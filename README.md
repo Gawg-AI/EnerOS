@@ -1,10 +1,14 @@
+**[中文](README_zh.md)** | English
+
+---
+
 <div align="center">
 
 # EnerOS
 
-### 能枢 — 电力/能源原生的 AgentOS
+### Power/Energy-Native AgentOS
 
-**聚能以枢，驱动万物智能**
+**Converge Energy at the Hub, Drive Intelligence in All Things**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -14,44 +18,44 @@
 
 ## Why EnerOS?
 
-当前 AI Agent 技术蓬勃发展，但通用 Agent 框架在电力能源领域面临根本性困境：
+AI Agent technology is booming, yet general-purpose Agent frameworks face fundamental challenges in the power and energy domain:
 
-| 问题 | 表现 |
-|------|------|
-| **物理盲区** | Agent 不理解潮流、电压、频率等物理量，无法判断决策的物理可行性 |
-| **约束缺失** | 安全约束（N-1、热稳定、电压越限）被当作"提示词"而非系统级保障 |
-| **拓扑无感** | Agent 将电网视为扁平数据，无法感知拓扑结构与电气耦合关系 |
-| **时序割裂** | 电力系统是强时序耦合系统，通用框架缺乏时间维度的一等公民支持 |
-| **设备异构** | 变压器、断路器、逆变器各有独立模型与协议，难以统一调度 |
+| Problem | Manifestation |
+|---------|---------------|
+| **Physics Blindness** | Agents cannot understand power flow, voltage, frequency — unable to judge physical feasibility of decisions |
+| **Missing Constraints** | Safety constraints (N-1, thermal stability, voltage limits) are treated as "prompts" rather than system-level guarantees |
+| **Topology Unawareness** | Agents view the grid as flat data, unable to perceive topology structure and electrical coupling |
+| **Temporal Disconnection** | Power systems are strongly time-coupled; general frameworks lack first-class time-dimension support |
+| **Device Heterogeneity** | Transformers, breakers, inverters each have distinct models and protocols, making unified dispatch difficult |
 
-**EnerOS 的回答：不要在通用框架上"外挂"电力知识，而是从电力原生出发构建操作系统。**
+**EnerOS's answer: Don't "bolt on" power knowledge to generic frameworks — build the OS power-native from the ground up.**
 
 ---
 
 ## What is EnerOS?
 
-EnerOS 是面向电力与能源领域的原生智能体操作系统（AgentOS）。它将电力系统的领域知识、物理约束与运行逻辑内建为操作系统内核，使 AI Agent 在能源场景中具备原生理解、安全决策与自主行动能力。
+EnerOS is a native intelligent agent operating system (AgentOS) designed for the power and energy domain. It embeds domain knowledge, physical constraints, and operational logic of power systems into the OS kernel, enabling AI Agents with native understanding, safe decision-making, and autonomous action in energy scenarios.
 
-正如传统操作系统为应用程序提供进程、文件、网络的统一抽象，EnerOS 为能源智能体提供拓扑、潮流、约束、设备的统一抽象——**让 Agent 天然"懂电"**。
+Just as a traditional OS provides unified abstractions of processes, files, and networking for applications, EnerOS provides unified abstractions of topology, power flow, constraints, and equipment for energy agents — **making Agents natively "understand electricity"**.
 
 ---
 
 ## Design Philosophy
 
 ### Power-Native First
-电力拓扑、潮流计算、设备模型不是外挂插件，而是操作系统的原生抽象。Agent 从诞生起就运行在电网的物理世界模型之上。
+Power topology, power flow computation, and equipment models are not plug-ins — they are native OS abstractions. Agents are born running on top of the grid's physical world model.
 
 ### Agent-as-Grid-Node
-每个 Agent 对应电网中的一个功能节点（厂站、馈线、设备），天然具备拓扑感知与约束遵守能力。Agent 之间的通信即电网节点之间的信息交换。
+Each Agent corresponds to a functional node in the grid (substation, feeder, device), inherently possessing topology awareness and constraint compliance. Inter-Agent communication mirrors information exchange between grid nodes.
 
 ### Constraint as Kernel Law
-安全约束（N-1 校验、热稳定、电压限值）由内核强制执行，任何 Agent 的决策不可逾越物理可行域。安全不是提示词，而是操作系统级的硬约束。
+Safety constraints (N-1 verification, thermal stability, voltage limits) are enforced by the kernel — no Agent decision may exceed the physically feasible domain. Safety is not a prompt; it is a hard OS-level constraint.
 
 ### Time-Series Native
-电力系统是强时序耦合系统。EnerOS 将时间维度作为一等公民，支持实时数据流、历史回溯与预测推演的原生操作。
+Power systems are strongly time-coupled. EnerOS treats the time dimension as a first-class citizen, supporting native operations for real-time data streams, historical lookback, and predictive forecasting.
 
 ### Open & Interoperable
-标准化的 Agent 通信协议与设备接入规范，支持异构能源设备与多厂商系统的即插即用。
+Standardized Agent communication protocols and device integration specifications enable plug-and-play for heterogeneous energy devices and multi-vendor systems.
 
 ---
 
@@ -103,88 +107,88 @@ EnerOS 是面向电力与能源领域的原生智能体操作系统（AgentOS）
 
 ### Layer Responsibilities
 
-| 层次 | 职责 | 关键抽象 |
-|------|------|----------|
-| **Application Layer** | 面向业务场景的智能体应用 | Dispatch / Operation / Planning / Trading Agent |
-| **Agent Runtime Layer** | Agent 生命周期管理与智能调度 | Lifecycle / Memory / Tool / Reasoning / Security Guard |
-| **Power-Native Kernel** | 电力系统物理世界建模与约束执行 | Topology / PowerFlow / Constraint / Equipment / TimeSeries / Event |
-| **Infrastructure Layer** | 异构设备接入与数据采集 | SCADA / IEC 61850 / IEC 104 / MQTT / Modbus / OPC UA |
+| Layer | Responsibility | Key Abstractions |
+|-------|---------------|------------------|
+| **Application Layer** | Business-scenario-oriented agent applications | Dispatch / Operation / Planning / Trading Agent |
+| **Agent Runtime Layer** | Agent lifecycle management and intelligent scheduling | Lifecycle / Memory / Tool / Reasoning / Security Guard |
+| **Power-Native Kernel** | Power system physical world modeling and constraint enforcement | Topology / PowerFlow / Constraint / Equipment / TimeSeries / Event |
+| **Infrastructure Layer** | Heterogeneous device integration and data acquisition | SCADA / IEC 61850 / IEC 104 / MQTT / Modbus / OPC UA |
 
 ---
 
 ## Core Capabilities
 
 ### Grid Topology as First-Class Citizen
-电网拓扑图是 EnerOS 的核心数据结构。Agent 通过拓扑感知上下文自动获取其所在节点的电气关系、上下游设备与运行状态，无需显式查询。
+The grid topology graph is EnerOS's core data structure. Agents automatically acquire their node's electrical relationships, upstream/downstream devices, and operational status through topology-aware context — no explicit queries needed.
 
 ### Physics-Constrained Decision Making
-所有 Agent 的决策输出经过 Power-Native Kernel 的约束校验——潮流是否收敛、电压是否越限、线路是否过载。不满足物理约束的决策在内核层即被拒绝。
+All Agent decision outputs pass through the Power-Native Kernel's constraint verification — whether power flow converges, voltage exceeds limits, or lines are overloaded. Decisions failing physical constraints are rejected at the kernel level.
 
 ### Equipment Model Store
-内置符合中国国标（GB）与国际电工委员会标准（IEC）的设备参数库，涵盖变压器、线路、开关、逆变器等核心设备类型，支持 pandapower 兼容格式。
+Built-in equipment parameter library compliant with Chinese national standards (GB) and IEC standards, covering transformers, lines, switches, inverters, and other core equipment types, with pandapower-compatible format support.
 
 ### Multi-Agent Coordination
-基于电网拓扑的 Agent 组织模型：同一厂站内的 Agent 自动形成协作组，跨厂站 Agent 通过拓扑路径进行结构化通信，避免全局广播的混乱。
+A grid-topology-based Agent organization model: Agents within the same substation automatically form collaboration groups; cross-substation Agents communicate structurally along topology paths, avoiding the chaos of global broadcasting.
 
 ### Time-Series Native Operations
-实时数据流、历史数据回溯、预测数据推演——三种时间模式在内核层统一抽象，Agent 可无缝切换"回顾-感知-预判"的时间视角。
+Real-time data streams, historical lookback, and predictive forecasting — three temporal modes are unified at the kernel level, allowing Agents to seamlessly switch between "review — perceive — predict" time perspectives.
 
 ### Security Guard
-内核级安全守卫：N-1 安全校验、热稳定校验、电压越限检测。安全约束不可被 Agent 绕过或降级，是操作系统的"硬法律"。
+Kernel-level security guard: N-1 safety verification, thermal stability check, voltage limit detection. Safety constraints cannot be bypassed or downgraded by any Agent — they are the "hard law" of the operating system.
 
 ---
 
 ## Application Scenarios
 
-| 场景 | 描述 | 核心 Agent |
-|------|------|-----------|
-| **智能调度** | 基于负荷预测与新能源出力的日前/日内/实时调度 | Dispatch Agent |
-| **智能运维** | 设备状态监测、故障诊断与检修决策 | Operation Agent |
-| **配网规划** | 负荷增长预测下的网架扩展与设备选型 | Planning Agent |
-| **电力交易** | 现货市场报价策略与结算分析 | Trading Agent |
-| **故障自愈** | 故障定位、隔离与非故障区域恢复供电 | Self-Healing Agent |
-| **能效优化** | 工商业用户的用能优化与需求响应 | Energy Agent |
+| Scenario | Description | Core Agent |
+|----------|-------------|------------|
+| **Intelligent Dispatch** | Day-ahead / intra-day / real-time dispatch based on load forecasting and renewable output | Dispatch Agent |
+| **Smart Operation & Maintenance** | Equipment condition monitoring, fault diagnosis, and maintenance decisions | Operation Agent |
+| **Distribution Planning** | Network expansion and equipment selection under load growth projections | Planning Agent |
+| **Power Trading** | Spot market bidding strategies and settlement analysis | Trading Agent |
+| **Self-Healing** | Fault location, isolation, and service restoration for non-faulted areas | Self-Healing Agent |
+| **Energy Optimization** | Energy consumption optimization and demand response for commercial/industrial users | Energy Agent |
 
 ---
 
 ## Technical Design Principles
 
-- **Kernel-User Separation** — 物理约束执行在内核层，Agent 逻辑在用户层，安全边界清晰
-- **Graph-Centric** — 电网拓扑图是系统的核心索引，一切操作围绕图结构展开
-- **Event-Driven** — 基于事件总线的异步架构，适配电力系统的实时响应需求
-- **Plugin Architecture** — 设备协议、求解器、Agent 能力均以插件形式接入，可扩展
-- **Standard-Compliant** — 设备模型与通信协议遵循 IEC 61850 / IEC 60870-5-104 / GB 系列标准
+- **Kernel-User Separation** — Physical constraint enforcement in the kernel layer, Agent logic in the user layer; clear security boundary
+- **Graph-Centric** — Grid topology graph is the system's core index; all operations revolve around the graph structure
+- **Event-Driven** — Asynchronous architecture based on event bus, adapted to real-time response requirements of power systems
+- **Plugin Architecture** — Device protocols, solvers, and Agent capabilities are all plugged in, ensuring extensibility
+- **Standard-Compliant** — Equipment models and communication protocols follow IEC 61850 / IEC 60870-5-104 / GB series standards
 
 ---
 
 ## Comparison
 
-| 维度 | 通用 Agent 框架 | SCADA / EMS | **EnerOS** |
-|------|----------------|-------------|------------|
-| 电力物理建模 | 无 / 外挂 | 深度但封闭 | **原生内核** |
-| AI Agent 支持 | 原生 | 无 | **原生** |
-| 安全约束保障 | 提示词级 | 硬编码 | **内核级强制** |
-| 拓扑感知 | 无 | 有 | **Agent 原生感知** |
-| 多智能体协作 | 通用协议 | 无 | **拓扑结构化协作** |
-| 开放性 | 高 | 低 | **高（插件架构）** |
-| 设备模型标准 | 无 | 厂商私有 | **IEC / GB 标准** |
+| Dimension | General Agent Framework | SCADA / EMS | **EnerOS** |
+|-----------|------------------------|-------------|------------|
+| Power Physics Modeling | None / Bolt-on | Deep but closed | **Native Kernel** |
+| AI Agent Support | Native | None | **Native** |
+| Safety Constraint Guarantee | Prompt-level | Hardcoded | **Kernel-level Enforcement** |
+| Topology Awareness | None | Yes | **Agent-native Awareness** |
+| Multi-Agent Coordination | Generic protocol | None | **Topology-structured Collaboration** |
+| Openness | High | Low | **High (Plugin Architecture)** |
+| Equipment Model Standards | None | Vendor-proprietary | **IEC / GB Standards** |
 
 ---
 
 ## Roadmap
 
-- [ ] **Phase 1 — Kernel Foundation** — 拓扑引擎、潮流计算内核、设备模型库
-- [ ] **Phase 2 — Agent Runtime** — Agent 生命周期管理、记忆系统、工具引擎
-- [ ] **Phase 3 — Grid-Aware Context** — 拓扑感知注入、约束校验守卫、事件总线
-- [ ] **Phase 4 — Multi-Agent Coordination** — 多智能体协作协议、拓扑结构化通信
-- [ ] **Phase 5 — Infrastructure Adapters** — SCADA / IEC 61850 / MQTT 协议适配器
-- [ ] **Phase 6 — Domain Applications** — 调度、运维、规划等场景化智能体应用
+- [ ] **Phase 1 — Kernel Foundation** — Topology engine, power flow computation kernel, equipment model store
+- [ ] **Phase 2 — Agent Runtime** — Agent lifecycle management, memory system, tool engine
+- [ ] **Phase 3 — Grid-Aware Context** — Topology-aware injection, constraint verification guard, event bus
+- [ ] **Phase 4 — Multi-Agent Coordination** — Multi-agent collaboration protocol, topology-structured communication
+- [ ] **Phase 5 — Infrastructure Adapters** — SCADA / IEC 61850 / MQTT protocol adapters
+- [ ] **Phase 6 — Domain Applications** — Scenario-specific agent applications for dispatch, O&M, planning, etc.
 
 ---
 
 ## Contributing
 
-EnerOS 处于早期设计阶段，欢迎对电力系统与 AI 交叉领域感兴趣的贡献者参与讨论与共建。
+EnerOS is in its early design stage. Contributors interested in the intersection of power systems and AI are welcome to join the discussion and co-build.
 
 ---
 
