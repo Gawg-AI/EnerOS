@@ -54,12 +54,62 @@ Safety constraints (N-1 verification, thermal stability, voltage limits) are enf
 ### Time-Series Native
 Power systems are strongly time-coupled. EnerOS treats the time dimension as a first-class citizen, supporting native operations for real-time data streams, historical lookback, and predictive forecasting.
 
+### Real-Time Determinism
+Power systems have rigid real-time requirements. EnerOS adopts a dual-execution architecture: a standard Linux soft base for Agent orchestration and AI inference, and a PREEMPT_RT hard execution domain for deterministic latency in protection logic and breaker operations. The safety domain cannot be blocked by the soft base.
+
 ### Open & Interoperable
 Standardized Agent communication protocols and device integration specifications enable plug-and-play for heterogeneous energy devices and multi-vendor systems.
 
 ---
 
 ## Architecture
+
+### Dual-Execution Architecture: Soft Base + PREEMPT_RT Hard Execution
+
+Power systems have rigid real-time requirements — relay protection must act within milliseconds, breaker commands must be issued within deterministic deadlines. Standard Linux kernels cannot provide hard real-time guarantees, while pure real-time systems struggle to support complex workloads like AI inference and Agent orchestration.
+
+EnerOS adopts a **dual-execution architecture**, dividing the system into two execution domains:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  Soft Base (Standard Linux)                      │
+│                                                                   │
+│  Agent Runtime · AI Inference · Planning & Optimization · HMI    │
+│  Non-deterministic tasks · Latency: seconds ~ minutes            │
+│                                                                   │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │              RT Safety Gateway                               │ │
+│  │    Cross-domain Comm · Command Dispatch · State Sync         │ │
+│  │    Priority Arbitration · Constraint Verification            │ │
+│  └────────────────────────┬────────────────────────────────────┘ │
+│                           │ IPC / Shared Memory                   │
+├───────────────────────────┼─────────────────────────────────────┤
+│                  PREEMPT_RT Hard Execution Domain                │
+│                                                                   │
+│  Relay Protection · Breaker Operations · Fault Isolation          │
+│  Frequency Regulation · Deterministic tasks                       │
+│  Latency: microseconds ~ milliseconds                             │
+│                                                                   │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────────┐ │
+│  │  RT Scheduler │ │  IRQ Thread  │ │  I/O Polling Engine      │ │
+│  │ (SCHED_FIFO)  │ │  Handler     │ │ (SCADA / IEC 104 / GOOSE)│ │
+│  └──────────────┘ └──────────────┘ └──────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Execution Domain | Kernel | Scheduling | Typical Tasks | Latency |
+|------------------|--------|------------|---------------|---------|
+| **Soft Base** | Standard Linux | CFS (Completely Fair Scheduler) | Agent orchestration, AI inference, power flow, planning | Seconds ~ Minutes |
+| **PREEMPT_RT Hard Execution** | Linux + PREEMPT_RT patch | SCHED_FIFO / SCHED_RR | Relay protection, breaker ops, fault isolation, frequency regulation | Microseconds ~ Milliseconds |
+
+**Core Design Principles:**
+
+- **Safety domain cannot be blocked by soft base** — PREEMPT_RT real-time tasks have the highest priority; no soft base operation may affect hard execution determinism
+- **Unidirectional trust** — The hard execution domain can directly read soft base decisions, but the soft base cannot directly intervene in hard execution scheduling
+- **Cross-domain communication via RT Safety Gateway** — All soft base → hard execution commands must pass through the gateway's constraint verification and priority arbitration
+- **Graceful degradation** — When the soft base fails, the hard execution domain automatically switches to local protection logic, ensuring grid safety does not depend on AI
+
+### Layered Architecture Overview
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -92,27 +142,33 @@ Standardized Agent communication protocols and device integration specifications
 │  │ (IEC / GB)    │ │ (Stream / Hist│ │ (Pub/Sub)            │  │
 │  └───────────────┘ └───────────────┘ └──────────────────────┘  │
 ├──────────────────────────────────────────────────────────────────┤
+│              RT Safety Gateway                                    │
+│                                                                  │
+│  Cross-domain Comm · Command Dispatch · State Sync               │
+│  Priority Arbitration · Constraint Verification                  │
+├──────────────────────────────────────────────────────────────────┤
 │                      Infrastructure Layer                        │
 │                                                                  │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐  │
-│  │ SCADA    │ │ IEC 61850│ │ MQTT     │ │ OPC UA           │  │
-│  │ Connector│ │ Mapping  │ │ Broker   │ │ Client           │  │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────────────┘  │
-│  ┌──────────┐ ┌──────────┐ ┌──────────────────────────────┐   │
-│  │ IEC 104  │ │ Modbus   │ │ Custom Protocol Adapter      │   │
-│  │ Client   │ │ Gateway  │ │ (Plug-in Architecture)       │   │
-│  └──────────┘ └──────────┘ └──────────────────────────────┘   │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │              PREEMPT_RT Hard Execution Domain               │ │
+│  │  Relay Protection · Breaker Ops · Fault Isolation           │ │
+│  │  Frequency Regulation · GOOSE                               │ │
+│  ├────────────────────────────────────────────────────────────┤ │
+│  │              Standard Device Integration                     │ │
+│  │  SCADA · IEC 61850 · IEC 104 · MQTT · Modbus · OPC UA      │ │
+│  └────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Layer Responsibilities
 
-| Layer | Responsibility | Key Abstractions |
-|-------|---------------|------------------|
-| **Application Layer** | Business-scenario-oriented agent applications | Dispatch / Operation / Planning / Trading Agent |
-| **Agent Runtime Layer** | Agent lifecycle management and intelligent scheduling | Lifecycle / Memory / Tool / Reasoning / Security Guard |
-| **Power-Native Kernel** | Power system physical world modeling and constraint enforcement | Topology / PowerFlow / Constraint / Equipment / TimeSeries / Event |
-| **Infrastructure Layer** | Heterogeneous device integration and data acquisition | SCADA / IEC 61850 / IEC 104 / MQTT / Modbus / OPC UA |
+| Layer | Responsibility | Key Abstractions | Execution Domain |
+|-------|---------------|------------------|------------------|
+| **Application Layer** | Business-scenario-oriented agent applications | Dispatch / Operation / Planning / Trading Agent | Soft Base |
+| **Agent Runtime Layer** | Agent lifecycle management and intelligent scheduling | Lifecycle / Memory / Tool / Reasoning / Security Guard | Soft Base |
+| **Power-Native Kernel** | Power system physical world modeling and constraint enforcement | Topology / PowerFlow / Constraint / Equipment / TimeSeries / Event | Soft Base |
+| **RT Safety Gateway** | Cross-domain communication and command safety verification | Command Dispatch / State Sync / Priority Arbitration | Cross-domain |
+| **Infrastructure Layer** | Heterogeneous device integration and real-time control execution | SCADA / IEC 61850 / IEC 104 / MQTT / Modbus / OPC UA | Hard Execution + Soft Base |
 
 ---
 
