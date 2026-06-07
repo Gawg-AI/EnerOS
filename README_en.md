@@ -16,9 +16,17 @@
 
 ---
 
-> **AI Agent technology is reshaping industries at an unprecedented pace, yet the power and energy domain faces unique challenges.** General-purpose Agent frameworks lack native understanding of power system physics; safety constraints are demoted to prompt-level suggestions; grid topology and electrical coupling are overlooked; protocol and model heterogeneity across devices makes unified dispatch intractable. These fundamental gaps render "bolt-on" approaches to power knowledge inherently unsafe and inefficient.
->
-> **EnerOS** is a native intelligent agent operating system (AgentOS) designed for the power and energy domain. It embeds domain knowledge, physical constraints, and operational logic of power systems into the OS kernel, enabling AI Agents with native understanding, safe decision-making, and autonomous action in energy scenarios. Just as a traditional OS provides unified abstractions of processes, files, and networking for applications, EnerOS provides unified abstractions of topology, power flow, constraints, and equipment for energy agents — **making Agents natively "understand electricity"**.
+<table>
+<tr><td>
+
+**AI Agent technology is reshaping industries at an unprecedented pace, yet the power and energy domain faces unique challenges.**
+
+General-purpose Agent frameworks lack native understanding of power system physics; safety constraints are demoted to prompt-level suggestions; grid topology and electrical coupling are overlooked; protocol and model heterogeneity across devices makes unified dispatch intractable. These fundamental gaps render "bolt-on" approaches to power knowledge inherently unsafe and inefficient.
+
+**EnerOS** is a native intelligent agent operating system (AgentOS) designed for the power and energy domain. It embeds domain knowledge, physical constraints, and operational logic of power systems into the OS kernel, enabling AI Agents with native understanding, safe decision-making, and autonomous action in energy scenarios. Just as a traditional OS provides unified abstractions of processes, files, and networking for applications, EnerOS provides unified abstractions of topology, power flow, constraints, and equipment for energy agents — **making Agents natively "understand electricity"**.
+
+</td></tr>
+</table>
 
 ---
 
