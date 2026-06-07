@@ -4,7 +4,7 @@
 
 <div align="center">
 
-# EnerOS
+# EnerOS（能枢OS）
 
 ### 能枢 — 电力/能源原生的 AgentOS
 
