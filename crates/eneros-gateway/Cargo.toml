@@ -1,0 +1,22 @@
+[package]
+name = "eneros-gateway"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS real-time safety gateway"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+eneros-constraint = { path = "../eneros-constraint" }
+eneros-eventbus = { path = "../eneros-eventbus" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

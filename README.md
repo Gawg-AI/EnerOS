@@ -241,18 +241,90 @@ EnerOS 采用**双执行架构**，将系统划分为两个执行域：
 
 ## 路线图
 
-- [ ] **Phase 1 — 内核基座** — 拓扑引擎、潮流计算内核、设备模型库
-- [ ] **Phase 2 — Agent 运行时** — Agent 生命周期管理、记忆系统、工具引擎
-- [ ] **Phase 3 — 电网感知上下文** — 拓扑感知注入、约束校验守卫、事件总线
-- [ ] **Phase 4 — 多智能体协作** — 多智能体协作协议、拓扑结构化通信
-- [ ] **Phase 5 — 基础设施适配器** — SCADA / IEC 61850 / MQTT 协议适配器
-- [ ] **Phase 6 — 领域应用** — 调度、运维、规划等场景化智能体应用
+- [x] **Phase 1 — 内核基座** — 拓扑引擎、潮流计算内核、设备模型库
+- [x] **Phase 2 — Agent 运行时** — Agent 生命周期管理、记忆系统、工具引擎
+- [x] **Phase 3 — 电网感知上下文** — 拓扑感知注入、约束校验守卫、事件总线
+- [x] **Phase 4 — 多智能体协作** — 多智能体协作协议、拓扑结构化通信
+- [x] **Phase 5 — 基础设施适配器** — SCADA / IEC 61850 / IEC 104 / MQTT / Modbus 协议适配器
+- [x] **Phase 6 — 领域应用** — 调度/运维/自愈Agent、领域协作协议
+- [x] **Phase 7 — 实时闭环与系统集成** — SCADA管线、DC-OPF/状态估计/短路、负荷预测/规划/交易Agent、axum API+WebSocket+仪表盘
+- [x] **Phase 8 — 深度集成与生产化** — 端到端连通、TOML配置、E2E测试、Dashboard集成、SQLite持久化
+- [x] **Phase 9 — 修复真实Bug与消除空壳** — 死锁修复、联锁校验、Y-bus bug、消息广播修复、clippy零警告
+- [x] **Phase 10 — 精度验证与LLM推理集成** — IEEE 14-bus精度验证、LlmReasoningEngine、Agent LLM增强、降级回退
+- [x] **Phase 11 — rig Tool实化与统一推理引擎** — rig框架集成(rig-core 0.38)、4个电力系统Tool实化、RigReasoningEngine统一推理引擎
+- [x] **Phase 12 — 实时执行域** — PriorityCommandQueue优先级命令队列、RealtimeExecutor实时命令执行器、PriorityEventBus双通道事件总线、DualScanGroup快/慢扫描分组、WatchdogTimer看门狗超时保护
+
+---
+
+## 快速开始
+
+### 前置条件
+
+- Rust 1.70+（通过 [rustup](https://rustup.rs/) 安装）
+- Cargo
+
+### 构建
+
+```bash
+# 克隆仓库
+git clone https://github.com/Gawg-AI/EnerOS.git
+cd EnerOS
+
+# 构建项目
+cargo build --release
+
+# 运行测试
+cargo test
+```
+
+### 运行
+
+```bash
+# 启动 API 服务器
+cargo run --bin eneros -- serve --host 0.0.0.0 --port 8080
+
+# 启用 AI 推理（需配置 rig provider）
+ENEROS_RIG_PROVIDER=openai cargo run --bin eneros -- serve --host 0.0.0.0 --port 8080
+```
+
+---
+
+## 项目结构
+
+```
+eneros/
+├── Cargo.toml                    # Workspace 配置
+├── crates/
+│   ├── eneros-core/              # 核心类型与工具
+│   ├── eneros-topology/          # 拓扑引擎
+│   ├── eneros-powerflow/         # 潮流引擎
+│   ├── eneros-constraint/        # 约束执行器
+│   ├── eneros-equipment/         # 设备模型库
+│   ├── eneros-timeseries/        # 时序引擎
+│   ├── eneros-eventbus/          # 事件总线
+│   ├── eneros-gateway/           # 安全网关（含实时执行域）
+│   ├── eneros-device/            # 设备接入层
+│   ├── eneros-network/           # 拓扑-潮流统一管线
+│   ├── eneros-reasoning/         # 推理引擎（RuleBased + rig）
+│   ├── eneros-tool/              # 工具引擎
+│   ├── eneros-memory/            # Agent 记忆存储
+│   ├── eneros-agent/             # Agent 编排（6个领域Agent）
+│   ├── eneros-scada/             # SCADA 数据管线
+│   ├── eneros-analysis/          # 高级分析（DC-OPF/状态估计/短路）
+│   ├── eneros-bridge/            # Python 桥接（cnpower/pandapower）
+│   ├── eneros-dashboard/         # Web 仪表盘
+│   └── eneros-api/               # API 服务器（axum + WebSocket）
+├── third_party/
+│   ├── cnpower/                  # 中国电力系统数据（git submodule）
+│   └── pandapower/               # pandapower 参考实现（git submodule）
+└── README.md
+```
 
 ---
 
 ## 参与贡献
 
-EnerOS 处于早期设计阶段，欢迎对电力系统与 AI 交叉领域感兴趣的贡献者参与讨论与共建。
+EnerOS 欢迎对电力系统与 AI 交叉领域感兴趣的贡献者参与讨论与共建。
 
 ---
 

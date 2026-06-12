@@ -1,0 +1,133 @@
+use std::collections::HashMap;
+use parking_lot::RwLock;
+use chrono::{DateTime, Utc};
+use eneros_core::{ElementId, Result};
+
+/// Time-series data point
+#[derive(Debug, Clone)]
+pub struct DataPoint {
+    pub timestamp: DateTime<Utc>,
+    pub value: f64,
+    pub quality: DataQuality,
+}
+
+/// Data quality indicator
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataQuality {
+    Good,
+    Uncertain,
+    Bad,
+}
+
+/// Time-series data for an element
+#[derive(Debug, Clone)]
+pub struct TimeSeries {
+    pub element_id: ElementId,
+    pub parameter: String,
+    pub data_points: Vec<DataPoint>,
+}
+
+/// Time-series engine for storing and querying historical data
+pub struct TimeSeriesEngine {
+    storage: RwLock<HashMap<(ElementId, String), Vec<DataPoint>>>,
+    max_retention: usize,
+}
+
+impl TimeSeriesEngine {
+    /// Create a new time-series engine
+    pub fn new(max_retention: usize) -> Self {
+        Self {
+            storage: RwLock::new(HashMap::new()),
+            max_retention,
+        }
+    }
+
+    /// Record a data point
+    pub fn record(
+        &self,
+        element_id: ElementId,
+        parameter: &str,
+        value: f64,
+        timestamp: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut storage = self.storage.write();
+        let key = (element_id, parameter.to_string());
+
+        let data_points = storage.entry(key).or_default();
+        data_points.push(DataPoint {
+            timestamp,
+            value,
+            quality: DataQuality::Good,
+        });
+
+        // Trim old data if超过限制
+        if data_points.len() > self.max_retention {
+            let excess = data_points.len() - self.max_retention;
+            data_points.drain(0..excess);
+        }
+
+        Ok(())
+    }
+
+    /// Query historical data
+    pub fn query(
+        &self,
+        element_id: ElementId,
+        parameter: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Vec<DataPoint> {
+        let storage = self.storage.read();
+        let key = (element_id, parameter.to_string());
+
+        storage
+            .get(&key)
+            .map(|points| {
+                points
+                    .iter()
+                    .filter(|p| p.timestamp >= start && p.timestamp <= end)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get latest value
+    pub fn latest(
+        &self,
+        element_id: ElementId,
+        parameter: &str,
+    ) -> Option<DataPoint> {
+        let storage = self.storage.read();
+        let key = (element_id, parameter.to_string());
+
+        storage.get(&key).and_then(|points| points.last().cloned())
+    }
+
+    /// Get storage statistics
+    pub fn statistics(&self) -> TimeSeriesStatistics {
+        let storage = self.storage.read();
+        let total_points: usize = storage.values().map(|v| v.len()).sum();
+        let series_count = storage.len();
+
+        TimeSeriesStatistics {
+            series_count,
+            total_points,
+            max_retention: self.max_retention,
+        }
+    }
+}
+
+impl Default for TimeSeriesEngine {
+    fn default() -> Self {
+        Self::new(100_000)
+    }
+}
+
+/// Time-series engine statistics
+#[derive(Debug, Clone)]
+pub struct TimeSeriesStatistics {
+    pub series_count: usize,
+    pub total_points: usize,
+    pub max_retention: usize,
+}

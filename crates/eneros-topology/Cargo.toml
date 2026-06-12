@@ -1,0 +1,20 @@
+[package]
+name = "eneros-topology"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS power grid topology engine"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+ahash = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

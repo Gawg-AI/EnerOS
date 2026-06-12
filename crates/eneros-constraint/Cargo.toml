@@ -1,0 +1,22 @@
+[package]
+name = "eneros-constraint"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS power system constraint executor"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+eneros-topology = { path = "../eneros-topology" }
+eneros-powerflow = { path = "../eneros-powerflow" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

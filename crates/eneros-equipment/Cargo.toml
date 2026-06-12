@@ -1,0 +1,20 @@
+[package]
+name = "eneros-equipment"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS power equipment model library"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+ahash = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

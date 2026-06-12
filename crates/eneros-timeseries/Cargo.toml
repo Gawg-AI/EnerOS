@@ -1,0 +1,20 @@
+[package]
+name = "eneros-timeseries"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS time-series data engine"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

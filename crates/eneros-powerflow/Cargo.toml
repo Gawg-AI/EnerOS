@@ -1,0 +1,22 @@
+[package]
+name = "eneros-powerflow"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS power flow calculation engine"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+eneros-topology = { path = "../eneros-topology" }
+eneros-equipment = { path = "../eneros-equipment" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+ndarray = { workspace = true }
+num-complex = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

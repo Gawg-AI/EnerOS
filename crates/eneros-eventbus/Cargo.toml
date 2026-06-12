@@ -1,0 +1,23 @@
+[package]
+name = "eneros-eventbus"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS event bus for inter-component communication"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
