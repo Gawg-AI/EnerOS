@@ -569,6 +569,7 @@ dependencies = [
  "eneros-topology",
  "parking_lot",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -656,10 +657,13 @@ dependencies = [
 name = "eneros-gateway"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
+ "eneros-agent",
  "eneros-constraint",
  "eneros-core",
  "eneros-eventbus",
+ "eneros-reasoning",
  "parking_lot",
  "serde",
  "thiserror 1.0.69",
@@ -695,6 +699,7 @@ dependencies = [
  "eneros-powerflow",
  "eneros-topology",
  "num-complex",
+ "parking_lot",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -729,7 +734,6 @@ dependencies = [
  "eneros-powerflow",
  "eneros-tool",
  "parking_lot",
- "reqwest 0.12.28",
  "rig-core",
  "schemars 0.8.22",
  "serde",

@@ -573,9 +573,7 @@ mod tests {
 
     #[test]
     fn test_heal_fault_with_interlocking_hard_constraint() {
-        let mut agent = SelfHealingAgent::new("sh1", "SelfHeal-1", vec![1]);
-        // Set breaker closed for the associated breaker of a disconnector operation
-        // This simulates a hard constraint that cannot be bypassed
+        // Test interlocking rule engine directly — agent not needed for this test
         let mut states = DeviceStates::default();
         // We need to test with an OpenDisconnector operation under load
         // Since our isolation uses OpenBreaker by default, let's test the

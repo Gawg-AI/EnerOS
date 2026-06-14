@@ -309,8 +309,8 @@ mod tests {
     #[test]
     fn test_extract_f64_from_string() {
         let mut map = serde_json::Map::new();
-        map.insert("value".to_string(), serde_json::Value::String("3.14".to_string()));
-        assert!((extract_f64(&map, "value").unwrap() - 3.14).abs() < 0.001);
+        map.insert("value".to_string(), serde_json::Value::String("2.5".to_string()));
+        assert!((extract_f64(&map, "value").unwrap() - 2.5).abs() < 0.001);
     }
 
     #[test]

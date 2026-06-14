@@ -1,5 +1,6 @@
-use eneros_core::{AuthorityLevel, Result, SystemOperatingState};
+use eneros_core::{AuthorityLevel, Jurisdiction, Result, StructuredAction, SystemOperatingState};
 use eneros_eventbus::{Event, EventHandler};
+use eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline;
 
 use crate::agent::AgentType;
 use crate::collaboration::CollaborationProtocol;
@@ -19,6 +20,10 @@ pub struct AgentOrchestrator {
     state_machine: SystemStateMachine,
     emergency_pipeline: EmergencyResponsePipeline,
     topology_scheduler: TopologyAwareScheduler,
+    /// Optional LLM feedback loop for re-prompting on rejected actions.
+    /// Lives here (in the agent layer) rather than in the gateway so the
+    /// gateway stays free of any reasoning dependency.
+    feedback_loop: Option<std::sync::Arc<eneros_reasoning::feedback::FeedbackLoop>>,
 }
 
 impl AgentOrchestrator {
@@ -34,6 +39,46 @@ impl AgentOrchestrator {
             state_machine: SystemStateMachine::new(),
             emergency_pipeline: EmergencyResponsePipeline::new(),
             topology_scheduler: TopologyAwareScheduler::new(),
+            feedback_loop: None,
+        }
+    }
+
+    /// Create a new orchestrator with a constrained decision pipeline
+    pub fn with_pipeline(ctx: AgentContext, pipeline: std::sync::Arc<ConstrainedDecisionPipeline>) -> Self {
+        let event_bus = ctx.event_bus.clone();
+        let gateway = ctx.gateway.clone();
+        Self {
+            ctx,
+            agents: Vec::new(),
+            dispatcher: ActionDispatcher::with_pipeline(event_bus, gateway, pipeline),
+            protocol: CollaborationProtocol::new(),
+            state_machine: SystemStateMachine::new(),
+            emergency_pipeline: EmergencyResponsePipeline::new(),
+            topology_scheduler: TopologyAwareScheduler::new(),
+            feedback_loop: None,
+        }
+    }
+
+    /// Create a new orchestrator with both a constrained decision pipeline and
+    /// an LLM feedback loop. This is the full Phase 14 closed loop: structured
+    /// actions flow through the pipeline, and rejected actions trigger a
+    /// re-reasoning cycle (capped by the loop's `max_iterations`).
+    pub fn with_pipeline_and_feedback(
+        ctx: AgentContext,
+        pipeline: std::sync::Arc<ConstrainedDecisionPipeline>,
+        feedback_loop: std::sync::Arc<eneros_reasoning::feedback::FeedbackLoop>,
+    ) -> Self {
+        let event_bus = ctx.event_bus.clone();
+        let gateway = ctx.gateway.clone();
+        Self {
+            ctx,
+            agents: Vec::new(),
+            dispatcher: ActionDispatcher::with_pipeline(event_bus, gateway, pipeline),
+            protocol: CollaborationProtocol::new(),
+            state_machine: SystemStateMachine::new(),
+            emergency_pipeline: EmergencyResponsePipeline::new(),
+            topology_scheduler: TopologyAwareScheduler::new(),
+            feedback_loop: Some(feedback_loop),
         }
     }
 
@@ -73,7 +118,7 @@ impl AgentOrchestrator {
             };
 
             for action in actions {
-                let dispatch_result = self.dispatcher.dispatch(action)?;
+                let dispatch_result = self.route_action(action).await?;
                 results.push(dispatch_result);
             }
         }
@@ -88,12 +133,127 @@ impl AgentOrchestrator {
         for handler in &self.agents {
             let actions = handler.tick_with_context(&self.ctx).await?;
             for action in actions {
-                let dispatch_result = self.dispatcher.dispatch(action)?;
+                let dispatch_result = self.route_action(action).await?;
                 results.push(dispatch_result);
             }
         }
 
         Ok(results)
+    }
+
+    /// Route a single agent action to the appropriate dispatcher path.
+    ///
+    /// `AgentAction::ExecuteStructured` is sent through the constrained
+    /// decision pipeline (`dispatch_structured`) so that feasibility
+    /// projection and constraint validation apply. All other variants use the
+    /// regular `dispatch()` path. This is the single integration point that
+    /// connects agent reasoning output to the Phase 13/14 safety pipeline.
+    async fn route_action(&self, action: crate::agent::AgentAction) -> Result<DispatchResult> {
+        match action {
+            crate::agent::AgentAction::ExecuteStructured(sa) => {
+                self.dispatch_via_pipeline(&sa).await
+            }
+            other => self.dispatcher.dispatch(other),
+        }
+    }
+
+    /// Dispatch a structured action through the constrained decision pipeline,
+    /// applying the LLM feedback loop when a pipeline is configured and the
+    /// action is rejected. When no pipeline is wired in, falls back to direct
+    /// gateway execution for backward compatibility.
+    async fn dispatch_via_pipeline(&self, action: &StructuredAction) -> Result<DispatchResult> {
+        // Snapshot the operating context the pipeline evaluates against.
+        let authority = self.ctx.authority;
+        let jurisdiction = self.ctx.jurisdiction.clone();
+        let system_state = *self.ctx.system_state.read();
+
+        // No pipeline configured (e.g. in tests) → degrade to direct execution
+        // so structured actions still take effect.
+        if !self.dispatcher.has_pipeline() {
+            let cmd = eneros_gateway::decision_pipeline::structured_action_to_command(action);
+            return self.dispatcher.dispatch(crate::agent::AgentAction::ExecuteCommand(cmd));
+        }
+
+        let result = self.dispatcher.dispatch_structured(
+            action,
+            authority,
+            &jurisdiction,
+            system_state,
+        )?;
+
+        // If the action was executed (possibly after projection), we're done.
+        if matches!(result, DispatchResult::CommandExecuted) {
+            return Ok(result);
+        }
+
+        // Rejected — try the feedback loop if one is configured.
+        if let Some(ref feedback_loop) = self.feedback_loop {
+            return self.retry_with_feedback(action, &result, feedback_loop, authority, &jurisdiction).await;
+        }
+
+        Ok(result)
+    }
+
+    /// Re-prompt the reasoning engine with the rejection reason, then re-run
+    /// the pipeline on whatever structured action it produces. Capped by the
+    /// FeedbackLoop's own `max_iterations`.
+    async fn retry_with_feedback(
+        &self,
+        original: &StructuredAction,
+        rejection: &DispatchResult,
+        feedback_loop: &eneros_reasoning::feedback::FeedbackLoop,
+        authority: AuthorityLevel,
+        jurisdiction: &Jurisdiction,
+    ) -> Result<DispatchResult> {
+        let rejection_reason = match rejection {
+            DispatchResult::ConstraintRejected(r) => r.clone(),
+            DispatchResult::CommandRejected(r) => r.clone(),
+            other => format!("{:?}", other),
+        };
+
+        // Build a minimal reasoning input describing the failed attempt.
+        let input = eneros_reasoning::ReasoningInput::new("Re-plan a rejected power system action")
+            .with_observation(&format!("Rejected action: {:?}", original))
+            .with_observation(&format!("Rejection reason: {}", rejection_reason))
+            .with_constraint("Voltage must be within 0.95-1.05 pu")
+            .with_constraint("Branch loading must stay below 100%")
+            .with_constraint("N-1 security must hold");
+
+        let feedback = feedback_loop
+            .reason_with_feedback(&input, &rejection_reason)
+            .await?;
+
+        if !feedback.accepted {
+            tracing::warn!(
+                "Feedback loop exhausted after {} retries; action rejected: {}",
+                feedback.retries,
+                rejection_reason
+            );
+            return Ok(DispatchResult::ConstraintRejected(format!(
+                "rejected after {} feedback retries: {}",
+                feedback.retries, rejection_reason
+            )));
+        }
+
+        // The feedback engine may have produced new structured actions.
+        let system_state = *self.ctx.system_state.read();
+        if let Some(new_actions) = &feedback.output.structured_actions {
+            for new_action in new_actions {
+                let r = self.dispatcher.dispatch_structured(
+                    new_action,
+                    authority,
+                    jurisdiction,
+                    system_state,
+                )?;
+                if matches!(r, DispatchResult::CommandExecuted) {
+                    return Ok(r);
+                }
+            }
+        }
+
+        Ok(DispatchResult::ConstraintRejected(
+            "feedback produced no feasible action".to_string(),
+        ))
     }
 
     /// Get agent count

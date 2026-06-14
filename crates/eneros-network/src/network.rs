@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use eneros_core::{ElementId, Result};
 use eneros_powerflow::{PowerFlowSolver, YBusMatrix, PowerFlowResult, BusTypeNR};
 use eneros_constraint::{ConstraintEngine, N1Result, StabilityResult, Violation};
@@ -24,8 +25,8 @@ pub struct PowerNetwork {
     bus_map: HashMap<ElementId, usize>,
     /// Power flow solver
     solver: PowerFlowSolver,
-    /// Constraint engine
-    constraint: ConstraintEngine,
+    /// Constraint engine (shared via Arc for consistency with main ConstraintEngine)
+    constraint: Arc<ConstraintEngine>,
     /// Initial voltage magnitudes (optional)
     v_initial: Option<Vec<f64>>,
 }
@@ -48,7 +49,7 @@ impl PowerNetwork {
             branches,
             bus_map,
             solver: PowerFlowSolver::default_solver(),
-            constraint: ConstraintEngine::new(),
+            constraint: Arc::new(ConstraintEngine::new()),
             v_initial: None,
         }
     }
@@ -84,7 +85,7 @@ impl PowerNetwork {
             branches,
             bus_map,
             solver: PowerFlowSolver::new(100, 1e-8),
-            constraint: ConstraintEngine::new(),
+            constraint: Arc::new(ConstraintEngine::new()),
             v_initial: Some(v_initial),
         }
     }
@@ -113,7 +114,7 @@ impl PowerNetwork {
             branches,
             bus_map,
             solver: PowerFlowSolver::new(100, 1e-8),
-            constraint: ConstraintEngine::new(),
+            constraint: Arc::new(ConstraintEngine::new()),
             v_initial: Some(v_initial),
         })
     }
@@ -133,6 +134,12 @@ impl PowerNetwork {
     /// Get reference to constraint engine for registering constraints
     pub fn constraint_engine(&self) -> &ConstraintEngine {
         &self.constraint
+    }
+
+    /// Set a shared ConstraintEngine (e.g., one wired with EventBus + Projector)
+    pub fn with_constraint_engine(mut self, engine: Arc<ConstraintEngine>) -> Self {
+        self.constraint = engine;
+        self
     }
 
     /// Execute power flow calculation
@@ -222,6 +229,31 @@ impl PowerNetwork {
     /// Get number of branches
     pub fn branch_count(&self) -> usize {
         self.branches.len()
+    }
+
+    /// Get a reference to the active power specifications
+    pub fn p_spec(&self) -> &[f64] {
+        &self.p_spec
+    }
+
+    /// Get a reference to the bus ID to index mapping
+    pub fn bus_map(&self) -> &HashMap<ElementId, usize> {
+        &self.bus_map
+    }
+
+    /// Create a new network with modified active power specifications (for What-If analysis)
+    pub fn with_modified_p_spec(&self, p_spec: Vec<f64>) -> Self {
+        Self {
+            ybus: self.ybus.clone(),
+            p_spec,
+            q_spec: self.q_spec.clone(),
+            bus_types: self.bus_types.clone(),
+            branches: self.branches.clone(),
+            bus_map: self.bus_map.clone(),
+            solver: self.solver.clone(),
+            constraint: Arc::new(ConstraintEngine::new()),
+            v_initial: self.v_initial.clone(),
+        }
     }
 }
 

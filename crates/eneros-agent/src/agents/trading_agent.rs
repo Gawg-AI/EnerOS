@@ -212,8 +212,13 @@ impl Agent for TradingAgent {
             }
             EventType::ConstraintViolation => {
                 // Adjust bids for constrained generators
+                let detail = match &event.payload {
+                    EventPayload::ConstraintViolation { constraint_id, element_id, severity, .. } =>
+                        format!("{} on element {} (severity={})", constraint_id, element_id, severity),
+                    _ => "unknown constraint".to_string(),
+                };
                 actions.push(AgentAction::LogMessage(
-                    "TradingAgent: 检测到越限，调整受限机组报价".to_string()
+                    format!("TradingAgent: 检测到越限，调整受限机组报价 — {}", detail)
                 ));
             }
             _ => {}

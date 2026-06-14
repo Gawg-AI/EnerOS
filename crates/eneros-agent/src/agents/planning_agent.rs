@@ -272,8 +272,13 @@ impl Agent for PlanningAgent {
         match event.event_type {
             EventType::ConstraintViolation => {
                 // Overload detected — trigger capacity assessment
+                let detail = match &event.payload {
+                    EventPayload::ConstraintViolation { constraint_id, element_id, severity, .. } =>
+                        format!("{} on element {} (severity={})", constraint_id, element_id, severity),
+                    _ => "unknown constraint".to_string(),
+                };
                 actions.push(AgentAction::LogMessage(
-                    "PlanningAgent: 收到越限事件，触发容量评估".to_string()
+                    format!("PlanningAgent: 收到越限事件，触发容量评估 — {}", detail)
                 ));
             }
             EventType::DataReceived => {

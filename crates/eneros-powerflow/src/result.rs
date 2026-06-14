@@ -7,6 +7,8 @@ pub struct PowerFlowResult {
     pub converged: bool,
     /// Number of iterations
     pub iterations: u32,
+    /// Maximum power mismatch at convergence (p.u.)
+    pub max_mismatch: f64,
     /// Bus results
     pub bus_results: Vec<BusResult>,
     /// Branch results

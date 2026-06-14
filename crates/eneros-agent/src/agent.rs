@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use eneros_core::{AuthorityLevel, Jurisdiction, Result};
+use eneros_core::{AuthorityLevel, Jurisdiction, Result, StructuredAction};
 use eneros_eventbus::Event;
 use eneros_gateway::command::Command;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,13 @@ pub enum AgentAction {
     PublishEvent(Event),
     /// Execute a control command (must go through SafetyGateway)
     ExecuteCommand(Command),
+    /// Execute a structured action through the constrained decision pipeline.
+    ///
+    /// Unlike `ExecuteCommand` (which bypasses constraint projection), this
+    /// variant is routed by the orchestrator into `ConstrainedDecisionPipeline`
+    /// so that feasibility projection, constraint validation, and the optional
+    /// LLM feedback loop all apply before execution.
+    ExecuteStructured(StructuredAction),
     /// Log a message
     LogMessage(String),
     /// No operation
@@ -95,6 +102,8 @@ pub struct MockAgent {
     authority_level: AuthorityLevel,
     jurisdiction: Jurisdiction,
     tick_interval: std::time::Duration,
+    /// Configurable actions returned by `tick()`; defaults to `[NoOp]`.
+    tick_actions: Vec<AgentAction>,
 }
 
 impl MockAgent {
@@ -110,6 +119,7 @@ impl MockAgent {
             authority_level: AuthorityLevel::Observer,
             jurisdiction: Jurisdiction::unrestricted(),
             tick_interval: std::time::Duration::from_secs(1),
+            tick_actions: vec![AgentAction::NoOp],
         }
     }
 
@@ -128,6 +138,16 @@ impl MockAgent {
     /// Set the tick interval for this mock agent
     pub fn with_tick_interval(mut self, interval: std::time::Duration) -> Self {
         self.tick_interval = interval;
+        self
+    }
+
+    /// Set the actions returned by each `tick()` call. Used by integration
+    /// tests to drive specific action variants (e.g. `ExecuteStructured`)
+    /// through the orchestrator's routing logic.
+    pub fn with_tick_actions(mut self, actions: Vec<AgentAction>) -> Self {
+        if !actions.is_empty() {
+            self.tick_actions = actions;
+        }
         self
     }
 
@@ -176,7 +196,7 @@ impl Agent for MockAgent {
 
     async fn tick(&mut self, _ctx: &AgentContext) -> Result<Vec<AgentAction>> {
         self.tick_count += 1;
-        Ok(vec![AgentAction::NoOp])
+        Ok(self.tick_actions.clone())
     }
 
     fn authority_level(&self) -> AuthorityLevel {

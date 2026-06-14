@@ -1,4 +1,4 @@
-﻿use std::time::Duration;
+use std::time::Duration;
 use eneros_core::{AuthorityLevel, Jurisdiction, Result, ZoneId};
 use eneros_gateway::command::{Command, CommandType, CommandPriority};
 use eneros_eventbus::Event;
@@ -249,10 +249,16 @@ impl Agent for DispatchAgent {
                 }
 
                 let context = match &event.payload {
-                    eneros_eventbus::event::EventPayload::Message(msg) => msg.as_str(),
-                    _ => "constraint violation",
+                    eneros_eventbus::event::EventPayload::ConstraintViolation {
+                        constraint_id, element_id, actual_value, limit_value, severity, ..
+                    } => format!(
+                        "ConstraintViolation: {} on element {} (actual={:.4}, limit={:.4}, severity={})",
+                        constraint_id, element_id, actual_value, limit_value, severity
+                    ),
+                    eneros_eventbus::event::EventPayload::Message(msg) => msg.clone(),
+                    _ => "constraint violation".to_string(),
                 };
-                let review_actions = self.review_dispatch_with_reasoning(&dispatch, context, ctx).await;
+                let review_actions = self.review_dispatch_with_reasoning(&dispatch, &context, ctx).await;
                 actions.extend(review_actions);
             }
             eneros_eventbus::event::EventType::DataReceived => {

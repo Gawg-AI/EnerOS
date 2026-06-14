@@ -313,6 +313,8 @@ cargo run --bin eneros -- power-flow --case ieee14
 - [x] **Phase 10 — 精度验证与LLM推理集成** — IEEE 14-bus标准答案精度验证、LlmReasoningEngine(OpenAI/Ollama/vLLM兼容)、Agent LLM推理增强(OperationAgent故障诊断+DispatchAgent调度审查)、降级回退机制
 - [x] **Phase 11 — rig Tool实化与统一推理引擎** — rig框架集成(rig-core 0.38)、4个电力系统Tool实化(PowerFlow/ConstraintCheck/N1Analysis/VoltageStability)、RigReasoningEngine统一推理引擎、LlmReasoningEngine废弃标记、Feature flag隔离
 - [x] **Phase 12 — 实时执行域** — PriorityCommandQueue优先级命令队列、RealtimeExecutor实时命令执行器、SafetyGateway集成优先级队列、PriorityEventBus双通道事件总线、DualScanGroup快/慢扫描分组(100ms/1s)、WatchdogTimer看门狗超时保护
+- [x] **Phase 13 — 约束驱动的确定性决策管道** — StructuredActionOutput结构化动作输出、FeasibilityProjector可行性投影(What-If分析+边界裁剪)、ConstrainedDecisionPipeline三阶段管道(投影→校验→执行)、ActionDispatcher集成dispatch_structured()、ConstraintAwareValidator增强投影器支持、FeedbackLoop LLM反馈重推理、NetworkSimulatorAdapter电力网络仿真适配器
+- [x] **Phase 14 — 接通确定性决策闭环** — 修复Phase 13"幽灵闭环"(结构化动作解析+ActionMapper优先消费+Orchestrator路由dispatch_structured)、FeedbackLoop改Arc\<dyn\>并接入orchestrator(拒绝→重推理)、AgentAction::ExecuteStructured变体、API注入FeedbackLoop、5个端到端闭环集成测试、eneros-bridge flaky测试修复
 
 ---
 

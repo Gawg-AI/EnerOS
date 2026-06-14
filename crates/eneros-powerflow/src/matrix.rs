@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use eneros_core::ElementId;
 
 /// Y-Bus matrix for power flow calculation
+#[derive(Clone)]
 pub struct YBusMatrix {
     size: usize,
     data: Vec<Vec<(f64, f64)>>, // (G, B) pairs

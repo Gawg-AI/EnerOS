@@ -227,8 +227,14 @@ impl Agent for OperationAgent {
 
         match event.event_type {
             EventType::ConstraintViolation | EventType::SystemAlarm => {
-                // Extract symptoms from event message
+                // Extract symptoms from event payload
                 let message = match &event.payload {
+                    EventPayload::ConstraintViolation {
+                        constraint_id, element_id, actual_value, limit_value, severity, ..
+                    } => format!(
+                        "constraint_violation {} element_{} actual_{:.4} limit_{:.4} severity_{}",
+                        constraint_id, element_id, actual_value, limit_value, severity
+                    ),
                     EventPayload::Message(msg) => msg.clone(),
                     _ => String::new(),
                 };

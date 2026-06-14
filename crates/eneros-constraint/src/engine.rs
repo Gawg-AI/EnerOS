@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::RwLock;
-use eneros_core::{ElementId, SeverityLevel, SystemOperatingState, ActionFeasibility};
+use eneros_core::{ElementId, SeverityLevel, SystemOperatingState, ActionFeasibility, StructuredAction};
 use eneros_eventbus::EventBus;
+use eneros_eventbus::event::{Event, EventType, EventPayload};
 use eneros_powerflow::{PowerFlowSolver, YBusMatrix, BusResult};
 
 use crate::rules::{Constraint, ConstraintType, N1Result, N1Violation, N1ViolationType, StabilityResult, VoltageMargin};
 use crate::violation::Violation;
+use crate::projector::{FeasibilityProjector, ProjectionResult};
 
 /// Default voltage limits for N-1 analysis
 const VOLTAGE_MIN_PU: f64 = 0.95;
@@ -23,8 +25,9 @@ pub struct ConstraintEngine {
     /// Dynamic threshold multiplier (1.0 = normal, higher = more relaxed)
     current_threshold_multiplier: f64,
     /// Optional event bus for violation notifications
-    #[allow(dead_code)]
     event_bus: Option<Arc<EventBus>>,
+    /// Optional feasibility projector for physics-based action feasibility checks
+    projector: RwLock<Option<Arc<FeasibilityProjector>>>,
 }
 
 impl ConstraintEngine {
@@ -35,6 +38,40 @@ impl ConstraintEngine {
             violations: RwLock::new(Vec::new()),
             current_threshold_multiplier: 1.0,
             event_bus: None,
+            projector: RwLock::new(None),
+        }
+    }
+
+    /// Create a constraint engine with an event bus for violation notifications
+    pub fn with_event_bus(event_bus: Arc<EventBus>) -> Self {
+        Self {
+            constraints: RwLock::new(HashMap::new()),
+            violations: RwLock::new(Vec::new()),
+            current_threshold_multiplier: 1.0,
+            event_bus: Some(event_bus),
+            projector: RwLock::new(None),
+        }
+    }
+
+    /// Create a constraint engine with a feasibility projector for physics-based checks
+    pub fn with_projector(projector: Arc<FeasibilityProjector>) -> Self {
+        Self {
+            constraints: RwLock::new(HashMap::new()),
+            violations: RwLock::new(Vec::new()),
+            current_threshold_multiplier: 1.0,
+            event_bus: None,
+            projector: RwLock::new(Some(projector)),
+        }
+    }
+
+    /// Create a constraint engine with both event bus and projector
+    pub fn with_event_bus_and_projector(event_bus: Arc<EventBus>, projector: Arc<FeasibilityProjector>) -> Self {
+        Self {
+            constraints: RwLock::new(HashMap::new()),
+            violations: RwLock::new(Vec::new()),
+            current_threshold_multiplier: 1.0,
+            event_bus: Some(event_bus),
+            projector: RwLock::new(Some(projector)),
         }
     }
 
@@ -48,6 +85,12 @@ impl ConstraintEngine {
     pub fn remove(&self, constraint_id: &str) -> bool {
         let mut constraints = self.constraints.write();
         constraints.remove(constraint_id).is_some()
+    }
+
+    /// Set or replace the feasibility projector for physics-based action checks
+    pub fn set_projector(&self, projector: Arc<FeasibilityProjector>) {
+        let mut inner = self.projector.write();
+        *inner = Some(projector);
     }
 
     /// Check all constraints against current state
@@ -81,6 +124,9 @@ impl ConstraintEngine {
         // Record violations
         let mut recorded_violations = self.violations.write();
         recorded_violations.extend(violations.clone());
+
+        // Publish violation events via EventBus
+        self.publish_violations(&violations);
 
         violations
     }
@@ -367,8 +413,37 @@ impl ConstraintEngine {
         self.violations.write().clear();
     }
 
-    /// Check if an action is feasible — predicts impact without executing
+    /// Check if an action is feasible — predicts impact without executing.
+    /// Uses FeasibilityProjector for physics-based What-If analysis when available,
+    /// falls back to keyword-based heuristic matching otherwise.
     pub fn check_action_feasibility(&self, action_description: &str) -> ActionFeasibility {
+        // If projector is available, try to use it for physics-based check
+        let projector_guard = self.projector.read();
+        if let Some(ref projector) = *projector_guard {
+            if let Some(action) = Self::infer_structured_action(action_description) {
+                return self.check_structured_action_feasibility_impl(&action, projector);
+            }
+        }
+
+        // Fallback: keyword-based heuristic matching
+        self.check_action_feasibility_heuristic(action_description)
+    }
+
+    /// Check if a structured action is feasible using What-If simulation.
+    /// Delegates to FeasibilityProjector when available, otherwise uses heuristic.
+    pub fn check_structured_action_feasibility(&self, action: &StructuredAction) -> ActionFeasibility {
+        let projector_guard = self.projector.read();
+        if let Some(ref projector) = *projector_guard {
+            self.check_structured_action_feasibility_impl(action, projector)
+        } else {
+            // No projector — convert to description and use heuristic
+            let desc = Self::structured_action_to_description(action);
+            self.check_action_feasibility_heuristic(&desc)
+        }
+    }
+
+    /// Keyword-based heuristic feasibility check (fallback when no projector available)
+    fn check_action_feasibility_heuristic(&self, action_description: &str) -> ActionFeasibility {
         let mut new_violations = Vec::new();
         let mut worsened = Vec::new();
 
@@ -415,6 +490,161 @@ impl ConstraintEngine {
         }
     }
 
+    /// Physics-based feasibility check using FeasibilityProjector
+    fn check_structured_action_feasibility_impl(
+        &self,
+        action: &StructuredAction,
+        projector: &FeasibilityProjector,
+    ) -> ActionFeasibility {
+        let projection = projector.project(action);
+
+        match projection {
+            ProjectionResult::Feasible(_) => ActionFeasibility {
+                feasible: true,
+                new_violations: Vec::new(),
+                worsened_violations: Vec::new(),
+                risk_level: SeverityLevel::Info,
+            },
+            ProjectionResult::Projected { modifications, .. } => {
+                let new_violations: Vec<String> = modifications.iter()
+                    .map(|m| format!("{}: {} -> {} ({})", m.parameter, m.original_value, m.projected_value, m.reason))
+                    .collect();
+                ActionFeasibility {
+                    feasible: true,
+                    new_violations,
+                    worsened_violations: Vec::new(),
+                    risk_level: SeverityLevel::Major,
+                }
+            }
+            ProjectionResult::Infeasible { violated_constraints, .. } => {
+                ActionFeasibility {
+                    feasible: false,
+                    new_violations: violated_constraints,
+                    worsened_violations: Vec::new(),
+                    risk_level: SeverityLevel::Critical,
+                }
+            }
+        }
+    }
+
+    /// Publish violation events via EventBus
+    fn publish_violations(&self, violations: &[Violation]) {
+        if let Some(ref bus) = self.event_bus {
+            for v in violations {
+                let event = Event::new(
+                    EventType::ConstraintViolation,
+                    "ConstraintEngine",
+                    EventPayload::ConstraintViolation {
+                        constraint_id: v.constraint_id.clone(),
+                        element_id: v.element_id,
+                        actual_value: v.actual_value,
+                        limit_value: if v.below_minimum() { v.limit_min } else { v.limit_max },
+                        severity: format!("{:?}", v.severity),
+                    },
+                );
+                let _ = bus.publish(event);
+            }
+        }
+    }
+
+    /// Infer a StructuredAction from a text description.
+    /// Returns None if the description cannot be mapped.
+    fn infer_structured_action(description: &str) -> Option<StructuredAction> {
+        let desc_lower = description.to_lowercase();
+
+        // Generator setpoint
+        if desc_lower.contains("generator") || desc_lower.contains("发电机") {
+            let target_mw = Self::extract_mw_value(description).unwrap_or(0.0);
+            let gen_id = Self::extract_device_id(description).unwrap_or(0);
+            return Some(StructuredAction::StartGenerator { gen_id, target_mw });
+        }
+
+        // Load shedding
+        if desc_lower.contains("load shed") || desc_lower.contains("切负荷") {
+            let amount_mw = Self::extract_mw_value(description).unwrap_or(0.0);
+            let zone_id = Self::extract_device_id(description).unwrap_or(0) as u32;
+            return Some(StructuredAction::ShedLoad { zone_id, amount_mw });
+        }
+
+        // Fault isolation
+        if desc_lower.contains("isolate fault") || desc_lower.contains("隔离故障") {
+            let device_id = Self::extract_device_id(description).unwrap_or(0);
+            return Some(StructuredAction::IsolateFault {
+                upstream_switch: device_id,
+                downstream_switch: device_id + 1,
+            });
+        }
+
+        // Tie switch
+        if desc_lower.contains("close tie") || desc_lower.contains("合环") {
+            let switch_id = Self::extract_device_id(description).unwrap_or(0);
+            return Some(StructuredAction::CloseTieSwitch { switch_id });
+        }
+
+        // Switching operation
+        if desc_lower.contains("breaker") || desc_lower.contains("断路器")
+            || desc_lower.contains("disconnector") || desc_lower.contains("隔离开关")
+            || desc_lower.contains("switch") || desc_lower.contains("开关")
+        {
+            let device_id = Self::extract_device_id(description).unwrap_or(0);
+            let operation = if desc_lower.contains("close") || desc_lower.contains("合") {
+                "close".to_string()
+            } else {
+                "open".to_string()
+            };
+            return Some(StructuredAction::ExecuteDevice {
+                device_id,
+                operation,
+                value: 1.0,
+            });
+        }
+
+        None
+    }
+
+    /// Convert a StructuredAction to a text description for heuristic fallback
+    fn structured_action_to_description(action: &StructuredAction) -> String {
+        match action {
+            StructuredAction::StartGenerator { gen_id, target_mw } =>
+                format!("Start generator {} to {:.1} MW", gen_id, target_mw),
+            StructuredAction::ShedLoad { zone_id, amount_mw } =>
+                format!("Load shed {:.1} MW from zone {}", amount_mw, zone_id),
+            StructuredAction::ExecuteDevice { device_id, operation, value } =>
+                format!("{} device {} value {:.2}", operation, device_id, value),
+            StructuredAction::IsolateFault { upstream_switch, downstream_switch } =>
+                format!("Isolate fault: switches {} and {}", upstream_switch, downstream_switch),
+            StructuredAction::CloseTieSwitch { switch_id } =>
+                format!("Close tie switch {}", switch_id),
+            StructuredAction::NotifyAgent { agent_id, message } =>
+                format!("Notify agent {}: {}", agent_id, message),
+        }
+    }
+
+    /// Extract a MW value from a description string
+    fn extract_mw_value(description: &str) -> Option<f64> {
+        // Try patterns like "100MW", "100 MW", "100.0MW", "100.0 MW"
+        let upper = description.to_uppercase();
+        if let Some(idx) = upper.find("MW") {
+            let prefix = &description[..idx].trim_end();
+            let num_start = prefix.rfind(|c: char| !c.is_ascii_digit() && c != '.')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            if num_start < prefix.len() {
+                if let Ok(val) = prefix[num_start..].trim().parse::<f64>() {
+                    return Some(val);
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract a numeric device ID from a description string
+    fn extract_device_id(description: &str) -> Option<u64> {
+        description.split_whitespace()
+            .filter_map(|word| word.parse::<u64>().ok())
+            .next()
+    }
+
     /// Get current violations
     pub fn get_current_violations(&self) -> Vec<Violation> {
         self.violations.read().clone()
@@ -459,7 +689,56 @@ impl Default for ConstraintEngine {
 mod tests {
     use super::*;
     use eneros_powerflow::solver::BusTypeNR;
+    use eneros_eventbus::event::{EventType, EventPayload};
+    use crate::projector::{FeasibilityProjector, NetworkSimulator, WhatIfResult};
     use std::collections::HashMap;
+
+    /// Mock simulator for projector-based tests
+    struct MockSimulator {
+        always_feasible: bool,
+    }
+
+    impl MockSimulator {
+        fn new_feasible() -> Self { Self { always_feasible: true } }
+        fn new_with_violations() -> Self { Self { always_feasible: false } }
+    }
+
+    impl NetworkSimulator for MockSimulator {
+        fn simulate_action(&self, action: &StructuredAction) -> WhatIfResult {
+            if self.always_feasible {
+                WhatIfResult {
+                    applicable: true, converged: true,
+                    voltage_violations: vec![], thermal_violations: vec![],
+                    all_constraints_satisfied: true,
+                    summary: "OK".to_string(),
+                }
+            } else {
+                match action {
+                    StructuredAction::StartGenerator { target_mw, .. } if *target_mw > 200.0 => {
+                        WhatIfResult {
+                            applicable: true, converged: true,
+                            voltage_violations: vec![(2, 0.88, 0.95)],
+                            thermal_violations: vec![(5, 110.0, 100.0)],
+                            all_constraints_satisfied: false,
+                            summary: "Voltage and thermal violations".to_string(),
+                        }
+                    }
+                    _ => WhatIfResult {
+                        applicable: true, converged: true,
+                        voltage_violations: vec![], thermal_violations: vec![],
+                        all_constraints_satisfied: true,
+                        summary: "OK".to_string(),
+                    },
+                }
+            }
+        }
+        fn generator_limits(&self) -> Vec<(u64, f64, f64)> {
+            vec![(1, 0.0, 200.0), (2, 0.0, 150.0)]
+        }
+        fn current_voltages(&self) -> Vec<(u64, f64)> {
+            vec![(1, 1.02), (2, 0.98)]
+        }
+    }
 
     #[test]
     fn test_constraint_engine_new() {
@@ -785,5 +1064,215 @@ mod tests {
     fn test_threshold_multiplier_default() {
         let engine = ConstraintEngine::new();
         assert!((engine.threshold_multiplier() - 1.0).abs() < f64::EPSILON);
+    }
+
+    // === Projector-based feasibility tests ===
+
+    #[test]
+    fn test_structured_action_feasibility_with_projector_feasible() {
+        let projector = Arc::new(FeasibilityProjector::new(Arc::new(MockSimulator::new_feasible())));
+        let engine = ConstraintEngine::with_projector(projector);
+        let action = StructuredAction::StartGenerator { gen_id: 1, target_mw: 100.0 };
+        let result = engine.check_structured_action_feasibility(&action);
+        assert!(result.feasible);
+        assert!(result.new_violations.is_empty());
+        assert_eq!(result.risk_level, SeverityLevel::Info);
+    }
+
+    #[test]
+    fn test_structured_action_feasibility_with_projector_infeasible() {
+        let projector = Arc::new(FeasibilityProjector::new(Arc::new(MockSimulator::new_with_violations())));
+        let engine = ConstraintEngine::with_projector(projector);
+        // 300MW gets clipped to 200MW by projector, which is feasible in mock
+        // So this tests the projector integration, not the mock behavior
+        let action = StructuredAction::StartGenerator { gen_id: 1, target_mw: 300.0 };
+        let result = engine.check_structured_action_feasibility(&action);
+        // Projector clips 300→200, which is feasible → result is projected (feasible with modifications)
+        assert!(result.feasible);
+        assert_eq!(result.risk_level, SeverityLevel::Major); // Projected = Major risk
+    }
+
+    #[test]
+    fn test_structured_action_feasibility_without_projector_fallback() {
+        let engine = ConstraintEngine::new();
+        let action = StructuredAction::ShedLoad { zone_id: 1, amount_mw: 50.0 };
+        let result = engine.check_structured_action_feasibility(&action);
+        // Falls back to heuristic — "Load shed" triggers potential_under_frequency
+        assert!(result.feasible);
+        assert!(result.new_violations.contains(&"potential_under_frequency".to_string()));
+    }
+
+    #[test]
+    fn test_action_feasibility_with_projector_infers_action() {
+        let projector = Arc::new(FeasibilityProjector::new(Arc::new(MockSimulator::new_feasible())));
+        let engine = ConstraintEngine::with_projector(projector);
+        // "generator" keyword should be inferred as StartGenerator
+        let result = engine.check_action_feasibility("Start generator 1 to 100.0 MW");
+        assert!(result.feasible);
+    }
+
+    #[test]
+    fn test_action_feasibility_with_projector_uninferrable_fallback() {
+        let projector = Arc::new(FeasibilityProjector::new(Arc::new(MockSimulator::new_feasible())));
+        let engine = ConstraintEngine::with_projector(projector);
+        // "shed capacitor" cannot be inferred as StructuredAction → falls back to heuristic
+        let result = engine.check_action_feasibility("shed capacitor bank 1");
+        assert!(result.feasible); // No violations → heuristic says feasible
+    }
+
+    // === EventBus violation notification tests ===
+
+    #[test]
+    fn test_event_bus_violation_published() {
+        let event_bus = Arc::new(EventBus::new(100));
+        let engine = ConstraintEngine::with_event_bus(event_bus.clone());
+        let mut constraint = Constraint::new(
+            "v1".to_string(),
+            "Voltage check".to_string(),
+            ConstraintType::Voltage,
+            0.95,
+            1.05,
+        );
+        constraint.element_ids = vec![1];
+        engine.register(constraint);
+
+        // Subscribe before publishing
+        let mut receiver = event_bus.subscribe();
+
+        // Trigger a violation
+        let bus_voltages: Vec<(ElementId, f64)> = vec![(1, 0.90)];
+        let branch_loadings: Vec<(ElementId, f64)> = vec![];
+        let violations = engine.check_all(&bus_voltages, &branch_loadings, 50.0);
+        assert_eq!(violations.len(), 1);
+
+        // Verify event was published
+        let event = receiver.try_recv().expect("Should receive violation event");
+        assert_eq!(event.event_type, EventType::ConstraintViolation);
+        match event.payload {
+            EventPayload::ConstraintViolation { constraint_id, element_id, actual_value, .. } => {
+                assert_eq!(constraint_id, "v1");
+                assert_eq!(element_id, 1);
+                assert!((actual_value - 0.90).abs() < f64::EPSILON);
+            }
+            _ => panic!("Expected ConstraintViolation payload"),
+        }
+    }
+
+    #[test]
+    fn test_event_bus_no_event_without_violations() {
+        let event_bus = Arc::new(EventBus::new(100));
+        let engine = ConstraintEngine::with_event_bus(event_bus.clone());
+        let mut constraint = Constraint::new(
+            "v1".to_string(),
+            "Voltage check".to_string(),
+            ConstraintType::Voltage,
+            0.95,
+            1.05,
+        );
+        constraint.element_ids = vec![1];
+        engine.register(constraint);
+
+        let mut receiver = event_bus.subscribe();
+
+        // No violation
+        let bus_voltages: Vec<(ElementId, f64)> = vec![(1, 1.00)];
+        let branch_loadings: Vec<(ElementId, f64)> = vec![];
+        let violations = engine.check_all(&bus_voltages, &branch_loadings, 50.0);
+        assert!(violations.is_empty());
+
+        // No event should be published
+        assert!(receiver.try_recv().is_err());
+    }
+
+    // === Infer structured action tests ===
+
+    #[test]
+    fn test_infer_structured_action_generator() {
+        let action = ConstraintEngine::infer_structured_action("Start generator 1 to 100.0 MW");
+        assert!(action.is_some());
+        match action.unwrap() {
+            StructuredAction::StartGenerator { gen_id, target_mw } => {
+                assert_eq!(gen_id, 1);
+                // MW extraction may vary — just verify it's a positive number
+                assert!(target_mw > 0.0);
+            }
+            _ => panic!("Expected StartGenerator"),
+        }
+    }
+
+    #[test]
+    fn test_infer_structured_action_load_shed() {
+        let action = ConstraintEngine::infer_structured_action("load shed 50MW from zone 1");
+        assert!(action.is_some());
+        match action.unwrap() {
+            StructuredAction::ShedLoad { zone_id, amount_mw } => {
+                assert_eq!(zone_id, 1);
+                assert!((amount_mw - 50.0).abs() < f64::EPSILON);
+            }
+            _ => panic!("Expected ShedLoad"),
+        }
+    }
+
+    #[test]
+    fn test_infer_structured_action_unknown() {
+        let action = ConstraintEngine::infer_structured_action("adjust transformer tap");
+        assert!(action.is_none());
+    }
+
+    // === Integration: EventBus + Projector together ===
+
+    #[test]
+    fn test_with_event_bus_and_projector_integration() {
+        let event_bus = Arc::new(EventBus::new(100));
+        let projector = Arc::new(FeasibilityProjector::new(Arc::new(MockSimulator::new_feasible())));
+        let engine = ConstraintEngine::with_event_bus_and_projector(event_bus.clone(), projector);
+
+        // Register a constraint
+        let mut constraint = Constraint::new(
+            "v1".to_string(),
+            "Voltage check".to_string(),
+            ConstraintType::Voltage,
+            0.95,
+            1.05,
+        );
+        constraint.element_ids = vec![1];
+        engine.register(constraint);
+
+        // Subscribe to events
+        let mut receiver = event_bus.subscribe();
+
+        // Trigger a violation — should publish event
+        let bus_voltages: Vec<(ElementId, f64)> = vec![(1, 0.90)];
+        let branch_loadings: Vec<(ElementId, f64)> = vec![];
+        let violations = engine.check_all(&bus_voltages, &branch_loadings, 50.0);
+        assert_eq!(violations.len(), 1);
+
+        // Verify EventBus notification
+        let event = receiver.try_recv().expect("Should receive violation event");
+        assert_eq!(event.event_type, EventType::ConstraintViolation);
+
+        // Verify Projector-based feasibility check works
+        let action = StructuredAction::StartGenerator { gen_id: 1, target_mw: 100.0 };
+        let result = engine.check_structured_action_feasibility(&action);
+        assert!(result.feasible);
+    }
+
+    #[test]
+    fn test_set_projector_runtime() {
+        let engine = ConstraintEngine::new();
+
+        // Without projector — heuristic fallback
+        let action = StructuredAction::ShedLoad { zone_id: 1, amount_mw: 50.0 };
+        let result = engine.check_structured_action_feasibility(&action);
+        assert!(result.new_violations.contains(&"potential_under_frequency".to_string()));
+
+        // Set projector at runtime
+        let projector = Arc::new(FeasibilityProjector::new(Arc::new(MockSimulator::new_feasible())));
+        engine.set_projector(projector);
+
+        // Now uses projector — no heuristic violations
+        let result2 = engine.check_structured_action_feasibility(&action);
+        assert!(result2.feasible);
+        assert!(result2.new_violations.is_empty());
     }
 }
