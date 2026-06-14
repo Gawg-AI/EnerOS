@@ -104,17 +104,9 @@ impl PythonBridge {
     }
 
     fn find_bridge_script() -> String {
-        let candidates = [
-            "python/bridge_server.py",
-            "../python/bridge_server.py",
-            "../../python/bridge_server.py",
-        ];
-        for candidate in &candidates {
-            if std::path::Path::new(candidate).exists() {
-                return candidate.to_string();
-            }
-        }
-        "python/bridge_server.py".to_string()
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest_dir).join("python/bridge_server.py");
+        path.to_string_lossy().to_string()
     }
 
     pub fn call<T: serde::de::DeserializeOwned>(
@@ -188,5 +180,20 @@ impl PythonBridge {
 impl Default for PythonBridge {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bridge_script_path_exists() {
+        let bridge = PythonBridge::new();
+        assert!(
+            std::path::Path::new(&bridge.script_path).exists(),
+            "Bridge script not found at: {}",
+            bridge.script_path
+        );
     }
 }

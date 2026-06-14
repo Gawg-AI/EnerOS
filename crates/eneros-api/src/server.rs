@@ -1,69 +1,123 @@
-use eneros_core::Result;
+use std::net::SocketAddr;
+use std::sync::Arc;
 
-use super::types::*;
+use eneros_constraint::ConstraintEngine;
+use eneros_eventbus::EventBus;
+use eneros_network::PowerNetwork;
+use eneros_powerflow::PowerFlowSolver;
+use eneros_scada::{ScadaCollector, SnapshotBuilder};
+use eneros_timeseries::TimeSeriesEngine;
+use eneros_topology::TopologyEngine;
+
+use eneros_agent::{AgentOrchestrator, DataDrivenAgentLoop};
+
+use crate::app::{self, AppState};
 
 /// API server for EnerOS
 pub struct ApiServer {
-    port: u16,
-    host: String,
+    state: AppState,
+    addr: SocketAddr,
 }
 
 impl ApiServer {
-    /// Create a new API server
+    /// Create a new API server with default (empty) AppState
     pub fn new(host: &str, port: u16) -> Self {
+        let addr = format!("{}:{}", host, port)
+            .parse()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], port)));
         Self {
-            port,
-            host: host.to_string(),
+            state: AppState::new(),
+            addr,
         }
     }
 
-    /// Start the API server
-    pub async fn start(&self) -> Result<()> {
-        tracing::info!("Starting EnerOS API server on {}:{}", self.host, self.port);
-        // Placeholder - would implement actual HTTP server
+    /// Create with a custom AppState and address
+    pub fn with_state(state: AppState, addr: SocketAddr) -> Self {
+        Self { state, addr }
+    }
+
+    /// Start the axum HTTP server
+    pub async fn start(&self) -> anyhow::Result<()> {
+        let app = app::create_router(self.state.clone());
+
+        let listener = tokio::net::TcpListener::bind(self.addr).await?;
+        tracing::info!("EnerOS API server listening on {}", self.addr);
+
+        axum::serve(listener, app).await?;
         Ok(())
     }
 
-    /// Stop the API server
-    pub async fn stop(&self) -> Result<()> {
-        tracing::info!("Stopping EnerOS API server");
-        Ok(())
+    // ---- Builder methods for injecting dependencies ----
+
+    /// Inject a TopologyEngine
+    pub fn with_topology_engine(mut self, engine: Arc<TopologyEngine>) -> Self {
+        self.state.topology_engine = Some(engine);
+        self
     }
 
-    /// Handle topology query
-    pub async fn handle_topology_query(
-        &self,
-        query: TopologyQuery,
-    ) -> ApiResponse<TopologyResponse> {
-        // Placeholder implementation
-        ApiResponse::success(TopologyResponse {
-            connected: true,
-            path: Some(vec![query.from_bus, query.to_bus]),
-        })
+    /// Inject a PowerFlowSolver
+    pub fn with_powerflow_solver(mut self, solver: Arc<PowerFlowSolver>) -> Self {
+        self.state.powerflow_solver = Some(solver);
+        self
     }
 
-    /// Handle power flow request
-    pub async fn handle_power_flow(
-        &self,
-        _request: PowerFlowRequest,
-    ) -> ApiResponse<PowerFlowResponse> {
-        // Placeholder implementation
-        ApiResponse::success(PowerFlowResponse {
-            converged: true,
-            iterations: 5,
-            total_losses: 10.5,
-            bus_voltages: Vec::new(),
-            branch_flows: Vec::new(),
-        })
+    /// Inject a ConstraintEngine
+    pub fn with_constraint_engine(mut self, engine: Arc<ConstraintEngine>) -> Self {
+        self.state.constraint_engine = Some(engine);
+        self
     }
 
-    /// Handle constraint check request
-    pub async fn handle_constraint_check(
-        &self,
-        _request: ConstraintCheckRequest,
-    ) -> ApiResponse<Vec<ConstraintViolationResponse>> {
-        // Placeholder implementation
-        ApiResponse::success(Vec::new())
+    /// Inject a PowerNetwork
+    pub fn with_network(mut self, network: Arc<PowerNetwork>) -> Self {
+        self.state.network = Some(network);
+        self
+    }
+
+    /// Inject a TimeSeriesEngine
+    pub fn with_ts_engine(mut self, engine: Arc<TimeSeriesEngine>) -> Self {
+        self.state.ts_engine = Some(engine);
+        self
+    }
+
+    /// Inject a ScadaCollector
+    pub fn with_scada_collector(mut self, collector: Arc<ScadaCollector>) -> Self {
+        self.state.scada_collector = Some(collector);
+        self
+    }
+
+    /// Inject an EventBus
+    pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
+        self.state.event_bus = Some(bus);
+        self
+    }
+
+    /// Inject an AgentOrchestrator
+    pub fn with_agent_orchestrator(mut self, orchestrator: Arc<AgentOrchestrator>) -> Self {
+        self.state.agent_orchestrator = Some(orchestrator);
+        self
+    }
+
+    /// Inject a DataPipeline
+    pub fn with_data_pipeline(mut self, pipeline: Arc<eneros_scada::DataPipeline>) -> Self {
+        self.state.data_pipeline = Some(pipeline);
+        self
+    }
+
+    /// Inject a SnapshotBuilder
+    pub fn with_snapshot_builder(mut self, builder: Arc<SnapshotBuilder>) -> Self {
+        self.state.snapshot_builder = Some(builder);
+        self
+    }
+
+    /// Inject a DataDrivenAgentLoop
+    pub fn with_data_driven_loop(mut self, dd_loop: Arc<DataDrivenAgentLoop>) -> Self {
+        self.state.data_driven_loop = Some(dd_loop);
+        self
+    }
+
+    /// Get a reference to the AppState
+    pub fn state(&self) -> &AppState {
+        &self.state
     }
 }
 

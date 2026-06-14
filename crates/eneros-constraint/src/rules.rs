@@ -89,3 +89,64 @@ impl Constraint {
         }
     }
 }
+
+/// N-1 contingency analysis result for a single branch outage
+#[derive(Debug, Clone)]
+pub struct N1Result {
+    /// Branch ID that was removed
+    pub branch_id: ElementId,
+    /// Whether the post-contingency system converges
+    pub converged: bool,
+    /// Voltage violations after contingency
+    pub voltage_violations: Vec<N1Violation>,
+    /// Thermal violations after contingency
+    pub thermal_violations: Vec<N1Violation>,
+    /// Overall severity of this contingency
+    pub severity: SeverityLevel,
+}
+
+/// Single violation found during N-1 analysis
+#[derive(Debug, Clone)]
+pub struct N1Violation {
+    /// Element ID (bus or branch)
+    pub element_id: ElementId,
+    /// Violation type
+    pub violation_type: N1ViolationType,
+    /// Actual value
+    pub actual_value: f64,
+    /// Limit value
+    pub limit_value: f64,
+}
+
+/// N-1 violation type
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum N1ViolationType {
+    /// Bus voltage below minimum
+    LowVoltage,
+    /// Bus voltage above maximum
+    HighVoltage,
+    /// Branch loading exceeds thermal limit
+    Overload,
+}
+
+/// Voltage stability analysis result
+#[derive(Debug, Clone)]
+pub struct StabilityResult {
+    /// Voltage stability margin per bus (lower = closer to instability)
+    pub voltage_margins: Vec<VoltageMargin>,
+    /// Buses with critically low stability margin
+    pub critical_buses: Vec<ElementId>,
+    /// Overall system stability status
+    pub stable: bool,
+}
+
+/// Voltage stability margin for a single bus
+#[derive(Debug, Clone)]
+pub struct VoltageMargin {
+    /// Bus ID
+    pub bus_id: ElementId,
+    /// Voltage magnitude (p.u.)
+    pub voltage_pu: f64,
+    /// Stability margin indicator (1.0 = healthy, 0.0 = collapse)
+    pub margin: f64,
+}

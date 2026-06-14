@@ -7,10 +7,13 @@ use eneros_core::{Result, EnerOSError};
 use super::event::Event;
 use super::handler::EventHandler;
 
+type HandlerList = Vec<Arc<dyn EventHandler>>;
+type HandlerMap = HashMap<String, HandlerList>;
+
 /// Event bus for inter-component communication
 pub struct EventBus {
     sender: broadcast::Sender<Event>,
-    handlers: Arc<RwLock<HashMap<String, Vec<Arc<dyn EventHandler>>>>>,
+    handlers: Arc<RwLock<HandlerMap>>,
     running: Arc<RwLock<bool>>,
     channel_capacity: usize,
 }

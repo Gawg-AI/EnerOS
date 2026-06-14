@@ -1,0 +1,6 @@
+[submodule "third_party/cnpower"]
+	path = third_party/cnpower
+	url = https://github.com/Gawg-AI/cnpower.git
+[submodule "third_party/pandapower"]
+	path = third_party/pandapower
+	url = https://github.com/e2nIEE/pandapower.git

@@ -52,77 +52,49 @@ impl YBusMatrix {
         self.size
     }
 
-    /// Build Y-Bus from branch data
+    /// Build Y-Bus from branch data with tap ratios
+    /// branches: (from, to, r, x, b, tap_ratio)
+    /// tap_ratio = 1.0 for normal lines, non-1.0 for transformers
     pub fn from_branches(
-        branches: &[(ElementId, ElementId, f64, f64, f64)], // (from, to, r, x, b)
+        branches: &[(ElementId, ElementId, f64, f64, f64, f64)],
         bus_map: &HashMap<ElementId, usize>,
     ) -> Self {
         let size = bus_map.len();
         let mut matrix = Self::new(size);
         matrix.set_bus_map(bus_map.clone());
 
-        for &(from, to, r, x, b) in branches {
+        for &(from, to, r, x, b, tap) in branches {
             if let (Some(&i), Some(&j)) = (bus_map.get(&from), bus_map.get(&to)) {
-                // Calculate admittance
                 let z_sq = r * r + x * x;
                 if z_sq > 1e-10 {
                     let g = r / z_sq;
                     let b_line = -x / z_sq;
                     let b_charging = b / 2.0;
 
-                    // Add to diagonal
-                    matrix.add(i, i, g, b_line + b_charging);
-                    matrix.add(j, j, g, b_line + b_charging);
-
-                    // Add to off-diagonal
-                    matrix.add(i, j, -g, -b_line);
-                    matrix.add(j, i, -g, -b_line);
+                    if (tap - 1.0).abs() < 1e-10 {
+                        // Normal line (tap = 1.0)
+                        matrix.add(i, i, g, b_line + b_charging);
+                        matrix.add(j, j, g, b_line + b_charging);
+                        matrix.add(i, j, -g, -b_line);
+                        matrix.add(j, i, -g, -b_line);
+                    } else {
+                        // Transformer with off-nominal tap ratio
+                        // Y_ii += y / tap^2, Y_jj += y, Y_ij = Y_ji = -y / tap
+                        let tap_sq = tap * tap;
+                        matrix.add(i, i, g / tap_sq, (b_line + b_charging) / tap_sq);
+                        matrix.add(j, j, g, b_line + b_charging);
+                        matrix.add(i, j, -g / tap, -b_line / tap);
+                        matrix.add(j, i, -g / tap, -b_line / tap);
+                    }
                 }
             }
         }
 
         matrix
     }
-}
 
-/// Jacobian matrix for Newton-Raphson iteration
-pub struct JacobianMatrix {
-    size: usize,
-    data: Vec<Vec<f64>>,
-}
-
-impl JacobianMatrix {
-    /// Create a new Jacobian matrix
-    pub fn new(size: usize) -> Self {
-        Self {
-            size,
-            data: vec![vec![0.0; size]; size],
-        }
-    }
-
-    /// Set matrix element
-    pub fn set(&mut self, i: usize, j: usize, value: f64) {
-        if i < self.size && j < self.size {
-            self.data[i][j] = value;
-        }
-    }
-
-    /// Get matrix element
-    pub fn get(&self, i: usize, j: usize) -> f64 {
-        if i < self.size && j < self.size {
-            self.data[i][j]
-        } else {
-            0.0
-        }
-    }
-
-    /// Get matrix size
-    pub fn size(&self) -> usize {
-        self.size
-    }
-
-    /// Get reference to data
-    pub fn data(&self) -> &[Vec<f64>] {
-        &self.data
+    /// Add shunt admittance to a bus diagonal element
+    pub fn add_shunt(&mut self, bus_idx: usize, g: f64, b: f64) {
+        self.add(bus_idx, bus_idx, g, b);
     }
 }

@@ -47,4 +47,13 @@ impl<'a> TopologySearcher<'a> {
     pub fn get_edges(&self, bus_id: ElementId) -> Vec<(ElementId, ElementId)> {
         self.graph.get_edges(bus_id)
     }
+
+    /// Detect cycle in the graph
+    pub fn detect_cycle(&self) -> SearchResult {
+        if let Some(cycle) = self.graph.find_cycle() {
+            SearchResult::Cycle(cycle)
+        } else {
+            SearchResult::None
+        }
+    }
 }

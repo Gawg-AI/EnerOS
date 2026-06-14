@@ -12,10 +12,33 @@ use crate::protocol::ProtocolType;
 
 #[derive(Debug, Clone)]
 struct Iec61850DataObject {
-    path: String,
     value: DataValue,
     quality: DataQuality,
     timestamp: i64,
+}
+
+/// Configuration for IEC 61850 adapter
+#[derive(Debug, Clone)]
+pub struct Iec61850Config {
+    pub host: String,
+    pub port: u16,
+    pub ied_name: String,
+    pub logical_devices: Vec<String>,
+    pub dataset_ref: String,
+    pub report_interval_ms: u32,
+}
+
+impl Default for Iec61850Config {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 102,
+            ied_name: "IED1".to_string(),
+            logical_devices: vec!["LD0".to_string()],
+            dataset_ref: "LD0/LLN0.dsGeneric".to_string(),
+            report_interval_ms: 1000,
+        }
+    }
 }
 
 pub struct Iec61850Adapter {
@@ -60,7 +83,6 @@ impl Iec61850Adapter {
         model.insert(
             path.to_string(),
             Iec61850DataObject {
-                path: path.to_string(),
                 value,
                 quality: DataQuality::Good,
                 timestamp: chrono::Utc::now().timestamp_millis(),
@@ -72,20 +94,6 @@ impl Iec61850Adapter {
         self.reports.lock().await.push(report);
     }
 
-    fn parse_iec61850_path(address: &str) -> Result<(String, String, String)> {
-        let parts: Vec<&str> = address.split('/').collect();
-        if parts.len() < 3 {
-            return Err(eneros_core::EnerOSError::Device(format!(
-                "Invalid IEC 61850 path '{}', expected 'LD/LN.DataObject.DataAttribute'",
-                address
-            )));
-        }
-        Ok((
-            parts[0].to_string(),
-            parts[1].to_string(),
-            parts[2..].join("/"),
-        ))
-    }
 }
 
 #[async_trait]
@@ -141,7 +149,6 @@ impl ProtocolAdapter for Iec61850Adapter {
         model.insert(
             address.to_string(),
             Iec61850DataObject {
-                path: address.to_string(),
                 value: value.clone(),
                 quality: DataQuality::Good,
                 timestamp: chrono::Utc::now().timestamp_millis(),
@@ -186,5 +193,134 @@ impl Iec61850Adapter {
 
     pub async fn data_model_size(&self) -> usize {
         self.data_model.lock().await.len()
+    }
+
+    /// Reconnect to the IEC 61850 server
+    pub async fn reconnect(&mut self, config: &ConnectionConfig) -> Result<()> {
+        self.disconnect().await?;
+        self.connect(config).await
+    }
+
+    /// Subscribe to a specific dataset report
+    pub async fn subscribe_dataset(&self, dataset_ref: &str) -> Result<()> {
+        if !*self.connected.lock().await {
+            return Err(eneros_core::EnerOSError::Device("Not connected".into()));
+        }
+        tracing::info!("IEC 61850 adapter '{}' subscribed to dataset: {}", self.name, dataset_ref);
+        Ok(())
+    }
+
+    /// Read a specific node from the data model by MMS path
+    pub async fn read_node(&self, ld: &str, ln: &str, do_da: &str) -> Result<DataPoint> {
+        let path = format!("{}/{}/{}", ld, ln, do_da);
+        self.read(&path).await
+    }
+
+    /// Write a value to a specific node in the data model
+    pub async fn write_node(&mut self, ld: &str, ln: &str, do_da: &str, value: &DataValue) -> Result<()> {
+        let path = format!("{}/{}/{}", ld, ln, do_da);
+        self.write(&path, value).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::ProtocolConfig;
+
+    fn test_config() -> ConnectionConfig {
+        ConnectionConfig {
+            host: "127.0.0.1".to_string(),
+            port: 102,
+            timeout_ms: 5000,
+            credentials: None,
+            protocol_config: ProtocolConfig::Iec61850 {
+                logical_devices: vec!["LD0".to_string()],
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_iec61850_connect_disconnect() {
+        let mut adapter = Iec61850Adapter::new("test-ied");
+        assert!(!adapter.is_connected());
+
+        adapter.connect(&test_config()).await.unwrap();
+        assert!(adapter.is_connected());
+
+        adapter.disconnect().await.unwrap();
+        assert!(!adapter.is_connected());
+    }
+
+    #[tokio::test]
+    async fn test_iec61850_read_write() {
+        let mut adapter = Iec61850Adapter::new("test-ied");
+        adapter.connect(&test_config()).await.unwrap();
+
+        // Write
+        adapter.write("LD0/GGIO1/AnIn1.mag", &DataValue::Float64(42.5)).await.unwrap();
+
+        // Read
+        let point = adapter.read("LD0/GGIO1/AnIn1.mag").await.unwrap();
+        assert_eq!(point.address, "LD0/GGIO1/AnIn1.mag");
+        assert_eq!(point.quality, DataQuality::Good);
+    }
+
+    #[tokio::test]
+    async fn test_iec61850_read_nonexistent() {
+        let mut adapter = Iec61850Adapter::new("test-ied");
+        adapter.connect(&test_config()).await.unwrap();
+
+        let point = adapter.read("LD0/GGIO1/NonExistent").await.unwrap();
+        assert_eq!(point.quality, DataQuality::Bad);
+    }
+
+    #[tokio::test]
+    async fn test_iec61850_read_node() {
+        let mut adapter = Iec61850Adapter::new("test-ied");
+        adapter.connect(&test_config()).await.unwrap();
+
+        adapter.write_node("LD0", "GGIO1", "AnIn1.mag", &DataValue::Float64(110.0)).await.unwrap();
+        let point = adapter.read_node("LD0", "GGIO1", "AnIn1.mag").await.unwrap();
+        assert_eq!(point.quality, DataQuality::Good);
+    }
+
+    #[tokio::test]
+    async fn test_iec61850_report() {
+        let adapter = Iec61850Adapter::new("test-ied");
+        let report = Iec61850Report {
+            report_id: "rpt1".to_string(),
+            data_set: "LD0/LLN0.dsGeneric".to_string(),
+            values: vec![("AnIn1".to_string(), DataValue::Float64(220.0))].into_iter().collect(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        };
+        adapter.inject_report(report.clone()).await;
+        let received = adapter.get_report().await.unwrap();
+        assert_eq!(received.report_id, "rpt1");
+    }
+
+    #[tokio::test]
+    async fn test_iec61850_config_default() {
+        let config = Iec61850Config::default();
+        assert_eq!(config.port, 102);
+        assert_eq!(config.ied_name, "IED1");
+        assert_eq!(config.report_interval_ms, 1000);
+    }
+
+    #[tokio::test]
+    async fn test_iec61850_reconnect() {
+        let mut adapter = Iec61850Adapter::new("test-ied");
+        adapter.connect(&test_config()).await.unwrap();
+        assert!(adapter.is_connected());
+
+        adapter.reconnect(&test_config()).await.unwrap();
+        assert!(adapter.is_connected());
+    }
+
+    #[tokio::test]
+    async fn test_iec61850_not_connected_read() {
+        let adapter = Iec61850Adapter::new("test-ied");
+        let result = adapter.read("LD0/GGIO1/AnIn1").await;
+        assert!(result.is_err());
     }
 }

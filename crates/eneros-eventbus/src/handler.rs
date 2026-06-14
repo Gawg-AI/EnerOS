@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use super::event::Event;
 
+type AsyncCallback = Box<dyn Fn(Event) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+
 /// Trait for event handlers
 #[async_trait]
 pub trait EventHandler: Send + Sync {
@@ -17,7 +19,7 @@ pub trait EventHandler: Send + Sync {
 /// Simple callback-based event handler
 pub struct CallbackHandler {
     name: String,
-    callback: Box<dyn Fn(Event) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>,
+    callback: AsyncCallback,
 }
 
 impl CallbackHandler {

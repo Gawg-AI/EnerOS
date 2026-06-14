@@ -1,0 +1,11 @@
+- [x] cnpower 作为 git submodule 存在于 third_party/cnpower
+- [x] pandapower 作为 git submodule 存在于 third_party/pandapower
+- [x] .gitignore 包含 Python 缓存忽略规则
+- [x] requirements.txt 包含本地安装说明
+- [x] IEC 61850 适配器实现 ProtocolAdapter trait，支持 MMS 连接和数据读写
+- [x] IEC 104 适配器实现 ProtocolAdapter trait，支持 ASDU 解析和总召唤
+- [x] MQTT 适配器实现 ProtocolAdapter trait，支持 QoS 1/2 和主题过滤
+- [x] IEC 104 适配器可将 ASDU 转换为 EventBus 事件
+- [x] MQTT 适配器可将消息转换为 EventBus 事件
+- [x] cargo test --workspace 全部通过
+- [x] cargo clippy --workspace 无错误

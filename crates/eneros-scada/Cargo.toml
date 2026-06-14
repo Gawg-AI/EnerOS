@@ -1,0 +1,17 @@
+[package]
+name = "eneros-scada"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+eneros-device = { path = "../eneros-device" }
+eneros-timeseries = { path = "../eneros-timeseries" }
+eneros-eventbus = { path = "../eneros-eventbus" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+parking_lot = { workspace = true }

@@ -1,0 +1,48 @@
+# EnerOS Default Configuration
+
+[topology]
+max_buses = 100000
+max_branches = 200000
+incremental_update = true
+
+[powerflow]
+max_iterations = 50
+tolerance = 1e-6
+enable_n1_analysis = true
+n1_parallel_workers = 8
+
+[constraint]
+check_interval_ms = 100
+auto_response = true
+max_violation_history = 10000
+
+[timeseries]
+retention_days = 365
+sampling_interval_ms = 1000
+enable_compression = true
+
+[eventbus]
+max_queue_size = 100000
+timeout_ms = 5000
+
+[device]
+max_connections = 10000
+connection_timeout_ms = 5000
+buffer_size = 1024
+
+[agent]
+max_agents = 1000
+tick_interval_ms = 1000
+execution_timeout_ms = 5000
+enable_constraint_validation = true
+enable_audit_trail = true
+
+[emergency]
+alert_frequency_hz = 49.8
+emergency_frequency_hz = 49.5
+alert_voltage_pu = 0.95
+emergency_voltage_pu = 0.90
+cascading_failure_threshold = 3
+auto_escalation = true
+emergency_voltage_relaxation_pu = 0.1
+emergency_frequency_relaxation_hz = 0.5

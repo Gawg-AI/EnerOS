@@ -1,0 +1,19 @@
+# EnerOS Bridge Python Dependencies
+# Install: pip install -r requirements.txt
+#
+# If cnpower/pandapower are available as git submodules:
+#   pip install -e ../../../third_party/cnpower
+#   pip install -e ../../../third_party/pandapower
+# Otherwise install from PyPI:
+#   pip install cnpower pandapower
+
+# cnpower - Chinese power equipment database
+# Prefer local submodule install: pip install -e ../../../third_party/cnpower
+cnpower>=1.0.0
+
+# pandapower - Power system analysis
+# Prefer local submodule install: pip install -e ../../../third_party/pandapower
+pandapower>=3.4,<4
+
+# aiohttp - Async HTTP server for bridge_http_server.py
+aiohttp>=3.9,<4

@@ -4,4 +4,4 @@ pub mod traits;
 
 pub use models::*;
 pub use library::EquipmentLibrary;
-pub use traits::EquipmentModel;
+pub use traits::{EquipmentModel, AdmittanceContribution, MultiAdmittanceContribution};

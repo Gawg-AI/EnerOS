@@ -1,0 +1,11 @@
+- [x] PowerNetwork::from_equipment 可从 EquipmentLibrary + NetworkGraph 构建并成功求解潮流
+- [x] AgentContext 持有所有子系统引用，Agent 可通过 ctx 访问服务
+- [x] AgentEventHandler 将 Agent 适配为 EventHandler，Agent 可接收 EventBus 事件
+- [x] ActionDispatcher 正确路由 PublishEvent→EventBus, ExecuteCommand→SafetyGateway, LogMessage→tracing
+- [x] TopologyQueryTool 支持 is_connected/find_path/zone_count/has_cycle 查询
+- [x] Command 支持 TopologyChange 关联，开关操作可触发拓扑更新
+- [x] AgentOrchestrator 主循环可运行端到端闭环：事件→推理→命令→校验→执行→反馈
+- [x] NetworkGraph Bus/Branch 包含潮流字段，to_solver_input() 可导出潮流数据
+- [x] EquipmentLibrary 提供 collect_admittances/get_injections_at_bus/bus_ids 批量接口
+- [x] cargo test --workspace 全部通过
+- [x] cargo clippy --workspace 无错误

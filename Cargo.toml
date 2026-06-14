@@ -12,6 +12,14 @@ members = [
     "crates/eneros-device",
     "crates/eneros-api",
     "crates/eneros-bridge",
+    "crates/eneros-network",
+    "crates/eneros-memory",
+    "crates/eneros-tool",
+    "crates/eneros-reasoning",
+    "crates/eneros-agent",
+    "crates/eneros-scada",
+    "crates/eneros-analysis",
+    "crates/eneros-dashboard",
 ]
 
 [workspace.package]

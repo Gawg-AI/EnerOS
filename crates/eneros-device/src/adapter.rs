@@ -129,7 +129,7 @@ pub struct DeviceInfo {
     pub capabilities: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AdapterStatistics {
     pub messages_sent: u64,
     pub messages_received: u64,
@@ -139,21 +139,6 @@ pub struct AdapterStatistics {
     pub reconnect_count: u32,
     pub last_message_time: Option<DateTime<Utc>>,
     pub uptime_seconds: u64,
-}
-
-impl Default for AdapterStatistics {
-    fn default() -> Self {
-        Self {
-            messages_sent: 0,
-            messages_received: 0,
-            errors: 0,
-            bytes_sent: 0,
-            bytes_received: 0,
-            reconnect_count: 0,
-            last_message_time: None,
-            uptime_seconds: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

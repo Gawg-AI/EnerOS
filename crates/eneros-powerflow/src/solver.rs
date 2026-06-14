@@ -28,9 +28,21 @@ impl PowerFlowSolver {
         q_spec: &[f64],
         bus_types: &[BusTypeNR],
     ) -> Result<PowerFlowResult> {
+        self.solve_with_initial(ybus, p_spec, q_spec, bus_types, None)
+    }
+
+    /// Solve power flow with optional initial voltage magnitudes
+    pub fn solve_with_initial(
+        &self,
+        ybus: &YBusMatrix,
+        p_spec: &[f64],
+        q_spec: &[f64],
+        bus_types: &[BusTypeNR],
+        v_initial: Option<&[f64]>,
+    ) -> Result<PowerFlowResult> {
         let n = ybus.size();
 
-        let mut v = vec![1.0; n];
+        let mut v = v_initial.map(|vi| vi.to_vec()).unwrap_or_else(|| vec![1.0; n]);
         let mut theta = vec![0.0; n];
 
         let mut converged = false;
@@ -56,31 +68,20 @@ impl PowerFlowSolver {
 
             let dx = gaussian_elimination(&jacobian, &rhs)?;
 
-            // Damping / line search
-            let mut alpha = 1.0;
-            let v_orig = v.clone();
-            let theta_orig = theta.clone();
-
-            for _ in 0..20 {
-                let mut idx = 0;
-                for (i, &bt) in bus_types.iter().enumerate() {
-                    if bt != BusTypeNR::Slack {
-                        theta[i] = theta_orig[i] + alpha * dx[idx];
-                        idx += 1;
-                    }
-                    if bt == BusTypeNR::PQ {
-                        v[i] = v_orig[i] + alpha * dx[idx];
-                        idx += 1;
-                    }
+            // Apply correction: first all Δθ, then all ΔV
+            // dx vector structure: [Δθ₁..Δθₙ, ΔV₁..ΔVₘ]
+            let mut idx = 0;
+            for (i, &bt) in bus_types.iter().enumerate() {
+                if bt != BusTypeNR::Slack {
+                    theta[i] += dx[idx];
+                    idx += 1;
                 }
-
-                let (new_dp, new_dq) = self.calculate_mismatches(&v, &theta, ybus, p_spec, q_spec, bus_types)?;
-                let new_max = new_dp.iter().chain(new_dq.iter()).fold(0.0_f64, |a, &b| a.max(b.abs()));
-
-                if new_max < max_mismatch {
-                    break;
+            }
+            for (i, &bt) in bus_types.iter().enumerate() {
+                if bt == BusTypeNR::PQ {
+                    v[i] += dx[idx];
+                    idx += 1;
                 }
-                alpha *= 0.5;
             }
         }
 
@@ -92,7 +93,7 @@ impl PowerFlowSolver {
         }
 
         let branch_results = self.calculate_branch_flows(&v, &theta, ybus)?;
-        let bus_results = self.calculate_bus_results(&v, &theta, ybus, p_spec, q_spec, bus_types);
+        let bus_results = self.calculate_bus_results(&v, &theta, ybus, p_spec, q_spec);
         let total_losses = branch_results.iter().map(|br| br.loss_mw).sum();
 
         Ok(PowerFlowResult {
@@ -185,7 +186,7 @@ impl PowerFlowSolver {
                 } else {
                     let (g, b) = ybus.get(i, j);
                     let angle_diff = theta[i] - theta[j];
-                    jacobian[ii][jj] = -v[i] * v[j] * (g * angle_diff.sin() - b * angle_diff.cos());
+                    jacobian[ii][jj] = v[i] * v[j] * (g * angle_diff.sin() - b * angle_diff.cos());
                 }
             }
         }
@@ -228,7 +229,7 @@ impl PowerFlowSolver {
                 } else {
                     let (g, b) = ybus.get(i, j);
                     let angle_diff = theta[i] - theta[j];
-                    jacobian[nns + ii][jj] = v[i] * v[j] * (g * angle_diff.cos() + b * angle_diff.sin());
+                    jacobian[nns + ii][jj] = -v[i] * v[j] * (g * angle_diff.cos() + b * angle_diff.sin());
                 }
             }
         }
@@ -274,7 +275,8 @@ impl PowerFlowSolver {
                     continue;
                 }
 
-                let angle_diff = theta[i] - theta[j];
+                let _angle_diff = theta[i] - theta[j];
+
                 let y_complex = num_complex::Complex::new(g, b);
                 let v_i = num_complex::Complex::from_polar(v[i], theta[i]);
                 let v_j = num_complex::Complex::from_polar(v[j], theta[j]);
@@ -286,8 +288,7 @@ impl PowerFlowSolver {
                 let q_mvar = s_ij.im;
 
                 let current_ka = i_ij.norm() / (v[i] * 1000.0);
-                let rated_current_ka = 1.0;
-                let loading_percent = (current_ka / rated_current_ka) * 100.0;
+                let loading_percent = if current_ka > 0.0 { current_ka * 100.0 } else { 0.0 };
 
                 let s_ji = v_j * (y_complex * (v_j - v_i)).conj();
                 let loss_mw = (p_mw + s_ji.re).abs();
@@ -319,7 +320,6 @@ impl PowerFlowSolver {
         _ybus: &YBusMatrix,
         p_spec: &[f64],
         q_spec: &[f64],
-        _bus_types: &[BusTypeNR],
     ) -> Vec<BusResult> {
         v.iter()
             .enumerate()
@@ -336,56 +336,8 @@ impl PowerFlowSolver {
 
 /// Gaussian elimination with partial pivoting
 fn gaussian_elimination(matrix: &[Vec<f64>], rhs: &[f64]) -> Result<Vec<f64>> {
-    let n = matrix.len();
-    if n == 0 {
-        return Ok(Vec::new());
-    }
-
-    let mut a: Vec<Vec<f64>> = matrix.to_vec();
-    let mut b: Vec<f64> = rhs.to_vec();
-
-    for col in 0..n {
-        let mut max_val = a[col][col].abs();
-        let mut max_row = col;
-
-        for row in (col + 1)..n {
-            if a[row][col].abs() > max_val {
-                max_val = a[row][col].abs();
-                max_row = row;
-            }
-        }
-
-        if max_val < 1e-12 {
-            return Err(EnerOSError::PowerFlow(format!(
-                "Singular matrix at column {}",
-                col
-            )));
-        }
-
-        if max_row != col {
-            a.swap(col, max_row);
-            b.swap(col, max_row);
-        }
-
-        for row in (col + 1)..n {
-            let factor = a[row][col] / a[col][col];
-            for k in col..n {
-                a[row][k] -= factor * a[col][k];
-            }
-            b[row] -= factor * b[col];
-        }
-    }
-
-    let mut x = vec![0.0; n];
-    for i in (0..n).rev() {
-        x[i] = b[i];
-        for j in (i + 1)..n {
-            x[i] -= a[i][j] * x[j];
-        }
-        x[i] /= a[i][i];
-    }
-
-    Ok(x)
+    eneros_core::solve_linear_system(matrix, rhs)
+        .ok_or_else(|| EnerOSError::PowerFlow("Singular matrix in Gaussian elimination".to_string()))
 }
 
 /// Bus type for Newton-Raphson solver
@@ -414,7 +366,7 @@ mod tests {
         bus_map.insert(1, 1);
 
         let branches = vec![
-            (0u64, 1u64, 0.01, 0.1, 0.0),
+            (0u64, 1u64, 0.01, 0.1, 0.0, 1.0),
         ];
 
         let ybus = YBusMatrix::from_branches(&branches, &bus_map);
@@ -433,9 +385,9 @@ mod tests {
         bus_map.insert(2, 2);
 
         let branches = vec![
-            (0u64, 1u64, 0.01, 0.1, 0.0),
-            (1u64, 2u64, 0.015, 0.15, 0.0),
-            (0u64, 2u64, 0.02, 0.2, 0.0),
+            (0u64, 1u64, 0.01, 0.1, 0.0, 1.0),
+            (1u64, 2u64, 0.015, 0.15, 0.0, 1.0),
+            (0u64, 2u64, 0.02, 0.2, 0.0, 1.0),
         ];
 
         let ybus = YBusMatrix::from_branches(&branches, &bus_map);
@@ -531,5 +483,165 @@ mod tests {
         let result = solver.solve(&ybus, &p_spec, &q_spec, &bus_types).unwrap();
 
         assert!(result.total_losses >= 0.0);
+    }
+
+    #[test]
+    fn test_ieee14_convergence() {
+        let data = crate::ieee::ieee14();
+        let (ybus, p_spec, q_spec, bus_types) = data.to_solver_input();
+
+        // Use specified voltage magnitudes as initial values
+        let v_initial: Vec<f64> = data.buses.iter().map(|b| b.v_pu).collect();
+
+        let solver = PowerFlowSolver::new(100, 1e-8);
+        let result = solver.solve_with_initial(&ybus, &p_spec, &q_spec, &bus_types, Some(&v_initial));
+
+        assert!(result.is_ok(), "IEEE 14 power flow failed: {:?}", result.err());
+        let result = result.unwrap();
+        assert!(result.converged, "IEEE 14 did not converge in {} iterations", result.iterations);
+        assert!(result.iterations <= 20, "IEEE 14 took too many iterations: {}", result.iterations);
+
+        // Verify bus voltages are in reasonable range (0.9 to 1.2 pu)
+        for br in &result.bus_results {
+            assert!(
+                br.voltage_magnitude > 0.9 && br.voltage_magnitude < 1.2,
+                "Bus {} voltage {} pu out of range",
+                br.bus_id, br.voltage_magnitude
+            );
+        }
+
+        // Verify total losses are positive and reasonable (< 20 MW for IEEE 14)
+        assert!(
+            result.total_losses > 0.0 && result.total_losses < 20.0,
+            "Total losses {} MW out of range",
+            result.total_losses
+        );
+    }
+
+    #[test]
+    fn test_ieee14_voltage_accuracy() {
+        let data = crate::ieee::ieee14();
+        let (ybus, p_spec, q_spec, bus_types) = data.to_solver_input();
+
+        let v_initial: Vec<f64> = data.buses.iter().map(|b| b.v_pu).collect();
+
+        let solver = PowerFlowSolver::new(100, 1e-8);
+        let result = solver
+            .solve_with_initial(&ybus, &p_spec, &q_spec, &bus_types, Some(&v_initial))
+            .expect("IEEE 14 power flow failed");
+
+        assert!(result.converged, "IEEE 14 did not converge");
+
+        // Print comparison table header
+        eprintln!(
+            "{:>6} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+            "Bus", "Comp V", "Exp V", "V Err", "Comp θ°", "Exp θ°", "θ Err°"
+        );
+        eprintln!("{}", "-".repeat(68));
+
+        for (i, bus_data) in data.buses.iter().enumerate() {
+            let computed = &result.bus_results[i];
+            let computed_v = computed.voltage_magnitude;
+            let expected_v = bus_data.v_pu;
+            let v_error = (computed_v - expected_v).abs();
+
+            let computed_angle_deg = computed.voltage_angle.to_degrees();
+            let expected_angle_deg = bus_data.angle_deg;
+            let angle_error = (computed_angle_deg - expected_angle_deg).abs();
+
+            eprintln!(
+                "{:>6} {:>10.4} {:>10.4} {:>10.4} {:>10.4} {:>10.4} {:>10.4}",
+                bus_data.bus_id, computed_v, expected_v, v_error,
+                computed_angle_deg, expected_angle_deg, angle_error
+            );
+
+            assert!(
+                v_error < 0.02,
+                "Bus {} voltage error too large: computed={}, expected={}, error={}",
+                bus_data.bus_id, computed_v, expected_v, v_error
+            );
+            assert!(
+                angle_error < 0.1,
+                "Bus {} angle error too large: computed={:.4}°, expected={:.4}°, error={:.4}°",
+                bus_data.bus_id, computed_angle_deg, expected_angle_deg, angle_error
+            );
+        }
+    }
+
+    #[test]
+    fn test_ieee14_total_losses() {
+        let data = crate::ieee::ieee14();
+        let (ybus, p_spec, q_spec, bus_types) = data.to_solver_input();
+
+        let v_initial: Vec<f64> = data.buses.iter().map(|b| b.v_pu).collect();
+
+        let solver = PowerFlowSolver::new(100, 1e-8);
+        let result = solver
+            .solve_with_initial(&ybus, &p_spec, &q_spec, &bus_types, Some(&v_initial))
+            .expect("IEEE 14 power flow failed");
+
+        assert!(result.converged, "IEEE 14 did not converge");
+
+        // IEEE 14-bus standard total losses are approximately 13.8 MW
+        // total_losses is in per-unit; convert to MW by multiplying base_mva
+        let total_losses_mw = result.total_losses * data.base_mva;
+        let expected_losses = 13.8;
+        let loss_error = (total_losses_mw - expected_losses).abs();
+
+        eprintln!(
+            "Total losses: computed={:.4} MW ({} pu), expected≈{:.1} MW, error={:.4} MW",
+            total_losses_mw, result.total_losses, expected_losses, loss_error
+        );
+
+        assert!(
+            loss_error < 1.0,
+            "Total losses {:.4} MW too far from expected {:.1} MW (error={:.4} MW)",
+            total_losses_mw, expected_losses, loss_error
+        );
+    }
+
+    #[test]
+    fn test_ieee14_branch_flow_reasonableness() {
+        let data = crate::ieee::ieee14();
+        let (ybus, p_spec, q_spec, bus_types) = data.to_solver_input();
+
+        let v_initial: Vec<f64> = data.buses.iter().map(|b| b.v_pu).collect();
+
+        let solver = PowerFlowSolver::new(100, 1e-8);
+        let result = solver
+            .solve_with_initial(&ybus, &p_spec, &q_spec, &bus_types, Some(&v_initial))
+            .expect("IEEE 14 power flow failed");
+
+        assert!(result.converged, "IEEE 14 did not converge");
+        assert!(!result.branch_results.is_empty(), "No branch results");
+
+        for br in &result.branch_results {
+            // Branch losses should be positive
+            assert!(
+                br.loss_mw >= 0.0,
+                "Branch {} ({}->{}) has negative loss: {} MW",
+                br.branch_id, br.from_bus, br.to_bus, br.loss_mw
+            );
+
+            // At least one direction should have positive active power flow magnitude
+            let has_flow = br.p_from.abs() > 1e-10 || br.p_to.abs() > 1e-10;
+            assert!(
+                has_flow || br.loss_mw < 1e-10,
+                "Branch {} ({}->{}) has no flow but nonzero loss",
+                br.branch_id, br.from_bus, br.to_bus
+            );
+        }
+
+        // Verify no branch is overloaded beyond its rate_mva
+        // Build a rate_mva lookup from branch data
+        for (branch_result, branch_data) in result.branch_results.iter().zip(data.branches.iter()) {
+            let flow_mva = (branch_result.p_from.hypot(branch_result.q_from)).abs();
+            assert!(
+                flow_mva <= branch_data.rate_mva * 1.01, // 1% tolerance for numerical precision
+                "Branch {} ({}->{}) overloaded: {:.2} MVA > rate {:.2} MVA",
+                branch_result.branch_id, branch_result.from_bus, branch_result.to_bus,
+                flow_mva, branch_data.rate_mva
+            );
+        }
     }
 }

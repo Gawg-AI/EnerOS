@@ -16,5 +16,7 @@ chrono = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 
+rusqlite = { version = "0.31", features = ["bundled"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

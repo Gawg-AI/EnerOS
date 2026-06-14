@@ -6,24 +6,47 @@ authors.workspace = true
 license.workspace = true
 description = "EnerOS API server and client"
 
+[features]
+default = []
+# Enable rig framework integration for AI reasoning
+rig = ["eneros-reasoning/rig"]
+
 [dependencies]
 eneros-core = { path = "../eneros-core" }
 eneros-topology = { path = "../eneros-topology" }
 eneros-powerflow = { path = "../eneros-powerflow" }
 eneros-constraint = { path = "../eneros-constraint" }
-eneros-equipment = { path = "../eneros-equipment" }
-eneros-timeseries = { path = "../eneros-timeseries" }
+eneros-network = { path = "../eneros-network" }
+eneros-agent = { path = "../eneros-agent" }
+eneros-scada = { path = "../eneros-scada" }
+eneros-analysis = { path = "../eneros-analysis" }
 eneros-eventbus = { path = "../eneros-eventbus" }
-eneros-gateway = { path = "../eneros-gateway" }
 eneros-device = { path = "../eneros-device" }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
+eneros-timeseries = { path = "../eneros-timeseries" }
+eneros-gateway = { path = "../eneros-gateway" }
+eneros-tool = { path = "../eneros-tool" }
+eneros-dashboard = { path = "../eneros-dashboard" }
+eneros-memory = { path = "../eneros-memory" }
+eneros-reasoning = { path = "../eneros-reasoning" }
+eneros-equipment = { path = "../eneros-equipment" }
+axum = { version = "0.7", features = ["ws"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
 tokio = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-clap = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
 anyhow = { workspace = true }
+clap = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+futures-util = "0.3"
+reqwest = { version = "0.12", features = ["json"] }
+num-complex = { workspace = true }
+ndarray = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

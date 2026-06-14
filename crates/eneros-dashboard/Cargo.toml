@@ -1,0 +1,10 @@
+[package]
+name = "eneros-dashboard"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+eneros-topology = { path = "../eneros-topology" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

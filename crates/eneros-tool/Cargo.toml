@@ -1,0 +1,23 @@
+[package]
+name = "eneros-tool"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS agent tool engine - power system tools for AI agents"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+eneros-network = { path = "../eneros-network" }
+eneros-powerflow = { path = "../eneros-powerflow" }
+eneros-constraint = { path = "../eneros-constraint" }
+eneros-topology = { path = "../eneros-topology" }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

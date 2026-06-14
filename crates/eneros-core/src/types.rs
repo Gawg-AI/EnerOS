@@ -149,17 +149,39 @@ pub struct LoadConsumption {
     pub status: bool,
 }
 
+/// Branch electrical parameters for topology changes
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BranchParams {
+    /// Resistance in per-unit
+    pub r: f64,
+    /// Reactance in per-unit
+    pub x: f64,
+    /// Susceptance in per-unit
+    pub b: f64,
+    /// Rate in MVA
+    pub rate_mva: f64,
+    /// Branch name
+    pub name: Option<String>,
+    /// Branch type
+    pub branch_type: BranchType,
+    /// From bus ID
+    pub from_bus: ElementId,
+    /// To bus ID
+    pub to_bus: ElementId,
+}
+
 /// Topology change event
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TopologyChange {
     /// Switch state changed
     SwitchToggle {
         switch_id: ElementId,
         closed: bool,
     },
-    /// Branch added
+    /// Branch added with electrical parameters
     BranchAdded {
         branch_id: ElementId,
+        params: BranchParams,
     },
     /// Branch removed
     BranchRemoved {

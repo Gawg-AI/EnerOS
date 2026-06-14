@@ -45,7 +45,6 @@ impl Default for DiscoveryConfig {
 pub struct DeviceDiscovery {
     config: DiscoveryConfig,
     discovered: RwLock<HashMap<String, DiscoveredDevice>>,
-    protocols: Vec<ProtocolType>,
 }
 
 impl DeviceDiscovery {
@@ -53,19 +52,13 @@ impl DeviceDiscovery {
         Self {
             config,
             discovered: RwLock::new(HashMap::new()),
-            protocols: vec![
-                ProtocolType::Modbus,
-                ProtocolType::Iec61850,
-                ProtocolType::Iec104,
-            ],
         }
     }
 
-    pub fn with_protocols(config: DiscoveryConfig, protocols: Vec<ProtocolType>) -> Self {
+    pub fn with_protocols(config: DiscoveryConfig, _protocols: Vec<ProtocolType>) -> Self {
         Self {
             config,
             discovered: RwLock::new(HashMap::new()),
-            protocols,
         }
     }
 

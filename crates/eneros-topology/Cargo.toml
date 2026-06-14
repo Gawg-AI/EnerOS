@@ -8,6 +8,7 @@ description = "EnerOS power grid topology engine"
 
 [dependencies]
 eneros-core = { path = "../eneros-core" }
+eneros-powerflow = { path = "../eneros-powerflow" }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

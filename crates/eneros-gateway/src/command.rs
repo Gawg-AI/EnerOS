@@ -17,6 +17,10 @@ pub enum CommandType {
     LoadShedding,
     /// System separation
     SystemSeparation,
+    /// Toggle a switch open/close
+    SwitchToggle,
+    /// Toggle a branch in/out of service
+    BranchToggle,
 }
 
 /// Command priority
@@ -70,5 +74,87 @@ impl Command {
     pub fn with_parameter(mut self, key: &str, value: f64) -> Self {
         self.parameters.insert(key.to_string(), value);
         self
+    }
+
+    /// Convert command to a topology change, if applicable
+    pub fn to_topology_change(&self) -> Option<eneros_core::TopologyChange> {
+        match self.command_type {
+            CommandType::SwitchToggle => {
+                let closed = self.parameters.get("closed").is_some_and(|&v| v != 0.0);
+                Some(eneros_core::TopologyChange::SwitchToggle {
+                    switch_id: self.target_id,
+                    closed,
+                })
+            }
+            CommandType::BranchToggle => {
+                let in_service = self.parameters.get("in_service").is_none_or(|&v| v != 0.0);
+                if !in_service {
+                    Some(eneros_core::TopologyChange::BranchRemoved {
+                        branch_id: self.target_id,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eneros_core::TopologyChange;
+
+    #[test]
+    fn test_command_switch_toggle_to_topology_change() {
+        let cmd = Command::new(CommandType::SwitchToggle, 42, CommandPriority::Normal, "test")
+            .with_parameter("closed", 1.0);
+        let tc = cmd.to_topology_change();
+        assert!(tc.is_some());
+        assert_eq!(
+            tc.unwrap(),
+            TopologyChange::SwitchToggle {
+                switch_id: 42,
+                closed: true
+            }
+        );
+
+        let cmd_open = Command::new(CommandType::SwitchToggle, 42, CommandPriority::Normal, "test")
+            .with_parameter("closed", 0.0);
+        let tc_open = cmd_open.to_topology_change();
+        assert!(tc_open.is_some());
+        assert_eq!(
+            tc_open.unwrap(),
+            TopologyChange::SwitchToggle {
+                switch_id: 42,
+                closed: false
+            }
+        );
+    }
+
+    #[test]
+    fn test_command_branch_toggle_to_topology_change() {
+        let cmd = Command::new(CommandType::BranchToggle, 7, CommandPriority::Normal, "test")
+            .with_parameter("in_service", 0.0);
+        let tc = cmd.to_topology_change();
+        assert!(tc.is_some());
+        assert_eq!(
+            tc.unwrap(),
+            TopologyChange::BranchRemoved { branch_id: 7 }
+        );
+
+        let cmd_in = Command::new(CommandType::BranchToggle, 7, CommandPriority::Normal, "test")
+            .with_parameter("in_service", 1.0);
+        assert!(cmd_in.to_topology_change().is_none());
+    }
+
+    #[test]
+    fn test_command_other_type_no_topology_change() {
+        let cmd = Command::new(CommandType::GeneratorSetpoint, 1, CommandPriority::Normal, "test");
+        assert!(cmd.to_topology_change().is_none());
+
+        let cmd2 = Command::new(CommandType::TransformerTap, 2, CommandPriority::Normal, "test");
+        assert!(cmd2.to_topology_change().is_none());
     }
 }

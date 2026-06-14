@@ -1,0 +1,46 @@
+- [x] ScadaPoint 结构体定义完整（element_id, parameter, scan_rate_ms, deadband）
+- [x] ScadaCollector 可从 DataSource trait 按周期读取数据
+- [x] DataPipeline 实现 Collector→TimeSeriesEngine 数据流
+- [x] 数据质量标记逻辑正确（越限→Bad，读取失败→Bad+NaN）
+- [x] SnapshotBuilder 可从实时数据构建 PowerSystemState
+- [x] MeasurementMapping 正确映射 ScadaPoint 到 PowerSystemState 字段
+- [x] 数据完整性检查 — 必填字段缺失时返回错误
+- [x] TimeSeriesEngine 支持滑动窗口聚合
+- [x] TimeSeriesEngine 支持数据插值
+- [x] TimeSeriesEngine 支持异常检测（3-sigma、突变检测）
+- [x] DataDrivenAgentLoop 实现数据变化触发 Agent 决策
+- [x] 紧急数据触发直接进入 EmergencyPipeline
+- [x] DcOpfProblem 结构体定义完整
+- [x] DC-OPF 求解器返回最优有功分配和节点电价（LMP）
+- [x] DC-OPF 测试通过（3-bus 和 14-bus）
+- [x] StateEstimator 实现加权最小二乘法（WLS）
+- [x] 坏数据检测（最大标准残差法）正确
+- [x] 状态估计测试通过
+- [x] FaultType 枚举完整（三相/单相接地/两相/两相接地）
+- [x] 对称分量法实现正确（SequenceImpedance）
+- [x] 三相短路计算正确（Z_bus 方法）
+- [x] 不对称故障计算正确（SLG/LL/DLG）
+- [x] LoadForecastAgent 实现指数平滑预测（单/双/Holt-Winters）
+- [x] LoadForecastAgent 实现 Agent trait（authority: Operator, tick: 15min）
+- [x] PlanningAgent 实现网架扩展评估（3种方案）
+- [x] PlanningAgent 实现 Agent trait（authority: Supervisor, tick: 1h）
+- [x] TradingAgent 实现边际成本定价（dC/dP = 2aP + b）
+- [x] TradingAgent 实现 Agent trait（authority: Operator, tick: 5min）
+- [x] axum HTTP 服务器实现 RESTful API
+- [x] /api/power-flow 端点正确返回潮流结果
+- [x] /api/constraints 端点正确返回违规列表
+- [x] /api/agents 端点正确管理 Agent
+- [x] /api/scada/latest 端点正确查询实时数据
+- [x] /api/analysis 端点正确调用 OPF/状态估计/短路分析
+- [x] WebSocket 实时推送 Agent 事件
+- [x] WebSocket 推送系统状态变更
+- [x] CLI `eneros run` 一键启动
+- [x] CLI `eneros status` 显示系统状态
+- [x] CLI `eneros agent list/inspect` 管理 Agent
+- [x] CLI `eneros analyze opf/state-estimation/short-circuit` 调用分析功能
+- [x] Web 仪表盘显示电网拓扑图（SVG 圆形布局）
+- [x] Web 仪表盘显示潮流热力图（电压/负载颜色映射）
+- [x] Web 仪表盘显示 Agent 状态面板
+- [x] Web 仪表盘显示实时数据面板
+- [x] cargo test --workspace 全部通过（680+ 测试）
+- [x] cargo clippy --workspace 无错误

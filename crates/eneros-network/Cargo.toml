@@ -1,0 +1,24 @@
+[package]
+name = "eneros-network"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS power network modeling - unified topology-to-powerflow pipeline"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+eneros-topology = { path = "../eneros-topology" }
+eneros-powerflow = { path = "../eneros-powerflow" }
+eneros-equipment = { path = "../eneros-equipment" }
+eneros-constraint = { path = "../eneros-constraint" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+num-complex = { workspace = true }
+ahash = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

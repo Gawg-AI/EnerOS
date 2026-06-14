@@ -46,14 +46,6 @@
 
 ---
 
-## EnerOS 是什么？
-
-EnerOS 是面向电力与能源领域的原生智能体操作系统（AgentOS）。它将电力系统的领域知识、物理约束与运行逻辑内建为操作系统内核，使 AI Agent 在能源场景中具备原生理解、安全决策与自主行动能力。
-
-正如传统操作系统为应用程序提供进程、文件、网络的统一抽象，EnerOS 为能源智能体提供拓扑、潮流、约束、设备的统一抽象——**让 Agent 天然"懂电"**。
-
----
-
 ## 设计哲学
 
 ### Power-Native First
@@ -115,7 +107,6 @@ EnerOS 采用**双执行架构**，将系统划分为两个执行域：
 | **实时执行域** | 实时扩展内核 | 优先级抢占调度 | 继电保护、开关操作、故障隔离、频率调节 | 微秒级 ~ 毫秒级 |
 
 **核心设计原则：**
-
 - **安全域不可被通用域阻塞** — 实时执行域的任务拥有最高优先级，通用域的任何操作不得影响实时执行的确定性
 - **单向信任** — 实时执行域可直接读取通用域的决策指令，但通用域不可直接干预实时执行域的调度
 - **跨域通信通过实时安全网关** — 所有通用域→实时执行域的指令必须经过网关的约束校验与优先级仲裁
@@ -202,6 +193,42 @@ EnerOS 采用**双执行架构**，将系统划分为两个执行域：
 
 ---
 
+## Crate 索引
+
+| Crate | 路径 | 职责 | 关键类型/接口 |
+|-------|------|------|---------------|
+| **eneros-core** | `crates/eneros-core/` | 统一类型、错误、配置 | `EnerOSError`, `EnerOSConfig`, `ElementId`, `BusType`, `PowerSystemState` |
+| **eneros-topology** | `crates/eneros-topology/` | 电网拓扑图建模与分析 | `NetworkGraph`, `TopologyEngine`, `TopologySearcher`, `Bus`, `Branch`, `Switch` |
+| **eneros-powerflow** | `crates/eneros-powerflow/` | Newton-Raphson 潮流求解 | `PowerFlowSolver`, `YBusMatrix`, `JacobianMatrix`, `PowerFlowResult` |
+| **eneros-constraint** | `crates/eneros-constraint/` | 安全约束校验与执行 | `ConstraintEngine`, `Constraint`, `ConstraintType`, `Violation`, `ResponseStrategy` |
+| **eneros-equipment** | `crates/eneros-equipment/` | 设备参数模型库 | `EquipmentModel` trait, `EquipmentLibrary`, `TransmissionLine`, `TwoWindingTransformer` |
+| **eneros-timeseries** | `crates/eneros-timeseries/` | 时序数据存储与查询 | `TimeSeriesEngine`, `TimeSeriesStorage` trait, `TimeSeriesQuery`, `Aggregation` |
+| **eneros-eventbus** | `crates/eneros-eventbus/` | 事件驱动通信总线 | `EventBus`, `Event`, `EventType`, `EventHandler` trait, `CallbackHandler` |
+| **eneros-gateway** | `crates/eneros-gateway/` | 安全网关与命令管控 | `SafetyGateway`, `Command`, `SafetyCheck` trait, `CommandPriority` |
+| **eneros-device** | `crates/eneros-device/` | 设备通信与协议适配 | `ProtocolAdapter` trait, `DeviceManager`, `DeviceDiscovery`, `HealthMonitor` |
+| **eneros-api** | `crates/eneros-api/` | CLI / HTTP API 服务 | `ApiServer`, `ApiClient`, `ApiResponse` |
+| **eneros-bridge** | `crates/eneros-bridge/` | Python 桥接 (cnpower/pandapower) | `PythonBridge`, `CnpowerEquipmentLoader` |
+| **eneros-network** | `crates/eneros-network/` | 拓扑-潮流统一管线 (规划中) | — |
+
+### 依赖关系
+
+```
+eneros-core ◄── eneros-topology
+             ◄── eneros-powerflow
+             ◄── eneros-constraint
+             ◄── eneros-equipment
+             ◄── eneros-timeseries
+             ◄── eneros-eventbus
+             ◄── eneros-gateway
+             ◄── eneros-api
+
+eneros-core + eneros-eventbus ◄── eneros-device
+eneros-core + eneros-equipment ◄── eneros-bridge
+eneros-core + eneros-topology + eneros-powerflow + eneros-equipment ◄── eneros-network
+```
+
+---
+
 ## 应用场景
 
 | 场景 | 描述 | 核心 Agent |
@@ -239,28 +266,11 @@ EnerOS 采用**双执行架构**，将系统划分为两个执行域：
 
 ---
 
-## 路线图
-
-- [x] **Phase 1 — 内核基座** — 拓扑引擎、潮流计算内核、设备模型库
-- [x] **Phase 2 — Agent 运行时** — Agent 生命周期管理、记忆系统、工具引擎
-- [x] **Phase 3 — 电网感知上下文** — 拓扑感知注入、约束校验守卫、事件总线
-- [x] **Phase 4 — 多智能体协作** — 多智能体协作协议、拓扑结构化通信
-- [x] **Phase 5 — 基础设施适配器** — SCADA / IEC 61850 / IEC 104 / MQTT / Modbus 协议适配器
-- [x] **Phase 6 — 领域应用** — 调度/运维/自愈Agent、领域协作协议
-- [x] **Phase 7 — 实时闭环与系统集成** — SCADA管线、DC-OPF/状态估计/短路、负荷预测/规划/交易Agent、axum API+WebSocket+仪表盘
-- [x] **Phase 8 — 深度集成与生产化** — 端到端连通、TOML配置、E2E测试、Dashboard集成、SQLite持久化
-- [x] **Phase 9 — 修复真实Bug与消除空壳** — 死锁修复、联锁校验、Y-bus bug、消息广播修复、clippy零警告
-- [x] **Phase 10 — 精度验证与LLM推理集成** — IEEE 14-bus精度验证、LlmReasoningEngine、Agent LLM增强、降级回退
-- [x] **Phase 11 — rig Tool实化与统一推理引擎** — rig框架集成(rig-core 0.38)、4个电力系统Tool实化、RigReasoningEngine统一推理引擎
-- [x] **Phase 12 — 实时执行域** — PriorityCommandQueue优先级命令队列、RealtimeExecutor实时命令执行器、PriorityEventBus双通道事件总线、DualScanGroup快/慢扫描分组、WatchdogTimer看门狗超时保护
-
----
-
 ## 快速开始
 
 ### 前置条件
 
-- Rust 1.70+（通过 [rustup](https://rustup.rs/) 安装）
+- Rust 1.70+ (通过 [rustup](https://rustup.rs/) 安装)
 - Cargo
 
 ### 构建
@@ -283,51 +293,43 @@ cargo test
 # 启动 API 服务器
 cargo run --bin eneros -- serve --host 0.0.0.0 --port 8080
 
-# 启用 AI 推理（需配置 rig provider）
-ENEROS_RIG_PROVIDER=openai cargo run --bin eneros -- serve --host 0.0.0.0 --port 8080
+# 执行潮流计算
+cargo run --bin eneros -- power-flow --case ieee14
 ```
 
 ---
 
-## 项目结构
+## 路线图
 
-```
-eneros/
-├── Cargo.toml                    # Workspace 配置
-├── crates/
-│   ├── eneros-core/              # 核心类型与工具
-│   ├── eneros-topology/          # 拓扑引擎
-│   ├── eneros-powerflow/         # 潮流引擎
-│   ├── eneros-constraint/        # 约束执行器
-│   ├── eneros-equipment/         # 设备模型库
-│   ├── eneros-timeseries/        # 时序引擎
-│   ├── eneros-eventbus/          # 事件总线
-│   ├── eneros-gateway/           # 安全网关（含实时执行域）
-│   ├── eneros-device/            # 设备接入层
-│   ├── eneros-network/           # 拓扑-潮流统一管线
-│   ├── eneros-reasoning/         # 推理引擎（RuleBased + rig）
-│   ├── eneros-tool/              # 工具引擎
-│   ├── eneros-memory/            # Agent 记忆存储
-│   ├── eneros-agent/             # Agent 编排（6个领域Agent）
-│   ├── eneros-scada/             # SCADA 数据管线
-│   ├── eneros-analysis/          # 高级分析（DC-OPF/状态估计/短路）
-│   ├── eneros-bridge/            # Python 桥接（cnpower/pandapower）
-│   ├── eneros-dashboard/         # Web 仪表盘
-│   └── eneros-api/               # API 服务器（axum + WebSocket）
-├── third_party/
-│   ├── cnpower/                  # 中国电力系统数据（git submodule）
-│   └── pandapower/               # pandapower 参考实现（git submodule）
-└── README.md
-```
+- [x] **Phase 1 — 内核基座** — 拓扑引擎、潮流计算内核、设备模型库
+- [x] **Phase 2 — Agent 运行时** — Agent 生命周期管理、记忆系统、工具引擎
+- [x] **Phase 3 — 电网感知上下文** — 拓扑感知注入、约束校验守卫、事件总线
+- [x] **Phase 4 — 多智能体协作** — 多智能体协作协议、拓扑结构化通信
+- [x] **Phase 5 — 基础设施适配器** — SCADA / IEC 61850 / IEC 104 / MQTT 协议适配器
+- [x] **Phase 6 — 领域应用** — 调度Agent(经济调度/AGC)、运维Agent(故障诊断/设备健康)、自愈Agent(故障隔离/网络重构)、领域协作协议
+- [x] **Phase 7 — 实时闭环与系统集成** — SCADA数据管线、DC-OPF/状态估计/短路分析、负荷预测/规划/交易Agent、axum API+WebSocket+Web仪表盘
+- [x] **Phase 8 — 深度集成与生产化** — 组件端到端连通、TOML配置加载、E2E集成测试、Dashboard集成、ApiClient真实HTTP、SQLite持久化
+- [x] **Phase 9 — 修复真实Bug与消除空壳** — await_holding_lock死锁修复、SelfHealingAgent联锁校验、Y-bus计算bug修复、消息广播修复、重复代码消除、clippy零警告
+- [x] **Phase 10 — 精度验证与LLM推理集成** — IEEE 14-bus标准答案精度验证、LlmReasoningEngine(OpenAI/Ollama/vLLM兼容)、Agent LLM推理增强(OperationAgent故障诊断+DispatchAgent调度审查)、降级回退机制
+- [x] **Phase 11 — rig Tool实化与统一推理引擎** — rig框架集成(rig-core 0.38)、4个电力系统Tool实化(PowerFlow/ConstraintCheck/N1Analysis/VoltageStability)、RigReasoningEngine统一推理引擎、LlmReasoningEngine废弃标记、Feature flag隔离
+- [x] **Phase 12 — 实时执行域** — PriorityCommandQueue优先级命令队列、RealtimeExecutor实时命令执行器、SafetyGateway集成优先级队列、PriorityEventBus双通道事件总线、DualScanGroup快/慢扫描分组(100ms/1s)、WatchdogTimer看门狗超时保护
 
 ---
 
 ## 参与贡献
 
-EnerOS 欢迎对电力系统与 AI 交叉领域感兴趣的贡献者参与讨论与共建。
+EnerOS 处于早期设计阶段，欢迎对电力系统与 AI 交叉领域感兴趣的贡献者参与讨论与共建。
 
 ---
 
 ## 许可证
 
 [MIT](LICENSE)
+
+---
+
+## 致谢
+
+- [pandapower](https://github.com/e2nIEE/pandapower) - 电力系统分析
+- [PowerGridModel](https://github.com/PowerGridModel/power-grid-model) - 高性能潮流计算
+- [libIEC61850](https://github.com/mz-automation/libiec61850) - IEC 61850 协议实现

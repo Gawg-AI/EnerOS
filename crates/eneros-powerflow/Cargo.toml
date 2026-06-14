@@ -8,7 +8,6 @@ description = "EnerOS power flow calculation engine"
 
 [dependencies]
 eneros-core = { path = "../eneros-core" }
-eneros-topology = { path = "../eneros-topology" }
 eneros-equipment = { path = "../eneros-equipment" }
 serde = { workspace = true }
 thiserror = { workspace = true }

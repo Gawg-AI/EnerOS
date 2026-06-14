@@ -11,6 +11,32 @@ use crate::adapter::{
 };
 use crate::protocol::ProtocolType;
 
+/// Configuration for MQTT adapter
+#[derive(Debug, Clone)]
+pub struct MqttConfig {
+    pub broker_url: String,
+    pub broker_port: u16,
+    pub client_id: String,
+    pub default_qos: u8,
+    pub will_topic: Option<String>,
+    pub will_payload: Option<String>,
+    pub keep_alive_secs: u64,
+}
+
+impl Default for MqttConfig {
+    fn default() -> Self {
+        Self {
+            broker_url: "127.0.0.1".to_string(),
+            broker_port: 1883,
+            client_id: format!("eneros-{}", uuid::Uuid::new_v4()),
+            default_qos: 1,
+            will_topic: None,
+            will_payload: None,
+            keep_alive_secs: 30,
+        }
+    }
+}
+
 pub struct MqttAdapter {
     client: Option<Arc<Mutex<AsyncClient>>>,
     shared_state: SharedState,
@@ -41,6 +67,41 @@ impl MqttAdapter {
         } else {
             Ok((address.to_string(), QoS::AtLeastOnce))
         }
+    }
+
+    /// Check if a topic matches a subscription pattern (supports + and # wildcards)
+    pub fn topic_matches(pattern: &str, topic: &str) -> bool {
+        let pattern_parts: Vec<&str> = pattern.split('/').collect();
+        let topic_parts: Vec<&str> = topic.split('/').collect();
+
+        let mut pi = 0;
+        let mut ti = 0;
+
+        while pi < pattern_parts.len() && ti < topic_parts.len() {
+            if pattern_parts[pi] == "#" {
+                return true; // # matches everything remaining
+            }
+            if pattern_parts[pi] != "+" && pattern_parts[pi] != topic_parts[ti] {
+                return false;
+            }
+            pi += 1;
+            ti += 1;
+        }
+
+        // Handle trailing # or exact match
+        (pi < pattern_parts.len() && pattern_parts[pi] == "#")
+            || (pi == pattern_parts.len() && ti == topic_parts.len())
+    }
+
+    /// Get list of subscribed topics
+    pub async fn subscribed_topics(&self) -> Vec<String> {
+        self.subscribed_topics.lock().await.keys().cloned().collect()
+    }
+
+    /// Reconnect to the MQTT broker
+    pub async fn reconnect(&mut self, config: &ConnectionConfig) -> Result<()> {
+        self.disconnect().await?;
+        self.connect(config).await
     }
 }
 
@@ -220,5 +281,85 @@ impl ProtocolAdapter for MqttAdapter {
 
     fn shared_state(&self) -> SharedState {
         self.shared_state.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mqtt_config_default() {
+        let config = MqttConfig::default();
+        assert_eq!(config.broker_port, 1883);
+        assert_eq!(config.default_qos, 1);
+        assert_eq!(config.keep_alive_secs, 30);
+        assert!(config.will_topic.is_none());
+    }
+
+    #[test]
+    fn test_topic_matches_exact() {
+        assert!(MqttAdapter::topic_matches("grid/bus1/voltage", "grid/bus1/voltage"));
+        assert!(!MqttAdapter::topic_matches("grid/bus1/voltage", "grid/bus2/voltage"));
+    }
+
+    #[test]
+    fn test_topic_matches_single_wildcard() {
+        assert!(MqttAdapter::topic_matches("grid/+/voltage", "grid/bus1/voltage"));
+        assert!(MqttAdapter::topic_matches("grid/+/voltage", "grid/bus2/voltage"));
+        assert!(!MqttAdapter::topic_matches("grid/+/voltage", "grid/bus1/current"));
+    }
+
+    #[test]
+    fn test_topic_matches_multi_wildcard() {
+        assert!(MqttAdapter::topic_matches("grid/#", "grid/bus1/voltage"));
+        assert!(MqttAdapter::topic_matches("grid/#", "grid/bus1/line1/current"));
+        assert!(!MqttAdapter::topic_matches("grid/#", "power/bus1/voltage"));
+    }
+
+    #[test]
+    fn test_topic_matches_combined_wildcards() {
+        assert!(MqttAdapter::topic_matches("+/+/voltage", "grid/bus1/voltage"));
+        assert!(MqttAdapter::topic_matches("+/bus1/#", "grid/bus1/voltage"));
+        assert!(MqttAdapter::topic_matches("+/bus1/#", "grid/bus1/line1/current"));
+    }
+
+    #[test]
+    fn test_parse_mqtt_address() {
+        let (topic, qos) = MqttAdapter::parse_mqtt_address("grid/bus1/voltage:2").unwrap();
+        assert_eq!(topic, "grid/bus1/voltage");
+        assert_eq!(qos, QoS::ExactlyOnce);
+
+        let (topic, qos) = MqttAdapter::parse_mqtt_address("grid/bus1/voltage").unwrap();
+        assert_eq!(topic, "grid/bus1/voltage");
+        assert_eq!(qos, QoS::AtLeastOnce);
+    }
+
+    #[tokio::test]
+    async fn test_mqtt_adapter_creation() {
+        let adapter = MqttAdapter::new("test-mqtt");
+        assert!(!adapter.is_connected());
+        assert_eq!(adapter.name(), "test-mqtt");
+    }
+
+    #[tokio::test]
+    async fn test_mqtt_not_connected_read() {
+        let adapter = MqttAdapter::new("test-mqtt");
+        let result = adapter.read("test/topic").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_mqtt_not_connected_write() {
+        let mut adapter = MqttAdapter::new("test-mqtt");
+        let result = adapter.write("test/topic", &DataValue::String("hello".into())).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_mqtt_subscribed_topics_empty() {
+        let adapter = MqttAdapter::new("test-mqtt");
+        let topics = adapter.subscribed_topics().await;
+        assert!(topics.is_empty());
     }
 }

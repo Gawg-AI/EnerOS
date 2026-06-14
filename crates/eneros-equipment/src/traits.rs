@@ -1,6 +1,24 @@
 use std::collections::HashMap;
 use eneros_core::{ElementId, EquipmentType};
 
+/// Admittance contribution from a branch element (series + shunt)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AdmittanceContribution {
+    /// Series admittance (1 / impedance) in per-unit
+    pub y_series: num_complex::Complex<f64>,
+    /// Shunt admittance at each end (half-line charging) in per-unit
+    pub y_shunt: num_complex::Complex<f64>,
+}
+
+/// Multi-terminal admittance contribution (for three-winding transformers etc.)
+#[derive(Debug, Clone)]
+pub struct MultiAdmittanceContribution {
+    /// Bus IDs corresponding to each admittance contribution
+    pub bus_ids: Vec<eneros_core::ElementId>,
+    /// Admittance contributions for each terminal pair
+    pub contributions: Vec<AdmittanceContribution>,
+}
+
 /// Trait for power equipment models
 pub trait EquipmentModel: Send + Sync {
     /// Get equipment ID
@@ -29,5 +47,26 @@ pub trait EquipmentModel: Send + Sync {
     /// Get rated voltage (kV)
     fn rated_voltage(&self) -> Option<f64> {
         None
+    }
+
+    /// Get bus IDs this element connects to (for branch-type elements)
+    fn bus_ids(&self) -> Vec<ElementId> {
+        Vec::new()
+    }
+
+    /// Compute admittance contribution in per-unit given base_mva and base_kv.
+    /// For series elements (lines, transformers) this returns series + shunt.
+    /// For shunt elements (loads, generators, shunts) this returns the injection.
+    fn to_admittance(&self, _base_mva: f64, _base_kv: f64) -> Option<AdmittanceContribution> {
+        None
+    }
+
+    /// Compute multi-terminal admittance contribution for elements with more than 2 buses.
+    /// Default implementation delegates to to_admittance for two-terminal elements.
+    fn to_admittance_multi(&self, base_mva: f64, base_kv: f64) -> Option<MultiAdmittanceContribution> {
+        self.to_admittance(base_mva, base_kv).map(|adm| MultiAdmittanceContribution {
+            bus_ids: self.bus_ids(),
+            contributions: vec![adm],
+        })
     }
 }

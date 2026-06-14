@@ -10,6 +10,7 @@ description = "EnerOS power system constraint executor"
 eneros-core = { path = "../eneros-core" }
 eneros-topology = { path = "../eneros-topology" }
 eneros-powerflow = { path = "../eneros-powerflow" }
+eneros-eventbus = { path = "../eneros-eventbus" }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

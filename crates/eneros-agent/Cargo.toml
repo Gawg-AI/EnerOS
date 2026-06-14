@@ -1,0 +1,29 @@
+[package]
+name = "eneros-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS agent runtime - lifecycle management for power system AI agents"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+eneros-constraint = { path = "../eneros-constraint" }
+eneros-eventbus = { path = "../eneros-eventbus" }
+eneros-network = { path = "../eneros-network" }
+eneros-gateway = { path = "../eneros-gateway" }
+eneros-memory = { path = "../eneros-memory" }
+eneros-tool = { path = "../eneros-tool" }
+eneros-reasoning = { path = "../eneros-reasoning" }
+eneros-timeseries = { path = "../eneros-timeseries" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+eneros-scada = { path = "../eneros-scada" }
+eneros-topology = { path = "../eneros-topology" }
+parking_lot = { workspace = true }

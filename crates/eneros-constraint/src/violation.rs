@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use eneros_core::{ElementId, SeverityLevel};
 
-use super::rules::ResponseStrategy;
+use super::rules::{ConstraintType, ResponseStrategy};
 
 /// Constraint violation record
 #[derive(Debug, Clone)]
@@ -10,6 +10,8 @@ pub struct Violation {
     pub constraint_id: String,
     /// Element ID that violated the constraint
     pub element_id: ElementId,
+    /// Constraint type
+    pub constraint_type: ConstraintType,
     /// Actual measured value
     pub actual_value: f64,
     /// Minimum limit

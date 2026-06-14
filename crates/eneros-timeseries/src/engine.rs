@@ -3,6 +3,8 @@ use parking_lot::RwLock;
 use chrono::{DateTime, Utc};
 use eneros_core::{ElementId, Result};
 
+use crate::aggregation::{WindowedAggregator, WindowSpec, WindowedResult};
+
 /// Time-series data point
 #[derive(Debug, Clone)]
 pub struct DataPoint {
@@ -116,6 +118,23 @@ impl TimeSeriesEngine {
             max_retention: self.max_retention,
         }
     }
+
+    /// Query and aggregate data in one call using sliding window aggregation
+    pub fn query_aggregated(
+        &self,
+        element_id: ElementId,
+        parameter: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        window_secs: u64,
+    ) -> Vec<WindowedResult> {
+        let points = self.query(element_id, parameter, start, end);
+        let spec = WindowSpec {
+            window_size_secs: window_secs,
+            step_size_secs: window_secs,
+        };
+        WindowedAggregator::aggregate(&points, &spec)
+    }
 }
 
 impl Default for TimeSeriesEngine {
@@ -130,4 +149,43 @@ pub struct TimeSeriesStatistics {
     pub series_count: usize,
     pub total_points: usize,
     pub max_retention: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn test_query_aggregated() {
+        let engine = TimeSeriesEngine::new(100_000);
+        let element_id: ElementId = 1;
+        let param = "temperature";
+
+        let base = Utc.timestamp_opt(0, 0).unwrap();
+        for i in 0..20 {
+            let ts = base + chrono::Duration::seconds(i * 5);
+            engine.record(element_id, param, i as f64 * 10.0, ts).unwrap();
+        }
+
+        let start = base;
+        let end = base + chrono::Duration::seconds(100);
+
+        let results = engine.query_aggregated(element_id, param, start, end, 50);
+        assert!(!results.is_empty());
+
+        // First window [0, 50): points at 0, 5, 10, 15, 20, 25, 30, 35, 40, 45
+        assert_eq!(results[0].count, 10);
+    }
+
+    #[test]
+    fn test_query_aggregated_empty() {
+        let engine = TimeSeriesEngine::new(100_000);
+        let element_id: ElementId = 99;
+        let start = Utc.timestamp_opt(0, 0).unwrap();
+        let end = Utc.timestamp_opt(100, 0).unwrap();
+
+        let results = engine.query_aggregated(element_id, "nonexistent", start, end, 10);
+        assert!(results.is_empty());
+    }
 }

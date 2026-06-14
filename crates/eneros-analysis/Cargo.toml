@@ -1,0 +1,15 @@
+[package]
+name = "eneros-analysis"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+eneros-powerflow = { path = "../eneros-powerflow" }
+eneros-topology = { path = "../eneros-topology" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+ndarray = { workspace = true }
+num-complex = { workspace = true }

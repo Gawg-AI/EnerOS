@@ -32,6 +32,9 @@ pub enum EnerOSError {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    #[error("Safety violation: {0}")]
+    Safety(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }

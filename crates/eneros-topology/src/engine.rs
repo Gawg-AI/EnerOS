@@ -102,3 +102,107 @@ pub struct TopologyStatistics {
     pub zone_count: usize,
     pub version: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eneros_core::BusType;
+
+    fn create_bus(id: ElementId, name: &str) -> Bus {
+        Bus {
+            id,
+            name: name.to_string(),
+            bus_type: BusType::PQ,
+            voltage_kv: 110.0,
+            zone_id: 0,
+            bus_type_pf: BusType::PQ,
+            p_gen: 0.0,
+            q_gen: 0.0,
+            p_load: 0.0,
+            q_load: 0.0,
+            v_pu: 1.0,
+        }
+    }
+
+    fn create_branch(id: ElementId, name: &str, from: ElementId, to: ElementId) -> Branch {
+        Branch {
+            id,
+            name: name.to_string(),
+            from_bus: from,
+            to_bus: to,
+            branch_type: eneros_core::BranchType::Line,
+            status: true,
+            r: 0.01,
+            x: 0.1,
+            b: 0.01,
+            tap_ratio: 1.0,
+        }
+    }
+
+    #[test]
+    fn test_engine_initialize() {
+        let engine = TopologyEngine::new();
+        engine.initialize(
+            vec![create_bus(1, "B1"), create_bus(2, "B2")],
+            vec![create_branch(1, "L1", 1, 2)],
+            vec![],
+        ).unwrap();
+
+        let stats = engine.statistics();
+        assert_eq!(stats.bus_count, 2);
+        assert_eq!(stats.branch_count, 1);
+        assert_eq!(stats.version, 1);
+    }
+
+    #[test]
+    fn test_engine_version_increments() {
+        let engine = TopologyEngine::new();
+        assert_eq!(engine.version(), 0);
+
+        engine.initialize(
+            vec![create_bus(1, "B1")],
+            vec![],
+            vec![],
+        ).unwrap();
+        assert_eq!(engine.version(), 1);
+
+        engine.apply_change(TopologyChange::BusAdded { bus_id: 2 }).unwrap();
+        assert_eq!(engine.version(), 2);
+    }
+
+    #[test]
+    fn test_engine_batch_change() {
+        let engine = TopologyEngine::new();
+        engine.initialize(
+            vec![create_bus(1, "B1")],
+            vec![],
+            vec![],
+        ).unwrap();
+
+        let changes = vec![
+            TopologyChange::BusAdded { bus_id: 2 },
+            TopologyChange::BusAdded { bus_id: 3 },
+        ];
+        engine.apply_batch(changes).unwrap();
+
+        assert_eq!(engine.statistics().bus_count, 3);
+        // Batch should increment version only once
+        assert_eq!(engine.version(), 2);
+    }
+
+    #[test]
+    fn test_engine_concurrent_reads() {
+        let engine = TopologyEngine::new();
+        engine.initialize(
+            vec![create_bus(1, "B1"), create_bus(2, "B2")],
+            vec![create_branch(1, "L1", 1, 2)],
+            vec![],
+        ).unwrap();
+
+        // Multiple reads should work concurrently
+        assert!(engine.is_connected(1, 2));
+        assert!(engine.find_path(1, 2).is_some());
+        let zone = engine.get_zone_buses(1);
+        assert_eq!(zone.len(), 2);
+    }
+}

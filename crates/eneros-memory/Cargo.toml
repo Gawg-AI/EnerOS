@@ -1,0 +1,19 @@
+[package]
+name = "eneros-memory"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS agent memory system - episodic, semantic, and procedural memory"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }

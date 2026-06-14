@@ -1,32 +1,24 @@
 use std::collections::HashMap;
-use eneros_core::ElementId;
 use eneros_equipment::{TwoWindingTransformer, TransmissionLine, ConstantPowerLoad};
 use crate::python_bridge::{PythonBridge, BridgeResult};
+use crate::topology_types::NetworkTopologyData;
+use crate::pandapower_types::PandapowerResult;
 
 pub struct CnpowerEquipmentLoader {
     bridge: PythonBridge,
-    next_id: ElementId,
 }
 
 impl CnpowerEquipmentLoader {
     pub fn new() -> Self {
         Self {
             bridge: PythonBridge::new(),
-            next_id: 1,
         }
     }
 
     pub fn with_bridge(bridge: PythonBridge) -> Self {
         Self {
             bridge,
-            next_id: 1,
         }
-    }
-
-    fn next_id(&mut self) -> ElementId {
-        let id = self.next_id;
-        self.next_id += 1;
-        id
     }
 
     pub fn load_all_transformers(&mut self) -> BridgeResult<Vec<TwoWindingTransformer>> {
@@ -88,6 +80,8 @@ impl CnpowerEquipmentLoader {
             impedance_percent: vk_percent,
             resistance_percent: vkr_percent,
             tap_position,
+            hv_bus_id: 0,
+            lv_bus_id: 1,
         })
     }
 
@@ -133,6 +127,8 @@ impl CnpowerEquipmentLoader {
             b_per_km,
             rated_current_ka,
             rated_kv,
+            from_bus_id: 0,
+            to_bus_id: 1,
         })
     }
 
@@ -178,12 +174,43 @@ impl CnpowerEquipmentLoader {
             b_per_km,
             rated_current_ka,
             rated_kv,
+            from_bus_id: 0,
+            to_bus_id: 1,
         })
     }
 
+    /// Load load definitions from cnpower.
+    /// Note: cnpower equipment catalog does not provide load data directly.
+    /// Load data should come from network topology via `build_full_network()`.
+    /// This method returns an empty vector as a placeholder.
     pub fn load_all_loads(&mut self) -> BridgeResult<Vec<ConstantPowerLoad>> {
-        let _raw: Vec<serde_json::Value> = self.bridge.call("list_validation_rules", HashMap::new())?;
+        // cnpower equipment catalog does not contain load definitions.
+        // Load data comes from the network topology (build_full_network).
         Ok(Vec::new())
+    }
+
+    /// Load all switchgear from cnpower equipment catalog
+    pub fn load_all_switchgear(&mut self) -> BridgeResult<Vec<serde_json::Value>> {
+        self.bridge.call("list_switchgear", HashMap::new())
+    }
+
+    /// Load all reactive compensation equipment from cnpower equipment catalog
+    pub fn load_all_reactive_compensation(&mut self) -> BridgeResult<Vec<serde_json::Value>> {
+        self.bridge.call("list_reactive_compensation", HashMap::new())
+    }
+
+    /// Load all new energy equipment (PV, wind, storage, EV chargers) from cnpower equipment catalog
+    pub fn load_all_new_energy(&mut self) -> BridgeResult<serde_json::Value> {
+        let pv: Vec<serde_json::Value> = self.bridge.call("list_photovoltaic", HashMap::new())?;
+        let wind: Vec<serde_json::Value> = self.bridge.call("list_wind_turbines", HashMap::new())?;
+        let storage: Vec<serde_json::Value> = self.bridge.call("list_energy_storage", HashMap::new())?;
+        let ev: Vec<serde_json::Value> = self.bridge.call("list_ev_chargers", HashMap::new())?;
+        Ok(serde_json::json!({
+            "photovoltaic": pv,
+            "wind_turbines": wind,
+            "energy_storage": storage,
+            "ev_chargers": ev,
+        }))
     }
 
     pub fn get_standards(&mut self) -> BridgeResult<serde_json::Value> {
@@ -228,6 +255,20 @@ impl CnpowerEquipmentLoader {
         bridge_params.insert("run_powerflow".to_string(), serde_json::Value::Bool(run_powerflow));
         self.bridge.call("build_network", bridge_params)
     }
+
+    /// Build a full network from cnpower assets and return complete topology
+    pub fn build_full_network(&mut self, assets: serde_json::Value) -> BridgeResult<NetworkTopologyData> {
+        let mut params = HashMap::new();
+        params.insert("assets".to_string(), assets);
+        self.bridge.call("build_full_network", params)
+    }
+
+    /// Run pandapower power flow and return detailed results
+    pub fn run_powerflow(&mut self, assets: serde_json::Value) -> BridgeResult<PandapowerResult> {
+        let mut params = HashMap::new();
+        params.insert("assets".to_string(), assets);
+        self.bridge.call("run_powerflow", params)
+    }
 }
 
 impl Default for CnpowerEquipmentLoader {
@@ -246,4 +287,35 @@ fn extract_f64(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> O
             None
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_loader_creation() {
+        let _loader = CnpowerEquipmentLoader::new();
+        // Verify the loader can be created (doesn't actually call Python)
+    }
+
+    #[test]
+    fn test_extract_f64_from_number() {
+        let mut map = serde_json::Map::new();
+        map.insert("value".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(42.5).unwrap()));
+        assert_eq!(extract_f64(&map, "value"), Some(42.5));
+    }
+
+    #[test]
+    fn test_extract_f64_from_string() {
+        let mut map = serde_json::Map::new();
+        map.insert("value".to_string(), serde_json::Value::String("3.14".to_string()));
+        assert!((extract_f64(&map, "value").unwrap() - 3.14).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_extract_f64_missing() {
+        let map = serde_json::Map::new();
+        assert_eq!(extract_f64(&map, "missing"), None);
+    }
 }

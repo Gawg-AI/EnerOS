@@ -1,0 +1,26 @@
+- [x] main.rs 正确注入所有组件到 AppState
+- [x] SCADA 管线后台运行，数据持续流入 TimeSeriesEngine
+- [x] Agent 编排器注册所有 6 个领域 Agent
+- [x] DataDrivenAgentLoop 连接 SCADA→Agent 闭环
+- [x] API handler 从 AppState 获取真实引擎数据
+- [x] EnerOSConfig::load_from_file() 可加载 TOML 配置
+- [x] 默认 eneros.toml 配置文件存在
+- [x] EnerOSConfig 支持 load_from_str/save_to_file/to_toml_string
+- [x] E2E 测试：API 返回真实潮流结果
+- [x] E2E 测试：SCADA→Agent→API 链路
+- [x] E2E 测试：Agent 响应 ConstraintViolation 事件
+- [x] E2E 测试：拓扑/约束/Agent/SCADA 端点
+- [x] Dashboard 集成到 API 服务器（/ 路由）
+- [x] /api/dashboard/topology-svg 端点返回拓扑 SVG
+- [x] /api/dashboard/flow-heatmap 端点返回潮流热力图
+- [x] agents_handler 返回实际注册的 Agent 列表
+- [x] scada_handler 返回真实采集数据
+- [x] constraints_handler 返回真实违规列表
+- [x] analysis handler 返回真实计算结果（OPF/状态估计/短路）
+- [x] ApiClient 实现真实 HTTP 请求（6 个异步方法）
+- [x] CLI status/agent 命令查询运行中的服务器
+- [x] /health 端点正常工作
+- [x] 时序引擎 SQLite 持久化可选启用
+- [x] 记忆系统文件持久化
+- [x] cargo test --workspace 全部通过（760+ 测试）
+- [x] cargo clippy --workspace 无错误
