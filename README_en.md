@@ -209,6 +209,42 @@ Kernel-level security guard: N-1 safety verification, thermal stability check, v
 
 ---
 
+## Crate Index
+
+| Crate | Path | Responsibility | Key Types / Interfaces |
+|-------|------|----------------|------------------------|
+| **eneros-core** | `crates/eneros-core/` | Unified types, errors, and configuration | `EnerOSError`, `EnerOSConfig`, `ElementId`, `BusType`, `PowerSystemState` |
+| **eneros-topology** | `crates/eneros-topology/` | Power grid topology graph modeling and analysis | `NetworkGraph`, `TopologyEngine`, `TopologySearcher`, `Bus`, `Branch`, `Switch` |
+| **eneros-powerflow** | `crates/eneros-powerflow/` | Newton-Raphson power flow solving | `PowerFlowSolver`, `YBusMatrix`, `JacobianMatrix`, `PowerFlowResult` |
+| **eneros-constraint** | `crates/eneros-constraint/` | Safety constraint verification and enforcement | `ConstraintEngine`, `Constraint`, `ConstraintType`, `Violation`, `ResponseStrategy` |
+| **eneros-equipment** | `crates/eneros-equipment/` | Equipment parameter model library | `EquipmentModel` trait, `EquipmentLibrary`, `TransmissionLine`, `TwoWindingTransformer` |
+| **eneros-timeseries** | `crates/eneros-timeseries/` | Time-series data storage and query | `TimeSeriesEngine`, `TimeSeriesStorage` trait, `TimeSeriesQuery`, `Aggregation` |
+| **eneros-eventbus** | `crates/eneros-eventbus/` | Event-driven communication bus | `EventBus`, `Event`, `EventType`, `EventHandler` trait, `CallbackHandler` |
+| **eneros-gateway** | `crates/eneros-gateway/` | Safety gateway and command control | `SafetyGateway`, `Command`, `SafetyCheck` trait, `CommandPriority` |
+| **eneros-device** | `crates/eneros-device/` | Device communication and protocol adaptation | `ProtocolAdapter` trait, `DeviceManager`, `DeviceDiscovery`, `HealthMonitor` |
+| **eneros-api** | `crates/eneros-api/` | CLI / HTTP API service | `ApiServer`, `ApiClient`, `ApiResponse` |
+| **eneros-bridge** | `crates/eneros-bridge/` | Python bridge for cnpower / pandapower | `PythonBridge`, `CnpowerEquipmentLoader` |
+| **eneros-network** | `crates/eneros-network/` | Unified topology-to-powerflow pipeline | `PowerNetwork`, `NetworkSimulatorAdapter` |
+
+### Dependency Relationships
+
+```
+eneros-core <-- eneros-topology
+             <-- eneros-powerflow
+             <-- eneros-constraint
+             <-- eneros-equipment
+             <-- eneros-timeseries
+             <-- eneros-eventbus
+             <-- eneros-gateway
+             <-- eneros-api
+
+eneros-core + eneros-eventbus <-- eneros-device
+eneros-core + eneros-equipment <-- eneros-bridge
+eneros-core + eneros-topology + eneros-powerflow + eneros-equipment <-- eneros-network
+```
+
+---
+
 ## Application Scenarios
 
 | Scenario | Description | Core Agent |
@@ -246,14 +282,55 @@ Kernel-level security guard: N-1 safety verification, thermal stability check, v
 
 ---
 
+## Quick Start
+
+### Prerequisites
+
+- Rust 1.70+ installed via [rustup](https://rustup.rs/)
+- Cargo
+
+### Build
+
+```bash
+# Clone the repository
+git clone https://github.com/Gawg-AI/EnerOS.git
+cd EnerOS
+
+# Build the project
+cargo build --release
+
+# Run tests
+cargo test
+```
+
+### Run
+
+```bash
+# Start the API server
+cargo run --bin eneros -- serve --host 0.0.0.0 --port 8080
+
+# Run power flow calculation
+cargo run --bin eneros -- power-flow --case ieee14
+```
+
+---
+
 ## Roadmap
 
-- [ ] **Phase 1 — Kernel Foundation** — Topology engine, power flow computation kernel, equipment model store
-- [ ] **Phase 2 — Agent Runtime** — Agent lifecycle management, memory system, tool engine
-- [ ] **Phase 3 — Grid-Aware Context** — Topology-aware injection, constraint verification guard, event bus
-- [ ] **Phase 4 — Multi-Agent Coordination** — Multi-agent collaboration protocol, topology-structured communication
-- [ ] **Phase 5 — Infrastructure Adapters** — SCADA / IEC 61850 / MQTT protocol adapters
-- [ ] **Phase 6 — Domain Applications** — Scenario-specific agent applications for dispatch, O&M, planning, etc.
+- [x] **Phase 1 — Kernel Foundation** — Topology engine, power flow computation kernel, equipment model store
+- [x] **Phase 2 — Agent Runtime** — Agent lifecycle management, memory system, tool engine
+- [x] **Phase 3 — Grid-Aware Context** — Topology-aware injection, constraint verification guard, event bus
+- [x] **Phase 4 — Multi-Agent Coordination** — Multi-agent collaboration protocol and topology-structured communication
+- [x] **Phase 5 — Infrastructure Adapters** — SCADA / IEC 61850 / IEC 104 / MQTT protocol adapters
+- [x] **Phase 6 — Domain Applications** — Dispatch Agent (economic dispatch / AGC), Operation Agent (fault diagnosis / equipment health), Self-Healing Agent (fault isolation / network reconfiguration), and domain collaboration protocol
+- [x] **Phase 7 — Real-Time Closed Loop and System Integration** — SCADA data pipeline, DC-OPF / state estimation / short-circuit analysis, load forecasting / planning / trading Agents, axum API + WebSocket + web dashboard
+- [x] **Phase 8 — Deep Integration and Productionization** — End-to-end component connectivity, TOML configuration loading, E2E integration tests, dashboard integration, real HTTP ApiClient, SQLite persistence
+- [x] **Phase 9 — Real Bug Fixes and Shell Removal** — `await_holding_lock` deadlock fix, SelfHealingAgent interlocking validation, Y-bus calculation bug fix, message broadcast fix, duplicate-code removal, zero clippy warnings
+- [x] **Phase 10 — Accuracy Verification and LLM Reasoning Integration** — IEEE 14-bus benchmark accuracy verification, LlmReasoningEngine (OpenAI / Ollama / vLLM compatible), Agent LLM reasoning enhancements (OperationAgent fault diagnosis + DispatchAgent dispatch review), fallback mechanism
+- [x] **Phase 11 — Real rig Tools and Unified Reasoning Engine** — rig framework integration (`rig-core` 0.38), four real power-system tools (PowerFlow / ConstraintCheck / N1Analysis / VoltageStability), unified RigReasoningEngine, deprecated LlmReasoningEngine marker, feature-flag isolation
+- [x] **Phase 12 — Real-Time Execution Domain** — PriorityCommandQueue, RealtimeExecutor, SafetyGateway priority-queue integration, PriorityEventBus dual-channel event bus, DualScanGroup fast / slow scan groups (100ms / 1s), WatchdogTimer timeout protection
+- [x] **Phase 13 — Constraint-Driven Deterministic Decision Pipeline** — StructuredActionOutput, FeasibilityProjector (What-If analysis + boundary clipping), three-stage ConstrainedDecisionPipeline (projection -> validation -> execution), ActionDispatcher `dispatch_structured()` integration, ConstraintAwareValidator projector support, FeedbackLoop LLM re-reasoning, NetworkSimulatorAdapter
+- [x] **Phase 14 — Deterministic Decision Closed Loop Wiring** — Fixed the Phase 13 "ghost loop" (structured action parsing + ActionMapper priority consumption + Orchestrator routing to `dispatch_structured`), changed FeedbackLoop to `Arc<dyn>` and wired it into the orchestrator (rejection -> re-reasoning), added `AgentAction::ExecuteStructured`, injected FeedbackLoop into the API, added five end-to-end closed-loop integration tests, fixed flaky eneros-bridge tests
 
 ---
 
@@ -266,3 +343,11 @@ EnerOS is in its early design stage. Contributors interested in the intersection
 ## License
 
 [MIT](LICENSE)
+
+---
+
+## Acknowledgements
+
+- [pandapower](https://github.com/e2nIEE/pandapower) - power system analysis
+- [PowerGridModel](https://github.com/PowerGridModel/power-grid-model) - high-performance power flow calculation
+- [libIEC61850](https://github.com/mz-automation/libiec61850) - IEC 61850 protocol implementation
