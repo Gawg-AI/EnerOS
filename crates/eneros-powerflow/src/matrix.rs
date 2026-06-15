@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use eneros_core::ElementId;
+use std::collections::HashMap;
 
 /// Y-Bus matrix for power flow calculation
 #[derive(Clone)]
@@ -7,6 +7,8 @@ pub struct YBusMatrix {
     size: usize,
     data: Vec<Vec<(f64, f64)>>, // (G, B) pairs
     bus_map: HashMap<ElementId, usize>,
+    base_mva: f64,
+    branch_ratings_mva: HashMap<(usize, usize), f64>,
 }
 
 impl YBusMatrix {
@@ -16,12 +18,38 @@ impl YBusMatrix {
             size,
             data: vec![vec![(0.0, 0.0); size]; size],
             bus_map: HashMap::new(),
+            base_mva: 1.0,
+            branch_ratings_mva: HashMap::new(),
         }
     }
 
     /// Set the bus index mapping
     pub fn set_bus_map(&mut self, bus_map: HashMap<ElementId, usize>) {
         self.bus_map = bus_map;
+    }
+
+    pub fn set_base_mva(&mut self, base_mva: f64) {
+        if base_mva.is_finite() && base_mva > 0.0 {
+            self.base_mva = base_mva;
+        }
+    }
+
+    pub fn base_mva(&self) -> f64 {
+        self.base_mva
+    }
+
+    pub fn set_branch_rating_mva(&mut self, from_idx: usize, to_idx: usize, rating_mva: f64) {
+        if from_idx < self.size && to_idx < self.size && rating_mva.is_finite() && rating_mva > 0.0
+        {
+            let key = ordered_pair(from_idx, to_idx);
+            self.branch_ratings_mva.insert(key, rating_mva);
+        }
+    }
+
+    pub fn branch_rating_mva(&self, from_idx: usize, to_idx: usize) -> Option<f64> {
+        self.branch_ratings_mva
+            .get(&ordered_pair(from_idx, to_idx))
+            .copied()
     }
 
     /// Get matrix element (G, B)
@@ -97,5 +125,13 @@ impl YBusMatrix {
     /// Add shunt admittance to a bus diagonal element
     pub fn add_shunt(&mut self, bus_idx: usize, g: f64, b: f64) {
         self.add(bus_idx, bus_idx, g, b);
+    }
+}
+
+fn ordered_pair(a: usize, b: usize) -> (usize, usize) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
     }
 }

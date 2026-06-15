@@ -305,7 +305,7 @@ cargo run --bin eneros -- power-flow --case ieee14
 - [x] **Phase 2 — Agent 运行时** — Agent 生命周期管理、记忆系统、工具引擎
 - [x] **Phase 3 — 电网感知上下文** — 拓扑感知注入、约束校验守卫、事件总线
 - [x] **Phase 4 — 多智能体协作** — 多智能体协作协议、拓扑结构化通信
-- [x] **Phase 5 — 基础设施适配器** — SCADA / IEC 61850 / IEC 104 / MQTT 协议适配器
+- [ ] **Phase 5 — 基础设施适配器** — 已有适配器骨架；IEC 61850 / IEC 104 / MQTT 生产级实现仍未完成（见 DEVGUIDE 4.2）
 - [x] **Phase 6 — 领域应用** — 调度Agent(经济调度/AGC)、运维Agent(故障诊断/设备健康)、自愈Agent(故障隔离/网络重构)、领域协作协议
 - [x] **Phase 7 — 实时闭环与系统集成** — SCADA数据管线、DC-OPF/状态估计/短路分析、负荷预测/规划/交易Agent、axum API+WebSocket+Web仪表盘
 - [x] **Phase 8 — 深度集成与生产化** — 组件端到端连通、TOML配置加载、E2E集成测试、Dashboard集成、ApiClient真实HTTP、SQLite持久化

@@ -6,10 +6,12 @@
 //! - FeedbackLoop convergence (P1)
 //! - FeasibilityProjector edge cases (P2)
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
-use eneros_constraint::projector::{FeasibilityProjector, NetworkSimulator, ProjectionResult, WhatIfResult};
+use eneros_constraint::projector::{
+    FeasibilityProjector, NetworkSimulator, ProjectionResult, WhatIfResult,
+};
 use eneros_constraint::ConstraintEngine;
 use eneros_core::{
     ActionVerdict, AuthorityLevel, Jurisdiction, StructuredAction, SystemOperatingState,
@@ -196,9 +198,7 @@ mod dispatch_structured_tests {
     use super::*;
     use eneros_agent::dispatcher::{ActionDispatcher, DispatchResult};
 
-    fn make_dispatcher_with_pipeline(
-        pipeline: ConstrainedDecisionPipeline,
-    ) -> ActionDispatcher {
+    fn make_dispatcher_with_pipeline(pipeline: ConstrainedDecisionPipeline) -> ActionDispatcher {
         let event_bus = Arc::new(EventBus::new(64));
         let gateway = Arc::new(SafetyGateway::new(100));
         ActionDispatcher::with_pipeline(event_bus, gateway, Arc::new(pipeline))
@@ -404,15 +404,34 @@ mod pipeline_infeasible_projected_tests {
         // - projection stage (always present)
         // - validation stage (always present)
         // - execution stage (present when approved)
-        assert!(result.audit.len() >= 2, "Expected at least 2 audit entries, got {}", result.audit.len());
+        assert!(
+            result.audit.len() >= 2,
+            "Expected at least 2 audit entries, got {}",
+            result.audit.len()
+        );
 
         let stages: Vec<&str> = result.audit.iter().map(|e| e.stage.as_str()).collect();
-        assert!(stages.contains(&"projection"), "Missing projection stage: {:?}", stages);
-        assert!(stages.contains(&"validation"), "Missing validation stage: {:?}", stages);
+        assert!(
+            stages.contains(&"projection"),
+            "Missing projection stage: {:?}",
+            stages
+        );
+        assert!(
+            stages.contains(&"validation"),
+            "Missing validation stage: {:?}",
+            stages
+        );
 
         // For approved actions, execution stage should be present
-        if matches!(result.verdict, ActionVerdict::Approved | ActionVerdict::EmergencyBypassed { .. }) {
-            assert!(stages.contains(&"execution"), "Missing execution stage for approved action: {:?}", stages);
+        if matches!(
+            result.verdict,
+            ActionVerdict::Approved | ActionVerdict::EmergencyBypassed { .. }
+        ) {
+            assert!(
+                stages.contains(&"execution"),
+                "Missing execution stage for approved action: {:?}",
+                stages
+            );
         }
 
         // All durations should be non-zero (or at least valid)
@@ -438,7 +457,10 @@ mod pipeline_infeasible_projected_tests {
         // Emergency authority in Emergency state → can bypass constraints
         // Even though the simulator returns violations, Emergency authority can bypass
         match &result.verdict {
-            ActionVerdict::EmergencyBypassed { bypassed_checks, reason } => {
+            ActionVerdict::EmergencyBypassed {
+                bypassed_checks,
+                reason,
+            } => {
                 assert!(!bypassed_checks.is_empty());
                 assert!(!reason.is_empty());
             }
@@ -560,7 +582,11 @@ mod feedback_loop_tests {
         async fn reason(&self, _input: ReasoningInput) -> eneros_core::Result<ReasoningOutput> {
             let count = self.call_count.fetch_add(1, Ordering::SeqCst);
             let mut output = ReasoningOutput::new(
-                if count == 0 { "No actions yet" } else { "Found actions" },
+                if count == 0 {
+                    "No actions yet"
+                } else {
+                    "Found actions"
+                },
                 0.8,
             )
             .with_step("Mock reasoning step");
@@ -587,8 +613,7 @@ mod feedback_loop_tests {
         }
 
         async fn reason(&self, _input: ReasoningInput) -> eneros_core::Result<ReasoningOutput> {
-            Ok(ReasoningOutput::new("No valid actions", 0.3)
-                .with_step("No actions available"))
+            Ok(ReasoningOutput::new("No valid actions", 0.3).with_step("No actions available"))
         }
     }
 
@@ -622,7 +647,10 @@ mod feedback_loop_tests {
             .unwrap();
 
         assert!(!result.accepted, "Feedback should not converge");
-        assert_eq!(result.retries, max_iterations, "Should have exhausted max iterations");
+        assert_eq!(
+            result.retries, max_iterations,
+            "Should have exhausted max iterations"
+        );
     }
 }
 
@@ -648,10 +676,9 @@ mod projector_edge_case_tests {
             ..
         } = &result
         {
-            // Should suggest alternatives (adjust_reactive for voltage violations)
             assert!(
-                !suggested_alternatives.is_empty(),
-                "Expected suggested alternatives for voltage violations"
+                suggested_alternatives.is_empty(),
+                "Infeasible alternatives must be simulated and filtered out"
             );
         }
     }
@@ -670,10 +697,9 @@ mod projector_edge_case_tests {
             ..
         } = &result
         {
-            // Should suggest alternatives (NotifyAgent for thermal violations)
             assert!(
-                !suggested_alternatives.is_empty(),
-                "Expected suggested alternatives for thermal violations"
+                suggested_alternatives.is_empty(),
+                "Infeasible alternatives must be simulated and filtered out"
             );
         }
     }
@@ -741,7 +767,11 @@ mod projector_edge_case_tests {
         let result = projector.project(&action);
         // Should be projected (clipped to 200.0)
         match &result {
-            ProjectionResult::Projected { projected, modifications, .. } => {
+            ProjectionResult::Projected {
+                projected,
+                modifications,
+                ..
+            } => {
                 if let StructuredAction::StartGenerator { target_mw, .. } = projected {
                     assert!(
                         *target_mw <= 200.0,

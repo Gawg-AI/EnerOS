@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use parking_lot::RwLock;
 use chrono::{DateTime, Utc};
 use eneros_core::{ElementId, Result};
+use parking_lot::RwLock;
+use std::collections::{HashMap, VecDeque};
 
-use crate::aggregation::{WindowedAggregator, WindowSpec, WindowedResult};
+use crate::aggregation::{WindowSpec, WindowedAggregator, WindowedResult};
 
 /// Time-series data point
 #[derive(Debug, Clone)]
@@ -31,7 +31,7 @@ pub struct TimeSeries {
 
 /// Time-series engine for storing and querying historical data
 pub struct TimeSeriesEngine {
-    storage: RwLock<HashMap<(ElementId, String), Vec<DataPoint>>>,
+    storage: RwLock<HashMap<(ElementId, String), VecDeque<DataPoint>>>,
     max_retention: usize,
 }
 
@@ -56,16 +56,15 @@ impl TimeSeriesEngine {
         let key = (element_id, parameter.to_string());
 
         let data_points = storage.entry(key).or_default();
-        data_points.push(DataPoint {
+        data_points.push_back(DataPoint {
             timestamp,
             value,
             quality: DataQuality::Good,
         });
 
         // Trim old data if超过限制
-        if data_points.len() > self.max_retention {
-            let excess = data_points.len() - self.max_retention;
-            data_points.drain(0..excess);
+        while data_points.len() > self.max_retention {
+            data_points.pop_front();
         }
 
         Ok(())
@@ -95,15 +94,11 @@ impl TimeSeriesEngine {
     }
 
     /// Get latest value
-    pub fn latest(
-        &self,
-        element_id: ElementId,
-        parameter: &str,
-    ) -> Option<DataPoint> {
+    pub fn latest(&self, element_id: ElementId, parameter: &str) -> Option<DataPoint> {
         let storage = self.storage.read();
         let key = (element_id, parameter.to_string());
 
-        storage.get(&key).and_then(|points| points.last().cloned())
+        storage.get(&key).and_then(|points| points.back().cloned())
     }
 
     /// Get storage statistics
@@ -165,7 +160,9 @@ mod tests {
         let base = Utc.timestamp_opt(0, 0).unwrap();
         for i in 0..20 {
             let ts = base + chrono::Duration::seconds(i * 5);
-            engine.record(element_id, param, i as f64 * 10.0, ts).unwrap();
+            engine
+                .record(element_id, param, i as f64 * 10.0, ts)
+                .unwrap();
         }
 
         let start = base;
@@ -187,5 +184,34 @@ mod tests {
 
         let results = engine.query_aggregated(element_id, "nonexistent", start, end, 10);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_record_retention_keeps_latest_points_in_order() {
+        let engine = TimeSeriesEngine::new(3);
+        let element_id: ElementId = 1;
+        let base = Utc.timestamp_opt(0, 0).unwrap();
+
+        for i in 0..5 {
+            engine
+                .record(
+                    element_id,
+                    "voltage",
+                    i as f64,
+                    base + chrono::Duration::seconds(i),
+                )
+                .unwrap();
+        }
+
+        let results = engine.query(
+            element_id,
+            "voltage",
+            base,
+            base + chrono::Duration::seconds(10),
+        );
+        let values: Vec<f64> = results.iter().map(|point| point.value).collect();
+
+        assert_eq!(values, vec![2.0, 3.0, 4.0]);
+        assert_eq!(engine.latest(element_id, "voltage").unwrap().value, 4.0);
     }
 }

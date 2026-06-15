@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use eneros_core::StructuredAction;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Result of a What-If analysis
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,7 +104,7 @@ impl FeasibilityProjector {
             if clipped != *action {
                 // Action was clipped — verify the clipped version via What-If
                 let result = self.simulator.simulate_action(&clipped);
-                if result.all_constraints_satisfied {
+                if Self::simulation_satisfied(&result) {
                     let modifications = self.describe_modifications(action, &clipped);
                     return ProjectionResult::Projected {
                         original: action.clone(),
@@ -119,7 +119,7 @@ impl FeasibilityProjector {
         // Step 2: What-If analysis on the original (or already-verified) action
         let what_if = self.simulator.simulate_action(action);
 
-        if what_if.all_constraints_satisfied {
+        if Self::simulation_satisfied(&what_if) {
             return ProjectionResult::Feasible(action.clone());
         }
 
@@ -187,38 +187,51 @@ impl FeasibilityProjector {
             StructuredAction::StartGenerator { gen_id, target_mw } => {
                 // Try reducing target by 10% increments (up to 5 attempts)
                 let limits = self.simulator.generator_limits();
-                let (_, p_min, _) = limits.iter().find(|(id, _, _)| id == gen_id)?;
-                let mut trial_mw = *target_mw;
-                for _ in 0..5 {
-                    trial_mw *= 0.9;
-                    if trial_mw < *p_min {
-                        trial_mw = *p_min;
-                    }
-                    let trial_action = StructuredAction::StartGenerator {
-                        gen_id: *gen_id,
-                        target_mw: trial_mw,
-                    };
-                    let result = self.simulator.simulate_action(&trial_action);
-                    if result.all_constraints_satisfied {
-                        return Some(trial_action);
+                let (_, p_min, p_max) = limits.iter().find(|(id, _, _)| id == gen_id)?;
+                let target = target_mw.clamp(*p_min, *p_max);
+                for step in 1..=5 {
+                    let ratio = step as f64 / 5.0;
+                    let candidates = [
+                        target - (target - *p_min) * ratio,
+                        target + (*p_max - target) * ratio,
+                    ];
+                    for candidate in candidates {
+                        if (candidate - target).abs() <= f64::EPSILON {
+                            continue;
+                        }
+                        let trial_action = StructuredAction::StartGenerator {
+                            gen_id: *gen_id,
+                            target_mw: candidate,
+                        };
+                        if self.action_is_feasible(&trial_action) {
+                            return Some(trial_action);
+                        }
                     }
                 }
                 None
             }
             StructuredAction::ShedLoad { zone_id, amount_mw } => {
-                // Try reducing shed amount by 20% increments
-                let mut trial_amount = *amount_mw;
-                for _ in 0..5 {
-                    trial_amount *= 0.8;
-                    if trial_amount < 1.0 {
-                        return None; // Too small to be useful
+                let mut lower = *amount_mw;
+                let mut upper = (*amount_mw).max(1.0);
+                for _ in 0..8 {
+                    lower *= 0.8;
+                    upper *= 1.25;
+
+                    if lower >= 1.0 {
+                        let trial_action = StructuredAction::ShedLoad {
+                            zone_id: *zone_id,
+                            amount_mw: lower,
+                        };
+                        if self.action_is_feasible(&trial_action) {
+                            return Some(trial_action);
+                        }
                     }
+
                     let trial_action = StructuredAction::ShedLoad {
                         zone_id: *zone_id,
-                        amount_mw: trial_amount,
+                        amount_mw: upper,
                     };
-                    let result = self.simulator.simulate_action(&trial_action);
-                    if result.all_constraints_satisfied {
+                    if self.action_is_feasible(&trial_action) {
                         return Some(trial_action);
                     }
                 }
@@ -226,6 +239,15 @@ impl FeasibilityProjector {
             }
             _ => None, // Switching operations can't be "reduced" — either feasible or not
         }
+    }
+
+    fn action_is_feasible(&self, action: &StructuredAction) -> bool {
+        let result = self.simulator.simulate_action(action);
+        Self::simulation_satisfied(&result)
+    }
+
+    fn simulation_satisfied(result: &WhatIfResult) -> bool {
+        result.applicable && result.converged && result.all_constraints_satisfied
     }
 
     /// Describe the modifications made during projection
@@ -237,8 +259,12 @@ impl FeasibilityProjector {
         let mut mods = Vec::new();
         match (original, projected) {
             (
-                StructuredAction::StartGenerator { target_mw: orig_mw, .. },
-                StructuredAction::StartGenerator { target_mw: proj_mw, .. },
+                StructuredAction::StartGenerator {
+                    target_mw: orig_mw, ..
+                },
+                StructuredAction::StartGenerator {
+                    target_mw: proj_mw, ..
+                },
             ) if (orig_mw - proj_mw).abs() > f64::EPSILON => {
                 let limits = self.simulator.generator_limits();
                 let reason = limits
@@ -259,8 +285,12 @@ impl FeasibilityProjector {
                 });
             }
             (
-                StructuredAction::ShedLoad { amount_mw: orig_mw, .. },
-                StructuredAction::ShedLoad { amount_mw: proj_mw, .. },
+                StructuredAction::ShedLoad {
+                    amount_mw: orig_mw, ..
+                },
+                StructuredAction::ShedLoad {
+                    amount_mw: proj_mw, ..
+                },
             ) if (orig_mw - proj_mw).abs() > f64::EPSILON => {
                 mods.push(ActionModification {
                     parameter: "amount_mw".to_string(),
@@ -310,15 +340,18 @@ impl FeasibilityProjector {
             StructuredAction::StartGenerator { gen_id, target_mw } => {
                 // If voltage violations, suggest reactive power support instead
                 if !what_if.voltage_violations.is_empty() {
-                    alternatives.push(StructuredAction::ExecuteDevice {
-                        device_id: *gen_id,
-                        operation: "adjust_reactive".to_string(),
-                        value: 10.0, // Suggest 10 MVar increase
-                    });
+                    self.push_feasible_alternative(
+                        &mut alternatives,
+                        StructuredAction::ExecuteDevice {
+                            device_id: *gen_id,
+                            operation: "adjust_reactive".to_string(),
+                            value: 10.0, // Suggest 10 MVar increase
+                        },
+                    );
                 }
                 // If thermal violations, suggest load redistribution
                 if !what_if.thermal_violations.is_empty() {
-                    alternatives.push(StructuredAction::NotifyAgent {
+                    self.push_feasible_alternative(&mut alternatives, StructuredAction::NotifyAgent {
                         agent_id: "dispatch".to_string(),
                         message: format!(
                             "Generator {} at {:.0}MW causes thermal violations, need redistribution",
@@ -329,17 +362,20 @@ impl FeasibilityProjector {
             }
             StructuredAction::ShedLoad { zone_id, amount_mw } => {
                 // Suggest smaller amount
-                alternatives.push(StructuredAction::ShedLoad {
-                    zone_id: *zone_id,
-                    amount_mw: amount_mw * 0.5,
-                });
+                self.push_feasible_alternative(
+                    &mut alternatives,
+                    StructuredAction::ShedLoad {
+                        zone_id: *zone_id,
+                        amount_mw: amount_mw * 0.5,
+                    },
+                );
             }
             StructuredAction::IsolateFault {
                 upstream_switch,
                 downstream_switch,
             } => {
                 // Suggest notifying dispatch for manual intervention
-                alternatives.push(StructuredAction::NotifyAgent {
+                self.push_feasible_alternative(&mut alternatives, StructuredAction::NotifyAgent {
                     agent_id: "dispatch".to_string(),
                     message: format!(
                         "Fault isolation via switches {}/{} blocked by interlocking, requires manual intervention",
@@ -351,6 +387,16 @@ impl FeasibilityProjector {
         }
 
         alternatives
+    }
+
+    fn push_feasible_alternative(
+        &self,
+        alternatives: &mut Vec<StructuredAction>,
+        candidate: StructuredAction,
+    ) {
+        if self.action_is_feasible(&candidate) {
+            alternatives.push(candidate);
+        }
     }
 }
 
@@ -511,6 +557,110 @@ mod tests {
         let result = projector.project(&action);
         // Should be projected to 0.0
         assert!(result.is_projected() || result.is_feasible());
+    }
+
+    struct DirectionalSimulator;
+
+    impl NetworkSimulator for DirectionalSimulator {
+        fn simulate_action(&self, action: &StructuredAction) -> WhatIfResult {
+            match action {
+                StructuredAction::StartGenerator { target_mw, .. } => {
+                    let ok = *target_mw >= 120.0;
+                    WhatIfResult {
+                        applicable: true,
+                        converged: true,
+                        voltage_violations: if ok { vec![] } else { vec![(2, 0.90, 0.95)] },
+                        thermal_violations: vec![],
+                        all_constraints_satisfied: ok,
+                        summary: if ok { "OK" } else { "Low voltage" }.to_string(),
+                    }
+                }
+                StructuredAction::ShedLoad { amount_mw, .. } => {
+                    let ok = *amount_mw >= 100.0;
+                    WhatIfResult {
+                        applicable: true,
+                        converged: true,
+                        voltage_violations: if ok { vec![] } else { vec![(2, 0.90, 0.95)] },
+                        thermal_violations: vec![],
+                        all_constraints_satisfied: ok,
+                        summary: if ok { "OK" } else { "Insufficient shed" }.to_string(),
+                    }
+                }
+                _ => WhatIfResult {
+                    applicable: true,
+                    converged: true,
+                    voltage_violations: vec![],
+                    thermal_violations: vec![],
+                    all_constraints_satisfied: false,
+                    summary: "No feasible alternative".to_string(),
+                },
+            }
+        }
+
+        fn generator_limits(&self) -> Vec<(u64, f64, f64)> {
+            vec![(1, 0.0, 200.0)]
+        }
+
+        fn current_voltages(&self) -> Vec<(u64, f64)> {
+            vec![(2, 0.90)]
+        }
+    }
+
+    #[test]
+    fn test_generator_projection_searches_upward_when_output_is_insufficient() {
+        let projector = FeasibilityProjector::new(Arc::new(DirectionalSimulator));
+        let action = StructuredAction::StartGenerator {
+            gen_id: 1,
+            target_mw: 80.0,
+        };
+
+        match projector.project(&action) {
+            ProjectionResult::Projected { projected, .. } => match projected {
+                StructuredAction::StartGenerator { target_mw, .. } => {
+                    assert!(target_mw >= 120.0);
+                }
+                _ => panic!("Expected generator projection"),
+            },
+            _ => panic!("Expected upward generator projection"),
+        }
+    }
+
+    #[test]
+    fn test_shed_load_projection_searches_upward_when_shed_is_insufficient() {
+        let projector = FeasibilityProjector::new(Arc::new(DirectionalSimulator));
+        let action = StructuredAction::ShedLoad {
+            zone_id: 1,
+            amount_mw: 50.0,
+        };
+
+        match projector.project(&action) {
+            ProjectionResult::Projected { projected, .. } => match projected {
+                StructuredAction::ShedLoad { amount_mw, .. } => {
+                    assert!(amount_mw >= 100.0);
+                }
+                _ => panic!("Expected shed-load projection"),
+            },
+            _ => panic!("Expected upward shed-load projection"),
+        }
+    }
+
+    #[test]
+    fn test_suggested_alternatives_are_simulated_before_returning() {
+        let projector = FeasibilityProjector::new(Arc::new(DirectionalSimulator));
+        let action = StructuredAction::IsolateFault {
+            upstream_switch: 1,
+            downstream_switch: 2,
+        };
+
+        match projector.project(&action) {
+            ProjectionResult::Infeasible {
+                suggested_alternatives,
+                ..
+            } => {
+                assert!(suggested_alternatives.is_empty());
+            }
+            _ => panic!("Expected infeasible switching action"),
+        }
     }
 
     #[test]

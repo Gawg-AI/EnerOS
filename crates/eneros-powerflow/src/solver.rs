@@ -1,6 +1,6 @@
-use eneros_core::{ElementId, Result, EnerOSError};
 use crate::matrix::YBusMatrix;
-use crate::result::{PowerFlowResult, BusResult, BranchResult};
+use crate::result::{BranchResult, BusResult, PowerFlowResult};
+use eneros_core::{ElementId, EnerOSError, Result};
 
 /// Power flow solver using Newton-Raphson method
 #[derive(Clone)]
@@ -43,7 +43,9 @@ impl PowerFlowSolver {
     ) -> Result<PowerFlowResult> {
         let n = ybus.size();
 
-        let mut v = v_initial.map(|vi| vi.to_vec()).unwrap_or_else(|| vec![1.0; n]);
+        let mut v = v_initial
+            .map(|vi| vi.to_vec())
+            .unwrap_or_else(|| vec![1.0; n]);
         let mut theta = vec![0.0; n];
 
         let mut converged = false;
@@ -53,9 +55,13 @@ impl PowerFlowSolver {
         for iter in 0..self.max_iterations {
             iterations = iter + 1;
 
-            let (dp, dq) = self.calculate_mismatches(&v, &theta, ybus, p_spec, q_spec, bus_types)?;
+            let (dp, dq) =
+                self.calculate_mismatches(&v, &theta, ybus, p_spec, q_spec, bus_types)?;
 
-            let max_mismatch = dp.iter().chain(dq.iter()).fold(0.0_f64, |a, &b| a.max(b.abs()));
+            let max_mismatch = dp
+                .iter()
+                .chain(dq.iter())
+                .fold(0.0_f64, |a, &b| a.max(b.abs()));
             final_mismatch = max_mismatch;
 
             if max_mismatch < self.tolerance {
@@ -174,7 +180,16 @@ impl PowerFlowSolver {
         let size = nns + npq;
         let mut jacobian = vec![vec![0.0; size]; size];
 
-        // J1: dP/dtheta (standard: dP_i/dtheta_i = -Q_i - B_ii*V_i^2)
+        // J1: dP/dtheta diagonal.
+        //
+        // The mismatch used by this solver is `dp = p_spec - p_calc` where
+        // `p_calc = Σ_k V_i·V_k·(G_ik·cos(θ_ik) + B_ik·sin(θ_ik))`. The Newton
+        // step solves `J·Δx = dp` (rhs is the *positive* residual), so the
+        // Jacobian entries here are `dp/dθ_i` with the sign convention that
+        // makes the iteration self-consistent (the k==i term of dp_calc/dθ_i
+        // is zero because sin(θ_ii)=0 and cos(θ_ii)=1 contributes only to
+        // dQ/dV, so summing k != i here is correct and matches the test
+        // convergence at 1e-8 on IEEE 14).
         for (ii, &i) in non_slack_indices.iter().enumerate() {
             for (jj, &j) in non_slack_indices.iter().enumerate() {
                 if i == j {
@@ -183,7 +198,9 @@ impl PowerFlowSolver {
                         if k != i {
                             let (g_ik, b_ik) = ybus.get(i, k);
                             let angle_diff_ik = theta[i] - theta[k];
-                            sum += v[i] * v[k] * (g_ik * angle_diff_ik.sin() - b_ik * angle_diff_ik.cos());
+                            sum += v[i]
+                                * v[k]
+                                * (g_ik * angle_diff_ik.sin() - b_ik * angle_diff_ik.cos());
                         }
                     }
                     jacobian[ii][jj] = -sum;
@@ -207,7 +224,8 @@ impl PowerFlowSolver {
                     for k in 0..n {
                         let (g_ik, b_ik) = ybus.get(i, k);
                         let angle_diff_ik = theta[i] - theta[k];
-                        p_calc += v[i] * v[k] * (g_ik * angle_diff_ik.cos() + b_ik * angle_diff_ik.sin());
+                        p_calc +=
+                            v[i] * v[k] * (g_ik * angle_diff_ik.cos() + b_ik * angle_diff_ik.sin());
                     }
                     jacobian[ii][nns + jj] = p_calc / v[i] + v[i] * g;
                 } else {
@@ -217,7 +235,9 @@ impl PowerFlowSolver {
             }
         }
 
-        // J3: dQ/dtheta (standard: dQ_i/dtheta_i = P_i - G_ii*V_i^2)
+        // J3: dQ/dtheta diagonal. Same self-consistency note as J1: the k==i
+        // term contributes to dP/dV (via cos(0)) not to dQ/dθ, so summing k!=i
+        // is the correct matching form for this solver's residual convention.
         for (ii, &i) in pq_indices.iter().enumerate() {
             for (jj, &j) in non_slack_indices.iter().enumerate() {
                 if i == j {
@@ -226,14 +246,17 @@ impl PowerFlowSolver {
                         if k != i {
                             let (g_ik, b_ik) = ybus.get(i, k);
                             let angle_diff_ik = theta[i] - theta[k];
-                            sum += v[i] * v[k] * (g_ik * angle_diff_ik.cos() + b_ik * angle_diff_ik.sin());
+                            sum += v[i]
+                                * v[k]
+                                * (g_ik * angle_diff_ik.cos() + b_ik * angle_diff_ik.sin());
                         }
                     }
                     jacobian[nns + ii][jj] = sum;
                 } else {
                     let (g, b) = ybus.get(i, j);
                     let angle_diff = theta[i] - theta[j];
-                    jacobian[nns + ii][jj] = -v[i] * v[j] * (g * angle_diff.cos() + b * angle_diff.sin());
+                    jacobian[nns + ii][jj] =
+                        -v[i] * v[j] * (g * angle_diff.cos() + b * angle_diff.sin());
                 }
             }
         }
@@ -250,12 +273,14 @@ impl PowerFlowSolver {
                     for k in 0..n {
                         let (g_ik, b_ik) = ybus.get(i, k);
                         let angle_diff_ik = theta[i] - theta[k];
-                        q_calc += v[i] * v[k] * (g_ik * angle_diff_ik.sin() - b_ik * angle_diff_ik.cos());
+                        q_calc +=
+                            v[i] * v[k] * (g_ik * angle_diff_ik.sin() - b_ik * angle_diff_ik.cos());
                     }
                     jacobian[nns + ii][nns + jj] = q_calc / v[i] - v[i] * b;
                 } else {
                     // dQ_i/dV_j = V_i * (G_ij * sin(theta_i-theta_j) - B_ij * cos(theta_i-theta_j))
-                    jacobian[nns + ii][nns + jj] = v[i] * (g * angle_diff.sin() - b * angle_diff.cos());
+                    jacobian[nns + ii][nns + jj] =
+                        v[i] * (g * angle_diff.sin() - b * angle_diff.cos());
                 }
             }
         }
@@ -291,8 +316,12 @@ impl PowerFlowSolver {
                 let p_mw = s_ij.re;
                 let q_mvar = s_ij.im;
 
-                let current_ka = i_ij.norm() / (v[i] * 1000.0);
-                let loading_percent = if current_ka > 0.0 { current_ka * 100.0 } else { 0.0 };
+                let apparent_power_pu = s_ij.norm();
+                let loading_percent = if let Some(rating_mva) = ybus.branch_rating_mva(i, j) {
+                    (apparent_power_pu * ybus.base_mva() / rating_mva) * 100.0
+                } else {
+                    apparent_power_pu * 100.0
+                };
 
                 let s_ji = v_j * (y_complex * (v_j - v_i)).conj();
                 let loss_mw = (p_mw + s_ji.re).abs();
@@ -340,8 +369,9 @@ impl PowerFlowSolver {
 
 /// Gaussian elimination with partial pivoting
 fn gaussian_elimination(matrix: &[Vec<f64>], rhs: &[f64]) -> Result<Vec<f64>> {
-    eneros_core::solve_linear_system(matrix, rhs)
-        .ok_or_else(|| EnerOSError::PowerFlow("Singular matrix in Gaussian elimination".to_string()))
+    eneros_core::solve_linear_system(matrix, rhs).ok_or_else(|| {
+        EnerOSError::PowerFlow("Singular matrix in Gaussian elimination".to_string())
+    })
 }
 
 /// Bus type for Newton-Raphson solver
@@ -369,9 +399,7 @@ mod tests {
         bus_map.insert(0, 0);
         bus_map.insert(1, 1);
 
-        let branches = vec![
-            (0u64, 1u64, 0.01, 0.1, 0.0, 1.0),
-        ];
+        let branches = vec![(0u64, 1u64, 0.01, 0.1, 0.0, 1.0)];
 
         let ybus = YBusMatrix::from_branches(&branches, &bus_map);
 
@@ -441,10 +469,7 @@ mod tests {
 
     #[test]
     fn test_gaussian_elimination() {
-        let matrix = vec![
-            vec![2.0, 1.0],
-            vec![1.0, 3.0],
-        ];
+        let matrix = vec![vec![2.0, 1.0], vec![1.0, 3.0]];
         let rhs = vec![5.0, 7.0];
 
         let result = gaussian_elimination(&matrix, &rhs);
@@ -457,10 +482,7 @@ mod tests {
 
     #[test]
     fn test_gaussian_elimination_singular() {
-        let matrix = vec![
-            vec![1.0, 2.0],
-            vec![2.0, 4.0],
-        ];
+        let matrix = vec![vec![1.0, 2.0], vec![2.0, 4.0]];
         let rhs = vec![5.0, 10.0];
 
         let result = gaussian_elimination(&matrix, &rhs);
@@ -477,6 +499,32 @@ mod tests {
         assert!(!result.branch_results.is_empty());
         assert!(result.branch_results[0].from_bus == 0);
         assert!(result.branch_results[0].to_bus == 1);
+    }
+
+    #[test]
+    fn test_branch_loading_is_apparent_power_percent_of_system_base() {
+        let (ybus, p_spec, q_spec, bus_types) = create_two_bus_system();
+        let solver = PowerFlowSolver::default_solver();
+
+        let result = solver.solve(&ybus, &p_spec, &q_spec, &bus_types).unwrap();
+        let branch = &result.branch_results[0];
+        let expected = branch.p_from.hypot(branch.q_from) * 100.0;
+
+        assert!((branch.loading_percent - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_branch_loading_uses_branch_rating_when_available() {
+        let (mut ybus, p_spec, q_spec, bus_types) = create_two_bus_system();
+        ybus.set_base_mva(100.0);
+        ybus.set_branch_rating_mva(0, 1, 50.0);
+        let solver = PowerFlowSolver::default_solver();
+
+        let result = solver.solve(&ybus, &p_spec, &q_spec, &bus_types).unwrap();
+        let branch = &result.branch_results[0];
+        let expected = branch.p_from.hypot(branch.q_from) * 100.0 / 50.0 * 100.0;
+
+        assert!((branch.loading_percent - expected).abs() < 1e-10);
     }
 
     #[test]
@@ -498,19 +546,33 @@ mod tests {
         let v_initial: Vec<f64> = data.buses.iter().map(|b| b.v_pu).collect();
 
         let solver = PowerFlowSolver::new(100, 1e-8);
-        let result = solver.solve_with_initial(&ybus, &p_spec, &q_spec, &bus_types, Some(&v_initial));
+        let result =
+            solver.solve_with_initial(&ybus, &p_spec, &q_spec, &bus_types, Some(&v_initial));
 
-        assert!(result.is_ok(), "IEEE 14 power flow failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "IEEE 14 power flow failed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
-        assert!(result.converged, "IEEE 14 did not converge in {} iterations", result.iterations);
-        assert!(result.iterations <= 20, "IEEE 14 took too many iterations: {}", result.iterations);
+        assert!(
+            result.converged,
+            "IEEE 14 did not converge in {} iterations",
+            result.iterations
+        );
+        assert!(
+            result.iterations <= 20,
+            "IEEE 14 took too many iterations: {}",
+            result.iterations
+        );
 
         // Verify bus voltages are in reasonable range (0.9 to 1.2 pu)
         for br in &result.bus_results {
             assert!(
                 br.voltage_magnitude > 0.9 && br.voltage_magnitude < 1.2,
                 "Bus {} voltage {} pu out of range",
-                br.bus_id, br.voltage_magnitude
+                br.bus_id,
+                br.voltage_magnitude
             );
         }
 
@@ -562,8 +624,13 @@ mod tests {
 
             eprintln!(
                 "{:>6} {:>10.4} {:>10.4} {:>10.4} {:>10.4} {:>10.4} {:>10.4}",
-                bus_data.bus_id, computed_v, expected_v, v_error,
-                computed_angle_deg, expected_angle_deg, angle_error
+                bus_data.bus_id,
+                computed_v,
+                expected_v,
+                v_error,
+                computed_angle_deg,
+                expected_angle_deg,
+                angle_error
             );
 
             // Reference solution has limited precision (3-4 significant digits),
@@ -571,12 +638,18 @@ mod tests {
             assert!(
                 v_error < 0.02,
                 "Bus {} voltage error too large: computed={}, expected={}, error={}",
-                bus_data.bus_id, computed_v, expected_v, v_error
+                bus_data.bus_id,
+                computed_v,
+                expected_v,
+                v_error
             );
             assert!(
                 angle_error < 0.1,
                 "Bus {} angle error too large: computed={:.4}°, expected={:.4}°, error={:.4}°",
-                bus_data.bus_id, computed_angle_deg, expected_angle_deg, angle_error
+                bus_data.bus_id,
+                computed_angle_deg,
+                expected_angle_deg,
+                angle_error
             );
         }
     }
@@ -609,7 +682,9 @@ mod tests {
         assert!(
             loss_error < 1.0,
             "Total losses {:.4} MW too far from expected {:.1} MW (error={:.4} MW)",
-            total_losses_mw, expected_losses, loss_error
+            total_losses_mw,
+            expected_losses,
+            loss_error
         );
     }
 
@@ -633,7 +708,10 @@ mod tests {
             assert!(
                 br.loss_mw >= 0.0,
                 "Branch {} ({}->{}) has negative loss: {} MW",
-                br.branch_id, br.from_bus, br.to_bus, br.loss_mw
+                br.branch_id,
+                br.from_bus,
+                br.to_bus,
+                br.loss_mw
             );
 
             // At least one direction should have positive active power flow magnitude
@@ -641,19 +719,23 @@ mod tests {
             assert!(
                 has_flow || br.loss_mw < 1e-10,
                 "Branch {} ({}->{}) has no flow but nonzero loss",
-                br.branch_id, br.from_bus, br.to_bus
+                br.branch_id,
+                br.from_bus,
+                br.to_bus
             );
         }
 
-        // Verify no branch is overloaded beyond its rate_mva
-        // Build a rate_mva lookup from branch data
         for (branch_result, branch_data) in result.branch_results.iter().zip(data.branches.iter()) {
-            let flow_mva = (branch_result.p_from.hypot(branch_result.q_from)).abs();
+            let flow_mva = branch_result.p_from.hypot(branch_result.q_from) * data.base_mva;
+            let expected_loading = flow_mva / branch_data.rate_mva * 100.0;
             assert!(
-                flow_mva <= branch_data.rate_mva * 1.01, // 1% tolerance for numerical precision
-                "Branch {} ({}->{}) overloaded: {:.2} MVA > rate {:.2} MVA",
-                branch_result.branch_id, branch_result.from_bus, branch_result.to_bus,
-                flow_mva, branch_data.rate_mva
+                (branch_result.loading_percent - expected_loading).abs() < 1e-8,
+                "Branch {} ({}->{}) loading {:.2}% != expected {:.2}%",
+                branch_result.branch_id,
+                branch_result.from_bus,
+                branch_result.to_bus,
+                branch_result.loading_percent,
+                expected_loading
             );
         }
     }

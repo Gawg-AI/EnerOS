@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
 
@@ -44,6 +45,7 @@ struct WatchdogTimerInner {
     total_cancelled: AtomicU64,
     total_registered: AtomicU64,
     running: AtomicBool,
+    stop_tx: watch::Sender<()>,
 }
 
 /// Watchdog timer for monitoring critical operations.
@@ -67,6 +69,7 @@ pub struct WatchdogTimer {
 impl WatchdogTimer {
     /// Create a new watchdog timer with the specified default timeout.
     pub fn new(default_timeout: Duration) -> Self {
+        let (stop_tx, _) = watch::channel(());
         Self {
             inner: Arc::new(WatchdogTimerInner {
                 operations: RwLock::new(HashMap::new()),
@@ -75,6 +78,7 @@ impl WatchdogTimer {
                 total_cancelled: AtomicU64::new(0),
                 total_registered: AtomicU64::new(0),
                 running: AtomicBool::new(false),
+                stop_tx,
             }),
             check_interval: Duration::from_millis(50),
         }
@@ -82,6 +86,7 @@ impl WatchdogTimer {
 
     /// Create with custom check interval.
     pub fn with_check_interval(default_timeout: Duration, check_interval: Duration) -> Self {
+        let (stop_tx, _) = watch::channel(());
         Self {
             inner: Arc::new(WatchdogTimerInner {
                 operations: RwLock::new(HashMap::new()),
@@ -90,6 +95,7 @@ impl WatchdogTimer {
                 total_cancelled: AtomicU64::new(0),
                 total_registered: AtomicU64::new(0),
                 running: AtomicBool::new(false),
+                stop_tx,
             }),
             check_interval,
         }
@@ -162,9 +168,13 @@ impl WatchdogTimer {
         self.inner.running.store(true, Ordering::SeqCst);
         let inner = self.inner.clone();
         let check_interval = self.check_interval;
+        let mut stop_rx = inner.stop_tx.subscribe();
 
         tokio::spawn(async move {
-            info!("WatchdogTimer started (check interval: {:?})", check_interval);
+            info!(
+                "WatchdogTimer started (check interval: {:?})",
+                check_interval
+            );
             loop {
                 if !inner.running.load(Ordering::SeqCst) {
                     info!("WatchdogTimer stopping");
@@ -199,7 +209,15 @@ impl WatchdogTimer {
                     }
                 }
 
-                tokio::time::sleep(check_interval).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(check_interval) => {}
+                    changed = stop_rx.changed() => {
+                        if changed.is_err() || !inner.running.load(Ordering::SeqCst) {
+                            info!("WatchdogTimer stopping");
+                            break;
+                        }
+                    }
+                }
             }
         })
     }
@@ -207,6 +225,7 @@ impl WatchdogTimer {
     /// Stop the watchdog check loop.
     pub fn stop(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
+        let _ = self.inner.stop_tx.send(());
     }
 
     /// Whether the watchdog is running.
@@ -386,5 +405,23 @@ mod tests {
 
         watchdog.stop();
         handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_stop_wakes_sleeping_loop_without_waiting_for_interval() {
+        let watchdog = Arc::new(WatchdogTimer::with_check_interval(
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+        ));
+
+        let handle = watchdog.start();
+        tokio::task::yield_now().await;
+        watchdog.stop();
+
+        let stopped = tokio::time::timeout(Duration::from_millis(100), handle).await;
+        assert!(
+            stopped.is_ok(),
+            "stop should wake the watchdog loop immediately"
+        );
     }
 }

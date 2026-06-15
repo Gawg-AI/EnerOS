@@ -1,7 +1,7 @@
-use std::collections::HashMap;
-use eneros_core::ElementId;
 use crate::matrix::YBusMatrix;
 use crate::solver::BusTypeNR;
+use eneros_core::ElementId;
+use std::collections::HashMap;
 
 /// Bus data for the IEEE 14-bus test system
 #[derive(Debug, Clone)]
@@ -85,6 +85,15 @@ impl Ieee14BusData {
             .collect();
 
         let mut ybus = YBusMatrix::from_branches(&branch_data, &bus_map);
+        ybus.set_base_mva(self.base_mva);
+        for branch in &self.branches {
+            if let (Some(&from_idx), Some(&to_idx)) = (
+                bus_map.get(&(branch.from_bus as ElementId)),
+                bus_map.get(&(branch.to_bus as ElementId)),
+            ) {
+                ybus.set_branch_rating_mva(from_idx, to_idx, branch.rate_mva);
+            }
+        }
 
         // Add shunt susceptances to Y-Bus diagonal
         for &(bus_id, b_shunt) in &self.shunt_susceptances {
@@ -125,61 +134,317 @@ pub fn ieee14() -> Ieee14BusData {
         base_mva: 100.0,
         buses: vec![
             // Bus 1: Slack, V=1.06pu, angle=0. P_inj determined by slack balance.
-            Ieee14Bus { bus_id: 1,  bus_type: 0, p_mw: 0.0,   q_mvar: 0.0,   v_pu: 1.060, angle_deg: 0.0 },
+            Ieee14Bus {
+                bus_id: 1,
+                bus_type: 0,
+                p_mw: 0.0,
+                q_mvar: 0.0,
+                v_pu: 1.060,
+                angle_deg: 0.0,
+            },
             // Bus 2: PV, Gen=40MW, Load=21.7+j12.7MVar => P_inj = 40-21.7 = 18.3MW
-            Ieee14Bus { bus_id: 2,  bus_type: 1, p_mw: 18.3,  q_mvar: -12.7, v_pu: 1.045, angle_deg: -4.98 },
+            Ieee14Bus {
+                bus_id: 2,
+                bus_type: 1,
+                p_mw: 18.3,
+                q_mvar: -12.7,
+                v_pu: 1.045,
+                angle_deg: -4.98,
+            },
             // Bus 3: PV (synchronous condenser), Gen=0MW, Load=94.2+j19.0MVar => P_inj = -94.2MW
-            Ieee14Bus { bus_id: 3,  bus_type: 1, p_mw: -94.2, q_mvar: -19.0, v_pu: 1.010, angle_deg: -12.72 },
+            Ieee14Bus {
+                bus_id: 3,
+                bus_type: 1,
+                p_mw: -94.2,
+                q_mvar: -19.0,
+                v_pu: 1.010,
+                angle_deg: -12.72,
+            },
             // Bus 4: PQ, Load=47.8-j3.9MVar
-            Ieee14Bus { bus_id: 4,  bus_type: 2, p_mw: -47.8, q_mvar: 3.9,   v_pu: 1.019, angle_deg: -10.33 },
+            Ieee14Bus {
+                bus_id: 4,
+                bus_type: 2,
+                p_mw: -47.8,
+                q_mvar: 3.9,
+                v_pu: 1.019,
+                angle_deg: -10.33,
+            },
             // Bus 5: PQ, Load=7.6+j1.6MVar
-            Ieee14Bus { bus_id: 5,  bus_type: 2, p_mw: -7.6,  q_mvar: -1.6,  v_pu: 1.020, angle_deg: -8.78 },
+            Ieee14Bus {
+                bus_id: 5,
+                bus_type: 2,
+                p_mw: -7.6,
+                q_mvar: -1.6,
+                v_pu: 1.020,
+                angle_deg: -8.78,
+            },
             // Bus 6: PV, Gen=0MW, Load=11.2+j7.5MVar => P_inj = -11.2MW
-            Ieee14Bus { bus_id: 6,  bus_type: 1, p_mw: -11.2, q_mvar: -7.5,  v_pu: 1.070, angle_deg: -14.22 },
+            Ieee14Bus {
+                bus_id: 6,
+                bus_type: 1,
+                p_mw: -11.2,
+                q_mvar: -7.5,
+                v_pu: 1.070,
+                angle_deg: -14.22,
+            },
             // Bus 7: PQ, no load
-            Ieee14Bus { bus_id: 7,  bus_type: 2, p_mw: 0.0,   q_mvar: 0.0,   v_pu: 1.062, angle_deg: -13.37 },
+            Ieee14Bus {
+                bus_id: 7,
+                bus_type: 2,
+                p_mw: 0.0,
+                q_mvar: 0.0,
+                v_pu: 1.062,
+                angle_deg: -13.37,
+            },
             // Bus 8: PV, Gen=0MW, no load
-            Ieee14Bus { bus_id: 8,  bus_type: 1, p_mw: 0.0,   q_mvar: 0.0,   v_pu: 1.090, angle_deg: -13.36 },
+            Ieee14Bus {
+                bus_id: 8,
+                bus_type: 1,
+                p_mw: 0.0,
+                q_mvar: 0.0,
+                v_pu: 1.090,
+                angle_deg: -13.36,
+            },
             // Bus 9: PQ, Load=29.5+j16.6MVar
-            Ieee14Bus { bus_id: 9,  bus_type: 2, p_mw: -29.5, q_mvar: -16.6, v_pu: 1.056, angle_deg: -14.94 },
+            Ieee14Bus {
+                bus_id: 9,
+                bus_type: 2,
+                p_mw: -29.5,
+                q_mvar: -16.6,
+                v_pu: 1.056,
+                angle_deg: -14.94,
+            },
             // Bus 10: PQ, Load=9.0+j5.8MVar
-            Ieee14Bus { bus_id: 10, bus_type: 2, p_mw: -9.0,  q_mvar: -5.8,  v_pu: 1.051, angle_deg: -15.10 },
+            Ieee14Bus {
+                bus_id: 10,
+                bus_type: 2,
+                p_mw: -9.0,
+                q_mvar: -5.8,
+                v_pu: 1.051,
+                angle_deg: -15.10,
+            },
             // Bus 11: PQ, Load=3.5+j1.8MVar
-            Ieee14Bus { bus_id: 11, bus_type: 2, p_mw: -3.5,  q_mvar: -1.8,  v_pu: 1.057, angle_deg: -14.80 },
+            Ieee14Bus {
+                bus_id: 11,
+                bus_type: 2,
+                p_mw: -3.5,
+                q_mvar: -1.8,
+                v_pu: 1.057,
+                angle_deg: -14.80,
+            },
             // Bus 12: PQ, Load=6.1+j1.6MVar
-            Ieee14Bus { bus_id: 12, bus_type: 2, p_mw: -6.1,  q_mvar: -1.6,  v_pu: 1.055, angle_deg: -15.07 },
+            Ieee14Bus {
+                bus_id: 12,
+                bus_type: 2,
+                p_mw: -6.1,
+                q_mvar: -1.6,
+                v_pu: 1.055,
+                angle_deg: -15.07,
+            },
             // Bus 13: PQ, Load=13.5+j5.8MVar
-            Ieee14Bus { bus_id: 13, bus_type: 2, p_mw: -13.5, q_mvar: -5.8,  v_pu: 1.050, angle_deg: -15.16 },
+            Ieee14Bus {
+                bus_id: 13,
+                bus_type: 2,
+                p_mw: -13.5,
+                q_mvar: -5.8,
+                v_pu: 1.050,
+                angle_deg: -15.16,
+            },
             // Bus 14: PQ, Load=14.9+j5.0MVar
-            Ieee14Bus { bus_id: 14, bus_type: 2, p_mw: -14.9, q_mvar: -5.0,  v_pu: 1.036, angle_deg: -16.04 },
+            Ieee14Bus {
+                bus_id: 14,
+                bus_type: 2,
+                p_mw: -14.9,
+                q_mvar: -5.0,
+                v_pu: 1.036,
+                angle_deg: -16.04,
+            },
         ],
         branches: vec![
             // Lines (tap_ratio = 1.0)
-            Ieee14Branch { from_bus: 1,  to_bus: 2,  r_pu: 0.01938, x_pu: 0.05917, b_pu: 0.0528,  rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 1,  to_bus: 5,  r_pu: 0.05403, x_pu: 0.22304, b_pu: 0.0492,  rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 2,  to_bus: 3,  r_pu: 0.04699, x_pu: 0.19797, b_pu: 0.0438,  rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 2,  to_bus: 4,  r_pu: 0.05811, x_pu: 0.17632, b_pu: 0.0340,  rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 2,  to_bus: 5,  r_pu: 0.05695, x_pu: 0.17388, b_pu: 0.0346,  rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 3,  to_bus: 4,  r_pu: 0.06701, x_pu: 0.17103, b_pu: 0.0128,  rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 4,  to_bus: 5,  r_pu: 0.01335, x_pu: 0.04211, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 1.0 },
+            Ieee14Branch {
+                from_bus: 1,
+                to_bus: 2,
+                r_pu: 0.01938,
+                x_pu: 0.05917,
+                b_pu: 0.0528,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 1,
+                to_bus: 5,
+                r_pu: 0.05403,
+                x_pu: 0.22304,
+                b_pu: 0.0492,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 2,
+                to_bus: 3,
+                r_pu: 0.04699,
+                x_pu: 0.19797,
+                b_pu: 0.0438,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 2,
+                to_bus: 4,
+                r_pu: 0.05811,
+                x_pu: 0.17632,
+                b_pu: 0.0340,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 2,
+                to_bus: 5,
+                r_pu: 0.05695,
+                x_pu: 0.17388,
+                b_pu: 0.0346,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 3,
+                to_bus: 4,
+                r_pu: 0.06701,
+                x_pu: 0.17103,
+                b_pu: 0.0128,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 4,
+                to_bus: 5,
+                r_pu: 0.01335,
+                x_pu: 0.04211,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
             // Transformers with off-nominal tap ratios
-            Ieee14Branch { from_bus: 4,  to_bus: 7,  r_pu: 0.0,     x_pu: 0.20912, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 0.978 },
-            Ieee14Branch { from_bus: 4,  to_bus: 9,  r_pu: 0.0,     x_pu: 0.55618, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 0.969 },
-            Ieee14Branch { from_bus: 5,  to_bus: 6,  r_pu: 0.0,     x_pu: 0.25202, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 0.932 },
-            Ieee14Branch { from_bus: 6,  to_bus: 11, r_pu: 0.09498, x_pu: 0.19890, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 6,  to_bus: 12, r_pu: 0.12291, x_pu: 0.25581, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 6,  to_bus: 13, r_pu: 0.06615, x_pu: 0.13027, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 7,  to_bus: 8,  r_pu: 0.0,     x_pu: 0.17615, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 0.969 },
-            Ieee14Branch { from_bus: 7,  to_bus: 9,  r_pu: 0.0,     x_pu: 0.11001, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 9,  to_bus: 10, r_pu: 0.03181, x_pu: 0.08450, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 9,  to_bus: 14, r_pu: 0.12711, x_pu: 0.27038, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 10, to_bus: 11, r_pu: 0.08205, x_pu: 0.19207, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 12, to_bus: 13, r_pu: 0.22092, x_pu: 0.19988, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 1.0 },
-            Ieee14Branch { from_bus: 13, to_bus: 14, r_pu: 0.17093, x_pu: 0.34802, b_pu: 0.0,     rate_mva: 100.0, tap_ratio: 1.0 },
+            Ieee14Branch {
+                from_bus: 4,
+                to_bus: 7,
+                r_pu: 0.0,
+                x_pu: 0.20912,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 0.978,
+            },
+            Ieee14Branch {
+                from_bus: 4,
+                to_bus: 9,
+                r_pu: 0.0,
+                x_pu: 0.55618,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 0.969,
+            },
+            Ieee14Branch {
+                from_bus: 5,
+                to_bus: 6,
+                r_pu: 0.0,
+                x_pu: 0.25202,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 0.932,
+            },
+            Ieee14Branch {
+                from_bus: 6,
+                to_bus: 11,
+                r_pu: 0.09498,
+                x_pu: 0.19890,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 6,
+                to_bus: 12,
+                r_pu: 0.12291,
+                x_pu: 0.25581,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 6,
+                to_bus: 13,
+                r_pu: 0.06615,
+                x_pu: 0.13027,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 7,
+                to_bus: 8,
+                r_pu: 0.0,
+                x_pu: 0.17615,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 0.969,
+            },
+            Ieee14Branch {
+                from_bus: 7,
+                to_bus: 9,
+                r_pu: 0.0,
+                x_pu: 0.11001,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 9,
+                to_bus: 10,
+                r_pu: 0.03181,
+                x_pu: 0.08450,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 9,
+                to_bus: 14,
+                r_pu: 0.12711,
+                x_pu: 0.27038,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 10,
+                to_bus: 11,
+                r_pu: 0.08205,
+                x_pu: 0.19207,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 12,
+                to_bus: 13,
+                r_pu: 0.22092,
+                x_pu: 0.19988,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
+            Ieee14Branch {
+                from_bus: 13,
+                to_bus: 14,
+                r_pu: 0.17093,
+                x_pu: 0.34802,
+                b_pu: 0.0,
+                rate_mva: 100.0,
+                tap_ratio: 1.0,
+            },
         ],
         // Shunt capacitors: Bus 9 has 19.0 MVar capacitor => B = 19.0/100 = 0.19 pu
-        shunt_susceptances: vec![
-            (9, 0.19),
-        ],
+        shunt_susceptances: vec![(9, 0.19)],
     }
 }

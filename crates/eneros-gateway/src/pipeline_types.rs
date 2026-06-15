@@ -111,8 +111,9 @@ impl PreConditionResult {
             .filter(|c| !c.passed)
             .filter_map(|c| c.failure_reason.clone())
             .collect();
+        let satisfied = checks.iter().all(|c| c.passed);
         Self {
-            satisfied: failure_summary.is_empty(),
+            satisfied,
             checks,
             failure_summary,
         }

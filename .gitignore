@@ -1,6 +1,12 @@
 /target
 DEVGUIDE.md
 
+# Build/test output logs
+*.log
+build_output.txt
+test_compile.txt
+test_output.txt
+
 # Python
 __pycache__/
 *.py[cod]
@@ -9,3 +15,14 @@ __pycache__/
 .venv/
 venv/
 *.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

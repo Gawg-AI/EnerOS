@@ -267,13 +267,15 @@ impl ConstrainedDecisionPipeline {
 
                 // Execute each step of the decomposition
                 let mut execution_ok = true;
+                let mut execution_error = String::new();
                 for step in &decomposition.steps {
                     let cmd = structured_action_to_command(&step.action);
                     if let Err(e) = self.gateway.execute_command(cmd) {
                         execution_ok = false;
+                        execution_error = format!("Step {} FAILED: {}", step.step_index, e);
                         audit.push(PipelineAuditEntry {
                             stage: "execution".to_string(),
-                            description: format!("Step {} FAILED: {}", step.step_index, e),
+                            description: execution_error.clone(),
                             duration_us: start.elapsed().as_micros() as u64,
                             passed: false,
                         });
@@ -296,37 +298,56 @@ impl ConstrainedDecisionPipeline {
                     });
                 }
 
+                // If execution failed, reject the action
+                if !execution_ok {
+                    let total_latency = pipeline_start.elapsed().as_micros() as u64;
+                    self.record_stats(total_latency, &ActionVerdict::Rejected(
+                        execution_error.clone()
+                    ), projection.is_projected());
+                    return EnhancedPipelineDecision {
+                        executed_action: None,
+                        original_action: action.clone(),
+                        decomposition: Some(decomposition),
+                        projection,
+                        pre_conditions: pre_result,
+                        post_conditions: None,
+                        verdict: ActionVerdict::Rejected(execution_error),
+                        rollback_plan: Some(rollback_plan),
+                        audit,
+                        total_latency_us: total_latency,
+                    };
+                }
+
                 // ── Stage 6: Post-condition verification ──
-                let post_conditions = if execution_ok {
-                    let what_if = self.projector.simulate(&feasible_action);
-                    let start = Instant::now();
-                    let post_result = self.postcondition_verifier.verify(
-                        &feasible_action, &what_if, ctx,
-                    );
-                    let post_duration = start.elapsed().as_micros() as u64;
+                let what_if = projection_to_what_if(&projection);
+                let start = Instant::now();
+                let post_result = self.postcondition_verifier.verify(
+                    &feasible_action, &what_if, ctx,
+                );
+                let post_duration = start.elapsed().as_micros() as u64;
 
-                    audit.push(PipelineAuditEntry {
-                        stage: "postcondition".to_string(),
-                        description: if post_result.satisfied {
-                            "All post-conditions satisfied".to_string()
-                        } else {
-                            format!(
-                                "Post-conditions FAILED: {} new violations, {} worsened",
-                                post_result.new_violations.len(),
-                                post_result.worsened_violations.len()
-                            )
-                        },
-                        duration_us: post_duration,
-                        passed: post_result.satisfied,
-                    });
-
-                    Some(post_result)
-                } else {
-                    None
-                };
+                audit.push(PipelineAuditEntry {
+                    stage: "postcondition".to_string(),
+                    description: if post_result.satisfied {
+                        "All post-conditions satisfied".to_string()
+                    } else {
+                        format!(
+                            "Post-conditions FAILED: {} new violations, {} worsened",
+                            post_result.new_violations.len(),
+                            post_result.worsened_violations.len()
+                        )
+                    },
+                    duration_us: post_duration,
+                    passed: post_result.satisfied,
+                });
 
                 let total_latency = pipeline_start.elapsed().as_micros() as u64;
                 self.record_stats(total_latency, &verdict, projection.is_projected());
+
+                // Track postcondition failures
+                if !post_result.satisfied {
+                    self.statistics.write().postcondition_failures += 1;
+                }
 
                 EnhancedPipelineDecision {
                     executed_action: Some(feasible_action),
@@ -334,7 +355,7 @@ impl ConstrainedDecisionPipeline {
                     decomposition: Some(decomposition),
                     projection,
                     pre_conditions: pre_result,
-                    post_conditions,
+                    post_conditions: Some(post_result),
                     verdict,
                     rollback_plan: Some(rollback_plan),
                     audit,
@@ -431,67 +452,55 @@ impl ConstrainedDecisionPipeline {
     }
 }
 
-/// Internal helper: simulate action via projector's simulator
-trait ProjectorSimulate {
-    fn simulate(&self, action: &StructuredAction) -> WhatIfResult;
-}
-
-impl ProjectorSimulate for FeasibilityProjector {
-    fn simulate(&self, action: &StructuredAction) -> WhatIfResult {
-        // Use the projector's internal simulator
-        // We need to call project and extract the What-If from it
-        // Since projector doesn't expose simulate directly, we use a workaround:
-        // The projector already does simulation internally, so we call project
-        // and reconstruct a WhatIfResult from the ProjectionResult
-        let result = self.project(action);
-        match result {
-            ProjectionResult::Feasible(_) => WhatIfResult {
+/// Convert a ProjectionResult (already computed in Stage 2) into a WhatIfResult
+/// for post-condition verification, avoiding a redundant project() call.
+fn projection_to_what_if(projection: &ProjectionResult) -> WhatIfResult {
+    match projection {
+        ProjectionResult::Feasible(_) => WhatIfResult {
+            applicable: true,
+            converged: true,
+            voltage_violations: vec![],
+            thermal_violations: vec![],
+            all_constraints_satisfied: true,
+            summary: "Feasible".to_string(),
+        },
+        ProjectionResult::Projected { .. } => WhatIfResult {
+            applicable: true,
+            converged: true,
+            voltage_violations: vec![],
+            thermal_violations: vec![],
+            all_constraints_satisfied: true,
+            summary: "Projected to feasible".to_string(),
+        },
+        ProjectionResult::Infeasible { violated_constraints, .. } => {
+            let voltage_violations: Vec<(u64, f64, f64)> = violated_constraints.iter()
+                .filter(|v| v.contains("Voltage"))
+                .filter_map(|v| {
+                    let parts: Vec<&str> = v.split_whitespace().collect();
+                    let bus: u64 = parts.get(3)?.parse().ok()?;
+                    let voltage: f64 = parts.get(5)?.parse().ok()?;
+                    let limit: f64 = parts.get(9)?.parse().ok()?;
+                    Some((bus, voltage, limit))
+                })
+                .collect();
+            let thermal_violations: Vec<(u64, f64, f64)> = violated_constraints.iter()
+                .filter(|v| v.contains("Thermal"))
+                .filter_map(|v| {
+                    let parts: Vec<&str> = v.split_whitespace().collect();
+                    let branch: u64 = parts.get(3)?.parse().ok()?;
+                    let loading: f64 = parts.get(5)?.trim_end_matches('%').parse().ok()?;
+                    let limit: f64 = parts.get(9)?.trim_end_matches('%').parse().ok()?;
+                    Some((branch, loading, limit))
+                })
+                .collect();
+            let converged = !violated_constraints.iter().any(|v| v.contains("did not converge"));
+            WhatIfResult {
                 applicable: true,
-                converged: true,
-                voltage_violations: vec![],
-                thermal_violations: vec![],
-                all_constraints_satisfied: true,
-                summary: "Feasible".to_string(),
-            },
-            ProjectionResult::Projected { .. } => WhatIfResult {
-                applicable: true,
-                converged: true,
-                voltage_violations: vec![],
-                thermal_violations: vec![],
-                all_constraints_satisfied: true,
-                summary: "Projected to feasible".to_string(),
-            },
-            ProjectionResult::Infeasible { violated_constraints, .. } => {
-                let voltage_violations: Vec<(u64, f64, f64)> = violated_constraints.iter()
-                    .filter(|v| v.contains("Voltage"))
-                    .filter_map(|v| {
-                        // Parse "Voltage violation: Bus X voltage Y.YYY pu < Z.ZZZ pu limit"
-                        let parts: Vec<&str> = v.split_whitespace().collect();
-                        let bus: u64 = parts.get(3)?.parse().ok()?;
-                        let voltage: f64 = parts.get(5)?.parse().ok()?;
-                        let limit: f64 = parts.get(9)?.parse().ok()?;
-                        Some((bus, voltage, limit))
-                    })
-                    .collect();
-                let thermal_violations: Vec<(u64, f64, f64)> = violated_constraints.iter()
-                    .filter(|v| v.contains("Thermal"))
-                    .filter_map(|v| {
-                        let parts: Vec<&str> = v.split_whitespace().collect();
-                        let branch: u64 = parts.get(3)?.parse().ok()?;
-                        let loading: f64 = parts.get(5)?.trim_end_matches('%').parse().ok()?;
-                        let limit: f64 = parts.get(9)?.trim_end_matches('%').parse().ok()?;
-                        Some((branch, loading, limit))
-                    })
-                    .collect();
-                let converged = !violated_constraints.iter().any(|v| v.contains("did not converge"));
-                WhatIfResult {
-                    applicable: true,
-                    converged,
-                    voltage_violations,
-                    thermal_violations,
-                    all_constraints_satisfied: false,
-                    summary: violated_constraints.join("; "),
-                }
+                converged,
+                voltage_violations,
+                thermal_violations,
+                all_constraints_satisfied: false,
+                summary: violated_constraints.join("; "),
             }
         }
     }
