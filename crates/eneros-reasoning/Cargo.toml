@@ -9,19 +9,19 @@ description = "EnerOS reasoning engine - rule-based and LLM reasoning for power 
 [features]
 default = []
 # rig framework integration — enables RigReasoningEngine and power system Tools
-rig = ["rig-core", "schemars", "eneros-network", "eneros-powerflow", "eneros-constraint", "parking_lot"]
+rig = ["rig-core", "schemars", "eneros-network", "eneros-powerflow", "parking_lot"]
 
 [dependencies]
 eneros-core = { path = "../eneros-core" }
 eneros-tool = { path = "../eneros-tool" }
 eneros-memory = { path = "../eneros-memory" }
+eneros-constraint = { path = "../eneros-constraint" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-reqwest = { version = "0.12", features = ["json"] }
 
 # rig integration (optional — feature-gated)
 # Pin to specific minor version for stability; bump only after testing
@@ -29,5 +29,4 @@ rig-core = { version = "0.38", default-features = false, features = ["reqwest", 
 schemars = { version = "0.8", optional = true }
 eneros-network = { path = "../eneros-network", optional = true }
 eneros-powerflow = { path = "../eneros-powerflow", optional = true }
-eneros-constraint = { path = "../eneros-constraint", optional = true }
 parking_lot = { workspace = true, optional = true }

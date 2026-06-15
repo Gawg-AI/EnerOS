@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use axum::Router;
 use axum::routing::{get, post};
+use axum::Router;
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
@@ -9,6 +9,7 @@ use tower_http::cors::CorsLayer;
 use eneros_agent::{AgentOrchestrator, DataDrivenAgentLoop};
 use eneros_constraint::ConstraintEngine;
 use eneros_eventbus::EventBus;
+use eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline;
 use eneros_network::PowerNetwork;
 use eneros_powerflow::PowerFlowSolver;
 use eneros_scada::{ScadaCollector, SnapshotBuilder};
@@ -39,6 +40,7 @@ pub struct AppState {
     pub data_pipeline: Option<Arc<eneros_scada::DataPipeline>>,
     pub snapshot_builder: Option<Arc<SnapshotBuilder>>,
     pub data_driven_loop: Option<Arc<DataDrivenAgentLoop>>,
+    pub decision_pipeline: Option<Arc<ConstrainedDecisionPipeline>>,
 }
 
 impl AppState {
@@ -57,6 +59,7 @@ impl AppState {
             data_pipeline: None,
             snapshot_builder: None,
             data_driven_loop: None,
+            decision_pipeline: None,
         }
     }
 
@@ -102,6 +105,11 @@ impl AppState {
         self
     }
 
+    pub fn with_decision_pipeline(mut self, pipeline: Arc<ConstrainedDecisionPipeline>) -> Self {
+        self.decision_pipeline = Some(pipeline);
+        self
+    }
+
     /// Builder: inject EventBus
     pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
         self.event_bus = Some(bus);
@@ -125,15 +133,34 @@ impl Default for AppState {
 pub fn create_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .route("/power-flow", post(handlers::powerflow::power_flow_handler))
-        .route("/constraints", get(handlers::constraints::constraints_handler))
+        .route(
+            "/constraints",
+            get(handlers::constraints::constraints_handler),
+        )
         .route("/agents", get(handlers::agents::agents_handler))
         .route("/scada/latest", get(handlers::scada::scada_latest_handler))
+        .route(
+            "/actions/structured",
+            post(handlers::actions::structured_action_handler),
+        )
         .route("/analysis/opf", post(handlers::analysis::opf_handler))
-        .route("/analysis/state-estimation", post(handlers::analysis::state_estimation_handler))
-        .route("/analysis/short-circuit", post(handlers::analysis::short_circuit_handler))
+        .route(
+            "/analysis/state-estimation",
+            post(handlers::analysis::state_estimation_handler),
+        )
+        .route(
+            "/analysis/short-circuit",
+            post(handlers::analysis::short_circuit_handler),
+        )
         .route("/topology", get(handlers::topology::topology_handler))
-        .route("/dashboard/topology-svg", get(handlers::dashboard::topology_svg_handler))
-        .route("/dashboard/flow-heatmap", get(handlers::dashboard::flow_heatmap_handler));
+        .route(
+            "/dashboard/topology-svg",
+            get(handlers::dashboard::topology_svg_handler),
+        )
+        .route(
+            "/dashboard/flow-heatmap",
+            get(handlers::dashboard::flow_heatmap_handler),
+        );
 
     Router::new()
         .route("/ws", get(handlers::ws::ws_handler))
@@ -176,6 +203,7 @@ mod tests {
         assert!(state.data_pipeline.is_none());
         assert!(state.snapshot_builder.is_none());
         assert!(state.data_driven_loop.is_none());
+        assert!(state.decision_pipeline.is_none());
     }
 
     #[test]
@@ -204,7 +232,12 @@ mod tests {
         let app = create_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/api/dashboard/topology-svg").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/dashboard/topology-svg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -217,7 +250,12 @@ mod tests {
         let app = create_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/api/dashboard/flow-heatmap").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/dashboard/flow-heatmap")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -230,7 +268,12 @@ mod tests {
         let app = create_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/api/topology").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/topology")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -243,7 +286,12 @@ mod tests {
         let app = create_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/api/agents").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -256,7 +304,12 @@ mod tests {
         let app = create_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/api/constraints").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/constraints")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -269,7 +322,12 @@ mod tests {
         let app = create_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/api/scada/latest").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/scada/latest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 

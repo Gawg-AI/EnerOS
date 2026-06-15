@@ -446,3 +446,95 @@ impl ProtocolAdapter for ModbusTcpAdapter {
         self.shared_state.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_address_holding() {
+        let (rtype, addr) = ModbusTcpAdapter::parse_address("holding:40001").unwrap();
+        assert_eq!(rtype, ModbusRegisterType::Holding);
+        assert_eq!(addr, 0); // 40001 - 40001 = 0
+    }
+
+    #[test]
+    fn test_parse_address_input() {
+        let (rtype, addr) = ModbusTcpAdapter::parse_address("input:30001").unwrap();
+        assert_eq!(rtype, ModbusRegisterType::Input);
+        assert_eq!(addr, 0);
+    }
+
+    #[test]
+    fn test_parse_address_coil() {
+        let (rtype, addr) = ModbusTcpAdapter::parse_address("coil:10001").unwrap();
+        assert_eq!(rtype, ModbusRegisterType::Coil);
+        assert_eq!(addr, 0);
+    }
+
+    #[test]
+    fn test_parse_address_discrete() {
+        let (rtype, addr) = ModbusTcpAdapter::parse_address("discrete:20001").unwrap();
+        assert_eq!(rtype, ModbusRegisterType::Discrete);
+        assert_eq!(addr, 0);
+    }
+
+    #[test]
+    fn test_parse_address_offset() {
+        let (rtype, addr) = ModbusTcpAdapter::parse_address("holding:40100").unwrap();
+        assert_eq!(rtype, ModbusRegisterType::Holding);
+        assert_eq!(addr, 99); // 40100 - 40001 = 99
+    }
+
+    #[test]
+    fn test_parse_address_invalid_format() {
+        let result = ModbusTcpAdapter::parse_address("invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_address_unknown_type() {
+        let result = ModbusTcpAdapter::parse_address("analog:40001");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_address_below_base() {
+        let result = ModbusTcpAdapter::parse_address("holding:30001");
+        assert!(result.is_err()); // 30001 < 40001 base
+    }
+
+    #[test]
+    fn test_parse_address_non_numeric() {
+        let result = ModbusTcpAdapter::parse_address("holding:abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_new_adapter_not_connected() {
+        let adapter = ModbusTcpAdapter::new("test-modbus");
+        assert!(!adapter.is_connected());
+        assert_eq!(adapter.name(), "test-modbus");
+        assert_eq!(adapter.slave_id, 1);
+    }
+
+    #[test]
+    fn test_with_slave_id() {
+        let adapter = ModbusTcpAdapter::with_slave_id("test-modbus", 5);
+        assert_eq!(adapter.slave_id, 5);
+    }
+
+    #[tokio::test]
+    async fn test_read_not_connected() {
+        let adapter = ModbusTcpAdapter::new("test-modbus");
+        let result = adapter.read("holding:40001").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_write_not_connected() {
+        let mut adapter = ModbusTcpAdapter::new("test-modbus");
+        let result = adapter.write("holding:40001", &DataValue::Int16(100)).await;
+        assert!(result.is_err());
+    }
+}

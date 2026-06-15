@@ -3,6 +3,7 @@ use crate::matrix::YBusMatrix;
 use crate::result::{PowerFlowResult, BusResult, BranchResult};
 
 /// Power flow solver using Newton-Raphson method
+#[derive(Clone)]
 pub struct PowerFlowSolver {
     max_iterations: u32,
     tolerance: f64,
@@ -17,7 +18,7 @@ impl PowerFlowSolver {
     }
 
     pub fn default_solver() -> Self {
-        Self::new(50, 1e-6)
+        Self::new(50, 1e-8)
     }
 
     /// Solve power flow using Newton-Raphson method
@@ -46,6 +47,7 @@ impl PowerFlowSolver {
         let mut theta = vec![0.0; n];
 
         let mut converged = false;
+        let mut final_mismatch = f64::MAX;
         let mut iterations = 0;
 
         for iter in 0..self.max_iterations {
@@ -54,6 +56,7 @@ impl PowerFlowSolver {
             let (dp, dq) = self.calculate_mismatches(&v, &theta, ybus, p_spec, q_spec, bus_types)?;
 
             let max_mismatch = dp.iter().chain(dq.iter()).fold(0.0_f64, |a, &b| a.max(b.abs()));
+            final_mismatch = max_mismatch;
 
             if max_mismatch < self.tolerance {
                 converged = true;
@@ -99,6 +102,7 @@ impl PowerFlowSolver {
         Ok(PowerFlowResult {
             converged,
             iterations,
+            max_mismatch: final_mismatch,
             bus_results,
             branch_results,
             total_losses,
@@ -532,6 +536,13 @@ mod tests {
 
         assert!(result.converged, "IEEE 14 did not converge");
 
+        // Self-consistency check: max mismatch must be below tolerance
+        assert!(
+            result.max_mismatch < 1e-8,
+            "Max mismatch too large: {:.2e}",
+            result.max_mismatch
+        );
+
         // Print comparison table header
         eprintln!(
             "{:>6} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
@@ -555,6 +566,8 @@ mod tests {
                 computed_angle_deg, expected_angle_deg, angle_error
             );
 
+            // Reference solution has limited precision (3-4 significant digits),
+            // so we use a moderate tolerance for comparison
             assert!(
                 v_error < 0.02,
                 "Bus {} voltage error too large: computed={}, expected={}, error={}",

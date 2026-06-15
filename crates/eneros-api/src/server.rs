@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use eneros_constraint::ConstraintEngine;
 use eneros_eventbus::EventBus;
+use eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline;
 use eneros_network::PowerNetwork;
 use eneros_powerflow::PowerFlowSolver;
 use eneros_scada::{ScadaCollector, SnapshotBuilder};
@@ -112,6 +113,11 @@ impl ApiServer {
     /// Inject a DataDrivenAgentLoop
     pub fn with_data_driven_loop(mut self, dd_loop: Arc<DataDrivenAgentLoop>) -> Self {
         self.state.data_driven_loop = Some(dd_loop);
+        self
+    }
+
+    pub fn with_decision_pipeline(mut self, pipeline: Arc<ConstrainedDecisionPipeline>) -> Self {
+        self.state.decision_pipeline = Some(pipeline);
         self
     }
 

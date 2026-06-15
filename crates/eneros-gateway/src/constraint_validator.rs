@@ -1,8 +1,10 @@
 use std::sync::Arc;
-use eneros_core::{AuthorityLevel, Jurisdiction, SystemOperatingState, ActionVerdict};
+use eneros_core::{AuthorityLevel, Jurisdiction, SystemOperatingState, ActionVerdict, StructuredAction};
 use eneros_constraint::ConstraintEngine;
+use eneros_constraint::projector::{FeasibilityProjector, ProjectionResult};
 use crate::interlocking::{InterlockingRuleEngine, DeviceOperation, DeviceStates, OperationType};
 use crate::gateway::SafetyGateway;
+use crate::command::{Command, CommandType, CommandPriority};
 
 /// Constraint-aware action validator
 /// Validates agent actions through a multi-step pipeline:
@@ -16,10 +18,11 @@ pub struct ConstraintAwareValidator {
     /// Constraint engine for pre-action validation
     constraint_engine: Arc<ConstraintEngine>,
     /// Safety gateway for static safety checks
-    #[allow(dead_code)]
     safety_gateway: Arc<SafetyGateway>,
     /// Interlocking rule engine for equipment operation safety
     interlocking_engine: InterlockingRuleEngine,
+    /// Optional projector for What-If based feasibility checks
+    projector: Option<Arc<FeasibilityProjector>>,
 }
 
 impl ConstraintAwareValidator {
@@ -33,6 +36,7 @@ impl ConstraintAwareValidator {
             constraint_engine,
             safety_gateway,
             interlocking_engine,
+            projector: None,
         }
     }
 
@@ -45,6 +49,22 @@ impl ConstraintAwareValidator {
             constraint_engine,
             safety_gateway,
             interlocking_engine: InterlockingRuleEngine::new(),
+            projector: None,
+        }
+    }
+
+    /// Create a validator with a FeasibilityProjector for What-If based pre-checks
+    pub fn with_projector(
+        constraint_engine: Arc<ConstraintEngine>,
+        safety_gateway: Arc<SafetyGateway>,
+        interlocking_engine: InterlockingRuleEngine,
+        projector: Arc<FeasibilityProjector>,
+    ) -> Self {
+        Self {
+            constraint_engine,
+            safety_gateway,
+            interlocking_engine,
+            projector: Some(projector),
         }
     }
 
@@ -89,11 +109,39 @@ impl ConstraintAwareValidator {
         }
 
         // Step 3: Constraint pre-check
-        let feasibility = self.constraint_engine.check_action_feasibility(action_description);
-        if !feasibility.feasible && !effective_authority.can_bypass_checks() {
+        // When a FeasibilityProjector is available, use What-If analysis for richer checks;
+        // otherwise fall back to keyword-based constraint engine check.
+        let (feasible, worsened, new_violations) = if let Some(ref projector) = self.projector {
+            // Try to infer a StructuredAction from the description for projector-based check
+            if let Some(action) = self.infer_structured_action(action_description, target_device_id) {
+                let projection = projector.project(&action);
+                match &projection {
+                    ProjectionResult::Feasible(_) => (true, vec![], vec![]),
+                    ProjectionResult::Projected { modifications, .. } => {
+                        // Projected means the action was adjusted but is now feasible
+                        let worsened: Vec<String> = modifications.iter()
+                            .map(|m| format!("{} adjusted: {}", m.parameter, m.reason))
+                            .collect();
+                        (true, worsened, vec![])
+                    }
+                    ProjectionResult::Infeasible { violated_constraints, .. } => {
+                        (false, violated_constraints.clone(), violated_constraints.clone())
+                    }
+                }
+            } else {
+                // Cannot infer StructuredAction — fall back to keyword check
+                let feasibility = self.constraint_engine.check_action_feasibility(action_description);
+                (feasibility.feasible, feasibility.worsened_violations, feasibility.new_violations)
+            }
+        } else {
+            let feasibility = self.constraint_engine.check_action_feasibility(action_description);
+            (feasibility.feasible, feasibility.worsened_violations, feasibility.new_violations)
+        };
+
+        if !feasible && !effective_authority.can_bypass_checks() {
             return ActionVerdict::Rejected(format!(
                 "Action would worsen existing violations: {:?}",
-                feasibility.worsened_violations
+                worsened
             ));
         }
 
@@ -119,7 +167,24 @@ impl ConstraintAwareValidator {
             }
         }
 
-        // Step 5: Safety gateway check (for high-risk actions)
+        // Step 5: Safety gateway check — validate action through registered safety rules
+        // Convert action to Command and run through SafetyGateway's safety checks
+        if let Some(cmd) = self.action_to_command(action_description, target_device_id) {
+            if let Err(e) = self.safety_gateway.validate_command(&cmd) {
+                if !effective_authority.can_execute_high_risk() {
+                    return ActionVerdict::Rejected(format!(
+                        "Safety gateway violation: {}", e
+                    ));
+                }
+                // High-risk authority can proceed but needs approval
+                return ActionVerdict::PendingApproval {
+                    approver_level: AuthorityLevel::Supervisor,
+                    reason: format!("Safety gateway override required: {}", e),
+                };
+            }
+        }
+
+        // Step 5b: High-risk action approval check (keyword-based supplement)
         if self.is_high_risk_action(action_description) && !effective_authority.can_execute_high_risk() {
             return ActionVerdict::PendingApproval {
                 approver_level: AuthorityLevel::Supervisor,
@@ -128,10 +193,10 @@ impl ConstraintAwareValidator {
         }
 
         // Step 6: Emergency bypass for feasible but risky actions
-        if !feasibility.new_violations.is_empty() && effective_authority.can_bypass_checks() {
+        if !new_violations.is_empty() && effective_authority.can_bypass_checks() {
             return ActionVerdict::EmergencyBypassed {
                 bypassed_checks: vec!["constraint_pre_check".to_string()],
-                reason: format!("Emergency override: action may cause {:?}", feasibility.new_violations),
+                reason: format!("Emergency override: action may cause {:?}", new_violations),
             };
         }
 
@@ -167,11 +232,73 @@ impl ConstraintAwareValidator {
         }
     }
 
+    /// Infer a StructuredAction from the action description for projector-based checks.
+    /// Returns None if the description cannot be mapped to a StructuredAction.
+    fn infer_structured_action(&self, description: &str, target_device_id: Option<u64>) -> Option<StructuredAction> {
+        let desc_lower = description.to_lowercase();
+        let device_id = target_device_id.unwrap_or(0);
+
+        // Generator setpoint
+        if desc_lower.contains("generator") || desc_lower.contains("发电机") {
+            // Try to extract target_mw from description (e.g., "100.0 MW")
+            let target_mw = extract_mw_value(description).unwrap_or(0.0);
+            return Some(StructuredAction::StartGenerator {
+                gen_id: device_id,
+                target_mw,
+            });
+        }
+
+        // Load shedding
+        if desc_lower.contains("load shed") || desc_lower.contains("切负荷") {
+            let amount_mw = extract_mw_value(description).unwrap_or(0.0);
+            return Some(StructuredAction::ShedLoad {
+                zone_id: device_id as u32,
+                amount_mw,
+            });
+        }
+
+        // Fault isolation
+        if desc_lower.contains("isolate fault") || desc_lower.contains("隔离故障") {
+            return Some(StructuredAction::IsolateFault {
+                upstream_switch: device_id,
+                downstream_switch: device_id + 1,
+            });
+        }
+
+        // Tie switch
+        if desc_lower.contains("close tie") || desc_lower.contains("合环") {
+            return Some(StructuredAction::CloseTieSwitch {
+                switch_id: device_id,
+            });
+        }
+
+        // Device operation (breaker, disconnector, etc.)
+        if desc_lower.contains("breaker") || desc_lower.contains("断路器")
+            || desc_lower.contains("disconnector") || desc_lower.contains("隔离开关")
+            || desc_lower.contains("switch") || desc_lower.contains("开关")
+        {
+            let operation = if desc_lower.contains("close") || desc_lower.contains("合") {
+                "close".to_string()
+            } else {
+                "open".to_string()
+            };
+            return Some(StructuredAction::ExecuteDevice {
+                device_id,
+                operation,
+                value: 1.0,
+            });
+        }
+
+        // Cannot infer
+        None
+    }
+
     /// Check if an action is high-risk (requires supervisor approval)
     fn is_high_risk_action(&self, description: &str) -> bool {
         let desc_lower = description.to_lowercase();
         desc_lower.contains("load shed")
             || desc_lower.contains("切负荷")
+            || desc_lower.contains("shed ") && desc_lower.contains("mw")
             || desc_lower.contains("system separation")
             || desc_lower.contains("系统解列")
             || desc_lower.contains("island")
@@ -179,6 +306,53 @@ impl ConstraintAwareValidator {
             || desc_lower.contains("black start")
             || desc_lower.contains("黑启动")
     }
+
+    /// Convert an action description to a Command for SafetyGateway validation.
+    /// Returns None if the description cannot be mapped to a Command.
+    fn action_to_command(&self, description: &str, target_device_id: Option<u64>) -> Option<Command> {
+        let desc_lower = description.to_lowercase();
+        let device_id = target_device_id.unwrap_or(0);
+
+        let (cmd_type, priority) = if desc_lower.contains("generator") || desc_lower.contains("发电机") {
+            let target_mw = extract_mw_value(description).unwrap_or(0.0);
+            let mut cmd = Command::new(CommandType::GeneratorSetpoint, device_id, CommandPriority::Normal, "validator");
+            cmd.parameters.insert("target_mw".to_string(), target_mw);
+            return Some(cmd);
+        } else if desc_lower.contains("load shed") || desc_lower.contains("切负荷") {
+            let amount_mw = extract_mw_value(description).unwrap_or(0.0);
+            let mut cmd = Command::new(CommandType::LoadShedding, device_id, CommandPriority::High, "validator");
+            cmd.parameters.insert("amount_mw".to_string(), amount_mw);
+            return Some(cmd);
+        } else if desc_lower.contains("close breaker") || desc_lower.contains("合断路器")
+            || desc_lower.contains("open breaker") || desc_lower.contains("断断路器") || desc_lower.contains("分断路器") {
+            (CommandType::SwitchOperation, CommandPriority::High)
+        } else if desc_lower.contains("close disconnector") || desc_lower.contains("合隔离开关")
+            || desc_lower.contains("open disconnector") || desc_lower.contains("拉隔离开关") {
+            (CommandType::SwitchOperation, CommandPriority::Normal)
+        } else if desc_lower.contains("capacitor") || desc_lower.contains("电容") {
+            (CommandType::CapacitorSwitch, CommandPriority::Normal)
+        } else if desc_lower.contains("transformer") || desc_lower.contains("变压器") {
+            (CommandType::TransformerTap, CommandPriority::Normal)
+        } else {
+            return None;
+        };
+
+        Some(Command::new(cmd_type, device_id, priority, "validator"))
+    }
+}
+
+/// Extract a MW value from a description string (e.g., "100.0 MW" or "50.0MW")
+fn extract_mw_value(description: &str) -> Option<f64> {
+    // Find "MW" or "mw" in the string and parse the number before it
+    let upper = description.to_uppercase();
+    let idx = upper.find("MW")?;
+    let prefix = &description[..idx];
+    // Find the last number in the prefix
+    let num_start = prefix.rfind(|c: char| !c.is_ascii_digit() && c != '.')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let num_str = prefix[num_start..].trim();
+    num_str.parse().ok()
 }
 
 #[cfg(test)]

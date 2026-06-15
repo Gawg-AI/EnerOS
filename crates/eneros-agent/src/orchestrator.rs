@@ -1,5 +1,6 @@
-use eneros_core::{AuthorityLevel, Result, SystemOperatingState};
+use eneros_core::{AuthorityLevel, Jurisdiction, Result, StructuredAction, SystemOperatingState};
 use eneros_eventbus::{Event, EventHandler};
+use eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline;
 
 use crate::agent::AgentType;
 use crate::collaboration::CollaborationProtocol;
@@ -7,7 +8,7 @@ use crate::context::AgentContext;
 use crate::dispatcher::{ActionDispatcher, DispatchResult};
 use crate::emergency::EmergencyResponsePipeline;
 use crate::event_adapter::AgentEventHandler;
-use crate::system_state::{StateTransitionTrigger, StateTransitionResult, SystemStateMachine};
+use crate::system_state::{StateTransitionResult, StateTransitionTrigger, SystemStateMachine};
 use crate::topology_scheduler::{AgentRegistration, TopologyAwareScheduler};
 
 /// Orchestrates agent execution: event dispatch → agent reasoning → action routing
@@ -19,6 +20,10 @@ pub struct AgentOrchestrator {
     state_machine: SystemStateMachine,
     emergency_pipeline: EmergencyResponsePipeline,
     topology_scheduler: TopologyAwareScheduler,
+    /// Optional LLM feedback loop for re-prompting on rejected actions.
+    /// Lives here (in the agent layer) rather than in the gateway so the
+    /// gateway stays free of any reasoning dependency.
+    feedback_loop: Option<std::sync::Arc<eneros_reasoning::feedback::FeedbackLoop>>,
 }
 
 impl AgentOrchestrator {
@@ -34,6 +39,49 @@ impl AgentOrchestrator {
             state_machine: SystemStateMachine::new(),
             emergency_pipeline: EmergencyResponsePipeline::new(),
             topology_scheduler: TopologyAwareScheduler::new(),
+            feedback_loop: None,
+        }
+    }
+
+    /// Create a new orchestrator with a constrained decision pipeline
+    pub fn with_pipeline(
+        ctx: AgentContext,
+        pipeline: std::sync::Arc<ConstrainedDecisionPipeline>,
+    ) -> Self {
+        let event_bus = ctx.event_bus.clone();
+        let gateway = ctx.gateway.clone();
+        Self {
+            ctx,
+            agents: Vec::new(),
+            dispatcher: ActionDispatcher::with_pipeline(event_bus, gateway, pipeline),
+            protocol: CollaborationProtocol::new(),
+            state_machine: SystemStateMachine::new(),
+            emergency_pipeline: EmergencyResponsePipeline::new(),
+            topology_scheduler: TopologyAwareScheduler::new(),
+            feedback_loop: None,
+        }
+    }
+
+    /// Create a new orchestrator with both a constrained decision pipeline and
+    /// an LLM feedback loop. This is the full Phase 14 closed loop: structured
+    /// actions flow through the pipeline, and rejected actions trigger a
+    /// re-reasoning cycle (capped by the loop's `max_iterations`).
+    pub fn with_pipeline_and_feedback(
+        ctx: AgentContext,
+        pipeline: std::sync::Arc<ConstrainedDecisionPipeline>,
+        feedback_loop: std::sync::Arc<eneros_reasoning::feedback::FeedbackLoop>,
+    ) -> Self {
+        let event_bus = ctx.event_bus.clone();
+        let gateway = ctx.gateway.clone();
+        Self {
+            ctx,
+            agents: Vec::new(),
+            dispatcher: ActionDispatcher::with_pipeline(event_bus, gateway, pipeline),
+            protocol: CollaborationProtocol::new(),
+            state_machine: SystemStateMachine::new(),
+            emergency_pipeline: EmergencyResponsePipeline::new(),
+            topology_scheduler: TopologyAwareScheduler::new(),
+            feedback_loop: Some(feedback_loop),
         }
     }
 
@@ -54,7 +102,8 @@ impl AgentOrchestrator {
 
         // Use topology scheduler to determine which agents should receive the event
         let routing = self.topology_scheduler.route_event(&event, None);
-        let target_ids: std::collections::HashSet<String> = routing.target_agent_ids.into_iter().collect();
+        let target_ids: std::collections::HashSet<String> =
+            routing.target_agent_ids.into_iter().collect();
 
         for handler in &self.agents {
             if !handler.can_handle(&event.event_type) {
@@ -62,18 +111,31 @@ impl AgentOrchestrator {
             }
 
             // If topology scheduler has registered agents, filter by routing result
-            if !self.topology_scheduler.is_empty() && !target_ids.contains(handler.name().strip_prefix("agent_handler_").unwrap_or(handler.name())) {
+            if !self.topology_scheduler.is_empty()
+                && !target_ids.contains(
+                    handler
+                        .name()
+                        .strip_prefix("agent_handler_")
+                        .unwrap_or(handler.name()),
+                )
+            {
                 continue;
             }
 
             let actions = if is_emergency {
-                handler.handle_emergency_with_context(event.clone(), &self.ctx).await?
+                handler
+                    .handle_emergency_with_context(event.clone(), &self.ctx)
+                    .await?
             } else {
-                handler.handle_with_context(event.clone(), &self.ctx).await?
+                handler
+                    .handle_with_context(event.clone(), &self.ctx)
+                    .await?
             };
 
+            let authority = handler.agent_authority_level();
+            let jurisdiction = handler.agent_jurisdiction();
             for action in actions {
-                let dispatch_result = self.dispatcher.dispatch(action)?;
+                let dispatch_result = self.route_action(action, authority, &jurisdiction).await?;
                 results.push(dispatch_result);
             }
         }
@@ -87,13 +149,140 @@ impl AgentOrchestrator {
 
         for handler in &self.agents {
             let actions = handler.tick_with_context(&self.ctx).await?;
+            let authority = handler.agent_authority_level();
+            let jurisdiction = handler.agent_jurisdiction();
             for action in actions {
-                let dispatch_result = self.dispatcher.dispatch(action)?;
+                let dispatch_result = self.route_action(action, authority, &jurisdiction).await?;
                 results.push(dispatch_result);
             }
         }
 
         Ok(results)
+    }
+
+    /// Route a single agent action to the appropriate dispatcher path.
+    ///
+    /// `AgentAction::ExecuteStructured` is sent through the constrained
+    /// decision pipeline (`dispatch_structured`) so that feasibility
+    /// projection and constraint validation apply. All other variants use the
+    /// regular `dispatch()` path. This is the single integration point that
+    /// connects agent reasoning output to the Phase 13/14 safety pipeline.
+    async fn route_action(
+        &self,
+        action: crate::agent::AgentAction,
+        authority: AuthorityLevel,
+        jurisdiction: &Jurisdiction,
+    ) -> Result<DispatchResult> {
+        match action {
+            crate::agent::AgentAction::ExecuteStructured(sa) => {
+                self.dispatch_via_pipeline(&sa, authority, jurisdiction)
+                    .await
+            }
+            other => self.dispatcher.dispatch(other),
+        }
+    }
+
+    /// Dispatch a structured action through the constrained decision pipeline,
+    /// applying the LLM feedback loop when a pipeline is configured and the
+    /// action is rejected. When no pipeline is wired in, falls back to direct
+    /// gateway execution for backward compatibility.
+    async fn dispatch_via_pipeline(
+        &self,
+        action: &StructuredAction,
+        authority: AuthorityLevel,
+        jurisdiction: &Jurisdiction,
+    ) -> Result<DispatchResult> {
+        // Snapshot the operating context the pipeline evaluates against.
+        let system_state = *self.ctx.system_state.read();
+
+        // No pipeline configured (e.g. in tests) → degrade to direct execution
+        // so structured actions still take effect.
+        if !self.dispatcher.has_pipeline() {
+            let cmd = eneros_gateway::decision_pipeline::structured_action_to_command(action);
+            return self
+                .dispatcher
+                .dispatch(crate::agent::AgentAction::ExecuteCommand(cmd));
+        }
+
+        let result =
+            self.dispatcher
+                .dispatch_structured(action, authority, jurisdiction, system_state)?;
+
+        // If the action was executed (possibly after projection), we're done.
+        if matches!(result, DispatchResult::CommandExecuted) {
+            return Ok(result);
+        }
+
+        // Rejected — try the feedback loop if one is configured.
+        if let Some(ref feedback_loop) = self.feedback_loop {
+            return self
+                .retry_with_feedback(action, &result, feedback_loop, authority, jurisdiction)
+                .await;
+        }
+
+        Ok(result)
+    }
+
+    /// Re-prompt the reasoning engine with the rejection reason, then re-run
+    /// the pipeline on whatever structured action it produces. Capped by the
+    /// FeedbackLoop's own `max_iterations`.
+    async fn retry_with_feedback(
+        &self,
+        original: &StructuredAction,
+        rejection: &DispatchResult,
+        feedback_loop: &eneros_reasoning::feedback::FeedbackLoop,
+        authority: AuthorityLevel,
+        jurisdiction: &Jurisdiction,
+    ) -> Result<DispatchResult> {
+        let rejection_reason = match rejection {
+            DispatchResult::ConstraintRejected(r) => r.clone(),
+            DispatchResult::CommandRejected(r) => r.clone(),
+            other => format!("{:?}", other),
+        };
+
+        // Build a minimal reasoning input describing the failed attempt.
+        let input = eneros_reasoning::ReasoningInput::new("Re-plan a rejected power system action")
+            .with_observation(&format!("Rejected action: {:?}", original))
+            .with_observation(&format!("Rejection reason: {}", rejection_reason))
+            .with_constraint("Voltage must be within 0.95-1.05 pu")
+            .with_constraint("Branch loading must stay below 100%")
+            .with_constraint("N-1 security must hold");
+
+        let feedback = feedback_loop
+            .reason_with_feedback(&input, &rejection_reason)
+            .await?;
+
+        if !feedback.accepted {
+            tracing::warn!(
+                "Feedback loop exhausted after {} retries; action rejected: {}",
+                feedback.retries,
+                rejection_reason
+            );
+            return Ok(DispatchResult::ConstraintRejected(format!(
+                "rejected after {} feedback retries: {}",
+                feedback.retries, rejection_reason
+            )));
+        }
+
+        // The feedback engine may have produced new structured actions.
+        let system_state = *self.ctx.system_state.read();
+        if let Some(new_actions) = &feedback.output.structured_actions {
+            for new_action in new_actions {
+                let r = self.dispatcher.dispatch_structured(
+                    new_action,
+                    authority,
+                    jurisdiction,
+                    system_state,
+                )?;
+                if matches!(r, DispatchResult::CommandExecuted) {
+                    return Ok(r);
+                }
+            }
+        }
+
+        Ok(DispatchResult::ConstraintRejected(
+            "feedback produced no feasible action".to_string(),
+        ))
     }
 
     /// Get agent count
@@ -103,9 +292,10 @@ impl AgentOrchestrator {
 
     /// Get information about all registered agents
     pub fn registered_agents(&self) -> Vec<(String, AgentType, AuthorityLevel)> {
-        self.agents.iter().map(|h| {
-            (h.agent_name(), h.agent_type(), h.agent_authority_level())
-        }).collect()
+        self.agents
+            .iter()
+            .map(|h| (h.agent_name(), h.agent_type(), h.agent_authority_level()))
+            .collect()
     }
 
     /// Access the collaboration protocol
@@ -129,9 +319,21 @@ impl AgentOrchestrator {
     }
 
     /// Check for emergency conditions and auto-respond
-    pub fn check_emergency(&self, frequency_hz: f64, branches_tripped: usize, min_voltage_pu: f64, buses_below: usize) -> Vec<crate::emergency::EmergencyResponseResult> {
+    pub fn check_emergency(
+        &self,
+        frequency_hz: f64,
+        branches_tripped: usize,
+        min_voltage_pu: f64,
+        buses_below: usize,
+    ) -> Vec<crate::emergency::EmergencyResponseResult> {
         let state = self.state_machine.current_state();
-        self.emergency_pipeline.auto_respond(frequency_hz, branches_tripped, min_voltage_pu, buses_below, state)
+        self.emergency_pipeline.auto_respond(
+            frequency_hz,
+            branches_tripped,
+            min_voltage_pu,
+            buses_below,
+            state,
+        )
     }
 
     /// Register an agent with topology scheduling
@@ -144,7 +346,7 @@ impl AgentOrchestrator {
 mod tests {
     use super::*;
     use crate::agent::{AgentType, MockAgent};
-    use eneros_eventbus::event::{EventType, EventPayload};
+    use eneros_eventbus::event::{EventPayload, EventType};
     use eneros_eventbus::EventBus;
     use eneros_gateway::SafetyGateway;
     use eneros_memory::InMemoryMemory;
@@ -171,10 +373,7 @@ mod tests {
         let mut orchestrator = AgentOrchestrator::new(ctx);
 
         let agent = MockAgent::new("operator-1", "Operator Agent", AgentType::Operator);
-        let handler = AgentEventHandler::new(
-            Box::new(agent),
-            vec![EventType::ConstraintViolation],
-        );
+        let handler = AgentEventHandler::new(Box::new(agent), vec![EventType::ConstraintViolation]);
         orchestrator.register_agent(handler);
 
         assert_eq!(orchestrator.agent_count(), 1);
@@ -260,8 +459,14 @@ mod tests {
         let mut orchestrator = AgentOrchestrator::new(ctx);
 
         // Assign roles via protocol
-        orchestrator.protocol_mut().assign_role("coordinator-1", crate::collaboration::CollaborationRole::Coordinator);
-        orchestrator.protocol_mut().assign_role("executor-1", crate::collaboration::CollaborationRole::Executor);
+        orchestrator.protocol_mut().assign_role(
+            "coordinator-1",
+            crate::collaboration::CollaborationRole::Coordinator,
+        );
+        orchestrator.protocol_mut().assign_role(
+            "executor-1",
+            crate::collaboration::CollaborationRole::Executor,
+        );
 
         assert_eq!(orchestrator.protocol().agent_count(), 2);
 
@@ -274,7 +479,10 @@ mod tests {
         let task_id = task.id.clone();
 
         assert_eq!(orchestrator.protocol().all_tasks().len(), 1);
-        assert_eq!(orchestrator.protocol().tasks_for_agent("executor-1").len(), 1);
+        assert_eq!(
+            orchestrator.protocol().tasks_for_agent("executor-1").len(),
+            1
+        );
 
         // Update task through protocol
         let t = orchestrator.protocol_mut().get_task_mut(&task_id).unwrap();
@@ -326,7 +534,9 @@ mod tests {
         let mut orchestrator = AgentOrchestrator::new(ctx);
 
         // Transition to emergency state
-        orchestrator.transition_state(StateTransitionTrigger::ManualOverride(SystemOperatingState::Emergency));
+        orchestrator.transition_state(StateTransitionTrigger::ManualOverride(
+            SystemOperatingState::Emergency,
+        ));
         assert_eq!(orchestrator.system_state(), SystemOperatingState::Emergency);
 
         let agent = MockAgent::new("emg-1", "Emergency Agent", AgentType::Operator);
@@ -359,7 +569,10 @@ mod tests {
         orchestrator.register_with_topology(registration);
 
         // Verify the topology scheduler has the agent registered
-        assert!(orchestrator.topology_scheduler.get_agent("topo-agent-1").is_some());
+        assert!(orchestrator
+            .topology_scheduler
+            .get_agent("topo-agent-1")
+            .is_some());
     }
 
     // === Integration tests for the full Power-Native AgentOS pipeline ===
@@ -390,7 +603,9 @@ mod tests {
         assert_eq!(results[0], DispatchResult::Logged);
 
         // 4. Escalate to Emergency via state machine
-        let result = orchestrator.transition_state(StateTransitionTrigger::ManualOverride(SystemOperatingState::Emergency));
+        let result = orchestrator.transition_state(StateTransitionTrigger::ManualOverride(
+            SystemOperatingState::Emergency,
+        ));
         assert!(result.success);
         assert_eq!(orchestrator.system_state(), SystemOperatingState::Emergency);
 
@@ -431,13 +646,15 @@ mod tests {
         );
 
         // Observer authority should be rejected
-        let result = dispatcher.dispatch_with_validation(
-            crate::agent::AgentAction::ExecuteCommand(cmd),
-            eneros_core::AuthorityLevel::Observer,
-            &eneros_core::Jurisdiction::unrestricted(),
-            SystemOperatingState::Normal,
-            None,
-        ).unwrap();
+        let result = dispatcher
+            .dispatch_with_validation(
+                crate::agent::AgentAction::ExecuteCommand(cmd),
+                eneros_core::AuthorityLevel::Observer,
+                &eneros_core::Jurisdiction::unrestricted(),
+                SystemOperatingState::Normal,
+                None,
+            )
+            .unwrap();
         assert!(matches!(result, DispatchResult::CommandRejected(_)));
 
         // Operator authority should be allowed
@@ -447,13 +664,15 @@ mod tests {
             eneros_gateway::command::CommandPriority::Normal,
             "operator test",
         );
-        let result2 = dispatcher.dispatch_with_validation(
-            crate::agent::AgentAction::ExecuteCommand(cmd2),
-            eneros_core::AuthorityLevel::Operator,
-            &eneros_core::Jurisdiction::unrestricted(),
-            SystemOperatingState::Normal,
-            None,
-        ).unwrap();
+        let result2 = dispatcher
+            .dispatch_with_validation(
+                crate::agent::AgentAction::ExecuteCommand(cmd2),
+                eneros_core::AuthorityLevel::Operator,
+                &eneros_core::Jurisdiction::unrestricted(),
+                SystemOperatingState::Normal,
+                None,
+            )
+            .unwrap();
         assert_eq!(result2, DispatchResult::CommandExecuted);
     }
 
@@ -464,7 +683,11 @@ mod tests {
         let mut orchestrator = AgentOrchestrator::new(ctx);
 
         // Register an agent
-        let agent = MockAgent::new("emergency-test-1", "Emergency Test Agent", AgentType::Operator);
+        let agent = MockAgent::new(
+            "emergency-test-1",
+            "Emergency Test Agent",
+            AgentType::Operator,
+        );
         let handler = AgentEventHandler::new_all_events(Box::new(agent));
         orchestrator.register_agent(handler);
 
@@ -472,7 +695,9 @@ mod tests {
         assert_eq!(orchestrator.system_state(), SystemOperatingState::Normal);
 
         // Transition to Emergency
-        orchestrator.transition_state(StateTransitionTrigger::ManualOverride(SystemOperatingState::Emergency));
+        orchestrator.transition_state(StateTransitionTrigger::ManualOverride(
+            SystemOperatingState::Emergency,
+        ));
         assert!(orchestrator.system_state().is_emergency());
 
         // In Emergency state, process_event uses handle_emergency
@@ -500,13 +725,15 @@ mod tests {
         let trail = AuditTrail::new();
 
         // Dispatch a LogMessage with audit trail
-        let result = dispatcher.dispatch_with_validation(
-            crate::agent::AgentAction::LogMessage("audit test".to_string()),
-            eneros_core::AuthorityLevel::Operator,
-            &eneros_core::Jurisdiction::unrestricted(),
-            SystemOperatingState::Normal,
-            Some(&trail),
-        ).unwrap();
+        let result = dispatcher
+            .dispatch_with_validation(
+                crate::agent::AgentAction::LogMessage("audit test".to_string()),
+                eneros_core::AuthorityLevel::Operator,
+                &eneros_core::Jurisdiction::unrestricted(),
+                SystemOperatingState::Normal,
+                Some(&trail),
+            )
+            .unwrap();
         assert_eq!(result, DispatchResult::Logged);
         assert_eq!(trail.len(), 1);
 
@@ -517,20 +744,28 @@ mod tests {
             eneros_gateway::command::CommandPriority::Normal,
             "audit rejection test",
         );
-        let result2 = dispatcher.dispatch_with_validation(
-            crate::agent::AgentAction::ExecuteCommand(cmd),
-            eneros_core::AuthorityLevel::Observer,
-            &eneros_core::Jurisdiction::unrestricted(),
-            SystemOperatingState::Normal,
-            Some(&trail),
-        ).unwrap();
+        let result2 = dispatcher
+            .dispatch_with_validation(
+                crate::agent::AgentAction::ExecuteCommand(cmd),
+                eneros_core::AuthorityLevel::Observer,
+                &eneros_core::Jurisdiction::unrestricted(),
+                SystemOperatingState::Normal,
+                Some(&trail),
+            )
+            .unwrap();
         assert!(matches!(result2, DispatchResult::CommandRejected(_)));
         assert_eq!(trail.len(), 2);
 
         // Verify audit entries
         let entries = trail.all_entries();
-        assert_eq!(entries[0].authority_level, eneros_core::AuthorityLevel::Operator);
-        assert_eq!(entries[1].authority_level, eneros_core::AuthorityLevel::Observer);
+        assert_eq!(
+            entries[0].authority_level,
+            eneros_core::AuthorityLevel::Operator
+        );
+        assert_eq!(
+            entries[1].authority_level,
+            eneros_core::AuthorityLevel::Observer
+        );
 
         // Verify integrity
         assert!(trail.verify_integrity());

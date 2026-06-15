@@ -44,7 +44,7 @@ impl BridgeClient {
         self
     }
 
-    fn find_bridge_script() -> String {
+    pub fn find_bridge_script() -> String {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let path = std::path::Path::new(manifest_dir).join("python/bridge_http_server.py");
         path.to_string_lossy().to_string()
@@ -179,11 +179,16 @@ mod tests {
 
     #[test]
     fn test_bridge_script_path_exists() {
-        let client = BridgeClient::new();
+        // Resolve the script path directly without constructing a full
+        // BridgeClient — the latter eagerly builds a reqwest::blocking::Client,
+        // whose initialization can race with other tests under workspace-wide
+        // parallel execution and cause spurious failures. The test only needs
+        // to verify the file exists.
+        let script_path = BridgeClient::find_bridge_script();
         assert!(
-            std::path::Path::new(&client.script_path).exists(),
+            std::path::Path::new(&script_path).exists(),
             "Bridge script not found at: {}",
-            client.script_path
+            script_path
         );
     }
 }

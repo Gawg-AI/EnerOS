@@ -4,7 +4,7 @@ use axum::Json;
 use eneros_powerflow::ieee14;
 
 use crate::app::AppState;
-use crate::types::{ApiResponse, TopologyDataResponse, BusData, BranchData};
+use crate::types::{ApiResponse, BranchData, BusData, TopologyDataResponse};
 
 /// GET /api/topology
 pub async fn topology_handler(
@@ -27,24 +27,31 @@ pub async fn topology_handler(
     let data = ieee14();
     let mut zones = std::collections::HashSet::new();
 
-    let buses: Vec<BusData> = data.buses.iter().map(|b| {
-        zones.insert(0u64); // IEEE 14 has a single zone by default
-        BusData {
-            id: b.bus_id as u64,
-            name: format!("Bus {}", b.bus_id),
-            zone_id: 0,
-            voltage_kv: 138.0, // IEEE 14 is 138 kV nominal
-        }
-    }).collect();
+    let buses: Vec<BusData> = data
+        .buses
+        .iter()
+        .map(|b| {
+            zones.insert(0u64); // IEEE 14 has a single zone by default
+            BusData {
+                id: b.bus_id as u64,
+                name: format!("Bus {}", b.bus_id),
+                zone_id: 0,
+                voltage_kv: 138.0, // IEEE 14 is 138 kV nominal
+            }
+        })
+        .collect();
 
-    let branches: Vec<BranchData> = data.branches.iter().enumerate().map(|(i, b)| {
-        BranchData {
+    let branches: Vec<BranchData> = data
+        .branches
+        .iter()
+        .enumerate()
+        .map(|(i, b)| BranchData {
             id: i as u64,
             from_bus: b.from_bus as u64,
             to_bus: b.to_bus as u64,
             reactance: b.x_pu,
-        }
-    }).collect();
+        })
+        .collect();
 
     let response = TopologyDataResponse {
         buses,

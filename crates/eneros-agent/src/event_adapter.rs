@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use eneros_core::{AuthorityLevel, Result};
+use eneros_core::{AuthorityLevel, Jurisdiction, Result};
 use eneros_eventbus::{Event, EventHandler};
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
@@ -18,6 +18,7 @@ pub struct AgentEventHandler {
     agent_type: AgentType,
     /// Cached agent authority level (immutable after construction)
     agent_authority_level: AuthorityLevel,
+    agent_jurisdiction: Jurisdiction,
     /// Cached tick interval (immutable after construction)
     tick_interval: std::time::Duration,
     /// Last actions produced by the agent (for inspection/testing)
@@ -34,6 +35,7 @@ impl AgentEventHandler {
         let agent_name = agent.name().to_string();
         let agent_type = agent.agent_type();
         let agent_authority_level = agent.authority_level();
+        let agent_jurisdiction = agent.jurisdiction();
         let tick_interval = agent.tick_interval();
         Self {
             agent: AsyncMutex::new(agent),
@@ -42,6 +44,7 @@ impl AgentEventHandler {
             agent_name,
             agent_type,
             agent_authority_level,
+            agent_jurisdiction,
             tick_interval,
             last_actions: Mutex::new(Vec::new()),
         }
@@ -50,13 +53,16 @@ impl AgentEventHandler {
     /// Create a handler that handles all event types
     pub fn new_all_events(agent: Box<dyn Agent>) -> Self {
         use eneros_eventbus::event::EventType;
-        Self::new(agent, vec![
-            EventType::ConstraintViolation,
-            EventType::EquipmentStatusChanged,
-            EventType::TopologyChanged,
-            EventType::PowerFlowConverged,
-            EventType::SystemAlarm,
-        ])
+        Self::new(
+            agent,
+            vec![
+                EventType::ConstraintViolation,
+                EventType::EquipmentStatusChanged,
+                EventType::TopologyChanged,
+                EventType::PowerFlowConverged,
+                EventType::SystemAlarm,
+            ],
+        )
     }
 
     /// Get the last actions produced by the agent
@@ -65,7 +71,11 @@ impl AgentEventHandler {
     }
 
     /// Handle an event with a given AgentContext, returning the actions
-    pub async fn handle_with_context(&self, event: Event, ctx: &AgentContext) -> Result<Vec<AgentAction>> {
+    pub async fn handle_with_context(
+        &self,
+        event: Event,
+        ctx: &AgentContext,
+    ) -> Result<Vec<AgentAction>> {
         let mut agent = self.agent.lock().await;
         let actions = agent.handle_event(&event, ctx).await?;
         drop(agent); // Release async lock before acquiring last_actions
@@ -74,7 +84,11 @@ impl AgentEventHandler {
     }
 
     /// Handle an event as an emergency with a given AgentContext, returning the actions
-    pub async fn handle_emergency_with_context(&self, event: Event, ctx: &AgentContext) -> Result<Vec<AgentAction>> {
+    pub async fn handle_emergency_with_context(
+        &self,
+        event: Event,
+        ctx: &AgentContext,
+    ) -> Result<Vec<AgentAction>> {
         let mut agent = self.agent.lock().await;
         let actions = agent.handle_emergency(&event, ctx).await?;
         drop(agent); // Release async lock before acquiring last_actions
@@ -110,6 +124,10 @@ impl AgentEventHandler {
     pub fn agent_authority_level(&self) -> AuthorityLevel {
         self.agent_authority_level
     }
+
+    pub fn agent_jurisdiction(&self) -> Jurisdiction {
+        self.agent_jurisdiction.clone()
+    }
 }
 
 #[async_trait]
@@ -117,7 +135,11 @@ impl EventHandler for AgentEventHandler {
     async fn handle(&self, event: Event) -> std::result::Result<(), String> {
         // Note: Without AgentContext, we can only log that an event was received.
         // Full handling requires the Orchestrator to provide AgentContext.
-        tracing::info!("AgentEventHandler '{}' received event: {:?}", self.name, event.event_type);
+        tracing::info!(
+            "AgentEventHandler '{}' received event: {:?}",
+            self.name,
+            event.event_type
+        );
         Ok(())
     }
 
@@ -135,15 +157,15 @@ mod tests {
     use super::*;
     use crate::agent::{AgentType, MockAgent};
     use crate::context::AgentContext;
-    use eneros_eventbus::event::{EventType, EventPayload};
+    use eneros_eventbus::event::{EventPayload, EventType};
     use eneros_eventbus::EventBus;
     use eneros_gateway::SafetyGateway;
     use eneros_memory::InMemoryMemory;
     use eneros_network::PowerNetwork;
     use eneros_reasoning::RuleBasedEngine;
     use eneros_tool::ToolEngine;
-    use std::sync::Arc;
     use parking_lot::RwLock;
+    use std::sync::Arc;
 
     fn test_context() -> AgentContext {
         AgentContext::new(
@@ -185,10 +207,7 @@ mod tests {
     #[tokio::test]
     async fn test_event_handler_handle_succeeds() {
         let agent = MockAgent::new("mock-3", "Handle Agent", AgentType::Dispatcher);
-        let handler = AgentEventHandler::new(
-            Box::new(agent),
-            vec![EventType::ConstraintViolation],
-        );
+        let handler = AgentEventHandler::new(Box::new(agent), vec![EventType::ConstraintViolation]);
 
         let event = Event::new(
             EventType::ConstraintViolation,
@@ -204,10 +223,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_with_context_returns_actions() {
         let agent = MockAgent::new("mock-4", "Context Agent", AgentType::Operator);
-        let handler = AgentEventHandler::new(
-            Box::new(agent),
-            vec![EventType::ConstraintViolation],
-        );
+        let handler = AgentEventHandler::new(Box::new(agent), vec![EventType::ConstraintViolation]);
 
         let ctx = test_context();
         let event = Event::new(

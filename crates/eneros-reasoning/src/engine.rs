@@ -86,6 +86,10 @@ pub struct ReasoningOutput {
     pub actions: Vec<String>,
     /// Reasoning chain (explainability)
     pub reasoning_chain: Vec<String>,
+    /// Structured actions (when available from LLM reasoning)
+    pub structured_actions: Option<Vec<eneros_core::StructuredAction>>,
+    /// Preconditions that must be satisfied before executing actions
+    pub preconditions: Vec<String>,
 }
 
 impl ReasoningOutput {
@@ -96,6 +100,8 @@ impl ReasoningOutput {
             confidence: confidence.clamp(0.0, 1.0),
             actions: Vec::new(),
             reasoning_chain: Vec::new(),
+            structured_actions: None,
+            preconditions: Vec::new(),
         }
     }
 
@@ -109,6 +115,18 @@ impl ReasoningOutput {
     pub fn with_step(mut self, step: &str) -> Self {
         self.reasoning_chain.push(step.to_string());
         self
+    }
+
+    /// Create from a StructuredActionOutput
+    pub fn from_structured(output: crate::structured_output::StructuredActionOutput) -> Self {
+        Self {
+            conclusion: output.reasoning_chain.clone(),
+            confidence: output.confidence,
+            actions: output.actions.iter().map(|a| format!("{:?}", a)).collect(),
+            reasoning_chain: vec![output.reasoning_chain],
+            structured_actions: Some(output.actions),
+            preconditions: output.preconditions,
+        }
     }
 }
 

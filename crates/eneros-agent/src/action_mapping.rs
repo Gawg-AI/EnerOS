@@ -146,7 +146,25 @@ impl ActionMapper {
 
     /// Map ReasoningOutput to AgentActions
     /// Attempts to parse action strings; falls back to PublishEvent for unparseable actions
+    /// Map a `ReasoningOutput` to executable `AgentAction`s.
+    ///
+    /// If the reasoning engine produced structured actions (the preferred
+    /// Phase 14 path), each one becomes an `AgentAction::ExecuteStructured`
+    /// that the orchestrator routes through the `ConstrainedDecisionPipeline`.
+    /// Otherwise we fall back to the legacy free-text keyword matching.
     pub fn map_reasoning_output(output: &ReasoningOutput) -> Vec<AgentAction> {
+        // Prefer structured actions when available — they bypass the fragile
+        // string keyword matcher and carry typed parameters directly.
+        if let Some(ref structured) = output.structured_actions {
+            if !structured.is_empty() {
+                return structured
+                    .iter()
+                    .map(|sa| AgentAction::ExecuteStructured(sa.clone()))
+                    .collect();
+            }
+        }
+
+        // Legacy path: parse free-text action strings via keyword matching.
         output.actions.iter().map(|action_str| {
             Self::parse_action_string(action_str)
                 .unwrap_or_else(|| {
@@ -271,6 +289,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_map_reasoning_output_prefers_structured_actions() {
+        // When structured_actions is Some, the mapper must produce
+        // AgentAction::ExecuteStructured variants — never touching the
+        // fragile text keyword path.
+        let output = ReasoningOutput {
+            conclusion: "undervoltage".to_string(),
+            confidence: 0.9,
+            actions: vec!["adjust generator 1 to 300MW".to_string()],
+            reasoning_chain: vec![],
+            structured_actions: Some(vec![
+                StructuredAction::StartGenerator { gen_id: 1, target_mw: 100.0 },
+                StructuredAction::ShedLoad { zone_id: 2, amount_mw: 25.0 },
+            ]),
+            preconditions: vec![],
+        };
+        let results = ActionMapper::map_reasoning_output(&output);
+        assert_eq!(results.len(), 2);
+        assert!(matches!(
+            results[0],
+            AgentAction::ExecuteStructured(StructuredAction::StartGenerator { .. })
+        ));
+        assert!(matches!(
+            results[1],
+            AgentAction::ExecuteStructured(StructuredAction::ShedLoad { .. })
+        ));
+    }
+
+    #[test]
+    fn test_map_reasoning_output_falls_back_when_structured_empty() {
+        // structured_actions present but empty → must use the legacy text path.
+        let output = ReasoningOutput {
+            conclusion: "adjust".to_string(),
+            confidence: 0.8,
+            actions: vec!["adjust generator 1 to 100MW".to_string()],
+            reasoning_chain: vec![],
+            structured_actions: Some(vec![]),
+            preconditions: vec![],
+        };
+        let results = ActionMapper::map_reasoning_output(&output);
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], AgentAction::ExecuteCommand(_)));
+    }
+
+    #[test]
+    fn test_map_reasoning_output_falls_back_when_structured_none() {
+        // structured_actions is None → legacy text path (existing behavior).
+        let output = ReasoningOutput {
+            conclusion: "adjust".to_string(),
+            confidence: 0.8,
+            actions: vec!["adjust generator 1 to 100MW".to_string()],
+            reasoning_chain: vec![],
+            structured_actions: None,
+            preconditions: vec![],
+        };
+        let results = ActionMapper::map_reasoning_output(&output);
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], AgentAction::ExecuteCommand(_)));
+    }
+
+    #[test]
     fn test_map_emergency_action_execute_device() {
         let mut params = std::collections::HashMap::new();
         params.insert("value".to_string(), 100.0);
@@ -347,6 +425,8 @@ mod tests {
             confidence: 0.9,
             actions: vec!["adjust generator 1 to 100MW".to_string()],
             reasoning_chain: vec![],
+            structured_actions: None,
+            preconditions: vec![],
         };
         let results = ActionMapper::map_reasoning_output(&output);
         assert_eq!(results.len(), 1);
@@ -360,6 +440,8 @@ mod tests {
             confidence: 0.8,
             actions: vec!["shed load 50MW".to_string()],
             reasoning_chain: vec![],
+            structured_actions: None,
+            preconditions: vec![],
         };
         let results = ActionMapper::map_reasoning_output(&output);
         assert_eq!(results.len(), 1);
@@ -373,6 +455,8 @@ mod tests {
             confidence: 0.5,
             actions: vec!["do something complicated".to_string()],
             reasoning_chain: vec![],
+            structured_actions: None,
+            preconditions: vec![],
         };
         let results = ActionMapper::map_reasoning_output(&output);
         assert_eq!(results.len(), 1);
@@ -386,6 +470,8 @@ mod tests {
             confidence: 0.9,
             actions: vec!["切负荷 30MW".to_string()],
             reasoning_chain: vec![],
+            structured_actions: None,
+            preconditions: vec![],
         };
         let results = ActionMapper::map_reasoning_output(&output);
         assert_eq!(results.len(), 1);

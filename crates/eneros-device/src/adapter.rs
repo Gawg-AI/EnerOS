@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(DataValue::Bool(true).to_string(), "true");
         assert_eq!(DataValue::Int16(42).to_string(), "42");
         assert_eq!(DataValue::Int32(100000).to_string(), "100000");
-        assert_eq!(DataValue::Float64(3.14).to_string(), "3.14");
+        assert_eq!(DataValue::Float64(2.5).to_string(), "2.5");
         assert_eq!(DataValue::String("hello".into()).to_string(), "hello");
     }
 

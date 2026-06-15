@@ -20,3 +20,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+eneros-agent = { path = "../eneros-agent" }
+eneros-reasoning = { path = "../eneros-reasoning" }
+async-trait = { workspace = true }

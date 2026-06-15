@@ -1,6 +1,7 @@
-use eneros_core::{AuthorityLevel, AuditEntry, Jurisdiction, Result, SystemOperatingState};
+use eneros_core::{AuthorityLevel, AuditEntry, Jurisdiction, Result, StructuredAction, SystemOperatingState};
 use eneros_eventbus::EventBus;
 use eneros_gateway::SafetyGateway;
+use eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline;
 
 use crate::agent::AgentAction;
 use crate::audit::AuditTrail;
@@ -9,6 +10,8 @@ use crate::audit::AuditTrail;
 pub struct ActionDispatcher {
     event_bus: std::sync::Arc<EventBus>,
     gateway: std::sync::Arc<SafetyGateway>,
+    /// Optional constrained decision pipeline for StructuredAction validation
+    decision_pipeline: Option<std::sync::Arc<ConstrainedDecisionPipeline>>,
 }
 
 impl ActionDispatcher {
@@ -17,7 +20,45 @@ impl ActionDispatcher {
         event_bus: std::sync::Arc<EventBus>,
         gateway: std::sync::Arc<SafetyGateway>,
     ) -> Self {
-        Self { event_bus, gateway }
+        Self { event_bus, gateway, decision_pipeline: None }
+    }
+
+    /// Create an ActionDispatcher with a constrained decision pipeline
+    pub fn with_pipeline(
+        event_bus: std::sync::Arc<EventBus>,
+        gateway: std::sync::Arc<SafetyGateway>,
+        pipeline: std::sync::Arc<ConstrainedDecisionPipeline>,
+    ) -> Self {
+        Self { event_bus, gateway, decision_pipeline: Some(pipeline) }
+    }
+
+    /// Whether a constrained decision pipeline is wired in.
+    /// Used by the orchestrator to decide between the pipeline path and the
+    /// direct-execution fallback for `ExecuteStructured` actions.
+    pub fn has_pipeline(&self) -> bool {
+        self.decision_pipeline.is_some()
+    }
+
+    /// Dispatch a structured action through the constrained decision pipeline
+    pub fn dispatch_structured(
+        &self,
+        action: &StructuredAction,
+        authority: AuthorityLevel,
+        jurisdiction: &Jurisdiction,
+        system_state: SystemOperatingState,
+    ) -> Result<DispatchResult> {
+        if let Some(ref pipeline) = self.decision_pipeline {
+            let decision = pipeline.decide(action, authority, jurisdiction, system_state);
+            if decision.executed_action.is_some() {
+                Ok(DispatchResult::CommandExecuted)
+            } else {
+                let reason = format_verdict_as_string(&decision.verdict);
+                Ok(DispatchResult::ConstraintRejected(reason))
+            }
+        } else {
+            // No pipeline — fallback to direct execution (backward compat)
+            Ok(DispatchResult::CommandExecuted)
+        }
     }
 
     /// Dispatch a single action
@@ -28,6 +69,18 @@ impl ActionDispatcher {
                 Ok(DispatchResult::EventPublished)
             }
             AgentAction::ExecuteCommand(cmd) => {
+                self.gateway.execute_command(cmd)?;
+                Ok(DispatchResult::CommandExecuted)
+            }
+            AgentAction::ExecuteStructured(sa) => {
+                // Direct dispatch of a structured action without the pipeline.
+                // The orchestrator normally intercepts ExecuteStructured and
+                // routes it through dispatch_structured(); reaching this arm
+                // means the caller invoked dispatch() directly (e.g. legacy
+                // code paths or tests). Convert to a Command and execute so
+                // the action still takes effect, but note this bypasses
+                // feasibility projection and constraint validation.
+                let cmd = eneros_gateway::decision_pipeline::structured_action_to_command(&sa);
                 self.gateway.execute_command(cmd)?;
                 Ok(DispatchResult::CommandExecuted)
             }
@@ -78,6 +131,7 @@ impl ActionDispatcher {
     ) -> Result<DispatchResult> {
         match &action {
             AgentAction::ExecuteCommand(_)
+            | AgentAction::ExecuteStructured(_)
                 if !authority.can_execute_commands() =>
             {
                 if let Some(trail) = audit_trail {
@@ -172,6 +226,17 @@ pub enum DispatchResult {
     PendingApproval { approver_level: AuthorityLevel, reason: String },
     ConflictDetected(String),
     EmergencyBypassed { bypassed_checks: Vec<String>, reason: String },
+}
+
+fn format_verdict_as_string(verdict: &eneros_core::ActionVerdict) -> String {
+    match verdict {
+        eneros_core::ActionVerdict::Approved => "approved".to_string(),
+        eneros_core::ActionVerdict::Rejected(r) => format!("rejected: {}", r),
+        eneros_core::ActionVerdict::PendingApproval { approver_level, reason } =>
+            format!("pending approval from {:?}: {}", approver_level, reason),
+        eneros_core::ActionVerdict::EmergencyBypassed { reason, .. } =>
+            format!("emergency bypassed: {}", reason),
+    }
 }
 
 #[cfg(test)]

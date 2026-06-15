@@ -129,12 +129,15 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
     let event_bus = Arc::new(eneros_eventbus::EventBus::new(64));
     println!("  [Core] EventBus created");
 
-    // 1b. Create PriorityEventBus for realtime event routing
-    let _priority_event_bus = Arc::new(eneros_eventbus::PriorityEventBus::new(10_000, 1_000));
-    println!("  [Core] PriorityEventBus created (normal=10K, urgent=1K)");
+    // 2. Create ConstraintEngine (EventBus wired; Projector added later after PowerNetwork creation)
+    let constraint_engine = Arc::new(eneros_constraint::ConstraintEngine::with_event_bus(event_bus.clone()));
+    println!("  [Constraint] Engine created (EventBus wired)");
 
-    // 2. Create PowerNetwork from IEEE 14 bus data
-    let network = Arc::new(eneros_network::PowerNetwork::from_ieee14());
+    // 3. Create PowerNetwork from IEEE 14 bus data with shared ConstraintEngine
+    let network = Arc::new(
+        eneros_network::PowerNetwork::from_ieee14()
+            .with_constraint_engine(constraint_engine.clone())
+    );
     println!("  [Network] IEEE 14-bus network loaded ({} buses, {} branches)",
         network.bus_count(), network.branch_count());
 
@@ -166,20 +169,16 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
     );
     println!("  [SCADA] SnapshotBuilder created");
 
-    // 7. Create ConstraintEngine
-    let constraint_engine = Arc::new(eneros_constraint::ConstraintEngine::new());
-    println!("  [Constraint] Engine created");
-
-    // 8. Create SafetyGateway with PriorityCommandQueue
+    // 7. Create SafetyGateway with PriorityCommandQueue
     let command_queue = Arc::new(eneros_gateway::SharedPriorityCommandQueue::new());
     let gateway = Arc::new(eneros_gateway::SafetyGateway::with_queue(100, command_queue.clone()));
     println!("  [Gateway] SafetyGateway created with PriorityCommandQueue");
 
-    // 8b. Start RealtimeExecutor
+    // 7b. Start RealtimeExecutor
     let rt_executor = gateway.start_executor()?;
     println!("  [Gateway] RealtimeExecutor started");
 
-    // 8c. Start WatchdogTimer
+    // 7c. Start WatchdogTimer
     let watchdog = Arc::new(eneros_gateway::WatchdogTimer::new(
         std::time::Duration::from_millis(500)
     ));
@@ -209,6 +208,36 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
             Arc::new(eneros_reasoning::RuleBasedEngine::new())
         };
 
+    // 9b. Create ConstrainedDecisionPipeline (feasibility projection + constraint validation)
+    let network_simulator = Arc::new(eneros_network::NetworkSimulatorAdapter::new(network_rw.clone()));
+    let projector = Arc::new(eneros_constraint::projector::FeasibilityProjector::new(network_simulator));
+
+    // 9c. Wire Projector into ConstraintEngine (now that it's created)
+    constraint_engine.set_projector(projector.clone());
+    println!("  [Constraint] Projector wired into ConstraintEngine");
+
+    let pipeline_validator = Arc::new(eneros_gateway::constraint_validator::ConstraintAwareValidator::with_projector(
+        constraint_engine.clone(),
+        gateway.clone(),
+        eneros_gateway::interlocking::InterlockingRuleEngine::new(),
+        projector.clone(),
+    ));
+    let decision_pipeline = Arc::new(eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline::new(
+        projector,
+        pipeline_validator,
+        gateway.clone(),
+    ));
+    println!("  [Pipeline] ConstrainedDecisionPipeline created (projection + validation + execution)");
+
+    // Phase 14: build the LLM feedback loop from the shared reasoning engine
+    // *before* it is moved into the AgentContext. The loop re-prompts the
+    // engine when the decision pipeline rejects an action, closing the
+    // "LLM → projection → validation → re-reasoning" loop.
+    let feedback_loop = Arc::new(eneros_reasoning::feedback::FeedbackLoop::with_default_iterations_shared(
+        reasoning.clone(),
+    ));
+    println!("  [Pipeline] FeedbackLoop created (shared reasoning engine, max 2 retries)");
+
     let ctx = eneros_agent::AgentContext::new(
         event_bus.clone(),
         gateway.clone(),
@@ -217,8 +246,12 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
         memory,
         reasoning,
     );
-    let mut orchestrator = eneros_agent::AgentOrchestrator::new(ctx);
-    println!("  [Agent] Orchestrator created");
+    let mut orchestrator = eneros_agent::AgentOrchestrator::with_pipeline_and_feedback(
+        ctx,
+        decision_pipeline.clone(),
+        feedback_loop,
+    );
+    println!("  [Agent] Orchestrator created with ConstrainedDecisionPipeline + FeedbackLoop");
 
     // 10. Register all 6 domain agents
     use eneros_agent::event_adapter::AgentEventHandler;
@@ -298,7 +331,8 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
         .with_agent_orchestrator(orchestrator.clone())
         .with_data_pipeline(pipeline.clone())
         .with_snapshot_builder(snapshot_builder.clone())
-        .with_data_driven_loop(dd_loop.clone());
+        .with_data_driven_loop(dd_loop.clone())
+        .with_decision_pipeline(decision_pipeline);
 
     // 13. Start SCADA pipeline background task
     let pipeline_handle = pipeline.start(1000);

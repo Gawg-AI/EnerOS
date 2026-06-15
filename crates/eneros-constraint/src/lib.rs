@@ -1,8 +1,10 @@
 pub mod engine;
+pub mod projector;
 pub mod rules;
 pub mod violation;
 
 pub use engine::ConstraintEngine;
+pub use projector::{FeasibilityProjector, ProjectionResult, WhatIfResult, NetworkSimulator, ActionModification};
 pub use rules::{Constraint, ConstraintType, ConstraintCategory, ResponseStrategy,
     N1Result, N1Violation, N1ViolationType, StabilityResult, VoltageMargin};
 pub use violation::Violation;
