@@ -2,7 +2,7 @@ use axum::extract::State;
 use axum::Json;
 
 use crate::app::AppState;
-use crate::types::{ApiResponse, AgentsResponse, AgentInfo};
+use crate::types::{AgentInfo, AgentsResponse, ApiResponse};
 
 /// Known agent types in the EnerOS system (fallback when no orchestrator is available)
 const KNOWN_AGENT_TYPES: &[(&str, &str, &str)] = &[
@@ -14,33 +14,34 @@ const KNOWN_AGENT_TYPES: &[(&str, &str, &str)] = &[
 ];
 
 /// GET /api/agents
-pub async fn agents_handler(
-    State(state): State<AppState>,
-) -> Json<ApiResponse<AgentsResponse>> {
+pub async fn agents_handler(State(state): State<AppState>) -> Json<ApiResponse<AgentsResponse>> {
     // If agent_orchestrator is available, query registered agents
     if let Some(orchestrator) = &state.agent_orchestrator {
         let registered = orchestrator.registered_agents();
-        let agents: Vec<AgentInfo> = registered.iter().map(|(name, agent_type, authority)| {
-            let type_str = match agent_type {
-                eneros_agent::AgentType::Dispatcher => "Dispatcher",
-                eneros_agent::AgentType::Operator => "Operator",
-                eneros_agent::AgentType::Planner => "Planner",
-                eneros_agent::AgentType::Trader => "Trader",
-                eneros_agent::AgentType::Custom(ref s) => s,
-            };
-            let auth_str = match authority {
-                eneros_core::AuthorityLevel::Emergency => "Emergency",
-                eneros_core::AuthorityLevel::Supervisor => "Supervisor",
-                eneros_core::AuthorityLevel::Operator => "Operator",
-                eneros_core::AuthorityLevel::Observer => "Observer",
-            };
-            AgentInfo {
-                name: name.clone(),
-                agent_type: type_str.to_string(),
-                authority: auth_str.to_string(),
-                status: "active".to_string(),
-            }
-        }).collect();
+        let agents: Vec<AgentInfo> = registered
+            .iter()
+            .map(|(name, agent_type, authority)| {
+                let type_str = match agent_type {
+                    eneros_agent::AgentType::Dispatcher => "Dispatcher",
+                    eneros_agent::AgentType::Operator => "Operator",
+                    eneros_agent::AgentType::Planner => "Planner",
+                    eneros_agent::AgentType::Trader => "Trader",
+                    eneros_agent::AgentType::Custom(ref s) => s,
+                };
+                let auth_str = match authority {
+                    eneros_core::AuthorityLevel::Emergency => "Emergency",
+                    eneros_core::AuthorityLevel::Supervisor => "Supervisor",
+                    eneros_core::AuthorityLevel::Operator => "Operator",
+                    eneros_core::AuthorityLevel::Observer => "Observer",
+                };
+                AgentInfo {
+                    name: name.clone(),
+                    agent_type: type_str.to_string(),
+                    authority: auth_str.to_string(),
+                    status: "active".to_string(),
+                }
+            })
+            .collect();
 
         let response = AgentsResponse {
             agent_count: agents.len(),
@@ -50,14 +51,15 @@ pub async fn agents_handler(
     }
 
     // Fallback: return placeholder list based on known agent types
-    let agents: Vec<AgentInfo> = KNOWN_AGENT_TYPES.iter().map(|(name, agent_type, authority)| {
-        AgentInfo {
+    let agents: Vec<AgentInfo> = KNOWN_AGENT_TYPES
+        .iter()
+        .map(|(name, agent_type, authority)| AgentInfo {
             name: name.to_string(),
             agent_type: agent_type.to_string(),
             authority: authority.to_string(),
             status: "available".to_string(),
-        }
-    }).collect();
+        })
+        .collect();
 
     let response = AgentsResponse {
         agent_count: agents.len(),

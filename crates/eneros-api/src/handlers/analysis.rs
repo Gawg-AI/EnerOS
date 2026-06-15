@@ -2,12 +2,11 @@ use axum::extract::State;
 use axum::Json;
 
 use eneros_analysis::{
-    DcOpfSolver, DcOpfProblem, GeneratorBid, BranchLimit,
-    StateEstimator, Measurement, MeasType,
-    ShortCircuitAnalyzer, FaultSpec, FaultType, SequenceImpedance,
+    BranchLimit, DcOpfProblem, DcOpfSolver, FaultSpec, FaultType, GeneratorBid, MeasType,
+    Measurement, SequenceImpedance, ShortCircuitAnalyzer, StateEstimator,
 };
-use num_complex::Complex64;
 use ndarray::Array2;
+use num_complex::Complex64;
 
 use crate::app::AppState;
 use crate::types::*;
@@ -21,35 +20,51 @@ pub async fn opf_handler(
     if let Some(network) = &state.network {
         let pf_result = match network.solve() {
             Ok(r) => r,
-            Err(e) => return Json(ApiResponse::error(format!("Power flow for OPF failed: {}", e))),
+            Err(e) => {
+                return Json(ApiResponse::error(format!(
+                    "Power flow for OPF failed: {}",
+                    e
+                )))
+            }
         };
 
         // Build generators from power flow results (use existing generation as bids)
-        let generators: Vec<GeneratorBid> = pf_result.bus_results.iter().enumerate().map(|(i, bus)| {
-            GeneratorBid {
+        let generators: Vec<GeneratorBid> = pf_result
+            .bus_results
+            .iter()
+            .enumerate()
+            .map(|(i, bus)| GeneratorBid {
                 gen_id: bus.bus_id,
                 bus_id: bus.bus_id,
                 p_min: 0.0,
-                p_max: if bus.p_injection > 0.0 { bus.p_injection * 1.5 } else { 100.0 },
+                p_max: if bus.p_injection > 0.0 {
+                    bus.p_injection * 1.5
+                } else {
+                    100.0
+                },
                 cost_a: 0.001,
                 cost_b: 10.0 + i as f64,
                 cost_c: 100.0,
-            }
-        }).collect();
+            })
+            .collect();
 
         // Build branches from network
-        let branches: Vec<BranchLimit> = pf_result.branch_results.iter().map(|b| {
-            BranchLimit {
+        let branches: Vec<BranchLimit> = pf_result
+            .branch_results
+            .iter()
+            .map(|b| BranchLimit {
                 branch_id: b.branch_id,
                 from_bus: b.from_bus,
                 to_bus: b.to_bus,
                 p_limit_mw: 200.0,
                 reactance_pu: 0.1,
-            }
-        }).collect();
+            })
+            .collect();
 
         // Build loads from negative injections
-        let loads: Vec<(u64, f64)> = pf_result.bus_results.iter()
+        let loads: Vec<(u64, f64)> = pf_result
+            .bus_results
+            .iter()
             .filter(|b| b.p_injection < 0.0)
             .map(|b| (b.bus_id, -b.p_injection))
             .collect();
@@ -79,23 +94,31 @@ pub async fn opf_handler(
     }
 
     // Fallback: use request data directly
-    let generators: Vec<GeneratorBid> = req.generators.iter().map(|g| GeneratorBid {
-        gen_id: g.gen_id,
-        bus_id: g.bus_id,
-        p_min: g.p_min,
-        p_max: g.p_max,
-        cost_a: g.cost_a,
-        cost_b: g.cost_b,
-        cost_c: g.cost_c,
-    }).collect();
+    let generators: Vec<GeneratorBid> = req
+        .generators
+        .iter()
+        .map(|g| GeneratorBid {
+            gen_id: g.gen_id,
+            bus_id: g.bus_id,
+            p_min: g.p_min,
+            p_max: g.p_max,
+            cost_a: g.cost_a,
+            cost_b: g.cost_b,
+            cost_c: g.cost_c,
+        })
+        .collect();
 
-    let branches: Vec<BranchLimit> = req.branches.iter().map(|b| BranchLimit {
-        branch_id: b.branch_id,
-        from_bus: b.from_bus,
-        to_bus: b.to_bus,
-        p_limit_mw: b.p_limit,
-        reactance_pu: b.reactance,
-    }).collect();
+    let branches: Vec<BranchLimit> = req
+        .branches
+        .iter()
+        .map(|b| BranchLimit {
+            branch_id: b.branch_id,
+            from_bus: b.from_bus,
+            to_bus: b.to_bus,
+            p_limit_mw: b.p_limit,
+            reactance_pu: b.reactance,
+        })
+        .collect();
 
     let problem = DcOpfProblem {
         generators,
@@ -128,14 +151,16 @@ pub async fn state_estimation_handler(
     if let Some(network) = &state.network {
         match network.solve() {
             Ok(pf_result) => {
-                let measurements: Vec<Measurement> = pf_result.bus_results.iter().map(|b| {
-                    Measurement {
+                let measurements: Vec<Measurement> = pf_result
+                    .bus_results
+                    .iter()
+                    .map(|b| Measurement {
                         meas_type: MeasType::VoltageMagnitude,
                         element_id: b.bus_id,
                         value: b.voltage_magnitude,
                         sigma: 0.01,
-                    }
-                }).collect();
+                    })
+                    .collect();
 
                 let bus_count = pf_result.bus_results.len();
                 let slack_bus = pf_result.bus_results.first().map(|b| b.bus_id).unwrap_or(0);
@@ -150,30 +175,44 @@ pub async fn state_estimation_handler(
                         };
                         return Json(ApiResponse::success(response));
                     }
-                    Err(e) => return Json(ApiResponse::error(format!("State estimation failed: {}", e))),
+                    Err(e) => {
+                        return Json(ApiResponse::error(format!(
+                            "State estimation failed: {}",
+                            e
+                        )))
+                    }
                 }
             }
-            Err(e) => return Json(ApiResponse::error(format!("Power flow for SE failed: {}", e))),
+            Err(e) => {
+                return Json(ApiResponse::error(format!(
+                    "Power flow for SE failed: {}",
+                    e
+                )))
+            }
         }
     }
 
     // Fallback: use request data
-    let measurements: Vec<Measurement> = req.measurements.iter().map(|m| {
-        let meas_type = match m.meas_type.to_lowercase().as_str() {
-            "voltage" | "voltage_magnitude" => MeasType::VoltageMagnitude,
-            "bus_p" | "bus_injection_p" => MeasType::BusInjectionP,
-            "bus_q" | "bus_injection_q" => MeasType::BusInjectionQ,
-            "branch_p" | "branch_flow_p" => MeasType::BranchFlowP,
-            "branch_q" | "branch_flow_q" => MeasType::BranchFlowQ,
-            _ => MeasType::VoltageMagnitude,
-        };
-        Measurement {
-            meas_type,
-            element_id: m.element_id,
-            value: m.value,
-            sigma: m.sigma,
-        }
-    }).collect();
+    let measurements: Vec<Measurement> = req
+        .measurements
+        .iter()
+        .map(|m| {
+            let meas_type = match m.meas_type.to_lowercase().as_str() {
+                "voltage" | "voltage_magnitude" => MeasType::VoltageMagnitude,
+                "bus_p" | "bus_injection_p" => MeasType::BusInjectionP,
+                "bus_q" | "bus_injection_q" => MeasType::BusInjectionQ,
+                "branch_p" | "branch_flow_p" => MeasType::BranchFlowP,
+                "branch_q" | "branch_flow_q" => MeasType::BranchFlowQ,
+                _ => MeasType::VoltageMagnitude,
+            };
+            Measurement {
+                meas_type,
+                element_id: m.element_id,
+                value: m.value,
+                sigma: m.sigma,
+            }
+        })
+        .collect();
 
     let estimator = StateEstimator::default_estimator();
     match estimator.estimate(&measurements, req.bus_count, req.slack_bus) {
@@ -185,7 +224,10 @@ pub async fn state_estimation_handler(
             };
             Json(ApiResponse::success(response))
         }
-        Err(e) => Json(ApiResponse::error(format!("State estimation failed: {}", e))),
+        Err(e) => Json(ApiResponse::error(format!(
+            "State estimation failed: {}",
+            e
+        ))),
     }
 }
 
@@ -241,24 +283,35 @@ pub async fn short_circuit_handler(
     if let Some(network) = &state.network {
         let pf_result = match network.solve() {
             Ok(r) => r,
-            Err(e) => return Json(ApiResponse::error(format!("Power flow for SC failed: {}", e))),
+            Err(e) => {
+                return Json(ApiResponse::error(format!(
+                    "Power flow for SC failed: {}",
+                    e
+                )))
+            }
         };
 
         let z_bus = match build_z_bus(network.ybus()) {
             Some(z) => z,
-            None => return Json(ApiResponse::error("Failed to build Z-bus matrix (singular Y-bus)".to_string())),
+            None => {
+                return Json(ApiResponse::error(
+                    "Failed to build Z-bus matrix (singular Y-bus)".to_string(),
+                ))
+            }
         };
 
-        let prefault_voltages: Vec<Complex64> = pf_result.bus_results.iter().map(|b| {
-            Complex64::from_polar(b.voltage_magnitude, b.voltage_angle)
-        }).collect();
+        let prefault_voltages: Vec<Complex64> = pf_result
+            .bus_results
+            .iter()
+            .map(|b| Complex64::from_polar(b.voltage_magnitude, b.voltage_angle))
+            .collect();
 
         // For asymmetric faults, provide sequence impedances
         let seq_z = if fault_type != FaultType::ThreePhase {
             let z_ff = z_bus[[req.bus_id as usize, req.bus_id as usize]];
             Some(SequenceImpedance {
                 z1: z_ff,
-                z2: z_ff, // Assume z2 = z1 for simplicity
+                z2: z_ff,                      // Assume z2 = z1 for simplicity
                 z0: Complex64::new(0.03, 0.3), // Typical zero-sequence impedance
             })
         } else {
@@ -271,18 +324,26 @@ pub async fn short_circuit_handler(
                 let response = ScResponse {
                     fault_current_real: result.fault_current_ka.re,
                     fault_current_imag: result.fault_current_ka.im,
-                    bus_voltages: result.bus_voltages.iter().map(|(id, v)| {
-                        (*id, v.re, v.im)
-                    }).collect(),
+                    bus_voltages: result
+                        .bus_voltages
+                        .iter()
+                        .map(|(id, v)| (*id, v.re, v.im))
+                        .collect(),
                 };
                 return Json(ApiResponse::success(response));
             }
-            Err(e) => return Json(ApiResponse::error(format!("Short circuit analysis failed: {}", e))),
+            Err(e) => {
+                return Json(ApiResponse::error(format!(
+                    "Short circuit analysis failed: {}",
+                    e
+                )))
+            }
         }
     }
 
     // No network model available
     Json(ApiResponse::error(
-        "Short circuit analysis requires a loaded network model. Configure a PowerNetwork first.".to_string()
+        "Short circuit analysis requires a loaded network model. Configure a PowerNetwork first."
+            .to_string(),
     ))
 }

@@ -1,19 +1,19 @@
-use std::collections::HashMap;
 use axum::extract::State;
 use axum::response::Html;
 use axum::Json;
 use chrono::Utc;
+use std::collections::HashMap;
 
 use eneros_dashboard::{
-    topology_svg::{self, BusSvgData, BranchSvgData, TopologySvgConfig},
-    flow_heatmap::{self, BusFlowData, BranchFlowData, FlowHeatmapConfig},
     agent_panel::{AgentDisplay, AgentPanelData},
-    data_panel::{ReadingDisplay, DataPanelData},
+    data_panel::{DataPanelData, ReadingDisplay},
+    flow_heatmap::{self, BranchFlowData, BusFlowData, FlowHeatmapConfig},
     full_page,
+    topology_svg::{self, BranchSvgData, BusSvgData, TopologySvgConfig},
 };
 
 use crate::app::AppState;
-use crate::types::{ApiResponse, TopologySvgResponse, FlowHeatmapResponse};
+use crate::types::{ApiResponse, FlowHeatmapResponse, TopologySvgResponse};
 
 /// Build SVG data from the PowerNetwork if available
 fn build_svg_data_from_network(state: &AppState) -> (Vec<BusSvgData>, Vec<BranchSvgData>) {
@@ -21,24 +21,31 @@ fn build_svg_data_from_network(state: &AppState) -> (Vec<BusSvgData>, Vec<Branch
         // When a PowerNetwork is available, use IEEE 14 bus data as the topology source
         // (the PowerNetwork is built from this data)
         let data = eneros_powerflow::ieee14();
-        let buses: Vec<BusSvgData> = data.buses.iter().map(|b| {
-            BusSvgData {
-                id: b.bus_id as u64,
-                name: format!("Bus {}", b.bus_id),
-                x: 0.0, // will be set by circular_layout
-                y: 0.0,
-                zone_id: 0,
-                voltage_level: format!("{:.0}kV", 138.0),
-            }
-        }).collect();
-        let branches: Vec<BranchSvgData> = data.branches.iter().enumerate().map(|(i, b)| {
-            BranchSvgData {
+        let buses: Vec<BusSvgData> = data
+            .buses
+            .iter()
+            .map(|b| {
+                BusSvgData {
+                    id: b.bus_id as u64,
+                    name: format!("Bus {}", b.bus_id),
+                    x: 0.0, // will be set by circular_layout
+                    y: 0.0,
+                    zone_id: 0,
+                    voltage_level: format!("{:.0}kV", 138.0),
+                }
+            })
+            .collect();
+        let branches: Vec<BranchSvgData> = data
+            .branches
+            .iter()
+            .enumerate()
+            .map(|(i, b)| BranchSvgData {
                 id: i as u64,
                 from_bus: b.from_bus as u64,
                 to_bus: b.to_bus as u64,
                 status: true,
-            }
-        }).collect();
+            })
+            .collect();
         return (buses, branches);
     }
 
@@ -50,29 +57,32 @@ fn build_svg_data_from_network(state: &AppState) -> (Vec<BusSvgData>, Vec<Branch
 fn build_agent_panel_data(state: &AppState) -> AgentPanelData {
     if let Some(orchestrator) = &state.agent_orchestrator {
         let registered = orchestrator.registered_agents();
-        let agents: Vec<AgentDisplay> = registered.iter().map(|(name, agent_type, authority)| {
-            let type_str = match agent_type {
-                eneros_agent::AgentType::Dispatcher => "Dispatcher",
-                eneros_agent::AgentType::Operator => "Operator",
-                eneros_agent::AgentType::Planner => "Planner",
-                eneros_agent::AgentType::Trader => "Trader",
-                eneros_agent::AgentType::Custom(ref s) => s,
-            };
-            let auth_str = match authority {
-                eneros_core::AuthorityLevel::Emergency => "Emergency",
-                eneros_core::AuthorityLevel::Supervisor => "Supervisor",
-                eneros_core::AuthorityLevel::Operator => "Operator",
-                eneros_core::AuthorityLevel::Observer => "Observer",
-            };
-            AgentDisplay {
-                name: name.clone(),
-                agent_type: type_str.to_string(),
-                authority: auth_str.to_string(),
-                status: "active".to_string(),
-                last_action: None,
-                last_action_time: None,
-            }
-        }).collect();
+        let agents: Vec<AgentDisplay> = registered
+            .iter()
+            .map(|(name, agent_type, authority)| {
+                let type_str = match agent_type {
+                    eneros_agent::AgentType::Dispatcher => "Dispatcher",
+                    eneros_agent::AgentType::Operator => "Operator",
+                    eneros_agent::AgentType::Planner => "Planner",
+                    eneros_agent::AgentType::Trader => "Trader",
+                    eneros_agent::AgentType::Custom(ref s) => s,
+                };
+                let auth_str = match authority {
+                    eneros_core::AuthorityLevel::Emergency => "Emergency",
+                    eneros_core::AuthorityLevel::Supervisor => "Supervisor",
+                    eneros_core::AuthorityLevel::Operator => "Operator",
+                    eneros_core::AuthorityLevel::Observer => "Observer",
+                };
+                AgentDisplay {
+                    name: name.clone(),
+                    agent_type: type_str.to_string(),
+                    authority: auth_str.to_string(),
+                    status: "active".to_string(),
+                    last_action: None,
+                    last_action_time: None,
+                }
+            })
+            .collect();
         let active_count = agents.iter().filter(|a| a.status == "active").count();
         return AgentPanelData {
             total_count: agents.len(),
@@ -93,15 +103,16 @@ fn build_agent_panel_data(state: &AppState) -> AgentPanelData {
 fn build_data_panel_data(state: &AppState) -> DataPanelData {
     if let Some(collector) = &state.scada_collector {
         let readings = collector.latest_all();
-        let displays: Vec<ReadingDisplay> = readings.iter().map(|r| {
-            ReadingDisplay {
+        let displays: Vec<ReadingDisplay> = readings
+            .iter()
+            .map(|r| ReadingDisplay {
                 element_id: r.element_id,
                 parameter: r.parameter.clone(),
                 value: r.value,
                 unit: "p.u.".to_string(),
                 quality: format!("{:?}", r.quality),
-            }
-        }).collect();
+            })
+            .collect();
         return DataPanelData {
             readings: displays,
             timestamp: Utc::now().to_rfc3339(),
@@ -115,9 +126,7 @@ fn build_data_panel_data(state: &AppState) -> DataPanelData {
 }
 
 /// GET / — serve the main dashboard HTML page
-pub async fn dashboard_handler(
-    State(state): State<AppState>,
-) -> Html<String> {
+pub async fn dashboard_handler(State(state): State<AppState>) -> Html<String> {
     let (buses, branches) = build_svg_data_from_network(&state);
     let config = TopologySvgConfig::default();
 
@@ -158,21 +167,25 @@ pub async fn flow_heatmap_handler(
     if let Some(network) = &state.network {
         match network.solve() {
             Ok(pf_result) => {
-                let buses: Vec<BusFlowData> = pf_result.bus_results.iter().map(|b| {
-                    BusFlowData {
+                let buses: Vec<BusFlowData> = pf_result
+                    .bus_results
+                    .iter()
+                    .map(|b| BusFlowData {
                         id: b.bus_id,
                         v_pu: b.voltage_magnitude,
-                    }
-                }).collect();
+                    })
+                    .collect();
 
-                let branches: Vec<BranchFlowData> = pf_result.branch_results.iter().map(|b| {
-                    BranchFlowData {
+                let branches: Vec<BranchFlowData> = pf_result
+                    .branch_results
+                    .iter()
+                    .map(|b| BranchFlowData {
                         id: b.branch_id,
                         from_bus: b.from_bus,
                         to_bus: b.to_bus,
                         loading_percent: b.loading_percent,
-                    }
-                }).collect();
+                    })
+                    .collect();
 
                 let config = FlowHeatmapConfig::default();
                 let overlay = flow_heatmap::generate_flow_overlay(&buses, &branches, &config);
@@ -185,7 +198,10 @@ pub async fn flow_heatmap_handler(
                 return Json(ApiResponse::success(response));
             }
             Err(e) => {
-                return Json(ApiResponse::error(format!("Power flow failed for heatmap: {}", e)));
+                return Json(ApiResponse::error(format!(
+                    "Power flow failed for heatmap: {}",
+                    e
+                )));
             }
         }
     }

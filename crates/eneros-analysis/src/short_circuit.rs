@@ -1,7 +1,7 @@
-use num_complex::Complex64;
-use ndarray::Array2;
-use eneros_core::ElementId;
 use crate::types::AnalysisError;
+use eneros_core::ElementId;
+use ndarray::Array2;
+use num_complex::Complex64;
 
 /// Fault type classification
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -79,24 +79,51 @@ impl ShortCircuitAnalyzer {
         let fault_idx = fault.bus_id as usize;
 
         if fault_idx >= n {
-            return Err(AnalysisError::InvalidConfiguration(
-                format!("Fault bus index {} out of range (max {})", fault_idx, n - 1),
-            ));
+            return Err(AnalysisError::InvalidConfiguration(format!(
+                "Fault bus index {} out of range (max {})",
+                fault_idx,
+                n - 1
+            )));
         }
 
         if prefault_voltages.len() < n {
-            return Err(AnalysisError::DataIncomplete(
-                format!("Need {} prefault voltages, got {}", n, prefault_voltages.len()),
-            ));
+            return Err(AnalysisError::DataIncomplete(format!(
+                "Need {} prefault voltages, got {}",
+                n,
+                prefault_voltages.len()
+            )));
         }
 
         let v_prefault = prefault_voltages[fault_idx];
 
         match fault.fault_type {
-            FaultType::ThreePhase => self.analyze_three_phase(fault, z_bus, prefault_voltages, fault_idx, v_prefault),
-            FaultType::SingleLineGround => self.analyze_slg(fault, z_bus, prefault_voltages, fault_idx, v_prefault, sequence_z),
-            FaultType::LineLine => self.analyze_ll(fault, z_bus, prefault_voltages, fault_idx, v_prefault, sequence_z),
-            FaultType::DoubleLineGround => self.analyze_dlg(fault, z_bus, prefault_voltages, fault_idx, v_prefault, sequence_z),
+            FaultType::ThreePhase => {
+                self.analyze_three_phase(fault, z_bus, prefault_voltages, fault_idx, v_prefault)
+            }
+            FaultType::SingleLineGround => self.analyze_slg(
+                fault,
+                z_bus,
+                prefault_voltages,
+                fault_idx,
+                v_prefault,
+                sequence_z,
+            ),
+            FaultType::LineLine => self.analyze_ll(
+                fault,
+                z_bus,
+                prefault_voltages,
+                fault_idx,
+                v_prefault,
+                sequence_z,
+            ),
+            FaultType::DoubleLineGround => self.analyze_dlg(
+                fault,
+                z_bus,
+                prefault_voltages,
+                fault_idx,
+                v_prefault,
+                sequence_z,
+            ),
         }
     }
 
@@ -170,9 +197,11 @@ impl ShortCircuitAnalyzer {
         v_prefault: Complex64,
         sequence_z: Option<&SequenceImpedance>,
     ) -> Result<FaultResult, AnalysisError> {
-        let seq_z = sequence_z.ok_or_else(|| AnalysisError::DataIncomplete(
-            "Sequence impedances required for asymmetric fault analysis".into(),
-        ))?;
+        let seq_z = sequence_z.ok_or_else(|| {
+            AnalysisError::DataIncomplete(
+                "Sequence impedances required for asymmetric fault analysis".into(),
+            )
+        })?;
 
         let n = z_bus.nrows();
         let z_ff = z_bus[[fault_idx, fault_idx]];
@@ -235,9 +264,11 @@ impl ShortCircuitAnalyzer {
         v_prefault: Complex64,
         sequence_z: Option<&SequenceImpedance>,
     ) -> Result<FaultResult, AnalysisError> {
-        let seq_z = sequence_z.ok_or_else(|| AnalysisError::DataIncomplete(
-            "Sequence impedances required for asymmetric fault analysis".into(),
-        ))?;
+        let seq_z = sequence_z.ok_or_else(|| {
+            AnalysisError::DataIncomplete(
+                "Sequence impedances required for asymmetric fault analysis".into(),
+            )
+        })?;
 
         let n = z_bus.nrows();
         let z_ff = z_bus[[fault_idx, fault_idx]];
@@ -298,9 +329,11 @@ impl ShortCircuitAnalyzer {
         v_prefault: Complex64,
         sequence_z: Option<&SequenceImpedance>,
     ) -> Result<FaultResult, AnalysisError> {
-        let seq_z = sequence_z.ok_or_else(|| AnalysisError::DataIncomplete(
-            "Sequence impedances required for asymmetric fault analysis".into(),
-        ))?;
+        let seq_z = sequence_z.ok_or_else(|| {
+            AnalysisError::DataIncomplete(
+                "Sequence impedances required for asymmetric fault analysis".into(),
+            )
+        })?;
 
         let n = z_bus.nrows();
         let z_ff = z_bus[[fault_idx, fault_idx]];
@@ -394,7 +427,8 @@ mod tests {
         y_bus[[2, 2]] = y12 + y_shunt2;
 
         // Invert Y_bus to get Z_bus
-        invert_complex_matrix(&y_bus).unwrap_or_else(|| Array2::from_elem((3, 3), Complex64::new(0.0, 0.0)))
+        invert_complex_matrix(&y_bus)
+            .unwrap_or_else(|| Array2::from_elem((3, 3), Complex64::new(0.0, 0.0)))
     }
 
     fn invert_complex_matrix(a: &Array2<Complex64>) -> Option<Array2<Complex64>> {
@@ -414,9 +448,10 @@ mod tests {
         for col in 0..n {
             let mut max_val = aug[col][col].norm();
             let mut max_row = col;
-            for row in (col + 1)..n {
-                if aug[row][col].norm() > max_val {
-                    max_val = aug[row][col].norm();
+            for (row, row_values) in aug.iter().enumerate().take(n).skip(col + 1) {
+                let candidate = row_values[col].norm();
+                if candidate > max_val {
+                    max_val = candidate;
                     max_row = row;
                 }
             }
@@ -430,15 +465,18 @@ mod tests {
             }
 
             let pivot = aug[col][col];
-            for j in 0..(2 * n) {
-                aug[col][j] = aug[col][j] / pivot;
+            for value in aug[col].iter_mut().take(2 * n) {
+                *value /= pivot;
             }
 
-            for row in 0..n {
+            let pivot_row = aug[col].clone();
+            for (row, row_values) in aug.iter_mut().enumerate().take(n) {
                 if row != col {
-                    let factor = aug[row][col];
-                    for j in 0..(2 * n) {
-                        aug[row][j] = aug[row][j] - factor * aug[col][j];
+                    let factor = row_values[col];
+                    for (value, pivot_value) in
+                        row_values.iter_mut().zip(pivot_row.iter()).take(2 * n)
+                    {
+                        *value -= factor * *pivot_value;
                     }
                 }
             }
@@ -472,7 +510,11 @@ mod tests {
         let analyzer = ShortCircuitAnalyzer::new();
         let result = analyzer.analyze(&fault, &z_bus, &prefault_voltages, None);
 
-        assert!(result.is_ok(), "Three-phase fault analysis failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Three-phase fault analysis failed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
 
         // Fault current should be significant
@@ -483,7 +525,9 @@ mod tests {
         );
 
         // Fault bus voltage should be near zero (for bolted fault)
-        let fault_bus_voltage = result.bus_voltages.iter()
+        let fault_bus_voltage = result
+            .bus_voltages
+            .iter()
             .find(|(id, _)| *id == 1)
             .map(|(_, v)| v.norm())
             .unwrap_or(999.0);
@@ -499,7 +543,8 @@ mod tests {
                 assert!(
                     v.norm() > 0.0 && v.norm() <= 1.1,
                     "Bus {} voltage {} should be in reasonable range",
-                    id, v.norm()
+                    id,
+                    v.norm()
                 );
             }
         }
@@ -532,7 +577,9 @@ mod tests {
             fault_type: FaultType::ThreePhase,
             fault_impedance: Complex64::new(0.0, 0.0),
         };
-        let bolted_result = analyzer.analyze(&bolted_fault, &z_bus, &prefault_voltages, None).unwrap();
+        let bolted_result = analyzer
+            .analyze(&bolted_fault, &z_bus, &prefault_voltages, None)
+            .unwrap();
 
         assert!(
             result.fault_current_ka.norm() < bolted_result.fault_current_ka.norm(),
@@ -566,7 +613,11 @@ mod tests {
         let analyzer = ShortCircuitAnalyzer::new();
         let result = analyzer.analyze(&fault, &z_bus, &prefault_voltages, Some(&seq_z));
 
-        assert!(result.is_ok(), "SLG fault analysis failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "SLG fault analysis failed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
 
         // SLG fault current should be significant
@@ -603,7 +654,11 @@ mod tests {
         let analyzer = ShortCircuitAnalyzer::new();
         let result = analyzer.analyze(&fault, &z_bus, &prefault_voltages, Some(&seq_z));
 
-        assert!(result.is_ok(), "LL fault analysis failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "LL fault analysis failed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
 
         assert!(
@@ -637,7 +692,11 @@ mod tests {
         let analyzer = ShortCircuitAnalyzer::new();
         let result = analyzer.analyze(&fault, &z_bus, &prefault_voltages, Some(&seq_z));
 
-        assert!(result.is_ok(), "DLG fault analysis failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "DLG fault analysis failed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
 
         assert!(
@@ -708,11 +767,23 @@ mod tests {
 
         let analyzer = ShortCircuitAnalyzer::new();
 
-        let fault_3ph = FaultSpec { bus_id: 1, fault_type: FaultType::ThreePhase, fault_impedance: Complex64::new(0.0, 0.0) };
-        let fault_slg = FaultSpec { bus_id: 1, fault_type: FaultType::SingleLineGround, fault_impedance: Complex64::new(0.0, 0.0) };
+        let fault_3ph = FaultSpec {
+            bus_id: 1,
+            fault_type: FaultType::ThreePhase,
+            fault_impedance: Complex64::new(0.0, 0.0),
+        };
+        let fault_slg = FaultSpec {
+            bus_id: 1,
+            fault_type: FaultType::SingleLineGround,
+            fault_impedance: Complex64::new(0.0, 0.0),
+        };
 
-        let result_3ph = analyzer.analyze(&fault_3ph, &z_bus, &prefault_voltages, None).unwrap();
-        let result_slg = analyzer.analyze(&fault_slg, &z_bus, &prefault_voltages, Some(&seq_z)).unwrap();
+        let result_3ph = analyzer
+            .analyze(&fault_3ph, &z_bus, &prefault_voltages, None)
+            .unwrap();
+        let result_slg = analyzer
+            .analyze(&fault_slg, &z_bus, &prefault_voltages, Some(&seq_z))
+            .unwrap();
 
         // Three-phase fault current should typically be larger than SLG
         // (depends on zero-sequence impedance)

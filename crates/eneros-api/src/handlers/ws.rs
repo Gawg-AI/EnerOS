@@ -1,5 +1,5 @@
-use axum::extract::State;
 use axum::extract::ws::{WebSocket, WebSocketUpgrade};
+use axum::extract::State;
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -7,10 +7,7 @@ use tokio::sync::mpsc;
 use crate::app::{AppState, WsClient};
 
 /// GET /ws — WebSocket upgrade handler
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> Response {
+pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
@@ -37,7 +34,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let send_id = client_id.clone();
     let send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if ws_sender.send(axum::extract::ws::Message::Text(msg)).await.is_err() {
+            if ws_sender
+                .send(axum::extract::ws::Message::Text(msg))
+                .await
+                .is_err()
+            {
                 break;
             }
         }

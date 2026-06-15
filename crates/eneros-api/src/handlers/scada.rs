@@ -14,12 +14,15 @@ pub async fn scada_latest_handler(
         let _ = collector.collect_once();
         let readings = collector.latest_all();
         let response = ScadaLatestResponse {
-            readings: readings.iter().map(|r| ScadaReadingResponse {
-                element_id: r.element_id,
-                parameter: r.parameter.clone(),
-                value: r.value,
-                quality: format!("{:?}", r.quality),
-            }).collect(),
+            readings: readings
+                .iter()
+                .map(|r| ScadaReadingResponse {
+                    element_id: r.element_id,
+                    parameter: r.parameter.clone(),
+                    value: r.value,
+                    quality: format!("{:?}", r.quality),
+                })
+                .collect(),
             snapshot_time: Utc::now().to_rfc3339(),
         };
         return Json(ApiResponse::success(response));

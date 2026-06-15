@@ -4,7 +4,9 @@ use axum::Json;
 use eneros_powerflow::ieee14;
 
 use crate::app::AppState;
-use crate::types::{ApiResponse, PowerFlowRequest, PowerFlowResponse, BusVoltageResponse, BranchFlowResponse};
+use crate::types::{
+    ApiResponse, BranchFlowResponse, BusVoltageResponse, PowerFlowRequest, PowerFlowResponse,
+};
 
 /// POST /api/power-flow
 pub async fn power_flow_handler(
@@ -19,19 +21,27 @@ pub async fn power_flow_handler(
                     converged: result.converged,
                     iterations: result.iterations,
                     total_losses: result.total_losses,
-                    bus_voltages: result.bus_results.iter().map(|b| BusVoltageResponse {
-                        bus_id: b.bus_id,
-                        voltage_magnitude: b.voltage_magnitude,
-                        voltage_angle: b.voltage_angle,
-                    }).collect(),
-                    branch_flows: result.branch_results.iter().map(|b| BranchFlowResponse {
-                        branch_id: b.branch_id,
-                        from_bus: b.from_bus,
-                        to_bus: b.to_bus,
-                        active_power_mw: b.p_from,
-                        reactive_power_mvar: b.q_from,
-                        loading_percent: b.loading_percent,
-                    }).collect(),
+                    bus_voltages: result
+                        .bus_results
+                        .iter()
+                        .map(|b| BusVoltageResponse {
+                            bus_id: b.bus_id,
+                            voltage_magnitude: b.voltage_magnitude,
+                            voltage_angle: b.voltage_angle,
+                        })
+                        .collect(),
+                    branch_flows: result
+                        .branch_results
+                        .iter()
+                        .map(|b| BranchFlowResponse {
+                            branch_id: b.branch_id,
+                            from_bus: b.from_bus,
+                            to_bus: b.to_bus,
+                            active_power_mw: b.p_from,
+                            reactive_power_mvar: b.q_from,
+                            loading_percent: b.loading_percent,
+                        })
+                        .collect(),
                 };
                 return Json(ApiResponse::success(response));
             }
@@ -55,19 +65,27 @@ pub async fn power_flow_handler(
                     converged: result.converged,
                     iterations: result.iterations,
                     total_losses: result.total_losses,
-                    bus_voltages: result.bus_results.iter().map(|b| BusVoltageResponse {
-                        bus_id: b.bus_id,
-                        voltage_magnitude: b.voltage_magnitude,
-                        voltage_angle: b.voltage_angle,
-                    }).collect(),
-                    branch_flows: result.branch_results.iter().map(|b| BranchFlowResponse {
-                        branch_id: b.branch_id,
-                        from_bus: b.from_bus,
-                        to_bus: b.to_bus,
-                        active_power_mw: b.p_from,
-                        reactive_power_mvar: b.q_from,
-                        loading_percent: b.loading_percent,
-                    }).collect(),
+                    bus_voltages: result
+                        .bus_results
+                        .iter()
+                        .map(|b| BusVoltageResponse {
+                            bus_id: b.bus_id,
+                            voltage_magnitude: b.voltage_magnitude,
+                            voltage_angle: b.voltage_angle,
+                        })
+                        .collect(),
+                    branch_flows: result
+                        .branch_results
+                        .iter()
+                        .map(|b| BranchFlowResponse {
+                            branch_id: b.branch_id,
+                            from_bus: b.from_bus,
+                            to_bus: b.to_bus,
+                            active_power_mw: b.p_from,
+                            reactive_power_mvar: b.q_from,
+                            loading_percent: b.loading_percent,
+                        })
+                        .collect(),
                 };
                 return Json(ApiResponse::success(response));
             }
@@ -90,19 +108,27 @@ pub async fn power_flow_handler(
                 converged: result.converged,
                 iterations: result.iterations,
                 total_losses: result.total_losses,
-                bus_voltages: result.bus_results.iter().map(|b| BusVoltageResponse {
-                    bus_id: b.bus_id,
-                    voltage_magnitude: b.voltage_magnitude,
-                    voltage_angle: b.voltage_angle,
-                }).collect(),
-                branch_flows: result.branch_results.iter().map(|b| BranchFlowResponse {
-                    branch_id: b.branch_id,
-                    from_bus: b.from_bus,
-                    to_bus: b.to_bus,
-                    active_power_mw: b.p_from,
-                    reactive_power_mvar: b.q_from,
-                    loading_percent: b.loading_percent,
-                }).collect(),
+                bus_voltages: result
+                    .bus_results
+                    .iter()
+                    .map(|b| BusVoltageResponse {
+                        bus_id: b.bus_id,
+                        voltage_magnitude: b.voltage_magnitude,
+                        voltage_angle: b.voltage_angle,
+                    })
+                    .collect(),
+                branch_flows: result
+                    .branch_results
+                    .iter()
+                    .map(|b| BranchFlowResponse {
+                        branch_id: b.branch_id,
+                        from_bus: b.from_bus,
+                        to_bus: b.to_bus,
+                        active_power_mw: b.p_from,
+                        reactive_power_mvar: b.q_from,
+                        loading_percent: b.loading_percent,
+                    })
+                    .collect(),
             };
             Json(ApiResponse::success(response))
         }

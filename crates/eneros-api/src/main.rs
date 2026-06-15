@@ -248,7 +248,7 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
     );
     let mut orchestrator = eneros_agent::AgentOrchestrator::with_pipeline_and_feedback(
         ctx,
-        decision_pipeline,
+        decision_pipeline.clone(),
         feedback_loop,
     );
     println!("  [Agent] Orchestrator created with ConstrainedDecisionPipeline + FeedbackLoop");
@@ -331,7 +331,8 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
         .with_agent_orchestrator(orchestrator.clone())
         .with_data_pipeline(pipeline.clone())
         .with_snapshot_builder(snapshot_builder.clone())
-        .with_data_driven_loop(dd_loop.clone());
+        .with_data_driven_loop(dd_loop.clone())
+        .with_decision_pipeline(decision_pipeline);
 
     // 13. Start SCADA pipeline background task
     let pipeline_handle = pipeline.start(1000);
