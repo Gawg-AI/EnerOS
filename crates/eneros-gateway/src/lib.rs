@@ -11,6 +11,7 @@ pub mod pipeline_types;
 pub mod precondition;
 pub mod postcondition;
 pub mod decomposer;
+pub mod executor;
 
 pub use gateway::SafetyGateway;
 pub use safety::SafetyCheck;
@@ -28,4 +29,5 @@ pub use pipeline_types::{
 pub use precondition::PreConditionChecker;
 pub use postcondition::PostConditionVerifier;
 pub use decomposer::ActionDecomposer;
-pub use decision_pipeline::ConstrainedDecisionPipeline;
+pub use decision_pipeline::{ConstrainedDecisionPipeline, ObservationProvider};
+pub use executor::{CommandExecutor, DeviceCommandExecutor, LoggingExecutor, ExecutionResult};

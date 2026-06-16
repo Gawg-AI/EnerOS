@@ -71,6 +71,8 @@ impl CnpowerEquipmentLoader {
             .map(|v| v as i32)
             .unwrap_or(0);
 
+        let tap_step_percent = extract_f64(obj, "tap_step_percent").unwrap_or(1.25);
+
         Some(TwoWindingTransformer {
             id: 0,
             name,
@@ -80,6 +82,7 @@ impl CnpowerEquipmentLoader {
             impedance_percent: vk_percent,
             resistance_percent: vkr_percent,
             tap_position,
+            tap_step_percent,
             hv_bus_id: 0,
             lv_bus_id: 1,
         })

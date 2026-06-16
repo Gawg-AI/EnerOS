@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 use parking_lot::RwLock;
-use eneros_core::{ActionVerdict, AuthorityLevel, Jurisdiction, StructuredAction, SystemOperatingState};
+use eneros_core::{ActionVerdict, AuthorityLevel, Jurisdiction, PowerObservation, StructuredAction, SystemOperatingState};
 use eneros_constraint::projector::{FeasibilityProjector, ProjectionResult, WhatIfResult};
 use crate::constraint_validator::ConstraintAwareValidator;
 use crate::gateway::SafetyGateway;
@@ -13,6 +13,13 @@ use crate::pipeline_types::{
     DecisionContext, EnhancedPipelineDecision, PipelineAuditEntry,
     PipelineStatistics,
 };
+
+/// Async callback that returns the **current** field observation after execution.
+///
+/// In production this reads from SCADA / RTU / IEC-104 polling. In tests it
+/// can be a mock that returns a canned `PowerObservation`. When `None`, the
+/// pipeline falls back to simulator-based postcondition verification.
+pub type ObservationProvider = Arc<dyn Fn() -> Option<PowerObservation> + Send + Sync>;
 
 /// Constrained decision pipeline — ensures every action satisfies physical constraints.
 ///
@@ -26,6 +33,20 @@ use crate::pipeline_types::{
 /// 5. **Execution** — Send the command through the safety gateway
 /// 6. **Post-condition verification** — Did the action produce the expected outcome?
 /// 7. **Rollback planning** — Prepare rollback if post-conditions fail
+///
+/// ## Post-condition data source
+///
+/// Stage 6 has two modes:
+/// - **Field observation** (production): If an `ObservationProvider` is
+///   configured, the postcondition is verified against **real measurements**
+///   read back from SCADA/RTU after execution. This closes the loop
+///   "execute → measure → verify" and catches cases where the device
+///   NACK'd the command or the physical effect differed from the prediction.
+/// - **Simulator prediction** (fallback): If no provider is configured,
+///   the pipeline re-runs `simulate_action` as a best-effort prediction.
+///   This is the legacy behavior and is inherently weaker because the
+///   simulator is a pure function that does not know whether execution
+///   actually changed the world.
 pub struct ConstrainedDecisionPipeline {
     projector: Arc<FeasibilityProjector>,
     validator: Arc<ConstraintAwareValidator>,
@@ -36,6 +57,11 @@ pub struct ConstrainedDecisionPipeline {
     postcondition_verifier: PostConditionVerifier,
     /// Pipeline statistics
     statistics: RwLock<PipelineStatistics>,
+    /// Optional provider for post-execution field observations.
+    ///
+    /// When set, postcondition verification uses **real measurements** instead
+    /// of simulator predictions, closing the execute→measure→verify loop.
+    observation_provider: Option<ObservationProvider>,
 }
 
 /// Legacy result type — kept for backward compatibility
@@ -74,6 +100,7 @@ impl ConstrainedDecisionPipeline {
             precondition_checker: PreConditionChecker::new(),
             postcondition_verifier: PostConditionVerifier::new(),
             statistics: RwLock::new(PipelineStatistics::default()),
+            observation_provider: None,
         }
     }
 
@@ -91,6 +118,7 @@ impl ConstrainedDecisionPipeline {
             precondition_checker: checker,
             postcondition_verifier: PostConditionVerifier::new(),
             statistics: RwLock::new(PipelineStatistics::default()),
+            observation_provider: None,
         }
     }
 
@@ -108,11 +136,35 @@ impl ConstrainedDecisionPipeline {
             precondition_checker: PreConditionChecker::new(),
             postcondition_verifier: verifier,
             statistics: RwLock::new(PipelineStatistics::default()),
+            observation_provider: None,
+        }
+    }
+
+    /// Create with a field observation provider for production-grade
+    /// postcondition verification.
+    ///
+    /// When set, Stage 6 reads **real measurements** from SCADA/RTU after
+    /// execution instead of relying on the simulator's pure-function
+    /// prediction. This closes the "execute → measure → verify" loop.
+    pub fn with_observation_provider(
+        projector: Arc<FeasibilityProjector>,
+        validator: Arc<ConstraintAwareValidator>,
+        gateway: Arc<SafetyGateway>,
+        provider: ObservationProvider,
+    ) -> Self {
+        Self {
+            projector,
+            validator,
+            gateway,
+            precondition_checker: PreConditionChecker::new(),
+            postcondition_verifier: PostConditionVerifier::new(),
+            statistics: RwLock::new(PipelineStatistics::default()),
+            observation_provider: Some(provider),
         }
     }
 
     /// Process a single action through the enhanced pipeline using DecisionContext
-    pub fn decide_enhanced(
+    pub async fn decide_enhanced(
         &self,
         action: &StructuredAction,
         ctx: &DecisionContext,
@@ -270,7 +322,7 @@ impl ConstrainedDecisionPipeline {
                 let mut execution_error = String::new();
                 for step in &decomposition.steps {
                     let cmd = structured_action_to_command(&step.action);
-                    if let Err(e) = self.gateway.execute_command(cmd) {
+                    if let Err(e) = self.gateway.execute_command(cmd).await {
                         execution_ok = false;
                         execution_error = format!("Step {} FAILED: {}", step.step_index, e);
                         audit.push(PipelineAuditEntry {
@@ -319,22 +371,51 @@ impl ConstrainedDecisionPipeline {
                 }
 
                 // ── Stage 6: Post-condition verification ──
-                let what_if = projection_to_what_if(&projection);
+                // Production path: read **real** field observations after execution
+                // and verify against them. This closes the "execute → measure →
+                // verify" loop, catching cases where the device NACK'd the command
+                // or the physical effect differed from the prediction.
+                //
+                // Fallback: if no observation provider is configured, re-run the
+                // simulator as a best-effort prediction (legacy behavior).
+                let (post_what_if, postcondition_source) = if let Some(ref provider) = self.observation_provider {
+                    match provider() {
+                        Some(obs) => {
+                            let what_if = WhatIfResult::from_observation(
+                                &obs,
+                                self.postcondition_verifier.voltage_min,
+                                self.postcondition_verifier.voltage_max,
+                                self.postcondition_verifier.thermal_limit,
+                            );
+                            (what_if, "field_observation")
+                        }
+                        None => {
+                            // Provider returned None — data unavailable, fall back
+                            let what_if = self.projector.simulator().simulate_action(&feasible_action);
+                            (what_if, "simulator_fallback")
+                        }
+                    }
+                } else {
+                    let what_if = self.projector.simulator().simulate_action(&feasible_action);
+                    (what_if, "simulator_prediction")
+                };
+
                 let start = Instant::now();
                 let post_result = self.postcondition_verifier.verify(
-                    &feasible_action, &what_if, ctx,
+                    &feasible_action, &post_what_if, ctx,
                 );
                 let post_duration = start.elapsed().as_micros() as u64;
 
                 audit.push(PipelineAuditEntry {
                     stage: "postcondition".to_string(),
                     description: if post_result.satisfied {
-                        "All post-conditions satisfied".to_string()
+                        format!("All post-conditions satisfied (source: {})", postcondition_source)
                     } else {
                         format!(
-                            "Post-conditions FAILED: {} new violations, {} worsened",
+                            "Post-conditions FAILED: {} new violations, {} worsened (source: {})",
                             post_result.new_violations.len(),
-                            post_result.worsened_violations.len()
+                            post_result.worsened_violations.len(),
+                            postcondition_source
                         )
                     },
                     duration_us: post_duration,
@@ -383,7 +464,7 @@ impl ConstrainedDecisionPipeline {
     }
 
     /// Process a single action through the legacy pipeline (backward compatible)
-    pub fn decide(
+    pub async fn decide(
         &self,
         action: &StructuredAction,
         authority: AuthorityLevel,
@@ -391,7 +472,7 @@ impl ConstrainedDecisionPipeline {
         system_state: SystemOperatingState,
     ) -> PipelineDecision {
         let ctx = DecisionContext::new(authority, jurisdiction.clone(), system_state);
-        let enhanced = self.decide_enhanced(action, &ctx);
+        let enhanced = self.decide_enhanced(action, &ctx).await;
 
         PipelineDecision {
             executed_action: enhanced.executed_action,
@@ -403,27 +484,31 @@ impl ConstrainedDecisionPipeline {
     }
 
     /// Process multiple actions through the pipeline
-    pub fn decide_batch(
+    pub async fn decide_batch(
         &self,
         actions: &[StructuredAction],
         authority: AuthorityLevel,
         jurisdiction: &Jurisdiction,
         system_state: SystemOperatingState,
     ) -> Vec<PipelineDecision> {
-        actions.iter()
-            .map(|a| self.decide(a, authority, jurisdiction, system_state))
-            .collect()
+        let mut results = Vec::with_capacity(actions.len());
+        for a in actions {
+            results.push(self.decide(a, authority, jurisdiction, system_state).await);
+        }
+        results
     }
 
     /// Process multiple actions through the enhanced pipeline
-    pub fn decide_batch_enhanced(
+    pub async fn decide_batch_enhanced(
         &self,
         actions: &[StructuredAction],
         ctx: &DecisionContext,
     ) -> Vec<EnhancedPipelineDecision> {
-        actions.iter()
-            .map(|a| self.decide_enhanced(a, ctx))
-            .collect()
+        let mut results = Vec::with_capacity(actions.len());
+        for a in actions {
+            results.push(self.decide_enhanced(a, ctx).await);
+        }
+        results
     }
 
     /// Get pipeline statistics
@@ -448,60 +533,6 @@ impl ConstrainedDecisionPipeline {
         }
         if was_projected {
             stats.projected += 1;
-        }
-    }
-}
-
-/// Convert a ProjectionResult (already computed in Stage 2) into a WhatIfResult
-/// for post-condition verification, avoiding a redundant project() call.
-fn projection_to_what_if(projection: &ProjectionResult) -> WhatIfResult {
-    match projection {
-        ProjectionResult::Feasible(_) => WhatIfResult {
-            applicable: true,
-            converged: true,
-            voltage_violations: vec![],
-            thermal_violations: vec![],
-            all_constraints_satisfied: true,
-            summary: "Feasible".to_string(),
-        },
-        ProjectionResult::Projected { .. } => WhatIfResult {
-            applicable: true,
-            converged: true,
-            voltage_violations: vec![],
-            thermal_violations: vec![],
-            all_constraints_satisfied: true,
-            summary: "Projected to feasible".to_string(),
-        },
-        ProjectionResult::Infeasible { violated_constraints, .. } => {
-            let voltage_violations: Vec<(u64, f64, f64)> = violated_constraints.iter()
-                .filter(|v| v.contains("Voltage"))
-                .filter_map(|v| {
-                    let parts: Vec<&str> = v.split_whitespace().collect();
-                    let bus: u64 = parts.get(3)?.parse().ok()?;
-                    let voltage: f64 = parts.get(5)?.parse().ok()?;
-                    let limit: f64 = parts.get(9)?.parse().ok()?;
-                    Some((bus, voltage, limit))
-                })
-                .collect();
-            let thermal_violations: Vec<(u64, f64, f64)> = violated_constraints.iter()
-                .filter(|v| v.contains("Thermal"))
-                .filter_map(|v| {
-                    let parts: Vec<&str> = v.split_whitespace().collect();
-                    let branch: u64 = parts.get(3)?.parse().ok()?;
-                    let loading: f64 = parts.get(5)?.trim_end_matches('%').parse().ok()?;
-                    let limit: f64 = parts.get(9)?.trim_end_matches('%').parse().ok()?;
-                    Some((branch, loading, limit))
-                })
-                .collect();
-            let converged = !violated_constraints.iter().any(|v| v.contains("did not converge"));
-            WhatIfResult {
-                applicable: true,
-                converged,
-                voltage_violations,
-                thermal_violations,
-                all_constraints_satisfied: false,
-                summary: violated_constraints.join("; "),
-            }
         }
     }
 }
@@ -537,12 +568,23 @@ pub fn structured_action_to_command(action: &StructuredAction) -> Command {
             } else {
                 CommandPriority::Normal
             };
-            Command::new(
+            let device_value = match operation.as_str() {
+                "close" | "合闸" => Some(eneros_device::adapter::DataValue::Bool(true)),
+                "open" | "分闸" => Some(eneros_device::adapter::DataValue::Bool(false)),
+                "adjust_reactive" => Some(eneros_device::adapter::DataValue::Float64(*value)),
+                _ => Some(eneros_device::adapter::DataValue::Float64(*value)),
+            };
+            let mut cmd = Command::new(
                 cmd_type,
                 *device_id,
                 priority,
                 &format!("{} device {} value {:.2}", operation, device_id, value),
-            )
+            );
+            // Set device routing for real execution
+            cmd.device_id = Some(format!("device-{}", device_id));
+            cmd.device_address = Some(format!("point-{}", device_id));
+            cmd.device_value = device_value;
+            cmd
         }
         StructuredAction::IsolateFault { upstream_switch, downstream_switch } => {
             Command::new(
@@ -629,7 +671,7 @@ pub fn extract_targets(action: &StructuredAction) -> (Option<u32>, Option<u64>) 
 mod tests {
     use super::*;
     use eneros_constraint::ConstraintEngine;
-    use eneros_constraint::projector::NetworkSimulator;
+    use eneros_constraint::projector::{NetworkSimulator, WhatIfResult};
 
     struct MockSimulator;
     impl NetworkSimulator for MockSimulator {
@@ -663,8 +705,8 @@ mod tests {
 
     // ── Legacy API tests ──
 
-    #[test]
-    fn test_pipeline_feasible_action_approved() {
+    #[tokio::test]
+    async fn test_pipeline_feasible_action_approved() {
         let pipeline = make_pipeline();
         let action = StructuredAction::StartGenerator { gen_id: 1, target_mw: 100.0 };
         let result = pipeline.decide(
@@ -672,13 +714,13 @@ mod tests {
             AuthorityLevel::Supervisor,
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
-        );
+        ).await;
         assert!(result.executed_action.is_some());
         assert!(result.audit.len() >= 2);
     }
 
-    #[test]
-    fn test_pipeline_observer_rejected() {
+    #[tokio::test]
+    async fn test_pipeline_observer_rejected() {
         let pipeline = make_pipeline();
         let action = StructuredAction::StartGenerator { gen_id: 1, target_mw: 100.0 };
         let result = pipeline.decide(
@@ -686,13 +728,13 @@ mod tests {
             AuthorityLevel::Observer,
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
-        );
+        ).await;
         assert!(result.executed_action.is_none());
         assert!(matches!(result.verdict, ActionVerdict::Rejected(_)));
     }
 
-    #[test]
-    fn test_pipeline_high_risk_requires_supervisor() {
+    #[tokio::test]
+    async fn test_pipeline_high_risk_requires_supervisor() {
         let pipeline = make_pipeline();
         let action = StructuredAction::ShedLoad { zone_id: 1, amount_mw: 50.0 };
         let result = pipeline.decide(
@@ -700,12 +742,12 @@ mod tests {
             AuthorityLevel::Operator,
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
-        );
+        ).await;
         assert!(result.executed_action.is_none() || matches!(result.verdict, ActionVerdict::PendingApproval { .. }));
     }
 
-    #[test]
-    fn test_pipeline_batch() {
+    #[tokio::test]
+    async fn test_pipeline_batch() {
         let pipeline = make_pipeline();
         let actions = vec![
             StructuredAction::StartGenerator { gen_id: 1, target_mw: 100.0 },
@@ -716,14 +758,14 @@ mod tests {
             AuthorityLevel::Supervisor,
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
-        );
+        ).await;
         assert_eq!(results.len(), 2);
     }
 
     // ── Enhanced API tests ──
 
-    #[test]
-    fn test_enhanced_pipeline_feasible_action() {
+    #[tokio::test]
+    async fn test_enhanced_pipeline_feasible_action() {
         let pipeline = make_pipeline();
         let action = StructuredAction::StartGenerator { gen_id: 1, target_mw: 100.0 };
         let ctx = DecisionContext::new(
@@ -731,7 +773,7 @@ mod tests {
             Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
         );
-        let result = pipeline.decide_enhanced(&action, &ctx);
+        let result = pipeline.decide_enhanced(&action, &ctx).await;
         assert!(result.executed_action.is_some());
         assert!(result.pre_conditions.satisfied);
         assert!(result.decomposition.is_some());
@@ -741,8 +783,8 @@ mod tests {
         assert!(result.audit.len() >= 5, "Expected >= 5 audit entries, got {}", result.audit.len());
     }
 
-    #[test]
-    fn test_enhanced_pipeline_observer_rejected() {
+    #[tokio::test]
+    async fn test_enhanced_pipeline_observer_rejected() {
         let pipeline = make_pipeline();
         let action = StructuredAction::StartGenerator { gen_id: 1, target_mw: 100.0 };
         let ctx = DecisionContext::new(
@@ -750,14 +792,14 @@ mod tests {
             Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
         );
-        let result = pipeline.decide_enhanced(&action, &ctx);
+        let result = pipeline.decide_enhanced(&action, &ctx).await;
         assert!(result.executed_action.is_none());
         assert!(!result.pre_conditions.satisfied);
         assert!(matches!(result.verdict, ActionVerdict::Rejected(_)));
     }
 
-    #[test]
-    fn test_enhanced_pipeline_isolate_fault_decomposed() {
+    #[tokio::test]
+    async fn test_enhanced_pipeline_isolate_fault_decomposed() {
         let pipeline = make_pipeline();
         let action = StructuredAction::IsolateFault {
             upstream_switch: 10,
@@ -768,7 +810,7 @@ mod tests {
             Jurisdiction::unrestricted(),
             SystemOperatingState::Emergency,
         ).with_device_states(crate::interlocking::DeviceStates::default());
-        let result = pipeline.decide_enhanced(&action, &ctx);
+        let result = pipeline.decide_enhanced(&action, &ctx).await;
         // IsolateFault should be decomposed into 2 steps
         if let Some(ref decomp) = result.decomposition {
             assert!(decomp.is_multi_step());
@@ -776,8 +818,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_enhanced_pipeline_statistics() {
+    #[tokio::test]
+    async fn test_enhanced_pipeline_statistics() {
         let pipeline = make_pipeline();
         let action = StructuredAction::StartGenerator { gen_id: 1, target_mw: 100.0 };
         let ctx = DecisionContext::new(
@@ -785,14 +827,14 @@ mod tests {
             Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
         );
-        let _ = pipeline.decide_enhanced(&action, &ctx);
+        let _ = pipeline.decide_enhanced(&action, &ctx).await;
         let stats = pipeline.statistics();
         assert_eq!(stats.total_decisions, 1);
         assert!(stats.avg_latency_us > 0);
     }
 
-    #[test]
-    fn test_enhanced_pipeline_batch() {
+    #[tokio::test]
+    async fn test_enhanced_pipeline_batch() {
         let pipeline = make_pipeline();
         let actions = vec![
             StructuredAction::StartGenerator { gen_id: 1, target_mw: 100.0 },
@@ -803,7 +845,7 @@ mod tests {
             Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
         );
-        let results = pipeline.decide_batch_enhanced(&actions, &ctx);
+        let results = pipeline.decide_batch_enhanced(&actions, &ctx).await;
         assert_eq!(results.len(), 2);
     }
 

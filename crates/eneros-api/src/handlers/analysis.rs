@@ -157,6 +157,7 @@ pub async fn state_estimation_handler(
                     .map(|b| Measurement {
                         meas_type: MeasType::VoltageMagnitude,
                         element_id: b.bus_id,
+                        to_element_id: None,
                         value: b.voltage_magnitude,
                         sigma: 0.01,
                     })
@@ -208,6 +209,7 @@ pub async fn state_estimation_handler(
             Measurement {
                 meas_type,
                 element_id: m.element_id,
+                to_element_id: None,
                 value: m.value,
                 sigma: m.sigma,
             }

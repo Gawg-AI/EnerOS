@@ -40,12 +40,44 @@ pub struct MeasurementMapping {
     pub target_field: MeasurementField,
 }
 
+/// Topology mapping for populating bus/branch IDs in snapshot data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopologyMapping {
+    /// Map branch_id -> (from_bus, to_bus)
+    pub branch_topology: HashMap<ElementId, (ElementId, ElementId)>,
+    /// Map gen_id -> bus_id
+    pub gen_bus_map: HashMap<ElementId, ElementId>,
+    /// Map load_id -> bus_id
+    pub load_bus_map: HashMap<ElementId, ElementId>,
+    /// Map bus_id -> nominal voltage kV
+    pub bus_voltage_kv: HashMap<ElementId, f64>,
+    /// Map branch_id -> rated current kA (for computing loading_percent)
+    pub branch_rated_current: HashMap<ElementId, f64>,
+    /// Map branch_id -> rated voltage kV (for computing current_ka)
+    pub branch_rated_kv: HashMap<ElementId, f64>,
+}
+
+impl Default for TopologyMapping {
+    fn default() -> Self {
+        Self {
+            branch_topology: HashMap::new(),
+            gen_bus_map: HashMap::new(),
+            load_bus_map: HashMap::new(),
+            bus_voltage_kv: HashMap::new(),
+            branch_rated_current: HashMap::new(),
+            branch_rated_kv: HashMap::new(),
+        }
+    }
+}
+
 /// Builder for constructing PowerSystemState from SCADA readings
 pub struct SnapshotBuilder {
     /// Mappings from SCADA parameters to measurement fields
     mappings: Vec<MeasurementMapping>,
     /// Required fields that must have data; if any is missing, build() returns an error
     required_fields: Vec<MeasurementField>,
+    /// Topology mapping for populating bus/branch IDs
+    topology: TopologyMapping,
 }
 
 impl SnapshotBuilder {
@@ -54,12 +86,19 @@ impl SnapshotBuilder {
         Self {
             mappings,
             required_fields: Vec::new(),
+            topology: TopologyMapping::default(),
         }
     }
 
     /// Set required fields. If any of these fields has no reading, build() returns an error.
     pub fn with_required_fields(mut self, fields: Vec<MeasurementField>) -> Self {
         self.required_fields = fields;
+        self
+    }
+
+    /// Set topology mapping for populating bus/branch IDs in snapshot data
+    pub fn with_topology(mut self, topology: TopologyMapping) -> Self {
+        self.topology = topology;
         self
     }
 
@@ -152,20 +191,39 @@ impl SnapshotBuilder {
                 bus_id: *id,
                 voltage_magnitude: *vm,
                 voltage_angle: *va,
-                voltage_kv: 0.0,
+                voltage_kv: self.topology.bus_voltage_kv.get(id).copied().unwrap_or(0.0),
             })
             .collect();
 
         let branch_flows: Vec<BranchFlow> = branch_flows_map
             .iter()
-            .map(|(id, (p, q))| BranchFlow {
-                branch_id: *id,
-                from_bus: 0,
-                to_bus: 0,
-                active_power_mw: *p,
-                reactive_power_mvar: *q,
-                current_ka: 0.0,
-                loading_percent: 0.0,
+            .map(|(id, (p, q))| {
+                let (from_bus, to_bus) = self.topology.branch_topology.get(id)
+                    .copied()
+                    .unwrap_or((0, 0));
+                // Compute current and loading if rated values are available
+                let rated_ka = self.topology.branch_rated_current.get(id).copied().unwrap_or(0.0);
+                let rated_kv = self.topology.branch_rated_kv.get(id).copied().unwrap_or(0.0);
+                let apparent_power_mva = (p * p + q * q).sqrt();
+                let current_ka = if rated_kv > 0.0 {
+                    apparent_power_mva / (rated_kv * 1.732)
+                } else {
+                    0.0
+                };
+                let loading_percent = if rated_ka > 0.0 {
+                    (current_ka / rated_ka) * 100.0
+                } else {
+                    0.0
+                };
+                BranchFlow {
+                    branch_id: *id,
+                    from_bus,
+                    to_bus,
+                    active_power_mw: *p,
+                    reactive_power_mvar: *q,
+                    current_ka,
+                    loading_percent,
+                }
             })
             .collect();
 
@@ -173,7 +231,7 @@ impl SnapshotBuilder {
             .iter()
             .map(|(id, (p, q))| GenOutput {
                 gen_id: *id,
-                bus_id: 0,
+                bus_id: self.topology.gen_bus_map.get(id).copied().unwrap_or(0),
                 active_power_mw: *p,
                 reactive_power_mvar: *q,
                 voltage_setpoint: 0.0,
@@ -185,7 +243,7 @@ impl SnapshotBuilder {
             .iter()
             .map(|(id, (p, q))| LoadConsumption {
                 load_id: *id,
-                bus_id: 0,
+                bus_id: self.topology.load_bus_map.get(id).copied().unwrap_or(0),
                 active_power_mw: *p,
                 reactive_power_mvar: *q,
                 status: true,

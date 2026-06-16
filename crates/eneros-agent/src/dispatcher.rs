@@ -40,7 +40,7 @@ impl ActionDispatcher {
     }
 
     /// Dispatch a structured action through the constrained decision pipeline
-    pub fn dispatch_structured(
+    pub async fn dispatch_structured(
         &self,
         action: &StructuredAction,
         authority: AuthorityLevel,
@@ -48,7 +48,7 @@ impl ActionDispatcher {
         system_state: SystemOperatingState,
     ) -> Result<DispatchResult> {
         if let Some(ref pipeline) = self.decision_pipeline {
-            let decision = pipeline.decide(action, authority, jurisdiction, system_state);
+            let decision = pipeline.decide(action, authority, jurisdiction, system_state).await;
             if decision.executed_action.is_some() {
                 Ok(DispatchResult::CommandExecuted)
             } else {
@@ -62,14 +62,14 @@ impl ActionDispatcher {
     }
 
     /// Dispatch a single action
-    pub fn dispatch(&self, action: AgentAction) -> Result<DispatchResult> {
+    pub async fn dispatch(&self, action: AgentAction) -> Result<DispatchResult> {
         match action {
             AgentAction::PublishEvent(event) => {
                 self.event_bus.publish(event)?;
                 Ok(DispatchResult::EventPublished)
             }
             AgentAction::ExecuteCommand(cmd) => {
-                self.gateway.execute_command(cmd)?;
+                self.gateway.execute_command(cmd).await?;
                 Ok(DispatchResult::CommandExecuted)
             }
             AgentAction::ExecuteStructured(sa) => {
@@ -81,7 +81,7 @@ impl ActionDispatcher {
                 // the action still takes effect, but note this bypasses
                 // feasibility projection and constraint validation.
                 let cmd = eneros_gateway::decision_pipeline::structured_action_to_command(&sa);
-                self.gateway.execute_command(cmd)?;
+                self.gateway.execute_command(cmd).await?;
                 Ok(DispatchResult::CommandExecuted)
             }
             AgentAction::LogMessage(msg) => {
@@ -109,8 +109,12 @@ impl ActionDispatcher {
     }
 
     /// Dispatch multiple actions in order
-    pub fn dispatch_all(&self, actions: Vec<AgentAction>) -> Vec<Result<DispatchResult>> {
-        actions.into_iter().map(|a| self.dispatch(a)).collect()
+    pub async fn dispatch_all(&self, actions: Vec<AgentAction>) -> Vec<Result<DispatchResult>> {
+        let mut results = Vec::with_capacity(actions.len());
+        for a in actions {
+            results.push(self.dispatch(a).await);
+        }
+        results
     }
 
     /// Dispatch an action with additional validation context.
@@ -121,7 +125,7 @@ impl ActionDispatcher {
     /// 2. For `EmergencyOverride`, checks if system is in emergency state
     /// 3. Records an audit entry if `audit_trail` is provided
     /// 4. Then delegates to `dispatch()`
-    pub fn dispatch_with_validation(
+    pub async fn dispatch_with_validation(
         &self,
         action: AgentAction,
         authority: AuthorityLevel,
@@ -206,7 +210,7 @@ impl ActionDispatcher {
             });
         }
 
-        self.dispatch(action)
+        self.dispatch(action).await
     }
 }
 
@@ -257,22 +261,22 @@ mod tests {
         let _dispatcher = test_dispatcher();
     }
 
-    #[test]
-    fn test_dispatch_log_message() {
+    #[tokio::test]
+    async fn test_dispatch_log_message() {
         let dispatcher = test_dispatcher();
-        let result = dispatcher.dispatch(AgentAction::LogMessage("hello".to_string()));
+        let result = dispatcher.dispatch(AgentAction::LogMessage("hello".to_string())).await;
         assert_eq!(result.unwrap(), DispatchResult::Logged);
     }
 
-    #[test]
-    fn test_dispatch_noop() {
+    #[tokio::test]
+    async fn test_dispatch_noop() {
         let dispatcher = test_dispatcher();
-        let result = dispatcher.dispatch(AgentAction::NoOp);
+        let result = dispatcher.dispatch(AgentAction::NoOp).await;
         assert_eq!(result.unwrap(), DispatchResult::NoOp);
     }
 
-    #[test]
-    fn test_dispatch_publish_event() {
+    #[tokio::test]
+    async fn test_dispatch_publish_event() {
         let event_bus = std::sync::Arc::new(EventBus::new(64));
         // Subscribe so that publish has at least one receiver
         let _receiver = event_bus.subscribe();
@@ -285,79 +289,79 @@ mod tests {
             "test",
             EventPayload::Message("test".to_string()),
         );
-        let result = dispatcher.dispatch(AgentAction::PublishEvent(event));
+        let result = dispatcher.dispatch(AgentAction::PublishEvent(event)).await;
         assert_eq!(result.unwrap(), DispatchResult::EventPublished);
     }
 
-    #[test]
-    fn test_dispatch_execute_command() {
+    #[tokio::test]
+    async fn test_dispatch_execute_command() {
         let dispatcher = test_dispatcher();
         let cmd = Command::new(CommandType::GeneratorSetpoint, 1, CommandPriority::Normal, "test");
-        let result = dispatcher.dispatch(AgentAction::ExecuteCommand(cmd));
+        let result = dispatcher.dispatch(AgentAction::ExecuteCommand(cmd)).await;
         assert_eq!(result.unwrap(), DispatchResult::CommandExecuted);
     }
 
-    #[test]
-    fn test_dispatch_all() {
+    #[tokio::test]
+    async fn test_dispatch_all() {
         let dispatcher = test_dispatcher();
         let actions = vec![
             AgentAction::LogMessage("msg1".to_string()),
             AgentAction::NoOp,
             AgentAction::LogMessage("msg2".to_string()),
         ];
-        let results = dispatcher.dispatch_all(actions);
+        let results = dispatcher.dispatch_all(actions).await;
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].as_ref().unwrap(), &DispatchResult::Logged);
         assert_eq!(results[1].as_ref().unwrap(), &DispatchResult::NoOp);
         assert_eq!(results[2].as_ref().unwrap(), &DispatchResult::Logged);
     }
 
-    #[test]
-    fn test_dispatch_request_approval() {
+    #[tokio::test]
+    async fn test_dispatch_request_approval() {
         let dispatcher = test_dispatcher();
         let action = AgentAction::RequestApproval {
             action: Box::new(AgentAction::NoOp),
             reason: "high risk".to_string(),
         };
-        let result = dispatcher.dispatch(action);
+        let result = dispatcher.dispatch(action).await;
         assert_eq!(result.unwrap(), DispatchResult::ApprovalRequested);
     }
 
-    #[test]
-    fn test_dispatch_delegate_task() {
+    #[tokio::test]
+    async fn test_dispatch_delegate_task() {
         let dispatcher = test_dispatcher();
         let action = AgentAction::DelegateTask {
             target_agent_id: "agent-2".to_string(),
             task_description: "Switch capacitor bank".to_string(),
         };
-        let result = dispatcher.dispatch(action);
+        let result = dispatcher.dispatch(action).await;
         assert_eq!(result.unwrap(), DispatchResult::TaskDelegated);
     }
 
-    #[test]
-    fn test_dispatch_emergency_override() {
+    #[tokio::test]
+    async fn test_dispatch_emergency_override() {
         let dispatcher = test_dispatcher();
         let action = AgentAction::EmergencyOverride {
             action: Box::new(AgentAction::NoOp),
             justification: "system emergency".to_string(),
         };
-        let result = dispatcher.dispatch(action);
+        let result = dispatcher.dispatch(action).await;
         assert_eq!(result.unwrap(), DispatchResult::EmergencyOverrideApplied);
     }
 
-    #[test]
-    fn test_dispatch_rollback_action() {
+    #[tokio::test]
+    async fn test_dispatch_rollback_action() {
         let dispatcher = test_dispatcher();
         let action = AgentAction::RollbackAction {
             action_id: "action-123".to_string(),
             reason: "unsafe condition".to_string(),
         };
-        let result = dispatcher.dispatch(action);
+        let result = dispatcher.dispatch(action).await;
         assert_eq!(result.unwrap(), DispatchResult::ActionRolledBack);
     }
 
-    #[test]
-    fn test_dispatch_with_validation_observer_rejected() {
+    #[tokio::test]
+    async fn test_dispatch_with_validation_observer_rejected() {
         let dispatcher = test_dispatcher();
         let cmd = Command::new(CommandType::GeneratorSetpoint, 1, CommandPriority::Normal, "test");
         let result = dispatcher.dispatch_with_validation(
@@ -366,12 +370,12 @@ mod tests {
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
             None,
-        ).unwrap();
+        ).await.unwrap();
         assert!(matches!(result, DispatchResult::CommandRejected(_)));
     }
 
-    #[test]
-    fn test_dispatch_with_validation_operator_allowed() {
+    #[tokio::test]
+    async fn test_dispatch_with_validation_operator_allowed() {
         let dispatcher = test_dispatcher();
         let cmd = Command::new(CommandType::GeneratorSetpoint, 1, CommandPriority::Normal, "test");
         let result = dispatcher.dispatch_with_validation(
@@ -380,12 +384,12 @@ mod tests {
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
             None,
-        ).unwrap();
+        ).await.unwrap();
         assert_eq!(result, DispatchResult::CommandExecuted);
     }
 
-    #[test]
-    fn test_dispatch_with_validation_emergency_override_rejected_in_normal() {
+    #[tokio::test]
+    async fn test_dispatch_with_validation_emergency_override_rejected_in_normal() {
         let dispatcher = test_dispatcher();
         let result = dispatcher.dispatch_with_validation(
             AgentAction::EmergencyOverride {
@@ -396,12 +400,12 @@ mod tests {
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
             None,
-        ).unwrap();
+        ).await.unwrap();
         assert!(matches!(result, DispatchResult::CommandRejected(_)));
     }
 
-    #[test]
-    fn test_dispatch_with_validation_emergency_override_allowed_in_emergency() {
+    #[tokio::test]
+    async fn test_dispatch_with_validation_emergency_override_allowed_in_emergency() {
         let dispatcher = test_dispatcher();
         let result = dispatcher.dispatch_with_validation(
             AgentAction::EmergencyOverride {
@@ -412,12 +416,12 @@ mod tests {
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Emergency,
             None,
-        ).unwrap();
+        ).await.unwrap();
         assert_eq!(result, DispatchResult::EmergencyOverrideApplied);
     }
 
-    #[test]
-    fn test_dispatch_with_validation_audit_trail() {
+    #[tokio::test]
+    async fn test_dispatch_with_validation_audit_trail() {
         let dispatcher = test_dispatcher();
         let trail = AuditTrail::new();
         let result = dispatcher.dispatch_with_validation(
@@ -426,13 +430,13 @@ mod tests {
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
             Some(&trail),
-        ).unwrap();
+        ).await.unwrap();
         assert_eq!(result, DispatchResult::Logged);
         assert_eq!(trail.len(), 1);
     }
 
-    #[test]
-    fn test_dispatch_with_validation_observer_rejected_with_audit() {
+    #[tokio::test]
+    async fn test_dispatch_with_validation_observer_rejected_with_audit() {
         let dispatcher = test_dispatcher();
         let trail = AuditTrail::new();
         let cmd = Command::new(CommandType::GeneratorSetpoint, 1, CommandPriority::Normal, "test");
@@ -442,7 +446,7 @@ mod tests {
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
             Some(&trail),
-        ).unwrap();
+        ).await.unwrap();
         assert!(matches!(result, DispatchResult::CommandRejected(_)));
         assert_eq!(trail.len(), 1);
     }

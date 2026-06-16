@@ -8,6 +8,10 @@ pub struct AdmittanceContribution {
     pub y_series: num_complex::Complex<f64>,
     /// Shunt admittance at each end (half-line charging) in per-unit
     pub y_shunt: num_complex::Complex<f64>,
+    /// Additional shunt admittance at the "from" bus (e.g., y/tap^2 - y for transformer tap model)
+    pub y_from_shunt: num_complex::Complex<f64>,
+    /// Additional shunt admittance at the "to" bus (e.g., y - y/tap for transformer tap model)
+    pub y_to_shunt: num_complex::Complex<f64>,
 }
 
 /// Multi-terminal admittance contribution (for three-winding transformers etc.)

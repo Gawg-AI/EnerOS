@@ -619,12 +619,14 @@ fn run_state_estimation(case: &str) -> anyhow::Result<()> {
                 eneros_analysis::Measurement {
                     meas_type: eneros_analysis::MeasType::VoltageMagnitude,
                     element_id: bus.bus_id,
+                    to_element_id: None,
                     value: bus.voltage_magnitude,
                     sigma: 0.005,
                 },
                 eneros_analysis::Measurement {
                     meas_type: eneros_analysis::MeasType::BusInjectionP,
                     element_id: bus.bus_id,
+                    to_element_id: None,
                     value: bus.p_injection,
                     sigma: 0.05,
                 },

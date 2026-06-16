@@ -73,10 +73,10 @@ impl SystemOperatingState {
             // Alert can escalate to Emergency or recover to Normal
             (SystemOperatingState::Alert, SystemOperatingState::Emergency) => true,
             (SystemOperatingState::Alert, SystemOperatingState::Normal) => true,
-            // Emergency can escalate to Blackout or recover to Alert/Normal
+            // Emergency can escalate to Blackout or recover to Alert
+            // (must go through Alert before reaching Normal — gradual recovery)
             (SystemOperatingState::Emergency, SystemOperatingState::Blackout) => true,
             (SystemOperatingState::Emergency, SystemOperatingState::Alert) => true,
-            (SystemOperatingState::Emergency, SystemOperatingState::Normal) => true,
             // Blackout can only go to Restoration
             (SystemOperatingState::Blackout, SystemOperatingState::Restoration) => true,
             // Restoration can go to Normal (success) or back to Blackout (failure)
@@ -513,12 +513,12 @@ mod tests {
     fn test_valid_transitions_from_emergency() {
         assert!(SystemOperatingState::Emergency.can_transition_to(SystemOperatingState::Blackout));
         assert!(SystemOperatingState::Emergency.can_transition_to(SystemOperatingState::Alert));
-        assert!(SystemOperatingState::Emergency.can_transition_to(SystemOperatingState::Normal));
         assert!(SystemOperatingState::Emergency.can_transition_to(SystemOperatingState::Emergency));
     }
 
     #[test]
     fn test_invalid_transitions_from_emergency() {
+        assert!(!SystemOperatingState::Emergency.can_transition_to(SystemOperatingState::Normal));
         assert!(!SystemOperatingState::Emergency.can_transition_to(SystemOperatingState::Restoration));
     }
 

@@ -1,11 +1,22 @@
 /target
 DEVGUIDE.md
 
+# Trae IDE workspace (AI-assisted dev artifacts, not for public repo)
+.trae/
+
 # Build/test output logs
 *.log
 build_output.txt
 test_compile.txt
 test_output.txt
+# Phase test/verify outputs
+verify_*.txt
+p*_test.txt
+p*_final.txt
+bug*_test.txt
+plan_*.txt
+*_diag.txt
+*_scan.txt
 
 # Python
 __pycache__/

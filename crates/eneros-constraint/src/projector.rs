@@ -1,4 +1,5 @@
 use eneros_core::StructuredAction;
+use eneros_core::PowerObservation;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -17,6 +18,70 @@ pub struct WhatIfResult {
     pub all_constraints_satisfied: bool,
     /// Summary message
     pub summary: String,
+}
+
+impl WhatIfResult {
+    /// Build a `WhatIfResult` from a **real post-execution observation**.
+    ///
+    /// This is the production-grade path: instead of calling the simulator
+    /// (which is a pure function that doesn't know whether the action was
+    /// actually executed), we use the actual SCADA/RTU measurements read
+    /// back from the field after command execution.
+    ///
+    /// The observation is checked against the given voltage and thermal
+    /// limits to populate `voltage_violations` and `thermal_violations`.
+    /// `converged` is set to `true` (we have real measurements, so the
+    /// system is solvable); if the observation is empty, `converged` is
+    /// `false` to signal data unavailability.
+    pub fn from_observation(
+        obs: &PowerObservation,
+        voltage_min: f64,
+        voltage_max: f64,
+        thermal_limit: f64,
+    ) -> Self {
+        let mut voltage_violations = Vec::new();
+        let mut thermal_violations = Vec::new();
+
+        // Voltage violations: check both under- and over-voltage
+        for (bus_id, bv) in &obs.bus_voltages {
+            if bv.vm_pu < voltage_min {
+                voltage_violations.push((*bus_id, bv.vm_pu, voltage_min));
+            } else if bv.vm_pu > voltage_max {
+                voltage_violations.push((*bus_id, bv.vm_pu, voltage_max));
+            }
+        }
+
+        // Thermal violations: check branch loading
+        for (branch_id, bf) in &obs.branch_flows {
+            if bf.loading_percent > thermal_limit {
+                thermal_violations.push((*branch_id, bf.loading_percent, thermal_limit));
+            }
+        }
+
+        let converged = !obs.bus_voltages.is_empty();
+        let all_satisfied = converged && voltage_violations.is_empty() && thermal_violations.is_empty();
+
+        let summary = if !converged {
+            "No post-execution observation data available".to_string()
+        } else if all_satisfied {
+            "All constraints satisfied (verified from field observation)".to_string()
+        } else {
+            format!(
+                "Field observation: {} voltage violations, {} thermal violations",
+                voltage_violations.len(),
+                thermal_violations.len()
+            )
+        };
+
+        Self {
+            applicable: true,
+            converged,
+            voltage_violations,
+            thermal_violations,
+            all_constraints_satisfied: all_satisfied,
+            summary,
+        }
+    }
 }
 
 /// Trait for network simulation — abstracts over PowerNetwork to avoid circular deps
@@ -95,6 +160,11 @@ impl FeasibilityProjector {
     /// Create a new projector with a network simulator
     pub fn new(simulator: Arc<dyn NetworkSimulator>) -> Self {
         Self { simulator }
+    }
+
+    /// Get a reference to the underlying simulator (for post-execution re-simulation)
+    pub fn simulator(&self) -> &Arc<dyn NetworkSimulator> {
+        &self.simulator
     }
 
     /// Evaluate action feasibility and project to feasible domain

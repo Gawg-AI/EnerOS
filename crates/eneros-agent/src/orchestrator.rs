@@ -178,7 +178,7 @@ impl AgentOrchestrator {
                 self.dispatch_via_pipeline(&sa, authority, jurisdiction)
                     .await
             }
-            other => self.dispatcher.dispatch(other),
+            other => self.dispatcher.dispatch(other).await,
         }
     }
 
@@ -201,12 +201,12 @@ impl AgentOrchestrator {
             let cmd = eneros_gateway::decision_pipeline::structured_action_to_command(action);
             return self
                 .dispatcher
-                .dispatch(crate::agent::AgentAction::ExecuteCommand(cmd));
+                .dispatch(crate::agent::AgentAction::ExecuteCommand(cmd)).await;
         }
 
         let result =
             self.dispatcher
-                .dispatch_structured(action, authority, jurisdiction, system_state)?;
+                .dispatch_structured(action, authority, jurisdiction, system_state).await?;
 
         // If the action was executed (possibly after projection), we're done.
         if matches!(result, DispatchResult::CommandExecuted) {
@@ -273,7 +273,7 @@ impl AgentOrchestrator {
                     authority,
                     jurisdiction,
                     system_state,
-                )?;
+                ).await?;
                 if matches!(r, DispatchResult::CommandExecuted) {
                     return Ok(r);
                 }
@@ -631,8 +631,8 @@ mod tests {
     }
 
     /// Observer agent cannot execute commands via dispatch_with_validation
-    #[test]
-    fn test_observer_cannot_execute_commands() {
+    #[tokio::test]
+    async fn test_observer_cannot_execute_commands() {
         let dispatcher = crate::dispatcher::ActionDispatcher::new(
             Arc::new(EventBus::new(64)),
             Arc::new(SafetyGateway::new(100)),
@@ -654,7 +654,7 @@ mod tests {
                 SystemOperatingState::Normal,
                 None,
             )
-            .unwrap();
+            .await.unwrap();
         assert!(matches!(result, DispatchResult::CommandRejected(_)));
 
         // Operator authority should be allowed
@@ -672,7 +672,7 @@ mod tests {
                 SystemOperatingState::Normal,
                 None,
             )
-            .unwrap();
+            .await.unwrap();
         assert_eq!(result2, DispatchResult::CommandExecuted);
     }
 
@@ -713,8 +713,8 @@ mod tests {
     }
 
     /// Audit trail records actions through dispatch_with_validation
-    #[test]
-    fn test_audit_trail_records_actions() {
+    #[tokio::test]
+    async fn test_audit_trail_records_actions() {
         use crate::audit::AuditTrail;
 
         let dispatcher = crate::dispatcher::ActionDispatcher::new(
@@ -733,7 +733,7 @@ mod tests {
                 SystemOperatingState::Normal,
                 Some(&trail),
             )
-            .unwrap();
+            .await.unwrap();
         assert_eq!(result, DispatchResult::Logged);
         assert_eq!(trail.len(), 1);
 
@@ -752,7 +752,7 @@ mod tests {
                 SystemOperatingState::Normal,
                 Some(&trail),
             )
-            .unwrap();
+            .await.unwrap();
         assert!(matches!(result2, DispatchResult::CommandRejected(_)));
         assert_eq!(trail.len(), 2);
 

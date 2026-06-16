@@ -210,8 +210,8 @@ mod dispatch_structured_tests {
         ActionDispatcher::new(event_bus, gateway)
     }
 
-    #[test]
-    fn test_dispatch_structured_with_pipeline_approved() {
+    #[tokio::test]
+    async fn test_dispatch_structured_with_pipeline_approved() {
         let pipeline = make_pipeline();
         let dispatcher = make_dispatcher_with_pipeline(pipeline);
         let action = StructuredAction::StartGenerator {
@@ -225,12 +225,13 @@ mod dispatch_structured_tests {
                 &Jurisdiction::unrestricted(),
                 SystemOperatingState::Normal,
             )
+            .await
             .unwrap();
         assert_eq!(result, DispatchResult::CommandExecuted);
     }
 
-    #[test]
-    fn test_dispatch_structured_with_pipeline_rejected() {
+    #[tokio::test]
+    async fn test_dispatch_structured_with_pipeline_rejected() {
         let pipeline = make_pipeline();
         let dispatcher = make_dispatcher_with_pipeline(pipeline);
         let action = StructuredAction::StartGenerator {
@@ -244,13 +245,14 @@ mod dispatch_structured_tests {
                 &Jurisdiction::unrestricted(),
                 SystemOperatingState::Normal,
             )
+            .await
             .unwrap();
         // Observer cannot execute commands → pipeline rejects → ConstraintRejected
         assert!(matches!(result, DispatchResult::ConstraintRejected(_)));
     }
 
-    #[test]
-    fn test_dispatch_structured_without_pipeline_fallback() {
+    #[tokio::test]
+    async fn test_dispatch_structured_without_pipeline_fallback() {
         let dispatcher = make_dispatcher_without_pipeline();
         let action = StructuredAction::StartGenerator {
             gen_id: 1,
@@ -263,13 +265,14 @@ mod dispatch_structured_tests {
                 &Jurisdiction::unrestricted(),
                 SystemOperatingState::Normal,
             )
+            .await
             .unwrap();
         // Without pipeline, falls through to CommandExecuted (backward compat)
         assert_eq!(result, DispatchResult::CommandExecuted);
     }
 
-    #[test]
-    fn test_dispatch_structured_high_risk_requires_supervisor() {
+    #[tokio::test]
+    async fn test_dispatch_structured_high_risk_requires_supervisor() {
         let pipeline = make_pipeline();
         let dispatcher = make_dispatcher_with_pipeline(pipeline);
         let action = StructuredAction::ShedLoad {
@@ -283,6 +286,7 @@ mod dispatch_structured_tests {
                 &Jurisdiction::unrestricted(),
                 SystemOperatingState::Normal,
             )
+            .await
             .unwrap();
         // ShedLoad is high-risk; Operator cannot execute high-risk → rejected or pending
         match result {
@@ -306,8 +310,8 @@ mod dispatch_structured_tests {
         }
     }
 
-    #[test]
-    fn test_dispatch_structured_emergency_bypass() {
+    #[tokio::test]
+    async fn test_dispatch_structured_emergency_bypass() {
         let pipeline = make_pipeline();
         let dispatcher = make_dispatcher_with_pipeline(pipeline);
         let action = StructuredAction::StartGenerator {
@@ -321,6 +325,7 @@ mod dispatch_structured_tests {
                 &Jurisdiction::unrestricted(),
                 SystemOperatingState::Emergency,
             )
+            .await
             .unwrap();
         // Emergency authority in Emergency state should bypass constraints
         assert!(
@@ -341,8 +346,8 @@ mod dispatch_structured_tests {
 mod pipeline_infeasible_projected_tests {
     use super::*;
 
-    #[test]
-    fn test_pipeline_infeasible_action_rejected() {
+    #[tokio::test]
+    async fn test_pipeline_infeasible_action_rejected() {
         let pipeline = make_pipeline_with(Arc::new(ViolatingMockSimulator));
         let action = StructuredAction::StartGenerator {
             gen_id: 1,
@@ -353,7 +358,7 @@ mod pipeline_infeasible_projected_tests {
             AuthorityLevel::Supervisor,
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
-        );
+        ).await;
         // Violating simulator always returns violations → infeasible
         assert!(result.executed_action.is_none());
         assert!(matches!(result.verdict, ActionVerdict::Rejected(_)));
@@ -361,8 +366,8 @@ mod pipeline_infeasible_projected_tests {
         assert!(result.audit.iter().any(|e| e.stage == "projection"));
     }
 
-    #[test]
-    fn test_pipeline_projected_action_executed() {
+    #[tokio::test]
+    async fn test_pipeline_projected_action_executed() {
         let pipeline = make_pipeline_with(Arc::new(ProjectingMockSimulator));
         let action = StructuredAction::StartGenerator {
             gen_id: 1,
@@ -373,7 +378,7 @@ mod pipeline_infeasible_projected_tests {
             AuthorityLevel::Supervisor,
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
-        );
+        ).await;
         // ProjectingMockSimulator: target > 100 → violations, but 90% reduction (135) still > 100
         // The projector will try reducing by 10% increments. After enough reductions it
         // should find a feasible point or exhaust attempts.
@@ -387,8 +392,8 @@ mod pipeline_infeasible_projected_tests {
         }
     }
 
-    #[test]
-    fn test_pipeline_audit_trail_complete() {
+    #[tokio::test]
+    async fn test_pipeline_audit_trail_complete() {
         let pipeline = make_pipeline();
         let action = StructuredAction::StartGenerator {
             gen_id: 1,
@@ -399,7 +404,7 @@ mod pipeline_infeasible_projected_tests {
             AuthorityLevel::Supervisor,
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Normal,
-        );
+        ).await;
         // For a feasible action with Supervisor authority:
         // - projection stage (always present)
         // - validation stage (always present)
@@ -441,8 +446,8 @@ mod pipeline_infeasible_projected_tests {
         }
     }
 
-    #[test]
-    fn test_pipeline_emergency_state_bypass() {
+    #[tokio::test]
+    async fn test_pipeline_emergency_state_bypass() {
         let pipeline = make_pipeline_with(Arc::new(ViolatingMockSimulator));
         let action = StructuredAction::StartGenerator {
             gen_id: 1,
@@ -453,7 +458,7 @@ mod pipeline_infeasible_projected_tests {
             AuthorityLevel::Emergency,
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Emergency,
-        );
+        ).await;
         // Emergency authority in Emergency state → can bypass constraints
         // Even though the simulator returns violations, Emergency authority can bypass
         match &result.verdict {
@@ -478,8 +483,8 @@ mod pipeline_infeasible_projected_tests {
         }
     }
 
-    #[test]
-    fn test_pipeline_jurisdiction_restriction() {
+    #[tokio::test]
+    async fn test_pipeline_jurisdiction_restriction() {
         let pipeline = make_pipeline();
         let action = StructuredAction::ShedLoad {
             zone_id: 5, // Zone 5
@@ -491,7 +496,7 @@ mod pipeline_infeasible_projected_tests {
             AuthorityLevel::Supervisor,
             &restricted_jurisdiction,
             SystemOperatingState::Normal,
-        );
+        ).await;
         // Zone 5 is outside jurisdiction → should be rejected
         assert!(result.executed_action.is_none());
         match &result.verdict {
@@ -506,8 +511,8 @@ mod pipeline_infeasible_projected_tests {
         }
     }
 
-    #[test]
-    fn test_pipeline_alert_state_behavior() {
+    #[tokio::test]
+    async fn test_pipeline_alert_state_behavior() {
         let pipeline = make_pipeline();
         let action = StructuredAction::StartGenerator {
             gen_id: 1,
@@ -518,7 +523,7 @@ mod pipeline_infeasible_projected_tests {
             AuthorityLevel::Operator,
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Alert,
-        );
+        ).await;
         // Alert state is NOT emergency, so Operator authority should work normally.
         // Operator can execute commands (but not high-risk).
         // StartGenerator is not high-risk → should be approved.
@@ -529,8 +534,8 @@ mod pipeline_infeasible_projected_tests {
         assert!(matches!(result.verdict, ActionVerdict::Approved));
     }
 
-    #[test]
-    fn test_pipeline_alert_state_high_risk_requires_supervisor() {
+    #[tokio::test]
+    async fn test_pipeline_alert_state_high_risk_requires_supervisor() {
         let pipeline = make_pipeline();
         let action = StructuredAction::ShedLoad {
             zone_id: 1,
@@ -541,7 +546,7 @@ mod pipeline_infeasible_projected_tests {
             AuthorityLevel::Operator,
             &Jurisdiction::unrestricted(),
             SystemOperatingState::Alert,
-        );
+        ).await;
         // Alert state is NOT emergency; Operator cannot execute high-risk
         assert!(result.executed_action.is_none());
         assert!(matches!(

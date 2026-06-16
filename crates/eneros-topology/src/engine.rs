@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use parking_lot::RwLock;
 use eneros_core::{ElementId, TopologyChange, Result};
 
@@ -7,8 +8,8 @@ use crate::graph::{Bus, Branch, Switch, NetworkGraph};
 pub struct TopologyEngine {
     /// Network graph data
     graph: RwLock<NetworkGraph>,
-    /// Version counter for incremental updates
-    version: RwLock<u64>,
+    /// Version counter for incremental updates (atomic to avoid nested locking)
+    version: AtomicU64,
 }
 
 impl TopologyEngine {
@@ -16,7 +17,7 @@ impl TopologyEngine {
     pub fn new() -> Self {
         Self {
             graph: RwLock::new(NetworkGraph::new()),
-            version: RwLock::new(0),
+            version: AtomicU64::new(0),
         }
     }
 
@@ -29,7 +30,8 @@ impl TopologyEngine {
     ) -> Result<()> {
         let mut graph = self.graph.write();
         graph.initialize(buses, branches, switches)?;
-        *self.version.write() += 1;
+        drop(graph); // Release graph lock before incrementing version
+        self.version.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
@@ -55,7 +57,8 @@ impl TopologyEngine {
     pub fn apply_change(&self, change: TopologyChange) -> Result<()> {
         let mut graph = self.graph.write();
         graph.apply_change(change)?;
-        *self.version.write() += 1;
+        drop(graph); // Release graph lock before incrementing version
+        self.version.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
@@ -65,13 +68,14 @@ impl TopologyEngine {
         for change in changes {
             graph.apply_change(change)?;
         }
-        *self.version.write() += 1;
+        drop(graph); // Release graph lock before incrementing version
+        self.version.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
     /// Get current topology version
     pub fn version(&self) -> u64 {
-        *self.version.read()
+        self.version.load(Ordering::Acquire)
     }
 
     /// Get network statistics
@@ -82,7 +86,7 @@ impl TopologyEngine {
             branch_count: graph.branch_count(),
             switch_count: graph.switch_count(),
             zone_count: graph.zone_count(),
-            version: *self.version.read(),
+            version: self.version.load(Ordering::Acquire),
         }
     }
 }

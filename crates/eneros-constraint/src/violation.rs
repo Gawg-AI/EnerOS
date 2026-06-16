@@ -30,9 +30,19 @@ impl Violation {
     /// Calculate violation percentage
     pub fn violation_percent(&self) -> f64 {
         if self.actual_value < self.limit_min {
-            ((self.limit_min - self.actual_value) / self.limit_min) * 100.0
+            if self.limit_min.abs() < 1e-12 {
+                // Avoid division by zero: use absolute difference instead
+                (self.limit_min - self.actual_value) * 100.0
+            } else {
+                ((self.limit_min - self.actual_value) / self.limit_min) * 100.0
+            }
         } else if self.actual_value > self.limit_max {
-            ((self.actual_value - self.limit_max) / self.limit_max) * 100.0
+            if self.limit_max.abs() < 1e-12 {
+                // Avoid division by zero: use absolute difference instead
+                (self.actual_value - self.limit_max) * 100.0
+            } else {
+                ((self.actual_value - self.limit_max) / self.limit_max) * 100.0
+            }
         } else {
             0.0
         }

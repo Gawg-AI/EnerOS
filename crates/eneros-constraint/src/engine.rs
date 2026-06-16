@@ -27,8 +27,12 @@ const STABILITY_MARGIN_THRESHOLD: f64 = 0.3;
 pub struct ConstraintEngine {
     constraints: RwLock<HashMap<String, Constraint>>,
     violations: RwLock<Vec<Violation>>,
-    /// Dynamic threshold multiplier (1.0 = normal, higher = more relaxed)
-    current_threshold_multiplier: f64,
+    /// Dynamic threshold multiplier (1.0 = normal, higher = more relaxed).
+    /// Interior-mutable so it can be updated by `set_emergency_thresholds`
+    /// via a shared `&ConstraintEngine` (e.g. through `Arc<ConstraintEngine>`
+    /// held by the system state machine), matching the pattern used by the
+    /// other RwLock-protected fields above.
+    current_threshold_multiplier: RwLock<f64>,
     /// Optional event bus for violation notifications
     event_bus: Option<Arc<EventBus>>,
     /// Optional feasibility projector for physics-based action feasibility checks
@@ -41,7 +45,7 @@ impl ConstraintEngine {
         Self {
             constraints: RwLock::new(HashMap::new()),
             violations: RwLock::new(Vec::new()),
-            current_threshold_multiplier: 1.0,
+            current_threshold_multiplier: RwLock::new(1.0),
             event_bus: None,
             projector: RwLock::new(None),
         }
@@ -52,7 +56,7 @@ impl ConstraintEngine {
         Self {
             constraints: RwLock::new(HashMap::new()),
             violations: RwLock::new(Vec::new()),
-            current_threshold_multiplier: 1.0,
+            current_threshold_multiplier: RwLock::new(1.0),
             event_bus: Some(event_bus),
             projector: RwLock::new(None),
         }
@@ -63,7 +67,7 @@ impl ConstraintEngine {
         Self {
             constraints: RwLock::new(HashMap::new()),
             violations: RwLock::new(Vec::new()),
-            current_threshold_multiplier: 1.0,
+            current_threshold_multiplier: RwLock::new(1.0),
             event_bus: None,
             projector: RwLock::new(Some(projector)),
         }
@@ -77,7 +81,7 @@ impl ConstraintEngine {
         Self {
             constraints: RwLock::new(HashMap::new()),
             violations: RwLock::new(Vec::new()),
-            current_threshold_multiplier: 1.0,
+            current_threshold_multiplier: RwLock::new(1.0),
             event_bus: Some(event_bus),
             projector: RwLock::new(Some(projector)),
         }
@@ -274,7 +278,9 @@ impl ConstraintEngine {
     }
 
     fn relaxed_band_limits(&self, limit_min: f64, limit_max: f64) -> (f64, f64) {
-        let multiplier = self.current_threshold_multiplier;
+        // Read the multiplier into a local copy so the read-guard is dropped
+        // immediately and never held across the arithmetic below.
+        let multiplier = *self.current_threshold_multiplier.read();
         if multiplier <= 1.0 || !limit_min.is_finite() || !limit_max.is_finite() {
             return (limit_min, limit_max);
         }
@@ -288,10 +294,11 @@ impl ConstraintEngine {
     }
 
     fn relaxed_upper_limit(&self, limit_max: f64) -> f64 {
-        if self.current_threshold_multiplier <= 1.0 || !limit_max.is_finite() {
+        let multiplier = *self.current_threshold_multiplier.read();
+        if multiplier <= 1.0 || !limit_max.is_finite() {
             return limit_max;
         }
-        limit_max * self.current_threshold_multiplier
+        limit_max * multiplier
     }
 
     /// Perform N-1 contingency analysis
@@ -781,27 +788,24 @@ impl ConstraintEngine {
         self.violations.read().clone()
     }
 
-    /// Set emergency thresholds — adjust constraint limits based on system state
-    pub fn set_emergency_thresholds(&mut self, state: SystemOperatingState) {
-        match state {
-            SystemOperatingState::Normal | SystemOperatingState::Restoration => {
-                self.current_threshold_multiplier = 1.0;
-            }
-            SystemOperatingState::Alert => {
-                self.current_threshold_multiplier = 1.0; // No relaxation in alert
-            }
-            SystemOperatingState::Emergency => {
-                self.current_threshold_multiplier = 1.5; // Allow 50% more deviation
-            }
-            SystemOperatingState::Blackout => {
-                self.current_threshold_multiplier = 2.0; // Maximum relaxation
-            }
-        }
+    /// Set emergency thresholds — adjust constraint limits based on system state.
+    ///
+    /// Takes `&self` (not `&mut self`) so it can be invoked through a shared
+    /// `Arc<ConstraintEngine>` held by the system state machine. The multiplier
+    /// field is interior-mutable (`RwLock<f64>`).
+    pub fn set_emergency_thresholds(&self, state: SystemOperatingState) {
+        let new_multiplier = match state {
+            SystemOperatingState::Normal | SystemOperatingState::Restoration => 1.0,
+            SystemOperatingState::Alert => 1.0, // No relaxation in alert
+            SystemOperatingState::Emergency => 1.5, // Allow 50% more deviation
+            SystemOperatingState::Blackout => 2.0, // Maximum relaxation
+        };
+        *self.current_threshold_multiplier.write() = new_multiplier;
     }
 
     /// Get current threshold multiplier
     pub fn threshold_multiplier(&self) -> f64 {
-        self.current_threshold_multiplier
+        *self.current_threshold_multiplier.read()
     }
 
     /// Get constraint count
@@ -1206,35 +1210,35 @@ mod tests {
 
     #[test]
     fn test_set_emergency_thresholds_normal() {
-        let mut engine = ConstraintEngine::new();
+        let engine = ConstraintEngine::new();
         engine.set_emergency_thresholds(SystemOperatingState::Normal);
         assert!((engine.threshold_multiplier() - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_set_emergency_thresholds_alert() {
-        let mut engine = ConstraintEngine::new();
+        let engine = ConstraintEngine::new();
         engine.set_emergency_thresholds(SystemOperatingState::Alert);
         assert!((engine.threshold_multiplier() - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_set_emergency_thresholds_emergency() {
-        let mut engine = ConstraintEngine::new();
+        let engine = ConstraintEngine::new();
         engine.set_emergency_thresholds(SystemOperatingState::Emergency);
         assert!((engine.threshold_multiplier() - 1.5).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_set_emergency_thresholds_blackout() {
-        let mut engine = ConstraintEngine::new();
+        let engine = ConstraintEngine::new();
         engine.set_emergency_thresholds(SystemOperatingState::Blackout);
         assert!((engine.threshold_multiplier() - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_set_emergency_thresholds_restoration() {
-        let mut engine = ConstraintEngine::new();
+        let engine = ConstraintEngine::new();
         // First set to blackout, then restore
         engine.set_emergency_thresholds(SystemOperatingState::Blackout);
         assert!((engine.threshold_multiplier() - 2.0).abs() < f64::EPSILON);
@@ -1250,7 +1254,7 @@ mod tests {
 
     #[test]
     fn test_emergency_thresholds_are_applied_to_constraint_checks() {
-        let mut engine = ConstraintEngine::new();
+        let engine = ConstraintEngine::new();
 
         let mut voltage = Constraint::new(
             "v-emergency".to_string(),

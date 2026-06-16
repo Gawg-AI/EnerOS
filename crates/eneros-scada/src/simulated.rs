@@ -7,6 +7,7 @@ use crate::collector::DataSource;
 ///
 /// Provides realistic IEEE 14-bus data without real devices.
 /// Used for testing and demonstration purposes.
+/// Data is constant (no noise) — for noisy simulation, wrap with a noise-adding decorator.
 pub struct SimulatedDataSource {
     data: HashMap<(ElementId, String), f64>,
 }
@@ -74,7 +75,7 @@ impl SimulatedDataSource {
             data.insert((*load_id, "load_q_mvar".to_string()), *q);
         }
 
-        // System frequency (Hz) — 50.0 Hz nominal with small noise
+        // System frequency (Hz) — 50.0 Hz nominal (constant, no noise)
         data.insert((0, "frequency_hz".to_string()), 50.0);
 
         Self { data }

@@ -39,7 +39,7 @@ pub struct Command {
     pub id: String,
     /// Command type
     pub command_type: CommandType,
-    /// Target element ID
+    /// Target element ID (e.g., switch_id, gen_id, zone_id)
     pub target_id: ElementId,
     /// Command parameters
     pub parameters: std::collections::HashMap<String, f64>,
@@ -49,6 +49,17 @@ pub struct Command {
     pub timestamp: DateTime<Utc>,
     /// Command source
     pub source: String,
+    /// Target device ID for real execution (e.g., "rtu-1", "ied-bay3")
+    /// When set, the command will be dispatched to this device via ProtocolAdapter::write()
+    #[serde(default)]
+    pub device_id: Option<String>,
+    /// Device address for write operation (e.g., "holding:40001", "LD0/GGIO1.Pos.stVal")
+    /// Interpreted by the protocol adapter of the target device
+    #[serde(default)]
+    pub device_address: Option<String>,
+    /// Value to write to the device, derived from command_type and parameters
+    #[serde(skip)]
+    pub device_value: Option<eneros_device::adapter::DataValue>,
 }
 
 impl Command {
@@ -67,6 +78,9 @@ impl Command {
             priority,
             timestamp: Utc::now(),
             source: source.to_string(),
+            device_id: None,
+            device_address: None,
+            device_value: None,
         }
     }
 
@@ -74,6 +88,19 @@ impl Command {
     pub fn with_parameter(mut self, key: &str, value: f64) -> Self {
         self.parameters.insert(key.to_string(), value);
         self
+    }
+
+    /// Set the target device for real execution
+    pub fn with_device(mut self, device_id: &str, address: &str, value: eneros_device::adapter::DataValue) -> Self {
+        self.device_id = Some(device_id.to_string());
+        self.device_address = Some(address.to_string());
+        self.device_value = Some(value);
+        self
+    }
+
+    /// Whether this command has device routing information
+    pub fn has_device_target(&self) -> bool {
+        self.device_id.is_some() && self.device_address.is_some() && self.device_value.is_some()
     }
 
     /// Convert command to a topology change, if applicable

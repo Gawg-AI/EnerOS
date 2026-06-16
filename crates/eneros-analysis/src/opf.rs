@@ -209,8 +209,11 @@ impl DcOpfSolver {
             }
         }
 
-        // Step 6: Compute LMP
-        let lmp = Self::compute_lmp(problem, &ptdf, &bus_map, bus_count);
+        // Step 6: Compute LMP using the congestion-adjusted generation.
+        // Use the rigorous Lagrangian-dual based LMP calculation; `flows` has
+        // already been computed above on the final (post-adjustment) dispatch,
+        // so we pass it in directly to avoid recomputing it.
+        let lmp = Self::compute_lmp_rigorous(problem, &ptdf, &bus_map, bus_count, &generation, &flows);
 
         // Compute total cost
         let total_cost: f64 = generation.iter().map(|(gen_id, p_mw)| {
@@ -346,10 +349,14 @@ impl DcOpfSolver {
         let mut remaining_load = total_load;
 
         for gen in &sorted_gens {
+            // Clamp p_min to not exceed p_max (defensive: handle invalid data)
+            let p_min = gen.p_min.min(gen.p_max);
+            let p_max = gen.p_max.max(gen.p_min);
+
             if remaining_load <= 0.0 {
-                generation.push((gen.gen_id, gen.p_min));
+                generation.push((gen.gen_id, p_min));
             } else {
-                let dispatch = (gen.p_max).min(remaining_load).max(gen.p_min);
+                let dispatch = p_max.min(remaining_load).max(p_min);
                 generation.push((gen.gen_id, dispatch));
                 remaining_load -= dispatch;
             }
@@ -362,7 +369,8 @@ impl DcOpfSolver {
                     break;
                 }
                 if let Some(gen) = problem.generators.iter().find(|g| g.gen_id == entry.0) {
-                    let headroom = gen.p_max - entry.1;
+                    let p_max = gen.p_max.max(gen.p_min);
+                    let headroom = p_max - entry.1;
                     let increase = headroom.min(remaining_load);
                     entry.1 += increase;
                     remaining_load -= increase;
@@ -412,19 +420,29 @@ impl DcOpfSolver {
         flows
     }
 
-    /// Compute Locational Marginal Prices (LMP)
+    /// Compute Locational Marginal Prices (LMP) — **simplified version**.
+    ///
+    /// This is a simplified LMP calculation based on PTDF sensitivity heuristics:
+    /// - The shadow price of a congested line is computed via an empirical
+    ///   formula `(flow - 0.95 * limit).max(0) * 10.0`, which is **not** a strict
+    ///   Lagrangian dual variable.
+    /// - Only lines whose flow exceeds 99% of their limit contribute to the
+    ///   congestion component.
+    ///
+    /// For a rigorous Lagrangian-dual based LMP calculation, use
+    /// [`compute_lmp_rigorous`](Self::compute_lmp_rigorous).
+    ///
+    /// Kept for backward compatibility.
     pub fn compute_lmp(
         problem: &DcOpfProblem,
         ptdf: &Array2<f64>,
         bus_map: &HashMap<ElementId, usize>,
         bus_count: usize,
+        generation: &[(ElementId, f64)],
     ) -> Vec<f64> {
         // LMP = energy component + congestion component
         // Energy component: marginal cost of the marginal generator
         // Congestion component: based on PTDF and shadow prices of congested lines
-
-        // Find the marginal generator (last dispatched)
-        let generation = Self::merit_order_dispatch(problem);
 
         // Energy component: marginal cost of the most expensive dispatched generator
         let energy_price = generation.iter().map(|(gen_id, p_mw)| {
@@ -440,7 +458,7 @@ impl DcOpfSolver {
 
         // Check congested lines and adjust LMP
         let flows = Self::compute_line_flows(
-            ptdf, &generation, &problem.loads, bus_map, bus_count,
+            ptdf, generation, &problem.loads, bus_map, bus_count,
             *bus_map.get(&problem.slack_bus_id).unwrap_or(&0),
             problem,
         );
@@ -457,6 +475,164 @@ impl DcOpfSolver {
                         lmp[i] -= ptdf_val * shadow_price;
                     }
                 }
+            }
+        }
+
+        lmp
+    }
+
+    /// Rigorously compute LMP based on Lagrangian duality.
+    ///
+    /// LMP = energy component + congestion component (+ loss component, ignored in DC model).
+    ///
+    /// - **Energy component**: system marginal cost (λ) determined by KKT conditions.
+    ///   The marginal generator (one neither at `p_min` nor `p_max`) sets λ via its
+    ///   incremental cost `2*a*P + b`. If no generator is strictly marginal, the
+    ///   most expensive online generator's marginal cost is used as a fallback.
+    ///
+    /// - **Congestion component**: `Σ_l (μ_l * PTDF_{l,i})`, where `μ_l` is the
+    ///   shadow price (Lagrangian dual variable) of line `l`'s flow limit.
+    ///
+    /// Shadow price `μ_l` is derived from KKT conditions on the congested
+    /// constraint boundary: redispatching must not change total cost, so
+    ///
+    /// ```text
+    /// μ_l = (MC_high - MC_low) / (PTDF_high - PTDF_low)
+    /// ```
+    ///
+    /// where `MC_high`/`MC_low` are the marginal costs of the two marginal
+    /// generators with the highest/lowest PTDF sensitivity to line `l`.
+    /// If this cannot be determined (fewer than two distinct sensitivities
+    /// among marginal generators), `μ_l` falls back to a penalty based on
+    /// the marginal-cost curve slope:
+    ///
+    /// ```text
+    /// μ_l = (|flow_l| - p_limit_mw) * penalty_factor
+    /// ```
+    ///
+    /// with `penalty_factor` derived from the average marginal-cost slope.
+    pub fn compute_lmp_rigorous(
+        problem: &DcOpfProblem,
+        ptdf: &Array2<f64>,
+        bus_map: &HashMap<ElementId, usize>,
+        bus_count: usize,
+        generation: &[(ElementId, f64)],
+        flows: &[f64],
+    ) -> Vec<f64> {
+        // ----- Step 1: Energy component (λ) from KKT conditions -----
+        // Identify marginal generators: strictly inside (p_min, p_max).
+        // Use a small tolerance so generators sitting essentially at a limit
+        // are not treated as marginal.
+        const MARGIN_TOL: f64 = 1e-6;
+
+        let mut marginal_gens: Vec<(&GeneratorBid, f64)> = Vec::new(); // (gen, p_dispatched)
+        let mut online_gens: Vec<(&GeneratorBid, f64)> = Vec::new();   // all dispatched gens
+
+        for (gen_id, p_mw) in generation {
+            if let Some(gen) = problem.generators.iter().find(|g| g.gen_id == *gen_id) {
+                online_gens.push((gen, *p_mw));
+                let p_min = gen.p_min.min(gen.p_max);
+                let p_max = gen.p_max.max(gen.p_min);
+                if *p_mw > p_min + MARGIN_TOL && *p_mw < p_max - MARGIN_TOL {
+                    marginal_gens.push((gen, *p_mw));
+                }
+            }
+        }
+
+        // Energy price λ = marginal cost of a marginal generator.
+        // If multiple are marginal they share the same λ in an optimal solution;
+        // pick the average to be robust to numerical noise.
+        let energy_price = if !marginal_gens.is_empty() {
+            let lambda_sum: f64 = marginal_gens.iter()
+                .map(|(g, p)| 2.0 * g.cost_a * p + g.cost_b)
+                .sum();
+            lambda_sum / marginal_gens.len() as f64
+        } else if !online_gens.is_empty() {
+            // Fallback: most expensive online generator's marginal cost.
+            online_gens.iter()
+                .map(|(g, p)| 2.0 * g.cost_a * p + g.cost_b)
+                .fold(f64::NEG_INFINITY, f64::max)
+        } else {
+            0.0
+        };
+
+        // ----- Step 2: Congestion component via shadow prices μ_l -----
+        // Average marginal-cost slope (2*a) used for the penalty fallback.
+        let avg_slope: f64 = if online_gens.is_empty() {
+            1.0
+        } else {
+            let s: f64 = online_gens.iter().map(|(g, _)| 2.0 * g.cost_a).sum();
+            s / online_gens.len() as f64
+        };
+        // Penalty factor: slope scaled so the fallback has consistent units
+        // ($/MW of overload * MW of redispatch sensitivity). A factor of 10×
+        // the average slope gives a meaningful but bounded shadow price.
+        let penalty_factor = (avg_slope * 10.0).max(1.0);
+
+        let mut lmp = vec![energy_price; bus_count];
+
+        for (l, branch) in problem.branches.iter().enumerate() {
+            let flow_abs = flows[l].abs();
+            let limit = branch.p_limit_mw;
+            if limit <= 0.0 {
+                continue;
+            }
+            // Congestion: |flow| exceeds 99% of the limit.
+            if flow_abs <= limit * 0.99 {
+                continue;
+            }
+
+            // Sign convention: μ_l is positive for a binding |flow| ≤ limit constraint.
+            // The contribution to LMP_i is μ_l * PTDF_{l,i} * sign(flow_l).
+            let flow_sign = if flows[l] >= 0.0 { 1.0 } else { -1.0 };
+
+            // Try to compute μ_l from KKT redispatch condition using marginal gens.
+            let mu_l = if marginal_gens.len() >= 2 {
+                // For each marginal generator, compute (PTDF sensitivity, marginal cost).
+                let sens_mc: Vec<(f64, f64)> = marginal_gens.iter().map(|(g, p)| {
+                    let bus_idx = bus_map.get(&g.bus_id).copied().unwrap_or(0);
+                    let s = ptdf[[l, bus_idx]];
+                    let mc = 2.0 * g.cost_a * p + g.cost_b;
+                    (s, mc)
+                }).collect();
+
+                // Pick the marginal gens with the highest and lowest PTDF sensitivity.
+                let (s_high, mc_high) = sens_mc.iter()
+                    .cloned()
+                    .fold((f64::NEG_INFINITY, 0.0), |acc, x| {
+                        if x.0 > acc.0 { x } else { acc }
+                    });
+                let (s_low, mc_low) = sens_mc.iter()
+                    .cloned()
+                    .fold((f64::INFINITY, 0.0), |acc, x| {
+                        if x.0 < acc.0 { x } else { acc }
+                    });
+
+                let denom = s_high - s_low;
+                if denom.abs() > 1e-9 {
+                    // μ_l = (MC_high - MC_low) / (PTDF_high - PTDF_low)
+                    // The sign of μ_l follows the sensitivity ordering; we keep
+                    // the raw value (which may be negative) and multiply by
+                    // flow_sign below to align with the |flow| ≤ limit convention.
+                    (mc_high - mc_low) / denom
+                } else {
+                    // Sensitivities too close — fall back to penalty.
+                    (flow_abs - limit).max(0.0) * penalty_factor
+                }
+            } else {
+                // Fewer than two marginal generators — fall back to penalty.
+                (flow_abs - limit).max(0.0) * penalty_factor
+            };
+
+            // Only apply a non-trivial shadow price.
+            if mu_l.abs() < 1e-9 {
+                continue;
+            }
+
+            // LMP_i += μ_l * PTDF_{l,i} * sign(flow_l)
+            for i in 0..bus_count {
+                let ptdf_val = ptdf[[l, i]];
+                lmp[i] += mu_l * ptdf_val * flow_sign;
             }
         }
 

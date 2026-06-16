@@ -28,6 +28,8 @@ impl WindowedAggregator {
     ///
     /// Only points with `DataQuality::Good` are included in the aggregation.
     /// If all points in a window are Bad/Uncertain, the aggregate values are `None`.
+    /// Empty windows (no data points at all) are skipped to avoid bloating results
+    /// when data is sparse relative to the step size.
     pub fn aggregate(data_points: &[DataPoint], spec: &WindowSpec) -> Vec<WindowedResult> {
         if data_points.is_empty() {
             return Vec::new();
@@ -53,6 +55,16 @@ impl WindowedAggregator {
                 .filter(|p| p.timestamp >= window_start && p.timestamp < window_end)
                 .map(|p| p.value)
                 .collect();
+
+            // Skip empty windows entirely (no data points at all in this window)
+            let has_any_point = data_points
+                .iter()
+                .any(|p| p.timestamp >= window_start && p.timestamp < window_end);
+
+            if !has_any_point {
+                window_start += step_duration;
+                continue;
+            }
 
             let count = good_values.len();
             let (avg, min, max, sum) = if count == 0 {

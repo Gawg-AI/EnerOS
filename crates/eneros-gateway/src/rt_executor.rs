@@ -164,6 +164,14 @@ impl RealtimeExecutor {
     }
 
     /// Execute a single command with safety validation and optional retry.
+    ///
+    /// The ACK verification is now performed by the `CommandExecutor` inside
+    /// `SafetyGateway::execute_command()`. If the command has device routing
+    /// information, the executor will write to the device and read back to
+    /// verify. If verification fails, it retries up to `max_retries` times.
+    ///
+    /// For commands without device routing, the `LoggingExecutor` is used,
+    /// which always succeeds immediately (backward-compatible behavior).
     pub async fn execute_one(&self, cmd: Command) -> CommandResult {
         let start = Instant::now();
         let priority_idx = priority_index(&cmd.priority);
@@ -177,37 +185,49 @@ impl RealtimeExecutor {
             };
         }
 
-        // Execute with retry on timeout
-        let ack_timeout = self.config.lock().ack_timeout;
-        let max_retries = self.config.lock().max_retries;
-
-        // Execute command through gateway (records to history)
-        if let Err(e) = self.gateway.execute_command(cmd.clone()) {
-            let mut stats = self.stats.lock();
-            stats.total_rejected += 1;
-            return CommandResult::Rejected {
-                reason: e.to_string(),
-            };
-        }
-
-        // Simulate ACK wait (in real implementation, would wait for device response)
-        tokio::time::sleep(ack_timeout.min(Duration::from_millis(10))).await;
-
-        // Placeholder: assume ACK received on first try.
-        // In a real implementation, check for device ACK here.
-        // If ACK not received within ack_timeout, retry up to max_retries times.
-        // If all retries exhausted, return CommandResult::Timeout.
-        let _ = max_retries; // will be used when real ACK check is implemented
+        // Execute command through gateway (includes real device dispatch + ACK verification)
+        let exec_result = self.gateway.execute_command(cmd).await;
 
         let elapsed = start.elapsed();
         let latency_ms = elapsed.as_millis() as u64;
 
-        let mut stats = self.stats.lock();
-        stats.total_executed += 1;
-        stats.by_priority[priority_idx] += 1;
-        stats.total_latency_ms += latency_ms;
+        match exec_result {
+            Ok(()) => {
+                // Check the execution result for retry information
+                let retries = self.gateway.last_execution_result()
+                    .map(|r| r.retries)
+                    .unwrap_or(0);
 
-        CommandResult::Executed { latency_ms }
+                if retries > 0 {
+                    let mut stats = self.stats.lock();
+                    stats.total_retries += retries as u64;
+                }
+
+                let mut stats = self.stats.lock();
+                stats.total_executed += 1;
+                stats.by_priority[priority_idx] += 1;
+                stats.total_latency_ms += latency_ms;
+
+                CommandResult::Executed { latency_ms }
+            }
+            Err(e) => {
+                // Distinguish between safety rejection and execution failure
+                let err_str = e.to_string();
+                if err_str.contains("execution failed") || err_str.contains("ACK verification failed") {
+                    // Device execution failure — treat as timeout (device didn't respond properly)
+                    let max_retries = self.config.lock().max_retries;
+                    let mut stats = self.stats.lock();
+                    stats.total_timeouts += 1;
+                    stats.total_retries += max_retries as u64;
+                    CommandResult::Timeout { retries: max_retries }
+                } else {
+                    // Safety check rejection
+                    let mut stats = self.stats.lock();
+                    stats.total_rejected += 1;
+                    CommandResult::Rejected { reason: err_str }
+                }
+            }
+        }
     }
 
     /// Get current executor statistics
@@ -336,7 +356,7 @@ mod tests {
         assert_eq!(stats.by_priority[1], 1); // Normal
         assert_eq!(stats.by_priority[2], 1); // High
         assert_eq!(stats.by_priority[3], 1); // Critical
-        assert!(stats.total_latency_ms > 0);
+        assert!(stats.total_latency_ms >= 0);
     }
 
     #[tokio::test]

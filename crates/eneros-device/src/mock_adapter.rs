@@ -1,4 +1,3 @@
-#[cfg(test)]
 pub mod mock {
     use std::collections::HashMap;
     use async_trait::async_trait;

@@ -71,6 +71,8 @@ impl EquipmentModel for SynchronousGenerator {
         Some(AdmittanceContribution {
             y_series: num_complex::Complex::new(0.0, 0.0),
             y_shunt: y,
+            y_from_shunt: num_complex::Complex::new(0.0, 0.0),
+            y_to_shunt: num_complex::Complex::new(0.0, 0.0),
         })
     }
 }
@@ -86,6 +88,7 @@ pub struct TwoWindingTransformer {
     pub impedance_percent: f64,
     pub resistance_percent: f64,
     pub tap_position: i32,
+    pub tap_step_percent: f64,
     pub hv_bus_id: ElementId,
     pub lv_bus_id: ElementId,
 }
@@ -103,6 +106,7 @@ impl EquipmentModel for TwoWindingTransformer {
         p.insert("impedance_percent".into(), self.impedance_percent);
         p.insert("resistance_percent".into(), self.resistance_percent);
         p.insert("tap_position".into(), self.tap_position as f64);
+        p.insert("tap_step_percent".into(), self.tap_step_percent);
         p.insert("hv_bus_id".into(), self.hv_bus_id as f64);
         p.insert("lv_bus_id".into(), self.lv_bus_id as f64);
         p
@@ -116,6 +120,7 @@ impl EquipmentModel for TwoWindingTransformer {
             "impedance_percent" => Some(self.impedance_percent),
             "resistance_percent" => Some(self.resistance_percent),
             "tap_position" => Some(self.tap_position as f64),
+            "tap_step_percent" => Some(self.tap_step_percent),
             "hv_bus_id" => Some(self.hv_bus_id as f64),
             "lv_bus_id" => Some(self.lv_bus_id as f64),
             _ => None,
@@ -134,14 +139,35 @@ impl EquipmentModel for TwoWindingTransformer {
     fn rated_voltage(&self) -> Option<f64> { Some(self.rated_kv_high) }
     fn bus_ids(&self) -> Vec<ElementId> { vec![self.hv_bus_id, self.lv_bus_id] }
 
-    fn to_admittance(&self, base_mva: f64, _base_kv: f64) -> Option<AdmittanceContribution> {
+    fn to_admittance(&self, _base_mva: f64, _base_kv: f64) -> Option<AdmittanceContribution> {
+        // Two-winding transformer with off-nominal tap ratio:
+        // Y-bus entries: Y_ii = y/tap^2, Y_jj = y, Y_ij = Y_ji = -y/tap
+        // where y = 1/Z_pu and tap = 1.0 + tap_position * tap_step
         let z_pu = num_complex::Complex::new(
             self.resistance_percent / 100.0,
             self.impedance_percent / 100.0,
         );
-        let y_series = if z_pu.norm() > 1e-12 { num_complex::Complex::new(1.0, 0.0) / z_pu } else { num_complex::Complex::new(0.0, 0.0) };
-        let _ = base_mva;
-        Some(AdmittanceContribution { y_series, y_shunt: num_complex::Complex::new(0.0, 0.0) })
+        let y = if z_pu.norm() > 1e-12 { num_complex::Complex::new(1.0, 0.0) / z_pu } else { num_complex::Complex::new(0.0, 0.0) };
+        let tap_step = self.tap_step_percent / 100.0;
+        let tap = 1.0 + self.tap_position as f64 * tap_step;
+        let tap_sq = tap * tap;
+
+        // y_series represents the off-diagonal element: Y_ij = -y/tap
+        let y_series = -y / tap;
+        // y_from_shunt: additional shunt at from (HV) bus = y/tap^2 - y (diagonal minus symmetric part)
+        let y_from_shunt = y / tap_sq - y;
+        // y_to_shunt: additional shunt at to (LV) bus = y - y (zero when no tap)
+        // Actually for the full model: Y_jj = y, so y_to_shunt = 0
+        // But the symmetric y_shunt already accounts for y, so:
+        // y_shunt = y (the base diagonal contribution shared by both buses)
+        // y_from_shunt = y/tap^2 - y (extra at HV bus due to tap)
+        // y_to_shunt = 0 (no extra at LV bus)
+        Some(AdmittanceContribution {
+            y_series,
+            y_shunt: y, // base diagonal contribution
+            y_from_shunt,
+            y_to_shunt: num_complex::Complex::new(0.0, 0.0),
+        })
     }
 }
 
@@ -166,9 +192,23 @@ pub struct ThreeWindingTransformer {
 }
 
 impl ThreeWindingTransformer {
-    fn star_impedance(&self, vk_pct: f64, vkr_pct: f64) -> num_complex::Complex<f64> {
-        let z = num_complex::Complex::new(vkr_pct / 100.0, vk_pct / 100.0);
-        if z.norm() > 1e-12 { num_complex::Complex::new(1.0, 0.0) / z } else { num_complex::Complex::new(0.0, 0.0) }
+    /// Convert pair short-circuit impedances to star equivalent branch impedances.
+    /// vk_hv_percent = Z_HM, vk_mv_percent = Z_HT, vk_lv_percent = Z_MT (pair values)
+    /// Star: Z_H = (Z_HM + Z_HT - Z_MT)/2, Z_M = (Z_HM + Z_MT - Z_HT)/2, Z_L = (Z_HT + Z_MT - Z_HM)/2
+    fn star_impedance_from_pairs(
+        vk_hm_pct: f64, vkr_hm_pct: f64,
+        vk_ht_pct: f64, vkr_ht_pct: f64,
+        vk_mt_pct: f64, vkr_mt_pct: f64,
+    ) -> (num_complex::Complex<f64>, num_complex::Complex<f64>, num_complex::Complex<f64>) {
+        let z_hm = num_complex::Complex::new(vkr_hm_pct / 100.0, vk_hm_pct / 100.0);
+        let z_ht = num_complex::Complex::new(vkr_ht_pct / 100.0, vk_ht_pct / 100.0);
+        let z_mt = num_complex::Complex::new(vkr_mt_pct / 100.0, vk_mt_pct / 100.0);
+
+        let z_h = (z_hm + z_ht - z_mt) / 2.0;
+        let z_m = (z_hm + z_mt - z_ht) / 2.0;
+        let z_l = (z_ht + z_mt - z_hm) / 2.0;
+
+        (z_h, z_m, z_l)
     }
 }
 
@@ -229,26 +269,39 @@ impl EquipmentModel for ThreeWindingTransformer {
     fn to_admittance(&self, _base_mva: f64, _base_kv: f64) -> Option<AdmittanceContribution> {
         // Three-winding transformer requires multi-terminal representation.
         // to_admittance returns the HV-MV contribution as the primary.
-        let y_hv = self.star_impedance(self.vk_hv_percent, self.vkr_hv_percent);
+        let (z_h, _z_m, _z_l) = Self::star_impedance_from_pairs(
+            self.vk_hv_percent, self.vkr_hv_percent,
+            self.vk_mv_percent, self.vkr_mv_percent,
+            self.vk_lv_percent, self.vkr_lv_percent,
+        );
+        let y_hv = if z_h.norm() > 1e-12 { num_complex::Complex::new(1.0, 0.0) / z_h } else { num_complex::Complex::new(0.0, 0.0) };
         Some(AdmittanceContribution {
             y_series: y_hv,
             y_shunt: num_complex::Complex::new(0.0, 0.0),
+            y_from_shunt: num_complex::Complex::new(0.0, 0.0),
+            y_to_shunt: num_complex::Complex::new(0.0, 0.0),
         })
     }
 
     fn to_admittance_multi(&self, _base_mva: f64, _base_kv: f64) -> Option<MultiAdmittanceContribution> {
         // Three-winding transformer modeled as star (T) equivalent:
-        // Each winding has an admittance from the star point to the respective bus.
-        let y_hv = self.star_impedance(self.vk_hv_percent, self.vkr_hv_percent);
-        let y_mv = self.star_impedance(self.vk_mv_percent, self.vkr_mv_percent);
-        let y_lv = self.star_impedance(self.vk_lv_percent, self.vkr_lv_percent);
+        // Convert pair short-circuit impedances to star branch impedances first.
+        let (z_h, z_m, z_l) = Self::star_impedance_from_pairs(
+            self.vk_hv_percent, self.vkr_hv_percent,
+            self.vk_mv_percent, self.vkr_mv_percent,
+            self.vk_lv_percent, self.vkr_lv_percent,
+        );
+
+        let y_hv = if z_h.norm() > 1e-12 { num_complex::Complex::new(1.0, 0.0) / z_h } else { num_complex::Complex::new(0.0, 0.0) };
+        let y_mv = if z_m.norm() > 1e-12 { num_complex::Complex::new(1.0, 0.0) / z_m } else { num_complex::Complex::new(0.0, 0.0) };
+        let y_lv = if z_l.norm() > 1e-12 { num_complex::Complex::new(1.0, 0.0) / z_l } else { num_complex::Complex::new(0.0, 0.0) };
 
         Some(MultiAdmittanceContribution {
             bus_ids: vec![self.hv_bus_id, self.mv_bus_id, self.lv_bus_id],
             contributions: vec![
-                AdmittanceContribution { y_series: y_hv, y_shunt: num_complex::Complex::new(0.0, 0.0) },
-                AdmittanceContribution { y_series: y_mv, y_shunt: num_complex::Complex::new(0.0, 0.0) },
-                AdmittanceContribution { y_series: y_lv, y_shunt: num_complex::Complex::new(0.0, 0.0) },
+                AdmittanceContribution { y_series: y_hv, y_shunt: num_complex::Complex::new(0.0, 0.0), y_from_shunt: num_complex::Complex::new(0.0, 0.0), y_to_shunt: num_complex::Complex::new(0.0, 0.0) },
+                AdmittanceContribution { y_series: y_mv, y_shunt: num_complex::Complex::new(0.0, 0.0), y_from_shunt: num_complex::Complex::new(0.0, 0.0), y_to_shunt: num_complex::Complex::new(0.0, 0.0) },
+                AdmittanceContribution { y_series: y_lv, y_shunt: num_complex::Complex::new(0.0, 0.0), y_from_shunt: num_complex::Complex::new(0.0, 0.0), y_to_shunt: num_complex::Complex::new(0.0, 0.0) },
             ],
         })
     }
@@ -335,6 +388,8 @@ impl EquipmentModel for TransmissionLine {
         Some(AdmittanceContribution {
             y_series,
             y_shunt: y_shunt_total * 0.5,
+            y_from_shunt: num_complex::Complex::new(0.0, 0.0),
+            y_to_shunt: num_complex::Complex::new(0.0, 0.0),
         })
     }
 }
@@ -494,11 +549,17 @@ impl EquipmentModel for ShuntCompensator {
     fn rated_voltage(&self) -> Option<f64> { Some(self.rated_kv) }
     fn bus_ids(&self) -> Vec<ElementId> { vec![self.bus_id] }
 
-    fn to_admittance(&self, _base_mva: f64, base_kv: f64) -> Option<AdmittanceContribution> {
-        let y = num_complex::Complex::new(0.0, self.q_mvar) / (base_kv * base_kv);
+    fn to_admittance(&self, base_mva: f64, _base_kv: f64) -> Option<AdmittanceContribution> {
+        // Shunt compensator: B_pu = Q_mvar / base_mva (at V=1pu, B_pu = Q_pu)
+        // Positive q_mvar = capacitor (injects reactive power, B > 0)
+        // Negative q_mvar = reactor (absorbs reactive power, B < 0)
+        let b_pu = self.q_mvar / base_mva;
+        let y = num_complex::Complex::new(0.0, b_pu);
         Some(AdmittanceContribution {
             y_series: num_complex::Complex::new(0.0, 0.0),
             y_shunt: y,
+            y_from_shunt: num_complex::Complex::new(0.0, 0.0),
+            y_to_shunt: num_complex::Complex::new(0.0, 0.0),
         })
     }
 }
@@ -568,22 +629,28 @@ impl EquipmentModel for ZipLoad {
 
     fn to_admittance(&self, base_mva: f64, base_kv: f64) -> Option<AdmittanceContribution> {
         // ZIP load: only the constant-impedance portion contributes to Y-bus.
-        // y_shunt = (Z_pct/100) * S / V^2 where S = P + jQ, V = base_kv
-        // In per-unit: y_shunt = (Z_pct/100) * (P + jQ) / base_mva  (since V_base = 1 pu)
+        // Load convention: load absorbs S = P + jQ, so admittance y = conj(S) / V^2
+        // y_shunt = (Z_pct/100) * conj(S_pu) / V_pu^2 where S_pu = (P + jQ)/base_mva
+        // For inductive loads (Q > 0), y_shunt.im < 0 (negative susceptance = inductive)
         if base_kv <= 0.0 {
             return Some(AdmittanceContribution {
                 y_series: num_complex::Complex::new(0.0, 0.0),
                 y_shunt: num_complex::Complex::new(0.0, 0.0),
+                y_from_shunt: num_complex::Complex::new(0.0, 0.0),
+                y_to_shunt: num_complex::Complex::new(0.0, 0.0),
             });
         }
         let s_pu = num_complex::Complex::new(self.p_mw / base_mva, self.q_mvar / base_mva);
         let v_pu_sq = 1.0; // nominal voltage = 1 pu
         let z_p_pct = self.const_z_p_pct / 100.0;
         let z_q_pct = self.const_z_q_pct / 100.0;
-        let y_shunt = num_complex::Complex::new(z_p_pct * s_pu.re, z_q_pct * s_pu.im) / v_pu_sq;
+        // conj(S) = P - jQ, so y_shunt = (z_p_pct * P - j * z_q_pct * Q) / base_mva / v_pu_sq
+        let y_shunt = num_complex::Complex::new(z_p_pct * s_pu.re, -z_q_pct * s_pu.im) / v_pu_sq;
         Some(AdmittanceContribution {
             y_series: num_complex::Complex::new(0.0, 0.0),
             y_shunt,
+            y_from_shunt: num_complex::Complex::new(0.0, 0.0),
+            y_to_shunt: num_complex::Complex::new(0.0, 0.0),
         })
     }
 }
@@ -640,6 +707,8 @@ impl EquipmentModel for CircuitBreaker {
             Some(AdmittanceContribution {
                 y_series: num_complex::Complex::new(1e12, 0.0),
                 y_shunt: num_complex::Complex::new(0.0, 0.0),
+                y_from_shunt: num_complex::Complex::new(0.0, 0.0),
+                y_to_shunt: num_complex::Complex::new(0.0, 0.0),
             })
         } else {
             // Open breaker: no connection
@@ -711,10 +780,30 @@ mod tests {
             id: 1, name: "T1".into(), rated_mva: 100.0,
             rated_kv_high: 110.0, rated_kv_low: 10.0,
             impedance_percent: 10.0, resistance_percent: 1.0,
-            tap_position: 0, hv_bus_id: 0, lv_bus_id: 1,
+            tap_position: 0, tap_step_percent: 1.25,
+            hv_bus_id: 0, lv_bus_id: 1,
         };
         let adm = trafo.to_admittance(100.0, 110.0).unwrap();
+        // With tap=1.0: y_series = -y (off-diagonal), y_shunt = y (diagonal base)
         assert!(adm.y_series.norm() > 0.0);
+        // y_series should be negative (off-diagonal element)
+        assert!(adm.y_series.re < 0.0, "y_series.re should be negative for off-diagonal");
+    }
+
+    #[test]
+    fn test_two_winding_transformer_with_tap() {
+        let trafo = TwoWindingTransformer {
+            id: 2, name: "T2".into(), rated_mva: 100.0,
+            rated_kv_high: 110.0, rated_kv_low: 10.0,
+            impedance_percent: 10.0, resistance_percent: 1.0,
+            tap_position: 5, tap_step_percent: 1.25,
+            hv_bus_id: 0, lv_bus_id: 1, // tap = 1.0625
+        };
+        let adm = trafo.to_admittance(100.0, 110.0).unwrap();
+        // With tap != 1.0, y_from_shunt should be non-zero
+        assert!(adm.y_from_shunt.norm() > 0.0, "y_from_shunt should be non-zero with tap != 1.0");
+        // y_to_shunt should still be zero
+        assert!(adm.y_to_shunt.norm() < 1e-15, "y_to_shunt should be zero");
     }
 
     #[test]
@@ -736,7 +825,9 @@ mod tests {
             id: 1, name: "C1".into(), q_mvar: 10.0, rated_kv: 10.0, bus_id: 0,
         };
         let adm = shunt.to_admittance(100.0, 10.0).unwrap();
+        // B_pu = Q_mvar / base_mva = 10.0 / 100.0 = 0.1
         assert!(adm.y_shunt.im > 0.0);
+        assert!((adm.y_shunt.im - 0.1).abs() < 1e-10, "Shunt B_pu should be 0.1, got {}", adm.y_shunt.im);
     }
 
     #[test]
@@ -817,8 +908,8 @@ mod tests {
             const_z_q_pct: 30.0, const_i_q_pct: 30.0, const_p_q_pct: 40.0,
         };
         let adm = load.to_admittance(100.0, 10.0).unwrap();
-        assert!(adm.y_shunt.re > 0.0); // P portion
-        assert!(adm.y_shunt.im > 0.0); // Q portion
+        assert!(adm.y_shunt.re > 0.0); // P portion (conductance)
+        assert!(adm.y_shunt.im < 0.0); // Q portion (negative susceptance for inductive load)
     }
 
     #[test]
@@ -831,13 +922,14 @@ mod tests {
             const_z_q_pct: 50.0, const_i_q_pct: 25.0, const_p_q_pct: 25.0,
         };
         let adm = load.to_admittance(100.0, 10.0).unwrap();
-        // y_shunt = (Z_pct/100) * (P + jQ) / base_mva / v_pu_sq
-        // With v_pu_sq = 1.0: y_shunt.re = 0.5 * 10.0/100.0 = 0.05
-        //                      y_shunt.im = 0.5 * 5.0/100.0 = 0.025
+        // y_shunt = (Z_pct/100) * conj(S_pu) / v_pu_sq
+        // conj(S_pu) = P/base_mva - j*Q/base_mva = 0.1 - j0.05
+        // With v_pu_sq = 1.0: y_shunt.re = 0.5 * 0.1 = 0.05
+        //                      y_shunt.im = -0.5 * 0.05 = -0.025
         assert!(adm.y_shunt.re > 0.0, "P admittance should be positive with base_kv > 0");
-        assert!(adm.y_shunt.im > 0.0, "Q admittance should be positive with base_kv > 0");
+        assert!(adm.y_shunt.im < 0.0, "Q admittance should be negative (inductive load convention)");
         assert!((adm.y_shunt.re - 0.05).abs() < 1e-10, "P admittance value mismatch");
-        assert!((adm.y_shunt.im - 0.025).abs() < 1e-10, "Q admittance value mismatch");
+        assert!((adm.y_shunt.im - (-0.025)).abs() < 1e-10, "Q admittance value mismatch");
     }
 
     #[test]
@@ -865,10 +957,11 @@ mod tests {
             const_z_q_pct: 100.0, const_i_q_pct: 0.0, const_p_q_pct: 0.0,
         };
         let adm = load.to_admittance(100.0, 10.0).unwrap();
-        // 100% constant impedance: y_shunt = (P + jQ) / base_mva / v_pu_sq
-        // = (20.0 + j10.0) / 100.0 / 1.0 = 0.2 + j0.1
+        // 100% constant impedance: y_shunt = conj(S_pu) / v_pu_sq
+        // conj(S_pu) = P/base_mva - j*Q/base_mva = 0.2 - j0.1
+        // y_shunt = 0.2 - j0.1
         assert!((adm.y_shunt.re - 0.2).abs() < 1e-10, "P shunt admittance mismatch");
-        assert!((adm.y_shunt.im - 0.1).abs() < 1e-10, "Q shunt admittance mismatch");
+        assert!((adm.y_shunt.im - (-0.1)).abs() < 1e-10, "Q shunt admittance mismatch");
         // y_series should always be zero for a shunt load
         assert_eq!(adm.y_series.re, 0.0);
         assert_eq!(adm.y_series.im, 0.0);

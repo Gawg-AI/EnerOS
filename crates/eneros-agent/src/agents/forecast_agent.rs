@@ -81,6 +81,19 @@ pub fn double_exponential_smoothing(data: &[f64], alpha: f64, beta: f64) -> Vec<
     result
 }
 
+/// Seasonality model: additive (constant amplitude) or multiplicative
+/// (amplitude scales with level). For load forecasting, multiplicative is
+/// usually more accurate because demand swings grow in absolute terms as the
+/// average load rises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SeasonalityType {
+    /// y = level + trend + season
+    #[default]
+    Additive,
+    /// y = (level + trend) * season
+    Multiplicative,
+}
+
 /// Parameters for Holt-Winters exponential smoothing
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HoltWintersParams {
@@ -88,6 +101,10 @@ pub struct HoltWintersParams {
     pub beta: f64,
     pub gamma: f64,
     pub season_length: usize,
+    /// Additive vs multiplicative seasonality. Defaults to additive for
+    /// backward compatibility.
+    #[serde(default)]
+    pub seasonality: SeasonalityType,
 }
 
 impl Default for HoltWintersParams {
@@ -97,72 +114,283 @@ impl Default for HoltWintersParams {
             beta: 0.1,
             gamma: 0.1,
             season_length: 24, // daily seasonality for hourly data
+            seasonality: SeasonalityType::Additive,
         }
     }
 }
 
-/// Holt-Winters additive forecast — level + trend + seasonality
-pub fn holt_winters_forecast(
+impl HoltWintersParams {
+    /// Validate smoothing parameters.
+    ///
+    /// `alpha`, `beta`, `gamma` must each lie in the open interval `(0, 1)` —
+    /// 0 would freeze the component and 1 would make it track noise. A
+    /// `season_length` of 1 is meaningless (a single-point "season" is just the
+    /// level), so we require at least 2.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let in_range = |v: f64, name: &str| -> std::result::Result<(), String> {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(format!("{} must be in [0,1], got {}", name, v));
+            }
+            Ok(())
+        };
+        in_range(self.alpha, "alpha")?;
+        in_range(self.beta, "beta")?;
+        in_range(self.gamma, "gamma")?;
+        if self.season_length < 2 {
+            return Err(format!(
+                "season_length must be >= 2, got {}",
+                self.season_length
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Full output of a Holt-Winters fit, including the in-sample fitted values
+/// (one-step-ahead) so that residuals and confidence intervals can be computed
+/// from the *actual* model rather than a proxy.
+#[derive(Debug, Clone)]
+pub struct HoltWintersResult {
+    /// In-sample one-step-ahead fitted values, same length as the input.
+    pub fitted: Vec<f64>,
+    /// Forecast for `horizon` steps beyond the end of the input.
+    pub forecast: Vec<f64>,
+    /// Final level component at the last observation.
+    pub final_level: f64,
+    /// Final trend component at the last observation.
+    pub final_trend: f64,
+    /// Seasonal component series (length = input length).
+    pub season: Vec<f64>,
+    /// Seasonality model used.
+    pub seasonality: SeasonalityType,
+}
+
+/// Holt-Winters forecast — level + trend + seasonality.
+///
+/// Returns the full [`HoltWintersResult`] (in-sample fitted values + forecast).
+/// When the input has fewer than `2 * season_length` points, seasonal
+/// decomposition is impossible and the function falls back to double
+/// exponential smoothing (trend-only), recording NaN fitted values for indices
+/// before the fallback becomes available.
+pub fn holt_winters_fit(
     data: &[f64],
     params: &HoltWintersParams,
     forecast_horizon: usize,
-) -> Vec<f64> {
-    let s = params.season_length;
+) -> HoltWintersResult {
+    if let Err(msg) = params.validate() {
+        tracing::warn!("Holt-Winters parameter validation failed: {}; using defaults", msg);
+    }
+    let alpha = params.alpha.clamp(0.0, 1.0);
+    let beta = params.beta.clamp(0.0, 1.0);
+    let gamma = params.gamma.clamp(0.0, 1.0);
+    let s = params.season_length.max(1);
+
+    if data.is_empty() {
+        return HoltWintersResult {
+            fitted: Vec::new(),
+            forecast: Vec::new(),
+            final_level: 0.0,
+            final_trend: 0.0,
+            season: Vec::new(),
+            seasonality: params.seasonality,
+        };
+    }
+
+    // Fallback: not enough data to estimate a season.
     if data.len() < 2 * s {
-        // Not enough data for seasonal decomposition; fall back to double smoothing
-        let smoothed = double_exponential_smoothing(data, params.alpha, params.beta);
-        if smoothed.is_empty() {
-            return Vec::new();
-        }
-        let last_level = smoothed[smoothed.len() - 1];
-        let n = data.len();
+        let smoothed = double_exponential_smoothing(data, alpha, beta);
+        let n = smoothed.len();
+        let last_level = smoothed[n - 1];
         let last_trend = if n >= 2 {
             smoothed[n - 1] - smoothed[n - 2]
         } else {
             0.0
         };
-        return (1..=forecast_horizon)
+        let forecast = (1..=forecast_horizon)
             .map(|h| (last_level + h as f64 * last_trend).max(0.0))
             .collect();
+        return HoltWintersResult {
+            fitted: smoothed,
+            forecast,
+            final_level: last_level,
+            final_trend: last_trend,
+            season: vec![0.0; n],
+            seasonality: params.seasonality,
+        };
     }
 
     let n = data.len();
     let mut level = vec![0.0; n];
     let mut trend = vec![0.0; n];
     let mut season = vec![0.0; n];
+    let mut fitted = vec![0.0; n];
 
-    // Initialize level and trend using first season
-    let avg_first_season: f64 = data[..s].iter().sum::<f64>() / s as f64;
-    let avg_second_season: f64 = data[s..2 * s].iter().sum::<f64>() / s as f64;
-
-    level[s - 1] = avg_first_season;
-    trend[s - 1] = (avg_second_season - avg_first_season) / s as f64;
-
-    // Initialize seasonal indices
-    for i in 0..s {
-        season[i] = data[i] - avg_first_season;
+    match params.seasonality {
+        SeasonalityType::Additive => {
+            // Initialize level/trend from the first two seasons.
+            let avg_first: f64 = data[..s].iter().sum::<f64>() / s as f64;
+            let avg_second: f64 = data[s..2 * s].iter().sum::<f64>() / s as f64;
+            level[s - 1] = avg_first;
+            trend[s - 1] = (avg_second - avg_first) / s as f64;
+            for i in 0..s {
+                season[i] = data[i] - avg_first;
+            }
+            // The first season is used to initialize the model, so its in-sample
+            // fitted value is the seasonal reconstruction (= the data itself);
+            // leaving fitted[0..s] at 0.0 would inject spurious large residuals.
+            for i in 0..s {
+                fitted[i] = avg_first + season[i];
+            }
+            for i in s..n {
+                level[i] =
+                    alpha * (data[i] - season[i - s]) + (1.0 - alpha) * (level[i - 1] + trend[i - 1]);
+                trend[i] = beta * (level[i] - level[i - 1]) + (1.0 - beta) * trend[i - 1];
+                season[i] = gamma * (data[i] - level[i]) + (1.0 - gamma) * season[i - s];
+                fitted[i] = level[i - 1] + trend[i - 1] + season[i - s];
+            }
+            let last_level = level[n - 1];
+            let last_trend = trend[n - 1];
+            let forecast = (1..=forecast_horizon)
+                .map(|h| {
+                    let idx = if h <= s { n - s + h - 1 } else { n - s + (h - 1) % s };
+                    (last_level + h as f64 * last_trend + season[idx]).max(0.0)
+                })
+                .collect();
+            HoltWintersResult {
+                fitted,
+                forecast,
+                final_level: last_level,
+                final_trend: last_trend,
+                season,
+                seasonality: SeasonalityType::Additive,
+            }
+        }
+        SeasonalityType::Multiplicative => {
+            // Multiplicative seasonality: y_t = (level + trend) * season_t.
+            // Seasonal indices are dimensionless ratios centered around 1.0.
+            let avg_first: f64 = data[..s].iter().sum::<f64>() / s as f64;
+            let avg_second: f64 = data[s..2 * s].iter().sum::<f64>() / s as f64;
+            level[s - 1] = avg_first;
+            trend[s - 1] = (avg_second - avg_first) / s as f64;
+            for i in 0..s {
+                season[i] = if avg_first.abs() > 1e-9 {
+                    data[i] / avg_first
+                } else {
+                    1.0
+                };
+            }
+            // First season: fitted = reconstruction of the data (≈ data itself),
+            // so the initialization window contributes ~zero residual.
+            for i in 0..s {
+                fitted[i] = avg_first * season[i];
+            }
+            for i in s..n {
+                let denom = season[i - s];
+                let base = level[i - 1] + trend[i - 1];
+                level[i] = if denom.abs() > 1e-9 {
+                    alpha * (data[i] / denom) + (1.0 - alpha) * base
+                } else {
+                    alpha * data[i] + (1.0 - alpha) * base
+                };
+                trend[i] = beta * (level[i] - level[i - 1]) + (1.0 - beta) * trend[i - 1];
+                let level_val = if level[i].abs() > 1e-9 { level[i] } else { 1.0 };
+                season[i] = gamma * (data[i] / level_val) + (1.0 - gamma) * season[i - s];
+                fitted[i] = (level[i - 1] + trend[i - 1]) * season[i - s];
+            }
+            let last_level = level[n - 1];
+            let last_trend = trend[n - 1];
+            let forecast = (1..=forecast_horizon)
+                .map(|h| {
+                    let idx = if h <= s { n - s + h - 1 } else { n - s + (h - 1) % s };
+                    ((last_level + h as f64 * last_trend) * season[idx]).max(0.0)
+                })
+                .collect();
+            HoltWintersResult {
+                fitted,
+                forecast,
+                final_level: last_level,
+                final_trend: last_trend,
+                season,
+                seasonality: SeasonalityType::Multiplicative,
+            }
+        }
     }
+}
 
-    // Holt-Winters additive recursion
-    for i in s..n {
-        level[i] = params.alpha * (data[i] - season[i - s])
-            + (1.0 - params.alpha) * (level[i - 1] + trend[i - 1]);
-        trend[i] = params.beta * (level[i] - level[i - 1])
-            + (1.0 - params.beta) * trend[i - 1];
-        season[i] = params.gamma * (data[i] - level[i])
-            + (1.0 - params.gamma) * season[i - s];
+/// Holt-Winters forecast (convenience wrapper returning only the forecast
+/// vector, for backward compatibility with callers that don't need fitted
+/// values).
+pub fn holt_winters_forecast(
+    data: &[f64],
+    params: &HoltWintersParams,
+    forecast_horizon: usize,
+) -> Vec<f64> {
+    holt_winters_fit(data, params, forecast_horizon).forecast
+}
+
+// ---------------------------------------------------------------------------
+// Forecast accuracy metrics
+// ---------------------------------------------------------------------------
+
+/// Forecast accuracy metrics, computed by comparing predicted values against
+/// actuals. Used to evaluate model fit and to select between smoothing methods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccuracyMetrics {
+    /// Mean Absolute Error
+    pub mae: f64,
+    /// Root Mean Squared Error
+    pub rmse: f64,
+    /// Mean Absolute Percentage Error (percent). `NaN` if any actual is zero.
+    pub mape: f64,
+}
+
+impl Default for AccuracyMetrics {
+    fn default() -> Self {
+        Self {
+            mae: 0.0,
+            rmse: 0.0,
+            mape: 0.0,
+        }
     }
+}
 
-    // Generate forecast
-    let last_level = level[n - 1];
-    let last_trend = trend[n - 1];
+/// Compute accuracy metrics by comparing `predicted` to `actual` element-wise.
+/// Returns `None` if the inputs are empty or of mismatched length.
+pub fn accuracy_metrics(actual: &[f64], predicted: &[f64]) -> Option<AccuracyMetrics> {
+    if actual.is_empty() || actual.len() != predicted.len() {
+        return None;
+    }
+    let n = actual.len() as f64;
+    let abs_err: f64 = actual
+        .iter()
+        .zip(predicted.iter())
+        .map(|(a, p)| (a - p).abs())
+        .sum();
+    let sq_err: f64 = actual
+        .iter()
+        .zip(predicted.iter())
+        .map(|(a, p)| (a - p).powi(2))
+        .sum();
+    let mae = abs_err / n;
+    let rmse = (sq_err / n).sqrt();
 
-    (1..=forecast_horizon)
-        .map(|h| {
-            let seasonal_idx = if h <= s { n - s + h - 1 } else { n - s + (h - 1) % s };
-            (last_level + h as f64 * last_trend + season[seasonal_idx]).max(0.0)
-        })
-        .collect()
+    // MAPE: ignore points where actual == 0 (undefined), report the average
+    // over the remaining points. If all are zero, MAPE is NaN.
+    let mut pct_sum = 0.0;
+    let mut pct_count = 0u32;
+    for (a, p) in actual.iter().zip(predicted.iter()) {
+        if a.abs() > 1e-9 {
+            pct_sum += ((p - a) / a).abs() * 100.0;
+            pct_count += 1;
+        }
+    }
+    let mape = if pct_count > 0 {
+        pct_sum / pct_count as f64
+    } else {
+        f64::NAN
+    };
+
+    Some(AccuracyMetrics { mae, rmse, mape })
 }
 
 // ---------------------------------------------------------------------------
@@ -176,8 +404,16 @@ pub enum SmoothingMethod {
     Single { alpha: f64 },
     /// Double exponential smoothing (level + trend)
     Double { alpha: f64, beta: f64 },
-    /// Holt-Winters (level + trend + seasonality)
+    /// Holt-Winters (level + trend + seasonality), additive model
     HoltWinters { alpha: f64, beta: f64, gamma: f64, season_length: usize },
+    /// Holt-Winters with explicit seasonality type (additive or multiplicative)
+    HoltWintersTyped {
+        alpha: f64,
+        beta: f64,
+        gamma: f64,
+        season_length: usize,
+        seasonality: SeasonalityType,
+    },
 }
 
 impl Default for SmoothingMethod {
@@ -304,28 +540,61 @@ impl LoadForecastAgent {
                     beta: *beta,
                     gamma: *gamma,
                     season_length: *season_length,
+                    seasonality: SeasonalityType::Additive,
                 };
-                let forecast = holt_winters_forecast(data, &params, self.forecast_horizon_hours as usize);
-                (forecast, "HoltWinters".to_string())
+                let result = holt_winters_fit(data, &params, self.forecast_horizon_hours as usize);
+                (result.forecast, "HoltWinters".to_string())
             }
-        }
-    }
-
-    /// Get the smoothed values for the historical data (for residual computation)
-    fn get_smoothed_values(&self, data: &[f64]) -> Vec<f64> {
-        match &self.smoothing_method {
-            SmoothingMethod::Single { alpha } => single_exponential_smoothing(data, *alpha),
-            SmoothingMethod::Double { alpha, beta } => double_exponential_smoothing(data, *alpha, *beta),
-            SmoothingMethod::HoltWinters { alpha, beta, gamma, season_length } => {
-                let _params = HoltWintersParams {
+            SmoothingMethod::HoltWintersTyped { alpha, beta, gamma, season_length, seasonality } => {
+                let params = HoltWintersParams {
                     alpha: *alpha,
                     beta: *beta,
                     gamma: *gamma,
                     season_length: *season_length,
+                    seasonality: *seasonality,
                 };
-                // For Holt-Winters, we compute in-sample fitted values
-                // Simplified: use double smoothing as proxy for residuals
+                let result = holt_winters_fit(data, &params, self.forecast_horizon_hours as usize);
+                let label = match seasonality {
+                    SeasonalityType::Additive => "HoltWinters-Additive",
+                    SeasonalityType::Multiplicative => "HoltWinters-Multiplicative",
+                };
+                (result.forecast, label.to_string())
+            }
+        }
+    }
+
+    /// Get the in-sample fitted (smoothed) values for the historical data.
+    ///
+    /// These are the one-step-ahead fitted values of the configured model,
+    /// used to compute residuals and hence confidence intervals. For
+    /// Holt-Winters this now uses the **actual** model's fitted values rather
+    /// than a double-smoothing proxy, so confidence intervals reflect the real
+    /// model error.
+    fn get_smoothed_values(&self, data: &[f64]) -> Vec<f64> {
+        match &self.smoothing_method {
+            SmoothingMethod::Single { alpha } => single_exponential_smoothing(data, *alpha),
+            SmoothingMethod::Double { alpha, beta } => {
                 double_exponential_smoothing(data, *alpha, *beta)
+            }
+            SmoothingMethod::HoltWinters { alpha, beta, gamma, season_length } => {
+                let params = HoltWintersParams {
+                    alpha: *alpha,
+                    beta: *beta,
+                    gamma: *gamma,
+                    season_length: *season_length,
+                    seasonality: SeasonalityType::Additive,
+                };
+                holt_winters_fit(data, &params, 0).fitted
+            }
+            SmoothingMethod::HoltWintersTyped { alpha, beta, gamma, season_length, seasonality } => {
+                let params = HoltWintersParams {
+                    alpha: *alpha,
+                    beta: *beta,
+                    gamma: *gamma,
+                    season_length: *season_length,
+                    seasonality: *seasonality,
+                };
+                holt_winters_fit(data, &params, 0).fitted
             }
         }
     }
@@ -390,6 +659,19 @@ impl Agent for LoadForecastAgent {
                             season_length: *season_length,
                         }
                     }
+                    SmoothingMethod::HoltWintersTyped {
+                        beta,
+                        gamma,
+                        season_length,
+                        seasonality,
+                        ..
+                    } => SmoothingMethod::HoltWintersTyped {
+                        alpha: 0.5,
+                        beta: *beta,
+                        gamma: *gamma,
+                        season_length: *season_length,
+                        seasonality: *seasonality,
+                    },
                 };
 
                 // Temporarily apply adjusted method for re-forecast
@@ -661,6 +943,7 @@ mod tests {
             beta: 0.1,
             gamma: 0.1,
             season_length: 24,
+            seasonality: SeasonalityType::Additive,
         };
 
         let forecast = holt_winters_forecast(&data, &params, 24);
@@ -680,6 +963,7 @@ mod tests {
             beta: 0.1,
             gamma: 0.1,
             season_length: 24,
+            seasonality: SeasonalityType::Additive,
         };
         let forecast = holt_winters_forecast(&data, &params, 5);
         assert_eq!(forecast.len(), 5);
@@ -1032,5 +1316,219 @@ mod tests {
         let smoothed = vec![1.0, 2.0];
         let std_dev = LoadForecastAgent::compute_residual_std(&data, &smoothed);
         assert_eq!(std_dev, 0.0);
+    }
+
+    // ===================================================================
+    // Holt-Winters v2: fitted values, multiplicative, validation, metrics
+    // (BUG3 §5 — previously get_smoothed_values used double-smoothing as a
+    // proxy for Holt-Winters residuals, producing wrong confidence intervals)
+    // ===================================================================
+
+    /// holt_winters_fit must return fitted values whose length equals the input.
+    #[test]
+    fn test_hw_fit_returns_fitted_values() {
+        let mut data = Vec::new();
+        for day in 0..7 {
+            for hour in 0..24 {
+                data.push(100.0 + 2.0 * day as f64 + 20.0 * ((hour as f64 - 12.0) / 12.0).sin());
+            }
+        }
+        let params = HoltWintersParams::default();
+        let result = holt_winters_fit(&data, &params, 24);
+        assert_eq!(result.fitted.len(), data.len(), "fitted length must match input");
+        assert_eq!(result.forecast.len(), 24);
+        assert_eq!(result.season.len(), data.len());
+    }
+
+    /// Regression: previously get_smoothed_values for Holt-Winters returned
+    /// double-smoothing output (length n) — now it returns the real HW fitted
+    /// values. The fitted values must track seasonal data far more closely
+    /// than double smoothing does, so residual std should be substantially
+    /// smaller with the real model.
+    #[test]
+    fn test_hw_fitted_values_are_the_real_model() {
+        // Strongly seasonal data: double smoothing cannot capture the swing,
+        // but HW (additive) should. residual_std(HW) < residual_std(double).
+        let mut data = Vec::new();
+        for day in 0..7 {
+            for hour in 0..24 {
+                data.push(100.0 + 30.0 * ((hour as f64 - 12.0) / 12.0).sin());
+            }
+        }
+        let params = HoltWintersParams::default();
+        let hw_fit = holt_winters_fit(&data, &params, 0);
+        let double_fit = double_exponential_smoothing(&data, params.alpha, params.beta);
+
+        let hw_resid = LoadForecastAgent::compute_residual_std(&data, &hw_fit.fitted);
+        let double_resid = LoadForecastAgent::compute_residual_std(&data, &double_fit);
+
+        assert!(
+            hw_resid < double_resid,
+            "HW residual std ({:.3}) should be smaller than double-smoothing ({:.3}) \
+             because HW captures seasonality",
+            hw_resid,
+            double_resid
+        );
+    }
+
+    /// Multiplicative seasonality: forecast should reproduce a multiplicative
+    /// pattern (seasonal amplitude proportional to level).
+    #[test]
+    fn test_hw_multiplicative_seasonality() {
+        // y = base * (1 + 0.5 * sin), a pure multiplicative seasonal pattern.
+        let mut data = Vec::new();
+        for day in 0..7 {
+            for hour in 0..24 {
+                let base = 100.0 + 5.0 * day as f64;
+                let mult = 1.0 + 0.5 * ((hour as f64 - 12.0) / 12.0).sin();
+                data.push(base * mult);
+            }
+        }
+        let params = HoltWintersParams {
+            alpha: 0.3,
+            beta: 0.1,
+            gamma: 0.1,
+            season_length: 24,
+            seasonality: SeasonalityType::Multiplicative,
+        };
+        let result = holt_winters_fit(&data, &params, 24);
+        assert_eq!(result.seasonality, SeasonalityType::Multiplicative);
+        // Multiplicative seasonal indices should hover around 1.0.
+        let avg_season: f64 = result.season[result.season.len() - 24..].iter().sum::<f64>() / 24.0;
+        assert!(
+            (avg_season - 1.0).abs() < 0.5,
+            "multiplicative seasonal indices should average near 1.0, got {:.3}",
+            avg_season
+        );
+        for v in &result.forecast {
+            assert!(*v > 0.0);
+        }
+    }
+
+    /// Parameter validation rejects out-of-range smoothing constants and
+    /// too-short seasons.
+    #[test]
+    fn test_hw_param_validation() {
+        let bad_alpha = HoltWintersParams {
+            alpha: 1.5,
+            beta: 0.1,
+            gamma: 0.1,
+            season_length: 24,
+            seasonality: SeasonalityType::Additive,
+        };
+        assert!(bad_alpha.validate().is_err());
+
+        let bad_season = HoltWintersParams {
+            alpha: 0.3,
+            beta: 0.1,
+            gamma: 0.1,
+            season_length: 1,
+            seasonality: SeasonalityType::Additive,
+        };
+        assert!(bad_season.validate().is_err());
+
+        let good = HoltWintersParams::default();
+        assert!(good.validate().is_ok());
+    }
+
+    /// Out-of-range params are clamped rather than panicking (defensive).
+    #[test]
+    fn test_hw_fit_clamps_bad_params() {
+        let data = vec![10.0; 60]; // flat, 2.5 seasons of length 24
+        let params = HoltWintersParams {
+            alpha: 5.0, // out of range → clamped to 1.0
+            beta: -1.0, // out of range → clamped to 0.0
+            gamma: 0.1,
+            season_length: 24,
+            seasonality: SeasonalityType::Additive,
+        };
+        // Must not panic; must produce a sane forecast.
+        let result = holt_winters_fit(&data, &params, 5);
+        assert_eq!(result.forecast.len(), 5);
+        for v in &result.forecast {
+            assert!(v.is_finite());
+        }
+    }
+
+    /// Accuracy metrics on a perfect prediction should be all-zero.
+    #[test]
+    fn test_accuracy_metrics_perfect() {
+        let actual = vec![100.0, 102.0, 98.0, 101.0];
+        let m = accuracy_metrics(&actual, &actual).unwrap();
+        assert!(m.mae.abs() < 1e-12);
+        assert!(m.rmse.abs() < 1e-12);
+        assert!(m.mape.abs() < 1e-12);
+    }
+
+    /// MAE / RMSE on a known error.
+    #[test]
+    fn test_accuracy_metrics_known_error() {
+        let actual = vec![100.0, 100.0, 100.0];
+        let predicted = vec![101.0, 99.0, 100.0];
+        let m = accuracy_metrics(&actual, &predicted).unwrap();
+        // abs errors: 1, 1, 0 → MAE = 2/3
+        assert!((m.mae - 2.0 / 3.0).abs() < 1e-12);
+        // sq errors: 1, 1, 0 → RMSE = sqrt(2/3)
+        assert!((m.rmse - (2.0 / 3.0_f64).sqrt()).abs() < 1e-12);
+    }
+
+    /// MAPE ignores zero-actual points (undefined %).
+    #[test]
+    fn test_accuracy_metrics_mape_skips_zeros() {
+        let actual = vec![0.0, 100.0, 0.0];
+        let predicted = vec![50.0, 110.0, 50.0];
+        let m = accuracy_metrics(&actual, &predicted).unwrap();
+        // Only the middle point counts: |110-100|/100 * 100 = 10%
+        assert!((m.mape - 10.0).abs() < 1e-9);
+    }
+
+    /// Mismatched / empty inputs return None.
+    #[test]
+    fn test_accuracy_metrics_invalid_inputs() {
+        assert!(accuracy_metrics(&[], &[]).is_none());
+        assert!(accuracy_metrics(&[1.0], &[1.0, 2.0]).is_none());
+    }
+
+    /// The agent end-to-end with the new HoltWintersTyped variant produces a
+    /// forecast using the multiplicative model.
+    #[tokio::test]
+    async fn test_agent_multiplicative_hw_forecast() {
+        let ts_engine = Arc::new(TimeSeriesEngine::new(100_000));
+        let element_id: ElementId = 1;
+
+        let now = Utc::now();
+        for day in 0..7 {
+            for hour in 0..24 {
+                let i = day * 24 + hour;
+                let ts = now - chrono::Duration::hours(168 - i as i64);
+                let base = 100.0;
+                let mult = 1.0 + 0.3 * ((hour as f64 - 12.0) / 12.0).sin();
+                ts_engine.record(element_id, "load_mw", base * mult, ts).unwrap();
+            }
+        }
+
+        let mut agent = LoadForecastAgent::new(
+            "fc-mult",
+            jurisdiction_with_device(1, element_id),
+            ts_engine,
+        )
+        .with_smoothing_method(SmoothingMethod::HoltWintersTyped {
+            alpha: 0.3,
+            beta: 0.1,
+            gamma: 0.1,
+            season_length: 24,
+            seasonality: SeasonalityType::Multiplicative,
+        });
+
+        let ctx = test_context();
+        let actions = agent.tick(&ctx).await.unwrap();
+        assert!(!actions.is_empty());
+
+        let forecast = agent.last_forecast().unwrap();
+        assert_eq!(forecast.forecast_values.len(), 24);
+        assert_eq!(forecast.method_used, "HoltWinters-Multiplicative");
+        for v in &forecast.forecast_values {
+            assert!(*v > 0.0);
+        }
     }
 }

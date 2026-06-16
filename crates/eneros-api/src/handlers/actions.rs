@@ -37,7 +37,7 @@ pub async fn structured_action_handler(
         Jurisdiction::unrestricted(),
         request.system_state.unwrap_or(SystemOperatingState::Normal),
     );
-    let decision = pipeline.decide_enhanced(&request.action, &ctx);
+    let decision = pipeline.decide_enhanced(&request.action, &ctx).await;
 
     Json(ApiResponse::success(StructuredActionResponse {
         executed: decision.executed_action.is_some(),
