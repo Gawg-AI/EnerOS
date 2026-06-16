@@ -200,15 +200,22 @@ EnerOS 采用**双执行架构**，将系统划分为两个执行域：
 | **eneros-core** | `crates/eneros-core/` | 统一类型、错误、配置 | `EnerOSError`, `EnerOSConfig`, `ElementId`, `BusType`, `PowerSystemState` |
 | **eneros-topology** | `crates/eneros-topology/` | 电网拓扑图建模与分析 | `NetworkGraph`, `TopologyEngine`, `TopologySearcher`, `Bus`, `Branch`, `Switch` |
 | **eneros-powerflow** | `crates/eneros-powerflow/` | Newton-Raphson 潮流求解 | `PowerFlowSolver`, `YBusMatrix`, `JacobianMatrix`, `PowerFlowResult` |
-| **eneros-constraint** | `crates/eneros-constraint/` | 安全约束校验与执行 | `ConstraintEngine`, `Constraint`, `ConstraintType`, `Violation`, `ResponseStrategy` |
+| **eneros-constraint** | `crates/eneros-constraint/` | 安全约束校验与可行性投影 | `ConstraintEngine`, `Constraint`, `Violation`, `FeasibilityProjector`, `WhatIfResult` |
 | **eneros-equipment** | `crates/eneros-equipment/` | 设备参数模型库 | `EquipmentModel` trait, `EquipmentLibrary`, `TransmissionLine`, `TwoWindingTransformer` |
-| **eneros-timeseries** | `crates/eneros-timeseries/` | 时序数据存储与查询 | `TimeSeriesEngine`, `TimeSeriesStorage` trait, `TimeSeriesQuery`, `Aggregation` |
-| **eneros-eventbus** | `crates/eneros-eventbus/` | 事件驱动通信总线 | `EventBus`, `Event`, `EventType`, `EventHandler` trait, `CallbackHandler` |
-| **eneros-gateway** | `crates/eneros-gateway/` | 安全网关与命令管控 | `SafetyGateway`, `Command`, `SafetyCheck` trait, `CommandPriority` |
-| **eneros-device** | `crates/eneros-device/` | 设备通信与协议适配 | `ProtocolAdapter` trait, `DeviceManager`, `DeviceDiscovery`, `HealthMonitor` |
+| **eneros-timeseries** | `crates/eneros-timeseries/` | 时序数据存储与查询（SQLite 持久化） | `TimeSeriesEngine`, `TimeSeriesStorage` trait, `TimeSeriesQuery`, `Aggregation` |
+| **eneros-eventbus** | `crates/eneros-eventbus/` | 事件驱动通信总线 | `EventBus`, `Event`, `EventType`, `EventHandler` trait, `PriorityEventBus` |
+| **eneros-gateway** | `crates/eneros-gateway/` | 安全网关、命令执行、决策管线 | `SafetyGateway`, `Command`, `CommandExecutor`, `ConstrainedDecisionPipeline`, `RealtimeExecutor` |
+| **eneros-device** | `crates/eneros-device/` | 设备通信与协议适配（IEC104/IEC61850/Modbus/MQTT） | `ProtocolAdapter` trait, `DeviceManager`, `DeviceDiscovery`, `HealthMonitor` |
 | **eneros-api** | `crates/eneros-api/` | CLI / HTTP API 服务 | `ApiServer`, `ApiClient`, `ApiResponse` |
 | **eneros-bridge** | `crates/eneros-bridge/` | Python 桥接 (cnpower/pandapower) | `PythonBridge`, `CnpowerEquipmentLoader` |
-| **eneros-network** | `crates/eneros-network/` | 拓扑-潮流统一管线 (规划中) | — |
+| **eneros-network** | `crates/eneros-network/` | 拓扑-潮流统一管线与端到端测试 | `PowerNetwork`, `NetworkSimulatorAdapter` |
+| **eneros-memory** | `crates/eneros-memory/` | Agent 记忆系统 | `MemoryStore` trait, `FileMemoryStore`, `MemoryEntry` |
+| **eneros-tool** | `crates/eneros-tool/` | Agent 工具引擎 | `Tool` trait, `ToolRegistry`, `ToolResult` |
+| **eneros-reasoning** | `crates/eneros-reasoning/` | 推理引擎（LLM + rig 集成） | `ReasoningEngine` trait, `RigReasoningEngine`, `FeedbackLoop` |
+| **eneros-agent** | `crates/eneros-agent/` | Agent 运行时与领域 Agent | `Agent` trait, `DispatchAgent`, `SelfHealingAgent`, `Orchestrator`, `SystemStateMachine` |
+| **eneros-scada** | `crates/eneros-scada/` | SCADA 数据采集（IEC 104 集成） | `ScadaEngine`, `DataSource` trait, `Iec104DataSource` |
+| **eneros-analysis** | `crates/eneros-analysis/` | 电力系统分析（状态估计/OPF/短路） | `StateEstimator`, `OpfSolver`, `ShortCircuitAnalyzer`, `SequenceNetworks` |
+| **eneros-dashboard** | `crates/eneros-dashboard/` | Web 仪表盘 | `DashboardServer`, `TopologySvg`, `FlowHeatmap`, `AgentPanel` |
 
 ### 依赖关系
 
@@ -219,12 +226,17 @@ eneros-core ◄── eneros-topology
              ◄── eneros-equipment
              ◄── eneros-timeseries
              ◄── eneros-eventbus
-             ◄── eneros-gateway
-             ◄── eneros-api
+             ◄── eneros-memory
+             ◄── eneros-tool
+             ◄── eneros-reasoning
 
 eneros-core + eneros-eventbus ◄── eneros-device
 eneros-core + eneros-equipment ◄── eneros-bridge
 eneros-core + eneros-topology + eneros-powerflow + eneros-equipment ◄── eneros-network
+eneros-core + eneros-device ◄── eneros-scada
+eneros-powerflow + eneros-equipment ◄── eneros-analysis
+eneros-gateway + eneros-agent + eneros-reasoning + eneros-tool ◄── eneros-api
+eneros-gateway + eneros-agent + eneros-constraint ◄── eneros-dashboard
 ```
 
 ---
@@ -301,26 +313,43 @@ cargo run --bin eneros -- power-flow --case ieee14
 
 ## 路线图
 
+> 详细版本规划见 [ROADMAP.md](ROADMAP.md)，历史变更见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 已完成
+
 - [x] **Phase 1 — 内核基座** — 拓扑引擎、潮流计算内核、设备模型库
 - [x] **Phase 2 — Agent 运行时** — Agent 生命周期管理、记忆系统、工具引擎
 - [x] **Phase 3 — 电网感知上下文** — 拓扑感知注入、约束校验守卫、事件总线
 - [x] **Phase 4 — 多智能体协作** — 多智能体协作协议、拓扑结构化通信
-- [ ] **Phase 5 — 基础设施适配器** — 已有适配器骨架；IEC 61850 / IEC 104 / MQTT 生产级实现仍未完成（见 DEVGUIDE 4.2）
+- [x] **Phase 5 — 基础设施适配器** — SCADA / IEC 61850 / IEC 104 / MQTT / Modbus 协议适配器
 - [x] **Phase 6 — 领域应用** — 调度Agent(经济调度/AGC)、运维Agent(故障诊断/设备健康)、自愈Agent(故障隔离/网络重构)、领域协作协议
 - [x] **Phase 7 — 实时闭环与系统集成** — SCADA数据管线、DC-OPF/状态估计/短路分析、负荷预测/规划/交易Agent、axum API+WebSocket+Web仪表盘
 - [x] **Phase 8 — 深度集成与生产化** — 组件端到端连通、TOML配置加载、E2E集成测试、Dashboard集成、ApiClient真实HTTP、SQLite持久化
 - [x] **Phase 9 — 修复真实Bug与消除空壳** — await_holding_lock死锁修复、SelfHealingAgent联锁校验、Y-bus计算bug修复、消息广播修复、重复代码消除、clippy零警告
-- [x] **Phase 10 — 精度验证与LLM推理集成** — IEEE 14-bus标准答案精度验证、LlmReasoningEngine(OpenAI/Ollama/vLLM兼容)、Agent LLM推理增强(OperationAgent故障诊断+DispatchAgent调度审查)、降级回退机制
-- [x] **Phase 11 — rig Tool实化与统一推理引擎** — rig框架集成(rig-core 0.38)、4个电力系统Tool实化(PowerFlow/ConstraintCheck/N1Analysis/VoltageStability)、RigReasoningEngine统一推理引擎、LlmReasoningEngine废弃标记、Feature flag隔离
-- [x] **Phase 12 — 实时执行域** — PriorityCommandQueue优先级命令队列、RealtimeExecutor实时命令执行器、SafetyGateway集成优先级队列、PriorityEventBus双通道事件总线、DualScanGroup快/慢扫描分组(100ms/1s)、WatchdogTimer看门狗超时保护
-- [x] **Phase 13 — 约束驱动的确定性决策管道** — StructuredActionOutput结构化动作输出、FeasibilityProjector可行性投影(What-If分析+边界裁剪)、ConstrainedDecisionPipeline三阶段管道(投影→校验→执行)、ActionDispatcher集成dispatch_structured()、ConstraintAwareValidator增强投影器支持、FeedbackLoop LLM反馈重推理、NetworkSimulatorAdapter电力网络仿真适配器
-- [x] **Phase 14 — 接通确定性决策闭环** — 修复Phase 13"幽灵闭环"(结构化动作解析+ActionMapper优先消费+Orchestrator路由dispatch_structured)、FeedbackLoop改Arc\<dyn\>并接入orchestrator(拒绝→重推理)、AgentAction::ExecuteStructured变体、API注入FeedbackLoop、5个端到端闭环集成测试、eneros-bridge flaky测试修复
+- [x] **Phase 10 — 精度验证与LLM推理集成** — IEEE 14-bus标准答案精度验证、LlmReasoningEngine(OpenAI/Ollama/vLLM兼容)、Agent LLM推理增强、降级回退机制
+- [x] **Phase 11 — rig Tool实化与统一推理引擎** — rig框架集成(rig-core 0.38)、4个电力系统Tool实化、RigReasoningEngine统一推理引擎、Feature flag隔离
+- [x] **Phase 12 — 实时执行域** — PriorityCommandQueue优先级命令队列、RealtimeExecutor实时命令执行器、PriorityEventBus双通道事件总线、DualScanGroup快/慢扫描分组、WatchdogTimer看门狗超时保护
+- [x] **Phase 13 — 约束驱动的确定性决策管道** — StructuredActionOutput、FeasibilityProjector可行性投影、ConstrainedDecisionPipeline三阶段管道、FeedbackLoop LLM反馈重推理
+- [x] **Phase 14 — 接通确定性决策闭环** — 修复"幽灵闭环"、FeedbackLoop接入orchestrator、5个端到端闭环集成测试
+- [x] **Phase 15 — 仿真器真实性增强** — 物理校正（变压器分接头、并联补偿器导纳、ZIP负荷约定、三绕组变压器模型）、数据完整性修复
+- [x] **Phase 16 — 端到端管线验证** — 14个集成测试覆盖自愈场景、回滚计划、约束验证全链路
+- [x] **Phase 17 — IEC 104 适配器** — 真实TCP协议栈、TESTFR心跳应答、半包/粘包处理、6个TCP传输测试
+- [x] **v0.2.0 — 生产级架构修复（BUG3 全部9项）** — 接入层协议真实化、执行层命令落地（DeviceCommandExecutor + ACK验证）、状态机联动、冲突解析四级链、Holt-Winters真实实现、SQLite持久化write-through、分析层生产级化（真实雅可比/序网络/严格对偶LMP/参数化分接头）、P16闭环实测观测验证
+
+### 进行中 / 规划中
+
+- [ ] **v0.3.0 — 生产就绪** — 持久化全面接入、配置体系、可观测性（Prometheus/结构化日志）、安全加固（JWT/mTLS）
+- [ ] **v0.4.0 — 协议覆盖完善** — Modbus RTU、IEC 104/61850增强、DNP3、OPC UA
+- [ ] **v0.5.0 — Agent 智能化** — LLM多后端、多Agent协同、自愈策略库、预测精度提升
+- [ ] **v0.6.0 — 分析层进阶** — 不良数据检测、AC-OPF、SCOPF、暂态稳定
+- [ ] **v0.7.0 — 高可用部署** — 容器化、集群冗余、灾备、性能优化
+- [ ] **v0.8.0 — 生态扩展** — 插件系统、GraphQL、可视化增强、文档体系
 
 ---
 
 ## 参与贡献
 
-EnerOS 处于早期设计阶段，欢迎对电力系统与 AI 交叉领域感兴趣的贡献者参与讨论与共建。
+EnerOS 当前版本 v0.2.0，已完成核心架构的生产级修复，930+ 测试通过。欢迎对电力系统与 AI 交叉领域感兴趣的贡献者参与。请阅读 [ROADMAP.md](ROADMAP.md) 了解规划方向。
 
 ---
 

@@ -216,15 +216,22 @@ Kernel-level security guard: N-1 safety verification, thermal stability check, v
 | **eneros-core** | `crates/eneros-core/` | Unified types, errors, and configuration | `EnerOSError`, `EnerOSConfig`, `ElementId`, `BusType`, `PowerSystemState` |
 | **eneros-topology** | `crates/eneros-topology/` | Power grid topology graph modeling and analysis | `NetworkGraph`, `TopologyEngine`, `TopologySearcher`, `Bus`, `Branch`, `Switch` |
 | **eneros-powerflow** | `crates/eneros-powerflow/` | Newton-Raphson power flow solving | `PowerFlowSolver`, `YBusMatrix`, `JacobianMatrix`, `PowerFlowResult` |
-| **eneros-constraint** | `crates/eneros-constraint/` | Safety constraint verification and enforcement | `ConstraintEngine`, `Constraint`, `ConstraintType`, `Violation`, `ResponseStrategy` |
+| **eneros-constraint** | `crates/eneros-constraint/` | Safety constraint verification and feasibility projection | `ConstraintEngine`, `Constraint`, `Violation`, `FeasibilityProjector`, `WhatIfResult` |
 | **eneros-equipment** | `crates/eneros-equipment/` | Equipment parameter model library | `EquipmentModel` trait, `EquipmentLibrary`, `TransmissionLine`, `TwoWindingTransformer` |
-| **eneros-timeseries** | `crates/eneros-timeseries/` | Time-series data storage and query | `TimeSeriesEngine`, `TimeSeriesStorage` trait, `TimeSeriesQuery`, `Aggregation` |
-| **eneros-eventbus** | `crates/eneros-eventbus/` | Event-driven communication bus | `EventBus`, `Event`, `EventType`, `EventHandler` trait, `CallbackHandler` |
-| **eneros-gateway** | `crates/eneros-gateway/` | Safety gateway and command control | `SafetyGateway`, `Command`, `SafetyCheck` trait, `CommandPriority` |
-| **eneros-device** | `crates/eneros-device/` | Device communication and protocol adaptation | `ProtocolAdapter` trait, `DeviceManager`, `DeviceDiscovery`, `HealthMonitor` |
+| **eneros-timeseries** | `crates/eneros-timeseries/` | Time-series data storage and query (SQLite persistence) | `TimeSeriesEngine`, `TimeSeriesStorage` trait, `TimeSeriesQuery`, `Aggregation` |
+| **eneros-eventbus** | `crates/eneros-eventbus/` | Event-driven communication bus | `EventBus`, `Event`, `EventType`, `EventHandler` trait, `PriorityEventBus` |
+| **eneros-gateway** | `crates/eneros-gateway/` | Safety gateway, command execution, decision pipeline | `SafetyGateway`, `Command`, `CommandExecutor`, `ConstrainedDecisionPipeline`, `RealtimeExecutor` |
+| **eneros-device** | `crates/eneros-device/` | Device communication and protocol adaptation (IEC104/IEC61850/Modbus/MQTT) | `ProtocolAdapter` trait, `DeviceManager`, `DeviceDiscovery`, `HealthMonitor` |
 | **eneros-api** | `crates/eneros-api/` | CLI / HTTP API service | `ApiServer`, `ApiClient`, `ApiResponse` |
 | **eneros-bridge** | `crates/eneros-bridge/` | Python bridge for cnpower / pandapower | `PythonBridge`, `CnpowerEquipmentLoader` |
-| **eneros-network** | `crates/eneros-network/` | Unified topology-to-powerflow pipeline | `PowerNetwork`, `NetworkSimulatorAdapter` |
+| **eneros-network** | `crates/eneros-network/` | Unified topology-to-powerflow pipeline and E2E tests | `PowerNetwork`, `NetworkSimulatorAdapter` |
+| **eneros-memory** | `crates/eneros-memory/` | Agent memory system | `MemoryStore` trait, `FileMemoryStore`, `MemoryEntry` |
+| **eneros-tool** | `crates/eneros-tool/` | Agent tool engine | `Tool` trait, `ToolRegistry`, `ToolResult` |
+| **eneros-reasoning** | `crates/eneros-reasoning/` | Reasoning engine (LLM + rig integration) | `ReasoningEngine` trait, `RigReasoningEngine`, `FeedbackLoop` |
+| **eneros-agent** | `crates/eneros-agent/` | Agent runtime and domain agents | `Agent` trait, `DispatchAgent`, `SelfHealingAgent`, `Orchestrator`, `SystemStateMachine` |
+| **eneros-scada** | `crates/eneros-scada/` | SCADA data acquisition (IEC 104 integration) | `ScadaEngine`, `DataSource` trait, `Iec104DataSource` |
+| **eneros-analysis** | `crates/eneros-analysis/` | Power system analysis (state estimation / OPF / short circuit) | `StateEstimator`, `OpfSolver`, `ShortCircuitAnalyzer`, `SequenceNetworks` |
+| **eneros-dashboard** | `crates/eneros-dashboard/` | Web dashboard | `DashboardServer`, `TopologySvg`, `FlowHeatmap`, `AgentPanel` |
 
 ### Dependency Relationships
 
@@ -235,12 +242,17 @@ eneros-core <-- eneros-topology
              <-- eneros-equipment
              <-- eneros-timeseries
              <-- eneros-eventbus
-             <-- eneros-gateway
-             <-- eneros-api
+             <-- eneros-memory
+             <-- eneros-tool
+             <-- eneros-reasoning
 
 eneros-core + eneros-eventbus <-- eneros-device
 eneros-core + eneros-equipment <-- eneros-bridge
 eneros-core + eneros-topology + eneros-powerflow + eneros-equipment <-- eneros-network
+eneros-core + eneros-device <-- eneros-scada
+eneros-powerflow + eneros-equipment <-- eneros-analysis
+eneros-gateway + eneros-agent + eneros-reasoning + eneros-tool <-- eneros-api
+eneros-gateway + eneros-agent + eneros-constraint <-- eneros-dashboard
 ```
 
 ---
@@ -317,26 +329,43 @@ cargo run --bin eneros -- power-flow --case ieee14
 
 ## Roadmap
 
+> See [ROADMAP.md](ROADMAP.md) for detailed version planning and [CHANGELOG.md](CHANGELOG.md) for change history.
+
+### Completed
+
 - [x] **Phase 1 — Kernel Foundation** — Topology engine, power flow computation kernel, equipment model store
 - [x] **Phase 2 — Agent Runtime** — Agent lifecycle management, memory system, tool engine
 - [x] **Phase 3 — Grid-Aware Context** — Topology-aware injection, constraint verification guard, event bus
 - [x] **Phase 4 — Multi-Agent Coordination** — Multi-agent collaboration protocol and topology-structured communication
-- [x] **Phase 5 — Infrastructure Adapters** — SCADA / IEC 61850 / IEC 104 / MQTT protocol adapters
-- [x] **Phase 6 — Domain Applications** — Dispatch Agent (economic dispatch / AGC), Operation Agent (fault diagnosis / equipment health), Self-Healing Agent (fault isolation / network reconfiguration), and domain collaboration protocol
+- [x] **Phase 5 — Infrastructure Adapters** — SCADA / IEC 61850 / IEC 104 / MQTT / Modbus protocol adapters
+- [x] **Phase 6 — Domain Applications** — Dispatch Agent, Operation Agent, Self-Healing Agent, domain collaboration protocol
 - [x] **Phase 7 — Real-Time Closed Loop and System Integration** — SCADA data pipeline, DC-OPF / state estimation / short-circuit analysis, load forecasting / planning / trading Agents, axum API + WebSocket + web dashboard
-- [x] **Phase 8 — Deep Integration and Productionization** — End-to-end component connectivity, TOML configuration loading, E2E integration tests, dashboard integration, real HTTP ApiClient, SQLite persistence
-- [x] **Phase 9 — Real Bug Fixes and Shell Removal** — `await_holding_lock` deadlock fix, SelfHealingAgent interlocking validation, Y-bus calculation bug fix, message broadcast fix, duplicate-code removal, zero clippy warnings
-- [x] **Phase 10 — Accuracy Verification and LLM Reasoning Integration** — IEEE 14-bus benchmark accuracy verification, LlmReasoningEngine (OpenAI / Ollama / vLLM compatible), Agent LLM reasoning enhancements (OperationAgent fault diagnosis + DispatchAgent dispatch review), fallback mechanism
-- [x] **Phase 11 — Real rig Tools and Unified Reasoning Engine** — rig framework integration (`rig-core` 0.38), four real power-system tools (PowerFlow / ConstraintCheck / N1Analysis / VoltageStability), unified RigReasoningEngine, deprecated LlmReasoningEngine marker, feature-flag isolation
-- [x] **Phase 12 — Real-Time Execution Domain** — PriorityCommandQueue, RealtimeExecutor, SafetyGateway priority-queue integration, PriorityEventBus dual-channel event bus, DualScanGroup fast / slow scan groups (100ms / 1s), WatchdogTimer timeout protection
-- [x] **Phase 13 — Constraint-Driven Deterministic Decision Pipeline** — StructuredActionOutput, FeasibilityProjector (What-If analysis + boundary clipping), three-stage ConstrainedDecisionPipeline (projection -> validation -> execution), ActionDispatcher `dispatch_structured()` integration, ConstraintAwareValidator projector support, FeedbackLoop LLM re-reasoning, NetworkSimulatorAdapter
-- [x] **Phase 14 — Deterministic Decision Closed Loop Wiring** — Fixed the Phase 13 "ghost loop" (structured action parsing + ActionMapper priority consumption + Orchestrator routing to `dispatch_structured`), changed FeedbackLoop to `Arc<dyn>` and wired it into the orchestrator (rejection -> re-reasoning), added `AgentAction::ExecuteStructured`, injected FeedbackLoop into the API, added five end-to-end closed-loop integration tests, fixed flaky eneros-bridge tests
+- [x] **Phase 8 — Deep Integration and Productionization** — End-to-end connectivity, TOML configuration, E2E integration tests, SQLite persistence
+- [x] **Phase 9 — Real Bug Fixes and Shell Removal** — `await_holding_lock` deadlock fix, Y-bus calculation bug fix, zero clippy warnings
+- [x] **Phase 10 — Accuracy Verification and LLM Reasoning Integration** — IEEE 14-bus benchmark, LlmReasoningEngine (OpenAI / Ollama / vLLM), fallback mechanism
+- [x] **Phase 11 — Real rig Tools and Unified Reasoning Engine** — rig framework integration (`rig-core` 0.38), four real power-system tools, unified RigReasoningEngine
+- [x] **Phase 12 — Real-Time Execution Domain** — PriorityCommandQueue, RealtimeExecutor, PriorityEventBus, DualScanGroup, WatchdogTimer
+- [x] **Phase 13 — Constraint-Driven Deterministic Decision Pipeline** — StructuredActionOutput, FeasibilityProjector, three-stage ConstrainedDecisionPipeline, FeedbackLoop
+- [x] **Phase 14 — Deterministic Decision Closed Loop Wiring** — Fixed "ghost loop", FeedbackLoop wired into orchestrator, 5 E2E closed-loop integration tests
+- [x] **Phase 15 — Simulator Realism Enhancement** — Physical corrections (transformer tap, shunt compensator admittance, ZIP load convention, three-winding transformer), data integrity fixes
+- [x] **Phase 16 — End-to-End Pipeline Verification** — 14 integration tests covering self-healing scenarios, rollback plans, constraint validation
+- [x] **Phase 17 — IEC 104 Adapter** — Real TCP protocol stack, TESTFR heartbeat reply, packet fragmentation/reassembly, 6 TCP transport tests
+- [x] **v0.2.0 — Production-Grade Architecture Fixes (BUG3 all 9 sections)** — Real protocol stacks for access layer, DeviceCommandExecutor with ACK verification, state machine linkage, 4-level conflict resolution, real Holt-Winters, SQLite write-through persistence, production-grade analysis (real Jacobian / sequence networks / rigorous dual LMP / parameterized tap step), P16 closed-loop field observation validation
+
+### In Progress / Planned
+
+- [ ] **v0.3.0 — Production Readiness** — Full persistence integration, configuration system, observability (Prometheus / structured logging), security hardening (JWT / mTLS)
+- [ ] **v0.4.0 — Protocol Coverage** — Modbus RTU, IEC 104/61850 enhancements, DNP3, OPC UA
+- [ ] **v0.5.0 — Agent Intelligence** — Multi-backend LLM, multi-agent coordination, self-healing strategy library, forecasting accuracy
+- [ ] **v0.6.0 — Advanced Analysis** — Bad data detection, AC-OPF, SCOPF, transient stability
+- [ ] **v0.7.0 — High-Availability Deployment** — Containerization, cluster redundancy, disaster recovery, performance optimization
+- [ ] **v0.8.0 — Ecosystem Expansion** — Plugin system, GraphQL, visualization enhancements, documentation
 
 ---
 
 ## Contributing
 
-EnerOS is in its early design stage. Contributors interested in the intersection of power systems and AI are welcome to join the discussion and co-build.
+EnerOS is currently at v0.2.0, with core architecture production-grade fixes completed and 930+ tests passing. Contributors interested in the intersection of power systems and AI are welcome. Please read [ROADMAP.md](ROADMAP.md) for planned directions.
 
 ---
 
