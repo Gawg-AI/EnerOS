@@ -308,14 +308,6 @@ impl Agent for SelfHealingAgent {
     fn jurisdiction(&self) -> Jurisdiction { self.jurisdiction.clone() }
     fn tick_interval(&self) -> Duration { Duration::from_secs(2) }
 
-    async fn start(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn stop(&mut self) -> Result<()> {
-        Ok(())
-    }
-
     async fn handle_event(&mut self, _event: &Event, _ctx: &AgentContext) -> Result<Vec<AgentAction>> {
         Ok(Vec::new())
     }

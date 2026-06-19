@@ -338,7 +338,7 @@ async fn test_iec104_full_pipeline_to_snapshot() {
     }
 
     // Generator outputs
-    for (idx, (_gen_bus, p, q)) in vec![
+    for (idx, (_gen_bus, p, q)) in [
         (0, (1u64, 232.4f32, -16.5f32)),
         (1, (2, 40.0f32, 42.4f32)),
         (2, (3, 0.0f32, 23.4f32)),

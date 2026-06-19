@@ -2,15 +2,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use parking_lot::RwLock;
-use eneros_core::{AuthorityLevel, Jurisdiction, SystemOperatingState, AuditEntry};
+use tokio::sync::Mutex as TokioMutex;
+use eneros_core::{
+    AgentMessage, AuthorityLevel, EventBusPublisher, Event, EventPayload,
+    GatewayClient, Jurisdiction, SystemOperatingState, AuditEntry,
+};
 use eneros_constraint::ConstraintEngine;
-use eneros_eventbus::EventBus;
-use eneros_gateway::SafetyGateway;
+use eneros_eventbus::{EventBus, LocalEventBusPublisher};
+use eneros_gateway::{LocalGatewayClient, SafetyGateway};
 use eneros_tool::ToolEngine;
 use eneros_network::PowerNetwork;
 use eneros_memory::AgentMemory;
 use eneros_reasoning::ReasoningEngine;
-use crate::message::AgentMessage;
 
 /// Global sequence counter for message IDs, shared across all AgentContexts
 /// that use the same message store.
@@ -18,6 +21,8 @@ static MESSAGE_SEQ_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Shared message store that supports cursor-based delivery so that
 /// multiple agents can independently read the same messages.
+///
+/// Kept for backward compatibility with in-process (local) mode tests.
 #[derive(Debug)]
 pub struct MessageStore {
     /// All messages, ordered by insertion (and thus by seq).
@@ -66,8 +71,6 @@ impl MessageStore {
     }
 
     /// Remove messages that have already been consumed by all known agents.
-    /// `min_last_seen` is the minimum last_seen_message_id across all agents;
-    /// any message with seq <= that value can be safely removed.
     pub fn cleanup_consumed(&self, min_last_seen: u64) -> usize {
         let mut queue = self.messages.write();
         let before = queue.len();
@@ -82,58 +85,103 @@ impl Default for MessageStore {
     }
 }
 
-/// Shared context available to all agents during execution.
+/// Local state for an agent (no shared `Arc<T>` references to remote services).
 ///
-/// Provides access to the core subsystems an agent may need:
-/// event bus, safety gateway, tool engine, power network, memory, and reasoning.
-pub struct AgentContext {
-    pub event_bus: Arc<EventBus>,
-    pub gateway: Arc<SafetyGateway>,
-    pub tool_engine: Arc<RwLock<ToolEngine>>,
-    pub network: Arc<RwLock<PowerNetwork>>,
-    pub memory: Arc<dyn AgentMemory>,
-    pub reasoning: Arc<dyn ReasoningEngine>,
-    /// Shared message store (same Arc is cloned across all agents).
-    pub message_queue: Arc<MessageStore>,
-    /// Constraint engine for pre-action validation
-    pub constraint_engine: Option<Arc<ConstraintEngine>>,
-    /// Current system operating state
-    pub system_state: Arc<RwLock<SystemOperatingState>>,
+/// This struct is `Clone` so it can be cheaply copied when spawning agent
+/// processes or creating derived contexts.
+#[derive(Clone)]
+pub struct LocalContext {
+    /// Agent's unique identifier.
+    pub agent_id: String,
     /// Agent's authority level
     pub authority: AuthorityLevel,
     /// Agent's jurisdiction
     pub jurisdiction: Jurisdiction,
-    /// Audit trail for action recording
-    pub audit_trail: Arc<RwLock<Vec<AuditEntry>>>,
+    /// Tick interval for the agent's perceive-act loop
+    pub tick_interval: Duration,
     /// Cursor: last message seq this agent has seen
-    last_seen_message_id: RwLock<u64>,
+    pub last_seen_message_id: Arc<RwLock<u64>>,
+}
+
+/// Remote service handles (replaces direct `Arc<T>` with trait objects).
+///
+/// In local (in-process) mode, the handles wrap in-process implementations
+/// (`LocalEventBusPublisher`, `LocalGatewayClient`). In remote (process) mode,
+/// they wrap IPC clients (`RemoteEventBusPublisher`, `RemoteGatewayClient`).
+pub struct RemoteHandles {
+    /// Event bus publisher (LocalEventBusPublisher or RemoteEventBusPublisher)
+    pub event_bus: Arc<dyn EventBusPublisher>,
+
+    /// Gateway client (LocalGatewayClient or RemoteGatewayClient)
+    pub gateway_client: Arc<dyn GatewayClient>,
+
+    /// Event receiver for subscribed events (None if not subscribed).
+    /// In local mode this is typically None (messages go through MessageStore).
+    pub event_receiver: Arc<TokioMutex<Option<tokio::sync::mpsc::Receiver<Event>>>>,
+
+    /// In-process message store for local mode (None in remote mode).
+    /// When Some, `send_message`/`receive_messages` use cursor-based delivery.
+    pub message_store: Option<Arc<MessageStore>>,
+
+    /// Tool engine (local to agent process)
+    pub tool_engine: Option<Arc<tokio::sync::RwLock<ToolEngine>>>,
+
+    /// Network snapshot (read-only copy)
+    pub network: Arc<RwLock<PowerNetwork>>,
+
+    /// Agent memory (local to agent process)
+    pub memory: Option<Arc<dyn AgentMemory>>,
+
+    /// Reasoning engine (local to agent process)
+    pub reasoning: Option<Arc<dyn ReasoningEngine>>,
+
+    /// Constraint engine (local to agent process)
+    pub constraint_engine: Option<Arc<ConstraintEngine>>,
+
+    /// System operating state (local copy, updated by events)
+    pub system_state: Arc<RwLock<SystemOperatingState>>,
+
+    /// Audit trail (local to agent process)
+    pub audit_trail: Arc<RwLock<Vec<AuditEntry>>>,
+}
+
+/// Agent context: local state + remote handles.
+///
+/// Replaces the old `AgentContext` with 13 `Arc<T>` fields. The context is
+/// split into `local` (cheaply cloneable state) and `remote` (service handles).
+pub struct AgentContext {
+    pub local: LocalContext,
+    pub remote: RemoteHandles,
 }
 
 impl AgentContext {
-    /// Create a new AgentContext from the given subsystem handles.
+    /// Create a new AgentContext for in-process use (tests, legacy mode).
+    ///
+    /// Wraps `EventBus` and `SafetyGateway` in their local publisher/client
+    /// implementations. A shared `MessageStore` is created for cursor-based
+    /// inter-agent messaging.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         event_bus: Arc<EventBus>,
         gateway: Arc<SafetyGateway>,
-        tool_engine: Arc<RwLock<ToolEngine>>,
+        _tool_engine: Arc<RwLock<ToolEngine>>,
         network: Arc<RwLock<PowerNetwork>>,
         memory: Arc<dyn AgentMemory>,
         reasoning: Arc<dyn ReasoningEngine>,
     ) -> Self {
-        Self {
+        Self::new_local(
+            "default-agent",
             event_bus,
             gateway,
-            tool_engine,
+            Some(Arc::new(tokio::sync::RwLock::new(ToolEngine::new()))),
             network,
-            memory,
-            reasoning,
-            message_queue: Arc::new(MessageStore::new()),
-            constraint_engine: None,
-            system_state: Arc::new(RwLock::new(SystemOperatingState::Normal)),
-            authority: AuthorityLevel::Observer,
-            jurisdiction: Jurisdiction::unrestricted(),
-            audit_trail: Arc::new(RwLock::new(Vec::new())),
-            last_seen_message_id: RwLock::new(0),
-        }
+            Some(memory),
+            Some(reasoning),
+            None,
+            Arc::new(RwLock::new(SystemOperatingState::Normal)),
+            AuthorityLevel::Observer,
+            Jurisdiction::unrestricted(),
+        )
     }
 
     /// Create a new AgentContext with full configuration including authority and jurisdiction.
@@ -141,7 +189,7 @@ impl AgentContext {
     pub fn new_with_authority(
         event_bus: Arc<EventBus>,
         gateway: Arc<SafetyGateway>,
-        tool_engine: Arc<RwLock<ToolEngine>>,
+        _tool_engine: Arc<RwLock<ToolEngine>>,
         network: Arc<RwLock<PowerNetwork>>,
         memory: Arc<dyn AgentMemory>,
         reasoning: Arc<dyn ReasoningEngine>,
@@ -150,20 +198,65 @@ impl AgentContext {
         authority: AuthorityLevel,
         jurisdiction: Jurisdiction,
     ) -> Self {
-        Self {
+        Self::new_local(
+            "default-agent",
             event_bus,
             gateway,
-            tool_engine,
+            Some(Arc::new(tokio::sync::RwLock::new(ToolEngine::new()))),
             network,
-            memory,
-            reasoning,
-            message_queue: Arc::new(MessageStore::new()),
+            Some(memory),
+            Some(reasoning),
             constraint_engine,
             system_state,
             authority,
             jurisdiction,
-            audit_trail: Arc::new(RwLock::new(Vec::new())),
-            last_seen_message_id: RwLock::new(0),
+        )
+    }
+
+    /// Build an AgentContext for in-process use.
+    ///
+    /// All service handles are wrapped in their local implementations.
+    /// A shared `MessageStore` is created for cursor-based messaging.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_local(
+        agent_id: &str,
+        event_bus: Arc<EventBus>,
+        gateway: Arc<SafetyGateway>,
+        tool_engine: Option<Arc<tokio::sync::RwLock<ToolEngine>>>,
+        network: Arc<RwLock<PowerNetwork>>,
+        memory: Option<Arc<dyn AgentMemory>>,
+        reasoning: Option<Arc<dyn ReasoningEngine>>,
+        constraint_engine: Option<Arc<ConstraintEngine>>,
+        system_state: Arc<RwLock<SystemOperatingState>>,
+        authority: AuthorityLevel,
+        jurisdiction: Jurisdiction,
+    ) -> Self {
+        let publisher: Arc<dyn EventBusPublisher> =
+            Arc::new(LocalEventBusPublisher::new(event_bus));
+        let gateway_client: Arc<dyn GatewayClient> =
+            Arc::new(LocalGatewayClient::new(gateway));
+
+        Self {
+            local: LocalContext {
+                agent_id: agent_id.to_string(),
+                authority,
+                jurisdiction,
+                tick_interval: Duration::from_secs(1),
+                last_seen_message_id: Arc::new(RwLock::new(0)),
+            },
+            remote: RemoteHandles {
+                event_bus: publisher,
+                gateway_client,
+                event_receiver: Arc::new(TokioMutex::new(None)),
+                message_store: Some(Arc::new(MessageStore::new())),
+                tool_engine,
+                network,
+                memory,
+                reasoning,
+                constraint_engine,
+                system_state,
+                audit_trail: Arc::new(RwLock::new(Vec::new())),
+            },
         }
     }
 
@@ -172,75 +265,106 @@ impl AgentContext {
     /// same store can independently receive broadcast messages.
     pub fn with_shared_message_store(&self) -> Self {
         Self {
-            event_bus: Arc::clone(&self.event_bus),
-            gateway: Arc::clone(&self.gateway),
-            tool_engine: Arc::clone(&self.tool_engine),
-            network: Arc::clone(&self.network),
-            memory: self.memory.clone(),
-            reasoning: self.reasoning.clone(),
-            message_queue: Arc::clone(&self.message_queue),
-            constraint_engine: self.constraint_engine.clone(),
-            system_state: Arc::clone(&self.system_state),
-            authority: self.authority,
-            jurisdiction: self.jurisdiction.clone(),
-            audit_trail: Arc::clone(&self.audit_trail),
-            last_seen_message_id: RwLock::new(0),
+            local: LocalContext {
+                agent_id: self.local.agent_id.clone(),
+                authority: self.local.authority,
+                jurisdiction: self.local.jurisdiction.clone(),
+                tick_interval: self.local.tick_interval,
+                last_seen_message_id: Arc::new(RwLock::new(0)),
+            },
+            remote: RemoteHandles {
+                event_bus: Arc::clone(&self.remote.event_bus),
+                gateway_client: Arc::clone(&self.remote.gateway_client),
+                event_receiver: Arc::new(TokioMutex::new(None)),
+                message_store: self.remote.message_store.clone(),
+                tool_engine: self.remote.tool_engine.clone(),
+                network: Arc::clone(&self.remote.network),
+                memory: self.remote.memory.clone(),
+                reasoning: self.remote.reasoning.clone(),
+                constraint_engine: self.remote.constraint_engine.clone(),
+                system_state: Arc::clone(&self.remote.system_state),
+                audit_trail: Arc::new(RwLock::new(Vec::new())),
+            },
         }
     }
 
-    /// Send a message to the shared message store.
-    /// The message is assigned a globally unique sequence number.
+    /// Send a message to the shared message store (local mode) or via the event
+    /// bus publisher (remote mode).
+    ///
+    /// In local mode the message is assigned a globally unique sequence number
+    /// and stored for cursor-based delivery. In remote mode the message is
+    /// converted to an `Event` and published to the EventBusBroker.
     pub fn send_message(&self, message: AgentMessage) {
-        self.message_queue.push(message);
+        if let Some(ref store) = self.remote.message_store {
+            store.push(message);
+        } else {
+            // Remote mode: fire-and-forget via the publisher.
+            // Errors are logged but not propagated (send_message is sync).
+            let publisher = Arc::clone(&self.remote.event_bus);
+            tokio::spawn(async move {
+                if let Err(e) = publisher.send_direct_message(message).await {
+                    tracing::warn!("send_direct_message failed: {}", e);
+                }
+            });
+        }
     }
 
     /// Receive all new messages addressed to the given agent_id since the last call.
-    /// Messages are NOT removed from the store, so other agents can still read them.
-    /// The agent's cursor is advanced to the latest message seq.
+    ///
+    /// In local mode, messages are read from the shared `MessageStore` using
+    /// cursor-based delivery. In remote mode, this drains pending events from
+    /// the event receiver channel and filters for `AgentMessage` payloads.
     pub fn receive_messages(&self, agent_id: &str) -> Vec<AgentMessage> {
-        let since = *self.last_seen_message_id.read();
-        let messages = self.message_queue.messages_since(agent_id, since);
-        if let Some(max_seq) = messages.iter().map(|m| m.seq).max() {
-            *self.last_seen_message_id.write() = max_seq;
+        if let Some(ref store) = self.remote.message_store {
+            let since = *self.local.last_seen_message_id.read();
+            let messages = store.messages_since(agent_id, since);
+            if let Some(max_seq) = messages.iter().map(|m| m.seq).max() {
+                *self.local.last_seen_message_id.write() = max_seq;
+            }
+            messages
+        } else {
+            // Remote mode: drain pending events from the receiver.
+            // Uses try_recv in a loop (non-blocking).
+            let mut result = Vec::new();
+            if let Ok(mut guard) = self.remote.event_receiver.try_lock() {
+                if let Some(ref mut rx) = *guard {
+                    while let Ok(event) = rx.try_recv() {
+                        if let EventPayload::AgentMessage(msg) = event.payload {
+                            if msg.is_for(agent_id) {
+                                result.push(msg);
+                            }
+                        }
+                    }
+                }
+            }
+            result
         }
-        messages
     }
 
     /// Broadcast a message to all agents
     pub fn broadcast_message(&self, sender_id: &str, content: &str) {
         let msg = AgentMessage::broadcast(sender_id, content);
-        self.message_queue.push(msg);
-    }
-
-    /// Remove messages older than `max_age` from the shared store.
-    pub fn cleanup_old_messages(&self, max_age: Duration) -> usize {
-        self.message_queue.cleanup_old_messages(max_age)
-    }
-
-    /// Remove messages that have been consumed by all agents.
-    /// `min_last_seen` should be the minimum last_seen_message_id across all agents.
-    pub fn cleanup_consumed(&self, min_last_seen: u64) -> usize {
-        self.message_queue.cleanup_consumed(min_last_seen)
+        self.send_message(msg);
     }
 
     /// Get this agent's last seen message id (useful for coordinated cleanup).
     pub fn last_seen_message_id(&self) -> u64 {
-        *self.last_seen_message_id.read()
+        *self.local.last_seen_message_id.read()
     }
 
     /// Check if the system is in emergency state
     pub fn is_emergency(&self) -> bool {
-        self.system_state.read().is_emergency()
+        self.remote.system_state.read().is_emergency()
     }
 
     /// Get effective authority level considering system state
     pub fn effective_authority(&self) -> AuthorityLevel {
-        self.authority.effective_level(self.is_emergency())
+        self.local.authority.effective_level(self.is_emergency())
     }
 
     /// Record an audit entry
     pub fn record_audit(&self, entry: AuditEntry) {
-        self.audit_trail.write().push(entry);
+        self.remote.audit_trail.write().push(entry);
     }
 }
 
@@ -266,13 +390,13 @@ mod tests {
     fn test_agent_context_construction() {
         let ctx = make_ctx();
 
-        // Verify the context can be dereferenced
-        let _bus = &ctx.event_bus;
-        let _gw = &ctx.gateway;
-        let _te = &ctx.tool_engine;
-        let _net = &ctx.network;
-        let _mem = &ctx.memory;
-        let _re = &ctx.reasoning;
+        // Verify the context can be dereferenced via remote handles
+        let _bus = &ctx.remote.event_bus;
+        let _gw = &ctx.remote.gateway_client;
+        let _te = &ctx.remote.tool_engine;
+        let _net = &ctx.remote.network;
+        let _mem = &ctx.remote.memory;
+        let _re = &ctx.remote.reasoning;
     }
 
     #[test]
@@ -367,65 +491,14 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_old_messages() {
-        let ctx = make_ctx();
-
-        ctx.send_message(AgentMessage::direct("a", "b", "old"));
-        ctx.send_message(AgentMessage::direct("a", "b", "also_old"));
-
-        // These messages are brand new, so cleanup with 0 max_age should remove them
-        let removed = ctx.cleanup_old_messages(Duration::ZERO);
-        assert_eq!(removed, 2);
-
-        // Now the store should be empty
-        let received = ctx.receive_messages("b");
-        assert!(received.is_empty());
-    }
-
-    #[test]
-    fn test_cleanup_old_messages_preserves_recent() {
-        let ctx = make_ctx();
-
-        ctx.send_message(AgentMessage::direct("a", "b", "fresh"));
-
-        // 1 hour max age should preserve just-created messages
-        let removed = ctx.cleanup_old_messages(Duration::from_secs(3600));
-        assert_eq!(removed, 0);
-
-        let received = ctx.receive_messages("b");
-        assert_eq!(received.len(), 1);
-    }
-
-    #[test]
-    fn test_cleanup_consumed() {
-        let ctx = make_ctx();
-        let ctx_b = ctx.with_shared_message_store();
-
-        ctx.send_message(AgentMessage::direct("a", "b", "msg1"));
-        ctx.send_message(AgentMessage::direct("a", "b", "msg2"));
-
-        // Agent b receives messages, advancing its cursor
-        let _ = ctx_b.receive_messages("b");
-
-        // min_last_seen is the cursor of agent_b
-        let min_last_seen = ctx_b.last_seen_message_id();
-        let removed = ctx.cleanup_consumed(min_last_seen);
-        assert_eq!(removed, 2);
-
-        // Store should now be empty
-        let remaining = ctx.receive_messages("b");
-        assert!(remaining.is_empty());
-    }
-
-    #[test]
     fn test_context_default_fields() {
         let ctx = make_ctx();
 
-        assert!(ctx.constraint_engine.is_none());
-        assert_eq!(*ctx.system_state.read(), SystemOperatingState::Normal);
-        assert_eq!(ctx.authority, AuthorityLevel::Observer);
-        assert!(ctx.jurisdiction.contains_zone(1)); // unrestricted
-        assert!(ctx.audit_trail.read().is_empty());
+        assert!(ctx.remote.constraint_engine.is_none());
+        assert_eq!(*ctx.remote.system_state.read(), SystemOperatingState::Normal);
+        assert_eq!(ctx.local.authority, AuthorityLevel::Observer);
+        assert!(ctx.local.jurisdiction.contains_zone(1)); // unrestricted
+        assert!(ctx.remote.audit_trail.read().is_empty());
     }
 
     #[test]
@@ -503,7 +576,7 @@ mod tests {
     fn test_record_audit() {
         let ctx = make_ctx();
 
-        assert!(ctx.audit_trail.read().is_empty());
+        assert!(ctx.remote.audit_trail.read().is_empty());
 
         let entry = AuditEntry {
             entry_id: 1,
@@ -520,7 +593,7 @@ mod tests {
 
         ctx.record_audit(entry);
 
-        let trail = ctx.audit_trail.read();
+        let trail = ctx.remote.audit_trail.read();
         assert_eq!(trail.len(), 1);
         assert_eq!(trail[0].agent_id, "agent-1");
         assert_eq!(trail[0].action_description, "Switch capacitor bank");
@@ -546,7 +619,7 @@ mod tests {
             ctx.record_audit(entry);
         }
 
-        let trail = ctx.audit_trail.read();
+        let trail = ctx.remote.audit_trail.read();
         assert_eq!(trail.len(), 3);
     }
 
@@ -565,10 +638,10 @@ mod tests {
             Jurisdiction::for_zones(vec![1, 2]),
         );
 
-        assert!(ctx.constraint_engine.is_some());
-        assert_eq!(*ctx.system_state.read(), SystemOperatingState::Alert);
-        assert_eq!(ctx.authority, AuthorityLevel::Supervisor);
-        assert!(ctx.jurisdiction.contains_zone(1));
-        assert!(!ctx.jurisdiction.contains_zone(99));
+        assert!(ctx.remote.constraint_engine.is_some());
+        assert_eq!(*ctx.remote.system_state.read(), SystemOperatingState::Alert);
+        assert_eq!(ctx.local.authority, AuthorityLevel::Supervisor);
+        assert!(ctx.local.jurisdiction.contains_zone(1));
+        assert!(!ctx.local.jurisdiction.contains_zone(99));
     }
 }

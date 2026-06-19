@@ -1,0 +1,19 @@
+[package]
+name = "eneros-installer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS installer — interactive CLI + PXE config generation"
+
+[[bin]]
+name = "eneros-installer"
+path = "src/main.rs"
+
+[dependencies]
+eneros-os = { path = "../.." }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }

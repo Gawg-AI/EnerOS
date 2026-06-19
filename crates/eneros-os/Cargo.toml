@@ -1,0 +1,44 @@
+[package]
+name = "eneros-os"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Power-Native Operating System layer"
+
+[dependencies]
+# EnerOS core shared types
+eneros-core = { path = "../eneros-core" }
+# Async runtime (通用域使用，RT 域用独立线程)
+tokio = { workspace = true, features = ["full"] }
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Logging
+tracing = { workspace = true }
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+# Data structures
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+# Time
+chrono = { workspace = true }
+# Config
+toml = { workspace = true }
+# Crypto (audit log HMAC signing)
+hmac = { workspace = true }
+sha2 = { workspace = true }
+# OTA signing (v0.22.0)
+ed25519-dalek = { workspace = true }
+base64 = { workspace = true }
+serde_yaml = { workspace = true }
+reqwest = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+# Linux syscalls (for RT scheduling, mlockall, etc.)
+libc = "0.2"
+nix = { version = "0.29", features = ["process", "sched", "signal", "fs", "user"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

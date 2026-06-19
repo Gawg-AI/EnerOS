@@ -9,6 +9,16 @@ use crate::types::{
 };
 
 /// POST /api/power-flow
+#[utoipa::path(
+    post,
+    path = "/api/power-flow",
+    request_body = PowerFlowRequest,
+    responses(
+        (status = 200, description = "潮流计算成功", body = PowerFlowResponse),
+        (status = 400, description = "请求参数错误"),
+    )
+)]
+#[tracing::instrument(skip(state, req), fields(endpoint = "/api/power-flow"))]
 pub async fn power_flow_handler(
     State(state): State<AppState>,
     Json(req): Json<PowerFlowRequest>,

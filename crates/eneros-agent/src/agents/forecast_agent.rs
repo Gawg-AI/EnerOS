@@ -631,14 +631,6 @@ impl Agent for LoadForecastAgent {
         Duration::from_secs(900) // 15 minutes
     }
 
-    async fn start(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn stop(&mut self) -> Result<()> {
-        Ok(())
-    }
-
     async fn handle_event(&mut self, event: &Event, _ctx: &AgentContext) -> Result<Vec<AgentAction>> {
         let mut actions = Vec::new();
 
@@ -1014,19 +1006,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_start_stop() {
-        let ts_engine = Arc::new(TimeSeriesEngine::new(100_000));
-        let mut agent = LoadForecastAgent::new(
-            "fc-3",
-            Jurisdiction::for_zones(vec![1]),
-            ts_engine,
-        );
-
-        agent.start().await.unwrap();
-        agent.stop().await.unwrap();
-    }
-
-    #[tokio::test]
     async fn test_tick_produces_forecast() {
         let ts_engine = Arc::new(TimeSeriesEngine::new(100_000));
         let element_id: ElementId = 1;
@@ -1350,7 +1329,7 @@ mod tests {
         // Strongly seasonal data: double smoothing cannot capture the swing,
         // but HW (additive) should. residual_std(HW) < residual_std(double).
         let mut data = Vec::new();
-        for day in 0..7 {
+        for _day in 0..7 {
             for hour in 0..24 {
                 data.push(100.0 + 30.0 * ((hour as f64 - 12.0) / 12.0).sin());
             }

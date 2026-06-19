@@ -11,7 +11,9 @@ eneros-core = { path = "../eneros-core" }
 eneros-constraint = { path = "../eneros-constraint" }
 eneros-eventbus = { path = "../eneros-eventbus" }
 eneros-device = { path = "../eneros-device" }
+eneros-os = { path = "../eneros-os" }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -19,6 +21,7 @@ parking_lot = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
+anyhow = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

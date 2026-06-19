@@ -153,7 +153,7 @@ impl DataDrivenAgentLoop {
 
     /// Execute one complete data-driven cycle.
     ///
-    /// 1. Collect data via pipeline.run_once()
+    /// 1. Collect data via pipeline.run_once() (refreshes upstream + collects)
     /// 2. Check for emergency triggers
     /// 3. Check for data changes exceeding deadband
     /// 4. If significant changes: build snapshot
@@ -162,8 +162,8 @@ impl DataDrivenAgentLoop {
     /// 7. Update previous_values
     /// 8. Return DataDrivenCycleResult
     pub async fn run_cycle(&self) -> Result<DataDrivenCycleResult> {
-        // 1. Collect data
-        let points_collected = self.pipeline.run_once()?;
+        // 1. Collect data (refresh upstream source + collect + write to TS)
+        let points_collected = self.pipeline.run_once().await?;
         let readings = self.collector.latest_all();
 
         // 2. Check emergency triggers

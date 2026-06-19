@@ -1,0 +1,20 @@
+[package]
+name = "eneros-os-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS OS integration tests"
+
+[[test]]
+name = "boot_test"
+path = "boot_test.rs"
+
+[[test]]
+name = "boot_params_test"
+path = "boot_params_test.rs"
+
+[dependencies]
+eneros-os = { path = "../../crates/eneros-os" }
+toml = { workspace = true }
+serde = { workspace = true }

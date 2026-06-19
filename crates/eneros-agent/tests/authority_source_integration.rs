@@ -60,7 +60,7 @@ fn build_orchestrator(context_authority: AuthorityLevel) -> AgentOrchestrator {
     ));
 
     let mut ctx = AgentContext::new(event_bus, gateway, tool_engine, network, memory, reasoning);
-    ctx.authority = context_authority;
+    ctx.local.authority = context_authority;
     AgentOrchestrator::with_pipeline(ctx, pipeline)
 }
 

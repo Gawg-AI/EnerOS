@@ -1,0 +1,5 @@
+root:x:0:
+eneros:x:1000:
+tty:x:5:
+disk:x:6:
+wheel:x:10:eneros

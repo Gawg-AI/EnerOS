@@ -1,0 +1,43 @@
+# EnerOS 网络配置
+# 电力通信网络：双网冗余 + VLAN 隔离
+
+# 管理网口（非 RT 域）
+[[interfaces]]
+name = "eth0"
+ipv4 = { mode = "static", address = "192.168.1.100/24", gateway = "192.168.1.1" }
+mtu = 1500
+
+# 电力通信冗余链路（bond0：active-backup）
+[[bonds]]
+name = "bond0"
+mode = "active_backup"
+interfaces = ["eth1", "eth2"]
+miimon_ms = 100
+primary = "eth1"
+
+# IEC 61850 GOOSE VLAN（VLAN 10）
+[[vlans]]
+name = "bond0.10"
+parent = "bond0"
+id = 10
+
+# IEC 61850 SV VLAN（VLAN 20）
+[[vlans]]
+name = "bond0.20"
+parent = "bond0"
+id = 20
+
+# IEC 104 通信接口（bond0 直接 IP）
+[[interfaces]]
+name = "bond0"
+ipv4 = { mode = "static", address = "10.0.0.100/24" }
+
+# 网桥（连接 Agent 命名空间）
+[[bridges]]
+name = "br0"
+ports = ["bond0.10"]
+
+# DNS
+[dns]
+nameservers = ["10.0.0.1", "10.0.0.2"]
+search = ["eneros.local"]

@@ -1,14 +1,12 @@
 use crate::network::PowerNetwork;
 use eneros_constraint::projector::{NetworkSimulator, WhatIfResult};
-use eneros_core::StructuredAction;
+use eneros_core::{ElementId, StructuredAction};
 use eneros_powerflow::BusTypeNR;
 use std::sync::Arc;
 
 mod result;
 
-use result::{
-    conservative_switching_reject, inapplicable_result, simulate_base_case, solve_and_check,
-};
+use result::{inapplicable_result, simulate_base_case, solve_and_check};
 
 /// System base MVA. Matches `Ieee14BusData.base_mva` (100.0) and the
 /// `PowerFlowSolver::new(100, ...)` used by `PowerNetwork`. Used to convert
@@ -23,12 +21,19 @@ const BASE_MVA: f64 = 100.0;
 /// The simulation now reads real generator limits and zone membership from the
 /// `PowerNetwork` (instead of hardcoded literals and `bus_map` misuse), and
 /// applies the correct per-bus net-injection arithmetic for generator and load
-/// actions. Switching actions (`ExecuteDevice{open/close}`, `IsolateFault`,
-/// `CloseTieSwitch`) are **not** physically modeled (that requires Y-bus
-/// reconstruction — deferred to a later phase); instead they return a
-/// conservative `all_constraints_satisfied=false` so the projector routes them
-/// to rejection / human intervention. This is safer than the previous behavior,
-/// which silently treated every switching action as feasible.
+/// actions.
+///
+/// ## v0.8.0 T9: switch-action physics
+///
+/// Switching actions are now physically modeled by rebuilding the Y-Bus with
+/// the targeted branches removed (`with_opened_branches`):
+/// - `ExecuteDevice{open/分闸}` opens the branch identified by `device_id`.
+/// - `IsolateFault` opens both the upstream and downstream branches.
+/// - `CloseTieSwitch` is simulated as the base case (re-closing not yet modeled).
+/// - `ExecuteDevice{close/合闸}` is inapplicable (re-closing not yet modeled).
+///
+/// The old `conservative_switching_reject` path is deprecated but retained for
+/// backward compatibility.
 pub struct NetworkSimulatorAdapter {
     network: Arc<parking_lot::RwLock<PowerNetwork>>,
 }
@@ -52,20 +57,74 @@ impl NetworkSimulator for NetworkSimulatorAdapter {
                 self.simulate_shed_load(&net, *zone_id, *amount_mw)
             }
             StructuredAction::ExecuteDevice {
-                operation, value, ..
+                device_id,
+                operation,
+                value,
             } => {
                 match operation.as_str() {
                     // Reactive power adjustment: physically modeled (q_spec edit).
                     "adjust_reactive" => self.simulate_reactive(&net, action, *value),
-                    // Switching operations: conservative reject (no Y-bus rebuild).
-                    "open" | "close" | "合闸" | "分闸" => conservative_switching_reject(action),
-                    _ => conservative_switching_reject(action),
+                    // v0.8.0 T9.3：开关分闸物理建模——将 device_id 解释为支路 ID，
+                    // 断开对应支路并重建 Y-Bus 求解。
+                    "open" | "分闸" => match self.find_branch_index(&net, *device_id) {
+                        Some(idx) => {
+                            self.simulate_with_opened_branches(&net, &[idx], action)
+                        }
+                        None => inapplicable_result(format!(
+                            "open: device_id {} not found in branch_ids",
+                            device_id
+                        )),
+                    },
+                    // v0.8.0 T9.3：合闸操作需要恢复已断开的支路，当前
+                    // `with_opened_branches` 只能断开，不支持恢复，故报不可应用。
+                    "close" | "合闸" => inapplicable_result(format!(
+                        "close: re-closing not yet modeled (device_id={})",
+                        device_id
+                    )),
+                    _ => inapplicable_result(format!(
+                        "unknown ExecuteDevice operation: {}",
+                        operation
+                    )),
                 }
             }
 
-            // ── Switching actions: conservative reject (physics deferred) ──
-            StructuredAction::IsolateFault { .. } | StructuredAction::CloseTieSwitch { .. } => {
-                conservative_switching_reject(action)
+            // v0.8.0 T9.4：故障隔离物理建模——断开故障段两侧开关（解释为支路 ID）。
+            StructuredAction::IsolateFault {
+                upstream_switch,
+                downstream_switch,
+            } => {
+                let mut indices: Vec<usize> = Vec::new();
+                match self.find_branch_index(&net, *upstream_switch) {
+                    Some(idx) => indices.push(idx),
+                    None => {
+                        return inapplicable_result(format!(
+                            "IsolateFault: upstream_switch {} not found in branch_ids",
+                            upstream_switch
+                        ))
+                    }
+                }
+                match self.find_branch_index(&net, *downstream_switch) {
+                    Some(idx) => indices.push(idx),
+                    None => {
+                        return inapplicable_result(format!(
+                            "IsolateFault: downstream_switch {} not found in branch_ids",
+                            downstream_switch
+                        ))
+                    }
+                }
+                self.simulate_with_opened_branches(&net, &indices, action)
+            }
+
+            // v0.8.0 T9.5：合联络开关——当前网络中该支路可能已断开，合上意味着
+            // 恢复。由于 `with_opened_branches` 只能断开，这里按原始网络（不解列）
+            // 求解，并在 summary 中注明尚未建模恢复。
+            StructuredAction::CloseTieSwitch { switch_id } => {
+                let mut result = self.simulate_base_case(&net);
+                result.summary = format!(
+                    "tie switch close (switch_id={}): simulated as base case (re-closing not yet modeled); {}",
+                    switch_id, result.summary
+                );
+                result
             }
 
             // ── NotifyAgent: no physical effect — solve the unmodified network ──
@@ -281,5 +340,197 @@ impl NetworkSimulatorAdapter {
     /// physical effect — feasibility is whatever the current state is).
     fn simulate_base_case(&self, net: &PowerNetwork) -> WhatIfResult {
         simulate_base_case(net)
+    }
+
+    /// v0.8.0 T9.2：根据开关状态重建 Y-Bus 并求解。
+    ///
+    /// 调用 `net.with_opened_branches(open_indices)` 创建断开指定支路后的网络副本，
+    /// 再用 `solve_and_check` 求解并检查约束。若潮流不收敛，返回 `converged=false`
+    /// 但 `applicable=true`（动作本身可应用，只是物理上无解）。
+    fn simulate_with_opened_branches(
+        &self,
+        net: &PowerNetwork,
+        open_indices: &[usize],
+        action: &StructuredAction,
+    ) -> WhatIfResult {
+        let modified = net.with_opened_branches(open_indices);
+        let mut result = solve_and_check(&modified);
+        // 在 summary 前缀标注动作与断开支路数，便于追溯
+        result.summary = format!(
+            "{:?}: opened {} branch(es); {}",
+            action,
+            open_indices.len(),
+            result.summary
+        );
+        result
+    }
+
+    /// v0.8.0 T9.3：将支路 ID 映射到 `branches` 中的索引。
+    ///
+    /// 开关动作中的 `device_id` / `upstream_switch` / `downstream_switch` /
+    /// `switch_id` 均解释为支路 ID，通过 `branch_ids()` 查找对应索引。
+    fn find_branch_index(&self, net: &PowerNetwork, branch_id: ElementId) -> Option<usize> {
+        net.branch_ids().iter().position(|&id| id == branch_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eneros_constraint::projector::NetworkSimulator;
+    use std::sync::Arc;
+
+    fn make_adapter() -> NetworkSimulatorAdapter {
+        let network = Arc::new(parking_lot::RwLock::new(PowerNetwork::from_ieee14()));
+        NetworkSimulatorAdapter::new(network)
+    }
+
+    // v0.8.0 T9.7：开关分闸物理建模——断开支路 1（1→2），网络仍连通（经 1→5→2），
+    // 应返回 applicable=true、converged=true，且不再包含保守拒绝的 summary。
+    #[test]
+    fn test_switch_open_physical() {
+        let adapter = make_adapter();
+        let action = StructuredAction::ExecuteDevice {
+            device_id: 1,
+            operation: "open".to_string(),
+            value: 0.0,
+        };
+        let result = adapter.simulate_action(&action);
+
+        assert!(
+            result.applicable,
+            "open branch 1 must be applicable: {}",
+            result.summary
+        );
+        // 不再返回保守拒绝的 summary
+        assert!(
+            !result.summary.contains("conservative reject"),
+            "summary must not be conservative reject, got: {}",
+            result.summary
+        );
+        // 支路 1（1→2）断开后网络仍连通（1→5→2），潮流应收敛
+        assert!(
+            result.converged,
+            "network stays connected after opening branch 1, expected converged=true: {}",
+            result.summary
+        );
+        // summary 应标注断开了 1 条支路
+        assert!(
+            result.summary.contains("opened 1 branch(es)"),
+            "summary should mention opened 1 branch: {}",
+            result.summary
+        );
+    }
+
+    // v0.8.0 T9.7：未知 device_id 应返回 inapplicable
+    #[test]
+    fn test_switch_open_unknown_branch_inapplicable() {
+        let adapter = make_adapter();
+        let action = StructuredAction::ExecuteDevice {
+            device_id: 999,
+            operation: "open".to_string(),
+            value: 0.0,
+        };
+        let result = adapter.simulate_action(&action);
+        assert!(
+            !result.applicable,
+            "unknown branch id must be inapplicable: {}",
+            result.summary
+        );
+    }
+
+    // v0.8.0 T9.7：close 操作当前不支持（只能断开，不能恢复），应返回 inapplicable
+    #[test]
+    fn test_switch_close_not_modeled() {
+        let adapter = make_adapter();
+        let action = StructuredAction::ExecuteDevice {
+            device_id: 1,
+            operation: "close".to_string(),
+            value: 0.0,
+        };
+        let result = adapter.simulate_action(&action);
+        assert!(
+            !result.applicable,
+            "close must be inapplicable until re-closing is modeled: {}",
+            result.summary
+        );
+    }
+
+    // v0.8.0 T9.8：故障隔离物理建模——断开支路 1（1→2）与支路 2（1→5），
+    // 这会孤立 slack 母线 1，潮流可能不收敛，但动作本身 applicable=true，
+    // 且 summary 应标注断开了 2 条支路。
+    #[test]
+    fn test_isolate_fault_physical() {
+        let adapter = make_adapter();
+        let action = StructuredAction::IsolateFault {
+            upstream_switch: 1,
+            downstream_switch: 2,
+        };
+        let result = adapter.simulate_action(&action);
+
+        assert!(
+            result.applicable,
+            "IsolateFault must be applicable: {}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("conservative reject"),
+            "summary must not be conservative reject: {}",
+            result.summary
+        );
+        // 两条支路被断开
+        assert!(
+            result.summary.contains("opened 2 branch(es)"),
+            "summary should mention opened 2 branches: {}",
+            result.summary
+        );
+    }
+
+    // v0.8.0 T9.8：故障隔离——未知 upstream_switch 应返回 inapplicable
+    #[test]
+    fn test_isolate_fault_unknown_upstream_inapplicable() {
+        let adapter = make_adapter();
+        let action = StructuredAction::IsolateFault {
+            upstream_switch: 999,
+            downstream_switch: 2,
+        };
+        let result = adapter.simulate_action(&action);
+        assert!(
+            !result.applicable,
+            "unknown upstream_switch must be inapplicable: {}",
+            result.summary
+        );
+    }
+
+    // v0.8.0 T9.8：合联络开关——按原始网络（base case）求解，applicable=true，
+    // summary 应注明按 base case 模拟。
+    #[test]
+    fn test_close_tie_switch() {
+        let adapter = make_adapter();
+        let action = StructuredAction::CloseTieSwitch { switch_id: 1 };
+        let result = adapter.simulate_action(&action);
+
+        assert!(
+            result.applicable,
+            "CloseTieSwitch must be applicable: {}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("conservative reject"),
+            "summary must not be conservative reject: {}",
+            result.summary
+        );
+        // 返回 base case 结果
+        assert!(
+            result.summary.contains("simulated as base case"),
+            "summary should mention base case: {}",
+            result.summary
+        );
+        // base case 应收敛
+        assert!(
+            result.converged,
+            "base case should converge: {}",
+            result.summary
+        );
     }
 }

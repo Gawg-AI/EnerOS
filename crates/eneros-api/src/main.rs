@@ -3,7 +3,11 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use eneros_api::app::AppState;
 use eneros_api::server::ApiServer;
-use eneros_scada::{SimulatedDataSource, build_ieee14_scada_config, build_ieee14_snapshot_mappings};
+use eneros_core::config::EnerOSConfig;
+use eneros_scada::{
+    build_ieee14_ioa_mapping, build_ieee14_scada_config, build_ieee14_snapshot_mappings,
+    Iec104DataSource, SimulatedDataSource,
+};
 
 // ---------------------------------------------------------------------------
 // CLI definitions
@@ -23,17 +27,29 @@ enum Commands {
     /// Start the EnerOS server (API + Agent orchestrator + SCADA pipeline)
     Run {
         /// Host address
-        #[arg(short, long, default_value = "0.0.0.0")]
+        #[arg(long, default_value = "0.0.0.0")]
         host: String,
         /// Port number
         #[arg(short, long, default_value = "8080")]
         port: u16,
+        /// Path to the configuration file (default: ./eneros.toml)
+        #[arg(short, long)]
+        config: Option<String>,
         /// Enable SCADA data pipeline
         #[arg(long)]
         with_scada: bool,
         /// Enable Agent orchestrator
         #[arg(long, default_value = "true")]
         with_agents: bool,
+        /// Enable structured JSON logging (v0.7.0 — deferred from v0.6.0 S3)
+        #[arg(long)]
+        json_log: bool,
+        /// Path to TLS certificate file (PEM). When set, enables TLS (v0.7.0).
+        #[arg(long)]
+        tls_cert: Option<String>,
+        /// Path to TLS private key file (PEM). When set, enables TLS (v0.7.0).
+        #[arg(long)]
+        tls_key: Option<String>,
     },
 
     /// Show system status
@@ -122,81 +138,856 @@ fn load_network(case: &str) -> anyhow::Result<eneros_network::PowerNetwork> {
     }
 }
 
-async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bool) -> anyhow::Result<()> {
+/// Build a `PowerNetwork` from the configured source.
+///
+/// Supported sources:
+/// - `ieee14` — built-in IEEE 14-bus test case (default)
+/// - `cnpower` — load from cnpower equipment database via `eneros-bridge`
+///   (requires the Python bridge server to be running)
+/// - `cim` — load from CIM/CGMES profile (future, not yet implemented)
+fn build_network_from_config(
+    network_cfg: &eneros_core::config::NetworkConfig,
+    constraint_engine: Arc<eneros_constraint::ConstraintEngine>,
+) -> anyhow::Result<eneros_network::PowerNetwork> {
+    let network = match network_cfg.source.as_str() {
+        "ieee14" => {
+            println!("  [Network] Loading IEEE 14-bus test case");
+            eneros_network::PowerNetwork::from_ieee14()
+        }
+        "cnpower" => {
+            println!("  [Network] Loading from cnpower equipment database");
+            // The cnpower loader requires a running Python bridge server.
+            // We construct the loader and attempt to build the full network;
+            // if the bridge is unavailable, we fall back to IEEE 14 with a
+            // warning so the server still starts.
+            match build_cnpower_network(network_cfg) {
+                Ok(n) => n,
+                Err(e) => {
+                    println!(
+                        "  [Network] WARNING: cnpower load failed ({}); falling back to IEEE 14",
+                        e
+                    );
+                    eneros_network::PowerNetwork::from_ieee14()
+                }
+            }
+        }
+        "cim" => {
+            println!("  [Network] Loading from CIM/CGMES profile");
+            match build_cim_network(network_cfg) {
+                Ok(n) => n,
+                Err(e) => {
+                    println!(
+                        "  [Network] WARNING: CIM load failed ({}); falling back to IEEE 14",
+                        e
+                    );
+                    eneros_network::PowerNetwork::from_ieee14()
+                }
+            }
+        }
+        other => {
+            println!(
+                "  [Network] Unknown source '{}'; falling back to IEEE 14",
+                other
+            );
+            eneros_network::PowerNetwork::from_ieee14()
+        }
+    };
+
+    let network = network.with_constraint_engine(constraint_engine);
+    println!(
+        "  [Network] Loaded ({} buses, {} branches)",
+        network.bus_count(),
+        network.branch_count()
+    );
+
+    Ok(network)
+}
+
+/// Build a `PowerNetwork` from the cnpower equipment database via the
+/// `eneros-bridge` Python bridge.
+///
+/// This calls the bridge's `build_full_network` command, which returns a
+/// `NetworkTopologyData` (buses, branches, shunts, power-flow results). We
+/// then convert that topology into a `PowerNetwork` by:
+///
+/// 1. Building a sorted bus ID → index map.
+/// 2. Converting each `TopologyBranch` to per-unit (r, x, b, tap) using the
+///    branch's voltage base and the system `base_mva`.
+/// 3. Constructing the Y-Bus matrix from branches, then adding shunt
+///    admittances.
+/// 4. Assembling `p_spec`, `q_spec`, `bus_types`, and `v_initial` from bus
+///    data.
+/// 5. Building a `GeneratorSpec` table from buses with non-zero generation.
+fn build_cnpower_network(
+    network_cfg: &eneros_core::config::NetworkConfig,
+) -> anyhow::Result<eneros_network::PowerNetwork> {
+    use eneros_bridge::equipment_bridge::CnpowerEquipmentLoader;
+    use eneros_bridge::topology_types::NetworkTopologyData;
+
+    let mut loader = CnpowerEquipmentLoader::new();
+    loader
+        .start_server()
+        .map_err(|e| anyhow::anyhow!("bridge start failed: {}", e))?;
+
+    let assets = if let Some(ref path) = network_cfg.path {
+        serde_json::from_str(&std::fs::read_to_string(path)?)
+            .unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let topo: NetworkTopologyData = loader
+        .build_full_network(assets)
+        .map_err(|e| anyhow::anyhow!("build_full_network failed: {}", e))?;
+
+    println!(
+        "  [Network] cnpower returned {} buses, {} branches, {} shunts (converged={})",
+        topo.bus_count, topo.branch_count, topo.shunts.len(), topo.converged
+    );
+
+    topology_data_to_power_network(&topo)
+}
+
+/// Convert `NetworkTopologyData` (from cnpower/pandapower bridge) into a
+/// `PowerNetwork` suitable for power-flow and What-If analysis.
+///
+/// This is the core topology → PowerNetwork conversion. It handles:
+/// - Lines: r/x/b in physical units (Ohm/km, nF/km) → per-unit
+/// - Transformers: vk_percent/vkr_percent → per-unit r/x on system base
+/// - Shunts: p_mw/q_mvar → per-unit admittance
+/// - Bus types: Slack/PV/PQ → corresponding `BusType`
+/// - Generators: buses with p_gen_mw > 0 become `GeneratorSpec` entries
+fn topology_data_to_power_network(
+    topo: &eneros_bridge::topology_types::NetworkTopologyData,
+) -> anyhow::Result<eneros_network::PowerNetwork> {
+    use eneros_core::ElementId;
+    use eneros_powerflow::{BusTypeNR, YBusMatrix};
+    use std::collections::HashMap;
+
+    let base_mva = if topo.base_mva > 0.0 {
+        topo.base_mva
+    } else {
+        100.0
+    };
+
+    if topo.buses.is_empty() {
+        return Err(anyhow::anyhow!("topology has no buses"));
+    }
+
+    // ── 1. Build bus ID → index map (sorted by bus ID) ────────────────────
+    let mut bus_ids: Vec<i64> = topo.buses.iter().map(|b| b.id).collect();
+    bus_ids.sort();
+    bus_ids.dedup();
+    let bus_map: HashMap<ElementId, usize> = bus_ids
+        .iter()
+        .enumerate()
+        .map(|(idx, &id)| (id as ElementId, idx))
+        .collect();
+    let n = bus_ids.len();
+
+    // Build a quick lookup: bus_id → TopologyBus
+    let bus_lookup: HashMap<i64, &eneros_bridge::topology_types::TopologyBus> =
+        topo.buses.iter().map(|b| (b.id, b)).collect();
+
+    // ── 2. Convert branches to per-unit (from, to, r, x, b, tap) ──────────
+    let branches: Vec<(ElementId, ElementId, f64, f64, f64, f64)> = topo
+        .branches
+        .iter()
+        .filter(|b| b.in_service)
+        .map(|br| {
+            let from = br.from_bus as ElementId;
+            let to = br.to_bus as ElementId;
+
+            // Determine voltage base (kV) from the from-bus
+            let vn_kv = bus_lookup
+                .get(&br.from_bus)
+                .map(|b| b.vn_kv)
+                .unwrap_or(110.0);
+            let z_base = vn_kv * vn_kv / base_mva; // Ohms
+
+            let (r_pu, x_pu, b_pu, tap) = if br.branch_type == "line" {
+                let length = br.length_km.unwrap_or(1.0);
+                let r_ohm = br.r_ohm_per_km.unwrap_or(0.0) * length;
+                let x_ohm = br.x_ohm_per_km.unwrap_or(0.0) * length;
+                let c_nf = br.c_nf_per_km.unwrap_or(0.0) * length;
+                // Charging susceptance in Siemens: 2*pi*f*C (f=50Hz)
+                let b_siemens = 2.0 * std::f64::consts::PI * 50.0 * c_nf * 1e-9;
+                let r_pu = r_ohm / z_base;
+                let x_pu = x_ohm / z_base;
+                let b_pu = b_siemens * z_base;
+                (r_pu, x_pu, b_pu, 1.0)
+            } else {
+                // Transformer: vk_percent / vkr_percent → r, x on system base
+                let sn_mva = br.sn_mva.unwrap_or(base_mva);
+                let vk = br.vk_percent.unwrap_or(10.0) / 100.0;
+                let vkr = br.vkr_percent.unwrap_or(0.5) / 100.0;
+                let r_pu = vkr * (base_mva / sn_mva);
+                let z_pu = vk * (base_mva / sn_mva);
+                let x_pu = (z_pu * z_pu - r_pu * r_pu).max(0.0).sqrt();
+                // Tap ratio: if tap_pos is present, assume tap_step = 1.25%
+                let tap = br
+                    .tap_pos
+                    .map(|pos| 1.0 + 0.0125 * pos as f64)
+                    .unwrap_or(1.0);
+                (r_pu, x_pu, 0.0, tap)
+            };
+
+            (from, to, r_pu, x_pu, b_pu, tap)
+        })
+        .collect();
+
+    // ── 3. Build Y-Bus from branches, then add shunt admittances ──────────
+    let mut ybus = YBusMatrix::from_branches(&branches, &bus_map);
+
+    for shunt in &topo.shunts {
+        if let Some(&idx) = bus_map.get(&(shunt.bus as ElementId)) {
+            // Shunt power → per-unit admittance (V=1.0 pu):
+            //   g = P / base_mva, b = Q / base_mva
+            let g_pu = shunt.p_mw / base_mva;
+            let b_pu = shunt.q_mvar / base_mva;
+            ybus.add_shunt(idx, g_pu, b_pu);
+        }
+    }
+
+    // ── 4. Build p_spec, q_spec, bus_types, v_initial ─────────────────────
+    let mut p_spec = vec![0.0; n];
+    let mut q_spec = vec![0.0; n];
+    let mut bus_types = vec![BusTypeNR::PQ; n];
+    let mut v_initial = vec![1.0; n];
+
+    for (&bus_id, &idx) in &bus_map {
+        if let Some(bus) = bus_lookup.get(&(bus_id as i64)) {
+            let p_gen = bus.p_gen_mw.unwrap_or(0.0);
+            let q_gen = bus.q_gen_mvar.unwrap_or(0.0);
+            let p_load = bus.p_load_mw.unwrap_or(0.0);
+            let q_load = bus.q_load_mvar.unwrap_or(0.0);
+            p_spec[idx] = (p_gen - p_load) / base_mva;
+            q_spec[idx] = (q_gen - q_load) / base_mva;
+            bus_types[idx] = match bus.bus_type.as_str() {
+                "Slack" | "slack" | "SLACK" => BusTypeNR::Slack,
+                "PV" | "pv" => BusTypeNR::PV,
+                _ => BusTypeNR::PQ,
+            };
+            v_initial[idx] = bus.vm_pu.unwrap_or(1.0);
+        }
+    }
+
+    // ── 5. Build generator table from buses with generation ───────────────
+    let generators: Vec<eneros_network::GeneratorSpec> = topo
+        .buses
+        .iter()
+        .filter(|b| b.p_gen_mw.unwrap_or(0.0).abs() > 1e-6 || b.bus_type == "Slack")
+        .enumerate()
+        .map(|(gen_idx, bus)| eneros_network::GeneratorSpec {
+            gen_id: (gen_idx + 1) as ElementId,
+            bus_id: bus.id as ElementId,
+            p_min_mw: 0.0,
+            p_max_mw: bus.p_gen_mw.unwrap_or(0.0).abs() * 2.0 + 10.0,
+            p_gen_mw: bus.p_gen_mw.unwrap_or(0.0),
+            p_load_mw: bus.p_load_mw.unwrap_or(0.0),
+        })
+        .collect();
+
+    // ── 6. Build zone map (single default zone with all buses) ────────────
+    let all_buses: Vec<ElementId> = bus_ids.iter().map(|&id| id as ElementId).collect();
+    let mut zone_map = HashMap::new();
+    zone_map.insert(0u32, all_buses);
+
+    let branch_ids: Vec<ElementId> = (1..=branches.len() as ElementId).collect();
+
+    let network = eneros_network::PowerNetwork::new(
+        ybus,
+        p_spec,
+        q_spec,
+        bus_types,
+        branches,
+        bus_map,
+    )
+    .with_initial_voltages(v_initial);
+
+    // The PowerNetwork::new() constructor doesn't expose generators/zone_map
+    // setters, so we use the public API and accept that loaded networks have
+    // empty generator tables. The power-flow solver still works because it
+    // uses p_spec/q_spec directly. For What-If agent actions targeting
+    // generators, users should use ieee14 (which has full GeneratorSpec data)
+    // or extend the config to provide generator limits.
+    let _ = (generators, zone_map, branch_ids); // suppress unused warnings
+
+    Ok(network)
+}
+
+/// Build a `PowerNetwork` from a CIM/CGMES XML file.
+///
+/// CIM (Common Information Model, IEC 61968/61970) is the standard data
+/// exchange format for power system models. This loader:
+///
+/// 1. Reads the XML file from `network_cfg.path`.
+/// 2. Parses it with `eneros_network::parse_cim()` into a `CimModel`.
+/// 3. Converts to `PowerNetwork` via `eneros_network::cim_to_power_network()`.
+fn build_cim_network(
+    network_cfg: &eneros_core::config::NetworkConfig,
+) -> anyhow::Result<eneros_network::PowerNetwork> {
+    let path = network_cfg
+        .path
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("CIM loader requires network.path to be set"))?;
+
+    println!("  [Network] Parsing CIM file: {}", path);
+    let xml = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read CIM file '{}': {}", path, e))?;
+    let model = eneros_network::parse_cim(&xml)
+        .map_err(|e| anyhow::anyhow!("CIM parse error: {}", e))?;
+
+    println!(
+        "  [Network] CIM parsed: {} busbar sections, {} lines, {} transformers, {} generators, {} loads",
+        model.busbar_sections.len(),
+        model.ac_line_segments.len(),
+        model.power_transformers.len(),
+        model.synchronous_machines.len(),
+        model.energy_consumers.len(),
+    );
+
+    let network = eneros_network::cim_to_power_network(&model)
+        .map_err(|e| anyhow::anyhow!("CIM → PowerNetwork conversion error: {}", e))?;
+
+    println!(
+        "  [Network] CIM converted: {} buses, {} branches",
+        network.bus_count(),
+        network.branch_count(),
+    );
+
+    Ok(network)
+}
+
+/// Build the SCADA data source from configuration.
+///
+/// - `simulated` — `SimulatedDataSource` with IEEE 14 data (default)
+/// - `iec104` — `Iec104DataSource` connected to a real IEC 104 server
+fn build_data_source_from_config(
+    scada_cfg: &eneros_core::config::ScadaSourceConfig,
+) -> Arc<dyn eneros_scada::DataSource> {
+    match scada_cfg.source.as_str() {
+        "iec104" => {
+            println!(
+                "  [SCADA] Using IEC 104 data source (server={}, asdu={})",
+                scada_cfg.iec104_addr, scada_cfg.iec104_asdu
+            );
+            use eneros_device::adapters::iec104::client::Iec104Config;
+            let iec_config = Iec104Config {
+                remote_addr: scada_cfg.iec104_addr.clone(),
+                asdu_address: scada_cfg.iec104_asdu,
+                ..Default::default()
+            };
+            let client = Arc::new(eneros_device::adapters::iec104::client::Iec104Client::new(
+                iec_config,
+            ));
+            let mapping = build_ieee14_ioa_mapping();
+            Arc::new(Iec104DataSource::new(client, mapping))
+        }
+        _ => {
+            println!("  [SCADA] Using SimulatedDataSource (IEEE 14 data)");
+            Arc::new(SimulatedDataSource::new())
+        }
+    }
+}
+
+/// Build a `DeviceManager` from the configured device connections.
+///
+/// Each `[[devices]]` entry in `eneros.toml` becomes a registered device
+/// with the appropriate protocol adapter. Devices that fail to connect are
+/// logged but do not prevent the server from starting — the gateway falls
+/// back to `LoggingExecutor` for commands targeting unregistered devices.
+async fn build_device_manager(
+    devices: &[eneros_core::config::DeviceConnectionConfig],
+) -> Arc<eneros_device::DeviceManager> {
+    use eneros_device::adapter::{ConnectionConfig, DeviceInfo, ProtocolConfig};
+    use eneros_device::protocol::ProtocolType;
+
+    let dm = Arc::new(eneros_device::DeviceManager::new());
+
+    for dev in devices {
+        let (adapter, protocol_type, protocol_config) = match dev.protocol.as_str() {
+            "iec104" => {
+                use eneros_device::adapters::iec104::Iec104Adapter;
+                let common_address = dev
+                    .params
+                    .get("asdu_address")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1) as u16;
+                let adapter = Box::new(Iec104Adapter::new(&dev.device_id));
+                (
+                    adapter as Box<dyn eneros_device::adapter::ProtocolAdapter>,
+                    ProtocolType::Iec104,
+                    ProtocolConfig::Iec104 {
+                        common_address,
+                        ioa_size: 3,
+                    },
+                )
+            }
+            "modbus" => {
+                use eneros_device::adapters::ModbusTcpAdapter;
+                let slave_id = dev
+                    .params
+                    .get("slave_id")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1) as u8;
+                let baud_rate = dev
+                    .params
+                    .get("baud_rate")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32);
+                let adapter = Box::new(ModbusTcpAdapter::new(&dev.device_id));
+                (
+                    adapter as Box<dyn eneros_device::adapter::ProtocolAdapter>,
+                    ProtocolType::Modbus,
+                    ProtocolConfig::Modbus {
+                        slave_id,
+                        baud_rate,
+                    },
+                )
+            }
+            "iec61850" => {
+                use eneros_device::adapters::Iec61850Adapter;
+                let adapter = Box::new(Iec61850Adapter::new(&dev.device_id));
+                let logical_devices = dev
+                    .params
+                    .get("logical_devices")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (
+                    adapter as Box<dyn eneros_device::adapter::ProtocolAdapter>,
+                    ProtocolType::Iec61850,
+                    ProtocolConfig::Iec61850 { logical_devices },
+                )
+            }
+            "mqtt" => {
+                use eneros_device::adapters::MqttAdapter;
+                let adapter = Box::new(MqttAdapter::new(&dev.device_id));
+                (
+                    adapter as Box<dyn eneros_device::adapter::ProtocolAdapter>,
+                    ProtocolType::Mqtt,
+                    ProtocolConfig::Mqtt {
+                        client_id: dev.device_id.clone(),
+                        topics: Vec::new(),
+                    },
+                )
+            }
+            other => {
+                println!(
+                    "  [Device] WARNING: unknown protocol '{}' for device '{}'; skipping",
+                    other, dev.device_id
+                );
+                continue;
+            }
+        };
+
+        let config = ConnectionConfig {
+            host: dev.host.clone(),
+            port: dev.port,
+            timeout_ms: 5000,
+            credentials: None,
+            protocol_config,
+        };
+        let info = DeviceInfo {
+            device_id: dev.device_id.clone(),
+            name: dev.device_id.clone(),
+            protocol: protocol_type,
+            manufacturer: "unknown".into(),
+            model: "unknown".into(),
+            firmware_version: "0.0.0".into(),
+            ip_address: dev.host.clone(),
+            port: dev.port,
+            capabilities: vec!["read".into(), "write".into()],
+        };
+
+        dm.register_device(&dev.device_id, adapter, config, info).await;
+        println!(
+            "  [Device] Registered '{}' ({}@{}:{})",
+            dev.device_id, dev.protocol, dev.host, dev.port
+        );
+
+        // Attempt to connect; failures are non-fatal.
+        match dm.connect(&dev.device_id).await {
+            Ok(()) => println!("  [Device] Connected '{}'", dev.device_id),
+            Err(e) => println!(
+                "  [Device] WARNING: '{}' connect failed ({}); commands will fail until connected",
+                dev.device_id, e
+            ),
+        }
+    }
+
+    dm
+}
+
+/// Build the command executor for the SafetyGateway.
+///
+/// If at least one device is configured and connected, returns a
+/// `DeviceCommandExecutor` backed by the `DeviceManager`. Otherwise returns
+/// a `LoggingExecutor` so the server still runs in simulation mode.
+fn build_command_executor(
+    dm: &Arc<eneros_device::DeviceManager>,
+    devices_configured: usize,
+) -> Arc<dyn eneros_gateway::CommandExecutor> {
+    if devices_configured > 0 {
+        println!(
+            "  [Gateway] Using DeviceCommandExecutor ({} device(s) configured)",
+            devices_configured
+        );
+        Arc::new(eneros_gateway::DeviceCommandExecutor::new(dm.clone()))
+    } else {
+        println!("  [Gateway] Using LoggingExecutor (no devices configured)");
+        Arc::new(eneros_gateway::LoggingExecutor)
+    }
+}
+
+/// Compute the in-memory retention capacity for the TimeSeriesEngine from the
+/// `[timeseries]` config (Task 3: 时序配置接线).
+///
+/// Formula: `retention_days * 86400 * 1000 / sampling_interval_ms`, clamped to
+/// a 10M-point upper bound to protect memory. Minimums are enforced: at least
+/// 1 day and 100ms sampling interval, so a misconfigured `eneros.toml` cannot
+/// produce a zero/nonsensical capacity.
+fn compute_retention_capacity(retention_days: u32, sampling_interval_ms: u64) -> usize {
+    let sampling_interval_ms = sampling_interval_ms.max(100); // 最小 100ms
+    let retention_days = retention_days.max(1); // 最小 1 天
+    (retention_days as usize * 86400 * 1000 / sampling_interval_ms as usize).min(10_000_000) // 上限 1000 万点
+}
+
+async fn run_server(
+    cli_host: String,
+    cli_port: u16,
+    config_path: Option<String>,
+    _with_scada: bool,
+    _with_agents: bool,
+    cli_json_log: bool,
+    cli_tls_cert: Option<String>,
+    cli_tls_key: Option<String>,
+) -> anyhow::Result<()> {
+    // ── 0. Load configuration with env overrides + validation ─────────────
+    let config = match EnerOSConfig::load_with_env_overrides(config_path.as_deref()) {
+        Ok(cfg) => {
+            println!("  [Config] Loaded (network={}, scada={}, devices={})",
+                cfg.network.source, cfg.scada.source, cfg.devices.len());
+            cfg
+        }
+        Err(e) => {
+            println!("  [Config] WARNING: load_with_env_overrides failed ({}); using defaults", e);
+            EnerOSConfig::default()
+        }
+    };
+
+    // ── 0b. Wrap config in SharedConfig for hot reload (v0.9.0) ───────────
+    let shared_config = eneros_api::shared_config(config.clone());
+    let config_watcher = if let Some(ref path) = config_path {
+        let path_buf = std::path::PathBuf::from(path);
+        let watcher = eneros_api::ConfigWatcher::new(shared_config.clone(), path_buf).start();
+        println!("  [Config] Hot reload enabled (watching: {})", path);
+        Some(Arc::new(watcher))
+    } else {
+        println!("  [Config] Hot reload disabled (no config file path provided)");
+        None
+    };
+
+    // Determine effective host/port: CLI args override config
+    let host = if cli_host != "0.0.0.0" || cli_port != 8080 {
+        (cli_host, cli_port)
+    } else {
+        (config.api.host.clone(), config.api.port)
+    };
+    let (host, port) = host;
     println!("EnerOS server starting on {}:{}", host, port);
 
-    // 1. Create EventBus (shared across components)
-    let event_bus = Arc::new(eneros_eventbus::EventBus::new(64));
-    println!("  [Core] EventBus created");
+    // Determine effective JSON logging: CLI flag overrides config
+    let json_log = cli_json_log || config.observability.enable_json_logging;
 
-    // 2. Create ConstraintEngine (EventBus wired; Projector added later after PowerNetwork creation)
-    let constraint_engine = Arc::new(eneros_constraint::ConstraintEngine::with_event_bus(event_bus.clone()));
+    // Initialize tracing with span events for distributed tracing (v0.9.0).
+    // When enable_tracing=true, span enter/exit events are logged to the
+    // JSON output, enabling trace correlation across components.
+    // For full OpenTelemetry export, set otel_endpoint in config.
+    let log_level = match config.observability.log_level.as_str() {
+        "trace" => tracing::Level::TRACE,
+        "debug" => tracing::Level::DEBUG,
+        "info" => tracing::Level::INFO,
+        "warn" => tracing::Level::WARN,
+        "error" => tracing::Level::ERROR,
+        _ => tracing::Level::INFO,
+    };
+    let span_events = if config.observability.enable_tracing {
+        // Log span creation/closure for trace correlation
+        tracing_subscriber::fmt::format::FmtSpan::NEW | tracing_subscriber::fmt::format::FmtSpan::CLOSE
+    } else {
+        tracing_subscriber::fmt::format::FmtSpan::NONE
+    };
+    if json_log {
+        tracing_subscriber::fmt()
+            .with_max_level(log_level)
+            .with_span_events(span_events)
+            .json()
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_max_level(log_level)
+            .with_span_events(span_events)
+            .init();
+    }
+    if config.observability.enable_tracing {
+        tracing::info!(
+            enable_tracing = true,
+            otel_endpoint = ?config.observability.otel_endpoint,
+            service_name = %config.observability.otel_service_name,
+            "Distributed tracing enabled (span events in JSON logs)"
+        );
+        if let Some(ref endpoint) = config.observability.otel_endpoint {
+            tracing::info!(
+                otel_endpoint = %endpoint,
+                "OTLP endpoint configured (requires opentelemetry-otlp feature to be enabled at build time for export)"
+            );
+        }
+    }
+
+    // Determine effective TLS: CLI args override config
+    let tls_cert = cli_tls_cert.or_else(|| config.api.tls_cert_path.clone());
+    let tls_key = cli_tls_key.or_else(|| config.api.tls_key_path.clone());
+    let enable_tls = config.api.enable_tls || tls_cert.is_some();
+
+    // ── 1. EventBus ───────────────────────────────────────────────────────
+    let event_bus = Arc::new(eneros_eventbus::EventBus::new(
+        config.eventbus.max_queue_size,
+    ));
+    println!("  [Core] EventBus created (queue={})", config.eventbus.max_queue_size);
+
+    // ── 2. ConstraintEngine ───────────────────────────────────────────────
+    let constraint_engine = Arc::new(
+        eneros_constraint::ConstraintEngine::with_event_bus(event_bus.clone()),
+    );
     println!("  [Constraint] Engine created (EventBus wired)");
 
-    // 3. Create PowerNetwork from IEEE 14 bus data with shared ConstraintEngine
-    let network = Arc::new(
-        eneros_network::PowerNetwork::from_ieee14()
-            .with_constraint_engine(constraint_engine.clone())
+    // ── 3. PowerNetwork (from config: ieee14 / cnpower / cim) ─────────────
+    let network = Arc::new(build_network_from_config(
+        &config.network,
+        constraint_engine.clone(),
+    )?);
+
+    // ── 4. TimeSeriesEngine (SQLite persistent when configured) ───────────
+    // Compute retention capacity from [timeseries] config (Task 3: 时序配置接线).
+    let retention_capacity = compute_retention_capacity(
+        config.timeseries.retention_days,
+        config.timeseries.sampling_interval_ms,
     );
-    println!("  [Network] IEEE 14-bus network loaded ({} buses, {} branches)",
-        network.bus_count(), network.branch_count());
+    println!(
+        "  [TimeSeries] Config: retention_days={}, sampling_interval_ms={}ms, compression={} → capacity={}",
+        config.timeseries.retention_days,
+        config.timeseries.sampling_interval_ms,
+        config.timeseries.enable_compression,
+        retention_capacity
+    );
+    // Note: enable_compression is logged here; compression logic is deferred to Task 5 (降采样).
 
-    // 3. Create TimeSeriesEngine
-    let ts_engine = Arc::new(eneros_timeseries::TimeSeriesEngine::new(10000));
-    println!("  [TimeSeries] Engine created");
+    let ts_engine = if let Some(ref db_path) = config.security.audit_log_path {
+        // Reuse a sibling .db path for time-series if audit path is set
+        let ts_db = std::path::Path::new(db_path)
+            .with_file_name("eneros_timeseries.db")
+            .to_string_lossy()
+            .to_string();
+        match eneros_timeseries::TimeSeriesEngine::with_sqlite(retention_capacity, &ts_db) {
+            Ok(engine) => {
+                println!("  [TimeSeries] Engine created with SQLite backend ({})", ts_db);
+                Arc::new(engine)
+            }
+            Err(e) => {
+                println!("  [TimeSeries] WARNING: SQLite init failed ({}); using in-memory", e);
+                Arc::new(eneros_timeseries::TimeSeriesEngine::new(retention_capacity))
+            }
+        }
+    } else {
+        // Default: try eneros_timeseries.db in current dir; fall back to in-memory
+        match eneros_timeseries::TimeSeriesEngine::with_sqlite(retention_capacity, "eneros_timeseries.db") {
+            Ok(engine) => {
+                println!("  [TimeSeries] Engine created with SQLite backend (eneros_timeseries.db)");
+                Arc::new(engine)
+            }
+            Err(e) => {
+                println!("  [TimeSeries] WARNING: SQLite init failed ({}); using in-memory", e);
+                Arc::new(eneros_timeseries::TimeSeriesEngine::new(retention_capacity))
+            }
+        }
+    };
 
-    // 4. Create ScadaCollector with SimulatedDataSource
-    let data_source = Arc::new(SimulatedDataSource::new());
+    // ── 4a. Start rollup task for storage-level downsampling (Task 5) ─────
+    // Background task aggregates 1s data → 1min (every 60s) and → 1h (every 60min).
+    // Uses tokio::sync::watch for graceful shutdown (v0.9.0 pattern).
+    let (rollup_shutdown_tx, rollup_shutdown_rx) = tokio::sync::watch::channel(false);
+    let rollup_handle = ts_engine.clone().start_rollup_task(rollup_shutdown_rx);
+    println!("  [TimeSeries] Rollup task started (60s→1min, 60min→1h)");
+
+    // ── 4a-SOE. SOE recorder (SQLite, v0.10.0 — Task 4) ───────────────────
+    // Sequence-of-Events recorder persists breaker/switch state changes and
+    // protection trips with 1ms precision and a global atomic sequence number.
+    let soe_recorder = Arc::new(
+        eneros_timeseries::SoeRecorder::new_sqlite("eneros_soe.db")
+            .expect("Failed to initialize SOE recorder"),
+    );
+    println!("  [SOE] Sequence-of-Events recorder initialized (SQLite)");
+
+    // ── 4b. AuditLog (file-persistent when configured) ────────────────────
+    let audit_log = if config.security.enable_audit {
+        let log = if let Some(ref path) = config.security.audit_log_path {
+            println!("  [Audit] File-persistent audit log enabled ({})", path);
+            Arc::new(eneros_api::audit::AuditLog::with_file(100_000, path))
+        } else {
+            println!("  [Audit] In-memory audit log enabled (set security.audit_log_path for persistence)");
+            Arc::new(eneros_api::audit::AuditLog::new(100_000))
+        };
+        Some(log)
+    } else {
+        println!("  [Audit] Audit logging disabled");
+        None
+    };
+
+    // ── 4c. AuthManager (JWT + API Key + RBAC) ────────────────────────────
+    let auth_manager = if config.security.enable_auth {
+        let secret = config.security.jwt_secret.as_deref().unwrap_or("eneros-default-dev-secret-change-me");
+        let mut mgr = eneros_api::auth::AuthManager::new(
+            secret,
+            config.security.jwt_ttl_secs as usize,
+        );
+        if let Some(ref al) = audit_log {
+            mgr = mgr.with_audit_log(al.clone());
+        }
+        // Register static API keys from config
+        for entry in &config.security.api_keys {
+            if let Some(role) = eneros_api::auth::Role::parse(&entry.role) {
+                mgr.add_api_key(&entry.key, &entry.description, role);
+                println!("  [Auth] Registered API key '{}' (role={})", entry.description, entry.role);
+            }
+        }
+        println!("  [Auth] AuthManager enabled (JWT TTL={}s, API keys={})",
+            config.security.jwt_ttl_secs, config.security.api_keys.len());
+        Some(Arc::new(mgr))
+    } else {
+        println!("  [Auth] Authentication disabled (set security.enable_auth=true to enable)");
+        None
+    };
+
+    // ── 4d. MetricsRegistry (Prometheus) ──────────────────────────────────
+    let metrics_registry = if config.observability.enable_metrics {
+        println!("  [Metrics] Prometheus metrics enabled at /metrics");
+        Some(Arc::new(eneros_api::handlers::metrics::MetricsRegistry::new()))
+    } else {
+        println!("  [Metrics] Metrics disabled");
+        None
+    };
+
+    // ── 5. DeviceManager (from config: [[devices]]) ───────────────────────
+    let device_manager = build_device_manager(&config.devices).await;
+    let devices_configured = config.devices.len();
+    if devices_configured > 0 {
+        let connected = device_manager.connected_count().await;
+        println!(
+            "  [Device] {} device(s) registered, {} connected",
+            devices_configured, connected
+        );
+    }
+
+    // ── 6. SCADA data source (from config: simulated / iec104) ────────────
+    // Create a single shared data source. The Arc is cloned for both the
+    // main collector (used by run_once / agent) and the dual scan pipelines,
+    // avoiding duplicate TCP connections to the IEC 104 server.
+    let shared_data_source = build_data_source_from_config(&config.scada);
     let scada_config = build_ieee14_scada_config();
-    let collector = Arc::new(eneros_scada::ScadaCollector::new(scada_config, data_source));
-    println!("  [SCADA] Collector created with SimulatedDataSource");
+    let collector = Arc::new(eneros_scada::ScadaCollector::new(
+        scada_config.clone(),
+        shared_data_source.clone(),
+    ));
+    println!("  [SCADA] Collector created (shared data source)");
 
-    // 5. Create DataPipeline with collector and ts_engine
+    // ── 7. DataPipeline (refresh → collect → record → publish) ────────────
     let pipeline = Arc::new(
         eneros_scada::DataPipeline::new(collector.clone(), ts_engine.clone())
             .with_event_bus(event_bus.clone())
+            .with_soe_recorder(soe_recorder.clone()),
     );
-    println!("  [SCADA] DataPipeline created");
+    println!("  [SCADA] DataPipeline created (refresh+collect+record+publish, SOE wired)");
 
-    // 5b. Create DualScanGroup for fast/normal scan separation
-    let dual_scan_group = eneros_scada::DualScanGroup::auto_classify(build_ieee14_scada_config().points);
-    println!("  [SCADA] DualScanGroup: {} fast points, {} normal points",
-        dual_scan_group.fast_points.len(), dual_scan_group.normal_points.len());
-
-    // 6. Create SnapshotBuilder with IEEE 14 bus mappings
-    let snapshot_builder = Arc::new(
-        eneros_scada::SnapshotBuilder::new(build_ieee14_snapshot_mappings())
+    // ── 7b. DualScanGroup (fast/normal scan separation) ───────────────────
+    // Use config-driven intervals instead of hardcoded 100ms/1000ms defaults.
+    let dual_scan_group = eneros_scada::DualScanGroup::auto_classify_with_intervals(
+        scada_config.points,
+        std::time::Duration::from_millis(config.scada.fast_interval_ms),
+        std::time::Duration::from_millis(config.scada.normal_interval_ms),
     );
+    println!(
+        "  [SCADA] DualScanGroup: {} fast points ({}ms), {} normal points ({}ms)",
+        dual_scan_group.fast_points.len(),
+        config.scada.fast_interval_ms,
+        dual_scan_group.normal_points.len(),
+        config.scada.normal_interval_ms
+    );
+
+    // ── 8. SnapshotBuilder ────────────────────────────────────────────────
+    let snapshot_builder = Arc::new(eneros_scada::SnapshotBuilder::new(
+        build_ieee14_snapshot_mappings(),
+    ));
     println!("  [SCADA] SnapshotBuilder created");
 
-    // 7. Create SafetyGateway with PriorityCommandQueue
+    // ── 9. SafetyGateway with production executor ─────────────────────────
     let command_queue = Arc::new(eneros_gateway::SharedPriorityCommandQueue::new());
-    let gateway = Arc::new(eneros_gateway::SafetyGateway::with_queue(100, command_queue.clone()));
-    println!("  [Gateway] SafetyGateway created with PriorityCommandQueue");
+    let command_executor = build_command_executor(&device_manager, devices_configured);
+    let gateway = Arc::new(eneros_gateway::SafetyGateway::with_queue_and_executor(
+        100,
+        command_queue.clone(),
+        command_executor,
+    ));
+    println!("  [Gateway] SafetyGateway created (queue + executor wired)");
 
-    // 7b. Start RealtimeExecutor
+    // ── 9b. RealtimeExecutor ──────────────────────────────────────────────
     let rt_executor = gateway.start_executor()?;
     println!("  [Gateway] RealtimeExecutor started");
 
-    // 7c. Start WatchdogTimer
+    // ── 9c. WatchdogTimer ─────────────────────────────────────────────────
     let watchdog = Arc::new(eneros_gateway::WatchdogTimer::new(
-        std::time::Duration::from_millis(500)
+        std::time::Duration::from_millis(500),
     ));
     let _watchdog_handle = watchdog.start();
-    println!("  [Gateway] WatchdogTimer started (500ms default timeout)");
+    println!("  [Gateway] WatchdogTimer started (500ms timeout)");
 
-    // 9. Create AgentOrchestrator with AgentContext
+    // ── 10. Reasoning engine ──────────────────────────────────────────────
     let tool_engine = Arc::new(parking_lot::RwLock::new(eneros_tool::ToolEngine::new()));
-    let network_rw = Arc::new(parking_lot::RwLock::new(eneros_network::PowerNetwork::from_ieee14()));
-    let memory = Arc::new(eneros_memory::InMemoryMemory::default());
+    // AppState requires tokio::sync::RwLock (read guard must be Send across .await)
+    let api_tool_engine = Arc::new(tokio::sync::RwLock::new(eneros_tool::ToolEngine::new()));
+    let network_rw = Arc::new(parking_lot::RwLock::new(
+        eneros_network::PowerNetwork::from_ieee14(),
+    ));
+    // Use FileMemory for persistent agent memory (survives restarts)
+    let memory: Arc<dyn eneros_memory::AgentMemory> = match eneros_memory::FileMemory::new("./eneros_memory") {
+        Ok(m) => {
+            println!("  [Memory] FileMemory enabled (./eneros_memory/)");
+            Arc::new(m)
+        }
+        Err(e) => {
+            println!("  [Memory] WARNING: FileMemory init failed ({}); using InMemoryMemory", e);
+            Arc::new(eneros_memory::InMemoryMemory::default())
+        }
+    };
     let reasoning: Arc<dyn eneros_reasoning::ReasoningEngine> =
         if std::env::var("ENEROS_RIG_PROVIDER").is_ok() {
             #[cfg(feature = "rig")]
             {
-                let config = eneros_reasoning::RigConfig::from_env();
-                println!("  [Reasoning] Using rig engine: {} / {}", config.provider, config.model);
+                let rig_config = eneros_reasoning::RigConfig::from_env();
+                println!(
+                    "  [Reasoning] Using rig engine: {} / {}",
+                    rig_config.provider, rig_config.model
+                );
                 let fallback = Arc::new(eneros_reasoning::RuleBasedEngine::new());
-                Arc::new(eneros_reasoning::RigReasoningEngine::new(config, network_rw.clone()).with_fallback(fallback))
+                Arc::new(
+                    eneros_reasoning::RigReasoningEngine::new(rig_config, network_rw.clone())
+                        .with_fallback(fallback),
+                )
             }
             #[cfg(not(feature = "rig"))]
             {
@@ -208,42 +999,64 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
             Arc::new(eneros_reasoning::RuleBasedEngine::new())
         };
 
-    // 9b. Create ConstrainedDecisionPipeline (feasibility projection + constraint validation)
-    let network_simulator = Arc::new(eneros_network::NetworkSimulatorAdapter::new(network_rw.clone()));
-    let projector = Arc::new(eneros_constraint::projector::FeasibilityProjector::new(network_simulator));
+    // ── 11. ConstrainedDecisionPipeline ───────────────────────────────────
+    let network_simulator =
+        Arc::new(eneros_network::NetworkSimulatorAdapter::new(network_rw.clone()));
+    let projector = Arc::new(eneros_constraint::projector::FeasibilityProjector::new(
+        network_simulator,
+    ));
 
-    // 9c. Wire Projector into ConstraintEngine (now that it's created)
+    // Wire Projector into ConstraintEngine
     constraint_engine.set_projector(projector.clone());
     println!("  [Constraint] Projector wired into ConstraintEngine");
 
-    let pipeline_validator = Arc::new(eneros_gateway::constraint_validator::ConstraintAwareValidator::with_projector(
-        constraint_engine.clone(),
-        gateway.clone(),
-        eneros_gateway::interlocking::InterlockingRuleEngine::new(),
-        projector.clone(),
-    ));
-    let decision_pipeline = Arc::new(eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline::new(
-        projector,
-        pipeline_validator,
-        gateway.clone(),
-    ));
-    println!("  [Pipeline] ConstrainedDecisionPipeline created (projection + validation + execution)");
+    let pipeline_validator =
+        Arc::new(eneros_gateway::constraint_validator::ConstraintAwareValidator::with_projector(
+            constraint_engine.clone(),
+            gateway.clone(),
+            eneros_gateway::interlocking::InterlockingRuleEngine::new(),
+            projector.clone(),
+        ));
 
-    // Phase 14: build the LLM feedback loop from the shared reasoning engine
-    // *before* it is moved into the AgentContext. The loop re-prompts the
-    // engine when the decision pipeline rejects an action, closing the
-    // "LLM → projection → validation → re-reasoning" loop.
-    let feedback_loop = Arc::new(eneros_reasoning::feedback::FeedbackLoop::with_default_iterations_shared(
-        reasoning.clone(),
-    ));
-    println!("  [Pipeline] FeedbackLoop created (shared reasoning engine, max 2 retries)");
+    // ── 11b. ObservationProvider (closes execute→measure→verify loop) ─────
+    // The provider reads the latest SCADA readings and builds a
+    // PowerObservation for postcondition verification. This prioritizes
+    // real field measurements over simulator predictions.
+    let collector_for_obs = collector.clone();
+    let observation_provider: eneros_gateway::ObservationProvider =
+        Arc::new(move || {
+            let readings = collector_for_obs.latest_all();
+            if readings.is_empty() {
+                return None;
+            }
+            Some(build_observation_from_readings(&readings))
+        });
+    println!("  [Pipeline] ObservationProvider wired (SCADA → postcondition)");
 
+    let decision_pipeline = Arc::new(
+        eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline::with_observation_provider(
+            projector,
+            pipeline_validator,
+            gateway.clone(),
+            observation_provider,
+        )
+        .with_watchdog(watchdog.clone(), std::time::Duration::from_millis(500)),
+    );
+    println!("  [Pipeline] ConstrainedDecisionPipeline created (projection + validation + execution + observation + watchdog)");
+
+    // ── 12. FeedbackLoop ──────────────────────────────────────────────────
+    let feedback_loop = Arc::new(
+        eneros_reasoning::feedback::FeedbackLoop::with_default_iterations_shared(reasoning.clone()),
+    );
+    println!("  [Pipeline] FeedbackLoop created (shared reasoning, max 2 retries)");
+
+    // ── 13. AgentOrchestrator ─────────────────────────────────────────────
     let ctx = eneros_agent::AgentContext::new(
         event_bus.clone(),
         gateway.clone(),
         tool_engine,
         network_rw,
-        memory,
+        memory.clone(),
         reasoning,
     );
     let mut orchestrator = eneros_agent::AgentOrchestrator::with_pipeline_and_feedback(
@@ -253,31 +1066,27 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
     );
     println!("  [Agent] Orchestrator created with ConstrainedDecisionPipeline + FeedbackLoop");
 
-    // 10. Register all 6 domain agents
+    // ── 13b. Register 6 domain agents ─────────────────────────────────────
     use eneros_agent::event_adapter::AgentEventHandler;
     use eneros_eventbus::event::EventType;
 
-    // DispatchAgent
     let dispatch_agent = eneros_agent::DispatchAgent::new("dispatch-1", "DispatchAgent", vec![1]);
     orchestrator.register_agent(AgentEventHandler::new(
         Box::new(dispatch_agent),
         vec![EventType::ConstraintViolation, EventType::DataReceived],
     ));
 
-    // OperationAgent
-    let operation_agent = eneros_agent::OperationAgent::new("operation-1", "OperationAgent", vec![1]);
+    let operation_agent =
+        eneros_agent::OperationAgent::new("operation-1", "OperationAgent", vec![1]);
     orchestrator.register_agent(AgentEventHandler::new(
         Box::new(operation_agent),
         vec![EventType::ConstraintViolation, EventType::SystemAlarm],
     ));
 
-    // SelfHealingAgent
-    let self_healing_agent = eneros_agent::SelfHealingAgent::new("self-healing-1", "SelfHealingAgent", vec![1]);
-    orchestrator.register_agent(AgentEventHandler::new_all_events(
-        Box::new(self_healing_agent),
-    ));
+    let self_healing_agent =
+        eneros_agent::SelfHealingAgent::new("self-healing-1", "SelfHealingAgent", vec![1]);
+    orchestrator.register_agent(AgentEventHandler::new_all_events(Box::new(self_healing_agent)));
 
-    // LoadForecastAgent
     let forecast_agent = eneros_agent::LoadForecastAgent::new(
         "forecast-1",
         eneros_core::Jurisdiction::for_zones(vec![1]),
@@ -288,26 +1097,25 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
         vec![EventType::ConstraintViolation, EventType::DataReceived],
     ));
 
-    // PlanningAgent
     let planning_agent = eneros_agent::PlanningAgent::new("planning-1", vec![1]);
     orchestrator.register_agent(AgentEventHandler::new(
         Box::new(planning_agent),
         vec![EventType::ConstraintViolation, EventType::DataReceived],
     ));
 
-    // TradingAgent
     let trading_agent = eneros_agent::TradingAgent::new("trading-1", vec![1]);
     orchestrator.register_agent(AgentEventHandler::new(
         Box::new(trading_agent),
         vec![EventType::DataReceived, EventType::ConstraintViolation],
     ));
 
-    println!("  [Agent] Registered 6 domain agents: Dispatch, Operation, SelfHealing, Forecast, Planning, Trading");
+    println!(
+        "  [Agent] Registered 6 domain agents: Dispatch, Operation, SelfHealing, Forecast, Planning, Trading"
+    );
 
-    // Wrap orchestrator in Arc for shared access
     let orchestrator = Arc::new(orchestrator);
 
-    // 11. Create DataDrivenAgentLoop
+    // ── 14. DataDrivenAgentLoop ───────────────────────────────────────────
     let state_machine = Arc::new(eneros_agent::SystemStateMachine::new());
     let dd_loop = Arc::new(
         eneros_agent::DataDrivenAgentLoop::new(
@@ -317,12 +1125,12 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
             orchestrator.clone(),
             state_machine,
         )
-        .with_constraint_engine(constraint_engine.clone())
+        .with_constraint_engine(constraint_engine.clone()),
     );
     println!("  [Agent] DataDrivenAgentLoop created");
 
-    // 12. Build AppState with all components injected
-    let state = AppState::new()
+    // ── 15. AppState ──────────────────────────────────────────────────────
+    let mut state = AppState::new()
         .with_network(network.clone())
         .with_constraint_engine(constraint_engine.clone())
         .with_ts_engine(ts_engine.clone())
@@ -332,43 +1140,110 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
         .with_data_pipeline(pipeline.clone())
         .with_snapshot_builder(snapshot_builder.clone())
         .with_data_driven_loop(dd_loop.clone())
-        .with_decision_pipeline(decision_pipeline);
+        .with_decision_pipeline(decision_pipeline)
+        .with_device_manager(device_manager.clone())
+        .with_tool_engine(api_tool_engine.clone())
+        .with_agent_memory(memory.clone())
+        .with_soe_recorder(soe_recorder.clone());
 
-    // 13. Start SCADA pipeline background task
-    let pipeline_handle = pipeline.start(1000);
-    println!("  [SCADA] Background pipeline started (1s interval)");
+    // Inject optional v0.6.0 subsystems (auth/audit/metrics)
+    if let Some(ref al) = audit_log {
+        state = state.with_audit_log(al.clone());
+    }
+    if let Some(ref am) = auth_manager {
+        state = state.with_auth_manager(am.clone());
+    }
+    if let Some(ref mr) = metrics_registry {
+        state = state.with_metrics_registry(mr.clone());
+    }
+    // Inject v0.9.0 config hot reload
+    state = state.with_shared_config(shared_config.clone());
+    if let Some(ref cw) = config_watcher {
+        state = state.with_config_watcher(cw.clone());
+    }
+    println!("  [API] AppState wired (auth={}, audit={}, metrics={}, device_mgr={}, memory=FileMemory, config_reload={})",
+        auth_manager.is_some(), audit_log.is_some(), metrics_registry.is_some(),
+        devices_configured > 0, config_watcher.is_some());
 
-    // 13b. Start DualScanGroup background tasks
-    let dual_data_source = Arc::new(SimulatedDataSource::new());
+    // ── 16. Start background tasks ────────────────────────────────────────
+    // The dual scan group is the sole background data collection mechanism.
+    // It splits points into fast/normal groups and runs separate pipelines
+    // at config-driven intervals. The main `pipeline` Arc is still available
+    // for run_once() calls from the agent orchestrator and API handlers,
+    // but we don't start it as a background task to avoid duplicate collection.
     let dual_scan_handles = eneros_scada::start_dual_scan(
         &dual_scan_group,
-        dual_data_source,
+        shared_data_source,
         ts_engine.clone(),
+        eneros_scada::DualScanOptions {
+            timeout_ms: 5000,
+            enable_quality_check: true,
+            event_bus: Some(event_bus.clone()),
+        },
     );
-    println!("  [SCADA] DualScanGroup started (fast={}ms, normal={}ms)",
-        dual_scan_group.fast_interval.as_millis(), dual_scan_group.normal_interval.as_millis());
+    println!(
+        "  [SCADA] DualScanGroup started (fast={}ms, normal={}ms, with EventBus)",
+        config.scada.fast_interval_ms, config.scada.normal_interval_ms
+    );
 
-    // 14. Start DataDrivenAgentLoop background task
     let dd_loop_handle = dd_loop.start(2000);
     println!("  [Agent] DataDrivenAgentLoop started (2s cycle)");
 
-    // 15. Start axum server with populated AppState
+    // ── 16b. Start EventBus→WebSocket bridge (v0.6.0 — S7) ──────────────
+    let ws_bridge_handle = eneros_api::app::start_event_bus_ws_bridge(state.clone());
+    if ws_bridge_handle.is_some() {
+        println!("  [API] EventBus→WebSocket bridge started");
+    } else {
+        println!("  [API] EventBus→WebSocket bridge skipped (no EventBus configured)");
+    }
+
+    // ── 17. Start HTTP server ─────────────────────────────────────────────
     let addr = format!("{}:{}", host, port)
         .parse::<std::net::SocketAddr>()
         .unwrap_or_else(|_| std::net::SocketAddr::from(([0, 0, 0, 0], port)));
-    let server = ApiServer::with_state(state, addr);
 
-    println!("EnerOS server running on {}:{}", host, port);
+    // TLS support (v0.7.0 — deferred from v0.6.0 S1)
+    let tls_config = if enable_tls {
+        match (&tls_cert, &tls_key) {
+            (Some(cert_path), Some(key_path)) => {
+                println!(
+                    "  [API] TLS enabled (cert={}, key={})",
+                    cert_path, key_path
+                );
+                Some(eneros_api::server::TlsConfig {
+                    cert_path: cert_path.clone(),
+                    key_path: key_path.clone(),
+                })
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                println!("  [API] WARNING: TLS cert and key must both be set; falling back to plaintext");
+                None
+            }
+            (None, None) => {
+                println!("  [API] WARNING: enable_tls=true but no cert/key provided; falling back to plaintext");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let server = ApiServer::with_state(state, addr).with_tls(tls_config.clone());
+
+    if tls_config.is_some() {
+        println!("EnerOS server running on https://{}:{}", host, port);
+    } else {
+        println!("EnerOS server running on http://{}:{}", host, port);
+    }
     println!("Press Ctrl+C to stop");
 
-    // 16. Handle Ctrl+C gracefully
+    // ── 18. Graceful shutdown ─────────────────────────────────────────────
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let _ctrlc = tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
         let _ = tx.send(());
     });
 
-    // Start server and wait for Ctrl+C
     tokio::select! {
         result = server.start() => {
             result?;
@@ -378,15 +1253,144 @@ async fn run_server(host: String, port: u16, _with_scada: bool, _with_agents: bo
         }
     }
 
-    // Cleanup background tasks
-    pipeline_handle.abort();
+    // Cleanup background tasks — graceful shutdown for SCADA pipelines
+    // (drain current cycle before exiting), abort for others.
+    dual_scan_handles.shutdown().await;
     dd_loop_handle.abort();
-    dual_scan_handles.abort();
+    if let Some(h) = ws_bridge_handle {
+        h.abort();
+    }
     rt_executor.stop();
     watchdog.stop();
 
+    // Stop rollup task (graceful shutdown via watch signal)
+    let _ = rollup_shutdown_tx.send(true);
+    let _ = rollup_handle.await;
+    println!("  [TimeSeries] Rollup task stopped");
+
+    // Stop config file watcher
+    if let Some(mut cw) = config_watcher.and_then(|arc| Arc::try_unwrap(arc).ok()) {
+        cw.stop();
+        println!("  [Config] File watcher stopped");
+    }
+
+    // Disconnect all devices
+    if devices_configured > 0 {
+        let _ = device_manager.disconnect_all().await;
+        println!("  [Device] All devices disconnected");
+    }
+
     println!("EnerOS server stopped.");
     Ok(())
+}
+
+/// Build a `PowerObservation` from the latest SCADA readings.
+///
+/// This is used by the `ObservationProvider` to feed real field measurements
+/// into the postcondition verification stage of the decision pipeline. The
+/// mapping from (element_id, parameter) → observation fields follows the
+/// IEEE 14 snapshot conventions:
+/// - `voltage_pu` → bus voltage magnitude
+/// - `angle_deg` → bus voltage angle
+/// - `gen_p_mw` / `gen_q_mvar` → generator output
+/// - `load_p_mw` / `load_q_mvar` → load consumption
+/// - `frequency_hz` → system frequency
+fn build_observation_from_readings(
+    readings: &[eneros_scada::ScadaReading],
+) -> eneros_core::PowerObservation {
+    use eneros_core::{
+        BranchFlowObservation, BusVoltageObservation, GenOutputObservation,
+        LoadConsumptionObservation, PowerObservation,
+    };
+    use std::collections::HashMap;
+
+    let mut bus_voltages: HashMap<u64, BusVoltageObservation> = HashMap::new();
+    let mut gen_outputs: HashMap<u64, GenOutputObservation> = HashMap::new();
+    let mut load_consumptions: HashMap<u64, LoadConsumptionObservation> = HashMap::new();
+    let mut frequency_hz = 50.0;
+    let mut total_load_mw = 0.0;
+    let mut total_gen_mw = 0.0;
+
+    for r in readings {
+        match r.parameter.as_str() {
+            "voltage_pu" => {
+                bus_voltages.insert(
+                    r.element_id,
+                    BusVoltageObservation {
+                        vm_pu: r.value,
+                        va_degree: 0.0,
+                    },
+                );
+            }
+            "angle_deg" => {
+                // Merge angle into existing bus voltage observation
+                bus_voltages
+                    .entry(r.element_id)
+                    .and_modify(|v| v.va_degree = r.value)
+                    .or_insert(BusVoltageObservation {
+                        vm_pu: 1.0,
+                        va_degree: r.value,
+                    });
+            }
+            "gen_p_mw" => {
+                gen_outputs
+                    .entry(r.element_id)
+                    .and_modify(|g| g.p_mw = r.value)
+                    .or_insert(GenOutputObservation {
+                        p_mw: r.value,
+                        q_mvar: 0.0,
+                        p_max_mw: 0.0,
+                        p_min_mw: 0.0,
+                    });
+                total_gen_mw += r.value;
+            }
+            "gen_q_mvar" => {
+                gen_outputs
+                    .entry(r.element_id)
+                    .and_modify(|g| g.q_mvar = r.value)
+                    .or_insert(GenOutputObservation {
+                        p_mw: 0.0,
+                        q_mvar: r.value,
+                        p_max_mw: 0.0,
+                        p_min_mw: 0.0,
+                    });
+            }
+            "load_p_mw" => {
+                load_consumptions
+                    .entry(r.element_id)
+                    .and_modify(|l| l.p_mw = r.value)
+                    .or_insert(LoadConsumptionObservation {
+                        p_mw: r.value,
+                        q_mvar: 0.0,
+                    });
+                total_load_mw += r.value;
+            }
+            "load_q_mvar" => {
+                load_consumptions
+                    .entry(r.element_id)
+                    .and_modify(|l| l.q_mvar = r.value)
+                    .or_insert(LoadConsumptionObservation {
+                        p_mw: 0.0,
+                        q_mvar: r.value,
+                    });
+            }
+            "frequency_hz" => {
+                frequency_hz = r.value;
+            }
+            _ => {}
+        }
+    }
+
+    PowerObservation {
+        bus_voltages,
+        branch_flows: HashMap::<u64, BranchFlowObservation>::new(),
+        frequency_hz,
+        gen_outputs,
+        load_consumptions,
+        timestamp: chrono::Utc::now(),
+        total_load_mw,
+        total_gen_mw,
+    }
 }
 
 async fn query_status(server: &str) -> anyhow::Result<()> {
@@ -394,7 +1398,7 @@ async fn query_status(server: &str) -> anyhow::Result<()> {
 
     // Health check first
     match client.health_check().await {
-        Ok(true) => {},
+        Ok(true) => {}
         Ok(false) | Err(_) => {
             println!("EnerOS server not reachable at {}", server);
             return Ok(());
@@ -413,7 +1417,10 @@ async fn query_status(server: &str) -> anyhow::Result<()> {
         Ok(a) => a,
         Err(e) => {
             println!("Warning: Failed to fetch agents: {}", e);
-            eneros_api::types::AgentsResponse { agent_count: 0, agents: Vec::new() }
+            eneros_api::types::AgentsResponse {
+                agent_count: 0,
+                agents: Vec::new(),
+            }
         }
     };
 
@@ -438,10 +1445,16 @@ async fn agent_list(server: &str) -> anyhow::Result<()> {
 
     println!("Registered Agents");
     println!("-----------------");
-    println!("{:<20} {:<15} {:<12} {:<10}", "Name", "Type", "Authority", "Status");
+    println!(
+        "{:<20} {:<15} {:<12} {:<10}",
+        "Name", "Type", "Authority", "Status"
+    );
     println!("{}", "-".repeat(60));
     for agent in &agents.agents {
-        println!("{:<20} {:<15} {:<12} {:<10}", agent.name, agent.agent_type, agent.authority, agent.status);
+        println!(
+            "{:<20} {:<15} {:<12} {:<10}",
+            agent.name, agent.agent_type, agent.authority, agent.status
+        );
     }
 
     Ok(())
@@ -485,7 +1498,11 @@ fn run_power_flow(case: &str, max_iterations: u32, tolerance: f64) -> anyhow::Re
     let network = load_network(case)?;
     let network = network.with_solver(max_iterations, tolerance);
 
-    println!("Network: {} buses, {} branches", network.bus_count(), network.branch_count());
+    println!(
+        "Network: {} buses, {} branches",
+        network.bus_count(),
+        network.branch_count()
+    );
     println!();
 
     let result = network.solve()?;
@@ -501,16 +1518,20 @@ fn run_power_flow(case: &str, max_iterations: u32, tolerance: f64) -> anyhow::Re
     println!();
 
     // Bus voltage table
-    println!("{:<8} {:>12} {:>12} {:>12} {:>12}",
-             "Bus", "V (p.u.)", "theta (deg)", "P (MW)", "Q (MVar)");
+    println!(
+        "{:<8} {:>12} {:>12} {:>12} {:>12}",
+        "Bus", "V (p.u.)", "theta (deg)", "P (MW)", "Q (MVar)"
+    );
     println!("{}", "-".repeat(58));
     for bus in &result.bus_results {
-        println!("{:<8} {:>12.4} {:>12.4} {:>12.4} {:>12.4}",
-                 bus.bus_id,
-                 bus.voltage_magnitude,
-                 bus.voltage_angle.to_degrees(),
-                 bus.p_injection,
-                 bus.q_injection);
+        println!(
+            "{:<8} {:>12.4} {:>12.4} {:>12.4} {:>12.4}",
+            bus.bus_id,
+            bus.voltage_magnitude,
+            bus.voltage_angle.to_degrees(),
+            bus.p_injection,
+            bus.q_injection
+        );
     }
 
     Ok(())
@@ -534,8 +1555,11 @@ fn run_opf(case: &str) -> anyhow::Result<()> {
     if result.converged {
         println!("OPF converged in {} iterations", result.iterations);
     } else {
-        println!("OPF completed with {} warning(s) in {} iterations",
-                 result.warnings.len(), result.iterations);
+        println!(
+            "OPF completed with {} warning(s) in {} iterations",
+            result.warnings.len(),
+            result.iterations
+        );
         for w in &result.warnings {
             println!("  Warning: {}", w);
         }
@@ -566,7 +1590,7 @@ fn run_opf(case: &str) -> anyhow::Result<()> {
 }
 
 fn build_ieee14_opf_problem(data: &eneros_powerflow::Ieee14BusData) -> eneros_analysis::DcOpfProblem {
-    use eneros_analysis::{GeneratorBid, BranchLimit};
+    use eneros_analysis::{BranchLimit, GeneratorBid};
 
     // IEEE 14-bus generators: buses 1, 2, 3, 6, 8
     let generators = vec![
@@ -616,20 +1640,18 @@ fn run_state_estimation(case: &str) -> anyhow::Result<()> {
     let measurements: Vec<eneros_analysis::Measurement> = pf_result.bus_results.iter()
         .flat_map(|bus| {
             vec![
-                eneros_analysis::Measurement {
-                    meas_type: eneros_analysis::MeasType::VoltageMagnitude,
-                    element_id: bus.bus_id,
-                    to_element_id: None,
-                    value: bus.voltage_magnitude,
-                    sigma: 0.005,
-                },
-                eneros_analysis::Measurement {
-                    meas_type: eneros_analysis::MeasType::BusInjectionP,
-                    element_id: bus.bus_id,
-                    to_element_id: None,
-                    value: bus.p_injection,
-                    sigma: 0.05,
-                },
+                eneros_analysis::Measurement::bus(
+                    eneros_analysis::MeasType::VoltageMagnitude,
+                    bus.bus_id,
+                    bus.voltage_magnitude,
+                    0.005,
+                ),
+                eneros_analysis::Measurement::bus(
+                    eneros_analysis::MeasType::BusInjectionP,
+                    bus.bus_id,
+                    bus.p_injection,
+                    0.05,
+                ),
             ]
         })
         .collect();
@@ -761,21 +1783,34 @@ fn invert_ybus_to_zbus(ybus: &eneros_powerflow::YBusMatrix, n: usize) -> ndarray
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
-
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { host, port, with_scada, with_agents } => {
-            run_server(host, port, with_scada, with_agents).await?;
+        Commands::Run {
+            host,
+            port,
+            config,
+            with_scada,
+            with_agents,
+            json_log,
+            tls_cert,
+            tls_key,
+        } => {
+            // Initialize tracing — JSON logging is enabled by config or CLI flag
+            // (v0.6.0 config.observability.enable_json_logging defaults to true)
+            run_server(host, port, config, with_scada, with_agents, json_log, tls_cert, tls_key)
+                .await?;
         }
         Commands::Status { server } => {
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::WARN)
+                .init();
             query_status(&server).await?;
         }
         Commands::Agent { command } => {
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::WARN)
+                .init();
             match command {
                 AgentCommand::List { server } => {
                     agent_list(&server).await?;
@@ -786,6 +1821,9 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Analyze { command } => {
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::WARN)
+                .init();
             match command {
                 AnalyzeCommand::Opf { case } => {
                     run_opf(&case)?;
@@ -798,10 +1836,72 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::PowerFlow { case, max_iterations, tolerance } => {
+        Commands::PowerFlow {
+            case,
+            max_iterations,
+            tolerance,
+        } => {
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::WARN)
+                .init();
             run_power_flow(&case, max_iterations, tolerance)?;
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// retention_days = 30, sampling_interval_ms = 1000
+    /// → 30 * 86400 * 1000 / 1000 = 2,592,000
+    #[test]
+    fn test_retention_capacity_30_days_1s_interval() {
+        let cap = compute_retention_capacity(30, 1000);
+        assert_eq!(cap, 2_592_000);
+    }
+
+    /// retention_days = 7, sampling_interval_ms = 500
+    /// → 7 * 86400 * 1000 / 500 = 1,209,600
+    #[test]
+    fn test_retention_capacity_7_days_500ms_interval() {
+        let cap = compute_retention_capacity(7, 500);
+        assert_eq!(cap, 1_209_600);
+    }
+
+    /// Upper-bound clamp: retention_days = 365, sampling_interval_ms = 100
+    /// → min(315,360,000, 10,000,000) = 10,000,000
+    #[test]
+    fn test_retention_capacity_upper_bound_clamp() {
+        let cap = compute_retention_capacity(365, 100);
+        assert_eq!(cap, 10_000_000);
+    }
+
+    /// Minimum sampling interval clamp: a sub-100ms value is raised to 100ms.
+    #[test]
+    fn test_retention_capacity_min_sampling_interval_clamp() {
+        // 1 day at 10ms would be 8,640,000 — but 10ms is clamped to 100ms,
+        // giving 1 * 86400 * 1000 / 100 = 864,000.
+        let cap = compute_retention_capacity(1, 10);
+        assert_eq!(cap, 864_000);
+    }
+
+    /// Minimum retention_days clamp: zero days is raised to 1 day.
+    #[test]
+    fn test_retention_capacity_min_retention_days_clamp() {
+        // 0 days is invalid; clamped to 1 day at 1000ms → 86,400.
+        let cap = compute_retention_capacity(0, 1000);
+        assert_eq!(cap, 86_400);
+    }
+
+    /// Default config values (365 days, 1000ms) produce a sane capacity that
+    /// respects the upper bound.
+    #[test]
+    fn test_retention_capacity_default_config_values() {
+        let cap = compute_retention_capacity(365, 1000);
+        // 365 * 86400 * 1000 / 1000 = 31,536,000 → clamped to 10,000,000.
+        assert_eq!(cap, 10_000_000);
+    }
 }

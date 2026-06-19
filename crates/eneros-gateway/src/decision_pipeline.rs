@@ -1,18 +1,23 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
-use parking_lot::RwLock;
+use std::time::{Duration, Instant};
 use eneros_core::{ActionVerdict, AuthorityLevel, Jurisdiction, PowerObservation, StructuredAction, SystemOperatingState};
 use eneros_constraint::projector::{FeasibilityProjector, ProjectionResult, WhatIfResult};
 use crate::constraint_validator::ConstraintAwareValidator;
 use crate::gateway::SafetyGateway;
-use crate::command::{Command, CommandType, CommandPriority};
+use crate::command::{Command, CommandType, CommandPriority, DeviceValue};
 use crate::precondition::PreConditionChecker;
 use crate::postcondition::PostConditionVerifier;
 use crate::decomposer::ActionDecomposer;
 use crate::pipeline_types::{
     DecisionContext, EnhancedPipelineDecision, PipelineAuditEntry,
-    PipelineStatistics,
+    PipelineStatistics, PipelineStatisticsSnapshot, RollbackExecution, RollbackStrategy,
 };
+
+/// Maximum time to wait for field observation before falling back to simulator.
+/// SCADA/RTU reads beyond this are treated as "unavailable" to prevent
+/// postcondition verification from blocking the decision pipeline.
+const OBSERVATION_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Async callback that returns the **current** field observation after execution.
 ///
@@ -55,13 +60,21 @@ pub struct ConstrainedDecisionPipeline {
     precondition_checker: PreConditionChecker,
     /// Post-condition verifier
     postcondition_verifier: PostConditionVerifier,
-    /// Pipeline statistics
-    statistics: RwLock<PipelineStatistics>,
+    /// Pipeline statistics (v0.8.0 — M5: atomic, no RwLock)
+    statistics: PipelineStatistics,
     /// Optional provider for post-execution field observations.
     ///
     /// When set, postcondition verification uses **real measurements** instead
     /// of simulator predictions, closing the execute→measure→verify loop.
     observation_provider: Option<ObservationProvider>,
+    /// Optional watchdog timer for command execution (v0.7.0).
+    ///
+    /// When set, each command execution in Stage 5 is registered with the
+    /// watchdog. If a command exceeds the timeout, the watchdog fires its
+    /// callback (typically triggering rollback or alerting).
+    watchdog: Option<Arc<crate::watchdog::WatchdogTimer>>,
+    /// Per-command execution timeout (v0.7.0). Defaults to 500ms.
+    command_timeout: Duration,
 }
 
 /// Legacy result type — kept for backward compatibility
@@ -99,8 +112,10 @@ impl ConstrainedDecisionPipeline {
             gateway,
             precondition_checker: PreConditionChecker::new(),
             postcondition_verifier: PostConditionVerifier::new(),
-            statistics: RwLock::new(PipelineStatistics::default()),
+            statistics: PipelineStatistics::default(),
             observation_provider: None,
+            watchdog: None,
+            command_timeout: Duration::from_millis(500),
         }
     }
 
@@ -117,8 +132,10 @@ impl ConstrainedDecisionPipeline {
             gateway,
             precondition_checker: checker,
             postcondition_verifier: PostConditionVerifier::new(),
-            statistics: RwLock::new(PipelineStatistics::default()),
+            statistics: PipelineStatistics::default(),
             observation_provider: None,
+            watchdog: None,
+            command_timeout: Duration::from_millis(500),
         }
     }
 
@@ -135,8 +152,10 @@ impl ConstrainedDecisionPipeline {
             gateway,
             precondition_checker: PreConditionChecker::new(),
             postcondition_verifier: verifier,
-            statistics: RwLock::new(PipelineStatistics::default()),
+            statistics: PipelineStatistics::default(),
             observation_provider: None,
+            watchdog: None,
+            command_timeout: Duration::from_millis(500),
         }
     }
 
@@ -158,9 +177,28 @@ impl ConstrainedDecisionPipeline {
             gateway,
             precondition_checker: PreConditionChecker::new(),
             postcondition_verifier: PostConditionVerifier::new(),
-            statistics: RwLock::new(PipelineStatistics::default()),
+            statistics: PipelineStatistics::default(),
             observation_provider: Some(provider),
+            watchdog: None,
+            command_timeout: Duration::from_millis(500),
         }
+    }
+
+    /// Attach a watchdog timer to monitor command execution (v0.7.0).
+    ///
+    /// When set, each command in Stage 5 is registered with the watchdog.
+    /// If a command exceeds `command_timeout`, the watchdog fires its
+    /// timeout callback. The pipeline itself does not abort the command
+    /// (the gateway's executor handles that); the watchdog is for
+    /// observability and triggering external alerts/rollback.
+    pub fn with_watchdog(
+        mut self,
+        watchdog: Arc<crate::watchdog::WatchdogTimer>,
+        command_timeout: Duration,
+    ) -> Self {
+        self.watchdog = Some(watchdog);
+        self.command_timeout = command_timeout;
+        self
     }
 
     /// Process a single action through the enhanced pipeline using DecisionContext
@@ -203,6 +241,7 @@ impl ConstrainedDecisionPipeline {
                 post_conditions: None,
                 verdict: ActionVerdict::Rejected(failure_msg),
                 rollback_plan: None,
+                rollback_executed: None,
                 audit,
                 total_latency_us: total_latency,
             };
@@ -245,6 +284,7 @@ impl ConstrainedDecisionPipeline {
                                     "Action infeasible and no alternative found".to_string()
                                 ),
                                 rollback_plan: None,
+                                rollback_executed: None,
                                 audit,
                                 total_latency_us: total_latency,
                             };
@@ -266,6 +306,7 @@ impl ConstrainedDecisionPipeline {
                             "Action infeasible with no alternatives".to_string()
                         ),
                         rollback_plan: None,
+                        rollback_executed: None,
                         audit,
                         total_latency_us: total_latency,
                     };
@@ -322,6 +363,19 @@ impl ConstrainedDecisionPipeline {
                 let mut execution_error = String::new();
                 for step in &decomposition.steps {
                     let cmd = structured_action_to_command(&step.action);
+
+                    // Register a watchdog guard for this command (v0.7.0).
+                    // The guard is dropped at the end of the loop iteration,
+                    // which cancels the watchdog if the command completed in time.
+                    let _watchdog_guard = self.watchdog.as_ref().map(|wd| {
+                        let op_id = format!(
+                            "cmd-step-{}-{}",
+                            step.step_index,
+                            chrono::Utc::now().timestamp_millis()
+                        );
+                        wd.register_with_timeout(op_id, self.command_timeout)
+                    });
+
                     if let Err(e) = self.gateway.execute_command(cmd).await {
                         execution_ok = false;
                         execution_error = format!("Step {} FAILED: {}", step.step_index, e);
@@ -365,6 +419,7 @@ impl ConstrainedDecisionPipeline {
                         post_conditions: None,
                         verdict: ActionVerdict::Rejected(execution_error),
                         rollback_plan: Some(rollback_plan),
+                        rollback_executed: None,
                         audit,
                         total_latency_us: total_latency,
                     };
@@ -379,8 +434,15 @@ impl ConstrainedDecisionPipeline {
                 // Fallback: if no observation provider is configured, re-run the
                 // simulator as a best-effort prediction (legacy behavior).
                 let (post_what_if, postcondition_source) = if let Some(ref provider) = self.observation_provider {
-                    match provider() {
-                        Some(obs) => {
+                    // Wrap synchronous provider call in spawn_blocking + timeout
+                    // to prevent SCADA/RTU I/O from blocking the async runtime.
+                    let provider_clone = Arc::clone(provider);
+                    let obs_result = tokio::time::timeout(
+                        OBSERVATION_TIMEOUT,
+                        tokio::task::spawn_blocking(move || provider_clone()),
+                    ).await;
+                    match obs_result {
+                        Ok(Ok(Some(obs))) => {
                             let what_if = WhatIfResult::from_observation(
                                 &obs,
                                 self.postcondition_verifier.voltage_min,
@@ -389,8 +451,13 @@ impl ConstrainedDecisionPipeline {
                             );
                             (what_if, "field_observation")
                         }
-                        None => {
+                        Ok(Ok(None)) => {
                             // Provider returned None — data unavailable, fall back
+                            let what_if = self.projector.simulator().simulate_action(&feasible_action);
+                            (what_if, "simulator_fallback")
+                        }
+                        Ok(Err(_)) | Err(_) => {
+                            // spawn_blocking panicked or timed out — fall back to simulator
                             let what_if = self.projector.simulator().simulate_action(&feasible_action);
                             (what_if, "simulator_fallback")
                         }
@@ -426,8 +493,103 @@ impl ConstrainedDecisionPipeline {
                 self.record_stats(total_latency, &verdict, projection.is_projected());
 
                 // Track postcondition failures
+                let mut rollback_executed: Option<RollbackExecution> = None;
                 if !post_result.satisfied {
-                    self.statistics.write().postcondition_failures += 1;
+                    self.statistics.postcondition_failures.fetch_add(1, Ordering::Relaxed);
+
+                    // ── Stage 7: Auto-rollback execution (v0.6.0 — S6) ──
+                    // When post-conditions fail and the rollback plan allows
+                    // automatic rollback, execute the undo steps in reverse
+                    // order to restore the system to its pre-action state.
+                    if rollback_plan.can_auto_rollback() {
+                        let rb_start = Instant::now();
+                        self.statistics.rollbacks_triggered.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            "Post-condition failed; executing auto-rollback ({} steps, strategy={:?})",
+                            rollback_plan.steps.len(),
+                            rollback_plan.strategy
+                        );
+
+                        let mut steps_succeeded = 0usize;
+                        let mut steps_attempted = 0usize;
+                        let mut rb_error: Option<String> = None;
+
+                        // Execute rollback steps in reverse order (last-in, first-out)
+                        for rb_step in rollback_plan.steps.iter().rev() {
+                            steps_attempted += 1;
+                            let undo_cmd = structured_action_to_command(&rb_step.undo_action);
+                            match self.gateway.execute_command(undo_cmd).await {
+                                Ok(_) => {
+                                    steps_succeeded += 1;
+                                    tracing::info!(
+                                        "Rollback step {} succeeded: {}",
+                                        steps_attempted, rb_step.description
+                                    );
+                                }
+                                Err(e) => {
+                                    let msg = format!(
+                                        "Rollback step {} FAILED: {} ({})",
+                                        steps_attempted, e, rb_step.description
+                                    );
+                                    tracing::error!("{}", msg);
+                                    rb_error = Some(msg);
+                                    // For BestEffort strategy, continue; otherwise stop
+                                    if rollback_plan.strategy != RollbackStrategy::BestEffort {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        let rb_duration = rb_start.elapsed().as_micros() as u64;
+                        rollback_executed = Some(match rb_error {
+                            None => {
+                                self.statistics.rollbacks_succeeded.fetch_add(1, Ordering::Relaxed);
+                                tracing::info!(
+                                    "Auto-rollback completed successfully ({} steps, {} µs)",
+                                    steps_succeeded, rb_duration
+                                );
+                                RollbackExecution::success(steps_succeeded, rb_duration)
+                            }
+                            Some(err) => {
+                                self.statistics.rollbacks_failed.fetch_add(1, Ordering::Relaxed);
+                                tracing::error!(
+                                    "Auto-rollback FAILED after {}/{} steps: {}",
+                                    steps_succeeded, steps_attempted, err
+                                );
+                                RollbackExecution::failure(
+                                    steps_attempted,
+                                    steps_succeeded,
+                                    err,
+                                    rb_duration,
+                                )
+                            }
+                        });
+
+                        audit.push(PipelineAuditEntry {
+                            stage: "rollback".to_string(),
+                            description: format!(
+                                "Auto-rollback executed: {} steps attempted, {} succeeded",
+                                steps_attempted, steps_succeeded
+                            ),
+                            duration_us: rb_duration,
+                            passed: rollback_executed.as_ref().map(|r| r.succeeded).unwrap_or(false),
+                        });
+                    } else {
+                        tracing::warn!(
+                            "Post-condition failed but auto-rollback not allowed (strategy={:?})",
+                            rollback_plan.strategy
+                        );
+                        audit.push(PipelineAuditEntry {
+                            stage: "rollback".to_string(),
+                            description: format!(
+                                "Rollback skipped (auto_rollback={}, strategy={:?})",
+                                rollback_plan.auto_rollback, rollback_plan.strategy
+                            ),
+                            duration_us: 0,
+                            passed: false,
+                        });
+                    }
                 }
 
                 EnhancedPipelineDecision {
@@ -439,6 +601,7 @@ impl ConstrainedDecisionPipeline {
                     post_conditions: Some(post_result),
                     verdict,
                     rollback_plan: Some(rollback_plan),
+                    rollback_executed,
                     audit,
                     total_latency_us: total_latency,
                 }
@@ -456,6 +619,7 @@ impl ConstrainedDecisionPipeline {
                     post_conditions: None,
                     verdict,
                     rollback_plan: Some(rollback_plan),
+                    rollback_executed: None,
                     audit,
                     total_latency_us: total_latency,
                 }
@@ -512,27 +676,32 @@ impl ConstrainedDecisionPipeline {
     }
 
     /// Get pipeline statistics
-    pub fn statistics(&self) -> PipelineStatistics {
-        self.statistics.read().clone()
+    pub fn statistics(&self) -> PipelineStatisticsSnapshot {
+        self.statistics.snapshot()
+    }
+
+    /// Expose the projector's `project` method for What-If analysis without
+    /// executing the action. Used by the `POST /api/whatif` endpoint.
+    pub fn project(&self, action: &StructuredAction) -> ProjectionResult {
+        self.projector.project(action)
     }
 
     /// Reset pipeline statistics
     pub fn reset_statistics(&self) {
-        *self.statistics.write() = PipelineStatistics::default();
+        self.statistics.reset();
     }
 
     /// Record statistics for a decision
     fn record_stats(&self, latency_us: u64, verdict: &ActionVerdict, was_projected: bool) {
-        let mut stats = self.statistics.write();
-        stats.record_decision(latency_us);
+        self.statistics.record_decision(latency_us);
         match verdict {
-            ActionVerdict::Approved => stats.approved += 1,
-            ActionVerdict::Rejected(_) => stats.rejected += 1,
-            ActionVerdict::PendingApproval { .. } => stats.pending_approval += 1,
-            ActionVerdict::EmergencyBypassed { .. } => stats.emergency_bypassed += 1,
+            ActionVerdict::Approved => { self.statistics.approved.fetch_add(1, Ordering::Relaxed); }
+            ActionVerdict::Rejected(_) => { self.statistics.rejected.fetch_add(1, Ordering::Relaxed); }
+            ActionVerdict::PendingApproval { .. } => { self.statistics.pending_approval.fetch_add(1, Ordering::Relaxed); }
+            ActionVerdict::EmergencyBypassed { .. } => { self.statistics.emergency_bypassed.fetch_add(1, Ordering::Relaxed); }
         }
         if was_projected {
-            stats.projected += 1;
+            self.statistics.projected.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -569,10 +738,10 @@ pub fn structured_action_to_command(action: &StructuredAction) -> Command {
                 CommandPriority::Normal
             };
             let device_value = match operation.as_str() {
-                "close" | "合闸" => Some(eneros_device::adapter::DataValue::Bool(true)),
-                "open" | "分闸" => Some(eneros_device::adapter::DataValue::Bool(false)),
-                "adjust_reactive" => Some(eneros_device::adapter::DataValue::Float64(*value)),
-                _ => Some(eneros_device::adapter::DataValue::Float64(*value)),
+                "close" | "合闸" => Some(DeviceValue::Bool(true)),
+                "open" | "分闸" => Some(DeviceValue::Bool(false)),
+                "adjust_reactive" => Some(DeviceValue::Float64(*value)),
+                _ => Some(DeviceValue::Float64(*value)),
             };
             let mut cmd = Command::new(
                 cmd_type,
@@ -672,6 +841,10 @@ mod tests {
     use super::*;
     use eneros_constraint::ConstraintEngine;
     use eneros_constraint::projector::{NetworkSimulator, WhatIfResult};
+    use async_trait::async_trait;
+    use crate::executor::{CommandExecutor, ExecutionResult};
+    use eneros_core::Result as CoreResult;
+    use tokio::sync::Mutex;
 
     struct MockSimulator;
     impl NetworkSimulator for MockSimulator {
@@ -867,5 +1040,181 @@ mod tests {
         let (zone2, device2) = extract_targets(&action2);
         assert_eq!(zone2, None);
         assert_eq!(device2, Some(10));
+    }
+
+    // ── Auto-rollback tests (v0.6.0 — S6) ──
+
+    /// Mock executor that records all executed commands for verification.
+    struct RecordingExecutor {
+        commands: Arc<Mutex<Vec<Command>>>,
+    }
+
+    impl RecordingExecutor {
+        fn new() -> (Self, Arc<Mutex<Vec<Command>>>) {
+            let cmds = Arc::new(Mutex::new(Vec::new()));
+            (Self { commands: cmds.clone() }, cmds)
+        }
+    }
+
+    #[async_trait]
+    impl CommandExecutor for RecordingExecutor {
+        async fn execute(&self, command: &Command) -> CoreResult<ExecutionResult> {
+            self.commands.lock().await.push(command.clone());
+            Ok(ExecutionResult::ok(
+                format!("Executed command {} type {:?}", command.id, command.command_type),
+                Duration::from_micros(100),
+            ))
+        }
+
+        async fn read_back(&self, _command: &Command) -> Option<eneros_device::adapter::DataValue> {
+            None
+        }
+    }
+
+    /// Simulator that returns success on the first call (for projection) and
+    /// a voltage violation on subsequent calls (to fail postcondition).
+    struct FlakySimulator {
+        call_count: std::sync::atomic::AtomicU32,
+    }
+
+    impl FlakySimulator {
+        fn new() -> Self {
+            Self {
+                call_count: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+    }
+
+    impl NetworkSimulator for FlakySimulator {
+        fn simulate_action(&self, _action: &StructuredAction) -> WhatIfResult {
+            use std::sync::atomic::Ordering;
+            let n = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
+            // First call: projection succeeds. Later calls: postcondition fails.
+            if n <= 1 {
+                WhatIfResult {
+                    applicable: true,
+                    converged: true,
+                    voltage_violations: vec![],
+                    thermal_violations: vec![],
+                    all_constraints_satisfied: true,
+                    summary: "OK".to_string(),
+                }
+            } else {
+                WhatIfResult {
+                    applicable: true,
+                    converged: true,
+                    voltage_violations: vec![(1, 0.90, 0.95)],
+                    thermal_violations: vec![],
+                    all_constraints_satisfied: false,
+                    summary: "Voltage violation on bus 1".to_string(),
+                }
+            }
+        }
+        fn generator_limits(&self) -> Vec<(u64, f64, f64)> {
+            vec![(1, 0.0, 200.0)]
+        }
+        fn current_voltages(&self) -> Vec<(u64, f64)> {
+            vec![(1, 1.02)]
+        }
+    }
+
+    /// Build a pipeline with a flaky simulator that fails postcondition and a
+    /// recording executor that tracks rollback commands.
+    fn make_rollback_pipeline() -> (ConstrainedDecisionPipeline, Arc<Mutex<Vec<Command>>>) {
+        let sim = FlakySimulator::new();
+        let projector = Arc::new(FeasibilityProjector::new(Arc::new(sim)));
+        let constraint_engine = Arc::new(ConstraintEngine::new());
+        let (rec_exec, recorded_cmds) = RecordingExecutor::new();
+        let gateway = Arc::new(SafetyGateway::with_executor(100, Arc::new(rec_exec)));
+        let validator = Arc::new(ConstraintAwareValidator::with_default_interlocking(
+            constraint_engine, gateway.clone(),
+        ));
+        let pipeline = ConstrainedDecisionPipeline::new(projector, validator, gateway);
+        (pipeline, recorded_cmds)
+    }
+
+    #[tokio::test]
+    async fn test_auto_rollback_triggered_on_postcondition_failure() {
+        let (pipeline, recorded_cmds) = make_rollback_pipeline();
+        // Use IsolateFault — it decomposes into 2 steps (atomic=true), so the
+        // rollback plan will have undo steps and allow auto-rollback.
+        let action = StructuredAction::IsolateFault {
+            upstream_switch: 10,
+            downstream_switch: 20,
+        };
+        let ctx = DecisionContext::new(
+            AuthorityLevel::Emergency,
+            Jurisdiction::unrestricted(),
+            SystemOperatingState::Emergency,
+        ).with_device_states(crate::interlocking::DeviceStates::default());
+        let result = pipeline.decide_enhanced(&action, &ctx).await;
+
+        // Postcondition should have failed (flaky simulator returns violation)
+        let post = result.post_conditions.as_ref().expect("postcondition should run");
+        assert!(!post.satisfied, "Postcondition should fail");
+
+        // Rollback plan should exist and allow auto-rollback
+        let rb_plan = result.rollback_plan.as_ref().expect("rollback plan should exist");
+        assert!(rb_plan.can_auto_rollback(), "auto-rollback should be allowed (steps={}, auto={}, strategy={:?})",
+            rb_plan.steps.len(), rb_plan.auto_rollback, rb_plan.strategy);
+
+        // Rollback should have been executed
+        let rb_exec = result.rollback_executed.as_ref().expect("rollback should be executed");
+        assert!(rb_exec.succeeded, "rollback should succeed");
+        assert!(rb_exec.steps_attempted > 0, "at least one rollback step attempted");
+
+        // The recording executor should have received the original commands + rollback commands
+        // IsolateFault = 2 steps + 2 rollback steps = 4 commands minimum
+        let cmds = recorded_cmds.lock().await;
+        assert!(cmds.len() >= 4, "expected at least 4 commands (2 original + 2 rollback), got {}", cmds.len());
+
+        // Statistics should reflect the rollback
+        let stats = pipeline.statistics.snapshot();
+        assert_eq!(stats.rollbacks_triggered, 1, "rollbacks_triggered should be 1");
+        assert_eq!(stats.rollbacks_succeeded, 1, "rollbacks_succeeded should be 1");
+        assert_eq!(stats.rollbacks_failed, 0, "rollbacks_failed should be 0");
+        assert_eq!(stats.postcondition_failures, 1, "postcondition_failures should be 1");
+    }
+
+    #[tokio::test]
+    async fn test_no_rollback_when_postcondition_satisfied() {
+        // Use the normal (non-flaky) pipeline where postcondition passes
+        let pipeline = make_pipeline();
+        let action = StructuredAction::StartGenerator { gen_id: 1, target_mw: 100.0 };
+        let ctx = DecisionContext::new(
+            AuthorityLevel::Supervisor,
+            Jurisdiction::unrestricted(),
+            SystemOperatingState::Normal,
+        );
+        let result = pipeline.decide_enhanced(&action, &ctx).await;
+
+        // Postcondition should pass
+        let post = result.post_conditions.as_ref().expect("postcondition should run");
+        assert!(post.satisfied, "Postcondition should pass");
+
+        // No rollback should have been executed
+        assert!(result.rollback_executed.is_none(), "no rollback should be executed");
+
+        let stats = pipeline.statistics.snapshot();
+        assert_eq!(stats.rollbacks_triggered, 0, "no rollbacks should be triggered");
+    }
+
+    #[tokio::test]
+    async fn test_rollback_audit_entry_added() {
+        let (pipeline, _recorded_cmds) = make_rollback_pipeline();
+        let action = StructuredAction::IsolateFault {
+            upstream_switch: 10,
+            downstream_switch: 20,
+        };
+        let ctx = DecisionContext::new(
+            AuthorityLevel::Emergency,
+            Jurisdiction::unrestricted(),
+            SystemOperatingState::Emergency,
+        ).with_device_states(crate::interlocking::DeviceStates::default());
+        let result = pipeline.decide_enhanced(&action, &ctx).await;
+
+        // Should have a "rollback" audit entry
+        let has_rollback_audit = result.audit.iter().any(|a| a.stage == "rollback");
+        assert!(has_rollback_audit, "audit trail should contain a 'rollback' entry");
     }
 }

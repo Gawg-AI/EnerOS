@@ -1,0 +1,28 @@
+# EnerOS 时间同步配置
+# PTP IEEE 1588 优先，NTP 回退，时钟源优先级：PTP > NTP > RTC
+
+# 启用的时钟源（按优先级排序）
+enabled_sources = ["ptp", "ntp"]
+
+# 时间偏差告警阈值（微秒，1000 = 1ms）
+offset_alert_micros = 1000
+
+[ptp]
+# PTP 绑定的网络接口（电力通信网通常用 bond0 或 eth1）
+interface = "bond0"
+# PTP 域号（电力系统多区域用，默认 0）
+domain = 0
+# PHC 设备路径（留空则自动发现 /dev/ptp*）
+# phc_device = "/dev/ptp0"
+# 启用硬件时间戳（需要网卡支持）
+hardware_timestamping = true
+
+[ntp]
+# NTP 服务器列表（按优先级排序）
+servers = [
+    "ntp.aliyun.com",
+    "time.windows.com",
+    "time.google.com",
+]
+# 轮询间隔（秒）
+poll_interval_secs = 64

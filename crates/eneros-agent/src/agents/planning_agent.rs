@@ -258,14 +258,6 @@ impl Agent for PlanningAgent {
     fn jurisdiction(&self) -> Jurisdiction { self.jurisdiction.clone() }
     fn tick_interval(&self) -> Duration { Duration::from_secs(3600) }
 
-    async fn start(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn stop(&mut self) -> Result<()> {
-        Ok(())
-    }
-
     async fn handle_event(&mut self, event: &Event, _ctx: &AgentContext) -> Result<Vec<AgentAction>> {
         let mut actions = Vec::new();
 
@@ -305,7 +297,7 @@ impl Agent for PlanningAgent {
         let mut actions = Vec::new();
 
         // Get current network state
-        let network = ctx.network.read();
+        let network = ctx.remote.network.read();
         if let Ok(power_flow) = network.solve() {
             let state = PowerSystemState {
                 timestamp: chrono::Utc::now(),
@@ -636,12 +628,5 @@ mod tests {
         let actions = agent.handle_emergency(&event, &ctx).await.unwrap();
         assert!(!actions.is_empty());
         assert!(actions.iter().any(|a| matches!(a, AgentAction::DelegateTask { .. })));
-    }
-
-    #[tokio::test]
-    async fn test_planning_agent_start_stop() {
-        let mut agent = make_test_agent();
-        agent.start().await.unwrap();
-        agent.stop().await.unwrap();
     }
 }

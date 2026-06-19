@@ -93,8 +93,8 @@ pub fn generate_topology_svg(
             let color = if branch.status { "#cccccc" } else { "#555555" };
             let stroke_width = if branch.status { 2 } else { 1 };
             svg.push_str(&format!(
-                "  <line x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
-                x1, y1, x2, y2, color, stroke_width
+                "  <line x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" stroke=\"{}\" stroke-width=\"{}\" data-branch-id=\"{}\"/>\n",
+                x1, y1, x2, y2, color, stroke_width, branch.id
             ));
         }
     }
@@ -103,12 +103,12 @@ pub fn generate_topology_svg(
     for bus in buses {
         let fill = zone_color(bus.zone_id);
         svg.push_str(&format!(
-            "  <circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"{}\" fill=\"{}\" stroke=\"#ffffff\" stroke-width=\"1\"/>\n",
-            bus.x, bus.y, config.bus_radius, fill
+            "  <circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"{}\" fill=\"{}\" stroke=\"#ffffff\" stroke-width=\"1\" data-bus-id=\"{}\"/>\n",
+            bus.x, bus.y, config.bus_radius, fill, bus.id
         ));
         svg.push_str(&format!(
-            "  <text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" dominant-baseline=\"central\" fill=\"#ffffff\" font-size=\"{}\">{}</text>\n",
-            bus.x, bus.y, config.font_size, bus.name
+            "  <text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" dominant-baseline=\"central\" fill=\"#ffffff\" font-size=\"{}\" data-bus-id=\"{}\">{}</text>\n",
+            bus.x, bus.y, config.font_size, bus.id, bus.name
         ));
     }
 
@@ -210,6 +210,92 @@ mod tests {
         assert!(svg.contains("<text"));
         assert!(svg.contains("Bus1"));
         assert!(svg.contains("Bus2"));
+    }
+
+    #[test]
+    fn test_svg_contains_data_bus_id() {
+        let buses = vec![
+            BusSvgData {
+                id: 1,
+                name: "Bus1".to_string(),
+                x: 200.0,
+                y: 200.0,
+                zone_id: 0,
+                voltage_level: "110kV".to_string(),
+            },
+            BusSvgData {
+                id: 2,
+                name: "Bus2".to_string(),
+                x: 600.0,
+                y: 200.0,
+                zone_id: 1,
+                voltage_level: "220kV".to_string(),
+            },
+        ];
+        let branches = vec![];
+        let config = TopologySvgConfig::default();
+        let svg = generate_topology_svg(&buses, &branches, &config);
+
+        // Both circle and text elements should carry data-bus-id attributes
+        assert!(
+            svg.contains("data-bus-id=\"1\""),
+            "SVG should contain data-bus-id=\"1\" for bus 1"
+        );
+        assert!(
+            svg.contains("data-bus-id=\"2\""),
+            "SVG should contain data-bus-id=\"2\" for bus 2"
+        );
+        // Each bus should have both a circle and a text element with the attribute
+        let bus1_count = svg.matches("data-bus-id=\"1\"").count();
+        let bus2_count = svg.matches("data-bus-id=\"2\"").count();
+        assert_eq!(
+            bus1_count, 2,
+            "bus 1 should have data-bus-id on both circle and text"
+        );
+        assert_eq!(
+            bus2_count, 2,
+            "bus 2 should have data-bus-id on both circle and text"
+        );
+    }
+
+    #[test]
+    fn test_svg_contains_data_branch_id() {
+        let buses = vec![
+            BusSvgData {
+                id: 1,
+                name: "Bus1".to_string(),
+                x: 200.0,
+                y: 200.0,
+                zone_id: 0,
+                voltage_level: "110kV".to_string(),
+            },
+            BusSvgData {
+                id: 2,
+                name: "Bus2".to_string(),
+                x: 600.0,
+                y: 200.0,
+                zone_id: 0,
+                voltage_level: "110kV".to_string(),
+            },
+        ];
+        let branches = vec![BranchSvgData {
+            id: 42,
+            from_bus: 1,
+            to_bus: 2,
+            status: true,
+        }];
+        let config = TopologySvgConfig::default();
+        let svg = generate_topology_svg(&buses, &branches, &config);
+
+        assert!(
+            svg.contains("data-branch-id=\"42\""),
+            "SVG should contain data-branch-id=\"42\" for the branch"
+        );
+        let branch_count = svg.matches("data-branch-id=\"42\"").count();
+        assert_eq!(
+            branch_count, 1,
+            "branch line should carry exactly one data-branch-id attribute"
+        );
     }
 
     #[test]

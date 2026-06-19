@@ -157,7 +157,7 @@ impl DispatchAgent {
     }
 
     fn get_total_load(&self, ctx: &AgentContext) -> f64 {
-        let network = ctx.network.read();
+        let network = ctx.remote.network.read();
         if let Ok(result) = network.solve() {
             let total_load: f64 = result.bus_results.iter()
                 .filter(|b| b.p_injection < 0.0)
@@ -198,14 +198,17 @@ impl DispatchAgent {
             dispatch.total_generation_mw, dispatch.total_load_mw, dispatch.total_cost
         ));
 
-        match ctx.reasoning.reason(input).await {
-            Ok(output) => {
-                vec![AgentAction::LogMessage(format!(
-                    "dispatch review: {} (confidence: {:.2})",
-                    output.conclusion, output.confidence
-                ))]
-            }
-            Err(_) => Vec::new(),
+        match ctx.remote.reasoning.as_ref() {
+            Some(r) => match r.reason(input).await {
+                Ok(output) => {
+                    vec![AgentAction::LogMessage(format!(
+                        "dispatch review: {} (confidence: {:.2})",
+                        output.conclusion, output.confidence
+                    ))]
+                }
+                Err(_) => Vec::new(),
+            },
+            None => Vec::new(),
         }
     }
 }
@@ -218,14 +221,6 @@ impl Agent for DispatchAgent {
     fn authority_level(&self) -> AuthorityLevel { AuthorityLevel::Supervisor }
     fn jurisdiction(&self) -> Jurisdiction { self.jurisdiction.clone() }
     fn tick_interval(&self) -> Duration { Duration::from_secs(5) }
-
-    async fn start(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn stop(&mut self) -> Result<()> {
-        Ok(())
-    }
 
     async fn handle_event(&mut self, event: &Event, ctx: &AgentContext) -> Result<Vec<AgentAction>> {
         let mut actions = Vec::new();

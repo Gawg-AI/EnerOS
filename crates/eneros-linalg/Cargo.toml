@@ -1,0 +1,11 @@
+[package]
+name = "eneros-linalg"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sprs = { workspace = true }
+num-complex = { workspace = true }
+ndarray = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }

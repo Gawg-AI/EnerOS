@@ -29,7 +29,16 @@ impl SqliteStorage {
                 value REAL NOT NULL,
                 quality TEXT NOT NULL,
                 PRIMARY KEY (element_id, parameter, timestamp)
-            )",
+            ) WITHOUT ROWID",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+
+        // Composite index for range queries (element_id, parameter, timestamp)
+        // WITHOUT ROWID + PRIMARY KEY already provides this, but add explicit
+        // index on timestamp for cleanup() and latest() queries.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ts_time ON time_series(timestamp)",
             [],
         )
         .map_err(|e| e.to_string())?;

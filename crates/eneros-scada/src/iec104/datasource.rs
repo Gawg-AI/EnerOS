@@ -6,9 +6,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use eneros_core::ElementId;
 use eneros_device::adapters::iec104::client::Iec104Client;
 use parking_lot::RwLock;
+use tracing::debug;
 
 use crate::collector::DataSource;
 use super::mapping::IoaMappingTable;
@@ -17,6 +19,14 @@ use super::mapping::IoaMappingTable;
 ///
 /// Bridges IEC 104 IOA-based data into the (element_id, parameter) → f64
 /// model used by `ScadaCollector`.
+///
+/// # Refresh model
+///
+/// `Iec104DataSource` is **pull-based**: the `DataPipeline` scan loop calls
+/// `refresh()` before each `collect_once()` cycle, which in turn calls
+/// `Iec104Client::get_all_values()` to pull the latest cached ASDUs from
+/// the underlying TCP connection and apply the IOA→(element_id, parameter)
+/// mapping with scale/offset conversion.
 pub struct Iec104DataSource {
     client: Arc<Iec104Client>,
     mapping: IoaMappingTable,
@@ -35,6 +45,10 @@ impl Iec104DataSource {
     }
 
     /// Refresh the cache from the IEC 104 client's latest data.
+    ///
+    /// This is the same logic used by the `DataSource::refresh()` impl below,
+    /// kept as a standalone method for backward compatibility and tests that
+    /// call it directly.
     pub async fn refresh_cache(&self) {
         let values = self.client.get_all_values().await;
         let mut cache = self.cache.write();
@@ -70,9 +84,28 @@ impl Iec104DataSource {
     }
 }
 
+#[async_trait]
 impl DataSource for Iec104DataSource {
     fn read(&self, element_id: ElementId, parameter: &str) -> Option<f64> {
         self.cache.read().get(&(element_id, parameter.to_string())).copied()
+    }
+
+    /// Pull fresh data from the IEC 104 client into the local cache.
+    ///
+    /// Called by the `DataPipeline` scan loop before `collect_once()`.
+    /// If the client is not in the `Active` state, this is a no-op so that
+    /// a transient connection loss does not wipe the last-known-good cache.
+    async fn refresh(&self) {
+        use eneros_device::adapters::iec104::client::ConnectionState;
+        let state = self.client.connection_state().await;
+        if !matches!(state, ConnectionState::Active) {
+            debug!(
+                "Iec104DataSource::refresh skipped — client not Active (state={:?})",
+                state
+            );
+            return;
+        }
+        self.refresh_cache().await;
     }
 }
 

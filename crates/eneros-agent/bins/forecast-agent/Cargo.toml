@@ -1,0 +1,27 @@
+[package]
+name = "eneros-forecast-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS load forecast agent process (exponential smoothing, Holt-Winters)"
+
+[[bin]]
+name = "eneros-forecast-agent"
+path = "src/main.rs"
+
+[dependencies]
+eneros-agent = { path = "../.." }
+eneros-core = { path = "../../../eneros-core" }
+eneros-eventbus = { path = "../../../eneros-eventbus" }
+eneros-gateway = { path = "../../../eneros-gateway" }
+eneros-network = { path = "../../../eneros-network" }
+eneros-timeseries = { path = "../../../eneros-timeseries" }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
