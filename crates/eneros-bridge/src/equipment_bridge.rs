@@ -1,32 +1,71 @@
 use std::collections::HashMap;
 use eneros_equipment::{TwoWindingTransformer, TransmissionLine, ConstantPowerLoad};
 use crate::python_bridge::{PythonBridge, BridgeResult};
+use crate::bridge_client::BridgeClient;
 use crate::topology_types::NetworkTopologyData;
 use crate::pandapower_types::PandapowerResult;
 
+/// Enum-based backend selection (avoids dyn-incompatibility of generic trait methods).
+pub enum BridgeKind {
+    /// Subprocess-per-call mode (simple, slow).
+    Subprocess(PythonBridge),
+    /// HTTP persistent server mode (fast, recommended).
+    Http(BridgeClient),
+}
+
+impl BridgeKind {
+    fn call<T: serde::de::DeserializeOwned>(
+        &self,
+        command: &str,
+        params: HashMap<String, serde_json::Value>,
+    ) -> BridgeResult<T> {
+        match self {
+            BridgeKind::Subprocess(b) => b.call(command, params),
+            BridgeKind::Http(b) => b.call(command, params),
+        }
+    }
+}
+
 pub struct CnpowerEquipmentLoader {
-    bridge: PythonBridge,
+    bridge: BridgeKind,
 }
 
 impl CnpowerEquipmentLoader {
+    /// Create a new loader using the HTTP-based `BridgeClient` (recommended).
+    ///
+    /// The HTTP bridge starts a persistent Python process that serves all
+    /// subsequent calls, avoiding the per-call Python startup cost of
+    /// `PythonBridge`.
+    ///
+    /// **Note**: The returned loader holds an *unstarted* `BridgeClient`.
+    /// Callers must call `start_server()` before issuing `load_*` commands,
+    /// or construct with `with_backend()` using a pre-started client.
     pub fn new() -> Self {
         Self {
-            bridge: PythonBridge::new(),
+            bridge: BridgeKind::Http(BridgeClient::new()),
         }
     }
 
-    pub fn with_bridge(bridge: PythonBridge) -> Self {
-        Self {
-            bridge,
+    /// Create a loader with a custom backend kind.
+    pub fn with_backend(bridge: BridgeKind) -> Self {
+        Self { bridge }
+    }
+
+    /// Start the HTTP bridge server if using `BridgeKind::Http` (no-op otherwise).
+    pub fn start_server(&mut self) -> BridgeResult<()> {
+        if let BridgeKind::Http(client) = &mut self.bridge {
+            client.start()?;
         }
+        Ok(())
     }
 
     pub fn load_all_transformers(&mut self) -> BridgeResult<Vec<TwoWindingTransformer>> {
         let raw: Vec<serde_json::Value> = self.bridge.call("list_transformers", HashMap::new())?;
         let mut result = Vec::new();
 
-        for entry in &raw {
-            if let Some(trafo) = self.parse_transformer(entry) {
+        for (idx, entry) in raw.iter().enumerate() {
+            if let Some(mut trafo) = self.parse_transformer(entry) {
+                trafo.id = (idx + 1) as u64;
                 result.push(trafo);
             }
         }
@@ -44,10 +83,13 @@ impl CnpowerEquipmentLoader {
         params.insert("model".to_string(), serde_json::Value::String(model.to_string()));
 
         let raw: serde_json::Value = self.bridge.call("get_transformer", params)?;
-        self.parse_transformer(&raw)
+        let mut trafo = self.parse_transformer(&raw)
             .ok_or_else(|| crate::python_bridge::BridgeError::CommandFailed(
                 format!("Failed to parse transformer: {}", model)
-            ))
+            ))?;
+        // Single-transformer lookup: assign a stable hash-based ID.
+        trafo.id = self.hash_id(&trafo.name);
+        Ok(trafo)
     }
 
     fn parse_transformer(&self, raw: &serde_json::Value) -> Option<TwoWindingTransformer> {
@@ -74,7 +116,7 @@ impl CnpowerEquipmentLoader {
         let tap_step_percent = extract_f64(obj, "tap_step_percent").unwrap_or(1.25);
 
         Some(TwoWindingTransformer {
-            id: 0,
+            id: 0,  // assigned by caller
             name,
             rated_mva,
             rated_kv_high: vn_hv_kv,
@@ -83,8 +125,8 @@ impl CnpowerEquipmentLoader {
             resistance_percent: vkr_percent,
             tap_position,
             tap_step_percent,
-            hv_bus_id: 0,
-            lv_bus_id: 1,
+            hv_bus_id: 0,  // bus IDs assigned by network builder
+            lv_bus_id: 0,
         })
     }
 
@@ -92,8 +134,9 @@ impl CnpowerEquipmentLoader {
         let raw: Vec<serde_json::Value> = self.bridge.call("list_cables", HashMap::new())?;
         let mut result = Vec::new();
 
-        for entry in &raw {
-            if let Some(line) = self.parse_cable(entry) {
+        for (idx, entry) in raw.iter().enumerate() {
+            if let Some(mut line) = self.parse_cable(entry) {
+                line.id = (idx + 1) as u64;
                 result.push(line);
             }
         }
@@ -122,7 +165,7 @@ impl CnpowerEquipmentLoader {
             .unwrap_or(10.0);
 
         Some(TransmissionLine {
-            id: 0,
+            id: 0,  // assigned by caller
             name,
             length_km: 1.0,
             r_per_km,
@@ -130,8 +173,8 @@ impl CnpowerEquipmentLoader {
             b_per_km,
             rated_current_ka,
             rated_kv,
-            from_bus_id: 0,
-            to_bus_id: 1,
+            from_bus_id: 0,  // bus IDs assigned by network builder
+            to_bus_id: 0,
         })
     }
 
@@ -139,8 +182,9 @@ impl CnpowerEquipmentLoader {
         let raw: Vec<serde_json::Value> = self.bridge.call("list_overhead_lines", HashMap::new())?;
         let mut result = Vec::new();
 
-        for entry in &raw {
-            if let Some(line) = self.parse_overhead_line(entry) {
+        for (idx, entry) in raw.iter().enumerate() {
+            if let Some(mut line) = self.parse_overhead_line(entry) {
+                line.id = (idx + 1) as u64;
                 result.push(line);
             }
         }
@@ -169,7 +213,7 @@ impl CnpowerEquipmentLoader {
             .unwrap_or(10.0);
 
         Some(TransmissionLine {
-            id: 0,
+            id: 0,  // assigned by caller
             name,
             length_km: 1.0,
             r_per_km,
@@ -177,9 +221,20 @@ impl CnpowerEquipmentLoader {
             b_per_km,
             rated_current_ka,
             rated_kv,
-            from_bus_id: 0,
-            to_bus_id: 1,
+            from_bus_id: 0,  // bus IDs assigned by network builder
+            to_bus_id: 0,
         })
+    }
+
+    /// Generate a stable u64 ID from a name string (FNV-1a inspired).
+    /// Used for single-item lookups where no natural index exists.
+    fn hash_id(&self, name: &str) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in name.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
     }
 
     /// Load load definitions from cnpower.

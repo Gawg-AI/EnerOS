@@ -176,14 +176,6 @@ impl Agent for TradingAgent {
     fn jurisdiction(&self) -> Jurisdiction { self.jurisdiction.clone() }
     fn tick_interval(&self) -> Duration { Duration::from_secs(300) }
 
-    async fn start(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn stop(&mut self) -> Result<()> {
-        Ok(())
-    }
-
     async fn handle_event(&mut self, event: &Event, _ctx: &AgentContext) -> Result<Vec<AgentAction>> {
         let mut actions = Vec::new();
 
@@ -533,12 +525,5 @@ mod tests {
         assert!(!actions.is_empty());
         // Should log marginal cost bids for each generator
         assert!(actions.iter().any(|a| matches!(a, AgentAction::LogMessage(_))));
-    }
-
-    #[tokio::test]
-    async fn test_trading_agent_start_stop() {
-        let mut agent = make_test_agent();
-        agent.start().await.unwrap();
-        agent.stop().await.unwrap();
     }
 }

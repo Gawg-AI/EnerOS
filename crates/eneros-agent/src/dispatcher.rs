@@ -1,35 +1,91 @@
-use eneros_core::{AuthorityLevel, AuditEntry, Jurisdiction, Result, StructuredAction, SystemOperatingState};
-use eneros_eventbus::EventBus;
-use eneros_gateway::SafetyGateway;
+use std::sync::Arc;
+
+use eneros_core::{
+    AuthorityLevel, AuditEntry, EventBusPublisher, GatewayClient, Jurisdiction, Result,
+    DecisionContextCore, StructuredAction, SystemOperatingState,
+};
+use eneros_eventbus::{EventBus, LocalEventBusPublisher};
+use eneros_gateway::{LocalGatewayClient, SafetyGateway};
 use eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline;
+use eneros_tool::ToolEngine;
 
 use crate::agent::AgentAction;
 use crate::audit::AuditTrail;
+use crate::context::AgentContext;
+use crate::message::AgentMessage;
 
-/// Dispatches agent actions to the appropriate subsystems
+/// Dispatches agent actions to the appropriate subsystems.
+///
+/// In v0.15.0 the dispatcher uses trait objects (`EventBusPublisher`,
+/// `GatewayClient`) instead of concrete types, enabling Agent process
+/// migration. The constrained decision pipeline is optionally held for
+/// in-process backward compatibility; when present, `dispatch_structured`
+/// uses it directly. When absent, `ExecuteStructured` actions are routed
+/// through the `GatewayClient::decide()` method.
 pub struct ActionDispatcher {
-    event_bus: std::sync::Arc<EventBus>,
-    gateway: std::sync::Arc<SafetyGateway>,
-    /// Optional constrained decision pipeline for StructuredAction validation
-    decision_pipeline: Option<std::sync::Arc<ConstrainedDecisionPipeline>>,
+    event_bus: Arc<dyn EventBusPublisher>,
+    gateway_client: Arc<dyn GatewayClient>,
+    /// Optional constrained decision pipeline for in-process use.
+    /// When Some, `dispatch_structured` uses it directly instead of going
+    /// through `gateway_client.decide()`.
+    decision_pipeline: Option<Arc<ConstrainedDecisionPipeline>>,
+    /// Optional tool engine for CallTool actions.
+    /// Uses tokio::sync::RwLock (not parking_lot) because ToolEngine::execute
+    /// is async and the read guard must be held across an await point.
+    tool_engine: Option<Arc<tokio::sync::RwLock<ToolEngine>>>,
+    /// Optional shared context for DelegateTask routing (sends messages to
+    /// the target agent via the shared MessageStore or event bus).
+    context: Option<Arc<AgentContext>>,
 }
 
 impl ActionDispatcher {
-    /// Create a new ActionDispatcher
+    /// Create a new ActionDispatcher from trait object handles.
     pub fn new(
-        event_bus: std::sync::Arc<EventBus>,
-        gateway: std::sync::Arc<SafetyGateway>,
+        event_bus: Arc<dyn EventBusPublisher>,
+        gateway_client: Arc<dyn GatewayClient>,
     ) -> Self {
-        Self { event_bus, gateway, decision_pipeline: None }
+        Self {
+            event_bus,
+            gateway_client,
+            decision_pipeline: None,
+            tool_engine: None,
+            context: None,
+        }
     }
 
-    /// Create an ActionDispatcher with a constrained decision pipeline
-    pub fn with_pipeline(
-        event_bus: std::sync::Arc<EventBus>,
-        gateway: std::sync::Arc<SafetyGateway>,
-        pipeline: std::sync::Arc<ConstrainedDecisionPipeline>,
+    /// Create an ActionDispatcher for in-process use, wrapping concrete
+    /// `EventBus` and `SafetyGateway` in their local implementations.
+    pub fn new_local(
+        event_bus: Arc<EventBus>,
+        gateway: Arc<SafetyGateway>,
     ) -> Self {
-        Self { event_bus, gateway, decision_pipeline: Some(pipeline) }
+        Self::new(
+            Arc::new(LocalEventBusPublisher::new(event_bus)),
+            Arc::new(LocalGatewayClient::new(gateway)),
+        )
+    }
+
+    /// Attach a constrained decision pipeline for in-process use.
+    pub fn with_pipeline(mut self, pipeline: Arc<ConstrainedDecisionPipeline>) -> Self {
+        self.decision_pipeline = Some(pipeline);
+        self
+    }
+
+    /// Attach a tool engine to an existing dispatcher
+    pub fn with_tool_engine(
+        mut self,
+        tool_engine: Arc<tokio::sync::RwLock<ToolEngine>>,
+    ) -> Self {
+        self.tool_engine = Some(tool_engine);
+        self
+    }
+
+    /// Attach a shared AgentContext for DelegateTask routing.
+    /// When set, DelegateTask actions send a message to the target agent
+    /// via the shared MessageStore or event bus instead of just logging.
+    pub fn with_context(mut self, ctx: Arc<AgentContext>) -> Self {
+        self.context = Some(ctx);
+        self
     }
 
     /// Whether a constrained decision pipeline is wired in.
@@ -39,7 +95,11 @@ impl ActionDispatcher {
         self.decision_pipeline.is_some()
     }
 
-    /// Dispatch a structured action through the constrained decision pipeline
+    /// Dispatch a structured action through the constrained decision pipeline.
+    ///
+    /// When a local `decision_pipeline` is configured, uses it directly
+    /// (in-process backward compatibility). Otherwise, delegates to
+    /// `GatewayClient::decide()` which routes to the Gateway's pipeline.
     pub async fn dispatch_structured(
         &self,
         action: &StructuredAction,
@@ -56,8 +116,34 @@ impl ActionDispatcher {
                 Ok(DispatchResult::ConstraintRejected(reason))
             }
         } else {
-            // No pipeline — fallback to direct execution (backward compat)
-            Ok(DispatchResult::CommandExecuted)
+            let ctx_core = DecisionContextCore {
+                authority,
+                jurisdiction: jurisdiction.clone(),
+                system_state,
+                observation: None,
+                agent_id: String::new(),
+                reasoning: String::new(),
+            };
+            match self.gateway_client.decide(action.clone(), ctx_core).await {
+                Ok(result) => {
+                    if result.executed {
+                        Ok(DispatchResult::CommandExecuted)
+                    } else {
+                        let reason = format_verdict_as_string(&result.verdict);
+                        Ok(DispatchResult::ConstraintRejected(reason))
+                    }
+                }
+                Err(e) => {
+                    // Gateway client error (e.g. IPC failure, no pipeline
+                    // configured on the remote side). Propagate as an error
+                    // so the caller knows the action was NOT executed.
+                    tracing::warn!("dispatch_structured gateway error: {}", e);
+                    Err(eneros_core::EnerOSError::Internal(format!(
+                        "gateway decide failed: {}",
+                        e
+                    )))
+                }
+            }
         }
     }
 
@@ -65,23 +151,30 @@ impl ActionDispatcher {
     pub async fn dispatch(&self, action: AgentAction) -> Result<DispatchResult> {
         match action {
             AgentAction::PublishEvent(event) => {
-                self.event_bus.publish(event)?;
+                self.event_bus
+                    .publish_event(event)
+                    .await
+                    .map_err(|e| eneros_core::EnerOSError::Internal(e.to_string()))?;
                 Ok(DispatchResult::EventPublished)
             }
             AgentAction::ExecuteCommand(cmd) => {
-                self.gateway.execute_command(cmd).await?;
+                self.gateway_client
+                    .execute_command(cmd)
+                    .await
+                    .map_err(|e| eneros_core::EnerOSError::Internal(e.to_string()))?;
                 Ok(DispatchResult::CommandExecuted)
             }
             AgentAction::ExecuteStructured(sa) => {
-                // Direct dispatch of a structured action without the pipeline.
-                // The orchestrator normally intercepts ExecuteStructured and
-                // routes it through dispatch_structured(); reaching this arm
-                // means the caller invoked dispatch() directly (e.g. legacy
-                // code paths or tests). Convert to a Command and execute so
-                // the action still takes effect, but note this bypasses
-                // feasibility projection and constraint validation.
+                // Direct dispatch of a structured action without explicit
+                // authority/jurisdiction context. Convert to a Command and
+                // execute so the action still takes effect. The orchestrator
+                // normally intercepts ExecuteStructured and routes it through
+                // dispatch_structured() with full context.
                 let cmd = eneros_gateway::decision_pipeline::structured_action_to_command(&sa);
-                self.gateway.execute_command(cmd).await?;
+                self.gateway_client
+                    .execute_command(cmd)
+                    .await
+                    .map_err(|e| eneros_core::EnerOSError::Internal(e.to_string()))?;
                 Ok(DispatchResult::CommandExecuted)
             }
             AgentAction::LogMessage(msg) => {
@@ -94,7 +187,28 @@ impl ActionDispatcher {
                 Ok(DispatchResult::ApprovalRequested)
             }
             AgentAction::DelegateTask { target_agent_id, task_description } => {
-                tracing::info!("[Agent] DelegateTask to {}: {}", target_agent_id, task_description);
+                if let Some(ref ctx) = self.context {
+                    // Route the task to the target agent via the context's
+                    // message passing mechanism (MessageStore in local mode,
+                    // event bus in remote mode).
+                    let msg = AgentMessage::direct(
+                        "orchestrator",
+                        &target_agent_id,
+                        &task_description,
+                    );
+                    ctx.send_message(msg);
+                    tracing::info!(
+                        "[Agent] DelegateTask to {}: {} (routed via context)",
+                        target_agent_id,
+                        task_description
+                    );
+                } else {
+                    tracing::info!(
+                        "[Agent] DelegateTask to {}: {} (no context, logged only)",
+                        target_agent_id,
+                        task_description
+                    );
+                }
                 Ok(DispatchResult::TaskDelegated)
             }
             AgentAction::EmergencyOverride { action, justification } => {
@@ -104,6 +218,38 @@ impl ActionDispatcher {
             AgentAction::RollbackAction { action_id, reason } => {
                 tracing::info!("[Agent] RollbackAction {}: {}", action_id, reason);
                 Ok(DispatchResult::ActionRolledBack)
+            }
+            AgentAction::CallTool { tool_name, params } => {
+                if let Some(ref tool_engine) = self.tool_engine {
+                    let engine = tool_engine.read().await;
+                    let output = engine.execute(&tool_name, params.clone()).await?;
+                    if output.success {
+                        tracing::info!(
+                            "[Agent] CallTool '{}' succeeded: {}",
+                            tool_name,
+                            output.message
+                        );
+                        Ok(DispatchResult::ToolExecuted(output.message))
+                    } else {
+                        tracing::warn!(
+                            "[Agent] CallTool '{}' failed: {}",
+                            tool_name,
+                            output.message
+                        );
+                        Ok(DispatchResult::CommandRejected(format!(
+                            "Tool '{}' failed: {}",
+                            tool_name, output.message
+                        )))
+                    }
+                } else {
+                    tracing::warn!(
+                        "[Agent] CallTool '{}' but no ToolEngine configured",
+                        tool_name
+                    );
+                    Ok(DispatchResult::CommandRejected(
+                        "No ToolEngine configured".to_string(),
+                    ))
+                }
             }
         }
     }
@@ -230,6 +376,8 @@ pub enum DispatchResult {
     PendingApproval { approver_level: AuthorityLevel, reason: String },
     ConflictDetected(String),
     EmergencyBypassed { bypassed_checks: Vec<String>, reason: String },
+    /// A tool was called and executed successfully
+    ToolExecuted(String),
 }
 
 fn format_verdict_as_string(verdict: &eneros_core::ActionVerdict) -> String {
@@ -250,9 +398,9 @@ mod tests {
     use eneros_gateway::command::{Command, CommandPriority, CommandType};
 
     fn test_dispatcher() -> ActionDispatcher {
-        ActionDispatcher::new(
-            std::sync::Arc::new(EventBus::new(64)),
-            std::sync::Arc::new(SafetyGateway::new(100)),
+        ActionDispatcher::new_local(
+            Arc::new(EventBus::new(64)),
+            Arc::new(SafetyGateway::new(100)),
         )
     }
 
@@ -277,12 +425,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_publish_event() {
-        let event_bus = std::sync::Arc::new(EventBus::new(64));
+        let event_bus = Arc::new(EventBus::new(64));
         // Subscribe so that publish has at least one receiver
         let _receiver = event_bus.subscribe();
-        let dispatcher = ActionDispatcher::new(
+        let dispatcher = ActionDispatcher::new_local(
             event_bus,
-            std::sync::Arc::new(SafetyGateway::new(100)),
+            Arc::new(SafetyGateway::new(100)),
         );
         let event = Event::new(
             EventType::ConstraintViolation,
@@ -358,6 +506,64 @@ mod tests {
         };
         let result = dispatcher.dispatch(action).await;
         assert_eq!(result.unwrap(), DispatchResult::ActionRolledBack);
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_call_tool_no_engine() {
+        let dispatcher = test_dispatcher();
+        let action = AgentAction::CallTool {
+            tool_name: "power_flow".to_string(),
+            params: serde_json::json!({}),
+        };
+        let result = dispatcher.dispatch(action).await;
+        // No tool engine configured → rejected
+        assert!(matches!(result.unwrap(), DispatchResult::CommandRejected(_)));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_call_tool_with_engine() {
+        use async_trait::async_trait;
+        use eneros_tool::{Tool, ToolOutput};
+
+        struct EchoTool;
+        #[async_trait]
+        impl Tool for EchoTool {
+            fn name(&self) -> &str { "echo" }
+            fn description(&self) -> &str { "Echoes the input params" }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            async fn execute(&self, params: serde_json::Value) -> eneros_core::Result<ToolOutput> {
+                Ok(ToolOutput::ok(params, "echoed"))
+            }
+        }
+
+        let mut engine = ToolEngine::new();
+        engine.register(Box::new(EchoTool));
+        let tool_engine = Arc::new(tokio::sync::RwLock::new(engine));
+
+        let dispatcher = test_dispatcher().with_tool_engine(tool_engine);
+        let action = AgentAction::CallTool {
+            tool_name: "echo".to_string(),
+            params: serde_json::json!({"msg": "hello"}),
+        };
+        let result = dispatcher.dispatch(action).await;
+        assert!(matches!(result.unwrap(), DispatchResult::ToolExecuted(_)));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_call_tool_unknown_tool() {
+        let engine = ToolEngine::new();
+        let tool_engine = Arc::new(tokio::sync::RwLock::new(engine));
+
+        let dispatcher = test_dispatcher().with_tool_engine(tool_engine);
+        let action = AgentAction::CallTool {
+            tool_name: "nonexistent".to_string(),
+            params: serde_json::json!({}),
+        };
+        let result = dispatcher.dispatch(action).await;
+        // Unknown tool → ToolOutput::err → CommandRejected
+        assert!(matches!(result.unwrap(), DispatchResult::CommandRejected(_)));
     }
 
     #[tokio::test]

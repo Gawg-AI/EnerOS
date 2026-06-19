@@ -499,30 +499,30 @@ async fn test_notify_agent_complete_audit_trail() {
     // Must have at least precondition, projection, validation, decomposition stages
     let stages: Vec<&str> = result.audit.iter().map(|e| e.stage.as_str()).collect();
     assert!(
-        stages.iter().any(|s| *s == "precondition"),
+        stages.contains(&"precondition"),
         "Missing precondition stage. Stages: {:?}", stages
     );
     assert!(
-        stages.iter().any(|s| *s == "projection"),
+        stages.contains(&"projection"),
         "Missing projection stage. Stages: {:?}", stages
     );
     assert!(
-        stages.iter().any(|s| *s == "validation"),
+        stages.contains(&"validation"),
         "Missing validation stage. Stages: {:?}", stages
     );
     assert!(
-        stages.iter().any(|s| *s == "decomposition"),
+        stages.contains(&"decomposition"),
         "Missing decomposition stage. Stages: {:?}", stages
     );
 
     // If approved, must also have execution and postcondition
     if matches!(result.verdict, ActionVerdict::Approved) {
         assert!(
-            stages.iter().any(|s| *s == "execution"),
+            stages.contains(&"execution"),
             "Missing execution stage for approved NotifyAgent. Stages: {:?}", stages
         );
         assert!(
-            stages.iter().any(|s| *s == "postcondition"),
+            stages.contains(&"postcondition"),
             "Missing postcondition stage for approved NotifyAgent. Stages: {:?}", stages
         );
     }

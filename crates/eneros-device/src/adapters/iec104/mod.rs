@@ -39,7 +39,7 @@ use crate::adapter::{
 use crate::protocol::ProtocolType;
 
 pub use asdu::{TypeId, CauseOfTransmission, InformationObject, Asdu};
-pub use client::{Iec104Client, Iec104Config, ConnectionState};
+pub use client::{Iec104Client, Iec104Config, ConnectionState, TlsConfig, RedundancyMode};
 
 /// IEC 60870-5-104 protocol adapter with real TCP transport.
 ///
@@ -129,6 +129,7 @@ impl Iec104Adapter {
     }
 
     /// Register a callback for data updates
+    #[allow(clippy::type_complexity)]
     pub async fn on_data(&self, callback: Box<dyn Fn(u32, &InformationObject) + Send + Sync>) {
         self.client.on_data(callback).await;
     }
@@ -164,6 +165,15 @@ impl Iec104Adapter {
                 let q = if quality.is_valid() { DataQuality::Good } else { DataQuality::Uncertain };
                 (DataValue::Bool(*value), q)
             }
+            InformationObject::DoublePoint { value, quality, .. } => {
+                let q = if quality.is_valid() { DataQuality::Good } else { DataQuality::Uncertain };
+                let v = match value {
+                    asdu::DoublePointValue::On => DataValue::Bool(true),
+                    asdu::DoublePointValue::Off => DataValue::Bool(false),
+                    _ => DataValue::Bool(false),
+                };
+                (v, q)
+            }
             InformationObject::DoublePointTimeTag { value, quality, .. } => {
                 let q = if quality.is_valid() { DataQuality::Good } else { DataQuality::Uncertain };
                 let v = match value {
@@ -172,6 +182,14 @@ impl Iec104Adapter {
                     _ => DataValue::Bool(false),
                 };
                 (v, q)
+            }
+            InformationObject::StepPosition { value, quality, .. } => {
+                let q = if quality.is_valid() { DataQuality::Good } else { DataQuality::Uncertain };
+                (DataValue::Int32(*value as i32), q)
+            }
+            InformationObject::BinaryCounterReading { counter, invalid, .. } => {
+                let q = if *invalid { DataQuality::Bad } else { DataQuality::Good };
+                (DataValue::Int64(*counter as i64), q)
             }
             InformationObject::MeasuredShortFloat { value, quality, .. } => {
                 let q = if quality.is_valid() { DataQuality::Good } else { DataQuality::Uncertain };

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use eneros_core::ElementId;
 use eneros_device::DataQuality;
@@ -10,10 +11,33 @@ use serde::{Deserialize, Serialize};
 use crate::config::ScadaConfig;
 
 /// Trait for reading data from a data source (device, simulator, etc.)
+///
+/// Implementations may be **pull-based** (e.g., IEC 104 polling) or
+/// **push-based** (e.g., MQTT subscriptions that update an internal cache).
+/// The synchronous [`DataSource::read`] always returns the latest cached
+/// value, while the asynchronous [`DataSource::refresh`] pulls fresh data
+/// from the upstream device/protocol before the next read.
+///
+/// # Refresh semantics
+///
+/// - `refresh()` is called by the `DataPipeline` scan loop **before**
+///   `collect_once()`, so that `read()` returns fresh rather than stale data.
+/// - The default implementation is a no-op, preserving backward
+///   compatibility for sources that are updated out-of-band (e.g., MQTT
+///   push, simulator constants).
+#[async_trait]
 pub trait DataSource: Send + Sync {
     /// Read a value for the given element and parameter.
     /// Returns None if the read fails.
     fn read(&self, element_id: ElementId, parameter: &str) -> Option<f64>;
+
+    /// Pull fresh data from the upstream source into the internal cache.
+    ///
+    /// This is invoked by the scan loop before each `collect_once()` cycle.
+    /// Push-based sources (MQTT, simulator) may leave this as the default
+    /// no-op; pull-based sources (IEC 104 polling, Modbus polling) should
+    /// override it to actually fetch new values.
+    async fn refresh(&self) {}
 }
 
 /// A single SCADA reading
@@ -51,6 +75,16 @@ impl ScadaCollector {
             data_source,
             latest_values: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Refresh the underlying data source before collection.
+    ///
+    /// This is invoked by `DataPipeline::start()` before each `collect_once()`
+    /// cycle so that pull-based sources (IEC 104, Modbus) fetch fresh data
+    /// from the upstream device. Push-based sources (MQTT, simulator) treat
+    /// this as a no-op via the default `DataSource::refresh()` impl.
+    pub async fn refresh_data_source(&self) {
+        self.data_source.refresh().await;
     }
 
     /// Perform a single collection cycle: read all configured points
@@ -163,11 +197,15 @@ impl Default for MockDataSource {
     }
 }
 
+#[async_trait]
 impl DataSource for MockDataSource {
     fn read(&self, element_id: ElementId, parameter: &str) -> Option<f64> {
         let data = self.data.read();
         data.get(&(element_id, parameter.to_string())).copied()
     }
+
+    // MockDataSource uses the default no-op `refresh()` — values are
+    // injected directly via `MockDataSource::insert()`.
 }
 
 #[cfg(test)]

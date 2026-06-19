@@ -17,6 +17,8 @@ dashmap = { workspace = true }
 parking_lot = { workspace = true }
 
 rusqlite = { version = "0.31", features = ["bundled"] }
+utoipa = { workspace = true, features = ["chrono"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+serde_json = { workspace = true }

@@ -2,12 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::collector::DataSource;
 use crate::config::{ScadaConfig, ScadaPoint};
 use crate::pipeline::DataPipeline;
+use eneros_eventbus::EventBus;
 use eneros_timeseries::TimeSeriesEngine;
 
 /// Classification of a scan point into fast or normal group
@@ -60,7 +62,18 @@ impl DualScanGroup {
     /// Auto-classify points based on parameter name and scan rate.
     /// Points with scan_rate_ms <= 200 or matching fast-scan patterns go to fast group.
     /// Everything else goes to normal group.
+    /// Uses default intervals (100ms fast, 1000ms normal).
     pub fn auto_classify(points: Vec<ScadaPoint>) -> Self {
+        Self::auto_classify_with_intervals(points, Duration::from_millis(100), Duration::from_millis(1000))
+    }
+
+    /// Auto-classify points with custom fast/normal intervals.
+    /// This is the preferred constructor when config-driven intervals are available.
+    pub fn auto_classify_with_intervals(
+        points: Vec<ScadaPoint>,
+        fast_interval: Duration,
+        normal_interval: Duration,
+    ) -> Self {
         let mut fast = Vec::new();
         let mut normal = Vec::new();
 
@@ -71,7 +84,7 @@ impl DualScanGroup {
             }
         }
 
-        Self::new(fast, normal)
+        Self::with_intervals(fast, normal, fast_interval, normal_interval)
     }
 
     /// Total number of points across both groups.
@@ -158,76 +171,149 @@ impl Default for DualScanGroupBuilder {
 }
 
 /// Handles for the dual scan background tasks.
+///
+/// Each entry holds the `JoinHandle` and the corresponding shutdown signal
+/// sender (`watch::Sender<bool>`). Sending `true` (or dropping the sender)
+/// causes the background task to exit its loop gracefully after finishing
+/// the current cycle.
 pub struct DualScanHandles {
-    /// JoinHandle for the fast scan task
-    pub fast_handle: Option<JoinHandle<()>>,
-    /// JoinHandle for the normal scan task
-    pub normal_handle: Option<JoinHandle<()>>,
+    /// JoinHandle + shutdown sender for the fast scan task
+    pub fast: Option<(JoinHandle<()>, watch::Sender<bool>)>,
+    /// JoinHandle + shutdown sender for the normal scan task
+    pub normal: Option<(JoinHandle<()>, watch::Sender<bool>)>,
 }
 
 impl DualScanHandles {
-    /// Abort both scan tasks.
+    /// Abort both scan tasks immediately (non-graceful).
+    ///
+    /// This is the fallback for `Drop`. Prefer `shutdown()` for graceful
+    /// termination.
     pub fn abort(&self) {
-        if let Some(h) = &self.fast_handle {
+        if let Some((h, _)) = &self.fast {
             h.abort();
         }
-        if let Some(h) = &self.normal_handle {
+        if let Some((h, _)) = &self.normal {
             h.abort();
+        }
+    }
+
+    /// Gracefully shut down both scan tasks.
+    ///
+    /// Sends the shutdown signal, then awaits both tasks to finish their
+    /// current cycle. This ensures no partial writes to the time-series
+    /// engine.
+    pub async fn shutdown(mut self) {
+        // Take the options out so Drop doesn't fire on them (we handle
+        // shutdown explicitly here). Drop will still run on `self` but
+        // the fields will be None at that point — the Drop impl checks
+        // for None via the Option.
+        if let Some((handle, tx)) = self.fast.take() {
+            let _ = tx.send(true);
+            let _ = handle.await;
+        }
+        if let Some((handle, tx)) = self.normal.take() {
+            let _ = tx.send(true);
+            let _ = handle.await;
+        }
+    }
+}
+
+impl Drop for DualScanHandles {
+    fn drop(&mut self) {
+        // Best-effort graceful shutdown: signal both tasks to stop.
+        // If the tasks don't exit in time, they will be leaked (tokio will
+        // clean them up when the runtime shuts down). This is safer than
+        // `abort()` which can interrupt a write mid-flight.
+        if let Some((_, tx)) = &self.fast {
+            let _ = tx.send(true);
+        }
+        if let Some((_, tx)) = &self.normal {
+            let _ = tx.send(true);
+        }
+    }
+}
+
+/// Options for `start_dual_scan`.
+pub struct DualScanOptions {
+    /// Timeout in milliseconds for each collection cycle.
+    pub timeout_ms: u64,
+    /// Whether to enable quality checks on collected readings.
+    pub enable_quality_check: bool,
+    /// Optional event bus for publishing `DataReceived` events.
+    pub event_bus: Option<Arc<EventBus>>,
+}
+
+impl Default for DualScanOptions {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 5000,
+            enable_quality_check: true,
+            event_bus: None,
         }
     }
 }
 
 /// Start dual scan pipelines with the given data source and time-series engine.
-/// Returns handles for both the fast and normal scan tasks.
+///
+/// Returns handles for both the fast and normal scan tasks. The caller should
+/// use `DualScanHandles::shutdown()` for graceful termination.
 pub fn start_dual_scan(
     group: &DualScanGroup,
     data_source: Arc<dyn DataSource>,
     ts_engine: Arc<TimeSeriesEngine>,
+    options: DualScanOptions,
 ) -> DualScanHandles {
-    let fast_handle = if !group.fast_points.is_empty() {
+    let fast = if !group.fast_points.is_empty() {
         let config = ScadaConfig {
             points: group.fast_points.clone(),
             default_scan_rate_ms: group.fast_interval.as_millis() as u64,
-            timeout_ms: 5000,
-            enable_quality_check: true,
+            timeout_ms: options.timeout_ms,
+            enable_quality_check: options.enable_quality_check,
         };
         let collector = Arc::new(crate::collector::ScadaCollector::new(config, data_source.clone()));
-        let pipeline = DataPipeline::new(collector, ts_engine.clone());
+        let mut pipeline = DataPipeline::new(collector, ts_engine.clone());
+        if let Some(ref bus) = options.event_bus {
+            pipeline = pipeline.with_event_bus(bus.clone());
+        }
         let interval = group.fast_interval.as_millis() as u64;
         info!(
             "Starting fast scan group ({}ms interval, {} points)",
             interval,
             group.fast_points.len()
         );
-        Some(pipeline.start(interval))
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = pipeline.start_with_shutdown(interval, shutdown_rx);
+        Some((handle, shutdown_tx))
     } else {
         None
     };
 
-    let normal_handle = if !group.normal_points.is_empty() {
+    let normal = if !group.normal_points.is_empty() {
         let config = ScadaConfig {
             points: group.normal_points.clone(),
             default_scan_rate_ms: group.normal_interval.as_millis() as u64,
-            timeout_ms: 5000,
-            enable_quality_check: true,
+            timeout_ms: options.timeout_ms,
+            enable_quality_check: options.enable_quality_check,
         };
         let collector = Arc::new(crate::collector::ScadaCollector::new(config, data_source.clone()));
-        let pipeline = DataPipeline::new(collector, ts_engine);
+        let mut pipeline = DataPipeline::new(collector, ts_engine);
+        if let Some(ref bus) = options.event_bus {
+            pipeline = pipeline.with_event_bus(bus.clone());
+        }
         let interval = group.normal_interval.as_millis() as u64;
         info!(
             "Starting normal scan group ({}ms interval, {} points)",
             interval,
             group.normal_points.len()
         );
-        Some(pipeline.start(interval))
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = pipeline.start_with_shutdown(interval, shutdown_rx);
+        Some((handle, shutdown_tx))
     } else {
         None
     };
 
-    DualScanHandles {
-        fast_handle,
-        normal_handle,
-    }
+    DualScanHandles { fast, normal }
 }
 
 /// Classify a single SCADA point into fast or normal group.
@@ -237,7 +323,7 @@ fn classify_point(point: &ScadaPoint) -> ScanGroup {
         return ScanGroup::Fast;
     }
 
-    // Fast scan patterns: frequency, voltage, breaker/switch position
+    // Fast scan patterns: frequency, voltage, breaker/switch position, relay
     let param = point.parameter.to_lowercase();
     let fast_patterns = [
         "freq",
@@ -247,7 +333,6 @@ fn classify_point(point: &ScadaPoint) -> ScanGroup {
         "breaker",
         "switch",
         "position",
-        "current",
         "relay",
     ];
 
@@ -297,12 +382,14 @@ mod tests {
             make_point(1, "active_power_mw", 1000),
             make_point(2, "temperature_c", 1000),
             make_point(3, "reactive_power_mvar", 1000),
+            // current is no longer auto-classified as fast (it's a measurement, not protection)
+            make_point(4, "current_a", 1000),
         ];
 
         let group = DualScanGroup::auto_classify(points);
 
         assert!(group.fast_points.is_empty());
-        assert_eq!(group.normal_points.len(), 3);
+        assert_eq!(group.normal_points.len(), 4);
     }
 
     #[test]
@@ -317,6 +404,25 @@ mod tests {
 
         assert_eq!(group.fast_points.len(), 2);
         assert_eq!(group.normal_points.len(), 1);
+    }
+
+    #[test]
+    fn test_auto_classify_with_custom_intervals() {
+        let points = vec![
+            make_point(1, "frequency_hz", 100),
+            make_point(2, "active_power_mw", 1000),
+        ];
+
+        let group = DualScanGroup::auto_classify_with_intervals(
+            points,
+            Duration::from_millis(50),
+            Duration::from_millis(500),
+        );
+
+        assert_eq!(group.fast_points.len(), 1);
+        assert_eq!(group.normal_points.len(), 1);
+        assert_eq!(group.fast_interval, Duration::from_millis(50));
+        assert_eq!(group.normal_interval, Duration::from_millis(500));
     }
 
     #[test]
@@ -354,5 +460,53 @@ mod tests {
         assert!(!group.has_fast_group());
         assert!(!group.has_normal_group());
         assert_eq!(group.total_points(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_dual_scan_shutdown_graceful() {
+        use crate::collector::MockDataSource;
+
+        let mock = Arc::new(MockDataSource::new());
+        mock.insert(1, "frequency_hz", 50.0);
+        mock.insert(2, "active_power_mw", 100.0);
+
+        let group = DualScanGroup::with_intervals(
+            vec![ScadaPoint {
+                element_id: 1,
+                parameter: "frequency_hz".to_string(),
+                scan_rate_ms: 100,
+                deadband: 0.01,
+                min_value: None,
+                max_value: None,
+            }],
+            vec![ScadaPoint {
+                element_id: 2,
+                parameter: "active_power_mw".to_string(),
+                scan_rate_ms: 1000,
+                deadband: 0.1,
+                min_value: None,
+                max_value: None,
+            }],
+            Duration::from_millis(50),
+            Duration::from_millis(100),
+        );
+
+        let ts_engine = Arc::new(TimeSeriesEngine::new(1000));
+        let handles = start_dual_scan(
+            &group,
+            mock,
+            ts_engine.clone(),
+            DualScanOptions::default(),
+        );
+
+        // Let it run for a few cycles
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Graceful shutdown should complete without hanging
+        handles.shutdown().await;
+
+        // Verify data was written
+        let dp = ts_engine.latest(1, "frequency_hz").unwrap();
+        assert!((dp.value - 50.0).abs() < f64::EPSILON);
     }
 }

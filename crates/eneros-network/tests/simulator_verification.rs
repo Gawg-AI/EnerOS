@@ -9,8 +9,8 @@
 //! - `StartGenerator` resolves gen_id → bus via the generator table.
 //! - `ShedLoad` resolves zone_id → buses via the zone map.
 //! - Unknown gen_id / zone_id → `applicable == false` (was silently a no-op).
-//! - Switching actions → conservative `all_constraints_satisfied == false`
-//!   (was silently feasible).
+//! - Switching actions → v0.8.0 T9: physically modeled via Y-Bus rebuild
+//!   (was conservatively rejected).
 //! - Default voltage/thermal constraints are registered, so genuine violations
 //!   are now detectable.
 
@@ -209,11 +209,11 @@ fn test_simulator_rejects_non_finite_reactive_adjustment() {
 }
 
 // ============================================================================
-// Switching actions (conservative reject)
+// Switching actions (v0.8.0 T9: physically modeled via Y-Bus rebuild)
 // ============================================================================
 
 #[test]
-fn test_simulator_isolate_fault_conservative_reject() {
+fn test_simulator_isolate_fault_physical() {
     let adapter = make_adapter();
     let action = StructuredAction::IsolateFault {
         upstream_switch: 1,
@@ -221,30 +221,46 @@ fn test_simulator_isolate_fault_conservative_reject() {
     };
     let result = adapter.simulate_action(&action);
     assert!(result.applicable, "switching action is applicable");
-    // Phase 15: switching physics is not modeled, so it must NOT be reported
-    // as constraint-satisfying (old behavior reported it feasible).
+    // v0.8.0 T9.4：故障隔离现在物理建模——断开支路 1（1→2）与支路 2（1→5）
+    // 会孤立 slack 母线 1，潮流不收敛，故 all_constraints_satisfied=false。
     assert!(
-        !result.all_constraints_satisfied,
-        "switching action must be conservatively rejected, got satisfied=true ({})",
+        !result.summary.contains("conservative reject"),
+        "must not be conservative reject: {}",
+        result.summary
+    );
+    assert!(
+        result.summary.contains("opened 2 branch(es)"),
+        "summary should mention opened 2 branches: {}",
+        result.summary
+    );
+    assert!(
+        !result.converged,
+        "isolating slack bus should not converge: {}",
         result.summary
     );
 }
 
 #[test]
-fn test_simulator_close_tie_switch_conservative_reject() {
+fn test_simulator_close_tie_switch_base_case() {
     let adapter = make_adapter();
     let action = StructuredAction::CloseTieSwitch { switch_id: 5 };
     let result = adapter.simulate_action(&action);
     assert!(result.applicable);
+    // v0.8.0 T9.5：合联络开关按 base case 求解（恢复尚未建模）。
     assert!(
-        !result.all_constraints_satisfied,
-        "tie switch must be conservatively rejected ({})",
+        result.summary.contains("simulated as base case"),
+        "tie switch should be simulated as base case: {}",
+        result.summary
+    );
+    assert!(
+        !result.summary.contains("conservative reject"),
+        "must not be conservative reject: {}",
         result.summary
     );
 }
 
 #[test]
-fn test_simulator_execute_device_open_conservative_reject() {
+fn test_simulator_execute_device_open_physical() {
     let adapter = make_adapter();
     let action = StructuredAction::ExecuteDevice {
         device_id: 1,
@@ -253,9 +269,21 @@ fn test_simulator_execute_device_open_conservative_reject() {
     };
     let result = adapter.simulate_action(&action);
     assert!(result.applicable);
+    // v0.8.0 T9.3：分闸物理建模——断开支路 1（1→2），网络仍连通（1→5→2），
+    // 不再返回保守拒绝。
     assert!(
-        !result.all_constraints_satisfied,
-        "open device must be conservatively rejected ({})",
+        !result.summary.contains("conservative reject"),
+        "must not be conservative reject: {}",
+        result.summary
+    );
+    assert!(
+        result.summary.contains("opened 1 branch(es)"),
+        "summary should mention opened 1 branch: {}",
+        result.summary
+    );
+    assert!(
+        result.converged,
+        "network stays connected after opening branch 1: {}",
         result.summary
     );
 }

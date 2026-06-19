@@ -214,6 +214,7 @@ Kernel-level security guard: N-1 safety verification, thermal stability check, v
 | Crate | Path | Responsibility | Key Types / Interfaces |
 |-------|------|----------------|------------------------|
 | **eneros-core** | `crates/eneros-core/` | Unified types, errors, and configuration | `EnerOSError`, `EnerOSConfig`, `ElementId`, `BusType`, `PowerSystemState` |
+| **eneros-linalg** | `crates/eneros-linalg/` | Sparse linear algebra (CSR matrix, LU/Cholesky factorization) | `SparseMatrix`, `SparseLuFactorization`, `SymbolicFactorization` |
 | **eneros-topology** | `crates/eneros-topology/` | Power grid topology graph modeling and analysis | `NetworkGraph`, `TopologyEngine`, `TopologySearcher`, `Bus`, `Branch`, `Switch` |
 | **eneros-powerflow** | `crates/eneros-powerflow/` | Newton-Raphson power flow solving | `PowerFlowSolver`, `YBusMatrix`, `JacobianMatrix`, `PowerFlowResult` |
 | **eneros-constraint** | `crates/eneros-constraint/` | Safety constraint verification and feasibility projection | `ConstraintEngine`, `Constraint`, `Violation`, `FeasibilityProjector`, `WhatIfResult` |
@@ -352,20 +353,26 @@ cargo run --bin eneros -- power-flow --case ieee14
 - [x] **Phase 17 — IEC 104 Adapter** — Real TCP protocol stack, TESTFR heartbeat reply, packet fragmentation/reassembly, 6 TCP transport tests
 - [x] **v0.2.0 — Production-Grade Architecture Fixes (BUG3 all 9 sections)** — Real protocol stacks for access layer, DeviceCommandExecutor with ACK verification, state machine linkage, 4-level conflict resolution, real Holt-Winters, SQLite write-through persistence, production-grade analysis (real Jacobian / sequence networks / rigorous dual LMP / parameterized tap step), P16 closed-loop field observation validation
 
-### In Progress / Planned
+### Completed
 
-- [ ] **v0.3.0 — Production Readiness** — Full persistence integration, configuration system, observability (Prometheus / structured logging), security hardening (JWT / mTLS)
-- [ ] **v0.4.0 — Protocol Coverage** — Modbus RTU, IEC 104/61850 enhancements, DNP3, OPC UA
-- [ ] **v0.5.0 — Agent Intelligence** — Multi-backend LLM, multi-agent coordination, self-healing strategy library, forecasting accuracy
-- [ ] **v0.6.0 — Advanced Analysis** — Bad data detection, AC-OPF, SCOPF, transient stability
-- [ ] **v0.7.0 — High-Availability Deployment** — Containerization, cluster redundancy, disaster recovery, performance optimization
-- [ ] **v0.8.0 — Ecosystem Expansion** — Plugin system, GraphQL, visualization enhancements, documentation
+- [x] **v0.3.0 — Production Readiness Baseline** — Full persistence integration, configuration system, observability (Prometheus / structured logging), security hardening (JWT / mTLS)
+- [x] **v0.4.0 — Production Path Wiring** — Device layer wiring, SCADA real-time pipeline, configuration-driven network model loading
+- [x] **v0.5.0 — Agent Autonomy** — spawn lifecycle, behavior planning, reflection learning, unified tool protocol
+- [x] **v0.6.0 — Production Hardening** — Configuration, observability, security, API coverage, rollback execution
+- [x] **v0.7.0 — Protocol Coverage** — GOOSE/SV/OPC UA/DNP3, IEC104/61850 enhancements, CIM import, TLS runtime
+- [x] **v0.8.0 — Analysis Precision Advanced** — Sparse linear algebra, AC-OPF, transient stability, state estimation enhancements, asymmetric short circuit, switch physical modeling, 5 new API endpoints
+- [x] **v0.9.0 — Delivery-Grade Operations** — Containerization, config hot reload, distributed tracing, DualScanGroup fix, CI/CD
+- [x] **v0.10.0 — Production Deepening** — PipelineStatistics atomics, per-device lock pool, SOE event recording, storage-level downsampling, CIM converter, OpenAPI docs, SVG data-* fix
+
+### Planned
+
+- [ ] **v1.0.0 — Ecosystem Expansion** — Plugin system, GraphQL, digital twin, documentation
 
 ---
 
 ## Contributing
 
-EnerOS is currently at v0.2.0, with core architecture production-grade fixes completed and 930+ tests passing. Contributors interested in the intersection of power systems and AI are welcome. Please read [ROADMAP.md](ROADMAP.md) for planned directions.
+EnerOS is currently at v0.10.0, with 20 crates. Contributors interested in the intersection of power systems and AI are welcome. Please read [ROADMAP.md](ROADMAP.md) for planned directions.
 
 ---
 

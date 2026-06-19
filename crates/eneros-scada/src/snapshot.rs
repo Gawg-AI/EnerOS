@@ -41,7 +41,7 @@ pub struct MeasurementMapping {
 }
 
 /// Topology mapping for populating bus/branch IDs in snapshot data
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TopologyMapping {
     /// Map branch_id -> (from_bus, to_bus)
     pub branch_topology: HashMap<ElementId, (ElementId, ElementId)>,
@@ -55,19 +55,6 @@ pub struct TopologyMapping {
     pub branch_rated_current: HashMap<ElementId, f64>,
     /// Map branch_id -> rated voltage kV (for computing current_ka)
     pub branch_rated_kv: HashMap<ElementId, f64>,
-}
-
-impl Default for TopologyMapping {
-    fn default() -> Self {
-        Self {
-            branch_topology: HashMap::new(),
-            gen_bus_map: HashMap::new(),
-            load_bus_map: HashMap::new(),
-            bus_voltage_kv: HashMap::new(),
-            branch_rated_current: HashMap::new(),
-            branch_rated_kv: HashMap::new(),
-        }
-    }
 }
 
 /// Builder for constructing PowerSystemState from SCADA readings

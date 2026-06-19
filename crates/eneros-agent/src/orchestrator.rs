@@ -1,4 +1,9 @@
-use eneros_core::{AuthorityLevel, Jurisdiction, Result, StructuredAction, SystemOperatingState};
+use std::sync::Arc;
+
+use eneros_core::{
+    AuthorityLevel, EventPayload, EventType, Jurisdiction, Result, StructuredAction,
+    SystemOperatingState,
+};
 use eneros_eventbus::{Event, EventHandler};
 use eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline;
 
@@ -15,6 +20,9 @@ use crate::topology_scheduler::{AgentRegistration, TopologyAwareScheduler};
 pub struct AgentOrchestrator {
     ctx: AgentContext,
     agents: Vec<AgentEventHandler>,
+    /// `true` = broadcast tick/event via EventBusPublisher (remote agent processes).
+    /// `false` = call agents' `tick()`/`handle_event()` in-process (legacy/tests).
+    remote_mode: bool,
     dispatcher: ActionDispatcher,
     protocol: CollaborationProtocol,
     state_machine: SystemStateMachine,
@@ -29,12 +37,13 @@ pub struct AgentOrchestrator {
 impl AgentOrchestrator {
     /// Create a new orchestrator with the given context
     pub fn new(ctx: AgentContext) -> Self {
-        let event_bus = ctx.event_bus.clone();
-        let gateway = ctx.gateway.clone();
+        let event_bus = Arc::clone(&ctx.remote.event_bus);
+        let gateway_client = Arc::clone(&ctx.remote.gateway_client);
         Self {
             ctx,
             agents: Vec::new(),
-            dispatcher: ActionDispatcher::new(event_bus, gateway),
+            remote_mode: false,
+            dispatcher: ActionDispatcher::new(event_bus, gateway_client),
             protocol: CollaborationProtocol::new(),
             state_machine: SystemStateMachine::new(),
             emergency_pipeline: EmergencyResponsePipeline::new(),
@@ -43,17 +52,35 @@ impl AgentOrchestrator {
         }
     }
 
-    /// Create a new orchestrator with a constrained decision pipeline
+    /// Create a new orchestrator with a constrained decision pipeline.
+    ///
+    /// The pipeline is attached to a new `LocalGatewayClient` that wraps the
+    /// context's `SafetyGateway`. This preserves backward compatibility for
+    /// in-process orchestrator usage.
     pub fn with_pipeline(
         ctx: AgentContext,
         pipeline: std::sync::Arc<ConstrainedDecisionPipeline>,
     ) -> Self {
-        let event_bus = ctx.event_bus.clone();
-        let gateway = ctx.gateway.clone();
+        let event_bus = Arc::clone(&ctx.remote.event_bus);
+        // Build a LocalGatewayClient with the pipeline attached.
+        // We need to extract the SafetyGateway from the existing LocalGatewayClient.
+        // Since the context already wraps a LocalGatewayClient, we create a new
+        // one with the pipeline by downcasting — but trait objects can't be
+        // downcast easily. Instead, we keep the existing gateway_client for
+        // execute_command and use the pipeline via dispatch_structured's
+        // fallback path.
+        //
+        // For backward compat, the orchestrator's dispatch_structured will
+        // use the pipeline directly when has_pipeline() is true. We store
+        // the pipeline in the dispatcher via a separate field.
+        let gateway_client = Arc::clone(&ctx.remote.gateway_client);
+        let mut dispatcher = ActionDispatcher::new(event_bus, gateway_client);
+        dispatcher = dispatcher.with_pipeline(pipeline);
         Self {
             ctx,
             agents: Vec::new(),
-            dispatcher: ActionDispatcher::with_pipeline(event_bus, gateway, pipeline),
+            remote_mode: false,
+            dispatcher,
             protocol: CollaborationProtocol::new(),
             state_machine: SystemStateMachine::new(),
             emergency_pipeline: EmergencyResponsePipeline::new(),
@@ -71,12 +98,15 @@ impl AgentOrchestrator {
         pipeline: std::sync::Arc<ConstrainedDecisionPipeline>,
         feedback_loop: std::sync::Arc<eneros_reasoning::feedback::FeedbackLoop>,
     ) -> Self {
-        let event_bus = ctx.event_bus.clone();
-        let gateway = ctx.gateway.clone();
+        let event_bus = Arc::clone(&ctx.remote.event_bus);
+        let gateway_client = Arc::clone(&ctx.remote.gateway_client);
+        let mut dispatcher = ActionDispatcher::new(event_bus, gateway_client);
+        dispatcher = dispatcher.with_pipeline(pipeline);
         Self {
             ctx,
             agents: Vec::new(),
-            dispatcher: ActionDispatcher::with_pipeline(event_bus, gateway, pipeline),
+            remote_mode: false,
+            dispatcher,
             protocol: CollaborationProtocol::new(),
             state_machine: SystemStateMachine::new(),
             emergency_pipeline: EmergencyResponsePipeline::new(),
@@ -90,12 +120,60 @@ impl AgentOrchestrator {
         self.agents.push(handler);
     }
 
+    /// Create an orchestrator for remote agent coordination (v0.15.0).
+    ///
+    /// Agents run as separate processes and communicate via the EventBus.
+    /// The orchestrator does not hold any in-process agents; instead it
+    /// broadcasts tick events and publishes routed events through the
+    /// `EventBusPublisher`. Each agent process subscribes to the relevant
+    /// event types and runs its own `tick()`/`handle_event()` independently,
+    /// dispatching actions through its local `ActionDispatcher`.
+    pub fn new_remote(ctx: AgentContext, dispatcher: ActionDispatcher) -> Self {
+        Self {
+            ctx,
+            agents: Vec::new(),
+            remote_mode: true,
+            dispatcher,
+            protocol: CollaborationProtocol::new(),
+            state_machine: SystemStateMachine::new(),
+            emergency_pipeline: EmergencyResponsePipeline::new(),
+            topology_scheduler: TopologyAwareScheduler::new(),
+            feedback_loop: None,
+        }
+    }
+
+    /// Returns `true` if the orchestrator is in remote mode.
+    pub fn is_remote_mode(&self) -> bool {
+        self.remote_mode
+    }
+
     /// Process a single event through all registered agents that can handle it
     ///
     /// Enhanced pipeline:
     /// 1. If system is in emergency state, call `handle_emergency()` instead of `handle_event()`
     /// 2. Use `topology_scheduler.route_event()` to determine which agents should receive the event
+    ///
+    /// In remote mode (v0.15.0), the event is published to the EventBusBroker
+    /// and agents receive it via their own subscriptions. The orchestrator does
+    /// not collect `DispatchResult`s in this mode — each agent process
+    /// dispatches its own actions through its local `ActionDispatcher`.
     pub async fn process_event(&self, event: Event) -> Result<Vec<DispatchResult>> {
+        if self.remote_mode {
+            // Remote mode: publish event to EventBusBroker.
+            // Agents receive via their subscription and handle independently.
+            self.ctx
+                .remote
+                .event_bus
+                .publish_event(event)
+                .await
+                .map_err(|e| eneros_core::EnerOSError::Internal(e.to_string()))?;
+            // Emergency pipeline is still evaluated locally by the
+            // orchestrator via `check_emergency()` (called externally with
+            // numeric telemetry), so no event-level emergency handling is
+            // performed here.
+            return Ok(Vec::new());
+        }
+
         let mut results = Vec::new();
 
         let is_emergency = self.state_machine.current_state().is_emergency();
@@ -143,14 +221,60 @@ impl AgentOrchestrator {
         Ok(results)
     }
 
-    /// Tick all registered agents (for proactive behavior)
+    /// Tick all registered agents concurrently (for proactive behavior).
+    ///
+    /// Uses `futures::future::join_all` to run all agent ticks in parallel,
+    /// then routes the collected actions. This is the S8 fix: previously
+    /// tick_all was sequential, causing latency with many agents.
+    ///
+    /// In remote mode (v0.15.0), broadcasts an `EventType::AgentTick` event
+    /// via the `EventBusPublisher`. Each agent process receives the event and
+    /// runs its own `tick()` independently, dispatching actions through its
+    /// local `ActionDispatcher`. No `DispatchResult`s are collected in this
+    /// mode.
     pub async fn tick_all(&self) -> Result<Vec<DispatchResult>> {
-        let mut results = Vec::new();
+        if self.remote_mode {
+            // Remote mode: broadcast tick event via EventBusPublisher.
+            // Each Agent process receives the event and runs its own tick().
+            let tick_event = Event::new(
+                EventType::AgentTick,
+                "orchestrator",
+                EventPayload::Tick,
+            );
+            self.ctx
+                .remote
+                .event_bus
+                .publish_event(tick_event)
+                .await
+                .map_err(|e| eneros_core::EnerOSError::Internal(e.to_string()))?;
+            return Ok(Vec::new());
+        }
 
-        for handler in &self.agents {
-            let actions = handler.tick_with_context(&self.ctx).await?;
-            let authority = handler.agent_authority_level();
-            let jurisdiction = handler.agent_jurisdiction();
+        use futures::future::join_all;
+
+        // Build a future for each agent's tick that captures the necessary
+        // routing metadata (authority, jurisdiction).
+        let tick_futures: Vec<_> = self
+            .agents
+            .iter()
+            .map(|handler| {
+                let ctx_ref = &self.ctx;
+                async move {
+                    let result = handler.tick_with_context(ctx_ref).await;
+                    let authority = handler.agent_authority_level();
+                    let jurisdiction = handler.agent_jurisdiction();
+                    (result, authority, jurisdiction)
+                }
+            })
+            .collect();
+
+        // Run all ticks concurrently
+        let tick_results = join_all(tick_futures).await;
+
+        // Route actions from all agents
+        let mut results = Vec::new();
+        for (tick_result, authority, jurisdiction) in tick_results {
+            let actions = tick_result?;
             for action in actions {
                 let dispatch_result = self.route_action(action, authority, &jurisdiction).await?;
                 results.push(dispatch_result);
@@ -193,7 +317,7 @@ impl AgentOrchestrator {
         jurisdiction: &Jurisdiction,
     ) -> Result<DispatchResult> {
         // Snapshot the operating context the pipeline evaluates against.
-        let system_state = *self.ctx.system_state.read();
+        let system_state = *self.ctx.remote.system_state.read();
 
         // No pipeline configured (e.g. in tests) → degrade to direct execution
         // so structured actions still take effect.
@@ -265,7 +389,7 @@ impl AgentOrchestrator {
         }
 
         // The feedback engine may have produced new structured actions.
-        let system_state = *self.ctx.system_state.read();
+        let system_state = *self.ctx.remote.system_state.read();
         if let Some(new_actions) = &feedback.output.structured_actions {
             for new_action in new_actions {
                 let r = self.dispatcher.dispatch_structured(
@@ -633,7 +757,7 @@ mod tests {
     /// Observer agent cannot execute commands via dispatch_with_validation
     #[tokio::test]
     async fn test_observer_cannot_execute_commands() {
-        let dispatcher = crate::dispatcher::ActionDispatcher::new(
+        let dispatcher = crate::dispatcher::ActionDispatcher::new_local(
             Arc::new(EventBus::new(64)),
             Arc::new(SafetyGateway::new(100)),
         );
@@ -717,7 +841,7 @@ mod tests {
     async fn test_audit_trail_records_actions() {
         use crate::audit::AuditTrail;
 
-        let dispatcher = crate::dispatcher::ActionDispatcher::new(
+        let dispatcher = crate::dispatcher::ActionDispatcher::new_local(
             Arc::new(EventBus::new(64)),
             Arc::new(SafetyGateway::new(100)),
         );
@@ -769,5 +893,97 @@ mod tests {
 
         // Verify integrity
         assert!(trail.verify_integrity());
+    }
+
+    // === Remote mode tests (v0.15.0) ===
+
+    #[tokio::test]
+    async fn test_remote_mode_flag_and_empty_agents() {
+        let ctx = test_context();
+        let dispatcher = crate::dispatcher::ActionDispatcher::new_local(
+            Arc::new(EventBus::new(64)),
+            Arc::new(SafetyGateway::new(100)),
+        );
+        let orchestrator = AgentOrchestrator::new_remote(ctx, dispatcher);
+
+        assert!(orchestrator.is_remote_mode());
+        assert_eq!(orchestrator.agent_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_in_process_mode_flag_is_false() {
+        let ctx = test_context();
+        let orchestrator = AgentOrchestrator::new(ctx);
+        assert!(!orchestrator.is_remote_mode());
+    }
+
+    /// In remote mode, `tick_all()` broadcasts an `AgentTick` event via the
+    /// EventBusPublisher instead of calling agents' `tick()` in-process.
+    #[tokio::test]
+    async fn test_remote_mode_tick_all_broadcasts_agent_tick() {
+        let event_bus = Arc::new(EventBus::new(64));
+        let mut rx = event_bus.subscribe();
+
+        let ctx = AgentContext::new(
+            Arc::clone(&event_bus),
+            Arc::new(SafetyGateway::new(100)),
+            Arc::new(RwLock::new(ToolEngine::new())),
+            Arc::new(RwLock::new(PowerNetwork::from_ieee14())),
+            Arc::new(InMemoryMemory::default()),
+            Arc::new(RuleBasedEngine::new()),
+        );
+        let dispatcher = crate::dispatcher::ActionDispatcher::new_local(
+            event_bus,
+            Arc::new(SafetyGateway::new(100)),
+        );
+        let orchestrator = AgentOrchestrator::new_remote(ctx, dispatcher);
+
+        // tick_all in remote mode returns empty results (agents dispatch
+        // their own actions in their own processes).
+        let results = orchestrator.tick_all().await.unwrap();
+        assert!(results.is_empty());
+
+        // The AgentTick event should have been broadcast on the event bus.
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.event_type, EventType::AgentTick);
+        assert_eq!(event.source, "orchestrator");
+        assert!(matches!(event.payload, EventPayload::Tick));
+    }
+
+    /// In remote mode, `process_event()` publishes the event to the
+    /// EventBusBroker instead of routing it to in-process agents.
+    #[tokio::test]
+    async fn test_remote_mode_process_event_publishes_event() {
+        let event_bus = Arc::new(EventBus::new(64));
+        let mut rx = event_bus.subscribe();
+
+        let ctx = AgentContext::new(
+            Arc::clone(&event_bus),
+            Arc::new(SafetyGateway::new(100)),
+            Arc::new(RwLock::new(ToolEngine::new())),
+            Arc::new(RwLock::new(PowerNetwork::from_ieee14())),
+            Arc::new(InMemoryMemory::default()),
+            Arc::new(RuleBasedEngine::new()),
+        );
+        let dispatcher = crate::dispatcher::ActionDispatcher::new_local(
+            event_bus,
+            Arc::new(SafetyGateway::new(100)),
+        );
+        let orchestrator = AgentOrchestrator::new_remote(ctx, dispatcher);
+
+        let event = Event::new(
+            EventType::SystemAlarm,
+            "remote-test-source",
+            EventPayload::Message("remote alarm".to_string()),
+        );
+
+        // process_event in remote mode returns empty results.
+        let results = orchestrator.process_event(event).await.unwrap();
+        assert!(results.is_empty());
+
+        // The event should have been published to the event bus.
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.event_type, EventType::SystemAlarm);
+        assert_eq!(received.source, "remote-test-source");
     }
 }

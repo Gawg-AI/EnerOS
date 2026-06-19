@@ -14,10 +14,21 @@ use eneros_agent::{AgentOrchestrator, DataDrivenAgentLoop};
 
 use crate::app::{self, AppState};
 
+/// TLS configuration for the API server (v0.7.0 — deferred from v0.6.0 S1).
+#[derive(Debug, Clone)]
+pub struct TlsConfig {
+    /// Path to the PEM-encoded certificate file.
+    pub cert_path: String,
+    /// Path to the PEM-encoded private key file.
+    pub key_path: String,
+}
+
 /// API server for EnerOS
 pub struct ApiServer {
     state: AppState,
     addr: SocketAddr,
+    /// Optional TLS configuration. When set, the server uses HTTPS.
+    tls: Option<TlsConfig>,
 }
 
 impl ApiServer {
@@ -29,22 +40,68 @@ impl ApiServer {
         Self {
             state: AppState::new(),
             addr,
+            tls: None,
         }
     }
 
     /// Create with a custom AppState and address
     pub fn with_state(state: AppState, addr: SocketAddr) -> Self {
-        Self { state, addr }
+        Self {
+            state,
+            addr,
+            tls: None,
+        }
     }
 
-    /// Start the axum HTTP server
+    /// Enable TLS (v0.7.0). When set, the server uses HTTPS.
+    pub fn with_tls(mut self, tls: Option<TlsConfig>) -> Self {
+        self.tls = tls;
+        self
+    }
+
+    /// Start the axum HTTP server. If TLS is configured, starts an HTTPS
+    /// server using `tokio-rustls`; otherwise starts a plaintext HTTP server.
     pub async fn start(&self) -> anyhow::Result<()> {
         let app = app::create_router(self.state.clone());
 
-        let listener = tokio::net::TcpListener::bind(self.addr).await?;
-        tracing::info!("EnerOS API server listening on {}", self.addr);
+        if let Some(ref tls) = self.tls {
+            tracing::info!(
+                addr = %self.addr,
+                cert = %tls.cert_path,
+                "EnerOS API server listening (HTTPS)"
+            );
+            // Load certificate and private key
+            let cert_file = std::fs::File::open(&tls.cert_path)
+                .map_err(|e| anyhow::anyhow!("failed to open TLS cert: {}", e))?;
+            let mut reader = std::io::BufReader::new(cert_file);
+            let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
+                rustls_pemfile::certs(&mut reader)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| anyhow::anyhow!("failed to parse TLS cert: {}", e))?;
 
-        axum::serve(listener, app).await?;
+            let key_file = std::fs::File::open(&tls.key_path)
+                .map_err(|e| anyhow::anyhow!("failed to open TLS key: {}", e))?;
+            let mut key_reader = std::io::BufReader::new(key_file);
+            let key = rustls_pemfile::private_key(&mut key_reader)
+                .map_err(|e| anyhow::anyhow!("failed to parse TLS key: {}", e))?
+                .ok_or_else(|| anyhow::anyhow!("no private key found in TLS key file"))?;
+
+            let config = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(certs, key)
+                .map_err(|e| anyhow::anyhow!("failed to build TLS config: {}", e))?;
+
+            // Use axum_server for TLS support (standard axum 0.7 pattern)
+            let rustls_config =
+                axum_server::tls_rustls::RustlsConfig::from_config(std::sync::Arc::new(config));
+            axum_server::bind_rustls(self.addr, rustls_config)
+                .serve(app.into_make_service())
+                .await?;
+        } else {
+            tracing::info!(addr = %self.addr, "EnerOS API server listening (HTTP)");
+            let listener = tokio::net::TcpListener::bind(self.addr).await?;
+            axum::serve(listener, app).await?;
+        }
         Ok(())
     }
 

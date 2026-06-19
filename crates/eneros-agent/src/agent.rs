@@ -47,6 +47,8 @@ pub enum AgentAction {
     EmergencyOverride { action: Box<AgentAction>, justification: String },
     /// Rollback a previously executed action
     RollbackAction { action_id: String, reason: String },
+    /// Call a registered tool via the ToolEngine
+    CallTool { tool_name: String, params: serde_json::Value },
 }
 
 /// Agent trait — unified interface for all agents
@@ -60,12 +62,6 @@ pub trait Agent: Send + Sync {
 
     /// Agent type
     fn agent_type(&self) -> AgentType;
-
-    /// Start the agent
-    async fn start(&mut self) -> Result<()>;
-
-    /// Stop the agent
-    async fn stop(&mut self) -> Result<()>;
 
     /// Handle an incoming event
     async fn handle_event(&mut self, event: &Event, ctx: &AgentContext) -> Result<Vec<AgentAction>>;
@@ -96,7 +92,6 @@ pub struct MockAgent {
     id: String,
     name: String,
     agent_type: AgentType,
-    started: bool,
     event_count: u32,
     tick_count: u32,
     authority_level: AuthorityLevel,
@@ -113,7 +108,6 @@ impl MockAgent {
             id: id.to_string(),
             name: name.to_string(),
             agent_type,
-            started: false,
             event_count: 0,
             tick_count: 0,
             authority_level: AuthorityLevel::Observer,
@@ -176,16 +170,6 @@ impl Agent for MockAgent {
         self.agent_type.clone()
     }
 
-    async fn start(&mut self) -> Result<()> {
-        self.started = true;
-        Ok(())
-    }
-
-    async fn stop(&mut self) -> Result<()> {
-        self.started = false;
-        Ok(())
-    }
-
     async fn handle_event(&mut self, _event: &Event, _ctx: &AgentContext) -> Result<Vec<AgentAction>> {
         self.event_count += 1;
         Ok(vec![AgentAction::LogMessage(format!(
@@ -238,14 +222,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_agent_lifecycle() {
-        let mut agent = MockAgent::new("test-1", "Test Agent", AgentType::Operator);
+        let agent = MockAgent::new("test-1", "Test Agent", AgentType::Operator);
 
         assert_eq!(agent.id(), "test-1");
         assert_eq!(agent.name(), "Test Agent");
         assert_eq!(agent.agent_type(), AgentType::Operator);
-
-        agent.start().await.unwrap();
-        agent.stop().await.unwrap();
     }
 
     #[tokio::test]

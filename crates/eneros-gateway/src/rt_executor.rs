@@ -7,9 +7,14 @@ use tokio::task::JoinHandle;
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
+use eneros_os::rt::{HardwareWatchdog, RtConfig, RtRuntime};
+
 use crate::command::{Command, CommandPriority};
 use crate::gateway::SafetyGateway;
 use crate::priority_queue::SharedPriorityCommandQueue;
+
+/// Watchdog keepalive interval for the RT executor loop.
+const WATCHDOG_KEEPALIVE_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Result of executing a single command
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +72,15 @@ pub struct RealtimeExecutor {
     config: Mutex<ExecutorConfig>,
     stats: Mutex<ExecutorStats>,
     stop_notify: Notify,
+    /// Optional hardware watchdog for independent RT-thread keepalive.
+    ///
+    /// When set, `run_loop()` feeds the watchdog at most once per
+    /// [`WATCHDOG_KEEPALIVE_INTERVAL`] so that a stalled main thread
+    /// (eneros-init) does not trigger a hardware reset that would kill the
+    /// RT execution domain. Shared via `Arc<Mutex<…>>` because
+    /// `HardwareWatchdog::keepalive` requires `&mut self` and the same
+    /// device may be fed from multiple threads.
+    watchdog: Option<Arc<Mutex<HardwareWatchdog>>>,
 }
 
 impl RealtimeExecutor {
@@ -80,6 +94,7 @@ impl RealtimeExecutor {
             config: Mutex::new(ExecutorConfig::default()),
             stats: Mutex::new(ExecutorStats::default()),
             stop_notify: Notify::new(),
+            watchdog: None,
         }
     }
 
@@ -94,7 +109,27 @@ impl RealtimeExecutor {
             config: Mutex::new(config),
             stats: Mutex::new(ExecutorStats::default()),
             stop_notify: Notify::new(),
+            watchdog: None,
         }
+    }
+
+    /// Attach a hardware watchdog so that `run_loop()` independently feeds it
+    /// from the RT thread.
+    ///
+    /// This decouples RT-domain liveness from the eneros-init main loop: if
+    /// the main thread stalls but the RT thread is still processing commands
+    /// (or idle-but-alive), the watchdog is kept alive and no hardware reset
+    /// is triggered, preserving dual-execution-domain isolation.
+    ///
+    /// The watchdog is shared via `Arc<Mutex<HardwareWatchdog>>` because
+    /// `keepalive()` requires `&mut self` and the underlying `/dev/watchdog`
+    /// file descriptor must not be duplicated.
+    pub fn with_watchdog(
+        mut self,
+        watchdog: Arc<Mutex<HardwareWatchdog>>,
+    ) -> Self {
+        self.watchdog = Some(watchdog);
+        self
     }
 
     /// Start the executor's consumption loop as a background tokio task.
@@ -107,14 +142,91 @@ impl RealtimeExecutor {
         }
         tokio::spawn(async move {
             info!("RealtimeExecutor started");
-            loop {
-                if !executor.config.lock().running {
-                    info!("RealtimeExecutor stopping");
-                    break;
+            Self::run_loop(executor).await;
+        })
+    }
+
+    /// Start the executor's consumption loop on a dedicated RT-configured thread.
+    ///
+    /// The thread is configured via `RtRuntime` (SCHED_FIFO, mlockall, CPU affinity,
+    /// huge pages) before entering a single-threaded tokio runtime. On non-Linux
+    /// platforms the RT configuration is a no-op but the dedicated thread is still
+    /// spawned.
+    pub fn start_rt(self: &Arc<Self>, rt_config: RtConfig) -> std::thread::JoinHandle<()> {
+        let executor = self.clone();
+        {
+            let mut cfg = executor.config.lock();
+            cfg.running = true;
+        }
+        std::thread::Builder::new()
+            .name("rt-executor".into())
+            .spawn(move || {
+                let runtime = RtRuntime::new(rt_config);
+                if let Err(e) = runtime.configure_current_thread() {
+                    error!("Failed to configure RT thread: {}", e);
+                    return;
                 }
 
-                // Try to dequeue synchronously first
-                if let Some(cmd) = executor.queue.dequeue() {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        error!("Failed to build tokio runtime: {}", e);
+                        return;
+                    }
+                };
+
+                rt.block_on(async move {
+                    info!("RealtimeExecutor (RT) started");
+                    Self::run_loop(executor).await;
+                });
+            })
+            .expect("failed to spawn rt-executor thread")
+    }
+
+    /// Shared consumption loop used by both `start()` and `start_rt()`.
+    ///
+    /// When a watchdog is attached via [`with_watchdog`](Self::with_watchdog),
+    /// the loop independently feeds it at most once per
+    /// [`WATCHDOG_KEEPALIVE_INTERVAL`] (100ms). A `sleep` branch is added to
+    /// the idle `select!` so that the watchdog is still fed when the queue is
+    /// empty — without it, `select!` could block indefinitely and starve the
+    /// watchdog, defeating the purpose of independent RT-thread keepalive.
+    async fn run_loop(executor: Arc<RealtimeExecutor>) {
+        let mut last_keepalive = Instant::now();
+        loop {
+            if !executor.config.lock().running {
+                info!("RealtimeExecutor stopping");
+                break;
+            }
+
+            // Try to dequeue synchronously first
+            if let Some(cmd) = executor.queue.dequeue() {
+                let result = executor.execute_one(cmd).await;
+                match &result {
+                    CommandResult::Executed { latency_ms } => {
+                        info!("Command executed in {}ms", latency_ms);
+                    }
+                    CommandResult::Rejected { reason } => {
+                        warn!("Command rejected: {}", reason);
+                    }
+                    CommandResult::Timeout { retries } => {
+                        error!("Command timed out after {} retries", retries);
+                    }
+                }
+                Self::maybe_keepalive(&executor, &mut last_keepalive);
+                continue;
+            }
+
+            // Queue is empty: wait for a new command, a stop signal, or the
+            // watchdog keepalive interval (whichever comes first). The sleep
+            // branch guarantees the watchdog is fed even during prolonged idle
+            // periods, preventing a hardware reset that would kill the RT
+            // domain while it is still healthy.
+            tokio::select! {
+                cmd = executor.queue.dequeue_async() => {
                     let result = executor.execute_one(cmd).await;
                     match &result {
                         CommandResult::Executed { latency_ms } => {
@@ -127,34 +239,34 @@ impl RealtimeExecutor {
                             error!("Command timed out after {} retries", retries);
                         }
                     }
-                    continue;
                 }
-
-                // Queue is empty: wait for either a new command or a stop signal
-                tokio::select! {
-                    cmd = executor.queue.dequeue_async() => {
-                        let result = executor.execute_one(cmd).await;
-                        match &result {
-                            CommandResult::Executed { latency_ms } => {
-                                info!("Command executed in {}ms", latency_ms);
-                            }
-                            CommandResult::Rejected { reason } => {
-                                warn!("Command rejected: {}", reason);
-                            }
-                            CommandResult::Timeout { retries } => {
-                                error!("Command timed out after {} retries", retries);
-                            }
-                        }
+                _ = executor.stop_notify.notified() => {
+                    if !executor.config.lock().running {
+                        info!("RealtimeExecutor stopping");
+                        break;
                     }
-                    _ = executor.stop_notify.notified() => {
-                        if !executor.config.lock().running {
-                            info!("RealtimeExecutor stopping");
-                            break;
-                        }
-                    }
+                }
+                _ = tokio::time::sleep(WATCHDOG_KEEPALIVE_INTERVAL) => {
+                    // Keepalive timer expired; feed the watchdog below.
                 }
             }
-        })
+            Self::maybe_keepalive(&executor, &mut last_keepalive);
+        }
+    }
+
+    /// Feed the attached watchdog if [`WATCHDOG_KEEPALIVE_INTERVAL`] has
+    /// elapsed since the last keepalive. No-op when no watchdog is attached
+    /// (e.g. non-RT `start()` path or tests).
+    fn maybe_keepalive(executor: &RealtimeExecutor, last_keepalive: &mut Instant) {
+        if last_keepalive.elapsed() < WATCHDOG_KEEPALIVE_INTERVAL {
+            return;
+        }
+        if let Some(ref wd) = executor.watchdog {
+            if let Err(e) = wd.lock().keepalive() {
+                warn!("RT executor watchdog keepalive failed: {}", e);
+            }
+        }
+        *last_keepalive = Instant::now();
     }
 
     /// Stop the executor loop
@@ -198,12 +310,11 @@ impl RealtimeExecutor {
                     .map(|r| r.retries)
                     .unwrap_or(0);
 
+                // Single lock acquisition to update all stats
+                let mut stats = self.stats.lock();
                 if retries > 0 {
-                    let mut stats = self.stats.lock();
                     stats.total_retries += retries as u64;
                 }
-
-                let mut stats = self.stats.lock();
                 stats.total_executed += 1;
                 stats.by_priority[priority_idx] += 1;
                 stats.total_latency_ms += latency_ms;
@@ -356,7 +467,8 @@ mod tests {
         assert_eq!(stats.by_priority[1], 1); // Normal
         assert_eq!(stats.by_priority[2], 1); // High
         assert_eq!(stats.by_priority[3], 1); // Critical
-        assert!(stats.total_latency_ms >= 0);
+        // total_latency_ms is u64, always >= 0; just verify it's present
+        let _ = stats.total_latency_ms;
     }
 
     #[tokio::test]

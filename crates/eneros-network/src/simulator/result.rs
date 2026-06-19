@@ -57,6 +57,8 @@ pub(super) fn inapplicable_result(summary: String) -> WhatIfResult {
     }
 }
 
+#[deprecated(note = "v0.8.0: 开关动作已物理建模，使用 simulate_with_opened_branches 替代")]
+#[allow(dead_code)]
 pub(super) fn conservative_switching_reject(action: &StructuredAction) -> WhatIfResult {
     WhatIfResult {
         applicable: true,

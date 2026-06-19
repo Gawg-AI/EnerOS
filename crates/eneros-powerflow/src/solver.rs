@@ -2,11 +2,28 @@ use crate::matrix::YBusMatrix;
 use crate::result::{BranchResult, BusResult, PowerFlowResult};
 use eneros_core::{ElementId, EnerOSError, Result};
 
+/// Power flow algorithm selection.
+///
+/// - `NewtonRaphson`: General-purpose, works for meshed and radial networks.
+///   Best for transmission systems with strong coupling.
+/// - `BackwardForwardSweep`: Optimized for radial distribution networks.
+///   Uses BIBC/BCBV matrices (Jen-Hao Teng method). Faster than NR for radial
+///   topologies but requires tree structure (no loops).
+/// - `DC`: Linearized DC power flow. Fast approximation, ignores reactive power.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PowerFlowAlgorithm {
+    #[default]
+    NewtonRaphson,
+    BackwardForwardSweep,
+    DC,
+}
+
 /// Power flow solver using Newton-Raphson method
 #[derive(Clone)]
 pub struct PowerFlowSolver {
     max_iterations: u32,
     tolerance: f64,
+    algorithm: PowerFlowAlgorithm,
 }
 
 impl PowerFlowSolver {
@@ -14,11 +31,23 @@ impl PowerFlowSolver {
         Self {
             max_iterations,
             tolerance,
+            algorithm: PowerFlowAlgorithm::NewtonRaphson,
         }
     }
 
     pub fn default_solver() -> Self {
         Self::new(50, 1e-8)
+    }
+
+    /// Set the power flow algorithm.
+    pub fn with_algorithm(mut self, algorithm: PowerFlowAlgorithm) -> Self {
+        self.algorithm = algorithm;
+        self
+    }
+
+    /// Get the current algorithm.
+    pub fn algorithm(&self) -> PowerFlowAlgorithm {
+        self.algorithm
     }
 
     /// Solve power flow using Newton-Raphson method
@@ -34,6 +63,116 @@ impl PowerFlowSolver {
 
     /// Solve power flow with optional initial voltage magnitudes
     pub fn solve_with_initial(
+        &self,
+        ybus: &YBusMatrix,
+        p_spec: &[f64],
+        q_spec: &[f64],
+        bus_types: &[BusTypeNR],
+        v_initial: Option<&[f64]>,
+    ) -> Result<PowerFlowResult> {
+        self.solve_with_options(ybus, p_spec, q_spec, bus_types, v_initial, None, None)
+    }
+
+    /// Solve power flow with Q limit enforcement and recycle cache support.
+    ///
+    /// # Arguments
+    /// * `q_limits` - Optional Q limits for PV buses. When a PV bus's Q
+    ///   exceeds limits, it is converted to PQ (pandapower-style enforcement).
+    /// * `recycle` - Optional recycle cache. If provided and valid, uses
+    ///   cached voltages as initial values to speed up convergence.
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_with_options(
+        &self,
+        ybus: &YBusMatrix,
+        p_spec: &[f64],
+        q_spec: &[f64],
+        bus_types: &[BusTypeNR],
+        v_initial: Option<&[f64]>,
+        q_limits: Option<&QLimits>,
+        recycle: Option<&RecycleCache>,
+    ) -> Result<PowerFlowResult> {
+        // Use recycle cache for initial voltages if available and no explicit initial provided
+        let recycle_v: Vec<f64>;
+        let effective_v_initial: Option<&[f64]> = if let Some(vi) = v_initial {
+            Some(vi)
+        } else if let Some(cache) = recycle {
+            if let Some(cached_v) = &cache.cached_v {
+                recycle_v = cached_v.clone();
+                Some(&recycle_v)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // If no Q limits, solve normally
+        if q_limits.map(|q| q.is_empty()).unwrap_or(true) {
+            return self.solve_nr(ybus, p_spec, q_spec, bus_types, effective_v_initial);
+        }
+
+        // Q limit enforcement: iterate, converting PV→PQ when Q exceeds limits
+        let mut current_bus_types = bus_types.to_vec();
+        let mut current_q_spec = q_spec.to_vec();
+        let mut q_conversions: Vec<(usize, f64)> = Vec::new(); // (bus_idx, fixed_q)
+        let max_qlim_iterations = 10;
+
+        for _qlim_iter in 0..max_qlim_iterations {
+            let result = self.solve_nr(
+                ybus,
+                p_spec,
+                &current_q_spec,
+                &current_bus_types,
+                effective_v_initial,
+            )?;
+
+            if q_limits.is_none() {
+                return Ok(result);
+            }
+            let q_limits = q_limits.unwrap();
+
+            // Check Q violations at PV buses
+            let mut violations = Vec::new();
+            for (i, &bt) in current_bus_types.iter().enumerate() {
+                if bt == BusTypeNR::PV {
+                    let q_computed = result.bus_results.iter()
+                        .find(|br| br.bus_id == i as u64)
+                        .map(|br| br.q_injection)
+                        .unwrap_or(0.0);
+
+                    if let Some((qmin, qmax)) = q_limits.get(i) {
+                        if q_computed > qmax {
+                            violations.push((i, qmax, q_computed));
+                        } else if q_computed < qmin {
+                            violations.push((i, qmin, q_computed));
+                        }
+                    }
+                }
+            }
+
+            if violations.is_empty() {
+                return Ok(result);
+            }
+
+            // Convert the most violated PV bus to PQ
+            violations.sort_by(|a, b| {
+                let va = (a.2 - a.1).abs();
+                let vb = (b.2 - b.1).abs();
+                vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            let (bus_idx, fixed_q, _) = violations[0];
+            current_bus_types[bus_idx] = BusTypeNR::PQ;
+            current_q_spec[bus_idx] = fixed_q;
+            q_conversions.push((bus_idx, fixed_q));
+        }
+
+        // Final solve with updated bus types
+        self.solve_nr(ybus, p_spec, &current_q_spec, &current_bus_types, effective_v_initial)
+    }
+
+    /// Core Newton-Raphson solver (internal).
+    fn solve_nr(
         &self,
         ybus: &YBusMatrix,
         p_spec: &[f64],
@@ -136,8 +275,8 @@ impl PowerFlowSolver {
             let mut p_calc = 0.0;
             let mut q_calc = 0.0;
 
-            for j in 0..n {
-                let (g, b) = ybus.get(i, j);
+            // 使用稀疏迭代：零元素对 p_calc/q_calc 贡献为 0，可跳过
+            for (j, g, b) in ybus.iter_row(i) {
                 let angle_diff = theta[i] - theta[j];
                 p_calc += v[i] * v[j] * (g * angle_diff.cos() + b * angle_diff.sin());
                 q_calc += v[i] * v[j] * (g * angle_diff.sin() - b * angle_diff.cos());
@@ -159,8 +298,6 @@ impl PowerFlowSolver {
         ybus: &YBusMatrix,
         bus_types: &[BusTypeNR],
     ) -> Result<Vec<Vec<f64>>> {
-        let n = v.len();
-
         let pq_indices: Vec<usize> = bus_types
             .iter()
             .enumerate()
@@ -194,9 +331,8 @@ impl PowerFlowSolver {
             for (jj, &j) in non_slack_indices.iter().enumerate() {
                 if i == j {
                     let mut sum = 0.0;
-                    for k in 0..n {
+                    for (k, g_ik, b_ik) in ybus.iter_row(i) {
                         if k != i {
-                            let (g_ik, b_ik) = ybus.get(i, k);
                             let angle_diff_ik = theta[i] - theta[k];
                             sum += v[i]
                                 * v[k]
@@ -221,8 +357,7 @@ impl PowerFlowSolver {
                 if i == j {
                     // dP_i/dV_i = (1/V_i) * P_i + V_i * G_ii
                     let mut p_calc = 0.0;
-                    for k in 0..n {
-                        let (g_ik, b_ik) = ybus.get(i, k);
+                    for (k, g_ik, b_ik) in ybus.iter_row(i) {
                         let angle_diff_ik = theta[i] - theta[k];
                         p_calc +=
                             v[i] * v[k] * (g_ik * angle_diff_ik.cos() + b_ik * angle_diff_ik.sin());
@@ -242,9 +377,8 @@ impl PowerFlowSolver {
             for (jj, &j) in non_slack_indices.iter().enumerate() {
                 if i == j {
                     let mut sum = 0.0;
-                    for k in 0..n {
+                    for (k, g_ik, b_ik) in ybus.iter_row(i) {
                         if k != i {
-                            let (g_ik, b_ik) = ybus.get(i, k);
                             let angle_diff_ik = theta[i] - theta[k];
                             sum += v[i]
                                 * v[k]
@@ -270,8 +404,7 @@ impl PowerFlowSolver {
                 if i == j {
                     // dQ_i/dV_i = (1/V_i) * Q_i - V_i * B_ii
                     let mut q_calc = 0.0;
-                    for k in 0..n {
-                        let (g_ik, b_ik) = ybus.get(i, k);
+                    for (k, g_ik, b_ik) in ybus.iter_row(i) {
                         let angle_diff_ik = theta[i] - theta[k];
                         q_calc +=
                             v[i] * v[k] * (g_ik * angle_diff_ik.sin() - b_ik * angle_diff_ik.cos());
@@ -298,8 +431,11 @@ impl PowerFlowSolver {
         let mut branch_results = Vec::new();
 
         for i in 0..n {
-            for j in (i + 1)..n {
-                let (g, b) = ybus.get(i, j);
+            // 使用稀疏迭代，仅处理 j > i 的非零元（上三角）
+            for (j, g, b) in ybus.iter_row(i) {
+                if j <= i {
+                    continue;
+                }
                 if g.abs() < 1e-10 && b.abs() < 1e-10 {
                     continue;
                 }
@@ -380,6 +516,80 @@ pub enum BusTypeNR {
     PQ,
     PV,
     Slack,
+}
+
+/// Q limits for PV buses (for Q limit enforcement).
+///
+/// When a PV bus's reactive power exceeds these limits, it is converted to a
+/// PQ bus with Q fixed at the violated limit. This mirrors pandapower's
+/// `_run_ac_pf_with_qlims_enforced` behavior.
+#[derive(Debug, Clone, Default)]
+pub struct QLimits {
+    /// (bus_idx, q_min_mvar, q_max_mvar)
+    pub limits: Vec<(usize, f64, f64)>,
+}
+
+impl QLimits {
+    pub fn new() -> Self {
+        Self { limits: Vec::new() }
+    }
+
+    pub fn add(&mut self, bus_idx: usize, q_min_mvar: f64, q_max_mvar: f64) {
+        self.limits.push((bus_idx, q_min_mvar, q_max_mvar));
+    }
+
+    pub fn get(&self, bus_idx: usize) -> Option<(f64, f64)> {
+        self.limits.iter()
+            .find(|(idx, _, _)| *idx == bus_idx)
+            .map(|(_, qmin, qmax)| (*qmin, *qmax))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.limits.is_empty()
+    }
+}
+
+/// Cache for recycling Y-bus and previous solution across sequential power flow runs.
+///
+/// Inspired by pandapower's recycle mechanism (`powerflow.py:73-134`).
+/// When the network topology doesn't change between runs, the Y-bus matrix
+/// can be reused, saving construction time. Previous voltage results can
+/// also be used as initial values to speed up convergence.
+#[derive(Debug, Clone, Default)]
+pub struct RecycleCache {
+    /// Cached voltage magnitudes from previous solve (used as initial values).
+    pub cached_v: Option<Vec<f64>>,
+    /// Cached voltage angles from previous solve.
+    pub cached_theta: Option<Vec<f64>>,
+    /// Network topology signature (for invalidation detection).
+    pub topology_signature: Option<u64>,
+}
+
+impl RecycleCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Update cache with latest solution.
+    pub fn update(&mut self, v: &[f64], theta: &[f64]) {
+        self.cached_v = Some(v.to_vec());
+        self.cached_theta = Some(theta.to_vec());
+    }
+
+    /// Invalidate cache (call when topology changes).
+    pub fn invalidate(&mut self) {
+        self.cached_v = None;
+        self.cached_theta = None;
+        self.topology_signature = None;
+    }
+
+    /// Get cached initial voltages if available.
+    pub fn initial_voltages(&self) -> Option<(&[f64], &[f64])> {
+        match (&self.cached_v, &self.cached_theta) {
+            (Some(v), Some(theta)) => Some((v, theta)),
+            _ => None,
+        }
+    }
 }
 
 impl Default for PowerFlowSolver {

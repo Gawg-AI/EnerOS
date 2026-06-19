@@ -1,0 +1,43 @@
+# EnerOS 系统日志配置
+# 结构化 JSON 日志 + 轮转 + 压缩 + 远程转发
+
+# 日志目录
+log_dir = "/var/log/eneros"
+
+# 全局最小日志级别（trace/debug/info/warn/error）
+global_level = "info"
+
+[rotate]
+# 轮转策略：Size(字节数) / Daily / Both(字节数)
+policy = { Both = 104857600 }  # 100MB 或按天
+# 每个分类最大保留文件数
+max_files = 7
+# 是否 gzip 压缩归档
+compress = true
+# 保留天数
+retention_days = 7
+
+[forward]
+# 本地缓存大小（网络中断时缓存的日志条数）
+cache_size = 10000
+# 重传间隔（秒）
+retry_interval_secs = 30
+
+# 远程转发目标（主备日志服务器）
+# [[forward.targets]]
+# addr = "192.168.1.100:514"
+# transport = "tcp"  # tcp / udp / tls
+# min_level = "info"
+
+# [[forward.targets]]
+# addr = "192.168.1.101:514"
+# transport = "udp"
+# min_level = "warn"
+
+# 分类级别覆盖（不设则用 global_level）
+[category_levels]
+system = "info"
+agent = "info"
+protocol = "debug"
+security = "info"
+audit = "info"

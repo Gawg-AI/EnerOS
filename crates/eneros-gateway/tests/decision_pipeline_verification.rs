@@ -201,13 +201,13 @@ mod dispatch_structured_tests {
     fn make_dispatcher_with_pipeline(pipeline: ConstrainedDecisionPipeline) -> ActionDispatcher {
         let event_bus = Arc::new(EventBus::new(64));
         let gateway = Arc::new(SafetyGateway::new(100));
-        ActionDispatcher::with_pipeline(event_bus, gateway, Arc::new(pipeline))
+        ActionDispatcher::new_local(event_bus, gateway).with_pipeline(Arc::new(pipeline))
     }
 
     fn make_dispatcher_without_pipeline() -> ActionDispatcher {
         let event_bus = Arc::new(EventBus::new(64));
         let gateway = Arc::new(SafetyGateway::new(100));
-        ActionDispatcher::new(event_bus, gateway)
+        ActionDispatcher::new_local(event_bus, gateway)
     }
 
     #[tokio::test]
@@ -252,7 +252,7 @@ mod dispatch_structured_tests {
     }
 
     #[tokio::test]
-    async fn test_dispatch_structured_without_pipeline_fallback() {
+    async fn test_dispatch_structured_without_pipeline_returns_error() {
         let dispatcher = make_dispatcher_without_pipeline();
         let action = StructuredAction::StartGenerator {
             gen_id: 1,
@@ -265,10 +265,18 @@ mod dispatch_structured_tests {
                 &Jurisdiction::unrestricted(),
                 SystemOperatingState::Normal,
             )
-            .await
-            .unwrap();
-        // Without pipeline, falls through to CommandExecuted (backward compat)
-        assert_eq!(result, DispatchResult::CommandExecuted);
+            .await;
+        // Without a pipeline, gateway_client.decide() fails and the error
+        // is propagated (NOT a false CommandExecuted). The orchestrator's
+        // dispatch_via_pipeline handles this by checking has_pipeline() first
+        // and falling back to direct ExecuteCommand dispatch.
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("gateway decide failed"),
+            "unexpected error: {}",
+            err_msg
+        );
     }
 
     #[tokio::test]

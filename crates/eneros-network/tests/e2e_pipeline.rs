@@ -488,7 +488,7 @@ async fn test_e2e_rollback_steps_for_multi_step_action() {
             // For multi-step actions, rollback steps should cover each step
             if decomp.is_multi_step() {
                 assert!(
-                    rb.steps.len() >= 1,
+                    !rb.steps.is_empty(),
                     "Multi-step action needs at least 1 rollback step, got {}",
                     rb.steps.len()
                 );

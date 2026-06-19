@@ -191,6 +191,50 @@ EnerOS 采用**双执行架构**，将系统划分为两个执行域：
 ### 安全守卫
 内核级安全守卫：N-1 安全校验、热稳定校验、电压越限检测。安全约束不可被 Agent 绕过或降级，是操作系统的"硬法律"。
 
+### 实时双执行域
+通用执行域承载 Agent 编排与 AI 推理，实时执行域保障保护逻辑与开关操作的确定性时延。采用 SCHED_FIFO 优先级抢占调度 + CPU 隔离（isolcpus）+ mlockall 内存锁定 + 无锁 SPSC IPC + 硬件看门狗（/dev/watchdog），命令时延 P99 < 1ms。安全域不可被通用域阻塞。
+
+---
+
+## 项目结构
+
+EnerOS 采用 Cargo workspace 组织，所有可编译的 Rust crate 统一放在 `crates/` 下；OS 镜像构建基础设施（非 Rust）放在 `os/` 下。两者职责不同，不可合并。
+
+```
+eneros/
+├── crates/                    # Rust workspace（所有可编译 crate）
+│   ├── eneros-core/           #   统一类型、错误、配置
+│   ├── eneros-os/             #   OS 服务 crate（源代码）：init/rt/agentos/hal/netcfg/firewall/devmgr
+│   ├── eneros-gateway/        #   安全网关、决策管线、实时执行器
+│   ├── eneros-agent/          #   Agent 运行时与 7 种领域 Agent
+│   ├── eneros-powerflow/      #   潮流求解
+│   ├── eneros-topology/       #   电网拓扑图建模
+│   ├── ...                    #   其余 14 个 crate（见下方 Crate 索引）
+│   └── eneros-dashboard/      #   Web 仪表盘
+├── os/                        # OS 镜像构建基础设施（脚本 + 配置，非 Rust）
+│   ├── boot/                  #   启动配置（grub.cfg、initramfs、启动参数验证）
+│   ├── kernel/                #   内核配置（config-x86_64、config-aarch64、构建脚本）
+│   ├── rootfs/                #   根文件系统（build.sh + /etc/eneros/*.toml 配置文件）
+│   ├── image-builder/         #   镜像构建（分区、引导装载程序安装）
+│   └── tests/                 #   OS 集成测试 crate（boot_test、boot_params_test）
+├── docs/                      # 项目文档
+├── .trae/specs/agentos-native/  # 架构蓝图（spec.md、tasks.md、checklist.md）
+├── Cargo.toml                 # workspace 根配置
+├── CHANGELOG.md               # 变更日志
+└── ROADMAP.md                 # 开发路线图
+```
+
+### `crates/eneros-os/` 与 `os/` 的区别
+
+| | `crates/eneros-os/` | `os/` |
+|---|---|---|
+| **本质** | Rust crate（编译为库 + 二进制） | 镜像构建基础设施（shell 脚本 + 配置文件） |
+| **产物** | `eneros-init`（PID 1）、`enerosctl`（CLI）、`libeneros_os.rlib` | 可启动的 OS 镜像（rootfs tarball、initramfs、磁盘镜像） |
+| **内容** | `src/init/`、`src/rt/`、`src/agentos/`、`src/hal/`、`src/netcfg/` 等 | `boot/`、`kernel/`、`rootfs/`、`image-builder/` |
+| **关系** | 被 `os/rootfs/build.sh` 编译后拷入 rootfs | 调用 `cargo build -p eneros-init` 编译 crate 产物 |
+
+简言之：`crates/eneros-os/` 是 **OS 服务的源代码**，`os/` 是 **把源代码打包成可启动镜像的构建系统**。
+
 ---
 
 ## Crate 索引
@@ -198,6 +242,7 @@ EnerOS 采用**双执行架构**，将系统划分为两个执行域：
 | Crate | 路径 | 职责 | 关键类型/接口 |
 |-------|------|------|---------------|
 | **eneros-core** | `crates/eneros-core/` | 统一类型、错误、配置 | `EnerOSError`, `EnerOSConfig`, `ElementId`, `BusType`, `PowerSystemState` |
+| **eneros-linalg** | `crates/eneros-linalg/` | 稀疏线性代数（CSR 矩阵、LU/Cholesky 分解） | `SparseMatrix`, `SparseLuFactorization`, `SymbolicFactorization` |
 | **eneros-topology** | `crates/eneros-topology/` | 电网拓扑图建模与分析 | `NetworkGraph`, `TopologyEngine`, `TopologySearcher`, `Bus`, `Branch`, `Switch` |
 | **eneros-powerflow** | `crates/eneros-powerflow/` | Newton-Raphson 潮流求解 | `PowerFlowSolver`, `YBusMatrix`, `JacobianMatrix`, `PowerFlowResult` |
 | **eneros-constraint** | `crates/eneros-constraint/` | 安全约束校验与可行性投影 | `ConstraintEngine`, `Constraint`, `Violation`, `FeasibilityProjector`, `WhatIfResult` |
@@ -216,6 +261,7 @@ EnerOS 采用**双执行架构**，将系统划分为两个执行域：
 | **eneros-scada** | `crates/eneros-scada/` | SCADA 数据采集（IEC 104 集成） | `ScadaEngine`, `DataSource` trait, `Iec104DataSource` |
 | **eneros-analysis** | `crates/eneros-analysis/` | 电力系统分析（状态估计/OPF/短路） | `StateEstimator`, `OpfSolver`, `ShortCircuitAnalyzer`, `SequenceNetworks` |
 | **eneros-dashboard** | `crates/eneros-dashboard/` | Web 仪表盘 | `DashboardServer`, `TopologySvg`, `FlowHeatmap`, `AgentPanel` |
+| **eneros-os** | `crates/eneros-os/` | OS 服务层（init/rt/agentos/hal/netcfg/firewall/devmgr） | `eneros-init`（PID 1）, `enerosctl`（CLI）, `NetworkConfig`, `FirewallManager`, `RtRuntime`, `HardwareWatchdog`, `AgentRegistry` |
 
 ### 依赖关系
 
@@ -229,12 +275,14 @@ eneros-core ◄── eneros-topology
              ◄── eneros-memory
              ◄── eneros-tool
              ◄── eneros-reasoning
+             ◄── eneros-os
 
 eneros-core + eneros-eventbus ◄── eneros-device
 eneros-core + eneros-equipment ◄── eneros-bridge
 eneros-core + eneros-topology + eneros-powerflow + eneros-equipment ◄── eneros-network
 eneros-core + eneros-device ◄── eneros-scada
 eneros-powerflow + eneros-equipment ◄── eneros-analysis
+eneros-core + eneros-os ◄── eneros-gateway
 eneros-gateway + eneros-agent + eneros-reasoning + eneros-tool ◄── eneros-api
 eneros-gateway + eneros-agent + eneros-constraint ◄── eneros-dashboard
 ```
@@ -303,7 +351,7 @@ cargo test
 
 ```bash
 # 启动 API 服务器
-cargo run --bin eneros -- serve --host 0.0.0.0 --port 8080
+cargo run --bin eneros -- run --host 0.0.0.0 --port 8080
 
 # 执行潮流计算
 cargo run --bin eneros -- power-flow --case ieee14
@@ -336,20 +384,34 @@ cargo run --bin eneros -- power-flow --case ieee14
 - [x] **Phase 17 — IEC 104 适配器** — 真实TCP协议栈、TESTFR心跳应答、半包/粘包处理、6个TCP传输测试
 - [x] **v0.2.0 — 生产级架构修复（BUG3 全部9项）** — 接入层协议真实化、执行层命令落地（DeviceCommandExecutor + ACK验证）、状态机联动、冲突解析四级链、Holt-Winters真实实现、SQLite持久化write-through、分析层生产级化（真实雅可比/序网络/严格对偶LMP/参数化分接头）、P16闭环实测观测验证
 
-### 进行中 / 规划中
+### 已完成
 
-- [ ] **v0.3.0 — 生产就绪** — 持久化全面接入、配置体系、可观测性（Prometheus/结构化日志）、安全加固（JWT/mTLS）
-- [ ] **v0.4.0 — 协议覆盖完善** — Modbus RTU、IEC 104/61850增强、DNP3、OPC UA
-- [ ] **v0.5.0 — Agent 智能化** — LLM多后端、多Agent协同、自愈策略库、预测精度提升
-- [ ] **v0.6.0 — 分析层进阶** — 不良数据检测、AC-OPF、SCOPF、暂态稳定
-- [ ] **v0.7.0 — 高可用部署** — 容器化、集群冗余、灾备、性能优化
-- [ ] **v0.8.0 — 生态扩展** — 插件系统、GraphQL、可视化增强、文档体系
+- [x] **v0.3.0 — 生产就绪基线** — 持久化全面接入、配置体系、可观测性（Prometheus/结构化日志）、安全加固（JWT/mTLS）
+- [x] **v0.4.0 — 打通生产路径** — 设备层接线、SCADA 实时管道、网络模型配置化加载
+- [x] **v0.5.0 — Agent 自主化** — spawn 生命周期、行为规划、反思学习、工具统一
+- [x] **v0.6.0 — 生产加固** — 配置化、可观测性、安全、API 覆盖、回滚执行
+- [x] **v0.7.0 — 协议覆盖** — GOOSE/SV/OPC UA/DNP3、IEC104/61850 增强、CIM 导入、TLS 运行时
+- [x] **v0.8.0 — 分析精度进阶** — 稀疏线性代数、AC-OPF、暂态稳定、状态估计增强、不对称短路、开关物理建模、5 个新 API 端点
+- [x] **v0.9.0 — 交付级运维** — 容器化、配置热重载、分布式追踪、DualScanGroup 修复、CI/CD
+- [x] **v0.10.0 — 生产深化** — PipelineStatistics 原子化、per-device 锁池、SOE 事件记录、存储级降采样、CIM 转换器、OpenAPI 文档、SVG data-* 修复
+- [x] **v0.14.0 — AgentOS 内核 + EventBus Broker** — AgentRegistry/AgentSupervisor/AgentIPC/EventBusBroker/AuthorityEnforcer/ResourceQuota/AgentScheduler/enerosctl
+- [x] **v0.15.0 — Agent 进程化（激进迁移）** — 7 种 Agent 拆为独立进程 + AgentContext 重构 + ActionDispatcher IPC 化
+- [x] **v0.16.0 — Gateway 进程化** — SafetyGateway/DecisionPipeline 独立进程 + GatewayClient + 端到端测试
+- [x] **v0.18.0 — 实时双执行域** — eneros-rt 接线（SCHED_FIFO + CPU 隔离 + mlockall + huge pages）+ 无锁 SPSC IPC + 硬件看门狗 + 内核启动参数验证 + RT 基准测试
+- [x] **v0.19.0 — 网络配置服务** — netcfg 静态IP/VLAN/网桥 + nftables 防火墙 + bonding（active-backup/LACP）+ 网络命名空间隔离 + DNS + uevent 热插拔 + enerosctl network 子命令
+- [x] **v0.20.0 — 时间同步与日志** — PTP IEEE 1588 + NTP 回退 + PHC 管理 + syslog 结构化 JSON 日志 + 轮转/压缩/远程转发 + 审计日志 HMAC 签名 + enerosctl log 子命令
+- [x] **v0.20.1 — v0.20.0 安全与正确性修复** — 审计签名绕过/空密钥/seq持久化 + PTP孤儿进程/ptp4l参数/NTP校验/Duration panic + 日志轮转/TLS明文/RFC5424转义 + CLI路径遍历/grep注入防护
+- [x] **v0.20.2 — v0.20.0 功能完整性修复** — timesync 新增 eneros-timesync 守护进程（后台循环/PTP pmc 轮询/phc2sys -w/Drop trait/NTP 重试）+ syslog 线程安全（Mutex/BufWriter/fsync/TLS fail-fast/轮转修复）+ audit 链式哈希（prev_hash/轮转/fsync/查询过滤/签名修复）+ enerosctl audit/time 子命令 + log level 真正生效
+
+### 规划中
+
+- [ ] **v1.0.0 — 生态扩展** — 插件系统、GraphQL、数字孪生、文档体系
 
 ---
 
 ## 参与贡献
 
-EnerOS 当前版本 v0.2.0，已完成核心架构的生产级修复，930+ 测试通过。欢迎对电力系统与 AI 交叉领域感兴趣的贡献者参与。请阅读 [ROADMAP.md](ROADMAP.md) 了解规划方向。
+EnerOS 当前版本 v0.22.0，20 个 crate。欢迎对电力系统与 AI 交叉领域感兴趣的贡献者参与。请阅读 [ROADMAP.md](ROADMAP.md) 了解规划方向。
 
 ---
 

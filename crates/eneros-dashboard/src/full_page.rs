@@ -5,6 +5,7 @@ use crate::data_panel::DataPanelData;
 /// Generate a complete HTML dashboard page combining all components.
 pub fn generate_dashboard_page(
     topology_svg: &str,
+    flow_heatmap_svg: &str,
     agent_data: &AgentPanelData,
     data_panel: &DataPanelData,
 ) -> String {
@@ -34,7 +35,7 @@ pub fn generate_dashboard_page(
     </section>
     <section class="panel" id="flow-panel">
       <h2>Power Flow Heatmap</h2>
-      <div id="flow-svg-container" class="svg-container">{topology_svg}</div>
+      <div id="flow-svg-container" class="svg-container">{flow_heatmap_svg}</div>
     </section>
     <section class="panel" id="agent-panel">
       <h2>Agent Status</h2>
@@ -50,6 +51,7 @@ pub fn generate_dashboard_page(
 </html>"##,
         css = css,
         topology_svg = topology_svg,
+        flow_heatmap_svg = flow_heatmap_svg,
         agent_html = agent_html,
         data_html = data_html,
         js = js,
@@ -65,6 +67,7 @@ mod tests {
     #[test]
     fn test_generate_dashboard_page() {
         let topology_svg = "<svg><circle cx=\"100\" cy=\"100\" r=\"10\"/></svg>";
+        let flow_svg = "<svg><circle cx=\"50\" cy=\"50\" r=\"5\"/></svg>";
         let agent_data = AgentPanelData {
             agents: vec![AgentDisplay {
                 name: "TestAgent".to_string(),
@@ -88,7 +91,7 @@ mod tests {
             timestamp: "2025-01-01T12:00:00Z".to_string(),
         };
 
-        let page = generate_dashboard_page(topology_svg, &agent_data, &data_panel);
+        let page = generate_dashboard_page(topology_svg, flow_svg, &agent_data, &data_panel);
 
         assert!(page.contains("<!DOCTYPE html>"));
         assert!(page.contains("EnerOS Dashboard"));
@@ -103,6 +106,7 @@ mod tests {
     #[test]
     fn test_dashboard_page_contains_all_panels() {
         let topology_svg = "<svg></svg>";
+        let flow_svg = "<svg></svg>";
         let agent_data = AgentPanelData {
             agents: vec![],
             total_count: 0,
@@ -113,7 +117,7 @@ mod tests {
             timestamp: "now".to_string(),
         };
 
-        let page = generate_dashboard_page(topology_svg, &agent_data, &data_panel);
+        let page = generate_dashboard_page(topology_svg, flow_svg, &agent_data, &data_panel);
 
         assert!(page.contains("topology-panel"));
         assert!(page.contains("flow-panel"));

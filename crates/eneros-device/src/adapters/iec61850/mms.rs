@@ -84,9 +84,9 @@ impl BerEncoder {
 
     /// Encode an INTEGER value
     pub fn encode_integer(val: i32) -> Vec<u8> {
-        if val >= -128 && val <= 127 {
+        if (-128..=127).contains(&val) {
             vec![TAG_INTEGER, 0x01, val as u8]
-        } else if val >= -32768 && val <= 32767 {
+        } else if (-32768..=32767).contains(&val) {
             vec![TAG_INTEGER, 0x02, (val >> 8) as u8, (val & 0xFF) as u8]
         } else {
             vec![TAG_INTEGER, 0x04,
@@ -171,6 +171,12 @@ impl BerEncoder {
                 buf.push(parts[i]); // Last byte has high bit clear
             }
         }
+    }
+}
+
+impl Default for BerEncoder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -705,12 +711,7 @@ impl BerEncoder {
     /// Encode a BIT STRING with common MMS features
     fn encode_bit_string_features() -> Vec<u8> {
         // Bit string with all features supported (simplified)
-        let mut bs = Vec::new();
-        bs.push(TAG_BIT_STRING);
-        bs.push(0x03);  // 3 bytes
-        bs.push(0x00);  // no unused bits
-        bs.push(0xFF);  // all features supported byte 1
-        bs.push(0xFF);  // all features supported byte 2
+        let bs = vec![TAG_BIT_STRING, 0x03, 0x00, 0xFF, 0xFF];
         bs
     }
 }

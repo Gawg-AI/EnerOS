@@ -1,0 +1,98 @@
+# EnerOS — Docker Compose for production deployment
+# Usage: docker compose -f deploy/docker/docker-compose.yml up -d
+
+version: "3.9"
+
+services:
+  # ── EnerOS API Server ──────────────────────────────────────────────────
+  eneros:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: eneros:latest
+    container_name: eneros-api
+    restart: unless-stopped
+    ports:
+      - "${ENEROS_PORT:-8080}:8080"
+    volumes:
+      # Config file (hot-reloadable)
+      - ../../eneros.toml:/etc/eneros/eneros.toml:ro
+      # Persistent data
+      - eneros-memory:/var/lib/eneros/memory
+      - eneros-timeseries:/var/lib/eneros/timeseries
+      - eneros-logs:/var/log/eneros
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - ENEROS_API__PORT=8080
+      - ENEROS_API__HOST=0.0.0.0
+      # Override SCADA source via env var
+      - ENEROS_SCADA__SOURCE=${ENEROS_SCADA__SOURCE:-simulated}
+      - ENEROS_SCADA__IEC104_ADDR=${ENEROS_SCADA__IEC104_ADDR:-127.0.0.1:2404}
+    networks:
+      - eneros-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── Jaeger (optional — distributed tracing) ────────────────────────────
+  # Enable by setting ENEROS_OBSERVABILITY__ENABLE_TRACING=true and
+  # ENEROS_OBSERVABILITY__OTEL_ENDPOINT=http://jaeger:4317
+  jaeger:
+    image: jaegertracing/all-in-one:1.62
+    container_name: eneros-jaeger
+    restart: unless-stopped
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    networks:
+      - eneros-net
+    profiles:
+      - tracing
+
+  # ── Prometheus (optional — metrics scraping) ───────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: eneros-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - eneros-net
+    profiles:
+      - monitoring
+
+  # ── Grafana (optional — dashboards) ────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: eneros-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - eneros-net
+    profiles:
+      - monitoring
+    depends_on:
+      - prometheus
+
+volumes:
+  eneros-memory:
+  eneros-timeseries:
+  eneros-logs:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  eneros-net:
+    driver: bridge

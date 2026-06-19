@@ -87,6 +87,26 @@ impl fmt::Display for DataValue {
     }
 }
 
+/// Lossless conversion from `eneros_core::DeviceValue` to `DataValue`.
+///
+/// `eneros_core::DeviceValue` mirrors `DataValue` so that `Command` can carry
+/// a device value without eneros-core depending on eneros-device. This impl
+/// bridges the two at the gateway/device boundary.
+impl From<eneros_core::DeviceValue> for DataValue {
+    fn from(v: eneros_core::DeviceValue) -> Self {
+        match v {
+            eneros_core::DeviceValue::Bool(v) => DataValue::Bool(v),
+            eneros_core::DeviceValue::Int16(v) => DataValue::Int16(v),
+            eneros_core::DeviceValue::Int32(v) => DataValue::Int32(v),
+            eneros_core::DeviceValue::Int64(v) => DataValue::Int64(v),
+            eneros_core::DeviceValue::Float32(v) => DataValue::Float32(v),
+            eneros_core::DeviceValue::Float64(v) => DataValue::Float64(v),
+            eneros_core::DeviceValue::String(v) => DataValue::String(v),
+            eneros_core::DeviceValue::Bytes(v) => DataValue::Bytes(v),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DataQuality {
     Good,

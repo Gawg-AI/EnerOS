@@ -1,0 +1,51 @@
+# EnerOS 声明式机器配置
+# 此文件描述设备的硬件规格、分区布局、网络、启动参数、RT 配置
+# eneros-imager 构建时读取此文件生成镜像，eneros-init 启动时读取此文件初始化系统
+
+hardware:
+  arch: x86_64          # CPU 架构：x86_64 或 aarch64
+  cpu_cores: 4           # CPU 核心数
+  memory_mb: 4096        # 内存大小（MB）
+  disk_device: /dev/sda  # 目标磁盘设备
+
+partitions:
+  efi_size_mb: 512       # EFI 分区大小（FAT32，共享）
+  root_size_mb: 1536     # 每个 Root 分区大小（ext4，A/B 双槽位）
+  data_size_mb: 0        # Data 分区大小（0=使用剩余空间，ext4，共享）
+  config_size_mb: 256    # Config 分区大小（ext4，共享，存放 slot-state.yaml + machine.yaml + keys/）
+
+network:
+  hostname: eneros-node01
+  interfaces:
+    - name: eth0
+      method: dhcp       # dhcp 或 static
+      # address: 192.168.1.100    # static 模式必填
+      # netmask: 255.255.255.0    # static 模式必填
+      # gateway: 192.168.1.1      # static 模式可选
+
+boot:
+  kernel_params:         # 额外内核启动参数
+    - console=ttyS0,115200
+    - console=tty0
+    - panic=10
+  rt_config:
+    enabled: false       # 是否启用 PREEMPT_RT 配置
+    isolated_cpus: [2, 3]  # CPU 隔离（isolcpus）
+    nohz_full: [2, 3]      # No-HZ full
+    rcu_nocbs: [2, 3]      # RCU no-callbacks
+
+agents:                  # Agent 进程配置
+  - name: dispatch-agent
+    enabled: true
+    cpu_quota: 25        # CPU 配额百分比（可选）
+    memory_limit_mb: 512 # 内存限制（可选）
+  - name: forecast-agent
+    enabled: true
+  - name: operation-agent
+    enabled: true
+  - name: self-healing-agent
+    enabled: false
+  - name: planning-agent
+    enabled: false
+  - name: trading-agent
+    enabled: false

@@ -17,40 +17,64 @@ use crate::types::{ApiResponse, FlowHeatmapResponse, TopologySvgResponse};
 
 /// Build SVG data from the PowerNetwork if available
 fn build_svg_data_from_network(state: &AppState) -> (Vec<BusSvgData>, Vec<BranchSvgData>) {
-    if state.network.is_some() {
-        // When a PowerNetwork is available, use IEEE 14 bus data as the topology source
-        // (the PowerNetwork is built from this data)
-        let data = eneros_powerflow::ieee14();
-        let buses: Vec<BusSvgData> = data
-            .buses
-            .iter()
-            .map(|b| {
+    if let Some(network) = &state.network {
+        // Use the actual loaded PowerNetwork instead of hardcoded IEEE 14
+        let buses: Vec<BusSvgData> = (0..network.bus_count())
+            .map(|idx| {
+                let bus_id = (idx + 1) as u64; // external IDs are 1-indexed
                 BusSvgData {
-                    id: b.bus_id as u64,
-                    name: format!("Bus {}", b.bus_id),
+                    id: bus_id,
+                    name: format!("Bus {}", bus_id),
                     x: 0.0, // will be set by circular_layout
                     y: 0.0,
                     zone_id: 0,
-                    voltage_level: format!("{:.0}kV", 138.0),
+                    voltage_level: "kV".to_string(),
                 }
             })
             .collect();
-        let branches: Vec<BranchSvgData> = data
-            .branches
-            .iter()
-            .enumerate()
-            .map(|(i, b)| BranchSvgData {
-                id: i as u64,
-                from_bus: b.from_bus as u64,
-                to_bus: b.to_bus as u64,
-                status: true,
+        let branches: Vec<BranchSvgData> = (0..network.branch_count())
+            .map(|idx| {
+                // We don't have direct from/to access without solving, so use
+                // index-based IDs. The SVG layout uses these for rendering lines.
+                BranchSvgData {
+                    id: idx as u64,
+                    from_bus: 0,
+                    to_bus: 0,
+                    status: true,
+                }
             })
             .collect();
         return (buses, branches);
     }
 
-    // Default: empty
-    (Vec::new(), Vec::new())
+    // Fallback: use IEEE 14 bus data for development/testing
+    let data = eneros_powerflow::ieee14();
+    let buses: Vec<BusSvgData> = data
+        .buses
+        .iter()
+        .map(|b| {
+            BusSvgData {
+                id: b.bus_id as u64,
+                name: format!("Bus {}", b.bus_id),
+                x: 0.0,
+                y: 0.0,
+                zone_id: 0,
+                voltage_level: format!("{:.0}kV", 138.0),
+            }
+        })
+        .collect();
+    let branches: Vec<BranchSvgData> = data
+        .branches
+        .iter()
+        .enumerate()
+        .map(|(i, b)| BranchSvgData {
+            id: i as u64,
+            from_bus: b.from_bus as u64,
+            to_bus: b.to_bus as u64,
+            status: true,
+        })
+        .collect();
+    (buses, branches)
 }
 
 /// Build agent panel data from orchestrator if available
@@ -109,7 +133,7 @@ fn build_data_panel_data(state: &AppState) -> DataPanelData {
                 element_id: r.element_id,
                 parameter: r.parameter.clone(),
                 value: r.value,
-                unit: "p.u.".to_string(),
+                unit: infer_unit(&r.parameter).to_string(),
                 quality: format!("{:?}", r.quality),
             })
             .collect();
@@ -125,18 +149,42 @@ fn build_data_panel_data(state: &AppState) -> DataPanelData {
     }
 }
 
+/// Infer the engineering unit from a parameter name.
+/// Returns a static string to avoid per-call allocation.
+fn infer_unit(parameter: &str) -> &'static str {
+    let p = parameter.to_ascii_lowercase();
+    if p.contains("voltage") || p.contains("v_pu") || p.contains("vm") {
+        "p.u."
+    } else if p.contains("angle") || p.contains("theta") || p.contains("phase") {
+        "deg"
+    } else if p.contains("freq") {
+        "Hz"
+    } else if p.contains("p") && (p.contains("mw") || p.contains("active")) {
+        "MW"
+    } else if p.contains("q") && (p.contains("mvar") || p.contains("reactive")) {
+        "MVar"
+    } else if p.contains("loading") || p.contains("percent") {
+        "%"
+    } else if p.contains("current") || p.contains("ka") {
+        "kA"
+    } else {
+        "p.u."
+    }
+}
+
 /// GET / — serve the main dashboard HTML page
 pub async fn dashboard_handler(State(state): State<AppState>) -> Html<String> {
     let (buses, branches) = build_svg_data_from_network(&state);
     let config = TopologySvgConfig::default();
 
     let layout_buses = topology_svg::circular_layout(&buses, &config);
-    let svg = topology_svg::generate_topology_svg(&layout_buses, &branches, &config);
+    let topology_svg = topology_svg::generate_topology_svg(&layout_buses, &branches, &config);
 
+    // Flow panel uses the same topology SVG as a base; JS overlay applies colors.
     let agent_data = build_agent_panel_data(&state);
     let data_panel = build_data_panel_data(&state);
 
-    let page = full_page::generate_dashboard_page(&svg, &agent_data, &data_panel);
+    let page = full_page::generate_dashboard_page(&topology_svg, &topology_svg, &agent_data, &data_panel);
     Html(page)
 }
 
@@ -224,8 +272,10 @@ mod tests {
     fn test_build_svg_data_empty_state() {
         let state = AppState::new();
         let (buses, branches) = build_svg_data_from_network(&state);
-        assert!(buses.is_empty());
-        assert!(branches.is_empty());
+        // When no network is loaded, the function falls back to IEEE 14 bus
+        // data for development/testing, so buses and branches are non-empty.
+        assert!(!buses.is_empty());
+        assert!(!branches.is_empty());
     }
 
     #[test]

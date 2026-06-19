@@ -1,0 +1,23 @@
+[package]
+name = "eneros-gateway-bin"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS standalone SafetyGateway process (IPC server for Agent processes)"
+
+[[bin]]
+name = "eneros-gateway"
+path = "src/main.rs"
+
+[dependencies]
+eneros-core = { path = "../../../eneros-core" }
+eneros-gateway = { path = "../../" }
+eneros-constraint = { path = "../../../eneros-constraint" }
+eneros-network = { path = "../../../eneros-network" }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }

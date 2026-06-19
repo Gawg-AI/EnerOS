@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use eneros_core::ElementId;
 use crate::collector::DataSource;
 
@@ -82,10 +83,14 @@ impl SimulatedDataSource {
     }
 }
 
+#[async_trait]
 impl DataSource for SimulatedDataSource {
     fn read(&self, element_id: ElementId, parameter: &str) -> Option<f64> {
         self.data.get(&(element_id, parameter.to_string())).copied()
     }
+
+    // SimulatedDataSource uses the default no-op `refresh()` — values are
+    // constant IEEE 14-bus data, no upstream device to poll.
 }
 
 impl Default for SimulatedDataSource {

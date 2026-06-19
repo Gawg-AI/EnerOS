@@ -183,7 +183,7 @@ fn build_orchestrator(
     ));
 
     let mut ctx = AgentContext::new(event_bus, gateway, tool_engine, network, memory, engine.clone());
-    ctx.authority = authority;
+    ctx.local.authority = authority;
 
     if with_feedback {
         let feedback = Arc::new(FeedbackLoop::with_default_iterations_shared(engine));

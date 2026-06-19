@@ -266,6 +266,20 @@ impl PowerNetwork {
         self
     }
 
+    /// Set the generator table (used by CIM converter and other importers that
+    /// build a `PowerNetwork` outside of `from_ieee14` / `from_equipment`).
+    pub fn with_generators(mut self, generators: Vec<GeneratorSpec>) -> Self {
+        self.generators = generators;
+        self
+    }
+
+    /// Set branch IDs parallel to `branches` (used by importers that assign
+    /// explicit branch identifiers rather than the default 1..=n sequence).
+    pub fn with_branch_ids(mut self, branch_ids: Vec<ElementId>) -> Self {
+        self.branch_ids = branch_ids;
+        self
+    }
+
     /// Get reference to constraint engine for registering constraints
     pub fn constraint_engine(&self) -> &ConstraintEngine {
         &self.constraint
@@ -512,6 +526,51 @@ impl PowerNetwork {
         &self.generators
     }
 
+    /// 创建一个移除指定支路的网络副本（用于开关开合/故障隔离模拟）。
+    ///
+    /// v0.8.0 T9.1：开关动作物理建模的基础设施。`open_branch_indices` 是要断开的
+    /// 支路在 `self.branches` 中的索引（不是支路 ID）。断开后重建 Y-Bus，但保持
+    /// bus_map、bus_types、p_spec、q_spec 不变。注意：断开支路后网络可能变为
+    /// 非连通，潮流可能不收敛，这是正常的。
+    pub fn with_opened_branches(&self, open_branch_indices: &[usize]) -> Self {
+        use std::collections::HashSet;
+
+        let open_set: HashSet<usize> = open_branch_indices.iter().copied().collect();
+
+        // 过滤 branches 与 branch_ids（两者并行，索引一致）
+        let mut new_branches =
+            Vec::with_capacity(self.branches.len().saturating_sub(open_set.len()));
+        let mut new_branch_ids =
+            Vec::with_capacity(self.branch_ids.len().saturating_sub(open_set.len()));
+        for (i, br) in self.branches.iter().enumerate() {
+            if !open_set.contains(&i) {
+                new_branches.push(*br);
+                if let Some(&bid) = self.branch_ids.get(i) {
+                    new_branch_ids.push(bid);
+                }
+            }
+        }
+
+        // 重建 Y-Bus（保留原 base_mva 以维持正确的标幺值换算）
+        let mut new_ybus = YBusMatrix::from_branches(&new_branches, &self.bus_map);
+        new_ybus.set_base_mva(self.ybus.base_mva());
+
+        Self {
+            ybus: new_ybus,
+            p_spec: self.p_spec.clone(),
+            q_spec: self.q_spec.clone(),
+            bus_types: self.bus_types.clone(),
+            branches: new_branches,
+            bus_map: self.bus_map.clone(),
+            solver: self.solver.clone(),
+            constraint: self.constraint.clone(),
+            v_initial: self.v_initial.clone(),
+            generators: self.generators.clone(),
+            zone_map: self.zone_map.clone(),
+            branch_ids: new_branch_ids,
+        }
+    }
+
     /// Look up a generator by gen_id (Phase 15).
     pub fn generator_at(&self, gen_id: ElementId) -> Option<&GeneratorSpec> {
         self.generators.iter().find(|g| g.gen_id == gen_id)
@@ -526,6 +585,12 @@ impl PowerNetwork {
     /// Get branch IDs parallel to `branches` (Phase 15).
     pub fn branch_ids(&self) -> &[ElementId] {
         &self.branch_ids
+    }
+
+    /// Get branch data (from, to, r, x, b, tap) for AC-OPF / transient
+    /// stability / short-circuit analyses (v0.8.0).
+    pub fn branches_data(&self) -> &[(ElementId, ElementId, f64, f64, f64, f64)] {
+        &self.branches
     }
 }
 

@@ -3,8 +3,12 @@ use eneros_core::{ElementId, Result};
 use parking_lot::RwLock;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use crate::aggregation::{WindowSpec, WindowedAggregator, WindowedResult};
+use crate::downsample::{AggregatedPoint, DownsampleLevel, DownsampledCache};
 use crate::storage::TimeSeriesStorage;
 
 /// Time-series data point
@@ -65,6 +69,9 @@ pub struct TimeSeriesEngine {
     max_retention: usize,
     /// Optional persistent backend (write-through). `None` = memory-only.
     persistent: Option<Arc<dyn TimeSeriesStorage>>,
+    /// 多粒度降采样缓存（1s/1min/1h），后台 rollup 任务定期聚合。
+    /// 使用 `Arc<RwLock<...>>` 以便在后台任务与查询路径间共享。
+    downsample_cache: Arc<RwLock<DownsampledCache>>,
 }
 
 /// One in-memory cache bucket. `authoritative` is true when the buffer was
@@ -87,6 +94,7 @@ impl TimeSeriesEngine {
             storage: RwLock::new(HashMap::new()),
             max_retention,
             persistent: None,
+            downsample_cache: Arc::new(RwLock::new(DownsampledCache::new())),
         }
     }
 
@@ -101,6 +109,7 @@ impl TimeSeriesEngine {
             storage: RwLock::new(HashMap::new()),
             max_retention,
             persistent: Some(backend),
+            downsample_cache: Arc::new(RwLock::new(DownsampledCache::new())),
         }
     }
 
@@ -351,6 +360,124 @@ impl TimeSeriesEngine {
             step_size_secs: window_secs,
         };
         WindowedAggregator::aggregate(&points, &spec)
+    }
+
+    // -----------------------------------------------------------------
+    // 存储级降采样（Task 5）
+    // -----------------------------------------------------------------
+
+    /// 立即执行一次 rollup，将原始数据聚合到指定粒度并写入降采样缓存。
+    ///
+    /// 此方法为同步调用，适合测试或手动触发。生产环境由
+    /// [`start_rollup_task`] 后台定期调用。
+    pub fn rollup_now(&self, level: DownsampleLevel) {
+        // 收集所有 (element_id, parameter) 键
+        let keys: Vec<(ElementId, String)> = {
+            let storage = self.storage.read();
+            storage.keys().cloned().collect()
+        };
+
+        // 对每个键，读取原始数据点并聚合
+        for (element_id, parameter) in keys {
+            let points: Vec<DataPoint> = {
+                let storage = self.storage.read();
+                storage
+                    .get(&(element_id, parameter.clone()))
+                    .map(|e| e.points.iter().cloned().collect())
+                    .unwrap_or_default()
+            };
+
+            if !points.is_empty() {
+                let mut cache = self.downsample_cache.write();
+                cache.rollup(element_id, &parameter, level, &points);
+            }
+        }
+    }
+
+    /// 启动后台 rollup 任务，定期将原始 1s 数据聚合为 1min/1h 粒度。
+    ///
+    /// - 每 60 秒：将 1s 数据聚合为 1min
+    /// - 每 60 分钟（第 60 次 tick）：将 1s 数据聚合为 1h
+    ///
+    /// 通过 `shutdown_rx` 接收 `true` 信号优雅退出。与 v0.9.0 的
+    /// graceful shutdown 模式一致（`tokio::sync::watch`）。
+    pub fn start_rollup_task(
+        self: Arc<Self>,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            let mut tick_count: u64 = 0;
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        tick_count += 1;
+                        // 每 1 分钟：将 1s 数据聚合为 1min
+                        self.rollup_now(DownsampleLevel::Minute);
+
+                        // 每 1 小时（第 60 次 tick）：将 1s 数据聚合为 1h
+                        if tick_count.is_multiple_of(60) {
+                            self.rollup_now(DownsampleLevel::Hour);
+                        }
+                    }
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            tracing::info!("time-series rollup task shutting down");
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    /// 多粒度降采样查询：根据查询时间范围自动选择粒度。
+    ///
+    /// - `< 1h`：返回原始 1s 数据（转换为 AggregatedPoint，count=1）
+    /// - `1h–7d`：优先返回 1min 聚合数据（如果缓存中有），否则回退原始数据
+    /// - `> 7d`：优先返回 1h 聚合数据
+    pub fn query_downsampled(
+        &self,
+        element_id: ElementId,
+        parameter: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Vec<AggregatedPoint> {
+        let start_ms = start.timestamp_millis();
+        let end_ms = end.timestamp_millis();
+        let level = DownsampleLevel::for_range(start_ms, end_ms);
+
+        match level {
+            DownsampleLevel::Second => {
+                // 短范围：返回原始数据（转换为 AggregatedPoint）
+                let points = self.query(element_id, parameter, start, end);
+                points
+                    .into_iter()
+                    .map(|p| AggregatedPoint {
+                        timestamp: p.timestamp,
+                        avg: p.value,
+                        min: p.value,
+                        max: p.value,
+                        count: 1,
+                        sum: p.value,
+                    })
+                    .collect()
+            }
+            DownsampleLevel::Minute | DownsampleLevel::Hour => {
+                // 长范围：优先从降采样缓存读取
+                {
+                    let cache = self.downsample_cache.read();
+                    if cache.has_data(element_id, parameter, level) {
+                        return cache.query(element_id, parameter, level, start_ms, end_ms);
+                    }
+                }
+                // 缓存未命中：查询原始数据并即时聚合
+                let points = self.query(element_id, parameter, start, end);
+                let mut temp_cache = DownsampledCache::new();
+                temp_cache.rollup(element_id, parameter, level, &points);
+                temp_cache.query(element_id, parameter, level, start_ms, end_ms)
+            }
+        }
     }
 }
 
@@ -833,5 +960,170 @@ mod tests {
         // An illegal path (NUL byte) cannot be opened — must return Err.
         let res = TimeSeriesEngine::with_sqlite(100, "\0invalid\0path");
         assert!(res.is_err(), "invalid path must surface an error");
+    }
+
+    // ===================================================================
+    // 存储级降采样（Task 5）
+    // ===================================================================
+
+    /// rollup_now() 将原始 1s 数据聚合为 1min 粒度，query_downsampled()
+    /// 在 1h–7d 范围内返回 1min 聚合数据（点数远少于原始数据）。
+    #[test]
+    fn test_query_downsampled_minute_level() {
+        let engine = TimeSeriesEngine::new(100_000);
+        let element_id: ElementId = 1;
+        let param = "temperature";
+        let base = Utc.timestamp_opt(0, 0).unwrap();
+
+        // 记录 120 秒数据（2 分钟），每秒一个点
+        for i in 0..120 {
+            let ts = base + chrono::Duration::seconds(i);
+            engine.record(element_id, param, i as f64, ts).unwrap();
+        }
+
+        // 手动触发 1min rollup
+        engine.rollup_now(DownsampleLevel::Minute);
+
+        // 查询 2 小时范围 → 选择 Minute 粒度 → 应返回 2 个聚合点
+        let start = base;
+        let end = base + chrono::Duration::hours(2);
+        let result = engine.query_downsampled(element_id, param, start, end);
+        assert_eq!(result.len(), 2, "2 minutes of data → 2 aggregated points");
+
+        // 验证聚合值
+        // 第 1 分钟 [0, 60s)：值 0..59，avg=29.5
+        assert_eq!(result[0].count, 60);
+        assert!((result[0].avg - 29.5).abs() < 1e-9);
+        assert_eq!(result[0].min, 0.0);
+        assert_eq!(result[0].max, 59.0);
+
+        // 第 2 分钟 [60s, 120s)：值 60..119，avg=89.5
+        assert_eq!(result[1].count, 60);
+        assert!((result[1].avg - 89.5).abs() < 1e-9);
+    }
+
+    /// 短范围查询（< 1h）返回原始 1s 数据（转换为 AggregatedPoint）。
+    #[test]
+    fn test_query_downsampled_second_level() {
+        let engine = TimeSeriesEngine::new(100_000);
+        let element_id: ElementId = 1;
+        let param = "voltage";
+        let base = Utc.timestamp_opt(0, 0).unwrap();
+
+        // 记录 30 秒数据
+        for i in 0..30 {
+            let ts = base + chrono::Duration::seconds(i);
+            engine.record(element_id, param, i as f64 * 10.0, ts).unwrap();
+        }
+
+        // 查询 30 分钟范围 → 选择 Second 粒度 → 应返回 30 个原始点
+        let start = base;
+        let end = base + chrono::Duration::minutes(30);
+        let result = engine.query_downsampled(element_id, param, start, end);
+        assert_eq!(result.len(), 30, "short range → raw 1s data");
+        assert_eq!(result[0].count, 1);
+        assert_eq!(result[0].avg, 0.0);
+        assert_eq!(result[29].avg, 290.0);
+    }
+
+    /// 长范围查询（> 7d）返回 1h 聚合数据。
+    #[test]
+    fn test_query_downsampled_hour_level() {
+        let engine = TimeSeriesEngine::new(100_000);
+        let element_id: ElementId = 1;
+        let param = "load";
+        let base = Utc.timestamp_opt(0, 0).unwrap();
+
+        // 记录 3 小时数据，每分钟一个点（共 180 个点）
+        for i in 0..180 {
+            let ts = base + chrono::Duration::minutes(i);
+            engine.record(element_id, param, i as f64, ts).unwrap();
+        }
+
+        // 手动触发 1h rollup
+        engine.rollup_now(DownsampleLevel::Hour);
+
+        // 查询 8 天范围 → 选择 Hour 粒度 → 应返回 3 个聚合点
+        let start = base;
+        let end = base + chrono::Duration::days(8);
+        let result = engine.query_downsampled(element_id, param, start, end);
+        assert_eq!(result.len(), 3, "3 hours of data → 3 hourly aggregated points");
+
+        // 每小时 60 个点
+        assert_eq!(result[0].count, 60);
+        assert_eq!(result[1].count, 60);
+        assert_eq!(result[2].count, 60);
+    }
+
+    /// 缓存未命中时，query_downsampled() 回退到即时聚合。
+    #[test]
+    fn test_query_downsampled_fallback_to_on_the_fly_aggregation() {
+        let engine = TimeSeriesEngine::new(100_000);
+        let element_id: ElementId = 1;
+        let param = "power";
+        let base = Utc.timestamp_opt(0, 0).unwrap();
+
+        // 记录 120 秒数据
+        for i in 0..120 {
+            let ts = base + chrono::Duration::seconds(i);
+            engine.record(element_id, param, i as f64, ts).unwrap();
+        }
+
+        // 不触发 rollup，直接查询 2 小时范围
+        // → Minute 粒度，缓存未命中 → 回退到即时聚合
+        let start = base;
+        let end = base + chrono::Duration::hours(2);
+        let result = engine.query_downsampled(element_id, param, start, end);
+        assert_eq!(result.len(), 2, "fallback aggregation should still produce 2 points");
+        assert_eq!(result[0].count, 60);
+    }
+
+    /// rollup_now() 对多个 (element_id, parameter) 键同时聚合。
+    #[test]
+    fn test_rollup_now_multiple_keys() {
+        let engine = TimeSeriesEngine::new(100_000);
+        let base = Utc.timestamp_opt(0, 0).unwrap();
+
+        // 两个不同的键
+        for i in 0..120 {
+            let ts = base + chrono::Duration::seconds(i);
+            engine.record(1, "voltage", i as f64, ts).unwrap();
+            engine.record(2, "current", i as f64 * 2.0, ts).unwrap();
+        }
+
+        engine.rollup_now(DownsampleLevel::Minute);
+
+        // 两个键都应有 1min 聚合数据
+        let start = base;
+        let end = base + chrono::Duration::hours(2);
+
+        let r1 = engine.query_downsampled(1, "voltage", start, end);
+        assert_eq!(r1.len(), 2);
+
+        let r2 = engine.query_downsampled(2, "current", start, end);
+        assert_eq!(r2.len(), 2);
+        assert!((r2[0].avg - 59.0).abs() < 1e-9); // avg of 0,2,4,...,118 = 59
+    }
+
+    /// start_rollup_task() 在收到 shutdown 信号后优雅退出。
+    #[tokio::test]
+    async fn test_start_rollup_task_graceful_shutdown() {
+        let engine = Arc::new(TimeSeriesEngine::new(100_000));
+        let element_id: ElementId = 1;
+        let base = Utc.timestamp_opt(0, 0).unwrap();
+
+        for i in 0..60 {
+            let ts = base + chrono::Duration::seconds(i);
+            engine.record(element_id, "temp", i as f64, ts).unwrap();
+        }
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = engine.clone().start_rollup_task(shutdown_rx);
+
+        // 立即发送 shutdown 信号
+        let _ = shutdown_tx.send(true);
+        // 等待任务退出（应在短时间内完成）
+        let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        assert!(result.is_ok(), "rollup task should shut down within 5s");
     }
 }

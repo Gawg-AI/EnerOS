@@ -38,32 +38,7 @@ use tracing::{debug, info, warn};
 
 use crate::command::Command;
 
-/// Result of executing a command through the execution backend.
-#[derive(Debug, Clone)]
-pub struct ExecutionResult {
-    /// Whether the command was successfully executed on the device
-    pub success: bool,
-    /// Human-readable description of what happened
-    pub description: String,
-    /// Time taken for execution (including ACK verification)
-    pub latency: Duration,
-    /// Number of retries attempted (0 = first try success)
-    pub retries: u32,
-}
-
-impl ExecutionResult {
-    pub fn ok(description: String, latency: Duration) -> Self {
-        Self { success: true, description, latency, retries: 0 }
-    }
-
-    pub fn ok_with_retries(description: String, latency: Duration, retries: u32) -> Self {
-        Self { success: true, description, latency, retries }
-    }
-
-    pub fn failed(description: String, latency: Duration) -> Self {
-        Self { success: false, description, latency, retries: 0 }
-    }
-}
+pub use eneros_core::execution::ExecutionResult;
 
 /// Trait for command execution backends.
 ///
@@ -169,8 +144,8 @@ impl CommandExecutor for DeviceCommandExecutor {
             }
         };
 
-        let value = match &command.device_value {
-            Some(v) => v,
+        let value: DataValue = match &command.device_value {
+            Some(v) => v.clone().into(),
             None => {
                 return Ok(ExecutionResult::failed(
                     format!("Command {} has no device_value", command.id),
@@ -185,7 +160,7 @@ impl CommandExecutor for DeviceCommandExecutor {
             command.id, device_id, address, value
         );
 
-        if let Err(e) = self.device_manager.write(device_id, address, value).await {
+        if let Err(e) = self.device_manager.write(device_id, address, &value).await {
             warn!("Command {} write failed: {}", command.id, e);
             return Ok(ExecutionResult::failed(
                 format!("Write to device '{}' failed: {}", device_id, e),
@@ -199,7 +174,7 @@ impl CommandExecutor for DeviceCommandExecutor {
         let mut retries = 0u32;
         loop {
             if let Some(read_value) = self.read_back(command).await {
-                if self.values_match(value, &read_value) {
+                if self.values_match(&value, &read_value) {
                     info!(
                         "Command {} ACK verified on device '{}' (retries: {})",
                         command.id, device_id, retries
@@ -282,7 +257,7 @@ impl CommandExecutor for LoggingExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{CommandType, CommandPriority};
+    use crate::command::{CommandType, CommandPriority, DeviceValue};
     use eneros_device::adapter::{ConnectionConfig, ProtocolConfig, DeviceInfo};
     use eneros_device::mock_adapter::mock::MockAdapter;
     use eneros_device::protocol::ProtocolType;
@@ -326,7 +301,7 @@ mod tests {
 
         let cmd = Command::new(CommandType::SwitchToggle, 42, CommandPriority::High, "test")
             .with_parameter("closed", 1.0)
-            .with_device("rtu-1", "coil:1", DataValue::Bool(true));
+            .with_device("rtu-1", "coil:1", DeviceValue::Bool(true));
 
         let result = executor.execute(&cmd).await.unwrap();
         assert!(result.success, "Expected success, got: {}", result.description);
@@ -341,7 +316,7 @@ mod tests {
 
         let cmd = Command::new(CommandType::GeneratorSetpoint, 1, CommandPriority::Normal, "test")
             .with_parameter("target_mw", 150.0)
-            .with_device("rtu-1", "holding:40001", DataValue::Float64(150.0));
+            .with_device("rtu-1", "holding:40001", DeviceValue::Float64(150.0));
 
         let result = executor.execute(&cmd).await.unwrap();
         assert!(result.success, "Expected success, got: {}", result.description);
@@ -364,7 +339,7 @@ mod tests {
         let executor = DeviceCommandExecutor::new(manager);
 
         let cmd = Command::new(CommandType::SwitchToggle, 42, CommandPriority::Normal, "test")
-            .with_device("nonexistent", "coil:1", DataValue::Bool(true));
+            .with_device("nonexistent", "coil:1", DeviceValue::Bool(true));
 
         let result = executor.execute(&cmd).await.unwrap();
         assert!(!result.success);
@@ -403,7 +378,7 @@ mod tests {
 
         // Write first
         let cmd = Command::new(CommandType::SwitchToggle, 42, CommandPriority::Normal, "test")
-            .with_device("rtu-1", "holding:40001", DataValue::Int16(99));
+            .with_device("rtu-1", "holding:40001", DeviceValue::Int16(99));
 
         executor.execute(&cmd).await.unwrap();
 

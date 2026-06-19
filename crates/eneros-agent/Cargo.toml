@@ -21,9 +21,11 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+futures = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 eneros-scada = { path = "../eneros-scada" }
 eneros-topology = { path = "../eneros-topology" }
 parking_lot = { workspace = true }
+anyhow = { workspace = true }

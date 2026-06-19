@@ -363,7 +363,7 @@ async fn test_scada_data_flows_through_pipeline() {
     let pipeline = DataPipeline::new(collector.clone(), ts_engine.clone());
 
     // Run one pipeline cycle
-    let count = pipeline.run_once().unwrap();
+    let count = pipeline.run_once().await.unwrap();
     assert!(count > 0, "Pipeline should write at least one data point, got {}", count);
 
     // Verify data was written to TimeSeriesEngine

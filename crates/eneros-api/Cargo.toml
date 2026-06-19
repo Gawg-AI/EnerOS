@@ -29,13 +29,16 @@ eneros-dashboard = { path = "../eneros-dashboard" }
 eneros-memory = { path = "../eneros-memory" }
 eneros-reasoning = { path = "../eneros-reasoning" }
 eneros-equipment = { path = "../eneros-equipment" }
+eneros-bridge = { path = "../eneros-bridge" }
 axum = { version = "0.7", features = ["ws"] }
 tower = { version = "0.4", features = ["util"] }
-tower-http = { version = "0.5", features = ["cors", "fs"] }
+tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 tokio = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_urlencoded = "0.7"
 tracing = { workspace = true }
+log = "0.4"
 chrono = { workspace = true, features = ["serde"] }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
@@ -47,6 +50,16 @@ futures-util = "0.3"
 reqwest = { version = "0.12", features = ["json"] }
 num-complex = { workspace = true }
 ndarray = { workspace = true }
+jsonwebtoken = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+base64 = { workspace = true }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+utoipa = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+async-trait = { workspace = true }

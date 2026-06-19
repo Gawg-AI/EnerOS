@@ -43,6 +43,10 @@
 
 pub mod cotp;
 pub mod mms;
+pub mod rcb;
+pub mod scl;
+pub mod control;
+pub mod dataset;
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -58,7 +62,10 @@ use crate::protocol::ProtocolType;
 
 pub use cotp::{CotpTransport, CotpParams, CotpState};
 pub use mms::{MmsClient, BerEncoder, BerDecoder};
-
+pub use rcb::{RcbManager, ReportControlBlock, RcbType, TrgOp, Iec61850ReportData};
+pub use scl::{SclDocument, Ied, LogicalDevice, LogicalNode, DataSet as SclDataSet, parse_scl};
+pub use control::{ControlService, ControlObject, ControlState, ControlMode, ControlResult, Originator, ControllableCdc};
+pub use dataset::{DataSetManager, DataSet as Iec61850DataSet, FcdaRef, FunctionalConstraint, DataSetValue};
 /// Configuration for IEC 61850 adapter
 #[derive(Debug, Clone)]
 pub struct Iec61850Config {

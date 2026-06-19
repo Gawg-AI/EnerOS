@@ -3,12 +3,15 @@ resolver = "2"
 members = [
     "crates/eneros-core",
     "crates/eneros-topology",
+    "crates/eneros-linalg",
     "crates/eneros-powerflow",
     "crates/eneros-constraint",
     "crates/eneros-equipment",
     "crates/eneros-timeseries",
     "crates/eneros-eventbus",
+    "crates/eneros-eventbus/bins/broker",
     "crates/eneros-gateway",
+    "crates/eneros-gateway/bins/gateway",
     "crates/eneros-device",
     "crates/eneros-api",
     "crates/eneros-bridge",
@@ -20,10 +23,22 @@ members = [
     "crates/eneros-scada",
     "crates/eneros-analysis",
     "crates/eneros-dashboard",
+    "crates/eneros-os",
+    "crates/eneros-os/bins/eneros-init",
+    "crates/eneros-os/bins/eneros-timesync",
+    "crates/eneros-os/bins/enerosctl",
+    "crates/eneros-os/bins/eneros-installer",
+    "crates/eneros-agent/bins/dispatch-agent",
+    "crates/eneros-agent/bins/forecast-agent",
+    "crates/eneros-agent/bins/operation-agent",
+    "crates/eneros-agent/bins/self-healing-agent",
+    "crates/eneros-agent/bins/planning-agent",
+    "crates/eneros-agent/bins/trading-agent",
+    "os/tests",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["GAWG-AI"]
 license = "MIT"
@@ -33,6 +48,7 @@ description = "EnerOS - Power-Native Agent Operating System"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
+futures = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -40,7 +56,7 @@ serde_json = "1"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 # Error handling
 thiserror = "1"
@@ -55,6 +71,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # Math/Science
 ndarray = "0.15"
 num-complex = "0.4"
+sprs = "0.11"
 
 # Hashing
 ahash = "0.8"
@@ -66,3 +83,25 @@ metrics-exporter-prometheus = "0.11"
 # Config
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
+
+# Security (v0.6.0)
+jsonwebtoken = "9"
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+
+# OTA signing (v0.22.0)
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+serde_yaml = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+tar = "0.4"
+flate2 = "1.0"
+
+# TLS (v0.7.0)
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+
+# OpenAPI documentation (v0.10.0 — Task 8)
+utoipa = "5"

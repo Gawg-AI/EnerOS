@@ -1,8 +1,10 @@
 pub mod aggregation;
 pub mod anomaly;
+pub mod downsample;
 pub mod engine;
 pub mod interpolation;
 pub mod query;
+pub mod soe;
 pub mod sqlite_storage;
 pub mod storage;
 
@@ -10,6 +12,8 @@ pub use engine::TimeSeriesEngine;
 pub use sqlite_storage::SqliteStorage;
 pub use storage::{InMemoryStorage, TimeSeriesStorage};
 pub use query::TimeSeriesQuery;
+pub use downsample::{AggregatedPoint, DownsampleLevel, DownsampledCache};
+pub use soe::{SoeRecord, SoeEventType, SoeRecorder, SoeStorage};
 
 /// Configuration for the time-series storage backend
 #[derive(Debug, Clone)]

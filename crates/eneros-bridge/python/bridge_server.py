@@ -52,6 +52,8 @@ COMMAND_MAP = {
     "normalize_equipment": lambda p: normalize_equipment(p["equipment_type"], p["params"]),
     "check_compliance": lambda p: check_equipment_compliance(p["equipment_type"], p["spec"], p["operating"]),
     "build_network": lambda p: _build_network(p["assets"], p.get("run_powerflow", False)),
+    "run_powerflow": lambda p: _run_powerflow(p["assets"]),
+    "build_full_network": lambda p: _build_full_network(p["assets"]),
 }
 
 
@@ -88,6 +90,163 @@ def _build_network(assets: dict, run_powerflow: bool) -> dict:
     }
 
 
+def _run_powerflow(assets: dict) -> dict:
+    """Run pandapower power flow and return detailed results."""
+    net = build_pandapower_net(assets, run_powerflow=True)
+
+    buses = []
+    for idx in net.bus.index:
+        bus_data = {"id": int(idx)}
+        if "vm_pu" in net.res_bus.columns:
+            bus_data["vm_pu"] = float(net.res_bus.at[idx, "vm_pu"]) if idx in net.res_bus.index else None
+        if "va_degree" in net.res_bus.columns:
+            bus_data["va_degree"] = float(net.res_bus.at[idx, "va_degree"]) if idx in net.res_bus.index else None
+        buses.append(bus_data)
+
+    lines = []
+    for idx in net.line.index:
+        line_data = {"id": int(idx)}
+        if "p_from_mw" in net.res_line.columns:
+            line_data["p_from_mw"] = float(net.res_line.at[idx, "p_from_mw"]) if idx in net.res_line.index else None
+        if "q_from_mvar" in net.res_line.columns:
+            line_data["q_from_mvar"] = float(net.res_line.at[idx, "q_from_mvar"]) if idx in net.res_line.index else None
+        if "p_to_mw" in net.res_line.columns:
+            line_data["p_to_mw"] = float(net.res_line.at[idx, "p_to_mw"]) if idx in net.res_line.index else None
+        if "q_to_mvar" in net.res_line.columns:
+            line_data["q_to_mvar"] = float(net.res_line.at[idx, "q_to_mvar"]) if idx in net.res_line.index else None
+        if "pl_mw" in net.res_line.columns:
+            line_data["pl_mw"] = float(net.res_line.at[idx, "pl_mw"]) if idx in net.res_line.index else None
+        if "ql_mvar" in net.res_line.columns:
+            line_data["ql_mvar"] = float(net.res_line.at[idx, "ql_mvar"]) if idx in net.res_line.index else None
+        lines.append(line_data)
+
+    trafos = []
+    for idx in net.trafo.index:
+        trafo_data = {"id": int(idx)}
+        if "p_hv_mw" in net.res_trafo.columns:
+            trafo_data["p_hv_mw"] = float(net.res_trafo.at[idx, "p_hv_mw"]) if idx in net.res_trafo.index else None
+        if "q_hv_mvar" in net.res_trafo.columns:
+            trafo_data["q_hv_mvar"] = float(net.res_trafo.at[idx, "q_hv_mvar"]) if idx in net.res_trafo.index else None
+        if "p_lv_mw" in net.res_trafo.columns:
+            trafo_data["p_lv_mw"] = float(net.res_trafo.at[idx, "p_lv_mw"]) if idx in net.res_trafo.index else None
+        if "q_lv_mvar" in net.res_trafo.columns:
+            trafo_data["q_lv_mvar"] = float(net.res_trafo.at[idx, "q_lv_mvar"]) if idx in net.res_trafo.index else None
+        if "pl_mw" in net.res_trafo.columns:
+            trafo_data["pl_mw"] = float(net.res_trafo.at[idx, "pl_mw"]) if idx in net.res_trafo.index else None
+        if "ql_mvar" in net.res_trafo.columns:
+            trafo_data["ql_mvar"] = float(net.res_trafo.at[idx, "ql_mvar"]) if idx in net.res_trafo.index else None
+        trafos.append(trafo_data)
+
+    total_loss_mw = sum(l.get("pl_mw", 0) or 0 for l in lines) + sum(t.get("pl_mw", 0) or 0 for t in trafos)
+    total_loss_mvar = sum(l.get("ql_mvar", 0) or 0 for l in lines) + sum(t.get("ql_mvar", 0) or 0 for t in trafos)
+
+    return {
+        "converged": bool(net.converged) if hasattr(net, "converged") else False,
+        "buses": buses,
+        "lines": lines,
+        "trafos": trafos,
+        "total_loss_mw": total_loss_mw,
+        "total_loss_mvar": total_loss_mvar,
+    }
+
+
+def _build_full_network(assets: dict) -> dict:
+    """Build pandapower network and return full topology data for Rust side."""
+    net = build_pandapower_net(assets, run_powerflow=True)
+
+    # Extract bus data
+    buses = []
+    for idx in net.bus.index:
+        bus = {
+            "id": int(idx),
+            "name": str(net.bus.at[idx, "name"]) if "name" in net.bus.columns else f"Bus{idx}",
+            "vn_kv": float(net.bus.at[idx, "vn_kv"]),
+            "type": "PQ",  # default
+        }
+        # Check if this bus has external grid (slack)
+        if "bus" in net.ext_grid.columns and idx in net.ext_grid["bus"].values:
+            bus["type"] = "Slack"
+        # Check if this bus has generator (PV)
+        elif "bus" in net.gen.columns and idx in net.gen["bus"].values:
+            bus["type"] = "PV"
+
+        # Generation
+        if "bus" in net.gen.columns and idx in net.gen["bus"].values:
+            gen_rows = net.gen[net.gen["bus"] == idx]
+            bus["p_gen_mw"] = float(gen_rows["p_mw"].sum()) if "p_mw" in gen_rows.columns else 0.0
+            bus["q_gen_mvar"] = float(gen_rows["q_mvar"].sum()) if "q_mvar" in gen_rows.columns else 0.0
+
+        # Load
+        if "bus" in net.load.columns and idx in net.load["bus"].values:
+            load_rows = net.load[net.load["bus"] == idx]
+            bus["p_load_mw"] = float(load_rows["p_mw"].sum()) if "p_mw" in load_rows.columns else 0.0
+            bus["q_load_mvar"] = float(load_rows["q_mvar"].sum()) if "q_mvar" in load_rows.columns else 0.0
+
+        # Voltage from power flow results
+        if hasattr(net, "res_bus") and idx in net.res_bus.index:
+            if "vm_pu" in net.res_bus.columns:
+                bus["vm_pu"] = float(net.res_bus.at[idx, "vm_pu"])
+            if "va_degree" in net.res_bus.columns:
+                bus["va_degree"] = float(net.res_bus.at[idx, "va_degree"])
+
+        buses.append(bus)
+
+    # Extract branch data
+    branches = []
+    # Lines
+    for idx in net.line.index:
+        line = {
+            "id": int(idx),
+            "type": "line",
+            "from_bus": int(net.line.at[idx, "from_bus"]),
+            "to_bus": int(net.line.at[idx, "to_bus"]),
+            "length_km": float(net.line.at[idx, "length_km"]) if "length_km" in net.line.columns else 1.0,
+            "r_ohm_per_km": float(net.line.at[idx, "r_ohm_per_km"]) if "r_ohm_per_km" in net.line.columns else 0.0,
+            "x_ohm_per_km": float(net.line.at[idx, "x_ohm_per_km"]) if "x_ohm_per_km" in net.line.columns else 0.0,
+            "c_nf_per_km": float(net.line.at[idx, "c_nf_per_km"]) if "c_nf_per_km" in net.line.columns else 0.0,
+            "max_i_ka": float(net.line.at[idx, "max_i_ka"]) if "max_i_ka" in net.line.columns else 1.0,
+            "in_service": bool(net.line.at[idx, "in_service"]) if "in_service" in net.line.columns else True,
+        }
+        branches.append(line)
+
+    # Transformers
+    for idx in net.trafo.index:
+        trafo = {
+            "id": int(idx) + 10000,  # offset to avoid ID collision with lines
+            "type": "trafo",
+            "from_bus": int(net.trafo.at[idx, "hv_bus"]),
+            "to_bus": int(net.trafo.at[idx, "lv_bus"]),
+            "sn_mva": float(net.trafo.at[idx, "sn_mva"]) if "sn_mva" in net.trafo.columns else 0.0,
+            "vk_percent": float(net.trafo.at[idx, "vk_percent"]) if "vk_percent" in net.trafo.columns else 0.0,
+            "vkr_percent": float(net.trafo.at[idx, "vkr_percent"]) if "vkr_percent" in net.trafo.columns else 0.0,
+            "tap_pos": int(net.trafo.at[idx, "tap_pos"]) if "tap_pos" in net.trafo.columns else 0,
+            "in_service": bool(net.trafo.at[idx, "in_service"]) if "in_service" in net.trafo.columns else True,
+        }
+        branches.append(trafo)
+
+    # Shunt elements
+    shunts = []
+    if hasattr(net, 'shunt') and len(net.shunt) > 0:
+        for idx in net.shunt.index:
+            shunt = {
+                "id": int(idx),
+                "bus": int(net.shunt.at[idx, "bus"]),
+                "q_mvar": float(net.shunt.at[idx, "q_mvar"]) if "q_mvar" in net.shunt.columns else 0.0,
+                "p_mw": float(net.shunt.at[idx, "p_mw"]) if "p_mw" in net.shunt.columns else 0.0,
+            }
+            shunts.append(shunt)
+
+    return {
+        "converged": bool(net.converged) if hasattr(net, "converged") else False,
+        "base_mva": 1.0,  # pandapower default
+        "buses": buses,
+        "branches": branches,
+        "shunts": shunts,
+        "bus_count": len(buses),
+        "branch_count": len(branches),
+    }
+
+
 def _serialize(obj):
     if hasattr(obj, "isoformat"):
         return obj.isoformat()
@@ -104,11 +263,10 @@ def main():
         params = request.get("params", {})
 
         if command not in COMMAND_MAP:
-            result = {"error": f"Unknown command: {command}"}
+            json.dump({"ok": False, "error": f"Unknown command: {command}"}, sys.stdout, ensure_ascii=False)
         else:
             result = COMMAND_MAP[command](params)
-
-        json.dump({"ok": True, "data": result}, sys.stdout, default=_serialize, ensure_ascii=False)
+            json.dump({"ok": True, "data": result}, sys.stdout, default=_serialize, ensure_ascii=False)
     except Exception as e:
         json.dump({"ok": False, "error": str(e)}, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")

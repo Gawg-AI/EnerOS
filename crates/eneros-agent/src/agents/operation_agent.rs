@@ -175,23 +175,29 @@ impl OperationAgent {
         input = input.with_constraint("必须识别故障类型和受影响设备");
         input = input.with_constraint("必须给出安全可行的处置建议");
 
-        match ctx.reasoning.reason(input).await {
-            Ok(output) => {
-                info!(
-                    conclusion = %output.conclusion,
-                    confidence = output.confidence,
-                    "Reasoning engine diagnosis result"
-                );
-                let mut actions = vec![AgentAction::LogMessage(format!(
-                    "LLM推理诊断: {} (置信度:{:.0}%), 推理链: {:?}",
-                    output.conclusion, output.confidence * 100.0, output.reasoning_chain
-                ))];
-                let mapped = ActionMapper::map_reasoning_output(&output);
-                actions.extend(mapped);
-                actions
-            }
-            Err(e) => {
-                warn!(error = %e, "Reasoning engine diagnosis failed, using hardcoded patterns only");
+        match ctx.remote.reasoning.as_ref() {
+            Some(r) => match r.reason(input).await {
+                Ok(output) => {
+                    info!(
+                        conclusion = %output.conclusion,
+                        confidence = output.confidence,
+                        "Reasoning engine diagnosis result"
+                    );
+                    let mut actions = vec![AgentAction::LogMessage(format!(
+                        "LLM推理诊断: {} (置信度:{:.0}%), 推理链: {:?}",
+                        output.conclusion, output.confidence * 100.0, output.reasoning_chain
+                    ))];
+                    let mapped = ActionMapper::map_reasoning_output(&output);
+                    actions.extend(mapped);
+                    actions
+                }
+                Err(e) => {
+                    warn!(error = %e, "Reasoning engine diagnosis failed, using hardcoded patterns only");
+                    Vec::new()
+                }
+            },
+            None => {
+                warn!("No reasoning engine configured, using hardcoded patterns only");
                 Vec::new()
             }
         }
@@ -213,14 +219,6 @@ impl Agent for OperationAgent {
     fn authority_level(&self) -> AuthorityLevel { AuthorityLevel::Operator }
     fn jurisdiction(&self) -> Jurisdiction { self.jurisdiction.clone() }
     fn tick_interval(&self) -> Duration { Duration::from_secs(60) }
-
-    async fn start(&mut self) -> eneros_core::Result<()> {
-        Ok(())
-    }
-
-    async fn stop(&mut self) -> eneros_core::Result<()> {
-        Ok(())
-    }
 
     async fn handle_event(&mut self, event: &Event, ctx: &AgentContext) -> eneros_core::Result<Vec<AgentAction>> {
         let mut actions = Vec::new();

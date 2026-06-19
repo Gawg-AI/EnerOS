@@ -1,0 +1,24 @@
+[package]
+name = "enerosctl"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS management CLI"
+
+[[bin]]
+name = "enerosctl"
+path = "src/main.rs"
+
+[dependencies]
+eneros-os = { path = "../.." }
+eneros-core = { path = "../../../eneros-core" }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+toml = { workspace = true }

@@ -21,6 +21,10 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 tokio-modbus = { version = "0.14", default-features = false, features = ["tcp"] }
 rumqttc = "0.24"
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+webpki-roots = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

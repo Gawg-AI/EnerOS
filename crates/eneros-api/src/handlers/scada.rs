@@ -6,6 +6,14 @@ use crate::app::AppState;
 use crate::types::{ApiResponse, ScadaLatestResponse, ScadaReadingResponse};
 
 /// GET /api/scada/latest
+#[utoipa::path(
+    get,
+    path = "/api/scada/latest",
+    responses(
+        (status = 200, description = "最新 SCADA 读数", body = ScadaLatestResponse),
+        (status = 503, description = "未配置 SCADA 采集器"),
+    )
+)]
 pub async fn scada_latest_handler(
     State(state): State<AppState>,
 ) -> Json<ApiResponse<ScadaLatestResponse>> {

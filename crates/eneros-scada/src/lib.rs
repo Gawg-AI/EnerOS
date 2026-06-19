@@ -9,7 +9,7 @@ pub mod snapshot;
 
 pub use collector::{DataSource, MockDataSource, ScadaCollector, ScadaReading};
 pub use config::{ScadaConfig, ScadaPoint};
-pub use dual_scan::{DualScanGroup, DualScanGroupBuilder, DualScanHandles, ScanGroup, start_dual_scan};
+pub use dual_scan::{DualScanGroup, DualScanGroupBuilder, DualScanHandles, DualScanOptions, ScanGroup, start_dual_scan};
 pub use iec104::{
     Iec104Client, Iec104Config, Iec104DataSource, IoaMapping, IoaMappingTable,
     build_ieee14_ioa_mapping,

@@ -123,7 +123,7 @@ impl CotpTransport {
         loop {
             let (_li, tpdu) = self.recv_tpdu().await?;
 
-            let tpdu_type = tpdu.get(0).copied().unwrap_or(0);
+            let tpdu_type = tpdu.first().copied().unwrap_or(0);
 
             match tpdu_type {
                 DT => {
@@ -216,7 +216,7 @@ impl CotpTransport {
         if tpdu.is_empty() || tpdu[0] != CC {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
-                format!("Expected COTP CC, got 0x{:02X}", tpdu.get(0).copied().unwrap_or(0)),
+                format!("Expected COTP CC, got 0x{:02X}", tpdu.first().copied().unwrap_or(0)),
             ));
         }
 
