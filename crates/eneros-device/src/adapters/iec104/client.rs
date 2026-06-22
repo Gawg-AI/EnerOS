@@ -282,18 +282,18 @@ impl Iec104Client {
                             Ok(tcp2)
                         }
                         Err(e) => {
-                            return Err(std::io::Error::new(
+                            Err(std::io::Error::new(
                                 std::io::ErrorKind::ConnectionRefused,
                                 format!("TLS handshake to {} failed: {}", addr, e),
-                            ));
+                            ))
                         }
                     }
                 }
                 Err(e) => {
-                    return Err(std::io::Error::new(
+                    Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("TLS connector build failed: {}", e),
-                    ));
+                    ))
                 }
             }
         } else {

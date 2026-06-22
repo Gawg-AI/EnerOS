@@ -583,4 +583,298 @@ mod tests {
         assert!(importance > 0.8); // priority 2 + constraint rejection
         assert!(importance <= 1.0);
     }
+
+    // ========================================================================
+    // T030-07: 覆盖率补充测试
+    // ========================================================================
+
+    #[test]
+    fn test_lesson_new_clamps_importance() {
+        // importance 应被 clamp 到 [0.0, 1.0]
+        let lesson_high = Lesson::new("s", "f", "i", 1.5);
+        assert!((lesson_high.importance - 1.0).abs() < 1e-6);
+
+        let lesson_low = Lesson::new("s", "f", "i", -0.5);
+        assert!((lesson_low.importance - 0.0).abs() < 1e-6);
+
+        let lesson_normal = Lesson::new("s", "f", "i", 0.7);
+        assert!((lesson_normal.importance - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_lesson_with_tags() {
+        let lesson = Lesson::new("s", "f", "i", 0.5)
+            .with_tags(vec!["tag1".to_string(), "tag2".to_string()]);
+        assert_eq!(lesson.tags.len(), 2);
+        assert!(lesson.tags.contains(&"tag1".to_string()));
+        assert!(lesson.tags.contains(&"tag2".to_string()));
+    }
+
+    #[test]
+    fn test_lesson_to_memory_entry_has_correct_type() {
+        let lesson = Lesson::new("scenario", "failure", "improvement", 0.6);
+        let entry = lesson.to_memory_entry();
+        assert_eq!(entry.memory_type, MemoryType::Procedural);
+        assert!((entry.importance - 0.6).abs() < 1e-6);
+        // 内容应包含三个字段
+        assert!(entry.content.contains("scenario"));
+        assert!(entry.content.contains("failure"));
+        assert!(entry.content.contains("improvement"));
+    }
+
+    #[test]
+    fn test_lesson_from_memory_entry_missing_fields_returns_none() {
+        // 缺少 Scenario 或 Improvement 字段应返回 None
+        let entry = MemoryEntry::new(MemoryType::Procedural, "no fields here".to_string(), 0.5);
+        assert!(Lesson::from_memory_entry(&entry).is_none());
+    }
+
+    #[test]
+    fn test_lesson_from_memory_entry_partial_fields() {
+        // 只有 Scenario 和 Improvement（无 Failure）应能解析，failure_reason 为空
+        let content = "Scenario: test scenario\nImprovement: do better".to_string();
+        let entry = MemoryEntry::new(MemoryType::Procedural, content, 0.5);
+        let lesson = Lesson::from_memory_entry(&entry).unwrap();
+        assert_eq!(lesson.scenario, "test scenario");
+        assert!(lesson.failure_reason.is_empty());
+        assert_eq!(lesson.improvement, "do better");
+    }
+
+    #[test]
+    fn test_learning_policy_default() {
+        let policy = LearningPolicy::default();
+        assert_eq!(policy.learn_every_n, 1);
+        assert_eq!(policy.min_importance, 0.3);
+        assert_eq!(policy.max_lessons_per_agent, 1000);
+    }
+
+    #[test]
+    fn test_learning_policy_should_learn_every_n() {
+        let mut policy = LearningPolicy::new(2, 0.5);
+        // 第 1 次：不学习（1 不是 2 的倍数）
+        assert!(!policy.should_learn());
+        // 第 2 次：学习
+        assert!(policy.should_learn());
+        // 第 3 次：不学习
+        assert!(!policy.should_learn());
+        // 第 4 次：学习
+        assert!(policy.should_learn());
+    }
+
+    #[test]
+    fn test_learning_policy_zero_n_never_learns() {
+        let mut policy = LearningPolicy::new(0, 0.5);
+        assert!(!policy.should_learn());
+        assert!(!policy.should_learn());
+        assert!(!policy.should_learn());
+    }
+
+    #[test]
+    fn test_learning_policy_one_n_always_learns() {
+        let mut policy = LearningPolicy::new(1, 0.5);
+        assert!(policy.should_learn());
+        assert!(policy.should_learn());
+        assert!(policy.should_learn());
+    }
+
+    #[test]
+    fn test_reflection_engine_new_has_default_policy() {
+        let engine = ReflectionEngine::new();
+        // 默认 policy: learn_every_n=1, min_importance=0.3
+        // 验证默认 policy 的 should_learn() 行为（每次都学习）
+        // 需要可变引用来调用 should_learn()
+        let mut engine = engine;
+        assert!(engine.policy.should_learn()); // learn_every_n=1，每次都应学习
+    }
+
+    #[test]
+    fn test_reflection_engine_with_policy() {
+        let policy = LearningPolicy::new(5, 0.8);
+        // 验证自定义 policy 被正确设置
+        assert_eq!(policy.learn_every_n, 5);
+        assert_eq!(policy.min_importance, 0.8);
+        let engine = ReflectionEngine::with_policy(policy);
+        // 验证 engine 可正常构造
+        let _ = engine;
+    }
+
+    #[tokio::test]
+    async fn test_reflect_on_success_low_priority_no_lesson() {
+        // 低优先级（priority=0）成功执行不应生成 lesson
+        let mut engine = ReflectionEngine::new();
+        let plan = Plan::new(Goal::new("test", "low priority success"));
+        let exec_result = PlanExecutionResult {
+            plan_id: plan.id.clone(),
+            success: true,
+            step_results: vec![crate::planning::StepResult {
+                step_id: "s1".to_string(),
+                success: true,
+                error: None,
+            }],
+            error: None,
+        };
+
+        let result = engine.reflect(&plan, &exec_result).await.unwrap();
+        assert!(result.success);
+        // priority=0 < 1，不应生成 lesson
+        assert!(result.lessons_learned.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reflect_summary_on_success() {
+        let mut engine = ReflectionEngine::new();
+        let plan = make_test_plan();
+        let exec_result = PlanExecutionResult {
+            plan_id: plan.id.clone(),
+            success: true,
+            step_results: vec![crate::planning::StepResult {
+                step_id: "check_voltage".to_string(),
+                success: true,
+                error: None,
+            }],
+            error: None,
+        };
+
+        let result = engine.reflect(&plan, &exec_result).await.unwrap();
+        assert!(result.summary.contains("successfully"));
+        assert!(result.summary.contains(&plan.id));
+    }
+
+    #[tokio::test]
+    async fn test_reflect_summary_on_failure() {
+        let mut engine = ReflectionEngine::new();
+        let plan = make_test_plan();
+        let exec_result = PlanExecutionResult {
+            plan_id: plan.id.clone(),
+            success: false,
+            step_results: vec![crate::planning::StepResult {
+                step_id: "check_voltage".to_string(),
+                success: false,
+                error: Some("connection lost".to_string()),
+            }],
+            error: Some("failed".to_string()),
+        };
+
+        let result = engine.reflect(&plan, &exec_result).await.unwrap();
+        assert!(result.summary.contains("failed"));
+        assert!(result.summary.contains(&plan.id));
+    }
+
+    #[tokio::test]
+    async fn test_reflect_importance_below_min_not_stored() {
+        // 重要性低于 min_importance 的 lesson 不应生成
+        let policy = LearningPolicy::new(1, 0.99); // 极高的 min_importance
+        let mut engine = ReflectionEngine::with_policy(policy);
+
+        let plan = make_test_plan(); // priority=1
+        let exec_result = PlanExecutionResult {
+            plan_id: plan.id.clone(),
+            success: false,
+            step_results: vec![crate::planning::StepResult {
+                step_id: "check_voltage".to_string(),
+                success: false,
+                error: Some("simple error".to_string()),
+            }],
+            error: Some("failed".to_string()),
+        };
+
+        let result = engine.reflect(&plan, &exec_result).await.unwrap();
+        // importance = 0.5 + 1*0.15 = 0.65 < 0.99，不应生成 lesson
+        assert!(result.lessons_learned.is_empty());
+    }
+
+    #[test]
+    fn test_calculate_importance_base_value() {
+        // 基础重要性 = 0.5 + priority * 0.15
+        let goal = Goal::new("test", "d").with_priority(0);
+        let importance = calculate_importance(&goal, "plain error");
+        assert!((importance - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_calculate_importance_safety_related() {
+        // safety/emergency 关键词应增加重要性
+        let goal = Goal::new("test", "d").with_priority(0);
+        let importance = calculate_importance(&goal, "safety violation detected");
+        // 0.5 + 0.3 (safety) = 0.8
+        assert!(importance >= 0.8);
+    }
+
+    #[test]
+    fn test_calculate_importance_capped_at_1() {
+        // 重要性不应超过 1.0
+        let goal = Goal::new("test", "d").with_priority(2);
+        let importance = calculate_importance(
+            &goal,
+            "ConstraintRejected: safety emergency detected",
+        );
+        assert!(importance <= 1.0);
+    }
+
+    #[test]
+    fn test_generate_improvement_suggestion_default_case() {
+        // 未知 goal_type/step_id 组合应返回默认建议
+        let suggestion = generate_improvement_suggestion(
+            "unknown_goal",
+            "unknown_step",
+            "some failure",
+        );
+        assert!(suggestion.contains("unknown_step"));
+        assert!(suggestion.contains("some failure"));
+    }
+
+    #[test]
+    fn test_generate_improvement_suggestion_all_known_cases() {
+        // 验证所有已知 case 都有定制建议
+        let cases = vec![
+            ("voltage_violation", "adjust_reactive"),
+            ("voltage_violation", "verify_voltage"),
+            ("overload", "reroute_power"),
+            ("frequency_deviation", "adjust_setpoints"),
+            ("restore_supply", "close_switches"),
+        ];
+        for (goal, step) in cases {
+            let suggestion = generate_improvement_suggestion(goal, step, "failure");
+            assert!(!suggestion.contains("Review step"), "case ({}, {}) should have custom suggestion", goal, step);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_store_lessons_empty_list() {
+        // 空 lesson 列表应正常返回
+        let engine = ReflectionEngine::new();
+        let memory: Arc<dyn AgentMemory> = Arc::new(eneros_memory::InMemoryMemory::default());
+        let result = engine.store_lessons(&memory, "agent-1", &[]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_recall_lessons_empty_memory() {
+        // 空 memory 应返回空列表
+        let engine = ReflectionEngine::new();
+        let memory: Arc<dyn AgentMemory> = Arc::new(eneros_memory::InMemoryMemory::default());
+        let result = engine.recall_lessons(&memory, "agent-1", "anything").await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_field_present() {
+        let content = "Line1\nScenario: my scenario\nImprovement: do better";
+        let field = extract_field(content, "Scenario:");
+        assert_eq!(field, Some("my scenario".to_string()));
+    }
+
+    #[test]
+    fn test_extract_field_absent() {
+        let content = "Line1\nNo matching field here";
+        let field = extract_field(content, "Scenario:");
+        assert_eq!(field, None);
+    }
+
+    #[test]
+    fn test_extract_field_empty_value() {
+        let content = "Scenario: \nImprovement: something";
+        let field = extract_field(content, "Scenario:");
+        assert_eq!(field, Some("".to_string()));
+    }
 }

@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 mod commands;
 mod format;
+mod shell;
 
 /// EnerOS 管理 CLI
 #[derive(Parser, Debug)]
@@ -90,6 +91,45 @@ enum Commands {
     /// OTA 更新管理
     #[command(subcommand)]
     Update(UpdateCommands),
+    /// 协议适配器管理（v0.23.0）
+    #[command(subcommand)]
+    Protocol(ProtocolCommands),
+    /// 安全管理（v0.24.0）
+    #[command(subcommand)]
+    Security(SecurityCommands),
+    /// 高可用管理（v0.25.0）
+    #[command(subcommand)]
+    Ha(HaCommands),
+    /// 插件管理（v0.27.0）
+    #[command(subcommand)]
+    Plugin(PluginCommands),
+    /// 模拟器管理（v0.28.0 — Task 15）
+    Simulator {
+        /// Simulator 子命令
+        #[command(subcommand)]
+        action: SimulatorAction,
+    },
+    /// 启动交互式 shell（v0.28.0 — Task 13）
+    Shell,
+    /// 生成 shell 补全脚本（v0.28.0 — Task 13）
+    Completions {
+        /// 目标 shell 类型（bash/zsh/fish/powershell/elvish）
+        shell: clap_complete::Shell,
+    },
+    /// 配置管理（v0.29.0 — Task 14）
+    Config {
+        /// Config 子命令
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// 服务管理（v0.29.0 — Task 14）
+    Service {
+        /// Service 子命令
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+    /// 系统诊断（v0.29.0 — Task 14）
+    Doctor,
 }
 
 /// Agent 子命令
@@ -347,6 +387,249 @@ enum UpdateCommands {
     },
 }
 
+/// Protocol 子命令（v0.23.0）
+#[derive(Subcommand, Debug)]
+enum ProtocolCommands {
+    /// 显示所有协议适配器状态（支持协议列表 + 传输层能力）
+    Status,
+    /// 列出已注册协议适配器及配置
+    List,
+    /// 测试指定协议连通性
+    Test {
+        /// 协议类型（goose/sv/iec104/modbus_tcp/modbus_rtu/mqtt/opcua/dnp3/iec61850）
+        protocol: String,
+        /// 目标地址（IP:Port / 串口设备 / 网卡名）
+        address: String,
+    },
+}
+
+/// Security 子命令（v0.24.0）
+#[derive(Subcommand, Debug)]
+enum SecurityCommands {
+    /// 显示安全状态汇总（Secure Boot + 内核加固 + seccomp + 审计 + KMS）
+    Status,
+    /// 审计日志管理
+    Audit {
+        /// Audit 子命令
+        #[command(subcommand)]
+        action: SecurityAuditCommands,
+    },
+    /// 密钥管理
+    Keys {
+        /// Keys 子命令
+        #[command(subcommand)]
+        action: SecurityKeysCommands,
+    },
+}
+
+/// Security Audit 子命令
+#[derive(Subcommand, Debug)]
+enum SecurityAuditCommands {
+    /// 列出审计日志
+    List {
+        /// 起始时间（ISO 8601 或 YYYY-MM-DD）
+        #[arg(long)]
+        since: Option<String>,
+        /// 结束时间（ISO 8601 或 YYYY-MM-DD）
+        #[arg(long)]
+        until: Option<String>,
+        /// 最大返回条数
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// 搜索审计日志
+    Search {
+        /// 按操作者过滤
+        #[arg(long)]
+        actor: Option<String>,
+        /// 按动作类型过滤（login/logout/config_change/agent_control/...）
+        #[arg(long)]
+        action: Option<String>,
+        /// 按结果过滤（success/failure/denied）
+        #[arg(long)]
+        result: Option<String>,
+        /// 起始时间（ISO 8601 或 YYYY-MM-DD）
+        #[arg(long)]
+        since: Option<String>,
+        /// 结束时间（ISO 8601 或 YYYY-MM-DD）
+        #[arg(long)]
+        until: Option<String>,
+        /// 最大返回条数
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// 验证审计日志完整性
+    Verify,
+}
+
+/// Security Keys 子命令
+#[derive(Subcommand, Debug)]
+enum SecurityKeysCommands {
+    /// 列出所有密钥
+    List,
+    /// 显示密钥详情
+    Info {
+        /// 密钥 ID
+        key_id: String,
+    },
+    /// 轮换密钥
+    Rotate {
+        /// 密钥 ID
+        key_id: String,
+    },
+}
+
+/// HA 子命令（v0.26.0 — 通过 IPC 查询 ha-daemon）
+#[derive(Subcommand, Debug)]
+enum HaCommands {
+    /// 显示 HA 状态（节点角色、心跳、同步、failover）
+    Status,
+    /// 列出集群节点
+    Nodes,
+    /// 显示同步状态
+    SyncStatus,
+    /// 显示 failover 状态（状态机、VIP、上次切换）
+    FailoverStatus,
+    /// 手动触发 failover 切换
+    FailoverTrigger {
+        /// 跳过交互式确认（高风险操作）
+        #[arg(long)]
+        force: bool,
+    },
+    /// 显示 failover 切换历史
+    FailoverHistory,
+    /// 触发灾备演练
+    FailoverDrill {
+        /// 演练场景（primary_down / network_partition / disk_failure）
+        #[arg(long, default_value = "primary_down")]
+        scenario: String,
+    },
+}
+
+/// Plugin 子命令（v0.27.0 — 直接调用 eneros-plugin 库，IPC 推迟到 v0.28.0）
+#[derive(Subcommand, Debug)]
+enum PluginCommands {
+    /// 列出已加载的插件
+    List,
+    /// 加载插件（验证签名 → 加载库 → 初始化 → 启动）
+    Load {
+        /// 插件动态库路径或 manifest.toml 路径
+        path: String,
+        /// 跳过签名验证（仅开发/测试环境使用）
+        #[arg(long)]
+        skip_signature: bool,
+    },
+    /// 卸载插件（停止 → 卸载库）
+    Unload {
+        /// 插件名称
+        name: String,
+    },
+    /// 显示插件详情（manifest + state + statistics）
+    Info {
+        /// 插件名称
+        name: String,
+    },
+    /// 验证插件签名（不加载）
+    Verify {
+        /// 插件动态库路径
+        path: String,
+        /// 签名文件路径（默认为 `<plugin>.sig`）
+        #[arg(long)]
+        sig: Option<String>,
+    },
+    /// 启用插件
+    Enable {
+        /// 插件名称
+        name: String,
+    },
+    /// 禁用插件
+    Disable {
+        /// 插件名称
+        name: String,
+    },
+    /// 生成插件签名密钥对（Ed25519）
+    GenKeys {
+        /// 密钥输出目录（默认 /etc/eneros/keys/）
+        #[arg(long, default_value = "/etc/eneros/keys/")]
+        output: String,
+    },
+    /// 对插件文件签名
+    Sign {
+        /// 插件动态库路径
+        plugin: String,
+        /// 私钥路径
+        key: String,
+    },
+}
+
+/// Simulator 子命令（v0.28.0 — Task 15）
+#[derive(Subcommand, Debug)]
+pub enum SimulatorAction {
+    /// 运行场景脚本
+    Run {
+        /// 场景脚本文件路径（TOML 格式）
+        path: PathBuf,
+    },
+    /// 验证场景脚本语法（解析 + 类型检查）
+    Validate {
+        /// 场景脚本文件路径（TOML 格式）
+        path: PathBuf,
+    },
+    /// 列出内置故障场景
+    List,
+}
+
+/// Config 子命令（v0.29.0 — Task 14）
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// 查看配置项
+    Get {
+        /// 配置键（格式：file.field，如 plugin.require_signature）
+        key: String,
+    },
+    /// 设置配置项
+    Set {
+        /// 配置键（格式：file.field）
+        key: String,
+        /// 配置值
+        value: String,
+    },
+    /// 编辑配置文件
+    Edit {
+        /// 配置文件名（不含扩展名，如 plugin、syslog）
+        file: String,
+    },
+    /// 列出所有配置文件
+    List,
+}
+
+/// Service 子命令（v0.29.0 — Task 14）
+#[derive(Subcommand, Debug)]
+pub enum ServiceAction {
+    /// 启动服务
+    Start {
+        /// 服务名称（eneros-init / ha-daemon / plugin-daemon / eventbus-broker / gateway）
+        name: String,
+    },
+    /// 停止服务
+    Stop {
+        /// 服务名称
+        name: String,
+    },
+    /// 重启服务
+    Restart {
+        /// 服务名称
+        name: String,
+    },
+    /// 查询服务状态
+    Status {
+        /// 服务名称
+        name: String,
+    },
+    /// 列出所有服务
+    List,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -363,130 +646,6 @@ async fn main() -> Result<()> {
 
     let socket = cli.socket.as_str();
 
-    match cli.command {
-        Commands::Agent { action } => match action {
-            AgentCommands::List => commands::cmd_agent_list(socket).await,
-            AgentCommands::Start { agent_id } => {
-                commands::cmd_agent_start(socket, &agent_id).await
-            }
-            AgentCommands::Stop { agent_id } => {
-                commands::cmd_agent_stop(socket, &agent_id).await
-            }
-            AgentCommands::Status { agent_id } => {
-                commands::cmd_agent_status(socket, &agent_id).await
-            }
-            AgentCommands::Restart { agent_id } => {
-                commands::cmd_agent_restart(socket, &agent_id).await
-            }
-        },
-        Commands::Eventbus { action } => match action {
-            EventbusCommands::Status => commands::cmd_eventbus_status(socket).await,
-            EventbusCommands::Subscribe { topic } => {
-                commands::cmd_eventbus_subscribe(socket, topic.as_deref()).await
-            }
-        },
-        Commands::System { action } => match action {
-            SystemCommands::Info => commands::cmd_system_info(socket).await,
-        },
-        Commands::Network { action } => match action {
-            NetworkCommands::Status => commands::cmd_network_status().await,
-            NetworkCommands::Config { interface } => {
-                commands::cmd_network_config(interface.as_deref()).await
-            }
-            NetworkCommands::Firewall { action } => match action {
-                Some(FirewallCommands::List) => commands::cmd_network_firewall_list().await,
-                Some(FirewallCommands::Policy) => commands::cmd_network_firewall_policy().await,
-                None => commands::cmd_network_firewall_list().await,
-            },
-            NetworkCommands::Bond { interface } => {
-                commands::cmd_network_bond_status(interface.as_deref()).await
-            }
-        },
-        Commands::Log { action } => match action {
-            LogCommands::Tail {
-                category,
-                lines,
-                follow,
-                json,
-            } => commands::cmd_log_tail(category.as_deref(), lines, follow, json).await,
-            LogCommands::Search {
-                pattern,
-                category,
-                level,
-                since,
-                until,
-                source,
-                json,
-            } => {
-                commands::cmd_log_search(
-                    &pattern,
-                    category.as_deref(),
-                    level.as_deref(),
-                    since.as_deref(),
-                    until.as_deref(),
-                    source.as_deref(),
-                    json,
-                )
-                .await
-            }
-            LogCommands::Level { target, level } => {
-                commands::cmd_log_level(&target, level.as_deref()).await
-            }
-            LogCommands::Export {
-                start,
-                end,
-                format,
-                category,
-                output,
-            } => {
-                commands::cmd_log_export(
-                    start.as_deref(),
-                    end.as_deref(),
-                    &format,
-                    category.as_deref(),
-                    output.as_deref(),
-                )
-                .await
-            }
-            LogCommands::Rotate { category } => commands::cmd_log_rotate(&category).await,
-        },
-        Commands::Device { action } => match action {
-            DeviceCommands::List { r#type } => commands::cmd_device_list(r#type.as_deref()).await,
-            DeviceCommands::Info { device } => commands::cmd_device_info(&device).await,
-            DeviceCommands::Config { device, preset, baud } => {
-                commands::cmd_device_config(&device, preset.as_deref(), baud).await
-            }
-            DeviceCommands::Monitor => commands::cmd_device_monitor().await,
-        },
-        Commands::Audit { action } => match action {
-            AuditCommands::List { since, until, limit } => {
-                commands::cmd_audit_list(since.as_deref(), until.as_deref(), limit).await
-            }
-            AuditCommands::Verify => commands::cmd_audit_verify().await,
-            AuditCommands::Search {
-                actor,
-                action,
-                result,
-                since,
-                until,
-                limit,
-            } => {
-                commands::cmd_audit_search(
-                    actor.as_deref(),
-                    action.as_deref(),
-                    result.as_deref(),
-                    since.as_deref(),
-                    until.as_deref(),
-                    limit,
-                )
-                .await
-            }
-        },
-        Commands::Time { action } => match action {
-            TimeCommands::Status => commands::cmd_time_status().await,
-            TimeCommands::SetSource { source } => commands::cmd_time_set_source(&source).await,
-            TimeCommands::Sync => commands::cmd_time_sync().await,
-        },
-        Commands::Update(cmd) => commands::cmd_update(cmd).await,
-    }
+    // 分发到对应子命令（dispatch_command 同时供交互式 shell 使用）
+    commands::dispatch_command(cli.command, socket).await
 }

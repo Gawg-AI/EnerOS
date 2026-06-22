@@ -21,6 +21,14 @@ pub enum BusType {
     Slack,
 }
 
+/// Bus type for Newton-Raphson solver
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusTypeNR {
+    PQ,
+    PV,
+    Slack,
+}
+
 /// Branch type in power system
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BranchType {

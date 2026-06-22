@@ -27,6 +27,8 @@
 pub mod asdu;
 pub mod client;
 
+pub mod serial;
+
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -40,6 +42,10 @@ use crate::protocol::ProtocolType;
 
 pub use asdu::{TypeId, CauseOfTransmission, InformationObject, Asdu};
 pub use client::{Iec104Client, Iec104Config, ConnectionState, TlsConfig, RedundancyMode};
+pub use serial::{
+    Iec104SerialTransport, Iec104SerialConfig, Iec104SerialError,
+    ft12_checksum, encode_ft12_variable_frame, encode_ft12_fixed_frame, decode_ft12_frame,
+};
 
 /// IEC 60870-5-104 protocol adapter with real TCP transport.
 ///

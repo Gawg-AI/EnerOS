@@ -1,0 +1,24 @@
+[package]
+name = "eneros-e2e-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS end-to-end test framework"
+
+[dependencies]
+eneros-runtime = { path = "../../crates/eneros-runtime" }
+eneros-test-utils = { path = "../../crates/eneros-test-utils" }
+eneros-core = { path = "../../crates/eneros-core" }
+eneros-api = { path = "../../crates/eneros-api" }
+eneros-gateway = { path = "../../crates/eneros-gateway" }
+eneros-eventbus = { path = "../../crates/eneros-eventbus" }
+eneros-agent = { path = "../../crates/eneros-agent" }
+eneros-scada = { path = "../../crates/eneros-scada" }
+tokio = { workspace = true, features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

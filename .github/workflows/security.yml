@@ -1,0 +1,101 @@
+# EnerOS — Security Compliance Scanning
+# Runs OWASP Top 10 tests, SAST scanning, and dependency vulnerability audit
+# Triggered on push/PR and daily schedule
+
+name: Security
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'crates/**'
+      - 'tests/security/**'
+      - '.github/workflows/security.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'crates/**'
+      - 'tests/security/**'
+      - '.github/workflows/security.yml'
+  schedule:
+    # 每日 UTC 02:00 运行（北京时间 10:00）
+    - cron: '0 2 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Dependency Vulnerability Audit ─────────────────────────────────────
+  cargo-audit:
+    name: Dependency Audit (cargo audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked || true
+
+      - name: Run cargo audit
+        run: cargo audit --deny warnings
+
+  # ── Clippy (Security Crate) ────────────────────────────────────────────
+  clippy:
+    name: Clippy (Security)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-security-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-security-clippy-
+
+      - name: Run clippy (workspace)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ── Security Tests ─────────────────────────────────────────────────────
+  security-tests:
+    name: Security Tests (OWASP + SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-security-tests-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-security-tests-
+
+      - name: Build security test crate
+        run: cargo build -p eneros-security-tests
+
+      - name: Run security tests
+        run: cargo test -p eneros-security-tests
+
+      - name: Run ignored tests (requires API server)
+        # ignored 测试需要 API server，CI 中无法运行，跳过
+        run: echo "ignored tests require API server, skipping in CI"

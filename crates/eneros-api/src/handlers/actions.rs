@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::Json;
 use eneros_core::{AuthorityLevel, Jurisdiction, StructuredAction, SystemOperatingState};
-use eneros_gateway::pipeline_types::DecisionContext;
+use eneros_runtime::gateway::pipeline_types::DecisionContext;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 

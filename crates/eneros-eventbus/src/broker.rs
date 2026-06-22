@@ -223,10 +223,7 @@ impl EventBusBroker {
 
         // 等待（broker 会一直运行直到进程终止）
         tcp_handle.await.map_err(|e| {
-            BrokerError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("tcp task join: {}", e),
-            ))
+            BrokerError::Io(std::io::Error::other(format!("tcp task join: {}", e)))
         })?;
 
         #[cfg(unix)]

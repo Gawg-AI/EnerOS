@@ -177,21 +177,53 @@ static APP_JS: &str = r##"(function() {
 
   var ws = null;
   var reconnectDelay = 1000;
+  var evtSource = null;
+  var sseReconnectDelay = 1000;
 
+  // ── SSE：主要实时数据源 (T029-11) ──────────────────────────────────
+  function connectSSE() {
+    evtSource = new EventSource('/api/v1/dashboard/stream');
+
+    evtSource.addEventListener('open', function() {
+      sseReconnectDelay = 1000;
+      updateConnectionStatus();
+    });
+
+    // 监听 metric 事件 — 与 WS EventBus 桥接使用相同的 JSON 结构
+    evtSource.addEventListener('metric', function(e) {
+      try {
+        var msg = JSON.parse(e.data);
+        handleMessage(msg);
+      } catch(err) {
+        console.error('Failed to parse SSE message:', err);
+      }
+    });
+
+    evtSource.onerror = function() {
+      evtSource.close();
+      evtSource = null;
+      updateConnectionStatus();
+      setTimeout(function() {
+        sseReconnectDelay = Math.min(sseReconnectDelay * 2, 30000);
+        connectSSE();
+      }, sseReconnectDelay);
+    };
+  }
+
+  // ── WebSocket：备份实时数据通道 ───────────────────────────────────
   function connectWebSocket() {
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var wsUrl = protocol + '//' + location.host + '/ws';
     ws = new WebSocket(wsUrl);
 
     ws.onopen = function() {
-      document.getElementById('connection-status').textContent = 'Connected';
-      document.getElementById('connection-status').className = 'status-connected';
       reconnectDelay = 1000;
+      updateConnectionStatus();
     };
 
     ws.onclose = function() {
-      document.getElementById('connection-status').textContent = 'Disconnected';
-      document.getElementById('connection-status').className = 'status-disconnected';
+      ws = null;
+      updateConnectionStatus();
       setTimeout(function() {
         reconnectDelay = Math.min(reconnectDelay * 2, 30000);
         connectWebSocket();
@@ -210,6 +242,20 @@ static APP_JS: &str = r##"(function() {
         console.error('Failed to parse WebSocket message:', e);
       }
     };
+  }
+
+  function updateConnectionStatus() {
+    var el = document.getElementById('connection-status');
+    if (evtSource && evtSource.readyState === 1) {
+      el.textContent = 'Connected (SSE)';
+      el.className = 'status-connected';
+    } else if (ws && ws.readyState === 1) {
+      el.textContent = 'Connected (WS)';
+      el.className = 'status-connected';
+    } else {
+      el.textContent = 'Disconnected';
+      el.className = 'status-disconnected';
+    }
   }
 
   function handleMessage(msg) {
@@ -346,6 +392,8 @@ static APP_JS: &str = r##"(function() {
     document.getElementById('data-content').innerHTML = html;
   }
 
+  // SSE 作为主要实时数据源，WebSocket 作为备份，5 秒轮询兜底
+  connectSSE();
   connectWebSocket();
   refreshData();
   setInterval(refreshData, 5000);
@@ -382,5 +430,10 @@ mod tests {
         assert!(js.contains("/api/"));
         assert!(js.contains("setInterval"));
         assert!(js.contains("5000"));
+        // T029-11: SSE 实时刷新
+        assert!(js.contains("EventSource"));
+        assert!(js.contains("/api/v1/dashboard/stream"));
+        assert!(js.contains("connectSSE"));
+        assert!(js.contains("metric"));
     }
 }

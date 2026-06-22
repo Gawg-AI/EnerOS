@@ -3,12 +3,12 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use eneros_api::app::{create_router, AppState};
-use eneros_constraint::projector::{FeasibilityProjector, NetworkSimulator, WhatIfResult};
-use eneros_constraint::ConstraintEngine;
+use eneros_runtime::constraint::projector::{FeasibilityProjector, NetworkSimulator, WhatIfResult};
+use eneros_runtime::constraint::ConstraintEngine;
 use eneros_core::{AuthorityLevel, StructuredAction};
-use eneros_gateway::constraint_validator::ConstraintAwareValidator;
-use eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline;
-use eneros_gateway::SafetyGateway;
+use eneros_runtime::gateway::constraint_validator::ConstraintAwareValidator;
+use eneros_runtime::gateway::decision_pipeline::ConstrainedDecisionPipeline;
+use eneros_runtime::gateway::SafetyGateway;
 use serde_json::Value;
 use tower::ServiceExt;
 

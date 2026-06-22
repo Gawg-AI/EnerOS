@@ -57,10 +57,11 @@ impl AgentSupervisor {
 
     /// 启动一个 Agent 进程
     ///
-    /// 在 Linux 上：fork/exec 创建子进程
+    /// 在 Linux 上：fork/exec 创建子进程，并在 `pre_exec` 钩子中加载 seccomp 沙箱
     /// 在非 Linux 上：记录元数据但不真正 spawn（用于开发/测试）
     #[cfg(target_os = "linux")]
     pub fn spawn(&self, config: AgentSpawnConfig) -> Result<u32, SupervisorError> {
+        use crate::agentos::authority::AuthorityLevelSeccompExt;
         use std::os::unix::process::CommandExt;
         use std::process::Command;
 
@@ -68,6 +69,31 @@ impl AgentSupervisor {
         cmd.args(&config.args);
         for (k, v) in &config.env {
             cmd.env(k, v);
+        }
+
+        // 在 fork 后、exec 前设置权限沙箱。
+        // `pre_exec` 闭包运行在 fork 后的多线程上下文中，只能调用 async-signal-safe 函数。
+        // libseccomp 的 `seccomp_load()` 是 async-signal-safe 的。
+        #[cfg(feature = "seccomp")]
+        let profile = config.authority.to_seccomp_profile();
+
+        unsafe {
+            cmd.pre_exec(move || {
+                // === capabilities 设置 ===
+                // 此处应通过 capset() 设置进程 capabilities（参考 authority.rs 的
+                // `AuthorityEnforcer::capset_linux`）。当前 capset 逻辑需 registry 上下文，
+                // 生产部署中应在此补充独立的 capset 调用。
+
+                // === seccomp 沙箱 ===
+                // 仅在启用 seccomp feature 时加载 BPF 过滤器。
+                #[cfg(feature = "seccomp")]
+                {
+                    crate::agentos::seccomp::apply_seccomp(&profile)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                }
+
+                Ok(())
+            });
         }
 
         let child = cmd

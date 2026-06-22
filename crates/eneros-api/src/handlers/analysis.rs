@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::Json;
 
-use eneros_analysis::{
+use eneros_runtime::analysis::{
     AcBranch, AcBus, AcGenerator, AcOpfProblem, AcOpfSolver, BadDataDetector, BranchLimit,
     DcOpfProblem, DcOpfSolver, FaultSpec, FaultType, GeneratorBid, GeneratorDynamic,
     GeneratorModel, IntegrationMethod, MeasType, Measurement, ObservabilityAnalyzer,
@@ -157,6 +157,14 @@ pub async fn opf_handler(
 }
 
 /// POST /api/analysis/state-estimation
+#[utoipa::path(
+    post,
+    path = "/api/analysis/state-estimation",
+    responses(
+        (status = 200, description = "状态估计结果"),
+        (status = 400, description = "请求参数错误或求解失败"),
+    )
+)]
 #[tracing::instrument(skip(state, req), fields(endpoint = "/api/analysis/state-estimation"))]
 pub async fn state_estimation_handler(
     State(state): State<AppState>,
@@ -210,7 +218,7 @@ pub async fn state_estimation_handler(
                     .unwrap_or(1);
 
                 // Use network-based estimation if Y-bus is available
-                let network_model = eneros_analysis::NetworkModel::new(
+                let network_model = eneros_runtime::analysis::NetworkModel::new(
                     network.ybus().clone(),
                     network.bus_map().clone(),
                     100.0,
@@ -306,6 +314,14 @@ fn build_z_bus(ybus: &eneros_powerflow::YBusMatrix) -> Option<Array2<Complex64>>
 }
 
 /// POST /api/analysis/short-circuit
+#[utoipa::path(
+    post,
+    path = "/api/analysis/short-circuit",
+    responses(
+        (status = 200, description = "短路计算结果"),
+        (status = 400, description = "请求参数错误或未加载网络模型"),
+    )
+)]
 #[tracing::instrument(skip(state, req), fields(endpoint = "/api/analysis/short-circuit"))]
 pub async fn short_circuit_handler(
     State(state): State<AppState>,
@@ -407,7 +423,7 @@ pub async fn short_circuit_handler(
 /// 使用外部母线 ID（IEEE-14 为 1-based）。此处通过反向映射将内部索引
 /// 转换为外部母线 ID，确保与 `NetworkModel.bus_map` 一致。
 fn build_synthetic_measurements(
-    network: &eneros_network::PowerNetwork,
+    network: &eneros_runtime::network::PowerNetwork,
 ) -> Result<(Vec<Measurement>, u64), String> {
     let pf_result = network
         .solve()
@@ -487,6 +503,14 @@ fn meas_request_to_measurement(m: &MeasRequest) -> Measurement {
 ///
 /// 执行交流最优潮流计算。支持牛顿-拉夫逊法和原对偶内点法。
 /// 若请求未提供发电机/支路/母线数据，则从已加载的网络模型构建。
+#[utoipa::path(
+    post,
+    path = "/api/analysis/ac-opf",
+    responses(
+        (status = 200, description = "AC-OPF 计算结果"),
+        (status = 400, description = "请求参数错误或求解失败"),
+    )
+)]
 #[tracing::instrument(skip(state, req), fields(endpoint = "/api/analysis/ac-opf"))]
 pub async fn ac_opf_handler(
     State(state): State<AppState>,
@@ -691,6 +715,14 @@ pub async fn ac_opf_handler(
 /// - `simulate`: 单次暂态仿真，返回完整时间序列
 /// - `cct`: 临界故障清除时间二分搜索
 /// - `equal_area`: 等面积法则快速判定（单机无穷大系统）
+#[utoipa::path(
+    post,
+    path = "/api/analysis/transient",
+    responses(
+        (status = 200, description = "暂态稳定分析结果"),
+        (status = 400, description = "请求参数错误或求解失败"),
+    )
+)]
 #[tracing::instrument(skip(state, req), fields(endpoint = "/api/analysis/transient"))]
 pub async fn transient_handler(
     State(state): State<AppState>,
@@ -978,6 +1010,14 @@ pub async fn transient_handler(
 ///
 /// 执行可观测性分析。支持数值法（雅可比矩阵秩）和拓扑法（图论）。
 /// 可选计算最小 PMU 配置。
+#[utoipa::path(
+    post,
+    path = "/api/analysis/observability",
+    responses(
+        (status = 200, description = "可观测性分析结果"),
+        (status = 400, description = "请求参数错误或未加载网络模型"),
+    )
+)]
 pub async fn observability_handler(
     State(state): State<AppState>,
     Json(req): Json<ObservabilityRequest>,
@@ -991,7 +1031,7 @@ pub async fn observability_handler(
         }
     };
 
-    let network_model = eneros_analysis::NetworkModel::new(
+    let network_model = eneros_runtime::analysis::NetworkModel::new(
         network.ybus().clone(),
         network.bus_map().clone(),
         100.0,
@@ -1078,6 +1118,14 @@ pub async fn observability_handler(
 ///
 /// 执行不良数据检测。包括 χ² 检测、最大标准残差法（LNR）、
 /// 拓扑错误辨识。可选迭代剔除最严重的不良数据后重新估计。
+#[utoipa::path(
+    post,
+    path = "/api/analysis/bad-data",
+    responses(
+        (status = 200, description = "不良数据检测结果"),
+        (status = 400, description = "请求参数错误或未加载网络模型"),
+    )
+)]
 pub async fn bad_data_handler(
     State(state): State<AppState>,
     Json(req): Json<BadDataRequest>,
@@ -1091,7 +1139,7 @@ pub async fn bad_data_handler(
         }
     };
 
-    let network_model = eneros_analysis::NetworkModel::new(
+    let network_model = eneros_runtime::analysis::NetworkModel::new(
         network.ybus().clone(),
         network.bus_map().clone(),
         100.0,
@@ -1145,7 +1193,7 @@ pub async fn bad_data_handler(
                     ));
                 }
                 // 构建雅可比和残差
-                let state = eneros_analysis::bad_data::build_state_vector(
+                let state = eneros_runtime::analysis::bad_data::build_state_vector(
                     &se_result.result.bus_voltages,
                     &network_model,
                 );
@@ -1175,7 +1223,7 @@ pub async fn bad_data_handler(
 
 /// 构建不良数据检测响应
 fn build_bad_data_response(
-    report: &eneros_analysis::BadDataReport,
+    report: &eneros_runtime::analysis::BadDataReport,
     cleaned_voltages: Option<Vec<(u64, f64, f64)>>,
     converged: bool,
 ) -> BadDataResponse {
@@ -1225,6 +1273,14 @@ fn build_bad_data_response(
 /// 执行不对称短路分析（SLG/LL/DLG）。使用完整的序网络 Z-bus 矩阵，
 /// 支持自定义正序、负序、零序网络。若未提供序网络，则从已加载网络
 /// 的 Y-bus 构建正序 Z-bus，并假设 z2 = z1，z0 使用典型值。
+#[utoipa::path(
+    post,
+    path = "/api/analysis/short-circuit/asymmetric",
+    responses(
+        (status = 200, description = "不对称短路分析结果"),
+        (status = 400, description = "请求参数错误或未加载网络模型"),
+    )
+)]
 pub async fn asymmetric_short_circuit_handler(
     State(state): State<AppState>,
     Json(req): Json<AsymmetricScRequest>,

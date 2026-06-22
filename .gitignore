@@ -4,6 +4,10 @@ DEVGUIDE.md
 # Trae IDE workspace (AI-assisted dev artifacts, not for public repo)
 .trae/
 
+# Temp files
+*.tmp
+fix_*.py
+
 # Build/test output logs
 *.log
 build_output.txt

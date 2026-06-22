@@ -101,7 +101,7 @@ pub struct ConstraintCheckRequest {
 }
 
 /// Constraint violation response
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ConstraintViolationResponse {
     pub constraint_id: String,
     pub element_id: ElementId,
@@ -116,7 +116,7 @@ pub struct ConstraintViolationResponse {
 // ============================================================
 
 /// Topology data response for GET /api/topology
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct TopologyDataResponse {
     pub buses: Vec<BusData>,
     pub branches: Vec<BranchData>,
@@ -124,7 +124,7 @@ pub struct TopologyDataResponse {
 }
 
 /// Bus data in topology response
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct BusData {
     pub id: u64,
     pub name: String,
@@ -133,7 +133,7 @@ pub struct BusData {
 }
 
 /// Branch data in topology response
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct BranchData {
     pub id: u64,
     pub from_bus: u64,
@@ -146,14 +146,14 @@ pub struct BranchData {
 // ============================================================
 
 /// Agents response for GET /api/agents
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct AgentsResponse {
     pub agent_count: usize,
     pub agents: Vec<AgentInfo>,
 }
 
 /// Agent info in agents response
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct AgentInfo {
     pub name: String,
     pub agent_type: String,
@@ -728,7 +728,7 @@ pub struct AsymmetricScResponse {
 // ============================================================
 
 /// Topology SVG response for GET /api/dashboard/topology-svg
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct TopologySvgResponse {
     pub svg: String,
     pub bus_count: usize,
@@ -736,7 +736,7 @@ pub struct TopologySvgResponse {
 }
 
 /// Flow heatmap response for GET /api/dashboard/flow-heatmap
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct FlowHeatmapResponse {
     pub bus_colors: HashMap<u64, String>,
     pub branch_widths: HashMap<u64, f64>,

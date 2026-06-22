@@ -963,6 +963,7 @@ pub struct OpcUaAdapter {
     /// Cache for read values (updated by subscription callbacks)
     cache: Arc<RwLock<HashMap<String, OpcUaVariant>>>,
     /// Subscription callbacks
+    #[allow(clippy::type_complexity)]
     callbacks: Arc<RwLock<Vec<Box<dyn Fn(DataPoint) + Send + Sync>>>>,
 }
 
@@ -1278,7 +1279,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_adapter_read_cached() {
-        let mut adapter = OpcUaAdapter::new("test", OpcUaConfig::default());
+        let adapter = OpcUaAdapter::new("test", OpcUaConfig::default());
         adapter.shared_state.mark_connected();
 
         adapter

@@ -19,6 +19,9 @@ parking_lot = { workspace = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 utoipa = { workspace = true, features = ["chrono"] }
 
+# TDengine HTTP REST API 响应解析（v0.29.0 — T029-19）
+# 使用 std::net::TcpStream 实现纯标准库 HTTP 客户端，避免 reqwest/libc 依赖
+serde_json = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
-serde_json = { workspace = true }

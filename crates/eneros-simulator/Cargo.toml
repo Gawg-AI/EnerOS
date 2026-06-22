@@ -1,0 +1,14 @@
+[package]
+name = "eneros-simulator"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+eneros-network = { path = "../eneros-network" }
+eneros-powerflow = { path = "../eneros-powerflow" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

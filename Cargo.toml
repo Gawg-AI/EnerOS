@@ -14,17 +14,25 @@ members = [
     "crates/eneros-gateway/bins/gateway",
     "crates/eneros-device",
     "crates/eneros-api",
+    "crates/eneros-runtime",
     "crates/eneros-bridge",
     "crates/eneros-network",
     "crates/eneros-memory",
     "crates/eneros-tool",
     "crates/eneros-reasoning",
     "crates/eneros-agent",
+    "crates/eneros-test-utils",
     "crates/eneros-scada",
     "crates/eneros-analysis",
     "crates/eneros-dashboard",
+    "crates/eneros-simulator",
+    "crates/eneros-plugin",
+    "crates/eneros-plugin/bins/plugin-daemon",
+    "crates/eneros-plugin-macros",
+    "crates/eneros-sdk",
     "crates/eneros-os",
     "crates/eneros-os/bins/eneros-init",
+    "crates/eneros-os/bins/eneros-ha",
     "crates/eneros-os/bins/eneros-timesync",
     "crates/eneros-os/bins/enerosctl",
     "crates/eneros-os/bins/eneros-installer",
@@ -35,10 +43,14 @@ members = [
     "crates/eneros-agent/bins/planning-agent",
     "crates/eneros-agent/bins/trading-agent",
     "os/tests",
+    "tests/e2e",
+    "tests/protocol_conformance",
+    "tests/security",
+    "benches",
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.30.0"
 edition = "2021"
 authors = ["GAWG-AI"]
 license = "MIT"
@@ -50,13 +62,26 @@ tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"
 
+# System / FFI (Linux AF_PACKET 原始套接字)
+libc = "0.2"
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 二进制序列化（v0.29.0 — T029-23 HA 同步优化）
+bincode = "1"
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# OpenTelemetry OTLP 导出 (v0.29.0 — T029-18)
+# 版本锁定：opentelemetry 0.27 + opentelemetry-otlp 0.27 + tracing-opentelemetry 0.28
+# 三者需保持 API 兼容（tracing-opentelemetry 0.28 对应 opentelemetry 0.27）
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
+tracing-opentelemetry = "0.28"
 
 # Error handling
 thiserror = "1"
@@ -89,6 +114,15 @@ jsonwebtoken = "9"
 sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
+argon2 = "0.5"
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", features = ["simple"] }
+rand = "0.8"
+# 密钥材料零化（v0.24.0 — Task 3）
+zeroize = { version = "1", features = ["derive", "serde", "alloc"] }
+
+# seccomp BPF 沙箱 (v0.24.0 — Task 1)
+libseccomp = "0.4"
 
 # OTA signing (v0.22.0)
 ed25519-dalek = { version = "2", features = ["rand_core"] }
@@ -105,3 +139,15 @@ webpki-roots = "0.26"
 
 # OpenAPI documentation (v0.10.0 — Task 8)
 utoipa = "5"
+
+# Interactive shell & completion (v0.28.0 — Task 13)
+rustyline = "14"
+clap_complete = "4"
+dirs = "5"
+
+# Benchmarking (v0.29.0 — T029-12 热点路径性能优化)
+# async_tokio 特性用于异步基准测试（SCADA/Agent/Gateway 热点路径均为 async）
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
+# 共享内存映射 (v0.29.0 — T029-24 RT 域 SharedMemoryChannel)
+memmap2 = "0.9"

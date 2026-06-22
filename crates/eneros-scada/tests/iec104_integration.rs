@@ -77,6 +77,7 @@ async fn test_iec104_data_flows_into_snapshot_builder() {
         default_scan_rate_ms: 1000,
         timeout_ms: 5000,
         enable_quality_check: true,
+        pool: Default::default(),
     };
 
     let collector = ScadaCollector::new(scada_config, data_source.clone());
@@ -406,6 +407,7 @@ async fn test_iec104_full_pipeline_to_snapshot() {
         default_scan_rate_ms: 1000,
         timeout_ms: 5000,
         enable_quality_check: true,
+        pool: Default::default(),
     };
 
     let collector = ScadaCollector::new(scada_config, data_source);

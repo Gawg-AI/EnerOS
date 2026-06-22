@@ -295,3 +295,228 @@ EnerOS 遵循语义化版本 2.0.0：
 - **PATCH**：向后兼容的缺陷修复
 
 变更记录见 `CHANGELOG.md`，未来规划见 `ROADMAP.md`。
+
+## 10. plugin-daemon 部署
+
+plugin-daemon 是 v0.28.0 引入的插件宿主进程，以进程隔离方式加载第三方插件，崩溃不影响主进程。
+
+### 10.1 安装
+
+plugin-daemon 包含在 eneros-plugin crate 中，编译 workspace 时自动构建：
+
+```bash
+cargo build --release -p plugin-daemon
+```
+
+产物：`target/release/plugin-daemon`
+
+镜像部署时，plugin-daemon 已包含在 rootfs 中，二进制位于 `/usr/bin/plugin-daemon`。
+
+### 10.2 配置
+
+plugin-daemon 的配置位于 `/etc/eneros/plugin.toml`：
+
+```toml
+[plugin]
+require_signature = true              # 生产环境必须为 true
+default_mode = "daemon"               # daemon（默认）或 inline
+plugin_dir = "/var/lib/eneros/plugins"
+keys_dir = "/etc/eneros/keys"
+
+[plugin.sandbox]
+enable_seccomp = true
+enable_quota = true
+default_cpu_percent = 50
+default_memory_mb = 256
+allowed_paths = ["/var/lib/eneros/data"]
+denied_paths = ["/etc/shadow"]
+allowed_network = ["tcp:2404"]
+```
+
+| 配置项 | 说明 |
+|--------|------|
+| `require_signature` | 是否强制签名验证（生产环境必须 true） |
+| `default_mode` | 默认加载模式（daemon / inline） |
+| `plugin_dir` | 插件动态库目录 |
+| `keys_dir` | 可信公钥目录 |
+| `enable_seccomp` | 启用 seccomp 沙箱 |
+| `enable_quota` | 启用 cgroups 资源配额 |
+| `default_cpu_percent` | 默认 CPU 上限 |
+| `default_memory_mb` | 默认内存上限 |
+
+### 10.3 启动
+
+```bash
+# 通过 enerosctl 启动
+enerosctl service start plugin-daemon
+
+# 或直接运行
+plugin-daemon --config /etc/eneros/plugin.toml
+
+# 查看状态
+enerosctl service status plugin-daemon
+```
+
+plugin-daemon 启动后会监听 IPC 通道，等待主进程的加载请求。
+
+### 10.4 日志
+
+plugin-daemon 的日志输出到 syslog 的 `protocol` 分类：
+
+```bash
+# 查看 plugin-daemon 日志
+enerosctl log tail protocol -f
+
+# 搜索插件加载错误
+enerosctl log search "plugin" --level error
+```
+
+### 10.5 插件管理
+
+```bash
+# 列出已加载插件
+enerosctl plugin list
+
+# 加载插件
+enerosctl plugin load /var/lib/eneros/plugins/libmy_plugin.so
+
+# 卸载插件
+enerosctl plugin unload my-plugin
+
+# 查看插件详情
+enerosctl plugin info my-plugin
+```
+
+详细插件开发与部署流程见 [插件开发指南](./plugin-development.md)。
+
+## 11. 模拟器部署
+
+EnerOS 仿真器（eneros-simulator）用于验证 Agent 决策、测试保护逻辑、回归测试分析模块，支持 TOML 场景脚本描述时序事件。
+
+### 11.1 eneros-simulator crate
+
+仿真器作为 eneros-simulator crate 提供，编译 workspace 时自动构建：
+
+```bash
+cargo build --release -p eneros-simulator
+```
+
+仿真器核心能力：
+
+- **场景脚本引擎**：TOML 描述事件时间线（故障注入、负荷变化、跳闸等）
+- **电网模型**：支持 IEEE 标准网络与自定义拓扑
+- **故障注入**：短路、接地、发电机/线路跳闸
+- **观察记录**：在指定时间点记录系统状态快照
+
+### 11.2 场景脚本
+
+场景脚本为 TOML 格式，包含场景元数据、事件时间线与初始状态：
+
+```toml
+name = "ieee14-line-trip"
+description = "IEEE 14 节点系统线路跳闸场景"
+duration = 60.0
+time_step = 0.1
+
+[[timeline]]
+time = 0.0
+action = { type = "observe" }
+params = { label = "steady_state" }
+
+[[timeline]]
+time = 10.0
+action = { type = "line_trip" }
+params = { line = "L1-2" }
+
+[[timeline]]
+time = 30.0
+action = { type = "observe" }
+params = { label = "post_fault" }
+
+[initial_state]
+load_level = 0.8
+```
+
+支持的动作类型：
+
+| 动作 | 说明 |
+|------|------|
+| `inject_fault` | 注入故障 |
+| `clear_fault` | 清除故障 |
+| `load_change` | 负荷变化 |
+| `generator_trip` | 发电机跳闸 |
+| `line_trip` | 线路跳闸 |
+| `load_shed` | 负荷切除 |
+| `observe` | 观察记录点 |
+
+场景脚本格式详见 [ADR-0004](./adr/0004-simulator-scenario-engine.md)。
+
+### 11.3 enerosctl simulator 命令
+
+```bash
+# 验证场景脚本格式
+enerosctl simulator validate ./scenarios/ieee14-line-trip.toml
+
+# 运行场景
+enerosctl simulator run ./scenarios/ieee14-line-trip.toml
+
+# 列出可用场景
+enerosctl simulator list-scenarios
+```
+
+### 11.4 部署建议
+
+- 仿真器主要用于开发、测试与验证环境，生产部署通常不需要
+- 场景脚本建议纳入版本控制，便于回归测试
+- 复杂场景可拆分为多个脚本，通过 `initial_state` 参数化复用
+
+## 12. SDK 应用打包
+
+eneros-sdk 是面向第三方开发者的 SDK，封装 Agent/协议/插件开发的常用类型与辅助函数。
+
+### 12.1 eneros-sdk 依赖
+
+在应用项目的 `Cargo.toml` 中添加 SDK 依赖：
+
+```toml
+[dependencies]
+eneros-sdk = { path = "../eneros/crates/eneros-sdk", features = ["full"] }
+```
+
+SDK 通过 feature 门控按需启用模块：
+
+| feature | 启用模块 | 用途 |
+|---------|----------|------|
+| `agent` | agent | Agent 开发 |
+| `protocol` | protocol | 协议开发 |
+| `plugin` | plugin | 插件开发 |
+| `full`（默认） | 全部 | 全部模块 |
+
+### 12.2 编译
+
+```bash
+# 编译 SDK 应用
+cargo build --release
+
+# 交叉编译（aarch64 目标）
+cargo build --release --target aarch64-unknown-linux-gnu
+```
+
+### 12.3 分发
+
+SDK 应用的分发方式取决于应用类型：
+
+| 应用类型 | 产物 | 分发方式 |
+|----------|------|----------|
+| 插件 | 动态库（.so/.dll/.dylib） | 签名后部署到 `/var/lib/eneros/plugins/` |
+| Agent | 可执行文件 | 部署到 `/usr/bin/`，在 `init.toml` 中注册 |
+| 独立工具 | 可执行文件 | 按需部署 |
+
+插件分发需附带：
+
+- 动态库文件
+- `manifest.toml` 清单
+- `.sig` 签名文件
+- 公钥（首次部署时添加到 `/etc/eneros/keys/`）
+
+详细打包与签名流程见 [插件开发指南 — 插件市场发布流程](./plugin-development.md#9-插件市场发布流程)。

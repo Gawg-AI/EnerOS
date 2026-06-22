@@ -1,0 +1,8 @@
+{
+  "_comment": "基准测试基线数据。每个子对象存储对应 bench 的性能基线指标（如 p99/中位数/吞吐量），用于回归对比。当前为初始空结构，待首次基准运行后填充。",
+  "scada_bench": {},
+  "agent_bench": {},
+  "ha_bench": {},
+  "api_bench": {},
+  "powerflow_bench": {}
+}

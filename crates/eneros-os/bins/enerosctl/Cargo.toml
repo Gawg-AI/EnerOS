@@ -13,6 +13,9 @@ path = "src/main.rs"
 [dependencies]
 eneros-os = { path = "../.." }
 eneros-core = { path = "../../../eneros-core" }
+eneros-device = { path = "../../../eneros-device" }
+eneros-plugin = { path = "../../../eneros-plugin" }
+eneros-simulator = { path = "../../../eneros-simulator" }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -22,3 +25,6 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 toml = { workspace = true }
+rustyline = { workspace = true }
+clap_complete = { workspace = true }
+dirs = { workspace = true }

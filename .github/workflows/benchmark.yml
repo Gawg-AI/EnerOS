@@ -1,0 +1,71 @@
+name: Benchmark
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      - name: Build benchmarks
+        run: |
+          cargo build -p eneros-benches --benches
+
+      - name: Run benchmarks (PR)
+        if: github.event_name == 'pull_request'
+        # 注意：GitHub Actions 每次运行是全新环境，--save-baseline 无法跨运行比较。
+        # 建议本地使用 --baseline main 进行比较。
+        run: |
+          cargo bench --workspace \
+            --bench scada_bench \
+            --bench agent_bench \
+            --bench ha_bench \
+            --bench api_bench \
+            --bench powerflow_bench \
+            -- --save-baseline pr --relative-threshold 0.1
+
+      - name: Run benchmarks (main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          cargo bench --workspace \
+            --bench scada_bench \
+            --bench agent_bench \
+            --bench ha_bench \
+            --bench api_bench \
+            --bench powerflow_bench \
+            -- --save-baseline main
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: target/criterion/
+          retention-days: 30

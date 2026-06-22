@@ -11,24 +11,24 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use tower::ServiceExt;
 
-use eneros_agent::event_adapter::AgentEventHandler;
-use eneros_agent::{AgentContext, AgentOrchestrator, DataDrivenAgentLoop, DispatchAgent, OperationAgent};
+use eneros_runtime::agent::event_adapter::AgentEventHandler;
+use eneros_runtime::agent::{AgentContext, AgentOrchestrator, DataDrivenAgentLoop, DispatchAgent, OperationAgent};
 use eneros_api::app::{create_router, AppState};
-use eneros_constraint::ConstraintEngine;
-use eneros_constraint::projector::FeasibilityProjector;
-use eneros_eventbus::event::{EventPayload, EventType};
-use eneros_eventbus::{Event, EventBus};
-use eneros_gateway::SafetyGateway;
-use eneros_gateway::constraint_validator::ConstraintAwareValidator;
-use eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline;
-use eneros_gateway::interlocking::InterlockingRuleEngine;
-use eneros_memory::InMemoryMemory;
-use eneros_network::{PowerNetwork, NetworkSimulatorAdapter};
-use eneros_reasoning::RuleBasedEngine;
-use eneros_scada::{DataPipeline, ScadaCollector, SimulatedDataSource, build_ieee14_scada_config, build_ieee14_snapshot_mappings};
-use eneros_scada::snapshot::SnapshotBuilder;
-use eneros_timeseries::TimeSeriesEngine;
-use eneros_tool::ToolEngine;
+use eneros_runtime::constraint::ConstraintEngine;
+use eneros_runtime::constraint::projector::FeasibilityProjector;
+use eneros_runtime::eventbus::event::{EventPayload, EventType};
+use eneros_runtime::eventbus::{Event, EventBus};
+use eneros_runtime::gateway::SafetyGateway;
+use eneros_runtime::gateway::constraint_validator::ConstraintAwareValidator;
+use eneros_runtime::gateway::decision_pipeline::ConstrainedDecisionPipeline;
+use eneros_runtime::gateway::interlocking::InterlockingRuleEngine;
+use eneros_runtime::memory::InMemoryMemory;
+use eneros_runtime::network::{PowerNetwork, NetworkSimulatorAdapter};
+use eneros_runtime::reasoning::RuleBasedEngine;
+use eneros_runtime::scada::{DataPipeline, ScadaCollector, SimulatedDataSource, build_ieee14_scada_config, build_ieee14_snapshot_mappings};
+use eneros_runtime::scada::snapshot::SnapshotBuilder;
+use eneros_runtime::timeseries::TimeSeriesEngine;
+use eneros_runtime::tool::ToolEngine;
 use parking_lot::RwLock;
 
 // ---------------------------------------------------------------------------
@@ -119,7 +119,7 @@ fn build_test_app_state() -> AppState {
     let orchestrator = Arc::new(orchestrator);
 
     // 12. DataDrivenAgentLoop
-    let state_machine = Arc::new(eneros_agent::SystemStateMachine::new());
+    let state_machine = Arc::new(eneros_runtime::agent::SystemStateMachine::new());
     let dd_loop = Arc::new(
         DataDrivenAgentLoop::new(
             pipeline.clone(),
@@ -449,8 +449,8 @@ async fn test_agent_responds_to_constraint_violation_event() {
 
 #[tokio::test]
 async fn test_constraint_engine_publishes_violation_via_event_bus() {
-    use eneros_constraint::rules::Constraint;
-    use eneros_constraint::rules::ConstraintType;
+    use eneros_runtime::constraint::rules::Constraint;
+    use eneros_runtime::constraint::rules::ConstraintType;
 
     let event_bus = Arc::new(EventBus::new(64));
     let constraint_engine = Arc::new(ConstraintEngine::with_event_bus(event_bus.clone()));

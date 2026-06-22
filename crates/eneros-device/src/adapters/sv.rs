@@ -29,6 +29,9 @@ use crate::adapter::{
 };
 use crate::protocol::ProtocolType;
 use crate::adapters::goose::{GooseTransport, MockGooseTransport};
+use crate::adapters::af_packet::{AfPacketConfig, AdapterError};
+#[cfg(target_os = "linux")]
+use crate::adapters::af_packet::AfPacketTransport;
 
 /// SV EtherType (IEEE 802.3)
 pub const SV_ETHERTYPE: u16 = 0x88BA;
@@ -70,6 +73,24 @@ impl Default for SvConfig {
     }
 }
 
+/// 单个 ASDU（应用服务数据单元）—— IEC 61850-9-2。
+///
+/// 一个 SV 帧可包含多个 ASDU（典型 8 个），每个 ASDU 携带一组
+/// 瞬时采样值（4 路电流 + 4 路电压）及对应的 smpCnt/confRev 等元数据。
+#[derive(Debug, Clone)]
+pub struct SvAsdu {
+    /// 采样计数器——每个采样点递增，到达 smpRate 后回绕
+    pub smp_cnt: u32,
+    /// 配置修订号
+    pub conf_rev: u32,
+    /// 刷新时间戳（可选，毫秒）
+    pub refr_tm: Option<u64>,
+    /// 采样率（Hz）
+    pub smp_rate: u32,
+    /// 采样值序列（通常 iA, iB, iC, iN, uA, uB, uC, uN）
+    pub seq_data: Vec<i16>,
+}
+
 /// Parsed SV frame (IEC 61850-9-2).
 #[derive(Debug, Clone)]
 pub struct SvFrame {
@@ -78,15 +99,25 @@ pub struct SvFrame {
     /// SV dataset identifier (e.g., "MU01")
     pub sv_id: String,
     /// Sample counter — increments per sample, wraps at sample_rate
+    /// (取自第一个 ASDU，向后兼容)
     pub smp_cnt: u32,
     /// Configuration revision
+    /// (取自第一个 ASDU，向后兼容)
     pub conf_rev: u32,
     /// RefrTm (optional timestamp)
+    /// (取自第一个 ASDU，向后兼容)
     pub refr_tm: Option<u64>,
     /// Sample rate (smpRate)
+    /// (取自第一个 ASDU，向后兼容)
     pub smp_rate: u32,
     /// Sequence data — instantaneous values (typically iA, iB, iC, iN, uA, uB, uC, uN)
+    /// (取自第一个 ASDU，向后兼容；多 ASDU 场景请使用 asdus 字段或 all_asdus() 方法)
     pub seq_data: Vec<i16>,
+    /// 所有 ASDU 列表（多 ASDU 支持）
+    ///
+    /// 解析时填充所有 ASDU；手动构造的单 ASDU 帧此字段为空，
+    /// 此时 asdu_count()/asdu_at()/all_asdus() 会回退到顶层字段。
+    pub asdus: Vec<SvAsdu>,
 }
 
 impl SvFrame {
@@ -106,6 +137,12 @@ impl SvFrame {
         }
         let appid = u16::from_be_bytes([payload[0], payload[1]]);
         let length = u16::from_be_bytes([payload[2], payload[3]]) as usize;
+        // 修复 M20：校验 length 字段下限。SV header 自身占 8 字节
+        // (appid 2 + length 2 + reserved 4)，length < 8 表示 PDU 长度字段
+        // 非法（连 header 都装不下），按 IEC 61850-9-2 规范应拒绝。
+        if length < 8 {
+            return Err(SvParseError::HeaderTooShort);
+        }
         let pdu = &payload[8..];
         if pdu.len() < length.saturating_sub(8) {
             return Err(SvParseError::LengthMismatch);
@@ -139,34 +176,98 @@ impl SvFrame {
     }
 
     fn encode_ber(&self, buf: &mut Vec<u8>) {
+        // 确定要编码的 ASDU 列表：
+        // 若 asdus 非空则编码所有 ASDU（多 ASDU 场景），
+        // 否则从顶层字段构造单个 ASDU（向后兼容）。
+        let asdus: Vec<SvAsdu> = if self.asdus.is_empty() {
+            vec![SvAsdu {
+                smp_cnt: self.smp_cnt,
+                conf_rev: self.conf_rev,
+                refr_tm: self.refr_tm,
+                smp_rate: self.smp_rate,
+                seq_data: self.seq_data.clone(),
+            }]
+        } else {
+            self.asdus.clone()
+        };
+
         let mut inner = Vec::new();
-        // noASDU [0] INTEGER (typically 1)
-        encode_int_tlv(&mut inner, 0x80, 1);
+        // noASDU [0] INTEGER — ASDU 数量
+        encode_int_tlv(&mut inner, 0x80, asdus.len() as i64);
         // seqASDU [1] SEQUENCE OF ASDU
         let mut asdu_seq = Vec::new();
-        // Single ASDU
-        let mut asdu = Vec::new();
-        // svID [0xA0] VisibleString (context tag 0, constructed)
-        encode_string_tlv(&mut asdu, 0x80, &self.sv_id);
-        // datSet [0xA1] (optional, skip)
-        // smpCnt [0x82] INTEGER
-        encode_int_tlv(&mut asdu, 0x82, self.smp_cnt as i64);
-        // confRev [0x83] INTEGER
-        encode_int_tlv(&mut asdu, 0x83, self.conf_rev as i64);
-        // refrTm [0x84] UtcTime (optional, skip)
-        // smpRate [0x85] INTEGER
-        encode_int_tlv(&mut asdu, 0x85, self.smp_rate as i64);
-        // sample [0x86] SEQUENCE
-        let mut sample_seq = Vec::new();
-        for &val in &self.seq_data {
-            // Each value is INTEGER (universal tag 0x02)
-            encode_int_tlv(&mut sample_seq, 0x87, val as i64);
+        for asdu in &asdus {
+            let mut a = Vec::new();
+            // svID [0x80] VisibleString (context tag 0, primitive)
+            encode_string_tlv(&mut a, 0x80, &self.sv_id);
+            // smpCnt [0x82] INTEGER
+            encode_int_tlv(&mut a, 0x82, asdu.smp_cnt as i64);
+            // confRev [0x83] INTEGER
+            encode_int_tlv(&mut a, 0x83, asdu.conf_rev as i64);
+            // refrTm [0x84] UtcTime (optional, skip)
+            // smpRate [0x85] INTEGER
+            encode_int_tlv(&mut a, 0x85, asdu.smp_rate as i64);
+            // sample [0xA6] SEQUENCE
+            let mut sample_seq = Vec::new();
+            for &val in &asdu.seq_data {
+                // Each value is INTEGER (context tag 7, primitive)
+                encode_int_tlv(&mut sample_seq, 0x87, val as i64);
+            }
+            encode_constructed(&mut a, 0xA6, &sample_seq);
+            // ASDU as SEQUENCE
+            encode_constructed(&mut asdu_seq, 0x30, &a);
         }
-        encode_constructed(&mut asdu, 0xA6, &sample_seq);
-        encode_constructed(&mut asdu_seq, 0x30, &asdu); // ASDU as SEQUENCE
         encode_constructed(&mut inner, 0xA1, &asdu_seq);
         // Wrap in SEQUENCE
         encode_constructed(buf, 0x60, &inner);
+    }
+
+    /// 返回 ASDU 数量。
+    ///
+    /// 若 asdus 字段非空则返回其长度；否则返回 1（单 ASDU 向后兼容）。
+    pub fn asdu_count(&self) -> usize {
+        if self.asdus.is_empty() {
+            1
+        } else {
+            self.asdus.len()
+        }
+    }
+
+    /// 获取指定索引处的 ASDU 数据。
+    ///
+    /// 返回 Some(SvAsdu) 表示成功，None 表示索引越界。
+    /// 若 asdus 字段为空（手动构造的单 ASDU 帧），仅 index==0 返回顶层字段数据。
+    pub fn asdu_at(&self, index: usize) -> Option<SvAsdu> {
+        if !self.asdus.is_empty() {
+            self.asdus.get(index).cloned()
+        } else if index == 0 {
+            Some(SvAsdu {
+                smp_cnt: self.smp_cnt,
+                conf_rev: self.conf_rev,
+                refr_tm: self.refr_tm,
+                smp_rate: self.smp_rate,
+                seq_data: self.seq_data.clone(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// 获取所有 ASDU 的迭代器（以 Vec 返回，便于遍历）。
+    ///
+    /// 若 asdus 字段为空，则返回包含单个 ASDU（从顶层字段构造）的 Vec。
+    pub fn all_asdus(&self) -> Vec<SvAsdu> {
+        if !self.asdus.is_empty() {
+            self.asdus.clone()
+        } else {
+            vec![SvAsdu {
+                smp_cnt: self.smp_cnt,
+                conf_rev: self.conf_rev,
+                refr_tm: self.refr_tm,
+                smp_rate: self.smp_rate,
+                seq_data: self.seq_data.clone(),
+            }]
+        }
     }
 
     /// Convert a channel value to engineering units.
@@ -237,6 +338,7 @@ impl<'a> SvBerParser<'a> {
             refr_tm: None,
             smp_rate: SV_DEFAULT_SAMPLE_RATE,
             seq_data: Vec::new(),
+            asdus: Vec::new(),
         };
 
         // noASDU [0]
@@ -257,31 +359,51 @@ impl<'a> SvBerParser<'a> {
             )));
         }
 
-        // Parse first ASDU (SEQUENCE)
+        // 遍历解析所有 ASDU（修复：此前仅取第一个 ASDU）
         let mut asdu_parser = SvBerParser::new(asdu_content);
-        let (_seq_tag, asdu_inner) = asdu_parser.read_tlv()?;
-        let mut asdu_parser = SvBerParser::new(asdu_inner);
-
         while asdu_parser.pos < asdu_parser.data.len() {
-            let (tag, content) = asdu_parser.read_tlv()?;
-            match tag {
-                0x80 => frame.sv_id = String::from_utf8_lossy(content).into_owned(),
-                0x82 => frame.smp_cnt = decode_ber_int(content)? as u32,
-                0x83 => frame.conf_rev = decode_ber_int(content)? as u32,
-                0x84 => frame.refr_tm = Some(decode_ber_utc(content)?),
-                0x85 => frame.smp_rate = decode_ber_int(content)? as u32,
-                0xA6 => {
-                    // sample SEQUENCE — contains channel values
-                    let mut sample_parser = SvBerParser::new(content);
-                    while sample_parser.pos < sample_parser.data.len() {
-                        let (stag, scontent) = sample_parser.read_tlv()?;
-                        if stag == 0x87 {
-                            frame.seq_data.push(decode_ber_int(scontent)? as i16);
+            let (_seq_tag, asdu_inner) = asdu_parser.read_tlv()?;
+            let mut p = SvBerParser::new(asdu_inner);
+            let mut asdu = SvAsdu {
+                smp_cnt: 0,
+                conf_rev: 0,
+                refr_tm: None,
+                smp_rate: SV_DEFAULT_SAMPLE_RATE,
+                seq_data: Vec::new(),
+            };
+
+            while p.pos < p.data.len() {
+                let (tag, content) = p.read_tlv()?;
+                match tag {
+                    0x80 => frame.sv_id = String::from_utf8_lossy(content).into_owned(),
+                    0x82 => asdu.smp_cnt = decode_ber_int(content)? as u32,
+                    0x83 => asdu.conf_rev = decode_ber_int(content)? as u32,
+                    0x84 => asdu.refr_tm = Some(decode_ber_utc(content)?),
+                    0x85 => asdu.smp_rate = decode_ber_int(content)? as u32,
+                    0xA6 => {
+                        // sample SEQUENCE — contains channel values
+                        let mut sample_parser = SvBerParser::new(content);
+                        while sample_parser.pos < sample_parser.data.len() {
+                            let (stag, scontent) = sample_parser.read_tlv()?;
+                            if stag == 0x87 {
+                                asdu.seq_data.push(decode_ber_int(scontent)? as i16);
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
+
+            frame.asdus.push(asdu);
+        }
+
+        // 向后兼容：从第一个 ASDU 填充顶层字段
+        if let Some(first) = frame.asdus.first() {
+            frame.smp_cnt = first.smp_cnt;
+            frame.conf_rev = first.conf_rev;
+            frame.refr_tm = first.refr_tm;
+            frame.smp_rate = first.smp_rate;
+            frame.seq_data = first.seq_data.clone();
         }
 
         if frame.sv_id.is_empty() {
@@ -363,7 +485,7 @@ fn encode_int_tlv(buf: &mut Vec<u8>, tag: u8, val: i64) {
             bytes.push((v & 0xFF) as u8);
             v >>= 8;
         }
-        if bytes.last().map_or(false, |&b| b & 0x80 != 0) {
+        if bytes.last().is_some_and(|&b| b & 0x80 != 0) {
             bytes.push(0);
         }
         bytes.reverse();
@@ -374,7 +496,7 @@ fn encode_int_tlv(buf: &mut Vec<u8>, tag: u8, val: i64) {
         while v != -1 || bytes.is_empty() {
             bytes.push((v & 0xFF) as u8);
             v >>= 8;
-            if v == -1 && bytes.last().map_or(false, |&b| b & 0x80 != 0) {
+            if v == -1 && bytes.last().is_some_and(|&b| b & 0x80 != 0) {
                 break;
             }
         }
@@ -409,15 +531,16 @@ fn encode_tlv_raw(buf: &mut Vec<u8>, tag: u8, content: &[u8]) {
 /// SV protocol adapter.
 ///
 /// Subscribes to SV multicast frames, parses them, and exposes
-/// instantaneous sample values via the `ProtocolAdapter` trait.
+/// instantaneous sample values via the ProtocolAdapter trait.
 pub struct SvAdapter {
-    transport: Arc<Mutex<Box<dyn GooseTransport>>>,
+    transport: Arc<Box<dyn GooseTransport>>,
     shared_state: SharedState,
     name: String,
     config: SvConfig,
     /// Ring buffer of recent samples per svID
     cache: Arc<RwLock<HashMap<String, SvFrame>>>,
     /// Callbacks
+    #[allow(clippy::type_complexity)]
     callbacks: Arc<RwLock<Vec<Box<dyn Fn(DataPoint) + Send + Sync>>>>,
     recv_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -426,7 +549,7 @@ impl SvAdapter {
     /// Create a new SV adapter with the given transport.
     pub fn with_transport(name: &str, config: SvConfig, transport: Box<dyn GooseTransport>) -> Self {
         Self {
-            transport: Arc::new(Mutex::new(transport)),
+            transport: Arc::new(transport),
             shared_state: new_shared_state(),
             name: name.to_string(),
             config,
@@ -443,27 +566,70 @@ impl SvAdapter {
         (adapter, sender)
     }
 
+    /// 使用 AF_PACKET 原始套接字创建 SV 适配器（Linux 原生直采）。
+    ///
+    /// 非 Linux 平台返回 AdapterError::Unsupported。
+    /// 创建套接字需要 CAP_NET_RAW 能力（root 或 setcap）。
+    ///
+    /// # 参数
+    /// - `name`: 适配器实例名（与 `GooseAdapter::with_af_packet` API 一致）
+    /// - `config`: SV 协议配置
+    /// - `af_config`: AF_PACKET 传输配置（网卡名、源 MAC），通常通过
+    ///   `AfPacketConfig::for_sv(interface, src_mac)` 构建
+    #[cfg(target_os = "linux")]
+    pub fn with_af_packet(
+        name: &str,
+        config: SvConfig,
+        af_config: AfPacketConfig,
+    ) -> std::result::Result<Self, AdapterError> {
+        let transport = AfPacketTransport::new(af_config)?;
+        Ok(Self::with_transport(name, config, Box::new(transport)))
+    }
+
+    /// 使用 AF_PACKET 原始套接字创建 SV 适配器（非 Linux stub）。
+    ///
+    /// 非 Linux 平台始终返回 AdapterError::Unsupported。
+    /// AF_PACKET 是 Linux 专有的原始套接字机制，在 Windows/macOS 等
+    /// 平台不可用。此 stub 保证 API 跨平台编译通过。
+    #[cfg(not(target_os = "linux"))]
+    pub fn with_af_packet(
+        _name: &str,
+        _config: SvConfig,
+        _af_config: AfPacketConfig,
+    ) -> std::result::Result<Self, AdapterError> {
+        Err(AdapterError::Unsupported(
+            "AF_PACKET requires Linux".into(),
+        ))
+    }
+
     /// Get the latest cached frame for a given svID.
     pub async fn get_latest_frame(&self, sv_id: &str) -> Option<SvFrame> {
         self.cache.read().await.get(sv_id).cloned()
     }
 
     /// Inject a parsed frame directly (for testing).
+    ///
+    /// 修复 H15：遍历所有 ASDU 通知回调，避免多 ASDU 数据丢失。
+    /// 地址格式 `svID/asdu_idx/ch_idx`，便于订阅者区分不同采样点。
+    /// 单 ASDU 回退（asdus 为空）时 asdu_idx 恒为 0。
     pub async fn inject_frame(&self, frame: SvFrame) {
         let sv_id = frame.sv_id.clone();
-        let seq_data = frame.seq_data.clone();
+        let asdus = frame.all_asdus();
         self.cache.write().await.insert(sv_id.clone(), frame);
 
         let callbacks = self.callbacks.read().await;
-        for (idx, val) in seq_data.iter().enumerate() {
-            let dp = DataPoint {
-                address: format!("{}/{}", sv_id, idx),
-                value: DataValue::Int16(*val),
-                timestamp: chrono::Utc::now().timestamp_millis(),
-                quality: DataQuality::Good,
-            };
-            for cb in callbacks.iter() {
-                cb(dp.clone());
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        for (asdu_idx, asdu) in asdus.iter().enumerate() {
+            for (ch_idx, val) in asdu.seq_data.iter().enumerate() {
+                let dp = DataPoint {
+                    address: format!("{}/{}/{}", sv_id, asdu_idx, ch_idx),
+                    value: DataValue::Int16(*val),
+                    timestamp,
+                    quality: DataQuality::Good,
+                };
+                for cb in callbacks.iter() {
+                    cb(dp.clone());
+                }
             }
         }
     }
@@ -479,14 +645,11 @@ impl SvAdapter {
 
         let handle = tokio::spawn(async move {
             loop {
-                let frame_bytes = {
-                    let mut t = transport.lock().await;
-                    match t.receive().await {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            tracing::warn!("SV receive error: {}", e);
-                            break;
-                        }
+                let frame_bytes = match transport.receive().await {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("SV receive error: {}", e);
+                        break;
                     }
                 };
 
@@ -501,20 +664,23 @@ impl SvAdapter {
 
                         shared.record_received(frame_bytes.len() as u64);
                         let sv_id = sv.sv_id.clone();
-                        let seq_data = sv.seq_data.clone();
+                        let asdus = sv.all_asdus();
 
                         cache.write().await.insert(sv_id.clone(), sv);
 
                         let cbs = callbacks.read().await;
-                        for (idx, val) in seq_data.iter().enumerate() {
-                            let dp = DataPoint {
-                                address: format!("{}/{}", sv_id, idx),
-                                value: DataValue::Int16(*val),
-                                timestamp: chrono::Utc::now().timestamp_millis(),
-                                quality: DataQuality::Good,
-                            };
-                            for cb in cbs.iter() {
-                                cb(dp.clone());
+                        let timestamp = chrono::Utc::now().timestamp_millis();
+                        for (asdu_idx, asdu) in asdus.iter().enumerate() {
+                            for (ch_idx, val) in asdu.seq_data.iter().enumerate() {
+                                let dp = DataPoint {
+                                    address: format!("{}/{}/{}", sv_id, asdu_idx, ch_idx),
+                                    value: DataValue::Int16(*val),
+                                    timestamp,
+                                    quality: DataQuality::Good,
+                                };
+                                for cb in cbs.iter() {
+                                    cb(dp.clone());
+                                }
                             }
                         }
                     }
@@ -641,6 +807,7 @@ mod tests {
             refr_tm: None,
             smp_rate: SV_DEFAULT_SAMPLE_RATE,
             seq_data: channels,
+            asdus: Vec::new(),
         }
     }
 
@@ -681,8 +848,7 @@ mod tests {
 
     #[test]
     fn test_to_engineering_conversion() {
-        // 4000 counts = nominal primary
-        let val = SvFrame::to_engineering(0, 4000, 100.0); // 100A nominal
+        let val = SvFrame::to_engineering(0, 4000, 100.0);
         assert!((val - 100.0).abs() < 0.01);
 
         let val2 = SvFrame::to_engineering(0, 2000, 100.0);
@@ -708,7 +874,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_read_cached() {
-        let (mut adapter, _) = SvAdapter::new_mock("test-sv");
+        let (adapter, _) = SvAdapter::new_mock("test-sv");
         adapter.shared_state.mark_connected();
 
         let frame = make_test_frame(1, "MU01", vec![100, 200, 300]);
@@ -724,7 +890,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_read_missing() {
-        let (mut adapter, _) = SvAdapter::new_mock("test-sv");
+        let (adapter, _) = SvAdapter::new_mock("test-sv");
         adapter.shared_state.mark_connected();
 
         let dp = adapter.read("missing/0").await.unwrap();
@@ -733,7 +899,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_read_out_of_range() {
-        let (mut adapter, _) = SvAdapter::new_mock("test-sv");
+        let (adapter, _) = SvAdapter::new_mock("test-sv");
         adapter.shared_state.mark_connected();
 
         let frame = make_test_frame(1, "MU01", vec![100]);
@@ -798,7 +964,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_latest_frame() {
-        let (mut adapter, _) = SvAdapter::new_mock("test");
+        let (adapter, _) = SvAdapter::new_mock("test");
         adapter.shared_state.mark_connected();
 
         let frame = make_test_frame(1, "MU01", vec![100, 200]);
@@ -811,7 +977,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_sv_ids() {
-        let (mut adapter, _) = SvAdapter::new_mock("test");
+        let (adapter, _) = SvAdapter::new_mock("test");
         adapter.shared_state.mark_connected();
 
         adapter
@@ -826,5 +992,405 @@ mod tests {
 
         let dp2 = adapter.read("MU02/0").await.unwrap();
         assert_eq!(dp2.value, DataValue::Int16(200));
+    }
+
+    // ========================================================================
+    // 多 ASDU 解析测试（IEC 61850-9-2LE 典型 8 ASDU）
+    // ========================================================================
+
+    #[test]
+    fn test_multi_asdu_parse_8_asdus() {
+        let frame = SvFrame {
+            appid: 0x4000,
+            sv_id: "MU01".to_string(),
+            smp_cnt: 100,
+            conf_rev: 1,
+            refr_tm: None,
+            smp_rate: SV_DEFAULT_SAMPLE_RATE,
+            seq_data: Vec::new(),
+            asdus: (0..8u32)
+                .map(|i| SvAsdu {
+                    smp_cnt: 100 + i,
+                    conf_rev: 1,
+                    refr_tm: None,
+                    smp_rate: SV_DEFAULT_SAMPLE_RATE,
+                    seq_data: vec![
+                        100 + i as i16,
+                        200 + i as i16,
+                        300 + i as i16,
+                        400 + i as i16,
+                        500 + i as i16,
+                        600 + i as i16,
+                        700 + i as i16,
+                        800 + i as i16,
+                    ],
+                })
+                .collect(),
+        };
+
+        let src_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let bytes = frame.serialize(&src_mac);
+        assert!(bytes.len() > 14);
+
+        let parsed = SvFrame::parse(&bytes).expect("parse should succeed");
+        assert_eq!(parsed.asdu_count(), 8, "should parse 8 ASDUs");
+
+        for i in 0..8 {
+            let asdu = parsed.asdu_at(i).expect("ASDU should exist");
+            assert_eq!(asdu.smp_cnt, 100 + i as u32, "ASDU {} smp_cnt mismatch", i);
+            assert_eq!(asdu.conf_rev, 1);
+            assert_eq!(asdu.smp_rate, SV_DEFAULT_SAMPLE_RATE);
+            assert_eq!(asdu.seq_data.len(), 8, "ASDU {} should have 8 channels", i);
+            assert_eq!(asdu.seq_data[0], 100 + i as i16);
+            assert_eq!(asdu.seq_data[7], 800 + i as i16);
+        }
+
+        // 向后兼容：顶层字段取自第一个 ASDU
+        assert_eq!(parsed.smp_cnt, 100);
+        assert_eq!(parsed.seq_data.len(), 8);
+        assert_eq!(parsed.seq_data[0], 100);
+    }
+
+    #[test]
+    fn test_multi_asdu_all_asdus_iterator() {
+        let frame = SvFrame {
+            appid: 0x4000,
+            sv_id: "MU01".to_string(),
+            smp_cnt: 0,
+            conf_rev: 1,
+            refr_tm: None,
+            smp_rate: SV_DEFAULT_SAMPLE_RATE,
+            seq_data: Vec::new(),
+            asdus: (0..4u32)
+                .map(|i| SvAsdu {
+                    smp_cnt: i,
+                    conf_rev: 1,
+                    refr_tm: None,
+                    smp_rate: SV_DEFAULT_SAMPLE_RATE,
+                    seq_data: vec![i as i16, (i + 1) as i16],
+                })
+                .collect(),
+        };
+
+        let all = frame.all_asdus();
+        assert_eq!(all.len(), 4);
+        for (i, asdu) in all.iter().enumerate() {
+            assert_eq!(asdu.smp_cnt, i as u32);
+            assert_eq!(asdu.seq_data.len(), 2);
+        }
+    }
+
+    #[test]
+    fn test_single_asdu_fallback_methods() {
+        let frame = make_test_frame(0x4000, "MU01", vec![100, 200, 300]);
+
+        assert_eq!(frame.asdu_count(), 1);
+
+        let asdu0 = frame.asdu_at(0).expect("index 0 should succeed");
+        assert_eq!(asdu0.smp_cnt, 100);
+        assert_eq!(asdu0.seq_data, vec![100, 200, 300]);
+
+        assert!(frame.asdu_at(1).is_none());
+
+        let all = frame.all_asdus();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].seq_data, vec![100, 200, 300]);
+    }
+
+    #[test]
+    fn test_multi_asdu_roundtrip_preserves_count() {
+        let frame = SvFrame {
+            appid: 0x4000,
+            sv_id: "MU02".to_string(),
+            smp_cnt: 0,
+            conf_rev: 2,
+            refr_tm: None,
+            smp_rate: 4800,
+            seq_data: Vec::new(),
+            asdus: (0..3u32)
+                .map(|i| SvAsdu {
+                    smp_cnt: 200 + i,
+                    conf_rev: 2,
+                    refr_tm: None,
+                    smp_rate: 4800,
+                    seq_data: vec![-1000, 0, 1000],
+                })
+                .collect(),
+        };
+
+        let bytes = frame.serialize(&[0; 6]);
+        let parsed = SvFrame::parse(&bytes).expect("parse should succeed");
+
+        assert_eq!(parsed.asdu_count(), 3);
+        assert_eq!(parsed.sv_id, "MU02");
+        assert_eq!(parsed.smp_rate, 4800);
+        assert_eq!(parsed.conf_rev, 2);
+
+        for i in 0..3 {
+            let asdu = parsed.asdu_at(i).unwrap();
+            assert_eq!(asdu.smp_cnt, 200 + i as u32);
+            assert_eq!(asdu.seq_data, vec![-1000, 0, 1000]);
+        }
+    }
+
+    // ========================================================================
+    // Mock transport 集成测试
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_mock_transport_sv_roundtrip() {
+        let (adapter, sender) = SvAdapter::new_mock("test-sv-roundtrip");
+
+        let frame = make_test_frame(
+            0x4000,
+            "MU01",
+            vec![100, 200, 300, 400, 500, 600, 700, 800],
+        );
+        let src_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let bytes = frame.serialize(&src_mac);
+
+        sender.send(bytes).await.unwrap();
+
+        adapter.start_receive_loop().await;
+        adapter.shared_state.mark_connected();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let latest = adapter
+            .get_latest_frame("MU01")
+            .await
+            .expect("frame should be cached");
+        assert_eq!(latest.sv_id, "MU01");
+        assert_eq!(latest.appid, 0x4000);
+        assert_eq!(latest.seq_data.len(), 8);
+        assert_eq!(latest.seq_data[0], 100);
+        assert_eq!(latest.seq_data[7], 800);
+
+        adapter.stop_receive_loop().await;
+    }
+
+    #[tokio::test]
+    async fn test_mock_transport_multi_asdu_roundtrip() {
+        let (adapter, sender) = SvAdapter::new_mock("test-sv-multi");
+
+        let frame = SvFrame {
+            appid: 0x4000,
+            sv_id: "MU03".to_string(),
+            smp_cnt: 0,
+            conf_rev: 1,
+            refr_tm: None,
+            smp_rate: SV_DEFAULT_SAMPLE_RATE,
+            seq_data: Vec::new(),
+            asdus: (0..4u32)
+                .map(|i| SvAsdu {
+                    smp_cnt: 50 + i,
+                    conf_rev: 1,
+                    refr_tm: None,
+                    smp_rate: SV_DEFAULT_SAMPLE_RATE,
+                    seq_data: vec![1000 + i as i16 * 10, 2000, 3000],
+                })
+                .collect(),
+        };
+        let src_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let bytes = frame.serialize(&src_mac);
+
+        sender.send(bytes).await.unwrap();
+
+        adapter.start_receive_loop().await;
+        adapter.shared_state.mark_connected();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let latest = adapter
+            .get_latest_frame("MU03")
+            .await
+            .expect("frame should be cached");
+        assert_eq!(latest.sv_id, "MU03");
+        assert_eq!(latest.asdu_count(), 4, "cached frame should have 4 ASDUs");
+
+        assert_eq!(latest.smp_cnt, 50);
+        assert_eq!(latest.seq_data.len(), 3);
+        assert_eq!(latest.seq_data[0], 1000);
+
+        adapter.stop_receive_loop().await;
+    }
+
+    // ========================================================================
+    // with_af_packet 构造测试
+    // ========================================================================
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_with_af_packet_unsupported_on_nonlinux() {
+        let cfg = AfPacketConfig::for_sv("eth0", [0; 6]);
+        let result = SvAdapter::with_af_packet("test-sv-af", SvConfig::default(), cfg);
+        assert!(result.is_err(), "non-Linux should return error");
+        match result {
+            Err(AdapterError::Unsupported(_)) => {}
+            Err(e) => panic!("expected Unsupported error, got: {:?}", e),
+            Ok(_) => panic!("should not succeed on non-Linux"),
+        }
+    }
+
+    #[test]
+    fn test_with_af_packet_config_creation() {
+        let cfg = AfPacketConfig::for_sv("eth1", [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        assert_eq!(cfg.interface, "eth1");
+        assert_eq!(cfg.ethertype, SV_ETHERTYPE);
+        assert_eq!(cfg.src_mac, [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+    }
+
+    // ========================================================================
+    // H15 修复测试：多 ASDU 回调收到所有 ASDU 数据
+    // ========================================================================
+
+    /// 验证 8 ASDU × 8 通道 = 64 个数据点全部通过回调通知，且地址格式
+    /// `svID/asdu_idx/ch_idx` 正确区分不同采样点。
+    #[tokio::test]
+    async fn test_multi_asdu_callback_receives_all_asdus() {
+        let (mut adapter, _) = SvAdapter::new_mock("test-sv-multi-cb");
+        let received: Arc<Mutex<Vec<DataPoint>>> = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = received.clone();
+
+        adapter
+            .subscribe(vec![], Box::new(move |dp| {
+                received_clone.try_lock().unwrap().push(dp);
+            }))
+            .await
+            .unwrap();
+
+        // 构造 8 ASDU × 8 通道的 SV 帧
+        let frame = SvFrame {
+            appid: 0x4000,
+            sv_id: "MU04".to_string(),
+            smp_cnt: 0,
+            conf_rev: 1,
+            refr_tm: None,
+            smp_rate: SV_DEFAULT_SAMPLE_RATE,
+            seq_data: Vec::new(),
+            asdus: (0..8u32)
+                .map(|i| SvAsdu {
+                    smp_cnt: 100 + i,
+                    conf_rev: 1,
+                    refr_tm: None,
+                    smp_rate: SV_DEFAULT_SAMPLE_RATE,
+                    seq_data: vec![
+                        (1000 + i as i16),
+                        (1100 + i as i16),
+                        (1200 + i as i16),
+                        (1300 + i as i16),
+                        (1400 + i as i16),
+                        (1500 + i as i16),
+                        (1600 + i as i16),
+                        (1700 + i as i16),
+                    ],
+                })
+                .collect(),
+        };
+
+        adapter.inject_frame(frame).await;
+
+        let msgs = received.lock().await;
+        assert_eq!(msgs.len(), 64, "8 ASDU × 8 channels should yield 64 data points");
+
+        // 验证每个 ASDU 的每个通道都收到，且地址格式正确
+        for asdu_idx in 0..8usize {
+            for ch_idx in 0..8usize {
+                let expected_addr = format!("MU04/{}/{}", asdu_idx, ch_idx);
+                // seq_data[ch_idx] = (1000 + ch_idx*100) + asdu_idx
+                let expected_val = 1000 + ch_idx as i16 * 100 + asdu_idx as i16;
+                let found = msgs.iter().find(|dp| dp.address == expected_addr);
+                assert!(
+                    found.is_some(),
+                    "missing data point for address {}",
+                    expected_addr
+                );
+                let dp = found.unwrap();
+                assert_eq!(
+                    dp.value,
+                    DataValue::Int16(expected_val),
+                    "value mismatch at {}",
+                    expected_addr
+                );
+                assert_eq!(dp.quality, DataQuality::Good);
+            }
+        }
+    }
+
+    /// 验证单 ASDU 回退：asdus 为空时使用顶层 seq_data，asdu_idx 恒为 0。
+    /// 地址格式 `svID/0/ch_idx`。
+    #[tokio::test]
+    async fn test_single_asdu_fallback_callback() {
+        let (mut adapter, _) = SvAdapter::new_mock("test-sv-single-cb");
+        let received: Arc<Mutex<Vec<DataPoint>>> = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = received.clone();
+
+        adapter
+            .subscribe(vec![], Box::new(move |dp| {
+                received_clone.try_lock().unwrap().push(dp);
+            }))
+            .await
+            .unwrap();
+
+        // asdus 为空的单 ASDU 帧（向后兼容路径）
+        let frame = make_test_frame(0x4000, "MU05", vec![100, 200, 300]);
+        adapter.inject_frame(frame).await;
+
+        let msgs = received.lock().await;
+        assert_eq!(msgs.len(), 3, "single ASDU with 3 channels should yield 3 data points");
+
+        // asdu_idx 恒为 0
+        assert_eq!(msgs[0].address, "MU05/0/0");
+        assert_eq!(msgs[0].value, DataValue::Int16(100));
+        assert_eq!(msgs[1].address, "MU05/0/1");
+        assert_eq!(msgs[1].value, DataValue::Int16(200));
+        assert_eq!(msgs[2].address, "MU05/0/2");
+        assert_eq!(msgs[2].value, DataValue::Int16(300));
+    }
+
+    // ========================================================================
+    // M20 修复测试：parse 检查 length 下限
+    // ========================================================================
+
+    /// 验证 length 字段 < 8 时返回 HeaderTooShort 错误。
+    /// SV header 自身占 8 字节（appid 2 + length 2 + reserved 4），
+    /// length < 8 表示 PDU 长度字段非法。
+    #[test]
+    fn test_parse_length_below_minimum() {
+        // 构造一个 length 字段 < 8 的帧
+        let mut frame = vec![0u8; 22]; // 14 ethernet + 8 SV header
+        // Ethernet header with SV ethertype
+        frame[12] = 0x88;
+        frame[13] = 0xBA;
+        // SV header: appid=0x4000, length=4 (< 8, 非法)
+        frame[14] = 0x40;
+        frame[15] = 0x00;
+        frame[16] = 0x00;
+        frame[17] = 0x04; // length = 4
+        let result = SvFrame::parse(&frame);
+        assert!(
+            matches!(result, Err(SvParseError::HeaderTooShort)),
+            "length < 8 should return HeaderTooShort, got: {:?}",
+            result
+        );
+    }
+
+    /// 验证 length 字段 = 0 时也返回 HeaderTooShort 错误（边界值）。
+    #[test]
+    fn test_parse_length_zero() {
+        let mut frame = vec![0u8; 22];
+        frame[12] = 0x88;
+        frame[13] = 0xBA;
+        // appid=0x4000, length=0
+        frame[14] = 0x40;
+        frame[15] = 0x00;
+        frame[16] = 0x00;
+        frame[17] = 0x00;
+        let result = SvFrame::parse(&frame);
+        assert!(
+            matches!(result, Err(SvParseError::HeaderTooShort)),
+            "length = 0 should return HeaderTooShort, got: {:?}",
+            result
+        );
     }
 }

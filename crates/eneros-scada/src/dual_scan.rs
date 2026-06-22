@@ -269,6 +269,7 @@ pub fn start_dual_scan(
             default_scan_rate_ms: group.fast_interval.as_millis() as u64,
             timeout_ms: options.timeout_ms,
             enable_quality_check: options.enable_quality_check,
+            pool: Default::default(),
         };
         let collector = Arc::new(crate::collector::ScadaCollector::new(config, data_source.clone()));
         let mut pipeline = DataPipeline::new(collector, ts_engine.clone());
@@ -294,6 +295,7 @@ pub fn start_dual_scan(
             default_scan_rate_ms: group.normal_interval.as_millis() as u64,
             timeout_ms: options.timeout_ms,
             enable_quality_check: options.enable_quality_check,
+            pool: Default::default(),
         };
         let collector = Arc::new(crate::collector::ScadaCollector::new(config, data_source.clone()));
         let mut pipeline = DataPipeline::new(collector, ts_engine);

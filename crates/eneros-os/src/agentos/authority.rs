@@ -9,6 +9,7 @@
 //! 非 Linux 平台提供 stub 实现，用于开发/测试。
 
 use crate::agentos::registry::AgentRegistry;
+use crate::agentos::seccomp::SeccompProfile;
 use eneros_core::AuthorityLevel;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -46,6 +47,7 @@ impl CapabilitySet {
         Self { caps: Vec::new() }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_iter<I: IntoIterator<Item = Capability>>(iter: I) -> Self {
         Self {
             caps: iter.into_iter().collect(),
@@ -87,6 +89,21 @@ pub fn authority_to_capabilities(level: AuthorityLevel) -> CapabilitySet {
             Capability::SysAdmin,
             Capability::SysRawio,
         ]),
+    }
+}
+
+/// AuthorityLevel → seccomp profile 转换扩展 trait
+///
+/// 由于 `AuthorityLevel` 定义在 `eneros-core` 中，无法添加固有方法，
+/// 故通过扩展 trait 在本 crate 中为其添加 `to_seccomp_profile()` 方法。
+pub trait AuthorityLevelSeccompExt {
+    /// 按当前权限层级生成对应的 seccomp profile
+    fn to_seccomp_profile(&self) -> SeccompProfile;
+}
+
+impl AuthorityLevelSeccompExt for AuthorityLevel {
+    fn to_seccomp_profile(&self) -> SeccompProfile {
+        SeccompProfile::new(*self)
     }
 }
 

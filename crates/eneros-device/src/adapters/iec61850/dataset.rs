@@ -76,6 +76,7 @@ impl FunctionalConstraint {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
             "ST" => Some(Self::St),
@@ -140,6 +141,7 @@ impl FcdaRef {
     }
 
     /// Render as a reference string
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         if self.da_path.is_empty() {
             format!("{}/{}.{}.{}",

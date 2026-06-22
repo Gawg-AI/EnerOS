@@ -5,11 +5,12 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
+use utoipa::ToSchema;
 
 use crate::app::AppState;
 
 /// Request body for storing a memory entry.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct StoreMemoryRequest {
     pub memory_type: String,
     pub content: String,
@@ -19,7 +20,7 @@ pub struct StoreMemoryRequest {
 }
 
 /// Request body for recalling memories.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RecallMemoryRequest {
     #[serde(default)]
     pub memory_type: Option<String>,
@@ -36,6 +37,18 @@ fn default_limit() -> usize {
 }
 
 /// `POST /api/memory/{agent_id}/store` — store a memory entry.
+#[utoipa::path(
+    post,
+    path = "/api/memory/{agent_id}/store",
+    params(("agent_id" = String, Path, description = "Agent ID")),
+    request_body = StoreMemoryRequest,
+    responses(
+        (status = 200, description = "记忆存储成功"),
+        (status = 400, description = "无效的 memory_type"),
+        (status = 500, description = "存储失败"),
+        (status = 503, description = "记忆系统未配置"),
+    )
+)]
 pub async fn store_handler(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
@@ -47,13 +60,13 @@ pub async fn store_handler(
     };
 
     let mem_type = match req.memory_type.as_str() {
-        "episodic" => eneros_memory::MemoryType::Episodic,
-        "semantic" => eneros_memory::MemoryType::Semantic,
-        "procedural" => eneros_memory::MemoryType::Procedural,
+        "episodic" => eneros_runtime::memory::MemoryType::Episodic,
+        "semantic" => eneros_runtime::memory::MemoryType::Semantic,
+        "procedural" => eneros_runtime::memory::MemoryType::Procedural,
         _ => return (StatusCode::BAD_REQUEST, "invalid memory_type").into_response(),
     };
 
-    let mut entry = eneros_memory::MemoryEntry::new(mem_type, req.content, req.importance);
+    let mut entry = eneros_runtime::memory::MemoryEntry::new(mem_type, req.content, req.importance);
     if !req.tags.is_empty() {
         entry = entry.with_tags(req.tags);
     }
@@ -71,6 +84,18 @@ pub async fn store_handler(
 }
 
 /// `POST /api/memory/{agent_id}/recall` — recall memories.
+#[utoipa::path(
+    post,
+    path = "/api/memory/{agent_id}/recall",
+    params(("agent_id" = String, Path, description = "Agent ID")),
+    request_body = RecallMemoryRequest,
+    responses(
+        (status = 200, description = "记忆召回结果"),
+        (status = 400, description = "无效的 memory_type"),
+        (status = 500, description = "召回失败"),
+        (status = 503, description = "记忆系统未配置"),
+    )
+)]
 pub async fn recall_handler(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
@@ -81,7 +106,7 @@ pub async fn recall_handler(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "memory not configured").into_response(),
     };
 
-    let mut query = eneros_memory::RecallQuery::new().with_limit(req.limit);
+    let mut query = eneros_runtime::memory::RecallQuery::new().with_limit(req.limit);
     if let Some(ref kw) = req.keyword {
         query = query.with_keyword(kw);
     }
@@ -90,9 +115,9 @@ pub async fn recall_handler(
     }
     if let Some(ref mt) = req.memory_type {
         let mem_type = match mt.as_str() {
-            "episodic" => eneros_memory::MemoryType::Episodic,
-            "semantic" => eneros_memory::MemoryType::Semantic,
-            "procedural" => eneros_memory::MemoryType::Procedural,
+            "episodic" => eneros_runtime::memory::MemoryType::Episodic,
+            "semantic" => eneros_runtime::memory::MemoryType::Semantic,
+            "procedural" => eneros_runtime::memory::MemoryType::Procedural,
             _ => return (StatusCode::BAD_REQUEST, "invalid memory_type").into_response(),
         };
         query = query.with_type(mem_type);
@@ -124,6 +149,15 @@ pub async fn recall_handler(
 }
 
 /// `GET /api/memory/{agent_id}/count` — get memory entry count.
+#[utoipa::path(
+    get,
+    path = "/api/memory/{agent_id}/count",
+    params(("agent_id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "记忆条目数量"),
+        (status = 503, description = "记忆系统未配置"),
+    )
+)]
 pub async fn count_handler(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
@@ -138,6 +172,19 @@ pub async fn count_handler(
 }
 
 /// `DELETE /api/memory/{agent_id}/{entry_id}` — forget a specific memory entry.
+#[utoipa::path(
+    delete,
+    path = "/api/memory/{agent_id}/{entry_id}",
+    params(
+        ("agent_id" = String, Path, description = "Agent ID"),
+        ("entry_id" = String, Path, description = "记忆条目 ID"),
+    ),
+    responses(
+        (status = 200, description = "记忆删除成功"),
+        (status = 500, description = "删除失败"),
+        (status = 503, description = "记忆系统未配置"),
+    )
+)]
 pub async fn forget_handler(
     State(state): State<AppState>,
     Path((agent_id, entry_id)): Path<(String, String)>,
@@ -154,6 +201,16 @@ pub async fn forget_handler(
 }
 
 /// `DELETE /api/memory/{agent_id}` — clear all memories for an agent.
+#[utoipa::path(
+    delete,
+    path = "/api/memory/{agent_id}",
+    params(("agent_id" = String, Path, description = "Agent ID")),
+    responses(
+        (status = 200, description = "记忆清空成功"),
+        (status = 500, description = "清空失败"),
+        (status = 503, description = "记忆系统未配置"),
+    )
+)]
 pub async fn clear_handler(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,

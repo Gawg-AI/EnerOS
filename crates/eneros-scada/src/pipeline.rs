@@ -266,6 +266,7 @@ mod tests {
             default_scan_rate_ms: 1000,
             timeout_ms: 5000,
             enable_quality_check: true,
+            pool: Default::default(),
         };
 
         let collector = Arc::new(ScadaCollector::new(config, mock));
@@ -355,6 +356,7 @@ mod tests {
             default_scan_rate_ms: 1000,
             timeout_ms: 5000,
             enable_quality_check: true,
+            pool: Default::default(),
         };
 
         let collector = Arc::new(ScadaCollector::new(config, mock));

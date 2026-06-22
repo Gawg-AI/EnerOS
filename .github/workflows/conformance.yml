@@ -1,0 +1,87 @@
+# EnerOS — Protocol Conformance Tests
+# Runs protocol conformance tests for IEC 61850 / Modbus / IEC 60870-5-104
+# Triggered on push/PR when protocol-related files change
+
+name: Protocol Conformance
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'crates/eneros-device/**'
+      - 'tests/protocol_conformance/**'
+      - '.github/workflows/conformance.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'crates/eneros-device/**'
+      - 'tests/protocol_conformance/**'
+      - '.github/workflows/conformance.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Build & Test ────────────────────────────────────────────────────────
+  conformance-test:
+    name: Protocol Conformance Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-conformance-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-conformance-
+
+      - name: Build conformance crate
+        run: cargo build -p eneros-protocol-conformance
+
+      - name: Run conformance tests
+        run: cargo test -p eneros-protocol-conformance
+
+      - name: Run ignored tests (unimplemented features)
+        run: cargo test -p eneros-protocol-conformance -- --ignored || true
+
+  # ── Lint (Clippy) ──────────────────────────────────────────────────────
+  clippy:
+    name: Clippy (Conformance)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-conformance-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-conformance-clippy-
+
+      - name: Run clippy
+        run: cargo clippy -p eneros-protocol-conformance --all-targets -- -D warnings

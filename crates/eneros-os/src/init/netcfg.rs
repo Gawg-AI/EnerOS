@@ -96,6 +96,7 @@ pub enum BondMode {
 }
 
 impl BondMode {
+    #[allow(dead_code)]
     fn linux_mode(&self) -> &'static str {
         match self {
             BondMode::ActiveBackup => "active-backup",

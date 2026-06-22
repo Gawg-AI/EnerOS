@@ -7,7 +7,7 @@
 //! 在非 Linux 上：仅记录策略，不真正设置
 
 use crate::agentos::registry::{AgentRegistry, AgentType};
-use crate::rt::runtime::{RtConfig, RtRuntime};
+use crate::rt::runtime::RtConfig;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

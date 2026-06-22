@@ -32,7 +32,7 @@ pub struct LoginResponse {
 }
 
 /// Refresh token request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RefreshRequest {
     pub token: String,
 }
@@ -135,6 +135,16 @@ pub async fn login_handler(
 }
 
 /// POST /api/auth/refresh — refresh a JWT token.
+#[utoipa::path(
+    post,
+    path = "/api/auth/refresh",
+    request_body = RefreshRequest,
+    responses(
+        (status = 200, description = "令牌刷新成功", body = LoginResponse),
+        (status = 401, description = "令牌无效或已过期"),
+        (status = 503, description = "认证管理器未配置"),
+    )
+)]
 pub async fn refresh_handler(
     State(state): State<AppState>,
     Json(req): Json<RefreshRequest>,
@@ -178,6 +188,15 @@ pub async fn refresh_handler(
 }
 
 /// GET /api/auth/me — return current user info from token.
+#[utoipa::path(
+    get,
+    path = "/api/auth/me",
+    responses(
+        (status = 200, description = "当前用户信息"),
+        (status = 401, description = "未认证"),
+        (status = 503, description = "认证管理器未配置"),
+    )
+)]
 pub async fn me_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,

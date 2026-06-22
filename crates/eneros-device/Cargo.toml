@@ -26,5 +26,9 @@ rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 webpki-roots = { workspace = true }
 
+# Linux 串口 termios 系统调用（Modbus RTU）与 AF_PACKET（GOOSE/SV Layer 2）
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

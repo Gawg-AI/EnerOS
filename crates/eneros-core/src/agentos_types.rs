@@ -250,7 +250,7 @@ pub enum EmergencyTriggerCondition {
     Custom(String),
 }
 
-/// Structured power system observation — replaces Vec<String> in ReasoningInput
+/// Structured power system observation — replaces `Vec<String>` in ReasoningInput
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerObservation {
     /// Bus voltage observations: bus_id -> (vm_pu, va_degree)

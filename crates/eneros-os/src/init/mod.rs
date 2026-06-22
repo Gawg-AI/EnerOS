@@ -14,6 +14,8 @@ pub mod syslog;
 pub mod audit;
 pub mod serial_mgr;
 pub mod usb_mgr;
+pub mod security;
+pub mod kms;
 
 pub use service::{Service, ServiceConfig, ServiceStatus, RestartPolicy};
 pub use graph::ServiceGraph;
@@ -41,3 +43,11 @@ pub use serial_mgr::{
     SerialPreset,
 };
 pub use usb_mgr::{UsbMgrError, UsbSerialAdapter, UsbWhitelist, UsbWhitelistRule};
+pub use security::{
+    EfiVariable, SecureBootManager, SecureBootStatus, SecurityError, SecurityStatus,
+    efi_attr_string,
+};
+pub use kms::{
+    KeyAlgorithm, KeyEntry, KeyId, KeyMetadata, KeyStore, KeyStoreError, KeyStoreStatus,
+    KeyType, KmsConfig,
+};

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use eneros_core::{ElementId, BusType, BranchType, TopologyChange, Result, EnerOSError};
-use eneros_powerflow::{YBusMatrix, BusTypeNR};
+use eneros_core::{YBusMatrix, BusTypeNR};
 
 /// Bus node in the power grid
 #[derive(Debug, Clone)]

@@ -1,0 +1,91 @@
+# EnerOS 高可用配置
+# /etc/eneros/ha.toml
+
+# 本节点 ID（必须唯一）
+node_id = "node-1"
+
+# 节点角色：primary 或 secondary
+role = "primary"
+
+# 心跳参数
+heartbeat_interval_ms = 100   # 心跳发送间隔
+heartbeat_suspect_ms = 100    # suspect 状态阈值
+heartbeat_dead_ms = 300       # dead 状态阈值
+
+# UDP 多播配置
+multicast_addr = "239.0.0.1"
+heartbeat_port = 5400
+sync_port = 5401
+
+# 多播 TTL（Time-To-Live），默认 32
+# TTL=1 仅限同网段；跨网段需增大（如 32 或 64）
+multicast_ttl = 32
+
+# 节点优先级（数字越大优先级越高，主节点应设置更高值）
+priority = 100
+
+# 网络接口列表（双网卡冗余）
+interfaces = ["eth0", "eth1"]
+
+# HMAC 认证密钥（用于心跳包认证，防止伪造）
+# 生产环境必须配置；开发/测试环境可留空（留空时跳过 HMAC 校验）
+# auth_key = "your-secret-key-here"
+
+# 是否为生产环境（生产环境强制启用 fencing，测试环境可设为 false）
+is_production = true
+
+# Fencing 策略（生产环境必须配置非 none 的策略）
+# 可选值：none / stonith / disk / network
+# none: 无 fencing（仅测试环境允许）
+# stonith: Shoot The Other Node In The Head（IPMI/PDU 电源开关）
+# disk: SCSI Reservation（共享存储 fencing）
+# network: 网络隔离（切断对端网络）
+fencing_strategy = "stonith"
+
+# 同步范围
+[sync_scope]
+sync_scada = true
+sync_agent_state = true
+sync_command_history = true
+sync_config = true
+
+# ============================================================================
+# Failover 配置（v0.26.0 — Task 9）
+# 热备自动切换：故障后 < 3s 接管服务
+# ============================================================================
+[failover]
+# 虚拟 IP（VIP），failover 时备节点接管此 IP
+vip = "192.168.1.100/24"
+# VIP 绑定的网络接口
+vip_interface = "eth0"
+# 接管 VIP 后是否发送 ARP 广播清除对端 ARP 缓存
+cleanup_arp = true
+# 接管超时（毫秒），超过此时间未完成接管则判定失败
+takeover_timeout_ms = 3000
+# 恢复策略：auto_prefer_primary（自动回切到原主节点）或 manual（手动回切）
+recovery_policy = "auto_prefer_primary"
+
+# ============================================================================
+# 集群配置（v0.26.0 — Task 9）
+# 多节点集群支持（>2 节点 + Quorum 仲裁）
+# 默认注释，双节点 HA 无需配置；多节点集群取消注释并按实际拓扑修改
+# ============================================================================
+# [cluster]
+# members = [
+#   { node_id = "node-1", role = "primary", priority = 100 },
+#   { node_id = "node-2", role = "secondary", priority = 50 },
+#   { node_id = "node-3", role = "secondary", priority = 30 },
+# ]
+# witness = []
+# quorum_policy = "majority"
+
+# ============================================================================
+# 灾备演练配置（v0.26.0 — Task 9）
+# 定期灾备演练，验证 failover 流程可靠性
+# 默认注释，生产环境按需启用
+# ============================================================================
+# [drill]
+# enabled = false
+# schedule = "weekly"
+# scenarios = ["primary_down"]
+# auto_rollback = true

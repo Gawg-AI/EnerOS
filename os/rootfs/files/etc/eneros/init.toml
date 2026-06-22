@@ -60,6 +60,25 @@ RUST_LOG = "info"
 ENEROS_CONFIG = "/etc/eneros/eneros.toml"
 
 # ---------------------------------------------------------------------------
+# eneros-ha: HA 守护进程（ha-daemon）
+# 启动顺序：系统服务 → eneros-ha → Agent 进程
+# 依赖：eventbus（EventBusBroker 必须先启动，ha-daemon 通过 EventBus 发布 HaEvent）
+# 崩溃后自动重启（restart_policy = "on_failure"）
+# 优雅关闭：持久化快照 → 释放 VIP → 退出（graceful_timeout_secs = 30）
+# ---------------------------------------------------------------------------
+
+[[services]]
+name = "eneros-ha"
+binary = "/usr/bin/eneros-ha"
+args = ["--config", "/etc/eneros/ha.toml"]
+dependencies = ["eventbus"]
+restart_policy = "on_failure"
+graceful_timeout_secs = 30
+
+[services.env]
+RUST_LOG = "info"
+
+# ---------------------------------------------------------------------------
 # Agent processes (started after system services)
 # Each Agent runs as an independent OS process managed by AgentSupervisor.
 # Scheduling: self-healing uses SCHED_FIFO (RT), others use SCHED_OTHER.

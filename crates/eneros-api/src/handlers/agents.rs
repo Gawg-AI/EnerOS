@@ -14,6 +14,15 @@ const KNOWN_AGENT_TYPES: &[(&str, &str, &str)] = &[
 ];
 
 /// GET /api/agents
+#[utoipa::path(
+    get,
+    path = "/api/agents",
+    responses(
+        (status = 200, description = "已注册的 Agent 列表", body = AgentsResponse),
+    )
+)]
+/// Agent 列表查询 handler (T029-18: 添加 tracing span 用于 OTLP 导出)
+#[tracing::instrument(skip(state), fields(endpoint = "/api/agents"))]
 pub async fn agents_handler(State(state): State<AppState>) -> Json<ApiResponse<AgentsResponse>> {
     // If agent_orchestrator is available, query registered agents
     if let Some(orchestrator) = &state.agent_orchestrator {
@@ -22,11 +31,11 @@ pub async fn agents_handler(State(state): State<AppState>) -> Json<ApiResponse<A
             .iter()
             .map(|(name, agent_type, authority)| {
                 let type_str = match agent_type {
-                    eneros_agent::AgentType::Dispatcher => "Dispatcher",
-                    eneros_agent::AgentType::Operator => "Operator",
-                    eneros_agent::AgentType::Planner => "Planner",
-                    eneros_agent::AgentType::Trader => "Trader",
-                    eneros_agent::AgentType::Custom(ref s) => s,
+                    eneros_runtime::agent::AgentType::Dispatcher => "Dispatcher",
+                    eneros_runtime::agent::AgentType::Operator => "Operator",
+                    eneros_runtime::agent::AgentType::Planner => "Planner",
+                    eneros_runtime::agent::AgentType::Trader => "Trader",
+                    eneros_runtime::agent::AgentType::Custom(ref s) => s,
                 };
                 let auth_str = match authority {
                     eneros_core::AuthorityLevel::Emergency => "Emergency",

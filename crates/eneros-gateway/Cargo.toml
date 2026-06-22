@@ -22,9 +22,16 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
+dashmap = { workspace = true }
+ahash = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
-eneros-agent = { path = "../eneros-agent" }
+eneros-test-utils = { path = "../eneros-test-utils" }
 eneros-reasoning = { path = "../eneros-reasoning" }
 async-trait = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "gateway_benchmark"
+harness = false

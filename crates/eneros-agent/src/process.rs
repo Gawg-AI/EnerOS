@@ -267,12 +267,15 @@ async fn connect_and_build(
     };
 
     // 5. Build LocalContext
+    //    trace_id 默认生成 UUID v4；Agent 进程作为独立 OS 进程运行时，
+    //    每个 tick 循环会通过 tracing::Span 携带该 trace_id（T029-06）。
     let local_context = LocalContext {
         agent_id: config.agent_id.clone(),
         authority: config.authority,
         jurisdiction: config.jurisdiction.clone(),
         tick_interval: config.tick_interval(),
         last_seen_message_id: Arc::new(RwLock::new(0)),
+        trace_id: uuid::Uuid::new_v4().to_string(),
     };
 
     // 6. Build AgentContext
@@ -295,6 +298,9 @@ async fn connect_and_build(
 /// Returns `TickLoopOutcome::Shutdown` if Ctrl+C was received, or
 /// `TickLoopOutcome::Disconnected` if the event receiver was closed
 /// (EventBusBroker disconnected).
+///
+/// 每次处理事件或 tick 时都会创建一个携带 `ctx.trace_id()` 的
+/// `tracing::Span`，使所有日志都自动包含 trace_id（T029-06）。
 async fn run_tick_loop(
     agent_id: &str,
     agent: &mut Box<dyn Agent>,
@@ -304,11 +310,16 @@ async fn run_tick_loop(
     tick_interval: Duration,
     consecutive_errors: &mut u32,
 ) -> TickLoopOutcome {
+    // 缓存 trace_id，避免每次循环都读取 RwLock。
+    let trace_id = ctx.trace_id().to_string();
+
     loop {
         tokio::select! {
             // Check for shutdown signal
             _ = signal::ctrl_c() => {
                 tracing::info!(
+                    agent_id = %agent_id,
+                    trace_id = %trace_id,
                     "Agent {} received Ctrl+C, shutting down",
                     agent_id
                 );
@@ -326,10 +337,19 @@ async fn run_tick_loop(
                 match event {
                     Some(event) => {
                         *consecutive_errors = 0;
+                        // 为本次事件处理创建 span，携带 trace_id（T029-06）。
+                        let span = tracing::info_span!(
+                            "agent.process_event",
+                            agent_id = %agent_id,
+                            trace_id = %trace_id,
+                            event_type = ?event.event_type,
+                        );
+                        let _enter = span.enter();
+
                         match agent.handle_event(&event, ctx).await {
                             Ok(actions) => {
                                 for action in actions {
-                                    if let Err(e) = dispatcher.dispatch(action).await {
+                                    if let Err(e) = dispatcher.dispatch_with_trace(action, &trace_id).await {
                                         tracing::error!("dispatch error: {}", e);
                                     }
                                 }
@@ -351,6 +371,8 @@ async fn run_tick_loop(
                     None => {
                         // Event receiver closed — broker disconnected.
                         tracing::warn!(
+                            agent_id = %agent_id,
+                            trace_id = %trace_id,
                             "Agent {} event receiver closed",
                             agent_id
                         );
@@ -360,11 +382,19 @@ async fn run_tick_loop(
             }
             // Tick timer
             _ = tokio::time::sleep(tick_interval) => {
+                // 为本次 tick 创建 span，携带 trace_id（T029-06）。
+                let span = tracing::info_span!(
+                    "agent.tick",
+                    agent_id = %agent_id,
+                    trace_id = %trace_id,
+                );
+                let _enter = span.enter();
+
                 match agent.tick(ctx).await {
                     Ok(actions) => {
                         *consecutive_errors = 0;
                         for action in actions {
-                            if let Err(e) = dispatcher.dispatch(action).await {
+                            if let Err(e) = dispatcher.dispatch_with_trace(action, &trace_id).await {
                                 tracing::error!("dispatch error: {}", e);
                             }
                         }

@@ -12,7 +12,9 @@ use sha2::Sha256;
 use sha2::Digest;
 #[cfg(target_os = "linux")]
 use std::io::Write;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -25,6 +27,8 @@ pub enum AuditError {
     Config(String),
     #[error("hmac error: {0}")]
     Hmac(String),
+    #[error("forward error: {0}")]
+    ForwardError(String),
     #[error("unsupported platform")]
     UnsupportedPlatform,
 }
@@ -244,6 +248,47 @@ fn sha256_hex(data: &[u8]) -> String {
     hex::encode(hasher.finalize().as_slice())
 }
 
+/// 审计日志转发配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditForwardConfig {
+    pub enabled: bool,
+    /// 目标地址 "host:port"
+    pub target: String,
+    #[serde(default)]
+    pub tls_ca: Option<PathBuf>,
+    #[serde(default)]
+    pub tls_cert: Option<PathBuf>,
+    #[serde(default)]
+    pub tls_key: Option<PathBuf>,
+    #[serde(default = "default_forward_cache_size")]
+    pub cache_size: usize,
+}
+
+fn default_forward_cache_size() -> usize {
+    10000
+}
+
+impl Default for AuditForwardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            target: String::new(),
+            tls_ca: None,
+            tls_cert: None,
+            tls_key: None,
+            cache_size: 10000,
+        }
+    }
+}
+
+/// TLS 客户端配置（简化版，当前仅记录路径，TLS 连接为 TODO）
+#[derive(Debug, Clone)]
+pub struct TlsClientConfig {
+    pub ca_path: Option<PathBuf>,
+    pub cert_path: Option<PathBuf>,
+    pub key_path: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditConfig {
     #[serde(default = "default_audit_dir")]
@@ -257,6 +302,8 @@ pub struct AuditConfig {
     pub forward_enabled: bool,
     #[serde(default)]
     pub forward_target: Option<String>,
+    #[serde(default)]
+    pub forward: AuditForwardConfig,
 }
 
 fn default_audit_dir() -> PathBuf {
@@ -278,6 +325,7 @@ impl Default for AuditConfig {
             max_size_bytes: default_max_size_bytes(),
             forward_enabled: false,
             forward_target: None,
+            forward: AuditForwardConfig::default(),
         }
     }
 }
@@ -295,6 +343,12 @@ pub struct AuditLogger {
     secret: Vec<u8>,
     #[allow(dead_code)]
     state: parking_lot::Mutex<AuditState>,
+    /// 远程转发器（启用时存在）
+    #[allow(dead_code)]
+    forwarder: Option<Arc<tokio::sync::Mutex<AuditForwarder>>>,
+    /// tokio 运行时句柄（用于在同步 log() 中 spawn 异步转发）
+    #[allow(dead_code)]
+    runtime_handle: Option<tokio::runtime::Handle>,
 }
 
 impl AuditLogger {
@@ -313,6 +367,18 @@ impl AuditLogger {
         }
         let secret = hex_decode(&config.hmac_secret)
             .map_err(|e| AuditError::Config(format!("hmac_secret decode: {e}")))?;
+
+        // 根据配置创建转发器
+        let forwarder = if config.forward.enabled {
+            let fwd = AuditForwarder::new(&config.forward);
+            Some(Arc::new(tokio::sync::Mutex::new(fwd)))
+        } else {
+            None
+        };
+
+        // 尝试获取当前 tokio 运行时句柄（若不在 async 上下文中则为 None）
+        let runtime_handle = tokio::runtime::Handle::try_current().ok();
+
         Ok(Self {
             config,
             secret,
@@ -321,6 +387,8 @@ impl AuditLogger {
                 last_hash: String::new(),
                 initialized: false,
             }),
+            forwarder,
+            runtime_handle,
         })
     }
 
@@ -381,6 +449,16 @@ impl AuditLogger {
 
         if let Err(e) = self.cleanup_old_files() {
             tracing::warn!("审计日志清理失败: {e}");
+        }
+
+        // 远程转发（异步 spawn，不阻塞本地写入）
+        if let (Some(ref forwarder), Some(ref handle)) = (&self.forwarder, &self.runtime_handle) {
+            let entry_clone = entry.clone();
+            let forwarder = Arc::clone(forwarder);
+            handle.spawn(async move {
+                let mut fwd = forwarder.lock().await;
+                let _ = fwd.forward(&entry_clone).await;
+            });
         }
 
         Ok(entry)
@@ -624,6 +702,185 @@ impl AuditLogger {
 
     pub fn reload(path: &Path) -> Result<Self, AuditError> {
         Self::load(path)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AuditForwarder — 审计日志远程转发器（RFC 5424 over TCP）
+// ---------------------------------------------------------------------------
+
+/// 审计日志转发器
+///
+/// 将审计条目格式化为 RFC 5424 通过 TCP 发送到远程日志服务器。
+/// 网络中断时缓存日志，恢复后自动重传。TLS 支持为 TODO（当前仅 TCP）。
+pub struct AuditForwarder {
+    target: String,
+    #[allow(dead_code)]
+    tls_config: Option<TlsClientConfig>,
+    /// 缓存 RFC 5424 格式化的日志行
+    cache: VecDeque<String>,
+    max_cache: usize,
+    last_forward_time: Option<DateTime<Utc>>,
+    forward_count: u64,
+    cache_drop_count: u64,
+}
+
+impl AuditForwarder {
+    pub fn new(config: &AuditForwardConfig) -> Self {
+        let tls_config = if config.tls_ca.is_some() || config.tls_cert.is_some() {
+            Some(TlsClientConfig {
+                ca_path: config.tls_ca.clone(),
+                cert_path: config.tls_cert.clone(),
+                key_path: config.tls_key.clone(),
+            })
+        } else {
+            None
+        };
+        Self {
+            target: config.target.clone(),
+            tls_config,
+            cache: VecDeque::new(),
+            max_cache: config.cache_size,
+            last_forward_time: None,
+            forward_count: 0,
+            cache_drop_count: 0,
+        }
+    }
+
+    /// 将审计条目格式化为 RFC 5424
+    ///
+    /// facility = 10 (authpriv), severity = 5 (notice)
+    /// priority = facility * 8 + severity = 85
+    fn to_rfc5424(entry: &AuditEntry) -> String {
+        let priority = 85; // authpriv/notice
+        let timestamp = entry.timestamp.format("%Y-%m-%dT%H:%M:%S%.6fZ");
+        let hostname = hostname_string();
+        let app_name = "eneros-audit";
+        let procid = std::process::id();
+        let msgid = format!("audit-{}", entry.seq);
+
+        // Structured Data
+        let sd = format!(
+            "[eneros seq=\"{}\" action=\"{}\" actor=\"{}\" target=\"{}\" result=\"{}\"]",
+            entry.seq,
+            entry.action.as_str(),
+            entry.actor,
+            entry.target,
+            entry.result_str(),
+        );
+
+        // 消息体：完整条目的 JSON
+        let msg = serde_json::to_string(entry).unwrap_or_default();
+
+        format!(
+            "<{}>1 {} {} {} {} {} {}\n",
+            priority, timestamp, hostname, app_name, procid, msgid, sd
+        ) + &msg
+    }
+
+    /// 转发审计条目（异步）
+    ///
+    /// 发送成功时尝试刷新缓存；失败时入缓存（满则丢弃最旧）。
+    pub async fn forward(&mut self, entry: &AuditEntry) -> Result<(), AuditError> {
+        let rfc5424 = Self::to_rfc5424(entry);
+
+        match self.try_send(&rfc5424).await {
+            Ok(()) => {
+                self.forward_count += 1;
+                self.last_forward_time = Some(Utc::now());
+                // 尝试刷新缓存
+                self.flush_cache().await;
+                Ok(())
+            }
+            Err(e) => {
+                // 转发失败，入缓存
+                if self.cache.len() >= self.max_cache {
+                    self.cache.pop_front();
+                    self.cache_drop_count += 1;
+                }
+                self.cache.push_back(rfc5424);
+                Err(e)
+            }
+        }
+    }
+
+    /// 尝试发送到远程服务器（当前简化为 TCP，TLS 为 TODO）
+    async fn try_send(&self, message: &str) -> Result<(), AuditError> {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpStream;
+
+        let mut stream = TcpStream::connect(&self.target)
+            .await
+            .map_err(|e| AuditError::ForwardError(format!("connect failed: {}", e)))?;
+
+        // 如果有 TLS 配置，这里应该用 TLS 连接
+        // TODO: TLS 支持需要 tokio-rustls
+        stream
+            .write_all(message.as_bytes())
+            .await
+            .map_err(|e| AuditError::ForwardError(format!("write failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// 刷新缓存（重传缓存的日志）
+    pub async fn flush_cache(&mut self) {
+        while !self.cache.is_empty() {
+            let msg = self.cache.front().unwrap().clone();
+            match self.try_send(&msg).await {
+                Ok(()) => {
+                    self.cache.pop_front();
+                    self.forward_count += 1;
+                }
+                Err(_) => break, // 仍然不可达，停止重试
+            }
+        }
+        if self.cache.is_empty() {
+            self.last_forward_time = Some(Utc::now());
+        }
+    }
+
+    /// 获取转发器状态
+    pub fn status(&self) -> ForwarderStatus {
+        ForwarderStatus {
+            target: self.target.clone(),
+            cache_count: self.cache.len(),
+            max_cache: self.max_cache,
+            forward_count: self.forward_count,
+            cache_drop_count: self.cache_drop_count,
+            last_forward_time: self.last_forward_time,
+        }
+    }
+}
+
+/// 转发器状态快照
+#[derive(Debug, Clone, Serialize)]
+pub struct ForwarderStatus {
+    pub target: String,
+    pub cache_count: usize,
+    pub max_cache: usize,
+    pub forward_count: u64,
+    pub cache_drop_count: u64,
+    pub last_forward_time: Option<DateTime<Utc>>,
+}
+
+/// 获取主机名（Linux 用 libc::gethostname，非 Unix 返回 "localhost"）
+fn hostname_string() -> String {
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        // SAFETY: gethostname 写入缓冲区并以 null 结尾，缓冲区大小充足
+        if unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) } == 0 {
+            String::from_utf8_lossy(&buf)
+                .trim_end_matches('\0')
+                .to_string()
+        } else {
+            "localhost".to_string()
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        "localhost".to_string()
     }
 }
 
@@ -1247,5 +1504,150 @@ forward_target = "10.0.0.1:6514"
         assert!(logger.flush().is_ok());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // AuditForwarder 测试
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_audit_forwarder_creation() {
+        let config = AuditForwardConfig {
+            enabled: true,
+            target: "10.0.0.1:6514".to_string(),
+            tls_ca: Some(PathBuf::from("/etc/eneros/certs/log-ca.pem")),
+            tls_cert: Some(PathBuf::from("/etc/eneros/certs/log-client.pem")),
+            tls_key: Some(PathBuf::from("/etc/eneros/certs/log-client.key")),
+            cache_size: 5000,
+        };
+        let forwarder = AuditForwarder::new(&config);
+        let status = forwarder.status();
+        assert_eq!(status.target, "10.0.0.1:6514");
+        assert_eq!(status.max_cache, 5000);
+        assert_eq!(status.cache_count, 0);
+        assert_eq!(status.forward_count, 0);
+        assert_eq!(status.cache_drop_count, 0);
+        assert!(status.last_forward_time.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_audit_forwarder_cache_overflow() {
+        // 使用不可达端口，触发缓存路径
+        let config = AuditForwardConfig {
+            enabled: true,
+            target: "127.0.0.1:1".to_string(),
+            tls_ca: None,
+            tls_cert: None,
+            tls_key: None,
+            cache_size: 2,
+        };
+        let mut forwarder = AuditForwarder::new(&config);
+
+        let secret = test_secret();
+        for i in 0..5u64 {
+            let entry = AuditEntry::new(
+                i + 1,
+                AuditAction::Login,
+                "admin",
+                "system",
+                AuditResult::Success,
+                None,
+                &format!("entry {}", i),
+                "",
+                &secret,
+            )
+            .unwrap();
+            let _ = forwarder.forward(&entry).await;
+        }
+
+        let status = forwarder.status();
+        // cache_size=2，5 条全部发送失败入缓存，满后丢弃最旧
+        assert_eq!(status.cache_count, 2);
+        assert_eq!(status.cache_drop_count, 3);
+    }
+
+    #[test]
+    fn test_audit_forwarder_to_rfc5424() {
+        let secret = test_secret();
+        let entry = AuditEntry::new(
+            42,
+            AuditAction::Login,
+            "admin",
+            "system",
+            AuditResult::Success,
+            Some("192.168.1.50"),
+            "login from console",
+            "abc123",
+            &secret,
+        )
+        .unwrap();
+
+        let rfc = AuditForwarder::to_rfc5424(&entry);
+
+        // priority = 85 (authpriv/notice)
+        assert!(rfc.starts_with("<85>1 "), "should start with <85>1");
+        // app-name
+        assert!(rfc.contains("eneros-audit"));
+        // msgid
+        assert!(rfc.contains("audit-42"));
+        // structured data
+        assert!(rfc.contains("seq=\"42\""));
+        assert!(rfc.contains("action=\"login\""));
+        assert!(rfc.contains("actor=\"admin\""));
+        assert!(rfc.contains("result=\"success\""));
+        // 消息体（JSON）
+        assert!(rfc.contains("\"seq\":42"));
+    }
+
+    #[test]
+    fn test_audit_config_with_forward() {
+        let toml_str = r#"
+hmac_secret = "deadbeef"
+retention_days = 365
+
+[forward]
+enabled = true
+target = "10.0.0.1:6514"
+tls_ca = "/etc/eneros/certs/log-ca.pem"
+tls_cert = "/etc/eneros/certs/log-client.pem"
+tls_key = "/etc/eneros/certs/log-client.key"
+cache_size = 5000
+"#;
+        let config: AuditConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.hmac_secret, "deadbeef");
+        assert_eq!(config.retention_days, 365);
+        assert!(config.forward.enabled);
+        assert_eq!(config.forward.target, "10.0.0.1:6514");
+        assert_eq!(
+            config.forward.tls_ca,
+            Some(PathBuf::from("/etc/eneros/certs/log-ca.pem"))
+        );
+        assert_eq!(
+            config.forward.tls_cert,
+            Some(PathBuf::from("/etc/eneros/certs/log-client.pem"))
+        );
+        assert_eq!(
+            config.forward.tls_key,
+            Some(PathBuf::from("/etc/eneros/certs/log-client.key"))
+        );
+        assert_eq!(config.forward.cache_size, 5000);
+    }
+
+    #[test]
+    fn test_audit_forwarder_status() {
+        let config = AuditForwardConfig {
+            enabled: true,
+            target: "192.168.1.100:6514".to_string(),
+            cache_size: 10000,
+            ..Default::default()
+        };
+        let forwarder = AuditForwarder::new(&config);
+        let status = forwarder.status();
+        assert_eq!(status.target, "192.168.1.100:6514");
+        assert_eq!(status.max_cache, 10000);
+        assert_eq!(status.cache_count, 0);
+        assert_eq!(status.forward_count, 0);
+        assert_eq!(status.cache_drop_count, 0);
+        assert!(status.last_forward_time.is_none());
     }
 }

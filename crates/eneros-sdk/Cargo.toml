@@ -1,0 +1,44 @@
+[package]
+name = "eneros-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS developer SDK - common types and helpers for Agent/protocol/plugin development"
+
+[dependencies]
+# 基础依赖（始终启用）
+eneros-core = { path = "../eneros-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Agent 相关（agent feature 启用）
+eneros-agent = { path = "../eneros-agent", optional = true }
+eneros-eventbus = { path = "../eneros-eventbus", optional = true }
+
+# 协议相关（protocol feature 启用）
+eneros-gateway = { path = "../eneros-gateway", optional = true }
+eneros-device = { path = "../eneros-device", optional = true }
+
+# 插件相关（plugin feature 启用）
+eneros-plugin = { path = "../eneros-plugin", optional = true }
+eneros-plugin-macros = { path = "../eneros-plugin-macros", optional = true }
+toml = { workspace = true, optional = true }
+
+# OS 层（full feature 启用）
+eneros-os = { path = "../eneros-os", optional = true }
+
+[features]
+default = ["full"]
+# 启用所有依赖（Agent + 协议 + 插件 + OS 层）
+full = ["agent", "protocol", "plugin", "dep:eneros-os"]
+# Agent 开发相关依赖
+agent = ["dep:eneros-agent", "dep:eneros-eventbus"]
+# 协议开发相关依赖
+protocol = ["dep:eneros-gateway", "dep:eneros-eventbus", "dep:eneros-device"]
+# 插件开发相关依赖
+plugin = ["dep:eneros-plugin", "dep:eneros-plugin-macros", "dep:toml"]

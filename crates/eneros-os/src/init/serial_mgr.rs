@@ -186,8 +186,8 @@ const FAILED_THRESHOLD: u32 = 10;
 
 /// 串口故障检测与恢复监控器（跨平台纯状态管理）。
 ///
-/// 错误计数达到 [`DEGRADED_THRESHOLD`] → `Degraded`，
-/// 达到 [`FAILED_THRESHOLD`] → `Failed`；一次成功通信重置计数并恢复 `Healthy`。
+/// 错误计数达到 `DEGRADED_THRESHOLD` → `Degraded`，
+/// 达到 `FAILED_THRESHOLD` → `Failed`；一次成功通信重置计数并恢复 `Healthy`。
 pub struct SerialMonitor {
     ports: HashMap<String, SerialHealth>,
     error_counts: HashMap<String, u32>,

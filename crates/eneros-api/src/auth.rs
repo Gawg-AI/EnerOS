@@ -305,7 +305,7 @@ impl AuthManager {
     }
 
     /// Authenticate from raw Authorization header value.
-    /// Supports "Bearer <jwt>" and "X-API-Key: <key>".
+    /// Supports "Bearer `<jwt>`" and "X-API-Key: `<key>`".
     pub fn authenticate(
         &self,
         auth_header: Option<&str>,

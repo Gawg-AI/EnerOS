@@ -1,0 +1,46 @@
+[package]
+name = "eneros-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS runtime aggregation layer - unified runtime subsystem initialization and lifecycle"
+
+[features]
+default = []
+# 透传 rig 框架集成特性到 eneros-reasoning
+rig = ["eneros-reasoning/rig"]
+
+[dependencies]
+# Runtime-class crates — 聚合的子系统
+eneros-agent = { path = "../eneros-agent" }
+eneros-gateway = { path = "../eneros-gateway" }
+eneros-eventbus = { path = "../eneros-eventbus" }
+eneros-scada = { path = "../eneros-scada" }
+eneros-device = { path = "../eneros-device" }
+eneros-memory = { path = "../eneros-memory" }
+eneros-tool = { path = "../eneros-tool" }
+eneros-reasoning = { path = "../eneros-reasoning" }
+eneros-analysis = { path = "../eneros-analysis" }
+eneros-simulator = { path = "../eneros-simulator" }
+eneros-plugin = { path = "../eneros-plugin" }
+eneros-dashboard = { path = "../eneros-dashboard" }
+eneros-bridge = { path = "../eneros-bridge" }
+eneros-constraint = { path = "../eneros-constraint" }
+eneros-network = { path = "../eneros-network" }
+eneros-timeseries = { path = "../eneros-timeseries" }
+# 模型类 crate — Runtime 结构体初始化需要
+eneros-core = { path = "../eneros-core" }
+eneros-topology = { path = "../eneros-topology" }
+eneros-powerflow = { path = "../eneros-powerflow" }
+
+# Workspace dependencies — Runtime 结构体的生命周期管理
+tokio = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

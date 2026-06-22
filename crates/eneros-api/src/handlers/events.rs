@@ -5,24 +5,35 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::app::AppState;
 
 /// Request body for publishing an event.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct PublishEventRequest {
     pub source: String,
     pub message: String,
 }
 
 /// Response for event publication.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PublishEventResponse {
     pub event_id: String,
     pub published: bool,
 }
 
 /// `POST /api/events/publish` — publish a message event to the event bus.
+#[utoipa::path(
+    post,
+    path = "/api/events/publish",
+    request_body = PublishEventRequest,
+    responses(
+        (status = 200, description = "事件发布成功", body = PublishEventResponse),
+        (status = 503, description = "事件总线未配置"),
+        (status = 500, description = "事件发布失败"),
+    )
+)]
 pub async fn publish_handler(
     State(state): State<AppState>,
     Json(req): Json<PublishEventRequest>,
@@ -32,10 +43,10 @@ pub async fn publish_handler(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "event bus not configured").into_response(),
     };
 
-    let event = eneros_eventbus::Event::new(
-        eneros_eventbus::event::EventType::SystemAlarm,
+    let event = eneros_runtime::eventbus::Event::new(
+        eneros_runtime::eventbus::event::EventType::SystemAlarm,
         &req.source,
-        eneros_eventbus::event::EventPayload::Message(req.message.clone()),
+        eneros_runtime::eventbus::event::EventPayload::Message(req.message.clone()),
     );
     let event_id = event.id.clone();
 
@@ -60,6 +71,14 @@ pub async fn publish_handler(
 }
 
 /// `GET /api/events/stats` — get event bus statistics.
+#[utoipa::path(
+    get,
+    path = "/api/events/stats",
+    responses(
+        (status = 200, description = "事件总线统计信息"),
+        (status = 503, description = "事件总线未配置"),
+    )
+)]
 pub async fn stats_handler(
     State(state): State<AppState>,
 ) -> axum::response::Response {

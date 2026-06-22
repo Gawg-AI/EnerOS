@@ -217,6 +217,7 @@ fn extract_attr(tag: &str, attr: &str) -> Option<String> {
 }
 
 /// Minimal XML tag parser — yields (tag_name, attributes_str, is_self_closing)
+#[allow(dead_code)]
 fn parse_tag(s: &str) -> Option<(String, String, bool)> {
     let s = s.trim();
     if !s.starts_with('<') || s.starts_with("</") {
@@ -238,6 +239,7 @@ fn parse_tag(s: &str) -> Option<(String, String, bool)> {
 }
 
 /// Parse an SCL XML document
+#[allow(clippy::field_reassign_with_default)]
 pub fn parse_scl(xml: &str) -> Result<SclDocument, String> {
     let mut doc = SclDocument::default();
 

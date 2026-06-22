@@ -1014,6 +1014,7 @@ impl StateEstimator {
     }
 
     /// 估计单个变压器分接头
+    #[allow(clippy::too_many_arguments)]
     fn estimate_single_tap(
         &self,
         measurements: &[Measurement],
