@@ -1,0 +1,13 @@
+[plugin]
+name = "reliability-analysis"
+version = "0.1.0"
+api_version = "0.27.0"
+plugin_type = "analysis"
+description = "Power grid reliability analysis (SAIFI/SAIDI/CAIDI)"
+author = "EnerOS Team"
+
+[dependencies]
+plugins = []
+
+[security]
+signer = ""

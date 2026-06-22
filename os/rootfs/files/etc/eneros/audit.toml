@@ -1,0 +1,29 @@
+# EnerOS 审计日志配置
+# 防篡改审计日志（HMAC 签名 + 链式哈希 + 独立存储 + 轮转 + 远程转发）
+# 生成 HMAC 密钥: openssl rand -hex 32
+
+# 审计日志目录（独立于普通日志）
+audit_dir = "/var/log/eneros/audit"
+
+# HMAC-SHA256 签名密钥（hex 编码，>=32 字节）
+# 生成: openssl rand -hex 32
+hmac_secret = ""
+
+# 保留天数
+retention_days = 365
+
+# 单文件最大字节数（超过则轮转）
+max_size_bytes = 104857600  # 100MB
+
+# 远程转发配置（RFC 5424 over TCP）
+[forward]
+# 是否启用远程转发
+enabled = false
+# 目标地址（host:port）
+target = "10.0.0.1:6514"  # RFC 5424 TLS 日志服务器
+# TLS 证书路径（当前为 TODO，仅 TCP）
+tls_ca = "/etc/eneros/certs/log-ca.pem"
+tls_cert = "/etc/eneros/certs/log-client.pem"
+tls_key = "/etc/eneros/certs/log-client.key"
+# 本地缓存大小（网络中断时缓存的日志条数）
+cache_size = 10000

@@ -3,10 +3,75 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use parking_lot::Mutex;
 use parking_lot::RwLock;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
+
+/// Watchdog 超时处理策略（T029-10）
+///
+/// 定义 watchdog 超时时管线应执行的动作。策略在管线配置中设定，
+/// 由回调函数和管线执行循环共同实现。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchdogAction {
+    /// 仅记录日志（向后兼容行为）
+    Log,
+    /// 记录告警 + 发送事件到 EventBus
+    Alert,
+    /// 降级模式：跳过当前及剩余步骤，使用默认值
+    Degrade,
+    /// 重启管线：中止当前执行，请求重启
+    Restart,
+    /// 触发回滚：中止执行并执行回滚计划
+    Rollback,
+}
+
+impl Default for WatchdogAction {
+    /// 默认策略为 Alert —— 比 Log 更显眼，比 Restart 更安全
+    fn default() -> Self {
+        WatchdogAction::Alert
+    }
+}
+
+/// Watchdog 超时记录（T029-10）
+///
+/// 由管线在注册 watchdog 时创建，超时回调填充此记录。
+/// 管线在命令执行完成后检查此记录，决定后续动作（降级/回滚/重启）。
+///
+/// 设计说明：watchdog 回调是同步的 `FnOnce()`，无法直接执行异步操作
+/// （如 gateway 命令）。因此回调只记录超时事实和即时副作用（日志/事件），
+/// 异步动作（回滚执行）由管线在 `execute_command` 返回后处理。
+#[derive(Debug, Default)]
+pub struct WatchdogTimeoutRecord {
+    /// 是否发生超时
+    timed_out: AtomicBool,
+    /// 超时操作 ID
+    op_id: Mutex<Option<String>>,
+}
+
+impl WatchdogTimeoutRecord {
+    /// 创建空记录
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 记录超时事件
+    pub fn record(&self, op_id: String) {
+        self.timed_out.store(true, Ordering::SeqCst);
+        *self.op_id.lock() = Some(op_id);
+    }
+
+    /// 是否已超时
+    pub fn timed_out(&self) -> bool {
+        self.timed_out.load(Ordering::SeqCst)
+    }
+
+    /// 获取超时操作 ID
+    pub fn op_id(&self) -> Option<String> {
+        self.op_id.lock().clone()
+    }
+}
 
 /// A pending operation being monitored by the watchdog.
 struct PendingOp {

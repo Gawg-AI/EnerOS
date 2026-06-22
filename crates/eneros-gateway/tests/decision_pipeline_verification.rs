@@ -1,175 +1,29 @@
 //! Comprehensive integration tests for the constrained decision pipeline.
 //!
 //! Covers scenarios that the unit tests in `decision_pipeline.rs` miss:
-//! - dispatch_structured (P0)
 //! - Infeasible / Projected flow (P1)
 //! - FeedbackLoop convergence (P1)
 //! - FeasibilityProjector edge cases (P2)
+//!
+//! 注：原 `dispatch_structured_tests` 模块（P0）依赖 `eneros-agent` 的
+//! `ActionDispatcher`，属于 agent↔gateway 集成测试。为消除 dev-dependency
+//! 循环，该模块已移至 `eneros-agent/tests/dispatch_structured_integration.rs`。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use eneros_constraint::projector::{
-    FeasibilityProjector, NetworkSimulator, ProjectionResult, WhatIfResult,
-};
+use eneros_constraint::projector::{FeasibilityProjector, NetworkSimulator, ProjectionResult};
 use eneros_constraint::ConstraintEngine;
 use eneros_core::{
     ActionVerdict, AuthorityLevel, Jurisdiction, StructuredAction, SystemOperatingState,
 };
-use eneros_eventbus::EventBus;
 use eneros_gateway::constraint_validator::ConstraintAwareValidator;
 use eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline;
 use eneros_gateway::SafetyGateway;
-
-// ============================================================================
-// Mock simulators
-// ============================================================================
-
-/// Always-feasible mock simulator (same as existing unit tests)
-struct FeasibleMockSimulator;
-
-impl NetworkSimulator for FeasibleMockSimulator {
-    fn simulate_action(&self, _action: &StructuredAction) -> WhatIfResult {
-        WhatIfResult {
-            applicable: true,
-            converged: true,
-            voltage_violations: vec![],
-            thermal_violations: vec![],
-            all_constraints_satisfied: true,
-            summary: "OK".to_string(),
-        }
-    }
-    fn generator_limits(&self) -> Vec<(u64, f64, f64)> {
-        vec![(1, 0.0, 200.0), (2, 0.0, 150.0)]
-    }
-    fn current_voltages(&self) -> Vec<(u64, f64)> {
-        vec![(1, 1.02), (2, 0.98)]
-    }
-}
-
-/// Mock simulator that always returns violations (voltage + thermal)
-struct ViolatingMockSimulator;
-
-impl NetworkSimulator for ViolatingMockSimulator {
-    fn simulate_action(&self, _action: &StructuredAction) -> WhatIfResult {
-        WhatIfResult {
-            applicable: true,
-            converged: true,
-            voltage_violations: vec![(2, 0.88, 0.95)],
-            thermal_violations: vec![(5, 110.0, 100.0)],
-            all_constraints_satisfied: false,
-            summary: "Voltage and thermal violations".to_string(),
-        }
-    }
-    fn generator_limits(&self) -> Vec<(u64, f64, f64)> {
-        vec![(1, 0.0, 200.0), (2, 0.0, 150.0)]
-    }
-    fn current_voltages(&self) -> Vec<(u64, f64)> {
-        vec![(1, 1.02), (2, 0.88)]
-    }
-}
-
-/// Mock simulator that returns violations for original actions but feasible for reduced ones.
-/// This simulates the "projected" flow: StartGenerator with target_mw > 100 is infeasible,
-/// but with target_mw <= 100 is feasible.
-struct ProjectingMockSimulator;
-
-impl NetworkSimulator for ProjectingMockSimulator {
-    fn simulate_action(&self, action: &StructuredAction) -> WhatIfResult {
-        match action {
-            StructuredAction::StartGenerator { target_mw, .. } if *target_mw > 100.0 => {
-                WhatIfResult {
-                    applicable: true,
-                    converged: true,
-                    voltage_violations: vec![(2, 0.88, 0.95)],
-                    thermal_violations: vec![],
-                    all_constraints_satisfied: false,
-                    summary: "Voltage violation".to_string(),
-                }
-            }
-            _ => WhatIfResult {
-                applicable: true,
-                converged: true,
-                voltage_violations: vec![],
-                thermal_violations: vec![],
-                all_constraints_satisfied: true,
-                summary: "OK".to_string(),
-            },
-        }
-    }
-    fn generator_limits(&self) -> Vec<(u64, f64, f64)> {
-        vec![(1, 0.0, 200.0), (2, 0.0, 150.0)]
-    }
-    fn current_voltages(&self) -> Vec<(u64, f64)> {
-        vec![(1, 1.02), (2, 0.98)]
-    }
-}
-
-/// Mock simulator that returns non-convergent results
-struct NonConvergentMockSimulator;
-
-impl NetworkSimulator for NonConvergentMockSimulator {
-    fn simulate_action(&self, _action: &StructuredAction) -> WhatIfResult {
-        WhatIfResult {
-            applicable: true,
-            converged: false,
-            voltage_violations: vec![],
-            thermal_violations: vec![],
-            all_constraints_satisfied: false,
-            summary: "Power flow did not converge".to_string(),
-        }
-    }
-    fn generator_limits(&self) -> Vec<(u64, f64, f64)> {
-        vec![(1, 0.0, 200.0)]
-    }
-    fn current_voltages(&self) -> Vec<(u64, f64)> {
-        vec![(1, 1.02)]
-    }
-}
-
-/// Mock simulator that returns voltage-only violations
-struct VoltageViolationMockSimulator;
-
-impl NetworkSimulator for VoltageViolationMockSimulator {
-    fn simulate_action(&self, _action: &StructuredAction) -> WhatIfResult {
-        WhatIfResult {
-            applicable: true,
-            converged: true,
-            voltage_violations: vec![(3, 0.85, 0.95), (4, 0.87, 0.95)],
-            thermal_violations: vec![],
-            all_constraints_satisfied: false,
-            summary: "Voltage violations".to_string(),
-        }
-    }
-    fn generator_limits(&self) -> Vec<(u64, f64, f64)> {
-        vec![(1, 0.0, 200.0)]
-    }
-    fn current_voltages(&self) -> Vec<(u64, f64)> {
-        vec![(1, 1.02), (3, 0.85)]
-    }
-}
-
-/// Mock simulator that returns thermal-only violations
-struct ThermalViolationMockSimulator;
-
-impl NetworkSimulator for ThermalViolationMockSimulator {
-    fn simulate_action(&self, _action: &StructuredAction) -> WhatIfResult {
-        WhatIfResult {
-            applicable: true,
-            converged: true,
-            voltage_violations: vec![],
-            thermal_violations: vec![(5, 120.0, 100.0), (6, 115.0, 100.0)],
-            all_constraints_satisfied: false,
-            summary: "Thermal violations".to_string(),
-        }
-    }
-    fn generator_limits(&self) -> Vec<(u64, f64, f64)> {
-        vec![(1, 0.0, 200.0)]
-    }
-    fn current_voltages(&self) -> Vec<(u64, f64)> {
-        vec![(1, 1.02)]
-    }
-}
+use eneros_test_utils::{
+    FeasibleMockSimulator, NonConvergentMockSimulator, ProjectingMockSimulator,
+    ThermalViolationMockSimulator, ViolatingMockSimulator, VoltageViolationMockSimulator,
+};
 
 // ============================================================================
 // Helpers
@@ -188,163 +42,6 @@ fn make_pipeline_with(simulator: Arc<dyn NetworkSimulator>) -> ConstrainedDecisi
 
 fn make_pipeline() -> ConstrainedDecisionPipeline {
     make_pipeline_with(Arc::new(FeasibleMockSimulator))
-}
-
-// ============================================================================
-// P0: dispatch_structured tests
-// ============================================================================
-
-mod dispatch_structured_tests {
-    use super::*;
-    use eneros_agent::dispatcher::{ActionDispatcher, DispatchResult};
-
-    fn make_dispatcher_with_pipeline(pipeline: ConstrainedDecisionPipeline) -> ActionDispatcher {
-        let event_bus = Arc::new(EventBus::new(64));
-        let gateway = Arc::new(SafetyGateway::new(100));
-        ActionDispatcher::new_local(event_bus, gateway).with_pipeline(Arc::new(pipeline))
-    }
-
-    fn make_dispatcher_without_pipeline() -> ActionDispatcher {
-        let event_bus = Arc::new(EventBus::new(64));
-        let gateway = Arc::new(SafetyGateway::new(100));
-        ActionDispatcher::new_local(event_bus, gateway)
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_structured_with_pipeline_approved() {
-        let pipeline = make_pipeline();
-        let dispatcher = make_dispatcher_with_pipeline(pipeline);
-        let action = StructuredAction::StartGenerator {
-            gen_id: 1,
-            target_mw: 100.0,
-        };
-        let result = dispatcher
-            .dispatch_structured(
-                &action,
-                AuthorityLevel::Supervisor,
-                &Jurisdiction::unrestricted(),
-                SystemOperatingState::Normal,
-            )
-            .await
-            .unwrap();
-        assert_eq!(result, DispatchResult::CommandExecuted);
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_structured_with_pipeline_rejected() {
-        let pipeline = make_pipeline();
-        let dispatcher = make_dispatcher_with_pipeline(pipeline);
-        let action = StructuredAction::StartGenerator {
-            gen_id: 1,
-            target_mw: 100.0,
-        };
-        let result = dispatcher
-            .dispatch_structured(
-                &action,
-                AuthorityLevel::Observer,
-                &Jurisdiction::unrestricted(),
-                SystemOperatingState::Normal,
-            )
-            .await
-            .unwrap();
-        // Observer cannot execute commands → pipeline rejects → ConstraintRejected
-        assert!(matches!(result, DispatchResult::ConstraintRejected(_)));
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_structured_without_pipeline_returns_error() {
-        let dispatcher = make_dispatcher_without_pipeline();
-        let action = StructuredAction::StartGenerator {
-            gen_id: 1,
-            target_mw: 100.0,
-        };
-        let result = dispatcher
-            .dispatch_structured(
-                &action,
-                AuthorityLevel::Operator,
-                &Jurisdiction::unrestricted(),
-                SystemOperatingState::Normal,
-            )
-            .await;
-        // Without a pipeline, gateway_client.decide() fails and the error
-        // is propagated (NOT a false CommandExecuted). The orchestrator's
-        // dispatch_via_pipeline handles this by checking has_pipeline() first
-        // and falling back to direct ExecuteCommand dispatch.
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("gateway decide failed"),
-            "unexpected error: {}",
-            err_msg
-        );
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_structured_high_risk_requires_supervisor() {
-        let pipeline = make_pipeline();
-        let dispatcher = make_dispatcher_with_pipeline(pipeline);
-        let action = StructuredAction::ShedLoad {
-            zone_id: 1,
-            amount_mw: 50.0,
-        };
-        let result = dispatcher
-            .dispatch_structured(
-                &action,
-                AuthorityLevel::Operator,
-                &Jurisdiction::unrestricted(),
-                SystemOperatingState::Normal,
-            )
-            .await
-            .unwrap();
-        // ShedLoad is high-risk; Operator cannot execute high-risk → rejected or pending
-        match result {
-            DispatchResult::ConstraintRejected(reason) => {
-                // Rejected because Operator cannot execute high-risk
-                assert!(
-                    reason.to_lowercase().contains("high-risk")
-                        || reason.to_lowercase().contains("supervisor")
-                        || reason.to_lowercase().contains("pending"),
-                    "Unexpected rejection reason: {}",
-                    reason
-                );
-            }
-            DispatchResult::PendingApproval { .. } => {
-                // Also acceptable: pending supervisor approval
-            }
-            other => panic!(
-                "Expected ConstraintRejected or PendingApproval, got {:?}",
-                other
-            ),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_structured_emergency_bypass() {
-        let pipeline = make_pipeline();
-        let dispatcher = make_dispatcher_with_pipeline(pipeline);
-        let action = StructuredAction::StartGenerator {
-            gen_id: 1,
-            target_mw: 100.0,
-        };
-        let result = dispatcher
-            .dispatch_structured(
-                &action,
-                AuthorityLevel::Emergency,
-                &Jurisdiction::unrestricted(),
-                SystemOperatingState::Emergency,
-            )
-            .await
-            .unwrap();
-        // Emergency authority in Emergency state should bypass constraints
-        assert!(
-            matches!(
-                result,
-                DispatchResult::CommandExecuted | DispatchResult::EmergencyBypassed { .. }
-            ),
-            "Expected CommandExecuted or EmergencyBypassed, got {:?}",
-            result
-        );
-    }
 }
 
 // ============================================================================

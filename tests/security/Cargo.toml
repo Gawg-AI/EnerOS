@@ -1,0 +1,22 @@
+[package]
+name = "eneros-security-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS security compliance test suite (OWASP Top 10, SAST, dependency audit)"
+
+[dependencies]
+eneros-api = { path = "../../crates/eneros-api" }
+eneros-core = { path = "../../crates/eneros-core" }
+tokio = { workspace = true, features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+regex = "1"
+axum = "0.7"
+tower = { version = "0.4", features = ["util"] }
+base64 = { workspace = true }
+chrono = { workspace = true }

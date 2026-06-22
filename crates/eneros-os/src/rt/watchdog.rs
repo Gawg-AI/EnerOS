@@ -135,7 +135,7 @@ pub struct WatchdogLogEntry {
 }
 
 /// In-memory ring buffer of recent watchdog events with optional JSONL
-/// persistence. Retains at most [`MAX_LOG_ENTRIES`] entries; the oldest entry
+/// persistence. Retains at most `MAX_LOG_ENTRIES` entries; the oldest entry
 /// is evicted once the limit is exceeded.
 pub struct WatchdogLogger {
     entries: Mutex<Vec<WatchdogLogEntry>>,
@@ -152,7 +152,7 @@ impl WatchdogLogger {
         }
     }
 
-    /// Record a new event. The ring buffer keeps at most [`MAX_LOG_ENTRIES`]
+    /// Record a new event. The ring buffer keeps at most `MAX_LOG_ENTRIES`
     /// entries; the oldest is dropped when the limit is exceeded.
     pub fn record(&self, event: &str, detail: &str) {
         let entry = WatchdogLogEntry {

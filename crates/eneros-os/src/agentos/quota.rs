@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// 资源配额配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct QuotaConfig {
     /// CPU 配额百分比（0-100，0 表示不限制）
     pub cpu_percent: u32,
@@ -21,16 +21,6 @@ pub struct QuotaConfig {
     pub memory_mb: u64,
     /// 最大 PID 数量（0 表示不限制）
     pub max_pids: u32,
-}
-
-impl Default for QuotaConfig {
-    fn default() -> Self {
-        Self {
-            cpu_percent: 0,
-            memory_mb: 0,
-            max_pids: 0,
-        }
-    }
 }
 
 impl QuotaConfig {
@@ -87,6 +77,7 @@ pub enum QuotaError {
 pub struct ResourceQuota {
     registry: Arc<AgentRegistry>,
     /// cgroup 根路径
+    #[allow(dead_code)]
     cgroup_root: PathBuf,
     /// 已创建的 cgroup（agent_id → 配置）
     configs: parking_lot::RwLock<std::collections::HashMap<String, QuotaConfig>>,
@@ -236,6 +227,7 @@ impl ResourceQuota {
     }
 
     /// cgroup 路径
+    #[allow(dead_code)]
     fn cgroup_path(&self, agent_id: &str) -> PathBuf {
         self.cgroup_root.join(format!("agent-{}", agent_id))
     }

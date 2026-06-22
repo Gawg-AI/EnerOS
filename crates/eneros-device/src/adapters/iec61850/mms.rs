@@ -110,13 +110,13 @@ impl BerEncoder {
         Self::encode_tl(0x0C, s.as_bytes())
     }
 
-    /// Encode a context-specific tag [n] IMPLICIT
+    /// Encode a context-specific tag \[n\] IMPLICIT
     pub fn encode_context(n: u8, value: &[u8]) -> Vec<u8> {
         let tag = BER_CONTEXT | n;
         Self::encode_tl(tag, value)
     }
 
-    /// Encode a context-specific constructed tag [n] CONSTRUCTED
+    /// Encode a context-specific constructed tag \[n\] CONSTRUCTED
     pub fn encode_context_constructed(n: u8, value: &[u8]) -> Vec<u8> {
         let tag = BER_CONTEXT | BER_CONSTRUCTED | n;
         Self::encode_tl(tag, value)

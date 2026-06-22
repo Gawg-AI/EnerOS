@@ -1,0 +1,13 @@
+[plugin]
+name = "custom-strategy-agent"
+version = "0.1.0"
+api_version = "0.27.0"
+plugin_type = "agent"
+description = "Custom load balancing strategy Agent (stub)"
+author = "EnerOS Team"
+
+[dependencies]
+plugins = []
+
+[security]
+signer = ""

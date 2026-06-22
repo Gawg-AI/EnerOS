@@ -1,0 +1,15 @@
+[package]
+name = "eneros-protocol-conformance"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS protocol conformance test suite (IEC 61850 / Modbus / IEC 60870-5-104)"
+
+[dependencies]
+eneros-device = { path = "../../crates/eneros-device" }
+eneros-core = { path = "../../crates/eneros-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

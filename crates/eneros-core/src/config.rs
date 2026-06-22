@@ -194,6 +194,14 @@ pub struct TimeSeriesConfig {
     pub sampling_interval_ms: u64,
     /// Enable compression
     pub enable_compression: bool,
+    /// 存储后端（"memory", "sqlite", "tdengine", "influxdb"），默认 "memory"
+    #[serde(default = "default_storage_backend")]
+    pub storage_backend: String,
+}
+
+/// 默认存储后端：内存
+fn default_storage_backend() -> String {
+    "memory".to_string()
 }
 
 /// Event bus configuration
@@ -443,6 +451,7 @@ impl Default for EnerOSConfig {
                 retention_days: 365,
                 sampling_interval_ms: 1000,
                 enable_compression: true,
+                storage_backend: "memory".to_string(),
             },
             eventbus: EventBusConfig {
                 max_queue_size: 100_000,
@@ -855,6 +864,7 @@ fn parse_toml_value<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, Config
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_load_from_str_valid() {
@@ -1095,6 +1105,7 @@ max_buses = 100
     }
 
     #[test]
+    #[serial]
     fn test_apply_env_overrides_string() {
         // Use a unique port to avoid conflicts with other tests
         std::env::set_var("ENEROS_NETWORK__SOURCE", "cnpower");
@@ -1115,6 +1126,7 @@ max_buses = 100
     }
 
     #[test]
+    #[serial]
     fn test_apply_env_overrides_float_and_bool() {
         // Test float and bool overrides together (single test to avoid env var races)
         std::env::set_var("ENEROS_POWERFLOW__TOLERANCE", "1e-8");
@@ -1138,6 +1150,7 @@ max_buses = 100
     }
 
     #[test]
+    #[serial]
     fn test_apply_env_overrides_no_vars() {
         // Ensure no ENEROS_ vars are set — clean up any that might exist from other tests
         let keys_to_remove: Vec<String> = std::env::vars()
@@ -1156,6 +1169,7 @@ max_buses = 100
     }
 
     #[test]
+    #[serial]
     fn test_load_with_env_overrides_validates() {
         std::env::set_var("ENEROS_API__PORT", "8888");
 
@@ -1168,6 +1182,7 @@ max_buses = 100
     }
 
     #[test]
+    #[serial]
     fn test_load_with_env_overrides_validation_fails() {
         std::env::set_var("ENEROS_NETWORK__SOURCE", "invalid_source");
 

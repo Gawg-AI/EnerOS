@@ -95,13 +95,23 @@ pub async fn query_handler(
 }
 
 /// Query parameters for `GET /api/timeseries/latest`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct LatestQueryParams {
     pub element_id: u64,
     pub parameter: String,
 }
 
 /// `GET /api/timeseries/latest` — get the latest value for a data point.
+#[utoipa::path(
+    get,
+    path = "/api/timeseries/latest",
+    params(LatestQueryParams),
+    responses(
+        (status = 200, description = "最新数据点", body = DataPointDto),
+        (status = 404, description = "未找到数据"),
+        (status = 503, description = "时序引擎未配置"),
+    )
+)]
 pub async fn latest_handler(
     State(state): State<AppState>,
     Query(params): Query<LatestQueryParams>,
@@ -125,6 +135,14 @@ pub async fn latest_handler(
 }
 
 /// `GET /api/timeseries/statistics` — get time series engine statistics.
+#[utoipa::path(
+    get,
+    path = "/api/timeseries/statistics",
+    responses(
+        (status = 200, description = "时序引擎统计信息"),
+        (status = 503, description = "时序引擎未配置"),
+    )
+)]
 pub async fn statistics_handler(
     State(state): State<AppState>,
 ) -> axum::response::Response {

@@ -35,6 +35,9 @@ pub enum EnerOSError {
     #[error("Safety violation: {0}")]
     Safety(String),
 
+    #[error("Plugin error: {0}")]
+    Plugin(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }

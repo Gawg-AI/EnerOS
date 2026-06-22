@@ -101,6 +101,13 @@ pub struct LocalContext {
     pub tick_interval: Duration,
     /// Cursor: last message seq this agent has seen
     pub last_seen_message_id: Arc<RwLock<u64>>,
+    /// 分布式追踪 ID（T029-06）。
+    ///
+    /// 贯穿 API 请求 → Agent 调度 → 插件执行 → 任务完成的全链路。
+    /// 默认生成 UUID v4；API handler 会从请求扩展中取出 trace_id 注入此处，
+    /// 后续 AgentOrchestrator / ActionDispatcher / SpawnedAgent 都会读取该字段，
+    /// 并通过 `tracing::Span` 携带，使所有日志自动包含 trace_id。
+    pub trace_id: String,
 }
 
 /// Remote service handles (replaces direct `Arc<T>` with trait objects).
@@ -243,6 +250,7 @@ impl AgentContext {
                 jurisdiction,
                 tick_interval: Duration::from_secs(1),
                 last_seen_message_id: Arc::new(RwLock::new(0)),
+                trace_id: uuid::Uuid::new_v4().to_string(),
             },
             remote: RemoteHandles {
                 event_bus: publisher,
@@ -263,6 +271,9 @@ impl AgentContext {
     /// Create a new AgentContext that shares the same message store as an existing context.
     /// This is the key method for multi-agent collaboration: all agents sharing the
     /// same store can independently receive broadcast messages.
+    ///
+    /// trace_id 默认继承自父上下文（T029-06），保证同一请求链路下的所有
+    /// 衍生 Agent 上下文都携带相同的 trace_id。
     pub fn with_shared_message_store(&self) -> Self {
         Self {
             local: LocalContext {
@@ -271,6 +282,7 @@ impl AgentContext {
                 jurisdiction: self.local.jurisdiction.clone(),
                 tick_interval: self.local.tick_interval,
                 last_seen_message_id: Arc::new(RwLock::new(0)),
+                trace_id: self.local.trace_id.clone(),
             },
             remote: RemoteHandles {
                 event_bus: Arc::clone(&self.remote.event_bus),
@@ -286,6 +298,27 @@ impl AgentContext {
                 audit_trail: Arc::new(RwLock::new(Vec::new())),
             },
         }
+    }
+
+    /// 返回当前上下文携带的 trace_id（T029-06）。
+    ///
+    /// trace_id 在 `LocalContext::new_local` 中默认生成 UUID v4，
+    /// 也可通过 [`with_trace_id`](Self::with_trace_id) 覆盖。
+    /// AgentOrchestrator / ActionDispatcher / SpawnedAgent 都会读取该字段，
+    /// 并通过 `tracing::Span` 携带，使所有日志自动包含 trace_id。
+    pub fn trace_id(&self) -> &str {
+        &self.local.trace_id
+    }
+
+    /// 返回一个新的 `AgentContext`，其 trace_id 被替换为 `trace_id`（T029-06）。
+    ///
+    /// 用于 API handler 从请求扩展中取出 trace_id 后注入到 Agent 执行上下文。
+    /// 其它字段（agent_id、authority、jurisdiction、remote handles 等）保持不变。
+    /// 调用方通常会在每次 API 请求中调用一次本方法，得到一个请求作用域的上下文。
+    pub fn with_trace_id(&self, trace_id: impl Into<String>) -> Self {
+        let mut new_ctx = self.with_shared_message_store();
+        new_ctx.local.trace_id = trace_id.into();
+        new_ctx
     }
 
     /// Send a message to the shared message store (local mode) or via the event
@@ -643,5 +676,123 @@ mod tests {
         assert_eq!(ctx.local.authority, AuthorityLevel::Supervisor);
         assert!(ctx.local.jurisdiction.contains_zone(1));
         assert!(!ctx.local.jurisdiction.contains_zone(99));
+    }
+
+    // === T029-06: 分布式追踪 trace_id 贯穿 Agent 管线 ===
+
+    /// 验证 `LocalContext` 在构造时默认生成一个非空的 UUID v4 trace_id。
+    #[test]
+    fn test_trace_id_default_is_nonempty_uuid() {
+        let ctx = make_ctx();
+
+        // trace_id 应为非空字符串
+        let trace_id = ctx.trace_id();
+        assert!(!trace_id.is_empty());
+
+        // 应为合法的 UUID v4 格式（36 字符，含 4 个连字符）
+        assert_eq!(trace_id.len(), 36);
+        assert_eq!(trace_id.matches('-').count(), 4);
+        // UUID v4 的版本位应为 '4'
+        let bytes: Vec<char> = trace_id.chars().collect();
+        assert_eq!(bytes[14], '4');
+    }
+
+    /// 验证 `trace_id()` 访问器返回 `LocalContext.trace_id` 字段。
+    #[test]
+    fn test_trace_id_accessor_returns_local_field() {
+        let ctx = make_ctx();
+        assert_eq!(ctx.trace_id(), ctx.local.trace_id);
+    }
+
+    /// 验证 `with_trace_id()` 返回一个新的 `AgentContext`，其 trace_id 被替换为
+    /// 调用方提供的值，其余字段（agent_id、authority、jurisdiction 等）保持不变。
+    #[test]
+    fn test_with_trace_id_replaces_trace_id() {
+        let ctx = make_ctx();
+        let original_trace_id = ctx.trace_id().to_string();
+
+        let new_trace_id = "test-trace-id-12345678-abcd-ef01-2345-678901234567";
+        let new_ctx = ctx.with_trace_id(new_trace_id);
+
+        // 新上下文的 trace_id 应为调用方提供的值
+        assert_eq!(new_ctx.trace_id(), new_trace_id);
+        // 原上下文的 trace_id 应保持不变（不可变借用）
+        assert_eq!(ctx.trace_id(), original_trace_id);
+        assert_ne!(new_ctx.trace_id(), ctx.trace_id());
+    }
+
+    /// 验证 `with_trace_id()` 保留其它字段（agent_id、authority、jurisdiction、
+    /// tick_interval、共享消息存储等）。
+    #[test]
+    fn test_with_trace_id_preserves_other_fields() {
+        let ctx = AgentContext::new_with_authority(
+            Arc::new(EventBus::new(64)),
+            Arc::new(SafetyGateway::new(100)),
+            Arc::new(RwLock::new(ToolEngine::new())),
+            Arc::new(RwLock::new(PowerNetwork::from_ieee14())),
+            Arc::new(InMemoryMemory::default()),
+            Arc::new(RuleBasedEngine::new()),
+            Some(Arc::new(ConstraintEngine::new())),
+            Arc::new(RwLock::new(SystemOperatingState::Normal)),
+            AuthorityLevel::Operator,
+            Jurisdiction::for_zones(vec![1, 2, 3]),
+        );
+
+        let new_ctx = ctx.with_trace_id("custom-trace-id");
+
+        // agent_id、authority、jurisdiction 应保持不变
+        assert_eq!(new_ctx.local.agent_id, ctx.local.agent_id);
+        assert_eq!(new_ctx.local.authority, ctx.local.authority);
+        assert_eq!(new_ctx.local.jurisdiction, ctx.local.jurisdiction);
+        assert_eq!(new_ctx.local.tick_interval, ctx.local.tick_interval);
+
+        // 共享消息存储应保持不变（同一 Arc 指针）
+        assert!(new_ctx.remote.message_store.is_some());
+        // 通过发送消息验证两个上下文共享同一个消息存储
+        ctx.send_message(AgentMessage::direct("a", "b", "shared"));
+        let received = new_ctx.receive_messages("b");
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].content, "shared");
+    }
+
+    /// 验证 `with_shared_message_store()` 继承父上下文的 trace_id（T029-06）。
+    /// 这是 trace_id 在衍生上下文中自动传播的关键机制。
+    #[test]
+    fn test_with_shared_message_store_inherits_trace_id() {
+        let ctx = make_ctx();
+        let custom_trace_id = "inherited-trace-id-abc";
+        let ctx_with_trace = ctx.with_trace_id(custom_trace_id);
+
+        // 通过 with_shared_message_store 派生的上下文应继承 trace_id
+        let derived_ctx = ctx_with_trace.with_shared_message_store();
+        assert_eq!(derived_ctx.trace_id(), custom_trace_id);
+
+        // 原始 ctx 的 trace_id 应保持默认值（未被修改）
+        assert_ne!(ctx.trace_id(), custom_trace_id);
+    }
+
+    /// 验证两个独立构造的 `AgentContext` 拥有不同的 trace_id（UUID v4 唯一性）。
+    #[test]
+    fn test_trace_id_uniqueness_across_contexts() {
+        let ctx1 = make_ctx();
+        let ctx2 = make_ctx();
+
+        // 两次构造应生成不同的 trace_id
+        assert_ne!(ctx1.trace_id(), ctx2.trace_id());
+    }
+
+    /// 验证 `with_trace_id()` 接受 `&str`、`String`、`&String` 等多种参数类型
+    /// （`impl Into<String>` 泛型约束）。
+    #[test]
+    fn test_with_trace_id_accepts_multiple_string_types() {
+        let ctx = make_ctx();
+
+        // &str
+        let ctx1 = ctx.with_trace_id("str-literal");
+        assert_eq!(ctx1.trace_id(), "str-literal");
+
+        // String
+        let ctx2 = ctx.with_trace_id(String::from("owned-string"));
+        assert_eq!(ctx2.trace_id(), "owned-string");
     }
 }

@@ -448,3 +448,187 @@ pub fn ieee14() -> Ieee14BusData {
         shunt_susceptances: vec![(9, 0.19)],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::solver::BusTypeNR;
+
+    /// 验证 IEEE-14 标准测试系统的基本结构
+    #[test]
+    fn test_ieee14_bus_count() {
+        let data = ieee14();
+        assert_eq!(data.buses.len(), 14, "IEEE-14 should have 14 buses");
+    }
+
+    #[test]
+    fn test_ieee14_branch_count() {
+        let data = ieee14();
+        assert_eq!(data.branches.len(), 20, "IEEE-14 should have 20 branches");
+    }
+
+    #[test]
+    fn test_ieee14_base_mva() {
+        let data = ieee14();
+        assert_eq!(data.base_mva, 100.0);
+    }
+
+    #[test]
+    fn test_ieee14_bus_ids_sequential() {
+        // IEEE-14 节点 ID 应为 1..=14
+        let data = ieee14();
+        let ids: Vec<u32> = data.buses.iter().map(|b| b.bus_id).collect();
+        assert_eq!(ids, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    }
+
+    #[test]
+    fn test_ieee14_bus_type_distribution() {
+        // IEEE-14 应有 1 Slack, 4 PV, 9 PQ
+        let data = ieee14();
+        let slack_count = data.buses.iter().filter(|b| b.bus_type == 0).count();
+        let pv_count = data.buses.iter().filter(|b| b.bus_type == 1).count();
+        let pq_count = data.buses.iter().filter(|b| b.bus_type == 2).count();
+        assert_eq!(slack_count, 1, "should have 1 slack bus");
+        assert_eq!(pv_count, 4, "should have 4 PV buses");
+        assert_eq!(pq_count, 9, "should have 9 PQ buses");
+    }
+
+    #[test]
+    fn test_ieee14_initial_voltages_in_range() {
+        // 所有初始电压应在合理范围 [0.95, 1.10]
+        let data = ieee14();
+        for bus in &data.buses {
+            assert!(
+                bus.v_pu >= 0.95 && bus.v_pu <= 1.10,
+                "Bus {} voltage {} pu out of range [0.95, 1.10]",
+                bus.bus_id,
+                bus.v_pu
+            );
+        }
+    }
+
+    #[test]
+    fn test_ieee14_slack_bus_voltage() {
+        // Slack 节点（bus 1）电压应为 1.06 pu，相角为 0
+        let data = ieee14();
+        let slack = data.buses.iter().find(|b| b.bus_type == 0).unwrap();
+        assert_eq!(slack.bus_id, 1);
+        assert!((slack.v_pu - 1.060).abs() < 1e-6);
+        assert!((slack.angle_deg - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_ieee14_shunt_susceptances() {
+        // Bus 9 应有 0.19 pu 并联电纳
+        let data = ieee14();
+        assert_eq!(data.shunt_susceptances.len(), 1);
+        assert_eq!(data.shunt_susceptances[0].0, 9);
+        assert!((data.shunt_susceptances[0].1 - 0.19).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_ieee14_branch_data_valid() {
+        // 所有支路的 r_pu、x_pu 应为有限值，rate_mva > 0
+        let data = ieee14();
+        for br in &data.branches {
+            assert!(br.r_pu.is_finite(), "Branch {}->{} r_pu not finite", br.from_bus, br.to_bus);
+            assert!(br.x_pu.is_finite(), "Branch {}->{} x_pu not finite", br.from_bus, br.to_bus);
+            assert!(br.rate_mva > 0.0, "Branch {}->{} rate_mva should be positive", br.from_bus, br.to_bus);
+            assert!(br.tap_ratio > 0.0, "Branch {}->{} tap_ratio should be positive", br.from_bus, br.to_bus);
+        }
+    }
+
+    #[test]
+    fn test_ieee14_transformer_tap_ratios() {
+        // 验证变压器支路的非标准变比
+        let data = ieee14();
+        let transformers: Vec<&Ieee14Branch> = data
+            .branches
+            .iter()
+            .filter(|br| (br.tap_ratio - 1.0).abs() > 1e-6)
+            .collect();
+        // IEEE-14 有 3 台变压器（4-7, 4-9, 5-6, 7-8 共 4 台）
+        assert!(!transformers.is_empty(), "should have at least one transformer");
+        for tx in &transformers {
+            assert!(tx.tap_ratio > 0.0 && tx.tap_ratio < 1.1, "transformer tap_ratio out of range");
+        }
+    }
+
+    #[test]
+    fn test_ieee14_to_solver_input_bus_types() {
+        // to_solver_input 应正确转换 bus_type
+        let data = ieee14();
+        let (_ybus, _p, _q, bus_types) = data.to_solver_input();
+        assert_eq!(bus_types.len(), 14);
+        let slack_count = bus_types.iter().filter(|&&t| t == BusTypeNR::Slack).count();
+        let pv_count = bus_types.iter().filter(|&&t| t == BusTypeNR::PV).count();
+        let pq_count = bus_types.iter().filter(|&&t| t == BusTypeNR::PQ).count();
+        assert_eq!(slack_count, 1);
+        assert_eq!(pv_count, 4);
+        assert_eq!(pq_count, 9);
+    }
+
+    #[test]
+    fn test_ieee14_to_solver_input_p_q_per_unit() {
+        // to_solver_input 应将 P/Q 从 MW/MVar 转换为 per-unit
+        let data = ieee14();
+        let (_ybus, p_spec, q_spec, _bus_types) = data.to_solver_input();
+        // Bus 1 (idx 0) 是 Slack，P/Q 由平衡计算，spec 应为 0
+        assert!((p_spec[0] - 0.0).abs() < 1e-10);
+        assert!((q_spec[0] - 0.0).abs() < 1e-10);
+        // Bus 2 (idx 1) 是 PV，P_inj = 18.3 MW → p_spec = 0.183 pu
+        assert!((p_spec[1] - 0.183).abs() < 1e-6);
+        // Q_inj = -12.7 MVar → q_spec = -0.127 pu
+        assert!((q_spec[1] - (-0.127)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_ieee14_to_solver_input_ybus_size() {
+        // Y-bus 矩阵应为 14x14
+        let data = ieee14();
+        let (ybus, _p, _q, _bus_types) = data.to_solver_input();
+        assert_eq!(ybus.size(), 14);
+        // 非零元数量应 > 0（至少有对角元素和支路元素）
+        assert!(ybus.nnz() > 0);
+    }
+
+    #[test]
+    fn test_ieee14_to_solver_input_base_mva() {
+        let data = ieee14();
+        let (ybus, _p, _q, _bus_types) = data.to_solver_input();
+        assert_eq!(ybus.base_mva(), 100.0);
+    }
+
+    #[test]
+    fn test_ieee14_to_solver_input_branch_ratings() {
+        // 所有支路应有 rating_mva 设置
+        let data = ieee14();
+        let (ybus, _p, _q, _bus_types) = data.to_solver_input();
+        for br in &data.branches {
+            let from_idx = (br.from_bus - 1) as usize;
+            let to_idx = (br.to_bus - 1) as usize;
+            let rating = ybus.branch_rating_mva(from_idx, to_idx);
+            assert!(rating.is_some(), "Branch {}->{} should have rating", br.from_bus, br.to_bus);
+            assert_eq!(rating.unwrap(), br.rate_mva);
+        }
+    }
+
+    #[test]
+    fn test_ieee14_data_clone() {
+        // Ieee14BusData 应可 Clone
+        let data = ieee14();
+        let cloned = data.clone();
+        assert_eq!(cloned.buses.len(), data.buses.len());
+        assert_eq!(cloned.branches.len(), data.branches.len());
+        assert_eq!(cloned.base_mva, data.base_mva);
+    }
+
+    #[test]
+    fn test_ieee14_bus_data_debug_format() {
+        // Ieee14Bus 应可 Debug
+        let data = ieee14();
+        let debug_str = format!("{:?}", data.buses[0]);
+        assert!(debug_str.contains("Ieee14Bus"));
+        assert!(debug_str.contains("bus_id"));
+    }
+}

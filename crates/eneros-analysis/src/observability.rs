@@ -358,20 +358,20 @@ impl ObservabilityAnalyzer {
             // 注入测量传播：若母线 i 有注入测量且可观测，且只有一个相邻母线不可观测，
             // 则该相邻母线变为可观测（通过 KCL 推断）
             for meas in measurements {
-                if matches!(meas.meas_type, MeasType::BusInjectionP | MeasType::BusInjectionQ) {
-                    if observable_set.contains(&meas.element_id) {
-                        // 找到该母线的所有邻居
-                        let neighbors = self.get_neighbors(meas.element_id, network);
-                        let unobservable_neighbors: Vec<_> = neighbors
-                            .iter()
-                            .filter(|n| !observable_set.contains(n))
-                            .copied()
-                            .collect();
-                        // 若只有一个不可观测邻居，可通过 KCL 推断
-                        if unobservable_neighbors.len() == 1 {
-                            observable_set.insert(unobservable_neighbors[0]);
-                            changed = true;
-                        }
+                if matches!(meas.meas_type, MeasType::BusInjectionP | MeasType::BusInjectionQ)
+                    && observable_set.contains(&meas.element_id)
+                {
+                    // 找到该母线的所有邻居
+                    let neighbors = self.get_neighbors(meas.element_id, network);
+                    let unobservable_neighbors: Vec<_> = neighbors
+                        .iter()
+                        .filter(|n| !observable_set.contains(n))
+                        .copied()
+                        .collect();
+                    // 若只有一个不可观测邻居，可通过 KCL 推断
+                    if unobservable_neighbors.len() == 1 {
+                        observable_set.insert(unobservable_neighbors[0]);
+                        changed = true;
                     }
                 }
             }
@@ -645,6 +645,7 @@ impl ObservabilityAnalyzer {
 }
 
 /// 计算矩阵秩（高斯消元法）
+#[allow(clippy::needless_range_loop)]
 fn matrix_rank(matrix: &[Vec<f64>]) -> usize {
     if matrix.is_empty() || matrix[0].is_empty() {
         return 0;

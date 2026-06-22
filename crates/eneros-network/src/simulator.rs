@@ -13,7 +13,7 @@ use result::{inapplicable_result, simulate_base_case, solve_and_check};
 /// MW/MVar action parameters into the per-unit quantities the solver consumes.
 const BASE_MVA: f64 = 100.0;
 
-/// Adapter that wraps PowerNetwork behind Arc<RwLock> to implement NetworkSimulator
+/// Adapter that wraps PowerNetwork behind `Arc<RwLock>` to implement NetworkSimulator
 /// for the constrained decision pipeline's What-If analysis.
 ///
 /// ## Phase 15: physical accuracy

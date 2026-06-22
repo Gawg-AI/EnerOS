@@ -5,6 +5,7 @@ pub mod audit;
 pub mod collaboration;
 pub mod conflict_resolver;
 pub mod context;
+pub mod controller;
 pub mod data_driven_loop;
 pub mod dispatcher;
 pub mod emergency;
@@ -26,6 +27,9 @@ pub use audit::{AuditTrail, AuditFilter};
 pub use collaboration::{CollaborationRole, TaskStatus, TaskAssignment, CollaborationProtocol};
 pub use conflict_resolver::{ActionConflict, ActionConflictResolver, ConflictType, ConflictResolution, ResolutionStrategy, TaggedAction};
 pub use context::{AgentContext, MessageStore, LocalContext, RemoteHandles};
+pub use controller::{
+    AgentController, AgentLifecycleState, ControlCommand, ControlError, ControlResult,
+};
 pub use data_driven_loop::{DataDrivenAgentLoop, DataDrivenCycleResult, EmergencyTrigger};
 pub use dispatcher::{ActionDispatcher, DispatchResult};
 pub use emergency::{EmergencyResponsePipeline, EmergencyResponseResult};

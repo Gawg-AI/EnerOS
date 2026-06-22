@@ -2,7 +2,7 @@ use eneros_core::StructuredAction;
 use serde::{Deserialize, Serialize};
 pub use eneros_constraint::projector::{ActionModification, ProjectionResult, WhatIfResult, NetworkSimulator, FeasibilityProjector};
 
-/// Structured action output from reasoning — replaces Vec<String> in ReasoningOutput
+/// Structured action output from reasoning — replaces `Vec<String>` in ReasoningOutput
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructuredActionOutput {
     /// Reasoning chain (LLM's thought process, for audit)

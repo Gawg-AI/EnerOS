@@ -41,7 +41,7 @@ pub struct TimeSeries {
 pub enum StorageBackendKind {
     /// In-memory only (data lost on restart)
     Memory,
-    /// Persistent — an Arc<dyn TimeSeriesStorage> is wired in (SQLite, etc.)
+    /// Persistent — an `Arc<dyn TimeSeriesStorage>` is wired in (SQLite, etc.)
     Persistent(String),
 }
 
@@ -369,7 +369,7 @@ impl TimeSeriesEngine {
     /// 立即执行一次 rollup，将原始数据聚合到指定粒度并写入降采样缓存。
     ///
     /// 此方法为同步调用，适合测试或手动触发。生产环境由
-    /// [`start_rollup_task`] 后台定期调用。
+    /// `start_rollup_task` 后台定期调用。
     pub fn rollup_now(&self, level: DownsampleLevel) {
         // 收集所有 (element_id, parameter) 键
         let keys: Vec<(ElementId, String)> = {

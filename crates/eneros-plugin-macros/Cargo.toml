@@ -1,0 +1,20 @@
+[package]
+name = "eneros-plugin-macros"
+version = "0.2.0"
+edition = "2021"
+authors = ["GAWG-AI"]
+license = "MIT"
+description = "EnerOS 插件过程宏 — 自动生成 C ABI 入口函数，简化插件开发"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+syn = { version = "2", features = ["full"] }
+quote = "1"
+eneros-plugin = { path = "../eneros-plugin" }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+serde_json = { workspace = true }

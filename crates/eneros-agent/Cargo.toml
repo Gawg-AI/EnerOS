@@ -29,3 +29,13 @@ eneros-scada = { path = "../eneros-scada" }
 eneros-topology = { path = "../eneros-topology" }
 parking_lot = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+eneros-test-utils = { path = "../eneros-test-utils" }
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tracing-subscriber = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "agent_benchmark"
+harness = false

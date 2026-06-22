@@ -52,6 +52,7 @@ impl TrgOp {
         self.0 & flag.0 != 0
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn add(self, flag: Self) -> Self {
         Self(self.0 | flag.0)
     }

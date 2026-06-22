@@ -419,4 +419,174 @@ mod tests {
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("not reachable") || err_msg.contains("island"));
     }
+
+    // ========================================================================
+    // T030-07: 覆盖率补充测试
+    // ========================================================================
+
+    #[test]
+    fn test_bfsw_solver_default() {
+        let solver = BfswSolver::default_solver();
+        // 默认参数：max_iterations=20, tolerance=1e-8
+        // 通过行为验证（求解成功）间接验证默认参数
+        let mut ybus = YBusMatrix::new(2);
+        ybus.set_base_mva(100.0);
+        let branches = vec![(0, 1, 0.01, 0.03, 1.0)];
+        let p_pu = vec![0.0, -1.0];
+        let q_pu = vec![0.0, -0.5];
+        let result = solver.solve(&ybus, &branches, &p_pu, &q_pu, 0, None).unwrap();
+        assert!(result.converged);
+    }
+
+    #[test]
+    fn test_bfsw_with_initial_voltages() {
+        // 提供初始电压应正常工作
+        let mut ybus = YBusMatrix::new(2);
+        ybus.set_base_mva(100.0);
+        let branches = vec![(0, 1, 0.01, 0.03, 1.0)];
+        let p_pu = vec![0.0, -1.0];
+        let q_pu = vec![0.0, -0.5];
+        let v_initial = vec![1.0, 0.98];
+        let solver = BfswSolver::default_solver();
+        let result = solver
+            .solve(&ybus, &branches, &p_pu, &q_pu, 0, Some(&v_initial))
+            .unwrap();
+        assert!(result.converged);
+        assert!(result.bus_results[1].voltage_magnitude < 1.0);
+    }
+
+    #[test]
+    fn test_bfsw_4bus_radial() {
+        // 4-bus 辐射网：slack -- b1 -- b2 -- b3
+        let mut ybus = YBusMatrix::new(4);
+        ybus.set_base_mva(100.0);
+        let branches = vec![
+            (0, 1, 0.01, 0.03, 1.0),
+            (1, 2, 0.02, 0.05, 1.0),
+            (2, 3, 0.015, 0.04, 1.0),
+        ];
+        let p_pu = vec![0.0, -0.3, -0.3, -0.4];
+        let q_pu = vec![0.0, -0.1, -0.1, -0.15];
+
+        let solver = BfswSolver::default_solver();
+        let result = solver.solve(&ybus, &branches, &p_pu, &q_pu, 0, None).unwrap();
+        assert!(result.converged);
+        // 电压沿馈线递减
+        assert!(result.bus_results[0].voltage_magnitude > result.bus_results[1].voltage_magnitude);
+        assert!(result.bus_results[1].voltage_magnitude > result.bus_results[2].voltage_magnitude);
+        assert!(result.bus_results[2].voltage_magnitude > result.bus_results[3].voltage_magnitude);
+    }
+
+    #[test]
+    fn test_bfsw_with_transformer_tap_ratio() {
+        // 含变压器变比的辐射网
+        let mut ybus = YBusMatrix::new(2);
+        ybus.set_base_mva(100.0);
+        // tap_ratio = 0.95（非 1.0，触发变压器分支）
+        let branches = vec![(0, 1, 0.01, 0.05, 0.95)];
+        let p_pu = vec![0.0, -0.5];
+        let q_pu = vec![0.0, -0.2];
+
+        let solver = BfswSolver::default_solver();
+        let result = solver.solve(&ybus, &branches, &p_pu, &q_pu, 0, None);
+        // 应能正常求解（变比仅影响阻抗计算）
+        assert!(result.is_ok());
+        assert!(result.unwrap().converged);
+    }
+
+    #[test]
+    fn test_bfsw_branch_results_populated() {
+        // 验证 branch_results 字段被正确填充
+        let mut ybus = YBusMatrix::new(3);
+        ybus.set_base_mva(100.0);
+        let branches = vec![
+            (0, 1, 0.01, 0.03, 1.0),
+            (1, 2, 0.02, 0.05, 1.0),
+        ];
+        let p_pu = vec![0.0, -0.5, -0.5];
+        let q_pu = vec![0.0, -0.2, -0.2];
+
+        let solver = BfswSolver::default_solver();
+        let result = solver.solve(&ybus, &branches, &p_pu, &q_pu, 0, None).unwrap();
+        assert_eq!(result.branch_results.len(), 2);
+        // 验证 branch_id、from_bus、to_bus 正确
+        assert_eq!(result.branch_results[0].branch_id, 0);
+        assert_eq!(result.branch_results[0].from_bus, 0);
+        assert_eq!(result.branch_results[0].to_bus, 1);
+        assert_eq!(result.branch_results[1].branch_id, 1);
+        assert_eq!(result.branch_results[1].from_bus, 1);
+        assert_eq!(result.branch_results[1].to_bus, 2);
+    }
+
+    #[test]
+    fn test_bfsw_bus_results_base_mva_conversion() {
+        // 验证 bus_results 中 p_injection/q_injection 已乘以 base_mva
+        let mut ybus = YBusMatrix::new(2);
+        ybus.set_base_mva(100.0);
+        let branches = vec![(0, 1, 0.01, 0.03, 1.0)];
+        let p_pu = vec![0.0, -1.0];
+        let q_pu = vec![0.0, -0.5];
+
+        let solver = BfswSolver::default_solver();
+        let result = solver.solve(&ybus, &branches, &p_pu, &q_pu, 0, None).unwrap();
+        // p_injection 应为 p_pu * base_mva = -1.0 * 100 = -100.0
+        assert!((result.bus_results[1].p_injection - (-100.0)).abs() < 1e-6);
+        assert!((result.bus_results[1].q_injection - (-50.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_bfsw_total_losses_non_negative() {
+        let mut ybus = YBusMatrix::new(3);
+        ybus.set_base_mva(100.0);
+        let branches = vec![
+            (0, 1, 0.01, 0.03, 1.0),
+            (1, 2, 0.02, 0.05, 1.0),
+        ];
+        let p_pu = vec![0.0, -0.5, -0.5];
+        let q_pu = vec![0.0, -0.2, -0.2];
+
+        let solver = BfswSolver::default_solver();
+        let result = solver.solve(&ybus, &branches, &p_pu, &q_pu, 0, None).unwrap();
+        assert!(result.total_losses >= 0.0);
+        // 每条支路损耗也应非负
+        for br in &result.branch_results {
+            assert!(br.loss_mw >= 0.0, "branch {} loss_mw negative: {}", br.branch_id, br.loss_mw);
+        }
+    }
+
+    #[test]
+    fn test_bfsw_no_load_converges_at_flat_start() {
+        // 无负荷系统应立即收敛（电压保持 1.0）
+        let mut ybus = YBusMatrix::new(3);
+        ybus.set_base_mva(100.0);
+        let branches = vec![
+            (0, 1, 0.01, 0.03, 1.0),
+            (1, 2, 0.02, 0.05, 1.0),
+        ];
+        let p_pu = vec![0.0, 0.0, 0.0];
+        let q_pu = vec![0.0, 0.0, 0.0];
+
+        let solver = BfswSolver::default_solver();
+        let result = solver.solve(&ybus, &branches, &p_pu, &q_pu, 0, None).unwrap();
+        assert!(result.converged);
+        // 无负荷时所有节点电压应接近 1.0
+        for br in &result.bus_results {
+            assert!((br.voltage_magnitude - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_bfsw_empty_network_errors() {
+        // 空网络（n=0）应返回错误
+        let ybus = YBusMatrix::new(0);
+        let branches: Vec<(usize, usize, f64, f64, f64)> = vec![];
+        let p_pu: Vec<f64> = vec![];
+        let q_pu: Vec<f64> = vec![];
+
+        let solver = BfswSolver::default_solver();
+        let result = solver.solve(&ybus, &branches, &p_pu, &q_pu, 0, None);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Empty network"));
+    }
 }

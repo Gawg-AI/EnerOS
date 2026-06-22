@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use axum::middleware::from_fn;
 use axum::routing::{delete, get, post};
 use axum::Router;
 use parking_lot::RwLock;
@@ -7,17 +8,18 @@ use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 use utoipa::OpenApi;
 
-use eneros_agent::{AgentOrchestrator, DataDrivenAgentLoop};
-use eneros_constraint::ConstraintEngine;
-use eneros_eventbus::EventBus;
-use eneros_gateway::decision_pipeline::ConstrainedDecisionPipeline;
-use eneros_network::PowerNetwork;
+use eneros_runtime::agent::{AgentController, AgentOrchestrator, DataDrivenAgentLoop};
+use eneros_runtime::constraint::ConstraintEngine;
+use eneros_runtime::eventbus::EventBus;
+use eneros_runtime::gateway::decision_pipeline::ConstrainedDecisionPipeline;
+use eneros_runtime::network::PowerNetwork;
 use eneros_powerflow::PowerFlowSolver;
-use eneros_scada::{ScadaCollector, SnapshotBuilder};
-use eneros_timeseries::TimeSeriesEngine;
+use eneros_runtime::scada::{ScadaCollector, SnapshotBuilder};
+use eneros_runtime::timeseries::TimeSeriesEngine;
 use eneros_topology::TopologyEngine;
 
 use crate::handlers;
+use crate::middleware::trace_id_middleware;
 use crate::openapi::OpenApiDoc;
 
 /// WebSocket client for real-time push
@@ -39,7 +41,7 @@ pub struct AppState {
     pub ws_clients: Arc<RwLock<Vec<WsClient>>>,
     // New fields for full component injection
     pub agent_orchestrator: Option<Arc<AgentOrchestrator>>,
-    pub data_pipeline: Option<Arc<eneros_scada::DataPipeline>>,
+    pub data_pipeline: Option<Arc<eneros_runtime::scada::DataPipeline>>,
     pub snapshot_builder: Option<Arc<SnapshotBuilder>>,
     pub data_driven_loop: Option<Arc<DataDrivenAgentLoop>>,
     pub decision_pipeline: Option<Arc<ConstrainedDecisionPipeline>>,
@@ -50,17 +52,26 @@ pub struct AppState {
     /// Auth manager for JWT/API Key authentication (v0.6.0)
     pub auth_manager: Option<Arc<crate::auth::AuthManager>>,
     /// Device manager for device control (v0.6.0)
-    pub device_manager: Option<Arc<eneros_device::DeviceManager>>,
+    pub device_manager: Option<Arc<eneros_runtime::device::DeviceManager>>,
     /// Tool engine for tool execution (v0.6.0)
-    pub tool_engine: Option<Arc<tokio::sync::RwLock<eneros_tool::ToolEngine>>>,
+    pub tool_engine: Option<Arc<tokio::sync::RwLock<eneros_runtime::tool::ToolEngine>>>,
     /// Agent memory store (v0.6.0)
-    pub agent_memory: Option<Arc<dyn eneros_memory::AgentMemory>>,
+    pub agent_memory: Option<Arc<dyn eneros_runtime::memory::AgentMemory>>,
     /// Shared runtime config for hot reload (v0.9.0)
     pub shared_config: Option<crate::config_reload::SharedConfig>,
     /// Config file watcher for hot reload (v0.9.0)
     pub config_watcher: Option<Arc<crate::config_reload::ConfigWatcher>>,
     /// SOE (Sequence of Events) recorder (v0.10.0 — Task 4)
-    pub soe_recorder: Option<Arc<eneros_timeseries::SoeRecorder>>,
+    pub soe_recorder: Option<Arc<eneros_runtime::timeseries::SoeRecorder>>,
+    /// Plugin market client for remote plugin search/install (v0.28.0 — Task 17)
+    pub plugin_market_client:
+        Option<Arc<tokio::sync::RwLock<eneros_runtime::plugin::PluginMarketClient>>>,
+    /// 日志级别动态调整的 reload handle (T029-05)
+    pub log_reload_handle: Option<crate::LogReloadHandle>,
+    /// 当前日志级别（与 reload handle 配合使用，用于读取当前级别）(T029-05)
+    pub current_log_level: Arc<RwLock<String>>,
+    /// Agent 生命周期控制器 (T029-08)：管理 Agent 的 start/stop/pause/resume/status
+    pub agent_controller: Option<AgentController>,
 }
 
 impl AppState {
@@ -89,6 +100,10 @@ impl AppState {
             shared_config: None,
             config_watcher: None,
             soe_recorder: None,
+            plugin_market_client: None,
+            log_reload_handle: None,
+            current_log_level: Arc::new(RwLock::new("info".to_string())),
+            agent_controller: None,
         }
     }
 
@@ -123,7 +138,7 @@ impl AppState {
     }
 
     /// Builder: inject DataPipeline
-    pub fn with_data_pipeline(mut self, pipeline: Arc<eneros_scada::DataPipeline>) -> Self {
+    pub fn with_data_pipeline(mut self, pipeline: Arc<eneros_runtime::scada::DataPipeline>) -> Self {
         self.data_pipeline = Some(pipeline);
         self
     }
@@ -173,19 +188,19 @@ impl AppState {
     }
 
     /// Builder: inject DeviceManager (v0.6.0)
-    pub fn with_device_manager(mut self, dm: Arc<eneros_device::DeviceManager>) -> Self {
+    pub fn with_device_manager(mut self, dm: Arc<eneros_runtime::device::DeviceManager>) -> Self {
         self.device_manager = Some(dm);
         self
     }
 
     /// Builder: inject ToolEngine (v0.6.0)
-    pub fn with_tool_engine(mut self, engine: Arc<tokio::sync::RwLock<eneros_tool::ToolEngine>>) -> Self {
+    pub fn with_tool_engine(mut self, engine: Arc<tokio::sync::RwLock<eneros_runtime::tool::ToolEngine>>) -> Self {
         self.tool_engine = Some(engine);
         self
     }
 
     /// Builder: inject AgentMemory (v0.6.0)
-    pub fn with_agent_memory(mut self, memory: Arc<dyn eneros_memory::AgentMemory>) -> Self {
+    pub fn with_agent_memory(mut self, memory: Arc<dyn eneros_runtime::memory::AgentMemory>) -> Self {
         self.agent_memory = Some(memory);
         self
     }
@@ -203,8 +218,35 @@ impl AppState {
     }
 
     /// Builder: inject SOE recorder (v0.10.0 — Task 4)
-    pub fn with_soe_recorder(mut self, recorder: Arc<eneros_timeseries::SoeRecorder>) -> Self {
+    pub fn with_soe_recorder(mut self, recorder: Arc<eneros_runtime::timeseries::SoeRecorder>) -> Self {
         self.soe_recorder = Some(recorder);
+        self
+    }
+
+    /// Builder: inject plugin market client (v0.28.0 — Task 17)
+    pub fn with_plugin_market_client(
+        mut self,
+        client: Arc<tokio::sync::RwLock<eneros_runtime::plugin::PluginMarketClient>>,
+    ) -> Self {
+        self.plugin_market_client = Some(client);
+        self
+    }
+
+    /// Builder: inject log reload handle for dynamic log level (T029-05)
+    pub fn with_log_reload_handle(mut self, handle: crate::LogReloadHandle) -> Self {
+        self.log_reload_handle = Some(handle);
+        self
+    }
+
+    /// Builder: set initial log level string (T029-05)
+    pub fn with_initial_log_level(self, level: impl Into<String>) -> Self {
+        *self.current_log_level.write() = level.into();
+        self
+    }
+
+    /// Builder: inject AgentController for agent lifecycle management (T029-08)
+    pub fn with_agent_controller(mut self, controller: AgentController) -> Self {
+        self.agent_controller = Some(controller);
         self
     }
 }
@@ -365,10 +407,34 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/config/reload",
             post(handlers::config_reload::reload_handler),
+        )
+        // v0.28.0 — Task 17: 模拟器 API 端点
+        .route("/simulator/run", post(handlers::simulator::run_handler))
+        .route(
+            "/simulator/scenarios",
+            get(handlers::simulator::scenarios_handler),
+        )
+        .route(
+            "/simulator/validate",
+            post(handlers::simulator::validate_handler),
+        )
+        // v0.28.0 — Task 17: 插件市场 API 端点
+        .route(
+            "/plugins/market/search",
+            get(handlers::plugin_market::search_handler),
+        )
+        .route(
+            "/plugins/market/install",
+            post(handlers::plugin_market::install_handler),
         );
 
     Router::new()
         .route("/ws", get(handlers::ws::ws_handler))
+        // T029-11: Dashboard SSE 实时刷新端点
+        .route(
+            "/api/v1/dashboard/stream",
+            get(handlers::sse::dashboard_stream),
+        )
         .route("/health", get(handlers::health::health_handler))
         .route("/metrics", get(handlers::metrics::metrics_handler))
         // OpenAPI documentation endpoints (v0.10.0 — Task 8)
@@ -377,7 +443,51 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api", api_routes)
         .route("/", get(handlers::dashboard::dashboard_handler))
         .layer(CorsLayer::permissive())
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        // TraceLayer：创建包含 trace_id 的 span，记录请求/响应日志 (T029-04)
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::http::Request<axum::body::Body>| {
+                    let trace_id = request
+                        .extensions()
+                        .get::<crate::middleware::TraceId>()
+                        .map(|t| t.0.as_str())
+                        .unwrap_or("");
+                    tracing::info_span!(
+                        "http_request",
+                        trace_id = %trace_id,
+                        method = %request.method(),
+                        uri = %request.uri()
+                    )
+                })
+                .on_request(
+                    |request: &axum::http::Request<axum::body::Body>, _span: &tracing::Span| {
+                        let trace_id = request
+                            .extensions()
+                            .get::<crate::middleware::TraceId>()
+                            .map(|t| t.0.as_str())
+                            .unwrap_or("");
+                        tracing::info!(
+                            trace_id = %trace_id,
+                            method = %request.method(),
+                            path = %request.uri().path(),
+                            "request started"
+                        );
+                    },
+                )
+                .on_response(
+                    |response: &axum::http::Response<axum::body::Body>,
+                     latency: std::time::Duration,
+                     _span: &tracing::Span| {
+                        tracing::info!(
+                            status = %response.status().as_u16(),
+                            latency_ms = latency.as_millis() as u64,
+                            "request completed"
+                        );
+                    },
+                ),
+        )
+        // trace_id 中间件：最外层，先生成/复用 trace_id 注入 extensions (T029-04)
+        .layer(from_fn(trace_id_middleware))
         .with_state(state)
 }
 
@@ -494,6 +604,11 @@ mod tests {
         assert!(state.snapshot_builder.is_none());
         assert!(state.data_driven_loop.is_none());
         assert!(state.decision_pipeline.is_none());
+        // T029-05: 验证日志级别字段初始化
+        assert!(state.log_reload_handle.is_none());
+        assert_eq!(*state.current_log_level.read(), "info");
+        // T029-08: 验证 AgentController 字段初始化
+        assert!(state.agent_controller.is_none());
     }
 
     #[test]
@@ -514,6 +629,35 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// T029-11: 验证 SSE 端点路由可达且返回 text/event-stream
+    #[tokio::test]
+    async fn test_sse_dashboard_stream_endpoint() {
+        let state = AppState::new();
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/dashboard/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .expect("响应应包含 content-type 头")
+            .to_str()
+            .unwrap();
+        assert!(
+            content_type.starts_with("text/event-stream"),
+            "SSE content-type 应为 text/event-stream"
+        );
     }
 
     #[tokio::test]
@@ -670,7 +814,8 @@ mod tests {
         // Verify it's a valid OpenAPI document
         assert_eq!(json["openapi"], "3.1.0");
         assert_eq!(json["info"]["title"], "EnerOS API");
-        assert_eq!(json["info"]["version"], "0.10.0");
+        // v0.28.0 — Task 14: OpenAPI 版本号应与 Cargo.toml 中的 CARGO_PKG_VERSION 一致
+        assert_eq!(json["info"]["version"], env!("CARGO_PKG_VERSION"));
 
         // Verify all 6 annotated endpoints are present in the paths
         let paths = json["paths"].as_object().unwrap();
@@ -680,6 +825,94 @@ mod tests {
         assert!(paths.contains_key("/api/scada/latest"));
         assert!(paths.contains_key("/api/timeseries/query"));
         assert!(paths.contains_key("/api/auth/login"));
+    }
+
+    /// v0.28.0 — Task 17: 验证 OpenAPI schema 包含新增的模拟器与插件市场端点
+    #[tokio::test]
+    async fn test_openapi_schema_contains_new_endpoints() {
+        let openapi = OpenApiDoc::openapi();
+        let json = serde_json::to_value(&openapi).expect("OpenAPI 序列化为 JSON 应成功");
+
+        // 验证 paths 中包含 5 个新端点
+        let paths = json["paths"]
+            .as_object()
+            .expect("paths 应为 JSON 对象");
+        assert!(
+            paths.contains_key("/api/simulator/run"),
+            "OpenAPI 应包含 POST /api/simulator/run 端点"
+        );
+        assert!(
+            paths.contains_key("/api/simulator/scenarios"),
+            "OpenAPI 应包含 GET /api/simulator/scenarios 端点"
+        );
+        assert!(
+            paths.contains_key("/api/simulator/validate"),
+            "OpenAPI 应包含 POST /api/simulator/validate 端点"
+        );
+        assert!(
+            paths.contains_key("/api/plugins/market/search"),
+            "OpenAPI 应包含 GET /api/plugins/market/search 端点"
+        );
+        assert!(
+            paths.contains_key("/api/plugins/market/install"),
+            "OpenAPI 应包含 POST /api/plugins/market/install 端点"
+        );
+
+        // 验证新端点的 HTTP 方法正确
+        assert_eq!(
+            json["paths"]["/api/simulator/run"]["post"]["operationId"],
+            "run_handler"
+        );
+        assert_eq!(
+            json["paths"]["/api/simulator/scenarios"]["get"]["operationId"],
+            "scenarios_handler"
+        );
+        assert_eq!(
+            json["paths"]["/api/simulator/validate"]["post"]["operationId"],
+            "validate_handler"
+        );
+        assert_eq!(
+            json["paths"]["/api/plugins/market/search"]["get"]["operationId"],
+            "search_handler"
+        );
+        assert_eq!(
+            json["paths"]["/api/plugins/market/install"]["post"]["operationId"],
+            "install_handler"
+        );
+
+        // 验证 components.schemas 中包含新 schema
+        let schemas = json["components"]["schemas"]
+            .as_object()
+            .expect("components.schemas 应为 JSON 对象");
+        assert!(schemas.contains_key("SimulatorRunRequest"), "缺少 SimulatorRunRequest schema");
+        assert!(schemas.contains_key("SimulatorRunResponse"), "缺少 SimulatorRunResponse schema");
+        assert!(schemas.contains_key("ObservationDto"), "缺少 ObservationDto schema");
+        assert!(schemas.contains_key("FaultScenarioDto"), "缺少 FaultScenarioDto schema");
+        assert!(
+            schemas.contains_key("SimulatorScenariosResponse"),
+            "缺少 SimulatorScenariosResponse schema"
+        );
+        assert!(
+            schemas.contains_key("SimulatorValidateRequest"),
+            "缺少 SimulatorValidateRequest schema"
+        );
+        assert!(
+            schemas.contains_key("SimulatorValidateResponse"),
+            "缺少 SimulatorValidateResponse schema"
+        );
+        assert!(
+            schemas.contains_key("MarketSearchResultEntry"),
+            "缺少 MarketSearchResultEntry schema"
+        );
+        assert!(
+            schemas.contains_key("MarketSearchResponse"),
+            "缺少 MarketSearchResponse schema"
+        );
+        assert!(schemas.contains_key("MarketInstallRequest"), "缺少 MarketInstallRequest schema");
+        assert!(
+            schemas.contains_key("MarketInstallResponse"),
+            "缺少 MarketInstallResponse schema"
+        );
     }
 
     #[tokio::test]
@@ -740,8 +973,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_bus_ws_bridge_forwards_events() {
-        use eneros_eventbus::EventBus;
-        use eneros_eventbus::event::{EventType, EventPayload};
+        use eneros_runtime::eventbus::EventBus;
+        use eneros_runtime::eventbus::event::{EventType, EventPayload};
 
         let event_bus = Arc::new(EventBus::new(16));
         let state = AppState::new().with_event_bus(event_bus.clone());
@@ -762,7 +995,7 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Publish an event
-        let event = eneros_eventbus::Event::new(
+        let event = eneros_runtime::eventbus::Event::new(
             EventType::SystemAlarm,
             "test-source",
             EventPayload::Message("bridge test".to_string()),
@@ -785,8 +1018,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_bus_ws_bridge_handles_multiple_clients() {
-        use eneros_eventbus::EventBus;
-        use eneros_eventbus::event::{EventType, EventPayload};
+        use eneros_runtime::eventbus::EventBus;
+        use eneros_runtime::eventbus::event::{EventType, EventPayload};
 
         let event_bus = Arc::new(EventBus::new(16));
         let state = AppState::new().with_event_bus(event_bus.clone());
@@ -807,7 +1040,7 @@ mod tests {
             .expect("bridge should start");
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        let event = eneros_eventbus::Event::new(
+        let event = eneros_runtime::eventbus::Event::new(
             EventType::DeviceConnected,
             "device-mgr",
             EventPayload::DeviceEvent {
@@ -830,5 +1063,204 @@ mod tests {
         assert!(msg2.unwrap().unwrap().contains("DeviceConnected"));
 
         bridge_handle.abort();
+    }
+
+    // ── T029-04: trace_id 中间件测试 ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_trace_id_header_in_response() {
+        let state = AppState::new();
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        // 响应应包含 X-Trace-Id 头
+        assert!(
+            response.headers().contains_key("x-trace-id"),
+            "response should contain X-Trace-Id header"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trace_id_reused_from_upstream() {
+        let state = AppState::new();
+        let app = create_router(state);
+
+        let upstream_trace_id = "550e8400-e29b-41d4-a716-446655440000";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header("x-trace-id", upstream_trace_id)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let trace_id = response
+            .headers()
+            .get("x-trace-id")
+            .expect("response should have X-Trace-Id header")
+            .to_str()
+            .unwrap();
+        // 上游传入的 trace_id 应被复用
+        assert_eq!(
+            trace_id, upstream_trace_id,
+            "upstream trace_id should be reused"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trace_id_is_valid_uuid_when_not_provided() {
+        let state = AppState::new();
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let trace_id = response
+            .headers()
+            .get("x-trace-id")
+            .expect("response should have X-Trace-Id header")
+            .to_str()
+            .unwrap();
+        // 未传入上游 trace_id 时，应生成有效的 UUID v4
+        assert!(
+            uuid::Uuid::parse_str(trace_id).is_ok(),
+            "generated trace_id should be a valid UUID: {}",
+            trace_id
+        );
+    }
+
+    // ── T029-05: 动态日志级别 API 测试 ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_log_level() {
+        let state = AppState::new();
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/log-level")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(json["level"].is_string(), "level should be a string");
+        assert!(
+            json["available_levels"].is_array(),
+            "available_levels should be an array"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_log_level_valid() {
+        let state = AppState::new();
+        let app = create_router(state);
+
+        let body = serde_json::json!({"level": "debug"});
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/log-level")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["current_level"], "debug");
+        assert_eq!(json["previous_level"], "info");
+        assert_eq!(json["result"], "success");
+    }
+
+    #[tokio::test]
+    async fn test_set_log_level_invalid() {
+        let state = AppState::new();
+        let app = create_router(state);
+
+        let body = serde_json::json!({"level": "verbose"});
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/log-level")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_set_log_level_with_reload_handle() {
+        // 测试带有 reload handle 的真实动态级别切换
+        let filter = tracing_subscriber::EnvFilter::new("info");
+        let (_filter_layer, reload_handle) =
+            tracing_subscriber::reload::Layer::new(filter);
+
+        let state = AppState::new()
+            .with_log_reload_handle(reload_handle)
+            .with_initial_log_level("info");
+        let app = create_router(state);
+
+        // 切换到 debug
+        let body = serde_json::json!({"level": "debug"});
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/log-level")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["current_level"], "debug");
+        assert_eq!(json["previous_level"], "info");
     }
 }

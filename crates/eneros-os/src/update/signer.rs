@@ -12,11 +12,21 @@ use ed25519_dalek::{
 };
 use std::path::Path;
 
+// KeyStore 集成 (v0.24.0 — Task 2)
+use crate::security::keystore::KeyStore;
+
 /// Ed25519 私钥（封装 ed25519-dalek 的 SigningKey）
 pub struct SigningKey(DalekSigningKey);
 
 /// Ed25519 公钥（封装 ed25519-dalek 的 VerifyingKey）
 pub struct VerifyingKey(DalekVerifyingKey);
+
+impl SigningKey {
+    /// 返回私钥的 32 字节原始表示
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
+}
 
 #[cfg(target_os = "windows")]
 #[link(name = "advapi32")]
@@ -155,6 +165,41 @@ fn write_file_secure(path: &Path, content: &str) -> Result<(), UpdateError> {
 fn write_file_secure(path: &Path, content: &str) -> Result<(), UpdateError> {
     std::fs::write(path, content)?;
     Ok(())
+}
+
+// ============================================================================
+// KeyStore 集成 (v0.24.0 — Task 2)
+// ============================================================================
+
+/// 从 KeyStore 加载签名密钥
+///
+/// 从 keystore 读取指定 key_id 的 Active 版本密钥数据，
+/// 转换为 Ed25519 SigningKey。密钥数据应为 32 字节原始私钥。
+pub fn load_signing_key_from_keystore(
+    keystore: &dyn KeyStore,
+    key_id: &str,
+) -> Result<SigningKey, UpdateError> {
+    let key_data = keystore
+        .load(key_id, None)
+        .map_err(|e| UpdateError::Key(format!("keystore load failed: {}", e)))?;
+    signing_key_from_bytes(&key_data)
+}
+
+/// 轮换签名密钥
+///
+/// 生成新的 Ed25519 密钥对，将私钥存储到 keystore（创建新版本），
+/// 返回新的 (SigningKey, VerifyingKey)。
+pub fn rotate_signing_key(
+    keystore: &dyn KeyStore,
+    key_id: &str,
+) -> Result<(SigningKey, VerifyingKey), UpdateError> {
+    // 1. 生成新密钥对
+    let (signing_key, verifying_key) = generate_keypair()?;
+    // 2. 存储到 keystore（创建新版本，旧版本自动标记 Retired）
+    keystore
+        .store(key_id, signing_key.to_bytes().as_slice())
+        .map_err(|e| UpdateError::Key(format!("keystore store failed: {}", e)))?;
+    Ok((signing_key, verifying_key))
 }
 
 #[cfg(test)]

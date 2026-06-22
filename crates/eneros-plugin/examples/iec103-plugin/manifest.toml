@@ -1,0 +1,13 @@
+[plugin]
+name = "iec103-adapter"
+version = "0.1.0"
+api_version = "0.27.0"
+plugin_type = "protocol"
+description = "IEC 60870-5-103 protocol adapter (stub)"
+author = "EnerOS Team"
+
+[dependencies]
+plugins = []
+
+[security]
+signer = ""

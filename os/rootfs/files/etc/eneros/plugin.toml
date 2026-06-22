@@ -1,0 +1,43 @@
+# EnerOS 插件系统配置
+# /etc/eneros/plugin.toml
+
+[plugin]
+# 插件目录（动态库 .so/.dll/.dylib 与 manifest.toml 存放位置）
+plugin_dir = "/var/lib/eneros/plugins"
+
+# 可信公钥目录（Ed25519 公钥 .pub 文件存放位置）
+trusted_keys_dir = "/etc/eneros/keys"
+
+# 是否强制要求插件签名（生产环境必须为 true，开发/测试可设为 false）
+require_signature = true
+
+# 是否启用 seccomp 沙箱（仅 Linux 生效）
+enable_seccomp = true
+
+# 是否启用资源配额（cgroups v2，仅 Linux 生效）
+enable_quota = true
+
+[quota]
+# 默认 CPU 配额百分比（相对单核，100 = 1 个完整 CPU 核）
+default_cpu_percent = 50
+
+# 默认内存上限（MB）
+default_memory_mb = 256
+
+[sandbox]
+# 允许插件访问的路径白名单（只读访问，写入需显式声明）
+allowed_paths = [
+    "/etc/eneros/plugins",
+    "/var/lib/eneros/plugins",
+]
+
+# 禁止插件访问的路径黑名单（即使白名单中包含也会被拒绝）
+denied_paths = [
+    "/etc/shadow",
+    "/etc/eneros/keys",
+    "/root",
+]
+
+# 允许插件访问的网络目标（CIDR 或 host:port，留空表示禁止所有网络）
+# 示例：["127.0.0.1/32", "192.168.1.0/24:502"]
+allowed_network = []

@@ -19,8 +19,8 @@
 //!
 //! Because raw Ethernet sockets require elevated privileges and are
 //! platform-specific, the transport is abstracted behind `GooseTransport`.
-//! Production deployments use `PcapTransport` (libpcap); tests use
-//! `MockTransport` which injects raw frames directly.
+//! Production deployments use `AfPacketTransport` (Linux AF_PACKET); tests use
+//! `MockGooseTransport` which injects raw frames directly.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -33,6 +33,10 @@ use crate::adapter::{
     SharedState, new_shared_state,
 };
 use crate::protocol::ProtocolType;
+// AF_PACKET 传输集成（Linux 原始套接字，用于生产环境 GOOSE Layer 2 直采）
+use crate::adapters::af_packet::{AfPacketConfig, AdapterError as AfPacketAdapterError};
+#[cfg(target_os = "linux")]
+use crate::adapters::af_packet::AfPacketTransport;
 
 /// GOOSE EtherType (IEEE 802.3)
 pub const GOOSE_ETHERTYPE: u16 = 0x88B8;
@@ -156,6 +160,9 @@ impl GooseFrame {
         }
         let appid = u16::from_be_bytes([payload[0], payload[1]]);
         let length = u16::from_be_bytes([payload[2], payload[3]]) as usize;
+        if length < 8 {
+            return Err(GooseParseError::HeaderTooShort);
+        }
         // Reserved 4 bytes at payload[4..8]
         let pdu = &payload[8..];
         if pdu.len() < length.saturating_sub(8) {
@@ -387,10 +394,11 @@ fn parse_all_data(data: &[u8]) -> std::result::Result<Vec<GooseData>, GooseParse
             0x01 => GooseData::Bool(decode_boolean(content)),
             0x03 => {
                 // BIT STRING — first byte is unused bits count
-                if content.is_empty() {
-                    GooseData::Quality(0)
-                } else {
+                if content.len() >= 2 {
                     GooseData::Quality(content[1])
+                } else {
+                    // content 只有 unused bits 字节或为空，无实际数据
+                    GooseData::Quality(0)
                 }
             }
             0x04 => {
@@ -482,7 +490,7 @@ fn encode_integer(buf: &mut Vec<u8>, tag: u8, val: i64) {
             bytes.push((v & 0xFF) as u8);
             v >>= 8;
         }
-        if bytes.last().map_or(false, |&b| b & 0x80 != 0) {
+        if bytes.last().is_some_and(|&b| b & 0x80 != 0) {
             bytes.push(0);
         }
         bytes.reverse();
@@ -494,7 +502,7 @@ fn encode_integer(buf: &mut Vec<u8>, tag: u8, val: i64) {
         while v != -1 || bytes.is_empty() {
             bytes.push((v & 0xFF) as u8);
             v >>= 8;
-            if v == -1 && bytes.last().map_or(false, |&b| b & 0x80 != 0) {
+            if v == -1 && bytes.last().is_some_and(|&b| b & 0x80 != 0) {
                 break;
             }
         }
@@ -539,18 +547,31 @@ fn encode_octet_string(buf: &mut Vec<u8>, tag: u8, data: &[u8]) {
 
 /// Transport abstraction for GOOSE frame I/O.
 ///
-/// Production uses libpcap (`PcapTransport`); tests use `MockTransport`.
+/// Production uses Linux AF_PACKET (`AfPacketTransport`); tests use
+/// `MockGooseTransport`. The transport handles raw Ethernet frame I/O —
+/// callers provide/expect full Ethernet frames (dst MAC + src MAC +
+/// EtherType + payload).
 #[async_trait]
 pub trait GooseTransport: Send + Sync {
     /// Receive the next GOOSE frame (blocks until a frame is available).
-    async fn receive(&mut self) -> std::result::Result<Vec<u8>, String>;
+    ///
+    /// Returns the full Ethernet frame (including the 14-byte header).
+    /// Implementations are expected to filter by EtherType 0x88B8.
+    async fn receive(&self) -> std::result::Result<Vec<u8>, String>;
     /// Send a raw Ethernet frame.
-    async fn send(&mut self, frame: &[u8]) -> std::result::Result<(), String>;
+    ///
+    /// The `frame` argument must be a complete Ethernet frame (dst MAC +
+    /// src MAC + EtherType + payload).
+    async fn send(&self, frame: &[u8]) -> std::result::Result<(), String>;
 }
 
 /// Mock transport for testing — injects frames via a channel.
 pub struct MockGooseTransport {
-    rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    rx: Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>,
+    /// Retained sender to keep the receive channel open. In `new()`, a clone
+    /// is also returned to the caller for injecting frames.
+    /// 该字段从不被读取，仅用于保持通道开启（防止 `receive()` 立即返回错误）。
+    #[allow(dead_code)]
     tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     sent: Arc<Mutex<Vec<Vec<u8>>>>,
 }
@@ -559,13 +580,12 @@ impl MockGooseTransport {
     /// Create a mock transport and a sender handle for injecting frames.
     pub fn new() -> (Self, tokio::sync::mpsc::Sender<Vec<u8>>) {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let (echo_tx, _echo_rx) = tokio::sync::mpsc::channel(64);
         let sent = Arc::new(Mutex::new(Vec::new()));
         (
             Self {
-                rx,
-                tx: echo_tx,
-                sent: sent.clone(),
+                rx: Mutex::new(rx),
+                tx: tx.clone(),
+                sent,
             },
             tx,
         )
@@ -579,21 +599,28 @@ impl MockGooseTransport {
 
 impl Default for MockGooseTransport {
     fn default() -> Self {
-        let (t, _sender) = Self::new();
-        t
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        Self {
+            rx: Mutex::new(rx),
+            tx,
+            sent,
+        }
     }
 }
 
 #[async_trait]
 impl GooseTransport for MockGooseTransport {
-    async fn receive(&mut self) -> std::result::Result<Vec<u8>, String> {
+    async fn receive(&self) -> std::result::Result<Vec<u8>, String> {
         self.rx
+            .lock()
+            .await
             .recv()
             .await
             .ok_or_else(|| "channel closed".to_string())
     }
 
-    async fn send(&mut self, frame: &[u8]) -> std::result::Result<(), String> {
+    async fn send(&self, frame: &[u8]) -> std::result::Result<(), String> {
         self.sent.lock().await.push(frame.to_vec());
         Ok(())
     }
@@ -605,13 +632,14 @@ impl GooseTransport for MockGooseTransport {
 /// dataset values via the `ProtocolAdapter` trait. Address format:
 /// `dataset_index` (e.g., "0" for the first entry in allData).
 pub struct GooseAdapter {
-    transport: Arc<Mutex<Box<dyn GooseTransport>>>,
+    transport: Arc<Box<dyn GooseTransport>>,
     shared_state: SharedState,
     name: String,
     config: GooseConfig,
     /// Cache of latest GOOSE frame per gocb_ref
     cache: Arc<RwLock<HashMap<String, GooseFrame>>>,
     /// Callbacks registered via subscribe()
+    #[allow(clippy::type_complexity)]
     callbacks: Arc<RwLock<Vec<Box<dyn Fn(DataPoint) + Send + Sync>>>>,
     /// Receive task handle
     recv_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -619,9 +647,12 @@ pub struct GooseAdapter {
 
 impl GooseAdapter {
     /// Create a new GOOSE adapter with the given transport.
+    ///
+    /// 任意实现了 `GooseTransport` 的传输层均可注入，包括
+    /// `MockGooseTransport`（测试）与 `AfPacketTransport`（生产）。
     pub fn with_transport(name: &str, config: GooseConfig, transport: Box<dyn GooseTransport>) -> Self {
         Self {
-            transport: Arc::new(Mutex::new(transport)),
+            transport: Arc::new(transport),
             shared_state: new_shared_state(),
             name: name.to_string(),
             config,
@@ -636,6 +667,46 @@ impl GooseAdapter {
         let (transport, sender) = MockGooseTransport::new();
         let adapter = Self::with_transport(name, GooseConfig::default(), Box::new(transport));
         (adapter, sender)
+    }
+
+    /// 使用 AF_PACKET 传输创建 GOOSE 适配器（生产环境推荐）。
+    ///
+    /// 在 Linux 平台创建 `AfPacketTransport` 并接入 `GooseAdapter`，
+    /// 实现真实的 Layer 2 GOOSE 收发。非 Linux 平台返回
+    /// `AdapterError::Unsupported`。
+    ///
+    /// # 参数
+    /// - `name`: 适配器实例名称
+    /// - `config`: GOOSE 协议配置（APPID 过滤、gocb_ref 过滤、组播 MAC 等）
+    /// - `af_config`: AF_PACKET 传输配置（网卡名、源 MAC），通常通过
+    ///   `AfPacketConfig::for_goose(interface, src_mac)` 构建
+    ///
+    /// # 平台
+    /// - Linux：创建 `AF_PACKET + SOCK_RAW` 套接字，需要 `CAP_NET_RAW` 能力
+    /// - 非 Linux：返回 `AdapterError::Unsupported`
+    #[cfg(target_os = "linux")]
+    pub fn with_af_packet(
+        name: &str,
+        config: GooseConfig,
+        af_config: AfPacketConfig,
+    ) -> std::result::Result<Self, AfPacketAdapterError> {
+        let transport = AfPacketTransport::new(af_config)?;
+        Ok(Self::with_transport(name, config, Box::new(transport)))
+    }
+
+    /// 非 Linux 平台的 `with_af_packet` stub —— 始终返回 `Unsupported`。
+    ///
+    /// AF_PACKET 是 Linux 专有的原始套接字机制，在 Windows/macOS 等
+    /// 平台不可用。此 stub 保证 API 跨平台编译通过。
+    #[cfg(not(target_os = "linux"))]
+    pub fn with_af_packet(
+        _name: &str,
+        _config: GooseConfig,
+        _af_config: AfPacketConfig,
+    ) -> std::result::Result<Self, AfPacketAdapterError> {
+        Err(AfPacketAdapterError::Unsupported(
+            "AF_PACKET requires Linux".into(),
+        ))
     }
 
     /// Get the latest cached frame for a given gocb_ref.
@@ -680,14 +751,11 @@ impl GooseAdapter {
 
         let handle = tokio::spawn(async move {
             loop {
-                let frame_bytes = {
-                    let mut t = transport.lock().await;
-                    match t.receive().await {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            tracing::warn!("GOOSE receive error: {}", e);
-                            break;
-                        }
+                let frame_bytes = match transport.receive().await {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("GOOSE receive error: {}", e);
+                        break;
                     }
                 };
 
@@ -743,8 +811,6 @@ impl GooseAdapter {
     pub async fn publish(&self, frame: &GooseFrame, src_mac: &[u8; 6]) -> Result<()> {
         let bytes = frame.serialize(src_mac);
         self.transport
-            .lock()
-            .await
             .send(&bytes)
             .await
             .map_err(|e| eneros_core::EnerOSError::Device(format!("GOOSE send failed: {}", e)))?;
@@ -956,7 +1022,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_read_cached() {
-        let (mut adapter, _sender) = GooseAdapter::new_mock("test-goose");
+        let (adapter, _sender) = GooseAdapter::new_mock("test-goose");
         adapter.shared_state.mark_connected();
 
         let frame = make_test_frame(
@@ -976,7 +1042,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_read_missing() {
-        let (mut adapter, _sender) = GooseAdapter::new_mock("test-goose");
+        let (adapter, _sender) = GooseAdapter::new_mock("test-goose");
         adapter.shared_state.mark_connected();
 
         let dp = adapter.read("missing/0").await.unwrap();
@@ -985,7 +1051,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_read_out_of_range() {
-        let (mut adapter, _sender) = GooseAdapter::new_mock("test-goose");
+        let (adapter, _sender) = GooseAdapter::new_mock("test-goose");
         adapter.shared_state.mark_connected();
 
         let frame = make_test_frame(1, "gcb1", vec![GooseData::Bool(true)]);
@@ -1018,17 +1084,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_publish() {
-        let (mut adapter, _sender) = GooseAdapter::new_mock("test-goose");
+        let (adapter, _sender) = GooseAdapter::new_mock("test-goose");
         let frame = make_test_frame(1, "gcb1", vec![GooseData::Bool(true)]);
         let src_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
 
         adapter.publish(&frame, &src_mac).await.unwrap();
 
-        let transport = adapter.transport.lock().await;
-        // Verify frame was sent (we can't easily downcast here, but record_sent was called)
+        // Verify frame was sent (record_sent was called)
         let stats = adapter.statistics();
         assert_eq!(stats.messages_sent, 1);
-        drop(transport);
     }
 
     #[tokio::test]
@@ -1097,7 +1161,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cached_refs() {
-        let (mut adapter, _) = GooseAdapter::new_mock("test");
+        let (adapter, _) = GooseAdapter::new_mock("test");
         adapter.shared_state.mark_connected();
 
         adapter
@@ -1115,7 +1179,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_latest_frame() {
-        let (mut adapter, _) = GooseAdapter::new_mock("test");
+        let (adapter, _) = GooseAdapter::new_mock("test");
         adapter.shared_state.mark_connected();
 
         let frame = make_test_frame(1, "gcb1", vec![GooseData::Bool(true)]);
@@ -1124,5 +1188,291 @@ mod tests {
         let latest = adapter.get_latest_frame("gcb1").await.unwrap();
         assert_eq!(latest.appid, 1);
         assert_eq!(latest.gocb_ref, "gcb1");
+    }
+
+    // ========================================================================
+    // AF_PACKET 集成测试（Task 2）
+    // ========================================================================
+
+    /// 非 Linux 平台：`with_af_packet` 应返回 `Unsupported` 错误。
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_with_af_packet_unsupported_on_nonlinux() {
+        let cfg = AfPacketConfig::for_goose("eth0", [0; 6]);
+        let result = GooseAdapter::with_af_packet("test", GooseConfig::default(), cfg);
+        assert!(
+            matches!(result, Err(AfPacketAdapterError::Unsupported(_))),
+            "非 Linux 平台应返回 Unsupported 错误"
+        );
+    }
+
+    /// Linux 平台：使用不存在的网卡名应返回错误。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_with_af_packet_nonexistent_interface() {
+        let cfg = AfPacketConfig::for_goose("nonexistent_iface_xyz_12345", [0; 6]);
+        let result = GooseAdapter::with_af_packet("test", GooseConfig::default(), cfg);
+        assert!(result.is_err(), "不存在的网卡应返回错误");
+    }
+
+    /// GOOSE PDU 编码 → transport.send → transport.recv → GOOSE PDU 解码 往返测试。
+    #[tokio::test]
+    async fn test_goose_pdu_roundtrip_through_transport() {
+        let (transport, sender) = MockGooseTransport::new();
+
+        let frame = GooseFrame {
+            appid: 0x0001,
+            gocb_ref: "IED1_LD0/LLN0$GO$gcb1".into(),
+            time_allowed_to_live: 1000,
+            dat_set: "IED1_LD0/LLN0$dsGeneric".into(),
+            go_id: "goID-test".into(),
+            t: 1700000000000,
+            st_num: 1,
+            sq_num: 0,
+            simulation: false,
+            conf_rev: 1,
+            nds_com: false,
+            num_dat_set_entries: 3,
+            all_data: vec![
+                GooseData::Bool(true),
+                GooseData::Int(42),
+                GooseData::Float(220.5),
+            ],
+        };
+        let src_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+        // 1. 编码：序列化为完整以太网帧
+        let bytes = frame.serialize(&src_mac);
+        assert!(bytes.len() > 14, "序列化后的帧应包含以太网头");
+
+        // 2. transport.send
+        transport.send(&bytes).await.expect("send should succeed");
+
+        // 3. 取回已发送的帧，注入到接收通道模拟回环
+        let sent = transport.sent_frames().await;
+        assert_eq!(sent.len(), 1, "应记录 1 帧已发送");
+        sender.send(sent[0].clone()).await.unwrap();
+
+        // 4. transport.recv
+        let received = transport.receive().await.expect("receive should succeed");
+        assert_eq!(received, bytes, "接收到的帧应与发送的帧一致");
+
+        // 5. 解码：解析回 GooseFrame
+        let parsed = GooseFrame::parse(&received).expect("parse should succeed");
+        assert_eq!(parsed.appid, frame.appid);
+        assert_eq!(parsed.gocb_ref, frame.gocb_ref);
+        assert_eq!(parsed.dat_set, frame.dat_set);
+        assert_eq!(parsed.go_id, frame.go_id);
+        assert_eq!(parsed.st_num, frame.st_num);
+        assert_eq!(parsed.sq_num, frame.sq_num);
+        assert_eq!(parsed.conf_rev, frame.conf_rev);
+        assert_eq!(parsed.all_data.len(), frame.all_data.len());
+        assert_eq!(parsed.all_data[0], GooseData::Bool(true));
+        assert_eq!(parsed.all_data[1], GooseData::Int(42));
+    }
+
+    /// GooseAdapter 完整收发流程测试：
+    /// publish → 注入回接收通道 → receive loop 解析 → cache 命中 → read 读取。
+    #[tokio::test]
+    async fn test_adapter_complete_send_receive_flow() {
+        let (adapter, sender) = GooseAdapter::new_mock("test-flow");
+        adapter.shared_state.mark_connected();
+
+        adapter.start_receive_loop().await;
+
+        let frame = GooseFrame {
+            appid: 0x0001,
+            gocb_ref: "flow_test_gcb".into(),
+            time_allowed_to_live: 1000,
+            dat_set: "IED1_LD0/LLN0$dsGeneric".into(),
+            go_id: String::new(),
+            t: 1700000000000,
+            st_num: 1,
+            sq_num: 0,
+            simulation: false,
+            conf_rev: 1,
+            nds_com: false,
+            num_dat_set_entries: 2,
+            all_data: vec![GooseData::Bool(true), GooseData::Int(99)],
+        };
+        let src_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+        // 1. 通过 adapter.publish 发送
+        adapter.publish(&frame, &src_mac).await.expect("publish should succeed");
+
+        let stats = adapter.statistics();
+        assert_eq!(stats.messages_sent, 1, "应记录 1 帧已发送");
+
+        // 2. 将序列化后的帧注入到接收通道（模拟网络回环）
+        let sent_bytes = frame.serialize(&src_mac);
+        sender.send(sent_bytes).await.unwrap();
+
+        // 3. 等待接收循环处理
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+
+        // 4. 验证 cache 中有该帧
+        let latest = adapter.get_latest_frame("flow_test_gcb").await;
+        assert!(latest.is_some(), "帧应已进入缓存");
+        let latest = latest.unwrap();
+        assert_eq!(latest.appid, 0x0001);
+        assert_eq!(latest.gocb_ref, "flow_test_gcb");
+        assert_eq!(latest.all_data.len(), 2);
+        assert_eq!(latest.all_data[0], GooseData::Bool(true));
+        assert_eq!(latest.all_data[1], GooseData::Int(99));
+
+        // 5. 通过 read 读取数据点
+        let dp0 = adapter.read("flow_test_gcb/0").await.unwrap();
+        assert_eq!(dp0.value, DataValue::Bool(true));
+        assert_eq!(dp0.quality, DataQuality::Good);
+
+        let dp1 = adapter.read("flow_test_gcb/1").await.unwrap();
+        assert_eq!(dp1.value, DataValue::Int64(99));
+        assert_eq!(dp1.quality, DataQuality::Good);
+
+        // 6. 验证接收统计
+        let stats = adapter.statistics();
+        assert_eq!(stats.messages_received, 1, "应记录 1 帧已接收");
+
+        adapter.stop_receive_loop().await;
+    }
+
+    /// 验证 `with_transport` 可接受任意 `GooseTransport` 实现。
+    #[tokio::test]
+    async fn test_with_transport_custom_implementation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingTransport {
+            send_count: Arc<AtomicUsize>,
+            recv_count: Arc<AtomicUsize>,
+            pending: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl GooseTransport for CountingTransport {
+            async fn receive(&self) -> std::result::Result<Vec<u8>, String> {
+                self.recv_count.fetch_add(1, Ordering::SeqCst);
+                self.pending
+                    .lock()
+                    .await
+                    .recv()
+                    .await
+                    .ok_or_else(|| "closed".into())
+            }
+            async fn send(&self, frame: &[u8]) -> std::result::Result<(), String> {
+                self.send_count.fetch_add(1, Ordering::SeqCst);
+                assert!(frame.len() > 14, "发送的帧应包含以太网头");
+                Ok(())
+            }
+        }
+
+        let send_count = Arc::new(AtomicUsize::new(0));
+        let recv_count = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+
+        let transport = CountingTransport {
+            send_count: send_count.clone(),
+            recv_count: recv_count.clone(),
+            pending: tokio::sync::Mutex::new(rx),
+        };
+
+        let adapter = GooseAdapter::with_transport(
+            "counting-test",
+            GooseConfig::default(),
+            Box::new(transport),
+        );
+
+        let frame = make_test_frame(1, "custom_gcb", vec![GooseData::Bool(true)]);
+        adapter.publish(&frame, &[0; 6]).await.unwrap();
+        assert_eq!(send_count.load(Ordering::SeqCst), 1, "send 应被调用 1 次");
+
+        let bytes = frame.serialize(&[0; 6]);
+        tx.send(bytes).await.unwrap();
+
+        adapter.start_receive_loop().await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+        adapter.stop_receive_loop().await;
+
+        assert!(recv_count.load(Ordering::SeqCst) >= 1, "receive 应被调用至少 1 次");
+
+        let latest = adapter.get_latest_frame("custom_gcb").await;
+        assert!(latest.is_some(), "帧应已进入缓存");
+    }
+
+    // ========================================================================
+    // 新增测试：修复验证（C4 / H14 / M15）
+    // ========================================================================
+
+    /// C4: BIT STRING content 长度为 1 时不 panic，返回 Quality(0)。
+    #[test]
+    fn test_parse_bit_string_content_length_1_no_panic() {
+        // 构造一个 allData 序列，包含一个 BIT STRING，content 仅 1 字节（unused bits）
+        // tag=0x03, length=0x01, content=[0x00]
+        let all_data_bytes = vec![0x03, 0x01, 0x00];
+        let result = parse_all_data(&all_data_bytes);
+        assert!(result.is_ok(), "BIT STRING content len=1 不应 panic");
+        let data = result.unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0], GooseData::Quality(0));
+    }
+
+    /// C4: BIT STRING content 长度为 0 时不 panic，返回 Quality(0)。
+    #[test]
+    fn test_parse_bit_string_content_length_0_no_panic() {
+        // tag=0x03, length=0x00 (空 content)
+        let all_data_bytes = vec![0x03, 0x00];
+        let result = parse_all_data(&all_data_bytes);
+        assert!(result.is_ok(), "BIT STRING content len=0 不应 panic");
+        let data = result.unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0], GooseData::Quality(0));
+    }
+
+    /// C4: BIT STRING content 长度 >= 2 时正常解析 Quality 值。
+    #[test]
+    fn test_parse_bit_string_content_length_2_normal() {
+        // tag=0x03, length=0x02, content=[0x00, 0x0A] → Quality(0x0A)
+        let all_data_bytes = vec![0x03, 0x02, 0x00, 0x0A];
+        let result = parse_all_data(&all_data_bytes);
+        assert!(result.is_ok());
+        let data = result.unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0], GooseData::Quality(0x0A));
+    }
+
+    /// M15: GOOSE length 字段 < 8 应返回 HeaderTooShort 错误。
+    #[test]
+    fn test_parse_length_field_too_short() {
+        let mut frame = vec![0u8; 22];
+        // Ethernet header
+        frame[12] = (GOOSE_ETHERTYPE >> 8) as u8;
+        frame[13] = GOOSE_ETHERTYPE as u8;
+        // GOOSE header
+        frame[14] = 0x00;
+        frame[15] = 0x01; // APPID
+        frame[16] = 0x00;
+        frame[17] = 0x07; // Length = 7 (< 8，应被拒绝)
+                           // Reserved 4 bytes at [18..22]
+        let result = GooseFrame::parse(&frame);
+        assert!(
+            matches!(result, Err(GooseParseError::HeaderTooShort)),
+            "length < 8 应返回 HeaderTooShort"
+        );
+    }
+
+    /// H14: MockGooseTransport::default() 的 receive() 不应立即返回错误（通道保持开启）。
+    #[tokio::test]
+    async fn test_mock_transport_default_channel_not_closed() {
+        let transport = MockGooseTransport::default();
+        // 通道应保持开启：receive() 应阻塞等待，而非立即返回 "channel closed"
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_millis(100),
+            transport.receive(),
+        )
+        .await;
+        // 超时意味着 receive() 在阻塞等待（通道未关闭）—— 这是预期行为
+        assert!(
+            result.is_err(),
+            "receive() 应阻塞等待（超时），而非立即返回错误"
+        );
     }
 }

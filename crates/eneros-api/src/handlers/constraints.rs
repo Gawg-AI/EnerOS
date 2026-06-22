@@ -5,6 +5,13 @@ use crate::app::AppState;
 use crate::types::{ApiResponse, ConstraintViolationResponse};
 
 /// GET /api/constraints
+#[utoipa::path(
+    get,
+    path = "/api/constraints",
+    responses(
+        (status = 200, description = "当前约束越限列表", body = ConstraintViolationResponse),
+    )
+)]
 pub async fn constraints_handler(
     State(state): State<AppState>,
 ) -> Json<ApiResponse<Vec<ConstraintViolationResponse>>> {

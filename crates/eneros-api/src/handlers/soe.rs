@@ -36,7 +36,7 @@ pub struct SoeLatestParams {
 pub struct SoeResponse {
     pub success: bool,
     pub count: usize,
-    pub data: Vec<eneros_timeseries::SoeRecord>,
+    pub data: Vec<eneros_runtime::timeseries::SoeRecord>,
     pub error: Option<String>,
 }
 
@@ -100,7 +100,7 @@ pub async fn query_handler(
     };
 
     let event_type = match &params.event_type {
-        Some(s) => match eneros_timeseries::SoeEventType::from_str(s) {
+        Some(s) => match eneros_runtime::timeseries::SoeEventType::from_str(s) {
             Some(et) => Some(et),
             None => {
                 let resp = SoeResponse {
@@ -211,7 +211,7 @@ mod tests {
     use std::sync::Arc;
     use tower::util::ServiceExt;
 
-    fn app_with_recorder(recorder: Option<Arc<eneros_timeseries::SoeRecorder>>) -> axum::Router {
+    fn app_with_recorder(recorder: Option<Arc<eneros_runtime::timeseries::SoeRecorder>>) -> axum::Router {
         let mut state = AppState::new();
         if let Some(r) = recorder {
             state = state.with_soe_recorder(r);
@@ -245,13 +245,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_soe_handler_query() {
-        let recorder = Arc::new(eneros_timeseries::SoeRecorder::new_memory());
+        let recorder = Arc::new(eneros_runtime::timeseries::SoeRecorder::new_memory());
         // Seed a couple of events.
         recorder
-            .record_now("dev1", eneros_timeseries::SoeEventType::BreakerOpen, 1, "1 -> 0")
+            .record_now("dev1", eneros_runtime::timeseries::SoeEventType::BreakerOpen, 1, "1 -> 0")
             .unwrap();
         recorder
-            .record_now("dev2", eneros_timeseries::SoeEventType::Alarm, 2, "overload")
+            .record_now("dev2", eneros_runtime::timeseries::SoeEventType::Alarm, 2, "overload")
             .unwrap();
 
         let app = app_with_recorder(Some(recorder.clone()));
@@ -279,10 +279,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_soe_handler_latest_default_limit() {
-        let recorder = Arc::new(eneros_timeseries::SoeRecorder::new_memory());
+        let recorder = Arc::new(eneros_runtime::timeseries::SoeRecorder::new_memory());
         for i in 0..5 {
             recorder
-                .record_now("d", eneros_timeseries::SoeEventType::Manual, 1, &format!("v{}", i))
+                .record_now("d", eneros_runtime::timeseries::SoeEventType::Manual, 1, &format!("v{}", i))
                 .unwrap();
         }
 
@@ -311,10 +311,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_soe_handler_latest_with_limit() {
-        let recorder = Arc::new(eneros_timeseries::SoeRecorder::new_memory());
+        let recorder = Arc::new(eneros_runtime::timeseries::SoeRecorder::new_memory());
         for i in 0..10 {
             recorder
-                .record_now("d", eneros_timeseries::SoeEventType::Manual, 1, &format!("v{}", i))
+                .record_now("d", eneros_runtime::timeseries::SoeEventType::Manual, 1, &format!("v{}", i))
                 .unwrap();
         }
 
@@ -342,7 +342,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_soe_handler_bad_event_type() {
-        let recorder = Arc::new(eneros_timeseries::SoeRecorder::new_memory());
+        let recorder = Arc::new(eneros_runtime::timeseries::SoeRecorder::new_memory());
         let app = app_with_recorder(Some(recorder));
 
         let response = app

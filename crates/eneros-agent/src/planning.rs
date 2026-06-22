@@ -798,4 +798,279 @@ mod tests {
         assert!(step.preconditions.contains(&"condition A".to_string()));
         assert_eq!(step.expected_outcome, "result A");
     }
+
+    // ========================================================================
+    // T030-07: 覆盖率补充测试
+    // ========================================================================
+
+    #[test]
+    fn test_goal_new_default_priority() {
+        let goal = Goal::new("voltage_violation", "test goal");
+        assert_eq!(goal.goal_type, "voltage_violation");
+        assert_eq!(goal.description, "test goal");
+        assert_eq!(goal.priority, 0);
+        assert!(goal.params.is_empty());
+    }
+
+    #[test]
+    fn test_goal_with_priority_levels() {
+        let g0 = Goal::new("t", "d").with_priority(0);
+        let g1 = Goal::new("t", "d").with_priority(1);
+        let g2 = Goal::new("t", "d").with_priority(2);
+        assert_eq!(g0.priority, 0);
+        assert_eq!(g1.priority, 1);
+        assert_eq!(g2.priority, 2);
+    }
+
+    #[test]
+    fn test_plan_status_variants() {
+        // PlanStatus 各变体应可比较
+        assert_eq!(PlanStatus::Pending, PlanStatus::Pending);
+        assert_eq!(PlanStatus::InProgress, PlanStatus::InProgress);
+        assert_eq!(PlanStatus::Completed, PlanStatus::Completed);
+        assert_eq!(PlanStatus::Cancelled, PlanStatus::Cancelled);
+        assert_ne!(PlanStatus::Pending, PlanStatus::Completed);
+        assert_eq!(PlanStatus::Failed("err".to_string()), PlanStatus::Failed("err".to_string()));
+    }
+
+    #[test]
+    fn test_plan_get_step() {
+        let mut plan = Plan::new(Goal::new("test", "test"));
+        plan.add_step(PlanStep::new("a", "A", AgentAction::NoOp));
+        plan.add_step(PlanStep::new("b", "B", AgentAction::NoOp));
+
+        assert!(plan.get_step("a").is_some());
+        assert_eq!(plan.get_step("a").unwrap().description, "A");
+        assert!(plan.get_step("b").is_some());
+        assert!(plan.get_step("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_plan_validate_success() {
+        // 合法 DAG 应通过验证
+        let mut plan = Plan::new(Goal::new("test", "test"));
+        plan.add_step(PlanStep::new("a", "A", AgentAction::NoOp));
+        plan.add_step(
+            PlanStep::new("b", "B", AgentAction::NoOp).depends_on_step("a"),
+        );
+        plan.add_step(
+            PlanStep::new("c", "C", AgentAction::NoOp)
+                .depends_on_step("a")
+                .depends_on_step("b"),
+        );
+        assert!(plan.validate().is_ok());
+    }
+
+    #[test]
+    fn test_plan_validate_empty_plan() {
+        let plan = Plan::new(Goal::new("test", "test"));
+        assert!(plan.validate().is_ok());
+    }
+
+    #[test]
+    fn test_plan_validate_self_dependency() {
+        // 自依赖应视为循环
+        let mut plan = Plan::new(Goal::new("test", "test"));
+        plan.add_step(
+            PlanStep::new("a", "A", AgentAction::NoOp).depends_on_step("a"),
+        );
+        assert!(plan.validate().is_err());
+    }
+
+    #[test]
+    fn test_plan_topological_order_empty() {
+        let plan = Plan::new(Goal::new("test", "test"));
+        assert!(plan.topological_order().is_empty());
+    }
+
+    #[test]
+    fn test_plan_topological_order_single_step() {
+        let mut plan = Plan::new(Goal::new("test", "test"));
+        plan.add_step(PlanStep::new("only", "Only step", AgentAction::NoOp));
+        let order: Vec<&str> = plan.topological_order().iter().map(|s| s.step_id.as_str()).collect();
+        assert_eq!(order, vec!["only"]);
+    }
+
+    #[test]
+    fn test_plan_topological_order_diamond() {
+        // 菱形依赖：a → b, a → c, b → d, c → d
+        let mut plan = Plan::new(Goal::new("test", "test"));
+        plan.add_step(PlanStep::new("a", "A", AgentAction::NoOp));
+        plan.add_step(
+            PlanStep::new("b", "B", AgentAction::NoOp).depends_on_step("a"),
+        );
+        plan.add_step(
+            PlanStep::new("c", "C", AgentAction::NoOp).depends_on_step("a"),
+        );
+        plan.add_step(
+            PlanStep::new("d", "D", AgentAction::NoOp)
+                .depends_on_step("b")
+                .depends_on_step("c"),
+        );
+        let order: Vec<&str> = plan.topological_order().iter().map(|s| s.step_id.as_str()).collect();
+        assert_eq!(order.len(), 4);
+        assert_eq!(order[0], "a");
+        assert_eq!(order[3], "d");
+        // b 和 c 的相对顺序由拓扑排序决定，但都在 a 之后、d 之前
+        let b_pos = order.iter().position(|&s| s == "b").unwrap();
+        let c_pos = order.iter().position(|&s| s == "c").unwrap();
+        assert!(b_pos > 0 && b_pos < 3);
+        assert!(c_pos > 0 && c_pos < 3);
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_planner_overload_template() {
+        let planner = RuleBasedPlanner::new();
+        let goal = Goal::new("overload", "Branch 5 overloaded")
+            .with_param("branch_id", "5");
+        let plan = planner.plan(&goal).await.unwrap();
+        assert_eq!(plan.steps.len(), 3);
+        assert_eq!(plan.steps[0].step_id, "check_loading");
+        assert_eq!(plan.steps[1].step_id, "reroute_power");
+        assert_eq!(plan.steps[2].step_id, "verify_loading");
+        assert!(plan.steps[1].depends_on.contains(&"check_loading".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_planner_frequency_deviation_template() {
+        let planner = RuleBasedPlanner::new();
+        let goal = Goal::new("frequency_deviation", "Frequency low");
+        let plan = planner.plan(&goal).await.unwrap();
+        assert_eq!(plan.steps.len(), 3);
+        assert_eq!(plan.steps[0].step_id, "check_balance");
+        assert_eq!(plan.steps[1].step_id, "adjust_setpoints");
+        assert_eq!(plan.steps[2].step_id, "verify_frequency");
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_planner_register_custom_template() {
+        let mut planner = RuleBasedPlanner::new();
+        planner.register_template("custom_goal", |goal| {
+            let mut plan = Plan::new(goal.clone());
+            plan.add_step(PlanStep::new("custom_step", "Custom", AgentAction::NoOp));
+            plan
+        });
+        let goal = Goal::new("custom_goal", "Custom goal");
+        let plan = planner.plan(&goal).await.unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].step_id, "custom_step");
+    }
+
+    #[tokio::test]
+    async fn test_plan_executor_aborts_on_first_failure() {
+        // 首步失败应中止后续步骤
+        // 使用 CallTool 但未配置 ToolEngine → CommandRejected → 视为失败
+        let ctx = test_context();
+        let dispatcher = Arc::new(test_dispatcher(&ctx));
+        let executor = PlanExecutor::new(dispatcher);
+
+        let mut plan = Plan::new(Goal::new("test", "abort test"));
+        plan.add_step(PlanStep::new(
+            "failing_step",
+            "Will fail",
+            AgentAction::CallTool {
+                tool_name: "nonexistent".to_string(),
+                params: serde_json::json!({}),
+            },
+        ));
+        plan.add_step(
+            PlanStep::new("second_step", "Should not run", AgentAction::NoOp)
+                .depends_on_step("failing_step"),
+        );
+
+        let result = executor.execute(&mut plan).await.unwrap();
+        assert!(!result.success);
+        assert_eq!(result.step_results.len(), 1);
+        assert!(!result.step_results[0].success);
+        assert!(matches!(plan.status, PlanStatus::Failed(_)));
+    }
+
+    #[tokio::test]
+    async fn test_plan_executor_parallel_branches() {
+        // 两条独立分支应都能执行
+        let ctx = test_context();
+        let dispatcher = Arc::new(test_dispatcher(&ctx));
+        let executor = PlanExecutor::new(dispatcher);
+
+        let mut plan = Plan::new(Goal::new("test", "parallel branches"));
+        plan.add_step(PlanStep::new("root", "Root", AgentAction::NoOp));
+        plan.add_step(
+            PlanStep::new("branch_a", "Branch A", AgentAction::NoOp).depends_on_step("root"),
+        );
+        plan.add_step(
+            PlanStep::new("branch_b", "Branch B", AgentAction::NoOp).depends_on_step("root"),
+        );
+
+        let result = executor.execute(&mut plan).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.step_results.len(), 3);
+        assert_eq!(plan.status, PlanStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_plan_executor_sets_in_progress_then_completed() {
+        let ctx = test_context();
+        let dispatcher = Arc::new(test_dispatcher(&ctx));
+        let executor = PlanExecutor::new(dispatcher);
+
+        let mut plan = Plan::new(Goal::new("test", "status check"));
+        plan.add_step(PlanStep::new("s1", "Step 1", AgentAction::NoOp));
+
+        // 执行前应为 Pending
+        assert_eq!(plan.status, PlanStatus::Pending);
+
+        let result = executor.execute(&mut plan).await.unwrap();
+        assert!(result.success);
+        // 执行后应为 Completed
+        assert_eq!(plan.status, PlanStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_plan_executor_log_message_action_succeeds() {
+        // LogMessage 动作应成功执行
+        let ctx = test_context();
+        let dispatcher = Arc::new(test_dispatcher(&ctx));
+        let executor = PlanExecutor::new(dispatcher);
+
+        let mut plan = Plan::new(Goal::new("test", "log action"));
+        plan.add_step(PlanStep::new(
+            "log_step",
+            "Log something",
+            AgentAction::LogMessage("test message".to_string()),
+        ));
+
+        let result = executor.execute(&mut plan).await.unwrap();
+        assert!(result.success);
+        assert!(result.step_results[0].success);
+    }
+
+    #[test]
+    fn test_plan_step_default_fields() {
+        // 新建的 PlanStep 默认字段应为空
+        let step = PlanStep::new("s1", "desc", AgentAction::NoOp);
+        assert_eq!(step.step_id, "s1");
+        assert_eq!(step.description, "desc");
+        assert!(step.depends_on.is_empty());
+        assert!(step.preconditions.is_empty());
+        assert!(step.expected_outcome.is_empty());
+    }
+
+    #[test]
+    fn test_plan_new_generates_unique_id() {
+        // 每个 Plan 应有唯一 ID
+        let plan1 = Plan::new(Goal::new("test", "d"));
+        let plan2 = Plan::new(Goal::new("test", "d"));
+        assert_ne!(plan1.id, plan2.id);
+    }
+
+    #[test]
+    fn test_plan_add_step_appends() {
+        let mut plan = Plan::new(Goal::new("test", "d"));
+        assert!(plan.steps.is_empty());
+        plan.add_step(PlanStep::new("a", "A", AgentAction::NoOp));
+        plan.add_step(PlanStep::new("b", "B", AgentAction::NoOp));
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[0].step_id, "a");
+        assert_eq!(plan.steps[1].step_id, "b");
+    }
 }

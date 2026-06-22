@@ -4,7 +4,7 @@ use axum::Json;
 use chrono::Utc;
 use std::collections::HashMap;
 
-use eneros_dashboard::{
+use eneros_runtime::dashboard::{
     agent_panel::{AgentDisplay, AgentPanelData},
     data_panel::{DataPanelData, ReadingDisplay},
     flow_heatmap::{self, BranchFlowData, BusFlowData, FlowHeatmapConfig},
@@ -85,11 +85,11 @@ fn build_agent_panel_data(state: &AppState) -> AgentPanelData {
             .iter()
             .map(|(name, agent_type, authority)| {
                 let type_str = match agent_type {
-                    eneros_agent::AgentType::Dispatcher => "Dispatcher",
-                    eneros_agent::AgentType::Operator => "Operator",
-                    eneros_agent::AgentType::Planner => "Planner",
-                    eneros_agent::AgentType::Trader => "Trader",
-                    eneros_agent::AgentType::Custom(ref s) => s,
+                    eneros_runtime::agent::AgentType::Dispatcher => "Dispatcher",
+                    eneros_runtime::agent::AgentType::Operator => "Operator",
+                    eneros_runtime::agent::AgentType::Planner => "Planner",
+                    eneros_runtime::agent::AgentType::Trader => "Trader",
+                    eneros_runtime::agent::AgentType::Custom(ref s) => s,
                 };
                 let auth_str = match authority {
                     eneros_core::AuthorityLevel::Emergency => "Emergency",
@@ -189,6 +189,13 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> Html<String> {
 }
 
 /// GET /api/dashboard/topology-svg — return topology SVG
+#[utoipa::path(
+    get,
+    path = "/api/dashboard/topology-svg",
+    responses(
+        (status = 200, description = "拓扑 SVG 图像与统计信息", body = TopologySvgResponse),
+    )
+)]
 pub async fn topology_svg_handler(
     State(state): State<AppState>,
 ) -> Json<ApiResponse<TopologySvgResponse>> {
@@ -209,6 +216,13 @@ pub async fn topology_svg_handler(
 }
 
 /// GET /api/dashboard/flow-heatmap — return flow heatmap data as JSON
+#[utoipa::path(
+    get,
+    path = "/api/dashboard/flow-heatmap",
+    responses(
+        (status = 200, description = "潮流热力图数据（母线颜色、支路宽度/颜色）", body = FlowHeatmapResponse),
+    )
+)]
 pub async fn flow_heatmap_handler(
     State(state): State<AppState>,
 ) -> Json<ApiResponse<FlowHeatmapResponse>> {

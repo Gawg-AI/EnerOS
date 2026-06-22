@@ -1,0 +1,55 @@
+[package]
+name = "eneros-benches"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS unified performance benchmark suite (T030-06)"
+
+[dependencies]
+eneros-core = { path = "../crates/eneros-core" }
+eneros-runtime = { path = "../crates/eneros-runtime" }
+eneros-scada = { path = "../crates/eneros-scada" }
+eneros-agent = { path = "../crates/eneros-agent" }
+eneros-gateway = { path = "../crates/eneros-gateway" }
+eneros-os = { path = "../crates/eneros-os" }
+eneros-powerflow = { path = "../crates/eneros-powerflow" }
+eneros-api = { path = "../crates/eneros-api" }
+eneros-constraint = { path = "../crates/eneros-constraint" }
+eneros-eventbus = { path = "../crates/eneros-eventbus" }
+eneros-timeseries = { path = "../crates/eneros-timeseries" }
+eneros-topology = { path = "../crates/eneros-topology" }
+eneros-network = { path = "../crates/eneros-network" }
+eneros-device = { path = "../crates/eneros-device" }
+eneros-memory = { path = "../crates/eneros-memory" }
+eneros-tool = { path = "../crates/eneros-tool" }
+eneros-reasoning = { path = "../crates/eneros-reasoning" }
+criterion = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+async-trait = { workspace = true }
+axum = "0.7"
+tower = { version = "0.4", features = ["util"] }
+
+[[bench]]
+name = "scada_bench"
+harness = false
+
+[[bench]]
+name = "agent_bench"
+harness = false
+
+[[bench]]
+name = "ha_bench"
+harness = false
+
+[[bench]]
+name = "api_bench"
+harness = false
+
+[[bench]]
+name = "powerflow_bench"
+harness = false

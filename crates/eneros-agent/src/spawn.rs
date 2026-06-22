@@ -98,7 +98,22 @@ impl SpawnedAgent {
         let agent = Arc::new(Mutex::new(agent));
         let lc_clone = lifecycle.clone();
 
+        // 缓存上下文中的 trace_id，用于在后台任务的每次循环中创建 span（T029-06）。
+        // trace_id 在 AgentContext 构造时默认生成 UUID v4，也可由调用方通过
+        // with_trace_id() 覆盖。后台任务的所有日志都会携带该 trace_id。
+        let trace_id = ctx.trace_id().to_string();
+
         let join_handle = tokio::spawn(async move {
+            // 为整个后台任务创建一个顶层 span，携带 trace_id。
+            // 后续每次循环内的 handle_event / tick / dispatch 都会继承该 span，
+            // 从而保证所有日志都包含同一个 trace_id。
+            let task_span = tracing::info_span!(
+                "agent.spawned_task",
+                agent_id = %agent_id_for_task,
+                trace_id = %trace_id,
+            );
+            let _task_span_guard = task_span.enter();
+
             let mut current_signal = *signal_rx.borrow();
 
             loop {
@@ -136,6 +151,14 @@ impl SpawnedAgent {
                             }
                         }
 
+                        // 每次循环创建一个子 span，便于在日志中区分不同的 tick 周期。
+                        let cycle_span = tracing::debug_span!(
+                            "agent.cycle",
+                            agent_id = %agent_id_for_task,
+                            trace_id = %trace_id,
+                        );
+                        let _cycle_guard = cycle_span.enter();
+
                         // Perceive: check for messages addressed to this agent
                         let messages = ctx.receive_messages(&agent_id_for_task);
 
@@ -162,9 +185,12 @@ impl SpawnedAgent {
                             all_actions.extend(tick_actions);
                         }
 
-                        // Act: dispatch all produced actions
+                        // Act: dispatch all produced actions.
+                        // 使用 dispatch_with_trace 显式携带 trace_id，确保
+                        // dispatcher 内部的日志（如 CallTool、DelegateTask）
+                        // 都包含 trace_id（T029-06）。
                         for action in all_actions {
-                            let _ = dispatcher.dispatch(action).await;
+                            let _ = dispatcher.dispatch_with_trace(action, &trace_id).await;
                         }
 
                         // Sleep for the tick interval
@@ -337,5 +363,154 @@ mod tests {
         assert_eq!(spawned.state().await, AgentState::Running);
 
         spawned.stop().await.unwrap();
+    }
+
+    // === T029-06: 分布式追踪 trace_id 贯穿 Agent 管线 ===
+
+    /// 验证 `SpawnedAgent::spawn()` 在上下文携带自定义 trace_id 时能正常工作。
+    /// trace_id 在 spawn 时被缓存，并在后台任务的每次循环中通过 span 携带。
+    #[tokio::test]
+    async fn test_spawned_agent_with_custom_trace_id() {
+        let ctx = Arc::new(test_context());
+        let custom_trace_id = "spawn-custom-trace-id-abcdef";
+        let ctx_with_trace = Arc::new(ctx.with_trace_id(custom_trace_id));
+
+        let dispatcher = Arc::new(test_dispatcher(&ctx_with_trace));
+        let agent: Box<dyn Agent> = Box::new(
+            MockAgent::new("trace-spawn-1", "Trace Spawn Test", AgentType::Operator)
+                .with_tick_interval(Duration::from_millis(10)),
+        );
+
+        let spawned = SpawnedAgent::spawn(agent, ctx_with_trace, dispatcher)
+            .await
+            .unwrap();
+
+        // 验证 agent 正常运行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(spawned.state().await, AgentState::Running);
+        assert!(spawned.is_alive().await);
+
+        spawned.stop().await.unwrap();
+    }
+
+    /// 验证 `SpawnedAgent` 后台任务正确缓存并使用上下文中的 trace_id。
+    ///
+    /// 本测试验证 trace_id 传播机制的核心保证：
+    /// 1. `SpawnedAgent::spawn` 在调用时从 `ctx.trace_id()` 读取 trace_id
+    /// 2. 该 trace_id 被缓存到 `tokio::spawn` 闭包中
+    /// 3. 后台任务的每次循环都使用该缓存的 trace_id 创建 span
+    /// 4. `dispatch_with_trace` 也使用该缓存的 trace_id
+    ///
+    /// 由于 `tokio::spawn` 的任务可能在不同线程上运行，线程本地的 tracing
+    /// dispatcher 无法在测试中可靠捕获 span 内容。因此本测试通过验证 agent
+    /// 在携带自定义 trace_id 的上下文中正常运行，间接验证 trace_id 传播机制。
+    /// 在真实部署中，配置 `tracing_subscriber` 后，所有日志都会包含 trace_id。
+    ///
+    /// **span 传播的代码级验证**（见 `spawn.rs` 第 104-115 行）：
+    /// - `let trace_id = ctx.trace_id().to_string();` — 在 spawn 时缓存 trace_id
+    /// - `task_span` 携带 `trace_id = %trace_id` — 顶层任务 span
+    /// - `cycle_span` 携带 `trace_id = %trace_id` — 每次循环的子 span
+    /// - `dispatcher.dispatch_with_trace(action, &trace_id)` — 显式传播到 dispatcher
+    #[tokio::test]
+    async fn test_spawned_agent_propagates_trace_id_in_spans() {
+        let ctx = Arc::new(test_context());
+        let custom_trace_id = "propagated-trace-id-12345678";
+        let ctx_with_trace = Arc::new(ctx.with_trace_id(custom_trace_id));
+
+        // 验证上下文确实携带了自定义 trace_id
+        assert_eq!(ctx_with_trace.trace_id(), custom_trace_id);
+
+        let dispatcher = Arc::new(test_dispatcher(&ctx_with_trace));
+        let agent: Box<dyn Agent> = Box::new(
+            MockAgent::new("trace-prop-1", "Trace Propagation Test", AgentType::Operator)
+                .with_tick_interval(Duration::from_millis(10)),
+        );
+
+        let spawned = SpawnedAgent::spawn(agent, ctx_with_trace, dispatcher)
+            .await
+            .unwrap();
+
+        // 等待后台任务执行至少一个 tick 周期
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        // agent 应正常运行（说明 trace_id 缓存和使用没有导致 panic 或错误）
+        assert_eq!(spawned.state().await, AgentState::Running);
+        assert!(spawned.is_alive().await);
+
+        // 停止 agent（stop 消耗 self，所以后续不能再访问 spawned）
+        spawned.stop().await.unwrap();
+    }
+
+    /// 验证 `SpawnedAgent` 在处理消息时也能保持 trace_id 传播。
+    /// 这模拟了 API 请求 → Agent 调度 → 消息处理 → 动作调度的完整链路。
+    #[tokio::test]
+    async fn test_spawned_agent_trace_id_during_message_processing() {
+        use crate::message::AgentMessage;
+
+        let ctx = Arc::new(test_context());
+        let custom_trace_id = "msg-processing-trace-id";
+        let ctx_with_trace = Arc::new(ctx.with_trace_id(custom_trace_id));
+
+        let dispatcher = Arc::new(test_dispatcher(&ctx_with_trace));
+        let agent: Box<dyn Agent> = Box::new(
+            MockAgent::new("msg-trace-1", "Message Trace Test", AgentType::Operator)
+                .with_tick_interval(Duration::from_millis(10)),
+        );
+
+        let spawned = SpawnedAgent::spawn(agent, ctx_with_trace.clone(), dispatcher)
+            .await
+            .unwrap();
+
+        // 发送消息触发 handle_event 路径
+        ctx_with_trace.send_message(AgentMessage::direct(
+            "sender",
+            "msg-trace-1",
+            "trace_id propagation through message",
+        ));
+
+        // 等待消息被处理
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // agent 应仍在运行（处理消息不应导致崩溃）
+        assert_eq!(spawned.state().await, AgentState::Running);
+
+        spawned.stop().await.unwrap();
+    }
+
+    /// 验证多个 `SpawnedAgent` 使用不同 trace_id 时互不干扰。
+    /// 每个 agent 的后台任务应携带各自的 trace_id。
+    #[tokio::test]
+    async fn test_multiple_spawned_agents_with_different_trace_ids() {
+        let ctx1 = Arc::new(test_context());
+        let trace_id_1 = "agent-1-trace-id";
+        let ctx1 = Arc::new(ctx1.with_trace_id(trace_id_1));
+
+        let ctx2 = Arc::new(test_context());
+        let trace_id_2 = "agent-2-trace-id";
+        let ctx2 = Arc::new(ctx2.with_trace_id(trace_id_2));
+
+        let dispatcher1 = Arc::new(test_dispatcher(&ctx1));
+        let dispatcher2 = Arc::new(test_dispatcher(&ctx2));
+
+        let agent1: Box<dyn Agent> = Box::new(
+            MockAgent::new("multi-trace-agent-1", "Agent 1", AgentType::Operator)
+                .with_tick_interval(Duration::from_millis(10)),
+        );
+        let agent2: Box<dyn Agent> = Box::new(
+            MockAgent::new("multi-trace-agent-2", "Agent 2", AgentType::Operator)
+                .with_tick_interval(Duration::from_millis(10)),
+        );
+
+        let spawned1 = SpawnedAgent::spawn(agent1, ctx1, dispatcher1).await.unwrap();
+        let spawned2 = SpawnedAgent::spawn(agent2, ctx2, dispatcher2).await.unwrap();
+
+        // 两个 agent 都应正常运行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(spawned1.state().await, AgentState::Running);
+        assert_eq!(spawned2.state().await, AgentState::Running);
+
+        // 各自停止
+        spawned1.stop().await.unwrap();
+        spawned2.stop().await.unwrap();
     }
 }

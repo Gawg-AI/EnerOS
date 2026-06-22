@@ -14,6 +14,8 @@ use crate::types::{ApiResponse, ScadaLatestResponse, ScadaReadingResponse};
         (status = 503, description = "未配置 SCADA 采集器"),
     )
 )]
+/// SCADA 最新测点查询 handler (T029-18: 添加 tracing span 用于 OTLP 导出)
+#[tracing::instrument(skip(state), fields(endpoint = "/api/scada/latest"))]
 pub async fn scada_latest_handler(
     State(state): State<AppState>,
 ) -> Json<ApiResponse<ScadaLatestResponse>> {

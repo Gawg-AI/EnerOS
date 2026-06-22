@@ -1,0 +1,188 @@
+# EnerOS — Release Pipeline
+# 推送 v* 格式的 tag 时触发：多平台构建二进制 → Docker 镜像推送 ghcr.io → 创建 GitHub Release
+# 版本号遵循语义化版本 2.0.0，Release Notes 从 CHANGELOG.md 自动提取
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # ── 多平台二进制构建 ──────────────────────────────────────────────────
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x86_64
+            archive: tar.gz
+          - os: macos-12
+            target: macos-x86_64
+            archive: tar.gz
+          - os: windows-2022
+            target: windows-x86_64
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-release-cargo-
+
+      - name: Build release binaries
+        # 排除 eneros-installer（交叉编译依赖复杂，不纳入发布矩阵）
+        run: cargo build --workspace --exclude eneros-installer --release
+
+      - name: Package binaries (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p staging
+          # 收集 target/release 下的可执行二进制（排除共享库、静态库与调试信息）
+          for f in target/release/*; do
+            [ -f "$f" ] || continue
+            [ -x "$f" ] || continue
+            case "$f" in
+              *.d|*.so|*.dylib|*.a) continue ;;
+            esac
+            cp -v "$f" staging/
+          done
+          # 附带默认配置与说明文档，便于开箱即用
+          [ -f eneros.toml ] && cp eneros.toml staging/ || true
+          [ -f README.md ] && cp README.md staging/ || true
+          tar -czf eneros-${{ matrix.target }}.tar.gz -C staging .
+
+      - name: Package binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          # 收集所有 release 可执行文件
+          Get-ChildItem -Path target/release -Filter *.exe -File | Copy-Item -Destination staging/
+          # 附带默认配置与说明文档
+          if (Test-Path eneros.toml) { Copy-Item eneros.toml staging/ }
+          if (Test-Path README.md) { Copy-Item README.md staging/ }
+          Compress-Archive -Path staging/* -DestinationPath eneros-${{ matrix.target }}.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eneros-${{ matrix.target }}
+          path: eneros-${{ matrix.target }}.${{ matrix.archive }}
+          retention-days: 7
+
+  # ── Docker 镜像构建与推送（仅 Linux）──────────────────────────────────
+  # 项目 Dockerfile 位于 deploy/docker/Dockerfile（与 ci.yml 一致），构建 eneros-api 服务镜像
+  docker:
+    name: Docker Image
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # metadata-action 会自动将镜像名转为小写（ghcr.io 要求小写）
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 创建 GitHub Release ───────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [build, docker]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate release notes from CHANGELOG
+        run: |
+          # 从 tag 名剥离 v 前缀，得到纯版本号（CHANGELOG 中为 [0.29.0] 而非 [v0.29.0]）
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "从 CHANGELOG.md 提取版本节 [$VERSION]..."
+          awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (in_section) exit
+              if ($0 ~ "^## \\[" ver "\\]") { in_section=1; print; next }
+            }
+            in_section { print }
+          ' CHANGELOG.md > release_notes.md
+
+          # 若 CHANGELOG 未找到对应版本，回退到通用说明
+          if [ ! -s release_notes.md ]; then
+            echo "未在 CHANGELOG.md 中找到版本 $VERSION，使用回退说明" >&2
+            {
+              echo "## EnerOS ${GITHUB_REF_NAME}"
+              echo ""
+              echo "本版本变更详情请参见 [CHANGELOG.md](CHANGELOG.md)。"
+            } > release_notes.md
+          fi
+
+          echo "=== Release Notes ==="
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 收集所有构建产物路径
+          mapfile -t assets < <(find artifacts -type f)
+          echo "将上传以下资产到 Release ${GITHUB_REF_NAME}:"
+          printf '  %s\n' "${assets[@]}"
+
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release_notes.md \
+            "${assets[@]}"

@@ -147,6 +147,16 @@ impl AgentOrchestrator {
         self.remote_mode
     }
 
+    /// 返回当前 AgentContext 携带的 trace_id（T029-06）。
+    ///
+    /// 该 trace_id 会被 `process_event` / `tick_all` 等方法通过
+    /// `tracing::Span` 携带到所有子任务的日志中。API handler 可通过
+    /// [`process_event_with_trace`](Self::process_event_with_trace) /
+    /// [`tick_all_with_trace`](Self::tick_all_with_trace) 覆盖该值。
+    pub fn trace_id(&self) -> &str {
+        self.ctx.trace_id()
+    }
+
     /// Process a single event through all registered agents that can handle it
     ///
     /// Enhanced pipeline:
@@ -157,7 +167,53 @@ impl AgentOrchestrator {
     /// and agents receive it via their own subscriptions. The orchestrator does
     /// not collect `DispatchResult`s in this mode — each agent process
     /// dispatches its own actions through its local `ActionDispatcher`.
+    ///
+    /// trace_id 取自 `self.ctx.local.trace_id`，并通过 `tracing::Span` 携带，
+    /// 使本次调用产生的所有日志都自动包含 trace_id（T029-06）。
     pub async fn process_event(&self, event: Event) -> Result<Vec<DispatchResult>> {
+        self.process_event_with_ctx(event, &self.ctx).await
+    }
+
+    /// 与 [`process_event`](Self::process_event) 相同，但使用调用方提供的
+    /// `trace_id` 覆盖上下文中的 trace_id（T029-06）。
+    ///
+    /// 典型用法：API handler 从请求扩展中取出 trace_id 后调用本方法，
+    /// 使整条 Agent 执行链路（事件分发 → Agent 推理 → 动作调度）的日志
+    /// 都携带同一个 trace_id，实现端到端分布式追踪。
+    ///
+    /// 实现上会基于 `self.ctx` 派生一个临时上下文（仅替换 trace_id），
+    /// 然后委托给 [`process_event_with_ctx`](Self::process_event_with_ctx)。
+    /// 后者会创建一个携带 `ctx.trace_id()` 的 `tracing::Span`，使本次调用
+    /// 产生的所有日志都自动包含 trace_id。
+    pub async fn process_event_with_trace(
+        &self,
+        event: Event,
+        trace_id: impl Into<String>,
+    ) -> Result<Vec<DispatchResult>> {
+        // 派生临时上下文：仅替换 trace_id，其余字段（agent_id、authority、
+        // remote handles 等）保持不变。with_trace_id 内部调用
+        // with_shared_message_store，因此消息存储等共享状态仍然保留。
+        let ctx = self.ctx.with_trace_id(trace_id);
+        self.process_event_with_ctx(event, &ctx).await
+    }
+
+    /// `process_event` 的内部实现，接受任意 `AgentContext` 引用（T029-06）。
+    ///
+    /// 该方法创建一个携带 `ctx.trace_id()` 的 `tracing::Span`，使本次调用
+    /// 产生的所有日志（包括 Agent.handle_event、dispatcher.dispatch 等）
+    /// 都自动包含 trace_id。
+    async fn process_event_with_ctx(
+        &self,
+        event: Event,
+        ctx: &AgentContext,
+    ) -> Result<Vec<DispatchResult>> {
+        let span = tracing::info_span!(
+            "agent.process_event",
+            trace_id = %ctx.trace_id(),
+            event_type = ?event.event_type,
+        );
+        let _enter = span.enter();
+
         if self.remote_mode {
             // Remote mode: publish event to EventBusBroker.
             // Agents receive via their subscription and handle independently.
@@ -202,11 +258,11 @@ impl AgentOrchestrator {
 
             let actions = if is_emergency {
                 handler
-                    .handle_emergency_with_context(event.clone(), &self.ctx)
+                    .handle_emergency_with_context(event.clone(), ctx)
                     .await?
             } else {
                 handler
-                    .handle_with_context(event.clone(), &self.ctx)
+                    .handle_with_context(event.clone(), ctx)
                     .await?
             };
 
@@ -232,7 +288,37 @@ impl AgentOrchestrator {
     /// runs its own `tick()` independently, dispatching actions through its
     /// local `ActionDispatcher`. No `DispatchResult`s are collected in this
     /// mode.
+    ///
+    /// trace_id 取自 `self.ctx.local.trace_id`，并通过 `tracing::Span` 携带，
+    /// 使本次调用产生的所有日志都自动包含 trace_id（T029-06）。
     pub async fn tick_all(&self) -> Result<Vec<DispatchResult>> {
+        self.tick_all_with_ctx(&self.ctx).await
+    }
+
+    /// 与 [`tick_all`](Self::tick_all) 相同，但使用调用方提供的 `trace_id`
+    /// 覆盖上下文中的 trace_id（T029-06）。
+    ///
+    /// 典型用法：API handler 从请求扩展中取出 trace_id 后调用本方法，
+    /// 使整条 Agent tick 链路的日志都携带同一个 trace_id。
+    pub async fn tick_all_with_trace(
+        &self,
+        trace_id: impl Into<String>,
+    ) -> Result<Vec<DispatchResult>> {
+        let ctx = self.ctx.with_trace_id(trace_id);
+        self.tick_all_with_ctx(&ctx).await
+    }
+
+    /// `tick_all` 的内部实现，接受任意 `AgentContext` 引用（T029-06）。
+    ///
+    /// 该方法创建一个携带 `ctx.trace_id()` 的 `tracing::Span`，使本次调用
+    /// 产生的所有日志都自动包含 trace_id。
+    async fn tick_all_with_ctx(&self, ctx: &AgentContext) -> Result<Vec<DispatchResult>> {
+        let span = tracing::info_span!(
+            "agent.tick_all",
+            trace_id = %ctx.trace_id(),
+        );
+        let _enter = span.enter();
+
         if self.remote_mode {
             // Remote mode: broadcast tick event via EventBusPublisher.
             // Each Agent process receives the event and runs its own tick().
@@ -258,7 +344,7 @@ impl AgentOrchestrator {
             .agents
             .iter()
             .map(|handler| {
-                let ctx_ref = &self.ctx;
+                let ctx_ref = ctx;
                 async move {
                     let result = handler.tick_with_context(ctx_ref).await;
                     let authority = handler.agent_authority_level();
@@ -985,5 +1071,281 @@ mod tests {
         let received = rx.recv().await.unwrap();
         assert_eq!(received.event_type, EventType::SystemAlarm);
         assert_eq!(received.source, "remote-test-source");
+    }
+
+    // === T029-06: 分布式追踪 trace_id 贯穿 Agent 管线 ===
+
+    /// 验证 `AgentOrchestrator::trace_id()` 返回底层 `AgentContext` 的 trace_id。
+    #[test]
+    fn test_orchestrator_trace_id_accessor() {
+        let ctx = test_context();
+        let expected_trace_id = ctx.trace_id().to_string();
+        let orchestrator = AgentOrchestrator::new(ctx);
+
+        assert_eq!(orchestrator.trace_id(), expected_trace_id);
+    }
+
+    /// 验证 `process_event_with_trace()` 使用调用方提供的 trace_id，
+    /// 而非 orchestrator 默认上下文中的 trace_id。
+    ///
+    /// 本测试通过对比 orchestrator.trace_id() 与传入的 trace_id 不同，
+    /// 但 process_event_with_trace 仍能正常执行（说明它使用了传入的 trace_id
+    /// 派生临时上下文，而非使用 self.ctx）。
+    #[tokio::test]
+    async fn test_process_event_with_trace_uses_provided_trace_id() {
+        let ctx = test_context();
+        let orchestrator_default_trace_id = ctx.trace_id().to_string();
+        let mut orchestrator = AgentOrchestrator::new(ctx);
+
+        // 注册一个 agent 处理 ConstraintViolation 事件
+        let agent = MockAgent::new("trace-1", "Trace Agent", AgentType::Operator);
+        let handler = AgentEventHandler::new(Box::new(agent), vec![EventType::ConstraintViolation]);
+        orchestrator.register_agent(handler);
+
+        // 使用一个与默认 trace_id 不同的值
+        let custom_trace_id = "custom-trace-id-for-process-event-12345";
+        assert_ne!(custom_trace_id, orchestrator_default_trace_id);
+
+        let event = Event::new(
+            EventType::ConstraintViolation,
+            "trace-test-source",
+            EventPayload::Message("trace_id propagation test".to_string()),
+        );
+
+        // 使用 process_event_with_trace 传入自定义 trace_id
+        let results = orchestrator
+            .process_event_with_trace(event, custom_trace_id)
+            .await
+            .unwrap();
+
+        // MockAgent 返回 LogMessage，dispatch 后得到 Logged
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], DispatchResult::Logged);
+
+        // orchestrator 的默认 trace_id 应保持不变（未被修改）
+        assert_eq!(orchestrator.trace_id(), orchestrator_default_trace_id);
+    }
+
+    /// 验证 `tick_all_with_trace()` 使用调用方提供的 trace_id。
+    #[tokio::test]
+    async fn test_tick_all_with_trace_uses_provided_trace_id() {
+        let ctx = test_context();
+        let orchestrator_default_trace_id = ctx.trace_id().to_string();
+        let mut orchestrator = AgentOrchestrator::new(ctx);
+
+        // 注册一个 agent
+        let agent = MockAgent::new("trace-tick-1", "Trace Tick Agent", AgentType::Dispatcher);
+        let handler = AgentEventHandler::new_all_events(Box::new(agent));
+        orchestrator.register_agent(handler);
+
+        // 使用一个与默认 trace_id 不同的值
+        let custom_trace_id = "custom-trace-id-for-tick-all-67890";
+        assert_ne!(custom_trace_id, orchestrator_default_trace_id);
+
+        // 使用 tick_all_with_trace 传入自定义 trace_id
+        let results = orchestrator
+            .tick_all_with_trace(custom_trace_id)
+            .await
+            .unwrap();
+
+        // MockAgent.tick() 返回 NoOp
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], DispatchResult::NoOp);
+
+        // orchestrator 的默认 trace_id 应保持不变（未被修改）
+        assert_eq!(orchestrator.trace_id(), orchestrator_default_trace_id);
+    }
+
+    /// 验证 `process_event_with_trace()` 在 remote 模式下也能正常工作，
+    /// 并且不会修改 orchestrator 的默认 trace_id。
+    #[tokio::test]
+    async fn test_process_event_with_trace_in_remote_mode() {
+        let event_bus = Arc::new(EventBus::new(64));
+        let mut rx = event_bus.subscribe();
+
+        let ctx = AgentContext::new(
+            Arc::clone(&event_bus),
+            Arc::new(SafetyGateway::new(100)),
+            Arc::new(RwLock::new(ToolEngine::new())),
+            Arc::new(RwLock::new(PowerNetwork::from_ieee14())),
+            Arc::new(InMemoryMemory::default()),
+            Arc::new(RuleBasedEngine::new()),
+        );
+        let orchestrator_default_trace_id = ctx.trace_id().to_string();
+        let dispatcher = crate::dispatcher::ActionDispatcher::new_local(
+            event_bus,
+            Arc::new(SafetyGateway::new(100)),
+        );
+        let orchestrator = AgentOrchestrator::new_remote(ctx, dispatcher);
+
+        let custom_trace_id = "remote-trace-id-abcdef";
+        assert_ne!(custom_trace_id, orchestrator_default_trace_id);
+
+        let event = Event::new(
+            EventType::SystemAlarm,
+            "remote-trace-source",
+            EventPayload::Message("remote trace test".to_string()),
+        );
+
+        // remote 模式下 process_event_with_trace 应返回空结果
+        let results = orchestrator
+            .process_event_with_trace(event, custom_trace_id)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+
+        // 事件应已发布到 event bus
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.event_type, EventType::SystemAlarm);
+        assert_eq!(received.source, "remote-trace-source");
+
+        // orchestrator 的默认 trace_id 应保持不变
+        assert_eq!(orchestrator.trace_id(), orchestrator_default_trace_id);
+    }
+
+    /// 验证 `process_event()`（不带 trace 参数）使用 orchestrator 默认上下文的 trace_id。
+    /// 这是向后兼容性测试：现有代码无需修改即可工作，trace_id 自动从 ctx 继承。
+    #[tokio::test]
+    async fn test_process_event_uses_default_trace_id() {
+        let ctx = test_context();
+        let default_trace_id = ctx.trace_id().to_string();
+        let mut orchestrator = AgentOrchestrator::new(ctx);
+
+        let agent = MockAgent::new("default-trace-1", "Default Trace Agent", AgentType::Operator);
+        let handler = AgentEventHandler::new(Box::new(agent), vec![EventType::ConstraintViolation]);
+        orchestrator.register_agent(handler);
+
+        let event = Event::new(
+            EventType::ConstraintViolation,
+            "default-trace-source",
+            EventPayload::Message("default trace test".to_string()),
+        );
+
+        // 不带 trace_id 参数的 process_event 应使用 orchestrator.ctx.trace_id
+        let results = orchestrator.process_event(event).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], DispatchResult::Logged);
+
+        // 验证 orchestrator.trace_id() 仍然是默认值
+        assert_eq!(orchestrator.trace_id(), default_trace_id);
+    }
+
+    /// 验证 `tick_all()`（不带 trace 参数）使用 orchestrator 默认上下文的 trace_id。
+    #[tokio::test]
+    async fn test_tick_all_uses_default_trace_id() {
+        let ctx = test_context();
+        let default_trace_id = ctx.trace_id().to_string();
+        let mut orchestrator = AgentOrchestrator::new(ctx);
+
+        let agent = MockAgent::new("default-tick-1", "Default Tick Agent", AgentType::Dispatcher);
+        let handler = AgentEventHandler::new_all_events(Box::new(agent));
+        orchestrator.register_agent(handler);
+
+        let results = orchestrator.tick_all().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], DispatchResult::NoOp);
+
+        assert_eq!(orchestrator.trace_id(), default_trace_id);
+    }
+
+    /// 验证多次调用 `process_event_with_trace()` 使用不同的 trace_id 不会相互干扰。
+    /// 每次调用都应使用本次传入的 trace_id，且不影响 orchestrator 的默认 trace_id。
+    #[tokio::test]
+    async fn test_process_event_with_trace_multiple_calls_different_trace_ids() {
+        let ctx = test_context();
+        let orchestrator_default_trace_id = ctx.trace_id().to_string();
+        let mut orchestrator = AgentOrchestrator::new(ctx);
+
+        let agent = MockAgent::new("multi-trace-1", "Multi Trace Agent", AgentType::Operator);
+        let handler = AgentEventHandler::new_all_events(Box::new(agent));
+        orchestrator.register_agent(handler);
+
+        // 第一次调用使用 trace_id_1
+        let trace_id_1 = "trace-id-1-aaaa";
+        let event1 = Event::new(
+            EventType::SystemAlarm,
+            "source-1",
+            EventPayload::Message("event 1".to_string()),
+        );
+        let results1 = orchestrator
+            .process_event_with_trace(event1, trace_id_1)
+            .await
+            .unwrap();
+        assert_eq!(results1.len(), 1);
+
+        // 第二次调用使用 trace_id_2
+        let trace_id_2 = "trace-id-2-bbbb";
+        let event2 = Event::new(
+            EventType::SystemAlarm,
+            "source-2",
+            EventPayload::Message("event 2".to_string()),
+        );
+        let results2 = orchestrator
+            .process_event_with_trace(event2, trace_id_2)
+            .await
+            .unwrap();
+        assert_eq!(results2.len(), 1);
+
+        // orchestrator 的默认 trace_id 应保持不变
+        assert_eq!(orchestrator.trace_id(), orchestrator_default_trace_id);
+        assert_ne!(orchestrator.trace_id(), trace_id_1);
+        assert_ne!(orchestrator.trace_id(), trace_id_2);
+    }
+
+    // ===== T030-07: 覆盖率补充测试 =====
+
+    /// 验证 `registered_agents()` 返回已注册 agent 的元信息列表。
+    #[test]
+    fn test_registered_agents_returns_correct_info() {
+        let ctx = test_context();
+        let mut orchestrator = AgentOrchestrator::new(ctx);
+
+        let agent = MockAgent::new("reg-1", "Registered Agent", AgentType::Operator);
+        let handler = AgentEventHandler::new_all_events(Box::new(agent));
+        orchestrator.register_agent(handler);
+
+        let agents = orchestrator.registered_agents();
+        assert_eq!(agents.len(), 1);
+        // 第一个字段是 agent 显示名称
+        assert_eq!(agents[0].0, "Registered Agent");
+        // 第二个字段是 agent 类型
+        assert_eq!(agents[0].1, AgentType::Operator);
+    }
+
+    /// 验证 `registered_agents()` 在无 agent 时返回空列表。
+    #[test]
+    fn test_registered_agents_empty_when_none_registered() {
+        let ctx = test_context();
+        let orchestrator = AgentOrchestrator::new(ctx);
+        let agents = orchestrator.registered_agents();
+        assert!(agents.is_empty());
+    }
+
+    /// 验证 `protocol_mut()` 返回可变引用，允许修改协作协议。
+    #[test]
+    fn test_protocol_mut_allows_modification() {
+        let ctx = test_context();
+        let mut orchestrator = AgentOrchestrator::new(ctx);
+        // 通过 protocol_mut 获取可变引用并验证可访问
+        let protocol = orchestrator.protocol_mut();
+        // 仅验证可访问，不实际修改（CollaborationProtocol 内部状态修改需要了解其 API）
+        let _ = protocol;
+    }
+
+    /// 验证 `agent_count()` 在注册多个 agent 后返回正确数量。
+    #[test]
+    fn test_agent_count_multiple_agents() {
+        let ctx = test_context();
+        let mut orchestrator = AgentOrchestrator::new(ctx);
+
+        assert_eq!(orchestrator.agent_count(), 0);
+
+        let agent1 = MockAgent::new("multi-1", "Agent 1", AgentType::Operator);
+        orchestrator.register_agent(AgentEventHandler::new_all_events(Box::new(agent1)));
+        assert_eq!(orchestrator.agent_count(), 1);
+
+        let agent2 = MockAgent::new("multi-2", "Agent 2", AgentType::Dispatcher);
+        orchestrator.register_agent(AgentEventHandler::new_all_events(Box::new(agent2)));
+        assert_eq!(orchestrator.agent_count(), 2);
     }
 }

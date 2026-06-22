@@ -5,11 +5,12 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::app::AppState;
 
 /// Device summary in the list response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct DeviceSummary {
     pub device_id: String,
     pub protocol: String,
@@ -18,7 +19,7 @@ pub struct DeviceSummary {
 }
 
 /// Device health response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct DeviceHealth {
     pub device_id: String,
     pub connected: bool,
@@ -27,6 +28,14 @@ pub struct DeviceHealth {
 }
 
 /// `GET /api/devices` — list all registered devices.
+#[utoipa::path(
+    get,
+    path = "/api/devices",
+    responses(
+        (status = 200, description = "已注册设备列表", body = DeviceSummary),
+        (status = 503, description = "设备管理器未配置"),
+    )
+)]
 pub async fn list_handler(
     State(state): State<AppState>,
 ) -> axum::response::Response {
@@ -56,6 +65,16 @@ pub async fn list_handler(
 }
 
 /// `GET /api/devices/{id}/health` — get device health status.
+#[utoipa::path(
+    get,
+    path = "/api/devices/{id}/health",
+    params(("id" = String, Path, description = "设备 ID")),
+    responses(
+        (status = 200, description = "设备健康状态", body = DeviceHealth),
+        (status = 404, description = "设备未找到"),
+        (status = 503, description = "设备管理器未配置"),
+    )
+)]
 pub async fn health_handler(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -86,6 +105,16 @@ pub async fn health_handler(
 }
 
 /// `POST /api/devices/{id}/connect` — connect a device.
+#[utoipa::path(
+    post,
+    path = "/api/devices/{id}/connect",
+    params(("id" = String, Path, description = "设备 ID")),
+    responses(
+        (status = 200, description = "设备连接成功"),
+        (status = 500, description = "连接失败"),
+        (status = 503, description = "设备管理器未配置"),
+    )
+)]
 pub async fn connect_handler(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -105,6 +134,16 @@ pub async fn connect_handler(
 }
 
 /// `POST /api/devices/{id}/disconnect` — disconnect a device.
+#[utoipa::path(
+    post,
+    path = "/api/devices/{id}/disconnect",
+    params(("id" = String, Path, description = "设备 ID")),
+    responses(
+        (status = 200, description = "设备断开成功"),
+        (status = 500, description = "断开失败"),
+        (status = 503, description = "设备管理器未配置"),
+    )
+)]
 pub async fn disconnect_handler(
     State(state): State<AppState>,
     Path(device_id): Path<String>,

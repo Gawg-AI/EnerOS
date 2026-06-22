@@ -119,6 +119,7 @@ impl GatewayClient for LocalGatewayClient {
 /// 使用 `#[serde(tag = "type")]` 内部标签，与 `EventBusBroker` 风格一致。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 pub enum GatewayRequest {
     ExecuteCommand { command: Command },
     ValidateCommand { command: Command },

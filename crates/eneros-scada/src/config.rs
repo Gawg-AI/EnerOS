@@ -1,5 +1,56 @@
+use std::time::Duration;
+
 use eneros_core::ElementId;
 use serde::{Deserialize, Serialize};
+
+/// 连接池配置（T029-14）
+///
+/// 用于 SCADA / Modbus / IEC 61850 协议连接池化。
+/// 在 TOML 配置文件中通过 `[pool]` 段指定。
+///
+/// # 示例
+///
+/// ```toml
+/// [pool]
+/// max_size = 16
+/// idle_timeout_ms = 30000
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolConfig {
+    /// 最大连接数（活跃 + 空闲）。默认 16。
+    #[serde(default = "default_pool_max_size")]
+    pub max_size: usize,
+    /// 空闲连接超时时间（毫秒）。默认 30000（30 秒）。
+    #[serde(default = "default_pool_idle_timeout_ms")]
+    pub idle_timeout_ms: u64,
+}
+
+fn default_pool_max_size() -> usize {
+    16
+}
+
+fn default_pool_idle_timeout_ms() -> u64 {
+    30000
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            max_size: default_pool_max_size(),
+            idle_timeout_ms: default_pool_idle_timeout_ms(),
+        }
+    }
+}
+
+impl PoolConfig {
+    /// 将配置转换为 `pool::PoolConfig`（使用 `Duration` 类型）。
+    pub fn to_pool_config(&self) -> crate::pool::PoolConfig {
+        crate::pool::PoolConfig::new(
+            self.max_size,
+            Duration::from_millis(self.idle_timeout_ms),
+        )
+    }
+}
 
 /// Configuration for a single SCADA data point
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +83,9 @@ pub struct ScadaConfig {
     /// Whether to enable quality checks
     #[serde(default = "default_enable_quality")]
     pub enable_quality_check: bool,
+    /// 连接池配置（T029-14）
+    #[serde(default)]
+    pub pool: PoolConfig,
 }
 
 fn default_scan_rate() -> u64 {
@@ -53,6 +107,7 @@ impl Default for ScadaConfig {
             default_scan_rate_ms: 1000,
             timeout_ms: 5000,
             enable_quality_check: true,
+            pool: PoolConfig::default(),
         }
     }
 }
@@ -100,6 +155,8 @@ mod tests {
         assert_eq!(config.default_scan_rate_ms, 1000);
         assert_eq!(config.timeout_ms, 5000);
         assert!(config.enable_quality_check);
+        assert_eq!(config.pool.max_size, 16);
+        assert_eq!(config.pool.idle_timeout_ms, 30000);
     }
 
     #[test]
@@ -118,9 +175,47 @@ mod tests {
             default_scan_rate_ms: 500,
             timeout_ms: 3000,
             enable_quality_check: false,
+            pool: PoolConfig::default(),
         };
         assert_eq!(config.points.len(), 1);
         assert_eq!(config.default_scan_rate_ms, 500);
         assert!(!config.enable_quality_check);
+    }
+
+    #[test]
+    fn test_pool_config_default() {
+        let config = PoolConfig::default();
+        assert_eq!(config.max_size, 16);
+        assert_eq!(config.idle_timeout_ms, 30000);
+    }
+
+    #[test]
+    fn test_pool_config_to_pool_config() {
+        let config = PoolConfig {
+            max_size: 32,
+            idle_timeout_ms: 60000,
+        };
+        let pool_config = config.to_pool_config();
+        assert_eq!(pool_config.max_size, 32);
+        assert_eq!(pool_config.idle_timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_pool_config_serde() {
+        let toml_str = r#"
+max_size = 8
+idle_timeout_ms = 10000
+"#;
+        let config: PoolConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.max_size, 8);
+        assert_eq!(config.idle_timeout_ms, 10000);
+    }
+
+    #[test]
+    fn test_pool_config_serde_defaults() {
+        let toml_str = "";
+        let config: PoolConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.max_size, 16);
+        assert_eq!(config.idle_timeout_ms, 30000);
     }
 }

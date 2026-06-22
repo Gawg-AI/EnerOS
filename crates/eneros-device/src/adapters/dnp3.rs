@@ -207,7 +207,7 @@ impl Dnp3LinkFrame {
     /// - CRC (2 bytes)
     /// - Data blocks (16 bytes + 2 CRC each)
     pub fn encode(&self, is_master: bool) -> Vec<u8> {
-        let data_blocks = (self.payload.len() + 15) / 16;
+        let data_blocks = self.payload.len().div_ceil(16);
         let total_length = 5 + (data_blocks as u8) * 16;
 
         let mut frame = Vec::with_capacity(10 + self.payload.len() + data_blocks * 2);
@@ -265,7 +265,7 @@ impl Dnp3LinkFrame {
         // Parse data blocks
         let mut payload = Vec::new();
         let mut pos = 10;
-        let data_bytes = if length > 5 { (length - 5) as usize } else { 0 };
+        let data_bytes = length.saturating_sub(5);
 
         while pos < data.len() && payload.len() < data_bytes {
             if pos + 18 > data.len() {
@@ -579,6 +579,7 @@ pub struct Dnp3Adapter {
     name: String,
     config: Dnp3Config,
     /// Callbacks for subscription
+    #[allow(clippy::type_complexity)]
     callbacks: Arc<RwLock<Vec<Box<dyn Fn(DataPoint) + Send + Sync>>>>,
 }
 
@@ -966,7 +967,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_adapter_read_cached() {
-        let mut adapter = Dnp3Adapter::new("test", Dnp3Config::default());
+        let adapter = Dnp3Adapter::new("test", Dnp3Config::default());
         adapter.shared_state.mark_connected();
 
         adapter
@@ -986,7 +987,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_adapter_read_missing() {
-        let mut adapter = Dnp3Adapter::new("test", Dnp3Config::default());
+        let adapter = Dnp3Adapter::new("test", Dnp3Config::default());
         adapter.shared_state.mark_connected();
 
         let dp = adapter.read("analog:99").await.unwrap();

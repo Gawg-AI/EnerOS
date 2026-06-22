@@ -1,6 +1,7 @@
 use crate::matrix::YBusMatrix;
 use crate::result::{BranchResult, BusResult, PowerFlowResult};
 use eneros_core::{ElementId, EnerOSError, Result};
+pub use eneros_core::BusTypeNR;
 
 /// Power flow algorithm selection.
 ///
@@ -510,14 +511,6 @@ fn gaussian_elimination(matrix: &[Vec<f64>], rhs: &[f64]) -> Result<Vec<f64>> {
     })
 }
 
-/// Bus type for Newton-Raphson solver
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BusTypeNR {
-    PQ,
-    PV,
-    Slack,
-}
-
 /// Q limits for PV buses (for Q limit enforcement).
 ///
 /// When a PV bus's reactive power exceeds these limits, it is converted to a
@@ -948,5 +941,243 @@ mod tests {
                 expected_loading
             );
         }
+    }
+
+    // ========================================================================
+    // T030-07: 覆盖率补充测试
+    // ========================================================================
+
+    #[test]
+    fn test_solver_default_algorithm_is_newton_raphson() {
+        let solver = PowerFlowSolver::default_solver();
+        assert_eq!(solver.algorithm(), PowerFlowAlgorithm::NewtonRaphson);
+    }
+
+    #[test]
+    fn test_solver_with_algorithm_builder() {
+        let solver = PowerFlowSolver::default_solver()
+            .with_algorithm(PowerFlowAlgorithm::BackwardForwardSweep);
+        assert_eq!(solver.algorithm(), PowerFlowAlgorithm::BackwardForwardSweep);
+
+        let solver_dc = PowerFlowSolver::default_solver()
+            .with_algorithm(PowerFlowAlgorithm::DC);
+        assert_eq!(solver_dc.algorithm(), PowerFlowAlgorithm::DC);
+    }
+
+    #[test]
+    fn test_power_flow_algorithm_default() {
+        assert_eq!(PowerFlowAlgorithm::default(), PowerFlowAlgorithm::NewtonRaphson);
+    }
+
+    #[test]
+    fn test_solver_default_impl() {
+        // PowerFlowSolver 实现了 Default trait
+        let solver = PowerFlowSolver::default();
+        assert_eq!(solver.algorithm(), PowerFlowAlgorithm::NewtonRaphson);
+    }
+
+    #[test]
+    fn test_two_bus_max_mismatch_below_tolerance() {
+        // 收敛后 max_mismatch 必须低于 tolerance
+        let (ybus, p_spec, q_spec, bus_types) = create_two_bus_system();
+        let solver = PowerFlowSolver::new(50, 1e-8);
+        let result = solver.solve(&ybus, &p_spec, &q_spec, &bus_types).unwrap();
+        assert!(result.converged);
+        assert!(result.max_mismatch < 1e-8);
+    }
+
+    #[test]
+    fn test_three_bus_pv_pq_distinct_handling() {
+        // 3-bus 系统：Slack + PV + PQ，验证 PV 节点电压幅值保持，PQ 节点电压可变
+        let (ybus, p_spec, q_spec, bus_types) = create_three_bus_system();
+        let solver = PowerFlowSolver::default_solver();
+        let v_initial: Vec<f64> = vec![1.0, 1.0, 1.0];
+        let result = solver
+            .solve_with_initial(&ybus, &p_spec, &q_spec, &bus_types, Some(&v_initial))
+            .unwrap();
+        assert!(result.converged);
+        // PV 节点（bus 1）电压幅值应接近 1.0（初始值）
+        let pv_voltage = result.bus_results[1].voltage_magnitude;
+        assert!((pv_voltage - 1.0).abs() < 0.05, "PV bus voltage should be near 1.0, got {}", pv_voltage);
+        // Slack 节点电压幅值应为 1.0
+        assert!((result.bus_results[0].voltage_magnitude - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_q_limits_struct_operations() {
+        // QLimits 基本操作
+        let mut limits = QLimits::new();
+        assert!(limits.is_empty());
+
+        limits.add(1, -10.0, 10.0);
+        limits.add(2, -5.0, 5.0);
+        assert!(!limits.is_empty());
+        assert_eq!(limits.get(1), Some((-10.0, 10.0)));
+        assert_eq!(limits.get(2), Some((-5.0, 5.0)));
+        assert_eq!(limits.get(99), None);
+    }
+
+    #[test]
+    fn test_q_limits_enforcement_pv_to_pq_conversion() {
+        // 当 PV 节点的 Q 超出限制时，应转换为 PQ 节点
+        let (ybus, p_spec, q_spec, bus_types) = create_three_bus_system();
+        let mut limits = QLimits::new();
+        // 设置极小的 Q 限制，迫使 PV 节点（bus 1）转换为 PQ
+        limits.add(1, -0.001, 0.001);
+
+        let solver = PowerFlowSolver::new(100, 1e-8);
+        let result = solver.solve_with_options(
+            &ybus,
+            &p_spec,
+            &q_spec,
+            &bus_types,
+            None,
+            Some(&limits),
+            None,
+        );
+        assert!(result.is_ok(), "Q-limited solve failed: {:?}", result.err());
+        let result = result.unwrap();
+        assert!(result.converged);
+    }
+
+    #[test]
+    fn test_q_limits_empty_falls_back_to_normal_solve() {
+        // 空 QLimits 应回退到普通求解
+        let (ybus, p_spec, q_spec, bus_types) = create_two_bus_system();
+        let limits = QLimits::new();
+        let solver = PowerFlowSolver::default_solver();
+        let result = solver.solve_with_options(
+            &ybus,
+            &p_spec,
+            &q_spec,
+            &bus_types,
+            None,
+            Some(&limits),
+            None,
+        );
+        assert!(result.is_ok());
+        assert!(result.unwrap().converged);
+    }
+
+    #[test]
+    fn test_recycle_cache_default_and_operations() {
+        // RecycleCache 默认状态
+        let mut cache = RecycleCache::new();
+        assert!(cache.cached_v.is_none());
+        assert!(cache.cached_theta.is_none());
+        assert!(cache.topology_signature.is_none());
+        assert!(cache.initial_voltages().is_none());
+
+        // 更新缓存
+        let v = vec![1.0, 0.99, 0.98];
+        let theta = vec![0.0, -0.01, -0.02];
+        cache.update(&v, &theta);
+        assert!(cache.cached_v.is_some());
+        assert!(cache.cached_theta.is_some());
+        let (cached_v, cached_theta) = cache.initial_voltages().unwrap();
+        assert_eq!(cached_v, v.as_slice());
+        assert_eq!(cached_theta, theta.as_slice());
+
+        // 失效缓存
+        cache.invalidate();
+        assert!(cache.cached_v.is_none());
+        assert!(cache.cached_theta.is_none());
+        assert!(cache.topology_signature.is_none());
+        assert!(cache.initial_voltages().is_none());
+    }
+
+    #[test]
+    fn test_recycle_cache_provides_initial_voltages() {
+        // 使用 RecycleCache 提供初始电压
+        let (ybus, p_spec, q_spec, bus_types) = create_two_bus_system();
+        let solver = PowerFlowSolver::default_solver();
+
+        // 先求解一次，缓存结果
+        let first_result = solver.solve(&ybus, &p_spec, &q_spec, &bus_types).unwrap();
+        let cache = RecycleCache {
+            cached_v: Some(first_result.bus_results.iter().map(|b| b.voltage_magnitude).collect()),
+            cached_theta: Some(first_result.bus_results.iter().map(|b| b.voltage_angle).collect()),
+            topology_signature: None,
+        };
+
+        // 使用缓存作为初始值再次求解
+        let result = solver.solve_with_options(
+            &ybus,
+            &p_spec,
+            &q_spec,
+            &bus_types,
+            None,
+            None,
+            Some(&cache),
+        );
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert!(result.converged);
+    }
+
+    #[test]
+    fn test_solve_with_initial_voltages_uses_provided_values() {
+        // 显式初始电压应优先于 recycle cache
+        let (ybus, p_spec, q_spec, bus_types) = create_two_bus_system();
+        let solver = PowerFlowSolver::default_solver();
+        let v_initial = vec![1.0, 0.95];
+        let result = solver
+            .solve_with_initial(&ybus, &p_spec, &q_spec, &bus_types, Some(&v_initial))
+            .unwrap();
+        assert!(result.converged);
+    }
+
+    #[test]
+    fn test_gaussian_elimination_3x3() {
+        // 3x3 系统求解
+        let matrix = vec![
+            vec![3.0, 2.0, -1.0],
+            vec![2.0, -2.0, 4.0],
+            vec![-1.0, 0.5, -1.0],
+        ];
+        let rhs = vec![1.0, -2.0, 0.0];
+        let result = gaussian_elimination(&matrix, &rhs).unwrap();
+        // 验证解：x = [1, -2, -2]
+        assert!((result[0] - 1.0).abs() < 1e-10);
+        assert!((result[1] + 2.0).abs() < 1e-10);
+        assert!((result[2] + 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_gaussian_elimination_1x1() {
+        let matrix = vec![vec![5.0]];
+        let rhs = vec![15.0];
+        let result = gaussian_elimination(&matrix, &rhs).unwrap();
+        assert!((result[0] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_solve_zero_dimension_succeeds() {
+        // 0-bus 系统：n=0，应直接收敛（无 mismatch）
+        let ybus = YBusMatrix::new(0);
+        let p_spec: Vec<f64> = vec![];
+        let q_spec: Vec<f64> = vec![];
+        let bus_types: Vec<BusTypeNR> = vec![];
+        let solver = PowerFlowSolver::default_solver();
+        let result = solver.solve(&ybus, &p_spec, &q_spec, &bus_types);
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert!(result.converged);
+        assert_eq!(result.iterations, 1); // 第一次迭代就收敛
+        assert!(result.bus_results.is_empty());
+    }
+
+    #[test]
+    fn test_solve_only_slack_bus() {
+        // 单节点系统（仅 Slack）：应立即收敛
+        let ybus = YBusMatrix::new(1);
+        let p_spec = vec![0.0];
+        let q_spec = vec![0.0];
+        let bus_types = vec![BusTypeNR::Slack];
+        let solver = PowerFlowSolver::default_solver();
+        let result = solver.solve(&ybus, &p_spec, &q_spec, &bus_types).unwrap();
+        assert!(result.converged);
+        assert_eq!(result.bus_results.len(), 1);
+        assert!((result.bus_results[0].voltage_magnitude - 1.0).abs() < 1e-6);
     }
 }

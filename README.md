@@ -11,6 +11,11 @@
 **聚能以枢，驱动万物智能**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![codecov](https://codecov.io/gh/Gawg-AI/EnerOS/branch/main/graph/badge.svg)](https://codecov.io/gh/Gawg-AI/EnerOS)
+[![Security](https://img.shields.io/badge/Security-OWASP%20Top%2010-green.svg)](tests/security/)
+[![IEC 62443](https://img.shields.io/badge/IEC%2062434-SL1%20Ready-blue.svg)](docs/compliance/)
+[![Conformance](https://img.shields.io/badge/Protocol-Conformance%20IEC%2061850%2FModbus%2F104-orange.svg)](tests/protocol_conformance/)
+[![Benchmarks](https://img.shields.io/badge/Performance-criterion%20tracked-success.svg)](benches/)
 
 </div>
 
@@ -402,16 +407,175 @@ cargo run --bin eneros -- power-flow --case ieee14
 - [x] **v0.20.0 — 时间同步与日志** — PTP IEEE 1588 + NTP 回退 + PHC 管理 + syslog 结构化 JSON 日志 + 轮转/压缩/远程转发 + 审计日志 HMAC 签名 + enerosctl log 子命令
 - [x] **v0.20.1 — v0.20.0 安全与正确性修复** — 审计签名绕过/空密钥/seq持久化 + PTP孤儿进程/ptp4l参数/NTP校验/Duration panic + 日志轮转/TLS明文/RFC5424转义 + CLI路径遍历/grep注入防护
 - [x] **v0.20.2 — v0.20.0 功能完整性修复** — timesync 新增 eneros-timesync 守护进程（后台循环/PTP pmc 轮询/phc2sys -w/Drop trait/NTP 重试）+ syslog 线程安全（Mutex/BufWriter/fsync/TLS fail-fast/轮转修复）+ audit 链式哈希（prev_hash/轮转/fsync/查询过滤/签名修复）+ enerosctl audit/time 子命令 + log level 真正生效
+- [x] **v0.21.0 — 设备管理与 HAL** — devmgr uevent 热插拔 + termios 串口 + USB/GPIO/I2C/SPI 设备接口 + enerosctl device 子命令
+- [x] **v0.22.0 — 部署与 OTA 更新** — A/B 分区原子更新 + Ed25519 签名验证 + eneros-imager v2 五分区布局 + eneros-installer 交互式安装器 + enerosctl update 子命令 + 启动成功检测与自动回滚
+- [x] **v0.23.0 — 电力协议原生支持** — AF_PACKET 原始套接字 transport（GOOSE/SV Layer 2 直采）+ IEC 104 FT 1.2 串口模式 + Modbus RTU 串口模式 + 协议时间戳（SO_TIMESTAMPNS + PTP 对齐）+ PRP/HSR 冗余框架 + enerosctl protocol 子命令
+- [x] **v0.23.0 交付级修复（Delivery-Grade Hardening）** — AF_PACKET 改用内核 EtherType 过滤（`htons(ethertype)` 替代 `ETH_P_ALL`）+ cmsg_len/MSG_TRUNC 安全校验 + FT 1.2 帧区分算法重写（先试变长帧再回退固定帧，去除字符间超时依赖）+ Modbus Float32/Int32 IEEE 754 双寄存器写入（功能码 0x10）+ GOOSE BIT STRING 越界防护 + GooseTransport trait 改 `&self` 消除锁阻塞 + SV 多 ASDU 回调遍历 + timestamp 负值/溢出防护 + PTP 偏移过期检查（`is_stale`）+ PRP/HSR 序列号窗口回绕算法 + RCT 标准兼容（LSDU_size 字段）+ HSR Tag path 高 2 位编码 + enerosctl `receive()` 编译修复 + `for_goose`/`for_sv` 构造器 + 超时非零退出码 + IPv6 解析
+- [x] **v0.24.0 — 安全加固** — UEFI Secure Boot（PK/KEK/db/dbx 变量管理 + Ed25519 签名验证 + `secure-boot.sh` 5 命令脚本）+ 内核加固（CONFIG_SECURITY_DMESG_RESTRICT + page_alloc.shuffle/slab_nomerge/init_on_alloc/init_on_free 命令行参数）+ seccomp 4 级 profile（Observer/Operator/Supervisor/Emergency，libseccomp BPF）+ 审计系统增强（HMAC-SHA256 签名 + 链式哈希 + 远程转发 + 365 天保留）+ 密钥管理服务（AES-256-GCM + Argon2id + Ed25519/Aes256/HmacSha256 + 访问控制 + 备份恢复）+ enerosctl security 子命令（status/keys/audit）
+- [x] **v0.25.0 — 高可用基础** — 双节点心跳（UDP 多播 100ms 间隔 + 300ms 故障检测 + Alive/Suspect/Dead 状态机 + 主备角色优先级 + 双网卡冗余）+ HA 配置管理（HaConfig/SyncScope）+ 共享状态存储（应用级复制引擎 + 冲突检测/解决 PrimaryWins/TimestampWins/VersionWins + 配额管理）+ 状态同步/Fencing 框架占位 + enerosctl ha 子命令（status/nodes/sync-status/failover）
+- [x] **v0.25.1 — HA 基础加固修复** — 修复 v0.25.0 HA 模块的 11 个 CRITICAL + 21 个 HIGH 缺陷：HaConfig 配置语义校验 + 心跳包 HMAC-SHA256 认证 + 双网卡冗余实现 + SyncManager 长连接/读取缓冲区/SharedStore 集成 + SharedStore role 可变/replicate 配额/delete 复制/O(1) 配额 + Fencing 自 fencing 防护/速率限制/多节点校验/历史持久化 + RwLock 中毒安全 + CLI 桩实现标注/failover 确认提示
+- [x] **v0.26.0 — 高可用切换** — eneros-ha 守护进程（TCP IPC 127.0.0.1:5402）+ FailoverEngine 5 状态状态机 + VIP 漂移（ip addr + arping）+ 服务降级（is_readonly）+ 自动故障恢复（增量同步）+ 多节点集群（ClusterManager + Quorum 多数派 + witness 仲裁）+ 灾备演练（DrillScheduler 3 场景）+ SharedStore 持久化（JSON 快照 + WAL）+ enerosctl failover 子命令
+- [x] **v0.27.0 — 插件系统** — eneros-plugin crate（独立框架核心）+ libloading 动态库加载 + C ABI 入口函数（eneros_plugin_create/destroy/metadata）+ Ed25519 签名验证 + seccomp 沙箱 + cgroups v2 资源配额 + catch_unwind 崩溃隔离 + ProtocolPlugin/AgentPlugin/AnalysisPlugin 三类插件接口 + ProtocolType::Custom 扩展 + Agent 权限上限 Operator + Kahn 拓扑排序依赖解析 + enerosctl plugin 子命令（9 个）+ 3 个示例插件（IEC 103/负荷均衡/可靠性分析）
+- [x] **v0.28.0 — 开发者工具** — eneros-sdk crate（Agent/协议/插件开发 SDK，feature 门控）+ eneros-simulator crate（场景脚本引擎 + 电网/设备/故障/负荷四类模拟器，34 测试）+ eneros-plugin-macros crate（`#[eneros_plugin]` 过程宏自动生成 C ABI 入口）+ plugin-daemon 独立守护进程（IPC JSON 行协议 + 崩溃隔离 + Unix socket/TCP 双传输）+ PluginDaemonClient IPC 客户端 + LoadMode 双模式加载（Daemon 默认/Inline 向后兼容）+ PluginMarketClient 插件市场基础（搜索/下载/LRU 缓存）+ enerosctl 交互式 shell（rustyline REPL + Tab 补全 + 命令历史）+ enerosctl config/service/doctor/simulator 子命令 + plugin 命令 IPC 化 + clap_complete 补全脚本生成 + 完整文档体系（CONTRIBUTING + developer-guide + ADR 0001-0004 + user-manual + plugin-development + deployment 增强）+ API 文档完善（simulator validate 端点 + plugin_market tags）
+- [x] **v0.28.1 — 开发者工具加固修复** — 7 CRITICAL + 23 HIGH + 60 MEDIUM + 44 LOW 修复：FFI `OnceLock<CString>` 零泄漏 + JSON RFC 8259 控制字符转义 + 潮流 `base_mva` per-unit 转换 + 分支功率真实 ID 映射 + Slack 母线校验 + NaN `is_finite()` 拒绝 + `plugin_op_lock` 串行化 + IPC `connect_timeout` + 路径遍历 `validate_config_file_name()` + `env!("CARGO_PKG_VERSION")` 编译期版本嵌入 + serde `snake_case` 场景动作 + vtable 死代码消除
+
+- [x] **v0.29.0 — 技术债务清偿与架构加固** — 25 项任务全部完成：`eneros-runtime` 架构重构 + dev-deps 循环消除 + 拓扑依赖反转 + TraceLayer/JSON日志/trace_id贯穿/TLS/OTLP 可观测性 + Agent控制API/校验合规规划WhatIf审计API/SSE Dashboard + WatchdogTimer + 热点路径p99<10ms + Gorilla压缩 + 连接池 + 决策缓存 + CI/CD + TDengine/InfluxDB后端 + FencingManager Quorum + 成员变更回调 + bincode批量同步 + SharedMemoryChannel(mmap+eventfd)
+
+- [x] **v0.30.0 — 生态成熟与质量保障** — 8 项任务全部完成：IEC 62443-4-1/4-2 安全认证文档（SL1 91% / SL2 66% 符合性矩阵）+ OWASP Top 10 安全合规测试套件（97 测试，cargo audit + SAST 自定义规则）+ 端到端测试框架（TestCluster 本地进程组模式，6 场景 12 测试）+ 混沌工程（5 类注入器：网络/磁盘/CPU/内存/进程，4 场景）+ 电力协议一致性测试（IEC 61850 MMS/GOOSE/SV + Modbus TCP/RTU + IEC 104，174 测试通过）+ 性能基准体系（criterion 5 基准：SCADA/Agent/HA/API/PowerFlow，p50/p95/p99，回归 > 10% CI 失败）+ 测试覆盖率补充（114 新测试覆盖 powerflow/agent/ha）+ 集成验证发布（0 错误/0 警告/3500+ 测试）
+
+### 规划中（v0.31.0-v0.50.0）
+
+> 完整 22 版本蓝图见 [ROADMAP.md](ROADMAP.md)，任务分解见 [.trae/specs/roadmap-v029-to-v050/tasks.md](.trae/specs/roadmap-v029-to-v050/tasks.md)。
+
+| 版本 | 主题 | 核心交付 |
+|------|------|----------|
+| v0.29.0 | 技术债务清偿与架构加固 | 42 项推迟项修复 + `eneros-runtime` 架构重构 + 性能优化（p99 < 10ms）+ TDengine/InfluxDB + OTLP + FencingManager Quorum + SharedMemoryChannel + Gorilla 压缩 + 连接池 + 决策缓存 + SSE Dashboard（25/25 任务完成，3115 测试通过）|
+| v0.30.0 | 生态成熟与质量保障 | IEC 62443 认证 + 安全合规测试 + e2e 测试 + 混沌工程 + 协议一致性 + 性能基准 + 覆盖率 > 80%（8/8 任务完成，3500+ 测试通过）|
+| v0.31.0 | 数字孪生引擎 | TwinModel 实时镜像 + What-If 推演 + 历史回放 + 虚拟传感器 |
+| v0.32.0 | 高级 API 与数据平台 | GraphQL + API 版本管理 + 限流配额 + 时序查询 + 数据导出 |
+| v0.33.0 | AI/ML 集成基础 | LLM 集成 + 异常检测 + 预测性维护 + 嵌入模型 + Agent LLM 增强 |
+| v0.34.0 | 边缘计算与云边协同 | 边缘 Agent + 云边 gRPC + 模型分发 + 边缘推理 + 边缘自治 |
+| v0.35.0 | 电力协议扩展 | IEC 60870-5-103 + CDT + R-GOOSE + PMU/PDC + ICCP + 协议网关 |
+| v0.36.0 | 高级电网分析 | 预想事故分析 + 动态安全评估 + 新能源 + 储能 + 微电网 |
+| v0.37.0 | 插件生态与市场 | 插件市场 + 进程隔离 + 第三方 SDK + 插件 CI/CD + 依赖管理 |
+| v0.38.0 | 多租户与隔离 | 租户模型 + 命名空间隔离 + 租户配额 + 租户感知 API |
+| v0.39.0 | 安全增强与零信任 | 零信任 mTLS + 威胁检测 + 安全自动化 + NERC CIP + 审计取证 |
+| v0.40.0 | 生产级运维自动化 | SLO/SLI + 自动扩缩容 + 事件响应 + 容量规划 + AIOps |
+| v0.41.0 | 高可用增强 | 多区域 HA + 灾难恢复 + 零停机升级 + 地理冗余多活 |
+| v0.42.0 | 性能极致优化 | 亚毫秒延迟 + 100 万点/秒 SCADA + 内存优化 + 共享内存 IPC + 内核旁路 |
+| v0.43.0 | Agent 智能进阶 | 多 Agent 协作 + 强化学习 + 任务分解 + 策略市场 + 可解释性 |
+| v0.44.0 | 电网分析进阶 | 动态状态估计 + 实时稳定 + EMTP 电磁暂态 + 谐波分析 + 电网等值 |
+| v0.45.0 | 物联网与泛在接入 | MQTT + CoAP + LwM2M + 传感器网络 + 边缘设备管理 |
+| v0.46.0 | 可视化与交互增强 | 高级仪表盘 + 3D 可视化 + 自然语言接口 + 移动端 + 报表 |
+| v0.47.0 | 国际化与合规 | 多语言 i18n + GDPR/PIPL/CCPA + 区域协议 + 本地化 |
+| v0.48.0 | 数据治理与隐私 | 数据治理 + 差分隐私 + 数据血缘 + 数据脱敏 + 字段级加密 |
+| v0.49.0 | 1.0 候选准备 | 功能冻结 + 全面测试 + 文档完善 + 性能验证 + 安全审计 |
+| v0.50.0 | 1.0 Release Candidate | 最终加固 + 生产就绪 + IEC 62443 SL2 认证 + v1.0.0-rc.1 发布 |
+
+### HA 高可用（v0.26.0）
+
+EnerOS 提供双节点主备冗余和多节点集群高可用能力，故障切换 < 3s。
+
+**核心组件**：
+- `eneros-ha` 守护进程：独立二进制，运行 HeartbeatManager + SyncManager + SharedStore + FencingManager + FailoverEngine
+- `FailoverEngine` 状态机：Standby → TakingOver → Active → FailingBack → Failed
+- VIP 漂移：Linux 下通过 `ip addr add/del` + `arping -U` 实现 IP 接管
+- 服务降级模式：备节点 `is_readonly = true` 防止双主冲突
+- 自动故障恢复：原主节点恢复后增量同步，按策略（AutoPreferPrimary/Manual）回切
+- 多节点集群：ClusterManager + Quorum 多数派仲裁 + witness 仲裁节点
+- 灾备演练：DrillScheduler 支持 PrimaryDown/NetworkPartition/DiskFailure 场景
+- 持久化：JSON 快照 + WAL 追加日志，ha-daemon 重启后状态恢复
+
+**CLI 控制**（`enerosctl ha` 子命令）：
+- `enerosctl ha status` — 查询 HA 整体状态
+- `enerosctl ha nodes` — 查询集群成员列表
+- `enerosctl ha sync-status` — 查询同步统计
+- `enerosctl ha failover-status` — 查询 failover 状态机
+- `enerosctl ha failover-trigger --force` — 手动触发切换
+- `enerosctl ha failover-history` — 查询切换历史
+- `enerosctl ha failover-drill --scenario primary_down` — 触发灾备演练
+
+**配置**：`/etc/eneros/ha.toml` 包含 [heartbeat]/[sync]/[fencing]/[failover]/[cluster]/[drill] 配置段
+
+**已知限制**：
+- IP 接管/释放为 Linux only
+- FencingManager::fence 的 Quorum 校验推迟到 v0.27.0
+- 集群成员变更通知回调推迟到 v0.27.0
+- 二进制序列化、批量同步性能优化推迟到 v0.27.0
+
+### 插件系统（v0.27.0）
+
+EnerOS v0.27.0 引入完整的插件框架，支持第三方协议适配器、Agent 策略、分析模块以动态库形式接入系统，通过 Ed25519 签名验证与 seccomp 沙箱保障安全隔离。
+
+**核心组件**：
+- `eneros-plugin` crate：插件框架核心，独立于 eneros-device/eneros-agent/eneros-analysis，通过镜像类型避免循环依赖
+- `PluginLoader`：基于 libloading 0.8 的动态库加载器，支持 .so/.dll/.dylib 跨平台
+- `PluginSignatureVerifier`：Ed25519 签名验证（复用 v0.22.0 OTA 签名基础设施）
+- `PluginSandbox`：seccomp BPF 沙箱 + cgroups v2 资源配额 + catch_unwind 崩溃隔离
+- `PluginRegistry`：线程安全注册表（RwLock<HashMap>）+ Kahn 拓扑排序依赖解析
+- `PluginState` 状态机：Loaded → Initialized → Starting → Running → Stopping → Stopped / Crashed / Failed
+
+**三类插件接口**：
+- `ProtocolPlugin`：协议适配器插件，`ProtocolType::Custom(String)` 支持第三方协议接入
+- `AgentPlugin`：Agent 策略插件，权限上限 Operator（Emergency/Supervisor 强制降级）+ StrategyPriority 冲突解决
+- `AnalysisPlugin`：分析模块插件，输入/输出使用 serde_json::Value 避免 ABI 不安全类型
+
+**CLI 控制**（`enerosctl plugin` 子命令）：
+- `enerosctl plugin list` — 列出插件目录中的已安装插件
+- `enerosctl plugin load <path>` — 加载插件（验证签名 → 加载库 → 显示入口符号）
+- `enerosctl plugin verify <path>` — 验证插件签名（不加载）
+- `enerosctl plugin info <name>` — 显示插件详情（manifest + 元数据）
+- `enerosctl plugin gen-keys --output <dir>` — 生成 Ed25519 签名密钥对
+- `enerosctl plugin sign --plugin <path> --key <key>` — 对插件文件签名
+
+**示例插件**（`crates/eneros-plugin/examples/`）：
+- `iec103-plugin`：IEC 103 协议适配器示例
+- `custom-strategy-agent`：基于规则的负荷均衡策略示例
+- `reliability-analysis`：SAIFI/SAIDI/CAIDI 可靠性指标计算示例
+
+**配置**：`/etc/eneros/plugin.toml` 包含 [plugin]/[quota]/[sandbox] 三段配置
+
+**已知限制**：
+- 插件进程隔离（独立进程 + IPC 通信）推迟到 v0.28.0，v0.27.0 采用同进程加载
+- `#[eneros_plugin]` 过程宏推迟到 v0.28.0，v0.27.0 用 C ABI 入口函数替代
+- plugin-daemon 独立守护进程推迟到 v0.28.0，v0.27.0 CLI 直接调用库
+- seccomp/cgroups 仅 Linux 生效，非 Linux 平台返回 Unsupported
+
+### 开发者工具（v0.28.0）
+
+EnerOS v0.28.0 引入完整开发者工具链，支持快速构建、测试和部署 EnerOS 应用。
+
+**Rust SDK**（`crates/eneros-sdk/`）：
+- `AgentBuilder` 链式构造器 + `AgentSdk` 封装 IPC 客户端句柄
+- `ProtocolAdapterBuilder` 协议适配器开发辅助
+- `PluginBuilder` 生成 PluginManifest TOML + `#[eneros_plugin]` 宏 re-export
+- feature 门控：`full`（默认）/`agent`/`protocol`/`plugin`
+
+**统一模拟器框架**（`crates/eneros-simulator/`）：
+- 场景脚本引擎：TOML 格式场景定义，7 种动作（InjectFault/ClearFault/LoadChange/GeneratorTrip/LineTrip/LoadShed/Observe）
+- 电网模拟器：稳态潮流重求解，支持支路开断/发电机调整/负荷调节
+- 设备模拟器：RTU/IED/保护装置行为仿真，IEC 104 + Modbus 协议响应
+- 故障注入：5 种故障类型 + 5 个预置场景（N-1/N-2/级联/保护拒动/保护误动）
+- 负荷曲线：4 季 × 3 区域类型典型曲线 + 光伏/风电新能源模型
+
+**plugin-daemon 进程隔离**：
+- 独立守护进程，插件在 daemon 进程内加载，IPC 通信实现崩溃隔离
+- `LoadMode::Daemon`（v0.28.0 默认）/ `LoadMode::Inline`（v0.27.0 同进程，向后兼容）
+- IPC 协议：JSON 行协议，Unix socket（Linux）/ TCP 127.0.0.1:5410（跨平台回退）
+
+**`#[eneros_plugin]` 过程宏**（`crates/eneros-plugin-macros/`）：
+- 标注 `impl Plugin` 的结构体，自动生成 `eneros_plugin_create`/`destroy`/`metadata`/`vtable` C ABI 入口
+- 使用具体类型进行 FFI 指针转换，避免 fat pointer vtable 丢失问题
+
+**插件市场基础**（`crates/eneros-plugin/src/market.rs`）：
+- `PluginMarketClient` 远程仓库索引（TOML 清单）、搜索、下载、LRU 缓存淘汰
+
+**enerosctl 全功能 CLI**：
+- 交互式 shell：`enerosctl shell` 启动 REPL（`eneros> ` 提示符，Tab 补全，命令历史）
+- 补全脚本：`enerosctl completions bash/zsh/fish/powershell`
+- 配置管理：`enerosctl config get/set/edit/list`
+- 服务管理：`enerosctl service start/stop/restart/status/list`
+- 系统诊断：`enerosctl doctor`（内核/控制通道/状态文件/权限/依赖服务检查）
+- 模拟器：`enerosctl simulator run/validate/list`
+- plugin 命令 IPC 化：通过 PluginDaemonClient 调用 plugin-daemon
+
+**完整文档体系**：
+- [CONTRIBUTING.md](CONTRIBUTING.md) — 贡献指南
+- [docs/developer-guide.md](docs/developer-guide.md) — 开发者指南
+- [docs/adr/](docs/adr/) — 架构决策记录（0001-0004）
+- [docs/user-manual.md](docs/user-manual.md) — 用户手册
+- [docs/plugin-development.md](docs/plugin-development.md) — 插件开发指南
+- [docs/deployment.md](docs/deployment.md) — 部署运维手册
 
 ### 规划中
 
-- [ ] **v1.0.0 — 生态扩展** — 插件系统、GraphQL、数字孪生、文档体系
+- [ ] **v1.0.0 — 生态扩展** — GraphQL、数字孪生、文档体系
 
 ---
 
 ## 参与贡献
 
-EnerOS 当前版本 v0.22.0，20 个 crate。欢迎对电力系统与 AI 交叉领域感兴趣的贡献者参与。请阅读 [ROADMAP.md](ROADMAP.md) 了解规划方向。
+EnerOS 当前版本 v0.30.0（已发布，8/8 任务完成，3500+ 测试通过），43 个 crate。欢迎对电力系统与 AI 交叉领域感兴趣的贡献者参与。请阅读 [ROADMAP.md](ROADMAP.md) 了解规划方向，[CONTRIBUTING.md](CONTRIBUTING.md) 了解贡献流程。
 
 ---
 

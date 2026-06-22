@@ -90,7 +90,7 @@ impl ServiceManager {
     }
 
     /// Register all graph services with the supervisor and compute the
-    /// startup order. Called once before [`start_all`].
+    /// startup order. Called once before `start_all`.
     pub fn prepare(&mut self) -> Result<&[String], InitError> {
         for service in self.graph.services() {
             self.supervisor.register(service.clone());

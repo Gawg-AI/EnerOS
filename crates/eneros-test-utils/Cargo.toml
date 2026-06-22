@@ -1,0 +1,14 @@
+[package]
+name = "eneros-test-utils"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS shared test utilities (mock simulators, fixtures)"
+
+[dependencies]
+eneros-core = { path = "../eneros-core" }
+eneros-constraint = { path = "../eneros-constraint" }
+tokio = { workspace = true, features = ["rt", "time", "sync", "process", "fs", "io-util", "macros"] }
+tracing = { workspace = true }
+anyhow = { workspace = true }

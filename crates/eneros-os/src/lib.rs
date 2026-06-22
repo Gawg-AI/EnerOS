@@ -22,3 +22,5 @@ pub mod devmgr;
 pub mod update;
 pub mod hal;
 pub mod agentos;
+pub mod security;
+pub mod ha;

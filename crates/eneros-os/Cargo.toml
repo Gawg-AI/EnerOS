@@ -14,6 +14,8 @@ tokio = { workspace = true, features = ["full"] }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+# 二进制序列化（v0.29.0 — T029-23 HA 同步批量二进制序列化）
+bincode = { workspace = true }
 # Logging
 tracing = { workspace = true }
 # Error handling
@@ -29,6 +31,13 @@ toml = { workspace = true }
 # Crypto (audit log HMAC signing)
 hmac = { workspace = true }
 sha2 = { workspace = true }
+# KeyStore 加密 (v0.24.0 — Task 2)
+argon2 = { workspace = true }
+aes-gcm = { workspace = true }
+pbkdf2 = { workspace = true, features = ["simple"] }
+rand = { workspace = true }
+# 密钥材料零化（v0.24.0 — Task 3）
+zeroize = { workspace = true }
 # OTA signing (v0.22.0)
 ed25519-dalek = { workspace = true }
 base64 = { workspace = true }
@@ -39,6 +48,16 @@ flate2 = { workspace = true }
 # Linux syscalls (for RT scheduling, mlockall, etc.)
 libc = "0.2"
 nix = { version = "0.29", features = ["process", "sched", "signal", "fs", "user"] }
+# 共享内存映射 (v0.29.0 — T029-24 RT 域 SharedMemoryChannel)
+memmap2 = { workspace = true }
+# seccomp BPF 沙箱 (v0.24.0 — Task 1)：仅 Linux + seccomp feature 启用
+libseccomp = { workspace = true, optional = true }
+
+[features]
+# seccomp 系统调用沙箱：仅 Linux 平台有实际功能，非 Linux 为 stub
+seccomp = ["dep:libseccomp"]
+# TPM 硬件密钥存储：仅 Linux 平台有实际功能，非 Linux 为 stub
+tpm = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

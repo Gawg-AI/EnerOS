@@ -8,11 +8,21 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::app::AppState;
 use crate::config_reload::ReloadResult;
 
 /// `POST /api/config/reload` — manually trigger a config reload from disk.
+#[utoipa::path(
+    post,
+    path = "/api/config/reload",
+    responses(
+        (status = 200, description = "配置重载结果", body = ConfigReloadResponse),
+        (status = 500, description = "重载失败"),
+        (status = 501, description = "配置热重载未启用"),
+    )
+)]
 pub async fn reload_handler(State(state): State<AppState>) -> axum::response::Response {
     let watcher = match &state.config_watcher {
         Some(w) => w,
@@ -44,6 +54,14 @@ pub async fn reload_handler(State(state): State<AppState>) -> axum::response::Re
 /// `GET /api/config` — return the current runtime configuration (sanitized).
 ///
 /// Sensitive fields (jwt_secret, api_keys) are redacted.
+#[utoipa::path(
+    get,
+    path = "/api/config",
+    responses(
+        (status = 200, description = "当前运行时配置（敏感字段已脱敏）"),
+        (status = 501, description = "共享配置不可用"),
+    )
+)]
 pub async fn get_config_handler(State(state): State<AppState>) -> axum::response::Response {
     let config = match &state.shared_config {
         Some(sc) => sc.read().clone(),
@@ -77,7 +95,7 @@ pub async fn get_config_handler(State(state): State<AppState>) -> axum::response
 }
 
 /// Response for the reload endpoint (re-exported for convenience).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ConfigReloadResponse {
     pub success: bool,
     pub message: String,

@@ -5,11 +5,12 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::app::AppState;
 
 /// Tool info in the list response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ToolInfoDto {
     pub name: String,
     pub description: String,
@@ -17,13 +18,13 @@ pub struct ToolInfoDto {
 }
 
 /// Request body for tool execution.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ExecuteToolRequest {
     pub params: serde_json::Value,
 }
 
 /// Response for tool execution.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ExecuteToolResponse {
     pub success: bool,
     pub data: serde_json::Value,
@@ -31,6 +32,14 @@ pub struct ExecuteToolResponse {
 }
 
 /// `GET /api/tools` — list all registered tools.
+#[utoipa::path(
+    get,
+    path = "/api/tools",
+    responses(
+        (status = 200, description = "已注册工具列表", body = ToolInfoDto),
+        (status = 503, description = "工具引擎未配置"),
+    )
+)]
 pub async fn list_handler(
     State(state): State<AppState>,
 ) -> axum::response::Response {
@@ -55,6 +64,17 @@ pub async fn list_handler(
 }
 
 /// `POST /api/tools/{name}/execute` — execute a tool by name.
+#[utoipa::path(
+    post,
+    path = "/api/tools/{name}/execute",
+    params(("name" = String, Path, description = "工具名称")),
+    request_body = ExecuteToolRequest,
+    responses(
+        (status = 200, description = "工具执行结果", body = ExecuteToolResponse),
+        (status = 500, description = "工具执行失败"),
+        (status = 503, description = "工具引擎未配置"),
+    )
+)]
 pub async fn execute_handler(
     State(state): State<AppState>,
     Path(tool_name): Path<String>,

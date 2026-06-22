@@ -19,7 +19,7 @@ use axum::Router;
 use tower::ServiceExt;
 
 use eneros_api::app::{create_router, AppState};
-use eneros_network::PowerNetwork;
+use eneros_runtime::network::PowerNetwork;
 
 // ---------------------------------------------------------------------------
 // Test helpers

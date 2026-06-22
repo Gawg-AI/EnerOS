@@ -254,6 +254,28 @@ impl ActionDispatcher {
         }
     }
 
+    /// 与 [`dispatch`](Self::dispatch) 相同，但在一个携带 `trace_id` 的
+    /// `tracing::Span` 中执行（T029-06）。
+    ///
+    /// 用于 Agent 进程（`SpawnedAgent`、`AgentProcess`）直接调用 dispatcher
+    /// 时显式传播 trace_id。当 dispatcher 已在 orchestrator 的 span 内被
+    /// 调用时，无需使用本方法——外层 span 已经携带 trace_id。
+    pub async fn dispatch_with_trace(
+        &self,
+        action: AgentAction,
+        trace_id: impl AsRef<str>,
+    ) -> Result<DispatchResult> {
+        let span = tracing::info_span!(
+            "agent.dispatch",
+            trace_id = %trace_id.as_ref(),
+            action_type = ?action,
+        );
+        // 使用 Instrument 将 span 附加到 dispatch 返回的 future 上，
+        // 确保 dispatch 内部所有 await 点和日志都在该 span 下。
+        use tracing::Instrument;
+        self.dispatch(action).instrument(span).await
+    }
+
     /// Dispatch multiple actions in order
     pub async fn dispatch_all(&self, actions: Vec<AgentAction>) -> Vec<Result<DispatchResult>> {
         let mut results = Vec::with_capacity(actions.len());
@@ -655,5 +677,264 @@ mod tests {
         ).await.unwrap();
         assert!(matches!(result, DispatchResult::CommandRejected(_)));
         assert_eq!(trail.len(), 1);
+    }
+
+    // === T029-06: 分布式追踪 trace_id 贯穿 Agent 管线 ===
+
+    /// 验证 `dispatch_with_trace()` 在携带 trace_id 的 span 下执行 dispatch，
+    /// 并且返回结果与 `dispatch()` 一致。
+    #[tokio::test]
+    async fn test_dispatch_with_trace_returns_same_result_as_dispatch() {
+        let dispatcher = test_dispatcher();
+
+        // 对比 dispatch 和 dispatch_with_trace 的返回结果
+        let direct_result = dispatcher.dispatch(AgentAction::LogMessage("hello".to_string())).await;
+        let traced_result = dispatcher
+            .dispatch_with_trace(AgentAction::LogMessage("hello".to_string()), "test-trace-id-1")
+            .await;
+
+        // 两者应返回相同的结果
+        assert_eq!(direct_result.unwrap(), DispatchResult::Logged);
+        assert_eq!(traced_result.unwrap(), DispatchResult::Logged);
+    }
+
+    /// 验证 `dispatch_with_trace()` 接受 `&str`、`String` 等多种参数类型
+    /// （`impl AsRef<str>` 泛型约束）。
+    #[tokio::test]
+    async fn test_dispatch_with_trace_accepts_multiple_string_types() {
+        let dispatcher = test_dispatcher();
+
+        // &str
+        let result1 = dispatcher
+            .dispatch_with_trace(AgentAction::NoOp, "str-trace-id")
+            .await
+            .unwrap();
+        assert_eq!(result1, DispatchResult::NoOp);
+
+        // String
+        let result2 = dispatcher
+            .dispatch_with_trace(AgentAction::NoOp, String::from("string-trace-id"))
+            .await
+            .unwrap();
+        assert_eq!(result2, DispatchResult::NoOp);
+
+        // &String
+        let trace_id = String::from("ref-string-trace-id");
+        let result3 = dispatcher
+            .dispatch_with_trace(AgentAction::NoOp, &trace_id)
+            .await
+            .unwrap();
+        assert_eq!(result3, DispatchResult::NoOp);
+    }
+
+    /// 验证 `dispatch_with_trace()` 对所有 `AgentAction` 变体都能正常工作。
+    /// 这确保 trace_id span 不会干扰 dispatch 的实际逻辑。
+    #[tokio::test]
+    async fn test_dispatch_with_trace_works_for_all_action_variants() {
+        let dispatcher = test_dispatcher();
+
+        // LogMessage
+        let r1 = dispatcher
+            .dispatch_with_trace(AgentAction::LogMessage("msg".to_string()), "trace-1")
+            .await
+            .unwrap();
+        assert_eq!(r1, DispatchResult::Logged);
+
+        // NoOp
+        let r2 = dispatcher
+            .dispatch_with_trace(AgentAction::NoOp, "trace-2")
+            .await
+            .unwrap();
+        assert_eq!(r2, DispatchResult::NoOp);
+
+        // ExecuteCommand
+        let cmd = Command::new(CommandType::GeneratorSetpoint, 1, CommandPriority::Normal, "test");
+        let r3 = dispatcher
+            .dispatch_with_trace(AgentAction::ExecuteCommand(cmd), "trace-3")
+            .await
+            .unwrap();
+        assert_eq!(r3, DispatchResult::CommandExecuted);
+
+        // RequestApproval
+        let r4 = dispatcher
+            .dispatch_with_trace(
+                AgentAction::RequestApproval {
+                    action: Box::new(AgentAction::NoOp),
+                    reason: "test".to_string(),
+                },
+                "trace-4",
+            )
+            .await
+            .unwrap();
+        assert_eq!(r4, DispatchResult::ApprovalRequested);
+
+        // DelegateTask
+        let r5 = dispatcher
+            .dispatch_with_trace(
+                AgentAction::DelegateTask {
+                    target_agent_id: "agent-2".to_string(),
+                    task_description: "task".to_string(),
+                },
+                "trace-5",
+            )
+            .await
+            .unwrap();
+        assert_eq!(r5, DispatchResult::TaskDelegated);
+
+        // EmergencyOverride
+        let r6 = dispatcher
+            .dispatch_with_trace(
+                AgentAction::EmergencyOverride {
+                    action: Box::new(AgentAction::NoOp),
+                    justification: "emergency".to_string(),
+                },
+                "trace-6",
+            )
+            .await
+            .unwrap();
+        assert_eq!(r6, DispatchResult::EmergencyOverrideApplied);
+
+        // RollbackAction
+        let r7 = dispatcher
+            .dispatch_with_trace(
+                AgentAction::RollbackAction {
+                    action_id: "action-1".to_string(),
+                    reason: "rollback".to_string(),
+                },
+                "trace-7",
+            )
+            .await
+            .unwrap();
+        assert_eq!(r7, DispatchResult::ActionRolledBack);
+    }
+
+    /// 验证 `dispatch_with_trace()` 在 PublishEvent 动作下也能正常工作。
+    #[tokio::test]
+    async fn test_dispatch_with_trace_publish_event() {
+        let event_bus = Arc::new(EventBus::new(64));
+        let _receiver = event_bus.subscribe();
+        let dispatcher = ActionDispatcher::new_local(
+            event_bus,
+            Arc::new(SafetyGateway::new(100)),
+        );
+
+        let event = Event::new(
+            EventType::ConstraintViolation,
+            "trace-test",
+            EventPayload::Message("trace publish".to_string()),
+        );
+
+        let result = dispatcher
+            .dispatch_with_trace(AgentAction::PublishEvent(event), "publish-trace-id")
+            .await
+            .unwrap();
+        assert_eq!(result, DispatchResult::EventPublished);
+    }
+
+    /// 验证 `dispatch_with_trace()` 在空 trace_id 下也能正常工作（边界情况）。
+    /// 虽然 trace_id 应为非空 UUID，但方法本身不应因空字符串而 panic。
+    #[tokio::test]
+    async fn test_dispatch_with_trace_empty_trace_id_does_not_panic() {
+        let dispatcher = test_dispatcher();
+
+        let result = dispatcher
+            .dispatch_with_trace(AgentAction::NoOp, "")
+            .await
+            .unwrap();
+        assert_eq!(result, DispatchResult::NoOp);
+    }
+
+    /// 验证连续多次调用 `dispatch_with_trace()` 使用不同 trace_id 不会相互干扰。
+    /// 这确保 span 是按调用隔离的，不会泄漏到后续调用。
+    #[tokio::test]
+    async fn test_dispatch_with_trace_multiple_calls_different_trace_ids() {
+        let dispatcher = test_dispatcher();
+
+        // 第一次调用使用 trace_id_1
+        let r1 = dispatcher
+            .dispatch_with_trace(AgentAction::LogMessage("msg1".to_string()), "trace-id-a")
+            .await
+            .unwrap();
+        assert_eq!(r1, DispatchResult::Logged);
+
+        // 第二次调用使用 trace_id_2
+        let r2 = dispatcher
+            .dispatch_with_trace(AgentAction::LogMessage("msg2".to_string()), "trace-id-b")
+            .await
+            .unwrap();
+        assert_eq!(r2, DispatchResult::Logged);
+
+        // 第三次调用使用 trace_id_3
+        let r3 = dispatcher
+            .dispatch_with_trace(AgentAction::NoOp, "trace-id-c")
+            .await
+            .unwrap();
+        assert_eq!(r3, DispatchResult::NoOp);
+    }
+
+    // ===== T030-07: 覆盖率补充测试 =====
+
+    /// 验证 `has_pipeline()` 在默认构造时返回 false。
+    #[test]
+    fn test_has_pipeline_default_false() {
+        let dispatcher = test_dispatcher();
+        assert!(!dispatcher.has_pipeline());
+    }
+
+    /// 验证 `with_context()` builder 方法可链式调用且不 panic。
+    /// 此处仅验证 builder 方法本身，不实际构造 AgentContext（需要较多依赖）。
+    #[test]
+    fn test_with_tool_engine_builder_returns_self() {
+        let dispatcher = test_dispatcher();
+        let tool_engine = Arc::new(tokio::sync::RwLock::new(ToolEngine::new()));
+        // builder 方法应返回 Self，允许链式调用
+        let _dispatcher2 = dispatcher.with_tool_engine(tool_engine);
+    }
+
+    /// 验证 `dispatch()` 对 `ExecuteStructured` 动作在无 pipeline 时走 execute_command 路径。
+    #[tokio::test]
+    async fn test_dispatch_execute_structured_without_pipeline() {
+        let dispatcher = test_dispatcher();
+        // ExecuteStructured 无 pipeline 时转换为 Command 并通过 gateway 执行
+        let sa = StructuredAction::StartGenerator {
+            gen_id: 1,
+            target_mw: 50.0,
+        };
+        let result = dispatcher.dispatch(AgentAction::ExecuteStructured(sa)).await;
+        // SafetyGateway 默认配置下应执行成功
+        assert!(result.is_ok());
+    }
+
+    /// 验证 `dispatch_with_validation()` 在 observer 上下文下对 NoOp 动作放行。
+    /// NoOp 不涉及权限控制，应在任何 authority 下返回 Ok(NoOp)。
+    #[tokio::test]
+    async fn test_dispatch_with_validation_noop_always_allowed() {
+        let dispatcher = test_dispatcher();
+        let result = dispatcher
+            .dispatch_with_validation(
+                AgentAction::NoOp,
+                AuthorityLevel::Observer,
+                &Jurisdiction::unrestricted(),
+                SystemOperatingState::Normal,
+                None,
+            )
+            .await;
+        assert_eq!(result.unwrap(), DispatchResult::NoOp);
+    }
+
+    /// 验证 `dispatch_with_validation()` 对 LogMessage 动作放行（低风险动作）。
+    #[tokio::test]
+    async fn test_dispatch_with_validation_log_message_allowed() {
+        let dispatcher = test_dispatcher();
+        let result = dispatcher
+            .dispatch_with_validation(
+                AgentAction::LogMessage("test log".to_string()),
+                AuthorityLevel::Observer,
+                &Jurisdiction::unrestricted(),
+                SystemOperatingState::Normal,
+                None,
+            )
+            .await;
+        assert_eq!(result.unwrap(), DispatchResult::Logged);
     }
 }

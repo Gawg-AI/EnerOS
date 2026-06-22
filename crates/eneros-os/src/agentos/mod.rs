@@ -8,6 +8,7 @@
 //! - `authority`: 权限强制（Linux capabilities + seccomp）
 //! - `quota`: 资源配额（cgroups v2 CPU/内存限制）
 //! - `scheduler`: 调度策略（SCHED_FIFO RT Agent / SCHED_OTHER 普通 Agent）
+//! - `seccomp`: seccomp BPF 系统调用沙箱（按 AuthorityLevel 限制 syscall）
 
 pub mod registry;
 pub mod supervisor;
@@ -15,13 +16,15 @@ pub mod ipc;
 pub mod authority;
 pub mod quota;
 pub mod scheduler;
+pub mod seccomp;
 
 pub use registry::{AgentInfo, AgentRegistry, AgentStatus, AgentType};
 pub use supervisor::{AgentSpawnConfig, AgentSupervisor, SupervisorError};
 pub use ipc::{
     AgentIpcClient, AgentIpcServer, IpcTransport, AgentIpcConfig, NetworkNamespaceConfig,
-    NetworkNamespaceManager, NamespaceError,
+    NetworkNamespaceManager, NamespaceError, ChannelConfig, SharedMemoryChannel,
 };
-pub use authority::{AuthorityEnforcer, CapabilitySet};
+pub use authority::{AuthorityEnforcer, AuthorityLevelSeccompExt, CapabilitySet};
 pub use quota::{ResourceQuota, ResourceUsage, QuotaConfig};
 pub use scheduler::{AgentScheduler, SchedulingPolicy};
+pub use seccomp::{SeccompAction, SeccompError, SeccompProfile, SeccompRule};

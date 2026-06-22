@@ -76,6 +76,10 @@ impl BinaryWriter {
         self.buf.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
     pub fn write_u8(&mut self, v: u8) {
         self.buf.push(v);
     }

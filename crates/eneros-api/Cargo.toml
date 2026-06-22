@@ -8,28 +8,16 @@ description = "EnerOS API server and client"
 
 [features]
 default = []
-# Enable rig framework integration for AI reasoning
-rig = ["eneros-reasoning/rig"]
+# Enable rig framework integration for AI reasoning — 透传到 eneros-runtime
+rig = ["eneros-runtime/rig"]
 
 [dependencies]
+# 中间聚合层 — 聚合 runtime 类子系统 crate（agent/gateway/eventbus/scada/...）
+eneros-runtime = { path = "../eneros-runtime" }
+# 模型类 crate — 由上层直接依赖（不聚合）
 eneros-core = { path = "../eneros-core" }
 eneros-topology = { path = "../eneros-topology" }
 eneros-powerflow = { path = "../eneros-powerflow" }
-eneros-constraint = { path = "../eneros-constraint" }
-eneros-network = { path = "../eneros-network" }
-eneros-agent = { path = "../eneros-agent" }
-eneros-scada = { path = "../eneros-scada" }
-eneros-analysis = { path = "../eneros-analysis" }
-eneros-eventbus = { path = "../eneros-eventbus" }
-eneros-device = { path = "../eneros-device" }
-eneros-timeseries = { path = "../eneros-timeseries" }
-eneros-gateway = { path = "../eneros-gateway" }
-eneros-tool = { path = "../eneros-tool" }
-eneros-dashboard = { path = "../eneros-dashboard" }
-eneros-memory = { path = "../eneros-memory" }
-eneros-reasoning = { path = "../eneros-reasoning" }
-eneros-equipment = { path = "../eneros-equipment" }
-eneros-bridge = { path = "../eneros-bridge" }
 axum = { version = "0.7", features = ["ws"] }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
@@ -45,8 +33,15 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 tracing-subscriber = { workspace = true }
+# OpenTelemetry OTLP 导出 (v0.29.0 — T029-18)
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 uuid = { workspace = true }
 futures-util = "0.3"
+# SSE 流式构造（T029-11 Dashboard SSE 实时刷新）
+async-stream = "0.3"
 reqwest = { version = "0.12", features = ["json"] }
 num-complex = { workspace = true }
 ndarray = { workspace = true }
@@ -63,3 +58,5 @@ utoipa = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 async-trait = { workspace = true }
+rcgen = "0.12"
+tempfile = "3"

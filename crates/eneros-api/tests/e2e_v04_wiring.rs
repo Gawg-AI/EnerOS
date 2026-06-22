@@ -23,17 +23,17 @@ use eneros_core::config::{
     DeviceConnectionConfig, EnerOSConfig, NetworkConfig, ScadaSourceConfig,
 };
 use eneros_core::PowerObservation;
-use eneros_device::adapters::iec104::asdu::{InformationObject, MeasuredQuality};
-use eneros_device::adapters::iec104::client::{ConnectionState, Iec104Client, Iec104Config};
-use eneros_gateway::{
+use eneros_runtime::device::adapters::iec104::asdu::{InformationObject, MeasuredQuality};
+use eneros_runtime::device::adapters::iec104::client::{ConnectionState, Iec104Client, Iec104Config};
+use eneros_runtime::gateway::{
     CommandExecutor, DeviceCommandExecutor, LoggingExecutor, ObservationProvider,
     SafetyGateway, SharedPriorityCommandQueue,
 };
-use eneros_scada::{
+use eneros_runtime::scada::{
     build_ieee14_ioa_mapping, build_ieee14_scada_config, DataPipeline, DataSource,
     Iec104DataSource, IoaMapping, IoaMappingTable, ScadaCollector, SimulatedDataSource,
 };
-use eneros_timeseries::TimeSeriesEngine;
+use eneros_runtime::timeseries::TimeSeriesEngine;
 
 // ============================================================================
 // T6: Configuration system — EnerOSConfig parses network/scada/devices
@@ -254,7 +254,7 @@ fn test_network_config_selects_ieee14() {
     // The actual build_network_from_config() lives in main.rs (binary), so
     // here we just verify the config selects the right source. The real
     // build path is exercised by the HTTP integration tests.
-    let network = eneros_network::PowerNetwork::from_ieee14();
+    let network = eneros_runtime::network::PowerNetwork::from_ieee14();
     assert_eq!(network.bus_count(), 14);
     assert!(network.branch_count() > 0);
 }
@@ -305,7 +305,7 @@ impl DataSource for CountingDataSource {
 
 #[tokio::test]
 async fn test_pipeline_calls_refresh_before_collect() {
-    use eneros_scada::config::{ScadaConfig, ScadaPoint};
+    use eneros_runtime::scada::config::{ScadaConfig, ScadaPoint};
 
     let ds = Arc::new(CountingDataSource::new());
     let config = ScadaConfig {
@@ -320,6 +320,7 @@ async fn test_pipeline_calls_refresh_before_collect() {
         default_scan_rate_ms: 1000,
         timeout_ms: 5000,
         enable_quality_check: true,
+        pool: Default::default(),
     };
     let collector = Arc::new(ScadaCollector::new(config, ds.clone()));
     let ts = Arc::new(TimeSeriesEngine::new(100));
@@ -419,16 +420,16 @@ async fn test_iec104_data_source_refresh_pulls_from_client_cache() {
 
 #[tokio::test]
 async fn test_build_device_manager_from_config_creates_registrations() {
-    use eneros_device::DeviceManager;
+    use eneros_runtime::device::DeviceManager;
 
     let dm = Arc::new(DeviceManager::new());
     assert_eq!(dm.connected_count().await, 0);
 
     // Registering a device with an unreachable host is non-fatal.
     // The device is registered but connection fails.
-    use eneros_device::adapter::{ConnectionConfig, DeviceInfo, ProtocolConfig};
-    use eneros_device::adapters::iec104::Iec104Adapter;
-    use eneros_device::protocol::ProtocolType;
+    use eneros_runtime::device::adapter::{ConnectionConfig, DeviceInfo, ProtocolConfig};
+    use eneros_runtime::device::adapters::iec104::Iec104Adapter;
+    use eneros_runtime::device::protocol::ProtocolType;
 
     let adapter = Box::new(Iec104Adapter::new("rtu-test"));
     let config = ConnectionConfig {
@@ -476,7 +477,7 @@ async fn test_command_executor_selection_logging_fallback() {
 async fn test_command_executor_selection_device_executor() {
     // Mirrors build_command_executor() in main.rs:
     // - devices_configured > 0 → DeviceCommandExecutor
-    let dm = Arc::new(eneros_device::DeviceManager::new());
+    let dm = Arc::new(eneros_runtime::device::DeviceManager::new());
     let _executor: Arc<dyn CommandExecutor> = Arc::new(DeviceCommandExecutor::new(dm));
 }
 
@@ -485,7 +486,7 @@ async fn test_safety_gateway_with_queue_and_executor_wires_production_path() {
     // This is the critical F1 fix: SafetyGateway must be constructed with
     // a real command executor (not just a queue) so that commands actually
     // reach devices.
-    let dm = Arc::new(eneros_device::DeviceManager::new());
+    let dm = Arc::new(eneros_runtime::device::DeviceManager::new());
     let executor: Arc<dyn CommandExecutor> = Arc::new(DeviceCommandExecutor::new(dm));
     let queue = Arc::new(SharedPriorityCommandQueue::new());
 
@@ -574,7 +575,7 @@ async fn test_observation_provider_returns_none_when_no_data() {
 /// `main.rs`, duplicated here because the function lives in the binary
 /// crate and is not accessible from integration tests.
 fn build_observation_from_readings(
-    readings: &[eneros_scada::ScadaReading],
+    readings: &[eneros_runtime::scada::ScadaReading],
 ) -> PowerObservation {
     use eneros_core::{
         BranchFlowObservation, BusVoltageObservation, GenOutputObservation,
@@ -683,7 +684,7 @@ async fn test_full_chain_simulated_source() {
     assert_eq!(config.scada.source, "simulated");
 
     // 1. Network from config.
-    let network = eneros_network::PowerNetwork::from_ieee14();
+    let network = eneros_runtime::network::PowerNetwork::from_ieee14();
     assert_eq!(network.bus_count(), 14);
 
     // 2. SCADA data source from config (simulated).

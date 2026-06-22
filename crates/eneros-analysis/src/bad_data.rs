@@ -216,7 +216,7 @@ impl BadDataDetector {
             ));
         }
         let n = state_count;
-        let dof = if m > n { m - n } else { 0 };
+        let dof = m.saturating_sub(n);
 
         // 构建权重矩阵 W = diag(1/σ²)
         let mut w = Array2::<f64>::zeros((m, m));
@@ -491,6 +491,7 @@ fn pseudo_inverse(a: &Array2<f64>) -> Result<Array2<f64>, AnalysisError> {
 }
 
 /// 方阵求逆（高斯-约旦消元）
+#[allow(clippy::needless_range_loop)]
 fn invert_square(a: &Array2<f64>) -> Result<Array2<f64>, AnalysisError> {
     let n = a.nrows();
     if n == 0 {

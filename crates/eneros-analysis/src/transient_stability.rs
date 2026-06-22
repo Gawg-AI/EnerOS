@@ -817,6 +817,7 @@ impl TransientStabilityAnalyzer {
     // ========================================================================
 
     /// 4 阶龙格-库塔积分一步
+    #[allow(clippy::too_many_arguments)]
     fn rk4_step(
         &self,
         _t: f64,
@@ -885,6 +886,7 @@ impl TransientStabilityAnalyzer {
     ///
     /// 预测步（显式欧拉）：y_pred = y + dt * f(t, y)
     /// 校正步（梯形）：    y_next = y + dt/2 * (f(t, y) + f(t+dt, y_pred))
+    #[allow(clippy::too_many_arguments)]
     fn heun_step(
         &self,
         _t: f64,
@@ -1369,6 +1371,7 @@ impl TransientStabilityAnalyzer {
     /// - `max_lambda`: 最大负荷参数（安全上限）
     /// - `initial_step`: 初始步长 Δλ
     /// - `max_steps`: 最大连续步数
+    #[allow(clippy::too_many_arguments)]
     pub fn run_cpf(
         &self,
         ybus: &YBusMatrix,
@@ -2240,7 +2243,7 @@ mod tests {
             let k2 = -(y + dt / 2.0 * k1);
             let k3 = -(y + dt / 2.0 * k2);
             let k4 = -(y + dt * k3);
-            y = y + dt / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+            y += dt / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
         }
 
         let t = dt * n_steps as f64;
@@ -2351,7 +2354,7 @@ mod tests {
             let y_pred = y + dt * k1;
             // 校正步（梯形）
             let k2 = -y_pred;
-            y = y + dt / 2.0 * (k1 + k2);
+            y += dt / 2.0 * (k1 + k2);
         }
 
         let t = dt * n_steps as f64;
@@ -2379,6 +2382,7 @@ mod tests {
     /// 3 母线系统：2 发电机 + 1 负荷母线
     /// - 发电机 1：低惯量、高出力（加速快）
     /// - 发电机 2：高惯量、低出力（加速慢）
+    ///
     /// 故障期间两发电机加速度不同，功角差增大
     fn create_2gen_scenario(t_clear: f64) -> TransientScenario {
         TransientScenario {

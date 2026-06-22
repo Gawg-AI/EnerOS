@@ -151,4 +151,9 @@ enable_metrics = true
 enable_json_logging = true
 log_level = "info"  # trace | debug | info | warn | error
 enable_tracing = false
+# OTLP gRPC endpoint for OpenTelemetry trace export (v0.29.0 — T029-18)
+# Set enable_tracing=true and otel_endpoint to export traces to Jaeger/Tempo/Collector
+# Endpoint priority: --otel-endpoint CLI > OTEL_EXPORTER_OTLP_ENDPOINT env > otel_endpoint config
+# otel_endpoint = "http://localhost:4317"  # OTLP gRPC standard port
+# otel_service_name = "eneros-api"         # Service name in Jaeger/Tempo UI
 metrics_retention_secs = 300

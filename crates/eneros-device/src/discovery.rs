@@ -301,6 +301,7 @@ impl DeviceDiscovery {
         Ok(sig.port_open_confidence)
     }
 
+    #[allow(dead_code)]
     async fn probe_device(
         ip: std::net::Ipv4Addr,
         port: u16,

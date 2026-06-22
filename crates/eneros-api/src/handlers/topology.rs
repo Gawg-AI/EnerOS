@@ -7,6 +7,13 @@ use crate::app::AppState;
 use crate::types::{ApiResponse, BranchData, BusData, TopologyDataResponse};
 
 /// GET /api/topology
+#[utoipa::path(
+    get,
+    path = "/api/topology",
+    responses(
+        (status = 200, description = "电网拓扑数据（母线、支路、区域）", body = TopologyDataResponse),
+    )
+)]
 pub async fn topology_handler(
     State(state): State<AppState>,
 ) -> Json<ApiResponse<TopologyDataResponse>> {
