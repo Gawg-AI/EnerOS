@@ -1,0 +1,37 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — cargo-deny 配置
+# 蓝图依据：phase0.md §v0.2.0（替代 cargo-audit，实现许可证+漏洞双查）
+# 用途：CI 执行 `cargo deny check advisories licenses bans sources`
+# 兼容：cargo-deny >= 0.20
+# ============================================================
+
+[advisories]
+db-urls = ["https://github.com/RustSec/advisory-db"]
+# vulnerability = "deny" 在 cargo-deny 0.20+ 已移除（默认即 deny）
+# unmaintained 范围：all / workspace / transitive / none
+# workspace = 仅检查 workspace 直接依赖中的 unmaintained crate
+unmaintained = "workspace"
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "0BSD",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+# git 依赖（如 rust-sel4）无版本号，视为 wildcard。
+# 项目锁定使用 git tag（如 v3.0.0），等价于版本锁定，故放宽为 warn。
+wildcards = "warn"
+
+[sources]
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# rust-sel4 仅通过 git 分发，未发布到 crates.io
+allow-git = ["https://github.com/seL4/rust-sel4.git"]

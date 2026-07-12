@@ -1,0 +1,9 @@
+[package]
+name = "eneros-sched"
+version = "0.19.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+
+# 零外部依赖（D2）
+[dependencies]

@@ -1,0 +1,64 @@
+# EnerOS Holdover & Clock Redundancy Configuration
+# Version: v0.12.2
+# Blueprint: phase0.md §v0.12.2
+#
+# This file is a reference template. The no_std time crate uses compile-time
+# constants mirroring these values (the crate does not read TOML at runtime).
+
+# ---------------------------------------------------------------------------
+# OCXO (Oven-Controlled Crystal Oscillator) compensation model
+# ---------------------------------------------------------------------------
+[ocxo]
+# Frequency offset in parts-per-billion (ppb).
+# Typical OCXO: 1-10 ppb/day. 1 ppb yields ~86.4 us drift over 24h.
+freq_offset_ppb = 1
+# Temperature coefficient in ppb/degree-C.
+# Describes how the frequency changes with temperature.
+# A typical OCXO has temp_coeff < 1 ppb/degree-C inside the oven range.
+temp_coeff = 0
+# Calibration interval: how often the OCXO is re-calibrated against BeiDou.
+# In production, re-calibration happens on each successful beidou_sync().
+calibration_interval_secs = 3600
+
+# ---------------------------------------------------------------------------
+# RTC (Real-Time Clock) drift parameters
+# ---------------------------------------------------------------------------
+[rtc]
+# RTC frequency drift in ppb. Typical PL031 crystal: 10-50 ppm.
+# 20 ppm = 20000 ppb. This is a conservative estimate.
+drift_ppb = 20000
+
+# ---------------------------------------------------------------------------
+# Clock source switching thresholds
+# ---------------------------------------------------------------------------
+[switching]
+# Health score threshold: sources with score below this are unhealthy.
+health_threshold = 50
+# Slew rate for gradual offset correction (nanoseconds per decay step).
+# 100 us/step ensures smooth convergence without time jumps.
+slew_rate_ns = 100000
+# Authorization is required for manual switches (one-shot).
+# Automatic safety failover bypasses this check.
+require_authorization = true
+
+# ---------------------------------------------------------------------------
+# Holdover quality thresholds (projected 24-hour drift)
+# ---------------------------------------------------------------------------
+[accuracy]
+# Excellent: < 100 us/24h
+excellent_threshold_us = 100
+# Good: < 1 ms/24h
+good_threshold_ms = 1
+# Degraded: < 10 ms/24h
+degraded_threshold_ms = 10
+# Maximum acceptable 24h drift for holdover (hard requirement: 1 ms)
+max_24h_drift_ms = 1
+
+# ---------------------------------------------------------------------------
+# Default operating environment
+# ---------------------------------------------------------------------------
+[environment]
+# Default operating temperature (degrees Celsius).
+default_temp_c = 25
+# Temperature sensor read interval (seconds).
+temp_read_interval_secs = 10

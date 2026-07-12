@@ -1,0 +1,7 @@
+[package]
+name = "eneros-ci"
+version = "0.2.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+description = "EnerOS quality gate tool for local pre-check and CI"

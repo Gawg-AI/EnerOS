@@ -1,0 +1,9 @@
+[package]
+name = "eneros-ipc"
+version = "0.22.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+eneros-sched = { path = "../sched" }

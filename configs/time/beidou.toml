@@ -1,0 +1,93 @@
+# EnerOS BeiDou GNSS Timing Configuration
+# Version: v0.12.1
+# Blueprint: phase0.md §v0.12.1
+#
+# This file is a reference template. The no_std time crate uses compile-time
+# constants mirroring these values (the crate does not read TOML at runtime).
+
+# ---------------------------------------------------------------------------
+# UART interface for NMEA sentence reception
+# ---------------------------------------------------------------------------
+[uart]
+# Baud rate for the NMEA 0183 output stream.
+# 115200 is recommended for high-rate receivers; 9600 is the NMEA default.
+baud_rate = 115200
+# Data bits / parity / stop bits (NMEA 0183 standard).
+data_bits = 8
+parity = "none"
+stop_bits = 1
+
+# ---------------------------------------------------------------------------
+# 1PPS (one pulse-per-second) signal
+# ---------------------------------------------------------------------------
+[pps]
+# GPIO pin number connected to the BeiDou receiver's 1PPS output.
+# On QEMU virt this is unused (host-side mock); on real hardware it maps to
+# the SoC GPIO controller. Example: GPIO 16 on a typical ARM64 board.
+gpio_pin = 16
+# Trigger edge: "rising" (1PPS is active-high pulse).
+trigger_edge = "rising"
+# Pulse width in microseconds (typical BeiDou receiver: 100 ms).
+pulse_width_us = 100
+# Expected interval between PPS pulses (nanoseconds).
+expected_interval_ns = 1_000_000_000
+# PPS timeout: if no pulse arrives within this window (ms), report PpsTimeout.
+timeout_ms = 1500
+
+# ---------------------------------------------------------------------------
+# PI clock disciplining controller
+# ---------------------------------------------------------------------------
+[discipline]
+# Proportional gain (Kp = KP_NUM / KP_DEN = 1/2 = 0.5).
+kp_num = 1
+kp_den = 2
+# Integral gain (Ki = KI_NUM / KI_DEN = 1/10 = 0.1).
+ki_num = 1
+ki_den = 10
+# Anti-windup: maximum absolute integral term (nanoseconds).
+integral_limit_ns = 500_000
+# Maximum correction per discipline call (nanoseconds).
+# Bounded to guarantee the disciplined clock never jumps backward.
+max_correction_ns = 50_000
+# Number of consecutive PPS captures retained for jitter estimation.
+history_length = 4
+
+# ---------------------------------------------------------------------------
+# BDT (BeiDou Navigation Satellite System Time)
+# ---------------------------------------------------------------------------
+[bdt]
+# BDT epoch: 2006-01-01 00:00:00 UTC, expressed in Unix seconds.
+epoch_unix_secs = 1_136_073_600
+# Default BDT-UTC offset (leap seconds) as of 2017-01-01.
+# BDT = TAI - 33; UTC = TAI - 37; therefore BDT = UTC + 4.
+default_utc_offset = 4
+
+# ---------------------------------------------------------------------------
+# Leap-second table
+# ---------------------------------------------------------------------------
+# Each entry records the date *after* a leap-second insertion and the
+# resulting BDT-UTC offset. Leap seconds are inserted at 23:59:60 UTC on
+# the last day of June or December.
+[[leap_seconds]]
+year = 2009
+month = 1
+day = 1
+bdt_utc_offset = 1  # inserted 2008-12-31
+
+[[leap_seconds]]
+year = 2012
+month = 7
+day = 1
+bdt_utc_offset = 2  # inserted 2012-06-30
+
+[[leap_seconds]]
+year = 2015
+month = 7
+day = 1
+bdt_utc_offset = 3  # inserted 2015-06-30
+
+[[leap_seconds]]
+year = 2017
+month = 1
+day = 1
+bdt_utc_offset = 4  # inserted 2016-12-31

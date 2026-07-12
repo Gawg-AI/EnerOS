@@ -1,0 +1,12 @@
+[package]
+name = "eneros-board"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS board support crate (no_std, hardware boot + serial driver)"
+
+[dependencies]
+
+[features]
+default = []

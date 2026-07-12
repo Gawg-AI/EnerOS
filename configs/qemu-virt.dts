@@ -1,0 +1,94 @@
+// EnerOS / Power Native Agent OS — QEMU virt Machine Device Tree
+// 用于 QEMU virt 机器的 ARM64 设备树源文件
+// 包含：CPU、GICv3、UART(PL011)、Timer
+// 编译：dtc -I dts -O dtb -o qemu-virt.dtb configs/qemu-virt.dts
+//
+// 中断类型常量（直接使用数值，dtc 不支持 #define）：
+//   GIC_SPI = 0 (Shared Peripheral Interrupt)
+//   GIC_PPI = 1 (Private Peripheral Interrupt)
+//   IRQ_TYPE_LEVEL_HIGH = 4
+//   IRQ_TYPE_LEVEL_LOW  = 8
+//   GIC_CPU_MASK_SIMPLE(2) = 0x3 (2 CPUs bitmask)
+
+/dts-v1/;
+
+/ {
+    #address-cells = <2>;
+    #size-cells = <2>;
+    compatible = "linux,dummy-virt";
+    interrupt-parent = <&gic>;
+
+    // ===== CPU 节点 =====
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cpu@0 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a57";
+            reg = <0>;
+            enable-method = "psci";
+        };
+
+        cpu@1 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a57";
+            reg = <1>;
+            enable-method = "psci";
+        };
+    };
+
+    // ===== PSCI (Power State Coordination Interface) =====
+    psci {
+        compatible = "arm,psci-0.2";
+        method = "hvc";
+    };
+
+    // ===== 内存 =====
+    memory@40000000 {
+        device_type = "memory";
+        reg = <0x0 0x40000000 0x0 0x08000000>; // 128MB at 0x40000000
+    };
+
+    // ===== UART (PL011) — 串口输出 =====
+    // interrupts = <GIC_SPI(0) 1 IRQ_TYPE_LEVEL_HIGH(4)>
+    uart@9000000 {
+        compatible = "arm,pl011", "arm,primecell";
+        reg = <0x0 0x09000000 0x0 0x1000>;
+        interrupts = <0 1 4>;
+        clock-names = "uartclk", "apb_pclk";
+        clocks = <&clk24mhz>, <&clk24mhz>;
+        status = "okay";
+    };
+
+    // ===== 时钟 =====
+    clk24mhz: clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+    };
+
+    // ===== ARM 架构定时器 =====
+    // interrupts = <GIC_PPI(1) N (GIC_CPU_MASK_SIMPLE(2)=3 | IRQ_TYPE_LEVEL_LOW=8)=11>
+    timer {
+        compatible = "arm,armv8-timer", "arm,armv7-timer";
+        interrupts = <1 13 11>,
+                     <1 14 11>,
+                     <1 11 11>,
+                     <1 10 11>;
+        always-on;
+    };
+
+    // ===== GICv3 (Generic Interrupt Controller) =====
+    // interrupts = <GIC_PPI(1) 9 (GIC_CPU_MASK_SIMPLE(2)=3 | IRQ_TYPE_LEVEL_HIGH=4)=7>
+    gic: interrupt-controller@8000000 {
+        compatible = "arm,gic-v3";
+        #interrupt-cells = <3>;
+        #address-cells = <2>;
+        #size-cells = <2>;
+        interrupt-controller;
+        reg = <0x0 0x08000000 0x0 0x0100000>,  // GICD
+              <0x0 0x080a0000 0x0 0xf60000>;   // GICR
+        interrupts = <1 9 7>;
+    };
+};

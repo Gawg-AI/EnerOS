@@ -1,0 +1,11 @@
+[package]
+name = "eneros-panic"
+version = "0.14.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+eneros-time = { path = "../../drivers/time" }
+spin = "0.9"
+heapless = "0.8"

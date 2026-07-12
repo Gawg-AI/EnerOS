@@ -1,0 +1,28 @@
+# EnerOS Storage Configuration Template
+# v0.23.0 — eMMC/NVMe Block Device
+
+[storage]
+# Storage type: "emmc" | "nvme" | "sdcard"
+storage_type = "emmc"
+
+# Controller register base address (MMIO)
+base_addr = 0xFF3F0000
+
+# Interrupt number
+irq_num = 62
+
+# DMA channel (0-15)
+dma_channel = 0
+
+# Block size in bytes (512 or 4096)
+block_size = 512
+
+# Maximum blocks per DMA transfer
+max_transfer_blocks = 256
+
+[bad_block]
+# Reserved blocks for bad block replacement (at end of device)
+reserved_count = 1024
+
+# Full scan on boot
+scan_on_boot = true

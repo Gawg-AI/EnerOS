@@ -1,0 +1,12 @@
+[package]
+name = "eneros-sel4-sys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS seL4 syscall FFI bindings (no_std, minimal)"
+
+[dependencies]
+
+[features]
+default = []

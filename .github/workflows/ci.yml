@@ -1,0 +1,256 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — CI Pipeline
+# Version: v0.23.0
+# 蓝图 §七 CI/CD 规范
+# ============================================================
+# 检查项：fmt / clippy / cargo-deny / test / 交叉编译 / commitlint / 工作区整洁
+# ============================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_NIGHTLY: nightly-2026-04-04
+  TARGET: aarch64-unknown-none
+  RUSTC_WRAPPER: sccache
+
+jobs:
+  # ===== 提交信息规范检查 =====
+  commitlint:
+    name: Commit Message Lint
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lint commit messages
+        uses: wagoid/commitlint-github-action@v5
+        with:
+          configFile: .commitlintrc.yml
+
+  # ===== 代码质量检查 =====
+  quality-check:
+    name: Code Quality
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly-2026-04-04
+        with:
+          components: rust-src, clippy, rustfmt
+          targets: aarch64-unknown-none
+
+      - name: Install sccache
+        run: cargo install sccache --locked || true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/sccache
+            ~/.sccache
+          key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy check
+        # eneros-kernel and eneros-hello excluded: both define #[panic_handler]
+        # / #[lang = "eh_personality"] which conflict with std on host target.
+        # They are validated via cross-build step below.
+        # eneros-runtime was converted to a library in v0.4.0 and is now host-testable.
+        run: cargo clippy --workspace --exclude eneros-kernel --exclude eneros-hello --all-targets -- -D warnings
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked || true
+
+      - name: cargo-deny check
+        run: cargo deny check advisories licenses bans sources
+
+  # ===== 单元测试 =====
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-22.04
+    needs: quality-check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly-2026-04-04
+        with:
+          components: rust-src
+          targets: aarch64-unknown-none
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run tests
+        # eneros-kernel and eneros-hello excluded: both define
+        # #[panic_handler] / #![no_main] which can't be tested on host.
+        # eneros-runtime (v0.4.0) and eneros-hal (v0.5.0+) are library crates
+        # and are host-testable.
+        # Note: eneros-hal arm64 module (v0.6.0 core + v0.7.0 peripherals + v0.8.0 mm + v0.9.0 partition) is cfg-gated by
+        # #[cfg(target_arch = "aarch64")] and excluded from host tests.
+        # eneros-heap (v0.10.0) is a standalone no_std crate with no arch-specific code, host-testable.
+        run: cargo test --workspace --exclude eneros-kernel --exclude eneros-hello
+
+      - name: Run eneros-hal mock tests
+        run: cargo test -p eneros-hal --features mock
+
+  # ===== 交叉编译验证 =====
+  cross-build:
+    name: Cross Compile (aarch64-unknown-none)
+    runs-on: ubuntu-22.04
+    needs: quality-check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly-2026-04-04
+        with:
+          components: rust-src
+          targets: aarch64-unknown-none
+
+      - name: Install cross-compile tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Install sccache
+        run: cargo install sccache --locked || true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cross-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-cross-
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/sccache
+            ~/.sccache
+          key: ${{ runner.os }}-sccache-cross-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-cross-
+
+      - name: Build kernel crate
+        run: cargo build -p eneros-kernel --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build runtime crate
+        run: cargo build -p eneros-runtime --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build board crate
+        run: cargo build -p eneros-board --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build sel4-sys crate
+        run: cargo build -p eneros-sel4-sys --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build hello crate
+        run: cargo build -p eneros-hello --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build hal crate
+        run: cargo build -p eneros-hal --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build mm crate
+        run: cargo build -p eneros-mm --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build heap crate
+        run: cargo build -p eneros-heap --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build user-heap crate
+        run: cargo build -p eneros-user-heap --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build time crate
+        run: cargo build -p eneros-time --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build watchdog crate
+        run: cargo build -p eneros-watchdog --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build panic crate
+        run: cargo build -p eneros-panic --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build smp crate
+        run: cargo build -p eneros-smp --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build sched crate
+        run: cargo build -p eneros-sched --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build power crate
+        run: cargo build -p eneros-power --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build ipc crate
+        run: cargo build -p eneros-ipc --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build controlbus crate
+        run: cargo build -p eneros-controlbus --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build storage crate
+        run: cargo build -p eneros-storage --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+  # ===== 工作区整洁检查 =====
+  workspace-clean:
+    name: Workspace Clean Check
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check .gitignore covers target/
+        run: |
+          if ! grep -q "^target/" .gitignore; then
+            echo "ERROR: target/ not in .gitignore"
+            exit 1
+          fi
+          if ! grep -q "^build/" .gitignore; then
+            echo "ERROR: build/ not in .gitignore"
+            exit 1
+          fi
+          if ! grep -q "^\*.elf" .gitignore; then
+            echo "ERROR: *.elf not in .gitignore"
+            exit 1
+          fi
+          if ! grep -q "^\*.dtb" .gitignore; then
+            echo "ERROR: *.dtb not in .gitignore"
+            exit 1
+          fi
+          echo "✓ .gitignore covers all required patterns"

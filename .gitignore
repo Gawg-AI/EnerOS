@@ -1,0 +1,149 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — .gitignore
+# 依据：开发管理记忆.md §三 垃圾文件与缓存治理
+# ============================================================
+
+# ===== 蓝图文档（不入仓，仅本地参考） =====
+蓝图/
+
+# ===== Rust / Cargo 构建产物 =====
+target/
+ci/target-check/
+**/*.rs.bk
+*.rs.bk
+
+# ===== seL4 构建产物 =====
+build/
+sel4-build/
+sel4_kernel/
+seL4/
+
+# ===== 二进制镜像 / 编译产物 =====
+*.elf
+*.bin
+*.img
+*.hex
+*.map
+*.lst
+
+# ===== 设备树二进制（源文件 .dts/.dtsi 入仓） =====
+*.dtb
+
+# ===== QEMU 产物 =====
+qemu-output/
+*.qcow2
+*.img.qcow2
+qemu-serial.log
+
+# ===== 模型文件（用 Git LFS 或外部存储） =====
+*.gguf
+*.ggml
+models/*.bin
+*.onnx
+*.pt
+*.pth
+*.safetensors
+
+# ===== IDE 缓存 =====
+.idea/
+.vscode/
+.trae/cache/
+.trae/index/
+.trae/tmp/
+*.code-workspace
+.project
+.classpath
+.settings/
+
+# ===== 编辑器临时文件 =====
+*.swp
+*.swo
+*~
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# ===== 操作系统垃圾 =====
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ===== 密钥 / 凭证 / 敏感文件 =====
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cert
+secrets/
+.env
+.env.*
+!.env.example
+*.pem.bak
+id_rsa
+id_rsa.pub
+known_hosts
+
+# ===== 日志 =====
+*.log
+logs/
+log/
+
+# ===== 测试覆盖率 / 性能分析产物 =====
+tarpaulin-report.html
+tarpaulin-report.json
+coverage/
+*.lcov
+*.profdata
+*.profraw
+perf.data
+perf.data.*
+*.perf
+
+# ===== Python 缓存（工具脚本用） =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# ===== Node.js（若用文档工具） =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ===== Cargo.lock 策略 =====
+# 本项目是二进制 crate，Cargo.lock 需入仓
+# （如需忽略库 crate 的 lock，在子目录单独配置）
+
+# ===== 本地开发配置（不入仓） =====
+configs/local/
+configs/*.local.toml
+configs/*.local.json
+Makefile.local
+
+# ===== WSL / 虚拟机产物 =====
+*.vhdx
+*.vmdk
+*.vdi
+
+# ===== 调试产物 =====
+core
+core.*
+*.core
+dump.*
+gdb-output.txt

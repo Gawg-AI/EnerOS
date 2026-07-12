@@ -1,0 +1,12 @@
+[package]
+name = "eneros-kernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS kernel crate (no_std, Phase 0 placeholder)"
+
+[dependencies]
+
+[features]
+default = []

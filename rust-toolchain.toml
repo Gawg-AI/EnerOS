@@ -1,0 +1,13 @@
+# EnerOS / Power Native Agent OS — Rust Toolchain Configuration
+# 蓝图 §5.2 依赖锁定：nightly-2026-04-04
+# 蓝图 §43.1 no_std 合规：需要 build-std 编译 core/alloc
+
+[toolchain]
+channel = "nightly-2026-04-04"
+components = ["rust-src", "clippy", "rustfmt"]
+targets = ["aarch64-unknown-none"]
+profile = "minimal"
+
+[unstable]
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]

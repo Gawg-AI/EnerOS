@@ -1,0 +1,44 @@
+# EnerOS v0.9.1 — Horizontal Isolation Compliance Policy
+# Based on 36 号文《电力监控系统安全防护总体方案》§3.2 横向隔离
+#
+# This file is the reference configuration for the bipartition horizontal
+# isolation compliance check. It is consumed by the compliance tooling
+# and serves as the written record of the Go/No-Go threshold.
+
+# ===== Partition A: Safety / Control (安全控制大区) =====
+[partitions.a]
+name = "safety_control"
+memory_base = 0x40000000
+memory_size = 0x08000000   # 128 MB
+capability_root = 0x1000
+
+# ===== Partition B: Agent / Runtime (管理信息大区) =====
+[partitions.b]
+name = "agent_runtime"
+memory_base = 0x48000000
+memory_size = 0x08000000   # 128 MB
+capability_root = 0x2000
+
+# ===== Regulatory clause =====
+[regulatory]
+clause = "36号文-横向隔离-§3.2"
+# Minimum number of satisfied checks (out of 4) required for Go.
+go_threshold = 3
+# Checks that are strictly mandatory (must all be true for Go).
+mandatory_checks = [
+    "partition_separation",
+    "capability_enforced",
+    "unidirectional_flow",
+]
+
+# ===== BOM impact thresholds =====
+[bom]
+isolator_unit_cost_yuan = 12000
+diode_gateway_unit_cost_yuan = 8000
+# Maximum acceptable cost delta before writeback is rejected.
+max_cost_delta_yuan = 1000000
+default_items = [
+    "network-isolator",
+    "diode-gateway",
+    "sfp-module",
+]

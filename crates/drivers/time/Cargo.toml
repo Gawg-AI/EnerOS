@@ -1,0 +1,10 @@
+[package]
+name = "eneros-time"
+version = "0.12.2"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+eneros-hal = { path = "../../hal/hal" }
+spin = "0.9"

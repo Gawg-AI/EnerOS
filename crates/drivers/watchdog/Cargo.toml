@@ -1,0 +1,10 @@
+[package]
+name = "eneros-watchdog"
+version = "0.13.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+eneros-time = { path = "../time" }
+spin = "0.9"

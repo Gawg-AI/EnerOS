@@ -1,0 +1,13 @@
+[package]
+name = "eneros-hello"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS first user-space hello component (no_std, seL4 root task)"
+
+[dependencies]
+eneros-runtime = { path = "../runtime" }
+
+[features]
+default = []

@@ -1,0 +1,13 @@
+[package]
+name = "eneros-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS user-space runtime library (no_std)"
+
+[dependencies]
+eneros-sel4-sys = { path = "../sel4-sys" }
+
+[features]
+default = []
