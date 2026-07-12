@@ -1,0 +1,8 @@
+[package]
+name = "eneros-storage"
+version = "0.23.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]

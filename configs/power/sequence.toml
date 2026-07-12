@@ -1,0 +1,42 @@
+# EnerOS Edge Box Power Management Configuration
+# Version: v0.17.1
+# Blueprint: phase0.md §v0.17.1
+#
+# This file is a reference template. The no_std power crate uses compile-time
+# constants mirroring these values (the crate does not read TOML at runtime).
+
+# ---------------------------------------------------------------------------
+# Ride-through budget (UPS / supercapacitor)
+# ---------------------------------------------------------------------------
+[ride_through]
+# Time the UPS/supercapacitor can sustain the system after mains failure (ms).
+# Must be >= checkpoint_timeout + graceful_shutdown_timeout + detection_latency.
+budget_ms = 500
+
+# ---------------------------------------------------------------------------
+# Emergency checkpoint
+# ---------------------------------------------------------------------------
+[checkpoint]
+# Maximum time allowed for emergency checkpoint flush (ms).
+timeout_ms = 200
+# Callback is injected at runtime via register_checkpoint_callback().
+# The power crate does not depend on a file system.
+
+# ---------------------------------------------------------------------------
+# Graceful shutdown
+# ---------------------------------------------------------------------------
+[shutdown]
+# Maximum time for graceful shutdown after checkpoint (ms).
+timeout_ms = 100
+
+# ---------------------------------------------------------------------------
+# Power-loss detection
+# ---------------------------------------------------------------------------
+[detection]
+# Target detection latency from mains failure to callback (ms).
+latency_target_ms = 10
+# ADC voltage threshold for main power OK (millivolts).
+# 4750 mV = 4.75 V threshold for a 5 V rail (5% tolerance).
+adc_threshold_mv = 4750
+# Dual-redundant detection: both ADC and GPIO must agree.
+redundancy = "adc+gpio"

@@ -1,0 +1,9 @@
+[package]
+name = "eneros-heap"
+version = "0.10.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+spin = "0.9"

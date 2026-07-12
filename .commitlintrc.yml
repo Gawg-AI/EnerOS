@@ -1,0 +1,38 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — Commitlint 提交规范配置
+# 蓝图依据：记忆.md §六 Conventional Commits
+# 用途：enforce 提交信息格式，CI 中由 commitlint 检查
+# ============================================================
+extends:
+  - '@commitlint/config-conventional'
+
+rules:
+  type-enum:
+    - 2
+    - always
+    - [feat, fix, docs, style, refactor, test, chore, ci, perf, build, revert]
+  type-case:
+    - 2
+    - always
+    - lower-case
+  subject-max-length:
+    - 2
+    - always
+    - 72
+  # 中文提交信息不强制大小写（level 1 = warning，不阻断提交）
+  subject-case:
+    - 1
+    - always
+    - lower-case
+  header-max-length:
+    - 2
+    - always
+    - 100
+  body-max-line-length:
+    - 2
+    - always
+    - 100
+  footer-max-line-length:
+    - 2
+    - always
+    - 100

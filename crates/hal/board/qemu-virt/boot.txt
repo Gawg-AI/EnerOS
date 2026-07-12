@@ -1,0 +1,59 @@
+# EnerOS v0.3.0 — QEMU virt U-Boot boot script
+# 蓝图：phase0.md §v0.3.0
+#
+# 用途：当通过 U-Boot 引导 QEMU virt（或兼容真机）时，本脚本定义从
+#       SD 卡加载 seL4 镜像与设备树并跳转入口的完整流程。
+#
+# QEMU virt 默认可通过 -kernel 直接加载镜像（见 Makefile run 目标），
+# 本脚本作为真机/SD 卡启动场景的参考配置，亦可用于 U-Boot sandbox 验证。
+#
+# 编译为 boot.scr：
+#   mkimage -C none -A arm64 -T script -d board/qemu-virt/boot.txt \
+#           -n "EnerOS boot" board/qemu-virt/boot.scr
+#
+# 内存布局（QEMU virt, 128MB @ 0x40000000）：
+#   0x40000000  kernel 镜像加载地址
+#   0x44000000  设备树（DTB）加载地址
+#   0x48000000  U-Boot 自身及栈区（避开）
+
+# ===== 1. 加载地址环境变量 =====
+setenv kernel_addr_r 0x40000000
+setenv dtb_addr_r 0x44000000
+
+# ===== 2. 内核命令行 =====
+# console=ttyAMA0,115200 — PL011 UART @ 0x09000000，波特率 115200
+setenv bootargs console=ttyAMA0,115200
+
+# ===== 3. SD 卡上的镜像文件名 =====
+# 烧录后镜像位于 SD 卡第一个分区 (FAT/EXT)，文件名固定为 eneros.img
+setenv kernel_name eneros.img
+setenv dtb_name qemu-virt.dtb
+
+# ===== 4. bootcmd —— 从 mmc 0 (SD 卡) 加载镜像与 DTB =====
+# mmc dev 0     选择 SD 卡控制器
+# mmc rescan    重新扫描设备
+# fatload       从 FAT 分区加载文件到指定地址（EXT 分区改用 ext4load）
+# bootm         跳转到内核入口，第二参数为 ramdisk（无则填 -）
+setenv bootcmd \
+    'mmc dev 0; \
+     mmc rescan; \
+     fatload mmc 0:1 ${kernel_addr_r} ${kernel_name}; \
+     fatload mmc 0:1 ${dtb_addr_r} ${dtb_name}; \
+     bootm ${kernel_addr_r} - ${dtb_addr_r}'
+
+# ===== 5. 启动延迟与波特率（自动化场景 bootdelay 设为 0）=====
+setenv bootdelay 2
+setenv baudrate 115200
+
+# ===== 6. 保存环境变量（首次配置后执行一次即可）=====
+# saveenv
+
+# ===== 7. 执行启动 =====
+echo "=== EnerOS v0.3.0 boot ==="
+echo "Loading kernel: ${kernel_name} -> ${kernel_addr_r}"
+echo "Loading dtb:    ${dtb_name} -> ${dtb_addr_r}"
+echo "bootargs: ${bootargs}"
+run bootcmd
+
+# 若 bootcmd 失败则回到 U-Boot 提示符
+echo "!!! Boot failed — dropping to U-Boot prompt"

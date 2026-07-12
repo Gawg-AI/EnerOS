@@ -1,0 +1,10 @@
+[package]
+name = "eneros-user-heap"
+version = "0.11.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+eneros-heap = { path = "../../../kernel/heap" }
+spin = "0.9"

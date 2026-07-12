@@ -1,0 +1,33 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — Clippy Lint 配置
+# 蓝图依据：phase0.md §v0.2.0；记忆.md §1.2 / §七
+# 用途：设定 clippy lint 严格度，配合 CI `cargo clippy -- -D warnings`
+# 注意：disallowed-*/enforced-import-renames 属 restriction 组（默认 allow），
+#       需在 crate 根用 #![warn(...)] 启用；测试模块可用 #[allow] 豁免。
+# ============================================================
+
+# 最低支持的 Rust 版本（蓝图 §9.1 要求 ≥ 1.75）
+msrv = "1.75.0"
+
+# 禁止在非测试代码中使用的方法（测试模块请用 #[allow] 豁免）
+# allow-invalid = true：避免在某些 crate 中该方法不可达时 clippy 自身报 warning
+disallowed-methods = [
+    { path = "std::panic::panic_any", reason = "use panic! macro or proper error handling instead", allow-invalid = true },
+    { path = "core::panic::panic_any", reason = "use panic! macro or proper error handling instead", allow-invalid = true },
+]
+
+# 禁止在非测试代码中使用的宏（测试模块请用 #[allow] 豁免）
+disallowed-macros = [
+    { path = "core::panic", reason = "no direct panic in non-test code; use Result/Option" },
+    { path = "std::panic", reason = "no direct panic in non-test code; use Result/Option" },
+    { path = "core::unimplemented", reason = "no unimplemented!; provide real implementation" },
+    { path = "core::todo", reason = "no todo!; provide real implementation" },
+]
+
+# 强制常见导入重命名（no_std 项目统一引用风格）
+enforced-import-renames = [
+    { path = "core::mem::replace", rename = "mem::replace" },
+    { path = "core::mem::swap", rename = "mem::swap" },
+    { path = "core::ptr::null", rename = "ptr::null" },
+    { path = "core::ptr::null_mut", rename = "ptr::null_mut" },
+]

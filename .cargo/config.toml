@@ -1,0 +1,12 @@
+# EnerOS / Power Native Agent OS — Cargo Build Configuration
+# 蓝图 §43.1 no_std：交叉编译 aarch64-unknown-none + build-std
+# 注意：不设置默认 target，允许 host-side 工具（如 ci crate）在主机上编译。
+# 交叉编译时通过 --target aarch64-unknown-none -Z build-std=core,alloc 显式指定。
+
+[target.aarch64-unknown-none]
+linker = "aarch64-linux-gnu-gcc"
+ar = "aarch64-linux-gnu-ar"
+
+# 使用 rust-lld 作为链接器（备选，如果 gcc 链接有问题可切换）
+# linker = "rust-lld"
+# rustflags = ["-C", "link-arg=-Tlinker-aarch64.ld"]

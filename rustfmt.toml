@@ -1,0 +1,17 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — Rustfmt 代码格式化配置
+# 蓝图依据：phase0.md §v0.2.0；记忆.md §1.2
+# 用途：统一代码格式，配合 CI `cargo fmt --all -- --check`
+# 注意：标有 (unstable) 的选项需要 nightly rustfmt（本项目使用
+#       nightly-2026-04-04，已满足）。
+# ============================================================
+
+max_width = 100
+tab_spaces = 4
+use_field_init_shorthand = true
+newline_style = "Unix"
+reorder_imports = true
+reorder_modules = true
+
+# (unstable) 按 std/external/crate 分组导入，需 nightly rustfmt
+group_imports = "StdExternalCrate"
