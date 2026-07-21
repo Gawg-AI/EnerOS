@@ -1,0 +1,40 @@
+# EnerOS v0.87.0 设备池配置模板
+# 多设备调度（储能+光伏+充电桩）能力参数清单
+# D4: id 使用 u64 而非 String（no_std 合规，保持 Copy 语义）
+#
+# 单位说明：
+#   - p_min / p_max：MW（兆瓦），p_min 为负表示可充电（储能类设备）
+#   - ramp_rate：MW·min⁻¹（每分钟最大爬坡功率），用于爬坡约束 |Δp| ≤ ramp_rate
+#   - efficiency：0~1 无量纲转换效率，目标函数 Minimize Σ(1.0 - efficiency_i)·p_i
+#
+# SOC 过滤规则（D10）：
+#   soc <= 0 的设备本轮调度跳过（不参与 LP 列构建，也不进入 equal_split 兜底分配）。
+#   SOC 由运行时参数注入，不在本静态配置中声明。
+#
+# 平均分配兜底（蓝图 §4.4）：
+#   Solver 返回 Err / 非 Optimal / 解长度不符时，回退到 equal_split 平均分配，
+#   且所有 setpoint 均 clamp 到 [p_min, p_max]，objective_value 记 0.0。
+
+[[device]]
+id = 1
+# name = "储能系统-1"  # 仅文档用途，代码中不引用
+p_min = -5.0   # 最小功率（MW，负值表示充电）
+p_max = 5.0    # 最大功率（MW）
+ramp_rate = 1.0  # 爬坡速率（MW·min⁻¹）
+efficiency = 0.95  # 转换效率（0~1）
+
+[[device]]
+id = 2
+# name = "光伏电站-1"
+p_min = 0.0
+p_max = 3.0
+ramp_rate = 0.5
+efficiency = 0.92
+
+[[device]]
+id = 3
+# name = "充电桩-1"
+p_min = 0.0
+p_max = 0.12
+ramp_rate = 0.06
+efficiency = 0.88

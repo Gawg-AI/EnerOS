@@ -1,0 +1,48 @@
+# EnerOS Socket Abstraction Layer Configuration Template
+# v0.29.0 — SocketManager / Poll / Non-blocking IO
+#
+# Default configuration for the socket abstraction layer built on top of
+# the v0.28.0 TCP/IP stack (smoltcp v0.13).
+# See docs/drivers/socket-abstraction-design.md for the full design.
+
+[tcp]
+# TCP socket RX buffer size (bytes).
+# Larger buffers improve throughput but increase memory usage.
+# Each TCP socket allocates rx_buffer_size + tx_buffer_size.
+# Default: 65535 (64 KB - 1, matches configs/tcpip.toml)
+rx_buffer_size = 65535
+
+# TCP socket TX buffer size (bytes).
+# Default: 65535 (64 KB - 1)
+tx_buffer_size = 65535
+
+[udp]
+# UDP socket RX buffer size (bytes).
+# Default: 4096 (4 KB)
+rx_buffer_size = 4096
+
+# UDP socket TX buffer size (bytes).
+# Default: 4096 (4 KB)
+tx_buffer_size = 4096
+
+[manager]
+# Maximum number of concurrent sockets managed by SocketManager.
+# Each socket requires a SocketEntry (~64 bytes) plus buffer space.
+# 64 connections × 128 KB (TCP default) = ~8 MB.
+# Reduce this value if memory is constrained.
+# Default: 64
+max_connections = 64
+
+# Default non-blocking mode for newly created sockets.
+# smoltcp is always non-blocking; this flag is semantic and stored
+# in SocketEntry for future use (e.g. blocking simulation).
+# Default: false (blocking semantics — application polls)
+default_nonblocking = false
+
+[poll]
+# Default poll timeout (milliseconds).
+# Used by application-layer poll loops that implement blocking semantics
+# on top of the non-blocking poll_once(). v0.29.0 does not implement
+# blocking poll; this value is for future use.
+# Default: 100 (100 ms)
+default_timeout_ms = 100

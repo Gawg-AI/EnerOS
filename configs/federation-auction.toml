@@ -1,0 +1,54 @@
+# ============================================================
+# EnerOS v0.100.0 Federation Auction — 资源争抢竞价（统一价格拍卖）配置
+# ============================================================
+# Crate: eneros-federation (crates/agents/federation/src/{auction,bid_book,matching}.rs)
+# 版本: v0.100.0 资源争抢竞价（统一价格拍卖撮合 + 安全底线 + 共识确认，Phase 2 P2-E 第 4 版）
+# 蓝图: phase2.md §v0.100.0
+#
+# 竞价文义（一句话）：
+#   联邦内多 Agent 对共享馈线容量等可调资源竞价争抢——统一价格拍卖撮合公平定价，
+#   安全底线拦截异常低价，限价防价格波动操纵，撮合结果经 v0.99.0 联邦共识
+#   确认后执行资源分配。
+
+[auction]
+# 【注释点 1 · 统一价格拍卖选型（蓝图 §5.1）】撮合机制：统一价格拍卖——
+# 全部成交统一按出清价（末笔成交价）结算，规则简单可审计、无个体价格
+# 歧视，优于双向拍卖（规则复杂）与轮询（无价格发现、不公平，不采用）；
+# 本配置仅承载拍卖参数，撮合算法本身不可配置（跨节点必须逐字节一致，
+# 算法代码固化，仅阈值参数开放配置化）。
+safety_floor = 0
+
+# 【注释点 2 · 定点单位 D1】价格单位毫元（1e-3 元，u64），数量单位 Wh
+# （1e-3 kWh，u64）——蓝图 f32 原文的定点化偏差：撮合结果须经 v0.99.0
+# 共识确认（蓝图 §4.3 末步），跨节点需逐字节一致；IEEE 浮点存在平台/
+# 编译非确定风险，定点 u64 无 NaN、字节稳定，为共识逐字节一致的前提；
+# 成交价 (bid+ask)/2 按 u64 向下取整（D13），取整方向全网点统一。
+# 上方 safety_floor = 0 表示默认不启用安全底线（任何非负价均可成交）。
+
+# 【注释点 3 · 安全底线 §4.4】安全底价（毫元/Wh）：撮合中若某笔候选成交
+# 价 < safety_floor，立即终止本轮撮合（该笔及后续全部不成交）——防异常
+# 低价倾销/录入错误击穿价格体系；判定为严格小于（price == safety_floor
+# 边界含等可成交，TM19 锚定）；默认 0 不启用，现场按资源保底价值设定
+# （如储能度电成本下限），变更须全网点同步后开新轮次。
+# safety_floor = 0  # （默认值见上方段首）
+
+# 【注释点 4 · 限价 §8.5 坑点对策】最高限价（毫元/Wh）：蓝图 §8.5 坑点
+# "价格波动大需限价"的直接对策——提交侧过滤，price > max_price 的买/卖
+# 单以 PriceCapExceeded 拒绝并计入 rejected_count，防恶意报高价/异常
+# 波动操纵市场；0 = 不限价（对应代码 max_price: Option<Price> 的 None）；
+# 建议按现货价格上限或园区内部结算封顶价设定。
+max_price = 0
+
+# 【注释点 5 · 共识确认 seam §4.3 末步】撮合结果不直接执行：上层 Agent
+# 调用 AuctionEngine::match_orders 得 MatchResult 后，经 to_bytes()
+# 序列化（clearing_price:u64be‖count:u64be‖每 match 32 字节大端）提交
+# ConsensusEngine::submit，PBFT 三阶段 committed 且各节点 match_digest
+# （SM3）一致后，方可执行资源分配并 clear_book 开新轮——auction 模块不
+# 持有 ConsensusEngine（D10 seam 分离），共识参数见 federation-consensus.toml。
+
+# 【注释点 6 · 4 计数器 + last_clearing_price 可观测（D9）】运行可观测：
+# 引擎暴露 bid_count / ask_count / match_count / rejected_count 4 个 pub
+# 计数器 + last_clearing_price（最近轮出清价）——蓝图 §9"成交记录
+# metric"落地；no_std 无 log crate，metric 全部字段化本地可查，由上层
+# Agent Runtime 读字段聚合告警（如 rejected_count 斜率突增提示操纵攻击
+# 或限价配置失当）；计数器全生命周期累计，clear_book 轮次切换不归零。

@@ -1,0 +1,10 @@
+[package]
+name = "eneros-protocol-abstract"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS protocol abstraction layer — PointAccess / ProtocolAdapter / ProtocolManager traits (v0.51.0)"
+
+[dependencies]
+eneros-upa-model = { path = "../upa-model" }

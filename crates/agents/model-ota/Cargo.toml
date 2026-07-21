@@ -1,0 +1,10 @@
+[package]
+name = "eneros-model-ota"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 模型 OTA 推送 (v0.111.0) — no_std, 断点续传 + SM2/SM3 验签 + 白名单热切换回滚"
+
+[dependencies]
+eneros-crypto = { path = "../../security/crypto" }

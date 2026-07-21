@@ -1,0 +1,10 @@
+[package]
+name = "eneros-mtls"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS mTLS 双向认证通信安全 (v0.115.0) — SM 密码套件协商 + 证书管理 + SM2/SM3/SM4 握手与记录层加密, no_std"
+
+[dependencies]
+eneros-crypto = { path = "../crypto" }

@@ -1,0 +1,45 @@
+# EnerOS v0.89.0 数字孪生数据镜像配置模板
+# Digital Twin Agent 数据镜像：旁路只读订阅 → TwinModel 实时镜像 → 周期摘要快照发布
+#
+# 镜像语义（一句话）：
+#   TwinMirror 旁路订阅 /power/state/* 主题，将全网状态实时合并进 TwinModel，
+#   并按 publish_interval_ms 周期向 /power/twin/update 发布摘要快照。
+#
+# 安全要求（蓝图 §7.3）：
+#   本 Agent 为【只读旁路】，仅订阅不写入控制通道，不参与任何调度闭环，
+#   镜像异常不影响既有控制路径。
+#
+# 过期判定规则（D11，蓝图 §4.4）：
+#   payload 自带时间戳 < 现有镜像值对应时间戳 → 判定为过期消息，跳过不更新
+#   （skipped_count 计数），保留旧值。缓解时钟不同步导致的旧消息覆盖新状态。
+#
+# 逐字段合并规则（蓝图 §4.4）：
+#   grid / battery 消息 payload 字段全为 Option：Some(v) → 覆盖对应字段；
+#   None（字段缺失）→ 保留镜像旧值。部分更新不会清空既有状态。
+#
+# 显式 topic 列表说明（D11）：
+#   订阅采用【显式 topic 列表】而非 "/power/state/*" 通配符。原因：Mock DDS
+#   广播为 topic 精确匹配，"/power/state/battery/{id}" 通配仅存在于
+#   v0.76.0 注册表层的概念，传输层不展开。每个 battery 设备需单独声明一行。
+#
+# 内存风险提示（蓝图 §8.1）：
+#   TwinModel.devices 为 BTreeMap<u64, DeviceTwin>，随接入设备数线性增长，
+#   本版本不设上限；大规模部署需关注分区内存预算（蓝图 §43.6）。
+
+[mirror]
+publish_interval_ms = 1000  # 摘要快照发布周期（ms）；蓝图 §6.3 要求镜像延迟 < 1s，周期 ≤ 1s 保证新鲜度
+take_max_samples = 100      # on_tick 单次每 reader 最大取样本数（蓝图 §4.5 批量消费，防单 tick 阻塞）
+
+# 订阅 topic 列表（显式声明，Mock 精确匹配，D11）
+topics = [
+    "/power/state/grid",        # 电网状态：payload 为 GridPayload（全 Option），如 {"frequency": 50.02, "voltage": 10.5, "active_power": 12.3, "timestamp": 1721200000000}；逐字段合并进 model.grid
+    "/power/state/battery/1",   # 电池设备状态（id 从 topic 后缀解析 u64）：payload 为 DevicePayload（全 Option），如 {"soc": 0.82, "power": 1.5, "timestamp": 1721200000000}；逐字段合并进 devices.entry(1).or_default()
+    "/power/market/price",      # 市场价格：payload 为 MarketPayload（timestamp/current_price 必填），如 {"timestamp": 1721200000000, "current_price": 0.65}；整体替换 model.market
+]
+
+# 发布目标说明（crate 内固定，无需配置）：
+#   摘要快照固定发布到 "/power/twin/update"（D9）。
+#   因 GridState / DeviceState 无 serde 派生，发布内容为摘要 JSON：
+#   {"timestamp": <u64>, "last_update": <u64>, "device_count": <usize>,
+#    "grid_timestamp": <u64>, "market_timestamp": <u64|null>,
+#    "applied_count": <u64>, "skipped_count": <u64>, "published_count": <u64>}

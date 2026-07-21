@@ -1,0 +1,11 @@
+[package]
+name = "eneros-cloud-coordinator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.95.0 Cloud Coordinator (云端策略下发 + 边缘安全校验, no_std) + v0.96.0 数据汇聚（DataAggregator/DataSink/Mock 故障注入）"
+
+[dependencies]
+eneros-energy-market-agent = { path = "../energy-market-agent" }
+eneros-coordinator = { path = "../coordinator" }

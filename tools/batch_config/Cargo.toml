@@ -1,0 +1,18 @@
+# ============================================================
+# EnerOS v0.51.2 — Batch Configuration Tool (host-side std tool)
+# D11: 主机侧 std 程序（非 no_std）
+# D12: 放置于 tools/ 目录（非 crates/，因非产品代码）
+# D13: 独立可执行程序（含 main.rs）
+# D14: 独立 crate，非 workspace 成员（独立编译）
+# ============================================================
+
+[package]
+name = "eneros-batch-config"
+version = "0.51.2"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+description = "EnerOS factory test batch configuration tool (host-side std tool)"
+
+# D14: 声明自身为独立 workspace 根，脱离 eneros 主 workspace。
+[workspace]

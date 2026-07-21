@@ -1,0 +1,11 @@
+[package]
+name = "eneros-device-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.73.0 Device Agent (设备管理: 状态采集/命令执行/多设备, no_std)"
+
+[dependencies]
+eneros-agent = { path = "../agent" }
+eneros-energy-market-agent = { path = "../energy-market-agent" }

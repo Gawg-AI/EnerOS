@@ -1,0 +1,51 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — v0.83.0 PCC 并网点管理配置
+# ============================================================
+# 配置 PCC (Point of Common Coupling) 并网点管理器的运行参数。
+# 包括：PCC 标识、防抖时间、点表映射、功率方向阈值、功率因数阈值。
+#
+# 本模板由上层 Agent 加载，量测点 ID 引用 v0.51.0 协议抽象层
+# 的 PointId（u32），由调用方注入对应结构体（偏差 D3：PccReader
+# trait 抽象，避免依赖 eneros-protocol-abstract / eneros-upa-model）。
+#
+# 相关源码：crates/agents/grid_agent/src/pcc.rs
+# 相关文档：docs/agents/pcc-management-design.md
+# ============================================================
+
+# PCC 标识与防抖（支持多 PCC 场景，§8.4）
+[pcc]
+# PCC 标识（u32，偏差 D2：避免堆 String 分配，Copy 语义使 PccState 可 derive Copy）
+pcc_id = 1
+# 开关状态防抖时间（毫秒）。开关状态变化后需稳定保持 debounce_ms 才确认为稳态。
+# 防抖期内 status 报告为 Transitioning（偏差 D6：最小防抖逻辑）。
+# debounce_ms = 0 表示禁用防抖（每次 read 后立即稳定）。
+debounce_ms = 100
+# 点表映射（实际 IEC 104 / Modbus 点位 ID，硬件集成阶段填入，偏差 D13）
+breaker_point_id = 2001         # 开关状态点（DI：true=闭合，false=断开）
+active_power_point_id = 2002    # 有功功率点（AI：单位 W，正=导入，负=导出，偏差 D11）
+reactive_power_point_id = 2003  # 无功功率点（AI：单位 var）
+
+# 功率方向与功率因数判定阈值
+[thresholds]
+# 功率方向判定阈值（瓦特，偏差 D11：导入为正）
+# |P| <= import_power_w 视为 Idle（空载），避免零漂误判
+# P >  import_power_w 视为 Import（导入，从主网取电）
+# P < -export_power_w 视为 Export（导出，向主网送电）
+import_power_w = 1.0
+export_power_w = 1.0
+# 功率因数计算阈值（偏差 D7：core::f32::sqrt，aarch64 原生 fsqrts 指令）
+# |P| < pf_epsilon 时直接返回 1.0，避免除零与微小值噪声
+pf_epsilon = 0.1
+# 功率因数告警阈值（< pf_warn_below 时触发无功告警，蓝图 §4.4）
+pf_warn_below = 0.8
+
+# 断路器状态 → PCC 状态映射（compute_stable_status 函数）
+[stable_status]
+# Closed   → GridConnected  （开关闭合，并网运行）
+# Open     → Islanded        （开关断开，孤岛运行）
+# Tripped  → Islanded        （保护跳闸，视为孤岛，偏差 D10）
+# Unknown  → Transitioning   （状态不确定，保持过渡态并告警）
+breaker_closed = "GridConnected"
+breaker_open = "Islanded"
+breaker_tripped = "Islanded"
+breaker_unknown = "Transitioning"

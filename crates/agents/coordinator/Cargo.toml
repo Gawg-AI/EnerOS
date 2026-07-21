@@ -1,0 +1,12 @@
+[package]
+name = "eneros-coordinator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.92.0+v0.93.0+v0.94.0 Edge Coordinator (域内仲裁 + 域级优化 + VPP 聚合, no_std)"
+
+[dependencies]
+eneros-agent = { path = "../agent" }
+eneros-solver-core = { path = "../../ai/solver-core" }
+eneros-energy-market-agent = { path = "../energy-market-agent" }

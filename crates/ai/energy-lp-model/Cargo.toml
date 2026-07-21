@@ -1,0 +1,11 @@
+[package]
+name = "eneros-energy-lp-model"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.66.0 Energy schedule LP model (DSL-based, no_std)"
+
+[dependencies]
+eneros-solver-core = { path = "../solver-core" }
+eneros-solver-model = { path = "../solver-model" }

@@ -1,0 +1,19 @@
+[package]
+name = "eneros-dual-brain"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.71.0 Dual-brain coordinator (LLM + Solver end-to-end, <2s, no_std)"
+
+[dependencies]
+eneros-solver-core = { path = "../solver-core" }
+eneros-energy-lp-model = { path = "../energy-lp-model" }
+eneros-safety-validator = { path = "../safety-validator" }
+eneros-intent-parser = { path = "../intent-parser" }
+eneros-intent-contract = { path = "../intent-contract" }
+eneros-fast-path = { path = "../fast-path" }
+eneros-llm-engine = { path = "../llm-engine" }
+eneros-prompt-template = { path = "../prompt-template" }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }

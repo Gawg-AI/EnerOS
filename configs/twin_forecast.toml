@@ -1,0 +1,43 @@
+# EnerOS v0.90.0 数字孪生短期预测配置模板
+# Digital Twin Agent 短期预测：TwinModel 当前状态 → 主模型 predict → 失败兜底持续法 → 置信度评估 → 发布 /power/twin/forecast
+#
+# 预测语义（一句话）：
+#   Predictor 基于 v0.89.0 TwinModel 实时镜像的当前状态做秒~分钟级功率短期预测：
+#   主模型 predict 生成预测区间点序列，失败时自动切换 PersistenceModel（持续法）兜底，
+#   经置信度评估与 degraded 判定后，向 /power/twin/forecast 发布 ForecastResult JSON。
+#
+# 性能目标（蓝图 §7.2）：
+#   预测误差 < 5%（MAPE）——【集成阶段回测验收】：v0.25.0 TSDB 历史数据接入后
+#   以真实历史回测判定，本版本以合成平滑数据做单元级验证（持续法恒定输入 MAPE == 0、
+#   缓变斜坡 MAPE < 5%）；推理延迟 < 100ms——同为集成阶段验收，本版本交付算法骨架。
+#
+# 只读安全（蓝图 §7.3）：
+#   预测仅读取 TwinModel 镜像，不写入任何控制通道，不参与调度闭环；
+#   唯一输出为 /power/twin/forecast 预测主题，预测异常不影响既有控制路径。
+#
+# NaN/Inf 防御（D12，v0.88.0 C140 教训）：
+#   输入功率非有限值（NaN/Inf）→ sanitize 按 0.0 处理，confidence 置 0 且
+#   degraded = true，非有限值不传播、不 panic。
+#
+# 点数上限防 OOM（蓝图 §43.6 内存预算）：
+#   预测点数 = horizon_ms / step_ms 向上取整，钳制 1..=max_points（默认 96），
+#   防止超大 horizon 触发超限堆分配。
+#
+# LSTM 说明（D7）：
+#   model_path 为 LSTM 权重文件路径占位。本版本交付 ForecastModel trait 抽象 +
+#   PersistenceModel/MeanModel 基线 + 兜底链，LSTM 权重分发与推理后端后续版本接入
+#   （v0.61.0 模型部署线仅覆盖 LLM GGUF，不含 LSTM 通道）。
+#   GPU 规则（蓝图 §6.6）：LSTM 接入后推理优先使用 GPU（model.to("cuda")）且
+#   禁用梯度计算（torch.no_grad() 等价语义），GPU 不可用退 CPU；
+#   本版本基线为纯标量 CPU 计算，无张量，不涉及 GPU。
+
+[forecast]
+horizon_ms = 60000                  # 默认预测时域（ms，D3：u64 ms 外部时间注入）：60s 秒~分钟级；forecast 调用方可覆盖
+step_ms = 1000                      # 预测步长（ms）：秒~分钟级短期预测，1s 步长；点数 = horizon_ms / step_ms 向上取整（D9）
+max_points = 96                     # 预测点数上限：与电力市场 96 时段惯例一致，钳制防 OOM（蓝图 §43.6）
+confidence_threshold = 0.5          # 置信度阈值：confidence < 此值时 ForecastResult.degraded 置位（D10）
+target = "power"                    # 预测目标（D2：&'static str）：本版本固定电网有功功率，多目标扩展后续版本
+publish_topic = "/power/twin/forecast"  # 预测结果发布主题（D11）：ForecastResult::to_json() 全量含 points 数组（≤96 点约 4KB）
+model = "persistence"               # 主模型选择：persistence（持续法）/ mean（均值法，D8 可选主模型）；lstm 后续版本接入后可用
+fallback = "persistence"            # 兜底模型（D8 统一兜底链）：主模型 predict 返回 Err 时自动切换持续法并置 degraded = true
+model_path = ""                     # LSTM 权重文件路径占位（D7）：空表示未启用；本版本交付持续法/均值基线，LSTM 后续版本接入

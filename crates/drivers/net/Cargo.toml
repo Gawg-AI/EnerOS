@@ -1,0 +1,21 @@
+[package]
+name = "eneros-net"
+version = "0.30.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# smoltcp v0.13 — no_std TCP/IP protocol stack (蓝图 §5.5 默认集成清单)
+smoltcp = { version = "0.13", default-features = false, features = [
+    "alloc",
+    "medium-ethernet",
+    "proto-ipv4",
+    "socket-tcp",
+    "socket-udp",
+    "socket-icmp",
+    "socket-dhcpv4",
+] }
+
+[dev-dependencies]
+# 测试用 std（通过 cfg_attr(not(test), no_std) 自动引入）

@@ -1,0 +1,10 @@
+[package]
+name = "eneros-can"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS CAN driver — CAN 2.0A/B frame driver with ID filtering"
+
+[dependencies]
+eneros-driver-framework = { path = "../framework" }

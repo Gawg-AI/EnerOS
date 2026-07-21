@@ -1,0 +1,51 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — v0.84.0 Grid Transfer Configuration
+# ============================================================
+# Grid Agent 并离网切换配置 — 孤岛检测阈值 + 切换超时 + RTOS 紧急通道
+#
+# 用途：
+#   - 配置 IslandDetector 的连续确认阈值与频率/电压边界
+#   - 配置 GridTransfer 的切换超时阈值与默认原因
+#   - 配置 RtosChannel 紧急命令通道的超时与重试
+#
+# 本模板由上层 Agent 加载，参数注入 IslandConfig / GridTransfer /
+# RtosChannel 实现（偏差 D3：RtosChannel trait 抽象，避免依赖
+# 真实 RTOS 通道实现；D14：IslandConfig 配置结构体）。
+#
+# 相关源码：crates/agents/grid_agent/src/island_detect.rs
+#         crates/agents/grid_agent/src/transfer.rs
+# 相关文档：docs/agents/grid-transfer-design.md
+# ============================================================
+
+# 孤岛检测配置（IslandDetector，偏差 D6 连续确认 + D14 IslandConfig）
+[island_detection]
+# 连续确认阈值：检测到孤岛条件后，需要连续 N 次确认才判定为孤岛
+# 默认 3 次，避免单次抖动误触发切换
+confirmation_threshold = 3
+
+# 频率边界（Hz）：低于 freq_min 或高于 freq_max 视为频率越限（孤岛辅源判据）
+freq_min = 49.5
+freq_max = 50.5
+
+# 电压边界（V，相电压）：低于 voltage_min 或高于 voltage_max 视为电压越限（孤岛辅源判据）
+voltage_min = 200.0
+voltage_max = 240.0
+
+# 切换状态机配置（GridTransfer，偏差 D5 失败回滚 + D13 性能目标）
+[transfer]
+# 切换最大耗时阈值（ms）：超过此值由调用方告警
+# 蓝图 §7.5 性能目标：< 100ms
+max_duration_ms = 100
+
+# 默认切换原因（手动操作场景）
+# 可选值：Manual / IslandDetected / GridRecovered / Fault
+default_reason = "Manual"
+
+# RTOS 快平面紧急通道配置（RtosChannel trait 实现，偏差 D2 trait 抽象）
+[rtos_channel]
+# RTOS 快平面紧急通道超时（ms）：send_emergency 阻塞等待 ACK 的最大时间
+# 蓝图 §5.3：wait_ack(Duration::from_millis(80))
+timeout_ms = 80
+
+# 命令重试次数（首失败后重试 N 次，超过则上报 ChannelTimeout）
+retry_count = 2

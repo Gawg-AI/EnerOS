@@ -1,0 +1,58 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — v0.85.0 市场数据订阅配置
+# ============================================================
+# 配置 Market Agent 市场数据订阅（MarketSubscriber）的运行参数。
+# 包括：订阅市场类型、轮询周期、数据源类型、发布 Topic 路径。
+#
+# 本模板由上层 Agent 加载，参数注入 MarketSubscriber 构造器与
+# MarketFeedSource 实现（偏差 D8：MarketFeedSource trait 抽象，
+# 真实 HttpApi / File 适配器后续注入；D9：MarketFeedPublisher
+# trait 抽象，真实 DDS 适配器后续注入）。
+#
+# 相关源码：crates/agents/energy-market-agent/src/subscriber.rs
+#         crates/agents/energy-market-agent/src/parser.rs
+#         crates/agents/energy-market-agent/src/market_feed.rs
+# 相关文档：docs/agents/market-subscription-design.md
+# ============================================================
+
+# 市场订阅配置（蓝图 §6.3 轮询周期 60s）
+[market]
+# 订阅市场类型列表（对应 MarketType 枚举，偏差 D3）
+# 可选值："spot"（现货）/ "ancillary"（辅助服务）/ "dr"（需求响应）
+# 仅订阅列表内的市场类型会被缓存与发布；未订阅类型的 feed 被过滤（不缓存不发布）
+subscribe_types = ["spot", "ancillary", "dr"]
+# 轮询周期（毫秒，偏差 D11：poll_interval_ms 构造参数 + last_poll_ms 门控）
+# 蓝图 §6.3 性能基准：轮询周期 60s；蓝图 §7.2 延迟 < 60s
+# 首次 poll 立即执行（last_poll_ms = None），随后间隔 poll_interval_ms 门控
+poll_interval_ms = 60000
+
+# 数据源配置（偏差 D8：MarketFeedSource trait 抽象）
+[source]
+# 数据源类型（对应蓝图 §4.5 MarketSource 枚举语义）
+# 可选值："simulated"（模拟数据，本版本唯一可运行实现）/
+#         "http_api"（REST API 轮询，no_std 无 HTTP 栈，适配器后续注入）/
+#         "file"（文件导入，no_std 无文件系统，适配器后续注入）
+# 本版本 Mock 实现为 MockMarketFeedSource；真实 HttpApi/File 适配器
+# 在硬件/网络集成阶段实现 MarketFeedSource trait 后注入（偏差 D8）
+kind = "simulated"
+# 数据源端点（预留字段：真实 REST API URL 或文件路径）
+# 本版本 kind = "simulated" 时为空串；HttpApi/File 适配器注入时填入
+# 注意：凭证不写入本文件（蓝图 §7.3 凭证加密存储，由密钥管理组件负责）
+endpoint = ""
+
+# 发布配置（蓝图 §4.3 Topic 路径，偏差 D9：MarketFeedPublisher trait 抽象）
+[publish]
+# 电价点列表发布 Topic（PricePoint 列表，feed.prices 非空时发布）
+price_topic = "/power/market/price"
+# DR 信号列表发布 Topic（DrSignal 列表，feed.dr_signals 非空时发布）
+dr_topic = "/power/market/signal"
+
+# 缓存配置（蓝图 §4.4 "接口超时 → 使用缓存"，偏差 D10）
+[cache]
+# last-good 缓存语义：MarketFeedCache 仅保存最近一次成功的 MarketFeed
+# - source.fetch 失败时：若缓存非空 → 返回缓存副本（缓存降级，不报错）
+# - source.fetch 成功且类型已订阅 → 覆盖缓存（cache.store）
+# - 未订阅类型的 feed 不进入缓存（订阅过滤优先于缓存）
+# 本版本为单条 last-good 最小实现，无 TTL / 无容量配置项；
+# 缓存生命周期与 MarketSubscriber 实例一致，进程重启后清空
+# （后续版本可扩展 TTL / 多槽位，此处预留配置段）

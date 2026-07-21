@@ -1,0 +1,207 @@
+# Tasks
+
+- [x] Task 1: 同步 workspace 版本号与 members 列表
+  - [x] 修改 `e:\eneros\Cargo.toml`：`version = "0.51.0"` → `version = "0.52.0"`
+  - [x] 在 members 数组中 `"crates/protocols/protocol-abstract"` 之后增加 `"crates/protocols/telemetry-model"`
+  - 验证：`cargo metadata --format-version 1` 成功
+
+- [x] Task 2: 创建 telemetry-model crate 骨架
+  - [x] 创建 `e:\eneros\crates\protocols\telemetry-model\Cargo.toml`
+    - package name = `eneros-telemetry-model`，workspace 继承
+    - dependencies: `eneros-upa-model = { path = "../upa-model" }`
+  - [x] 创建 `e:\eneros\crates\protocols\telemetry-model\src\lib.rs`
+    - `#![cfg_attr(not(test), no_std)]` + `extern crate alloc`
+    - 模块声明：quality / digital / command / telemetry / telesignaling / telecontrol / teleadjust / deadband
+    - D1~D7 偏差声明表
+    - 重导出公共 API
+  - 验证：`cargo build -p eneros-telemetry-model` 编译通过
+
+- [x] Task 3: 实现 quality 模块（QualityFlag）
+  - [x] 创建 `src/quality.rs`
+    - `QualityFlag` 枚举（Good/Invalid/Questionable/Substituted/Blocked/Overflow/Outdated）
+    - 派生 Debug/Clone/Copy/PartialEq/Eq
+    - `is_valid(&self) -> bool` — Good 返回 true，其余 false
+    - `is_error(&self) -> bool` — Invalid/Blocked/Overflow/Outdated 返回 true
+  - 验证：编译通过
+
+- [x] Task 4: 实现 digital 模块（DigitalState）
+  - [x] 创建 `src/digital.rs`
+    - `DigitalState` 枚举（Off/On/Intermediate/Bad）
+    - 派生 Debug/Clone/Copy/PartialEq/Eq/Hash
+    - `is_on(&self) -> bool` — On 返回 true
+    - `is_off(&self) -> bool` — Off 返回 true
+    - `is_valid(&self) -> bool` — Off/On 返回 true（中间态和错误为 false）
+  - 验证：编译通过
+
+- [x] Task 5: 实现 command 模块（ControlCommand + 子类型）
+  - [x] 创建 `src/command.rs`
+    - `SingleCommand` 枚举（Off/On）— 派生 Debug/Clone/Copy/PartialEq/Eq
+    - `DoubleCommand` 枚举（Off/On/Intermediate/Bad）— 派生 Debug/Clone/Copy/PartialEq/Eq
+    - `ControlCommand` 枚举（Single(SingleCommand)/Double(DoubleCommand)）— 派生 Debug/Clone/Copy/PartialEq/Eq
+    - `ControlExecState` 枚举（Idle/Selected/Executing/Done/Failed/Timeout）— 派生 Debug/Clone/Copy/PartialEq/Eq
+    - `ControlExecState::is_terminal(&self) -> bool` — Done/Failed/Timeout 返回 true
+    - `ControlExecState::is_active(&self) -> bool` — Selected/Executing 返回 true
+  - 验证：编译通过
+
+- [x] Task 6: 实现 telemetry 模块（Telemetry 遥测）
+  - [x] 创建 `src/telemetry.rs`
+    - `Telemetry` 结构体：
+      - `point_id: PointId`
+      - `device_id: DeviceId`
+      - `name: String`
+      - `value: f64` — 工程量值
+      - `unit: String` — 单位（V/A/kW/℃/Hz）
+      - `quality: QualityFlag`
+      - `timestamp_ms: u64` — D1: u64 毫秒时间戳
+      - `deadband: f64` — 死区值
+      - `high_limit: Option<f64>`
+      - `low_limit: Option<f64>`
+      - `last_reported: Option<f64>` — 上次上报值
+    - 方法：
+      - `new(point_id, device_id, name: &str, value: f64, unit: &str, now_ms: u64) -> Self` — 默认 quality=Good, deadband=0.0, limits=None
+      - `should_report(&mut self) -> bool` — 死区过滤逻辑：None 时首次上报；|value - last| > deadband 时上报
+      - `check_quality(&mut self)` — 越限检测：value > high_limit 或 < low_limit 时置 Questionable
+      - `update(&mut self, value: f64, now_ms: u64)` — 更新值和时间戳
+      - `force_report(&mut self)` — 强制上报（品质变化时调用），设置 last_reported = Some(value)
+  - 验证：编译通过
+
+- [x] Task 7: 实现 telesignaling 模块（Telesignaling 遥信）
+  - [x] 创建 `src/telesignaling.rs`
+    - `Telesignaling` 结构体：
+      - `point_id: PointId`
+      - `device_id: DeviceId`
+      - `name: String`
+      - `value: DigitalState`
+      - `quality: QualityFlag`
+      - `timestamp_ms: u64`
+      - `double_point: bool` — 是否双位置遥信
+      - `last_reported: Option<DigitalState>`
+    - 方法：
+      - `new(point_id, device_id, name: &str, value: DigitalState, double_point: bool, now_ms: u64) -> Self`
+      - `should_report(&mut self) -> bool` — 状态变化立即上报（无死区）：None 时首次上报；last != value 时上报
+      - `update(&mut self, value: DigitalState, now_ms: u64)` — 更新值和时间戳
+      - `force_report(&mut self)` — 强制上报
+  - 验证：编译通过
+
+- [x] Task 8: 实现 telecontrol 模块（Telecontrol 遥控）
+  - [x] 创建 `src/telecontrol.rs`
+    - `Telecontrol` 结构体：
+      - `point_id: PointId`
+      - `device_id: DeviceId`
+      - `name: String`
+      - `command: ControlCommand`
+      - `quality: QualityFlag`
+      - `timestamp_ms: u64`
+      - `select_before_operate: bool` — 是否需要 SBO
+      - `exec_state: ControlExecState`
+    - 方法：
+      - `new(point_id, device_id, name: &str, command: ControlCommand, sbo: bool, now_ms: u64) -> Self` — 默认 exec_state=Idle
+      - `select(&mut self) -> Result<(), &'static str>` — SBO 第一步：Idle → Selected（非 Idle 返回错误）
+      - `execute(&mut self) -> Result<(), &'static str>` — SBO 第二步：Selected → Executing（非 Selected 返回错误）；非 SBO 模式 Idle → Executing
+      - `complete(&mut self)` — Executing → Done
+      - `fail(&mut self)` — Executing → Failed
+      - `timeout(&mut self)` — Executing → Timeout
+      - `is_complete(&self) -> bool` — exec_state == Done
+    - SBO 状态机：Idle → Selected → Executing → Done/Failed/Timeout
+  - 验证：编译通过
+
+- [x] Task 9: 实现 teleadjust 模块（Teleadjust 遥调）
+  - [x] 创建 `src/teleadjust.rs`
+    - `Teleadjust` 结构体：
+      - `point_id: PointId`
+      - `device_id: DeviceId`
+      - `name: String`
+      - `setpoint: f64` — 设定值
+      - `current_value: f64` — 当前实际值
+      - `quality: QualityFlag`
+      - `timestamp_ms: u64`
+      - `min_value: f64`
+      - `max_value: f64`
+      - `ramp_rate: Option<f64>` — 变化率限制（单位/秒）
+    - 方法：
+      - `new(point_id, device_id, name: &str, setpoint: f64, min: f64, max: f64, now_ms: u64) -> Self`
+      - `validate(&self, value: f64) -> bool` — 检查值是否在 [min, max] 范围内
+      - `set(&mut self, value: f64, now_ms: u64) -> Result<(), &'static str>` — 设置设定值（超出范围返回错误）
+      - `update_current(&mut self, value: f64, now_ms: u64)` — 更新当前实际值
+      - `is_in_range(&self) -> bool` — current_value 是否在 [min, max] 范围内
+      - `deviation(&self) -> f64` — 偏差 = current_value - setpoint
+  - 验证：编译通过
+
+- [x] Task 10: 实现 deadband 模块（DeadbandFilter）
+  - [x] 创建 `src/deadband.rs`
+    - `PointDeadband` 结构体（pub(crate)）：
+      - `deadband: f64`
+      - `last_reported: Option<f64>`
+      - `report_count: u64`
+      - `skip_count: u64`
+    - `DeadbandFilter` 结构体：
+      - `filters: BTreeMap<PointId, PointDeadband>`
+    - 方法：
+      - `new() -> Self` — 空过滤器
+      - `configure(&mut self, point_id: PointId, deadband: f64)` — 配置点的死区
+      - `should_report(&mut self, point_id: PointId, value: f64) -> bool` — 检查是否需要上报（None 时首次上报；|value - last| > deadband 时上报；skip_count 递增）
+      - `force_report(&mut self, point_id: PointId, value: f64)` — 强制上报（品质变化时调用）
+      - `get_stats(&self, point_id: PointId) -> Option<(u64, u64)>` — 返回 (report_count, skip_count)
+      - `point_count(&self) -> usize` — 已配置死区的点数
+      - `remove(&mut self, point_id: PointId) -> bool` — 移除点配置
+    - D6: 使用 BTreeMap（no_std 兼容）
+  - 验证：编译通过
+
+- [x] Task 11: 集成测试
+  - [x] 在 `src/lib.rs` 的 `#[cfg(test)] mod tests` 中编写集成测试：
+    - 测试 1：Telemetry 死区过滤（值变化 ≤ 死区 → 不上报；> 死区 → 上报）
+    - 测试 2：Telemetry 首次上报（last_reported=None → 上报）
+    - 测试 3：Telemetry 品质检查（越限 → Questionable）
+    - 测试 4：Telemetry force_report 强制上报
+    - 测试 5：Telesignaling 状态变化立即上报
+    - 测试 6：Telesignaling 状态不变不上报
+    - 测试 7：Telecontrol SBO 流程（select → execute → complete）
+    - 测试 8：Telecontrol 非 SBO 流程（execute → complete）
+    - 测试 9：Telecontrol 失败/超时（execute → fail / timeout）
+    - 测试 10：Telecontrol 状态机错误（Idle 非 select 直接 execute 返回错误）
+    - 测试 11：Teleadjust 设定值范围验证
+    - 测试 12：Teleadjust 偏差计算
+    - 测试 13：DeadbandFilter 批量死区过滤
+    - 测试 14：DeadbandFilter force_report 强制上报
+    - 测试 15：DeadbandFilter get_stats 统计查询
+    - 测试 16：DeadbandFilter remove 移除点配置
+    - 测试 17：DeadbandFilter 死区 0（全部上报）
+    - 测试 18：QualityFlag is_valid/is_error 语义
+    - 测试 19：DigitalState is_on/is_off/is_valid 语义
+    - 测试 20：ControlExecState is_terminal/is_active 语义
+  - 验证：`cargo test -p eneros-telemetry-model` 全部通过（20 passed; 0 failed）
+
+- [x] Task 12: 编写设计文档
+  - [x] 创建 `e:\eneros\docs\protocols\telemetry-model-design.md`
+    - 12 章节：1.概述 / 2.架构 / 3.品质标志 / 4.遥测模型 / 5.遥信模型 / 6.遥控模型 / 7.遥调模型 / 8.死区过滤 / 9.变化上报机制 / 10.no_std合规 / 11.测试策略 / 12.偏差声明
+    - 包含 Mermaid 架构图（四遥模型在协议栈中的位置）
+    - 包含遥控 SBO 状态机图
+  - 验证：文档位置在 `docs/protocols/` 下（C4 校验）
+
+- [x] Task 13: 更新 Makefile / ci.yml / gate.rs 版本号
+  - [x] `e:\eneros\Makefile`：0.51.0 → 0.52.0
+  - [x] `e:\eneros\.github\workflows\ci.yml`：0.51.0 → 0.52.0
+  - [x] `e:\eneros\ci\src\gate.rs`：补充 v0.52.0 telemetry-model 注释
+  - 验证：版本号已同步
+
+- [x] Task 14: 构建校验（C6~C11）
+  - [x] `cargo metadata --format-version 1` — workspace 解析成功（METADATA_OK）
+  - [x] `cargo test -p eneros-telemetry-model` — 全部测试通过（20 passed; 0 failed）
+  - [x] `cargo build -p eneros-telemetry-model --target aarch64-unknown-none -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem` — 交叉编译通过（CROSS_COMPILE_OK）
+  - [x] `cargo fmt -p eneros-telemetry-model -- --check` — 格式检查通过（FMT_OK）
+  - [x] `cargo clippy -p eneros-telemetry-model --all-targets -- -D warnings` — lint 通过（CLIPPY_OK）
+  - [x] `cargo deny check advisories licenses bans sources` — 安全扫描（DENY_OK：advisories ok, bans ok, licenses ok, sources ok）
+
+# Task Dependencies
+- Task 1 独立（workspace 准备）
+- Task 2 依赖 Task 1（crate 骨架）
+- Task 3~5 依赖 Task 2（quality/digital/command 模块，相互独立）
+- Task 6 依赖 Task 3（Telemetry 依赖 QualityFlag）
+- Task 7 依赖 Task 3+4（Telesignaling 依赖 QualityFlag + DigitalState）
+- Task 8 依赖 Task 3+5（Telecontrol 依赖 QualityFlag + ControlCommand）
+- Task 9 依赖 Task 3（Teleadjust 依赖 QualityFlag）
+- Task 10 依赖 upa-model（DeadbandFilter 仅依赖 PointId）
+- Task 11 依赖 Task 6~10（集成测试依赖所有四遥模型 + 死区过滤）
+- Task 12 依赖 Task 6~10（文档依赖实现完成）
+- Task 13 独立（版本号同步）
+- Task 14 依赖全部完成

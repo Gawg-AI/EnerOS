@@ -1,0 +1,15 @@
+[package]
+name = "eneros-gguf-loader"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS GGUF 模型加载与内存管理（GGUF 解析 + MmapBackend + ModelMemoryManager，no_std）"
+
+[dependencies]
+eneros-llm-engine = { path = "../llm-engine" }
+
+[features]
+default = []
+# D3: llama.cpp C 库 GPU 操作（默认关闭，启用时需链接 libllama）
+llama-cpp = []

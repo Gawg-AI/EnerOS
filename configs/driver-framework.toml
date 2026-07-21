@@ -1,0 +1,29 @@
+# EnerOS 驱动框架配置模板 (v0.43.0)
+# 蓝图：phase1.md §v0.43.0
+#
+# 此文件为驱动框架的编译时配置参考。
+# 实际运行时配置由调用方（RTOS/Agent Runtime）注入。
+
+[registry]
+# 注册表最大容量（0 = 无限制）
+max_drivers = 64
+# 是否允许运行时动态注册
+dynamic_registration = true
+
+[capability]
+# 默认驱动所需权限（注册时未指定则使用此值）
+default_required_perms = 0x01  # OPEN
+# 能力令牌默认所有者
+default_owner_id = 0
+
+[logging]
+# 日志级别：0=off 1=error 2=warn 3=info 4=debug 5=trace
+level = 2
+# 是否记录 IRQ 调用
+log_irq = false
+
+[isolation]
+# 驱动 panic 隔离策略（Phase 3 seL4 集成后生效）
+# "kill" = 标记 Dead，不影响其他驱动
+# "restart" = 自动重启驱动
+panic_strategy = "kill"

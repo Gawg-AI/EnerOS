@@ -1,0 +1,13 @@
+[package]
+name = "eneros-rtos-degrade"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS RTOS 降级规则引擎 — 模式层级/规则优先级/安全降级"
+
+[dependencies]
+eneros-controlbus = { path = "../controlbus" }
+eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
+eneros-upa-model = { path = "../../protocols/upa-model" }
+eneros-rtos-cmd-exec = { path = "../rtos-cmd-exec" }

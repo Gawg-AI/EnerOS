@@ -1,0 +1,40 @@
+# EnerOS File System Configuration Template
+# v0.24.0 — littlefs2 Log-Structured File System
+
+[lfs]
+# Block size in bytes (must match underlying BlockDevice::block_size).
+# 4096 is the EnerOS default for eMMC/NVMe.
+block_size = 4096
+
+# Segment size in blocks (littlefs2 "block count per segment").
+# Larger segments reduce metadata overhead but increase COW copy cost.
+segment_size = 8
+
+# Read/write cache size in bytes (must be a multiple of block_size).
+# littlefs2 requires this as a compile-time constant via typenum.
+cache_size = 4096
+
+# Lookahead bitmap size in blocks (power of 2 recommended).
+# Controls how far ahead the allocator looks for free blocks.
+lookahead = 8
+
+# Maximum simultaneously open files (littlefs2 compile-time limit).
+# Each open file consumes ~64 bytes of static state.
+max_open_files = 16
+
+# Name max length (littlefs2 default 255).
+name_max = 255
+
+# File max size in bytes (0 = unlimited, limited by device capacity).
+file_max = 0
+
+# Attribute max size in bytes (littlefs2 custom attributes).
+attr_max = 256
+
+[partition]
+# Partition offset in blocks (for multi-partition devices).
+# 0 = use entire device.
+offset_blocks = 0
+
+# Partition size in blocks (0 = use entire device from offset).
+size_blocks = 0

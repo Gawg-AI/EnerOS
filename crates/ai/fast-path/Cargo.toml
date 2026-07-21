@@ -1,0 +1,12 @@
+[package]
+name = "eneros-fast-path"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.70.0 Realtime fast path engine (Solver-only, <500ms, no_std)"
+
+[dependencies]
+eneros-solver-core = { path = "../solver-core" }
+eneros-energy-lp-model = { path = "../energy-lp-model" }
+eneros-safety-validator = { path = "../safety-validator" }

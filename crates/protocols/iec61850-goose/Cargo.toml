@@ -1,0 +1,10 @@
+[package]
+name = "eneros-iec61850-goose"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.107.0 IEC 61850 GOOSE protocol stack (L2 multicast + BER + retransmit state machine, no_std)"
+
+[dependencies]
+eneros-iec61850-model = { path = "../iec61850-model" }

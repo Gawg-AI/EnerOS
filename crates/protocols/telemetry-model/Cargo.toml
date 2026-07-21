@@ -1,0 +1,10 @@
+[package]
+name = "eneros-telemetry-model"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 四遥数据模型 — Telemetry/Telesignaling/Telecontrol/Teleadjust + DeadbandFilter"
+
+[dependencies]
+eneros-upa-model = { path = "../upa-model" }

@@ -1,0 +1,108 @@
+# ============================================================
+# EnerOS v0.109.0 故障录波 COMTRADE — 录波器配置
+# ============================================================
+# Crate: eneros-fault-recorder (crates/protocols/fault-recorder/src/{lib,ring_buffer,trigger,comtrade_writer}.rs)
+# 版本: v0.109.0 故障录波 COMTRADE（Phase 2 P2-H 第 1 版，v3.0 路线图新增基础服务）：
+#       环形采样缓冲 + 7 类故障触发条件 + IEEE C37.111-2013 .cfg/.dat 文件生成导出
+# 蓝图: phase2.md §v0.109.0
+# 日期: 2026-07-20
+#
+# 故障录波文义（一句话）：
+#   故障录波是电力事故追溯的法定数据源：故障时刻前后的电压/电流/开关量波形
+#   必须以 COMTRADE 标准格式落盘，供标准分析工具（Sigra/Wavewin）解析——本
+#   crate 在 v0.55.0 高频采样、v0.24.0 文件系统、v0.108.0 安全 SV 采样源
+#   基座上打通「采样 → 触发 → 录波 → 导出」链路，为 v0.110.0 云边同步提供
+#   可上传的录波文件。
+
+[recorder]
+# 【注释点 1 · 环形缓冲溢出覆盖最旧策略（蓝图 §4.4）】录波为持续高速采样流：
+# 环形缓冲固定容量，写满后新帧覆盖最旧帧（write_pos 前移），不阻塞、不回压；
+# get_recent 按时间旧→新保序取最近 n 帧。故障窗口（pre+post）必须完整保留在
+# 缓冲内，故 buffer_frames ≥ pre_fault_samples + post_fault_samples 为
+# FaultRecorder::new 的硬校验（不满足返回 RecorderError::InvalidConfig）。
+# 多通道按帧交错存储（D10）：帧 i 的通道 c 位于 i × n_ch + c。
+
+# 【注释点 2 · 内存预算声明（蓝图 §43.6，记忆 §5.6）】录波缓冲占用 =
+#   buffer_frames × (n_analog × 4 + n_digital + 8) 字节
+# （每帧 n_analog 个 f32 + n_digital 个 bool + 8B u64 时间戳）。按本示例
+# buffer_frames=8000、典型 8 模拟 + 8 数字通道计：8000 × (32 + 8 + 8) ≈ 375KB，
+# 远小于 Agent Runtime 管理信息大区 ≤ 64MB 预算；OOM 策略与大区一致：总用量
+# > 90% 触发 OOM handler 冻结非关键 Agent。Vec 分配走 v0.11.0 用户堆 alloc。
+
+# 采样率（Hz）：保护/测量级 4kHz 高速采样（v0.55.0 高频采样数据源）；
+# 用于触发条件 duration_ms 折算连续帧数与 .cfg 档行写出。
+sample_rate = 4000
+# 故障前采样帧数（导出窗口前半；400 帧 @4kHz = 100ms 故障前波形）。
+pre_fault_samples = 400
+# 故障后采样帧数（导出窗口后半；3600 帧 @4kHz = 900ms 故障后波形；
+# 触发后再录满该数量帧转 Ready 可导出）。
+post_fault_samples = 3600
+# 环形缓冲帧容量（示例 8000 帧 @4kHz = 2s 滑窗；必须 ≥ pre+post=4000，
+# 见注释点 1；内存占用见注释点 2）。
+buffer_frames = 8000
+
+# 【注释点 3 · 7 类触发类型与 duration_ms 帧折算语义（蓝图 §4.4，D12）】
+# TriggerType 共 7 变体：
+#   OverCurrent / OverVoltage / OverFrequency：v > threshold（超上限）
+#   UnderVoltage                              ：v < threshold（低于下限）
+#   RateOfChange                              ：|v - v_prev| > threshold（相邻帧差分）
+#   DigitalEvent                              ：数字量上升沿（false → true，持续 true 不重复）
+#   Manual                                    ：不自动评估，由 start_recording() 显式触发
+# 每条件按 duration_ms 折算触发所需连续命中帧数：
+#   required = max(1, duration_ms × sample_rate / 1000)
+# 连续命中达 required 帧即触发并复位计数；同帧多条件命中按配置顺序取首个
+# （配置序即优先级，先写先生效）。channel 按 ChannelConfig.channel_id 匹配。
+
+# 【注释点 4 · 触发检测性能 < 1ms 口径（蓝图 §6.3/§7.2，D12）】触发评估在
+# push_sample 内同步完成：每帧为 O(条件数) 阈值比较，4000Hz 下蓝图要求单帧
+# 触发检测 < 1ms。验收口径为 cfg(test) 主机 Instant 断言（PERF31：4000 次
+# push_sample 含 4 条件评估总耗时 < 1000ms，等效单帧 < 0.25ms）；真实硬件
+# （飞腾/鲲鹏）触发时延为实验室项，集成阶段补测。
+
+# 过流触发示例：Ia 通道 > 100A 持续 10ms（@4kHz 需连续 40 帧）触发。
+[[triggers]]
+trigger_type = "OverCurrent"
+threshold = 100.0
+duration_ms = 10
+channel = "Ia"
+
+# 低压触发示例：Ua 通道 < 180V 持续 5ms（@4kHz 需连续 20 帧）触发。
+[[triggers]]
+trigger_type = "UnderVoltage"
+threshold = 180.0
+duration_ms = 5
+channel = "Ua"
+
+# 【注释点 5 · FileSink 文件落盘抽象（spec D4）】crate 不直接操作文件系统：
+# export_comtrade 经 FileSink trait（write_file(path, data)）写
+# {base_path}.cfg 与 {base_path}.dat，MockSink 供主机测试；no_std 无 std::fs，
+# 真实 littlefs2（v0.24.0 文件系统，掉电安全/磨损均衡）接线在集成层完成
+# （v0.106.0 MmsTransport / v0.107.0 L2Transport / v0.108.0 L2Transport 同先例）。
+
+# 【注释点 6 · GPU 不适用（蓝图 §6.6，记忆 §4.2）】录波触发为逐帧阈值比较/
+# 差分/边沿检测 workload，COMTRADE 写盘为文本/二进制序列化：无矩阵运算、
+# 无大规模张量，GPU 加速无意义；GPU 优先规则仅适用模型训练/校准与数字孪生
+# 仿真，不适用协议栈路径——本 crate 零 GPU 代码，纯 CPU 处理。
+
+[comtrade]
+# 【注释点 7 · COMTRADE C37.111-2013 选型（蓝图 §5.1）】COMTRADE 为 IEEE
+# C37.111 电力系统暂态数据交换通用格式，是故障录波的事实国际标准，Sigra/
+# Wavewin 等标准分析工具可直接解析；采用 2013 修订版（revision_year=2013，
+# 写出于 .cfg 第 1 行），通道计数行带 A/D 后缀、时间戳行 dd/mm/yyyy 格式等
+# 合规细节见 docs/protocols/fault-recorder-comtrade-design.md §7（D6~D9）。
+# C37.111 为 IEEE 开放标准，无国产化替代限制（蓝图 §5.6）。
+
+# 厂站名称（.cfg 第 1 行第 1 字段）。
+station_name = "SubA"
+# 装置 ID（.cfg 第 1 行第 2 字段）。
+device_id = "FR01"
+# 标准修订年（C37.111-2013，见注释点 7）。
+revision_year = 2013
+# 数据文件格式：ASCII / BINARY（模拟量 i16 LE）/ BINARY32（模拟量 i32 LE）；
+# 三种格式模拟量均按 raw = round((v - b) / a) 逆变换量化并钳位，数字量按
+# 16 位字打包（D9）。
+file_format = "ASCII"
+
+# 【注释点 8 · 下游 v0.110.0 云边同步（蓝图 §v0.110.0）】导出的 .cfg/.dat
+# 录波文件经 FileSink 落盘后，由 v0.110.0 云边同步服务上传至云端/主站，
+# 供事故追溯与离线分析；本 crate 仅负责生成标准格式文件，不负责传输。

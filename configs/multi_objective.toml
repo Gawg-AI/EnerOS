@@ -1,0 +1,33 @@
+# EnerOS v0.88.0 多目标优化配置模板
+# 经济 vs 寿命 vs 安全 vs 碳排 4 目标加权和 + Pareto 前沿求解参数
+#
+# 4 目标含义：
+#   - economy      ：经济性，最小化运行损耗（高效设备优先承担功率）
+#   - battery_life ：电池寿命，浅充浅放（大功率设备优先承担，降低单位应力）
+#   - safety       ：安全性，响应能力优先（爬坡率高的设备优先承担）
+#   - carbon       ：碳排放，以效率为排放代理（低损耗即低排放）
+#
+# 单位与归一化说明（D9，蓝图 §8.5 量纲坑点）：
+#   - 各目标成本系数为无量纲代理量，量纲不同，不可直接相加。
+#   - normalize_costs 对每目标成本向量做 max 归一化到 [0,1]：
+#     norm_cost_obj_i = cost_obj_i / max(cost_obj)；max <= 0 或全非有限 → 全 0.0。
+#   - 加权聚合：combined_i = Σ_obj w_obj * norm_cost_obj_i，再交单目标 LP 求解。
+#
+# 权重合法性规则（D10）：
+#   任一权重为 NaN / 负值 / 非有限，或总和 <= 0 → 自动退化为 4 目标各 0.25 均权。
+#   合法权重由 WeightedSum::normalized() 归一化，总和恒为 1.0。
+#
+# 安全权重最高为验收硬性要求（蓝图 §7.3）：safety >= 其余任一目标权重。
+#
+# SOC 过滤与 equal_split 兜底沿用 v0.87.0（见 configs/device_pool.toml）：
+#   soc <= 0 的设备本轮跳过；Solver 失败 / 非 Optimal / 解长度不符 →
+#   equal_split 平均分配兜底，objective_value 记 0.0。
+
+[weights]
+economy = 0.3       # 经济性：cost = 1.0 - efficiency（损耗代理，efficiency∈(0,1]）
+battery_life = 0.2  # 电池寿命：cost = 1.0 / p_max（p_max<=0 → 1.0，浅充放：大功率设备优先）
+safety = 0.4        # 安全性：cost = 1.0 / ramp_rate（ramp<=0 → 1.0，响应能力优先，权重最高 §7.3）
+carbon = 0.1        # 碳排放：cost = 1.0 - efficiency（效率代理排放，与经济同式异权）
+
+[pareto]
+samples = 50        # Pareto 权重采样点数（蓝图 §6.3：Pareto(50) < 5s 性能目标）

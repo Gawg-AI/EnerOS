@@ -1,0 +1,18 @@
+[package]
+name = "eneros-energy-market-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.72.0 Energy Agent + Market Agent (双 Agent 协作 MVP, no_std) + v0.85.0 市场数据订阅 (现货/辅助服务/DR 订阅解析发布, no_std) + v0.86.0 报价生成 (LLM 意图+Solver 优化双脑报价/规则与保守回退, no_std) + v0.87.0 多设备调度 (设备池/LP 功率分配/平均分配兜底, no_std) + v0.88.0 多目标优化 (经济/寿命/安全/碳排加权和 + Pareto 前沿, no_std)"
+
+[dependencies]
+eneros-agent = { path = "../agent" }
+eneros-dual-brain = { path = "../../ai/dual-brain" }
+eneros-fast-path = { path = "../../ai/fast-path" }
+eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
+eneros-solver-core = { path = "../../ai/solver-core" }
+eneros-llm-engine = { path = "../../ai/llm-engine" }
+eneros-safety-validator = { path = "../../ai/safety-validator" }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }

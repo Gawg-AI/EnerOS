@@ -1,0 +1,35 @@
+# EnerOS v0.78.0 消息签名层密钥配置模板
+#
+# 用途：配置 Agent Bus 跨域消息签名的密钥参数。
+# - 本机私钥用于签名出口消息
+# - 对端公钥用于验证入口消息
+# - timestamp_window_ms 控制防重放窗口
+#
+# 注意：
+# - 私钥文件必须为 PEM 格式
+# - 私钥落盘加密由 v0.98.0 mTLS 提供
+# - 启用 sm2 feature 后此配置才生效（cargo build --features sm2）
+#
+# TOML 规范提示：根级标量字段必须放在 [[public_keys]] 数组表之前，
+# 一旦进入 array-of-tables 区段，后续键值对将归属于该表的最后一个条目，
+# 无法再回到根作用域添加字段。
+
+# 本机密钥
+key_id = 1
+private_key_path = "/etc/eneros/keys/local_sm2_sk.pem"
+
+# 防重放时间戳窗口（毫秒，默认 5000 = 5 秒）
+timestamp_window_ms = 5000
+
+# 是否启用 SM2 签名（false 时使用 MockSigner，仅用于测试）
+enable_sm2 = false
+
+# 对端公钥列表（key_id → 公钥路径）
+# 注意：此数组表必须放在所有根级标量字段之后。
+[[public_keys]]
+id = 2
+path = "/etc/eneros/keys/peer_2_sm2_pk.pem"
+
+[[public_keys]]
+id = 3
+path = "/etc/eneros/keys/peer_3_sm2_pk.pem"

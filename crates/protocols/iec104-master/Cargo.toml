@@ -1,0 +1,10 @@
+[package]
+name = "eneros-iec104-master"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS IEC 60870-5-104 master protocol stack — interrogation, command, clock sync, multi-device polling"
+
+[dependencies]
+eneros-iec104-slave = { path = "../iec104-slave" }

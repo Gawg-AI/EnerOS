@@ -1,0 +1,11 @@
+[package]
+name = "eneros-rs485"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS RS485 serial driver — half-duplex differential serial bus with DE/RE direction control"
+
+[dependencies]
+eneros-driver-framework = { path = "../framework" }
+eneros-hal = { path = "../../hal/hal" }

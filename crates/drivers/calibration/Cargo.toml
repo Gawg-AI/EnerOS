@@ -1,0 +1,10 @@
+[package]
+name = "eneros-calibration"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS meter calibration — coefficients, accuracy class, calibration store (no_std)"
+
+[dependencies]
+# Zero external dependencies — pure Rust no_std (D10)

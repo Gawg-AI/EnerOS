@@ -1,0 +1,78 @@
+# ============================================================
+# EnerOS v0.107.0 IEC 61850 GOOSE — GOOSE 快速事件传输 GoCB 配置
+# ============================================================
+# Crate: eneros-iec61850-goose (crates/protocols/iec61850-goose/src/{lib,dataset,goose_tx,goose_rx}.rs)
+# 版本: v0.107.0 IEC 61850 GOOSE 快速事件传输（二层组播 EtherType 0x88B8 + BER 编解码 + st_num/sq_num 重传状态机 + L2Transport 抽象，Phase 2 P2-G 第 3 版）
+# 蓝图: phase2.md §v0.107.0
+#
+# IEC 61850 GOOSE 文义（一句话）：
+#   电力保护级快速事件传输要求 GOOSE（IEC 61850-8-1，EtherType 0x88B8）二层组播
+#   直发、端到端 < 4ms——本 crate 在 v0.105.0 LD/LN/DO/DA 信息模型与 v0.106.0
+#   MMS 服务层之上实现 GOOSE 发布/订阅、BER 编解码与 st_num/sq_num 重传状态机，
+#   打通联邦保护协同的事件通道，为 v0.108.0 SV + IEC 62351 安全加固奠基。
+
+[gocb]
+# 【注释点 1 · Raw socket L2 直发选型（蓝图 §5.1）】GOOSE 承载方式对比：经
+# TCP/IP 协议栈转发——引入 IP/传输层排队与协议栈调度抖动，无法满足保护级
+# < 4ms 端到端延迟 vs Raw socket 二层直发——绕过协议栈直接在以太网帧上收发
+# （EtherType 0x88B8），路径最短、时延确定性最强；蓝图 §5.1 采用 L2 直发，
+# GOOSE 本就为无连接组播设计，无需 TCP 可靠语义（可靠性由重传状态机兜底）。
+
+# 【注释点 2 · EtherType 0x88B8 + IEC 组播 MAC】IEC 61850-8-1 规定 GOOSE 帧
+# EtherType 固定 0x88B8；目的 MAC 取 IEC 保留组播段 01:0C:CD:01:xx:xx
+# （01:0C:CD 为 IEC 61850 OUI，01 前缀标识 GOOSE）；APPID 在帧内二层过滤，
+# 订阅者按 dst MAC + APPID 双条件匹配，非本 GoCB 帧直接丢弃不进入解码。
+
+# 【注释点 3 · 重传策略 min_time×3 后 max_time 心跳（蓝图 §4.3）】事件触发
+# （update_value）后 st_num+1、sq_num 归零并置 needs_retransmit：前 3 次重发
+# 按 min_time 间隔快速补齐（对抗瞬时丢帧），其后转 max_time 周期心跳保活
+# （信道空闲时仍可检测链路中断）；订阅侧凭 st_num 跳变 >1 判定事件丢失
+# （RxStatus::StJump）。min_time 调小将放大组播风暴风险，现场勿低于 2ms。
+
+# 【注释点 4 · L2Transport 传输抽象（spec D4）】GoosePublisher/Subscriber
+# <T: L2Transport> 泛型化：L2Transport { send/recv } 由 MockL2 提供脚本化
+# 帧队列用于主机测试与集成占位；aarch64-unknown-none 无 libc 可链接
+# extern "C" raw socket FFI，真实网卡（v0.27.0 以太网驱动）接线在集成层
+# 完成（mqtt / iec104 / iec61850-mms 同先例），crate 内零 unsafe、零 C FFI。
+
+# 【注释点 5 · 时间注入（spec D6）】no_std 无系统时钟：publish(now) /
+# retransmit_if_needed(now) 的当前时间由调用方传入（毫秒），重传间隔判定
+# 与 last_tx_time 记录均基于注入时间（v0.64.0 D1 时间注入先例）；集成层
+# 须保证时钟源单调，否则重传时序与心跳判定失真。
+
+# 【注释点 6 · 性能 < 4ms 口径（蓝图 §6.3/§7.2，spec D11）】性能验收口径为
+# MockL2 回路 publish → poll 全链路（BER 编码 + 传输 + 解码），cfg(test)
+# std::time::Instant 断言 < 4ms；真实网卡端到端时延为实验室硬件项，以
+# MockL2 脚本化帧替代（v0.106.0 D12 同口径）。
+
+# 【注释点 7 · 内存预算（记忆 §5.6）】本 crate 属 Agent Runtime 管理信息大区
+# 分区（≤ 64MB 预算）：GOOSE 单帧 ≤ 256B 量级（以太网头 14B + GoCB 引用串
+# + 数据集条目），发布/订阅缓冲均为百字节级，远小于预算；字符串/Vec 均走
+# v0.11.0 用户堆 alloc；OOM 策略与大区一致：降级到规则引擎，总用量 > 90%
+# 触发 OOM handler 冻结非关键 Agent（蓝图 §43.6）。
+
+# 【注释点 8 · GPU 不适用（蓝图 §6.6）】GOOSE 组帧/解码为字节流拼接与逐层
+# TLV 解析 workload：无矩阵运算、无大规模张量，GPU 加速无意义；记忆 §4.2
+# GPU 优先规则仅适用模型训练/校准与数字孪生仿真，不适用协议栈路径——本
+# crate 零 GPU 代码，纯 CPU 字节处理。
+
+# 【注释点 9 · IEC 62351 安全加固待 v0.108.0（蓝图 §7.3）】当前 GOOSE 为
+# 明文二层组播（无签名、无加密）；IEC 62351 安全加固（报文完整性保护 +
+# 源认证）随 v0.108.0 SV + IEC 62351 一并落地，生产部署前须完成该版本
+# 升级；纵向加密认证装置对接见 v0.98.1。
+
+# GoCB 引用（逻辑设备内唯一标识本控制块；须与 IED SCD 文件一致，否则订阅侧
+# 过滤不到帧）。
+go_cb_ref = "IED1LD/LLN0$GO$gocb1"
+# 应用标识 APPID（帧内二层过滤字段；0 为非法值，GoosePublisher::new 将返回
+# GooseError::InvalidConfig）。
+app_id = 1
+# 目的组播 MAC（IEC 61850 GOOSE 保留段 01:0C:CD:01:xx:xx，见注释点 2）。
+dst_mac = "01:0C:CD:01:00:01"
+# 最小重传间隔（毫秒；事件后前 3 次按此间隔快速重发，见注释点 3）。
+min_time_ms = 2
+# 最大重传间隔（毫秒；3 次快发后的周期心跳间隔，见注释点 3）。
+max_time_ms = 5000
+# GOOSE 数据集引用（allData 条目来源；须与 v0.105.0 信息模型中的数据集路径
+# 一致）。
+dataset_ref = "IED1LD/LLN0$dsGOOSE1"

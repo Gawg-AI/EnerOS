@@ -1,0 +1,63 @@
+# ============================================================
+# EnerOS v0.99.0 Federation Consensus — 联邦共识协议（PBFT 变体）配置
+# ============================================================
+# Crate: eneros-federation (crates/agents/federation/src/{consensus,pbft,view_change}.rs)
+# 版本: v0.99.0 联邦共识协议（PBFT 变体，Phase 2 P2-E 第 3 版）
+# 蓝图: phase2.md §v0.99.0
+#
+# 共识文义（一句话）：
+#   Edge Coordinator 间跨域决策一致性——PBFT 三阶段（PrePrepare/Prepare/Commit）
+#   容忍 ≤ f 个拜占庭节点（n ≥ 3f+1），为 v0.100.0 资源争抢竞价提供
+#   "跨域决策可信、防恶意节点"的协议一致性基础。
+
+[consensus]
+# 【注释点 1 · P2 降级说明】共识模式：蓝图评审 P2 判定 PBFT 对园区 VPP
+# 可能过重——默认部署应为 "primary-backup" 主从仲裁（v0.92.0
+# DomainArbiter 既有能力，崩溃容错、开销低）；仅在需要 Byzantine 容错的
+# 跨信任域场景（跨运营商/跨主体 VPP 互不信任）经显式配置启用 "pbft"。
+# 本字段为纯配置语义：eneros-federation 本版本交付 PBFT 引擎，
+# primary-backup 模式由 v0.92.0 仲裁器承载，不在本 crate 内实现分支。
+mode = "pbft"
+
+# 【注释点 2 · 共识 <1s 验收口径】共识超时（ms）：蓝图 §7.2 要求
+# 共识达成 < 1s（4 节点）——本超时为单视图停滞判定阈值（共识 <1s 达成
+# + 超时余量）；有效超时 = timeout_ms << min(consecutive_vc, 3)
+# （ViewChange 指数退避，D8）；验收测量口径为注入时钟
+# last_latency_ms = 提交时刻 − 请求受理时刻（D12），非墙钟基准测试。
+timeout_ms = 3000
+
+# 【注释点 3 · ViewChange 退避防风暴】最大 ViewChange 退避指数：
+# 蓝图 §8.5 坑点"ViewChange 风暴"对策——连续主节点故障时有效超时按
+# timeout_ms << min(consecutive_vc, max_view_change_backoff) 指数放大，
+# 封顶 3 级（3s→6s→12s→24s），避免网络分区抖动期全网反复切换视图
+# 导致共识活锁；enter_view 成功后 consecutive_vc 清零恢复正常超时。
+max_view_change_backoff = 3
+
+# 【注释点 4 · 3f+1 假设】共识节点表：蓝图 §2 假设节点数 n ≥ 3f+1——
+# 本示例 4 节点容忍 f=1 个拜占庭节点（(4-1)/3=1）；节点标识为 u64
+# 无堆值类型（D2，v0.97.0 惯例，电力调度确定性可复现审计要求）；
+# 节点配置化（蓝图 §9 可维护）：本表注入 ConsensusEngine::new，
+# 变更成员须经离线协商同步全网点公钥表（peers）后滚动重启。
+nodes = [1, 2, 3, 4]
+
+# 【注释点 5 · quorum=2f+1 与主票优化】法定人数：quorum(n) = 2f+1
+# （n=4 → 3，n=7 → 5）；D7 主票计入优化——主节点 PrePrepare 计入自身
+# prepare 票（PBFT 经典变体），n=4 时主 PrePrepare + 2 备份 Prepare
+# 即达 prepared（3 票 = quorum），与蓝图 §4.3 "收集 2f+1" 数值一致，
+# 可容忍 1 备份静默/作恶仍达成提交（蓝图 §7.3 容错验收）。
+
+# 【注释点 6 · 消息全签名验证】拜占庭防护（蓝图 §7.3 安全）：全部共识
+# 消息（PrePrepare/Prepare/Commit/ViewChange）SM2 签名 + 收端全量验签——
+# 签名域分离格式 msg_type:u8‖view:u64be‖sequence:u64be‖digest‖
+# sender:u64be（‖payload）（D9）；验签失败/未知 sender/错 view/
+# digest 与 payload 不符 → rejected_count+=1 丢弃，共识不受污染；
+# 重复投票经 BTreeSet<NodeId> 票集确定性去重（D5），
+# equivocation（同 seq 异 digest）无法收齐任一 quorum。
+
+# 【注释点 7 · 4 计数器 + last_latency_ms 可观测】运行可观测（D12）：
+# 引擎暴露 4 个 pub 计数器 submit_count / committed_count /
+# rejected_count / view_change_count + last_latency_ms（注入时钟：
+# 提交时刻 − 请求受理时刻，蓝图 §9 "共识延迟 metric"）——no_std 无
+# log crate，metric 全部字段化本地可查，拜占庭攻击强度（rejected_count
+# 斜率）与视图稳定性（view_change_count）由上层 Agent Runtime 读字段
+# 聚合告警。

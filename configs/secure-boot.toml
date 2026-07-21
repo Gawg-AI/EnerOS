@@ -1,0 +1,33 @@
+# EnerOS v0.113.0 Secure Boot 配置模板（D12）
+#
+# ① 本文件仅为配置模板：真实信任根公钥由集成层在产线烧录（熔丝/安全存储），
+#    密钥绝不入仓（记忆 §3.1 密钥禁忌）。
+# ② 集成层启动时读取本配置（或等效烧录值），构造
+#    `BootVerifier::new(root_key, min_timestamp)` 注入（D8 注入先例同 v0.111.0）。
+# ③ 公钥格式：SM2 未压缩点 65 字节（0x04 ‖ x(32B) ‖ y(32B)）的小写 hex，
+#    共 130 个 hex 字符，经 `Sm2PublicKey::from_bytes` 解析。
+
+[trust_root]
+# ④ 信任根公钥（占位符："04" + 64 字节 x‖y 坐标，产线烧录时替换为真实值）。
+#    Bootloader 级镜像固定使用该公钥验签；Kernel/Runtime 级使用随已验签
+#    Bootloader 镜像体传递的 BL 公钥（stage_key，D6），不在本配置中。
+root_pubkey_hex = "04000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+[anti_rollback]
+# ⑤ 防降级时间戳下限：仅接受 timestamp >= min_timestamp 的镜像签名头，
+#    低于下限判定 StaleImage 拒绝启动（蓝图 §4.4 防降级攻击）。
+# ⑥ 真实值取自熔丝/安全存储（no_std 无安全存储抽象，由集成层供给）；
+#    每次成功 OTA/固件升级后由集成层单调递增回写，禁止回退。
+min_timestamp = 0
+
+[stages]
+# ⑦ 四级信任链（严格逐级推进，禁止跳级，跳级判定 WrongStage）：
+#    - rom        ：由硬件根信任（TrustZone/TPM）验证，`verify_stage` 直通
+#                   （蓝图 §4.5 语义），不计 verified_stages；
+#    - bootloader ：使用 [trust_root] 信任根公钥验签；
+#    - kernel     ：使用 stage_key 验签（BL 公钥随已验签 Bootloader 镜像体
+#                   传递，推进时经 `advance_stage(Some(bl_pubkey))` 安装，
+#                   缺失判定 MissingStageKey）；
+#    - runtime    ：沿用 stage_key 验签（`advance_stage(None)`，蓝图
+#                   「同 BL key」语义），传 Some 则轮换密钥。
+order = ["rom", "bootloader", "kernel", "runtime"]

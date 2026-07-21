@@ -1,0 +1,15 @@
+[package]
+name = "eneros-rtos-cmd-exec"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS RTOS 命令消费与执行 — TTL/约束检查 + 协议下发"
+
+[dependencies]
+eneros-controlbus = { path = "../controlbus" }
+eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
+eneros-upa-model = { path = "../../protocols/upa-model" }
+
+[dev-dependencies]
+eneros-ipc = { path = "../ipc" }

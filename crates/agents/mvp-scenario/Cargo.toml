@@ -1,0 +1,14 @@
+[package]
+name = "eneros-mvp-scenario"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.74.0 MVP 端到端集成 — 储能自治场景 (no_std)"
+
+[dependencies]
+eneros-agent = { path = "../agent" }
+eneros-energy-market-agent = { path = "../energy-market-agent" }
+eneros-device-agent = { path = "../device-agent" }
+eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
+eneros-solver-core = { path = "../../ai/solver-core" }

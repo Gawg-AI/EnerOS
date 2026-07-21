@@ -1,0 +1,96 @@
+# ============================================================
+# EnerOS v0.104.0 Solver Pareto — 多目标 Pareto 优化配置
+# ============================================================
+# Crate: eneros-solver-pareto (crates/ai/solver-pareto/src/{lib,pareto_front,nsga2,decision}.rs)
+# 版本: v0.104.0 多目标 Pareto 优化（NSGA-II 前沿生成 + 决策者加权选择，Phase 2 P2-F 第 3 版 Solver 扩展收尾）
+# 蓝图: phase2.md §v0.104.0
+#
+# Pareto 文义（一句话）：
+#   日前/联邦调度需兼顾经济性、碳排放、设备寿命三目标，单目标 LP/MILP 无法
+#   表达目标间权衡——NSGA-II 逐代进化生成 Pareto 前沿（rank 0 非支配解集），
+#   决策者按偏好权重从前沿加权选出最终调度方案；前沿为空时由编排层回退
+#   v0.66.0 单目标 LP（D10），为联邦多目标协调奠基（P2-F 闭环）。
+
+[pareto]
+# 【注释点 1 · NSGA-II 选型（蓝图 §5.1）】多目标优化算法选型对比：NSGA-II
+# 前沿质量高——非支配排序 + 拥挤度保持解集多样性 vs MOEA/D 需设计权重向量
+# 与邻域分解、实现复杂 vs 加权和法将多目标压成单目标、前沿质量低且非凸前沿
+# 无法覆盖 vs ε-约束法需逐 ε 多次求解、可作备选；蓝图 §5.1 采用 NSGA-II，
+# 本配置仅承载种群/代数/算子概率/种子/偏好权重参数，算法本体零配置硬编码。
+
+# 【注释点 2 · 性能目标 50 代 × 100 种群 < 10s（蓝图 §6.3）】性能口径声明：
+# < 10s 为 #[cfg(test)] std::time::Instant 断言（D12，no_std 无计时器，测试外
+# 不注入计时以保持 solve 签名与蓝图一致），实测约 3.3ms，余量约 3000 倍；
+# 算法复杂度 O(gen × pop² × obj)，非支配排序的 pop² 支配比较为主开销；
+# 扩大 pop_size/gen 时按复杂度外推并以 NS22 实测复核。
+
+# 【注释点 3 · 确定性 seed（D4）】内置确定性 xorshift64* PRNG（~20 行私有
+# struct，零 unsafe）：rand crate 依赖 std 违反全项目 no_std（记忆 §4.3，
+# 蓝图 §43.1），故内置 PRNG 并以 seed 构造注入；同 seed 两次求解结果逐比特
+# 一致（NS13 锚定），测试/审计/故障复盘可精确复现；seed == 0 时以固定非零
+# 常量替换，防止零状态锁死。
+
+# 【注释点 4 · 方向归一（D7）】Maximize 目标在评估出口统一取负（蓝图
+# "lifespan" => -sum 硬编码的一般化）：dominates / crowding / select_by_weight
+# 全程统一最小化口径，算法与方向解耦；新增目标仅需声明 direction，无需改
+# 算法代码（蓝图 §8.4/§9 可扩展要求）。
+
+# 【注释点 5 · 前沿为空 LP 兜底在编排层（D10）】本 crate 不内联 LP 兜底：
+# solve 前沿为空时返回空 front（is_empty() 可判，select_by_weight/choose 返回
+# None），由编排层检测后回退 v0.66.0 energy-lp 单目标 LP——crate 无 LP 问题
+# 输入，内联 LP 会造成依赖反转（Simplicity First）；正常三目标问题前沿非空
+# 由 NS20 锚定。
+
+# 【注释点 6 · 内存预算 ≤128MB（蓝图 §5.6/记忆 §5.6 Solver 分区）】Solver 分区
+# 内存预算：总量 ≤128MB；本配置种群 100 × 4 变量（100×4×8B ≈ 3.2KB）+ 目标
+# 值/rank/拥挤度（100×(3×8+8+8)B ≈ 4KB），KB 级远小于预算；OOM 策略与
+# v0.102.0/v0.103.0 一致：缩减问题规模/超时降级，总用量 > 90% 触发 OOM
+# handler 冻结非关键 Agent（蓝图 §43.6）。
+
+# 【注释点 7 · GPU 不适用（蓝图 §6.6）】NSGA-II 为种群迭代算法：逐代存在
+# 排序/选择同步点，并行粒度细、分支密集，不适合 GPU 加速；记忆 §4.2 GPU
+# 优先规则仅适用云端训练/校准与数字孪生仿真，不适用边缘推理与 Solver
+# 求解路径——本 crate 零 GPU 代码，纯 CPU 种群算法。
+
+# 种群大小：每代个体数（对应 ParetoSolver::solve 的 pop_size）；100 为蓝图
+# §6.2 基准（50 代 × 100 种群 < 10s）；增大提升前沿覆盖度但按
+# O(gen × pop² × obj) 增加耗时，调小加速但前沿变稀；== 0 返回
+# Err(SolverError::InvalidProblem(_))（NS21）。
+pop_size = 100
+
+# 进化代数：迭代轮数（对应 solve 的 gen）；50 为蓝图 §6.2 基准；三目标 4 变量
+# 问题的 rank 0 前沿在数十代内即稳定，50 代留足收敛余量。
+gen = 50
+
+# 均匀交叉概率（对应 Nsga2Solver.crossover_rate）：两亲本逐基因按 0/1 随机
+# 交换；0.9 与 Nsga2Solver::new() 默认一致；剩余 0.1 概率子代直接克隆亲本 1，
+# 保留优解结构。
+crossover_rate = 0.9
+
+# 逐基因变异概率（对应 Nsga2Solver.mutation_rate）：每个变量位按此概率重
+# 采样至 [lower, upper) 界内；0.1 与默认一致；过高破坏已收敛结构，过低
+# 种群多样性不足易早熟。
+mutation_rate = 0.1
+
+# PRNG 种子（D4，对应 Nsga2Solver::with_seed）：同 seed 两次求解逐比特复现
+# （NS13），异 seed 结果不同（NS14）；固定 42 供联调默认；生产环境可按调度
+# 日/批次号派生 seed 以支持审计复盘，注意 new() 默认 seed 为内置固定值
+# 0x0005_DEEC_E66D，与本文件 seed 独立。
+seed = 42
+
+[pareto.weights]
+# 三目标决策者偏好权重（对应 DecisionMaker.preferences，顺序与
+# problem.objectives 一致：cost → carbon → lifespan）。归一化规则（蓝图 §4.4，
+# 由 ParetoFront::select_by_weight 承担，DecisionMaker 仅委托）：负值 clamp
+# 为 0；长度不足目标数缺省补 0、超出截断；和为 0 时按均匀权重处理（每目标
+# 1.0），不 panic。示例 0.6/0.3/0.1 为经济优先口径；纯成本偏好 [1.0,0.0,0.0]、
+# 纯碳偏好 [0.0,1.0,0.0] 会选出不同解（DM24 锚定）。
+
+# 经济性权重：成本目标（cost，Minimize，Σv）偏好强度。
+cost_weight = 0.6
+
+# 碳排放权重：碳目标（carbon，Minimize，Σ0.5·v）偏好强度。
+carbon_weight = 0.3
+
+# 设备寿命权重：寿命目标（lifespan，Maximize，评估出口取负归一 D7）偏好强度。
+lifespan_weight = 0.1

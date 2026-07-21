@@ -1,0 +1,21 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — v0.81.0 Latency Probe 配置模板
+# ============================================================
+# 端到端时延探针 (LatencyProbe) 配置参数.
+# 本模板由 eneros-config v0.26.0 上层加载，本 crate (eneros-tsn-time)
+# 不直接解析 TOML（D15 延续：纯 Rust 构造器由调用方使用）.
+# ============================================================
+
+# 单次突发测量样本数（run_burst 的 count 参数）
+sample_count = 10
+
+# 采样间隔（微秒，run_burst 的 interval 参数）
+# 1000us = 1ms，适用于 Agent 命令的常规巡检
+interval_us = 1000
+
+# 持续测量时长（微秒，run 的 duration 参数）
+# 10_000_000us = 10s，适用于基线测量
+duration_us = 10000000
+
+# 突发测量轮次（measure_e2e 内部使用）
+burst_count = 100

@@ -1,0 +1,64 @@
+# EnerOS Network Configuration Template
+# v0.27.0 — Ethernet Network Card Driver
+#
+# Raw Ethernet MAC driver configuration. See docs/drivers/net-driver-design.md
+# for the full design.
+
+[device]
+# MAC address (6 bytes, hexadecimal). Must be unique on the local network.
+# Default: 02:00:00:00:00:01 (locally administered, unicast).
+mac_addr = "02:00:00:00:00:01"
+
+# Maximum Transmission Unit (bytes), excluding Ethernet header.
+# Default: 1500 (standard Ethernet II).
+# Jumbo frames up to 9000 are supported by hardware but require PHY/MAC support.
+mtu = 1500
+
+# TX descriptor ring size (number of descriptors).
+# Default: 16. Larger rings improve throughput under burst but increase memory.
+tx_desc_count = 16
+
+# RX descriptor ring size (number of descriptors).
+# Default: 32. RX rings are typically larger than TX to absorb bursts.
+rx_desc_count = 32
+
+# MAC base address (physical MMIO base, hex).
+# Default: 0x09010000 (QEMU virt Ethernet).
+mac_base_addr = 0x09010000
+
+[phy]
+# PHY address on the MII bus (0-31).
+# Default: 0. Most Edge Box designs use PHY addr 0 or 1.
+phy_addr = 0
+
+# Enable auto-negotiation on init.
+# Default: true. When false, speed/duplex must be set manually.
+autoneg = true
+
+# Manual speed (only used when autoneg = false).
+# Values: "10M", "100M", "1000M".
+# Default: "1000M".
+manual_speed = "1000M"
+
+# Manual duplex (only used when autoneg = false).
+# Values: "Half", "Full".
+# Default: "Full".
+manual_duplex = "Full"
+
+# Auto-negotiation timeout (milliseconds).
+# Default: 3000. GenericPhy polls BMSR_ANEG_COMPLETE up to 1000 iterations.
+autoneg_timeout_ms = 3000
+
+[promiscuous]
+# Enable promiscuous mode (receive all frames, not just those addressed to us).
+# Default: false. Used for network sniffing/monitoring.
+enabled = false
+
+[dma]
+# Interrupt-on-completion (IOC) flag on TX descriptors.
+# Default: true. Triggers an interrupt after each TX completion.
+tx_ioc = true
+
+# Interrupt-on-completion (IOC) flag on RX descriptors.
+# Default: true. Triggers an interrupt after each RX completion.
+rx_ioc = true

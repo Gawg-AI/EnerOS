@@ -1,0 +1,20 @@
+# EnerOS Dual-Network Redundancy Configuration (v0.30.2)
+# Heartbeat monitoring and failover settings.
+
+[heartbeat]
+# Heartbeat interval in milliseconds (primary link)
+interval_ms = 1000
+# Heartbeat timeout in milliseconds (link considered unhealthy)
+timeout_ms = 3000
+# Maximum missed heartbeats before declaring link failure
+max_missed = 3
+
+[failover]
+# Recovery delay in milliseconds (anti-flap: wait before switching back to primary)
+recovery_delay_ms = 10000
+# Heartbeat interval for backup link (cellular)
+backup_heartbeat_interval_ms = 2000
+# Heartbeat timeout for backup link
+backup_heartbeat_timeout_ms = 5000
+# Maximum missed heartbeats for backup link
+backup_max_missed = 5

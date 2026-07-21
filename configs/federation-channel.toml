@@ -1,0 +1,47 @@
+# ============================================================
+# EnerOS v0.98.0 Cross-Domain Channel — 跨域通信通道配置
+# ============================================================
+# Crate: eneros-federation (crates/agents/federation/src/channel.rs)
+# 版本: v0.98.0 跨域通信通道（mTLS 双向认证 + 国密 SM2/SM3/SM4，Phase 2 P2-E）
+# 蓝图: phase2.md §v0.98.0
+#
+# 通道文义（一句话）：
+#   Edge Coordinator 间建立跨域加密通信通道（mTLS 双向认证握手 +
+#   SM4-GCM 加密调用），防窃听篡改，为 v0.99.0 联邦共识提供安全通道。
+
+[channel]
+# 国密开关：纯配置字段保留（D8）——本版本仅国密路径（SM2/SM3/SM4），
+# 项目无 RSA/AES 实现（§5.6 国密合规），use_sm 不产生分支行为差异，
+# 未来非国密 TLS 集成时本字段为兼容占位。
+use_sm = true
+
+# CA 根证书路径：mTLS 双向认证强制（蓝图 §7.3）——connect 握手时双方
+# 互验证书，任一方证书无效即 Err(CertInvalid)，拒绝建立通道。
+ca_cert_path = "configs/certs/ca.pem"
+
+# 本端客户端证书路径：hello 帧 MAGIC[4]‖cert_len:u32‖cert‖nonce[32]
+# 中携带，由对端 CertVerifier 验证（复用 v0.97.0 证书验证器）。
+client_cert_path = "configs/certs/client.pem"
+
+# 本端客户端私钥路径：与 client_cert 配对，TlsConfig::validate 要求
+# ca_cert/client_cert/client_key 三者均非空，任一空 → Err(CertInvalid)。
+client_key_path = "configs/certs/client-key.pem"
+
+# 握手超时（ms）：跨域往返 <50ms 为集成阶段验收项（蓝图 §7.2），
+# 本版本交付算法骨架 + Mock 单元验证，真实传输往返时延由集成阶段
+# 注入 SecureTransport 真实适配器后实测；本超时为握手兜底上限。
+handshake_timeout_ms = 3000
+
+# 最大并发端点数：每端点维护 Endpoint{node_id, addr, established,
+# session_key, send_seq}；会话密钥派生方式为
+# SM3("eneros-ch-enc"‖init_cert‖resp_cert‖nonce) 取前 16 字节（D6，
+# 双方同序拼接可独立复算）；数据帧格式 SM4-GCM：seq:u64‖ciphertext‖tag[16]，
+# nonce = 0u32‖seq_be（12 字节逐 seq 唯一，GCM 安全），
+# aad = node_id_be‖seq_be（D7）；4 个可观测计数器
+# connect_count/call_count/handshake_fail_count/crypto_fail_count（D12）
+# 全程留痕，本地可查。
+max_endpoints = 16
+
+# 证书轮换提示：证书过期前必须轮换（蓝图 §4.4/§8.5）——过期证书导致
+# 握手 CertInvalid 全链中断，运维侧须监控证书有效期并提前滚动更新；
+# 断连端点可经 reconnect(node_id) 按已存 addr 重握手恢复（蓝图 §9 可靠）。

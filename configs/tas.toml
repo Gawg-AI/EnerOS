@@ -1,0 +1,52 @@
+# EnerOS v0.80.0 TSN 802.1Qbv 配置模板
+# 时间感知整形（Time-Aware Shaper）门控列表
+# 文档：docs/protocols/tsn-qbv-design.md
+#
+# 本文件为配置模板，运行时由上层 eneros-config (v0.26.0) 读取并通过
+# build_tas_config() 构造器注入 TasConfig 结构体（D15：本版本不内嵌 TOML 解析）。
+# 不参与 cargo build（D3：位于 configs/，非蓝图 config/）。
+
+# 调度周期（微秒）。1ms = 1000us，典型值 1000us / 500us / 250us
+cycle_us = 1000
+
+# 基准时间（秒，Unix epoch）。gPTP 同步后的调度起始时刻
+# 0 表示从下一个周期边界开始
+base_time_s = 0
+
+# 端口数量（每个端口独立应用同一 GCL）
+port_count = 2
+
+# 门控列表（Gate Control List）
+# 每条 entry 含 duration_us（持续时长，微秒）+ gate_mask（8 位掩码，bit i = 1 表示 TCi 开放）
+# 所有 entry 的 duration_us 之和必须等于 cycle_us（闭合校验，否则 TasError::ScheduleGap）
+# 每条 entry duration_us 必须 >= 5（硬件限制，否则 TasError::TooShort）
+[[schedule]]
+duration_us = 50
+gate_mask = 0b01000000  # TC6 (NC, gPTP) 开放
+
+[[schedule]]
+duration_us = 100
+gate_mask = 0b00010000  # TC4 (VO, GOOSE) 开放
+
+[[schedule]]
+duration_us = 100
+gate_mask = 0b00001000  # TC3 (CA, Agent 命令) 开放
+
+[[schedule]]
+duration_us = 250
+gate_mask = 0b00000100  # TC2 (EE, Agent 状态) 开放
+
+[[schedule]]
+duration_us = 500
+gate_mask = 0b00000001  # TC0 (Be, Best Effort) 开放
+# 总时长：50 + 100 + 100 + 250 + 500 = 1000us = cycle_us ✅
+
+# 流量分类规则参考：
+# - TC6 (NC, bit 6, 0x40) — gPTP（ethertype 0x88F7）
+# - TC5 (VI, bit 5, 0x20) — SV 采样（ethertype 0x88BA）
+# - TC4 (VO, bit 4, 0x10) — GOOSE 跳闸（ethertype 0x88B8）
+# - TC3 (CA, bit 3, 0x08) — Agent 控制命令（DSCP 40-47）
+# - TC2 (EE, bit 2, 0x04) — Agent 状态上报（DSCP 24-31）
+# - TC1 (BK, bit 1, 0x02) — 后台流量（DSCP 8-15）
+# - TC0 (Be, bit 0, 0x01) — 尽力而为（DSCP 0-7 或默认）
+# - TC7 (ST, bit 7, 0x80) — 战略保留（暂未使用）

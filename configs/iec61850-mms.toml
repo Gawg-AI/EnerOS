@@ -1,0 +1,68 @@
+# ============================================================
+# EnerOS v0.106.0 IEC 61850 MMS — MMS 协议栈 IED 连接配置
+# ============================================================
+# Crate: eneros-iec61850-mms (crates/protocols/iec61850-mms/src/{lib,ber_encode,ber_decode,acse,mms_client}.rs)
+# 版本: v0.106.0 IEC 61850 MMS 协议栈（BER 编解码 + ACSE 关联 + COTP + MMS Read/Write 客户端 + MmsTransport 抽象，Phase 2 P2-G 第 2 版）
+# 蓝图: phase2.md §v0.106.0
+#
+# IEC 61850 MMS 文义（一句话）：
+#   边缘设备与变电站认证 IED 的标准互操作需要 MMS（IEC 61850-8-1）服务层——
+#   本 crate 在 v0.105.0 LD/LN/DO/DA 信息模型基座上实现 BER 编解码、ACSE 关联
+#   建立（COTP CR/CC + AARQ/AARE）与 MMS Read/Write 服务，打通联邦多机
+#   IEC 61850 通信的服务层，为 v0.107.0 GOOSE、v0.108.0 SV + IEC 62351 奠基。
+
+[ied]
+# 【注释点 1 · 自研 BER 编解码选型（蓝图 §5.1）】ASN.1 BER 实现方式对比：集成
+# 开源 crate——no_std 生态无成熟 ASN.1/BER crate（rasn 等依赖 std 运行时，且
+# 引入完整 ASN.1 编译器远超 MMS 子集需求）vs 自研迷你 BER——仅覆盖 MMS
+# ConfirmedRequestPDU 所需的 tag + 长度（短/长型）+ 内容子集（零第三方依赖，
+# 主机可测）；蓝图 §5.1 采用自研 BER，对齐记忆 §5.5「自研仅限能源行业特有 +
+# 无开源替代」：本场景属 no_std 无成熟替代。
+
+# 【注释点 2 · MMS over TCP 标准 102 端口】IEC 61850-8-1 规定 MMS 经 RFC 1006
+# （ISO Transport over TCP）承载，TCP 目的端口固定 102（TSAP 协商在 COTP
+# CR/CC 内完成，应用层不见）；peer_port 改为非 102 将被认证 IED 拒绝连接，
+# 除非 IED 厂商私有扩展——现场勿改。
+
+# 【注释点 3 · 连接重试至多 3 次（蓝图 §4.4 / spec D11）】connect 超时重试上限
+# 3 次：第 3 次仍超时返回 MmsError::Timeout 且状态置 Error；no_std 无计时器，
+# 超时语义由传输层内部决定（v0.64.0 D1 时间注入先例），重试计数经
+# MockTransport 断言验证；connect_retry 调大将线性放大最坏建连耗时。
+
+# 【注释点 4 · MmsTransport 传输抽象（spec D4）】MmsClient<T: MmsTransport>
+# 泛型化：MmsTransport { connect/send/recv } 由 MockTransport 提供脚本化响应
+# 用于主机测试与集成占位；v0.29.0 Socket 真实接线在集成层完成（mqtt /
+# iec104 / agent-bus-dds 同先例），crate 内无真实网络 I/O，no_std 主机可测。
+
+# 【注释点 5 · 性能口径 100 点 < 50ms（蓝图 §6.3 / spec D12）】一次 read 编码
+# 100 个 VarAccessSpec + 解码响应（mock 回路，编码+解码口径）耗时 < 50ms，
+# cfg(test) std::time::Instant 断言；与认证 IED 真实通信的集成测试为实验室
+# 硬件项，以 MockTransport 脚本化响应替代（v0.105.0 D13 同口径）。
+
+# 【注释点 6 · 内存预算（记忆 §5.6）】本 crate 属 Agent Runtime 管理信息大区
+# 分区（≤ 64MB 预算）：PDU 缓冲为 KB 级——单条 MMS PDU ≤ 16KB 量级（100 点
+# Read 请求编码约 4KB，响应含 100 个 DataAccessResult 约 8KB），远小于预算；
+# 字符串/Vec 均走 v0.11.0 用户堆 alloc；OOM 策略与大区一致：降级到规则引擎，
+# 总用量 > 90% 触发 OOM handler 冻结非关键 Agent（蓝图 §43.6）。
+
+# 【注释点 7 · GPU 不适用（蓝图 §6.6）】BER 编解码与 MMS 客户端为字节流拼接/
+# 逐层解析 workload：无矩阵运算、无大规模张量，GPU 加速无意义；记忆 §4.2
+# GPU 优先规则仅适用模型训练/校准与数字孪生仿真，不适用协议栈路径——本
+# crate 零 GPU 代码，纯 CPU 字节处理。
+
+# 【注释点 8 · 安全加固待 v0.108.0（蓝图 §7.3）】当前为明文 MMS（TCP 102 无
+# TLS）；IEC 62351 安全加固（TLS 证书认证 + 报文完整性保护）随 v0.108.0
+# SV + IEC 62351 一并落地，生产部署前须完成该版本升级；纵向加密认证装置
+# 对接见 v0.98.1。
+
+# IED 对端地址（变电站认证 IED 的管理 IP；真实 Socket 接线在集成层，注释点 4）。
+peer_addr = "192.168.1.10"
+# MMS over TCP 标准端口（IEC 61850-8-1 / RFC 1006，见注释点 2）。
+peer_port = 102
+# 本端 AP-title（ACSE AARQ 携带的 VisibleString 应用实体标识；"1.1.1.999.1"
+# 为 IEC 61850 常见测试值，现场须与 IED 侧认可值一致，否则 AARE 拒绝）。
+local_ap_title = "1.1.1.999.1"
+# 单次传输超时（毫秒；超时语义由 MmsTransport 实现内部决定，见注释点 3）。
+timeout_ms = 3000
+# 连接重试上限（至多 3 次，蓝图 §4.4 / spec D11，见注释点 3）。
+connect_retry = 3

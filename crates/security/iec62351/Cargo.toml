@@ -1,0 +1,10 @@
+[package]
+name = "eneros-iec62351"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS IEC 62351 GOOSE/SV 安全层 (v0.108.0) — SM4-GCM + SM3-HMAC, no_std"
+
+[dependencies]
+eneros-crypto = { path = "../crypto" }

@@ -1,0 +1,41 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — Message Router Policy Config
+# Version: v0.77.0
+# Blueprint: phase2.md §v0.77.0 (Agent 消息路由器)
+# Deviation: D3 — config in `configs/` (project rule §2.3, NOT blueprint's `config/`)
+# ============================================================
+# This is a configuration TEMPLATE only. Runtime loading is not
+# implemented in v0.77.0 (no_std has no `toml` crate). The
+# `MessageRouter::new()` constructor takes a `RoutingPolicy`
+# struct directly. This file documents the available options for
+# integrators and future std-environment loaders.
+
+[router]
+# Require a valid Capability Token for publish operations.
+# When true, `MessageRouter::dispatch()` verifies the publisher's
+# token via `CapabilityVerifier::verify(Permission::Publish, ...)`.
+require_publish_token = false
+
+# Require a valid Capability Token for subscribe operations.
+# When true, `MessageRouter::subscribe()` verifies the subscriber's
+# token via `CapabilityVerifier::verify(Permission::Subscribe, ...)`.
+require_subscribe_token = false
+
+# Enable priority preemption: higher-priority messages are
+# dispatched before lower-priority ones when both are queued.
+# (Note: v0.77.0 MVP records priority in RouteDecision but does
+# not implement reordering; preemption is a future enhancement.)
+priority_preempt = false
+
+# Per-agent rate limit in messages per second.
+# When set, agents exceeding this rate are dropped with
+# DropReason::RateLimited. When None/absent, no rate limiting.
+# (Note: v0.77.0 MVP does not implement rate limiting logic;
+# this is reserved for future versions. Set to 0 to disable.)
+rate_limit_per_agent = 0
+
+# ============================================================
+# Policy Presets (reference, not parsed by v0.77.0 runtime)
+# ============================================================
+# default = { require_publish_token = false, require_subscribe_token = false, priority_preempt = false, rate_limit_per_agent = 0 }
+# strict  = { require_publish_token = true,  require_subscribe_token = true,  priority_preempt = true,  rate_limit_per_agent = 100 }

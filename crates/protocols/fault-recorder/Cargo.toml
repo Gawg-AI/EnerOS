@@ -1,0 +1,9 @@
+[package]
+name = "eneros-fault-recorder"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 故障录波 COMTRADE (v0.109.0) — no_std, IEEE C37.111-2013"
+
+[dependencies]

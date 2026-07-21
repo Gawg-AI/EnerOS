@@ -1,0 +1,11 @@
+[package]
+name = "eneros-solver-milp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.102.0 MILP solver integration (UC day-ahead scheduling, no_std)"
+
+[dependencies]
+eneros-solver-core = { path = "../solver-core" }
+eneros-solver-model = { path = "../solver-model" }

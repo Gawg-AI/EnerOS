@@ -1,0 +1,18 @@
+[package]
+name = "eneros-rtos-watchdog-degrade"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS RTOS 看门狗与端到端降级流程 — 心跳监控/状态机/恢复过渡/分层喂狗"
+
+[dependencies]
+eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
+eneros-upa-model = { path = "../../protocols/upa-model" }
+eneros-controlbus = { path = "../controlbus" }
+eneros-rtos-cmd-exec = { path = "../rtos-cmd-exec" }
+eneros-rtos-degrade = { path = "../rtos-degrade" }
+eneros-watchdog = { path = "../../drivers/watchdog" }
+
+[dev-dependencies]
+eneros-ipc = { path = "../ipc" }

@@ -1,0 +1,14 @@
+[package]
+name = "eneros-llm-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS LLM 推理引擎选型与 FFI 封装（llama.cpp C API + MockEngine，no_std）"
+
+[dependencies]
+
+[features]
+default = []
+# D3: llama.cpp C 库绑定 + LlamaCppEngine（默认关闭，启用时需链接 libllama）
+llama-cpp = []

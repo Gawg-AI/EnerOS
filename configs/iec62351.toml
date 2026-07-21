@@ -1,0 +1,69 @@
+# ============================================================
+# EnerOS v0.108.0 IEC 62351 — GOOSE/SV 安全层密钥配置
+# ============================================================
+# Crate: eneros-iec62351 (crates/security/iec62351/src/{lib,key_mgmt,secure_goose,secure_sv}.rs)
+# 版本: v0.108.0 IEC 62351 GOOSE/SV 加密封装（SM4-GCM 机密性 + SM3-HMAC 完整性/
+#       认证 + 会话密钥管理，Phase 2 P2-G 第 4 版）
+# 蓝图: phase2.md §v0.108.0
+# 日期: 2026-07-20
+#
+# IEC 62351 文义（一句话）：
+#   电力系统通信协议安全标准（IEC 62351）要求对 GOOSE/SV 报文实施机密性保护
+#   与完整性/源认证，满足 36 号文横向隔离合规与电力行业准入——本 crate 在
+#   v0.31.0 国密 SM2/SM3/SM4 基座上实现 SM4-GCM AEAD 加密封装 + SM3-HMAC 消息
+#   认证 + 多密钥存储与轮换，加密延迟 < 0.5ms，为联邦保护协同提供安全数据通道。
+
+[security]
+# 【注释点 1 · SM4-GCM AEAD 选型（蓝图 §5.1，IEC 62351 + 国密合规）】IEC 62351
+# 推荐对 GOOSE/SV 等快速报文采用对称加密；本 crate 选用国密 SM4-GCM（AEAD
+# 模式同时提供机密性与认证），满足 GB/T 32907（SM4）与等保 2.0 三级/信创
+# 认证合规要求。eneros-crypto v0.31.0 提供纯 Rust 实现（零 unsafe），避免
+# 自研 FFI 在 aarch64-unknown-none 无法链接的问题（记忆 §5.5 默认集成清单）。
+
+# 【注释点 2 · SM3-HMAC 消息认证（先校验 HMAC 再解密，防时序攻击）】在 SM4-GCM
+# tag 之上再附加 SM3-HMAC（256 bit），解密时先以常量时间比较（ct_eq）校验
+# HMAC，不通过则直接返回 SecError::HmacMismatch，避免进入 SM4-GCM 解密路径
+# 被时序分析攻击；HMAC 覆盖 IV ‖ ciphertext ‖ tag，提供完整的完整性保护。
+
+# 【注释点 3 · 密钥轮换策略（蓝图 §4.4，过期触发 rotate_keys）】会话密钥按
+# key_lifetime_ms 设定生命周期（单位毫秒，默认 1 小时 = 3600000ms）；当当前
+# 密钥 expiry <= now 时，rotate_keys(now, new_key_data, new_mac_key) 生成
+# 新密钥并追加到密钥表（key_id 递增，expiry = now + lifetime）；未过期时调用
+# rotate_keys 直接返回 Ok(())，避免不必要的密钥更替。多密钥存储支持接收侧
+# 按 key_id 查找历史密钥，兼容乱序帧/重传帧解密。
+
+# 【注释点 4 · IV 构造规则（蓝图 §4.5）】SM4-GCM 要求 IV（Nonce）在相同密钥下
+# 绝对唯一，否则将破坏认证安全性。本 crate IV 为 12 字节：前 8 字节为 64 bit
+# 计数器（大端），后 4 字节为 key_id（大端）；每次加密计数器 +1，保证同一
+# SessionKey 下 IV 不重复；计数器回绕前须轮换密钥（lifetime 通常远早于回绕）。
+
+# 【注释点 5 · 密钥材料外部注入（spec D9）】本配置文件仅含策略参数，不含任何
+# 明文密钥材料。生产环境中 SessionKey.key_data（SM4 128 bit）与 mac_key
+# （SM3-HMAC 256 bit）必须由硬件 TRNG（真随机数发生器）或密钥管理系统注入，
+# rotate_keys(now, new_key_data, new_mac_key) 的密钥材料参数由调用方提供；
+# no_std 无系统熵源（CsRng 固定种子仅测试用），内部生成密钥不可用于生产。
+# SessionKey 不派生 Debug，防止密钥在日志/堆栈跟踪中泄露。
+
+# 【注释点 6 · 性能 < 0.5ms 口径（蓝图 §6.3，spec D11）】加密延迟验收口径为
+# cfg(test) Instant 断言：256 字节载荷 × 100 次加密+解密 < 50ms（即 < 0.5ms/
+# 次）；真实网卡端到端 GOOSE/SV 安全通信为实验室硬件项，以 MockL2 脚本化
+# 帧替代（v0.107.0 D11 同口径）。
+
+# 【注释点 7 · 内存预算声明（记忆 §5.6）】SecureFrame 开销固定：key_id(4) +
+# iv(12) + tag(16) + hmac(32) = 64B，加 ciphertext 与明文等长；单帧总量 ≈
+# 明文长 + 64B。GOOSE/SV 典型帧 ≤ 256B，安全封装后 ≤ 320B；密钥表按
+# SessionKey(56B) × N，N 通常 < 4，总量可忽略。本 crate 属 Agent Runtime
+# 管理信息大区（≤ 64MB 预算），OOM 策略与大区一致：总用量 > 90% 触发 OOM
+# handler 冻结非关键 Agent（蓝图 §43.6）。
+
+# 【注释点 8 · GPU 不适用（蓝图 §6.6）】SM4/SM3 为轻量对称加密与哈希运算，
+# 单次加密载荷仅百字节级，CPU 处理延迟 < 0.5ms，GPU 卸载反而引入上下文
+# 切换与显存拷贝开销，无加速意义；记忆 §4.2 GPU 优先规则仅适用模型训练/
+# 校准与数字孪生仿真，不适用密码学协议栈路径——本 crate 零 GPU 代码。
+
+# 密钥生命周期（毫秒）。默认 3600000ms = 1 小时；过期后 rotate_keys 触发
+# 新密钥生成（见注释点 3）。
+key_lifetime_ms = 3600000
+# 初始密钥标识符（KeyMgmt::new 时 next_key_id 的起始值；rotate_keys 生成
+# 的密钥 key_id 从此值开始递增）。
+initial_key_id = 1

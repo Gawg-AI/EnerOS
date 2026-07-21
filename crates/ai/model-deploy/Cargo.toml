@@ -1,0 +1,16 @@
+[package]
+name = "eneros-model-deploy"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.61.0 7B INT4 quantization model deployment verifier"
+
+[dependencies]
+eneros-llm-engine = { path = "../llm-engine" }
+eneros-gguf-loader = { path = "../gguf-loader" }
+
+[features]
+default = []
+# D3: llama.cpp C 库后端（默认关闭，启用时需链接 libllama）
+llama-cpp = []

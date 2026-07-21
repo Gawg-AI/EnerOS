@@ -1,0 +1,10 @@
+[package]
+name = "eneros-modbus-rtu"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Modbus RTU master protocol stack"
+
+[dependencies]
+eneros-driver-framework = { path = "../../drivers/framework" }

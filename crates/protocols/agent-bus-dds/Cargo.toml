@@ -1,0 +1,19 @@
+[package]
+name = "eneros-agent-bus-dds"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.78.0 DDS middleware + Agent Bus router + signed envelope (Cyclone DDS via FFI + MockDdsNode + MockSigner/Sm2Signer, no_std)"
+
+[dependencies]
+slotmap = { version = "1.0", default-features = false }
+# D14: SM2 签名支持（可选，启用 sm2 feature 时引入）
+eneros-crypto = { path = "../../security/crypto", default-features = false, optional = true }
+
+[features]
+default = []
+# D3: Cyclone DDS C library bindings + CycloneDdsNode (disabled by default; enable when libddsc.so is available)
+cyclone-dds = []
+# D14: SM2 签名器（封装 eneros-crypto v0.32.0）
+sm2 = ["eneros-crypto"]

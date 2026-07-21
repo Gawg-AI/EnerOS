@@ -1,0 +1,40 @@
+# EnerOS TSDB Configuration Template
+# v0.25.0 — Time-Series Database Engine
+#
+# Columnar time-series storage on top of eneros-fs (v0.24.0).
+# See docs/drivers/tsdb-design.md for the full design.
+
+[storage]
+# Root data directory on the filesystem.
+# Chunk files are laid out as: {data_dir}/{device_id}/{metric_id}/{start_time:020}
+# The persisted index lives at: {data_dir}/index.bin
+data_dir = "/tsdb"
+
+# Time span covered by a single chunk (milliseconds).
+# Default: 3_600_000 (1 hour). When a chunk exceeds this span it is flushed.
+chunk_duration_ms = 3600000
+
+# Maximum points buffered in a chunk before flush is triggered.
+# Default: 10_000. Larger buffers improve compression ratio but increase
+# memory footprint and data loss window on power failure.
+max_points_per_chunk = 10000
+
+# Compression algorithm for columnar data.
+#   "none"   — pass-through (no compression)
+#   "snappy" — LZ4 compression (backed by lz4_flex, no_std compatible)
+# Note: the original blueprint specified Snappy, but the `snap` crate is not
+# no_std compatible. lz4_flex is used as the backend; the variant name "snappy"
+# is retained for configuration compatibility. See design doc §11.2.
+compression = "snappy"
+
+[retention]
+# Data retention period (milliseconds). Chunks whose start_time is older than
+# `now - retention_ms` are removed by cleanup_expired().
+# Default: 2_592_000_000 (30 days).
+retention_ms = 2592000000
+
+[flush]
+# Interval between automatic flushes (milliseconds).
+# Default: 5_000 (5 seconds). The caller (e.g. v0.52.0 four-remote telemetry)
+# is responsible for invoking compact()/close() at appropriate cadence.
+flush_interval_ms = 5000

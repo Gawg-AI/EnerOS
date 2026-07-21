@@ -1,0 +1,13 @@
+[package]
+name = "eneros-solver-pareto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.104.0 multi-objective Pareto optimization (NSGA-II front + decision maker, no_std)"
+
+[dependencies]
+eneros-solver-core = { path = "../solver-core" }
+
+[features]
+default = []

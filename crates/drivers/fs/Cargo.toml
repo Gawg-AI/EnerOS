@@ -1,0 +1,14 @@
+[package]
+name = "eneros-fs"
+version = "0.24.1"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+eneros-storage = { path = "../storage" }
+littlefs2 = { version = "0.8", features = ["c-stubs"] }
+generic-array = "0.14"
+typenum = "1.20"
+bitflags = "2.13"
+spin = "0.9"

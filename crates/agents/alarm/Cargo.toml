@@ -1,0 +1,10 @@
+[package]
+name = "eneros-alarm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 告警管理 — 生成/抑制/确认/升级/清除全生命周期"
+
+[dependencies]
+eneros-upa-model = { path = "../../protocols/upa-model" }

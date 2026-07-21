@@ -1,0 +1,45 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — v0.82.0 Grid Agent 配置模板
+# ============================================================
+# 电网量测点表与采样/异常检测配置.
+# 本模板由 Grid Agent 上层加载，量测点 ID 引用 v0.51.0 协议抽象层
+# 的 PointId（u32），由调用方注入对应结构体.
+# ============================================================
+
+# 电网量测点表配置（PointId 引用 v0.51.0 协议抽象层）
+[grid]
+frequency_point_id = 1001         # 电网频率量测点 ID（Hz）
+voltage_a_point_id = 1002          # A 相电压量测点 ID（V）
+voltage_b_point_id = 1003          # B 相电压量测点 ID（V）
+voltage_c_point_id = 1004          # C 相电压量测点 ID（V）
+current_a_point_id = 1005          # A 相电流量测点 ID（A）
+current_b_point_id = 1006          # B 相电流量测点 ID（A）
+current_c_point_id = 1007          # C 相电流量测点 ID（A）
+active_power_point_id = 1008       # 有功功率量测点 ID（kW）
+reactive_power_point_id = 1009     # 无功功率量测点 ID（kVar）
+power_factor_point_id = 1010       # 功率因数量测点 ID
+
+# 采样配置
+[sampling]
+# 采样周期（毫秒），100ms 适用于 Agent 命令的常规巡检
+interval_ms = 100
+
+# 单次采样超时（毫秒）
+timeout_ms = 50
+
+# 数据品质阈值（0.0~1.0，低于此值标记 Invalid）
+quality_threshold = 0.95
+
+# 异常检测配置
+[anomaly]
+# 频率下限（Hz），低于此值触发告警
+frequency_min = 49.5
+
+# 频率上限（Hz），高于此值触发告警
+frequency_max = 50.5
+
+# 电压下限（V）
+voltage_min = 200.0
+
+# 电压上限（V）
+voltage_max = 240.0

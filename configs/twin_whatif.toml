@@ -1,0 +1,53 @@
+# EnerOS v0.91.0 数字孪生 What-if 分析配置模板
+# Digital Twin Agent What-if 分析：TwinModel 当前镜像 → clone 副本 → 逐 Action 应用
+# → SimModel 仿真推演 → compute_outcomes（3 指标）→ assess_risk（取最重）→ ScenarioResult
+#
+# 分析语义（一句话）：
+#   WhatIfAnalyzer 基于 v0.89.0 TwinModel 实时镜像做"如果……会怎样"决策前预演：
+#   克隆当前模型，依次应用场景假设动作（设备功率设定/设备退出/电网功率设定/市场价格设定），
+#   经 SimModel 推演后与基线对比得出 Outcome，并评估风险等级 RiskLevel（Low/Medium/High/Critical）。
+#
+# 性能目标（蓝图 §7.2）：
+#   单次分析 < 1s——【集成阶段验收】：本版本交付算法骨架 + 单元验证，
+#   AnalyticalSimModel 为纯标量 O(设备数) 线性推演，实际开销远低于目标。
+#
+# 高风险拦截（蓝图 §7.3）：
+#   risk_level >= High 的场景，下游决策层应拒绝执行对应动作；
+#   分析结果为决策辅助输入，What-if 本身只读 TwinModel、不写入任何控制通道、不修改输入模型。
+#
+# 解析模型局限（D9）：
+#   AnalyticalSimModel 仅做 SOC 线性推演（soc -= power × hours / capacity，clamp [0,1]），
+#   grid/market/last_update 透传；详细动态仿真（离线）与蒙特卡洛（风险评估）后续版本接入。
+#
+# NaN/Inf 防御（D12，v0.88.0 C140 教训）：
+#   action/sim 中非有限功率（NaN/Inf）复用 model_forecast::sanitize 按 0.0 处理，不传播不 panic；
+#   battery_capacity_kwh 非有限或 <= 0 → 回退默认 100.0。
+#
+# 错误语义（D10，蓝图 §4.4）：
+#   仿真发散 Err(Diverged) → analyze 返回 Ok 且 outcomes 为空 + risk_level = Critical（标记高风险）；
+#   模型不可用 Err(ModelUnavailable) → analyze 透传 Err 拒绝分析。
+
+[whatif]
+battery_capacity_kwh = 100.0        # AnalyticalSimModel 电池容量（kWh，D9）；非有限或 <= 0 回退 100.0（D12）
+min_soc_high_threshold = 0.2        # min_soc < 此值 → RiskLevel::High（D11，与 assess_risk 规则一致；<= 0 直接 Critical）
+grid_deviation_medium_threshold = 0.5  # grid 有功功率相对基线波动 > 此值 → RiskLevel::Medium（D11，严格大于才触发）
+
+# ==================== 场景模板（[[scenario]]） ====================
+# 字段：name（&'static str，D2 静态命名）/ duration_ms（u64 ms，D3 外部时间注入）
+# actions 由调用方按场景语义构造（D7 四变体）：
+#   SetDevicePower { device_id: u64, power: f64 }   —— 设定设备功率（kW，正放电负充电）
+#   RemoveDevice { device_id: u64 }                 —— 设备退出镜像
+#   SetGridPower { active_power: f32 }              —— 设定电网有功功率
+#   SetMarketPrice { price: f32 }                   —— 设定市场电价
+
+[[scenario]]
+name = "heavy-discharge"      # 重放电：actions = [SetDevicePower{device_id:1, power:50.0}]；1h 持续 50kW 放电 → soc 耗尽，预期 Critical
+duration_ms = 3600000
+
+[[scenario]]
+name = "device-removal"       # 设备退出：actions = [RemoveDevice{device_id:2}]；30min 窗口内设备 2 退出镜像，min_soc 按剩余设备推演 → 预期 Low/Medium
+duration_ms = 1800000
+
+[[scenario]]
+name = "grid-power-set"       # 电网功率设定：actions = [SetGridPower{active_power:16.0}]（基线 10.0，相对波动 60% > 50%）→ 预期 Medium
+duration_ms = 0

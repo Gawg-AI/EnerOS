@@ -1,0 +1,55 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — v0.86.0 报价策略配置模板
+# ============================================================
+# 配置 Market Agent 报价生成（BidGenerator）的运行参数。
+# 包括：报价策略（价差边际 / 最大报价量 / SOC 阈值）、资源标识、
+# 发布 Topic 路径。
+#
+# 本模板由上层 Agent 加载，参数注入 BidStrategy 与 BidGenerator
+# 构造器。报价流水线为「意图（BidIntentSource trait，未来接 LLM）
+# → 优化（BidOptimizer trait，未来接 Solver LP）→ 生成 → 发布
+# （BidPublisher trait，未来接 DDS /power/market/bid）」，
+# 偏差 D5 / D6 / D11：三个 trait 抽象隔离重依赖，真实 LLM /
+# Solver / DDS 适配器后续注入。
+#
+# 相关源码：crates/agents/energy-market-agent/src/bid_generator.rs
+# 相关文档：docs/agents/bid-generation-design.md
+# ============================================================
+
+# 报价策略配置（蓝图 §4.1 BidStrategy）
+[strategy]
+# 价差边际（元/MWh）
+# 保守回退时即 price_adjust（偏差 D14：Sell 价 = point.price + margin，
+# Buy 价 = (point.price - margin).max(0.0)）
+margin = 0.1
+# 单笔最大报价量（MW）
+# 报价量上限：quantity = min(opt.quantity, max_quantity, capacity).max(0.0)
+# （偏差 D14，蓝图 §7.3 "报价不超容量上限"）
+max_quantity = 5.0
+# SOC 阈值（0.0~1.0）
+# Sell 且 soc < soc_threshold 时禁止卖出报价（SOC 门控，返回空列表）
+soc_threshold = 0.2
+
+# 资源标识配置
+[resource]
+# 报价资源 ID（u64）
+# 偏差 D4：no_std 无堆 String，资源 ID 用 u64，Bid 保持 Copy
+resource_id = 42
+
+# 发布配置（蓝图 §4.3 Topic 路径，偏差 D11：BidPublisher trait 抽象）
+[publish]
+# 报价列表发布 Topic（Vec<Bid>，bids 非空时发布）
+# 真实 DDS 适配器后续注入（eneros-agent-bus-dds，v0.77.0）
+bid_topic = "/power/market/bid"
+
+# 回退配置（蓝图 §4.4 两级确定性回退，偏差 D9 / D10）
+# 本段仅注释说明回退语义，无独立配置字段（回退参数复用 [strategy] 段）：
+# - 第一级（意图回退）：LLM 意图失败（BidIntentSource::generate_intent 返回
+#   Err）→ rule_intent() 规则策略：side = Sell，
+#   target_quantity = min(max_quantity, capacity * soc)
+# - 第二级（优化回退）：Solver 优化失败（BidOptimizer::optimize 返回 Err）
+#   → conservative_optimize() 保守报价：price_adjust = margin，
+#   quantity = min(target_quantity, max_quantity)
+# 两级回退均为确定性规则，保证 LLM / Solver 不可用时报价链路不中断
+# （蓝图 §4.4）
+[fallback]

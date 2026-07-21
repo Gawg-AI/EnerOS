@@ -1,0 +1,11 @@
+[package]
+name = "eneros-rtos-sampling"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS RTOS 高频采样服务 — 双缓冲快照 + 采样统计"
+
+[dependencies]
+eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
+eneros-upa-model = { path = "../../protocols/upa-model" }

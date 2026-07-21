@@ -1,0 +1,13 @@
+[package]
+name = "eneros-safety-validator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.67.0 Safety validator (rule chain + clamp, no_std)"
+
+[dependencies]
+eneros-energy-lp-model = { path = "../energy-lp-model" }
+
+[dev-dependencies]
+eneros-solver-core = { path = "../solver-core" }

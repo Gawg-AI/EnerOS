@@ -1,0 +1,15 @@
+[package]
+name = "eneros-intent-parser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.68.0 Intent parser (LLM JSON → ScheduleConfig/LpProblem, no_std)"
+
+[dependencies]
+eneros-energy-lp-model = { path = "../energy-lp-model" }
+eneros-safety-validator = { path = "../safety-validator" }
+eneros-solver-model = { path = "../solver-model" }
+eneros-solver-core = { path = "../solver-core" }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }

@@ -1,0 +1,10 @@
+[package]
+name = "eneros-driver-framework"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS user-space device driver framework — DeviceDriver trait, registry, capability"
+
+[dependencies]
+# Zero external dependencies — pure Rust no_std

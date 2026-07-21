@@ -1,0 +1,49 @@
+# ============================================================
+# EnerOS v0.98.1 Vertical Encrypt — 纵向加密认证配置
+# ============================================================
+# Crate: eneros-federation (crates/agents/federation/src/tunnel.rs)
+# 版本: v0.98.1 纵向加密认证（36 号文刚性合规子版本，Phase 2 安全合规出口）
+# 蓝图: phase2.md §v0.98.1
+#
+# 隧道文义（一句话）：
+#   调度主站合规接入：SM2 IKE 密钥协商 + SM4 密文隧道 + 重放保护，
+#   满足 36 号文纵向加密刚性要求（调度主站接入的合规出口条件）。
+
+[vertical_encrypt]
+# SPI（安全参数索引）范围起点：36 号文纵向加密合规——调度主站接入
+# 刚性要求，隧道以 local_spi 标识，TunnelManager 按 local_spi 管理
+# 多隧道（BTreeMap 路由）；spi_start/spi_end 界定本端可用 SPI 区间，
+# 与对端装置协商时从本区间提议 spi_offer。
+spi_start = 256
+
+# SPI 范围终点：SPI 分配上限（含）；IKE 协商发起方从
+# [spi_start, spi_end] 内选择 spi_offer 随 hello 帧携带
+# （spi_offer:u32‖SM2加密(PMS)‖SM2签名），应答方以 spi_answer 回应。
+spi_end = 65535
+
+# 重放窗口：64 位滑动位图（E9，IPsec 惯例窗口 64）——recv_seq 记录
+# 最大已收 seq，位图记录窗口内已收；seq 已收或 seq <= recv_seq - 64
+# → Err(ReplayDetected)，抗重放攻击；TunnelManager 侧
+# replay_reject_count 计数器留痕可观测。
+replay_window = 64
+
+# 密钥轮换间隔（ms，默认 86400000 = 24h）：rotate(new_keys) 原位换钥
+# + 重放窗口清零（E12）——隧道持有派生密钥而非证书，证书轮换天然
+# 不影响已有连接；PMS 预主密钥不出内存明文留存、IKE 派生后即弃
+# （安全要求：密钥材料最小驻留），轮换按本间隔由上层周期触发。
+key_rotation_interval_ms = 86400000
+
+# 隧道策略：SM4-CBC 加密 + SM3-HMAC 认证——帧格式
+# local_spi‖seq:u64‖iv[16]‖SM4-CBC(iv, plaintext)‖SM3-HMAC(auth_key,
+# spi‖seq‖iv‖ct)；随机 IV 由注入 CsRng 生成（E6，CBC 可预测 IV 不安全，
+# 生产接硬件 TRNG）；HMAC 恒定时间校验，失配 → Err(TagMismatch)。
+tunnel_policy = "sm4-cbc-sm3-hmac"
+
+# IKE 协商超时（ms）：SM2 IKE 两报文协商兜底上限——initiator_hello
+# （PMS 生成 + SM2 加密至对端公钥 + 签名）→ responder_accept（解密验签）
+# → initiator_finish（验签），失败即 HandshakeFailed/CertInvalid 并告警，
+# 降级本地自治；纵向加密卡以 VerticalEncryptDevice trait（xmit/poll）
+# 适配（E2），MockVerticalEncryptDevice 回环支撑 CI，真实卡驱动由现场
+# 注入；吞吐 ≥10Mbps 与延迟增加 <5ms 为现场装置验收项（E10，与真实
+# 纵向加密装置对接后实测）。
+ike_timeout_ms = 5000

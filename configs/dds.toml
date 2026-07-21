@@ -1,0 +1,37 @@
+# EnerOS DDS 节点配置模板（v0.75.0）
+# 参考：蓝图/phase2.md §v0.75.0
+#
+# DDS（Data Distribution Service）中间件配置。
+# 用于配置 eneros-agent-bus-dds crate 的 DdsConfig。
+# 设计文档：docs/protocols/dds-integration-design.md
+
+# DDS domain ID（同域才能通信）
+# 默认：0
+# 范围：0 ~ 232（u32）
+# 同一 domain_id 下的 participant 才能相互发现并通信。
+domain_id = 0
+
+# 发现策略：multicast | unicast | static
+# - multicast: 默认，使用 239.255.0.1 多播地址发现对端
+# - unicast: 退化为单播发现，需配置 peers 列表
+# - static: 完全静态配置，无发现
+discovery = "multicast"
+
+# 绑定网卡（空字符串表示自动选择）
+# 默认：""（空字符串，自动选择）
+# 示例："eth0" / "ens33"
+# 真实 FFI 启用时（feature = "cyclone-dds"）由 Cyclone DDS C 库解析。
+interface = ""
+
+# 单播发现对端列表（discovery = "unicast" 时生效）
+# discovery = "multicast" 或 "static" 时本列表被忽略。
+# 每条 peer 包含 address（IPv4 字符串）与 port（UDP 端口）。
+# Cyclone DDS 默认 SPDP 端口为 7400。
+
+# [[peers]]
+# address = "192.168.1.100"
+# port = 7400
+
+# [[peers]]
+# address = "192.168.1.101"
+# port = 7400

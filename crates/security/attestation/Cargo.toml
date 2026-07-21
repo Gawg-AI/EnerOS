@@ -1,0 +1,10 @@
+[package]
+name = "eneros-attestation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 测量启动与远程证明 (v0.114.0) — TPM PCR 度量 + TCG 事件日志 + SM2 Quote 验签, no_std"
+
+[dependencies]
+eneros-crypto = { path = "../crypto" }

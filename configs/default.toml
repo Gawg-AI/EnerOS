@@ -1,0 +1,51 @@
+# EnerOS Default Configuration
+# Version: 1.0
+# This file provides default values for all configurable subsystems.
+# See docs/runtime/config-design.md for the full design.
+
+[device]
+name = "edge-box-01"
+model = "EnerOS-Edge-V1"
+location = "default"
+sampling_interval_ms = 1000
+
+[network]
+mode = "static"
+ip = "192.168.1.100"
+netmask = "255.255.255.0"
+gateway = "192.168.1.1"
+dns = "8.8.8.8"
+mtu = 1500
+
+[agent]
+max_agents = 16
+heartbeat_interval_ms = 5000
+task_timeout_ms = 30000
+restart_on_crash = true
+log_level = "info"
+
+[solver]
+enabled = true
+backend = "highs"
+timeout_ms = 500
+max_variables = 10000
+max_constraints = 5000
+tolerance = 1.0e-6
+
+[tsdb]
+chunk_duration_ms = 3600000
+max_points_per_chunk = 10000
+compression = "lz4"
+retention_ms = 2592000000
+flush_interval_ms = 5000
+
+[storage]
+block_size = 4096
+total_blocks = 65536
+wear_level_threshold = 0.8
+
+[logging]
+level = "info"
+max_file_size_kb = 1024
+max_files = 10
+flush_interval_ms = 1000

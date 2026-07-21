@@ -1,0 +1,95 @@
+# ============================================================
+# EnerOS v0.110.0 云边数据同步 — 事件溯源 + 增量同步 + 重试队列配置
+# ============================================================
+# Crate: eneros-cloud-sync (crates/agents/cloud-sync/src/{lib,event_store,delta_sync,retry_queue}.rs)
+# 版本: v0.110.0 云边数据同步（Phase 2 P2-H 第 2 版）：
+#       事件溯源存储（CRC32 完整性）+ 增量批量同步（二进制帧序列化）+ 指数退避重试队列（有界死信）
+# 蓝图: phase2.md §v0.110.0
+# 日期: 2026-07-20
+#
+# 云边数据同步文义（一句话）：
+#   边缘侧遥测/状态/告警/控制日志/交易/配置六类事件必须可靠汇聚到云端 TSDB——
+#   断网期间事件本地持久不丢，网络恢复后增量补传；本 crate 在 v0.96.0 云端数据
+#   汇聚、v0.101.0 断网处理、v0.109.0 COMTRADE 录波基座上打通
+#   「事件 → 存储 → 同步 → 补传」链路，为 v0.111.0 模型 OTA 提供云边通道。
+
+[event_store]
+# 【注释点 1 · 事件溯源选型（蓝图 §5.1）】采用 Event Sourcing 模式：六类事件
+# （Telemetry/Status/Alarm/ControlLog/TradeRecord/ConfigChange）以全局递增
+# offset 追加写入，绝不原地修改；云端按 offset 区间确认（ack），断点续传天然
+# 幂等（batch_id = from_offset，云端据此去重，蓝图 §6.4）。相比「发送即删」
+# 队列，事件溯源保留本地审计追溯能力，满足电力事故留痕要求。
+# 单事件完整性由 CRC32-IEEE（多项式 0xEDB88320，const 256 项表）保证，
+# 已知向量 "123456789" → 0xCBF43926（D8）。
+
+# 【注释点 2 · 内存预算声明（蓝图 §43.6，记忆 §5.6）】事件存储占用 ≈
+#   max_events × (平均 payload + 40B 结构开销)
+# 按本示例 max_events=10000、平均 payload 256B 计：10000 × 296 ≈ 2.9MB，
+# 归入 Agent Runtime 管理信息大区 ≤ 64MB 预算；重试/死信队列复用批次克隆，
+# 峰值 ≤ 2× 单批体积。OOM 策略与大区一致：总用量 > 90% 触发 OOM handler。
+# Vec 分配走 v0.11.0 用户堆 alloc。
+
+# 事件存储容量上限（事件条数）。满时先 compact（保留全部未同步 + 最近 100 条
+# 已同步），仍满则驱逐最旧已同步事件腾位（云端已持久，本地驱逐不丢数据）；
+# 全部未同步不可压缩时 append 返回 Err(StoreFull) 显式背压（D9，蓝图 §7.1
+# 「断网后数据不丢」——宁可报错不静默丢数据）。
+max_events = 10000
+
+[delta_sync]
+# 【注释点 3 · SyncTransport 传输抽象（spec D4）】crate 不含任何网络代码：
+# sync_once/retry_once 经 SyncTransport trait（send_batch(batch, payload) ->
+# Result<u64 ack_offset, SyncError>）发送序列化帧；no_std 无 async runtime/
+# std::net，真实 HTTP/gRPC/MQTT 适配器在集成层注入（v0.95.0 CloudChannel /
+# v0.106.0 MmsTransport 同先例），MockSyncTransport 供主机测试与故障注入。
+
+# 【注释点 4 · 断网补传策略（蓝图 §4.4）】sync_once 失败：批次入 RetryQueue、
+# store 零标记、原样返回错误；网络恢复后 retry_once 取出到期批次重发，成功
+# 才 mark_synced(ack)。长断网期间 append 持续累积至 StoreFull 背压上游；
+# 补传按 from_offset 升序逐批推进，云端按 batch_id 幂等去重。
+
+# 【注释点 5 · 二进制帧格式（spec D11）】自定义帧（全小端）：
+#   [magic u16 = 0xC537][version u8 = 1][event_count u16]
+#   + 每事件 [offset u64][timestamp u64][event_type u8][payload_len u32]
+#            [payload][checksum u32]
+# magic+version 支撑云端 API 版本演进（蓝图 §8.4）；per-event CRC32 支撑
+# 云端校验和不匹配时按批重发（蓝图 §4.4）。零第三方依赖（serde/postcard 不入仓）。
+
+# 单批最大事件数（增量同步每次 sync_once 最多取该数量未同步事件组批）。
+batch_size = 100
+# 压缩类型：None / Snappy / Gzip（D5：本版仅 None 可构造——snappy/gzip 无
+# no_std 成熟实现，记忆 §5.5 集成清单未列入；压缩为传输层可选增强，后续按需引入）。
+compression = "None"
+
+[retry_queue]
+# 【注释点 6 · 指数退避 + 确定性抖动（spec D6）】退避公式：
+#   backoff(retry_count) = min(base << retry_count, 300_000) + jitter
+#   jitter = xorshift32(retry_count × 2654435761 | 1) mod (base + 1)
+# base=1000ms 时下界序列 1s/2s/4s/…/256s，封顶 300s（5 分钟）；jitter ∈
+# [0, base] 防多边缘盒同时断网恢复后重试风暴（ thundering herd ）。rand 为
+# std 专用 no_std 不可用，xorshift32 确定性抖动同 retry_count 同结果，
+# 测试可断言，零依赖零状态。重试失败重入队时 created_at 更新为失败时刻
+# （D10 重试时间基线，避免长断网后全部批次立即到期形成重试风暴）。
+
+# 单批最大重试次数（超过后移入死信队列）。
+max_retries = 10
+# 退避基数（ms）。
+backoff_base_ms = 1000
+# 死信队列容量上限（D10 有界死信：超 max_retries 批次移入，满则丢最旧死信，
+# dead_letter_count 累计全量死信数；死信批次保留供运维人工干预/审计，
+# 替代蓝图「直接丢弃」的数据丢失缺陷）。
+dead_letter_capacity = 8
+
+# 【注释点 7 · 性能口径（蓝图 §6.3/§7.2，spec D12）】蓝图要求 1000 事件批量
+# 同步 < 2s。验收口径为 cfg(test) 主机 Instant 断言（PERF29：1000 事件 ×
+# 10 批 build_batch + serialize + mock send 总耗时 < 2000ms）；真实网络
+# 时延为实验室项，集成阶段补测。单事件序列化开销 = 25B 帧字段 + payload 拷贝。
+
+# 【注释点 8 · GPU 不适用（蓝图 §6.6，记忆 §4.2）】同步路径为缓冲管理 +
+# 字节序列化 + 队列操作 workload：无矩阵运算、无大规模张量，GPU 加速无意义；
+# GPU 优先规则仅适用模型训练/校准与数字孪生仿真，不适用协议栈路径——本
+# crate 零 GPU 代码，纯 CPU 处理。
+
+# 【注释点 9 · 下游 v0.111.0 模型 OTA 复用通道（蓝图 §v0.111.0）】模型 OTA
+# 下发将复用本 crate 的 SyncTransport 抽象与重试队列机制（大文件分块经
+# EventType::ConfigChange 或专用事件类型承载）；本 crate 仅负责可靠传输
+# 通道，不负责模型解析与校验。
