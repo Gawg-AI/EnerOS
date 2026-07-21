@@ -1,0 +1,22 @@
+# EnerOS Cellular Modem Configuration (v0.30.1)
+# AT command and PPP dial-up settings for 4G/5G modem.
+
+[modem]
+# APN (Access Point Name) for cellular data
+apn = "internet"
+# Serial baud rate (bps)
+baud_rate = 115200
+# Maximum retry attempts for dial-up
+max_retries = 3
+# Retry interval in milliseconds
+retry_interval_ms = 5000
+
+[at]
+# Default AT command timeout in milliseconds
+default_timeout_ms = 1000
+
+[ppp]
+# PPP negotiation maximum retries (LCP/IPCP)
+negotiation_retries = 3
+# PPP authentication timeout in milliseconds
+auth_timeout_ms = 10000

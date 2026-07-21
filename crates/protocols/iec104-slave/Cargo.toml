@@ -1,0 +1,9 @@
+[package]
+name = "eneros-iec104-slave"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS IEC 60870-5-104 slave protocol stack — APDU/ASDU codec, interrogation, command, clock sync"
+
+[dependencies]

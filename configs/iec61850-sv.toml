@@ -1,0 +1,64 @@
+# ============================================================
+# EnerOS v0.108.0 IEC 61850-9-2 SV — SV 采样值订阅配置
+# ============================================================
+# Crate: eneros-iec61850-sv (crates/protocols/iec61850-sv/src/{lib,sv_rx,sv_buffer}.rs)
+# 版本: v0.108.0 IEC 61850 SV 采样值接收 + IEC 62351 安全加固（EtherType 0x88BA
+#       二层过滤 + BER TLV 解码 + smpCnt 连续性检测 + 固定容量环形缓冲，Phase 2
+#       P2-G 第 4 版）
+# 蓝图: phase2.md §v0.108.0
+# 日期: 2026-07-20
+#
+# IEC 61850 SV 文义（一句话）：
+#   电力采样值（SV，IEC 61850-9-2）是保护/测量的高速数据通道，要求二层组播
+#   直发（EtherType 0x88BA）、确定性时延——本 crate 在 v0.105.0 信息模型与
+#   v0.107.0 GOOSE 事件通道基座上实现 SV 订阅者（过滤 + 解码 + smpCnt 连续性
+#   检测 + 环形缓冲），为 v0.109.0 故障录波提供安全采样数据源。
+
+[sv]
+# 【注释点 1 · EtherType 0x88BA SV 采样值（IEC 61850-9-2）】IEC 61850-9-2 规定
+# SV 帧 EtherType 固定 0x88BA（区别于 GOOSE 的 0x88B8）；目的 MAC 取 IEC 保留
+# 组播段 01:0C:CD:04:xx:xx（01:0C:CD 为 IEC 61850 OUI，04 前缀标识 SV）；
+# APPID 在帧内二层过滤，订阅者按 EtherType + dst MAC + APPID 三重条件匹配，
+# 非本订阅帧直接丢弃（receive 返回 Ok(false)）不进入解码。
+
+# 【注释点 2 · L2Transport 传输抽象（spec D4）】SvSubscriber<T: L2Transport>
+# 泛型化：L2Transport { send/recv } 由 MockL2 提供脚本化帧队列用于主机测试
+# 与集成占位；aarch64-unknown-none 无 libc 可链接 extern "C" raw socket FFI，
+# 真实网卡（v0.27.0 以太网驱动）接线在集成层完成（v0.107.0 GOOSE 同先例），
+# crate 内零 unsafe、零 C FFI。
+
+# 【注释点 3 · 环形缓冲溢出覆盖最旧策略（蓝图 §4.4）】SV 为高频率采样流
+# （典型 4kHz），消费方（故障录波/保护算法）允许丢弃旧采样但必须拿到最新
+# 数据：RingBuffer 固定容量，写满后新样本覆盖最旧样本（head 前移），
+# take_samples 按旧→新顺序返回全部并清空；溢出丢失的旧采样由 smpCnt 跳变
+# 检测（SampleStatus::SmpJump）在上游暴露，不做阻塞/回压。
+
+# 【注释点 4 · buf_size 内存预算声明（记忆 §5.6）】每样本为 SvSample
+# { smp_cnt u16 + timestamp u64 + channels Vec<f32> + status }：channels 按
+# 典型 8 通道计约 32B，单样本定长部分 + Vec 堆分配约 64B 量级；buf_size=16
+# 时缓冲总量 ≤ 1KB 量级，即使 buf_size 放大到 1024 亦 ≤ 64KB 量级，远小于
+# Agent Runtime 管理信息大区 ≤ 64MB 预算；OOM 策略与大区一致：总用量 > 90%
+# 触发 OOM handler 冻结非关键 Agent（蓝图 §43.6）。
+
+# 【注释点 5 · 性能 < 4ms 口径（蓝图 §6.3，spec D11）】SV 接收属保护/测量
+# < 4ms 高速通道：过滤为 O(1) 定长比较，BER 解码为 O(n) 遍历 TLV 字段；
+# 性能验收口径为 cfg(test) MockL2 回路断言（无真实网卡 I/O），真实硬件
+# 端到端时延为实验室项，以 mock 脚本化帧替代（v0.107.0 D11 同口径）。
+
+# 【注释点 6 · GPU 不适用（蓝图 §6.6）】SV 过滤/解码为字节流比较与逐层
+# TLV 解析 workload：无矩阵运算、无大规模张量，GPU 加速无意义；记忆 §4.2
+# GPU 优先规则仅适用模型训练/校准与数字孪生仿真，不适用协议栈路径——本
+# crate 零 GPU 代码，纯 CPU BER 解码。
+
+# 【注释点 7 · 安全加密由 iec62351 crate 提供（蓝图 §4.5）】本配置仅覆盖
+# SV 明文订阅参数；GOOSE/SV 报文的 SM4-GCM 机密性 + SM3-HMAC 完整性/认证
+# 由同版 eneros-iec62351 crate（configs/iec62351.toml）提供，本配置文件
+# 不含任何密钥材料；生产部署须同时升级 IEC 62351 安全层（36 号文合规）。
+
+# 应用标识 APPID（帧内二层过滤字段；0 为非法值，SvSubscriber::new 将返回
+# SvError::InvalidConfig）。
+app_id = 1
+# 目的组播 MAC（IEC 61850-9-2 SV 保留段 01:0C:CD:04:xx:xx，见注释点 1）。
+dst_mac = "01:0C:CD:04:00:00"
+# 环形缓冲容量（样本数；溢出覆盖最旧，见注释点 3；内存预算见注释点 4）。
+buf_size = 16

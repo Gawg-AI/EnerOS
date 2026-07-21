@@ -1,0 +1,42 @@
+# EnerOS Wear-Leveling Configuration Template
+# v0.24.1 — Storage Write-Lifetime Management
+
+[wear_leveling]
+# GC trigger threshold: balance_ratio = max_block_erases / avg_block_erases.
+# When ratio exceeds this value, trigger_wear_leveling() returns victim blocks.
+# 1.5 = moderate sensitivity; 2.0 = conservative.
+gc_threshold = 1.5
+
+# Write amplification limit. When actual WA exceeds this value,
+# is_write_amp_throttled() returns true and callers should throttle writes.
+# 2.0 is the healthy upper bound for log-structured filesystems.
+write_amp_limit = 2.0
+
+# Maximum erase cycles per block (SLC = 100000, MLC = 10000, TLC = 3000).
+# Used for lifespan estimation and remaining-life percentage.
+# EnerOS targets SLC industrial-grade flash for 10-year lifespan.
+max_block_erases = 100000
+
+# Total blocks in the storage device (must match BlockDevice::block_count).
+# Default: 65536 blocks × 4096 bytes = 256 MB.
+total_blocks = 65536
+
+# Block size in bytes (must match BlockDevice::block_size).
+block_size = 4096
+
+[lifespan]
+# Expected daily write volume in MB (for lifespan estimation).
+# 500 MB/day is the EnerOS design assumption for Edge Box telemetry + logs.
+daily_write_mb = 500
+
+# Minimum acceptable lifespan in years (alert threshold).
+# EnerOS requirement: 10 years maintenance-free.
+min_lifespan_years = 10.0
+
+[monitoring]
+# Polling interval for wear status checks, in seconds.
+poll_interval_sec = 3600
+
+# Alert when any single block's erase count exceeds this fraction of max.
+# 0.8 = alert at 80% wear.
+alert_threshold_fraction = 0.8

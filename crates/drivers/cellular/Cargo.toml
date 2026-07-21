@@ -1,0 +1,15 @@
+[package]
+name = "eneros-cellular"
+version = "0.30.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+description = "Cellular modem driver and dual-network redundancy for EnerOS"
+
+[dependencies]
+eneros-hal = { path = "../../hal/hal" }
+smoltcp = { version = "0.13", default-features = false, features = ["alloc", "proto-ipv4"] }
+
+[features]
+default = []
+mock = ["eneros-hal/mock"]

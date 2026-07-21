@@ -1,0 +1,82 @@
+# EnerOS TCP/IP Stack Configuration Template
+# v0.28.0 — smoltcp Integration
+#
+# TCP/IP protocol stack configuration based on smoltcp v0.13.
+# See docs/drivers/tcpip-stack-design.md for the full design.
+
+[interface]
+# MAC address (6 bytes, hexadecimal, colon-separated).
+# Must match the hardware MAC address configured in network.toml.
+# Default: 02:00:00:00:00:01
+mac_addr = "02:00:00:00:00:01"
+
+# Static IPv4 address (CIDR notation).
+# Set to empty string to disable static IP (use DHCP instead).
+# Default: "192.168.1.100/24"
+ipv4_addr = "192.168.1.100/24"
+
+# Default IPv4 gateway.
+# Set to empty string to disable gateway.
+# Default: "192.168.1.1"
+gateway = "192.168.1.1"
+
+# Enable DHCP for automatic IP configuration.
+# When true, ipv4_addr and gateway are ignored (DHCP provides them).
+# Default: false
+dhcp = false
+
+[tcp]
+# TCP socket RX buffer size (bytes).
+# Larger buffers improve throughput but increase memory usage.
+# Default: 65535 (64 KB)
+rx_buffer_size = 65535
+
+# TCP socket TX buffer size (bytes).
+# Default: 65535 (64 KB)
+tx_buffer_size = 65535
+
+[udp]
+# UDP socket RX buffer size (bytes).
+# Default: 1024 (1 KB)
+rx_buffer_size = 1024
+
+# UDP socket TX buffer size (bytes).
+# Default: 1024 (1 KB)
+tx_buffer_size = 1024
+
+# Maximum number of packets the UDP buffer can hold simultaneously.
+# Default: 4
+max_packet_count = 4
+
+[icmp]
+# ICMP socket RX buffer size (bytes).
+# Default: 1024 (1 KB)
+rx_buffer_size = 1024
+
+# ICMP socket TX buffer size (bytes).
+# Default: 1024 (1 KB)
+tx_buffer_size = 1024
+
+# Maximum number of packets the ICMP buffer can hold simultaneously.
+# Default: 4
+max_packet_count = 4
+
+[dhcp]
+# DHCP discover timeout (milliseconds).
+# How long to wait for a DHCPOFFER before retrying.
+# Default: 10000 (10 seconds)
+discover_timeout_ms = 10000
+
+# Initial DHCP request timeout (milliseconds).
+# The request timeout doubles every 2 retries.
+# Default: 5000 (5 seconds)
+initial_request_timeout_ms = 5000
+
+# Maximum DHCP request retries before giving up.
+# Default: 5
+request_retries = 5
+
+# Minimum DHCP renew timeout (milliseconds).
+# The minimum time to wait between renew attempts.
+# Default: 60000 (60 seconds)
+min_renew_timeout_ms = 60000

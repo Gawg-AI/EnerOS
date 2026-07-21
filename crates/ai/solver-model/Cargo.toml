@@ -1,0 +1,10 @@
+[package]
+name = "eneros-solver-model"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.65.0 Optimization problem modeling framework (DSL + Builder + Compiler, no_std)"
+
+[dependencies]
+eneros-solver-core = { path = "../solver-core" }

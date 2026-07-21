@@ -1,0 +1,11 @@
+[package]
+name = "eneros-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Agent Runtime — descriptor/registry/lifecycle/spawner/heartbeat/recovery/capability"
+
+[dependencies]
+eneros-crypto = { path = "../../security/crypto" }
+# Zero external dependencies — pure Rust no_std

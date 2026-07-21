@@ -1,0 +1,9 @@
+[package]
+name = "eneros-iec61850-model"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.105.0 IEC 61850 information model (LD/LN/DO/DA + SCL parser, no_std)"
+
+[dependencies]

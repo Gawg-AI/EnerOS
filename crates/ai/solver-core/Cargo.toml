@@ -1,0 +1,14 @@
+[package]
+name = "eneros-solver-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.64.0 LP solver integration + v0.102.0 MILP increment + v0.103.0 warm-start injection (HiGHS via FFI + MockSolver, no_std)"
+
+[dependencies]
+
+[features]
+default = []
+# D2/D10: HiGHS C library bindings + HighsSolver (disabled by default; enable when HiGHS static lib is available)
+highs-ffi = []

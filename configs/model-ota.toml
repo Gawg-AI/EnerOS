@@ -1,0 +1,93 @@
+# ============================================================
+# EnerOS v0.111.0 模型 OTA 推送 — 断点续传 + 国密双重验证 + 热加载配置
+# ============================================================
+# Crate: eneros-model-ota (crates/agents/model-ota/src/{lib,ota_client,signature,model_loader}.rs)
+# 版本: v0.111.0 模型 OTA 推送（Phase 2 P2-H 第 3 版）：
+#       OTA 客户端（检查更新 + 断点续传下载）+ SM3 哈希/SM2 签名双重验证 +
+#       白名单 + 原子热切换与回滚
+# 蓝图: phase2.md §v0.111.0
+# 日期: 2026-07-20
+#
+# 模型 OTA 推送文义（一句话）：
+#   AI 模型需云端训练 → 签名 → 边缘热加载的远程迭代能力，免去现场维护（蓝图 §1）；
+#   本 crate 在 v0.110.0 云边同步通道、v0.31.0/v0.32.0/v0.33.0 国密 SM2/SM3 与
+#   PKI 基座上打通「云端训练 → 签名 → 推送 → 验证 → 热加载」链路，为 v0.112.0
+#   云端孪生与联邦 AI 持续演进提供模型更新通道。
+
+[ota_client]
+# 【注释点 1 · SM3 哈希 + SM2 签名双重验证（蓝图 §7.3）】模型下载完成后经
+# verify_model_signature 三道门：① 算法门（非 Sm2Sm3 → Err(UnsupportedAlgorithm)，
+# RsaSha256 仅占位不可验证，D6）；② SM3 门（sm3_hash(data) != info.hash →
+# Err(HashMismatch)）；③ SM2 门（签名长度非 64B 或 sm2_verify 失败 →
+# Err(SignatureInvalid)）。哈希不匹配与签名无效分属不同错误变体（D12），支撑
+# 蓝图 §4.4 安全告警区分篡改类型——无签名校验则模型可能被篡改（§2 阻塞项）。
+
+# 【注释点 2 · OtaTransport sync trait 抽象（spec D4）】crate 不含任何网络代码：
+# check_update/download_model 经 OtaTransport trait（fetch_latest(current_version)
+# + download_range(model_id, offset, len)）访问云端；no_std 无 async runtime/
+# std::net/sleep，真实 HTTP/gRPC 适配器在集成层注入（v0.110.0 SyncTransport
+# 同先例），MockOtaTransport 供主机测试与故障注入（fail_remaining 递减 +
+# chunk_size 截断 + download_calls 计数）。下载循环失败立即重试，退避策略由
+# 传输实现层自持。
+
+# 【注释点 3 · 断点续传语义（蓝图 §4.4/§6.5）】download_model 每轮以
+# download_range(model_id, 已下载长度, 剩余长度) 拉取分块：失败重试 offset 从
+# 已下载长度继续（前段字节不重下，INT24 断言 offset 序列 [0,0,4,4,8,12] 单调
+# 前进）；成功但返回空 chunk → Err(DownloadFailed)（防蓝图死循环 bug）；连续
+# 失败超 max_retries → Err(DownloadFailed)；完成后字节数 != info.size →
+# Err(SizeMismatch)。
+
+# 下载失败最大重试次数（初次尝试 + max_retries 次重试；连续失败超限 →
+# Err(DownloadFailed)，长断网场景由集成层调度下一轮 update_once）。
+max_retries = 3
+
+[hot_loader]
+# 【注释点 4 · 白名单构造注入（spec D11）】white_list 为允许加载的模型 SM3
+# 哈希列表，经 HotLoader::new(current, white_list) 构造注入——白名单运维下发
+# 属集成层职责（如经 v0.95.0 云端策略下发通道），本 crate 不提供本地持久化
+# 与默认值；load_new 时 sm3_hash(data) 不在白名单 → Err(NotInWhitelist) 且
+# loading 保持 None（蓝图 §4.3 拒绝 + 审计，update_once 中 total_rejected+1）。
+
+# 【注释点 5 · 加载峰值内存声明（记忆 §5.6，蓝图 §43.6）】热加载峰值内存 =
+# 2× 模型大小（load_new 持有一份 data 克隆，swap 瞬间 current/previous 双
+# 实例并存）；LLM 7B INT4 模型须归入 ≤ 4GB 分区预算（记忆 §5.6 内存预算），
+# Solver/小模型归入 Agent Runtime 管理信息大区 ≤ 64MB 分区。OOM 阈值与大区
+# 一致：总用量 > 90% 触发 OOM handler 冻结非关键 Agent。Vec 分配走 v0.11.0
+# 用户堆 alloc。
+
+# 允许加载的模型 SM3 哈希白名单（64 位十六进制字符串，占位示例——实际值由
+# 集成层/运维下发替换；每个哈希对应一个已核准模型版本）。
+white_list = [
+  # 示例：eneros-lp v1.0.0 模型字节 SM3 哈希（占位，部署时替换）
+  "0000000000000000000000000000000000000000000000000000000000000000",
+]
+
+[security]
+# 【注释点 6 · 信任锚构造注入（spec D11）】trusted_pubkey 为云端 SM2 签名
+# 公钥（未压缩 64 字节 x‖y 的 128 位十六进制占位），集成层解析后经
+# OtaClient::new(current_model, trusted_pubkey, max_retries) 构造注入
+# Sm2PublicKey——安全关键件禁止静默默认空值（空公钥语义不明，no_std 无本地
+# 安全存储抽象）；蓝图 ModelSignature.signer_cert 字段已删除，证书链验证归
+# v0.32.0 PKI 层职责，本版不做链式验证（Karpathy 最小实现）。
+trusted_pubkey = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+# 【注释点 7 · 国密 SM2/SM3 复用 eneros-crypto（spec D7，禁止重复造轮子）】
+# sm3_hash / sm2_verify / Sm2Signature::from_bytes（64B r‖s 大端序）全部复用
+# eneros-crypto（workspace 内 path 依赖 ../../security/crypto，v0.31.0~v0.33.0
+# 落地）；国密实现已经安全评审（常量时间/零化/Drop），自研重引入风险
+# （记忆 §5.5/禁忌 14）。信创全程国密，RsaSha256 仅占位不可验证（D6）。
+
+# 【注释点 8 · 性能口径（蓝图 §6.3/§7.2，spec D12）】蓝图要求 100MB 模型
+# 下载 + SM3 校验 < 60s。验收口径为 cfg(test) 主机 Instant 断言（PERF26：
+# 100MB × 1MB/块 mock 下载 + SM3 校验总耗时 < 60s，download_calls == 100）；
+# 真实网络时延为实验室项，集成阶段补测。
+
+# 【注释点 9 · GPU 不适用（记忆 §4.2）】OTA 路径为字节搬运 + 哈希/验签 +
+# 状态轮转 workload：无矩阵运算、无大规模张量，GPU 加速无意义；GPU 优先
+# 规则仅适用模型训练/校准与数字孪生仿真，不适用纯控制逻辑——本 crate 零
+# GPU 代码，纯 CPU 处理。
+
+# 【注释点 10 · 下游 v0.112.0 云端数字孪生（模型持续演进通道）】云端孪生
+# 主节点依赖本 OTA 通道实现模型持续演进（训练新模型 → 签名 → 推送 → 边缘
+# 热加载）；消费侧 v0.59.0 llm-engine / v0.61.0 model-deploy 为热加载目标，
+# 经集成层接线 loader.current() 获取在运行模型实例（本版不接线）。

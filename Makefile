@@ -1,6 +1,6 @@
 # ============================================================
 # EnerOS / Power Native Agent OS — Makefile
-# Version: v0.23.0
+# Version: v0.115.0
 # 蓝图：phase0.md §v0.4.0
 # ============================================================
 # 统一构建入口：seL4 kernel + Rust user-space + QEMU 验证
@@ -8,7 +8,7 @@
 
 # ===== 项目配置 =====
 PROJECT_NAME := eneros
-VERSION := 0.23.0
+VERSION := 0.115.0
 
 # ===== 工具链 =====
 CARGO := cargo
@@ -233,6 +233,69 @@ storage-build:
 storage-test:
 	$(CARGO) test -p eneros-storage
 
+## fs crate (v0.24.0/v0.24.1 File System + Wear Leveling)
+fs-build:
+	$(CARGO) build -p eneros-fs
+
+fs-test:
+	$(CARGO) test -p eneros-fs
+
+## tsdb crate (v0.25.0 Time-Series Database)
+tsdb-build:
+	$(CARGO) build -p eneros-tsdb
+
+tsdb-test:
+	$(CARGO) test -p eneros-tsdb
+
+## config crate (v0.26.0 Config Management)
+config-build:
+	$(CARGO) build -p eneros-config
+
+config-test:
+	$(CARGO) test -p eneros-config
+
+## net crate (v0.27.0 Ethernet Network Driver)
+net-build:
+	$(CARGO) build -p eneros-net
+
+net-test:
+	$(CARGO) test -p eneros-net
+
+## tcpip stack (v0.28.0 TCP/IP Protocol Stack — smoltcp integration, inside eneros-net)
+tcpip-build:
+	$(CARGO) build -p eneros-net
+
+tcpip-test:
+	$(CARGO) test -p eneros-net
+
+## socket abstraction (v0.29.0 Socket Abstraction Layer — SocketManager + Poll, inside eneros-net)
+socket-build:
+	$(CARGO) build -p eneros-net
+
+socket-test:
+	$(CARGO) test -p eneros-net
+
+## cellular crate (v0.30.0/v0.30.1/v0.30.2 Cellular Modem + PPP + Failover)
+cellular-build:
+	$(CARGO) build -p eneros-cellular --target aarch64-unknown-none -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+cellular-test:
+	$(CARGO) test -p eneros-cellular
+
+## crypto crate (v0.32.0 国密 SM2/SM3/SM4 + CSRNG + PKI 证书基础 — pure Rust, no_std)
+crypto-build:
+	$(CARGO) build -p eneros-crypto
+
+crypto-test:
+	$(CARGO) test -p eneros-crypto
+
+## agent crate (v0.38.0 Agent Lifecycle + Spawner + Heartbeat + Crash Recovery — LifecycleManager / LifecycleHook / AgentSpawner / AgentFactory / CrashRecovery / CheckpointStore)
+agent-build:
+	$(CARGO) build -p eneros-agent
+
+agent-test:
+	$(CARGO) test -p eneros-agent
+
 # ===== 镜像合并 =====
 .PHONY: image
 image: runtime-build
@@ -378,4 +441,20 @@ help:
 	@echo "  controlbus-test  - Run eneros-controlbus tests"
 	@echo "  storage-build    - Build storage crate (v0.23.0)"
 	@echo "  storage-test     - Run eneros-storage tests"
+	@echo "  fs-build         - Build fs crate (v0.24.0/v0.24.1)"
+	@echo "  fs-test          - Run eneros-fs tests"
+	@echo "  tsdb-build       - Build tsdb crate (v0.25.0)"
+	@echo "  tsdb-test        - Run eneros-tsdb tests"
+	@echo "  config-build     - Build config crate (v0.26.0)"
+	@echo "  config-test      - Run eneros-config tests"
+	@echo "  net-build        - Build net crate (v0.27.0)"
+	@echo "  net-test         - Run eneros-net tests"
+	@echo "  tcpip-build      - Build tcpip stack (v0.28.0, inside eneros-net)"
+	@echo "  tcpip-test       - Run tcpip stack tests (v0.28.0, inside eneros-net)"
+	@echo "  socket-build     - Build socket abstraction (v0.29.0, inside eneros-net)"
+	@echo "  socket-test      - Run socket abstraction tests (v0.29.0, inside eneros-net)"
+	@echo "  cellular-build   - Build cellular crate (v0.30.0/v0.30.1/v0.30.2)"
+	@echo "  cellular-test    - Run eneros-cellular tests"
+	@echo "  crypto-build     - Build crypto crate (v0.32.0 国密 SM2/SM3/SM4 + PKI)"
+	@echo "  crypto-test      - Run eneros-crypto tests"
 	@echo "  help        - Show this help message"

@@ -1,0 +1,22 @@
+# EnerOS Network Security Configuration (v0.30.0)
+# Firewall, connection tracking, and DDoS protection settings.
+
+[firewall]
+# Default policy when no rule matches: "allow_all" or "drop_all"
+default_policy = "drop_all"
+# Maximum number of firewall rules
+max_rules = 64
+
+[connection]
+# Maximum concurrent connections per IP
+max_per_ip = 10
+# Maximum total concurrent connections
+max_total = 1000
+# Rate limit: max connections per second per IP
+max_rate_per_sec = 20
+
+[ddos]
+# SYN flood detection: max SYN packets per window
+syn_rate_threshold = 100
+# SYN tracking window in milliseconds
+window_ms = 1000

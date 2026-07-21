@@ -1,0 +1,40 @@
+# EnerOS HMI 配置模板 (v0.42.1)
+# 本地人机接口配置：串口控制台 + Web 运维接口 + 审批流程
+
+[console]
+# 串口波特率
+baud_rate = 115200
+# 数据位
+data_bits = 8
+# 停止位
+stop_bits = 1
+# 校验位 (none/even/odd)
+parity = "none"
+# 刷新间隔（ms）
+refresh_interval_ms = 1000
+
+[web]
+# Web 服务器监听端口
+port = 8080
+# 最大连接数
+max_connections = 4
+# 请求超时（秒）
+request_timeout_sec = 10
+# 是否启用 CORS
+enable_cors = true
+
+[approval]
+# 审批超时（秒，0=永不超时）
+timeout_sec = 300
+# 最大待审批数量
+max_pending = 32
+# 是否需要双重审批
+require_double_approval = false
+
+[security]
+# 是否要求认证
+require_auth = true
+# 允许的来源 IP（空列表=允许所有）
+allowed_ips = []
+# Session 超时（秒）
+session_timeout_sec = 1800

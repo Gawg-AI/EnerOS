@@ -1,0 +1,8 @@
+[package]
+name = "eneros-tsn-time"
+version = "0.81.0"
+edition = "2021"
+description = "EnerOS v0.81.0 gPTP + TSN 802.1Qbv 调度 + 端到端时延探针（无真实网络 I/O）."
+license = "MIT"
+
+[dependencies]

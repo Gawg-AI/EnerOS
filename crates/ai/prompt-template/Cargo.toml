@@ -1,0 +1,13 @@
+[package]
+name = "eneros-prompt-template"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.63.0 Power-scene prompt templates with JSON output constraint and retry"
+
+[dependencies]
+eneros-llm-engine = { path = "../llm-engine" }
+# no_std 配置（参考 eneros-config v0.26.0 模式）：
+# 关闭默认 features（移除 std），启用 alloc feature。
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }

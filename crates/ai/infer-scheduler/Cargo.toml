@@ -1,0 +1,10 @@
+[package]
+name = "eneros-infer-scheduler"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.62.0 LLM inference scheduler with concurrency control and KV Cache tracking"
+
+[dependencies]
+eneros-llm-engine = { path = "../llm-engine" }

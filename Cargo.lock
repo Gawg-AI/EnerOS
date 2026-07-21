@@ -3,18 +3,228 @@
 version = 4
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "bindgen"
+version = "0.70.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f49d8fed880d473ea71efb9bf597651e77201bdd4893efe54c9e5d65ae04ce6f"
+dependencies = [
+ "bitflags 2.13.0",
+ "cexpr",
+ "clang-sys",
+ "itertools",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex 1.3.0",
+ "syn",
+]
+
+[[package]]
+name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+
+[[package]]
+name = "bitflags"
+version = "2.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "cc"
+version = "1.2.67"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17dd265a7d0f31ef544e1b20e03add05d3b45b491b633b10d67145d2acc1a38"
+dependencies = [
+ "find-msvc-tools",
+ "shlex 2.0.1",
+]
+
+[[package]]
+name = "cexpr"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
+dependencies = [
+ "nom",
+]
+
+[[package]]
+name = "cfg-if"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "clang-sys"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b023947811758c97c59bf9d1c188fd619ad4718dcaa767947df1cadb14f39f4"
+dependencies = [
+ "glob",
+ "libc",
+ "libloading",
+]
+
+[[package]]
+name = "crc32fast"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
+name = "defmt"
+version = "0.3.100"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0963443817029b2024136fc4dd07a5107eb8f977eaf18fcd1fdeb11306b64ad"
+dependencies = [
+ "defmt 1.1.1",
+]
+
+[[package]]
+name = "defmt"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2953bfe4f93bbd20cc71198842756f77d161884c99ebbabc41d80231ded88d1"
+dependencies = [
+ "bitflags 1.3.2",
+ "defmt-macros",
+]
+
+[[package]]
+name = "defmt-macros"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bad9c72e7ca2137e0dc3813245a0d282fd6daad32fd800af018306a9169b5fe8"
+dependencies = [
+ "defmt-parser",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "defmt-parser"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "delog"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed991f9823b19e8a0380e198dcbb6aa6ac82727b40bfecd2c6cc634f46b7e01c"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "either"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+
+[[package]]
+name = "eneros-agent"
+version = "0.115.0"
+dependencies = [
+ "eneros-crypto",
+]
+
+[[package]]
+name = "eneros-agent-bus-dds"
+version = "0.115.0"
+dependencies = [
+ "eneros-crypto",
+ "slotmap",
+]
+
+[[package]]
+name = "eneros-alarm"
+version = "0.115.0"
+dependencies = [
+ "eneros-upa-model",
+]
+
+[[package]]
+name = "eneros-attestation"
+version = "0.115.0"
+dependencies = [
+ "eneros-crypto",
+]
+
+[[package]]
 name = "eneros-board"
-version = "0.23.0"
+version = "0.115.0"
+
+[[package]]
+name = "eneros-calibration"
+version = "0.115.0"
+
+[[package]]
+name = "eneros-can"
+version = "0.115.0"
+dependencies = [
+ "eneros-driver-framework",
+]
+
+[[package]]
+name = "eneros-cellular"
+version = "0.30.0"
+dependencies = [
+ "eneros-hal",
+ "smoltcp",
+]
 
 [[package]]
 name = "eneros-ci"
 version = "0.2.0"
+
+[[package]]
+name = "eneros-cloud-coordinator"
+version = "0.115.0"
+dependencies = [
+ "eneros-coordinator",
+ "eneros-energy-market-agent",
+]
+
+[[package]]
+name = "eneros-cloud-sync"
+version = "0.115.0"
+
+[[package]]
+name = "eneros-config"
+version = "0.26.0"
+dependencies = [
+ "crc32fast",
+ "eneros-fs",
+ "eneros-storage",
+ "serde_json",
+ "toml",
+]
 
 [[package]]
 name = "eneros-controlbus"
@@ -25,8 +235,119 @@ dependencies = [
 ]
 
 [[package]]
+name = "eneros-coordinator"
+version = "0.115.0"
+dependencies = [
+ "eneros-agent",
+ "eneros-energy-market-agent",
+ "eneros-solver-core",
+]
+
+[[package]]
+name = "eneros-crypto"
+version = "0.115.0"
+
+[[package]]
+name = "eneros-device-agent"
+version = "0.115.0"
+dependencies = [
+ "eneros-agent",
+ "eneros-energy-market-agent",
+]
+
+[[package]]
+name = "eneros-driver-framework"
+version = "0.115.0"
+
+[[package]]
+name = "eneros-dual-brain"
+version = "0.115.0"
+dependencies = [
+ "eneros-energy-lp-model",
+ "eneros-fast-path",
+ "eneros-intent-contract",
+ "eneros-intent-parser",
+ "eneros-llm-engine",
+ "eneros-prompt-template",
+ "eneros-safety-validator",
+ "eneros-solver-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "eneros-energy-lp-model"
+version = "0.115.0"
+dependencies = [
+ "eneros-solver-core",
+ "eneros-solver-model",
+]
+
+[[package]]
+name = "eneros-energy-market-agent"
+version = "0.115.0"
+dependencies = [
+ "eneros-agent",
+ "eneros-dual-brain",
+ "eneros-energy-lp-model",
+ "eneros-fast-path",
+ "eneros-llm-engine",
+ "eneros-safety-validator",
+ "eneros-solver-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "eneros-fast-path"
+version = "0.115.0"
+dependencies = [
+ "eneros-energy-lp-model",
+ "eneros-safety-validator",
+ "eneros-solver-core",
+]
+
+[[package]]
+name = "eneros-fault-recorder"
+version = "0.115.0"
+
+[[package]]
+name = "eneros-federation"
+version = "0.115.0"
+dependencies = [
+ "eneros-crypto",
+]
+
+[[package]]
+name = "eneros-fs"
+version = "0.24.1"
+dependencies = [
+ "bitflags 2.13.0",
+ "eneros-storage",
+ "generic-array",
+ "littlefs2",
+ "spin",
+ "typenum",
+]
+
+[[package]]
+name = "eneros-gguf-loader"
+version = "0.115.0"
+dependencies = [
+ "eneros-llm-engine",
+]
+
+[[package]]
+name = "eneros-grid-agent"
+version = "0.115.0"
+dependencies = [
+ "eneros-agent",
+ "eneros-energy-market-agent",
+]
+
+[[package]]
 name = "eneros-hal"
-version = "0.23.0"
+version = "0.115.0"
 
 [[package]]
 name = "eneros-heap"
@@ -37,9 +358,90 @@ dependencies = [
 
 [[package]]
 name = "eneros-hello"
-version = "0.23.0"
+version = "0.115.0"
 dependencies = [
  "eneros-runtime",
+]
+
+[[package]]
+name = "eneros-hmi"
+version = "0.115.0"
+dependencies = [
+ "eneros-agent",
+]
+
+[[package]]
+name = "eneros-iec104-master"
+version = "0.115.0"
+dependencies = [
+ "eneros-iec104-slave",
+]
+
+[[package]]
+name = "eneros-iec104-slave"
+version = "0.115.0"
+
+[[package]]
+name = "eneros-iec61850-goose"
+version = "0.115.0"
+dependencies = [
+ "eneros-iec61850-model",
+]
+
+[[package]]
+name = "eneros-iec61850-mms"
+version = "0.115.0"
+dependencies = [
+ "eneros-iec61850-model",
+]
+
+[[package]]
+name = "eneros-iec61850-model"
+version = "0.115.0"
+
+[[package]]
+name = "eneros-iec61850-sv"
+version = "0.115.0"
+dependencies = [
+ "eneros-iec61850-model",
+]
+
+[[package]]
+name = "eneros-iec62351"
+version = "0.115.0"
+dependencies = [
+ "eneros-crypto",
+]
+
+[[package]]
+name = "eneros-infer-scheduler"
+version = "0.115.0"
+dependencies = [
+ "eneros-llm-engine",
+]
+
+[[package]]
+name = "eneros-intent-contract"
+version = "0.115.0"
+dependencies = [
+ "eneros-energy-lp-model",
+ "eneros-intent-parser",
+ "eneros-safety-validator",
+ "eneros-solver-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "eneros-intent-parser"
+version = "0.115.0"
+dependencies = [
+ "eneros-energy-lp-model",
+ "eneros-safety-validator",
+ "eneros-solver-core",
+ "eneros-solver-model",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -51,14 +453,79 @@ dependencies = [
 
 [[package]]
 name = "eneros-kernel"
-version = "0.23.0"
+version = "0.115.0"
+
+[[package]]
+name = "eneros-llm-engine"
+version = "0.115.0"
 
 [[package]]
 name = "eneros-mm"
 version = "0.9.1"
 dependencies = [
  "eneros-hal",
- "heapless",
+ "heapless 0.8.0",
+]
+
+[[package]]
+name = "eneros-modbus-rtu"
+version = "0.115.0"
+dependencies = [
+ "eneros-driver-framework",
+]
+
+[[package]]
+name = "eneros-modbus-tcp"
+version = "0.115.0"
+dependencies = [
+ "eneros-modbus-rtu",
+]
+
+[[package]]
+name = "eneros-model-deploy"
+version = "0.115.0"
+dependencies = [
+ "eneros-gguf-loader",
+ "eneros-llm-engine",
+]
+
+[[package]]
+name = "eneros-model-ota"
+version = "0.115.0"
+dependencies = [
+ "eneros-crypto",
+]
+
+[[package]]
+name = "eneros-mqtt"
+version = "0.115.0"
+dependencies = [
+ "eneros-upa-model",
+]
+
+[[package]]
+name = "eneros-mtls"
+version = "0.115.0"
+dependencies = [
+ "eneros-crypto",
+]
+
+[[package]]
+name = "eneros-mvp-scenario"
+version = "0.115.0"
+dependencies = [
+ "eneros-agent",
+ "eneros-device-agent",
+ "eneros-energy-lp-model",
+ "eneros-energy-market-agent",
+ "eneros-solver-core",
+]
+
+[[package]]
+name = "eneros-net"
+version = "0.30.0"
+dependencies = [
+ "smoltcp",
 ]
 
 [[package]]
@@ -66,7 +533,7 @@ name = "eneros-panic"
 version = "0.14.0"
 dependencies = [
  "eneros-time",
- "heapless",
+ "heapless 0.8.0",
  "spin",
 ]
 
@@ -74,15 +541,97 @@ dependencies = [
 name = "eneros-power"
 version = "0.17.1"
 dependencies = [
- "heapless",
+ "heapless 0.8.0",
  "spin",
 ]
 
 [[package]]
+name = "eneros-prompt-template"
+version = "0.115.0"
+dependencies = [
+ "eneros-llm-engine",
+ "serde_json",
+]
+
+[[package]]
+name = "eneros-protocol-abstract"
+version = "0.115.0"
+dependencies = [
+ "eneros-upa-model",
+]
+
+[[package]]
+name = "eneros-rs485"
+version = "0.115.0"
+dependencies = [
+ "eneros-driver-framework",
+ "eneros-hal",
+]
+
+[[package]]
+name = "eneros-rtos-cmd-exec"
+version = "0.115.0"
+dependencies = [
+ "eneros-controlbus",
+ "eneros-ipc",
+ "eneros-protocol-abstract",
+ "eneros-upa-model",
+]
+
+[[package]]
+name = "eneros-rtos-control"
+version = "0.115.0"
+dependencies = [
+ "eneros-controlbus",
+ "eneros-ipc",
+ "eneros-protocol-abstract",
+ "eneros-upa-model",
+]
+
+[[package]]
+name = "eneros-rtos-degrade"
+version = "0.115.0"
+dependencies = [
+ "eneros-controlbus",
+ "eneros-protocol-abstract",
+ "eneros-rtos-cmd-exec",
+ "eneros-upa-model",
+]
+
+[[package]]
+name = "eneros-rtos-sampling"
+version = "0.115.0"
+dependencies = [
+ "eneros-protocol-abstract",
+ "eneros-upa-model",
+]
+
+[[package]]
+name = "eneros-rtos-watchdog-degrade"
+version = "0.115.0"
+dependencies = [
+ "eneros-controlbus",
+ "eneros-ipc",
+ "eneros-protocol-abstract",
+ "eneros-rtos-cmd-exec",
+ "eneros-rtos-degrade",
+ "eneros-upa-model",
+ "eneros-watchdog",
+]
+
+[[package]]
 name = "eneros-runtime"
-version = "0.23.0"
+version = "0.115.0"
 dependencies = [
  "eneros-sel4-sys",
+]
+
+[[package]]
+name = "eneros-safety-validator"
+version = "0.115.0"
+dependencies = [
+ "eneros-energy-lp-model",
+ "eneros-solver-core",
 ]
 
 [[package]]
@@ -90,20 +639,76 @@ name = "eneros-sched"
 version = "0.19.0"
 
 [[package]]
+name = "eneros-secure-boot"
+version = "0.115.0"
+dependencies = [
+ "eneros-crypto",
+]
+
+[[package]]
 name = "eneros-sel4-sys"
-version = "0.23.0"
+version = "0.115.0"
 
 [[package]]
 name = "eneros-smp"
 version = "0.17.0"
 dependencies = [
- "heapless",
+ "heapless 0.8.0",
  "spin",
+]
+
+[[package]]
+name = "eneros-soe-engine"
+version = "0.115.0"
+dependencies = [
+ "eneros-telemetry-model",
+ "eneros-upa-model",
+]
+
+[[package]]
+name = "eneros-solver-core"
+version = "0.115.0"
+
+[[package]]
+name = "eneros-solver-milp"
+version = "0.115.0"
+dependencies = [
+ "eneros-solver-core",
+ "eneros-solver-model",
+]
+
+[[package]]
+name = "eneros-solver-model"
+version = "0.115.0"
+dependencies = [
+ "eneros-solver-core",
+]
+
+[[package]]
+name = "eneros-solver-pareto"
+version = "0.115.0"
+dependencies = [
+ "eneros-solver-core",
+]
+
+[[package]]
+name = "eneros-solver-warm"
+version = "0.115.0"
+dependencies = [
+ "eneros-solver-core",
+ "eneros-solver-milp",
 ]
 
 [[package]]
 name = "eneros-storage"
 version = "0.23.0"
+
+[[package]]
+name = "eneros-telemetry-model"
+version = "0.115.0"
+dependencies = [
+ "eneros-upa-model",
+]
 
 [[package]]
 name = "eneros-time"
@@ -112,6 +717,34 @@ dependencies = [
  "eneros-hal",
  "spin",
 ]
+
+[[package]]
+name = "eneros-tsdb"
+version = "0.25.0"
+dependencies = [
+ "eneros-fs",
+ "eneros-storage",
+ "lz4_flex",
+]
+
+[[package]]
+name = "eneros-tsn-time"
+version = "0.81.0"
+
+[[package]]
+name = "eneros-twin-agent"
+version = "0.115.0"
+dependencies = [
+ "eneros-agent-bus-dds",
+ "eneros-device-agent",
+ "eneros-grid-agent",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "eneros-upa-model"
+version = "0.115.0"
 
 [[package]]
 name = "eneros-user-heap"
@@ -128,6 +761,28 @@ dependencies = [
  "eneros-time",
  "spin",
 ]
+
+[[package]]
+name = "find-msvc-tools"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+
+[[package]]
+name = "generic-array"
+version = "0.14.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bb6743198531e02858aeaea5398fcc883e71851fcbcb5a2f773e2fb6cb1edf2"
+dependencies = [
+ "typenum",
+ "version_check",
+]
+
+[[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "hash32"
@@ -149,6 +804,81 @@ dependencies = [
 ]
 
 [[package]]
+name = "heapless"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
+
+[[package]]
+name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itoa"
+version = "1.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "libc"
+version = "0.2.186"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
+name = "littlefs2"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e00aee790b8914c83815e9f6952731f4ddd9965c160aa66fe2a89abeb5c406a"
+dependencies = [
+ "bitflags 2.13.0",
+ "delog",
+ "generic-array",
+ "heapless 0.9.3",
+ "littlefs2-core",
+ "littlefs2-sys",
+]
+
+[[package]]
+name = "littlefs2-core"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0dd2d1cad5532f5e11b0fd871b8a981885efd3fdaec0427c0d637322ae09efbf"
+dependencies = [
+ "bitflags 2.13.0",
+ "serde",
+]
+
+[[package]]
+name = "littlefs2-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "999d08bb7fae46d63ecb98d2474d28f7af1a6c928a51b4dfe5f1804abf9afc46"
+dependencies = [
+ "bindgen",
+ "cc",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -158,10 +888,190 @@ dependencies = [
 ]
 
 [[package]]
+name = "log"
+version = "0.4.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+
+[[package]]
+name = "lz4_flex"
+version = "0.11.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
+
+[[package]]
+name = "managed"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
+
+[[package]]
+name = "memchr"
+version = "2.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "minimal-lexical"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "nom"
+version = "7.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
+dependencies = [
+ "memchr",
+ "minimal-lexical",
+]
+
+[[package]]
+name = "proc-macro2"
+version = "1.0.106"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
+name = "quote"
+version = "1.0.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfbc457d0c7a0759a614551b11a6409e5951f6c7537be1f1b7682b9ae9230368"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
+name = "regex"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a0e75113e14dc5acb068cd0786884f214f1312650a3d36d269f5c4f3cdee8a2"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-automata"
+version = "0.4.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f388202e4b80542a0921078cc23b6333bcf1409c1e3f86404cae4766a6131db"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-syntax"
+version = "0.8.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "rustc-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
+dependencies = [
+ "serde_core",
+ "serde_derive",
+]
+
+[[package]]
+name = "serde_core"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad"
+dependencies = [
+ "serde_derive",
+]
+
+[[package]]
+name = "serde_derive"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.150"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
+dependencies = [
+ "itoa",
+ "memchr",
+ "serde",
+ "serde_core",
+ "zmij",
+]
+
+[[package]]
+name = "serde_spanned"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
+name = "shlex"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "shlex"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "slotmap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
+dependencies = [
+ "version_check",
+]
+
+[[package]]
+name = "smoltcp"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f73d40463bba65efc9adc6370b56df76d563cc46e2482bba58351b4afb7535e"
+dependencies = [
+ "bitflags 1.3.2",
+ "byteorder",
+ "cfg-if",
+ "defmt 0.3.100",
+ "heapless 0.9.3",
+ "managed",
+]
 
 [[package]]
 name = "spin"
@@ -177,3 +1087,108 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "syn"
+version = "2.0.118"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "toml"
+version = "1.1.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81f3d15e84cbcd896376e6730314d59fb5a87f31e4b038454184435cd57defee"
+dependencies = [
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "1.1.1+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
+name = "toml_parser"
+version = "1.1.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
+dependencies = [
+ "winnow",
+]
+
+[[package]]
+name = "toml_writer"
+version = "1.1.1+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
+
+[[package]]
+name = "typenum"
+version = "1.20.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "unicode-ident"
+version = "1.0.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "version_check"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "windows-link"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "winnow"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0592e1c9d151f854e6fd382574c3a0855250e1d9b2f99d9281c6e6391af352f1"
+
+[[package]]
+name = "zmij"
+version = "1.0.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd2f034a4bebf216c9e4b7083603e024cf930873fd67830cfb083c9fa33129d9"

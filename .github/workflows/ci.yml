@@ -1,6 +1,6 @@
 # ============================================================
 # EnerOS / Power Native Agent OS — CI Pipeline
-# Version: v0.23.0
+# Version: v0.115.0
 # 蓝图 §七 CI/CD 规范
 # ============================================================
 # 检查项：fmt / clippy / cargo-deny / test / 交叉编译 / commitlint / 工作区整洁
@@ -226,6 +226,24 @@ jobs:
 
       - name: Build storage crate
         run: cargo build -p eneros-storage --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build fs crate
+        run: cargo build -p eneros-fs --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build tsdb crate
+        run: cargo build -p eneros-tsdb --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build config crate
+        run: cargo build -p eneros-config --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build net crate (v0.27.0 Ethernet driver + v0.28.0 TCP/IP stack + v0.29.0 Socket abstraction)
+        run: cargo build -p eneros-net --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build cellular crate (v0.30.0/v0.30.1/v0.30.2 Cellular Modem + PPP + Failover)
+        run: cargo build -p eneros-cellular --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+
+      - name: Build crypto crate (v0.33.0 国密 SM2/SM3/SM4 + CSRNG + PKI 证书基础)
+        run: cargo build -p eneros-crypto --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
 
   # ===== 工作区整洁检查 =====
   workspace-clean:

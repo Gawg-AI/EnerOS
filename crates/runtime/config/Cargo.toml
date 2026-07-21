@@ -1,0 +1,21 @@
+[package]
+name = "eneros-config"
+version = "0.26.0"
+edition = "2021"
+description = "EnerOS configuration management system (TOML/JSON, hot reload, versioning)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+eneros-fs = { path = "../../drivers/fs" }
+# toml v1.0+ no_std configuration:
+# The default features are [std, serde, parse, display].
+# For no_std, disable default features (removes `std`) and enable serde + parse + display.
+# The `serde` feature is REQUIRED for `toml::Value`, `toml::Table`, `from_str`, and `to_string`
+# (they are all gated on `cfg(feature = "serde")` in the toml crate source).
+# The `serde` feature pulls in `serde_core` with `alloc` (no_std-compatible).
+toml = { version = "1.0", default-features = false, features = ["serde", "parse", "display"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+crc32fast = { version = "1.4", default-features = false }
+
+[dev-dependencies]
+eneros-storage = { path = "../../drivers/storage" }

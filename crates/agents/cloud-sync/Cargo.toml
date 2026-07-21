@@ -1,0 +1,9 @@
+[package]
+name = "eneros-cloud-sync"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 云边数据同步 (v0.110.0) — no_std, 事件溯源 + 增量同步 + 重试队列"
+
+[dependencies]

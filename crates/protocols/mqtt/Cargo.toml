@@ -1,0 +1,10 @@
+[package]
+name = "eneros-mqtt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS MQTT v3.1.1 客户端 — QoS 0/1/2 + 遗嘱 + 断线重连 + 订阅恢复"
+
+[dependencies]
+eneros-upa-model = { path = "../upa-model" }

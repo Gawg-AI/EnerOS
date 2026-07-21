@@ -1,0 +1,10 @@
+[package]
+name = "eneros-modbus-tcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Modbus TCP master protocol stack"
+
+[dependencies]
+eneros-modbus-rtu = { path = "../modbus-rtu" }

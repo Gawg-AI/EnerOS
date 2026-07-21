@@ -1,0 +1,23 @@
+# ============================================================
+# EnerOS v0.97.0 Federation Discovery Protocol — 联邦发现协议配置
+# ============================================================
+# Crate: eneros-federation (crates/agents/federation/)
+# 版本: v0.97.0 联邦发现协议（Phase 2 P2-E 第 2 版，多机联邦发现层）
+# 蓝图: phase2.md §v0.97.0
+#
+# 联邦发现文义（一句话）：
+#   边缘节点通过广播/心跳在联邦子网内自发现彼此，维护动态成员表；
+#   为 v0.98.0 纵向加密与 v0.99.0 共识选举提供成员拓扑基础。
+
+[federation]
+# 发现延迟 <5s（蓝图 §7.2，集成阶段验收，本版本交付算法骨架 + Mock 单元验证）
+# 证书验证强制（蓝图 §7.3，CertVerifier trait 强制验证，PKI v0.32.0 适配器后续注入）
+heartbeat_interval_ms = 3000
+
+# 心跳超时剔除为 heartbeat_interval_ms 的 3 倍（蓝图 §4.4/§4.5，边界存活：now - last_seen > timeout 才剔除）
+stale_multiplier = 3
+
+# 节点 ID 冲突确定性拒绝（蓝图 §8.5，DuplicateNode 不覆盖不更新，冲突显式暴露）
+# 多版本节点兼容（蓝图 §8.4，capabilities 能力码 u64 协商，配置定义语义）
+# 成员数可观测（蓝图 §9，join_count/reject_count/broadcast_count/stale_count 4 个计数器）
+max_members = 64

@@ -1,0 +1,75 @@
+# ============================================================
+# EnerOS v0.105.0 IEC 61850 Model — 信息模型与 SCL 解析配置
+# ============================================================
+# Crate: eneros-iec61850-model (crates/protocols/iec61850-model/src/{lib,ld,ln,do_da,scl_parser,xml}.rs)
+# 版本: v0.105.0 IEC 61850 信息模型（LD/LN/DO/DA 四层模型 + SCL 解析，Phase 2 P2-G 第 1 版 IEC 61850 协议栈起点）
+# 蓝图: phase2.md §v0.105.0
+#
+# IEC 61850 信息模型文义（一句话）：
+#   联邦多机 IEC 61850 通信（MMS/GOOSE/SV）必须以统一的 LD/LN/DO/DA 信息模型
+#   为地基——本 crate 从 SCL（Substation Configuration Language，XML）自动
+#   解析构建四层模型并建立路径索引（1000 次 DA 查找 < 1ms），为 v0.106.0 MMS、
+#   v0.107.0 GOOSE、v0.108.0 SV + IEC 62351 提供统一语义底座。
+
+[iec61850_model]
+# 【注释点 1 · SCL 自动解析选型（蓝图 §5.1）】信息模型构建方式对比：SCL 自动
+# 解析——从变电站配置描述文件（XML）直接建模，IED 互操作免手工点表 vs 手工
+# 建模——逐 LD/LN/DO/DA 硬编码，维护随站规模爆炸 vs 半自动（模板 + 手工补录）
+# ——仍需人工介入；蓝图 §5.1 采用 SCL 自动解析，本 crate 内置迷你 XML DOM
+# 解析器（D4，零第三方依赖），仅解析 SCL 子集 IED/LDevice/LN0/LN/DOI/DAI/Val。
+
+# 【注释点 2 · 路径语法 LD/LN.DO.DA（D7）】DA 路径统一为 `LD/LN.DO.DA`（如
+# "IED1_LD0/XCBR1.Pos.stVal"）：IEC 61850 引用惯例即此格式；蓝图 §4.2 trait
+# 注释与 §4.5 示例代码自相矛盾（"LD/LN/DO.DA"），以 §4.2 为准修复（D7 蓝图
+# bug 修复①）；路径索引 BTreeMap 键与 get_da/set_da 入参三方一致，1000 次
+# 查找 < 1ms（注释点 5）。
+
+# 【注释点 3 · 未知 FC 策略 = error（D8）】DAI 的 fc 属性仅接受 ST/MX/CO/SP/
+# SG/SE/BR/OR 八值（蓝图 bug 修复②补齐 OR 分支）；遇到未知 FC（如 "XX9"）
+# 返回 SclParseError 显式报错，不静默默认为 ST——静默降级丢失语义且掩盖 SCL
+# 配置错误，蓝图 §6.5 故障注入要求错误可诊断（unknown_fc = "error"）。
+
+# 【注释点 4 · LN0（LLN0）支持（D10）】真实 SCL 每个 LDevice 必含 LN0（逻辑
+# 节点零，类 LLN0）：蓝图仅过滤 "LN" 元素会遗漏，本 crate 同时解析 "LN0" 与
+# "LN"；LLN0 的 ln_inst 固定 0、ln_ref 不带实例号后缀（即 "LLN0" 而非
+# "LLN00"），路径如 "IED1_LD0/LLN0.Beh.stVal"（IEC 61850-6 强制节点）。
+
+# 【注释点 5 · 性能目标 1000 次 DA 查找 < 1ms（蓝图 §6.3/§7.2）】路径索引
+# BTreeMap<String, (usize, usize, usize, usize)> 四元组（ld/ln/do/da 索引，
+# D7 修复蓝图三元组缺 LN 索引的 bug），查找复杂度 O(log n)；性能口径声明：
+# < 1ms 为 #[cfg(test)] std::time::Instant 断言（D13，no_std 无计时器），
+# 测试模型为 100 LN × 10 DA = 1000 DA，实测微秒级，余量充足。
+
+# 【注释点 6 · 内存预算（记忆 §5.6）】本 crate 属 Agent Runtime 管理信息大区
+# 分区（≤ 64MB 预算）：典型站级 SCL 模型（数十 IED × 数 LD × 十余 LN × 数十
+# DA）为 KB~百 KB 级，远小于预算；字符串/Vec 均走 v0.11.0 用户堆 alloc；
+# OOM 策略与大区一致：降级到规则引擎，总用量 > 90% 触发 OOM handler 冻结
+# 非关键 Agent（蓝图 §43.6）。
+
+# 【注释点 7 · GPU 不适用（蓝图 §6.6）】SCL 解析为字符串/树遍历 workload：
+# 无矩阵运算、无大规模张量，GPU 加速无意义；记忆 §4.2 GPU 优先规则仅适用
+# 模型训练/校准与数字孪生仿真，不适用协议解析路径——本 crate 零 GPU 代码，
+# 纯 CPU XML 解析。
+
+# 模型容量上限（文档性参数，防呆参考；当前实现 Vec 动态增长不强制截断）：
+# 单模型最大 LD 数；超过请拆分多个 SCL 文件分批 load_scl（可多次调用追加）。
+max_lds = 64
+# 单 LD 最大 LN 数（含 LN0）。
+max_lns_per_ld = 256
+# 单 LN 最大 DO 数。
+max_dos_per_ln = 64
+# 单 DO 最大 DA 数。
+max_das_per_do = 64
+
+# 路径语法说明（只读注释项，见注释点 2）：`{ld_name}/{ln_ref}.{do_name}.{da_name}`，
+# 例如 "IED1_LD0/XCBR1.Pos.stVal"、"IED1_LD0/LLN0.Beh.stVal"。
+# path_syntax = "LD/LN.DO.DA"
+
+# 未知 FC 处理策略（见注释点 3）："error" = 返回 SclParseError（当前唯一支持值，
+# D8；不接受 "warn"/"ignore"，静默降级被显式禁止）。
+unknown_fc = "error"
+
+# 重复 LD 名策略（D11）：false = 第二次 load_scl 解析出同名 LD 时返回
+# SclParseError（IEC 61850 LD 名系统内唯一；静默接受将致路径索引覆盖、查询
+# 结果不确定）。
+allow_duplicate_ld = false

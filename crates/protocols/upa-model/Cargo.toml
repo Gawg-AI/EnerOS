@@ -1,0 +1,9 @@
+[package]
+name = "eneros-upa-model"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Unified Point Abstraction — DataPoint / PointType / PointValue / PointQuality / PointDatabase"
+
+[dependencies]

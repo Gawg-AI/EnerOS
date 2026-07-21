@@ -1,0 +1,9 @@
+[package]
+name = "eneros-federation"
+description = "EnerOS v0.97.0 联邦发现 + v0.98.0 跨域通信通道（mTLS + 国密 SM2/SM3/SM4）+ v0.98.1 纵向加密认证 + v0.99.0 联邦共识协议（PBFT 变体）+ v0.100.0 资源争抢竞价（统一价格拍卖撮合 + 安全底线 + 共识确认） + v0.101.0 断网处理与孤岛模式（分区检测 + 交易冻结 + 本地自治缓存 + 恢复同步）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eneros-crypto = { path = "../../security/crypto" }

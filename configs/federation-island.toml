@@ -1,0 +1,59 @@
+# ============================================================
+# EnerOS v0.101.0 Federation Island — 断网处理与孤岛模式配置
+# ============================================================
+# Crate: eneros-federation (crates/agents/federation/src/{detector,partition,cache,recovery}.rs)
+# 版本: v0.101.0 断网处理与孤岛模式（分区检测 + 交易冻结 + 本地自治缓存 + 恢复同步，Phase 2 P2-E 收尾版）
+# 蓝图: phase2.md §v0.101.0
+#
+# 孤岛文义（一句话）：
+#   联邦网络中断时——检测分区（PBFT quorum 判据）→ 冻结交易进入孤岛自治 →
+#   本地缓存业务事件 → 恢复后增量同步上传，保证"数据不丢、交易不被脑裂污染"。
+
+[island]
+# 【注释点 1 · 心跳超时与检测延迟（蓝图 §7.2 验收口径）】心跳超时（ms）：
+# 节点 now - last_contact > heartbeat_timeout_ms 判定失联（边界含等仍活跃）。
+# 检测延迟 <5s 的落地：超时判定 3000ms + check 轮询周期（上层 Agent Runtime
+# 驱动，建议 ≤1000ms），失联最迟在"超时 + 一个轮询周期"内检出，满足蓝图
+# §7.2"断网检测 <5s"验收；过短易受跨运营商链路抖动误剔，过长拖延冻结
+# 保护生效，3000ms 与 v0.97.0 心跳剔除惯例（心跳间隔 × 3）同量级。
+heartbeat_timeout_ms = 3000
+
+# 【注释点 2 · 四态状态机（蓝图 §4.3）】分区检测状态机四态——Connected
+# （全网连通）/ Suspected（部分失联但 ≥ quorum，抖动容忍不冻结）/
+# Partitioned（活跃 < quorum 确认分区，冻结交易进孤岛）/ Recovering
+# （活跃回升 ≥ quorum，同步完成前保持冻结）；本配置不承载状态机参数，
+# 状态迁移判据代码固化（与共识语义闭环，跨节点必须逐字节一致），仅上方
+# heartbeat_timeout_ms 影响"活跃"判定阈值。
+
+# 【注释点 3 · quorum 判据 D8】分区确认阈值复用 v0.99.0 pbft::quorum(n)：
+# alive < quorum(n) 才确认 Partitioned——quorum 不可达即 PBFT 无法提交任何
+# 决议，业务上等同断网，与 v0.99.0 共识语义闭环（n=4 → quorum=3，容忍 1
+# 节点失联仍 Suspected 正常交易）；Connected 下 alive < quorum 直接升级
+# Partitioned 不经 Suspected（全失联无抖动容忍价值）。
+
+# 【注释点 4 · 冻结交易（蓝图 §7.3）】Partitioned 与 Recovering 期间
+# detector.trading_frozen() == true：AuctionEngine 使用侧在每轮撮合前查询
+# 该标志，冻结期拒绝开新轮/执行分配——防止分区两侧各自成交同一可调资源
+# （脑裂污染）；解冻不自动发生，须恢复同步完成后显式 complete_recovery
+# （见注释点 7），AuctionEngine 参数见 federation-auction.toml。
+
+# 【注释点 5 · 事件缓存容量与内存预算（蓝图 §43.6）】本地自治事件缓存
+# 容量（条）：孤岛期间产生的业务事件按队序缓存，满时丢弃最旧（队首）
+# 并 overflow_count += 1。内存预算估算：按每事件 ~100B 计，1024 条
+# ≤ ~100KB，远在 Agent Runtime 64MB 分区预算内（蓝图 §43.6）；现场按
+# 预期孤岛时长 × 事件产生速率调定（如 10 事件/s × 100s ≈ 1000 条）。
+cache_max_size = 1024
+
+# 【注释点 6 · 溢出丢弃最旧（蓝图 §4.4）】缓存满时丢弃最旧事件的语义
+# 落地：no_std 无 log crate，蓝图"丢弃最旧并告警"以 overflow_count 计数器
+# 字段化替代告警日志——上层 Agent Runtime 读字段聚合（斜率突增提示缓存
+# 容量配置不足或孤岛超期）；clear() 清空事件但保留 overflow_count，历史
+# 可观测不归零；max_size=0 属配置错误容忍（每次 push 都丢弃并计数）。
+
+# 【注释点 7 · 冲突仲裁与重同步策略（蓝图 §4.4/§8.5）】恢复同步两类错误
+# 分治——Conflict（sink 端时间戳仲裁：云端已有更新数据）：跳过该事件继续
+# 上传，conflicts 计数入 SyncReport；UploadFailed（链路仍不可用硬错误）：
+# 立即中止本轮同步，缓存保留不丢待重试（sink 侧幂等去重已上传部分）。
+# 同步成功后上层显式 complete_recovery → Connected 解冻 + deactivate
+# 退出孤岛 + clear 缓存——显式完成防脑裂（不自动解冻），确认前交易
+# 保持冻结。

@@ -1,0 +1,15 @@
+[package]
+name = "eneros-crypto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 国密算法库 (SM2/SM3/SM4 + CSRNG) — pure Rust, no_std, no C FFI"
+
+[dependencies]
+# No external dependencies — pure Rust implementation
+
+[features]
+default = []
+# Feature flag for std-only tests (optional)
+std = []

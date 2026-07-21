@@ -1,0 +1,14 @@
+[package]
+name = "eneros-twin-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.89.0 Digital Twin Agent (旁路订阅 /power/state/* 数据镜像 + 周期快照发布 /power/twin/update, no_std)"
+
+[dependencies]
+eneros-agent-bus-dds = { path = "../../protocols/agent-bus-dds" }
+eneros-grid-agent = { path = "../grid_agent" }
+eneros-device-agent = { path = "../device-agent" }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }

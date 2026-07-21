@@ -1,0 +1,10 @@
+[package]
+name = "eneros-iec61850-mms"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.106.0 IEC 61850 MMS protocol stack (BER + ACSE/COTP + MmsClient, no_std)"
+
+[dependencies]
+eneros-iec61850-model = { path = "../iec61850-model" }

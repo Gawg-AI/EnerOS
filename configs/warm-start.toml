@@ -1,0 +1,65 @@
+# ============================================================
+# EnerOS v0.103.0 Warm Start — Solver 神经部分热启动配置
+# ============================================================
+# Crate: eneros-solver-warm (crates/ai/solver-warm/src/{candidate,heuristic_net,warm_start}.rs)
+# 版本: v0.103.0 Solver 神经部分热启动（MILP 神经热启动 + 冷启动降级，Phase 2 P2-F 第 2 版）
+# 蓝图: phase2.md §v0.103.0
+#
+# 热启动文义（一句话）：
+#   日前 MILP 冷启动求解分钟级——用神经网络启发式（ONNX 推理）生成初始候选解
+#   注入 HiGHS 热启动加速 ≥30%；推理失败/置信度过低回退冷启动，三级计数器
+#   可观测，为 v0.104.0 Pareto 提供加速底座。
+
+[warm_start]
+# 【注释点 1 · NN 选型（蓝图 §5.1）】热启动候选解生成方案选型：神经网络
+# 启发式——蓝图量化对比：NN 预计加速 ≥30% vs 贪心启发式 10-15% vs 历史平均
+# 5-10%；NN 能从历史解中学习负荷/电价 → 机组启停模式的非线性映射，泛化
+# 能力显著优于规则法；本配置仅承载模型与阈值参数，推理引擎以 InferEngine
+# seam 注入（MockEngine 默认 / OnnxEngine 由 onnx-ffi feature 门控）。
+model_path = "models/uc_heuristic.onnx"
+
+# 【注释点 2 · 加速目标 ≥30%（蓝图 §7.2，D11 口径）】性能口径声明：加速
+# ≥30% 为硬件集成验证项——需真实 ONNX 模型 + HiGHS 环境实测（D11），本版
+# 单测仅验证注入路径正确性（Mock 记录断言），不对加速比实测断言；模型
+# 离线训练产出，现场替换 model_path 即可生效，无需改代码。
+
+# 【注释点 3 · 冷启动回退（蓝图 §4.4）】三级降级链：① 推理失败（generate
+# Err）→ cold_fallback_count+=1 回退冷启动；② 置信度 < threshold →
+# warm_rejected_count+=1 不注入；③ set_warm_start Err → cold_fallback_count
+# +=1；回退路径 solver 状态零污染（蓝图 §6.4），后续 solve 即冷启动。
+
+# 【注释点 4 · 可行性投影（D9）】候选解注入前经可行性投影：连续变量 clamp
+# 到列界 [lower_bounds, upper_bounds]，整数变量 >0.5→1 否则 0（0.5 阈值
+# 二值化）；不做约束级 LP 投影（需求解 LP，过度工程化），界内投影已满足
+# HiGHS setSolution 要求；project 不修改置信度。
+confidence_threshold = 0.5
+
+# 【注释点 5 · ONNX CPU 推理非 GPU（蓝图 §6.6，D12）】Solver 热启动不适用
+# GPU 规则：边缘侧 ONNX Runtime CPU 推理，无 PyTorch/CUDA（记忆 §4.2 GPU
+# 优先规则仅适用云端训练/校准，不适用边缘推理与 Solver 求解路径）；
+# ComputeDevice 仅保留 Cpu 变体（蓝图 Gpu(String) 删除，避免死代码）。
+
+# 【注释点 6 · 内存预算 ≤128MB（蓝图 §5.6/记忆 §5.6）】Solver 分区内存预算：
+# 总量 ≤128MB（含 MILP 模型 + 分支定界树 + 本热启动特征向量/候选解）；
+# 特征向量 input_dim × f64 + 输出 output_dim × f32 为 KB 级，远低于预算；
+# OOM 策略与 v0.102.0 一致：缩减问题规模/超时降级。
+
+# 【注释点 7 · 模型签名校验 v0.116.0 预留（蓝图 §7.3）】model_path 加载前
+# 的签名校验为 v0.116.0 预留集成点：本版 OnnxEngine::load 仅加载模型文件，
+# 签名验证（SM2 签名 + SM3 摘要）由 v0.116.0 在加载前注入校验 seam，本版
+# 接口已预留路径透传，无 BREAKING 变更。
+
+# 置信度阈值（D8）：generate 产出 confidence < 此值则拒绝注入（回退冷启动）；
+# 默认 0.5 与 spec D8 一致；== 阈值视为通过（C53）；现场按模型质量微调
+# （高精度模型可上调至 0.6~0.7 减少误注入，低精度下调避免频繁回退）。
+
+# 输入特征维度（D7）：encode_input 输出长度 == 此值（负荷预测 + 电价信号 +
+# 末条历史计划逐机组 generation 拼接，不足零填充、超出截断）；72 = 24 负荷
+# + 24 电价 + 2 机组 × 24 周期历史（典型 2 机组场景）；机组数变化时同步调整。
+input_dim = 72
+
+# 输出维度（D7）：decode_output 输入长度须 == 此值（推理输出逐列对应 MILP
+# 变量：连续列 clamp 列界 + 整数列二值化）；96 = 2 机组 × 24 周期 × 2 变量
+# （P 连续出力 + U 0-1 状态）；与 input_dim 配比由模型架构决定，维度不匹配
+# 返回 Err(InvalidDim) 回退冷启动。
+output_dim = 96

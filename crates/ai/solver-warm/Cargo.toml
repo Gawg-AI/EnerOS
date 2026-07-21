@@ -1,0 +1,16 @@
+[package]
+name = "eneros-solver-warm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.103.0 neural warm-start for MILP solver (candidate generation + injection, no_std)"
+
+[dependencies]
+eneros-solver-core = { path = "../solver-core" }
+eneros-solver-milp = { path = "../solver-milp" }
+
+[features]
+default = []
+# D6: ONNX Runtime C API 推理后端（默认关闭；启用需 ONNX Runtime 静态库）
+onnx-ffi = []

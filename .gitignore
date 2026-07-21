@@ -11,6 +11,7 @@ target/
 ci/target-check/
 **/*.rs.bk
 *.rs.bk
+rustc-ice-*.txt
 
 # ===== seL4 构建产物 =====
 build/

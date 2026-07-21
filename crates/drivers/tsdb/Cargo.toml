@@ -1,0 +1,19 @@
+[package]
+name = "eneros-tsdb"
+version = "0.25.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+eneros-fs = { path = "../fs" }
+# Compression backend decision (v0.25.0):
+# snap v1.1.1 was tested and is NOT no_std compatible — it requires `std`
+# (uses std::convert::TryInto, vec! macro, write! macro, and does not declare
+# #![no_std]). Cross-compile to aarch64-unknown-none fails with E0463.
+# Fallback: lz4_flex (pure Rust, no_std compatible with default-features=false).
+# The Compressor trait abstracts the backend, so the upper layers are unaffected.
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
+
+[dev-dependencies]
+eneros-storage = { path = "../storage" }

@@ -1,0 +1,11 @@
+[package]
+name = "eneros-grid-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.82.0 Grid Agent — 电网状态感知 + v0.83.0 PCC 并网点管理 + v0.84.0 并离网切换 (采样/异常检测/PCC/孤岛检测/切换状态机, no_std)"
+
+[dependencies]
+eneros-agent = { path = "../agent" }
+eneros-energy-market-agent = { path = "../energy-market-agent" }

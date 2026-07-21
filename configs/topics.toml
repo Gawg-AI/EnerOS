@@ -1,0 +1,95 @@
+# EnerOS DDS Topic 注册表配置模板（v0.76.0）
+# 参考：蓝图/phase2.md §v0.76.0 + docs/protocols/dds-topic-qos-design.md
+#
+# 本文件为配置模板，运行时加载由后续版本 std 环境实现（D5 偏差）.
+# 8 个标准 Topic 由 standard_topics() 函数硬编码提供.
+
+# 标准 Topic 定义
+[[topics]]
+name = "/power/state/battery/{id}"
+category = "state"           # state | command | alert | twin | market | log
+payload_type = "json"        # json | bincode | cdr
+reliability = "best_effort"  # best_effort | reliable
+durability = "volatile"      # volatile | transient_local
+history = "keep_last"        # keep_last | keep_all
+keep_last_depth = 1
+ttl_secs = 5
+priority = 0
+
+[[topics]]
+name = "/power/state/pv/{id}"
+category = "state"
+payload_type = "json"
+reliability = "best_effort"
+durability = "volatile"
+history = "keep_last"
+keep_last_depth = 1
+ttl_secs = 5
+priority = 0
+
+[[topics]]
+name = "/power/state/grid"
+category = "state"
+payload_type = "json"
+reliability = "best_effort"
+durability = "volatile"
+history = "keep_last"
+keep_last_depth = 1
+ttl_secs = 2
+priority = 0
+
+[[topics]]
+name = "/power/market/price"
+category = "market"
+payload_type = "json"
+reliability = "best_effort"
+durability = "volatile"
+history = "keep_last"
+keep_last_depth = 1
+ttl_secs = 60
+priority = 0
+
+[[topics]]
+name = "/power/market/signal"
+category = "market"
+payload_type = "json"
+reliability = "best_effort"
+durability = "volatile"
+history = "keep_last"
+keep_last_depth = 1
+ttl_secs = 30
+priority = 0
+
+[[topics]]
+name = "/power/command/internal"
+category = "command"
+payload_type = "bincode"
+reliability = "reliable"
+durability = "transient_local"
+history = "keep_all"
+keep_last_depth = 0
+ttl_secs = 10
+deadline_secs = 2
+priority = 6
+
+[[topics]]
+name = "/power/alert/fault"
+category = "alert"
+payload_type = "json"
+reliability = "reliable"
+durability = "transient_local"
+history = "keep_last"
+keep_last_depth = 10
+ttl_secs = 0           # 0 表示不过期
+priority = 7
+
+[[topics]]
+name = "/power/twin/update"
+category = "twin"
+payload_type = "json"
+reliability = "best_effort"
+durability = "volatile"
+history = "keep_last"
+keep_last_depth = 1
+ttl_secs = 5
+priority = 0

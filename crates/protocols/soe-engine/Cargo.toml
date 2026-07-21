@@ -1,0 +1,11 @@
+[package]
+name = "eneros-soe-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS SOE 事件顺序记录引擎 — 事件队列/触发器/持久化/上传"
+
+[dependencies]
+eneros-upa-model = { path = "../upa-model" }
+eneros-telemetry-model = { path = "../telemetry-model" }

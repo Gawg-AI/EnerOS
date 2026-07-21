@@ -1,0 +1,44 @@
+# EnerOS v0.79.0 gPTP 时间同步配置模板
+# IEEE 802.1AS (gPTP) — 主时钟优先级与端口角色
+#
+# 本文件为配置模板，运行时由上层 Agent 读取并注入 GptpConfig 结构体。
+# 不参与 cargo build（D3：位于 configs/，非蓝图 config/）。
+
+# 时钟优先级（数值小者优先，BMCA 选举用）
+priority1 = 128          # 默认优先级 1（0-255，0 最高）
+priority2 = 0            # 默认优先级 2（0-255，同 priority1 时决胜）
+
+# Sync 消息发送间隔（毫秒，gPTP 默认 125ms = 8 Hz）
+sync_interval_ms = 125
+
+# FollowUp 模式（true: Sync+FollowUp 双消息；false: Sync 单消息带精确时间戳）
+follow_up_enabled = true
+
+# 时钟调整阈值（纳秒）
+# 偏移绝对值小于此阈值时仅微调频率（frequency_offset = offset / 100）
+# 大于此阈值时跳跃调整并记录 last_jump_ns
+clock_adjust_threshold_ns = 1_000_000   # 1ms
+
+# 偏差突变告警阈值（纳秒，超过此值标记时钟不可信）
+offset_jump_alert_ns = 100_000_000       # 100ms
+
+# 低通滤波系数（offset = (offset * (N-1) + new_offset) / N）
+# 默认 N=8（蓝图 §4.5：offset = (offset * 7 + new_offset) / 8）
+low_pass_filter_n = 8
+
+# 端口列表（每个 [[ports]] 块定义一个端口）
+# 实际部署时需填写真实 MAC 地址与硬件时间戳能力
+
+[[ports]]
+port_id = 1
+role = "Disabled"         # Master / Slave / Passive / Disabled
+state = "Initializing"    # Initializing / Listening / Master / Slave / Passive
+mac = "00:00:00:00:00:01"
+hw_timestamping = true    # 网卡是否支持 PTP 硬件时间戳（D8：仅标志位）
+
+[[ports]]
+port_id = 2
+role = "Disabled"
+state = "Initializing"
+mac = "00:00:00:00:00:02"
+hw_timestamping = false   # 软件时间戳（精度 ~10ms，不达标）

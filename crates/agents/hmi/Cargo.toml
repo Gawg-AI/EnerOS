@@ -1,0 +1,11 @@
+[package]
+name = "eneros-hmi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS HMI — 本地人机接口（串口控制台 + Web 运维接口 + 审批状态机）"
+
+[dependencies]
+eneros-agent = { path = "../agent" }
+# Zero external dependencies — pure Rust no_std
