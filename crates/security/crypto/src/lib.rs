@@ -127,6 +127,7 @@ extern crate alloc;
 pub mod bigint;
 pub mod constant_time;
 pub mod error;
+pub mod hw;
 pub mod pki;
 pub mod rng;
 pub mod sm2;
@@ -137,6 +138,12 @@ pub mod sm4;
 pub use bigint::U256;
 pub use constant_time::{ct_eq, ct_zeroize};
 pub use error::CryptoError;
+// HW acceleration (v0.158.0) re-exports
+pub use hw::{
+    create_selector_with_hw, create_simulated_selector, create_software_selector, Algorithm,
+    CryptoEngine, CryptoSelector, DmaBuffer, EngineStats, KunpengKaeEngine, PhytiumCryptoEngine,
+    Sm4Mode, SoftwareCryptoEngine,
+};
 // PKI (v0.32.0) re-exports
 pub use pki::asn1::{Asn1Error, DerReader, DerWriter};
 pub use pki::builder::{build_certificate, build_self_signed, build_tbs, sign_tbs};
@@ -161,4 +168,4 @@ pub use sm3::{
 pub use sm4::Sm4;
 
 /// Crate version string.
-pub const VERSION: &str = "0.32.0";
+pub const VERSION: &str = "0.158.0";

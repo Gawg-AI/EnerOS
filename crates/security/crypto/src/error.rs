@@ -8,7 +8,7 @@
 
 use alloc::string::String;
 
-/// 密码学错误类型（13 变体）.
+/// 密码学错误类型（19 变体）.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CryptoError {
     /// 输入长度无效（期望长度，实际长度）
@@ -37,6 +37,19 @@ pub enum CryptoError {
     RngFailed,
     /// 内部状态错误（不应发生）
     InternalError,
+    // ── v0.158.0 硬件加速相关 ──
+    /// 硬件加密引擎忙（正在处理其他请求）
+    EngineBusy,
+    /// 硬件加密引擎超时（操作超过允许时间）
+    EngineTimeout,
+    /// DMA 传输错误
+    DmaError,
+    /// 硬件引擎内部错误（寄存器报告异常）
+    EngineError,
+    /// 硬件引擎不可用（探测失败或未初始化）
+    EngineUnavailable,
+    /// 不支持的操作（引擎不支持请求的算法/模式）
+    Unsupported,
 }
 
 impl CryptoError {
@@ -53,6 +66,20 @@ impl CryptoError {
                 | CryptoError::InvalidPointEncoding
                 | CryptoError::ScalarOutOfRange
                 | CryptoError::ModInverseFailed
+        )
+    }
+
+    /// 判断是否为硬件引擎错误（可触发 fallback 到软件实现）.
+    ///
+    /// 硬件错误通常意味着引擎故障或超时，调用方应切换到软件 fallback。
+    pub fn is_hardware_error(&self) -> bool {
+        matches!(
+            self,
+            CryptoError::EngineBusy
+                | CryptoError::EngineTimeout
+                | CryptoError::DmaError
+                | CryptoError::EngineError
+                | CryptoError::EngineUnavailable
         )
     }
 }
