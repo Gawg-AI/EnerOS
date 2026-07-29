@@ -1,0 +1,12 @@
+session Kernel = HOL +
+  theories
+    "Isabelle/Kernel"
+    "Isabelle/Refinement"
+    "Isabelle/Scheduler"
+    "Isabelle/Scheduler_Proof"
+    "Isabelle/Memory"
+    "Isabelle/Memory_Proof"
+    "Isabelle/Ipc"
+    "Isabelle/Ipc_Proof"
+    "Isabelle/Capability"
+    "Isabelle/Capability_Proof"

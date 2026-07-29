@@ -1,6 +1,6 @@
 # ============================================================
 # EnerOS / Power Native Agent OS — Makefile
-# Version: v0.115.0
+# Version: v0.137.0 (多核内存一致性 自旋锁/屏障 — Phase 3 P3-C 第 5 版) + v0.138.0 (WCET 验证 抖动测量 — Phase 3 P3-C 终版) + v0.139.0 (同步 IPC endpoint — Phase 3 P3-D 首版) + v0.140.0 (通知机制 异步信号 — Phase 3 P3-D 第 2 版) + v0.141.0 (共享内存 IPC — Phase 3 P3-D 第 3 版) + v0.142.0 (能力管理器 Capability-based — Phase 3 P3-D 终版) + v0.143.0 (HAL 接口与 ARM64 实现 — Phase 3 P3-E 首版) + v0.144.0 (x86_64 BSP 接口占位 — Phase 3 P3-E 第 2 版) + v0.145.0 (飞腾 D2000 BSP — Phase 3 P3-E 第 3 版 ★ 信创核心交付) + v0.146.0 (鲲鹏 920 BSP — Phase 3 P3-E 第 4 版 ★ 信创核心 双国产平台) + v0.147.0 (RISC-V + 龙芯 BSP — Phase 3 P3-E 终版本 接口占位) + v0.148.0 (形式化规范框架 Isabelle/HOL — Phase 3 P3-F 首版本) + v0.149.0 (调度器规范抽象 — Phase 3 P3-F 第 2 版本) + v0.150.0 (调度器形式化证明 ★ — Phase 3 P3-F 第 3 版本 第一个形式化证明里程碑) + v0.151.0 (内存隔离规范抽象 — Phase 3 P3-F 第 4 版本 ADR-0001 保留项 #2 内存隔离证明) + v0.152.0 (内存隔离形式化证明 ★ — Phase 3 P3-F 第 5 版本 第二个证明里程碑) + v0.153.0 (IPC 规范抽象 — Phase 3 P3-F 第 6 版本) + v0.154.0 (IPC 形式化证明 ★ — Phase 3 P3-F 第 7 版本 第三个证明里程碑) + v0.155.0 (能力管理器形式化证明 ★ — Phase 3 P3-F 终版本 第四个证明里程碑)
 # 蓝图：phase0.md §v0.4.0
 # ============================================================
 # 统一构建入口：seL4 kernel + Rust user-space + QEMU 验证
@@ -8,7 +8,7 @@
 
 # ===== 项目配置 =====
 PROJECT_NAME := eneros
-VERSION := 0.115.0
+VERSION := 0.155.0
 
 # ===== 工具链 =====
 CARGO := cargo

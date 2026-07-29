@@ -14,6 +14,7 @@ members = [
     "crates/kernel/rtos-cmd-exec",
     "crates/kernel/rtos-degrade",
     "crates/kernel/rtos-watchdog-degrade",
+    "crates/kernel/microkernel",
     "crates/ai/llm-engine",
     "crates/ai/gguf-loader",
     "crates/ai/model-deploy",
@@ -70,6 +71,11 @@ members = [
     "crates/security/secure-boot",
     "crates/security/attestation",
     "crates/security/mtls",
+    "crates/security/model-security",
+    "crates/security/audit",
+    "crates/security/pentest",
+    "crates/security/ota-ab",
+    "crates/security/recovery",
     "crates/agents/agent",
     "crates/agents/hmi",
     "crates/agents/alarm",
@@ -83,11 +89,16 @@ members = [
     "crates/agents/cloud-sync",
     "crates/agents/model-ota",
     "crates/agents/federation",
+    "crates/agents/hot-update",
+    "crates/agents/vpp-scenario",
+    "crates/observability/metrics",
+    "crates/observability/logging",
+    "crates/observability/tracing",
     "ci",
 ]
 
 [workspace.package]
-version = "0.115.0"
+version = "0.155.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
