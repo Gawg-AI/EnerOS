@@ -1,0 +1,14 @@
+[package]
+name = "eneros-tpm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS TPM 2.0 驱动 — TPM 命令集、PCR 度量、密钥管理 (v0.159.0)"
+
+[dependencies]
+eneros-crypto = { path = "../crypto" }
+
+[features]
+default = []
+std = []

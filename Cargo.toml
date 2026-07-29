@@ -76,6 +76,7 @@ members = [
     "crates/security/pentest",
     "crates/security/ota-ab",
     "crates/security/recovery",
+    "crates/security/tpm",
     "crates/agents/agent",
     "crates/agents/hmi",
     "crates/agents/alarm",
@@ -98,7 +99,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.158.0"
+version = "0.159.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

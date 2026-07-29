@@ -1,0 +1,75 @@
+# EnerOS TPM 2.0 配置 (v0.159.0)
+#
+# TPM 芯片接口配置和 PCR 度量策略。
+
+[tpm]
+# 接口类型: "spi" | "mmio" | "simulated"
+interface = "spi"
+
+# SPI 总线基地址（飞腾 D2000）
+spi_base_address = 0x28200000
+
+# MMIO 基地址（鲲鹏 920）
+mmio_base_address = 0x40000000
+
+# Locality（0~4）
+locality = 0
+
+# 命令超时（毫秒）
+command_timeout_ms = 1000
+
+# 最大重试次数
+max_retries = 3
+
+[pcr]
+# PCR 度量策略配置
+# 每个 PCR 的期望值（SM3-256 哈希，hex 格式）
+# 全零表示不验证
+
+# PCR 0: Bootloader 度量
+pcr0_expected = "0000000000000000000000000000000000000000000000000000000000000000"
+
+# PCR 7: Secure Boot 策略
+pcr7_expected = "0000000000000000000000000000000000000000000000000000000000000000"
+
+# 是否在启动时自动验证
+auto_verify_on_boot = true
+
+# 验证失败时的动作: "halt" | "warn" | "log_only"
+on_verification_failure = "halt"
+
+[keys]
+# 密钥管理配置
+
+# 密钥认证值长度（字节）
+auth_length = 32
+
+# 是否启用密钥层次自动初始化
+auto_init_hierarchy = true
+
+# Agent 密钥最大数量
+max_agent_keys = 16
+
+[measurement]
+# 度量服务配置
+
+# 是否记录度量日志
+enable_log = true
+
+# 度量日志最大条目数
+max_log_entries = 256
+
+# 是否支持远程证明
+enable_remote_attestation = true
+
+[security]
+# 安全配置
+
+# 密钥不可导出（TPM 硬件保证）
+keys_non_exportable = true
+
+# 认证失败锁定阈值
+auth_failure_lockout = 5
+
+# 锁定时间（秒）
+lockout_duration_secs = 3600
