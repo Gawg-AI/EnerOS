@@ -1,0 +1,54 @@
+# EnerOS Secure Boot 配置 (v0.160.0)
+#
+# 信任根配置、PCR 策略、降级策略。
+
+[secure_boot]
+# 是否启用 Secure Boot
+enabled = true
+
+# 验证失败时的动作: "halt" | "recovery" | "warn"
+on_failure = "halt"
+
+# 开发调试模式（跳过验签，仅用于开发环境）
+debug_mode = false
+
+[root_of_trust]
+# 信任根 SM2 公钥（65 字节未压缩格式，hex 编码）
+# 生产环境由熔丝/安全存储烧录，此处为占位符
+root_public_key = "0400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+# 哈希算法: "sm3"
+hash_algorithm = "sm3"
+
+# 签名算法: "sm2"
+sign_algorithm = "sm2"
+
+[anti_rollback]
+# 防降级时间戳下限（Unix 时间戳）
+# 低于此时间戳签名的镜像将被拒绝
+min_timestamp = 0
+
+[tpm]
+# TPM PCR 度量配置
+
+# 是否要求 TPM 可用（false = TPM 不可用时降级启动）
+require_tpm = false
+
+# PCR 分配
+# PCR 0: Bootloader
+# PCR 4: Kernel
+# PCR 2: Runtime/Userland
+pcr_bootloader = 0
+pcr_kernel = 4
+pcr_runtime = 2
+
+[certificates]
+# 证书链配置
+
+# 是否启用证书链验证（v0.160.0 暂不启用，后续版本）
+enable_chain_verification = false
+
+# 证书更新策略: "strict" | "compatible"
+# strict: 仅接受新证书签名的镜像
+# compatible: 旧证书签名的镜像仍可启动
+update_policy = "compatible"

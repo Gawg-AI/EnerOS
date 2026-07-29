@@ -48,10 +48,16 @@
 
 pub mod chain;
 pub mod header;
+pub mod report;
+pub mod root_of_trust;
+pub mod secure_boot;
 pub mod verifier;
 
 pub use chain::{BootStage, ChainOfTrust};
 pub use header::{decode_header, encode_header, ImageSignature, HEADER_LEN};
+pub use report::BootChainReport;
+pub use root_of_trust::{HashAlgo, RootOfTrust, SignAlgo};
+pub use secure_boot::{BootImages, EnerosSecureBoot, SecureBoot};
 pub use verifier::BootVerifier;
 
 /// Secure Boot 错误（D11：10 变体覆盖蓝图 §4.4 各失败面，Copy 对齐 v0.111.0

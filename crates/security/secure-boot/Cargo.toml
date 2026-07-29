@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS Secure Boot 全链验证 (v0.113.0) — SM2 签名链 + SM3 哈希 + 防降级, no_std"
+description = "EnerOS Secure Boot 全链验证 (v0.160.0) — SM2 签名链 + SM3 哈希 + TPM PCR 度量 + 防降级, no_std"
 
 [dependencies]
 eneros-crypto = { path = "../crypto" }
+eneros-tpm = { path = "../tpm" }
