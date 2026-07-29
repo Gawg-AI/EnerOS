@@ -216,6 +216,7 @@ mod tests {
 
     #[test]
     fn test_init_default() {
+        let _guard = GLOBAL_TEST_LOCK.lock().unwrap();
         init_default();
         let s = wear_level_status();
         // Default config: 65536 blocks, no erases yet.
@@ -225,12 +226,14 @@ mod tests {
 
     #[test]
     fn test_is_write_amp_throttled_not_initialized() {
+        let _guard = GLOBAL_TEST_LOCK.lock().unwrap();
         *GLOBAL_MANAGER.lock() = None;
         assert!(!is_write_amp_throttled());
     }
 
     #[test]
     fn test_trigger_wear_leveling_not_initialized() {
+        let _guard = GLOBAL_TEST_LOCK.lock().unwrap();
         *GLOBAL_MANAGER.lock() = None;
         let victims = trigger_wear_leveling(5);
         assert!(victims.is_empty());

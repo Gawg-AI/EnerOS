@@ -73,6 +73,7 @@ pub mod ipc;
 pub mod layout;
 pub mod mem;
 pub mod registry;
+pub mod regression;
 pub mod sched;
 pub mod smp;
 pub mod state;
@@ -87,6 +88,10 @@ pub use compat::{
 pub use error::KernelError;
 pub use layout::{BuildConfig, KernelImageLayout, OptLevel};
 pub use registry::{KernelSubsystem, SubsystemRegistry};
+pub use regression::{
+    Priority, RegressionMatrix, RegressionReport, RegressionRunner, TestCase, TestResult,
+    TestStatus,
+};
 pub use state::{
     BootstrapHandle, CapabilityHandle, HalHandle, IpcHandle, KernelState, KernelVersion,
     MemoryHandle, SchedulerHandle, TimeHandle, KERNEL_VERSION,
