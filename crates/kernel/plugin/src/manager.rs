@@ -204,6 +204,9 @@ impl PluginManager for PluginManagerImpl {
             .position(|p| p.id == id)
             .ok_or(PluginError::NotFound)?;
 
+        // 记录卸载前是否活跃
+        let was_active = self.plugins[idx].state == PluginState::Enabled;
+
         // 停用沙箱
         self.plugins[idx].sandbox.deactivate();
 
@@ -214,7 +217,7 @@ impl PluginManager for PluginManagerImpl {
         // 移除记录
         self.plugins.remove(idx);
         self.stats.total_uninstalled += 1;
-        if self.stats.active_count > 0 {
+        if was_active && self.stats.active_count > 0 {
             self.stats.active_count -= 1;
         }
 
@@ -310,8 +313,27 @@ mod tests {
         // 构建最小有效 ELF
         let binary = crate::loader::make_test_elf(0x0, &[(0x0, 64, 4096)]);
 
+        let manifest = PluginManifest::new(
+            String::from(name),
+            String::from("1.0.0"),
+            String::from("tester"),
+            PluginType::Generic,
+            perms,
+            String::from("0.165.0"),
+        );
+
+        // 签名覆盖 manifest + binary
+        let mut payload = manifest.canonical_bytes();
+        payload.extend_from_slice(&binary);
+
         let mut rng = CsRng::new();
-        let sig = sm2_sign(&binary, &keypair.private_key, &keypair.public_key, &mut rng).unwrap();
+        let sig = sm2_sign(
+            &payload,
+            &keypair.private_key,
+            &keypair.public_key,
+            &mut rng,
+        )
+        .unwrap();
 
         let cert = Certificate {
             subject: String::from("Test CA"),
@@ -321,14 +343,7 @@ mod tests {
         };
 
         PluginPackage {
-            manifest: PluginManifest::new(
-                String::from(name),
-                String::from("1.0.0"),
-                String::from("tester"),
-                PluginType::Generic,
-                perms,
-                String::from("0.165.0"),
-            ),
+            manifest,
             binary,
             signature: sig.to_bytes().to_vec(),
             signer_cert: cert,
@@ -433,8 +448,31 @@ mod tests {
         let kp = Sm2KeyPair::generate(&mut rng).unwrap();
         let mut mgr = setup_manager(&kp);
 
-        let mut pkg = make_signed_package(&kp, "future-plugin", alloc::vec![]);
-        pkg.manifest.min_sdk_version = String::from("9.99.0"); // 未来版本
+        // 构建一个声明未来 SDK 版本的插件（签名覆盖 manifest，所以必须签名前就设定）
+        let binary = crate::loader::make_test_elf(0x0, &[(0x0, 64, 4096)]);
+        let manifest = PluginManifest::new(
+            String::from("future-plugin"),
+            String::from("1.0.0"),
+            String::from("tester"),
+            PluginType::Generic,
+            alloc::vec![],
+            String::from("9.99.0"), // 未来版本
+        );
+        let mut payload = manifest.canonical_bytes();
+        payload.extend_from_slice(&binary);
+        let sig = sm2_sign(&payload, &kp.private_key, &kp.public_key, &mut rng).unwrap();
+        let cert = Certificate {
+            subject: String::from("Test CA"),
+            public_key: kp.public_key.point.to_bytes_uncompressed().to_vec(),
+            not_before: 0,
+            not_after: u64::MAX,
+        };
+        let pkg = PluginPackage {
+            manifest,
+            binary,
+            signature: sig.to_bytes().to_vec(),
+            signer_cert: cert,
+        };
 
         assert_eq!(mgr.install(&pkg).unwrap_err(), PluginError::IncompatibleSdk);
         assert_eq!(mgr.stats().total_rejected, 1);

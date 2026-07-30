@@ -76,7 +76,7 @@ pub mod types;
 pub use loader::{Elf64Header, LoadedPlugin, PluginLoader, ProgramHeader};
 pub use manager::{PluginManager, PluginManagerImpl, PluginStats, MAX_PLUGINS};
 pub use sandbox::{Capability, CpuQuota, IpcQuota, MemoryRegion, PluginSandbox};
-pub use signature::{is_sdk_compatible, SignatureVerifier};
+pub use signature::{build_signed_payload, is_sdk_compatible, SignatureVerifier};
 pub use types::{
     Certificate, Permission, PluginId, PluginInfo, PluginManifest, PluginPackage, PluginState,
     PluginType, SDK_VERSION,

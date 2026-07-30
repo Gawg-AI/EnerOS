@@ -137,6 +137,30 @@ impl PluginManifest {
             min_sdk_version,
         }
     }
+
+    /// 生成规范化字节序列（用于签名覆盖）.
+    ///
+    /// 格式：各字段以 0xFF 分隔，权限以逗号分隔。
+    /// 确保 manifest 任何字段被篡改都会导致验签失败。
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(self.name.as_bytes());
+        buf.push(0xFF);
+        buf.extend_from_slice(self.version.as_bytes());
+        buf.push(0xFF);
+        buf.extend_from_slice(self.author.as_bytes());
+        buf.push(0xFF);
+        // 插件类型编码为 u8
+        buf.push(self.plugin_type as u8);
+        buf.push(0xFF);
+        // 权限编码为 u8 序列
+        for perm in &self.permissions {
+            buf.push(*perm as u8);
+        }
+        buf.push(0xFF);
+        buf.extend_from_slice(self.min_sdk_version.as_bytes());
+        buf
+    }
 }
 
 impl PluginInfo {

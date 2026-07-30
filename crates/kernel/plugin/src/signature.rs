@@ -28,23 +28,29 @@ impl SignatureVerifier {
 
     /// 验证插件包签名.
     ///
+    /// 签名覆盖范围：manifest 规范化字节 ‖ binary（确保权限声明不可篡改）。
+    ///
     /// 流程：
-    /// 1. 解析 SM2 签名（64 字节 r‖s）
-    /// 2. 从签名者证书提取公钥
-    /// 3. 验证证书是否在受信任根列表中
-    /// 4. SM2 验签（内部自动 SM3 哈希 + Z 值计算）
+    /// 1. 构造签名负载（manifest + binary）
+    /// 2. 解析 SM2 签名（64 字节 r‖s）
+    /// 3. 从签名者证书提取公钥
+    /// 4. 验证证书是否在受信任根列表中
+    /// 5. SM2 验签（内部自动 SM3 哈希 + Z 值计算）
     pub fn verify_package(&self, package: &PluginPackage) -> Result<(), PluginError> {
-        // 1. 解析签名（64 字节 = r(32) ‖ s(32)）
+        // 1. 构造签名负载：manifest 规范化 ‖ binary
+        let signed_data = build_signed_payload(package);
+
+        // 2. 解析签名（64 字节 = r(32) ‖ s(32)）
         let signature = self.parse_signature(&package.signature)?;
 
-        // 2. 从证书提取公钥
+        // 3. 从证书提取公钥
         let signer_key = self.extract_public_key(&package.signer_cert)?;
 
-        // 3. 验证签名者是否受信任
+        // 4. 验证签名者是否受信任
         self.verify_trust(&signer_key)?;
 
-        // 4. SM2 验签（传入原始二进制，内部自动 SM3）
-        let valid = sm2_verify(&package.binary, &signature, &signer_key)
+        // 5. SM2 验签（传入组合负载，内部自动 SM3）
+        let valid = sm2_verify(&signed_data, &signature, &signer_key)
             .map_err(|_| PluginError::SignatureInvalid)?;
         if !valid {
             return Err(PluginError::SignatureInvalid);
@@ -116,6 +122,15 @@ pub fn is_sdk_compatible(min_sdk_version: &str) -> bool {
     }
 }
 
+/// 构造签名负载：manifest 规范化字节 ‖ binary.
+///
+/// 签名覆盖 manifest + binary，确保权限声明不可篡改。
+pub fn build_signed_payload(package: &PluginPackage) -> Vec<u8> {
+    let mut payload = package.manifest.canonical_bytes();
+    payload.extend_from_slice(&package.binary);
+    payload
+}
+
 /// 解析语义化版本号为 (major, minor, patch) 元组.
 fn parse_semver(version: &str) -> Option<(u32, u32, u32)> {
     let parts: Vec<&str> = version.split('.').collect();
@@ -139,8 +154,27 @@ mod tests {
     fn make_test_package(keypair: &Sm2KeyPair) -> PluginPackage {
         let binary = alloc::vec![0x7f, 0x45, 0x4c, 0x46, 0x01, 0x02, 0x03, 0x04];
 
+        let manifest = PluginManifest::new(
+            alloc::string::String::from("test-plugin"),
+            alloc::string::String::from("1.0.0"),
+            alloc::string::String::from("tester"),
+            PluginType::Generic,
+            alloc::vec![],
+            alloc::string::String::from("0.165.0"),
+        );
+
+        // 签名覆盖 manifest + binary
+        let mut payload = manifest.canonical_bytes();
+        payload.extend_from_slice(&binary);
+
         let mut rng = CsRng::new();
-        let sig = sm2_sign(&binary, &keypair.private_key, &keypair.public_key, &mut rng).unwrap();
+        let sig = sm2_sign(
+            &payload,
+            &keypair.private_key,
+            &keypair.public_key,
+            &mut rng,
+        )
+        .unwrap();
         let sig_bytes = sig.to_bytes();
 
         let cert = Certificate {
@@ -151,14 +185,7 @@ mod tests {
         };
 
         PluginPackage {
-            manifest: PluginManifest::new(
-                alloc::string::String::from("test-plugin"),
-                alloc::string::String::from("1.0.0"),
-                alloc::string::String::from("tester"),
-                PluginType::Generic,
-                alloc::vec![],
-                alloc::string::String::from("0.165.0"),
-            ),
+            manifest,
             binary,
             signature: sig_bytes.to_vec(),
             signer_cert: cert,
