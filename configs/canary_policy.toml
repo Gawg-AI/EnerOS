@@ -1,0 +1,45 @@
+# EnerOS 灰度发布策略配置 (v0.162.0)
+
+[canary]
+# 默认灰度阶段（4 阶段）
+# 阶段 1: 5% 设备，观察 5 分钟
+# 阶段 2: 25% 设备，观察 10 分钟
+# 阶段 3: 50% 设备，观察 10 分钟
+# 阶段 4: 100% 设备，观察 5 分钟
+
+[[canary.stages]]
+name = "canary_5pct"
+percentage = 0.05
+min_duration_secs = 300
+
+[[canary.stages]]
+name = "canary_25pct"
+percentage = 0.25
+min_duration_secs = 600
+
+[[canary.stages]]
+name = "canary_50pct"
+percentage = 0.50
+min_duration_secs = 600
+
+[[canary.stages]]
+name = "full_rollout"
+percentage = 1.0
+min_duration_secs = 300
+
+[thresholds]
+# 自动暂停失败率阈值（5%）
+auto_pause = 0.05
+
+# 自动回滚失败率阈值（10%）
+auto_rollback = 0.10
+
+[monitoring]
+# 健康检查间隔（秒）
+check_interval_secs = 60
+
+# 设备响应超时（秒）
+device_timeout_secs = 30
+
+# 最大连续失败次数（单设备）
+max_device_failures = 3

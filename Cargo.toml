@@ -99,7 +99,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.161.0"
+version = "0.162.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

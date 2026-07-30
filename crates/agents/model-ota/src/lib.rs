@@ -50,6 +50,7 @@
 
 extern crate alloc;
 
+mod canary;
 mod diff;
 mod manager;
 mod model_loader;
@@ -59,6 +60,10 @@ mod signature;
 
 use alloc::vec::Vec;
 
+pub use canary::{
+    CanaryDeployment, CanaryEngine, CanaryId, CanaryPolicy, CanaryStage, CanaryStatus, StageHealth,
+    StageStatus,
+};
 pub use diff::{DiffPatch, DiffUpdater, SimpleDiff};
 pub use manager::{ModelVersion, OtaManager, OtaState};
 pub use model_loader::{HotLoader, ModelInstance};
