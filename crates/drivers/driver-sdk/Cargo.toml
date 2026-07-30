@@ -1,0 +1,14 @@
+[package]
+name = "eneros-driver-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Driver SDK v1.0 (v0.165.0) — 硬件驱动插件开发框架, no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }
+
+[features]
+default = []
+mock = []

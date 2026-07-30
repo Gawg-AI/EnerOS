@@ -65,7 +65,9 @@ members = [
     "crates/protocols/iec61850-goose",
     "crates/protocols/iec61850-sv",
     "crates/protocols/fault-recorder",
+    "crates/protocols/protocol-sdk",
     "crates/drivers/calibration",
+    "crates/drivers/driver-sdk",
     "crates/security/crypto",
     "crates/security/iec62351",
     "crates/security/secure-boot",
@@ -100,7 +102,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.164.0"
+version = "0.165.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
