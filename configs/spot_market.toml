@@ -1,0 +1,20 @@
+# 现货市场参与配置 (Spot Market Participation)
+
+[market]
+type = "day-ahead"              # day-ahead | intra-day
+submitter_id = 1001
+
+[bid]
+max_segments = 24               # 最大报价段数
+min_volume_kwh = 1.0            # 最小申报电量
+max_volume_kwh = 100000.0       # 最大申报电量
+price_floor = 0.0               # 价格下限 (元/kWh)
+price_cap = 1.5                 # 价格上限 (元/kWh)
+
+[deviation]
+threshold_pct = 5.0             # 偏差阈值 (%)
+penalty_rate = 0.1              # 偏差考核费率
+
+[timeout]
+submit_timeout_secs = 30        # 提交超时
+clearing_poll_interval_secs = 60  # 出清轮询间隔

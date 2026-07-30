@@ -1,0 +1,12 @@
+[package]
+name = "eneros-spot-market"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 现货市场参与 (v0.171.0) — 日前/日内报价 + 出清 + 执行跟踪, no_std"
+
+[dependencies]
+
+[features]
+default = []
