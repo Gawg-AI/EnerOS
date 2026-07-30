@@ -1,0 +1,15 @@
+[package]
+name = "eneros-simulator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 模拟器完整版 (v0.167.0) — QEMU 后端 + 设备模拟 + 调试器, PC 上无硬件开发调试 Agent"
+
+[dependencies]
+eneros-agent-sdk = { path = "../agent-sdk" }
+
+[features]
+default = []
+# 宿主机专属功能：QEMU 进程管理、网络调试器连接
+std = []
