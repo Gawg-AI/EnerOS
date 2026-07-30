@@ -92,6 +92,7 @@ members = [
     "crates/agents/federation",
     "crates/agents/hot-update",
     "crates/agents/vpp-scenario",
+    "crates/agents/agent-sdk",
     "crates/observability/metrics",
     "crates/observability/logging",
     "crates/observability/tracing",
@@ -99,7 +100,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.163.0"
+version = "0.164.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
