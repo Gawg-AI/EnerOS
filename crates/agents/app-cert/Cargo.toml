@@ -1,0 +1,12 @@
+[package]
+name = "eneros-app-cert"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Agent OS 认证体系 (v0.184.0) — 设备兼容性认证 + 应用认证, no_std"
+
+[dependencies]
+
+[features]
+default = []

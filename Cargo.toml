@@ -113,6 +113,7 @@ members = [
     "crates/agents/reputation",
     "crates/agents/tenant",
     "crates/agents/bsp-cert",
+    "crates/agents/app-cert",
     "crates/observability/metrics",
     "crates/observability/logging",
     "crates/observability/tracing",
@@ -120,7 +121,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.183.0"
+version = "0.184.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
