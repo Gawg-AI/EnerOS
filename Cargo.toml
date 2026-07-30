@@ -81,6 +81,7 @@ members = [
     "crates/security/recovery",
     "crates/security/tpm",
     "crates/security/did",
+    "crates/security/compliance",
     "crates/agents/agent",
     "crates/agents/hmi",
     "crates/agents/alarm",
@@ -106,7 +107,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.169.0"
+version = "0.170.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

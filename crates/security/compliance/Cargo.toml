@@ -1,0 +1,12 @@
+[package]
+name = "eneros-compliance"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 信创认证 + 等保 2.0 三级 (v0.170.0) — Phase 3 出口标准验证, no_std"
+
+[dependencies]
+
+[features]
+default = []
