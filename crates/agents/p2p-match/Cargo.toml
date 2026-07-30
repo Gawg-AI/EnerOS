@@ -1,0 +1,12 @@
+[package]
+name = "eneros-p2p-match"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS P2P 撮合引擎 (v0.176.0) — 价格时间优先撮合 + 成交管理, no_std"
+
+[dependencies]
+
+[features]
+default = []
