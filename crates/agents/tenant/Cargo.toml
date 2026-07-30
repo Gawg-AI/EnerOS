@@ -1,0 +1,12 @@
+[package]
+name = "eneros-tenant"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 多租户支持 (v0.182.0) — 租户管理/资源配额/隔离, no_std"
+
+[dependencies]
+
+[features]
+default = []

@@ -111,6 +111,7 @@ members = [
     "crates/agents/chain",
     "crates/agents/settlement",
     "crates/agents/reputation",
+    "crates/agents/tenant",
     "crates/observability/metrics",
     "crates/observability/logging",
     "crates/observability/tracing",
@@ -118,7 +119,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.181.0"
+version = "0.182.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
