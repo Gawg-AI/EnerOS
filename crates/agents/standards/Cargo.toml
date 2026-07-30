@@ -1,0 +1,12 @@
+[package]
+name = "eneros-standards"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 国际标准参与 (v0.185.0) — Power Native OS 标准提案/联盟/一致性, no_std"
+
+[dependencies]
+
+[features]
+default = []
