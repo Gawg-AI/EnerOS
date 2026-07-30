@@ -1,0 +1,12 @@
+[package]
+name = "eneros-settlement"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 自动结算系统 (v0.180.0) — 清算/对账/争议处理, no_std"
+
+[dependencies]
+
+[features]
+default = []
