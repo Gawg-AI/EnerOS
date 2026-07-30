@@ -1,0 +1,12 @@
+[package]
+name = "eneros-bsp-cert"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS BSP 认证体系 (v0.183.0) — 认证规范/测试套件/认证流程, no_std"
+
+[dependencies]
+
+[features]
+default = []
