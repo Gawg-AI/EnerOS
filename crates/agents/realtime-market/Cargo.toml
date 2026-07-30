@@ -1,0 +1,12 @@
+[package]
+name = "eneros-realtime-market"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 实时市场 (v0.174.0) — 15min 级实时报价闭环, no_std"
+
+[dependencies]
+
+[features]
+default = []

@@ -1,0 +1,15 @@
+# 实时市场配置 (v0.174.0)
+
+[realtime_market]
+# 报价间隔 (秒), 15min = 900
+interval_sec = 900
+# 最大报价电量 (kWh)
+max_volume_kwh = 10000.0
+# 最小报价电量 (kWh)
+min_volume_kwh = 1.0
+# 价格上限 (元/MWh)
+price_cap = 1500.0
+# 价格下限 (元/MWh)
+price_floor = 0.0
+# 出清超时 (秒)
+clearing_timeout_sec = 60

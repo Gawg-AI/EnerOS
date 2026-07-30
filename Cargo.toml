@@ -103,6 +103,7 @@ members = [
     "crates/agents/spot-market",
     "crates/agents/ancillary",
     "crates/agents/dr",
+    "crates/agents/realtime-market",
     "crates/observability/metrics",
     "crates/observability/logging",
     "crates/observability/tracing",
@@ -110,7 +111,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.173.0"
+version = "0.174.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
