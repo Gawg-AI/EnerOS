@@ -1,0 +1,12 @@
+[package]
+name = "eneros-trust"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Agent 信誉体系 (v0.168.0) — Trust Score 计算 + 信誉分级 + 动态调整, no_std"
+
+[dependencies]
+
+[features]
+default = []
