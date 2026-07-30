@@ -15,6 +15,7 @@ members = [
     "crates/kernel/rtos-degrade",
     "crates/kernel/rtos-watchdog-degrade",
     "crates/kernel/microkernel",
+    "crates/kernel/plugin",
     "crates/ai/llm-engine",
     "crates/ai/gguf-loader",
     "crates/ai/model-deploy",
@@ -102,7 +103,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.165.0"
+version = "0.166.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
