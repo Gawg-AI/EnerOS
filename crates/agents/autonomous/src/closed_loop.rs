@@ -1,0 +1,135 @@
+//! 闭环驱动
+//!
+//! 自动推进交易至最终状态（Settled 或 Failed）。
+
+use crate::orchestrator::TradeOrchestrator;
+use crate::settlement::{AutoSettlement, SettlementTrigger};
+use crate::types::TradePhase;
+use crate::TradeError;
+
+/// 闭环驱动 trait
+///
+/// 每次调用将交易推进到下一阶段。
+pub trait ClosedLoop {
+    /// 推进交易到下一阶段，返回新阶段
+    fn advance(&mut self, deal_id: u64) -> Result<TradePhase, TradeError>;
+}
+
+/// 闭环驱动实现
+///
+/// 封装 TradeOrchestrator，自动推进交易状态。
+#[derive(Debug, Clone)]
+pub struct ClosedLoopImpl {
+    /// 交易编排器
+    pub orchestrator: TradeOrchestrator,
+    /// 自动结算器
+    pub settlement: AutoSettlement,
+    /// 冻结 ID 计数器
+    next_freeze_id: u64,
+}
+
+impl ClosedLoopImpl {
+    /// 创建闭环驱动
+    pub fn new(orchestrator: TradeOrchestrator, settlement: AutoSettlement) -> Self {
+        Self {
+            orchestrator,
+            settlement,
+            next_freeze_id: 1,
+        }
+    }
+
+    /// 运行至完成：推进直到 Settled 或 Failed
+    pub fn run_to_completion(&mut self, deal_id: u64) -> Result<TradePhase, TradeError> {
+        loop {
+            let phase = self.advance(deal_id)?;
+            if phase == TradePhase::Settled || phase == TradePhase::Failed {
+                return Ok(phase);
+            }
+        }
+    }
+}
+
+impl ClosedLoop for ClosedLoopImpl {
+    fn advance(&mut self, deal_id: u64) -> Result<TradePhase, TradeError> {
+        let current = self.orchestrator.find(deal_id)?.phase;
+        match current {
+            TradePhase::Matched => {
+                let fid = self.next_freeze_id;
+                self.next_freeze_id += 1;
+                self.orchestrator.freeze(deal_id, fid)?;
+                Ok(TradePhase::Frozen)
+            }
+            TradePhase::Frozen => {
+                self.orchestrator.confirm(deal_id)?;
+                Ok(TradePhase::Confirmed)
+            }
+            TradePhase::Confirmed => {
+                self.orchestrator.start_delivery(deal_id)?;
+                Ok(TradePhase::Delivering)
+            }
+            TradePhase::Delivering => {
+                // 假设全额交付
+                let volume = self.orchestrator.find(deal_id)?.volume_kwh;
+                self.orchestrator.record_delivery(deal_id, volume)?;
+                Ok(TradePhase::Delivered)
+            }
+            TradePhase::Delivered => {
+                let ctx = self.orchestrator.find(deal_id)?.clone();
+                let st = self.settlement.settle(&ctx)?;
+                self.orchestrator.settle(deal_id, st)?;
+                Ok(TradePhase::Settled)
+            }
+            TradePhase::Settled | TradePhase::Failed => Err(TradeError::InvalidPhase),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_loop() -> ClosedLoopImpl {
+        let mut orch = TradeOrchestrator::new();
+        orch.create_trade(1, 2, 200.0, 0.8);
+        let settlement = AutoSettlement::new(9999);
+        ClosedLoopImpl::new(orch, settlement)
+    }
+
+    #[test]
+    fn run_to_completion_reaches_settled() {
+        let mut cl = make_loop();
+        let result = cl.run_to_completion(1).unwrap();
+        assert_eq!(result, TradePhase::Settled);
+
+        let ctx = cl.orchestrator.find(1).unwrap();
+        assert_eq!(ctx.phase, TradePhase::Settled);
+        assert!(ctx.settlement.is_some());
+        let st = ctx.settlement.as_ref().unwrap();
+        assert_eq!(st.seller_credit_kwh, 200.0);
+        assert!((st.amount_yuan - 160.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn phase_sequence_correct() {
+        let mut cl = make_loop();
+
+        assert_eq!(cl.advance(1).unwrap(), TradePhase::Frozen);
+        assert_eq!(cl.advance(1).unwrap(), TradePhase::Confirmed);
+        assert_eq!(cl.advance(1).unwrap(), TradePhase::Delivering);
+        assert_eq!(cl.advance(1).unwrap(), TradePhase::Delivered);
+        assert_eq!(cl.advance(1).unwrap(), TradePhase::Settled);
+    }
+
+    #[test]
+    fn advance_past_settled_fails() {
+        let mut cl = make_loop();
+        cl.run_to_completion(1).unwrap();
+        assert_eq!(cl.advance(1), Err(TradeError::InvalidPhase));
+    }
+
+    #[test]
+    fn advance_not_found() {
+        let mut cl = make_loop();
+        assert_eq!(cl.advance(999), Err(TradeError::DealNotFound));
+    }
+}
