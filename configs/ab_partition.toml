@@ -1,0 +1,116 @@
+# EnerOS A/B 分区布局配置 (v0.163.0)
+#
+# 蓝图 §4.1 A/B 分区布局：eMMC 双分区内核 OTA
+#
+# 分区布局（eMMC 8GB 示例）：
+# ┌─────────────────────────────────────────────────────────────┐
+# │ Bootloader (1MB)  │ BootConfig (64B) │ A 分区 (128MB) │ B 分区 (128MB) │ Shared │
+# └─────────────────────────────────────────────────────────────┘
+#
+# 使用方式：
+# - Bootloader 启动时读取 BootConfig 决定启动分区
+# - 内核 OTA 时写入备用分区，验签后切换
+# - 启动失败自动回滚到 LastGood 分区
+
+[partition_layout]
+# Bootloader 分区
+bootloader_offset = 0x0
+bootloader_size = 0x100000  # 1MB
+
+# BootConfig 保留区（紧跟 Bootloader）
+boot_config_offset = 0x100000
+boot_config_size = 64  # 12 字节有效 + 填充
+
+# A 分区：内核镜像 + 设备树
+partition_a_offset = 0x200000  # 2MB
+partition_a_size = 0x8000000   # 128MB
+
+# B 分区：内核镜像 + 设备树
+partition_b_offset = 0x8200000  # 130MB
+partition_b_size = 0x8000000    # 128MB
+
+# 共享数据分区：配置/模型/日志
+shared_data_offset = 0x10200000  # 258MB
+shared_data_size = 0x10000000    # 256MB
+
+[boot_config]
+# 最大重试次数：启动失败超过此次数自动切换到 LastGood 分区
+max_retries = 3
+
+# 默认启动分区（首次启动或 BootConfig 损坏时）
+default_partition = "A"
+
+# BootConfig 魔数（用于校验）
+magic = "EBCF"
+
+[kernel_load]
+# A 分区内核加载地址（QEMU virt 约定）
+partition_a_load_addr = 0x49000000
+
+# B 分区内核加载地址
+partition_b_load_addr = 0x51000000
+
+# 设备树加载地址偏移（相对于分区起始）
+dtb_offset = 0x1000000  # 16MB
+
+[ota]
+# 分块写入大小（字节）
+chunk_size = 65536  # 64KB
+
+# 写入超时（秒）
+write_timeout_secs = 30
+
+# 校验超时（秒）
+verify_timeout_secs = 10
+
+# 启用热迁移（false = 重启切换模式）
+enable_hot_migrate = false
+
+[hot_migrate]
+# 热迁移超时（毫秒）
+timeout_ms = 5000
+
+# 新内核加载地址
+load_addr = 0x60000000
+
+# 新内核入口地址
+entry_addr = 0x60000000
+
+# 最大线程快照数
+max_thread_snapshots = 64
+
+# 最大设备快照数
+max_device_snapshots = 32
+
+[security]
+# 新内核镜像必须验签后才写入
+require_signature = true
+
+# 签名算法：SM2（国密）
+signature_algorithm = "SM2"
+
+# 哈希算法：SM3（国密）
+hash_algorithm = "SM3"
+
+# 根公钥存储位置
+root_key_storage = "tpm"
+
+[rollback]
+# 自动回滚启用
+auto_rollback = true
+
+# 回滚后是否清除失败分区标记
+clear_failed_on_rollback = false
+
+# 回滚日志记录
+log_rollback_events = true
+
+[logging]
+# OTA 进度日志级别
+ota_progress_level = "info"
+
+# 分区状态日志级别
+partition_state_level = "debug"
+
+# 错误日志级别
+error_level = "error"
