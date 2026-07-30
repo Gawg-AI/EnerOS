@@ -1,0 +1,12 @@
+[package]
+name = "eneros-p2p"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS P2P 电力交易协议 (v0.175.0) — Agent 间报价/询价/匹配通信, no_std"
+
+[dependencies]
+
+[features]
+default = []
