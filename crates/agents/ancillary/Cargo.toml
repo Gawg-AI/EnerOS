@@ -1,0 +1,12 @@
+[package]
+name = "eneros-ancillary"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 辅助服务参与 (v0.172.0) — 调频/调峰 + AGC 接口, no_std"
+
+[dependencies]
+
+[features]
+default = []
