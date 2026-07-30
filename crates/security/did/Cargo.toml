@@ -1,0 +1,13 @@
+[package]
+name = "eneros-did"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Agent DID 去中心化身份体系 (v0.169.0) — W3C DID + SM2 签名 + 跨域认证, no_std"
+
+[dependencies]
+eneros-crypto = { path = "../crypto" }
+
+[features]
+default = []

@@ -149,14 +149,14 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "eneros-agent"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-agent-bus-dds"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
  "slotmap",
@@ -164,29 +164,36 @@ dependencies = [
 
 [[package]]
 name = "eneros-agent-hot-update"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
 ]
 
 [[package]]
+name = "eneros-agent-sdk"
+version = "0.169.0"
+dependencies = [
+ "heapless 0.8.0",
+]
+
+[[package]]
 name = "eneros-alarm"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-upa-model",
 ]
 
 [[package]]
 name = "eneros-attestation"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-audit"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
@@ -194,19 +201,19 @@ dependencies = [
 
 [[package]]
 name = "eneros-board"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-bootloader"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-calibration"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-can"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-driver-framework",
 ]
@@ -225,7 +232,7 @@ version = "0.2.0"
 
 [[package]]
 name = "eneros-cloud-coordinator"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-coordinator",
  "eneros-energy-market-agent",
@@ -233,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-cloud-sync"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-config"
@@ -256,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-coordinator"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-agent",
  "eneros-energy-market-agent",
@@ -265,23 +272,37 @@ dependencies = [
 
 [[package]]
 name = "eneros-crypto"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-device-agent"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-agent",
  "eneros-energy-market-agent",
 ]
 
 [[package]]
+name = "eneros-did"
+version = "0.169.0"
+dependencies = [
+ "eneros-crypto",
+]
+
+[[package]]
 name = "eneros-driver-framework"
-version = "0.155.0"
+version = "0.169.0"
+
+[[package]]
+name = "eneros-driver-sdk"
+version = "0.169.0"
+dependencies = [
+ "heapless 0.8.0",
+]
 
 [[package]]
 name = "eneros-dual-brain"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-fast-path",
@@ -297,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-energy-lp-model"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-solver-core",
  "eneros-solver-model",
@@ -305,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-energy-market-agent"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-agent",
  "eneros-dual-brain",
@@ -320,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-fast-path"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-safety-validator",
@@ -329,11 +350,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-fault-recorder"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-federation"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
 ]
@@ -352,14 +373,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-gguf-loader"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-llm-engine",
 ]
 
 [[package]]
 name = "eneros-grid-agent"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-agent",
  "eneros-energy-market-agent",
@@ -367,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-hal"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-heap"
@@ -378,71 +399,71 @@ dependencies = [
 
 [[package]]
 name = "eneros-hello"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-runtime",
 ]
 
 [[package]]
 name = "eneros-hmi"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-agent",
 ]
 
 [[package]]
 name = "eneros-iec104-master"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-iec104-slave",
 ]
 
 [[package]]
 name = "eneros-iec104-slave"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-iec61850-goose"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-iec61850-model",
 ]
 
 [[package]]
 name = "eneros-iec61850-mms"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-iec61850-model",
 ]
 
 [[package]]
 name = "eneros-iec61850-model"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-iec61850-sv"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-iec61850-model",
 ]
 
 [[package]]
 name = "eneros-iec62351"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-infer-scheduler"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-llm-engine",
 ]
 
 [[package]]
 name = "eneros-intent-contract"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-intent-parser",
@@ -454,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-intent-parser"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-safety-validator",
@@ -473,15 +494,15 @@ dependencies = [
 
 [[package]]
 name = "eneros-kernel"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-llm-engine"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-logging"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-metrics",
  "heapless 0.8.0",
@@ -489,14 +510,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-metrics"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "heapless 0.8.0",
 ]
 
 [[package]]
 name = "eneros-microkernel"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-bootloader",
 ]
@@ -511,21 +532,21 @@ dependencies = [
 
 [[package]]
 name = "eneros-modbus-rtu"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-driver-framework",
 ]
 
 [[package]]
 name = "eneros-modbus-tcp"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-modbus-rtu",
 ]
 
 [[package]]
 name = "eneros-model-deploy"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-gguf-loader",
  "eneros-llm-engine",
@@ -533,35 +554,35 @@ dependencies = [
 
 [[package]]
 name = "eneros-model-ota"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-model-security"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-mqtt"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-upa-model",
 ]
 
 [[package]]
 name = "eneros-mtls"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-mvp-scenario"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-agent",
  "eneros-device-agent",
@@ -579,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-ota-ab"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
  "eneros-storage",
@@ -597,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-pentest"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-attestation",
  "eneros-audit",
@@ -610,6 +631,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "eneros-plugin"
+version = "0.169.0"
+dependencies = [
+ "eneros-crypto",
+]
+
+[[package]]
 name = "eneros-power"
 version = "0.17.1"
 dependencies = [
@@ -619,7 +647,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-prompt-template"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-llm-engine",
  "serde_json",
@@ -627,14 +655,21 @@ dependencies = [
 
 [[package]]
 name = "eneros-protocol-abstract"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-upa-model",
 ]
 
 [[package]]
+name = "eneros-protocol-sdk"
+version = "0.169.0"
+dependencies = [
+ "heapless 0.8.0",
+]
+
+[[package]]
 name = "eneros-recovery"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
  "eneros-ota-ab",
@@ -644,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-rs485"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-driver-framework",
  "eneros-hal",
@@ -652,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-rtos-cmd-exec"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-controlbus",
  "eneros-ipc",
@@ -662,7 +697,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-rtos-control"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-controlbus",
  "eneros-ipc",
@@ -672,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-rtos-degrade"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-controlbus",
  "eneros-protocol-abstract",
@@ -682,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-rtos-sampling"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-protocol-abstract",
  "eneros-upa-model",
@@ -690,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-rtos-watchdog-degrade"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-controlbus",
  "eneros-ipc",
@@ -703,14 +738,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-runtime"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-sel4-sys",
 ]
 
 [[package]]
 name = "eneros-safety-validator"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-solver-core",
@@ -722,14 +757,22 @@ version = "0.19.0"
 
 [[package]]
 name = "eneros-secure-boot"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
+ "eneros-tpm",
 ]
 
 [[package]]
 name = "eneros-sel4-sys"
-version = "0.155.0"
+version = "0.169.0"
+
+[[package]]
+name = "eneros-simulator"
+version = "0.169.0"
+dependencies = [
+ "eneros-agent-sdk",
+]
 
 [[package]]
 name = "eneros-smp"
@@ -741,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-soe-engine"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-telemetry-model",
  "eneros-upa-model",
@@ -749,11 +792,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-solver-core"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-solver-milp"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-solver-core",
  "eneros-solver-model",
@@ -761,21 +804,21 @@ dependencies = [
 
 [[package]]
 name = "eneros-solver-model"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-solver-core",
 ]
 
 [[package]]
 name = "eneros-solver-pareto"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-solver-core",
 ]
 
 [[package]]
 name = "eneros-solver-warm"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-solver-core",
  "eneros-solver-milp",
@@ -787,7 +830,7 @@ version = "0.23.0"
 
 [[package]]
 name = "eneros-telemetry-model"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-upa-model",
 ]
@@ -801,12 +844,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "eneros-tpm"
+version = "0.169.0"
+dependencies = [
+ "eneros-crypto",
+]
+
+[[package]]
 name = "eneros-tracing"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-logging",
  "heapless 0.8.0",
 ]
+
+[[package]]
+name = "eneros-trust"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-tsdb"
@@ -823,7 +877,7 @@ version = "0.81.0"
 
 [[package]]
 name = "eneros-twin-agent"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-agent-bus-dds",
  "eneros-device-agent",
@@ -834,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-upa-model"
-version = "0.155.0"
+version = "0.169.0"
 
 [[package]]
 name = "eneros-user-heap"
@@ -846,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-vpp-scenario"
-version = "0.155.0"
+version = "0.169.0"
 dependencies = [
  "eneros-crypto",
  "eneros-federation",
