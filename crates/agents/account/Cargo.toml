@@ -1,0 +1,12 @@
+[package]
+name = "eneros-account"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Agent 能源账户 (v0.177.0) — 余额/收支/交易历史/冻结, no_std"
+
+[dependencies]
+
+[features]
+default = []
