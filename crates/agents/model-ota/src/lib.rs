@@ -50,16 +50,22 @@
 
 extern crate alloc;
 
+mod diff;
+mod manager;
 mod model_loader;
 mod ota_client;
+mod rollback;
 mod signature;
 
 use alloc::vec::Vec;
 
+pub use diff::{DiffPatch, DiffUpdater, SimpleDiff};
+pub use manager::{ModelVersion, OtaManager, OtaState};
 pub use model_loader::{HotLoader, ModelInstance};
 pub use ota_client::{
     decode_manifest, encode_manifest, ModelInfo, ModelSignature, OtaClient, OtaStats, SigAlgorithm,
 };
+pub use rollback::{RollbackProtection, Snapshot, SnapshotId, SnapshotManager};
 pub use signature::verify_model_signature;
 
 /// OTA 错误（D12：11 变体覆盖蓝图 §4.4 各失败面，Copy 对齐 v0.95.0 CloudError 惯例）.

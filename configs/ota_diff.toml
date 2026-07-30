@@ -1,0 +1,51 @@
+# EnerOS OTA 差分更新配置 (v0.161.0)
+
+[ota]
+# 差分算法: "simple" | "bsdiff" | "xdelta"
+diff_algorithm = "simple"
+
+# 最大快照保留数
+max_snapshots = 5
+
+# 更新超时（秒）
+update_timeout_secs = 60
+
+# 健康检查超时（秒）
+health_check_timeout_secs = 30
+
+[rollback]
+# 自动回滚策略
+# 更新失败时自动回滚到最近快照
+auto_rollback = true
+
+# 健康检查失败时自动回滚
+rollback_on_health_failure = true
+
+# 回滚后是否重试更新
+retry_after_rollback = false
+
+# 最大重试次数
+max_retries = 3
+
+[storage]
+# 快照存储路径
+snapshot_dir = "/data/snapshots"
+
+# 差分包缓存路径
+patch_cache_dir = "/data/patches"
+
+# 模型存储路径
+model_dir = "/data/models"
+
+# 最大存储空间（MB）
+max_storage_mb = 512
+
+[verification]
+# 是否验证补丁签名
+verify_signature = true
+
+# 是否验证新版本哈希
+verify_hash = true
+
+# 签名算法: "sm2_sm3"
+sign_algorithm = "sm2_sm3"
