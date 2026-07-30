@@ -1,0 +1,16 @@
+# 需求响应聚合配置 (DR Aggregation)
+# v0.173.0
+
+[dr]
+# 聚合调度周期 (秒)
+dispatch_interval_secs = 60
+# 最大偏差告警阈值 (%)
+max_deviation_pct = 15.0
+# 最小参与容量 (kW)
+min_participant_kw = 10.0
+
+[dr.signal]
+# 信号超时 (秒)，超过此时间未确认则视为失败
+ack_timeout_secs = 30
+# 事件提前通知时间 (秒)
+advance_notice_secs = 300

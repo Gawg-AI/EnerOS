@@ -1,0 +1,12 @@
+[package]
+name = "eneros-dr"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 需求响应聚合 (v0.173.0) — DR 信号响应 + 负荷聚合, no_std"
+
+[dependencies]
+
+[features]
+default = []
