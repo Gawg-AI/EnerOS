@@ -1,0 +1,13 @@
+[package]
+name = "eneros-chain"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 轻量区块链 (v0.179.0) — 哈希链 + SM3 + 轻量共识, no_std"
+
+[dependencies]
+eneros-crypto = { path = "../../security/crypto" }
+
+[features]
+default = []

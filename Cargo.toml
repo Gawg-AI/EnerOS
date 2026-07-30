@@ -108,6 +108,7 @@ members = [
     "crates/agents/p2p-match",
     "crates/agents/account",
     "crates/agents/autonomous",
+    "crates/agents/chain",
     "crates/observability/metrics",
     "crates/observability/logging",
     "crates/observability/tracing",
@@ -115,7 +116,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.178.0"
+version = "0.179.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
