@@ -123,11 +123,12 @@ members = [
     "crates/observability/logging",
     "crates/observability/tracing",
     "crates/observability/dashboard",
+    "crates/observability/aiops",
     "ci",
 ]
 
 [workspace.package]
-version = "0.190.0"
+version = "0.191.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
