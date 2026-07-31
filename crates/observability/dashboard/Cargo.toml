@@ -1,0 +1,12 @@
+[package]
+name = "eneros-dashboard"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 高级监控仪表盘 (v0.190.0) — 3D 拓扑 + 实时功率流 + 交互式, no_std"
+
+[dependencies]
+
+[features]
+default = []
