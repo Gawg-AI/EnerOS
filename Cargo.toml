@@ -35,6 +35,7 @@ members = [
     "crates/ai/online",
     "crates/ai/rl",
     "crates/ai/marl",
+    "crates/ai/dialog",
     "crates/hal/hal",
     "crates/hal/board",
     "crates/runtime/runtime",
@@ -125,7 +126,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.188.0"
+version = "0.189.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

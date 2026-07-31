@@ -1,0 +1,12 @@
+[package]
+name = "eneros-dialog"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS LLM↔Solver 对话协商 (v0.189.0) — 多轮迭代推理 + 收敛判定, no_std"
+
+[dependencies]
+
+[features]
+default = []
