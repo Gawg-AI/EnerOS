@@ -32,6 +32,7 @@ members = [
     "crates/ai/intent-contract",
     "crates/ai/fast-path",
     "crates/ai/dual-brain",
+    "crates/ai/online",
     "crates/hal/hal",
     "crates/hal/board",
     "crates/runtime/runtime",
@@ -122,7 +123,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.185.0"
+version = "0.186.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

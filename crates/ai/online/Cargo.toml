@@ -1,0 +1,12 @@
+[package]
+name = "eneros-online-learning"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 模型在线学习 (v0.186.0) — 边缘增量微调 + 联邦学习 FedAvg + 检查点回滚, no_std"
+
+[dependencies]
+
+[features]
+default = []
