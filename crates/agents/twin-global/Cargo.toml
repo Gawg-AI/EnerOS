@@ -1,0 +1,12 @@
+[package]
+name = "eneros-twin-global"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 全局数字孪生 (v0.192.0) — 多域联合仿真 + 全局优化, Phase 4 出口版, no_std"
+
+[dependencies]
+
+[features]
+default = []
