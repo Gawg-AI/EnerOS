@@ -1,0 +1,12 @@
+[package]
+name = "eneros-rl"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Agent 强化学习 (v0.187.0) — PPO 策略训练 + Reward 设计 + Replay Buffer, no_std"
+
+[dependencies]
+
+[features]
+default = []
