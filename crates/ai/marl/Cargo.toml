@@ -1,0 +1,12 @@
+[package]
+name = "eneros-marl"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 多 Agent 强化学习 (v0.188.0) — MAPPO + 信用分配 + 联邦协同进化, no_std"
+
+[dependencies]
+
+[features]
+default = []
