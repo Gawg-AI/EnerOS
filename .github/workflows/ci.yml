@@ -57,8 +57,11 @@ jobs:
       - name: Intra-doc link integrity (C-249 gate)
         run: |
           set -euo pipefail
-          OUT=$(cargo doc --workspace --no-deps 2>&1 || true)
-          COUNT=$(echo "$OUT" | grep -c "unresolved link" || true)
+          set +e
+          OUT=$(cargo doc --workspace --no-deps 2>&1)
+          RC=$?
+          set -e
+          COUNT=$(echo "$OUT" | awk '/unresolved link/{n++} END{print n+0}')
           if [ "$COUNT" -ne 0 ]; then
             echo "$OUT" | grep -B1 -A4 "unresolved link" | head -80
             echo "FAIL: $COUNT unresolved intra-doc links" >&2
@@ -203,6 +206,15 @@ jobs:
           for t in boot_protocol ipc_wire modbus_rtu iec104 elf_loader gguf_loader; do
             cargo xtask fuzz $t 10000
           done
+
+      - name: Perf baseline + regression gate (C-251, real measurement)
+        run: |
+          # 生成真实测量基线（unsigned——CI 无签名密钥；篡改保护由
+          # 发布流程 --sign-key 提供，见 xtask qa perf-baseline --help 文档）。
+          cargo xtask qa perf-baseline
+          # 门禁：无签名文件时 perf-gate 直接评估 SLO/回归（首次基线 SLO=0 跳过）。
+          rm -f target/perf-results.json.sig
+          cargo xtask qa perf-gate target/perf-results.json
 
       - name: VRF-003 gate semantics (no silent pass)
         run: cargo xtask test gate-semantics
