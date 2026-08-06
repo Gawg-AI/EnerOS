@@ -961,6 +961,12 @@ mod tests {
     // 静态时钟计数器（测试前重置）
     static CLOCK_NS: AtomicU64 = AtomicU64::new(0);
     static SLEEP_COUNT: AtomicU64 = AtomicU64::new(0);
+    /// 全局静态测试串行锁（并行测试间互斥，修复 t64/t72/t75 flaky）。
+    static STATIC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_statics() -> std::sync::MutexGuard<'static, ()> {
+        STATIC_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     fn reset_statics() {
         CLOCK_NS.store(0, Ordering::SeqCst);
@@ -1113,6 +1119,7 @@ mod tests {
     // ===== T64：run_burst 10 次全成功 — samples=10, sample_count=10 =====
     #[test]
     fn test_t64_run_burst_success() {
+        let _guard = lock_statics();
         reset_statics();
         let mut probe = LatencyProbe::new(test_clock, test_sleep);
         let stats = probe.run_burst(10, Duration::from_millis(1), || Ok::<(), ()>(()));
@@ -1246,6 +1253,7 @@ mod tests {
     // ===== T72：measure_e2e 委托 run_burst — 100 样本 =====
     #[test]
     fn test_t72_measure_e2e_delegates_to_run_burst() {
+        let _guard = lock_statics();
         reset_statics();
         let mut probe = LatencyProbe::new(test_clock, test_sleep);
         let stats = probe.measure_e2e(100, || Ok::<(), ()>(()));
@@ -1293,6 +1301,7 @@ mod tests {
     // ===== T75：measure_under_load 混合失败 — 5 成功 5 失败, background 调用 10 次 =====
     #[test]
     fn test_t75_measure_under_load_mixed_failure() {
+        let _guard = lock_statics();
         reset_statics();
         static BG_COUNT: AtomicU64 = AtomicU64::new(0);
         static CALL_COUNT: AtomicU64 = AtomicU64::new(0);
