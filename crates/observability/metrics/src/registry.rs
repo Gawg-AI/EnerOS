@@ -138,6 +138,8 @@ mod tests {
             buf[pos] = digits[dlen - 1 - k];
             pos += 1;
         }
+        // SAFETY: `buf[..pos]` 仅含 ASCII 数字/分隔字节（本函数构造），
+        // UTF-8 解码必然成功。
         core::str::from_utf8(&buf[..pos]).unwrap()
     }
 }

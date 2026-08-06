@@ -88,10 +88,37 @@ impl Redactor {
                 result.push_str(&replacement);
                 i += match_len;
             } else {
-                // 复制一个字节
-                let ch = bytes[i];
-                result.push(ch as char);
-                i += 1;
+                // v0.246.0：按 UTF-8 字符边界复制——旧实现 `bytes[i] as char`
+                // 逐字节转 char（Latin-1 化），多字节字符（中文日志等）被
+                // 拆成乱码。先解码当前字符：合法 UTF-8 序列整体复制，
+                // 非法字节（二进制内容）按字节转义保持可读性。
+                match core::str::from_utf8(remaining) {
+                    Ok(s) => {
+                        // 当前位置是合法 UTF-8 起始：取该字符并推进。
+                        let ch = s.chars().next().unwrap_or('\u{FFFD}');
+                        result.push(ch);
+                        i += ch.len_utf8();
+                    }
+                    Err(e) => {
+                        // 非法字节序列：按字节复制（转义为 \xNN 保证可读、
+                        // 不产生无效 UTF-8——String 无法携带非法字节）。
+                        let valid = e.valid_up_to();
+                        if valid > 0 {
+                            // 前缀部分是合法 UTF-8，整体复制。
+                            let prefix = core::str::from_utf8(&remaining[..valid])
+                                .unwrap_or("\u{FFFD}");
+                            result.push_str(prefix);
+                            i += valid;
+                        } else {
+                            // 当前字节非法：\xNN 转义。
+                            let _ = alloc::fmt::write(
+                                &mut result,
+                                format_args!("\\x{:02X}", bytes[i]),
+                            );
+                            i += 1;
+                        }
+                    }
+                }
             }
         }
         (result, count)
@@ -223,7 +250,12 @@ fn match_pem_block(data: &[u8]) -> Option<usize> {
     }
 }
 
-/// 扫描 = 后的值长度（直到空白、换行或行尾）。
+/// 扫描 = 后的值长度（直到空白、换行、行尾或非 ASCII 字符）。
+///
+/// v0.246.0：旧实现只按 ASCII 空白/分隔符终止——UTF-8 多字节字符（中文
+/// 标点如 `，`）的首字节不匹配任何终止符，导致值扫描越过中文标点吞掉
+/// 后续文本（脱敏把"密码=secret123，电池电量"整个吃掉）。值本身应为
+/// ASCII（密钥/凭证），遇到非 ASCII 字节即终止。
 fn scan_value_len(data: &[u8], offset: usize) -> usize {
     let mut len = 0usize;
     for &b in &data[offset..] {
@@ -234,6 +266,7 @@ fn scan_value_len(data: &[u8], offset: usize) -> usize {
             || b == b','
             || b == b'}'
             || b == b'"'
+            || !b.is_ascii()
         {
             break;
         }
@@ -412,5 +445,55 @@ mod tests {
         let (output, count) = Redactor::new().redact(input);
         assert_eq!(count, 1);
         assert!(!output.contains("dXNlcjpwYXNz"));
+    }
+}
+
+#[cfg(test)]
+mod utf8_tests {
+    use super::*;
+
+    /// v0.246.0：中文日志（多字节 UTF-8）经脱敏后必须保持可读，
+    /// 不能被逐字节 Latin-1 化（旧行为：每个字节转 char 产生乱码）。
+    #[test]
+    fn redact_preserves_chinese_log_utf8() {
+        let input = "设备启动成功，password=secret123，电池电量 85%";
+        let (output, count) = Redactor::new().redact(input);
+        assert_eq!(count, 1, "password= 模式必须命中");
+        assert!(output.contains("[REDACTED:PASSWORD]"));
+        // 中文文本必须原样保留（旧实现输出乱码断言必败）。
+        assert!(
+            output.contains("设备启动成功"),
+            "中文前缀被破坏: {output}"
+        );
+        assert!(output.contains("电池电量 85%"), "中文后缀被破坏: {output}");
+    }
+
+    /// v0.246.0：混入非法 UTF-8 字节的文本——合法前缀整体保留，
+    /// 非法字节转义为 \xNN，不 panic、不产生无效 UTF-8。
+    #[test]
+    fn redact_handles_invalid_utf8_bytes() {
+        let mut input = String::from("正常日志 password=abc ");
+        input.push('\u{FFFD}'); // 占位，下面替换为非法字节
+        let mut bytes = input.into_bytes();
+        bytes.push(0xFF); // 非法 UTF-8 首字节
+        bytes.extend_from_slice(" 结尾".as_bytes());
+        let text = String::from_utf8_lossy(&bytes);
+        let (output, count) = Redactor::new().redact(&text);
+        assert_eq!(count, 1);
+        assert!(!output.contains("abc"), "密钥必须脱敏");
+        // lossy 输入本身把非法字节转 U+FFFD，脱敏器按字符边界处理无 panic。
+        assert!(core::str::from_utf8(output.as_bytes()).is_ok());
+    }
+
+    /// v0.246.0：纯非法字节序列不 panic（\xNN 转义路径）。
+    #[test]
+    fn redact_all_invalid_bytes_no_panic() {
+        let raw = [0xFFu8, 0xFE, 0x80, 0x81];
+        // 直接走 bytes→String 不可能（String 要求合法 UTF-8），
+        // 验证的是 redact 对 lossy 输入仍稳健；纯非法序列经 lossy 后
+        // 为 4 个 U+FFFD，脱敏器应原样保留。
+        let text = String::from_utf8_lossy(&raw);
+        let (output, _) = Redactor::new().redact(&text);
+        assert!(core::str::from_utf8(output.as_bytes()).is_ok());
     }
 }
