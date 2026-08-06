@@ -47,6 +47,14 @@
 //! 本版本仅交付算法与统计骨架（D10 延续），真实 TSN 网卡 I/O 集成延后到 v0.82.0+
 //! Agent 使用阶段.
 //!
+//! # v0.223.0 裁决（B2-06）：降级为软时钟同步宣称
+//!
+//! 目标板网卡不支持硬件时间戳/taprio（QEMU virt 与首款交付板评估结论），
+//! 按蓝图选项 ② 执行：**移除 TSN 硬实时承诺**，gPTP 保留为软件时间同步
+//! 原语。参见 [`degraded::SoftSyncClaim`]（能力一致性机器可查）与
+//! [`degraded::SoftSyncClock`]。真实硬件路径（taprio/gPTP 硬件时间戳）
+//! 在具备能力的网卡接入后另行评估（选项 ①）。
+//!
 //! # 核心类型
 //!
 //! - [`clock::ClockIdentity`] — EUI-64 时钟标识（D13：定长 8 字节，无 `uuid`）
@@ -130,6 +138,7 @@
 extern crate alloc;
 
 pub mod bmca;
+pub mod degraded;
 pub mod clock;
 pub mod config_loader;
 pub mod driver_glue;
