@@ -4,9 +4,12 @@
 //! construction. [`MockDmaTransfer`] implements [`DmaTransfer`] using a plain
 //! `Vec<u8>` backing store so the DMA code path is exercisable on the host.
 
+#[cfg(test)]
 use alloc::vec::Vec;
 
+#[cfg(test)]
 use crate::driver::DmaTransfer;
+#[cfg(test)]
 use crate::error::StorageError;
 
 /// Owned DMA buffer: raw pointer + size + physical address.
@@ -68,6 +71,9 @@ impl DmaBuffer {
 /// Implements [`DmaTransfer`] so the DMA code path (bounds checking, buffer
 /// slicing, error classification) is fully exercisable on the host without
 /// real DMA hardware.
+///
+/// v0.214.0（B1-02）：收编为测试专用（生产路径无使用方），不再无条件 pub。
+#[cfg(test)]
 pub struct MockDmaTransfer {
     /// Backing store (device memory in the mock).
     storage: Vec<u8>,
@@ -75,6 +81,7 @@ pub struct MockDmaTransfer {
     block_size: usize,
 }
 
+#[cfg(test)]
 impl MockDmaTransfer {
     /// Creates a new mock DMA engine with `total_bytes` of backing storage
     /// and the given `block_size`.
@@ -86,18 +93,17 @@ impl MockDmaTransfer {
     }
 
     /// Returns the block size in bytes.
-    #[allow(dead_code)]
     pub fn block_size(&self) -> usize {
         self.block_size
     }
 
     /// Returns the total backing storage size in bytes.
-    #[allow(dead_code)]
     pub fn capacity(&self) -> usize {
         self.storage.len()
     }
 }
 
+#[cfg(test)]
 impl DmaTransfer for MockDmaTransfer {
     fn dma_read(&mut self, block_idx: u64, count: u32, buf: &mut [u8]) -> Result<(), StorageError> {
         let start = (block_idx as usize)

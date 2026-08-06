@@ -84,7 +84,36 @@ impl<S: HalSerial> CellularModem<S> {
     }
 
     /// Send an AT command and parse the response.
+    ///
+    /// v0.214.0（B1-02）：`retry_config` 全面生效——超时/无响应时按
+    /// `retry_interval_ms` 间隔重试最多 `max_retries` 次；`ERROR` 等有效
+    /// 响应不重试直接返回。
     pub fn send_at(&mut self, cmd: &AtCommand) -> Result<AtResponse, CellularError> {
+        let mut last_err = CellularError::AtCommandTimeout;
+        for attempt in 0..=self.retry_config.max_retries {
+            match self.send_at_once(cmd) {
+                Ok(resp) => return Ok(resp),
+                Err(e) => last_err = e,
+            }
+            if attempt < self.retry_config.max_retries {
+                self.wait_retry_interval();
+            }
+        }
+        Err(last_err)
+    }
+
+    /// 等待重试间隔（模拟节拍推进 `retry_interval_ms`）。
+    fn wait_retry_interval(&mut self) {
+        let deadline = self.timeout_tick() + self.retry_config.retry_interval_ms * 1_000_000;
+        while self.timeout_tick() < deadline {
+            for _ in 0..1_000 {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    /// 单次 AT 发送尝试（不重试）。
+    fn send_at_once(&mut self, cmd: &AtCommand) -> Result<AtResponse, CellularError> {
         let encoded = AtParser::encode(cmd);
         self.serial
             .write(encoded.as_bytes())
@@ -309,6 +338,8 @@ mod tests {
         /// 预设响应序列：每段耗尽后进下一段，最后一段循环重放。
         sequence: RefCell<Vec<Vec<u8>>>,
         seq_idx: RefCell<usize>,
+        /// 丢包注入：前 N 次 read 返回空。
+        drop_reads: RefCell<usize>,
     }
 
     impl MockSerial {
@@ -318,7 +349,13 @@ mod tests {
                 rx_buf: RefCell::new(Vec::new()),
                 sequence: RefCell::new(Vec::new()),
                 seq_idx: RefCell::new(0),
+                drop_reads: RefCell::new(0),
             }
+        }
+
+        /// 注入丢包：前 `n` 次 `read` 返回空（模拟 AT 响应在链路上丢失/延迟）。
+        fn set_drop_reads(&self, n: usize) {
+            *self.drop_reads.borrow_mut() = n;
         }
 
         /// Preset a single response that `read` returns (循环重放，保持旧测试语义)。
@@ -361,6 +398,14 @@ mod tests {
         }
 
         fn read(&self, buf: &mut [u8]) -> Result<usize, HalError> {
+            // 丢包注入：前 N 次 read 返回空（模拟 AT 响应丢失/延迟）。
+            {
+                let mut drops = self.drop_reads.borrow_mut();
+                if *drops > 0 {
+                    *drops -= 1;
+                    return Ok(0);
+                }
+            }
             // 消耗式读：模拟真实 UART 流。当前段耗尽时加载下一段
             // （最后一段循环重放，保持旧 set_response 语义）。
             {
@@ -443,6 +488,46 @@ mod tests {
         let cmd = AtCommand::new("AT", 1000);
         let err = modem.send_at(&cmd).unwrap_err();
         assert_eq!(err, CellularError::AtCommandTimeout);
+    }
+
+    #[test]
+    fn send_at_timeout_then_retry_success() {
+        // 丢包注入：第一次尝试响应丢失（read 返回空 → 超时），重试成功。
+        let mock = MockSerial::new();
+        mock.set_response(b"OK\r\n");
+        // 精确丢包窗口：首次尝试 50 次 read（50ms 窗口）+ 10 次间隔 read，
+        // 第二次尝试第 2 次 read 即收到 OK。
+        mock.set_drop_reads(61);
+        let cfg = RetryConfig::new(3, 10);
+        let mut modem = CellularModem::new(mock, "internet", cfg);
+        let cmd = AtCommand::new("AT", 50);
+        let resp = modem.send_at(&cmd).unwrap();
+        assert_eq!(resp, AtResponse::Ok(String::new()));
+    }
+
+    #[test]
+    fn send_at_retry_exhausted_returns_last_error() {
+        // 持续丢包：重试耗尽后仍返回 AtCommandTimeout。
+        let mock = MockSerial::new();
+        mock.set_response(b"OK\r\n");
+        mock.set_drop_reads(10_000);
+        let cfg = RetryConfig::new(2, 10);
+        let mut modem = CellularModem::new(mock, "internet", cfg);
+        let cmd = AtCommand::new("AT", 5);
+        let err = modem.send_at(&cmd).unwrap_err();
+        assert_eq!(err, CellularError::AtCommandTimeout);
+    }
+
+    #[test]
+    fn send_at_no_retry_on_error_response() {
+        // ERROR 是有效响应：不重试，直接返回 Error。
+        let mock = MockSerial::new();
+        mock.set_response(b"ERROR\r\n");
+        let cfg = RetryConfig::new(5, 10);
+        let mut modem = CellularModem::new(mock, "internet", cfg);
+        let cmd = AtCommand::new("AT+CSQ", 100);
+        let resp = modem.send_at(&cmd).unwrap();
+        assert_eq!(resp, AtResponse::Error(String::new()));
     }
 
     #[test]

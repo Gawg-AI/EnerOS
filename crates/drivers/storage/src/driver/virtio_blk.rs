@@ -613,9 +613,16 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
     }
 
     /// Polls the used ring until a new element appears (bounded spins).
+    ///
+    /// v0.214.0（B1-02）：轮询前 invalidate used ring 区域——设备经 DMA
+    /// 写 used ring，CPU 侧非一致缓存下必须使该区域缓存失效才能看到新
+    /// 元素（此前缺失，真机 cache 一致性缺口）。
     fn wait_used(&self) -> Result<u32, StorageError> {
+        let used_va = self.va_of(0x1000);
         for _ in 0..20_000_000u32 {
             compiler_fence(Ordering::SeqCst);
+            // 设备写 used ring（DMA）：轮询前使缓存失效。
+            self.cache.invalidate(used_va, core::mem::size_of::<VirtqUsed>());
             let pool = self.pool.borrow();
             let bytes = pool.as_bytes();
             let used = unsafe { &*(bytes[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
@@ -950,6 +957,26 @@ impl DmaPool for RamPool {
 mod tests {
     use super::*;
     use crate::driver::StorageType;
+    use core::cell::RefCell;
+
+    /// 追踪型 cache：记录 clean/invalidate 调用，用于验证 DMA cache
+    /// 维护时序（v0.214.0 B1-02 压测：无 cache 一致性数据损坏）。
+    #[derive(Default)]
+    struct TrackingCache {
+        cleans: RefCell<usize>,
+        invalidates: RefCell<usize>,
+        last_invalidate_va: RefCell<usize>,
+    }
+
+    impl ArmCache for TrackingCache {
+        fn clean(&self, _va: usize, _len: usize) {
+            *self.cleans.borrow_mut() += 1;
+        }
+        fn invalidate(&self, va: usize, _len: usize) {
+            *self.invalidates.borrow_mut() += 1;
+            *self.last_invalidate_va.borrow_mut() = va;
+        }
+    }
 
     fn config() -> StorageConfig {
         StorageConfig {
@@ -1028,5 +1055,99 @@ mod tests {
         let h = drv.health_status();
         assert_eq!(h.total_blocks, 16);
         assert_eq!(h.remaining_life, 100);
+    }
+
+    // ===== v0.214.0（B1-02）：DMA cache 维护与压测 =====
+
+    #[test]
+    fn test_cache_clean_before_notify_and_invalidate_after_used() {
+        // 验证 cache 维护时序：描述符/请求/OUT 数据在 notify 前 clean；
+        // used ring 轮询与 status/IN 数据读回前 invalidate。
+        let mmio = RamMmio::new(1024);
+        let pool = RamPool::new(9);
+        let cache = TrackingCache::default();
+        let mut drv = VirtioBlkDriver::new(mmio, pool, cache, config()).expect("init");
+        drv.set_block_count(1024);
+
+        let input = [0xC3; 512];
+        drv.write_block(1, &input).expect("write");
+        // write 路径：descs/req/OUT data clean（≥1）+ used ring invalidate（≥1）
+        assert!(
+            *drv.cache.cleans.borrow() >= 1,
+            "OUT 数据须在 notify 前 clean"
+        );
+        assert!(
+            *drv.cache.invalidates.borrow() >= 1,
+            "used ring 须在轮询前 invalidate"
+        );
+
+        let mut out = [0u8; 512];
+        drv.read_block(1, &mut out).expect("read");
+        // read 路径：IN 数据 invalidate 已发生
+        assert!(
+            *drv.cache.invalidates.borrow() >= 2,
+            "IN 数据读回前须 invalidate"
+        );
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn test_stress_random_roundtrip_no_corruption() {
+        // 压测：随机块×随机内容多次往返，验证 cache 一致性与数据无损坏。
+        let mmio = RamMmio::new(1024);
+        let pool = RamPool::new(9);
+        let cache = TrackingCache::default();
+        let mut drv = VirtioBlkDriver::new(mmio, pool, cache, config()).expect("init");
+        drv.set_block_count(64);
+
+        // 固定伪随机序列（确定性，可重算）。
+        let mut seed = 0x1234_5678u32;
+        let mut next = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as u8
+        };
+
+        for round in 0..200u32 {
+            let block = (round * 7 % 64) as u64;
+            let mut input = [0u8; 512];
+            for b in input.iter_mut() {
+                *b = next();
+            }
+            drv.write_block(block, &input).expect("write");
+            let mut out = [0u8; 512];
+            drv.read_block(block, &mut out).expect("read");
+            assert_eq!(
+                out, input,
+                "round {round} block {block}: cache 一致性数据损坏"
+            );
+        }
+        // 压测全程每次 IO 都有 cache 维护动作。
+        assert!(*drv.cache.cleans.borrow() >= 200);
+        assert!(*drv.cache.invalidates.borrow() >= 400);
+    }
+
+    #[test]
+    fn test_stress_interleaved_multi_block_no_cross_corruption() {
+        // 多块交错读写：验证不同块间无串扰（cache 维护范围正确）。
+        let mmio = RamMmio::new(1024);
+        let pool = RamPool::new(9);
+        let mut drv =
+            VirtioBlkDriver::new(mmio, pool, NoopCache, config()).expect("init");
+        drv.set_block_count(32);
+
+        let pattern_a = [0xAA; 512];
+        let pattern_b = [0x55; 512];
+        for i in 0..64u32 {
+            let block = (i % 4) as u64;
+            if i % 2 == 0 {
+                drv.write_block(block, &pattern_a).expect("write A");
+            } else {
+                drv.write_block(block, &pattern_b).expect("write B");
+            }
+            let mut out = [0u8; 512];
+            drv.read_block(block, &mut out).expect("read");
+            let expect = if i % 2 == 0 { pattern_a } else { pattern_b };
+            assert_eq!(out, expect, "block {block} 数据串扰");
+        }
     }
 }

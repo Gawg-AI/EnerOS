@@ -21,7 +21,9 @@ pub mod nvme;
 pub mod types;
 pub mod virtio_blk;
 
-pub use dma::{DmaBuffer, MockDmaTransfer};
+pub use dma::DmaBuffer;
+#[cfg(test)]
+pub use dma::MockDmaTransfer;
 pub use emmc::{EmmcCmdType, EmmcDriver};
 pub use factory::create_block_device;
 pub use mock::MockBlockDevice;

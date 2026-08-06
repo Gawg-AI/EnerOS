@@ -68,7 +68,9 @@ pub use driver::{
     create_block_device, BlockDevice, DeviceHealth, DmaTransfer, MockBlockDevice, StorageConfig,
     StorageMmio, StorageType,
 };
-pub use driver::{DmaBuffer, EmmcCmdType, EmmcDriver, MockDmaTransfer, NvmeDriver};
+pub use driver::{DmaBuffer, EmmcCmdType, EmmcDriver, NvmeDriver};
+#[cfg(test)]
+pub use driver::MockDmaTransfer;
 pub use driver::virtio_blk::{
     Aarch64Cache, ArmCache, NoopCache, RamMmio, RamPool, VirtioBlkDriver, VirtioMmio,
 };
