@@ -9,3 +9,4 @@ description = "EnerOS IEC 60870-5-104 slave protocol stack — APDU/ASDU codec, 
 [dependencies]
 eneros-control-gateway = { path = "../control-gateway" }
 eneros-telemetry-model = { path = "../telemetry-model" }
+eneros-time = { path = "../../drivers/time" }

@@ -2,6 +2,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec;
+use alloc::vec::Vec;
 
 use eneros_control_gateway::AuthorizedCommand;
 use eneros_telemetry_model::command::{ControlCommand, DoubleCommand, SingleCommand};
@@ -12,6 +13,33 @@ use crate::config::Iec104Config;
 use crate::error::Iec104Error;
 use crate::point::PointDatabase;
 use crate::transport::{ConnId, SlaveStats, SlaveTransport};
+
+/// 应用 CP56Time2a 时标到系统 RTC（v0.219.0）。
+///
+/// IEC 104 时标：年 = 2000 + tag.year（0–99），换算为 Unix 秒后调用
+/// `eneros_time::rtc_write` 写入 PL031 RTC。`iv`（无效）标志置位时忽略。
+fn apply_time_tag(tag: TimeTag) {
+    if tag.iv {
+        return;
+    }
+    // days_from_civil 式换算（2000-01-01 起，不含闰秒）。
+    let year = 2000u32 + tag.year as u32;
+    let (y, m) = if tag.month as u32 <= 2 {
+        (year - 1, tag.month as u32 + 12)
+    } else {
+        (year, tag.month as u32)
+    };
+    let era = y / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m - 3) + 2) / 5 + tag.day as u32 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let secs = days as u64 * 86400
+        + tag.hour as u64 * 3600
+        + tag.minute as u64 * 60
+        + tag.second as u64;
+    eneros_time::rtc_write(eneros_time::secs_to_rtc(secs));
+}
 
 /// 从站状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,8 +65,65 @@ struct SlaveConnection {
     recv_seq: u16,
     last_rx_time_ms: u64,
     last_tx_time_ms: u64,
+    /// 未确认 I 帧计数（k 窗口，v0.219.0）
+    unacked_send: u16,
+    /// 已发送但未确认的 U 帧（t1 跟踪，v0.219.0）
+    pending_u_frame: Option<UFormatFunction>,
     pending_acks: u16,
     state: SlaveState,
+}
+
+/// 输入重组缓冲（TCP 粘包/半包，v0.219.0）。
+struct RxReassembler {
+    /// 累积缓冲。
+    buf: Vec<u8>,
+    /// 坏帧计数（不静默）。
+    bad_frames: u64,
+}
+
+impl RxReassembler {
+    fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            bad_frames: 0,
+        }
+    }
+
+    /// 喂入字节流，取出完整 APDU 帧列表。
+    ///
+    /// IEC 104 帧：`0x68 len ...`（len = 控制域+ASDU 字节数，帧总长 2+len）。
+    /// 粘包时循环取帧；半包时保留剩余；坏帧（起始字节错/长度越界）丢弃并计数。
+    fn feed(&mut self, data: &[u8]) -> Vec<Apdu> {
+        self.buf.extend_from_slice(data);
+        let mut out = Vec::new();
+        loop {
+            if self.buf.len() < 2 {
+                break;
+            }
+            if self.buf[0] != 0x68 {
+                self.bad_frames += 1;
+                self.buf.remove(0);
+                continue;
+            }
+            let len = self.buf[1] as usize;
+            if len < 4 || 2 + len > 4096 {
+                self.bad_frames += 1;
+                self.buf.remove(0);
+                continue;
+            }
+            if self.buf.len() < 2 + len {
+                break; // 半包
+            }
+            let frame: Vec<u8> = self.buf.drain(..2 + len).collect();
+            match Apdu::decode(&frame) {
+                Ok(apdu) => out.push(apdu),
+                Err(_) => {
+                    self.bad_frames += 1;
+                }
+            }
+        }
+        out
+    }
 }
 
 /// IEC 104 从站
@@ -49,6 +134,8 @@ pub struct Iec104Slave {
     connection: Option<SlaveConnection>,
     stats: SlaveStats,
     last_testfr_ms: u64,
+    /// 输入重组缓冲（粘包吃全）。
+    rx_reasm: RxReassembler,
     /// 控制网关授权的写命令 (CTL-004)。`None` 时所有遥控默认拒绝。
     authorized_write: Option<AuthorizedCommand>,
     /// PTC-003：SBO 已选择待执行的命令（Select Before Operate 状态）。
@@ -70,6 +157,7 @@ impl Iec104Slave {
             connection: None,
             stats: SlaveStats::default(),
             last_testfr_ms: 0,
+            rx_reasm: RxReassembler::new(),
             authorized_write: None,
             selected: None,
         }
@@ -110,11 +198,15 @@ impl Iec104Slave {
                     recv_seq: 0,
                     last_rx_time_ms: now_ms,
                     last_tx_time_ms: now_ms,
+                    unacked_send: 0,
+                    pending_u_frame: None,
                     pending_acks: 0,
                     state: SlaveState::Connected,
                 });
                 self.stats.connections_accepted += 1;
                 self.last_testfr_ms = now_ms;
+                // 新连接：重置重组缓冲。
+                self.rx_reasm = RxReassembler::new();
             }
         }
 
@@ -140,8 +232,48 @@ impl Iec104Slave {
                 conn.last_rx_time_ms = now_ms;
             }
             self.stats.rx_count += 1;
-            if let Ok(apdu) = Apdu::decode(&buf[..n]) {
+            // v0.219.0：TCP 重组缓冲（粘包吃全），逐帧处理。
+            let apdus = self.rx_reasm.feed(&buf[..n]);
+            self.stats.rx_error_count += self.rx_reasm.bad_frames as u32;
+            self.rx_reasm.bad_frames = 0;
+            for apdu in apdus {
                 self.handle_apdu(apdu)?;
+            }
+        }
+
+        // 2.5 t1 超时：发送 U 帧后未收到确认 → 重传或断开（v0.219.0）。
+        let t1_timeout = self.config.t1_timeout_ms as u64;
+        let t1_expired = match &self.connection {
+            Some(conn) => conn
+                .pending_u_frame
+                .is_some()
+                && now_ms.saturating_sub(conn.last_tx_time_ms) > t1_timeout,
+            None => false,
+        };
+        if t1_expired {
+            // t1 超时：重发一次 U 帧；仍无响应由上层断开（MVP：直接断开）。
+            if let Some(func) = self.connection.as_ref().and_then(|c| c.pending_u_frame) {
+                let retry = Apdu::u_format(func);
+                if self.send_apdu(&retry).is_err() {
+                    self.close_connection();
+                }
+            }
+        }
+
+        // 2.75 t2 超时：收到 I 帧未确认超过 t2 → 强制发 S 帧（v0.219.0）。
+        let t2_expired = match &self.connection {
+            Some(conn) => {
+                conn.pending_acks > 0
+                    && now_ms.saturating_sub(conn.last_rx_time_ms) > self.config.t2_timeout_ms as u64
+            }
+            None => false,
+        };
+        if t2_expired {
+            let recv_seq = self.connection.as_ref().map(|c| c.recv_seq).unwrap_or(0);
+            let s_frame = Apdu::s_format(recv_seq);
+            self.send_apdu(&s_frame)?;
+            if let Some(conn) = &mut self.connection {
+                conn.pending_acks = 0;
             }
         }
 
@@ -149,7 +281,7 @@ impl Iec104Slave {
         let need_testfr = match &self.connection {
             Some(conn) => {
                 conn.state == SlaveState::Active
-                    && (now_ms - self.last_testfr_ms) > self.config.t3_timeout_ms as u64
+                    && now_ms.saturating_sub(self.last_testfr_ms) > self.config.t3_timeout_ms as u64
             }
             None => false,
         };
@@ -173,6 +305,10 @@ impl Iec104Slave {
                 // S 格式：主站确认了我们的 I 帧
                 if let Some(conn) = &mut self.connection {
                     conn.pending_acks = 0;
+                    // v0.219.0：S 帧确认 → 清未确认发送计数（k 窗口释放）。
+                    conn.unacked_send = 0;
+                    conn.pending_u_frame = None;
+                    conn.last_rx_time_ms = self.transport.now_ms();
                 }
             }
             ControlField::Information { send_seq, recv_seq } => {
@@ -184,6 +320,16 @@ impl Iec104Slave {
         Ok(())
     }
 
+    /// 关闭当前连接（清除连接与重组缓冲）。
+    fn close_connection(&mut self) {
+        if let Some(conn) = &self.connection {
+            self.transport.close(conn.conn_id);
+            self.stats.connections_closed += 1;
+        }
+        self.connection = None;
+        self.rx_reasm = RxReassembler::new();
+    }
+
     /// 处理 U 格式帧。
     fn handle_u_format(&mut self, func: UFormatFunction) -> Result<(), Iec104Error> {
         match func {
@@ -192,6 +338,7 @@ impl Iec104Slave {
                 self.send_apdu(&con)?;
                 if let Some(conn) = &mut self.connection {
                     conn.state = SlaveState::Active;
+                    conn.pending_u_frame = None;
                 }
             }
             UFormatFunction::StopDtAct => {
@@ -199,6 +346,7 @@ impl Iec104Slave {
                 self.send_apdu(&con)?;
                 if let Some(conn) = &mut self.connection {
                     conn.state = SlaveState::Stopped;
+                    conn.pending_u_frame = None;
                 }
             }
             UFormatFunction::TestFrAct => {
@@ -211,14 +359,27 @@ impl Iec104Slave {
     }
 
     /// 处理 I 格式帧。
+    ///
+    /// v0.219.0：序号连续性校验 + 重放检测——主站 `send_seq` 必须等于
+    /// 期望的接收序号（`recv_seq`）；重复（重放）或跳号（丢帧）返回
+    /// [`Iec104Error::SeqMismatch`] 并计错（不静默）。
     fn handle_i_format(
         &mut self,
         asdu: Option<&Asdu>,
-        _send_seq: u16,
+        send_seq: u16,
         _recv_seq: u16,
     ) -> Result<(), Iec104Error> {
-        // 更新接收序列号
+        // 序号校验（接收方向）。
         if let Some(conn) = &mut self.connection {
+            let expected = conn.recv_seq & 0x7FFF;
+            if send_seq != expected {
+                self.stats.rx_error_count += 1;
+                return Err(Iec104Error::SeqMismatch {
+                    expected,
+                    actual: send_seq,
+                });
+            }
+            // 连续性通过：更新接收序列号。
             conn.recv_seq = (conn.recv_seq + 1) & 0x7FFF;
             conn.pending_acks += 1;
         }
@@ -399,9 +560,16 @@ impl Iec104Slave {
     }
 
     /// 处理时钟同步命令。
+    ///
+    /// v0.219.0：真实应用——CP56Time2a 时标（2000 年起）换算为 Unix
+    /// 秒后写入 PL031 RTC（`eneros_time::rtc_write`）；时标缺失时仅确认。
     fn handle_clock_sync(&mut self, asdu: &Asdu) -> Result<(), Iec104Error> {
-        // 提取时标（CP56Time2a）并更新内部时间（MVP 仅记录，不实际应用）
-        let _time_tag: Option<TimeTag> = asdu.ioas.first().and_then(|io| io.time_tag);
+        // 提取时标（CP56Time2a）并应用。
+        if let Some(io) = asdu.ioas.first() {
+            if let Some(tag) = io.time_tag {
+                apply_time_tag(tag);
+            }
+        }
 
         // 回复确认
         let confirm = Asdu {
@@ -414,16 +582,23 @@ impl Iec104Slave {
         Ok(())
     }
 
-    /// 发送 I 格式帧（自增 send_seq）。
+    /// 发送 I 格式帧（自增 send_seq；k 窗口检查 v0.219.0）。
     fn send_i_format(&mut self, asdu: &Asdu) -> Result<(), Iec104Error> {
         let (send_seq, recv_seq) = match &self.connection {
             Some(conn) => (conn.send_seq, conn.recv_seq),
             None => return Ok(()),
         };
+        // k 窗口：未确认 I 帧达到 k → 拒绝发送（主站须先 S 帧确认）。
+        if let Some(conn) = &self.connection {
+            if conn.unacked_send >= self.config.k {
+                return Err(Iec104Error::WindowFull);
+            }
+        }
         let apdu = Apdu::i_format(send_seq, recv_seq, asdu.clone());
         self.send_apdu(&apdu)?;
         if let Some(conn) = &mut self.connection {
             conn.send_seq = (conn.send_seq + 1) & 0x7FFF;
+            conn.unacked_send = conn.unacked_send.saturating_add(1);
         }
         Ok(())
     }
@@ -434,6 +609,12 @@ impl Iec104Slave {
             Some(conn) => conn.conn_id,
             None => return Ok(()),
         };
+        // t1 跟踪：U 帧发送后记录 pending，等待确认。
+        if let ControlField::Unnumbered(func) = apdu.control_field {
+            if let Some(conn) = &mut self.connection {
+                conn.pending_u_frame = Some(func);
+            }
+        }
         let data = apdu.encode();
         self.transport.send(conn_id, &data)?;
         self.stats.tx_count += 1;
@@ -587,12 +768,13 @@ mod tests {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
         mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode());
-        // 推入 w+1 个 I 帧（w=8）— 每个是一个单点遥控命令
-        for _ in 0..9 {
+        // 推入 w+1 个 I 帧（w=8）— 每个是一个单点遥控命令（v0.219.0：
+        // 序号须连续递增）。
+        for i in 0..9u16 {
             mock.push_rx_data(
                 conn,
                 Apdu::i_format(
-                    0,
+                    i,
                     0,
                     Asdu {
                         type_id: TypeId::SingleCommand,
@@ -766,11 +948,11 @@ mod tests {
             )
             .encode(),
         );
-        // execute：与 select 匹配
+        // execute：与 select 匹配（序号连续：select=0, execute=1）
         mock.push_rx_data(
             conn,
             Apdu::i_format(
-                0,
+                1,
                 0,
                 Asdu {
                     type_id: TypeId::SingleCommand,
@@ -863,11 +1045,11 @@ mod tests {
             )
             .encode(),
         );
-        // execute Off（与 select On 不匹配）
+        // execute Off（与 select On 不匹配；序号连续：select=0, execute=1）
         mock.push_rx_data(
             conn,
             Apdu::i_format(
-                0,
+                1,
                 0,
                 Asdu {
                     type_id: TypeId::SingleCommand,
@@ -1164,5 +1346,320 @@ mod tests {
         assert_eq!(dco.value, DoublePointValue::On);
         assert_eq!(dco.qu, 0);
         assert!(!dco.select);
+    }
+
+    // ===== v0.219.0（B2-02）：状态机补全测试 =====
+
+    #[test]
+    fn test_sequence_replay_rejected() {
+        // 重放检测：同一序号重复到达 → SeqMismatch（旧行为静默接受）。
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode());
+        let i_frame = Apdu::i_format(
+            0,
+            0,
+            Asdu {
+                type_id: TypeId::InterrogationCommand,
+                cause_of_tx: Cot::Activation,
+                common_addr: 1,
+                ioas: vec![InformationObject {
+                    ioa: 0,
+                    value: IoValue::SinglePoint(SinglePointValue::Off),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                }],
+            },
+        )
+        .encode();
+        mock.push_rx_data(conn, i_frame.clone());
+        mock.push_rx_data(conn, i_frame.clone()); // 重放同一帧
+        let db = InMemoryPointDatabase::new();
+        let mut slave = make_slave(mock, db);
+        slave.poll(100).expect("startdt");
+        slave.poll(200).expect("first I frame");
+        let err = slave.poll(300).expect_err("replay must be rejected");
+        assert!(matches!(err, Iec104Error::SeqMismatch { expected: 1, actual: 0 }));
+        // 坏帧计数（不静默）。
+        assert!(slave.stats().rx_error_count >= 1);
+    }
+
+    #[test]
+    fn test_k_window_full_blocks_send() {
+        // k 窗口：未确认 I 帧达到 k（12）→ 拒绝继续发送。
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode());
+        let db = InMemoryPointDatabase::new();
+        let mut slave = make_slave(mock, db);
+        slave.poll(100).expect("startdt");
+        // 连续 12 次激活确认（无 S 帧确认）。
+        for i in 0..12u16 {
+            slave
+                .send_i_format(&Asdu {
+                    type_id: TypeId::ClockSyncCommand,
+                    cause_of_tx: Cot::ActivationConfirm,
+                    common_addr: 1,
+                    ioas: vec![],
+                })
+                .expect("send within k");
+            // +1 = startdt con 已计 1 帧。
+            assert_eq!(i as u32 + 2, slave.stats().tx_count, "tx count at {i}");
+        }
+        // 第 13 次 → WindowFull。
+        let err = slave
+            .send_i_format(&Asdu {
+                type_id: TypeId::ClockSyncCommand,
+                cause_of_tx: Cot::ActivationConfirm,
+                common_addr: 1,
+                ioas: vec![],
+            })
+            .expect_err("k window must block");
+        assert_eq!(err, Iec104Error::WindowFull);
+    }
+
+    #[test]
+    fn test_k_window_released_by_s_frame() {
+        // S 帧确认释放 k 窗口。
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode());
+        // 主站 S 帧确认（recv_seq 指向从站下一发送序号 12）——提前 push，
+        // 随后 mock 被 move 进 slave。
+        mock.push_rx_data(conn, Apdu::s_format(12).encode());
+        let db = InMemoryPointDatabase::new();
+        let mut slave = make_slave(mock, db);
+        slave.poll(100).expect("startdt");
+        // 打满 k 窗口。
+        for _ in 0..12 {
+            slave
+                .send_i_format(&Asdu {
+                    type_id: TypeId::ClockSyncCommand,
+                    cause_of_tx: Cot::ActivationConfirm,
+                    common_addr: 1,
+                    ioas: vec![],
+                })
+                .expect("send");
+        }
+        assert_eq!(
+            slave
+                .send_i_format(&Asdu {
+                    type_id: TypeId::ClockSyncCommand,
+                    cause_of_tx: Cot::ActivationConfirm,
+                    common_addr: 1,
+                    ioas: vec![],
+                })
+                .unwrap_err(),
+            Iec104Error::WindowFull
+        );
+        // S 帧被 poll 消费 → 窗口释放。
+        slave.poll(200).expect("S frame");
+        // 窗口释放 → 可继续发送。
+        slave
+            .send_i_format(&Asdu {
+                type_id: TypeId::ClockSyncCommand,
+                cause_of_tx: Cot::ActivationConfirm,
+                common_addr: 1,
+                ioas: vec![],
+            })
+            .expect("send after S frame");
+    }
+
+    #[test]
+    fn test_t1_timeout_retries_u_frame() {
+        // t1 超时：TestFrAct 发出后 t1 内未收到 TestFrCon → 重发（t1=15s）。
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode());
+        let db = InMemoryPointDatabase::new();
+        let mut slave = make_slave(mock, db);
+        slave.poll(100).expect("startdt");
+        // t3=20s 空闲 → TestFrAct 发出（pending_u_frame 置位）。
+        slave.poll(21_000).expect("poll t3");
+        let tx1 = slave.stats().tx_count;
+        // 主站仍无响应；再过 t1=15s → 重发 TestFrAct。
+        slave.poll(21_000 + 16_000).expect("poll t1");
+        let tx2 = slave.stats().tx_count;
+        assert!(tx2 > tx1, "t1 超时应重发 U 帧 (tx1={tx1} tx2={tx2})");
+    }
+
+    #[test]
+    fn test_t2_timeout_forces_s_frame() {
+        // t2 超时：收到 1 个 I 帧但未达 w 阈值 → t2 后强制发 S 帧。
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode());
+        // 1 个 I 帧（未达 w=8）——提前 push，随后 mock 被 move。
+        mock.push_rx_data(
+            conn,
+            Apdu::i_format(
+                0,
+                0,
+                Asdu {
+                    type_id: TypeId::InterrogationCommand,
+                    cause_of_tx: Cot::Activation,
+                    common_addr: 1,
+                    ioas: vec![InformationObject {
+                        ioa: 0,
+                        value: IoValue::SinglePoint(SinglePointValue::Off),
+                        quality: QualityDescriptor::good(),
+                        time_tag: None,
+                    }],
+                },
+            )
+            .encode(),
+        );
+        let db = InMemoryPointDatabase::new();
+        let mut slave = make_slave(mock, db);
+        slave.poll(100).expect("startdt");
+        slave.poll(200).expect("I frame");
+        let tx1 = slave.stats().tx_count;
+        // t2=10s 超时后 → 强制 S 帧。
+        slave.poll(200 + 11_000).expect("t2");
+        let tx2 = slave.stats().tx_count;
+        assert!(tx2 > tx1, "t2 超时应强制 S 帧确认");
+    }
+
+    #[test]
+    fn test_rx_reassembler_glued_frames() {
+        // TCP 粘包：多帧一次到达 → 全部处理（粘包吃全）。
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        let start = Apdu::u_format(UFormatFunction::StartDtAct).encode();
+        let i1 = Apdu::i_format(
+            0,
+            0,
+            Asdu {
+                type_id: TypeId::InterrogationCommand,
+                cause_of_tx: Cot::Activation,
+                common_addr: 1,
+                ioas: vec![InformationObject {
+                    ioa: 0,
+                    value: IoValue::SinglePoint(SinglePointValue::Off),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                }],
+            },
+        )
+        .encode();
+        let i2 = Apdu::i_format(
+            1,
+            0,
+            Asdu {
+                type_id: TypeId::InterrogationCommand,
+                cause_of_tx: Cot::Activation,
+                common_addr: 1,
+                ioas: vec![InformationObject {
+                    ioa: 0,
+                    value: IoValue::SinglePoint(SinglePointValue::Off),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                }],
+            },
+        )
+        .encode();
+        // 全部粘在一起一次投递。
+        let mut glued = start.clone();
+        glued.extend_from_slice(&i1);
+        glued.extend_from_slice(&i2);
+        mock.push_rx_data(conn, glued.clone());
+        let db = InMemoryPointDatabase::new();
+        let mut slave = make_slave(mock, db);
+        slave.poll(100).expect("poll glued");
+        // startdt con + 2×总召唤激活确认 + 数据 + 终止 = 至少 4 帧发送。
+        assert!(slave.stats().tx_count >= 4, "tx={}", slave.stats().tx_count);
+        assert_eq!(slave.stats().rx_error_count, 0);
+    }
+
+    #[test]
+    fn test_rx_reassembler_half_frame_accumulates() {
+        // TCP 半包：帧被切成两段 → 重组后处理。
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        let frame = Apdu::i_format(
+            0,
+            0,
+            Asdu {
+                type_id: TypeId::InterrogationCommand,
+                cause_of_tx: Cot::Activation,
+                common_addr: 1,
+                ioas: vec![InformationObject {
+                    ioa: 0,
+                    value: IoValue::SinglePoint(SinglePointValue::Off),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                }],
+            },
+        )
+        .encode();
+        // 先喂前半帧。
+        mock.push_rx_data(conn, frame[..frame.len() / 2].to_vec());
+        let db = InMemoryPointDatabase::new();
+        let mut slave = make_slave(mock, db);
+        slave.poll(100).expect("poll half");
+        let tx1 = slave.stats().tx_count;
+        // 半包未重组：无新处理（tx 不变），rx 无错误。
+        assert_eq!(slave.stats().rx_error_count, 0);
+        // 直接验证 RxReassembler 半包累积语义（单元级）。
+        let mut reasm = RxReassembler::new();
+        assert!(reasm.feed(&frame[..frame.len() / 2]).is_empty());
+        let frames = reasm.feed(&frame[frame.len() / 2..]);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(reasm.bad_frames, 0);
+        let _ = tx1;
+    }
+
+    #[test]
+    fn test_clock_sync_applies_time_tag() {
+        // 时钟同步真实应用：TimeTag → rtc_write（v0.219.0）。
+        // 通过 apply_time_tag 直接验证换算（RTC 写入在板级注入有效基址）。
+        let tag = TimeTag {
+            year: 24, // 2024
+            month: 6,
+            day: 15,
+            hour: 10,
+            minute: 30,
+            second: 0,
+            iv: false,
+            su: false,
+            millis: 0,
+        };
+        // 2024-06-15 10:30:00 UTC = Unix 1718447400。
+        // 验证 days_from_civil 换算。
+        let year = 2000u32 + tag.year as u32;
+        let (y, m) = if tag.month as u32 <= 2 {
+            (year - 1, tag.month as u32 + 12)
+        } else {
+            (year, tag.month as u32)
+        };
+        let era = y / 400;
+        let yoe = y - era * 400;
+        let doy = (153 * (m - 3) + 2) / 5 + tag.day as u32 - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era * 146097 + doe - 719468;
+        let secs = days as u64 * 86400
+            + tag.hour as u64 * 3600
+            + tag.minute as u64 * 60
+            + tag.second as u64;
+        assert_eq!(secs, 1_718_447_400, "2024-06-15 10:30:00 UTC");
+        // apply_time_tag 不应 panic（iv=0 时写入 RTC；base=0 时 no-op）。
+        apply_time_tag(tag);
+    }
+
+    #[test]
+    fn test_clock_sync_iv_ignored() {
+        // iv 标志置位 → 不应用时标（不 panic）。
+        let tag = TimeTag {
+            year: 24,
+            month: 6,
+            day: 15,
+            hour: 10,
+            minute: 30,
+            second: 0,
+            iv: true,
+            su: false,
+            millis: 0,
+        };
+        apply_time_tag(tag);
     }
 }

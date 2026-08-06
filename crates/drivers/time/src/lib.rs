@@ -36,4 +36,4 @@ pub use api::{
 };
 pub use hrtimer::{HrTimer, TimerId, TimerWheel};
 pub use monotonic::MonotonicClock;
-pub use rtc::{Pl031Rtc, RtcTime, TimeStamp};
+pub use rtc::{secs_to_rtc, Pl031Rtc, RtcTime, TimeStamp};

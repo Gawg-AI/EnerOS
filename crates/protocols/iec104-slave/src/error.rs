@@ -23,6 +23,15 @@ pub enum Iec104Error {
     PointNotFound,
     /// 非法类型标识
     InvalidTypeId,
+    /// 序号不连续/重放（v0.219.0）
+    SeqMismatch {
+        /// 期望序号
+        expected: u16,
+        /// 实际序号
+        actual: u16,
+    },
+    /// k 窗口打满（v0.219.0）
+    WindowFull,
 }
 
 impl fmt::Display for Iec104Error {
@@ -37,6 +46,11 @@ impl fmt::Display for Iec104Error {
             Self::ConnectionClosed => write!(f, "iec104 connection closed"),
             Self::PointNotFound => write!(f, "iec104 point not found"),
             Self::InvalidTypeId => write!(f, "iec104 invalid type id"),
+            Self::SeqMismatch { expected, actual } => write!(
+                f,
+                "iec104 sequence mismatch: expected {expected}, got {actual}"
+            ),
+            Self::WindowFull => write!(f, "iec104 k-window full"),
         }
     }
 }
