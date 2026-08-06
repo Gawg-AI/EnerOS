@@ -74,3 +74,7 @@ pub trait AccountManager {
     /// 解冻：释放已冻结的金额
     fn unfreeze(&mut self, freeze_id: u64) -> Result<(), EconError>;
 }
+
+
+#[cfg(all(test, feature = "loom"))]
+pub mod loom_freeze;

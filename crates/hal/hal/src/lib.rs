@@ -188,8 +188,9 @@ pub fn init_hal(provider: &'static dyn HalProvider) {
 /// # Panics
 /// Panics if [`init_hal`] has not been called yet.
 pub fn hal() -> &'static dyn HalProvider {
-    // SAFETY: `HAL` 为 OnceLock 初始化的全局单例；`init_hal()` 在 boot
-    // 期间调用，此后 `get()` 恒返回 Some（expect 仅在未初始化时 panic）。
+    // SAFETY: `HAL` 为 boot 期 write-once 的全局单例（见 `init_hal` 的
+    // # Safety 契约）；`init_hal()` 在 boot 期间调用，此后读取恒为
+    // Some（expect 仅在未初始化时 panic——这是启动顺序 bug，应尽早暴露）。
     unsafe { HAL.expect("HAL not initialized: call init_hal() during boot first") }
 }
 

@@ -8,3 +8,10 @@ description = "EnerOS 指标采集 (v0.120.0) — Metrics 注册/采集/缓冲�
 
 [dependencies]
 heapless = { version = "0.8", default-features = false }
+# v0.247.0（C-247）：increment 丢失更新并发模型验证（loom；feature 门控）。
+loom = { version = "0.7", optional = true }
+
+[features]
+default = []
+# v0.247.0（C-247）：loom 并发模型检验。
+loom = ["dep:loom"]

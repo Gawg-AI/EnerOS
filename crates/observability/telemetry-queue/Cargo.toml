@@ -8,3 +8,11 @@ description = "EnerOS 远程遥测队列 + 隐私 opt-in (OBS-013/014), no_std"
 
 [dependencies]
 heapless = { version = "0.8", default-features = false }
+# v0.247.0（C-247）：队列并发模型验证（loom；feature 门控，仅在
+# cfg(all(test, feature="loom")) 下编译使用）。
+loom = { version = "0.7", optional = true }
+
+[features]
+default = []
+# v0.247.0（C-247）：loom 并发模型检验。
+loom = ["dep:loom"]

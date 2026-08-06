@@ -47,6 +47,13 @@ jobs:
       - name: BumpAllocator loom concurrency model (C-243 gate)
         run: cargo test --locked -p eneros-services --features loom --lib loom_allocator
 
+      - name: Concurrency loom models (C-247 gate: account/p2p-match/metrics/telemetry-queue)
+        run: |
+          cargo test --locked -p eneros-account --features loom --lib loom_freeze
+          cargo test --locked -p eneros-p2p-match --features loom --lib loom_orderbook
+          cargo test --locked -p eneros-metrics --features loom --lib loom_increment
+          cargo test --locked -p eneros-telemetry-queue --features loom --lib loom_queue
+
       - name: seL4 kernel toolchain cache (restore)
         uses: actions/cache@v4
         with:
