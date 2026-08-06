@@ -46,7 +46,10 @@
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
 pub mod chain;
+pub mod manifest;
 pub mod header;
 pub mod report;
 pub mod root_of_trust;
@@ -78,6 +81,10 @@ pub enum BootError {
     SignatureInvalid,
     /// 镜像时间戳低于防降级下限 `min_timestamp`（拒绝降级启动）.
     StaleImage,
+    /// Bootloader 镜像内嵌 manifest 不存在（v0.235.0）.
+    ManifestNotFound,
+    /// Manifest 损坏（magic/版本/公钥长度非法，v0.235.0）.
+    ManifestCorrupt,
     /// 启动阶段顺序错误（`verify_stage` 的 stage 必须与当前阶段一致，强制逐级）.
     WrongStage,
     /// 缺少下级验签密钥（Kernel/Runtime 验签时 stage_key 未安装，或
