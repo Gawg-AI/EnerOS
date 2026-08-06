@@ -1038,6 +1038,7 @@ mod tests {
     // ===== T59：LatencyProbe::new() 字段初始化 =====
     #[test]
     fn test_t59_latency_probe_new_fields() {
+        let _guard = lock_statics();
         reset_statics();
         let probe = LatencyProbe::new(test_clock, test_sleep);
         assert_eq!(probe.sample_count, 0);
@@ -1082,6 +1083,7 @@ mod tests {
     // ===== T62：measure_round_trip send 失败 — 返回 Err(()) =====
     #[test]
     fn test_t62_measure_round_trip_send_failure() {
+        let _guard = lock_statics();
         reset_statics();
         let mut probe = LatencyProbe::new(test_clock, test_sleep);
         let mut send = || Err::<(), ()>(());
@@ -1134,6 +1136,7 @@ mod tests {
     // ===== T65：run_burst 全失败 — samples=0, 返回 DelayStats::default() =====
     #[test]
     fn test_t65_run_burst_all_fail() {
+        let _guard = lock_statics();
         reset_statics();
         let mut probe = LatencyProbe::new(test_clock, test_sleep);
         let stats = probe.run_burst(10, Duration::from_millis(1), || Err::<(), ()>(()));
@@ -1147,6 +1150,7 @@ mod tests {
     // ===== T66：run_burst 混合 — 5 成功 5 失败 — samples=5 =====
     #[test]
     fn test_t66_run_burst_mixed() {
+        let _guard = lock_statics();
         reset_statics();
         static CALL_COUNT: AtomicU64 = AtomicU64::new(0);
         CALL_COUNT.store(0, Ordering::SeqCst);
@@ -1168,6 +1172,7 @@ mod tests {
     // ===== T67：run 持续测量到 deadline — 收集约 5 样本 =====
     #[test]
     fn test_t67_run_collects_until_deadline() {
+        let _guard = lock_statics();
         reset_statics();
         // 使用推进时钟：每次读返回旧值并自增 100µs
         static ADV_CLOCK: AtomicU64 = AtomicU64::new(0);
@@ -1192,6 +1197,7 @@ mod tests {
     // ===== T68：run 零时长 — 单次迭代后退出（clock_fn 不推进）=====
     #[test]
     fn test_t68_run_zero_duration_no_loop() {
+        let _guard = lock_statics();
         reset_statics();
         let mut probe = LatencyProbe::new(test_clock, test_sleep);
         // clock_fn 始终返回 0；duration=0 → deadline=0
@@ -1205,6 +1211,7 @@ mod tests {
     // ===== T69：compute_stats 空结果 — 返回 Default =====
     #[test]
     fn test_t69_compute_stats_empty() {
+        let _guard = lock_statics();
         reset_statics();
         let probe = LatencyProbe::new(test_clock, test_sleep);
         let stats = probe.compute_stats();
@@ -1215,6 +1222,7 @@ mod tests {
     // ===== T70：compute_stats 单样本 — 所有统计等于该样本, jitter=0 =====
     #[test]
     fn test_t70_compute_stats_single_sample() {
+        let _guard = lock_statics();
         reset_statics();
         let mut probe = LatencyProbe::new(test_clock, test_sleep);
         probe.results.push(Duration::from_micros(500));
@@ -1231,6 +1239,7 @@ mod tests {
     // ===== T71：compute_stats 多样本 — 验证 min/max/mean/p99/p999/jitter =====
     #[test]
     fn test_t71_compute_stats_multiple_samples() {
+        let _guard = lock_statics();
         reset_statics();
         let mut probe = LatencyProbe::new(test_clock, test_sleep);
         // 推入 100µs, 200µs, 300µs, 400µs, 500µs
@@ -1267,6 +1276,7 @@ mod tests {
     // ===== T73：measure_e2e 与 driver_send_closure 集成 =====
     #[test]
     fn test_t73_measure_e2e_with_driver_send_closure() {
+        let _guard = lock_statics();
         reset_statics();
         let mut driver = MockTsnDriver::new();
         let mut probe = LatencyProbe::new(test_clock, test_sleep);
@@ -1284,6 +1294,7 @@ mod tests {
     // ===== T74：measure_under_load background_load 在每轮调用 =====
     #[test]
     fn test_t74_measure_under_load_background_called() {
+        let _guard = lock_statics();
         reset_statics();
         static BG_COUNT: AtomicU64 = AtomicU64::new(0);
         BG_COUNT.store(0, Ordering::SeqCst);
@@ -1331,6 +1342,7 @@ mod tests {
     // ===== T76：measure_under_load 全成功 — samples=10 =====
     #[test]
     fn test_t76_measure_under_load_full_success() {
+        let _guard = lock_statics();
         reset_statics();
         static BG_COUNT: AtomicU64 = AtomicU64::new(0);
         BG_COUNT.store(0, Ordering::SeqCst);
