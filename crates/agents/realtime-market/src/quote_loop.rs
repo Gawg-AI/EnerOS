@@ -64,10 +64,9 @@ impl RealtimeLoop {
         Ok(())
     }
 
-    /// 生成模拟出清结果 (用于测试/仿真)
-    ///
-    /// 以报价价格的 95% 作为出清价格，报价电量的 90% 作为出清电量
-    pub fn mock_clearing(quote: &RealtimeQuote, cleared_at: u64) -> RealtimeClearing {
+    /// 生成模拟出清结果（v0.229.0 起仅测试使用——生产出清经 gateway）。
+    #[cfg(test)]
+    fn mock_clearing(quote: &RealtimeQuote, cleared_at: u64) -> RealtimeClearing {
         RealtimeClearing {
             session_id: quote.session_id,
             seq: quote.seq,

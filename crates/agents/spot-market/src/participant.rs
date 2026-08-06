@@ -49,8 +49,9 @@ impl MockParticipant {
         }
     }
 
-    /// 注入出清结果（模拟市场运营方）
-    pub fn inject_clearing(&mut self, result: ClearingResult) {
+    /// 注入出清结果（v0.229.0 起仅测试——生产出清经 [`crate::gateway`]）。
+    #[cfg(test)]
+    fn inject_clearing(&mut self, result: ClearingResult) {
         let bid_id = result.bid_id;
         self.clearings.insert(bid_id, result);
         if let Some(tracker) = self.trackers.get_mut(&bid_id) {

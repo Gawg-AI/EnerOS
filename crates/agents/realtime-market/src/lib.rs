@@ -13,6 +13,7 @@
 extern crate alloc;
 
 pub mod quote;
+pub mod gateway;
 pub mod quote_loop;
 pub mod session;
 pub mod types;

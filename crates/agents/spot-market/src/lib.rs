@@ -14,6 +14,7 @@ extern crate alloc;
 
 pub mod bid;
 pub mod clearing;
+pub mod gateway;
 pub mod participant;
 pub mod tracker;
 pub mod types;
