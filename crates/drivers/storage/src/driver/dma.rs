@@ -1,7 +1,7 @@
 //! DMA transfer abstraction and mock implementation.
 //!
 //! [`DmaBuffer`] wraps a raw pointer plus physical address for DMA descriptor
-//! construction. [`MockDmaTransfer`] implements [`DmaTransfer`] using a plain
+//! construction. `MockDmaTransfer` implements `DmaTransfer` using a plain
 //! `Vec<u8>` backing store so the DMA code path is exercisable on the host.
 
 #[cfg(test)]

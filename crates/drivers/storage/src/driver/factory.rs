@@ -14,9 +14,9 @@ use crate::error::StorageError;
 /// Creates a block device driver matching `config.storage_type`.
 ///
 /// - [`StorageType::VirtioBlk`] — real virtio-blk driver (QEMU-verifiable,
-///   virtio-mmio transport). Requires a concrete [`VirtioMmio`]/[`DmaPool`]/
-///   [`ArmCache`] wiring; `create_block_device` is the host-test entry that
-///   wires them, while target builds construct [`VirtioBlkDriver`] directly.
+///   virtio-mmio transport). Requires a concrete `VirtioMmio`/`DmaPool`/
+///   `ArmCache` wiring; `create_block_device` is the host-test entry that
+///   wires them, while target builds construct `VirtioBlkDriver` directly.
 /// - [`StorageType::Emmc`] — real eMMC driver over a RAM-simulated
 ///   controller (QEMU sd model equivalent, v0.215.0 B1-03). Target builds
 ///   construct [`EmmcDriver`] with a volatile MMIO backend.

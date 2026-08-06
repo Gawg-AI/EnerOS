@@ -5,7 +5,7 @@
 //! - `sel4_target` (set when `target_os = "none"`, i.e. the seL4 userland
 //!   target `aarch64-unknown-none`): real libsel4 link. `build.rs` compiles
 //!   `shim/sel4_shim.c` against the generated libsel4 headers and links
-//!   `libsel4.a` + `libgcc.a`. The [`ffi`] module declares the extern "C"
+//!   `libsel4.a` + `libgcc.a`. The `ffi` module declares the extern "C"
 //!   bindings to the shim; [`types`] holds the matching Rust types.
 //!
 //! - `host_build` (set for any other target, e.g. `cargo test` on x86_64):

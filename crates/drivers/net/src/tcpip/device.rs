@@ -25,7 +25,7 @@ use crate::mac::NetDevice;
 /// trait.
 ///
 /// Maintains an internal `rx_queue` of received frames. The caller must call
-/// [`recv_frame`] before [`poll`](super::interface::NetworkInterface::poll) to
+/// `recv_frame` before [`poll`](super::interface::NetworkInterface::poll) to
 /// drain frames from the hardware into the queue.
 pub struct SmolcpDevice<D: NetDevice> {
     /// The underlying network device (MAC controller or mock).

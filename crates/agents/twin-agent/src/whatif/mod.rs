@@ -8,7 +8,7 @@
 //! - **D8**：蓝图 `sim_state.apply(action)`（`TwinModel` 无此方法）→ 自由函数 [`apply_action`]
 //!   （model.rs 零改动，Surgical）。
 //! - **D9**：[`AnalyticalSimModel`] 简化解析模型——仅 SOC 线性推演
-//!   （`soc -= power × hours / capacity`，clamp [0,1]），grid/market/last_update 透传。
+//!   （`soc -= power × hours / capacity`，clamp `[0,1]`），grid/market/last_update 透传。
 //! - **D10**：仿真发散 → [`WhatIfError::Diverged`] → analyze 转 `Ok` 且 `risk_level = Critical`
 //!   + outcomes 空；模型不可用 → [`WhatIfError::ModelUnavailable`] → analyze 透传 `Err` 拒绝分析。
 //! - **D11**：[`compute_outcomes`] 固定 3 指标（`grid_active_power` / `total_device_power` /

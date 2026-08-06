@@ -12,7 +12,7 @@ use crate::stats::{EngineHealth, EngineStats};
 ///
 /// 提供模型加载、推理、流式推理、模型信息查询、健康检查、统计查询 6 个方法。
 /// 实现方包括 [`crate::mock::MockEngine`]（默认可用）与
-/// [`crate::llama_cpp::LlamaCppEngine`]（feature = "llama-cpp"，D3）。
+/// `crate::llama_cpp::LlamaCppEngine`（feature = "llama-cpp"，D3）。
 pub trait LlmEngine {
     /// 加载模型.
     ///

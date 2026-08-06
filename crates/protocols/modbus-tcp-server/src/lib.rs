@@ -9,7 +9,7 @@
 //!
 //! # Write path (control-gateway 纵向闭环)
 //!
-//! Writes are **default-deny**: with no [`AuthorizedCommand`] installed every
+//! Writes are **default-deny**: with no `AuthorizedCommand` installed every
 //! write (0x05/0x06/0x0F/0x10) is answered with `IllegalFunction` and no
 //! register is modified. A caller that has obtained an `AuthorizedCommand`
 //! from the control gateway installs it with

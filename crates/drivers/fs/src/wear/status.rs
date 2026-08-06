@@ -82,7 +82,7 @@ impl fmt::Display for WearDistribution {
 
 /// A snapshot of the storage subsystem's wear-leveling health.
 ///
-/// Returned by [`WearLevelManager::wear_level_status`](crate::wear::WearLevelManager::wear_level_status)
+/// Returned by [`WearLeveling::wear_level_status`](crate::wear::manager::WearLeveling::wear_level_status)
 /// and the global [`wear_level_status`](crate::wear::wear_level_status) function.
 #[derive(Clone, Debug, Default)]
 pub struct WearStatus {

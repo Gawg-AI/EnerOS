@@ -128,8 +128,8 @@ pub struct TransferRecord {
 /// 同步下发至 RTOS 快平面控制任务，返回命令执行耗时 `elapsed_ms`。
 ///
 /// 不要求 `Send + Sync`（no_std 单线程）。失败时返回 [`TransferError`]：
-/// - [`ChannelError`] — 通道下发失败（队列满/通信错误）
-/// - [`ChannelTimeout`] — 通道下发超时
+/// - [`TransferError::ChannelError`] — 通道下发失败（队列满/通信错误）
+/// - [`TransferError::ChannelTimeout`] — 通道下发超时
 pub trait RtosChannel {
     /// 下发紧急切换命令，返回 `elapsed_ms`（命令执行耗时）.
     ///

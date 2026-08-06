@@ -22,7 +22,7 @@ use crate::report::DeployReport;
 ///
 /// 泛型 `E: LlmEngine` 解耦具体引擎实现（D2）。默认使用
 /// [`MockDeployBackend`]（D12），可通过 [`DeployVerifier::with_backend`] 注入
-/// 自定义后端（如 [`crate::llama_backend::LlamaDeployBackend`]）。
+/// 自定义后端（如 `LlamaDeployBackend`）。
 pub struct DeployVerifier<E: LlmEngine> {
     /// 推理引擎.
     pub engine: E,

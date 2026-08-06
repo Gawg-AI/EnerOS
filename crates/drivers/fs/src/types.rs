@@ -147,7 +147,7 @@ pub enum SeekFrom {
 // FileStat
 // ============================================================================
 
-/// Metadata for a file or directory, returned by [`FileSystem::stat`].
+/// Metadata for a file or directory, returned by [`crate::FileSystem::stat`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileStat {
     /// Inode number (littlefs assigns a unique id per entry).
@@ -202,7 +202,7 @@ impl FileStat {
 // DirEntry
 // ============================================================================
 
-/// A directory entry, returned by [`FileSystem::readdir`].
+/// A directory entry, returned by [`crate::FileSystem::readdir`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirEntry {
     /// Entry name (last path component, not the full path).
@@ -237,7 +237,7 @@ impl DirEntry {
 // DiskUsage
 // ============================================================================
 
-/// Disk space usage summary, returned by [`FileSystem::df`].
+/// Disk space usage summary, returned by [`crate::FileSystem::df`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiskUsage {
     /// Total capacity in bytes.

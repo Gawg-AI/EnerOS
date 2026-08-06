@@ -18,7 +18,7 @@
 //! - UTCTime（YYMMDDHHMMSSZ，2 位年份：< 50 → 20XX，≥ 50 → 19XX）
 //! - GeneralizedTime（YYYYMMDDHHMMSSZ）
 //! - BOOLEAN / NULL
-//! - Context-specific [0]..[3] EXPLICIT（X.509 版本/扩展）
+//! - Context-specific `[0]`..`[3]` EXPLICIT（X.509 版本/扩展）
 //!
 //! # no_std 合规
 //! no_std 由 crate 根继承，本模块通过 `extern crate alloc` 引入堆分配。
@@ -59,9 +59,9 @@ pub const SET: u8 = 0x31;
 pub const UTC_TIME: u8 = 0x17;
 /// GeneralizedTime tag (0x18)
 pub const GENERALIZED_TIME: u8 = 0x18;
-/// Context-specific [0] constructed EXPLICIT (0xA0) — X.509 version
+/// Context-specific `[0]` constructed EXPLICIT (0xA0) — X.509 version
 pub const CONTEXT_0: u8 = 0xA0;
-/// Context-specific [3] constructed EXPLICIT (0xA3) — X.509 extensions
+/// Context-specific `[3]` constructed EXPLICIT (0xA3) — X.509 extensions
 pub const CONTEXT_3: u8 = 0xA3;
 
 // ============================================================================
@@ -333,9 +333,9 @@ impl<'a> DerReader<'a> {
         Ok(())
     }
 
-    /// 读取 context-specific [n] EXPLICIT，返回 content 的 DerReader.
+    /// 读取 context-specific `[n]` EXPLICIT，返回 content 的 DerReader.
     ///
-    /// X.509 中 [0] 用于版本，[3] 用于扩展。tag = 0xA0 | n。
+    /// X.509 中 `[0]` 用于版本，`[3]` 用于扩展。tag = 0xA0 | n。
     pub fn read_context_explicit(&mut self, n: u8) -> Result<DerReader<'a>, Asn1Error> {
         let expected_tag = 0xA0 | (n & 0x1F);
         let (tag, content) = self.read_element()?;
@@ -492,7 +492,7 @@ impl DerWriter {
         self.write_element(NULL, &[]);
     }
 
-    /// 写入 context-specific [n] EXPLICIT.
+    /// 写入 context-specific `[n]` EXPLICIT.
     ///
     /// tag = 0xA0 | n。content 为已编码的内部元素。
     pub fn write_context_explicit(&mut self, n: u8, content: &[u8]) {

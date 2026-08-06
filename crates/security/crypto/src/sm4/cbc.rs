@@ -54,7 +54,7 @@ impl Sm4Cbc {
     /// 加密明文，返回密文（含 PKCS#7 填充）.
     ///
     /// 始终应用 PKCS#7 填充（即使明文长度是 16 的倍数，也补一整块 16 字节）。
-    /// CBC 链：C[i] = E_K(P[i] XOR C[i-1])，C[0] 使用 IV。
+    /// CBC 链：C`[i]` = E_K(P`[i]` XOR C[i-1])，C`[0]` 使用 IV。
     pub fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
         // PKCS#7 填充：pad_len ∈ [1, 16]
         let pad_len = 16 - (plaintext.len() % 16);
@@ -79,7 +79,7 @@ impl Sm4Cbc {
 
     /// 解密密文，验证并去除 PKCS#7 填充后返回明文.
     ///
-    /// CBC 链：P[i] = D_K(C[i]) XOR C[i-1]，C[0] 使用 IV。
+    /// CBC 链：P`[i]` = D_K(C`[i]`) XOR C[i-1]，C`[0]` 使用 IV。
     /// 填充验证采用恒定时间比较（累积差异），避免提前返回的时序侧信道。
     ///
     /// # 错误

@@ -37,7 +37,7 @@ pub struct SourceHealth {
 /// Errors that can occur during a manual clock source switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwitchError {
-    /// The caller has not been authorized via [`holdover::authorize_switch`].
+    /// The caller has not been authorized via `holdover::authorize_switch`.
     NotAuthorized,
     /// The target source is currently unavailable (unhealthy).
     SourceUnavailable,
@@ -127,7 +127,7 @@ pub fn evaluate_sources() -> [SourceHealth; 3] {
 ///
 /// # Authorization
 ///
-/// The caller must have called [`holdover::authorize_switch`] beforehand.
+/// The caller must have called `holdover::authorize_switch` beforehand.
 /// Authorization is consumed (one-shot) regardless of whether the switch
 /// succeeds due to `AlreadyActive` or `SourceUnavailable`.
 ///

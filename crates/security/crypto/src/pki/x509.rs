@@ -316,7 +316,7 @@ impl SignatureAlgorithm {
 
     /// 从 DerReader 解析 AlgorithmIdentifier（reader 应位于 SEQUENCE tag 处）。
     ///
-    /// 读取 OID 后跳过参数字段（NULL 或其他），再调用 [`from_oid`]。
+    /// 读取 OID 后跳过参数字段（NULL 或其他），再调用 `from_oid`。
     pub fn decode_algorithm_identifier(reader: &mut DerReader) -> Result<Self, PkiError> {
         let mut alg = reader.read_sequence().map_err(asn1_err)?;
         let oid_bytes = alg.read_oid().map_err(asn1_err)?;

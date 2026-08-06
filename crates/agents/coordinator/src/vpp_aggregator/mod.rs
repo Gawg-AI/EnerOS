@@ -14,12 +14,12 @@
 //! | **D4** | `AggregatedDispatch.timestamp = now_ms`（u64 ms 外部时间注入）；`aggregate(&mut self)` 因 `aggregate_count` 计数器更新（内部 profile 计算为私有 `&self` 免计数） |
 //! | **D5** | `MarketData` 未派生 Default（v0.85.0 实现核实），蓝图 `MarketData::default()` 无法编译 → dispatch 增加 `market: &MarketData` 显式注入（净收益在 DomainPlan 内计算，v0.93.0 D12 链路透传） |
 //! | **D6** | `VppResource.online` + `set_online` / `set_available`（蓝图 §6.5 资源离线聚合重算、§5.4 容量动态变化）；离线资源从聚合与分配排除，状态保留便于恢复（v0.93.0 D8 惯例） |
-//! | **D7** | `VppResource` 增加 `efficiency: f32`（复用的 DomainOptimizer 损耗最小目标可区分高效/低效 DER，否则 LP 目标退化为常数；NaN→0.5 clamp [0,1]，v0.93.0 D12 一致） |
+//! | **D7** | `VppResource` 增加 `efficiency: f32`（复用的 DomainOptimizer 损耗最小目标可区分高效/低效 DER，否则 LP 目标退化为常数；NaN→0.5 clamp `[0,1]`，v0.93.0 D12 一致） |
 //! | **D8** | 复用 v0.93.0 `DomainOptimizer`：sync_boxes 将每在线资源映射为单设备 box（box_id=device_id=resource_id，`p_min=0`、`p_max=box capacity=available_mw`，`soc=1.0` 恒通过合格过滤）；"分配失败 → 重新优化"落地为 optimizer 内建容量比例兜底（不迭代重试 LP，v0.93.0 D10 惯例） |
 //! | **D9** | 3 个 pub 计数器 `aggregate_count`/`dispatch_count`/`reject_count`（拒绝 = InvalidTarget + InsufficientCapacity + NoResource 三路合计；聚合容量经 `VppProfile` 可观测） |
 //! | **D10** | 资源不足落地为**拒绝**（确定性）：`target_mw.abs() > profile.available_mw` → `Err(VppError::InsufficientCapacity)`（含负 target 充电场景，abs 判定） |
 //! | **D11** | `ramp_down = ramp_up` 对称实现（蓝图关键代码一致）；`ramp_rate` 非有限或 <0 → 按 0 计入 profile（ramp 仅上报不参与分配，不阻断调度） |
-//! | **D12** | NaN 防御（v0.88.0 C140 / v0.93.0 D12 教训）：capacity 非有限或 ≤0 → 资源从聚合排除；available 非有限 → 0 且 clamp [0, capacity]；efficiency NaN→0.5 clamp [0,1]；price 非有限 → bid price 按 0+margin。复用 domain_optimizer 的 `sanitize_capacity`/`sanitize_efficiency`/`sanitize_price`（可见性放宽为 `pub(crate)`，零逻辑改动） |
+//! | **D12** | NaN 防御（v0.88.0 C140 / v0.93.0 D12 教训）：capacity 非有限或 ≤0 → 资源从聚合排除；available 非有限 → 0 且 clamp [0, capacity]；efficiency NaN→0.5 clamp `[0,1]`；price 非有限 → bid price 按 0+margin。复用 domain_optimizer 的 `sanitize_capacity`/`sanitize_efficiency`/`sanitize_price`（可见性放宽为 `pub(crate)`，零逻辑改动） |
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -59,7 +59,7 @@ pub struct VppResource {
     pub available_mw: f32,
     /// 爬坡速率（MW·min⁻¹；非有限或 <0 → 按 0 计入，D11）.
     pub ramp_rate: f32,
-    /// 转换效率（0~1；NaN → 0.5 中性 clamp [0,1]，D7/D12）.
+    /// 转换效率（0~1；NaN → 0.5 中性 clamp `[0,1]`，D7/D12）.
     pub efficiency: f32,
     /// 资源类型.
     pub type_: ResourceType,

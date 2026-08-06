@@ -20,7 +20,7 @@ pub trait IncrementalTrainer {
 ///
 /// 使用简化的权重更新规则：
 /// - 梯度 = features 均值（模拟）
-/// - weights[i] -= lr * gradient[i % features.len()]
+/// - weights`[i]` -= lr * gradient[i % features.len()]
 /// - loss = 权重变化量的 MSE
 pub struct IncrementalTrainerImpl {
     /// 微调状态.

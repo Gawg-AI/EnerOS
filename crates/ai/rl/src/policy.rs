@@ -25,7 +25,7 @@ impl ActionSampler for DeterministicSampler {
 
 /// 策略推理：state × weights → action logits → 采样.
 ///
-/// Mock 实现：简单矩阵乘法 state[W] → logits。
+/// Mock 实现：简单矩阵乘法 state`[W]` → logits。
 pub fn policy_act(policy: &AgentPolicy, state: &[f32]) -> Result<Vec<f32>, RlError> {
     if state.len() != policy.state_dim {
         return Err(RlError::StateDimMismatch);

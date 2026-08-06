@@ -1,7 +1,7 @@
 //! EnerOS v0.93.0 Edge Coordinator 域级优化.
 //!
 //! 收集域内 Edge Box 状态 → 构建域级 LP（域平衡 + 各 box 容量约束，损耗最小目标）
-//! → Solver 求解 → 按 box 聚合 [`DispatchPlan`] 下发；Solver 失败回退容量比例分摊
+//! → Solver 求解 → 按 box 聚合 [`eneros_energy_market_agent::DispatchPlan`] 下发；Solver 失败回退容量比例分摊
 //! 兜底（D10）。复用 v0.87.0 `DevicePool`/`DeviceCapability`/`DispatchPlan`/`equal_split`
 //! 与 v0.64.0 `Solver`/`LpProblem`，使园区级整体收益优于单机独立调度，为 v0.94.0
 //! VPP 聚合提供优化基础。
@@ -20,7 +20,7 @@
 //! | **D9** | 3 个 pub 计数器 `optimize_count`/`fallback_count`/`empty_count`（v0.92.0 D9 惯例；收益经 `DomainPlan.total_revenue` 可观测） |
 //! | **D10** | 确定性容量比例兜底（不迭代重试 LP）：solver Err / Infeasible / 解长度不符 → 参与 box 按 `capacity_mw` 比例分摊 + 复用 `equal_split`；`objective_value = 0.0`（失败为兜底非错误） |
 //! | **D11** | `target_mw > Σ在线 capacity` → clamp 到总在线容量后再建 LP（构造保证不超发，不报错中断调度）；target 非有限 → `Err(InvalidTarget)` |
-//! | **D12** | 净收益 `total_revenue = price × (total_power − total_loss)`（`total_loss = Σ(1−eff_i)·p_i`）；NaN 防御：soc NaN/≤0 → 按耗尽跳过设备；capacity 非有限/≤0 → 排除 box；eff NaN → 0.5 且 clamp [0,1]；price 非有限 → 0.0 |
+//! | **D12** | 净收益 `total_revenue = price × (total_power − total_loss)`（`total_loss = Σ(1−eff_i)·p_i`）；NaN 防御：soc NaN/≤0 → 按耗尽跳过设备；capacity 非有限/≤0 → 排除 box；eff NaN → 0.5 且 clamp `[0,1]`；price 非有限 → 0.0 |
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -50,7 +50,7 @@ pub struct EdgeBoxState {
 /// 域级优化计划（D2/D6/D12）.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DomainPlan {
-    /// 各 Edge Box 下发计划（box_id → [`DispatchPlan`]，BTreeMap 确定性顺序）.
+    /// 各 Edge Box 下发计划（box_id → [`eneros_energy_market_agent::DispatchPlan`]，BTreeMap 确定性顺序）.
     pub box_plans: BTreeMap<u64, DispatchPlan>,
     /// 域级净收益（D12：`price × (total_power − total_loss)`）.
     pub total_revenue: f32,

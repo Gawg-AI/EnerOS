@@ -165,7 +165,7 @@ impl WearLevelManager {
 
     /// Returns `true` if the wear-leveling balance exceeds the GC threshold.
     ///
-    /// When this returns `true`, [`trigger_wear_leveling`] should be called
+    /// When this returns `true`, [`crate::wear::trigger_wear_leveling`] should be called
     /// to initiate block migration.
     pub fn needs_wear_leveling(&self) -> bool {
         let status = self.wear_level_status();

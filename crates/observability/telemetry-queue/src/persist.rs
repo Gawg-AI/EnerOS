@@ -1,6 +1,6 @@
 //! 遥测队列持久化与导出（v0.238.0，B5-01）。
 //!
-//! - [`fs_persist`] — 队列经 eneros-fs 落盘（行式，重启补传）；
+//! - `fs_persist` — 队列经 eneros-fs 落盘（行式，重启补传）；
 //! - [`persist_snapshot`] / [`load_snapshot`] — 快照读写（幂等断点：
 //!   记录已确认发送的 `last_acked_id`，重启后从断点继续）；
 //! - [`OtlpExporter`] — OTLP 兼容 exporter（注入 HTTP 闭包，host 可

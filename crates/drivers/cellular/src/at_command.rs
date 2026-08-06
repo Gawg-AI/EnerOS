@@ -110,7 +110,7 @@ impl AtParser {
     /// Parse a raw modem response into an [`AtResponse`].
     ///
     /// - Empty/whitespace → [`AtResponse::Timeout`]
-    /// - `+CMD: value` line → [`AtResponse::Ok(value)`] (takes priority)
+    /// - `+CMD: value` line → [`AtResponse::Ok`] (takes priority)
     /// - Contains `ERROR` → [`AtResponse::Error`]
     /// - Contains `OK` → [`AtResponse::Ok`]
     pub fn parse_response(raw: &str) -> Result<AtResponse, CellularError> {

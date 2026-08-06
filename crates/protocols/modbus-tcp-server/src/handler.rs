@@ -48,7 +48,7 @@ pub enum WritePolicy<'a> {
 
 /// Backing register store. The slave serves holding registers out of this.
 pub struct RegisterStore {
-    /// Holding registers, indexed by address. address 0 -> regs[0].
+    /// Holding registers, indexed by address. address 0 -> regs`0`.
     pub regs: Vec<u16>,
 }
 

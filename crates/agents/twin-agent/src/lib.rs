@@ -94,7 +94,7 @@
 //! | **D6** | `tests/whatif.rs` 独立集成测试 | src 内嵌单元测试 T1~T40（项目惯例）；分析 <1s 标注**集成阶段验收** |
 //! | **D7** | 蓝图 `Vec<Action>` 但 `Action` 类型未定义 | 本地定义 4 变体：`SetDevicePower { device_id, power: f64 }` / `RemoveDevice { device_id }` / `SetGridPower { active_power: f32 }` / `SetMarketPrice { price: f32 }`（覆盖 TwinModel 设备/电网/市场三面） |
 //! | **D8** | 蓝图 `sim_state.apply(action)`（TwinModel 无此方法） | `whatif.rs` 内自由函数 `apply_action(state: &mut TwinModel, action: &Action)`（model.rs 零改动，Surgical） |
-//! | **D9** | 选型"简化解析模型 ⭐ 实时" | `AnalyticalSimModel { battery_capacity_kwh: f64 }`：仅 SOC 线性推演（`soc -= power × hours / capacity`，clamp [0,1]），grid/market 透传；详细动态仿真/蒙特卡洛后续版本 |
+//! | **D9** | 选型"简化解析模型 ⭐ 实时" | `AnalyticalSimModel { battery_capacity_kwh: f64 }`：仅 SOC 线性推演（`soc -= power × hours / capacity`，clamp `[0,1]`），grid/market 透传；详细动态仿真/蒙特卡洛后续版本 |
 //! | **D10** | §4.4"仿真发散 → 标记高风险"+"模型不可用 → 拒绝分析" | `WhatIfError { ModelUnavailable, Diverged }`；`SimModel::run` 返回 `Err(Diverged)` → analyze 转 `Ok(result)` 且 `risk_level = Critical` + outcomes 空；`Err(ModelUnavailable)` → analyze 拒绝（透传 Err） |
 //! | **D11** | `compute_outcomes`/`assess_risk` 蓝图仅骨架未定义 | 本版本定义 3 指标：`grid_active_power` / `total_device_power` / `min_soc`（空设备 min_soc=1.0 中性）；风险规则取最重：min_soc ≤ 0 → Critical；min_soc < 0.2 → High；grid 功率相对波动 > 50% → Medium；else Low |
 //! | **D12** | —（蓝图未覆盖） | NaN/Inf 防御（v0.88.0 C140 教训）：action/sim 中非有限功率复用 `model_forecast::sanitize` 按 0.0；`battery_capacity_kwh` 非有限或 ≤ 0 → 默认 100.0 |

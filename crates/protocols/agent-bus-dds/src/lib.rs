@@ -1,7 +1,7 @@
 //! EnerOS v0.77.0 DDS 中间件集成与 Rust 封装（Phase 2 P2-A 路由层）.
 //!
 //! Agent Bus 三层总线之一的 DDS 发布/订阅抽象。提供统一的 [`node::DdsNode`] trait、
-//! [`mock::MockDdsNode`]（默认可用，纯 Rust）与 [`cyclone_dds::CycloneDdsNode`]
+//! [`mock::MockDdsNode`]（默认可用，纯 Rust）与 `CycloneDdsNode`
 //!（feature = "cyclone-dds"，封装 Eclipse Cyclone DDS C 库），并在 v0.76.0 引入
 //! 语义层：[`topic::TopicSpec`] / [`topic::TopicCategory`] / [`topic::standard_topics`]
 //! / [`registry::TopicRegistry`] / 扩展的 [`qos::QosPolicy`]（含 deadline/lifespan/priority）。
@@ -18,7 +18,7 @@
 //!
 //! - [`node::DdsNode`] — DDS 节点统一 trait（D2 无 Send + Sync bound，D7 合并 reader/writer）
 //! - [`mock::MockDdsNode`] — 默认可用的 Mock 实现（D3，纯 Rust）
-//! - [`cyclone_dds::CycloneDdsNode`] — Cyclone DDS C 库实现（feature = "cyclone-dds"，D3）
+//! - `CycloneDdsNode` — Cyclone DDS C 库实现（feature = "cyclone-dds"，D3）
 //! - [`config::DdsConfig`] / [`config::DiscoveryPolicy`] — 节点配置与发现策略（D5 / D6）
 //! - [`qos::QosPolicy`] / [`qos::Reliability`] / [`qos::Durability`] / [`qos::History`] — QoS 策略（D2/D3：History::KeepLast(u32) + deadline/lifespan/priority）
 //! - [`topic::TopicSpec`] / [`topic::TopicCategory`] / [`topic::PayloadType`] / [`topic::TopicError`] / [`topic::standard_topics`] / [`topic::validate_topic_name`] — Topic 语义层（v0.76.0 新增）

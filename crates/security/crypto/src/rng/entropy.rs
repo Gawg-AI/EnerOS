@@ -4,7 +4,7 @@
 //! - [`EntropySource`]：统一熵源接口（32 字节块输出）；
 //! - [`platform_entropy_source`]：按编译配置选择平台源（fail-closed，
 //!   无可用源时返回 [`EntropyError::Unavailable`]，绝不静默回退固定种子）；
-//! - [`CsRng::from_platform`]：平台熵 → `from_seed` 注入闭环。
+//! - `CsRng::from_platform`：平台熵 → `from_seed` 注入闭环。
 //!
 //! 平台现状：
 //! - `PhytiumTrng` / `KunpengTrng`：真实硬件 TRNG 寄存器接口——**BLOCKED（缺硬件）**，
@@ -113,7 +113,7 @@ impl EntropySource for FixedQemuEntropy {
 /// 按编译配置选择平台熵源（CRY-002 工厂，fail-closed）。
 ///
 /// 当前实现：无硬件/无 PCI 栈 → 返回 `EntropyUnavailable`；QEMU 冒烟
-/// 在 `qemu-entropy` feature 下选择 [`FixedQemuEntropy`]。硬件 TRNG
+/// 在 `qemu-entropy` feature 下选择 `FixedQemuEntropy`。硬件 TRNG
 /// 接入后在此按 target/feature 分派。
 pub fn platform_entropy_source() -> Result<Box<dyn EntropySource>, EntropyError> {
     #[cfg(feature = "qemu-entropy")]

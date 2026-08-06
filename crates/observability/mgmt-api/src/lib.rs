@@ -6,7 +6,7 @@
 //! 本 crate 提供：
 //! - [`ApiVersion`] — API 版本号（语义化，当前 v1）。
 //! - [`Role`] / [`Permission`] — RBAC 角色与权限模型。
-//! - [`Request`] / [`Response`] — 版本化请求/响应。
+//! - `Request` / `Response` — 版本化请求/响应。
 //! - [`IdempotencyStore`] — 幂等键存储（防止重复执行副作用操作）。
 //! - [`RateLimiter`] — 滑动窗口限流器。
 //! - [`ManagementApi`] — 组合以上组件的请求分发器。

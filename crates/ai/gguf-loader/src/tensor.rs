@@ -1,7 +1,7 @@
 //! GGUF 张量信息解析（D6）.
 //!
 //! 解析元数据 KV 之后的 `tensor_count` 个张量描述符。每个张量布局：
-//! name（gguf_string）+ n_dims（u32）+ dims（u64[n_dims]）+ dtype（u32）+ offset（u64）。
+//! name（gguf_string）+ `n_dims`（u32）+ dims（u64`[n_dims]`）+ dtype（u32）+ offset（u64）。
 
 use alloc::string::String;
 use alloc::string::ToString;
@@ -26,7 +26,7 @@ pub struct GgufTensorInfo {
 impl GgufTensorInfo {
     /// 从 `offset` 处解析 `tensor_count` 个张量描述符，返回 `(tensors, 已消费字节数)`.
     ///
-    /// 每个张量布局：name（gguf_string）+ n_dims（u32）+ dims（u64[n_dims]）
+    /// 每个张量布局：name（gguf_string）+ `n_dims`（u32）+ dims（u64`[n_dims]`）
     /// + dtype（u32）+ offset（u64）。
     pub fn parse(
         bytes: &[u8],

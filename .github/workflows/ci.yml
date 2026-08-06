@@ -54,6 +54,18 @@ jobs:
           cargo test --locked -p eneros-metrics --features loom --lib loom_increment
           cargo test --locked -p eneros-telemetry-queue --features loom --lib loom_queue
 
+      - name: Intra-doc link integrity (C-249 gate)
+        run: |
+          set -euo pipefail
+          OUT=$(cargo doc --workspace --no-deps 2>&1 || true)
+          COUNT=$(echo "$OUT" | grep -c "unresolved link" || true)
+          if [ "$COUNT" -ne 0 ]; then
+            echo "$OUT" | grep -B1 -A4 "unresolved link" | head -80
+            echo "FAIL: $COUNT unresolved intra-doc links" >&2
+            exit 1
+          fi
+          echo "rustdoc: 0 unresolved links"
+
       - name: seL4 kernel toolchain cache (restore)
         uses: actions/cache@v4
         with:

@@ -71,7 +71,7 @@ pub struct RouterStats {
     pub total_routed: u64,
     /// 总丢弃消息数.
     pub total_dropped: u64,
-    /// 按丢弃原因聚合（key 为 [`DropReason::reason_name`] 返回的静态字符串）.
+    /// 按丢弃原因聚合（key 为 `DropReason::reason_name` 返回的静态字符串）.
     pub dropped_by_reason: BTreeMap<&'static str, u64>,
 }
 
@@ -94,7 +94,7 @@ pub fn pattern_matches(pattern: &str, topic: &str) -> bool {
 /// 消息路由器.
 ///
 /// 管理订阅、路由消息到匹配订阅者的回调。无锁设计（**D8**：`&mut self`，无 `Mutex`），
-/// 由调用方保证互斥。默认使用 [`MockCapabilityVerifier`]（**D10**），可通过
+/// 由调用方保证互斥。默认使用 `MockCapabilityVerifier`（**D10**），可通过
 /// [`MessageRouter::with_verifier`] 注入真实能力验证器。
 pub struct MessageRouter {
     registry: TopicRegistry,

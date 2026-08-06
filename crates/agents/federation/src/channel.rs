@@ -267,7 +267,7 @@ impl FederationChannel {
 
     /// 建立到指定节点的跨域连接（确定性握手，D6）
     ///
-    /// 流程：tls.validate() → rng nonce[32] → hello 帧发送 → 接收应答帧 →
+    /// 流程：tls.validate() → rng nonce`[32]` → hello 帧发送 → 接收应答帧 →
     /// 解析对端证书 → CertVerifier 验证 → 派生会话密钥 → push Endpoint。
     pub fn connect(&mut self, node_id: u64, addr: SocketAddr) -> Result<(), ChannelError> {
         // validate 失败直接返回，不计数

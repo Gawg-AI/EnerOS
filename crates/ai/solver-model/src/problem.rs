@@ -14,7 +14,7 @@ use crate::variable::{Variable, K_HIGHS_INF};
 /// 将边界值钳制到 `[-kHighsInf, kHighsInf]`（P0-21）。
 ///
 /// `f64::INFINITY` → `K_HIGHS_INF`，`f64::NEG_INFINITY` → `-K_HIGHS_INF`；
-/// 其他值原样返回（超出 ±1e30 的有限字面量由 [`VarBuilder`] 拒绝）。
+/// 其他值原样返回（超出 ±1e30 的有限字面量由 `VarBuilder` 拒绝）。
 pub fn clamp_bound(v: f64) -> f64 {
     if v.is_infinite() {
         if v > 0.0 {

@@ -4,13 +4,13 @@
 //!
 //! # 算法概述
 //! SM2 公钥加密使用接收方公钥 P 加密，接收方私钥 d 解密。
-//! 共享秘密通过椭圆曲线 Diffie-Hellman（ECDH）计算：加密方计算 [k]P，
-//! 解密方计算 [d]C1 = [d][k]G = [dk]G，二者得到相同的 (x2, y2)。
+//! 共享秘密通过椭圆曲线 Diffie-Hellman（ECDH）计算：加密方计算 `[k]`P，
+//! 解密方计算 `[d]`C1 = `[d]``[k]`G = `[dk]`G，二者得到相同的 (x2, y2)。
 //!
 //! ## 加密流程
 //! 1. 生成随机 k ∈ [1, n-1]
-//! 2. C1 = [k]G（椭圆曲线点，65 字节未压缩格式 04 ‖ x1 ‖ y1）
-//! 3. (x2, y2) = [k]P（共享秘密点）
+//! 2. C1 = `[k]`G（椭圆曲线点，65 字节未压缩格式 04 ‖ x1 ‖ y1）
+//! 3. (x2, y2) = `[k]`P（共享秘密点）
 //! 4. C3 = SM3(x2 ‖ M ‖ y2)（32 字节）
 //! 5. C2 = M XOR KDF(x2 ‖ y2, len(M))（与 M 等长）
 //! 6. 输出 C1 ‖ C3 ‖ C2（国标顺序）
@@ -18,7 +18,7 @@
 //! ## 解密流程
 //! 1. 解析 C1（65 字节）、C3（32 字节）、C2（剩余字节）
 //! 2. 验证 C1 在曲线上
-//! 3. (x2, y2) = [d]C1（共享秘密点）
+//! 3. (x2, y2) = `[d]`C1（共享秘密点）
 //! 4. M' = C2 XOR KDF(x2 ‖ y2, len(C2))（先恢复明文）
 //! 5. C3' = SM3(x2 ‖ M' ‖ y2)，恒定时间比较 C3' == C3
 //! 6. 输出 M'
@@ -178,7 +178,7 @@ pub fn sm2_encrypt(
 /// - [`CryptoError::InvalidLength`][]: 密文长度 < 97 字节
 /// - [`CryptoError::PointNotOnCurve`][]: C1 不在 SM2 曲线上
 /// - [`CryptoError::InvalidPointEncoding`][]: C1 格式错误
-/// - [`CryptoError::InternalError`][]: [d]C1 为无穷远点（不应发生）
+/// - [`CryptoError::InternalError`][]: `[d]`C1 为无穷远点（不应发生）
 /// - [`CryptoError::TagMismatch`][]: C3 校验失败（密文被篡改或密钥不匹配）
 pub fn sm2_decrypt(ciphertext: &[u8], sk: &Sm2PrivateKey) -> Result<Vec<u8>, CryptoError> {
     // 1. 解析 C1 ‖ C3 ‖ C2

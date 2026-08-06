@@ -1,6 +1,6 @@
 //! cloud-sync 真实传输后端（v0.233.0，B3-10）。
 //!
-//! [`SyncTransport`] 此前仅 [`MockSyncTransport`]。本模块提供
+//! [`SyncTransport`] 此前仅 `MockSyncTransport`。本模块提供
 //! [`HttpSyncTransport`]：经注入 HTTP 闭包发送批次（真实云端上报）。
 
 use alloc::string::String;

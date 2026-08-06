@@ -11,7 +11,7 @@
 
 /// 连续 DMA 内存池。
 ///
-/// 布局（由 [`DmaPool::layout`] 描述）：
+/// 布局（由 `DmaPool::layout` 描述）：
 /// - TX 描述符数组（`tx_count × 16 B`）
 /// - RX 描述符数组（`rx_count × 16 B`）
 /// - TX 帧缓冲（`tx_count × mtu`）

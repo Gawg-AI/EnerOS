@@ -3,7 +3,7 @@
 //! 此前仅 [`MockTransport`](crate::transport::MockTransport)（内存 mock）。
 //! 本模块提供生产实现：
 //!
-//! 1. [`NetTcpTransport`]（feature `net`）— 基于 eneros-net 的
+//! 1. `NetTcpTransport`（feature `net`）— 基于 eneros-net 的
 //!    `TcpSocket`/`NetworkInterface`（smoltcp，经 v0.196 真实 DMA 环）
 //!    的 MQTT 字节流传输；
 //! 2. [`TlsLayer`] — TLS 包装抽象（std 侧 rustls 实现，feature `tls`

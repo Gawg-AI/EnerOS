@@ -8,7 +8,7 @@
 //! - 与 `protocol-abstract::contract` 共享契约测试套件（mock 与真实适配器同一套件）。
 //!
 //! 传输层为泛型 `T: RtuTransport`（静态组合，ADR-0025）：测试用
-//! [`crate::mock::MockRtuTransport`]，生产用真实 RS485 驱动。
+//! `MockRtuTransport`，生产用真实 RS485 驱动。
 
 use alloc::vec::Vec;
 

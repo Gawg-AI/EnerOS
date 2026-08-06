@@ -1,7 +1,7 @@
 //! v0.78.0 消息签名信封与可插拔签名器。
 //!
 //! - [`SignedEnvelope`]：消息 + header + 64 字节签名
-//! - [`MessageSigner`] trait：可插拔签名（默认 [`MockSigner`]，feature `sm2` 启用 [`Sm2Signer`]）
+//! - [`MessageSigner`] trait：可插拔签名（默认 [`MockSigner`]，feature `sm2` 启用 `Sm2Signer`）
 //! - [`pack_and_sign()`] / [`unpack_and_verify()`]：构造与验签信封
 //! - 防重放：5 秒时间戳窗口（`now` 由调用方注入）
 //!
@@ -91,7 +91,7 @@ impl core::error::Error for SignError {}
 
 /// 可插拔签名器 trait（D7：无 Send + Sync bound）。
 ///
-/// 实现者提供签名与验签能力。默认实现 [`MockSigner`]；启用 `sm2` feature 时可用 [`Sm2Signer`]。
+/// 实现者提供签名与验签能力。默认实现 [`MockSigner`]；启用 `sm2` feature 时可用 `Sm2Signer`。
 pub trait MessageSigner {
     /// 对 header + payload 签名，返回 64 字节签名。
     fn sign(&self, header: &EnvelopeHeader, payload: &[u8]) -> Result<[u8; 64], SignError>;

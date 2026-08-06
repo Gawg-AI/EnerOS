@@ -52,15 +52,15 @@
 //! - **D9**：3 个 pub 计数器 `aggregate_count`/`dispatch_count`/`reject_count`。
 //! - **D10**：资源不足确定性拒绝——`|target| > available` → `Err(InsufficientCapacity)`（abs 判定）。
 //! - **D11**：`ramp_down = ramp_up` 对称；ramp 非有限或 <0 → 按 0 计入（不阻断调度）。
-//! - **D12**：NaN 防御——capacity 非有限/≤0 排除资源；available 非有限→0 clamp [0,cap]；
-//!   eff NaN→0.5 clamp [0,1]；price 非有限→0+margin。复用 domain_optimizer sanitize（pub(crate)）。
+//! - **D12**：NaN 防御——capacity 非有限/≤0 排除资源；available 非有限→0 clamp `[0,cap]`；
+//!   eff NaN→0.5 clamp `[0,1]`；price 非有限→0+margin。复用 domain_optimizer sanitize（pub(crate)）。
 //!
 //! ## v0.93.0 域级优化
 //!
 //! 扩展本 crate 新增 `domain_optimizer` 模块：收集域内 Edge Box 状态（BTreeMap 确定性，
 //! D2）→ 构建域级 LP（行 0 域平衡 `Σp = target_mw`、每参与 box 一行容量约束
 //! `Σ_{i∈box} p_i ≤ capacity_mw`、目标 Minimize `Σ(1−eff_i)·p_i`，D7）→ Solver 求解
-//! 按 box 聚合 [`DispatchPlan`] 下发；Solver Err / Infeasible / 解长度不符回退容量比例
+//! 按 box 聚合 [`eneros_energy_market_agent::DispatchPlan`] 下发；Solver Err / Infeasible / 解长度不符回退容量比例
 //! 分摊兜底（box 间按 `capacity_mw` 比例 + box 内复用 v0.87.0 `equal_split`，D10）。
 //! 净收益 `total_revenue = price × (total_power − total_loss)`（D12），支撑蓝图 §7.2
 //! "收益优于单机"可判定。Surgical 追加：v0.92.0 既有公共 API 全部保留。
@@ -81,11 +81,11 @@
 //! - **D11**：`target_mw > Σ在线 capacity` → clamp 后建 LP（构造保证不超发）；target 非有限
 //!   → `Err(InvalidTarget)`。
 //! - **D12**：净收益公式 + NaN 防御（soc NaN/≤0 跳过设备；capacity 非有限/≤0 排除 box；
-//!   eff NaN→0.5 clamp [0,1]；price 非有限→0.0）。
+//!   eff NaN→0.5 clamp `[0,1]`；price 非有限→0.0）。
 //!
 //! ## v0.92.0 偏差记录（D1~D12）
 //!
-//! - **D1**：零外部依赖（仅 `eneros-agent` 提供 [`AgentId`]），纯计算无总线副作用。
+//! - **D1**：零外部依赖（仅 `eneros-agent` 提供 [`eneros_agent::AgentId`]），纯计算无总线副作用。
 //! - **D2**：`resource_id` 等标识字符串全部 `&'static str`（无堆分配，同 v0.90.0/v0.91.0 D2 惯例）。
 //! - **D3**：`deadline` / `timestamp` 统一 `u64` ms，外部时间注入（全 crate 统一 u64 ms 惯例），不读系统时钟。
 //! - **D4**：[`DomainArbiter`] 不要求 Send + Sync（no_std 单线程惯例）。

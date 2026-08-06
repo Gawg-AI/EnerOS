@@ -15,7 +15,7 @@ use crate::types::{DdsSample, ParticipantId, ReaderId, WriterId};
 ///
 /// 定义 DDS 节点的生命周期与资源管理接口：创建 participant / reader / writer，
 /// 读写样本，关闭节点。实现方包括 [`crate::mock::MockDdsNode`]（默认可用）与
-/// [`crate::cyclone_dds::CycloneDdsNode`]（feature = "cyclone-dds"，D3）。
+/// `CycloneDdsNode`（feature = "cyclone-dds"，D3）。
 ///
 /// # 广播语义
 ///

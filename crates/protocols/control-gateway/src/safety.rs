@@ -9,7 +9,7 @@
 //! independent code/data path.
 //!
 //! The constraints directly enforce the STPA unsafe-control-actions in
-//! [`eneros_safety_catalog::catalog::STPA`]:
+//! `STPA`:
 //! - UCA-PCC-001: close PCC while grid is down / maintenance → deny.
 //! - UCA-CHG-001: charge past SOC ceiling → deny.
 //! - UCA-DIS-001: discharge below SOC floor → deny.

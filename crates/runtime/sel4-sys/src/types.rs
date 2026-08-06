@@ -21,7 +21,7 @@ pub type CPtr = u64;
 pub type Error = i64;
 
 /// `seL4_ObjectType` — object kind for `Untyped_Retype`. Platform-specific;
-/// resolve via [`object_type`] getters rather than hardcoding.
+/// resolve via `object_type` getters rather than hardcoding.
 pub type ObjectType = u64;
 
 /// `seL4_CapRights` — rights bitmask for capability mint/copy.
@@ -35,7 +35,7 @@ pub type MessageInfo = u64;
 pub type Bool = u8;
 
 /// `seL4_ARM_VMAttributes` — page mapping attributes. Resolve via
-/// [`arm_default_attributes`].
+/// `arm_default_attributes`.
 pub type ArmVmAttributes = u64;
 
 // ----------------------------------------------------------------------------
@@ -121,7 +121,7 @@ pub const REG_NZCV: usize = 33;
 
 /// Conservative upper bound on `seL4_UserContext` register count across
 /// supported seL4 aarch64 configs. The actual count is returned by
-/// [`crate::safe::user_context_n_registers`] (resolved from the C shim).
+/// `user_context_n_registers` (resolved from the C shim).
 pub const USER_CONTEXT_MAX_REGS: usize = 64;
 
 /// `seL4_UserContext` — the register file read/written by TCB_ReadRegisters

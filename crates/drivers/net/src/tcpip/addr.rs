@@ -16,7 +16,7 @@ pub type HardwareAddress = smoltcp::wire::HardwareAddress;
 /// Socket address = IP + port (wraps `smoltcp::wire::IpEndpoint`).
 pub type SocketAddr = smoltcp::wire::IpEndpoint;
 
-/// Socket handle — identifies a socket within a [`tcpip::SocketSet`].
+/// Socket handle — identifies a socket within a `SocketSet`.
 pub type SocketHandle = smoltcp::iface::SocketHandle;
 
 /// Create an IPv4 address from four octets.

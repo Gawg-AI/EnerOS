@@ -298,7 +298,7 @@ pub fn authorize_switch() {
 
 /// Force a switch to the specified clock source (requires authorization).
 ///
-/// Delegates to [`redundancy::switch_clock_source`].
+/// Delegates to `redundancy::switch_clock_source`.
 pub fn switch_clock_source(target: ClockSource) -> Result<(), SwitchError> {
     crate::redundancy::switch_clock_source(target)
 }

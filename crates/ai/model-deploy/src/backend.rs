@@ -2,7 +2,7 @@
 //!
 //! [`DeployBackend`] 抽象硬件检查与模型加载两个步骤，由
 //! [`crate::mock_backend::MockDeployBackend`]（默认）与
-//! [`crate::llama_backend::LlamaDeployBackend`]（feature-gated，D3）实现。
+//! `LlamaDeployBackend`（feature-gated，D3）实现。
 
 use eneros_llm_engine::LlmEngine;
 
@@ -23,7 +23,7 @@ pub struct HardwareCheck {
 /// 部署后端 trait.
 ///
 /// 抽象硬件检查与模型加载，实现方包括 [`crate::mock_backend::MockDeployBackend`]
-/// 与 [`crate::llama_backend::LlamaDeployBackend`]（D3 feature-gated）。
+/// 与 `LlamaDeployBackend`（D3 feature-gated）。
 pub trait DeployBackend {
     /// 检查硬件是否满足配置要求.
     fn check_hardware(&self, config: &QuantConfig7B) -> Result<HardwareCheck, DeployError>;

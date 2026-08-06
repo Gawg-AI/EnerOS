@@ -3,7 +3,7 @@
 //! Provides [`MacController`], a generic Ethernet MAC driver that manages
 //! DMA rings, PHY communication, and frame TX/RX. Register access is
 //! abstracted via the [`MacRegs`] trait, enabling both real hardware
-//! ([`MmioMacRegs`]) and mock testing ([`MockMacRegs`](crate::mock::MockMacRegs)).
+//! (`MmioMacRegs`) and mock testing (`MockMacRegs`).
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -70,8 +70,8 @@ pub const MAC_FF_PROMISC: u32 = 1 << 0;
 
 /// Trait abstracting MAC register read/write operations.
 ///
-/// Implementations include [`MmioMacRegs`] for real hardware and
-/// [`MockMacRegs`](crate::mock::MockMacRegs) for testing.
+/// Implementations include `MmioMacRegs` for real hardware and
+/// `MockMacRegs` for testing.
 pub trait MacRegs {
     /// Read a 32-bit register at the given offset.
     fn read(&self, offset: u64) -> u32;

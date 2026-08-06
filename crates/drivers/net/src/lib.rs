@@ -48,8 +48,8 @@
 //! # Design Decisions
 //!
 //! - **MacRegs trait**: Register access is abstracted via a trait, enabling
-//!   mock testing without hardware. Real hardware uses [`MmioMacRegs`]
-//!   (volatile MMIO); tests use [`MockMacRegs`](mock::MockMacRegs)
+//!   mock testing without hardware. Real hardware uses `MmioMacRegs`
+//!   (volatile MMIO); tests use `MockMacRegs`
 //!   (BTreeMap-backed).
 //! - **GenericPhy**: Does not own the register set. Methods accept
 //!   `&mut R: MacRegs`, allowing [`MacController`] to share its registers.

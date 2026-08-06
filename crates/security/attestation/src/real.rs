@@ -1,8 +1,8 @@
 //! attestation 真实适配器（v0.236.0，B4-03）。
 //!
-//! - [`Tpm2Backend`]（feature `tpm2`）：真实 TPM2 适配器——包装
+//! - `Tpm2Backend`（feature `tpm2`）：真实 TPM2 适配器——包装
 //!   `eneros-tpm` 的 `TpmDriver`（硬件 TPM2_Create/Sign/Quote 路径），
-//!   实现 [`TpmBackend`]；SoftTpm 保留为显式降级档（构建配置标注
+//!   实现 `TpmBackend`；SoftTpm 保留为显式降级档（构建配置标注
 //!   非生产）。
 //! - [`TunnelAttestTransport`]：真实远程验证传输——经 federation
 //!   tunnel 注入发送/接收闭包（复用 v0.228 设备端 TLS）。

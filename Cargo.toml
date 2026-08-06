@@ -36,7 +36,6 @@ members = [
     "crates/runtime/hello",
     "crates/runtime/root-task",
     "crates/runtime/services",
-    "crates/runtime/config",
     "crates/drivers/time",
     "crates/drivers/watchdog",
     "crates/drivers/power",
@@ -137,7 +136,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.248.0"
+version = "0.249.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

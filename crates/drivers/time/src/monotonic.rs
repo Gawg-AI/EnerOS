@@ -14,7 +14,7 @@ impl MonotonicClock {
         }
     }
 
-    /// Returns nanoseconds elapsed since [`init`], saturating at 0 if the
+    /// Returns nanoseconds elapsed since `init`, saturating at 0 if the
     /// underlying clock reports a value below the boot timestamp.
     pub fn now_ns(&self, clock: &dyn HalClock) -> u64 {
         clock.now_ns().saturating_sub(self.boot_ns)

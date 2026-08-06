@@ -344,7 +344,7 @@ impl VerticalEncryptTunnel {
 
     /// 加密发送（E6）：
     ///
-    /// send_seq+=1 得 seq；随机 IV[16]；帧 =
+    /// send_seq+=1 得 seq；随机 IV`[16]`；帧 =
     /// `local_spi:u32be‖seq:u64be‖iv‖SM4-CBC(iv, plaintext)‖
     /// SM3-HMAC(auth_key, spi‖seq‖iv‖ct)`。
     pub fn tunnel_send(&mut self, plaintext: &[u8], rng: &mut CsRng) -> Vec<u8> {

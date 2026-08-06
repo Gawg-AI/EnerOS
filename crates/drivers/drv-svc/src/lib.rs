@@ -1,6 +1,7 @@
 //! EnerOS 驱动/存储 EL0 服务 — 共享入口与 panic handler.
 //!
-//! 这六个服务是第五册 M0 阶段的占位 EL0 驱动进程，被打包进 init bundle：
+//! 这六个服务被打包进 init bundle，由 root task 在 M2.1（seL4 TCB/CSpace/
+//! VSpace FFI）完成后 spawn：
 //! - `svc-drv-rng`：virtio-rng 取熵服务（DRV-006）
 //! - `svc-drv-blk`：virtio-blk 块设备服务（DRV-007）
 //! - `svc-drv-net`：virtio-net 网络服务（DRV-008）
@@ -8,9 +9,11 @@
 //! - `svc-storage`：存储事务日志服务（STO-002）
 //! - `svc-drv-fault`：驱动故障注入服务
 //!
-//! M0 阶段：每个服务只是合法 aarch64-unknown-none ELF（`_start` loop），
-//! 由 root task 在 M2.1（seL4 TCB/CSpace/VSpace FFI）完成后 spawn。
-//! 真实 virtio I/O 在 M2+ 接入（从 C root_task.c 的 G3 实现移植）。
+//! 实现状态（v0.249.0 注释校正）：
+//! - `svc-drv-rng` 已实现真实 virtio-rng 队列 I/O（v0.200.0 P0-9，
+//!   `VirtioRngDriver::read_entropy`，host 仿真测试覆盖）；
+//! - 其余服务仍为 `_start` loop 占位（ELF 合法装载），真实 virtio I/O
+//!   在 M2+ 接入（从 C root_task.c 的 G3 实现移植）。
 //!
 //! no_std 合规：仅 core，无 alloc 依赖（virtio 队列用固定大小缓冲）。
 
@@ -20,7 +23,7 @@
 /// 驱动 EL0 服务公共入口 — 永久 loop。
 ///
 /// v0.200.0 (P0-9)：svc-drv-rng 实现真实 virtio-rng 队列 I/O
-/// （[`virtio_rng_read`]，host 可测的 virtqueue 语义）；其余服务保持
+/// （[`crate::VirtioRng::read_entropy`]，host 可测的 virtqueue 语义）；其余服务保持
 /// 占位，M2.1（seL4 MMIO 映射 + Endpoint IPC）后接线。
 #[inline]
 pub fn drv_loop() -> ! {

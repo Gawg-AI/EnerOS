@@ -8,7 +8,7 @@
 //! # Corruption Detection
 //!
 //! [`FsError::is_corruption`] returns `true` for variants that indicate on-disk
-//! data corruption ([`CorruptedBlock`], [`CrcMismatch`], [`BadSuperBlock`]).
+//! data corruption ([`FsError::CorruptedBlock`], [`FsError::CrcMismatch`], [`FsError::BadSuperBlock`]).
 //! Callers can use this to trigger a reformat or quarantine the storage device.
 
 use alloc::string::String;
@@ -83,7 +83,7 @@ pub enum FsError {
 impl FsError {
     /// Returns `true` if the error indicates on-disk data corruption.
     ///
-    /// Corruption errors ([`CorruptedBlock`], [`CrcMismatch`], [`BadSuperBlock`])
+    /// Corruption errors ([`FsError::CorruptedBlock`], [`FsError::CrcMismatch`], [`FsError::BadSuperBlock`])
     /// may warrant a reformat or device quarantine.
     pub fn is_corruption(&self) -> bool {
         matches!(
@@ -127,7 +127,7 @@ impl fmt::Display for FsError {
 
 /// Convert a littlefs2 error into an [`FsError`].
 ///
-/// The littlefs2 [`Error`] is a code-based struct; we map known codes to
+/// The littlefs2 [`FsError`] is a code-based struct; we map known codes to
 /// semantic [`FsError`] variants and fall back to [`FsError::IoError`] for
 /// unrecognized codes.
 impl From<LfsError> for FsError {

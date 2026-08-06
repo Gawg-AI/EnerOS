@@ -1,6 +1,6 @@
 //! IEC 104 APDU 帧结构（I/S/U 三种控制域格式）.
 //!
-//! 帧布局：StartByte(0x68) | Length(1) | ControlField(4) | [ASDU]
+//! 帧布局：StartByte(0x68) | Length(1) | ControlField(4) | `ASDU`
 //! - I 格式：bit0=0，send_seq/recv_seq 各 15 位
 //! - S 格式：bit0=1, bit1=1，recv_seq 15 位
 //! - U 格式：bit0=1, bit1=0，功能码在 byte0

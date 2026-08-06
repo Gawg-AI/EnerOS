@@ -79,7 +79,7 @@
 //!
 //! ## 核心类型（v0.86.0）
 //!
-//! - [`BidSide`]（Buy/Sell，默认 Buy）、[`Bid`]（8 字段：bid_id/market_type/resource_id/price/quantity/side/period/timestamp，Copy）、[`BidStrategy`]（margin/max_quantity/soc_threshold）
+//! - [`BidSide`]（Buy/Sell，默认 Buy）、`Bid`（8 字段：bid_id/market_type/resource_id/price/quantity/side/period/timestamp，Copy）、[`BidStrategy`]（margin/max_quantity/soc_threshold）
 //! - [`BidIntent`] / [`BidOptimization`] 中间结构（D7 MVP 最小字段）
 //! - [`BidError`]（InvalidInput/IntentFailed/OptimizeFailed/PublishFailed，D8）
 //! - [`BidIntentSource`] / [`BidOptimizer`] / [`BidPublisher`] trait + 3 个 Mock（D5/D6/D11 本地 trait 抽象，真实 LLM/Solver/DDS 适配器后续注入）

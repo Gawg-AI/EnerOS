@@ -47,7 +47,7 @@ pub struct AppPackage {
     pub name: String,
     /// 应用版本
     pub version: String,
-    /// 签名是否有效（v0.233.0：由 [`verify_app_signature`] 计算的真实验签结果）
+    /// 签名是否有效（v0.233.0：由 `verify_app_signature` 计算的真实验签结果）
     pub signature_valid: bool,
     /// 二进制哈希 (SHA-256)
     pub binary_hash: [u8; 32],

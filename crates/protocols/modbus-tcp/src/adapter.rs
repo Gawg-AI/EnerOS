@@ -3,7 +3,7 @@
 //! 实现 [`eneros_protocol_abstract::adapter::ProtocolAdapter`] 与
 //! [`eneros_protocol_abstract::access::PointAccess`]，使 modbus-tcp 与
 //! modbus-rtu/iec104 跑同一共享契约测试套件：
-//! - 泛型传输 `T: TcpTransport`（测试用 [`crate::mock::MockTcpTransport`]）；
+//! - 泛型传输 `T: TcpTransport`（测试用 `MockTcpTransport`）；
 //! - 连接复用（PTC-002）：同设备复用 TCP 连接，换设备才重连；
 //! - [`eneros_modbus_rtu::point::RegToPoint`] 作为点表。
 

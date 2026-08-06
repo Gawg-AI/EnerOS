@@ -9,7 +9,7 @@
 //!
 //! - [`engine::LlmEngine`] — 推理引擎统一 trait（D2 无 Send + Sync bound）
 //! - [`mock::MockEngine`] — 默认可用的 Mock 实现（D3，纯 Rust）
-//! - [`llama_cpp::LlamaCppEngine`] — llama.cpp C 库实现（feature = "llama-cpp"，D3）
+//! - `llama_cpp::LlamaCppEngine` — llama.cpp C 库实现（feature = "llama-cpp"，D3）
 //! - [`device::ComputeDevice`] — 计算设备（Cpu / Cuda / Metal / Npu，D4 / D12）
 //! - [`model::ModelInfo`] / [`model::Quantization`] — 模型元数据（D11）
 //! - [`params::InferParams`] — 推理参数

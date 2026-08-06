@@ -7,7 +7,7 @@
 //!   与 ffi 模块的双后端一致）。
 //! - [`CapSlot`] / [`CapAllocator`]：类型化 cap 右值与空闲槽分配器。
 //! - [`Sel4Result`] / [`to_sel4_result`]：seL4 错误码 → `Result` 映射。
-//! - [`retype`] / [`tcb_*`] / [`endpoint_*`]：retype / TCB 配置 / IPC 的
+//! - [`retype`] / `tcb_*` / `endpoint_*`：retype / TCB 配置 / IPC 的
 //!   安全封装（错误码真实传播，不再静默丢弃）。
 //! - [`BootInfo`] 解析：untyped 区间与 `untypedList` 的 offset 访问器
 //!   （对照 seL4 14.0.0 aarch64 `bootinfo.h` 布局）。

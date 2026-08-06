@@ -5,7 +5,7 @@
 //! 1. [`RealGridSampler`] — 经真实驱动采集链（rs485/can/net）采样：
 //!    接受三个注入闭包（频率/电压/功率读数），组装 [`GridState`]；
 //! 2. [`DdsGridPublisher`] — 经 agent-bus-dds `DdsNode` 发布电网状态与
-//!    告警（真实签名，topic 由 [`standard_topics`] 注册）；
+//!    告警（真实签名，topic 由 [`eneros_agent_bus_dds::standard_topics`] 注册）；
 //! 3. [`RealPccReader`] — 经真实并网点计量（注入计量读数闭包）读取
 //!    [`PccReading`]。
 //!

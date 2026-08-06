@@ -25,7 +25,7 @@ pub(crate) static POWER_IRQ_CALLBACK: Mutex<Option<fn()>> = Mutex::new(None);
 /// Register the power-loss interrupt callback.
 ///
 /// The callback is invoked from [`notify_power_loss`] when power loss is
-/// detected. It should initiate the shutdown sequence via [`on_power_loss`].
+/// detected. It should initiate the shutdown sequence via `on_power_loss`.
 pub fn register_power_irq(callback: fn()) {
     *POWER_IRQ_CALLBACK.lock() = Some(callback);
 }

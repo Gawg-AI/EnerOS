@@ -107,7 +107,7 @@ impl TsnDriver for MockTsnDriver {
 /// `driver.send(...)` 要求 `&mut self`，闭包捕获 `&'a mut dyn TsnDriver` 后调用
 /// `&mut self` 方法 — Rust 类型系统约束该闭包只能实现 `FnMut`，不能实现 `Fn`
 /// （`Fn::call(&self, ...)` 仅给出 `&self`，无法从 `&&mut T` 获取 `&mut T`）.
-/// 因此 [`LatencyProbe::measure_round_trip`] 等方法签名同步改为 `&mut impl FnMut()`.
+/// 因此 `LatencyProbe::measure_round_trip` 等方法签名同步改为 `&mut impl FnMut()`.
 ///
 /// # 示例
 ///

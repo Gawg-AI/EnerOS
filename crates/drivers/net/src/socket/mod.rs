@@ -1,7 +1,7 @@
 //! Socket abstraction layer (workspace v0.192.0).
 //!
 //! Unified Socket API built on top of the v0.28.0 TCP/IP stack. Provides a
-//! [`SocketManager`] that centrally owns the [`NetworkInterface`] and all
+//! [`SocketManager`] that centrally owns the `NetworkInterface` and all
 //! sockets, exposing standardized read/write/close operations, non-blocking
 //! IO, and `poll`-style multiplexing.
 //!

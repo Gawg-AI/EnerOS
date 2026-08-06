@@ -10,7 +10,7 @@
 //! - [`config::QuantConfig7B`] — 7B INT4 量化部署配置（D11 复用 v0.59.0 类型）
 //! - [`backend::DeployBackend`] — 部署后端 trait（D2 抽象）
 //! - [`mock_backend::MockDeployBackend`] — 默认 Mock 后端（D12）
-//! - [`llama_backend::LlamaDeployBackend`] — llama.cpp 后端（D3 feature-gated）
+//! - `LlamaDeployBackend` — llama.cpp 后端（D3 feature-gated）
 //! - [`prompts::PowerPromptSet`] — 5 类能源场景提示词
 //! - [`report::DeployReport`] — 部署报告（D5 普通 u64）
 //! - [`error::DeployError`] — 部署错误（D7 7 变体 + From<LlmError>）
