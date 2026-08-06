@@ -14,27 +14,27 @@ use crate::asdu::{Dco, IoValue, QualityDescriptor, Sco, SinglePointValue};
 /// 应用可插入自定义存储实现；`InMemoryPointDatabase` 供测试参考。
 pub trait PointDatabase {
     /// 获取指定 IOA 的值（owned，`IoValue` 为 `Copy`）。
-    fn get_value(&self, ioa: u16) -> Option<IoValue>;
+    fn get_value(&self, ioa: u32) -> Option<IoValue>;
     /// 获取指定 IOA 的品质；不存在时返回 `good()`。
-    fn get_quality(&self, ioa: u16) -> QualityDescriptor;
+    fn get_quality(&self, ioa: u32) -> QualityDescriptor;
     /// 设置指定 IOA 的值。
-    fn set_value(&mut self, ioa: u16, value: IoValue);
+    fn set_value(&mut self, ioa: u32, value: IoValue);
     /// 设置指定 IOA 的品质。
-    fn set_quality(&mut self, ioa: u16, quality: QualityDescriptor);
+    fn set_quality(&mut self, ioa: u32, quality: QualityDescriptor);
     /// 获取全部点（IOA, 值, 品质），按 IOA 升序。
-    fn get_all_points(&self) -> Vec<(u16, IoValue, QualityDescriptor)>;
+    fn get_all_points(&self) -> Vec<(u32, IoValue, QualityDescriptor)>;
     /// 执行单点遥控命令。
     #[allow(clippy::result_unit_err)]
-    fn execute_single_command(&mut self, ioa: u16, sco: &Sco) -> Result<(), ()>;
+    fn execute_single_command(&mut self, ioa: u32, sco: &Sco) -> Result<(), ()>;
     /// 执行双点遥控命令。
     #[allow(clippy::result_unit_err)]
-    fn execute_double_command(&mut self, ioa: u16, dco: &Dco) -> Result<(), ()>;
+    fn execute_double_command(&mut self, ioa: u32, dco: &Dco) -> Result<(), ()>;
 }
 
 /// 内存点数据库实现
 pub struct InMemoryPointDatabase {
-    values: BTreeMap<u16, IoValue>,
-    qualities: BTreeMap<u16, QualityDescriptor>,
+    values: BTreeMap<u32, IoValue>,
+    qualities: BTreeMap<u32, QualityDescriptor>,
 }
 
 impl InMemoryPointDatabase {
@@ -54,18 +54,18 @@ impl Default for InMemoryPointDatabase {
 }
 
 impl PointDatabase for InMemoryPointDatabase {
-    fn get_value(&self, ioa: u16) -> Option<IoValue> {
+    fn get_value(&self, ioa: u32) -> Option<IoValue> {
         self.values.get(&ioa).copied()
     }
 
-    fn get_quality(&self, ioa: u16) -> QualityDescriptor {
+    fn get_quality(&self, ioa: u32) -> QualityDescriptor {
         self.qualities
             .get(&ioa)
             .copied()
             .unwrap_or_else(QualityDescriptor::good)
     }
 
-    fn set_value(&mut self, ioa: u16, value: IoValue) {
+    fn set_value(&mut self, ioa: u32, value: IoValue) {
         self.values.insert(ioa, value);
         // 若品质未设置，补一个默认 good
         self.qualities
@@ -73,11 +73,11 @@ impl PointDatabase for InMemoryPointDatabase {
             .or_insert_with(QualityDescriptor::good);
     }
 
-    fn set_quality(&mut self, ioa: u16, quality: QualityDescriptor) {
+    fn set_quality(&mut self, ioa: u32, quality: QualityDescriptor) {
         self.qualities.insert(ioa, quality);
     }
 
-    fn get_all_points(&self) -> Vec<(u16, IoValue, QualityDescriptor)> {
+    fn get_all_points(&self) -> Vec<(u32, IoValue, QualityDescriptor)> {
         let mut result = Vec::new();
         for (ioa, value) in &self.values {
             let q = self
@@ -91,7 +91,7 @@ impl PointDatabase for InMemoryPointDatabase {
         result
     }
 
-    fn execute_single_command(&mut self, ioa: u16, sco: &Sco) -> Result<(), ()> {
+    fn execute_single_command(&mut self, ioa: u32, sco: &Sco) -> Result<(), ()> {
         // 仅执行模式（select=false）才实际改变值
         if sco.select {
             return Ok(());
@@ -105,7 +105,7 @@ impl PointDatabase for InMemoryPointDatabase {
         Ok(())
     }
 
-    fn execute_double_command(&mut self, ioa: u16, dco: &Dco) -> Result<(), ()> {
+    fn execute_double_command(&mut self, ioa: u32, dco: &Dco) -> Result<(), ()> {
         if dco.select {
             return Ok(());
         }

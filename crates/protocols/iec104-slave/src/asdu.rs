@@ -32,6 +32,12 @@ pub enum TypeId {
     InterrogationCommand = 100,
     /// 时钟同步命令（TI=103）
     ClockSyncCommand = 103,
+    /// 单点遥信带时标（TI=30，M_SP_TB_1，v0.220.0）
+    SinglePointTimeTagged = 30,
+    /// 归一化遥测带时标（TI=34，M_ME_NB_1，v0.220.0）
+    MeasuredValueNormalizedTimeTagged = 34,
+    /// 短浮点遥测带时标（TI=36，M_ME_TD_1，v0.220.0）
+    MeasuredValueFloatTimeTagged = 36,
 }
 
 impl TypeId {
@@ -48,6 +54,9 @@ impl TypeId {
             46 => Some(Self::DoubleCommand),
             100 => Some(Self::InterrogationCommand),
             103 => Some(Self::ClockSyncCommand),
+            30 => Some(Self::SinglePointTimeTagged),
+            34 => Some(Self::MeasuredValueNormalizedTimeTagged),
+            36 => Some(Self::MeasuredValueFloatTimeTagged),
             _ => None,
         }
     }
@@ -55,6 +64,16 @@ impl TypeId {
     /// 转换为 `u8`。
     pub fn to_u8(self) -> u8 {
         self as u8
+    }
+
+    /// 该类型是否强制携带时标（CP56Time2a，v0.220.0）。
+    pub fn is_time_tagged(self) -> bool {
+        matches!(
+            self,
+            Self::SinglePointTimeTagged
+                | Self::MeasuredValueNormalizedTimeTagged
+                | Self::MeasuredValueFloatTimeTagged
+        )
     }
 
     /// 该类型是否携带品质描述符。
@@ -67,6 +86,9 @@ impl TypeId {
                 | Self::MeasuredValueScaled
                 | Self::MeasuredValueFloat
                 | Self::Counter
+                | Self::SinglePointTimeTagged
+                | Self::MeasuredValueNormalizedTimeTagged
+                | Self::MeasuredValueFloatTimeTagged
         )
     }
 }
@@ -429,8 +451,8 @@ impl IoValue {
 /// 信息对象
 #[derive(Debug, Clone, PartialEq)]
 pub struct InformationObject {
-    /// 信息对象地址（IOA）
-    pub ioa: u16,
+    /// 信息对象地址（IOA，3 字节 24-bit，v0.220.0 支持 >65535）
+    pub ioa: u32,
     /// 值
     pub value: IoValue,
     /// 品质描述符
@@ -440,24 +462,32 @@ pub struct InformationObject {
 }
 
 impl InformationObject {
-    /// 编码 IOA 为 3 字节小端序。
-    fn encode_ioa(ioa: u16) -> [u8; 3] {
+    /// 编码 IOA 为 3 字节小端序（24-bit，v0.220.0）。
+    fn encode_ioa(ioa: u32) -> [u8; 3] {
         let lo = (ioa & 0xFF) as u8;
         let mid = ((ioa >> 8) & 0xFF) as u8;
-        [lo, mid, 0]
+        let hi = ((ioa >> 16) & 0xFF) as u8;
+        [lo, mid, hi]
     }
 
-    /// 从 3 字节小端序解码 IOA。
-    fn decode_ioa(bytes: &[u8]) -> u16 {
-        (bytes[0] as u16) | ((bytes[1] as u16) << 8)
+    /// 从 3 字节小端序解码 IOA（24-bit，v0.220.0）。
+    fn decode_ioa(bytes: &[u8]) -> u32 {
+        (bytes[0] as u32) | ((bytes[1] as u32) << 8) | ((bytes[2] as u32) << 16)
     }
 
     /// 按 `type_id` 编码单个信息对象（IOA + 值 + 品质 + 可选时标）。
     fn encode(&self, type_id: TypeId) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&Self::encode_ioa(self.ioa));
+        buf.extend_from_slice(&self.encode_body(type_id));
+        buf
+    }
+
+    /// 编码信息对象体（不含 IOA；SQ=1 序列帧后续对象复用，v0.220.0）。
+    fn encode_body(&self, type_id: TypeId) -> Vec<u8> {
+        let mut buf = Vec::new();
         match type_id {
-            TypeId::SinglePointInformation => {
+            TypeId::SinglePointInformation | TypeId::SinglePointTimeTagged => {
                 // SIQ: bit0=value, bits1-5=quality
                 let mut b = self.value.as_single_point() as u8;
                 b |= self.quality.encode() << 1;
@@ -469,12 +499,14 @@ impl InformationObject {
                 b |= self.quality.encode() << 2;
                 buf.push(b);
             }
-            TypeId::MeasuredValueNormalized | TypeId::MeasuredValueScaled => {
+            TypeId::MeasuredValueNormalized
+            | TypeId::MeasuredValueScaled
+            | TypeId::MeasuredValueNormalizedTimeTagged => {
                 let v = self.value.as_i16();
                 buf.extend_from_slice(&v.to_le_bytes());
                 buf.push(self.quality.encode());
             }
-            TypeId::MeasuredValueFloat => {
+            TypeId::MeasuredValueFloat | TypeId::MeasuredValueFloatTimeTagged => {
                 let v = self.value.as_f32();
                 buf.extend_from_slice(&v.to_le_bytes()); // D6: 小端序
                 buf.push(self.quality.encode());
@@ -507,8 +539,15 @@ impl InformationObject {
                 }
             }
         }
-        // 对于带品质的类型，附加可选时标
-        if type_id.has_quality() {
+        // 附加时标（v0.220.0）：强制时标类型必须写（缺失时写 0）；
+        // 其他带品质类型可选。
+        if type_id.is_time_tagged() {
+            if let Some(t) = &self.time_tag {
+                buf.extend_from_slice(&t.encode());
+            } else {
+                buf.extend_from_slice(&[0u8; 7]);
+            }
+        } else if type_id.has_quality() {
             if let Some(t) = &self.time_tag {
                 buf.extend_from_slice(&t.encode());
             }
@@ -522,9 +561,15 @@ impl InformationObject {
             return Err(Iec104Error::Decode);
         }
         let ioa = Self::decode_ioa(&bytes[0..3]);
-        let mut off = 3usize;
+        let (body, consumed) = Self::decode_body(&bytes[3..], type_id)?;
+        Ok((InformationObject { ioa, ..body }, 3 + consumed))
+    }
+
+    /// 按 `type_id` 解码信息对象体（不含 IOA；SQ=1 序列帧用，v0.220.0）。
+    fn decode_body(bytes: &[u8], type_id: TypeId) -> Result<(Self, usize), Iec104Error> {
+        let mut off = 0usize;
         let (value, quality, time_tag) = match type_id {
-            TypeId::SinglePointInformation => {
+            TypeId::SinglePointInformation | TypeId::SinglePointTimeTagged => {
                 if bytes.len() < off + 1 {
                     return Err(Iec104Error::Decode);
                 }
@@ -545,7 +590,7 @@ impl InformationObject {
                 let q = QualityDescriptor::decode((b >> 2) & 0x1F);
                 (IoValue::DoublePoint(v), q, None)
             }
-            TypeId::MeasuredValueNormalized => {
+            TypeId::MeasuredValueNormalized | TypeId::MeasuredValueNormalizedTimeTagged => {
                 if bytes.len() < off + 3 {
                     return Err(Iec104Error::Decode);
                 }
@@ -563,7 +608,7 @@ impl InformationObject {
                 off += 3;
                 (IoValue::Scaled(v), q, None)
             }
-            TypeId::MeasuredValueFloat => {
+            TypeId::MeasuredValueFloat | TypeId::MeasuredValueFloatTimeTagged => {
                 if bytes.len() < off + 5 {
                     return Err(Iec104Error::Decode);
                 }
@@ -635,14 +680,17 @@ impl InformationObject {
             }
         };
         let mut obj = Self {
-            ioa,
+            ioa: 0, // SQ=1 由调用方回填；SQ=0 走 decode() 入口
             value,
             quality,
             time_tag,
         };
-        // 解析可选时标（仅对带品质的类型，且仅当剩余字节恰好 7 字节时才读取，
-        // 避免在多对象 ASDU 中误读下一个对象的 IOA 作为时标）
-        if type_id.has_quality() && bytes.len() == off + 7 {
+        // 结构化时标解码（v0.220.0，替代"恰好 7 字节"启发式）：
+        // 强制时标类型必须读 7 字节 CP56Time2a。
+        if type_id.is_time_tagged() {
+            if bytes.len() < off + 7 {
+                return Err(Iec104Error::Decode);
+            }
             let mut tt = [0u8; 7];
             tt.copy_from_slice(&bytes[off..off + 7]);
             off += 7;
@@ -715,23 +763,46 @@ pub struct Asdu {
 }
 
 impl Asdu {
-    /// 编码 ASDU 为字节流（SQ=0 非序列模式）。
+    /// 编码 ASDU 为字节流（SQ 自动选择，v0.220.0）。
     ///
     /// 布局：TypeId(1) | VarStruct(1) | COT(1) | OriginatorAddr(1) | CommonAddr(2 LE) | InfoObjects
+    ///
+    /// SQ=1 序列压缩：当 ≥2 个对象的 IOA 连续（相邻差 1）时启用——
+    /// 首对象带完整 IOA，后续对象仅编码体（IOA 递增）。
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.push(self.type_id.to_u8());
-        // VarStruct: SQ=0 (bit7=0) | number of objects (bits 0-6)
         let num = self.ioas.len().min(127);
-        buf.push(num as u8);
+        // 连续 IOA 检测（仅当 >1 个对象且类型非命令类）。
+        let use_sq = num > 1
+            && self
+                .ioas
+                .windows(2)
+                .all(|w| w[1].ioa == w[0].ioa + 1)
+            && !matches!(
+                self.type_id,
+                TypeId::SingleCommand
+                    | TypeId::DoubleCommand
+                    | TypeId::InterrogationCommand
+                    | TypeId::ClockSyncCommand
+            );
+        // VarStruct: SQ (bit7) | number of objects (bits 0-6)
+        buf.push(if use_sq { num as u8 | 0x80 } else { num as u8 });
         // COT + OriginatorAddr (originator = 0)
         buf.push(self.cause_of_tx.to_u8());
         buf.push(0u8);
         // CommonAddr (2 bytes LE)
         buf.extend_from_slice(&self.common_addr.to_le_bytes());
-        // Information objects
-        for io in &self.ioas {
-            buf.extend_from_slice(&io.encode(self.type_id));
+        if use_sq {
+            // 首对象完整 IOA，后续仅体。
+            buf.extend_from_slice(&self.ioas[0].encode(self.type_id));
+            for io in &self.ioas[1..] {
+                buf.extend_from_slice(&io.encode_body(self.type_id));
+            }
+        } else {
+            for io in &self.ioas {
+                buf.extend_from_slice(&io.encode(self.type_id));
+            }
         }
         buf
     }
@@ -746,19 +817,35 @@ impl Asdu {
         let var_struct = bytes[1];
         let sq = var_struct & 0x80 != 0;
         let num = (var_struct & 0x7F) as usize;
-        if sq {
-            // 本 MVP 不支持 SQ=1 序列模式
-            return Err(Iec104Error::Decode);
-        }
         let cot = Cot::from_u8(bytes[2]).ok_or(Iec104Error::Decode)?;
         let _originator = bytes[3];
         let common_addr = u16::from_le_bytes([bytes[4], bytes[5]]);
         let mut off = 6usize;
         let mut ioas = Vec::with_capacity(num);
-        for _ in 0..num {
-            let (obj, consumed) = InformationObject::decode(&bytes[off..], type_id)?;
+        if sq {
+            // SQ=1 序列压缩：首对象带完整 IOA，后续 IOA 递增。
+            if num == 0 {
+                return Err(Iec104Error::Decode);
+            }
+            let (first, consumed) = InformationObject::decode(&bytes[off..], type_id)?;
             off += consumed;
-            ioas.push(obj);
+            let base_ioa = first.ioa;
+            ioas.push(first);
+            for idx in 1..num {
+                // 仅解码体（IOA = base + idx）。
+                let (obj, consumed) = InformationObject::decode_body(&bytes[off..], type_id)?;
+                off += consumed;
+                ioas.push(InformationObject {
+                    ioa: base_ioa + idx as u32,
+                    ..obj
+                });
+            }
+        } else {
+            for _ in 0..num {
+                let (obj, consumed) = InformationObject::decode(&bytes[off..], type_id)?;
+                off += consumed;
+                ioas.push(obj);
+            }
         }
         Ok(Self {
             type_id,
@@ -1261,7 +1348,8 @@ mod tests {
             ],
         };
         let bytes = asdu.encode();
-        assert_eq!(bytes[1], 5); // 5 objects
+        // v0.220.0：IOA 1..=5 连续 → 自动 SQ=1 序列压缩（bit7=1 | 5）。
+        assert_eq!(bytes[1], 0x85, "SQ=1 | 5 objects");
         let decoded = Asdu::decode(&bytes).expect("decode ok");
         assert_eq!(decoded.ioas.len(), 5);
         assert_eq!(decoded, asdu);
@@ -1269,8 +1357,9 @@ mod tests {
 
     #[test]
     fn test_asdu_with_time_tag() {
+        // v0.220.0：带时标类型用 TI=36（M_ME_TD_1）——TI=13 无强制时标。
         let asdu = Asdu {
-            type_id: TypeId::MeasuredValueFloat,
+            type_id: TypeId::MeasuredValueFloatTimeTagged,
             cause_of_tx: Cot::Spontaneous,
             common_addr: 1,
             ioas: vec![InformationObject {
@@ -1304,5 +1393,216 @@ mod tests {
     fn test_asdu_decode_invalid_type_id() {
         let bytes = [200u8, 1, 1, 0, 1, 0];
         assert_eq!(Asdu::decode(&bytes), Err(Iec104Error::InvalidTypeId));
+    }
+
+    // ===== v0.220.0（B2-03）：3 字节 IOA / SQ=1 / 带时标类型 =====
+
+    #[test]
+    fn test_ioa_24bit_roundtrip() {
+        // >65535 点寻址：IOA 0x010203。
+        let asdu = Asdu {
+            type_id: TypeId::SinglePointInformation,
+            cause_of_tx: Cot::Spontaneous,
+            common_addr: 1,
+            ioas: vec![InformationObject {
+                ioa: 0x010203,
+                value: IoValue::SinglePoint(SinglePointValue::On),
+                quality: QualityDescriptor::good(),
+                time_tag: None,
+            }],
+        };
+        let bytes = asdu.encode();
+        // IOA 3 字节小端：0x03 0x02 0x01（在 TypeId+VarStruct+COT+Orig+CommonAddr 之后）。
+        assert_eq!(bytes[6], 0x03);
+        assert_eq!(bytes[7], 0x02);
+        assert_eq!(bytes[8], 0x01);
+        let decoded = Asdu::decode(&bytes).expect("decode");
+        assert_eq!(decoded.ioas[0].ioa, 0x010203);
+    }
+
+    #[test]
+    fn test_ioa_24bit_large_sequential() {
+        // 70000 起的连续 IOA（旧 u16 溢出场景）。
+        let asdu = Asdu {
+            type_id: TypeId::MeasuredValueNormalized,
+            cause_of_tx: Cot::Spontaneous,
+            common_addr: 1,
+            ioas: (70_000..70_004)
+                .map(|ioa| InformationObject {
+                    ioa,
+                    value: IoValue::Normalized(100),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                })
+                .collect(),
+        };
+        let bytes = asdu.encode();
+        // 连续 → SQ=1 压缩。
+        assert_eq!(bytes[1], 0x84, "SQ=1 | 4 objects");
+        let decoded = Asdu::decode(&bytes).expect("decode");
+        assert_eq!(decoded.ioas.len(), 4);
+        assert_eq!(decoded.ioas[0].ioa, 70_000);
+        assert_eq!(decoded.ioas[3].ioa, 70_003);
+    }
+
+    #[test]
+    fn test_sq1_compressed_roundtrip() {
+        // 显式 SQ=1：单点遥信连续 IOA 序列压缩往返。
+        let asdu = Asdu {
+            type_id: TypeId::SinglePointInformation,
+            cause_of_tx: Cot::Spontaneous,
+            common_addr: 5,
+            ioas: vec![
+                InformationObject {
+                    ioa: 10,
+                    value: IoValue::SinglePoint(SinglePointValue::On),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                },
+                InformationObject {
+                    ioa: 11,
+                    value: IoValue::SinglePoint(SinglePointValue::Off),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                },
+                InformationObject {
+                    ioa: 12,
+                    value: IoValue::SinglePoint(SinglePointValue::On),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                },
+            ],
+        };
+        let bytes = asdu.encode();
+        assert_eq!(bytes[1], 0x83);
+        let decoded = Asdu::decode(&bytes).expect("decode");
+        assert_eq!(decoded, asdu);
+        // 压缩后长度：6 头 + 4(首 IOA+SIQ) + 2×1(后续仅 SIQ) = 12。
+        assert_eq!(bytes.len(), 12);
+    }
+
+    #[test]
+    fn test_non_sequential_ioas_use_sq0() {
+        // 非连续 IOA → 保持 SQ=0（每个对象完整 IOA）。
+        let asdu = Asdu {
+            type_id: TypeId::SinglePointInformation,
+            cause_of_tx: Cot::Spontaneous,
+            common_addr: 1,
+            ioas: vec![
+                InformationObject {
+                    ioa: 1,
+                    value: IoValue::SinglePoint(SinglePointValue::On),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                },
+                InformationObject {
+                    ioa: 100,
+                    value: IoValue::SinglePoint(SinglePointValue::Off),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                },
+            ],
+        };
+        let bytes = asdu.encode();
+        assert_eq!(bytes[1], 0x02, "非连续 → SQ=0");
+        let decoded = Asdu::decode(&bytes).expect("decode");
+        assert_eq!(decoded, asdu);
+    }
+
+    #[test]
+    fn test_single_point_time_tagged_roundtrip() {
+        // M_SP_TB_1（TI=30）：单点遥信 + 强制时标。
+        let tag = TimeTag {
+            year: 25,
+            month: 3,
+            day: 14,
+            hour: 8,
+            minute: 30,
+            second: 5,
+            iv: false,
+            su: false,
+            millis: 250,
+        };
+        let asdu = Asdu {
+            type_id: TypeId::SinglePointTimeTagged,
+            cause_of_tx: Cot::Spontaneous,
+            common_addr: 1,
+            ioas: vec![InformationObject {
+                ioa: 42,
+                value: IoValue::SinglePoint(SinglePointValue::On),
+                quality: QualityDescriptor::good(),
+                time_tag: Some(tag),
+            }],
+        };
+        let bytes = asdu.encode();
+        // 3(IOA) + 1(SIQ) + 7(CP56Time2a) = 11。
+        assert_eq!(bytes.len(), 6 + 11);
+        let decoded = Asdu::decode(&bytes).expect("decode");
+        assert_eq!(decoded.ioas[0].ioa, 42);
+        assert_eq!(decoded.ioas[0].time_tag, Some(tag));
+    }
+
+    #[test]
+    fn test_measured_value_float_time_tagged_roundtrip() {
+        // M_ME_TD_1（TI=36）：短浮点遥测 + 强制时标。
+        let tag = TimeTag {
+            year: 25,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            iv: false,
+            su: false,
+            millis: 0,
+        };
+        let asdu = Asdu {
+            type_id: TypeId::MeasuredValueFloatTimeTagged,
+            cause_of_tx: Cot::Spontaneous,
+            common_addr: 2,
+            ioas: vec![InformationObject {
+                ioa: 7,
+                value: IoValue::Float(3.25),
+                quality: QualityDescriptor::good(),
+                time_tag: Some(tag),
+            }],
+        };
+        let bytes = asdu.encode();
+        let decoded = Asdu::decode(&bytes).expect("decode");
+        assert_eq!(decoded.ioas[0].ioa, 7);
+        assert_eq!(decoded.ioas[0].time_tag, Some(tag));
+        let v = decoded.ioas[0].value.as_f32();
+        assert!((v - 3.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_time_tagged_missing_time_tag_encodes_zeros() {
+        // 强制时标类型缺失 time_tag → 编码 7 字节 0，解码得到 Some(0 时标)。
+        let asdu = Asdu {
+            type_id: TypeId::SinglePointTimeTagged,
+            cause_of_tx: Cot::Spontaneous,
+            common_addr: 1,
+            ioas: vec![InformationObject {
+                ioa: 1,
+                value: IoValue::SinglePoint(SinglePointValue::Off),
+                quality: QualityDescriptor::good(),
+                time_tag: None,
+            }],
+        };
+        let bytes = asdu.encode();
+        assert_eq!(bytes.len(), 6 + 11);
+        let decoded = Asdu::decode(&bytes).expect("decode");
+        assert!(decoded.ioas[0].time_tag.is_some(), "缺失时标编码为 0 后解码得 Some");
+    }
+
+    #[test]
+    fn test_time_tagged_decode_truncated_rejected() {
+        // 强制时标类型但字节不足 7 字节时标 → Decode 错误（结构化校验）。
+        let mut bytes = [0u8; 6 + 3 + 1 + 3]; // 头 + IOA + SIQ + 半截时标
+        bytes[0] = 30; // M_SP_TB_1
+        bytes[1] = 1;
+        bytes[2] = 3; // Spontaneous
+        bytes[4] = 1;
+        assert_eq!(Asdu::decode(&bytes), Err(Iec104Error::Decode));
     }
 }

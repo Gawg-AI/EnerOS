@@ -172,12 +172,12 @@ impl Iec104Slave {
     /// 校验一条 IEC 104 遥控是否与已安装的 [`AuthorizedCommand`] 精确匹配：
     /// `common_addr → device_id`、`ioa → point_id`、命令值一致。任一不匹配或未安装
     /// 授权 → 拒绝（默认 deny）。
-    fn write_authorized(&self, common_addr: u16, ioa: u16, cmd: &ControlCommand) -> bool {
+    fn write_authorized(&self, common_addr: u16, ioa: u32, cmd: &ControlCommand) -> bool {
         match &self.authorized_write {
             None => false,
             Some(auth) => {
                 auth.device_id == common_addr as u32
-                    && auth.point_id == ioa as u32
+                    && auth.point_id == ioa
                     && &auth.command == cmd
             }
         }
@@ -475,7 +475,7 @@ impl Iec104Slave {
                 };
                 // PTC-003：SBO 选择阶段——仅记录选择，不执行。
                 if sco.select {
-                    self.selected = Some((asdu.common_addr as u32, io.ioa as u32, cmd));
+                    self.selected = Some((asdu.common_addr as u32, io.ioa, cmd));
                     let confirm = Asdu {
                         type_id: TypeId::SingleCommand,
                         cause_of_tx: Cot::ActivationConfirm,
@@ -489,7 +489,7 @@ impl Iec104Slave {
                 let matched = matches!(
                     &self.selected,
                     Some((a, p, c)) if *a == asdu.common_addr as u32
-                        && *p == io.ioa as u32
+                        && *p == io.ioa
                         && *c == cmd
                 );
                 if matched && self.write_authorized(asdu.common_addr, io.ioa, &cmd) {
@@ -890,10 +890,10 @@ mod tests {
 
     // ===== 14. 单点遥控执行 =====
     /// 构造一条与 (common_addr, ioa, cmd) 匹配的 AuthorizedCommand (CTL-004)。
-    fn auth_for(common_addr: u16, ioa: u16, cmd: ControlCommand) -> AuthorizedCommand {
+    fn auth_for(common_addr: u16, ioa: u32, cmd: ControlCommand) -> AuthorizedCommand {
         AuthorizedCommand {
             device_id: common_addr as u32,
-            point_id: ioa as u32,
+            point_id: ioa,
             command: cmd,
             actor_kind: eneros_control_gateway::ActorKind::Operator,
             issuer: [0xCD; 16],

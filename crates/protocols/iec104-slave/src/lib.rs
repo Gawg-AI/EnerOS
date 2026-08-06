@@ -105,7 +105,7 @@ mod tests {
     }
 
     /// 构造单点遥控命令 ASDU.
-    fn build_single_command_asdu(common_addr: u16, ioa: u16, value: bool) -> Asdu {
+    fn build_single_command_asdu(common_addr: u16, ioa: u32, value: bool) -> Asdu {
         Asdu {
             type_id: TypeId::SingleCommand,
             cause_of_tx: Cot::Activation,
@@ -120,7 +120,7 @@ mod tests {
     }
 
     /// 构造双点遥控命令 ASDU.
-    fn build_double_command_asdu(common_addr: u16, ioa: u16, value: DoublePointValue) -> Asdu {
+    fn build_double_command_asdu(common_addr: u16, ioa: u32, value: DoublePointValue) -> Asdu {
         Asdu {
             type_id: TypeId::DoubleCommand,
             cause_of_tx: Cot::Activation,

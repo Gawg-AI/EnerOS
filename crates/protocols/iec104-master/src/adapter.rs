@@ -195,7 +195,7 @@ impl PointAccess for Iec104Adapter {
             .find_mapping(point_id)
             .ok_or(ProtocolError::PointNotFound)?;
         self.master
-            .send_single_command(mapping.common_addr, mapping.ioa as u16, SinglePointValue::On)
+            .send_single_command(mapping.common_addr, mapping.ioa, SinglePointValue::On)
             .map_err(iec104_to_protocol)
     }
 
@@ -285,7 +285,7 @@ mod tests {
             cause_of_tx: Cot::Spontaneous,
             common_addr,
             ioas: vec![InformationObject {
-                ioa: ioa as u16,
+                ioa,
                 value: IoValue::Float(value),
                 quality: QualityDescriptor::good(),
                 time_tag: None,

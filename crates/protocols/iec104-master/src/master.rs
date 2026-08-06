@@ -188,7 +188,7 @@ impl Iec104Master {
     pub fn send_single_command(
         &mut self,
         common_addr: u16,
-        ioa: u16,
+        ioa: u32,
         value: SinglePointValue,
     ) -> Result<(), MasterError> {
         let state = self
@@ -221,7 +221,7 @@ impl Iec104Master {
     pub fn send_double_command(
         &mut self,
         common_addr: u16,
-        ioa: u16,
+        ioa: u32,
         value: DoublePointValue,
     ) -> Result<(), MasterError> {
         let state = self
@@ -404,13 +404,17 @@ impl Iec104Master {
             | TypeId::MeasuredValueNormalized
             | TypeId::MeasuredValueScaled
             | TypeId::MeasuredValueFloat
-            | TypeId::Counter => {
+            | TypeId::Counter
+            // v0.220.0：带时标类型数据路径相同（时标保留在 io.time_tag）。
+            | TypeId::SinglePointTimeTagged
+            | TypeId::MeasuredValueNormalizedTimeTagged
+            | TypeId::MeasuredValueFloatTimeTagged => {
                 // 遥测遥信数据 — 保留到数据面缓存（ARCH-P04）
                 let ts = self.transport.now_ms();
                 let entry = self.latest_values.entry(asdu.common_addr).or_default();
                 for io in &asdu.ioas {
                     entry.insert(
-                        io.ioa.into(),
+                        io.ioa,
                         LatestValue {
                             value: io.value,
                             quality: io.quality,

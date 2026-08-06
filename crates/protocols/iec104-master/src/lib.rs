@@ -137,7 +137,7 @@ mod tests {
     }
 
     /// 构造遥测数据 I 帧（从站 → 主站，单点遥信）.
-    fn single_point_data_bytes(common_addr: u16, ioa: u16, value: SinglePointValue) -> Vec<u8> {
+    fn single_point_data_bytes(common_addr: u16, ioa: u32, value: SinglePointValue) -> Vec<u8> {
         Apdu::i_format(
             0,
             0,
