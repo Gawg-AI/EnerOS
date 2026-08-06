@@ -182,6 +182,7 @@
 extern crate alloc;
 
 pub mod auction;
+pub mod real;
 pub mod bid_book;
 pub mod cache;
 pub mod channel;

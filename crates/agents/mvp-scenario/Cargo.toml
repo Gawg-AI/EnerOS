@@ -8,7 +8,7 @@ description = "EnerOS v0.74.0 MVP 端到端集成 — 储能自治场景 (no_std
 
 [dependencies]
 eneros-agent = { path = "../agent" }
-eneros-market-types = { path = "../market-types", version = "0.227.0" }
+eneros-market-types = { path = "../market-types", version = "0.228.0" }
 eneros-energy-market-agent = { path = "../energy-market-agent", features = ["mock"] }
 eneros-device-agent = { path = "../device-agent" }
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
