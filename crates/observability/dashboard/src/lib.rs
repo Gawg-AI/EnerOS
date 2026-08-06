@@ -22,6 +22,7 @@
 extern crate alloc;
 
 pub mod powerflow;
+pub mod real_render;
 pub mod render;
 pub mod topology;
 pub mod types;
