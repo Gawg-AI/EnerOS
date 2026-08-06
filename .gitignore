@@ -157,3 +157,7 @@ gdb-output.txt
 .codebuddy/
 .redox-research/
 .qoderignore
+
+# ===== 第三方源码仓库（本地获取，不入仓） =====
+third_party/highs-*/
+third_party/llama.cpp/
