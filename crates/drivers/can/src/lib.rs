@@ -7,13 +7,14 @@
 //! - [`driver::CanDriver`] — CAN 驱动，实现 `DeviceDriver` trait
 //! - [`config::CanConfig`] — CAN 配置结构（控制器类型/波特率/模式/过滤器/自动重传）
 //! - [`controller::CanController`] — CAN 控制器硬件抽象 trait（D1 偏差）
+//! - [`sja1000::Sja1000Controller`] — SJA1000 寄存器级真实控制器（v0.213.0，B1-01）
 //! - [`frame::CanFrame`] — CAN 帧结构（标准/扩展/远程帧）
 //! - [`filter::CanFilter`] — CAN 帧过滤器（ID+掩码匹配）
 //! - [`ring::RingBuffer`] — no_std 环形缓冲（D4 偏差：无外部依赖）
 //!
 //! # 偏差声明
 //! - D1: 定义本地 `CanController` trait（HAL 仅有 `HalSpi`/`HalGpio`，无 CAN 控制器专有方法）
-//! - D2: `CanControllerType` 枚举仅作配置标识（MCP2515/Internal/SJA1000），不实现寄存器级操作
+//! - D2: `CanControllerType` 枚举标识控制器类型；SJA1000 已有寄存器级实现（`sja1000.rs`，v0.213.0），MCP2515/Internal 仍为配置标识
 //! - D3: `CanFrame` 不含 `timestamp: MonotonicTime` 字段（EnerOS 无 `MonotonicTime` 类型）
 //! - D4: `RingBuffer<T, const N: usize>` 本地实现（不依赖 RS485 crate，遵循 Surgical Changes 原则）
 //! - D5: `recv()` 接受 `now_ns: u64` 参数注入时间戳（不使用 `MonotonicTime::now()`）
@@ -37,6 +38,7 @@ pub mod driver;
 pub mod filter;
 pub mod frame;
 pub mod ring;
+pub mod sja1000;
 
 #[cfg(test)]
 pub mod mock;
@@ -47,6 +49,7 @@ pub use driver::CanDriver;
 pub use filter::CanFilter;
 pub use frame::{CanFrame, CanId, FrameType};
 pub use ring::RingBuffer;
+pub use sja1000::{Sja1000Controller, VolatileMmio};
 
 #[cfg(test)]
 mod tests {
