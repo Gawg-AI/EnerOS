@@ -10,7 +10,9 @@
 use alloc::vec::Vec;
 
 use crate::attest::RemoteAttestation;
-use crate::tpm::{PcrBank, TpmBackend};
+#[cfg(feature = "tpm2")]
+use crate::tpm::TpmBackend;
+#[cfg(feature = "tpm2")]
 use crate::TpmError;
 use crate::{AttestError, AttestResult, AttestTransport};
 
