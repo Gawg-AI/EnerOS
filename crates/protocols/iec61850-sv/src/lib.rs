@@ -43,6 +43,8 @@
 extern crate alloc;
 
 pub mod sv_buffer;
+#[cfg(feature = "net")]
+pub mod l2_raw;
 pub mod sv_rx;
 
 pub use sv_buffer::RingBuffer;

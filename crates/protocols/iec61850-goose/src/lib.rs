@@ -46,6 +46,8 @@
 
 extern crate alloc;
 
+#[cfg(feature = "net")]
+pub mod l2_raw;
 pub mod dataset;
 pub mod goose_rx;
 pub mod goose_tx;

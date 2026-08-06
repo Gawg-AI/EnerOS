@@ -52,6 +52,8 @@ pub mod acse;
 pub mod ber_decode;
 pub mod ber_encode;
 pub mod mms_client;
+#[cfg(feature = "net")]
+pub mod mms_net;
 
 pub use ber_decode::{decode_read_response, decode_write_response, read_tag_length};
 pub use ber_encode::BerEncoder;
