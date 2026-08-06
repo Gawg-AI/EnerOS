@@ -289,7 +289,7 @@ fn test_sm2_verify_with_wrong_public_key() {
 fn test_sm2_custom_user_id() {
     let (kp, mut rng) = setup_keypair();
     let custom_id = b"my-custom-user-id-2026";
-    let signer = Sm2Signer::with_user_id(custom_id);
+    let signer = Sm2Signer::with_user_id(custom_id).expect("SM2 user_id ≤ 8191B");
     let msg = b"custom user id sign/verify test";
 
     let sig = signer
@@ -308,13 +308,13 @@ fn test_sm2_user_id_mismatch() {
     let msg = b"user id mismatch test";
 
     // Sign with user_id_1
-    let signer1 = Sm2Signer::with_user_id(b"signer-user-id-one");
+    let signer1 = Sm2Signer::with_user_id(b"signer-user-id-one").expect("SM2 user_id ≤ 8191B");
     let sig = signer1
         .sign(msg, &kp.private_key, &kp.public_key, &mut rng)
         .expect("sign should succeed");
 
     // Verify with user_id_2 → should fail
-    let signer2 = Sm2Signer::with_user_id(b"signer-user-id-two");
+    let signer2 = Sm2Signer::with_user_id(b"signer-user-id-two").expect("SM2 user_id ≤ 8191B");
     let valid = signer2
         .verify(msg, &sig, &kp.public_key)
         .expect("verify should not error");

@@ -309,4 +309,34 @@ mod tests {
         let result = store.post(entry);
         assert_eq!(result, Err(EconError::Frozen));
     }
+    /// v0.245.0（C-245）：长期累计精度——100 万次 0.1 kWh 入账，
+    /// 余额漂移相对误差必须 < 1e-10（f64 累加的经典漂移检查；金额侧
+    /// 全程 MilliYuan 定点无漂移）。
+    ///
+    /// 电量侧保留 f64 的说明：电量来自仪表输入（物理量本身为浮点），
+    /// 定点化会引入 0.001 kWh 粒度量化误差；f64 累加 100 万次的绝对
+    /// 漂移 ~1.3e-6 kWh（相对 1e-11），远小于仪表精度（0.01 kWh 级）。
+    #[test]
+    fn test_long_term_kwh_drift_below_threshold() {
+        let mut store = AccountStore::new();
+        store.open(100).unwrap();
+        // 模拟长期交易：100 万笔 0.1 kWh 入账（0.1 是二进制不可精确表示
+        // 的值，f64 累加最易暴露漂移）。
+        for i in 0..1_000_000u64 {
+            let entry = create_entry(1, FlowDir::Credit, 0.1, 0.01, Some(i), "drift");
+            store.post(entry).unwrap();
+        }
+        let (_kwh, yuan) = store.balance(1).unwrap();
+        // 金额侧：0.01 元 × 100 万 = 10_000 元 = 10_000_000 毫元，精确无漂移。
+        assert_eq!(yuan, MilliYuan(10_000_000), "定点金额长期累计必须精确");
+        // 电量侧：f64 累加允许极小漂移，相对误差必须 < 1e-10。
+        let (kwh, _) = store.balance(1).unwrap();
+        let expected = 100_000.0f64;
+        let rel_drift = (kwh - expected).abs() / expected;
+        assert!(
+            rel_drift < 1e-10,
+            "100 万次 0.1kWh 入账后相对漂移 {rel_drift} 超阈值 1e-10"
+        );
+    }
 }
+

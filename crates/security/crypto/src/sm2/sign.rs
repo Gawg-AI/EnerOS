@@ -93,10 +93,17 @@ impl Sm2Signer {
     }
 
     /// 创建签名器，使用自定义用户 ID.
-    pub fn with_user_id(user_id: &[u8]) -> Self {
-        Self {
-            user_id: user_id.to_vec(),
+    ///
+    /// SM2 规范：ENTL 为 16 位比特长度，user_id 最大 8191 字节（65528 位）。
+    /// 超长 ID 返回 `None`（拒绝静默截断——截断会改变 Z 值导致验签失败
+    /// 且不可观测）。
+    pub fn with_user_id(user_id: &[u8]) -> Option<Self> {
+        if user_id.len() > 8191 {
+            return None;
         }
+        Some(Self {
+            user_id: user_id.to_vec(),
+        })
     }
 
     /// 返回用户 ID.
@@ -466,7 +473,7 @@ mod tests {
             .expect("签名失败");
 
         // 自定义用户 ID 签名
-        let custom_signer = Sm2Signer::with_user_id(b"custom-id-12345");
+        let custom_signer = Sm2Signer::with_user_id(b"custom-id-12345").expect("SM2 user_id ≤ 8191B");
         assert_eq!(custom_signer.user_id(), b"custom-id-12345");
         let sig_custom = custom_signer
             .sign(msg, &kp.private_key, &kp.public_key, &mut rng)
@@ -481,7 +488,7 @@ mod tests {
         let mut rng = CsRng::new();
         let kp = gen_keypair(&mut rng);
         let custom_id = b"my-custom-user-id";
-        let signer = Sm2Signer::with_user_id(custom_id);
+        let signer = Sm2Signer::with_user_id(custom_id).expect("SM2 user_id ≤ 8191B");
         let msg = b"custom id verify test";
 
         let sig = signer
@@ -492,6 +499,23 @@ mod tests {
         assert!(valid, "相同用户 ID 签名/验签应通过");
     }
 
+    /// v0.245.0：超长 user_id（> 8191 字节）必须拒绝，杜绝 ENTL 16 位
+    /// 比特长度截断导致的静默 Z 值漂移（旧行为：len*8 溢出 u16 后
+    /// 验签必然失败且原因不可观测）。
+    #[test]
+    fn test_signer_with_oversized_user_id_rejected() {
+        let oversized = [0x41u8; 8192];
+        assert!(
+            Sm2Signer::with_user_id(&oversized).is_none(),
+            "8192 字节 user_id 超出 SM2 ENTL 上限必须拒绝"
+        );
+        let boundary = [0x41u8; 8191];
+        assert!(
+            Sm2Signer::with_user_id(&boundary).is_some(),
+            "8191 字节 user_id 恰在 SM2 ENTL 上限内应接受"
+        );
+    }
+
     #[test]
     fn test_signer_wrong_user_id_verify() {
         let mut rng = CsRng::new();
@@ -499,13 +523,13 @@ mod tests {
         let msg = b"wrong user id test";
 
         // 使用 ID1 签名
-        let signer1 = Sm2Signer::with_user_id(b"user-id-one");
+        let signer1 = Sm2Signer::with_user_id(b"user-id-one").expect("SM2 user_id ≤ 8191B");
         let sig = signer1
             .sign(msg, &kp.private_key, &kp.public_key, &mut rng)
             .expect("签名失败");
 
         // 使用 ID2 验签
-        let signer2 = Sm2Signer::with_user_id(b"user-id-two");
+        let signer2 = Sm2Signer::with_user_id(b"user-id-two").expect("SM2 user_id ≤ 8191B");
         let valid = signer2.verify(msg, &sig, &kp.public_key).expect("验签失败");
         assert!(!valid, "不同用户 ID 验签应失败");
     }
