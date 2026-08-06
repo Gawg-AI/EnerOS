@@ -7,7 +7,7 @@ license.workspace = true
 description = "EnerOS Agent 自主交易 (v0.178.0) — 报价/撮合/执行/结算全闭环, no_std"
 
 [dependencies]
-eneros-market-types = { path = "../market-types", version = "0.223.0" }
+eneros-market-types = { path = "../market-types", version = "0.224.0" }
 
 [features]
 default = []

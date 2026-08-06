@@ -66,7 +66,16 @@ pub struct IpcClient {
     recv_count: u64,
     /// 统计：编解码错误数
     error_count: u64,
+    /// seL4 IPC 传输（feature sel4；None = 进程内 SPSC 队列）。
+    #[cfg(feature = "sel4")]
+    sel4: Option<crate::ipc_sel4::Sel4IpcClient>,
 }
+
+// SAFETY: IpcClient 是单线程 no_std 语义（SDK D17）：内部 heapless Queue
+// 仅在同一 Agent 执行上下文中访问；跨线程共享不提供（Send 用于 Agent
+// trait 的 Send+Sync 要求，实际由 Runtime 串行化调用）。
+unsafe impl Send for IpcClient {}
+unsafe impl Sync for IpcClient {}
 
 impl IpcClient {
     /// 创建新的 IPC 客户端。
@@ -78,7 +87,19 @@ impl IpcClient {
             sent_count: 0,
             recv_count: 0,
             error_count: 0,
+            #[cfg(feature = "sel4")]
+            sel4: None,
         }
+    }
+
+    /// 绑定 seL4 IPC 传输（v0.224.0）。
+    ///
+    /// 绑定后 `request`/`send` 走真实 seL4 endpoint（`seL4_Call`/
+    /// `seL4_Send`），替代进程内 SPSC 队列。
+    #[cfg(feature = "sel4")]
+    pub fn with_sel4(mut self, client: crate::ipc_sel4::Sel4IpcClient) -> Self {
+        self.sel4 = Some(client);
+        self
     }
 
     /// 设置端点名称。
@@ -91,6 +112,12 @@ impl IpcClient {
     ///
     /// 消息经过完整 wire codec 编码后入队。如果队列满则返回错误。
     pub fn send(&mut self, target: &str, msg: &[u8]) -> Result<(), AgentError> {
+        #[cfg(feature = "sel4")]
+        {
+            if let Some(sel4) = &mut self.sel4 {
+                return sel4.send(target, msg);
+            }
+        }
         if msg.len() > MAX_MSG_SIZE {
             return Err(AgentError::IpcError(
                 HString::<128>::try_from("message too large").unwrap_or_default(),
@@ -155,6 +182,12 @@ impl IpcClient {
     /// 发送 Request 消息，等待 Response。当前实现为同步（非阻塞 recv），
     /// 若无响应则返回空。
     pub fn request(&mut self, target: &str, req: &[u8]) -> Result<Vec<u8>, AgentError> {
+        #[cfg(feature = "sel4")]
+        {
+            if let Some(sel4) = &mut self.sel4 {
+                return sel4.request(target, req, 1_000_000_000);
+            }
+        }
         self.send(target, req)?;
         self.recv()
     }

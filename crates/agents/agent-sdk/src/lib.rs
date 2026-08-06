@@ -63,6 +63,7 @@
 //! v1.0 承诺公共 API 向后兼容。
 
 #![cfg_attr(not(test), no_std)]
+#![allow(unexpected_cfgs)] // sel4_target 由 sel4-sys build.rs 注入
 // AgentError uses HString<128> (136 bytes) for no_std error messages without
 // allocation. The large Err variant is an intentional trade-off.
 #![allow(clippy::result_large_err)]
@@ -73,6 +74,14 @@ pub mod agent;
 pub mod config;
 pub mod context;
 pub mod ipc;
+#[cfg(all(feature = "sel4", sel4_target))]
+pub mod ipc_sel4;
+
+// sel4 feature 仅限目标构建（seL4 userland）：host 上显式拒绝。
+#[cfg(all(feature = "sel4", not(sel4_target)))]
+compile_error!(
+    "feature `sel4` requires the seL4 target (aarch64-unknown-none);      host builds must not enable it (use the default SPSC queue)"
+);
 pub mod lifecycle;
 pub mod logger;
 pub mod storage;
