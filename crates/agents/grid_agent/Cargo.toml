@@ -9,3 +9,5 @@ description = "EnerOS v0.82.0 Grid Agent — 电网状态感知 + v0.83.0 PCC �
 [dependencies]
 eneros-agent = { path = "../agent" }
 eneros-energy-market-agent = { path = "../energy-market-agent" }
+# v0.225.0（B3-02）：真实发布接 agent-bus-dds。
+eneros-agent-bus-dds = { path = "../../protocols/agent-bus-dds" }
