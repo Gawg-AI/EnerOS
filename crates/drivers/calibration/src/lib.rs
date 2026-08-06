@@ -49,6 +49,7 @@ pub mod accuracy;
 pub mod coeffs;
 pub mod func;
 pub mod result;
+pub mod sampler;
 pub mod store;
 pub mod trait_def;
 
@@ -56,6 +57,10 @@ pub use accuracy::{is_within_class, AccuracyClass};
 pub use coeffs::CalibCoeffs;
 pub use func::{calibrate_meter, verify_accuracy, DefaultCalibrator};
 pub use result::{CalibResult, MeterReading};
+pub use sampler::{
+    compute_stats, run_sampling_calibration, Sampler, SamplePoint, SamplingCalibrationReport,
+    SamplingStats, MAX_SAMPLES,
+};
 pub use store::{CalibStore, InMemoryCalibStore};
 pub use trait_def::MeterCalibration;
 

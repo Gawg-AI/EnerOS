@@ -8,3 +8,11 @@ description = "EnerOS user-space device driver framework — DeviceDriver trait,
 
 [dependencies]
 # Zero external dependencies — pure Rust no_std
+
+[features]
+# v0.217.0（B1-05）：MockDriver 收编——仅测试或显式启用 mock 时可见。
+mock = []
+
+[dev-dependencies]
+# 集成测试（tests/）使用 MockDriver：自引用并显式开启 mock feature。
+eneros-driver-framework = { path = ".", features = ["mock"] }
