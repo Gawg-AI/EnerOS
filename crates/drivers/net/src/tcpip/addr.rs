@@ -101,3 +101,8 @@ mod tests {
         }
     }
 }
+
+/// 构造 IP 端点（IPv4 + 端口）（v0.221.0，供外部 crate 使用）。
+pub fn ip_endpoint(ip: Ipv4Addr, port: u16) -> SocketAddr {
+    smoltcp::wire::IpEndpoint::new(smoltcp::wire::IpAddress::Ipv4(ip), port)
+}

@@ -23,7 +23,7 @@
 //! | **D12** | TCP 传输抽象为 `MqttTransport` trait + `MockTransport` 实现（不直接依赖 smoltcp；与 v0.46.0/v0.49.0 transport trait 模式一致） |
 //! | **D13** | 仅支持 MQTT v3.1.1（不支持 MQTT 5；蓝图 §5 技术交底明确"MVP 不需要复杂特性"） |
 //! | **D14** | 不实现 TLS（MVP；蓝图 §8 注明"凭证安全：与 v0.31.0 国密联动"留待后续集成） |
-//! | **D15** | QoS 1/2 未确认消息仅在内存（不持久化；蓝图 §5 提及"需持久化"但 MVP 简化） |
+//! | **D15** | （v0.221.0 已解除）QoS 1/2 未确认消息经 [`qos_store::QosStore`] 持久化（fs 后端 + 内存实现），确认后清除、重启可补传 |
 //! | **D16** | 时间戳/超时使用 `u64` 毫秒参数注入（与 D1 一致） |
 //! | **D17** | 不要求 `Send + Sync`（no_std 单线程；与 v0.51.0 D2 一致） |
 //! | **D18** | 凭证使用 `String` 明文（不加密；加密留待与 v0.31.0 国密集成） |
@@ -42,6 +42,8 @@ pub mod client;
 pub mod error;
 pub mod packet;
 pub mod qos;
+pub mod qos_store;
+pub mod real;
 pub mod topic;
 pub mod transport;
 pub mod will;
@@ -54,6 +56,7 @@ pub use packet::{
 };
 pub use qos::QoS;
 pub use topic::TopicFilter;
+pub use qos_store::{FsQosStore, InMemoryQosStore, PendingMessage, QosStore};
 pub use transport::{MockTransport, MqttTransport};
 pub use will::LastWill;
 
@@ -339,5 +342,73 @@ mod tests {
         assert_eq!(client.reconnect_state.attempt_count, 2);
         assert_eq!(client.reconnect_state.backoff_ms, 4000);
         assert_eq!(client.reconnect_state.next_retry_ms, 3000); // 1000 + 2000
+    }
+
+    // ===== v0.221.0（B2-04）：QoS 持久化集成 =====
+
+    #[test]
+    fn test_qos1_persisted_until_puback() {
+        use crate::qos_store::InMemoryQosStore;
+        let mut mock = MockTransport::new();
+        mock.set_connected(true);
+        mock.enqueue_recv(make_connack());
+        // PUBACK 对应 packet_id=1
+        mock.enqueue_recv(make_puback(1));
+        let mut client = MqttClient::new("localhost", "c1", 60_000);
+        client.set_transport(Box::new(mock));
+        let mut store = InMemoryQosStore::new();
+        // 发布前无记录。
+        assert!(store.load_all().is_empty());
+        client.set_qos_store(Box::new(store));
+        assert!(client.connect(0).is_ok());
+        let r = client.publish("sensor/temp", &[0x01], QoS::AtLeastOnce, 0);
+        assert!(r.is_ok());
+        // PUBACK 后持久化记录已清除（确认完成）。
+        let store = client.qos_store.as_mut().unwrap();
+        assert!(store.load_all().is_empty(), "确认后必须清除持久化");
+    }
+
+    #[test]
+    fn test_qos1_saved_before_ack_and_restore() {
+        // 模拟断网：publish 后未收到 PUBACK → 记录保留，可 restore 补传。
+        use crate::qos_store::InMemoryQosStore;
+        let mut mock = MockTransport::new();
+        mock.set_connected(true);
+        mock.enqueue_recv(make_connack());
+        // 不喂 PUBACK → publish 将超时，但记录应已持久化。
+        let mut client = MqttClient::new("localhost", "c1", 60_000);
+        client.set_transport(Box::new(mock));
+        let store = InMemoryQosStore::new();
+        client.set_qos_store(Box::new(store));
+        assert!(client.connect(0).is_ok());
+        let _ = client.publish("sensor/power", &[0xAA], QoS::AtLeastOnce, 0);
+        // 在途记录存在（即使未确认）。
+        let store = client.qos_store.as_mut().unwrap();
+        let pending = store.load_all();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].packet_id, 1);
+        assert_eq!(pending[0].topic, "sensor/power");
+        assert_eq!(pending[0].payload, vec![0xAA]);
+        // 重启恢复路径。
+        let restored = client.restore_pending();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].packet_id, 1);
+    }
+
+    #[test]
+    fn test_qos0_not_persisted() {
+        use crate::qos_store::InMemoryQosStore;
+        let mut mock = MockTransport::new();
+        mock.set_connected(true);
+        mock.enqueue_recv(make_connack());
+        let mut client = MqttClient::new("localhost", "c1", 60_000);
+        client.set_transport(Box::new(mock));
+        let store = InMemoryQosStore::new();
+        client.set_qos_store(Box::new(store));
+        assert!(client.connect(0).is_ok());
+        let r = client.publish("sensor/fire", &[1], QoS::AtMostOnce, 0);
+        assert!(r.is_ok());
+        let store = client.qos_store.as_mut().unwrap();
+        assert!(store.load_all().is_empty(), "QoS0 不持久化");
     }
 }

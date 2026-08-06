@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use crate::error::MqttError;
 use crate::packet::{self, MqttPacket, PublishPacket, SubscribePacket, UnsubscribePacket};
 use crate::qos::QoS;
+use crate::qos_store::{PendingMessage, QosStore};
 use crate::transport::MqttTransport;
 use crate::will::LastWill;
 
@@ -104,6 +105,8 @@ pub struct MqttClient {
     pub pending_publish_packet_id: u16,
     /// 在途 QoS 1/2 消息（packet_id → 状态）.
     pub pending_acks: BTreeMap<u16, PendingAck>,
+    /// QoS 1/2 在途消息持久化（v0.221.0；None = 不持久化）。
+    pub qos_store: Option<Box<dyn QosStore>>,
 }
 
 impl MqttClient {
@@ -120,6 +123,22 @@ impl MqttClient {
             reconnect_state: ReconnectState::new(),
             pending_publish_packet_id: 1,
             pending_acks: BTreeMap::new(),
+            qos_store: None,
+        }
+    }
+
+    /// 设置 QoS 持久化存储（v0.221.0）。
+    pub fn set_qos_store(&mut self, store: Box<dyn QosStore>) {
+        self.qos_store = Some(store);
+    }
+
+    /// 启动时恢复在途消息（重连补传）。
+    ///
+    /// 返回恢复的未确认消息列表；调用方应逐条重新 publish（dup=true）。
+    pub fn restore_pending(&mut self) -> Vec<PendingMessage> {
+        match &mut self.qos_store {
+            Some(store) => store.load_all(),
+            None => Vec::new(),
         }
     }
 
@@ -219,6 +238,19 @@ impl MqttClient {
             payload: Vec::from(payload),
         };
         let bytes = packet::encode(&MqttPacket::Publish(publish));
+        // v0.221.0：QoS1/2 发送前持久化（断网/重启可补传）。
+        if let (Some(id), Some(state)) = (packet_id, pending) {
+            if let Some(store) = &mut self.qos_store {
+                let pm = PendingMessage {
+                    packet_id: id,
+                    topic: String::from(topic),
+                    payload: payload.to_vec(),
+                    qos: qos.as_u8(),
+                    state,
+                };
+                let _ = store.save(&pm);
+            }
+        }
         {
             let transport = self.transport.as_mut().ok_or(MqttError::NotConnected)?;
             transport
@@ -252,6 +284,10 @@ impl MqttClient {
         match pkt {
             MqttPacket::Puback(id) if id == packet_id => {
                 self.pending_acks.remove(&packet_id);
+                // v0.221.0：确认后清除持久化记录。
+                if let Some(store) = &mut self.qos_store {
+                    let _ = store.remove(packet_id);
+                }
                 Ok(())
             }
             _ => Err(MqttError::UnexpectedPacket),
@@ -282,6 +318,10 @@ impl MqttClient {
         match pkt {
             MqttPacket::Pubcomp(id) if id == packet_id => {
                 self.pending_acks.remove(&packet_id);
+                // v0.221.0：确认后清除持久化记录。
+                if let Some(store) = &mut self.qos_store {
+                    let _ = store.remove(packet_id);
+                }
                 Ok(())
             }
             _ => Err(MqttError::UnexpectedPacket),

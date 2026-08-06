@@ -363,6 +363,28 @@ impl FileSystem for Lfs {
             block_count: block_count as u64,
         })
     }
+
+    fn read_file(&mut self, path: &str) -> Result<Vec<u8>, FsError> {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 256];
+        let mut offset = 0u64;
+        loop {
+            let n = self.read_file_at(path, offset, &mut buf)?;
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+            offset += n as u64;
+        }
+        Ok(out)
+    }
+
+    fn write_file(&mut self, path: &str, data: &[u8]) -> Result<(), FsError> {
+        // 截断重写：先移除再全量写入（read_file_at/write_file_at 不做截断）。
+        let _ = self.remove(path);
+        self.write_file_at(path, 0, data)?;
+        Ok(())
+    }
 }
 
 /// Converts a `&str` path to a littlefs2 [`PathBuf`].

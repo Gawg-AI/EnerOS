@@ -8,3 +8,12 @@ description = "EnerOS MQTT v3.1.1 客户端 — QoS 0/1/2 + 遗嘱 + 断线重�
 
 [dependencies]
 eneros-upa-model = { path = "../upa-model" }
+eneros-fs = { path = "../../drivers/fs" }
+# v0.221.0（B2-04）：真实 TCP 传输（smoltcp，经真实 DMA 环）。
+eneros-net = { path = "../../drivers/net", optional = true }
+
+[features]
+# 真实传输层（默认关闭保持无外部依赖；启用后提供 NetTcpTransport）。
+net = ["dep:eneros-net"]
+# TLS 层（std 侧 rustls；与 eneros-tls 一致，默认关闭）。
+tls = []

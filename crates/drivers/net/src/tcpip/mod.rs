@@ -72,7 +72,8 @@ pub mod socket;
 
 // Re-export key types for convenience.
 pub use addr::{
-    ipv4_addr, ipv4_cidr, HardwareAddress, Ipv4Addr, Ipv4Cidr, SocketAddr, SocketHandle,
+    ip_endpoint, ipv4_addr, ipv4_cidr, HardwareAddress, Ipv4Addr, Ipv4Cidr, SocketAddr,
+    SocketHandle,
 };
 pub use device::SmolcpDevice;
 pub use dhcp::{DhcpClient, DhcpLease, DhcpState};
