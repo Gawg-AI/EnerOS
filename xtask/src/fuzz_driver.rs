@@ -137,6 +137,20 @@ fn exercise(target: &str, data: &[u8]) {
     }
 }
 
+/// 将崩溃复现输入写入 `target/fuzz-crashes/<target>-<iter>.bin`。
+///
+/// v0.250.0（C-250）：崩溃语料归档——nightly 长跑 fuzz 的崩溃输入
+/// 上传为 CI artifact，供次日 triage 与防回归测试复用。
+fn save_crash_input(target: &str, iter: usize, data: &[u8]) {
+    use std::io::Write;
+    let dir = std::path::Path::new("target").join("fuzz-crashes");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("{target}-{iter}.bin"));
+    if let Ok(mut f) = std::fs::File::create(&path) {
+        let _ = f.write_all(data);
+    }
+}
+
 pub fn command_fuzz(target: &str, iterations: usize) -> DynResult<()> {
     let seed = seed_for(target);
     let mut rng = Prng(0x4D595DF4D0F33173);
@@ -152,6 +166,9 @@ pub fn command_fuzz(target: &str, iterations: usize) -> DynResult<()> {
         }));
         if result.is_err() {
             crashes.push(format!("iter={i} len={} bytes={:02x?}", data.len(), &data[..data.len().min(64)]));
+            // v0.250.0（C-250）：崩溃复现输入落盘（target/fuzz-crashes/），
+            // 供 nightly 归档与回归测试复用。
+            save_crash_input(target, i, &data);
         }
     }
     let elapsed = start.elapsed();

@@ -4,7 +4,14 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     // v0.242.0（B6）：解码成功 → 编码往返一致性断言（差分）。
+    // v0.250.0（C-250）：补结构断言——payload 长度与帧长度字段一致。
     if let Ok(frame) = eneros_ipc_wire::el0::decode_frame(data) {
+        // 结构断言：解码出的 payload 不超过协议最大帧长（防畸形长度）。
+        assert!(
+            frame.payload.len() <= eneros_ipc_wire::DEFAULT_MAX_PAYLOAD_LEN,
+            "payload len {} exceeds MAX_WIRE_SIZE",
+            frame.payload.len()
+        );
         // 解码出的 payload 重新编码，再解码应保持头部一致。
         let encoded = eneros_ipc_wire::el0::encode_frame(
             frame.frame_type,

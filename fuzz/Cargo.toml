@@ -1,6 +1,6 @@
 [package]
 name = "eneros-fuzz"
-version = "0.192.0"
+version = "0.250.0"
 edition = "2021"
 publish = false
 
@@ -57,3 +57,8 @@ path = "fuzz_targets/gguf_loader.rs"
 test = false
 doc = false
 bench = false
+
+# v0.250.0（C-250）：独立于主 workspace——cargo-fuzz 要求 fuzz crate
+# 独立解析（libFuzzer 的 nightly/clang 构建链与主 workspace 的 stable
+# 门禁互不干扰）。
+[workspace]

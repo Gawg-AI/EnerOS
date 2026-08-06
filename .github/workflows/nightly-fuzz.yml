@@ -1,0 +1,57 @@
+name: nightly-fuzz
+
+# v0.250.0（C-250）：每夜长跑模糊测试（比 PR 门禁 10k 迭代更深的 500k
+# 迭代）+ 崩溃语料归档：崩溃发生时上传复现输入（libFuzzer 语料格式），
+# 供次日 triage 与回归测试复用。
+
+on:
+  schedule:
+    # 每天 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  fuzz-deep:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly-2026-04-04
+        with:
+          components: rust-src
+          targets: aarch64-unknown-none
+
+      - name: Cargo fetch locked
+        run: cargo fetch --locked
+
+      - name: Deep fuzz 6 parse surfaces (500k iterations each)
+        id: fuzz
+        run: |
+          set +e
+          FAILED=""
+          for t in boot_protocol ipc_wire modbus_rtu iec104 elf_loader gguf_loader; do
+            echo "=== deep fuzz: $t ==="
+            cargo xtask fuzz $t 500000
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              FAILED="$FAILED $t"
+            fi
+          done
+          set -e
+          if [ -n "$FAILED" ]; then
+            echo "crash-targets=$FAILED" >> "$GITHUB_OUTPUT"
+            echo "DEEP FUZZ FAILED on:$FAILED" >&2
+            exit 1
+          fi
+          echo "DEEP FUZZ ALL PASS"
+
+      - name: Archive crash corpus (if any)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-corpus
+          path: |
+            fuzz/corpus/**/*
+            target/fuzz-crashes/**/*
+          if-no-files-found: ignore
