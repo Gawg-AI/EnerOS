@@ -62,6 +62,8 @@ mod tests {
             version: String::from("0.1.0"),
             signature_valid,
             binary_hash: [0xAB; 32],
+            signer_pubkey: None,
+            signature: None,
         }
     }
 

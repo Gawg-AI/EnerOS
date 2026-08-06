@@ -7,6 +7,8 @@ license.workspace = true
 description = "EnerOS Agent OS 认证体系 (v0.184.0) — 设备兼容性认证 + 应用认证, no_std"
 
 [dependencies]
+# v0.233.0（B3-10）：应用包真实 SM2 验签。
+eneros-crypto = { path = "../../security/crypto" }
 
 [features]
 default = []

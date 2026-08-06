@@ -47,10 +47,28 @@ pub struct AppPackage {
     pub name: String,
     /// 应用版本
     pub version: String,
-    /// 签名是否有效
+    /// 签名是否有效（v0.233.0：由 [`verify_app_signature`] 计算的真实验签结果）
     pub signature_valid: bool,
     /// 二进制哈希 (SHA-256)
     pub binary_hash: [u8; 32],
+    /// 发布者公钥（v0.233.0；None = 无法验证，视为无效签名）
+    pub signer_pubkey: Option<eneros_crypto::Sm2PublicKey>,
+    /// SM2 签名（v0.233.0；对 binary_hash 签名）
+    pub signature: Option<eneros_crypto::Sm2Signature>,
+}
+
+impl AppPackage {
+    /// 真实验签（v0.233.0）：SM2 验签 binary_hash。
+    ///
+    /// 公钥或签名缺失 → 验证失败（安全默认拒绝）。
+    pub fn verify_app_signature(&self) -> bool {
+        match (&self.signer_pubkey, &self.signature) {
+            (Some(pubkey), Some(sig)) => {
+                eneros_crypto::sm2_verify(&self.binary_hash, sig, pubkey).unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
 }
 
 /// 测试用例结果
@@ -163,6 +181,8 @@ mod tests {
             version: String::from("0.1.0"),
             signature_valid: true,
             binary_hash: [0u8; 32],
+            signer_pubkey: None,
+            signature: None,
         };
         assert_eq!(app.app_id, 100);
         assert!(app.signature_valid);

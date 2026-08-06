@@ -47,6 +47,7 @@
 extern crate alloc;
 
 pub mod delta_sync;
+pub mod real;
 pub mod event_store;
 pub mod retry_queue;
 

@@ -11,3 +11,8 @@ eneros-solver-core = { path = "../../ai/solver-core" }
 
 [features]
 default = []
+mock = ["eneros-solver-core/mock"]
+
+[dev-dependencies]
+# 测试模块使用 MockSolver（v0.212.0 P0-27 纪律）。
+eneros-twin-global = { path = ".", features = ["mock"] }

@@ -19,25 +19,30 @@ pub trait CertificationProcess {
 }
 
 /// BSP 认证引擎
-#[derive(Debug)]
 pub struct BspCertEngine {
     /// 认证案例列表: (case_id, 硬件信息, 阶段, 测试报告)
     pub cases: Vec<(u64, HardwareInfo, CertPhase, Option<BspTestReport>)>,
     next_id: u64,
     next_cert_id: u64,
-    /// 测试套件是否全部通过（用于模拟）
-    pass_all: bool,
+    /// 真实测试套件执行器（v0.233.0：构造器显式注入；默认 Mock 兼容）。
+    test_kit: alloc::boxed::Box<dyn BspTestKit>,
 }
 
 impl BspCertEngine {
-    /// 创建认证引擎
+    /// 创建认证引擎（默认 Mock 测试套件，`pass_all` 控制通过率）。
     pub fn new(pass_all: bool) -> Self {
         Self {
             cases: Vec::new(),
             next_id: 1,
             next_cert_id: 1000,
-            pass_all,
+            test_kit: alloc::boxed::Box::new(MockTestKit::new(pass_all)),
         }
+    }
+
+    /// 注入真实测试套件执行器（v0.233.0：接真实硬件测试台/工厂产线）。
+    pub fn with_test_kit(mut self, kit: alloc::boxed::Box<dyn BspTestKit>) -> Self {
+        self.test_kit = kit;
+        self
     }
 
     fn find_case(&self, case_id: u64) -> Option<usize> {
@@ -63,8 +68,7 @@ impl CertificationProcess for BspCertEngine {
         self.cases[idx].2 = CertPhase::Testing;
 
         let spec = default_spec();
-        let mut kit = MockTestKit::new(self.pass_all);
-        let report = kit.run(&spec);
+        let report = self.test_kit.run(&spec);
 
         // 存储报告，转为 Report 阶段
         self.cases[idx].3 = Some(report.clone());

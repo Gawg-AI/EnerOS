@@ -44,3 +44,57 @@ fn main() {
     let _slot = TimeSlot::new(1000, 3600);
     let _dir = TradeDir::Sell;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eneros_account::AccountManager;
+
+    /// 场景端到端断言（v0.233.0 B3-10：固件闭包场景可验证）。
+    #[test]
+    fn test_firmware_scene_end_to_end() {
+        // 1. 设备注册。
+        let mut registry = DeviceRegistry::new();
+        registry.register(
+            "battery-01",
+            DeviceType::Battery,
+            Box::new(MockPointDevice::new(3)),
+            Default::default(),
+        );
+        assert_eq!(registry.len(), 1, "设备注册成功");
+
+        // 2. 市场结算：100 kWh × 0.5 元/kWh = 50 元 = 50_000 毫元。
+        let job = ClearingJob {
+            deal_id: 1,
+            delivered_kwh: 100.0,
+            contract_kwh: 100.0,
+            contract_price: YuanPerKwh(0.5),
+            at: 1000,
+        };
+        let mut clearing = ClearingEngine::new();
+        let result = clearing.clear(&job).expect("结算成功");
+        assert_eq!(result.amount_yuan, MilliYuan(50_000), "100×0.5=50 元定点");
+
+        // 3. 账本记账后余额正确。
+        let mut ledger = AccountStore::new();
+        ledger.open(1).expect("开户");
+        ledger
+            .post(create_entry(
+                1,
+                FlowDir::Credit,
+                100.0,
+                result.amount_yuan.to_yuan_f64(),
+                Some(1),
+                "firmware-scene",
+            ))
+            .expect("记账");
+        let (kwh, balance) = ledger.balance(1).expect("查询余额");
+        assert!(kwh > 0.0, "电量累计");
+        assert_eq!(balance, MilliYuan(50_000), "余额=结算额");
+
+        // 4. 词汇就绪。
+        let slot = TimeSlot::new(1000, 3600);
+        assert_eq!(slot.start, 1000);
+        assert_eq!(TradeDir::Sell as u8, 1);
+    }
+}

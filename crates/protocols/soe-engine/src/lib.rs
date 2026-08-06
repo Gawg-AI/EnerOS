@@ -51,7 +51,7 @@ pub use error::SoeError;
 pub use event::{EventPriority, SoeEvent, SoeEventType};
 pub use storage::{InMemorySoeStorage, SoeStorage};
 pub use trigger::{DigitalChangeTrigger, EventTrigger, OverLimitTrigger};
-pub use upload::{MockUploadChannel, UploadChannel};
+pub use upload::{MockUploadChannel, RealUploadChannel, UploadChannel};
 
 #[cfg(test)]
 mod tests {

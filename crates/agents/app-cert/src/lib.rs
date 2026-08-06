@@ -77,7 +77,8 @@ impl Default for AppCertEngine {
 
 impl AppCertification for AppCertEngine {
     fn certify_app(&self, app: &AppPackage) -> Result<AppCertificate, AppCertError> {
-        if !app.signature_valid {
+        // v0.233.0：真实 SM2 验签（不再信任外部布尔）。
+        if !app.verify_app_signature() {
             return Err(AppCertError::SignatureInvalid);
         }
 
@@ -120,14 +121,25 @@ mod tests {
 
     use super::*;
 
-    fn make_valid_app() -> AppPackage {
-        AppPackage {
-            app_id: 42,
-            name: String::from("energy-agent"),
-            version: String::from("1.0.0"),
-            signature_valid: true,
-            binary_hash: [0xCD; 32],
-        }
+    fn make_valid_app() -> (AppPackage, eneros_crypto::Sm2PrivateKey) {
+        // v0.233.0：真实 SM2 签名。
+        let mut rng = eneros_crypto::CsRng::from_seed(&[0x41; 32]);
+        let kp = eneros_crypto::Sm2KeyPair::generate(&mut rng).expect("kp");
+        let hash = [0xCD; 32];
+        let sig = eneros_crypto::sm2_sign(&hash, &kp.private_key, &kp.public_key, &mut rng)
+            .expect("sign");
+        (
+            AppPackage {
+                app_id: 42,
+                name: String::from("energy-agent"),
+                version: String::from("1.0.0"),
+                signature_valid: true,
+                binary_hash: hash,
+                signer_pubkey: Some(kp.public_key),
+                signature: Some(sig),
+            },
+            kp.private_key,
+        )
     }
 
     fn make_invalid_app() -> AppPackage {
@@ -137,13 +149,15 @@ mod tests {
             version: String::from("0.0.1"),
             signature_valid: false,
             binary_hash: [0x00; 32],
+            signer_pubkey: None,
+            signature: None,
         }
     }
 
     #[test]
     fn test_certify_valid_app() {
         let engine = AppCertEngine::new();
-        let app = make_valid_app();
+        let (app, _pk) = make_valid_app();
         let result = engine.certify_app(&app);
         assert!(result.is_ok());
 
@@ -192,7 +206,7 @@ mod tests {
     #[test]
     fn test_engine_default() {
         let engine = AppCertEngine::default();
-        let app = make_valid_app();
+        let (app, _pk) = make_valid_app();
         assert!(engine.certify_app(&app).is_ok());
     }
 }
