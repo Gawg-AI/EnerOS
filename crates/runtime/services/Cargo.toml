@@ -27,7 +27,7 @@ name = "svc-fault"
 path = "src/bin/svc-fault.rs"
 
 [dependencies]
-eneros-ipc-wire = { path = "../../abi/ipc-wire", version = "0.236.0" }
+eneros-ipc-wire = { path = "../../abi/ipc-wire", version = "0.237.0" }
 
 [features]
 default = []

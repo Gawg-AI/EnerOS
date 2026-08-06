@@ -45,10 +45,12 @@
 extern crate alloc;
 
 pub mod key_mgmt;
+pub mod secure_104;
 pub mod secure_goose;
 pub mod secure_sv;
 
 pub use key_mgmt::{KeyMgmt, SessionKey};
+pub use secure_104::{PlainRecordCodec, RecordCodec, RecordType, Secure104Session, TlsRecordCodec};
 pub use secure_goose::{SecureFrame, SecureGoose};
 pub use secure_sv::SecureSv;
 
@@ -65,4 +67,10 @@ pub enum SecError {
     EncryptFailed,
     /// 按 key_id 查找密钥未命中。
     InvalidKeyId,
+    /// 记录帧格式非法（v0.237.0）。
+    FrameInvalid,
+    /// 会话未就绪（握手未完成即传输，v0.237.0）。
+    NotReady,
+    /// 对端安全告警（TLS Alert，v0.237.0）。
+    PeerAlert,
 }
