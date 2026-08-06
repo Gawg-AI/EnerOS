@@ -69,6 +69,7 @@ pub use driver::{
     StorageMmio, StorageType,
 };
 pub use driver::{DmaBuffer, EmmcCmdType, EmmcDriver, NvmeDriver};
+pub use driver::emmc::RamEmmcMmio;
 #[cfg(test)]
 pub use driver::MockDmaTransfer;
 pub use driver::virtio_blk::{

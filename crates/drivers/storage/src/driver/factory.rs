@@ -5,6 +5,7 @@
 
 use alloc::boxed::Box;
 
+use crate::driver::emmc::{EmmcDriver, RamEmmcMmio};
 use crate::driver::mock::MockBlockDevice;
 use crate::driver::types::{StorageConfig, StorageType};
 use crate::driver::BlockDevice;
@@ -16,9 +17,10 @@ use crate::error::StorageError;
 ///   virtio-mmio transport). Requires a concrete [`VirtioMmio`]/[`DmaPool`]/
 ///   [`ArmCache`] wiring; `create_block_device` is the host-test entry that
 ///   wires them, while target builds construct [`VirtioBlkDriver`] directly.
-/// - [`StorageType::Emmc`] / [`StorageType::Nvme`] / [`StorageType::SdCard`]
-///   — **not supported in this release** (阶段 A：真实控制器推后到阶段 B).
-///   Returns [`StorageError::HardwareFault`] instead of a broken skeleton.
+/// - [`StorageType::Emmc`] — real eMMC driver over a RAM-simulated
+///   controller (QEMU sd model equivalent, v0.215.0 B1-03). Target builds
+///   construct [`EmmcDriver`] with a volatile MMIO backend.
+/// - [`StorageType::Nvme`] / [`StorageType::SdCard`] — not supported yet.
 ///
 /// The returned driver is uninitialized — call `init(block_count)` on the
 /// concrete type (or use [`create_mock_device`] for host tests).
@@ -39,11 +41,15 @@ pub fn create_block_device(
             )?;
             Ok(Box::new(driver))
         }
-        StorageType::Emmc | StorageType::Nvme | StorageType::SdCard => {
-            // 阶段 A（v0.194.0）：真实 eMMC/NVMe 控制器驱动推后到阶段 B。
-            // 不再产出恒 NotInitialized 的不可读写骨架（P0-4）。
+        StorageType::Emmc => {
+            // v0.215.0（B1-03）：eMMC 真实驱动 + RAM 模拟控制器（QEMU sd 模型等价）。
+            // 目标板用 volatile MMIO 后端直接构造 EmmcDriver。
+            let mmio = RamEmmcMmio::new(config.max_transfer_blocks as u64, config.block_size);
+            Ok(Box::new(EmmcDriver::new(mmio, config.clone())))
+        }
+        StorageType::Nvme | StorageType::SdCard => {
             Err(StorageError::HardwareFault {
-                detail: "eMMC/NVMe controller driver not supported until Phase B (use VirtioBlk)",
+                detail: "NVMe/SdCard controller driver not supported yet (use Emmc or VirtioBlk)",
             })
         }
     }
@@ -63,9 +69,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_create_emmc_device_rejected_phase_a() {
-        // P0-4（v0.194.0）：eMMC 真实控制器驱动推后到阶段 B，不再产出
-        // 恒 NotInitialized 的不可读写骨架。
+    fn test_create_emmc_device_roundtrip() {
+        // v0.215.0（B1-03）：eMMC 真实驱动 + RAM 模拟控制器（QEMU sd 模型等价）。
         let cfg = StorageConfig {
             storage_type: StorageType::Emmc,
             base_addr: 0xFF3F_0000,
@@ -74,10 +79,17 @@ mod tests {
             block_size: 512,
             max_transfer_blocks: 256,
         };
-        assert!(
-            matches!(create_block_device(&cfg), Err(StorageError::HardwareFault { .. })),
-            "eMMC/NVMe must be rejected in Phase A"
-        );
+        let dev = create_block_device(&cfg).expect("should create eMMC device");
+        // 工厂返回未初始化驱动，需 init（factory 层 trait 无 init，这里用具体类型验证）。
+        let mmio = RamEmmcMmio::new(256, 512);
+        let mut real = EmmcDriver::new(mmio, cfg.clone());
+        real.init(256);
+        let input = [0xC7; 512];
+        real.write_block(0, &input).expect("write");
+        let mut out = [0u8; 512];
+        real.read_block(0, &mut out).expect("read");
+        assert_eq!(out, input);
+        let _ = dev;
     }
 
     #[test]
