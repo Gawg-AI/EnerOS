@@ -82,7 +82,7 @@ impl BootManifest {
     ) -> Result<Self, BootError> {
         // 1. 信任根验签（与 verifier 相同的 SM2 验签路径）。
         let _header = encode_header(sig);
-        let mut verifier = crate::verifier::BootVerifier::new(root_key.clone(), 0);
+        let mut verifier = crate::verifier::BootVerifier::new(*root_key, 0);
         verifier.verify_stage(crate::BootStage::Bootloader, image, sig)?;
 
         // 2. 解析 manifest。
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn test_verify_and_parse_rejects_unsigned_image() {
         // 未验签镜像：verify_and_parse 必须在验签期失败（防张冠李戴）。
-        let (kp, mut rng) = keypair();
+        let (kp, _rng) = keypair();
         let (manifest, manifest_len) = BootManifest::encode(&kp.public_key);
         let mut image = alloc::vec![0x33u8; 64];
         image.extend_from_slice(&manifest[..manifest_len]);

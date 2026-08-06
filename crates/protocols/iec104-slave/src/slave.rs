@@ -586,7 +586,9 @@ impl Iec104Slave {
     fn send_i_format(&mut self, asdu: &Asdu) -> Result<(), Iec104Error> {
         let (send_seq, recv_seq) = match &self.connection {
             Some(conn) => (conn.send_seq, conn.recv_seq),
-            None => return Ok(()),
+            // v0.244.0：无连接时发送 I 帧是协议错误（静默成功会让调用方
+            // 误以为数据已到达主站）——上报 ConnectionClosed。
+            None => return Err(Iec104Error::ConnectionClosed),
         };
         // k 窗口：未确认 I 帧达到 k → 拒绝发送（主站须先 S 帧确认）。
         if let Some(conn) = &self.connection {
@@ -607,7 +609,8 @@ impl Iec104Slave {
     fn send_apdu(&mut self, apdu: &Apdu) -> Result<(), Iec104Error> {
         let conn_id = match &self.connection {
             Some(conn) => conn.conn_id,
-            None => return Ok(()),
+            // v0.244.0：与 send_i_format 同——无连接发送静默成功掩盖故障。
+            None => return Err(Iec104Error::ConnectionClosed),
         };
         // t1 跟踪：U 帧发送后记录 pending，等待确认。
         if let ControlField::Unnumbered(func) = apdu.control_field {
@@ -842,6 +845,53 @@ mod tests {
         let mut slave = make_slave(mock, db);
         slave.poll(100).expect("poll ok");
         assert_eq!(slave.state(), SlaveState::Idle);
+    }
+
+    // ===== 11b. 无连接时发送 I 帧/APDU 必须报错（v0.244.0 防回归）=====
+    // 旧行为：`send_i_format`/`send_apdu` 在无连接时静默 `Ok(())`，
+    // 调用方误以为数据已送达主站；新行为：返回 ConnectionClosed。
+    #[test]
+    fn test_send_i_format_without_connection_errors() {
+        let mock = MockSlaveTransport::new();
+        let db = InMemoryPointDatabase::new();
+        let mut slave = make_slave(mock, db);
+        let asdu = Asdu {
+            type_id: TypeId::SingleCommand,
+            cause_of_tx: Cot::Activation,
+            common_addr: 1,
+            ioas: vec![],
+        };
+        let err = slave.send_i_format(&asdu).unwrap_err();
+        assert_eq!(err, Iec104Error::ConnectionClosed);
+    }
+
+    #[test]
+    fn test_send_apdu_without_connection_errors() {
+        let mock = MockSlaveTransport::new();
+        let db = InMemoryPointDatabase::new();
+        let mut slave = make_slave(mock, db);
+        let apdu = Apdu::u_format(UFormatFunction::StartDtAct);
+        let err = slave.send_apdu(&apdu).unwrap_err();
+        assert_eq!(err, Iec104Error::ConnectionClosed);
+    }
+
+    #[test]
+    fn test_send_i_format_with_connection_ok() {
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        let db = InMemoryPointDatabase::new();
+        let mut slave = make_slave(mock, db);
+        // 建立连接（poll 接受）。
+        slave.poll(100).expect("accept conn");
+        assert_eq!(slave.state(), SlaveState::Connected);
+        let asdu = Asdu {
+            type_id: TypeId::SingleCommand,
+            cause_of_tx: Cot::Activation,
+            common_addr: 1,
+            ioas: vec![],
+        };
+        assert!(slave.send_i_format(&asdu).is_ok(), "已连接时发送应成功");
+        let _ = conn;
     }
 
     // ===== 12. stats 递增 =====

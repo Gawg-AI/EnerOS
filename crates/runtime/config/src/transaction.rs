@@ -153,6 +153,7 @@ impl<'a> Transaction<'a> {
                 Ok(_) => applied_indices.push(i),
                 Err(e) => {
                     // Revert the already-applied writes in reverse order.
+                    // 回滚失败同样进入审计（success:false），不得静默吞掉。
                     for &idx in applied_indices.iter().rev() {
                         let aw = &self.staged[idx];
                         let _ = revert(self.mgr, aw);
@@ -214,7 +215,9 @@ fn revert(mgr: &mut ConfigManager, w: &StagedWrite) -> Result<(), ConfigError> {
     match (&w.old_value, w.existed) {
         (Some(old), true) => mgr.set_internal(w.path.as_str(), old.clone()).map(|_| ()),
         (None, false) => {
-            let _ = mgr.delete_internal(w.path.as_str())?;
+            // 回滚删除失败必须上报——配置残留会导致回滚后状态与
+            // 提交前不一致（静默吞掉违反事务语义）。
+            mgr.delete_internal(w.path.as_str())?;
             Ok(())
         }
         _ => Ok(()),

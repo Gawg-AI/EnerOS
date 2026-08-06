@@ -194,7 +194,8 @@ impl<S: HalSerial> CellularModem<S> {
         // 2. 记录 APN 并发送 ATD*99# 拨号命令（带超时窗口）。
         self.apn = apn.to_string();
         let dial_cmd = AtCommand::new("ATD*99#", 5000);
-        let _ = self.send_at(&dial_cmd);
+        // AT 拨号失败必须上报（真实 PPP 拨号的前提），不能静默吞掉。
+        self.send_at(&dial_cmd)?;
         // 3. 真实 PPP 协商：读帧流 → LCP/IPCP → 提取 IP。
         self.negotiate_ppp()
     }
@@ -280,7 +281,8 @@ impl<S: HalSerial> CellularModem<S> {
     pub fn hang_up(&mut self) -> Result<(), CellularError> {
         self.ppp.terminate();
         let ath = AtCommand::new("ATH", 1000);
-        let _ = self.send_at(&ath);
+        // 挂断失败上报调用方（连接状态清理不可静默失败）。
+        self.send_at(&ath)?;
         Ok(())
     }
 
@@ -657,7 +659,7 @@ mod tests {
     fn dial_failure_when_already_connected() {
         let mock = MockSerial::new();
         let stream = ppp_stream();
-        mock.set_response(&stream);
+        mock.set_sequence(&[b"CONNECT\r\n", &stream]);
         let mut modem = CellularModem::new(mock, "internet", RetryConfig::default());
         assert!(modem.dial("internet").is_ok());
         assert_eq!(modem.ppp_state(), PppState::Connected);
@@ -671,7 +673,8 @@ mod tests {
     fn hang_up_after_dial() {
         let mock = MockSerial::new();
         let stream = ppp_stream();
-        mock.set_response(&stream);
+        // dial 消耗 PPP 帧流；hang_up 发送 ATH 需要 OK 响应。
+        mock.set_sequence(&[b"CONNECT\r\n", &stream, b"OK\r\n"]);
         let mut modem = CellularModem::new(mock, "internet", RetryConfig::default());
         modem.dial("internet").unwrap();
         assert_eq!(modem.ppp_state(), PppState::Connected);
@@ -682,6 +685,7 @@ mod tests {
     #[test]
     fn hang_up_when_closed() {
         let mock = MockSerial::new();
+        mock.set_response(b"OK\r\n");
         let mut modem = CellularModem::new(mock, "internet", RetryConfig::default());
         assert!(modem.hang_up().is_ok());
         assert_eq!(modem.ppp_state(), PppState::Closed);
@@ -729,7 +733,7 @@ mod tests {
     fn cellular_driver_trait_dial_and_hangup() {
         let mock = MockSerial::new();
         let stream = ppp_stream();
-        mock.set_response(&stream);
+        mock.set_sequence(&[b"CONNECT\r\n", &stream, b"OK\r\n"]);
         let mut modem = CellularModem::new(mock, "internet", RetryConfig::default());
         let ip = CellularDriver::dial(&mut modem, "internet").unwrap();
         assert_eq!(ip, Ipv4Addr::new(10, 1, 2, 3));
@@ -792,7 +796,7 @@ mod tests {
     fn dial_then_check_state_then_hangup() {
         let mock = MockSerial::new();
         let stream = ppp_stream();
-        mock.set_response(&stream);
+        mock.set_sequence(&[b"CONNECT\r\n", &stream, b"OK\r\n"]);
         let mut modem = CellularModem::new(mock, "internet", RetryConfig::default());
         assert_eq!(modem.ppp_state(), PppState::Closed);
         modem.dial("internet").unwrap();

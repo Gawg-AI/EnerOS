@@ -38,7 +38,7 @@ impl ClosedLoopImpl {
             orchestrator,
             settlement,
             next_freeze_id: 1,
-            meter_fn: |deal_id| {
+            meter_fn: |_deal_id| {
                 // 默认回退：全额交付（调用方应注入真实计量）。
                 Err(TradeError::MeterUnavailable)
             },

@@ -12,21 +12,12 @@ use alloc::vec::Vec;
 use crate::queue::TelemetryEvent;
 
 /// 持久化快照：队列事件 + 幂等断点。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QueueSnapshot {
     /// 已确认发送的最大事件 ID（断点，重启后跳过 ≤ 此 ID 的事件）。
     pub last_acked_id: u64,
     /// 待补传事件。
     pub events: Vec<TelemetryEvent>,
-}
-
-impl Default for QueueSnapshot {
-    fn default() -> Self {
-        Self {
-            last_acked_id: 0,
-            events: Vec::new(),
-        }
-    }
 }
 
 /// 序列化快照为文本行。

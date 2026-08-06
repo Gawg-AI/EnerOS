@@ -724,7 +724,7 @@ mod tests {
         leaf.issuer = DistinguishedName::new("Evil CA");
         let verifier = CertVerifier::new(vec![ca_root.clone()]);
         assert_eq!(
-            verifier.verify_chain(&vec![leaf, ca_root], NOW),
+            verifier.verify_chain(&[leaf, ca_root], NOW),
             Err(PkiError::IssuerMismatch)
         );
     }

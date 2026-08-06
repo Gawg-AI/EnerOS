@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 
 use eneros_agent_bus_dds::node::DdsNode;
 use eneros_agent_bus_dds::qos::{Durability, History, QosPolicy, Reliability};
-use eneros_agent_bus_dds::types::{ParticipantId, WriterId};
+use eneros_agent_bus_dds::types::WriterId;
 
 use crate::pcc::{PccReader, PccReading};
 use crate::publisher::GridPublisher;

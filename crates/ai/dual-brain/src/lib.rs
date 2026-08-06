@@ -58,6 +58,7 @@ mod tests {
     use eneros_fast_path::state::RealtimeState;
     use eneros_llm_engine::engine::LlmEngine;
     use eneros_safety_validator::state::SystemState;
+    #[cfg(any(test, feature = "mock"))]
     use eneros_solver_core::mock::MockSolver;
 
     use super::*;

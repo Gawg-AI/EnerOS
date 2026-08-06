@@ -130,7 +130,6 @@ mod tests {
         assert!((result - 0.0).abs() < f64::EPSILON);
     }
 
-    #[test]
     // ===== v0.233.0（B3-10）：策略真实分化 =====
 
     #[test]

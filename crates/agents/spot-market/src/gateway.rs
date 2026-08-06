@@ -55,6 +55,11 @@ where
         req
     }
 
+    /// 网关地址（诊断：错误消息携带来源，便于多网关部署定位）。
+    pub fn gateway_addr(&self) -> &str {
+        &self.gateway
+    }
+
     /// 解析出清响应帧；格式非法返回 [`MarketError::ClearingNotFound`]。
     pub fn decode_response(resp: &[u8]) -> Result<ClearingResult, MarketError> {
         if resp.len() < 1 + 8 + 8 + 8 + 1 {

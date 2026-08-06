@@ -249,8 +249,11 @@ impl<R: MacRegs> MacController<R> {
     }
 
     /// Write a PHY register via the MAC MII management interface.
-    pub fn write_phy_reg(&mut self, reg: u8, val: u16) {
-        let _ = self.phy.write_reg(&mut self.regs, reg, val);
+    ///
+    /// 返回写入结果（MII 忙等超时/总线错误不得静默吞掉——PHY 配置失败
+    /// 会导致链路异常且不可观测）。
+    pub fn write_phy_reg(&mut self, reg: u8, val: u16) -> Result<(), NetError> {
+        self.phy.write_reg(&mut self.regs, reg, val)
     }
 
     /// Return the current PHY link state.
@@ -794,7 +797,7 @@ mod tests {
     #[test]
     fn test_write_phy_reg() {
         let mut ctrl = setup_controller(4, 4, 0);
-        ctrl.write_phy_reg(MII_BMSR, 0x1234);
+        ctrl.write_phy_reg(MII_BMSR, 0x1234).expect("phy write");
         assert_eq!(ctrl.regs.get_phy_reg(MII_BMSR), Some(0x1234));
     }
 

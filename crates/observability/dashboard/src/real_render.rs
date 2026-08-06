@@ -6,7 +6,7 @@
 //! 数据面：真实 WS 服务由集成层接 mgmt-api（此处提供数据序列化
 //! 与渲染，浏览器可见实时拓扑与功率流）。
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::types::{NodeKind, PowerFlowSample, TopologyGraph};

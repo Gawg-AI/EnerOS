@@ -93,8 +93,15 @@ where
         }
     }
 
-    /// 网络层回调：收到对端消息注入邮箱。
+    /// 网络层回调：收到消息注入邮箱。
+    ///
+    /// 仅接受对端节点（`peer_id`）的消息，拒绝本节点（`self_id`）自环
+    /// 与未知来源——两节点总线的拓扑不变量，使 `receive` 不会消费
+    /// 本节点自己广播的副本或伪造来源消息。
     pub fn inject(&mut self, from: NodeId, msg: PbftMessage) {
+        if from != self.peer_id || from == self.self_id {
+            return;
+        }
         self.inbox.push((from, msg));
     }
 }

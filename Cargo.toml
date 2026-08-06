@@ -137,7 +137,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.243.0"
+version = "0.244.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

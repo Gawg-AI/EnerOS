@@ -4,7 +4,6 @@
 //! [`HttpSyncTransport`]：经注入 HTTP 闭包发送批次（真实云端上报）。
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use crate::delta_sync::SyncBatch;
 use crate::{SyncError, SyncTransport};

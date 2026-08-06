@@ -8,9 +8,6 @@
 //! - [`TokenVerifier`] — 验签 + 过期检查 + 角色提取；伪造角色请求
 //!   在验签期必失败（`SignatureInvalid`/`TokenExpired`）。
 
-use alloc::string::String;
-use alloc::vec::Vec;
-
 use eneros_crypto::{sm3_hash, sm2_verify, Sm2PublicKey, Sm2Signature};
 
 use crate::Role;

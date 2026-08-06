@@ -37,6 +37,10 @@ impl Reconciliation {
 /// - `Ok(true)` — 幂等命中（已有冻结且金额一致，无需再扣）；
 /// - `Ok(false)` — 首次冻结（余额充足，调用方执行冻结）；
 /// - `Err(())` — 拒绝（金额不一致或余额不足）。
+///
+/// `Err(())` 无附加信息是刻意设计：拒绝原因（不一致/不足）由调用方
+/// 依据自身状态可判定，无需携带错误载荷（no_std 最小化）。
+#[allow(clippy::result_unit_err)]
 pub fn freeze_idempotent(
     existing_freeze: Option<u64>,
     requested: MilliYuan,
@@ -112,13 +116,11 @@ mod tests {
         let total = MilliYuan(100_000);
         let mut frozen = MilliYuan(0);
         let mut freeze_id: Option<u64> = None;
-        let mut next_id = 1u64;
         // 路径 A：冻结 60_000（首次 → Ok(false) 执行）。
         if let Ok(false) = freeze_idempotent(freeze_id, MilliYuan(60_000), frozen, total) {
             freeze_id = Some(1);
             frozen = MilliYuan(frozen.0 + 60_000);
         }
-        let _ = next_id;
         // 路径 B：独立冻结请求 50_000（可用只剩 40_000 → 拒绝）。
         assert!(freeze_idempotent(None, MilliYuan(50_000), frozen, total).is_err());
         // 对账平衡。

@@ -5,8 +5,7 @@
 //! - [`NotificationSink`] — 通知出口抽象（注入闭包：上报/日志/外部
 //!   通知通道）。
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use alloc::string::String;
 
 /// 告警状态机状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +21,10 @@ pub enum AlertState {
 /// 通知出口。
 pub trait NotificationSink {
     /// 发送告警通知。
+    ///
+    /// `Err(())` 表示投递失败（触发引擎将保留告警状态并在下一轮重试）；
+    /// 无错误载荷是刻意设计——通知通道失败原因由注入实现记录。
+    #[allow(clippy::result_unit_err)]
     fn notify(&mut self, alert: &TriggeredAlert) -> Result<(), ()>;
 }
 
@@ -145,6 +148,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
     use super::*;
 
     #[test]

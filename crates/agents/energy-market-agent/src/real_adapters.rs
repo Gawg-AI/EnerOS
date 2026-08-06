@@ -15,9 +15,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use eneros_market_types::{Bid, BidSegment, TimeSlot, TradeDir, YuanPerKwh};
-use eneros_solver_core::problem::LpProblem;
-use eneros_solver_core::result::SolveResult;
+use eneros_market_types::TradeDir;
 use eneros_solver_core::solver::Solver;
 
 use crate::bid_generator::{
@@ -129,22 +127,22 @@ impl<S: Solver> BidOptimizer for SolverBidOptimizer<S> {
             rhs_upper: Vec::new(),
         };
         let solved = self.solver.solve(&problem, 0);
-        // 闭式解回退：电量 = min(目标, 容量)；价格调整按方向。
+        // 求解器结果优先：成功且非负取解值；失败/无效回退闭式解
+        // （电量 = min(目标, 容量)）。v0.244.0：旧代码第二行赋值覆盖了
+        // 求解器结果（真 bug——优化结果从未生效）。
         let quantity = match solved {
             Ok(r) if !r.solution.is_empty() && r.solution[0] >= 0.0 => {
                 r.solution[0] as f32
             }
             _ => capacity.min(intent.target_quantity).max(0.0),
         };
-        let quantity = capacity.min(intent.target_quantity).max(0.0);
         // 价格调整：按意图方向微调（Sell 加价 2%，Buy 减价 2%）。
         let adjust = match intent.side {
             TradeDir::Sell => price * 0.02,
             TradeDir::Buy => -price * 0.02,
-            _ => 0.0,
         };
         Ok(BidOptimization {
-            price_adjust: adjust as f32,
+            price_adjust: adjust,
             quantity,
         })
     }
@@ -205,7 +203,9 @@ where
 mod tests {
     use super::*;
     use crate::market_feed::PricePoint;
-    use eneros_market_types::MarketType;
+    use eneros_market_types::{Bid, BidSegment, MarketType, TimeSlot, YuanPerKwh};
+    use eneros_solver_core::problem::LpProblem;
+    use eneros_solver_core::result::SolveResult;
 
     fn feed_with_price(price: f64) -> MarketFeed {
         MarketFeed {
@@ -324,7 +324,7 @@ mod tests {
                 submit_at: 1000,
             },
         };
-        pub_.publish_bids(&[rb.clone()]).expect("publish");
+        pub_.publish_bids(&[rb]).expect("publish");
         assert_eq!(sent_payloads.borrow().len(), 1);
         assert_eq!(pub_.published().len(), 1);
         assert_eq!(pub_.published()[0].resource_id, 1);

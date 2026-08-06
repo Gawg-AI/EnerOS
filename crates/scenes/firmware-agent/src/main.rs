@@ -17,7 +17,8 @@ fn main() {
     // 1. 设备注册 + 点轮询（PointAccess 统一抽象）
     let mut registry = DeviceRegistry::new();
     let mut adapter: Box<dyn PointAccess> = Box::new(MockPointDevice::new(3));
-    // 空 Mock 设备 → PointNotFound 容忍（闭包可达性验证）
+    // 空 Mock 设备 → PointNotFound 容忍（闭包可达性验证；真实设备接入
+    // 后此处改为错误上报路径）。
     let _ = adapter.read_point(1);
     registry.register("battery-01", DeviceType::Battery, adapter, Default::default());
 
@@ -36,6 +37,8 @@ fn main() {
         let mut ledger = AccountStore::new();
         use eneros_account::AccountManager;
         ledger.open(1).unwrap();
+        // 演示骨架：记账/查询失败可忽略（闭包可达性验证，非生产数据路径；
+        // 真机场景由 account 服务的持久化事务处理错误）。
         let _ = ledger.post(create_entry(1, FlowDir::Credit, 100.0, amount.to_yuan_f64(), Some(1), "firmware-scene"));
         let _ = ledger.balance(1);
     }

@@ -111,8 +111,11 @@ impl SoeEngine {
         }
         let mut ids = Vec::new();
         for event in triggered {
-            if let Ok(id) = self.record_event(event) {
-                ids.push(id);
+            match self.record_event(event) {
+                Ok(id) => ids.push(id),
+                // v0.244.0：记录失败（持久化错误等）计入 dropped 指标，
+                // 不再静默吞掉（错误要么处理、要么计指标）。
+                Err(_) => self.stats.dropped_events += 1,
             }
         }
         ids

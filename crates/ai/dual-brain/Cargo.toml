@@ -22,3 +22,8 @@ serde_json = { version = "1", default-features = false, features = ["alloc"] }
 default = []
 # v0.212.0（P0-27）：mock 仅测试/显式启用；生产不依赖 mock。
 mock = ["eneros-solver-core/mock"]
+
+[dev-dependencies]
+# v0.244.0：lib 测试使用 MockSolver（solver-core 的 mock 模块在 test 构建
+# 下需要显式启用该 feature；dev-dependencies 在 cargo test 时自动生效）。
+eneros-solver-core = { path = "../solver-core", features = ["mock"] }

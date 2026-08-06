@@ -20,11 +20,16 @@ use eneros_intent_contract::contract::{
 use eneros_intent_contract::converter::ContractConverter;
 use eneros_intent_contract::validator::ContractValidator;
 use eneros_intent_parser::parser::IntentParser;
-use eneros_llm_engine::device::ComputeDevice;
 use eneros_llm_engine::engine::LlmEngine;
-use eneros_llm_engine::error::LlmError;
-use eneros_llm_engine::model::{ModelInfo, Quantization};
 use eneros_llm_engine::params::InferParams;
+// 以下类型仅 mock 引擎（cfg(any(test, feature="mock"))）使用。
+#[cfg(any(test, feature = "mock"))]
+use eneros_llm_engine::device::ComputeDevice;
+#[cfg(any(test, feature = "mock"))]
+use eneros_llm_engine::error::LlmError;
+#[cfg(any(test, feature = "mock"))]
+use eneros_llm_engine::model::{ModelInfo, Quantization};
+#[cfg(any(test, feature = "mock"))]
 use eneros_llm_engine::stats::{EngineHealth, EngineStats};
 use eneros_prompt_template::context::TemplateContext;
 use eneros_prompt_template::template::PromptTemplate;
@@ -32,14 +37,18 @@ use eneros_prompt_template::templates::ChargeDischargeTemplate;
 use eneros_safety_validator::state::SystemState;
 use eneros_safety_validator::validator::SafetyValidator;
 #[cfg(any(test, feature = "mock"))]
+#[cfg(any(test, feature = "mock"))]
 use eneros_solver_core::mock::MockSolver;
 use eneros_solver_core::solver::Solver;
 
 use crate::error::DualBrainError;
 use crate::latency::LatencyBreakdown;
-use crate::sink::{CommandSink, DispatchCommand, MockCommandSink};
+use crate::sink::{CommandSink, DispatchCommand};
+#[cfg(any(test, feature = "mock"))]
+use crate::sink::MockCommandSink;
 
 /// Mock LLM 输出（合法 Charge intent JSON，满足 ContractValidator 6 项校验）.
+#[cfg(any(test, feature = "mock"))]
 const MOCK_INTENT_JSON: &str = r#"{"intent_type":"Charge","power":{"power_kw":50.0,"power_ratio":0.5},"time_range":{"start_period":0,"end_period":5},"reason":"price low","confidence":0.85}"#;
 
 /// 双脑结果.
