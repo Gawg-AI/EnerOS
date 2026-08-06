@@ -23,6 +23,7 @@
 
 extern crate alloc;
 
+pub mod auth;
 pub mod idempotency;
 pub mod rate_limit;
 pub mod rbac;
@@ -31,7 +32,8 @@ pub mod schema;
 use alloc::format;
 use alloc::string::String;
 
-pub use idempotency::{IdempotencyEntry, IdempotencyError, IdempotencyStore};
+pub use auth::{SignedToken, TokenError, TokenVerifier, TOKEN_LEN};
+pub use idempotency::{content_hash_key, IdempotencyEntry, IdempotencyError, IdempotencyStore};
 pub use rate_limit::{RateLimitConfig, RateLimitError, RateLimiter};
 pub use rbac::{Permission, RbacError, RbacPolicy, Role};
 pub use schema::{

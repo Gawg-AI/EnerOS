@@ -33,6 +33,26 @@ pub struct IdempotencyEntry {
     pub created_at: u64,
 }
 
+/// 计算幂等键的内容哈希（v0.239.0，B5-02）。
+///
+/// 幂等键 = SM3(action ‖ payload) 的十六进制——相同内容重放命中缓存，
+/// 不同内容使用相同显式键不命中（防错误重放命中）。
+pub fn content_hash_key(action: &str, payload: &str) -> String {
+    let mut buf = Vec::with_capacity(action.len() + payload.len() + 1);
+    buf.extend_from_slice(action.as_bytes());
+    buf.push(0xFF);
+    buf.extend_from_slice(payload.as_bytes());
+    let digest = eneros_crypto::sm3_hash(&buf);
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xF) as usize] as char);
+    }
+    out
+}
+
+const HEX: [u8; 16] = *b"0123456789abcdef";
+
 /// 幂等性错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdempotencyError {
@@ -211,5 +231,35 @@ mod tests {
         assert_eq!(store.len(), 2);
         store.clear();
         assert!(store.is_empty());
+    }
+
+    // ===== v0.239.0（B5-02）：幂等键内容哈希 =====
+
+    #[test]
+    fn test_content_hash_key_deterministic() {
+        let k1 = content_hash_key("start", "kw=100");
+        let k2 = content_hash_key("start", "kw=100");
+        assert_eq!(k1, k2, "同内容同哈希");
+        assert_eq!(k1.len(), 64, "SM3 hex 64 字符");
+    }
+
+    #[test]
+    fn test_content_hash_key_differs_by_content() {
+        let k1 = content_hash_key("start", "kw=100");
+        let k2 = content_hash_key("start", "kw=200");
+        let k3 = content_hash_key("stop", "kw=100");
+        assert_ne!(k1, k2, "不同 payload 不同哈希");
+        assert_ne!(k1, k3, "不同 action 不同哈希");
+    }
+
+    #[test]
+    fn test_idempotency_with_content_hash_key() {
+        // 相同内容重放 → 命中缓存；不同内容同显式键 → 不命中。
+        let mut store = IdempotencyStore::new(16);
+        let key1 = content_hash_key("start", "kw=100");
+        store.put(&key1, StatusCode::Ok, "done", 1000);
+        assert!(store.get(&key1, 1500).is_some(), "同内容命中");
+        let key2 = content_hash_key("start", "kw=999");
+        assert!(store.get(&key2, 1500).is_none(), "不同内容不命中");
     }
 }

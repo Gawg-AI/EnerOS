@@ -27,6 +27,27 @@ pub enum Role {
 }
 
 impl Role {
+    /// 从字节解码（v0.239.0，签名 Token 用）。
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Viewer),
+            1 => Some(Self::Operator),
+            2 => Some(Self::Admin),
+            3 => Some(Self::Superuser),
+            _ => None,
+        }
+    }
+
+    /// 编码为字节（v0.239.0）。
+    pub fn to_u8(self) -> u8 {
+        match self {
+            Self::Viewer => 0,
+            Self::Operator => 1,
+            Self::Admin => 2,
+            Self::Superuser => 3,
+        }
+    }
+
     /// 角色名称（用于序列化）。
     pub fn name(self) -> &'static str {
         match self {

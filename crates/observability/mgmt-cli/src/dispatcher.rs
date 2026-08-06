@@ -69,9 +69,10 @@ impl CliDispatcher {
         let payload = build_payload(cmd);
 
         // 构造 API 请求
-        // 幂等键基于命令内容（action + payload），使相同命令在窗口内重放返回缓存
+        // v0.239.0（B5-02）：幂等键改内容哈希（SM3(action ‖ payload)），
+        // 相同内容重放命中缓存，不同内容不命中。
         let idempotency_key = if is_mutating(action) {
-            Some(format!("cli-{}-{}", action.name(), payload.len()))
+            Some(eneros_mgmt_api::content_hash_key(action.name(), &payload))
         } else {
             None
         };

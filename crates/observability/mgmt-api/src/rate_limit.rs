@@ -67,11 +67,19 @@ impl RateLimiter {
     pub fn check(&mut self, key: &RateLimitKey, now_unix: u64) -> Result<(), RateLimitError> {
         let window_start = now_unix.saturating_sub(self.config.window_secs);
 
-        // 查找或创建键的窗口
+        // 查找或创建键的窗口（v0.239.0：真 LRU——命中提升到末尾，
+        // 驱逐最久未用（头部））。
         let idx = match self.keys.iter().position(|k| k == key) {
-            Some(idx) => idx,
+            Some(idx) => {
+                // LRU 提升：命中键移到末尾。
+                let k = self.keys.remove(idx);
+                let w = self.windows.remove(idx);
+                self.keys.push(k);
+                self.windows.push(w);
+                self.keys.len() - 1
+            }
             None => {
-                // 容量满时驱逐最旧（第一个）
+                // 容量满时驱逐最久未用（头部）。
                 if self.keys.len() >= self.max_keys {
                     self.keys.remove(0);
                     self.windows.remove(0);
