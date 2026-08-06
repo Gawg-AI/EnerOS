@@ -31,6 +31,13 @@ pub enum ModbusError {
     InvalidRegisterAddr,
     /// 不支持的功能码
     UnsupportedFunction,
+    /// 响应功能码与请求不一致（v0.218.0 B2-01）
+    FuncCodeMismatch {
+        /// 期望（请求）功能码
+        expected: u8,
+        /// 实际（响应）功能码
+        actual: u8,
+    },
 }
 
 impl fmt::Display for ModbusError {
@@ -47,6 +54,10 @@ impl fmt::Display for ModbusError {
             Self::InvalidQuantity => write!(f, "modbus invalid quantity"),
             Self::InvalidRegisterAddr => write!(f, "modbus invalid register address"),
             Self::UnsupportedFunction => write!(f, "modbus unsupported function code"),
+            Self::FuncCodeMismatch { expected, actual } => write!(
+                f,
+                "modbus response function code mismatch: expected {expected:#x}, got {actual:#x}"
+            ),
         }
     }
 }

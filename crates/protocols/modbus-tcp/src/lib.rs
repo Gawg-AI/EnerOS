@@ -50,7 +50,7 @@ pub use error::ModbusTcpError;
 pub use adapter::ModbusTcpAdapter;
 pub use master::ModbusTcpMaster;
 
-pub use mbap::MbapHeader;
+pub use mbap::{MbapHeader, MbapStreamDecoder};
 pub use transport::{TcpStats, TcpTransport};
 
 #[cfg(test)]

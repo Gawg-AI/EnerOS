@@ -26,6 +26,7 @@ extern crate alloc;
 pub mod crc;
 pub mod error;
 pub mod frame;
+pub mod framer;
 pub mod master;
 pub mod point;
 pub mod request;
@@ -38,11 +39,12 @@ pub mod mock;
 
 pub use adapter::ModbusRtuAdapter;
 pub use crc::crc16_modbus;
+pub use framer::{char_time_35_ns, RtuFramer, DEFAULT_BAUD};
 pub use error::ModbusError;
 pub use frame::ModbusFrame;
 pub use master::{ModbusRtuMaster, ModbusStats, RtuTransport};
 pub use point::{AccessMode, ModbusDataType, PointMapping, RegToPoint};
-pub use request::{ExceptionCode, FunctionCode, ModbusRequest, ModbusResponse};
+pub use request::{parse_bit_data, ExceptionCode, FunctionCode, ModbusRequest, ModbusResponse};
 
 #[cfg(test)]
 mod tests {

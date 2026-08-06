@@ -7,7 +7,9 @@ use eneros_driver_framework::DriverError;
 use crate::error::ModbusError;
 use crate::frame::ModbusFrame;
 use crate::point::{group_by_slave, PointMapping};
-use crate::request::{ExceptionCode, ModbusRequest, ModbusResponse};
+use crate::request::{
+    parse_bit_data, ExceptionCode, ModbusRequest, ModbusResponse,
+};
 
 /// RTU 传输层抽象（D1）。
 ///
@@ -73,6 +75,9 @@ impl<'a> ModbusRtuMaster<'a> {
     }
 
     /// 解析响应帧（D7）。
+    ///
+    /// v0.218.0（B2-01）：响应功能码一致性校验——响应功能码必须与
+    /// 请求一致（异常响应除外），不一致返回 [`ModbusError::FuncCodeMismatch`]。
     fn parse_response(
         &self,
         req: &ModbusRequest,
@@ -89,23 +94,46 @@ impl<'a> ModbusRtuMaster<'a> {
                 exception_code: exc_code,
             });
         }
+        // 功能码一致性校验：响应功能码必须等于请求功能码。
+        if frame.func_code != req.func_code() as u8 {
+            return Err(ModbusError::FuncCodeMismatch {
+                expected: req.func_code() as u8,
+                actual: frame.func_code,
+            });
+        }
         match req {
+            ModbusRequest::ReadCoils { quantity, .. } => {
+                Ok(ModbusResponse::ReadCoils(
+                    parse_bit_data(&frame.data, *quantity)
+                        .map_err(|_| ModbusError::UnexpectedResponse)?,
+                ))
+            }
+            ModbusRequest::ReadDiscreteInputs { quantity, .. } => {
+                Ok(ModbusResponse::ReadDiscreteInputs(
+                    parse_bit_data(&frame.data, *quantity)
+                        .map_err(|_| ModbusError::UnexpectedResponse)?,
+                ))
+            }
+            ModbusRequest::ReadInputRegisters { .. } => {
+                // 与读保持寄存器相同的数据布局。
+                Self::parse_reg_read(&frame.data)
+                    .map(ModbusResponse::ReadInputRegisters)
+            }
             ModbusRequest::ReadHoldingRegisters { .. } => {
-                // 响应数据：[byte_count(1)][reg values...]
-                if frame.data.is_empty() {
+                Self::parse_reg_read(&frame.data)
+                    .map(ModbusResponse::ReadHoldingRegisters)
+            }
+            ModbusRequest::WriteSingleCoil { value, .. } => {
+                // 响应：[coil_addr BE(2)][value(0xFF00/0x0000)]
+                if frame.data.len() < 4 {
                     return Err(ModbusError::UnexpectedResponse);
                 }
-                let byte_count = frame.data[0] as usize;
-                if frame.data.len() < 1 + byte_count {
+                let addr = u16::from_be_bytes([frame.data[0], frame.data[1]]);
+                let on = frame.data[2] == 0xFF && frame.data[3] == 0x00;
+                if on != *value {
                     return Err(ModbusError::UnexpectedResponse);
                 }
-                let mut regs = Vec::new();
-                let mut i = 1;
-                while i + 1 < frame.data.len() && regs.len() * 2 < byte_count {
-                    regs.push(u16::from_be_bytes([frame.data[i], frame.data[i + 1]]));
-                    i += 2;
-                }
-                Ok(ModbusResponse::ReadHoldingRegisters(regs))
+                Ok(ModbusResponse::WriteSingleCoil { addr, value: on })
             }
             ModbusRequest::WriteSingleRegister { .. } => {
                 // 响应：[reg_addr BE(2)][value BE(2)]
@@ -115,6 +143,18 @@ impl<'a> ModbusRtuMaster<'a> {
                 let addr = u16::from_be_bytes([frame.data[0], frame.data[1]]);
                 let value = u16::from_be_bytes([frame.data[2], frame.data[3]]);
                 Ok(ModbusResponse::WriteSingleRegister { addr, value })
+            }
+            ModbusRequest::WriteMultipleCoils { .. } => {
+                // 响应：[start_addr BE(2)][quantity BE(2)]
+                if frame.data.len() < 4 {
+                    return Err(ModbusError::UnexpectedResponse);
+                }
+                let start_addr = u16::from_be_bytes([frame.data[0], frame.data[1]]);
+                let quantity = u16::from_be_bytes([frame.data[2], frame.data[3]]);
+                Ok(ModbusResponse::WriteMultipleCoils {
+                    start_addr,
+                    quantity,
+                })
             }
             ModbusRequest::WriteMultipleRegisters { .. } => {
                 // 响应：[start_addr BE(2)][quantity BE(2)]
@@ -129,6 +169,24 @@ impl<'a> ModbusRtuMaster<'a> {
                 })
             }
         }
+    }
+
+    /// 解析读寄存器响应数据（[byte_count][reg values BE...]）。
+    fn parse_reg_read(data: &[u8]) -> Result<Vec<u16>, ModbusError> {
+        if data.is_empty() {
+            return Err(ModbusError::UnexpectedResponse);
+        }
+        let byte_count = data[0] as usize;
+        if data.len() < 1 + byte_count {
+            return Err(ModbusError::UnexpectedResponse);
+        }
+        let mut regs = Vec::new();
+        let mut i = 1;
+        while i + 1 < data.len() && regs.len() * 2 < byte_count {
+            regs.push(u16::from_be_bytes([data[i], data[i + 1]]));
+            i += 2;
+        }
+        Ok(regs)
     }
 
     /// 发送请求并等待响应（带重试 + 广播处理 D10）。
@@ -253,6 +311,123 @@ impl<'a> ModbusRtuMaster<'a> {
         };
         match self.send_request_with_retry(&req)? {
             ModbusResponse::WriteMultipleRegisters { .. } => Ok(()),
+            ModbusResponse::Broadcast => Ok(()),
+            ModbusResponse::Error { exception_code } => Err(ModbusError::Exception(exception_code)),
+            _ => Err(ModbusError::UnexpectedResponse),
+        }
+    }
+
+    /// 读线圈（功能码 0x01，v0.218.0 B2-01）。
+    ///
+    /// - `quantity` 范围 1..=2000
+    pub fn read_coils(
+        &mut self,
+        slave_addr: u8,
+        start_addr: u16,
+        quantity: u16,
+    ) -> Result<Vec<bool>, ModbusError> {
+        if quantity == 0 || quantity > 2000 {
+            return Err(ModbusError::InvalidQuantity);
+        }
+        let req = ModbusRequest::ReadCoils {
+            slave_addr,
+            start_addr,
+            quantity,
+        };
+        match self.send_request_with_retry(&req)? {
+            ModbusResponse::ReadCoils(bits) => Ok(bits),
+            ModbusResponse::Error { exception_code } => Err(ModbusError::Exception(exception_code)),
+            _ => Err(ModbusError::UnexpectedResponse),
+        }
+    }
+
+    /// 读离散输入（功能码 0x02，v0.218.0 B2-01）。
+    ///
+    /// - `quantity` 范围 1..=2000
+    pub fn read_discrete_inputs(
+        &mut self,
+        slave_addr: u8,
+        start_addr: u16,
+        quantity: u16,
+    ) -> Result<Vec<bool>, ModbusError> {
+        if quantity == 0 || quantity > 2000 {
+            return Err(ModbusError::InvalidQuantity);
+        }
+        let req = ModbusRequest::ReadDiscreteInputs {
+            slave_addr,
+            start_addr,
+            quantity,
+        };
+        match self.send_request_with_retry(&req)? {
+            ModbusResponse::ReadDiscreteInputs(bits) => Ok(bits),
+            ModbusResponse::Error { exception_code } => Err(ModbusError::Exception(exception_code)),
+            _ => Err(ModbusError::UnexpectedResponse),
+        }
+    }
+
+    /// 读输入寄存器（功能码 0x04，v0.218.0 B2-01）。
+    ///
+    /// - `quantity` 范围 1..=125
+    pub fn read_input_registers(
+        &mut self,
+        slave_addr: u8,
+        start_addr: u16,
+        quantity: u16,
+    ) -> Result<Vec<u16>, ModbusError> {
+        if quantity == 0 || quantity > 125 {
+            return Err(ModbusError::InvalidQuantity);
+        }
+        let req = ModbusRequest::ReadInputRegisters {
+            slave_addr,
+            start_addr,
+            quantity,
+        };
+        match self.send_request_with_retry(&req)? {
+            ModbusResponse::ReadInputRegisters(regs) => Ok(regs),
+            ModbusResponse::Error { exception_code } => Err(ModbusError::Exception(exception_code)),
+            _ => Err(ModbusError::UnexpectedResponse),
+        }
+    }
+
+    /// 写单个线圈（功能码 0x05，v0.218.0 B2-01）。
+    pub fn write_single_coil(
+        &mut self,
+        slave_addr: u8,
+        coil_addr: u16,
+        value: bool,
+    ) -> Result<(), ModbusError> {
+        let req = ModbusRequest::WriteSingleCoil {
+            slave_addr,
+            coil_addr,
+            value,
+        };
+        match self.send_request_with_retry(&req)? {
+            ModbusResponse::WriteSingleCoil { .. } => Ok(()),
+            ModbusResponse::Broadcast => Ok(()),
+            ModbusResponse::Error { exception_code } => Err(ModbusError::Exception(exception_code)),
+            _ => Err(ModbusError::UnexpectedResponse),
+        }
+    }
+
+    /// 写多个线圈（功能码 0x0F，v0.218.0 B2-01）。
+    ///
+    /// - `values` 长度范围 1..=1968
+    pub fn write_multiple_coils(
+        &mut self,
+        slave_addr: u8,
+        start_addr: u16,
+        values: &[bool],
+    ) -> Result<(), ModbusError> {
+        if values.is_empty() || values.len() > 1968 {
+            return Err(ModbusError::InvalidQuantity);
+        }
+        let req = ModbusRequest::WriteMultipleCoils {
+            slave_addr,
+            start_addr,
+            values: values.to_vec(),
+        };
+        match self.send_request_with_retry(&req)? {
+            ModbusResponse::WriteMultipleCoils { .. } => Ok(()),
             ModbusResponse::Broadcast => Ok(()),
             ModbusResponse::Error { exception_code } => Err(ModbusError::Exception(exception_code)),
             _ => Err(ModbusError::UnexpectedResponse),

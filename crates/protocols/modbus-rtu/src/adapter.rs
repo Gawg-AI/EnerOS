@@ -151,9 +151,18 @@ impl<T: RtuTransport> ModbusRtuAdapter<T> {
         if access == AccessMode::ReadOnly {
             return Err(ProtocolError::Unsupported);
         }
+        // v0.218.0（B2-01）：写值经 scale 逆变换（替代 `f as u16` 直截断）。
+        // 查映射获取数据类型以选择正确的逆变换。
+        let mapping = self
+            .find_mapping(point_id)
+            .ok_or(ProtocolError::PointNotFound)?;
         let raw: u16 = match value {
-            PointValue::Float(f) => f as u16,
-            PointValue::Int(i) => i as u16,
+            PointValue::Float(f) => mapping
+                .inverse_convert(f)
+                .map_err(modbus_to_protocol)?,
+            PointValue::Int(i) => mapping
+                .inverse_convert(i as f64)
+                .map_err(modbus_to_protocol)?,
             PointValue::Enum(e) => e,
             _ => return Err(ProtocolError::Unsupported),
         };
@@ -231,7 +240,9 @@ fn modbus_to_protocol(e: ModbusError) -> ProtocolError {
     match e {
         InvalidSlaveAddr | InvalidQuantity | InvalidRegisterAddr => ProtocolError::InvalidConfig,
         Exception(_) | MaxRetryExceeded | AddrMismatch | CrcMismatch | UnexpectedResponse
-        | FrameTooShort | UnsupportedFunction | Driver(_) => ProtocolError::ReadFailed,
+        | FrameTooShort | UnsupportedFunction | FuncCodeMismatch { .. } | Driver(_) => {
+            ProtocolError::ReadFailed
+        }
     }
 }
 

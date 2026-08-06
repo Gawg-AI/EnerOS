@@ -107,6 +107,70 @@ impl RegToPoint {
         };
         Ok((raw as f64) * self.scale + self.offset)
     }
+
+    /// 工程值 → 原始寄存器值逆变换（v0.218.0 B2-01）。
+    ///
+    /// 逆变换：`raw = round((value − offset) / scale)`，随后按数据类型
+    /// 截断到合法范围。替代此前 `f as u16` 直截断——直截断在
+    /// scale/offset 非 1/0 时产生系统性错误（工程值 1.0 × scale 0.1
+    /// 本应写 10，直截断写成 0）。
+    ///
+    /// 返回写入单个寄存器的原始值（U16/I16/Bit/F32 场景）。
+    /// 对 U32 返回低字（调用方负责高字序）。
+    pub fn inverse_convert(&self, value: f64) -> Result<u16, ModbusError> {
+        if self.scale.abs() < f64::EPSILON {
+            return Err(ModbusError::InvalidRegisterAddr);
+        }
+        let raw_f = (value - self.offset) / self.scale;
+        match self.data_type {
+            ModbusDataType::U16 => {
+                if !(0.0..=65535.0).contains(&raw_f) {
+                    return Err(ModbusError::InvalidQuantity);
+                }
+                Ok(round_f64(raw_f) as u16)
+            }
+            ModbusDataType::I16 => {
+                if !(-32768.0..=32767.0).contains(&raw_f) {
+                    return Err(ModbusError::InvalidQuantity);
+                }
+                Ok(round_f64(raw_f) as i16 as u16)
+            }
+            ModbusDataType::U32 => {
+                if !(0.0..=4294967295.0).contains(&raw_f) {
+                    return Err(ModbusError::InvalidQuantity);
+                }
+                // 低 16 位（调用方组合高字）。
+                Ok((round_f64(raw_f) as u64 & 0xFFFF) as u16)
+            }
+            ModbusDataType::F32 => {
+                if !raw_f.is_finite() {
+                    return Err(ModbusError::InvalidQuantity);
+                }
+                // F32 原值即 u32 位模式；逆变换后取原始 u32 的低字。
+                let bits = (raw_f as f32).to_bits();
+                Ok((bits & 0xFFFF) as u16)
+            }
+            ModbusDataType::Bit(bit_index) => {
+                if bit_index >= 16 {
+                    return Err(ModbusError::InvalidRegisterAddr);
+                }
+                let bit = if value.abs() > 0.5 { 1u16 } else { 0u16 };
+                Ok(bit << bit_index)
+            }
+        }
+    }
+}
+
+/// 四舍五入（no_std 无 f64::round/floor/ceil；远离零舍入）。
+///
+/// 通过 `+0.5` 后截断实现：正数 `(x + 0.5) as i64`，负数 `(x − 0.5) as i64`
+/// （`as` 向零截断）。输入必须在 i64 可表示范围（调用方已做范围校验）。
+fn round_f64(x: f64) -> f64 {
+    if x >= 0.0 {
+        ((x + 0.5) as i64) as f64
+    } else {
+        ((x - 0.5) as i64) as f64
+    }
 }
 
 /// 点表映射集合
@@ -318,5 +382,96 @@ mod tests {
         assert_ne!(ModbusDataType::U32, ModbusDataType::F32);
         assert_ne!(ModbusDataType::Bit(0), ModbusDataType::Bit(1));
         assert_ne!(ModbusDataType::Bit(0), ModbusDataType::U16);
+    }
+
+    // ===== v0.218.0（B2-01）：scale 逆变换 =====
+
+    #[test]
+    fn test_inverse_convert_u16_with_scale() {
+        // scale=0.1：工程值 1.0 → raw 10（旧 `f as u16` 会写成 0）。
+        let p = RegToPoint {
+            point_id: 1,
+            point_name: String::from("p1"),
+            slave_addr: 1,
+            reg_addr: 0,
+            data_type: ModbusDataType::U16,
+            access: AccessMode::ReadWrite,
+            scale: 0.1,
+            offset: 0.0,
+        };
+        assert_eq!(p.inverse_convert(1.0).unwrap(), 10);
+        assert_eq!(p.inverse_convert(0.0).unwrap(), 0);
+        assert_eq!(p.inverse_convert(6553.5).unwrap(), 65535);
+        // 超出范围拒绝。
+        assert!(p.inverse_convert(-1.0).is_err());
+        assert!(p.inverse_convert(6554.0).is_err());
+    }
+
+    #[test]
+    fn test_inverse_convert_roundtrip() {
+        // convert(inverse_convert(x)) ≈ x。
+        let p = RegToPoint {
+            point_id: 1,
+            point_name: String::from("p1"),
+            slave_addr: 1,
+            reg_addr: 0,
+            data_type: ModbusDataType::U16,
+            access: AccessMode::ReadWrite,
+            scale: 0.5,
+            offset: 10.0,
+        };
+        for eng in [10.0, 20.0, 33.5, 100.0] {
+            let raw = p.inverse_convert(eng).unwrap();
+            let back = p.convert(&[raw]).unwrap();
+            assert!((back - eng).abs() < 0.6, "eng {eng} back {back}");
+        }
+    }
+
+    #[test]
+    fn test_inverse_convert_i16_negative() {
+        let p = RegToPoint {
+            point_id: 1,
+            point_name: String::from("p1"),
+            slave_addr: 1,
+            reg_addr: 0,
+            data_type: ModbusDataType::I16,
+            access: AccessMode::ReadWrite,
+            scale: 1.0,
+            offset: 0.0,
+        };
+        // -5 → raw = 0xFFFB。
+        assert_eq!(p.inverse_convert(-5.0).unwrap(), 0xFFFBu16);
+        assert!(p.inverse_convert(-32769.0).is_err());
+    }
+
+    #[test]
+    fn test_inverse_convert_bit() {
+        let p = RegToPoint {
+            point_id: 1,
+            point_name: String::from("p1"),
+            slave_addr: 1,
+            reg_addr: 0,
+            data_type: ModbusDataType::Bit(3),
+            access: AccessMode::ReadWrite,
+            scale: 1.0,
+            offset: 0.0,
+        };
+        assert_eq!(p.inverse_convert(1.0).unwrap(), 0x08);
+        assert_eq!(p.inverse_convert(0.0).unwrap(), 0x00);
+    }
+
+    #[test]
+    fn test_inverse_convert_zero_scale_rejected() {
+        let p = RegToPoint {
+            point_id: 1,
+            point_name: String::from("p1"),
+            slave_addr: 1,
+            reg_addr: 0,
+            data_type: ModbusDataType::U16,
+            access: AccessMode::ReadWrite,
+            scale: 0.0,
+            offset: 0.0,
+        };
+        assert!(p.inverse_convert(5.0).is_err());
     }
 }

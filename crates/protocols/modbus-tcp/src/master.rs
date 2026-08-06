@@ -8,7 +8,9 @@
 
 use alloc::vec::Vec;
 
-use eneros_modbus_rtu::{ExceptionCode, ModbusError, ModbusRequest, ModbusResponse, PointMapping};
+use eneros_modbus_rtu::{
+    parse_bit_data, ExceptionCode, ModbusError, ModbusRequest, ModbusResponse, PointMapping,
+};
 
 use crate::device::TcpDevice;
 use crate::error::ModbusTcpError;
@@ -105,24 +107,43 @@ impl<'a> ModbusTcpMaster<'a> {
             });
         }
 
+        // v0.218.0（B2-01）：响应功能码一致性校验。
+        if func_code != req.func_code() as u8 {
+            return Err(ModbusTcpError::Modbus(ModbusError::FuncCodeMismatch {
+                expected: req.func_code() as u8,
+                actual: func_code,
+            }));
+        }
+
         // 正常响应：按请求类型解析
         match req {
+            ModbusRequest::ReadCoils { quantity, .. } => Ok(ModbusResponse::ReadCoils(
+                parse_bit_data(data, *quantity)
+                    .map_err(|_| ModbusTcpError::Modbus(ModbusError::UnexpectedResponse))?,
+            )),
+            ModbusRequest::ReadDiscreteInputs { quantity, .. } => {
+                Ok(ModbusResponse::ReadDiscreteInputs(
+                    parse_bit_data(data, *quantity)
+                        .map_err(|_| ModbusTcpError::Modbus(ModbusError::UnexpectedResponse))?,
+                ))
+            }
             ModbusRequest::ReadHoldingRegisters { .. } => {
-                // [byte_count(1)][reg values...]
-                if data.is_empty() {
+                Self::parse_reg_read(data).map(ModbusResponse::ReadHoldingRegisters)
+            }
+            ModbusRequest::ReadInputRegisters { .. } => {
+                Self::parse_reg_read(data).map(ModbusResponse::ReadInputRegisters)
+            }
+            ModbusRequest::WriteSingleCoil { value, .. } => {
+                // [coil_addr BE(2)][value(0xFF00/0x0000)]
+                if data.len() < 4 {
                     return Err(ModbusTcpError::Modbus(ModbusError::UnexpectedResponse));
                 }
-                let byte_count = data[0] as usize;
-                if data.len() < 1 + byte_count {
+                let addr = u16::from_be_bytes([data[0], data[1]]);
+                let on = data[2] == 0xFF && data[3] == 0x00;
+                if on != *value {
                     return Err(ModbusTcpError::Modbus(ModbusError::UnexpectedResponse));
                 }
-                let mut regs = Vec::new();
-                let mut i = 1;
-                while i + 1 < data.len() && regs.len() * 2 < byte_count {
-                    regs.push(u16::from_be_bytes([data[i], data[i + 1]]));
-                    i += 2;
-                }
-                Ok(ModbusResponse::ReadHoldingRegisters(regs))
+                Ok(ModbusResponse::WriteSingleCoil { addr, value: on })
             }
             ModbusRequest::WriteSingleRegister { .. } => {
                 // [reg_addr BE(2)][value BE(2)]
@@ -132,6 +153,18 @@ impl<'a> ModbusTcpMaster<'a> {
                 let addr = u16::from_be_bytes([data[0], data[1]]);
                 let value = u16::from_be_bytes([data[2], data[3]]);
                 Ok(ModbusResponse::WriteSingleRegister { addr, value })
+            }
+            ModbusRequest::WriteMultipleCoils { .. } => {
+                // [start_addr BE(2)][quantity BE(2)]
+                if data.len() < 4 {
+                    return Err(ModbusTcpError::Modbus(ModbusError::UnexpectedResponse));
+                }
+                let start_addr = u16::from_be_bytes([data[0], data[1]]);
+                let quantity = u16::from_be_bytes([data[2], data[3]]);
+                Ok(ModbusResponse::WriteMultipleCoils {
+                    start_addr,
+                    quantity,
+                })
             }
             ModbusRequest::WriteMultipleRegisters { .. } => {
                 // [start_addr BE(2)][quantity BE(2)]
@@ -146,6 +179,24 @@ impl<'a> ModbusTcpMaster<'a> {
                 })
             }
         }
+    }
+
+    /// 解析读寄存器响应数据（[byte_count][reg values BE...]）。
+    fn parse_reg_read(data: &[u8]) -> Result<Vec<u16>, ModbusTcpError> {
+        if data.is_empty() {
+            return Err(ModbusTcpError::Modbus(ModbusError::UnexpectedResponse));
+        }
+        let byte_count = data[0] as usize;
+        if data.len() < 1 + byte_count {
+            return Err(ModbusTcpError::Modbus(ModbusError::UnexpectedResponse));
+        }
+        let mut regs = Vec::new();
+        let mut i = 1;
+        while i + 1 < data.len() && regs.len() * 2 < byte_count {
+            regs.push(u16::from_be_bytes([data[i], data[i + 1]]));
+            i += 2;
+        }
+        Ok(regs)
     }
 
     /// 发送请求并等待响应（带超时重试）。
@@ -299,6 +350,131 @@ impl<'a> ModbusTcpMaster<'a> {
             results.push((*device, device_results));
         }
         results
+    }
+
+    /// 读线圈（功能码 0x01，v0.218.0 B2-01）。
+    ///
+    /// - `quantity` 范围 1..=2000
+    pub fn read_coils(
+        &mut self,
+        device: &TcpDevice,
+        start_addr: u16,
+        quantity: u16,
+    ) -> Result<Vec<bool>, ModbusTcpError> {
+        if quantity == 0 || quantity > 2000 {
+            return Err(ModbusTcpError::Modbus(ModbusError::InvalidQuantity));
+        }
+        let req = ModbusRequest::ReadCoils {
+            slave_addr: device.unit_id,
+            start_addr,
+            quantity,
+        };
+        match self.send_request_with_retry(device, &req)? {
+            ModbusResponse::ReadCoils(bits) => Ok(bits),
+            ModbusResponse::Error { exception_code } => Err(ModbusTcpError::Modbus(
+                ModbusError::Exception(exception_code),
+            )),
+            _ => Err(ModbusTcpError::Modbus(ModbusError::UnexpectedResponse)),
+        }
+    }
+
+    /// 读离散输入（功能码 0x02，v0.218.0 B2-01）。
+    ///
+    /// - `quantity` 范围 1..=2000
+    pub fn read_discrete_inputs(
+        &mut self,
+        device: &TcpDevice,
+        start_addr: u16,
+        quantity: u16,
+    ) -> Result<Vec<bool>, ModbusTcpError> {
+        if quantity == 0 || quantity > 2000 {
+            return Err(ModbusTcpError::Modbus(ModbusError::InvalidQuantity));
+        }
+        let req = ModbusRequest::ReadDiscreteInputs {
+            slave_addr: device.unit_id,
+            start_addr,
+            quantity,
+        };
+        match self.send_request_with_retry(device, &req)? {
+            ModbusResponse::ReadDiscreteInputs(bits) => Ok(bits),
+            ModbusResponse::Error { exception_code } => Err(ModbusTcpError::Modbus(
+                ModbusError::Exception(exception_code),
+            )),
+            _ => Err(ModbusTcpError::Modbus(ModbusError::UnexpectedResponse)),
+        }
+    }
+
+    /// 读输入寄存器（功能码 0x04，v0.218.0 B2-01）。
+    ///
+    /// - `quantity` 范围 1..=125
+    pub fn read_input_registers(
+        &mut self,
+        device: &TcpDevice,
+        start_addr: u16,
+        quantity: u16,
+    ) -> Result<Vec<u16>, ModbusTcpError> {
+        if quantity == 0 || quantity > 125 {
+            return Err(ModbusTcpError::Modbus(ModbusError::InvalidQuantity));
+        }
+        let req = ModbusRequest::ReadInputRegisters {
+            slave_addr: device.unit_id,
+            start_addr,
+            quantity,
+        };
+        match self.send_request_with_retry(device, &req)? {
+            ModbusResponse::ReadInputRegisters(regs) => Ok(regs),
+            ModbusResponse::Error { exception_code } => Err(ModbusTcpError::Modbus(
+                ModbusError::Exception(exception_code),
+            )),
+            _ => Err(ModbusTcpError::Modbus(ModbusError::UnexpectedResponse)),
+        }
+    }
+
+    /// 写单个线圈（功能码 0x05，v0.218.0 B2-01）。
+    pub fn write_single_coil(
+        &mut self,
+        device: &TcpDevice,
+        coil_addr: u16,
+        value: bool,
+    ) -> Result<(), ModbusTcpError> {
+        let req = ModbusRequest::WriteSingleCoil {
+            slave_addr: device.unit_id,
+            coil_addr,
+            value,
+        };
+        match self.send_request_with_retry(device, &req)? {
+            ModbusResponse::WriteSingleCoil { .. } => Ok(()),
+            ModbusResponse::Error { exception_code } => Err(ModbusTcpError::Modbus(
+                ModbusError::Exception(exception_code),
+            )),
+            _ => Err(ModbusTcpError::Modbus(ModbusError::UnexpectedResponse)),
+        }
+    }
+
+    /// 写多个线圈（功能码 0x0F，v0.218.0 B2-01）。
+    ///
+    /// - `values` 长度范围 1..=1968
+    pub fn write_multiple_coils(
+        &mut self,
+        device: &TcpDevice,
+        start_addr: u16,
+        values: &[bool],
+    ) -> Result<(), ModbusTcpError> {
+        if values.is_empty() || values.len() > 1968 {
+            return Err(ModbusTcpError::Modbus(ModbusError::InvalidQuantity));
+        }
+        let req = ModbusRequest::WriteMultipleCoils {
+            slave_addr: device.unit_id,
+            start_addr,
+            values: values.to_vec(),
+        };
+        match self.send_request_with_retry(device, &req)? {
+            ModbusResponse::WriteMultipleCoils { .. } => Ok(()),
+            ModbusResponse::Error { exception_code } => Err(ModbusTcpError::Modbus(
+                ModbusError::Exception(exception_code),
+            )),
+            _ => Err(ModbusTcpError::Modbus(ModbusError::UnexpectedResponse)),
+        }
     }
 }
 

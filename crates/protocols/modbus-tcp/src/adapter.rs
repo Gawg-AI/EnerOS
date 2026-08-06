@@ -118,9 +118,19 @@ impl<T: TcpTransport> ModbusTcpAdapter<T> {
         if access == eneros_modbus_rtu::point::AccessMode::ReadOnly {
             return Err(ProtocolError::Unsupported);
         }
+        // v0.218.0（B2-01）：写值经 scale 逆变换（替代 `f as u16` 直截断）。
+        let mapping = self
+            .find_mapping(point_id)
+            .ok_or(ProtocolError::PointNotFound)?;
         let raw: u16 = match value {
-            PointValue::Float(f) => f as u16,
-            PointValue::Int(i) => i as u16,
+            PointValue::Float(f) => mapping
+                .inverse_convert(f)
+                .map_err(ModbusTcpError::Modbus)
+                .map_err(modbus_tcp_to_protocol)?,
+            PointValue::Int(i) => mapping
+                .inverse_convert(i as f64)
+                .map_err(ModbusTcpError::Modbus)
+                .map_err(modbus_tcp_to_protocol)?,
             PointValue::Enum(e) => e,
             _ => return Err(ProtocolError::Unsupported),
         };

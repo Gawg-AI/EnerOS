@@ -1,8 +1,13 @@
 //! Modbus 功能码、异常码、请求与响应类型.
 //!
-//! 支持功能码：
+//! 支持功能码（v0.218.0 B2-01 补全）：
+//! - 0x01 读线圈
+//! - 0x02 读离散输入
 //! - 0x03 读保持寄存器
+//! - 0x04 读输入寄存器
+//! - 0x05 写单个线圈
 //! - 0x06 写单个寄存器
+//! - 0x0F 写多个线圈
 //! - 0x10 写多个寄存器
 
 use alloc::vec::Vec;
@@ -12,6 +17,8 @@ use alloc::vec::Vec;
 pub enum FunctionCode {
     /// 读线圈（0x01）
     ReadCoils = 0x01,
+    /// 读离散输入（0x02）
+    ReadDiscreteInputs = 0x02,
     /// 读保持寄存器（0x03）
     ReadHoldingRegisters = 0x03,
     /// 读输入寄存器（0x04）
@@ -20,6 +27,8 @@ pub enum FunctionCode {
     WriteSingleCoil = 0x05,
     /// 写单个寄存器（0x06）
     WriteSingleRegister = 0x06,
+    /// 写多个线圈（0x0F）
+    WriteMultipleCoils = 0x0F,
     /// 写多个寄存器（0x10）
     WriteMultipleRegisters = 0x10,
 }
@@ -59,17 +68,47 @@ impl ExceptionCode {
 /// Modbus 请求（主站发起）
 #[derive(Debug, Clone)]
 pub enum ModbusRequest {
+    /// 读线圈（0x01）
+    ReadCoils {
+        slave_addr: u8,
+        start_addr: u16,
+        quantity: u16,
+    },
+    /// 读离散输入（0x02）
+    ReadDiscreteInputs {
+        slave_addr: u8,
+        start_addr: u16,
+        quantity: u16,
+    },
     /// 读保持寄存器（0x03）
     ReadHoldingRegisters {
         slave_addr: u8,
         start_addr: u16,
         quantity: u16,
     },
+    /// 读输入寄存器（0x04）
+    ReadInputRegisters {
+        slave_addr: u8,
+        start_addr: u16,
+        quantity: u16,
+    },
+    /// 写单个线圈（0x05）
+    WriteSingleCoil {
+        slave_addr: u8,
+        coil_addr: u16,
+        value: bool,
+    },
     /// 写单个寄存器（0x06）
     WriteSingleRegister {
         slave_addr: u8,
         reg_addr: u16,
         value: u16,
+    },
+    /// 写多个线圈（0x0F）
+    WriteMultipleCoils {
+        slave_addr: u8,
+        start_addr: u16,
+        values: Vec<bool>,
     },
     /// 写多个寄存器（0x10）
     WriteMultipleRegisters {
@@ -83,8 +122,13 @@ impl ModbusRequest {
     /// 返回从站地址
     pub fn slave_addr(&self) -> u8 {
         match self {
-            Self::ReadHoldingRegisters { slave_addr, .. }
+            Self::ReadCoils { slave_addr, .. }
+            | Self::ReadDiscreteInputs { slave_addr, .. }
+            | Self::ReadHoldingRegisters { slave_addr, .. }
+            | Self::ReadInputRegisters { slave_addr, .. }
+            | Self::WriteSingleCoil { slave_addr, .. }
             | Self::WriteSingleRegister { slave_addr, .. }
+            | Self::WriteMultipleCoils { slave_addr, .. }
             | Self::WriteMultipleRegisters { slave_addr, .. } => *slave_addr,
         }
     }
@@ -92,20 +136,43 @@ impl ModbusRequest {
     /// 返回功能码
     pub fn func_code(&self) -> FunctionCode {
         match self {
+            Self::ReadCoils { .. } => FunctionCode::ReadCoils,
+            Self::ReadDiscreteInputs { .. } => FunctionCode::ReadDiscreteInputs,
             Self::ReadHoldingRegisters { .. } => FunctionCode::ReadHoldingRegisters,
+            Self::ReadInputRegisters { .. } => FunctionCode::ReadInputRegisters,
+            Self::WriteSingleCoil { .. } => FunctionCode::WriteSingleCoil,
             Self::WriteSingleRegister { .. } => FunctionCode::WriteSingleRegister,
+            Self::WriteMultipleCoils { .. } => FunctionCode::WriteMultipleCoils,
             Self::WriteMultipleRegisters { .. } => FunctionCode::WriteMultipleRegisters,
         }
     }
 
     /// 编码请求帧的数据域（不含从站地址和功能码）。
     ///
-    /// - ReadHoldingRegisters: start_addr BE(2) + quantity BE(2)
+    /// - ReadCoils/ReadDiscreteInputs/ReadHoldingRegisters/ReadInputRegisters:
+    ///   start_addr BE(2) + quantity BE(2)
+    /// - WriteSingleCoil: coil_addr BE(2) + value(0xFF00/0x0000)
     /// - WriteSingleRegister: reg_addr BE(2) + value BE(2)
+    /// - WriteMultipleCoils: start_addr BE(2) + quantity BE(2) + byte_count(1) + packed bits
     /// - WriteMultipleRegisters: start_addr BE(2) + quantity BE(2) + byte_count(1) + values BE(...)
     pub fn encode_data(&self) -> Vec<u8> {
         match self {
-            Self::ReadHoldingRegisters {
+            Self::ReadCoils {
+                start_addr,
+                quantity,
+                ..
+            }
+            | Self::ReadDiscreteInputs {
+                start_addr,
+                quantity,
+                ..
+            }
+            | Self::ReadHoldingRegisters {
+                start_addr,
+                quantity,
+                ..
+            }
+            | Self::ReadInputRegisters {
                 start_addr,
                 quantity,
                 ..
@@ -115,12 +182,45 @@ impl ModbusRequest {
                 buf.extend_from_slice(&quantity.to_be_bytes());
                 buf
             }
+            Self::WriteSingleCoil {
+                coil_addr, value, ..
+            } => {
+                let mut buf = Vec::with_capacity(4);
+                buf.extend_from_slice(&coil_addr.to_be_bytes());
+                // Modbus 协议：ON=0xFF00，OFF=0x0000。
+                buf.extend_from_slice(if *value { &[0xFF, 0x00] } else { &[0x00, 0x00] });
+                buf
+            }
             Self::WriteSingleRegister {
                 reg_addr, value, ..
             } => {
                 let mut buf = Vec::with_capacity(4);
                 buf.extend_from_slice(&reg_addr.to_be_bytes());
                 buf.extend_from_slice(&value.to_be_bytes());
+                buf
+            }
+            Self::WriteMultipleCoils {
+                start_addr,
+                values,
+                ..
+            } => {
+                let quantity = values.len();
+                let byte_count = quantity.div_ceil(8);
+                let mut buf = Vec::with_capacity(5 + byte_count);
+                buf.extend_from_slice(&start_addr.to_be_bytes());
+                buf.extend_from_slice(&(quantity as u16).to_be_bytes());
+                buf.push(byte_count as u8);
+                // 位打包：LSB 在前（线圈 i 在字节 i/8 的位 i%8）。
+                for byte_idx in 0..byte_count {
+                    let mut byte = 0u8;
+                    for bit in 0..8 {
+                        let idx = byte_idx * 8 + bit;
+                        if idx < quantity && values[idx] {
+                            byte |= 1 << bit;
+                        }
+                    }
+                    buf.push(byte);
+                }
                 buf
             }
             Self::WriteMultipleRegisters {
@@ -143,16 +243,44 @@ impl ModbusRequest {
 /// Modbus 响应（从站返回）
 #[derive(Debug, Clone)]
 pub enum ModbusResponse {
+    /// 读线圈响应（位列表）
+    ReadCoils(Vec<bool>),
+    /// 读离散输入响应（位列表）
+    ReadDiscreteInputs(Vec<bool>),
     /// 读保持寄存器响应（寄存器值列表）
     ReadHoldingRegisters(Vec<u16>),
+    /// 读输入寄存器响应（寄存器值列表）
+    ReadInputRegisters(Vec<u16>),
+    /// 写单个线圈响应
+    WriteSingleCoil { addr: u16, value: bool },
     /// 写单个寄存器响应
     WriteSingleRegister { addr: u16, value: u16 },
+    /// 写多个线圈响应
+    WriteMultipleCoils { start_addr: u16, quantity: u16 },
     /// 写多个寄存器响应
     WriteMultipleRegisters { start_addr: u16, quantity: u16 },
     /// 异常响应
     Error { exception_code: ExceptionCode },
     /// 广播（无响应）
     Broadcast,
+}
+
+/// 解析读位类响应数据（byte_count + packed bits）。
+#[allow(clippy::result_unit_err)] // 结构错误由调用方统一映射为 UnexpectedResponse
+pub fn parse_bit_data(data: &[u8], quantity: u16) -> Result<Vec<bool>, ()> {
+    if data.is_empty() {
+        return Err(());
+    }
+    let byte_count = data[0] as usize;
+    if data.len() < 1 + byte_count {
+        return Err(());
+    }
+    let mut bits = Vec::with_capacity(quantity as usize);
+    for i in 0..quantity as usize {
+        let byte = data[1 + i / 8];
+        bits.push(byte & (1 << (i % 8)) != 0);
+    }
+    Ok(bits)
 }
 
 #[cfg(test)]
