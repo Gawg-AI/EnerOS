@@ -7,7 +7,7 @@ license.workspace = true
 description = "[SPECULATIVE] EnerOS Agent 能源账户 (v0.177.0) — 余额/收支/交易历史/冻结, no_std"
 
 [dependencies]
-eneros-market-types = { path = "../market-types", version = "0.241.0" }
+eneros-market-types = { path = "../market-types", version = "0.242.0" }
 # SPECULATIVE (ARCH-M04/ADR-0029): 未接入任何真实 agent 的报价/结算流水线，不进入 release 闭包；接入前不得计入完成度。
 
 [features]
