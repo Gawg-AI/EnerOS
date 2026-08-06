@@ -16,8 +16,10 @@
 
 extern crate alloc;
 
+pub mod persist;
 pub mod privacy;
 pub mod queue;
 
 pub use privacy::{PrivacyAuditEntry, PrivacyAuditLog, PrivacyConfig, TelemetryConsent};
+pub use persist::{load_snapshot, persist_snapshot, OtlpExporter, QueueSnapshot};
 pub use queue::{OverflowPolicy, QueueStats, TelemetryCategory, TelemetryEvent, TelemetryQueue};

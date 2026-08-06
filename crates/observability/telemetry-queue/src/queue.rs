@@ -117,6 +117,35 @@ pub struct TelemetryQueue {
 }
 
 impl TelemetryQueue {
+    /// 导出当前队列为持久化快照（v0.238.0，B5-01）。
+    ///
+    /// `last_acked_id` = 已确认发送的最大事件 ID（幂等断点：重启后
+    /// 跳过 ≤ 此 ID 的事件，不重复补传）。
+    pub fn snapshot(&self, last_acked_id: u64) -> crate::persist::QueueSnapshot {
+        crate::persist::QueueSnapshot {
+            last_acked_id,
+            events: self.events.clone(),
+        }
+    }
+
+    /// 从持久化快照恢复（v0.238.0）：重建队列并推进 next_id。
+    ///
+    /// 返回 `(队列, last_acked_id)`——调用方据此从断点继续补传。
+    pub fn restore(snap: crate::persist::QueueSnapshot) -> (Self, u64) {
+        let capacity = snap.events.len().max(16) * 2;
+        let next_id = snap
+            .events
+            .iter()
+            .map(|e| e.id)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(snap.last_acked_id + 1);
+        let mut q = Self::new(capacity, OverflowPolicy::DropOldest);
+        q.events = snap.events;
+        q.next_id = next_id.max(1);
+        (q, snap.last_acked_id)
+    }
+
     /// 创建队列。
     pub fn new(capacity: usize, policy: OverflowPolicy) -> Self {
         Self {
