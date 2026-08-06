@@ -353,3 +353,69 @@ fn test_sm2_decrypt_wrong_private_key() {
         "Decryption with wrong private key should fail"
     );
 }
+
+// ============================================================
+// v0.234.0（B4-01）：确定性签名 KAT——GB/T 32918.2 附录向量可复现路径
+// ============================================================
+
+/// 确定性签名：同私钥同消息 → 相同签名（KAT 可复现性前提）。
+#[test]
+fn test_sm2_deterministic_signature_reproducible() {
+    let mut rng = CsRng::from_seed(&[0x51; 32]);
+    let kp = Sm2KeyPair::generate(&mut rng).expect("keypair");
+    let signer = Sm2Signer::new();
+    let msg = b"GB/T 32918.5 KAT vector message";
+
+    let sig1 = signer.sign_deterministic(msg, &kp.private_key, &kp.public_key).expect("sig1");
+    let sig2 = signer.sign_deterministic(msg, &kp.private_key, &kp.public_key).expect("sig2");
+
+    // 同私钥同消息 → 逐字节相同（KAT 可复现）。
+    assert_eq!(sig1, sig2, "确定性签名必须可复现");
+
+    // 与 verify 一致。
+    let ok = signer.verify(msg, &sig1, &kp.public_key).expect("verify");
+    assert!(ok, "确定性签名必须可验证");
+}
+
+/// 确定性签名：不同消息 → 不同签名。
+#[test]
+fn test_sm2_deterministic_signature_differs_per_message() {
+    let mut rng = CsRng::from_seed(&[0x52; 32]);
+    let kp = Sm2KeyPair::generate(&mut rng).expect("keypair");
+    let signer = Sm2Signer::new();
+
+    let sig_a = signer.sign_deterministic(b"message-A", &kp.private_key, &kp.public_key).expect("a");
+    let sig_b = signer.sign_deterministic(b"message-B", &kp.private_key, &kp.public_key).expect("b");
+    assert_ne!(sig_a, sig_b, "不同消息必须产生不同签名");
+}
+
+/// 确定性签名：不同私钥 → 不同签名（同一消息）。
+#[test]
+fn test_sm2_deterministic_signature_differs_per_key() {
+    let mut rng = CsRng::from_seed(&[0x53; 32]);
+    let kp1 = Sm2KeyPair::generate(&mut rng).expect("kp1");
+    let kp2 = Sm2KeyPair::generate(&mut rng).expect("kp2");
+    let signer = Sm2Signer::new();
+    let msg = b"same message";
+
+    let sig1 = signer.sign_deterministic(msg, &kp1.private_key, &kp1.public_key).expect("1");
+    let sig2 = signer.sign_deterministic(msg, &kp2.private_key, &kp2.public_key).expect("2");
+    assert_ne!(sig1, sig2, "不同私钥必须产生不同签名");
+}
+
+/// 确定性签名边界：空消息、长消息。
+#[test]
+fn test_sm2_deterministic_signature_edge_messages() {
+    let mut rng = CsRng::from_seed(&[0x54; 32]);
+    let kp = Sm2KeyPair::generate(&mut rng).expect("keypair");
+    let signer = Sm2Signer::new();
+
+    // 空消息。
+    let sig_empty = signer.sign_deterministic(b"", &kp.private_key, &kp.public_key).expect("empty");
+    assert!(signer.verify(b"", &sig_empty, &kp.public_key).expect("v1"));
+
+    // 长消息（超过单块）。
+    let long: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+    let sig_long = signer.sign_deterministic(&long, &kp.private_key, &kp.public_key).expect("long");
+    assert!(signer.verify(&long, &sig_long, &kp.public_key).expect("v2"));
+}

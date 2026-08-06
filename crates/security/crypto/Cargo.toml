@@ -8,8 +8,11 @@ description = "EnerOS 国密算法库 (SM2/SM3/SM4 + CSRNG) — pure Rust, no_st
 publish = false
 
 [package.metadata.eneros]
+# v0.234.0（B4-01）裁决：保持 product_allowed=false（fail-closed）——
+# 确定性 KAT（GB/T 32918.5 附录向量路径）已就绪，独立密码学评审
+# （送审或换经审计库）为阶段 D 前置；解锁前禁止进入产品闭包。
 product_allowed = false
-isolation_reason = "Pending audited system entropy integration and independent cryptographic review"
+isolation_reason = "v0.234.0: SM2 deterministic KAT in place; awaiting independent cryptographic review (Phase D gate) before product inclusion"
 
 [dependencies]
 # No external dependencies — pure Rust implementation

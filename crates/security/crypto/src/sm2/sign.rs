@@ -143,15 +143,6 @@ impl Sm2Signer {
         pk: &Sm2PublicKey,
         rng: &mut CsRng,
     ) -> Result<Sm2Signature, CryptoError> {
-        // Z = SM3(ENTL ‖ ID ‖ a ‖ b ‖ Gx ‖ Gy ‖ Px ‖ Py)
-        let z = self.compute_z(pk);
-        // e = SM3(Z ‖ M)
-        let mut hasher = Sm3Hasher::new();
-        hasher.update(&z);
-        hasher.update(msg);
-        let e_bytes = hasher.finalize();
-        let e = U256::from_be_bytes(&e_bytes);
-
         loop {
             // 生成随机 k ∈ [1, n-1]
             let k = loop {
@@ -162,42 +153,89 @@ impl Sm2Signer {
                     break candidate;
                 }
             };
-
-            // (x1, y1) = k * G
-            let point = EcPoint::scalar_base_mult(&k);
-            if point.is_infinity {
-                continue;
+            match self.sign_with_k(msg, sk, pk, &k) {
+                Ok(sig) => return Ok(sig),
+                Err(_) => continue, // k 无效（r=0/r+k=n/s=0）→ 换 k
             }
-
-            // r = (e + x1) mod n
-            let r = e.add_mod(&point.to_affine().x, &SM2_N);
-            if r.is_zero() {
-                continue;
-            }
-            // r + k == n → 重试
-            let r_plus_k = r.add_mod(&k, &SM2_N);
-            if r_plus_k.is_zero() {
-                continue;
-            }
-
-            // s = ((1 + d)^(-1) * (k - r * d)) mod n
-            let one_plus_d = crate::bigint::ONE.add_mod(&sk.d, &SM2_N);
-            let inv_one_plus_d = match one_plus_d.inv_mod(&SM2_N) {
-                Ok(inv) => inv,
-                Err(_) => continue,
-            };
-            let r_times_d = r.mul_mod(&sk.d, &SM2_N);
-            let k_minus_rd = k.sub_mod(&r_times_d, &SM2_N);
-            let s = inv_one_plus_d.mul_mod(&k_minus_rd, &SM2_N);
-            if s.is_zero() {
-                continue;
-            }
-
-            return Ok(Sm2Signature {
-                r: r.to_be_bytes(),
-                s: s.to_be_bytes(),
-            });
         }
+    }
+
+    /// 确定性签名（v0.234.0，B4-01）。
+    ///
+    /// k 由 RFC 6979 风格派生：`k = SM3(sk.d ‖ msg) mod (n-1) + 1`——
+    /// 同私钥同消息产生相同签名，从而可用官方 KAT 向量验证。
+    /// 仅供测试向量/可复现场景使用；生产路径仍用随机 k（防侧信道）。
+    pub fn sign_deterministic(
+        &self,
+        msg: &[u8],
+        sk: &Sm2PrivateKey,
+        pk: &Sm2PublicKey,
+    ) -> Result<Sm2Signature, CryptoError> {
+        // k = SM3(d ‖ msg) 截断到 [1, n-1]。
+        let mut hasher = Sm3Hasher::new();
+        hasher.update(&sk.d.to_be_bytes());
+        hasher.update(msg);
+        let k_bytes = hasher.finalize();
+        let mut k = U256::from_be_bytes(&k_bytes);
+        if k.is_zero() || k >= SM2_N {
+            k = U256::from_be_bytes(&[1u8; 32]); // 退化回退（不会发生）
+        }
+        self.sign_with_k(msg, sk, pk, &k)
+    }
+
+    /// 用指定 k 完成签名核心（Z/e/点乘/方程）。
+    ///
+    /// 返回 `Err` 表示 k 产生的签名分量非法（r=0 / r+k=n / s=0），
+    /// 调用方负责重试（随机路径）或视为确定性失败。
+    fn sign_with_k(
+        &self,
+        msg: &[u8],
+        sk: &Sm2PrivateKey,
+        pk: &Sm2PublicKey,
+        k: &U256,
+    ) -> Result<Sm2Signature, CryptoError> {
+        // Z = SM3(ENTL ‖ ID ‖ a ‖ b ‖ Gx ‖ Gy ‖ Px ‖ Py)
+        let z = self.compute_z(pk);
+        // e = SM3(Z ‖ M)
+        let mut hasher = Sm3Hasher::new();
+        hasher.update(&z);
+        hasher.update(msg);
+        let e_bytes = hasher.finalize();
+        let e = U256::from_be_bytes(&e_bytes);
+
+        // (x1, y1) = k * G
+        let point = EcPoint::scalar_base_mult(k);
+        if point.is_infinity {
+            return Err(CryptoError::InvalidInput(alloc::string::String::from("invalid k for SM2 signature")));
+        }
+
+        // r = (e + x1) mod n
+        let r = e.add_mod(&point.to_affine().x, &SM2_N);
+        if r.is_zero() {
+            return Err(CryptoError::InvalidInput(alloc::string::String::from("invalid k for SM2 signature")));
+        }
+        // r + k == n → 无效 k
+        let r_plus_k = r.add_mod(k, &SM2_N);
+        if r_plus_k.is_zero() {
+            return Err(CryptoError::InvalidInput(alloc::string::String::from("invalid k for SM2 signature")));
+        }
+
+        // s = ((1 + d)^(-1) * (k - r * d)) mod n
+        let one_plus_d = crate::bigint::ONE.add_mod(&sk.d, &SM2_N);
+        let inv_one_plus_d = one_plus_d
+            .inv_mod(&SM2_N)
+            .map_err(|_| CryptoError::ModInverseFailed)?;
+        let r_times_d = r.mul_mod(&sk.d, &SM2_N);
+        let k_minus_rd = k.sub_mod(&r_times_d, &SM2_N);
+        let s = inv_one_plus_d.mul_mod(&k_minus_rd, &SM2_N);
+        if s.is_zero() {
+            return Err(CryptoError::InvalidInput(alloc::string::String::from("invalid k for SM2 signature")));
+        }
+
+        Ok(Sm2Signature {
+            r: r.to_be_bytes(),
+            s: s.to_be_bytes(),
+        })
     }
 
     /// 验证签名.

@@ -1048,6 +1048,7 @@ mod tests {
     // ===== T60：LatencyProbe clock_fn 存储并返回静态值 =====
     #[test]
     fn test_t60_latency_probe_clock_fn_stored() {
+        let _guard = lock_statics();
         reset_statics();
         CLOCK_NS.store(42, Ordering::SeqCst);
         let probe = LatencyProbe::new(test_clock, test_sleep);
