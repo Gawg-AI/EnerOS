@@ -170,6 +170,7 @@ pub mod market_feed;
 pub mod multi_dispatch;
 pub mod multi_objective;
 pub mod parser;
+pub mod real_adapters;
 mod runtime;
 pub mod sdk_bridge;
 pub mod subscriber;

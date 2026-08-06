@@ -8,9 +8,9 @@ description = "EnerOS seL4 root task — G2 closure + init bundle handoff (no_st
 
 [dependencies]
 eneros-runtime = { path = "../runtime" }
-eneros-boot-protocol = { path = "../../boot/boot-protocol", version = "0.225.0" }
-eneros-ipc-wire = { path = "../../abi/ipc-wire", version = "0.225.0" }
-eneros-elf-loader = { path = "../../abi/elf-loader", version = "0.225.0" }
+eneros-boot-protocol = { path = "../../boot/boot-protocol", version = "0.226.0" }
+eneros-ipc-wire = { path = "../../abi/ipc-wire", version = "0.226.0" }
+eneros-elf-loader = { path = "../../abi/elf-loader", version = "0.226.0" }
 
 [features]
 default = []
