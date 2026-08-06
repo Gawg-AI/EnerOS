@@ -1,0 +1,10 @@
+[package]
+name = "eneros-telemetry-queue"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 远程遥测队列 + 隐私 opt-in (OBS-013/014), no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }

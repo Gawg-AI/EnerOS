@@ -1,0 +1,159 @@
+// EnerOS / Power Native Agent OS — 飞腾 D2000 设备树源文件（v0.145.0 占位最小骨架）
+// 用于飞腾 D2000 真机启动（蓝图 §v0.145.0 §3 交付物清单 + spec D8 占位口径）
+//
+// 编译：dtc -I dts -O dtb -o configs/phytium-d2000.dtb configs/phytium-d2000.dts
+//
+// 占位说明（spec D8 + D10）：
+//   - 所有 reg 属性用占位物理地址，与 platform::phytium_d2000 常量对齐：
+//       UART_PL011_BASE = 0x2800_0000   GICD_BASE       = 0x2f00_0000
+//       GPIO_PL061_BASE = 0x2801_0000   GICR_BASE        = 0x2f10_0000
+//       SMMU_BASE       = 0x2b00_0000   CRYPTO_BASE      = 0x2c00_0000
+//   - 飞腾 D2000 数据手册实际值待真机调试确认（蓝图 §8 风险「飞腾 DTB 与 QEMU 不同」）
+//   - 真机调试时按 /proc/device-tree 实际值调整 reg 地址 + compatible 字符串
+//   - SMMUv3 / crypto 节点 compatible 字符串原样占位（spec D6），真机调试时按
+//     飞腾 D2000 实际 DTB 值调整（"arm,smmu-v3" 或 "phytium,smmu-v3" 等）
+//
+// 中断类型常量（直接使用数值，dtc 不支持 #define）：
+//   GIC_SPI = 0 (Shared Peripheral Interrupt)
+//   GIC_PPI = 1 (Private Peripheral Interrupt)
+//   IRQ_TYPE_LEVEL_HIGH = 4
+//   IRQ_TYPE_LEVEL_LOW  = 8
+//   GIC_CPU_MASK_SIMPLE(8) = 0xFF (8 CPUs bitmask，飞腾 D2000 最多 8 核)
+
+/dts-v1/;
+
+/ {
+    #address-cells = <2>;
+    #size-cells = <2>;
+    compatible = "phytium,d2000";
+    interrupt-parent = <&gic>;
+
+    // ===== CPU 节点（飞腾 D2000 4-8 核 ARMv8，占位 4 核）=====
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cpu@0 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <0>;
+            enable-method = "psci";
+        };
+
+        cpu@1 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <1>;
+            enable-method = "psci";
+        };
+
+        cpu@2 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <2>;
+            enable-method = "psci";
+        };
+
+        cpu@3 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <3>;
+            enable-method = "psci";
+        };
+    };
+
+    // ===== PSCI (Power State Coordination Interface) =====
+    psci {
+        compatible = "arm,psci-0.2";
+        method = "smc";
+    };
+
+    // ===== 内存（占位 4GB，真机按数据手册调整）=====
+    memory@20000000 {
+        device_type = "memory";
+        reg = <0x0 0x20000000 0x1 0x00000000>; // 4GB at 0x20000000
+    };
+
+    // ===== UART (PL011) — 串口输出（飞腾 D2000 兼容 PL011）=====
+    // spec D10 platform::phytium_d2000::UART_PL011_BASE = 0x2800_0000
+    uart@28000000 {
+        compatible = "arm,pl011", "arm,primecell";
+        reg = <0x0 0x28000000 0x0 0x1000>;
+        interrupts = <0 1 4>; // GIC_SPI(0) 1 IRQ_TYPE_LEVEL_HIGH(4)
+        clock-names = "uartclk", "apb_pclk";
+        clocks = <&clk24mhz>, <&clk24mhz>;
+        status = "okay";
+    };
+
+    // ===== 时钟 =====
+    clk24mhz: clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+    };
+
+    // ===== ARM 架构定时器（飞腾兼容 ARMv8 通用定时器）=====
+    // interrupts = <GIC_PPI(1) N (GIC_CPU_MASK_SIMPLE(4)=0xF | IRQ_TYPE_LEVEL_LOW=8)>
+    //   PPI 13 (Secure Physical Timer)
+    //   PPI 14 (Non-secure Physical Timer, CNTP) — spec D10 CNTP_IRQ = 30
+    //   PPI 11 (Virtual Timer, CNTV) — spec D10 CNTV_IRQ = 27
+    //   PPI 10 (Hypervisor Timer)
+    timer {
+        compatible = "arm,armv8-timer", "arm,armv7-timer";
+        interrupts = <1 13 0x108>,
+                     <1 14 0x108>,
+                     <1 11 0x108>,
+                     <1 10 0x108>;
+        always-on;
+    };
+
+    // ===== GICv3 (Generic Interrupt Controller) — 飞腾 D2000 集成 GICv3 =====
+    // spec D10 platform::phytium_d2000:
+    //   GICD_BASE = 0x2f00_0000   GICR_BASE = 0x2f10_0000
+    gic: interrupt-controller@2f000000 {
+        compatible = "arm,gic-v3";
+        #interrupt-cells = <3>;
+        #address-cells = <2>;
+        #size-cells = <2>;
+        interrupt-controller;
+        reg = <0x0 0x2f000000 0x0 0x0100000>,  // GICD（占位 1MB）
+              <0x0 0x2f100000 0x0 0x200000>;   // GICR（占位 2MB，4 核）
+        interrupts = <1 9 0x104>; // PPI 9 (Maintenance) GIC_CPU_MASK_SIMPLE(4)|IRQ_TYPE_LEVEL_HIGH
+    };
+
+    // ===== GPIO (PL061) — 飞腾 D2000 兼容 PL061 =====
+    // spec D10 platform::phytium_d2000::GPIO_PL061_BASE = 0x2801_0000
+    gpio@28010000 {
+        compatible = "arm,pl061", "arm,primecell";
+        reg = <0x0 0x28010000 0x0 0x1000>;
+        interrupts = <0 32 4>; // GIC_SPI(0) 32 IRQ_TYPE_LEVEL_HIGH(4)
+        gpio-controller;
+        #gpio-cells = <2>;
+        status = "okay";
+    };
+
+    // ===== SMMUv3 (System Memory Management Unit) — 飞腾 D2000 集成 ARM SMMUv3 =====
+    // spec D4 PhytiumSmmu::init() 写 CR0（base + 0x20 = 0x1）使能 SMMU
+    // spec D10 platform::phytium_d2000::SMMU_BASE = 0x2b00_0000
+    // spec D6 兼容性字符串 "arm,smmu-v3"（真机调试时按 /proc/device-tree 实际值调整）
+    smmu@2b000000 {
+        compatible = "arm,smmu-v3";
+        reg = <0x0 0x2b000000 0x0 0x100000>; // SMMUv3 寄存器帧（占位 1MB）
+        interrupts = <0 77 4>,  // Event queue (IRQ)
+                     <0 78 4>,  // PRI queue (IRQ)
+                     <0 79 4>;  // CMDQ sync (IRQ)
+        #iommu-cells = <1>;
+        status = "okay";
+    };
+
+    // ===== Crypto Engine — 飞腾 D2000 内置 SM2/SM3/SM4 加速引擎 =====
+    // spec D5 PhytiumCrypto::has_sm4()/has_sm2() 占位 true
+    // spec D10 platform::phytium_d2000::CRYPTO_BASE = 0x2c00_0000
+    // spec D6 兼容性字符串 "phytium,crypto"（真机调试时按 /proc/device-tree 实际值调整）
+    crypto@2c000000 {
+        compatible = "phytium,crypto";
+        reg = <0x0 0x2c000000 0x0 0x100000>; // crypto 引擎寄存器帧（占位 1MB）
+        interrupts = <0 80 4>; // GIC_SPI(0) 80 IRQ_TYPE_LEVEL_HIGH(4)
+        status = "okay";
+    };
+};

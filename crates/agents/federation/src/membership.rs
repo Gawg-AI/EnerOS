@@ -7,7 +7,8 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::net::IpAddr;
 
-/// FNV-1a 64 offset basis
+/// FNV-1a 64 offset basis（QA-101：非安全用途——仅作 CertRef 稳定指纹/
+/// 去重标识，不用于完整性或身份验证；安全哈希一律使用 eneros-crypto SM3）
 const FNV_OFFSET_BASIS: u64 = 14695981039346656037;
 /// FNV-1a 64 prime
 const FNV_PRIME: u64 = 1099511628211;

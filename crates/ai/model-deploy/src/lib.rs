@@ -76,7 +76,6 @@ mod tests {
 
     use eneros_llm_engine::{ComputeDevice, LlmEngine, MockEngine, Quantization};
 
-    use super::*;
     use crate::backend::DeployBackend;
     use crate::backend::HardwareCheck;
     use crate::config::QuantConfig7B;
@@ -261,13 +260,39 @@ mod tests {
         assert!(report.total_tokens > 0);
     }
 
-    // ===== T15：DeployVerifier undeploy 返回 Ok(()) =====
+    // ===== T15：DeployVerifier undeploy 真实化（ARC-006）=====
     #[test]
-    fn test_t15_deploy_verifier_undeploy_ok() {
+    fn test_t15_deploy_verifier_undeploy_real() {
         let engine = MockEngine::new(ComputeDevice::Cpu);
         let config = QuantConfig7B::default();
         let mut verifier = DeployVerifier::new(engine, config);
-        let result = verifier.undeploy();
-        assert!(result.is_ok());
+        // 未部署时卸载 → 拒绝（不再空操作静默成功）
+        assert_eq!(verifier.undeploy().unwrap_err(), DeployError::NotDeployed);
+        // deploy 后卸载 → 委托引擎 unload（MockEngine unload 计数可断言）
+        verifier.deploy().unwrap();
+        assert_eq!(verifier.engine.unload_count(), 0);
+        verifier.undeploy().unwrap();
+        assert_eq!(verifier.engine.unload_count(), 1, "undeploy 委托引擎 unload");
+        // 重复卸载 → 拒绝
+        assert_eq!(verifier.undeploy().unwrap_err(), DeployError::NotDeployed);
+    }
+}
+
+#[cfg(test)]
+mod arc006_tests {
+    use crate::config::QuantConfig7B;
+    use crate::error::DeployError;
+    use crate::verifier::DeployVerifier;
+    use eneros_llm_engine::{ComputeDevice, MockEngine};
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn test_arc006_mock_hardware_check_can_fail() {
+        // ARC-006：Mock 硬件检查可失败——需求超能力 → 拒绝部署
+        let engine = MockEngine::new(ComputeDevice::Cpu);
+        let mut config = QuantConfig7B::default();
+        config.min_ram_gb = 32.0; // 超过 Mock 能力 16GB
+        let mut verifier = DeployVerifier::new(engine, config);
+        assert_eq!(verifier.deploy().unwrap_err(), DeployError::HardwareInsufficient);
     }
 }

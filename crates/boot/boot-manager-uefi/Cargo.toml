@@ -1,0 +1,29 @@
+[package]
+name = "eneros-boot-manager-uefi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Fail-closed EnerOS UEFI boot manager and verified media loader"
+build = "build.rs"
+
+[lib]
+name = "eneros_boot_manager_uefi"
+path = "src/lib.rs"
+
+[[bin]]
+name = "boot-manager-uefi"
+path = "src/main.rs"
+required-features = ["uefi-app"]
+
+[dependencies]
+eneros-boot-protocol = { path = "../boot-protocol" }
+eneros-image-format = { path = "../image-format" }
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["alloc", "fast", "zeroize"] }
+sha2 = { version = "0.10.9", default-features = false }
+uefi = { version = "0.39.0", optional = true, features = ["alloc", "global_allocator", "panic_handler"] }
+
+[features]
+default = []
+uefi-app = ["dep:uefi"]

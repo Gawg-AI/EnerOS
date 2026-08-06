@@ -1,0 +1,17 @@
+[package]
+name = "eneros-agent-hot-update"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Agent 热更新 (v0.124.0) — no_std, 请求排空 + Arc 原子热切换 + SM3 模块校验 + 失败回滚"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }
+eneros-crypto = { path = "../../security/crypto" }
+# VRF-004：loom 并发模型验证（并发 load/swap 无 double-free/use-after-free）。
+loom = { version = "0.7", optional = true }
+
+[features]
+default = []
+loom = ["dep:loom"]

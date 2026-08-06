@@ -1,4 +1,4 @@
-//! Wear-leveling monitoring and management (v0.24.1).
+//! Wear-leveling monitoring and management (workspace v0.192.0).
 //!
 //! This module provides observability and control for flash storage wear
 //! leveling. It works alongside littlefs2's built-in dynamic wear leveling,

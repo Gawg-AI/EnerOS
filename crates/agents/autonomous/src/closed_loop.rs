@@ -106,7 +106,7 @@ mod tests {
         assert!(ctx.settlement.is_some());
         let st = ctx.settlement.as_ref().unwrap();
         assert_eq!(st.seller_credit_kwh, 200.0);
-        assert!((st.amount_yuan - 160.0).abs() < f64::EPSILON);
+        assert_eq!(st.amount_yuan, crate::types::MilliYuan(160_000), "200 × 0.8 = 160 元");
     }
 
     #[test]

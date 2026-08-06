@@ -1,0 +1,10 @@
+[package]
+name = "eneros-ipc-wire"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS IPC wire 共享层 (ARCH-S04) — 帧完整性 CRC32 + 版本发现/ABI 常量 + 长度边界原语, no_std"
+
+[dependencies]
+# Zero external dependencies — pure Rust no_std

@@ -189,8 +189,9 @@ mod tests {
     #[test]
     fn t9_ramp_constraint_count() {
         let model = EnergyScheduleModel::new(ScheduleConfig::default());
-        // 爬坡约束 = Le with 2 terms
-        assert_eq!(count_le_with_terms(&model, 2), 190);
+        // Le with 2 terms = 爬坡(190) + AI-003 充放电互斥(num_periods=96)
+        // 旧断言 190 未计入互斥约束；互斥加入后总数为 286。
+        assert_eq!(count_le_with_terms(&model, 2), 190 + 96);
     }
 
     // === T10: SOC 初始约束数 = 1 ===
@@ -323,8 +324,8 @@ mod tests {
         assert_eq!(model.soc_var_idx.len(), 4);
         let lp = model.compile().unwrap();
         assert_eq!(lp.variables.len(), 12);
-        // 约束：soc_dynamics(3) + ramp(6) + soc_init(1) + soc_final(1) = 11
-        assert_eq!(lp.constraints.num_rows, 11);
+        // 约束：soc_dynamics(3) + ramp(6) + mutex(4) + soc_init(1) + soc_final(1) = 15
+        assert_eq!(lp.constraints.num_rows, 15);
     }
 
     // === T20: 小规模模型 compile + MockSolver 端到端 ===
@@ -402,5 +403,107 @@ mod tests {
         assert_eq!(cloned.schedule[0].net_power_kw, 40.0);
         assert_eq!(cloned.schedule[0].soc_pct, 0.5);
         assert_eq!(cloned.schedule[0].revenue_yuan, 5.0);
+    }
+
+    // === AI-003: 充放电互斥约束 + 负电价 ================
+
+    /// AI-003：每个时段都存在互斥约束 `charge[t] + discharge[t] <= pcs`
+    /// （旧模型无此约束——优化器可同时充放电制造虚假收益，旧代码失败证据）。
+    #[test]
+    fn t23_mutex_constraint_present_each_period() {
+        let config = ScheduleConfig {
+            num_periods: 3,
+            ..Default::default()
+        };
+        let model = EnergyScheduleModel::new(config.clone());
+        let mut mutex_count = 0;
+        for c in &model.problem.constraints {
+            if let Constraint::Le(e, rhs) = c {
+                if e.terms.len() == 2 && *rhs == config.pcs_power_kw {
+                    // terms 为 charge_t + discharge_t
+                    mutex_count += 1;
+                }
+            }
+        }
+        assert_eq!(mutex_count, 3, "each period must have a mutex constraint");
+    }
+
+    /// AI-003：互斥约束语义——charge 与 discharge 系数各为 1，上界 pcs。
+    #[test]
+    fn t24_mutex_constraint_terms() {
+        let config = ScheduleConfig {
+            num_periods: 1,
+            pcs_power_kw: 10.0,
+            ..Default::default()
+        };
+        let model = EnergyScheduleModel::new(config);
+        let mut found = false;
+        for c in &model.problem.constraints {
+            if let Constraint::Le(e, rhs) = c {
+                if e.terms.len() == 2 && *rhs == 10.0 {
+                    found = true;
+                    for coef in e.terms.values() {
+                        assert_eq!(*coef, 1.0);
+                    }
+                }
+            }
+        }
+        assert!(found, "mutex constraint with rhs = pcs must exist");
+    }
+
+    /// AI-003：负电价时段，模型应选择充电（charge > 0）而非放电——
+    /// 目标系数 `-price·dt` 对 charge 为负收益方向。通过 compile 的
+    /// LpProblem 检查 charge 系数为正（maximize 时吸收负价）。
+    #[test]
+    fn t25_negative_price_favors_charging() {
+        let config = ScheduleConfig {
+            num_periods: 2,
+            price: alloc::vec![-0.3, 0.5],
+            ..Default::default()
+        };
+        let model = EnergyScheduleModel::new(config.clone());
+        let lp = model.compile().expect("compile");
+        // t=0 负电价：charge_0 目标系数 = -(-0.3)·dt = +0.3（正，maximize 鼓励充电）
+        // discharge_0 目标系数 = (-0.3)·dt = -0.3（负，maximize 抑制放电）
+        // t=1 正电价：charge_1 = -0.5·dt（抑制），discharge_1 = +0.5·dt（鼓励放电）
+        let charge0 = lp.objective[0];
+        let discharge0 = lp.objective[config.num_periods];
+        let charge1 = lp.objective[1];
+        let discharge1 = lp.objective[config.num_periods + 1];
+        assert!(
+            charge0 > 0.0 && discharge0 < 0.0,
+            "negative price must favor charging (c0={charge0} d0={discharge0})"
+        );
+        assert!(
+            charge1 < 0.0 && discharge1 > 0.0,
+            "positive price must favor discharging"
+        );
+    }
+
+    /// AI-003：无互斥约束时模型允许同时充放电（旧缺陷可被求解器利用）；
+    /// 加入互斥后同一时段 charge+discharge <= pcs 成立。
+    #[test]
+    fn t26_mutex_prevents_simultaneous() {
+        let config = ScheduleConfig {
+            num_periods: 2,
+            pcs_power_kw: 8.0,
+            ..Default::default()
+        };
+        let model = EnergyScheduleModel::new(config.clone());
+        let lp = model.compile().expect("compile");
+        // 检查互斥约束行：charge_t + discharge_t <= pcs（Le 行 rhs = 8.0）
+        let mut found = 0;
+        for (i, rhs_upper) in lp.rhs_upper.iter().enumerate() {
+            if *rhs_upper == 8.0 {
+                // 对应行两个系数 1.0
+                let row_start = lp.constraints.row_start[i] as usize;
+                let row_end = lp.constraints.row_start[i + 1] as usize;
+                let row_vals: alloc::vec::Vec<f64> =
+                    lp.constraints.values[row_start..row_end].to_vec();
+                assert_eq!(row_vals, alloc::vec![1.0, 1.0]);
+                found += 1;
+            }
+        }
+        assert_eq!(found, 2, "two mutex rows with rhs=pcs");
     }
 }

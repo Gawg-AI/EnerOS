@@ -8,4 +8,10 @@ description = "EnerOS Secure Boot 全链验证 (v0.160.0) — SM2 签名链 + SM
 
 [dependencies]
 eneros-crypto = { path = "../crypto" }
+# v0.212.0（P0-15）：移除无条件 simulated feature——secure-boot 使用
+# 真实 TPM 路径（new_simulated 仅 test/simulated 可用）。
 eneros-tpm = { path = "../tpm" }
+
+[dev-dependencies]
+# v0.212.0（P0-15）：模拟 TPM 仅测试用（release 不含）。
+eneros-tpm = { path = "../tpm", features = ["simulated"] }

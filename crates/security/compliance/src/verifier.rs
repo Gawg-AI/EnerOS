@@ -4,6 +4,9 @@
 
 use crate::dengbao::DengbaoChecker;
 use crate::types::{Phase3ExitReport, VerificationReport};
+
+#[cfg(test)]
+use crate::types::CheckStatus;
 use crate::xinchuang::XinchuangChecker;
 
 /// 合规验证 trait.
@@ -85,8 +88,10 @@ mod tests {
     fn test_verify_xinchuang() {
         let verifier = Phase3ExitVerification::new();
         let report = verifier.verify_xinchuang();
-        assert!(report.all_passed());
+        // v0.212.0（P0-13）：无动态证据时标 Pending，不得硬编码 Passed。
+        assert!(!report.all_passed(), "无证据不得 all_passed");
         assert_eq!(report.total, 7);
+        assert!(report.items.iter().any(|i| i.status == CheckStatus::Pending));
     }
 
     #[test]
@@ -101,24 +106,23 @@ mod tests {
     fn test_phase3_exit_check_all_passed() {
         let verifier = Phase3ExitVerification::new();
         let report = verifier.phase3_exit_check();
-        assert!(report.kernel_ok);
-        assert!(report.cpu_ok);
-        assert!(report.xinchuang_ok);
-        assert!(report.dengbao_ok);
-        assert!(report.all_passed());
+        // v0.212.0（P0-13）：无证据时信创项不全过（防静态 Passed）。
+        assert!(!report.kernel_ok, "无证据内核不得 ok");
+        assert!(!report.cpu_ok, "无证据 CPU 不得 ok");
+        assert!(!report.all_passed(), "无证据不得 all_passed");
     }
 
     #[test]
     fn test_phase3_exit_report_structure() {
         let verifier = Phase3ExitVerification::new();
         let report = verifier.phase3_exit_check();
-        // 验证所有字段均为 true
+        // v0.212.0（P0-13）：无证据时信创项 false（dengbao 保持其状态）。
         assert_eq!(
             report,
             Phase3ExitReport {
-                kernel_ok: true,
-                cpu_ok: true,
-                xinchuang_ok: true,
+                kernel_ok: false,
+                cpu_ok: false,
+                xinchuang_ok: false,
                 dengbao_ok: true,
             }
         );
@@ -129,7 +133,8 @@ mod tests {
         let verifier: &dyn ComplianceVerifier = &Phase3ExitVerification::new();
         let xc = verifier.verify_xinchuang();
         let db = verifier.verify_dengbao_level3();
-        assert!(xc.all_passed());
-        assert!(db.all_passed());
+        // v0.212.0（P0-13）：无证据信创不全过。
+        assert!(!xc.all_passed(), "无证据信创不得全过");
+        assert_eq!(db.total, 15);
     }
 }

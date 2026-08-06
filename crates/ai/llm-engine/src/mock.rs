@@ -18,6 +18,8 @@ use crate::stats::{EngineHealth, EngineStats};
 pub struct MockEngine {
     /// 模型是否已加载.
     loaded: bool,
+    /// unload 调用计数（ARC-006：验证 undeploy 真实委托）.
+    unload_count: u32,
     /// 目标计算设备.
     device: ComputeDevice,
     /// 当前模型元数据.
@@ -35,6 +37,7 @@ impl MockEngine {
     pub fn new(device: ComputeDevice) -> Self {
         Self {
             loaded: false,
+            unload_count: 0,
             device,
             model_info: None,
             stats: EngineStats::default(),
@@ -116,5 +119,19 @@ impl LlmEngine for MockEngine {
 
     fn stats(&self) -> &EngineStats {
         &self.stats
+    }
+
+    fn unload(&mut self) -> Result<(), LlmError> {
+        self.loaded = false;
+        self.unload_count += 1;
+        self.model_info = None;
+        Ok(())
+    }
+}
+
+impl MockEngine {
+    /// unload 调用次数（ARC-006 测试断言用）.
+    pub fn unload_count(&self) -> u32 {
+        self.unload_count
     }
 }

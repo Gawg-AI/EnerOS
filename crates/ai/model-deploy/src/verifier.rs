@@ -32,6 +32,8 @@ pub struct DeployVerifier<E: LlmEngine> {
     pub backend: Box<dyn DeployBackend>,
     /// 提示词集合.
     pub prompts: PowerPromptSet,
+    /// 部署状态（ARC-006：undeploy 真实化）。
+    deployed: bool,
 }
 
 impl<E: LlmEngine> DeployVerifier<E> {
@@ -42,6 +44,7 @@ impl<E: LlmEngine> DeployVerifier<E> {
             config,
             backend: Box::new(MockDeployBackend::new()),
             prompts: PowerPromptSet::default(),
+            deployed: false,
         }
     }
 
@@ -52,6 +55,7 @@ impl<E: LlmEngine> DeployVerifier<E> {
             config,
             backend,
             prompts: PowerPromptSet::default(),
+            deployed: false,
         }
     }
 
@@ -68,8 +72,11 @@ impl<E: LlmEngine> DeployVerifier<E> {
         let n_gpu_layers = device.n_gpu_layers();
         let mut report = DeployReport::new(device, n_gpu_layers);
 
-        // 1. 硬件检查
-        let _hw = self.backend.check_hardware(&self.config)?;
+        // 1. 硬件检查（meets_requirements=false → 拒绝部署，ARC-006 非恒真）
+        let hw = self.backend.check_hardware(&self.config)?;
+        if !hw.meets_requirements {
+            return Err(DeployError::HardwareInsufficient);
+        }
 
         // 2. 模型加载
         let load_ns = self.backend.load_model(&mut self.engine, &self.config)?;
@@ -101,14 +108,20 @@ impl<E: LlmEngine> DeployVerifier<E> {
 
         // 4. 结束统计
         report.finalize();
+        self.deployed = true;
         Ok(report)
     }
 
-    /// 卸载部署.
+    /// 卸载部署（ARC-006：不再空操作——委托引擎 `unload` 释放资源）.
     ///
-    /// 实际资源清理委托给 `LlmEngine` 内部逻辑（`Drop` 或显式释放）。
-    /// `DeployVerifier` 自身不实现 `Drop`（D8），调用方需显式调用本方法。
+    /// 清理委托给 `LlmEngine::unload`（各后端实现显式释放）；重复卸载
+    /// 返回 `DeployError::NotDeployed`（非幂等静默成功）。
     pub fn undeploy(&mut self) -> Result<(), DeployError> {
+        if !self.deployed {
+            return Err(DeployError::NotDeployed);
+        }
+        self.engine.unload().map_err(DeployError::from)?;
+        self.deployed = false;
         Ok(())
     }
 }

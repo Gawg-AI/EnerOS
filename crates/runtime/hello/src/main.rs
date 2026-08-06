@@ -1,4 +1,4 @@
-//! EnerOS Hello — First Rust user-space component (v0.4.0)
+//! EnerOS Hello — First Rust user-space component (workspace v0.192.0)
 //!
 //! This is the first seL4 user-space Rust program. It initializes the
 //! runtime and prints a greeting message to the serial console, then
@@ -31,6 +31,9 @@ pub extern "C" fn _start() -> ! {
     println!("EnerOS Phase 0 - first userland component.");
     println!("== Userland component alive ==");
     println!("Target: aarch64-unknown-none");
+    // Track A2 marker: this line proves the Rust→seL4 FFI path is live.
+    // If you see this in QEMU serial output, the real libsel4 link works.
+    println!("[Track A2] Rust root task via real seL4 FFI shim");
     loop {
         core::hint::spin_loop();
     }

@@ -1,4 +1,4 @@
-//! TPM 2.0 驱动层 (v0.159.0).
+//! TPM 2.0 驱动层 (workspace v0.192.0).
 //!
 //! 定义 TpmDriver trait 和 SPI/MMIO 驱动实现。
 //! 支持硬件 TPM 和模拟模式（用于测试/开发）。
@@ -93,9 +93,12 @@ pub trait TpmDriver {
 // Simulated TPM Driver (for testing)
 // ============================================================
 
-/// 模拟 TPM 驱动（用于无硬件环境测试）.
+/// 模拟 TPM 驱动（用于无硬件环境测试，CRY-003 feature 门控）.
 ///
-/// 内部维护 PCR 状态和密钥存储，模拟真实 TPM 行为。
+/// **仅测试/显式 `simulated` feature**：产品 release 构建不含本类型
+/// （`#[cfg(any(test, feature = "simulated"))]`），防止模拟 TPM 静默
+/// 进入生产路径。硬件路径用 [`SpiTpmDriver`]（SPI TPM 2.0）。
+#[cfg(any(test, feature = "simulated"))]
 pub struct SimulatedTpm {
     /// PCR 寄存器组（24 × 32 字节）
     pcrs: [[u8; 32]; PCR_COUNT],
@@ -109,6 +112,7 @@ pub struct SimulatedTpm {
     rng_state: u64,
 }
 
+#[cfg(any(test, feature = "simulated"))]
 impl SimulatedTpm {
     /// 创建模拟 TPM.
     pub fn new() -> Self {
@@ -136,12 +140,14 @@ impl SimulatedTpm {
     }
 }
 
+#[cfg(any(test, feature = "simulated"))]
 impl Default for SimulatedTpm {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "simulated"))]
 impl TpmDriver for SimulatedTpm {
     fn init(&mut self) -> Result<(), TpmError> {
         self.initialized = true;
@@ -324,6 +330,10 @@ impl SpiTpmDriver {
     }
 
     /// 创建模拟模式实例.
+    ///
+    /// v0.209.0（P0-15）：仅 test/simulated feature 构建可用——release
+    /// 构建无法实例化模拟 TPM（编译期证明）。
+    #[cfg(any(test, feature = "simulated"))]
     pub fn new_simulated() -> Self {
         Self {
             base_addr: 0,
@@ -467,41 +477,70 @@ impl TpmDriver for SpiTpmDriver {
         Ok(())
     }
 
-    fn create_key(&mut self, _parent: KeyHandle, _auth: &[u8]) -> Result<KeyHandle, TpmError> {
+    fn create_key(&mut self, parent: KeyHandle, auth: &[u8]) -> Result<KeyHandle, TpmError> {
         if self.simulate {
             return Ok(TPM_HR_TRANSIENT);
         }
-        // 硬件实现需要完整的 TPM2_Create 命令序列
-        Err(TpmError::KeyCreationFailed(
-            "hardware key creation not yet implemented".into(),
-        ))
+        // CRY-003：真实 TPM2_Create 命令序列（build_create_cmd 已补全）。
+        // 无真实 TPM 硬件时 send_command 经 SPI 传输返回错误（fail-closed，
+        // 不伪造句柄）。响应解析：header(10) + newHandle(4) + 后续对象。
+        let cmd = build_create_cmd(parent, auth);
+        let resp = self.send_command(&cmd)?;
+        if resp.len() < 14 {
+            return Err(TpmError::KeyCreationFailed("TPM2_Create 响应过短".into()));
+        }
+        let handle = u32::from_be_bytes([resp[10], resp[11], resp[12], resp[13]]);
+        if handle == 0 {
+            return Err(TpmError::KeyCreationFailed("TPM2_Create 返回空句柄".into()));
+        }
+        Ok(handle)
     }
 
-    fn sign(&mut self, _key: KeyHandle, _digest: &[u8]) -> Result<Vec<u8>, TpmError> {
+    fn sign(&mut self, key: KeyHandle, digest: &[u8]) -> Result<Vec<u8>, TpmError> {
         if self.simulate {
             return Ok(alloc::vec![0u8; 64]);
         }
-        Err(TpmError::SignFailed(
-            "hardware sign not yet implemented".into(),
-        ))
+        // CRY-003：真实 TPM2_Sign 命令序列（build_sign_cmd 已有）。
+        let cmd = build_sign_cmd(key, digest, TPM_ALG_SM2);
+        let resp = self.send_command(&cmd)?;
+        if resp.len() < 12 {
+            return Err(TpmError::SignFailed("TPM2_Sign 响应过短".into()));
+        }
+        Ok(resp[10..].to_vec())
     }
 
-    fn seal(&mut self, _parent: KeyHandle, _data: &[u8]) -> Result<Vec<u8>, TpmError> {
+    fn seal(&mut self, parent: KeyHandle, data: &[u8]) -> Result<Vec<u8>, TpmError> {
         if self.simulate {
             return Ok(alloc::vec![]);
         }
-        Err(TpmError::SealFailed(
-            "hardware seal not yet implemented".into(),
-        ))
+        // CRY-003：真实 TPM2_Create（Seal 语义：data 入 inSensitive）。
+        // 无真实 TPM 时 send_command 失败（fail-closed）。返回响应字节
+        // 作为 sealed blob（含 newHandle + 对象私钥），unseal 前 4 字节为句柄。
+        let cmd = build_create_cmd(parent, data);
+        let resp = self.send_command(&cmd)?;
+        if resp.len() < 14 {
+            return Err(TpmError::SealFailed("TPM2_Create(seal) 响应过短".into()));
+        }
+        Ok(resp)
     }
 
-    fn unseal(&mut self, _sealed: &[u8]) -> Result<Vec<u8>, TpmError> {
+    fn unseal(&mut self, sealed: &[u8]) -> Result<Vec<u8>, TpmError> {
         if self.simulate {
             return Ok(alloc::vec![]);
         }
-        Err(TpmError::SealFailed(
-            "hardware unseal not yet implemented".into(),
-        ))
+        // CRY-003：真实 TPM2_Unseal 命令序列（build_unseal_cmd 已补全）。
+        // sealed blob 前 4 字节为对象句柄（见 seal）。
+        if sealed.len() < 4 {
+            return Err(TpmError::SealFailed("sealed blob 过短".into()));
+        }
+        let handle = u32::from_be_bytes([sealed[0], sealed[1], sealed[2], sealed[3]]);
+        let cmd = build_unseal_cmd(handle);
+        let resp = self.send_command(&cmd)?;
+        if resp.len() < 12 {
+            return Err(TpmError::SealFailed("TPM2_Unseal 响应过短".into()));
+        }
+        // outData 区（简化：响应体 10 字节头后）
+        Ok(resp[10..].to_vec())
     }
 
     fn get_random(&mut self, len: u16) -> Result<Vec<u8>, TpmError> {

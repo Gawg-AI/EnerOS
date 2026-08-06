@@ -1,4 +1,4 @@
-//! EnerOS Agent 信誉体系 (v0.168.0) — P3-K Agent 信任与认证.
+//! EnerOS Agent 信誉体系 (workspace v0.192.0) — P3-K Agent 信任与认证.
 //!
 //! 基于行为历史动态计算 Trust Score，支持信誉分级与自动降级。
 //! 高信任 Agent 获得更多资源，低信任 Agent 被限制/封禁。

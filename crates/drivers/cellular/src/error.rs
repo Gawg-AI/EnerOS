@@ -1,6 +1,6 @@
 //! Error types for the cellular subsystem.
 
-/// Errors from cellular modem operations (v0.30.1).
+/// Errors from cellular modem operations (workspace v0.192.0).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CellularError {
     /// No SIM card detected.
@@ -15,7 +15,7 @@ pub enum CellularError {
     PppNegotiationFailed,
 }
 
-/// Errors from failover management (v0.30.2).
+/// Errors from failover management (workspace v0.192.0).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FailoverError {
     /// No backup link available.

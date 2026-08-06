@@ -142,6 +142,31 @@ impl SoftTpm {
         }
     }
 
+    /// 从设备身份种子确定性派生 AK（CRY-004：EK 派生，跨重启锚定设备身份）.
+    ///
+    /// AK 私钥不落盘——由 `seed`（TPM EK 派生材料 / 平台持久种子）经
+    /// `SM3(seed ‖ "AK/v1")` 确定性派生，重建 `SoftTpm` 实例（模拟重启）
+    /// 后 `attestation_pubkey()` 不变，验证方预置的 AK 公钥跨重启有效。
+    /// 真实 TPM 的 EK 读取（TPM2_ReadPublic EK）BLOCKED（缺硬件）；软件
+    /// 环境 seed 由集成层持久存储提供。
+    pub fn from_identity_seed(seed: &[u8; 32]) -> Result<Self, TpmError> {
+        use eneros_crypto::sm3::hash as sm3_hash;
+        // 域分离派生材料：SM3(seed ‖ label) → 32 字节私钥种子
+        let mut material = [0u8; 32 + 6];
+        material[..32].copy_from_slice(seed);
+        material[32..].copy_from_slice(b"AK/v1\0");
+        let sk_bytes = sm3_hash(&material);
+        let sk = eneros_crypto::Sm2PrivateKey::from_bytes(&sk_bytes)
+            .map_err(|_| TpmError::QuoteFailed)?;
+        let kp = eneros_crypto::Sm2KeyPair::from_private_key(&sk)
+            .map_err(|_| TpmError::QuoteFailed)?;
+        Ok(Self {
+            bank: PcrBank::default(),
+            ak: kp,
+            fail_remaining: Cell::new(0),
+        })
+    }
+
     /// 注入后续 `count` 次 TPM 故障（所有操作方法逐次消费，蓝图 §6.5）.
     pub fn inject_failure(&mut self, count: u32) {
         self.fail_remaining.set(count);
@@ -225,6 +250,42 @@ mod tests {
     use super::*;
 
     /// 构造 SoftTpm + CsRng 测试对.
+    #[test]
+    fn test_cry004_ak_stable_across_restart() {
+        // 同身份种子 → 跨"重启"（重建实例）AK 公钥不变
+        let seed = [0x42u8; 32];
+        let tpm1 = SoftTpm::from_identity_seed(&seed).expect("seed derive");
+        let tpm2 = SoftTpm::from_identity_seed(&seed).expect("seed derive");
+        assert_eq!(
+            tpm1.attestation_pubkey(),
+            tpm2.attestation_pubkey(),
+            "同 seed 的 AK 公钥跨重启稳定（锚定设备身份）"
+        );
+        // 签名一致性：同 seed 派生的 AK 对同一数据签名，验签均通过
+        use eneros_crypto::{sm2_sign, sm2_verify, CsRng};
+        let digest = [0x11u8; 32];
+        let mut rng1 = CsRng::new();
+        let sig1 = sm2_sign(&digest, &tpm1.ak.private_key, &tpm1.ak.public_key, &mut rng1).unwrap();
+        let mut rng2 = CsRng::new();
+        let sig2 = sm2_sign(&digest, &tpm2.ak.private_key, &tpm2.ak.public_key, &mut rng2).unwrap();
+        assert!(sm2_verify(&digest, &sig1, &tpm2.attestation_pubkey()).unwrap());
+        assert!(sm2_verify(&digest, &sig2, &tpm1.attestation_pubkey()).unwrap());
+    }
+
+    #[test]
+    fn test_cry004_ak_differs_across_devices() {
+        // 不同身份种子 → 不同 AK（设备身份隔离）
+        let seed_a = [0x01u8; 32];
+        let seed_b = [0x02u8; 32];
+        let tpm_a = SoftTpm::from_identity_seed(&seed_a).expect("a");
+        let tpm_b = SoftTpm::from_identity_seed(&seed_b).expect("b");
+        assert_ne!(
+            tpm_a.attestation_pubkey(),
+            tpm_b.attestation_pubkey(),
+            "不同设备种子必须派生不同 AK"
+        );
+    }
+
     fn make_tpm() -> (SoftTpm, CsRng) {
         let mut rng = CsRng::new();
         let tpm = SoftTpm::new(&mut rng);

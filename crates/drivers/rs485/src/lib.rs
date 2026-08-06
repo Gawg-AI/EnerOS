@@ -32,6 +32,7 @@ extern crate alloc;
 
 pub mod config;
 pub mod driver;
+pub mod pl011_uart_hw;
 pub mod ring;
 pub mod uart_hw;
 
@@ -40,6 +41,7 @@ pub mod mock;
 
 pub use config::{GpioPin, Parity, Rs485Config, StopBits, UartPort};
 pub use driver::{Rs485Driver, Rs485Stats};
+pub use pl011_uart_hw::Pl011UartHw;
 pub use ring::RingBuffer;
 pub use uart_hw::UartHw;
 

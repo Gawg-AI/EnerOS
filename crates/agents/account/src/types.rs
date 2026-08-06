@@ -2,6 +2,8 @@
 
 use alloc::string::String;
 
+pub use eneros_market_types::MilliYuan;
+
 /// 资金流向
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowDir {
@@ -20,8 +22,8 @@ pub struct EnergyAccount {
     pub owner: u64,
     /// 电量余额 (kWh)
     pub balance_kwh: f64,
-    /// 资金余额 (元)
-    pub balance_yuan: f64,
+    /// 资金余额（毫元定点，ARC-003）
+    pub balance_yuan: MilliYuan,
     /// 创建时间戳
     pub created_at: u64,
     /// 是否冻结
@@ -39,8 +41,8 @@ pub struct LedgerEntry {
     pub direction: FlowDir,
     /// 电量 (kWh)
     pub amount_kwh: f64,
-    /// 金额 (元)
-    pub amount_yuan: f64,
+    /// 金额（毫元定点，ARC-003）
+    pub amount_yuan: MilliYuan,
     /// 关联交易 ID
     pub ref_deal: Option<u64>,
     /// 时间戳
@@ -52,12 +54,12 @@ pub struct LedgerEntry {
 /// 冻结记录
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrozenAmount {
+    /// 冻结金额（毫元定点，ARC-003）
+    pub amount: MilliYuan,
     /// 冻结唯一标识
     pub freeze_id: u64,
     /// 所属账户 ID
     pub account: u64,
-    /// 冻结金额 (元)
-    pub amount_yuan: f64,
     /// 冻结时间戳
     pub at: u64,
     /// 是否已释放
@@ -81,14 +83,14 @@ mod tests {
             account_id: 1,
             owner: 100,
             balance_kwh: 0.0,
-            balance_yuan: 0.0,
+            balance_yuan: MilliYuan::ZERO,
             created_at: 1000,
             frozen: false,
         };
         assert_eq!(acct.account_id, 1);
         assert_eq!(acct.owner, 100);
         assert_eq!(acct.balance_kwh, 0.0);
-        assert_eq!(acct.balance_yuan, 0.0);
+        assert_eq!(acct.balance_yuan, MilliYuan::ZERO);
         assert!(!acct.frozen);
     }
 
@@ -99,7 +101,7 @@ mod tests {
             account: 1,
             direction: FlowDir::Credit,
             amount_kwh: 50.0,
-            amount_yuan: 25.0,
+            amount_yuan: MilliYuan(25_000),
             ref_deal: Some(42),
             at: 2000,
             memo: String::from("sell energy"),
@@ -114,11 +116,11 @@ mod tests {
         let frozen = FrozenAmount {
             freeze_id: 1,
             account: 1,
-            amount_yuan: 100.0,
+            amount: MilliYuan(100_000),
             at: 3000,
             released: false,
         };
-        assert_eq!(frozen.amount_yuan, 100.0);
+        assert_eq!(frozen.amount, MilliYuan(100_000));
         assert!(!frozen.released);
     }
 }

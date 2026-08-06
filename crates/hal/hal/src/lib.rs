@@ -9,6 +9,29 @@
 pub mod types;
 pub use types::*;
 
+/// HAL 纯数学/边界逻辑（无硬件依赖，host 可测；HAL-001/002）。
+pub(crate) mod timer_math;
+
+/// GPIO 位操作纯逻辑（无硬件依赖，host 可测；HAL-003）。
+pub(crate) mod bit_logic;
+
+/// HAL-005：有界忙等——轮询 `cond` 直到为 true 或超过 `max_iters`。
+///
+/// 旧代码为无限 `while` + `spin_loop()` 忙等（外设挂死即永久阻塞）。
+/// 返回 `Err(HalError::Timeout)` 供调用方上报。
+#[allow(dead_code)]
+pub(crate) fn wait_until<F: FnMut() -> bool>(mut cond: F, max_iters: u32) -> Result<(), HalError> {
+    for _ in 0..max_iters {
+        if cond() {
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+    Err(HalError::Timeout)
+}
+
+
+
 #[cfg(target_arch = "aarch64")]
 pub mod arm64;
 
@@ -127,16 +150,16 @@ pub trait HalGpio {
 pub trait HalProvider {
     /// Returns the CPU HAL implementation.
     fn cpu(&self) -> &'static dyn HalCpu;
-    /// Returns the memory HAL implementation.
-    fn mem(&self) -> &'static dyn HalMem;
     /// Returns the interrupt controller HAL implementation.
     fn irq(&self) -> &'static dyn HalIrq;
     /// Returns the clock HAL implementation.
     fn clock(&self) -> &'static dyn HalClock;
     /// Returns the serial HAL implementation.
     fn serial(&self) -> &'static dyn HalSerial;
-    /// Returns the GPIO HAL implementation.
-    fn gpio(&self) -> &'static dyn HalGpio;
+    // HAL-004/HAL-006：`mem()` 与 `gpio()` 已从 trait 移除——
+    // QEMU virt 平台没有内存映射 HAL 与 GPIO 控制器（虚构 MMIO 地址
+    // 0x0901_0000/0x0902_0000 分别是 PL031 RTC 与 fw-cfg，非网卡/GPIO）；
+    // 原 `mem()` 占位 `panic!` 已删除。BSP 有真实设备时再扩展 trait。
 }
 
 /// Global HAL reference (injected by BSP during early boot).
@@ -170,3 +193,36 @@ pub fn hal() -> &'static dyn HalProvider {
 
 #[cfg(feature = "mock")]
 pub mod mock;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_until_immediately_true() {
+        assert_eq!(wait_until(|| true, 10), Ok(()));
+    }
+
+    #[test]
+    fn wait_until_true_after_n_iters() {
+        let mut n = 0;
+        let r = wait_until(|| {
+            n += 1;
+            n >= 3
+        }, 10);
+        assert_eq!(r, Ok(()));
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn wait_until_timeout() {
+        // 永不满足的条件 → Timeout（HAL-005：旧代码无限忙等，新代码有界）
+        let mut n = 0;
+        let r = wait_until(|| {
+            n += 1;
+            false
+        }, 5);
+        assert_eq!(r, Err(HalError::Timeout));
+        assert_eq!(n, 5);
+    }
+}

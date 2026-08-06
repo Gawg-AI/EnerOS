@@ -1,0 +1,81 @@
+# ============================================================
+# EnerOS v0.124.0 Agent 热更新 — 请求排空 + Arc 原子热切换 + 验证回滚配置
+# ============================================================
+# Crate: eneros-agent-hot-update (crates/agents/hot-update/src/{lib,agent_hot,hot_swap}.rs)
+# 版本: v0.124.0 Agent 热更新（Phase 2 P2-K OTA 与 Recovery 第 2 版）：
+#       热加载/热替换/热卸载——请求排空（drain）+ ArcHotSwap 原子切换 +
+#       SM3 模块哈希校验 + 健康探针 + 失败回滚
+# 蓝图: phase2.md §v0.124.0
+# 日期: 2026-07-22
+#
+# Agent 热更新文义（一句话）：
+#   在不停止系统运行的情况下实现 Agent 模块的热加载、热替换、热卸载，支持新旧
+#   版本平滑过渡（请求排空 + 原子切换 + 健康验证 + 失败回滚），满足电力控制
+#   7×24 不间断运行下的「无感升级」，为 v0.126.0 VPP 出口提供在线升级能力
+#   （蓝图 §1）。
+
+[hot_update]
+# 【注释点 1 · 并发管理容量（heapless 定容口径）】AgentHotUpdaterImpl 内部
+# contexts / active_counts / slots / module_images 四张表均为
+# heapless::Vec<_, 16> 定容（栈/静态段，无堆增长），最多并发管理 16 个 Agent
+# 的热更新；第 17 个 register_agent 静默忽略（heapless push .ok() 口径）。
+# 本项与代码常量 16 对齐，仅作集成层容量核对参考，运行时不可改。
+max_concurrent_agents = 16
+
+# 【注释点 2 · 排空超时（蓝图 §4.1 drain_timeout_ms 默认 30s）】prepare 建
+# 上下文时 drain_timeout_ms 默认 30_000ms；drain(agent_id, timeout_ms, now_ms)
+# 每次调用以参数覆盖（D2 单步评估语义：活跃=0 → Ok 可 swap；
+# now_ms - start_ms > timeout_ms → Err(DrainTimeout{active})；否则保持
+# Draining 由调用方重试，重试节奏/退避由集成层调度器自持）。取值应大于
+# 业务最长单请求耗时，避免长请求被误判超时（蓝图 §5.4 难点）；超时非永久
+# 失败——长请求完成后再次 drain 即可恢复推进（INT4 覆盖）。
+drain_timeout_ms = 30000
+
+# 【注释点 3 · 活跃请求追踪（spec D7）】路由层在请求进出时必须调用
+# request_started(agent_id) / request_finished(agent_id)（AtomicU32 Relaxed
+# 计数）；drain/swap 依据该计数判定排空——漏调 request_finished 将导致计数
+# 永不归零、drain 必然超时（蓝图 §8.5 坑点：全局状态未迁移导致行为异常的
+# 同类问题）；未注册 Agent 的计数调用静默忽略。
+
+[verify]
+# 【注释点 4 · SM3 模块哈希强制校验（蓝图 §7.3 安全验收，spec D4）】prepare
+# 登记新模块字节入 module_images；verify 时对登记字节计算 sm3_hash 并与
+# new_version.module_hash 经 ct_eq 常时比较——不匹配即 Err(VerificationFailed)
+# 且状态置 Failed（应 rollback）。SM3 复用 eneros-crypto（workspace 内 path
+# 依赖 ../../security/crypto，v0.31.0~v0.33.0 落地，信创全程国密）；禁止
+# 自研哈希（记忆 §5.5/禁忌 14 禁止重复造轮子）。module_hash 为 32 字节
+# SM3 摘要，由发布侧（OTA 打包管线，v0.123.0）随版本清单一并下发。
+require_module_hash_check = true
+
+# 【注释点 5 · 健康探针注册（spec D4）】verify 除 SM3 校验外还执行健康探针：
+# AgentHotUpdaterImpl::with_probe(fn(u32) -> bool) 注册，probe(agent_id)
+# 返回 false 视为新版本不健康 → Err(VerificationFailed) + Failed（应
+# rollback 切回旧版本，INT3 覆盖）；默认 new() 无探针视为恒 true（仅 SM3
+# 单门）。探针函数由集成层实现（如向新版本发测试请求、检查心跳/自诊断
+# 寄存器），须为纯同步 fn 指针（no_std 无闭包环境捕获）。
+require_health_probe = false
+
+[abi]
+# 【注释点 6 · ABI 版本兼容规则（蓝图 §7.4 文档验收：ABI 兼容性规范，spec
+# D6）】AgentVersion.abi_version 标识 Agent 与框架之间的二进制接口版本；
+# 热更新要求新版本 abi_version 与 register_agent 登记的当前版本**完全一致**
+# ——prepare 时真实比对，不一致即 Err(AbiIncompatible{expect, got}) 拒绝
+# （HOT5/INT 覆盖；D6 修复蓝图以合成 old_version 比对导致检查永不触发的
+# 缺陷）。接口（AgentHotUpdater trait / 消息结构体布局 / entry_point 符号
+# 语义）变更属于破坏性升级：必须先整体升级框架并 bump abi_version，经
+# v0.123.0 A/B 分区整包升级通道发布，禁止走本热更新通道混部新旧 ABI。
+# 语义版本约定：abi_version 仅在接口不兼容变更时 +1；新增可选能力不改变
+# 既有布局时不 bump（由 version 字段区分）。
+abi_version_check = "exact_match"
+
+# 【注释点 7 · 内存预算声明（记忆 §5.6，蓝图 §43.6）】热更新峰值内存 =
+# 单 Agent 模块 2× 大小（swap 瞬间新旧版本双实例并存，旧实例待全部在途
+# Arc 释放后引用计数归零卸载，蓝图 §8.3 资源风险）+ module_images 单份
+# 新模块字节（verify 后由集成层决定是否清理）。Agent Runtime 分区归入
+# ≤ 64MB 预算（管理信息大区）；总用量 > 90% 触发 OOM handler 冻结非关键
+# Agent。Vec 分配走 v0.11.0 用户堆 alloc。
+
+# 【注释点 8 · GPU 不适用（记忆 §4.2）】热更新路径为状态机流转 + 引用计数
+# 原子交换 + SM3 哈希 workload：无矩阵运算、无大规模张量，GPU 加速无意义；
+# GPU 优先规则仅适用模型训练/校准与数字孪生仿真——本 crate 零 GPU 代码，
+# 纯 CPU 处理。

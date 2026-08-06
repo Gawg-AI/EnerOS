@@ -2,7 +2,9 @@
 
 use alloc::vec::Vec;
 
-use crate::types::{ClearStatus, ClearingJob, ClearingResult};
+use crate::types::{ClearStatus, ClearingJob, ClearingResult, MilliYuan};
+#[cfg(test)]
+use crate::types::YuanPerKwh;
 use crate::SettlementError;
 
 /// 清算引擎。
@@ -39,18 +41,20 @@ impl ClearingEngine {
             return Err(SettlementError::InvalidJob);
         }
 
-        let amount_yuan = job.delivered_kwh * job.contract_price;
+        // ARC-003：金额定点化——电量 × 电价（f64 精确积）round-half-up 定毫；
+        // 考核费 = 金额 × 费率（毫元定点乘）。金额路径无 f64 残留。
+        let amount_yuan = MilliYuan::from_yuan_f64(job.delivered_kwh * job.contract_price.0);
         let deviation = (job.delivered_kwh - job.contract_kwh).abs() / job.contract_kwh;
 
         let (status, penalty) = if deviation > 0.05 {
-            let penalty = amount_yuan * self.penalty_rate;
+            let penalty = amount_yuan.mul_f64(self.penalty_rate);
             if job.delivered_kwh < job.contract_kwh {
                 (ClearStatus::ShortDelivered, penalty)
             } else {
                 (ClearStatus::OverDelivered, penalty)
             }
         } else {
-            (ClearStatus::Cleared, 0.0)
+            (ClearStatus::Cleared, MilliYuan::ZERO)
         };
 
         let result = ClearingResult {
@@ -76,7 +80,7 @@ mod tests {
             deal_id: 1,
             delivered_kwh: delivered,
             contract_kwh: contract,
-            contract_price: price,
+            contract_price: YuanPerKwh(price),
             at: 1000,
         }
     }
@@ -88,8 +92,8 @@ mod tests {
         let result = engine.clear(&job).unwrap();
 
         assert_eq!(result.status, ClearStatus::Cleared);
-        assert_eq!(result.amount_yuan, 50.0);
-        assert_eq!(result.deviation_penalty, 0.0);
+        assert_eq!(result.amount_yuan, MilliYuan(50_000), "100 kWh × 0.5 元 = 50 元 = 50000 毫元");
+        assert_eq!(result.deviation_penalty, MilliYuan::ZERO);
         assert_eq!(result.seller_credit, 100.0);
         assert_eq!(result.buyer_debit, 100.0);
     }
@@ -102,9 +106,8 @@ mod tests {
         let result = engine.clear(&job).unwrap();
 
         assert_eq!(result.status, ClearStatus::ShortDelivered);
-        assert_eq!(result.amount_yuan, 40.0);
-        // penalty = 40 * 0.05 = 2.0
-        assert!((result.deviation_penalty - 2.0).abs() < 1e-9);
+        assert_eq!(result.amount_yuan, MilliYuan(40_000));
+        assert_eq!(result.deviation_penalty, MilliYuan(2_000), "penalty = 40 元 × 5% = 2 元");
     }
 
     #[test]
@@ -115,9 +118,8 @@ mod tests {
         let result = engine.clear(&job).unwrap();
 
         assert_eq!(result.status, ClearStatus::OverDelivered);
-        assert_eq!(result.amount_yuan, 60.0);
-        // penalty = 60 * 0.05 = 3.0
-        assert!((result.deviation_penalty - 3.0).abs() < 1e-9);
+        assert_eq!(result.amount_yuan, MilliYuan(60_000));
+        assert_eq!(result.deviation_penalty, MilliYuan(3_000), "penalty = 60 元 × 5% = 3 元");
     }
 
     #[test]
@@ -138,7 +140,7 @@ mod tests {
         let result = engine.clear(&job).unwrap();
 
         assert_eq!(result.status, ClearStatus::Cleared);
-        assert_eq!(result.deviation_penalty, 0.0);
+        assert_eq!(result.deviation_penalty, MilliYuan::ZERO);
     }
 
     #[test]

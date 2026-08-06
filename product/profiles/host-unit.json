@@ -1,0 +1,28 @@
+{
+  "schema": "eneros.product-profile.v1",
+  "id": "host-unit",
+  "class": "test",
+  "platform": "host",
+  "target": "host",
+  "image_layout": null,
+  "artifacts": ["test-binaries"],
+  "binaries": [
+    {
+      "selector": "eneros-ci::eneros-ci",
+      "role": "host-gate",
+      "default_features": true,
+      "features": []
+    }
+  ],
+  "signing": {
+    "required": false,
+    "key_source": "none",
+    "allow_test_keys": false
+  },
+  "security": {
+    "allow_mock": true,
+    "allow_unsigned": true,
+    "minimum_security_version": 0,
+    "entropy_sources": ["host-os"]
+  }
+}

@@ -1,4 +1,4 @@
-//! Socket abstraction layer (v0.29.0).
+//! Socket abstraction layer (workspace v0.192.0).
 //!
 //! Unified Socket API built on top of the v0.28.0 TCP/IP stack. Provides a
 //! [`SocketManager`] that centrally owns the [`NetworkInterface`] and all
@@ -22,7 +22,7 @@
 //! └─────────────┬────────────────────────────────────────────┘
 //!               │  SocketHandle -> smoltcp tcp/udp Socket
 //! ┌─────────────▼────────────────────────────────────────────┐
-//! │  tcpip::NetworkInterface<D> + SocketSet  (v0.28.0)        │
+//! │  tcpip::NetworkInterface<D> + SocketSet  (workspace v0.192.0)        │
 //! └─────────────┬────────────────────────────────────────────┘
 //!               │  NetDevice trait
 //! ┌─────────────▼────────────────────────────────────────────┐
@@ -32,7 +32,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_net::{SocketManager, InterfaceConfig, ipv4_addr, ipv4_cidr};
 //!
 //! let dev = MyNetDevice::new();

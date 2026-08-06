@@ -3,10 +3,27 @@
 # 注意：不设置默认 target，允许 host-side 工具（如 ci crate）在主机上编译。
 # 交叉编译时通过 --target aarch64-unknown-none -Z build-std=core,alloc 显式指定。
 
-[target.aarch64-unknown-none]
-linker = "aarch64-linux-gnu-gcc"
-ar = "aarch64-linux-gnu-ar"
+[env]
+# 本机无独立 clang 二进制：bindgen（littlefs2-sys 等）经 libclang 解析，
+# 需显式给出 libclang 与系统 C 头文件路径。
+LIBCLANG_PATH = "/usr/lib/llvm-21/lib"
+BINDGEN_EXTRA_CLANG_ARGS = "-I/usr/lib/gcc/x86_64-linux-gnu/15/include -I/usr/include"
 
-# 使用 rust-lld 作为链接器（备选，如果 gcc 链接有问题可切换）
-# linker = "rust-lld"
-# rustflags = ["-C", "link-arg=-Tlinker-aarch64.ld"]
+[alias]
+xtask = "run --package eneros-xtask --"
+
+[target.aarch64-unknown-none]
+# v0.128.0 偏差 D3：Windows host 无交叉 gcc；rust-lld 随 Rust 工具链分发，
+# 零外部依赖即可链接裸机 ELF。链接脚本由 eneros-microkernel/build.rs
+# 经 cargo:rustc-link-arg 注入，此处无需再配 rustflags。
+# 若在装有交叉 gcc 的 Linux/WSL 环境，可切回：
+# linker = "aarch64-linux-gnu-gcc"
+# ar = "aarch64-linux-gnu-ar"
+linker = "rust-lld"
+
+[target.aarch64-unknown-uefi]
+# lld-link otherwise leaves a target-directory-dependent CodeView/PDB GUID in
+# the unsigned PE image.  G1 compares unsigned payloads before release signing,
+# so make the PE timestamp content-derived and suppress the non-runtime debug
+# directory entirely.
+rustflags = ["-C", "link-arg=/Brepro", "-C", "link-arg=/debug:none"]

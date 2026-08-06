@@ -1,0 +1,11 @@
+[package]
+name = "eneros-support-bundle"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 加密支持包与 redaction 验证 (OBS-008), no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }
+eneros-crypto = { path = "../../security/crypto", default-features = false }

@@ -1,4 +1,4 @@
-//! EnerOS Configuration Management Crate (v0.26.0)
+//! EnerOS Configuration Management Crate (workspace v0.192.0)
 //!
 //! Provides TOML/JSON configuration loading/saving, hot reload notification,
 //! version management with rollback, and default value mechanism.
@@ -23,13 +23,13 @@
 //! └─────────────┬────────────────────────────────┘
 //!               │  FileSystem trait (eneros-fs)
 //! ┌─────────────▼────────────────────────────────┐
-//! │  eneros-fs::Lfs (v0.24.0)                     │
+//! │  eneros-fs::Lfs (workspace v0.192.0)                     │
 //! └──────────────────────────────────────────────┘
 //! ```
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_config::{ConfigManager, ConfigValue};
 //! use eneros_fs::Lfs;
 //!
@@ -73,18 +73,23 @@
 
 extern crate alloc;
 
+pub mod audit;
 pub mod error;
 pub mod loader;
 pub mod manager;
 pub mod schema;
+pub mod store;
+pub mod transaction;
 pub mod version;
 pub mod watcher;
 
 // Re-export key types at crate root.
+pub use audit::{AuditEntry, AuditLog, AuditOp};
 pub use error::ConfigError;
 pub use loader::{ConfigFormat, ConfigLoader, JsonLoader, TomlLoader};
 pub use manager::ConfigManager;
 pub use schema::{ConfigField, ConfigSchema, ConfigType, ConfigValue};
+pub use transaction::{CasOutcome, CommitOutcome, Transaction};
 pub use version::{ConfigVersion, VersionHistory};
 pub use watcher::{ConfigWatcher, WatcherRegistry};
 

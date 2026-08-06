@@ -1,0 +1,126 @@
+# ============================================================
+# EnerOS v0.126.0 VPP 场景端到端验证配置
+# ============================================================
+# Crate: eneros-vpp-scenario (crates/agents/vpp-scenario/)
+# 版本: v0.126.0 ★ VPP 场景端到端验证（Phase 2 收官版本）
+# 蓝图: phase2.md §v0.126.0（出口判定 §7.5）
+#
+# 用途（一句话）：
+#   定义 VPP 端到端验证场景的集群节点清单、DR 事件参数与出口判定
+#   阈值，与 tests/vpp_e2e.rs（E1~E22 + PERF23）口径一致；第 1~3 项
+#   出口标准由场景实算，第 4~10 项由真实子系统采集证据注册。
+#
+# ---------------------------------------------------------------
+# 1. 集群组建（蓝图 §4.2 / §4.5）
+# ---------------------------------------------------------------
+#   8 节点出口报告口径：node 1~7 为 EdgeBox（各 50kW、soc=0.8、在线），
+#   node 8 为 Coordinator（容量 0kW 不参与调度，仅承担选举与调度分发）。
+#   聚合 total=350kW、available=350kW（soc>0.1 全部纳入）。
+#   Coordinator 选举：取节点集中首个 online 的 Coordinator 角色节点；
+#   无 Coordinator → CoordinatorElectionFailed。
+#
+# ---------------------------------------------------------------
+# 2. DR 事件全流程（蓝图 §4.3 sequenceDiagram）
+# ---------------------------------------------------------------
+#   DR 平台下发 target_kw=-300（降载 300kW）→ Coordinator 容量校验
+#   （available < |target| → InsufficientCapacity，蓝图 §4.3 矛盾场景
+#   的正确语义 D7）→ 按比例生成调度计划（share = target × 节点容量 /
+#   总容量）→ 各 EdgeBox 确认 → 结算 reward。
+#   响应延迟模型（D1 构造注入）：response = coord_processing_ms +
+#   2 × link_latency_ms = 2000 + 2×8000 = 18000ms < 30000ms 达标。
+#
+# ---------------------------------------------------------------
+# 3. 出口判定阈值（蓝图 §7.5，第 1~3 项场景实算）
+# ---------------------------------------------------------------
+#   第 1 项：online_nodes >= min_nodes（5 台最小集群）
+#   第 2 项：total_capacity_kw >= min_capacity_kw（100kW）
+#   第 3 项：response_ms < max_response_ms（30s DR 响应时限）
+#   第 4~10 项阈值来源（证据由对应子系统真实采集）：
+#     goose_max_ms=4（GOOSE 往返，v0.105.0~v0.107.0）
+#     sync_max_ms=1（gPTP 同步精度，v0.101.0）
+
+[cluster]
+# 节点 1~7：边缘盒（EdgeBox）——VPP 可调资源，参与比例分配调度
+[[cluster.node]]
+node_id = 1
+role = "EdgeBox"
+address = "edge://vpp-node-1"
+capacity_kw = 50.0
+soc = 0.8
+
+[[cluster.node]]
+node_id = 2
+role = "EdgeBox"
+address = "edge://vpp-node-2"
+capacity_kw = 50.0
+soc = 0.8
+
+[[cluster.node]]
+node_id = 3
+role = "EdgeBox"
+address = "edge://vpp-node-3"
+capacity_kw = 50.0
+soc = 0.8
+
+[[cluster.node]]
+node_id = 4
+role = "EdgeBox"
+address = "edge://vpp-node-4"
+capacity_kw = 50.0
+soc = 0.8
+
+[[cluster.node]]
+node_id = 5
+role = "EdgeBox"
+address = "edge://vpp-node-5"
+capacity_kw = 50.0
+soc = 0.8
+
+[[cluster.node]]
+node_id = 6
+role = "EdgeBox"
+address = "edge://vpp-node-6"
+capacity_kw = 50.0
+soc = 0.8
+
+[[cluster.node]]
+node_id = 7
+role = "EdgeBox"
+address = "edge://vpp-node-7"
+capacity_kw = 50.0
+soc = 0.8
+
+# 节点 8：协调者（Coordinator）——负责选举、容量校验与调度分发，
+# 容量 0kW 不参与调度计划分配
+[[cluster.node]]
+node_id = 8
+role = "Coordinator"
+address = "edge://vpp-coordinator"
+capacity_kw = 0.0
+soc = 0.0
+
+[dr]
+# DR 事件目标功率（kW）：负值表示降载（蓝图 §4.3 口径 -300kW）
+target_kw = -300.0
+# 事件持续时长（分钟）
+duration_min = 30
+# 响应时限预算（毫秒）：超过即 ResponseTimeout 且状态机置 Expired（D5）
+deadline_ms = 30000
+# 完成奖励（元）：全部节点确认后由 complete() 结算
+reward = 128.5
+# 响应延迟模型参数（D1 构造注入）：单程链路延迟 + Coordinator 处理耗时，
+# response = coord_processing_ms + 2 × link_latency_ms = 18000ms
+link_latency_ms = 8000
+coord_processing_ms = 2000
+
+[thresholds]
+# 出口第 1 项：最小在线节点数（5 台最小集群规模）
+min_nodes = 5
+# 出口第 2 项：最小聚合总容量（kW）
+min_capacity_kw = 100.0
+# 出口第 3 项：DR 响应延迟上限（毫秒，蓝图 < 30s）
+max_response_ms = 30000
+# 出口第 10 项关联阈值：GOOSE 发布/订阅往返延迟上限（毫秒）
+goose_max_ms = 4
+# 出口第 5 项关联阈值：gPTP 时间同步精度上限（毫秒）
+sync_max_ms = 1

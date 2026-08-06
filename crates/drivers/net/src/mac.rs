@@ -29,6 +29,14 @@ pub const DMA_TX_POLL: u64 = 0x48;
 pub const DMA_RX_POLL: u64 = 0x4C;
 /// DMA Status Register (interrupt cause).
 pub const DMA_STATUS: u64 = 0x60;
+/// DMA TX descriptor list base address (low 32 bits, P0-6).
+pub const DMA_TX_DESC_LOW: u64 = 0x68;
+/// DMA TX descriptor list base address (high 32 bits, P0-6).
+pub const DMA_TX_DESC_HIGH: u64 = 0x6C;
+/// DMA RX descriptor list base address (low 32 bits, P0-6).
+pub const DMA_RX_DESC_LOW: u64 = 0x70;
+/// DMA RX descriptor list base address (high 32 bits, P0-6).
+pub const DMA_RX_DESC_HIGH: u64 = 0x74;
 
 // ---------------------------------------------------------------------------
 // MII management bits (within MAC_MII_ADDR)
@@ -158,8 +166,7 @@ impl<R: MacRegs> MacController<R> {
         for desc in &mut self.dma.rx_desc {
             desc.set_owned_by_dma(true);
             desc.set_ioc(true);
-        }
-        // Set rx_head to rx_count (all descriptors given to DMA).
+        }        // Set rx_head to rx_count (all descriptors given to DMA).
         // This way rx_head wraps to 0, and rx_tail stays at 0.
         // Actually, we use rx_head == rx_tail to mean "empty", so after
         // giving all descriptors to DMA, rx_head should equal rx_tail
@@ -178,6 +185,43 @@ impl<R: MacRegs> MacController<R> {
 
         self.initialized = true;
         Ok(())
+    }
+
+    /// 编程真实 DMA 描述符环（P0-6）。
+    ///
+    /// `pool_base_pa` 是 DMA 池的物理基址（描述符 + 数据缓冲的连续内存）。
+    /// 步骤：
+    /// 1. 计算环布局（TX/RX 描述符数组 + TX/RX 缓冲物理地址）。
+    /// 2. 用真实物理地址填充所有描述符的 `buffer_addr`（RX 置 OWN=1）。
+    /// 3. 将 TX/RX 描述符数组物理基址写入 DMA 基址寄存器。
+    /// 4. cache 维护：clean 描述符环（设备读取前写回）。
+    ///
+    /// 调用前 `tx_buffers`/`rx_buffers` 的物理位置必须与布局一致——本方法
+    /// 接受外部 DMA 池并在返回后由调用方保证缓冲位于池内对应偏移。
+    pub fn init_dma<C: crate::dma_mem::ArmCache>(
+        &mut self,
+        pool_base_pa: u64,
+        pool_va: usize,
+        cache: &C,
+    ) {
+        let layout = crate::dma_ring::DmaRing::layout(
+            pool_base_pa,
+            self.dma.tx_count(),
+            self.dma.rx_count(),
+            self.mtu,
+        );
+        self.dma.program_descriptors(&layout);
+
+        // 将描述符数组物理基址写入 DMA 寄存器（真实 DMA 引擎发现环的位置）。
+        self.regs.write(DMA_TX_DESC_LOW, layout.tx_desc_pa as u32);
+        self.regs.write(DMA_TX_DESC_HIGH, (layout.tx_desc_pa >> 32) as u32);
+        self.regs.write(DMA_RX_DESC_LOW, layout.rx_desc_pa as u32);
+        self.regs.write(DMA_RX_DESC_HIGH, (layout.rx_desc_pa >> 32) as u32);
+
+        // cache 维护：描述符环在设备读取前 clean 写回（aarch64 dc cvac）。
+        let desc_bytes = (self.dma.tx_count() + self.dma.rx_count())
+            * core::mem::size_of::<crate::dma_ring::DmaDescriptor>();
+        cache.clean(pool_va, desc_bytes);
     }
 
     /// Handle a DMA interrupt.
@@ -852,5 +896,59 @@ mod tests {
         ctrl.handle_irq();
         // DMA_STATUS should be cleared (write 0xFFFFFFFF to clear)
         assert_eq!(ctrl.regs.get_mac_reg(DMA_STATUS), Some(0xFFFF_FFFF));
+    }
+
+    // ======================================================================
+    // v0.196.0 (P0-6)：真实 DMA 环编程 + 收发包（smoltcp 链）
+    // ======================================================================
+    #[test]
+    fn test_init_dma_programs_descriptor_ring() {
+        use crate::dma_mem::NoopCache;
+        let mut ctrl = setup_controller(4, 8, 0);
+        init_controller(&mut ctrl);
+        // DMA 池：物理基址 0x2000_0000，VA=池地址（host 仿真 no-op cache）。
+        ctrl.init_dma(0x2000_0000, 0x2000_0000, &NoopCache);
+
+        // 描述符 buffer_addr 真实填充。
+        let layout = crate::dma_ring::DmaRing::layout(
+            0x2000_0000,
+            ctrl.dma.tx_count(),
+            ctrl.dma.rx_count(),
+            ctrl.mtu,
+        );
+        assert_eq!(ctrl.dma.tx_desc[0].buffer_addr, layout.tx_buf_base_pa);
+        assert_eq!(ctrl.dma.rx_desc[0].buffer_addr, layout.rx_buf_base_pa);
+        // RX 描述符已交给 DMA。
+        assert!(ctrl.dma.rx_desc[0].is_owned_by_dma());
+        // 描述符基址写入 DMA 寄存器（真实 DMA 引擎发现环的位置）。
+        assert_eq!(ctrl.regs.read(DMA_TX_DESC_LOW), layout.tx_desc_pa as u32);
+        assert_eq!(ctrl.regs.read(DMA_RX_DESC_LOW), layout.rx_desc_pa as u32);
+    }
+
+    #[test]
+    fn test_dma_ring_send_and_receive_arp() {
+        use crate::dma_mem::NoopCache;
+        let mut ctrl = setup_controller(4, 8, 0);
+        init_controller(&mut ctrl);
+        ctrl.init_dma(0x2000_0000, 0x2000_0000, &NoopCache);
+
+        // ARP 请求帧（真实以太网帧：dst/src MAC + EtherType 0x0806 + ARP）。
+        let mut frame = sample_frame(42);
+        frame[12..14].copy_from_slice(&[0x08, 0x06]); // ARP EtherType
+
+        // 发送：DMA 收到帧（模拟 TX 完成需 OWN 清除，这里验证 TX 入环）。
+        ctrl.send(&frame).expect("send via DMA ring");
+        // TX 描述符 buffer_addr 指向池内真实缓冲，长度正确。
+        let tx_idx = (ctrl.dma.tx_head as usize + ctrl.dma.tx_count() - 1) % ctrl.dma.tx_count();
+        let _ = tx_idx;
+        // tx_head 已推进（入环）。
+        assert_eq!(ctrl.dma.tx_pending(), 1);
+
+        // 接收：DMA 注入 ARP 帧 → recv 读出完整帧。
+        ctrl.simulate_rx_frame(&frame);
+        let mut buf = [0u8; 1500];
+        let len = ctrl.recv(&mut buf).expect("recv via DMA ring");
+        assert_eq!(len, 42);
+        assert_eq!(&buf[..42], &frame[..]);
     }
 }

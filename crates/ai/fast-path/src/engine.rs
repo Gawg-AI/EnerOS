@@ -104,8 +104,12 @@ impl<S: Solver> RealtimePathEngine<S> {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl RealtimePathEngine<eneros_solver_core::mock::MockSolver> {
     /// 默认构造（使用 MockSolver，D2）.
+    ///
+    /// v0.205.0（P0-27）：仅 test/mock feature 可用；生产用
+    /// [`RealtimePathEngine::new`] 构造器注入真实 Solver。
     pub fn default_with_mock() -> Self {
         Self::new(
             ScheduleConfig::default(),

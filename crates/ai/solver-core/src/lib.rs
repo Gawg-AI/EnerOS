@@ -50,14 +50,41 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(dead_code)]
 
+// ============================================================================
+// G7 Fail-closed Mock gate (MASTER §G7 禁止捷径 L2118:
+//   "feature-gated FFI 代码存在就宣称集成")
+//
+// Two gates:
+// 1. Release builds MUST NOT use Mock (MASTER: "release profile 禁止 mock").
+//    `debug_assertions` is off in release → this fires.
+// 2. Non-test builds MUST have at least one backend (Mock or real).
+//    Prevents accidental `--no-default-features` without selecting a backend.
+// ============================================================================
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-solver-core: Mock backend is FORBIDDEN in release builds. \
+     Use: --no-default-features --features highs-ffi"
+);
+
+#[cfg(not(any(feature = "highs-ffi", feature = "mock", test)))]
+compile_error!(
+    "eneros-solver-core: no backend selected. \
+     Release builds must enable 'highs-ffi' feature. \
+     For tests, use 'mock' feature or run via `cargo test`."
+);
+
 extern crate alloc;
 
 pub mod error;
-pub mod mock;
 pub mod problem;
 pub mod result;
 pub mod solver;
 
+// Mock solver: only available with `mock` feature or in test builds.
+#[cfg(any(feature = "mock", test))]
+pub mod mock;
+
+// Real HiGHS backend: only available with `highs-ffi` feature.
 #[cfg(feature = "highs-ffi")]
 pub mod ffi;
 

@@ -1,4 +1,4 @@
-//! 能力令牌（Capability Token）核心数据结构 (v0.39.0).
+//! 能力令牌（Capability Token）核心数据结构 (workspace v0.192.0).
 //!
 //! 实现 Agent 访问控制的能力令牌，包含：
 //! - [`CapabilityToken`] — 令牌主体（9 字段 + SM2 签名）

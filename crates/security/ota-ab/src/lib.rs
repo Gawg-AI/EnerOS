@@ -1,4 +1,4 @@
-//! EnerOS A/B 分区 OTA 升级 (v0.123.0) — Phase 2 P2-K OTA 与 Recovery 第 1 版。
+//! EnerOS A/B 分区 OTA 升级 (workspace v0.192.0) — Phase 2 P2-K OTA 与 Recovery 第 1 版。
 //!
 //! 实现 A/B 双分区镜像级 OTA 升级机制：SM2/SM3 签名校验、原子切换、
 //! 启动健康检查与失败自动回滚、分区表断电持久化（魔数 + CRC32）。

@@ -116,6 +116,15 @@ impl GgufTensorInfo {
             ]);
             pos += 8;
 
+            // AI-001：GGUF 规范要求张量数据 32 字节对齐；未对齐即拒绝，
+            // 防止后续映射读取时发生未对齐访问（真实 llama.cpp 文件满足）。
+            if tensor_offset % 32 != 0 {
+                return Err(GgufError::MisalignedTensor {
+                    name,
+                    offset: tensor_offset,
+                });
+            }
+
             tensors.push(GgufTensorInfo {
                 name,
                 dimensions,
@@ -125,5 +134,46 @@ impl GgufTensorInfo {
         }
 
         Ok((tensors, pos - offset))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造单个 tensor 描述符（name + n_dims + dims + dtype + offset）。
+    fn tensor_bytes(name: &[u8], offset: u64) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&(name.len() as u64).to_le_bytes());
+        b.extend_from_slice(name);
+        b.extend_from_slice(&1u32.to_le_bytes()); // n_dims
+        b.extend_from_slice(&4096u64.to_le_bytes()); // dim[0]
+        b.extend_from_slice(&12u32.to_le_bytes()); // Q4_K
+        b.extend_from_slice(&offset.to_le_bytes());
+        b
+    }
+
+    /// AI-001：32 字节对齐的 offset 通过。
+    #[test]
+    fn test_alignment_ok() {
+        let bytes = tensor_bytes(b"t.weight", 0);
+        let (tensors, _) = GgufTensorInfo::parse(&bytes, 0, 1).expect("parse");
+        assert_eq!(tensors[0].offset, 0);
+        let bytes2 = tensor_bytes(b"t.weight", 64);
+        let (tensors2, _) = GgufTensorInfo::parse(&bytes2, 0, 1).expect("parse 64");
+        assert_eq!(tensors2[0].offset, 64);
+    }
+
+    /// AI-001：未对齐 offset（31/33）→ MisalignedTensor（旧代码不检查）。
+    #[test]
+    fn test_alignment_rejects_unaligned() {
+        for bad in [31u64, 33u64, 1u64] {
+            let bytes = tensor_bytes(b"t.weight", bad);
+            let r = GgufTensorInfo::parse(&bytes, 0, 1);
+            assert!(
+                matches!(r, Err(GgufError::MisalignedTensor { .. })),
+                "offset {bad} must be rejected"
+            );
+        }
     }
 }

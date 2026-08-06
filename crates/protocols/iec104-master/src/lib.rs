@@ -58,10 +58,14 @@ pub mod master;
 pub mod poll;
 pub mod transport;
 
+/// IEC 104 协议适配器（ARCH-P04）— 第三个真实 `ProtocolAdapter`。
+pub mod adapter;
+
 #[cfg(test)]
 pub mod mock;
 
 // 重导出公共 API
+pub use adapter::{Iec104Adapter, IecPointMapping};
 pub use config::MasterConfig;
 pub use connection::MasterConnection;
 pub use device::{ConnState, RemoteDevice};
@@ -71,7 +75,7 @@ pub use eneros_iec104_slave::{
     QualityDescriptor, Sco, SinglePointValue, TimeTag, TypeId, UFormatFunction,
 };
 pub use error::{Iec104Error, MasterError};
-pub use master::{time_tag_from_ms, Iec104Master};
+pub use master::{time_tag_from_ms, Iec104Master, LatestValue};
 pub use poll::{PollScheduler, PollTask};
 pub use transport::{ConnId, MasterStats, MasterTransport};
 

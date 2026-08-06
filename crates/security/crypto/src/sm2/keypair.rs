@@ -16,16 +16,24 @@ use crate::bigint::U256;
 use crate::error::CryptoError;
 
 // ============================================================
-// EcPoint: 椭圆曲线点（仿射坐标）
+// EcPoint: 椭圆曲线点（Jacobian 投影坐标，CRY-001）
 // ============================================================
 
-/// 椭圆曲线点（仿射坐标）.
+/// 椭圆曲线点（Jacobian 投影坐标）.
 ///
-/// `is_infinity = true` 表示无穷远点（曲线单位元）。
+/// 仿射点 (x, y) 表示为 (X = x, Y = y, Z = 1)；Jacobian 坐标满足
+/// x = X/Z², y = Y/Z³。CRY-001：点加/点倍全程无模逆（消除旧仿射坐标
+/// 每步一次逐步 EEA 求逆），仅在 `to_affine` 末尾做一次定次费马模逆。
+///
+/// `is_infinity = true` 表示无穷远点（曲线单位元，Z = 0）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EcPoint {
+    /// Jacobian X 坐标.
     pub x: U256,
+    /// Jacobian Y 坐标.
     pub y: U256,
+    /// Jacobian Z 坐标（Z = 1 即仿射点；Z = 0 即无穷远点）.
+    pub z: U256,
     pub is_infinity: bool,
 }
 
@@ -34,6 +42,7 @@ impl EcPoint {
     pub const INFINITY: EcPoint = EcPoint {
         x: U256 { limbs: [0; 4] },
         y: U256 { limbs: [0; 4] },
+        z: U256 { limbs: [0; 4] },
         is_infinity: true,
     };
 
@@ -42,34 +51,47 @@ impl EcPoint {
         EcPoint {
             x: SM2_GX,
             y: SM2_GY,
+            z: crate::bigint::ONE,
             is_infinity: false,
         }
     }
 
     /// 验证点是否在 SM2 曲线上: y^2 ≡ x^3 + ax + b (mod p).
+    ///
+    /// CRY-001：接受 Jacobian 点——先转仿射（Z=1 快速路径免模逆）再检查。
     pub fn is_on_curve(&self) -> bool {
         if self.is_infinity {
             return true;
         }
+        let aff = if self.z == crate::bigint::ONE {
+            *self
+        } else {
+            self.to_affine()
+        };
+        if aff.is_infinity {
+            return false;
+        }
         // y^2 mod p
-        let y_sq = self.y.mul_mod(&self.y, &SM2_P);
+        let y_sq = aff.y.mul_mod(&aff.y, &SM2_P);
         // x^3 mod p = x * x^2
-        let x_sq = self.x.mul_mod(&self.x, &SM2_P);
-        let x_cu = x_sq.mul_mod(&self.x, &SM2_P);
+        let x_sq = aff.x.mul_mod(&aff.x, &SM2_P);
+        let x_cu = x_sq.mul_mod(&aff.x, &SM2_P);
         // a*x mod p
-        let ax = SM2_A.mul_mod(&self.x, &SM2_P);
+        let ax = SM2_A.mul_mod(&aff.x, &SM2_P);
         // x^3 + ax + b mod p
         let rhs = x_cu.add_mod(&ax, &SM2_P).add_mod(&SM2_B, &SM2_P);
         y_sq == rhs
     }
 
-    /// 点加：self + other.
+    /// 点加：self + other（Jacobian 坐标，CRY-001，无模逆）。
     ///
-    /// 处理所有情况：
-    /// - 任一点为无穷远点 → 返回另一点
-    /// - P == -Q（相同 x，不同 y）→ 返回无穷远点
-    /// - P == Q → 调用 [`double`]
-    /// - 一般情况：λ = (y2 - y1) / (x2 - x1) mod p
+    /// 一般 Jacobian 加法公式（a = p-3 的 SM2 曲线；此处用通用公式，
+    /// 输入可为任意 Jacobian 点）：
+    ///   U1 = X1·Z2², U2 = X2·Z1²
+    ///   S1 = Y1·Z2³, S2 = Y2·Z1³
+    ///   H = U2-U1, R = S2-S1
+    ///   H=0 且 R=0 → 加倍；H=0 → 无穷远
+    ///   X3 = R²-H³-2U1H², Y3 = R(U1H²-X3)-S1H³, Z3 = Z1·Z2·H
     pub fn add(&self, other: &EcPoint) -> EcPoint {
         if self.is_infinity {
             return *other;
@@ -77,84 +99,118 @@ impl EcPoint {
         if other.is_infinity {
             return *self;
         }
-        if self.x == other.x {
-            if self.y == other.y {
+        let z1 = self.z;
+        let z2 = other.z;
+        let z1_sq = z1.mul_mod(&z1, &SM2_P);
+        let z2_sq = z2.mul_mod(&z2, &SM2_P);
+        let z1_cu = z1_sq.mul_mod(&z1, &SM2_P);
+        let z2_cu = z2_sq.mul_mod(&z2, &SM2_P);
+        let u1 = self.x.mul_mod(&z2_sq, &SM2_P);
+        let u2 = other.x.mul_mod(&z1_sq, &SM2_P);
+        let s1 = self.y.mul_mod(&z2_cu, &SM2_P);
+        let s2 = other.y.mul_mod(&z1_cu, &SM2_P);
+        let h = u2.sub_mod(&u1, &SM2_P);
+        let r = s2.sub_mod(&s1, &SM2_P);
+        if h.is_zero() {
+            if r.is_zero() {
                 return self.double();
-            } else {
-                // P + (-P) = O
-                return EcPoint::INFINITY;
             }
+            return EcPoint::INFINITY;
         }
-        // λ = (y2 - y1) / (x2 - x1) mod p
-        let dy = other.y.sub_mod(&self.y, &SM2_P);
-        let dx = other.x.sub_mod(&self.x, &SM2_P);
-        let lambda = match dx.inv_mod(&SM2_P) {
-            Ok(inv) => dy.mul_mod(&inv, &SM2_P),
-            Err(_) => return EcPoint::INFINITY,
-        };
-        // x3 = λ^2 - x1 - x2 mod p
-        let lambda_sq = lambda.mul_mod(&lambda, &SM2_P);
-        let x3 = lambda_sq.sub_mod(&self.x, &SM2_P).sub_mod(&other.x, &SM2_P);
-        // y3 = λ(x1 - x3) - y1 mod p
-        let dx13 = self.x.sub_mod(&x3, &SM2_P);
-        let y3 = lambda.mul_mod(&dx13, &SM2_P).sub_mod(&self.y, &SM2_P);
-        EcPoint {
-            x: x3,
-            y: y3,
-            is_infinity: false,
-        }
+        let h_sq = h.mul_mod(&h, &SM2_P);
+        let h_cu = h_sq.mul_mod(&h, &SM2_P);
+        let u1_h_sq = u1.mul_mod(&h_sq, &SM2_P);
+        let r_sq = r.mul_mod(&r, &SM2_P);
+        // X3 = R² - H³ - 2·U1·H²
+        let x3 = r_sq.sub_mod(&h_cu, &SM2_P).sub_mod(&u1_h_sq, &SM2_P).sub_mod(&u1_h_sq, &SM2_P);
+        // Y3 = R·(U1·H² - X3) - S1·H³
+        let y3 = r.mul_mod(&u1_h_sq.sub_mod(&x3, &SM2_P), &SM2_P)
+            .sub_mod(&s1.mul_mod(&h_cu, &SM2_P), &SM2_P);
+        // Z3 = Z1·Z2·H
+        let z3 = z1.mul_mod(&z2, &SM2_P).mul_mod(&h, &SM2_P);
+        EcPoint { x: x3, y: y3, z: z3, is_infinity: false }
     }
 
-    /// 点倍：2 * self.
+    /// 点倍：2 * self（Jacobian 坐标，CRY-001，无模逆）。
     ///
-    /// λ = (3x^2 + a) / (2y) mod p
+    /// a = -3 优化（SM2 曲线 a = p-3）：
+    ///   A = X², B = Y², C = B²
+    ///   D = 2·((X+B)² - A - C)
+    ///   E = 3·(A - Z⁴)
+    ///   X3 = E² - 2D, Y3 = E·(D-X3) - 8C, Z3 = 2·Y·Z
     pub fn double(&self) -> EcPoint {
         if self.is_infinity || self.y.is_zero() {
             return EcPoint::INFINITY;
         }
-        // λ = (3x^2 + a) / (2y) mod p
-        let x_sq = self.x.mul_mod(&self.x, &SM2_P);
-        let three_x_sq = x_sq.add_mod(&x_sq, &SM2_P).add_mod(&x_sq, &SM2_P);
-        let numerator = three_x_sq.add_mod(&SM2_A, &SM2_P);
-        let two_y = self.y.add_mod(&self.y, &SM2_P);
-        let lambda = match two_y.inv_mod(&SM2_P) {
-            Ok(inv) => numerator.mul_mod(&inv, &SM2_P),
-            Err(_) => return EcPoint::INFINITY,
+        let a = self.x.mul_mod(&self.x, &SM2_P);
+        let b = self.y.mul_mod(&self.y, &SM2_P);
+        let c = b.mul_mod(&b, &SM2_P);
+        let x_plus_b = self.x.add_mod(&b, &SM2_P);
+        let d = {
+            let t = x_plus_b.mul_mod(&x_plus_b, &SM2_P).sub_mod(&a, &SM2_P).sub_mod(&c, &SM2_P);
+            t.add_mod(&t, &SM2_P)
         };
-        // x3 = λ^2 - 2x mod p
-        let lambda_sq = lambda.mul_mod(&lambda, &SM2_P);
-        let two_x = self.x.add_mod(&self.x, &SM2_P);
-        let x3 = lambda_sq.sub_mod(&two_x, &SM2_P);
-        // y3 = λ(x - x3) - y mod p
-        let dx = self.x.sub_mod(&x3, &SM2_P);
-        let y3 = lambda.mul_mod(&dx, &SM2_P).sub_mod(&self.y, &SM2_P);
-        EcPoint {
-            x: x3,
-            y: y3,
-            is_infinity: false,
-        }
+        let z_sq = self.z.mul_mod(&self.z, &SM2_P);
+        let z_4 = z_sq.mul_mod(&z_sq, &SM2_P);
+        let e = a.sub_mod(&z_4, &SM2_P).add_mod(&a.sub_mod(&z_4, &SM2_P), &SM2_P).add_mod(&a.sub_mod(&z_4, &SM2_P), &SM2_P);
+        let e_sq = e.mul_mod(&e, &SM2_P);
+        let x3 = e_sq.sub_mod(&d, &SM2_P).sub_mod(&d, &SM2_P);
+        let eight_c = c
+            .add_mod(&c, &SM2_P) // 2C
+            .add_mod(&c, &SM2_P) // 3C
+            .add_mod(&c, &SM2_P) // 4C
+            .add_mod(&c, &SM2_P) // 5C
+            .add_mod(&c, &SM2_P) // 6C
+            .add_mod(&c, &SM2_P) // 7C
+            .add_mod(&c, &SM2_P); // 8C
+        let y3 = e.mul_mod(&d.sub_mod(&x3, &SM2_P), &SM2_P).sub_mod(&eight_c, &SM2_P);
+        let two_yz = self.y.mul_mod(&self.z, &SM2_P).add_mod(&self.y.mul_mod(&self.z, &SM2_P), &SM2_P);
+        EcPoint { x: x3, y: y3, z: two_yz, is_infinity: false }
     }
 
-    /// 标量乘法 k * P，使用 Montgomery ladder（恒定时间）.
+    /// 标量乘法 k * P（恒定时间，CRY-001）——Montgomery ladder +
+    /// Brumley-Tuveri 标量掩码（k' = k + n，257 位）。
     ///
-    /// 不变量：R1 - R0 = P 在整个迭代过程中保持。
-    /// 从最高位到最低位逐位处理 256 位标量。
+    /// - 掩码保证 k' 的最高位（bit256 或 bit255）为 1——ladder 首轮
+    ///   r0 即非无穷远点，消除旧实现前导零阶段 `add(O, R1)` 快速路径
+    ///   的时序差异（k=1 与 k≈2^256 耗时一致）。
+    /// - 每轮无条件 add(r0,r1) + double×2，仅按位 ct_select 选择结果
+    ///   （旧实现 `if k.bit(i)` 结果选择分支已消除）。
+    /// - 正确性：k'·G = (k+n)·G = k·G（n 为 G 的阶）。
     pub fn scalar_mult(&self, k: &U256) -> EcPoint {
         if self.is_infinity || k.is_zero() {
             return EcPoint::INFINITY;
         }
+        let (masked, carry) = k.add_full(&SM2_N); // k' = k + n（257 位）
         let mut r0 = EcPoint::INFINITY;
         let mut r1 = *self;
-        for i in (0..256).rev() {
-            if k.bit(i) {
-                r0 = r0.add(&r1);
-                r1 = r1.double();
-            } else {
-                r1 = r0.add(&r1);
-                r0 = r0.double();
-            }
+        for i in (0..=256).rev() {
+            let bit = if i == 256 { carry == 1 } else { masked.bit(i) };
+            let add_01 = r0.add(&r1);
+            let dbl_r1 = r1.double();
+            let dbl_r0 = r0.double();
+            r0 = ct_select_point(&add_01, &dbl_r0, bit);
+            r1 = ct_select_point(&dbl_r1, &add_01, bit);
         }
         r0
+    }
+
+    /// 转为仿射坐标（CRY-001）：末尾一次定次费马模逆。
+    ///
+    /// x = X/Z², y = Y/Z³（Z=1 时原样返回）。无穷远点返回自身。
+    pub fn to_affine(&self) -> EcPoint {
+        if self.is_infinity || self.z == crate::bigint::ONE {
+            return *self;
+        }
+        let z_inv = match self.z.inv_mod(&SM2_P) {
+            Ok(v) => v,
+            Err(_) => return EcPoint::INFINITY,
+        };
+        let z_inv_sq = z_inv.mul_mod(&z_inv, &SM2_P);
+        let z_inv_cu = z_inv_sq.mul_mod(&z_inv, &SM2_P);
+        let x = self.x.mul_mod(&z_inv_sq, &SM2_P);
+        let y = self.y.mul_mod(&z_inv_cu, &SM2_P);
+        EcPoint { x, y, z: crate::bigint::ONE, is_infinity: false }
     }
 
     /// 基点标量乘法 k * G.
@@ -163,11 +219,14 @@ impl EcPoint {
     }
 
     /// 编码为未压缩格式: 04 || x || y (65 bytes).
+    ///
+    /// CRY-001：先转仿射坐标再编码（Jacobian X/Y 不是曲线点坐标）。
     pub fn to_bytes_uncompressed(&self) -> [u8; 65] {
+        let aff = self.to_affine();
         let mut out = [0u8; 65];
         out[0] = 0x04;
-        out[1..33].copy_from_slice(&self.x.to_be_bytes());
-        out[33..65].copy_from_slice(&self.y.to_be_bytes());
+        out[1..33].copy_from_slice(&aff.x.to_be_bytes());
+        out[33..65].copy_from_slice(&aff.y.to_be_bytes());
         out
     }
 
@@ -195,6 +254,7 @@ impl EcPoint {
                 let point = EcPoint {
                     x: U256::from_be_bytes(&x_bytes),
                     y: U256::from_be_bytes(&y_bytes),
+                    z: crate::bigint::ONE,
                     is_infinity: false,
                 };
                 if !point.is_on_curve() {
@@ -299,8 +359,11 @@ impl core::fmt::Debug for Sm2KeyPair {
 
 impl Sm2KeyPair {
     /// 从私钥派生密钥对: P = d * G.
+    ///
+    /// CRY-001：公钥点规范化到仿射坐标（z=1）——Jacobian 表示不唯一，
+    /// 公钥语义要求 affine 点（序列化/比较/证书一致）。
     pub fn from_private_key(sk: &Sm2PrivateKey) -> Result<Self, CryptoError> {
-        let point = EcPoint::scalar_base_mult(&sk.d);
+        let point = EcPoint::scalar_base_mult(&sk.d).to_affine();
         if point.is_infinity {
             return Err(CryptoError::InternalError);
         }
@@ -327,6 +390,36 @@ impl Sm2KeyPair {
 }
 
 // ============================================================
+// ============================================================================
+// 恒定时间点选择（CRY-001）
+// ============================================================================
+
+/// 按 bit 恒定时间选择两个点之一（逐 limb 掩码，无数据相关分支）。
+pub fn ct_select_point_for_test(a: &EcPoint, b: &EcPoint, bit: bool) -> EcPoint {
+    ct_select_point(a, b, bit)
+}
+
+/// 按 bit 恒定时间选择两个点之一（逐 limb 掩码，无数据相关分支）。
+fn ct_select_point(a: &EcPoint, b: &EcPoint, bit: bool) -> EcPoint {
+    let mask = if bit { u64::MAX } else { 0 };
+    let nmask = !mask;
+    let mut x = [0u64; 4];
+    let mut y = [0u64; 4];
+    let mut z = [0u64; 4];
+    for i in 0..4 {
+        x[i] = (a.x.limbs[i] & mask) | (b.x.limbs[i] & nmask);
+        y[i] = (a.y.limbs[i] & mask) | (b.y.limbs[i] & nmask);
+        z[i] = (a.z.limbs[i] & mask) | (b.z.limbs[i] & nmask);
+    }
+    EcPoint {
+        x: U256 { limbs: x },
+        y: U256 { limbs: y },
+        z: U256 { limbs: z },
+        is_infinity: (a.is_infinity as u8 & (bit as u8)) != 0
+            || (b.is_infinity as u8 & (!bit as u8)) != 0,
+    }
+}
+
 // Unit Tests
 // ============================================================
 
@@ -378,6 +471,7 @@ mod tests {
         let neg_g = EcPoint {
             x: g.x,
             y: SM2_P.sub_mod(&g.y, &SM2_P),
+            z: crate::bigint::ONE,
             is_infinity: false,
         };
         let result = g.add(&neg_g);
@@ -429,7 +523,7 @@ mod tests {
         let one = U256 {
             limbs: [1, 0, 0, 0],
         };
-        let result = g.scalar_mult(&one);
+        let result = g.scalar_mult(&one).to_affine();
         assert_eq!(result, g, "1 * G = G");
     }
 
@@ -439,8 +533,8 @@ mod tests {
         let two = U256 {
             limbs: [2, 0, 0, 0],
         };
-        let result = g.scalar_mult(&two);
-        assert_eq!(result, g.double(), "2 * G = G.double()");
+        let result = g.scalar_mult(&two).to_affine();
+        assert_eq!(result, g.double().to_affine(), "2 * G = G.double()");
     }
 
     #[test]
@@ -460,8 +554,10 @@ mod tests {
             limbs: [5, 0, 0, 0],
         };
         let a_plus_b = a.add_mod(&b, &SM2_N);
-        let left = EcPoint::scalar_base_mult(&a_plus_b);
-        let right = EcPoint::scalar_base_mult(&a).add(&EcPoint::scalar_base_mult(&b));
+        let left = EcPoint::scalar_base_mult(&a_plus_b).to_affine();
+        let right = EcPoint::scalar_base_mult(&a)
+            .add(&EcPoint::scalar_base_mult(&b))
+            .to_affine();
         assert_eq!(left, right, "(a+b)*G = a*G + b*G");
     }
 
@@ -475,9 +571,9 @@ mod tests {
             limbs: [11, 0, 0, 0],
         };
         let l_g = EcPoint::scalar_base_mult(&l);
-        let left = l_g.scalar_mult(&k);
+        let left = l_g.scalar_mult(&k).to_affine();
         let kl = k.mul_mod(&l, &SM2_N);
-        let right = EcPoint::scalar_base_mult(&kl);
+        let right = EcPoint::scalar_base_mult(&kl).to_affine();
         assert_eq!(left, right, "k*(l*G) = (k*l)*G");
     }
 
@@ -591,8 +687,8 @@ mod tests {
         let kp = Sm2KeyPair::generate(&mut rng).unwrap();
         assert!(kp.public_key.point.is_on_curve(), "生成的公钥必须在曲线上");
         assert!(!kp.public_key.point.is_infinity);
-        // 验证 P = d * G
-        let expected = EcPoint::scalar_base_mult(&kp.private_key.d);
+        // 验证 P = d * G（公钥为 affine，expected 也转 affine 比较）
+        let expected = EcPoint::scalar_base_mult(&kp.private_key.d).to_affine();
         assert_eq!(kp.public_key.point, expected);
     }
 
@@ -602,6 +698,7 @@ mod tests {
         let kp = Sm2KeyPair::generate(&mut rng).unwrap();
         let encoded = kp.public_key.to_bytes_uncompressed();
         let decoded = Sm2PublicKey::from_bytes(&encoded).unwrap();
-        assert_eq!(decoded.point, kp.public_key.point);
+        // 序列化是 affine 规范化：from_bytes(to_bytes(p)) == p.to_affine()
+        assert_eq!(decoded.point, kp.public_key.point.to_affine());
     }
 }

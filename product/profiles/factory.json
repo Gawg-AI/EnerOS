@@ -1,0 +1,43 @@
+{
+  "schema": "eneros.product-profile.v1",
+  "id": "factory",
+  "class": "factory",
+  "platform": "external-board-contract",
+  "target": "aarch64-unknown-none",
+  "image_layout": "external-board-v1",
+  "artifacts": [
+    "provisioning-bundle",
+    "firmware-bundle"
+  ],
+  "binaries": [
+    {
+      "selector": "eneros-boot-manager-uefi::boot-manager-uefi",
+      "role": "factory",
+      "target": "aarch64-unknown-uefi",
+      "default_features": false,
+      "features": [
+        "uefi-app"
+      ]
+    },
+    {
+      "selector": "sel4:elfloader-arm-qemu-arm-virt",
+      "role": "kernel",
+      "target": "host",
+      "features": [],
+      "default_features": false
+    }
+  ],
+  "signing": {
+    "required": true,
+    "key_source": "external-provider",
+    "allow_test_keys": false
+  },
+  "security": {
+    "allow_mock": false,
+    "allow_unsigned": false,
+    "minimum_security_version": 1,
+    "entropy_sources": [
+      "hardware-trng"
+    ]
+  }
+}

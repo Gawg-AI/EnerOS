@@ -245,10 +245,9 @@ mod tests {
     #[test]
     fn test_outcome_fail_message() {
         let outcome = Outcome::Fail(format!("IRQ {} not responding", 7));
+        assert!(matches!(outcome, Outcome::Fail(_)));
         if let Outcome::Fail(msg) = outcome {
             assert!(msg.contains("IRQ"));
-        } else {
-            panic!("expected Fail");
         }
     }
 }

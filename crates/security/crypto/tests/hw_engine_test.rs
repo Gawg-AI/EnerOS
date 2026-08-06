@@ -1,4 +1,4 @@
-//! 国密硬件加速引擎集成测试 (v0.158.0).
+//! 国密硬件加速引擎集成测试 (workspace v0.192.0).
 //!
 //! 验证 CryptoEngine trait 实现、CryptoSelector fallback 逻辑、
 //! 国标测试向量（GM/T 0003/0004/0002）。

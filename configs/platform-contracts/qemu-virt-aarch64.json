@@ -1,0 +1,125 @@
+{
+  "schema": "eneros.platform-contract.v1",
+  "platform_id": "qemu-virt-aarch64",
+  "revision": "1.0.0",
+  "sources": [
+    { "kind": "qemu-source", "name": "QEMU hw/arm/virt.c (virt machine memory map)", "version": "8.2.2+" },
+    { "kind": "manual", "name": "EnerOS qemu-prod profile", "version": "1.0.0" }
+  ],
+  "firmware": {
+    "type": "uefi",
+    "boot_method": "AAVMF UEFI + EnerOS boot manager",
+    "psci_conduit": "hvc",
+    "el0_entry": true
+  },
+  "cpu": { "arch": "armv8-a", "cores": 4, "model": "cortex-a57" },
+  "memory": [
+    { "name": "ram", "base": 1073741824, "size": 536870912, "kind": "ram" },
+    { "name": "gic-mmio", "base": 134217728, "size": 1048576, "kind": "reserved" },
+    { "name": "mmio-low", "base": 150994944, "size": 33554432, "kind": "reserved" },
+    { "name": "virtio-mmio", "base": 167772160, "size": 65536, "kind": "reserved" },
+    { "name": "pcie-ecam", "base": 1056964608, "size": 67108864, "kind": "reserved" }
+  ],
+  "gic": {
+    "version": "gicv3",
+    "distributor": { "base": 134217728, "size": 65536 },
+    "redistributor": { "base": 134348800, "size": 1048576 },
+    "ppi": [11, 13, 14, 26, 27, 30],
+    "spi_base": 32
+  },
+  "timer": { "kind": "armv8-architected", "frequency_source": "qemu-virt-cntfrq", "irq": 30 },
+  "resources": [
+    {
+      "name": "uart0",
+      "compatible": "arm,pl011",
+      "range": { "base": 150994944, "size": 4096 },
+      "irq": 33,
+      "source": "qemu-source"
+    },
+    {
+      "name": "rtc0",
+      "compatible": "arm,pl031",
+      "range": { "base": 151060480, "size": 4096 },
+      "irq": 34,
+      "source": "qemu-source"
+    },
+    {
+      "name": "gpio0",
+      "compatible": "arm,pl061",
+      "range": { "base": 151127040, "size": 4096 },
+      "irq": 35,
+      "source": "qemu-source"
+    },
+    {
+      "name": "virtio-mmio-0",
+      "compatible": "virtio,mmio",
+      "range": { "base": 167772160, "size": 512 },
+      "irq": 32,
+      "source": "qemu-source",
+      "dma": { "capable": true, "cache_coherent": true, "iommu_stream_id": 0 }
+    },
+    {
+      "name": "virtio-mmio-1",
+      "compatible": "virtio,mmio",
+      "range": { "base": 167772672, "size": 512 },
+      "irq": 33,
+      "source": "qemu-source",
+      "dma": { "capable": true, "cache_coherent": true, "iommu_stream_id": 1 }
+    },
+    {
+      "name": "virtio-mmio-2",
+      "compatible": "virtio,mmio",
+      "range": { "base": 167773184, "size": 512 },
+      "irq": 34,
+      "source": "qemu-source",
+      "dma": { "capable": true, "cache_coherent": true, "iommu_stream_id": 2 }
+    },
+    {
+      "name": "virtio-mmio-3",
+      "compatible": "virtio,mmio",
+      "range": { "base": 167773696, "size": 512 },
+      "irq": 35,
+      "source": "qemu-source",
+      "dma": { "capable": true, "cache_coherent": true, "iommu_stream_id": 3 }
+    },
+    {
+      "name": "virtio-mmio-4",
+      "compatible": "virtio,mmio",
+      "range": { "base": 167774208, "size": 512 },
+      "irq": 36,
+      "source": "qemu-source",
+      "dma": { "capable": true, "cache_coherent": true, "iommu_stream_id": 4 }
+    }
+  ],
+  "psci": {
+    "version": "0.2",
+    "cpu_on": true,
+    "system_reset": true,
+    "system_off": true
+  },
+  "dma": {
+    "iommu": null,
+    "cache_coherent": true,
+    "max_address_bits": 40
+  },
+  "entropy": [
+    {
+      "name": "virtio-rng",
+      "compatible": "virtio,mmio",
+      "range": { "base": 167772672, "size": 512 },
+      "irq": 33
+    }
+  ],
+  "watchdog": {
+    "compatible": "arm,sp805",
+    "range": { "base": 151142400, "size": 4096 },
+    "irq": 48,
+    "clock_hz": 24000000
+  },
+  "rtc": {
+    "compatible": "arm,pl031",
+    "range": { "base": 151060480, "size": 4096 },
+    "irq": 34
+  },
+  "reset_reason": { "persistent": true, "storage": "bootctrl-partition" }
+}

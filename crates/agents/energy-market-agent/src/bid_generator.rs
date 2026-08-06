@@ -22,39 +22,28 @@
 //!   （沿用 v0.85.0 D9 `MarketFeedPublisher` 模式），DDS 适配器后续注入。
 
 use alloc::boxed::Box;
+use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::market_feed::{MarketFeed, MarketType, Period};
+use eneros_market_types::{Bid, BidSegment, TimeSlot, TradeDir, YuanPerKwh};
 
-/// 报价方向.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum BidSide {
-    /// 买入（充电/购电）.
-    #[default]
-    Buy,
-    /// 卖出（放电/售电）.
-    Sell,
-}
+use crate::market_feed::{MarketFeed, Period};
 
-/// 报价单（MVP 最小字段，D7）.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Bid {
-    /// 报价 ID（生成器内单调递增，从 1 开始）.
-    pub bid_id: u64,
-    /// 市场类型.
-    pub market_type: MarketType,
+/// 报价方向（唯一来源：`eneros-market-types::TradeDir`，ARCH-M03 / ADR-0029）。
+pub type BidSide = TradeDir;
+
+/// 资源报价（领域包装：resource_id/period + 共享 `Bid`）。
+///
+/// ARCH-M03：`pub struct Bid` 定义删除，`Bid` 为 `eneros-market-types` 唯一来源；
+/// 本类型携带储能资源领域字段（resource_id、峰/平/谷时段），报价结构体为共享 `Bid`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResourceBid {
     /// 资源 ID（储能/可调资源标识）.
     pub resource_id: u64,
-    /// 报价价格（元/MWh）.
-    pub price: f32,
-    /// 报价电量（MW）.
-    pub quantity: f32,
-    /// 报价方向.
-    pub side: BidSide,
-    /// 时段.
+    /// 时段（峰/平/谷，领域枚举）.
     pub period: Period,
-    /// 时间戳（ms）.
-    pub timestamp: u64,
+    /// 共享报价单（segments 单段：period→TimeSlot、volume_kwh、price、direction）.
+    pub bid: Bid,
 }
 
 /// 报价策略.
@@ -69,7 +58,7 @@ pub struct BidStrategy {
 }
 
 /// 报价意图（D7：MVP 最小字段）.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BidIntent {
     /// 报价方向.
     pub side: BidSide,
@@ -209,15 +198,15 @@ impl BidOptimizer for MockBidOptimizer {
 
 /// 报价发布抽象（D11：trait 替代 DdsNode；不要求 Send + Sync，no_std 单线程）.
 pub trait BidPublisher {
-    /// 发布报价单列表.
-    fn publish_bids(&mut self, bids: &[Bid]) -> Result<(), BidError>;
+    /// 发布资源报价单列表.
+    fn publish_bids(&mut self, bids: &[ResourceBid]) -> Result<(), BidError>;
 }
 
 /// Mock 发布器：记录已发布报价或恒失败.
 #[derive(Debug, Clone, Default)]
 pub struct MockBidPublisher {
-    /// 已发布的报价记录.
-    published: Vec<Bid>,
+    /// 已发布的资源报价记录.
+    published: Vec<ResourceBid>,
     /// 恒失败开关.
     fail: bool,
 }
@@ -241,7 +230,7 @@ impl MockBidPublisher {
 }
 
 impl BidPublisher for MockBidPublisher {
-    fn publish_bids(&mut self, bids: &[Bid]) -> Result<(), BidError> {
+    fn publish_bids(&mut self, bids: &[ResourceBid]) -> Result<(), BidError> {
         if self.fail {
             return Err(BidError::PublishFailed);
         }
@@ -259,7 +248,7 @@ pub fn rule_intent(
     strategy: &BidStrategy,
 ) -> BidIntent {
     BidIntent {
-        side: BidSide::Sell,
+        side: TradeDir::Sell,
         target_quantity: strategy.max_quantity.min(capacity * soc.max(0.0)),
     }
 }
@@ -331,7 +320,7 @@ impl BidGenerator {
         soc: f32,
         capacity: f32,
         now_ms: u64,
-    ) -> Result<Vec<Bid>, BidError> {
+    ) -> Result<Vec<ResourceBid>, BidError> {
         if capacity <= 0.0 {
             return Err(BidError::InvalidInput);
         }
@@ -351,18 +340,28 @@ impl BidGenerator {
         };
         let mut bids = Vec::new();
         for point in feed.prices.iter() {
+            // ARCH-M03/M02：共享 Bid 单段表达；价格单位 YuanPerKwh（与 feed 元/kWh 一致，
+            // 修复旧注释"元/MWh"与 feed 单位不一致的隐患）；电量 MW→kWh（1 小时段 ×1000）。
+            let price_yuan_per_kwh = compute_price(intent.side, point.price, opt.price_adjust);
+            let quantity_kw = clamp_quantity(opt.quantity, self.strategy.max_quantity, capacity);
             let bid = Bid {
                 bid_id: self.next_bid_id,
-                market_type: feed.market_type,
-                resource_id: self.resource_id,
-                price: compute_price(intent.side, point.price, opt.price_adjust),
-                quantity: clamp_quantity(opt.quantity, self.strategy.max_quantity, capacity),
-                side: intent.side,
-                period: point.period,
-                timestamp: now_ms,
+                market: feed.market_type,
+                submitter: self.resource_id,
+                segments: vec![BidSegment {
+                    period: TimeSlot::new(point.time, point.time + 3_600_000),
+                    volume_kwh: quantity_kw as f64 * 1000.0,
+                    price: YuanPerKwh(price_yuan_per_kwh as f64),
+                    direction: intent.side,
+                }],
+                submit_at: now_ms,
             };
             self.next_bid_id += 1;
-            bids.push(bid);
+            bids.push(ResourceBid {
+                resource_id: self.resource_id,
+                period: point.period,
+                bid,
+            });
         }
         if !bids.is_empty() {
             self.publisher.publish_bids(&bids)?;
@@ -379,6 +378,7 @@ mod tests {
 
     use super::*;
     use crate::market_feed::{DrSignal, PricePoint};
+    use eneros_market_types::MarketType;
 
     /// 辅助：默认报价策略（margin=0.1 / max=5.0 / threshold=0.2）.
     fn make_strategy() -> BidStrategy {
@@ -429,7 +429,7 @@ mod tests {
     fn make_sell_generator() -> BidGenerator {
         make_generator(
             MockBidIntentSource::new(BidIntent {
-                side: BidSide::Sell,
+                side: TradeDir::Sell,
                 target_quantity: 5.0,
             }),
             MockBidOptimizer::new(BidOptimization {
@@ -440,12 +440,12 @@ mod tests {
         )
     }
 
-    // ===== T43: BidSide 默认值 Buy + 2 变体 Debug 非空 =====
+    // ===== T43: BidSide（= TradeDir 别名，ARCH-M03）变体 Debug 非空 =====
     #[test]
-    fn t43_bid_side_default_and_debug() {
-        assert_eq!(BidSide::default(), BidSide::Buy);
+    fn t43_bid_side_debug() {
         assert!(!format!("{:?}", BidSide::Buy).is_empty());
         assert!(!format!("{:?}", BidSide::Sell).is_empty());
+        assert_ne!(BidSide::Buy, BidSide::Sell);
     }
 
     // ===== T44: BidStrategy 默认全 0 + 显式构造字段断言 =====
@@ -465,65 +465,61 @@ mod tests {
         assert!((s.soc_threshold - 0.2).abs() < f32::EPSILON);
     }
 
-    // ===== T45: Bid::default 全零 + 默认枚举值 =====
+    // ===== T45: 共享 Bid（market-types）构造与字段访问（ARCH-M03）=====
     #[test]
-    fn t45_bid_default() {
-        let b = Bid::default();
-        assert_eq!(b.bid_id, 0);
-        assert_eq!(b.market_type, MarketType::Spot);
-        assert_eq!(b.resource_id, 0);
-        assert!((b.price - 0.0).abs() < f32::EPSILON);
-        assert!((b.quantity - 0.0).abs() < f32::EPSILON);
-        assert_eq!(b.side, BidSide::Buy);
-        assert_eq!(b.period, Period::Flat);
-        assert_eq!(b.timestamp, 0);
+    fn t45_shared_bid_construction() {
+        let bid = Bid::new(0, MarketType::Spot, 0, 0).with_segment(BidSegment {
+            period: TimeSlot::new(0, 3_600_000),
+            volume_kwh: 5000.0,
+            price: YuanPerKwh(1.0),
+            direction: TradeDir::Buy,
+        });
+        assert_eq!(bid.bid_id, 0);
+        assert_eq!(bid.market, MarketType::Spot);
+        assert_eq!(bid.submitter, 0);
+        assert_eq!(bid.segments.len(), 1);
+        assert_eq!(bid.total_volume_kwh(), 5000.0);
     }
 
-    // ===== T46: Bid 8 字段显式构造与访问 =====
+    // ===== T46: ResourceBid（领域包装 + 共享 Bid）构造与访问 =====
     #[test]
-    fn t46_bid_fields() {
-        let b = Bid {
-            bid_id: 7,
-            market_type: MarketType::Spot,
+    fn t46_resource_bid_fields() {
+        let rb = ResourceBid {
             resource_id: 42,
-            price: 1.0,
-            quantity: 5.0,
-            side: BidSide::Sell,
             period: Period::Peak,
-            timestamp: 1000,
+            bid: Bid::new(7, MarketType::Spot, 42, 1000).with_segment(BidSegment {
+                period: TimeSlot::new(0, 3_600_000),
+                volume_kwh: 5000.0,
+                price: YuanPerKwh(1.0),
+                direction: TradeDir::Sell,
+            }),
         };
-        assert_eq!(b.bid_id, 7);
-        assert_eq!(b.market_type, MarketType::Spot);
-        assert_eq!(b.resource_id, 42);
-        assert!((b.price - 1.0).abs() < f32::EPSILON);
-        assert!((b.quantity - 5.0).abs() < f32::EPSILON);
-        assert_eq!(b.side, BidSide::Sell);
-        assert_eq!(b.period, Period::Peak);
-        assert_eq!(b.timestamp, 1000);
+        assert_eq!(rb.bid.bid_id, 7);
+        assert_eq!(rb.bid.market, MarketType::Spot);
+        assert_eq!(rb.resource_id, 42);
+        assert_eq!(rb.bid.submitter, 42);
+        assert_eq!(rb.bid.submit_at, 1000);
+        assert_eq!(rb.period, Period::Peak);
+        assert_eq!(rb.bid.segments[0].direction, TradeDir::Sell);
     }
 
-    // ===== T47: Bid 是 Copy =====
+    // ===== T47: ResourceBid 可克隆比较 =====
     #[test]
-    fn t47_bid_copy() {
-        let b1 = Bid {
-            bid_id: 7,
-            market_type: MarketType::Spot,
+    fn t47_resource_bid_clone_eq() {
+        let rb = ResourceBid {
             resource_id: 42,
-            price: 1.0,
-            quantity: 5.0,
-            side: BidSide::Sell,
             period: Period::Peak,
-            timestamp: 1000,
+            bid: Bid::new(7, MarketType::Spot, 42, 1000),
         };
-        let b2 = b1;
-        assert_eq!(b2, b1);
+        let rb2 = rb.clone();
+        assert_eq!(rb2, rb);
     }
 
     // ===== T48: BidIntent / BidOptimization 构造与字段访问 =====
     #[test]
     fn t48_intent_and_optimization_fields() {
         let intent = BidIntent {
-            side: BidSide::Sell,
+            side: TradeDir::Sell,
             target_quantity: 2.0,
         };
         assert_eq!(intent.side, BidSide::Sell);
@@ -557,7 +553,7 @@ mod tests {
     #[test]
     fn t50_mock_intent_source_new() {
         let intent = BidIntent {
-            side: BidSide::Sell,
+            side: TradeDir::Sell,
             target_quantity: 2.0,
         };
         let mut src = MockBidIntentSource::new(intent);
@@ -603,7 +599,7 @@ mod tests {
         let mut optimizer = MockBidOptimizer::new(opt);
         let feed = make_feed_2prices();
         let intent = BidIntent {
-            side: BidSide::Sell,
+            side: TradeDir::Sell,
             target_quantity: 3.0,
         };
         assert_eq!(optimizer.optimize(&intent, &feed, 0.5, 10.0), Ok(opt));
@@ -614,7 +610,7 @@ mod tests {
     fn t54_mock_optimizer_failing_and_default() {
         let feed = make_feed_2prices();
         let intent = BidIntent {
-            side: BidSide::Sell,
+            side: TradeDir::Sell,
             target_quantity: 3.0,
         };
         let mut failing = MockBidOptimizer::new_failing();
@@ -633,7 +629,10 @@ mod tests {
     #[test]
     fn t55_mock_publisher_records() {
         let mut publisher = MockBidPublisher::new();
-        let bids = vec![Bid::default(), Bid::default()];
+        let bids = vec![
+            ResourceBid { resource_id: 1, period: Period::Flat, bid: Bid::new(0, MarketType::Spot, 1, 0) },
+            ResourceBid { resource_id: 1, period: Period::Flat, bid: Bid::new(0, MarketType::Spot, 1, 0) },
+        ];
         assert_eq!(publisher.publish_bids(&bids), Ok(()));
         assert_eq!(publisher.published.len(), 2);
     }
@@ -642,7 +641,7 @@ mod tests {
     #[test]
     fn t56_mock_publisher_failing() {
         let mut publisher = MockBidPublisher::new_failing();
-        let bids = vec![Bid::default()];
+        let bids = vec![ResourceBid { resource_id: 1, period: Period::Flat, bid: Bid::new(0, MarketType::Spot, 1, 0) }];
         assert_eq!(publisher.publish_bids(&bids), Err(BidError::PublishFailed));
         assert!(publisher.published.is_empty());
     }
@@ -681,14 +680,14 @@ mod tests {
     fn t59_conservative_optimize() {
         let s = make_strategy();
         let i1 = BidIntent {
-            side: BidSide::Sell,
+            side: TradeDir::Sell,
             target_quantity: 2.0,
         };
         let o1 = conservative_optimize(&i1, &s);
         assert!((o1.price_adjust - 0.1).abs() < f32::EPSILON);
         assert!((o1.quantity - 2.0).abs() < f32::EPSILON);
         let i2 = BidIntent {
-            side: BidSide::Sell,
+            side: TradeDir::Sell,
             target_quantity: 8.0,
         };
         let o2 = conservative_optimize(&i2, &s);
@@ -750,15 +749,15 @@ mod tests {
         assert!(result.is_ok());
         let bids = result.unwrap_or_default();
         assert_eq!(bids.len(), 2);
-        assert!((bids[0].price - 1.0).abs() < 1e-6);
-        assert!((bids[1].price - 0.4).abs() < 1e-6);
-        assert!((bids[0].quantity - 5.0).abs() < f32::EPSILON);
-        assert!((bids[1].quantity - 5.0).abs() < f32::EPSILON);
+        assert!((bids[0].bid.segments[0].price.0 - 1.0).abs() < 1e-6);
+        assert!((bids[1].bid.segments[0].price.0 - 0.4).abs() < 1e-6);
+        assert_eq!(bids[0].bid.segments[0].volume_kwh, 5000.0);
+        assert_eq!(bids[1].bid.segments[0].volume_kwh, 5000.0);
         assert_eq!(bids[0].period, Period::Peak);
         assert_eq!(bids[1].period, Period::Valley);
-        assert_eq!(bids[0].market_type, MarketType::Spot);
-        assert_eq!(bids[0].side, BidSide::Sell);
-        assert_eq!(bids[1].side, BidSide::Sell);
+        assert_eq!(bids[0].bid.market, MarketType::Spot);
+        assert_eq!(bids[0].bid.segments[0].direction, TradeDir::Sell);
+        assert_eq!(bids[1].bid.segments[0].direction, TradeDir::Sell);
     }
 
     // ===== T65: bid_id 跨次单调递增 =====
@@ -769,8 +768,8 @@ mod tests {
         let r1 = gen.generate(&feed, 0.8, 10.0, 5000);
         assert!(r1.is_ok());
         let b1 = r1.unwrap_or_default();
-        assert_eq!(b1[0].bid_id, 1);
-        assert_eq!(b1[1].bid_id, 2);
+        assert_eq!(b1[0].bid.bid_id, 1);
+        assert_eq!(b1[1].bid.bid_id, 2);
         let feed1 = MarketFeed {
             market_type: MarketType::Spot,
             timestamp: 2000,
@@ -784,7 +783,7 @@ mod tests {
         let r2 = gen.generate(&feed1, 0.8, 10.0, 6000);
         assert!(r2.is_ok());
         let b2 = r2.unwrap_or_default();
-        assert_eq!(b2[0].bid_id, 3);
+        assert_eq!(b2[0].bid.bid_id, 3);
     }
 
     // ===== T66: timestamp（now_ms）与 resource_id 传播 =====
@@ -795,8 +794,8 @@ mod tests {
         let result = gen.generate(&feed, 0.8, 10.0, 5000);
         assert!(result.is_ok());
         let bids = result.unwrap_or_default();
-        assert_eq!(bids[0].timestamp, 5000);
-        assert_eq!(bids[1].timestamp, 5000);
+        assert_eq!(bids[0].bid.submit_at, 5000);
+        assert_eq!(bids[1].bid.submit_at, 5000);
         assert_eq!(bids[0].resource_id, 42);
         assert_eq!(bids[1].resource_id, 42);
     }
@@ -820,8 +819,8 @@ mod tests {
         assert!(result.is_ok());
         let bids = result.unwrap_or_default();
         assert_eq!(bids.len(), 2);
-        assert!((bids[0].price - 0.8).abs() < 1e-6);
-        assert_eq!(bids[0].side, BidSide::Buy);
+        assert!((bids[0].bid.segments[0].price.0 - 0.8).abs() < 1e-6);
+        assert_eq!(bids[0].bid.segments[0].direction, TradeDir::Buy);
     }
 
     // ===== T68: Buy 价格地板 0 =====
@@ -851,7 +850,7 @@ mod tests {
         let result = gen.generate(&feed, 0.8, 10.0, 5000);
         assert!(result.is_ok());
         let bids = result.unwrap_or_default();
-        assert!((bids[0].price - 0.0).abs() < f32::EPSILON);
+        assert!((bids[0].bid.segments[0].price.0 - 0.0).abs() < 1e-6);
     }
 
     // ===== T69: 电量截断 max_quantity =====
@@ -860,7 +859,7 @@ mod tests {
         let feed = make_feed_2prices();
         let mut gen = make_generator(
             MockBidIntentSource::new(BidIntent {
-                side: BidSide::Sell,
+                side: TradeDir::Sell,
                 target_quantity: 8.0,
             }),
             MockBidOptimizer::new(BidOptimization {
@@ -872,7 +871,7 @@ mod tests {
         let result = gen.generate(&feed, 0.8, 10.0, 5000);
         assert!(result.is_ok());
         let bids = result.unwrap_or_default();
-        assert!((bids[0].quantity - 5.0).abs() < f32::EPSILON);
+        assert_eq!(bids[0].bid.segments[0].volume_kwh, 5000.0);
     }
 
     // ===== T70: 电量截断 capacity =====
@@ -888,7 +887,7 @@ mod tests {
             strategy,
             42,
             Box::new(MockBidIntentSource::new(BidIntent {
-                side: BidSide::Sell,
+                side: TradeDir::Sell,
                 target_quantity: 8.0,
             })),
             Box::new(MockBidOptimizer::new(BidOptimization {
@@ -900,7 +899,7 @@ mod tests {
         let result = gen.generate(&feed, 0.8, 4.0, 5000);
         assert!(result.is_ok());
         let bids = result.unwrap_or_default();
-        assert!((bids[0].quantity - 4.0).abs() < f32::EPSILON);
+        assert_eq!(bids[0].bid.segments[0].volume_kwh, 4000.0);
     }
 
     // ===== T71: SOC 门控 —— Sell 且 SOC < 门限 → 空（门控先于 optimize）=====
@@ -910,7 +909,7 @@ mod tests {
         // 优化器恒失败：若门控未先生效，会走保守回退仍生成非空 bids
         let mut gen = make_generator(
             MockBidIntentSource::new(BidIntent {
-                side: BidSide::Sell,
+                side: TradeDir::Sell,
                 target_quantity: 5.0,
             }),
             MockBidOptimizer::new_failing(),
@@ -967,7 +966,7 @@ mod tests {
         assert!(result.is_ok());
         let bids = result.unwrap_or_default();
         assert_eq!(bids.len(), 2);
-        assert_eq!(bids[0].side, BidSide::Sell);
+        assert_eq!(bids[0].bid.segments[0].direction, TradeDir::Sell);
     }
 
     // ===== T75: 优化失败 → 保守回退（margin 加价 + 电量截断）=====
@@ -976,7 +975,7 @@ mod tests {
         let feed = make_feed_2prices();
         let mut gen = make_generator(
             MockBidIntentSource::new(BidIntent {
-                side: BidSide::Sell,
+                side: TradeDir::Sell,
                 target_quantity: 2.0,
             }),
             MockBidOptimizer::new_failing(),
@@ -985,8 +984,8 @@ mod tests {
         let result = gen.generate(&feed, 0.8, 10.0, 5000);
         assert!(result.is_ok());
         let bids = result.unwrap_or_default();
-        assert!((bids[0].price - 1.0).abs() < 1e-6);
-        assert!((bids[0].quantity - 2.0).abs() < f32::EPSILON);
+        assert!((bids[0].bid.segments[0].price.0 - 1.0).abs() < 1e-6);
+        assert_eq!(bids[0].bid.segments[0].volume_kwh, 2000.0);
     }
 
     // ===== T76: 意图 + 优化双失败 → 规则意图 + 保守优化仍生成 =====
@@ -1002,9 +1001,9 @@ mod tests {
         assert!(result.is_ok());
         let bids = result.unwrap_or_default();
         assert_eq!(bids.len(), 2);
-        assert_eq!(bids[0].side, BidSide::Sell);
-        assert!((bids[0].price - 1.0).abs() < 1e-6);
-        assert!((bids[1].price - 0.4).abs() < 1e-6);
+        assert_eq!(bids[0].bid.segments[0].direction, TradeDir::Sell);
+        assert!((bids[0].bid.segments[0].price.0 - 1.0).abs() < 1e-6);
+        assert!((bids[1].bid.segments[0].price.0 - 0.4).abs() < 1e-6);
     }
 
     // ===== T77: 发布失败 → PublishFailed 传播 =====
@@ -1013,7 +1012,7 @@ mod tests {
         let feed = make_feed_2prices();
         let mut gen = make_generator(
             MockBidIntentSource::new(BidIntent {
-                side: BidSide::Sell,
+                side: TradeDir::Sell,
                 target_quantity: 5.0,
             }),
             MockBidOptimizer::new(BidOptimization {
@@ -1062,7 +1061,7 @@ mod tests {
         let result = gen.generate(&feed, 0.8, 10.0, 5000);
         assert!(result.is_ok());
         let bids = result.unwrap_or_default();
-        assert_eq!(bids[0].market_type, MarketType::DemandResponse);
+        assert_eq!(bids[0].bid.market, MarketType::DemandResponse);
     }
 
     // ===== T80: 发布调用证据 —— Ok 且非空即证明 publish_bids 已执行 =====

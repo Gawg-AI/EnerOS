@@ -56,7 +56,7 @@ pub struct DelayStats {
 ///
 /// # 用法
 ///
-/// ```ignore
+/// ```text
 /// use eneros_tsn_time::{DelayStats, LatencyProbe};
 /// use core::time::Duration;
 ///

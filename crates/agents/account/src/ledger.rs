@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use crate::types::{EnergyAccount, FlowDir, FrozenAmount, LedgerEntry};
+use crate::types::{MilliYuan, EnergyAccount, FlowDir, FrozenAmount, LedgerEntry};
 use crate::{AccountManager, EconError};
 
 /// 内存账户存储
@@ -47,12 +47,14 @@ impl AccountStore {
     }
 
     /// 计算账户已冻结但未释放的总金额
-    fn frozen_total(&self, account_id: u64) -> f64 {
-        self.freezes
-            .iter()
-            .filter(|f| f.account == account_id && !f.released)
-            .map(|f| f.amount_yuan)
-            .sum()
+    fn frozen_total(&self, account_id: u64) -> MilliYuan {
+        let mut total = MilliYuan(0);
+        for f in self.freezes.iter().filter(|f| f.account == account_id && !f.released) {
+            if let Some(v) = total.checked_add(f.amount) {
+                total = v;
+            }
+        }
+        total
     }
 }
 
@@ -67,7 +69,7 @@ impl AccountManager for AccountStore {
             account_id: self.next_account_id,
             owner,
             balance_kwh: 0.0,
-            balance_yuan: 0.0,
+            balance_yuan: MilliYuan::ZERO,
             created_at: 0,
             frozen: false,
         };
@@ -76,7 +78,7 @@ impl AccountManager for AccountStore {
         Ok(acct)
     }
 
-    fn balance(&self, account_id: u64) -> Result<(f64, f64), EconError> {
+    fn balance(&self, account_id: u64) -> Result<(f64, MilliYuan), EconError> {
         let idx = self
             .find_account(account_id)
             .ok_or(EconError::AccountNotFound)?;
@@ -89,7 +91,7 @@ impl AccountManager for AccountStore {
             .find_account(entry.account)
             .ok_or(EconError::AccountNotFound)?;
 
-        if entry.amount_kwh < 0.0 || entry.amount_yuan < 0.0 {
+        if entry.amount_kwh < 0.0 || entry.amount_yuan.0 < 0 {
             return Err(EconError::InvalidEntry);
         }
 
@@ -104,15 +106,24 @@ impl AccountManager for AccountStore {
         match entry.direction {
             FlowDir::Credit => {
                 acct.balance_kwh += entry.amount_kwh;
-                acct.balance_yuan += entry.amount_yuan;
+                acct.balance_yuan = acct
+                    .balance_yuan
+                    .checked_add(entry.amount_yuan)
+                    .ok_or(EconError::InvalidEntry)?;
             }
             FlowDir::Debit => {
-                let available_yuan = acct.balance_yuan - frozen_total;
+                let available_yuan = acct
+                    .balance_yuan
+                    .checked_sub(frozen_total)
+                    .ok_or(EconError::InsufficientBalance)?;
                 if acct.balance_kwh < entry.amount_kwh || available_yuan < entry.amount_yuan {
                     return Err(EconError::InsufficientBalance);
                 }
                 acct.balance_kwh -= entry.amount_kwh;
-                acct.balance_yuan -= entry.amount_yuan;
+                acct.balance_yuan = acct
+                    .balance_yuan
+                    .checked_sub(entry.amount_yuan)
+                    .ok_or(EconError::InsufficientBalance)?;
             }
         }
 
@@ -120,12 +131,12 @@ impl AccountManager for AccountStore {
         Ok(())
     }
 
-    fn freeze(&mut self, account_id: u64, amount: f64) -> Result<u64, EconError> {
+    fn freeze(&mut self, account_id: u64, amount: MilliYuan) -> Result<u64, EconError> {
         let idx = self
             .find_account(account_id)
             .ok_or(EconError::AccountNotFound)?;
 
-        if amount <= 0.0 {
+        if amount.0 <= 0 {
             return Err(EconError::InvalidEntry);
         }
 
@@ -136,7 +147,10 @@ impl AccountManager for AccountStore {
 
         // 可用余额 = 总余额 - 已冻结金额
         let frozen_total = self.frozen_total(account_id);
-        let available = acct.balance_yuan - frozen_total;
+        let available = acct
+            .balance_yuan
+            .checked_sub(frozen_total)
+            .ok_or(EconError::InsufficientBalance)?;
         if available < amount {
             return Err(EconError::InsufficientBalance);
         }
@@ -147,7 +161,7 @@ impl AccountManager for AccountStore {
         self.freezes.push(FrozenAmount {
             freeze_id,
             account: account_id,
-            amount_yuan: amount,
+            amount,
             at: 0,
             released: false,
         });
@@ -174,6 +188,7 @@ impl AccountManager for AccountStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MilliYuan;
     use crate::entry::create_entry;
 
     #[test]
@@ -183,7 +198,7 @@ mod tests {
         assert_eq!(acct.account_id, 1);
         assert_eq!(acct.owner, 100);
         assert_eq!(acct.balance_kwh, 0.0);
-        assert_eq!(acct.balance_yuan, 0.0);
+        assert_eq!(acct.balance_yuan, MilliYuan::ZERO);
         assert!(!acct.frozen);
     }
 
@@ -205,7 +220,7 @@ mod tests {
 
         let (kwh, yuan) = store.balance(1).unwrap();
         assert_eq!(kwh, 50.0);
-        assert_eq!(yuan, 25.0);
+        assert_eq!(yuan, MilliYuan(25_000), "25 元 = 25000 毫元");
     }
 
     #[test]
@@ -221,7 +236,7 @@ mod tests {
 
         let (kwh, yuan) = store.balance(1).unwrap();
         assert_eq!(kwh, 70.0);
-        assert_eq!(yuan, 35.0);
+        assert_eq!(yuan, MilliYuan(35_000), "35 元 = 35000 毫元");
     }
 
     #[test]
@@ -245,7 +260,7 @@ mod tests {
         let credit = create_entry(1, FlowDir::Credit, 100.0, 100.0, None, "deposit");
         store.post(credit).unwrap();
 
-        let freeze_id = store.freeze(1, 60.0).unwrap();
+        let freeze_id = store.freeze(1, MilliYuan(60_000)).unwrap();
         assert_eq!(freeze_id, 1);
 
         // 冻结后，可用余额不足以支持大额支出
@@ -259,7 +274,7 @@ mod tests {
         store.post(debit2).unwrap();
 
         let (_, yuan) = store.balance(1).unwrap();
-        assert_eq!(yuan, 50.0);
+        assert_eq!(yuan, MilliYuan(50_000), "100-50 = 50 元");
     }
 
     #[test]
@@ -270,7 +285,7 @@ mod tests {
         let credit = create_entry(1, FlowDir::Credit, 100.0, 100.0, None, "deposit");
         store.post(credit).unwrap();
 
-        let freeze_id = store.freeze(1, 30.0).unwrap();
+        let freeze_id = store.freeze(1, MilliYuan(30_000)).unwrap();
         store.unfreeze(freeze_id).unwrap();
 
         let result = store.unfreeze(freeze_id);

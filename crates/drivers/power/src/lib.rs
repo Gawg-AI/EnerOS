@@ -9,7 +9,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_power::{on_power_loss, advance_sequence, PowerEvent, ShutdownStage};
 //!
 //! // Register power-loss interrupt callback (called by detect module on IRQ)

@@ -1,4 +1,4 @@
-//! PCR 操作与度量策略 (v0.159.0).
+//! PCR 操作与度量策略 (workspace v0.192.0).
 //!
 //! 实现 PCR（Platform Configuration Register）管理和度量策略。
 //! PCR 是 TPM 中只能扩展不能直接写入的寄存器，用于记录平台状态度量。

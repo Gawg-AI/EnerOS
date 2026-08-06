@@ -1,0 +1,33 @@
+[package]
+name = "eneros-services"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS reference EL0 services — svc-hello/svc-pi/svc-hog/svc-fault (no_std, aarch64-unknown-none)"
+
+[lib]
+name = "eneros_services"
+path = "src/lib.rs"
+
+[[bin]]
+name = "svc-hello"
+path = "src/bin/svc-hello.rs"
+
+[[bin]]
+name = "svc-pi"
+path = "src/bin/svc-pi.rs"
+
+[[bin]]
+name = "svc-hog"
+path = "src/bin/svc-hog.rs"
+
+[[bin]]
+name = "svc-fault"
+path = "src/bin/svc-fault.rs"
+
+[dependencies]
+eneros-ipc-wire = { path = "../../abi/ipc-wire", version = "0.212.0" }
+
+[features]
+default = []

@@ -1,4 +1,4 @@
-//! 协同协调 — 信用分配 (v0.188.0).
+//! 协同协调 — 信用分配 (workspace v0.192.0).
 //!
 //! 将全局 Reward 分配到各 Agent（信用分配问题）。
 
@@ -108,6 +108,7 @@ mod tests {
                 })
                 .collect(),
             global_reward: global,
+            old_probs: alloc::vec![0.5; rewards.len()],
         }
     }
 
@@ -128,6 +129,7 @@ mod tests {
         let jt = JointTransition {
             per_agent: Vec::new(),
             global_reward: 5.0,
+            old_probs: Vec::new(),
         };
         assert!(credit.credit(&jt).is_empty());
     }

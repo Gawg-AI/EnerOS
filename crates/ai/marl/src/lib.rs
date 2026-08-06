@@ -1,4 +1,4 @@
-//! EnerOS 多 Agent 强化学习 (v0.188.0) — P4-D 高级 AI.
+//! EnerOS 多 Agent 强化学习 (workspace v0.192.0) — P4-D 高级 AI.
 //!
 //! 实现 MARL 框架：MAPPO（集中训练分散执行）+ 信用分配 + 联邦协同进化。
 //! 多个边缘 Agent 在联邦协同中共同进化，优化全局收益。

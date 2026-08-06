@@ -1,12 +1,4 @@
-# ============================================================
-# EnerOS / Power Native Agent OS — CI Pipeline
-# Version: v0.115.0
-# 蓝图 §七 CI/CD 规范
-# ============================================================
-# 检查项：fmt / clippy / cargo-deny / test / 交叉编译 / commitlint / 工作区整洁
-# ============================================================
-
-name: CI
+name: EnerOS formal baseline
 
 on:
   push:
@@ -14,261 +6,178 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
-  RUST_NIGHTLY: nightly-2026-04-04
-  TARGET: aarch64-unknown-none
-  RUSTC_WRAPPER: sccache
+  RUST_BACKTRACE: "1"
+  SOURCE_DATE_EPOCH: "1785465257"
+  ENEROS_RELEASE_PUBLIC_KEY_HEX: "8e5150375a22ae2ad55ea85a3e7a8faee8196315a413163fd4778c82c59af9a7"
+  ENEROS_RELEASE_KEY_ID_HEX: "4e28c578ebd8c3c68b83ff1d0b1a16df"
+  ENEROS_PLATFORM_ID_HEX: "6afc39cf058a1ca52a5e36d8eefa1463"
 
 jobs:
-  # ===== 提交信息规范检查 =====
-  commitlint:
-    name: Commit Message Lint
+  g0-fail-closed:
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Lint commit messages
-        uses: wagoid/commitlint-github-action@v5
-        with:
-          configFile: .commitlintrc.yml
-
-  # ===== 代码质量检查 =====
-  quality-check:
-    name: Code Quality
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly-2026-04-04
+      - uses: dtolnay/rust-toolchain@nightly-2026-04-04
         with:
           components: rust-src, clippy, rustfmt
-          targets: aarch64-unknown-none
+          targets: aarch64-unknown-none,aarch64-unknown-uefi
 
-      - name: Install sccache
-        run: cargo install sccache --locked || true
+      - name: Fetch locked materials
+        run: cargo fetch --locked
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+      - name: Prove offline locked resolution
+        run: cargo metadata --locked --offline --format-version 1 > /dev/null
 
-      - name: Cache sccache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/sccache
-            ~/.sccache
-          key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-sccache-
-
-      - name: Format check
+      - name: Formatting
         run: cargo fmt --all -- --check
 
-      - name: Clippy check
-        # eneros-kernel and eneros-hello excluded: both define #[panic_handler]
-        # / #[lang = "eh_personality"] which conflict with std on host target.
-        # They are validated via cross-build step below.
-        # eneros-runtime was converted to a library in v0.4.0 and is now host-testable.
-        run: cargo clippy --workspace --exclude eneros-kernel --exclude eneros-hello --all-targets -- -D warnings
+      - name: Product profile and forbidden-closure audit
+        run: cargo xtask audit all
 
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked || true
-
-      - name: cargo-deny check
-        run: cargo deny check advisories licenses bans sources
-
-  # ===== 单元测试 =====
-  test:
-    name: Unit Tests
-    runs-on: ubuntu-22.04
-    needs: quality-check
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly-2026-04-04
-        with:
-          components: rust-src
-          targets: aarch64-unknown-none
-
-      - name: Cache cargo registry
+      - name: seL4 kernel toolchain cache (restore)
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.tool_cache }}/sel4
+            target/sel4
+          key: sel4-${{ runner.os }}-v0.192.0
 
-      - name: Run tests
-        # eneros-kernel and eneros-hello excluded: both define
-        # #[panic_handler] / #![no_main] which can't be tested on host.
-        # eneros-runtime (v0.4.0) and eneros-hal (v0.5.0+) are library crates
-        # and are host-testable.
-        # Note: eneros-hal arm64 module (v0.6.0 core + v0.7.0 peripherals + v0.8.0 mm + v0.9.0 partition) is cfg-gated by
-        # #[cfg(target_arch = "aarch64")] and excluded from host tests.
-        # eneros-heap (v0.10.0) is a standalone no_std crate with no arch-specific code, host-testable.
-        run: cargo test --workspace --exclude eneros-kernel --exclude eneros-hello
-
-      - name: Run eneros-hal mock tests
-        run: cargo test -p eneros-hal --features mock
-
-  # ===== 交叉编译验证 =====
-  cross-build:
-    name: Cross Compile (aarch64-unknown-none)
-    runs-on: ubuntu-22.04
-    needs: quality-check
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly-2026-04-04
-        with:
-          components: rust-src
-          targets: aarch64-unknown-none
-
-      - name: Install cross-compile tools
+      - name: Build seL4 kernel + root image (ADR-0023, KRN-006)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          if [ ! -f target/sel4/elfloader-arm-qemu-arm-virt ]; then
+            SEL4_CACHE="${{ runner.tool_cache }}/sel4" third_party/sel4-build.sh
+          else
+            echo "target/sel4 already present, skipping seL4 rebuild"
+          fi
 
-      - name: Install sccache
-        run: cargo install sccache --locked || true
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-cross-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-cross-
-
-      - name: Cache sccache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/sccache
-            ~/.sccache
-          key: ${{ runner.os }}-sccache-cross-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-sccache-cross-
-
-      - name: Build kernel crate
-        run: cargo build -p eneros-kernel --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build runtime crate
-        run: cargo build -p eneros-runtime --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build board crate
-        run: cargo build -p eneros-board --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build sel4-sys crate
-        run: cargo build -p eneros-sel4-sys --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build hello crate
-        run: cargo build -p eneros-hello --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build hal crate
-        run: cargo build -p eneros-hal --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build mm crate
-        run: cargo build -p eneros-mm --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build heap crate
-        run: cargo build -p eneros-heap --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build user-heap crate
-        run: cargo build -p eneros-user-heap --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build time crate
-        run: cargo build -p eneros-time --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build watchdog crate
-        run: cargo build -p eneros-watchdog --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build panic crate
-        run: cargo build -p eneros-panic --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build smp crate
-        run: cargo build -p eneros-smp --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build sched crate
-        run: cargo build -p eneros-sched --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build power crate
-        run: cargo build -p eneros-power --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build ipc crate
-        run: cargo build -p eneros-ipc --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build controlbus crate
-        run: cargo build -p eneros-controlbus --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build storage crate
-        run: cargo build -p eneros-storage --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build fs crate
-        run: cargo build -p eneros-fs --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build tsdb crate
-        run: cargo build -p eneros-tsdb --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build config crate
-        run: cargo build -p eneros-config --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build net crate (v0.27.0 Ethernet driver + v0.28.0 TCP/IP stack + v0.29.0 Socket abstraction)
-        run: cargo build -p eneros-net --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build cellular crate (v0.30.0/v0.30.1/v0.30.2 Cellular Modem + PPP + Failover)
-        run: cargo build -p eneros-cellular --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-      - name: Build crypto crate (v0.33.0 国密 SM2/SM3/SM4 + CSRNG + PKI 证书基础)
-        run: cargo build -p eneros-crypto --target ${{ env.TARGET }} -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
-
-  # ===== 工作区整洁检查 =====
-  workspace-clean:
-    name: Workspace Clean Check
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Check .gitignore covers target/
+      - name: QEMU seL4 boot evidence (eneros.sel4.v1, fail-closed)
         run: |
-          if ! grep -q "^target/" .gitignore; then
-            echo "ERROR: target/ not in .gitignore"
+          set -euo pipefail
+          if [ ! -f target/sel4/eneros-root-image-arm-qemu-arm-virt ]; then
+            echo "target/sel4/eneros-root-image-arm-qemu-arm-virt missing (seL4 build skipped?)" >&2
             exit 1
           fi
-          if ! grep -q "^build/" .gitignore; then
-            echo "ERROR: build/ not in .gitignore"
+          set +e
+          timeout 60 qemu-system-aarch64 -machine virt,gic-version=3,secure=off -cpu cortex-a57 \
+            -smp 4 -m 1024M -nographic -kernel target/sel4/eneros-root-image-arm-qemu-arm-virt \
+            > target/qemu-sel4-boot.log 2>&1
+          rc=$?
+          set -e
+          # 124 = timeout（预期：日志证据已采集完成）；0 = 正常退出；其余视为 QEMU 启动失败。
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+            echo "QEMU seL4 boot failed with exit $rc" >&2
+            cat target/qemu-sel4-boot.log >&2
             exit 1
           fi
-          if ! grep -q "^\*.elf" .gitignore; then
-            echo "ERROR: *.elf not in .gitignore"
+          for t in sel4-kernel-init bootinfo-valid cap-create ipc-loopback root-heartbeat; do
+            if ! grep -q "\"test\":\"$t\",\"result\":\"PASS\"" target/qemu-sel4-boot.log; then
+              echo "QEMU seL4 evidence missing PASS for $t" >&2
+              exit 1
+            fi
+          done
+          echo "QEMU seL4 boot: 5/5 PASS"
+
+      - name: Build every declared profile through the single entry
+        run: cargo xtask build all
+
+      - name: Formal xtask unit tests
+        run: cargo xtask test unit
+
+      - name: CI policy scan
+        run: cargo xtask test ci-policy
+
+      - name: Skip timeout and child-failure mutations
+        run: cargo xtask test gate-semantics
+
+      - name: Boot format and loader tests
+        run: cargo test --locked -p eneros-boot-protocol -p eneros-image-format -p eneros-boot-manager-uefi
+
+      - name: Verify frozen Cargo graph and binary BOM
+        shell: pwsh
+        run: tools/delivery/cargo-closure.ps1 -VerifyDirectory product/closure -Repository .
+
+      - name: Forbidden package mutation must fail
+        shell: bash
+        run: |
+          if cargo xtask audit profile qemu-prod --fault-inject-package mockall; then
+            echo "forbidden package mutation was accepted" >&2
             exit 1
           fi
-          if ! grep -q "^\*.dtb" .gitignore; then
-            echo "ERROR: *.dtb not in .gitignore"
+
+      - name: Legacy entrypoints must fail
+        shell: bash
+        run: |
+          if make; then
+            echo "legacy Makefile was accepted" >&2
             exit 1
           fi
-          echo "✓ .gitignore covers all required patterns"
+          if tools/flash.sh --help; then
+            echo "legacy flash script was accepted" >&2
+            exit 1
+          fi
+
+      - name: VRF-002 dual-build byte comparison (bit-identical payload)
+        run: cargo xtask build-compare
+
+  g1-fuzz-gates:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly-2026-04-04
+        with:
+          components: rust-src, clippy, rustfmt
+          targets: aarch64-unknown-none,aarch64-unknown-uefi
+
+      - name: Cargo fetch locked
+        run: cargo fetch --locked
+
+      - name: seL4 kernel toolchain cache (restore)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.tool_cache }}/sel4
+            target/sel4
+          key: sel4-${{ runner.os }}-v0.192.0
+
+      - name: Build seL4 kernel + root image (ADR-0023, image dependency)
+        run: |
+          if [ ! -f target/sel4/elfloader-arm-qemu-arm-virt ]; then
+            SEL4_CACHE="${{ runner.tool_cache }}/sel4" third_party/sel4-build.sh
+          else
+            echo "target/sel4 already present, skipping seL4 rebuild"
+          fi
+
+      - name: Workspace clippy (fail-closed, -D warnings)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Workspace full test suite (fail-closed)
+        run: cargo test --workspace --locked
+
+      - name: Cargo deny license/advisory (fail-closed)
+        run: |
+          cargo install cargo-deny --locked --root /tmp/cargo-deny
+          /tmp/cargo-deny/bin/cargo-deny check --manifest-path Cargo.toml
+
+      - name: Image build (fail-closed)
+        run: cargo xtask image qemu-prod
+
+      - name: Evidence gate (fail-closed, machine-recomputable)
+        run: cargo xtask evidence verify
+
+      - name: libFuzzer 6 parse surfaces (VRF-001, fail-closed)
+        run: |
+          for t in boot_protocol ipc_wire modbus_rtu iec104 elf_loader gguf_loader; do
+            cargo xtask fuzz $t 10000
+          done
+
+      - name: VRF-003 gate semantics (no silent pass)
+        run: cargo xtask test gate-semantics

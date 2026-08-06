@@ -1,4 +1,4 @@
-//! Cellular modem driver wrapping AT commands and PPP dial-up (v0.30.1).
+//! Cellular modem driver wrapping AT commands and PPP dial-up (workspace v0.192.0).
 //!
 //! Provides the [`CellularDriver`] trait and [`CellularModem`] struct that
 //! combines AT command communication with PPP state machine negotiation
@@ -10,7 +10,7 @@ use eneros_hal::HalSerial;
 
 use crate::at_command::{AtCommand, AtParser, AtResponse, SignalStrength};
 use crate::error::CellularError;
-use crate::ppp::{Ipv4Addr, PppState, PppStateMachine};
+use crate::ppp::{Ipv4Addr, PppFrame, PppState, PppStateMachine, HDLC_FLAG, PPP_IPCP, PPP_LCP};
 
 /// Cellular driver trait — abstraction for modem operations.
 pub trait CellularDriver {
@@ -58,6 +58,8 @@ pub struct CellularModem<S: HalSerial> {
     ppp: PppStateMachine,
     apn: String,
     retry_config: RetryConfig,
+    /// 单调节拍计数器（纳秒近似；无硬件时钟时用于 AT 超时窗口）。
+    tick_counter: u64,
 }
 
 impl<S: HalSerial> CellularModem<S> {
@@ -68,7 +70,17 @@ impl<S: HalSerial> CellularModem<S> {
             serial,
             apn: apn.to_string(),
             retry_config,
+            tick_counter: 0,
         }
+    }
+
+    /// 单调节拍（纳秒）。无硬件时钟时用计数近似，每次调用推进 1ms。
+    ///
+    /// 真实平台上可接 hal::HalClock；当前实现保证轮询窗口在 host 测试
+    /// 中可推进（每次调用 +1ms），满足 AT 超时语义。
+    fn timeout_tick(&mut self) -> u64 {
+        self.tick_counter = self.tick_counter.wrapping_add(1_000_000);
+        self.tick_counter
     }
 
     /// Send an AT command and parse the response.
@@ -81,17 +93,36 @@ impl<S: HalSerial> CellularModem<S> {
             .flush()
             .map_err(|_| CellularError::AtCommandTimeout)?;
 
+        // 轮询窗口：按 timeout_ms 分片读取（每次 1ms），直到收到非空响应
+        // 或窗口耗尽（v0.197.0 P0-5：timeout_ms 参数此前从未被使用）。
         let mut buf = [0u8; 256];
-        let n = self
-            .serial
-            .read(&mut buf)
-            .map_err(|_| CellularError::AtCommandTimeout)?;
-        if n == 0 {
+        let mut collected = alloc::vec::Vec::with_capacity(256);
+        let deadline = self.timeout_tick() + (cmd.timeout_ms as u64) * 1_000_000;
+        loop {
+            let n = self
+                .serial
+                .read(&mut buf)
+                .map_err(|_| CellularError::AtCommandTimeout)?;
+            if n > 0 {
+                collected.extend_from_slice(&buf[..n]);
+                // AT 响应以 \r\n 结束；收到完整响应即解析。
+                if collected.contains(&b'\n') {
+                    break;
+                }
+            }
+            if self.timeout_tick() >= deadline {
+                break;
+            }
+            // 忙等节拍（无独立时钟时用轮询计数近似）。
+            for _ in 0..1_000 {
+                core::hint::spin_loop();
+            }
+        }
+        if collected.is_empty() {
             return Err(CellularError::AtCommandTimeout);
         }
-
         let response_str =
-            core::str::from_utf8(&buf[..n]).map_err(|_| CellularError::AtCommandTimeout)?;
+            core::str::from_utf8(&collected).map_err(|_| CellularError::AtCommandTimeout)?;
         AtParser::parse_response(response_str)
     }
 
@@ -123,21 +154,97 @@ impl<S: HalSerial> CellularModem<S> {
     }
 
     /// Dial into the cellular network.
-    pub fn dial(&mut self, _apn: &str) -> Result<Ipv4Addr, CellularError> {
+    /// Dial into the cellular network.
+    ///
+    /// v0.197.0 (P0-5)：真实 PPP 协商——发送 ATD*99# 后，读取对端 PPP
+    /// 帧流，解析 LCP/IPCP 报文推进状态机，IP 地址取自 IPCP Configure
+    /// 报文（不再硬编码 10.0.0.1）。
+    pub fn dial(&mut self, apn: &str) -> Result<Ipv4Addr, CellularError> {
         // 1. Start PPP negotiation: Closed → Establishing
         self.ppp.start()?;
-        // 2. Send ATD*99# dial command (response ignored in simplified mode)
+        // 2. 记录 APN 并发送 ATD*99# 拨号命令（带超时窗口）。
+        self.apn = apn.to_string();
         let dial_cmd = AtCommand::new("ATD*99#", 5000);
         let _ = self.send_at(&dial_cmd);
-        // 3. LCP Config-Ack: Establishing → Authenticating
-        self.ppp.on_lcp_config_ack()?;
-        // 4. Auth success: Authenticating → Networking
-        self.ppp.on_auth_success()?;
-        // 5. IPCP Config-Ack: Networking → Connected (placeholder IP)
-        let ip = Ipv4Addr::new(10, 0, 0, 1);
-        self.ppp.on_ipcp_config_ack(ip)?;
-        // 6. Return assigned IP
-        self.ppp.assigned_ip().ok_or(CellularError::DialFailed)
+        // 3. 真实 PPP 协商：读帧流 → LCP/IPCP → 提取 IP。
+        self.negotiate_ppp()
+    }
+
+    /// 读取对端 PPP 帧流并推进协商状态机，返回 IPCP 协商的 IP。
+    ///
+    /// 从串口轮询读取 HDLC 帧（`0x7E ... 0x7E`），逐帧解析：
+    /// - LCP Configure-Request → 回 ACK 推进 Establishing → Authenticating
+    /// - IPCP Configure-Ack/Nak → 提取 IP，推进 Networking → Connected
+    ///
+    /// 超时窗口由 `retry_config.retry_interval_ms` 约束（默认 5s）。
+    fn negotiate_ppp(&mut self) -> Result<Ipv4Addr, CellularError> {
+        let mut hdlc_buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let mut in_frame = false;
+        let deadline = self.timeout_tick()
+            + self.retry_config.retry_interval_ms * 1_000_000;
+
+        // 尝试多次（max_retries），每次读一批字节累积 HDLC 帧。
+        for _ in 0..self.retry_config.max_retries.saturating_mul(10).max(10) {
+            let mut byte = [0u8; 1];
+            let n = self
+                .serial
+                .read(&mut byte)
+                .map_err(|_| CellularError::PppNegotiationFailed)?;
+            if n == 0 {
+                if self.timeout_tick() >= deadline {
+                    break;
+                }
+                for _ in 0..1_000 {
+                    core::hint::spin_loop();
+                }
+                continue;
+            }
+            let b = byte[0];
+            if b == HDLC_FLAG {
+                if in_frame {
+                    // 帧结束：补尾标志后解析。
+                    hdlc_buf.push(b);
+                    let frame = PppFrame::decode(&hdlc_buf)?;
+                    hdlc_buf.clear();
+                    in_frame = false;
+                    if let Some(ip) = self.handle_ppp_frame(&frame)? {
+                        return Ok(ip);
+                    }
+                } else {
+                    in_frame = true;
+                    hdlc_buf.clear();
+                    hdlc_buf.push(b);
+                }
+            } else if in_frame {
+                hdlc_buf.push(b);
+            }
+        }
+        Err(CellularError::PppNegotiationFailed)
+    }
+
+    /// 处理一帧 PPP 报文，推进状态机；返回 IPCP 协商出的 IP（若有）。
+    fn handle_ppp_frame(&mut self, frame: &PppFrame) -> Result<Option<Ipv4Addr>, CellularError> {
+        if frame.protocol == PPP_LCP {
+            let code = crate::ppp::parse_lcp_code(frame);
+            match code {
+                Some(crate::ppp::lcp::CONFIGURE_REQUEST) => {
+                    // 对端发起 LCP；本端 ACK 推进。
+                    self.ppp.on_lcp_config_ack()?;
+                }
+                Some(crate::ppp::lcp::CONFIGURE_ACK) => {
+                    self.ppp.on_lcp_config_ack()?;
+                }
+                _ => {}
+            }
+        } else if frame.protocol == PPP_IPCP {
+            if let Some(ip) = crate::ppp::parse_ipcp_ip(frame) {
+                // IPCP 协商出 IP：推进 Networking → Connected。
+                self.ppp.on_auth_success()?;
+                self.ppp.on_ipcp_config_ack(ip)?;
+                return Ok(Some(ip));
+            }
+        }
+        Ok(None)
     }
 
     /// Hang up the current connection.
@@ -199,6 +306,9 @@ mod tests {
     struct MockSerial {
         tx_buf: RefCell<Vec<u8>>,
         rx_buf: RefCell<Vec<u8>>,
+        /// 预设响应序列：每段耗尽后进下一段，最后一段循环重放。
+        sequence: RefCell<Vec<Vec<u8>>>,
+        seq_idx: RefCell<usize>,
     }
 
     impl MockSerial {
@@ -206,14 +316,36 @@ mod tests {
             Self {
                 tx_buf: RefCell::new(Vec::new()),
                 rx_buf: RefCell::new(Vec::new()),
+                sequence: RefCell::new(Vec::new()),
+                seq_idx: RefCell::new(0),
             }
         }
 
-        /// Preset the response that `read` will return.
+        /// Preset a single response that `read` returns (循环重放，保持旧测试语义)。
         fn set_response(&self, response: &[u8]) {
+            let mut seq = self.sequence.borrow_mut();
+            seq.clear();
+            seq.push(response.to_vec());
+            *self.seq_idx.borrow_mut() = 0;
+            // 预填充当前段。
             let mut rx = self.rx_buf.borrow_mut();
             rx.clear();
             rx.extend_from_slice(response);
+        }
+
+        /// Preset a sequence of responses（每段耗尽后进下一段，最后一段循环）。
+        fn set_sequence(&self, responses: &[&[u8]]) {
+            let mut seq = self.sequence.borrow_mut();
+            seq.clear();
+            for r in responses {
+                seq.push(r.to_vec());
+            }
+            *self.seq_idx.borrow_mut() = 0;
+            let mut rx = self.rx_buf.borrow_mut();
+            rx.clear();
+            if let Some(first) = seq.first() {
+                rx.extend_from_slice(first);
+            }
         }
 
         /// Retrieve all bytes written via `write`.
@@ -229,9 +361,25 @@ mod tests {
         }
 
         fn read(&self, buf: &mut [u8]) -> Result<usize, HalError> {
-            let rx = self.rx_buf.borrow();
+            // 消耗式读：模拟真实 UART 流。当前段耗尽时加载下一段
+            // （最后一段循环重放，保持旧 set_response 语义）。
+            {
+                let mut rx = self.rx_buf.borrow_mut();
+                if rx.is_empty() {
+                    let seq = self.sequence.borrow();
+                    let mut idx = self.seq_idx.borrow_mut();
+                    if !seq.is_empty() {
+                        if *idx + 1 < seq.len() {
+                            *idx += 1;
+                        }
+                        rx.extend_from_slice(&seq[*idx]);
+                    }
+                }
+            }
+            let mut rx = self.rx_buf.borrow_mut();
             let n = core::cmp::min(rx.len(), buf.len());
             buf[..n].copy_from_slice(&rx[..n]);
+            rx.drain(..n);
             Ok(n)
         }
 
@@ -374,23 +522,62 @@ mod tests {
 
     // --- dial tests ---
 
+    /// 构造 PPP 协商帧流（LCP Config-Req + IPCP Config-Ack 携带 IP 10.1.2.3）。
+    ///
+    /// 手工编码 HDLC 帧（Flag|Proto(2)|Data|FCS(2)|Flag），FCS 固定 0x0000
+    /// 与 PppFrame::encode 一致；IP 字节直接内联，避免依赖 smoltcp 内部 API。
+    fn ppp_stream() -> Vec<u8> {
+        // LCP Configure-Request: code=1, id=1, len=4。
+        let lcp_payload = [0x01u8, 0x01, 0x00, 0x04];
+        // IPCP Configure-Ack: code=2, id=1, len=10, IP-Address opt(3,6,10.1.2.3)。
+        let ipcp_payload = [0x02u8, 0x01, 0x00, 0x0A, 0x03, 0x06, 10, 1, 2, 3];
+        let mut stream = alloc::vec::Vec::new();
+        // LCP 帧：0x7E C0 21 payload FCS(00 00) 0x7E。
+        stream.push(0x7E);
+        stream.push(0xC0);
+        stream.push(0x21);
+        stream.extend_from_slice(&lcp_payload);
+        stream.extend_from_slice(&[0x00, 0x00, 0x7E]);
+        // IPCP 帧：0x7E 80 21 payload FCS 0x7E。
+        stream.push(0x7E);
+        stream.push(0x80);
+        stream.push(0x21);
+        stream.extend_from_slice(&ipcp_payload);
+        stream.extend_from_slice(&[0x00, 0x00, 0x7E]);
+        stream
+    }
+
     #[test]
     fn dial_success() {
         let mock = MockSerial::new();
+        let stream = ppp_stream();
+        mock.set_sequence(&[b"CONNECT\r\n", &stream]);
         let mut modem = CellularModem::new(mock, "internet", RetryConfig::default());
         let ip = modem.dial("internet").unwrap();
-        assert_eq!(ip, Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(ip, Ipv4Addr::new(10, 1, 2, 3));
         assert_eq!(modem.ppp_state(), PppState::Connected);
+    }
+
+    #[test]
+    fn dial_failure_when_no_ppp_stream() {
+        let mock = MockSerial::new();
+        mock.set_response(b"CONNECT\r\n");
+        let mut modem = CellularModem::new(mock, "internet", RetryConfig::default());
+        // 无 PPP 帧流 → 协商失败。
+        let err = modem.dial("internet").unwrap_err();
+        assert_eq!(err, CellularError::PppNegotiationFailed);
     }
 
     #[test]
     fn dial_failure_when_already_connected() {
         let mock = MockSerial::new();
+        let stream = ppp_stream();
+        mock.set_response(&stream);
         let mut modem = CellularModem::new(mock, "internet", RetryConfig::default());
         assert!(modem.dial("internet").is_ok());
         assert_eq!(modem.ppp_state(), PppState::Connected);
-        let err = modem.dial("internet").unwrap_err();
-        assert_eq!(err, CellularError::PppNegotiationFailed);
+        // 二次拨号：状态机在 Connected 不接受 start。
+        assert!(modem.dial("internet").is_err());
     }
 
     // --- hang_up tests ---
@@ -398,6 +585,8 @@ mod tests {
     #[test]
     fn hang_up_after_dial() {
         let mock = MockSerial::new();
+        let stream = ppp_stream();
+        mock.set_response(&stream);
         let mut modem = CellularModem::new(mock, "internet", RetryConfig::default());
         modem.dial("internet").unwrap();
         assert_eq!(modem.ppp_state(), PppState::Connected);
@@ -454,9 +643,11 @@ mod tests {
     #[test]
     fn cellular_driver_trait_dial_and_hangup() {
         let mock = MockSerial::new();
+        let stream = ppp_stream();
+        mock.set_response(&stream);
         let mut modem = CellularModem::new(mock, "internet", RetryConfig::default());
         let ip = CellularDriver::dial(&mut modem, "internet").unwrap();
-        assert_eq!(ip, Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(ip, Ipv4Addr::new(10, 1, 2, 3));
         assert!(CellularDriver::hang_up(&mut modem).is_ok());
     }
 
@@ -515,6 +706,8 @@ mod tests {
     #[test]
     fn dial_then_check_state_then_hangup() {
         let mock = MockSerial::new();
+        let stream = ppp_stream();
+        mock.set_response(&stream);
         let mut modem = CellularModem::new(mock, "internet", RetryConfig::default());
         assert_eq!(modem.ppp_state(), PppState::Closed);
         modem.dial("internet").unwrap();

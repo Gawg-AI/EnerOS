@@ -1,4 +1,4 @@
-//! 能力令牌存储（TokenStore）(v0.40.0).
+//! 能力令牌存储（TokenStore）(workspace v0.192.0).
 //!
 //! 提供 [`TokenStore`]，作为 [`CapabilityManager`](crate::capability::manager::CapabilityManager)
 //! 的内部存储层，维护令牌主表和按 owner 索引。

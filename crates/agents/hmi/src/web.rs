@@ -57,6 +57,12 @@ impl HttpMethod {
             Self::Delete => "DELETE",
         }
     }
+
+}
+
+/// 从路径解析审批 ID。
+fn parse_id(s: &str) -> Option<u64> {
+    s.trim().parse::<u64>().ok()
 }
 
 /// HTTP 请求
@@ -129,7 +135,8 @@ impl HttpResponse {
 /// 根据 HTTP 请求和系统状态生成响应。无状态，线程安全。
 #[derive(Debug, Clone, Default)]
 pub struct WebHandler {
-    // 当前无状态，未来可扩展
+    /// 审批管理器（v0.211.0 P0-26：真实状态机，RefCell 支持 &self 访问）。
+    approvals: core::cell::RefCell<crate::approval::ApprovalManager>,
 }
 
 impl WebHandler {
@@ -146,21 +153,58 @@ impl WebHandler {
                 HttpResponse::ok(&json)
             }
             (HttpMethod::Get, "/approvals") => {
-                // 无审批管理器引用，返回空数组
-                HttpResponse::ok("[]")
+                // v0.211.0（P0-26）：返回真实待审批列表（不再恒 "[]"）。
+                let mgr = self.approvals.borrow();
+                let pending = mgr.list_pending();
+                let mut items = alloc::string::String::from("[");
+                for (i, a) in pending.iter().enumerate() {
+                    if i > 0 {
+                        items.push(',');
+                    }
+                    items.push_str(&alloc::format!(
+                        "{{\"id\":{},\"requester\":\"{}\",\"state\":\"{:?}\"}}",
+                        a.id.0, a.requester, a.state
+                    ));
+                }
+                items.push(']');
+                HttpResponse::ok(&items)
             }
             (HttpMethod::Post, path) if path.starts_with("/action") => {
                 // 简化：实际实现需要解析 body 并提交审批
                 HttpResponse::ok(r#"{"status":"submitted"}"#)
             }
             (HttpMethod::Post, path) if path.starts_with("/approve/") => {
-                HttpResponse::ok(r#"{"status":"approved"}"#)
+                // v0.211.0（P0-26）：真实批准——调 ApprovalManager::approve。
+                match parse_id(path.trim_start_matches("/approve/")) {
+                    Some(id) => match self.approvals.borrow_mut().approve(crate::ApprovalId(id)) {
+                        Ok(()) => HttpResponse::ok(r#"{"status":"approved"}"#),
+                        Err(_) => HttpResponse::not_found(),
+                    },
+                    None => HttpResponse::not_found(),
+                }
             }
             (HttpMethod::Post, path) if path.starts_with("/reject/") => {
-                HttpResponse::ok(r#"{"status":"rejected"}"#)
+                // v0.211.0（P0-26）：真实拒绝。
+                match parse_id(path.trim_start_matches("/reject/")) {
+                    Some(id) => match self.approvals.borrow_mut().reject(crate::ApprovalId(id)) {
+                        Ok(()) => HttpResponse::ok(r#"{"status":"rejected"}"#),
+                        Err(_) => HttpResponse::not_found(),
+                    },
+                    None => HttpResponse::not_found(),
+                }
             }
             _ => HttpResponse::not_found(),
         }
+    }
+
+    /// 提交审批（P0-26：真实接入 ApprovalManager）。
+    pub fn submit_action(
+        &self,
+        action: crate::ManualAction,
+        requester: &str,
+        now: u64,
+    ) -> crate::ApprovalId {
+        self.approvals.borrow_mut().submit(action, requester, now)
     }
 
     /// 将系统状态序列化为 JSON 字符串
@@ -411,14 +455,42 @@ mod tests {
         let handler = WebHandler::new();
         let state = make_state();
 
+        // v0.211.0（P0-26）：无审批项时 approve 返回 404（真实状态机）。
         let approve_req = HttpRequest::new(HttpMethod::Post, "/approve/1");
+        let resp = handler.handle(&approve_req, &state);
+        assert_eq!(resp.status, 404, "无审批项时 approve 必须失败");
+
+        // 提交真实审批 → /approvals 可见 → approve 生效。
+        let id = handler.submit_action(
+            crate::ManualAction {
+                id: 1,
+                action_type: "restart_agent".to_string(),
+                target_agent: None,
+                params: String::new(),
+            },
+            "admin",
+            1000,
+        );
+        let approvals_req = HttpRequest::new(HttpMethod::Get, "/approvals");
+        let resp = handler.handle(&approvals_req, &state);
+        assert_eq!(resp.status, 200);
+        assert!(
+            resp.body.contains(&alloc::format!("\"id\":{}", id.0)),
+            "/approvals 必须返回真实审批项: {}",
+            resp.body
+        );
+
+        // approve 真实生效（P0-26）。
+        let approve_req = HttpRequest::new(
+            HttpMethod::Post,
+            &alloc::format!("/approve/{}", id.0),
+        );
         let resp = handler.handle(&approve_req, &state);
         assert_eq!(resp.status, 200);
         assert!(resp.body.contains("approved"));
 
-        let reject_req = HttpRequest::new(HttpMethod::Post, "/reject/1");
-        let resp = handler.handle(&reject_req, &state);
-        assert_eq!(resp.status, 200);
-        assert!(resp.body.contains("rejected"));
+        // 重复 approve：状态已非 Pending → 404（幂等防重放）。
+        let resp2 = handler.handle(&approve_req, &state);
+        assert_eq!(resp2.status, 404, "重复 approve 必须失败（幂等）");
     }
 }

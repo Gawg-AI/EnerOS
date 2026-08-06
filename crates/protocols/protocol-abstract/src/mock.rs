@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use eneros_upa_model::{DataPoint, DeviceId, PointId, PointValue};
 
-use crate::access::PointAccess;
+use crate::access::{PointAccess, PointAccessExt};
 use crate::adapter::{AdapterState, ProtocolAdapter};
 use crate::config::{AdapterConfig, ProtocolType};
 use crate::error::ProtocolError;
@@ -56,10 +56,6 @@ impl PointAccess for MockAdapter {
             .ok_or(ProtocolError::PointNotFound)
     }
 
-    fn read_points(&mut self, point_ids: &[PointId]) -> Vec<Result<DataPoint, ProtocolError>> {
-        point_ids.iter().map(|&id| self.read_point(id)).collect()
-    }
-
     fn write_point(&mut self, point_id: PointId, value: PointValue) -> Result<(), ProtocolError> {
         if let Some(point) = self.points.get_mut(&point_id) {
             point.value = value;
@@ -69,12 +65,12 @@ impl PointAccess for MockAdapter {
         }
     }
 
-    fn write_points(&mut self, cmds: &[(PointId, PointValue)]) -> Vec<Result<(), ProtocolError>> {
-        cmds.iter()
-            .map(|(id, v)| self.write_point(*id, v.clone()))
-            .collect()
+    fn protocol_type(&self) -> ProtocolType {
+        self.protocol_type
     }
+}
 
+impl PointAccessExt for MockAdapter {
     fn read_device_points(&mut self, device_id: DeviceId) -> Result<Vec<DataPoint>, ProtocolError> {
         let result: Vec<DataPoint> = self
             .points
@@ -83,10 +79,6 @@ impl PointAccess for MockAdapter {
             .cloned()
             .collect();
         Ok(result)
-    }
-
-    fn protocol_type(&self) -> ProtocolType {
-        self.protocol_type
     }
 }
 

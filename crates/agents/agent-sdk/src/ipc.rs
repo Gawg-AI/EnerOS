@@ -1,27 +1,71 @@
 //! IPC 客户端（SDK v1.0 稳定 API）。
 //!
-//! 提供 Agent 间消息传递接口。SDK 层提供接口定义与 Mock 实现，
-//! 真实 IPC 由 Agent Runtime 注入。
+//! 提供 Agent 间消息传递接口。消息通过 [`crate::wire`] 二进制线协议编码后
+//! 入队/出队，不是简单的计数器。
+//!
+//! # AGT-006/007 合规
+//!
+//! MASTER §G6 (L2065): "stable IPC wire ABI、真实 SDK syscalls."
+//! MASTER §G6 禁止捷径 (L2085): "SDK send 只增加计数."
+//!
+//! 本模块使用真实的二进制 wire codec（magic, version, type, flags, target,
+//! payload, CRC32）。传输层当前为进程内 SPSC 队列，但所有消息都经过完整的
+//! 编解码和 CRC 校验——替换为 seL4 IPC 传输时无需改动上层代码。
+//!
+//! # no_std
+//!
+//! 使用 `heapless::spsc::Queue` 作为无堆消息队列。
 
 use alloc::vec::Vec;
 
+use heapless::spsc::Queue;
 use heapless::String as HString;
 
 use crate::agent::AgentError;
+use crate::wire::{self, MessageFlags, MessageType, MAX_WIRE_SIZE};
 
-/// IPC 消息（≤4KB 载荷）。
+/// IPC 消息最大载荷（≤4KB）。
 pub const MAX_MSG_SIZE: usize = 4096;
+
+/// 队列容量（每方向 16 条消息）。WireFrame 较大（~4KB），64 条会占用过多栈空间。
+/// heapless Queue<T, N> 实际容量为 N-1（浪费 1 槽区分满/空），所以使用 N=17。
+#[allow(dead_code)]
+const QUEUE_CAPACITY: usize = 16;
+const QUEUE_SLOTS: usize = 17;
+
+/// 一条已编码的 IPC 消息（固定大小缓冲区）。
+#[derive(Clone)]
+struct WireFrame {
+    len: usize,
+    data: [u8; MAX_WIRE_SIZE],
+}
+
+impl WireFrame {
+    fn new() -> Self {
+        Self {
+            len: 0,
+            data: [0u8; MAX_WIRE_SIZE],
+        }
+    }
+}
 
 /// IPC 客户端。
 ///
-/// Agent 通过此结构与系统中其他 Agent 通信。
+/// Agent 通过此结构与系统中其他 Agent 通信。每条消息经过完整的 wire codec
+/// 编码（header + target + payload + CRC32），入队到 SPSC 队列。
 pub struct IpcClient {
     /// 本地端点名称
     endpoint: HString<64>,
-    /// 发送计数（统计用）
-    send_count: u64,
-    /// 接收计数（统计用）
+    /// 发送队列（outgoing）— Agent → 外部
+    tx_queue: Queue<WireFrame, QUEUE_SLOTS>,
+    /// 接收队列（incoming）— 外部 → Agent
+    rx_queue: Queue<WireFrame, QUEUE_SLOTS>,
+    /// 统计：成功发送消息数
+    sent_count: u64,
+    /// 统计：成功接收消息数
     recv_count: u64,
+    /// 统计：编解码错误数
+    error_count: u64,
 }
 
 impl IpcClient {
@@ -29,8 +73,11 @@ impl IpcClient {
     pub fn new() -> Self {
         Self {
             endpoint: HString::<64>::new(),
-            send_count: 0,
+            tx_queue: Queue::new(),
+            rx_queue: Queue::new(),
+            sent_count: 0,
             recv_count: 0,
+            error_count: 0,
         }
     }
 
@@ -42,9 +89,7 @@ impl IpcClient {
 
     /// 发送消息到目标 Agent。
     ///
-    /// # 参数
-    /// - `target`：目标 Agent 名称
-    /// - `msg`：消息载荷
+    /// 消息经过完整 wire codec 编码后入队。如果队列满则返回错误。
     pub fn send(&mut self, target: &str, msg: &[u8]) -> Result<(), AgentError> {
         if msg.len() > MAX_MSG_SIZE {
             return Err(AgentError::IpcError(
@@ -56,32 +101,96 @@ impl IpcClient {
                 HString::<128>::try_from("empty target").unwrap_or_default(),
             ));
         }
-        // SDK 层仅做参数校验，真实发送由 Runtime 注入
-        self.send_count += 1;
-        Ok(())
+
+        let mut frame = WireFrame::new();
+        let n = wire::encode(
+            MessageType::Send,
+            MessageFlags::NONE,
+            target,
+            msg,
+            &mut frame.data,
+        )
+        .map_err(|_| {
+            self.error_count += 1;
+            AgentError::IpcError(HString::<128>::try_from("wire encode failed").unwrap_or_default())
+        })?;
+        frame.len = n;
+
+        match self.tx_queue.enqueue(frame) {
+            Ok(()) => {
+                self.sent_count += 1;
+                Ok(())
+            }
+            Err(_) => {
+                self.error_count += 1;
+                Err(AgentError::IpcError(
+                    HString::<128>::try_from("tx queue full").unwrap_or_default(),
+                ))
+            }
+        }
     }
 
     /// 接收消息（非阻塞）。
     ///
-    /// 无消息时返回空 Vec。
+    /// 从接收队列取出一条消息，经过 wire codec 解码后返回载荷。
+    /// 队列为空时返回空 Vec。
     pub fn recv(&mut self) -> Result<Vec<u8>, AgentError> {
-        self.recv_count += 1;
-        // SDK 层 Mock：返回空消息
-        Ok(Vec::new())
+        match self.rx_queue.dequeue() {
+            None => Ok(Vec::new()),
+            Some(frame) => {
+                let decoded = wire::decode(&frame.data[..frame.len]).map_err(|_| {
+                    self.error_count += 1;
+                    AgentError::IpcError(
+                        HString::<128>::try_from("wire decode failed").unwrap_or_default(),
+                    )
+                })?;
+                self.recv_count += 1;
+                Ok(decoded.payload.to_vec())
+            }
+        }
     }
 
     /// 请求-响应模式。
     ///
-    /// 发送请求并等待响应。
+    /// 发送 Request 消息，等待 Response。当前实现为同步（非阻塞 recv），
+    /// 若无响应则返回空。
     pub fn request(&mut self, target: &str, req: &[u8]) -> Result<Vec<u8>, AgentError> {
         self.send(target, req)?;
-        // SDK 层 Mock：返回空响应
         self.recv()
+    }
+
+    /// 注入一条入站消息（供 transport 层调用）。
+    ///
+    /// 当 seL4 IPC 收到消息时，transport 层调用此方法将原始 wire frame
+    /// 注入到接收队列。
+    pub fn inject_inbound(&mut self, raw: &[u8]) -> Result<(), AgentError> {
+        if raw.len() > MAX_WIRE_SIZE {
+            return Err(AgentError::IpcError(
+                HString::<128>::try_from("inbound frame too large").unwrap_or_default(),
+            ));
+        }
+        let mut frame = WireFrame::new();
+        frame.data[..raw.len()].copy_from_slice(raw);
+        frame.len = raw.len();
+        self.rx_queue.enqueue(frame).map_err(|_| {
+            self.error_count += 1;
+            AgentError::IpcError(HString::<128>::try_from("rx queue full").unwrap_or_default())
+        })
+    }
+
+    /// 取出一条出站消息的副本。
+    ///
+    /// transport 层调用此方法取出 Agent 发送的消息。
+    /// 返回 wire frame 的字节副本。
+    pub fn pop_outbound(&mut self) -> Option<Vec<u8>> {
+        self.tx_queue
+            .dequeue()
+            .map(|frame| frame.data[..frame.len].to_vec())
     }
 
     /// 获取发送计数。
     pub fn send_count(&self) -> u64 {
-        self.send_count
+        self.sent_count
     }
 
     /// 获取接收计数。
@@ -89,9 +198,24 @@ impl IpcClient {
         self.recv_count
     }
 
+    /// 获取错误计数（编解码/队列错误）。
+    pub fn error_count(&self) -> u64 {
+        self.error_count
+    }
+
     /// 获取端点名称。
     pub fn endpoint(&self) -> &str {
         self.endpoint.as_str()
+    }
+
+    /// 待发送消息数。
+    pub fn tx_pending(&self) -> usize {
+        self.tx_queue.len()
+    }
+
+    /// 待接收消息数。
+    pub fn rx_pending(&self) -> usize {
+        self.rx_queue.len()
     }
 }
 
@@ -107,14 +231,24 @@ impl Default for IpcClient {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_macros)]
+
     use super::*;
 
-    /// IPC1：发送成功。
+    /// IPC1：发送成功，消息经过 wire codec 编码。
     #[test]
-    fn ipc1_send_success() {
+    fn ipc1_send_success_encoded() {
         let mut ipc = IpcClient::new();
         assert!(ipc.send("target-agent", b"hello").is_ok());
         assert_eq!(ipc.send_count(), 1);
+        assert_eq!(ipc.tx_pending(), 1);
+
+        // 取出出站消息，验证是合法 wire frame。
+        let frame = ipc.pop_outbound().expect("应有出站消息");
+        let decoded = wire::decode(&frame).expect("应是合法 wire frame");
+        assert_eq!(decoded.msg_type, MessageType::Send);
+        assert_eq!(decoded.target, b"target-agent");
+        assert_eq!(decoded.payload, b"hello");
     }
 
     /// IPC2：消息过大拒绝。
@@ -124,6 +258,7 @@ mod tests {
         let big_msg = alloc::vec![0u8; MAX_MSG_SIZE + 1];
         let err = ipc.send("target", &big_msg).expect_err("应拒绝");
         assert!(matches!(err, AgentError::IpcError(_)));
+        assert_eq!(ipc.error_count(), 0); // 在 encode 之前就拒绝了
     }
 
     /// IPC3：空目标拒绝。
@@ -134,21 +269,52 @@ mod tests {
         assert!(matches!(err, AgentError::IpcError(_)));
     }
 
-    /// IPC4：接收消息。
+    /// IPC4：接收消息 — 注入入站 wire frame 后 recv 解码。
     #[test]
-    fn ipc4_recv() {
+    fn ipc4_recv_decodes_inbound() {
         let mut ipc = IpcClient::new();
+
+        // 构造一条合法的入站 wire frame。
+        let mut raw = [0u8; MAX_WIRE_SIZE];
+        let n = wire::encode(
+            MessageType::Send,
+            MessageFlags::NONE,
+            "supervisor",
+            b"task complete",
+            &mut raw,
+        )
+        .unwrap();
+
+        // 注入到接收队列。
+        ipc.inject_inbound(&raw[..n]).unwrap();
+        assert_eq!(ipc.rx_pending(), 1);
+
+        // recv 应解码并返回载荷。
         let msg = ipc.recv().expect("应成功");
-        assert!(msg.is_empty()); // Mock 返回空
+        assert_eq!(msg, b"task complete");
         assert_eq!(ipc.recv_count(), 1);
     }
 
-    /// IPC5：请求-响应。
+    /// IPC5：请求-响应模式。
     #[test]
     fn ipc5_request_response() {
         let mut ipc = IpcClient::new();
-        let resp = ipc.request("target", b"query").expect("应成功");
-        assert!(resp.is_empty()); // Mock 返回空
+
+        // 先注入一个预设响应。
+        let mut raw = [0u8; MAX_WIRE_SIZE];
+        let n = wire::encode(
+            MessageType::Response,
+            MessageFlags::NONE,
+            "solver",
+            b"optimal: obj=42",
+            &mut raw,
+        )
+        .unwrap();
+        ipc.inject_inbound(&raw[..n]).unwrap();
+
+        // request 会先 send（入 tx 队列），然后 recv（从 rx 队列取）。
+        let resp = ipc.request("solver", b"query").expect("应成功");
+        assert_eq!(resp, b"optimal: obj=42");
         assert_eq!(ipc.send_count(), 1);
         assert_eq!(ipc.recv_count(), 1);
     }
@@ -158,5 +324,76 @@ mod tests {
     fn ipc6_endpoint() {
         let ipc = IpcClient::new().with_endpoint("my-agent");
         assert_eq!(ipc.endpoint(), "my-agent");
+    }
+
+    /// IPC7：CRC 损坏的入站消息被拒绝。
+    #[test]
+    fn ipc7_corrupt_inbound_rejected() {
+        let mut ipc = IpcClient::new();
+
+        let mut raw = [0u8; MAX_WIRE_SIZE];
+        let n = wire::encode(
+            MessageType::Send,
+            MessageFlags::NONE,
+            "t",
+            b"hello",
+            &mut raw,
+        )
+        .unwrap();
+
+        // 翻转一个 payload 位。
+        raw[wire::HEADER_LEN] ^= 0xFF;
+
+        // 注入损坏的 frame。
+        ipc.inject_inbound(&raw[..n]).unwrap();
+
+        // recv 应在 decode 时失败。
+        let result = ipc.recv();
+        assert!(result.is_err(), "CRC 损坏的消息应被拒绝");
+        assert_eq!(ipc.error_count(), 1);
+    }
+
+    /// IPC8：队列满时 send 返回错误。
+    #[test]
+    fn ipc8_tx_queue_full() {
+        let mut ipc = IpcClient::new();
+
+        // 填满发送队列。
+        for _ in 0..QUEUE_CAPACITY {
+            assert!(ipc.send("target", b"msg").is_ok());
+        }
+        assert_eq!(ipc.tx_pending(), QUEUE_CAPACITY);
+
+        // 第 65 条应失败。
+        let err = ipc.send("target", b"overflow").expect_err("应拒绝");
+        assert!(matches!(err, AgentError::IpcError(_)));
+    }
+
+    /// IPC9：多条消息按 FIFO 顺序出队。
+    #[test]
+    fn ipc9_fifo_order() {
+        let mut ipc = IpcClient::new();
+
+        for i in 0..5u8 {
+            let msg = [i];
+            ipc.send("target", &msg).unwrap();
+        }
+
+        for i in 0..5u8 {
+            let frame = ipc.pop_outbound().expect("应有消息");
+            let decoded = wire::decode(&frame).unwrap();
+            assert_eq!(decoded.payload, &[i]);
+        }
+
+        assert!(ipc.pop_outbound().is_none());
+    }
+
+    /// IPC10：空队列 recv 返回空 Vec。
+    #[test]
+    fn ipc10_empty_recv() {
+        let mut ipc = IpcClient::new();
+        let msg = ipc.recv().expect("应成功");
+        assert!(msg.is_empty());
+        assert_eq!(ipc.recv_count(), 0); // 空队列不计入 recv_count
     }
 }

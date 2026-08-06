@@ -8,3 +8,5 @@ description = "EnerOS Modbus RTU master protocol stack"
 
 [dependencies]
 eneros-driver-framework = { path = "../../drivers/framework" }
+eneros-protocol-abstract = { path = "../protocol-abstract" }
+eneros-upa-model = { path = "../upa-model" }

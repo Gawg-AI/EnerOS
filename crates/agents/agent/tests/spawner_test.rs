@@ -1,148 +1,143 @@
-//! Integration tests for v0.36.0 AgentSpawner.
+//! Integration tests for AGT-003 real ELF spawn (ProcessHandle-based).
 //!
-//! 验证 Agent 启动器的端到端行为：
-//! - 完整成功路径（Created → Ready → Running）
-//! - on_init / on_start / load_code 失败时进入 Error 状态
-//! - spawn_blocking 与 spawn 等价
-//! - 多 Agent 独立 spawn
-//! - priority_override / mem_override 应用
-//! - AgentContext 在回调中传递正确的 agent_id 与 config
+//! Verifies the end-to-end spawn flow:
+//! - Real ELF parse + ProcessHandle creation (not Box<dyn AgentEntry>)
+//! - Created -> Ready -> Running lifecycle on success
+//! - Error state on missing ELF / budget exceeded
+//! - spawn_blocking equivalent to spawn
+//! - Multiple agents independent
+//! - priority_override / mem_override applied to both registry and ProcessHandle
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::string::String;
 
 use eneros_agent::{
-    AgentConfig, AgentContext, AgentEntry, AgentError, AgentFactory, AgentId, AgentRegistry,
-    AgentSpawner, AgentState, AgentType, LifecycleManager,
+    AgentConfig, AgentError, AgentRegistry, AgentSpawner, AgentState, AgentType, LifecycleManager,
+    AgentBinary, ProcessState, StaticAgentRegistry,
 };
 
-// ---- Helper agent implementations ----
+// ---- Minimal valid ELF64 PIE AArch64 binary (128 bytes) ----
 
-/// Success Agent: on_init/on_start return Ok.
-struct SuccessAgent;
-impl AgentEntry for SuccessAgent {
-    fn on_init(&mut self, _ctx: &mut AgentContext) -> Result<(), AgentError> {
-        Ok(())
-    }
-    fn on_start(&mut self, _ctx: &mut AgentContext) -> Result<(), AgentError> {
-        Ok(())
-    }
-    fn on_stop(&mut self, _ctx: &mut AgentContext) {}
+const fn build_minimal_test_elf() -> [u8; 128] {
+    let mut buf = [0u8; 128];
+    buf[0] = 0x7f;
+    buf[1] = 0x45;
+    buf[2] = 0x4c;
+    buf[3] = 0x46;
+    buf[4] = 2;
+    buf[5] = 1;
+    buf[6] = 1;
+    buf[16] = 3;
+    buf[17] = 0; // ET_DYN
+    buf[18] = 0xB7;
+    buf[19] = 0; // EM_AARCH64
+    buf[24] = 0x00;
+    buf[25] = 0x10; // e_entry = 0x1000
+    buf[32] = 64; // e_phoff = 64
+    buf[54] = 56; // e_phentsize
+    buf[56] = 1; // e_phnum = 1
+    let ph = 64;
+    buf[ph] = 1; // PT_LOAD
+    buf[ph + 4] = 5; // PF_R | PF_X
+    buf[ph + 8] = 120; // p_offset
+    buf[ph + 16] = 0x00;
+    buf[ph + 17] = 0x10; // p_vaddr = 0x1000
+    buf[ph + 32] = 8; // p_filesz
+    buf[ph + 40] = 8; // p_memsz
+    buf[ph + 48] = 0x00;
+    buf[ph + 49] = 0x10; // p_align = 0x1000
+    buf[120] = 0x1f;
+    buf[121] = 0x20;
+    buf[122] = 0x03;
+    buf[123] = 0xd5; // NOP
+    buf[124] = 0xc0;
+    buf[125] = 0x03;
+    buf[126] = 0x5f;
+    buf[127] = 0xd6; // RET
+    buf
 }
 
-/// FailInit Agent: on_init returns Err.
-struct FailInitAgent;
-impl AgentEntry for FailInitAgent {
-    fn on_init(&mut self, _ctx: &mut AgentContext) -> Result<(), AgentError> {
-        Err(AgentError::InitFailed(String::from("test init failure")))
-    }
-    fn on_start(&mut self, _ctx: &mut AgentContext) -> Result<(), AgentError> {
-        Ok(())
-    }
-    fn on_stop(&mut self, _ctx: &mut AgentContext) {}
-}
+static MINIMAL_ELF: &[u8] = &build_minimal_test_elf();
 
-/// FailStart Agent: on_start returns Err.
-struct FailStartAgent;
-impl AgentEntry for FailStartAgent {
-    fn on_init(&mut self, _ctx: &mut AgentContext) -> Result<(), AgentError> {
-        Ok(())
-    }
-    fn on_start(&mut self, _ctx: &mut AgentContext) -> Result<(), AgentError> {
-        Err(AgentError::StartFailed(String::from("test start failure")))
-    }
-    fn on_stop(&mut self, _ctx: &mut AgentContext) {}
-}
+#[allow(dead_code)]
+static SUCCESS_REGISTRY: StaticAgentRegistry = StaticAgentRegistry::new(&[
+    (AgentType::Energy, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
+    (AgentType::Device, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
+    (AgentType::Market, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
+    (AgentType::Grid, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
+]);
 
-/// Recording Agent: captures ctx.agent_id and ctx.config.name during on_init.
-struct RecordingAgent {
-    captured: Rc<RefCell<Option<(AgentId, String)>>>,
-}
-impl AgentEntry for RecordingAgent {
-    fn on_init(&mut self, ctx: &mut AgentContext) -> Result<(), AgentError> {
-        *self.captured.borrow_mut() = Some((ctx.agent_id, ctx.config.name.clone()));
-        Ok(())
-    }
-    fn on_start(&mut self, _ctx: &mut AgentContext) -> Result<(), AgentError> {
-        Ok(())
-    }
-    fn on_stop(&mut self, _ctx: &mut AgentContext) {}
-}
+static FAIL_REGISTRY: StaticAgentRegistry = StaticAgentRegistry::new(&[]);
 
-// ---- Helper factory implementations ----
+/// SEC-002 集成测试辅助：固定私钥（d=1）确定性 SM2 签名清单。
+fn signed_manifest(agent_type: AgentType) -> eneros_agent::AgentPackageManifest {
+    use eneros_crypto::sm2::{sm2_sign, Sm2KeyPair, Sm2PrivateKey};
+    use eneros_crypto::CsRng;
 
-/// Success factory: creates SuccessAgent.
-struct SuccessFactory;
-impl AgentFactory for SuccessFactory {
-    fn create(
-        &self,
-        _agent_type: AgentType,
-        _name: &str,
-    ) -> Result<Box<dyn AgentEntry>, AgentError> {
-        Ok(Box::new(SuccessAgent))
-    }
-}
+    let name = match agent_type {
+        AgentType::Energy => "energy",
+        AgentType::Device => "device",
+        AgentType::Market => "market",
+        AgentType::Grid => "grid",
+        _ => "agent",
+    };
+    let version = "1.0.0";
+    let hash = eneros_crypto::sm3_hash(MINIMAL_ELF);
 
-/// Fail factory: load_code fails (CodeLoadFailed).
-struct FailFactory;
-impl AgentFactory for FailFactory {
-    fn create(
-        &self,
-        _agent_type: AgentType,
-        _name: &str,
-    ) -> Result<Box<dyn AgentEntry>, AgentError> {
-        Err(AgentError::CodeLoadFailed(String::from(
-            "no agent registered",
-        )))
-    }
-}
+    let mut d = [0u8; 32];
+    d[31] = 1;
+    let sk = Sm2PrivateKey::from_bytes(&d).expect("fixed sk");
+    let keypair = Sm2KeyPair::from_private_key(&sk).expect("keypair");
 
-/// FailInit factory: creates FailInitAgent.
-struct FailInitFactory;
-impl AgentFactory for FailInitFactory {
-    fn create(
-        &self,
-        _agent_type: AgentType,
-        _name: &str,
-    ) -> Result<Box<dyn AgentEntry>, AgentError> {
-        Ok(Box::new(FailInitAgent))
-    }
-}
+    let mut msg = Vec::new();
+    msg.extend_from_slice(name.as_bytes());
+    msg.extend_from_slice(version.as_bytes());
+    msg.extend_from_slice(&hash);
+    let mut rng = CsRng::for_deterministic_signature(b"sec002-test", &msg, b"spawner");
+    let sig = sm2_sign(&msg, &keypair.private_key, &keypair.public_key, &mut rng)
+        .expect("deterministic sign");
+    let sig_bytes = sig.to_bytes();
+    let uncompressed = keypair.public_key.to_bytes_uncompressed();
+    let mut pk_bytes = [0u8; 64];
+    pk_bytes.copy_from_slice(&uncompressed[1..65]);
 
-/// FailStart factory: creates FailStartAgent.
-struct FailStartFactory;
-impl AgentFactory for FailStartFactory {
-    fn create(
-        &self,
-        _agent_type: AgentType,
-        _name: &str,
-    ) -> Result<Box<dyn AgentEntry>, AgentError> {
-        Ok(Box::new(FailStartAgent))
+    eneros_agent::AgentPackageManifest {
+        name: String::from(name),
+        version: String::from(version),
+        agent_type,
+        budget: Default::default(),
+        elf_hash: hash,
+        signature: sig_bytes,
+        signer_pubkey: pk_bytes,
     }
 }
 
-/// Recording factory: creates RecordingAgent sharing the captured cell.
-struct RecordingFactory {
-    captured: Rc<RefCell<Option<(AgentId, String)>>>,
-}
-impl AgentFactory for RecordingFactory {
-    fn create(
-        &self,
-        _agent_type: AgentType,
-        _name: &str,
-    ) -> Result<Box<dyn AgentEntry>, AgentError> {
-        Ok(Box::new(RecordingAgent {
-            captured: self.captured.clone(),
-        }))
+fn signed_binary(agent_type: AgentType) -> AgentBinary {
+    AgentBinary {
+        elf: MINIMAL_ELF,
+        manifest: Some(signed_manifest(agent_type)),
     }
 }
 
-// ---- Helper functions ----
+fn signed_registry() -> &'static StaticAgentRegistry {
+    use std::sync::OnceLock;
+    static REGS: OnceLock<StaticAgentRegistry> = OnceLock::new();
+    REGS.get_or_init(|| {
+        let entries: &'static [(AgentType, AgentBinary)] = Box::leak(Box::new([
+            (AgentType::Energy, signed_binary(AgentType::Energy)),
+            (AgentType::Device, signed_binary(AgentType::Device)),
+            (AgentType::Market, signed_binary(AgentType::Market)),
+            (AgentType::Grid, signed_binary(AgentType::Grid)),
+        ]));
+        StaticAgentRegistry::new(entries)
+    })
+}
 
-/// Create an AgentSpawner with shared registry and lifecycle.
-fn make_spawner<F: AgentFactory + 'static>(
-    factory: F,
+// ---- Helpers ----
+
+fn make_spawner(
+    agents: &'static StaticAgentRegistry,
 ) -> (
     AgentSpawner,
     Rc<RefCell<AgentRegistry>>,
@@ -150,11 +145,10 @@ fn make_spawner<F: AgentFactory + 'static>(
 ) {
     let reg = Rc::new(RefCell::new(AgentRegistry::new()));
     let lifecycle = Rc::new(RefCell::new(LifecycleManager::new(reg.clone())));
-    let spawner = AgentSpawner::new(reg.clone(), lifecycle.clone(), Rc::new(factory));
+    let spawner = AgentSpawner::new(reg.clone(), lifecycle.clone(), agents);
     (spawner, reg, lifecycle)
 }
 
-/// Create a minimal AgentConfig.
 fn make_config(agent_type: AgentType, name: &str) -> AgentConfig {
     AgentConfig {
         agent_type,
@@ -170,60 +164,44 @@ fn make_config(agent_type: AgentType, name: &str) -> AgentConfig {
 
 #[test]
 fn integration_spawn_full_success_path() {
-    let (spawner, _reg, lifecycle) = make_spawner(SuccessFactory);
+    let (spawner, _reg, lifecycle) = make_spawner(signed_registry());
     let config = make_config(AgentType::Energy, "e1");
     let id = spawner.spawn(config, 1000).unwrap();
     assert_eq!(
         lifecycle.borrow().current_state(id),
         Ok(AgentState::Running)
     );
+    let process = spawner.get_process(id).expect("process handle");
+    assert_eq!(process.state, ProcessState::Running);
+    assert!(process.is_alive());
 }
 
 #[test]
-fn integration_spawn_init_failure_error_state() {
-    let (spawner, reg, lifecycle) = make_spawner(FailInitFactory);
+fn integration_spawn_no_elf_error_state() {
+    let (spawner, reg, lifecycle) = make_spawner(&FAIL_REGISTRY);
     let config = make_config(AgentType::Energy, "e1");
     let err = spawner.spawn(config, 1000).unwrap_err();
-    assert_eq!(
-        err,
-        AgentError::InitFailed(String::from("test init failure"))
-    );
+    assert!(matches!(err, AgentError::CodeLoadFailed(_)));
     assert_eq!(reg.borrow().count(), 1);
     let id = reg.borrow().list_all()[0].agent_id;
     assert_eq!(lifecycle.borrow().current_state(id), Ok(AgentState::Error));
+    assert_eq!(spawner.process_count(), 0);
 }
 
 #[test]
-fn integration_spawn_start_failure_error_state() {
-    let (spawner, reg, lifecycle) = make_spawner(FailStartFactory);
-    let config = make_config(AgentType::Energy, "e1");
+fn integration_spawn_memory_budget_exceeded() {
+    let (spawner, reg, lifecycle) = make_spawner(signed_registry());
+    let mut config = make_config(AgentType::Energy, "e1");
+    config.mem_override = Some(1);
     let err = spawner.spawn(config, 1000).unwrap_err();
-    assert_eq!(
-        err,
-        AgentError::StartFailed(String::from("test start failure"))
-    );
-    assert_eq!(reg.borrow().count(), 1);
-    let id = reg.borrow().list_all()[0].agent_id;
-    assert_eq!(lifecycle.borrow().current_state(id), Ok(AgentState::Error));
-}
-
-#[test]
-fn integration_spawn_load_code_failure() {
-    let (spawner, reg, lifecycle) = make_spawner(FailFactory);
-    let config = make_config(AgentType::Energy, "e1");
-    let err = spawner.spawn(config, 1000).unwrap_err();
-    assert_eq!(
-        err,
-        AgentError::CodeLoadFailed(String::from("no agent registered"))
-    );
-    assert_eq!(reg.borrow().count(), 1);
+    assert!(matches!(err, AgentError::CodeLoadFailed(_)));
     let id = reg.borrow().list_all()[0].agent_id;
     assert_eq!(lifecycle.borrow().current_state(id), Ok(AgentState::Error));
 }
 
 #[test]
 fn integration_spawn_blocking_same_as_spawn() {
-    let (spawner, _reg, lifecycle) = make_spawner(SuccessFactory);
+    let (spawner, _reg, lifecycle) = make_spawner(signed_registry());
     let config = make_config(AgentType::Energy, "e1");
     let id = spawner.spawn_blocking(config, 1000).unwrap();
     assert_eq!(
@@ -234,7 +212,7 @@ fn integration_spawn_blocking_same_as_spawn() {
 
 #[test]
 fn integration_spawn_multiple_agents() {
-    let (spawner, reg, lifecycle) = make_spawner(SuccessFactory);
+    let (spawner, reg, lifecycle) = make_spawner(signed_registry());
     let id1 = spawner
         .spawn(make_config(AgentType::Energy, "e1"), 1000)
         .unwrap();
@@ -245,44 +223,26 @@ fn integration_spawn_multiple_agents() {
         .spawn(make_config(AgentType::Grid, "g1"), 1000)
         .unwrap();
     assert_eq!(reg.borrow().count(), 3);
-    assert_eq!(
-        lifecycle.borrow().current_state(id1),
-        Ok(AgentState::Running)
-    );
-    assert_eq!(
-        lifecycle.borrow().current_state(id2),
-        Ok(AgentState::Running)
-    );
-    assert_eq!(
-        lifecycle.borrow().current_state(id3),
-        Ok(AgentState::Running)
-    );
+    assert_eq!(spawner.process_count(), 3);
+    for id in [id1, id2, id3] {
+        assert_eq!(
+            lifecycle.borrow().current_state(id),
+            Ok(AgentState::Running)
+        );
+        assert!(spawner.get_process(id).is_some());
+    }
 }
 
 #[test]
 fn integration_spawn_with_overrides() {
-    let (spawner, reg, _lifecycle) = make_spawner(SuccessFactory);
-    // Device default priority is 100, default mem_quota is 32 MB;
-    // override to 200 and 1024 respectively to verify both are applied.
+    let (spawner, reg, _lifecycle) = make_spawner(signed_registry());
     let mut config = make_config(AgentType::Device, "d1");
     config.priority_override = Some(200);
     config.mem_override = Some(1024);
     let id = spawner.spawn(config, 1000).unwrap();
     assert_eq!(reg.borrow().get(id).unwrap().priority, 200);
     assert_eq!(reg.borrow().get(id).unwrap().mem_quota, 1024);
-}
-
-#[test]
-fn integration_spawn_agent_context_correct() {
-    let captured = Rc::new(RefCell::new(None));
-    let (spawner, _reg, _lifecycle) = make_spawner(RecordingFactory {
-        captured: captured.clone(),
-    });
-    let config = make_config(AgentType::Energy, "rec-agent");
-    let id = spawner.spawn(config, 1000).unwrap();
-
-    let cap = captured.borrow();
-    let (ctx_id, ctx_name) = cap.as_ref().expect("context not captured");
-    assert_eq!(*ctx_id, id);
-    assert_eq!(ctx_name, "rec-agent");
+    let process = spawner.get_process(id).unwrap();
+    assert_eq!(process.budget.priority, 200);
+    assert_eq!(process.budget.max_memory_bytes, 1024);
 }

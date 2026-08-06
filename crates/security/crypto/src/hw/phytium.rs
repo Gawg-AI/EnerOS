@@ -1,4 +1,4 @@
-//! 飞腾 D2000 国密硬件加密引擎驱动 (v0.158.0).
+//! 飞腾 D2000 国密硬件加密引擎驱动 (workspace v0.192.0).
 //!
 //! 利用飞腾 D2000 SoC 内置的 SM2/SM3/SM4 硬件加密引擎实现国密算法加速。
 //! 通过 MMIO 寄存器接口控制引擎，DMA 零拷贝传输数据。
@@ -680,7 +680,11 @@ impl PhytiumCryptoEngine {
         use crate::rng::CsRng;
         use crate::sm2::{sm2_sign, Sm2KeyPair, Sm2PrivateKey};
 
-        let mut rng = CsRng::new();
+        let mut rng = CsRng::for_deterministic_signature(
+            private_key,
+            msg,
+            b"eneros/phytium/software-fallback/sm2-sign/v1",
+        );
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(private_key);
         let sk = Sm2PrivateKey::from_bytes(&key_bytes)

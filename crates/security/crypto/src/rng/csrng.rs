@@ -17,20 +17,21 @@
 //! `reseed(seed)`：`V = SM3(V || seed || counter)`，然后 `counter += 1`。
 //!
 //! # 安全警告
-//! **WARNING**: `CsRng::new()` 使用固定种子，仅用于 no_std 测试环境。
-//! 生产环境必须使用 `CsRng::from_seed` 并传入硬件 TRNG 采集的熵。
+//! 固定种子构造器仅在 test/debug 或显式 `insecure-test-rng` feature 下编译。
+//! release 代码必须使用 [`CsRng::from_seed`] 注入硬件熵，或仅为签名 nonce
+//! 使用 [`CsRng::for_deterministic_signature`] 的域分离确定性派生。
 
 use alloc::vec::Vec;
 
 use crate::constant_time::ct_zeroize;
 use crate::sm3::hash as sm3_hash;
+use crate::sm3::hmac::Sm3Hmac;
 
 /// 基于 SM3 Hash DRBG 的密码学安全随机数生成器.
 ///
 /// 状态由 256-bit `V` 和 64-bit `counter` 组成。输出通过反复哈希状态产生。
 ///
-/// **WARNING**: 默认构造函数 `CsRng::new()` 使用固定种子，仅用于测试。
-/// 生产环境必须使用 `CsRng::from_seed` 传入硬件 TRNG 熵源。
+/// release 构造必须显式注入熵；固定种子便捷构造器不会进入 release API。
 pub struct CsRng {
     /// 内部状态 V（256-bit = 32 字节）.
     v: [u8; 32],
@@ -39,10 +40,12 @@ pub struct CsRng {
 }
 
 impl CsRng {
-    /// 使用固定种子创建 CSRNG.
+    /// 使用固定种子创建仅供测试的 CSRNG.
     ///
     /// **WARNING**: 仅用于测试。种子是确定性的，相同实例产生相同输出序列。
-    /// 生产环境必须使用 `CsRng::from_seed` 传入硬件 TRNG 采集的熵。
+    /// 本函数在 release 中默认不存在；显式启用不安全 feature 也会被产品
+    /// dependency policy 拒绝。
+    #[cfg(any(test, debug_assertions, feature = "insecure-test-rng"))]
     pub fn new() -> Self {
         // 固定种子 — 切勿用于生产
         let seed = [
@@ -60,6 +63,22 @@ impl CsRng {
     pub fn from_seed(seed: &[u8; 32]) -> Self {
         let v = sm3_hash(seed);
         Self { v, counter: 0 }
+    }
+
+    /// 为确定性签名 nonce 派生一个域分离 DRBG。
+    ///
+    /// 种子为 `HMAC-SM3(secret, label || lengths || context || message)`，因此
+    /// 不依赖固定种子，也不会因创建多个实例而为不同消息重复 nonce。该入口
+    /// 只适用于签名 nonce；一般随机数仍必须由 [`Self::from_seed`] 接收系统熵。
+    pub fn for_deterministic_signature(secret: &[u8], message: &[u8], context: &[u8]) -> Self {
+        let mut hmac = Sm3Hmac::new(secret);
+        hmac.update(b"EnerOS/SM2/deterministic-nonce/v1");
+        hmac.update(&(context.len() as u64).to_be_bytes());
+        hmac.update(context);
+        hmac.update(&(message.len() as u64).to_be_bytes());
+        hmac.update(message);
+        let seed = hmac.finalize();
+        Self::from_seed(&seed)
     }
 
     /// 用随机字节填充缓冲区.
@@ -115,6 +134,7 @@ impl CsRng {
     }
 }
 
+#[cfg(any(test, debug_assertions, feature = "insecure-test-rng"))]
 impl Default for CsRng {
     fn default() -> Self {
         Self::new()
@@ -354,5 +374,32 @@ mod tests {
         let mut buf2 = [0u8; 32];
         rng2.fill_bytes(&mut buf2);
         assert_eq!(buf, buf2, "default() and new() must yield same output");
+    }
+
+    #[test]
+    fn deterministic_signature_nonce_is_stable_and_domain_separated() {
+        let secret = [0xA5u8; 32];
+        let mut first =
+            CsRng::for_deterministic_signature(&secret, b"message-a", b"eneros/test/signature/v1");
+        let mut repeat =
+            CsRng::for_deterministic_signature(&secret, b"message-a", b"eneros/test/signature/v1");
+        let mut changed_message =
+            CsRng::for_deterministic_signature(&secret, b"message-b", b"eneros/test/signature/v1");
+        let mut changed_domain =
+            CsRng::for_deterministic_signature(&secret, b"message-a", b"eneros/test/other/v1");
+        let mut a = [0u8; 32];
+        let mut b = [0u8; 32];
+        let mut c = [0u8; 32];
+        let mut d = [0u8; 32];
+        first.fill_bytes(&mut a);
+        repeat.fill_bytes(&mut b);
+        changed_message.fill_bytes(&mut c);
+        changed_domain.fill_bytes(&mut d);
+        assert_eq!(
+            a, b,
+            "same secret/message/domain must reproduce the nonce stream"
+        );
+        assert_ne!(a, c, "message change must change the nonce stream");
+        assert_ne!(a, d, "domain change must change the nonce stream");
     }
 }

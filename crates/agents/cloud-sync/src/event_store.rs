@@ -11,37 +11,11 @@ use crate::SyncError;
 /// compact 后保留的最近已同步事件条数（D9 内存水位）。
 const COMPACT_KEEP_SYNCED: usize = 100;
 
-/// CRC32-IEEE（反射多项式 0xEDB88320）查找表，编译期生成（D8）。
-const fn crc32_table() -> [u32; 256] {
-    let mut table = [0u32; 256];
-    let mut i = 0usize;
-    while i < 256 {
-        let mut c = i as u32;
-        let mut k = 0;
-        while k < 8 {
-            c = if c & 1 != 0 {
-                0xEDB8_8320 ^ (c >> 1)
-            } else {
-                c >> 1
-            };
-            k += 1;
-        }
-        table[i] = c;
-        i += 1;
-    }
-    table
-}
-
-/// CRC32-IEEE 查找表（const 256 项）。
-static CRC32_TABLE: [u32; 256] = crc32_table();
 
 /// CRC32-IEEE 校验和（D8；已知向量 `"123456789" -> 0xCBF43926`）。
 pub fn crc32(data: &[u8]) -> u32 {
-    let mut c = 0xFFFF_FFFFu32;
-    for &b in data {
-        c = CRC32_TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
-    }
-    c ^ 0xFFFF_FFFF
+    // HYG-001：CRC32 唯一实现归一到 abi/ipc-wire。
+    eneros_ipc_wire::crc32(data)
 }
 
 /// 事件类型（蓝图 §3 六类事件；序列化码 0..=5，D11）。

@@ -1,0 +1,11 @@
+[package]
+name = "eneros-crash-dump"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 崩溃转储格式与 build-id 精确匹配 (OBS-007), no_std"
+
+[dependencies]
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }
+heapless = { version = "0.8", default-features = false }

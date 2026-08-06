@@ -1,4 +1,4 @@
-//! EnerOS PKI (公钥基础设施) 证书基础模块 (v0.32.0).
+//! EnerOS PKI (公钥基础设施) 证书基础模块 (workspace v0.192.0).
 //!
 //! 提供 X.509 证书解析、验证与链式信任校验的基础错误类型定义。
 //! 基于 v0.31.0 国密 SM2/SM3 算法栈，支持国密证书体系。
@@ -49,6 +49,8 @@ pub enum PkiError {
     CertRevoked { serial: alloc::string::String },
     /// 不可信的根证书
     UntrustedRoot,
+    /// 链 issuer/subject 不一致或根非自签（v0.207.0 P0-12）
+    IssuerMismatch,
     /// 证书链过长（超出最大深度限制）
     ChainTooLong,
     /// 未找到颁发者证书

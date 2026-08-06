@@ -64,7 +64,13 @@ pub mod tensor;
 pub mod value;
 
 #[cfg(feature = "llama-cpp")]
-pub mod gpu_ops;
+// AI-002：`llama-cpp` feature 下的虚构 `eneros_gpu_*` FFI 符号无真实
+// llama.cpp 库提供——启用即编译失败（fail-closed）。真实 GPU 后端须接入
+// llama.cpp 实际 API 或自研 GPU 分配器。
+#[cfg(feature = "llama-cpp")]
+compile_error!(
+    "llama-cpp: 虚构 eneros_gpu_* FFI 符号已封印（AI-002）——gpu_ops.rs 内的 extern 声明不得再启用"
+);
 
 #[cfg(test)]
 mod tests {
@@ -94,8 +100,8 @@ mod tests {
         bytes.extend_from_slice(&1u64.to_le_bytes()); // tensor_count
         bytes.extend_from_slice(&2u64.to_le_bytes()); // metadata_kv_count
 
-        // Metadata KV 1: "name" -> "test_model"
-        let key1 = b"name";
+        // Metadata KV 1: "general.name" -> "test_model"（真实 GGUF 键名）
+        let key1 = b"general.name";
         bytes.extend_from_slice(&(key1.len() as u64).to_le_bytes());
         bytes.extend_from_slice(key1);
         bytes.extend_from_slice(&8u32.to_le_bytes()); // String type
@@ -103,8 +109,8 @@ mod tests {
         bytes.extend_from_slice(&(val1.len() as u64).to_le_bytes());
         bytes.extend_from_slice(val1);
 
-        // Metadata KV 2: "architecture" -> "llama"
-        let key2 = b"architecture";
+        // Metadata KV 2: "general.architecture" -> "llama"（真实 GGUF 键名）
+        let key2 = b"general.architecture";
         bytes.extend_from_slice(&(key2.len() as u64).to_le_bytes());
         bytes.extend_from_slice(key2);
         bytes.extend_from_slice(&8u32.to_le_bytes()); // String type
@@ -258,6 +264,7 @@ mod tests {
         let metadata = loader
             .load("path", ComputeDevice::Cpu)
             .expect("load should succeed");
+        eprintln!("DBG metadata: name={:?} arch={:?}", metadata.name, metadata.architecture);
         assert_eq!(metadata.name, "test_model");
         assert_eq!(metadata.architecture, "llama");
 

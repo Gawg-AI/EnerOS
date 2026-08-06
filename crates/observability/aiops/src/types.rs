@@ -1,4 +1,4 @@
-//! AI 运维核心类型定义。
+//! 运维分析核心类型定义（VRF-006 正名：统计/规则方法，无 AI 推理）。
 
 use alloc::string::String;
 use alloc::vec::Vec;

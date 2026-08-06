@@ -1,4 +1,4 @@
-//! 能力管理器（CapabilityManager）(v0.40.0).
+//! 能力管理器（CapabilityManager）(workspace v0.192.0).
 //!
 //! 提供 [`CapabilityManager`]，封装能力令牌的签发、校验、冻结、撤销和过期清理。
 //! 作为 Agent 访问控制的安全边界，确保越权操作被拒绝。

@@ -42,21 +42,21 @@ impl LifecycleState {
     /// - Error → Initialized, Destroyed
     /// - Destroyed → (终态，不可转换)
     pub fn can_transition_to(&self, target: LifecycleState) -> bool {
-        match (self, target) {
-            (LifecycleState::Created, LifecycleState::Initialized) => true,
-            (LifecycleState::Created, LifecycleState::Error) => true,
-            (LifecycleState::Created, LifecycleState::Destroyed) => true,
-            (LifecycleState::Initialized, LifecycleState::Running) => true,
-            (LifecycleState::Initialized, LifecycleState::Error) => true,
-            (LifecycleState::Initialized, LifecycleState::Destroyed) => true,
-            (LifecycleState::Running, LifecycleState::Stopped) => true,
-            (LifecycleState::Running, LifecycleState::Error) => true,
-            (LifecycleState::Stopped, LifecycleState::Running) => true,
-            (LifecycleState::Stopped, LifecycleState::Destroyed) => true,
-            (LifecycleState::Error, LifecycleState::Initialized) => true,
-            (LifecycleState::Error, LifecycleState::Destroyed) => true,
-            _ => false,
-        }
+        matches!(
+            (self, target),
+            (LifecycleState::Created, LifecycleState::Initialized)
+                | (LifecycleState::Created, LifecycleState::Error)
+                | (LifecycleState::Created, LifecycleState::Destroyed)
+                | (LifecycleState::Initialized, LifecycleState::Running)
+                | (LifecycleState::Initialized, LifecycleState::Error)
+                | (LifecycleState::Initialized, LifecycleState::Destroyed)
+                | (LifecycleState::Running, LifecycleState::Stopped)
+                | (LifecycleState::Running, LifecycleState::Error)
+                | (LifecycleState::Stopped, LifecycleState::Running)
+                | (LifecycleState::Stopped, LifecycleState::Destroyed)
+                | (LifecycleState::Error, LifecycleState::Initialized)
+                | (LifecycleState::Error, LifecycleState::Destroyed)
+        )
     }
 }
 

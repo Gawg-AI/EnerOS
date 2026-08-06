@@ -4,6 +4,13 @@ use alloc::string::String;
 
 use eneros_solver_core::problem::VarType;
 
+/// HiGHS 认可的边界上限（`kHighsInf = 1e30`，P0-21，v0.201.0）。
+///
+/// HiGHS C API 要求 `|bound| ≤ 1e30`；`f64::INFINITY` 会被
+/// `Highs_passLp/passMip` 拒绝。所有 DSL 生成的变量界与约束 rhs 一律
+/// 钳制到此值（或以下）。
+pub const K_HIGHS_INF: f64 = 1e30;
+
 /// 决策变量.
 #[derive(Debug, Clone)]
 pub struct Variable {
@@ -11,7 +18,7 @@ pub struct Variable {
     pub name: String,
     /// 下界（默认 0.0）.
     pub lower_bound: f64,
-    /// 上界（默认 `f64::INFINITY`）.
+    /// 上界（默认 `K_HIGHS_INF` = 1e30，P0-21）.
     pub upper_bound: f64,
     /// 变量类型（复用 v0.64.0 `VarType`，D3）.
     pub var_type: VarType,
@@ -28,30 +35,45 @@ pub struct VarBuilder {
 }
 
 impl VarBuilder {
-    /// 创建变量构建器，默认 lower=0.0, upper=INFINITY, var_type=Continuous.
+    /// 创建变量构建器，默认 lower=0.0, upper=K_HIGHS_INF（1e30，P0-21）。
     pub fn new(name: &str) -> Self {
         Self {
             name: String::from(name),
             lower: 0.0,
-            upper: f64::INFINITY,
+            upper: K_HIGHS_INF,
             var_type: VarType::Continuous,
         }
     }
 
-    /// 设置下界.
+    /// 设置下界（超界字面量 → panic，带调用点定位）。
+    #[track_caller]
     pub fn lower(mut self, v: f64) -> Self {
+        assert!(
+            (-K_HIGHS_INF..=K_HIGHS_INF).contains(&v),
+            "VarBuilder::lower 越界: {v} 超出 ±kHighsInf(1e30)（P0-21：DSL 边界钳制）"
+        );
         self.lower = v;
         self
     }
 
-    /// 设置上界.
+    /// 设置上界（超界字面量 → panic，带调用点定位）。
+    #[track_caller]
     pub fn upper(mut self, v: f64) -> Self {
+        assert!(
+            (-K_HIGHS_INF..=K_HIGHS_INF).contains(&v),
+            "VarBuilder::upper 越界: {v} 超出 ±kHighsInf(1e30)（P0-21：DSL 边界钳制）"
+        );
         self.upper = v;
         self
     }
 
-    /// 设置范围 [lo, hi].
+    /// 设置范围 [lo, hi]（超界字面量 → panic）。
+    #[track_caller]
     pub fn range(mut self, lo: f64, hi: f64) -> Self {
+        assert!(
+            lo >= -K_HIGHS_INF && hi <= K_HIGHS_INF,
+            "VarBuilder::range 越界: [{lo}, {hi}] 超出 ±kHighsInf(1e30)（P0-21）"
+        );
         self.lower = lo;
         self.upper = hi;
         self

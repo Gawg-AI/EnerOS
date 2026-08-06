@@ -42,16 +42,43 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(dead_code)]
 
+// ============================================================================
+// G7 Fail-closed Mock gate (MASTER §G7 禁止捷径 L2118:
+//   "feature-gated FFI 代码存在就宣称集成")
+//
+// Two gates:
+// 1. Release builds MUST NOT use Mock (MASTER: "release profile 禁止 mock").
+//    `debug_assertions` is off in release → this fires.
+// 2. Non-test builds MUST have at least one backend (Mock or real).
+//    Prevents accidental `--no-default-features` without selecting a backend.
+// ============================================================================
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-llm-engine: Mock backend is FORBIDDEN in release builds. \
+     Use: --no-default-features --features llama-cpp"
+);
+
+#[cfg(not(any(feature = "llama-cpp", feature = "mock", test)))]
+compile_error!(
+    "eneros-llm-engine: no backend selected. \
+     Release builds must enable 'llama-cpp' feature. \
+     For tests, use 'mock' feature or run via `cargo test`."
+);
+
 extern crate alloc;
 
 pub mod device;
 pub mod engine;
 pub mod error;
-pub mod mock;
 pub mod model;
 pub mod params;
 pub mod stats;
 
+// Mock engine: only available with `mock` feature or in test builds.
+#[cfg(any(feature = "mock", test))]
+pub mod mock;
+
+// Real llama.cpp backend: only available with `llama-cpp` feature.
 #[cfg(feature = "llama-cpp")]
 pub mod ffi;
 
@@ -61,6 +88,7 @@ pub mod llama_cpp;
 pub use device::ComputeDevice;
 pub use engine::LlmEngine;
 pub use error::LlmError;
+#[cfg(any(feature = "mock", test))]
 pub use mock::MockEngine;
 pub use model::{ModelInfo, Quantization};
 pub use params::InferParams;

@@ -1,4 +1,4 @@
-//! Heartbeat monitoring for link liveness detection (v0.30.2).
+//! Heartbeat monitoring for link liveness detection (workspace v0.192.0).
 //!
 //! Tracks heartbeat reception and detects timeouts based on configurable
 //! interval, timeout window, and maximum missed count. Pure numeric

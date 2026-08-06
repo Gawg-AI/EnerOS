@@ -6,3 +6,4 @@ authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }

@@ -3,6 +3,8 @@
 //! `SlaveTransport` trait 抽象 TCP 传输层访问，使从站独立于 smoltcp/eneros-net（D8）。
 //! 类比 v0.46.0 Modbus TCP 的 `TcpTransport`，但面向从站（accept/send/recv/close/now_ms）。
 
+use alloc::vec::Vec;
+
 use crate::error::Iec104Error;
 
 /// 连接标识类型别名
@@ -23,6 +25,10 @@ pub trait SlaveTransport {
     fn close(&mut self, conn: ConnId);
     /// 返回当前单调时钟（毫秒）。
     fn now_ms(&self) -> u64;
+    /// 返回已发送给 `conn` 的帧切片引用（诊断/测试用）。默认实现返回空。
+    fn tx_frames_for(&self, _conn: ConnId) -> Vec<&[u8]> {
+        Vec::new()
+    }
 }
 
 /// IEC 104 从站统计信息

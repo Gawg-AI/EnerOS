@@ -1,4 +1,4 @@
-//! 信誉体系管理器 (v0.168.0).
+//! 信誉体系管理器 (workspace v0.192.0).
 //!
 //! TrustSystem trait 实现，统一管理所有 Agent 信誉。
 

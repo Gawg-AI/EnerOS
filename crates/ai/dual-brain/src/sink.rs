@@ -28,6 +28,11 @@ pub struct DispatchCommand {
 pub trait CommandSink {
     /// 写入命令到下发通道.
     fn write(&mut self, cmd: DispatchCommand) -> Result<(), DualBrainError>;
+
+    /// 已成功写入的命令数（默认 0；Mock 实现返回收集数，P0-17 验收用）.
+    fn write_count(&self) -> usize {
+        0
+    }
 }
 
 /// Mock 命令 sink（收集命令用于测试）.
@@ -59,5 +64,9 @@ impl CommandSink for MockCommandSink {
     fn write(&mut self, cmd: DispatchCommand) -> Result<(), DualBrainError> {
         self.commands.push(cmd);
         Ok(())
+    }
+
+    fn write_count(&self) -> usize {
+        self.commands.len()
     }
 }

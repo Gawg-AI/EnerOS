@@ -4,9 +4,11 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS 自动结算系统 (v0.180.0) — 清算/对账/争议处理, no_std"
+description = "[SPECULATIVE] EnerOS 自动结算系统 (v0.180.0) — 清算/对账/争议处理, no_std"
 
 [dependencies]
+eneros-market-types = { path = "../market-types" }
+# SPECULATIVE (ARCH-M04/ADR-0029): 未接入任何真实 agent 的报价/结算流水线，不进入 release 闭包；接入前不得计入完成度。
 
 [features]
 default = []

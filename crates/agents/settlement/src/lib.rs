@@ -1,4 +1,4 @@
-//! EnerOS 自动结算系统 (v0.180.0)。
+//! EnerOS 自动结算系统 (workspace v0.192.0)。
 //!
 //! 提供清算（Clearing）、对账（Reconciliation）与争议处理（Dispute）三大核心能力，
 //! 适用于电力交易自动结算场景。
@@ -6,7 +6,7 @@
 //! # 架构
 //! ```text
 //! ┌───────────────────────────────────────────────────┐
-//! │  eneros-settlement (v0.180.0)                     │
+//! │  eneros-settlement (workspace v0.192.0)                     │
 //! │  ┌──────────┐  ┌────────────┐  ┌──────────────┐  │
 //! │  │ clearing │  │ reconcile  │  │ dispute      │  │
 //! │  │ (Engine) │  │(Reconciler)│  │(DisputeMgr)  │  │

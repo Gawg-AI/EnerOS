@@ -1,0 +1,24 @@
+[package]
+name = "eneros-xtask"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Single fail-closed EnerOS product build, image, run, inspect, release and flash entry"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+eneros-image-format = { path = "../crates/boot/image-format" }
+eneros-boot-protocol = { path = "../crates/boot/boot-protocol" }
+eneros-ipc-wire = { path = "../crates/abi/ipc-wire" }
+eneros-modbus-rtu = { path = "../crates/protocols/modbus-rtu" }
+eneros-iec104-slave = { path = "../crates/protocols/iec104-slave" }
+eneros-elf-loader = { path = "../crates/abi/elf-loader" }
+eneros-gguf-loader = { path = "../crates/ai/gguf-loader" }
+eneros-boot-manager-uefi = { path = "../crates/boot/boot-manager-uefi" }
+eneros-crash-dump = { path = "../crates/observability/crash-dump" }
+ed25519-dalek = { version = "2.2.0", default-features = true }
+sha2 = "0.10.9"
+object = { version = "0.36", default-features = false, features = ["read_core", "elf", "std"] }

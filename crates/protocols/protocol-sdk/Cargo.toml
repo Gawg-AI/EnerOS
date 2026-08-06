@@ -4,10 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS Protocol SDK v1.0 (v0.165.0) — 设备协议插件开发框架, no_std"
+description = "EnerOS Protocol SDK v1.0 (v0.165.0) — 协议插件 IPC wire codec 客户端, no_std (ADR-0025/ARCH-S01)"
 
 [dependencies]
 heapless = { version = "0.8", default-features = false }
+eneros-upa-model = { path = "../upa-model" }
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 
 [features]
 default = []

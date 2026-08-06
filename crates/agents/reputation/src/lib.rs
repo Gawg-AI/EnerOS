@@ -1,4 +1,4 @@
-//! EnerOS Agent 信誉经济激励 (v0.181.0)。
+//! EnerOS Agent 信誉经济激励 (workspace v0.192.0)。
 //!
 //! 提供信誉评分（Scorer）、经济激励（Incentive）与联动表（Linkage）三大核心能力，
 //! 实现信誉→权限→收益的完整联动链路。
@@ -6,7 +6,7 @@
 //! # 架构
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
-//! │  eneros-reputation (v0.181.0)                               │
+//! │  eneros-reputation (workspace v0.192.0)                               │
 //! │  ┌────────────┐  ┌──────────────┐  ┌───────────────────┐   │
 //! │  │ scorer     │  │ incentive    │  │ linkage           │   │
 //! │  │ (Engine)   │  │(Policy/Gate) │  │(LinkageTable)     │   │

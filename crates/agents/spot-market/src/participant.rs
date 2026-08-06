@@ -85,12 +85,12 @@ impl SpotMarketParticipant for MockParticipant {
         self.clock += 1;
         let ack = BidAck {
             bid_id: bid.bid_id,
-            ack_at: self.clock,
+            reason: None,
             accepted: true,
         };
         let planned: f64 = bid.segments.iter().map(|s| s.volume_kwh).sum();
         self.bids.insert(bid.bid_id, bid.clone());
-        self.acks.insert(bid.bid_id, ack);
+        self.acks.insert(bid.bid_id, ack.clone());
         self.trackers
             .insert(bid.bid_id, ExecTracker::new(bid.bid_id, planned));
         Ok(ack)
@@ -115,12 +115,13 @@ impl SpotMarketParticipant for MockParticipant {
 mod tests {
     use super::*;
     use crate::bid::BidBuilder;
-    use crate::types::{ClearedSegment, SpotMarketType, TimeSlot, TradeDir};
+    use eneros_market_types::YuanPerKwh;
+    use crate::types::{ClearedSegment, MarketType, SpotMarketType, TimeSlot, TradeDir};
 
     fn make_bid(id: u64) -> Bid {
         BidBuilder::new(id, SpotMarketType::DayAhead, 1)
             .submit_at(1000)
-            .add_segment(TimeSlot::new(0, 3600), 100.0, 0.5, TradeDir::Sell)
+            .add_segment(TimeSlot::new(0, 3600), 100.0, YuanPerKwh(0.5), TradeDir::Sell)
             .build()
             .unwrap()
     }
@@ -139,7 +140,7 @@ mod tests {
         let mut p = MockParticipant::new();
         let bid = Bid {
             bid_id: 2,
-            market: SpotMarketType::DayAhead,
+            market: MarketType::DayAhead,
             submitter: 1,
             segments: Vec::new(),
             submit_at: 1000,
@@ -164,15 +165,15 @@ mod tests {
             cleared: alloc::vec![ClearedSegment {
                 period: TimeSlot::new(0, 3600),
                 cleared_volume: 80.0,
-                cleared_price: 0.48,
+                cleared_price: YuanPerKwh(0.48),
             }],
-            clearing_price: 0.48,
+            clearing_price: YuanPerKwh(0.48),
             clearing_at: 2000,
         };
         p.inject_clearing(clearing);
 
         let fetched = p.fetch_clearing(1).unwrap();
-        assert_eq!(fetched.clearing_price, 0.48);
+        assert_eq!(fetched.clearing_price, YuanPerKwh(0.48));
     }
 
     #[test]
@@ -188,9 +189,9 @@ mod tests {
             cleared: alloc::vec![ClearedSegment {
                 period: TimeSlot::new(0, 3600),
                 cleared_volume: 100.0,
-                cleared_price: 0.5,
+                cleared_price: YuanPerKwh(0.5),
             }],
-            clearing_price: 0.5,
+            clearing_price: YuanPerKwh(0.5),
             clearing_at: 2000,
         };
         p.inject_clearing(clearing);

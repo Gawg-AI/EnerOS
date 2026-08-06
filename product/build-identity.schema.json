@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eneros.invalid/schema/build-identity-v1.json",
+  "title": "EnerOS deterministic build identity",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "profile", "workspace_version", "source_commit", "source_date_epoch", "cargo_lock_sha256", "build_id_hex"],
+  "properties": {
+    "schema": { "const": "eneros.build-identity.v1" },
+    "profile": { "type": "string", "minLength": 1 },
+    "workspace_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "source_date_epoch": { "type": "integer", "minimum": 1 },
+    "cargo_lock_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "build_id_hex": { "type": "string", "pattern": "^[0-9a-f]{32}$" }
+  }
+}

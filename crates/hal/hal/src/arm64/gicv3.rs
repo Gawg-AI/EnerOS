@@ -26,6 +26,9 @@ const GICR_CTLR: u64 = 0x00;
 const GICR_WAKER: u64 = 0x14;
 #[allow(dead_code)] // GICv3 register map; TYPER probe deferred to multi-core support
 const GICR_TYPER: u64 = 0x08;
+const GICR_IPRIORITYR: u64 = 0x400;
+/// HAL-005：GICR 唤醒等待的最大轮询次数（约 1ms @ 100MHz 轮询）。
+const GICR_WAKEUP_MAX_ITERS: u32 = 100_000;
 #[allow(dead_code)] // GICv3 register map; group config not used yet in v0.6.0
 const GICR_IGROUPR0: u64 = 0x100;
 
@@ -95,9 +98,14 @@ impl Arm64Gic {
                 in(reg) pmr,
                 options(nostack, preserves_flags),
             );
-            // Default priority (0x80) for SGIs/PPIs (IRQ 0..32).
-            for i in 0..32u32 {
-                w32(self.gicd_base, GICD_PRI + (i as u64) * 4, 0x80);
+            // HAL-004：默认优先级 0x80。每个 IPRIORITYR u32 覆盖 4 个 IRQ
+            // 的 8-bit 优先级——一次写 0x80808080（旧代码逐 IRQ 写单字节 0x80，
+            // 会把同寄存器相邻 3 个 IRQ 的优先级置 0 = 最高优先级）。
+            // SGI/PPI（0..32）的优先级位于 **GICR_IPRIORITYR**（重分发器），
+            // SPI（32..）位于 GICD_IPRIORITYR（分发器）。
+            let gicr = self.locate_current_core_gicr();
+            for i in (0..32u32).step_by(4) {
+                w32(gicr, GICR_IPRIORITYR + (i as u64), 0x8080_8080);
             }
         }
     }
@@ -112,10 +120,13 @@ impl Arm64Gic {
         let mut waker = r32(gicr, GICR_WAKER);
         waker &= !GICR_WAKER_PROCESSING_SLEEP;
         w32(gicr, GICR_WAKER, waker);
-        // Wait until ChildrenAsleep clears (re-distributor ready).
-        while r32(gicr, GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP != 0 {
-            core::hint::spin_loop();
-        }
+        // HAL-005：有界忙等——等待 ChildrenAsleep 清除（重分发器就绪）。
+        // 旧代码无限忙等；超时返回 Err(HalError::Timeout)。
+        crate::wait_until(
+            || r32(gicr, GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP == 0,
+            GICR_WAKEUP_MAX_ITERS,
+        )
+        .expect("GICR redistributor failed to become ready");
     }
 
     /// Locate the GICR base for the current core.
@@ -146,16 +157,27 @@ impl Arm64Gic {
             return;
         }
         let irq = irq as u32;
-        // SAFETY: bounds-checked read of the handler table.
-        unsafe {
-            if let Some(handler) = IRQ_HANDLERS[irq as usize] {
-                let _ = handler(irq);
-            }
+        // HAL-001：保留 INTID 边界检查——IRQ 超出 handler 表（>= MAX_IRQ，
+        // 如 1022 保留中断或非法 INTID）不得索引 panic，EOI 清除 active 后返回。
+        if let Some(handler) = resolve_handler(irq) {
+            let _ = handler(irq);
         }
         // Always EOI (including for unknown IRQs) to clear the active state.
         // Use fully-qualified syntax: `eoi` is a `HalIrq` trait method, which
         // is not in scope inside this inherent `impl Arm64Gic` block.
         crate::HalIrq::eoi(self, irq);
+    }
+
+    /// HAL-001：handler 表安全查找（保留 INTID 边界检查）。
+    ///
+    /// `irq >= MAX_IRQ`（含 1022 保留 INTID 与任何非法 INTID）返回 `None`，
+    /// 绝不以越界索引触发 panic。调用方（`dispatch_irq`）EOI 后返回。
+    fn resolve_handler(irq: u32) -> Option<crate::IrqHandler> {
+        if !crate::timer_math::irq_in_range(irq, MAX_IRQ) {
+            return None;
+        }
+        // SAFETY: `irq < MAX_IRQ` 已由 `irq_in_range` 保证，索引必然在表内。
+        unsafe { IRQ_HANDLERS[irq as usize] }
     }
 }
 
@@ -260,5 +282,45 @@ mod tests {
     #[test]
     fn max_irq_constant() {
         assert_eq!(MAX_IRQ, 256);
+    }
+
+    // ===== HAL-001: dispatch_irq 保留 INTID 边界检查 =====
+
+    /// 已注册 IRQ（< MAX_IRQ）→ 命中 handler。
+    #[test]
+    fn resolve_handler_registered_in_range() {
+        fn dummy(_irq: u32) {}
+        unsafe {
+            IRQ_HANDLERS[42] = Some(dummy);
+        }
+        assert!(resolve_handler(42).is_some());
+        unsafe {
+            IRQ_HANDLERS[42] = None;
+        }
+    }
+
+    /// 未注册 IRQ（< MAX_IRQ）→ None，不 panic。
+    #[test]
+    fn resolve_handler_unregistered_in_range() {
+        unsafe {
+            IRQ_HANDLERS[7] = None;
+        }
+        assert!(resolve_handler(7).is_none());
+    }
+
+    /// HAL-001 回归：1022 保留 INTID → None，不 panic（旧代码
+    /// `IRQ_HANDLERS[1022]` 越界 panic——旧代码失败证据）。
+    #[test]
+    fn resolve_handler_reserved_intid_1022() {
+        assert!(resolve_handler(1022).is_none());
+    }
+
+    /// HAL-001 回归：非法 INTID（>= MAX_IRQ，如 4096）→ None，不 panic。
+    #[test]
+    fn resolve_handler_out_of_bounds_never_panics() {
+        assert!(resolve_handler(4096).is_none());
+        assert!(resolve_handler(u32::MAX).is_none());
+        assert!(resolve_handler(MAX_IRQ).is_none());
+        assert!(resolve_handler(MAX_IRQ - 1).is_none());
     }
 }

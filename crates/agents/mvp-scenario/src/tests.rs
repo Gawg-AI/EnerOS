@@ -70,8 +70,8 @@ fn t3_revenue_comparator_new_empty() {
     let rc = RevenueComparator::new();
     assert!(rc.dual_brain_revenue.is_empty());
     assert!(rc.traditional_revenue.is_empty());
-    assert_eq!(rc.dual_brain_total(), 0.0);
-    assert_eq!(rc.traditional_total(), 0.0);
+    assert_eq!(rc.dual_brain_total(), crate::revenue::MilliYuan::ZERO);
+    assert_eq!(rc.traditional_total(), crate::revenue::MilliYuan::ZERO);
 }
 
 // ===== T4: RevenueComparator::record_dual_brain + dual_brain_total =====
@@ -81,7 +81,7 @@ fn t4_revenue_comparator_record_dual_brain() {
     rc.record_dual_brain(100.0);
     rc.record_dual_brain(50.0);
     assert_eq!(rc.dual_brain_revenue.len(), 2);
-    assert!((rc.dual_brain_total() - 150.0).abs() < 1e-9);
+    assert_eq!(rc.dual_brain_total(), crate::revenue::MilliYuan(150_000), "100+50 元 = 150 元");
 }
 
 // ===== T5: RevenueComparator::record_traditional + traditional_total =====
@@ -91,7 +91,7 @@ fn t5_revenue_comparator_record_traditional() {
     rc.record_traditional(80.0);
     rc.record_traditional(20.0);
     assert_eq!(rc.traditional_revenue.len(), 2);
-    assert!((rc.traditional_total() - 100.0).abs() < 1e-9);
+    assert_eq!(rc.traditional_total(), crate::revenue::MilliYuan(100_000), "80+20 元 = 100 元");
 }
 
 // ===== T6: RevenueComparator::improvement_pct 正常计算（dual=100, trad=80 → 25.0）=====
@@ -104,14 +104,16 @@ fn t6_revenue_comparator_improvement_pct_normal() {
     assert!((rc.improvement_pct() - 25.0).abs() < 1e-9);
 }
 
-// ===== T7: RevenueComparator::improvement_pct traditional=0 返回 INFINITY =====
+// ===== T7: RevenueComparator trad=0 时提升比无定义，出口不达标（B14）=====
 #[test]
-fn t7_revenue_comparator_improvement_pct_trad_zero() {
+fn t7_revenue_comparator_trad_zero_not_met() {
     let mut rc = RevenueComparator::new();
     rc.record_dual_brain(100.0);
     // traditional_revenue 为空 → traditional_total() = 0.0
-    assert!(rc.improvement_pct().is_infinite());
-    assert!(rc.improvement_pct() > 0.0);
+    // B14 修复：旧实现返回 INFINITY 使 meets_target() 恒真（自欺指标）；
+    // 新实现返回 NaN 且 meets_target() 为 false（fail-closed）。
+    assert!(rc.improvement_pct().is_nan());
+    assert!(!rc.meets_target(), "trad=0 时出口标准不得恒真（B14）");
 }
 
 // ===== T8: RevenueComparator::meets_target（improvement ≥ 10%）=====
@@ -336,15 +338,17 @@ fn t20_orchestrator_tick_records_revenue() {
         .energy_agent
         .current_schedule
         .as_ref()
-        .map(|s| s.total_revenue_yuan)
-        .unwrap_or(0.0);
-    assert!((orch.revenue_comparator.dual_brain_total() - expected_dual).abs() < 1e-9);
+        .map(|s| crate::revenue::MilliYuan::from_yuan_f64(s.total_revenue_yuan))
+        .unwrap_or(crate::revenue::MilliYuan::ZERO);
+    assert_eq!(
+        orch.revenue_comparator.dual_brain_total(),
+        expected_dual,
+        "双脑累计收益（毫元定点）"
+    );
 
     // report 字段应与 comparator 一致
-    assert!((report.dual_brain_revenue - orch.revenue_comparator.dual_brain_total()).abs() < 1e-9);
-    assert!(
-        (report.traditional_revenue - orch.revenue_comparator.traditional_total()).abs() < 1e-9
-    );
+    assert_eq!(report.dual_brain_revenue, orch.revenue_comparator.dual_brain_total());
+    assert_eq!(report.traditional_revenue, orch.revenue_comparator.traditional_total());
 }
 
 // ===== T21: MvpOrchestrator 多 tick 累积收益 =====
@@ -364,20 +368,20 @@ fn t21_orchestrator_multi_tick_accumulate() {
     assert_eq!(orch.revenue_comparator.traditional_revenue.len(), 3);
 
     // 累计收益 = 各 tick 收益之和
-    let expected_dual: f64 = orch
-        .revenue_comparator
-        .dual_brain_revenue
-        .iter()
-        .copied()
-        .sum();
-    let expected_trad: f64 = orch
-        .revenue_comparator
-        .traditional_revenue
-        .iter()
-        .copied()
-        .sum();
-    assert!((orch.revenue_comparator.dual_brain_total() - expected_dual).abs() < 1e-9);
-    assert!((orch.revenue_comparator.traditional_total() - expected_trad).abs() < 1e-9);
+    let mut expected_dual = crate::revenue::MilliYuan(0);
+    for v in &orch.revenue_comparator.dual_brain_revenue {
+        expected_dual = expected_dual.checked_add(*v).unwrap_or(expected_dual);
+    }
+    let mut expected_trad = crate::revenue::MilliYuan(0);
+    for v in &orch.revenue_comparator.traditional_revenue {
+        expected_trad = expected_trad.checked_add(*v).unwrap_or(expected_trad);
+    }
+    assert_eq!(
+        orch.revenue_comparator.dual_brain_total(),
+        expected_dual,
+        "双脑累计收益（毫元定点）"
+    );
+    assert_eq!(orch.revenue_comparator.traditional_total(), expected_trad);
 }
 
 // ===== T22: MvpOrchestrator::stop 全部 Agent 转 Dead + running=false =====

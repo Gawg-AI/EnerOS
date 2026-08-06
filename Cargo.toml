@@ -1,21 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/kernel/kernel",
-    "crates/kernel/mm",
-    "crates/kernel/heap",
-    "crates/kernel/sched",
-    "crates/kernel/smp",
-    "crates/kernel/panic",
-    "crates/kernel/ipc",
-    "crates/kernel/controlbus",
-    "crates/kernel/rtos-control",
-    "crates/kernel/rtos-sampling",
-    "crates/kernel/rtos-cmd-exec",
-    "crates/kernel/rtos-degrade",
-    "crates/kernel/rtos-watchdog-degrade",
-    "crates/kernel/microkernel",
-    "crates/kernel/plugin",
+    "crates/scenes/firmware-agent",
+    "xtask",
+    "crates/boot/boot-protocol",
+    "crates/boot/boot-manager-uefi",
+    "crates/boot/installer-uefi",
+    "crates/boot/image-format",
+    "crates/abi/ipc-wire",
+    "crates/abi/elf-loader",
     "crates/ai/llm-engine",
     "crates/ai/gguf-loader",
     "crates/ai/model-deploy",
@@ -41,7 +34,8 @@ members = [
     "crates/runtime/runtime",
     "crates/runtime/sel4-sys",
     "crates/runtime/hello",
-    "crates/runtime/user/heap",
+    "crates/runtime/root-task",
+    "crates/runtime/services",
     "crates/runtime/config",
     "crates/drivers/time",
     "crates/drivers/watchdog",
@@ -56,6 +50,7 @@ members = [
     "crates/drivers/can",
     "crates/protocols/modbus-rtu",
     "crates/protocols/modbus-tcp",
+    "crates/protocols/modbus-tcp-server",
     "crates/protocols/iec104-slave",
     "crates/protocols/iec104-master",
     "crates/protocols/upa-model",
@@ -71,13 +66,16 @@ members = [
     "crates/protocols/iec61850-sv",
     "crates/protocols/fault-recorder",
     "crates/protocols/protocol-sdk",
+    "crates/protocols/control-gateway",
+    "crates/protocols/safety-catalog",
     "crates/drivers/calibration",
-    "crates/drivers/driver-sdk",
+    "crates/drivers/drv-svc",
     "crates/security/crypto",
     "crates/security/iec62351",
     "crates/security/secure-boot",
     "crates/security/attestation",
     "crates/security/mtls",
+    "crates/security/tls",
     "crates/security/model-security",
     "crates/security/audit",
     "crates/security/pentest",
@@ -110,6 +108,7 @@ members = [
     "crates/agents/realtime-market",
     "crates/agents/p2p",
     "crates/agents/p2p-match",
+    "crates/agents/market-types",
     "crates/agents/account",
     "crates/agents/autonomous",
     "crates/agents/chain",
@@ -120,16 +119,25 @@ members = [
     "crates/agents/app-cert",
     "crates/agents/standards",
     "crates/agents/twin-global",
+    "crates/agents/fleet-ops",
+    "crates/agents/ops-lifecycle",
+    "crates/agents/data-governance",
     "crates/observability/metrics",
     "crates/observability/logging",
     "crates/observability/tracing",
     "crates/observability/dashboard",
     "crates/observability/aiops",
+    "crates/observability/crash-dump",
+    "crates/observability/support-bundle",
+    "crates/observability/mgmt-api",
+    "crates/observability/mgmt-cli",
+    "crates/observability/slo-alert",
+    "crates/observability/telemetry-queue",
     "ci",
 ]
 
 [workspace.package]
-version = "0.192.0"
+version = "0.212.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
@@ -144,3 +152,6 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+# 用户态 EL0 程序：LTO+opt3 曾产生可疑的寄存器/控制流异常；降级为
+# opt1 + 多 codegen units（内核本身保持 LTO）。证据正确性优先于尺寸。

@@ -1,4 +1,4 @@
-//! EnerOS Cellular Modem Driver & Dual-Network Redundancy (v0.30.0).
+//! EnerOS Cellular Modem Driver & Dual-Network Redundancy (workspace v0.192.0).
 //!
 //! Provides:
 //! - **v0.30.1**: AT command encapsulation, PPP dial-up protocol, CellularModem driver
@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────┐
-//! │  RedundancyManager (v0.30.2)                 │
+//! │  RedundancyManager (workspace v0.192.0)                 │
 //! │  ┌─────────────┐  ┌──────────────────────┐   │
 //! │  │ LinkState   │  │ FailoverManager      │   │
 //! │  │ (primary)   │  │ ┌──────────────────┐ │   │
@@ -21,7 +21,7 @@
 //! └───────────────┬──────────────────────────────┘
 //!                 │
 //! ┌───────────────▼──────────────────────────────┐
-//! │  CellularModem<S: HalSerial> (v0.30.1)       │
+//! │  CellularModem<S: HalSerial> (workspace v0.192.0)       │
 //! │  ┌──────────────┐  ┌─────────────────────┐   │
 //! │  │ AtParser     │  │ PppStateMachine     │   │
 //! │  │ (AT+CSQ etc) │  │ (LCP→Auth→IPCP→IP)  │   │
@@ -35,7 +35,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_cellular::{CellularModem, RetryConfig};
 //! use eneros_hal::HalSerial;
 //!

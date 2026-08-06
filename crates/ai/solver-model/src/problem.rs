@@ -9,7 +9,23 @@ use eneros_solver_core::problem::{ConstraintMatrix, LpProblem, ObjectiveSense};
 
 use crate::constraint::Constraint;
 use crate::expr::LinearExpr;
-use crate::variable::Variable;
+use crate::variable::{Variable, K_HIGHS_INF};
+
+/// 将边界值钳制到 `[-kHighsInf, kHighsInf]`（P0-21）。
+///
+/// `f64::INFINITY` → `K_HIGHS_INF`，`f64::NEG_INFINITY` → `-K_HIGHS_INF`；
+/// 其他值原样返回（超出 ±1e30 的有限字面量由 [`VarBuilder`] 拒绝）。
+pub fn clamp_bound(v: f64) -> f64 {
+    if v.is_infinite() {
+        if v > 0.0 {
+            K_HIGHS_INF
+        } else {
+            -K_HIGHS_INF
+        }
+    } else {
+        v
+    }
+}
 
 /// 优化问题容器 + Builder + 编译器.
 pub struct OptProblem {
@@ -109,10 +125,12 @@ impl OptProblem {
         row_start.push(0);
         for con in &self.constraints {
             let (expr, lo, hi) = match con {
-                Constraint::Le(e, rhs) => (e, f64::NEG_INFINITY, *rhs),
-                Constraint::Ge(e, rhs) => (e, *rhs, f64::INFINITY),
-                Constraint::Eq(e, rhs) => (e, *rhs, *rhs),
-                Constraint::Range(e, lo, hi) => (e, *lo, *hi),
+                // P0-21（v0.201.0）：±∞ 边界钳制到 ±kHighsInf(1e30)，
+                // HiGHS 不接受 f64::INFINITY。
+                Constraint::Le(e, rhs) => (e, -K_HIGHS_INF, clamp_bound(*rhs)),
+                Constraint::Ge(e, rhs) => (e, clamp_bound(*rhs), K_HIGHS_INF),
+                Constraint::Eq(e, rhs) => (e, clamp_bound(*rhs), clamp_bound(*rhs)),
+                Constraint::Range(e, lo, hi) => (e, clamp_bound(*lo), clamp_bound(*hi)),
             };
             // BTreeMap 遍历顺序确定（D2 优势）
             for (&idx, &coeff) in &expr.terms {

@@ -1,4 +1,4 @@
-//! EnerOS Agent 自主交易 (v0.178.0)
+//! EnerOS Agent 自主交易 (workspace v0.192.0)
 //!
 //! 实现 Agent 间自主交易全闭环：报价 → 撮合 → 冻结 → 确认 → 交付 → 结算。
 //!

@@ -64,8 +64,8 @@ impl PromptTemplate for ChargeDischargeTemplate {
                 "当前功率: {} kW\n",
                 "温度: {}℃\n",
                 "时段: {}\n\n",
-                "请输出 JSON 格式的充放电策略，包含以下字段：\n",
-                "{{ \"action\": \"charge\" | \"discharge\" | \"standby\", \"power_kw\": <浮点数>, \"reason\": \"<简短理由>\", \"confidence\": <0.0~1.0> }}\n\n",
+                "请输出 JSON 格式的充放电策略（意图契约 v0.203.0），包含以下字段：\n",
+                "{{ \"intent_type\": \"Charge\" | \"Discharge\" | \"Hold\", \"time_range\": {{\"start_period\": <起始时段>, \"end_period\": <结束时段>}}, \"power\": {{\"power_kw\": <浮点数，充电为负>}}, \"reason\": \"<简短理由>\", \"confidence\": <0.0~1.0> }}\n\n",
                 "只输出 JSON，不要其他文字。",
             ),
             ctx.market_price, ctx.soc, ctx.power_current, ctx.temperature, ctx.time_of_day

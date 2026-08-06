@@ -1,80 +1,163 @@
-//! HiGHS C API FFI 绑定（D2/D10）.
+//! HiGHS C API FFI 绑定（feature = "highs-ffi"）.
 //!
-//! 仅在 `highs-ffi` feature 启用时编译。对应 HiGHS `highs.h` 中的 C 接口.
+//! 直接绑定 HiGHS C API（`src/interfaces/highs_c_api.h`），无中间包装。
+//! 所有 `unsafe` 块在 `highs.rs` 中调用，此处仅声明 extern "C" 签名。
+//!
+//! # Safety
+//!
+//! HiGHS 句柄（`*mut c_void`）由 `HighsSolver` 通过 RAII 管理：
+//! - `Highs_create` 返回的指针由 `HighsSolver` 持有
+//! - `Drop` 调用 `Highs_destroy` 释放
+//! - 其他函数接受非 null 的 `highs` 指针
 
-use core::ffi::{c_char, c_int, c_void};
+#![cfg(feature = "highs-ffi")]
 
-/// HiGHS 对象句柄.
-pub type HighsPtr = *mut c_void;
+use core::ffi::c_void;
+
+/// HiGHS 整数类型（C 侧为 `HighsInt`，通常是 `int` = i32）。
+pub type HighsInt = i32;
+
+// --- 状态常量（来自 highs_c_api.h）---
+
+/// 矩阵格式：列压缩（CSC）。
+pub const MATRIX_FORMAT_COLWISE: HighsInt = 1;
+/// 矩阵格式：行压缩（CSR）。
+pub const MATRIX_FORMAT_ROWWISE: HighsInt = 2;
+
+/// 目标方向：最小化。
+pub const OBJ_SENSE_MINIMIZE: HighsInt = 1;
+/// 目标方向：最大化。
+pub const OBJ_SENSE_MAXIMIZE: HighsInt = -1;
+
+/// 模型状态：最优解。
+pub const MODEL_STATUS_OPTIMAL: HighsInt = 7;
+/// 模型状态：不可行。
+pub const MODEL_STATUS_INFEASIBLE: HighsInt = 8;
+/// 模型状态：无界或不可行。
+pub const MODEL_STATUS_UNBOUNDED_OR_INFEASIBLE: HighsInt = 9;
+/// 模型状态：无界。
+pub const MODEL_STATUS_UNBOUNDED: HighsInt = 10;
+
+/// 变量类型：连续。
+pub const VAR_TYPE_CONTINUOUS: HighsInt = 0;
+/// 变量类型：整数。
+pub const VAR_TYPE_INTEGER: HighsInt = 1;
+
+// --- C API 函数声明 ---
 
 extern "C" {
-    /// 创建 HiGHS 对象。返回空指针表示失败.
-    pub fn Highs_create() -> HighsPtr;
-    /// 销毁 HiGHS 对象.
-    pub fn Highs_destroy(highs: HighsPtr);
-    /// 传递 LP 问题.
+    /// 创建 HiGHS 实例。返回不透明指针，失败返回 null。
+    pub fn Highs_create() -> *mut c_void;
+
+    /// 销毁 HiGHS 实例并释放所有关联内存。
+    pub fn Highs_destroy(highs: *mut c_void);
+
+    /// 传入 LP 问题（连续）。返回 0=成功，<0=错误。
+    #[allow(clippy::too_many_arguments)]
     pub fn Highs_passLp(
-        highs: HighsPtr,
-        num_col: c_int,
-        num_row: c_int,
-        num_nz: c_int,
-        a_format: c_int,
-        sense: c_int,
+        highs: *mut c_void,
+        num_col: HighsInt,
+        num_row: HighsInt,
+        num_nz: HighsInt,
+        a_format: HighsInt,
+        sense: HighsInt,
         offset: f64,
         col_cost: *const f64,
         col_lower: *const f64,
         col_upper: *const f64,
         row_lower: *const f64,
         row_upper: *const f64,
-        a_start: *const c_int,
-        a_index: *const c_int,
+        a_start: *const HighsInt,
+        a_index: *const HighsInt,
         a_value: *const f64,
-    ) -> c_int;
-    /// 传递 MIP 问题（v0.102.0 增量：同 `Highs_passLp`，尾部追加整数性数组）.
-    ///
-    /// `integrality` 长度 = num_col：0=连续，1=整数（Binary 以 [0,1] 界 + 1 表达）.
+    ) -> HighsInt;
+
+    /// 传入 MILP 问题（含整数约束）。返回 0=成功，<0=错误。
+    #[allow(clippy::too_many_arguments)]
     pub fn Highs_passMip(
-        highs: HighsPtr,
-        num_col: c_int,
-        num_row: c_int,
-        num_nz: c_int,
-        a_format: c_int,
-        sense: c_int,
+        highs: *mut c_void,
+        num_col: HighsInt,
+        num_row: HighsInt,
+        num_nz: HighsInt,
+        a_format: HighsInt,
+        sense: HighsInt,
         offset: f64,
         col_cost: *const f64,
         col_lower: *const f64,
         col_upper: *const f64,
         row_lower: *const f64,
         row_upper: *const f64,
-        a_start: *const c_int,
-        a_index: *const c_int,
+        a_start: *const HighsInt,
+        a_index: *const HighsInt,
         a_value: *const f64,
-        integrality: *const c_int,
-    ) -> c_int;
-    /// 运行求解.
-    pub fn Highs_run(highs: HighsPtr) -> c_int;
-    /// 获取求解状态.
-    pub fn Highs_getModelStatus(highs: HighsPtr) -> c_int;
-    /// 获取目标函数值.
-    pub fn Highs_getObjectiveValue(highs: HighsPtr) -> f64;
-    /// 获取变量解.
+        integrality: *const HighsInt,
+    ) -> HighsInt;
+
+    /// 求解已传入的问题。返回 0=成功，<0=错误。
+    pub fn Highs_run(highs: *mut c_void) -> HighsInt;
+
+    /// 获取解向量（col_value, col_dual, row_value, row_dual）。
+    /// 调用者需预先分配足够大小的数组。
     pub fn Highs_getSolution(
-        highs: HighsPtr,
+        highs: *const c_void,
         col_value: *mut f64,
         col_dual: *mut f64,
         row_value: *mut f64,
         row_dual: *mut f64,
-    ) -> c_int;
-    /// 设置字符串参数.
+    ) -> HighsInt;
+
+    /// 获取目标函数值。
+    pub fn Highs_getObjectiveValue(highs: *const c_void) -> f64;
+
+    /// 获取模型状态（kHighsModelStatus* 常量）。
+    pub fn Highs_getModelStatus(highs: *const c_void) -> HighsInt;
+
+    /// 获取列数。
+    pub fn Highs_getNumCol(highs: *const c_void) -> HighsInt;
+
+    /// 获取行数。
+    pub fn Highs_getNumRow(highs: *const c_void) -> HighsInt;
+
+    /// 设置布尔选项（如 "presolve", "output_flag"）。
+    pub fn Highs_setBoolOptionValue(
+        highs: *mut c_void,
+        option: *const u8,
+        value: HighsInt,
+    ) -> HighsInt;
+
+    /// 设置整型选项（如 "random_seed"）（v0.202.0 P0-20）。
+    pub fn Highs_setIntOptionValue(
+        highs: *mut c_void,
+        option: *const u8,
+        value: HighsInt,
+    ) -> HighsInt;
+
+    /// 设置双精度选项（如 "time_limit", "mip_rel_gap"）（v0.202.0 P0-20）。
+    pub fn Highs_setDoubleOptionValue(
+        highs: *mut c_void,
+        option: *const u8,
+        value: f64,
+    ) -> HighsInt;
+
+    /// 设置字符串选项（如 "solver"）（v0.202.0 P0-20）。
     pub fn Highs_setStringOptionValue(
-        highs: HighsPtr,
-        option: *const c_char,
-        value: *const c_char,
-    ) -> c_int;
-    /// 设置双精度参数.
-    pub fn Highs_setDoubleOptionValue(highs: HighsPtr, option: *const c_char, value: f64) -> c_int;
-    /// 注入热启动初始解（v0.103.0 增量）.
+        highs: *mut c_void,
+        option: *const u8,
+        value: *const u8,
+    ) -> HighsInt;
+
+    /// 注入求解器初始解（热启动，v0.204.0 P0-19）。
     ///
-    /// `col_value` 长度 = num_col，为完整解向量（连续/整数列已合并）.
-    pub fn Highs_setSolution(highs: HighsPtr, col_value: *const f64) -> c_int;
+    /// `col_value` 为列（变量）值数组（长度 = 列数）；`row_value`/
+    /// `col_dual`/`row_dual` 可为 NULL（本封装只注入原始解）。
+    pub fn Highs_setSolution(
+        highs: *mut c_void,
+        col_value: *const f64,
+        row_value: *const f64,
+        col_dual: *const f64,
+        row_dual: *const f64,
+    ) -> HighsInt;
+
+    /// 清空模型但不销毁实例（用于复用）。
+    pub fn Highs_clearModel(highs: *mut c_void) -> HighsInt;
 }

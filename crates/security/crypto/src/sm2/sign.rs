@@ -170,7 +170,7 @@ impl Sm2Signer {
             }
 
             // r = (e + x1) mod n
-            let r = e.add_mod(&point.x, &SM2_N);
+            let r = e.add_mod(&point.to_affine().x, &SM2_N);
             if r.is_zero() {
                 continue;
             }
@@ -248,7 +248,7 @@ impl Sm2Signer {
         }
 
         // R = (e + x1) mod n
-        let r_check = e.add_mod(&point.x, &SM2_N);
+        let r_check = e.add_mod(&point.to_affine().x, &SM2_N);
 
         // 恒定时间比较
         let r_check_bytes = r_check.to_be_bytes();

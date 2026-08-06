@@ -12,3 +12,6 @@ eneros-crypto = { path = "../crypto" }
 [features]
 default = []
 std = []
+# CRY-003：SimulatedTpm 显式 feature 门控——禁止进入产品 release（release 构建
+# 不带本 feature，SimulatedTpm 不存在；产品路径只能用硬件 TpmDriver）。
+simulated = []

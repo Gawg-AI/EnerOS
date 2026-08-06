@@ -9,4 +9,10 @@ description = "EnerOS 模型在线学习 (v0.186.0) — 边缘增量微调 + 联
 [dependencies]
 
 [features]
+experimental = []
 default = []
+
+[package.metadata.eneros]
+# v0.212.0（A11 研究线隔离）：伪训练/实验性 crate 不入产品发布闭包。
+product_allowed = false
+

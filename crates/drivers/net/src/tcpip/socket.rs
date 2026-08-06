@@ -15,7 +15,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_net::{NetworkInterface, InterfaceConfig, TcpSocket};
 //!
 //! let mut iface = NetworkInterface::new(device, config);

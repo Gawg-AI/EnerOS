@@ -1,4 +1,4 @@
-//! PCC (Point of Common Coupling) 并网点管理模块 (v0.83.0).
+//! PCC (Point of Common Coupling) 并网点管理模块 (workspace v0.192.0).
 //!
 //! 实现 [`PccManager`] 周期性读取并网点开关状态 + 功率，计算功率方向/功率因数，
 //! 判定并网/离网/过渡态，提供最小防抖逻辑。沿用 v0.82.0 [`crate::GridSampler`]

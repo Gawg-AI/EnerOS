@@ -1,0 +1,74 @@
+# EnerOS v0.119.0 纵深安全联调与渗透测试 安全策略配置模板
+#
+# ① 本文件仅为配置模板：集成层启动时读取本配置，按 [orchestrator] 构造
+#    `SecurityOrchestratorImpl` 的 7 层启用态与巡检周期，按 [response]
+#    执行安全事件分级响应动作映射，按 [pentest] 约束渗透测试范围与
+#    通过条件（详见 docs/security/pentest-design.md）。
+# ② 7 层纵深防御（蓝图 §7.4①）：L1 Secure Boot（v0.113.0）/ L2 测量启动
+#    与远程证明（v0.114.0）/ L3 mTLS 双向认证（v0.115.0）/ L4 模型签名
+#    （v0.116.0）/ L5 审计日志哈希链（v0.117.0）/ L6 行为审计
+#    （v0.118.0）/ L7 联邦安全（v0.99.0 PBFT 共识）。任一层的攻击被检出
+#    后构造 `SecurityIncident` 上报编排器，按严重级别联动响应。
+# ③ ★ 渗透测试通过是 Phase 2 出口必要条件（蓝图 §7.3/§7.5）：30/30
+#    Passed 且 0 Critical 发现 → PentestReport.overall_pass=true。
+
+[orchestrator]
+# ④ 7 层启用开关：enabled=false 的层在编排器巡检中恒为 unhealthy
+#    （`check_all_layers` 返回 healthy=false），用于分层维护/降级场景；
+#    生产环境 7 层应全部启用（纵深防御缺一不可）。
+l1_secure_boot = true      # L1 Secure Boot（v0.113.0）
+l2_measured_boot = true    # L2 测量启动与远程证明（v0.114.0）
+l3_mtls = true             # L3 mTLS 双向认证通信（v0.115.0）
+l4_model_signature = true  # L4 模型签名与供应链安全（v0.116.0）
+l5_audit_log = true        # L5 审计日志哈希链（v0.117.0）
+l6_behavior_audit = true   # L6 行为审计与异常检测（v0.118.0）
+l7_federation_sec = true   # L7 联邦安全（PBFT + 跨域通道，v0.99.0）
+
+# ⑤ 巡检周期（毫秒）：集成层按此周期调用
+#    `SecurityOrchestrator::check_all_layers(now_ms)` 刷新 7 层健康态与
+#    last_check_ms。单次巡检实测均值约 24ns（release，主机），远在蓝图
+#    §6.2 单次 < 5ms 门禁内，周期取值对实时性无压力。
+check_interval_ms = 5000
+
+[response]
+# ⑥ 安全事件分级响应动作映射（蓝图 §4.3）：事件严重级别 → 响应动作
+#    集合，`incident::respond(severity)` 按此映射返回定容动作列表，
+#    `handle_incident` 取首动作作为实际执行动作写入事件
+#    `response_action` 入库（可追溯审计）。动作语义：Alert=告警上报 /
+#    Throttle=限速降级 / Freeze=冻结会话交易 / Isolate=隔离故障域 /
+#    Shutdown=关停受影响组件。
+
+# 严重（可直接击穿防线）：先隔离故障域，再关停受影响组件。
+critical = ["Isolate", "Shutdown"]
+
+# 高危：先冻结相关会话/交易，再告警上报。
+high = ["Freeze", "Alert"]
+
+# 中危：限速/降级运行。
+medium = ["Throttle"]
+
+# 低危/提示：仅告警上报（Info 级与 Low 级同口径）。
+low = ["Alert"]
+
+[pentest]
+# ⑦ 用例范围：蓝图 v0.119.0 既定 30 项渗透用例，覆盖 L1~L7 全 7 层
+#    （L1×4 / L2×3 / L3×5 / L4×4 / L5×4 / L6×5 / L7×5，含跨层复合用例
+#    归层计数）。每项用例通过对应组件真实公开 API 构造篡改/伪造/重放
+#    输入，断言组件正确拒绝或检出（攻击被拦截 = 用例 Passed）。
+case_count = 30
+
+# ⑧ 通过条件（蓝图 §7.3/§7.5 ★ Phase 2 出口必要条件）：30/30 Passed
+#    且 0 Critical 发现（0 Failed / 0 Blocked）→
+#    PentestReport.overall_pass=true；任一用例 Failed 或 Blocked 即
+#    判定出口不通过，须修复后复测。
+pass_condition = "30/30 Passed, 0 Critical"
+
+# ⑨ 第三方人工渗透流程补充说明（偏差 D4）：蓝图设想引入第三方渗透
+#    工具/团队执行安全评估；本版本以 Rust 自动化渗透套件
+#    （eneros-pentest，30 用例真实攻击执行器）承载可复现、可 CI 化的
+#    基线验证，主机不可测项（ROM 验签、TPM 硬件拒绝、ARP 欺骗链路、
+#    时序侧信道实测等）映射为组件 API 级等价攻击输入（详见
+#    docs/security/pentest-design.md §9 D6）。商用交付前仍建议补充一次
+#    第三方人工渗透：流程为 ① 提供本套件报告作为基线；② 第三方在
+#    目标硬件（飞腾/鲲鹏 BSP）上执行人工渗透；③ 新发现转化为本套件
+#    新增用例固化回归，形成「自动化基线 + 人工增强」双轨机制。

@@ -1,9 +1,10 @@
 //! 需求响应数据类型定义
 
 /// DR 信号类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DrSignalType {
     /// 削负荷
+    #[default]
     LoadReduce,
     /// 增负荷
     LoadIncrease,
@@ -11,8 +12,9 @@ pub enum DrSignalType {
     Curtailment,
 }
 
-/// DR 事件信号
-#[derive(Debug, Clone, PartialEq)]
+/// DR 事件信号（ARC-005 统一量纲：target_kw/kW、start_at·end_at/unix 秒、
+/// incentive_yuan/元——全仓唯一定义，energy-market-agent re-export）。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DrSignal {
     /// 事件 ID
     pub event_id: u64,

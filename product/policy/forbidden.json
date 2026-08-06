@@ -1,0 +1,38 @@
+{
+  "schema": "eneros.forbidden-policy.v1",
+  "release_classes": [
+    "release",
+    "recovery",
+    "factory"
+  ],
+  "packages": [
+    "eneros-bootloader",
+    "eneros-crypto",
+    "eneros-kernel",
+    "eneros-mtls",
+    "eneros-plugin",
+    "eneros-runtime",
+    "eneros-sel4-sys",
+    "eneros-rl",
+    "eneros-online-learning",
+    "eneros-dialog",
+    "eneros-marl"
+  ],
+  "feature_patterns": [
+    "fixed-*",
+    "insecure-*",
+    "mock",
+    "mock-*",
+    "sel4-compat",
+    "test",
+    "test-*"
+  ],
+  "path_fragments": [
+    "crates/kernel/bootloader/",
+    "crates/kernel/kernel/",
+    "crates/kernel/plugin/",
+    "crates/runtime/runtime/",
+    "crates/runtime/sel4-sys/",
+    "crates/security/mtls/"
+  ]
+}

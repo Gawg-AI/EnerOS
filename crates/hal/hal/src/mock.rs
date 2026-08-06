@@ -104,9 +104,6 @@ impl HalProvider for MockHalProvider {
     fn cpu(&self) -> &'static dyn HalCpu {
         &MOCK_HAL
     }
-    fn mem(&self) -> &'static dyn HalMem {
-        &MOCK_HAL
-    }
     fn irq(&self) -> &'static dyn HalIrq {
         &MOCK_HAL
     }
@@ -114,9 +111,6 @@ impl HalProvider for MockHalProvider {
         &MOCK_HAL
     }
     fn serial(&self) -> &'static dyn HalSerial {
-        &MOCK_HAL
-    }
-    fn gpio(&self) -> &'static dyn HalGpio {
         &MOCK_HAL
     }
 }

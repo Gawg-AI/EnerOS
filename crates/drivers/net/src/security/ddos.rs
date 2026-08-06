@@ -1,4 +1,4 @@
-//! DDoS protection (v0.30.0).
+//! DDoS protection (workspace v0.192.0).
 //!
 //! Provides per-IP SYN flood detection using a sliding window rate limiter.
 //! Each source IP is tracked independently; when the number of SYN packets

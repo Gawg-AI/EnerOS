@@ -5,11 +5,20 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "EnerOS 国密算法库 (SM2/SM3/SM4 + CSRNG) — pure Rust, no_std, no C FFI"
+publish = false
+
+[package.metadata.eneros]
+product_allowed = false
+isolation_reason = "Pending audited system entropy integration and independent cryptographic review"
 
 [dependencies]
 # No external dependencies — pure Rust implementation
 
 [features]
+qemu-entropy = []
 default = []
 # Feature flag for std-only tests (optional)
 std = []
+# Explicit research escape hatch. Product policy rejects this feature and the
+# entire package in every release profile.
+insecure-test-rng = []

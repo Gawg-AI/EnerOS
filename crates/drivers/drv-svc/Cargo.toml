@@ -1,0 +1,38 @@
+[package]
+name = "eneros-drv-svc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS driver/storage EL0 services — rng/blk/net/console/storage/fault (no_std, aarch64-unknown-none)"
+
+[lib]
+name = "eneros_drv_svc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "svc-drv-rng"
+path = "src/bin/svc-drv-rng.rs"
+
+[[bin]]
+name = "svc-drv-blk"
+path = "src/bin/svc-drv-blk.rs"
+
+[[bin]]
+name = "svc-drv-net"
+path = "src/bin/svc-drv-net.rs"
+
+[[bin]]
+name = "svc-drv-console"
+path = "src/bin/svc-drv-console.rs"
+
+[[bin]]
+name = "svc-storage"
+path = "src/bin/svc-storage.rs"
+
+[[bin]]
+name = "svc-drv-fault"
+path = "src/bin/svc-drv-fault.rs"
+
+[features]
+default = []

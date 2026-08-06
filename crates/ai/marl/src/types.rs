@@ -1,4 +1,4 @@
-//! MARL 核心类型 (v0.188.0).
+//! MARL 核心类型 (workspace v0.192.0).
 
 use alloc::vec::Vec;
 
@@ -79,13 +79,16 @@ pub struct Transition {
     pub done: bool,
 }
 
-/// 联合转移（多 Agent 一步）.
+/// 联合转移（多 Agent 一步，ARC-006：含旧策略 logπ 用于重要性采样比）.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JointTransition {
     /// 各 Agent 的转移.
     pub per_agent: Vec<Transition>,
     /// 全局奖励.
     pub global_reward: f32,
+    /// 各 Agent 采样动作时的旧策略概率 π_old(a|s)（PPO importance ratio
+    /// 分母；no_std 环境用概率比 r = π_new/π_old，避免 exp/ln）.
+    pub old_probs: Vec<f32>,
 }
 
 /// 训练指标.
@@ -161,6 +164,7 @@ mod tests {
                 },
             ],
             global_reward: 1.5,
+            old_probs: alloc::vec![0.5; 2],
         };
         assert_eq!(jt.per_agent.len(), 2);
         assert!((jt.global_reward - 1.5).abs() < 1e-6);

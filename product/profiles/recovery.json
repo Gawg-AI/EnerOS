@@ -1,0 +1,44 @@
+{
+  "schema": "eneros.product-profile.v1",
+  "id": "recovery",
+  "class": "recovery",
+  "platform": "qemu-virt-aarch64",
+  "target": "aarch64-unknown-none",
+  "image_layout": "qemu-v1",
+  "artifacts": [
+    "recovery-image",
+    "sbom",
+    "firmware-bundle"
+  ],
+  "binaries": [
+    {
+      "selector": "eneros-boot-manager-uefi::boot-manager-uefi",
+      "role": "boot-manager",
+      "target": "aarch64-unknown-uefi",
+      "default_features": false,
+      "features": [
+        "uefi-app"
+      ]
+    },
+    {
+      "selector": "sel4:elfloader-arm-qemu-arm-virt",
+      "role": "recovery",
+      "target": "host",
+      "features": [],
+      "default_features": false
+    }
+  ],
+  "signing": {
+    "required": true,
+    "key_source": "external-file",
+    "allow_test_keys": false
+  },
+  "security": {
+    "allow_mock": false,
+    "allow_unsigned": false,
+    "minimum_security_version": 1,
+    "entropy_sources": [
+      "virtio-rng"
+    ]
+  }
+}

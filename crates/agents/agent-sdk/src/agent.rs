@@ -1,6 +1,8 @@
 //! Agent trait 与核心类型（SDK v1.0 稳定 API）。
 //!
-//! 外部开发者实现 [`Agent`] trait 并用 [`register_agent!`] 宏导出 C ABI 入口。
+//! 外部开发者实现 [`Agent`] trait；宿主经 IPC wire codec（`crate::wire`）
+//! 与 Agent 进程通信（HYG-002：`register_agent!` 宏已按 AGT-003 删除，
+//! 不再导出 extern "C" -> *mut dyn 入口）。
 //!
 //! # API 稳定性承诺
 //! v1.0 承诺本模块公共接口向后兼容。
@@ -113,7 +115,7 @@ impl AgentDescriptor {
 /// ```
 ///
 /// # 示例
-/// ```ignore
+/// ```text
 /// use eneros_agent_sdk::{Agent, AgentDescriptor, AgentError, Context};
 ///
 /// struct HelloAgent;

@@ -19,8 +19,7 @@ impl crate::HalClock for Arm64Timer {
             );
         }
         let freq = self.frequency_hz();
-        // ns = count * 1_000_000_000 / freq
-        count.saturating_mul(1_000_000_000) / freq
+        count_to_ns_impl(count, freq)
     }
 
     fn frequency_hz(&self) -> u64 {
@@ -37,7 +36,7 @@ impl crate::HalClock for Arm64Timer {
 
     fn set_deadline(&self, ns: u64) -> Result<(), crate::HalError> {
         let freq = self.frequency_hz();
-        let ticks = ns.saturating_mul(freq) / 1_000_000_000;
+        let ticks = ns_to_ticks_impl(ns, freq);
         unsafe {
             core::arch::asm!(
                 "msr cntp_tval_el0, {}",
@@ -55,6 +54,8 @@ impl crate::HalClock for Arm64Timer {
         Ok(())
     }
 }
+
+use crate::timer_math::{count_to_ns_impl, ns_to_ticks_impl};
 
 static ARM64_TIMER: Arm64Timer = Arm64Timer;
 

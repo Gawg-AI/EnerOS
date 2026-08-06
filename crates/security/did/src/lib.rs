@@ -1,4 +1,4 @@
-//! EnerOS Agent DID 去中心化身份体系 (v0.169.0).
+//! EnerOS Agent DID 去中心化身份体系 (workspace v0.192.0).
 //!
 //! 实现 W3C DID Core 兼容的去中心化身份标识系统，集成 SM2 国密签名
 //! 和跨域认证能力，为 EnerOS Agent 提供唯一、可验证的身份。
@@ -6,7 +6,7 @@
 //! # 架构
 //! ```text
 //! ┌─────────────────────────────────────────────────────┐
-//! │  eneros-did (v0.169.0)                              │
+//! │  eneros-did (workspace v0.192.0)                              │
 //! │  ┌───────────┐  ┌───────────┐  ┌────────────────┐  │
 //! │  │ types     │  │ identifier│  │ document       │  │
 //! │  │ (Did,     │  │ (generate,│  │ (DocumentStore)│  │

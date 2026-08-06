@@ -15,6 +15,9 @@ pub trait TcpTransport {
     fn recv(&mut self, timeout_ms: u32) -> Result<Vec<u8>, ModbusTcpError>;
     /// 建立到指定设备的 TCP 连接。
     fn connect(&mut self, device: &TcpDevice) -> Result<(), ModbusTcpError>;
+    /// 当前是否已建立到 `device` 的连接（PTC-002 连接复用判断——
+    /// 同设备复用，换设备视为未连接）。
+    fn is_connected(&self, device: &TcpDevice) -> bool;
 }
 
 /// Modbus TCP 主站统计信息

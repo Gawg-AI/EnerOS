@@ -32,6 +32,7 @@ extern crate alloc;
 
 pub mod device;
 pub mod error;
+pub mod adapter;
 pub mod master;
 pub mod mbap;
 pub mod transport;
@@ -46,7 +47,9 @@ pub use eneros_modbus_rtu::{
     ModbusResponse, PointMapping, RegToPoint,
 };
 pub use error::ModbusTcpError;
+pub use adapter::ModbusTcpAdapter;
 pub use master::ModbusTcpMaster;
+
 pub use mbap::MbapHeader;
 pub use transport::{TcpStats, TcpTransport};
 

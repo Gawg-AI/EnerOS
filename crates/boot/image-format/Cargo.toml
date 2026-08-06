@@ -1,0 +1,14 @@
+[package]
+name = "eneros-image-format"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Deterministic protective-MBR and dual-copy GPT writer/parser"
+
+[dependencies]
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }
+
+[features]
+default = []

@@ -127,7 +127,7 @@ pub fn validate_strategy(
             if !local_state.max_capacity_mw.is_finite() || local_state.max_capacity_mw <= 0.0 {
                 return Err(RejectReason::ExceedsCapacity);
             }
-            if !dr.target_mw.is_finite() || dr.target_mw.abs() > local_state.max_capacity_mw {
+            if !dr.target_kw.is_finite() || dr.target_kw.abs() > (local_state.max_capacity_mw * 1000.0) as f64 {
                 return Err(RejectReason::ExceedsCapacity);
             }
         }
@@ -169,10 +169,11 @@ mod tests {
             targets: vec![10],
             content: StrategyContent::DrResponse(DrSignal {
                 event_id: 100,
-                target_mw,
-                start: 1_000,
-                end: 2_000,
-                reward: 5.0,
+                signal_type: eneros_dr::types::DrSignalType::LoadReduce,
+                target_kw: target_mw as f64 * 1000.0,
+                start_at: 1,
+                end_at: 2,
+                incentive_yuan: 5.0,
             }),
             deadline: 60_000,
             priority: Priority::High,
@@ -221,10 +222,11 @@ mod tests {
 
         let d = StrategyContent::DrResponse(DrSignal {
             event_id: 1,
-            target_mw: 5.0,
-            start: 0,
-            end: 1,
-            reward: 0.0,
+            signal_type: eneros_dr::types::DrSignalType::LoadReduce,
+            target_kw: 5000.0,
+            start_at: 0,
+            end_at: 1,
+            incentive_yuan: 0.0,
         });
         assert_eq!(d, d.clone());
 

@@ -1,0 +1,11 @@
+[package]
+name = "eneros-audit"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 审计日志与哈希链 (v0.117.0) — 审计事件编码 + SM3 哈希链存证 + 链校验与恢复, no_std"
+
+[dependencies]
+eneros-crypto = { path = "../crypto" }
+heapless = "0.8"

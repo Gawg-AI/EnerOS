@@ -1,0 +1,19 @@
+[package]
+name = "eneros-modbus-tcp-server-fuzz"
+version = "0.0.0"
+edition = "2021"
+authors = ["EnerOS Team"]
+license = "MIT OR Apache-2.0"
+publish = false
+description = "cargo-fuzz / libFuzzer targets for the Modbus TCP PDU parser (NET-016)"
+
+# Separate workspace so this does not pollute the main EnerOS workspace.
+[workspace]
+
+[dependencies]
+eneros-modbus-tcp-server = { path = ".." }
+libfuzzer-sys = "0.4"
+
+# Mirrors the release profile used by cargo-fuzz.
+[profile.release]
+debug = true

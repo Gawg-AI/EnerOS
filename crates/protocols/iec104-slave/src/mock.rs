@@ -122,6 +122,10 @@ impl SlaveTransport for MockSlaveTransport {
     fn now_ms(&self) -> u64 {
         self.now_ms_value
     }
+
+    fn tx_frames_for(&self, conn: ConnId) -> Vec<&[u8]> {
+        MockSlaveTransport::tx_frames_for(self, conn)
+    }
 }
 
 #[cfg(test)]

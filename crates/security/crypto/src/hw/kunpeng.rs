@@ -1,4 +1,4 @@
-//! 鲲鹏 920 KAE (Kunpeng Accelerator Engine) 国密硬件加速驱动 (v0.158.0).
+//! 鲲鹏 920 KAE (Kunpeng Accelerator Engine) 国密硬件加速驱动 (workspace v0.192.0).
 //!
 //! 鲲鹏 920 SoC 内置 KAE 加速引擎，支持 SM2/SM3/SM4 硬件加速。
 //! 与飞腾 D2000 不同，鲲鹏使用 KAE 驱动框架（队列式接口）。
@@ -494,7 +494,11 @@ impl KunpengKaeEngine {
         use crate::rng::CsRng;
         use crate::sm2::{sm2_sign, Sm2KeyPair, Sm2PrivateKey};
 
-        let mut rng = CsRng::new();
+        let mut rng = CsRng::for_deterministic_signature(
+            private_key,
+            msg,
+            b"eneros/kunpeng-kae/software-fallback/sm2-sign/v1",
+        );
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(private_key);
         let sk = Sm2PrivateKey::from_bytes(&key_bytes)

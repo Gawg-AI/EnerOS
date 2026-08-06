@@ -70,6 +70,7 @@ impl ClearingProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eneros_market_types::YuanPerKwh;
     use crate::types::{ClearedSegment, TimeSlot};
 
     fn make_clearing(bid_id: u64) -> ClearingResult {
@@ -78,9 +79,9 @@ mod tests {
             cleared: alloc::vec![ClearedSegment {
                 period: TimeSlot::new(0, 3600),
                 cleared_volume: 100.0,
-                cleared_price: 0.45,
+                cleared_price: YuanPerKwh(0.45),
             }],
-            clearing_price: 0.45,
+            clearing_price: YuanPerKwh(0.45),
             clearing_at: 5000,
         }
     }
@@ -125,7 +126,7 @@ mod tests {
         let result = make_clearing(1);
         proc.apply_clearing(&result).unwrap();
         let stored = proc.get_clearing(1).unwrap();
-        assert_eq!(stored.clearing_price, 0.45);
+        assert_eq!(stored.clearing_price, YuanPerKwh(0.45));
     }
 
     #[test]

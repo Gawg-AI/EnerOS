@@ -7,12 +7,13 @@
 use alloc::vec::Vec;
 
 use crc32fast::Hasher as Crc32Hasher;
+use serde::{Deserialize, Serialize};
 
 /// Maximum number of versions retained per config file.
 pub const MAX_VERSIONS: usize = 10;
 
 /// A single configuration version snapshot.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigVersion {
     /// Monotonically increasing version number.
     pub version: u64,
@@ -44,6 +45,15 @@ impl ConfigVersion {
     }
 }
 
+impl Default for VersionHistory {
+    /// CFG-003：`Default` 必须与 `new()` 一致（`next_version` 从 1 开始）——
+    /// 旧 derive(Default) 使 `next_version=0`，版本号从 0 开始，与 `new()`
+    /// 的语义分裂（store 用 `or_default()` 创建历史）。
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Computes the CRC32 checksum of `data`.
 pub fn compute_crc32(data: &[u8]) -> u32 {
     let mut hasher = Crc32Hasher::new();
@@ -54,8 +64,8 @@ pub fn compute_crc32(data: &[u8]) -> u32 {
 /// Version history for a single configuration file.
 ///
 /// Stores up to [`MAX_VERSIONS`] entries. When full, the oldest entry is
-/// evicted.
-#[derive(Debug, Default)]
+/// evicted. CFG-003：可序列化以持久化到磁盘（重启后回滚能力不丢失）。
+#[derive(Debug, Serialize, Deserialize)]
 pub struct VersionHistory {
     /// Version entries, ordered by version number ascending.
     versions: Vec<ConfigVersion>,

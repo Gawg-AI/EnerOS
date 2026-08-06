@@ -1,4 +1,4 @@
-//! EnerOS Agent 强化学习 (v0.187.0) — P4-D 高级 AI.
+//! EnerOS Agent 强化学习 (workspace v0.192.0) — P4-D 高级 AI.
 //!
 //! 实现 Agent RL 框架：PPO 策略训练 + Reward 设计 + Replay Buffer。
 //! 使调度策略通过 Reward 反馈自进化，超越静态优化。

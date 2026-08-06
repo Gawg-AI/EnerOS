@@ -1,0 +1,16 @@
+[package]
+name = "eneros-boot-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Shared fixed-layout EnerOS boot ABI and canonical release manifest codec"
+
+[dependencies]
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }
+sha2 = { version = "0.10.9", default-features = false }
+
+[features]
+default = ["alloc"]
+alloc = []

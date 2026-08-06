@@ -1,13 +1,36 @@
-//! 集成测试 — DeviceAgent T1~T24.
+//! 集成测试 — DeviceAgent T1~T24（ARCH-P02：PointAccess 统一 seam）。
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
 
 use eneros_agent::{AgentState, AgentType};
 use eneros_energy_market_agent::{AgentRuntime, AgentRuntimeError, HeartbeatStatus};
+use eneros_protocol_abstract::access::PointAccess;
+use eneros_upa_model::PointValue;
 
 use super::*;
+
+/// 构造 MockPointDevice + point_map 并注册到注册表。
+fn register_mock(
+    reg: &mut DeviceRegistry,
+    name: &str,
+    device_type: DeviceType,
+    points: &[(&str, f64)],
+) {
+    let mut dev = MockPointDevice::new(1);
+    for (n, v) in points {
+        dev = dev.with_point(n, *v);
+    }
+    let mut pm = BTreeMap::new();
+    for (n, _) in points {
+        if let Some(id) = dev.point_id_of(n) {
+            pm.insert(String::from(*n), id);
+        }
+    }
+    reg.register(name, device_type, Box::new(dev), pm);
+}
 
 // ===== T1: DeviceType 变体构造 =====
 #[test]
@@ -54,42 +77,47 @@ fn t3_device_snapshot_new_set_get() {
     assert!(snap.get("unknown").is_none());
 }
 
-// ===== T4: MockDevice::new 空 + read_point 未找到 =====
+// ===== T4: MockPointDevice::new 空 + read_point(PointId) 未找到 =====
 #[test]
-fn t4_mock_device_new_empty() {
-    let mut dev = MockDevice::new(DeviceType::Battery);
-    let result = dev.read_point("soc");
-    assert!(matches!(result, Err(DeviceError::PointNotFound(_))));
+fn t4_mock_point_device_new_empty() {
+    let mut dev = MockPointDevice::new(1);
+    assert_eq!(
+        dev.read_point(99),
+        Err(eneros_protocol_abstract::error::ProtocolError::PointNotFound)
+    );
+    assert!(dev.point_ids().is_empty());
 }
 
-// ===== T5: MockDevice::with_point 链式 + read_point 成功 =====
+// ===== T5: MockPointDevice::with_point + point_id_of 映射 =====
 #[test]
-fn t5_mock_device_with_point() {
-    let mut dev = MockDevice::new(DeviceType::Battery).with_point("soc", 0.65);
-    let result = dev.read_point("soc");
-    assert!(result.is_ok());
-    assert!((result.unwrap() - 0.65).abs() < 1e-9);
+fn t5_mock_point_device_with_point() {
+    let dev = MockPointDevice::new(1).with_point("soc", 0.65);
+    let id = dev.point_id_of("soc").expect("soc point should exist");
+    assert_eq!(id, 1);
+    assert!(dev.point_id_of("missing").is_none());
 }
 
-// ===== T6: MockDevice set_point + write_point 成功 =====
+// ===== T6: MockPointDevice read_point 返回带质量位与时间戳的 DataPoint =====
 #[test]
-fn t6_mock_device_set_point_write_point() {
-    let mut dev = MockDevice::new(DeviceType::Pcs);
-    dev.set_point("voltage", 400.0);
-    assert!((dev.read_point("voltage").unwrap() - 400.0).abs() < 1e-9);
-    let result = dev.write_point("power", 50.0);
-    assert!(result.is_ok());
-    assert!((dev.read_point("power").unwrap() - 50.0).abs() < 1e-9);
+fn t6_mock_point_device_read_datapoint() {
+    let mut dev = MockPointDevice::new(7).with_point("voltage", 400.0);
+    let id = dev.point_id_of("voltage").unwrap();
+    let dp = dev.read_point(id).expect("read should succeed");
+    assert_eq!(dp.point_id, id);
+    assert_eq!(dp.device_id, 7);
+    assert_eq!(dp.value, PointValue::Float(400.0));
+    assert!(dp.quality.valid, "读点必须带质量位");
+    assert_eq!(dp.timestamp_ms, 0, "读点必须带时间戳");
 }
 
-// ===== T7: MockDevice 离线 + read_point 返回 DeviceOffline =====
+// ===== T7: MockPointDevice 离线 → 读点 quality invalid =====
 #[test]
-fn t7_mock_device_offline() {
-    let mut dev = MockDevice::new(DeviceType::Battery).with_point("soc", 0.65);
-    dev.set_online(false);
-    let result = dev.read_point("soc");
-    assert!(matches!(result, Err(DeviceError::DeviceOffline(_))));
-    assert!(!dev.is_online());
+fn t7_mock_point_device_offline_quality() {
+    let mut dev = MockPointDevice::new(1).with_point("soc", 0.65);
+    dev.set_offline(true);
+    let id = dev.point_id_of("soc").unwrap();
+    let dp = dev.read_point(id).expect("read should succeed");
+    assert!(!dp.quality.valid, "离线时质量位必须 invalid");
 }
 
 // ===== T8: DeviceRegistry::new 空 + register + len =====
@@ -97,11 +125,7 @@ fn t7_mock_device_offline() {
 fn t8_device_registry_register() {
     let mut reg = DeviceRegistry::new();
     assert!(reg.is_empty());
-    reg.register(
-        "pcs",
-        DeviceType::Pcs,
-        Box::new(MockDevice::new(DeviceType::Pcs)),
-    );
+    register_mock(&mut reg, "pcs", DeviceType::Pcs, &[("soc", 0.5)]);
     assert!(!reg.is_empty());
     assert_eq!(reg.len(), 1);
 }
@@ -110,26 +134,19 @@ fn t8_device_registry_register() {
 #[test]
 fn t9_device_registry_get_mut() {
     let mut reg = DeviceRegistry::new();
-    reg.register(
-        "pcs",
-        DeviceType::Pcs,
-        Box::new(MockDevice::new(DeviceType::Pcs)),
-    );
+    register_mock(&mut reg, "pcs", DeviceType::Pcs, &[("soc", 0.5)]);
     let info = reg.get_mut("pcs");
     assert!(info.is_some());
     let info = info.unwrap();
     assert_eq!(info.device_type, DeviceType::Pcs);
+    assert_eq!(info.point_map.get("soc"), Some(&1u32));
 }
 
 // ===== T10: DeviceRegistry get_mut 未找到返回 None =====
 #[test]
 fn t10_device_registry_get_mut_not_found() {
     let mut reg = DeviceRegistry::new();
-    reg.register(
-        "pcs",
-        DeviceType::Pcs,
-        Box::new(MockDevice::new(DeviceType::Pcs)),
-    );
+    register_mock(&mut reg, "pcs", DeviceType::Pcs, &[("soc", 0.5)]);
     let info = reg.get_mut("unknown");
     assert!(info.is_none());
 }
@@ -227,26 +244,35 @@ fn t18_device_agent_on_start() {
     assert_eq!(agent.descriptor().agent_type, AgentType::Device);
 }
 
-// ===== T19: DeviceAgent::on_tick 采集设备状态（soc=0.65）=====
+// ===== T19: DeviceAgent::on_tick 经 PointAccess 采集（soc=0.65，质量位有效）=====
 #[test]
 fn t19_device_agent_on_tick_polls_devices() {
     let mut agent = DeviceAgent::new("test", Box::new(MockCommandSource::new()), 0);
-    agent.registry_mut().register(
+    register_mock(
+        agent.registry_mut(),
         "battery",
         DeviceType::Battery,
-        Box::new(MockDevice::new(DeviceType::Battery).with_point("soc", 0.65)),
+        &[
+            ("soc", 0.65),
+            ("voltage", 48.0),
+            ("current", 50.0),
+            ("temperature", 28.0),
+            ("power", 25.0),
+        ],
     );
     agent.on_start(1000).unwrap();
     agent.on_tick(2000).unwrap();
     let snap = agent.last_snapshot();
     let state = snap.get("battery").expect("battery should be in snapshot");
     assert!((state.soc - 0.65).abs() < 1e-9);
+    assert!((state.voltage - 48.0).abs() < 1e-9);
     assert!(state.online);
     assert_eq!(agent.tick_count, 1);
 }
 
-// ===== T20: DeviceAgent::on_tick 执行命令（power_kw=50.0）=====
+// ===== T20: DeviceAgent::on_tick 执行命令（经 point_map 写 power_setpoint）=====
 #[test]
+#[allow(clippy::disallowed_macros)] // 测试断言允许 panic
 fn t20_device_agent_on_tick_executes_commands() {
     let mut source = MockCommandSource::new();
     source.push(DeviceCommand {
@@ -256,36 +282,51 @@ fn t20_device_agent_on_tick_executes_commands() {
         timestamp_ms: 1000,
     });
     let mut agent = DeviceAgent::new("test", Box::new(source), 0);
-    agent.registry_mut().register(
-        "pcs",
-        DeviceType::Pcs,
-        Box::new(MockDevice::new(DeviceType::Pcs)),
-    );
+    // pcs 设备含 power_setpoint 点位（ReadWrite）
+    let dev = MockPointDevice::new(1).with_point("power_setpoint", 0.0);
+    let mut pm = BTreeMap::new();
+    if let Some(id) = dev.point_id_of("power_setpoint") {
+        pm.insert(String::from("power_setpoint"), id);
+    }
+    agent
+        .registry_mut()
+        .register("pcs", DeviceType::Pcs, Box::new(dev), pm);
     agent.on_start(1000).unwrap();
     agent.on_tick(2000).unwrap();
-    // Verify power_setpoint was written
+    // Verify power_setpoint was written (经 PointAccess 读回)
     let info = agent
         .registry_mut()
         .get_mut("pcs")
         .expect("pcs should exist");
-    let power_setpoint = info.adapter.read_point("power_setpoint").unwrap();
-    assert!((power_setpoint - 50.0).abs() < 1e-9);
+    let id = info
+        .point_map
+        .get("power_setpoint")
+        .expect("point_map 应含 power_setpoint");
+    let dp = info.adapter.read_point(*id).expect("read should succeed");
+    match dp.value {
+        PointValue::Float(v) => assert!((v - 50.0).abs() < 1e-9),
+        other => panic!("power_setpoint 应为 Float，got {other:?}"),
+    }
 }
 
-// ===== T21: DeviceAgent::on_tick 设备离线标记 =====
+// ===== T21: DeviceAgent::on_tick 设备离线（质量位 invalid → online:false）=====
 #[test]
 fn t21_device_agent_on_tick_offline_device() {
     let mut agent = DeviceAgent::new("test", Box::new(MockCommandSource::new()), 0);
-    let mut device = MockDevice::new(DeviceType::Battery).with_point("soc", 0.65);
-    device.set_online(false);
+    let mut dev = MockPointDevice::new(1).with_point("soc", 0.65);
+    dev.set_offline(true);
+    let mut pm = BTreeMap::new();
+    if let Some(id) = dev.point_id_of("soc") {
+        pm.insert(String::from("soc"), id);
+    }
     agent
         .registry_mut()
-        .register("battery", DeviceType::Battery, Box::new(device));
+        .register("battery", DeviceType::Battery, Box::new(dev), pm);
     agent.on_start(1000).unwrap();
     agent.on_tick(2000).unwrap();
     let snap = agent.last_snapshot();
     let state = snap.get("battery").expect("battery should be in snapshot");
-    assert!(!state.online);
+    assert!(!state.online, "质量位 invalid 时必须标记离线");
 }
 
 // ===== T22: DeviceAgent::on_tick 命令目标设备不存在跳过 =====

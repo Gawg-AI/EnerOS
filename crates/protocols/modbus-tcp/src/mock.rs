@@ -17,6 +17,10 @@ pub struct MockTcpTransport {
     sent_frames: Vec<Vec<u8>>,
     connect_calls: Vec<TcpDevice>,
     recv_timeout: bool,
+    /// PTC-002：当前连接的设备（连接复用判断——同设备复用）.
+    connected_device: Option<TcpDevice>,
+    /// 调试：recv 历史（每次弹出的帧）.
+    pub recv_log: Vec<Vec<u8>>,
 }
 
 impl MockTcpTransport {
@@ -27,6 +31,8 @@ impl MockTcpTransport {
             sent_frames: Vec::new(),
             connect_calls: Vec::new(),
             recv_timeout: false,
+            connected_device: None,
+            recv_log: Vec::new(),
         }
     }
 
@@ -75,11 +81,22 @@ impl TcpTransport for MockTcpTransport {
         if self.recv_timeout {
             return Err(ModbusTcpError::Timeout);
         }
-        self.rx_queue.pop_front().ok_or(ModbusTcpError::Timeout)
+        match self.rx_queue.pop_front() {
+            Some(f) => {
+                self.recv_log.push(f.clone());
+                Ok(f)
+            }
+            None => Err(ModbusTcpError::Timeout),
+        }
     }
 
     fn connect(&mut self, device: &TcpDevice) -> Result<(), ModbusTcpError> {
         self.connect_calls.push(*device);
+        self.connected_device = Some(*device);
         Ok(())
+    }
+
+    fn is_connected(&self, device: &TcpDevice) -> bool {
+        self.connected_device == Some(*device)
     }
 }

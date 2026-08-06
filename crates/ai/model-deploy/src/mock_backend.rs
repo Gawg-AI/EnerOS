@@ -39,11 +39,15 @@ impl Default for MockDeployBackend {
 }
 
 impl DeployBackend for MockDeployBackend {
-    fn check_hardware(&self, _config: &QuantConfig7B) -> Result<HardwareCheck, DeployError> {
+    fn check_hardware(&self, config: &QuantConfig7B) -> Result<HardwareCheck, DeployError> {
+        // ARC-006：Mock 检查不再恒真——需求超能力 → HardwareInsufficient
+        // （出口测试可对 Mock 失败）。
+        let ram_gb = 16.0;
+        let vram_gb = 8.0;
         Ok(HardwareCheck {
-            ram_gb: 16.0,
-            vram_gb: 8.0,
-            meets_requirements: true,
+            ram_gb,
+            vram_gb,
+            meets_requirements: ram_gb >= config.min_ram_gb && vram_gb >= config.min_vram_gb,
         })
     }
 

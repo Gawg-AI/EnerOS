@@ -15,7 +15,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! let mut file = fs.open("/data.txt", OpenFlags::READ)?;
 //! let mut buf = [0u8; 64];
 //! let n = file.read(&mut fs, &mut buf)?;

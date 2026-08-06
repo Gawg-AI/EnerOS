@@ -32,7 +32,7 @@
 //!
 //! # 用法
 //!
-//! ```ignore
+//! ```text
 //! use eneros_calibration::{calibrate_meter, AccuracyClass, MeterReading};
 //!
 //! let measured = MeterReading { voltage: 200.0, current: 9.5, power: 1900.0, energy: 1900.0 };

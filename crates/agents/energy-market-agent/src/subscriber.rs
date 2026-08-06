@@ -278,10 +278,11 @@ mod tests {
             }],
             dr_signals: vec![DrSignal {
                 event_id: 1,
-                target_mw: 2.5,
-                start: 1000,
-                end: 2000,
-                reward: 500.0,
+                signal_type: eneros_dr::types::DrSignalType::LoadReduce,
+                target_kw: 2500.0,
+                start_at: 1,
+                end_at: 2,
+                incentive_yuan: 500.0,
             }],
         }
     }

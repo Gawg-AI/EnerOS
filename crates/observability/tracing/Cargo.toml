@@ -1,0 +1,13 @@
+[package]
+name = "eneros-tracing"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 分布式追踪 (v0.122.0) — Trace/Span 数据模型/26 字节上下文传播/采样/链路可视化, no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }
+
+[dev-dependencies]
+eneros-logging = { path = "../logging" }

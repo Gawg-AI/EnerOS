@@ -1,4 +1,4 @@
-//! TCP/IP protocol stack integration (v0.28.0).
+//! TCP/IP protocol stack integration (workspace v0.192.0).
 //!
 //! This module integrates [smoltcp] v0.13 — a `no_std` TCP/IP stack — as the
 //! default network protocol layer for EnerOS, per Blueprint §5.5 (Default
@@ -31,7 +31,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_net::{InterfaceConfig, NetworkInterface, TcpSocket};
 //!
 //! // 1. Create a network interface with static IP

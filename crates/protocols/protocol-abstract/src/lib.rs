@@ -45,6 +45,7 @@ pub mod access;
 pub mod adapter;
 pub mod address;
 pub mod config;
+pub mod contract;
 pub mod error;
 pub mod manager;
 pub mod mapping;
@@ -53,7 +54,7 @@ pub mod mapping;
 pub mod mock;
 
 // 重导出公共 API
-pub use access::PointAccess;
+pub use access::{PointAccess, PointAccessExt};
 pub use adapter::{AdapterState, ProtocolAdapter};
 pub use address::ProtocolAddress;
 pub use config::{AdapterConfig, DeviceConfig, ProtocolType};
@@ -69,6 +70,8 @@ mod tests {
     use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    use crate::access::PointAccessExt;
 
     use eneros_upa_model::{
         DataPoint, DataSource, DeviceId, PointId, PointQuality, PointType, PointValue,

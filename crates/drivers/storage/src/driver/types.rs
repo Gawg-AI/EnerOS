@@ -9,6 +9,8 @@ pub enum StorageType {
     Nvme,
     /// SD card (uses eMMC-like interface).
     SdCard,
+    /// virtio-blk over virtio-mmio (QEMU, DRV-007).
+    VirtioBlk,
 }
 
 /// Storage controller configuration.

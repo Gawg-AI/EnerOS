@@ -1,0 +1,56 @@
+# EnerOS v0.121.0 结构化日志 配置模板
+#
+# ① 本文件仅为配置模板：集成层启动时读取，按 [logger] 构造
+#    `StructuredLoggerImpl::new(min_level)`，按 [storage] 构造
+#    `MemoryLogStorage::new(capacity)`，按 [fields] 约束自定义字段规模
+#    与敏感字段审查（详见 docs/observability/logging-design.md §5）。
+# ② 数据流（蓝图 §4.3）：LogBuilder 构建 LogEntry → log 按 min_level
+#    分级过滤（低于阈值静默丢弃）→ 写入 128 条内存缓冲（写满丢弃最旧）
+#    → flush_to 逐条 to_json 序列化并批量刷入 LogStorage → LogFilter
+#    七条件 AND 检索（详见 docs/observability/logging-design.md §4）。
+# ③ 容量规划（记忆 §5.6 内存预算）：单条 LogEntry ≈ 1.6 KB（target≤64B +
+#    message≤256B + fields≤8×(32B+128B) + 3 个 ID），缓冲 128 条 ≈ 205 KB
+#    （heapless 定容，栈/静态段）；store capacity 4096 条 ≈ 6.5 MB（条目
+#    + JSON 文本），Agent Runtime 分区 ≤ 64 MB 预算内，集成层须按实际
+#    日志速率核算（公式：capacity × ≈1.6 KB + 缓冲 205 KB）。
+
+[logger]
+# ④ 最低记录级别：低于该级别的日志静默丢弃（蓝图 §4.3 分级过滤）。
+#    可选值（严重性递增）：DEBUG / INFO / WARN / ERROR / FATAL。
+#    默认 INFO：生产运维基线；调试现场可降为 DEBUG，存储紧张场景可
+#    升为 WARN。运行时可通过 set_level 动态调整（对应故障排查降级）。
+min_level = "INFO"
+
+# ⑤ 内存缓冲容量（条）：写满丢弃最旧一条（蓝图 §6.5 存储满 → 丢弃
+#    最旧口径）。与代码常量 128 对齐（heapless::Vec 定容），本项仅作
+#    集成层配置核对参考，运行时不可改；flush_to 由集成层在主循环/
+#    定时器中周期性调用，缓冲滞留窗口 = 128 / 日志产生速率。
+buffer_capacity = 128
+
+[storage]
+# ⑥ 存储容量上限（条）：MemoryLogStorage 以 VecDeque 保存（条目 + JSON
+#    文本），写满轮转丢弃最旧。默认 4096 条 ≈ 6.5 MB；按日志速率折算
+#    保留时长（如 10 条/秒 ≈ 6.8 分钟，1 条/秒 ≈ 68 分钟），等保审计
+#    要求的历史留存须由持久化后端承担（见 ⑦）。
+capacity = 4096
+
+# ⑦ 轮转策略说明：drop_oldest = 写满丢弃最旧（环形覆盖，对应蓝图
+#    §6.5 故障注入口径）。持久化对接经 LogStorage trait 预留：
+#    后续版本将对接 v0.25.0 时序数据存储引擎（TSDB）/ v0.24.0 文件
+#    系统落盘（按大小/时间分卷 + 压缩归档），届时新增 [storage.persist]
+#    节配置落盘路径/分卷阈值/保留周期，本版本不落地适配器，本项仅为
+#    文档化说明。
+rotation = "drop_oldest"
+
+[fields]
+# ⑧ 单条日志自定义字段上限（个）：超过截断丢弃（LogBuilder field 超
+#    8 截断口径）。与代码常量 8 对齐（heapless::Vec 定容，key ≤ 32B、
+#    value ≤ 128B），本项仅作集成层配置核对参考。
+max_custom_fields = 8
+
+# ⑨ 敏感字段禁写说明（等保审计 + 蓝图 §7.3 安全验收「日志不含明文
+#    密钥」）：password / secret / key / token / plaintext 等口令、
+#    密钥、凭证、明文敏感数据【严禁】写入日志任何字段（含 msg 与
+#    fields 键值）；字段命名审查在代码评审与 CI 检查中执行，必须记录
+#    敏感上下文时仅可写字段名、长度、哈希指纹等脱敏形式（详见
+#    docs/observability/logging-design.md §5.1 日志字段规范）。

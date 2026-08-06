@@ -4,9 +4,21 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS seL4 syscall FFI bindings (no_std, minimal)"
+description = "EnerOS seL4 syscall FFI bindings — real libsel4 link on aarch64, host stubs for unit tests (G2 closure, ADR-0023)"
+
+build = "build.rs"
 
 [dependencies]
 
+[build-dependencies]
+# Host-side C compiler driver; only used to compile the shim when targeting
+# `aarch64-unknown-none` (the seL4 userland target). Never enters the target
+# binary's dependency closure.
+cc = "1.0"
+
 [features]
 default = []
+# Internal: set by build.rs when the target is a seL4 userland target
+# (target_os = "none"). Host builds (cargo test) get the host stub module
+# instead. Do NOT enable manually.
+sel4-target = []

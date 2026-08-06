@@ -1,6 +1,9 @@
-//! # EnerOS AI 运维 (AIOps)
+//! # EnerOS 运维分析（VRF-006 正名：statistical operations analytics）
 //!
-//! 提供异常检测、预测性维护和自愈能力，用于电力原生 Agent OS 的智能运维。
+//! 提供异常检测、预测性维护和自愈能力——全部基于**统计与规则方法**
+//! （相对偏差、线性外推、规则引擎），**不含**模型推理/机器学习
+//! （无 LLM/神经网络后端）。原 "AI 运维 (AIOps)" 宣称已去除（VRF-006：
+//! 未接真实模型推理的不得宣称 AI）。
 //!
 //! ## 模块
 //!
@@ -25,7 +28,7 @@ pub use types::{
     AnomalyResult, HealAction, HealActionType, HealOutcome, HealPlan, PredictionResult, RiskLevel,
 };
 
-/// AI 运维错误类型
+/// 运维分析错误类型
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiOpsError {
     /// 异常检测失败

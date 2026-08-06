@@ -22,6 +22,8 @@ pub enum GgufError {
     BackendError,
     /// GPU 不可用（分配失败）.
     GpuUnavailable,
+    /// AI-001：张量数据偏移未按 GGUF 规范 32 字节对齐.
+    MisalignedTensor { name: String, offset: u64 },
     /// 已有模型加载（同一 Loader 同时只允许一个模型）.
     AlreadyLoaded,
     /// 无已加载模型（卸载/访问时）.
@@ -43,6 +45,9 @@ impl core::fmt::Display for GgufError {
             Self::AlreadyLoaded => write!(f, "a model is already loaded"),
             Self::NotLoaded => write!(f, "no model loaded"),
             Self::Utf8Error => write!(f, "UTF-8 decode error"),
+            Self::MisalignedTensor { name, offset } => {
+                write!(f, "tensor {name} offset {offset} is not 32-byte aligned")
+            }
         }
     }
 }

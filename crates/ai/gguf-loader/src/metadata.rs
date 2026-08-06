@@ -81,44 +81,49 @@ impl GgufMetadata {
             let (value, consumed) = Self::parse_value(bytes, pos, value_type)?;
             pos += consumed;
 
-            // 将已知键映射到 metadata 字段
+            // AI-001：键名对齐真实 GGUF（llama.cpp 规范）。
+            // 通用键带 `general.*` 前缀（general.architecture / general.name）；
+            // 架构参数键带 `<arch>.*` 前缀（llama.context_length 等），
+            // 按 `.后缀` 匹配以支持多架构（llama/bert/gpt2/...）。
+            // 旧实现裸键名（"architecture" 等）与真实 GGUF 文件不匹配，
+            // 导致真实模型元数据全空——旧代码失败证据。
             match key.as_str() {
-                "name" => {
+                "general.name" => {
                     if let GgufValue::String(s) = value {
                         metadata.name = s;
                     }
                 }
-                "architecture" => {
+                "general.architecture" => {
                     if let GgufValue::String(s) = value {
                         metadata.architecture = s;
                     }
                 }
-                "context_length" => {
+                k if k.ends_with(".context_length") => {
                     if let GgufValue::Uint32(v) = value {
                         metadata.context_length = v;
                     }
                 }
-                "embedding_length" => {
+                k if k.ends_with(".embedding_length") => {
                     if let GgufValue::Uint32(v) = value {
                         metadata.embedding_length = v;
                     }
                 }
-                "block_count" => {
+                k if k.ends_with(".block_count") => {
                     if let GgufValue::Uint32(v) = value {
                         metadata.block_count = v;
                     }
                 }
-                "head_count" => {
+                k if k.ends_with(".head_count") => {
                     if let GgufValue::Uint32(v) = value {
                         metadata.head_count = v;
                     }
                 }
-                "head_count_kv" => {
+                k if k.ends_with(".head_count_kv") => {
                     if let GgufValue::Uint32(v) = value {
                         metadata.head_count_kv = v;
                     }
                 }
-                "quantization" => {
+                k if k.ends_with(".quantization") => {
                     if let GgufValue::String(s) = value {
                         metadata.quantization = match s.as_str() {
                             "F16" => Quantization::F16,
@@ -322,5 +327,66 @@ impl GgufMetadata {
                 Ok((GgufValue::Float64(v), 8))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造 KV 字节（key + type + value）。
+    fn kv(key: &str, ty: u32, val: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        b.extend_from_slice(key.as_bytes());
+        b.extend_from_slice(&ty.to_le_bytes());
+        b.extend_from_slice(val);
+        b
+    }
+
+    fn str_val(s: &str) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&(s.len() as u64).to_le_bytes());
+        b.extend_from_slice(s.as_bytes());
+        b
+    }
+
+    fn uint32_val(v: u32) -> Vec<u8> {
+        v.to_le_bytes().to_vec()
+    }
+
+    /// AI-001：真实 GGUF 键名（general.* / <arch>.*）被识别。
+    #[test]
+    fn test_real_gguf_keys_recognized() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&kv("general.name", 8, &str_val("qwen7b")));
+        bytes.extend_from_slice(&kv("general.architecture", 8, &str_val("llama")));
+        bytes.extend_from_slice(&kv("llama.context_length", 4, &uint32_val(8192)));
+        bytes.extend_from_slice(&kv("llama.embedding_length", 4, &uint32_val(4096)));
+        bytes.extend_from_slice(&kv("llama.block_count", 4, &uint32_val(32)));
+        bytes.extend_from_slice(&kv("llama.head_count", 4, &uint32_val(32)));
+        bytes.extend_from_slice(&kv("llama.head_count_kv", 4, &uint32_val(8)));
+        bytes.extend_from_slice(&kv("general.quantization", 8, &str_val("Q8_0")));
+
+        let (m, _) = GgufMetadata::parse(&bytes, 0, 8).expect("parse");
+        assert_eq!(m.name, "qwen7b");
+        assert_eq!(m.architecture, "llama");
+        assert_eq!(m.context_length, 8192);
+        assert_eq!(m.embedding_length, 4096);
+        assert_eq!(m.block_count, 32);
+        assert_eq!(m.head_count, 32);
+        assert_eq!(m.head_count_kv, 8);
+        assert_eq!(m.quantization, Quantization::Q8_0);
+    }
+
+    /// AI-001：裸键名（旧实现）不被识别——真实 GGUF 文件带前缀。
+    #[test]
+    fn test_bare_keys_not_recognized() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&kv("architecture", 8, &str_val("llama")));
+        bytes.extend_from_slice(&kv("context_length", 4, &uint32_val(4096)));
+        let (m, _) = GgufMetadata::parse(&bytes, 0, 2).expect("parse");
+        assert_eq!(m.architecture, "", "bare key must not be recognized (AI-001)");
+        assert_eq!(m.context_length, 0);
     }
 }

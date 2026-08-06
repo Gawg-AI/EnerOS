@@ -1,6 +1,6 @@
 //! Compression backends for TSDB columnar data.
 //!
-//! # Backend Decision (v0.25.0)
+//! # Backend Decision (workspace v0.192.0)
 //!
 //! `snap` v1.1.1 was tested and is **not** no_std compatible — it requires
 //! `std` (uses `std::convert::TryInto`, the `vec!`/`write!` macros, and does

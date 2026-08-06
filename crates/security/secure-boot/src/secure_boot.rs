@@ -1,4 +1,4 @@
-//! Secure Boot 核心实现 (v0.160.0).
+//! Secure Boot 核心实现 (workspace v0.192.0).
 //!
 //! 提供 `SecureBoot` trait 和 `EnerosSecureBoot` 实现，
 //! 集成 BootVerifier（四级验签）+ TPM PCR 度量。

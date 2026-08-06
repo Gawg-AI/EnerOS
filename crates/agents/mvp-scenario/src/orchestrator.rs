@@ -5,6 +5,7 @@ use alloc::string::String;
 use eneros_device_agent::DeviceAgent;
 use eneros_energy_lp_model::config::ScheduleConfig;
 use eneros_energy_market_agent::{AgentRuntime, EnergyAgent, MarketAgent};
+use eneros_solver_core::mock::MockSolver;
 
 use crate::error::MvpError;
 use crate::revenue::RevenueComparator;
@@ -15,10 +16,10 @@ use crate::traditional_ems::TraditionalEms;
 pub struct MvpTickReport {
     /// tick 序号（从 1 开始）.
     pub tick: u64,
-    /// 双脑 EMS 累计收益（元）.
-    pub dual_brain_revenue: f64,
-    /// 传统 EMS 累计收益（元）.
-    pub traditional_revenue: f64,
+    /// 双脑 EMS 累计收益（毫元定点，ARC-003）.
+    pub dual_brain_revenue: crate::revenue::MilliYuan,
+    /// 传统 EMS 累计收益（毫元定点，ARC-003）.
+    pub traditional_revenue: crate::revenue::MilliYuan,
     /// 收益提升百分比.
     pub improvement_pct: f64,
 }
@@ -30,7 +31,7 @@ pub struct MvpTickReport {
 /// 记录收益对比 → device.on_tick。
 pub struct MvpOrchestrator {
     /// 能源调度 Agent.
-    pub energy_agent: EnergyAgent,
+    pub energy_agent: EnergyAgent<MockSolver>,
     /// 市场数据 Agent.
     pub market_agent: MarketAgent,
     /// 设备管理 Agent.
@@ -64,7 +65,7 @@ impl MvpOrchestrator {
     ///
     /// 调用方提供 3 个已配置好的 Agent 与 `ScheduleConfig`（用于传统 EMS 基准）。
     pub fn new(
-        energy: EnergyAgent,
+        energy: EnergyAgent<MockSolver>,
         market: MarketAgent,
         device: DeviceAgent,
         config: ScheduleConfig,

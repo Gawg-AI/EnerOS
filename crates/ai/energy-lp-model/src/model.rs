@@ -90,9 +90,10 @@ impl EnergyScheduleModel {
             soc_var_idx,
         };
 
-        // 添加约束（顺序：SOC 动态 → 爬坡 → SOC 初值 → SOC 终值）
+        // 添加约束（顺序：SOC 动态 → 爬坡 → 充放电互斥 → SOC 初值 → SOC 终值）
         model.add_soc_dynamics_constraints();
         model.add_ramp_constraints();
+        model.add_mutex_constraints();
         model.add_soc_init_constraint();
         if let Some(soc_final) = model.config.soc_final {
             model.add_soc_final_constraint(soc_final);
@@ -183,6 +184,25 @@ impl EnergyScheduleModel {
             .add_constraint("soc_final", Constraint::Eq(expr, final_val));
     }
 
+    /// AI-003：充放电互斥约束——同一时段不得同时充电与放电。
+    ///
+    /// 物理约束：储能设备不能同时充放电。线性互斥近似
+    /// `charge[t] + discharge[t] <= pcs`（各变量上界均为 pcs，若同时为
+    /// pcs 则和为 2·pcs > pcs 被排除）。旧实现缺此约束，优化器可在同一
+    /// 时段同时充放电制造虚假收益。
+    pub fn add_mutex_constraints(&mut self) {
+        let pcs = self.config.pcs_power_kw;
+        for t in 0..self.config.num_periods {
+            let mut expr = LinearExpr::new();
+            expr.add_term(self.charge_var_idx[t], 1.0);
+            expr.add_term(self.discharge_var_idx[t], 1.0);
+            self.problem.add_constraint(
+                &format!("charge_discharge_mutex_{}", t),
+                Constraint::Le(expr, pcs),
+            );
+        }
+    }
+
     /// 设置目标函数：最大化收益.
     ///
     /// `max Σ (price[t]·discharge[t] - price[t]·charge[t])·dt`
@@ -230,11 +250,15 @@ impl EnergyScheduleModel {
                 .get(self.discharge_var_idx[t])
                 .copied()
                 .unwrap_or(0.0);
+            // v0.206.0（P0-17）：soc 缺省用初始 SOC（soc_init*cap）而非 0——
+            // 空/越界 solution 不应产生 soc=0 的 Fatal 违规（安全校验 SOC 下限）。
+            // 求解器越界时钳制到 [0, cap]。
             let soc = result
                 .solution
                 .get(self.soc_var_idx[t])
                 .copied()
-                .unwrap_or(0.0);
+                .unwrap_or(self.config.soc_init * cap)
+                .clamp(0.0, cap);
             let price = self.config.price.get(t).copied().unwrap_or(0.0);
 
             let net_power = discharge - charge;

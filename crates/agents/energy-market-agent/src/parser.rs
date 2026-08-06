@@ -96,28 +96,31 @@ pub fn parse_dr_signal(line: &str) -> Result<DrSignal, MarketError> {
         .trim()
         .parse::<u64>()
         .map_err(|_| MarketError::ParseFailed)?;
-    let target_mw = fields[2]
+    let target_kw = fields[2]
         .trim()
-        .parse::<f32>()
+        .parse::<f64>()
         .map_err(|_| MarketError::ParseFailed)?;
-    let start = fields[3]
-        .trim()
-        .parse::<u64>()
-        .map_err(|_| MarketError::ParseFailed)?;
-    let end = fields[4]
+    let start_at = fields[3]
         .trim()
         .parse::<u64>()
         .map_err(|_| MarketError::ParseFailed)?;
-    let reward = fields[5]
+    let end_at = fields[4]
         .trim()
-        .parse::<f32>()
+        .parse::<u64>()
         .map_err(|_| MarketError::ParseFailed)?;
+    let incentive_yuan = fields[5]
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| MarketError::ParseFailed)?;
+    // ARC-005：统一量纲——输入按 MW/ms 格式（历史格式）换算为 kW/秒：
+    // target_kw = MW × 1000；start_at/end_at = ms ÷ 1000。
     Ok(DrSignal {
         event_id,
-        target_mw,
-        start,
-        end,
-        reward,
+        signal_type: eneros_dr::types::DrSignalType::LoadReduce,
+        target_kw: target_kw * 1000.0,
+        start_at: start_at / 1000,
+        end_at: end_at / 1000,
+        incentive_yuan,
     })
 }
 
@@ -242,10 +245,10 @@ mod tests {
     fn t21_parse_dr_signal_ok() {
         let s = parse_dr_signal("D,42,2.5,1000,2000,500.0").unwrap();
         assert_eq!(s.event_id, 42);
-        assert!((s.target_mw - 2.5).abs() < f32::EPSILON);
-        assert_eq!(s.start, 1000);
-        assert_eq!(s.end, 2000);
-        assert!((s.reward - 500.0).abs() < f32::EPSILON);
+        assert!((s.target_kw - 2500.0).abs() < f64::EPSILON, "2.5 MW → 2500 kW");
+        assert_eq!(s.start_at, 1, "1000 ms → 1 s");
+        assert_eq!(s.end_at, 2, "2000 ms → 2 s");
+        assert!((s.incentive_yuan - 500.0).abs() < f64::EPSILON);
     }
 
     // ===== T22: DR 信号前缀非 D → ParseFailed =====

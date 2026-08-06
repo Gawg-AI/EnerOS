@@ -1,4 +1,4 @@
-//! Network performance benchmarks (v0.30.0).
+//! Network performance benchmarks (workspace v0.192.0).
 //!
 //! Provides throughput and latency benchmark framework for the firewall and
 //! connection-tracking subsystems. Because `no_std` environments lack

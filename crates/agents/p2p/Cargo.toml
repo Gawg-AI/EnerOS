@@ -4,9 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS P2P 电力交易协议 (v0.175.0) — Agent 间报价/询价/匹配通信, no_std"
+description = "[SPECULATIVE] EnerOS P2P 电力交易协议 (v0.175.0) — Agent 间报价/询价/匹配通信, no_std"
 
 [dependencies]
+# SPECULATIVE (ARCH-M04/ADR-0029): 未接入任何真实 agent 的报价/结算流水线，不进入 release 闭包；接入前不得计入完成度。
+# PTC-001：TimeSlot 统一来自 market-types（UTC 秒），消除毫秒/秒 1000 倍冲突。
+eneros-market-types = { path = "../market-types" }
 
 [features]
 default = []

@@ -1,0 +1,8 @@
+[package]
+name = "eneros-elf-loader"
+description = "ELF64 PIE loader (W^X, bounded) — shared by agent packages and root-task EL0 services (KRN-002)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

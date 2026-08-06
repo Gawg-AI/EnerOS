@@ -1,0 +1,11 @@
+[package]
+name = "eneros-control-gateway"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 控制网关 — 写命令授权信封 codec (CTL-003) + 默认 deny 网关"
+
+[dependencies]
+eneros-crypto = { path = "../../security/crypto" }
+eneros-telemetry-model = { path = "../telemetry-model" }

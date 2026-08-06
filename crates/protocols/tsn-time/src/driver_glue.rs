@@ -111,7 +111,7 @@ impl TsnDriver for MockTsnDriver {
 ///
 /// # 示例
 ///
-/// ```ignore
+/// ```text
 /// use eneros_tsn_time::{driver_send_closure, MockTsnDriver, LatencyProbe, TrafficClass};
 /// use core::time::Duration;
 ///

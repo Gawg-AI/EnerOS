@@ -51,6 +51,8 @@ impl MatchStrategy for PriceTimePriority {
                         deal_id: 0, // 由 MatchEngine 分配
                         seller: bid.agent,
                         buyer: ask.agent,
+                        seller_seq: bid.seq,
+                        buyer_seq: ask.seq,
                         volume_kwh: volume,
                         price: bid.price,
                         window_start: 0,
@@ -96,10 +98,25 @@ impl MatchEngine {
         self.asks.push(ask);
     }
 
-    /// 执行撮合，返回一笔成交 (如有)
-    pub fn run_match(&mut self) -> Option<Deal> {
+    /// 执行撮合，返回一笔成交 (如有)。
+    ///
+    /// v0.211.0（P0-25）：
+    /// 1. 过期订单（`valid_until < now`）从订单簿移除，不参与撮合。
+    /// 2. 成交后从订单簿移除已成交的 bid/ask（防止同一订单重复成交）。
+    pub fn run_match(&mut self, now: u64) -> Option<Deal> {
+        // 1. 移除过期订单（fail-closed：过期订单不得成交）。
+        self.bids.retain(|b| b.valid_until >= now);
+        self.asks.retain(|a| a.valid_until >= now);
+
+        // 2. 撮合。
         let strategy = PriceTimePriority;
-        let mut deal = strategy.match_one(&self.bids, &self.asks)?;
+        let deal = strategy.match_one(&self.bids, &self.asks)?;
+
+        // 3. 移除已成交订单（按 agent+seq 定位，防重复成交）。
+        self.bids.retain(|b| !(b.agent == deal.seller && b.seq == deal.seller_seq));
+        self.asks.retain(|a| !(a.agent == deal.buyer && a.seq == deal.buyer_seq));
+
+        let mut deal = deal;
         deal.deal_id = self.next_deal_id;
         self.next_deal_id += 1;
         Some(deal)
@@ -136,7 +153,7 @@ mod tests {
         engine.add_bid(make_bid(1, 100.0, 0.60, 1));
         engine.add_ask(make_ask(2, 80.0, 0.70, 1));
 
-        let deal = engine.run_match().expect("should match");
+        let deal = engine.run_match(1000).expect("should match");
         assert_eq!(deal.seller, 1);
         assert_eq!(deal.buyer, 2);
         assert_eq!(deal.price, 0.60);
@@ -151,7 +168,7 @@ mod tests {
         engine.add_bid(make_bid(1, 100.0, 0.80, 1)); // 卖方要价 0.80
         engine.add_ask(make_ask(2, 80.0, 0.70, 1)); // 买方最高 0.70
 
-        let deal = engine.run_match();
+        let deal = engine.run_match(1000);
         assert!(deal.is_none());
     }
 
@@ -163,7 +180,7 @@ mod tests {
         engine.add_bid(make_bid(3, 50.0, 0.60, 1)); // seq=1 更早
         engine.add_ask(make_ask(2, 30.0, 0.70, 1));
 
-        let deal = engine.run_match().expect("should match");
+        let deal = engine.run_match(1000).expect("should match");
         assert_eq!(deal.seller, 3); // seq=1 优先
     }
 
@@ -173,7 +190,7 @@ mod tests {
         engine.add_bid(make_bid(1, 200.0, 0.50, 1));
         engine.add_ask(make_ask(2, 150.0, 0.60, 1));
 
-        let deal = engine.run_match().expect("should match");
+        let deal = engine.run_match(1000).expect("should match");
         assert_eq!(deal.volume_kwh, 150.0); // min(200, 150)
     }
 
@@ -184,7 +201,7 @@ mod tests {
         engine.add_bid(make_bid(2, 50.0, 0.50, 2)); // 较便宜
         engine.add_ask(make_ask(3, 30.0, 0.80, 1));
 
-        let deal = engine.run_match().expect("should match");
+        let deal = engine.run_match(1000).expect("should match");
         assert_eq!(deal.seller, 2); // 价格低的优先
         assert_eq!(deal.price, 0.50);
     }
@@ -196,17 +213,17 @@ mod tests {
         engine.add_ask(make_ask(2, 30.0, 0.60, 1)); // 出价较低
         engine.add_ask(make_ask(3, 30.0, 0.90, 2)); // 出价较高
 
-        let deal = engine.run_match().expect("should match");
+        let deal = engine.run_match(1000).expect("should match");
         assert_eq!(deal.buyer, 3); // 出价高的优先
     }
 
     #[test]
     fn test_empty_orders() {
         let mut engine = MatchEngine::new();
-        assert!(engine.run_match().is_none());
+        assert!(engine.run_match(1000).is_none());
 
         engine.add_bid(make_bid(1, 50.0, 0.50, 1));
-        assert!(engine.run_match().is_none()); // 无买方
+        assert!(engine.run_match(1000).is_none()); // 无买方
     }
 
     #[test]
@@ -215,11 +232,29 @@ mod tests {
         engine.add_bid(make_bid(1, 100.0, 0.50, 1));
         engine.add_ask(make_ask(2, 50.0, 0.60, 1));
 
-        let deal1 = engine.run_match().expect("should match");
+        let deal1 = engine.run_match(1000).expect("should match");
         assert_eq!(deal1.deal_id, 1);
 
-        // 再次撮合 (订单仍在队列中)
-        let deal2 = engine.run_match().expect("should match again");
-        assert_eq!(deal2.deal_id, 2);
+        // v0.211.0（P0-25）：成交后订单已从订单簿移除——再次撮合无单可成
+        // （防回归：旧 bug 是同一订单重复成交出 deal_id=2）。
+        assert!(
+            engine.run_match(1000).is_none(),
+            "成交后订单必须从订单簿移除，不能重复成交（P0-25）"
+        );
+    }
+
+    #[test]
+    fn test_expired_orders_removed() {
+        let mut engine = MatchEngine::new();
+        // 过期订单（valid_until=99999，now=1000000 → 已过期）。
+        engine.add_bid(make_bid(1, 100.0, 0.50, 1));
+        engine.add_ask(make_ask(2, 50.0, 0.60, 1));
+        assert!(
+            engine.run_match(1_000_000).is_none(),
+            "过期订单不得成交（P0-25 valid_until 校验）"
+        );
+        // 订单簿已清空过期单。
+        assert!(engine.bids.is_empty());
+        assert!(engine.asks.is_empty());
     }
 }

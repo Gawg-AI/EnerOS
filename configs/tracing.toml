@@ -1,0 +1,68 @@
+# EnerOS v0.122.0 分布式追踪 配置模板
+#
+# ① 本文件仅为配置模板：集成层启动时读取，按 [tracer] 构造
+#    `TracerImpl::new(sampling_rate)` 并核对 span_capacity 口径，按
+#    [propagation] 在跨 Agent 消息头部注入/提取 26 字节追踪上下文
+#    （详见 docs/observability/tracing-design.md §4/§5）。
+# ② 数据流（蓝图 §4.3）：start_span 开启 Span（无父上下文时判定采样并
+#    生成 trace_id = 8B now_ms 大端 + 8B 计数器大端；有父上下文时继承
+#    trace_id/sampled 并以父 span_id 为 parent_span_id）→ 采样 span
+#    入 512 条定容存储（写满丢弃最旧）→ inject_context 提取
+#    TraceContext 经 encode_trace_context 编码为 26B 头部随消息传播 →
+#    下游 decode + extract_context 后以之为 parent 开启子 Span →
+#    finish_span 更新 end_ms/status → get_trace/render_trace/
+#    incomplete_spans 支撑链路查询、文本树可视化与崩溃不完整检测。
+# ③ 容量规划（记忆 §5.6 内存预算）：单条 Span ≈ 1.3 KB（trace_id 16B +
+#    span_id 8B + parent 16B + operation≤64B + tags≤8×(32B+64B) +
+#    agent_id≤32B + 时间戳/状态/采样位），存储 512 条 ≈ 650 KB
+#    （heapless 定容，栈/静态段；host 侧多实例场景建议堆分配，见
+#    tests/tracing_integration.rs boxed_tracer 口径），Agent Runtime
+#    分区 ≤ 64 MB 预算内；渲染输出 alloc String 按链路规模另计。
+
+[tracer]
+# ④ 采样率：取值 [0.0, 1.0]，超出截断到边界。采样判定仅在 trace 创建时
+#    （无父上下文）进行并随 TraceContext 传播，保证同一 trace 全链一致
+#    （偏差 D4）；未采样 span 不入库但正常返回句柄，sampled=false 随
+#    上下文传播给下游。1.0 = 全采（调试/验收基线）；生产高负载可下调
+#    以降低存储与渲染开销（蓝图 §8.5 坑点：采样率过低导致关键链路丢失，
+#    故障排查期建议临时调回 1.0）。本实现为确定性计数器取模判定。
+sampling_rate = 1.0
+
+# ⑤ Span 存储容量（条）：写满丢弃最旧一条（remove(0)，对应蓝图 §4.5
+#    spans 满 512 丢最旧口径）。与代码常量 512 对齐（heapless::Vec 定容），
+#    本项仅作集成层配置核对参考，运行时不可改；保留窗口 = 512 / Span
+#    产生速率，链路在窗口内可被 get_trace/render_trace 完整重建。
+span_capacity = 512
+
+[retention]
+# ⑥ 保留策略说明：drop_oldest = 写满丢弃最旧（环形覆盖，与 v0.121.0 日志
+#    缓冲同口径）。崩溃 Agent 的未 finish Span 保留 Active 状态直至被
+#    覆盖，期间可被 incomplete_spans 检出（蓝图 §6.5 故障注入 → 链路不
+#    完整检测）。
+retention = "drop_oldest"
+
+# ⑦ 后端导出预留：本版本 Span 仅存于各 Agent 本地定容存储，链路汇聚/
+#    可视化由运维侧收集后调用 render_trace（文本树）；后续版本可经导出
+#    适配器对接 OpenTelemetry 兼容后端（Jaeger/Zipkin，蓝图 §5.1 选型
+#    为后端可选），届时新增 [export] 节配置端点/批量阈值/上报周期，
+#    本版本不落地适配器，本项仅为文档化说明。
+# [export]
+# endpoint = "jaeger:4317"
+# batch_size = 64
+
+[propagation]
+# ⑧ 追踪上下文头部长度（字节）：encode_trace_context/decode_trace_context
+#    编解码互为逆运算，作为跨 Agent 消息（DDS，v0.75.0）头部格式
+#    （偏差 D5：本版本以 26B 编解码格式交付，DDS 栈消息传播在集成测试
+#    层以模拟消息验证）。布局：
+#      [0..16)  trace_id 16B（前 8B = trace 创建时刻 now_ms 大端，
+#               后 8B = 创建方计数器大端）
+#      [16..24) span_id 8B（当前 Span ID，下游以其为 parent_span_id）
+#      [24]     sampled 1B（0 = 未采样，非 0 = 采样）
+#      [25]     保留 1B（固定 0，供后续版本扩展 flags）
+header_bytes = 26
+
+# ⑨ 时钟说明：trace_id 前 8 字节与 Span start/end 时间戳均为集成层 RTC
+#    （v0.12.0）经 now_ms 参数注入的毫秒时间戳（偏差 D1）；跨机时序
+#    依赖 v0.79.0 时间同步（蓝图 §5.4 难点：时钟偏移导致调用顺序错误，
+#    render_trace 按 parent 链而非时间戳排序，对时钟偏移不敏感）。

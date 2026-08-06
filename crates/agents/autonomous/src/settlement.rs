@@ -2,7 +2,7 @@
 //!
 //! 定义结算 trait 及自动结算实现。
 
-use crate::types::{Settlement, TradeContext};
+use crate::types::{MilliYuan, Settlement, TradeContext};
 use crate::TradeError;
 
 /// 结算触发器 trait
@@ -34,7 +34,8 @@ impl SettlementTrigger for AutoSettlement {
         if ctx.delivered_kwh <= 0.0 {
             return Err(TradeError::SettlementFailed);
         }
-        let amount = ctx.delivered_kwh * ctx.price;
+        // ARC-003：金额定点（delivered × price 精确积 round-half-up 定毫）
+        let amount = MilliYuan::from_yuan_f64(ctx.delivered_kwh * ctx.price);
         Ok(Settlement {
             deal_id: ctx.deal_id,
             seller_credit_kwh: ctx.delivered_kwh,
@@ -72,7 +73,7 @@ mod tests {
         assert_eq!(result.deal_id, 1);
         assert_eq!(result.seller_credit_kwh, 150.0);
         assert_eq!(result.buyer_debit_kwh, 150.0);
-        assert!((result.amount_yuan - 90.0).abs() < f64::EPSILON);
+        assert_eq!(result.amount_yuan, MilliYuan(90_000), "150 × 0.6 = 90 元 = 90000 毫元");
         assert_eq!(result.at, 5000);
     }
 

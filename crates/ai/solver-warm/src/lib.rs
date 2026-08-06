@@ -52,11 +52,17 @@ pub mod candidate;
 pub mod heuristic_net;
 pub mod warm_start;
 
+// AI-002：`onnx-ffi` feature 下的虚构 `ort_*` FFI 符号（ort_create_session
+// 等）无任何真实 ONNX Runtime 库提供——启用即编译失败（fail-closed），
+// 禁止静默链接虚构符号。真实集成须改用 ONNX Runtime C API 的 OrtApi
+// （`OrtGetApiBase` → OrtCreateSession/OrtRun）。
 #[cfg(feature = "onnx-ffi")]
-pub mod ffi;
+compile_error!(
+    "onnx-ffi: 虚构 ort_* FFI 符号已封印（AI-002）——真实 ONNX Runtime 集成必须通过 OrtApi (OrtGetApiBase) 提供；solver-warm/src/ffi.rs 内的 extern 声明不得再启用"
+);
 
 pub use candidate::CandidateSolution;
 #[cfg(feature = "onnx-ffi")]
-pub use ffi::OnnxEngine;
+compile_error!("onnx-ffi: OnnxEngine 依赖虚构 ort_* FFI（AI-002 封印）");
 pub use heuristic_net::{HeuristicNet, InferEngine, MockEngine, WarmError};
 pub use warm_start::{SolveContext, WarmStartProvider, WarmStarter};

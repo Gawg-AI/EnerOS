@@ -1,4 +1,4 @@
-//! EnerOS Storage Driver — Phase 1 P1-A (v0.23.0).
+//! EnerOS Storage Driver — Phase 1 P1-A (workspace v0.192.0).
 //!
 //! This crate provides the block device abstraction layer for EnerOS,
 //! supporting eMMC and NVMe storage backends with a unified
@@ -37,7 +37,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_storage::{create_block_device, StorageConfig, StorageType};
 //!
 //! let config = StorageConfig {
@@ -69,4 +69,7 @@ pub use driver::{
     StorageMmio, StorageType,
 };
 pub use driver::{DmaBuffer, EmmcCmdType, EmmcDriver, MockDmaTransfer, NvmeDriver};
+pub use driver::virtio_blk::{
+    Aarch64Cache, ArmCache, NoopCache, RamMmio, RamPool, VirtioBlkDriver, VirtioMmio,
+};
 pub use error::StorageError;

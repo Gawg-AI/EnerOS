@@ -21,7 +21,7 @@ use core::fmt;
 ///
 /// # Usage
 ///
-/// ```ignore
+/// ```text
 /// use eneros_fs::wear::WriteAmplificationTracker;
 ///
 /// let mut tracker = WriteAmplificationTracker::new();

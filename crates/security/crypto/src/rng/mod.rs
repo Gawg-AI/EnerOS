@@ -14,3 +14,7 @@
 pub mod csrng;
 
 pub use csrng::CsRng;
+
+pub mod entropy;
+pub mod virtio_rng;
+pub use entropy::{csrng_from_platform, platform_entropy_source, EntropyError, EntropySource};

@@ -3,6 +3,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+pub use eneros_market_types::{Bid, MilliYuan, TradeDir, YuanPerKwh};
+
 /// 清算状态。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ClearStatus {
@@ -25,8 +27,8 @@ pub struct ClearingJob {
     pub delivered_kwh: f64,
     /// 合同电量 (kWh)。
     pub contract_kwh: f64,
-    /// 合同电价 (元/kWh)。
-    pub contract_price: f64,
+    /// 合同电价 (元/kWh，单位化，ARCH-M02)。
+    pub contract_price: eneros_market_types::YuanPerKwh,
     /// 时间戳。
     pub at: u64,
 }
@@ -40,10 +42,10 @@ pub struct ClearingResult {
     pub seller_credit: f64,
     /// 买方扣减电量。
     pub buyer_debit: f64,
-    /// 结算金额（元）。
-    pub amount_yuan: f64,
-    /// 偏差考核费（元）。
-    pub deviation_penalty: f64,
+    /// 结算金额（毫元定点，ARC-003）。
+    pub amount_yuan: MilliYuan,
+    /// 偏差考核费（毫元定点，ARC-003）。
+    pub deviation_penalty: MilliYuan,
     /// 清算状态。
     pub status: ClearStatus,
 }
@@ -104,13 +106,13 @@ mod tests {
             deal_id: 1,
             delivered_kwh: 100.0,
             contract_kwh: 100.0,
-            contract_price: 0.5,
+            contract_price: eneros_market_types::YuanPerKwh(0.5),
             at: 1000,
         };
         assert_eq!(job.deal_id, 1);
         assert_eq!(job.delivered_kwh, 100.0);
         assert_eq!(job.contract_kwh, 100.0);
-        assert_eq!(job.contract_price, 0.5);
+        assert_eq!(job.contract_price, eneros_market_types::YuanPerKwh(0.5));
         assert_eq!(job.at, 1000);
     }
 
@@ -120,13 +122,13 @@ mod tests {
             deal_id: 42,
             seller_credit: 100.0,
             buyer_debit: 100.0,
-            amount_yuan: 50.0,
-            deviation_penalty: 0.0,
+            amount_yuan: MilliYuan(50_000),
+            deviation_penalty: MilliYuan::ZERO,
             status: ClearStatus::Cleared,
         };
         assert_eq!(result.deal_id, 42);
         assert_eq!(result.status, ClearStatus::Cleared);
-        assert_eq!(result.deviation_penalty, 0.0);
+        assert_eq!(result.deviation_penalty, MilliYuan::ZERO);
     }
 
     #[test]

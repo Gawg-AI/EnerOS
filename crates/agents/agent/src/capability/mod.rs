@@ -1,4 +1,4 @@
-//! 能力令牌（Capability Token）模块 (v0.40.0).
+//! 能力令牌（Capability Token）模块 (workspace v0.192.0).
 //!
 //! 提供 Agent 访问控制的能力令牌系统，包含：
 //! - [`CapabilityToken`] — 令牌主体（SM2 签名）

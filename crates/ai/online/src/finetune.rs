@@ -1,4 +1,4 @@
-//! 边缘增量微调 (v0.186.0).
+//! 边缘增量微调 (workspace v0.192.0).
 //!
 //! 实现 IncrementalTrainer trait，使用简化的 mock 梯度下降。
 //! 未来集成 PyTorch FFI 时替换 mock 计算为真实训练步。

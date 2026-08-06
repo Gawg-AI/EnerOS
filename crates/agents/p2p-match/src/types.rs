@@ -1,34 +1,9 @@
 //! P2P 撮合引擎数据类型定义
+//!
+//! PTC-001：`P2pBid`/`P2pAsk` 统一来自 `eneros-p2p`（旧本地定义与其
+//! 完全同构——重复定义已删除，避免两处演化漂移）。
 
-/// 卖方报价 (Bid)
-#[derive(Debug, Clone, PartialEq)]
-pub struct P2pBid {
-    /// 卖方 Agent ID
-    pub agent: u64,
-    /// 出售电量 (kWh)
-    pub volume_kwh: f64,
-    /// 单价 (元/kWh)
-    pub price: f64,
-    /// 有效截止时间戳
-    pub valid_until: u64,
-    /// 消息序列号
-    pub seq: u64,
-}
-
-/// 买方询价 (Ask)
-#[derive(Debug, Clone, PartialEq)]
-pub struct P2pAsk {
-    /// 买方 Agent ID
-    pub agent: u64,
-    /// 需求电量 (kWh)
-    pub volume_kwh: f64,
-    /// 最高可接受单价 (元/kWh)
-    pub max_price: f64,
-    /// 有效截止时间戳
-    pub valid_until: u64,
-    /// 消息序列号
-    pub seq: u64,
-}
+pub use eneros_p2p::{P2pAsk, P2pBid};
 
 /// 成交状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +29,10 @@ pub struct Deal {
     pub seller: u64,
     /// 买方 Agent ID
     pub buyer: u64,
+    /// 卖方订单 seq（v0.211.0 P0-25：成交后定位移除订单用）
+    pub seller_seq: u64,
+    /// 买方订单 seq（v0.211.0 P0-25）
+    pub buyer_seq: u64,
     /// 成交电量 (kWh)
     pub volume_kwh: f64,
     /// 成交单价 (元/kWh)
@@ -117,6 +96,8 @@ mod tests {
             deal_id: 1,
             seller: 10,
             buyer: 20,
+            seller_seq: 0,
+            buyer_seq: 0,
             volume_kwh: 50.0,
             price: 0.70,
             window_start: 1000,

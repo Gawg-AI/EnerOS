@@ -205,7 +205,15 @@ impl U256 {
     /// 正确性不依赖 `self, other < m`（归约步骤处理任意 512 位输入）。
     pub fn mul_mod(&self, other: &U256, m: &U256) -> U256 {
         let prod = self.mul_full(other);
-        reduce_512_to_256(&prod, m)
+        // CRY-007：SM2 p/n 特殊形式素数用 Solinas 快速归约（移位-加法，
+        // 无逐位除法）；其他模数回退通用逐位归约。
+        if m == &crate::sm2::SM2_P {
+            // CRY-007：p 有 Solinas 形式（2^256−2^224−2^96+2^64−1）→ 快速归约
+            reduce_512_sm2_p_for_test(&prod)
+        } else {
+            // n 与任意模数：逐位归约（n 的使用频率远低于 p 的点运算）
+            reduce_512_slow_for_test(&prod, m)
+        }
     }
 
     // ============================================================
@@ -216,6 +224,34 @@ impl U256 {
     ///
     /// 返回 `CryptoError::ModInverseFailed` 当 `gcd(self, m) != 1` 或 `self == 0` 或 `m == 0`。
     /// 系数运算在 mod m 下进行，避免有符号算术。
+    /// 定次模幂：a^exp mod m（平方-乘，轮数固定为 exp 的位长，恒定时间）。
+    ///
+    /// CRY-001：供 `inv_mod`（费马小定理定次模逆）使用；循环轮数只依赖
+    /// exp 位长，不依赖输入值——消除旧迭代 EEA 的输入相关迭代次数。
+    pub fn pow_mod(&self, exp: &U256, m: &U256) -> U256 {
+        let mut result = ONE;
+        let base = if self.cmp_u256(m) != core::cmp::Ordering::Less {
+            self.div_rem(m).1
+        } else {
+            *self
+        };
+        // 从左到右平方-乘：每轮先平方 result，再按 exp 位条件乘 base。
+        // 轮数固定（256），base 恒定——无输入相关分支次数。
+        for i in (0..256).rev() {
+            result = result.mul_mod(&result, m);
+            if exp.bit(i) {
+                result = result.mul_mod(&base, m);
+            }
+        }
+        result
+    }
+
+    /// 定次模逆（CRY-001）：费马小定理 a^(m-2) mod m（m 为素数）。
+    ///
+    /// 旧实现为迭代 EEA——迭代次数依赖输入值（时序侧信道）。
+    /// 新实现轮数固定（256 轮平方-乘），不依赖输入。
+    /// **约束**：仅适用于素数模数（SM2 的 p/n 均为素数）；非素数模数
+    /// 逆不存在时由 `pow_mod(m-2)` 产生错误结果，调用方负责素数性。
     pub fn inv_mod(&self, m: &U256) -> Result<U256, CryptoError> {
         if m.is_zero() {
             return Err(CryptoError::ModInverseFailed);
@@ -223,55 +259,27 @@ impl U256 {
         if self.is_zero() {
             return Err(CryptoError::ModInverseFailed);
         }
-
-        // 先归约 self mod m（保证 a < m，使后续 mul_mod 的商 q < m）
-        let a = if self.cmp_u256(m) != Ordering::Less {
+        let exp = m.sub_mod(&ONE, m); // m-1，再减 1 得 m-2
+        let exp = exp.sub_mod(&ONE, m);
+        let inv = self.pow_mod(&exp, m);
+        // 验证 a * a^-1 ≡ 1（防御非素数模数错误结果）
+        let reduced = if self.cmp_u256(m) != core::cmp::Ordering::Less {
             self.div_rem(m).1
         } else {
             *self
         };
-        if a.is_zero() {
+        let check = reduced.mul_mod(&inv, m);
+        if check != ONE {
             return Err(CryptoError::ModInverseFailed);
         }
-
-        // 迭代 EEA:
-        //   old_r, r = a, m
-        //   old_s, s = 1, 0
-        //   while r != 0:
-        //     q = old_r / r
-        //     old_r, r = r, old_r - q*r
-        //     old_s, s = s, (old_s - q*s) mod m
-        let mut old_r = a;
-        let mut r = *m;
-        let mut old_s = ONE;
-        let mut s = ZERO;
-
-        while !r.is_zero() {
-            let (q, rem) = old_r.div_rem(&r);
-            old_r = r;
-            r = rem;
-
-            // s_new = (old_s - q * s) mod m
-            // q < m（因 old_r < m，q = old_r / r < m）
-            let temp = q.mul_mod(&s, m);
-            let s_new = old_s.sub_mod(&temp, m);
-
-            old_s = s;
-            s = s_new;
-        }
-
-        if old_r != ONE {
-            return Err(CryptoError::ModInverseFailed);
-        }
-        Ok(old_s)
+        Ok(inv)
     }
-
     // ============================================================
     // Helper methods (private)
     // ============================================================
 
     /// 全精度加法，返回 (result, carry)。carry ∈ {0, 1}.
-    fn add_full(&self, other: &U256) -> (U256, u64) {
+    pub(crate) fn add_full(&self, other: &U256) -> (U256, u64) {
         let mut result = [0u64; 4];
         let mut carry: u64 = 0;
         for ((r, a), b) in result
@@ -443,11 +451,159 @@ fn sub_512(a: &mut [u64; 8], b: &[u64; 8]) {
     }
 }
 
-/// 将 512 位值（8 limbs）归约 mod m（4 limbs）为 `U256`.
+// 将 512 位值（8 limbs）归约 mod m（4 limbs）为 `U256`.
+//
+// 使用移位-减法长除法，从最高位到最低位逐位处理。
+// 不变量：每步后 remainder < m（适配 256 位，但中间用 8 limbs 防溢出）。
+// ============================================================================
+// SM2 p/n Solinas 快速归约（CRY-007）
+// ============================================================================
+
+/// 8-limb 数组左移 n 位（n < 64），返回 (移位结果, 溢出位宽 0/1)。
+#[inline]
+fn shl8(x: &[u64; 8], n: u32) -> [u64; 8] {
+    debug_assert!(n < 64);
+    let mut out = [0u64; 8];
+    for i in (1..8).rev() {
+        out[i] = (x[i] << n) | (x[i - 1] >> (64 - n));
+    }
+    out[0] = x[0] << n;
+    out
+}
+
+/// 8-limb 数组右移 n 位（n < 64，用于取 2^256 商）。
+#[inline]
+#[allow(dead_code)] // CRY-007 Solinas 归约辅助（保留供测试/扩展）
+fn shr8(x: &[u64; 8], n: u32) -> [u64; 8] {
+    debug_assert!(n < 64);
+    let mut out = [0u64; 8];
+    for i in 0..7 {
+        out[i] = (x[i] >> n) | (x[i + 1] << (64 - n));
+    }
+    out[7] = x[7] >> n;
+    out
+}
+
+/// 8-limb 加：a += b（返回是否溢出，调用方忽略——归约中间量有界）。
+#[inline]
+fn add8(a: &mut [u64; 8], b: &[u64; 8]) -> u64 {
+    let mut carry = 0u64;
+    for i in 0..8 {
+        let s = (a[i] as u128) + (b[i] as u128) + (carry as u128);
+        a[i] = s as u64;
+        carry = (s >> 64) as u64;
+    }
+    carry
+}
+
+/// 8-limb 二补码取负：out = !x + 1（模 2^512）。
+#[inline]
+fn neg8(x: &[u64; 8]) -> [u64; 8] {
+    let mut out = [0u64; 8];
+    let mut carry = 1u128;
+    for i in 0..8 {
+        let s = ((!x[i]) as u128) + carry;
+        out[i] = s as u64;
+        carry = s >> 64;
+    }
+    out
+}
+
+/// 8-limb 减：a -= b（要求 a >= b；返回借位，调用方保证不借）。
+#[inline]
+#[allow(dead_code)] // CRY-007 Solinas 归约辅助（保留供测试/扩展）
+fn sub8_no_borrow(a: &mut [u64; 8], b: &[u64; 8]) {
+    let mut borrow = 0u128;
+    for i in 0..8 {
+        let d = (a[i] as u128).wrapping_sub(b[i] as u128).wrapping_sub(borrow);
+        a[i] = d as u64;
+        borrow = (d >> 64) & 1;
+    }
+    debug_assert_eq!(borrow, 0, "sub8 借位（归约中间量应保证 a>=b）");
+}
+
+/// SM2 素域 p 的 Solinas 归约（p = 2^256 − 2^224 − 2^96 + 2^64 − 1）。
 ///
-/// 使用移位-减法长除法，从最高位到最低位逐位处理。
-/// 不变量：每步后 remainder < m（适配 256 位，但中间用 8 limbs 防溢出）。
-fn reduce_512_to_256(prod: &[u64; 8], m: &U256) -> U256 {
+/// 2^256 ≡ 2^224 + 2^96 − 2^64 + 1 (mod p)。将 512 位乘积
+/// x = A·2^256 + B 归约为 A·(2^224 + 2^96 − 2^64 + 1) + B，
+/// 迭代两次后 < 2^256 + p，再做至多两次条件减 p。
+pub fn reduce_512_sm2_p_for_test(prod: &[u64; 8]) -> U256 {
+    let p = crate::sm2::SM2_P;
+    let mut x = *prod;
+    // 循环归约：每轮 x = B + A·(2^224 + 2^96 − 2^64 + 1)，位宽每轮降 ~31 位
+    //（512 → ~480 → ~448 → …）。固定 12 轮（恒定时间：轮数不依赖输入，
+    // 512 位乘积最坏 ~10 轮收敛，12 轮留余量）；A=0 时该轮为恒等操作。
+    for _ in 0..12 {
+        let a: [u64; 8] = [x[4], x[5], x[6], x[7], 0, 0, 0, 0];
+        let b: [u64; 8] = [x[0], x[1], x[2], x[3], 0, 0, 0, 0];
+        let a_s = [a[0], a[1], a[2], a[3], 0, 0, 0, 0];
+        let a_sh32 = shl8(&a_s, 32); // A << 32
+        let mut a224 = [0u64; 8];
+        a224[3..8].copy_from_slice(&a_sh32[0..5]);
+        let mut a96 = [0u64; 8];
+        a96[1..6].copy_from_slice(&a_sh32[0..5]);
+        let mut a64 = [0u64; 8];
+        a64[1..5].copy_from_slice(&a[0..4]);
+        let mut t = b;
+        add8(&mut t, &a224);
+        add8(&mut t, &a96);
+        let n_a64 = neg8(&a64);
+        add8(&mut t, &n_a64);
+        add8(&mut t, &a_s);
+        x = t;
+    }
+    let mut out = U256 { limbs: [x[0], x[1], x[2], x[3]] };
+    let p256 = p;
+    if out.cmp_u256(&p256) != core::cmp::Ordering::Less {
+        out = out.sub_mod(&p256, &p256);
+        if out.cmp_u256(&p256) != core::cmp::Ordering::Less {
+            out = out.sub_mod(&p256, &p256);
+        }
+    }
+    out
+}
+
+/// SM2 曲线阶 n 的 Solinas 归约（n = 2^256 − 2^224 − 2^192 + 2^96 − 1）。
+///
+/// 2^256 ≡ 2^224 + 2^192 − 2^96 + 1 (mod n)。
+pub fn reduce_512_sm2_n_for_test(prod: &[u64; 8]) -> U256 {
+    let n = crate::sm2::SM2_N;
+    let mut x = *prod;
+    // 2^256 ≡ 2^224 + 2^192 − 2^96 + 1 (mod n)，循环归约至 x < 2^256。
+    for _ in 0..12 {
+        if x[4] == 0 && x[5] == 0 && x[6] == 0 && x[7] == 0 {
+            break;
+        }
+        let a: [u64; 8] = [x[4], x[5], x[6], x[7], 0, 0, 0, 0];
+        let b: [u64; 8] = [x[0], x[1], x[2], x[3], 0, 0, 0, 0];
+        let a_s = [a[0], a[1], a[2], a[3], 0, 0, 0, 0];
+        let a_sh32 = shl8(&a_s, 32); // A << 32
+        let mut a224 = [0u64; 8];
+        a224[3..8].copy_from_slice(&a_sh32[0..5]);
+        let mut a192 = [0u64; 8];
+        a192[3..7].copy_from_slice(&a[0..4]);
+        let mut a96 = [0u64; 8];
+        a96[1..6].copy_from_slice(&a_sh32[0..5]);
+        let mut t = b;
+        add8(&mut t, &a224);
+        add8(&mut t, &a192);
+        let n_a96 = neg8(&a96);
+        add8(&mut t, &n_a96);
+        add8(&mut t, &a_s);
+        x = t;
+    }
+    let mut out = U256 { limbs: [x[0], x[1], x[2], x[3]] };
+    let n256 = n;
+    if out.cmp_u256(&n256) != core::cmp::Ordering::Less {
+        out = out.sub_mod(&n256, &n256);
+        if out.cmp_u256(&n256) != core::cmp::Ordering::Less {
+            out = out.sub_mod(&n256, &n256);
+        }
+    }
+    out
+}
+
+pub fn reduce_512_slow_for_test(prod: &[u64; 8], m: &U256) -> U256 {
     // m 扩展为 8 limbs（高位补零）
     let m_ext: [u64; 8] = [m.limbs[0], m.limbs[1], m.limbs[2], m.limbs[3], 0, 0, 0, 0];
     let mut rem: [u64; 8] = [0; 8];

@@ -2,6 +2,8 @@
 
 use alloc::vec::Vec;
 
+use eneros_market_types::YuanPerKwh;
+
 use crate::types::{Bid, BidSegment, SpotMarketType, TimeSlot, TradeDir};
 use crate::MarketError;
 
@@ -10,7 +12,7 @@ use crate::MarketError;
 /// 规则：
 /// - segments 不能为空
 /// - 每段 volume_kwh > 0
-/// - 每段 price_yuan_per_kwh >= 0
+/// - 每段 price >= 0（YuanPerKwh）
 /// - 每段 period 有效 (end > start)
 pub fn validate_bid(bid: &Bid) -> Result<(), MarketError> {
     if bid.segments.is_empty() {
@@ -20,7 +22,7 @@ pub fn validate_bid(bid: &Bid) -> Result<(), MarketError> {
         if seg.volume_kwh <= 0.0 {
             return Err(MarketError::InvalidBid);
         }
-        if seg.price_yuan_per_kwh < 0.0 {
+        if seg.price.0 < 0.0 {
             return Err(MarketError::InvalidBid);
         }
         if !seg.period.is_valid() {
@@ -63,13 +65,13 @@ impl BidBuilder {
         mut self,
         period: TimeSlot,
         volume_kwh: f64,
-        price_yuan_per_kwh: f64,
+        price: YuanPerKwh,
         direction: TradeDir,
     ) -> Self {
         self.segments.push(BidSegment {
             period,
             volume_kwh,
-            price_yuan_per_kwh,
+            price,
             direction,
         });
         self
@@ -79,7 +81,7 @@ impl BidBuilder {
     pub fn build(self) -> Result<Bid, MarketError> {
         let bid = Bid {
             bid_id: self.bid_id,
-            market: self.market,
+            market: self.market.to_market_type(),
             submitter: self.submitter,
             segments: self.segments,
             submit_at: self.submit_at,
@@ -92,11 +94,12 @@ impl BidBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eneros_market_types::MarketType;
 
     fn make_valid_bid() -> Bid {
         BidBuilder::new(1, SpotMarketType::DayAhead, 100)
             .submit_at(1000)
-            .add_segment(TimeSlot::new(0, 3600), 100.0, 0.45, TradeDir::Sell)
+            .add_segment(TimeSlot::new(0, 3600), 100.0, YuanPerKwh(0.45), TradeDir::Sell)
             .build()
             .unwrap()
     }
@@ -113,7 +116,7 @@ mod tests {
     fn test_empty_segments() {
         let bid = Bid {
             bid_id: 2,
-            market: SpotMarketType::IntraDay,
+            market: MarketType::IntraDay,
             submitter: 100,
             segments: Vec::new(),
             submit_at: 1000,
@@ -125,12 +128,12 @@ mod tests {
     fn test_negative_volume() {
         let bid = Bid {
             bid_id: 3,
-            market: SpotMarketType::DayAhead,
+            market: MarketType::DayAhead,
             submitter: 100,
             segments: alloc::vec![BidSegment {
                 period: TimeSlot::new(0, 3600),
                 volume_kwh: -10.0,
-                price_yuan_per_kwh: 0.5,
+                price: YuanPerKwh(0.5),
                 direction: TradeDir::Buy,
             }],
             submit_at: 1000,
@@ -142,12 +145,12 @@ mod tests {
     fn test_zero_volume() {
         let bid = Bid {
             bid_id: 4,
-            market: SpotMarketType::DayAhead,
+            market: MarketType::DayAhead,
             submitter: 100,
             segments: alloc::vec![BidSegment {
                 period: TimeSlot::new(0, 3600),
                 volume_kwh: 0.0,
-                price_yuan_per_kwh: 0.5,
+                price: YuanPerKwh(0.5),
                 direction: TradeDir::Buy,
             }],
             submit_at: 1000,
@@ -159,12 +162,12 @@ mod tests {
     fn test_negative_price() {
         let bid = Bid {
             bid_id: 5,
-            market: SpotMarketType::DayAhead,
+            market: MarketType::DayAhead,
             submitter: 100,
             segments: alloc::vec![BidSegment {
                 period: TimeSlot::new(0, 3600),
                 volume_kwh: 100.0,
-                price_yuan_per_kwh: -0.1,
+                price: YuanPerKwh(-0.1),
                 direction: TradeDir::Sell,
             }],
             submit_at: 1000,
@@ -176,12 +179,12 @@ mod tests {
     fn test_invalid_period() {
         let bid = Bid {
             bid_id: 6,
-            market: SpotMarketType::DayAhead,
+            market: MarketType::DayAhead,
             submitter: 100,
             segments: alloc::vec![BidSegment {
                 period: TimeSlot::new(3600, 0),
                 volume_kwh: 100.0,
-                price_yuan_per_kwh: 0.5,
+                price: YuanPerKwh(0.5),
                 direction: TradeDir::Sell,
             }],
             submit_at: 1000,
@@ -201,11 +204,11 @@ mod tests {
     fn test_builder_multiple_segments() {
         let bid = BidBuilder::new(8, SpotMarketType::IntraDay, 200)
             .submit_at(2000)
-            .add_segment(TimeSlot::new(0, 3600), 50.0, 0.4, TradeDir::Buy)
-            .add_segment(TimeSlot::new(3600, 7200), 80.0, 0.5, TradeDir::Sell)
+            .add_segment(TimeSlot::new(0, 3600), 50.0, YuanPerKwh(0.4), TradeDir::Buy)
+            .add_segment(TimeSlot::new(3600, 7200), 80.0, YuanPerKwh(0.5), TradeDir::Sell)
             .build()
             .unwrap();
         assert_eq!(bid.segments.len(), 2);
-        assert_eq!(bid.market, SpotMarketType::IntraDay);
+        assert_eq!(bid.market, MarketType::IntraDay);
     }
 }

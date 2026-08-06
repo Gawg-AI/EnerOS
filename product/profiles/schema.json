@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eneros.invalid/schema/product-profile-v1.json",
+  "title": "EnerOS product profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "class",
+    "platform",
+    "target",
+    "image_layout",
+    "artifacts",
+    "binaries",
+    "signing",
+    "security"
+  ],
+  "properties": {
+    "schema": { "const": "eneros.product-profile.v1" },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}$" },
+    "class": { "enum": ["test", "development", "release", "recovery", "factory"] },
+    "platform": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "target": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "image_layout": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}$" }
+      ]
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["test-binaries", "raw-gpt", "installer-iso", "recovery-image", "update-package", "sbom", "firmware-bundle", "provisioning-bundle"] }
+    },
+    "binaries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["selector", "role", "default_features", "features"],
+        "properties": {
+          "selector": { "type": "string", "pattern": "^[A-Za-z0-9_-]+::[A-Za-z0-9_-]+$" },
+          "role": { "enum": ["host-gate", "boot-manager", "kernel", "recovery", "factory"] },
+          "target": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "default_features": { "type": "boolean" },
+          "features": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        }
+      }
+    },
+    "signing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "key_source", "allow_test_keys"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "key_source": { "enum": ["none", "external-file", "external-provider"] },
+        "allow_test_keys": { "type": "boolean" }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allow_mock", "allow_unsigned", "minimum_security_version", "entropy_sources"],
+      "properties": {
+        "allow_mock": { "type": "boolean" },
+        "allow_unsigned": { "type": "boolean" },
+        "minimum_security_version": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "entropy_sources": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["host-os", "virtio-rng", "hardware-trng"] }
+        }
+      }
+    }
+  }
+}

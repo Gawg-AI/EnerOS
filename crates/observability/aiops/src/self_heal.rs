@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_default_impl() {
-        let healer = RuleBasedHealer::default();
+        let healer = RuleBasedHealer;
         let anomaly = make_anomaly(0.2);
         let plan = healer.diagnose(&anomaly);
         assert_eq!(plan.actions.len(), 1);

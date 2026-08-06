@@ -3,11 +3,13 @@
 # 依据：开发管理记忆.md §三 垃圾文件与缓存治理
 # ============================================================
 
-# ===== 蓝图文档（不入仓，仅本地参考） =====
-蓝图/
-
+# ===== 蓝图文档 =====
+# Markdown 是后续开发的正式执行基线，需要进入版本控制；历史压缩备份仍留在本地。
+蓝图/*
+!蓝图/*.md
 # ===== Rust / Cargo 构建产物 =====
 target/
+target-test-*/
 ci/target-check/
 **/*.rs.bk
 *.rs.bk
@@ -49,6 +51,7 @@ models/*.bin
 .idea/
 .vscode/
 .trae/cache/
+.trae/documents/
 .trae/index/
 .trae/tmp/
 *.code-workspace
@@ -148,3 +151,9 @@ core.*
 *.core
 dump.*
 gdb-output.txt
+
+# ===== 本地分析/临时产物（不入仓） =====
+.clippy-*.txt
+.codebuddy/
+.redox-research/
+.qoderignore

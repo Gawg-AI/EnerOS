@@ -38,6 +38,15 @@
 
 #![cfg_attr(not(test), no_std)]
 
+#[cfg(all(
+    not(test),
+    not(debug_assertions),
+    not(feature = "insecure-mtls-prototype")
+))]
+compile_error!(
+    "eneros-mtls is an insecure custom protocol prototype; production release builds are disabled. Use an audited standards-compatible TLS implementation."
+);
+
 extern crate alloc;
 
 use alloc::collections::VecDeque;

@@ -3,6 +3,9 @@
 use alloc::boxed::Box;
 use alloc::vec;
 
+use eneros_control_gateway::AuthorizedCommand;
+use eneros_telemetry_model::command::{ControlCommand, DoubleCommand, SingleCommand};
+
 use crate::apdu::{Apdu, ControlField, UFormatFunction};
 use crate::asdu::{Asdu, Cot, InformationObject, IoValue, TimeTag, TypeId};
 use crate::config::Iec104Config;
@@ -46,6 +49,11 @@ pub struct Iec104Slave {
     connection: Option<SlaveConnection>,
     stats: SlaveStats,
     last_testfr_ms: u64,
+    /// 控制网关授权的写命令 (CTL-004)。`None` 时所有遥控默认拒绝。
+    authorized_write: Option<AuthorizedCommand>,
+    /// PTC-003：SBO 已选择待执行的命令（Select Before Operate 状态）。
+    /// 键 = (common_addr, ioa)，值 = 命令；execute 须与 select 一致才执行。
+    selected: Option<(u32, u32, ControlCommand)>,
 }
 
 impl Iec104Slave {
@@ -62,6 +70,28 @@ impl Iec104Slave {
             connection: None,
             stats: SlaveStats::default(),
             last_testfr_ms: 0,
+            authorized_write: None,
+            selected: None,
+        }
+    }
+
+    /// 安装一条来自控制网关的 [`AuthorizedCommand`]，使下一条匹配的遥控可被执行
+    /// (CTL-004)。未安装时（默认）所有遥控被默认拒绝，不写任何点。
+    pub fn set_authorized_write(&mut self, cmd: AuthorizedCommand) {
+        self.authorized_write = Some(cmd);
+    }
+
+    /// 校验一条 IEC 104 遥控是否与已安装的 [`AuthorizedCommand`] 精确匹配：
+    /// `common_addr → device_id`、`ioa → point_id`、命令值一致。任一不匹配或未安装
+    /// 授权 → 拒绝（默认 deny）。
+    fn write_authorized(&self, common_addr: u16, ioa: u16, cmd: &ControlCommand) -> bool {
+        match &self.authorized_write {
+            None => false,
+            Some(auth) => {
+                auth.device_id == common_addr as u32
+                    && auth.point_id == ioa as u32
+                    && &auth.command == cmd
+            }
         }
     }
 
@@ -254,10 +284,11 @@ impl Iec104Slave {
             self.send_i_format(&data_asdu)?;
         }
 
-        // Step 3: 激活终止
+        // Step 3: 激活终止（PTC-003：必须用 COT=10 ActivationTermination，
+        // 旧实现误用 COT=7 ActivationConfirm——从站响应不合规）。
         let terminate = Asdu {
             type_id: TypeId::InterrogationCommand,
-            cause_of_tx: Cot::ActivationConfirm,
+            cause_of_tx: Cot::ActivationTermination,
             common_addr: asdu.common_addr,
             ioas: asdu.ioas.clone(),
         };
@@ -266,36 +297,103 @@ impl Iec104Slave {
         Ok(())
     }
 
-    /// 处理单点遥控命令。
+    /// 处理单点遥控命令（PTC-003：补 SBO——Select Before Operate 两步）。
+    ///
+    /// SBO 流程：
+    /// 1. `select=true`：选择命令，存储到 `selected`，回 ActivationConfirm（未执行）；
+    /// 2. `select=false`（execute）：须与 `selected` 精确匹配才执行（仍须过
+    ///    CTL-004 授权），否则回 Deactivation 拒绝；
+    /// 3. 直接 execute（无 select）一律拒绝（SBO 强制）。
     fn handle_single_command(&mut self, asdu: &Asdu) -> Result<(), Iec104Error> {
         for io in &asdu.ioas {
             if let IoValue::SingleCommand(sco) = &io.value {
-                let _ = self.point_db.execute_single_command(io.ioa, sco);
+                let cmd = if sco.value {
+                    ControlCommand::Single(SingleCommand::On)
+                } else {
+                    ControlCommand::Single(SingleCommand::Off)
+                };
+                // PTC-003：SBO 选择阶段——仅记录选择，不执行。
+                if sco.select {
+                    self.selected = Some((asdu.common_addr as u32, io.ioa as u32, cmd));
+                    let confirm = Asdu {
+                        type_id: TypeId::SingleCommand,
+                        cause_of_tx: Cot::ActivationConfirm,
+                        common_addr: asdu.common_addr,
+                        ioas: vec![io.clone()],
+                    };
+                    self.send_i_format(&confirm)?;
+                    continue;
+                }
+                // execute 阶段：必须与 select 匹配（SBO 强制），且过授权。
+                let matched = matches!(
+                    &self.selected,
+                    Some((a, p, c)) if *a == asdu.common_addr as u32
+                        && *p == io.ioa as u32
+                        && *c == cmd
+                );
+                if matched && self.write_authorized(asdu.common_addr, io.ioa, &cmd) {
+                    let _ = self.point_db.execute_single_command(io.ioa, sco);
+                    self.selected = None;
+                    let confirm = Asdu {
+                        type_id: TypeId::SingleCommand,
+                        cause_of_tx: Cot::ActivationConfirm,
+                        common_addr: asdu.common_addr,
+                        ioas: vec![io.clone()],
+                    };
+                    self.send_i_format(&confirm)?;
+                } else {
+                    // 未选择/选择不匹配/未授权 → 拒绝执行，回 Deactivation。
+                    let deny = Asdu {
+                        type_id: TypeId::SingleCommand,
+                        cause_of_tx: Cot::Deactivation,
+                        common_addr: asdu.common_addr,
+                        ioas: vec![io.clone()],
+                    };
+                    self.send_i_format(&deny)?;
+                }
             }
-            let confirm = Asdu {
-                type_id: TypeId::SingleCommand,
-                cause_of_tx: Cot::ActivationConfirm,
-                common_addr: asdu.common_addr,
-                ioas: vec![io.clone()],
-            };
-            self.send_i_format(&confirm)?;
         }
         Ok(())
     }
 
     /// 处理双点遥控命令。
+    ///
+    /// CTL-004：与单点相同，默认拒绝，仅匹配 [`AuthorizedCommand`] 时执行。
     fn handle_double_command(&mut self, asdu: &Asdu) -> Result<(), Iec104Error> {
         for io in &asdu.ioas {
             if let IoValue::DoubleCommand(dco) = &io.value {
-                let _ = self.point_db.execute_double_command(io.ioa, dco);
+                let cmd = match dco.value {
+                    crate::asdu::DoublePointValue::Off => {
+                        ControlCommand::Double(DoubleCommand::Off)
+                    }
+                    crate::asdu::DoublePointValue::On => ControlCommand::Double(DoubleCommand::On),
+                    crate::asdu::DoublePointValue::Intermediate => {
+                        ControlCommand::Double(DoubleCommand::Intermediate)
+                    }
+                    crate::asdu::DoublePointValue::Bad => {
+                        ControlCommand::Double(DoubleCommand::Bad)
+                    }
+                };
+                // DEFAULT DENY: only execute under an exact-matching AuthorizedCommand.
+                if self.write_authorized(asdu.common_addr, io.ioa, &cmd) {
+                    let _ = self.point_db.execute_double_command(io.ioa, dco);
+                    let confirm = Asdu {
+                        type_id: TypeId::DoubleCommand,
+                        cause_of_tx: Cot::ActivationConfirm,
+                        common_addr: asdu.common_addr,
+                        ioas: vec![io.clone()],
+                    };
+                    self.send_i_format(&confirm)?;
+                } else {
+                    let deny = Asdu {
+                        type_id: TypeId::DoubleCommand,
+                        cause_of_tx: Cot::Deactivation,
+                        common_addr: asdu.common_addr,
+                        ioas: vec![io.clone()],
+                    };
+                    self.send_i_format(&deny)?;
+                }
             }
-            let confirm = Asdu {
-                type_id: TypeId::DoubleCommand,
-                cause_of_tx: Cot::ActivationConfirm,
-                common_addr: asdu.common_addr,
-                ioas: vec![io.clone()],
-            };
-            self.send_i_format(&confirm)?;
         }
         Ok(())
     }
@@ -362,6 +460,12 @@ impl Iec104Slave {
             .as_ref()
             .map(|c| c.state)
             .unwrap_or(SlaveState::Idle)
+    }
+
+    /// 已发送帧的诊断视图（测试用，转发到传输层）。
+    #[cfg(test)]
+    pub(crate) fn transport_tx_frames_for(&self, conn: ConnId) -> Vec<&[u8]> {
+        self.transport.tx_frames_for(conn)
     }
 }
 
@@ -603,8 +707,233 @@ mod tests {
     }
 
     // ===== 14. 单点遥控执行 =====
+    /// 构造一条与 (common_addr, ioa, cmd) 匹配的 AuthorizedCommand (CTL-004)。
+    fn auth_for(common_addr: u16, ioa: u16, cmd: ControlCommand) -> AuthorizedCommand {
+        AuthorizedCommand {
+            device_id: common_addr as u32,
+            point_id: ioa as u32,
+            command: cmd,
+            actor_kind: eneros_control_gateway::ActorKind::Operator,
+            issuer: [0xCD; 16],
+            correlation_id: [1; 16],
+            sequence: 1,
+            lease_id: [3; 16],
+            fencing_token: 7,
+            policy_version: 3,
+            idempotency_key: [4; 16],
+        }
+    }
+
+    /// 解码 mock 发送的最后一帧 I 格式 ASDU 的 Cot。
+    fn last_cot(slave: &Iec104Slave, conn: ConnId) -> Cot {
+        let frames = slave.transport_tx_frames_for(conn);
+        // 找最后一个 I 格式（带 ASDU）帧。
+        frames
+            .iter()
+            .rev()
+            .find_map(|f| Apdu::decode(f).ok().and_then(|apdu| apdu.asdu))
+            .map(|asdu| asdu.cause_of_tx)
+            .expect("no I-format frame sent")
+    }
+
+    // ===== 14. 单点遥控：授权匹配 → 执行 (ActivationConfirm) =====
     #[test]
-    fn test_single_command_executes() {
+    fn test_single_command_executes_when_authorized() {
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode());
+        // PTC-003 SBO：select（不执行）
+        mock.push_rx_data(
+            conn,
+            Apdu::i_format(
+                0,
+                0,
+                Asdu {
+                    type_id: TypeId::SingleCommand,
+                    cause_of_tx: Cot::Activation,
+                    common_addr: 1,
+                    ioas: vec![InformationObject {
+                        ioa: 10,
+                        value: IoValue::SingleCommand(Sco {
+                            value: true,
+                            qu: 0,
+                            select: true,
+                        }),
+                        quality: QualityDescriptor::good(),
+                        time_tag: None,
+                    }],
+                },
+            )
+            .encode(),
+        );
+        // execute：与 select 匹配
+        mock.push_rx_data(
+            conn,
+            Apdu::i_format(
+                0,
+                0,
+                Asdu {
+                    type_id: TypeId::SingleCommand,
+                    cause_of_tx: Cot::Activation,
+                    common_addr: 1,
+                    ioas: vec![InformationObject {
+                        ioa: 10,
+                        value: IoValue::SingleCommand(Sco::new(true)),
+                        quality: QualityDescriptor::good(),
+                        time_tag: None,
+                    }],
+                },
+            )
+            .encode(),
+        );
+        let mut db = InMemoryPointDatabase::new();
+        db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
+        let mut slave = make_slave(mock, db);
+        slave.set_authorized_write(auth_for(1, 10, ControlCommand::Single(SingleCommand::On)));
+        slave.poll(100).expect("poll startdt");
+        slave.poll(200).expect("poll select");
+        assert_eq!(last_cot(&slave, conn), Cot::ActivationConfirm);
+        slave.poll(300).expect("poll execute");
+        assert_eq!(last_cot(&slave, conn), Cot::ActivationConfirm);
+    }
+
+    // ===== 14a1. PTC-003 SBO：直接 execute（无 select）→ Deactivation ====
+    #[test]
+    fn test_sbo_direct_execute_rejected() {
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        mock.push_rx_data(
+            conn,
+            Apdu::i_format(
+                0,
+                0,
+                Asdu {
+                    type_id: TypeId::SingleCommand,
+                    cause_of_tx: Cot::Activation,
+                    common_addr: 1,
+                    ioas: vec![InformationObject {
+                        ioa: 10,
+                        value: IoValue::SingleCommand(Sco::new(true)),
+                        quality: QualityDescriptor::good(),
+                        time_tag: None,
+                    }],
+                },
+            )
+            .encode(),
+        );
+        let mut db = InMemoryPointDatabase::new();
+        db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
+        let mut slave = make_slave(mock, db);
+        slave.set_authorized_write(auth_for(1, 10, ControlCommand::Single(SingleCommand::On)));
+        slave.poll(100).expect("poll startdt");
+        slave.poll(200).expect("poll direct execute");
+        // 无 select 直接 execute → Deactivation（SBO 强制，旧代码直接执行——旧代码失败证据）
+        assert_eq!(last_cot(&slave, conn), Cot::Deactivation);
+        // 点未被执行
+        let v = slave.point_db.get_value(10).unwrap();
+        assert!(matches!(v, IoValue::SinglePoint(SinglePointValue::Off)));
+    }
+
+    // ===== 14a2. PTC-003 SBO：select 后 execute 命令不匹配 → Deactivation ====
+    #[test]
+    fn test_sbo_execute_mismatch_rejected() {
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        // select On
+        mock.push_rx_data(
+            conn,
+            Apdu::i_format(
+                0,
+                0,
+                Asdu {
+                    type_id: TypeId::SingleCommand,
+                    cause_of_tx: Cot::Activation,
+                    common_addr: 1,
+                    ioas: vec![InformationObject {
+                        ioa: 10,
+                        value: IoValue::SingleCommand(Sco {
+                            value: true,
+                            qu: 0,
+                            select: true,
+                        }),
+                        quality: QualityDescriptor::good(),
+                        time_tag: None,
+                    }],
+                },
+            )
+            .encode(),
+        );
+        // execute Off（与 select On 不匹配）
+        mock.push_rx_data(
+            conn,
+            Apdu::i_format(
+                0,
+                0,
+                Asdu {
+                    type_id: TypeId::SingleCommand,
+                    cause_of_tx: Cot::Activation,
+                    common_addr: 1,
+                    ioas: vec![InformationObject {
+                        ioa: 10,
+                        value: IoValue::SingleCommand(Sco::new(false)),
+                        quality: QualityDescriptor::good(),
+                        time_tag: None,
+                    }],
+                },
+            )
+            .encode(),
+        );
+        let mut db = InMemoryPointDatabase::new();
+        db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
+        let mut slave = make_slave(mock, db);
+        slave.set_authorized_write(auth_for(1, 10, ControlCommand::Single(SingleCommand::On)));
+        slave.poll(100).expect("poll startdt");
+        slave.poll(200).expect("poll select");
+        slave.poll(300).expect("poll execute mismatch");
+        // 最后一条响应：execute 不匹配 → Deactivation
+        assert_eq!(last_cot(&slave, conn), Cot::Deactivation);
+        let v = slave.point_db.get_value(10).unwrap();
+        assert!(matches!(v, IoValue::SinglePoint(SinglePointValue::Off)));
+    }
+
+    // ===== 14a3. PTC-003：总召唤终止帧 COT=10 ActivationTermination =====
+    #[test]
+    fn test_interrogation_termination_cot_10() {
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        mock.push_rx_data(
+            conn,
+            Apdu::i_format(
+                0,
+                0,
+                Asdu {
+                    type_id: TypeId::InterrogationCommand,
+                    cause_of_tx: Cot::Activation,
+                    common_addr: 1,
+                    ioas: vec![InformationObject {
+                        ioa: 0,
+                        value: IoValue::SinglePoint(SinglePointValue::Off),
+                        quality: QualityDescriptor::good(),
+                        time_tag: None,
+                    }],
+                },
+            )
+            .encode(),
+        );
+        let mut db = InMemoryPointDatabase::new();
+        db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
+        let mut slave = make_slave(mock, db);
+        slave.poll(100).expect("poll startdt");
+        slave.poll(200).expect("poll interrogation");
+        // 总召唤 3 帧：激活确认(7) → 数据(20) → 激活终止(10)。
+        // 旧实现终止帧 COT=7（不合规）——旧代码失败证据；
+        // 新实现终止帧 COT=10 ActivationTermination。
+        assert_eq!(last_cot(&slave, conn), Cot::ActivationTermination);
+    }
+
+    // ===== 14b. 单点遥控：未授权 → 默认拒绝 (Deactivation)，不执行 =====
+    #[test]
+    fn test_single_command_denied_without_authorization() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
         mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode());
@@ -630,15 +959,84 @@ mod tests {
         let mut db = InMemoryPointDatabase::new();
         db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
         let mut slave = make_slave(mock, db);
+        // 不安装授权 → 默认拒绝
         slave.poll(100).expect("poll startdt");
         slave.poll(200).expect("poll cmd");
-        // 至少 STARTDT_CON + 命令确认 = 2 tx
-        assert!(slave.stats().tx_count >= 2);
+        assert_eq!(last_cot(&slave, conn), Cot::Deactivation);
     }
 
-    // ===== 15. 双点遥控执行 =====
+    // ===== 14c. 单点遥控：授权值不匹配 → 拒绝 (Deactivation) =====
     #[test]
-    fn test_double_command_executes() {
+    fn test_single_command_denied_wrong_value() {
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode());
+        mock.push_rx_data(
+            conn,
+            Apdu::i_format(
+                0,
+                0,
+                Asdu {
+                    type_id: TypeId::SingleCommand,
+                    cause_of_tx: Cot::Activation,
+                    common_addr: 1,
+                    ioas: vec![InformationObject {
+                        ioa: 10,
+                        value: IoValue::SingleCommand(Sco::new(true)), // On
+                        quality: QualityDescriptor::good(),
+                        time_tag: None,
+                    }],
+                },
+            )
+            .encode(),
+        );
+        let mut db = InMemoryPointDatabase::new();
+        db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
+        let mut slave = make_slave(mock, db);
+        // 授权的是 Off，但请求 On → 不匹配 → 拒绝
+        slave.set_authorized_write(auth_for(1, 10, ControlCommand::Single(SingleCommand::Off)));
+        slave.poll(100).expect("poll startdt");
+        slave.poll(200).expect("poll cmd");
+        assert_eq!(last_cot(&slave, conn), Cot::Deactivation);
+    }
+
+    // ===== 15. 双点遥控：授权匹配 → 执行 (ActivationConfirm) =====
+    #[test]
+    fn test_double_command_executes_when_authorized() {
+        let mut mock = MockSlaveTransport::new();
+        let conn = mock.accept_conn();
+        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode());
+        mock.push_rx_data(
+            conn,
+            Apdu::i_format(
+                0,
+                0,
+                Asdu {
+                    type_id: TypeId::DoubleCommand,
+                    cause_of_tx: Cot::Activation,
+                    common_addr: 1,
+                    ioas: vec![InformationObject {
+                        ioa: 20,
+                        value: IoValue::DoubleCommand(Dco::new(DoublePointValue::On)),
+                        quality: QualityDescriptor::good(),
+                        time_tag: None,
+                    }],
+                },
+            )
+            .encode(),
+        );
+        let mut db = InMemoryPointDatabase::new();
+        db.set_value(20, IoValue::DoublePoint(DoublePointValue::Off));
+        let mut slave = make_slave(mock, db);
+        slave.set_authorized_write(auth_for(1, 20, ControlCommand::Double(DoubleCommand::On)));
+        slave.poll(100).expect("poll startdt");
+        slave.poll(200).expect("poll cmd");
+        assert_eq!(last_cot(&slave, conn), Cot::ActivationConfirm);
+    }
+
+    // ===== 15b. 双点遥控：未授权 → 默认拒绝 (Deactivation) =====
+    #[test]
+    fn test_double_command_denied_without_authorization() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
         mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode());
@@ -666,7 +1064,7 @@ mod tests {
         let mut slave = make_slave(mock, db);
         slave.poll(100).expect("poll startdt");
         slave.poll(200).expect("poll cmd");
-        assert!(slave.stats().tx_count >= 2);
+        assert_eq!(last_cot(&slave, conn), Cot::Deactivation);
     }
 
     // ===== 16. 时钟同步确认 =====

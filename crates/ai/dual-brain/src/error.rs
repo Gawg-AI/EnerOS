@@ -15,4 +15,6 @@ pub enum DualBrainError {
     SolveError(String),
     /// 命令下发错误.
     DispatchError(String),
+    /// 安全校验 Fatal（v0.206.0 P0-17：Fatal 违规阻断命令下发）.
+    SafetyFatal(String),
 }

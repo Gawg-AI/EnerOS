@@ -1,0 +1,26 @@
+{
+  "schema": "eneros.release-key-policy.v1",
+  "private_keys_in_repository": false,
+  "roles": [
+    {
+      "role": "uefi-db-release-candidate",
+      "algorithm": "RSA-3072/SHA-256 Authenticode",
+      "public_certificate_sha256": "6d95740fdd353aad11429a584d6460f32cb18ae3653cb1cec37df566087841ec",
+      "x509_fingerprint_sha256": "e95ccd636728b01498bf633d4cdfb398deac8dbb9c3f0fb0bd1da781783fe9b6",
+      "subject": "CN=EnerOS-G1-Release-Candidate-2026-08-01",
+      "allowed_uses": ["boot-manager-uefi", "installer-uefi"]
+    },
+    {
+      "role": "release-manifest-release-candidate",
+      "algorithm": "Ed25519",
+      "public_key_sha256": "4e28c578ebd8c3c68b83ff1d0b1a16df23038c05cc7af66a29b8068c994d0632",
+      "key_id_hex": "4e28c578ebd8c3c68b83ff1d0b1a16df",
+      "allowed_uses": ["release-manifest", "install-manifest", "update-manifest"]
+    }
+  ],
+  "test_trust_allowed_profiles": ["host-unit", "qemu-dev"],
+  "test_trust_forbidden_profiles": ["qemu-prod", "qemu-prod-sv2", "board-prod", "recovery", "factory"],
+  "known_test_public_key_sha256": ["425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c"],
+  "rotation": "A new key changes key_id and requires re-enrollment, new artifacts, verifier evidence and rollback review.",
+  "production_note": "These external keys are G1 release-candidate keys. HSM/offline production ceremony is a G9 requirement."
+}

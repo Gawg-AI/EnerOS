@@ -1,0 +1,10 @@
+[package]
+name = "eneros-market-types"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 市场域共享词汇 (ARCH-M01/M02, ADR-0029) — TradeDir/TimeSlot/Bid/价格单位 newtype 唯一来源, no_std"
+
+[dependencies]
+# Zero external dependencies — pure Rust no_std

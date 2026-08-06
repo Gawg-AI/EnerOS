@@ -1,4 +1,4 @@
-//! EnerOS Board Support Crate (v0.3.0)
+//! EnerOS Board Support Crate (workspace v0.192.0)
 //!
 //! 提供 ARM64 硬件启动所需的板级抽象：启动信息（`BootInfo`）、
 //! 启动阶段标识（`BootStage`）以及最小 PL011 串口驱动（`Pl011Serial`）。

@@ -7,9 +7,48 @@ use alloc::vec::Vec;
 
 use crate::types::{CheckItem, CheckStatus, VerificationReport};
 
+/// 运行时探测结果（VRF-006：动态检测输入，替换静态 Passed）。
+///
+/// 由宿主在检查时注入真实运行时数据；`None` 表示该面无运行时数据（保留静态项）。
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeProbe {
+    /// SM2 签名验签能力是否可用（身份鉴别，项 4）。
+    pub sm2_sign_available: Option<bool>,
+    /// 审计链是否已写入（审计记录，项 8）。
+    pub audit_chain_written: Option<bool>,
+    /// 异常检测器是否激活（入侵防范，项 9）。
+    pub anomaly_detector_active: Option<bool>,
+    /// 时间同步是否有效（时间戳完整性，项 7）。
+    pub time_sync_valid: Option<bool>,
+}
+
 /// 等保 2.0 三级检查器.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DengbaoChecker;
+
+impl DengbaoChecker {
+    /// 执行等保 2.0 三级全部检查项，返回验证报告（VRF-006：支持运行时探测
+    /// 动态判定——`probe` 中提供的面按真实结果判定，其余保留静态项）。
+    pub fn check_level3_dynamic(&self, probe: &RuntimeProbe) -> VerificationReport {
+        let mut report = self.check_level3();
+        for item in report.items_mut() {
+            let status = match (item.id, probe) {
+                (4, RuntimeProbe { sm2_sign_available: Some(true), .. }) => CheckStatus::Passed,
+                (4, RuntimeProbe { sm2_sign_available: Some(false), .. }) => CheckStatus::Failed,
+                (8, RuntimeProbe { audit_chain_written: Some(true), .. }) => CheckStatus::Passed,
+                (8, RuntimeProbe { audit_chain_written: Some(false), .. }) => CheckStatus::Failed,
+                (9, RuntimeProbe { anomaly_detector_active: Some(true), .. }) => CheckStatus::Passed,
+                (9, RuntimeProbe { anomaly_detector_active: Some(false), .. }) => CheckStatus::Failed,
+                (7, RuntimeProbe { time_sync_valid: Some(true), .. }) => CheckStatus::Passed,
+                (7, RuntimeProbe { time_sync_valid: Some(false), .. }) => CheckStatus::Failed,
+                _ => continue,
+            };
+            item.set_status(status);
+        }
+        report.recompute();
+        report
+    }
+}
 
 impl DengbaoChecker {
     /// 创建检查器实例.
@@ -17,10 +56,9 @@ impl DengbaoChecker {
         Self
     }
 
-    /// 执行等保 2.0 三级全部检查项，返回验证报告.
-    ///
-    /// 共 15 项检查，覆盖技术要求和管理要求。
-    pub fn check_level3(&self) -> VerificationReport {
+    /// 静态基准检查（VRF-006：15 项中可动态判定的面由
+    /// `check_level3_dynamic` 覆盖，本方法保留静态枚举）。
+    fn check_level3_static(&self) -> VerificationReport {
         let items: Vec<CheckItem> = alloc::vec![
             CheckItem::new(
                 1,
@@ -146,6 +184,11 @@ impl DengbaoChecker {
 
         VerificationReport::new("等保 2.0 三级验证报告", items)
     }
+
+    /// 执行等保 2.0 三级全部检查项（静态基准；动态判定见 `check_level3_dynamic`）。
+    pub fn check_level3(&self) -> VerificationReport {
+        self.check_level3_static()
+    }
 }
 
 #[cfg(test)]
@@ -205,5 +248,40 @@ mod tests {
         for (idx, item) in report.items.iter().enumerate() {
             assert_eq!(item.id, (idx + 1) as u32);
         }
+    }
+}
+
+#[cfg(test)]
+mod vrf006_tests {
+    use super::*;
+
+    #[test]
+    fn test_vrf006_dynamic_detection_overrides_static() {
+        let checker = DengbaoChecker::new();
+        // 全部静态 Passed
+        let static_report = checker.check_level3();
+        assert_eq!(static_report.failed_count, 0);
+        // 动态探测：SM2 不可用 → 项 4 变 Failed（运行时真实判定）
+        let probe = RuntimeProbe {
+            sm2_sign_available: Some(false),
+            ..RuntimeProbe::default()
+        };
+        let dyn_report = checker.check_level3_dynamic(&probe);
+        let item4 = dyn_report
+            .items
+            .iter()
+            .find(|i| i.id == 4)
+            .expect("项 4 存在");
+        assert_eq!(item4.status, CheckStatus::Failed, "动态探测 SM2 不可用 → 项 4 Failed");
+        assert_eq!(dyn_report.failed_count, 1, "动态检测使出口可对假实现失败");
+        // 全部通过探测 → 全 Passed
+        let ok_probe = RuntimeProbe {
+            sm2_sign_available: Some(true),
+            audit_chain_written: Some(true),
+            anomaly_detector_active: Some(true),
+            time_sync_valid: Some(true),
+        };
+        let ok_report = checker.check_level3_dynamic(&ok_probe);
+        assert_eq!(ok_report.failed_count, 0);
     }
 }

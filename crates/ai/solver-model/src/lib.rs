@@ -72,10 +72,12 @@ mod tests {
 
     #[test]
     fn t1_var_builder_default() {
+        // P0-21：默认上界钳制到 kHighsInf(1e30)，不再 INFINITY。
         let v = VarBuilder::new("x").build();
         assert_eq!(v.name, "x");
         assert_eq!(v.lower_bound, 0.0);
-        assert!(v.upper_bound.is_infinite() && v.upper_bound > 0.0);
+        assert_eq!(v.upper_bound, crate::variable::K_HIGHS_INF);
+        assert!(!v.upper_bound.is_infinite(), "上界不得为 INFINITY");
         assert_eq!(v.var_type, VarType::Continuous);
         assert!(v.index.is_none());
     }
@@ -276,7 +278,9 @@ mod tests {
         assert_eq!(lp.constraints.num_rows, 1);
         assert_eq!(lp.constraints.num_nz, 2);
         assert_eq!(lp.rhs_upper[0], 5.0);
-        assert!(lp.rhs_lower[0].is_infinite() && lp.rhs_lower[0] < 0.0);
+        // P0-21：Le 约束的下界钳制到 -kHighsInf（不再 NEG_INFINITY）。
+        assert_eq!(lp.rhs_lower[0], -crate::variable::K_HIGHS_INF);
+        assert!(!lp.rhs_lower[0].is_infinite(), "rhs_lower 不得为 INFINITY");
     }
 
     #[test]
@@ -327,5 +331,65 @@ mod tests {
         let mut solver = MockSolver::new();
         let result = solver.solve(&lp, 0).unwrap();
         assert_eq!(result.status, SolveStatus::Optimal);
+    }
+
+    // ======================================================================
+    // v0.201.0 (P0-21)：DSL 边界钳制
+    // ======================================================================
+    #[test]
+    fn p021_no_infinity_in_compiled_problem() {
+        use crate::constraint::Constraint;
+        use crate::expr::LinearExpr;
+        use crate::variable::K_HIGHS_INF;
+
+        let mut p = OptProblem::new();
+        p.add_var(VarBuilder::new("x").lower(0.0).build()); // 默认上界 K_HIGHS_INF
+        p.add_var(VarBuilder::new("y").range(0.0, 100.0).build());
+
+        let mut obj = LinearExpr::new();
+        obj.add_term(0, 1.0);
+        obj.add_term(1, 2.0);
+        // minimize 消费 self——用返回的新 OptProblem。
+        p = p.minimize(obj);
+
+        // Le（隐含 -∞ 下界）与 Ge（隐含 +∞ 上界）约束。
+        let mut c1 = LinearExpr::new();
+        c1.add_term(0, 1.0);
+        c1.add_term(1, 1.0);
+        p.add_constraint("cap_le", Constraint::Le(c1, 5.0));
+
+        let mut c2 = LinearExpr::new();
+        c2.add_term(0, 1.0);
+        p.add_constraint("min_ge", Constraint::Ge(c2, 2.0));
+
+        let lp = p.compile().unwrap();
+        // 变量上界：默认钳制到 kHighsInf（无 INFINITY）。
+        let x = p.var("x").expect("x");
+        assert_eq!(x.upper_bound, K_HIGHS_INF, "无上界变量钳制到 kHighsInf");
+        // 约束边界：无 INFINITY（HiGHS 会拒绝 ±f64::INFINITY）。
+        for &rhs in lp.rhs_lower.iter().chain(lp.rhs_upper.iter()) {
+            assert!(
+                rhs.abs() <= K_HIGHS_INF && !rhs.is_nan(),
+                "约束边界必须有限（|rhs| ≤ 1e30），实际 {rhs}"
+            );
+        }
+        assert_eq!(lp.rhs_lower[0], -K_HIGHS_INF); // Le 的下界
+        assert_eq!(lp.rhs_upper[1], K_HIGHS_INF); // Ge 的上界
+    }
+
+    #[test]
+    #[should_panic(expected = "越界")]
+    fn p021_oversize_literal_rejected() {
+        // 超界字面量（> 1e30）必须被拒绝，而非静默传 ∞。
+        let _ = VarBuilder::new("bad").upper(2e30);
+    }
+
+    #[test]
+    fn p021_clamp_bound_finite_and_infinite() {
+        use crate::problem::clamp_bound;
+        use crate::variable::K_HIGHS_INF;
+        assert_eq!(clamp_bound(f64::INFINITY), K_HIGHS_INF);
+        assert_eq!(clamp_bound(f64::NEG_INFINITY), -K_HIGHS_INF);
+        assert_eq!(clamp_bound(42.0), 42.0);
     }
 }

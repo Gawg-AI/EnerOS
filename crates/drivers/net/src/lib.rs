@@ -1,4 +1,4 @@
-//! EnerOS Ethernet Network Driver (v0.27.0)
+//! EnerOS Ethernet Network Driver (workspace v0.192.0)
 //!
 //! Raw Ethernet MAC driver for the EnerOS Edge Box. Provides frame TX/RX
 //! via DMA descriptor rings, PHY autonegotiation via MII management, and
@@ -28,11 +28,11 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_net::{MacController, NetDevice, MmioMacRegs};
 //!
 //! // Real hardware (aarch64 only)
-//! let regs = MmioMacRegs::new(0x0901_0000);
+//! let regs = MmioMacRegs::new(base); // base = BSP 提供的真实 MAC MMIO 基址（QEMU virt 用 virtio-net/PCIe，0x0901_0000 是 PL031 RTC 非网卡，HAL-004）;
 //! let mut mac = MacController::new(regs, [0x02,0,0,0,0,0x01], 1500, 16, 32, 0);
 //! mac.init().expect("PHY autoneg failed");
 //!
@@ -61,6 +61,7 @@
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
+pub mod dma_mem;
 pub mod dma_ring;
 pub mod error;
 pub mod eth_frame;

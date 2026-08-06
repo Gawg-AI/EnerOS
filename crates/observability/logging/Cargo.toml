@@ -1,0 +1,13 @@
+[package]
+name = "eneros-logging"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 结构化日志 (v0.121.0) — JSON 序列化/分级缓冲/批量刷入/过滤查询, no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }
+
+[dev-dependencies]
+eneros-metrics = { path = "../metrics" }

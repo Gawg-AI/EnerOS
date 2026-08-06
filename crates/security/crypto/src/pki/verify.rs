@@ -228,9 +228,15 @@ impl CertVerifier {
             return Err(PkiError::ChainTooLong);
         }
 
-        // 3. 从叶子到根逐级验证
+        // 3. 从叶子到根逐级验证（含 issuer/subject 链一致性）
         for window in chain.windows(2) {
-            self.verify(&window[0], &window[1], now)?;
+            // v0.207.0（P0-12）：issuer/subject 链一致性校验——子证书 issuer
+            // 必须等于父证书 subject（防张冠李戴：跨链拼装）。
+            let (child, parent) = (&window[0], &window[1]);
+            if child.issuer != parent.subject {
+                return Err(PkiError::IssuerMismatch);
+            }
+            self.verify(child, parent, now)?;
         }
 
         // 4. 末端证书必须是信任根
@@ -239,12 +245,21 @@ impl CertVerifier {
             return Err(PkiError::UntrustedRoot);
         }
 
+        // 5. 链尾根证书必须自签（P0-12：防伪造根——攻击者无法用自签伪造根
+        //    冒充信任根，因为信任根按公钥比对）。
+        if last.issuer != last.subject {
+            return Err(PkiError::IssuerMismatch);
+        }
+        verify_signature(last, last)?;
+
         Ok(())
     }
 
     /// 检查证书是否为信任根.
     ///
-    /// 匹配条件：`subject.cn` 与 `serial_number` 相同。
+    /// 匹配条件（v0.207.0 P0-12）：**公钥（SPKI DER 哈希）相同**——不再
+    /// 只比对 `subject.cn` + `serial_number`（攻击者可用同 CN/同 serial 的
+    /// 自签证书伪造根）。
     ///
     /// # 参数
     /// - `cert`：待检查的证书
@@ -253,8 +268,15 @@ impl CertVerifier {
     /// - `true`：证书在信任根列表中
     /// - `false`：证书不在信任根列表中
     pub fn is_trusted_root(&self, cert: &X509Certificate) -> bool {
+        let Ok(cert_spki) = cert.public_key().encode_spki() else {
+            return false;
+        };
         self.trusted_roots.iter().any(|root| {
-            root.subject.cn == cert.subject.cn && root.serial_number == cert.serial_number
+            let Ok(root_spki) = root.public_key().encode_spki() else {
+                return false;
+            };
+            // 公钥（SPKI）字节级比对；CN/serial 不再参与（防伪造根）。
+            root_spki == cert_spki
         })
     }
 }
@@ -275,6 +297,12 @@ mod tests {
     /// 生成测试用 SM2 密钥对.
     fn gen_keypair() -> Sm2KeyPair {
         let mut rng = CsRng::new();
+        Sm2KeyPair::generate(&mut rng).expect("密钥对生成失败")
+    }
+
+    /// 生成确定性不同密钥对（seed 不同 → 密钥不同）。
+    fn gen_keypair_seed(seed: u8) -> Sm2KeyPair {
+        let mut rng = CsRng::from_seed(&[seed; 32]);
         Sm2KeyPair::generate(&mut rng).expect("密钥对生成失败")
     }
 
@@ -454,11 +482,11 @@ mod tests {
     #[test]
     fn test_verify_chain_untrusted_root() {
         // 9. verify_chain 末端不可信根 → Err(UntrustedRoot)
-        let kp = gen_keypair();
+        let kp = gen_keypair_seed(1);
         let cert = build_root(&kp, "Root CA", NOW);
 
         // 不将 cert 添加到 trusted_roots
-        let other_kp = gen_keypair();
+        let other_kp = gen_keypair_seed(2);
         let other_cert = build_root(&other_kp, "Other CA", NOW);
         let verifier = CertVerifier::new(vec![other_cert]);
 
@@ -494,10 +522,10 @@ mod tests {
     #[test]
     fn test_is_trusted_root_no_match() {
         // 12. is_trusted_root 不匹配的证书返回 false
-        let kp1 = gen_keypair();
+        let kp1 = gen_keypair_seed(1);
         let cert1 = build_root(&kp1, "Root CA", NOW);
 
-        let kp2 = gen_keypair();
+        let kp2 = gen_keypair_seed(2);
         let cert2 = build_root(&kp2, "Other CA", NOW);
 
         let verifier = CertVerifier::new(vec![cert1]);
@@ -584,10 +612,10 @@ mod tests {
     #[test]
     fn test_add_trusted_root() {
         // 验证 add_trusted_root 能将证书添加到信任根列表
-        let kp1 = gen_keypair();
+        let kp1 = gen_keypair_seed(1);
         let cert1 = build_root(&kp1, "CA One", NOW);
 
-        let kp2 = gen_keypair();
+        let kp2 = gen_keypair_seed(2);
         let cert2 = build_root(&kp2, "CA Two", NOW);
 
         let mut verifier = CertVerifier::new(vec![cert1]);
@@ -636,5 +664,68 @@ mod tests {
 
         let result = verify_signature(&cert, &rsa_issuer);
         assert_eq!(result, Err(PkiError::UnsupportedAlgorithm));
+    }
+
+    // ======================================================================
+    // v0.207.0 (P0-12)：信任根公钥比对——同 CN/serial 伪造根必须失败
+    // ======================================================================
+    #[test]
+    fn p012_forged_root_same_cn_serial_fails() {
+        // 攻击场景：攻击者用同 CN、同 serial 的自签证书冒充信任根。
+        // 旧实现只比 CN+serial → 伪造根通过；新实现按 SPKI 公钥比对 → 必须失败。
+        let real_kp = gen_keypair_seed(1);
+        let real_root = build_root(&real_kp, "Root CA", NOW);
+
+        // 伪造根：同 CN，但不同密钥（攻击者自己的密钥），相同 serial 号。
+        let forged_kp = gen_keypair_seed(2);
+        let mut forged_root = build_root(&forged_kp, "Root CA", NOW);
+        forged_root.serial_number = real_root.serial_number.clone();
+
+        let verifier = CertVerifier::new(vec![real_root.clone()]);
+        assert!(
+            !verifier.is_trusted_root(&forged_root),
+            "同 CN+serial 但公钥不同的伪造根必须不被信任（P0-12）"
+        );
+
+        // 完整链验证：伪造根作链尾 → UntrustedRoot（而非通过）。
+        let chain = vec![forged_root];
+        assert_eq!(
+            verifier.verify_chain(&chain, NOW),
+            Err(PkiError::UntrustedRoot),
+            "伪造根链必须验链失败"
+        );
+
+        // 真实根作链尾 → 通过（合法链不受影响）。
+        let good_chain = vec![real_root];
+        assert_eq!(verifier.verify_chain(&good_chain, NOW), Ok(()));
+    }
+
+    #[test]
+    fn p012_trusted_root_matches_by_public_key() {
+        // 信任根匹配基于 SPKI 公钥：同密钥的证书（不同 CN）仍被信任。
+        let kp = gen_keypair_seed(1);
+        let root_a = build_root(&kp, "Root CA A", NOW);
+        let root_b = build_root(&kp, "Root CA B", NOW); // 同密钥、不同 CN
+        let verifier = CertVerifier::new(vec![root_a]);
+        assert!(
+            verifier.is_trusted_root(&root_b),
+            "同公钥的证书应被信任（按 SPKI 匹配，CN 不参与）"
+        );
+    }
+
+    #[test]
+    fn p012_chain_issuer_subject_mismatch_rejected() {
+        // 链一致性：子证书 issuer ≠ 父证书 subject → IssuerMismatch。
+        let ca_kp = gen_keypair_seed(1);
+        let ca_root = build_root(&ca_kp, "CA", NOW);
+        let leaf_kp = gen_keypair_seed(2);
+        let mut leaf = build_leaf(&leaf_kp, &ca_kp, "CA", "Leaf", &[7], NOW);
+        // 篡改 leaf 的 issuer（指向不存在的 "Evil CA"）→ 链一致性失败。
+        leaf.issuer = DistinguishedName::new("Evil CA");
+        let verifier = CertVerifier::new(vec![ca_root.clone()]);
+        assert_eq!(
+            verifier.verify_chain(&vec![leaf, ca_root], NOW),
+            Err(PkiError::IssuerMismatch)
+        );
     }
 }

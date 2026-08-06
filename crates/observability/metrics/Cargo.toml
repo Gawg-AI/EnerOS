@@ -1,0 +1,10 @@
+[package]
+name = "eneros-metrics"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 指标采集 (v0.120.0) — Metrics 注册/采集/缓冲刷入/范围查询, no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }

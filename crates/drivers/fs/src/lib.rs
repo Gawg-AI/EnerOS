@@ -1,4 +1,4 @@
-//! EnerOS File System Crate (v0.24.0)
+//! EnerOS File System Crate (workspace v0.192.0)
 //!
 //! Log-structured file system based on littlefs2 integration.
 //! Provides power-loss safe, wear-leveled file storage on top of
@@ -24,14 +24,14 @@
 //! └─────────────┬────────────────────────────────┘
 //!               │  read_block / write_block / erase_block
 //! ┌─────────────▼────────────────────────────────┐
-//! │  eneros-storage::BlockDevice (v0.23.0)        │
+//! │  eneros-storage::BlockDevice (workspace v0.192.0)        │
 //! │  MockBlockDevice / EmmcDriver / NvmeDriver    │
 //! └──────────────────────────────────────────────┘
 //! ```
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_fs::{Lfs, FileSystem, FileMode, OpenFlags};
 //! use eneros_storage::{BlockDevice, MockBlockDevice};
 //! use alloc::boxed::Box;

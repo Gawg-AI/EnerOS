@@ -4,14 +4,18 @@
 //! 控制命令。作为 RTOS 控制层与 Agent 层之间的桥梁。
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
 
 use eneros_agent::{AgentDescriptor, AgentState, AgentType};
 use eneros_energy_market_agent::{AgentRuntime, AgentRuntimeError, HeartbeatStatus};
+use eneros_protocol_abstract::access::PointAccess;
+use eneros_upa_model::{DataPoint, PointId, PointValue};
 
 use crate::command::CommandSource;
 use crate::command::MockCommandSource;
 use crate::device_type::{DeviceSnapshot, DeviceState, DeviceType};
-use crate::registry::{DeviceRegistry, MockDevice};
+use crate::registry::{DeviceRegistry, MockPointDevice};
 
 /// 设备管理 Agent.
 ///
@@ -52,42 +56,51 @@ impl DeviceAgent {
     pub fn new_default(now_ms: u64) -> Self {
         let mut devices = DeviceRegistry::new();
         // PCS：功率变换系统
-        devices.register(
-            "pcs",
-            DeviceType::Pcs,
-            Box::new(
-                MockDevice::new(DeviceType::Pcs)
-                    .with_point("soc", 0.5)
-                    .with_point("voltage", 400.0)
-                    .with_point("current", 100.0)
-                    .with_point("temperature", 35.0)
-                    .with_point("power", 0.0),
-            ),
-        );
+        {
+            let dev = MockPointDevice::new(1)
+                .with_point("soc", 0.5)
+                .with_point("voltage", 400.0)
+                .with_point("current", 100.0)
+                .with_point("temperature", 35.0)
+                .with_point("power", 0.0);
+            let mut pm = BTreeMap::new();
+            for n in ["soc", "voltage", "current", "temperature", "power"] {
+                if let Some(id) = dev.point_id_of(n) {
+                    pm.insert(String::from(n), id);
+                }
+            }
+            devices.register("pcs", DeviceType::Pcs, Box::new(dev), pm);
+        }
         // Battery：电池
-        devices.register(
-            "battery",
-            DeviceType::Battery,
-            Box::new(
-                MockDevice::new(DeviceType::Battery)
-                    .with_point("soc", 0.65)
-                    .with_point("voltage", 48.0)
-                    .with_point("current", 50.0)
-                    .with_point("temperature", 28.0)
-                    .with_point("power", 25.0),
-            ),
-        );
+        {
+            let dev = MockPointDevice::new(2)
+                .with_point("soc", 0.65)
+                .with_point("voltage", 48.0)
+                .with_point("current", 50.0)
+                .with_point("temperature", 28.0)
+                .with_point("power", 25.0);
+            let mut pm = BTreeMap::new();
+            for n in ["soc", "voltage", "current", "temperature", "power"] {
+                if let Some(id) = dev.point_id_of(n) {
+                    pm.insert(String::from(n), id);
+                }
+            }
+            devices.register("battery", DeviceType::Battery, Box::new(dev), pm);
+        }
         // Meter：电表
-        devices.register(
-            "meter",
-            DeviceType::Meter,
-            Box::new(
-                MockDevice::new(DeviceType::Meter)
-                    .with_point("voltage", 220.0)
-                    .with_point("current", 30.0)
-                    .with_point("power", 6600.0),
-            ),
-        );
+        {
+            let dev = MockPointDevice::new(3)
+                .with_point("voltage", 220.0)
+                .with_point("current", 30.0)
+                .with_point("power", 6600.0);
+            let mut pm = BTreeMap::new();
+            for n in ["voltage", "current", "power"] {
+                if let Some(id) = dev.point_id_of(n) {
+                    pm.insert(String::from(n), id);
+                }
+            }
+            devices.register("meter", DeviceType::Meter, Box::new(dev), pm);
+        }
         Self {
             descriptor: AgentDescriptor::new(AgentType::Device, "device-agent", now_ms),
             devices,
@@ -110,38 +123,55 @@ impl DeviceAgent {
 
     /// 采集设备状态（D5：返回 DeviceSnapshot，存入 last_snapshot）.
     ///
-    /// 遍历所有设备，通过 `DeviceAdapter::read_point` 采集 soc/voltage/current/
-    /// temperature/power。离线设备或读取失败时标记 `online: false`，不中断采集。
+    /// 遍历所有设备，经 `PointAccess` + `point_map` 桥接读取 soc/voltage/current/
+    /// temperature/power（ARCH-P02：字符串点名 → PointId → DataPoint，读点带
+    /// 质量位与时间戳）。读取失败或质量位 invalid 时标记 `online: false`，
+    /// 不中断采集。
     fn poll_devices(&mut self, now_ms: u64) {
         let mut snapshot = DeviceSnapshot::new();
         for (name, info) in self.devices.iter_mut() {
             let adapter = &mut info.adapter;
-            if !adapter.is_online() {
-                snapshot.set(
-                    name,
-                    DeviceState {
-                        online: false,
-                        last_update_ms: now_ms,
-                        ..DeviceState::default()
-                    },
-                );
-                continue;
-            }
-            let soc = adapter.read_point("soc").unwrap_or(0.0);
-            let voltage = adapter.read_point("voltage").unwrap_or(0.0);
-            let current = adapter.read_point("current").unwrap_or(0.0);
-            let temperature = adapter.read_point("temperature").unwrap_or(0.0);
-            let power = adapter.read_point("power").unwrap_or(0.0);
+            let read_f = |adapter: &mut dyn PointAccess, point_map: &BTreeMap<String, PointId>, key: &str| {
+                point_map
+                    .get(key)
+                    .and_then(|&id| adapter.read_point(id).ok())
+            };
+            let soc = read_f(adapter, &info.point_map, "soc");
+            let voltage = read_f(adapter, &info.point_map, "voltage");
+            let current = read_f(adapter, &info.point_map, "current");
+            let temperature = read_f(adapter, &info.point_map, "temperature");
+            let power = read_f(adapter, &info.point_map, "power");
+
+            let all_valid = [&soc, &voltage, &current, &temperature, &power]
+                .iter()
+                .all(|dp| match dp {
+                    Some(p) => p.quality.valid,
+                    None => false,
+                });
+            let f = |dp: &Option<DataPoint>| match dp {
+                Some(p) => match &p.value {
+                    PointValue::Float(v) => *v,
+                    PointValue::Int(i) => *i as f64,
+                    _ => 0.0,
+                },
+                None => 0.0,
+            };
+            let last_update = [&soc, &voltage, &current, &temperature, &power]
+                .iter()
+                .filter_map(|dp| dp.as_ref())
+                .map(|p| p.timestamp_ms)
+                .max()
+                .unwrap_or(now_ms);
             snapshot.set(
                 name,
                 DeviceState {
-                    soc,
-                    voltage,
-                    current,
-                    temperature,
-                    power,
-                    online: true,
-                    last_update_ms: now_ms,
+                    soc: f(&soc),
+                    voltage: f(&voltage),
+                    current: f(&current),
+                    temperature: f(&temperature),
+                    power: f(&power),
+                    online: all_valid,
+                    last_update_ms: last_update,
                 },
             );
         }
@@ -150,13 +180,17 @@ impl DeviceAgent {
 
     /// 执行命令（D14：跳过失败命令，不中断）.
     ///
-    /// 从 `command_source` 读取命令，查找目标设备，调用
-    /// `write_point("power_setpoint", power_kw)`。设备未找到或写入失败时跳过，
-    /// 继续下一条命令。
+    /// 从 `command_source` 读取命令，查找目标设备，经 point_map 桥接调用
+    /// `write_point(power_setpoint 的 PointId, PointValue::Float(power_kw))`。
+    /// 设备未找到或写入失败时跳过，继续下一条命令。
     fn execute_commands(&mut self, _now_ms: u64) -> Result<(), AgentRuntimeError> {
         while let Some(cmd) = self.command_source.try_read() {
             if let Some(info) = self.devices.get_mut(&cmd.target_device) {
-                let _ = info.adapter.write_point("power_setpoint", cmd.power_kw);
+                if let Some(&id) = info.point_map.get("power_setpoint") {
+                    let _ = info
+                        .adapter
+                        .write_point(id, PointValue::Float(cmd.power_kw));
+                }
             }
             // Device not found or write failed: skip (D14, don't interrupt)
         }

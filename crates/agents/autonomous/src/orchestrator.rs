@@ -169,7 +169,7 @@ mod tests {
             deal_id: id,
             seller_credit_kwh: 100.0,
             buyer_debit_kwh: 100.0,
-            amount_yuan: 50.0,
+            amount_yuan: crate::types::MilliYuan(50_000),
             at: 2000,
         };
         orch.settle(id, st).unwrap();
@@ -189,7 +189,7 @@ mod tests {
             deal_id: 1,
             seller_credit_kwh: 0.0,
             buyer_debit_kwh: 0.0,
-            amount_yuan: 0.0,
+            amount_yuan: crate::types::MilliYuan::ZERO,
             at: 0,
         };
         assert_eq!(orch.settle(1, st), Err(TradeError::InvalidPhase));
@@ -251,7 +251,7 @@ mod tests {
             deal_id: 1,
             seller_credit_kwh: 100.0,
             buyer_debit_kwh: 100.0,
-            amount_yuan: 50.0,
+            amount_yuan: crate::types::MilliYuan(50_000),
             at: 1000,
         };
         orch.settle(1, st).unwrap();

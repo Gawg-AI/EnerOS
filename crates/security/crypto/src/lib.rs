@@ -1,4 +1,4 @@
-//! EnerOS 国密算法库 + PKI 证书基础 (v0.32.0).
+//! EnerOS 国密算法库 + PKI 证书基础 (workspace v0.192.0).
 //!
 //! 提供 GB/T 32905-2016 (SM3)、GB/T 32907-2016 (SM4)、GB/T 32918.1~5-2017 (SM2)
 //! 的纯 Rust 实现，以及基于 SM3 的 CSRNG (NIST SP 800-90A 风格)。
@@ -16,7 +16,7 @@
 //! # 架构
 //! ```text
 //! ┌──────────────────────────────────────────────────────┐
-//! │  eneros-crypto (v0.32.0)                             │
+//! │  eneros-crypto (workspace v0.192.0)                             │
 //! │  ┌──────────┐  ┌──────────┐  ┌────────────────────┐  │
 //! │  │ bigint   │  │ sm3      │  │ sm4                │  │
 //! │  │ (U256)   │  │ (Hash)   │  │ ┌────┐ ┌─────┐     │  │
@@ -40,7 +40,7 @@
 //! │  │(CryptoError)│  │(ct_eq/zero)  │                   │
 //! │  └─────────────┘  └──────────────┘                   │
 //! │  ┌──────────────────────────────────────────────────┐  │
-//! │  │ pki (v0.32.0)                                     │  │
+//! │  │ pki (workspace v0.192.0)                                     │  │
 //! │  │ ┌────┐ ┌─────┐ ┌──────┐ ┌──────┐ ┌────┐ ┌────┐  │  │
 //! │  │ │asn1│ │x509 │ │parser│ │builder│ │verify│ │ca│ │  │
 //! │  │ └────┘ └─────┘ └──────┘ └──────┘ └──────┘ └───┘  │  │
@@ -138,13 +138,13 @@ pub mod sm4;
 pub use bigint::U256;
 pub use constant_time::{ct_eq, ct_zeroize};
 pub use error::CryptoError;
-// HW acceleration (v0.158.0) re-exports
+// HW acceleration (workspace v0.192.0) re-exports
 pub use hw::{
     create_selector_with_hw, create_simulated_selector, create_software_selector, Algorithm,
     CryptoEngine, CryptoSelector, DmaBuffer, EngineStats, KunpengKaeEngine, PhytiumCryptoEngine,
     Sm4Mode, SoftwareCryptoEngine,
 };
-// PKI (v0.32.0) re-exports
+// PKI (workspace v0.192.0) re-exports
 pub use pki::asn1::{Asn1Error, DerReader, DerWriter};
 pub use pki::builder::{build_certificate, build_self_signed, build_tbs, sign_tbs};
 pub use pki::ca::CaIssuer;

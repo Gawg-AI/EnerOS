@@ -137,7 +137,10 @@ impl<E: InferEngine> HeuristicNet<E> {
                 }
                 VarType::Integer | VarType::Binary => {
                     integer.push(if val > 0.5 { 1 } else { 0 });
-                    confidence *= 1.0 - (val - 0.5).abs() * 2.0;
+                    // v0.204.0（P0-18）：置信度单调于确定性——网络输出越确定
+                    // （v→0/1）置信度越高。旧公式 `1.0 - (val-0.5).abs()*2.0`
+                    // 反转（确定→0、猜测 0.5→1），导致好解被拒、差解注入。
+                    confidence *= (val - 0.5).abs() * 2.0;
                 }
             }
         }
@@ -298,15 +301,16 @@ mod tests {
         assert!(c.integer.is_empty());
     }
 
-    /// TH15：decode 二值化 0.9 → 1，蓝图公式因子 0.2 累积（C42/C43）.
+    /// TH15（v0.204.0 P0-18）：decode 二值化 0.9 → 1；置信度单调于确定性。
     #[test]
     fn th15_decode_binarize_0_9() {
         let p = problem(&[VarType::Binary], &[0.0], &[1.0]);
         let net = HeuristicNet::new(MockEngine::new(vec![]));
         let c = net.decode_output(&[0.9], &p);
         assert_eq!(c.integer, vec![1]);
-        // 因子 = 1 − |0.9−0.5|·2 = 0.2；confidence = 0.2 / 1
-        assert!((c.confidence - 0.2).abs() < 1e-9);
+        // 新公式因子 = |0.9−0.5|·2 = 0.8；confidence = 0.8 / 1。
+        // 旧公式（反转）因子 = 0.2 → 修复后必须为 0.8。
+        assert!((c.confidence - 0.8).abs() < 1e-9);
     }
 
     /// TH16：0.5 → 0（严格大于）；蓝图公式下 0/1 值因子为 0 → 信度整体归零（C43）.
@@ -317,7 +321,8 @@ mod tests {
         let c = net.decode_output(&[0.5, 1.0], &p);
         // 0.5 不 > 0.5 → 0；1.0 → 1
         assert_eq!(c.integer, vec![0, 1]);
-        // 因子(0.5) = 1 − 0·2 = 1.0；因子(1.0) = 1 − 0.5·2 = 0.0 → 累积归零
+        // 新公式因子(0.5) = 0·2 = 0.0；因子(1.0) = 0.5·2 = 1.0 → 累积 0
+        // （0.5 是完全不确定 → 置信 0；1.0 完全确定 → 因子 1）。
         assert_eq!(c.confidence, 0.0);
     }
 
@@ -333,8 +338,8 @@ mod tests {
         let c = net.decode_output(&[0.9, 0.7, 5.0], &p);
         assert_eq!(c.integer, vec![1, 1]);
         assert_eq!(c.continuous, vec![5.0]);
-        // 因子(0.9)=0.2、因子(0.7)=0.6 → 0.2·0.6=0.12；/3 = 0.04
-        assert!((c.confidence - 0.04).abs() < 1e-9);
+        // v0.204.0（P0-18）新公式：因子(0.9)=0.8、因子(0.7)=0.4 → 0.32；/3 = 0.10667
+        assert!((c.confidence - 0.32 / 3.0).abs() < 1e-9);
     }
 
     /// TH18：MockEngine 驱动 generate 端到端（encode → infer → decode，C44）.
@@ -354,8 +359,8 @@ mod tests {
         let c = net.generate(&p, &ctx).unwrap();
         assert_eq!(c.integer, vec![1]);
         assert_eq!(c.continuous, vec![5.0]);
-        // 因子(0.9f32→f64) ≈ 0.2；/2 ≈ 0.1
-        assert!((c.confidence - 0.1).abs() < 1e-6);
+        // v0.204.0（P0-18）新公式：因子(0.9) ≈ 0.8；/2 ≈ 0.4
+        assert!((c.confidence - 0.4).abs() < 1e-6);
     }
 
     /// TH19：infer Err 透传为 InferenceFailed（C46，不吞没）.
@@ -390,5 +395,26 @@ mod tests {
         let ctx = SolveContext::default();
         let net = HeuristicNet::new(DimMismatchEngine);
         assert_eq!(net.generate(&p, &ctx).unwrap_err(), WarmError::InvalidDim);
+    }
+
+    // ======================================================================
+    // v0.204.0 (P0-18)：置信度公式防回归（旧公式反转修复）
+    // ======================================================================
+    #[test]
+    fn p018_confidence_monotonic_in_determinism() {
+        let p = problem(&[VarType::Binary], &[0.0], &[1.0]);
+        let net = HeuristicNet::new(MockEngine::new(vec![]));
+        // 确定输出（0.99）置信度必须高于不确定输出（0.6）。
+        let certain = net.decode_output(&[0.99], &p).confidence;
+        let unsure = net.decode_output(&[0.6], &p).confidence;
+        assert!(
+            certain > unsure,
+            "置信度必须单调于确定性: certain={certain} unsure={unsure}（旧公式反转）"
+        );
+        // 完全确定（1.0/0.0）置信度 = 1.0；完全不确定（0.5）置信度 = 0.0。
+        let full = net.decode_output(&[1.0], &p).confidence;
+        let none = net.decode_output(&[0.5], &p).confidence;
+        assert!((full - 1.0).abs() < 1e-9, "完全确定 → 置信 1.0");
+        assert!((none - 0.0).abs() < 1e-9, "完全不确定 → 置信 0.0");
     }
 }

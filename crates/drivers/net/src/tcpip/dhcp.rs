@@ -16,7 +16,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_net::{DhcpClient, InterfaceConfig, NetworkInterface};
 //!
 //! let mut iface = NetworkInterface::new(device, InterfaceConfig::new(mac).with_dhcp(true));

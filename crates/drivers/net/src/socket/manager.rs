@@ -109,7 +109,7 @@ impl fmt::Debug for SocketEntry {
 ///
 /// # Usage
 ///
-/// ```ignore
+/// ```text
 /// use eneros_net::{SocketManager, InterfaceConfig, ipv4_addr, ipv4_cidr, Interest};
 ///
 /// let dev = MyNetDevice::new();

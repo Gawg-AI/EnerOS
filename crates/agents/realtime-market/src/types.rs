@@ -1,13 +1,9 @@
-//! 实时市场数据类型定义
+//! 实时市场数据类型定义（ARCH-M01/M02 / ADR-0029 收敛）。
+//!
+//! `TradeDir` 唯一来源为 `eneros-market-types`（此处 re-export）；
+//! 价格字段一律为 [`YuanPerMwh`] 类型（元/MWh，禁止裸 f64，ARCH-M02）。
 
-/// 交易方向
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TradeDir {
-    /// 买入
-    Buy,
-    /// 卖出
-    Sell,
-}
+pub use eneros_market_types::{TradeDir, YuanPerMwh};
 
 /// 会话状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,8 +27,8 @@ pub struct RealtimeQuote {
     pub period_start: u64,
     /// 报价电量 (kWh)
     pub volume_kwh: f64,
-    /// 报价价格 (元/MWh)
-    pub price: f64,
+    /// 报价价格 (元/MWh，单位化)
+    pub price: YuanPerMwh,
     /// 交易方向
     pub direction: TradeDir,
     /// 报价序号
@@ -61,8 +57,8 @@ pub struct RealtimeClearing {
     pub session_id: u64,
     /// 出清序号
     pub seq: u64,
-    /// 出清价格 (元/MWh)
-    pub clearing_price: f64,
+    /// 出清价格 (元/MWh，单位化)
+    pub clearing_price: YuanPerMwh,
     /// 出清电量 (kWh)
     pub cleared_volume: f64,
     /// 出清时间 (unix timestamp)
@@ -110,14 +106,14 @@ mod tests {
             session_id: 1,
             period_start: 1000,
             volume_kwh: 500.0,
-            price: 350.0,
+            price: YuanPerMwh(350.0),
             direction: TradeDir::Buy,
             seq: 1,
         };
         assert_eq!(q.session_id, 1);
         assert_eq!(q.period_start, 1000);
         assert!((q.volume_kwh - 500.0).abs() < f64::EPSILON);
-        assert!((q.price - 350.0).abs() < f64::EPSILON);
+        assert_eq!(q.price, YuanPerMwh(350.0));
         assert_eq!(q.direction, TradeDir::Buy);
         assert_eq!(q.seq, 1);
     }
@@ -143,13 +139,13 @@ mod tests {
         let c = RealtimeClearing {
             session_id: 1,
             seq: 1,
-            clearing_price: 320.0,
+            clearing_price: YuanPerMwh(320.0),
             cleared_volume: 450.0,
             cleared_at: 1900,
         };
         assert_eq!(c.session_id, 1);
         assert_eq!(c.seq, 1);
-        assert!((c.clearing_price - 320.0).abs() < f64::EPSILON);
+        assert_eq!(c.clearing_price, YuanPerMwh(320.0));
         assert!((c.cleared_volume - 450.0).abs() < f64::EPSILON);
         assert_eq!(c.cleared_at, 1900);
     }

@@ -28,6 +28,10 @@ use crate::transport::{MasterStats, MasterTransport};
 ///
 /// 封装多设备连接管理、轮询调度、APDU 收发与 ASDU 分发。
 /// 通过 [`MasterTransport`] trait 抽象传输层，不直接依赖 smoltcp（D4）。
+///
+/// 数据面（ARCH-P04）：`latest_values` 保留最近接收的遥测/遥信值
+/// （common_addr → ioa → 值+品质+时间戳），供上层 [`crate::adapter::Iec104Adapter`]
+/// 经 [`Self::latest_value`] 读取。
 pub struct Iec104Master {
     /// 设备连接表（key: common_addr）
     devices: BTreeMap<u16, MasterConnection>,
@@ -39,6 +43,19 @@ pub struct Iec104Master {
     stats: MasterStats,
     /// 传输层（trait object，由调用方注入）
     transport: Box<dyn MasterTransport>,
+    /// 最近接收值缓存：common_addr → ioa → (值, 品质, 时间戳)。
+    latest_values: BTreeMap<u16, BTreeMap<u32, LatestValue>>,
+}
+
+/// 最近接收的点值（数据面，ARCH-P04）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LatestValue {
+    /// 信息对象值。
+    pub value: IoValue,
+    /// 数据品质。
+    pub quality: QualityDescriptor,
+    /// 接收时间戳（ms，来自传输层单调时钟）。
+    pub timestamp_ms: u64,
 }
 
 impl Iec104Master {
@@ -50,7 +67,26 @@ impl Iec104Master {
             config,
             stats: MasterStats::default(),
             transport,
+            latest_values: BTreeMap::new(),
         }
+    }
+
+    /// 返回最近接收的点值（数据面，ARCH-P04）。
+    pub fn latest_value(&self, common_addr: u16, ioa: u32) -> Option<&LatestValue> {
+        self.latest_values
+            .get(&common_addr)
+            .and_then(|m| m.get(&ioa))
+    }
+
+    /// 返回所有已建立连接的公共地址列表（数据面轮询用，ARCH-P04）。
+    pub fn conn_keys(&self) -> Vec<u16> {
+        self.devices.keys().copied().collect()
+    }
+
+    /// 测试专用：可变访问传输层（预置接收数据/检查发送帧）。
+    #[cfg(test)]
+    pub fn transport_mut(&mut self) -> &mut dyn MasterTransport {
+        &mut *self.transport
     }
 
     /// 连接远端设备并发送 STARTDT_ACT。
@@ -369,7 +405,20 @@ impl Iec104Master {
             | TypeId::MeasuredValueScaled
             | TypeId::MeasuredValueFloat
             | TypeId::Counter => {
-                // 遥测遥信数据 — 统计已在 process_rx 中更新
+                // 遥测遥信数据 — 保留到数据面缓存（ARCH-P04）
+                let ts = self.transport.now_ms();
+                let entry = self.latest_values.entry(asdu.common_addr).or_default();
+                for io in &asdu.ioas {
+                    entry.insert(
+                        io.ioa.into(),
+                        LatestValue {
+                            value: io.value,
+                            quality: io.quality,
+                            timestamp_ms: ts,
+                        },
+                    );
+                }
+                self.stats.rx_point_count += asdu.ioas.len() as u64;
             }
         }
         Ok(())

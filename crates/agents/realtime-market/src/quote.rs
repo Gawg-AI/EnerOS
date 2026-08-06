@@ -73,7 +73,7 @@ impl QuoteValidator {
         if q.volume_kwh <= 0.0 {
             return Err(RealtimeError::InvalidQuote);
         }
-        if q.price < 0.0 {
+        if q.price.0 < 0.0 {
             return Err(RealtimeError::InvalidQuote);
         }
         if session_state != SessionState::Open {
@@ -85,6 +85,8 @@ impl QuoteValidator {
 
 #[cfg(test)]
 mod tests {
+    use crate::types::YuanPerMwh;
+
     use super::*;
     use crate::types::TradeDir;
 
@@ -141,7 +143,7 @@ mod tests {
             session_id: 1,
             period_start: 900,
             volume_kwh: 100.0,
-            price: 350.0,
+            price: YuanPerMwh(350.0),
             direction: TradeDir::Buy,
             seq: 1,
         };
@@ -155,7 +157,7 @@ mod tests {
             session_id: 1,
             period_start: 900,
             volume_kwh: 0.0,
-            price: 350.0,
+            price: YuanPerMwh(350.0),
             direction: TradeDir::Buy,
             seq: 1,
         };
@@ -172,7 +174,7 @@ mod tests {
             session_id: 1,
             period_start: 900,
             volume_kwh: 100.0,
-            price: -1.0,
+            price: YuanPerMwh(-1.0),
             direction: TradeDir::Sell,
             seq: 1,
         };
@@ -189,7 +191,7 @@ mod tests {
             session_id: 1,
             period_start: 900,
             volume_kwh: 100.0,
-            price: 350.0,
+            price: YuanPerMwh(350.0),
             direction: TradeDir::Buy,
             seq: 1,
         };

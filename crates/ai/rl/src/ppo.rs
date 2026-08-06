@@ -1,4 +1,4 @@
-//! PPO 训练器 (v0.187.0).
+//! PPO 训练器 (workspace v0.192.0).
 //!
 //! 实现 PolicyTrainer trait，编排 act/observe/update 闭环。
 //! Mock 实现：简化 PPO 更新（权重沿 reward 梯度方向微调）。

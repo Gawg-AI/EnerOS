@@ -4,9 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS P2P 撮合引擎 (v0.176.0) — 价格时间优先撮合 + 成交管理, no_std"
+description = "[SPECULATIVE] EnerOS P2P 撮合引擎 (v0.176.0) — 价格时间优先撮合 + 成交管理, no_std"
 
 [dependencies]
+# SPECULATIVE (ARCH-M04/ADR-0029): 未接入任何真实 agent 的报价/结算流水线，不进入 release 闭包；接入前不得计入完成度。
+# PTC-001：P2pBid/P2pAsk 统一来自 eneros-p2p（消除重复定义）。
+eneros-p2p = { path = "../p2p" }
 
 [features]
 default = []

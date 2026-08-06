@@ -1,8 +1,12 @@
 //! ARM64 generic GPIO controller HAL implementation.
 //!
 //! Implements [`crate::HalGpio`] for a simple memory-mapped GPIO controller
-//! with direction, data, and pull-up/down registers. Targets the QEMU `virt`
-//! platform GPIO region (base `0x0902_0000`, 32 pins).
+//! with direction, data, and pull-up/down registers.
+//!
+//! HAL-004：QEMU `virt` 平台**没有** GPIO 控制器——旧注释宣称的
+//! `0x0902_0000` 实为 fw-cfg 设备（虚构 MMIO 地址）。不再提供默认基址
+//! singleton；BSP 必须用 [`Arm64Gpio::new(base, pin_count)`] 显式提供
+//! 真实外设基址（如飞腾 D2000 GPIO 控制器）。
 
 // ---------------------------------------------------------------------------
 // GPIO register offsets
@@ -49,20 +53,19 @@ impl crate::HalGpio for Arm64Gpio {
             crate::GpioDir::Input => dir &= !mask,
         }
         unsafe { Self::w32(self.base, GPIO_DIR, dir) };
-        // Configure pull resistor. PullMode has no #[repr(u32)], so convert
-        // manually rather than using `as u32`.
+        // HAL-003：Configure pull resistor with read-modify-write + per-pin
+        // 2-bit field shift. PullMode has no #[repr(u32)], so convert manually
+        // rather than using `as u32`. Old code wrote `pull_val` verbatim,
+        // clobbering the other 15 pins in the same PUD register.
         let pull_val: u32 = match config.pull {
             crate::PullMode::None => 0,
             crate::PullMode::Up => 1,
             crate::PullMode::Down => 2,
         };
-        unsafe {
-            Self::w32(
-                self.base,
-                GPIO_PUD + ((config.pin / 16) as u64) * 4,
-                pull_val,
-            );
-        }
+        let reg_off = GPIO_PUD + ((config.pin / 16) as u64) * 4;
+        let pud = unsafe { Self::r32(self.base, reg_off) };
+        let new_pud = crate::bit_logic::apply_pull(pud, config.pin % 16, pull_val);
+        unsafe { Self::w32(self.base, reg_off, new_pud) };
         Ok(())
     }
 
@@ -70,9 +73,11 @@ impl crate::HalGpio for Arm64Gpio {
         if pin >= self.pin_count {
             return Err(crate::HalError::InvalidParam);
         }
-        let mask = 1u32 << pin;
-        let v = if val { mask } else { 0 };
-        unsafe { Self::w32(self.base, GPIO_DATA, v) };
+        // HAL-003：读-改-写——只改动目标 pin 的位，不清零其他 31 个引脚
+        // （旧实现整寄存器覆写 `w32(GPIO_DATA, mask)`，把其余引脚全部清零）。
+        let data = unsafe { Self::r32(self.base, GPIO_DATA) };
+        let new_data = crate::bit_logic::apply_set_pin(data, pin, val);
+        unsafe { Self::w32(self.base, GPIO_DATA, new_data) };
         Ok(())
     }
 
@@ -88,13 +93,6 @@ impl crate::HalGpio for Arm64Gpio {
         let cur = self.get(pin)?;
         self.set(pin, !cur)
     }
-}
-
-static ARM64_GPIO: Arm64Gpio = Arm64Gpio::new(0x09020000, 32);
-
-/// Returns the ARM64 GPIO HAL singleton.
-pub fn gpio() -> &'static dyn crate::HalGpio {
-    &ARM64_GPIO
 }
 
 #[cfg(test)]

@@ -1,54 +1,128 @@
-//! Integration tests for v0.41.0 SystemAgent.
+//! Integration tests for SystemAgent with real ELF spawn (AGT-003).
 //!
-//! 验证 SystemAgent 的端到端行为：
-//! - start/stop/suspend/resume 生命周期编排
-//! - tick 心跳崩溃恢复（Unhealthy → AgentRecovered）
-//! - tick OOM victim 挂起（最低优先级存活 Agent）
-//! - tick 过热事件
-//! - get_system_stats 统计（6 字段）
-//! - find_oom_victim victim 选择
-//! - 多次 tick 健康系统无事件
-//! - start/stop 心跳注册/注销
+//! Verifies SystemAgent end-to-end behavior with the ProcessHandle-based spawner:
+//! - start/stop/suspend/resume lifecycle orchestration
+//! - tick heartbeat crash recovery (Unhealthy -> AgentRecovered)
+//! - tick OOM victim suspension (lowest priority alive agent)
+//! - tick overheat event
+//! - get_system_stats (6 fields)
+//! - find_oom_victim victim selection
+//! - multiple ticks on healthy system produce no events
+//! - start/stop heartbeat registration/unregistration
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::string::String;
 
 use eneros_agent::{
-    AgentConfig, AgentContext, AgentEntry, AgentError, AgentFactory, AgentRegistry, AgentSpawner,
-    AgentState, AgentType, CheckpointStore, CrashRecovery, HeartbeatMonitor,
-    InMemoryCheckpointStore, LifecycleManager, SystemAgent, SystemConfig, SystemEvent,
+    AgentConfig, AgentRegistry, AgentSpawner, AgentState, AgentType, CheckpointStore,
+    CrashRecovery, HeartbeatMonitor, InMemoryCheckpointStore, LifecycleManager,
+    AgentBinary, StaticAgentRegistry, SystemAgent, SystemConfig, SystemEvent,
 };
 
-// ---- Helper agent implementations ----
+// ---- Minimal valid ELF64 PIE AArch64 binary (128 bytes) ----
 
-/// Stub AgentEntry: on_init/on_start return Ok, on_stop is no-op.
-struct StubEntry;
-impl AgentEntry for StubEntry {
-    fn on_init(&mut self, _ctx: &mut AgentContext) -> Result<(), AgentError> {
-        Ok(())
-    }
-    fn on_start(&mut self, _ctx: &mut AgentContext) -> Result<(), AgentError> {
-        Ok(())
-    }
-    fn on_stop(&mut self, _ctx: &mut AgentContext) {}
+const fn build_minimal_test_elf() -> [u8; 128] {
+    let mut buf = [0u8; 128];
+    buf[0] = 0x7f;
+    buf[1] = 0x45;
+    buf[2] = 0x4c;
+    buf[3] = 0x46;
+    buf[4] = 2;
+    buf[5] = 1;
+    buf[6] = 1;
+    buf[16] = 3;
+    buf[17] = 0; // ET_DYN
+    buf[18] = 0xB7;
+    buf[19] = 0; // EM_AARCH64
+    buf[24] = 0x00;
+    buf[25] = 0x10; // e_entry = 0x1000
+    buf[32] = 64; // e_phoff = 64
+    buf[54] = 56; // e_phentsize
+    buf[56] = 1; // e_phnum = 1
+    let ph = 64;
+    buf[ph] = 1; // PT_LOAD
+    buf[ph + 4] = 5; // PF_R | PF_X
+    buf[ph + 8] = 120; // p_offset
+    buf[ph + 16] = 0x00;
+    buf[ph + 17] = 0x10; // p_vaddr = 0x1000
+    buf[ph + 32] = 8; // p_filesz
+    buf[ph + 40] = 8; // p_memsz
+    buf[ph + 48] = 0x00;
+    buf[ph + 49] = 0x10; // p_align = 0x1000
+    buf[120] = 0x1f;
+    buf[121] = 0x20;
+    buf[122] = 0x03;
+    buf[123] = 0xd5; // NOP
+    buf[124] = 0xc0;
+    buf[125] = 0x03;
+    buf[126] = 0x5f;
+    buf[127] = 0xd6; // RET
+    buf
 }
 
-/// Mock AgentFactory that returns StubEntry.
-struct MockFactory;
-impl AgentFactory for MockFactory {
-    fn create(
-        &self,
-        _agent_type: AgentType,
-        _name: &str,
-    ) -> Result<Box<dyn AgentEntry>, AgentError> {
-        Ok(Box::new(StubEntry))
+static MINIMAL_ELF: &[u8] = &build_minimal_test_elf();
+
+#[allow(dead_code)]
+static TEST_REGISTRY: StaticAgentRegistry = StaticAgentRegistry::new(&[(
+    AgentType::Energy,
+    AgentBinary {
+        elf: MINIMAL_ELF,
+        manifest: None,
+    },
+)]);
+
+/// SEC-002：带真实 SM2 签名的 registry（成功路径测试用）。
+fn signed_manifest() -> eneros_agent::AgentPackageManifest {
+    use eneros_crypto::sm2::{sm2_sign, Sm2KeyPair, Sm2PrivateKey};
+    use eneros_crypto::CsRng;
+
+    let name = "energy";
+    let version = "1.0.0";
+    let hash = eneros_crypto::sm3_hash(MINIMAL_ELF);
+    let mut d = [0u8; 32];
+    d[31] = 1;
+    let sk = Sm2PrivateKey::from_bytes(&d).expect("fixed sk");
+    let keypair = Sm2KeyPair::from_private_key(&sk).expect("keypair");
+    let mut msg = Vec::new();
+    msg.extend_from_slice(name.as_bytes());
+    msg.extend_from_slice(version.as_bytes());
+    msg.extend_from_slice(&hash);
+    let mut rng = CsRng::for_deterministic_signature(b"sec002-test", &msg, b"spawner");
+    let sig = sm2_sign(&msg, &keypair.private_key, &keypair.public_key, &mut rng)
+        .expect("deterministic sign");
+    let sig_bytes = sig.to_bytes();
+    let uncompressed = keypair.public_key.to_bytes_uncompressed();
+    let mut pk_bytes = [0u8; 64];
+    pk_bytes.copy_from_slice(&uncompressed[1..65]);
+    eneros_agent::AgentPackageManifest {
+        name: String::from(name),
+        version: String::from(version),
+        agent_type: AgentType::Energy,
+        budget: Default::default(),
+        elf_hash: hash,
+        signature: sig_bytes,
+        signer_pubkey: pk_bytes,
     }
 }
 
-// ---- Helper functions ----
+fn signed_registry() -> &'static StaticAgentRegistry {
+    use std::sync::OnceLock;
+    static REGS: OnceLock<StaticAgentRegistry> = OnceLock::new();
+    REGS.get_or_init(|| {
+        let entries: &'static [(AgentType, AgentBinary)] = Box::leak(Box::new([(
+            AgentType::Energy,
+            AgentBinary {
+                elf: MINIMAL_ELF,
+                manifest: Some(signed_manifest()),
+            },
+        )]));
+        StaticAgentRegistry::new(entries)
+    })
+}
 
-/// Create a minimal AgentConfig with the given name.
+// ---- Helpers ----
+
 fn make_config(name: &str) -> AgentConfig {
     AgentConfig {
         agent_type: AgentType::Energy,
@@ -60,7 +134,6 @@ fn make_config(name: &str) -> AgentConfig {
     }
 }
 
-/// Create an AgentConfig with the given name and priority override.
 fn make_config_with_priority(name: &str, priority: u8) -> AgentConfig {
     AgentConfig {
         agent_type: AgentType::Energy,
@@ -72,10 +145,6 @@ fn make_config_with_priority(name: &str, priority: u8) -> AgentConfig {
     }
 }
 
-/// Construct a SystemAgent with all dependencies and shared handles.
-///
-/// Returns (SystemAgent, registry, lifecycle, heartbeat) so tests can inspect
-/// shared state after calling SystemAgent methods.
 #[allow(clippy::type_complexity)]
 fn make_system_agent() -> (
     SystemAgent,
@@ -93,8 +162,11 @@ fn make_system_agent() -> (
         lifecycle.clone(),
         checkpoint_store,
     ));
-    let factory: Rc<MockFactory> = Rc::new(MockFactory);
-    let spawner = Rc::new(AgentSpawner::new(reg.clone(), lifecycle.clone(), factory));
+    let spawner = Rc::new(AgentSpawner::new(
+        reg.clone(),
+        lifecycle.clone(),
+        signed_registry(),
+    ));
     let sa = SystemAgent::new(
         reg.clone(),
         spawner,
@@ -108,7 +180,6 @@ fn make_system_agent() -> (
 
 // ---- Integration tests ----
 
-/// 1. Start an agent, verify it's registered; stop it, verify it's unregistered.
 #[test]
 fn test_system_agent_start_and_stop_agent() {
     let (sa, reg, _lifecycle, _heartbeat) = make_system_agent();
@@ -128,7 +199,6 @@ fn test_system_agent_start_and_stop_agent() {
     );
 }
 
-/// 2. Start an agent, suspend, verify Suspended; resume, verify Running.
 #[test]
 fn test_system_agent_suspend_and_resume() {
     let (sa, _reg, lifecycle, _heartbeat) = make_system_agent();
@@ -152,18 +222,12 @@ fn test_system_agent_suspend_and_resume() {
     );
 }
 
-/// 3. Start an agent, advance time past heartbeat timeout (default 1000ms interval,
-///    3 missed beats = Unhealthy), call tick, verify SystemEvent::AgentRecovered.
 #[test]
 fn test_system_agent_tick_heartbeat_crash_recovery() {
     let (mut sa, _reg, _lifecycle, _heartbeat) = make_system_agent();
     let config = make_config("agent-1");
     let id = sa.start_agent(config, 1000).unwrap();
 
-    // Heartbeat registered at now=1000. Advance to now=4001:
-    // elapsed = 4001 - 1000 = 3001 > 1000 (interval)
-    // missed_count = 3001 / 1000 = 3 >= 3 (max_missed) → Unhealthy
-    // tick: force_state(Error) + handle_crash → restart_count 0 < 3 → recovered
     let events = sa.tick(4001);
 
     assert!(
@@ -176,14 +240,10 @@ fn test_system_agent_tick_heartbeat_crash_recovery() {
     );
 }
 
-/// 4. Set up 2 agents with different priorities, set monitor to OOM condition
-///    (mem 95/100, threshold 0.9), call tick, verify OomVictimSuspended for the
-///    lower priority agent.
 #[test]
 fn test_system_agent_tick_oom_suspends_lowest_priority() {
     let (mut sa, reg, lifecycle, _heartbeat) = make_system_agent();
 
-    // Two agents with different priorities (via priority_override).
     let _high = sa
         .start_agent(make_config_with_priority("high", 200), 1000)
         .unwrap();
@@ -191,10 +251,8 @@ fn test_system_agent_tick_oom_suspends_lowest_priority() {
         .start_agent(make_config_with_priority("low", 100), 1000)
         .unwrap();
 
-    // OOM condition: mem_used/mem_total = 95/100 = 0.95 > 0.9 threshold.
     sa.monitor.set_values(0.5, 95, 100, 50.0);
 
-    // tick at now=1500: elapsed = 500 (not > 1000), so no heartbeat unhealthy.
     let events = sa.tick(1500);
 
     assert!(
@@ -204,12 +262,10 @@ fn test_system_agent_tick_oom_suspends_lowest_priority() {
         "expected OomVictimSuspended for low-priority agent, got: {:?}",
         events
     );
-    // Verify low is now Suspended.
     assert_eq!(
         lifecycle.borrow().current_state(low),
         Ok(AgentState::Suspended)
     );
-    // high should still be Running.
     let high = reg.borrow().list_all()[0].agent_id;
     assert_eq!(
         lifecycle.borrow().current_state(high),
@@ -217,11 +273,9 @@ fn test_system_agent_tick_oom_suspends_lowest_priority() {
     );
 }
 
-/// 5. Set monitor temperature above threshold (85 > 80), call tick, verify Overheat.
 #[test]
 fn test_system_agent_tick_overheat_event() {
     let (mut sa, _reg, _lifecycle, _heartbeat) = make_system_agent();
-    // 85.0 > 80.0 (default overheat_threshold).
     sa.monitor.set_values(0.5, 50, 100, 85.0);
 
     let events = sa.tick(1000);
@@ -235,26 +289,21 @@ fn test_system_agent_tick_overheat_event() {
     );
 }
 
-/// 6. Start agents, set monitor values, call get_system_stats, verify all 6 fields.
 #[test]
 fn test_system_agent_get_system_stats() {
     let (mut sa, _reg, _lifecycle, _heartbeat) = make_system_agent();
-    // Start one agent (Running → alive).
     sa.start_agent(make_config("agent-1"), 1000).unwrap();
-    // Set monitor values.
     sa.monitor.set_values(0.5, 50, 100, 65.0);
 
     let stats = sa.get_system_stats();
     assert_eq!(stats.cpu_usage, 0.5);
-    assert_eq!(stats.mem_usage, 0.5); // 50/100
+    assert_eq!(stats.mem_usage, 0.5);
     assert_eq!(stats.temperature, 65.0);
     assert_eq!(stats.agent_count, 1);
-    assert_eq!(stats.alive_agents, 1); // Running is alive
+    assert_eq!(stats.alive_agents, 1);
     assert_eq!(stats.error_agents, 0);
 }
 
-/// 7. Start 3 agents with different priorities, call find_oom_victim, verify it
-///    returns the lowest priority.
 #[test]
 fn test_system_agent_find_oom_victim() {
     let (sa, _reg, _lifecycle, _heartbeat) = make_system_agent();
@@ -277,53 +326,32 @@ fn test_system_agent_find_oom_victim() {
     );
 }
 
-/// 8. Call tick multiple times with advancing now, verify no events when system is
-///    healthy.
 #[test]
 fn test_system_agent_multiple_ticks() {
     let (mut sa, _reg, _lifecycle, _heartbeat) = make_system_agent();
-    // Start an agent at now=1000 (heartbeat registered at 1000).
     sa.start_agent(make_config("agent-1"), 1000).unwrap();
 
-    // Multiple ticks with advancing now, all within heartbeat interval.
-    // elapsed = now - 1000; stays <= 1000 so agent remains Healthy.
-    let events1 = sa.tick(1100); // elapsed = 100
-    assert!(
-        events1.is_empty(),
-        "no events expected on healthy tick, got: {:?}",
-        events1
-    );
+    let events1 = sa.tick(1100);
+    assert!(events1.is_empty(), "got: {:?}", events1);
 
-    let events2 = sa.tick(1300); // elapsed = 300
-    assert!(
-        events2.is_empty(),
-        "no events expected on healthy tick, got: {:?}",
-        events2
-    );
+    let events2 = sa.tick(1300);
+    assert!(events2.is_empty(), "got: {:?}", events2);
 
-    let events3 = sa.tick(1500); // elapsed = 500 (still <= 1000)
-    assert!(
-        events3.is_empty(),
-        "no events expected on healthy tick, got: {:?}",
-        events3
-    );
+    let events3 = sa.tick(1500);
+    assert!(events3.is_empty(), "got: {:?}", events3);
 }
 
-/// 9. Start an agent, verify it's tracked by heartbeat monitor (advance time
-///    slightly, no unhealthy reported).
 #[test]
 fn test_system_agent_start_registers_heartbeat() {
     let (mut sa, _reg, _lifecycle, heartbeat) = make_system_agent();
     let config = make_config("agent-1");
     let id = sa.start_agent(config, 1000).unwrap();
 
-    // Agent should be tracked by heartbeat monitor as Healthy.
     assert!(
         heartbeat.borrow().is_healthy(id),
         "agent should be tracked by heartbeat monitor after start"
     );
 
-    // Advance time slightly (elapsed = 500, not > 1000) — no unhealthy.
     let events = sa.tick(1500);
     assert!(
         !events.iter().any(|e| matches!(
@@ -333,39 +361,32 @@ fn test_system_agent_start_registers_heartbeat() {
             | SystemEvent::AgentRecoveryFailed { agent }
             if *agent == id
         )),
-        "no crash/recovery events expected for healthy agent, got: {:?}",
+        "got: {:?}",
         events
     );
-    // Still healthy after the tick.
     assert!(
         heartbeat.borrow().is_healthy(id),
         "agent should still be healthy after tick"
     );
 }
 
-/// 10. Start + stop an agent, verify heartbeat no longer tracks it (call tick after
-///     stop, no AgentCrashed event for that id).
 #[test]
 fn test_system_agent_stop_unregisters() {
     let (mut sa, _reg, _lifecycle, heartbeat) = make_system_agent();
     let config = make_config("agent-1");
     let id = sa.start_agent(config, 1000).unwrap();
 
-    // Verify heartbeat is tracking the agent.
     assert!(
         heartbeat.borrow().is_healthy(id),
         "agent should be tracked by heartbeat before stop"
     );
 
-    // Stop the agent — this unregisters from heartbeat.
     sa.stop_agent(id).unwrap();
     assert!(
         !heartbeat.borrow().is_healthy(id),
         "agent should not be tracked by heartbeat after stop"
     );
 
-    // Call tick at a time that WOULD trigger unhealthy if still tracked.
-    // elapsed = 4001 - 1000 = 3001 > 1000, missed = 3 >= 3 → would be Unhealthy.
     let events = sa.tick(4001);
     assert!(
         !events.iter().any(|e| matches!(
@@ -375,7 +396,7 @@ fn test_system_agent_stop_unregisters() {
             | SystemEvent::AgentRecoveryFailed { agent }
             if *agent == id
         )),
-        "no crash/recovery events expected for stopped agent, got: {:?}",
+        "got: {:?}",
         events
     );
 }

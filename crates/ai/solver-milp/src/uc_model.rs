@@ -479,7 +479,8 @@ mod tests {
         // pmax 行（i=1, t=3）：Le 型
         let row = t + t + 3;
         assert_eq!(lp.rhs_upper[row], 0.0);
-        assert_eq!(lp.rhs_lower[row], f64::NEG_INFINITY);
+        // P0-21：Le 型约束下界钳制到 -kHighsInf（不再 NEG_INFINITY）。
+        assert_eq!(lp.rhs_lower[row], -1e30);
         let (lo, hi) = (
             lp.constraints.row_start[row] as usize,
             lp.constraints.row_start[row + 1] as usize,
@@ -495,7 +496,8 @@ mod tests {
         // pmin 行（i=1, t=3）：Ge 型
         let row = t + n * t + t + 3;
         assert_eq!(lp.rhs_lower[row], 0.0);
-        assert_eq!(lp.rhs_upper[row], f64::INFINITY);
+        // P0-21：Ge 型约束上界钳制到 +kHighsInf（不再 INFINITY）。
+        assert_eq!(lp.rhs_upper[row], 1e30);
         let lo = lp.constraints.row_start[row] as usize;
         assert_eq!(lp.constraints.values[lo], 1.0);
         assert_eq!(lp.constraints.values[lo + 1], -60.0); // U 系数 -p_min

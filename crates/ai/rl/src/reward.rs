@@ -1,4 +1,4 @@
-//! Reward 设计 (v0.187.0).
+//! Reward 设计 (workspace v0.192.0).
 //!
 //! 收益-成本-安全惩罚加权 Reward Shaping。
 

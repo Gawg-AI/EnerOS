@@ -1,0 +1,176 @@
+{
+  "$schema": "https://eneros.dev/schemas/platform-contract.v1.json",
+  "title": "EnerOS Platform Contract v1",
+  "description": "Machine-readable platform contract: firmware, memory, MMIO, IRQ, DMA, IOMMU, entropy, watchdog/RTC/reset resources. Sources: manual | datasheet | measured | to-verify. No unknown/overlapping resources allowed at runtime.",
+  "type": "object",
+  "required": ["schema", "platform_id", "revision", "firmware", "cpu", "memory", "gic", "timer", "resources", "psci", "dma"],
+  "properties": {
+    "schema": { "const": "eneros.platform-contract.v1" },
+    "platform_id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "revision": { "type": "string" },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "name", "version"],
+        "properties": {
+          "kind": { "enum": ["datasheet", "board-manual", "qemu-source", "measured", "to-verify", "manual"] },
+          "name": { "type": "string" },
+          "version": { "type": "string" }
+        }
+      }
+    },
+    "firmware": {
+      "type": "object",
+      "required": ["type", "boot_method", "psci_conduit", "el0_entry"],
+      "properties": {
+        "type": { "enum": ["uefi", "raw-image", "uboot", "tf-a"] },
+        "boot_method": { "type": "string" },
+        "psci_conduit": { "enum": ["hvc", "smc"] },
+        "el0_entry": { "type": "boolean" }
+      }
+    },
+    "cpu": {
+      "type": "object",
+      "required": ["arch", "cores", "model"],
+      "properties": {
+        "arch": { "const": "armv8-a" },
+        "cores": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "model": { "type": "string" }
+      }
+    },
+    "memory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "base", "size", "kind"],
+        "properties": {
+          "name": { "type": "string" },
+          "base": { "type": "integer", "minimum": 0 },
+          "size": { "type": "integer", "minimum": 4096 },
+          "kind": { "enum": ["ram", "reserved", "dma-pool", "firmware", "boot-firmware", "framebuffer"] }
+        }
+      }
+    },
+    "gic": {
+      "type": "object",
+      "required": ["version", "distributor", "redistributor", "ppi", "spi_base"],
+      "properties": {
+        "version": { "enum": ["gicv2", "gicv3", "gicv4"] },
+        "distributor": { "$ref": "#/definitions/range" },
+        "redistributor": { "$ref": "#/definitions/range" },
+        "ppi": { "type": "array", "items": { "type": "integer" } },
+        "spi_base": { "type": "integer", "minimum": 32 }
+      }
+    },
+    "timer": {
+      "type": "object",
+      "required": ["kind", "frequency_source", "irq"],
+      "properties": {
+        "kind": { "enum": ["armv8-architected", "external"] },
+        "frequency_source": { "type": "string" },
+        "irq": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "compatible", "range", "irq", "source"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "compatible": { "type": "string" },
+          "range": { "$ref": "#/definitions/range" },
+          "irq": { "type": "integer", "minimum": 0 },
+          "source": { "enum": ["datasheet", "qemu-source", "measured", "to-verify", "manual"] },
+          "dma": {
+            "type": "object",
+            "required": ["capable", "cache_coherent", "iommu_stream_id"],
+            "properties": {
+              "capable": { "type": "boolean" },
+              "cache_coherent": { "type": "boolean" },
+              "iommu_stream_id": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "psci": {
+      "type": "object",
+      "required": ["version", "cpu_on", "system_reset", "system_off"],
+      "properties": {
+        "version": { "type": "string" },
+        "cpu_on": { "type": "boolean" },
+        "system_reset": { "type": "boolean" },
+        "system_off": { "type": "boolean" }
+      }
+    },
+    "dma": {
+      "type": "object",
+      "required": ["iommu", "cache_coherent", "max_address_bits"],
+      "properties": {
+        "iommu": {
+          "type": ["object", "null"],
+          "required": ["compatible", "range", "stream_id_bits"],
+          "properties": {
+            "compatible": { "type": "string" },
+            "range": { "$ref": "#/definitions/range" },
+            "stream_id_bits": { "type": "integer" }
+          }
+        },
+        "cache_coherent": { "type": "boolean" },
+        "max_address_bits": { "type": "integer", "minimum": 32, "maximum": 52 }
+      }
+    },
+    "entropy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "compatible", "range", "irq"],
+        "properties": {
+          "name": { "type": "string" },
+          "compatible": { "type": "string" },
+          "range": { "$ref": "#/definitions/range" },
+          "irq": { "type": "integer" }
+        }
+      }
+    },
+    "watchdog": {
+      "type": ["object", "null"],
+      "required": ["compatible", "range", "irq", "clock_hz"],
+      "properties": {
+        "compatible": { "type": "string" },
+        "range": { "$ref": "#/definitions/range" },
+        "irq": { "type": "integer" },
+        "clock_hz": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "rtc": {
+      "type": ["object", "null"],
+      "required": ["compatible", "range", "irq"],
+      "properties": {
+        "compatible": { "type": "string" },
+        "range": { "$ref": "#/definitions/range" },
+        "irq": { "type": "integer" }
+      }
+    },
+    "reset_reason": {
+      "type": "object",
+      "required": ["persistent", "storage"],
+      "properties": {
+        "persistent": { "type": "boolean" },
+        "storage": { "enum": ["bootctrl-partition", "nvram", "rtc-backup"] }
+      }
+    }
+  },
+  "definitions": {
+    "range": {
+      "type": "object",
+      "required": ["base", "size"],
+      "properties": {
+        "base": { "type": "integer", "minimum": 0 },
+        "size": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

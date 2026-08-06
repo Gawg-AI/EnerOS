@@ -1,0 +1,199 @@
+// EnerOS / Power Native Agent OS — 鲲鹏 920 设备树源文件（v0.146.0 占位最小骨架）
+// 用于鲲鹏 920 真机启动（蓝图 §v0.146.0 §3 交付物清单 + spec D8 占位口径）
+//
+// 编译：dtc -I dts -O dtb -o configs/kunpeng-920.dtb configs/kunpeng-920.dts
+//
+// 占位说明（spec D8 + D10）：
+//   - 所有 reg 属性用占位物理地址，与 platform::kunpeng_920 常量对齐：
+//       UART_PL011_BASE = 0x9FFF_F000   GICD_BASE       = 0x4_0080_0000
+//       GPIO_PL061_BASE = 0x9400_0000   GICR_BASE        = 0x4_00A0_0000
+//       SMMU_BASE       = 0x4_0040_0000 NUMA_MAX_NODES   = 8
+//   - 鲲鹏 920 数据手册实际值待真机调试确认（蓝图 §8 风险「鲲鹏 DTB 与 QEMU 不同」）
+//   - 真机调试时按 /proc/device-tree 实际值调整 reg 地址 + compatible 字符串
+//   - SMMUv3 / numa-node 节点 compatible 字符串原样占位（spec D6），真机调试时按
+//     鲲鹏 920 实际 DTB 值调整（"arm,smmu-v3" 或 "hisilicon,smmu-v3" 等；
+//     "numa-node" 或 "hisilicon,numa-node" 等）
+//
+// 中断类型常量（直接使用数值，dtc 不支持 #define）：
+//   GIC_SPI = 0 (Shared Peripheral Interrupt)
+//   GIC_PPI = 1 (Private Peripheral Interrupt)
+//   IRQ_TYPE_LEVEL_HIGH = 4
+//   IRQ_TYPE_LEVEL_LOW  = 8
+//   GIC_CPU_MASK_SIMPLE(8) = 0xFF (8 CPUs bitmask，鲲鹏 920 占位 8 核简化)
+//
+// 注意：鲲鹏 920 实际为 64 核 ARMv8.2 处理器，本占位骨架简化为 8 核
+//       （spec D13——64 核 SMP 启动属 v0.136.0 SMP 域，本版本 BSP 仅单核 HAL，
+//        真机版本按实际核数调整 CPU 节点数）
+
+/dts-v1/;
+
+/ {
+    #address-cells = <2>;
+    #size-cells = <2>;
+    model = "Kunpeng 920 BSP Placeholder (v0.146.0)";
+    compatible = "hisilicon,kunpeng-920", "arm,v8.2";
+    interrupt-parent = <&gic>;
+
+    // ===== CPU 节点（鲲鹏 920 64 核 ARMv8.2，占位 8 核简化 — spec D13）=====
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cpu@0 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <0>;
+            enable-method = "psci";
+        };
+
+        cpu@1 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <1>;
+            enable-method = "psci";
+        };
+
+        cpu@2 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <2>;
+            enable-method = "psci";
+        };
+
+        cpu@3 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <3>;
+            enable-method = "psci";
+        };
+
+        cpu@4 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <4>;
+            enable-method = "psci";
+        };
+
+        cpu@5 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <5>;
+            enable-method = "psci";
+        };
+
+        cpu@6 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <6>;
+            enable-method = "psci";
+        };
+
+        cpu@7 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a72", "arm,armv8";
+            reg = <7>;
+            enable-method = "psci";
+        };
+    };
+
+    // ===== PSCI (Power State Coordination Interface) =====
+    psci {
+        compatible = "arm,psci-0.2";
+        method = "smc";
+    };
+
+    // ===== 内存（占位 4GB，真机按数据手册调整）=====
+    memory@10000000 {
+        device_type = "memory";
+        reg = <0x0 0x10000000 0x1 0x00000000>; // 4GB at 0x10000000
+    };
+
+    // ===== UART (PL011) — 串口输出（鲲鹏 920 兼容 PL011）=====
+    // spec D10 platform::kunpeng_920::UART_PL011_BASE = 0x9FFF_F000
+    uart@9ffff000 {
+        compatible = "arm,pl011", "arm,primecell";
+        reg = <0x0 0x9ffff000 0x0 0x1000>;
+        interrupts = <0 1 4>; // GIC_SPI(0) 1 IRQ_TYPE_LEVEL_HIGH(4)
+        clock-names = "uartclk", "apb_pclk";
+        clocks = <&clk24mhz>, <&clk24mhz>;
+        status = "okay";
+    };
+
+    // ===== 时钟 =====
+    clk24mhz: clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+    };
+
+    // ===== ARM 架构定时器（鲲鹏 920 兼容 ARMv8 通用定时器）=====
+    // interrupts = <GIC_PPI(1) N (GIC_CPU_MASK_SIMPLE(8)=0xFF | IRQ_TYPE_LEVEL_LOW=8)>
+    //   PPI 13 (Secure Physical Timer)
+    //   PPI 14 (Non-secure Physical Timer, CNTP) — spec D10 CNTP_IRQ = 30
+    //   PPI 11 (Virtual Timer, CNTV) — spec D10 CNTV_IRQ = 27
+    //   PPI 10 (Hypervisor Timer)
+    timer {
+        compatible = "arm,armv8-timer", "arm,armv7-timer";
+        interrupts = <1 13 0x108>,
+                     <1 14 0x108>,
+                     <1 11 0x108>,
+                     <1 10 0x108>;
+        always-on;
+    };
+
+    // ===== GICv3 (Generic Interrupt Controller) — 鲲鹏 920 集成 GICv3 =====
+    // spec D10 platform::kunpeng_920:
+    //   GICD_BASE = 0x4_0080_0000   GICR_BASE = 0x4_00A0_0000
+    gic: interrupt-controller@400800000 {
+        compatible = "arm,gic-v3";
+        #interrupt-cells = <3>;
+        #address-cells = <2>;
+        #size-cells = <2>;
+        interrupt-controller;
+        reg = <0x04 0x00800000 0x0 0x0100000>,  // GICD（占位 1MB）
+              <0x04 0x00a00000 0x0 0x200000>;   // GICR（占位 2MB，8 核）
+        interrupts = <1 9 0x104>; // PPI 9 (Maintenance) GIC_CPU_MASK_SIMPLE(8)|IRQ_TYPE_LEVEL_HIGH
+    };
+
+    // ===== GPIO (PL061) — 鲲鹏 920 兼容 PL061 =====
+    // spec D10 platform::kunpeng_920::GPIO_PL061_BASE = 0x9400_0000
+    gpio@94000000 {
+        compatible = "arm,pl061", "arm,primecell";
+        reg = <0x0 0x94000000 0x0 0x1000>;
+        interrupts = <0 32 4>; // GIC_SPI(0) 32 IRQ_TYPE_LEVEL_HIGH(4)
+        gpio-controller;
+        #gpio-cells = <2>;
+        status = "okay";
+    };
+
+    // ===== SMMUv3 (System Memory Management Unit) — 鲲鹏 920 集成 ARM SMMUv3 =====
+    // spec D4 KunpengSmmu::init() 写 CR0（base + 0x20 = 0x1）使能 SMMU
+    // spec D10 platform::kunpeng_920::SMMU_BASE = 0x4_0040_0000
+    // spec D6 兼容性字符串 "arm,smmu-v3"（真机调试时按 /proc/device-tree 实际值调整）
+    smmu@400400000 {
+        compatible = "arm,smmu-v3";
+        reg = <0x04 0x00400000 0x0 0x100000>; // SMMUv3 寄存器帧（占位 1MB）
+        interrupts = <0 77 4>,  // Event queue (IRQ)
+                     <0 78 4>,  // PRI queue (IRQ)
+                     <0 79 4>;  // CMDQ sync (IRQ)
+        #iommu-cells = <1>;
+        status = "okay";
+    };
+
+    // ===== NUMA 节点占位（鲲鹏 920 服务器场景多 NUMA 节点）=====
+    // spec D12 KunpengNuma { nodes: Cell<u8>, configured: Cell<bool> } 占位
+    // spec D10 platform::kunpeng_920::NUMA_MAX_NODES = 8
+    // spec D6 兼容性字符串 "numa-node"（真机调试时按 /proc/device-tree 实际值调整）
+    // 真机扩展点：distances 矩阵 + distance-map 节点（D12 留待真机版本）
+    numa-node@0 {
+        compatible = "numa-node";
+        reg = <0x0 0x0 0x0 0x0>; // NUMA 节点 0 占位
+        status = "okay";
+    };
+
+    numa-node@1 {
+        compatible = "numa-node";
+        reg = <0x0 0x1 0x0 0x0>; // NUMA 节点 1 占位
+        status = "okay";
+    };
+};

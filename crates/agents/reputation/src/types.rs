@@ -161,3 +161,66 @@ mod tests {
         assert_ne!(PermissionLevel::Full, PermissionLevel::Banned);
     }
 }
+
+// ============================================================================
+// ARC-002：信誉分 ↔ agent::TrustLevel 映射（ADR-0032）
+// ============================================================================
+
+impl ReputationScore {
+    /// 映射到授权信任等级（ARC-002 / ADR-0032）。
+    ///
+    /// - score < 25 → `Untrusted`
+    /// - 25 ≤ score < 50 → `Verified`
+    /// - 50 ≤ score < 75 → `Trusted`
+    /// - score ≥ 75 → `Trusted` 封顶（`System` 为特权级，不由信誉分授予）
+    pub fn trust_level(&self) -> eneros_agent::types::TrustLevel {
+        match self.score {
+            s if s < 25.0 => eneros_agent::types::TrustLevel::Untrusted,
+            s if s < 50.0 => eneros_agent::types::TrustLevel::Verified,
+            _ => eneros_agent::types::TrustLevel::Trusted,
+        }
+    }
+}
+
+/// 静态授权等级 → 信誉分（映射区间下限，ARC-002 / ADR-0032）。
+pub fn score_from_trust_level(tl: &eneros_agent::types::TrustLevel) -> f64 {
+    match tl {
+        eneros_agent::types::TrustLevel::Untrusted => 0.0,
+        eneros_agent::types::TrustLevel::Verified => 25.0,
+        eneros_agent::types::TrustLevel::Trusted => 75.0,
+        eneros_agent::types::TrustLevel::System => 100.0,
+    }
+}
+
+#[cfg(test)]
+mod arc002_tests {
+    use super::*;
+    use eneros_agent::types::TrustLevel;
+
+    fn score(v: f64) -> ReputationScore {
+        ReputationScore {
+            agent: 1,
+            score: v,
+            grade: ReputationGrade::D,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn test_arc002_score_to_trust_level() {
+        assert_eq!(score(0.0).trust_level(), TrustLevel::Untrusted);
+        assert_eq!(score(24.9).trust_level(), TrustLevel::Untrusted);
+        assert_eq!(score(25.0).trust_level(), TrustLevel::Verified);
+        assert_eq!(score(49.9).trust_level(), TrustLevel::Verified);
+        assert_eq!(score(50.0).trust_level(), TrustLevel::Trusted);
+        assert_eq!(score(99.9).trust_level(), TrustLevel::Trusted, "System 特权级不由信誉分授予");
+    }
+
+    #[test]
+    fn test_arc002_trust_level_to_score() {
+        assert_eq!(score_from_trust_level(&TrustLevel::Untrusted), 0.0);
+        assert_eq!(score_from_trust_level(&TrustLevel::Verified), 25.0);
+        assert_eq!(score_from_trust_level(&TrustLevel::Trusted), 75.0);
+        assert_eq!(score_from_trust_level(&TrustLevel::System), 100.0);
+    }
+}

@@ -1,45 +1,16 @@
 //! IEEE 802.3 CRC32 (polynomial 0xEDB88320, reversed).
 //!
-//! Used for storage data integrity verification. The implementation is
-//! table-based (256-entry lookup) for O(n) computation with a small constant
-//! factor.
+//! Used for storage data integrity verification.
+//!
+//! HYG-001：实现已归一到 [`eneros_ipc_wire::crc32`]（`abi/ipc-wire` 唯一
+//! 实现）——本模块仅为兼容 re-export，不再维护第二份表实现。
 //!
 //! # Known Vectors
 //!
 //! - Empty input → `0x00000000`
 //! - `b"123456789"` → `0xCBF43926`
 
-/// Reversed IEEE 802.3 CRC32 polynomial.
-const CRC32_POLY: u32 = 0xEDB8_8320;
-
-/// 256-entry lookup table for byte-at-a-time CRC32 computation.
-const CRC32_TABLE: [u32; 256] = build_crc32_table();
-
-/// Builds the 256-entry CRC32 lookup table at compile time.
-const fn build_crc32_table() -> [u32; 256] {
-    let mut table = [0u32; 256];
-    let mut i = 0;
-    while i < 256 {
-        let mut crc = i as u32;
-        let mut j = 0;
-        while j < 8 {
-            if crc & 1 != 0 {
-                crc = (crc >> 1) ^ CRC32_POLY;
-            } else {
-                crc >>= 1;
-            }
-            j += 1;
-        }
-        table[i] = crc;
-        i += 1;
-    }
-    table
-}
-
-/// Computes the IEEE 802.3 CRC32 of `data`.
-///
-/// Returns `0` for empty input. For the standard check vector
-/// `b"123456789"` the result is `0xCBF43926`.
+/// Computes the IEEE 802.3 CRC32 of `data`（转发 abi/ipc-wire 唯一实现）。
 ///
 /// # Example
 ///
@@ -49,12 +20,7 @@ const fn build_crc32_table() -> [u32; 256] {
 /// assert_eq!(crc32(b""), 0);
 /// ```
 pub fn crc32(data: &[u8]) -> u32 {
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &byte in data {
-        let idx = ((crc as u8) ^ byte) as usize;
-        crc = (crc >> 8) ^ CRC32_TABLE[idx];
-    }
-    crc ^ 0xFFFF_FFFF
+    eneros_ipc_wire::crc32(data)
 }
 
 // ============================================================================
@@ -103,14 +69,10 @@ mod tests {
     }
 
     #[test]
-    fn test_table_built() {
-        // Spot-check a few table entries against known values.
-        // table[0] is always 0 (no bits set).
-        assert_eq!(CRC32_TABLE[0], 0);
-        // table[1] = poly itself (1 bit shifts through).
-        assert_eq!(CRC32_TABLE[1], 0x7707_3096);
-        // table[255] — last entry, deterministic.
-        assert_eq!(CRC32_TABLE[255], 0x2D02_EF8D);
+    fn test_forwarded_matches_known_vector() {
+        // HYG-001：实现已归一到 eneros-ipc-wire——KAT 向量验证转发一致性
+        // （旧表实现与 ipc-wire 同为 IEEE 802.3 0xEDB88320）。
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
     }
 
     #[test]

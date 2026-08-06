@@ -1,0 +1,77 @@
+# EnerOS v0.125.0 Recovery Mode 最小化恢复内核 配置模板
+#
+# ① 本文件仅为配置模板：集成层进入恢复模式时读取，按 [flash] 驱动流式
+#    接收循环（receive_chunk 分块喂入 RecoveryModeImpl::flash_writer_mut），
+#    按 [factory] 核对出厂默认集（与 crates/security/recovery/src/
+#    factory_reset.rs 中 FactoryReset::factory_defaults() 一致），按
+#    [diag] 实现 HealthProbe 探针注入（详见 docs/security/
+#    recovery-mode-design.md §4/§5）。
+# ② 数据流（蓝图 §4.3）：enter 进入恢复模式（Waiting）→ 集成方经串口/网络
+#    循环接收镜像分块并调用 receive_chunk（Sm3Hasher 增量哈希随接收推进）→
+#    接收完毕后执行 execute(Flash, [expected_hash_hex, signature_hex,
+#    slot_base])：先 SM3 哈希常时比对 + SM2 根公钥验签（未通过不触碰设备），
+#    再按块写盘（末块零填充）→ state=Complete 后 reboot 重启激活。
+# ③ 存储规划（记忆 §5.6 内存预算）：刷写目标槽位布局与 v0.123.0 ota-ab
+#    一致（保留块 + 双分区，slot_b_base=2049，单分区容量随块大小缩放，
+#    8 KiB 块 → 16 MiB ≥ 10 MiB 性能基线镜像）；镜像接收缓冲为 alloc 堆
+#    上 Vec（≤ max_image_bytes），恢复模式属管理信息大区（≤ 64 MB 预算内）。
+
+[flash]
+# ④ 流式接收分块大小（字节）：串口/网络接收循环每次 receive_chunk 的建议
+#    粒度。4 KiB 在接收吞吐与交互时延间折中；FlashWriter 内部累积为完整
+#    镜像后统一验签写盘，分块大小不影响哈希/验签结果（增量 SM3 与一次性
+#    SM3 等价，FLS1 验证）。10 MiB 镜像 = 2560 块。
+chunk_size = 4096
+
+# ⑤ 最大镜像字节数：10 MiB（= 10 × 1024 × 1024），与 v0.123.0 性能基线
+#    一致（蓝图 §6.3/§7.2）。集成层接收循环应在此上限处截断并拒绝继续
+#    接收（防恶意超大镜像耗尽恢复环境内存）；上限须 ≤ 单分区容量（见 ③）。
+max_image_bytes = 10485760
+
+# ⑥ 刷写总超时（秒）：从首个 receive_chunk 起至 execute(Flash) 返回的
+#    建议上限（蓝图 §7.2：10MB 镜像刷写 < 60s）。超时判定与中止由集成层
+#    执行（crate 不持有时钟）；主机实测均值约 0.2s（MockBlockDevice
+#    内存后端），目标硬件（eMMC/NVMe）受介质带宽影响仍余量充足。
+timeout_s = 60
+
+# ⑦ 刷写目标槽位基址（块地址）：execute(Flash) 第三参数 slot_base 的
+#    建议值——固定写非激活槽位（v0.123.0 口径 slot_b_base=2049），
+#    严禁写当前 Active 槽位（恢复环境从该槽位运行，覆写即变砖）。重启后
+#    由 ota-ab activate 切换启动标志激活新镜像。
+slot_b_base = 2049
+
+[factory]
+# ⑧ 出厂默认配置集：execute(FactoryReset) 时 FactoryReset::write_defaults
+#    写入的四项键值（与 factory_reset.rs `factory_defaults()` 完全一致，
+#    本项仅作集成层核对参考，运行时以代码常量为准）。修改出厂集须同步
+#    修改代码常量与本模板，并经 RST1/INT5 回归。
+device_name = "eneros-edge"
+sample_interval_ms = "100"
+report_interval_ms = "1000"
+log_level = "info"
+
+# ⑨ 配置备份/恢复说明：execute(Backup) 将当前配置集序列化为字节流
+#   （每条目 [key_len][key][value_len][value] + 末尾 4B CRC32 大端，
+#    eneros-storage crc32）缓存于会话内；execute(Restore) 先校验 CRC
+#    再逐条目解析到临时集，全部合法才整体替换（先校验后落地，损坏流
+#    不造成部分污染，RST6 验证）。偏差 D3：恢复环境无文件系统假设，
+#    备份流不落盘，需持久备份时由集成方将字节流经串口/网络导出。
+#    键 ≤ 32B、值 ≤ 128B（超长按字符边界截断，不 panic）、容量 32 条。
+
+[diag]
+# ⑩ 健康探针默认值（偏差 D7）：Diagnostician 的 storage_ok / network_ok /
+#    temperature 三硬件字段经 HealthProbe trait 注入而非直读硬件。恢复
+#    模式默认场景使用 DefaultProbe 占位（恒 ok，temperature 返回 25.0）；
+#    接入真实平台驱动时由集成方实现 HealthProbe 并经
+#    RecoveryModeImpl::with_probe(device, root_key, probe) 注入。
+storage_ok = true
+network_ok = true
+temperature_c = 25.0
+
+# ⑪ 分区健康语义（偏差 D5）：partition_a_ok / partition_b_ok 真实查询自
+#    eneros-ota-ab 分区表（集成方经 load_from_device 恢复后经
+#    diagnostician_mut().set_partition_table 注入），替代蓝图硬编码字符串。
+#    健康判定：state ∈ {Active, Verified, Written} → ok；{Empty, Writing,
+#    Failed, Rolling} → 非 ok；boot_fail_count 为双分区 boot_count 之和；
+#    last_error 记录首个非 ok 分区描述（≤128B 截断）。无分区表时双分区
+#    谨慎判定为非 ok（恢复模式宁缺毋滥）。

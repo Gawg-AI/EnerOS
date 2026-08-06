@@ -1,0 +1,13 @@
+[package]
+name = "eneros-recovery"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Recovery Mode 最小化恢复内核 (v0.125.0) — 固件重刷(SM2 验签) + 恢复出厂 + 系统诊断, no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }
+eneros-crypto = { path = "../crypto" }
+eneros-storage = { path = "../../drivers/storage" }
+eneros-ota-ab = { path = "../ota-ab" }

@@ -1,0 +1,15 @@
+[package]
+name = "eneros-safety-catalog"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 安全工程目录 (CTL-001) — hazard/FMEA/STPA + 设备 safe-state + 安全需求追溯"
+
+[features]
+default = []
+# 启用目录校验完整性检查（host 测试用）。
+std = []
+
+[lib]
+path = "src/lib.rs"

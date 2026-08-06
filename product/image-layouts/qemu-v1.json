@@ -1,0 +1,21 @@
+{
+  "schema": "eneros.image-layout.v1",
+  "id": "qemu-v1",
+  "disk_size_bytes": 134217728,
+  "sector_size": 512,
+  "alignment_bytes": 1048576,
+  "disk_guid": "454e4552-4f53-4001-8000-000000000001",
+  "partitions": [
+    { "role": "PLATFORM_BOOT", "name": "PLATFORM_BOOT", "type_guid": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "size_bytes": 8388608, "attributes": 1 },
+    { "role": "BOOTCTRL", "name": "BOOTCTRL", "type_guid": "454e4552-0002-4001-8000-000000000002", "size_bytes": 1048576, "attributes": 1 },
+    { "role": "BOOT_A", "name": "BOOT_A", "type_guid": "454e4552-0003-4001-8000-000000000003", "size_bytes": 8388608, "attributes": 0 },
+    { "role": "BOOT_B", "name": "BOOT_B", "type_guid": "454e4552-0004-4001-8000-000000000004", "size_bytes": 8388608, "attributes": 0 },
+    { "role": "SYS_A", "name": "SYS_A", "type_guid": "454e4552-0005-4001-8000-000000000005", "size_bytes": 12582912, "attributes": 0 },
+    { "role": "SYS_B", "name": "SYS_B", "type_guid": "454e4552-0006-4001-8000-000000000006", "size_bytes": 12582912, "attributes": 0 },
+    { "role": "RECOVERY", "name": "RECOVERY", "type_guid": "454e4552-0007-4001-8000-000000000007", "size_bytes": 16777216, "attributes": 0 },
+    { "role": "CONFIG", "name": "CONFIG", "type_guid": "454e4552-0008-4001-8000-000000000008", "size_bytes": 4194304, "attributes": 0 },
+    { "role": "DATA", "name": "DATA", "type_guid": "454e4552-0009-4001-8000-000000000009", "size_bytes": 16777216, "attributes": 0 },
+    { "role": "LOGS", "name": "LOGS", "type_guid": "454e4552-000a-4001-8000-00000000000a", "size_bytes": 8388608, "attributes": 0 },
+    { "role": "MODELS", "name": "MODELS", "type_guid": "454e4552-000b-4001-8000-00000000000b", "size_bytes": 16777216, "attributes": 0 }
+  ]
+}

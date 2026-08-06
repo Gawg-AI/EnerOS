@@ -106,6 +106,10 @@ impl MasterTransport for MockMasterTransport {
     fn now_ms(&self) -> u64 {
         self.current_time_ms
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
 }
 
 #[cfg(test)]

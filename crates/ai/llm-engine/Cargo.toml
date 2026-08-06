@@ -4,11 +4,20 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS LLM 推理引擎选型与 FFI 封装（llama.cpp C API + MockEngine，no_std）"
+description = "EnerOS LLM 推理引擎（llama.cpp C API + MockEngine for tests, no_std）"
 
 [dependencies]
 
 [features]
-default = []
-# D3: llama.cpp C 库绑定 + LlamaCppEngine（默认关闭，启用时需链接 libllama）
+# v0.212.0（P0-27）：mock 作为 LLM 后端默认（测试替身）；release 由
+# compile_error 熔断（all(feature=mock, not(debug_assertions))），
+# 生产必须 --no-default-features --features llama-cpp。
+default = ["mock"]
+# Real llama.cpp backend (statically linked C library).
+# Release builds MUST enable this feature — Mock is test-only.
 llama-cpp = []
+# Mock backend (test/dev only). Release builds must NOT use this.
+mock = []
+
+# Fail-closed: if no backend is selected in a non-test build, the crate
+# emits a compile_error. This prevents accidental Mock-only release builds.

@@ -6,11 +6,10 @@
 //! - MPIDR_EL1 (core identification)
 //! - WFI (wait-for-interrupt low-power state)
 
-/// Default number of CPU cores supported by this HAL implementation.
-///
-/// TODO: discover at runtime via the Device Tree in a future version. For
-/// now the QEMU `virt` default of 4 cores is assumed.
-const CORE_COUNT: u32 = 4;
+// BSP-001：核心数按平台配置（QEMU virt=4，飞腾 D2000=8 cluster 拓扑）；
+// 运行时设备树探测为后续项（真机验证 BLOCKED 缺硬件）。
+use super::platform::QEMU_VIRT;
+const CORE_COUNT: u32 = QEMU_VIRT.core_count;
 
 /// ARM64 CPU HAL implementation.
 pub struct Arm64Cpu;

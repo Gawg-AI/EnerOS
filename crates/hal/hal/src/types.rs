@@ -60,7 +60,7 @@ pub enum IrqTrigger {
 }
 
 /// HAL error codes.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HalError {
     /// Invalid parameter supplied.
     InvalidParam,
@@ -72,6 +72,8 @@ pub enum HalError {
     HardwareFault,
     /// Caller lacks required privilege/capability.
     PermissionDenied,
+    /// Hardware busy-wait timed out (HAL-005).
+    Timeout,
 }
 
 impl core::fmt::Display for HalError {
@@ -82,6 +84,7 @@ impl core::fmt::Display for HalError {
             HalError::NotSupported => write!(f, "not supported"),
             HalError::HardwareFault => write!(f, "hardware fault"),
             HalError::PermissionDenied => write!(f, "permission denied"),
+            HalError::Timeout => write!(f, "hardware timeout"),
         }
     }
 }

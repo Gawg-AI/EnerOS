@@ -22,8 +22,8 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::policy::{
-    AgentId, CapabilityVerifier, MockCapabilityVerifier, Permission, RouteDecision, RouteError,
-    RoutingPolicy,
+    AgentId, CapabilityTicketVerifier, CapabilityVerifier, Permission, RouteDecision,
+    RouteError, RoutingPolicy,
 };
 use crate::registry::TopicRegistry;
 use crate::topic::validate_topic_name;
@@ -106,7 +106,8 @@ pub struct MessageRouter {
 }
 
 impl MessageRouter {
-    /// 创建路由器（使用 [`MockCapabilityVerifier`] 作为默认能力验证器）.
+    /// 创建路由器（使用真实 [`CapabilityTicketVerifier`]，空授权表
+    /// fail-closed——未授权订阅/发布被拒，P0-11）。
     ///
     /// `next_sub_id` 从 1 开始单调递增。
     pub fn new(registry: TopicRegistry, policy: RoutingPolicy) -> Self {
@@ -116,7 +117,7 @@ impl MessageRouter {
             policy,
             stats: RouterStats::default(),
             next_sub_id: 1,
-            verifier: Box::new(MockCapabilityVerifier),
+            verifier: Box::new(CapabilityTicketVerifier::new()),
         }
     }
 

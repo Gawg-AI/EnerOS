@@ -4,9 +4,10 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS 需求响应聚合 (v0.173.0) — DR 信号响应 + 负荷聚合, no_std"
+description = "[SPECULATIVE] EnerOS 需求响应聚合 (v0.173.0) — DR 信号响应 + 负荷聚合, no_std"
 
 [dependencies]
+# SPECULATIVE (ARCH-M04/ADR-0029): 未接入任何真实 agent 的报价/结算流水线，不进入 release 闭包；接入前不得计入完成度。
 
 [features]
 default = []

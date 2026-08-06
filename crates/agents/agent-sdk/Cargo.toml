@@ -8,6 +8,7 @@ description = "EnerOS Agent SDK v1.0 (v0.164.0) — 稳定 Agent API + 生命周
 
 [dependencies]
 heapless = { version = "0.8", default-features = false }
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 
 [features]
 default = []

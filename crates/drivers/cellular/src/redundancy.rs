@@ -1,4 +1,4 @@
-//! Dual-network redundancy manager (v0.30.2).
+//! Dual-network redundancy manager (workspace v0.192.0).
 //!
 //! Wraps [`FailoverManager`] with link-state tracking for the primary
 //! (Ethernet) and backup (Cellular) links. Provides a higher-level API

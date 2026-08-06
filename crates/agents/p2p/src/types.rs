@@ -2,14 +2,10 @@
 
 use alloc::string::String;
 
-/// 交割时段
-#[derive(Debug, Clone, PartialEq)]
-pub struct TimeSlot {
-    /// 开始时间戳 (unix ms)
-    pub start: u64,
-    /// 结束时间戳 (unix ms)
-    pub end: u64,
-}
+// PTC-001：TimeSlot 统一为 market-types 定义（UTC **秒**）。
+// 旧自定义定义注释为 unix **毫秒**，与 market-types 秒语义存在 1000 倍
+// 冲突（B10）——已删除本地定义并 re-export 单一来源。
+pub use eneros_market_types::TimeSlot;
 
 /// 卖方报价 (Bid)
 #[derive(Debug, Clone, PartialEq)]

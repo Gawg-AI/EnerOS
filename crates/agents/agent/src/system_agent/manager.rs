@@ -95,40 +95,117 @@ impl super::SystemAgent {
 
 #[cfg(test)]
 mod tests {
-    use alloc::boxed::Box;
     use alloc::rc::Rc;
     use alloc::string::String;
     use core::cell::RefCell;
 
     use super::super::{SystemAgent, SystemConfig};
     use crate::{
-        AgentConfig, AgentContext, AgentEntry, AgentError, AgentFactory, AgentId, AgentRegistry,
-        AgentSpawner, AgentState, AgentType, CrashRecovery, HeartbeatMonitor,
-        InMemoryCheckpointStore, LifecycleManager,
+        AgentConfig, AgentError, AgentId, AgentRegistry, AgentSpawner, AgentState, AgentType,
+        AgentBinary, CrashRecovery, HeartbeatMonitor, InMemoryCheckpointStore, LifecycleManager,
+        StaticAgentRegistry,
     };
 
-    /// Stub AgentEntry for testing (does nothing).
-    struct StubEntry;
-    impl AgentEntry for StubEntry {
-        fn on_init(&mut self, _ctx: &mut AgentContext) -> Result<(), AgentError> {
-            Ok(())
-        }
-        fn on_start(&mut self, _ctx: &mut AgentContext) -> Result<(), AgentError> {
-            Ok(())
-        }
-        fn on_stop(&mut self, _ctx: &mut AgentContext) {}
+    /// Minimal valid ELF64 PIE AArch64 binary for testing (128 bytes).
+    /// Reuses the same const builder as spawner tests.
+    const fn build_minimal_test_elf() -> [u8; 128] {
+        let mut buf = [0u8; 128];
+        buf[0] = 0x7f;
+        buf[1] = 0x45;
+        buf[2] = 0x4c;
+        buf[3] = 0x46;
+        buf[4] = 2;
+        buf[5] = 1;
+        buf[6] = 1;
+        buf[16] = 3;
+        buf[17] = 0; // ET_DYN
+        buf[18] = 0xB7;
+        buf[19] = 0; // EM_AARCH64
+        buf[24] = 0x00;
+        buf[25] = 0x10; // e_entry = 0x1000
+        buf[32] = 64; // e_phoff = 64
+        buf[54] = 56; // e_phentsize
+        buf[56] = 1; // e_phnum = 1
+        let ph = 64;
+        buf[ph] = 1; // PT_LOAD
+        buf[ph + 4] = 5; // PF_R | PF_X
+        buf[ph + 8] = 120; // p_offset
+        buf[ph + 16] = 0x00;
+        buf[ph + 17] = 0x10; // p_vaddr = 0x1000
+        buf[ph + 32] = 8; // p_filesz
+        buf[ph + 40] = 8; // p_memsz
+        buf[ph + 48] = 0x00;
+        buf[ph + 49] = 0x10; // p_align = 0x1000
+        buf[120] = 0x1f;
+        buf[121] = 0x20;
+        buf[122] = 0x03;
+        buf[123] = 0xd5; // NOP
+        buf[124] = 0xc0;
+        buf[125] = 0x03;
+        buf[126] = 0x5f;
+        buf[127] = 0xd6; // RET
+        buf
     }
 
-    /// Mock AgentFactory that returns StubEntry.
-    struct MockFactory;
-    impl AgentFactory for MockFactory {
-        fn create(
-            &self,
-            _agent_type: AgentType,
-            _name: &str,
-        ) -> Result<Box<dyn AgentEntry>, AgentError> {
-            Ok(Box::new(StubEntry))
+    static MINIMAL_ELF: &[u8] = &build_minimal_test_elf();
+
+    /// Static registry mapping Energy → minimal ELF (test agent).
+    #[allow(dead_code)]
+static STUB_REGISTRY: StaticAgentRegistry = StaticAgentRegistry::new(&[(
+        AgentType::Energy,
+        AgentBinary {
+            elf: MINIMAL_ELF,
+            manifest: None,
+        },
+    )]);
+
+    /// SEC-002：带真实 SM2 签名的 registry（manager 成功路径用）。
+    fn signed_manifest() -> crate::AgentPackageManifest {
+        use eneros_crypto::sm2::{sm2_sign, Sm2KeyPair, Sm2PrivateKey};
+        use eneros_crypto::CsRng;
+
+        let name = "energy";
+        let version = "1.0.0";
+        let hash = crate::process::sm3_hash(MINIMAL_ELF);
+        let mut d = [0u8; 32];
+        d[31] = 1;
+        let sk = Sm2PrivateKey::from_bytes(&d).expect("fixed sk");
+        let keypair = Sm2KeyPair::from_private_key(&sk).expect("keypair");
+        let mut msg = Vec::new();
+        msg.extend_from_slice(name.as_bytes());
+        msg.extend_from_slice(version.as_bytes());
+        msg.extend_from_slice(&hash);
+        let mut rng = CsRng::for_deterministic_signature(b"sec002-test", &msg, b"spawner");
+        let sig = sm2_sign(&msg, &keypair.private_key, &keypair.public_key, &mut rng)
+            .expect("deterministic sign");
+        let sig_bytes = sig.to_bytes();
+        let uncompressed = keypair.public_key.to_bytes_uncompressed();
+        let mut pk_bytes = [0u8; 64];
+        pk_bytes.copy_from_slice(&uncompressed[1..65]);
+        crate::AgentPackageManifest {
+            name: String::from(name),
+            version: String::from(version),
+            agent_type: AgentType::Energy,
+            budget: Default::default(),
+            elf_hash: hash,
+            signature: sig_bytes,
+            signer_pubkey: pk_bytes,
         }
+    }
+
+    fn signed_registry() -> &'static StaticAgentRegistry {
+        use std::sync::OnceLock;
+        static REGS: OnceLock<StaticAgentRegistry> = OnceLock::new();
+        REGS.get_or_init(|| {
+            let entries: &'static [(AgentType, AgentBinary)] = Box::leak(Box::new([(
+                AgentType::Energy,
+                AgentBinary {
+                    elf: MINIMAL_ELF,
+                    manifest: Some(signed_manifest()),
+                },
+            )]));
+            StaticAgentRegistry::new(entries)
+        })
     }
 
     /// Helper: create a minimal AgentConfig.
@@ -163,8 +240,11 @@ mod tests {
             lifecycle.clone(),
             checkpoint_store,
         ));
-        let factory: Rc<MockFactory> = Rc::new(MockFactory);
-        let spawner = Rc::new(AgentSpawner::new(reg.clone(), lifecycle.clone(), factory));
+        let spawner = Rc::new(AgentSpawner::new(
+            reg.clone(),
+            lifecycle.clone(),
+            signed_registry(),
+        ));
         let sa = SystemAgent::new(
             reg.clone(),
             spawner,

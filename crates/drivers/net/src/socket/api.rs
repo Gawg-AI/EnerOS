@@ -96,7 +96,7 @@ impl fmt::Display for SocketError {
     }
 }
 
-/// Convert `TcpIpError` (v0.28.0) to `SocketError`.
+/// Convert `TcpIpError` (workspace v0.192.0) to `SocketError`.
 ///
 /// Direct semantic matches are preserved (e.g. `WouldBlock` → `WouldBlock`).
 /// Errors without a direct match (DMA, ARP, route, DHCP, unreachable,
@@ -130,7 +130,7 @@ impl From<TcpIpError> for SocketError {
     }
 }
 
-/// Convert `NetError` (v0.27.0) to `SocketError`.
+/// Convert `NetError` (workspace v0.192.0) to `SocketError`.
 ///
 /// Maps hardware-level errors into socket-layer semantics. `NoBuffer` becomes
 /// `WouldBlock` (RX ring empty / TX ring full), `Timeout` becomes `TimedOut`,

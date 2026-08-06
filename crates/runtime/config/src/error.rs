@@ -24,8 +24,19 @@ pub enum ConfigError {
     ChecksumMismatch,
     /// Requested version does not exist in the history.
     VersionNotFound { version: u64 },
+    /// Compare-and-swap failed: the current value did not match `expected`.
+    /// Carries a snapshot of the current value (when available) so callers can
+    /// retry without a separate read.
+    CasMismatch {
+        path: String,
+        current: Option<String>,
+    },
+    /// A transaction was committed/aborted twice, or used without `begin`.
+    TxnState { reason: String },
     /// Internal error (e.g. serialization failure, invariant violation).
     Internal(String),
+    /// CFG-003：非法配置值（如 Float NaN/Infinity——序列化无法闭环）。
+    InvalidValue(String),
 }
 
 impl From<FsError> for ConfigError {
@@ -48,7 +59,15 @@ impl core::fmt::Display for ConfigError {
             ConfigError::VersionNotFound { version } => {
                 write!(f, "version {} not found in history", version)
             }
+            ConfigError::CasMismatch { path, current } => match current {
+                Some(c) => write!(f, "CAS mismatch on '{}': current value is {}", path, c),
+                None => write!(f, "CAS mismatch on '{}': path not present", path),
+            },
+            ConfigError::TxnState { reason } => {
+                write!(f, "transaction state error: {}", reason)
+            }
             ConfigError::Internal(msg) => write!(f, "internal error: {}", msg),
+            ConfigError::InvalidValue(msg) => write!(f, "invalid config value: {}", msg),
         }
     }
 }

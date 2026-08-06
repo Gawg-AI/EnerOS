@@ -1,0 +1,51 @@
+# EnerOS v0.120.0 Metrics 指标采集 配置模板
+#
+# ① 本文件仅为配置模板：集成层启动时读取，按 [collector] 构造
+#    `MetricsCollectorImpl::new(store, flush_interval_ms)`，按 [store] 构造
+#    `MemoryMetricsStore::new(per_metric_capacity)`，按 [defaults] 决定
+#    `register_defaults()` 注册的 8 项默认指标中哪些启用采集。
+# ② 数据流（蓝图 §4.3）：record 写入 256 条内存环形缓冲（写满丢弃最旧）
+#    → maybe_flush(now_ms) 每 flush_interval_ms 批量刷入 MetricsStore
+#    → query 按时间窗过滤、按时间戳升序返回（详见
+#    docs/observability/metrics-design.md §4）。
+# ③ 容量规划（记忆 §5.6 内存预算）：单条 Metric ≈ 1 KB（name≤64B +
+#    labels≤8×≈120B + value + timestamp），采集缓冲 256 条 ≈ 256 KB；
+#    store 每桶 per_metric_capacity 条，64 项指标满配 ≈ 64 MB 量级，
+#    已贴近 Agent Runtime 分区 ≤ 64 MB 预算上限，集成层须按实际启用
+#    指标数与采集频率核算（公式：指标数 × per_metric_capacity × 1 KB）。
+
+[collector]
+# ④ 批量刷入间隔（毫秒）：maybe_flush(now_ms) 距上次刷入达到该间隔才把
+#    缓冲批量写入存储并清空，否则返回 0（蓝图 §4.5）。默认 1000ms；
+#    高频采集场景可调小（如 200ms），低频运维场景可调大（如 5000ms）。
+flush_interval_ms = 1000
+
+# ⑤ 采集缓冲容量（条）：内存环形缓冲，写满丢弃最旧一条（蓝图 §6.5
+#    存储满 → 丢弃最旧口径）。与代码常量 256 对齐（heapless::Vec 定容），
+#    本项仅作集成层配置核对参考，运行时不可改。
+buffer_capacity = 256
+
+[store]
+# ⑥ 每个指标的最大保留条数：MemoryMetricsStore 按指标名分桶的环形缓冲，
+#    每桶写满丢弃最旧一条。默认 1024 条 ≈ 17 分钟历史（1 秒采集周期），
+#    或 ≈ 2.8 小时（10 秒采集周期）。
+per_metric_capacity = 1024
+
+# ⑦ 保留策略说明：drop_oldest = 写满丢弃最旧（环形覆盖）。TSDB
+#    （v0.25.0 时序数据存储引擎）持久化对接经 MetricsStore trait 预留
+#    （偏差 D3），后续版本将增加 [store.tsdb] 节配置落盘路径/降采样
+#    策略，本版本不落地适配器，本项仅为文档化说明。
+retention = "drop_oldest"
+
+[defaults]
+# ⑧ 8 项系统默认指标采集开关（蓝图 §4.5）：true = 启用采集。集成层按
+#    本表筛选 register_defaults 注册的指标子集；全部启用为推荐口径
+#    （运维监控基线），资源受限场景可关闭业务类指标。
+system_cpu_usage = true          # CPU 使用率（Gauge，%）
+system_mem_usage = true          # 内存使用率（Gauge，%）
+system_temperature = true        # CPU 温度（Gauge，°C）
+agent_active_count = true        # 活跃 Agent 数（Gauge，count）
+agent_request_latency = true     # 请求延迟（Histogram，ms）
+agent_error_count = true         # 错误计数（Counter，count）
+business_control_commands = true # 控制指令数（Counter，count）
+business_optimization_calls = true # 优化调用数（Counter，count）

@@ -1,4 +1,4 @@
-//! EnerOS LLM↔Solver 对话协商 (v0.189.0).
+//! EnerOS LLM↔Solver 对话协商 (workspace v0.192.0).
 //!
 //! 实现 LLM 与 Solver 之间的迭代对话式协商框架：
 //! 多轮迭代推理 + 收敛判定，用于复杂能源优化问题的协同求解。

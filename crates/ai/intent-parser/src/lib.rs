@@ -457,4 +457,53 @@ mod tests {
         assert!((cfg.price[4] - (-50.0)).abs() < 1e-9);
         assert!((cfg.price[5] - 0.5).abs() < 1e-9);
     }
+
+    // ======================================================================
+    // v0.203.0 (P0-16)：prompt→parser 全链路（真实 LLM 输出样本）
+    // ======================================================================
+    #[test]
+    fn p016_llm_output_with_action_alias_parses() {
+        use crate::parser::normalize_llm_json;
+        // LLM 按旧 prompt（action 别名）输出：顶层 power_kw。
+        let llm_out = r#"{"action":"charge","power_kw":-50.0,"reason":"谷时充电","confidence":0.9}"#;
+        let normalized = normalize_llm_json(llm_out);
+        let parser = IntentParser::default();
+        let i = parser.parse_json(&normalized).unwrap();
+        assert_eq!(i.intent_type, IntentType::Charge, "action 别名→intent_type");
+        let p = i.power.unwrap();
+        assert!((p.power_kw - (-50.0)).abs() < 1e-9, "顶层 power_kw→嵌套 power");
+    }
+
+    #[test]
+    fn p016_llm_output_with_markdown_wrapper_parses() {
+        // LLM 用 ```json 围栏 + 前后说明文字包裹。
+        let llm_out = "好的，以下是策略：\n```json\n{\"intent_type\":\"Discharge\",\"time_range\":{\"start_period\":6,\"end_period\":10},\"power\":{\"power_kw\":80.0}}\n```\n以上为参考。";
+        let parser = IntentParser::default();
+        let i = parser.parse_json(llm_out).unwrap();
+        assert_eq!(i.intent_type, IntentType::Discharge);
+        let tr = i.time_range.unwrap();
+        assert_eq!(tr.start_period, 6);
+        let p = i.power.unwrap();
+        assert!((p.power_kw - 80.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn p016_standby_action_maps_to_hold() {
+        use crate::parser::normalize_llm_json;
+        let llm_out = r#"{"action":"standby","reason":"等待调度"}"#;
+        let normalized = normalize_llm_json(llm_out);
+        let parser = IntentParser::default();
+        let i = parser.parse_json(&normalized).unwrap();
+        assert_eq!(i.intent_type, IntentType::Hold, "standby→Hold");
+    }
+
+    #[test]
+    fn p016_discharge_alias_maps() {
+        use crate::parser::normalize_llm_json;
+        let llm_out = r#"{"action":"discharging","power_kw":100.0}"#;
+        let normalized = normalize_llm_json(llm_out);
+        let parser = IntentParser::default();
+        let i = parser.parse_json(&normalized).unwrap();
+        assert_eq!(i.intent_type, IntentType::Discharge);
+    }
 }

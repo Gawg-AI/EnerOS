@@ -7,3 +7,4 @@ license.workspace = true
 description = "EnerOS 云边数据同步 (v0.110.0) — no_std, 事件溯源 + 增量同步 + 重试队列"
 
 [dependencies]
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }

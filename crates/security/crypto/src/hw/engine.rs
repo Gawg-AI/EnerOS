@@ -1,4 +1,4 @@
-//! 硬件加密引擎抽象层 (v0.158.0).
+//! 硬件加密引擎抽象层 (workspace v0.192.0).
 //!
 //! 定义统一的 `CryptoEngine` trait，屏蔽不同硬件平台（飞腾 D2000、鲲鹏 920 KAE）
 //! 的寄存器差异，并提供 `CryptoSelector` 实现硬件优先 + 软件 fallback 策略。
@@ -220,7 +220,7 @@ pub trait CryptoEngine {
 /// 当硬件引擎操作失败时，自动降级到软件实现。
 ///
 /// # 示例
-/// ```ignore
+/// ```
 /// use eneros_crypto::hw::{CryptoSelector, SoftwareCryptoEngine};
 ///
 /// let mut selector = CryptoSelector::new();

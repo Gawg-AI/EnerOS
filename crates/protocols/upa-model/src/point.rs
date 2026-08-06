@@ -105,7 +105,7 @@ pub enum DataSource {
 ///
 /// 将不同协议（Modbus/IEC 104/CAN）的数据归一化为统一格式。
 /// `timestamp_ms` 为注入的 u64 毫秒时间戳（D1）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DataPoint {
     /// 点唯一标识（全局唯一）。
     pub point_id: PointId,

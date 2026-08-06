@@ -1,0 +1,26 @@
+[package]
+name = "eneros-installer-uefi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Fail-closed EnerOS UEFI installer for signed formal disk images"
+build = "build.rs"
+
+[[bin]]
+name = "installer-uefi"
+path = "src/main.rs"
+required-features = ["uefi-app"]
+test = false
+bench = false
+
+[dependencies]
+eneros-boot-protocol = { path = "../boot-protocol", default-features = false }
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["alloc", "fast", "zeroize"] }
+sha2 = { version = "0.10.9", default-features = false }
+uefi = { version = "0.39.0", optional = true, features = ["alloc", "global_allocator", "panic_handler"] }
+
+[features]
+default = []
+uefi-app = ["dep:uefi"]

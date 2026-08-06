@@ -1,0 +1,24 @@
+[package]
+name = "eneros-vpp-scenario"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v0.126.0 VPP 场景端到端验证 — 多机联邦 VPP 聚合 + DR 参与 + Phase 2 出口报告 (no_std)"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }
+
+[dev-dependencies]
+eneros-crypto = { path = "../../security/crypto" }
+eneros-federation = { path = "../federation" }
+eneros-iec61850-model = { path = "../../protocols/iec61850-model" }
+eneros-storage = { path = "../../drivers/storage" }
+eneros-ota-ab = { path = "../../security/ota-ab" }
+eneros-recovery = { path = "../../security/recovery" }
+eneros-pentest = { path = "../../security/pentest" }
+eneros-iec61850-goose = { path = "../../protocols/iec61850-goose" }
+eneros-tsn-time = { path = "../../protocols/tsn-time" }
+eneros-metrics = { path = "../../observability/metrics" }
+eneros-logging = { path = "../../observability/logging" }
+eneros-tracing = { path = "../../observability/tracing" }

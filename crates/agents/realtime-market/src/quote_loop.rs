@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::quote::{QuoteScheduler, QuoteValidator};
 use crate::session::SessionManager;
-use crate::types::{RealtimeClearing, RealtimeQuote};
+use crate::types::{RealtimeClearing, RealtimeQuote, YuanPerMwh};
 use crate::RealtimeError;
 
 /// 实时市场操作 trait
@@ -71,7 +71,7 @@ impl RealtimeLoop {
         RealtimeClearing {
             session_id: quote.session_id,
             seq: quote.seq,
-            clearing_price: quote.price * 0.95,
+            clearing_price: YuanPerMwh(quote.price.0 * 0.95),
             cleared_volume: quote.volume_kwh * 0.90,
             cleared_at,
         }
@@ -131,7 +131,7 @@ mod tests {
             session_id,
             period_start: 900,
             volume_kwh: 200.0,
-            price: 400.0,
+            price: YuanPerMwh(400.0),
             direction: TradeDir::Buy,
             seq,
         }
@@ -208,7 +208,7 @@ mod tests {
         let clearing = RealtimeClearing {
             session_id: id,
             seq: 1,
-            clearing_price: 380.0,
+            clearing_price: YuanPerMwh(380.0),
             cleared_volume: 180.0,
             cleared_at: 1900,
         };
@@ -225,7 +225,7 @@ mod tests {
         let clearing = RealtimeClearing {
             session_id: 999,
             seq: 1,
-            clearing_price: 380.0,
+            clearing_price: YuanPerMwh(380.0),
             cleared_volume: 180.0,
             cleared_at: 1900,
         };
@@ -239,7 +239,7 @@ mod tests {
         let clearing = RealtimeLoop::mock_clearing(&quote, 2000);
         assert_eq!(clearing.session_id, 1);
         assert_eq!(clearing.seq, 5);
-        assert!((clearing.clearing_price - 380.0).abs() < f64::EPSILON);
+        assert_eq!(clearing.clearing_price, YuanPerMwh(380.0));
         assert!((clearing.cleared_volume - 180.0).abs() < f64::EPSILON);
         assert_eq!(clearing.cleared_at, 2000);
     }

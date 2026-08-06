@@ -240,7 +240,9 @@ mod tests {
         assert!(prompt.contains("-30"));
         assert!(prompt.contains("28.5"));
         assert!(prompt.contains("峰时"));
-        assert!(prompt.contains("action"));
+        // v0.203.0（P0-16）：prompt 示例改为 intent_type 契约（不再 action）。
+        assert!(prompt.contains("intent_type"), "prompt 必须输出 intent_type 契约");
+        assert!(!prompt.contains("\"action\""), "不再要求 action 字段");
     }
 
     // ===== T12：DispatchTemplate + AlarmTemplate build 输出 =====

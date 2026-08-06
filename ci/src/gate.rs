@@ -188,7 +188,10 @@ impl QualityGate for DefaultGate {
             Ok(_) => Err(GateError::VulnFound(
                 "cargo-deny reported advisories/license/ban/source issues".to_string(),
             )),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Err(GateError::IoError(
+                "cargo-deny not found in PATH (fail-closed: audit requires cargo-deny)"
+                    .to_string(),
+            )),
             Err(e) => Err(GateError::IoError(format!(
                 "failed to spawn `cargo deny`: {}",
                 e
@@ -296,14 +299,17 @@ impl QualityGate for DefaultGate {
         clippy_cr.name = "clippy";
         clippy_cr.duration_ms = start.elapsed().as_millis() as u64;
 
-        // audit (special: detect degraded mode so we can annotate the result)
+        // audit (special: fail-closed — cargo-deny 缺失视为失败而非降级 PASS)
         let start = Instant::now();
         let audit_cr = if !Self::cargo_deny_available() {
             CheckResult {
                 name: "audit",
-                passed: true,
+                passed: false,
                 duration_ms: start.elapsed().as_millis() as u64,
-                message: Some("cargo-deny not found, audit skipped (degraded)".to_string()),
+                message: Some(
+                    "cargo-deny not found, audit FAILED (fail-closed: toolchain is mandatory)"
+                        .to_string(),
+                ),
             }
         } else {
             let mut cr = CheckResult::from(self.run_audit());
@@ -413,20 +419,23 @@ mod tests {
     }
 
     #[test]
-    fn test_audit_degraded() {
-        // A degraded audit passes but carries a notice.
+    fn test_audit_degraded_is_fail_closed() {
+        // A degraded audit (cargo-deny missing) must now fail closed.
         let degraded = CheckResult {
             name: "audit",
-            passed: true,
+            passed: false,
             duration_ms: 0,
-            message: Some("cargo-deny not found, audit skipped (degraded)".to_string()),
+            message: Some(
+                "cargo-deny not found, audit FAILED (fail-closed: toolchain is mandatory)"
+                    .to_string(),
+            ),
         };
-        assert!(degraded.passed);
-        assert!(degraded.message.as_ref().unwrap().contains("degraded"));
+        assert!(!degraded.passed);
+        assert!(degraded.message.as_ref().unwrap().contains("fail-closed"));
 
-        // A degraded audit must not cause overall failure.
+        // A fail-closed audit must flip the overall result.
         let results = [pass("fmt"), pass("clippy"), degraded, pass("test")];
         let overall_pass = results.iter().all(|r| r.passed);
-        assert!(overall_pass);
+        assert!(!overall_pass);
     }
 }

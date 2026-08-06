@@ -1,0 +1,16 @@
+[package]
+name = "eneros-modbus-tcp-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Modbus TCP slave/server — 真实 TCP，独立 peer 互操作，写命令默认 deny"
+
+[dependencies]
+eneros-modbus-tcp = { path = "../modbus-tcp" }
+eneros-modbus-rtu = { path = "../modbus-rtu" }
+eneros-control-gateway = { path = "../control-gateway" }
+eneros-telemetry-model = { path = "../telemetry-model" }
+
+[dev-dependencies]
+proptest = "1.5"

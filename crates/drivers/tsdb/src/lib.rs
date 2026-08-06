@@ -1,4 +1,4 @@
-//! EnerOS Time-Series Database Engine (v0.25.0)
+//! EnerOS Time-Series Database Engine (workspace v0.192.0)
 //!
 //! Columnar time-series storage engine built on the v0.24.0 [`FileSystem`]
 //! trait. Provides efficient storage and querying for four-remote telemetry
@@ -37,13 +37,13 @@
 //! └─────────────┬────────────────────────────────┘
 //!               │  read_block / write_block / erase_block
 //! ┌─────────────▼────────────────────────────────┐
-//! │  eneros-storage::BlockDevice (v0.23.0)        │
+//! │  eneros-storage::BlockDevice (workspace v0.192.0)        │
 //! └──────────────────────────────────────────────┘
 //! ```
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_tsdb::{TimeSeriesDB, TsdbConfig, TimeSeriesPoint, DeviceId, MetricId, DataQuality};
 //! use eneros_fs::Lfs;
 //! use eneros_storage::{BlockDevice, MockBlockDevice};

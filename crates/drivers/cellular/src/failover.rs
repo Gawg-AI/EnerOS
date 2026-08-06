@@ -1,4 +1,4 @@
-//! Failover management for dual-network redundancy (v0.30.2).
+//! Failover management for dual-network redundancy (workspace v0.192.0).
 //!
 //! Implements a state machine that tracks primary (Ethernet) and backup
 //! (Cellular) links, switching between them on failure and recovering

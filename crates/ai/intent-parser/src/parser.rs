@@ -3,15 +3,111 @@
 //! 桥接 LLM 输出（`Intent`）与 Solver 输入（`ScheduleConfig` / `LpProblem`），
 //! 是双脑架构的关键转换环节。
 
-use alloc::string::ToString;
-
 use eneros_energy_lp_model::config::ScheduleConfig;
 use eneros_energy_lp_model::model::EnergyScheduleModel;
 use eneros_safety_validator::state::SystemState;
 use eneros_solver_core::problem::LpProblem;
 
+use alloc::string::{String, ToString};
+
 use crate::error::IntentError;
 use crate::intent::{Intent, IntentType};
+
+/// 将 LLM 输出的 JSON 归一化为 [`Intent`] 反序列化可接受的形态（P0-16，v0.203.0）。
+///
+/// 处理 LLM 常见偏离：
+/// 1. **多余文本包裹**：剥离 JSON 前后的说明文字/围栏（提取首个 `{...}` 平衡对象）。
+/// 2. **`action` 别名 → `intent_type`**：`{"action":"charge"}` → `{"intent_type":"Charge"}`。
+/// 3. **顶层 `power_kw` → 嵌套 `power`**：`{"power_kw":-50.0}` → `{"power":{"power_kw":-50.0}}`。
+/// 4. **`power_ratio` 顶层 → 嵌套**：同 3。
+///
+/// 返回归一化后的 JSON 字符串；无法提取 JSON 对象时原样返回（由 serde 报错）。
+pub fn normalize_llm_json(raw: &str) -> String {
+    let Some(json) = extract_balanced_json(raw) else {
+        return raw.to_string();
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&json) else {
+        return json;
+    };
+    let Some(obj) = value.as_object_mut() else {
+        return json;
+    };
+
+    // 1) action 别名 → intent_type（大小写不敏感）。
+    if !obj.contains_key("intent_type") {
+        let action_owned = obj.remove("action").and_then(|a| match a {
+            serde_json::Value::String(s) => Some(s),
+            _ => None,
+        });
+        if let Some(action) = action_owned {
+            let canonical: String = match action.to_lowercase().as_str() {
+                "charge" | "charging" => "Charge".to_string(),
+                "discharge" | "discharging" => "Discharge".to_string(),
+                "hold" | "idle" | "standby" => "Hold".to_string(),
+                "stop" => "Stop".to_string(),
+                "emergency_stop" | "emergency" => "EmergencyStop".to_string(),
+                "autonomous" | "auto" => "AutonomousSchedule".to_string(),
+                "setpoint" | "set_setpoint" => "SetSetpoint".to_string(),
+                other => other.to_string(),
+            };
+            obj.insert("intent_type".to_string(), serde_json::Value::String(canonical));
+        }
+    }
+
+    // 2) 顶层 power_kw / power_ratio → 嵌套 power。
+    let mut power = serde_json::Map::new();
+    if let Some(pk) = obj.remove("power_kw") {
+        power.insert("power_kw".to_string(), pk);
+    }
+    if let Some(pr) = obj.remove("power_ratio") {
+        power.insert("power_ratio".to_string(), pr);
+    }
+    if !power.is_empty() {
+        if let Some(existing) = obj.get_mut("power").and_then(|p| p.as_object_mut()) {
+            for (k, v) in power {
+                existing.entry(k).or_insert(v);
+            }
+        } else {
+            obj.insert(
+                "power".to_string(),
+                serde_json::Value::Object(power),
+            );
+        }
+    }
+
+    serde_json::Value::Object(obj.clone()).to_string()
+}
+
+/// 提取字符串中首个平衡的 JSON 对象 `{...}`（含嵌套）。
+///
+/// 用于剥离 LLM 输出前后的说明文字/围栏；无平衡对象时返回 `None`。
+pub fn extract_balanced_json(raw: &str) -> Option<String> {
+    let start = raw.find('{')?;
+    let bytes = raw.as_bytes();
+    let mut depth = 0u32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        match b {
+            b'"' if !escaped => in_string = !in_string,
+            b'\\' if in_string => escaped = !escaped,
+            _ => escaped = false,
+        }
+        if !in_string {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some(raw[start..=i].to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
 
 /// 意图解析器.
 ///
@@ -42,8 +138,12 @@ impl IntentParser {
     /// 解析 JSON 字符串为 `Intent`.
     ///
     /// 失败返回 `IntentError::ParseError`（D1：使用 `serde_json::from_str`）。
+    /// v0.203.0（P0-16）：先经 [`normalize_llm_json`] 归一化 LLM 常见偏离
+    /// （`action` 别名 → `intent_type`、顶层 `power_kw` → 嵌套 `power`、
+    /// 多余文本包裹剥离），再反序列化。
     pub fn parse_json(&self, json: &str) -> Result<Intent, IntentError> {
-        serde_json::from_str(json).map_err(|e| IntentError::ParseError(e.to_string()))
+        let normalized = normalize_llm_json(json);
+        serde_json::from_str(&normalized).map_err(|e| IntentError::ParseError(e.to_string()))
     }
 
     /// 将 `Intent` 转换为 `ScheduleConfig`.

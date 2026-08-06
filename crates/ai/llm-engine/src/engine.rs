@@ -48,4 +48,10 @@ pub trait LlmEngine {
 
     /// 累计统计.
     fn stats(&self) -> &EngineStats;
+
+    /// 卸载模型并释放资源（ARC-006：undeploy 真实化——不再空操作）。
+    /// 返回卸载是否成功；引擎可能不支持（默认返回 Ok）。
+    fn unload(&mut self) -> Result<(), LlmError> {
+        Ok(())
+    }
 }

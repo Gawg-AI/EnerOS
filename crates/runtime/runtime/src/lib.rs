@@ -1,4 +1,4 @@
-//! EnerOS user-space runtime library (v0.4.0)
+//! EnerOS user-space runtime library (workspace v0.192.0)
 //!
 //! Provides `print!`/`println!` macros and console initialization for
 //! seL4 user-space Rust components. Depends on `eneros-sel4-sys` for

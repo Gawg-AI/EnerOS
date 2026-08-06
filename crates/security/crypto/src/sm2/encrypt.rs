@@ -124,7 +124,7 @@ pub fn sm2_encrypt(
         let c1 = c1_point.to_bytes_uncompressed(); // 65 字节
 
         // 3. (x2, y2) = [k]P
-        let s_point = pk.point.scalar_mult(&k);
+        let s_point = pk.point.scalar_mult(&k).to_affine();
         if s_point.is_infinity {
             continue;
         }
@@ -196,7 +196,7 @@ pub fn sm2_decrypt(ciphertext: &[u8], sk: &Sm2PrivateKey) -> Result<Vec<u8>, Cry
     let c1_point = EcPoint::from_bytes(c1_bytes)?;
 
     // 3. (x2, y2) = [d]C1
-    let s_point = c1_point.scalar_mult(&sk.d);
+    let s_point = c1_point.scalar_mult(&sk.d).to_affine();
     if s_point.is_infinity {
         return Err(CryptoError::InternalError);
     }

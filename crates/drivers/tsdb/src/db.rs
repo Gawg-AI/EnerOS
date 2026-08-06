@@ -6,7 +6,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_tsdb::{TimeSeriesDB, TsdbConfig, TimeSeriesPoint, DataQuality, DeviceId, MetricId};
 //! use eneros_fs::Lfs;
 //! use eneros_storage::{BlockDevice, MockBlockDevice};
@@ -768,5 +768,84 @@ mod tests {
                 .len(),
             0
         );
+    }
+
+    // ======================================================================
+    // v0.194.0 (A2)：virtio-blk 真实化 — tsdb 写入 → 断电 → 重挂载数据完整
+    //
+    // 用 VirtioBlkDriver（RamMmio 仿真 QEMU virtio-mmio 设备 + 真实 virtqueue
+    // 协议）作为 BlockDevice：第 1 个驱动实例写入并 close，随后"断电"（丢弃
+    // 驱动实例但保留 RamMmio 的共享磁盘介质 Rc），第 2 个驱动实例经
+    // with_disk_rc 绑定同一介质重挂载，验证数据完整可查。
+    // ======================================================================
+    #[test]
+    fn test_virtio_blk_power_loss_recovery() {
+        use eneros_storage::{
+            NoopCache, RamMmio, RamPool, StorageConfig, StorageType, VirtioBlkDriver,
+        };
+
+        // 构造 virtio-blk 驱动 + Lfs::format；返回 fs 与共享磁盘句柄。
+        fn format_virtio_fs() -> (Lfs, alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<u8>>>) {
+            let mmio = RamMmio::new(2048); // 2048 扇区 × 512 B = 1 MiB 介质
+            let disk_handle = mmio.disk_handle();
+            let pool = RamPool::new(9);
+            let cfg = StorageConfig {
+                storage_type: StorageType::VirtioBlk,
+                base_addr: 0x0A00_0000,
+                irq_num: 48,
+                dma_channel: 0,
+                block_size: 4096,
+                max_transfer_blocks: 256,
+            };
+            let mut dev =
+                VirtioBlkDriver::new(mmio, pool, NoopCache, cfg).expect("virtio-blk init");
+            dev.set_block_count(64); // 适配器 BLOCK_COUNT 上限 64 × 4096 B = 256 KiB
+            let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(dev);
+            (Lfs::format(dev).expect("format on virtio-blk"), disk_handle)
+        }
+
+        // 用共享磁盘句柄重建驱动 + Lfs::mount（不 format）。
+        fn mount_virtio_fs(
+            disk_handle: alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<u8>>>,
+        ) -> Lfs {
+            let mmio = RamMmio::with_disk_rc(disk_handle);
+            let pool = RamPool::new(9);
+            let cfg = StorageConfig {
+                storage_type: StorageType::VirtioBlk,
+                base_addr: 0x0A00_0000,
+                irq_num: 48,
+                dma_channel: 0,
+                block_size: 4096,
+                max_transfer_blocks: 256,
+            };
+            let mut dev =
+                VirtioBlkDriver::new(mmio, pool, NoopCache, cfg).expect("virtio-blk reinit");
+            dev.set_block_count(64);
+            let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(dev);
+            Lfs::mount(dev).expect("mount on virtio-blk")
+        }
+
+        // ---- 第 1 次运行：写入 200 点并 close（flush 落盘）----
+        let config = make_config();
+        let (fs, disk_handle) = format_virtio_fs();
+        let mut db = TimeSeriesDB::open(fs, config.clone()).expect("open");
+        let points: Vec<TimeSeriesPoint> = (0..200)
+            .map(|i| make_point(1000 + i * 10, 7, 3, i as f64 * 0.5))
+            .collect();
+        db.write_batch(&points).expect("write batch");
+        db.close().expect("close flushes to disk");
+        // db 已 drop —— 模拟断电：驱动实例销毁，但磁盘介质（disk_handle）保留。
+
+        // ---- 第 2 次运行：同一介质重挂载，数据必须完整 ----
+        let mut db2 = TimeSeriesDB::open(mount_virtio_fs(disk_handle), config).expect("reopen");
+        let recovered = db2
+            .query_range(DeviceId(7), MetricId(3), 0, u64::MAX)
+            .expect("query after remount");
+        assert_eq!(recovered.len(), 200, "全部 200 点断电后仍完整");
+        for (i, p) in recovered.iter().enumerate() {
+            assert_eq!(p.timestamp, 1000 + i as u64 * 10);
+            assert_eq!(p.value, i as f64 * 0.5);
+            assert_eq!(p.quality, DataQuality::Good);
+        }
     }
 }

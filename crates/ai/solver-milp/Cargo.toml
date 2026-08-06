@@ -9,3 +9,10 @@ description = "EnerOS v0.102.0 MILP solver integration (UC day-ahead scheduling,
 [dependencies]
 eneros-solver-core = { path = "../solver-core" }
 eneros-solver-model = { path = "../solver-model" }
+
+[features]
+# AI-004：真实 HiGHS 后端（highs-ffi 链接 third_party libhighs.a）。
+highs = ["eneros-solver-core/highs-ffi"]
+default = []
+# v0.205.0（P0-27）：测试需 solver-core mock 后端。
+mock = ["eneros-solver-core/mock"]

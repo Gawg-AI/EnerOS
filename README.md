@@ -5,7 +5,7 @@
 > **Tech Stack**: Rust nightly (`no_std`) + seL4 14.0.0 + ARM64 (`aarch64-unknown-none`)
 
 [![CI](https://github.com/Gawg-AI/EnerOS/actions/workflows/ci.yml/badge.svg)](https://github.com/Gawg-AI/EnerOS/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSES.md)
 
 **[中文](#中文) | [English](#english)**
 
@@ -17,7 +17,9 @@
 
 EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power Native + Agent Native + AI Native** 专用操作系统。基于 seL4 微内核形式化验证基座与 Rust `no_std` 运行时构建，采用混合关键性架构（Mixed Criticality），将**实时控制（RTOS 分区）**与**AI Agent（用户态分区）**隔离运行在同一 ARM64 硬件上。
 
-**当前版本**：v0.22.0 — Phase 0（内核地基）已完成，477 个单元测试通过，准备进入 Phase 1（单机 MVP）。
+**当前版本**：workspace v0.192.0 — 单机 MVP 至平台化收敛中：单元测试全量通过（cargo test --workspace 0 fail），真实性与正确性清偿（08 蓝图 S1）完成、内核路线裁决与运行时闭环（S2）推进中；生产发布（v1.0.0）未授权。
+
+> **唯一内核路线 = seL4**（ADR-0023 用户决策，ADR-0030 执行确认，KRN-001）：自研 microkernel 已淘汰（G2 验证缺陷），产品镜像内核/引导为 seL4（`third_party/sel4-build.sh`）；EnerOS root-task 消费 BootInfo 并 spawn EL0 服务（KRN-002~004）。
 
 #### 核心架构
 
@@ -46,10 +48,14 @@ EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power
 | Phase 1 | v0.23.0 ~ v0.74.0 | 60（+8 子版本） | 单机 MVP（Edge Box 端到端） | ⏳ 下一步 |
 | Phase 2 | v0.75.0 ~ v0.126.0 | 53（+1 子版本） | 多机联邦（VPP/微电网） | — |
 | Phase 3 | v0.127.0 ~ v0.170.0 | ~20（裁剪后） | seL4 深度定制 + 国产化 + 信创认证 | — |
-| Phase 4 | v0.171.0 ~ v0.191.0 | 8（产品主路径） | 平台化（市场接入 + SDK 生态） | — |
-| 商用版 | v1.0.0 | 1 | 最小可商用集合（MVP 联邦 + 合规 + SDK） | — |
+| Phase 4 | v0.171.0 ~ v0.191.0 | 8（产品主路径） | 平台化（市场接入 + SDK 生态） | ⏳ 进行中（v0.192.0） |
+| 商用版 | v1.0.0 | 1 | 最小可商用集合（MVP 联邦 + 合规 + SDK） | —（未授权） |
 
 > 主路径共 205 个开发版本（含 13 个刚性子版本），ADR-0001/0002 裁剪后实际约 167 版。
+>
+> **注意（HYG-002）**：README 版本路线图更新为代码现状——实际 workspace 版本 v0.192.0，
+> 高于路线图规划的 v0.191.0（平台化收尾 + 真实性清偿/架构收敛额外版本）；
+> 以 `Cargo.toml`（version.workspace）与 `git` 为准。
 
 #### 关键架构决策（ADR）
 

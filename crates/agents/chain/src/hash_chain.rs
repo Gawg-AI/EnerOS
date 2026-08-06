@@ -83,6 +83,8 @@ mod tests {
             kind: TxKind::Deal,
             payload: alloc::vec![id as u8],
             at: id * 100,
+            author: 0,
+            signature: [0u8; 64],
         }
     }
 

@@ -1,6 +1,6 @@
 //! # eneros-standards
 //!
-//! EnerOS 国际标准参与 (v0.185.0) — Power Native OS 标准提案、联盟协作与一致性检查。
+//! EnerOS 国际标准参与 (workspace v0.192.0) — Power Native OS 标准提案、联盟协作与一致性检查。
 //!
 //! 本 crate 提供：
 //! - 标准提案的起草、章节管理与提交（`proposal` 模块）

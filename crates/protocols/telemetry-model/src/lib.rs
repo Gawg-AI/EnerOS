@@ -38,20 +38,24 @@ extern crate alloc;
 pub mod command;
 pub mod deadband;
 pub mod digital;
+pub mod point_spec;
 pub mod quality;
 pub mod teleadjust;
 pub mod telecontrol;
 pub mod telemetry;
 pub mod telesignaling;
+pub mod unit;
 
 pub use command::{ControlCommand, ControlExecState, DoubleCommand, SingleCommand};
 pub use deadband::DeadbandFilter;
 pub use digital::DigitalState;
+pub use point_spec::{ControlDirection, PointSpec, RampViolation};
 pub use quality::QualityFlag;
 pub use teleadjust::Teleadjust;
 pub use telecontrol::Telecontrol;
 pub use telemetry::Telemetry;
 pub use telesignaling::Telesignaling;
+pub use unit::{Dimension, PhysicalUnit};
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,59 @@
+# EnerOS v0.118.0 Agent 行为审计与异常检测 规则配置模板
+#
+# ① 本文件仅为配置模板：集成层启动时读取本配置，按 [threshold] 构造
+#    `ThresholdConfig`（σ 分级阈值 + 训练/窗口参数）传入
+#    `StatAnomalyDetector::new`，按 [alert] 构造 `AlertQueue`，按
+#    [baseline] 管理基线训练窗口与定期重训。
+# ② 检测规则（蓝图 §4.3，详见 docs/security/behavior-audit-design.md）：
+#    滑动窗口统计最近一分钟事件速率，与 RequestRate 基线比对——偏离
+#    > sigma_low·stddev → Low 级 RateSpike/RateDrop，> sigma_high·stddev
+#    → High 级；stddev≈0 退化为均值 50% 偏离 → Medium（蓝图 §4.5）。
+#    另有非工作时段（<6 或 >22 时控制命令 → Low 级 OffHours）与越权
+#    访问（特权类型作用于陌生 target → Low 级 ScopeExpansion）两条
+#    规则检测，不依赖基线。
+# ③ 告警语义：Alert 携带 id/timestamp_ms/agent_id/anomaly/level/
+#    detail/evidence_seq，evidence_seq 指向触发告警的审计日志序号，
+#    可回溯 v0.117.0 哈希链取证。
+
+[threshold]
+# ④ 低危告警 σ 阈值：|当前速率 - 基线均值| > sigma_low × 基线标准差
+#    → Low 级告警（蓝图 §4.3 默认 2σ）。
+sigma_low = 2.0
+
+# ⑤ 高危告警 σ 阈值：偏离 > sigma_high × 标准差 → High 级告警
+#    （蓝图 §4.3 默认 4σ）。sigma_high 必须大于 sigma_low。
+sigma_high = 4.0
+
+# ⑥ 基线训练最少样本数：历史事件不足此数时 `BaselineTrainer::train`
+#    返回 AnomalyError::InsufficientSamples{min, got}（蓝图 §4.3 默认
+#    100；样本过少时统计基线不可信，拒绝训练优于给出假基线）。
+min_samples = 100
+
+# ⑦ 滑动窗口容量（条）：窗口满时淘汰最旧事件（蓝图 §4.3 默认 64；
+#    实现侧受堆外定容上限 64 钳制，调大无效、调小可降内存占用，
+#    蓝图 §8.3 资源风险对策）。
+window_size = 64
+
+[alert]
+# ⑧ 告警队列容量：`AlertQueue` 定容 FIFO，满时 push 显式返回
+#    AnomalyError::AlertQueueFull，不静默丢弃（告警可审计性）。
+queue_capacity = 256
+
+# ⑨ 联动响应（蓝图 §4.3 核心算法）：Low/Medium 级告警仅记录日志；
+#    High/Critical 级告警须由集成层经 `AlertHandler::on_alert` 通知
+#    System Agent（v0.41.0）执行联动响应（冻结/隔离涉事 Agent）。
+#    本配置不直接驱动联动，仅声明容量与分级语义，联动路由由 System
+#    Agent 侧实现。
+
+[baseline]
+# ⑩ 基线训练窗口（小时）：`BehaviorBaseline.window_hours`，用于基线
+#    有效期判定（蓝图 §4.1 默认 24）。超过窗口期的基线视为过期，须
+#    重训后方可继续检测。
+window_hours = 24
+
+# ⑪ 定期重训（蓝图 §5.4 难点「基线漂移」对策）：Agent 行为随业务自然
+#    变化会使旧基线失准导致误报率升高，集成层应定期（建议不超过
+#    window_hours）用最新历史日志重新执行 `BaselineTrainer::train`
+#    并 `StatAnomalyDetector::load_baseline` 热更新基线；冷启动新
+#    Agent 无历史数据时可先加载同类 Agent 的默认基线模板（蓝图 §8.4
+#    兼容性对策）。

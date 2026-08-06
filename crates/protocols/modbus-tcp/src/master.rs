@@ -158,11 +158,15 @@ impl<'a> ModbusTcpMaster<'a> {
         device: &TcpDevice,
         req: &ModbusRequest,
     ) -> Result<ModbusResponse, ModbusTcpError> {
-        // 建立连接（D7：每次请求建立连接，计数重连）
-        self.transport
-            .connect(device)
-            .map_err(|_| ModbusTcpError::ConnectionFailed)?;
-        self.stats.reconnect_count += 1;
+        // PTC-002：连接复用——仅在未连接时建立（旧 D7 每次请求重连，
+        // 低效且 mock reconnect_count 随请求数增长）。连接断开后
+        // （send/recv 失败）下次请求自动重连。
+        if !self.transport.is_connected(device) {
+            self.transport
+                .connect(device)
+                .map_err(|_| ModbusTcpError::ConnectionFailed)?;
+            self.stats.reconnect_count += 1;
+        }
 
         // 构建请求帧（事务 ID + MBAP + PDU）
         let txn_id = self.next_txn_id();
@@ -812,7 +816,8 @@ mod tests {
         assert_eq!(stats.response_count, 1); // 第一次成功
         assert_eq!(stats.timeout_count, 1); // 第二次超时
         assert_eq!(stats.error_count, 1);
-        assert_eq!(stats.reconnect_count, 2); // 每次请求都连接
+        // PTC-002：同设备连接复用——两次请求只连接一次（旧语义每次请求连接）。
+        assert_eq!(stats.reconnect_count, 1);
     }
 
     // ===== 21. 写多寄存器发送帧验证 =====

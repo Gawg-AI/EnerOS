@@ -30,9 +30,13 @@ pub mod master;
 pub mod point;
 pub mod request;
 
+/// Modbus RTU 协议适配器（ARCH-P01）— 第一个真实 `ProtocolAdapter`。
+pub mod adapter;
+
 #[cfg(test)]
 pub mod mock;
 
+pub use adapter::ModbusRtuAdapter;
 pub use crc::crc16_modbus;
 pub use error::ModbusError;
 pub use frame::ModbusFrame;

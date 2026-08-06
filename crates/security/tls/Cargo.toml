@@ -1,0 +1,25 @@
+[package]
+name = "eneros-tls"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 标准 TLS 1.3 / mTLS 集成 (NET-005) — 基于 rustls 的真实 TLS，替换伪 mTLS；host 服务侧"
+publish = false
+
+[package.metadata.eneros]
+product_allowed = true
+replaces = "eneros-mtls"
+replaces_reason = "eneros-mtls 是自定义伪 mTLS，非标准 TLS，禁止生产；本 crate 用 rustls 提供真实 TLS 1.3"
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls-pemfile = "2.2"
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["ring", "std"] }
+
+[dev-dependencies]
+rcgen = "0.13"
+time = "0.3"
+
+# ring (transitive via rustls/webpki) needs a C compiler on the host. This
+# crate is host-side std only — it is NOT compiled for aarch64-unknown-none.

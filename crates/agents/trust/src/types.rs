@@ -1,4 +1,4 @@
-//! 信誉体系核心类型 (v0.168.0).
+//! 信誉体系核心类型 (workspace v0.192.0).
 
 use alloc::string::String;
 

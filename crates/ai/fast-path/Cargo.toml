@@ -10,3 +10,8 @@ description = "EnerOS v0.70.0 Realtime fast path engine (Solver-only, <500ms, no
 eneros-solver-core = { path = "../solver-core" }
 eneros-energy-lp-model = { path = "../energy-lp-model" }
 eneros-safety-validator = { path = "../safety-validator" }
+
+[features]
+default = []
+# v0.212.0（P0-27）：mock 仅测试/显式启用；生产不依赖 mock。
+mock = ["eneros-solver-core/mock"]

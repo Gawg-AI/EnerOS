@@ -1,4 +1,4 @@
-//! Connection tracking and rate limiting (v0.30.0).
+//! Connection tracking and rate limiting (workspace v0.192.0).
 //!
 //! Provides per-IP connection counting, total connection caps, and a sliding
 //! 1-second rate window to mitigate connection-flood style attacks. Used by

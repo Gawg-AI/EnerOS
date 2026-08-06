@@ -191,7 +191,7 @@ fn test_sm2_keypair_derivation() {
 
     // Verify P = d * G
     let d = U256::from_be_bytes(&d_bytes);
-    let expected_point = EcPoint::scalar_base_mult(&d);
+    let expected_point = EcPoint::scalar_base_mult(&d).to_affine();
     assert_eq!(
         kp.public_key.point.x, expected_point.x,
         "Public key x should match d*G"

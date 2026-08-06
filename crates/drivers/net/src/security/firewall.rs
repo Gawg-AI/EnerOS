@@ -1,4 +1,4 @@
-//! Firewall rule engine with connection tracking (v0.30.0).
+//! Firewall rule engine with connection tracking (workspace v0.192.0).
 //!
 //! Provides a simple first-match-wins rule list backed by an IPv4 CIDR source
 //! filter, plus a default policy that consults the [`ConnectionTracker`] from

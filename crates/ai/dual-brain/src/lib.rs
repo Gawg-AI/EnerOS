@@ -57,6 +57,7 @@ mod tests {
     use eneros_fast_path::selector::PathType;
     use eneros_fast_path::state::RealtimeState;
     use eneros_llm_engine::engine::LlmEngine;
+    use eneros_safety_validator::state::SystemState;
     use eneros_solver_core::mock::MockSolver;
 
     use super::*;
@@ -206,11 +207,26 @@ mod tests {
         let _coord = DualBrainCoordinator::default_with_mock();
     }
 
+    /// 构造安全系统状态（P0-17：避免默认态触发 Fatal 校验失败）。
+    fn safe_state() -> RealtimeState {
+        RealtimeState {
+            system: SystemState {
+                voltage_v: 380.0,
+                current_a: 10.0,
+                frequency_hz: 50.0,
+                soc_pct: 0.8,
+                timestamp_ms: 0,
+            },
+            current_price: 0.5,
+            load_demand: None,
+        }
+    }
+
     // ===== T13: execute 快路径 =====
     #[test]
     fn t13_execute_fast_path() {
         let mut coord = DualBrainCoordinator::default_with_mock();
-        let state = RealtimeState::default();
+        let state = safe_state();
         // 第一次：SlowPath（初始化基线）
         let _ = coord.execute(&state, 0).unwrap();
         // 第二次：状态未变，间隔内 → FastPath
@@ -222,7 +238,7 @@ mod tests {
     #[test]
     fn t14_execute_slow_path_end_to_end() {
         let mut coord = DualBrainCoordinator::default_with_mock();
-        let state = RealtimeState::default();
+        let state = safe_state();
         let result = coord.execute(&state, 0);
         assert!(result.is_ok());
     }
@@ -231,7 +247,7 @@ mod tests {
     #[test]
     fn t15_execute_slow_path_returns_slow_path() {
         let mut coord = DualBrainCoordinator::default_with_mock();
-        let state = RealtimeState::default();
+        let state = safe_state();
         let result = coord.execute(&state, 0).unwrap();
         assert_eq!(result.path_type, PathType::SlowPath);
     }
@@ -240,7 +256,7 @@ mod tests {
     #[test]
     fn t16_execute_slow_path_latency() {
         let mut coord = DualBrainCoordinator::default_with_mock();
-        let state = RealtimeState::default();
+        let state = safe_state();
         let result = coord.execute(&state, 0).unwrap();
         assert!(result.latency.llm_inference_ms > 0);
     }
@@ -249,7 +265,7 @@ mod tests {
     #[test]
     fn t17_execute_slow_path_feedback_some() {
         let mut coord = DualBrainCoordinator::default_with_mock();
-        let state = RealtimeState::default();
+        let state = safe_state();
         let result = coord.execute(&state, 0).unwrap();
         assert!(result.feedback.is_some());
     }
@@ -258,7 +274,7 @@ mod tests {
     #[test]
     fn t18_execute_slow_path_schedule_non_empty() {
         let mut coord = DualBrainCoordinator::default_with_mock();
-        let state = RealtimeState::default();
+        let state = safe_state();
         let result = coord.execute(&state, 0).unwrap();
         assert!(!result.schedule.schedule.is_empty());
     }
@@ -290,7 +306,7 @@ mod tests {
         let solver = MockSolver::new();
         let mut coord = DualBrainCoordinator::new(config, llm_engine, solver, sink);
 
-        let state = RealtimeState::default();
+        let state = safe_state();
         let _result = coord.execute(&state, 0).unwrap();
         assert_eq!(commands.borrow().len(), 1);
     }
@@ -299,7 +315,7 @@ mod tests {
     #[test]
     fn t20_request_id_format() {
         let mut coord = DualBrainCoordinator::default_with_mock();
-        let state = RealtimeState::default();
+        let state = safe_state();
         let result = coord.execute(&state, 0).unwrap();
         let feedback = result.feedback.as_ref().unwrap();
         assert_eq!(feedback.request_id, "req-0-1");
@@ -309,7 +325,7 @@ mod tests {
     #[test]
     fn t21_end_to_end_state_to_path_type() {
         let mut coord = DualBrainCoordinator::default_with_mock();
-        let state = RealtimeState::default();
+        let state = safe_state();
         let result = coord.execute(&state, 0).unwrap();
         assert_eq!(result.path_type, PathType::SlowPath);
     }
@@ -319,5 +335,73 @@ mod tests {
     fn t22_bottleneck_all_zero() {
         let lb = LatencyBreakdown::default();
         assert_eq!(lb.bottleneck(), "none");
+    }
+
+    // ======================================================================
+    // v0.206.0 (P0-17)：安全屏障闭环——Fatal 违规阻断命令下发
+    // ======================================================================
+    #[test]
+    fn p017_fatal_soc_blocks_sink_and_reports() {
+        use crate::coordinator::DualBrainMockEngine;
+        use crate::sink::MockCommandSink;
+        use eneros_llm_engine::engine::LlmEngine;
+        use eneros_solver_core::result::{SolveResult, SolveStatus};
+
+        let config = ScheduleConfig::default();
+        let n = config.num_periods;
+        let cap = config.battery_capacity_kwh;
+        // 故障注入：求解器输出 SOC = 0.02（< 0.05 安全下限）→ Fatal。
+        // solution 布局：charge[0..n]=0、discharge[n..2n]=0、soc[2n..3n]=0.02*cap。
+        let mut solution = alloc::vec![0.0f64; 3 * n];
+        for t in 0..n {
+            solution[2 * n + t] = 0.02 * cap;
+        }
+        let solver = MockSolver::with_result(SolveResult {
+            status: SolveStatus::Optimal,
+            objective_value: 0.0,
+            solution,
+            elapsed_ms: 0,
+            dual_solution: None,
+        });
+        let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
+        let sink = alloc::boxed::Box::new(MockCommandSink::new());
+        let mut coord =
+            DualBrainCoordinator::new(config, llm_engine, solver, sink);
+
+        let state = safe_state();
+        let err = coord.execute(&state, 1000).unwrap_err();
+        assert!(
+            matches!(err, DualBrainError::SafetyFatal(_)),
+            "SOC<0.05 必须 Fatal，实际 {err:?}"
+        );
+        // sink 零写入（命令未下发）。
+        assert_eq!(
+            coord.sink.write_count(),
+            0,
+            "Fatal 违规下 sink 必须零写入（P0-17）"
+        );
+    }
+
+    #[test]
+    fn p017_normal_soc_writes_sink() {
+        use crate::coordinator::DualBrainMockEngine;
+        use crate::sink::MockCommandSink;
+        use eneros_llm_engine::engine::LlmEngine;
+
+        let config = ScheduleConfig::default();
+        let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
+        let solver = MockSolver::new();
+        let sink = alloc::boxed::Box::new(MockCommandSink::new());
+        let mut coord =
+            DualBrainCoordinator::new(config, llm_engine, solver, sink);
+
+        // 正常 SOC=0.8 → 慢路径可下发命令（sink 有写入）。
+        let state = safe_state();
+        let _ = coord.execute(&state, 0).unwrap();
+        assert!(
+            coord.sink.write_count() >= 1,
+            "正常路径应下发命令，实际 {} 条",
+            coord.sink.write_count()
+        );
     }
 }

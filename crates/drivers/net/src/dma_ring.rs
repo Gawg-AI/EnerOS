@@ -604,3 +604,137 @@ mod tests {
         assert!(!desc.is_last());
     }
 }
+
+// ============================================================================
+// v0.196.0 (P0-6)：真实 DMA 描述符环编程
+// ============================================================================
+
+/// DMA 环物理布局（描述符数组 + 数据缓冲在一个连续 DMA 池内）。
+///
+/// 布局（offset 相对池物理基址）：
+/// - `0x0000`: TX 描述符数组（`tx_count × 16 B`）
+/// - `tx_offset`: RX 描述符数组（`rx_count × 16 B`）
+/// - `rx_desc_end`: TX 帧缓冲（`tx_count × mtu`）
+/// - 其后: RX 帧缓冲（`rx_count × mtu`）
+pub struct DmaLayout {
+    /// TX 描述符数组物理基址。
+    pub tx_desc_pa: u64,
+    /// RX 描述符数组物理基址。
+    pub rx_desc_pa: u64,
+    /// TX 帧缓冲 0 的物理基址。
+    pub tx_buf_base_pa: u64,
+    /// RX 帧缓冲 0 的物理基址。
+    pub rx_buf_base_pa: u64,
+    /// 单个描述符字节数。
+    pub desc_size: usize,
+    /// 单个帧缓冲字节数。
+    pub buf_size: usize,
+}
+
+impl DmaRing {
+    /// 计算 DMA 环在池内的物理布局。
+    ///
+    /// `pool_base_pa` 是 DMA 池物理基址；`mtu` 是帧缓冲大小（含以太网头）。
+    pub fn layout(pool_base_pa: u64, tx_count: usize, rx_count: usize, mtu: usize) -> DmaLayout {
+        const DESC_SIZE: usize = core::mem::size_of::<DmaDescriptor>(); // 16 B
+        let tx_desc_off = 0u64;
+        let tx_desc_len = (tx_count * DESC_SIZE) as u64;
+        let rx_desc_off = tx_desc_off + tx_desc_len;
+        let rx_desc_len = (rx_count * DESC_SIZE) as u64;
+        let tx_buf_off = rx_desc_off + rx_desc_len;
+        let tx_buf_len = (tx_count * mtu) as u64;
+        let rx_buf_off = tx_buf_off + tx_buf_len;
+        DmaLayout {
+            tx_desc_pa: pool_base_pa + tx_desc_off,
+            rx_desc_pa: pool_base_pa + rx_desc_off,
+            tx_buf_base_pa: pool_base_pa + tx_buf_off,
+            rx_buf_base_pa: pool_base_pa + rx_buf_off,
+            desc_size: DESC_SIZE,
+            buf_size: mtu,
+        }
+    }
+
+    /// 用真实物理地址编程所有描述符的 `buffer_addr`（P0-6）。
+    ///
+    /// 每个 TX 描述符 i 指向 `layout.tx_buf_base_pa + i*mtu`；
+    /// 每个 RX 描述符 i 指向 `layout.rx_buf_base_pa + i*mtu`。
+    /// RX 描述符同时置 OWN=1 交给 DMA。
+    pub fn program_descriptors(&mut self, layout: &DmaLayout) {
+        for (i, desc) in self.tx_desc.iter_mut().enumerate() {
+            desc.buffer_addr = layout.tx_buf_base_pa + (i * layout.buf_size) as u64;
+        }
+        for (i, desc) in self.rx_desc.iter_mut().enumerate() {
+            desc.buffer_addr = layout.rx_buf_base_pa + (i * layout.buf_size) as u64;
+            desc.set_owned_by_dma(true);
+            desc.set_ioc(true);
+        }
+    }
+
+    /// 返回 TX 描述符数组物理基址（写入 DMA 寄存器）。
+    pub fn tx_desc_base_pa(&self, layout: &DmaLayout) -> u64 {
+        layout.tx_desc_pa
+    }
+
+    /// 返回 RX 描述符数组物理基址（写入 DMA 寄存器）。
+    pub fn rx_desc_base_pa(&self, layout: &DmaLayout) -> u64 {
+        layout.rx_desc_pa
+    }
+}
+
+#[cfg(test)]
+mod real_dma_tests {
+    use super::*;
+    use crate::dma_mem::{DmaPool, RamDmaPool};
+
+    #[test]
+    fn test_layout_offsets() {
+        const DS: u64 = core::mem::size_of::<DmaDescriptor>() as u64;
+        let layout = DmaRing::layout(0x1000_0000, 4, 8, 1500);
+        assert_eq!(layout.tx_desc_pa, 0x1000_0000);
+        assert_eq!(layout.rx_desc_pa, 0x1000_0000 + 4 * DS);
+        assert_eq!(layout.tx_buf_base_pa, 0x1000_0000 + 4 * DS + 8 * DS);
+        assert_eq!(
+            layout.rx_buf_base_pa,
+            0x1000_0000 + 4 * DS + 8 * DS + 4 * 1500
+        );
+    }
+
+    #[test]
+    fn test_program_descriptors_fills_real_addresses() {
+        let mut ring = DmaRing::new(4, 8);
+        let layout = DmaRing::layout(0x1000_0000, 4, 8, 1500);
+        ring.program_descriptors(&layout);
+        // TX 描述符 buffer_addr 真实填充。
+        assert_eq!(ring.tx_desc[0].buffer_addr, layout.tx_buf_base_pa);
+        assert_eq!(
+            ring.tx_desc[3].buffer_addr,
+            layout.tx_buf_base_pa + 3 * 1500
+        );
+        // RX 描述符 buffer_addr 真实填充且 OWN=1（交给 DMA）。
+        assert_eq!(ring.rx_desc[0].buffer_addr, layout.rx_buf_base_pa);
+        assert_eq!(
+            ring.rx_desc[7].buffer_addr,
+            layout.rx_buf_base_pa + 7 * 1500
+        );
+        for desc in &ring.rx_desc {
+            assert!(desc.is_owned_by_dma(), "RX desc 必须交给 DMA");
+        }
+        // 描述符物理地址与池布局一致。
+        const DS: u64 = core::mem::size_of::<DmaDescriptor>() as u64;
+        assert_eq!(ring.tx_desc_base_pa(&layout), 0x1000_0000);
+        assert_eq!(ring.rx_desc_base_pa(&layout), 0x1000_0000 + 4 * DS);
+    }
+
+    #[test]
+    fn test_pool_capacity_fits_layout() {
+        // 池容量 = 描述符 + 缓冲；验证足够容纳。
+        let tx_count = 4usize;
+        let rx_count = 8usize;
+        let mtu = 1500usize;
+        let ds = core::mem::size_of::<DmaDescriptor>();
+        let need = tx_count * ds + rx_count * ds + (tx_count + rx_count) * mtu;
+        let pool = RamDmaPool::new(need, 0x1000_0000);
+        assert!(pool.len() >= need);
+        assert_eq!(pool.phys_base(), 0x1000_0000);
+    }
+}

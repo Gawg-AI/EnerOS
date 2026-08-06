@@ -4,9 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS 辅助服务参与 (v0.172.0) — 调频/调峰 + AGC 接口, no_std"
+description = "[SPECULATIVE] EnerOS 辅助服务参与 (v0.172.0) — 调频/调峰 + AGC 接口, no_std"
 
 [dependencies]
+# SPECULATIVE (ARCH-M04/ADR-0029): 未接入任何真实 agent 的报价/结算流水线，不进入 release 闭包；接入前不得计入完成度。
+# PTC-001：BidAck 统一来自 market-types（同名不同形消除）。
+eneros-market-types = { path = "../market-types" }
 
 [features]
 default = []

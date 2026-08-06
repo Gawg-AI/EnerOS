@@ -1,0 +1,91 @@
+# EnerOS v0.123.0 A/B 分区 OTA 升级 配置模板
+#
+# ① 本文件仅为配置模板：集成层启动时读取，按 [partition] 核对槽位布局常量
+#    （与 crates/security/ota-ab/src/ab_partition.rs 中 META_BLOCK /
+#    SLOT_A_BASE_BLOCK / PARTITION_BLOCKS / SLOT_B_BASE_BLOCK 一致），按
+#    [upgrade] 构造 `UpgradeMeta`（chunk_size/total_chunks）与启动健康检查
+#    参数，按 [security] 注入设备根公钥构造 `AbPartitionOta::new(device,
+#    root_key, now_ms)`（详见 docs/security/ota-ab-design.md §4/§5）。
+# ② 数据流（蓝图 §4.3）：prepare_upgrade 选非激活分区置 Writing → 下载侧按
+#    chunk_size 分块经 write_chunk 读-改-写落盘（downloaded_chunks 推进，
+#    写满 total_chunks 置 Written）→ verify 从存储回读镜像做 SM3 增量哈希
+#    常时比对 + SM2 根公钥验签（双过置 Verified，任一失败置 Failed）→
+#    activate 原子切换启动标志（新分区 Active、旧分区保留 Verified 备用、
+#    boot_attempts 清零）→ 重启后每次上电调用 boot_health_check，连续失败
+#    超过 max_boot_attempts 自动回滚旧版本。
+# ③ 存储规划（记忆 §5.6 内存预算）：单分区容量 = partition_blocks × 块大小
+#    （512B 块 → 1 MiB；4 KiB 块 → 8 MiB；8 KiB 块 → 16 MiB），设备总占用
+#    = 保留块 + 双分区；选型时须保证单分区容量 ≥ 最大镜像尺寸（当前性能
+#    基线 10 MiB 镜像，蓝图 §6.3/§7.2），OTA 写/读缓冲按块大小各 1 块
+#    （alloc 堆上临时分配），分区表序列化定长 307B 单保留块即可容纳。
+
+[partition]
+# ④ 分区表保留块地址（块 0）：`save_to_device`/`load_from_device` 持久化
+#    分区表的落点，定长 307B 布局 = 魔数 "EOTA"(4B) + active_slot(1B) +
+#    双分区全字段(2×151B) + CRC32(4B)（偏差 D5）；CRC/魔数校验失败回退
+#    安全默认（A Active v0.0.0），任何单块掉电撕裂不会导致误启动。
+meta_block = 0
+
+# ⑤ 槽位 A 起始块地址：紧跟保留块之后。A 为出厂默认激活分区（v0.0.0），
+#    首次 OTA 的写入目标为 B。
+slot_a_base = 1
+
+# ⑥ 单分区块数：与代码常量 PARTITION_BLOCKS=2048 对齐（运行时不可改，
+#    本项仅作集成层核对参考）。槽位 B 起始块 = slot_a_base +
+#    partition_blocks = 1 + 2048 = 2049。单分区字节容量 = 2048 × 块大小，
+#    随后端 `BlockDevice::block_size()` 缩放（见 ③）。
+partition_blocks = 2048
+
+# ⑦ 槽位 B 起始块地址：slot_a_base + partition_blocks = 2049。B 为首个
+#    OTA 写入槽位；此后 A/B 交替互为"激活分区 / 升级目标分区"。
+slot_b_base = 2049
+
+[upgrade]
+# ⑧ 下载/写入分块大小（字节）：`UpgradeMeta.chunk_size`，total_chunks =
+#    ceil(image_size / chunk_size)。write_chunk 内部按块大小读-改-写，
+#    容忍非块对齐分块；64 KiB 在下载吞吐与内存占用间折中（单分块缓冲
+#    64 KiB，Agent Runtime ≤ 64 MB 预算内）。10 MiB 镜像 = 160 块。
+chunk_size = 65536
+
+# ⑨ 最大启动尝试次数：activate 后每次上电调用 `boot_health_check(ota,
+#    now_ms)`，boot_attempts 超过本值自动回滚（新分区 Failed、旧分区
+#    恢复 Active、本次启动判定失败返回 false）。蓝图 §8.5 坑点：健康
+#    检查误判会导致频繁回滚——"启动成功"判定应由集成层结合看门狗
+#    （v0.13.0）+ 应用心跳综合给出，仅在确认新镜像异常时才让计数累加
+#    到超限；调大本值会延长故障发现时间，调小则放大误判风险，3 为蓝图
+#    默认口径。
+max_boot_attempts = 3
+
+# ⑩ 下载超时与重试策略（集成层职责，本 crate 不感知网络）：建议单分块
+#    下载超时 5s、整块重试 3 次、总下载超时 30min；任一重试耗尽即中止
+#    本次升级（分区停留 Writing，不影响当前 Active 分区运行），稍后
+#    可重新 prepare_upgrade 全量重传（INT3 验证重试路径）。镜像来源
+#    须经 v0.28.0 TCP/IP 栈 + 纵向加密通道（v0.98.1）下载，URL 长度
+#    ≤ 128B（`UpgradeMeta.download_url` 定容口径）。
+download_timeout_secs = 5
+download_retries = 3
+total_download_timeout_secs = 1800
+
+[security]
+# ⑪ SM2 设备根公钥：随出厂烧录/Secure Boot（v0.113.0）信任链预置，
+#    集成层以 `Sm2PublicKey`（未压缩点 x‖y，64 字节）注入
+#    `AbPartitionOta::new`；本模板不落具体数值（设备密钥属敏感配置，
+#    记忆 §3.1 禁入仓），部署时由密钥管理系统下发。私钥仅存于签名
+#    服务端，永不上设备。root_key 泄露/错配将导致所有镜像验签失败
+#    （SignatureInvalid），更换根密钥须走 Secure Boot 同链的密钥
+#    轮换流程。
+# root_key_hex = "<64 字节未压缩点 x‖y 的 hex，由 KMS 下发，勿入仓>"
+
+# ⑫ 签名强制验证：verify 固定执行"SM3 哈希常时比对 + SM2 根公钥验签"
+#    双重校验，无旁路开关（蓝图 §7.3 安全验收：篡改镜像必须被拒绝；
+#    INT4 验证签名篡改 → SignatureInvalid、数据篡改 → HashMismatch，
+#    分区均置 Failed）。调试场景也不得关闭——未验签镜像流入设备即
+#    破坏 Secure Boot 信任链，如需开发自测镜像请用测试根密钥对签名。
+#    本项仅作文档化说明，代码中不存在对应配置分支。
+signature_mandatory = true
+
+# ⑬ SM3 常时比较说明：镜像哈希比对使用 eneros-crypto `ct_eq` 常时
+#    比较（v0.31.0 国密库），不随字节差异提前退出，规避时序侧信道；
+#    SM3 哈希经 `Sm3Hasher` 对回读镜像增量计算（D2），比对对象为
+#    `UpgradeMeta.image_hash`（签名服务端随镜像一并下发的期望值）。
+sm3_constant_time = true

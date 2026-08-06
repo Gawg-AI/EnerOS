@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS AI 运维 (v0.191.0) — 异常检测 + 预测性维护 + 自愈, no_std"
+description = "EnerOS 运维分析 (v0.191.0) — 统计/规则异常检测 + 预测性维护 + 自愈, no_std（VRF-006 无 AI 推理）"
 
 [dependencies]
 

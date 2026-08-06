@@ -1,0 +1,11 @@
+[package]
+name = "eneros-data-governance"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 数据治理 — deletion propagation/legal hold/telemetry privacy/privacy assessment (DATA-005/006/009/010), no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }
+eneros-crypto = { path = "../../security/crypto", default-features = false }

@@ -83,11 +83,15 @@ impl Pl011Uart {
 
 impl crate::HalSerial for Pl011Uart {
     fn write(&self, data: &[u8]) -> Result<usize, crate::HalError> {
-        for &byte in data {
-            while unsafe { Self::r32(self.base, PL011_FR) } & FR_TXFF != 0 {
-                core::hint::spin_loop();
-            }
+        for (i, &byte) in data.iter().enumerate() {
+            // HAL-005：有界忙等 TX FIFO 空出（旧代码无限忙等）。
+            crate::wait_until(
+                || unsafe { Self::r32(self.base, PL011_FR) } & FR_TXFF == 0,
+                UART_TX_MAX_ITERS,
+            )
+            .map_err(|_| crate::HalError::Timeout)?;
             unsafe { Self::w32(self.base, PL011_DR, byte as u32) };
+            let _ = i;
         }
         Ok(data.len())
     }
@@ -105,10 +109,12 @@ impl crate::HalSerial for Pl011Uart {
     }
 
     fn flush(&self) -> Result<(), crate::HalError> {
-        while unsafe { Self::r32(self.base, PL011_FR) } & FR_BUSY != 0 {
-            core::hint::spin_loop();
-        }
-        Ok(())
+        // HAL-005：有界忙等 BUSY 清除（旧代码无限忙等）。
+        crate::wait_until(
+            || unsafe { Self::r32(self.base, PL011_FR) } & FR_BUSY == 0,
+            UART_FLUSH_MAX_ITERS,
+        )
+        .map_err(|_| crate::HalError::Timeout)
     }
 }
 

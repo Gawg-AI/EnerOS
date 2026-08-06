@@ -84,6 +84,8 @@ mod tests {
             deal_id: id,
             seller: 1,
             buyer: 2,
+            seller_seq: 0,
+            buyer_seq: 0,
             volume_kwh: 100.0,
             price: 0.65,
             window_start: 1000,

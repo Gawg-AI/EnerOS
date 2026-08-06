@@ -55,6 +55,11 @@ impl CheckItem {
             version: String::from(version),
         }
     }
+
+    /// 更新检查状态（VRF-006 动态判定用）。
+    pub fn set_status(&mut self, status: CheckStatus) {
+        self.status = status;
+    }
 }
 
 /// 验证报告.
@@ -73,6 +78,25 @@ pub struct VerificationReport {
 }
 
 impl VerificationReport {
+    /// 可写访问检查项（VRF-006 动态判定用）。
+    pub fn items_mut(&mut self) -> &mut [CheckItem] {
+        &mut self.items
+    }
+
+    /// 依据当前 items 状态重算通过/失败计数（VRF-006 动态判定后调用）。
+    pub fn recompute(&mut self) {
+        self.passed_count = self
+            .items
+            .iter()
+            .filter(|i| i.status == CheckStatus::Passed)
+            .count() as u32;
+        self.failed_count = self
+            .items
+            .iter()
+            .filter(|i| i.status == CheckStatus::Failed)
+            .count() as u32;
+    }
+
     /// 创建验证报告并自动统计.
     pub fn new(title: &str, items: Vec<CheckItem>) -> Self {
         let total = items.len() as u32;

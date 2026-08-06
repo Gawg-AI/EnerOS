@@ -92,14 +92,18 @@ mod tests {
             kind: TxKind::Deal,
             payload: alloc::vec![0x01],
             at: 100,
+            author: 0,
+            signature: [0u8; 64],
         };
         let tx2 = TxRecord {
             tx_id: 2,
             kind: TxKind::Settlement,
             payload: alloc::vec![0x02],
             at: 200,
+            author: 0,
+            signature: [0u8; 64],
         };
-        let r1 = compute_merkle_root(&[tx1.clone()]);
+        let r1 = compute_merkle_root(core::slice::from_ref(&tx1));
         let r2 = compute_merkle_root(&[tx2]);
         assert_ne!(r1, r2);
     }
@@ -118,6 +122,8 @@ mod tests {
             kind: TxKind::Reputation,
             payload: alloc::vec![0xFF],
             at: 500,
+            author: 0,
+            signature: [0u8; 64],
         };
         let blk = create_block(1, Sm3Digest::ZERO, alloc::vec![tx.clone()], 500, 1);
         assert_eq!(blk.merkle_root, compute_merkle_root(&[tx]));

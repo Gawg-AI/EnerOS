@@ -1,0 +1,10 @@
+[package]
+name = "eneros-slo-alert"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS SLO 仪表盘基线 + 告警/Runbook 目录 (OBS-011/012), no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }

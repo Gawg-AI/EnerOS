@@ -35,6 +35,12 @@ fn gen_keypair() -> Sm2KeyPair {
     Sm2KeyPair::generate(&mut rng).expect("密钥对生成失败")
 }
 
+/// 生成确定性不同密钥对（seed 不同 → 密钥不同；CsRng::new 无种子时每次相同）。
+fn gen_keypair_seed(seed: u8) -> Sm2KeyPair {
+    let mut rng = CsRng::from_seed(&[seed; 32]);
+    Sm2KeyPair::generate(&mut rng).expect("密钥对生成失败")
+}
+
 /// 创建确定性 RNG（种子全 42）.
 fn gen_rng() -> CsRng {
     CsRng::from_seed(&[42u8; 32])
@@ -269,8 +275,8 @@ fn test_tampered_signature() {
 #[test]
 fn test_untrusted_root() {
     // 生成两个独立的 CA
-    let ca1_kp = gen_keypair();
-    let ca2_kp = gen_keypair();
+    let ca1_kp = gen_keypair_seed(1);
+    let ca2_kp = gen_keypair_seed(2);
 
     let ca1_req = CertRequest::new(
         DistinguishedName::new("CA1"),

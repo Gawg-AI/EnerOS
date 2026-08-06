@@ -1,4 +1,4 @@
-//! EnerOS 信创认证 + 等保 2.0 三级 (v0.170.0).
+//! EnerOS 信创认证 + 等保 2.0 三级 (workspace v0.192.0).
 //!
 //! Phase 3 出口标准验证模块，提供信创认证检查、等保 2.0 三级检查
 //! 以及综合出口验证能力。
@@ -6,7 +6,7 @@
 //! # 架构
 //! ```text
 //! ┌──────────────────────────────────────────────────────┐
-//! │  eneros-compliance (v0.170.0)                         │
+//! │  eneros-compliance (workspace v0.192.0)                         │
 //! │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │
 //! │  │ types    │  │xinchuang │  │ dengbao           │  │
 //! │  │ (Check   │  │(7 items) │  │ (15 items)        │  │
@@ -27,7 +27,8 @@
 //!
 //! let verifier = Phase3ExitVerification::new();
 //! let report = verifier.phase3_exit_check();
-//! assert!(report.all_passed());
+//! // v0.212.0（P0-13）：无动态证据时不全过（防静态 Passed）。
+//! assert!(!report.all_passed());
 //! ```
 //!
 //! # no_std 合规
@@ -92,9 +93,9 @@ mod tests {
     fn test_full_verification_flow() {
         let verifier = Phase3ExitVerification::new();
 
-        // 信创检查
+        // 信创检查（v0.212.0 P0-13：无证据不全过）
         let xc = verifier.verify_xinchuang();
-        assert!(xc.all_passed());
+        assert!(!xc.all_passed(), "无证据信创不得全过");
         assert_eq!(xc.total, 7);
 
         // 等保检查
@@ -102,9 +103,9 @@ mod tests {
         assert!(db.all_passed());
         assert_eq!(db.total, 15);
 
-        // 综合出口验证
+        // 综合出口验证（v0.212.0 P0-13：无证据不全过）
         let exit = verifier.phase3_exit_check();
-        assert!(exit.all_passed());
+        assert!(!exit.all_passed(), "无证据出口不得全过");
     }
 
     #[test]
@@ -114,9 +115,11 @@ mod tests {
         let _err = ComplianceError::CertificationPending;
         let checker = XinchuangChecker::new();
         let report = checker.check_all();
+        // v0.212.0（P0-13）：标题改为证据驱动 + 无证据不全过。
         assert_eq!(
             report.title,
-            alloc::string::String::from("信创认证验证报告")
+            alloc::string::String::from("信创认证检查（证据驱动）")
         );
+        assert!(!report.all_passed(), "无证据不得全过");
     }
 }

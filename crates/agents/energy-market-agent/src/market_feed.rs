@@ -13,17 +13,13 @@
 
 use alloc::vec::Vec;
 
-/// 市场类型.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MarketType {
-    /// 现货市场.
-    #[default]
-    Spot,
-    /// 辅助服务市场.
-    AncillaryService,
-    /// 需求响应.
-    DemandResponse,
-}
+/// 市场类型（唯一来源：`eneros-market-types`，ARCH-M03 / ADR-0029）。
+pub use eneros_market_types::MarketType;
+
+/// 需求响应信号（ARC-005 统一量纲：唯一来源 `eneros-dr`——target_kw/kW、
+/// start_at·end_at/unix 秒、incentive_yuan/元；旧本地定义 target_mw/MW 与
+/// ms 时间戳量纲冲突已消除）。
+pub use eneros_dr::types::DrSignal;
 
 /// 时段类型（D6：蓝图引用未定义，本版本定义峰/平/谷）.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -48,23 +44,8 @@ pub struct PricePoint {
     pub period: Period,
 }
 
-/// 需求响应信号（D4：event_id 用 u64 而非 String，保持 Copy）.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct DrSignal {
-    /// 事件 ID.
-    pub event_id: u64,
-    /// 目标功率（MW）.
-    pub target_mw: f32,
-    /// 开始时间（ms）.
-    pub start: u64,
-    /// 结束时间（ms）.
-    pub end: u64,
-    /// 补偿价格（元）.
-    pub reward: f32,
-}
-
 /// 市场数据馈送（D3：命名 MarketFeed 避开 v0.72.0 既有 MarketData）.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MarketFeed {
     /// 市场类型.
     pub market_type: MarketType,
@@ -93,10 +74,12 @@ mod tests {
 
     use super::*;
 
-    // ===== T1: MarketType 默认值为 Spot =====
+    // ===== T1: MarketType 变体构造（唯一来源 market-types，ARCH-M03）=====
     #[test]
-    fn t1_market_type_default_spot() {
-        assert_eq!(MarketType::default(), MarketType::Spot);
+    fn t1_market_type_variants() {
+        assert_eq!(MarketType::Spot, MarketType::Spot);
+        assert_ne!(MarketType::Spot, MarketType::AncillaryService);
+        assert_ne!(MarketType::Spot, MarketType::DemandResponse);
     }
 
     // ===== T2: MarketType 3 变体 Debug 输出非空 =====
@@ -155,15 +138,15 @@ mod tests {
         assert_eq!(p2, p1);
     }
 
-    // ===== T8: DrSignal::default 全字段为 0/0.0 =====
+    // ===== T8: DrSignal::default 全字段为 0/0.0（ARC-005 统一量纲：kW/秒/元）=====
     #[test]
     fn t8_dr_signal_default() {
         let s = DrSignal::default();
         assert_eq!(s.event_id, 0);
-        assert!((s.target_mw - 0.0).abs() < f32::EPSILON);
-        assert_eq!(s.start, 0);
-        assert_eq!(s.end, 0);
-        assert!((s.reward - 0.0).abs() < f32::EPSILON);
+        assert!((s.target_kw - 0.0).abs() < f64::EPSILON);
+        assert_eq!(s.start_at, 0);
+        assert_eq!(s.end_at, 0);
+        assert!((s.incentive_yuan - 0.0).abs() < f64::EPSILON);
     }
 
     // ===== T9: DrSignal 构造与字段断言 =====
@@ -171,16 +154,17 @@ mod tests {
     fn t9_dr_signal_fields() {
         let s = DrSignal {
             event_id: 42,
-            target_mw: 2.5,
-            start: 1000,
-            end: 2000,
-            reward: 500.0,
+            signal_type: eneros_dr::types::DrSignalType::LoadReduce,
+            target_kw: 2500.0,
+            start_at: 1,
+            end_at: 2,
+            incentive_yuan: 500.0,
         };
         assert_eq!(s.event_id, 42);
-        assert!((s.target_mw - 2.5).abs() < f32::EPSILON);
-        assert_eq!(s.start, 1000);
-        assert_eq!(s.end, 2000);
-        assert!((s.reward - 500.0).abs() < f32::EPSILON);
+        assert!((s.target_kw - 2500.0).abs() < f64::EPSILON);
+        assert_eq!(s.start_at, 1);
+        assert_eq!(s.end_at, 2);
+        assert!((s.incentive_yuan - 500.0).abs() < f64::EPSILON);
     }
 
     // ===== T10: DrSignal 是 Copy =====
@@ -188,19 +172,25 @@ mod tests {
     fn t10_dr_signal_copy() {
         let s1 = DrSignal {
             event_id: 42,
-            target_mw: 2.5,
-            start: 1000,
-            end: 2000,
-            reward: 500.0,
+            signal_type: eneros_dr::types::DrSignalType::LoadReduce,
+            target_kw: 2500.0,
+            start_at: 1,
+            end_at: 2,
+            incentive_yuan: 500.0,
         };
         let s2 = s1;
         assert_eq!(s2, s1);
     }
 
-    // ===== T11: MarketFeed::default 空馈送 =====
+    // ===== T11: MarketFeed 显式构造（共享 MarketType）=====
     #[test]
-    fn t11_market_feed_default() {
-        let feed = MarketFeed::default();
+    fn t11_market_feed_construction() {
+        let feed = MarketFeed {
+            market_type: MarketType::Spot,
+            timestamp: 0,
+            prices: Vec::new(),
+            dr_signals: Vec::new(),
+        };
         assert!(feed.prices.is_empty());
         assert!(feed.dr_signals.is_empty());
         assert_eq!(feed.market_type, MarketType::Spot);

@@ -8,7 +8,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_time::time_init;
 //! use hal::arm64::timer::clock;
 //!

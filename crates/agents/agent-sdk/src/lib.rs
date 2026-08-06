@@ -4,8 +4,13 @@
 //!
 //! ## 快速开始
 //!
-//! ```ignore
-//! use eneros_agent_sdk::{register_agent, Agent, AgentDescriptor, AgentError, Context};
+//! Agent 是编译为签名的 ELF64 PIE 二进制的独立进程（MASTER §G6 AGT-003）。
+//! 开发者实现 [`Agent`] trait，编译为 AArch64 ELF，由 supervisor 通过
+//! `LoadedElf::parse` 加载、`ProcessHandle` 隔离运行。无动态插件、无跨二进制
+//! trait-object ABI。
+//!
+//! ```text
+//! use eneros_agent_sdk::{Agent, AgentDescriptor, AgentError, Context};
 //!
 //! struct HelloAgent;
 //!
@@ -36,8 +41,6 @@
 //!     }
 //!     fn on_destroy(&mut self, _ctx: &mut Context) {}
 //! }
-//!
-//! register_agent!(HelloAgent, "hello-agent");
 //! ```
 //!
 //! ## 模块结构
@@ -45,7 +48,8 @@
 //! - [`agent`] — Agent trait、AgentDescriptor、AgentError
 //! - [`context`] — Context（运行时环境）
 //! - [`lifecycle`] — 生命周期状态机
-//! - [`ipc`] — IPC 通信
+//! - [`ipc`] — IPC 通信（wire codec AGT-006/007）
+//! - [`wire`] — IPC 二进制 wire codec
 //! - [`storage`] — 键值存储
 //! - [`logger`] — 日志
 //! - [`config`] — 配置
@@ -59,6 +63,9 @@
 //! v1.0 承诺公共 API 向后兼容。
 
 #![cfg_attr(not(test), no_std)]
+// AgentError uses HString<128> (136 bytes) for no_std error messages without
+// allocation. The large Err variant is an intentional trade-off.
+#![allow(clippy::result_large_err)]
 
 extern crate alloc;
 
@@ -69,6 +76,7 @@ pub mod ipc;
 pub mod lifecycle;
 pub mod logger;
 pub mod storage;
+pub mod wire;
 
 // 重导出核心类型
 pub use agent::{Agent, AgentDescriptor, AgentError, AgentId, SDK_VERSION};
@@ -79,57 +87,11 @@ pub use lifecycle::{LifecycleManager, LifecycleState};
 pub use logger::{LogLevel, Logger};
 pub use storage::Storage;
 
-/// Agent 注册宏（SDK v1.0 稳定 API）。
-///
-/// 导出 C ABI 入口函数，供 Agent Runtime 动态加载。
-///
-/// # 导出函数
-/// - `eneros_agent_create` — 创建 Agent 实例
-/// - `eneros_agent_descriptor` — 获取 Agent 描述符
-/// - `eneros_agent_destroy` — 销毁 Agent 实例
-///
-/// # 示例
-/// ```ignore
-/// use eneros_agent_sdk::register_agent;
-///
-/// struct MyAgent;
-/// impl MyAgent { fn new() -> Self { Self } }
-/// // ... impl Agent for MyAgent ...
-///
-/// register_agent!(MyAgent, "my-agent");
-/// ```
-#[macro_export]
-macro_rules! register_agent {
-    ($type:ty, $name:literal) => {
-        /// 创建 Agent 实例（C ABI）。
-        #[no_mangle]
-        pub extern "C" fn eneros_agent_create() -> *mut dyn $crate::Agent {
-            let agent = <$type>::new();
-            Box::into_raw(Box::new(agent))
-        }
-
-        /// 获取 Agent 描述符（C ABI）。
-        #[no_mangle]
-        pub extern "C" fn eneros_agent_descriptor() -> $crate::AgentDescriptor {
-            let agent = <$type>::new();
-            agent.descriptor()
-        }
-
-        /// 销毁 Agent 实例（C ABI）。
-        ///
-        /// # Safety
-        /// 调用者必须确保 `ptr` 是由 `eneros_agent_create` 返回的有效指针。
-        #[no_mangle]
-        pub unsafe extern "C" fn eneros_agent_destroy(ptr: *mut dyn $crate::Agent) {
-            if !ptr.is_null() {
-                drop(Box::from_raw(ptr));
-            }
-        }
-
-        /// Agent 名称常量。
-        pub const AGENT_NAME: &str = $name;
-    };
-}
+// NOTE: The `register_agent!` macro (extern "C" -> *mut dyn Agent) was removed
+// because MASTER §G6 AGT-003 prohibits cross-binary Rust ABI / dynamic plugin
+// loading. Agents are signed ELF64 PIE binaries loaded via `LoadedElf::parse`
+// and run as isolated EL0 processes (`ProcessHandle`). Communication is via
+// the IPC wire codec (AGT-006/007), not trait-object method calls.
 
 // ============================================================================
 // 单元测试

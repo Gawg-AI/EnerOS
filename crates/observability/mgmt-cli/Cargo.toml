@@ -1,0 +1,11 @@
+[package]
+name = "eneros-mgmt-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 本地管理 CLI — 全关键操作/API conformance (OBS-009), no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }
+eneros-mgmt-api = { path = "../mgmt-api", default-features = false }

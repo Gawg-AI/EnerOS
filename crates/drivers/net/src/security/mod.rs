@@ -1,4 +1,4 @@
-//! Network security subsystem (v0.30.0).
+//! Network security subsystem (workspace v0.192.0).
 //!
 //! Provides firewall rule engine, connection tracking, rate limiting,
 //! and DDoS protection for the network stack.

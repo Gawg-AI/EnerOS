@@ -92,6 +92,9 @@ pub enum Cot {
     ActivationConfirm = 7,
     /// 停止激活（=8）
     Deactivation = 8,
+    /// 激活终止（=10，PTC-003：总召唤/遥控终止确认必须用此 COT，
+    /// 旧实现误用 ActivationConfirm=7）
+    ActivationTermination = 10,
     /// 被总召唤（=20）
     InterrogatedByStation = 20,
 }
@@ -108,6 +111,7 @@ impl Cot {
             6 => Some(Self::Activation),
             7 => Some(Self::ActivationConfirm),
             8 => Some(Self::Deactivation),
+            10 => Some(Self::ActivationTermination),
             20 => Some(Self::InterrogatedByStation),
             _ => None,
         }
@@ -246,15 +250,16 @@ impl Sco {
         }
     }
 
-    /// 编码为 1 字节（bit0=value, bits1-2=QU, bit3=S/E）。
+    /// 编码为 1 字节（v0.211.0 P0-10 按 IEC 60870-5-101 重编码：
+    /// bit0=SCS、bits1-5=QU（5 位）、bit7=S/E）。
     pub fn encode(&self) -> u8 {
         let mut b = 0u8;
         if self.value {
             b |= 0x01;
         }
-        b |= (self.qu & 0x03) << 1;
+        b |= (self.qu & 0x1F) << 1;
         if self.select {
-            b |= 0x08;
+            b |= 0x80;
         }
         b
     }
@@ -263,8 +268,8 @@ impl Sco {
     pub fn decode(b: u8) -> Self {
         Self {
             value: b & 0x01 != 0,
-            qu: (b >> 1) & 0x03,
-            select: b & 0x08 != 0,
+            qu: (b >> 1) & 0x1F,
+            select: b & 0x80 != 0,
         }
     }
 }
@@ -290,13 +295,14 @@ impl Dco {
         }
     }
 
-    /// 编码为 1 字节（bits0-1=value, bits2-3=QU, bit4=S/E）。
+    /// 编码为 1 字节（v0.211.0 P0-10 按 IEC 60870-5-101 重编码：
+    /// bits0-1=DCS、bits2-6=QU（5 位）、bit7=S/E）。
     pub fn encode(&self) -> u8 {
         let mut b = 0u8;
         b |= (self.value as u8) & 0x03;
-        b |= (self.qu & 0x03) << 2;
+        b |= (self.qu & 0x1F) << 2;
         if self.select {
-            b |= 0x10;
+            b |= 0x80;
         }
         b
     }
@@ -305,8 +311,8 @@ impl Dco {
     pub fn decode(b: u8) -> Self {
         Self {
             value: DoublePointValue::from_u8(b & 0x03).unwrap_or(DoublePointValue::Intermediate),
-            qu: (b >> 2) & 0x03,
-            select: b & 0x10 != 0,
+            qu: (b >> 2) & 0x1F,
+            select: b & 0x80 != 0,
         }
     }
 }
@@ -912,9 +918,15 @@ mod tests {
             select: true,
         };
         let encoded = sco.encode();
-        assert_eq!(encoded, 0x01 | (2 << 1) | 0x08);
+        // v0.211.0（P0-10）IEC 60870-5-101：QU 5 位（bits1-5）、S/E=bit7。
+        assert_eq!(encoded, 0x01 | (2 << 1) | 0x80);
         let decoded = Sco::decode(encoded);
         assert_eq!(decoded, sco);
+        // 标准 select 帧 0x81：select=true、value=true、qu=0。
+        let std_select = Sco::decode(0x81);
+        assert!(std_select.select, "标准 select 帧 0x81 必须解出 select=true");
+        assert!(std_select.value);
+        assert_eq!(std_select.qu, 0);
     }
 
     #[test]

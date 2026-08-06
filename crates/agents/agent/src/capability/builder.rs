@@ -1,4 +1,4 @@
-//! 能力令牌构建器 (v0.39.0).
+//! 能力令牌构建器 (workspace v0.192.0).
 //!
 //! 提供 [`CapabilityTokenBuilder`]，使用 Builder 模式构建并签名能力令牌。
 //!

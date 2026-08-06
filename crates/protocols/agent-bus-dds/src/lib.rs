@@ -723,15 +723,38 @@ mod tests {
 
     // ===== T44：subscribe() require_subscribe_token=true + Mock 放行 =====
     #[test]
-    fn test_t44_subscribe_with_token_required_mock_passes() {
+    fn test_t44_subscribe_with_token_required_fail_closed() {
         let policy = RoutingPolicy {
             require_subscribe_token: true,
             ..RoutingPolicy::default()
         };
         let mut router = MessageRouter::new(TopicRegistry::with_standards(), policy);
-        // MockCapabilityVerifier always returns Ok, so subscribe should succeed
+        // v0.208.0（P0-11）：真实验证器空授权表 → 未授权订阅被拒（fail-closed）。
         let result = router.subscribe("/power/state/*", AgentId(1), Box::new(|_s| {}));
-        assert!(result.is_ok());
+        assert!(
+            result.is_err(),
+            "未授权订阅必须被拒（不再 mock 恒放行）"
+        );
+    }
+
+    #[test]
+    fn test_t44b_subscribe_with_granted_capability_passes() {
+        use crate::policy::{CapabilityGrant, CapabilityTicketVerifier};
+        let policy = RoutingPolicy {
+            require_subscribe_token: true,
+            ..RoutingPolicy::default()
+        };
+        // 注入真实授权：agent 1 可订阅 /power/state/#。
+        let verifier = CapabilityTicketVerifier::new().with_grants(alloc::vec![
+            CapabilityGrant::new(AgentId(1), Permission::Subscribe, "/power/state/#"),
+        ]);
+        let mut router = MessageRouter::with_verifier(
+            TopicRegistry::with_standards(),
+            policy,
+            Box::new(verifier),
+        );
+        let result = router.subscribe("/power/state/1", AgentId(1), Box::new(|_s| {}));
+        assert!(result.is_ok(), "已授权订阅应通过");
     }
 
     // ===== T45：dispatch() 精确匹配 topic 派发到 1 个订阅 =====
@@ -1131,5 +1154,68 @@ mod tests_v0780 {
         // now = 1000 + 5001 = 6001，过期
         let res = unpack_and_verify(&signer, &env, 6001);
         assert_eq!(res, Err(SignError::StaleTimestamp));
+    }
+
+    // ======================================================================
+    // v0.208.0 (P0-11)：真实 SM2 签名——篡改签名消息被拒绝
+    // ======================================================================
+    #[cfg(feature = "sm2")]
+    #[test]
+    fn p011_tampered_signature_rejected() {
+        use crate::policy::AgentId;
+        use crate::signing::{EnvelopeHeader, KeyId, MessageSigner, Sm2Signer};
+        use crate::codec::CodecKind;
+
+        // 发送方密钥对（signer 自身持有私钥）。
+        let mut rng = eneros_crypto::CsRng::from_seed(&[3u8; 32]);
+        let kp = eneros_crypto::Sm2KeyPair::generate(&mut rng).expect("keygen");
+        let key_id = KeyId(7);
+        let mut signer = Sm2Signer::new(kp.private_key.clone(), kp.public_key, key_id);
+        // 注册 peer 公钥（验签方持有的同一公钥）。
+        signer.register_peer_key(key_id, kp.public_key);
+
+        let header = EnvelopeHeader {
+            msg_id: crate::signing::MsgId(42),
+            timestamp: 1_700_000_000,
+            source: AgentId(7),
+            topic: "/power/state".to_string(),
+            qos: 0,
+            codec: CodecKind::Json,
+            key_id,
+        };
+        // 签名原始 payload。
+        let sig = signer.sign(&header, b"charge").expect("sign");
+        // 原始 payload 验签通过。
+        assert!(
+            signer.verify(&header, b"charge", &sig, 1_700_000_000).expect("verify ok"),
+            "原始 payload 验签应通过"
+        );
+        // 篡改 payload → 验签失败（消息被拒绝）。
+        assert!(
+            !signer.verify(&header, b"discharge", &sig, 1_700_000_000).expect("verify tampered"),
+            "篡改 payload 后验签必须失败（P0-11）"
+        );
+    }
+
+    // 无 sm2 feature 时也验证 MockSigner 可检测篡改（校验和）。
+    #[test]
+    fn p011_mock_signer_detects_tamper() {
+        use crate::policy::AgentId;
+        use crate::signing::{EnvelopeHeader, KeyId, MessageSigner, MockSigner};
+        use crate::codec::CodecKind;
+
+        let signer = MockSigner;
+        let header = EnvelopeHeader {
+            timestamp: 1,
+            msg_id: crate::signing::MsgId(1),
+            source: AgentId(1),
+            key_id: KeyId(1),
+            qos: 0,
+            codec: CodecKind::Json,
+            topic: "/t".to_string(),
+        };
+        let sig = signer.sign(&header, b"abc").unwrap();
+        assert!(signer.verify(&header, b"abc", &sig, 1).unwrap());
+        assert!(!signer.verify(&header, b"abd", &sig, 1).unwrap());
     }
 }

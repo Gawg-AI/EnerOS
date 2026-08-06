@@ -1,0 +1,10 @@
+[package]
+name = "eneros-model-security"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 模型签名与白名单 (v0.116.0) — SM3 哈希登记 + SM2 签名验证 + 加载门禁审计, no_std"
+
+[dependencies]
+eneros-crypto = { path = "../crypto" }

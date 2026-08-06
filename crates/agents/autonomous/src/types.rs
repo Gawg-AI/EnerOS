@@ -2,6 +2,8 @@
 //!
 //! 包含交易阶段、结算信息和交易上下文。
 
+pub use eneros_market_types::MilliYuan;
+
 /// 交易阶段
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TradePhase {
@@ -45,8 +47,8 @@ pub struct Settlement {
     pub seller_credit_kwh: f64,
     /// 买方扣减电量 (kWh)
     pub buyer_debit_kwh: f64,
-    /// 结算金额 (元)
-    pub amount_yuan: f64,
+    /// 结算金额（毫元定点，ARC-003）
+    pub amount_yuan: MilliYuan,
     /// 结算时间戳
     pub at: u64,
 }
@@ -95,12 +97,12 @@ mod tests {
             deal_id: 1,
             seller_credit_kwh: 100.0,
             buyer_debit_kwh: 100.0,
-            amount_yuan: 50.0,
+            amount_yuan: MilliYuan(50_000),
             at: 1000,
         };
         assert_eq!(s.deal_id, 1);
         assert_eq!(s.seller_credit_kwh, 100.0);
-        assert_eq!(s.amount_yuan, 50.0);
+        assert_eq!(s.amount_yuan, MilliYuan(50_000));
     }
 
     #[test]

@@ -1,0 +1,59 @@
+[package]
+name = "eneros-fuzz"
+version = "0.192.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+eneros-boot-protocol = { path = "../crates/boot/boot-protocol" }
+eneros-ipc-wire = { path = "../crates/abi/ipc-wire" }
+eneros-modbus-rtu = { path = "../crates/protocols/modbus-rtu" }
+eneros-iec104-slave = { path = "../crates/protocols/iec104-slave" }
+eneros-elf-loader = { path = "../crates/abi/elf-loader" }
+eneros-gguf-loader = { path = "../crates/ai/gguf-loader" }
+
+[[bin]]
+name = "fuzz_boot_protocol"
+path = "fuzz_targets/boot_protocol.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ipc_wire"
+path = "fuzz_targets/ipc_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_modbus_rtu"
+path = "fuzz_targets/modbus_rtu.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_iec104"
+path = "fuzz_targets/iec104.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_elf_loader"
+path = "fuzz_targets/elf_loader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_gguf_loader"
+path = "fuzz_targets/gguf_loader.rs"
+test = false
+doc = false
+bench = false

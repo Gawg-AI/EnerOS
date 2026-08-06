@@ -9,3 +9,5 @@ description = "EnerOS v0.73.0 Device Agent (设备管理: 状态采集/命令执
 [dependencies]
 eneros-agent = { path = "../agent" }
 eneros-energy-market-agent = { path = "../energy-market-agent" }
+eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
+eneros-upa-model = { path = "../../protocols/upa-model" }

@@ -13,7 +13,8 @@
 //!   默认提供 [`MockCapabilityVerifier`] 始终放行，真实能力校验由后续版本注入）
 //! - **D12**：`AgentId` 为本地 `u64` newtype（非 v0.39.0 的 `u128`），避免引入 `eneros-agent` crate 依赖
 
-use alloc::string::String;
+use alloc::format;
+use alloc::string::{String, ToString};
 use core::fmt;
 
 /// Agent 唯一标识.
@@ -134,12 +135,91 @@ pub trait CapabilityVerifier {
 /// Mock 能力验证器（始终放行）.
 ///
 /// **D10**：默认实现，用于 v0.77.0 路由器在不依赖 v0.39.0 能力 Token 模型时运行。
-/// 真实能力校验由后续版本通过实现 [`CapabilityVerifier`] trait 注入。
+/// 真实能力校验由 [`CapabilityTicketVerifier`]（v0.208.0 P0-11）提供。
 #[derive(Debug, Default)]
 pub struct MockCapabilityVerifier;
 
 impl CapabilityVerifier for MockCapabilityVerifier {
     fn verify(&self, _perm: Permission, _agent: AgentId, _pattern: &str) -> Result<(), DropReason> {
         Ok(())
+    }
+}
+
+/// 一条能力授权（agent 对 topic pattern 的权限）。
+///
+/// v0.208.0（P0-11）：真实能力票据校验——授权表由系统配置注入。
+/// `pattern` 支持前缀通配：`"sensor/#"` 匹配 `"sensor/a"`、`"sensor/a/b"` 等。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityGrant {
+    /// 被授权 agent。
+    pub agent: AgentId,
+    /// 权限（Publish / Subscribe）。
+    pub permission: Permission,
+    /// topic pattern（`#` 通配前缀）。
+    pub pattern: alloc::string::String,
+}
+
+impl CapabilityGrant {
+    /// 创建授权条目。
+    pub fn new(agent: AgentId, permission: Permission, pattern: &str) -> Self {
+        Self {
+            agent,
+            permission,
+            pattern: pattern.to_string(),
+        }
+    }
+
+    /// 判断 topic 是否匹配本授权的 pattern。
+    pub fn matches(&self, topic: &str) -> bool {
+        if let Some(base) = self.pattern.strip_suffix('#') {
+            // "sensor/#"：匹配 "sensor" 前缀的任意子路径。
+            let base = base.trim_end_matches('/');
+            topic == base || topic.starts_with(&format!("{base}/"))
+        } else {
+            self.pattern == topic
+        }
+    }
+}
+
+/// 真实能力验证器（授权票据表驱动，P0-11）。
+///
+/// 基于显式 [`CapabilityGrant`] 授权表做真实决策：agent 未获授权访问
+/// topic → `Err(Unauthorized)`。空授权表默认拒绝所有（fail-closed）。
+#[derive(Debug, Clone, Default)]
+pub struct CapabilityTicketVerifier {
+    grants: alloc::vec::Vec<CapabilityGrant>,
+}
+
+impl CapabilityTicketVerifier {
+    /// 创建验证器（空授权表：默认拒绝所有——fail-closed）。
+    pub fn new() -> Self {
+        Self {
+            grants: alloc::vec::Vec::new(),
+        }
+    }
+
+    /// 注入授权条目。
+    pub fn grant(&mut self, grant: CapabilityGrant) {
+        self.grants.push(grant);
+    }
+
+    /// 批量注入授权。
+    pub fn with_grants(mut self, grants: alloc::vec::Vec<CapabilityGrant>) -> Self {
+        self.grants = grants;
+        self
+    }
+}
+
+impl CapabilityVerifier for CapabilityTicketVerifier {
+    fn verify(&self, perm: Permission, agent: AgentId, pattern: &str) -> Result<(), DropReason> {
+        let granted = self
+            .grants
+            .iter()
+            .any(|g| g.agent == agent && g.permission == perm && g.matches(pattern));
+        if granted {
+            Ok(())
+        } else {
+            Err(DropReason::Unauthorized)
+        }
     }
 }

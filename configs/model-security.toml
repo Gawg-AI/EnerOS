@@ -1,0 +1,47 @@
+# EnerOS v0.116.0 模型签名与白名单 配置模板
+#
+# ① 本文件仅为配置模板：真实签名密钥 / 白名单条目由密钥管理系统下发（产线
+#    烧录或运维通道热加载），私钥与真实公钥绝不入仓（记忆 §3.1 密钥禁忌）；
+#    下方路径与哈希均为占位符。
+# ② 集成层启动时读取本配置：按 [whitelist] 构造 `ModelWhitelist`（strict_mode
+#    + 逐条 add 登记条目），按 [signature] 加载可信 / 吊销公钥构造
+#    `ModelSignatureVerifier`，最后注入 `ModelGuard::new(whitelist, verifier)`。
+# ③ 加载判定顺序固定：SM3 哈希 → 严格模式白名单（含过期）→ SM2 签名验证
+#    （吊销 → 可信 → 验签），任一环节失败即拒绝加载并写审计日志（蓝图 §4.3）。
+
+[whitelist]
+# ④ 严格模式开关：true = 严格模式（默认），未登记或已过期的模型哈希一律
+#    拒绝加载（蓝图 §4.4：严格模式 + 空白名单 = 拒绝一切）；false = 宽松
+#    模式，白名单仅作记录不参与判定，加载只依赖签名验证（仅限调试场景，
+#    产线必须为 true）。
+strict_mode = true
+
+# ⑤ 白名单条目占位示例（真实条目由密钥管理系统 / v0.111.0 OTA 运维通道
+#    逐条下发并热加载，字段语义见 docs/security/model-security-design.md §4.1）：
+#    - model_id ：模型标识（如 "llm-7b-int4" / "solver-lp-v2"）
+#    - version  ：模型版本（语义化版本）
+#    - hash     ：模型数据的 SM3 哈希（64 位十六进制，白名单查找键）
+#    - added_at ：登记时间（Unix 时间戳，秒）
+#    - added_by ：登记人标识（审计可读用途）
+#    - expiry   ：有效期截止（Unix 时间戳，秒；expiry < now 视为过期拒绝）
+# [[whitelist.entries]]
+# model_id = "llm-7b-int4"
+# version = "1.0.0"
+# hash = "0000000000000000000000000000000000000000000000000000000000000000"
+# added_at = 1700000000
+# added_by = "ops-admin"
+# expiry = 2000000000
+
+[signature]
+# ⑥ 可信 / 吊销签名者公钥文件路径（占位符；SM2 未压缩点 65 字节
+#    0x04‖x(32B)‖y(32B)，PEM/DER 封装格式由密钥管理系统定义）。
+#    真实密钥绝不入仓，由产线烧录或运维通道热加载；`add_trusted_key`
+#    去重追加，`revoke_key` 吊销优先于可信（命中吊销即拒，即使仍在可信列表）。
+trusted_keys = "configs/keys/model-trusted-keys.pem"
+revoked_keys = "configs/keys/model-revoked-keys.pem"
+
+[audit]
+# ⑦ 审计日志容量（蓝图 §4.4）：写满后循环覆盖最旧条目（FIFO 环形语义，
+#    `ModelGuard` 内部 remove(0) 实现）；容量值须与 crate 内 AUDIT_CAPACITY
+#    常量（1000）保持一致；审计追溯与防篡改由下游 v0.117.0 哈希链加固。
+capacity = 1000

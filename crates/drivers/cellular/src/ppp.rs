@@ -1,4 +1,4 @@
-//! PPP (Point-to-Point Protocol) dial-up negotiation (v0.30.1).
+//! PPP (Point-to-Point Protocol) dial-up negotiation (workspace v0.192.0).
 //!
 //! Provides a minimal PPP state machine and HDLC frame encoding/decoding
 //! for cellular modem dial-up. Full PPP stack (complete LCP/IPCP/PAP/CHAP
@@ -229,6 +229,81 @@ impl PppFrame {
         }
         Ok(PppFrame { protocol, data })
     }
+}
+
+// ============================================================================
+// PPP 报文解析（v0.197.0 P0-5：真实协商，IP 取自 IPCP 而非硬编码）
+// ============================================================================
+
+/// LCP 报文类型。
+pub mod lcp {
+    /// Configure-Request。
+    pub const CONFIGURE_REQUEST: u8 = 0x01;
+    /// Configure-Ack。
+    pub const CONFIGURE_ACK: u8 = 0x02;
+    /// Configure-Nak。
+    pub const CONFIGURE_NAK: u8 = 0x03;
+    /// Terminate-Request。
+    pub const TERMINATE_REQUEST: u8 = 0x05;
+    /// Terminate-Ack。
+    pub const TERMINATE_ACK: u8 = 0x06;
+}
+
+/// IPCP 报文类型。
+pub mod ipcp {
+    /// Configure-Request。
+    pub const CONFIGURE_REQUEST: u8 = 0x01;
+    /// Configure-Ack。
+    pub const CONFIGURE_ACK: u8 = 0x02;
+    /// Configure-Nak。
+    pub const CONFIGURE_NAK: u8 = 0x03;
+    /// IP-Address 选项类型（RFC 1332 §3.2）。
+    pub const OPT_IP_ADDRESS: u8 = 0x03;
+}
+
+/// 解析 IPCP Configure-* 报文中的 IP 地址。
+///
+/// IPCP 选项 `IP-Address`（类型 3，长度 6：type+len+4B IP）携带本端/对端
+/// IP。返回 `Some(ip)` 若找到，否则 `None`。
+pub fn parse_ipcp_ip(frame: &PppFrame) -> Option<Ipv4Addr> {
+    if frame.protocol != PPP_IPCP {
+        return None;
+    }
+    // data: [code, id, len, options...]
+    let data = &frame.data;
+    if data.len() < 4 {
+        return None;
+    }
+    let code = data[0];
+    if !matches!(
+        code,
+        ipcp::CONFIGURE_REQUEST | ipcp::CONFIGURE_ACK | ipcp::CONFIGURE_NAK
+    ) {
+        return None;
+    }
+    // options 从 data[4..] 开始（code+id+len = 4 字节头）。
+    let mut i = 4;
+    while i + 1 < data.len() {
+        let opt_type = data[i];
+        let opt_len = data[i + 1] as usize;
+        if opt_len < 2 || i + opt_len > data.len() {
+            break;
+        }
+        if opt_type == ipcp::OPT_IP_ADDRESS && opt_len == 6 {
+            let ip = Ipv4Addr::new(data[i + 2], data[i + 3], data[i + 4], data[i + 5]);
+            return Some(ip);
+        }
+        i += opt_len;
+    }
+    None
+}
+
+/// 解析 LCP 报文类型（返回 `Option<u8>` code）。
+pub fn parse_lcp_code(frame: &PppFrame) -> Option<u8> {
+    if frame.protocol != PPP_LCP {
+        return None;
+    }
+    frame.data.first().copied()
 }
 
 #[cfg(test)]

@@ -45,6 +45,10 @@ pub enum TwinError {
     FusionError,
     /// 仿真错误
     SimulationError,
+    /// SEC-003：求解器后端未验证（Mock 后端禁止产生出口指标）
+    SolverNotVerified,
+    /// SEC-003：真实求解器调用失败
+    SolverFailed,
 }
 
 impl core::fmt::Display for TwinError {
@@ -55,6 +59,8 @@ impl core::fmt::Display for TwinError {
             Self::Infeasible => write!(f, "infeasible solution"),
             Self::FusionError => write!(f, "fusion error"),
             Self::SimulationError => write!(f, "simulation error"),
+            Self::SolverNotVerified => write!(f, "solver backend not verified (SEC-003)"),
+            Self::SolverFailed => write!(f, "solver backend call failed"),
         }
     }
 }
@@ -81,13 +87,9 @@ mod tests {
         let mut sim = MultiDomainSimulator::new();
         sim.simulate_step();
 
-        let optimizer = GlobalOptimizer::new(SolverKind::HiGHS, ObjectiveKind::MaxRevenue);
-        let result = optimizer.optimize(&sim.domains).unwrap();
-
-        assert!(result.feasible);
-        assert!(result.improvement_pct >= 15.0);
-
-        let bench = compare(100.0, 100.0 * (1.0 + result.improvement_pct / 100.0));
-        assert!(meets_exit_criteria(&bench));
+        let mut optimizer = GlobalOptimizer::new(SolverKind::HiGHS, ObjectiveKind::MaxRevenue);
+        // SEC-003：Mock 后端拒绝产生出口指标——出口测试必须能对 Mock 失败。
+        let err = optimizer.optimize(&sim.domains).unwrap_err();
+        assert!(matches!(err, TwinError::SolverNotVerified));
     }
 }

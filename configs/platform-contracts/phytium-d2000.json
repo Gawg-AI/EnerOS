@@ -1,0 +1,64 @@
+{
+  "schema": "eneros.platform-contract.v1",
+  "platform_id": "phytium-d2000",
+  "revision": "0.1.0-draft",
+  "sources": [
+    { "kind": "manual", "name": "EnerOS 蓝图 03 v0.233.0 目标板/BOM 冻结要求（占位）", "version": "G10 前置" },
+    { "kind": "to-verify", "name": "飞腾 D2000 数据手册（寄存器实测待 G10）", "version": "G10" },
+    { "kind": "to-verify", "name": "目标板原理图/板级测量", "version": "G10" }
+  ],
+  "firmware": {
+    "type": "tf-a",
+    "boot_method": "BootROM -> TF-A -> U-Boot -> EnerOS boot manager",
+    "psci_conduit": "hvc",
+    "el0_entry": true
+  },
+  "cpu": { "arch": "armv8-a", "cores": 8, "model": "phytium-d2000 (FTC662)" },
+  "memory": [
+    { "name": "ram", "base": 1073741824, "size": 1073741824, "kind": "ram" },
+    { "name": "dma-pool", "base": 0, "size": 0, "kind": "dma-pool" }
+  ],
+  "gic": {
+    "version": "gicv3",
+    "distributor": { "base": 788529152, "size": 65536 },
+    "redistributor": { "base": 789577728, "size": 1048576 },
+    "ppi": [11, 13, 14, 26, 27, 30],
+    "spi_base": 32
+  },
+  "timer": { "kind": "armv8-architected", "frequency_source": "to-verify", "irq": 30 },
+  "resources": [
+    {
+      "name": "uart0",
+      "compatible": "arm,pl011",
+      "range": { "base": 671088640, "size": 4096 },
+      "irq": 33,
+      "source": "to-verify"
+    },
+    {
+      "name": "gpio0",
+      "compatible": "arm,pl061",
+      "range": { "base": 671154176, "size": 4096 },
+      "irq": 35,
+      "source": "to-verify"
+    }
+  ],
+  "psci": {
+    "version": "0.2",
+    "cpu_on": true,
+    "system_reset": true,
+    "system_off": true
+  },
+  "dma": {
+    "iommu": {
+      "compatible": "arm,smmu-v3",
+      "range": { "base": 721420288, "size": 1048576 },
+      "stream_id_bits": 16
+    },
+    "cache_coherent": true,
+    "max_address_bits": 40
+  },
+  "entropy": [],
+  "watchdog": null,
+  "rtc": null,
+  "reset_reason": { "persistent": true, "storage": "bootctrl-partition" }
+}

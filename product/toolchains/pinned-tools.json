@@ -1,0 +1,24 @@
+{
+  "schema": "eneros.pinned-tools.v1",
+  "rust_channel": "nightly-2026-04-04",
+  "host_tools": [
+    { "name": "rustc", "version_contains": "rustc 1.96.0-nightly (2972b5e59 2026-04-03)", "sha256": "be32237a0d6fa8c486403bf2a113ecc221818c0ab5ee6de96a39f1f743bfd48c" },
+    { "name": "cargo", "version_contains": "cargo 1.96.0-nightly (888f67534 2026-03-30)", "sha256": "aa6c0594e27ad80da5bb5e999d39e63a290b65ef9631925e7c523e81fa4ac60a" },
+    { "name": "rustfmt", "version_contains": "rustfmt 1.9.0-nightly (2972b5e59f 2026-04-03)", "sha256": "476da89b923439edd8f23c9a1dc7a766905c53a0c35ce69fbd71c4a36f6051f7" },
+    { "name": "clippy-driver", "version_contains": "clippy 0.1.96", "sha256": "136352d40713785c59b15161a471e571889e9f4377ba60d2cb47f3e95a423876" }
+  ],
+  "wsl_distribution": "Ubuntu-22.04",
+  "wsl_tools": [
+    { "name": "qemu-system-aarch64", "path": "/usr/bin/qemu-system-aarch64", "version_contains": "QEMU emulator version 8.2.2", "sha256": "9768bf9b821acf3ce0211f76f4c5bb110508c1297e93f787e361c63934e47ede" },
+    { "name": "xorriso", "path": "/usr/bin/xorriso", "version_contains": "xorriso 1.5.6", "sha256": "c66a5be11a674e97ed8983af520eae8fad900b47d104c92bc63e5cf254391922" },
+    { "name": "sbsign", "path": "/usr/bin/sbsign", "version_contains": "0.9.4", "sha256": "96ceb5a079ee9eadddcc704411e015be0da1343e0bb6b347b9ea17738926e3d4" },
+    { "name": "sbverify", "path": "/usr/bin/sbverify", "version_contains": "0.9.4", "sha256": "54d2941c21cc7414ec2d4a3c80690ff0e7c205939b85b1736cc70f0d60b4ff6f" },
+    { "name": "sgdisk", "path": "/usr/sbin/sgdisk", "version_contains": "1.0.10", "sha256": "ad863c91702dfc0237866268433167516948812aee763b4f2d77a39ebd160878" },
+    { "name": "dtc", "path": "/usr/bin/dtc", "version_contains": "1.7.0", "sha256": "0ef74efe9f0de6c50a9792050247e55a18e0f674219bd4bb09927cd3c653f388" }
+  ],
+  "wsl_materials": [
+    { "name": "virt-fw-vars", "path": "/usr/bin/virt-fw-vars", "sha256": "fb75d70bd2e41f0ab136e3b8f4780e6d8c5d0b1f306e2458348364ccda370534" },
+    { "name": "aavmf-code-secboot", "path": "/usr/share/AAVMF/AAVMF_CODE.secboot.fd", "sha256": "e37b6dcdce78c96f629ab7f48803e809a76df5c1c2582c6d997fad3041aadf60" },
+    { "name": "aavmf-vars-template", "path": "/usr/share/AAVMF/AAVMF_VARS.fd", "sha256": "b3b855c5a80310168051164986855692d1bdb06e67619856177965cd87c6774f" }
+  ]
+}

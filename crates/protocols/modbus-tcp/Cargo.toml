@@ -8,3 +8,5 @@ description = "EnerOS Modbus TCP master protocol stack"
 
 [dependencies]
 eneros-modbus-rtu = { path = "../modbus-rtu" }
+eneros-protocol-abstract = { path = "../protocol-abstract" }
+eneros-upa-model = { path = "../upa-model" }

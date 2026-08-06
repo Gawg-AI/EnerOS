@@ -7,7 +7,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! use eneros_watchdog::wdt_init;
 //!
 //! // Initialize SP805 watchdog at 0x09050000 with 10s timeout

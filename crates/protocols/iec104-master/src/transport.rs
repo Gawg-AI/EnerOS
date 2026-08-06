@@ -27,6 +27,9 @@ pub trait MasterTransport {
     fn close(&mut self, conn: ConnId) -> Result<(), MasterError>;
     /// 返回当前单调时钟（毫秒）。
     fn now_ms(&self) -> u64;
+
+    /// 类型擦除向下转换（测试注入 mock 用，ARCH-P04）。
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any;
 }
 
 /// IEC 104 主站统计信息
@@ -50,6 +53,8 @@ pub struct MasterStats {
     pub command_count: u64,
     /// 时钟同步执行次数
     pub clock_sync_count: u64,
+    /// 接收点值总数（数据面，ARCH-P04）
+    pub rx_point_count: u64,
 }
 
 #[cfg(test)]

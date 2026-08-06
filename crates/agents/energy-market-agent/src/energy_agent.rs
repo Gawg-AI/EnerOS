@@ -3,13 +3,15 @@
 use alloc::boxed::Box;
 
 use eneros_agent::{AgentDescriptor, AgentState, AgentType};
-use eneros_dual_brain::coordinator::DualBrainMockEngine;
-use eneros_dual_brain::{DualBrainCoordinator, MockCommandSink};
+use eneros_dual_brain::DualBrainCoordinator;
 use eneros_energy_lp_model::config::ScheduleConfig;
 use eneros_energy_lp_model::result::ScheduleResult;
 use eneros_fast_path::state::RealtimeState;
 use eneros_llm_engine::engine::LlmEngine;
 use eneros_safety_validator::state::SystemState;
+use eneros_solver_core::solver::Solver;
+
+#[cfg(any(test, feature = "mock"))]
 use eneros_solver_core::mock::MockSolver;
 
 use crate::error::AgentRuntimeError;
@@ -18,13 +20,13 @@ use crate::runtime::{AgentRuntime, HeartbeatStatus};
 
 /// 能源调度 Agent.
 ///
-/// 持有 `DualBrainCoordinator<MockSolver>`，在 `on_tick` 中执行双脑链路。
+/// 持有 `DualBrainCoordinator<S>`（泛型求解器，构造器注入，P0-27）。
 /// 通过 `market_channel` 接收 Market Agent 转发的市场数据。
-pub struct EnergyAgent {
+pub struct EnergyAgent<S: Solver> {
     /// Agent 描述符.
     pub descriptor: AgentDescriptor,
-    /// 双脑协调器（泛型 `MockSolver`）.
-    pub coordinator: DualBrainCoordinator<MockSolver>,
+    /// 双脑协调器（泛型求解器）.
+    pub coordinator: DualBrainCoordinator<S>,
     /// 市场数据通道（接收 Market Agent 转发的数据）.
     pub market_channel: MarketChannel,
     /// 当前调度方案（双脑执行结果）.
@@ -37,18 +39,26 @@ pub struct EnergyAgent {
     pub tick_count: u64,
 }
 
-impl EnergyAgent {
+impl<S: Solver> EnergyAgent<S> {
     /// 构造 Energy Agent.
     ///
     /// `descriptor = AgentDescriptor::new(AgentType::Energy, name, now_ms)`（D7）。
     /// `coordinator = DualBrainCoordinator::new(config, llm, solver, sink)`（D9）。
-    pub fn new(name: &str, config: ScheduleConfig, now_ms: u64) -> Self {
+    /// 构造 Energy Agent（求解器/引擎/发送器构造器注入，P0-27）.
+    ///
+    /// `descriptor = AgentDescriptor::new(AgentType::Energy, name, now_ms)`（D7）。
+    /// `coordinator = DualBrainCoordinator::new(config, llm, solver, sink)`（D9）。
+    pub fn new<S2: Solver>(
+        name: &str,
+        config: ScheduleConfig,
+        now_ms: u64,
+        llm_engine: Box<dyn LlmEngine>,
+        solver: S2,
+        sink: Box<dyn eneros_dual_brain::sink::CommandSink>,
+    ) -> EnergyAgent<S2> {
         let descriptor = AgentDescriptor::new(AgentType::Energy, name, now_ms);
-        let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
-        let solver = MockSolver::new();
-        let sink = Box::new(MockCommandSink::new());
         let coordinator = DualBrainCoordinator::new(config, llm_engine, solver, sink);
-        Self {
+        EnergyAgent {
             descriptor,
             coordinator,
             market_channel: MarketChannel::new(16),
@@ -59,20 +69,6 @@ impl EnergyAgent {
         }
     }
 
-    /// 默认构造（使用 `DualBrainCoordinator::default_with_mock()`）.
-    pub fn new_default(now_ms: u64) -> Self {
-        let descriptor = AgentDescriptor::new(AgentType::Energy, "energy-agent", now_ms);
-        let coordinator = DualBrainCoordinator::default_with_mock();
-        Self {
-            descriptor,
-            coordinator,
-            market_channel: MarketChannel::new(16),
-            current_schedule: None,
-            current_price: 0.5,
-            state: AgentState::Created,
-            tick_count: 0,
-        }
-    }
 
     /// 获取市场通道可变引用（供测试注入数据）.
     pub fn market_channel_mut(&mut self) -> &mut MarketChannel {
@@ -80,7 +76,25 @@ impl EnergyAgent {
     }
 }
 
-impl AgentRuntime for EnergyAgent {
+#[cfg(any(test, feature = "mock"))]
+impl EnergyAgent<MockSolver> {
+    /// 测试/演示默认构造（使用 mock 求解器）.
+    pub fn new_default(now_ms: u64) -> EnergyAgent<MockSolver> {
+        let descriptor = AgentDescriptor::new(AgentType::Energy, "energy-agent", now_ms);
+        let coordinator = DualBrainCoordinator::default_with_mock();
+        EnergyAgent {
+            descriptor,
+            coordinator,
+            market_channel: MarketChannel::new(16),
+            current_schedule: None,
+            current_price: 0.5,
+            state: AgentState::Created,
+            tick_count: 0,
+        }
+    }
+}
+
+impl<S: Solver> AgentRuntime for EnergyAgent<S> {
     fn descriptor(&self) -> &AgentDescriptor {
         &self.descriptor
     }

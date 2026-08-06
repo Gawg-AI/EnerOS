@@ -1,4 +1,4 @@
-//! EnerOS Agent 能源账户 (v0.177.0)
+//! EnerOS Agent 能源账户 (workspace v0.192.0)
 //!
 //! 提供能源账户管理能力，包括余额查询、收支记账、
 //! 资金冻结/解冻以及交易历史查询。
@@ -62,14 +62,14 @@ pub trait AccountManager {
     /// 开户：为指定 owner 创建余额为零的账户
     fn open(&mut self, owner: u64) -> Result<EnergyAccount, EconError>;
 
-    /// 查询余额：返回 (kwh, yuan)
-    fn balance(&self, account_id: u64) -> Result<(f64, f64), EconError>;
+    /// 查询余额：返回 (kwh, 毫元定点金额，ARC-003)
+    fn balance(&self, account_id: u64) -> Result<(f64, eneros_market_types::MilliYuan), EconError>;
 
     /// 记账：根据方向增加或减少余额，余额不足时拒绝 Debit
     fn post(&mut self, entry: LedgerEntry) -> Result<(), EconError>;
 
-    /// 冻结：冻结指定金额，返回 freeze_id
-    fn freeze(&mut self, account_id: u64, amount: f64) -> Result<u64, EconError>;
+    /// 冻结：冻结指定金额（毫元定点），返回 freeze_id
+    fn freeze(&mut self, account_id: u64, amount: eneros_market_types::MilliYuan) -> Result<u64, EconError>;
 
     /// 解冻：释放已冻结的金额
     fn unfreeze(&mut self, freeze_id: u64) -> Result<(), EconError>;

@@ -1,4 +1,4 @@
-//! EnerOS Agent 抽象与描述符 (v0.43.0).
+//! EnerOS Agent 抽象与描述符 (workspace v0.192.0).
 //!
 //! 定义 Agent 作为 EnerOS 的一等操作系统公民。本 crate 提供核心数据结构：
 //! - [`AgentDescriptor`] — Agent 描述符（13 字段），定义 Agent 的完整属性
@@ -12,7 +12,7 @@
 //! - [`AgentRegistry`] / [`RegistryStats`] — Agent 注册表（双索引，注册/查询/统计）
 //! - [`LifecycleManager`] / [`LifecycleHook`] / [`LifecycleEvent`] — 生命周期状态机（12 合法转换）
 //! - [`AgentConfig`] / [`AgentContext`] / [`AgentEntry`] — Agent 启动配置与入口 trait
-//! - [`AgentSpawner`] / [`AgentFactory`] — Agent 启动器与工厂
+//! - [`AgentSpawner`] / [`StaticAgentRegistry`] — Agent 启动器与静态注册表
 //! - [`HealthStatus`] / [`HealthCheck`] — Agent 健康状态与自定义健康检查
 //! - [`HeartbeatMonitor`] / [`HeartbeatState`] — Agent 心跳监控（1s 周期、3 次超时=故障）
 //! - [`CheckpointStore`] / [`InMemoryCheckpointStore`] / [`Checkpointable`] — 检查点存储与可检查点 trait
@@ -47,12 +47,15 @@ extern crate alloc;
 pub mod capability;
 pub mod checkpoint;
 pub mod descriptor;
+pub mod elf;
 pub mod error;
 pub mod health;
 pub mod heartbeat;
 pub mod id;
 pub mod init;
 pub mod lifecycle;
+pub mod process;
+pub mod sdk_bridge;
 pub mod recovery;
 pub mod registry;
 pub mod spawner;
@@ -66,15 +69,19 @@ pub use capability::{
 };
 pub use checkpoint::{CheckpointStore, Checkpointable, InMemoryCheckpointStore};
 pub use descriptor::AgentDescriptor;
+pub use elf::{ElfError, LoadedElf, LoadedSegment, SegmentFlags};
 pub use error::AgentError;
 pub use health::{HealthCheck, HealthStatus};
 pub use heartbeat::{HeartbeatMonitor, HeartbeatState};
 pub use id::AgentId;
 pub use init::{AgentConfig, AgentContext, AgentEntry};
 pub use lifecycle::{LifecycleEvent, LifecycleHook, LifecycleManager};
+pub use process::{
+    AgentPackage, AgentPackageManifest, ProcessHandle, ProcessState, ResourceBudget,
+};
 pub use recovery::CrashRecovery;
 pub use registry::{AgentRegistry, RegistryStats};
-pub use spawner::{AgentFactory, AgentSpawner};
+pub use spawner::{AgentBinary, AgentSpawner, StaticAgentRegistry};
 pub use system_agent::{
     priority_of, AgentResourceUsage, DependencyGraph, RecoveryOrchestrator, RecoveryPriority,
     ResourceMonitor, ResourceSource, SystemAgent, SystemConfig, SystemEvent, SystemStats,

@@ -22,7 +22,7 @@
 //! |------|---------|-----------|------|
 //! | **D1** | `log::info!` / `log::warn!` / `log::error!` | 移除日志；状态/错误通过返回值传递 | no_std 无 `log` crate；与 v0.57/v0.64/v0.70/v0.71 一致 |
 //! | **D2** | `SystemTime::now()` / `UNIX_EPOCH` | `now_ms: u64` 参数 | no_std 合规：`SystemTime` 不可用；与 v0.57/v0.64/v0.70/v0.71 一致 |
-//! | **D3** | `uuid::Uuid::new_v4().to_string()` | `AgentId::generate()` (v0.33.0) | no_std 无 uuid crate；复用 v0.33.0 原子计数器 ID 生成 |
+//! | **D3** | `uuid::Uuid::new_v4().to_string()` | `AgentId::generate()` (workspace v0.192.0) | no_std 无 uuid crate；复用 v0.33.0 原子计数器 ID 生成 |
 //! | **D4** | `ChannelReceiver<MarketData>` / `ChannelSender<MarketData>` | 本地 `MarketChannel` (Vec-backed) | `ChannelReceiver`/`ChannelSender` 不存在；本地简单实现保持 crate 自包含可测试（与 v0.71.0 D6 一致） |
 //! | **D5** | `TcpConnection::connect(market_server)` / `recv_nonblocking()` | 本地 `MarketDataSource` trait + `MockMarketSource` | `TcpConnection` 不存在；v0.29.0 socket 抽象复杂，MVP 用 Mock 即可 |
 //! | **D6** | `impl AgentRuntime for EnergyAgent` | 本地定义 `AgentRuntime` trait | v0.33.0 `AgentEntry` trait 语义不同（on_init/on_start/on_stop + AgentContext，无 on_tick/on_heartbeat）；本地 trait 匹配蓝图运行时语义 |
@@ -171,12 +171,13 @@ pub mod multi_dispatch;
 pub mod multi_objective;
 pub mod parser;
 mod runtime;
+pub mod sdk_bridge;
 pub mod subscriber;
 
 pub use bid_generator::{
-    conservative_optimize, rule_intent, Bid, BidError, BidGenerator, BidIntent, BidIntentSource,
+    conservative_optimize, rule_intent, BidError, BidGenerator, BidIntent, BidIntentSource,
     BidOptimization, BidOptimizer, BidPublisher, BidSide, BidStrategy, MockBidIntentSource,
-    MockBidOptimizer, MockBidPublisher,
+    MockBidOptimizer, MockBidPublisher, ResourceBid,
 };
 pub use device_pool::{DeviceCapability, DeviceMode, DevicePool};
 pub use energy_agent::EnergyAgent;

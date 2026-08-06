@@ -28,16 +28,8 @@ pub struct AncillaryBid {
     pub duration_min: u32,
 }
 
-/// 报价确认
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BidAck {
-    /// 对应报价 ID
-    pub bid_id: u64,
-    /// 是否被接受
-    pub accepted: bool,
-    /// 确认时间戳 (ms)
-    pub ack_at: u64,
-}
+/// 报价确认（PTC-001：统一来自 market-types；旧本地定义同名不同形已消除）。
+pub use eneros_market_types::BidAck;
 
 /// AGC 调度命令
 #[derive(Debug, Clone, PartialEq)]
@@ -119,13 +111,14 @@ mod tests {
 
     #[test]
     fn test_bid_ack() {
+        // PTC-001：BidAck 为 market-types 定义（bid_id/accepted/reason）。
         let ack = BidAck {
             bid_id: 1,
             accepted: true,
-            ack_at: 1000,
+            reason: None,
         };
         assert!(ack.accepted);
-        assert_eq!(ack.ack_at, 1000);
+        assert_eq!(ack.bid_id, 1);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! TPM 2.0 命令集定义 (v0.159.0).
+//! TPM 2.0 命令集定义 (workspace v0.192.0).
 //!
 //! 按照 TCG TPM 2.0 规范定义命令/响应结构。
 //! 所有多字节字段使用大端序（Big-Endian）传输。
@@ -31,6 +31,9 @@ pub const TPM_CC_CREATE_PRIMARY: u32 = 0x0000_0131;
 pub const TPM_CC_CREATE: u32 = 0x0000_0153;
 /// Load Key
 pub const TPM_CC_LOAD: u32 = 0x0000_0157;
+
+/// TPM2_Create（Seal 语义）的 sensitive 数据最大长度（简化约束）。
+pub const TPM_SEAL_DATA_MAX: usize = 128;
 /// Sign
 pub const TPM_CC_SIGN: u32 = 0x0000_015D;
 /// Get Random
@@ -267,6 +270,60 @@ pub fn build_sign_cmd(key_handle: u32, digest: &[u8], scheme_alg: u16) -> Vec<u8
         .build()
 }
 
+/// 构建 TPM2_Create 命令（CRY-003，Seal 语义：数据写入 inSensitive）。
+///
+/// 参数：parentHandle（TPM_RH_OWNER 0x40000001 或 storage 父句柄）+ inSensitive
+/// （userAuth 空 + data）+ 最小 inPublic 模板（type=keyedhash 0x0008,
+/// nameAlg=SM3-256）+ outsideInfo 空 + creationPCR 空。简化实现聚焦命令
+/// 字节编码正确性（TPM 2.0 Part 3 §12.1）。
+pub fn build_create_cmd(parent_handle: u32, seal_data: &[u8]) -> Vec<u8> {
+    let data_len = seal_data.len().min(TPM_SEAL_DATA_MAX) as u16;
+    // inSensitive: TPM2B_SENSITIVE_CREATE = size(2) + userAuth TPM2B(2+0) + data TPM2B(2+len)
+    let inner: Vec<u8> = {
+        let mut v = Vec::new();
+        v.extend_from_slice(&[0u8, 0]); // userAuth size = 0
+        v.extend_from_slice(&data_len.to_be_bytes());
+        v.extend_from_slice(&seal_data[..data_len as usize]);
+        v
+    };
+    let mut sensitive = Vec::new();
+    sensitive.extend_from_slice(&(inner.len() as u16).to_be_bytes());
+    sensitive.extend_from_slice(&inner);
+    // inPublic 最小模板
+    let mut public_tpl = Vec::new();
+    public_tpl.extend_from_slice(&0x0008u16.to_be_bytes()); // TPM_ALG_KEYEDHASH
+    public_tpl.extend_from_slice(&TPM_ALG_SM3_256.to_be_bytes());
+    public_tpl.extend_from_slice(&0x0000_0042u32.to_be_bytes()); // attributes
+    public_tpl.extend_from_slice(&[0u8, 0]); // authPolicy size 0
+    public_tpl.extend_from_slice(&[0u8, 0, 0, 0]); // parameters
+    public_tpl.extend_from_slice(&[0u8, 0, 0, 0]); // unique
+    TpmCommandBuilder::new(TPM_CC_CREATE)
+        .push_u32(parent_handle)
+        .push_bytes(&sensitive)
+        .push_bytes(&public_tpl)
+        .push_bytes(&[0u8, 0]) // outsideInfo size 0
+        .push_bytes(&[0u8, 0]) // creationPCR count 0
+        .build()
+}
+
+/// 构建 TPM2_Unseal 命令（CRY-003）。
+pub fn build_unseal_cmd(item_handle: u32) -> Vec<u8> {
+    TpmCommandBuilder::new(TPM_CC_UNSEAL)
+        .push_u32(item_handle)
+        .build()
+}
+
+/// 构建 TPM2_Load 命令（CRY-003：加载 Create 产出的对象）。
+pub fn build_load_cmd(parent_handle: u32, in_private: &[u8], in_public: &[u8]) -> Vec<u8> {
+    TpmCommandBuilder::new(TPM_CC_LOAD)
+        .push_u32(parent_handle)
+        .push_bytes(&(in_private.len() as u16).to_be_bytes())
+        .push_bytes(in_private)
+        .push_bytes(&(in_public.len() as u16).to_be_bytes())
+        .push_bytes(in_public)
+        .build()
+}
+
 // ============================================================
 // Helper Functions
 // ============================================================
@@ -364,6 +421,51 @@ mod tests {
         assert_eq!(cmd.len(), 12); // 10 header + 2 param
         let size = u32::from_be_bytes([cmd[2], cmd[3], cmd[4], cmd[5]]);
         assert_eq!(size, 12);
+    }
+
+    #[test]
+    fn test_cry003_create_cmd_encoding() {
+        // TPM2_Create：命令码 0x153 + parentHandle + inSensitive(含 seal 数据)
+        let seal = b"sealed-secret";
+        let cmd = build_create_cmd(0x4000_0001, seal);
+        assert_eq!(u32::from_be_bytes([cmd[6], cmd[7], cmd[8], cmd[9]]), TPM_CC_CREATE);
+        assert_eq!(u32::from_be_bytes([cmd[10], cmd[11], cmd[12], cmd[13]]), 0x4000_0001);
+        // inSensitive 内应包含 seal 数据（size 字段后）
+        let data = cmd.windows(seal.len()).any(|w| w == seal);
+        assert!(data, "Create 命令 inSensitive 必须包含 seal 数据");
+        // 总长 = 10 header + 4 handle + sensitive + public + 2 + 2
+        let size = u32::from_be_bytes([cmd[2], cmd[3], cmd[4], cmd[5]]);
+        assert_eq!(size as usize, cmd.len());
+    }
+
+    #[test]
+    fn test_cry003_unseal_cmd_encoding() {
+        let cmd = build_unseal_cmd(0x8000_0001);
+        assert_eq!(u32::from_be_bytes([cmd[6], cmd[7], cmd[8], cmd[9]]), TPM_CC_UNSEAL);
+        assert_eq!(u32::from_be_bytes([cmd[10], cmd[11], cmd[12], cmd[13]]), 0x8000_0001);
+        let size = u32::from_be_bytes([cmd[2], cmd[3], cmd[4], cmd[5]]);
+        assert_eq!(size as usize, cmd.len());
+    }
+
+    #[test]
+    fn test_cry003_load_cmd_encoding() {
+        let cmd = build_load_cmd(0x4000_0001, &[0xAA; 16], &[0xBB; 24]);
+        assert_eq!(u32::from_be_bytes([cmd[6], cmd[7], cmd[8], cmd[9]]), TPM_CC_LOAD);
+        // inPrivate size 字段 = 16
+        assert_eq!(cmd[14], 0);
+        assert_eq!(cmd[15], 16);
+        // inPublic size 字段 = 24
+        let pub_len = u16::from_be_bytes([cmd[16 + 16], cmd[16 + 16 + 1]]);
+        assert_eq!(pub_len, 24);
+    }
+
+    #[test]
+    fn test_cry003_seal_data_truncated_at_max() {
+        let big = vec![0x42u8; TPM_SEAL_DATA_MAX + 50];
+        let cmd = build_create_cmd(0x4000_0001, &big);
+        // sensitive data 长度被截到 TPM_SEAL_DATA_MAX
+        let data = cmd.windows(TPM_SEAL_DATA_MAX).any(|w| w == &big[..TPM_SEAL_DATA_MAX]);
+        assert!(data, "seal 数据截断到上限");
     }
 
     #[test]

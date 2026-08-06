@@ -1,0 +1,13 @@
+{
+  "schema": "eneros.hermetic-build-environment.v1",
+  "host": "windows-x86_64-with-wsl2",
+  "wsl_distribution": "Ubuntu-22.04",
+  "rust_toolchain": "nightly-2026-04-04",
+  "cargo_lock_required": true,
+  "cargo_offline_after_fetch": true,
+  "source_date_epoch_required": true,
+  "network_allowed_phases": ["material-fetch"],
+  "network_forbidden_phases": ["profile-audit", "compile", "image", "inspect", "test"],
+  "required_materials": ["Cargo.lock", "rust-toolchain.toml", "product/toolchains/pinned-tools.json"],
+  "accepted_entry": "cargo xtask"
+}

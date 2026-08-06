@@ -17,3 +17,8 @@ eneros-llm-engine = { path = "../llm-engine" }
 eneros-prompt-template = { path = "../prompt-template" }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+[features]
+default = []
+# v0.212.0（P0-27）：mock 仅测试/显式启用；生产不依赖 mock。
+mock = ["eneros-solver-core/mock"]

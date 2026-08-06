@@ -31,6 +31,7 @@ use eneros_prompt_template::template::PromptTemplate;
 use eneros_prompt_template::templates::ChargeDischargeTemplate;
 use eneros_safety_validator::state::SystemState;
 use eneros_safety_validator::validator::SafetyValidator;
+#[cfg(any(test, feature = "mock"))]
 use eneros_solver_core::mock::MockSolver;
 use eneros_solver_core::solver::Solver;
 
@@ -216,6 +217,17 @@ impl<S: Solver> DualBrainCoordinator<S> {
         // Step 6: 安全校验
         let validation = self.validator.validate(&schedule, &state.system);
         latency.safety_validate_ms = 0;
+
+        // v0.206.0（P0-17）：安全屏障闭环——Fatal 违规（validation.passed ==
+        // false，如 SOC<0.05）拒绝命令下发并上报告警，不再取 clamped_schedule
+        // 照常写入 sink。clamped_schedule 仅在非 Fatal（passed）时使用。
+        if !validation.passed {
+            // v0.206.0（P0-17）：Fatal 违规阻断命令下发。
+            return Err(DualBrainError::SafetyFatal(format!(
+                "safety validation FATAL: {} violation(s)",
+                validation.violations.len()
+            )));
+        }
         let final_schedule = validation.clamped_schedule.clone().unwrap_or(schedule);
 
         // Step 7: 命令下发（D6）
@@ -250,8 +262,12 @@ impl<S: Solver> DualBrainCoordinator<S> {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl DualBrainCoordinator<MockSolver> {
     /// 默认构造（MockSolver + DualBrainMockEngine + MockCommandSink）.
+    ///
+    /// v0.205.0（P0-27）：仅 test/mock feature 可用；生产用
+    /// [`DualBrainCoordinator::new`] 构造器注入真实 Solver/Engine/Sink。
     pub fn default_with_mock() -> Self {
         let config = ScheduleConfig::default();
         let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
@@ -267,12 +283,16 @@ impl DualBrainCoordinator<MockSolver> {
 ///
 /// v0.59.0 `MockEngine::infer()` 返回 `"mock: {prompt}"` 而非 `mock_output`，
 /// 无法满足慢路径 JSON 解析需求，故本 crate 定义独立的 Mock 引擎。
+///
+/// v0.205.0（P0-27）：仅 test/mock feature 构建。
+#[cfg(any(test, feature = "mock"))]
 pub struct DualBrainMockEngine {
     loaded: bool,
     stats: EngineStats,
     model_info: Option<ModelInfo>,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl DualBrainMockEngine {
     /// 创建 Mock 引擎（预加载状态）.
     pub fn new() -> Self {
@@ -284,12 +304,14 @@ impl DualBrainMockEngine {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for DualBrainMockEngine {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl LlmEngine for DualBrainMockEngine {
     fn load_model(&mut self, path: &str) -> Result<(), LlmError> {
         self.loaded = true;

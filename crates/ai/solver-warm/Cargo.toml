@@ -9,8 +9,9 @@ description = "EnerOS v0.103.0 neural warm-start for MILP solver (candidate gene
 [dependencies]
 eneros-solver-core = { path = "../solver-core" }
 eneros-solver-milp = { path = "../solver-milp" }
-
 [features]
 default = []
 # D6: ONNX Runtime C API 推理后端（默认关闭；启用需 ONNX Runtime 静态库）
 onnx-ffi = []
+# v0.205.0（P0-27）：测试需 solver-core mock 后端。
+mock = ["eneros-solver-core/mock"]

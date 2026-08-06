@@ -23,6 +23,10 @@ allow = [
     "Unicode-DFS-2016",
     "Unicode-3.0",
     "Zlib",
+    # ring (via rustls NET-005) ships under ISC AND BSD-3-Clause AND OpenSSL.
+    # OpenSSL is the legacy OpenSSL/SSLeay license, Apache-equivalent. rustls
+    # is the production TLS stack that replaces the prohibited pseudo-mTLS.
+    "OpenSSL",
 ]
 confidence-threshold = 0.8
 

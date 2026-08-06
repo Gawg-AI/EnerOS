@@ -232,9 +232,7 @@ impl SystemAgent {
 
 #[cfg(test)]
 mod tests {
-    use alloc::boxed::Box;
     use alloc::rc::Rc;
-    use alloc::string::String;
     use core::cell::RefCell;
 
     use super::*;
@@ -243,17 +241,10 @@ mod tests {
         InMemoryCheckpointStore, LifecycleManager,
     };
 
-    /// Mock AgentFactory（返回 Err，测试中不调用 spawn）.
-    struct MockFactory;
-    impl crate::spawner::AgentFactory for MockFactory {
-        fn create(
-            &self,
-            _agent_type: AgentType,
-            _name: &str,
-        ) -> Result<Box<dyn crate::init::AgentEntry>, AgentError> {
-            Err(AgentError::InitFailed(String::from("mock factory")))
-        }
-    }
+    /// Empty static registry — spawn always fails (tests don't call spawn).
+    static EMPTY_REGISTRY: crate::StaticAgentRegistry = crate::StaticAgentRegistry::new(
+        &[] as &[(crate::AgentType, crate::AgentBinary)],
+    );
 
     /// Helper: construct SystemAgent with empty registry.
     fn make_system_agent() -> SystemAgent {
@@ -268,11 +259,10 @@ mod tests {
             lifecycle.clone(),
             checkpoint_store,
         ));
-        let factory: Rc<MockFactory> = Rc::new(MockFactory);
         let spawner = Rc::new(crate::spawner::AgentSpawner::new(
             reg.clone(),
             lifecycle.clone(),
-            factory,
+            &EMPTY_REGISTRY,
         ));
         let config = SystemConfig::default();
         SystemAgent::new(reg, spawner, recovery, heartbeat, lifecycle, config)
@@ -297,11 +287,10 @@ mod tests {
             lifecycle.clone(),
             checkpoint_store,
         ));
-        let factory: Rc<MockFactory> = Rc::new(MockFactory);
         let spawner = Rc::new(crate::spawner::AgentSpawner::new(
             reg.clone(),
             lifecycle.clone(),
-            factory,
+            &EMPTY_REGISTRY,
         ));
         let sa = SystemAgent::new(
             reg.clone(),

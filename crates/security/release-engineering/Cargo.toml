@@ -1,0 +1,10 @@
+[package]
+name = "eneros-release-engineering"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 发布工程 — SBOM/provenance/signing/evidence/legal/lifecycle (REL-001~016), no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }

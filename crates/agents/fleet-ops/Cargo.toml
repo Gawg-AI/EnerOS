@@ -1,0 +1,10 @@
+[package]
+name = "eneros-fleet-ops"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS Fleet 运维 — enrollment/inventory/canary/rollout/revoke (OPS-001~007), no_std"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }

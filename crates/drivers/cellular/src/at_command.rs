@@ -1,4 +1,4 @@
-//! AT command encapsulation for cellular modem (v0.30.1).
+//! AT command encapsulation for cellular modem (workspace v0.192.0).
 //!
 //! Provides AT command construction, encoding, and response parsing
 //! for communicating with cellular modems via AT commands.

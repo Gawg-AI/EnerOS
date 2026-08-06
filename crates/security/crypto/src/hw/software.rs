@@ -1,4 +1,4 @@
-//! 软件加密引擎 fallback 实现 (v0.158.0).
+//! 软件加密引擎 fallback 实现 (workspace v0.192.0).
 //!
 //! 将 v0.31.0 纯 Rust 国密算法库封装为 `CryptoEngine` trait 实现，
 //! 作为硬件引擎不可用时的 fallback。
@@ -63,7 +63,11 @@ impl CryptoEngine for SoftwareCryptoEngine {
             });
         }
 
-        let mut rng = CsRng::new();
+        let mut rng = CsRng::for_deterministic_signature(
+            private_key,
+            msg,
+            b"eneros/software-crypto-engine/sm2-sign/v1",
+        );
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(private_key);
         let sk = Sm2PrivateKey::from_bytes(&key_bytes)
