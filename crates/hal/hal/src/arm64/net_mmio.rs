@@ -49,15 +49,25 @@ impl NetMmio {
     }
 
     /// Write a 32-bit MMIO register.
+    ///
+    /// # Safety
+    /// `base + off` 必须指向有效的 MAC MMIO 寄存器映射且当前上下文可写；
+    /// 调用方保证无并发/中断重叠访问。
     #[inline]
     unsafe fn w32(base: u64, off: u64, v: u32) {
-        core::ptr::write_volatile((base + off) as *mut u32, v);
+        // SAFETY: 调用方保证 `base + off` 为有效 MMIO 地址且可写。
+        unsafe { core::ptr::write_volatile((base + off) as *mut u32, v) };
     }
 
     /// Read a 32-bit MMIO register.
+    ///
+    /// # Safety
+    /// `base + off` 必须指向有效的 MAC MMIO 寄存器映射且当前上下文可读；
+    /// 调用方保证无并发/中断重叠访问。
     #[inline]
     unsafe fn r32(base: u64, off: u64) -> u32 {
-        core::ptr::read_volatile((base + off) as *const u32)
+        // SAFETY: 调用方保证 `base + off` 为有效 MMIO 地址且可读。
+        unsafe { core::ptr::read_volatile((base + off) as *const u32) }
     }
 
     /// Read a PHY register via MII management.
@@ -66,6 +76,8 @@ impl NetMmio {
     /// 读完成等待，超时返回 `Err(HalError::Timeout)`。
     pub fn read_phy_reg(&self, phy_addr: u8, reg: u8) -> Result<u16, crate::HalError> {
         // Wait for MII not busy.
+        // SAFETY: `self.mac_base` 由构造方保证为有效 MAC MMIO 基址；
+        // MII_ADDR 为只读轮询位。
         crate::wait_until(
             || unsafe { Self::r32(self.mac_base, MAC_MII_ADDR) } & MII_BUSY == 0,
             MII_MAX_ITERS,
@@ -73,13 +85,16 @@ impl NetMmio {
         // Write MII address: phy_addr in bits [12:8], reg in bits [4:0],
         // write bit cleared (read operation).
         let addr = ((phy_addr as u32) << 8) | (reg as u32);
+        // SAFETY: `self.mac_base` 为有效 MAC MMIO 基址；MII_ADDR 写入。
         unsafe { Self::w32(self.mac_base, MAC_MII_ADDR, addr) };
         // Wait for read to complete.
+        // SAFETY: `self.mac_base` 为有效 MAC MMIO 基址；只读轮询位。
         crate::wait_until(
             || unsafe { Self::r32(self.mac_base, MAC_MII_ADDR) } & MII_BUSY != 0,
             MII_MAX_ITERS,
         )?;
         // Read data.
+        // SAFETY: `self.mac_base` 为有效 MAC MMIO 基址；MII_DATA 读取。
         let data = unsafe { Self::r32(self.mac_base, MAC_MII_DATA) };
         Ok(data as u16)
     }
@@ -93,6 +108,8 @@ impl NetMmio {
 
     /// Read the station MAC address (6 octets).
     pub fn read_mac_addr(&self) -> [u8; 6] {
+        // SAFETY: `self.mac_base` 由构造方保证为有效 MAC MMIO 基址；
+        // ADDR_LOW/ADDR_HIGH 为只读寄存器。
         let low = unsafe { Self::r32(self.mac_base, MAC_ADDR_LOW) };
         let high = unsafe { Self::r32(self.mac_base, MAC_ADDR_HIGH) };
         [

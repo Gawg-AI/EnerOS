@@ -236,6 +236,8 @@ fn locate_device_tree() -> Option<(u64, u64)> {
         if ptr.is_null() {
             return None;
         }
+        // SAFETY: `entry.address` 来自 UEFI 配置表项，指向有效的 FDT 内存；
+        // 先读 8 字节头（`magic`/`totalsize`），长度校验在 `parse_fdt_header` 内完成。
         let header = unsafe { core::slice::from_raw_parts(ptr, 8) };
         let totalsize = parse_fdt_header(header)?;
         return Some((entry.address as u64, totalsize as u64));
@@ -250,6 +252,8 @@ fn main() -> Status {
     }
     println!("ENEROS stage=uefi-entry profile=qemu-prod secure=required");
     match prepare_boot() {
+        // SAFETY: `loaded` 由 `prepare_boot` 完成完整性校验（签名+度量），
+        // `handoff` 内部在 `exit_boot_services` 后只访问已分配的 LOADER_DATA 页面。
         Ok(loaded) => unsafe { handoff(loaded) },
         Err(error) => {
             println!(
@@ -436,6 +440,8 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
             measurement_pages,
         )
         .map_err(|_| BootFailure::Allocation)?;
+        // SAFETY: `measurement_allocation` 由 UEFI `allocate_pages` 返回，
+        // 长度为 `measurement_pages * 4096`（checked_mul 防溢出），指针有效。
         let measurement_destination = unsafe {
             slice::from_raw_parts_mut(
                 measurement_allocation.as_ptr(),
@@ -452,6 +458,8 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
                 .map_err(|_| BootFailure::Allocation)?
                 .as_ptr()
                 .cast::<MemoryMapEntry>();
+        // SAFETY: `memory_map` 指向 `map_pages` 页的分配（页数按条目数算），
+        // 清零范围不越界。
         unsafe {
             memory_map.write_bytes(0, MAX_MEMORY_MAP_ENTRIES);
         }
@@ -504,6 +512,8 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
                 return Err(BootFailure::NoDeviceTree);
             }
         }
+        // SAFETY: `boot_info` 指向单页 LOADER_DATA 分配，`BootInfo` 大小
+        // 不超过一页；写入为独占所有权（prepare_boot 内不再使用该指针）。
         unsafe {
             boot_info.write(info);
         }
@@ -743,6 +753,7 @@ fn install_component(component: &Component, payload: &[u8]) -> Result<(), BootFa
         pages,
     )
     .map_err(|_| BootFailure::Allocation)?;
+    // SAFETY: `allocation` 由 `allocate_pages` 分配 `pages` 页，长度合法。
     let destination = unsafe { slice::from_raw_parts_mut(allocation.as_ptr(), pages * 4096) };
     destination.fill(0);
     let destination = destination
@@ -781,6 +792,8 @@ fn read_entropy() -> Result<[u8; 64], BootFailure> {
 
 fn volatile_clear(bytes: &mut [u8]) {
     for byte in bytes {
+        // SAFETY: `byte` 来自 `&mut [u8]`，指向有效可写内存；volatile 写
+        // 防止编译器消除清零（敏感数据擦除语义）。
         unsafe {
             core::ptr::write_volatile(byte, 0);
         }
@@ -805,7 +818,14 @@ fn pages_for(length: usize) -> Result<usize, BootFailure> {
         .ok_or(BootFailure::Allocation)
 }
 
+/// 退出启动服务并跳转内核。
+///
+/// # Safety
+/// 必须在所有 UEFI 服务不再被使用后调用；`loaded` 的分配必须在
+/// `exit_boot_services` 保留区域（LOADER_DATA）内。
 unsafe fn handoff(loaded: LoadedBoot) -> ! {
+    // SAFETY: 调用方保证所有 UEFI 服务调用已完成；`exit_boot_services`
+    // 之后仅能使用内存映射中的保留区域。
     let memory_map = unsafe { boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
     let mut count = 0usize;
     for descriptor in memory_map.entries() {
@@ -826,6 +846,8 @@ unsafe fn handoff(loaded: LoadedBoot) -> ! {
         } else {
             MemoryRegionKind::Firmware
         };
+        // SAFETY: `count < MAX_MEMORY_MAP_ENTRIES`（上方已检查），
+        // `loaded.memory_map` 为按该上限分配的页面，写入不越界。
         unsafe {
             loaded.memory_map.add(count).write(MemoryMapEntry {
                 base: descriptor.phys_start,
@@ -837,6 +859,8 @@ unsafe fn handoff(loaded: LoadedBoot) -> ! {
         }
         count += 1;
     }
+    // SAFETY: `loaded.boot_info` 指向 prepare_boot 分配的 BootInfo 页，
+    // 且在 `exit_boot_services` 保留区域，地址仍有效。
     let info = unsafe { &mut *loaded.boot_info };
     info.memory_map_phys = loaded.memory_map as u64;
     info.memory_map_count = u32::try_from(count).unwrap_or(0);
@@ -847,6 +871,9 @@ unsafe fn handoff(loaded: LoadedBoot) -> ! {
     }
     let _ = (loaded.manifest_digest, loaded.media_reads);
     forget(memory_map);
+    // SAFETY: `loaded.kernel_entry` 为已验签内核 ELF 的入口物理地址，
+    // 由 boot-info 解析验证；转换为相同 ABI 的函数指针（UB 风险已由
+    // 签名验证环节消除——仅信任已验证镜像的入口）。
     let entry: extern "C" fn(*const BootInfo) -> ! = unsafe {
         core::mem::transmute::<usize, extern "C" fn(*const BootInfo) -> !>(
             loaded.kernel_entry as usize,
@@ -857,6 +884,8 @@ unsafe fn handoff(loaded: LoadedBoot) -> ! {
 
 fn shutdown_after_exit() -> ! {
     let function = 0x8400_0008u64;
+    // SAFETY: `hvc #0` 触发 PSCI SYSTEM_OFF（x0 = 0x8400_0008），
+    // 无内存访问、无返回（noreturn），不破坏任何状态。
     unsafe { core::arch::asm!("hvc #0", in("x0") function, options(noreturn)) }
 }
 

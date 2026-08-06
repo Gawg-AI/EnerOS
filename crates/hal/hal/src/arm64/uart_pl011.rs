@@ -41,15 +41,27 @@ impl Pl011Uart {
     }
 
     /// Write a 32-bit MMIO register.
+    ///
+    /// # Safety
+    /// `base + off` 必须指向有效的 PL011 寄存器映射（MMIO），且当前执行
+    /// 上下文对该地址具有写权限；写入为 volatile 语义，调用者保证不存在
+    /// 与其它线程/中断的重叠访问竞争（本 crate 中 PL011 为单例串口）。
     #[inline]
     unsafe fn w32(base: u64, off: u64, v: u32) {
-        core::ptr::write_volatile((base + off) as *mut u32, v);
+        // SAFETY: 由调用方保证 `base + off` 是有效 PL011 MMIO 地址且可写。
+        unsafe { core::ptr::write_volatile((base + off) as *mut u32, v) };
     }
 
     /// Read a 32-bit MMIO register.
+    ///
+    /// # Safety
+    /// `base + off` 必须指向有效的 PL011 寄存器映射（MMIO），且当前执行
+    /// 上下文对该地址具有读权限；读取为 volatile 语义，调用者保证无
+    /// 与其它线程/中断的重叠访问竞争。
     #[inline]
     unsafe fn r32(base: u64, off: u64) -> u32 {
-        core::ptr::read_volatile((base + off) as *const u32)
+        // SAFETY: 由调用方保证 `base + off` 是有效 PL011 MMIO 地址且可读。
+        unsafe { core::ptr::read_volatile((base + off) as *const u32) }
     }
 
     /// Initialize the UART for `baud` baud at `clock_hz` reference clock.
@@ -85,11 +97,14 @@ impl crate::HalSerial for Pl011Uart {
     fn write(&self, data: &[u8]) -> Result<usize, crate::HalError> {
         for (i, &byte) in data.iter().enumerate() {
             // HAL-005：有界忙等 TX FIFO 空出（旧代码无限忙等）。
+            // SAFETY: `self.base` 由构造时保证为有效 PL011 基址；FR 寄存器
+            // 为只读标志位，读取无副作用。
             crate::wait_until(
                 || unsafe { Self::r32(self.base, PL011_FR) } & FR_TXFF == 0,
                 UART_TX_MAX_ITERS,
             )
             .map_err(|_| crate::HalError::Timeout)?;
+            // SAFETY: `self.base` 为有效 PL011 基址；DR 写入为 MMIO 语义。
             unsafe { Self::w32(self.base, PL011_DR, byte as u32) };
             let _ = i;
         }
@@ -99,9 +114,11 @@ impl crate::HalSerial for Pl011Uart {
     fn read(&self, buf: &mut [u8]) -> Result<usize, crate::HalError> {
         let mut count = 0;
         for slot in buf.iter_mut() {
+            // SAFETY: `self.base` 由构造时保证为有效 PL011 基址；FR 为只读标志。
             if unsafe { Self::r32(self.base, PL011_FR) } & FR_RXFE != 0 {
                 break;
             }
+            // SAFETY: `self.base` 为有效 PL011 基址；DR 读取为 MMIO 语义。
             *slot = unsafe { Self::r32(self.base, PL011_DR) } as u8;
             count += 1;
         }
@@ -110,6 +127,7 @@ impl crate::HalSerial for Pl011Uart {
 
     fn flush(&self) -> Result<(), crate::HalError> {
         // HAL-005：有界忙等 BUSY 清除（旧代码无限忙等）。
+        // SAFETY: `self.base` 由构造时保证为有效 PL011 基址；FR 为只读标志。
         crate::wait_until(
             || unsafe { Self::r32(self.base, PL011_FR) } & FR_BUSY == 0,
             UART_FLUSH_MAX_ITERS,

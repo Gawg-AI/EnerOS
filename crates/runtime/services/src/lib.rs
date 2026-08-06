@@ -18,6 +18,9 @@ extern crate alloc;
 
 pub mod allocator;
 
+#[cfg(all(test, feature = "loom"))]
+pub mod loom_allocator;
+
 /// EL0 服务公共入口 — 永久 loop。
 ///
 /// KRN-003：服务帧往返就绪——`svc_frame_roundtrip` 复用
@@ -104,6 +107,8 @@ pub fn inject_fault(kind: Option<FaultKind>) -> Result<(), ()> {
         None => Ok(()),
         Some(FaultKind::DivideByZero) => {
             // 用 volatile 读防御编译期常量折叠（触发真实除零异常路径）。
+            // SAFETY: 读取 `&0u32` 的 volatile 拷贝，地址为静态常量
+            // 有效内存；触发除零是 svc-fault 的故障注入语义。
             let zero = unsafe { core::ptr::read_volatile(&0u32) };
             let _ = 1u32 / zero;
             Err(())

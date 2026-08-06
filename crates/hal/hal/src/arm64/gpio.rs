@@ -29,15 +29,25 @@ impl Arm64Gpio {
     }
 
     /// Write a 32-bit MMIO register.
+    ///
+    /// # Safety
+    /// `base + off` 必须指向有效的 GPIO MMIO 寄存器映射且当前上下文可写；
+    /// 调用方保证无并发/中断重叠访问。
     #[inline]
     unsafe fn w32(base: u64, off: u64, v: u32) {
-        core::ptr::write_volatile((base + off) as *mut u32, v);
+        // SAFETY: 调用方保证 `base + off` 为有效 MMIO 地址且可写。
+        unsafe { core::ptr::write_volatile((base + off) as *mut u32, v) };
     }
 
     /// Read a 32-bit MMIO register.
+    ///
+    /// # Safety
+    /// `base + off` 必须指向有效的 GPIO MMIO 寄存器映射且当前上下文可读；
+    /// 调用方保证无并发/中断重叠访问。
     #[inline]
     unsafe fn r32(base: u64, off: u64) -> u32 {
-        core::ptr::read_volatile((base + off) as *const u32)
+        // SAFETY: 调用方保证 `base + off` 为有效 MMIO 地址且可读。
+        unsafe { core::ptr::read_volatile((base + off) as *const u32) }
     }
 }
 
@@ -46,12 +56,14 @@ impl crate::HalGpio for Arm64Gpio {
         if config.pin >= self.pin_count {
             return Err(crate::HalError::InvalidParam);
         }
+        // SAFETY: `self.base` 由构造方保证为有效 GPIO MMIO 基址；DIR 读取。
         let mut dir = unsafe { Self::r32(self.base, GPIO_DIR) };
         let mask = 1u32 << config.pin;
         match config.dir {
             crate::GpioDir::Output => dir |= mask,
             crate::GpioDir::Input => dir &= !mask,
         }
+        // SAFETY: `self.base` 为有效 GPIO MMIO 基址；DIR 写入。
         unsafe { Self::w32(self.base, GPIO_DIR, dir) };
         // HAL-003：Configure pull resistor with read-modify-write + per-pin
         // 2-bit field shift. PullMode has no #[repr(u32)], so convert manually
@@ -63,8 +75,10 @@ impl crate::HalGpio for Arm64Gpio {
             crate::PullMode::Down => 2,
         };
         let reg_off = GPIO_PUD + ((config.pin / 16) as u64) * 4;
+        // SAFETY: `self.base` 为有效 GPIO MMIO 基址；PUD 读取。
         let pud = unsafe { Self::r32(self.base, reg_off) };
         let new_pud = crate::bit_logic::apply_pull(pud, config.pin % 16, pull_val);
+        // SAFETY: `self.base` 为有效 GPIO MMIO 基址；PUD 写入。
         unsafe { Self::w32(self.base, reg_off, new_pud) };
         Ok(())
     }
@@ -75,8 +89,10 @@ impl crate::HalGpio for Arm64Gpio {
         }
         // HAL-003：读-改-写——只改动目标 pin 的位，不清零其他 31 个引脚
         // （旧实现整寄存器覆写 `w32(GPIO_DATA, mask)`，把其余引脚全部清零）。
+        // SAFETY: `self.base` 为有效 GPIO MMIO 基址；DATA 读取。
         let data = unsafe { Self::r32(self.base, GPIO_DATA) };
         let new_data = crate::bit_logic::apply_set_pin(data, pin, val);
+        // SAFETY: `self.base` 为有效 GPIO MMIO 基址；DATA 写入。
         unsafe { Self::w32(self.base, GPIO_DATA, new_data) };
         Ok(())
     }
@@ -85,6 +101,7 @@ impl crate::HalGpio for Arm64Gpio {
         if pin >= self.pin_count {
             return Err(crate::HalError::InvalidParam);
         }
+        // SAFETY: `self.base` 由构造方保证为有效 GPIO MMIO 基址；DATA 读取。
         let data = unsafe { Self::r32(self.base, GPIO_DATA) };
         Ok(data & (1u32 << pin) != 0)
     }

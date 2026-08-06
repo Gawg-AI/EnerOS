@@ -41,6 +41,9 @@ impl<T> ArcHotSwap<T> {
         let ptr = self.ptr.load(Ordering::Acquire);
         // ManuallyDrop 包裹临时借用：from_raw 还原的 Arc 若被 drop 会消费管理器的
         // 引用计数，必须阻止；此处仅借指针做 clone（计数 +1）
+        // SAFETY: `ptr` 由不变式保证为 `Arc::into_raw` 产物且非空；
+        // 用 `ManuallyDrop` 包裹防止临时 Arc drop 消费管理器持有的计数，
+        // 仅借指针做 clone（计数 +1）。
         let borrowed = ManuallyDrop::new(unsafe { Arc::from_raw(ptr as *const T) });
         (*borrowed).clone()
     }
@@ -58,6 +61,8 @@ impl<T> ArcHotSwap<T> {
         let new_ptr = Arc::into_raw(new) as *mut T;
         let old = self.ptr.swap(new_ptr, Ordering::AcqRel);
         // 旧指针恒非空（不变式），还原为 Arc 交还调用方，管理器不再持有旧实例
+        // SAFETY: `old` 恒非空且为 `Arc::into_raw` 产物（不变式），
+        // 还原为 Arc 交还调用方，管理器不再持有旧实例。
         unsafe { Arc::from_raw(old as *const T) }
     }
 }
@@ -66,6 +71,8 @@ impl<T> Drop for ArcHotSwap<T> {
     fn drop(&mut self) {
         // 释放管理器持有的当前实例引用（get_mut 独占访问，无需原子序）
         let ptr = *self.ptr.get_mut();
+        // SAFETY: `ptr` 恒非空且为 `Arc::into_raw` 产物（不变式），
+        // drop 释放管理器持有的当前实例引用（get_mut 独占访问，无需原子序）。
         drop(unsafe { Arc::from_raw(ptr as *const T) });
     }
 }

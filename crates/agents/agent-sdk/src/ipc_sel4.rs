@@ -120,6 +120,9 @@ impl Sel4IpcClient {
         .map_err(|_| self.ipc_err("wire encode failed"))?;
 
         // 写入 MR：MR[0] = 关联 ID，MR[1..] = 帧字节。
+        // SAFETY: `eneros_sel4_set_mr` 为 C shim 封装（host 为 stub），
+        // 索引 `i + 1 < 64` 保证在 seL4 MR 槽位范围内；写入值均为
+        // 纯数据（无指针），无内存安全风险。
         unsafe {
             eneros_sel4_set_mr(0, id);
             for (i, b) in frame[..n].iter().enumerate() {
@@ -129,12 +132,17 @@ impl Sel4IpcClient {
                 eneros_sel4_set_mr(i + 1, *b as u64);
             }
         }
+        // SAFETY: `message_info_new` 为纯值构造（host stub），无指针参数。
         let msg_info = unsafe { eneros_sel4_message_info_new(0, 0, 0, (n + 1) as u64) };
+        // SAFETY: `dest_cap` 由构造方注入的合法 endpoint 能力；`seL4_Call`
+        // 同步阻塞至接收方回复（host stub 立即返回），不引入内存安全风险。
         let _reply = unsafe { eneros_sel4_call(self.dest_cap, msg_info) };
         self.sent += 1;
         let _ = timeout_ns;
 
         // 读响应 MR：MR[0] = 关联 ID（响应匹配）。
+        // SAFETY: `eneros_sel4_get_mr` 为 C shim 封装（host 为 stub），
+        // 索引 0 始终有效；返回值仅作数据比较。
         let resp_id = unsafe { eneros_sel4_get_mr(0) };
         if resp_id != id {
             self.errors += 1;
@@ -142,6 +150,7 @@ impl Sel4IpcClient {
         }
         let mut resp = Vec::with_capacity(crate::ipc::MAX_MSG_SIZE);
         for i in 1..64 {
+            // SAFETY: 索引 `i < 64` 在 MR 槽位范围内（host stub 读静态数组）。
             let word = unsafe { eneros_sel4_get_mr(i) };
             if word == 0 {
                 break;
@@ -173,6 +182,7 @@ impl Sel4IpcClient {
             &mut frame,
         )
         .map_err(|_| self.ipc_err("wire encode failed"))?;
+        // SAFETY: 同上——`set_mr` 为 C shim（host stub），索引 < 64。
         unsafe {
             eneros_sel4_set_mr(0, 0);
             for (i, b) in frame[..n].iter().enumerate() {
@@ -182,7 +192,10 @@ impl Sel4IpcClient {
                 eneros_sel4_set_mr(i + 1, *b as u64);
             }
         }
+        // SAFETY: `message_info_new` 为纯值构造（host stub），无指针参数。
         let msg_info = unsafe { eneros_sel4_message_info_new(0, 0, 0, (n + 1) as u64) };
+        // SAFETY: `dest_cap` 为合法 endpoint 能力；`seL4_Send` 无返回数据
+        // 依赖（host stub 立即返回）。
         unsafe {
             eneros_sel4_send(self.dest_cap, msg_info);
         }

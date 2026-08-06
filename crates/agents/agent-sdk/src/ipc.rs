@@ -75,6 +75,9 @@ pub struct IpcClient {
 // 仅在同一 Agent 执行上下文中访问；跨线程共享不提供（Send 用于 Agent
 // trait 的 Send+Sync 要求，实际由 Runtime 串行化调用）。
 unsafe impl Send for IpcClient {}
+// SAFETY: `IpcClient` 内部状态仅在同一 Agent 执行上下文中访问；
+// 跨线程共享不提供（Send 用于 Agent trait 的 Send+Sync 要求，
+// 实际由 Runtime 串行化调用）。
 unsafe impl Sync for IpcClient {}
 
 impl IpcClient {

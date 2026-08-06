@@ -41,6 +41,12 @@ jobs:
       - name: Product profile and forbidden-closure audit
         run: cargo xtask audit all
 
+      - name: Unsafe SAFETY comment coverage (C-243 gate)
+        run: cargo xtask audit-unsafe-safety
+
+      - name: BumpAllocator loom concurrency model (C-243 gate)
+        run: cargo test --locked -p eneros-services --features loom --lib loom_allocator
+
       - name: seL4 kernel toolchain cache (restore)
         uses: actions/cache@v4
         with:

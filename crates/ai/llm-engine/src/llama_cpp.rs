@@ -118,10 +118,14 @@ impl LlmEngine for LlamaCppEngine {
 
         // 释放旧模型（如果有）
         if !self.ctx.is_null() {
+            // SAFETY: `self.ctx` 非 null 且由 `llama_new_context_with_model`
+            // 创建（Drop/重载路径持有所有权），释放逆序正确。
             unsafe { lffi::llama_free(self.ctx) };
             self.ctx = core::ptr::null_mut();
         }
         if !self.model.is_null() {
+            // SAFETY: `self.model` 非 null 且由 `llama_load_model_from_file`
+            // 创建（所有权由本结构持有），释放逆序正确。
             unsafe { lffi::llama_free_model(self.model) };
             self.model = core::ptr::null_mut();
         }
@@ -162,6 +166,7 @@ impl LlmEngine for LlamaCppEngine {
         // SAFETY: model 非 null（已检查），ctx_params 由 default 函数初始化。
         let ctx = unsafe { lffi::llama_new_context_with_model(model, ctx_params) };
         if ctx.is_null() {
+            // SAFETY: `model` 非 null 且由本函数创建，加载失败路径释放。
             unsafe { lffi::llama_free_model(model) };
             self.model = core::ptr::null_mut();
             return Err(LlmError::LoadFailed);
@@ -219,6 +224,8 @@ impl LlmEngine for LlamaCppEngine {
         // 1. 分词
         // b4000: llama_tokenize 返回负数表示所需大小（取绝对值），正数表示成功写入
         let prompt_bytes = prompt.as_bytes();
+        // SAFETY: `model` 非 null（上方已检查）；`prompt_bytes.as_ptr()`
+        // 指向有效 UTF-8 字节序列，len 一致；输出缓冲为 null（查询所需大小）。
         let needed_raw = unsafe {
             lffi::llama_tokenize(
                 self.model,
@@ -240,6 +247,8 @@ impl LlmEngine for LlamaCppEngine {
         }
 
         let mut tokens: Vec<lffi::LlamaToken> = vec![0; needed];
+        // SAFETY: `model` 非 null；`tokens.as_mut_ptr()` 指向长度 `needed`
+        // 的分配，容量与传入长度一致，写入不越界。
         let n_tokens_raw = unsafe {
             lffi::llama_tokenize(
                 self.model,

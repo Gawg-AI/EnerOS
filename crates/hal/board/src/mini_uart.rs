@@ -34,20 +34,30 @@ impl Pl011Serial {
     }
 
     /// 读寄存器
+    ///
+    /// # Safety
+    /// `self.base + off` 必须指向有效的 PL011 MMIO 映射且当前上下文可读。
     #[inline]
     unsafe fn read(&self, off: u64) -> u32 {
-        core::ptr::read_volatile((self.base + off) as *const u32)
+        // SAFETY: 调用方保证 `self.base` 为有效 PL011 MMIO 基址。
+        unsafe { core::ptr::read_volatile((self.base + off) as *const u32) }
     }
 
     /// 写寄存器
+    ///
+    /// # Safety
+    /// `self.base + off` 必须指向有效的 PL011 MMIO 映射且当前上下文可写。
     #[inline]
     unsafe fn write(&self, off: u64, v: u32) {
-        core::ptr::write_volatile((self.base + off) as *mut u32, v);
+        // SAFETY: 调用方保证 `self.base` 为有效 PL011 MMIO 基址。
+        unsafe { core::ptr::write_volatile((self.base + off) as *mut u32, v) };
     }
 }
 
 impl SerialOut for Pl011Serial {
     fn putc(&self, c: u8) {
+        // SAFETY: `self.base` 由构造方保证为有效 PL011 MMIO 基址；
+        // FR/DR 访问为 volatile 硬件语义（启动阶段单线程）。
         unsafe {
             // 等待发送 FIFO 不满
             while (self.read(UART_FR) & FR_TXFF as u32) != 0 {}

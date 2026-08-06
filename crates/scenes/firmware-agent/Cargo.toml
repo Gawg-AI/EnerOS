@@ -5,11 +5,11 @@ edition.workspace = true
 description = "固件闭包 Agent 场景（ARC-008）：设备轮询 + 市场结算闭包启动器"
 
 [dependencies]
-eneros-device-agent = { path = "../../agents/device-agent", version = "0.242.0" }
-eneros-agent = { path = "../../agents/agent", version = "0.242.0" }
-eneros-protocol-abstract = { path = "../../protocols/protocol-abstract", version = "0.242.0" }
-eneros-modbus-rtu = { path = "../../protocols/modbus-rtu", version = "0.242.0" }
-eneros-upa-model = { path = "../../protocols/upa-model", version = "0.242.0" }
-eneros-market-types = { path = "../../agents/market-types", version = "0.242.0" }
-eneros-settlement = { path = "../../agents/settlement", version = "0.242.0" }
-eneros-account = { path = "../../agents/account", version = "0.242.0" }
+eneros-device-agent = { path = "../../agents/device-agent", version = "0.243.0" }
+eneros-agent = { path = "../../agents/agent", version = "0.243.0" }
+eneros-protocol-abstract = { path = "../../protocols/protocol-abstract", version = "0.243.0" }
+eneros-modbus-rtu = { path = "../../protocols/modbus-rtu", version = "0.243.0" }
+eneros-upa-model = { path = "../../protocols/upa-model", version = "0.243.0" }
+eneros-market-types = { path = "../../agents/market-types", version = "0.243.0" }
+eneros-settlement = { path = "../../agents/settlement", version = "0.243.0" }
+eneros-account = { path = "../../agents/account", version = "0.243.0" }

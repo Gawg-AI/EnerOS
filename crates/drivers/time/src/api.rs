@@ -11,8 +11,11 @@ use crate::rtc::{secs_to_rtc, Pl031Rtc, RtcTime, TimeStamp};
 /// static. This is sound because every real `HalClock` implementation (e.g.
 /// `Arm64Timer`) is a read-only hardware singleton and therefore `Send + Sync`.
 struct ClockRef(Option<&'static dyn HalClock>);
+// SAFETY: 所有真实 `HalClock` 实现（如 `Arm64Timer`）为只读硬件单例，
+// 无内部可变状态，跨线程共享安全（Send）。
 unsafe impl Send for ClockRef {}
 #[allow(clippy::non_send_fields_in_send_ty)]
+// SAFETY: 同上——只读硬件单例共享引用可安全跨线程访问（Sync）。
 unsafe impl Sync for ClockRef {}
 
 static CLOCK: Mutex<ClockRef> = Mutex::new(ClockRef(None));
@@ -64,6 +67,8 @@ pub fn get_time() -> TimeStamp {
 pub fn sleep_until(deadline_ns: u64) {
     while get_monotonic_ns() < deadline_ns {
         #[cfg(target_arch = "aarch64")]
+        // SAFETY: `wfe` 不访问内存、无输出约束；副作用仅为进入低功耗
+        // 等待事件，由后续事件唤醒，不改变可观察状态。
         unsafe {
             core::arch::asm!("wfe");
         }

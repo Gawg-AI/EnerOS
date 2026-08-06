@@ -202,7 +202,8 @@ pub struct PhytiumCryptoEngine {
     simulate: bool,
 }
 
-// 安全：PhytiumCryptoEngine 仅在单核环境使用，或通过外部互斥保护
+// SAFETY: PhytiumCryptoEngine 仅在单核环境使用，或通过外部互斥保护；
+// `regs` 指向有效 MMIO 映射，跨线程移动不引入数据竞争。
 unsafe impl Send for PhytiumCryptoEngine {}
 
 impl PhytiumCryptoEngine {
@@ -243,6 +244,7 @@ impl PhytiumCryptoEngine {
         if self.simulate {
             return;
         }
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             // 发送复位命令
             (*self.regs).ctrl = CTRL_RESET;
@@ -267,10 +269,13 @@ impl PhytiumCryptoEngine {
 
         let mut elapsed: u64 = 0;
         loop {
+            // SAFETY: `self.regs` 由 `new()` 保证有效（simulate 已提前返回）；
+            // 中断状态寄存器读为 volatile 硬件语义。
             let status = unsafe { (*self.regs).irq_status };
 
             if status & IRQ_DONE != 0 {
                 // 清除完成中断
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；状态/中断寄存器读写为 volatile 硬件语义。
                 unsafe {
                     (*self.regs).irq_status = IRQ_DONE;
                 }
@@ -279,6 +284,7 @@ impl PhytiumCryptoEngine {
 
             if status & IRQ_ERROR != 0 {
                 // 清除错误中断
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；状态/中断寄存器读写为 volatile 硬件语义。
                 unsafe {
                     (*self.regs).irq_status = IRQ_ERROR;
                 }
@@ -300,6 +306,7 @@ impl PhytiumCryptoEngine {
         if self.simulate {
             return;
         }
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             (*self.regs).dma_src_lo = (addr & 0xFFFF_FFFF) as u32;
             (*self.regs).dma_src_hi = (addr >> 32) as u32;
@@ -312,6 +319,7 @@ impl PhytiumCryptoEngine {
         if self.simulate {
             return;
         }
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for (i, chunk) in key.chunks(4).enumerate() {
                 if i >= 8 {
@@ -329,6 +337,7 @@ impl PhytiumCryptoEngine {
         if self.simulate {
             return;
         }
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器字段写为硬件语义。
         unsafe {
             for reg in (*self.regs).key.iter_mut() {
                 *reg = 0;
@@ -341,6 +350,7 @@ impl PhytiumCryptoEngine {
         if self.simulate {
             return;
         }
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for (i, chunk) in iv.chunks(4).enumerate() {
                 if i >= 4 {
@@ -359,6 +369,7 @@ impl PhytiumCryptoEngine {
             return [0u8; 32];
         }
         let mut hash = [0u8; 32];
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for i in 0..8 {
                 let val = (*self.regs).data_out[i];
@@ -394,6 +405,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
             .map_err(|_| CryptoError::DmaError)?;
         self.set_dma_src(self.dma_buf.phys_addr(), msg.len());
 
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             // 发送 SM2 签名命令
             (*self.regs).sm2_cmd = CMD_SM2_SIGN | (msg.len() as u32);
@@ -405,6 +417,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
 
         // 读取签名结果 (r ‖ s)
         let mut sig = [0u8; 64];
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for i in 0..16 {
                 let val = (*self.regs).data_out[i];
@@ -450,6 +463,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
             .map_err(|_| CryptoError::DmaError)?;
         self.set_dma_src(self.dma_buf.phys_addr(), msg.len() + 64);
 
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             (*self.regs).sm2_cmd = CMD_SM2_VERIFY | (msg.len() as u32);
             (*self.regs).ctrl = CTRL_START;
@@ -458,6 +472,8 @@ impl CryptoEngine for PhytiumCryptoEngine {
         self.wait_completion()?;
 
         // 读取验证结果（status 寄存器 bit 0）
+        // SAFETY: `self.regs` 由 `new()` 保证有效（simulate 已提前返回）；
+        // 状态位读取为硬件语义。
         let result = unsafe { (*self.regs).status & 0x01 != 0 };
         self.dma_buf.zeroize();
         self.stats.record_success(msg.len());
@@ -480,6 +496,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
         let mut offset = 0;
 
         // 初始化
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             (*self.regs).sm3_cmd = CMD_SM3_INIT;
             (*self.regs).ctrl = CTRL_START;
@@ -493,6 +510,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
                 .map_err(|_| CryptoError::DmaError)?;
             self.set_dma_src(self.dma_buf.phys_addr(), SM3_BLOCK_SIZE);
 
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
             unsafe {
                 (*self.regs).sm3_cmd = CMD_SM3_UPDATE | (SM3_BLOCK_SIZE as u32);
                 (*self.regs).ctrl = CTRL_START;
@@ -508,6 +526,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
             .map_err(|_| CryptoError::DmaError)?;
         self.set_dma_src(self.dma_buf.phys_addr(), remaining.len());
 
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             (*self.regs).sm3_cmd = CMD_SM3_FINAL | (remaining.len() as u32);
             (*self.regs).ctrl = CTRL_START;
@@ -547,6 +566,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
         }
 
         // 设置模式
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             (*self.regs).sm4_mode = mode as u32;
         }
@@ -557,6 +577,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
             .map_err(|_| CryptoError::DmaError)?;
         self.set_dma_src(self.dma_buf.phys_addr(), data.len());
 
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             (*self.regs).sm4_cmd = CMD_SM4_ENCRYPT | (data.len() as u32);
             (*self.regs).ctrl = CTRL_START;
@@ -566,6 +587,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
 
         // 读取密文
         let mut result = vec![0u8; data.len()];
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for (i, chunk) in result.chunks_mut(4).enumerate() {
                 if i >= 16 {
@@ -610,6 +632,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
         }
 
         // 设置模式
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             (*self.regs).sm4_mode = mode as u32;
         }
@@ -620,6 +643,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
             .map_err(|_| CryptoError::DmaError)?;
         self.set_dma_src(self.dma_buf.phys_addr(), data.len());
 
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             (*self.regs).sm4_cmd = CMD_SM4_DECRYPT | (data.len() as u32);
             (*self.regs).ctrl = CTRL_START;
@@ -629,6 +653,7 @@ impl CryptoEngine for PhytiumCryptoEngine {
 
         // 读取明文
         let mut result = vec![0u8; data.len()];
+    // SAFETY: `self.regs` 由 `new()` 保证指向有效 Phytium MMIO 映射（simulate 已提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for (i, chunk) in result.chunks_mut(4).enumerate() {
                 if i >= 16 {

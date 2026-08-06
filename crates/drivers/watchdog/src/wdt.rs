@@ -19,21 +19,34 @@ impl HwWatchdog {
         Self { base }
     }
 
+    /// 写 32 位 MMIO 寄存器。
+    ///
+    /// # Safety
+    /// `self.base + off` 必须指向有效的 SP805 寄存器映射且当前上下文可写；
+    /// 调用方保证无并发/中断重叠访问。
     #[inline]
     unsafe fn w(&self, off: u64, v: u32) {
-        core::ptr::write_volatile((self.base + off) as *mut u32, v);
+        // SAFETY: 调用方保证 `self.base` 为有效看门狗 MMIO 基址。
+        unsafe { core::ptr::write_volatile((self.base + off) as *mut u32, v) };
     }
 
     #[allow(dead_code)]
     #[inline]
+    /// 读 32 位 MMIO 寄存器。
+    ///
+    /// # Safety
+    /// `self.base + off` 必须指向有效的 SP805 寄存器映射且当前上下文可读。
     unsafe fn r(&self, off: u64) -> u32 {
-        core::ptr::read_volatile((self.base + off) as *const u32)
+        // SAFETY: 调用方保证 `self.base` 为有效看门狗 MMIO 基址。
+        unsafe { core::ptr::read_volatile((self.base + off) as *const u32) }
     }
 
     pub fn init(&self, timeout_ms: u32) {
         if self.base == 0 {
             return;
         }
+        // SAFETY: `self.base != 0`（已提前返回）保证为有效 MMIO 基址；
+        // 寄存器序列为 SP805 解锁→装载→使能→加锁，写 volatile 语义。
         unsafe {
             self.w(WDT_LOCK, WDT_UNLOCK);
             let load = timeout_ms * 1000;
@@ -48,6 +61,8 @@ impl HwWatchdog {
         if self.base == 0 {
             return;
         }
+        // SAFETY: `self.base != 0` 保证为有效 MMIO 基址；喂狗序列为
+        // 解锁→清中断→加锁，写 volatile 语义。
         unsafe {
             self.w(WDT_LOCK, WDT_UNLOCK);
             self.w(WDT_INTCLR, 1);
@@ -59,6 +74,8 @@ impl HwWatchdog {
         if self.base == 0 {
             return;
         }
+        // SAFETY: `self.base != 0` 保证为有效 MMIO 基址；停止序列为
+        // 解锁→禁能→加锁，写 volatile 语义。
         unsafe {
             self.w(WDT_LOCK, WDT_UNLOCK);
             self.w(WDT_CTRL, 0);

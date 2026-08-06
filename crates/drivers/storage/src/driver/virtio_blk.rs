@@ -523,6 +523,8 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             // avail ring — all within one scoped mutable borrow of the pool.
             let mut pool = self.pool.borrow_mut();
             let bytes = pool.as_bytes_mut();
+            // SAFETY: `req_off` 对齐且 `req_off + 16 <= 0x2000`（请求头固定
+            // 在 pool 内），`VirtioBlkReq` 为 16 字节 POD，布局匹配。
             let req =
                 unsafe { &mut *(bytes[req_off..req_off + 16].as_mut_ptr() as *mut VirtioBlkReq) };
             req.kind = kind;
@@ -535,6 +537,8 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             // Initialize status to IOERR so we can detect a missing device write.
             bytes[status_off] = VIRTIO_BLK_S_IOERR;
 
+            // SAFETY: desc 区间 [0x0000, 0x1000) 与 avail/used/数据区间互不
+            // 重叠，`VirtqDesc` 布局匹配，长度 QUEUE_MAX 不越界。
             let descs = unsafe {
                 core::slice::from_raw_parts_mut(
                     bytes[0x0000..0x1000].as_mut_ptr() as *mut VirtqDesc,
@@ -565,6 +569,8 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
                 next: 0,
             };
 
+            // SAFETY: avail 视图区间 [0x0100, 0x1100) 与 desc/used 区间不重叠，
+            // 布局与 VirtioAvail 匹配；pool 借用独占。
             let avail =
                 unsafe { &mut *(bytes[0x0100..0x1100].as_mut_ptr() as *mut VirtqAvail) };
             avail.ring[avail.idx as usize & QUEUE_MASK] = head as u16;
@@ -625,6 +631,8 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             self.cache.invalidate(used_va, core::mem::size_of::<VirtqUsed>());
             let pool = self.pool.borrow();
             let bytes = pool.as_bytes();
+            // SAFETY: used 视图区间 [0x1000, 0x2000) 与 desc/avail 区间不重叠，
+            // 布局与 VirtqUsed 匹配；仅读取（cache invalidate 已刷新）。
             let used = unsafe { &*(bytes[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
             let used_idx = used.idx;
             if used_idx != self.last_used.get() {
@@ -846,11 +854,13 @@ impl RamMmio {
         // SAFETY: the pool is the driver's exclusive DMA buffer (injected via
         // attach_pool) and is laid out per our virtqueue structs.
         let pool = unsafe { core::slice::from_raw_parts_mut(pool, 9 * 4096) };
+        // SAFETY: avail/used 视图区间与 desc/数据区间不重叠，布局匹配。
         let avail = unsafe { &mut *(pool[0x0100..0x1100].as_mut_ptr() as *mut VirtqAvail) };
         let used = unsafe { &mut *(pool[0x1000..0x2000].as_mut_ptr() as *mut VirtqUsed) };
         // Process all newly available descriptors.
         while used.idx != avail.idx {
             let head = avail.ring[used.idx as usize & QUEUE_MASK] as usize;
+            // SAFETY: desc 只读视图区间合法，长度 QUEUE_MAX 不越界。
             let descs = unsafe {
                 core::slice::from_raw_parts_mut(
                     pool[0x0000..0x1000].as_mut_ptr() as *mut VirtqDesc,
@@ -859,6 +869,8 @@ impl RamMmio {
             };
             let req_desc = &descs[head];
             let req_off = (req_desc.addr - POOL_PHYS_BASE) as usize;
+            // SAFETY: `req_off` 来自 desc.addr - 池基址，位于池内；
+            // 16 字节请求头不越界（生产路径同布局）。
             let req = unsafe { &*(pool[req_off..req_off + 16].as_ptr() as *const VirtioBlkReq) };
             let data_desc = &descs[req_desc.next as usize];
             let status_desc = &descs[data_desc.next as usize];

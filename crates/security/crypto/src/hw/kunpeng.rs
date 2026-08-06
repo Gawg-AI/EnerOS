@@ -134,6 +134,8 @@ pub struct KunpengKaeEngine {
     simulate: bool,
 }
 
+// SAFETY: `KunpengKaeEngine` 的 `regs` 指向有效 KAE MMIO 映射，
+// DMA 缓冲区与统计由 `&mut self` 独占访问，跨线程移动不引入数据竞争。
 unsafe impl Send for KunpengKaeEngine {}
 
 impl KunpengKaeEngine {
@@ -171,6 +173,7 @@ impl KunpengKaeEngine {
         if self.simulate {
             return;
         }
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；寄存器写为硬件控制语义。
         unsafe {
             (*self.regs).ctrl = KAE_CTRL_RESET;
             while core::ptr::read_volatile(&(*self.regs).ctrl) & KAE_CTRL_BUSY != 0 {
@@ -186,6 +189,7 @@ impl KunpengKaeEngine {
             return Ok(());
         }
 
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；寄存器写为硬件控制语义。
         unsafe {
             // 写入请求类型和长度
             (*self.regs).req_type = req_type;
@@ -198,14 +202,18 @@ impl KunpengKaeEngine {
         // 等待完成
         let mut elapsed: u64 = 0;
         loop {
+            // SAFETY: `self.regs` 由 `new()` 保证有效（simulate 已提前返回）；
+            // 状态寄存器读为 volatile 硬件语义。
             let status = unsafe { (*self.regs).status };
             if status & KAE_STATUS_DONE != 0 {
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；状态寄存器读取/清除为 volatile 语义。
                 unsafe {
                     (*self.regs).status = KAE_STATUS_DONE;
                 }
                 return Ok(());
             }
             if status & KAE_STATUS_ERROR != 0 {
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；状态寄存器读取/清除为 volatile 语义。
                 unsafe {
                     (*self.regs).status = KAE_STATUS_ERROR;
                 }
@@ -224,6 +232,7 @@ impl KunpengKaeEngine {
         if self.simulate {
             return;
         }
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for (i, chunk) in key.chunks(4).enumerate() {
                 if i >= 8 {
@@ -241,6 +250,7 @@ impl KunpengKaeEngine {
         if self.simulate {
             return;
         }
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；寄存器字段写为 volatile 语义硬件操作。
         unsafe {
             for reg in (*self.regs).key.iter_mut() {
                 *reg = 0;
@@ -253,6 +263,7 @@ impl KunpengKaeEngine {
         if self.simulate {
             return;
         }
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for (i, chunk) in iv.chunks(4).enumerate() {
                 if i >= 4 {
@@ -284,6 +295,7 @@ impl CryptoEngine for KunpengKaeEngine {
 
         self.write_key(private_key);
         // 写入消息到数据区
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for (i, chunk) in msg.chunks(4).enumerate() {
                 if i >= 16 {
@@ -298,6 +310,7 @@ impl CryptoEngine for KunpengKaeEngine {
         self.submit_and_wait(KAE_REQ_SM2_SIGN, msg.len())?;
 
         let mut sig = [0u8; 64];
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for i in 0..16 {
                 let val = (*self.regs).data_out[i];
@@ -333,6 +346,8 @@ impl CryptoEngine for KunpengKaeEngine {
         self.write_key(&public_key[..32]);
         self.submit_and_wait(KAE_REQ_SM2_VERIFY, msg.len() + 64)?;
 
+        // SAFETY: `self.regs` 由 `new()` 保证有效（simulate 已提前返回）；
+        // 状态位读取为硬件语义。
         let result = unsafe { (*self.regs).status & 0x01 != 0 };
         self.stats.record_success(msg.len());
         Ok(result)
@@ -353,6 +368,7 @@ impl CryptoEngine for KunpengKaeEngine {
         let copy_len = data.len().min(self.dma_buf.len());
         self.dma_buf[..copy_len].copy_from_slice(&data[..copy_len]);
 
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；寄存器写为硬件控制语义。
         unsafe {
             (*self.regs).dma_src = self.dma_buf.as_ptr() as u64;
             (*self.regs).dma_len = copy_len as u32;
@@ -361,6 +377,7 @@ impl CryptoEngine for KunpengKaeEngine {
         self.submit_and_wait(KAE_REQ_SM3, data.len())?;
 
         let mut hash = [0u8; 32];
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for i in 0..8 {
                 let val = (*self.regs).data_out[i];
@@ -401,6 +418,7 @@ impl CryptoEngine for KunpengKaeEngine {
         self.submit_and_wait(KAE_REQ_SM4_ENC, data.len())?;
 
         let mut result = vec![0u8; data.len()];
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for (i, chunk) in result.chunks_mut(4).enumerate() {
                 if i >= 16 {
@@ -446,6 +464,7 @@ impl CryptoEngine for KunpengKaeEngine {
         self.submit_and_wait(KAE_REQ_SM4_DEC, data.len())?;
 
         let mut result = vec![0u8; data.len()];
+// SAFETY: `self.regs` 由 `new()` 保证指向有效 KAE MMIO 映射（simulate 模式提前返回）；寄存器写为硬件控制语义。
         unsafe {
             for (i, chunk) in result.chunks_mut(4).enumerate() {
                 if i >= 16 {

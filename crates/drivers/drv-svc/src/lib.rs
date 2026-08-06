@@ -229,6 +229,9 @@ impl<M: VirtioMmio> VirtioRng<M> {
         }
         let data_off = 0x2000usize;
         // desc[0]：设备写（RNG 输出）。
+        // SAFETY: `self.queue` 为分配的对齐队列缓冲（长度 >= 0x2200），
+        // 转换的 `VirtqDesc` 切片与后续 avail/used 视图区间互不重叠；
+        // 宿主单线程访问，无并发写。
         let descs = unsafe {
             core::slice::from_raw_parts_mut(
                 self.queue[0x0000..0x1000].as_mut_ptr() as *mut VirtqDesc,
@@ -242,6 +245,10 @@ impl<M: VirtioMmio> VirtioRng<M> {
             next: 0,
         };
         // 提交 avail。
+        // SAFETY: `self.queue` 为对齐缓冲；avail 视图区间
+        // [0x0100, 0x1100) 与 desc 区间 [0x0000, 0x1000) 不重叠，且
+        // 布局与 VirtioAvail 结构体（u16 计数 + u16 环 + u16 used_event）
+        // 匹配，访问未越界。
         let avail = unsafe { &mut *(self.queue[0x0100..0x1100].as_mut_ptr() as *mut VirtqAvail) };
         avail.ring[avail.idx as usize & (QUEUE_MAX - 1)] = 0;
         avail.idx = avail.idx.wrapping_add(1);
@@ -252,6 +259,10 @@ impl<M: VirtioMmio> VirtioRng<M> {
         let deadline = 1_000_000u32;
         let mut spins = 0;
         loop {
+            // SAFETY: used 视图区间 [0x1000, 0x2000) 与 desc/avail 区间
+            // 不重叠，布局与 VirtqUsed（u32 idx + u32 used_event + 环）
+            // 匹配；设备写 used 环的并发由 virtio 内存屏障语义保证，
+            // 此处仅读取。
             let used = unsafe { &*(self.queue[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
             if used.idx != self.used_idx {
                 let elem = used.ring[self.used_idx as usize & (QUEUE_MAX - 1)];
@@ -305,11 +316,14 @@ mod tests {
             if qp.is_null() {
                 return;
             }
+            // SAFETY: 测试专用——`qp` 指向全局静态仿真队列（长度 0x2200），
+            // 区间划分与生产路径一致，无越界。
             let queue = unsafe { core::slice::from_raw_parts_mut(qp, 0x2200) };
             let avail = unsafe { &mut *(queue[0x0100..0x1100].as_mut_ptr() as *mut VirtqAvail) };
             let used = unsafe { &mut *(queue[0x1000..0x2000].as_mut_ptr() as *mut VirtqUsed) };
             while used.idx != avail.idx {
                 let head = avail.ring[used.idx as usize & (QUEUE_MAX - 1)] as usize;
+                // SAFETY: 测试专用——desc 只读视图区间合法，长度不越界。
                 let descs = unsafe {
                     core::slice::from_raw_parts(
                         queue[0x0000..0x1000].as_ptr() as *const VirtqDesc,

@@ -48,6 +48,8 @@ pub fn seL4_put_char(c: u8) -> isize {
     // The C shim's `eneros_sel4_debug_put_char` wraps `seL4_DebugPutChar`,
     // which takes a `char`. On aarch64 AAPCS64 `char` is unsigned, matching
     // `u8` — no sign conversion needed.
+    // SAFETY: `eneros_sel4_debug_put_char` 为 C shim（host 为 stub）
+    // 封装，参数为 u8 纯值，无指针，无内存安全风险。
     let _ = unsafe { ffi::eneros_sel4_debug_put_char(c) };
     0
 }

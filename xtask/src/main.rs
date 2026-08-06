@@ -269,6 +269,7 @@ fn real_main() -> DynResult<()> {
             Ok(())
         }
         "audit" => command_audit(&root, &rest),
+        "audit-unsafe-safety" => audit_unsafe_safety(&root, &rest),
         "build" => command_build(&root, &rest),
         "test" => command_test(&root, &rest),
         "fault" => fault_factory::command_fault(&root, &rest),
@@ -320,8 +321,142 @@ fn command_fuzz(_root: &Path, args: &[String]) -> DynResult<()> {
     fuzz_driver::command_fuzz(&target, iterations)
 }
 
-fn command_audit(root: &Path, args: &[String]) -> DynResult<()> {
-    let (mode, tail) = args
+/// `audit-unsafe-safety`：全仓 unsafe 代码块 SAFETY 注释覆盖率门禁
+/// （阶段 C v0.243.0 验收：unsafe 块 SAFETY 注释覆盖率 100%）。
+///
+/// 规则：
+/// - 仅统计**真实代码**中的 `unsafe`（剔除 `//`、`/* */` 注释与字符串）；
+/// - 每个 unsafe 行之前 8 行内必须存在 `SAFETY:` / `# Safety` / `# 安全`
+///   注释（函数级 `# Safety` 文档覆盖函数体内全部 unsafe 行）；
+/// - 文档注释/字符串中出现的 "unsafe" 字样（如"零 unsafe"声明）不计数。
+fn audit_unsafe_safety(root: &Path, args: &[String]) -> DynResult<()> {
+    ensure_empty(args, "audit-unsafe-safety")?;
+    let crates_dir = root.join("crates");
+    let mut violations: Vec<String> = Vec::new();
+    let mut checked_files = 0usize;
+    let mut checked_unsafe = 0usize;
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_rs_files(&crates_dir, &mut files)?;
+    files.sort();
+
+    for file in files {
+        let text = fs::read_to_string(&file)?;
+        let lines: Vec<&str> = text.lines().collect();
+        let mut in_block_comment = false;
+        let mut file_has_unsafe = false;
+        let mut file_violations: Vec<String> = Vec::new();
+
+        for (idx, line) in lines.iter().enumerate() {
+            // 逐字节扫描，跳过注释与字符串中的内容（字节级安全，
+            // 不按字符边界切片）。
+            let bytes = line.as_bytes();
+            let mut i = 0usize;
+            let mut code_has_unsafe = false;
+            while i < bytes.len() {
+                if in_block_comment {
+                    if bytes[i..].starts_with(b"*/") {
+                        in_block_comment = false;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                } else if bytes[i..].starts_with(b"//") {
+                    break;
+                } else if bytes[i..].starts_with(b"/*") {
+                    in_block_comment = true;
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    // 跳过字符串字面量。
+                    i += 1;
+                    while i < bytes.len() {
+                        if bytes[i] == b'\\' {
+                            i += 2;
+                        } else if bytes[i] == b'"' {
+                            i += 1;
+                            break;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                } else if bytes[i..].starts_with(b"unsafe") {
+                    let before_ok =
+                        i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+                    let after_idx = i + 6;
+                    let after_ok = after_idx >= bytes.len()
+                        || !(bytes[after_idx].is_ascii_alphanumeric() || bytes[after_idx] == b'_');
+                    if before_ok && after_ok {
+                        code_has_unsafe = true;
+                        break;
+                    }
+                    i += 6;
+                } else {
+                    i += 1;
+                }
+            }
+            if !code_has_unsafe {
+                continue;
+            }
+            file_has_unsafe = true;
+            checked_unsafe += 1;
+
+            // 检查前面 12 行内是否有 SAFETY 注释（覆盖函数级/块级注释）。
+            let window_start = idx.saturating_sub(12);
+            let covered = lines[window_start..=idx].iter().any(|l| {
+                let t = l.trim();
+                t.starts_with("// SAFETY")
+                    || t.starts_with("//SAFETY")
+                    || t.contains("SAFETY:")
+                    || t.contains("# Safety")
+                    || t.contains("# 安全")
+            });
+            if !covered {
+                let snippet: String = line.trim().chars().take(60).collect();
+                file_violations.push(format!(
+                    "  {}:{}  `{}` 前 8 行内缺少 SAFETY 注释",
+                    file.display(),
+                    idx + 1,
+                    snippet
+                ));
+            }
+        }
+        if file_has_unsafe {
+            checked_files += 1;
+        }
+        violations.extend(file_violations);
+    }
+
+    if !violations.is_empty() {
+        eprintln!("audit-unsafe-safety: FAIL ({} 处 unsafe 缺少 SAFETY 注释)", violations.len());
+        for v in &violations {
+            eprintln!("{v}");
+        }
+        return Err(invalid(format!(
+            "unsafe SAFETY 注释覆盖率未达 100%（{} 处违规）",
+            violations.len()
+        )));
+    }
+    println!(
+        "AUDIT-UNSAFE-SAFETY result=PASS files_with_unsafe={} unsafe_sites={}",
+        checked_files, checked_unsafe
+    );
+    Ok(())
+}
+
+fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> DynResult<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_files(&path, out)?;
+        } else if path.extension().map(|e| e == "rs").unwrap_or(false) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn command_audit(root: &Path, args: &[String]) -> DynResult<()> {    let (mode, tail) = args
         .split_first()
         .ok_or_else(|| invalid("audit requires 'all' or 'profile <id>'"))?;
     match mode.as_str() {

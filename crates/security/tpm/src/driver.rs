@@ -349,6 +349,8 @@ impl SpiTpmDriver {
             return Ok(0);
         }
         let addr = (self.base_addr + offset as usize) as *const u8;
+        // SAFETY: `self.base_addr` 由 `new` 的 # Safety 契约保证为有效
+        // TPM MMIO 区域；`read_volatile` 为硬件寄存器读语义。
         Ok(unsafe { core::ptr::read_volatile(addr) })
     }
 
@@ -358,6 +360,8 @@ impl SpiTpmDriver {
             return Ok(());
         }
         let addr = (self.base_addr + offset as usize) as *mut u8;
+        // SAFETY: `self.base_addr` 由 `new` 的 # Safety 契约保证为有效
+        // TPM MMIO 区域；`write_volatile` 为硬件寄存器写语义。
         unsafe { core::ptr::write_volatile(addr, value) };
         Ok(())
     }

@@ -17,6 +17,8 @@ pub struct Arm64Cpu;
 impl crate::HalCpu for Arm64Cpu {
     fn enable_irq(&self) {
         // DAIFClr #0xf clears all DAIF bits (unmasks IRQ/FIQ/ABT/DBG).
+        // SAFETY: `msr daifclr` 为无内存访问的系统寄存器写指令；副作用是
+        // 解除中断屏蔽，本 HAL 单线程串行使用，不引入数据竞争。
         unsafe {
             core::arch::asm!("msr daifclr, #0xf", options(nostack, preserves_flags));
         }
@@ -24,6 +26,8 @@ impl crate::HalCpu for Arm64Cpu {
 
     fn disable_irq(&self) {
         // DAIFSet #0xf sets all DAIF bits (masks IRQ/FIQ/ABT/DBG).
+        // SAFETY: `msr daifset` 为无内存访问的系统寄存器写指令；副作用是
+        // 屏蔽中断，本 HAL 单线程串行使用，不引入数据竞争。
         unsafe {
             core::arch::asm!("msr daifset, #0xf", options(nostack, preserves_flags));
         }
@@ -31,6 +35,8 @@ impl crate::HalCpu for Arm64Cpu {
 
     fn current_core(&self) -> u32 {
         let id: u64;
+        // SAFETY: `mrs mpidr_el1` 为无内存访问的系统寄存器读指令；输出
+        // 寄存器由 `out(reg)` 约束分配，`id` 在 asm 后完全初始化。
         unsafe {
             core::arch::asm!(
                 "mrs {}, mpidr_el1",
@@ -53,6 +59,8 @@ impl crate::HalCpu for Arm64Cpu {
     }
 
     fn wfi(&self) {
+        // SAFETY: `wfi` 不访问内存、无输出约束；副作用仅为进入低功耗等待，
+        // 不改变任何可观察内存状态。
         unsafe {
             core::arch::asm!("wfi", options(nostack, preserves_flags));
         }

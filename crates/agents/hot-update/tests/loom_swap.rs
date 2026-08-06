@@ -27,13 +27,17 @@ impl<T> LoomHotSwap<T> {
     fn load(&self) -> Arc<T> {
         let ptr = self.ptr.load(Ordering::Acquire);
         // 与生产同构：原子递增强计数后转移（VRF-004 修复的 race 窗口）
+        // SAFETY: `ptr` 恒为 `Arc::into_raw` 产物且非空（不变式同生产）；
+        // loom 模型下由 loom 检测竞争。
         unsafe { loom::sync::Arc::increment_strong_count(ptr as *const T) };
+        // SAFETY: 同上一一递增后计数 ≥ 1，from_raw 还原合法。
         unsafe { Arc::from_raw(ptr as *const T) }
     }
 
     fn swap(&self, new: Arc<T>) -> Arc<T> {
         let new_ptr = Arc::into_raw(new) as *mut T;
         let old = self.ptr.swap(new_ptr, Ordering::AcqRel);
+        // SAFETY: `old` 恒非空且为 `Arc::into_raw` 产物（不变式）。
         unsafe { Arc::from_raw(old as *const T) }
     }
 }
@@ -42,6 +46,7 @@ impl<T> Drop for LoomHotSwap<T> {
     fn drop(&mut self) {
         // loom AtomicPtr 无 get_mut：模型退出时无并发（join 完成），load 即最终指针
         let ptr = self.ptr.load(Ordering::Acquire);
+        // SAFETY: 模型退出时无并发访问，`ptr` 恒非空且为 into_raw 产物。
         drop(unsafe { Arc::from_raw(ptr as *const T) });
     }
 }

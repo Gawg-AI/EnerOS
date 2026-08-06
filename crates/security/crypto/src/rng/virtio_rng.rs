@@ -196,6 +196,8 @@ fn read_entropy<M: Mmio>(
     out: &mut [u8; 32],
 ) -> Option<usize> {
     let data_off = 0x2000usize;
+    // SAFETY: `queue` 为长度 0x2200 的对齐缓冲；desc 区间 [0x0000, 0x1000)
+    // 与 avail/used 区间互不重叠，`VirtqDesc` 布局匹配，访问不越界。
     let descs = unsafe {
         core::slice::from_raw_parts_mut(
             queue[0x0000..0x1000].as_mut_ptr() as *mut VirtqDesc,
@@ -208,6 +210,8 @@ fn read_entropy<M: Mmio>(
         flags: DESC_F_WRITE,
         next: 0,
     };
+    // SAFETY: avail 视图区间 [0x0100, 0x1100) 与 desc/used 区间不重叠，
+    // 布局与 VirtioAvail 匹配；宿主单线程访问。
     let avail = unsafe { &mut *(queue[0x0100..0x1100].as_mut_ptr() as *mut VirtqAvail) };
     avail.ring[avail.idx as usize & (QUEUE_MAX - 1)] = 0;
     avail.idx = avail.idx.wrapping_add(1);
@@ -215,6 +219,8 @@ fn read_entropy<M: Mmio>(
     mmio.write(vmmio::QUEUE_NOTIFY, 0);
     let mut spins = 0u32;
     loop {
+        // SAFETY: used 视图区间 [0x1000, 0x2000) 与 desc/avail 区间不重叠，
+        // 布局与 VirtqUsed 匹配；此处仅读取（virtio 内存屏障由设备保证）。
         let used = unsafe { &*(queue[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
         if used.idx != 0 {
             let n = core::cmp::min(used.ring[0].len as usize, out.len());
@@ -269,11 +275,16 @@ mod tests {
             if qp.is_null() {
                 return;
             }
+            // SAFETY: 测试专用——`qp` 指向全局静态仿真队列（长度 0x2200），
+            // 区间划分与生产路径一致，无越界。
             let queue = unsafe { core::slice::from_raw_parts_mut(qp, 0x2200) };
+            // SAFETY: 测试专用——avail 视图区间与 desc/used 不重叠，布局匹配。
             let avail = unsafe { &mut *(queue[0x0100..0x1100].as_mut_ptr() as *mut VirtqAvail) };
+            // SAFETY: 测试专用——used 视图区间与 desc/avail 不重叠，布局匹配。
             let used = unsafe { &mut *(queue[0x1000..0x2000].as_mut_ptr() as *mut VirtqUsed) };
             while used.idx != avail.idx {
                 let head = avail.ring[used.idx as usize & (QUEUE_MAX - 1)] as usize;
+                // SAFETY: 测试专用——desc 只读视图区间合法，长度 QUEUE_MAX 不越界。
                 let descs = unsafe {
                     core::slice::from_raw_parts(
                         queue[0x0000..0x1000].as_ptr() as *const VirtqDesc,

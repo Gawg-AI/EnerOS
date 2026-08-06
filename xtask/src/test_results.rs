@@ -160,6 +160,7 @@ fn xtask_command_modes() -> &'static [(&'static str, Option<&'static [&'static s
         ("fault", Some(&["manifest", "bootctrl", "installer", "artifact"]), "fault"),
         ("fuzz", None, "fuzz <target> <iterations>"),
         ("build-compare", None, "build-compare"),
+        ("audit-unsafe-safety", None, "audit-unsafe-safety"),
         ("run", Some(&["qemu-prod", "qemu-g3", "qemu-install"]), "run"),
         (
             "inspect",
@@ -219,8 +220,13 @@ fn validate_xtask_steps(workflow: &str) -> Vec<String> {
                 )),
             },
             None => {
-                // 无固定 mode 的子命令：校验至少存在一个参数（fuzz/build-compare/symbolize）。
-                if mode.is_none() && command != "build-compare" {
+                // 无固定 mode 的子命令：校验至少存在一个参数
+                // （fuzz/symbolize；build-compare 与 audit-unsafe-safety
+                // 为无参数命令，豁免）。
+                if mode.is_none()
+                    && command != "build-compare"
+                    && command != "audit-unsafe-safety"
+                {
                     violations.push(format!(
                         "ci.yml:{line_no}: xtask {command} requires arguments (usage: {usage})"
                     ));

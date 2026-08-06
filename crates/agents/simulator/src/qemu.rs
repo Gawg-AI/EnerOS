@@ -219,6 +219,8 @@ impl Simulator for QemuSimulator {
         {
             // 实际终止 QEMU 进程
             if let Some(pid) = instance.qemu_pid {
+                // SAFETY: `pid` 为 `fork` 返回的合法子进程 PID；`kill` 仅
+                // 发信号（SIGTERM），无内存访问，libc 契约保证安全。
                 unsafe {
                     libc::kill(pid as i32, libc::SIGTERM);
                 }

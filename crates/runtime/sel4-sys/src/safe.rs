@@ -97,8 +97,14 @@ pub struct RightsTable {
     pub all: CapRights,
 }
 
+/// 解析平台对象类型常量（纯 FFI getter，无副作用）。
+///
+/// # Safety
+/// 所有调用为无参 C 函数返回平台常量；无指针参数/返回值，无内存安全风险。
 #[cfg(sel4_target)]
 fn resolve_object_types() -> ObjectTypeTable {
+    // SAFETY: 以下 getter 均为无参 C 函数返回平台常量（见函数文档 # Safety），
+    // 无指针参数/返回值，无内存安全风险。
     ObjectTypeTable {
         untyped: unsafe { crate::ffi::eneros_sel4_obj_untyped() },
         tcb: unsafe { crate::ffi::eneros_sel4_obj_tcb() },
@@ -111,8 +117,14 @@ fn resolve_object_types() -> ObjectTypeTable {
     }
 }
 
+/// 解析权限常量（纯 FFI getter，无副作用）。
+///
+/// # Safety
+/// 所有调用为无参 C 函数返回权限位常量；无指针参数/返回值，无内存安全风险。
 #[cfg(sel4_target)]
 fn resolve_rights() -> RightsTable {
+    // SAFETY: 以下 getter 均为无参 C 函数返回权限位常量（见函数文档 # Safety），
+    // 无指针参数/返回值，无内存安全风险。
     RightsTable {
         none: unsafe { crate::ffi::eneros_sel4_rights_none() },
         read: unsafe { crate::ffi::eneros_sel4_rights_read() },

@@ -54,12 +54,20 @@ pub struct Arm64Gic {
 static mut IRQ_HANDLERS: [Option<crate::IrqHandler>; MAX_IRQ as usize] = [None; MAX_IRQ as usize];
 
 /// Write a 32-bit MMIO register.
+///
+/// # Safety
+/// `base + off` 必须指向有效的 GIC MMIO 寄存器映射且当前上下文可写；
+/// 调用方保证无并发/中断重叠访问。
 #[inline]
 unsafe fn w32(base: u64, off: u64, v: u32) {
     core::ptr::write_volatile((base + off) as *mut u32, v);
 }
 
 /// Read a 32-bit MMIO register.
+///
+/// # Safety
+/// `base + off` 必须指向有效的 GIC MMIO 寄存器映射且当前上下文可读；
+/// 调用方保证无并发/中断重叠访问。
 #[inline]
 unsafe fn r32(base: u64, off: u64) -> u32 {
     core::ptr::read_volatile((base + off) as *const u32)
@@ -290,10 +298,13 @@ mod tests {
     #[test]
     fn resolve_handler_registered_in_range() {
         fn dummy(_irq: u32) {}
+        // SAFETY: 测试专用——`IRQ_HANDLERS` 为静态表，测试线程独占访问
+        // （host 单线程测试），写入后立即断言并复位。
         unsafe {
             IRQ_HANDLERS[42] = Some(dummy);
         }
         assert!(resolve_handler(42).is_some());
+        // SAFETY: 同上——测试线程独占访问静态表。
         unsafe {
             IRQ_HANDLERS[42] = None;
         }
@@ -302,6 +313,7 @@ mod tests {
     /// 未注册 IRQ（< MAX_IRQ）→ None，不 panic。
     #[test]
     fn resolve_handler_unregistered_in_range() {
+        // SAFETY: 测试专用——静态表由测试线程独占访问。
         unsafe {
             IRQ_HANDLERS[7] = None;
         }

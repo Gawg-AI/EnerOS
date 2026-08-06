@@ -122,12 +122,18 @@ impl Pl011UartHw {
     }
 
     /// 写 PL011 寄存器。
+    ///
+    /// # Safety
+    /// `self.base` 由 `new` 的 # Safety 契约保证为有效 PL011 MMIO 基址。
     #[inline]
     unsafe fn w32(&self, off: u64, v: u32) {
         core::ptr::write_volatile((self.base + off) as *mut u32, v);
     }
 
     /// 读 PL011 寄存器。
+    ///
+    /// # Safety
+    /// `self.base` 由 `new` 的 # Safety 契约保证为有效 PL011 MMIO 基址。
     #[inline]
     unsafe fn r32(&self, off: u64) -> u32 {
         core::ptr::read_volatile((self.base + off) as *const u32)
@@ -350,6 +356,7 @@ mod tests {
             // 自增时钟：每次 now_ns 调用 +1ms，模拟真实单调时钟推进。
             let clock_fn: ClockFn =
                 Box::new(|| TEST_CLOCK.fetch_add(1_000_000, Ordering::Relaxed));
+            // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真 PL011 寄存器。
             let uart = unsafe { Pl011UartHw::new(regs as u64, 24_000_000, clock_fn) };
             Harness {
                 regs,
@@ -361,6 +368,7 @@ mod tests {
 
         /// 在每次适配器操作前，把 FIFO 状态同步到 FR 寄存器（仿真设备行为）。
         fn sync_fr(&self) {
+            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
             unsafe {
                 let fr = &mut (*self.regs).fr;
                 let mut v = 0u32;
@@ -384,6 +392,8 @@ mod tests {
 
         /// 仿真设备角色：消费 DR 写（进 TX FIFO）。
         fn device_after_write(&mut self) {
+            // SAFETY: MMIO 访问；`self.base` 由 `new` 的 # Safety 契约保证有效。
+            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
             unsafe {
                 let dr = &mut (*self.regs).dr;
                 let v = *dr;
@@ -410,6 +420,8 @@ mod tests {
 
     impl Drop for Harness {
         fn drop(&mut self) {
+            // SAFETY: MMIO 访问；`self.base` 由 `new` 的 # Safety 契约保证有效。
+            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
             unsafe {
                 drop(Box::from_raw(self.regs));
             }
@@ -423,6 +435,8 @@ mod tests {
         h.uart
             .configure(9600, 8, StopBits::One, Parity::None)
             .expect("configure");
+            // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
+            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
         unsafe {
             assert_eq!((*h.regs).ibrd, 156);
             assert_eq!((*h.regs).fbrd, 16);
@@ -469,6 +483,8 @@ mod tests {
         h.push_rx(&[0xAB]);
         h.sync_fr();
         // 适配器读 DR 前，仿真把 RX 字节放进 DR 寄存器。
+            // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
+            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
         unsafe {
             (*h.regs).dr = h.device_before_read();
         }
@@ -484,6 +500,8 @@ mod tests {
         h.push_rx(&[0x11, 0x22, 0x33]);
         for expect in [0x11u8, 0x22, 0x33] {
             h.sync_fr();
+            // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
+            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
             unsafe {
                 (*h.regs).dr = h.device_before_read();
             }
@@ -497,10 +515,14 @@ mod tests {
     fn test_rx_irq_enable_disable() {
         let mut h = Harness::new();
         h.uart.enable_rx_irq().expect("enable");
+            // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
+            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
         unsafe {
             assert_eq!((*h.regs).imsc & IMSC_RXIM, IMSC_RXIM);
         }
         h.uart.disable_rx_irq().expect("disable");
+            // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
+            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
         unsafe {
             assert_eq!((*h.regs).imsc & IMSC_RXIM, 0);
         }
@@ -576,6 +598,8 @@ mod tests {
         let mut slave_rx = alloc::vec::Vec::new();
         for _ in 0..request.len() {
             slave_h.sync_fr();
+            // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
+            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
             unsafe {
                 (*slave_h.regs).dr = slave_h.device_before_read();
             }
@@ -594,6 +618,8 @@ mod tests {
         let mut master_rx = alloc::vec::Vec::new();
         for _ in 0..response.len() {
             master_h.sync_fr();
+            // SAFETY: MMIO 访问；`self.base` 由 `new` 的 # Safety 契约保证有效。
+            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
             unsafe {
                 (*master_h.regs).dr = master_h.device_before_read();
             }
