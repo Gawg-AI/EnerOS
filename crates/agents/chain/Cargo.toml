@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS 轻量区块链 (v0.179.0) — 哈希链 + SM3 + 轻量共识, no_std"
+description = "EnerOS 存证哈希链 (v0.232.0 正名) — 哈希链 + SM3 + 入块强制验签, no_std"
 
 [dependencies]
 eneros-crypto = { path = "../../security/crypto" }
