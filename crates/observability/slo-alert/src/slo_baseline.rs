@@ -201,6 +201,23 @@ pub static FROZEN_BASELINES: &[SloBaseline] = &[
         max_deadline_miss_per_million: 5000,
         max_jitter_ns: 400_000_000,
     },
+    // v0.241.0（B5-04）：补齐 ContextSwitch 基线（FROZEN_BASELINES 遗漏）。
+    SloBaseline {
+        id: SloBaselineId::ContextSwitch,
+        workload: WorkloadProfile {
+            name: "edge-standard",
+            agent_count: 8,
+            ai_load_percent: 80,
+            log_rate_per_sec: 1000,
+            network_stress_percent: 50,
+            control_loop_active: true,
+        },
+        p50_target_ns: 10_000,    // 10us
+        p99_target_ns: 50_000,    // 50us
+        p999_target_ns: 100_000,  // 100us
+        max_deadline_miss_per_million: 1000,
+        max_jitter_ns: 80_000,
+    },
 ];
 
 /// SLO 合规状态。

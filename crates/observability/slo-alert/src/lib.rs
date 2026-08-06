@@ -18,9 +18,11 @@
 extern crate alloc;
 
 pub mod alert_catalog;
+pub mod trigger;
 pub mod runbook;
 pub mod slo_baseline;
 
 pub use alert_catalog::{Alert, AlertCatalog, AlertSeverity, AlertStatus};
 pub use runbook::{Runbook, RunbookStep, RunbookStepType};
+pub use trigger::{AlertState, FnNotificationSink, NotificationSink, TriggerEngine, TriggeredAlert};
 pub use slo_baseline::{SloBaseline, SloCompliance, SloStatus, WorkloadProfile, FROZEN_BASELINES};
