@@ -30,6 +30,7 @@ use spin::Mutex;
 use crate::beidou::nmea::NmeaMessage;
 use crate::rtc::{rtc_to_secs, RtcTime};
 
+pub mod input;
 pub mod nmea;
 pub mod pps;
 

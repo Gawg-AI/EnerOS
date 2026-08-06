@@ -36,7 +36,10 @@ pub fn register_power_irq(callback: fn()) {
 
 /// Called by the hardware interrupt handler (or host mock) when main power
 /// is lost. Updates global state and invokes the registered callback.
+///
+/// v0.216.0（B1-04）：记录主→备切换事件。
 pub fn notify_power_loss() {
+    record_power_switch(PowerSource::Backup);
     {
         let mut state = crate::POWER_STATE.lock();
         state.main_power_ok = false;
@@ -51,7 +54,10 @@ pub fn notify_power_loss() {
 /// Called when main power is restored. Cancels the shutdown sequence by
 /// clearing `in_shutdown`. This is the authorized cancellation path —
 /// normal tasks cannot cancel via [`advance_sequence`](crate::advance_sequence).
+///
+/// v0.216.0（B1-04）：记录备→主切换事件。
 pub fn notify_power_restored() {
+    record_power_switch(PowerSource::Main);
     let mut state = crate::POWER_STATE.lock();
     state.main_power_ok = true;
     state.in_shutdown = false;
@@ -61,6 +67,116 @@ pub fn notify_power_restored() {
 // Power status check — aarch64 hardware implementation
 // ============================================================================
 
+/// 电源域检测抽象（v0.216.0，B1-04）。
+///
+/// 替代此前的虚构 MMIO 地址（0x0906_0000/0x0907_0000 并非真实 ADC/GPIO，
+/// 08 号文 B2）：电源域/电池检测经 [`PowerRail`] 注入，真机用寄存器级
+/// 实现，host 用 [`RamPowerRail`] 模拟。
+pub trait PowerRail: Send + Sync {
+    /// 读取主供电电压（毫伏）。
+    fn read_voltage_mv(&self) -> u32;
+    /// 读取 power-fail 信号（true = 掉电标志断言）。
+    fn read_power_fail(&self) -> bool;
+    /// 读取电池电量（0–100 %），无电池返回 None。
+    fn battery_soc(&self) -> Option<u8>;
+}
+
+/// RAM 模拟电源域（host 测试 / QEMU）。
+pub struct RamPowerRail {
+    /// 当前电压（毫伏）。
+    pub voltage_mv: u32,
+    /// power-fail 标志。
+    pub power_fail: bool,
+    /// 电池电量。
+    pub battery_soc: Option<u8>,
+}
+
+impl RamPowerRail {
+    /// 创建模拟电源域。
+    pub fn new(voltage_mv: u32, battery_soc: Option<u8>) -> Self {
+        Self {
+            voltage_mv,
+            power_fail: false,
+            battery_soc,
+        }
+    }
+}
+
+impl PowerRail for RamPowerRail {
+    fn read_voltage_mv(&self) -> u32 {
+        self.voltage_mv
+    }
+    fn read_power_fail(&self) -> bool {
+        self.power_fail
+    }
+    fn battery_soc(&self) -> Option<u8> {
+        self.battery_soc
+    }
+}
+
+/// 全局电源域（由板级初始化注入真实实现；默认 RAM 模拟）。
+static POWER_RAIL: Mutex<Option<&'static dyn PowerRail>> = Mutex::new(None);
+
+/// 注入电源域实现（板级初始化调用一次）。
+pub fn register_power_rail(rail: &'static dyn PowerRail) {
+    *POWER_RAIL.lock() = Some(rail);
+}
+
+/// 读取当前电压（毫伏）；未注入电源域时返回 0。
+pub fn read_voltage_mv() -> u32 {
+    match *POWER_RAIL.lock() {
+        Some(rail) => rail.read_voltage_mv(),
+        None => 0,
+    }
+}
+
+/// 读取当前电池电量（0–100 %）。
+pub fn read_battery_soc() -> Option<u8> {
+    match *POWER_RAIL.lock() {
+        Some(rail) => rail.battery_soc(),
+        None => None,
+    }
+}
+
+/// 主备电切换事件（v0.216.0，B1-04）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerSource {
+    /// 主电（AC/主供电轨）
+    Main,
+    /// 备电（电池/UPS）
+    Backup,
+}
+
+/// 最近一次主备电切换事件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PowerSwitchEvent {
+    /// 切换到的电源源。
+    pub source: PowerSource,
+    /// 切换时电压（毫伏）。
+    pub voltage_mv: u32,
+    /// 切换时电池电量（%）。
+    pub battery_soc: u8,
+}
+
+/// 最近一次切换事件（初始为主电）。
+static LAST_SWITCH_EVENT: Mutex<Option<PowerSwitchEvent>> = Mutex::new(None);
+
+/// 查询最近一次主备电切换事件。
+pub fn last_power_switch_event() -> Option<PowerSwitchEvent> {
+    *LAST_SWITCH_EVENT.lock()
+}
+
+/// 记录主备电切换事件（由检测路径调用）。
+pub fn record_power_switch(source: PowerSource) {
+    let voltage_mv = read_voltage_mv();
+    let battery_soc = read_battery_soc().unwrap_or(0);
+    *LAST_SWITCH_EVENT.lock() = Some(PowerSwitchEvent {
+        source,
+        voltage_mv,
+        battery_soc,
+    });
+}
+
 /// ADC base address (example: platform-specific, set by board config).
 #[cfg(target_arch = "aarch64")]
 const ADC_BASE: u64 = 0x0906_0000;
@@ -68,8 +184,7 @@ const ADC_BASE: u64 = 0x0906_0000;
 #[cfg(target_arch = "aarch64")]
 const ADC_DATA_REG: u64 = 0x00;
 /// Main power OK threshold in millivolts (4.75 V for a 5 V rail).
-#[cfg(target_arch = "aarch64")]
-const POWER_OK_THRESHOLD_MV: u32 = 4750;
+pub const POWER_OK_THRESHOLD_MV: u32 = 4750;
 
 /// GPIO base address (example: platform-specific).
 #[cfg(target_arch = "aarch64")]
@@ -120,9 +235,16 @@ pub fn is_main_power_ok() -> bool {
 // ============================================================================
 
 /// Host mock: check cached power state from [`crate::POWER_STATE`].
+///
+/// v0.216.0（B1-04）：已注入 [`PowerRail`] 时以真实检测为准（电压阈值 +
+/// power-fail 信号）；未注入时回退缓存状态（旧 mock 语义）。
 #[cfg(not(target_arch = "aarch64"))]
 pub fn is_main_power_ok() -> bool {
-    crate::POWER_STATE.lock().main_power_ok
+    let rail = *POWER_RAIL.lock();
+    match rail {
+        Some(rail) => rail.read_voltage_mv() >= POWER_OK_THRESHOLD_MV && !rail.read_power_fail(),
+        None => crate::POWER_STATE.lock().main_power_ok,
+    }
 }
 
 /// Host mock: simulate main power status change.
@@ -160,6 +282,9 @@ mod tests {
             in_shutdown: false,
         };
         *POWER_IRQ_CALLBACK.lock() = None;
+        // v0.216.0：清除注入的电源域，避免测试间泄漏。
+        *POWER_RAIL.lock() = None;
+        *LAST_SWITCH_EVENT.lock() = None;
     }
 
     fn test_callback() {
@@ -241,5 +366,83 @@ mod tests {
         // Latest registration wins.
         let cb = POWER_IRQ_CALLBACK.lock();
         assert!(cb.is_some());
+    }
+
+    // ===== v0.216.0（B1-04）：PowerRail 真实检测 + 主备电切换事件 =====
+
+    /// 静态模拟电源域（测试注入）。
+    static TEST_RAIL: RamPowerRail = RamPowerRail {
+        voltage_mv: 5000,
+        power_fail: false,
+        battery_soc: Some(85),
+    };
+
+    #[test]
+    fn test_power_rail_voltage_ok() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_state();
+        register_power_rail(&TEST_RAIL);
+        assert!(is_main_power_ok());
+        assert_eq!(read_voltage_mv(), 5000);
+        assert_eq!(read_battery_soc(), Some(85));
+    }
+
+    #[test]
+    fn test_power_rail_voltage_below_threshold() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_state();
+        // 电压低于 4.75V 阈值 → 主电不 OK（真实检测路径）。
+        static LOW_RAIL: RamPowerRail = RamPowerRail {
+            voltage_mv: 4500,
+            power_fail: false,
+            battery_soc: Some(80),
+        };
+        register_power_rail(&LOW_RAIL);
+        assert!(!is_main_power_ok());
+    }
+
+    #[test]
+    fn test_power_rail_power_fail_signal() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_state();
+        static FAIL_RAIL: RamPowerRail = RamPowerRail {
+            voltage_mv: 5000,
+            power_fail: true,
+            battery_soc: Some(80),
+        };
+        register_power_rail(&FAIL_RAIL);
+        assert!(!is_main_power_ok(), "power-fail 信号断言 → 主电不 OK");
+    }
+
+    #[test]
+    fn test_power_switch_event_recorded_on_loss_and_restore() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_state();
+        register_power_rail(&TEST_RAIL);
+
+        // 主电丢失：记录 Backup 切换事件（含电压/电量快照）。
+        notify_power_loss();
+        let ev = last_power_switch_event().expect("switch event");
+        assert_eq!(ev.source, PowerSource::Backup);
+        assert_eq!(ev.voltage_mv, 5000);
+        assert_eq!(ev.battery_soc, 85);
+
+        // 主电恢复：记录 Main 切换事件。
+        notify_power_restored();
+        let ev = last_power_switch_event().expect("switch event");
+        assert_eq!(ev.source, PowerSource::Main);
+        assert_eq!(ev.voltage_mv, 5000);
+    }
+
+    #[test]
+    fn test_record_power_switch_without_rail_defaults() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_state();
+        // 未注入 PowerRail：电压/电量回退 0。
+        record_power_switch(PowerSource::Backup);
+        let ev = last_power_switch_event().expect("switch event");
+        assert_eq!(ev.source, PowerSource::Backup);
+        assert_eq!(ev.voltage_mv, 0);
+        assert_eq!(ev.battery_soc, 0);
     }
 }

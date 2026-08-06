@@ -50,7 +50,7 @@ pub enum SwitchError {
 // ============================================================================
 
 /// Health score threshold: below this a source is considered unhealthy.
-const HEALTH_THRESHOLD: u8 = 50;
+pub(crate) const HEALTH_THRESHOLD: u8 = 50;
 
 // ============================================================================
 // Internal helpers
