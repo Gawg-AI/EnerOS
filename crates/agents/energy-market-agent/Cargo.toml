@@ -9,8 +9,8 @@ description = "EnerOS v0.72.0 Energy Agent + Market Agent (双 Agent 协作 MVP,
 [dependencies]
 eneros-market-types = { path = "../market-types" }
 eneros-agent = { path = "../agent" }
-eneros-agent-sdk = { path = "../agent-sdk", version = "0.229.0" }
-eneros-dr = { path = "../dr", version = "0.229.0" }
+eneros-agent-sdk = { path = "../agent-sdk", version = "0.230.0" }
+eneros-dr = { path = "../dr", version = "0.230.0" }
 eneros-dual-brain = { path = "../../ai/dual-brain" }
 eneros-fast-path = { path = "../../ai/fast-path" }
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }

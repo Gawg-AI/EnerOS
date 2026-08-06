@@ -44,9 +44,9 @@ pub struct Settlement {
     /// 交易 ID
     pub deal_id: u64,
     /// 卖方入账电量 (kWh)
-    pub seller_credit_kwh: f64,
+    pub seller_credit_kwh: crate::MilliKwh,
     /// 买方扣减电量 (kWh)
-    pub buyer_debit_kwh: f64,
+    pub buyer_debit_kwh: crate::MilliKwh,
     /// 结算金额（毫元定点，ARC-003）
     pub amount_yuan: MilliYuan,
     /// 结算时间戳
@@ -62,16 +62,16 @@ pub struct TradeContext {
     pub seller: u64,
     /// 买方 Agent ID
     pub buyer: u64,
-    /// 交易电量 (kWh)
-    pub volume_kwh: f64,
+    /// 交易电量（毫 kWh 定点，v0.230.0）
+    pub volume_kwh: crate::MilliKwh,
     /// 单价 (元/kWh)
     pub price: f64,
     /// 当前阶段
     pub phase: TradePhase,
     /// 冻结 ID
     pub freeze_id: Option<u64>,
-    /// 已交付电量 (kWh)
-    pub delivered_kwh: f64,
+    /// 已交付电量（毫 kWh 定点，v0.230.0）
+    pub delivered_kwh: crate::MilliKwh,
     /// 结算信息
     pub settlement: Option<Settlement>,
 }
@@ -95,13 +95,13 @@ mod tests {
     fn settlement_struct() {
         let s = Settlement {
             deal_id: 1,
-            seller_credit_kwh: 100.0,
-            buyer_debit_kwh: 100.0,
+            seller_credit_kwh: crate::MilliKwh(100_000),
+            buyer_debit_kwh: crate::MilliKwh(100_000),
             amount_yuan: MilliYuan(50_000),
             at: 1000,
         };
         assert_eq!(s.deal_id, 1);
-        assert_eq!(s.seller_credit_kwh, 100.0);
+        assert_eq!(s.seller_credit_kwh, crate::MilliKwh(100_000));
         assert_eq!(s.amount_yuan, MilliYuan(50_000));
     }
 
@@ -111,16 +111,16 @@ mod tests {
             deal_id: 1,
             seller: 10,
             buyer: 20,
-            volume_kwh: 500.0,
+            volume_kwh: crate::MilliKwh::from_kwh(500.0),
             price: 0.5,
             phase: TradePhase::Matched,
             freeze_id: None,
-            delivered_kwh: 0.0,
+            delivered_kwh: crate::MilliKwh::ZERO,
             settlement: None,
         };
         assert_eq!(ctx.phase, TradePhase::Matched);
         assert!(ctx.freeze_id.is_none());
         assert!(ctx.settlement.is_none());
-        assert_eq!(ctx.delivered_kwh, 0.0);
+        assert_eq!(ctx.delivered_kwh, crate::MilliKwh::ZERO);
     }
 }

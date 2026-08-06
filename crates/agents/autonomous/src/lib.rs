@@ -14,13 +14,17 @@
 extern crate alloc;
 
 pub mod closed_loop;
+pub mod milli_kwh;
 pub mod orchestrator;
+pub mod reconcile;
 pub mod settlement;
 pub mod types;
 
 pub use closed_loop::{ClosedLoop, ClosedLoopImpl};
 pub use orchestrator::TradeOrchestrator;
+pub use reconcile::{freeze_idempotent, Reconciliation};
 pub use settlement::{AutoSettlement, SettlementTrigger};
+pub use milli_kwh::MilliKwh;
 pub use types::{Settlement, TradeContext, TradePhase};
 
 /// 交易系统错误类型
@@ -36,6 +40,8 @@ pub enum TradeError {
     FreezeFailed,
     /// 交付失败
     DeliveryFailed,
+    /// 计量源不可用（v0.230.0：未注入计量闭包时交付阶段失败）
+    MeterUnavailable,
 }
 
 impl core::fmt::Display for TradeError {
@@ -46,6 +52,7 @@ impl core::fmt::Display for TradeError {
             Self::SettlementFailed => write!(f, "settlement failed"),
             Self::FreezeFailed => write!(f, "freeze failed"),
             Self::DeliveryFailed => write!(f, "delivery failed"),
+            Self::MeterUnavailable => write!(f, "meter unavailable"),
         }
     }
 }

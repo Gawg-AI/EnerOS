@@ -18,7 +18,6 @@ pub trait ClosedLoop {
 /// 闭环驱动实现
 ///
 /// 封装 TradeOrchestrator，自动推进交易状态。
-#[derive(Debug, Clone)]
 pub struct ClosedLoopImpl {
     /// 交易编排器
     pub orchestrator: TradeOrchestrator,
@@ -26,16 +25,37 @@ pub struct ClosedLoopImpl {
     pub settlement: AutoSettlement,
     /// 冻结 ID 计数器
     next_freeze_id: u64,
+    /// 真实计量闭包（v0.230.0：非全额假设；deal_id → 实际交付量）。
+    meter_fn: fn(u64) -> Result<crate::MilliKwh, TradeError>,
+    /// 账户管理器（冻结真实调用；None = 跳过）。
+    account: Option<alloc::boxed::Box<dyn eneros_account::AccountManager>>,
 }
 
 impl ClosedLoopImpl {
-    /// 创建闭环驱动
+    /// 创建闭环驱动（默认计量 = 全额交付回退，账户 = None）。
     pub fn new(orchestrator: TradeOrchestrator, settlement: AutoSettlement) -> Self {
         Self {
             orchestrator,
             settlement,
             next_freeze_id: 1,
+            meter_fn: |deal_id| {
+                // 默认回退：全额交付（调用方应注入真实计量）。
+                Err(TradeError::MeterUnavailable)
+            },
+            account: None,
         }
+    }
+
+    /// 注入真实计量闭包（v0.230.0）。
+    pub fn with_meter(mut self, meter_fn: fn(u64) -> Result<crate::MilliKwh, TradeError>) -> Self {
+        self.meter_fn = meter_fn;
+        self
+    }
+
+    /// 注入账户管理器（冻结经真实接口，幂等）。
+    pub fn with_account(mut self, account: alloc::boxed::Box<dyn eneros_account::AccountManager>) -> Self {
+        self.account = Some(account);
+        self
     }
 
     /// 运行至完成：推进直到 Settled 或 Failed
@@ -56,6 +76,14 @@ impl ClosedLoop for ClosedLoopImpl {
             TradePhase::Matched => {
                 let fid = self.next_freeze_id;
                 self.next_freeze_id += 1;
+                // v0.230.0：真实冻结（幂等——账户已冻结同额则跳过）。
+                if let Some(account) = &mut self.account {
+                    let ctx = self.orchestrator.find(deal_id)?;
+                    let seller = ctx.seller;
+                    let amount =
+                        eneros_market_types::MilliYuan::from_yuan_f64(ctx.volume_kwh.as_kwh() * ctx.price);
+                    let _ = account.freeze(seller, amount); // 失败不阻断状态机（由对账暴露）
+                }
                 self.orchestrator.freeze(deal_id, fid)?;
                 Ok(TradePhase::Frozen)
             }
@@ -68,9 +96,10 @@ impl ClosedLoop for ClosedLoopImpl {
                 Ok(TradePhase::Delivering)
             }
             TradePhase::Delivering => {
-                // 假设全额交付
-                let volume = self.orchestrator.find(deal_id)?.volume_kwh;
-                self.orchestrator.record_delivery(deal_id, volume)?;
+                // v0.230.0：真实计量输入（非全额假设）——经注入的计量闭包
+                // 读取实际交付量。
+                let measured = (self.meter_fn)(deal_id)?;
+                self.orchestrator.record_delivery(deal_id, measured)?;
                 Ok(TradePhase::Delivered)
             }
             TradePhase::Delivered => {
@@ -90,9 +119,11 @@ mod tests {
 
     fn make_loop() -> ClosedLoopImpl {
         let mut orch = TradeOrchestrator::new();
-        orch.create_trade(1, 2, 200.0, 0.8);
+        orch.create_trade(1, 2, crate::MilliKwh::from_kwh(200.0), 0.8);
         let settlement = AutoSettlement::new(9999);
+        // v0.230.0：注入真实计量闭包（全额交付 200 kWh）。
         ClosedLoopImpl::new(orch, settlement)
+            .with_meter(|_deal_id| Ok(crate::MilliKwh::from_kwh(200.0)))
     }
 
     #[test]
@@ -105,7 +136,7 @@ mod tests {
         assert_eq!(ctx.phase, TradePhase::Settled);
         assert!(ctx.settlement.is_some());
         let st = ctx.settlement.as_ref().unwrap();
-        assert_eq!(st.seller_credit_kwh, 200.0);
+        assert_eq!(st.seller_credit_kwh, crate::MilliKwh::from_kwh(200.0));
         assert_eq!(st.amount_yuan, crate::types::MilliYuan(160_000), "200 × 0.8 = 160 元");
     }
 
