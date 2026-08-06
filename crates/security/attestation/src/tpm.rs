@@ -115,6 +115,8 @@ pub trait TpmBackend {
 /// - `inject_failure` 注入后续 N 次 `Err(TpmUnavailable)`（蓝图 §6.5 故障
 ///   注入演练）；`fail_remaining` 用 `Cell` 使 `&self` 的 `pcr_read` 也能
 ///   消费故障次数
+/// 软件 TPM（v0.236.0 显式降级档：**非生产**——仅测试/无硬件环境；
+/// 生产构建须启用 `tpm2` feature 使用硬件 TPM 适配器）。
 pub struct SoftTpm {
     /// 本地 PCR bank（SM3-only 单 bank）.
     bank: PcrBank,

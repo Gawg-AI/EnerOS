@@ -53,6 +53,7 @@
 extern crate alloc;
 
 pub mod attest;
+pub mod real;
 pub mod event_log;
 pub mod tpm;
 
