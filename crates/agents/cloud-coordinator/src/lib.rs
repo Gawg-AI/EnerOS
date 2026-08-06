@@ -95,6 +95,7 @@
 extern crate alloc;
 
 pub mod aggregator;
+pub mod real;
 pub mod channel;
 pub mod publisher;
 pub mod strategy;

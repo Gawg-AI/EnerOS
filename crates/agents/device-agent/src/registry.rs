@@ -194,6 +194,11 @@ impl DeviceRegistry {
     pub fn iter_mut(&mut self) -> alloc::collections::btree_map::IterMut<'_, String, DeviceInfo> {
         self.devices.iter_mut()
     }
+
+    /// 只读迭代（v0.227.0，注册表持久化需要）.
+    pub fn iter(&self) -> alloc::collections::btree_map::Iter<'_, String, DeviceInfo> {
+        self.devices.iter()
+    }
 }
 
 impl Default for DeviceRegistry {

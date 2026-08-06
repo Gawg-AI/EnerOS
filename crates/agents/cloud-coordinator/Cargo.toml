@@ -10,3 +10,5 @@ description = "EnerOS v0.95.0 Cloud Coordinator (云端策略下发 + 边缘安�
 eneros-energy-market-agent = { path = "../energy-market-agent" }
 eneros-dr = { path = "../dr" }
 eneros-coordinator = { path = "../coordinator" }
+# v0.227.0（B3-04）：真实存储经 fs。
+eneros-fs = { path = "../../drivers/fs" }

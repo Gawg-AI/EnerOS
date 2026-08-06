@@ -7,7 +7,7 @@ license.workspace = true
 description = "EnerOS Agent 信誉经济激励 (v0.181.0) — 信誉→权限→收益联动, no_std"
 
 [dependencies]
-eneros-agent = { path = "../agent", version = "0.226.0" }
+eneros-agent = { path = "../agent", version = "0.227.0" }
 
 [features]
 default = []
