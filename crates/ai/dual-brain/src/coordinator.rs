@@ -66,6 +66,11 @@ pub struct DualBrainResult {
     pub feedback: Option<FeedbackContract>,
 }
 
+/// 默认单调时钟（毫秒）：eneros-time 全局时钟；boot 前未初始化返回 0。
+fn default_clock_ms() -> u64 {
+    eneros_time::get_monotonic_ns() / 1_000_000
+}
+
 /// 双脑协调器（D4：泛型 `Solver`，默认 `MockSolver`）.
 ///
 /// 端到端编排双脑链路。快路径委托 `RealtimePathEngine`，慢路径执行完整 7 步。
@@ -90,6 +95,9 @@ pub struct DualBrainCoordinator<S: Solver> {
     pub sink: Box<dyn CommandSink>,
     /// 请求计数器（D2：生成 `request_id`）.
     pub request_counter: u64,
+    /// 单调时钟（毫秒；v0.248.0 真实计时——默认 eneros-time 全局时钟，
+    /// 测试可注入可控时钟）。
+    pub clock_fn: fn() -> u64,
 }
 
 impl<S: Solver> DualBrainCoordinator<S> {
@@ -113,7 +121,14 @@ impl<S: Solver> DualBrainCoordinator<S> {
             contract_validator: ContractValidator::new(),
             sink,
             request_counter: 0,
+            clock_fn: default_clock_ms,
         }
+    }
+
+    /// 注入可控单调时钟（毫秒）——测试与仿真用；生产用默认全局时钟。
+    pub fn with_clock(mut self, clock_fn: fn() -> u64) -> Self {
+        self.clock_fn = clock_fn;
+        self
     }
 
     /// 端到端执行双脑链路.
@@ -131,17 +146,22 @@ impl<S: Solver> DualBrainCoordinator<S> {
         state: &RealtimeState,
         now_ms: u64,
     ) -> Result<DualBrainResult, DualBrainError> {
+        // v0.248.0：真实计时时钟（单调毫秒；默认 eneros-time 全局时钟，
+        // 测试经 with_clock 注入可控时钟）。
+        let tic = || (self.clock_fn)();
         let mut latency = LatencyBreakdown::default();
 
         // Step 1: 路径选择
         let path_type = self.path_selector.select(state, now_ms);
 
         if path_type == PathType::FastPath {
+            // v0.248.0：真实计时（单调时钟）。
+            let t0 = tic();
             let fast_result = self
                 .fast_path
                 .execute(state, now_ms)
                 .map_err(|e| DualBrainError::SolveError(format!("{:?}", e)))?;
-            latency.perception_ms = 0;
+            latency.perception_ms = tic().saturating_sub(t0);
             latency.calculate_total();
             return Ok(DualBrainResult {
                 path_type: PathType::FastPath,
@@ -154,6 +174,8 @@ impl<S: Solver> DualBrainCoordinator<S> {
         // ===== 慢路径：完整 7 步 =====
 
         // Step 2: 感知层 — 构建 SystemContext（D5）
+        // v0.248.0：真实计时。
+        let t_perception = tic();
         let system_context = SystemContext {
             current_soc: state.system.soc_pct,
             current_power_kw: state.system.current_a * state.system.voltage_v / 1000.0,
@@ -162,24 +184,28 @@ impl<S: Solver> DualBrainCoordinator<S> {
             device_status: DeviceStatus::Normal,
             alarms: Vec::new(),
         };
-        latency.perception_ms = 0;
+        latency.perception_ms = tic().saturating_sub(t_perception);
 
         // Step 3: LLM 推理（D9）
         let t_ctx = TemplateContext {
             market_price: state.current_price,
             soc: state.system.soc_pct * 100.0,
             power_current: state.system.current_a * state.system.voltage_v / 1000.0,
+            // 输入占位（非遥测观测值）：温度/时段无传感器数据源，
+            // 传感器接入后从 RealtimeState 扩展字段替换（标注 demo-only）。
             temperature: 25.0,
             time_of_day: String::from("谷时"),
             historical_data: state.load_demand.clone().unwrap_or_default(),
         };
         let prompt = self.prompt_template.build(&t_ctx);
         let infer_params = InferParams::default();
+        // v0.248.0：LLM 推理真实计时（替换硬编码 1200ms）。
+        let t_llm = tic();
         let llm_output = self
             .llm_engine
             .infer(&prompt, &infer_params)
             .map_err(|e| DualBrainError::LlmError(format!("{:?}", e)))?;
-        latency.llm_inference_ms = 1200;
+        latency.llm_inference_ms = tic().saturating_sub(t_llm);
 
         // Step 4: 意图解析（D9）
         let intent = self
@@ -195,9 +221,15 @@ impl<S: Solver> DualBrainCoordinator<S> {
             intent,
             context: system_context,
             llm_meta: LlmMeta {
-                model_name: String::from("mock"),
+                // v0.248.0：真实模型标识与 token 计数（引擎提供的能力查询；
+                // 未加载模型时回退为占位名，token 计数取累计统计）。
+                model_name: self
+                    .llm_engine
+                    .model_info()
+                    .map(|m| m.name.clone())
+                    .unwrap_or_else(|| String::from("unloaded")),
                 inference_ms: latency.llm_inference_ms,
-                token_count: 0,
+                token_count: self.llm_engine.stats().total_tokens_generated as usize,
                 confidence: 0.85,
             },
         };
@@ -208,24 +240,28 @@ impl<S: Solver> DualBrainCoordinator<S> {
             .converter
             .to_solver_params(&contract, &state.system)
             .map_err(|e| DualBrainError::ContractError(format!("{:?}", e)))?;
-        latency.intent_parse_ms = 0;
+        // v0.248.0：真实计时（意图解析整段：parse→validate→convert）。
+        latency.intent_parse_ms = tic().saturating_sub(t_llm);
 
         // Step 5: LP 求解（D8）
         let _ = self.fast_path.solver.set_param("time_limit", "0.5");
+        // v0.248.0：LP 模型构建真实计时（solve 前一刻）。
+        let t_lp_build = tic();
         let solve_result = self
             .fast_path
             .solver
             .solve(&problem, now_ms)
             .map_err(|e| DualBrainError::SolveError(format!("{:?}", e)))?;
-        latency.lp_build_ms = 0;
+        latency.lp_build_ms = tic().saturating_sub(t_lp_build);
         latency.lp_solve_ms = solve_result.elapsed_ms;
 
         let model = EnergyScheduleModel::new(config);
         let schedule = model.parse_result(&solve_result);
 
-        // Step 6: 安全校验
+        // Step 6: 安全校验（v0.248.0：真实计时）。
+        let t_safety = tic();
         let validation = self.validator.validate(&schedule, &state.system);
-        latency.safety_validate_ms = 0;
+        latency.safety_validate_ms = tic().saturating_sub(t_safety);
 
         // v0.206.0（P0-17）：安全屏障闭环——Fatal 违规（validation.passed ==
         // false，如 SOC<0.05）拒绝命令下发并上报告警，不再取 clamped_schedule
@@ -247,9 +283,11 @@ impl<S: Solver> DualBrainCoordinator<S> {
                 ttl_ms: 300_000,
                 timestamp: now_ms,
             };
+            // v0.248.0：真实计时。
+            let t_dispatch = tic();
             self.sink.write(cmd)?;
+            latency.command_dispatch_ms = tic().saturating_sub(t_dispatch);
         }
-        latency.command_dispatch_ms = 0;
 
         // 构建反馈契约
         let feedback = self.converter.to_feedback(

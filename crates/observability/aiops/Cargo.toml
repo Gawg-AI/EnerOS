@@ -7,6 +7,8 @@ license.workspace = true
 description = "EnerOS 运维分析 (v0.191.0) — 统计/规则异常检测 + 预测性维护 + 自愈, no_std（VRF-006 无 AI 推理）"
 
 [dependencies]
+# v0.248.0（C-248）：自愈执行真实计时（eneros-time 单调时钟）。
+eneros-time = { path = "../../drivers/time" }
 
 [features]
 default = []

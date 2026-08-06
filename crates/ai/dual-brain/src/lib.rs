@@ -254,12 +254,38 @@ mod tests {
     }
 
     // ===== T16: execute 慢路径 latency 各字段（llm_inference_ms > 0）=====
+    // v0.248.0：注入可控单调时钟（每步推进），验证 latency 各字段接真实
+    // 时钟——注入已知延迟可观测到对应数值（验收标准）。
+    static TEST_NOW_MS: core::sync::atomic::AtomicU64 =
+        core::sync::atomic::AtomicU64::new(0);
+
     #[test]
     fn t16_execute_slow_path_latency() {
-        let mut coord = DualBrainCoordinator::default_with_mock();
+        // 时钟：每次调用推进 10ms（模拟真实执行耗时）。
+        TEST_NOW_MS.store(1_000_000, core::sync::atomic::Ordering::SeqCst);
+        let clock = || {
+            TEST_NOW_MS.fetch_add(10, core::sync::atomic::Ordering::SeqCst)
+        };
+        let mut coord = DualBrainCoordinator::default_with_mock().with_clock(clock);
         let state = safe_state();
         let result = coord.execute(&state, 0).unwrap();
-        assert!(result.latency.llm_inference_ms > 0);
+        // 每个计时步骤至少推进一次（每步 ≥ 10ms）。
+        assert!(result.latency.llm_inference_ms >= 10);
+        assert!(result.latency.perception_ms >= 10);
+        assert!(result.latency.intent_parse_ms >= 10);
+        assert!(result.latency.lp_build_ms >= 10);
+        assert!(result.latency.safety_validate_ms >= 10);
+        // total = 各字段之和（calculate_total）。
+        let parts = result.latency.perception_ms
+            + result.latency.llm_inference_ms
+            + result.latency.intent_parse_ms
+            + result.latency.lp_build_ms
+            + result.latency.lp_solve_ms
+            + result.latency.safety_validate_ms
+            + result.latency.command_dispatch_ms;
+        assert_eq!(result.latency.total_ms, parts);
+        // FeedbackContract 不含 llm_meta；模型标识真实性由 coordinator
+        // 构造 IntentContract 时从 engine.model_info() 获取（v0.248.0）。
     }
 
     // ===== T17: execute 慢路径 feedback 为 Some =====

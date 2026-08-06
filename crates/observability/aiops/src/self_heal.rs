@@ -156,6 +156,9 @@ impl SelfHealEngine for RuleBasedHealer {
             return Err(AiOpsError::HealFailed);
         }
 
+        // v0.248.0：真实计时——执行动作前后取单调时钟差值（替换硬编码 150ms）。
+        let t0 = eneros_time::get_monotonic_ns();
+
         // v0.241.0：真实执行器（注入时逐动作执行；无执行器回退 Mock）。
         let side_effects: Vec<String> = match &mut *self.executor.borrow_mut() {
             Some(ex) => {
@@ -178,9 +181,13 @@ impl SelfHealEngine for RuleBasedHealer {
             None => plan.actions.iter().map(|a| a.description.clone()).collect(),
         };
 
+        // v0.248.0：耗时接真实时钟（boot 后单调纳秒；未初始化回退 0）。
+        let duration_ms = eneros_time::get_monotonic_ns()
+            .saturating_sub(t0)
+            / 1_000_000;
         Ok(HealOutcome {
             success: true,
-            duration_ms: 150,
+            duration_ms,
             side_effects,
         })
     }
@@ -236,7 +243,9 @@ mod tests {
         let outcome = healer.execute(&plan).unwrap();
 
         assert!(outcome.success);
-        assert_eq!(outcome.duration_ms, 150);
+        // v0.248.0：耗时接真实时钟（测试环境时钟未初始化 → 0；boot 后为
+        // 真实执行耗时）。断言不再依赖硬编码值。
+        assert!(outcome.duration_ms <= 1000, "真实执行耗时不应异常");
         assert!(!outcome.side_effects.is_empty());
     }
 
