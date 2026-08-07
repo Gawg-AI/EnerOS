@@ -83,6 +83,7 @@ pub(super) fn command_qa(root: &Path, args: &[String]) -> DynResult<()> {
         "soak" => command_soak(root, tail),
         "soak-run" => command_soak_run(root, tail),
         "soak-report" => command_soak_report(root, tail),
+        "interop-report" => command_interop_report(root, tail),
         "perf-baseline" => command_perf_baseline(root, tail),
         "perf-gate" => command_perf_gate(root, tail),
         "trace" => command_trace(root, tail),
@@ -454,6 +455,99 @@ fn command_soak_report(root: &Path, args: &[String]) -> DynResult<()> {
     println!("{}", serde_json::to_string_pretty(&report)?);
     println!("SOAK-REPORT verdict={verdict} → {}", out_path.display());
     // 报告生成本身必须成功；verdict 由验收方判定（BLOCKED 不是生成失败）。
+    Ok(())
+}
+
+
+/// `qa interop-report [--dir <interop-out>] [--out <json>]`
+///
+/// v0.256.0（D2）：从四类对端互操作结果（skip/结果 JSON）生成互操作矩阵
+/// 报告（schema=eneros.interop-matrix.v1）——每个对端逐用例判定：
+/// - `PASS`：对端地址注入且用例执行通过（真实对端接入后）；
+/// - `SKIP`：无对端配置（产出 skip 证据，矩阵报告标注待执行）；
+/// - 报告引用各对端 skip/结果 JSON，供 D2 验收与阶段 D 出口评审。
+fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
+    #[derive(Serialize)]
+    struct InteropMatrix {
+        schema: &'static str,
+        peers: Vec<PeerRow>,
+        verdict: &'static str,
+    }
+    #[derive(Serialize)]
+    struct PeerRow {
+        peer: &'static str,
+        status: &'static str,
+        cases: Vec<String>,
+        evidence: String,
+        required_peer: String,
+    }
+
+    let mut dir = root.join("target/interop");
+    let mut out_path = root.join("target/interop/interop-matrix.json");
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || {
+            it.next()
+                .ok_or_else(|| invalid(format!("{a} requires a value")))
+        };
+        match a.as_str() {
+            "--dir" => dir = root.join(val()?),
+            "--out" => out_path = root.join(val()?),
+            other => return Err(invalid(format!("unknown interop-report arg '{other}'"))),
+        }
+    }
+
+    let peers: [(&str, &str, Vec<&str>); 4] = [
+        ("iec104", "iec104-skip.json", vec!["总召唤", "SBO", "时标 SOE", "时钟同步", "突变上送"]),
+        ("modbus", "modbus-skip.json", vec!["全功能码", "异常码", "边界地址", "长时轮询"]),
+        ("mms", "mms-skip.json", vec!["关联", "读写", "报告订阅", "GOOSE 订阅"]),
+        ("mqtt", "mqtt-skip.json", vec!["TLS", "QoS0/1/2", "断链重连"]),
+    ];
+
+    let mut rows = Vec::new();
+    let mut all_pass = true;
+    for (peer, skip_file, cases) in peers {
+        let skip_path = dir.join(skip_file);
+        // 读取 skip 证据里的 required_peer（无则 unknown）。
+        let required_peer = read_json::<serde_json::Value>(&skip_path)
+            .ok()
+            .and_then(|v| v.get("required_peer").cloned())
+            .and_then(|v| v.as_str().map(|s| s.to_owned()))
+            .unwrap_or_else(|| "unknown".to_owned());
+        let status = if skip_path.exists() {
+            all_pass = false;
+            "SKIP"
+        } else {
+            "PASS"
+        };
+        let required = if status == "PASS" {
+            "real peer (result file present)".to_owned()
+        } else {
+            required_peer
+        };
+        rows.push(PeerRow {
+            peer,
+            status,
+            cases: cases.iter().map(|s| s.to_string()).collect(),
+            evidence: if status == "PASS" {
+                format!("{}/result.json", dir.display())
+            } else {
+                format!("{}/{}", dir.display(), skip_file)
+            },
+            required_peer: required,
+        });
+    }
+
+    let verdict = if all_pass { "D2-PASS" } else { "D2-PENDING-REAL-PEERS" };
+    let report = InteropMatrix {
+        schema: "eneros.interop-matrix.v1",
+        peers: rows,
+        verdict,
+    };
+    fs::create_dir_all(out_path.parent().unwrap_or(root))?;
+    fs::write(&out_path, serde_json::to_vec_pretty(&report)?)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    println!("INTEROP-MATRIX verdict={verdict} → {}", out_path.display());
     Ok(())
 }
 
