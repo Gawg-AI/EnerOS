@@ -15,7 +15,7 @@ eneros-dual-brain = { path = "../../ai/dual-brain" }
 eneros-fast-path = { path = "../../ai/fast-path" }
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
 eneros-solver-core = { path = "../../ai/solver-core" }
-eneros-llm-engine = { path = "../../ai/llm-engine" }
+eneros-llm-engine = { path = "../../ai/llm-engine", features = ["llama-cpp"] }
 eneros-safety-validator = { path = "../../ai/safety-validator" }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
@@ -28,3 +28,5 @@ mock = ["eneros-dual-brain/mock", "eneros-solver-core/mock"]
 [dev-dependencies]
 # 测试模块使用 mock 求解器/双脑引擎（v0.212.0 P0-27 纪律）。
 eneros-energy-market-agent = { path = ".", features = ["mock"] }
+
+eneros-llm-engine = { path = "../../ai/llm-engine", features = ["mock"] }

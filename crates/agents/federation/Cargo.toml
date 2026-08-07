@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# 蓝图/20 R2-1：Mock 类型仅测试/仿真；release 启用即熔断
+mock = []
+
 [dependencies]
 eneros-crypto = { path = "../../security/crypto" }
 

@@ -12,3 +12,4 @@ eneros-crypto = { path = "../../security/crypto" }
 
 [features]
 default = []
+mock = []

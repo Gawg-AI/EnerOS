@@ -13,9 +13,12 @@ use eneros_protocol_abstract::access::PointAccess;
 use eneros_upa_model::{DataPoint, PointId, PointValue};
 
 use crate::command::CommandSource;
+#[cfg(any(test, feature = "mock"))]
 use crate::command::MockCommandSource;
 use crate::device_type::{DeviceSnapshot, DeviceState, DeviceType};
-use crate::registry::{DeviceRegistry, MockPointDevice};
+use crate::registry::DeviceRegistry;
+#[cfg(any(test, feature = "mock"))]
+use crate::registry::MockPointDevice;
 
 /// 设备管理 Agent.
 ///
@@ -52,7 +55,9 @@ impl DeviceAgent {
         }
     }
 
-    /// 默认构造（预注册 3 个 Mock 设备：pcs/battery/meter）.
+    /// 默认构造（预注册 3 个 Mock 设备：pcs/battery/meter）——
+    /// 仅测试/仿真（蓝图/20 R2-1：生产必须显式注册真实设备）。
+    #[cfg(any(test, feature = "mock"))]
     pub fn new_default(now_ms: u64) -> Self {
         let mut devices = DeviceRegistry::new();
         // PCS：功率变换系统

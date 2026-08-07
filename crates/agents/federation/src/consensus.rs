@@ -150,6 +150,7 @@ pub trait ConsensusBus {
 
 /// Mock 共识总线（故障注入：isolated 离线、fail_times 丢包）
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockConsensusBus {
     /// 各节点邮箱队列
     pub queues: BTreeMap<NodeId, Vec<(NodeId, PbftMessage)>>,
@@ -159,6 +160,7 @@ pub struct MockConsensusBus {
     pub fail_times: u32,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockConsensusBus {
     /// 创建空 Mock 总线
     pub fn new() -> Self {
@@ -171,6 +173,7 @@ impl MockConsensusBus {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl ConsensusBus for MockConsensusBus {
     fn broadcast(&mut self, from: NodeId, msg: &PbftMessage) -> Result<(), ConsensusError> {
         if self.fail_times > 0 {

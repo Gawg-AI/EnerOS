@@ -38,6 +38,7 @@ pub trait CloudChannel {
 /// - `fail_times == 0`：broadcast 成功，策略克隆记入 `sent`；
 /// - `collect_acks`：从预置 `acks` 过滤 `strategy_id` 匹配项克隆返回
 ///   （不消耗预置 acks，重复调用行为一致）。
+#[cfg(any(test, feature = "mock"))]
 pub struct MockCloudChannel {
     /// 剩余失败注入次数（每次失败 broadcast 减一）.
     pub fail_times: u32,
@@ -47,6 +48,7 @@ pub struct MockCloudChannel {
     pub acks: Vec<EdgeAck>,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockCloudChannel {
     /// 创建空 Mock（无故障注入、无预置 acks）.
     pub fn new() -> Self {
@@ -74,12 +76,14 @@ impl MockCloudChannel {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for MockCloudChannel {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl CloudChannel for MockCloudChannel {
     fn broadcast(&mut self, strategy: &Strategy) -> Result<(), CloudError> {
         if self.fail_times > 0 {

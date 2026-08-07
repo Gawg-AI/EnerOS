@@ -7,4 +7,7 @@ license.workspace = true
 description = "EnerOS v0.62.0 LLM inference scheduler with concurrency control and KV Cache tracking"
 
 [dependencies]
-eneros-llm-engine = { path = "../llm-engine" }
+eneros-llm-engine = { path = "../llm-engine", features = ["llama-cpp"] }
+
+[dev-dependencies]
+eneros-llm-engine = { path = "../llm-engine", features = ["mock"] }

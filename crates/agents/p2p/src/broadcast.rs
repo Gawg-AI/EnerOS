@@ -9,6 +9,7 @@ use crate::{P2pError, P2pTransport};
 ///
 /// 内部维护发送队列 (sent) 和收件箱 (inbox)。
 #[derive(Debug, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockTransport {
     /// 已广播的消息记录
     sent: Vec<P2pMsg>,
@@ -16,6 +17,7 @@ pub struct MockTransport {
     inbox: Vec<P2pMsg>,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockTransport {
     /// 创建空的 MockTransport
     pub fn new() -> Self {
@@ -36,6 +38,7 @@ impl MockTransport {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl P2pTransport for MockTransport {
     fn broadcast(&mut self, _topic: &str, msg: &P2pMsg) -> Result<(), P2pError> {
         self.sent.push(msg.clone());

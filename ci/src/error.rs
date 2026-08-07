@@ -18,6 +18,8 @@ pub enum GateError {
     TestFailed,
     /// Go/No-Go 文档与 workspace 版本不一致（蓝图/20 R1-1）。
     VersionGateInconsistent(String),
+    /// crates/agents + crates/ai 存在无 cfg 保护的 pub struct Mock（蓝图/20 R2-1）。
+    MockGateViolation(String),
     /// A command could not be executed (e.g. `cargo` not in PATH).
     IoError(String),
 }
@@ -34,6 +36,7 @@ impl fmt::Display for GateError {
             GateError::VersionGateInconsistent(msg) => {
                 write!(f, "VersionGateInconsistent: {}", msg)
             }
+            GateError::MockGateViolation(msg) => write!(f, "MockGateViolation: {}", msg),
             GateError::IoError(msg) => write!(f, "IoError: {}", msg),
         }
     }

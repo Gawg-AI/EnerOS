@@ -24,11 +24,13 @@ pub trait CommandSource {
 }
 
 /// Mock 命令源（VecDeque-backed）.
+#[cfg(any(test, feature = "mock"))]
 pub struct MockCommandSource {
     /// 命令队列.
     commands: VecDeque<DeviceCommand>,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockCommandSource {
     /// 创建空命令源.
     pub fn new() -> Self {
@@ -50,12 +52,14 @@ impl MockCommandSource {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl CommandSource for MockCommandSource {
     fn try_read(&mut self) -> Option<DeviceCommand> {
         self.commands.pop_front()
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for MockCommandSource {
     fn default() -> Self {
         Self::new()

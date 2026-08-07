@@ -13,3 +13,4 @@ eneros-market-types = { path = "../market-types" }
 
 [features]
 default = []
+mock = []

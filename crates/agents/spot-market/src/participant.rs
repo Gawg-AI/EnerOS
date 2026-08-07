@@ -24,6 +24,7 @@ pub trait SpotMarketParticipant {
 
 /// 模拟参与者（本地状态，用于测试）
 #[derive(Debug, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockParticipant {
     /// bid_id -> Bid
     bids: BTreeMap<u64, Bid>,
@@ -37,6 +38,7 @@ pub struct MockParticipant {
     clock: u64,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockParticipant {
     /// 创建模拟参与者
     pub fn new() -> Self {
@@ -80,6 +82,7 @@ impl MockParticipant {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl SpotMarketParticipant for MockParticipant {
     fn submit_bid(&mut self, bid: &Bid) -> Result<BidAck, MarketError> {
         validate_bid(bid)?;

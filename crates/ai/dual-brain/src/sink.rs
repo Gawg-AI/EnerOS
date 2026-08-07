@@ -36,10 +36,12 @@ pub trait CommandSink {
 }
 
 /// Mock 命令 sink（收集命令用于测试）.
+#[cfg(any(test, feature = "mock"))]
 pub struct MockCommandSink {
     commands: Vec<DispatchCommand>,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockCommandSink {
     /// 创建空 sink.
     pub fn new() -> Self {
@@ -54,12 +56,14 @@ impl MockCommandSink {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for MockCommandSink {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl CommandSink for MockCommandSink {
     fn write(&mut self, cmd: DispatchCommand) -> Result<(), DualBrainError> {
         self.commands.push(cmd);

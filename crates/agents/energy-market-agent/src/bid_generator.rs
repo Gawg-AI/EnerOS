@@ -96,6 +96,7 @@ pub trait BidIntentSource {
 
 /// Mock 意图来源：返回预置意图或恒失败.
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockBidIntentSource {
     /// 下一次 generate_intent 返回的意图（fail=false 且为 None 时返回 IntentFailed）.
     next_intent: Option<BidIntent>,
@@ -103,6 +104,7 @@ pub struct MockBidIntentSource {
     fail: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockBidIntentSource {
     /// 构造返回指定意图的 Mock 源.
     pub fn new(intent: BidIntent) -> Self {
@@ -127,6 +129,7 @@ impl MockBidIntentSource {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl BidIntentSource for MockBidIntentSource {
     fn generate_intent(&mut self, _feed: &MarketFeed, _soc: f32) -> Result<BidIntent, BidError> {
         if self.fail {
@@ -153,6 +156,7 @@ pub trait BidOptimizer {
 
 /// Mock 优化器：返回预置优化结果或恒失败.
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockBidOptimizer {
     /// 下一次 optimize 返回的优化结果（fail=false 且为 None 时返回 OptimizeFailed）.
     next_opt: Option<BidOptimization>,
@@ -160,6 +164,7 @@ pub struct MockBidOptimizer {
     fail: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockBidOptimizer {
     /// 构造返回指定优化结果的 Mock 优化器.
     pub fn new(opt: BidOptimization) -> Self {
@@ -178,6 +183,7 @@ impl MockBidOptimizer {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl BidOptimizer for MockBidOptimizer {
     fn optimize(
         &mut self,
@@ -204,6 +210,7 @@ pub trait BidPublisher {
 
 /// Mock 发布器：记录已发布报价或恒失败.
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockBidPublisher {
     /// 已发布的资源报价记录.
     published: Vec<ResourceBid>,
@@ -211,6 +218,7 @@ pub struct MockBidPublisher {
     fail: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockBidPublisher {
     /// 构造正常发布的 Mock 发布器.
     pub fn new() -> Self {
@@ -229,6 +237,7 @@ impl MockBidPublisher {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl BidPublisher for MockBidPublisher {
     fn publish_bids(&mut self, bids: &[ResourceBid]) -> Result<(), BidError> {
         if self.fail {

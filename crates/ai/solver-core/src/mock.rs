@@ -11,6 +11,7 @@ use crate::solver::{Solver, SolverStatus};
 ///
 /// 默认返回 `SolveStatus::Optimal` + `objective_value=0.0` + `solution=vec![]`；
 /// 可通过 `with_result` 自定义返回结果。无 params 缓存（D3）.
+#[cfg(any(test, feature = "mock"))]
 pub struct MockSolver {
     /// 预设结果.
     preset_result: SolveResult,
@@ -18,6 +19,7 @@ pub struct MockSolver {
     pub warm_start: Option<alloc::vec::Vec<f64>>,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockSolver {
     /// 创建默认 Mock 求解器.
     pub fn new() -> Self {
@@ -42,12 +44,14 @@ impl MockSolver {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for MockSolver {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Solver for MockSolver {
     fn solve(&mut self, _problem: &LpProblem, _now_ms: u64) -> Result<SolveResult, SolverError> {
         Ok(self.preset_result.clone())

@@ -6,10 +6,22 @@ authors.workspace = true
 license.workspace = true
 description = "EnerOS v0.74.0 MVP 端到端集成 — 储能自治场景 (no_std)"
 
+[features]
+default = []
+# 蓝图/20 R2-1：Mock 仅测试/仿真
+mock = ["eneros-energy-market-agent/mock", "eneros-solver-core/mock", "eneros-device-agent/mock"]
+
 [dependencies]
 eneros-agent = { path = "../agent" }
 eneros-market-types = { path = "../market-types" }
-eneros-energy-market-agent = { path = "../energy-market-agent", features = ["mock"] }
+eneros-energy-market-agent = { path = "../energy-market-agent" }
 eneros-device-agent = { path = "../device-agent" }
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
 eneros-solver-core = { path = "../../ai/solver-core" }
+eneros-dual-brain = { path = "../../ai/dual-brain" }
+
+[dev-dependencies]
+# 测试构建合并 mock features（蓝图/20 R2-1：生产构建不含 mock）
+eneros-energy-market-agent = { path = "../energy-market-agent", features = ["mock"] }
+eneros-solver-core = { path = "../../ai/solver-core", features = ["mock"] }
+eneros-device-agent = { path = "../device-agent", features = ["mock"] }

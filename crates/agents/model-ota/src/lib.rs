@@ -48,6 +48,14 @@
 
 #![cfg_attr(not(test), no_std)]
 
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-model-ota: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 mod canary;
@@ -115,6 +123,7 @@ pub trait OtaTransport {
 }
 
 /// Mock OTA 传输（D4，v0.110.0 MockSyncTransport 先例：故障注入 + 调用计数）.
+#[cfg(any(test, feature = "mock"))]
 pub struct MockOtaTransport {
     /// 云端最新清单（fetch_latest 返回其克隆）.
     latest: Option<ModelInfo>,
@@ -128,6 +137,7 @@ pub struct MockOtaTransport {
     pub download_calls: u32,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockOtaTransport {
     /// 构造无更新（latest=None）的 mock.
     pub fn new(model_bytes: Vec<u8>, chunk_size: usize) -> Self {
@@ -152,6 +162,7 @@ impl MockOtaTransport {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl OtaTransport for MockOtaTransport {
     fn fetch_latest(&mut self, _current_version: &str) -> Result<Option<ModelInfo>, OtaError> {
         Ok(self.latest.clone())

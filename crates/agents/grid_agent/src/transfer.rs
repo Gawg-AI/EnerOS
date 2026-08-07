@@ -142,6 +142,7 @@ pub trait RtosChannel {
 ///
 /// 持有 `elapsed_ms`（成功路径返回值）与 `fail`（是否模拟失败）。
 #[derive(Debug, Clone)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockRtosChannel {
     /// 成功路径返回的命令执行耗时（ms）.
     pub elapsed_ms: u64,
@@ -149,6 +150,7 @@ pub struct MockRtosChannel {
     pub fail: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockRtosChannel {
     /// 创建成功路径通道（返回给定 `elapsed_ms`，`fail = false`）.
     pub fn new(elapsed_ms: u64) -> Self {
@@ -167,6 +169,7 @@ impl MockRtosChannel {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl RtosChannel for MockRtosChannel {
     fn send_emergency(
         &mut self,

@@ -36,6 +36,14 @@
 //! 仅使用 `alloc::*` / `core::*`，可交叉编译到 `aarch64-unknown-none`。
 
 #![cfg_attr(not(test), no_std)]
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-dual-brain: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 pub mod coordinator;
@@ -46,7 +54,9 @@ pub mod sink;
 pub use coordinator::{DualBrainCoordinator, DualBrainResult};
 pub use error::DualBrainError;
 pub use latency::LatencyBreakdown;
-pub use sink::{CommandSink, DispatchCommand, MockCommandSink};
+pub use sink::{CommandSink, DispatchCommand};
+#[cfg(any(test, feature = "mock"))]
+pub use sink::{MockCommandSink};
 
 #[cfg(test)]
 mod tests {

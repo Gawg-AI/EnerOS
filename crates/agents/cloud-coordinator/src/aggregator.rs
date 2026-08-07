@@ -213,6 +213,7 @@ impl DataAggregator {
 /// - `fail_times > 0`：fetch 失败并将 `fail_times` 减一，
 ///   返回 `Err(SourceFailed(state.box_id))`；
 /// - `fail_times == 0`：返回 `Ok(state.clone())`。
+#[cfg(any(test, feature = "mock"))]
 pub struct MockDataSource {
     /// 预置返回的 Edge Box 状态.
     pub state: EdgeBoxState,
@@ -220,6 +221,7 @@ pub struct MockDataSource {
     pub fail_times: u32,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockDataSource {
     /// 创建无故障注入的 Mock（首次 fetch 即成功）.
     pub fn new(state: EdgeBoxState) -> Self {
@@ -235,6 +237,7 @@ impl MockDataSource {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl DataSource for MockDataSource {
     fn fetch(&mut self, _now_ms: u64) -> Result<EdgeBoxState, AggError> {
         if self.fail_times > 0 {
@@ -249,6 +252,7 @@ impl DataSource for MockDataSource {
 ///
 /// - `fail_times > 0`：store 失败并将 `fail_times` 减一，返回 `Err(StoreFailed)`；
 /// - `fail_times == 0`：data 克隆记入 `stored`，返回 `Ok(())`。
+#[cfg(any(test, feature = "mock"))]
 pub struct MockDataSink {
     /// 已成功存储的数据记录（顺序与 store 调用一致）.
     pub stored: Vec<DomainData>,
@@ -256,6 +260,7 @@ pub struct MockDataSink {
     pub fail_times: u32,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockDataSink {
     /// 创建空 Mock（无故障注入、无记录）.
     pub fn new() -> Self {
@@ -274,12 +279,14 @@ impl MockDataSink {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for MockDataSink {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl DataSink for MockDataSink {
     fn store(&mut self, data: &DomainData, _now_ms: u64) -> Result<(), AggError> {
         if self.fail_times > 0 {

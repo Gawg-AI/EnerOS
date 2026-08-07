@@ -17,6 +17,7 @@ pub trait GridPublisher {
 
 /// Mock 电网发布器（测试用）.
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockGridPublisher {
     /// 已发布的状态列表
     pub published_states: Vec<GridState>,
@@ -28,6 +29,7 @@ pub struct MockGridPublisher {
     pub fail_alert: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockGridPublisher {
     /// 创建成功路径发布器.
     pub fn new() -> Self {
@@ -51,6 +53,7 @@ impl MockGridPublisher {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl GridPublisher for MockGridPublisher {
     fn publish_state(&mut self, state: &GridState) -> Result<(), GridError> {
         if self.fail_state {

@@ -15,6 +15,7 @@ use crate::stats::{EngineHealth, EngineStats};
 
 /// Mock LLM 推理引擎.
 #[derive(Debug)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockEngine {
     /// 模型是否已加载.
     loaded: bool,
@@ -30,6 +31,7 @@ pub struct MockEngine {
     mock_output: String,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockEngine {
     /// 创建 MockEngine.
     ///
@@ -58,6 +60,7 @@ impl MockEngine {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl LlmEngine for MockEngine {
     fn load_model(&mut self, path: &str) -> Result<(), LlmError> {
         self.loaded = true;
@@ -129,6 +132,7 @@ impl LlmEngine for MockEngine {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockEngine {
     /// unload 调用次数（ARC-006 测试断言用）.
     pub fn unload_count(&self) -> u32 {

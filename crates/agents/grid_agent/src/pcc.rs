@@ -103,6 +103,7 @@ pub trait PccReader {
 
 /// Mock PCC 读取器（测试用）.
 #[derive(Debug, Clone)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockPccReader {
     /// 下一次读取返回的读数.
     pub next_reading: PccReading,
@@ -110,6 +111,7 @@ pub struct MockPccReader {
     pub fail: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockPccReader {
     /// 创建成功路径读取器，返回给定读数（`fail = false`）.
     pub fn new(reading: PccReading) -> Self {
@@ -134,6 +136,7 @@ impl MockPccReader {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl PccReader for MockPccReader {
     fn read(&mut self, _pcc_id: u32, _now_ms: u64) -> Result<PccReading, GridError> {
         if self.fail {

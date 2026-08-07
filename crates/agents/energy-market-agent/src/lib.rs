@@ -158,6 +158,13 @@
 //! | **D14** | O(n²) 支配过滤，完全相同向量保留先者（非随机 MOEA） |
 
 #![cfg_attr(not(test), no_std)]
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-energy-market-agent: mock feature is FORBIDDEN in release builds.      Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 pub mod bid_generator;
@@ -177,13 +184,16 @@ pub mod subscriber;
 
 pub use bid_generator::{
     conservative_optimize, rule_intent, BidError, BidGenerator, BidIntent, BidIntentSource,
-    BidOptimization, BidOptimizer, BidPublisher, BidSide, BidStrategy, MockBidIntentSource,
-    MockBidOptimizer, MockBidPublisher, ResourceBid,
+    BidOptimization, BidOptimizer, BidPublisher, BidSide, BidStrategy, ResourceBid,
 };
+#[cfg(any(test, feature = "mock"))]
+pub use bid_generator::{MockBidIntentSource, MockBidOptimizer, MockBidPublisher};
 pub use device_pool::{DeviceCapability, DeviceMode, DevicePool};
 pub use energy_agent::EnergyAgent;
 pub use error::AgentRuntimeError;
-pub use market::{MarketChannel, MarketData, MarketDataSource, MarketSignal, MockMarketSource};
+pub use market::{MarketChannel, MarketData, MarketDataSource, MarketSignal};
+#[cfg(any(test, feature = "mock"))]
+pub use market::MockMarketSource;
 pub use market_agent::MarketAgent;
 pub use market_feed::{DrSignal, MarketError, MarketFeed, MarketType, Period, PricePoint};
 pub use multi_dispatch::{
@@ -195,10 +205,9 @@ pub use multi_objective::{
 };
 pub use parser::{parse_dr_signal, parse_feed, parse_price_point};
 pub use runtime::{AgentRuntime, HeartbeatStatus};
-pub use subscriber::{
-    MarketFeedCache, MarketFeedPublisher, MarketFeedSource, MarketSubscriber,
-    MockMarketFeedPublisher, MockMarketFeedSource,
-};
+pub use subscriber::{MarketFeedCache, MarketFeedPublisher, MarketFeedSource, MarketSubscriber};
+#[cfg(any(test, feature = "mock"))]
+pub use subscriber::{MockMarketFeedPublisher, MockMarketFeedSource};
 
 #[cfg(test)]
 mod tests {

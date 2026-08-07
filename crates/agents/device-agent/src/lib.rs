@@ -40,6 +40,14 @@
 //! 仅使用 `alloc::*` / `core::*`，可交叉编译到 `aarch64-unknown-none`。
 
 #![cfg_attr(not(test), no_std)]
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-device-agent: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 mod agent;
@@ -49,10 +57,16 @@ mod error;
 mod registry;
 
 pub use agent::DeviceAgent;
-pub use command::{CommandSource, DeviceCommand, MockCommandSource};
+pub use command::{CommandSource, DeviceCommand};
+#[cfg(any(test, feature = "mock"))]
+#[cfg(any(test, feature = "mock"))]
+pub use command::MockCommandSource;
 pub use device_type::{DeviceSnapshot, DeviceState, DeviceType};
 pub use error::DeviceError;
-pub use registry::{DeviceInfo, DeviceRegistry, MockPointDevice};
+pub use registry::{DeviceInfo, DeviceRegistry};
+#[cfg(any(test, feature = "mock"))]
+#[cfg(any(test, feature = "mock"))]
+pub use registry::MockPointDevice;
 
 #[cfg(test)]
 mod tests;

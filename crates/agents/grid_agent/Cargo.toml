@@ -6,6 +6,11 @@ authors.workspace = true
 license.workspace = true
 description = "EnerOS v0.82.0 Grid Agent — 电网状态感知 + v0.83.0 PCC 并网点管理 + v0.84.0 并离网切换 (采样/异常检测/PCC/孤岛检测/切换状态机, no_std)"
 
+[features]
+default = []
+# 蓝图/20 R2-1：Mock 类型仅测试/仿真；release 启用即熔断
+mock = []
+
 [dependencies]
 eneros-agent = { path = "../agent" }
 eneros-energy-market-agent = { path = "../energy-market-agent" }

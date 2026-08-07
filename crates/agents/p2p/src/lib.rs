@@ -5,12 +5,21 @@
 
 #![cfg_attr(not(test), no_std)]
 
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-p2p: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 pub mod broadcast;
 pub mod protocol;
 pub mod types;
 
+#[cfg(any(test, feature = "mock"))]
 pub use broadcast::MockTransport;
 pub use protocol::{can_match, validate_ask, validate_bid};
 pub use types::{P2pAsk, P2pBid, P2pConfirm, P2pMatch, P2pMsg, P2pReject, TimeSlot};

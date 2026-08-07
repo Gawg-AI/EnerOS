@@ -33,6 +33,7 @@ pub trait MarketFeedSource {
 
 /// Mock 市场数据源：返回预置 feed 或恒失败.
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockMarketFeedSource {
     /// 下一次 fetch 返回的 feed（fail=false 且为 None 时返回 SourceFailed）.
     next_feed: Option<MarketFeed>,
@@ -40,6 +41,7 @@ pub struct MockMarketFeedSource {
     fail: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockMarketFeedSource {
     /// 构造返回指定 feed 的 Mock 源.
     pub fn new(feed: MarketFeed) -> Self {
@@ -64,6 +66,7 @@ impl MockMarketFeedSource {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MarketFeedSource for MockMarketFeedSource {
     fn fetch(&mut self, _now_ms: u64) -> Result<MarketFeed, MarketError> {
         if self.fail {
@@ -86,6 +89,7 @@ pub trait MarketFeedPublisher {
 
 /// Mock 市场发布器：记录已发布 feed 或恒失败.
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockMarketFeedPublisher {
     /// 已发布的 feed 记录.
     published: Vec<MarketFeed>,
@@ -93,6 +97,7 @@ pub struct MockMarketFeedPublisher {
     fail: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockMarketFeedPublisher {
     /// 构造正常发布的 Mock 发布器.
     pub fn new() -> Self {
@@ -111,6 +116,7 @@ impl MockMarketFeedPublisher {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MarketFeedPublisher for MockMarketFeedPublisher {
     fn publish_prices(&mut self, feed: &MarketFeed) -> Result<(), MarketError> {
         if self.fail {

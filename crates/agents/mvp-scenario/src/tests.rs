@@ -1,5 +1,4 @@
-//! 集成测试 — MvpOrchestrator T1~T24.
-
+use eneros_solver_core::mock::MockSolver;
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec;
@@ -246,7 +245,7 @@ fn t14_traditional_ems_full_schedule_sum() {
 // ===== T15: MvpOrchestrator::new_default 构造 + 3 Agent + tick_count=0 + running=false =====
 #[test]
 fn t15_orchestrator_new_default() {
-    let orch = MvpOrchestrator::new_default(1000);
+    let orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(1000);
     assert_eq!(orch.tick_count, 0);
     assert!(!orch.running);
     // 3 个 Agent 都已构造
@@ -261,7 +260,7 @@ fn t15_orchestrator_new_default() {
 // ===== T16: MvpOrchestrator::start 全部 Agent 转 Running + running=true =====
 #[test]
 fn t16_orchestrator_start_agents_running() {
-    let mut orch = MvpOrchestrator::new_default(0);
+    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
     let result = orch.start(1000);
     assert!(result.is_ok());
     assert!(orch.running);
@@ -273,7 +272,7 @@ fn t16_orchestrator_start_agents_running() {
 // ===== T17: MvpOrchestrator::tick 未运行返回 NotRunning 错误 =====
 #[test]
 fn t17_orchestrator_tick_not_running_error() {
-    let mut orch = MvpOrchestrator::new_default(0);
+    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
     // 未调用 start，running == false
     let result = orch.tick(1000);
     assert!(result.is_err());
@@ -285,7 +284,7 @@ fn t17_orchestrator_tick_not_running_error() {
 // ===== T18: MvpOrchestrator::tick 单周期执行 + tick_count += 1 =====
 #[test]
 fn t18_orchestrator_tick_single_period() {
-    let mut orch = MvpOrchestrator::new_default(0);
+    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
     orch.start(1000).unwrap();
     let result = orch.tick(2000);
     assert!(result.is_ok());
@@ -325,7 +324,7 @@ fn t19_orchestrator_market_data_flow() {
 // ===== T20: MvpOrchestrator::tick 记录双脑收益 + 传统收益 =====
 #[test]
 fn t20_orchestrator_tick_records_revenue() {
-    let mut orch = MvpOrchestrator::new_default(0);
+    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
     orch.start(1000).unwrap();
     let report = orch.tick(2000).unwrap();
 
@@ -354,7 +353,7 @@ fn t20_orchestrator_tick_records_revenue() {
 // ===== T21: MvpOrchestrator 多 tick 累积收益 =====
 #[test]
 fn t21_orchestrator_multi_tick_accumulate() {
-    let mut orch = MvpOrchestrator::new_default(0);
+    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
     orch.start(1000).unwrap();
 
     for i in 1..=3 {
@@ -387,7 +386,7 @@ fn t21_orchestrator_multi_tick_accumulate() {
 // ===== T22: MvpOrchestrator::stop 全部 Agent 转 Dead + running=false =====
 #[test]
 fn t22_orchestrator_stop_agents_dead() {
-    let mut orch = MvpOrchestrator::new_default(0);
+    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
     orch.start(1000).unwrap();
     orch.tick(2000).unwrap();
     let result = orch.stop(3000);
@@ -401,7 +400,7 @@ fn t22_orchestrator_stop_agents_dead() {
 // ===== T23: MvpOrchestrator 端到端：start → 3 ticks → stop → report 非空 =====
 #[test]
 fn t23_orchestrator_end_to_end() {
-    let mut orch = MvpOrchestrator::new_default(0);
+    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
 
     // start
     orch.start(1000).unwrap();
@@ -428,7 +427,7 @@ fn t23_orchestrator_end_to_end() {
 // ===== T24: MvpOrchestrator::report 委托 RevenueComparator =====
 #[test]
 fn t24_orchestrator_report_delegates() {
-    let mut orch = MvpOrchestrator::new_default(0);
+    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
     orch.start(1000).unwrap();
     orch.tick(2000).unwrap();
 

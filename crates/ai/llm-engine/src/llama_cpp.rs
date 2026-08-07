@@ -384,7 +384,7 @@ impl LlmEngine for LlamaCppEngine {
 // Tests — 真实 llama.cpp 推理测试（AI-003 真实最小推理系统测试）
 // ============================================================================
 
-#[cfg(all(test, feature = "llama-cpp"))]
+#[cfg(all(test, feature = "llama-sys-tests"))]
 mod tests {
     use std::env;
     use std::path::Path;

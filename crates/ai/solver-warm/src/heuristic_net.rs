@@ -31,6 +31,7 @@ pub trait InferEngine {
 
 /// Mock 推理引擎（默认后端：预设输出 / 模拟失败，零 unsafe）.
 #[derive(Debug, Clone)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockEngine {
     /// 预设输出.
     pub preset_output: Vec<f32>,
@@ -40,6 +41,7 @@ pub struct MockEngine {
     pub input_dim: usize,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockEngine {
     /// 构造（预设输出；输入维度默认 == 输出长度）.
     pub fn new(output: Vec<f32>) -> Self {
@@ -69,6 +71,7 @@ impl MockEngine {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl InferEngine for MockEngine {
     fn infer(&self, _input: &[f32]) -> Result<Vec<f32>, WarmError> {
         if self.fail {

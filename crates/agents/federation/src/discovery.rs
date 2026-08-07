@@ -34,6 +34,7 @@ pub trait PresenceBus {
 
 /// Mock 证书验证器：按 `accept` 开关放行/拒绝
 #[derive(Debug, Clone)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockCertVerifier {
     /// true 放行，false 拒绝
     pub accept: bool,
@@ -41,6 +42,7 @@ pub struct MockCertVerifier {
     pub verify_count: u64,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockCertVerifier {
     /// 创建 Mock 验证器，verify_count 初始为 0
     pub fn new(accept: bool) -> Self {
@@ -51,6 +53,7 @@ impl MockCertVerifier {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl CertVerifier for MockCertVerifier {
     fn verify(&mut self, _cert: &[u8]) -> Result<(), FedError> {
         self.verify_count += 1;
@@ -64,6 +67,7 @@ impl CertVerifier for MockCertVerifier {
 
 /// Mock 广播总线：前 `fail_times` 次广播失败，之后成功并记录
 #[derive(Debug, Clone)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockPresenceBus {
     /// 已成功广播的成员记录
     pub broadcasts: Vec<MemberInfo>,
@@ -71,6 +75,7 @@ pub struct MockPresenceBus {
     pub fail_times: u32,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockPresenceBus {
     /// 创建 Mock 总线，`fail_times` 为前几次广播应失败次数，broadcasts 初始为空
     pub fn new(fail_times: u32) -> Self {
@@ -81,6 +86,7 @@ impl MockPresenceBus {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl PresenceBus for MockPresenceBus {
     fn broadcast(&mut self, member: &MemberInfo) -> Result<(), FedError> {
         if self.fail_times > 0 {

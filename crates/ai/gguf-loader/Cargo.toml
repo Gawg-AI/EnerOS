@@ -7,7 +7,7 @@ license.workspace = true
 description = "EnerOS GGUF 模型加载与内存管理（GGUF 解析 + MmapBackend + ModelMemoryManager，no_std）"
 
 [dependencies]
-eneros-llm-engine = { path = "../llm-engine" }
+eneros-llm-engine = { path = "../llm-engine", features = ["llama-cpp"] }
 
 [features]
 default = []

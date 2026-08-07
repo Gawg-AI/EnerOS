@@ -8,10 +8,8 @@ description = "EnerOS v0.126.0 VPP 场景端到端验证 — 多机联邦 VPP �
 
 [dependencies]
 heapless = { version = "0.8", default-features = false }
-
-[dev-dependencies]
-eneros-crypto = { path = "../../security/crypto" }
 eneros-federation = { path = "../federation" }
+eneros-crypto = { path = "../../security/crypto" }
 eneros-iec61850-model = { path = "../../protocols/iec61850-model" }
 eneros-storage = { path = "../../drivers/storage" }
 eneros-ota-ab = { path = "../../security/ota-ab" }
@@ -22,3 +20,8 @@ eneros-tsn-time = { path = "../../protocols/tsn-time" }
 eneros-metrics = { path = "../../observability/metrics" }
 eneros-logging = { path = "../../observability/logging" }
 eneros-tracing = { path = "../../observability/tracing" }
+
+[dev-dependencies]
+# 集成测试（tests/vpp_e2e.rs）使用 federation 的 Mock 类型（蓝图/20 R2-1：
+# mock feature 显式开启，仅测试构建生效）
+eneros-federation = { path = "../federation", features = ["mock"] }

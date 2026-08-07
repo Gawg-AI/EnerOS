@@ -28,6 +28,14 @@
 
 #![cfg_attr(not(test), no_std)]
 
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-dialog: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 pub mod convergence;
@@ -36,7 +44,9 @@ pub mod session;
 pub mod types;
 
 pub use convergence::{ConvergenceChecker, FeasibilityChecker, ObjectiveChecker};
-pub use negotiator::{DialogNegotiator, MockNegotiator};
+pub use negotiator::{DialogNegotiator};
+#[cfg(any(test, feature = "mock"))]
+pub use negotiator::{MockNegotiator};
 pub use session::DialogSession;
 pub use types::{
     ConvergenceResult, DialogState, LlmProposal, Problem, Round, Solution, SolverFeedback,

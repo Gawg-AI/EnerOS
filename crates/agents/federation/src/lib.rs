@@ -179,6 +179,14 @@
 //! | **D9** | 增 `trading_frozen()` 查询 + `complete_recovery()` 显式完成 | 蓝图 §7.3"断网冻结交易"的落地接口（AuctionEngine 使用侧查询）；Recovering→Connected 需同步完成事件驱动（蓝图 §4.3 状态图"同步完成"迁移） |
 //! | **D10** | `cache_event` 返回 `bool`（蓝图为空返回） | 未激活静默丢弃需可观测（蓝图 §4.5 return 语义的可测化） |
 
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-federation: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 pub mod auction;
@@ -207,19 +215,25 @@ pub use bid_book::{
 pub use cache::EventCache;
 // v0.98.0 跨域通信通道
 pub use channel::{
-    ChannelError, Endpoint, FederationChannel, MockSecureTransport, SecureTransport, TlsConfig,
+    ChannelError, Endpoint, FederationChannel, SecureTransport, TlsConfig,
 };
+#[cfg(any(test, feature = "mock"))]
+pub use channel::MockSecureTransport;
 // v0.99.0 联邦共识协议（PBFT 变体）
 pub use consensus::{
     ConsensusBus, ConsensusEngine, ConsensusError, ConsensusResult, ConsensusState, LogEntry,
-    MockConsensusBus, MsgType, NodeId, PbftMessage,
+    MsgType, NodeId, PbftMessage,
 };
+#[cfg(any(test, feature = "mock"))]
+pub use consensus::MockConsensusBus;
 // v0.101.0 联邦网络分区检测
 pub use detector::{PartitionDetector, PartitionState};
 // v0.97.0 联邦发现
 pub use discovery::{
-    CertVerifier, FedError, FederationDiscovery, MockCertVerifier, MockPresenceBus, PresenceBus,
+    CertVerifier, FedError, FederationDiscovery, PresenceBus,
 };
+#[cfg(any(test, feature = "mock"))]
+pub use discovery::{MockCertVerifier, MockPresenceBus};
 // v0.100.0 统一价格撮合纯函数
 pub use matching::match_book;
 pub use membership::{CertRef, JoinRequest, MemberInfo, MemberRegistry, NodeRole};
@@ -228,10 +242,12 @@ pub use partition::IslandMode;
 // v0.99.0 PBFT 三阶段数学与签名辅助
 pub use pbft::{f, primary_of, quorum, sign_message, verify_message};
 // v0.101.0 恢复增量同步
-pub use recovery::{MockSyncSink, RecoverySync, SyncError, SyncReport, SyncSink};
+pub use recovery::{RecoverySync, SyncError, SyncReport, SyncSink};
+#[cfg(any(test, feature = "mock"))]
+pub use recovery::MockSyncSink;
 // v0.98.1 纵向加密认证
 pub use tunnel::{
     derive_tunnel_keys, initiator_finish, initiator_hello, responder_accept, verify_dispatch_auth,
-    AuthResult, DispatchToken, EncryptError, MockVerticalEncryptDevice, TunnelKeys, TunnelManager,
+    AuthResult, DispatchToken, EncryptError, TunnelKeys, TunnelManager,
     VerticalEncryptDevice, VerticalEncryptTunnel,
 };

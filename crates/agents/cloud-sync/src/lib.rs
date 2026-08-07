@@ -44,6 +44,14 @@
 
 #![cfg_attr(not(test), no_std)]
 
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-cloud-sync: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 pub mod delta_sync;
@@ -80,6 +88,7 @@ pub trait SyncTransport {
 }
 
 /// Mock 云边传输（D4，v0.95.0 MockCloudChannel 先例：故障注入 + 发送记录）。
+#[cfg(any(test, feature = "mock"))]
 pub struct MockSyncTransport {
     /// 剩余故障注入次数：>0 时递减并返回 `Err(TransportError)`。
     pub fail_times: u32,
@@ -87,6 +96,7 @@ pub struct MockSyncTransport {
     pub sent: Vec<Vec<u8>>,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockSyncTransport {
     /// 构造零故障 mock。
     pub fn new() -> Self {
@@ -105,12 +115,14 @@ impl MockSyncTransport {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for MockSyncTransport {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl SyncTransport for MockSyncTransport {
     fn send_batch(&mut self, batch: &SyncBatch, payload: &[u8]) -> Result<u64, SyncError> {
         if self.fail_times > 0 {

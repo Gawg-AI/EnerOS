@@ -10,6 +10,14 @@
 
 #![cfg_attr(not(test), no_std)]
 
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-bsp-cert: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 pub mod process;
@@ -19,7 +27,9 @@ pub mod types;
 
 pub use process::{BspCertEngine, CertificationProcess};
 pub use spec::{default_spec, validate_spec};
-pub use testkit::{run_tests, BspTestKit, MockTestKit};
+pub use testkit::{run_tests, BspTestKit};
+#[cfg(any(test, feature = "mock"))]
+pub use testkit::{MockTestKit};
 pub use types::{
     BspCategory, BspItem, BspSpec, BspTestReport, CertPhase, Certificate, HardwareInfo, Outcome,
     TestCaseResult,

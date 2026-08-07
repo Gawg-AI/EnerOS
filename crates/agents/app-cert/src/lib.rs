@@ -11,6 +11,14 @@
 
 #![cfg_attr(not(test), no_std)]
 
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-app-cert: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 pub mod device_compat;
@@ -20,7 +28,9 @@ pub mod types;
 
 pub use device_compat::{CompatChecker, DeviceCompatChecker};
 pub use spec::default_app_spec;
-pub use testkit::{AppTestKit, MockAppTestKit};
+pub use testkit::{AppTestKit};
+#[cfg(any(test, feature = "mock"))]
+pub use testkit::{MockAppTestKit};
 pub use types::{
     AppCertCategory, AppCertItem, AppCertReport, AppCertSpec, AppCertificate, AppPackage,
     DeviceCompatReport, DeviceInfo, Outcome, TestCaseResult,
@@ -53,22 +63,29 @@ pub trait AppCertification {
 ///
 /// 整合测试套件与设备兼容性检查，提供完整认证流程。
 pub struct AppCertEngine {
-    test_kit: MockAppTestKit,
+    test_kit: alloc::boxed::Box<dyn AppTestKit>,
     compat_checker: CompatChecker,
     next_cert_id: u64,
 }
 
 impl AppCertEngine {
-    /// 创建新的认证引擎实例
-    pub fn new() -> Self {
+    /// 创建认证引擎（蓝图/20 R2-1：生产必须注入真实测试套件执行器）。
+    pub fn with_test_kit(test_kit: alloc::boxed::Box<dyn AppTestKit>) -> Self {
         Self {
-            test_kit: MockAppTestKit,
+            test_kit,
             compat_checker: CompatChecker,
             next_cert_id: 1,
         }
     }
+
+    /// 默认 Mock 测试套件——仅测试/仿真（R2-1：Mock 收编）。
+    #[cfg(any(test, feature = "mock"))]
+    pub fn new() -> Self {
+        Self::with_test_kit(alloc::boxed::Box::new(MockAppTestKit))
+    }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for AppCertEngine {
     fn default() -> Self {
         Self::new()

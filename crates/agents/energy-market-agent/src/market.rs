@@ -94,10 +94,12 @@ pub trait MarketDataSource {
 }
 
 /// Mock 市场数据源（预加载数据队列）.
+#[cfg(any(test, feature = "mock"))]
 pub struct MockMarketSource {
     data: VecDeque<MarketData>,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockMarketSource {
     /// 创建空 source.
     pub fn new() -> Self {
@@ -119,12 +121,14 @@ impl MockMarketSource {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for MockMarketSource {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MarketDataSource for MockMarketSource {
     fn recv_nonblocking(&mut self) -> Result<Option<MarketData>, AgentRuntimeError> {
         Ok(self.data.pop_front())

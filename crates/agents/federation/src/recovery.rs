@@ -49,6 +49,7 @@ pub trait SyncSink<T> {
 
 /// Mock 同步目标（测试用）
 #[derive(Debug, Clone)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockSyncSink<T> {
     /// 已成功上传的事件（保序）
     pub uploaded: Vec<T>,
@@ -58,6 +59,7 @@ pub struct MockSyncSink<T> {
     pub conflict_times: u32,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl<T: Clone> SyncSink<T> for MockSyncSink<T> {
     fn upload(&mut self, event: &T) -> Result<(), SyncError> {
         if self.fail_times > 0 {

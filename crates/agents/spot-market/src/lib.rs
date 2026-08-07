@@ -10,6 +10,14 @@
 
 #![cfg_attr(not(test), no_std)]
 
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-spot-market: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 pub mod bid;
@@ -21,7 +29,9 @@ pub mod types;
 
 pub use bid::{validate_bid, BidBuilder};
 pub use clearing::ClearingProcessor;
-pub use participant::{MockParticipant, SpotMarketParticipant};
+pub use participant::{SpotMarketParticipant};
+#[cfg(any(test, feature = "mock"))]
+pub use participant::{MockParticipant};
 pub use tracker::ExecTracker;
 pub use types::{
     Bid, BidAck, BidSegment, ClearedSegment, ClearingResult, ExecStatus, SpotMarketType, TimeSlot,

@@ -115,6 +115,7 @@ pub trait SecureTransport {
 
 /// Mock 安全传输（故障注入，D11）
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockSecureTransport {
     /// 已成功发送的记录 `(node_id, data)`
     pub sent: Vec<(u64, Vec<u8>)>,
@@ -126,6 +127,7 @@ pub struct MockSecureTransport {
     pub fail_recv_times: u32,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockSecureTransport {
     /// 创建空 Mock 传输（无故障注入）
     pub fn new() -> Self {
@@ -133,6 +135,7 @@ impl MockSecureTransport {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl SecureTransport for MockSecureTransport {
     fn send(&mut self, node_id: u64, data: &[u8]) -> Result<(), ChannelError> {
         if self.fail_send_times > 0 {

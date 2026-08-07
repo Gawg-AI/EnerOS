@@ -5,7 +5,7 @@ edition.workspace = true
 description = "固件闭包 Agent 场景（ARC-008）：设备轮询 + 市场结算闭包启动器"
 
 [dependencies]
-eneros-device-agent = { path = "../../agents/device-agent" }
+eneros-device-agent = { path = "../../agents/device-agent", features = ["mock"] }
 eneros-agent = { path = "../../agents/agent" }
 eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
 eneros-modbus-rtu = { path = "../../protocols/modbus-rtu" }

@@ -111,6 +111,14 @@
 //! | D14 | 未定义 IslandConfig | 新增 5 字段配置结构体 | D6 派生：阈值可配置 |
 
 #![cfg_attr(not(test), no_std)]
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-grid-agent: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 pub mod island_detect;
@@ -124,16 +132,24 @@ pub mod transfer;
 use eneros_energy_market_agent::AgentRuntimeError;
 pub use island_detect::{IslandConfig, IslandDetector, IslandResult};
 pub use pcc::{
-    compute_power_direction, compute_power_factor, BreakerStatus, MockPccReader, PccManager,
-    PccReader, PccReading, PccState, PccStatus, PowerDirection,
+    compute_power_direction, compute_power_factor, BreakerStatus, PccManager, PccReader,
+    PccReading, PccState, PccStatus, PowerDirection,
 };
-pub use publisher::{publish_state, GridPublisher, MockGridPublisher};
-pub use sampler::{default_anomaly_detectors, is_valid_grid, GridSampler, MockGridSampler};
+#[cfg(any(test, feature = "mock"))]
+pub use pcc::MockPccReader;
+pub use publisher::{publish_state, GridPublisher};
+#[cfg(any(test, feature = "mock"))]
+pub use publisher::MockGridPublisher;
+pub use sampler::{default_anomaly_detectors, is_valid_grid, GridSampler};
+#[cfg(any(test, feature = "mock"))]
+pub use sampler::MockGridSampler;
 pub use state::{DataQuality, GridAgent, GridState};
 pub use transfer::{
-    GridTransfer, MockRtosChannel, RtosChannel, TransferCommand, TransferError, TransferReason,
-    TransferRecord, TransferState,
+    GridTransfer, RtosChannel, TransferCommand, TransferError, TransferReason, TransferRecord,
+    TransferState,
 };
+#[cfg(any(test, feature = "mock"))]
+pub use transfer::MockRtosChannel;
 
 /// Grid Agent 错误类型.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

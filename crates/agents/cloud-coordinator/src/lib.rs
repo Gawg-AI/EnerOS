@@ -92,6 +92,14 @@
 
 #![cfg_attr(not(test), no_std)]
 
+// 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
+// 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-cloud-coordinator: mock feature is FORBIDDEN in release builds. \
+     Use --no-default-features in release."
+);
+
 extern crate alloc;
 
 pub mod aggregator;
@@ -102,9 +110,13 @@ pub mod strategy;
 
 pub use aggregator::{
     AggError, DataAggregator, DataSink, DataSource, DomainData, EventRecord, EventType,
-    MockDataSink, MockDataSource, Severity,
+    Severity,
 };
-pub use channel::{CloudChannel, CloudError, MockCloudChannel};
+#[cfg(any(test, feature = "mock"))]
+pub use aggregator::{MockDataSink, MockDataSource};
+pub use channel::{CloudChannel, CloudError};
+#[cfg(any(test, feature = "mock"))]
+pub use channel::MockCloudChannel;
 pub use publisher::StrategyPublisher;
 pub use strategy::{
     validate_strategy, EdgeAck, LocalState, ModelRef, RejectReason, Strategy, StrategyContent,

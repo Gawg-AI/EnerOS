@@ -10,3 +10,4 @@ description = "EnerOS BSP 认证体系 (v0.183.0) — 认证规范/测试套件/
 
 [features]
 default = []
+mock = []

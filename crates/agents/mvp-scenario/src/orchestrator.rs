@@ -5,7 +5,9 @@ use alloc::string::String;
 use eneros_device_agent::DeviceAgent;
 use eneros_energy_lp_model::config::ScheduleConfig;
 use eneros_energy_market_agent::{AgentRuntime, EnergyAgent, MarketAgent};
+#[cfg(any(test, feature = "mock"))]
 use eneros_solver_core::mock::MockSolver;
+use eneros_solver_core::solver::Solver;
 
 use crate::error::MvpError;
 use crate::revenue::RevenueComparator;
@@ -29,9 +31,9 @@ pub struct MvpTickReport {
 /// 直接持有 `EnergyAgent` / `MarketAgent` / `DeviceAgent` 三个 Agent（D4：非 clone），
 /// 在 `tick` 中按顺序执行：market.on_tick → 转发市场数据 → energy.on_tick →
 /// 记录收益对比 → device.on_tick。
-pub struct MvpOrchestrator {
+pub struct MvpOrchestrator<S: Solver> {
     /// 能源调度 Agent.
-    pub energy_agent: EnergyAgent<MockSolver>,
+    pub energy_agent: EnergyAgent<S>,
     /// 市场数据 Agent.
     pub market_agent: MarketAgent,
     /// 设备管理 Agent.
@@ -46,11 +48,12 @@ pub struct MvpOrchestrator {
     pub running: bool,
 }
 
-impl MvpOrchestrator {
-    /// 默认构造：3 个 Agent 用 `new_default`，`TraditionalEms` 用 `ScheduleConfig::default()`，
-    /// `RevenueComparator::new()`，`running = false`，`tick_count = 0`。
-    pub fn new_default(now_ms: u64) -> Self {
-        Self {
+impl<S: Solver> MvpOrchestrator<S> {
+    /// 默认构造（3 个 Agent 用 `new_default`）——仅测试/仿真（蓝图/20 R2-1：
+    /// Mock 收编；生产必须经 [`Self::new`] 注入真实 solver/Agent）。
+    #[cfg(any(test, feature = "mock"))]
+    pub fn new_default(now_ms: u64) -> MvpOrchestrator<MockSolver> {
+        MvpOrchestrator::<MockSolver> {
             energy_agent: EnergyAgent::new_default(now_ms),
             market_agent: MarketAgent::new_default(now_ms),
             device_agent: DeviceAgent::new_default(now_ms),
@@ -61,11 +64,11 @@ impl MvpOrchestrator {
         }
     }
 
-    /// 自定义 Agent 构造.
+    /// 自定义 Agent 构造（生产入口：注入真实 solver 的 EnergyAgent 等）。
     ///
     /// 调用方提供 3 个已配置好的 Agent 与 `ScheduleConfig`（用于传统 EMS 基准）。
     pub fn new(
-        energy: EnergyAgent<MockSolver>,
+        energy: EnergyAgent<S>,
         market: MarketAgent,
         device: DeviceAgent,
         config: ScheduleConfig,

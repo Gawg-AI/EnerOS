@@ -28,11 +28,13 @@ pub trait DialogNegotiator {
 ///
 /// 前 2 轮 Solver 返回不可行，第 3 轮返回可行解。
 #[derive(Debug, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockNegotiator {
     /// 收敛所需轮次（默认 3）.
     pub converge_after: u32,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockNegotiator {
     /// 创建 MockNegotiator，指定收敛轮次.
     #[must_use]
@@ -69,6 +71,7 @@ impl MockNegotiator {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl DialogNegotiator for MockNegotiator {
     fn run(&mut self, problem: &Problem) -> Result<Solution, DialogError> {
         if problem.max_rounds == 0 {

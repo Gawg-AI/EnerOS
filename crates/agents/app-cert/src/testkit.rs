@@ -17,8 +17,10 @@ pub trait AppTestKit {
 ///
 /// 规则：若 `app.signature_valid` 为 true，则所有项通过；
 /// 否则 Security 类别项失败，其余通过。
+#[cfg(any(test, feature = "mock"))]
 pub struct MockAppTestKit;
 
+#[cfg(any(test, feature = "mock"))]
 impl AppTestKit for MockAppTestKit {
     fn run(&self, app: &AppPackage, spec: &AppCertSpec) -> AppCertReport {
         let mut results: Vec<TestCaseResult> = Vec::new();

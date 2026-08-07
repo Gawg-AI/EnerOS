@@ -7,7 +7,9 @@ use alloc::vec::Vec;
 use eneros_agent::{AgentDescriptor, AgentState, AgentType};
 
 use crate::error::AgentRuntimeError;
-use crate::market::{MarketChannel, MarketDataSource, MockMarketSource};
+use crate::market::{MarketChannel, MarketDataSource};
+#[cfg(any(test, feature = "mock"))]
+use crate::market::MockMarketSource;
 use crate::runtime::{AgentRuntime, HeartbeatStatus};
 
 /// 市场数据 Agent.
@@ -45,7 +47,9 @@ impl MarketAgent {
         }
     }
 
-    /// 默认构造（使用 `MockMarketSource::new()`）.
+    /// 默认构造（使用 `MockMarketSource::new()`）——仅测试/仿真
+    /// （蓝图/20 R2-1：生产必须注入真实数据源）。
+    #[cfg(any(test, feature = "mock"))]
     pub fn new_default(now_ms: u64) -> Self {
         let source: Box<dyn MarketDataSource> = Box::new(MockMarketSource::new());
         Self::new("market-agent", source, now_ms)

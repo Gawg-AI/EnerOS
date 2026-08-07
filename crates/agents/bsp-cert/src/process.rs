@@ -4,7 +4,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::spec::default_spec;
-use crate::testkit::{BspTestKit, MockTestKit};
+use crate::testkit::BspTestKit;
+#[cfg(any(test, feature = "mock"))]
+use crate::testkit::MockTestKit;
 use crate::types::{BspTestReport, CertPhase, Certificate, HardwareInfo, Outcome};
 use crate::CertError;
 
@@ -29,7 +31,9 @@ pub struct BspCertEngine {
 }
 
 impl BspCertEngine {
-    /// 创建认证引擎（默认 Mock 测试套件，`pass_all` 控制通过率）。
+    /// 创建认证引擎（默认 Mock 测试套件）——仅测试/仿真（蓝图/20 R2-1：
+    /// 生产必须经 [`Self::with_test_kit`] 注入真实测试台/产线执行器）。
+    #[cfg(any(test, feature = "mock"))]
     pub fn new(pass_all: bool) -> Self {
         Self {
             cases: Vec::new(),

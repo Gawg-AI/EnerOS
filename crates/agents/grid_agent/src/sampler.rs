@@ -15,6 +15,7 @@ pub trait GridSampler {
 
 /// Mock 电网采样器（测试用）.
 #[derive(Debug, Clone)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockGridSampler {
     /// 下一次采样返回的状态
     pub next_state: GridState,
@@ -22,6 +23,7 @@ pub struct MockGridSampler {
     pub fail: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockGridSampler {
     /// 创建成功路径采样器，返回给定状态.
     pub fn new(state: GridState) -> Self {
@@ -46,6 +48,7 @@ impl MockGridSampler {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl GridSampler for MockGridSampler {
     fn sample(&mut self, now_ms: u64) -> Result<GridState, GridError> {
         if self.fail {

@@ -14,6 +14,7 @@ use eneros_llm_engine::LlmEngine;
 use crate::backend::DeployBackend;
 use crate::config::QuantConfig7B;
 use crate::error::DeployError;
+#[cfg(any(test, feature = "mock"))]
 use crate::mock_backend::MockDeployBackend;
 use crate::prompts::PowerPromptSet;
 use crate::report::DeployReport;
@@ -37,7 +38,9 @@ pub struct DeployVerifier<E: LlmEngine> {
 }
 
 impl<E: LlmEngine> DeployVerifier<E> {
-    /// 创建验证器（默认 MockDeployBackend，D12）.
+    /// 创建验证器（默认 MockDeployBackend）——仅测试/仿真（蓝图/20 R2-1：
+    /// 生产必须经 [`Self::with_backend`] 注入真实后端）。
+    #[cfg(any(test, feature = "mock"))]
     pub fn new(engine: E, config: QuantConfig7B) -> Self {
         Self {
             engine,

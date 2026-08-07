@@ -23,11 +23,11 @@ pub struct CheckResult {
     pub message: Option<String>,
 }
 
-/// Aggregated report for all five quality checks.
+/// Aggregated report for all six quality checks.
 #[derive(Debug)]
 pub struct GateReport {
-    /// Results for `[fmt, clippy, audit, test, version-gate]` in that order.
-    pub results: [CheckResult; 5],
+    /// Results for `[fmt, clippy, audit, test, version-gate, mock-gate]` in that order.
+    pub results: [CheckResult; 6],
     pub overall_pass: bool,
 }
 
@@ -42,6 +42,9 @@ pub trait QualityGate {
     /// Go/No-Go 文档与 workspace 版本一致性检查（蓝图/20 R1-1）：
     /// 任一 G 项非 PASS → 版本必须带 `-rc.` 后缀；全 PASS 才允许发布版。
     fn run_version_gate(&self) -> Result<(), GateError>;
+    /// R2-1 Mock 收编门禁：crates/agents + crates/ai 下所有 `pub struct Mock`
+    /// 定义行上方必须有 cfg(any(test, feature = "mock")) 保护。
+    fn run_mock_gate(&self) -> Result<(), GateError>;
 }
 
 /// Default gate that shells out to `cargo` subcommands.
@@ -335,7 +338,13 @@ impl QualityGate for DefaultGate {
         version_cr.name = "version-gate";
         version_cr.duration_ms = start.elapsed().as_millis() as u64;
 
-        let results = [fmt_cr, clippy_cr, audit_cr, test_cr, version_cr];
+        // mock-gate (蓝图/20 R2-1)
+        let start = Instant::now();
+        let mut mock_cr = CheckResult::from(self.run_mock_gate());
+        mock_cr.name = "mock-gate";
+        mock_cr.duration_ms = start.elapsed().as_millis() as u64;
+
+        let results = [fmt_cr, clippy_cr, audit_cr, test_cr, version_cr, mock_cr];
         let overall_pass = results.iter().all(|r| r.passed);
         GateReport {
             results,
@@ -345,6 +354,10 @@ impl QualityGate for DefaultGate {
 
     fn run_version_gate(&self) -> Result<(), GateError> {
         Self::version_gate_at(Path::new("."))
+    }
+
+    fn run_mock_gate(&self) -> Result<(), GateError> {
+        Self::mock_gate_at(Path::new("."))
     }
 }
 
@@ -418,6 +431,71 @@ impl DefaultGate {
     }
 }
 
+impl DefaultGate {
+    /// R2-1 Mock 收编门禁：扫描 crates/agents 与 crates/ai 下所有
+    /// `pub struct Mock` 定义，检查定义行上方 3 行内有
+    /// `#[cfg(any(test, feature = "mock"))]` 保护（含 cfg(test) 模块内的）。
+    fn mock_gate_at(root: &Path) -> Result<(), GateError> {
+        let mut violations: Vec<String> = Vec::new();
+        for dir in ["crates/agents", "crates/ai"] {
+            let base = root.join(dir);
+            let mut entries: Vec<_> = std::fs::read_dir(&base)
+                .map_err(|e| GateError::IoError(format!("cannot read {}: {e}", base.display())))?
+                .collect::<Result<_, _>>()
+                .map_err(|e| GateError::IoError(e.to_string()))?;
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let src = path.join("src");
+                let files = walk_rs(&src);
+                for f in files {
+                    let text = std::fs::read_to_string(&f).map_err(|e| {
+                        GateError::IoError(format!("cannot read {}: {e}", f.display()))
+                    })?;
+                    let lines: Vec<&str> = text.lines().collect();
+                    for (i, line) in lines.iter().enumerate() {
+                        if line.trim_start().starts_with("pub struct Mock") {
+                            let window_start = i.saturating_sub(3);
+                            let window = &lines[window_start..i];
+                            let protected = window.iter().any(|w| w.contains("#[cfg"));
+                            if !protected {
+                                violations.push(format!(
+                                    "{}:{}: pub struct Mock 无 cfg 保护",
+                                    f.display(),
+                                    i + 1
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(GateError::MockGateViolation(violations.join("; ")))
+        }
+    }
+}
+
+fn walk_rs(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(walk_rs(&p));
+            } else if p.extension().map(|x| x == "rs").unwrap_or(false) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
 impl From<Result<(), GateError>> for CheckResult {
     fn from(r: Result<(), GateError>) -> Self {
         match r {
@@ -468,6 +546,7 @@ mod tests {
             pass("audit"),
             pass("test"),
             pass("version-gate"),
+            pass("mock-gate"),
         ];
         let overall_pass = results.iter().all(|r| r.passed);
         assert!(overall_pass);
@@ -487,18 +566,20 @@ mod tests {
             pass("audit"),
             pass("test"),
             pass("version-gate"),
+            pass("mock-gate"),
         ];
         let overall_pass = results.iter().all(|r| r.passed);
         assert!(!overall_pass);
 
         // Any single failure flips the overall result.
-        for i in 0..5 {
+        for i in 0..6 {
             let mut r = [
                 pass("fmt"),
                 pass("clippy"),
                 pass("audit"),
                 pass("test"),
                 pass("version-gate"),
+                pass("mock-gate"),
             ];
             r[i] = fail("x");
             assert!(!r.iter().all(|c| c.passed), "index {} should fail", i);
@@ -543,6 +624,7 @@ mod tests {
             degraded,
             pass("test"),
             pass("version-gate"),
+            pass("mock-gate"),
         ];
         let overall_pass = results.iter().all(|r| r.passed);
         assert!(!overall_pass);

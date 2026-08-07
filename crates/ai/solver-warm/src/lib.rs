@@ -64,5 +64,7 @@ compile_error!(
 pub use candidate::CandidateSolution;
 #[cfg(feature = "onnx-ffi")]
 compile_error!("onnx-ffi: OnnxEngine 依赖虚构 ort_* FFI（AI-002 封印）");
-pub use heuristic_net::{HeuristicNet, InferEngine, MockEngine, WarmError};
+pub use heuristic_net::{HeuristicNet, InferEngine, WarmError};
+#[cfg(any(test, feature = "mock"))]
+pub use heuristic_net::MockEngine;
 pub use warm_start::{SolveContext, WarmStartProvider, WarmStarter};

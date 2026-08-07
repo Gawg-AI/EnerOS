@@ -501,6 +501,7 @@ pub trait VerticalEncryptDevice {
 
 /// Mock 纵向加密装置（字段全 pub，支持发送故障注入）
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockVerticalEncryptDevice {
     /// 已成功发送的帧记录
     pub xmitted: Vec<Vec<u8>>,
@@ -510,6 +511,7 @@ pub struct MockVerticalEncryptDevice {
     pub fail_times: u32,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockVerticalEncryptDevice {
     /// 创建空 Mock 装置（无故障注入）
     pub fn new() -> Self {
@@ -517,6 +519,7 @@ impl MockVerticalEncryptDevice {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl VerticalEncryptDevice for MockVerticalEncryptDevice {
     fn xmit(&mut self, frame: &[u8]) -> Result<(), EncryptError> {
         if self.fail_times > 0 {
@@ -537,11 +540,11 @@ impl VerticalEncryptDevice for MockVerticalEncryptDevice {
 }
 
 /// 多隧道管理器（E12；字段全 pub；按 local_spi 索引，接收按帧 spi 匹配 remote_spi 路由）
-pub struct TunnelManager {
+pub struct TunnelManager<D> {
     /// 已注册隧道（key = local_spi）
     pub tunnels: BTreeMap<u32, VerticalEncryptTunnel>,
-    /// 纵向加密装置（E2，偏差 EX3：直接用 Mock 具体类型保持简单）
-    pub device: MockVerticalEncryptDevice,
+    /// 纵向加密装置（蓝图/20 R2-1：泛型注入，Mock 收编 test-only）
+    pub device: D,
     /// 累计注册隧道数
     pub established_count: u64,
     /// 累计成功发送帧数
@@ -552,9 +555,9 @@ pub struct TunnelManager {
     pub replay_reject_count: u64,
 }
 
-impl TunnelManager {
+impl<D: VerticalEncryptDevice> TunnelManager<D> {
     /// 创建管理器：隧道表为空，4 计数器全零
-    pub fn new(device: MockVerticalEncryptDevice) -> Self {
+    pub fn new(device: D) -> Self {
         Self {
             tunnels: BTreeMap::new(),
             device,

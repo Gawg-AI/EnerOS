@@ -58,7 +58,11 @@ compile_error!(
      Use: --no-default-features --features llama-cpp"
 );
 
-#[cfg(not(any(feature = "llama-cpp", feature = "mock", test)))]
+#[cfg(all(
+    not(any(feature = "llama-cpp", feature = "mock")),
+    not(test),
+    not(debug_assertions)
+))]
 compile_error!(
     "eneros-llm-engine: no backend selected. \
      Release builds must enable 'llama-cpp' feature. \

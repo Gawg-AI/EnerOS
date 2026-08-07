@@ -32,6 +32,7 @@ pub struct DeviceInfo {
 ///
 /// 点值带质量位与时间戳（ADR-0027 canonical 点模型）；`set_offline` 后
 /// 读点返回 `invalid` 品质（在线判断由质量位表达，而非独立布尔）。
+#[cfg(any(test, feature = "mock"))]
 pub struct MockPointDevice {
     /// 点 ID → 数据点.
     points: BTreeMap<PointId, DataPoint>,
@@ -43,6 +44,7 @@ pub struct MockPointDevice {
     offline: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockPointDevice {
     /// 创建空设备（无点位，默认在线）。
     pub fn new(device_id: DeviceId) -> Self {
@@ -104,6 +106,7 @@ impl MockPointDevice {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl PointAccess for MockPointDevice {
     fn read_point(&mut self, point_id: PointId) -> Result<DataPoint, ProtocolError> {
         let mut dp = self
@@ -134,6 +137,7 @@ impl PointAccess for MockPointDevice {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl PointAccessExt for MockPointDevice {
     fn read_device_points(&mut self, device_id: DeviceId) -> Result<alloc::vec::Vec<DataPoint>, ProtocolError> {
         if device_id != self.device_id {

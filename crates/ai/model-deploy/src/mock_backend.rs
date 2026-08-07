@@ -11,11 +11,13 @@ use crate::config::QuantConfig7B;
 use crate::error::DeployError;
 
 /// Mock 部署后端（D12 默认）.
+#[cfg(any(test, feature = "mock"))]
 pub struct MockDeployBackend {
     /// 加载耗时覆盖值（None 时使用默认 1ms）.
     load_time_override: Option<u64>,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockDeployBackend {
     /// 创建 Mock 后端（加载耗时默认 1ms）.
     pub fn new() -> Self {
@@ -32,12 +34,14 @@ impl MockDeployBackend {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for MockDeployBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl DeployBackend for MockDeployBackend {
     fn check_hardware(&self, config: &QuantConfig7B) -> Result<HardwareCheck, DeployError> {
         // ARC-006：Mock 检查不再恒真——需求超能力 → HardwareInsufficient

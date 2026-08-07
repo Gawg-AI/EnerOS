@@ -16,11 +16,13 @@ pub trait BspTestKit {
 /// - `pass_all = true`: 所有用例通过
 /// - `pass_all = false`: 第一个强制项失败，其余通过
 #[derive(Debug, Clone)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockTestKit {
     /// 是否全部通过
     pub pass_all: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockTestKit {
     /// 创建模拟测试套件
     pub fn new(pass_all: bool) -> Self {
@@ -28,6 +30,7 @@ impl MockTestKit {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl BspTestKit for MockTestKit {
     fn run(&mut self, spec: &BspSpec) -> BspTestReport {
         let mut results: Vec<TestCaseResult> = Vec::new();
