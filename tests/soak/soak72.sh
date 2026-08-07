@@ -10,12 +10,18 @@
 # - 安全链：安全启动验签、OTA-A/B 升级+回滚、attestation 远程证明
 # - 运维：指标/日志真实导出，crash-dump 可采集可符号化
 #
-# 本机无硬件时的行为（与 tests/kunpeng_boot.sh 同口径）：
-# - 探测硬件标识文件；缺失 → 输出跳过证据 + 就绪检查清单，exit 0
-# - 硬件就绪 → 执行完整浸泡矩阵并产 QA-018 soak-campaign.json
+# 蓝图/20 R1-5（fail-closed 改造）：
+# - 检查器/执行器分离：执行器（真实硬件命令）写证据文件；检查器读证据
+#   文件校验字段——缺失/被篡改/不符 → FAIL（exit 1）。
+# - 脚本内禁止字面量 "PASS" 直接写入报告的分支（CI grep 门禁）；
+#   报告状态由证据推导。
+# - 无硬件（无标记）→ verdict=SKIP + 就绪检查清单，exit 0。
+# - 自检模式 `bash tests/soak/soak72.sh --self-test`：注入假硬件标记 +
+#   篡改证据，断言三个用例全部被判 FAIL（验收标准）。
 #
 # 用法：
 #   bash tests/soak/soak72.sh                      # 探测→跳过或全量
+#   bash tests/soak/soak72.sh --self-test          # 自检（无硬件也可运行）
 #   ENEROS_SOAK_FORCE=1 bash tests/soak/soak72.sh  # 强制执行（硬件就绪时）
 set -euo pipefail
 
@@ -30,6 +36,175 @@ BOOT_CYCLES="${ENEROS_SOAK_BOOT_CYCLES:-100}"
 POWER_CUTS="${ENEROS_SOAK_POWER_CUTS:-50}"
 PROTOCOL_HOURS="${ENEROS_SOAK_PROTOCOL_HOURS:-72}"
 
+# ============================================================
+# 检查器：读取执行器证据文件 → 校验字段 → 缺失/不符即 FAIL
+# （蓝图/20 R1-5：无证据=失败，证据缺失/被篡改=失败）
+# ============================================================
+FAIL_COUNT=0
+fail() {
+    echo "[soak] FAIL: $1" >&2
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+}
+
+# 启动链：boot-chain.log 每行 "cycle <n>: ok boot_ms=<ms>"，行数 ≥ BOOT_CYCLES
+check_boot_chain() {
+    local log="${OUT_DIR}/boot-chain.log"
+    if [ ! -f "${log}" ]; then
+        fail "missing boot-chain evidence: ${log}"
+        return
+    fi
+    local lines
+    lines=$(wc -l < "${log}" | tr -d ' ')
+    if [ "${lines}" -lt "${BOOT_CYCLES}" ]; then
+        fail "boot-chain log has ${lines} lines, expected >= ${BOOT_CYCLES}"
+        return
+    fi
+    if ! grep -qE '^cycle [0-9]+: ok boot_ms=[0-9]+$' "${log}"; then
+        fail "boot-chain log has malformed lines (expected 'cycle N: ok boot_ms=<ms>')"
+        return
+    fi
+    if grep -qE 'failed|error' "${log}"; then
+        fail "boot-chain log contains failure markers"
+    fi
+}
+
+# 断电恢复：power-cut.log 每行 "cut <n>: ok [checksum=<hex>]"，行数 ≥ POWER_CUTS
+check_power_cut() {
+    local log="${OUT_DIR}/power-cut.log"
+    if [ ! -f "${log}" ]; then
+        fail "missing power-cut evidence: ${log}"
+        return
+    fi
+    local lines
+    lines=$(wc -l < "${log}" | tr -d ' ')
+    if [ "${lines}" -lt "${POWER_CUTS}" ]; then
+        fail "power-cut log has ${lines} lines, expected >= ${POWER_CUTS}"
+        return
+    fi
+    if ! grep -qE '^cut [0-9]+: ok( checksum=[0-9a-f]+)?$' "${log}"; then
+        fail "power-cut log has malformed lines (expected 'cut N: ok [checksum=<hex>]')"
+        return
+    fi
+    if grep -qE 'failed|error|corrupt' "${log}"; then
+        fail "power-cut log contains failure markers"
+    fi
+}
+
+# 协议对通：protocol-soak.log 覆盖 72h 无失联
+check_protocol() {
+    local log="${OUT_DIR}/protocol-soak.log"
+    if [ ! -f "${log}" ]; then
+        fail "missing protocol-soak evidence: ${log}"
+        return
+    fi
+    if ! grep -qE '^ok' "${log}"; then
+        fail "protocol-soak log lacks ok marker"
+        return
+    fi
+    if grep -qE 'lost|disconnect|failed|error' "${log}"; then
+        fail "protocol-soak log contains loss markers"
+    fi
+}
+
+# 决策链 + 安全链 + 运维：chains-daily.log 每日断言
+check_chains() {
+    local log="${OUT_DIR}/chains-daily.log"
+    if [ ! -f "${log}" ]; then
+        fail "missing daily chains evidence: ${log}"
+        return
+    fi
+    if grep -qE 'failed|error' "${log}"; then
+        fail "daily chains log contains failure markers"
+    fi
+}
+
+run_checks() {
+    FAIL_COUNT=0
+    check_boot_chain
+    check_power_cut
+    check_protocol
+    check_chains
+}
+
+# ============================================================
+# 执行器：真实硬件命令接入点（kunpeng_boot.sh / phytium_boot.sh 扩展）。
+# 接入前不产生任何证据 → 检查器按"无证据=失败"判 FAIL（fail-closed）。
+# 接入后每个 cycle/cut 写一行 "…: ok …" 到对应日志。
+# ============================================================
+run_executors() {
+    # 接入点（真实硬件就绪后替换）：
+    # 1. 加载 UEFI 应用，断言串口序列 [kernel] booting + [eneros-root-task]
+    #    alive + EL0 banner，逐 cycle 写 boot-chain.log（含耗时 boot_ms）
+    # 2. TSDB 写样本 → 随机时刻断电（SSH 电源控制器）→ 恢复 → 校验和一致，
+    #    逐 cut 写 power-cut.log
+    # 3. Modbus/IEC104 对通轮询 72h，写 protocol-soak.log
+    # 4. 每日执行决策/安全/运维断言，写 chains-daily.log
+    :
+}
+
+# ============================================================
+# 自检模式：注入假硬件标记 + 篡改证据，断言三个用例全部 FAIL
+# （蓝图/20 R1-5 验收标准：--self-test 三个篡改用例全部被判 FAIL）
+# ============================================================
+self_test() {
+    local ok=1
+    local orig_out="${OUT_DIR}"
+    local i
+
+    # 用例 1：假硬件标记 + 零证据 → 每项检查 FAIL
+    OUT_DIR="$(mktemp -d)"
+    run_checks
+    if [ "${FAIL_COUNT}" -eq 0 ]; then
+        echo "[self-test] case 1 (fake hardware, zero evidence) was NOT rejected" >&2
+        ok=0
+    fi
+
+    # 用例 2：boot 证据被篡改（行数不足 + 伪造行），其余证据齐全
+    #         → 仅 boot 检查 FAIL（证明 FAIL 由篡改触发，非连带）
+    OUT_DIR="$(mktemp -d)"
+    printf 'cycle 1: ok boot_ms=5\n' > "${OUT_DIR}/boot-chain.log"
+    for i in $(seq 1 "${POWER_CUTS}"); do
+        printf 'cut %s: ok\n' "${i}" >> "${OUT_DIR}/power-cut.log"
+    done
+    printf 'ok\n' > "${OUT_DIR}/protocol-soak.log"
+    printf 'ok\n' > "${OUT_DIR}/chains-daily.log"
+    run_checks
+    if [ "${FAIL_COUNT}" -ne 1 ]; then
+        echo "[self-test] case 2 (tampered boot evidence) FAIL_COUNT=${FAIL_COUNT}, expected 1" >&2
+        ok=0
+    fi
+
+    # 用例 3：power-cut 证据被篡改（行数足够但格式不符），其余证据齐全
+    #         → 仅 power-cut 检查 FAIL
+    OUT_DIR="$(mktemp -d)"
+    for i in $(seq 1 "${BOOT_CYCLES}"); do
+        printf 'cycle %s: ok boot_ms=%s\n' "${i}" "$((i % 100))" >> "${OUT_DIR}/boot-chain.log"
+    done
+    for i in $(seq 1 "${POWER_CUTS}"); do
+        printf 'cut %s: ok (placeholder, hardware path)\n' "${i}" >> "${OUT_DIR}/power-cut.log"
+    done
+    printf 'ok\n' > "${OUT_DIR}/protocol-soak.log"
+    printf 'ok\n' > "${OUT_DIR}/chains-daily.log"
+    run_checks
+    if [ "${FAIL_COUNT}" -ne 1 ]; then
+        echo "[self-test] case 3 (tampered power-cut evidence) FAIL_COUNT=${FAIL_COUNT}, expected 1" >&2
+        ok=0
+    fi
+
+    OUT_DIR="${orig_out}"
+    if [ "${ok}" -eq 1 ]; then
+        echo "[self-test] ALL 3 TAMPER CASES REJECTED (ok)"
+        exit 0
+    fi
+    echo "[self-test] FAILED: at least one tamper case was accepted" >&2
+    exit 1
+}
+
+# ── 自检入口 ──
+if [ "${1:-}" = "--self-test" ]; then
+    self_test
+fi
+
 # ── 1. 硬件探测（双国产平台）──
 HARDWARE=""
 if [ -e /sys/class/phytium-d2000-marker ] || [ -n "${ENEROS_SOAK_HW:-}" ]; then
@@ -43,6 +218,7 @@ if [ -z "${HARDWARE}" ] && [ -z "${ENEROS_SOAK_FORCE:-}" ]; then
     cat > "${OUT_DIR}/soak-skip-evidence.json" <<'EOF'
 {
   "schema": "eneros.soak-skip-evidence.v1",
+  "verdict": "SKIP",
   "reason": "no hardware detected",
   "hardware_required": ["phytium-d2000", "kunpeng-920"],
   "readiness_checks": {
@@ -66,55 +242,39 @@ fi
 
 echo "[soak] hardware=${HARDWARE} boot_cycles=${BOOT_CYCLES} power_cuts=${POWER_CUTS} protocol_hours=${PROTOCOL_HOURS}"
 
-# ── 2. 启动链：冷启动 N 次零失败 ──
-BOOT_LOG="${OUT_DIR}/boot-chain.log"
-BOOT_TIMES="${OUT_DIR}/boot-times.csv"
-: > "${BOOT_LOG}"
-: > "${BOOT_TIMES}"
-BOOT_FAILS=0
-for i in $(seq 1 "${BOOT_CYCLES}"); do
-    # 硬件就绪后：加载 UEFI 应用 + 断言串口序列
-    # [kernel] booting + [eneros-root-task] alive + EL0 banner
-    # v0.254.0（D1b）：记录每次启动耗时（串口首行到 banner 的墙钟差）
-    START=$(date +%s%N)
-    # 占位：硬件就绪后替换为实际加载命令（kunpeng_boot.sh/phytium_boot.sh 扩展）
-    END=$(date +%s%N)
-    BOOT_MS=$(( (END - START) / 1000000 ))
-    echo "${i},${BOOT_MS}" >> "${BOOT_TIMES}"
-    echo "cycle ${i}: PASS boot_ms=${BOOT_MS}" >> "${BOOT_LOG}"
-done
-if [ "${BOOT_FAILS}" -gt 0 ]; then
-    echo "[soak] boot chain FAILED: ${BOOT_FAILS}/${BOOT_CYCLES}"
-    exit 1
-fi
-echo "[soak] boot chain: ${BOOT_CYCLES}/${BOOT_CYCLES} PASS"
+# ── 2. 执行器（真实硬件命令）→ 检查器（读证据，fail-closed）──
+run_executors
+run_checks
 
-# ── 3. 存储：随机断电 50 次数据可恢复 ──
-POWER_LOG="${OUT_DIR}/power-cut.log"
-: > "${POWER_LOG}"
-for i in $(seq 1 "${POWER_CUTS}"); do
-    # 硬件就绪后：写入 TSDB 样本 → 随机时刻断电（SSH 电源控制器/继电器）
-    # → 恢复 → 校验数据可读 + 校验和一致
-    echo "cut ${i}: PASS (placeholder, hardware path)" >> "${POWER_LOG}"
-done
-echo "[soak] power cut recovery: ${POWER_CUTS}/${POWER_CUTS} PASS"
-
-# ── 4. 协议对通：72h 无失联 ──
-echo "[soak] protocol soak: ${PROTOCOL_HOURS}h (placeholder, hardware path)"
-
-# ── 5. 决策链 + 安全链 + 运维（每日执行断言）──
-echo "[soak] decision/security/ops chains: scheduled daily (placeholder, hardware path)"
-
-# ── 6. 产 QA-018 证据 ──
+# ── 3. 产出 QA-018 证据（verdict 由检查结果推导）──
 DURATION_DAYS=$(( PROTOCOL_HOURS / 24 ))
 if [ "${DURATION_DAYS}" -lt 1 ]; then
     DURATION_DAYS=3
 fi
+
+if [ "${FAIL_COUNT}" -gt 0 ]; then
+    V_VERDICT="FAIL"
+    echo "[soak] VERDICT: ${V_VERDICT} (${FAIL_COUNT} check(s) failed)"
+    cat > "${OUT_DIR}/soak-campaign.json" <<EOF
+{
+  "schema": "eneros.soak-campaign.v1",
+  "campaign_id": "real-hardware-${HARDWARE}-${BOOT_CYCLES}x",
+  "verdict": "${V_VERDICT}",
+  "fail_checks": ${FAIL_COUNT},
+  "duration_days": ${DURATION_DAYS}
+}
+EOF
+    exit 1
+fi
+
+V_VERDICT="PASS"
+echo "[soak] VERDICT: ${V_VERDICT} — all checks derived from evidence files"
 cat > "${OUT_DIR}/soak-campaign.json" <<EOF
 {
   "schema": "eneros.soak-campaign.v1",
   "campaign_id": "real-hardware-${HARDWARE}-${BOOT_CYCLES}x",
   "artifact_sha256": "",
+  "verdict": "${V_VERDICT}",
   "duration_days": ${DURATION_DAYS},
   "min_duration_days": 3,
   "memory_leak_bytes_per_day": 0,

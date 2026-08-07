@@ -55,6 +55,15 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(dead_code)]
 
+// 蓝图/20 R1-7：RAM 模拟 eMMC 控制器（emmc-ram-sim）只允许测试/仿真；
+// release 构建启用即熔断，保证生产产物不含模拟控制器符号。
+#[cfg(all(feature = "emmc-ram-sim", not(debug_assertions)))]
+compile_error!(
+    "eneros-storage: emmc-ram-sim (RAM-simulated eMMC controller) is FORBIDDEN \
+     in release builds. Construct EmmcDriver with a real volatile MMIO backend \
+     on target, or run tests with `cargo test`."
+);
+
 extern crate alloc;
 
 pub mod bad_block;
@@ -69,6 +78,7 @@ pub use driver::{
     StorageMmio, StorageType,
 };
 pub use driver::{DmaBuffer, EmmcCmdType, EmmcDriver, NvmeDriver};
+#[cfg(any(test, feature = "emmc-ram-sim"))]
 pub use driver::emmc::RamEmmcMmio;
 #[cfg(test)]
 pub use driver::MockDmaTransfer;

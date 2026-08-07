@@ -346,3 +346,10 @@ pub fn write_all_flush<W: Write>(w: &mut W, data: &[u8]) -> std::io::Result<()> 
     w.write_all(data)?;
     w.flush()
 }
+
+// ============================================================================
+// 设备端 TLS（蓝图/20 R1-3）：embedded-tls + 本仓 PKI 证书链验证。
+// 仅 `embedded` feature 编译；no_std 目标可用（blocking 模式 + smoltcp 适配）。
+// ============================================================================
+#[cfg(feature = "embedded")]
+pub mod embedded;

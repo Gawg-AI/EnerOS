@@ -243,8 +243,10 @@ fn read_entropy<M: Mmio>(
 mod tests {
     use super::*;
     use core::sync::atomic::{AtomicU64, Ordering};
+    use crate::sm2::Sm2Signature;
 
     /// RAM 仿真 MMIO（QEMU 设备模型语义；queue 指针经全局桥接）。
+    /// 每次 `new()` 递增熵 epoch（R1-4：模拟真实设备每次产生不同熵）。
     struct SimMmio {
         regs: [u32; 64],
         entropy: [u8; 32],
@@ -254,6 +256,7 @@ mod tests {
     static SIM_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static QUEUE_PTR: AtomicU64 = AtomicU64::new(0);
     static PHYS_BASE: AtomicU64 = AtomicU64::new(0);
+    static ENTROPY_EPOCH: AtomicU64 = AtomicU64::new(0);
 
     impl SimMmio {
         fn new() -> Self {
@@ -262,9 +265,13 @@ mod tests {
             regs[vmmio::VERSION / 4] = 1;
             regs[vmmio::DEVICE_ID / 4] = VIRTIO_RNG_DEVICE_ID;
             regs[vmmio::QUEUE_NUM_MAX / 4] = 32;
+            let epoch = ENTROPY_EPOCH.fetch_add(1, Ordering::Relaxed) as u8;
             let mut entropy = [0u8; 32];
             for (i, b) in entropy.iter_mut().enumerate() {
-                *b = (i as u8).wrapping_mul(0x5D).wrapping_add(0x13);
+                *b = (i as u8)
+                    .wrapping_mul(0x5D)
+                    .wrapping_add(0x13)
+                    .wrapping_add(epoch);
             }
             SimMmio { regs, entropy }
         }
@@ -362,5 +369,60 @@ mod tests {
         let mut out2 = [0u8; 32];
         assert!(read_entropy(&mut mmio, &mut q, base, &mut out2).is_some());
         assert!(out2.iter().any(|&b| b != 0));
+    }
+
+    /// R1-4 验收（QEMU 等价断言）：连续两次 virtio-rng 读熵必须不同。
+    #[test]
+    fn test_virtio_rng_two_reads_distinct_entropy() {
+        let _guard = SIM_GUARD.lock().unwrap();
+        let mut out1 = [0u8; 32];
+        let mut out2 = [0u8; 32];
+        for round in 0..2u64 {
+            let mut mmio = SimMmio::new();
+            let mut q = [0u8; 0x2200];
+            let base = 0x3000_0000 + round * 0x1000_0000;
+            QUEUE_PTR.store(q.as_mut_ptr() as u64, Ordering::Relaxed);
+            PHYS_BASE.store(base, Ordering::Relaxed);
+            device_init(&mut mmio);
+            queue_setup(&mut mmio, base);
+            let out = if round == 0 { &mut out1 } else { &mut out2 };
+            assert!(
+                read_entropy(&mut mmio, &mut q, base, out).is_some(),
+                "round {round} 读熵必须成功"
+            );
+        }
+        assert_ne!(out1, out2, "连续两次 virtio-rng 读熵必须不同（R1-4）");
+    }
+
+    /// R1-4 验收（SM2 签名 nonce）：熵 → CsRng → 两次 SM2 签名必须不同。
+    #[test]
+    fn test_sm2_signature_nonce_distinct_with_virtio_entropy() {
+        let _guard = SIM_GUARD.lock().unwrap();
+        let msg: &[u8] = b"EnerOS R1-4 entropy audit";
+        let mut sigs: alloc::vec::Vec<Sm2Signature> = alloc::vec::Vec::new();
+        for round in 0..2u64 {
+            let mut mmio = SimMmio::new();
+            let mut q = [0u8; 0x2200];
+            let base = 0x4000_0000 + round * 0x1000_0000;
+            QUEUE_PTR.store(q.as_mut_ptr() as u64, Ordering::Relaxed);
+            PHYS_BASE.store(base, Ordering::Relaxed);
+            device_init(&mut mmio);
+            queue_setup(&mut mmio, base);
+            let mut seed = [0u8; 32];
+            assert!(
+                read_entropy(&mut mmio, &mut q, base, &mut seed).is_some(),
+                "round {round} 熵读取失败"
+            );
+            let mut rng = crate::rng::CsRng::from_seed(&seed);
+            let kp = crate::sm2::Sm2KeyPair::generate(&mut rng).expect("keygen");
+            let sig = crate::sm2::sm2_sign(msg, &kp.private_key, &kp.public_key, &mut rng)
+                .expect("sign");
+            sigs.push(sig);
+        }
+        assert_ne!(
+            sigs[0].r, sigs[1].r,
+            "两次签名 nonce (r 分量) 必须不同——nonce 来自真实熵（R1-4）"
+        );
+        assert_ne!(sigs[0].s, sigs[1].s, "两次签名 s 分量必须不同");
     }
 }

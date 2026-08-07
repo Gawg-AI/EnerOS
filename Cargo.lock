@@ -3,6 +3,41 @@
 version = 4
 
 [[package]]
+name = "aead"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d122413f284cf2d62fb1b7db97e02edb8cda96d769b16e443a4f6195e35662b0"
+dependencies = [
+ "crypto-common",
+ "generic-array",
+]
+
+[[package]]
+name = "aes"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
+dependencies = [
+ "cfg-if",
+ "cipher",
+ "cpufeatures",
+]
+
+[[package]]
+name = "aes-gcm"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
+dependencies = [
+ "aead",
+ "aes",
+ "cipher",
+ "ctr",
+ "ghash",
+ "subtle",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16,6 +51,35 @@ name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
+name = "aws-lc-rs"
+version = "1.17.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00bdb5da18dac48ca2cc7cd4a98e533e8635a58e2361d13a1a4ee3888e0d72f1"
+dependencies = [
+ "aws-lc-sys",
+ "zeroize",
+]
+
+[[package]]
+name = "aws-lc-sys"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43103168cc76fe62678a375e722fc9cb3a0146159ac5828bc4f0dfd755c2224c"
+dependencies = [
+ "cc",
+ "cmake",
+ "dunce",
+ "fs_extra",
+ "pkg-config",
+]
+
+[[package]]
+name = "base16ct"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
 
 [[package]]
 name = "base64"
@@ -102,6 +166,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17dd265a7d0f31ef544e1b20e03add05d3b45b491b633b10d67145d2acc1a38"
 dependencies = [
  "find-msvc-tools",
+ "jobserver",
+ "libc",
  "shlex 2.0.1",
 ]
 
@@ -121,6 +187,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "cipher"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
+dependencies = [
+ "crypto-common",
+ "inout",
+]
+
+[[package]]
 name = "clang-sys"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -129,6 +205,15 @@ dependencies = [
  "glob",
  "libc",
  "libloading",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -147,6 +232,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-bigint"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0dc92fb57ca44df6db8059111ab3af99a63d5d0f8375d9972e319a379c6bab76"
+dependencies = [
+ "generic-array",
+ "rand_core 0.6.4",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -154,6 +251,15 @@ checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
  "typenum",
+]
+
+[[package]]
+name = "ctr"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
+dependencies = [
+ "cipher",
 ]
 
 [[package]]
@@ -255,7 +361,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
+ "const-oid",
  "crypto-common",
+ "subtle",
+]
+
+[[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "ecdsa"
+version = "0.16.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee27f32b5c5292967d2d4a9d7f1e0b0aed2c15daded5a60300e4abb9d8020bca"
+dependencies = [
+ "der",
+ "digest",
+ "elliptic-curve",
+ "rfc6979",
+ "signature",
 ]
 
 [[package]]
@@ -289,8 +416,75 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
+name = "elliptic-curve"
+version = "0.13.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5e6043086bf7973472e0c7dff2142ea0b680d30e18d9cc40f267efbf222bd47"
+dependencies = [
+ "base16ct",
+ "crypto-bigint",
+ "digest",
+ "ff",
+ "generic-array",
+ "group",
+ "hkdf",
+ "pkcs8",
+ "rand_core 0.6.4",
+ "sec1",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "embedded-io"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
+
+[[package]]
+name = "embedded-io-adapters"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c900a1c087f1f7d17cdc84a1290df91521cd90933efa76d68e568385d889f2f4"
+dependencies = [
+ "embedded-io",
+]
+
+[[package]]
+name = "embedded-io-async"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2564b9f813c544241430e147d8bc454815ef9ac998878d30cc3055449f7fd4c0"
+dependencies = [
+ "embedded-io",
+]
+
+[[package]]
+name = "embedded-tls"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ff3c16c9cedcab3ef5c79fd46349152adbb98f997b937cb1ead7655f5c07e43"
+dependencies = [
+ "aes-gcm",
+ "digest",
+ "ecdsa",
+ "embedded-io",
+ "embedded-io-async",
+ "generic-array",
+ "heapless 0.9.3",
+ "hkdf",
+ "hmac",
+ "p256",
+ "portable-atomic",
+ "rand_core 0.6.4",
+ "sha2",
+ "signature",
+ "typenum",
+]
+
+[[package]]
 name = "eneros-account"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-market-types",
  "loom",
@@ -298,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-agent"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent-sdk",
  "eneros-crypto",
@@ -307,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-agent-bus-dds"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "slotmap",
@@ -315,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-agent-hot-update"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
@@ -324,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-agent-sdk"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-ipc-wire",
  "eneros-sel4-sys",
@@ -333,35 +527,35 @@ dependencies = [
 
 [[package]]
 name = "eneros-aiops"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-time",
 ]
 
 [[package]]
 name = "eneros-alarm"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-upa-model",
 ]
 
 [[package]]
 name = "eneros-ancillary"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-market-types",
 ]
 
 [[package]]
 name = "eneros-app-cert"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-attestation"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "eneros-tpm",
@@ -369,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-audit"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
@@ -377,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-autonomous"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-account",
  "eneros-market-types",
@@ -385,11 +579,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-board"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-boot-manager-uefi"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "ed25519-dalek",
  "eneros-boot-protocol",
@@ -400,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-boot-protocol"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-ipc-wire",
  "sha2",
@@ -408,15 +602,15 @@ dependencies = [
 
 [[package]]
 name = "eneros-bsp-cert"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-calibration"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-can"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-driver-framework",
 ]
@@ -431,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-chain"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
 ]
@@ -442,7 +636,7 @@ version = "0.2.0"
 
 [[package]]
 name = "eneros-cloud-coordinator"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-coordinator",
  "eneros-dr",
@@ -452,18 +646,18 @@ dependencies = [
 
 [[package]]
 name = "eneros-cloud-sync"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-ipc-wire",
 ]
 
 [[package]]
 name = "eneros-compliance"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-control-gateway"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "eneros-telemetry-model",
@@ -471,7 +665,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-coordinator"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent",
  "eneros-energy-market-agent",
@@ -481,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-crash-dump"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-ipc-wire",
  "heapless 0.8.0",
@@ -489,15 +683,19 @@ dependencies = [
 
 [[package]]
 name = "eneros-crypto"
-version = "1.0.0"
+version = "1.0.0-rc.0"
+dependencies = [
+ "p256",
+ "rand_core 0.6.4",
+]
 
 [[package]]
 name = "eneros-dashboard"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-data-governance"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
@@ -505,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-device-agent"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent",
  "eneros-energy-market-agent",
@@ -516,33 +714,33 @@ dependencies = [
 
 [[package]]
 name = "eneros-dialog"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-did"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-dr"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-driver-framework"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-driver-framework",
 ]
 
 [[package]]
 name = "eneros-drv-svc"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-dual-brain"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-fast-path",
@@ -559,11 +757,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-elf-loader"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-energy-lp-model"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-solver-core",
  "eneros-solver-model",
@@ -571,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-energy-market-agent"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent",
  "eneros-agent-sdk",
@@ -590,7 +788,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-fast-path"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-safety-validator",
@@ -599,18 +797,21 @@ dependencies = [
 
 [[package]]
 name = "eneros-fault-recorder"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-federation"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
+ "eneros-tls",
+ "rcgen",
+ "rustls",
 ]
 
 [[package]]
 name = "eneros-firmware-agent"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-account",
  "eneros-agent",
@@ -624,7 +825,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-fleet-ops"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "heapless 0.8.0",
 ]
@@ -643,14 +844,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-gguf-loader"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-llm-engine",
 ]
 
 [[package]]
 name = "eneros-grid-agent"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent",
  "eneros-agent-bus-dds",
@@ -659,25 +860,25 @@ dependencies = [
 
 [[package]]
 name = "eneros-hal"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-hello"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-runtime",
 ]
 
 [[package]]
 name = "eneros-hmi"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent",
 ]
 
 [[package]]
 name = "eneros-iec104-master"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-iec104-slave",
  "eneros-protocol-abstract",
@@ -686,7 +887,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec104-slave"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-control-gateway",
  "eneros-telemetry-model",
@@ -695,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec61850-goose"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-iec61850-model",
  "eneros-net",
@@ -703,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec61850-mms"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-iec61850-model",
  "eneros-net",
@@ -711,11 +912,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec61850-model"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-iec61850-sv"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-iec61850-model",
  "eneros-net",
@@ -723,28 +924,28 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec62351"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-image-format"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-ipc-wire",
 ]
 
 [[package]]
 name = "eneros-infer-scheduler"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-llm-engine",
 ]
 
 [[package]]
 name = "eneros-installer-uefi"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "ed25519-dalek",
  "eneros-boot-protocol",
@@ -754,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-intent-contract"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-intent-parser",
@@ -766,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-intent-parser"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-safety-validator",
@@ -778,15 +979,15 @@ dependencies = [
 
 [[package]]
 name = "eneros-ipc-wire"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-llm-engine"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-logging"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-metrics",
  "heapless 0.8.0",
@@ -794,15 +995,15 @@ dependencies = [
 
 [[package]]
 name = "eneros-market-types"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-marl"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-metrics"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "heapless 0.8.0",
  "loom",
@@ -810,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-mgmt-api"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
@@ -818,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-mgmt-cli"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-mgmt-api",
  "heapless 0.8.0",
@@ -826,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-modbus-rtu"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-driver-framework",
  "eneros-protocol-abstract",
@@ -835,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-modbus-tcp"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-modbus-rtu",
  "eneros-protocol-abstract",
@@ -844,7 +1045,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-modbus-tcp-server"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-control-gateway",
  "eneros-modbus-rtu",
@@ -855,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-model-deploy"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-gguf-loader",
  "eneros-llm-engine",
@@ -863,21 +1064,21 @@ dependencies = [
 
 [[package]]
 name = "eneros-model-ota"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-model-security"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-mqtt"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-fs",
  "eneros-net",
@@ -885,15 +1086,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "eneros-mtls"
-version = "1.0.0"
-dependencies = [
- "eneros-crypto",
-]
-
-[[package]]
 name = "eneros-mvp-scenario"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent",
  "eneros-device-agent",
@@ -912,11 +1106,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-online-learning"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-ops-lifecycle"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
@@ -924,7 +1118,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-ota-ab"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "eneros-storage",
@@ -933,14 +1127,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-p2p"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-market-types",
 ]
 
 [[package]]
 name = "eneros-p2p-match"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-p2p",
  "loom",
@@ -948,14 +1142,13 @@ dependencies = [
 
 [[package]]
 name = "eneros-pentest"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-attestation",
  "eneros-audit",
  "eneros-crypto",
  "eneros-federation",
  "eneros-model-security",
- "eneros-mtls",
  "eneros-secure-boot",
  "heapless 0.8.0",
 ]
@@ -970,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-prompt-template"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-llm-engine",
  "serde_json",
@@ -978,14 +1171,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-protocol-abstract"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-upa-model",
 ]
 
 [[package]]
 name = "eneros-protocol-sdk"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-ipc-wire",
  "eneros-upa-model",
@@ -994,14 +1187,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-realtime-market"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-market-types",
 ]
 
 [[package]]
 name = "eneros-recovery"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "eneros-ota-ab",
@@ -1011,18 +1204,18 @@ dependencies = [
 
 [[package]]
 name = "eneros-reputation"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent",
 ]
 
 [[package]]
 name = "eneros-rl"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-root-task"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-boot-protocol",
  "eneros-elf-loader",
@@ -1032,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-rs485"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-driver-framework",
  "eneros-hal",
@@ -1040,18 +1233,18 @@ dependencies = [
 
 [[package]]
 name = "eneros-runtime"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-sel4-sys",
 ]
 
 [[package]]
 name = "eneros-safety-catalog"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-safety-validator"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-solver-core",
@@ -1059,7 +1252,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-secure-boot"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "eneros-tpm",
@@ -1067,14 +1260,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-sel4-sys"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "eneros-services"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-ipc-wire",
  "loom",
@@ -1082,28 +1275,28 @@ dependencies = [
 
 [[package]]
 name = "eneros-settlement"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-market-types",
 ]
 
 [[package]]
 name = "eneros-simulator"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent-sdk",
 ]
 
 [[package]]
 name = "eneros-slo-alert"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "heapless 0.8.0",
 ]
 
 [[package]]
 name = "eneros-soe-engine"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-telemetry-model",
  "eneros-upa-model",
@@ -1111,11 +1304,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-solver-core"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-solver-milp"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-solver-core",
  "eneros-solver-model",
@@ -1123,21 +1316,21 @@ dependencies = [
 
 [[package]]
 name = "eneros-solver-model"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-solver-core",
 ]
 
 [[package]]
 name = "eneros-solver-pareto"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-solver-core",
 ]
 
 [[package]]
 name = "eneros-solver-warm"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-solver-core",
  "eneros-solver-milp",
@@ -1145,14 +1338,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-spot-market"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-market-types",
 ]
 
 [[package]]
 name = "eneros-standards"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-storage"
@@ -1163,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-support-bundle"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
@@ -1171,14 +1364,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-telemetry-model"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-upa-model",
 ]
 
 [[package]]
 name = "eneros-telemetry-queue"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "heapless 0.8.0",
  "loom",
@@ -1186,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-tenant"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-time"
@@ -1198,8 +1391,15 @@ dependencies = [
 
 [[package]]
 name = "eneros-tls"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
+ "digest",
+ "embedded-io",
+ "embedded-io-adapters",
+ "embedded-tls",
+ "eneros-crypto",
+ "p256",
+ "rand_core 0.6.4",
  "rcgen",
  "rustls",
  "rustls-pemfile",
@@ -1209,14 +1409,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-tpm"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-tracing"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-logging",
  "heapless 0.8.0",
@@ -1224,7 +1424,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-trust"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-tsdb"
@@ -1241,7 +1441,7 @@ version = "0.81.0"
 
 [[package]]
 name = "eneros-twin-agent"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent-bus-dds",
  "eneros-device-agent",
@@ -1252,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-twin-global"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-solver-core",
  "eneros-twin-global",
@@ -1260,11 +1460,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-upa-model"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 
 [[package]]
 name = "eneros-vpp-scenario"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "eneros-crypto",
  "eneros-federation",
@@ -1291,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-xtask"
-version = "1.0.0"
+version = "1.0.0-rc.0"
 dependencies = [
  "ed25519-dalek",
  "eneros-boot-manager-uefi",
@@ -1326,6 +1526,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "ff"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0b50bfb653653f9ca9095b427bed08ab8d75a137839d9ad64eb11810d5b6393"
+dependencies = [
+ "rand_core 0.6.4",
+ "subtle",
+]
+
+[[package]]
 name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1342,6 +1552,12 @@ name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
+
+[[package]]
+name = "fs_extra"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "generator"
@@ -1366,6 +1582,7 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
+ "zeroize",
 ]
 
 [[package]]
@@ -1403,10 +1620,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghash"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
+dependencies = [
+ "opaque-debug",
+ "polyval",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "group"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0f9ef7462f7c099f518d754361858f86d8a07af53ba9af0fe635bbccb151a63"
+dependencies = [
+ "ff",
+ "rand_core 0.6.4",
+ "subtle",
+]
 
 [[package]]
 name = "hash32"
@@ -1438,6 +1676,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "hkdf"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+dependencies = [
+ "hmac",
+]
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
+
+[[package]]
+name = "inout"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
+dependencies = [
+ "generic-array",
+]
+
+[[package]]
 name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1451,6 +1716,16 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jobserver"
+version = "0.1.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+dependencies = [
+ "getrandom 0.4.3",
+ "libc",
+]
 
 [[package]]
 name = "lazy_static"
@@ -1625,6 +1900,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "opaque-debug"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
+
+[[package]]
+name = "p256"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9863ad85fa8f4460f9c48cb909d38a0d689dba1f6f6988a5e3e0d31071bcd4b"
+dependencies = [
+ "ecdsa",
+ "elliptic-curve",
+ "primeorder",
+ "sha2",
+]
+
+[[package]]
 name = "pem"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1651,6 +1944,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "pkg-config"
+version = "0.3.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
+
+[[package]]
+name = "polyval"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1fe60d06143b2430aa532c94cfe9e29783047f06c0d7fd359a9a51b729fa25"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "opaque-debug",
+ "universal-hash",
+]
+
+[[package]]
+name = "portable-atomic"
+version = "1.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d20d5497ef88037a52ff98267d066e7f11fcc5e99bbfbd58a42336193aacec3"
+
+[[package]]
 name = "powerfmt"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1663,6 +1980,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "primeorder"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "353e1ca18966c16d9deb1c69278edbc5f194139612772bd9537af60ac231e1e6"
+dependencies = [
+ "elliptic-curve",
 ]
 
 [[package]]
@@ -1830,6 +2156,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "rfc6979"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8dd2a808d456c4a54e300a23e9f5a67e122c3024119acbfd73e3bf664491cb2"
+dependencies = [
+ "hmac",
+ "subtle",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1877,6 +2213,7 @@ version = "0.23.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
+ "aws-lc-rs",
  "log",
  "once_cell",
  "ring",
@@ -1910,6 +2247,7 @@ version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
+ "aws-lc-rs",
  "ring",
  "rustls-pki-types",
  "untrusted",
@@ -1944,6 +2282,19 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "sec1"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3e97a565f76233a6003f9f5c54be1d9c5bdfa3eccfb189469f11ec4901c47dc"
+dependencies = [
+ "base16ct",
+ "der",
+ "generic-array",
+ "subtle",
+ "zeroize",
+]
 
 [[package]]
 name = "semver"
@@ -2032,6 +2383,7 @@ version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
+ "digest",
  "rand_core 0.6.4",
 ]
 
@@ -2285,6 +2637,16 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "universal-hash"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc1de2c688dc15305988b563c3854064043356019f97a4b46276fe734c4f07ea"
+dependencies = [
+ "crypto-common",
+ "subtle",
+]
 
 [[package]]
 name = "untrusted"

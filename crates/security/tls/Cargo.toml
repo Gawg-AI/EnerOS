@@ -16,10 +16,26 @@ replaces_reason = "eneros-mtls 是自定义伪 mTLS，非标准 TLS，禁止生�
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-pemfile = "2.2"
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["ring", "std"] }
+# 设备端 TLS（蓝图/20 R1-3）：embedded-tls no_std + 本仓 PKI 证书链验证
+embedded-tls = { version = "0.19", default-features = false, optional = true }
+eneros-crypto = { path = "../crypto", optional = true }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8"], optional = true }
+embedded-io = { version = "0.7", default-features = false, optional = true }
+rand_core = { version = "0.6", default-features = false }
+digest = { version = "0.10", default-features = false }
+
+[features]
+default = []
+# 设备端 TLS：embedded-tls + 本仓 PKI 验证（no_std 可编译；host 测试经
+# dev-dependencies 的 embedded-tls/std 合并 feature）
+embedded = ["dep:embedded-tls", "dep:eneros-crypto", "dep:p256", "dep:embedded-io"]
 
 [dev-dependencies]
 rcgen = "0.13"
 time = "0.3"
+# host 环回测试：embedded-tls std（SystemTime 时钟 + blocking）+ std::net 适配
+embedded-tls = { version = "0.19", default-features = false, features = ["std"] }
+embedded-io-adapters = { version = "0.7", features = ["std"] }
 
 # ring (transitive via rustls/webpki) needs a C compiler on the host. This
 # crate is host-side std only — it is NOT compiled for aarch64-unknown-none.

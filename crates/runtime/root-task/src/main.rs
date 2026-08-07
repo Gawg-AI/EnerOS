@@ -33,6 +33,7 @@ pub mod boot;
 pub mod bundle;
 pub mod frame;
 pub mod service;
+pub mod spawn;
 
 /// boot manager 加载 init bundle 的物理地址（boot-protocol boot_info.rs）。
 /// M0 阶段只读 header 确认存在；M2+ 阶段解析 modules 并 spawn。
@@ -41,11 +42,13 @@ const INIT_BUNDLE_PHYS: u64 = 0x4200_0000;
 
 /// Root task 入口 — 由 seL4 elfloader 在 rootserver 模式下调用。
 ///
-/// M0 行为：
+/// M0+ 行为（蓝图/20 R1-2）：
 /// 1. `eneros_runtime::init()` 初始化串口控制台
 /// 2. 打印 root task banner（证明 Rust→seL4 FFI 真实启动）
-/// 3. 探测 init bundle header（确认 boot manager 传递了 init bundle）
-/// 4. 永久 loop（M2+ 改为 spawn EL0 服务后进入调度循环）
+/// 3. 消费 BootInfo + 解析 init bundle（INIT_BUNDLE_PHYS）
+/// 4. `spawn::plan_spawn` 生成 spawn 计划（root + ≥2 服务，W^X 页表）
+/// 5. `spawn::sel4_spawn_services` 真实 spawn（M2.1 sel4-sys FFI）
+/// 6. 失败即挂起（fail-closed，不进入伪运行态）
 #[cfg(target_os = "none")]
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
@@ -57,24 +60,103 @@ pub extern "C" fn _start() -> ! {
         INIT_BUNDLE_PHYS
     );
 
-    // KRN-002：BootInfo 消费路径已就绪（boot::consume_boot_info：decode + validate，
-    // host 侧 4 个回归测试覆盖合法/坏 magic/截断/未知 flag）。
-    // M2.1（seL4 VSpace FFI）完成物理页映射后，从 INIT_BUNDLE_PHYS 读 BOOT_INFO_SIZE
-    // 字节并调用 consume_boot_info，boot_id/selected_slot/init_bundle 由此进入运行时——
-    // 08 §2「启动链断头路」闭合（验签链尾接物 = root-task 消费）。
-    // EL0 服务装载复用 eneros-elf-loader（W^X），消息帧复用 eneros-ipc-wire（frame::*）。
-    println!("[eneros-root-task] M0 milestone reached — BootInfo consumer ready (KRN-002)");
-    println!("[eneros-root-task] KRN-004: service loop ready (dispatch_frame / config_service_roundtrip)");
+    // R1-2：从物理地址读取 init bundle（header 64 B → total_len → 全量）
+    let raw = read_bundle_from_phys(INIT_BUNDLE_PHYS);
+    let bundle = match raw {
+        Some(raw) => match crate::bundle::InitBundle::parse(&raw) {
+            Ok(b) => b,
+            Err(e) => {
+                println!("[eneros-root-task] init bundle parse FAILED: {:?} — 挂起（fail-closed）", e);
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+        },
+        None => {
+            println!("[eneros-root-task] init bundle missing @ paddr=0x{:x} — 挂起（fail-closed）", INIT_BUNDLE_PHYS);
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
 
-    // KRN-004：真实服务进程主循环。M2.1 前以纯逻辑存在（host 可测）；
-    // M2.1（seL4 Endpoint IPC）后：接收 EL0 帧 → dispatch_frame 分发 →
-    // 心跳/故障监控（svc-fault 崩溃通知经 seL4 fault handler 到达）。
-    // init bundle 解析 + EL0 spawn（W^X 校验后）在 M2.1 接入；本阶段
-    // （v0.199.0）已实现 bundle 解析 + 服务注册表（host 可测），
-    // 真实 Endpoint IPC 装载待 M2.1（sel4-sys FFI，v0.198.0 已提供封装）。
+    // R1-2：spawn 计划（root + ≥2 服务，W^X 页表 + 栈 + IPC EP）
+    const VSPACE_BASE: u64 = 0x4000_0000;
+    const PAGE_SIZE: u64 = 0x1000;
+    const STACK_SIZE: u64 = 0x4000;
+    const EP_BASE: u64 = 100;
+    let plan = match crate::spawn::plan_spawn(&bundle, VSPACE_BASE, PAGE_SIZE, STACK_SIZE, EP_BASE)
+    {
+        Ok(plan) => plan,
+        Err(e) => {
+            println!("[eneros-root-task] spawn plan FAILED: {:?} — 挂起（fail-closed）", e);
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+    println!(
+        "[eneros-root-task] spawn plan: root={} services={} (≥2 验收口径)",
+        plan.root.name,
+        plan.service_count()
+    );
+    for svc in &plan.services {
+        println!(
+            "[eneros-root-task]   spawn {} entry=0x{:x} stack_top=0x{:x} ipc_ep={} pages={}",
+            svc.name,
+            svc.entry,
+            svc.stack_top,
+            svc.ipc_ep,
+            svc.pages.len()
+        );
+    }
+
+    // R1-2：真实 spawn（M2.1 sel4-sys FFI：retype/TCB 寄存器/endpoint mint/resume）
+    match crate::spawn::sel4_spawn_services(&plan) {
+        Ok(()) => {
+            println!("[eneros-root-task] EL0 services spawned — entering service loop");
+        }
+        Err(e) => {
+            println!("[eneros-root-task] spawn FAILED: {:?} — 挂起（fail-closed）", e);
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    // KRN-004：服务调度主循环（dispatch_frame / config_service_roundtrip host 可测）。
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// 从物理地址读取 init bundle（目标环境：seL4 页表直接映射，物理地址可读）。
+///
+/// header 中的 `total_len` 无信任：超过 [`MAX_BUNDLE_LEN`]（64 MiB）即拒绝
+/// （fail-closed，防损坏/恶意 header 触发巨量分配）。
+#[cfg(target_os = "none")]
+const MAX_BUNDLE_LEN: usize = 64 * 1024 * 1024;
+
+/// 从物理地址读取 init bundle。
+#[cfg(target_os = "none")]
+fn read_bundle_from_phys(phys: u64) -> Option<alloc::vec::Vec<u8>> {
+    let header_ptr = phys as *const u8;
+    let mut header = [0u8; 64];
+    unsafe {
+        core::ptr::copy_nonoverlapping(header_ptr, header.as_mut_ptr(), 64);
+    }
+    if &header[..8] != crate::bundle::INIT_BUNDLE_MAGIC {
+        return None;
+    }
+    let total = u32::from_le_bytes(header[12..16].try_into().ok()?) as usize;
+    if total < 64 || total > MAX_BUNDLE_LEN {
+        return None;
+    }
+    let mut buf = alloc::vec![0u8; total];
+    unsafe {
+        core::ptr::copy_nonoverlapping(header_ptr, buf.as_mut_ptr(), total);
+    }
+    Some(buf)
 }
 
 /// Host 侧入口 — 演示 BootInfo 消费链（KRN-002），同时让 workspace 构建可链接。

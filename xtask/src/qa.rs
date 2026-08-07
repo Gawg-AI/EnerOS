@@ -92,8 +92,92 @@ pub(super) fn command_qa(root: &Path, args: &[String]) -> DynResult<()> {
         "trace" => command_trace(root, tail),
         "proof" => command_proof(root, tail),
         "validation" => command_validation(root, tail),
+        "gng-version" => command_gng_version(root, tail),
         other => Err(invalid(format!("unknown qa subcommand '{other}'"))),
     }
+}
+
+// ============================================================
+// GNG-VERSION: Go/No-Go 闸门与 workspace 版本一致性（蓝图/20 R1-1）
+// 规则：任一 G 项非 PASS → workspace 版本必须带 `-rc.` 后缀；
+// 全部 PASS 才允许写发布版（如 1.0.0）。禁止手工绕过——只读文件真实内容。
+// ============================================================
+
+/// 读取 docs/v1.0.0-go-no-go.md，解析 G1..G7 每项闸门状态（真实表格内容）。
+/// 返回 gate -> is_pass；文件缺失/无状态行即 Err（fail-closed）。
+fn parse_go_no_go_statuses(root: &Path) -> DynResult<BTreeMap<String, bool>> {
+    let path = root.join("docs/v1.0.0-go-no-go.md");
+    let text = fs::read_to_string(&path)
+        .map_err(|e| invalid(format!("cannot read {}: {e}", path.display())))?;
+    let mut statuses = BTreeMap::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("| G") {
+            continue;
+        }
+        let cols: Vec<&str> = trimmed.split('|').map(str::trim).collect();
+        // 表格行格式：| G1 | 闸门项 | 判据 | 状态 | 证据 | → cols[1]=闸门号, cols[4]=状态
+        let gate = cols.get(1).copied().unwrap_or("");
+        if gate.len() == 2
+            && gate.starts_with('G')
+            && gate.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
+        {
+            let status = cols.get(4).copied().unwrap_or("");
+            statuses.insert(gate.to_string(), status.contains("PASS"));
+        }
+    }
+    if statuses.is_empty() {
+        return Err(invalid("go-no-go 文档中未解析到任何 G 项状态行（表格结构异常）"));
+    }
+    Ok(statuses)
+}
+
+/// 读取根 Cargo.toml `[workspace.package]` 段的真实 version 字段值。
+fn workspace_version(root: &Path) -> DynResult<String> {
+    let path = root.join("Cargo.toml");
+    let text = fs::read_to_string(&path)
+        .map_err(|e| invalid(format!("cannot read {}: {e}", path.display())))?;
+    let mut in_workspace_package = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_workspace_package = t == "[workspace.package]";
+            continue;
+        }
+        if in_workspace_package {
+            if let Some((key, value)) = t.split_once('=') {
+                if key.trim() == "version" {
+                    let v = value.trim().trim_matches('"').trim_matches('\'');
+                    if !v.is_empty() {
+                        return Ok(v.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Err(invalid("Cargo.toml 中未找到 [workspace.package] version 字段"))
+}
+
+/// 版本闸门一致性校验：全 PASS 才允许 1.0.0；否则必须 -rc.N（fail-closed）。
+fn command_gng_version(root: &Path, _args: &[String]) -> DynResult<()> {
+    let statuses = parse_go_no_go_statuses(root)?;
+    let version = workspace_version(root)?;
+    let non_pass: Vec<&str> = statuses
+        .iter()
+        .filter(|(_, &p)| !p)
+        .map(|(g, _)| g.as_str())
+        .collect();
+    let all_pass = non_pass.is_empty();
+    let is_candidate = version.contains("-rc");
+    if !all_pass && !is_candidate {
+        return Err(invalid(format!(
+            "version-gate-consistency FAIL：Go/No-Go 非 PASS 项 [{}]，但 workspace 版本 '{version}' 未带 -rc. 后缀。\
+             版本由闸门驱动：非全 PASS 一律 -rc.N，只有全 PASS 才允许写 1.0.0",
+            non_pass.join(", ")
+        )));
+    }
+    println!("GNG-VERSION-PASS version={version} all_pass={all_pass} rc_suffix={is_candidate}");
+    Ok(())
 }
 
 /// 计算字节流 sha256（十六进制，机器可重算证据）。

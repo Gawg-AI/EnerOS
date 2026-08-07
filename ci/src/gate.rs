@@ -4,7 +4,9 @@
 //! the [`DefaultGate`] implementation that wraps `cargo` subcommands
 //! (fmt / clippy / deny / test).
 
+use std::fs;
 use std::io;
+use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
@@ -21,11 +23,11 @@ pub struct CheckResult {
     pub message: Option<String>,
 }
 
-/// Aggregated report for all four quality checks.
+/// Aggregated report for all five quality checks.
 #[derive(Debug)]
 pub struct GateReport {
-    /// Results for `[fmt, clippy, audit, test]` in that order.
-    pub results: [CheckResult; 4],
+    /// Results for `[fmt, clippy, audit, test, version-gate]` in that order.
+    pub results: [CheckResult; 5],
     pub overall_pass: bool,
 }
 
@@ -37,6 +39,9 @@ pub trait QualityGate {
     fn run_clippy(&self) -> Result<(), GateError>;
     fn run_audit(&self) -> Result<(), GateError>;
     fn run_tests(&self) -> Result<(), GateError>;
+    /// Go/No-Go 文档与 workspace 版本一致性检查（蓝图/20 R1-1）：
+    /// 任一 G 项非 PASS → 版本必须带 `-rc.` 后缀；全 PASS 才允许发布版。
+    fn run_version_gate(&self) -> Result<(), GateError>;
 }
 
 /// Default gate that shells out to `cargo` subcommands.
@@ -324,12 +329,92 @@ impl QualityGate for DefaultGate {
         test_cr.name = "test";
         test_cr.duration_ms = start.elapsed().as_millis() as u64;
 
-        let results = [fmt_cr, clippy_cr, audit_cr, test_cr];
+        // version-gate-consistency (蓝图/20 R1-1)
+        let start = Instant::now();
+        let mut version_cr = CheckResult::from(self.run_version_gate());
+        version_cr.name = "version-gate";
+        version_cr.duration_ms = start.elapsed().as_millis() as u64;
+
+        let results = [fmt_cr, clippy_cr, audit_cr, test_cr, version_cr];
         let overall_pass = results.iter().all(|r| r.passed);
         GateReport {
             results,
             overall_pass,
         }
+    }
+
+    fn run_version_gate(&self) -> Result<(), GateError> {
+        Self::version_gate_at(Path::new("."))
+    }
+}
+
+impl DefaultGate {
+    /// Go/No-Go 文档与 workspace 版本一致性检查（蓝图/20 R1-1）：
+    /// 任一 G 项非 PASS → 版本必须带 `-rc.` 后缀；全 PASS 才允许发布版。
+    /// 只读文件真实内容，禁止 grep 注释/手工绕过。
+    fn version_gate_at(root: &Path) -> Result<(), GateError> {
+        let gng_path = root.join("docs/v1.0.0-go-no-go.md");
+        let gng_text = fs::read_to_string(&gng_path).map_err(|e| {
+            GateError::VersionGateInconsistent(format!("cannot read {}: {e}", gng_path.display()))
+        })?;
+        let mut any_non_pass = false;
+        let mut parsed = 0usize;
+        for line in gng_text.lines() {
+            let t = line.trim();
+            if !t.starts_with("| G") {
+                continue;
+            }
+            let cols: Vec<&str> = t.split('|').map(str::trim).collect();
+            let gate = cols.get(1).copied().unwrap_or("");
+            if gate.len() == 2 && gate.starts_with('G') {
+                parsed += 1;
+                // 表格行格式：| G1 | 闸门项 | 判据 | 状态 | 证据 | → 状态在 cols[4]
+                match cols.get(4) {
+                    Some(status) if status.contains("PASS") => {}
+                    // 状态列缺失、含 BLOCKED 或其他非 PASS 措辞 → 非 PASS
+                    _ => any_non_pass = true,
+                }
+            }
+        }
+        if parsed == 0 {
+            return Err(GateError::VersionGateInconsistent(
+                "go-no-go 文档未解析到任何 G 项状态行（表格结构异常）".to_string(),
+            ));
+        }
+        let cargo_path = root.join("Cargo.toml");
+        let cargo_text = fs::read_to_string(&cargo_path).map_err(|e| {
+            GateError::VersionGateInconsistent(format!(
+                "cannot read {}: {e}",
+                cargo_path.display()
+            ))
+        })?;
+        let mut version: Option<String> = None;
+        let mut in_workspace_package = false;
+        for line in cargo_text.lines() {
+            let t = line.trim();
+            if t.starts_with('[') {
+                in_workspace_package = t == "[workspace.package]";
+                continue;
+            }
+            if in_workspace_package {
+                if let Some((key, value)) = t.split_once('=') {
+                    if key.trim() == "version" {
+                        version = Some(value.trim().trim_matches('"').to_string());
+                    }
+                }
+            }
+        }
+        let version = version.ok_or_else(|| {
+            GateError::VersionGateInconsistent(
+                "Cargo.toml [workspace.package] version 字段缺失".to_string(),
+            )
+        })?;
+        if any_non_pass && !version.contains("-rc") {
+            return Err(GateError::VersionGateInconsistent(format!(
+                "Go/No-Go 存在非 PASS 项，但 workspace 版本 '{version}' 未带 -rc. 后缀"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -377,7 +462,13 @@ mod tests {
 
     #[test]
     fn test_all_pass() {
-        let results = [pass("fmt"), pass("clippy"), pass("audit"), pass("test")];
+        let results = [
+            pass("fmt"),
+            pass("clippy"),
+            pass("audit"),
+            pass("test"),
+            pass("version-gate"),
+        ];
         let overall_pass = results.iter().all(|r| r.passed);
         assert!(overall_pass);
 
@@ -390,13 +481,25 @@ mod tests {
 
     #[test]
     fn test_one_fail() {
-        let results = [pass("fmt"), fail("clippy"), pass("audit"), pass("test")];
+        let results = [
+            pass("fmt"),
+            fail("clippy"),
+            pass("audit"),
+            pass("test"),
+            pass("version-gate"),
+        ];
         let overall_pass = results.iter().all(|r| r.passed);
         assert!(!overall_pass);
 
         // Any single failure flips the overall result.
-        for i in 0..4 {
-            let mut r = [pass("fmt"), pass("clippy"), pass("audit"), pass("test")];
+        for i in 0..5 {
+            let mut r = [
+                pass("fmt"),
+                pass("clippy"),
+                pass("audit"),
+                pass("test"),
+                pass("version-gate"),
+            ];
             r[i] = fail("x");
             assert!(!r.iter().all(|c| c.passed), "index {} should fail", i);
         }
@@ -434,8 +537,75 @@ mod tests {
         assert!(degraded.message.as_ref().unwrap().contains("fail-closed"));
 
         // A fail-closed audit must flip the overall result.
-        let results = [pass("fmt"), pass("clippy"), degraded, pass("test")];
+        let results = [
+            pass("fmt"),
+            pass("clippy"),
+            degraded,
+            pass("test"),
+            pass("version-gate"),
+        ];
         let overall_pass = results.iter().all(|r| r.passed);
         assert!(!overall_pass);
+    }
+
+    #[test]
+    fn test_version_gate_consistency_matrix() {
+        use std::io::Write;
+        use std::path::PathBuf;
+
+        fn write_scenario(root: &Path, gng: &str, version: &str) {
+            fs::create_dir_all(root.join("docs")).unwrap();
+            let mut f = fs::File::create(root.join("docs/v1.0.0-go-no-go.md")).unwrap();
+            f.write_all(gng.as_bytes()).unwrap();
+            let mut f = fs::File::create(root.join("Cargo.toml")).unwrap();
+            write!(
+                f,
+                "[workspace.package]\nversion = \"{}\"\n",
+                version
+            )
+            .unwrap();
+        }
+
+        fn scenario_root(tag: &str) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!(
+                "eneros-ci-gate-test-{}-{}",
+                tag,
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        // 与 docs/v1.0.0-go-no-go.md 相同的 5 列表格格式：| G1 | 闸门项 | 判据 | 状态 | 证据 |
+        let blocked =
+            "| G1 | 真机浸泡 | 72h | ⛔ **BLOCKED** | e |\n| G2 | 互操作 | 对端 | ✅ **PASS** | e |\n";
+        let all_pass =
+            "| G1 | 合规 | 可重算 | ✅ **PASS** | e |\n| G2 | 工程 | 可复现 | ✅ **PASS（CI 环境）** | e |\n";
+
+        // 非全 PASS + 发布版 1.0.0 → 必须红（一票否决项 1 的核心场景）
+        let root = scenario_root("blocked-100");
+        write_scenario(&root, blocked, "1.0.0");
+        assert!(DefaultGate::version_gate_at(&root).is_err());
+
+        // 非全 PASS + rc 版本 → 绿
+        let root = scenario_root("blocked-rc");
+        write_scenario(&root, blocked, "1.0.0-rc.0");
+        assert!(DefaultGate::version_gate_at(&root).is_ok());
+
+        // 全 PASS + 1.0.0 → 绿（放行条件）
+        let root = scenario_root("pass-100");
+        write_scenario(&root, all_pass, "1.0.0");
+        assert!(DefaultGate::version_gate_at(&root).is_ok());
+
+        // 全 PASS + rc → 绿（允许但非强制）
+        let root = scenario_root("pass-rc");
+        write_scenario(&root, all_pass, "1.0.0-rc.1");
+        assert!(DefaultGate::version_gate_at(&root).is_ok());
+
+        // 文档缺失 → fail-closed
+        let root = scenario_root("missing-doc");
+        fs::create_dir_all(&root).unwrap();
+        assert!(DefaultGate::version_gate_at(&root).is_err());
     }
 }

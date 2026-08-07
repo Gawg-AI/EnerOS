@@ -207,6 +207,9 @@ impl From<StorageError> for FsError {
             StorageError::HardwareFault { detail } => FsError::IoError {
                 detail: alloc::format!("hardware fault: {}", detail),
             },
+            StorageError::Unsupported { detail } => FsError::IoError {
+                detail: alloc::format!("unsupported backend: {}", detail),
+            },
             StorageError::WriteProtected => FsError::ReadOnly,
         }
     }

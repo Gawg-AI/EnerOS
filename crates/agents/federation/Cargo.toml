@@ -7,3 +7,8 @@ license.workspace = true
 
 [dependencies]
 eneros-crypto = { path = "../../security/crypto" }
+
+[dev-dependencies]
+eneros-tls = { path = "../../security/tls" }
+rcgen = "0.13"
+rustls = { version = "0.23", features = ["ring", "std", "tls12"] }

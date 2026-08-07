@@ -198,12 +198,14 @@ impl DistinguishedName {
 
 /// 主体公钥（SubjectPublicKeyInfo 中携带的公钥）。
 ///
-/// 当前仅支持 SM2 公钥编解码；RSA 变体保留枚举占位，编解码时返回
-/// [`PkiError::UnsupportedAlgorithm`]。
+/// 支持 SM2 与 ECDSA P-256（蓝图/20 R1-3：设备端 TLS 证书链验证扩展）；
+/// RSA 变体保留枚举占位，编解码时返回 [`PkiError::UnsupportedAlgorithm`]。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubjectPublicKey {
     /// SM2 公钥（SM2 推荐曲线上的点）
     Sm2(Sm2PublicKey),
+    /// ECDSA P-256 公钥（secp256r1 未压缩点 04||x||y，65 字节）
+    EcdsaP256(Vec<u8>),
     /// RSA 公钥（保留枚举变体，编解码时返回不支持错误）
     Rsa(Vec<u8>),
 }
@@ -212,6 +214,8 @@ impl SubjectPublicKey {
     /// 编码为 SubjectPublicKeyInfo DER。
     ///
     /// SM2: `SEQUENCE { SEQUENCE{OID(1.2.156.10197.1.301), NULL}, BIT STRING(04||x||y) }`
+    ///
+    /// ECDSA P-256: `SEQUENCE { SEQUENCE{OID(1.2.840.10045.2.1), OID(1.2.840.10045.3.1.7)}, BIT STRING(04||x||y) }`
     ///
     /// RSA: 返回 `Err(UnsupportedAlgorithm)`。
     pub fn encode_spki(&self) -> Result<Vec<u8>, PkiError> {
@@ -232,13 +236,33 @@ impl SubjectPublicKey {
                 result.write_sequence(content.as_bytes());
                 Ok(result.into_bytes())
             }
+            SubjectPublicKey::EcdsaP256(point) => {
+                if point.len() != 65 || point[0] != 0x04 {
+                    return Err(PkiError::InvalidDerFormat);
+                }
+                // AlgorithmIdentifier: SEQUENCE { OID(ecPublicKey), OID(secp256r1) }
+                let ec_oid = encode_oid(&[1, 2, 840, 10045, 2, 1]);
+                let p256_oid = encode_oid(&[1, 2, 840, 10045, 3, 1, 7]);
+                let mut alg_inner = DerWriter::new();
+                alg_inner.write_oid(&ec_oid);
+                alg_inner.write_oid(&p256_oid);
+
+                // SPKI content: AlgorithmIdentifier SEQUENCE + BIT STRING
+                let mut content = DerWriter::new();
+                content.write_sequence(alg_inner.as_bytes());
+                content.write_bit_string(point);
+
+                let mut result = DerWriter::new();
+                result.write_sequence(content.as_bytes());
+                Ok(result.into_bytes())
+            }
             SubjectPublicKey::Rsa(_) => Err(PkiError::UnsupportedAlgorithm),
         }
     }
 
     /// 从 DerReader 解析 SubjectPublicKeyInfo（reader 应位于 SEQUENCE tag 处）。
     ///
-    /// 仅支持 SM2 算法 OID；非 SM2 返回 `UnsupportedAlgorithm`。
+    /// 支持 SM2 与 ECDSA P-256（secp256r1）；其他算法返回 `UnsupportedAlgorithm`。
     pub fn decode_spki(reader: &mut DerReader) -> Result<Self, PkiError> {
         let mut spki = reader.read_sequence().map_err(asn1_err)?;
 
@@ -247,6 +271,20 @@ impl SubjectPublicKey {
         let oid_bytes = alg.read_oid().map_err(asn1_err)?;
 
         let sm2_oid = encode_oid(&[1, 2, 156, 10197, 1, 301]);
+        let ec_oid = encode_oid(&[1, 2, 840, 10045, 2, 1]);
+        if oid_bytes == ec_oid {
+            // ECDSA：算法参数必须为 secp256r1（1.2.840.10045.3.1.7）
+            let p256_oid = encode_oid(&[1, 2, 840, 10045, 3, 1, 7]);
+            let param_oid = alg.read_oid().map_err(asn1_err)?;
+            if param_oid != p256_oid {
+                return Err(PkiError::UnsupportedAlgorithm);
+            }
+            let key_bytes = spki.read_bit_string().map_err(asn1_err)?;
+            if key_bytes.len() != 65 || key_bytes[0] != 0x04 {
+                return Err(PkiError::InvalidDerFormat);
+            }
+            return Ok(SubjectPublicKey::EcdsaP256(key_bytes.to_vec()));
+        }
         if oid_bytes != sm2_oid {
             return Err(PkiError::UnsupportedAlgorithm);
         }

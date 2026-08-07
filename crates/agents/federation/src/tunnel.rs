@@ -318,8 +318,7 @@ pub struct VerticalEncryptTunnel {
     /// 本端 SPI（发送帧携带）
     pub local_spi: u32,
     /// 对端 SPI（接收帧匹配）
-    pub remote_spi: u32,
-    /// 派生密钥对
+    pub remote_spi: u32,    /// 派生密钥对
     pub keys: TunnelKeys,
     /// 发送序号（每帧递增，首帧为 1）
     pub send_seq: u64,
@@ -1435,5 +1434,314 @@ mod tests {
             Err(EncryptError::DeviceError)
         );
         assert_eq!(mgr.send_count, 3); // 未增加
+    }
+}
+
+// ============================================================================
+// TLS 隧道传输（蓝图/20 R1-3）：标准 TLS 1.3 mTLS 双向通道
+// ============================================================================
+
+/// TLS 隧道传输错误。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TlsTunnelError {
+    /// 底层传输错误
+    Io,
+    /// TLS 握手未完成或失败
+    Handshake,
+    /// 证书链验证失败（默认必验，禁 danger bypass）
+    CertificateRejected,
+    /// 对端身份（CN）不匹配
+    PeerIdentityMismatch,
+    /// 缓冲区不足
+    BufferTooSmall,
+}
+
+/// mTLS 双向认证策略（默认 `Mandatory`——禁未认证通道）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MtlsPolicy {
+    /// 双向证书认证（默认，强制：本端证书 + 对端证书链验证）
+    Mandatory,
+    /// 仅服务器认证（客户端证书可选）——仅用于明确降级的兼容场景
+    ServerOnly,
+}
+
+/// 标准 TLS 1.3 隧道传输（蓝图/20 R1-3）。
+///
+/// no_std 约束：TLS 具体实现由上层闭包注入（host：`eneros-tls` rustls；
+/// 设备端：`embedded.rs` 的 `PkiProvider` + smoltcp），本类型只承担
+/// mTLS 语义与安全约束：
+/// - **默认验证书链**：`CertificateRejected` 无绕过路径（禁 danger bypass）；
+/// - **双向认证**：`MtlsPolicy::Mandatory`（默认）；
+/// - **对端身份校验**：注入层在证书验证通过后调用 [`Self::verify_peer_identity`]
+///   确认对端 CN 与预期一致；
+/// - 未握手完成禁止发送（`Handshake` 错误）。
+pub struct TlsTunnelTransport<S, R> {
+    policy: MtlsPolicy,
+    expected_peer_cn: Option<alloc::string::String>,
+    established: bool,
+    xmit_fn: S,
+    poll_fn: R,
+}
+
+impl<S, R> TlsTunnelTransport<S, R>
+where
+    S: FnMut(&[u8]) -> Result<(), TlsTunnelError>,
+    R: FnMut(&mut [u8]) -> Result<usize, TlsTunnelError>,
+{
+    /// 创建 TLS 隧道传输（默认 `Mandatory` mTLS、未建立）。
+    pub fn new(xmit_fn: S, poll_fn: R) -> Self {
+        Self {
+            policy: MtlsPolicy::Mandatory,
+            expected_peer_cn: None,
+            established: false,
+            xmit_fn,
+            poll_fn,
+        }
+    }
+
+    /// 设置认证策略（仅兼容降级场景使用，生产必须保持 `Mandatory`）。
+    pub fn with_policy(mut self, policy: MtlsPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// 设置预期对端 CN（证书验证通过后由注入层调用
+    /// [`Self::verify_peer_identity`] 比对）。
+    pub fn set_expected_peer_cn(&mut self, cn: &str) {
+        self.expected_peer_cn = Some(alloc::string::String::from(cn));
+    }
+
+    /// 对端身份确认：注入层在 TLS 证书链验证通过后调用，比对证书 CN。
+    ///
+    /// 设置了预期 CN 但传入不匹配 → `PeerIdentityMismatch`（fail-closed），
+    /// 且连接保持未建立（`established=false`）——身份校验失败后 send/recv
+    /// 一律拒绝（review 修复：身份校验与发送门控联动）。
+    pub fn verify_peer_identity(&mut self, actual_cn: &str) -> Result<(), TlsTunnelError> {
+        if let Some(expected) = &self.expected_peer_cn {
+            if expected != actual_cn {
+                self.established = false;
+                return Err(TlsTunnelError::PeerIdentityMismatch);
+            }
+        }
+        Ok(())
+    }
+
+    /// 握手成功标记：注入层在 TLS 握手（含证书链验证）完成后调用。
+    pub fn mark_established(&mut self) {
+        self.established = true;
+    }
+
+    /// 发送帧（未建立连接禁止发送；发送方必须已通过身份校验）。
+    pub fn send(&mut self, frame: &[u8]) -> Result<(), TlsTunnelError> {
+        if !self.established {
+            return Err(TlsTunnelError::Handshake);
+        }
+        (self.xmit_fn)(frame)
+    }
+
+    /// 接收帧（未建立连接禁止接收）。
+    pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize, TlsTunnelError> {
+        if !self.established {
+            return Err(TlsTunnelError::Handshake);
+        }
+        (self.poll_fn)(buf)
+    }
+
+    /// 认证策略（可观测）。
+    pub fn policy(&self) -> MtlsPolicy {
+        self.policy
+    }
+
+    /// 是否已建立。
+    pub fn is_established(&self) -> bool {
+        self.established
+    }
+}
+
+impl<S, R> VerticalEncryptDevice for TlsTunnelTransport<S, R>
+where
+    S: FnMut(&[u8]) -> Result<(), TlsTunnelError>,
+    R: FnMut(&mut [u8]) -> Result<usize, TlsTunnelError>,
+{
+    fn xmit(&mut self, data: &[u8]) -> Result<(), EncryptError> {
+        self.send(data)
+            .map_err(|_| EncryptError::DeviceError)
+    }
+
+    fn poll(&mut self) -> Option<Vec<u8>> {
+        // TLS 隧道无独立轮询队列；recv 由上层在就绪事件后调用
+        None
+    }
+}
+
+
+// ============================================================================
+// TlsTunnelTransport host 测试：rustls mTLS 双端 + std::io::duplex 内存管道
+// （确定性驱动，无 TCP 时序；蓝图/20 R1-3 验收）
+// ============================================================================
+#[cfg(test)]
+mod tls_transport_tests {
+    use super::*;
+    use eneros_tls::{TlsClientConfig, TlsServerConfig};
+    use rcgen::generate_simple_self_signed;
+    use std::cell::RefCell;
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+
+    /// rustls ring provider 安装（进程级，幂等）。
+    fn install_ring() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    fn test_pki() -> (Arc<rcgen::CertifiedKey>, Arc<rcgen::CertifiedKey>) {
+        install_ring();
+        let server = generate_simple_self_signed(vec!["eneros-server".into()]).unwrap();
+        let client = generate_simple_self_signed(vec!["eneros-client".into()]).unwrap();
+        (Arc::new(server), Arc::new(client))
+    }
+
+    fn pem_of(cert: &rcgen::CertifiedKey, include_key: bool) -> Vec<u8> {
+        let mut out = cert.cert.pem().into_bytes();
+        if include_key {
+            out.extend_from_slice(cert.key_pair.serialize_pem().as_bytes());
+        }
+        out
+    }
+
+    fn server_stream(
+        server_cert: &rcgen::CertifiedKey,
+        client_cert: &rcgen::CertifiedKey,
+        io: std::os::unix::net::UnixStream,
+    ) -> rustls::StreamOwned<rustls::ServerConnection, std::os::unix::net::UnixStream> {
+        let cfg = TlsServerConfig::new_mtls(
+            &pem_of(server_cert, true),
+            &pem_of(server_cert, true),
+            &client_cert.cert.pem().into_bytes(),
+        )
+        .unwrap();
+        let conn = rustls::ServerConnection::new(cfg.rustls_config().clone()).unwrap();
+        rustls::StreamOwned::new(conn, io)
+    }
+
+    fn client_stream(
+        server_cert: &rcgen::CertifiedKey,
+        client_cert: &rcgen::CertifiedKey,
+        io: std::os::unix::net::UnixStream,
+    ) -> rustls::StreamOwned<rustls::ClientConnection, std::os::unix::net::UnixStream> {
+        let cfg = TlsClientConfig::new_mtls(
+            &server_cert.cert.pem().into_bytes(),
+            &pem_of(client_cert, true),
+            &pem_of(client_cert, true),
+        )
+        .unwrap();
+        let name = rustls::pki_types::ServerName::try_from("eneros-server").unwrap();
+        let conn = rustls::ClientConnection::new(cfg.rustls_config().clone(), name).unwrap();
+        rustls::StreamOwned::new(conn, io)
+    }
+
+    #[test]
+    fn test_tls_tunnel_transport_mtls_roundtrip() {
+        let (server_cert, client_cert) = test_pki();
+        let (server_io, client_io) = std::os::unix::net::UnixStream::pair().unwrap();
+
+        let server_cert_s = server_cert.clone();
+        let client_cert_s = client_cert.clone();
+        let server_cert = server_cert_s.clone();
+        let client_cert = client_cert_s.clone();
+        let server_thread = std::thread::spawn(move || {
+            let stream = RefCell::new(server_stream(&server_cert_s, &client_cert_s, server_io));
+            let mut tunnel = TlsTunnelTransport::new(
+                |data: &[u8]| -> Result<(), TlsTunnelError> {
+                    stream
+                        .borrow_mut()
+                        .write_all(data)
+                        .map_err(|_| TlsTunnelError::Io)
+                },
+                |buf: &mut [u8]| -> Result<usize, TlsTunnelError> {
+                    stream.borrow_mut().read(buf).map_err(|_| TlsTunnelError::Io)
+                },
+            );
+            tunnel.mark_established();
+            tunnel.verify_peer_identity("eneros-client").unwrap();
+            let mut buf = [0u8; 64];
+            let n = tunnel.recv(&mut buf).expect("服务器 recv ping");
+            assert_eq!(&buf[..n], b"ping");
+            tunnel.send(b"pong").expect("服务器 send pong");
+            n
+        });
+
+        let stream = RefCell::new(client_stream(&server_cert, &client_cert, client_io));
+        let mut tunnel = TlsTunnelTransport::new(
+            |data: &[u8]| -> Result<(), TlsTunnelError> {
+                stream
+                    .borrow_mut()
+                    .write_all(data)
+                    .map_err(|_| TlsTunnelError::Io)
+            },
+            |buf: &mut [u8]| -> Result<usize, TlsTunnelError> {
+                stream.borrow_mut().read(buf).map_err(|_| TlsTunnelError::Io)
+            },
+        );
+        // 未建立禁止发送（fail-closed）
+        assert_eq!(tunnel.send(b"x"), Err(TlsTunnelError::Handshake));
+        tunnel.mark_established();
+        tunnel.verify_peer_identity("eneros-server").unwrap();
+        tunnel.send(b"ping").expect("客户端 send ping");
+        let mut buf = [0u8; 64];
+        let n = tunnel.recv(&mut buf).expect("客户端 recv pong");
+        assert_eq!(&buf[..n], b"pong");
+        assert_eq!(server_thread.join().unwrap(), 4);
+    }
+
+    #[test]
+    fn test_tls_tunnel_transport_peer_identity_fail_closed() {
+        let (server_cert, client_cert) = test_pki();
+        let (server_io, client_io) = std::os::unix::net::UnixStream::pair().unwrap();
+        let server_cert_s = server_cert.clone();
+        let client_cert_s = client_cert.clone();
+        let server_cert = server_cert_s.clone();
+        let client_cert = client_cert_s.clone();
+        let server_thread = std::thread::spawn(move || {
+            let _stream = server_stream(&server_cert_s, &client_cert_s, server_io);
+            // 服务器保持连接存活，等待客户端（客户端身份校验失败后关闭）
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+
+        let stream = RefCell::new(client_stream(&server_cert, &client_cert, client_io));
+        let mut tunnel = TlsTunnelTransport::new(
+            |data: &[u8]| -> Result<(), TlsTunnelError> {
+                stream
+                    .borrow_mut()
+                    .write_all(data)
+                    .map_err(|_| TlsTunnelError::Io)
+            },
+            |buf: &mut [u8]| -> Result<usize, TlsTunnelError> {
+                stream.borrow_mut().read(buf).map_err(|_| TlsTunnelError::Io)
+            },
+        );
+        // 故意设错预期 CN：握手/证书均合法，但身份校验必须 fail-closed
+        tunnel.set_expected_peer_cn("eneros-wrong-host");
+        tunnel.mark_established();
+        assert_eq!(
+            tunnel.verify_peer_identity("eneros-server"),
+            Err(TlsTunnelError::PeerIdentityMismatch),
+            "对端 CN 与预期不符必须 fail-closed"
+        );
+        // 身份校验失败后连接回到未建立：send/recv 一律拒绝（review 修复）
+        assert_eq!(tunnel.send(b"x"), Err(TlsTunnelError::Handshake));
+        assert_eq!(tunnel.recv(&mut [0u8; 4]), Err(TlsTunnelError::Handshake));
+        assert!(!tunnel.is_established(), "身份校验失败后必须保持未建立");
+        let _ = server_thread.join();
+    }
+
+    #[test]
+    fn test_tls_tunnel_transport_policy_default_mandatory() {
+        let mut tunnel = TlsTunnelTransport::new(
+            |_: &[u8]| -> Result<(), TlsTunnelError> { Ok(()) },
+            |_: &mut [u8]| -> Result<usize, TlsTunnelError> { Ok(0) },
+        );
+        assert_eq!(tunnel.policy(), MtlsPolicy::Mandatory, "默认必须强制双向认证");
+        assert!(!tunnel.is_established());
+        assert_eq!(tunnel.recv(&mut [0u8; 4]), Err(TlsTunnelError::Handshake));
     }
 }

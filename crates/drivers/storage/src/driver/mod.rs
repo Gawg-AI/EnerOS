@@ -24,7 +24,9 @@ pub mod virtio_blk;
 pub use dma::DmaBuffer;
 #[cfg(test)]
 pub use dma::MockDmaTransfer;
-pub use emmc::{EmmcCmdType, EmmcDriver, RamEmmcMmio};
+pub use emmc::{EmmcCmdType, EmmcDriver};
+#[cfg(any(test, feature = "emmc-ram-sim"))]
+pub use emmc::RamEmmcMmio;
 pub use factory::create_block_device;
 pub use mock::MockBlockDevice;
 pub use nvme::NvmeDriver;

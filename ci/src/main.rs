@@ -1,7 +1,7 @@
 //! EnerOS Quality Gate CLI (v0.2.0)
 //!
-//! Runs the four quality checks (fmt, clippy, audit, test) and prints a
-//! report. Exits with code 0 on PASS, 1 on FAIL.
+//! Runs the five quality checks (fmt, clippy, audit, test, version-gate) and
+//! prints a report. Exits with code 0 on PASS, 1 on FAIL.
 
 mod error;
 mod gate;
@@ -18,8 +18,8 @@ fn main() -> std::process::ExitCode {
     for r in &report.results {
         let mark = if r.passed { "✓" } else { "✗" };
         match &r.message {
-            Some(msg) => println!("[{}] {:<8} {}ms  {}", mark, r.name, r.duration_ms, msg),
-            None => println!("[{}] {:<8} {}ms", mark, r.name, r.duration_ms),
+            Some(msg) => println!("[{}] {:<12} {}ms  {}", mark, r.name, r.duration_ms, msg),
+            None => println!("[{}] {:<12} {}ms", mark, r.name, r.duration_ms),
         }
     }
 

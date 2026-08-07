@@ -9,8 +9,9 @@
 //! 平台现状：
 //! - `PhytiumTrng` / `KunpengTrng`：真实硬件 TRNG 寄存器接口——**BLOCKED（缺硬件）**，
 //!   提供接口与地址占位，调用返回 `EntropyUnavailable`（不伪造读数）；
-//! - QEMU virtio-rng：无 PCI 栈（M 期），QEMU 冒烟用 `FixedQemuEntropy`
-//!   （显式 feature `qemu-entropy` 门控，禁止进入产品 release）。
+//! - QEMU virtio-rng：`qemu-entropy` feature 下选择 [`QemuVirtioRng`] 真实
+//!   virtqueue 读熵（蓝图/20 R1-4：删除固定种子顶包，收编为
+//!   `#[cfg(test)]` 的 `TestFixedEntropy` 测试夹具）。
 //!
 //! # release 可达性
 //! `CsRng::new()`（固定种子）在 release 构建下不存在
@@ -89,17 +90,17 @@ impl EntropySource for QemuVirtioRng {
     }
 }
 
-/// QEMU 冒烟固定熵（**显式 feature 门控，禁止产品 release**）。
+/// 测试专用固定熵（蓝图/20 R1-4：原固定 QEMU 熵收编为测试替身）。
 ///
-/// 仅在 `qemu-entropy` feature 下编译——用于 QEMU 启动冒烟验证
-/// 「平台熵 → from_seed」闭环路径；产品 release 编译不含本类型。
-#[cfg(feature = "qemu-entropy")]
-pub struct FixedQemuEntropy;
+/// 仅 `cfg(test)`：用于验证「熵 → from_seed」闭环的测试夹具，
+/// 生产/仿真构建一律不含本类型（生产用 [`QemuVirtioRng`] 真实读熵）。
+#[cfg(test)]
+pub struct TestFixedEntropy;
 
-#[cfg(feature = "qemu-entropy")]
-impl EntropySource for FixedQemuEntropy {
+#[cfg(test)]
+impl EntropySource for TestFixedEntropy {
     fn fill_entropy(&mut self, out: &mut [u8; 32]) -> Result<(), EntropyError> {
-        // 固定但非全零：QEMU 冒烟专用（标记字节 0x51 0x4d 0x55 = "QMU"）
+        // 固定但非全零：测试夹具专用（标记字节 0x51 0x4d 0x55 = "QMU"）
         out[0] = 0x51;
         out[1] = 0x4d;
         out[2] = 0x55;
@@ -110,15 +111,16 @@ impl EntropySource for FixedQemuEntropy {
     }
 }
 
-/// 按编译配置选择平台熵源（CRY-002 工厂，fail-closed）。
+/// 按编译配置选择平台熵源（CRY-002 工厂，fail-closed，蓝图/20 R1-4 真实化）。
 ///
-/// 当前实现：无硬件/无 PCI 栈 → 返回 `EntropyUnavailable`；QEMU 冒烟
-/// 在 `qemu-entropy` feature 下选择 `FixedQemuEntropy`。硬件 TRNG
-/// 接入后在此按 target/feature 分派。
+/// - `qemu-entropy` feature：选择 [`QemuVirtioRng`]——真实 virtqueue 读熵
+///   （virtio-rng 设备），不再是固定种子顶包；
+/// - 无 feature/无硬件（BSP-001 BLOCKED）：返回 [`EntropyError::Unavailable`]，
+///   绝不静默回退固定种子（fail-closed）。
 pub fn platform_entropy_source() -> Result<Box<dyn EntropySource>, EntropyError> {
     #[cfg(feature = "qemu-entropy")]
     {
-        return Ok(Box::new(FixedQemuEntropy));
+        return Ok(Box::new(QemuVirtioRng::new(0)));
     }
     #[cfg(not(feature = "qemu-entropy"))]
     {
@@ -152,17 +154,34 @@ mod tests {
         }
         #[cfg(feature = "qemu-entropy")]
         {
-            // QEMU 门控源：熵注入闭环可达，且输出非全零
-            let mut rng = csrng_from_platform().expect("qemu entropy available");
-            let mut out = [0u8; 32];
-            rng.fill_bytes(&mut out);
-            assert_ne!(out, [0u8; 32], "QEMU 熵源输出非全零");
-            // 同一门控源可复现（QEMU 冒烟确定性）
-            let mut rng2 = csrng_from_platform().expect("again");
-            let mut out2 = [0u8; 32];
-            rng2.fill_bytes(&mut out2);
-            assert_eq!(out, out2, "QEMU 固定熵源输出可复现");
+            // R1-4：qemu-entropy 必须选择真实 virtio-rng 源（构造成功）；
+            // host 测试环境无 virtio 设备，不得调用 fill_entropy（会访问
+            // MMIO）——真实读取由 virtio_rng 模块的 SimMmio 仿真测试覆盖。
+            let src = platform_entropy_source().expect("qemu-entropy selects QemuVirtioRng");
+            let _ = src;
         }
+    }
+
+    #[test]
+    fn test_cry002_test_fixed_entropy_closed_loop() {
+        // R1-4：测试夹具固定熵 → from_seed 闭环（替代原固定 QEMU 熵冒烟语义；
+        // 测试夹具不进入生产/仿真构建）
+        let mut src = TestFixedEntropy;
+        let mut seed = [0u8; 32];
+        src.fill_entropy(&mut seed).expect("test fixture entropy ok");
+        assert_ne!(seed, [0u8; 32], "夹具熵非全零");
+        let mut rng = CsRng::from_seed(&seed);
+        let mut out = [0u8; 32];
+        rng.fill_bytes(&mut out);
+        assert_ne!(out, [0u8; 32]);
+        // 同种子可复现（DRBG 确定性）
+        let mut src2 = TestFixedEntropy;
+        let mut seed2 = [0u8; 32];
+        src2.fill_entropy(&mut seed2).unwrap();
+        let mut rng2 = CsRng::from_seed(&seed2);
+        let mut out2 = [0u8; 32];
+        rng2.fill_bytes(&mut out2);
+        assert_eq!(out, out2, "同种子输出可复现");
     }
 
     #[test]

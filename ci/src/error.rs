@@ -16,6 +16,8 @@ pub enum GateError {
     VulnFound(String),
     /// `cargo test` reported one or more failing tests.
     TestFailed,
+    /// Go/No-Go 文档与 workspace 版本不一致（蓝图/20 R1-1）。
+    VersionGateInconsistent(String),
     /// A command could not be executed (e.g. `cargo` not in PATH).
     IoError(String),
 }
@@ -29,6 +31,9 @@ impl fmt::Display for GateError {
             GateError::ClippyWarning(msg) => write!(f, "ClippyWarning: {}", msg),
             GateError::VulnFound(msg) => write!(f, "VulnFound: {}", msg),
             GateError::TestFailed => write!(f, "TestFailed: one or more unit tests failed"),
+            GateError::VersionGateInconsistent(msg) => {
+                write!(f, "VersionGateInconsistent: {}", msg)
+            }
             GateError::IoError(msg) => write!(f, "IoError: {}", msg),
         }
     }

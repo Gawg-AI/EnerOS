@@ -16,6 +16,13 @@ isolation_reason = "v0.234.0: SM2 deterministic KAT in place; awaiting independe
 
 [dependencies]
 # No external dependencies — pure Rust implementation
+# ECDSA P-256 验签（蓝图/20 R1-3：设备端 TLS 证书链验证扩展）；
+# no_std 默认，禁用默认 feature（不引入 rand/std）。
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+
+[dev-dependencies]
+# 测试专用（ECDSA 测试签名需要 rng）
+rand_core = { version = "0.6", features = ["std"] }
 
 [features]
 qemu-entropy = []

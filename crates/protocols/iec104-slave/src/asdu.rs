@@ -272,14 +272,14 @@ impl Sco {
         }
     }
 
-    /// 编码为 1 字节（v0.211.0 P0-10 按 IEC 60870-5-101 重编码：
-    /// bit0=SCS、bits1-5=QU（5 位）、bit7=S/E）。
+    /// 编码为 1 字节（蓝图/20 R1-6 按 IEC 60870-5-101 QOC 修正）：
+    /// bit0=SCS、bits2-6=QU（5 位，bit1 保留恒 0）、bit7=S/E。
     pub fn encode(&self) -> u8 {
         let mut b = 0u8;
         if self.value {
             b |= 0x01;
         }
-        b |= (self.qu & 0x1F) << 1;
+        b |= (self.qu & 0x1F) << 2;
         if self.select {
             b |= 0x80;
         }
@@ -290,7 +290,7 @@ impl Sco {
     pub fn decode(b: u8) -> Self {
         Self {
             value: b & 0x01 != 0,
-            qu: (b >> 1) & 0x1F,
+            qu: (b >> 2) & 0x1F,
             select: b & 0x80 != 0,
         }
     }
@@ -1005,8 +1005,8 @@ mod tests {
             select: true,
         };
         let encoded = sco.encode();
-        // v0.211.0（P0-10）IEC 60870-5-101：QU 5 位（bits1-5）、S/E=bit7。
-        assert_eq!(encoded, 0x01 | (2 << 1) | 0x80);
+        // 蓝图/20 R1-6（IEC 60870-5-101 QOC）：QU 5 位（bits2-6）、S/E=bit7。
+        assert_eq!(encoded, 0x01 | (2 << 2) | 0x80);
         let decoded = Sco::decode(encoded);
         assert_eq!(decoded, sco);
         // 标准 select 帧 0x81：select=true、value=true、qu=0。
@@ -1014,6 +1014,72 @@ mod tests {
         assert!(std_select.select, "标准 select 帧 0x81 必须解出 select=true");
         assert!(std_select.value);
         assert_eq!(std_select.qu, 0);
+    }
+
+    /// 权威测试向量（蓝图/20 R1-6，可对照 IEC 60870-5-101 标准条文）：
+    /// - select + ON + QU=0 → 0x81（bit0=SCS、bit7=S/E）
+    /// - execute + ON + QU=1 → 0x05（bit0=SCS、bit2=QU bit0；旧编码给 0x03 即不互通）
+    /// - QU=31 → bits2-6 全 1（0x7C 布局）
+    #[test]
+    fn test_sco_authoritative_vectors() {
+        // 向量 1：select + ON + QU=0 → 0x81
+        let sco = Sco {
+            value: true,
+            qu: 0,
+            select: true,
+        };
+        assert_eq!(sco.encode(), 0x81, "select+ON+QU=0 必须编码为 0x81");
+        assert_eq!(Sco::decode(0x81), sco);
+
+        // 向量 2：execute + ON + QU=1 → 0x05（bit1 必须恒 0）
+        let sco = Sco {
+            value: true,
+            qu: 1,
+            select: false,
+        };
+        assert_eq!(sco.encode(), 0x05, "execute+ON+QU=1 必须编码为 0x05");
+        assert_eq!(Sco::decode(0x05), sco);
+        assert_eq!(0x05 & 0x02, 0, "bit1 是保留位，必须恒 0");
+
+        // 向量 3：QU=31 → bits2-6 全 1（0x7C 布局）
+        let sco = Sco {
+            value: true,
+            qu: 31,
+            select: false,
+        };
+        assert_eq!(sco.encode(), 0x7D, "ON+QU=31 必须编码为 0x7D");
+        assert_eq!(Sco::decode(0x7D), sco);
+        let sco = Sco {
+            value: false,
+            qu: 31,
+            select: false,
+        };
+        assert_eq!(sco.encode(), 0x7C, "OFF+QU=31 必须编码为 0x7C");
+        assert_eq!(Sco::decode(0x7C), sco);
+        // 高位布局断言：QU 占 bits2-6，bit1 保留
+        assert_eq!(Sco::decode(0x7D).qu, 31);
+        assert_eq!(Sco::decode(0x7D).value, true);
+        assert_eq!(Sco::decode(0x7D).select, false);
+    }
+
+    /// 回归证明（蓝图/20 R1-6 硬性约束）：旧编码 qu<<1 给出的 0x03 必须
+    /// 被新解码判为 QU=0（即旧行为在标准语义下错误，防同源自证）。
+    #[test]
+    fn test_sco_old_encoding_is_rejected_by_standard_layout() {
+        // 旧编码 execute+ON+QU=1 → 0x03；标准布局解码 0x03 → QU=0、value=ON、
+        // 丢失限定符 → 对端将按 QU=0 执行，行为不可区分（即互操作破坏点）。
+        let legacy = Sco {
+            value: true,
+            qu: 1,
+            select: false,
+        };
+        let legacy_byte = 0x01 | (1 << 1); // 旧实现产物
+        assert_ne!(
+            legacy.encode(),
+            legacy_byte,
+            "新编码不得再产出旧布局字节"
+        );
+        assert_eq!(Sco::decode(legacy_byte).qu, 0, "0x03 在标准布局下 QU=0");
     }
 
     #[test]
@@ -1034,6 +1100,78 @@ mod tests {
         let encoded = dco.encode();
         let decoded = Dco::decode(encoded);
         assert_eq!(decoded, dco);
+    }
+
+    /// DCO 权威向量（蓝图/20 R1-6 同步核对，IEC 60870-5-101 标准布局）：
+    /// bits0-1=DCS、bits2-6=QU、bit7=S/E。
+    #[test]
+    fn test_dco_authoritative_vectors() {
+        // select + ON + QU=0 → 0x82
+        let dco = Dco {
+            value: DoublePointValue::On,
+            qu: 0,
+            select: true,
+        };
+        assert_eq!(dco.encode(), 0x82, "select+ON+QU=0 必须编码为 0x82");
+        assert_eq!(Dco::decode(0x82), dco);
+        // execute + ON + QU=1 → 0x06
+        let dco = Dco {
+            value: DoublePointValue::On,
+            qu: 1,
+            select: false,
+        };
+        assert_eq!(dco.encode(), 0x06, "execute+ON+QU=1 必须编码为 0x06");
+        assert_eq!(Dco::decode(0x06), dco);
+        // QU=31 → bits2-6 全 1（Off=1 → DCS bits0-1=01）
+        let dco = Dco {
+            value: DoublePointValue::Off,
+            qu: 31,
+            select: true,
+        };
+        assert_eq!(dco.encode(), 0xFD, "OFF+QU=31+select 必须编码为 0xFD");
+        assert_eq!(Dco::decode(0xFD), dco);
+    }
+
+    /// 互操作链路测试（蓝图/20 R1-6 第 3 项）：lib60870 客户端 SBO 帧字节
+    /// （C_SC_NA TI=45，COT=6 激活，QU≠0）→ 本栈 ASDU 完整解析路径必须解出
+    /// select==true && qu 一致。字节为外部对端产物（非本栈自编码，防同源）。
+    #[test]
+    fn test_sbo_standard_frames_qu_nonzero_full_path() {
+        // lib60870 风格 select 帧：TI=45, VSQ=1, COT=6(ACT), CA=1, IOA=100, SCO=0x85
+        // SCO 0x85 = bit7 S/E + bit0 SCS + bit2 QU bit0 → select=true, value=true, qu=1
+        let select_frame: &[u8] = &[45, 1, 6, 0, 1, 0, 100, 0, 0, 0x85];
+        let asdu = Asdu::decode(select_frame).expect("lib60870 select 帧必须可解析");
+        assert_eq!(asdu.type_id, TypeId::SingleCommand);
+        assert_eq!(asdu.ioas.len(), 1);
+        match &asdu.ioas[0].value {
+            IoValue::SingleCommand(sco) => {
+                assert!(sco.select, "外部 select 帧必须解出 select=true");
+                assert!(sco.value);
+                assert_eq!(sco.qu, 1, "外部 QU≠0 必须一致解析");
+            }
+            other => panic!("期望 SingleCommand，实际 {other:?}"),
+        }
+
+        // lib60870 风格 execute 帧：SCO=0x05 → execute, value=true, qu=1
+        let execute_frame: &[u8] = &[45, 1, 6, 0, 1, 0, 100, 0, 0, 0x05];
+        let asdu = Asdu::decode(execute_frame).expect("lib60870 execute 帧必须可解析");
+        match &asdu.ioas[0].value {
+            IoValue::SingleCommand(sco) => {
+                assert!(!sco.select, "execute 帧必须解出 select=false");
+                assert!(sco.value);
+                assert_eq!(sco.qu, 1);
+            }
+            other => panic!("期望 SingleCommand，实际 {other:?}"),
+        }
+
+        // 旧编码产物 0x03（execute+ON+QU=1）在标准布局下 QU=0：
+        // 本栈不得把 0x03 误判为 QU=1（互操作破坏点回归证明）
+        let legacy_frame: &[u8] = &[45, 1, 6, 0, 1, 0, 100, 0, 0, 0x03];
+        let asdu = Asdu::decode(legacy_frame).expect("旧布局字节可解析");
+        match &asdu.ioas[0].value {
+            IoValue::SingleCommand(sco) => assert_eq!(sco.qu, 0, "0x03 在标准布局下 QU=0"),
+            other => panic!("期望 SingleCommand，实际 {other:?}"),
+        }
     }
 
     // ===== TimeTag 测试 =====

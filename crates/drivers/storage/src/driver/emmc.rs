@@ -11,6 +11,7 @@
 //! words are encoded via [`encode_cmd`] (17-bit block argument, matching the
 //! controller's address width).
 
+#[cfg(any(test, feature = "emmc-ram-sim"))]
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
@@ -176,6 +177,11 @@ pub fn decode_cmd(cmd_word: u32) -> Option<EmmcCmdType> {
 /// word to [`EMMC_CMDTM`] executes synchronously against the backing store,
 /// sets RESP0/STATUS/INT_STATUS, and moves data through the internal data
 /// port. This lets the full register-level driver flow run on the host.
+///
+/// 生产门控（蓝图/20 R1-7）：仅测试或显式 `emmc-ram-sim` feature 可用；
+/// release 下该 feature 触发 compile_error! 熔断（见 lib.rs），保证生产
+/// 构建不含 RAM 模拟控制器。
+#[cfg(any(test, feature = "emmc-ram-sim"))]
 pub struct RamEmmcMmio {
     /// Register file (offset / 4 index).
     regs: [u32; 32],
@@ -187,6 +193,7 @@ pub struct RamEmmcMmio {
     data_buf: [u8; 4096],
 }
 
+#[cfg(any(test, feature = "emmc-ram-sim"))]
 impl RamEmmcMmio {
     /// Creates a simulated controller with `block_count` blocks of
     /// `block_size` bytes.
@@ -276,6 +283,7 @@ impl RamEmmcMmio {
     }
 }
 
+#[cfg(any(test, feature = "emmc-ram-sim"))]
 impl StorageMmio for RamEmmcMmio {
     fn read_reg(&self, offset: usize) -> u32 {
         let idx = offset / 4;

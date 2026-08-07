@@ -5,7 +5,10 @@
 
 use alloc::boxed::Box;
 
-use crate::driver::emmc::{EmmcDriver, RamEmmcMmio};
+#[cfg(test)]
+use crate::driver::emmc::EmmcDriver;
+#[cfg(test)]
+use crate::driver::emmc::RamEmmcMmio;
 use crate::driver::mock::MockBlockDevice;
 use crate::driver::types::{StorageConfig, StorageType};
 use crate::driver::BlockDevice;
@@ -17,9 +20,11 @@ use crate::error::StorageError;
 ///   virtio-mmio transport). Requires a concrete `VirtioMmio`/`DmaPool`/
 ///   `ArmCache` wiring; `create_block_device` is the host-test entry that
 ///   wires them, while target builds construct `VirtioBlkDriver` directly.
-/// - [`StorageType::Emmc`] — real eMMC driver over a RAM-simulated
-///   controller (QEMU sd model equivalent, v0.215.0 B1-03). Target builds
-///   construct [`EmmcDriver`] with a volatile MMIO backend.
+/// - [`StorageType::Emmc`] — real eMMC driver, but the factory has no real
+///   controller MMIO backend on this platform: returns [`StorageError::Unsupported`]
+///   (fail-closed, 蓝图/20 R1-7). Target builds construct [`EmmcDriver`]
+///   directly with a volatile MMIO backend; the RAM-simulated controller is
+///   test/`emmc-ram-sim`-only.
 /// - [`StorageType::Nvme`] / [`StorageType::SdCard`] — not supported yet.
 ///
 /// The returned driver is uninitialized — call `init(block_count)` on the
@@ -42,10 +47,12 @@ pub fn create_block_device(
             Ok(Box::new(driver))
         }
         StorageType::Emmc => {
-            // v0.215.0（B1-03）：eMMC 真实驱动 + RAM 模拟控制器（QEMU sd 模型等价）。
-            // 目标板用 volatile MMIO 后端直接构造 EmmcDriver。
-            let mmio = RamEmmcMmio::new(config.max_transfer_blocks as u64, config.block_size);
-            Ok(Box::new(EmmcDriver::new(mmio, config.clone())))
+            // 蓝图/20 R1-7：生产分派禁止 RAM 模拟控制器（RamEmmcMmio 仅
+            // test / emmc-ram-sim feature）。无真实控制器时 fail-closed。
+            Err(StorageError::Unsupported {
+                detail: "no real eMMC controller MMIO backend on this platform; \
+                         construct EmmcDriver directly with a volatile MMIO backend",
+            })
         }
         StorageType::Nvme | StorageType::SdCard => {
             Err(StorageError::HardwareFault {
@@ -71,6 +78,8 @@ mod tests {
     #[test]
     fn test_create_emmc_device_roundtrip() {
         // v0.215.0（B1-03）：eMMC 真实驱动 + RAM 模拟控制器（QEMU sd 模型等价）。
+        // 蓝图/20 R1-7：工厂生产分派已 fail-closed，RAM 模拟控制器只经
+        // 测试路径直接构造 EmmcDriver。
         let cfg = StorageConfig {
             storage_type: StorageType::Emmc,
             base_addr: 0xFF3F_0000,
@@ -79,8 +88,15 @@ mod tests {
             block_size: 512,
             max_transfer_blocks: 256,
         };
-        let dev = create_block_device(&cfg).expect("should create eMMC device");
-        // 工厂返回未初始化驱动，需 init（factory 层 trait 无 init，这里用具体类型验证）。
+        // 生产分派必须拒绝（无真实控制器）
+        assert!(
+            matches!(
+                create_block_device(&cfg),
+                Err(StorageError::Unsupported { .. })
+            ),
+            "Emmc factory branch must fail closed without a real controller"
+        );
+        // 测试路径：RAM 模拟控制器 + 真实驱动直接构造，往返读写验证
         let mmio = RamEmmcMmio::new(256, 512);
         let mut real = EmmcDriver::new(mmio, cfg.clone());
         real.init(256);
@@ -89,7 +105,6 @@ mod tests {
         let mut out = [0u8; 512];
         real.read_block(0, &mut out).expect("read");
         assert_eq!(out, input);
-        let _ = dev;
     }
 
     #[test]

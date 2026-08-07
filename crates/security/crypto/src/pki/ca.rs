@@ -79,9 +79,10 @@ impl CaIssuer {
         ca_key: Sm2PrivateKey,
         rng: CsRng,
     ) -> Result<Self, PkiError> {
-        // 从 ca_cert 提取公钥（必须是 SM2 变体）
+        // 从 ca_cert 提取公钥（必须是 SM2 变体；ECDSA 证书 CA 签发不支持）
         let ca_pk = match ca_cert.public_key() {
             SubjectPublicKey::Sm2(pk) => *pk,
+            SubjectPublicKey::EcdsaP256(_) => return Err(PkiError::UnsupportedAlgorithm),
             SubjectPublicKey::Rsa(_) => return Err(PkiError::UnsupportedAlgorithm),
         };
         Ok(Self {

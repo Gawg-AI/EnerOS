@@ -3,7 +3,9 @@
 #
 # 用例矩阵（14 号文 D2 标准）：
 # 1. 总召唤（C_IC_NA）：激活确认 → 全点数据 → 激活终止
-# 2. SBO 选择-执行（C_SE_*）：select → execute 一致性校验
+# 2. SBO 选择-执行（C_SE_*）：select → execute 一致性校验（含 QU≠0 限定符
+#    ——蓝图/20 R1-6：lib60870 客户端发 select（QU≠0）→ 本栈解析
+#    select==true && qu 一致；execute+ON+QU=1 字节为 0x05，旧布局 0x03 判 QU=0）
 # 3. 时标 SOE（C_SO_NA 带时标事件）：时间戳精度校验
 # 4. 时钟同步（C_CS_NA）：从站时钟对时
 # 5. 突变上送（M_SP_NA/M_DP_NA spontaneous）：主动上送

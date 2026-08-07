@@ -54,6 +54,11 @@ pub enum StorageError {
         /// Static detail string describing the fault.
         detail: &'static str,
     },
+    /// Controller/transport not available on this platform (fail-closed).
+    Unsupported {
+        /// Static detail string describing the missing capability.
+        detail: &'static str,
+    },
     /// Device is write-protected and a write/erase was attempted.
     WriteProtected,
 }
@@ -64,7 +69,7 @@ impl StorageError {
     /// Only [`StorageError::Timeout`] and [`StorageError::DmaError`] are
     /// considered recoverable. All other variants indicate a permanent
     /// condition (bad block, CRC corruption, out-of-range, hardware fault,
-    /// write protection, or uninitialized hardware).
+    /// unsupported backend, write protection, or uninitialized hardware).
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,
@@ -96,6 +101,9 @@ impl fmt::Display for StorageError {
             }
             StorageError::HardwareFault { detail } => {
                 write!(f, "hardware fault: {}", detail)
+            }
+            StorageError::Unsupported { detail } => {
+                write!(f, "unsupported backend: {}", detail)
             }
             StorageError::WriteProtected => write!(f, "device is write-protected"),
         }

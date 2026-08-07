@@ -73,7 +73,6 @@ members = [
     "crates/security/iec62351",
     "crates/security/secure-boot",
     "crates/security/attestation",
-    "crates/security/mtls",
     "crates/security/tls",
     "crates/security/model-security",
     "crates/security/audit",
@@ -136,7 +135,10 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.0"
+# 版本纪律（蓝图/20 R1-1）：版本号由闸门驱动，只有 docs/v1.0.0-go-no-go.md
+# 全 PASS 才允许写 1.0.0；rc 期间必须带 -rc.N 后缀（xtask qa gng-version /
+# eneros-ci version-gate-consistency 双检查强制）。
+version = "1.0.0-rc.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

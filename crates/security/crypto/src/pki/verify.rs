@@ -28,7 +28,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::pki::crl::Crl;
-use crate::pki::x509::{SubjectPublicKey, X509Certificate};
+use crate::pki::x509::{SignatureAlgorithm, SubjectPublicKey, X509Certificate};
 use crate::pki::PkiError;
 use crate::sm2::{Sm2Signature, Sm2Signer};
 
@@ -55,45 +55,53 @@ fn hex_string(bytes: &[u8]) -> String {
 /// 用颁发者（issuer）的公钥验证证书（cert）的签名。
 ///
 /// # 流程
-/// 1. 获取 issuer 公钥（仅支持 SM2，RSA 返回 `UnsupportedAlgorithm`）
-/// 2. 检查 cert.signature 长度 == 64（SM2 签名 r‖s）
-/// 3. 编码 cert 的 TBS 字节
-/// 4. 构造 `Sm2Signature` 并调用 `Sm2Signer::verify`
-///
-/// # 参数
-/// - `cert`：待验证的证书（提供 TBS 与签名值）
-/// - `issuer`：颁发者证书（提供验证公钥）
+/// 1. 获取 issuer 公钥（SM2 或 ECDSA P-256；RSA 返回 `UnsupportedAlgorithm`）
+/// 2. 编码 cert 的 TBS 字节
+/// 3. 按算法验签：SM2（r‖s 64 字节）/ ECDSA P-256（DER ECDSA-Sig-Value）
 ///
 /// # 返回
 /// - `Ok(())`：签名有效
-/// - `Err(PkiError::UnsupportedAlgorithm)`：issuer 公钥非 SM2
+/// - `Err(PkiError::UnsupportedAlgorithm)`：issuer 公钥非 SM2/ECDSA P-256
 /// - `Err(PkiError::SignatureInvalid)`：签名长度错误或验证失败
 /// - `Err(PkiError::Asn1Error)`：TBS 编码失败
 pub fn verify_signature(cert: &X509Certificate, issuer: &X509Certificate) -> Result<(), PkiError> {
-    // 1. 获取 issuer 公钥（仅支持 SM2）
-    let issuer_pk = match issuer.public_key() {
-        SubjectPublicKey::Sm2(pk) => pk,
-        SubjectPublicKey::Rsa(_) => return Err(PkiError::UnsupportedAlgorithm),
-    };
-
-    // 2. 检查签名长度（SM2 签名为 64 字节 r‖s）
-    if cert.signature.len() != 64 {
-        return Err(PkiError::SignatureInvalid);
-    }
-
-    // 3. 编码 TBS 字节
+    // 1. 编码 TBS 字节（SM2 与 ECDSA 证书共用 TBS 编码）
     let tbs = cert.encode_tbs()?;
 
-    // 4. 构造 Sm2Signature 并验证（避免 panic，已确保长度为 64）
-    let mut sig_bytes = [0u8; 64];
-    sig_bytes.copy_from_slice(&cert.signature);
-    let sig = Sm2Signature::from_bytes(&sig_bytes);
+    // 2. 获取 issuer 公钥并验签
+    match issuer.public_key() {
+        SubjectPublicKey::Sm2(pk) => {
+            // SM2 签名：64 字节 r‖s
+            if cert.signature.len() != 64 {
+                return Err(PkiError::SignatureInvalid);
+            }
+            let mut sig_bytes = [0u8; 64];
+            sig_bytes.copy_from_slice(&cert.signature);
+            let sig = Sm2Signature::from_bytes(&sig_bytes);
 
-    let signer = Sm2Signer::new();
-    match signer.verify(&tbs, &sig, issuer_pk) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(PkiError::SignatureInvalid),
-        Err(_) => Err(PkiError::SignatureInvalid),
+            let signer = Sm2Signer::new();
+            match signer.verify(&tbs, &sig, pk) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(PkiError::SignatureInvalid),
+                Err(_) => Err(PkiError::SignatureInvalid),
+            }
+        }
+        SubjectPublicKey::EcdsaP256(point) => {
+            // ECDSA P-256：证书签名算法必须匹配，签名为 DER ECDSA-Sig-Value
+            if cert.signature_algorithm != SignatureAlgorithm::EcdsaWithSha256 {
+                return Err(PkiError::UnsupportedAlgorithm);
+            }
+            let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(point)
+                .map_err(|_| PkiError::InvalidDerFormat)?;
+            let sig = p256::ecdsa::Signature::from_der(&cert.signature)
+                .map_err(|_| PkiError::SignatureInvalid)?;
+            use p256::ecdsa::signature::Verifier;
+            match vk.verify(&tbs, &sig) {
+                Ok(()) => Ok(()),
+                Err(_) => Err(PkiError::SignatureInvalid),
+            }
+        }
+        SubjectPublicKey::Rsa(_) => Err(PkiError::UnsupportedAlgorithm),
     }
 }
 
@@ -313,6 +321,119 @@ mod tests {
 
     /// 固定测试时间戳（2023-11-14 22:13:20 UTC）.
     const NOW: u64 = 1_700_000_000;
+
+    /// 蓝图/20 R1-3：ECDSA P-256 证书链验证（设备端 TLS 证书体系）。
+    /// 根/叶证书均 ECDSA-with-SHA256 签名、secp256r1 公钥；链验证走
+    /// 本仓 CertVerifier（复用 SPKI 根比对修复）。
+    #[test]
+    fn test_ecdsa_cert_chain_verifies() {
+        use p256::ecdsa::signature::{Signer, Verifier};
+        use p256::ecdsa::{Signature, SigningKey};
+
+        // 固定测试密钥（确定性标量）
+        let root_sk: p256::ecdsa::SigningKey = SigningKey::from_bytes(&[0x21; 32].into()).unwrap();
+        let leaf_sk: p256::ecdsa::SigningKey = SigningKey::from_bytes(&[0x42; 32].into()).unwrap();
+        let root_pk = SubjectPublicKey::EcdsaP256(
+            root_sk.verifying_key().to_encoded_point(false).as_bytes().to_vec(),
+        );
+        let leaf_pk = SubjectPublicKey::EcdsaP256(
+            leaf_sk.verifying_key().to_encoded_point(false).as_bytes().to_vec(),
+        );
+
+        let root_dn = DistinguishedName::new("eneros-ecdsa-root");
+
+        // 根证书（自签）
+        let root_unsigned = ecdsa_test_cert(1, "eneros-ecdsa-root", &root_dn, root_pk.clone(), Vec::new());
+        let root_tbs = root_unsigned.encode_tbs().unwrap();
+        let root_sig: p256::ecdsa::Signature = root_sk.sign(&root_tbs);
+        let root_sig = root_sig.to_der().as_bytes().to_vec();
+        let root = ecdsa_test_cert(1, "eneros-ecdsa-root", &root_dn, root_pk.clone(), root_sig);
+
+        // 叶子证书（根签发，ECDSA 公钥）
+        let leaf_unsigned = ecdsa_test_cert(2, "eneros-ecdsa-leaf", &root_dn, leaf_pk.clone(), Vec::new());
+        let leaf_tbs = leaf_unsigned.encode_tbs().unwrap();
+        let leaf_sig: p256::ecdsa::Signature = root_sk.sign(&leaf_tbs);
+        let leaf_sig = leaf_sig.to_der().as_bytes().to_vec();
+        let leaf = ecdsa_test_cert(2, "eneros-ecdsa-leaf", &root_dn, leaf_pk.clone(), leaf_sig.clone());
+
+        // 正向：链验证通过
+        let verifier = CertVerifier::new(vec![root.clone()]);
+        assert_eq!(verifier.verify_chain(&[leaf.clone(), root.clone()], NOW), Ok(()));
+
+        // 负例 a：篡改叶子签名 → SignatureInvalid
+        let mut tampered = leaf.clone();
+        tampered.signature[0] ^= 0xFF;
+        assert!(matches!(
+            verifier.verify_chain(&[tampered, root.clone()], NOW),
+            Err(PkiError::SignatureInvalid)
+        ));
+
+        // 负例 b（SPKI 根比对）：CN 相同的伪根（公钥不同）→ UntrustedRoot
+        let fake_sk: p256::ecdsa::SigningKey = SigningKey::from_bytes(&[0x99; 32].into()).unwrap();
+        let fake_pk = SubjectPublicKey::EcdsaP256(
+            fake_sk.verifying_key().to_encoded_point(false).as_bytes().to_vec(),
+        );
+        let fake_root_unsigned =
+            ecdsa_test_cert(9, "eneros-ecdsa-root", &root_dn, fake_pk.clone(), Vec::new());
+        let fake_root_tbs = fake_root_unsigned.encode_tbs().unwrap();
+        let fake_root_sig: p256::ecdsa::Signature = fake_sk.sign(&fake_root_tbs);
+        let fake_root_sig = fake_root_sig.to_der().as_bytes().to_vec();
+        let fake_root = ecdsa_test_cert(9, "eneros-ecdsa-root", &root_dn, fake_pk, fake_root_sig);
+        let verifier_fake = CertVerifier::new(vec![fake_root]);
+        // 信任根是伪根（CN 相同、SPKI 不同），链末端是真实根 → 必须
+        // 在 SPKI 根比对处拒绝（UntrustedRoot），证明根比对按公钥而非 CN
+        assert!(matches!(
+            verifier_fake.verify_chain(&[leaf.clone(), root.clone()], NOW),
+            Err(PkiError::UntrustedRoot)
+        ));
+
+        // 负例 c：过期 → CertExpired
+        assert!(matches!(
+            verifier.verify_chain(&[leaf.clone(), root.clone()], NOW + 86400 * 400),
+            Err(PkiError::CertExpired { .. })
+        ));
+
+        // SPKI 编解码往返：ECDSA P-256 SPKI 可 encode→decode 还原
+        let spki = leaf_pk.encode_spki().unwrap();
+        let mut reader = crate::pki::asn1::DerReader::new(&spki);
+        let decoded = SubjectPublicKey::decode_spki(&mut reader).unwrap();
+        assert_eq!(decoded, leaf_pk);
+
+        // 独立验签（不依赖链验证）：根公钥验证叶子证书签名
+        let root_vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(&root_pk_point(root_pk)).unwrap();
+        let leaf_sig_parsed = Signature::from_der(&leaf_sig).unwrap();
+        assert!(root_vk.verify(&leaf_tbs, &leaf_sig_parsed).is_ok());
+    }
+
+    /// 从 SubjectPublicKey::EcdsaP256 提取未压缩点字节。
+    fn root_pk_point(pk: SubjectPublicKey) -> [u8; 65] {
+        match pk {
+            SubjectPublicKey::EcdsaP256(p) => p.try_into().unwrap(),
+            _ => panic!("expected EcdsaP256"),
+        }
+    }
+
+    /// 构造确定性 ECDSA 证书（内部工具）.
+    fn ecdsa_test_cert(
+        serial: u8,
+        subject_cn: &str,
+        issuer_dn: &DistinguishedName,
+        pk: SubjectPublicKey,
+        sig: Vec<u8>,
+    ) -> X509Certificate {
+        X509Certificate::new(
+            2,
+            vec![serial],
+            SignatureAlgorithm::EcdsaWithSha256,
+            issuer_dn.clone(),
+            DistinguishedName::new(subject_cn),
+            NOW,
+            NOW + 86400 * 365,
+            pk,
+            Vec::new(),
+            sig,
+        )
+    }
 
     /// 构建自签名根证书.
     fn build_root(kp: &Sm2KeyPair, cn: &str, now: u64) -> X509Certificate {
