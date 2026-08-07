@@ -175,7 +175,7 @@ fn xtask_command_modes() -> &'static [(&'static str, Option<&'static [&'static s
         ),
         (
             "qa",
-            Some(&["boot-reset", "soak", "soak-run", "soak-report", "interop-report", "kat-report", "compliance-report", "perf-baseline", "perf-gate", "trace", "proof", "validation"]),
+            Some(&["boot-reset", "soak", "soak-run", "soak-report", "interop-report", "kat-report", "compliance-report", "g7-audit", "perf-baseline", "perf-gate", "trace", "proof", "validation"]),
             "qa",
         ),
         ("release", Some(&["sbom", "verify-sbom"]), "release"),
