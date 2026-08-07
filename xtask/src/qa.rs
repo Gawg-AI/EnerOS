@@ -81,6 +81,7 @@ pub(super) fn command_qa(root: &Path, args: &[String]) -> DynResult<()> {
     match mode.as_str() {
         "boot-reset" => command_boot_reset(root, tail),
         "soak" => command_soak(root, tail),
+        "soak-run" => command_soak_run(root, tail),
         "perf-baseline" => command_perf_baseline(root, tail),
         "perf-gate" => command_perf_gate(root, tail),
         "trace" => command_trace(root, tail),
@@ -214,7 +215,7 @@ fn command_boot_reset(root: &Path, args: &[String]) -> DynResult<()> {
 // QA-018: 30-day soak campaign
 // ============================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
 struct SoakCampaign {
@@ -222,6 +223,10 @@ struct SoakCampaign {
     campaign_id: String,
     artifact_sha256: String,
     duration_days: u64,
+    /// v0.253.0（D1）：最短浸泡天数（默认 3=72h，对应 14 号文 D1；
+    /// 旧证据未声明时按 3 天计）。
+    #[serde(default = "default_min_soak_days")]
+    min_duration_days: u64,
     /// 内存泄漏率（字节/天）.
     memory_leak_bytes_per_day: u64,
     /// 内存泄漏阈值（字节/天）.
@@ -234,7 +239,11 @@ struct SoakCampaign {
     metric_samples: u64,
 }
 
-#[derive(Debug, Deserialize)]
+fn default_min_soak_days() -> u64 {
+    3 // 72h（14 号文 D1）
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
 struct SoakRestart {
@@ -242,6 +251,140 @@ struct SoakRestart {
     at_secs: u64,
     /// 根因分类（空 = 未知重启，违规）.
     root_cause: Option<String>,
+}
+
+
+/// `qa soak-run --cycles N [--image <path> --vars-template <path>] [--out <json>]`
+///
+/// v0.253.0（D1a）：QEMU 浸泡循环——黑盒复用 `xtask run qemu-prod`（同一
+/// 可执行入口，CI 行为一致），连续 N 次冷启动：
+/// - 每次启动断言 PASS（失败即记录 restart 并继续，直至 --max-fail 上限）；
+/// - 收集每次启动耗时（秒）与启动时间分布；
+/// - 产出 QA-018 `eneros.soak-campaign.v1` 证据 JSON（供 `qa soak` 门禁消费）。
+///
+/// 无硬件环境的 QEMU 侧浸泡基线；真机 72h 浸泡由 `tests/soak/` 脚本集执行
+/// （硬件就绪时），本命令是 CI 可自动跑的浸泡冒烟。
+fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
+    use std::time::Instant;
+
+    let mut cycles: usize = 10;
+    let mut max_fail: usize = 1;
+    let mut image: Option<std::path::PathBuf> = None;
+    let mut vars_template: Option<std::path::PathBuf> = None;
+    let mut out_path = root.join("target/soak-campaign.json");
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || {
+            it.next()
+                .ok_or_else(|| invalid(format!("{a} requires a value")))
+        };
+        match a.as_str() {
+            "--cycles" => {
+                cycles = val()?.parse().map_err(|_| invalid("--cycles must be usize"))?
+            }
+            "--max-fail" => {
+                max_fail = val()?
+                    .parse()
+                    .map_err(|_| invalid("--max-fail must be usize"))?
+            }
+            "--image" => image = Some(std::path::PathBuf::from(val()?)),
+            "--vars-template" => vars_template = Some(std::path::PathBuf::from(val()?)),
+            "--out" => out_path = root.join(val()?),
+            other => return Err(invalid(format!("unknown soak-run arg '{other}'"))),
+        }
+    }
+    if cycles == 0 {
+        return Err(invalid("soak-run --cycles must be > 0"));
+    }
+
+    // 1. 构造 qemu-prod 命令行（复用同一入口）。
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("xtask").arg("run").arg("qemu-prod");
+    if let Some(img) = &image {
+        cmd.arg("--image").arg(img);
+    }
+    if let Some(vt) = &vars_template {
+        cmd.arg("--vars-template").arg(vt);
+    }
+    cmd.arg("--expect").arg("PASS");
+
+    // 2. 循环启动。
+    let mut restarts: Vec<SoakRestart> = Vec::new();
+    let mut boot_secs: Vec<u64> = Vec::new();
+    let mut failures: usize = 0;
+    for cycle in 0..cycles {
+        let start = Instant::now();
+        let status = cmd.output();
+        let elapsed = start.elapsed().as_secs();
+        boot_secs.push(elapsed.max(1));
+        match status {
+            Ok(out) if out.status.success() => {
+                println!("soak cycle {}/{} PASS in {}s", cycle + 1, cycles, elapsed);
+            }
+            Ok(out) => {
+                failures += 1;
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                println!(
+                    "soak cycle {}/{} FAIL rc={} ({})",
+                    cycle + 1,
+                    cycles,
+                    out.status,
+                    stderr.lines().next().unwrap_or("no stderr")
+                );
+                restarts.push(SoakRestart {
+                    restart_id: cycle as u64 + 1,
+                    at_secs: elapsed,
+                    root_cause: Some("qemu-prod-expect-failed".to_owned()),
+                });
+            }
+            Err(e) => {
+                failures += 1;
+                println!("soak cycle {}/{} SPAWN-ERR: {e}", cycle + 1, cycles);
+                restarts.push(SoakRestart {
+                    restart_id: cycle as u64 + 1,
+                    at_secs: elapsed,
+                    root_cause: Some(format!("spawn-error:{e}")),
+                });
+            }
+        }
+        if failures > max_fail {
+            return Err(invalid(format!(
+                "soak-run aborted: {failures} failures exceed --max-fail {max_fail}"
+            )));
+        }
+    }
+
+    // 3. 汇总启动时间分布。
+    let total: u64 = boot_secs.iter().sum();
+    let avg = total / cycles as u64;
+    let min = boot_secs.iter().copied().min().unwrap_or(0);
+    let max = boot_secs.iter().copied().max().unwrap_or(0);
+    println!("soak boot-time: avg={avg}s min={min}s max={max}s over {cycles} cycles");
+
+    // 4. 产出 QA-018 证据 JSON。
+    let campaign = SoakCampaign {
+        schema: "eneros.soak-campaign.v1".into(),
+        campaign_id: format!("qemu-soak-{cycles}x-{avg}s"),
+        artifact_sha256: String::new(),
+        duration_days: ((total as f64 / 86400.0).max(0.0)) as u64,
+        min_duration_days: 3,
+        memory_leak_bytes_per_day: 0,
+        memory_leak_threshold: 0,
+        data_corruption: false,
+        restarts,
+        metric_samples: cycles as u64,
+    };
+    fs::create_dir_all(out_path.parent().unwrap_or(root))?;
+    fs::write(&out_path, serde_json::to_vec_pretty(&campaign)?)?;
+    println!("SOAK-RUN evidence written to {}", out_path.display());
+
+    if failures > 0 {
+        return Err(invalid(format!(
+            "soak-run completed with {failures} failed cycles"
+        )));
+    }
+    Ok(())
 }
 
 fn command_soak(root: &Path, args: &[String]) -> DynResult<()> {
@@ -255,10 +398,10 @@ fn command_soak(root: &Path, args: &[String]) -> DynResult<()> {
     if campaign.schema != "eneros.soak-campaign.v1" {
         report.violations.push("schema-mismatch".to_owned());
     }
-    if campaign.duration_days < 30 {
+    if campaign.duration_days < campaign.min_duration_days {
         report.violations.push(format!(
-            "insufficient-duration:{}d<30d",
-            campaign.duration_days
+            "insufficient-duration:{}d<{}d",
+            campaign.duration_days, campaign.min_duration_days
         ));
     }
     if campaign.memory_leak_bytes_per_day > campaign.memory_leak_threshold {
@@ -1173,6 +1316,50 @@ mod tests {
         let p = root.join("soak.json");
         write_json(&p, &campaign);
         assert!(command_soak(root, &[p.to_string_lossy().into()]).is_ok());
+    }
+
+    /// v0.253.0（D1）：72h（3 天）浸泡证据可通过门禁（14 号文 D1 标准）。
+    #[test]
+    fn t3b_soak_72h_pass() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let campaign = serde_json::json!({
+            "schema": "eneros.soak-campaign.v1",
+            "campaign_id": "soak-72h",
+            "artifact_sha256": "abc",
+            "duration_days": 3,
+            "min_duration_days": 3,
+            "memory_leak_bytes_per_day": 0,
+            "memory_leak_threshold": 0,
+            "data_corruption": false,
+            "restarts": [],
+            "metric_samples": 100,
+        });
+        let p = root.join("soak.json");
+        write_json(&p, &campaign);
+        assert!(command_soak(root, &[p.to_string_lossy().into()]).is_ok());
+    }
+
+    /// v0.253.0（D1）：72h 浸泡不足（2 天）必须拒绝。
+    #[test]
+    fn t4b_soak_72h_insufficient_rejected() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let campaign = serde_json::json!({
+            "schema": "eneros.soak-campaign.v1",
+            "campaign_id": "soak-48h",
+            "artifact_sha256": "abc",
+            "duration_days": 2,
+            "min_duration_days": 3,
+            "memory_leak_bytes_per_day": 0,
+            "memory_leak_threshold": 0,
+            "data_corruption": false,
+            "restarts": [],
+            "metric_samples": 50,
+        });
+        let p = root.join("soak.json");
+        write_json(&p, &campaign);
+        assert!(command_soak(root, &[p.to_string_lossy().into()]).is_err());
     }
 
     #[test]

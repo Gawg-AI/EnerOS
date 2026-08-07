@@ -218,3 +218,10 @@ jobs:
 
       - name: VRF-003 gate semantics (no silent pass)
         run: cargo xtask test gate-semantics
+
+      - name: D1 soak infrastructure (RC-1a, skip-evidence on no hardware)
+        run: |
+          # 真机浸泡执行器：无硬件 → 跳过证据+就绪清单（exit 0）；
+          # 硬件就绪 → 全量浸泡矩阵 + QA-018 证据。
+          bash tests/soak/soak72.sh
+          test -f target/soak/soak-skip-evidence.json             || test -f target/soak/soak-campaign.json

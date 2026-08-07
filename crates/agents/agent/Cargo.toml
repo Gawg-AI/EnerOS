@@ -7,9 +7,9 @@ license.workspace = true
 description = "EnerOS Agent Runtime — descriptor/registry/lifecycle/spawner/heartbeat/recovery/capability"
 
 [dependencies]
-eneros-elf-loader = { path = "../../abi/elf-loader", version = "0.252.0" }
+eneros-elf-loader = { path = "../../abi/elf-loader", version = "0.253.0" }
 eneros-crypto = { path = "../../security/crypto" }
-eneros-agent-sdk = { path = "../agent-sdk", version = "0.252.0" }
+eneros-agent-sdk = { path = "../agent-sdk", version = "0.253.0" }
 
 [dev-dependencies]
 eneros-crypto = { path = "../../security/crypto" }
