@@ -225,3 +225,11 @@ jobs:
           # 硬件就绪 → 全量浸泡矩阵 + QA-018 证据。
           bash tests/soak/soak72.sh
           test -f target/soak/soak-skip-evidence.json             || test -f target/soak/soak-campaign.json
+
+      - name: D1 evidence collection (RC-1b, six-category bundle + sha256 manifest)
+        run: |
+          # 六类证据采集打包：无硬件时产出缺失清单（fail-open 报告），
+          # 有硬件时产出完整证据包。manifest 哈希供防篡改校验。
+          bash tests/soak/collect-evidence.sh
+          test -f target/soak/evidence-bundle/MANIFEST.sha256
+          test -f target/soak/evidence-bundle/missing-evidence.txt

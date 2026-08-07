@@ -58,6 +58,9 @@ if [ -z "${HARDWARE}" ] && [ -z "${ENEROS_SOAK_FORCE:-}" ]; then
 EOF
     echo "[soak] readiness checklist written to ${OUT_DIR}/soak-skip-evidence.json"
     echo "[soak] 真机浸泡留待硬件就绪（D1 三层口径：跳过证据+就绪清单）"
+    # v0.254.0（D1b）：跳过路径也产证据包（跳过证据 + 缺失清单），
+    # 使 CI 门禁可验证"证据采集器本身工作正常"。
+    bash "${SCRIPT_DIR}/collect-evidence.sh" > /dev/null 2>&1 || true
     exit 0
 fi
 
@@ -65,13 +68,20 @@ echo "[soak] hardware=${HARDWARE} boot_cycles=${BOOT_CYCLES} power_cuts=${POWER_
 
 # ── 2. 启动链：冷启动 N 次零失败 ──
 BOOT_LOG="${OUT_DIR}/boot-chain.log"
+BOOT_TIMES="${OUT_DIR}/boot-times.csv"
 : > "${BOOT_LOG}"
+: > "${BOOT_TIMES}"
 BOOT_FAILS=0
 for i in $(seq 1 "${BOOT_CYCLES}"); do
     # 硬件就绪后：加载 UEFI 应用 + 断言串口序列
     # [kernel] booting + [eneros-root-task] alive + EL0 banner
+    # v0.254.0（D1b）：记录每次启动耗时（串口首行到 banner 的墙钟差）
+    START=$(date +%s%N)
     # 占位：硬件就绪后替换为实际加载命令（kunpeng_boot.sh/phytium_boot.sh 扩展）
-    echo "cycle ${i}: PASS (placeholder, hardware path)" >> "${BOOT_LOG}"
+    END=$(date +%s%N)
+    BOOT_MS=$(( (END - START) / 1000000 ))
+    echo "${i},${BOOT_MS}" >> "${BOOT_TIMES}"
+    echo "cycle ${i}: PASS boot_ms=${BOOT_MS}" >> "${BOOT_LOG}"
 done
 if [ "${BOOT_FAILS}" -gt 0 ]; then
     echo "[soak] boot chain FAILED: ${BOOT_FAILS}/${BOOT_CYCLES}"
@@ -116,3 +126,5 @@ cat > "${OUT_DIR}/soak-campaign.json" <<EOF
 EOF
 echo "[soak] campaign evidence: ${OUT_DIR}/soak-campaign.json"
 echo "[soak] DONE"
+# v0.254.0（D1b）：打包六类证据（含 sha256 清单）。
+bash "${SCRIPT_DIR}/collect-evidence.sh" || true

@@ -355,12 +355,19 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
         }
     }
 
-    // 3. 汇总启动时间分布。
+    // 3. 汇总启动时间分布 + 写 boot-times.csv（14 号文 D1 证据形式）。
     let total: u64 = boot_secs.iter().sum();
     let avg = total / cycles as u64;
     let min = boot_secs.iter().copied().min().unwrap_or(0);
     let max = boot_secs.iter().copied().max().unwrap_or(0);
     println!("soak boot-time: avg={avg}s min={min}s max={max}s over {cycles} cycles");
+    let csv_path = out_path.with_file_name("boot-times.csv");
+    let csv: String = boot_secs
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("{},{}\n", i + 1, s))
+        .collect();
+    fs::write(&csv_path, csv)?;
 
     // 4. 产出 QA-018 证据 JSON。
     let campaign = SoakCampaign {
@@ -1296,6 +1303,49 @@ mod tests {
         let p = root.join("br.json");
         write_json(&p, &campaign);
         assert!(command_boot_reset(root, &[p.to_string_lossy().into()]).is_err());
+    }
+
+    /// v0.254.0（D1b）：soak-run 产出 QA-018 证据 + boot-times.csv
+    /// （用 sleep 模拟启动耗时，验证参数校验与产物结构）。
+    #[test]
+    fn t5_soak_run_produces_evidence() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let out = root.join("soak-campaign.json");
+        // cycles=1、max-fail=1：本机无 QEMU 时命令可能 spawn 失败——
+        // 但证据文件仍应产出（restarts 记录 spawn-error）。
+        let r = command_soak_run(
+            root,
+            &[
+                "--cycles".into(),
+                "1".into(),
+                "--max-fail".into(),
+                "5".into(),
+                "--out".into(),
+                out.to_string_lossy().into(),
+            ],
+        );
+        // 无论 QEMU 是否可用，campaign JSON 必须产出。
+        assert!(out.exists(), "soak-campaign.json must be written");
+        let parsed: SoakCampaign = read_json(&out).expect("campaign parses");
+        assert_eq!(parsed.schema, "eneros.soak-campaign.v1");
+        assert_eq!(parsed.metric_samples, 1);
+        assert!(parsed.min_duration_days == 3, "min_duration_days must default to 3");
+        // boot-times.csv 必须产出（14 号文 D1 启动时间分布证据）。
+        let csv = out.with_file_name("boot-times.csv");
+        assert!(csv.exists(), "boot-times.csv must be written");
+        // 命令本身：QEMU 缺失时 spawn 失败应报错（fail-closed），
+        // 而非静默通过。
+        if r.is_ok() {
+            // 环境有 QEMU 且启动成功——合法。
+        } else {
+            // 无 QEMU 环境：错误信息应包含原因（spawn/expect）。
+            let msg = format!("{:?}", r);
+            assert!(
+                msg.contains("spawn") || msg.contains("qemu") || msg.contains("failed"),
+                "failure reason must be explicit: {msg}"
+            );
+        }
     }
 
     #[test]
