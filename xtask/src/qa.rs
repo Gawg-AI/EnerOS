@@ -84,6 +84,7 @@ pub(super) fn command_qa(root: &Path, args: &[String]) -> DynResult<()> {
         "soak-run" => command_soak_run(root, tail),
         "soak-report" => command_soak_report(root, tail),
         "interop-report" => command_interop_report(root, tail),
+        "kat-report" => command_kat_report(root, tail),
         "perf-baseline" => command_perf_baseline(root, tail),
         "perf-gate" => command_perf_gate(root, tail),
         "trace" => command_trace(root, tail),
@@ -548,6 +549,93 @@ fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
     fs::write(&out_path, serde_json::to_vec_pretty(&report)?)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     println!("INTEROP-MATRIX verdict={verdict} → {}", out_path.display());
+    Ok(())
+}
+
+
+/// `qa kat-report [--out <json>]`
+///
+/// v0.258.0（D3b）：密码 KAT 证据报告——运行 SM2/SM3/SM4/常数时间
+/// KAT 测试（eneros-crypto 的 cry001/sm2_kat/sm3_kat/sm4_kat），
+/// 汇总通过/失败为评审证据 JSON（schema=eneros.crypto-kat.v1），
+/// 供 D3 密码学独立评审引用（product_allowed=false 解除的前置证据）。
+fn command_kat_report(root: &Path, args: &[String]) -> DynResult<()> {
+    #[derive(Serialize)]
+    struct KatReport {
+        schema: &'static str,
+        suites: Vec<KatSuite>,
+        verdict: &'static str,
+    }
+    #[derive(Serialize)]
+    struct KatSuite {
+        name: &'static str,
+        test_file: &'static str,
+        pass: bool,
+        note: &'static str,
+    }
+
+    let mut out_path = root.join("target/kat-report.json");
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || {
+            it.next()
+                .ok_or_else(|| invalid(format!("{a} requires a value")))
+        };
+        match a.as_str() {
+            "--out" => out_path = root.join(val()?),
+            other => return Err(invalid(format!("unknown kat-report arg '{other}'"))),
+        }
+    }
+
+    // 运行 KAT 测试（cargo test，过滤对应 test binary）。
+    let run = |filter: &str| -> bool {
+        let status = std::process::Command::new("cargo")
+            .args(["test", "-p", "eneros-crypto", "--test", filter, "--quiet"])
+            .current_dir(root)
+            .status();
+        matches!(status, Ok(s) if s.success())
+    };
+
+    let suites = vec![
+        KatSuite {
+            name: "SM2 (GB/T 32918.2/4-2017)",
+            test_file: "tests/sm2_kat.rs",
+            pass: run("sm2_kat"),
+            note: "签名/加密 KAT + 确定性签名可复现",
+        },
+        KatSuite {
+            name: "SM3 (GB/T 32905)",
+            test_file: "tests/sm3_kat.rs",
+            pass: run("sm3_kat"),
+            note: "标准向量 + 长度边界",
+        },
+        KatSuite {
+            name: "SM4 (GB/T 32907)",
+            test_file: "tests/sm4_kat.rs",
+            pass: run("sm4_kat"),
+            note: "ECB/CBC 标准向量",
+        },
+        KatSuite {
+            name: "常数时间（CRY-001）",
+            test_file: "tests/cry001_constant_time.rs",
+            pass: run("cry001_constant_time"),
+            note: "模逆/点乘时序 + KAT 对拍",
+        },
+    ];
+
+    let all_pass = suites.iter().all(|s| s.pass);
+    let report = KatReport {
+        schema: "eneros.crypto-kat.v1",
+        suites,
+        verdict: if all_pass { "KAT-ALL-PASS" } else { "KAT-FAIL" },
+    };
+    fs::create_dir_all(out_path.parent().unwrap_or(root))?;
+    fs::write(&out_path, serde_json::to_vec_pretty(&report)?)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    println!("KAT-REPORT verdict={} → {}", report.verdict, out_path.display());
+    if !all_pass {
+        return Err(invalid("crypto KAT suite has failures — block product_allowed release"));
+    }
     Ok(())
 }
 

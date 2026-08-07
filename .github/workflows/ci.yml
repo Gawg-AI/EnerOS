@@ -226,6 +226,13 @@ jobs:
           bash tests/soak/soak72.sh
           test -f target/soak/soak-skip-evidence.json             || test -f target/soak/soak-campaign.json
 
+      - name: D3b crypto KAT evidence (RC-3b, fail-closed on any KAT failure)
+        run: |
+          # 密码 KAT 证据包：SM2/SM3/SM4/常数时间全绿 → KAT-ALL-PASS；
+          # 任一失败 → 阻断 product_allowed 解除。
+          cargo xtask qa kat-report
+          test -f target/kat-report.json
+
       - name: D2 interop framework (RC-2, matrix report on real-peer availability)
         run: |
           # 四类对端互操作 harness：无真实对端 → skip 证据+矩阵报告
