@@ -30,6 +30,9 @@ use alloc::vec;
 /// seL4 错误（`Error` 的非零值映射为描述性错误）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sel4Error {
+    /// host 构建（无 seL4）下该操作无意义，明确失败而非模拟成功
+    /// （21-A 红线 2：禁止用 mock 占位 seL4 系统调用）。
+    HostUnsupported,
     /// 参数非法。
     InvalidArgument,
     /// 能力非法或不存在。
@@ -382,6 +385,78 @@ pub fn cnode_mint(
 }
 
 // ============================================================================
+// ARM VSpace / 页映射（21-A K1.1：补齐 arm_page_map / arm_page_table_map）
+// ============================================================================
+
+/// ARM 页映射封装（`seL4_ARM_PageMap`，4 KiB SmallPage）。
+///
+/// 把已 retype 的页对象映射到 `vspace` 的 `vaddr` 处，权限为 `rights`。
+/// 映射属性使用平台默认值（`seL4_ARM_Default_VMAttributes`，由 C shim
+/// 解析，safe 层统一收口，调用方无需关心平台差异）。
+///
+/// # Safety
+/// 前置条件（调用方必须保证，封装不校验）：
+/// - `page` 必须是已 retype 的 `SmallPage`（4 KiB 页）能力，且尚未映射；
+/// - `vspace` 必须是已创建的 VSpace 能力（`arm_vspace` 对象）；
+/// - `vaddr` 必须 4 KiB 页对齐，且其所在的 1 GiB 区域已由
+///   [`arm_page_table_map`] 建立页表；
+/// - `rights` 必须是合法权限位（见 [`RightsTable`]）。
+///
+/// 目标构建真调 FFI；host 构建返回 [`Sel4Error::HostUnsupported`]
+/// （21-A 红线 2：禁止 host stub 模拟成功——页映射在 host 无意义）。
+pub fn arm_page_map(vspace: CPtr, page: CPtr, vaddr: Word, rights: CapRights) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；前置条件见函数文档（page 已 retype、
+        // vspace 有效、vaddr 4 KiB 对齐）。attr 为平台默认值 getter，
+        // 无指针参数，无内存安全风险。
+        let attr = unsafe { crate::ffi::eneros_sel4_arm_default_attributes() };
+        // SAFETY: 同上；传参顺序对齐 C shim（page, vspace, vaddr, rights, attr）。
+        let err =
+            unsafe { crate::ffi::eneros_sel4_arm_page_map(page, vspace, vaddr, rights, attr) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (vspace, page, vaddr, rights);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// ARM 页表映射封装（`seL4_ARM_PageTableMap`，1 GiB 区域）。
+///
+/// 把已 retype 的页表对象映射到 `vspace` 的 `vaddr` 处，为该 1 GiB 区域
+/// 建立二级页表，之后才能在其内映射 4 KiB 页（[`arm_page_map`]）。
+/// 映射属性使用平台默认值（与 [`arm_page_map`] 同一收口）。
+///
+/// # Safety
+/// 前置条件（调用方必须保证，封装不校验）：
+/// - `pt` 必须是已 retype 的 `PageTable` 对象能力（`arm_page_table`），
+///   且尚未映射；
+/// - `vspace` 必须是已创建的 VSpace 能力；
+/// - `vaddr` 必须 1 GiB 对齐（页表覆盖 1 GiB 虚拟地址区域）。
+///
+/// 目标构建真调 FFI；host 构建返回 [`Sel4Error::HostUnsupported`]
+/// （21-A 红线 2：禁止 host stub 模拟成功）。
+pub fn arm_page_table_map(vspace: CPtr, pt: CPtr, vaddr: Word) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；前置条件见函数文档（pt 已 retype、
+        // vspace 有效、vaddr 1 GiB 对齐）。attr 为平台默认值 getter，
+        // 无指针参数，无内存安全风险。
+        let attr = unsafe { crate::ffi::eneros_sel4_arm_default_attributes() };
+        // SAFETY: 同上；传参顺序对齐 C shim（pt, vspace, vaddr, attr）。
+        let err = unsafe { crate::ffi::eneros_sel4_arm_page_table_map(pt, vspace, vaddr, attr) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (vspace, pt, vaddr);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+// ============================================================================
 // BootInfo 解析（P0-1：untyped 列表 / 空闲 cap 区间 offset 访问器）
 // ============================================================================
 
@@ -607,6 +682,24 @@ mod tests {
         assert!(tcb_set_priority(5, 2, 10).is_ok());
         assert!(tcb_write_registers(5, 0, 0, core::ptr::null()).is_ok());
         assert!(cnode_mint(2, 0, 0, 2, 1, 0, 1).is_ok());
+    }
+
+    // 21-A K1.1 验收：页映射在 host 构建必须返回 HostUnsupported（非 Ok），
+    // 与既有 retype/tcb_* 的"模拟成功"stub 不同——红线 2 禁止 mock 占位。
+    #[test]
+    fn arm_page_map_host_unsupported() {
+        assert_eq!(
+            arm_page_map(0x100, 0x200, 0x4000_0000, 0x0F),
+            Err(Sel4Error::HostUnsupported)
+        );
+    }
+
+    #[test]
+    fn arm_page_table_map_host_unsupported() {
+        assert_eq!(
+            arm_page_table_map(0x100, 0x300, 0x4000_0000),
+            Err(Sel4Error::HostUnsupported)
+        );
     }
 
     #[test]
