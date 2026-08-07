@@ -30,8 +30,19 @@ fn gen_server_cert(ca: &rcgen::Certificate, ca_kp: &KeyPair) -> (rcgen::Certific
     (cert, kp)
 }
 
+/// 并行测试下确定性安装 rustls 默认 crypto provider（蓝图/20 R2 修复：
+/// 多个测试并发首次触发 install_default 时存在偶发竞争）。
+fn ensure_provider() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 #[test]
 fn tls13_handshake_and_echo_roundtrip() {
+    ensure_provider();
     let (ca, ca_kp) = gen_ca();
     let (server_cert, server_kp) = gen_server_cert(&ca, &ca_kp);
 
@@ -71,6 +82,7 @@ fn tls13_handshake_and_echo_roundtrip() {
 
 #[test]
 fn tls13_mtls_handshake() {
+    ensure_provider();
     // mTLS：服务器要求客户端证书（TlsServerConfig::new_mtls），
     // 客户端用 new_mtls 提供证书。
     let (ca, ca_kp) = gen_ca();
