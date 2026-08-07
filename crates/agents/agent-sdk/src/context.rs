@@ -4,6 +4,7 @@
 
 use crate::agent::AgentId;
 use crate::config::Config;
+#[cfg(any(test, feature = "mock"))]
 use crate::ipc::IpcClient;
 use crate::logger::Logger;
 use crate::storage::Storage;
@@ -16,7 +17,8 @@ pub struct Context {
     pub agent_id: AgentId,
     /// 配置
     pub config: Config,
-    /// IPC 客户端
+    /// IPC 客户端（仅测试/仿真——生产走 seL4 IPC，蓝图/20 R2-2）
+    #[cfg(any(test, feature = "mock"))]
     pub ipc: IpcClient,
     /// 日志器
     pub logger: Logger,
@@ -30,6 +32,7 @@ impl Context {
         Self {
             agent_id,
             config: Config::new(),
+            #[cfg(any(test, feature = "mock"))]
             ipc: IpcClient::new(),
             logger: Logger::new(agent_id),
             storage: Storage::new(),

@@ -49,10 +49,9 @@ impl WireFrame {
     }
 }
 
-/// IPC 客户端。
-///
-/// Agent 通过此结构与系统中其他 Agent 通信。每条消息经过完整的 wire codec
-/// 编码（header + target + payload + CRC32），入队到 SPSC 队列。
+/// IPC 客户端（SPSC 进程内传输）——仅测试/仿真（蓝图/20 R2-2：
+/// SDK 生产传输真实化为 seL4 IPC，见 [`crate::ipc_sel4::Sel4IpcClient`]）。
+#[cfg(any(test, feature = "mock"))]
 pub struct IpcClient {
     /// 本地端点名称
     endpoint: HString<64>,
@@ -74,12 +73,16 @@ pub struct IpcClient {
 // SAFETY: IpcClient 是单线程 no_std 语义（SDK D17）：内部 heapless Queue
 // 仅在同一 Agent 执行上下文中访问；跨线程共享不提供（Send 用于 Agent
 // trait 的 Send+Sync 要求，实际由 Runtime 串行化调用）。
+#[cfg(any(test, feature = "mock"))]
+#[cfg(any(test, feature = "mock"))]
 unsafe impl Send for IpcClient {}
 // SAFETY: `IpcClient` 内部状态仅在同一 Agent 执行上下文中访问；
 // 跨线程共享不提供（Send 用于 Agent trait 的 Send+Sync 要求，
 // 实际由 Runtime 串行化调用）。
+#[cfg(any(test, feature = "mock"))]
 unsafe impl Sync for IpcClient {}
 
+#[cfg(any(test, feature = "mock"))]
 impl IpcClient {
     /// 创建新的 IPC 客户端。
     pub fn new() -> Self {
@@ -255,6 +258,7 @@ impl IpcClient {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for IpcClient {
     fn default() -> Self {
         Self::new()

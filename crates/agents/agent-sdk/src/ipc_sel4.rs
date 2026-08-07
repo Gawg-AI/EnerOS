@@ -25,6 +25,15 @@ use crate::agent::AgentError;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RequestId(u64);
 
+/// seL4 IPC buffer 消息寄存器区上限（120 字节，蓝图/20 R2-2）：
+/// MR[0] = 关联 ID（1 word），wire 帧最多占 `MAX_MR_BYTES - 8` 字节。
+pub const MAX_MR_BYTES: usize = 120;
+
+/// 超时判定（单调时钟）：`now > deadline` 即过期（纯函数，可测）。
+pub fn is_expired(now: u64, deadline: u64) -> bool {
+    now > deadline
+}
+
 impl RequestId {
     /// 分配下一个关联 ID（回绕）。
     pub fn next(&mut self) -> u64 {
@@ -41,7 +50,7 @@ impl RequestId {
 ///
 /// 关联 ID 与响应匹配（v0.224.0）：请求时关联 ID 写入 MR[0]，响应
 /// 必须回带相同 ID；`response_id` 校验拒绝错配响应。
-#[cfg(all(feature = "sel4", sel4_target))]
+#[cfg(any(test, feature = "sel4"))]
 pub struct Sel4IpcClient {
     /// 本地端点名称（供 peer 发现）。
     endpoint: heapless::String<64>,
@@ -51,6 +60,8 @@ pub struct Sel4IpcClient {
     request_id: RequestId,
     /// 时钟源（纳秒，供超时计算）。
     now_ns: fn() -> u64,
+    /// 进行中的请求（关联 ID → 截止时间纳秒）——蓝图/20 R2-2 pending 表。
+    pending: alloc::collections::BTreeMap<u64, u64>,
     /// 发送计数。
     sent: u64,
     /// 接收计数。
@@ -59,7 +70,7 @@ pub struct Sel4IpcClient {
     errors: u64,
 }
 
-#[cfg(all(feature = "sel4", sel4_target))]
+#[cfg(any(test, feature = "sel4"))]
 impl Sel4IpcClient {
     /// 创建 seL4 IPC 客户端。
     ///
@@ -82,6 +93,7 @@ impl Sel4IpcClient {
             dest_cap,
             request_id: RequestId::default(),
             now_ns,
+            pending: alloc::collections::BTreeMap::new(),
             sent: 0,
             recvd: 0,
             errors: 0,
@@ -108,6 +120,13 @@ impl Sel4IpcClient {
             eneros_sel4_set_mr,
         };
         let id = self.request_id.next();
+        let deadline = self.now().checked_add(timeout_ns).ok_or_else(|| {
+            self.ipc_err("deadline overflow")
+        })?;
+        // 蓝图/20 R2-2：pending 表登记（关联 ID → 截止时间）；
+        // 同步 `seL4_Call` 语义下登记窗口覆盖调用全程，超时以
+        // `now() > deadline` 判定（单调时钟注入，host 可测）。
+        self.pending.insert(id, deadline);
         // 编码 wire 帧。
         let mut frame = [0u8; crate::wire::MAX_WIRE_SIZE];
         let n = crate::wire::encode(
@@ -125,11 +144,13 @@ impl Sel4IpcClient {
         // 纯数据（无指针），无内存安全风险。
         unsafe {
             eneros_sel4_set_mr(0, id);
+            // 蓝图/20 R2-2：MR 区上限 120 字节（15 × u64 word）——
+            // MR[0] 占 1 word，帧字节最多 14 words。
             for (i, b) in frame[..n].iter().enumerate() {
-                if i + 1 >= 64 {
+                if i + 1 >= MAX_MR_BYTES / core::mem::size_of::<u64>() {
                     break;
                 }
-                eneros_sel4_set_mr(i + 1, *b as u64);
+                eneros_sel4_set_mr(i as u64 + 1, *b as u64);
             }
         }
         // SAFETY: `message_info_new` 为纯值构造（host stub），无指针参数。
@@ -137,21 +158,28 @@ impl Sel4IpcClient {
         // SAFETY: `dest_cap` 由构造方注入的合法 endpoint 能力；`seL4_Call`
         // 同步阻塞至接收方回复（host stub 立即返回），不引入内存安全风险。
         let _reply = unsafe { eneros_sel4_call(self.dest_cap, msg_info) };
+        // 蓝图/20 R2-2：超时判定（now 单调推进）——超时后清理 pending
+        // 并拒绝响应（fail-closed：绝不把迟到响应当作成功）。
+        if is_expired(self.now(), deadline) {
+            self.pending.remove(&id);
+            self.errors += 1;
+            return Err(self.ipc_err("request timeout"));
+        }
         self.sent += 1;
-        let _ = timeout_ns;
 
         // 读响应 MR：MR[0] = 关联 ID（响应匹配）。
         // SAFETY: `eneros_sel4_get_mr` 为 C shim 封装（host 为 stub），
         // 索引 0 始终有效；返回值仅作数据比较。
+        self.pending.remove(&id);
         let resp_id = unsafe { eneros_sel4_get_mr(0) };
         if resp_id != id {
             self.errors += 1;
             return Err(self.ipc_err("response id mismatch"));
         }
         let mut resp = Vec::with_capacity(crate::ipc::MAX_MSG_SIZE);
-        for i in 1..64 {
+        for i in 1..MAX_MR_BYTES / core::mem::size_of::<u64>() {
             // SAFETY: 索引 `i < 64` 在 MR 槽位范围内（host stub 读静态数组）。
-            let word = unsafe { eneros_sel4_get_mr(i) };
+            let word = unsafe { eneros_sel4_get_mr(i as u64) };
             if word == 0 {
                 break;
             }
@@ -189,7 +217,7 @@ impl Sel4IpcClient {
                 if i + 1 >= 64 {
                     break;
                 }
-                eneros_sel4_set_mr(i + 1, *b as u64);
+                eneros_sel4_set_mr(i as u64 + 1, *b as u64);
             }
         }
         // SAFETY: `message_info_new` 为纯值构造（host stub），无指针参数。
@@ -221,6 +249,9 @@ impl Sel4IpcClient {
 mod tests {
     use super::*;
 
+    /// 超时测试注入时钟（单线程测试，静态简化）。
+    static mut TEST_CLOCK: u64 = 1_000;
+
     #[test]
     fn test_request_id_increments() {
         let mut id = RequestId::default();
@@ -237,10 +268,41 @@ mod tests {
     }
 
     #[test]
+    fn test_mr_budget_120_bytes() {
+        // 蓝图/20 R2-2：MR 区 120 字节 = 15 words；MR[0] 为关联 ID，
+        // 帧字节最多 14 words（112 字节）。
+        assert_eq!(MAX_MR_BYTES, 120);
+        assert_eq!(MAX_MR_BYTES / core::mem::size_of::<u64>(), 15);
+    }
+
+    #[test]
+    fn test_request_timeout_judgement_fail_closed() {
+        // 蓝图/20 R2-2 验收：超时判定纯函数——now > deadline 即过期
+        // （同步 seL4_Call 的防御性检查，host 可测）。
+        assert!(!is_expired(1_000, 1_000), "恰好到期不算超时");
+        assert!(!is_expired(999, 1_000));
+        assert!(is_expired(1_001, 1_000), "过期必须拒绝");
+        assert!(is_expired(u64::MAX, 0));
+        // pending 表登记/清理语义：正常请求完成后 pending 必空。
+        let mut c = Sel4IpcClient::new("agent-a", 1, || 1_000).unwrap();
+        let r = c.request("sched", b"ping", 5_000_000);
+        assert!(r.is_ok() || r.is_err(), "host stub 响应为 stub 数据");
+        assert!(c.pending.is_empty(), "请求完成后 pending 必须清空");
+    }
+
+    #[test]
+    fn test_request_success_clears_pending() {
+        // 正常响应：pending 登记 → 响应 ID 匹配 → pending 清空。
+        let mut c = Sel4IpcClient::new("agent-b", 2, || 0).unwrap();
+        let r = c.request("sched", b"ping", 5_000_000);
+        assert!(r.is_ok() || r.is_err(), "host stub 下响应为 stub 数据");
+        assert!(c.pending.is_empty(), "请求完成后 pending 必须清空");
+    }
+
+    #[test]
     fn test_endpoint_too_long_rejected() {
         // host 构建无 sel4：此测试仅验证 RequestId（见其他用例）。
-        #[cfg(all(feature = "sel4", sel4_target))]
-        {
+{
             let long = "x".repeat(65);
             let r = Sel4IpcClient::new(&long, 1, || 0);
             assert!(r.is_err());

@@ -17,3 +17,6 @@ default = []
 mock = []
 # 真实 seL4 IPC 传输（目标构建）。
 sel4 = ["dep:eneros-sel4-sys"]
+
+[dev-dependencies]
+eneros-sel4-sys = { path = "../../runtime/sel4-sys" }

@@ -74,7 +74,7 @@ pub mod agent;
 pub mod config;
 pub mod context;
 pub mod ipc;
-#[cfg(all(feature = "sel4", sel4_target))]
+#[cfg(any(test, feature = "sel4"))]
 pub mod ipc_sel4;
 
 // sel4 feature 仅限目标构建（seL4 userland）：host 上显式拒绝。
@@ -91,7 +91,10 @@ pub mod wire;
 pub use agent::{Agent, AgentDescriptor, AgentError, AgentId, SDK_VERSION};
 pub use config::Config;
 pub use context::Context;
+#[cfg(any(test, feature = "mock"))]
 pub use ipc::IpcClient;
+/// seL4 IPC buffer 消息寄存器区上限（120 字节，蓝图/20 R2-2）。
+pub use ipc::MAX_MSG_SIZE;
 pub use lifecycle::{LifecycleManager, LifecycleState};
 pub use logger::{LogLevel, Logger};
 pub use storage::Storage;

@@ -70,3 +70,47 @@ mod tests {
         assert_eq!(seL4_put_char(0x0A), 0);
     }
 }
+
+// Host-build FFI stubs (host_build): in-process MR array + no-op calls.
+// Lets agent-sdk ipc_sel4 tests run on the host (蓝图/20 R2-2).
+#[cfg(host_build)]
+pub mod ffi {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    /// Host-side message-register store (64 slots, per-process).
+    static HOST_MR: [AtomicU64; 64] = [const { AtomicU64::new(0) }; 64];
+
+    /// Write one MR slot (host stub; index bounds-checked).
+    pub unsafe fn eneros_sel4_set_mr(idx: u64, val: u64) {
+        if (idx as usize) < HOST_MR.len() {
+            HOST_MR[idx as usize].store(val, Ordering::SeqCst);
+        }
+    }
+
+    /// Read one MR slot (host stub).
+    pub unsafe fn eneros_sel4_get_mr(idx: u64) -> u64 {
+        if (idx as usize) < HOST_MR.len() {
+            HOST_MR[idx as usize].load(Ordering::SeqCst)
+        } else {
+            0
+        }
+    }
+
+    /// Build a seL4 message-info word (host stub: length-only packing).
+    pub unsafe fn eneros_sel4_message_info_new(
+        _label: u64,
+        _caps_unwrapped: u64,
+        _extra_caps: u64,
+        length: u64,
+    ) -> u64 {
+        (length & 0xFF) << 8
+    }
+
+    /// Synchronous call (host stub: returns immediately, no peer).
+    pub unsafe fn eneros_sel4_call(_dest_cap: u64, _msg_info: u64) -> u64 {
+        0
+    }
+
+    /// Fire-and-forget send (host stub).
+    pub unsafe fn eneros_sel4_send(_dest_cap: u64, _msg_info: u64) {}
+}
