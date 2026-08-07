@@ -447,11 +447,25 @@ pub fn entry_mapped(plan_pages: &[PageEntry], elf: &LoadedElf) -> Result<u64, Sp
     Err(SpawnError::PlanMismatch)
 }
 
+/// 已 spawn 服务句柄（K2.2：root-task IPC 主循环的服务表）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnedHandle {
+    /// 服务名（bundle manifest）。
+    pub name: String,
+    /// 服务 TCB cap（root CSpace 槽）。
+    pub tcb: u64,
+    /// 服务 endpoint cap（root CSpace 槽；root 侧发 IPC 用）。
+    pub ep: u64,
+}
+
 /// 目标端真实 spawn：按计划逐服务执行 seL4 FFI（21-A K1.2，ADR-0034）。
 ///
 /// 两阶段（红线 4 fail-closed 强化）：阶段一完成全部服务的对象创建与配置，
 /// 阶段二统一 `tcb_resume`——中途任何一步失败时没有任何服务在运行。
 /// 任一步失败返回 `Err`，由调用方挂起（fail-closed）。
+///
+/// 返回已 spawn 服务句柄表（name/tcb/ep cap），供 root-task IPC 主循环
+/// （K2.2）按名寻址服务。
 ///
 /// host 构建下不存在（真实 FFI 在目标验证环境执行）。
 #[cfg(target_os = "none")]
@@ -459,7 +473,7 @@ pub fn sel4_spawn_services(
     plan: &SpawnPlan,
     bundle: &crate::bundle::InitBundle,
     ctx: &mut SpawnCtx,
-) -> Result<(), SpawnError> {
+) -> Result<Vec<SpawnedHandle>, SpawnError> {
     use eneros_sel4_sys::safe::{
         arm_asid_pool_assign, arm_page_map, arm_page_table_map, arm_page_unmap, cnode_mint, retype,
         tcb_resume, tcb_set_ipcbuffer, tcb_set_priority, tcb_set_space, tcb_write_registers,
@@ -478,7 +492,7 @@ pub fn sel4_spawn_services(
     arm_page_table_map(ctx.root_vspace, window_pt[1], WINDOW_BASE).map_err(SpawnError::Sel4)?;
 
     // 阶段一：全部服务配置（对象创建 + 映射 + 寄存器 + 优先级）。
-    // 每服务记录 resume 前所需的 TCB cap。
+    let mut handles = Vec::with_capacity(plan.services.len());
     let mut tcb_slots = Vec::with_capacity(plan.services.len());
     for svc in &plan.services {
         let module = bundle
@@ -488,9 +502,13 @@ pub fn sel4_spawn_services(
             .ok_or(SpawnError::MissingBundleModule)?;
         let elf = LoadedElf::parse(&module.blob).map_err(|_| SpawnError::BadElf)?;
         let entry = entry_mapped(&svc.pages, &elf)?;
-        tcb_slots.push(configure_service(
-            svc, &elf, module, entry, ctx, &types, &rights,
-        )?);
+        let (tcb, ep) = configure_service(svc, &elf, module, entry, ctx, &types, &rights)?;
+        tcb_slots.push(tcb);
+        handles.push(SpawnedHandle {
+            name: svc.name.clone(),
+            tcb,
+            ep,
+        });
     }
 
     // 阶段二：统一 resume。
@@ -498,14 +516,14 @@ pub fn sel4_spawn_services(
         // SAFETY: tcb 为刚 retype 且已配置地址空间的 TCB cap。
         tcb_resume(*tcb).map_err(SpawnError::Sel4)?;
     }
-    Ok(())
+    Ok(handles)
 }
 
 /// 配置单个服务（阶段一）：对象 retype / ASID / 页表 / 页映射与拷贝 /
-/// CSpace mint / 寄存器 / 优先级。返回服务 TCB cap。
+/// CSpace mint / 寄存器 / 优先级。返回 `(服务 TCB cap, 服务 endpoint cap)`。
 ///
 /// # 返回值
-/// 服务 TCB 的 root CSpace 槽号。
+/// 元组：服务 TCB 的 root CSpace 槽号、服务 endpoint 的 root CSpace 槽号。
 #[cfg(target_os = "none")]
 #[allow(clippy::too_many_arguments)]
 fn configure_service(
@@ -516,7 +534,7 @@ fn configure_service(
     ctx: &mut SpawnCtx,
     types: &ObjectTypeTable,
     rights: &RightsTable,
-) -> Result<u64, SpawnError> {
+) -> Result<(u64, u64), SpawnError> {
     let root_cnode = ctx.root_cnode;
 
     // 1-3. TCB / VSpace / CNode retype。
@@ -623,7 +641,7 @@ fn configure_service(
     // SAFETY: root_tcb 为 root-task 自身 TCB cap（有效且有权）。
     tcb_set_priority(tcb, ctx.root_tcb, SVC_PRIORITY).map_err(SpawnError::Sel4)?;
 
-    Ok(tcb)
+    Ok((tcb, ep))
 }
 
 /// retype 单个对象到 root CSpace 的 `slot` 槽。

@@ -130,8 +130,10 @@ pub extern "C" fn _start() -> ! {
         let caps = CapInitThreadTable::resolve();
         let mut ctx = crate::spawn::SpawnCtx::from_bootinfo_reader(&reader, &caps);
         match crate::spawn::sel4_spawn_services(&plan, &bundle, &mut ctx) {
-            Ok(()) => {
+            Ok(handles) => {
                 println!("[eneros-root-task] EL0 services spawned — entering service loop");
+                // K2.2：IPC 调度主循环（替换 spin_loop，21-A）。
+                crate::service::run_ipc_loop(&handles);
             }
             Err(e) => {
                 println!(
@@ -150,7 +152,7 @@ pub extern "C" fn _start() -> ! {
         println!("[eneros-root-task] host build: spawn skipped (no seL4)");
     }
 
-    // KRN-004：服务调度主循环（dispatch_frame / config_service_roundtrip host 可测）。
+    // host 构建下的静态路径（sel4_target 分支已进入 run_ipc_loop 不返回）。
     loop {
         core::hint::spin_loop();
     }

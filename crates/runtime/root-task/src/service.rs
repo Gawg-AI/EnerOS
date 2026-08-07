@@ -13,6 +13,68 @@ use eneros_ipc_wire::el0::El0FrameType;
 
 extern crate alloc;
 
+/// K2.2/K2.3 消息契约：MR 布局。
+///
+/// seL4 IPC 载荷走 MR（message register）+ IPC buffer：
+/// - MR0 = 帧总字节数（u64 小端）；
+/// - MR1.. = 帧字节按 8 字节小端打包（末字不足补 0）；
+/// - MessageInfo：label = 帧类型（[`El0FrameType`] 数值），length = MR words 数。
+///
+/// root-task 与服务两侧共用本布局（单一事实源）。
+pub const MR_FRAME_LEN_SLOT: u64 = 0;
+/// 单帧最大字节数（ipc-wire 默认 payload 1024 + 帧头 10 + crc 4，留裕量；
+/// 须小于 IPC buffer 容量）。
+pub const MAX_FRAME_BYTES: usize = 2048;
+
+/// 帧编码错误。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameMrError {
+    /// 帧超长（> [`MAX_FRAME_BYTES`]）。
+    FrameTooLong,
+    /// MR 列表为空（无长度槽）。
+    NoLengthSlot,
+    /// 长度与 MR 载荷不一致。
+    BadLength,
+}
+
+/// 帧字节 → MR words（[`MR_FRAME_LEN_SLOT`] 布局）。
+pub fn frame_into_mrs(frame: &[u8]) -> Result<alloc::vec::Vec<u64>, FrameMrError> {
+    if frame.len() > MAX_FRAME_BYTES {
+        return Err(FrameMrError::FrameTooLong);
+    }
+    let mut mrs = alloc::vec![frame.len() as u64];
+    let mut i = 0;
+    while i < frame.len() {
+        let mut word = 0u64;
+        for j in 0..8 {
+            if i + j < frame.len() {
+                word |= u64::from(frame[i + j]) << (8 * j);
+            }
+        }
+        mrs.push(word);
+        i += 8;
+    }
+    Ok(mrs)
+}
+
+/// MR words → 帧字节（[`MR_FRAME_LEN_SLOT`] 布局）。
+pub fn frame_from_mrs(mrs: &[u64]) -> Result<alloc::vec::Vec<u8>, FrameMrError> {
+    let len = *mrs.first().ok_or(FrameMrError::NoLengthSlot)? as usize;
+    if len > MAX_FRAME_BYTES {
+        return Err(FrameMrError::FrameTooLong);
+    }
+    let words = 1 + len.div_ceil(8);
+    if mrs.len() < words {
+        return Err(FrameMrError::BadLength);
+    }
+    let mut out = alloc::vec![0u8; len];
+    for i in 0..len {
+        let word = mrs[1 + i / 8];
+        out[i] = (word >> (8 * (i % 8))) as u8;
+    }
+    Ok(out)
+}
+
 /// 服务调度结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchAction {
@@ -117,6 +179,98 @@ pub fn load_services_from_bundle(
     services
 }
 
+// ============================================================================
+// K2.2：root-task IPC 调度主循环（21-A，替换 spin_loop）
+// ============================================================================
+
+/// IPC 循环 fail-closed 挂起（红线 4：任何 IPC 错误 = 挂起，禁止降级运行）。
+#[cfg(target_os = "none")]
+fn ipc_fail_closed(step: &str, e: impl core::fmt::Debug) -> ! {
+    eneros_runtime::println!(
+        "[eneros-root-task] IPC loop FAILED at {}: {:?} — 挂起（fail-closed）",
+        step,
+        e
+    );
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// K2.2：root-task IPC 主循环（21-A §2.K2.2）。
+///
+/// 每轮迭代：
+/// 1. 向 svc-hello 的 endpoint 发 hello 请求帧（ipc-wire::el0 编码，
+///    MR 布局见 [`frame_into_mrs`]），`ipc_call` 同步往返收响应；
+/// 2. 阻塞 `ipc_recv` 任意来源消息（seL4 Endpoint 同步语义，非轮询）。
+///
+/// 任何 IPC 步骤失败 → [`ipc_fail_closed`] 挂起（红线 4）。
+/// 服务侧响应与故障隔离由 K2.3 的 `svc_ipc_loop` 提供（QEMU 验证）。
+#[cfg(target_os = "none")]
+pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
+    use eneros_ipc_wire::el0::{encode_frame, El0FrameType};
+    use eneros_sel4_sys::safe::{get_mr, ipc_call, ipc_recv, message_info_new, set_mr};
+    use eneros_sel4_sys::types::message_info_length;
+
+    // 服务表：按名寻址 svc-hello 的 ep cap。
+    let hello_ep = match handles.iter().find(|h| h.name == "svc-hello").map(|h| h.ep) {
+        Some(ep) => ep,
+        None => {
+            eneros_runtime::println!(
+                "[eneros-root-task] svc-hello not spawned — 挂起（fail-closed）"
+            );
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+
+    loop {
+        // 1. hello 请求 → svc-hello（帧 → MR）。
+        let req = encode_frame(El0FrameType::Report, b"hello");
+        let mrs = match frame_into_mrs(&req) {
+            Ok(m) => m,
+            Err(e) => ipc_fail_closed("encode hello", e),
+        };
+        for (i, w) in mrs.iter().enumerate() {
+            if let Err(e) = set_mr(i as u64, *w) {
+                ipc_fail_closed("set_mr", e);
+            }
+        }
+        let mi = match message_info_new(El0FrameType::Report as u64, 0, 0, mrs.len() as u64) {
+            Ok(m) => m,
+            Err(e) => ipc_fail_closed("message_info_new", e),
+        };
+        eneros_runtime::println!("[eneros-root-task] IPC: send hello-req to svc-hello");
+        let reply = match ipc_call(hello_ep, mi) {
+            Ok(r) => r,
+            Err(e) => ipc_fail_closed("ipc_call hello", e),
+        };
+        let words = message_info_length(reply);
+        let mut mr_buf = alloc::vec::Vec::with_capacity(words as usize);
+        for i in 0..words {
+            match get_mr(i) {
+                Ok(w) => mr_buf.push(w),
+                Err(e) => ipc_fail_closed("get_mr", e),
+            }
+        }
+        let resp = match frame_from_mrs(&mr_buf) {
+            Ok(f) => f,
+            Err(e) => ipc_fail_closed("decode reply", e),
+        };
+        eneros_runtime::println!(
+            "[eneros-root-task] IPC: recv {} bytes from svc-hello",
+            resp.len()
+        );
+
+        // 2. 阻塞接收任意服务消息（Ready/Report 帧；K2.3 起按帧分发）。
+        let mut sender = 0u64;
+        match ipc_recv(0, Some(&mut sender)) {
+            Ok(_info) => {}
+            Err(e) => ipc_fail_closed("ipc_recv", e),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +330,37 @@ mod tests {
         let manifest: &[&str] = &["svc-drv-rng", "svc-storage"];
         assert_eq!(service_name(b"svc-drv-rng\0", manifest), "svc-drv-rng");
         assert_eq!(service_name(b"svc-hello\0", manifest), "unknown");
+    }
+
+    // 21-A K2.2：MR 帧编解码往返（root-task ↔ 服务共享契约）。
+    #[test]
+    fn test_frame_mr_roundtrip() {
+        let frame = encode_frame(El0FrameType::Report, b"hello:eneros:tick=1");
+        let mrs = frame_into_mrs(&frame).expect("encode");
+        assert_eq!(mrs[MR_FRAME_LEN_SLOT as usize], frame.len() as u64);
+        let out = frame_from_mrs(&mrs).expect("decode");
+        assert_eq!(out, frame, "MR 往返必须无损");
+    }
+
+    #[test]
+    fn test_frame_mr_oversize_rejected() {
+        let big = alloc::vec![0u8; MAX_FRAME_BYTES + 1];
+        assert_eq!(frame_into_mrs(&big), Err(FrameMrError::FrameTooLong));
+        assert_eq!(
+            frame_from_mrs(&[(MAX_FRAME_BYTES + 1) as u64]),
+            Err(FrameMrError::FrameTooLong)
+        );
+        assert_eq!(frame_from_mrs(&[]), Err(FrameMrError::NoLengthSlot));
+        // 长度声明 16 但只有 2 个 word（1 长度 + 1 载荷）→ BadLength。
+        assert_eq!(frame_from_mrs(&[16u64, 0]), Err(FrameMrError::BadLength));
+    }
+
+    #[test]
+    fn test_frame_mr_partial_word_padding() {
+        // 1 字节帧：MR0=1，MR1 只有低 8 位有效。
+        let mrs = frame_into_mrs(&[0xAB]).expect("encode");
+        assert_eq!(mrs, vec![1, 0xAB]);
+        let out = frame_from_mrs(&mrs).expect("decode");
+        assert_eq!(out, vec![0xAB]);
     }
 }
