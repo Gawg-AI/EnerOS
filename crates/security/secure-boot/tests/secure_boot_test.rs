@@ -3,6 +3,7 @@
 //! 全链验证 + TPM PCR 度量 + 篡改拒绝 + 降级模式。
 
 use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair};
+use eneros_secure_boot::manifest::BootManifest;
 use eneros_secure_boot::{
     BootError, BootImages, EnerosSecureBoot, ImageSignature, RootOfTrust, SecureBoot,
 };
@@ -48,14 +49,15 @@ fn test_full_chain_with_tpm() {
     let images = BootImages {
         bootloader: bl_img,
         bl_sig: &bl_sig,
-        bl_key: bl.public_key,
         kernel: kern_img,
         kernel_sig: &kern_sig,
         runtime: rt_img,
         rt_sig: &rt_sig,
     };
+    let (raw, raw_len) = BootManifest::encode(&bl.public_key);
+    let manifest = BootManifest::parse(&raw[..raw_len]).unwrap();
 
-    let report = sb.verify_boot_chain(&images).unwrap();
+    let report = sb.verify_boot_chain(&images, &manifest).unwrap();
 
     assert!(report.bootloader_verified);
     assert!(report.kernel_verified);
@@ -90,14 +92,15 @@ fn test_tamper_bootloader_rejected() {
     let images = BootImages {
         bootloader: &tampered,
         bl_sig: &bl_sig,
-        bl_key: bl.public_key,
         kernel: kern_img,
         kernel_sig: &kern_sig,
         runtime: rt_img,
         rt_sig: &rt_sig,
     };
 
-    let result = sb.verify_boot_chain(&images);
+    let (raw_m, raw_m_len) = BootManifest::encode(&bl.public_key);
+    let manifest = BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+    let result = sb.verify_boot_chain(&images, &manifest);
     assert_eq!(result, Err(BootError::HashMismatch));
 }
 
@@ -123,14 +126,15 @@ fn test_tamper_kernel_rejected() {
     let images = BootImages {
         bootloader: bl_img,
         bl_sig: &bl_sig,
-        bl_key: bl.public_key,
         kernel: &tampered_kern,
         kernel_sig: &kern_sig,
         runtime: rt_img,
         rt_sig: &rt_sig,
     };
 
-    let result = sb.verify_boot_chain(&images);
+    let (raw_m, raw_m_len) = BootManifest::encode(&bl.public_key);
+    let manifest = BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+    let result = sb.verify_boot_chain(&images, &manifest);
     assert_eq!(result, Err(BootError::HashMismatch));
 }
 
@@ -154,14 +158,15 @@ fn test_forged_signature_rejected() {
     let images = BootImages {
         bootloader: bl_img,
         bl_sig: &bl_sig,
-        bl_key: bl.public_key,
         kernel: kern_img,
         kernel_sig: &kern_sig,
         runtime: rt_img,
         rt_sig: &rt_sig,
     };
 
-    let result = sb.verify_boot_chain(&images);
+    let (raw_m, raw_m_len) = BootManifest::encode(&bl.public_key);
+    let manifest = BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+    let result = sb.verify_boot_chain(&images, &manifest);
     assert_eq!(result, Err(BootError::SignatureInvalid));
 }
 
@@ -188,14 +193,15 @@ fn test_tpm_unavailable_degraded_boot() {
     let images = BootImages {
         bootloader: bl_img,
         bl_sig: &bl_sig,
-        bl_key: bl.public_key,
         kernel: kern_img,
         kernel_sig: &kern_sig,
         runtime: rt_img,
         rt_sig: &rt_sig,
     };
+    let (raw, raw_len) = BootManifest::encode(&bl.public_key);
+    let manifest = BootManifest::parse(&raw[..raw_len]).unwrap();
 
-    let report = sb.verify_boot_chain(&images).unwrap();
+    let report = sb.verify_boot_chain(&images, &manifest).unwrap();
     assert!(report.can_boot());
     assert!(!report.pcr_extended);
 }
@@ -224,14 +230,15 @@ fn test_stale_image_rejected() {
     let images = BootImages {
         bootloader: bl_img,
         bl_sig: &bl_sig,
-        bl_key: bl.public_key,
         kernel: kern_img,
         kernel_sig: &kern_sig,
         runtime: rt_img,
         rt_sig: &rt_sig,
     };
 
-    let result = sb.verify_boot_chain(&images);
+    let (raw_m, raw_m_len) = BootManifest::encode(&bl.public_key);
+    let manifest = BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+    let result = sb.verify_boot_chain(&images, &manifest);
     assert_eq!(result, Err(BootError::StaleImage));
 }
 

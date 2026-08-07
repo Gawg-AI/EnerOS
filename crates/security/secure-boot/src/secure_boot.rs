@@ -25,8 +25,6 @@ pub struct BootImages<'a> {
     pub bootloader: &'a [u8],
     /// Bootloader 签名
     pub bl_sig: &'a ImageSignature,
-    /// Bootloader 公钥（用于下级验签）
-    pub bl_key: Sm2PublicKey,
     /// 内核镜像
     pub kernel: &'a [u8],
     /// 内核签名
@@ -49,7 +47,11 @@ pub trait SecureBoot {
     ///
     /// 逐级验证 Bootloader → Kernel → Runtime，
     /// 每级验签后扩展 TPM PCR（如可用）。
-    fn verify_boot_chain(&mut self, images: &BootImages<'_>) -> Result<BootChainReport, BootError>;
+    fn verify_boot_chain(
+        &mut self,
+        images: &BootImages<'_>,
+        manifest: &crate::manifest::BootManifest,
+    ) -> Result<BootChainReport, BootError>;
 
     /// 验证单个镜像签名.
     fn verify_image(
@@ -127,7 +129,11 @@ impl<'a> EnerosSecureBoot<'a> {
 }
 
 impl SecureBoot for EnerosSecureBoot<'_> {
-    fn verify_boot_chain(&mut self, images: &BootImages<'_>) -> Result<BootChainReport, BootError> {
+    fn verify_boot_chain(
+        &mut self,
+        images: &BootImages<'_>,
+        manifest: &crate::manifest::BootManifest,
+    ) -> Result<BootChainReport, BootError> {
         let mut report = BootChainReport::new();
 
         // 验证信任根
@@ -146,9 +152,10 @@ impl SecureBoot for EnerosSecureBoot<'_> {
         report.stages_verified += 1;
         self.try_pcr_extend(0, images.bootloader);
 
-        // 阶段 2: Bootloader → Kernel（安装 BL 公钥）
+        // 阶段 2: Bootloader → Kernel（BL 公钥只来自已验证的 manifest，
+        // 蓝图/20 R2-6：类型级绑定，BootImages 不再携带独立 key）
         self.verifier
-            .advance_stage(Some(images.bl_key))
+            .advance_stage(Some(manifest.bl_key))
             .map_err(|_| BootError::MissingStageKey)?;
         self.verifier
             .verify_stage(BootStage::Kernel, images.kernel, images.kernel_sig)?;
@@ -246,14 +253,15 @@ mod tests {
         let images = BootImages {
             bootloader: bl_image,
             bl_sig: &bl_sig,
-            bl_key: bl.public_key,
             kernel: kernel_image,
             kernel_sig: &kernel_sig,
             runtime: rt_image,
             rt_sig: &rt_sig,
         };
+        let (raw, raw_len) = crate::manifest::BootManifest::encode(&bl.public_key);
+        let manifest = crate::manifest::BootManifest::parse(&raw[..raw_len]).unwrap();
 
-        let report = sb.verify_boot_chain(&images).unwrap();
+        let report = sb.verify_boot_chain(&images, &manifest).unwrap();
 
         assert!(report.all_verified());
         assert!(report.can_boot());
@@ -282,14 +290,15 @@ mod tests {
         let images = BootImages {
             bootloader: bl_image,
             bl_sig: &bl_sig,
-            bl_key: bl.public_key,
             kernel: kernel_image,
             kernel_sig: &kernel_sig,
             runtime: rt_image,
             rt_sig: &rt_sig,
         };
+        let (raw, raw_len) = crate::manifest::BootManifest::encode(&bl.public_key);
+        let manifest = crate::manifest::BootManifest::parse(&raw[..raw_len]).unwrap();
 
-        let report = sb.verify_boot_chain(&images).unwrap();
+        let report = sb.verify_boot_chain(&images, &manifest).unwrap();
 
         assert!(report.all_verified());
         assert!(report.can_boot());
@@ -320,14 +329,15 @@ mod tests {
         let images = BootImages {
             bootloader: &tampered,
             bl_sig: &bl_sig,
-            bl_key: bl.public_key,
             kernel: kernel_image,
             kernel_sig: &kernel_sig,
             runtime: rt_image,
             rt_sig: &rt_sig,
         };
 
-        let result = sb.verify_boot_chain(&images);
+        let (raw_m, raw_m_len) = crate::manifest::BootManifest::encode(&bl.public_key);
+        let manifest = crate::manifest::BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+        let result = sb.verify_boot_chain(&images, &manifest);
         assert_eq!(result, Err(BootError::HashMismatch));
     }
 
@@ -353,14 +363,15 @@ mod tests {
         let images = BootImages {
             bootloader: bl_image,
             bl_sig: &bl_sig,
-            bl_key: bl.public_key,
             kernel: kernel_image,
             kernel_sig: &kernel_sig,
             runtime: rt_image,
             rt_sig: &rt_sig,
         };
 
-        let result = sb.verify_boot_chain(&images);
+        let (raw_m, raw_m_len) = crate::manifest::BootManifest::encode(&bl.public_key);
+        let manifest = crate::manifest::BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+        let result = sb.verify_boot_chain(&images, &manifest);
         assert_eq!(result, Err(BootError::SignatureInvalid));
     }
 
