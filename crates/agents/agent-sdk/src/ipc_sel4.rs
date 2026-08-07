@@ -143,18 +143,22 @@ impl Sel4IpcClient {
             self.errors += 1;
             return Err(self.ipc_err("request frame exceeds MR budget (120B)"));
         }
-        // 写入 MR：MR[0] = 关联 ID，MR[1..] = 帧字节。
-        // SAFETY: `eneros_sel4_set_mr` 为 C shim 封装（host 为 stub），
-        // 索引 `i + 1 < 15` 保证在 seL4 MR 槽位范围内；写入值均为
-        // 纯数据（无指针），无内存安全风险。
+        // 写入 MR：MR[0] = 关联 ID，MR[1..] = 帧字节（8 字节/word 打包）。
+        // SAFETY: `eneros_sel4_set_mr` 为 C shim 封装（host 为 stub）；
+        // 帧 ≤112 字节 → 打包后 ≤14 words（索引 ≤14），在 seL4 MR 区
+        // （120B = 15 words）范围内；写入值均为纯数据，无内存安全风险。
         unsafe {
             eneros_sel4_set_mr(0, id);
-            for (i, b) in frame[..n].iter().enumerate() {
-                eneros_sel4_set_mr(i as u64 + 1, *b as u64);
+            for (i, chunk) in frame[..n].chunks(8).enumerate() {
+                let mut word = [0u8; 8];
+                word[..chunk.len()].copy_from_slice(chunk);
+                eneros_sel4_set_mr(i as u64 + 1, u64::from_le_bytes(word));
             }
         }
         // SAFETY: `message_info_new` 为纯值构造（host stub），无指针参数。
-        let msg_info = unsafe { eneros_sel4_message_info_new(0, 0, 0, (n + 1) as u64) };
+        // length 为 word 对齐字节数（MR[0] 1 word + 帧 ceil(n/8) words）。
+        let mr_words = 1 + n.div_ceil(8);
+        let msg_info = unsafe { eneros_sel4_message_info_new(0, 0, 0, (mr_words * 8) as u64) };
         // SAFETY: `dest_cap` 由构造方注入的合法 endpoint 能力；`seL4_Call`
         // 同步阻塞至接收方回复（host stub 立即返回），不引入内存安全风险。
         let _reply = unsafe { eneros_sel4_call(self.dest_cap, msg_info) };
@@ -176,14 +180,14 @@ impl Sel4IpcClient {
             self.errors += 1;
             return Err(self.ipc_err("response id mismatch"));
         }
+        // 读取响应 MR：固定 14 words × 8 字节解包（小端）；尾部补零由
+        // wire::decode 按帧内长度截断（不依赖 word==0 终止——打包 word
+        // 数据中段低字节可为 0）。
         let mut resp = Vec::with_capacity(crate::ipc::MAX_MSG_SIZE);
         for i in 1..MAX_MR_BYTES / core::mem::size_of::<u64>() {
-            // SAFETY: 索引 `i < 64` 在 MR 槽位范围内（host stub 读静态数组）。
+            // SAFETY: 索引 `i < 15` 在 MR 槽位范围内（host stub 读静态数组）。
             let word = unsafe { eneros_sel4_get_mr(i as u64) };
-            if word == 0 {
-                break;
-            }
-            resp.push(word as u8);
+            resp.extend_from_slice(&word.to_le_bytes());
             if resp.len() >= crate::ipc::MAX_MSG_SIZE {
                 break;
             }
@@ -227,7 +231,9 @@ impl Sel4IpcClient {
             }
         }
         // SAFETY: `message_info_new` 为纯值构造（host stub），无指针参数。
-        let msg_info = unsafe { eneros_sel4_message_info_new(0, 0, 0, (n + 1) as u64) };
+        // length 为 word 对齐字节数（MR[0] 1 word + 帧 ceil(n/8) words）。
+        let mr_words = 1 + n.div_ceil(8);
+        let msg_info = unsafe { eneros_sel4_message_info_new(0, 0, 0, (mr_words * 8) as u64) };
         // SAFETY: `dest_cap` 为合法 endpoint 能力；`seL4_Send` 无返回数据
         // 依赖（host stub 立即返回）。
         unsafe {
