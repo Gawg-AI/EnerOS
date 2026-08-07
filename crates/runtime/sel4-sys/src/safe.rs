@@ -633,6 +633,163 @@ pub fn arm_page_unmap(page: CPtr) -> Sel4Result<()> {
 }
 
 // ============================================================================
+// IPC（21-A K2.1：ipc_send / ipc_recv / ipc_call / ipc_reply_recv /
+//           set_mr / get_mr / message_info_new）
+// ============================================================================
+
+/// 写消息寄存器封装（`seL4_SetMR`）。
+///
+/// 把 `mr` 写入 MR 槽 `i`。aarch64 上 MR 0..3 走寄存器、其余走 IPC buffer
+/// （TCB 必须已通过 [`tcb_set_ipcbuffer`] 绑定 buffer，否则报错/fault）。
+///
+/// # Safety
+/// 无内存安全风险（MR 槽索引越界由内核/IPC buffer 边界处理）；`i`
+/// 超过 [`types::USER_CONTEXT_MAX_REGS`] 的槽在目标构建由内核返回错误。
+pub fn set_mr(i: Word, mr: Word) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；无指针参数，无内存安全风险。
+        unsafe { crate::ffi::eneros_sel4_set_mr(i, mr) };
+        Ok(())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (i, mr);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// 读消息寄存器封装（`seL4_GetMR`）。
+///
+/// # Safety
+/// 无内存安全风险（同 [`set_mr`]）。
+pub fn get_mr(i: Word) -> Sel4Result<Word> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；无指针参数，无内存安全风险。
+        Ok(unsafe { crate::ffi::eneros_sel4_get_mr(i) })
+    }
+    #[cfg(host_build)]
+    {
+        let _ = i;
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// 构造 MessageInfo 封装（`seL4_MessageInfo_new`）。
+///
+/// 打包 label / caps_unwrapped / extra_caps / length 为 MessageInfo word。
+/// 目标构建以 C shim 的权威 packer 为准（Rust 侧位布局见 [`types`]）。
+///
+/// # Safety
+/// 纯值构造，无指针参数，无内存安全风险。
+pub fn message_info_new(
+    label: Word,
+    caps_unwrapped: Word,
+    extra_caps: Word,
+    length: Word,
+) -> Sel4Result<MessageInfo> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；纯值构造，无内存安全风险。
+        Ok(unsafe {
+            crate::ffi::eneros_sel4_message_info_new(label, caps_unwrapped, extra_caps, length)
+        })
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (label, caps_unwrapped, extra_caps, length);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// 发送消息封装（`seL4_Send`，无回复）。
+///
+/// # Safety
+/// 前置条件：`dest` 是有效的 endpoint 能力；[`set_mr`] 已写入消息载荷。
+/// 无内存安全风险。
+pub fn ipc_send(dest: CPtr, msg_info: MessageInfo) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；前置条件见函数文档。
+        unsafe { crate::ffi::eneros_sel4_send(dest, msg_info) };
+        Ok(())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (dest, msg_info);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// 阻塞接收封装（`seL4_Recv`）。
+///
+/// 在 `src`（endpoint cap；`seL4_CapNull` = 任意来源）上阻塞等待消息。
+/// `sender` 为 `Some` 时写入发送者 cap（`None` = 不需要发送者）。
+///
+/// # Safety
+/// - 可能阻塞（Endpoint 同步语义，禁止在中断上下文调用）；
+/// - `sender: Some(&mut w)` 必须指向有效内存；目标侧转裸指针传给 FFI。
+pub fn ipc_recv(src: CPtr, sender: Option<&mut Word>) -> Sel4Result<MessageInfo> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: sender 为 Option<&mut>——Some 时指向有效内存且独占借用，
+        // None 时传 null（seL4 允许）。封装保证指针生命周期与调用一致。
+        let sender_ptr = sender.map_or(core::ptr::null_mut(), |w| w as *mut Word);
+        Ok(unsafe { crate::ffi::eneros_sel4_recv(src, sender_ptr) })
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (src, sender);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// 同步调用封装（`seL4_Call`，请求→等待回复）。
+///
+/// # Safety
+/// - 可能阻塞（同步往返，禁止在中断上下文调用）；
+/// - `dest` 必须是有效的 endpoint 能力；[`set_mr`] 已写入请求载荷。
+pub fn ipc_call(dest: CPtr, msg_info: MessageInfo) -> Sel4Result<MessageInfo> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；前置条件见函数文档。
+        Ok(unsafe { crate::ffi::eneros_sel4_call(dest, msg_info) })
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (dest, msg_info);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// 回复并继续接收封装（`seL4_ReplyRecv`）。
+///
+/// 服务侧模式：向 `dest` 回复当前请求，然后阻塞接收下一个请求
+/// （`src` 为 `seL4_CapNull` 时接收任意来源）。`sender` 语义同 [`ipc_recv`]。
+///
+/// # Safety
+/// - 可能阻塞（同步语义，禁止在中断上下文调用）；
+/// - `sender: Some(&mut w)` 必须指向有效内存。
+pub fn ipc_reply_recv(
+    dest: CPtr,
+    msg_info: MessageInfo,
+    sender: Option<&mut Word>,
+) -> Sel4Result<MessageInfo> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: sender 同 ipc_recv（Option<&mut> 独占借用，None 传 null）。
+        let sender_ptr = sender.map_or(core::ptr::null_mut(), |w| w as *mut Word);
+        Ok(unsafe { crate::ffi::eneros_sel4_reply_recv(dest, msg_info, sender_ptr) })
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (dest, msg_info, sender);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+// ============================================================================
 // BootInfo 解析（P0-1：untyped 列表 / 空闲 cap 区间 offset 访问器）
 // ============================================================================
 
@@ -923,6 +1080,30 @@ mod tests {
         assert_ne!(caps.cnode, caps.tcb);
         assert_ne!(caps.vspace, caps.tcb);
         assert_ne!(caps.asid_pool, 0);
+    }
+
+    // 21-A K2.1 验收：7 个 IPC 封装 host 构建一律返回 HostUnsupported
+    // （IPC 在 host 无 seL4 无意义，红线 2 禁止模拟成功）。
+    #[test]
+    fn ipc_host_unsupported() {
+        let mut sender = 0u64;
+        assert_eq!(set_mr(0, 1), Err(Sel4Error::HostUnsupported));
+        assert_eq!(get_mr(0), Err(Sel4Error::HostUnsupported));
+        assert_eq!(
+            message_info_new(0, 0, 0, 1),
+            Err(Sel4Error::HostUnsupported)
+        );
+        assert_eq!(ipc_send(1, 0), Err(Sel4Error::HostUnsupported));
+        assert_eq!(ipc_recv(1, None), Err(Sel4Error::HostUnsupported));
+        assert_eq!(
+            ipc_recv(1, Some(&mut sender)),
+            Err(Sel4Error::HostUnsupported)
+        );
+        assert_eq!(ipc_call(1, 0), Err(Sel4Error::HostUnsupported));
+        assert_eq!(
+            ipc_reply_recv(1, 0, Some(&mut sender)),
+            Err(Sel4Error::HostUnsupported)
+        );
     }
 
     #[test]
