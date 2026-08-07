@@ -15,7 +15,6 @@
 //! root-task ↔ EL0 服务 IPC 帧（KRN-002/003）：帧完整性 crc32 + 版本 WIRE_VERSION，由 services/root-task 共用。
 use crate::{crc32, WIRE_VERSION};
 
-
 /// EL0 帧魔数。
 pub const EL0_FRAME_MAGIC: [u8; 4] = *b"E0FR";
 
@@ -106,7 +105,10 @@ pub fn decode_frame<'a>(buf: &'a [u8]) -> Result<El0Frame<'a>, El0FrameError> {
         return Err(El0FrameError::BadCrc);
     }
     let _ = WIRE_VERSION; // 版本发现常量（未来握手使用）
-    Ok(El0Frame { frame_type, payload })
+    Ok(El0Frame {
+        frame_type,
+        payload,
+    })
 }
 
 #[cfg(test)]
@@ -155,6 +157,9 @@ mod tests {
     #[test]
     fn test_krn002_frame_truncated_rejected() {
         let buf = encode_frame(El0FrameType::Ready, b"abc");
-        assert_eq!(decode_frame(&buf[..buf.len() - 2]), Err(El0FrameError::BadLength));
+        assert_eq!(
+            decode_frame(&buf[..buf.len() - 2]),
+            Err(El0FrameError::BadLength)
+        );
     }
 }

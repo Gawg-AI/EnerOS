@@ -8,9 +8,9 @@
 //! 真机数据路径（modbus-rtu/iec104 等真实传输）由设备层注入（BLOCKED 缺硬件）。
 
 use eneros_account::{create_entry, AccountStore, FlowDir};
-use eneros_device_agent::{DeviceRegistry, DeviceType};
 #[cfg(feature = "mock")]
 use eneros_device_agent::MockPointDevice;
+use eneros_device_agent::{DeviceRegistry, DeviceType};
 use eneros_market_types::{MilliYuan, TimeSlot, TradeDir, YuanPerKwh};
 use eneros_protocol_abstract::PointAccess;
 use eneros_settlement::{ClearingEngine, ClearingJob};
@@ -28,7 +28,12 @@ fn main() {
         std::process::exit(2);
     };
     let _ = adapter.read_point(1);
-    registry.register("battery-01", DeviceType::Battery, adapter, Default::default());
+    registry.register(
+        "battery-01",
+        DeviceType::Battery,
+        adapter,
+        Default::default(),
+    );
 
     // 2. 市场结算闭包：电量 × 电价 → 毫元定点
     let job = ClearingJob {
@@ -47,7 +52,14 @@ fn main() {
         ledger.open(1).unwrap();
         // 演示骨架：记账/查询失败可忽略（闭包可达性验证，非生产数据路径；
         // 真机场景由 account 服务的持久化事务处理错误）。
-        let _ = ledger.post(create_entry(1, FlowDir::Credit, 100.0, amount.to_yuan_f64(), Some(1), "firmware-scene"));
+        let _ = ledger.post(create_entry(
+            1,
+            FlowDir::Credit,
+            100.0,
+            amount.to_yuan_f64(),
+            Some(1),
+            "firmware-scene",
+        ));
         let _ = ledger.balance(1);
     }
 

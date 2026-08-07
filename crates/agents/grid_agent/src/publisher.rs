@@ -1,5 +1,6 @@
 //! GridPublisher trait + MockGridPublisher.
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec::Vec;
 
 use crate::state::GridState;

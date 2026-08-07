@@ -15,9 +15,9 @@ use std::rc::Rc;
 use std::string::String;
 
 use eneros_agent::{
-    AgentConfig, AgentRegistry, AgentSpawner, AgentState, AgentType, CheckpointStore,
+    AgentBinary, AgentConfig, AgentRegistry, AgentSpawner, AgentState, AgentType, CheckpointStore,
     CrashRecovery, HeartbeatMonitor, InMemoryCheckpointStore, LifecycleManager,
-    AgentBinary, StaticAgentRegistry, SystemAgent, SystemConfig, SystemEvent,
+    StaticAgentRegistry, SystemAgent, SystemConfig, SystemEvent,
 };
 
 // ---- Minimal valid ELF64 PIE AArch64 binary (128 bytes) ----

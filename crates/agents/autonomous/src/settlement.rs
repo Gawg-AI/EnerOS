@@ -2,9 +2,10 @@
 //!
 //! 定义结算 trait 及自动结算实现。
 
-use eneros_market_types::YuanPerKwh;
 use crate::types::{MilliYuan, Settlement, TradeContext};
 use crate::TradeError;
+#[cfg(test)]
+use eneros_market_types::YuanPerKwh;
 
 /// 结算触发器 trait
 ///
@@ -74,7 +75,11 @@ mod tests {
         assert_eq!(result.deal_id, 1);
         assert_eq!(result.seller_credit_kwh, crate::MilliKwh(150_000));
         assert_eq!(result.buyer_debit_kwh, crate::MilliKwh::from_kwh(150.0));
-        assert_eq!(result.amount_yuan, MilliYuan(90_000), "150 × 0.6 = 90 元 = 90000 毫元");
+        assert_eq!(
+            result.amount_yuan,
+            MilliYuan(90_000),
+            "150 × 0.6 = 90 元 = 90000 毫元"
+        );
         assert_eq!(result.at, 5000);
     }
 

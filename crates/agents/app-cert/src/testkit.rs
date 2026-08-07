@@ -1,11 +1,13 @@
 //! 测试套件
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::string::String;
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec::Vec;
 
-use crate::types::{
-    AppCertCategory, AppCertReport, AppCertSpec, AppPackage, Outcome, TestCaseResult,
-};
+#[cfg(any(test, feature = "mock"))]
+use crate::types::{AppCertCategory, Outcome, TestCaseResult};
+use crate::types::{AppCertReport, AppCertSpec, AppPackage};
 
 /// 应用测试套件 trait
 pub trait AppTestKit {

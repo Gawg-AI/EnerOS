@@ -13,8 +13,8 @@ use std::rc::Rc;
 use std::string::String;
 
 use eneros_agent::{
-    AgentConfig, AgentError, AgentRegistry, AgentSpawner, AgentState, AgentType, LifecycleManager,
-    AgentBinary, ProcessState, StaticAgentRegistry,
+    AgentBinary, AgentConfig, AgentError, AgentRegistry, AgentSpawner, AgentState, AgentType,
+    LifecycleManager, ProcessState, StaticAgentRegistry,
 };
 
 // ---- Minimal valid ELF64 PIE AArch64 binary (128 bytes) ----
@@ -62,10 +62,34 @@ static MINIMAL_ELF: &[u8] = &build_minimal_test_elf();
 
 #[allow(dead_code)]
 static SUCCESS_REGISTRY: StaticAgentRegistry = StaticAgentRegistry::new(&[
-    (AgentType::Energy, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
-    (AgentType::Device, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
-    (AgentType::Market, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
-    (AgentType::Grid, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
+    (
+        AgentType::Energy,
+        AgentBinary {
+            elf: MINIMAL_ELF,
+            manifest: None,
+        },
+    ),
+    (
+        AgentType::Device,
+        AgentBinary {
+            elf: MINIMAL_ELF,
+            manifest: None,
+        },
+    ),
+    (
+        AgentType::Market,
+        AgentBinary {
+            elf: MINIMAL_ELF,
+            manifest: None,
+        },
+    ),
+    (
+        AgentType::Grid,
+        AgentBinary {
+            elf: MINIMAL_ELF,
+            manifest: None,
+        },
+    ),
 ]);
 
 static FAIL_REGISTRY: StaticAgentRegistry = StaticAgentRegistry::new(&[]);

@@ -101,11 +101,7 @@ impl Pl011UartHw {
     ///
     /// `base` 必须指向有效的、已映射的 PL011 寄存器块；调用方保证其在整个
     /// 适配器生命周期内有效。
-    pub unsafe fn new(
-        base: u64,
-        clock_hz: u32,
-        clock: ClockFn,
-    ) -> Self {
+    pub unsafe fn new(base: u64, clock_hz: u32, clock: ClockFn) -> Self {
         Self {
             base,
             clock_hz: if clock_hz == 0 {
@@ -301,21 +297,21 @@ mod tests {
     #[repr(C)]
     #[allow(dead_code)]
     struct Pl011Regs {
-        dr: u32,       // 0x00
-        _rsvd1: u32,   // 0x04
-        _rsvd2: u32,   // 0x08
-        _rsvd3: u32,   // 0x0C
-        _rsvd4: u32,   // 0x10
-        _rsvd5: u32,   // 0x14
-        fr: u32,       // 0x18
-        _rsvd6: u32,   // 0x1C
-        _rsvd7: u32,   // 0x20
-        ibrd: u32,     // 0x24
-        fbrd: u32,     // 0x28
-        lcrh: u32,     // 0x2C
-        cr: u32,       // 0x30
-        _rsvd8: u32,   // 0x34
-        imsc: u32,     // 0x38
+        dr: u32,     // 0x00
+        _rsvd1: u32, // 0x04
+        _rsvd2: u32, // 0x08
+        _rsvd3: u32, // 0x0C
+        _rsvd4: u32, // 0x10
+        _rsvd5: u32, // 0x14
+        fr: u32,     // 0x18
+        _rsvd6: u32, // 0x1C
+        _rsvd7: u32, // 0x20
+        ibrd: u32,   // 0x24
+        fbrd: u32,   // 0x28
+        lcrh: u32,   // 0x2C
+        cr: u32,     // 0x30
+        _rsvd8: u32, // 0x34
+        imsc: u32,   // 0x38
     }
 
     impl Pl011Regs {
@@ -354,8 +350,7 @@ mod tests {
             TEST_CLOCK.store(0, Ordering::Relaxed);
             let regs = Box::into_raw(Box::new(Pl011Regs::zero()));
             // 自增时钟：每次 now_ns 调用 +1ms，模拟真实单调时钟推进。
-            let clock_fn: ClockFn =
-                Box::new(|| TEST_CLOCK.fetch_add(1_000_000, Ordering::Relaxed));
+            let clock_fn: ClockFn = Box::new(|| TEST_CLOCK.fetch_add(1_000_000, Ordering::Relaxed));
             // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真 PL011 寄存器。
             let uart = unsafe { Pl011UartHw::new(regs as u64, 24_000_000, clock_fn) };
             Harness {
@@ -428,15 +423,14 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_configure_sets_baud_divisor() {
         let mut h = Harness::new();
         h.uart
             .configure(9600, 8, StopBits::One, Parity::None)
             .expect("configure");
-            // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
-            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
+        // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
+        // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
         unsafe {
             assert_eq!((*h.regs).ibrd, 156);
             assert_eq!((*h.regs).fbrd, 16);
@@ -483,8 +477,8 @@ mod tests {
         h.push_rx(&[0xAB]);
         h.sync_fr();
         // 适配器读 DR 前，仿真把 RX 字节放进 DR 寄存器。
-            // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
-            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
+        // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
+        // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
         unsafe {
             (*h.regs).dr = h.device_before_read();
         }
@@ -515,14 +509,14 @@ mod tests {
     fn test_rx_irq_enable_disable() {
         let mut h = Harness::new();
         h.uart.enable_rx_irq().expect("enable");
-            // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
-            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
+        // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
+        // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
         unsafe {
             assert_eq!((*h.regs).imsc & IMSC_RXIM, IMSC_RXIM);
         }
         h.uart.disable_rx_irq().expect("disable");
-            // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
-            // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
+        // SAFETY: 测试专用——`regs` 指向 Box 分配的仿真寄存器，访问不越界。
+        // SAFETY: 测试专用——`self.regs` 指向 Box 分配的仿真寄存器；访问不越界。
         unsafe {
             assert_eq!((*h.regs).imsc & IMSC_RXIM, 0);
         }
@@ -531,10 +525,7 @@ mod tests {
     #[test]
     fn test_configure_invalid_baud_rejected() {
         let mut h = Harness::new();
-        assert!(h
-            .uart
-            .configure(0, 8, StopBits::One, Parity::None)
-            .is_err());
+        assert!(h.uart.configure(0, 8, StopBits::One, Parity::None).is_err());
     }
 
     #[test]
@@ -584,8 +575,14 @@ mod tests {
 
         let mut master_h = Harness::new();
         let mut slave_h = Harness::new();
-        master_h.uart.configure(9600, 8, StopBits::One, Parity::None).expect("master cfg");
-        slave_h.uart.configure(9600, 8, StopBits::One, Parity::None).expect("slave cfg");
+        master_h
+            .uart
+            .configure(9600, 8, StopBits::One, Parity::None)
+            .expect("master cfg");
+        slave_h
+            .uart
+            .configure(9600, 8, StopBits::One, Parity::None)
+            .expect("slave cfg");
 
         // master 发送请求帧（逐字节，线缆=共享 FIFO 由测试转移）。
         for &b in &request {
@@ -626,6 +623,10 @@ mod tests {
             let b = master_h.uart.read_byte().expect("rx byte");
             master_rx.push(b);
         }
-        assert_eq!(master_rx, response.to_vec(), "master 收到完整 Modbus 响应帧");
+        assert_eq!(
+            master_rx,
+            response.to_vec(),
+            "master 收到完整 Modbus 响应帧"
+        );
     }
 }

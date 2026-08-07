@@ -1,8 +1,8 @@
-use eneros_solver_core::mock::MockSolver;
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
+use eneros_solver_core::mock::MockSolver;
 
 use eneros_agent::AgentState;
 use eneros_energy_lp_model::config::ScheduleConfig;
@@ -80,7 +80,11 @@ fn t4_revenue_comparator_record_dual_brain() {
     rc.record_dual_brain(100.0);
     rc.record_dual_brain(50.0);
     assert_eq!(rc.dual_brain_revenue.len(), 2);
-    assert_eq!(rc.dual_brain_total(), crate::revenue::MilliYuan(150_000), "100+50 元 = 150 元");
+    assert_eq!(
+        rc.dual_brain_total(),
+        crate::revenue::MilliYuan(150_000),
+        "100+50 元 = 150 元"
+    );
 }
 
 // ===== T5: RevenueComparator::record_traditional + traditional_total =====
@@ -90,7 +94,11 @@ fn t5_revenue_comparator_record_traditional() {
     rc.record_traditional(80.0);
     rc.record_traditional(20.0);
     assert_eq!(rc.traditional_revenue.len(), 2);
-    assert_eq!(rc.traditional_total(), crate::revenue::MilliYuan(100_000), "80+20 元 = 100 元");
+    assert_eq!(
+        rc.traditional_total(),
+        crate::revenue::MilliYuan(100_000),
+        "80+20 元 = 100 元"
+    );
 }
 
 // ===== T6: RevenueComparator::improvement_pct 正常计算（dual=100, trad=80 → 25.0）=====
@@ -346,8 +354,14 @@ fn t20_orchestrator_tick_records_revenue() {
     );
 
     // report 字段应与 comparator 一致
-    assert_eq!(report.dual_brain_revenue, orch.revenue_comparator.dual_brain_total());
-    assert_eq!(report.traditional_revenue, orch.revenue_comparator.traditional_total());
+    assert_eq!(
+        report.dual_brain_revenue,
+        orch.revenue_comparator.dual_brain_total()
+    );
+    assert_eq!(
+        report.traditional_revenue,
+        orch.revenue_comparator.traditional_total()
+    );
 }
 
 // ===== T21: MvpOrchestrator 多 tick 累积收益 =====

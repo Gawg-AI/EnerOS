@@ -213,7 +213,11 @@ mod arc002_tests {
         assert_eq!(score(25.0).trust_level(), TrustLevel::Verified);
         assert_eq!(score(49.9).trust_level(), TrustLevel::Verified);
         assert_eq!(score(50.0).trust_level(), TrustLevel::Trusted);
-        assert_eq!(score(99.9).trust_level(), TrustLevel::Trusted, "System 特权级不由信誉分授予");
+        assert_eq!(
+            score(99.9).trust_level(),
+            TrustLevel::Trusted,
+            "System 特权级不由信誉分授予"
+        );
     }
 
     #[test]

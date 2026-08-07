@@ -71,11 +71,7 @@ impl<T: RtuTransport> ModbusRtuAdapter<T> {
     }
 
     /// 转换原始寄存器值到工程值（在 master() 借用之后调用，避免借用冲突）。
-    fn mapping_convert(
-        &self,
-        point_id: PointId,
-        raw: &[u16],
-    ) -> Result<f64, ModbusError> {
+    fn mapping_convert(&self, point_id: PointId, raw: &[u16]) -> Result<f64, ModbusError> {
         let mapping = self
             .find_mapping(point_id)
             .ok_or(ModbusError::UnexpectedResponse)?;
@@ -157,9 +153,7 @@ impl<T: RtuTransport> ModbusRtuAdapter<T> {
             .find_mapping(point_id)
             .ok_or(ProtocolError::PointNotFound)?;
         let raw: u16 = match value {
-            PointValue::Float(f) => mapping
-                .inverse_convert(f)
-                .map_err(modbus_to_protocol)?,
+            PointValue::Float(f) => mapping.inverse_convert(f).map_err(modbus_to_protocol)?,
             PointValue::Int(i) => mapping
                 .inverse_convert(i as f64)
                 .map_err(modbus_to_protocol)?,
@@ -239,10 +233,15 @@ fn modbus_to_protocol(e: ModbusError) -> ProtocolError {
     use ModbusError::*;
     match e {
         InvalidSlaveAddr | InvalidQuantity | InvalidRegisterAddr => ProtocolError::InvalidConfig,
-        Exception(_) | MaxRetryExceeded | AddrMismatch | CrcMismatch | UnexpectedResponse
-        | FrameTooShort | UnsupportedFunction | FuncCodeMismatch { .. } | Driver(_) => {
-            ProtocolError::ReadFailed
-        }
+        Exception(_)
+        | MaxRetryExceeded
+        | AddrMismatch
+        | CrcMismatch
+        | UnexpectedResponse
+        | FrameTooShort
+        | UnsupportedFunction
+        | FuncCodeMismatch { .. }
+        | Driver(_) => ProtocolError::ReadFailed,
     }
 }
 
@@ -252,10 +251,10 @@ mod tests {
     use alloc::string::String;
     use alloc::vec;
 
-    use eneros_protocol_abstract::contract::{run_adapter_contract, simple_adapter_config};
     use crate::frame::ModbusFrame;
     use crate::mock::MockRtuTransport;
     use crate::point::ModbusDataType;
+    use eneros_protocol_abstract::contract::{run_adapter_contract, simple_adapter_config};
 
     /// 构建读保持寄存器响应帧。
     fn read_resp(slave: u8, regs: &[u16]) -> Vec<u8> {
@@ -311,14 +310,20 @@ mod tests {
         // 4. read_device_points：2 帧
         // 5. read_point(missing)：不发帧（Err 路径）
         for _ in 0..2 {
-            adapter.transport_mut().push_response(read_resp(1, &[100u16]));
-            adapter.transport_mut().push_response(read_resp(2, &[200u16]));
+            adapter
+                .transport_mut()
+                .push_response(read_resp(1, &[100u16]));
+            adapter
+                .transport_mut()
+                .push_response(read_resp(2, &[200u16]));
         }
+        adapter.transport_mut().push_response(write_resp(1, 0, 1));
         adapter
             .transport_mut()
-            .push_response(write_resp(1, 0, 1));
-        adapter.transport_mut().push_response(read_resp(1, &[100u16]));
-        adapter.transport_mut().push_response(read_resp(2, &[200u16]));
+            .push_response(read_resp(1, &[100u16]));
+        adapter
+            .transport_mut()
+            .push_response(read_resp(2, &[200u16]));
 
         let cfg = simple_adapter_config(ProtocolType::ModbusRtu, 7);
         run_adapter_contract(&mut adapter, &cfg, ProtocolType::ModbusRtu, 7, &[1, 2]);

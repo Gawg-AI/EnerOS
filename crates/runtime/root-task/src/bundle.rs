@@ -124,7 +124,10 @@ impl InitBundle {
                 u64::from_le_bytes(raw[entry + 8..entry + 16].try_into().unwrap()) as usize;
             let len = u64::from_le_bytes(raw[entry + 16..entry + 24].try_into().unwrap()) as usize;
             let name_raw = &raw[entry + 24..entry + 24 + INIT_BUNDLE_NAME_MAX];
-            let name_end = name_raw.iter().position(|&b| b == 0).unwrap_or(name_raw.len());
+            let name_end = name_raw
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(name_raw.len());
             if name_end == 0 {
                 return Err(BundleError::BadName);
             }
@@ -216,7 +219,10 @@ mod tests {
         assert_eq!(bundle.modules[0].name, "root-task");
         assert_eq!(bundle.modules[1].blob, vec![1, 2, 3, 4]);
         assert_eq!(bundle.names_of_kind(MODULE_KIND_SERVICE), vec!["svc-hello"]);
-        assert_eq!(bundle.names_of_kind(MODULE_KIND_DRIVER), vec!["svc-drv-rng"]);
+        assert_eq!(
+            bundle.names_of_kind(MODULE_KIND_DRIVER),
+            vec!["svc-drv-rng"]
+        );
     }
 
     #[test]

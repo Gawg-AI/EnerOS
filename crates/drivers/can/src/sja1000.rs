@@ -244,13 +244,11 @@ pub fn baud_to_timing(baud: u32, clock_hz: u32) -> Option<BaudTiming> {
                 if actual == 0 {
                     continue;
                 }
-                let err_ppm = ((actual as i64 - baud as i64).unsigned_abs() * 1_000_000)
-                    / baud as i64
-                    as u64;
+                let err_ppm =
+                    ((actual as i64 - baud as i64).unsigned_abs() * 1_000_000) / baud as i64 as u64;
                 let err_ppm = err_ppm as u32;
                 // 采样点 = (1 + TSEG1) / total_tq，目标 87.5%（=7/8）
-                let sample_x1000 =
-                    ((1 + tseg1) * 1000 + total_tq / 2) / total_tq;
+                let sample_x1000 = ((1 + tseg1) * 1000 + total_tq / 2) / total_tq;
                 let sample_dev = sample_x1000.abs_diff(875);
                 let candidate = BaudTiming {
                     btr0: (brp as u8) & 0x3F,
@@ -265,8 +263,7 @@ pub fn baud_to_timing(baud: u32, clock_hz: u32) -> Option<BaudTiming> {
                         let b_tseg1 = (b.btr1 & 0x0F) as u32 + 1;
                         let b_tseg2 = ((b.btr1 >> 4) & 0x07) as u32 + 1;
                         let b_total = 1 + b_tseg1 + b_tseg2;
-                        let b_sample_x1000 =
-                            ((1 + b_tseg1) * 1000 + b_total / 2) / b_total;
+                        let b_sample_x1000 = ((1 + b_tseg1) * 1000 + b_total / 2) / b_total;
                         let b_dev = b_sample_x1000.abs_diff(875);
                         (candidate.error_ppm, sample_dev) < (b.error_ppm, b_dev)
                     }
@@ -325,7 +322,11 @@ pub fn decode_frame(buf: &[u8; 13]) -> Option<CanFrame> {
     }
     let extended = info & INFO_FF != 0;
     let remote = info & INFO_RTR != 0;
-    let frame_type = if remote { FrameType::Remote } else { FrameType::Data };
+    let frame_type = if remote {
+        FrameType::Remote
+    } else {
+        FrameType::Data
+    };
     let mut data = alloc::vec![0u8; dlc];
     data.copy_from_slice(&buf[BUF_DATA as usize..BUF_DATA as usize + dlc]);
     let id = if extended {
@@ -335,8 +336,7 @@ pub fn decode_frame(buf: &[u8; 13]) -> Option<CanFrame> {
             | ((buf[BUF_ID as usize + 3] as u32) >> 3);
         CanId::Extended(raw & 0x1FFF_FFFF)
     } else {
-        let raw = ((buf[BUF_ID as usize] as u16) << 3)
-            | ((buf[BUF_ID as usize + 1] as u16) >> 5);
+        let raw = ((buf[BUF_ID as usize] as u16) << 3) | ((buf[BUF_ID as usize + 1] as u16) >> 5);
         CanId::Standard(raw & 0x7FF)
     };
     Some(CanFrame {
@@ -374,12 +374,7 @@ pub fn filter_to_acr_amr(filter: &CanFilter) -> ([u8; 4], [u8; 4]) {
         ];
         (acr, amr)
     } else {
-        let acr = [
-            ((id >> 3) & 0xFF) as u8,
-            ((id & 0x07) << 5) as u8,
-            0,
-            0,
-        ];
+        let acr = [((id >> 3) & 0xFF) as u8, ((id & 0x07) << 5) as u8, 0, 0];
         let amr = [
             (!(mask >> 3) & 0xFF) as u8,
             (!(mask & 0x07) << 5) as u8,
@@ -467,7 +462,7 @@ impl<M: Sja1000Mmio> Sja1000Controller<M> {
         // 重写 PeliCAN 模式与输出配置
         self.mmio.write(REG_CDR, CDR_PELICAN);
         self.mmio.write(REG_OCR, 0x1A); // 输出配置：正常推挽
-        // 重写波特率
+                                        // 重写波特率
         if self.baud > 0 {
             self.set_baud_rate(self.baud)?;
         }
@@ -542,7 +537,8 @@ impl<M: Sja1000Mmio> CanController for Sja1000Controller<M> {
 
     fn disable_rx_irq(&mut self) -> Result<(), ()> {
         let ier = self.mmio.read(REG_IER);
-        self.mmio.write(REG_IER, ier & !(IER_RIE | IER_EIE | IER_DOIE));
+        self.mmio
+            .write(REG_IER, ier & !(IER_RIE | IER_EIE | IER_DOIE));
         Ok(())
     }
 

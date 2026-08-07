@@ -46,11 +46,11 @@
 
 extern crate alloc;
 
-#[cfg(feature = "net")]
-pub mod l2_raw;
 pub mod dataset;
 pub mod goose_rx;
 pub mod goose_tx;
+#[cfg(feature = "net")]
+pub mod l2_raw;
 
 pub use dataset::{GooseDataset, GooseEntry};
 pub use goose_rx::{GoosePdu, GooseSubscriber, RxStatus};

@@ -57,7 +57,6 @@ impl HttpMethod {
             Self::Delete => "DELETE",
         }
     }
-
 }
 
 /// 从路径解析审批 ID。
@@ -163,7 +162,9 @@ impl WebHandler {
                     }
                     items.push_str(&alloc::format!(
                         "{{\"id\":{},\"requester\":\"{}\",\"state\":\"{:?}\"}}",
-                        a.id.0, a.requester, a.state
+                        a.id.0,
+                        a.requester,
+                        a.state
                     ));
                 }
                 items.push(']');
@@ -481,10 +482,7 @@ mod tests {
         );
 
         // approve 真实生效（P0-26）。
-        let approve_req = HttpRequest::new(
-            HttpMethod::Post,
-            &alloc::format!("/approve/{}", id.0),
-        );
+        let approve_req = HttpRequest::new(HttpMethod::Post, &alloc::format!("/approve/{}", id.0));
         let resp = handler.handle(&approve_req, &state);
         assert_eq!(resp.status, 200);
         assert!(resp.body.contains("approved"));

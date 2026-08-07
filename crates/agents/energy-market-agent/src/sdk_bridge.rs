@@ -29,11 +29,8 @@ impl<T: Agent> AgentRuntimeAdapter<T> {
     /// 构造适配器（descriptor 从 SDK 描述符初始化）。
     pub fn new(inner: T, now_ms: u64) -> Self {
         let sd = inner.descriptor();
-        let mut descriptor = AgentDescriptor::new(
-            eneros_agent::AgentType::Energy,
-            sd.name.as_str(),
-            now_ms,
-        );
+        let mut descriptor =
+            AgentDescriptor::new(eneros_agent::AgentType::Energy, sd.name.as_str(), now_ms);
         descriptor.state = eneros_agent::AgentState::Created;
         Self {
             inner,
@@ -127,10 +124,7 @@ mod tests {
 
     #[test]
     fn test_arc001_sdk_agent_adapts_to_runtime() {
-        let mut adapter = AgentRuntimeAdapter::new(
-            MockSdkAgent { ticks: 0 },
-            1_000,
-        );
+        let mut adapter = AgentRuntimeAdapter::new(MockSdkAgent { ticks: 0 }, 1_000);
         assert_eq!(adapter.on_heartbeat(1_000), HeartbeatStatus::Dead);
         adapter.on_start(1_100).unwrap();
         assert_eq!(adapter.on_heartbeat(1_200), HeartbeatStatus::Alive);

@@ -204,7 +204,6 @@ impl FileSystem for MockFileSystem {
     }
 }
 
-
 // ============================================================================
 // Tests — mock implementation verifies trait usability
 // ============================================================================
@@ -214,7 +213,6 @@ mod tests {
     #![allow(clippy::disallowed_macros)]
 
     use super::*;
-
 
     #[test]
     fn test_mock_create_and_stat() {

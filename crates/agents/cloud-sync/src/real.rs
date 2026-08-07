@@ -56,21 +56,22 @@ mod tests {
 
     #[test]
     fn test_send_batch_end_to_end() {
-        let mut t = HttpSyncTransport::new("https://cloud.example.com", |b: &SyncBatch, p: &[u8]| {
-            assert_eq!(b.to_offset, 100);
-            assert_eq!(p, b"data");
-            Ok(42)
-        });
+        let mut t =
+            HttpSyncTransport::new("https://cloud.example.com", |b: &SyncBatch, p: &[u8]| {
+                assert_eq!(b.to_offset, 100);
+                assert_eq!(p, b"data");
+                Ok(42)
+            });
         let ack = t.send_batch(&batch(), b"data").expect("send");
         assert_eq!(ack, 42);
     }
 
     #[test]
     fn test_send_error_propagates() {
-        let mut t = HttpSyncTransport::new(
-            "https://cloud.example.com",
-            |_b: &SyncBatch, _p: &[u8]| Err(SyncError::TransportError),
-        );
+        let mut t =
+            HttpSyncTransport::new("https://cloud.example.com", |_b: &SyncBatch, _p: &[u8]| {
+                Err(SyncError::TransportError)
+            });
         assert!(t.send_batch(&batch(), b"x").is_err());
     }
 }

@@ -57,16 +57,16 @@ mod error;
 mod registry;
 
 pub use agent::DeviceAgent;
-pub use command::{CommandSource, DeviceCommand};
 #[cfg(any(test, feature = "mock"))]
 #[cfg(any(test, feature = "mock"))]
 pub use command::MockCommandSource;
+pub use command::{CommandSource, DeviceCommand};
 pub use device_type::{DeviceSnapshot, DeviceState, DeviceType};
 pub use error::DeviceError;
-pub use registry::{DeviceInfo, DeviceRegistry};
 #[cfg(any(test, feature = "mock"))]
 #[cfg(any(test, feature = "mock"))]
 pub use registry::MockPointDevice;
+pub use registry::{DeviceInfo, DeviceRegistry};
 
 #[cfg(test)]
 mod tests;

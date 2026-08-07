@@ -66,14 +66,20 @@ pub extern "C" fn _start() -> ! {
         Some(raw) => match crate::bundle::InitBundle::parse(&raw) {
             Ok(b) => b,
             Err(e) => {
-                println!("[eneros-root-task] init bundle parse FAILED: {:?} — 挂起（fail-closed）", e);
+                println!(
+                    "[eneros-root-task] init bundle parse FAILED: {:?} — 挂起（fail-closed）",
+                    e
+                );
                 loop {
                     core::hint::spin_loop();
                 }
             }
         },
         None => {
-            println!("[eneros-root-task] init bundle missing @ paddr=0x{:x} — 挂起（fail-closed）", INIT_BUNDLE_PHYS);
+            println!(
+                "[eneros-root-task] init bundle missing @ paddr=0x{:x} — 挂起（fail-closed）",
+                INIT_BUNDLE_PHYS
+            );
             loop {
                 core::hint::spin_loop();
             }
@@ -89,7 +95,10 @@ pub extern "C" fn _start() -> ! {
     {
         Ok(plan) => plan,
         Err(e) => {
-            println!("[eneros-root-task] spawn plan FAILED: {:?} — 挂起（fail-closed）", e);
+            println!(
+                "[eneros-root-task] spawn plan FAILED: {:?} — 挂起（fail-closed）",
+                e
+            );
             loop {
                 core::hint::spin_loop();
             }
@@ -117,7 +126,10 @@ pub extern "C" fn _start() -> ! {
             println!("[eneros-root-task] EL0 services spawned — entering service loop");
         }
         Err(e) => {
-            println!("[eneros-root-task] spawn FAILED: {:?} — 挂起（fail-closed）", e);
+            println!(
+                "[eneros-root-task] spawn FAILED: {:?} — 挂起（fail-closed）",
+                e
+            );
             loop {
                 core::hint::spin_loop();
             }

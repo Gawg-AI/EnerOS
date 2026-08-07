@@ -210,8 +210,7 @@ impl<S: HalSerial> CellularModem<S> {
     fn negotiate_ppp(&mut self) -> Result<Ipv4Addr, CellularError> {
         let mut hdlc_buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
         let mut in_frame = false;
-        let deadline = self.timeout_tick()
-            + self.retry_config.retry_interval_ms * 1_000_000;
+        let deadline = self.timeout_tick() + self.retry_config.retry_interval_ms * 1_000_000;
 
         // 尝试多次（max_retries），每次读一批字节累积 HDLC 帧。
         for _ in 0..self.retry_config.max_retries.saturating_mul(10).max(10) {

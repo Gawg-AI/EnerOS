@@ -1,9 +1,13 @@
 //! 市场参与者抽象
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::collections::BTreeMap;
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec::Vec;
 
+#[cfg(any(test, feature = "mock"))]
 use crate::bid::validate_bid;
+#[cfg(any(test, feature = "mock"))]
 use crate::tracker::ExecTracker;
 use crate::types::{Bid, BidAck, ClearingResult, ExecStatus};
 use crate::MarketError;
@@ -119,13 +123,18 @@ impl SpotMarketParticipant for MockParticipant {
 mod tests {
     use super::*;
     use crate::bid::BidBuilder;
-    use eneros_market_types::YuanPerKwh;
     use crate::types::{ClearedSegment, MarketType, SpotMarketType, TimeSlot, TradeDir};
+    use eneros_market_types::YuanPerKwh;
 
     fn make_bid(id: u64) -> Bid {
         BidBuilder::new(id, SpotMarketType::DayAhead, 1)
             .submit_at(1000)
-            .add_segment(TimeSlot::new(0, 3600), 100.0, YuanPerKwh(0.5), TradeDir::Sell)
+            .add_segment(
+                TimeSlot::new(0, 3600),
+                100.0,
+                YuanPerKwh(0.5),
+                TradeDir::Sell,
+            )
             .build()
             .unwrap()
     }

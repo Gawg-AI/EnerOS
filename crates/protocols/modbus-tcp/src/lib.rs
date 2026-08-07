@@ -30,9 +30,9 @@
 
 extern crate alloc;
 
+pub mod adapter;
 pub mod device;
 pub mod error;
-pub mod adapter;
 pub mod master;
 pub mod mbap;
 pub mod transport;
@@ -42,12 +42,12 @@ pub mod mock;
 
 pub use device::TcpDevice;
 // 重导出 v0.45.0 应用层类型，便于上游统一从本 crate 引用
+pub use adapter::ModbusTcpAdapter;
 pub use eneros_modbus_rtu::{
     AccessMode, ExceptionCode, FunctionCode, ModbusDataType, ModbusError, ModbusRequest,
     ModbusResponse, PointMapping, RegToPoint,
 };
 pub use error::ModbusTcpError;
-pub use adapter::ModbusTcpAdapter;
 pub use master::ModbusTcpMaster;
 
 pub use mbap::{MbapHeader, MbapStreamDecoder};

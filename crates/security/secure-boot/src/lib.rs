@@ -49,8 +49,8 @@
 extern crate alloc;
 
 pub mod chain;
-pub mod manifest;
 pub mod header;
+pub mod manifest;
 pub mod report;
 pub mod root_of_trust;
 pub mod secure_boot;

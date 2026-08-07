@@ -2,7 +2,7 @@
 //!
 //! 包含交易阶段、结算信息和交易上下文。
 
-pub use eneros_market_types::{YuanPerKwh, MilliYuan};
+pub use eneros_market_types::{MilliYuan, YuanPerKwh};
 
 /// 交易阶段
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

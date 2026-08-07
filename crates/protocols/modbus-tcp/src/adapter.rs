@@ -52,10 +52,7 @@ impl<T: TcpTransport> ModbusTcpAdapter<T> {
     }
 
     /// 设置点表映射（链式）。
-    pub fn with_mappings(
-        mut self,
-        mappings: Vec<eneros_modbus_rtu::point::RegToPoint>,
-    ) -> Self {
+    pub fn with_mappings(mut self, mappings: Vec<eneros_modbus_rtu::point::RegToPoint>) -> Self {
         self.mappings = mappings;
         self
     }
@@ -105,7 +102,11 @@ impl<T: TcpTransport> ModbusTcpAdapter<T> {
         })
     }
 
-    fn write_point_impl(&mut self, point_id: PointId, value: PointValue) -> Result<(), ProtocolError> {
+    fn write_point_impl(
+        &mut self,
+        point_id: PointId,
+        value: PointValue,
+    ) -> Result<(), ProtocolError> {
         if self.state != AdapterState::Running && self.state != AdapterState::Initialized {
             return Err(ProtocolError::ProtocolNotStarted);
         }
@@ -310,27 +311,13 @@ mod tests {
         // read_point(1) → read_point(2) → read_points(1,2) → write_point →
         // read_device_points(2 点)
         let mut adapter = contract_adapter();
-        adapter
-            .transport
-            .push_response(read_resp(0, &[100u16]));
-        adapter
-            .transport
-            .push_response(read_resp(0, &[200u16]));
-        adapter
-            .transport
-            .push_response(read_resp(0, &[100u16]));
-        adapter
-            .transport
-            .push_response(read_resp(0, &[200u16]));
-        adapter
-            .transport
-            .push_response(write_resp(0, 100, 2));
-        adapter
-            .transport
-            .push_response(read_resp(0, &[100u16]));
-        adapter
-            .transport
-            .push_response(read_resp(0, &[200u16]));
+        adapter.transport.push_response(read_resp(0, &[100u16]));
+        adapter.transport.push_response(read_resp(0, &[200u16]));
+        adapter.transport.push_response(read_resp(0, &[100u16]));
+        adapter.transport.push_response(read_resp(0, &[200u16]));
+        adapter.transport.push_response(write_resp(0, 100, 2));
+        adapter.transport.push_response(read_resp(0, &[100u16]));
+        adapter.transport.push_response(read_resp(0, &[200u16]));
 
         let cfg = simple_adapter_config(ProtocolType::ModbusTcp, 7);
         run_adapter_contract(&mut adapter, &cfg, ProtocolType::ModbusTcp, 7, &[1, 2]);
@@ -347,7 +334,10 @@ mod tests {
         master.read_holding_registers(&dev, 0, 1).unwrap();
         master.read_holding_registers(&dev, 0, 1).unwrap();
         let stats = master.stats().clone();
-        assert_eq!(stats.reconnect_count, 1, "same device must reuse connection");
+        assert_eq!(
+            stats.reconnect_count, 1,
+            "same device must reuse connection"
+        );
         assert_eq!(mock.connect_calls().len(), 1);
     }
 }

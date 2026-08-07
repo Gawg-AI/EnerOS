@@ -264,9 +264,8 @@ impl RamEmmcMmio {
             EmmcCmdType::SendTuningBlock => {
                 // 调优：返回固定模式数据 + 成功响应。
                 let pattern = [
-                    0xFFu8, 0x0F, 0xFF, 0x00, 0xFF, 0xCC, 0xCC, 0xCC,
-                    0x33, 0xCC, 0x33, 0xCC, 0xCC, 0x33, 0xCC, 0x33,
-                    0xCC, 0xCC, 0xCC, 0x33, 0xFF, 0xFF, 0xFF, 0xFF,
+                    0xFFu8, 0x0F, 0xFF, 0x00, 0xFF, 0xCC, 0xCC, 0xCC, 0x33, 0xCC, 0x33, 0xCC, 0xCC,
+                    0x33, 0xCC, 0x33, 0xCC, 0xCC, 0xCC, 0x33, 0xFF, 0xFF, 0xFF, 0xFF,
                 ];
                 for (i, b) in self.data_buf.iter_mut().take(64).enumerate() {
                     *b = pattern[i % pattern.len()];
@@ -313,12 +312,16 @@ impl StorageMmio for RamEmmcMmio {
     }
 
     fn read_block_at(&self, offset: usize, buf: &mut [u8]) {
-        let n = buf.len().min(self.data_buf.len() - offset.min(self.data_buf.len()));
+        let n = buf
+            .len()
+            .min(self.data_buf.len() - offset.min(self.data_buf.len()));
         buf[..n].copy_from_slice(&self.data_buf[offset..offset + n]);
     }
 
     fn write_block_at(&mut self, offset: usize, buf: &[u8]) {
-        let n = buf.len().min(self.data_buf.len() - offset.min(self.data_buf.len()));
+        let n = buf
+            .len()
+            .min(self.data_buf.len() - offset.min(self.data_buf.len()));
         self.data_buf[offset..offset + n].copy_from_slice(&buf[..n]);
     }
 }

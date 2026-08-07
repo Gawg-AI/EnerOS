@@ -122,13 +122,22 @@ impl EcPoint {
         let u1_h_sq = u1.mul_mod(&h_sq, &SM2_P);
         let r_sq = r.mul_mod(&r, &SM2_P);
         // X3 = R² - H³ - 2·U1·H²
-        let x3 = r_sq.sub_mod(&h_cu, &SM2_P).sub_mod(&u1_h_sq, &SM2_P).sub_mod(&u1_h_sq, &SM2_P);
+        let x3 = r_sq
+            .sub_mod(&h_cu, &SM2_P)
+            .sub_mod(&u1_h_sq, &SM2_P)
+            .sub_mod(&u1_h_sq, &SM2_P);
         // Y3 = R·(U1·H² - X3) - S1·H³
-        let y3 = r.mul_mod(&u1_h_sq.sub_mod(&x3, &SM2_P), &SM2_P)
+        let y3 = r
+            .mul_mod(&u1_h_sq.sub_mod(&x3, &SM2_P), &SM2_P)
             .sub_mod(&s1.mul_mod(&h_cu, &SM2_P), &SM2_P);
         // Z3 = Z1·Z2·H
         let z3 = z1.mul_mod(&z2, &SM2_P).mul_mod(&h, &SM2_P);
-        EcPoint { x: x3, y: y3, z: z3, is_infinity: false }
+        EcPoint {
+            x: x3,
+            y: y3,
+            z: z3,
+            is_infinity: false,
+        }
     }
 
     /// 点倍：2 * self（Jacobian 坐标，CRY-001，无模逆）。
@@ -147,12 +156,18 @@ impl EcPoint {
         let c = b.mul_mod(&b, &SM2_P);
         let x_plus_b = self.x.add_mod(&b, &SM2_P);
         let d = {
-            let t = x_plus_b.mul_mod(&x_plus_b, &SM2_P).sub_mod(&a, &SM2_P).sub_mod(&c, &SM2_P);
+            let t = x_plus_b
+                .mul_mod(&x_plus_b, &SM2_P)
+                .sub_mod(&a, &SM2_P)
+                .sub_mod(&c, &SM2_P);
             t.add_mod(&t, &SM2_P)
         };
         let z_sq = self.z.mul_mod(&self.z, &SM2_P);
         let z_4 = z_sq.mul_mod(&z_sq, &SM2_P);
-        let e = a.sub_mod(&z_4, &SM2_P).add_mod(&a.sub_mod(&z_4, &SM2_P), &SM2_P).add_mod(&a.sub_mod(&z_4, &SM2_P), &SM2_P);
+        let e = a
+            .sub_mod(&z_4, &SM2_P)
+            .add_mod(&a.sub_mod(&z_4, &SM2_P), &SM2_P)
+            .add_mod(&a.sub_mod(&z_4, &SM2_P), &SM2_P);
         let e_sq = e.mul_mod(&e, &SM2_P);
         let x3 = e_sq.sub_mod(&d, &SM2_P).sub_mod(&d, &SM2_P);
         let eight_c = c
@@ -163,9 +178,19 @@ impl EcPoint {
             .add_mod(&c, &SM2_P) // 6C
             .add_mod(&c, &SM2_P) // 7C
             .add_mod(&c, &SM2_P); // 8C
-        let y3 = e.mul_mod(&d.sub_mod(&x3, &SM2_P), &SM2_P).sub_mod(&eight_c, &SM2_P);
-        let two_yz = self.y.mul_mod(&self.z, &SM2_P).add_mod(&self.y.mul_mod(&self.z, &SM2_P), &SM2_P);
-        EcPoint { x: x3, y: y3, z: two_yz, is_infinity: false }
+        let y3 = e
+            .mul_mod(&d.sub_mod(&x3, &SM2_P), &SM2_P)
+            .sub_mod(&eight_c, &SM2_P);
+        let two_yz = self
+            .y
+            .mul_mod(&self.z, &SM2_P)
+            .add_mod(&self.y.mul_mod(&self.z, &SM2_P), &SM2_P);
+        EcPoint {
+            x: x3,
+            y: y3,
+            z: two_yz,
+            is_infinity: false,
+        }
     }
 
     /// 标量乘法 k * P（恒定时间，CRY-001）——Montgomery ladder +
@@ -210,7 +235,12 @@ impl EcPoint {
         let z_inv_cu = z_inv_sq.mul_mod(&z_inv, &SM2_P);
         let x = self.x.mul_mod(&z_inv_sq, &SM2_P);
         let y = self.y.mul_mod(&z_inv_cu, &SM2_P);
-        EcPoint { x, y, z: crate::bigint::ONE, is_infinity: false }
+        EcPoint {
+            x,
+            y,
+            z: crate::bigint::ONE,
+            is_infinity: false,
+        }
     }
 
     /// 基点标量乘法 k * G.

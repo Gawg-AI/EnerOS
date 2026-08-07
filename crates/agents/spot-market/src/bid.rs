@@ -99,7 +99,12 @@ mod tests {
     fn make_valid_bid() -> Bid {
         BidBuilder::new(1, SpotMarketType::DayAhead, 100)
             .submit_at(1000)
-            .add_segment(TimeSlot::new(0, 3600), 100.0, YuanPerKwh(0.45), TradeDir::Sell)
+            .add_segment(
+                TimeSlot::new(0, 3600),
+                100.0,
+                YuanPerKwh(0.45),
+                TradeDir::Sell,
+            )
             .build()
             .unwrap()
     }
@@ -205,7 +210,12 @@ mod tests {
         let bid = BidBuilder::new(8, SpotMarketType::IntraDay, 200)
             .submit_at(2000)
             .add_segment(TimeSlot::new(0, 3600), 50.0, YuanPerKwh(0.4), TradeDir::Buy)
-            .add_segment(TimeSlot::new(3600, 7200), 80.0, YuanPerKwh(0.5), TradeDir::Sell)
+            .add_segment(
+                TimeSlot::new(3600, 7200),
+                80.0,
+                YuanPerKwh(0.5),
+                TradeDir::Sell,
+            )
             .build()
             .unwrap();
         assert_eq!(bid.segments.len(), 2);

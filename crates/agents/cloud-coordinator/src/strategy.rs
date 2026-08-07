@@ -127,7 +127,9 @@ pub fn validate_strategy(
             if !local_state.max_capacity_mw.is_finite() || local_state.max_capacity_mw <= 0.0 {
                 return Err(RejectReason::ExceedsCapacity);
             }
-            if !dr.target_kw.is_finite() || dr.target_kw.abs() > (local_state.max_capacity_mw * 1000.0) as f64 {
+            if !dr.target_kw.is_finite()
+                || dr.target_kw.abs() > (local_state.max_capacity_mw * 1000.0) as f64
+            {
                 return Err(RejectReason::ExceedsCapacity);
             }
         }

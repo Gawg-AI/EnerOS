@@ -68,7 +68,10 @@ mod tests {
     #[test]
     fn test_all_match() {
         let reconciler = Reconciler::new();
-        let results = vec![make_result(1, MilliYuan(50_000)), make_result(2, MilliYuan(80_000))];
+        let results = vec![
+            make_result(1, MilliYuan(50_000)),
+            make_result(2, MilliYuan(80_000)),
+        ];
         let expected = vec![(1, MilliYuan(50_000)), (2, MilliYuan(80_000))];
 
         let report = reconciler.reconcile(&results, &expected);
@@ -81,7 +84,10 @@ mod tests {
     #[test]
     fn test_some_mismatch() {
         let reconciler = Reconciler::new();
-        let results = vec![make_result(1, MilliYuan(50_000)), make_result(2, MilliYuan(80_000))];
+        let results = vec![
+            make_result(1, MilliYuan(50_000)),
+            make_result(2, MilliYuan(80_000)),
+        ];
         // deal 2 预期 90，实际 80 => 不匹配
         let expected = vec![(1, MilliYuan(50_000)), (2, MilliYuan(90_000))];
 
@@ -162,12 +168,7 @@ mod tests {
         let _price = bid.segments[0].price;
 
         // 多组属性组合：交付电量 × 电价 → 金额，全部经 reconcile 匹配
-        let combos: &[(f64, f64)] = &[
-            (100.0, 0.5),
-            (80.0, 0.5),
-            (120.0, 0.5),
-            (100.0, 0.75),
-        ];
+        let combos: &[(f64, f64)] = &[(100.0, 0.5), (80.0, 0.5), (120.0, 0.5), (100.0, 0.75)];
         let mut engine = ClearingEngine::new();
         let mut results = Vec::new();
         let mut expected: Vec<(u64, MilliYuan)> = Vec::new();

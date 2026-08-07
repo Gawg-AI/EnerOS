@@ -143,9 +143,9 @@ fn resolve_object_types() -> ObjectTypeTable {
         endpoint: 4,
         notification: 3,
         captable: 2,
-        arm_frame: 10, // seL4_ARM_SmallPageObject
+        arm_frame: 10,      // seL4_ARM_SmallPageObject
         arm_page_table: 11, // seL4_ARM_PageTableObject
-        arm_vspace: 9, // seL4_ARM_PageDirectoryObject
+        arm_vspace: 9,      // seL4_ARM_PageDirectoryObject
     }
 }
 
@@ -272,7 +272,16 @@ pub fn retype(
     #[cfg(host_build)]
     {
         // host stub：模拟成功；由 host 测试桩覆盖错误映射。
-        let _ = (untyped, object_type, size_bits, count, dest_root, dest_index, dest_depth, offset);
+        let _ = (
+            untyped,
+            object_type,
+            size_bits,
+            count,
+            dest_root,
+            dest_index,
+            dest_depth,
+            offset,
+        );
         Ok(())
     }
 }
@@ -287,9 +296,8 @@ pub fn tcb_write_registers(
     #[cfg(sel4_target)]
     {
         // SAFETY: regs 必须指向 count 个有效寄存器；调用方保证。
-        let err = unsafe {
-            crate::ffi::eneros_sel4_tcb_write_registers(tcb, 0, flags, count, regs)
-        };
+        let err =
+            unsafe { crate::ffi::eneros_sel4_tcb_write_registers(tcb, 0, flags, count, regs) };
         to_sel4_result(err, ())
     }
     #[cfg(host_build)]
@@ -366,7 +374,9 @@ pub fn cnode_mint(
     }
     #[cfg(host_build)]
     {
-        let _ = (dest_root, dest_index, dest_depth, src_root, src_index, src_depth, rights);
+        let _ = (
+            dest_root, dest_index, dest_depth, src_root, src_index, src_depth, rights,
+        );
         Ok(())
     }
 }
@@ -602,8 +612,16 @@ mod tests {
     #[test]
     fn bootinfo_parses_untyped_list() {
         let list = vec![
-            UntypedDesc { paddr: 0x1000, size_bits: 20, is_device: false },
-            UntypedDesc { paddr: 0xA000_0000, size_bits: 22, is_device: true },
+            UntypedDesc {
+                paddr: 0x1000,
+                size_bits: 20,
+                is_device: false,
+            },
+            UntypedDesc {
+                paddr: 0xA000_0000,
+                size_bits: 22,
+                is_device: true,
+            },
         ];
         let blob = build_test_bootinfo_blob(30, 40, list);
         let reader = BootInfoReader::from_bytes(&blob).expect("parse");

@@ -7,9 +7,9 @@ use alloc::vec::Vec;
 use eneros_agent::{AgentDescriptor, AgentState, AgentType};
 
 use crate::error::AgentRuntimeError;
-use crate::market::{MarketChannel, MarketDataSource};
 #[cfg(any(test, feature = "mock"))]
 use crate::market::MockMarketSource;
+use crate::market::{MarketChannel, MarketDataSource};
 use crate::runtime::{AgentRuntime, HeartbeatStatus};
 
 /// 市场数据 Agent.

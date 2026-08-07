@@ -9,8 +9,8 @@
 //! 返回 `&Sm2PublicKey` 生命周期绑定到已验签镜像——装配方无法在
 use eneros_crypto::Sm2PublicKey;
 
-use crate::BootError;
 use crate::header::{encode_header, ImageSignature};
+use crate::BootError;
 
 pub const MANIFEST_MAGIC: [u8; 4] = *b"BMAN";
 /// Manifest 版本。

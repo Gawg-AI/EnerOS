@@ -1,4 +1,3 @@
-
 //! root-task 服务化主循环（KRN-004）：BootInfo 消费后进入 EL0 服务调度。
 //!
 //! M2.1（seL4 TCB/CSpace/VSpace FFI）前，服务循环以纯逻辑形式存在并
@@ -37,7 +36,9 @@ pub fn dispatch_frame(
 ) -> Result<DispatchAction, eneros_ipc_wire::el0::El0FrameError> {
     let frame = eneros_ipc_wire::el0::decode_frame(buf)?;
     Ok(match frame.frame_type {
-        El0FrameType::Ready => DispatchAction::ServiceReady(service_name(frame.payload, registered)),
+        El0FrameType::Ready => {
+            DispatchAction::ServiceReady(service_name(frame.payload, registered))
+        }
         El0FrameType::Report => DispatchAction::ForwardReport,
         El0FrameType::Control => DispatchAction::EmitControl,
     })
@@ -48,7 +49,10 @@ pub fn dispatch_frame(
 /// 未注册的服务名返回 "unknown"（fail-closed：不将未知服务记为就绪）。
 /// v0.199.0：注册表来自 bundle manifest 而非硬编码字节表。
 pub fn service_name(payload: &[u8], registered: &[&str]) -> alloc::string::String {
-    let end = payload.iter().position(|&b| b == 0).unwrap_or(payload.len());
+    let end = payload
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(payload.len());
     let name = &payload[..end];
     match core::str::from_utf8(name) {
         Ok(name) if registered.contains(&name) => name.to_string(),
@@ -59,13 +63,19 @@ pub fn service_name(payload: &[u8], registered: &[&str]) -> alloc::string::Strin
 /// KRN-004：config 服务接入点——Report 帧携带 config 读请求时，
 /// 返回当前服务集合规模（host 侧闭环演示；真实 ConfigStore 服务由
 /// runtime 层在 M2.1 后以 EL0 服务形态接入）。
-pub fn config_service_roundtrip(registered_services: usize, buf: &[u8]) -> Result<alloc::vec::Vec<u8>, eneros_ipc_wire::el0::El0FrameError> {
+pub fn config_service_roundtrip(
+    registered_services: usize,
+    buf: &[u8],
+) -> Result<alloc::vec::Vec<u8>, eneros_ipc_wire::el0::El0FrameError> {
     let frame = eneros_ipc_wire::el0::decode_frame(buf)?;
     if frame.frame_type != El0FrameType::Report {
         return Err(eneros_ipc_wire::el0::El0FrameError::BadType);
     }
     let resp = alloc::format!("config:services={}", registered_services);
-    Ok(eneros_ipc_wire::el0::encode_frame(El0FrameType::Report, resp.as_bytes()))
+    Ok(eneros_ipc_wire::el0::encode_frame(
+        El0FrameType::Report,
+        resp.as_bytes(),
+    ))
 }
 
 /// 一个已校验的 EL0 服务（可 spawn）。

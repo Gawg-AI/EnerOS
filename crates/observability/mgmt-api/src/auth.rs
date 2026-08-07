@@ -8,7 +8,7 @@
 //! - [`TokenVerifier`] — 验签 + 过期检查 + 角色提取；伪造角色请求
 //!   在验签期必失败（`SignatureInvalid`/`TokenExpired`）。
 
-use eneros_crypto::{sm3_hash, sm2_verify, Sm2PublicKey, Sm2Signature};
+use eneros_crypto::{sm2_verify, sm3_hash, Sm2PublicKey, Sm2Signature};
 
 use crate::Role;
 
@@ -137,8 +137,8 @@ mod tests {
         expires_at: u64,
     ) -> SignedToken {
         let digest = SignedToken::compute_digest(role, issued_at, expires_at);
-        let sig = eneros_crypto::sm2_sign(&digest, &kp.private_key, &kp.public_key, rng)
-            .expect("sign");
+        let sig =
+            eneros_crypto::sm2_sign(&digest, &kp.private_key, &kp.public_key, rng).expect("sign");
         SignedToken {
             role,
             issued_at,

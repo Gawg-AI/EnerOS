@@ -18,7 +18,11 @@ use crate::RealtimeError;
 /// 实时出清网关抽象。
 pub trait RealtimeClearingGateway {
     /// 查询指定会话+序号的出清结果。
-    fn fetch_clearing(&mut self, session_id: u64, seq: u64) -> Result<RealtimeClearing, RealtimeError>;
+    fn fetch_clearing(
+        &mut self,
+        session_id: u64,
+        seq: u64,
+    ) -> Result<RealtimeClearing, RealtimeError>;
 }
 
 /// 协议出清客户端。
@@ -52,13 +56,29 @@ where
     }
 
     /// 解析出清响应。
-    pub fn decode_response(session_id: u64, seq: u64, resp: &[u8]) -> Result<RealtimeClearing, RealtimeError> {
+    pub fn decode_response(
+        session_id: u64,
+        seq: u64,
+        resp: &[u8],
+    ) -> Result<RealtimeClearing, RealtimeError> {
         if resp.len() < 1 + 8 + 8 + 8 || resp[0] != b'P' {
             return Err(RealtimeError::ClearingNotFound);
         }
-        let price = f64::from_le_bytes(resp[1..9].try_into().map_err(|_| RealtimeError::ClearingNotFound)?);
-        let volume = f64::from_le_bytes(resp[9..17].try_into().map_err(|_| RealtimeError::ClearingNotFound)?);
-        let cleared_at = u64::from_le_bytes(resp[17..25].try_into().map_err(|_| RealtimeError::ClearingNotFound)?);
+        let price = f64::from_le_bytes(
+            resp[1..9]
+                .try_into()
+                .map_err(|_| RealtimeError::ClearingNotFound)?,
+        );
+        let volume = f64::from_le_bytes(
+            resp[9..17]
+                .try_into()
+                .map_err(|_| RealtimeError::ClearingNotFound)?,
+        );
+        let cleared_at = u64::from_le_bytes(
+            resp[17..25]
+                .try_into()
+                .map_err(|_| RealtimeError::ClearingNotFound)?,
+        );
         Ok(RealtimeClearing {
             session_id,
             seq,
@@ -73,7 +93,11 @@ impl<T> RealtimeClearingGateway for RealtimeProtocolClient<T>
 where
     T: FnMut(&[u8]) -> Result<Vec<u8>, RealtimeError>,
 {
-    fn fetch_clearing(&mut self, session_id: u64, seq: u64) -> Result<RealtimeClearing, RealtimeError> {
+    fn fetch_clearing(
+        &mut self,
+        session_id: u64,
+        seq: u64,
+    ) -> Result<RealtimeClearing, RealtimeError> {
         let req = Self::encode_query(session_id, seq);
         let resp = (self.transport)(&req)?;
         Self::decode_response(session_id, seq, &resp)
@@ -99,7 +123,10 @@ mod tests {
 
     #[test]
     fn test_encode_query_layout() {
-        let req = RealtimeProtocolClient::<fn(&[u8]) -> Result<Vec<u8>, RealtimeError>>::encode_query(3, 9);
+        let req =
+            RealtimeProtocolClient::<fn(&[u8]) -> Result<Vec<u8>, RealtimeError>>::encode_query(
+                3, 9,
+            );
         assert_eq!(req[0], b'R');
         assert_eq!(&req[1..9], &3u64.to_le_bytes());
         assert_eq!(&req[9..17], &9u64.to_le_bytes());
@@ -111,7 +138,10 @@ mod tests {
         resp.extend_from_slice(&150.0f64.to_le_bytes());
         resp.extend_from_slice(&100.0f64.to_le_bytes());
         resp.extend_from_slice(&2000u64.to_le_bytes());
-        let r = RealtimeProtocolClient::<fn(&[u8]) -> Result<Vec<u8>, RealtimeError>>::decode_response(3, 9, &resp)
+        let r =
+            RealtimeProtocolClient::<fn(&[u8]) -> Result<Vec<u8>, RealtimeError>>::decode_response(
+                3, 9, &resp,
+            )
             .expect("decode");
         assert_eq!(r.session_id, 3);
         assert_eq!(r.seq, 9);
@@ -123,7 +153,10 @@ mod tests {
     #[test]
     fn test_decode_response_truncated_rejected() {
         let resp = vec![b'P', 0x01];
-        let r = RealtimeProtocolClient::<fn(&[u8]) -> Result<Vec<u8>, RealtimeError>>::decode_response(1, 1, &resp);
+        let r =
+            RealtimeProtocolClient::<fn(&[u8]) -> Result<Vec<u8>, RealtimeError>>::decode_response(
+                1, 1, &resp,
+            );
         assert!(r.is_err());
     }
 

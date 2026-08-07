@@ -36,7 +36,7 @@ pub fn is_expired(now: u64, deadline: u64) -> bool {
 
 impl RequestId {
     /// 分配下一个关联 ID（回绕）。
-    pub fn next(&mut self) -> u64 {
+    pub fn next_id(&mut self) -> u64 {
         let id = self.0;
         self.0 = self.0.wrapping_add(1);
         id
@@ -52,7 +52,8 @@ impl RequestId {
 /// 必须回带相同 ID；`response_id` 校验拒绝错配响应。
 #[cfg(any(test, feature = "sel4"))]
 pub struct Sel4IpcClient {
-    /// 本地端点名称（供 peer 发现）。
+    /// 本地端点名称（供 peer 发现；目标构建经服务发现读取）。
+    #[allow(dead_code)]
     endpoint: heapless::String<64>,
     /// 目标 endpoint 能力句柄。
     dest_cap: u64,
@@ -78,11 +79,7 @@ impl Sel4IpcClient {
     /// - `endpoint`: 本地端点名（服务发现/诊断）
     /// - `dest_cap`: 目标 endpoint 能力句柄（由 root-task 授予）
     /// - `now_ns`: 纳秒时钟函数（单调时钟）
-    pub fn new(
-        endpoint: &str,
-        dest_cap: u64,
-        now_ns: fn() -> u64,
-    ) -> Result<Self, AgentError> {
+    pub fn new(endpoint: &str, dest_cap: u64, now_ns: fn() -> u64) -> Result<Self, AgentError> {
         let ep = heapless::String::<64>::try_from(endpoint).map_err(|_| {
             AgentError::InitFailed(
                 heapless::String::<128>::try_from("endpoint too long").unwrap_or_default(),
@@ -116,13 +113,13 @@ impl Sel4IpcClient {
         timeout_ns: u64,
     ) -> Result<Vec<u8>, AgentError> {
         use eneros_sel4_sys::ffi::{
-            eneros_sel4_call, eneros_sel4_get_mr, eneros_sel4_message_info_new,
-            eneros_sel4_set_mr,
+            eneros_sel4_call, eneros_sel4_get_mr, eneros_sel4_message_info_new, eneros_sel4_set_mr,
         };
-        let id = self.request_id.next();
-        let deadline = self.now().checked_add(timeout_ns).ok_or_else(|| {
-            self.ipc_err("deadline overflow")
-        })?;
+        let id = self.request_id.next_id();
+        let deadline = self
+            .now()
+            .checked_add(timeout_ns)
+            .ok_or_else(|| self.ipc_err("deadline overflow"))?;
         // 蓝图/20 R2-2：pending 表登记（关联 ID → 截止时间）；
         // 同步 `seL4_Call` 语义下登记窗口覆盖调用全程，超时以
         // `now() > deadline` 判定（单调时钟注入，host 可测）。
@@ -249,22 +246,19 @@ impl Sel4IpcClient {
 mod tests {
     use super::*;
 
-    /// 超时测试注入时钟（单线程测试，静态简化）。
-    static mut TEST_CLOCK: u64 = 1_000;
-
     #[test]
     fn test_request_id_increments() {
         let mut id = RequestId::default();
-        assert_eq!(id.next(), 0);
-        assert_eq!(id.next(), 1);
-        assert_eq!(id.next(), 2);
+        assert_eq!(id.next_id(), 0);
+        assert_eq!(id.next_id(), 1);
+        assert_eq!(id.next_id(), 2);
     }
 
     #[test]
     fn test_request_id_wraps() {
         let mut id = RequestId(u64::MAX);
-        assert_eq!(id.next(), u64::MAX);
-        assert_eq!(id.next(), 0);
+        assert_eq!(id.next_id(), u64::MAX);
+        assert_eq!(id.next_id(), 0);
     }
 
     #[test]
@@ -302,7 +296,7 @@ mod tests {
     #[test]
     fn test_endpoint_too_long_rejected() {
         // host 构建无 sel4：此测试仅验证 RequestId（见其他用例）。
-{
+        {
             let long = "x".repeat(65);
             let r = Sel4IpcClient::new(&long, 1, || 0);
             assert!(r.is_err());

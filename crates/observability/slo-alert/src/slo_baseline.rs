@@ -212,9 +212,9 @@ pub static FROZEN_BASELINES: &[SloBaseline] = &[
             network_stress_percent: 50,
             control_loop_active: true,
         },
-        p50_target_ns: 10_000,    // 10us
-        p99_target_ns: 50_000,    // 50us
-        p999_target_ns: 100_000,  // 100us
+        p50_target_ns: 10_000,   // 10us
+        p99_target_ns: 50_000,   // 50us
+        p999_target_ns: 100_000, // 100us
         max_deadline_miss_per_million: 1000,
         max_jitter_ns: 80_000,
     },

@@ -428,8 +428,14 @@ mod tests {
         // TPM2_Create：命令码 0x153 + parentHandle + inSensitive(含 seal 数据)
         let seal = b"sealed-secret";
         let cmd = build_create_cmd(0x4000_0001, seal);
-        assert_eq!(u32::from_be_bytes([cmd[6], cmd[7], cmd[8], cmd[9]]), TPM_CC_CREATE);
-        assert_eq!(u32::from_be_bytes([cmd[10], cmd[11], cmd[12], cmd[13]]), 0x4000_0001);
+        assert_eq!(
+            u32::from_be_bytes([cmd[6], cmd[7], cmd[8], cmd[9]]),
+            TPM_CC_CREATE
+        );
+        assert_eq!(
+            u32::from_be_bytes([cmd[10], cmd[11], cmd[12], cmd[13]]),
+            0x4000_0001
+        );
         // inSensitive 内应包含 seal 数据（size 字段后）
         let data = cmd.windows(seal.len()).any(|w| w == seal);
         assert!(data, "Create 命令 inSensitive 必须包含 seal 数据");
@@ -441,8 +447,14 @@ mod tests {
     #[test]
     fn test_cry003_unseal_cmd_encoding() {
         let cmd = build_unseal_cmd(0x8000_0001);
-        assert_eq!(u32::from_be_bytes([cmd[6], cmd[7], cmd[8], cmd[9]]), TPM_CC_UNSEAL);
-        assert_eq!(u32::from_be_bytes([cmd[10], cmd[11], cmd[12], cmd[13]]), 0x8000_0001);
+        assert_eq!(
+            u32::from_be_bytes([cmd[6], cmd[7], cmd[8], cmd[9]]),
+            TPM_CC_UNSEAL
+        );
+        assert_eq!(
+            u32::from_be_bytes([cmd[10], cmd[11], cmd[12], cmd[13]]),
+            0x8000_0001
+        );
         let size = u32::from_be_bytes([cmd[2], cmd[3], cmd[4], cmd[5]]);
         assert_eq!(size as usize, cmd.len());
     }
@@ -450,7 +462,10 @@ mod tests {
     #[test]
     fn test_cry003_load_cmd_encoding() {
         let cmd = build_load_cmd(0x4000_0001, &[0xAA; 16], &[0xBB; 24]);
-        assert_eq!(u32::from_be_bytes([cmd[6], cmd[7], cmd[8], cmd[9]]), TPM_CC_LOAD);
+        assert_eq!(
+            u32::from_be_bytes([cmd[6], cmd[7], cmd[8], cmd[9]]),
+            TPM_CC_LOAD
+        );
         // inPrivate size 字段 = 16
         assert_eq!(cmd[14], 0);
         assert_eq!(cmd[15], 16);
@@ -464,7 +479,9 @@ mod tests {
         let big = vec![0x42u8; TPM_SEAL_DATA_MAX + 50];
         let cmd = build_create_cmd(0x4000_0001, &big);
         // sensitive data 长度被截到 TPM_SEAL_DATA_MAX
-        let data = cmd.windows(TPM_SEAL_DATA_MAX).any(|w| w == &big[..TPM_SEAL_DATA_MAX]);
+        let data = cmd
+            .windows(TPM_SEAL_DATA_MAX)
+            .any(|w| w == &big[..TPM_SEAL_DATA_MAX]);
         assert!(data, "seal 数据截断到上限");
     }
 

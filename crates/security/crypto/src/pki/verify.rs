@@ -334,31 +334,60 @@ mod tests {
         let root_sk: p256::ecdsa::SigningKey = SigningKey::from_bytes(&[0x21; 32].into()).unwrap();
         let leaf_sk: p256::ecdsa::SigningKey = SigningKey::from_bytes(&[0x42; 32].into()).unwrap();
         let root_pk = SubjectPublicKey::EcdsaP256(
-            root_sk.verifying_key().to_encoded_point(false).as_bytes().to_vec(),
+            root_sk
+                .verifying_key()
+                .to_encoded_point(false)
+                .as_bytes()
+                .to_vec(),
         );
         let leaf_pk = SubjectPublicKey::EcdsaP256(
-            leaf_sk.verifying_key().to_encoded_point(false).as_bytes().to_vec(),
+            leaf_sk
+                .verifying_key()
+                .to_encoded_point(false)
+                .as_bytes()
+                .to_vec(),
         );
 
         let root_dn = DistinguishedName::new("eneros-ecdsa-root");
 
         // 根证书（自签）
-        let root_unsigned = ecdsa_test_cert(1, "eneros-ecdsa-root", &root_dn, root_pk.clone(), Vec::new());
+        let root_unsigned = ecdsa_test_cert(
+            1,
+            "eneros-ecdsa-root",
+            &root_dn,
+            root_pk.clone(),
+            Vec::new(),
+        );
         let root_tbs = root_unsigned.encode_tbs().unwrap();
         let root_sig: p256::ecdsa::Signature = root_sk.sign(&root_tbs);
         let root_sig = root_sig.to_der().as_bytes().to_vec();
         let root = ecdsa_test_cert(1, "eneros-ecdsa-root", &root_dn, root_pk.clone(), root_sig);
 
         // 叶子证书（根签发，ECDSA 公钥）
-        let leaf_unsigned = ecdsa_test_cert(2, "eneros-ecdsa-leaf", &root_dn, leaf_pk.clone(), Vec::new());
+        let leaf_unsigned = ecdsa_test_cert(
+            2,
+            "eneros-ecdsa-leaf",
+            &root_dn,
+            leaf_pk.clone(),
+            Vec::new(),
+        );
         let leaf_tbs = leaf_unsigned.encode_tbs().unwrap();
         let leaf_sig: p256::ecdsa::Signature = root_sk.sign(&leaf_tbs);
         let leaf_sig = leaf_sig.to_der().as_bytes().to_vec();
-        let leaf = ecdsa_test_cert(2, "eneros-ecdsa-leaf", &root_dn, leaf_pk.clone(), leaf_sig.clone());
+        let leaf = ecdsa_test_cert(
+            2,
+            "eneros-ecdsa-leaf",
+            &root_dn,
+            leaf_pk.clone(),
+            leaf_sig.clone(),
+        );
 
         // 正向：链验证通过
         let verifier = CertVerifier::new(vec![root.clone()]);
-        assert_eq!(verifier.verify_chain(&[leaf.clone(), root.clone()], NOW), Ok(()));
+        assert_eq!(
+            verifier.verify_chain(&[leaf.clone(), root.clone()], NOW),
+            Ok(())
+        );
 
         // 负例 a：篡改叶子签名 → SignatureInvalid
         let mut tampered = leaf.clone();
@@ -371,10 +400,19 @@ mod tests {
         // 负例 b（SPKI 根比对）：CN 相同的伪根（公钥不同）→ UntrustedRoot
         let fake_sk: p256::ecdsa::SigningKey = SigningKey::from_bytes(&[0x99; 32].into()).unwrap();
         let fake_pk = SubjectPublicKey::EcdsaP256(
-            fake_sk.verifying_key().to_encoded_point(false).as_bytes().to_vec(),
+            fake_sk
+                .verifying_key()
+                .to_encoded_point(false)
+                .as_bytes()
+                .to_vec(),
         );
-        let fake_root_unsigned =
-            ecdsa_test_cert(9, "eneros-ecdsa-root", &root_dn, fake_pk.clone(), Vec::new());
+        let fake_root_unsigned = ecdsa_test_cert(
+            9,
+            "eneros-ecdsa-root",
+            &root_dn,
+            fake_pk.clone(),
+            Vec::new(),
+        );
         let fake_root_tbs = fake_root_unsigned.encode_tbs().unwrap();
         let fake_root_sig: p256::ecdsa::Signature = fake_sk.sign(&fake_root_tbs);
         let fake_root_sig = fake_root_sig.to_der().as_bytes().to_vec();
@@ -406,10 +444,11 @@ mod tests {
     }
 
     /// 从 SubjectPublicKey::EcdsaP256 提取未压缩点字节。
+    #[allow(clippy::disallowed_macros)]
     fn root_pk_point(pk: SubjectPublicKey) -> [u8; 65] {
         match pk {
-            SubjectPublicKey::EcdsaP256(p) => p.try_into().unwrap(),
-            _ => panic!("expected EcdsaP256"),
+            SubjectPublicKey::EcdsaP256(p) => p.try_into().expect("expected EcdsaP256"),
+            _ => unreachable!("expected EcdsaP256"),
         }
     }
 

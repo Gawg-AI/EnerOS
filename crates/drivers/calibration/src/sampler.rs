@@ -284,7 +284,11 @@ mod tests {
 
     #[test]
     fn test_compute_stats_perfect() {
-        let pts = [point(2200.0, 2200.0), point(2200.0, 2200.0), point(2200.0, 2200.0)];
+        let pts = [
+            point(2200.0, 2200.0),
+            point(2200.0, 2200.0),
+            point(2200.0, 2200.0),
+        ];
         let s = compute_stats(&pts);
         assert_eq!(s.sample_count, 3);
         assert!(s.power_error_mean_pct.abs() < 1e-9);
@@ -301,7 +305,11 @@ mod tests {
             point(2178.0, 2200.0),
         ];
         let s = compute_stats(&pts);
-        assert!((s.power_error_mean_pct - (-1.0)).abs() < 1e-6, "{}", s.power_error_mean_pct);
+        assert!(
+            (s.power_error_mean_pct - (-1.0)).abs() < 1e-6,
+            "{}",
+            s.power_error_mean_pct
+        );
         assert!(s.power_error_std_pct.abs() < 1e-6);
         assert!((s.power_error_max_abs_pct - 1.0).abs() < 1e-6);
     }
@@ -316,7 +324,11 @@ mod tests {
         ];
         let s = compute_stats(&pts);
         assert!(s.power_error_mean_pct.abs() < 1e-9);
-        assert!((s.power_error_std_pct - 0.8164965809).abs() < 1e-6, "{}", s.power_error_std_pct);
+        assert!(
+            (s.power_error_std_pct - 0.8164965809).abs() < 1e-6,
+            "{}",
+            s.power_error_std_pct
+        );
     }
 
     #[test]
@@ -363,8 +375,18 @@ mod tests {
     #[test]
     fn test_sampler_collect_capped() {
         let mut sampler = Sampler::new(
-            || MeterReading { voltage: 220.0, current: 10.0, power: 2200.0, energy: 0.0 },
-            || MeterReading { voltage: 220.0, current: 10.0, power: 2200.0, energy: 0.0 },
+            || MeterReading {
+                voltage: 220.0,
+                current: 10.0,
+                power: 2200.0,
+                energy: 0.0,
+            },
+            || MeterReading {
+                voltage: 220.0,
+                current: 10.0,
+                power: 2200.0,
+                energy: 0.0,
+            },
         );
         let mut buf: alloc::vec::Vec<SamplePoint> = alloc::vec::Vec::with_capacity(4);
         buf.resize(4, zero_point());
@@ -403,7 +425,11 @@ mod tests {
         assert_eq!(rep.target_class, AccuracyClass::Class0_5S);
         // 校准后误差应显著小于校准前。
         assert!(rep.after_error_pct.abs() < rep.before_error_pct.abs());
-        assert!(rep.passed, "after {} before {}", rep.after_error_pct, rep.before_error_pct);
+        assert!(
+            rep.passed,
+            "after {} before {}",
+            rep.after_error_pct, rep.before_error_pct
+        );
         // 报告含真实采样统计。
         assert_eq!(rep.stats.sample_count, 3);
         assert!((rep.stats.power_error_mean_pct - (-0.1)).abs() < 1e-6);

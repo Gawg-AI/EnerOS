@@ -10,17 +10,17 @@
 //!
 //! 构造器显式注入（B3 纪律）。
 
-use alloc::string::{String, ToString};
 use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use eneros_fs::fs_trait::FileSystem;
 
 use crate::aggregator::{AggError, DataSink, DataSource, DomainData};
-use eneros_coordinator::EdgeBoxState;
 use crate::channel::{CloudChannel, CloudError};
 use crate::strategy::EdgeAck;
 use crate::strategy::Strategy;
+use eneros_coordinator::EdgeBoxState;
 
 /// 真实数据存储：经 fs 落盘（每帧一行紧凑格式，重启可读）。
 pub struct FsDataSink<F> {

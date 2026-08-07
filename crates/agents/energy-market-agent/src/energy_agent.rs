@@ -69,7 +69,6 @@ impl<S: Solver> EnergyAgent<S> {
         }
     }
 
-
     /// 获取市场通道可变引用（供测试注入数据）.
     pub fn market_channel_mut(&mut self) -> &mut MarketChannel {
         &mut self.market_channel

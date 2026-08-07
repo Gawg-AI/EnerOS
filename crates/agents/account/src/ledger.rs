@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use crate::types::{MilliYuan, EnergyAccount, FlowDir, FrozenAmount, LedgerEntry};
+use crate::types::{EnergyAccount, FlowDir, FrozenAmount, LedgerEntry, MilliYuan};
 use crate::{AccountManager, EconError};
 
 /// 内存账户存储
@@ -49,7 +49,11 @@ impl AccountStore {
     /// 计算账户已冻结但未释放的总金额
     fn frozen_total(&self, account_id: u64) -> MilliYuan {
         let mut total = MilliYuan(0);
-        for f in self.freezes.iter().filter(|f| f.account == account_id && !f.released) {
+        for f in self
+            .freezes
+            .iter()
+            .filter(|f| f.account == account_id && !f.released)
+        {
             if let Some(v) = total.checked_add(f.amount) {
                 total = v;
             }
@@ -188,8 +192,8 @@ impl AccountManager for AccountStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::MilliYuan;
     use crate::entry::create_entry;
+    use crate::types::MilliYuan;
 
     #[test]
     fn test_open_account() {
@@ -339,4 +343,3 @@ mod tests {
         );
     }
 }
-

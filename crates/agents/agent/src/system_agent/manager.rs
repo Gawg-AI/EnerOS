@@ -101,8 +101,8 @@ mod tests {
 
     use super::super::{SystemAgent, SystemConfig};
     use crate::{
-        AgentConfig, AgentError, AgentId, AgentRegistry, AgentSpawner, AgentState, AgentType,
-        AgentBinary, CrashRecovery, HeartbeatMonitor, InMemoryCheckpointStore, LifecycleManager,
+        AgentBinary, AgentConfig, AgentError, AgentId, AgentRegistry, AgentSpawner, AgentState,
+        AgentType, CrashRecovery, HeartbeatMonitor, InMemoryCheckpointStore, LifecycleManager,
         StaticAgentRegistry,
     };
 
@@ -151,7 +151,7 @@ mod tests {
 
     /// Static registry mapping Energy → minimal ELF (test agent).
     #[allow(dead_code)]
-static STUB_REGISTRY: StaticAgentRegistry = StaticAgentRegistry::new(&[(
+    static STUB_REGISTRY: StaticAgentRegistry = StaticAgentRegistry::new(&[(
         AgentType::Energy,
         AgentBinary {
             elf: MINIMAL_ELF,

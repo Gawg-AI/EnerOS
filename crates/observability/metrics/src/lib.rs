@@ -48,6 +48,5 @@ pub use metrics::{
 pub use registry::MetricRegistry;
 pub use store::{MemoryMetricsStore, MetricsStore};
 
-
 #[cfg(all(test, feature = "loom"))]
 pub mod loom_increment;

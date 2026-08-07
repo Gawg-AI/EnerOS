@@ -4,10 +4,14 @@
 //! 满足要求（RAM 16GB / VRAM 8GB），模型加载委托给 [`LlmEngine`]，加载耗时
 //! 默认 1ms（可覆盖）。
 
+#[cfg(any(test, feature = "mock"))]
 use eneros_llm_engine::LlmEngine;
 
+#[cfg(any(test, feature = "mock"))]
 use crate::backend::{DeployBackend, HardwareCheck};
+#[cfg(any(test, feature = "mock"))]
 use crate::config::QuantConfig7B;
+#[cfg(any(test, feature = "mock"))]
 use crate::error::DeployError;
 
 /// Mock 部署后端（D12 默认）.

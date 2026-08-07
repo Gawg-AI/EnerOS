@@ -29,9 +29,7 @@ use crate::error::StorageError;
 ///
 /// The returned driver is uninitialized — call `init(block_count)` on the
 /// concrete type (or use [`create_mock_device`] for host tests).
-pub fn create_block_device(
-    config: &StorageConfig,
-) -> Result<Box<dyn BlockDevice>, StorageError> {
+pub fn create_block_device(config: &StorageConfig) -> Result<Box<dyn BlockDevice>, StorageError> {
     match config.storage_type {
         StorageType::VirtioBlk => {
             // Host-test wiring: RAM-simulated MMIO + DMA pool + no-op cache.
@@ -54,11 +52,9 @@ pub fn create_block_device(
                          construct EmmcDriver directly with a volatile MMIO backend",
             })
         }
-        StorageType::Nvme | StorageType::SdCard => {
-            Err(StorageError::HardwareFault {
-                detail: "NVMe/SdCard controller driver not supported yet (use Emmc or VirtioBlk)",
-            })
-        }
+        StorageType::Nvme | StorageType::SdCard => Err(StorageError::HardwareFault {
+            detail: "NVMe/SdCard controller driver not supported yet (use Emmc or VirtioBlk)",
+        }),
     }
 }
 
@@ -118,7 +114,10 @@ mod tests {
             max_transfer_blocks: 64,
         };
         assert!(
-            matches!(create_block_device(&cfg), Err(StorageError::HardwareFault { .. })),
+            matches!(
+                create_block_device(&cfg),
+                Err(StorageError::HardwareFault { .. })
+            ),
             "eMMC/NVMe must be rejected in Phase A"
         );
     }
@@ -134,7 +133,10 @@ mod tests {
             max_transfer_blocks: 128,
         };
         assert!(
-            matches!(create_block_device(&cfg), Err(StorageError::HardwareFault { .. })),
+            matches!(
+                create_block_device(&cfg),
+                Err(StorageError::HardwareFault { .. })
+            ),
             "eMMC/NVMe must be rejected in Phase A"
         );
     }

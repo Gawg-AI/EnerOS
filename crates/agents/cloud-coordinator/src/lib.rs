@@ -103,20 +103,19 @@ compile_error!(
 extern crate alloc;
 
 pub mod aggregator;
-pub mod real;
 pub mod channel;
 pub mod publisher;
+pub mod real;
 pub mod strategy;
 
 pub use aggregator::{
-    AggError, DataAggregator, DataSink, DataSource, DomainData, EventRecord, EventType,
-    Severity,
+    AggError, DataAggregator, DataSink, DataSource, DomainData, EventRecord, EventType, Severity,
 };
 #[cfg(any(test, feature = "mock"))]
 pub use aggregator::{MockDataSink, MockDataSource};
-pub use channel::{CloudChannel, CloudError};
 #[cfg(any(test, feature = "mock"))]
 pub use channel::MockCloudChannel;
+pub use channel::{CloudChannel, CloudError};
 pub use publisher::StrategyPublisher;
 pub use strategy::{
     validate_strategy, EdgeAck, LocalState, ModelRef, RejectReason, Strategy, StrategyContent,

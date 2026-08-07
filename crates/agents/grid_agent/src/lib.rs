@@ -122,34 +122,34 @@ compile_error!(
 extern crate alloc;
 
 pub mod island_detect;
-pub mod real;
 pub mod pcc;
 pub mod publisher;
+pub mod real;
 pub mod sampler;
 pub mod state;
 pub mod transfer;
 
 use eneros_energy_market_agent::AgentRuntimeError;
 pub use island_detect::{IslandConfig, IslandDetector, IslandResult};
+#[cfg(any(test, feature = "mock"))]
+pub use pcc::MockPccReader;
 pub use pcc::{
     compute_power_direction, compute_power_factor, BreakerStatus, PccManager, PccReader,
     PccReading, PccState, PccStatus, PowerDirection,
 };
 #[cfg(any(test, feature = "mock"))]
-pub use pcc::MockPccReader;
+pub use publisher::MockGridPublisher;
 pub use publisher::{publish_state, GridPublisher};
 #[cfg(any(test, feature = "mock"))]
-pub use publisher::MockGridPublisher;
-pub use sampler::{default_anomaly_detectors, is_valid_grid, GridSampler};
-#[cfg(any(test, feature = "mock"))]
 pub use sampler::MockGridSampler;
+pub use sampler::{default_anomaly_detectors, is_valid_grid, GridSampler};
 pub use state::{DataQuality, GridAgent, GridState};
+#[cfg(any(test, feature = "mock"))]
+pub use transfer::MockRtosChannel;
 pub use transfer::{
     GridTransfer, RtosChannel, TransferCommand, TransferError, TransferReason, TransferRecord,
     TransferState,
 };
-#[cfg(any(test, feature = "mock"))]
-pub use transfer::MockRtosChannel;
 
 /// Grid Agent 错误类型.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

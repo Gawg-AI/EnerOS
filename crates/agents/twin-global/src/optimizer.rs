@@ -14,6 +14,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+#[cfg(any(test, feature = "mock"))]
 use eneros_solver_core::mock::MockSolver;
 use eneros_solver_core::problem::{ConstraintMatrix, LpProblem, ObjectiveSense, VarType};
 use eneros_solver_core::result::SolveStatus;
@@ -35,8 +36,9 @@ pub struct GlobalOptimizer {
 }
 
 impl GlobalOptimizer {
-    /// 创建全局优化器（默认后端为 solver-core MockSolver——SEC-003 标记未验证，
-    /// `optimize()` 返回 [`TwinError::SolverNotVerified`]，禁止产生出口指标）。
+    /// 创建全局优化器（默认后端 MockSolver）——仅测试/仿真（蓝图/20 R2-1：
+    /// 生产必须经 [`Self::with_backend`] 注入已验证的真实求解器）。
+    #[cfg(any(test, feature = "mock"))]
     pub fn new(solver: SolverKind, objective: ObjectiveKind) -> Self {
         Self {
             solver,
@@ -87,8 +89,7 @@ impl GlobalOptimizer {
             return Err(TwinError::SolverNotVerified);
         }
 
-        let prices: alloc::vec::Vec<f64> =
-            domains.iter().map(|d| domain_price(d.kind)).collect();
+        let prices: alloc::vec::Vec<f64> = domains.iter().map(|d| domain_price(d.kind)).collect();
         let caps: alloc::vec::Vec<f64> = domains
             .iter()
             .map(|d| (d.state.power_kw.abs() * 1.5).max(1.0))
@@ -165,16 +166,9 @@ fn domain_price(kind: DomainKind) -> f64 {
 ///
 /// 变量 x_i ∈ [0, cap_i]；目标系数为价格（MaxRevenue/MaxSelfConsumption 取正，
 /// MinCost 取负以最小化成本）；单约束 Σx_i ≤ total_load（总功率平衡）。
-fn build_lp(
-    prices: &[f64],
-    caps: &[f64],
-    total_load: f64,
-    objective: ObjectiveKind,
-) -> LpProblem {
+fn build_lp(prices: &[f64], caps: &[f64], total_load: f64, objective: ObjectiveKind) -> LpProblem {
     let n = prices.len();
-    let variables: Vec<String> = (0..n)
-        .map(|i| alloc::format!("x{i}"))
-        .collect();
+    let variables: Vec<String> = (0..n).map(|i| alloc::format!("x{i}")).collect();
     let lower_bounds = alloc::vec![0.0; n];
     let upper_bounds = caps.to_vec();
     let var_types = alloc::vec![VarType::Continuous; n];
@@ -187,7 +181,13 @@ fn build_lp(
             // MultiObjective：收益 - 0.1*成本 = 简化加权
             let c: alloc::vec::Vec<f64> = prices
                 .iter()
-                .map(|p| if objective == ObjectiveKind::MultiObjective { p - 0.02 } else { -p })
+                .map(|p| {
+                    if objective == ObjectiveKind::MultiObjective {
+                        p - 0.02
+                    } else {
+                        -p
+                    }
+                })
                 .collect();
             (c, ObjectiveSense::Maximize)
         }
@@ -229,7 +229,12 @@ mod tests {
     struct GreedySolver;
 
     impl Solver for GreedySolver {
-        fn solve(&mut self, problem: &LpProblem, _now_ms: u64) -> Result<eneros_solver_core::result::SolveResult, eneros_solver_core::error::SolverError> {
+        fn solve(
+            &mut self,
+            problem: &LpProblem,
+            _now_ms: u64,
+        ) -> Result<eneros_solver_core::result::SolveResult, eneros_solver_core::error::SolverError>
+        {
             let solution = problem.upper_bounds.clone();
             let objective_value: f64 = solution
                 .iter()
@@ -244,10 +249,22 @@ mod tests {
                 dual_solution: None,
             })
         }
-        fn name(&self) -> &'static str { "GreedyTestSolver" }
-        fn version(&self) -> &'static str { "0.0.1-test" }
-        fn set_param(&mut self, _key: &str, _value: &str) -> Result<(), eneros_solver_core::error::SolverError> { Ok(()) }
-        fn status(&self) -> eneros_solver_core::solver::SolverStatus { eneros_solver_core::solver::SolverStatus::Idle }
+        fn name(&self) -> &'static str {
+            "GreedyTestSolver"
+        }
+        fn version(&self) -> &'static str {
+            "0.0.1-test"
+        }
+        fn set_param(
+            &mut self,
+            _key: &str,
+            _value: &str,
+        ) -> Result<(), eneros_solver_core::error::SolverError> {
+            Ok(())
+        }
+        fn status(&self) -> eneros_solver_core::solver::SolverStatus {
+            eneros_solver_core::solver::SolverStatus::Idle
+        }
     }
 
     /// SEC-003 出口门禁：Mock 后端必须被拒绝（出口测试能对 Mock 失败）。
@@ -289,23 +306,21 @@ mod tests {
     fn test_optimize_improvement_can_be_below_15() {
         // 纯负荷领域（DomainKind::Load，价格 0）：优化无收益 → improvement ≤ 0
         use crate::types::DomainState;
-        let domains = alloc::vec![
-            DomainTwin {
+        let domains = alloc::vec![DomainTwin {
+            domain_id: 1,
+            kind: DomainKind::Load,
+            state: DomainState {
                 domain_id: 1,
                 kind: DomainKind::Load,
-                state: DomainState {
-                    domain_id: 1,
-                    kind: DomainKind::Load,
-                    power_kw: 50.0,
-                    soc: 0.5,
-                    status: String::from("load"),
-                },
-                boundary: crate::types::DomainBoundary {
-                    coupling_vars: alloc::vec::Vec::new(),
-                    exchange_limit_kw: 0.0,
-                },
-            }
-        ];
+                power_kw: 50.0,
+                soc: 0.5,
+                status: String::from("load"),
+            },
+            boundary: crate::types::DomainBoundary {
+                coupling_vars: alloc::vec::Vec::new(),
+                exchange_limit_kw: 0.0,
+            },
+        }];
         let mut optimizer = GlobalOptimizer::with_backend(
             SolverKind::HiGHS,
             ObjectiveKind::MaxRevenue,
@@ -344,9 +359,9 @@ mod tests {
                 status: String::from("pv"),
             },
             boundary: crate::types::DomainBoundary {
-                    coupling_vars: alloc::vec::Vec::new(),
-                    exchange_limit_kw: 0.0,
-                },
+                coupling_vars: alloc::vec::Vec::new(),
+                exchange_limit_kw: 0.0,
+            },
         }];
         let mut opt2 = GlobalOptimizer::with_backend(
             SolverKind::HiGHS,
@@ -386,7 +401,10 @@ mod tests {
         );
         let r_rev = max_rev.optimize(&sim.domains).unwrap();
         let r_cost = min_cost.optimize(&sim.domains).unwrap();
-        eprintln!("r_rev={:?} r_cost={:?}", r_rev.objective_value, r_cost.objective_value);
+        eprintln!(
+            "r_rev={:?} r_cost={:?}",
+            r_rev.objective_value, r_cost.objective_value
+        );
         assert!(r_rev.objective_value > r_cost.objective_value);
     }
 }

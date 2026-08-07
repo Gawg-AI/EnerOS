@@ -46,7 +46,6 @@ pub const MAX_PANIC_MSG_LEN: usize = 512;
 /// 最大帧数。
 pub const MAX_FRAMES: usize = 64;
 
-
 /// 架构标识。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

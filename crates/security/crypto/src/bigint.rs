@@ -515,7 +515,9 @@ fn neg8(x: &[u64; 8]) -> [u64; 8] {
 fn sub8_no_borrow(a: &mut [u64; 8], b: &[u64; 8]) {
     let mut borrow = 0u128;
     for i in 0..8 {
-        let d = (a[i] as u128).wrapping_sub(b[i] as u128).wrapping_sub(borrow);
+        let d = (a[i] as u128)
+            .wrapping_sub(b[i] as u128)
+            .wrapping_sub(borrow);
         a[i] = d as u64;
         borrow = (d >> 64) & 1;
     }
@@ -552,7 +554,9 @@ pub fn reduce_512_sm2_p_for_test(prod: &[u64; 8]) -> U256 {
         add8(&mut t, &a_s);
         x = t;
     }
-    let mut out = U256 { limbs: [x[0], x[1], x[2], x[3]] };
+    let mut out = U256 {
+        limbs: [x[0], x[1], x[2], x[3]],
+    };
     let p256 = p;
     if out.cmp_u256(&p256) != core::cmp::Ordering::Less {
         out = out.sub_mod(&p256, &p256);
@@ -592,7 +596,9 @@ pub fn reduce_512_sm2_n_for_test(prod: &[u64; 8]) -> U256 {
         add8(&mut t, &a_s);
         x = t;
     }
-    let mut out = U256 { limbs: [x[0], x[1], x[2], x[3]] };
+    let mut out = U256 {
+        limbs: [x[0], x[1], x[2], x[3]],
+    };
     let n256 = n;
     if out.cmp_u256(&n256) != core::cmp::Ordering::Less {
         out = out.sub_mod(&n256, &n256);

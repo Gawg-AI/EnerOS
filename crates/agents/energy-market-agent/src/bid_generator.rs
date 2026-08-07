@@ -405,11 +405,13 @@ mod tests {
             timestamp: 1000,
             prices: vec![
                 PricePoint {
-                    time: 1000, price: YuanPerKwh(0.9),
+                    time: 1000,
+                    price: YuanPerKwh(0.9),
                     period: Period::Peak,
                 },
                 PricePoint {
-                    time: 2000, price: YuanPerKwh(0.3),
+                    time: 2000,
+                    price: YuanPerKwh(0.3),
                     period: Period::Valley,
                 },
             ],
@@ -637,8 +639,16 @@ mod tests {
     fn t55_mock_publisher_records() {
         let mut publisher = MockBidPublisher::new();
         let bids = vec![
-            ResourceBid { resource_id: 1, period: Period::Flat, bid: Bid::new(0, MarketType::Spot, 1, 0) },
-            ResourceBid { resource_id: 1, period: Period::Flat, bid: Bid::new(0, MarketType::Spot, 1, 0) },
+            ResourceBid {
+                resource_id: 1,
+                period: Period::Flat,
+                bid: Bid::new(0, MarketType::Spot, 1, 0),
+            },
+            ResourceBid {
+                resource_id: 1,
+                period: Period::Flat,
+                bid: Bid::new(0, MarketType::Spot, 1, 0),
+            },
         ];
         assert_eq!(publisher.publish_bids(&bids), Ok(()));
         assert_eq!(publisher.published.len(), 2);
@@ -648,7 +658,11 @@ mod tests {
     #[test]
     fn t56_mock_publisher_failing() {
         let mut publisher = MockBidPublisher::new_failing();
-        let bids = vec![ResourceBid { resource_id: 1, period: Period::Flat, bid: Bid::new(0, MarketType::Spot, 1, 0) }];
+        let bids = vec![ResourceBid {
+            resource_id: 1,
+            period: Period::Flat,
+            bid: Bid::new(0, MarketType::Spot, 1, 0),
+        }];
         assert_eq!(publisher.publish_bids(&bids), Err(BidError::PublishFailed));
         assert!(publisher.published.is_empty());
     }
@@ -781,7 +795,8 @@ mod tests {
             market_type: MarketType::Spot,
             timestamp: 2000,
             prices: vec![PricePoint {
-                time: 2000, price: YuanPerKwh(0.5),
+                time: 2000,
+                price: YuanPerKwh(0.5),
                 period: Period::Flat,
             }],
             dr_signals: Vec::new(),
@@ -836,7 +851,8 @@ mod tests {
             market_type: MarketType::Spot,
             timestamp: 1000,
             prices: vec![PricePoint {
-                time: 1000, price: YuanPerKwh(0.05),
+                time: 1000,
+                price: YuanPerKwh(0.05),
                 period: Period::Valley,
             }],
             dr_signals: Vec::new(),
@@ -1056,7 +1072,8 @@ mod tests {
             market_type: MarketType::DemandResponse,
             timestamp: 1000,
             prices: vec![PricePoint {
-                time: 1000, price: YuanPerKwh(0.9),
+                time: 1000,
+                price: YuanPerKwh(0.9),
                 period: Period::Peak,
             }],
             dr_signals: Vec::new(),

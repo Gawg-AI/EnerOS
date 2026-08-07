@@ -197,8 +197,7 @@ impl QualityGate for DefaultGate {
                 "cargo-deny reported advisories/license/ban/source issues".to_string(),
             )),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Err(GateError::IoError(
-                "cargo-deny not found in PATH (fail-closed: audit requires cargo-deny)"
-                    .to_string(),
+                "cargo-deny not found in PATH (fail-closed: audit requires cargo-deny)".to_string(),
             )),
             Err(e) => Err(GateError::IoError(format!(
                 "failed to spawn `cargo deny`: {}",
@@ -396,10 +395,7 @@ impl DefaultGate {
         }
         let cargo_path = root.join("Cargo.toml");
         let cargo_text = fs::read_to_string(&cargo_path).map_err(|e| {
-            GateError::VersionGateInconsistent(format!(
-                "cannot read {}: {e}",
-                cargo_path.display()
-            ))
+            GateError::VersionGateInconsistent(format!("cannot read {}: {e}", cargo_path.display()))
         })?;
         let mut version: Option<String> = None;
         let mut in_workspace_package = false;
@@ -640,12 +636,7 @@ mod tests {
             let mut f = fs::File::create(root.join("docs/v1.0.0-go-no-go.md")).unwrap();
             f.write_all(gng.as_bytes()).unwrap();
             let mut f = fs::File::create(root.join("Cargo.toml")).unwrap();
-            write!(
-                f,
-                "[workspace.package]\nversion = \"{}\"\n",
-                version
-            )
-            .unwrap();
+            write!(f, "[workspace.package]\nversion = \"{}\"\n", version).unwrap();
         }
 
         fn scenario_root(tag: &str) -> PathBuf {

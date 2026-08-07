@@ -58,7 +58,7 @@ fn main() {
     // 如果静态库不存在，构建它
     if !highs_lib.exists() {
         println!(
-            "cargo:warning=Building HiGHS v{} from source (this may take a few minutes)...",
+            "cargo:info=Building HiGHS v{} from source (this may take a few minutes)...",
             HIGHS_VERSION
         );
 
@@ -101,7 +101,7 @@ fn main() {
             );
         }
 
-        println!("cargo:warning=HiGHS v{} built successfully", HIGHS_VERSION);
+        println!("cargo:info=HiGHS v{} built successfully", HIGHS_VERSION);
     }
 
     // 告知 cargo 链接
@@ -123,7 +123,7 @@ fn main() {
 
     // 记录 pin 信息
     println!(
-        "cargo:warning=HiGHS pinned: v{} commit={}",
+        "cargo:info=HiGHS pinned: v{} commit={}",
         HIGHS_VERSION, HIGHS_COMMIT
     );
 }

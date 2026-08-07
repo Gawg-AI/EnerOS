@@ -113,8 +113,10 @@ impl MatchEngine {
         let deal = strategy.match_one(&self.bids, &self.asks)?;
 
         // 3. 移除已成交订单（按 agent+seq 定位，防重复成交）。
-        self.bids.retain(|b| !(b.agent == deal.seller && b.seq == deal.seller_seq));
-        self.asks.retain(|a| !(a.agent == deal.buyer && a.seq == deal.buyer_seq));
+        self.bids
+            .retain(|b| !(b.agent == deal.seller && b.seq == deal.seller_seq));
+        self.asks
+            .retain(|a| !(a.agent == deal.buyer && a.seq == deal.buyer_seq));
 
         let mut deal = deal;
         deal.deal_id = self.next_deal_id;

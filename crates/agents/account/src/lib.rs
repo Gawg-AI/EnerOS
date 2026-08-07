@@ -69,12 +69,15 @@ pub trait AccountManager {
     fn post(&mut self, entry: LedgerEntry) -> Result<(), EconError>;
 
     /// 冻结：冻结指定金额（毫元定点），返回 freeze_id
-    fn freeze(&mut self, account_id: u64, amount: eneros_market_types::MilliYuan) -> Result<u64, EconError>;
+    fn freeze(
+        &mut self,
+        account_id: u64,
+        amount: eneros_market_types::MilliYuan,
+    ) -> Result<u64, EconError>;
 
     /// 解冻：释放已冻结的金额
     fn unfreeze(&mut self, freeze_id: u64) -> Result<(), EconError>;
 }
-
 
 #[cfg(all(test, feature = "loom"))]
 pub mod loom_freeze;

@@ -775,10 +775,7 @@ impl Asdu {
         let num = self.ioas.len().min(127);
         // 连续 IOA 检测（仅当 >1 个对象且类型非命令类）。
         let use_sq = num > 1
-            && self
-                .ioas
-                .windows(2)
-                .all(|w| w[1].ioa == w[0].ioa + 1)
+            && self.ioas.windows(2).all(|w| w[1].ioa == w[0].ioa + 1)
             && !matches!(
                 self.type_id,
                 TypeId::SingleCommand
@@ -857,6 +854,7 @@ impl Asdu {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_macros)]
 mod tests {
     use super::*;
 
@@ -1011,7 +1009,10 @@ mod tests {
         assert_eq!(decoded, sco);
         // 标准 select 帧 0x81：select=true、value=true、qu=0。
         let std_select = Sco::decode(0x81);
-        assert!(std_select.select, "标准 select 帧 0x81 必须解出 select=true");
+        assert!(
+            std_select.select,
+            "标准 select 帧 0x81 必须解出 select=true"
+        );
         assert!(std_select.value);
         assert_eq!(std_select.qu, 0);
     }
@@ -1058,8 +1059,8 @@ mod tests {
         assert_eq!(Sco::decode(0x7C), sco);
         // 高位布局断言：QU 占 bits2-6，bit1 保留
         assert_eq!(Sco::decode(0x7D).qu, 31);
-        assert_eq!(Sco::decode(0x7D).value, true);
-        assert_eq!(Sco::decode(0x7D).select, false);
+        assert!(Sco::decode(0x7D).value);
+        assert!(!Sco::decode(0x7D).select);
     }
 
     /// 回归证明（蓝图/20 R1-6 硬性约束）：旧编码 qu<<1 给出的 0x03 必须
@@ -1074,11 +1075,7 @@ mod tests {
             select: false,
         };
         let legacy_byte = 0x01 | (1 << 1); // 旧实现产物
-        assert_ne!(
-            legacy.encode(),
-            legacy_byte,
-            "新编码不得再产出旧布局字节"
-        );
+        assert_ne!(legacy.encode(), legacy_byte, "新编码不得再产出旧布局字节");
         assert_eq!(Sco::decode(legacy_byte).qu, 0, "0x03 在标准布局下 QU=0");
     }
 
@@ -1143,34 +1140,37 @@ mod tests {
         let asdu = Asdu::decode(select_frame).expect("lib60870 select 帧必须可解析");
         assert_eq!(asdu.type_id, TypeId::SingleCommand);
         assert_eq!(asdu.ioas.len(), 1);
+
         match &asdu.ioas[0].value {
             IoValue::SingleCommand(sco) => {
                 assert!(sco.select, "外部 select 帧必须解出 select=true");
                 assert!(sco.value);
                 assert_eq!(sco.qu, 1, "外部 QU≠0 必须一致解析");
             }
-            other => panic!("期望 SingleCommand，实际 {other:?}"),
+            other => unreachable!("期望 SingleCommand，实际 {other:?}"),
         }
 
         // lib60870 风格 execute 帧：SCO=0x05 → execute, value=true, qu=1
         let execute_frame: &[u8] = &[45, 1, 6, 0, 1, 0, 100, 0, 0, 0x05];
         let asdu = Asdu::decode(execute_frame).expect("lib60870 execute 帧必须可解析");
+
         match &asdu.ioas[0].value {
             IoValue::SingleCommand(sco) => {
                 assert!(!sco.select, "execute 帧必须解出 select=false");
                 assert!(sco.value);
                 assert_eq!(sco.qu, 1);
             }
-            other => panic!("期望 SingleCommand，实际 {other:?}"),
+            other => unreachable!("期望 SingleCommand，实际 {other:?}"),
         }
 
         // 旧编码产物 0x03（execute+ON+QU=1）在标准布局下 QU=0：
         // 本栈不得把 0x03 误判为 QU=1（互操作破坏点回归证明）
         let legacy_frame: &[u8] = &[45, 1, 6, 0, 1, 0, 100, 0, 0, 0x03];
         let asdu = Asdu::decode(legacy_frame).expect("旧布局字节可解析");
+
         match &asdu.ioas[0].value {
             IoValue::SingleCommand(sco) => assert_eq!(sco.qu, 0, "0x03 在标准布局下 QU=0"),
-            other => panic!("期望 SingleCommand，实际 {other:?}"),
+            other => unreachable!("期望 SingleCommand，实际 {other:?}"),
         }
     }
 
@@ -1730,7 +1730,10 @@ mod tests {
         let bytes = asdu.encode();
         assert_eq!(bytes.len(), 6 + 11);
         let decoded = Asdu::decode(&bytes).expect("decode");
-        assert!(decoded.ioas[0].time_tag.is_some(), "缺失时标编码为 0 后解码得 Some");
+        assert!(
+            decoded.ioas[0].time_tag.is_some(),
+            "缺失时标编码为 0 后解码得 Some"
+        );
     }
 
     #[test]

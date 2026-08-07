@@ -797,8 +797,7 @@ mod tests {
                 block_size: 4096,
                 max_transfer_blocks: 256,
             };
-            let dev =
-                VirtioBlkDriver::new(mmio, pool, NoopCache, cfg).expect("virtio-blk init");
+            let dev = VirtioBlkDriver::new(mmio, pool, NoopCache, cfg).expect("virtio-blk init");
             dev.set_block_count(64); // 适配器 BLOCK_COUNT 上限 64 × 4096 B = 256 KiB
             let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(dev);
             (Lfs::format(dev).expect("format on virtio-blk"), disk_handle)
@@ -818,8 +817,7 @@ mod tests {
                 block_size: 4096,
                 max_transfer_blocks: 256,
             };
-            let dev =
-                VirtioBlkDriver::new(mmio, pool, NoopCache, cfg).expect("virtio-blk reinit");
+            let dev = VirtioBlkDriver::new(mmio, pool, NoopCache, cfg).expect("virtio-blk reinit");
             dev.set_block_count(64);
             let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(dev);
             Lfs::mount(dev).expect("mount on virtio-blk")

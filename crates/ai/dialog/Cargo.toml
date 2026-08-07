@@ -9,6 +9,7 @@ description = "EnerOS LLM↔Solver 对话协商 (v0.189.0) — 多轮迭代推�
 [dependencies]
 
 [features]
+mock = []
 experimental = []
 default = []
 

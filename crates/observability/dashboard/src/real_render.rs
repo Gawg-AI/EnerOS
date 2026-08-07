@@ -63,7 +63,9 @@ impl SvgRenderer {
             let my = (y1 + y2) / 2.0;
             body.push_str(&alloc::format!(
                 "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#222\">{:.1} kW</text>\n",
-                mx, my, edge.flow
+                mx,
+                my,
+                edge.flow
             ));
         }
         // 节点。
@@ -77,7 +79,9 @@ impl SvgRenderer {
             };
             body.push_str(&alloc::format!(
                 "<circle cx=\"{}\" cy=\"{}\" r=\"14\" fill=\"{}\"/>\n",
-                x, y, color
+                x,
+                y,
+                color
             ));
             body.push_str(&alloc::format!(
                 "<text x=\"{}\" y=\"{}\" font-size=\"11\" fill=\"#000\" text-anchor=\"middle\">{}</text>\n",
@@ -113,7 +117,11 @@ impl SvgRenderer {
             };
             out.push(alloc::format!(
                 "{{\"from\":{},\"to\":{},\"kw\":{:.3},\"v\":{:.1},\"a\":{:.2}}}",
-                s.from, s.to, kw, s.voltage, s.current
+                s.from,
+                s.to,
+                kw,
+                s.voltage,
+                s.current
             ));
         }
         out
@@ -153,14 +161,22 @@ mod tests {
                     node_id: 1,
                     label: String::from("PV"),
                     kind: NodeKind::Grid,
-                    position: Position3D { x: 0.0, y: 0.0, z: 0.0 },
+                    position: Position3D {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
                     status: crate::types::NodeStatus::Healthy,
                 },
                 crate::types::TopologyNode {
                     node_id: 2,
                     label: String::from("Load"),
                     kind: NodeKind::Asset,
-                    position: Position3D { x: 1.0, y: 0.0, z: 0.0 },
+                    position: Position3D {
+                        x: 1.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
                     status: crate::types::NodeStatus::Healthy,
                 },
             ],

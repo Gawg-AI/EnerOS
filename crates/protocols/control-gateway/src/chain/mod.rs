@@ -157,7 +157,6 @@ pub struct ControlChain {
     feedback_max_age_secs: u64,
 }
 
-
 impl ControlChain {
     /// Create a new chain with empty lease grants, empty policy rules, empty
     /// safety table and empty override sessions. The caller must:
@@ -214,7 +213,6 @@ impl ControlChain {
     pub fn sbo_select(&mut self, point_id: u32, now: u64) {
         self.sbo.select(point_id, now);
     }
-
 }
 
 /// 执行链大方法（ARCH-G03 拆分）。

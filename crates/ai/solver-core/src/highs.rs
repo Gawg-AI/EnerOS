@@ -339,7 +339,9 @@ impl Solver for HighsSolver {
         // v0.204.0（P0-19）：真实覆写——经 Highs_setSolution 注入初始解。
         // 失败真实报错（不再静默 Ok）。
         if solution.is_empty() {
-            return Err(SolverError::ParamError("set_warm_start: empty solution".to_string()));
+            return Err(SolverError::ParamError(
+                "set_warm_start: empty solution".to_string(),
+            ));
         }
         // SAFETY: handle 非 null；solution 是连续 f64 切片（C API 期望
         // 与列数等长的数组）。row_value/col_dual/row_dual 传 NULL
@@ -355,7 +357,9 @@ impl Solver for HighsSolver {
         };
         if status < 0 {
             self.status = SolverStatus::Error;
-            return Err(SolverError::FfiError("Highs_setSolution failed".to_string()));
+            return Err(SolverError::FfiError(
+                "Highs_setSolution failed".to_string(),
+            ));
         }
         Ok(())
     }

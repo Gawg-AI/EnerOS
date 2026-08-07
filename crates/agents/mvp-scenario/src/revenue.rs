@@ -29,12 +29,14 @@ impl RevenueComparator {
 
     /// 记录双脑 EMS 收益（元 f64 → 毫元定点）.
     pub fn record_dual_brain(&mut self, revenue: f64) {
-        self.dual_brain_revenue.push(MilliYuan::from_yuan_f64(revenue));
+        self.dual_brain_revenue
+            .push(MilliYuan::from_yuan_f64(revenue));
     }
 
     /// 记录传统 EMS 收益（元 f64 → 毫元定点）.
     pub fn record_traditional(&mut self, revenue: f64) {
-        self.traditional_revenue.push(MilliYuan::from_yuan_f64(revenue));
+        self.traditional_revenue
+            .push(MilliYuan::from_yuan_f64(revenue));
     }
 
     /// 双脑 EMS 累计收益（毫元）.

@@ -21,10 +21,10 @@ pub mod settlement;
 pub mod types;
 
 pub use closed_loop::{ClosedLoop, ClosedLoopImpl};
+pub use milli_kwh::MilliKwh;
 pub use orchestrator::TradeOrchestrator;
 pub use reconcile::{freeze_idempotent, Reconciliation};
 pub use settlement::{AutoSettlement, SettlementTrigger};
-pub use milli_kwh::MilliKwh;
 pub use types::{Settlement, TradeContext, TradePhase};
 
 /// 交易系统错误类型

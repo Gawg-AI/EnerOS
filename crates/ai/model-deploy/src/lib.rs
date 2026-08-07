@@ -280,7 +280,11 @@ mod tests {
         verifier.deploy().unwrap();
         assert_eq!(verifier.engine.unload_count(), 0);
         verifier.undeploy().unwrap();
-        assert_eq!(verifier.engine.unload_count(), 1, "undeploy 委托引擎 unload");
+        assert_eq!(
+            verifier.engine.unload_count(),
+            1,
+            "undeploy 委托引擎 unload"
+        );
         // 重复卸载 → 拒绝
         assert_eq!(verifier.undeploy().unwrap_err(), DeployError::NotDeployed);
     }
@@ -301,6 +305,9 @@ mod arc006_tests {
         let mut config = QuantConfig7B::default();
         config.min_ram_gb = 32.0; // 超过 Mock 能力 16GB
         let mut verifier = DeployVerifier::new(engine, config);
-        assert_eq!(verifier.deploy().unwrap_err(), DeployError::HardwareInsufficient);
+        assert_eq!(
+            verifier.deploy().unwrap_err(),
+            DeployError::HardwareInsufficient
+        );
     }
 }

@@ -20,8 +20,7 @@ use eneros_market_types::TradeDir;
 use eneros_solver_core::solver::Solver;
 
 use crate::bid_generator::{
-    BidError, BidIntent, BidIntentSource, BidOptimization, BidOptimizer, BidPublisher,
-    ResourceBid,
+    BidError, BidIntent, BidIntentSource, BidOptimization, BidOptimizer, BidPublisher, ResourceBid,
 };
 use crate::market_feed::MarketFeed;
 
@@ -132,9 +131,7 @@ impl<S: Solver> BidOptimizer for SolverBidOptimizer<S> {
         // （电量 = min(目标, 容量)）。v0.244.0：旧代码第二行赋值覆盖了
         // 求解器结果（真 bug——优化结果从未生效）。
         let quantity = match solved {
-            Ok(r) if !r.solution.is_empty() && r.solution[0] >= 0.0 => {
-                r.solution[0] as f32
-            }
+            Ok(r) if !r.solution.is_empty() && r.solution[0] >= 0.0 => r.solution[0] as f32,
             _ => capacity.min(intent.target_quantity).max(0.0),
         };
         // 价格调整：按意图方向微调（Sell 加价 2%，Buy 减价 2%）。
@@ -224,7 +221,9 @@ mod tests {
     #[test]
     fn test_rule_source_sell_when_price_high_and_soc_ok() {
         let mut src = RuleBidIntentSource::default();
-        let intent = src.generate_intent(&feed_with_price(1.2), 0.8).expect("intent");
+        let intent = src
+            .generate_intent(&feed_with_price(1.2), 0.8)
+            .expect("intent");
         assert_eq!(intent.side, TradeDir::Sell);
         assert_eq!(intent.target_quantity, 1.0);
     }
@@ -232,7 +231,9 @@ mod tests {
     #[test]
     fn test_rule_source_buy_when_price_low() {
         let mut src = RuleBidIntentSource::default();
-        let intent = src.generate_intent(&feed_with_price(0.1), 0.1).expect("intent");
+        let intent = src
+            .generate_intent(&feed_with_price(0.1), 0.1)
+            .expect("intent");
         assert_eq!(intent.side, TradeDir::Buy);
     }
 
@@ -267,17 +268,38 @@ mod tests {
         // 不依赖具体求解器：验证容量约束与意图方向。
         struct DummySolver;
         impl Solver for DummySolver {
-            fn solve(&mut self, _p: &LpProblem, _t: u64) -> Result<SolveResult, eneros_solver_core::error::SolverError> {
+            fn solve(
+                &mut self,
+                _p: &LpProblem,
+                _t: u64,
+            ) -> Result<SolveResult, eneros_solver_core::error::SolverError> {
                 Ok(SolveResult::optimal(0.0, vec![2.0]))
             }
-            fn name(&self) -> &'static str { "dummy" }
-            fn version(&self) -> &'static str { "0" }
-            fn set_param(&mut self, _k: &str, _v: &str) -> Result<(), eneros_solver_core::error::SolverError> { Ok(()) }
-            fn status(&self) -> eneros_solver_core::solver::SolverStatus { eneros_solver_core::solver::SolverStatus::Idle }
+            fn name(&self) -> &'static str {
+                "dummy"
+            }
+            fn version(&self) -> &'static str {
+                "0"
+            }
+            fn set_param(
+                &mut self,
+                _k: &str,
+                _v: &str,
+            ) -> Result<(), eneros_solver_core::error::SolverError> {
+                Ok(())
+            }
+            fn status(&self) -> eneros_solver_core::solver::SolverStatus {
+                eneros_solver_core::solver::SolverStatus::Idle
+            }
         }
         let mut opt = SolverBidOptimizer::new(DummySolver);
-        let intent = BidIntent { side: TradeDir::Sell, target_quantity: 5.0 };
-        let r = opt.optimize(&intent, &feed_with_price(1.0), 0.9, 2.0).expect("opt");
+        let intent = BidIntent {
+            side: TradeDir::Sell,
+            target_quantity: 5.0,
+        };
+        let r = opt
+            .optimize(&intent, &feed_with_price(1.0), 0.9, 2.0)
+            .expect("opt");
         // 电量不超过容量。
         assert!(r.quantity <= 2.0);
         assert!(r.quantity > 0.0);
@@ -289,17 +311,38 @@ mod tests {
     fn test_solver_optimizer_invalid_capacity() {
         struct DummySolver;
         impl Solver for DummySolver {
-            fn solve(&mut self, _p: &LpProblem, _t: u64) -> Result<SolveResult, eneros_solver_core::error::SolverError> {
+            fn solve(
+                &mut self,
+                _p: &LpProblem,
+                _t: u64,
+            ) -> Result<SolveResult, eneros_solver_core::error::SolverError> {
                 Ok(SolveResult::optimal(0.0, vec![0.0]))
             }
-            fn name(&self) -> &'static str { "dummy" }
-            fn version(&self) -> &'static str { "0" }
-            fn set_param(&mut self, _k: &str, _v: &str) -> Result<(), eneros_solver_core::error::SolverError> { Ok(()) }
-            fn status(&self) -> eneros_solver_core::solver::SolverStatus { eneros_solver_core::solver::SolverStatus::Idle }
+            fn name(&self) -> &'static str {
+                "dummy"
+            }
+            fn version(&self) -> &'static str {
+                "0"
+            }
+            fn set_param(
+                &mut self,
+                _k: &str,
+                _v: &str,
+            ) -> Result<(), eneros_solver_core::error::SolverError> {
+                Ok(())
+            }
+            fn status(&self) -> eneros_solver_core::solver::SolverStatus {
+                eneros_solver_core::solver::SolverStatus::Idle
+            }
         }
         let mut opt = SolverBidOptimizer::new(DummySolver);
-        let intent = BidIntent { side: TradeDir::Buy, target_quantity: 1.0 };
-        assert!(opt.optimize(&intent, &feed_with_price(0.5), 0.5, 0.0).is_err());
+        let intent = BidIntent {
+            side: TradeDir::Buy,
+            target_quantity: 1.0,
+        };
+        assert!(opt
+            .optimize(&intent, &feed_with_price(0.5), 0.5, 0.0)
+            .is_err());
     }
 
     #[test]
@@ -333,9 +376,8 @@ mod tests {
 
     #[test]
     fn test_publisher_send_error_propagates() {
-        let mut pub_ = MarketChannelBidPublisher::new(|_payload: &[u8]| {
-            Err(BidError::PublishFailed)
-        });
+        let mut pub_ =
+            MarketChannelBidPublisher::new(|_payload: &[u8]| Err(BidError::PublishFailed));
         let rb = ResourceBid {
             resource_id: 1,
             period: crate::market_feed::Period::Peak,

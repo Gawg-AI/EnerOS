@@ -1,5 +1,6 @@
 //! 市场数据结构 + Agent 间通信通道 + 数据源抽象（D4/D5/D13）.
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 

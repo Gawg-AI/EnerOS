@@ -171,8 +171,7 @@ pub fn decode_frame(buf: &[u8]) -> Result<DecodedFrame<'_>, DecodeError> {
     }
     let msg_type = MsgType::from_u8(buf[5]).ok_or(DecodeError::UnknownMessageType)?;
 
-    let payload_len =
-        u32::from_le_bytes(buf[8..12].try_into().expect("8..12 in bounds")) as usize;
+    let payload_len = u32::from_le_bytes(buf[8..12].try_into().expect("8..12 in bounds")) as usize;
     if payload_len > MAX_PAYLOAD_LEN {
         return Err(DecodeError::LengthOutOfBounds);
     }
@@ -307,9 +306,7 @@ pub fn encode_point_value(v: &PointValue, out: &mut Vec<u8>) -> Result<(), WireE
 
 /// 点值 wire 解码。
 pub fn decode_point_value(buf: &[u8]) -> Result<(PointValue, usize), DecodeError> {
-    let (tag, rest) = buf
-        .split_first()
-        .ok_or(DecodeError::InvalidPayload)?;
+    let (tag, rest) = buf.split_first().ok_or(DecodeError::InvalidPayload)?;
     match tag {
         0 => {
             if rest.len() < 8 {
@@ -359,7 +356,10 @@ pub enum ProtocolRequest {
     /// 读单点。
     ReadPoint { point_id: PointId },
     /// 写单点。
-    WritePoint { point_id: PointId, value: PointValue },
+    WritePoint {
+        point_id: PointId,
+        value: PointValue,
+    },
     /// 断开。
     Disconnect,
 }
@@ -568,7 +568,11 @@ pub fn decode_data_point(buf: &[u8]) -> Result<(DataPoint, usize), DecodeError> 
     let (unit, c) = decode_len_str(&buf[pos..])?;
     pos += c;
 
-    let unit = if unit.is_empty() { None } else { Some(String::from(unit)) };
+    let unit = if unit.is_empty() {
+        None
+    } else {
+        Some(String::from(unit))
+    };
 
     Ok((
         DataPoint {
@@ -617,14 +621,8 @@ mod tests {
         for (msg_type, payload) in [
             (MsgType::Connect, &[][..]),
             (MsgType::ReadPoint, &[1u8, 2, 3, 4][..]),
-            (
-                MsgType::WritePoint,
-                &[0u8; 512][..],
-            ),
-            (
-                MsgType::Response,
-                &[0xABu8; MAX_PAYLOAD_LEN][..],
-            ),
+            (MsgType::WritePoint, &[0u8; 512][..]),
+            (MsgType::Response, &[0xABu8; MAX_PAYLOAD_LEN][..]),
         ] {
             let mut buf = [0u8; MAX_WIRE_SIZE];
             let n = encode_frame(msg_type, payload, &mut buf).unwrap();
@@ -684,7 +682,9 @@ mod tests {
     fn request_roundtrip_all_variants() {
         let reqs = [
             ProtocolRequest::Connect { config_id: 7 },
-            ProtocolRequest::ReadPoint { point_id: 0xDEAD_BEEF },
+            ProtocolRequest::ReadPoint {
+                point_id: 0xDEAD_BEEF,
+            },
             ProtocolRequest::WritePoint {
                 point_id: 3,
                 value: PointValue::Float(12.5),
@@ -787,17 +787,11 @@ mod tests {
         // 空请求载荷
         let mut buf = [0u8; MAX_WIRE_SIZE];
         let n = encode_frame(MsgType::ReadPoint, &[], &mut buf).unwrap();
-        assert_eq!(
-            decode_request(&buf[..n]),
-            Err(DecodeError::InvalidPayload)
-        );
+        assert_eq!(decode_request(&buf[..n]), Err(DecodeError::InvalidPayload));
         // WritePoint 载荷缺值
         let mut buf = [0u8; MAX_WIRE_SIZE];
         let n = encode_frame(MsgType::WritePoint, &[0u8; 4], &mut buf).unwrap();
-        assert_eq!(
-            decode_request(&buf[..n]),
-            Err(DecodeError::InvalidPayload)
-        );
+        assert_eq!(decode_request(&buf[..n]), Err(DecodeError::InvalidPayload));
         // PointValue 未知 tag
         let mut bad = vec![99u8];
         bad.extend_from_slice(&[0u8; 8]);

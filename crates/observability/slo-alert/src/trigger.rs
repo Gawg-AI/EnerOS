@@ -148,13 +148,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
     use super::*;
+    use alloc::vec::Vec;
 
     #[test]
     fn test_evaluate_normal_no_notify() {
-        let notified: core::cell::RefCell<Vec<String>> =
-            core::cell::RefCell::new(Vec::new());
+        let notified: core::cell::RefCell<Vec<String>> = core::cell::RefCell::new(Vec::new());
         let sink = FnNotificationSink::new(|alert: &TriggeredAlert| {
             notified.borrow_mut().push(alert.id.clone());
             Ok(())
@@ -167,8 +166,7 @@ mod tests {
 
     #[test]
     fn test_warning_transition_notifies() {
-        let notified: core::cell::RefCell<Vec<String>> =
-            core::cell::RefCell::new(Vec::new());
+        let notified: core::cell::RefCell<Vec<String>> = core::cell::RefCell::new(Vec::new());
         let sink = FnNotificationSink::new(|alert: &TriggeredAlert| {
             notified.borrow_mut().push(alert.id.clone());
             Ok(())
@@ -184,8 +182,7 @@ mod tests {
 
     #[test]
     fn test_critical_escalation_notifies() {
-        let notified: core::cell::RefCell<Vec<String>> =
-            core::cell::RefCell::new(Vec::new());
+        let notified: core::cell::RefCell<Vec<String>> = core::cell::RefCell::new(Vec::new());
         let sink = FnNotificationSink::new(|alert: &TriggeredAlert| {
             notified.borrow_mut().push(alert.id.clone());
             Ok(())
@@ -199,8 +196,7 @@ mod tests {
 
     #[test]
     fn test_recovery_notifies() {
-        let notified: core::cell::RefCell<Vec<String>> =
-            core::cell::RefCell::new(Vec::new());
+        let notified: core::cell::RefCell<Vec<String>> = core::cell::RefCell::new(Vec::new());
         let sink = FnNotificationSink::new(|alert: &TriggeredAlert| {
             notified.borrow_mut().push(alert.id.clone());
             Ok(())
@@ -223,8 +219,7 @@ mod tests {
 
     #[test]
     fn test_alert_id_sequence() {
-        let notified: core::cell::RefCell<Vec<String>> =
-            core::cell::RefCell::new(Vec::new());
+        let notified: core::cell::RefCell<Vec<String>> = core::cell::RefCell::new(Vec::new());
         let sink = FnNotificationSink::new(|alert: &TriggeredAlert| {
             notified.borrow_mut().push(alert.id.clone());
             Ok(())

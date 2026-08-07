@@ -242,8 +242,8 @@ fn read_entropy<M: Mmio>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::{AtomicU64, Ordering};
     use crate::sm2::Sm2Signature;
+    use core::sync::atomic::{AtomicU64, Ordering};
 
     /// RAM 仿真 MMIO（QEMU 设备模型语义；queue 指针经全局桥接）。
     /// 每次 `new()` 递增熵 epoch（R1-4：模拟真实设备每次产生不同熵）。
@@ -348,7 +348,6 @@ mod tests {
         assert!(out2.iter().any(|&b| b != 0));
     }
 
-
     #[test]
     fn test_entropy_source_two_reads_both_nonzero() {
         // 同一 queue 连续两次读取（used.idx 推进后第二次需 re-submit）。
@@ -415,8 +414,8 @@ mod tests {
             );
             let mut rng = crate::rng::CsRng::from_seed(&seed);
             let kp = crate::sm2::Sm2KeyPair::generate(&mut rng).expect("keygen");
-            let sig = crate::sm2::sm2_sign(msg, &kp.private_key, &kp.public_key, &mut rng)
-                .expect("sign");
+            let sig =
+                crate::sm2::sm2_sign(msg, &kp.private_key, &kp.public_key, &mut rng).expect("sign");
             sigs.push(sig);
         }
         assert_ne!(

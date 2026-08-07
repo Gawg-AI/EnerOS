@@ -73,16 +73,16 @@ pub mod error;
 
 pub use bad_block::BadBlockTable;
 pub use crc32::crc32;
+#[cfg(any(test, feature = "emmc-ram-sim"))]
+pub use driver::emmc::RamEmmcMmio;
+pub use driver::virtio_blk::{
+    Aarch64Cache, ArmCache, NoopCache, RamMmio, RamPool, VirtioBlkDriver, VirtioMmio,
+};
+#[cfg(test)]
+pub use driver::MockDmaTransfer;
 pub use driver::{
     create_block_device, BlockDevice, DeviceHealth, DmaTransfer, MockBlockDevice, StorageConfig,
     StorageMmio, StorageType,
 };
 pub use driver::{DmaBuffer, EmmcCmdType, EmmcDriver, NvmeDriver};
-#[cfg(any(test, feature = "emmc-ram-sim"))]
-pub use driver::emmc::RamEmmcMmio;
-#[cfg(test)]
-pub use driver::MockDmaTransfer;
-pub use driver::virtio_blk::{
-    Aarch64Cache, ArmCache, NoopCache, RamMmio, RamPool, VirtioBlkDriver, VirtioMmio,
-};
 pub use error::StorageError;

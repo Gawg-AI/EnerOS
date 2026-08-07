@@ -4,9 +4,10 @@
 
 use crate::orchestrator::TradeOrchestrator;
 use crate::settlement::{AutoSettlement, SettlementTrigger};
-use eneros_market_types::YuanPerKwh;
 use crate::types::TradePhase;
 use crate::TradeError;
+#[cfg(test)]
+use eneros_market_types::YuanPerKwh;
 
 /// 闭环驱动 trait
 ///
@@ -54,7 +55,10 @@ impl ClosedLoopImpl {
     }
 
     /// 注入账户管理器（冻结经真实接口，幂等）。
-    pub fn with_account(mut self, account: alloc::boxed::Box<dyn eneros_account::AccountManager>) -> Self {
+    pub fn with_account(
+        mut self,
+        account: alloc::boxed::Box<dyn eneros_account::AccountManager>,
+    ) -> Self {
         self.account = Some(account);
         self
     }
@@ -81,8 +85,9 @@ impl ClosedLoop for ClosedLoopImpl {
                 if let Some(account) = &mut self.account {
                     let ctx = self.orchestrator.find(deal_id)?;
                     let seller = ctx.seller;
-                    let amount =
-                        eneros_market_types::MilliYuan::from_yuan_f64(ctx.volume_kwh.as_kwh() * ctx.price.0);
+                    let amount = eneros_market_types::MilliYuan::from_yuan_f64(
+                        ctx.volume_kwh.as_kwh() * ctx.price.0,
+                    );
                     let _ = account.freeze(seller, amount); // 失败不阻断状态机（由对账暴露）
                 }
                 self.orchestrator.freeze(deal_id, fid)?;
@@ -138,7 +143,11 @@ mod tests {
         assert!(ctx.settlement.is_some());
         let st = ctx.settlement.as_ref().unwrap();
         assert_eq!(st.seller_credit_kwh, crate::MilliKwh::from_kwh(200.0));
-        assert_eq!(st.amount_yuan, crate::types::MilliYuan(160_000), "200 × 0.8 = 160 元");
+        assert_eq!(
+            st.amount_yuan,
+            crate::types::MilliYuan(160_000),
+            "200 × 0.8 = 160 元"
+        );
     }
 
     #[test]

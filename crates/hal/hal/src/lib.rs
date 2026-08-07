@@ -30,8 +30,6 @@ pub(crate) fn wait_until<F: FnMut() -> bool>(mut cond: F, max_iters: u32) -> Res
     Err(HalError::Timeout)
 }
 
-
-
 #[cfg(target_arch = "aarch64")]
 pub mod arm64;
 
@@ -209,10 +207,13 @@ mod tests {
     #[test]
     fn wait_until_true_after_n_iters() {
         let mut n = 0;
-        let r = wait_until(|| {
-            n += 1;
-            n >= 3
-        }, 10);
+        let r = wait_until(
+            || {
+                n += 1;
+                n >= 3
+            },
+            10,
+        );
         assert_eq!(r, Ok(()));
         assert_eq!(n, 3);
     }
@@ -221,10 +222,13 @@ mod tests {
     fn wait_until_timeout() {
         // 永不满足的条件 → Timeout（HAL-005：旧代码无限忙等，新代码有界）
         let mut n = 0;
-        let r = wait_until(|| {
-            n += 1;
-            false
-        }, 5);
+        let r = wait_until(
+            || {
+                n += 1;
+                false
+            },
+            5,
+        );
         assert_eq!(r, Err(HalError::Timeout));
         assert_eq!(n, 5);
     }

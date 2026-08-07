@@ -53,8 +53,8 @@
 extern crate alloc;
 
 pub mod attest;
-pub mod real;
 pub mod event_log;
+pub mod real;
 pub mod tpm;
 
 pub use attest::{AttestReason, AttestResult, AttestVerifier, PcrQuote, RemoteAttestation};

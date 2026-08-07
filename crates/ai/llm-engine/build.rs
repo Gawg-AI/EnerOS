@@ -86,7 +86,7 @@ fn main() {
     // 如果静态库不存在，构建它
     if !llama_lib.exists() {
         println!(
-            "cargo:warning=Building llama.cpp {} from source (this may take several minutes)...",
+            "cargo:info=Building llama.cpp {} from source (this may take several minutes)...",
             LLAMA_TAG
         );
 
@@ -131,7 +131,7 @@ fn main() {
             );
         }
 
-        println!("cargo:warning=llama.cpp {} built successfully", LLAMA_TAG);
+        println!("cargo:info=llama.cpp {} built successfully", LLAMA_TAG);
     }
 
     // 告知 cargo 链接搜索路径
@@ -165,7 +165,7 @@ fn main() {
 
     // 记录 pin 信息
     println!(
-        "cargo:warning=llama.cpp pinned: tag {} commit={}",
+        "cargo:info=llama.cpp pinned: tag {} commit={}",
         LLAMA_TAG, LLAMA_COMMIT
     );
 }

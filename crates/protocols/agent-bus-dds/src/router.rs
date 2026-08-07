@@ -22,8 +22,8 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::policy::{
-    AgentId, CapabilityTicketVerifier, CapabilityVerifier, Permission, RouteDecision,
-    RouteError, RoutingPolicy,
+    AgentId, CapabilityTicketVerifier, CapabilityVerifier, Permission, RouteDecision, RouteError,
+    RoutingPolicy,
 };
 use crate::registry::TopicRegistry;
 use crate::topic::validate_topic_name;

@@ -145,7 +145,6 @@ pub struct VppAggregator {
     pub reject_count: u64,
 }
 
-
 impl VppAggregator {
     /// 创建聚合器（计数器全零，无资源）.
     pub fn new(solver: Box<dyn Solver>) -> Self {
@@ -210,7 +209,6 @@ impl VppAggregator {
         }
         profile
     }
-
 }
 
 /// VPP 聚合/调度大方法（ARCH-G03 拆分）。

@@ -24,17 +24,16 @@ pub mod virtio_blk;
 pub use dma::DmaBuffer;
 #[cfg(test)]
 pub use dma::MockDmaTransfer;
-pub use emmc::{EmmcCmdType, EmmcDriver};
 #[cfg(any(test, feature = "emmc-ram-sim"))]
 pub use emmc::RamEmmcMmio;
+pub use emmc::{EmmcCmdType, EmmcDriver};
 pub use factory::create_block_device;
 pub use mock::MockBlockDevice;
 pub use nvme::NvmeDriver;
 pub use types::{DeviceHealth, StorageConfig, StorageType};
 pub use virtio_blk::{
-    Aarch64Cache, ArmCache, DmaPool, NoopCache, VirtioBlkDriver, VirtioMmio,
-    VIRTIO_BLK_DEVICE_ID, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK, VIRTIO_BLK_T_FLUSH,
-    VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT,
+    Aarch64Cache, ArmCache, DmaPool, NoopCache, VirtioBlkDriver, VirtioMmio, VIRTIO_BLK_DEVICE_ID,
+    VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK, VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT,
 };
 
 use crate::error::StorageError;

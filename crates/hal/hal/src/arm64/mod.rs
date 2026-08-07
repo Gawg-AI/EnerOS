@@ -14,10 +14,10 @@
 //! - [`provider`]: [`crate::HalProvider`] glue exposing the ARM64 HAL singletons.
 
 pub mod cpu;
-pub mod platform;
 pub mod gicv3;
 pub mod gpio;
 pub mod net_mmio;
+pub mod platform;
 pub mod provider;
 pub mod timer;
 pub mod uart_pl011;

@@ -105,16 +105,14 @@ impl Redactor {
                         let valid = e.valid_up_to();
                         if valid > 0 {
                             // 前缀部分是合法 UTF-8，整体复制。
-                            let prefix = core::str::from_utf8(&remaining[..valid])
-                                .unwrap_or("\u{FFFD}");
+                            let prefix =
+                                core::str::from_utf8(&remaining[..valid]).unwrap_or("\u{FFFD}");
                             result.push_str(prefix);
                             i += valid;
                         } else {
                             // 当前字节非法：\xNN 转义。
-                            let _ = alloc::fmt::write(
-                                &mut result,
-                                format_args!("\\x{:02X}", bytes[i]),
-                            );
+                            let _ =
+                                alloc::fmt::write(&mut result, format_args!("\\x{:02X}", bytes[i]));
                             i += 1;
                         }
                     }
@@ -461,10 +459,7 @@ mod utf8_tests {
         assert_eq!(count, 1, "password= 模式必须命中");
         assert!(output.contains("[REDACTED:PASSWORD]"));
         // 中文文本必须原样保留（旧实现输出乱码断言必败）。
-        assert!(
-            output.contains("设备启动成功"),
-            "中文前缀被破坏: {output}"
-        );
+        assert!(output.contains("设备启动成功"), "中文前缀被破坏: {output}");
         assert!(output.contains("电池电量 85%"), "中文后缀被破坏: {output}");
     }
 

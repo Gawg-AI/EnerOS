@@ -309,7 +309,11 @@ mod tests {
 
     fn new_ota() -> AbPartitionOta<MockBlockDevice> {
         let dev = MockBlockDevice::new(64, 512);
-        AbPartitionOta::new(dev, Sm2KeyPair::generate(&mut CsRng::new()).unwrap().public_key, 0)
+        AbPartitionOta::new(
+            dev,
+            Sm2KeyPair::generate(&mut CsRng::new()).unwrap().public_key,
+            0,
+        )
     }
 
     #[test]
@@ -334,7 +338,10 @@ mod tests {
         // 降级尝试必须拒绝
         let mut down_meta = meta.clone();
         down_meta.target_version = HString::try_from("0.122.0").unwrap();
-        assert_eq!(ota.prepare_upgrade(down_meta), Err(OtaError::DowngradeRejected));
+        assert_eq!(
+            ota.prepare_upgrade(down_meta),
+            Err(OtaError::DowngradeRejected)
+        );
         // 升级放行
         let mut up_meta = meta.clone();
         up_meta.target_version = HString::try_from("0.124.0").unwrap();
@@ -351,15 +358,22 @@ mod tests {
         ota.active_slot = PartitionSlot::A;
         // 前 3 次健康检查通过（计数累积）
         for i in 0..3 {
-            assert!(crate::rollback::boot_health_check(&mut ota, i as u64), "第 {} 次启动未触发回滚", i);
+            assert!(
+                crate::rollback::boot_health_check(&mut ota, i as u64),
+                "第 {} 次启动未触发回滚",
+                i
+            );
         }
         // 第 4 次超过 max_boot_attempts → 自动回滚到 B 并返回 false
         assert!(!crate::rollback::boot_health_check(&mut ota, 3));
         assert_eq!(ota.active_slot, PartitionSlot::B, "回滚到备用分区");
-        assert_eq!(ota.partitions[0].state, PartitionState::Failed, "失败分区标记 Failed");
+        assert_eq!(
+            ota.partitions[0].state,
+            PartitionState::Failed,
+            "失败分区标记 Failed"
+        );
         assert_eq!(ota.boot_attempts, 0, "回滚后计数清零");
     }
-
 
     use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair};
     use eneros_storage::MockBlockDevice;

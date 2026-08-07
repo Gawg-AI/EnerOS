@@ -33,14 +33,62 @@ impl DengbaoChecker {
         let mut report = self.check_level3();
         for item in report.items_mut() {
             let status = match (item.id, probe) {
-                (4, RuntimeProbe { sm2_sign_available: Some(true), .. }) => CheckStatus::Passed,
-                (4, RuntimeProbe { sm2_sign_available: Some(false), .. }) => CheckStatus::Failed,
-                (8, RuntimeProbe { audit_chain_written: Some(true), .. }) => CheckStatus::Passed,
-                (8, RuntimeProbe { audit_chain_written: Some(false), .. }) => CheckStatus::Failed,
-                (9, RuntimeProbe { anomaly_detector_active: Some(true), .. }) => CheckStatus::Passed,
-                (9, RuntimeProbe { anomaly_detector_active: Some(false), .. }) => CheckStatus::Failed,
-                (7, RuntimeProbe { time_sync_valid: Some(true), .. }) => CheckStatus::Passed,
-                (7, RuntimeProbe { time_sync_valid: Some(false), .. }) => CheckStatus::Failed,
+                (
+                    4,
+                    RuntimeProbe {
+                        sm2_sign_available: Some(true),
+                        ..
+                    },
+                ) => CheckStatus::Passed,
+                (
+                    4,
+                    RuntimeProbe {
+                        sm2_sign_available: Some(false),
+                        ..
+                    },
+                ) => CheckStatus::Failed,
+                (
+                    8,
+                    RuntimeProbe {
+                        audit_chain_written: Some(true),
+                        ..
+                    },
+                ) => CheckStatus::Passed,
+                (
+                    8,
+                    RuntimeProbe {
+                        audit_chain_written: Some(false),
+                        ..
+                    },
+                ) => CheckStatus::Failed,
+                (
+                    9,
+                    RuntimeProbe {
+                        anomaly_detector_active: Some(true),
+                        ..
+                    },
+                ) => CheckStatus::Passed,
+                (
+                    9,
+                    RuntimeProbe {
+                        anomaly_detector_active: Some(false),
+                        ..
+                    },
+                ) => CheckStatus::Failed,
+                (
+                    7,
+                    RuntimeProbe {
+                        time_sync_valid: Some(true),
+                        ..
+                    },
+                ) => CheckStatus::Passed,
+                (
+                    7,
+                    RuntimeProbe {
+                        time_sync_valid: Some(false),
+                        ..
+                    },
+                ) => CheckStatus::Failed,
                 _ => continue,
             };
             item.set_status(status);
@@ -272,7 +320,11 @@ mod vrf006_tests {
             .iter()
             .find(|i| i.id == 4)
             .expect("项 4 存在");
-        assert_eq!(item4.status, CheckStatus::Failed, "动态探测 SM2 不可用 → 项 4 Failed");
+        assert_eq!(
+            item4.status,
+            CheckStatus::Failed,
+            "动态探测 SM2 不可用 → 项 4 Failed"
+        );
         assert_eq!(dyn_report.failed_count, 1, "动态检测使出口可对假实现失败");
         // 全部通过探测 → 全 Passed
         let ok_probe = RuntimeProbe {

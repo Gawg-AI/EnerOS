@@ -112,11 +112,7 @@ impl CapabilityManager {
     /// 空的 `CapabilityManager`（无令牌、无冻结、无撤销）。
     pub fn new(keypair: Sm2KeyPair, issuer_id: AgentId) -> Self {
         // 蓝图/20 R2-1 熵纪律：生产必须注入平台熵源；默认路径仅测试/仿真。
-        Self::with_rng(
-            keypair,
-            issuer_id,
-            CsRng::from_seed(&[0u8; 32]),
-        )
+        Self::with_rng(keypair, issuer_id, CsRng::from_seed(&[0u8; 32]))
     }
 
     /// 注入式构造：rng 必须来自平台熵（`csrng_from_platform`）。

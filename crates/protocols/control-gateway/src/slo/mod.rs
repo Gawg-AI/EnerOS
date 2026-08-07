@@ -376,7 +376,6 @@ impl Default for DeadlineMonitor {
     }
 }
 
-
 /// A snapshot entry for one SLO path.
 #[derive(Debug, Clone)]
 pub struct SloSnapshotEntry {
@@ -423,8 +422,6 @@ impl SloSnapshot {
 // ============================================================================
 // Tests
 // ============================================================================
-
-
 
 /// DeadlineMonitor 实现（ARCH-G03 拆分）。
 mod monitor;

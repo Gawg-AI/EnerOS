@@ -21,7 +21,9 @@ struct LoomHotSwap<T> {
 
 impl<T> LoomHotSwap<T> {
     fn new(arc: Arc<T>) -> Self {
-        Self { ptr: AtomicPtr::new(Arc::into_raw(arc) as *mut T) }
+        Self {
+            ptr: AtomicPtr::new(Arc::into_raw(arc) as *mut T),
+        }
     }
 
     fn load(&self) -> Arc<T> {

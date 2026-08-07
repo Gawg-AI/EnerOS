@@ -44,9 +44,9 @@ pub mod session;
 pub mod types;
 
 pub use convergence::{ConvergenceChecker, FeasibilityChecker, ObjectiveChecker};
-pub use negotiator::{DialogNegotiator};
+pub use negotiator::DialogNegotiator;
 #[cfg(any(test, feature = "mock"))]
-pub use negotiator::{MockNegotiator};
+pub use negotiator::MockNegotiator;
 pub use session::DialogSession;
 pub use types::{
     ConvergenceResult, DialogState, LlmProposal, Problem, Round, Solution, SolverFeedback,

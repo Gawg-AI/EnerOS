@@ -54,9 +54,9 @@ pub mod sink;
 pub use coordinator::{DualBrainCoordinator, DualBrainResult};
 pub use error::DualBrainError;
 pub use latency::LatencyBreakdown;
-pub use sink::{CommandSink, DispatchCommand};
 #[cfg(any(test, feature = "mock"))]
-pub use sink::{MockCommandSink};
+pub use sink::MockCommandSink;
+pub use sink::{CommandSink, DispatchCommand};
 
 #[cfg(test)]
 mod tests {
@@ -266,16 +266,13 @@ mod tests {
     // ===== T16: execute 慢路径 latency 各字段（llm_inference_ms > 0）=====
     // v0.248.0：注入可控单调时钟（每步推进），验证 latency 各字段接真实
     // 时钟——注入已知延迟可观测到对应数值（验收标准）。
-    static TEST_NOW_MS: core::sync::atomic::AtomicU64 =
-        core::sync::atomic::AtomicU64::new(0);
+    static TEST_NOW_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
     #[test]
     fn t16_execute_slow_path_latency() {
         // 时钟：每次调用推进 10ms（模拟真实执行耗时）。
         TEST_NOW_MS.store(1_000_000, core::sync::atomic::Ordering::SeqCst);
-        let clock = || {
-            TEST_NOW_MS.fetch_add(10, core::sync::atomic::Ordering::SeqCst)
-        };
+        let clock = || TEST_NOW_MS.fetch_add(10, core::sync::atomic::Ordering::SeqCst);
         let mut coord = DualBrainCoordinator::default_with_mock().with_clock(clock);
         let state = safe_state();
         let result = coord.execute(&state, 0).unwrap();
@@ -402,8 +399,7 @@ mod tests {
         });
         let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
         let sink = alloc::boxed::Box::new(MockCommandSink::new());
-        let mut coord =
-            DualBrainCoordinator::new(config, llm_engine, solver, sink);
+        let mut coord = DualBrainCoordinator::new(config, llm_engine, solver, sink);
 
         let state = safe_state();
         let err = coord.execute(&state, 1000).unwrap_err();
@@ -429,8 +425,7 @@ mod tests {
         let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
         let solver = MockSolver::new();
         let sink = alloc::boxed::Box::new(MockCommandSink::new());
-        let mut coord =
-            DualBrainCoordinator::new(config, llm_engine, solver, sink);
+        let mut coord = DualBrainCoordinator::new(config, llm_engine, solver, sink);
 
         // 正常 SOC=0.8 → 慢路径可下发命令（sink 有写入）。
         let state = safe_state();

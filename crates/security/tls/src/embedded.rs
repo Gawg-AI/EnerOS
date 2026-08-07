@@ -18,12 +18,12 @@ use core::marker::PhantomData;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use digest::Digest;
 use embedded_tls::blocking::{
     Certificate, CertificateEntryRef, CertificateRef, CertificateVerifyRef, CryptoProvider,
     TlsCipherSuite, TlsConfig, TlsContext, TlsError, TlsVerifier,
 };
 use embedded_tls::SignatureScheme;
-use digest::Digest;
 use eneros_crypto::pki::parser::parse_der;
 use eneros_crypto::pki::verify::CertVerifier;
 use eneros_crypto::pki::x509::{SubjectPublicKey, X509Certificate};
@@ -158,7 +158,8 @@ impl<CS: TlsCipherSuite> TlsVerifier<CS> for PkiVerifier<CS> {
         let sig = p256::ecdsa::Signature::from_der(verify.signature)
             .map_err(|_| TlsError::InvalidSignature)?;
         use p256::ecdsa::signature::Verifier;
-        vk.verify(&msg, &sig).map_err(|_| TlsError::InvalidSignature)
+        vk.verify(&msg, &sig)
+            .map_err(|_| TlsError::InvalidSignature)
     }
 }
 
@@ -342,8 +343,7 @@ impl<'b, S: embedded_io::Read + embedded_io::Write + 'b> EmbeddedTlsStream<'b, S
         } else {
             TlsConfig::new()
         };
-        let mut conn =
-            embedded_tls::blocking::TlsConnection::new(socket, read_buf, write_buf);
+        let mut conn = embedded_tls::blocking::TlsConnection::new(socket, read_buf, write_buf);
         conn.open(TlsContext::new(&config, &mut provider))?;
         Ok(Self {
             conn,
@@ -511,7 +511,11 @@ mod tests {
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = spawn_rustls_server(listener, server_id.key_der.clone(), server_id.cert_der.clone());
+        let server = spawn_rustls_server(
+            listener,
+            server_id.key_der.clone(),
+            server_id.cert_der.clone(),
+        );
 
         // 客户端：embedded-tls + 本仓 PKI 验证（roots = 服务器自签根）
         let tcp = std::net::TcpStream::connect(addr).unwrap();
@@ -600,10 +604,7 @@ mod tests {
             &mut read_buf,
             &mut write_buf,
         );
-        assert!(
-            result.is_err(),
-            "错误 CN 必须握手失败（R1-3 负例）"
-        );
+        assert!(result.is_err(), "错误 CN 必须握手失败（R1-3 负例）");
         let _ = server.join();
     }
 

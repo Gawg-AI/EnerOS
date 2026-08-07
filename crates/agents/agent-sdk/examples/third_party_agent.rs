@@ -39,7 +39,9 @@ impl QuoteAgent {
             &req,
             &mut frame,
         )
-        .map_err(|_| AgentError::IpcError(HString::<128>::try_from("wire encode").unwrap_or_default()))?;
+        .map_err(|_| {
+            AgentError::IpcError(HString::<128>::try_from("wire encode").unwrap_or_default())
+        })?;
         Ok(frame[..n].to_vec())
     }
 }

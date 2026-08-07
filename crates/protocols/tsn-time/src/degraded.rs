@@ -55,7 +55,11 @@ pub struct SoftSyncClock {
 
 impl SoftSyncClock {
     /// 创建软同步时钟。
-    pub fn new(identity: ClockIdentity, initial_time: PtpTime, config: &crate::gptp::GptpConfig) -> Self {
+    pub fn new(
+        identity: ClockIdentity,
+        initial_time: PtpTime,
+        config: &crate::gptp::GptpConfig,
+    ) -> Self {
         Self {
             inner: GptpClock::new(identity, initial_time, config),
             claim: SoftSyncClaim::default(),

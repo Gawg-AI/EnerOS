@@ -17,8 +17,8 @@ use core::net::IpAddr;
 
 use crate::consensus::{ConsensusBus, ConsensusError, NodeId, PbftMessage};
 use crate::discovery::{FedError, PresenceBus};
-use crate::MemberInfo;
 use crate::tunnel::{EncryptError, VerticalEncryptDevice};
+use crate::MemberInfo;
 
 /// 真实发现总线：静态种子 + mDNS 注入。
 ///

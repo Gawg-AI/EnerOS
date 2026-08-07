@@ -4,9 +4,9 @@ use alloc::vec::Vec;
 
 use crate::quote::{QuoteScheduler, QuoteValidator};
 use crate::session::SessionManager;
-use crate::types::{RealtimeClearing, RealtimeQuote};
 #[cfg(test)]
 use crate::types::YuanPerMwh;
+use crate::types::{RealtimeClearing, RealtimeQuote};
 use crate::RealtimeError;
 
 /// 实时市场操作 trait

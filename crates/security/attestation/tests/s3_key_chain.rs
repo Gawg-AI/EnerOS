@@ -34,7 +34,10 @@ fn test_s3_full_key_chain() {
     assert_eq!(unsealed, secret, "封仓-解封往返还原");
     let mut tampered_cipher = sealed.clone();
     tampered_cipher[0] ^= 0xff;
-    assert!(sm2_decrypt(&tampered_cipher, &kp.private_key).is_err(), "篡改密文拒绝");
+    assert!(
+        sm2_decrypt(&tampered_cipher, &kp.private_key).is_err(),
+        "篡改密文拒绝"
+    );
 
     // 6) 证明（Quote + 验签，AK 跨"重启"稳定）
     let mut tpm = SoftTpm::from_identity_seed(&[0x42; 32]).expect("AK 派生");

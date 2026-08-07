@@ -1,8 +1,11 @@
 //! P2P 消息广播与接收 — MockTransport 实现
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec::Vec;
 
+#[cfg(any(test, feature = "mock"))]
 use crate::types::P2pMsg;
+#[cfg(any(test, feature = "mock"))]
 use crate::{P2pError, P2pTransport};
 
 /// 模拟传输层，用于测试

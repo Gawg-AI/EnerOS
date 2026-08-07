@@ -182,9 +182,7 @@ impl SelfHealEngine for RuleBasedHealer {
         };
 
         // v0.248.0：耗时接真实时钟（boot 后单调纳秒；未初始化回退 0）。
-        let duration_ms = eneros_time::get_monotonic_ns()
-            .saturating_sub(t0)
-            / 1_000_000;
+        let duration_ms = eneros_time::get_monotonic_ns().saturating_sub(t0) / 1_000_000;
         Ok(HealOutcome {
             success: true,
             duration_ms,
@@ -296,10 +294,7 @@ mod tests {
         };
         let plan = healer.diagnose(&anomaly);
         for action in &plan.actions {
-            assert_ne!(
-                action.target, anomaly.ts,
-                "target 必须为组件 ID 而非时间戳"
-            );
+            assert_ne!(action.target, anomaly.ts, "target 必须为组件 ID 而非时间戳");
             assert_eq!(
                 action.target,
                 component_id_of("grid/voltage"),
@@ -310,8 +305,14 @@ mod tests {
 
     #[test]
     fn test_component_id_deterministic() {
-        assert_eq!(component_id_of("grid/voltage"), component_id_of("grid/voltage"));
-        assert_ne!(component_id_of("grid/voltage"), component_id_of("grid/current"));
+        assert_eq!(
+            component_id_of("grid/voltage"),
+            component_id_of("grid/voltage")
+        );
+        assert_ne!(
+            component_id_of("grid/voltage"),
+            component_id_of("grid/current")
+        );
     }
 
     #[test]

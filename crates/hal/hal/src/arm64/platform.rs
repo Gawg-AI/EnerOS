@@ -35,11 +35,11 @@ pub const QEMU_VIRT: PlatformConfig = PlatformConfig {
 /// 飞腾 D2000 平台（**BLOCKED 缺硬件**；基址基于公开数据手册，
 /// 真机后以设备树校准——本常量用于地址定义先行，不用于伪造验证）。
 pub const PHYTIUM_D2000: PlatformConfig = PlatformConfig {
-    core_count: 8, // D2000 8 核（2×4 cluster 拓扑）
+    core_count: 8,          // D2000 8 核（2×4 cluster 拓扑）
     uart_base: 0x2800_0000, // D2000 UART0
     gicd_base: 0x2980_0000, // D2000 GICD（公开资料）
     gicr_base: 0x2982_0000, // D2000 GICR（公开资料）
-    timer_irq: 27, // ARM 通用定时器 PPI（与 QEMU 相同，arm 规范）
+    timer_irq: 27,          // ARM 通用定时器 PPI（与 QEMU 相同，arm 规范）
 };
 
 #[cfg(test)]

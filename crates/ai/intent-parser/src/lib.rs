@@ -465,13 +465,17 @@ mod tests {
     fn p016_llm_output_with_action_alias_parses() {
         use crate::parser::normalize_llm_json;
         // LLM 按旧 prompt（action 别名）输出：顶层 power_kw。
-        let llm_out = r#"{"action":"charge","power_kw":-50.0,"reason":"谷时充电","confidence":0.9}"#;
+        let llm_out =
+            r#"{"action":"charge","power_kw":-50.0,"reason":"谷时充电","confidence":0.9}"#;
         let normalized = normalize_llm_json(llm_out);
         let parser = IntentParser::default();
         let i = parser.parse_json(&normalized).unwrap();
         assert_eq!(i.intent_type, IntentType::Charge, "action 别名→intent_type");
         let p = i.power.unwrap();
-        assert!((p.power_kw - (-50.0)).abs() < 1e-9, "顶层 power_kw→嵌套 power");
+        assert!(
+            (p.power_kw - (-50.0)).abs() < 1e-9,
+            "顶层 power_kw→嵌套 power"
+        );
     }
 
     #[test]

@@ -43,9 +43,9 @@ use eneros_solver_core::solver::Solver;
 
 use crate::error::DualBrainError;
 use crate::latency::LatencyBreakdown;
-use crate::sink::{CommandSink, DispatchCommand};
 #[cfg(any(test, feature = "mock"))]
 use crate::sink::MockCommandSink;
+use crate::sink::{CommandSink, DispatchCommand};
 
 /// Mock LLM 输出（合法 Charge intent JSON，满足 ContractValidator 6 项校验）.
 #[cfg(any(test, feature = "mock"))]

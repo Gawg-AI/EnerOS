@@ -162,8 +162,8 @@ impl SoftTpm {
         let sk_bytes = sm3_hash(&material);
         let sk = eneros_crypto::Sm2PrivateKey::from_bytes(&sk_bytes)
             .map_err(|_| TpmError::QuoteFailed)?;
-        let kp = eneros_crypto::Sm2KeyPair::from_private_key(&sk)
-            .map_err(|_| TpmError::QuoteFailed)?;
+        let kp =
+            eneros_crypto::Sm2KeyPair::from_private_key(&sk).map_err(|_| TpmError::QuoteFailed)?;
         Ok(Self {
             bank: PcrBank::default(),
             ak: kp,
@@ -269,9 +269,21 @@ mod tests {
         use eneros_crypto::{sm2_sign, sm2_verify, CsRng};
         let digest = [0x11u8; 32];
         let mut rng1 = CsRng::new();
-        let sig1 = sm2_sign(&digest, &tpm1.ak.private_key, &tpm1.ak.public_key, &mut rng1).unwrap();
+        let sig1 = sm2_sign(
+            &digest,
+            &tpm1.ak.private_key,
+            &tpm1.ak.public_key,
+            &mut rng1,
+        )
+        .unwrap();
         let mut rng2 = CsRng::new();
-        let sig2 = sm2_sign(&digest, &tpm2.ak.private_key, &tpm2.ak.public_key, &mut rng2).unwrap();
+        let sig2 = sm2_sign(
+            &digest,
+            &tpm2.ak.private_key,
+            &tpm2.ak.public_key,
+            &mut rng2,
+        )
+        .unwrap();
         assert!(sm2_verify(&digest, &sig1, &tpm2.attestation_pubkey().unwrap()).unwrap());
         assert!(sm2_verify(&digest, &sig2, &tpm1.attestation_pubkey().unwrap()).unwrap());
     }
@@ -429,7 +441,11 @@ mod tests {
         assert_eq!(quote.pcr_values[2], [0u8; 32], "PCR2 未度量应为零值");
         // 签名可验（quote_digest + AK 公钥）
         let sig = Sm2Signature::from_bytes(&sig_bytes);
-        let verified = sm2_verify(&quote_digest(&quote), &sig, &tpm.attestation_pubkey().unwrap());
+        let verified = sm2_verify(
+            &quote_digest(&quote),
+            &sig,
+            &tpm.attestation_pubkey().unwrap(),
+        );
         assert_eq!(verified, Ok(true), "quote 签名应可被 AK 公钥验证");
     }
 }

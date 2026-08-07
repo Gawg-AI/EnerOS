@@ -210,10 +210,17 @@ impl MarlTrainer for MappoTrainer {
                 let old_prob = *jt.old_probs.get(agent_idx).unwrap_or(&0.0);
                 // 当前策略 π_new(a|s)（概率比，no_std）
                 let new_prob = action_prob(agent, &t.state, &t.action);
-                let ratio = if old_prob > 1e-9 { new_prob / old_prob } else { 1.0 };
+                let ratio = if old_prob > 1e-9 {
+                    new_prob / old_prob
+                } else {
+                    1.0
+                };
                 // advantage：全局奖励 - 状态价值（critic 估计）
-                let global_state: Vec<f32> =
-                    jt.per_agent.iter().flat_map(|x| x.state.iter().copied()).collect();
+                let global_state: Vec<f32> = jt
+                    .per_agent
+                    .iter()
+                    .flat_map(|x| x.state.iter().copied())
+                    .collect();
                 let value = self
                     .critic
                     .as_ref()
@@ -229,9 +236,17 @@ impl MarlTrainer for MappoTrainer {
                 };
                 // 目标对 ratio 的导数（adv>0 时取非 clip 分支的掩码）
                 let d_surr_dr = if adv >= 0.0 {
-                    if ratio <= clipped { 1.0 } else { 0.0 }
+                    if ratio <= clipped {
+                        1.0
+                    } else {
+                        0.0
+                    }
                 } else {
-                    if ratio >= clipped { 1.0 } else { 0.0 }
+                    if ratio >= clipped {
+                        1.0
+                    } else {
+                        0.0
+                    }
                 };
                 // ∂logπ_a/∂w = (δ_a - π)·s
                 let probs = softmax_probs(agent, &t.state);
@@ -240,7 +255,11 @@ impl MarlTrainer for MappoTrainer {
                 for (k, s_val) in t.state.iter().enumerate() {
                     let w_base = k * agent.action_dim;
                     for a in 0..agent.action_dim {
-                        let grad_a = if a == action_idx { 1.0 - probs[a] } else { -probs[a] };
+                        let grad_a = if a == action_idx {
+                            1.0 - probs[a]
+                        } else {
+                            -probs[a]
+                        };
                         let gi = w_base + a;
                         if gi < grad.len() {
                             grad[gi] += adv * dr_dw * grad_a * s_val;

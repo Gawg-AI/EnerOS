@@ -13,9 +13,9 @@
 
 extern crate std;
 
+use loom::sync::Mutex;
 use std::cell::RefCell;
 use std::vec::Vec;
-use loom::sync::Mutex;
 
 /// 与生产 `increment`（get_latest + record）同构的 loom 复刻。
 struct LoomCounter {

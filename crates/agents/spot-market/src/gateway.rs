@@ -68,12 +68,21 @@ where
         if resp[0] != b'C' {
             return Err(MarketError::ClearingNotFound);
         }
-        let bid_id =
-            u64::from_le_bytes(resp[1..9].try_into().map_err(|_| MarketError::ClearingNotFound)?);
-        let price =
-            f64::from_le_bytes(resp[9..17].try_into().map_err(|_| MarketError::ClearingNotFound)?);
-        let clearing_at =
-            u64::from_le_bytes(resp[17..25].try_into().map_err(|_| MarketError::ClearingNotFound)?);
+        let bid_id = u64::from_le_bytes(
+            resp[1..9]
+                .try_into()
+                .map_err(|_| MarketError::ClearingNotFound)?,
+        );
+        let price = f64::from_le_bytes(
+            resp[9..17]
+                .try_into()
+                .map_err(|_| MarketError::ClearingNotFound)?,
+        );
+        let clearing_at = u64::from_le_bytes(
+            resp[17..25]
+                .try_into()
+                .map_err(|_| MarketError::ClearingNotFound)?,
+        );
         let n = resp[25] as usize;
         let mut cleared = Vec::with_capacity(n);
         let mut off = 26usize;
@@ -81,8 +90,16 @@ where
             if off + 16 > resp.len() {
                 return Err(MarketError::ClearingNotFound);
             }
-            let volume = f64::from_le_bytes(resp[off..off + 8].try_into().map_err(|_| MarketError::ClearingNotFound)?);
-            let seg_price = f64::from_le_bytes(resp[off + 8..off + 16].try_into().map_err(|_| MarketError::ClearingNotFound)?);
+            let volume = f64::from_le_bytes(
+                resp[off..off + 8]
+                    .try_into()
+                    .map_err(|_| MarketError::ClearingNotFound)?,
+            );
+            let seg_price = f64::from_le_bytes(
+                resp[off + 8..off + 16]
+                    .try_into()
+                    .map_err(|_| MarketError::ClearingNotFound)?,
+            );
             cleared.push(ClearedSegment {
                 period: eneros_market_types::TimeSlot { start: 0, end: 0 },
                 cleared_volume: volume,
@@ -130,7 +147,8 @@ mod tests {
 
     #[test]
     fn test_encode_query_layout() {
-        let req = ProtocolClearingClient::<fn(&[u8]) -> Result<Vec<u8>, MarketError>>::encode_query(42);
+        let req =
+            ProtocolClearingClient::<fn(&[u8]) -> Result<Vec<u8>, MarketError>>::encode_query(42);
         assert_eq!(req[0], b'Q');
         assert_eq!(&req[1..9], &42u64.to_le_bytes());
     }
@@ -145,7 +163,10 @@ mod tests {
         resp.push(1);
         resp.extend_from_slice(&10.0f64.to_le_bytes());
         resp.extend_from_slice(&0.85f64.to_le_bytes());
-        let r = ProtocolClearingClient::<fn(&[u8]) -> Result<Vec<u8>, MarketError>>::decode_response(&resp)
+        let r =
+            ProtocolClearingClient::<fn(&[u8]) -> Result<Vec<u8>, MarketError>>::decode_response(
+                &resp,
+            )
             .expect("decode");
         assert_eq!(r.bid_id, 42);
         assert_eq!(r.clearing_price.0, 0.85);
@@ -157,14 +178,20 @@ mod tests {
     #[test]
     fn test_decode_response_truncated_rejected() {
         let resp = vec![b'C', 0x01];
-        let r = ProtocolClearingClient::<fn(&[u8]) -> Result<Vec<u8>, MarketError>>::decode_response(&resp);
+        let r =
+            ProtocolClearingClient::<fn(&[u8]) -> Result<Vec<u8>, MarketError>>::decode_response(
+                &resp,
+            );
         assert!(r.is_err());
     }
 
     #[test]
     fn test_decode_response_wrong_magic_rejected() {
         let resp = vec![b'X', 0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let r = ProtocolClearingClient::<fn(&[u8]) -> Result<Vec<u8>, MarketError>>::decode_response(&resp);
+        let r =
+            ProtocolClearingClient::<fn(&[u8]) -> Result<Vec<u8>, MarketError>>::decode_response(
+                &resp,
+            );
         assert!(r.is_err());
     }
 

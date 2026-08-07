@@ -27,9 +27,9 @@ pub mod types;
 
 pub use process::{BspCertEngine, CertificationProcess};
 pub use spec::{default_spec, validate_spec};
-pub use testkit::{run_tests, BspTestKit};
 #[cfg(any(test, feature = "mock"))]
-pub use testkit::{MockTestKit};
+pub use testkit::MockTestKit;
+pub use testkit::{run_tests, BspTestKit};
 pub use types::{
     BspCategory, BspItem, BspSpec, BspTestReport, CertPhase, Certificate, HardwareInfo, Outcome,
     TestCaseResult,

@@ -4,9 +4,9 @@
 
 use alloc::vec::Vec;
 
-use eneros_market_types::YuanPerKwh;
 use crate::types::{Settlement, TradeContext, TradePhase};
 use crate::TradeError;
+use eneros_market_types::YuanPerKwh;
 
 /// 交易编排器
 ///
@@ -37,7 +37,13 @@ impl TradeOrchestrator {
     /// 创建交易，返回 deal_id
     ///
     /// 初始阶段为 Matched。
-    pub fn create_trade(&mut self, seller: u64, buyer: u64, volume: crate::MilliKwh, price: YuanPerKwh) -> u64 {
+    pub fn create_trade(
+        &mut self,
+        seller: u64,
+        buyer: u64,
+        volume: crate::MilliKwh,
+        price: YuanPerKwh,
+    ) -> u64 {
         let deal_id = self.next_id;
         self.next_id += 1;
         let ctx = TradeContext {
@@ -87,7 +93,11 @@ impl TradeOrchestrator {
     }
 
     /// 记录交付：Delivering → Delivered
-    pub fn record_delivery(&mut self, deal_id: u64, kwh: crate::MilliKwh) -> Result<(), TradeError> {
+    pub fn record_delivery(
+        &mut self,
+        deal_id: u64,
+        kwh: crate::MilliKwh,
+    ) -> Result<(), TradeError> {
         let ctx = self.find_mut(deal_id)?;
         if ctx.phase != TradePhase::Delivering {
             return Err(TradeError::InvalidPhase);
@@ -162,9 +172,13 @@ mod tests {
         orch.start_delivery(id).unwrap();
         assert_eq!(orch.find(id).unwrap().phase, TradePhase::Delivering);
 
-        orch.record_delivery(id, crate::MilliKwh::from_kwh(100.0)).unwrap();
+        orch.record_delivery(id, crate::MilliKwh::from_kwh(100.0))
+            .unwrap();
         assert_eq!(orch.find(id).unwrap().phase, TradePhase::Delivered);
-        assert_eq!(orch.find(id).unwrap().delivered_kwh, crate::MilliKwh::from_kwh(100.0));
+        assert_eq!(
+            orch.find(id).unwrap().delivered_kwh,
+            crate::MilliKwh::from_kwh(100.0)
+        );
 
         let st = Settlement {
             deal_id: id,
@@ -235,7 +249,8 @@ mod tests {
         orch.freeze(1, 10).unwrap();
         orch.confirm(1).unwrap();
         orch.start_delivery(1).unwrap();
-        orch.record_delivery(1, crate::MilliKwh::from_kwh(50.0)).unwrap();
+        orch.record_delivery(1, crate::MilliKwh::from_kwh(50.0))
+            .unwrap();
         orch.fail(1).unwrap();
         assert_eq!(orch.find(1).unwrap().phase, TradePhase::Failed);
     }
@@ -247,7 +262,8 @@ mod tests {
         orch.freeze(1, 10).unwrap();
         orch.confirm(1).unwrap();
         orch.start_delivery(1).unwrap();
-        orch.record_delivery(1, crate::MilliKwh::from_kwh(100.0)).unwrap();
+        orch.record_delivery(1, crate::MilliKwh::from_kwh(100.0))
+            .unwrap();
         let st = Settlement {
             deal_id: 1,
             seller_credit_kwh: crate::MilliKwh::from_kwh(100.0),

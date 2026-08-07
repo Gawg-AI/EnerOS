@@ -80,9 +80,9 @@ pub use commands::{
     TpmCommandBuilder, TpmCommandHeader, TpmResponseHeader, PCR_COUNT, PCR_DIGEST_SIZE,
     TPM_ALG_SM2, TPM_ALG_SM3_256, TPM_CC_PCR_EXTEND, TPM_CC_PCR_READ, TPM_RC_SUCCESS,
 };
-pub use driver::{KeyHandle, SpiTpmDriver, TpmDriver};
 #[cfg(any(test, feature = "simulated"))]
 pub use driver::SimulatedTpm;
+pub use driver::{KeyHandle, SpiTpmDriver, TpmDriver};
 pub use error::TpmError;
 pub use key_management::{KeyHierarchy, KeyManager};
 pub use measurement::{BootStage, MeasurementEntry, QuoteReport, TpmMeasurement};

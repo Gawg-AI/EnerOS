@@ -136,7 +136,9 @@ impl DeviceAgent {
         let mut snapshot = DeviceSnapshot::new();
         for (name, info) in self.devices.iter_mut() {
             let adapter = &mut info.adapter;
-            let read_f = |adapter: &mut dyn PointAccess, point_map: &BTreeMap<String, PointId>, key: &str| {
+            let read_f = |adapter: &mut dyn PointAccess,
+                          point_map: &BTreeMap<String, PointId>,
+                          key: &str| {
                 point_map
                     .get(key)
                     .and_then(|&id| adapter.read_point(id).ok())

@@ -64,12 +64,10 @@ unsafe impl GlobalAlloc for BumpAllocator {
             if end > HEAP_SIZE {
                 return core::ptr::null_mut(); // OOM → 返回 null（GlobalAlloc 契约）
             }
-            match self.offset.compare_exchange_weak(
-                off,
-                end,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
+            match self
+                .offset
+                .compare_exchange_weak(off, end, Ordering::Relaxed, Ordering::Relaxed)
+            {
                 Ok(_) => {
                     // SAFETY: CAS 成功后 `aligned..end` 区间不与任何已分配
                     // 区间重叠，且未越界（`end <= HEAP_SIZE`）；经 UnsafeCell

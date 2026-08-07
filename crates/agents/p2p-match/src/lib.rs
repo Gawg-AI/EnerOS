@@ -48,6 +48,5 @@ impl core::fmt::Display for MatchError {
     }
 }
 
-
 #[cfg(all(test, feature = "loom"))]
 pub mod loom_orderbook;

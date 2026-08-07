@@ -22,8 +22,8 @@
 
 extern crate alloc;
 
-pub mod types;
 pub mod safe;
+pub mod types;
 
 #[cfg(sel4_target)]
 pub mod ffi;
@@ -81,6 +81,9 @@ pub mod ffi {
     static HOST_MR: [AtomicU64; 64] = [const { AtomicU64::new(0) }; 64];
 
     /// Write one MR slot (host stub; index bounds-checked).
+    ///
+    /// # Safety
+    /// Host stub：越界索引被忽略，无内存安全风险（与目标 shim 行为一致）。
     pub unsafe fn eneros_sel4_set_mr(idx: u64, val: u64) {
         if (idx as usize) < HOST_MR.len() {
             HOST_MR[idx as usize].store(val, Ordering::SeqCst);
@@ -88,6 +91,9 @@ pub mod ffi {
     }
 
     /// Read one MR slot (host stub).
+    ///
+    /// # Safety
+    /// Host stub：越界索引返回 0，无内存安全风险。
     pub unsafe fn eneros_sel4_get_mr(idx: u64) -> u64 {
         if (idx as usize) < HOST_MR.len() {
             HOST_MR[idx as usize].load(Ordering::SeqCst)
@@ -97,6 +103,9 @@ pub mod ffi {
     }
 
     /// Build a seL4 message-info word (host stub: length-only packing).
+    ///
+    /// # Safety
+    /// Host stub：纯值构造，无指针参数。
     pub unsafe fn eneros_sel4_message_info_new(
         _label: u64,
         _caps_unwrapped: u64,
@@ -107,10 +116,16 @@ pub mod ffi {
     }
 
     /// Synchronous call (host stub: returns immediately, no peer).
+    ///
+    /// # Safety
+    /// Host stub：无实际能力操作，调用方负责目标构建下传参合法。
     pub unsafe fn eneros_sel4_call(_dest_cap: u64, _msg_info: u64) -> u64 {
         0
     }
 
     /// Fire-and-forget send (host stub).
+    ///
+    /// # Safety
+    /// Host stub：无实际能力操作，调用方负责目标构建下传参合法。
     pub unsafe fn eneros_sel4_send(_dest_cap: u64, _msg_info: u64) {}
 }

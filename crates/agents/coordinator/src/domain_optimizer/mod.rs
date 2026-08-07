@@ -81,7 +81,6 @@ pub struct DomainOptimizer {
     pub empty_count: u64,
 }
 
-
 impl DomainOptimizer {
     /// 创建优化器（计数器全零，无 box）.
     pub fn new(solver: Box<dyn Solver>) -> Self {
@@ -113,7 +112,6 @@ impl DomainOptimizer {
             false
         }
     }
-
 }
 
 /// 域级优化大方法（ARCH-G03 拆分，含 `optimize` 实现与其 doc）。

@@ -571,8 +571,7 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
 
             // SAFETY: avail 视图区间 [0x0100, 0x1100) 与 desc/used 区间不重叠，
             // 布局与 VirtioAvail 匹配；pool 借用独占。
-            let avail =
-                unsafe { &mut *(bytes[0x0100..0x1100].as_mut_ptr() as *mut VirtqAvail) };
+            let avail = unsafe { &mut *(bytes[0x0100..0x1100].as_mut_ptr() as *mut VirtqAvail) };
             avail.ring[avail.idx as usize & QUEUE_MASK] = head as u16;
             compiler_fence(Ordering::SeqCst);
             avail.idx = avail.idx.wrapping_add(1);
@@ -628,7 +627,8 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
         for _ in 0..20_000_000u32 {
             compiler_fence(Ordering::SeqCst);
             // 设备写 used ring（DMA）：轮询前使缓存失效。
-            self.cache.invalidate(used_va, core::mem::size_of::<VirtqUsed>());
+            self.cache
+                .invalidate(used_va, core::mem::size_of::<VirtqUsed>());
             let pool = self.pool.borrow();
             let bytes = pool.as_bytes();
             // SAFETY: used 视图区间 [0x1000, 0x2000) 与 desc/avail 区间不重叠，
@@ -814,9 +814,7 @@ impl RamMmio {
 
     /// Creates a simulation sharing an existing persistent disk handle
     /// (zero-copy; used by power-loss → remount tests).
-    pub fn with_disk_rc(
-        disk: alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<u8>>>,
-    ) -> Self {
+    pub fn with_disk_rc(disk: alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<u8>>>) -> Self {
         let mut regs = [0u32; 64];
         regs[VMMIO_MAGIC_VALUE / 4] = VIRTIO_MMIO_MAGIC;
         regs[VMMIO_VERSION / 4] = VIRTIO_MMIO_VERSION_1;
@@ -882,8 +880,7 @@ impl RamMmio {
                     let len = data_desc.len as usize;
                     let disk = self.disk.borrow();
                     if start + len <= disk.len() {
-                        pool[data_off..data_off + len]
-                            .copy_from_slice(&disk[start..start + len]);
+                        pool[data_off..data_off + len].copy_from_slice(&disk[start..start + len]);
                         pool[status_off] = VIRTIO_BLK_S_OK;
                     } else {
                         pool[status_off] = VIRTIO_BLK_S_IOERR;
@@ -894,8 +891,7 @@ impl RamMmio {
                     let len = data_desc.len as usize;
                     let mut disk = self.disk.borrow_mut();
                     if start + len <= disk.len() {
-                        disk[start..start + len]
-                            .copy_from_slice(&pool[data_off..data_off + len]);
+                        disk[start..start + len].copy_from_slice(&pool[data_off..data_off + len]);
                         pool[status_off] = VIRTIO_BLK_S_OK;
                     } else {
                         pool[status_off] = VIRTIO_BLK_S_IOERR;
@@ -1143,8 +1139,7 @@ mod tests {
         // 多块交错读写：验证不同块间无串扰（cache 维护范围正确）。
         let mmio = RamMmio::new(1024);
         let pool = RamPool::new(9);
-        let mut drv =
-            VirtioBlkDriver::new(mmio, pool, NoopCache, config()).expect("init");
+        let mut drv = VirtioBlkDriver::new(mmio, pool, NoopCache, config()).expect("init");
         drv.set_block_count(32);
 
         let pattern_a = [0xAA; 512];

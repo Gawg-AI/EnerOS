@@ -91,10 +91,15 @@ mod tests {
     #[test]
     fn length_bounds() {
         assert!(check_payload_len(0, DEFAULT_MAX_PAYLOAD_LEN));
-        assert!(check_payload_len(DEFAULT_MAX_PAYLOAD_LEN, DEFAULT_MAX_PAYLOAD_LEN));
-        assert!(!check_payload_len(DEFAULT_MAX_PAYLOAD_LEN + 1, DEFAULT_MAX_PAYLOAD_LEN));
+        assert!(check_payload_len(
+            DEFAULT_MAX_PAYLOAD_LEN,
+            DEFAULT_MAX_PAYLOAD_LEN
+        ));
+        assert!(!check_payload_len(
+            DEFAULT_MAX_PAYLOAD_LEN + 1,
+            DEFAULT_MAX_PAYLOAD_LEN
+        ));
     }
 }
 
 pub mod el0;
-

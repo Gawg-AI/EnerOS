@@ -200,9 +200,7 @@ impl ModbusRequest {
                 buf
             }
             Self::WriteMultipleCoils {
-                start_addr,
-                values,
-                ..
+                start_addr, values, ..
             } => {
                 let quantity = values.len();
                 let byte_count = quantity.div_ceil(8);

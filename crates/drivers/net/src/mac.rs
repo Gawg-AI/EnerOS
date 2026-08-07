@@ -166,13 +166,13 @@ impl<R: MacRegs> MacController<R> {
         for desc in &mut self.dma.rx_desc {
             desc.set_owned_by_dma(true);
             desc.set_ioc(true);
-        }        // Set rx_head to rx_count (all descriptors given to DMA).
-        // This way rx_head wraps to 0, and rx_tail stays at 0.
-        // Actually, we use rx_head == rx_tail to mean "empty", so after
-        // giving all descriptors to DMA, rx_head should equal rx_tail
-        // (no frames received yet). The descriptors are DMA-owned, so
-        // rx_dequeue will return None until DMA releases them.
-        // We leave rx_head = 0 and rx_tail = 0 (initial state).
+        } // Set rx_head to rx_count (all descriptors given to DMA).
+          // This way rx_head wraps to 0, and rx_tail stays at 0.
+          // Actually, we use rx_head == rx_tail to mean "empty", so after
+          // giving all descriptors to DMA, rx_head should equal rx_tail
+          // (no frames received yet). The descriptors are DMA-owned, so
+          // rx_dequeue will return None until DMA releases them.
+          // We leave rx_head = 0 and rx_tail = 0 (initial state).
 
         // Enable TX and RX in MAC_CR.
         self.regs.write(MAC_CR, MAC_CR_TX_ENABLE | MAC_CR_RX_ENABLE);
@@ -214,9 +214,11 @@ impl<R: MacRegs> MacController<R> {
 
         // 将描述符数组物理基址写入 DMA 寄存器（真实 DMA 引擎发现环的位置）。
         self.regs.write(DMA_TX_DESC_LOW, layout.tx_desc_pa as u32);
-        self.regs.write(DMA_TX_DESC_HIGH, (layout.tx_desc_pa >> 32) as u32);
+        self.regs
+            .write(DMA_TX_DESC_HIGH, (layout.tx_desc_pa >> 32) as u32);
         self.regs.write(DMA_RX_DESC_LOW, layout.rx_desc_pa as u32);
-        self.regs.write(DMA_RX_DESC_HIGH, (layout.rx_desc_pa >> 32) as u32);
+        self.regs
+            .write(DMA_RX_DESC_HIGH, (layout.rx_desc_pa >> 32) as u32);
 
         // cache 维护：描述符环在设备读取前 clean 写回（aarch64 dc cvac）。
         let desc_bytes = (self.dma.tx_count() + self.dma.rx_count())

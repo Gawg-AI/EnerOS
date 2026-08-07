@@ -55,8 +55,8 @@ pub use packet::{
     UnsubscribePacket,
 };
 pub use qos::QoS;
-pub use topic::TopicFilter;
 pub use qos_store::{FsQosStore, InMemoryQosStore, PendingMessage, QosStore};
+pub use topic::TopicFilter;
 pub use transport::{MockTransport, MqttTransport};
 pub use will::LastWill;
 

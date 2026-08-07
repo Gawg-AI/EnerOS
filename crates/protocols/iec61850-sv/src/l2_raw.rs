@@ -7,8 +7,8 @@ use alloc::vec::Vec;
 
 use eneros_net::NetDevice;
 
-use crate::SvError;
 use crate::L2Transport;
+use crate::SvError;
 
 /// SV EtherType（IEC 61850-9-2）。
 pub const ETHERTYPE_SV: u16 = 0x88BA;
@@ -38,9 +38,7 @@ impl<D: NetDevice> RawL2Transport<D> {
 
 impl<D: NetDevice> L2Transport for RawL2Transport<D> {
     fn send(&mut self, frame: &[u8]) -> Result<(), SvError> {
-        self.device
-            .send(frame)
-            .map_err(|_| SvError::TransportError)
+        self.device.send(frame).map_err(|_| SvError::TransportError)
     }
 
     fn recv(&mut self, buf: &mut [u8]) -> Result<usize, SvError> {

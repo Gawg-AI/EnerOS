@@ -31,8 +31,12 @@ pub trait Enforcer {
     fn check_spawn(&mut self, req: &SpawnReq) -> Result<(), PlatformError>;
 
     /// 释放一次 spawn（失败/退出时扣减，幂等）。
-    fn release_spawn(&mut self, tenant_id: u64, mem_kb: usize, cpu_pct: f32)
-        -> Result<(), PlatformError>;
+    fn release_spawn(
+        &mut self,
+        tenant_id: u64,
+        mem_kb: usize,
+        cpu_pct: f32,
+    ) -> Result<(), PlatformError>;
 
     /// 查询真实 usage。
     fn usage(&self, tenant_id: u64) -> Result<QuotaUsage, PlatformError>;
@@ -107,7 +111,12 @@ impl TenantEnforcer {
     }
 
     /// 释放一个 Agent（spawn 失败/退出时扣减，幂等）。
-    pub fn release_agent(&mut self, tenant_id: u64, mem_kb: usize, cpu_pct: f32) -> Result<(), PlatformError> {
+    pub fn release_agent(
+        &mut self,
+        tenant_id: u64,
+        mem_kb: usize,
+        cpu_pct: f32,
+    ) -> Result<(), PlatformError> {
         let usage = self.usage_mut(tenant_id)?;
         usage.agents = usage.agents.saturating_sub(1);
         usage.mem_kb = usage.mem_kb.saturating_sub(mem_kb);

@@ -190,7 +190,6 @@ compile_error!(
 extern crate alloc;
 
 pub mod auction;
-pub mod real;
 pub mod bid_book;
 pub mod cache;
 pub mod channel;
@@ -201,6 +200,7 @@ pub mod matching;
 pub mod membership;
 pub mod partition;
 pub mod pbft;
+pub mod real;
 pub mod recovery;
 pub mod tunnel;
 pub mod view_change;
@@ -214,24 +214,20 @@ pub use bid_book::{
 // v0.101.0 事件缓存（孤岛自治本地缓冲）
 pub use cache::EventCache;
 // v0.98.0 跨域通信通道
-pub use channel::{
-    ChannelError, Endpoint, FederationChannel, SecureTransport, TlsConfig,
-};
 #[cfg(any(test, feature = "mock"))]
 pub use channel::MockSecureTransport;
+pub use channel::{ChannelError, Endpoint, FederationChannel, SecureTransport, TlsConfig};
 // v0.99.0 联邦共识协议（PBFT 变体）
+#[cfg(any(test, feature = "mock"))]
+pub use consensus::MockConsensusBus;
 pub use consensus::{
     ConsensusBus, ConsensusEngine, ConsensusError, ConsensusResult, ConsensusState, LogEntry,
     MsgType, NodeId, PbftMessage,
 };
-#[cfg(any(test, feature = "mock"))]
-pub use consensus::MockConsensusBus;
 // v0.101.0 联邦网络分区检测
 pub use detector::{PartitionDetector, PartitionState};
 // v0.97.0 联邦发现
-pub use discovery::{
-    CertVerifier, FedError, FederationDiscovery, PresenceBus,
-};
+pub use discovery::{CertVerifier, FedError, FederationDiscovery, PresenceBus};
 #[cfg(any(test, feature = "mock"))]
 pub use discovery::{MockCertVerifier, MockPresenceBus};
 // v0.100.0 统一价格撮合纯函数
@@ -242,12 +238,12 @@ pub use partition::IslandMode;
 // v0.99.0 PBFT 三阶段数学与签名辅助
 pub use pbft::{f, primary_of, quorum, sign_message, verify_message};
 // v0.101.0 恢复增量同步
-pub use recovery::{RecoverySync, SyncError, SyncReport, SyncSink};
 #[cfg(any(test, feature = "mock"))]
 pub use recovery::MockSyncSink;
+pub use recovery::{RecoverySync, SyncError, SyncReport, SyncSink};
 // v0.98.1 纵向加密认证
 pub use tunnel::{
     derive_tunnel_keys, initiator_finish, initiator_hello, responder_accept, verify_dispatch_auth,
-    AuthResult, DispatchToken, EncryptError, TunnelKeys, TunnelManager,
-    VerticalEncryptDevice, VerticalEncryptTunnel,
+    AuthResult, DispatchToken, EncryptError, TunnelKeys, TunnelManager, VerticalEncryptDevice,
+    VerticalEncryptTunnel,
 };

@@ -42,7 +42,10 @@ where
 {
     /// 创建真实 TPM2 后端（AK 公钥未注入——证明前必须 [`Self::with_ak`]）。
     pub fn new(tpm: T) -> Self {
-        Self { tpm, ak_pubkey: None }
+        Self {
+            tpm,
+            ak_pubkey: None,
+        }
     }
 
     /// 注入 AK 公钥（从 TPM 持久化句柄 / EK 派生加载，集成层调用）。
@@ -117,8 +120,7 @@ where
 
     fn attestation_pubkey(&self) -> Result<eneros_crypto::Sm2PublicKey, TpmError> {
         // 蓝图/20 R3-1：AK 未注入 → 明确失败（禁占位公钥）。
-        self.ak_pubkey
-            .ok_or(TpmError::KeyUnavailable)
+        self.ak_pubkey.ok_or(TpmError::KeyUnavailable)
     }
 }
 
@@ -209,7 +211,10 @@ mod tests {
     #[test]
     fn test_encode_layout() {
         let a = attest();
-        let enc = TunnelAttestTransport::<fn(&[u8]) -> Result<(), AttestError>, fn() -> Result<Vec<u8>, AttestError>>::encode(&a);
+        let enc = TunnelAttestTransport::<
+            fn(&[u8]) -> Result<(), AttestError>,
+            fn() -> Result<Vec<u8>, AttestError>,
+        >::encode(&a);
         assert_eq!(&enc[0..4], b"RATT");
         assert_eq!(&enc[4..24], &[0x77; 20]);
         assert_eq!(&enc[24..88], &[0x55; 64]);
@@ -217,9 +222,27 @@ mod tests {
 
     #[test]
     fn test_decode_result() {
-        assert!(TunnelAttestTransport::<fn(&[u8]) -> Result<(), AttestError>, fn() -> Result<Vec<u8>, AttestError>>::decode_result(b"ROK").trusted);
-        assert!(!TunnelAttestTransport::<fn(&[u8]) -> Result<(), AttestError>, fn() -> Result<Vec<u8>, AttestError>>::decode_result(b"REJ:bad-pcr").trusted);
-        assert!(!TunnelAttestTransport::<fn(&[u8]) -> Result<(), AttestError>, fn() -> Result<Vec<u8>, AttestError>>::decode_result(b"x").trusted);
+        assert!(
+            TunnelAttestTransport::<
+                fn(&[u8]) -> Result<(), AttestError>,
+                fn() -> Result<Vec<u8>, AttestError>,
+            >::decode_result(b"ROK")
+            .trusted
+        );
+        assert!(
+            !TunnelAttestTransport::<
+                fn(&[u8]) -> Result<(), AttestError>,
+                fn() -> Result<Vec<u8>, AttestError>,
+            >::decode_result(b"REJ:bad-pcr")
+            .trusted
+        );
+        assert!(
+            !TunnelAttestTransport::<
+                fn(&[u8]) -> Result<(), AttestError>,
+                fn() -> Result<Vec<u8>, AttestError>,
+            >::decode_result(b"x")
+            .trusted
+        );
     }
 
     #[test]
@@ -237,10 +260,8 @@ mod tests {
 
     #[test]
     fn test_tunnel_rejected_result() {
-        let mut transport = TunnelAttestTransport::new(
-            |_p: &[u8]| Ok(()),
-            || Ok(b"REJ:nonce-mismatch".to_vec()),
-        );
+        let mut transport =
+            TunnelAttestTransport::new(|_p: &[u8]| Ok(()), || Ok(b"REJ:nonce-mismatch".to_vec()));
         let r = transport.verify_remote(&attest()).expect("verify");
         assert!(!r.trusted);
     }

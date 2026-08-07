@@ -31,9 +31,9 @@ pub mod sequence;
 
 // Re-export public API
 pub use detect::{
-    last_power_switch_event, notify_power_loss, notify_power_restored, register_power_irq,
-    PowerRail, PowerSource, PowerSwitchEvent, RamPowerRail, read_battery_soc, read_voltage_mv,
-    record_power_switch, register_power_rail,
+    last_power_switch_event, notify_power_loss, notify_power_restored, read_battery_soc,
+    read_voltage_mv, record_power_switch, register_power_irq, register_power_rail, PowerRail,
+    PowerSource, PowerSwitchEvent, RamPowerRail,
 };
 pub use sequence::{
     advance_sequence, emergency_checkpoint, on_power_loss, register_checkpoint_callback,

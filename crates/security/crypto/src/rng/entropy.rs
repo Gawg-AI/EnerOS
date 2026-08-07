@@ -75,7 +75,11 @@ impl QemuVirtioRng {
     /// `base_addr` 为 virtio-mmio 设备基址；0 时使用 QEMU virt 默认。
     pub fn new(base_addr: u64) -> Self {
         Self {
-            base_addr: if base_addr == 0 { 0x0a00_0000 } else { base_addr },
+            base_addr: if base_addr == 0 {
+                0x0a00_0000
+            } else {
+                base_addr
+            },
         }
     }
 }
@@ -104,8 +108,8 @@ impl EntropySource for TestFixedEntropy {
         out[0] = 0x51;
         out[1] = 0x4d;
         out[2] = 0x55;
-        for i in 3..32 {
-            out[i] = (i as u8).wrapping_mul(0x5d).wrapping_add(0x31);
+        for (i, slot) in out.iter_mut().enumerate().skip(3) {
+            *slot = (i as u8).wrapping_mul(0x5d).wrapping_add(0x31);
         }
         Ok(())
     }
@@ -168,7 +172,8 @@ mod tests {
         // 测试夹具不进入生产/仿真构建）
         let mut src = TestFixedEntropy;
         let mut seed = [0u8; 32];
-        src.fill_entropy(&mut seed).expect("test fixture entropy ok");
+        src.fill_entropy(&mut seed)
+            .expect("test fixture entropy ok");
         assert_ne!(seed, [0u8; 32], "夹具熵非全零");
         let mut rng = CsRng::from_seed(&seed);
         let mut out = [0u8; 32];

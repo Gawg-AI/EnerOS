@@ -12,13 +12,13 @@
 
 extern crate std;
 
-use std::vec::Vec;
 use loom::sync::Mutex;
+use std::vec::Vec;
 
 /// 与生产 `AccountStore::freeze` 同构的 loom 复刻（经 Mutex 串行化）。
 struct LoomAccount {
-    balance: i64,      // 毫元
-    frozen: i64,       // 已冻结毫元
+    balance: i64, // 毫元
+    frozen: i64,  // 已冻结毫元
     next_freeze_id: u64,
 }
 

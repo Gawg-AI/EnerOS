@@ -45,12 +45,7 @@ where
     I: FnMut() -> Result<[f32; 3], GridError>,
 {
     /// 创建真实采样器（构造器显式注入）。
-    pub fn new(
-        freq: F,
-        voltages: V,
-        currents: I,
-        power_factor: f32,
-    ) -> Self {
+    pub fn new(freq: F, voltages: V, currents: I, power_factor: f32) -> Self {
         Self {
             freq,
             voltages,
@@ -71,8 +66,7 @@ where
         let [va, vb, vc] = (self.voltages)()?;
         let [ia, ib, ic] = (self.currents)()?;
         // 有功功率 ≈ 三相视在功率 × 功率因数（真实数据源路径）。
-        let active_power =
-            (va * ia + vb * ib + vc * ic) / 1000.0 * self.power_factor;
+        let active_power = (va * ia + vb * ib + vc * ic) / 1000.0 * self.power_factor;
         let reactive_power = (va * ia + vb * ib + vc * ic) / 1000.0
             * sqrt_f32((1.0 - self.power_factor * self.power_factor).max(0.0));
         Ok(GridState {

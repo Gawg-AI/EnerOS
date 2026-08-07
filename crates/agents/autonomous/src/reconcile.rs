@@ -94,18 +94,31 @@ mod tests {
             Ok(false)
         );
         // 余额不足 → 拒绝。
-        assert!(freeze_idempotent(None, MilliYuan(60_000), MilliYuan(0), MilliYuan(50_000)).is_err());
+        assert!(
+            freeze_idempotent(None, MilliYuan(60_000), MilliYuan(0), MilliYuan(50_000)).is_err()
+        );
     }
 
     #[test]
     fn test_freeze_idempotent_repeat() {
         // 同额重复冻结 → 幂等命中（返回已有 id，不重复扣减）。
         assert_eq!(
-            freeze_idempotent(Some(7), MilliYuan(10_000), MilliYuan(10_000), MilliYuan(50_000)),
+            freeze_idempotent(
+                Some(7),
+                MilliYuan(10_000),
+                MilliYuan(10_000),
+                MilliYuan(50_000)
+            ),
             Ok(true)
         );
         // 金额不一致 → 拒绝。
-        assert!(freeze_idempotent(Some(7), MilliYuan(20_000), MilliYuan(10_000), MilliYuan(50_000)).is_err());
+        assert!(freeze_idempotent(
+            Some(7),
+            MilliYuan(20_000),
+            MilliYuan(10_000),
+            MilliYuan(50_000)
+        )
+        .is_err());
     }
 
     #[test]

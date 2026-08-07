@@ -122,7 +122,9 @@ fn plan_one(
         });
         vaddr = vaddr.checked_add(size).ok_or(SpawnError::OutOfVaddrSpace)?;
     }
-    let stack_top = vaddr.checked_add(stack_size).ok_or(SpawnError::OutOfVaddrSpace)?;
+    let stack_top = vaddr
+        .checked_add(stack_size)
+        .ok_or(SpawnError::OutOfVaddrSpace)?;
     Ok(SpawnedService {
         name: String::from(name),
         entry: elf.entry(),
@@ -250,7 +252,10 @@ pub fn sel4_spawn_services(_plan: &SpawnPlan) -> Result<(), SpawnError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bundle::{InitBundle, INIT_BUNDLE_ENTRY_LEN, INIT_BUNDLE_HEADER_LEN, INIT_BUNDLE_MAGIC, INIT_BUNDLE_VERSION};
+    use crate::bundle::{
+        InitBundle, INIT_BUNDLE_ENTRY_LEN, INIT_BUNDLE_HEADER_LEN, INIT_BUNDLE_MAGIC,
+        INIT_BUNDLE_VERSION,
+    };
 
     /// 最小 ELF64 PIE AArch64（字节布局与 elf-loader 测试 fixture 对齐）。
     fn minimal_exec_elf() -> Vec<u8> {
@@ -260,7 +265,7 @@ mod tests {
         buf[4] = 2; // ELFCLASS64
         buf[5] = 1; // ELFDATA2LSB
         buf[6] = 1; // EV_CURRENT
-        // e_type = ET_DYN (3)
+                    // e_type = ET_DYN (3)
         buf[16..18].copy_from_slice(&3u16.to_le_bytes());
         // e_machine = EM_AARCH64 (183)
         buf[18..20].copy_from_slice(&183u16.to_le_bytes());
@@ -350,9 +355,21 @@ mod tests {
     #[test]
     fn test_plan_spawn_root_plus_two_services() {
         let raw = build_bundle(&[
-            ("root-task", crate::bundle::MODULE_KIND_ROOT, minimal_exec_elf()),
-            ("svc-fault", crate::bundle::MODULE_KIND_SERVICE, minimal_data_elf()),
-            ("svc-proc-ts", crate::bundle::MODULE_KIND_SERVICE, minimal_data_elf()),
+            (
+                "root-task",
+                crate::bundle::MODULE_KIND_ROOT,
+                minimal_exec_elf(),
+            ),
+            (
+                "svc-fault",
+                crate::bundle::MODULE_KIND_SERVICE,
+                minimal_data_elf(),
+            ),
+            (
+                "svc-proc-ts",
+                crate::bundle::MODULE_KIND_SERVICE,
+                minimal_data_elf(),
+            ),
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
         let plan = plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100).expect("plan");
@@ -376,8 +393,16 @@ mod tests {
     #[test]
     fn test_plan_spawn_too_few_services_fail_closed() {
         let raw = build_bundle(&[
-            ("root-task", crate::bundle::MODULE_KIND_ROOT, minimal_exec_elf()),
-            ("svc-fault", crate::bundle::MODULE_KIND_SERVICE, minimal_exec_elf()),
+            (
+                "root-task",
+                crate::bundle::MODULE_KIND_ROOT,
+                minimal_exec_elf(),
+            ),
+            (
+                "svc-fault",
+                crate::bundle::MODULE_KIND_SERVICE,
+                minimal_exec_elf(),
+            ),
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
         assert_eq!(
@@ -390,18 +415,36 @@ mod tests {
     #[test]
     fn test_plan_spawn_no_root_fail_closed() {
         let raw = build_bundle(&[
-            ("svc-fault", crate::bundle::MODULE_KIND_SERVICE, minimal_exec_elf()),
-            ("svc-proc-ts", crate::bundle::MODULE_KIND_SERVICE, minimal_exec_elf()),
+            (
+                "svc-fault",
+                crate::bundle::MODULE_KIND_SERVICE,
+                minimal_exec_elf(),
+            ),
+            (
+                "svc-proc-ts",
+                crate::bundle::MODULE_KIND_SERVICE,
+                minimal_exec_elf(),
+            ),
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
-        assert_eq!(plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100), Err(SpawnError::NoRootTask));
+        assert_eq!(
+            plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100),
+            Err(SpawnError::NoRootTask)
+        );
     }
 
     #[test]
     fn test_plan_spawn_no_services_fail_closed() {
-        let raw = build_bundle(&[("root-task", crate::bundle::MODULE_KIND_ROOT, minimal_exec_elf())]);
+        let raw = build_bundle(&[(
+            "root-task",
+            crate::bundle::MODULE_KIND_ROOT,
+            minimal_exec_elf(),
+        )]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
-        assert_eq!(plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100), Err(SpawnError::NoServices));
+        assert_eq!(
+            plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100),
+            Err(SpawnError::NoServices)
+        );
     }
 
     #[test]
@@ -458,9 +501,23 @@ mod tests {
 
     #[test]
     fn test_page_entry_wx_semantics() {
-        let exec = PageEntry { vaddr: 0x1000, phys: 0, size: 0x1000, read: true, write: false, exec: true };
+        let exec = PageEntry {
+            vaddr: 0x1000,
+            phys: 0,
+            size: 0x1000,
+            read: true,
+            write: false,
+            exec: true,
+        };
         assert!(!exec.is_wx_violation());
-        let wx = PageEntry { vaddr: 0x1000, phys: 0, size: 0x1000, read: true, write: true, exec: true };
+        let wx = PageEntry {
+            vaddr: 0x1000,
+            phys: 0,
+            size: 0x1000,
+            read: true,
+            write: true,
+            exec: true,
+        };
         assert!(wx.is_wx_violation(), "W^X：可写可执行必须判定违规");
     }
 }

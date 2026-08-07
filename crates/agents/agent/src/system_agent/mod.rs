@@ -242,9 +242,8 @@ mod tests {
     };
 
     /// Empty static registry — spawn always fails (tests don't call spawn).
-    static EMPTY_REGISTRY: crate::StaticAgentRegistry = crate::StaticAgentRegistry::new(
-        &[] as &[(crate::AgentType, crate::AgentBinary)],
-    );
+    static EMPTY_REGISTRY: crate::StaticAgentRegistry =
+        crate::StaticAgentRegistry::new(&[] as &[(crate::AgentType, crate::AgentBinary)]);
 
     /// Helper: construct SystemAgent with empty registry.
     fn make_system_agent() -> SystemAgent {

@@ -110,7 +110,12 @@ impl VppAggregator {
     /// `quantity = min(available, strategy.max_quantity)`（max_quantity 非有限或 ≤0 →
     /// 按 available 全额）；`price = sanitize_price(market.current_price) + strategy.margin`；
     /// bid_id 从 1 顺序递增；空聚合器/全离线 → 空 Vec。
-    pub fn market_bid(&self, market: &MarketData, strategy: &BidStrategy, now_ms: u64) -> Vec<ResourceBid> {
+    pub fn market_bid(
+        &self,
+        market: &MarketData,
+        strategy: &BidStrategy,
+        now_ms: u64,
+    ) -> Vec<ResourceBid> {
         let mut bids = Vec::new();
         let mut bid_id = 1u64;
         for (rid, r) in self.resources.iter() {

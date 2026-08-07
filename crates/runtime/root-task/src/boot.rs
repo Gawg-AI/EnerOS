@@ -8,9 +8,9 @@
 
 extern crate alloc;
 
-use eneros_boot_protocol::boot_info::{BootInfo, BootInfoError};
 #[cfg(test)]
 use eneros_boot_protocol::boot_info::BootReason;
+use eneros_boot_protocol::boot_info::{BootInfo, BootInfoError};
 
 /// 从原始字节解码并校验 BootInfo（KRN-002 消费入口）。
 ///
@@ -70,7 +70,7 @@ pub fn map_physical_pages(
     if writable && executable {
         return Err("physical page mapping: W^X violation");
     }
-    let pages = (len + page_size - 1) / page_size;
+    let pages = len.div_ceil(page_size);
     let mut out = alloc::vec::Vec::with_capacity(pages as usize);
     for i in 0..pages {
         out.push(PhysPageMap {

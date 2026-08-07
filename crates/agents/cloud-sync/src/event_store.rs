@@ -11,7 +11,6 @@ use crate::SyncError;
 /// compact 后保留的最近已同步事件条数（D9 内存水位）。
 const COMPACT_KEEP_SYNCED: usize = 100;
 
-
 /// CRC32-IEEE 校验和（D8；已知向量 `"123456789" -> 0xCBF43926`）。
 pub fn crc32(data: &[u8]) -> u32 {
     // HYG-001：CRC32 唯一实现归一到 abi/ipc-wire。

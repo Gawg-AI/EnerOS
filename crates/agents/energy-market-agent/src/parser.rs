@@ -249,7 +249,10 @@ mod tests {
     fn t21_parse_dr_signal_ok() {
         let s = parse_dr_signal("D,42,2.5,1000,2000,500.0").unwrap();
         assert_eq!(s.event_id, 42);
-        assert!((s.target_kw - 2500.0).abs() < f64::EPSILON, "2.5 MW → 2500 kW");
+        assert!(
+            (s.target_kw - 2500.0).abs() < f64::EPSILON,
+            "2.5 MW → 2500 kW"
+        );
         assert_eq!(s.start_at, 1, "1000 ms → 1 s");
         assert_eq!(s.end_at, 2, "2000 ms → 2 s");
         assert!((s.incentive_yuan - 500.0).abs() < f64::EPSILON);

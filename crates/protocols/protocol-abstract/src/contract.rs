@@ -56,9 +56,7 @@ pub fn run_adapter_contract<A: ProtocolAdapter + PointAccessExt>(
     );
 
     // 3. init 成功并进入 Initialized。
-    adapter
-        .init(cfg)
-        .expect("契约：init(有效配置) 必须成功");
+    adapter.init(cfg).expect("契约：init(有效配置) 必须成功");
     assert_eq!(
         adapter.state(),
         AdapterState::Initialized,
@@ -93,10 +91,7 @@ pub fn run_adapter_contract<A: ProtocolAdapter + PointAccessExt>(
     let dev_points = adapter
         .read_device_points(device_id)
         .expect("契约：read_device_points(已注册设备) 必须成功");
-    assert!(
-        !dev_points.is_empty(),
-        "契约：read_device_points 不得为空"
-    );
+    assert!(!dev_points.is_empty(), "契约：read_device_points 不得为空");
     assert!(
         dev_points.iter().any(|dp| dp.point_id == point_ids[0]),
         "契约：read_device_points 结果必须包含注册点 {}",
@@ -110,7 +105,9 @@ pub fn run_adapter_contract<A: ProtocolAdapter + PointAccessExt>(
         AdapterState::Running,
         "契约：start 后必须为 Running"
     );
-    adapter.poll(1_700_000_000_000).expect("契约：poll 必须成功");
+    adapter
+        .poll(1_700_000_000_000)
+        .expect("契约：poll 必须成功");
     adapter.stop().expect("契约：stop 必须成功");
     assert_eq!(
         adapter.state(),

@@ -28,9 +28,9 @@ pub mod types;
 
 pub use device_compat::{CompatChecker, DeviceCompatChecker};
 pub use spec::default_app_spec;
-pub use testkit::{AppTestKit};
+pub use testkit::AppTestKit;
 #[cfg(any(test, feature = "mock"))]
-pub use testkit::{MockAppTestKit};
+pub use testkit::MockAppTestKit;
 pub use types::{
     AppCertCategory, AppCertItem, AppCertReport, AppCertSpec, AppCertificate, AppPackage,
     DeviceCompatReport, DeviceInfo, Outcome, TestCaseResult,

@@ -6,8 +6,8 @@
 
 use alloc::string::String;
 
-use crate::MmsError;
 use crate::mms_client::MmsTransport;
+use crate::MmsError;
 
 /// 读缓冲大小。
 const RX_BUF: usize = 4096;
@@ -65,8 +65,7 @@ impl<D: eneros_net::NetDevice> MmsTransport for NetMmsTransport<D> {
         if self.connected {
             return Ok(());
         }
-        let ip: eneros_net::tcpip::Ipv4Addr =
-            addr.parse().map_err(|_| MmsError::ConnRefused)?;
+        let ip: eneros_net::tcpip::Ipv4Addr = addr.parse().map_err(|_| MmsError::ConnRefused)?;
         let remote = eneros_net::tcpip::ip_endpoint(ip, port);
         let local_port = 40000u16.wrapping_add(
             addr.as_bytes()

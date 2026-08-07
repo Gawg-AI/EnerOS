@@ -366,8 +366,12 @@ fn test_sm2_deterministic_signature_reproducible() {
     let signer = Sm2Signer::new();
     let msg = b"GB/T 32918.5 KAT vector message";
 
-    let sig1 = signer.sign_deterministic(msg, &kp.private_key, &kp.public_key).expect("sig1");
-    let sig2 = signer.sign_deterministic(msg, &kp.private_key, &kp.public_key).expect("sig2");
+    let sig1 = signer
+        .sign_deterministic(msg, &kp.private_key, &kp.public_key)
+        .expect("sig1");
+    let sig2 = signer
+        .sign_deterministic(msg, &kp.private_key, &kp.public_key)
+        .expect("sig2");
 
     // 同私钥同消息 → 逐字节相同（KAT 可复现）。
     assert_eq!(sig1, sig2, "确定性签名必须可复现");
@@ -384,8 +388,12 @@ fn test_sm2_deterministic_signature_differs_per_message() {
     let kp = Sm2KeyPair::generate(&mut rng).expect("keypair");
     let signer = Sm2Signer::new();
 
-    let sig_a = signer.sign_deterministic(b"message-A", &kp.private_key, &kp.public_key).expect("a");
-    let sig_b = signer.sign_deterministic(b"message-B", &kp.private_key, &kp.public_key).expect("b");
+    let sig_a = signer
+        .sign_deterministic(b"message-A", &kp.private_key, &kp.public_key)
+        .expect("a");
+    let sig_b = signer
+        .sign_deterministic(b"message-B", &kp.private_key, &kp.public_key)
+        .expect("b");
     assert_ne!(sig_a, sig_b, "不同消息必须产生不同签名");
 }
 
@@ -398,8 +406,12 @@ fn test_sm2_deterministic_signature_differs_per_key() {
     let signer = Sm2Signer::new();
     let msg = b"same message";
 
-    let sig1 = signer.sign_deterministic(msg, &kp1.private_key, &kp1.public_key).expect("1");
-    let sig2 = signer.sign_deterministic(msg, &kp2.private_key, &kp2.public_key).expect("2");
+    let sig1 = signer
+        .sign_deterministic(msg, &kp1.private_key, &kp1.public_key)
+        .expect("1");
+    let sig2 = signer
+        .sign_deterministic(msg, &kp2.private_key, &kp2.public_key)
+        .expect("2");
     assert_ne!(sig1, sig2, "不同私钥必须产生不同签名");
 }
 
@@ -411,11 +423,15 @@ fn test_sm2_deterministic_signature_edge_messages() {
     let signer = Sm2Signer::new();
 
     // 空消息。
-    let sig_empty = signer.sign_deterministic(b"", &kp.private_key, &kp.public_key).expect("empty");
+    let sig_empty = signer
+        .sign_deterministic(b"", &kp.private_key, &kp.public_key)
+        .expect("empty");
     assert!(signer.verify(b"", &sig_empty, &kp.public_key).expect("v1"));
 
     // 长消息（超过单块）。
     let long: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
-    let sig_long = signer.sign_deterministic(&long, &kp.private_key, &kp.public_key).expect("long");
+    let sig_long = signer
+        .sign_deterministic(&long, &kp.private_key, &kp.public_key)
+        .expect("long");
     assert!(signer.verify(&long, &sig_long, &kp.public_key).expect("v2"));
 }

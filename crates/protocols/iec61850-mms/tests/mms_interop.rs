@@ -21,9 +21,7 @@ struct RawTcpTransport {
 
 impl MmsTransport for RawTcpTransport {
     fn connect(&mut self, addr: &str, port: u16) -> Result<(), MmsError> {
-        self.stream = Some(
-            TcpStream::connect((addr, port)).map_err(|_| MmsError::Timeout)?,
-        );
+        self.stream = Some(TcpStream::connect((addr, port)).map_err(|_| MmsError::Timeout)?);
         Ok(())
     }
     fn send(&mut self, pdu: &[u8]) -> Result<(), MmsError> {
@@ -88,7 +86,14 @@ fn spawn_mms_peer() -> (u16, std::thread::JoinHandle<(u8, u32)>) {
                         len0
                     };
                     // COTP 头 3 + tag 1 + len 字段 + content
-                    let total = 3 + 1 + if len0 & 0x80 != 0 { 1 + (len0 & 0x7f) } else { 1 } + content_len;
+                    let total = 3
+                        + 1
+                        + if len0 & 0x80 != 0 {
+                            1 + (len0 & 0x7f)
+                        } else {
+                            1
+                        }
+                        + content_len;
                     if acc.len() >= total {
                         break;
                     }
@@ -120,12 +125,12 @@ fn spawn_mms_peer() -> (u16, std::thread::JoinHandle<(u8, u32)>) {
         resp.extend_from_slice(&COTP_DATA);
         resp.push(0xA1);
         resp.push(0x09); // 内容长：invoke(3) + A5(2) + A0(2) + float(5) = 12 → 0x0C
-        // 上面长度算错——重算：A1 内容 = invokeID TLV(3) + A5 TLV
-        // A5 内容 = A0 TLV(2) + float TLV(5) = 7 → A5: A5 07
-        // A0 内容 = float TLV(5) → A0 05
-        // float: 87 04 + 4
-        // invoke: 02 01 <id> (3)
-        // A1 内容 = 3 + (2 + 7) = 12 = 0x0C
+                         // 上面长度算错——重算：A1 内容 = invokeID TLV(3) + A5 TLV
+                         // A5 内容 = A0 TLV(2) + float TLV(5) = 7 → A5: A5 07
+                         // A0 内容 = float TLV(5) → A0 05
+                         // float: 87 04 + 4
+                         // invoke: 02 01 <id> (3)
+                         // A1 内容 = 3 + (2 + 7) = 12 = 0x0C
         resp.clear();
         // 客户端 decode_read_response 从 data[0] 解析（无 COTP 头）
         resp.push(0xA1);

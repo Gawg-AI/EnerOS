@@ -91,7 +91,10 @@ mod tests {
         // v0.212.0（P0-13）：无动态证据时标 Pending，不得硬编码 Passed。
         assert!(!report.all_passed(), "无证据不得 all_passed");
         assert_eq!(report.total, 7);
-        assert!(report.items.iter().any(|i| i.status == CheckStatus::Pending));
+        assert!(report
+            .items
+            .iter()
+            .any(|i| i.status == CheckStatus::Pending));
     }
 
     #[test]

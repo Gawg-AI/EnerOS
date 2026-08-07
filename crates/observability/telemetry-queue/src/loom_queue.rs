@@ -9,8 +9,8 @@
 
 extern crate std;
 
-use std::vec::Vec;
 use loom::sync::Mutex;
+use std::vec::Vec;
 
 /// 与生产 `TelemetryQueue` 有界语义同构的 loom 复刻。
 struct LoomTelemetryQueue {
@@ -72,7 +72,11 @@ fn vrf_009_concurrent_push_unique_ids_bounded() {
             all.extend(h.join().unwrap());
         }
         let q = queue.lock().unwrap();
-        assert!(q.events.len() <= 4, "队列有界：长度 {0} > 容量 4", q.events.len());
+        assert!(
+            q.events.len() <= 4,
+            "队列有界：长度 {0} > 容量 4",
+            q.events.len()
+        );
         // ID 唯一性：去重后数量不变。
         let mut sorted = all.clone();
         sorted.sort_unstable();

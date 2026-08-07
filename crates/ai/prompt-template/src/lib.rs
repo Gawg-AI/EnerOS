@@ -232,8 +232,14 @@ mod tests {
     // ===== T11：ChargeDischargeTemplate build 输出含 ctx 参数 =====
     #[test]
     fn test_t11_charge_discharge_template_build() {
-        let ctx =
-            TemplateContext::new(0.8, 65.0, -30.0, Some(28.5), Some(String::from("峰时")), vec![1.0, 2.0]);
+        let ctx = TemplateContext::new(
+            0.8,
+            65.0,
+            -30.0,
+            Some(28.5),
+            Some(String::from("峰时")),
+            vec![1.0, 2.0],
+        );
         let prompt = ChargeDischargeTemplate.build(&ctx);
         assert!(prompt.contains("0.8"));
         assert!(prompt.contains("65"));
@@ -241,7 +247,10 @@ mod tests {
         assert!(prompt.contains("28.5"));
         assert!(prompt.contains("峰时"));
         // v0.203.0（P0-16）：prompt 示例改为 intent_type 契约（不再 action）。
-        assert!(prompt.contains("intent_type"), "prompt 必须输出 intent_type 契约");
+        assert!(
+            prompt.contains("intent_type"),
+            "prompt 必须输出 intent_type 契约"
+        );
         assert!(!prompt.contains("\"action\""), "不再要求 action 字段");
     }
 

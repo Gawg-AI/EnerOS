@@ -60,7 +60,9 @@ impl<D: NetDevice> RawL2Transport<D> {
 impl<D: NetDevice> L2Transport for RawL2Transport<D> {
     fn send(&mut self, frame: &[u8]) -> Result<(), GooseError> {
         // frame 已含完整以太网头（dst+src+ethertype+appid+payload）。
-        self.device.send(frame).map_err(|_| GooseError::TransportError)
+        self.device
+            .send(frame)
+            .map_err(|_| GooseError::TransportError)
     }
 
     fn recv(&mut self, buf: &mut [u8]) -> Result<usize, GooseError> {

@@ -121,10 +121,7 @@ impl Iec104Adapter {
             .ok_or(ProtocolError::PointNotFound)?;
         let (common_addr, ioa) = (mapping.common_addr, mapping.ioa);
 
-        let cached = self
-            .master
-            .latest_value(common_addr, ioa)
-            .cloned();
+        let cached = self.master.latest_value(common_addr, ioa).cloned();
         let lv = match cached {
             Some(v) => v,
             None => {
@@ -142,7 +139,10 @@ impl Iec104Adapter {
             IoValue::Float(f) => (PointValue::Float(f.into()), PointType::Analog),
             IoValue::Normalized(n) => (PointValue::Float(n as f64), PointType::Analog),
             IoValue::Scaled(s) => (PointValue::Int(s as i64), PointType::Analog),
-            IoValue::SinglePoint(s) => (PointValue::Bool(s == SinglePointValue::On), PointType::Digital),
+            IoValue::SinglePoint(s) => (
+                PointValue::Bool(s == SinglePointValue::On),
+                PointType::Digital,
+            ),
             IoValue::DoublePoint(d) => (PointValue::Enum(d as u16), PointType::Digital),
             IoValue::Counter(c) => (PointValue::Int(c as i64), PointType::Counter),
             other => (PointValue::String(format!("{other:?}")), PointType::Analog),
@@ -274,9 +274,11 @@ mod tests {
     use super::*;
     use alloc::vec;
 
-    use eneros_iec104_slave::{Apdu, Asdu, Cot, InformationObject, IoValue, QualityDescriptor, TypeId};
-    use eneros_protocol_abstract::contract::{run_adapter_contract, simple_adapter_config};
     use crate::mock::MockMasterTransport;
+    use eneros_iec104_slave::{
+        Apdu, Asdu, Cot, InformationObject, IoValue, QualityDescriptor, TypeId,
+    };
+    use eneros_protocol_abstract::contract::{run_adapter_contract, simple_adapter_config};
 
     /// 构造包含一个遥测点的 M_ME_NC 数据帧。
     fn telemetry_frame(common_addr: u16, ioa: u32, value: f32) -> Vec<u8> {
@@ -346,7 +348,10 @@ mod tests {
                 .expect("内部 transport 必须是 MockMasterTransport");
             // 每设备：STARTDT_CON + 总召唤激活确认 + 遥测帧
             for (conn, ioa) in [(1u32, 100u32), (2u32, 200u32)] {
-                mock.push_rx(conn, Apdu::u_format(eneros_iec104_slave::UFormatFunction::StartDtCon).encode());
+                mock.push_rx(
+                    conn,
+                    Apdu::u_format(eneros_iec104_slave::UFormatFunction::StartDtCon).encode(),
+                );
                 mock.push_rx(conn, interrogation_confirm(conn as u16));
                 mock.push_rx(conn, telemetry_frame(conn as u16, ioa, 42.0));
             }

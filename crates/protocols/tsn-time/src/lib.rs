@@ -138,9 +138,9 @@
 extern crate alloc;
 
 pub mod bmca;
-pub mod degraded;
 pub mod clock;
 pub mod config_loader;
+pub mod degraded;
 pub mod driver_glue;
 pub mod gptp;
 pub mod latency_probe;

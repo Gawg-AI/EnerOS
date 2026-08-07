@@ -318,7 +318,8 @@ pub struct VerticalEncryptTunnel {
     /// 本端 SPI（发送帧携带）
     pub local_spi: u32,
     /// 对端 SPI（接收帧匹配）
-    pub remote_spi: u32,    /// 派生密钥对
+    pub remote_spi: u32,
+    /// 派生密钥对
     pub keys: TunnelKeys,
     /// 发送序号（每帧递增，首帧为 1）
     pub send_seq: u64,
@@ -1567,8 +1568,7 @@ where
     R: FnMut(&mut [u8]) -> Result<usize, TlsTunnelError>,
 {
     fn xmit(&mut self, data: &[u8]) -> Result<(), EncryptError> {
-        self.send(data)
-            .map_err(|_| EncryptError::DeviceError)
+        self.send(data).map_err(|_| EncryptError::DeviceError)
     }
 
     fn poll(&mut self) -> Option<Vec<u8>> {
@@ -1576,7 +1576,6 @@ where
         None
     }
 }
-
 
 // ============================================================================
 // TlsTunnelTransport host 测试：rustls mTLS 双端 + std::io::duplex 内存管道
@@ -1661,7 +1660,10 @@ mod tls_transport_tests {
                         .map_err(|_| TlsTunnelError::Io)
                 },
                 |buf: &mut [u8]| -> Result<usize, TlsTunnelError> {
-                    stream.borrow_mut().read(buf).map_err(|_| TlsTunnelError::Io)
+                    stream
+                        .borrow_mut()
+                        .read(buf)
+                        .map_err(|_| TlsTunnelError::Io)
                 },
             );
             tunnel.mark_established();
@@ -1682,7 +1684,10 @@ mod tls_transport_tests {
                     .map_err(|_| TlsTunnelError::Io)
             },
             |buf: &mut [u8]| -> Result<usize, TlsTunnelError> {
-                stream.borrow_mut().read(buf).map_err(|_| TlsTunnelError::Io)
+                stream
+                    .borrow_mut()
+                    .read(buf)
+                    .map_err(|_| TlsTunnelError::Io)
             },
         );
         // 未建立禁止发送（fail-closed）
@@ -1719,7 +1724,10 @@ mod tls_transport_tests {
                     .map_err(|_| TlsTunnelError::Io)
             },
             |buf: &mut [u8]| -> Result<usize, TlsTunnelError> {
-                stream.borrow_mut().read(buf).map_err(|_| TlsTunnelError::Io)
+                stream
+                    .borrow_mut()
+                    .read(buf)
+                    .map_err(|_| TlsTunnelError::Io)
             },
         );
         // 故意设错预期 CN：握手/证书均合法，但身份校验必须 fail-closed
@@ -1743,7 +1751,11 @@ mod tls_transport_tests {
             |_: &[u8]| -> Result<(), TlsTunnelError> { Ok(()) },
             |_: &mut [u8]| -> Result<usize, TlsTunnelError> { Ok(0) },
         );
-        assert_eq!(tunnel.policy(), MtlsPolicy::Mandatory, "默认必须强制双向认证");
+        assert_eq!(
+            tunnel.policy(),
+            MtlsPolicy::Mandatory,
+            "默认必须强制双向认证"
+        );
         assert!(!tunnel.is_established());
         assert_eq!(tunnel.recv(&mut [0u8; 4]), Err(TlsTunnelError::Handshake));
     }

@@ -16,30 +16,39 @@
 //!
 //! 使用 `heapless::spsc::Queue` 作为无堆消息队列。
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec::Vec;
 
+#[cfg(any(test, feature = "mock"))]
 use heapless::spsc::Queue;
+#[cfg(any(test, feature = "mock"))]
 use heapless::String as HString;
 
+#[cfg(any(test, feature = "mock"))]
 use crate::agent::AgentError;
-use crate::wire::{self, MessageFlags, MessageType, MAX_WIRE_SIZE};
+use crate::wire::MAX_WIRE_SIZE;
+#[cfg(any(test, feature = "mock"))]
+use crate::wire::{self, MessageFlags, MessageType};
 
-/// IPC 消息最大载荷（≤4KB）。
-pub const MAX_MSG_SIZE: usize = 4096;
+/// IPC 消息最大载荷（与 wire 帧上限一致）。
+pub const MAX_MSG_SIZE: usize = MAX_WIRE_SIZE;
 
 /// 队列容量（每方向 16 条消息）。WireFrame 较大（~4KB），64 条会占用过多栈空间。
 /// heapless Queue<T, N> 实际容量为 N-1（浪费 1 槽区分满/空），所以使用 N=17。
 #[allow(dead_code)]
 const QUEUE_CAPACITY: usize = 16;
+#[cfg_attr(not(any(test, feature = "mock")), allow(dead_code))]
 const QUEUE_SLOTS: usize = 17;
 
 /// 一条已编码的 IPC 消息（固定大小缓冲区）。
 #[derive(Clone)]
+#[cfg_attr(not(any(test, feature = "mock")), allow(dead_code))]
 struct WireFrame {
     len: usize,
     data: [u8; MAX_WIRE_SIZE],
 }
 
+#[cfg_attr(not(any(test, feature = "mock")), allow(dead_code))]
 impl WireFrame {
     fn new() -> Self {
         Self {

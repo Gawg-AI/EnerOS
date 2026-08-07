@@ -308,11 +308,23 @@ mod arc003_tests {
     #[test]
     fn test_arc003_round_half_up() {
         // 舍入规范：0.5 毫元进位
-        assert_eq!(MilliYuan::from_yuan_f64(0.0005).0, 1, "0.0005 元 = 0.5 毫元进位");
+        assert_eq!(
+            MilliYuan::from_yuan_f64(0.0005).0,
+            1,
+            "0.0005 元 = 0.5 毫元进位"
+        );
         assert_eq!(MilliYuan::from_yuan_f64(0.0004).0, 0, "0.0004 元舍去");
-        assert_eq!(MilliYuan::from_yuan_f64(1.2345).0, 1235, "1.2345 元 → 1235 毫元");
+        assert_eq!(
+            MilliYuan::from_yuan_f64(1.2345).0,
+            1235,
+            "1.2345 元 → 1235 毫元"
+        );
         assert_eq!(MilliYuan::from_yuan_f64(1.2344).0, 1234);
-        assert_eq!(MilliYuan::from_yuan_f64(-0.0005).0, -1, "负数同样 round-half-up");
+        assert_eq!(
+            MilliYuan::from_yuan_f64(-0.0005).0,
+            -1,
+            "负数同样 round-half-up"
+        );
     }
 
     #[test]
@@ -322,7 +334,11 @@ mod arc003_tests {
         assert_eq!(a.checked_add(b), Some(MilliYuan(1250)));
         assert_eq!(a.checked_sub(b), Some(MilliYuan(750)));
         assert_eq!(a.mul_f64(0.05), MilliYuan(50), "1000 毫元 × 5% = 50 毫元");
-        assert_eq!(a.mul_f64(0.3333), MilliYuan(333), "round-half-up: 333.3 → 333");
+        assert_eq!(
+            a.mul_f64(0.3333),
+            MilliYuan(333),
+            "round-half-up: 333.3 → 333"
+        );
     }
 
     #[test]

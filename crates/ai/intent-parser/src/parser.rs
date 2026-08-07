@@ -50,7 +50,10 @@ pub fn normalize_llm_json(raw: &str) -> String {
                 "setpoint" | "set_setpoint" => "SetSetpoint".to_string(),
                 other => other.to_string(),
             };
-            obj.insert("intent_type".to_string(), serde_json::Value::String(canonical));
+            obj.insert(
+                "intent_type".to_string(),
+                serde_json::Value::String(canonical),
+            );
         }
     }
 
@@ -68,10 +71,7 @@ pub fn normalize_llm_json(raw: &str) -> String {
                 existing.entry(k).or_insert(v);
             }
         } else {
-            obj.insert(
-                "power".to_string(),
-                serde_json::Value::Object(power),
-            );
+            obj.insert("power".to_string(), serde_json::Value::Object(power));
         }
     }
 

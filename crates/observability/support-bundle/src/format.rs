@@ -563,38 +563,38 @@ mod tests {
     }
 }
 
-    /// v0.246.0 端到端：二进制条目混入非法 UTF-8 字节 + 中文 + 密钥，
-    /// 脱敏必须生效（旧实现 from_utf8 失败整体跳过，密钥泄露）。
-    #[test]
-    fn test_binary_item_with_invalid_utf8_still_redacted() {
-        let mut raw: Vec<u8> = Vec::new();
-        raw.extend_from_slice("日志头 ".as_bytes());
-        raw.push(0xFF); // 非法 UTF-8 字节
-        raw.push(0xFE);
-        raw.extend_from_slice(b" token=leaked-secret-42 ");
-        raw.extend_from_slice("中文尾部".as_bytes());
+/// v0.246.0 端到端：二进制条目混入非法 UTF-8 字节 + 中文 + 密钥，
+/// 脱敏必须生效（旧实现 from_utf8 失败整体跳过，密钥泄露）。
+#[test]
+fn test_binary_item_with_invalid_utf8_still_redacted() {
+    let mut raw: Vec<u8> = Vec::new();
+    raw.extend_from_slice("日志头 ".as_bytes());
+    raw.push(0xFF); // 非法 UTF-8 字节
+    raw.push(0xFE);
+    raw.extend_from_slice(b" token=leaked-secret-42 ");
+    raw.extend_from_slice("中文尾部".as_bytes());
 
-        let bundle = SupportBundle {
-            items: vec![BundleItem {
-                name: String::from("mixed.bin"),
-                content_type: String::from("application/octet-stream"),
-                data: raw,
-            }],
-        };
-        let key = [0x11u8; 16];
-        let nonce = [0x22u8; 12];
-        let encrypted = encrypt_bundle(&bundle, &key, &nonce).expect("encrypt");
-        let decrypted = decrypt_bundle(&encrypted, &key).expect("decrypt");
-        let out = &decrypted.items[0];
-        // 密钥必须被脱敏（旧行为：非法字节导致 from_utf8 Err → 整个条目
-        // 跳过脱敏 → leaked-secret-42 原样进包）。
-        let text = bytes_to_string_lossy(&out.data);
-        assert!(
-            !text.contains("leaked-secret-42"),
-            "非法字节条目中的密钥必须脱敏，实际: {text}"
-        );
-        // 中文片段保留可读。
-        assert!(text.contains("日志头") || text.contains("中文尾部"));
-        // 输出必须是合法 UTF-8（String 保证）。
-        assert!(core::str::from_utf8(&out.data).is_ok());
-    }
+    let bundle = SupportBundle {
+        items: vec![BundleItem {
+            name: String::from("mixed.bin"),
+            content_type: String::from("application/octet-stream"),
+            data: raw,
+        }],
+    };
+    let key = [0x11u8; 16];
+    let nonce = [0x22u8; 12];
+    let encrypted = encrypt_bundle(&bundle, &key, &nonce).expect("encrypt");
+    let decrypted = decrypt_bundle(&encrypted, &key).expect("decrypt");
+    let out = &decrypted.items[0];
+    // 密钥必须被脱敏（旧行为：非法字节导致 from_utf8 Err → 整个条目
+    // 跳过脱敏 → leaked-secret-42 原样进包）。
+    let text = bytes_to_string_lossy(&out.data);
+    assert!(
+        !text.contains("leaked-secret-42"),
+        "非法字节条目中的密钥必须脱敏，实际: {text}"
+    );
+    // 中文片段保留可读。
+    assert!(text.contains("日志头") || text.contains("中文尾部"));
+    // 输出必须是合法 UTF-8（String 保证）。
+    assert!(core::str::from_utf8(&out.data).is_ok());
+}

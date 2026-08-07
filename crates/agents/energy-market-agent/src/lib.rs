@@ -191,12 +191,12 @@ pub use bid_generator::{MockBidIntentSource, MockBidOptimizer, MockBidPublisher}
 pub use device_pool::{DeviceCapability, DeviceMode, DevicePool};
 pub use energy_agent::EnergyAgent;
 pub use error::AgentRuntimeError;
-pub use market::{MarketChannel, MarketData, MarketDataSource, MarketSignal};
 #[cfg(any(test, feature = "mock"))]
 pub use market::MockMarketSource;
+pub use market::{MarketChannel, MarketData, MarketDataSource, MarketSignal};
 pub use market_agent::MarketAgent;
-pub use market_feed::{DrSignal, MarketError, MarketFeed, MarketType, Period, PricePoint};
 pub use market_feed::YuanPerKwh;
+pub use market_feed::{DrSignal, MarketError, MarketFeed, MarketType, Period, PricePoint};
 pub use multi_dispatch::{
     equal_split, DeviceAssignment, DispatchError, DispatchPlan, MultiDeviceDispatcher,
 };

@@ -47,7 +47,10 @@ mod tests {
     #[test]
     fn count_to_ns_normal() {
         // count = 1e9 ticks @ 1e9 Hz → 1e9 ns
-        assert_eq!(count_to_ns_impl(1_000_000_000, 1_000_000_000), 1_000_000_000);
+        assert_eq!(
+            count_to_ns_impl(1_000_000_000, 1_000_000_000),
+            1_000_000_000
+        );
     }
 
     #[test]
@@ -74,7 +77,10 @@ mod tests {
 
     #[test]
     fn ns_to_ticks_normal() {
-        assert_eq!(ns_to_ticks_impl(1_000_000_000, 1_000_000_000), 1_000_000_000);
+        assert_eq!(
+            ns_to_ticks_impl(1_000_000_000, 1_000_000_000),
+            1_000_000_000
+        );
     }
 
     #[test]

@@ -12,15 +12,15 @@
 
 extern crate alloc;
 
+pub mod enforcement;
 pub mod isolation;
 pub mod manager;
-pub mod enforcement;
 pub mod quota;
 pub mod types;
 
-pub use isolation::{IsolationBoundary, TenantIsolation};
-pub use enforcement::{Enforcer, TenantEnforcer};
 pub use enforcement::SpawnReq;
+pub use enforcement::{Enforcer, TenantEnforcer};
+pub use isolation::{IsolationBoundary, TenantIsolation};
 pub use manager::{TenantManager, TenantStore};
 pub use quota::{check_quota, check_resource, remaining};
 pub use types::{QuotaUsage, ResourceReq, Tenant, TenantQuota};

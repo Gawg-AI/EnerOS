@@ -2,9 +2,9 @@
 
 use alloc::vec::Vec;
 
-use crate::types::{ClearStatus, ClearingJob, ClearingResult, MilliYuan};
 #[cfg(test)]
 use crate::types::YuanPerKwh;
+use crate::types::{ClearStatus, ClearingJob, ClearingResult, MilliYuan};
 use crate::SettlementError;
 
 /// 清算引擎。
@@ -92,7 +92,11 @@ mod tests {
         let result = engine.clear(&job).unwrap();
 
         assert_eq!(result.status, ClearStatus::Cleared);
-        assert_eq!(result.amount_yuan, MilliYuan(50_000), "100 kWh × 0.5 元 = 50 元 = 50000 毫元");
+        assert_eq!(
+            result.amount_yuan,
+            MilliYuan(50_000),
+            "100 kWh × 0.5 元 = 50 元 = 50000 毫元"
+        );
         assert_eq!(result.deviation_penalty, MilliYuan::ZERO);
         assert_eq!(result.seller_credit, 100.0);
         assert_eq!(result.buyer_debit, 100.0);
@@ -107,7 +111,11 @@ mod tests {
 
         assert_eq!(result.status, ClearStatus::ShortDelivered);
         assert_eq!(result.amount_yuan, MilliYuan(40_000));
-        assert_eq!(result.deviation_penalty, MilliYuan(2_000), "penalty = 40 元 × 5% = 2 元");
+        assert_eq!(
+            result.deviation_penalty,
+            MilliYuan(2_000),
+            "penalty = 40 元 × 5% = 2 元"
+        );
     }
 
     #[test]
@@ -119,7 +127,11 @@ mod tests {
 
         assert_eq!(result.status, ClearStatus::OverDelivered);
         assert_eq!(result.amount_yuan, MilliYuan(60_000));
-        assert_eq!(result.deviation_penalty, MilliYuan(3_000), "penalty = 60 元 × 5% = 3 元");
+        assert_eq!(
+            result.deviation_penalty,
+            MilliYuan(3_000),
+            "penalty = 60 元 × 5% = 3 元"
+        );
     }
 
     #[test]

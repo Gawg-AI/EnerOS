@@ -42,11 +42,9 @@ fn tls13_handshake_and_echo_roundtrip() {
     // 服务端：监听本地端口，接受连接并回显。
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let server_cfg = TlsServerConfig::new_server_only(
-        server_cert_pem.as_bytes(),
-        server_key_pem.as_bytes(),
-    )
-    .unwrap();
+    let server_cfg =
+        TlsServerConfig::new_server_only(server_cert_pem.as_bytes(), server_key_pem.as_bytes())
+            .unwrap();
 
     let server_thread = thread::spawn(move || {
         let acceptor = TlsAcceptor::new(listener, server_cfg);

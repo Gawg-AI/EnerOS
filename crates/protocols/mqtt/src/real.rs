@@ -23,9 +23,9 @@ use crate::error::MqttError;
 use crate::transport::MqttTransport;
 
 #[cfg(feature = "net")]
-use eneros_net::tcpip::{NetworkInterface, SocketSet, TcpSocket};
-#[cfg(feature = "net")]
 use eneros_net::tcpip::Ipv4Addr;
+#[cfg(feature = "net")]
+use eneros_net::tcpip::{NetworkInterface, SocketSet, TcpSocket};
 #[cfg(feature = "net")]
 use eneros_net::NetDevice;
 
@@ -110,7 +110,10 @@ impl<D: NetDevice> MqttTransport for NetTcpTransport<D> {
         let remote = eneros_net::tcpip::ip_endpoint(ip, port);
         // smoltcp 0.13 要求非零本地端口（蓝图 D 偏差记录）。
         let local_port = 40000u16.wrapping_add(
-            host.as_bytes().iter().fold(0u16, |acc, b| acc.wrapping_add(*b as u16)) % 10000,
+            host.as_bytes()
+                .iter()
+                .fold(0u16, |acc, b| acc.wrapping_add(*b as u16))
+                % 10000,
         );
         self.tcp
             .connect(&mut self.iface, remote, local_port)

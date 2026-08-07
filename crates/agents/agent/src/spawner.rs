@@ -28,8 +28,8 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use crate::{
-    elf::LoadedElf, AgentConfig, AgentDescriptor, AgentError, AgentId, AgentPackage, AgentRegistry,
-    AgentPackageManifest, AgentState, AgentType, LifecycleManager, ProcessHandle,
+    elf::LoadedElf, AgentConfig, AgentDescriptor, AgentError, AgentId, AgentPackage,
+    AgentPackageManifest, AgentRegistry, AgentState, AgentType, LifecycleManager, ProcessHandle,
     ResourceBudget,
 };
 
@@ -429,10 +429,34 @@ mod tests {
     }
 
     static SUCCESS_REGISTRY: StaticAgentRegistry = StaticAgentRegistry::new(&[
-        (AgentType::Energy, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
-        (AgentType::Device, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
-        (AgentType::Market, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
-        (AgentType::Grid, AgentBinary { elf: MINIMAL_ELF, manifest: None }),
+        (
+            AgentType::Energy,
+            AgentBinary {
+                elf: MINIMAL_ELF,
+                manifest: None,
+            },
+        ),
+        (
+            AgentType::Device,
+            AgentBinary {
+                elf: MINIMAL_ELF,
+                manifest: None,
+            },
+        ),
+        (
+            AgentType::Market,
+            AgentBinary {
+                elf: MINIMAL_ELF,
+                manifest: None,
+            },
+        ),
+        (
+            AgentType::Grid,
+            AgentBinary {
+                elf: MINIMAL_ELF,
+                manifest: None,
+            },
+        ),
     ]);
 
     /// 签名注册表（SEC-002 正路径）：所有条目携带真实 SM2 签名清单。

@@ -157,8 +157,6 @@ pub struct WhatIfAnalyzer {
     pub sim_model: Box<dyn SimModel>,
 }
 
-
-
 /// 模拟/评估大实现（ARCH-G03 拆分）。
 mod simulate;
 

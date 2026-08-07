@@ -163,7 +163,12 @@ mod tests {
 
     // ===== v0.232.0（B3-09）：入块强制验签 =====
 
-    fn signed_tx(id: u64, payload: &[u8], kp: &eneros_crypto::Sm2KeyPair, rng: &mut eneros_crypto::CsRng) -> TxRecord {
+    fn signed_tx(
+        id: u64,
+        payload: &[u8],
+        kp: &eneros_crypto::Sm2KeyPair,
+        rng: &mut eneros_crypto::CsRng,
+    ) -> TxRecord {
         let mut tx = TxRecord {
             tx_id: id,
             kind: crate::TxKind::Deal,

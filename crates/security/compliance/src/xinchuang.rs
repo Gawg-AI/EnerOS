@@ -57,7 +57,9 @@ impl XinchuangChecker {
                 "国产 CPU 支持",
                 "硬件适配",
                 status_of(
-                    evidence.cpu_platform.map(|p| matches!(p, "phytium" | "kunpeng")),
+                    evidence
+                        .cpu_platform
+                        .map(|p| matches!(p, "phytium" | "kunpeng")),
                     "运行平台未探测（飞腾/鲲鹏）"
                 ),
                 "飞腾 D2000 / 鲲鹏 920 双平台支持（运行时探测）",

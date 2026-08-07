@@ -237,9 +237,8 @@ impl AgentPackage {
         })?;
         let sig = Sm2Signature::from_bytes(&self.manifest.signature);
 
-        sm2_verify(&msg, &sig, &pk).map_err(|e| {
-            AgentError::CodeLoadFailed(alloc::format!("SM2 verify failed: {e:?}"))
-        })
+        sm2_verify(&msg, &sig, &pk)
+            .map_err(|e| AgentError::CodeLoadFailed(alloc::format!("SM2 verify failed: {e:?}")))
     }
 
     /// SEC-002：完整验证（fail-closed）— 哈希校验 + SM2 签名校验，任一失败即拒绝。
@@ -262,9 +261,9 @@ impl AgentPackage {
             )));
         }
         // 3) SM2 验签
-        let valid = self
-            .verify_signature()
-            .map_err(|e| AgentError::CodeLoadFailed(alloc::format!("signature check error: {e}")))?;
+        let valid = self.verify_signature().map_err(|e| {
+            AgentError::CodeLoadFailed(alloc::format!("signature check error: {e}"))
+        })?;
         if !valid {
             return Err(AgentError::CodeLoadFailed(String::from(
                 "agent package signature invalid",
@@ -486,8 +485,14 @@ mod tests {
 
         // 生成密钥对并签名载荷 name‖version‖elf_hash
         let keypair = Sm2KeyPair::generate(&mut rng).expect("keygen");
-        let msg = [b"energy-agent".as_slice(), b"1.0.0".as_slice(), hash.as_slice()].concat();
-        let sig = sm2_sign(&msg, &keypair.private_key, &keypair.public_key, &mut rng).expect("sign");
+        let msg = [
+            b"energy-agent".as_slice(),
+            b"1.0.0".as_slice(),
+            hash.as_slice(),
+        ]
+        .concat();
+        let sig =
+            sm2_sign(&msg, &keypair.private_key, &keypair.public_key, &mut rng).expect("sign");
         let sig_bytes = sig.to_bytes();
         let pk_bytes: [u8; 64] = {
             let uncompressed = keypair.public_key.to_bytes_uncompressed();

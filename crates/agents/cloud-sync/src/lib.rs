@@ -55,10 +55,11 @@ compile_error!(
 extern crate alloc;
 
 pub mod delta_sync;
-pub mod real;
 pub mod event_store;
+pub mod real;
 pub mod retry_queue;
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec::Vec;
 
 pub use delta_sync::{CompressionType, DeltaSync, SyncBatch, SyncStats};

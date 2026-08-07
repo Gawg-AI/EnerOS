@@ -1,9 +1,13 @@
 //! BSP 测试套件
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::string::String;
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec::Vec;
 
-use crate::types::{BspSpec, BspTestReport, Outcome, TestCaseResult};
+use crate::types::{BspSpec, BspTestReport};
+#[cfg(any(test, feature = "mock"))]
+use crate::types::{Outcome, TestCaseResult};
 
 /// BSP 测试套件 trait
 pub trait BspTestKit {

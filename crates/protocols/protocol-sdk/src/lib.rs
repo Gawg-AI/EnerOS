@@ -336,9 +336,7 @@ mod tests {
         let config = ProtocolConfig::tcp("192.168.1.1", 502);
         proto.connect(&config).expect("连接应成功");
 
-        let points = proto
-            .read_batch(&[1, 2, 3])
-            .expect("批量读取应成功");
+        let points = proto.read_batch(&[1, 2, 3]).expect("批量读取应成功");
         assert_eq!(points.len(), 3);
         assert_eq!(points[0].point_id, 1);
         assert_eq!(points[1].point_id, 2);

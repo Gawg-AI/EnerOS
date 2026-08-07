@@ -22,15 +22,19 @@ struct RawTcpTransport {
 
 impl RawTcpTransport {
     fn new() -> Self {
-        Self { stream: None, rx: Vec::new(), tx: Vec::new(), now: 0 }
+        Self {
+            stream: None,
+            rx: Vec::new(),
+            tx: Vec::new(),
+            now: 0,
+        }
     }
 }
 
 impl MasterTransport for RawTcpTransport {
     fn connect(&mut self, ip: [u8; 4], port: u16) -> Result<ConnId, MasterError> {
         let addr = format!("{}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], port);
-        self.stream =
-            Some(TcpStream::connect(&addr).map_err(|_| MasterError::ConnectFailed)?);
+        self.stream = Some(TcpStream::connect(&addr).map_err(|_| MasterError::ConnectFailed)?);
         Ok(1)
     }
     fn send(&mut self, _conn: ConnId, data: &[u8]) -> Result<(), MasterError> {
@@ -145,7 +149,11 @@ fn arc007_iec104_independent_peer_interop() {
 
     let rx = peer.join().unwrap();
     assert_eq!(&rx[..6], &apdu::STARTDT_ACT, "对端报文实录：STARTDT 激活");
-    assert_eq!(&rx[6..], &apdu::interrogate_act()[..], "对端报文实录：总召唤激活");
+    assert_eq!(
+        &rx[6..],
+        &apdu::interrogate_act()[..],
+        "对端报文实录：总召唤激活"
+    );
     assert!(
         master.stats().rx_point_count > 0,
         "主站解析对端遥测：rx_point_count={}",

@@ -386,7 +386,10 @@ mod tests {
         bytes.extend_from_slice(&kv("architecture", 8, &str_val("llama")));
         bytes.extend_from_slice(&kv("context_length", 4, &uint32_val(4096)));
         let (m, _) = GgufMetadata::parse(&bytes, 0, 2).expect("parse");
-        assert_eq!(m.architecture, "", "bare key must not be recognized (AI-001)");
+        assert_eq!(
+            m.architecture, "",
+            "bare key must not be recognized (AI-001)"
+        );
         assert_eq!(m.context_length, 0);
     }
 }

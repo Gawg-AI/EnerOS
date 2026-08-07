@@ -731,10 +731,7 @@ mod tests {
         let mut router = MessageRouter::new(TopicRegistry::with_standards(), policy);
         // v0.208.0（P0-11）：真实验证器空授权表 → 未授权订阅被拒（fail-closed）。
         let result = router.subscribe("/power/state/*", AgentId(1), Box::new(|_s| {}));
-        assert!(
-            result.is_err(),
-            "未授权订阅必须被拒（不再 mock 恒放行）"
-        );
+        assert!(result.is_err(), "未授权订阅必须被拒（不再 mock 恒放行）");
     }
 
     #[test]
@@ -745,9 +742,12 @@ mod tests {
             ..RoutingPolicy::default()
         };
         // 注入真实授权：agent 1 可订阅 /power/state/#。
-        let verifier = CapabilityTicketVerifier::new().with_grants(alloc::vec![
-            CapabilityGrant::new(AgentId(1), Permission::Subscribe, "/power/state/#"),
-        ]);
+        let verifier =
+            CapabilityTicketVerifier::new().with_grants(alloc::vec![CapabilityGrant::new(
+                AgentId(1),
+                Permission::Subscribe,
+                "/power/state/#"
+            ),]);
         let mut router = MessageRouter::with_verifier(
             TopicRegistry::with_standards(),
             policy,
@@ -1162,9 +1162,9 @@ mod tests_v0780 {
     #[cfg(feature = "sm2")]
     #[test]
     fn p011_tampered_signature_rejected() {
+        use crate::codec::CodecKind;
         use crate::policy::AgentId;
         use crate::signing::{EnvelopeHeader, KeyId, MessageSigner, Sm2Signer};
-        use crate::codec::CodecKind;
 
         // 发送方密钥对（signer 自身持有私钥）。
         let mut rng = eneros_crypto::CsRng::from_seed(&[3u8; 32]);
@@ -1187,12 +1187,16 @@ mod tests_v0780 {
         let sig = signer.sign(&header, b"charge").expect("sign");
         // 原始 payload 验签通过。
         assert!(
-            signer.verify(&header, b"charge", &sig, 1_700_000_000).expect("verify ok"),
+            signer
+                .verify(&header, b"charge", &sig, 1_700_000_000)
+                .expect("verify ok"),
             "原始 payload 验签应通过"
         );
         // 篡改 payload → 验签失败（消息被拒绝）。
         assert!(
-            !signer.verify(&header, b"discharge", &sig, 1_700_000_000).expect("verify tampered"),
+            !signer
+                .verify(&header, b"discharge", &sig, 1_700_000_000)
+                .expect("verify tampered"),
             "篡改 payload 后验签必须失败（P0-11）"
         );
     }
@@ -1200,9 +1204,9 @@ mod tests_v0780 {
     // 无 sm2 feature 时也验证 MockSigner 可检测篡改（校验和）。
     #[test]
     fn p011_mock_signer_detects_tamper() {
+        use crate::codec::CodecKind;
         use crate::policy::AgentId;
         use crate::signing::{EnvelopeHeader, KeyId, MessageSigner, MockSigner};
-        use crate::codec::CodecKind;
 
         let signer = MockSigner;
         let header = EnvelopeHeader {

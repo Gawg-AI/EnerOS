@@ -7,9 +7,7 @@ use eneros_driver_framework::DriverError;
 use crate::error::ModbusError;
 use crate::frame::ModbusFrame;
 use crate::point::{group_by_slave, PointMapping};
-use crate::request::{
-    parse_bit_data, ExceptionCode, ModbusRequest, ModbusResponse,
-};
+use crate::request::{parse_bit_data, ExceptionCode, ModbusRequest, ModbusResponse};
 
 /// RTU 传输层抽象（D1）。
 ///
@@ -102,12 +100,10 @@ impl<'a> ModbusRtuMaster<'a> {
             });
         }
         match req {
-            ModbusRequest::ReadCoils { quantity, .. } => {
-                Ok(ModbusResponse::ReadCoils(
-                    parse_bit_data(&frame.data, *quantity)
-                        .map_err(|_| ModbusError::UnexpectedResponse)?,
-                ))
-            }
+            ModbusRequest::ReadCoils { quantity, .. } => Ok(ModbusResponse::ReadCoils(
+                parse_bit_data(&frame.data, *quantity)
+                    .map_err(|_| ModbusError::UnexpectedResponse)?,
+            )),
             ModbusRequest::ReadDiscreteInputs { quantity, .. } => {
                 Ok(ModbusResponse::ReadDiscreteInputs(
                     parse_bit_data(&frame.data, *quantity)
@@ -116,12 +112,10 @@ impl<'a> ModbusRtuMaster<'a> {
             }
             ModbusRequest::ReadInputRegisters { .. } => {
                 // 与读保持寄存器相同的数据布局。
-                Self::parse_reg_read(&frame.data)
-                    .map(ModbusResponse::ReadInputRegisters)
+                Self::parse_reg_read(&frame.data).map(ModbusResponse::ReadInputRegisters)
             }
             ModbusRequest::ReadHoldingRegisters { .. } => {
-                Self::parse_reg_read(&frame.data)
-                    .map(ModbusResponse::ReadHoldingRegisters)
+                Self::parse_reg_read(&frame.data).map(ModbusResponse::ReadHoldingRegisters)
             }
             ModbusRequest::WriteSingleCoil { value, .. } => {
                 // 响应：[coil_addr BE(2)][value(0xFF00/0x0000)]

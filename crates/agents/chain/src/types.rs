@@ -139,7 +139,9 @@ mod arc004_tests {
             signature: [0u8; 64],
         };
         let digest = tx.digest();
-        tx.signature = sm2_sign(&digest, &kp.private_key, &kp.public_key, rng).unwrap().to_bytes();
+        tx.signature = sm2_sign(&digest, &kp.private_key, &kp.public_key, rng)
+            .unwrap()
+            .to_bytes();
         tx
     }
 

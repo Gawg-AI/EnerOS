@@ -139,7 +139,10 @@ impl PointAccess for MockPointDevice {
 
 #[cfg(any(test, feature = "mock"))]
 impl PointAccessExt for MockPointDevice {
-    fn read_device_points(&mut self, device_id: DeviceId) -> Result<alloc::vec::Vec<DataPoint>, ProtocolError> {
+    fn read_device_points(
+        &mut self,
+        device_id: DeviceId,
+    ) -> Result<alloc::vec::Vec<DataPoint>, ProtocolError> {
         if device_id != self.device_id {
             return Err(ProtocolError::PointNotFound);
         }

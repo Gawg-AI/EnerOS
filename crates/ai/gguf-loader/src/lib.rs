@@ -264,7 +264,10 @@ mod tests {
         let metadata = loader
             .load("path", ComputeDevice::Cpu)
             .expect("load should succeed");
-        eprintln!("DBG metadata: name={:?} arch={:?}", metadata.name, metadata.architecture);
+        eprintln!(
+            "DBG metadata: name={:?} arch={:?}",
+            metadata.name, metadata.architecture
+        );
         assert_eq!(metadata.name, "test_model");
         assert_eq!(metadata.architecture, "llama");
 

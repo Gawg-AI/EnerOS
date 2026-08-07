@@ -226,8 +226,7 @@ fn parse_fdt_header(header: &[u8]) -> Option<u32> {
 /// 未找到或 DTB 无效时返回 `None`。
 fn locate_device_tree() -> Option<(u64, u64)> {
     // UEFI 规范：Linux 设备树配置表 GUID。
-    const DEVICE_TREE_GUID: uefi::Guid =
-        uefi::guid!("b1b621d5-f19c-41a5-830b-d9152c69aabe");
+    const DEVICE_TREE_GUID: uefi::Guid = uefi::guid!("b1b621d5-f19c-41a5-830b-d9152c69aabe");
     for entry in uefi::system::config_table() {
         if entry.guid != DEVICE_TREE_GUID {
             continue;

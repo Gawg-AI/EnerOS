@@ -213,18 +213,24 @@ impl Sm2Signer {
         // (x1, y1) = k * G
         let point = EcPoint::scalar_base_mult(k);
         if point.is_infinity {
-            return Err(CryptoError::InvalidInput(alloc::string::String::from("invalid k for SM2 signature")));
+            return Err(CryptoError::InvalidInput(alloc::string::String::from(
+                "invalid k for SM2 signature",
+            )));
         }
 
         // r = (e + x1) mod n
         let r = e.add_mod(&point.to_affine().x, &SM2_N);
         if r.is_zero() {
-            return Err(CryptoError::InvalidInput(alloc::string::String::from("invalid k for SM2 signature")));
+            return Err(CryptoError::InvalidInput(alloc::string::String::from(
+                "invalid k for SM2 signature",
+            )));
         }
         // r + k == n → 无效 k
         let r_plus_k = r.add_mod(k, &SM2_N);
         if r_plus_k.is_zero() {
-            return Err(CryptoError::InvalidInput(alloc::string::String::from("invalid k for SM2 signature")));
+            return Err(CryptoError::InvalidInput(alloc::string::String::from(
+                "invalid k for SM2 signature",
+            )));
         }
 
         // s = ((1 + d)^(-1) * (k - r * d)) mod n
@@ -236,7 +242,9 @@ impl Sm2Signer {
         let k_minus_rd = k.sub_mod(&r_times_d, &SM2_N);
         let s = inv_one_plus_d.mul_mod(&k_minus_rd, &SM2_N);
         if s.is_zero() {
-            return Err(CryptoError::InvalidInput(alloc::string::String::from("invalid k for SM2 signature")));
+            return Err(CryptoError::InvalidInput(alloc::string::String::from(
+                "invalid k for SM2 signature",
+            )));
         }
 
         Ok(Sm2Signature {
@@ -473,7 +481,8 @@ mod tests {
             .expect("签名失败");
 
         // 自定义用户 ID 签名
-        let custom_signer = Sm2Signer::with_user_id(b"custom-id-12345").expect("SM2 user_id ≤ 8191B");
+        let custom_signer =
+            Sm2Signer::with_user_id(b"custom-id-12345").expect("SM2 user_id ≤ 8191B");
         assert_eq!(custom_signer.user_id(), b"custom-id-12345");
         let sig_custom = custom_signer
             .sign(msg, &kp.private_key, &kp.public_key, &mut rng)

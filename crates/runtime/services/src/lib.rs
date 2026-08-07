@@ -135,7 +135,9 @@ pub fn inject_fault(kind: Option<FaultKind>) -> Result<(), ()> {
 ///
 /// 供 svc-hello 等参考服务在 M2.1 Endpoint IPC 接入后调用；host 侧
 /// 单测验证帧往返（编码 → 解码 → 校验）完整可用。
-pub fn svc_frame_roundtrip(payload: &[u8]) -> Result<alloc::vec::Vec<u8>, eneros_ipc_wire::el0::El0FrameError> {
+pub fn svc_frame_roundtrip(
+    payload: &[u8],
+) -> Result<alloc::vec::Vec<u8>, eneros_ipc_wire::el0::El0FrameError> {
     use eneros_ipc_wire::el0::{decode_frame, encode_frame, El0FrameType};
     let buf = encode_frame(El0FrameType::Report, payload);
     let frame = decode_frame(&buf)?;
@@ -157,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_krn003_svc_frame_corruption_rejected() {
-        use eneros_ipc_wire::el0::{decode_frame, encode_frame, El0FrameType, El0FrameError};
+        use eneros_ipc_wire::el0::{decode_frame, encode_frame, El0FrameError, El0FrameType};
         let mut buf = encode_frame(El0FrameType::Ready, b"x");
         let n = buf.len();
         buf[n - 1] ^= 0xff;

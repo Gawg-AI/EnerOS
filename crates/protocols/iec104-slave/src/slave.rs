@@ -34,10 +34,8 @@ fn apply_time_tag(tag: TimeTag) {
     let doy = (153 * (m - 3) + 2) / 5 + tag.day as u32 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146097 + doe - 719468;
-    let secs = days as u64 * 86400
-        + tag.hour as u64 * 3600
-        + tag.minute as u64 * 60
-        + tag.second as u64;
+    let secs =
+        days as u64 * 86400 + tag.hour as u64 * 3600 + tag.minute as u64 * 60 + tag.second as u64;
     eneros_time::rtc_write(eneros_time::secs_to_rtc(secs));
 }
 
@@ -176,9 +174,7 @@ impl Iec104Slave {
         match &self.authorized_write {
             None => false,
             Some(auth) => {
-                auth.device_id == common_addr as u32
-                    && auth.point_id == ioa
-                    && &auth.command == cmd
+                auth.device_id == common_addr as u32 && auth.point_id == ioa && &auth.command == cmd
             }
         }
     }
@@ -244,10 +240,10 @@ impl Iec104Slave {
         // 2.5 t1 超时：发送 U 帧后未收到确认 → 重传或断开（v0.219.0）。
         let t1_timeout = self.config.t1_timeout_ms as u64;
         let t1_expired = match &self.connection {
-            Some(conn) => conn
-                .pending_u_frame
-                .is_some()
-                && now_ms.saturating_sub(conn.last_tx_time_ms) > t1_timeout,
+            Some(conn) => {
+                conn.pending_u_frame.is_some()
+                    && now_ms.saturating_sub(conn.last_tx_time_ms) > t1_timeout
+            }
             None => false,
         };
         if t1_expired {
@@ -264,7 +260,8 @@ impl Iec104Slave {
         let t2_expired = match &self.connection {
             Some(conn) => {
                 conn.pending_acks > 0
-                    && now_ms.saturating_sub(conn.last_rx_time_ms) > self.config.t2_timeout_ms as u64
+                    && now_ms.saturating_sub(conn.last_rx_time_ms)
+                        > self.config.t2_timeout_ms as u64
             }
             None => false,
         };
@@ -1429,7 +1426,13 @@ mod tests {
         slave.poll(100).expect("startdt");
         slave.poll(200).expect("first I frame");
         let err = slave.poll(300).expect_err("replay must be rejected");
-        assert!(matches!(err, Iec104Error::SeqMismatch { expected: 1, actual: 0 }));
+        assert!(matches!(
+            err,
+            Iec104Error::SeqMismatch {
+                expected: 1,
+                actual: 0
+            }
+        ));
         // 坏帧计数（不静默）。
         assert!(slave.stats().rx_error_count >= 1);
     }

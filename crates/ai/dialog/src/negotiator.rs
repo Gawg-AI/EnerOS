@@ -3,12 +3,18 @@
 //! 定义 [`DialogNegotiator`] trait 及 [`MockNegotiator`] 实现，
 //! 模拟 LLM↔Solver 多轮迭代对话直至收敛或超时。
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::format;
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec;
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec::Vec;
 
+#[cfg(any(test, feature = "mock"))]
 use crate::session::DialogSession;
-use crate::types::{LlmProposal, Problem, Round, Solution, SolverFeedback};
+#[cfg(any(test, feature = "mock"))]
+use crate::types::{LlmProposal, Round, SolverFeedback};
+use crate::types::{Problem, Solution};
 use crate::DialogError;
 
 /// 对话协商器 trait.

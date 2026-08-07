@@ -1,6 +1,7 @@
 //! 命令下发抽象（D6：本地定义，避免跨子系统内核依赖）.
 
 use alloc::string::String;
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec::Vec;
 
 use crate::error::DualBrainError;

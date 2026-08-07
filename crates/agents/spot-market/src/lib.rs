@@ -29,9 +29,9 @@ pub mod types;
 
 pub use bid::{validate_bid, BidBuilder};
 pub use clearing::ClearingProcessor;
-pub use participant::{SpotMarketParticipant};
 #[cfg(any(test, feature = "mock"))]
-pub use participant::{MockParticipant};
+pub use participant::MockParticipant;
+pub use participant::SpotMarketParticipant;
 pub use tracker::ExecTracker;
 pub use types::{
     Bid, BidAck, BidSegment, ClearedSegment, ClearingResult, ExecStatus, SpotMarketType, TimeSlot,

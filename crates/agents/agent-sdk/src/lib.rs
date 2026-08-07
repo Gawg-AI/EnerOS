@@ -63,7 +63,8 @@
 //! v1.0 承诺公共 API 向后兼容。
 
 #![cfg_attr(not(test), no_std)]
-#![allow(unexpected_cfgs)] // sel4_target 由 sel4-sys build.rs 注入
+#![allow(unexpected_cfgs)]
+// sel4_target 由 sel4-sys build.rs 注入
 // AgentError uses HString<128> (136 bytes) for no_std error messages without
 // allocation. The large Err variant is an intentional trade-off.
 #![allow(clippy::result_large_err)]

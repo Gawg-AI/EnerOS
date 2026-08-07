@@ -6,7 +6,8 @@
 
 #[cfg(not(test))]
 #[global_allocator]
-static ALLOC: eneros_services::allocator::BumpAllocator = eneros_services::allocator::BumpAllocator::new();
+static ALLOC: eneros_services::allocator::BumpAllocator =
+    eneros_services::allocator::BumpAllocator::new();
 
 #[cfg(not(test))]
 use core::panic::PanicInfo;
