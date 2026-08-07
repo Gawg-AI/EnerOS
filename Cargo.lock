@@ -1091,6 +1091,7 @@ version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent",
  "eneros-device-agent",
+ "eneros-dual-brain",
  "eneros-energy-lp-model",
  "eneros-energy-market-agent",
  "eneros-market-types",
@@ -1221,6 +1222,8 @@ dependencies = [
  "eneros-elf-loader",
  "eneros-ipc-wire",
  "eneros-runtime",
+ "eneros-sel4-sys",
+ "eneros-tenant",
 ]
 
 [[package]]

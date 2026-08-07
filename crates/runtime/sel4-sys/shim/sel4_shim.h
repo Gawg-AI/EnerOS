@@ -206,6 +206,31 @@ seL4_Error eneros_sel4_arm_page_table_map(seL4_CPtr pt,
 /* seL4_ARM_Page default attributes getter. */
 seL4_Word eneros_sel4_arm_default_attributes(void);
 
+/* ------------------------------------------------------------------ */
+/* G-KERNEL K1.2：真实 spawn 缺口（ADR-0034）。                        */
+/* ------------------------------------------------------------------ */
+seL4_Error eneros_sel4_tcb_set_space(seL4_CPtr tcb,
+                                     seL4_CPtr cspace_root,
+                                     seL4_Word cspace_root_data,
+                                     seL4_CPtr vspace_root,
+                                     seL4_Word vspace_root_data,
+                                     seL4_CPtr buffer,
+                                     seL4_Word buffer_data);
+
+seL4_Error eneros_sel4_tcb_set_ipcbuffer(seL4_CPtr tcb,
+                                         seL4_CPtr buffer,
+                                         seL4_Word buffer_data);
+
+seL4_Error eneros_sel4_arm_asid_pool_assign(seL4_CPtr pool,
+                                            seL4_CPtr vspace);
+
+seL4_Error eneros_sel4_arm_page_unmap(seL4_CPtr page);
+
+seL4_Word eneros_sel4_cap_init_thread_tcb(void);
+seL4_Word eneros_sel4_cap_init_thread_cnode(void);
+seL4_Word eneros_sel4_cap_init_thread_vspace(void);
+seL4_Word eneros_sel4_cap_init_thread_asid_pool(void);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

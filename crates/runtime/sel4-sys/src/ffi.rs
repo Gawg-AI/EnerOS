@@ -36,6 +36,12 @@ extern "C" {
 
     pub fn eneros_sel4_user_context_n_registers() -> Word;
     pub fn eneros_sel4_arm_default_attributes() -> Word;
+
+    // ADR-0034（K1.2）：root-task 固定 cap 常量（bootinfo.h 宏，经 shim getter）。
+    pub fn eneros_sel4_cap_init_thread_tcb() -> Word;
+    pub fn eneros_sel4_cap_init_thread_cnode() -> Word;
+    pub fn eneros_sel4_cap_init_thread_vspace() -> Word;
+    pub fn eneros_sel4_cap_init_thread_asid_pool() -> Word;
 }
 
 // ----------------------------------------------------------------------------
@@ -153,6 +159,19 @@ extern "C" {
     pub fn eneros_sel4_tcb_suspend(tcb: CPtr) -> Error;
     pub fn eneros_sel4_tcb_set_affinity(tcb: CPtr, affinity: Word) -> Error;
     pub fn eneros_sel4_tcb_set_priority(tcb: CPtr, authority: CPtr, priority: Word) -> Error;
+
+    // ADR-0034（K1.2）：TCB 绑定 CSpace/VSpace/IPC buffer（真实 spawn 必需）。
+    pub fn eneros_sel4_tcb_set_space(
+        tcb: CPtr,
+        cspace_root: CPtr,
+        cspace_root_data: Word,
+        vspace_root: CPtr,
+        vspace_root_data: Word,
+        buffer: CPtr,
+        buffer_data: Word,
+    ) -> Error;
+
+    pub fn eneros_sel4_tcb_set_ipcbuffer(tcb: CPtr, buffer: CPtr, buffer_data: Word) -> Error;
 }
 
 // ----------------------------------------------------------------------------
@@ -173,4 +192,9 @@ extern "C" {
         vaddr: Word,
         attr: ArmVmAttributes,
     ) -> Error;
+
+    // ADR-0034（K1.2）：aarch64 VSpace 必须绑 ASID；frame 只能映射一个地址，
+    // 重新映射前必须 unmap（K1.3 方案 A 临时窗口拷贝依赖）。
+    pub fn eneros_sel4_arm_asid_pool_assign(pool: CPtr, vspace: CPtr) -> Error;
+    pub fn eneros_sel4_arm_page_unmap(page: CPtr) -> Error;
 }

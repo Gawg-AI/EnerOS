@@ -179,6 +179,52 @@ impl RightsTable {
 }
 
 // ============================================================================
+// root-task 固定 cap 常量（ADR-0034，K1.2）
+// ============================================================================
+
+/// root-task 从 elfloader 继承的固定 cap 槽号（bootinfo.h 编译期宏）。
+///
+/// sel4_target：从 C shim getter 读取真实值；host_build：使用文档化的
+/// seL4 14.0.0 常量（测试用；目标侧以 shim 为准）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapInitThreadTable {
+    /// root-task 自身 TCB cap（SetPriority 的 authority）。
+    pub tcb: CPtr,
+    /// root-task 自身 CSpace 根 cap（retype/mint 的 dest_root）。
+    pub cnode: CPtr,
+    /// root-task 自身 VSpace cap（临时窗口映射的 vspace）。
+    pub vspace: CPtr,
+    /// root-task 继承的 ASID pool cap（服务 VSpace 分配 ASID）。
+    pub asid_pool: CPtr,
+}
+
+impl CapInitThreadTable {
+    /// 解析 root-task 固定 cap 表。
+    pub fn resolve() -> Self {
+        #[cfg(sel4_target)]
+        {
+            // SAFETY: getter 均为无参 C 函数返回编译期常量，无内存安全风险。
+            Self {
+                tcb: unsafe { crate::ffi::eneros_sel4_cap_init_thread_tcb() },
+                cnode: unsafe { crate::ffi::eneros_sel4_cap_init_thread_cnode() },
+                vspace: unsafe { crate::ffi::eneros_sel4_cap_init_thread_vspace() },
+                asid_pool: unsafe { crate::ffi::eneros_sel4_cap_init_thread_asid_pool() },
+            }
+        }
+        #[cfg(host_build)]
+        {
+            // seL4 14.0.0 bootinfo.h 常量（与 shim getter 在目标侧返回一致）。
+            Self {
+                tcb: 1,
+                cnode: 2,
+                vspace: 3,
+                asid_pool: 6,
+            }
+        }
+    }
+}
+
+// ============================================================================
 // 类型化 cap 右值与槽分配器
 // ============================================================================
 
@@ -355,6 +401,87 @@ pub fn tcb_set_priority(tcb: CPtr, authority: CPtr, priority: Word) -> Sel4Resul
     }
 }
 
+/// TCB 绑定地址空间封装（`seL4_TCB_SetSpace`，ADR-0034）。
+///
+/// 把服务的 CSpace / VSpace / IPC buffer 绑到 TCB——spawn 可运行进程的
+/// 必需步骤（TCB 创建后无地址空间，直接 resume 即 CapFault）。
+/// `cspace_root_data` / `vspace_root_data` 为一阶 cnode/vspace 时传 0；
+/// `buffer` 为 IPC buffer 帧 cap，`buffer_data` 为其在服务地址空间的虚拟地址。
+///
+/// # Safety
+/// 前置条件（调用方必须保证，封装不校验）：
+/// - `tcb`、`cspace_root`、`vspace_root` 必须有效且已 retype；
+/// - `buffer` 必须是已映射到服务地址空间的帧 cap（映射 vaddr 与
+///   `buffer_data` 一致）；
+/// - 一阶 CSpace/VSpace 时 `cspace_root_data`/`vspace_root_data` 必须为 0。
+///
+/// 目标构建真调 FFI；host 构建返回 [`Sel4Error::HostUnsupported`]（红线 2）。
+#[allow(clippy::too_many_arguments)]
+pub fn tcb_set_space(
+    tcb: CPtr,
+    cspace_root: CPtr,
+    cspace_root_data: Word,
+    vspace_root: CPtr,
+    vspace_root_data: Word,
+    buffer: CPtr,
+    buffer_data: Word,
+) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；前置条件见函数文档。
+        let err = unsafe {
+            crate::ffi::eneros_sel4_tcb_set_space(
+                tcb,
+                cspace_root,
+                cspace_root_data,
+                vspace_root,
+                vspace_root_data,
+                buffer,
+                buffer_data,
+            )
+        };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (
+            tcb,
+            cspace_root,
+            cspace_root_data,
+            vspace_root,
+            vspace_root_data,
+            buffer,
+            buffer_data,
+        );
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// TCB 设置 IPC buffer 封装（`seL4_TCB_SetIPCBuffer`，ADR-0034）。
+///
+/// 消息长度超过寄存器 MR 时必须经 IPC buffer 传输（ipc-wire 帧 ≥5 words）；
+/// 无 buffer 的线程执行 IPC 即 fault。`buffer` 为帧 cap，`buffer_data` 为
+/// buffer 在服务地址空间的虚拟地址。
+///
+/// # Safety
+/// 前置条件：`tcb` 有效；`buffer` 是已映射到服务地址空间的帧 cap
+/// （映射 vaddr 与 `buffer_data` 一致且 4 KiB 对齐）。
+///
+/// 目标构建真调 FFI；host 构建返回 [`Sel4Error::HostUnsupported`]（红线 2）。
+pub fn tcb_set_ipcbuffer(tcb: CPtr, buffer: CPtr, buffer_data: Word) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；前置条件见函数文档。
+        let err = unsafe { crate::ffi::eneros_sel4_tcb_set_ipcbuffer(tcb, buffer, buffer_data) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (tcb, buffer, buffer_data);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
 /// CNode_Mint 封装（派生带权限的能力）。
 pub fn cnode_mint(
     dest_root: CPtr,
@@ -456,9 +583,78 @@ pub fn arm_page_table_map(vspace: CPtr, pt: CPtr, vaddr: Word) -> Sel4Result<()>
     }
 }
 
+/// ASID pool 分配封装（`seL4_ARM_ASIDPool_Assign`，ADR-0034）。
+///
+/// aarch64 上 VSpace 必须先从 ASID pool 分配到 ASID 才能映射页
+/// （`arm_page_map` 内部走 `findVSpaceForASID`，未绑 ASID 即 FailedLookup）。
+///
+/// # Safety
+/// 前置条件：`pool` 是有效的 ASID pool cap（root-task 继承的
+/// `seL4_CapInitThreadASIDPool`）；`vspace` 是已 retype 且未分配 ASID 的
+/// VSpace 能力。
+///
+/// 目标构建真调 FFI；host 构建返回 [`Sel4Error::HostUnsupported`]（红线 2）。
+pub fn arm_asid_pool_assign(pool: CPtr, vspace: CPtr) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；前置条件见函数文档。
+        let err = unsafe { crate::ffi::eneros_sel4_arm_asid_pool_assign(pool, vspace) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (pool, vspace);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// ARM 页卸载封装（`seL4_ARM_Page_Unmap`，ADR-0034）。
+///
+/// frame 只能映射到一个虚拟地址（内核按 cap 记录的 asid/vaddr 校验）；
+/// K1.3 方案 A 的临时窗口拷贝流程 = 窗口映射 → 拷贝 → 本封装卸载 →
+/// 再映射进服务 VSpace。
+///
+/// # Safety
+/// 前置条件：`page` 是已映射的帧 cap（由之前 [`arm_page_map`] 映射）。
+///
+/// 目标构建真调 FFI；host 构建返回 [`Sel4Error::HostUnsupported`]（红线 2）。
+pub fn arm_page_unmap(page: CPtr) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；前置条件见函数文档。
+        let err = unsafe { crate::ffi::eneros_sel4_arm_page_unmap(page) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = page;
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
 // ============================================================================
 // BootInfo 解析（P0-1：untyped 列表 / 空闲 cap 区间 offset 访问器）
 // ============================================================================
+
+/// 获取 BootInfo 指针（`seL4_GetBootInfo`，21-A K1.2）。
+///
+/// 返回指针由 seL4 内核保证指向有效的 `seL4_BootInfo` 结构（rootserver
+/// 环境）；host 构建返回 `null`（无 seL4，调用方不得使用）。
+///
+/// # Safety
+/// 封装 ffi；返回值仅目标构建下有效，调用方必须结合
+/// [`BootInfoReader::from_bootinfo_ptr`] 使用。
+pub fn get_boot_info() -> *const crate::types::BootInfo {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；rootserver 环境下内核保证返回值有效。
+        unsafe { crate::ffi::eneros_sel4_get_boot_info() as *const crate::types::BootInfo }
+    }
+    #[cfg(host_build)]
+    {
+        core::ptr::null()
+    }
+}
 
 /// 一个 untyped 描述（对应 `seL4_UntypedDesc`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -700,6 +896,33 @@ mod tests {
             arm_page_table_map(0x100, 0x300, 0x4000_0000),
             Err(Sel4Error::HostUnsupported)
         );
+    }
+
+    // ADR-0034（K1.2）：真实 spawn 必需封装的 host 行为——一律明确失败。
+    #[test]
+    fn spawn_ffi_host_unsupported() {
+        assert_eq!(
+            tcb_set_space(0x10, 0x20, 0, 0x30, 0, 0x40, 0x2000_0000),
+            Err(Sel4Error::HostUnsupported)
+        );
+        assert_eq!(
+            tcb_set_ipcbuffer(0x10, 0x40, 0x2000_0000),
+            Err(Sel4Error::HostUnsupported)
+        );
+        assert_eq!(
+            arm_asid_pool_assign(0x50, 0x60),
+            Err(Sel4Error::HostUnsupported)
+        );
+        assert_eq!(arm_page_unmap(0x70), Err(Sel4Error::HostUnsupported));
+    }
+
+    #[test]
+    fn cap_init_thread_table_resolves() {
+        let caps = CapInitThreadTable::resolve();
+        assert_ne!(caps.tcb, 0);
+        assert_ne!(caps.cnode, caps.tcb);
+        assert_ne!(caps.vspace, caps.tcb);
+        assert_ne!(caps.asid_pool, 0);
     }
 
     #[test]

@@ -120,20 +120,34 @@ pub extern "C" fn _start() -> ! {
         );
     }
 
-    // R1-2：真实 spawn（M2.1 sel4-sys FFI：retype/TCB 寄存器/endpoint mint/resume）
-    match crate::spawn::sel4_spawn_services(&plan) {
-        Ok(()) => {
-            println!("[eneros-root-task] EL0 services spawned — entering service loop");
-        }
-        Err(e) => {
-            println!(
-                "[eneros-root-task] spawn FAILED: {:?} — 挂起（fail-closed）",
-                e
-            );
-            loop {
-                core::hint::spin_loop();
+    // R1-2：真实 spawn（21-A K1.2：sel4-sys FFI 完整序列，ADR-0034）
+    #[cfg(target_os = "none")]
+    {
+        use eneros_sel4_sys::safe::{get_boot_info, BootInfoReader, CapInitThreadTable};
+        // 从 bootinfo 构建 spawn 上下文（untyped 分配器 + cap 槽 + 固定 cap）。
+        let bi = get_boot_info();
+        let reader = BootInfoReader::from_bootinfo_ptr(bi);
+        let caps = CapInitThreadTable::resolve();
+        let mut ctx = crate::spawn::SpawnCtx::from_bootinfo_reader(&reader, &caps);
+        match crate::spawn::sel4_spawn_services(&plan, &bundle, &mut ctx) {
+            Ok(()) => {
+                println!("[eneros-root-task] EL0 services spawned — entering service loop");
+            }
+            Err(e) => {
+                println!(
+                    "[eneros-root-task] spawn FAILED: {:?} — 挂起（fail-closed）",
+                    e
+                );
+                loop {
+                    core::hint::spin_loop();
+                }
             }
         }
+    }
+    // host 构建：无 seL4，不 spawn（保持原行为，仅计划打印）。
+    #[cfg(not(target_os = "none"))]
+    {
+        println!("[eneros-root-task] host build: spawn skipped (no seL4)");
     }
 
     // KRN-004：服务调度主循环（dispatch_frame / config_service_roundtrip host 可测）。

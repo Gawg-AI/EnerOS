@@ -12,6 +12,7 @@ eneros-runtime = { path = "../runtime" }
 eneros-boot-protocol = { path = "../../boot/boot-protocol" }
 eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 eneros-elf-loader = { path = "../../abi/elf-loader" }
+eneros-sel4-sys = { path = "../sel4-sys" }
 
 [features]
 default = []

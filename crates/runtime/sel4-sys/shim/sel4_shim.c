@@ -267,3 +267,68 @@ seL4_Word eneros_sel4_arm_default_attributes(void)
 {
     return seL4_ARM_Default_VMAttributes;
 }
+
+/* ================================================================== */
+/* G-KERNEL K1.2：真实 spawn 缺口（ADR-0034）。                        */
+/*   TCB_SetSpace / TCB_SetIPCBuffer / ASIDPool_Assign / Page_Unmap   */
+/*   与 root-task 固定 cap 常量 getter。                              */
+/* ================================================================== */
+
+/* seL4_TCB_SetSpace：把 CSpace / VSpace / IPC buffer 绑到 TCB。      */
+seL4_Error eneros_sel4_tcb_set_space(seL4_CPtr tcb,
+                                     seL4_CPtr cspace_root,
+                                     seL4_Word cspace_root_data,
+                                     seL4_CPtr vspace_root,
+                                     seL4_Word vspace_root_data,
+                                     seL4_CPtr buffer,
+                                     seL4_Word buffer_data)
+{
+    return seL4_TCB_SetSpace(tcb, cspace_root, cspace_root_data,
+                             vspace_root, vspace_root_data,
+                             buffer, buffer_data);
+}
+
+/* seL4_TCB_SetIPCBuffer：设置线程的 IPC buffer（帧 cap + 虚拟地址）。 */
+seL4_Error eneros_sel4_tcb_set_ipcbuffer(seL4_CPtr tcb,
+                                         seL4_CPtr buffer,
+                                         seL4_Word buffer_data)
+{
+    return seL4_TCB_SetIPCBuffer(tcb, buffer, buffer_data);
+}
+
+/* seL4_ARM_ASIDPool_Assign：从 ASID pool 给 VSpace 分配 ASID。       */
+/* aarch64 上 VSpace 未绑 ASID 时页映射走 findVSpaceForASID 会失败。  */
+seL4_Error eneros_sel4_arm_asid_pool_assign(seL4_CPtr pool,
+                                            seL4_CPtr vspace)
+{
+    return seL4_ARM_ASIDPool_Assign(pool, vspace);
+}
+
+/* seL4_ARM_Page_Unmap：解除 frame 的映射（frame 只能映射一个地址，   */
+/* 重新映射前必须 unmap，见 ADR-0034）。                               */
+seL4_Error eneros_sel4_arm_page_unmap(seL4_CPtr page)
+{
+    return seL4_ARM_Page_Unmap(page);
+}
+
+/* root-task 固定 cap 常量（bootinfo.h 编译期宏；经 getter 暴露避免   */
+/* Rust 侧硬编码漂移）。                                              */
+seL4_Word eneros_sel4_cap_init_thread_tcb(void)
+{
+    return seL4_CapInitThreadTCB;
+}
+
+seL4_Word eneros_sel4_cap_init_thread_cnode(void)
+{
+    return seL4_CapInitThreadCNode;
+}
+
+seL4_Word eneros_sel4_cap_init_thread_vspace(void)
+{
+    return seL4_CapInitThreadVSpace;
+}
+
+seL4_Word eneros_sel4_cap_init_thread_asid_pool(void)
+{
+    return seL4_CapInitThreadASIDPool;
+}
