@@ -1,4 +1,4 @@
-//! svc-hog — EnerOS 内存占用参考 EL0 服务（OOM 隔离验证，M0 占位）.
+//! svc-hog — EnerOS 内存占用参考 EL0 服务（K2.3：Endpoint IPC 入口）.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -17,11 +17,10 @@ extern crate eneros_services;
 
 #[cfg(not(test))]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    // v0.200.0 (P0-3)：真实内存占用——分配 64 MiB（16384 × 4 KiB）并保持。
-    // OOM 隔离由 seL4 地址空间保证（QEMU 验证项）。
-    let _held = eneros_services::hog_memory(16_384);
-    eneros_services::svc_loop()
+pub extern "C" fn _start(ep: u64, _ipc_buffer: u64) -> ! {
+    // K2.3：内存占用由 IPC 请求驱动（hog=<n>），见 handle_request。
+    eneros_runtime::init();
+    eneros_services::svc_entry(ep, "hog")
 }
 
 #[cfg(not(test))]

@@ -147,8 +147,227 @@ pub fn svc_frame_roundtrip(
     Ok(frame.payload.to_vec())
 }
 
+// ============================================================================
+// 21-A K2.3：服务 IPC 请求处理（host 可测）+ svc_ipc_loop（目标构建）
+// ============================================================================
+
+/// 十进制无符号解析（no_std，K2.3 请求参数用）。
+pub fn parse_u64(s: &[u8]) -> Option<u64> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut v: u64 = 0;
+    for &b in s {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        v = v.checked_mul(10)?.checked_add(u64::from(b - b'0'))?;
+    }
+    Some(v)
+}
+
+/// 请求路由结果（K2.3）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestOutcome {
+    /// 正常响应（响应帧字节）。
+    Reply(alloc::vec::Vec<u8>),
+    /// 故障注入已触发（服务预期将挂起，不再回复）。
+    FaultTriggered,
+}
+
+/// K2.3 请求处理：解码帧 → 按 payload 前缀路由到服务功能 → 编码响应帧。
+///
+/// 协议（payload 前缀，root-task ↔ 服务共享契约）：
+/// - `hello`        → svc_hello 心跳 banner；
+/// - `pi=<n>`       → compute_pi 前 n 项（CPU 负载验证）；
+/// - `hog=<n>`      → hog_memory n 个 4 KiB 块（OOM 隔离验证）；
+/// - `fault=<kind>` → inject_fault（DivideByZero/IllegalAccess/Panic）；
+/// - 其他            → `unknown:<payload>`（fail-closed：不扩散）。
+///
+/// 响应一律 `Report` 帧。`fault` 分支触发后服务进程预期挂起（seL4 异常
+/// 路径），返回 [`RequestOutcome::FaultTriggered`]（不回复）。
+pub fn handle_request(payload: &[u8]) -> RequestOutcome {
+    let resp = |s: &str| RequestOutcome::Reply(encode_report(s.as_bytes()));
+    if payload == b"hello" {
+        return resp(&svc_hello("eneros"));
+    }
+    if let Some(rest) = payload.strip_prefix(b"pi=") {
+        return match parse_u64(rest) {
+            Some(n) => {
+                let pi = compute_pi(n);
+                let mut buf = alloc::string::String::with_capacity(32);
+                buf.push_str("pi=");
+                // f64 → 定点字符串（截断 6 位小数；量纲标注于协议文档）。
+                let scaled = (pi * 1_000_000.0) as u64;
+                buf.push_str(&alloc::format!("{scaled}"));
+                resp(&buf)
+            }
+            None => resp("pi=err"),
+        };
+    }
+    if let Some(rest) = payload.strip_prefix(b"hog=") {
+        return match parse_u64(rest) {
+            Some(n) => match hog_memory(n as usize) {
+                Ok(pages) => {
+                    let s = alloc::format!("hog=ok:{}", pages.len());
+                    resp(&s)
+                }
+                Err(()) => resp("hog=oom"),
+            },
+            None => resp("hog=err"),
+        };
+    }
+    if let Some(rest) = payload.strip_prefix(b"fault=") {
+        let kind = match rest {
+            // 注：aarch64 无除零异常（SDIV 结果 0 不触发 Data Abort）——
+            // DivideByZero 分支仅保留协议兼容与 host 测试语义，目标平台
+            // 隔离验证请用 IllegalAccess（null 写 → Data Abort）。
+            b"DivByZero" => Some(FaultKind::DivideByZero),
+            b"IllegalAccess" => Some(FaultKind::IllegalAccess),
+            b"Panic" => Some(FaultKind::Panic),
+            _ => None,
+        };
+        // 触发真实故障：除零/非法访问走异常路径，服务 TCB 被内核挂起
+        // （21-A K2.3 隔离验证核心）；不再回复。
+        if let Err(()) = inject_fault(kind) {
+            return RequestOutcome::FaultTriggered;
+        }
+        return resp("fault=noop");
+    }
+    resp(&alloc::format!(
+        "unknown:{}",
+        core::str::from_utf8(payload).unwrap_or("?")
+    ))
+}
+
+/// 编码 Report 响应帧。
+fn encode_report(payload: &[u8]) -> alloc::vec::Vec<u8> {
+    eneros_ipc_wire::el0::encode_frame(eneros_ipc_wire::el0::El0FrameType::Report, payload)
+}
+
+/// 服务入口（bin `_start` 统一调用，K2.3）。
+///
+/// 目标构建：进入 Endpoint IPC 主循环（[`svc_ipc_loop`]）；
+/// host 构建：无 seL4，回到 M0 占位空转（[`svc_loop`]，非假成功——
+/// 服务在 host 本就不存在运行环境，21-A 红线 2 只禁"模拟成功的系统调用"）。
+pub fn svc_entry(ep: u64, name: &'static str) -> ! {
+    #[cfg(target_os = "none")]
+    {
+        svc_ipc_loop(ep, name)
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = (ep, name);
+        svc_loop()
+    }
+}
+
+/// K2.3：服务 IPC 主循环（21-A §2.K2.3，替换空 svc_loop）。
+///
+/// 服务入口（root-task spawn 时寄存器 X0=ep cap、X1=IPC buffer vaddr，
+/// aarch64 ABI 自动成为 `_start(ep, buffer)` 参数）。
+///
+/// 循环：`ipc_recv` 收请求（第一轮）→ 解码帧 → [`handle_request`] →
+/// 编码响应帧入 MR → `ipc_reply_recv` 回复并继续接收。
+/// 任何解码/IPC 错误 → 打印 + 挂起（fail-closed，红线 4 精神）。
+#[cfg(target_os = "none")]
+pub fn svc_ipc_loop(ep: u64, name: &'static str) -> ! {
+    use eneros_sel4_sys::safe::{get_mr, ipc_recv, ipc_reply_recv, message_info_new, set_mr};
+    use eneros_sel4_sys::types::message_info_length;
+
+    let mut sender = 0u64;
+    let mut reply_info = 0u64; // 首轮 recv 前无 reply
+
+    loop {
+        // 接收（首轮 recv；后续 reply_recv 回复上一请求并继续收）。
+        let mi = {
+            let r = if reply_info == 0 {
+                ipc_recv(ep, Some(&mut sender))
+            } else {
+                ipc_reply_recv(ep, reply_info, Some(&mut sender))
+            };
+            match r {
+                Ok(m) => m,
+                Err(e) => svc_fail_closed("recv", e),
+            }
+        };
+        // 读载荷 MR → 帧。
+        let words = message_info_length(mi);
+        let mut mrs = alloc::vec::Vec::with_capacity(words as usize);
+        for i in 0..words {
+            match get_mr(i) {
+                Ok(w) => mrs.push(w),
+                Err(e) => svc_fail_closed("get_mr", e),
+            }
+        }
+        let frame = match eneros_ipc_wire::mr::frame_from_mrs(&mrs) {
+            Ok(f) => f,
+            Err(e) => svc_fail_closed("decode frame", e),
+        };
+        // 解码 ipc-wire 帧（crc32 完整性校验）。
+        let decoded = match eneros_ipc_wire::el0::decode_frame(&frame) {
+            Ok(f) => f,
+            Err(e) => svc_fail_closed("ipc-wire decode", e),
+        };
+        let outcome = handle_request(decoded.payload);
+        match outcome {
+            RequestOutcome::Reply(resp) => {
+                eneros_runtime::println!(
+                    "[svc-{}] IPC: recv req, replying {} bytes",
+                    name,
+                    resp.len()
+                );
+                // 响应帧 → MR → reply。
+                let mrs = match eneros_ipc_wire::mr::frame_into_mrs(&resp) {
+                    Ok(m) => m,
+                    Err(e) => svc_fail_closed("encode resp", e),
+                };
+                for (i, w) in mrs.iter().enumerate() {
+                    if let Err(e) = set_mr(i as u64, *w) {
+                        svc_fail_closed("set_mr", e);
+                    }
+                }
+                reply_info = match message_info_new(
+                    eneros_ipc_wire::el0::El0FrameType::Report as u64,
+                    0,
+                    0,
+                    mrs.len() as u64,
+                ) {
+                    Ok(m) => m,
+                    Err(e) => svc_fail_closed("message_info_new", e),
+                };
+            }
+            RequestOutcome::FaultTriggered => {
+                eneros_runtime::println!("[svc-{}] FAULT triggered — suspending", name);
+                // 不回复：服务预期被内核挂起（隔离验证）。
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+        }
+    }
+}
+
+/// 服务 IPC 循环 fail-closed 挂起。
+#[cfg(target_os = "none")]
+fn svc_fail_closed(step: &str, e: impl core::fmt::Debug) -> ! {
+    eneros_runtime::println!(
+        "[svc] IPC loop FAILED at {}: {:?} — 挂起（fail-closed）",
+        step,
+        e
+    );
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// 帧 ↔ MR 编解码（K2.2 契约）：单一事实源 = `eneros-ipc-wire::mr`，
+/// 与 root-task 完全同源，本 crate 禁止本地复制实现（见 `svc_ipc_loop`
+/// 直接引用 `eneros_ipc_wire::mr::*`）。
 #[cfg(test)]
 mod tests {
+    // 测试断言可用 panic!（仓库 lint：测试模块豁免）。
+    #![allow(clippy::disallowed_macros)]
     use super::*;
 
     #[test]
@@ -170,10 +389,87 @@ mod tests {
 
     #[test]
     fn test_svc_hello_banner_with_counter() {
+        // 计数器是全局 AtomicU64（跨测试共享），断言相对递增而非绝对 tick 值。
+        fn tick_of(s: &str) -> u64 {
+            let i = s.find("tick=").expect("banner 含 tick");
+            s[i + 5..].parse().expect("tick 数字")
+        }
         let first = svc_hello("eneros");
         let second = svc_hello("eneros");
-        assert!(first.contains("hello:eneros:tick=1"));
-        assert!(second.contains("tick=2"), "计数器必须单调递增: {second}");
+        assert!(first.starts_with("hello:eneros:tick="), "banner: {first}");
+        assert!(
+            tick_of(&second) > tick_of(&first),
+            "计数器必须单调递增: {first} → {second}"
+        );
+    }
+
+    // --- 21-A K2.3：请求路由（host 可测）---
+
+    #[test]
+    fn test_parse_u64_basic() {
+        assert_eq!(parse_u64(b"42"), Some(42));
+        assert_eq!(parse_u64(b"0"), Some(0));
+        assert_eq!(parse_u64(b""), None);
+        assert_eq!(parse_u64(b"12a"), None);
+        assert_eq!(parse_u64(b"99999999999999999999999"), None, "溢出必须 None");
+    }
+
+    #[test]
+    fn test_handle_request_hello() {
+        match handle_request(b"hello") {
+            RequestOutcome::Reply(frame) => {
+                let decoded = eneros_ipc_wire::el0::decode_frame(&frame).expect("frame");
+                let s = core::str::from_utf8(decoded.payload).expect("utf8");
+                assert!(s.starts_with("hello:eneros:tick="), "banner: {s}");
+            }
+            _ => panic!("hello 必须回复"),
+        }
+    }
+
+    #[test]
+    fn test_handle_request_pi() {
+        match handle_request(b"pi=1000") {
+            RequestOutcome::Reply(frame) => {
+                let decoded = eneros_ipc_wire::el0::decode_frame(&frame).expect("frame");
+                assert!(decoded.payload.starts_with(b"pi="));
+                assert_ne!(decoded.payload, b"pi=err");
+            }
+            _ => panic!("pi 必须回复"),
+        }
+    }
+
+    #[test]
+    fn test_handle_request_hog() {
+        match handle_request(b"hog=4") {
+            RequestOutcome::Reply(frame) => {
+                let decoded = eneros_ipc_wire::el0::decode_frame(&frame).expect("frame");
+                assert_eq!(decoded.payload, b"hog=ok:4");
+            }
+            _ => panic!("hog 必须回复"),
+        }
+    }
+
+    #[test]
+    fn test_handle_request_unknown_fail_closed() {
+        match handle_request(b"nonsense") {
+            RequestOutcome::Reply(frame) => {
+                let decoded = eneros_ipc_wire::el0::decode_frame(&frame).expect("frame");
+                assert_eq!(decoded.payload, b"unknown:nonsense");
+            }
+            _ => panic!("未知请求必须回 unknown"),
+        }
+    }
+
+    #[test]
+    fn test_handle_request_bad_fault_kind_noop() {
+        // fault= 但 kind 不识别 → inject_fault(None) → noop 回复（不触发故障）。
+        match handle_request(b"fault=bad") {
+            RequestOutcome::Reply(frame) => {
+                let decoded = eneros_ipc_wire::el0::decode_frame(&frame).expect("frame");
+                assert_eq!(decoded.payload, b"fault=noop");
+            }
+            _ => panic!("bad kind 必须 noop 回复"),
+        }
     }
 
     #[test]

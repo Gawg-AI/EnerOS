@@ -346,6 +346,7 @@ pub const OBJ_BITS_CNODE: u64 = 12; // 4 KiB = 4096 槽
 pub const OBJ_BITS_PAGE_TABLE: u64 = 12; // 4 KiB（L1/L2/L3 通用）
 pub const OBJ_BITS_SMALL_PAGE: u64 = 12; // 4 KiB
 pub const OBJ_BITS_ENDPOINT: u64 = 4; // 16 B
+pub const OBJ_BITS_NOTIFICATION: u64 = 4; // 16 B
 pub const PAGE_SIZE: u64 = 1 << OBJ_BITS_SMALL_PAGE;
 
 /// 方案 A 临时窗口基址（root-task 自身 VSpace，1 GiB 区域；与 root 镜像
@@ -456,6 +457,8 @@ pub struct SpawnedHandle {
     pub tcb: u64,
     /// 服务 endpoint cap（root CSpace 槽；root 侧发 IPC 用）。
     pub ep: u64,
+    /// 服务故障 notification cap（K2.3：服务异常时内核发通知）。
+    pub ntfn: u64,
 }
 
 /// 目标端真实 spawn：按计划逐服务执行 seL4 FFI（21-A K1.2，ADR-0034）。
@@ -502,12 +505,13 @@ pub fn sel4_spawn_services(
             .ok_or(SpawnError::MissingBundleModule)?;
         let elf = LoadedElf::parse(&module.blob).map_err(|_| SpawnError::BadElf)?;
         let entry = entry_mapped(&svc.pages, &elf)?;
-        let (tcb, ep) = configure_service(svc, &elf, module, entry, ctx, &types, &rights)?;
+        let (tcb, ep, ntfn) = configure_service(svc, &elf, module, entry, ctx, &types, &rights)?;
         tcb_slots.push(tcb);
         handles.push(SpawnedHandle {
             name: svc.name.clone(),
             tcb,
             ep,
+            ntfn,
         });
     }
 
@@ -520,10 +524,10 @@ pub fn sel4_spawn_services(
 }
 
 /// 配置单个服务（阶段一）：对象 retype / ASID / 页表 / 页映射与拷贝 /
-/// CSpace mint / 寄存器 / 优先级。返回 `(服务 TCB cap, 服务 endpoint cap)`。
+/// CSpace mint / 寄存器 / 优先级。返回 `(TCB cap, endpoint cap, ntfn cap)`。
 ///
 /// # 返回值
-/// 元组：服务 TCB 的 root CSpace 槽号、服务 endpoint 的 root CSpace 槽号。
+/// 元组：服务 TCB / endpoint / 故障 notification 的 root CSpace 槽号。
 #[cfg(target_os = "none")]
 #[allow(clippy::too_many_arguments)]
 fn configure_service(
@@ -534,7 +538,7 @@ fn configure_service(
     ctx: &mut SpawnCtx,
     types: &ObjectTypeTable,
     rights: &RightsTable,
-) -> Result<(u64, u64), SpawnError> {
+) -> Result<(u64, u64, u64), SpawnError> {
     let root_cnode = ctx.root_cnode;
 
     // 1-3. TCB / VSpace / CNode retype。
@@ -620,12 +624,20 @@ fn configure_service(
     // root_data=0）；buffer 为刚映射到 buffer_vaddr 的帧 cap。
     tcb_set_space(tcb, cnode, 0, vspace, 0, buffer, buffer_vaddr).map_err(SpawnError::Sel4)?;
 
-    // 8. endpoint：retype + mint 到服务 CSpace 槽 0。
+    // 8. endpoint：retype + mint 到服务 CSpace 槽 0。服务侧 cptr 0 即其
+    // 唯一 endpoint（服务 CSpace 仅此一槽，非 root 侧的 CapNull 语义）。
     let ep = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
     retype_one(ctx, types.endpoint, OBJ_BITS_ENDPOINT, ep)?;
     // SAFETY: cnode 为服务 CSpace（一阶，dest_depth=0）；槽 0 空闲；
     // rights 使用全部权限（服务经 ep 与 root 通信）。
     cnode_mint(cnode, 0, 0, root_cnode, ep, 0, rights.all).map_err(SpawnError::Sel4)?;
+
+    // 8b. K2.3：故障 notification：retype + bind 到服务 TCB（服务异常时
+    // 内核向 ntfn 发信号，root-task 据此检测故障隔离）。
+    let ntfn = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
+    retype_one(ctx, types.notification, OBJ_BITS_NOTIFICATION, ntfn)?;
+    // SAFETY: tcb/ntfn 均为刚 retype 的有效 cap。
+    eneros_sel4_sys::safe::tcb_bind_notification(tcb, ntfn).map_err(SpawnError::Sel4)?;
 
     // 9. 寄存器：PC=entry_mapped, SP=stack_top, X0=服务 CSpace 槽 0 的 ep cap,
     //    X1=IPC buffer 虚拟地址。
@@ -641,7 +653,7 @@ fn configure_service(
     // SAFETY: root_tcb 为 root-task 自身 TCB cap（有效且有权）。
     tcb_set_priority(tcb, ctx.root_tcb, SVC_PRIORITY).map_err(SpawnError::Sel4)?;
 
-    Ok((tcb, ep))
+    Ok((tcb, ep, ntfn))
 }
 
 /// retype 单个对象到 root CSpace 的 `slot` 槽。

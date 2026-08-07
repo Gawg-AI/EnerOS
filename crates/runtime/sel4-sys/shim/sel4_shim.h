@@ -206,6 +206,9 @@ seL4_Error eneros_sel4_arm_page_table_map(seL4_CPtr pt,
 /* seL4_ARM_Page default attributes getter. */
 seL4_Word eneros_sel4_arm_default_attributes(void);
 
+/* K2.3：把 notification 绑到 TCB（服务故障时内核发通知给绑定者）。 */
+seL4_Error eneros_sel4_tcb_bind_notification(seL4_CPtr tcb, seL4_CPtr ntfn);
+
 /* ------------------------------------------------------------------ */
 /* G-KERNEL K1.2：真实 spawn 缺口（ADR-0034）。                        */
 /* ------------------------------------------------------------------ */

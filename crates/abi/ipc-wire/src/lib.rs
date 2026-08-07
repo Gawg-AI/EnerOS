@@ -103,3 +103,4 @@ mod tests {
 }
 
 pub mod el0;
+pub mod mr;

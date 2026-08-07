@@ -10,70 +10,11 @@
 //! evidence/arch-convergence/krn-003.md 解锁条件）。
 
 use eneros_ipc_wire::el0::El0FrameType;
+pub use eneros_ipc_wire::mr::{
+    frame_from_mrs, frame_into_mrs, FrameMrError, MAX_FRAME_BYTES, MR_FRAME_LEN_SLOT,
+};
 
 extern crate alloc;
-
-/// K2.2/K2.3 消息契约：MR 布局。
-///
-/// seL4 IPC 载荷走 MR（message register）+ IPC buffer：
-/// - MR0 = 帧总字节数（u64 小端）；
-/// - MR1.. = 帧字节按 8 字节小端打包（末字不足补 0）；
-/// - MessageInfo：label = 帧类型（[`El0FrameType`] 数值），length = MR words 数。
-///
-/// root-task 与服务两侧共用本布局（单一事实源）。
-pub const MR_FRAME_LEN_SLOT: u64 = 0;
-/// 单帧最大字节数（ipc-wire 默认 payload 1024 + 帧头 10 + crc 4，留裕量；
-/// 须小于 IPC buffer 容量）。
-pub const MAX_FRAME_BYTES: usize = 2048;
-
-/// 帧编码错误。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrameMrError {
-    /// 帧超长（> [`MAX_FRAME_BYTES`]）。
-    FrameTooLong,
-    /// MR 列表为空（无长度槽）。
-    NoLengthSlot,
-    /// 长度与 MR 载荷不一致。
-    BadLength,
-}
-
-/// 帧字节 → MR words（[`MR_FRAME_LEN_SLOT`] 布局）。
-pub fn frame_into_mrs(frame: &[u8]) -> Result<alloc::vec::Vec<u64>, FrameMrError> {
-    if frame.len() > MAX_FRAME_BYTES {
-        return Err(FrameMrError::FrameTooLong);
-    }
-    let mut mrs = alloc::vec![frame.len() as u64];
-    let mut i = 0;
-    while i < frame.len() {
-        let mut word = 0u64;
-        for j in 0..8 {
-            if i + j < frame.len() {
-                word |= u64::from(frame[i + j]) << (8 * j);
-            }
-        }
-        mrs.push(word);
-        i += 8;
-    }
-    Ok(mrs)
-}
-
-/// MR words → 帧字节（[`MR_FRAME_LEN_SLOT`] 布局）。
-pub fn frame_from_mrs(mrs: &[u64]) -> Result<alloc::vec::Vec<u8>, FrameMrError> {
-    let len = *mrs.first().ok_or(FrameMrError::NoLengthSlot)? as usize;
-    if len > MAX_FRAME_BYTES {
-        return Err(FrameMrError::FrameTooLong);
-    }
-    let words = 1 + len.div_ceil(8);
-    if mrs.len() < words {
-        return Err(FrameMrError::BadLength);
-    }
-    let mut out = alloc::vec![0u8; len];
-    for i in 0..len {
-        let word = mrs[1 + i / 8];
-        out[i] = (word >> (8 * (i % 8))) as u8;
-    }
-    Ok(out)
-}
 
 /// 服务调度结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,79 +137,134 @@ fn ipc_fail_closed(step: &str, e: impl core::fmt::Debug) -> ! {
     }
 }
 
-/// K2.2：root-task IPC 主循环（21-A §2.K2.2）。
+/// K2.2/K2.3：root-task IPC 主循环（21-A §2.K2.2/K2.3）。
 ///
-/// 每轮迭代：
-/// 1. 向 svc-hello 的 endpoint 发 hello 请求帧（ipc-wire::el0 编码，
-///    MR 布局见 [`frame_into_mrs`]），`ipc_call` 同步往返收响应；
-/// 2. 阻塞 `ipc_recv` 任意来源消息（seL4 Endpoint 同步语义，非轮询）。
+/// 首轮迭代（fault 注入只执行一次，svc-fault 挂起后不再接收消息）：
+/// 1. 向 svc-hello 发 hello 请求帧（`ipc_call` 同步往返），打印响应；
+/// 2. 向 svc-fault 发 `fault=IllegalAccess` 请求（`ipc_send`——aarch64
+///    无除零异常，用 null 地址写触发 Data Abort）；
+/// 3. 在 svc-fault 的故障 notification 上阻塞 `ipc_recv`——收到通知即
+///    svc-fault 已被内核挂起（故障隔离：不扩散到其他服务）；
+/// 4. 再次 hello 往返验证 svc-hello 仍响应（隔离成立证据）。
+/// 此后循环仅 hello 心跳（svc-hello tick 递增可见）。
 ///
 /// 任何 IPC 步骤失败 → [`ipc_fail_closed`] 挂起（红线 4）。
-/// 服务侧响应与故障隔离由 K2.3 的 `svc_ipc_loop` 提供（QEMU 验证）。
 #[cfg(target_os = "none")]
 pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
     use eneros_ipc_wire::el0::{encode_frame, El0FrameType};
-    use eneros_sel4_sys::safe::{get_mr, ipc_call, ipc_recv, message_info_new, set_mr};
-    use eneros_sel4_sys::types::message_info_length;
+    use eneros_sel4_sys::safe::{get_mr, ipc_call, ipc_recv, ipc_send, message_info_new, set_mr};
 
-    // 服务表：按名寻址 svc-hello 的 ep cap。
-    let hello_ep = match handles.iter().find(|h| h.name == "svc-hello").map(|h| h.ep) {
-        Some(ep) => ep,
-        None => {
-            eneros_runtime::println!(
-                "[eneros-root-task] svc-hello not spawned — 挂起（fail-closed）"
-            );
-            loop {
-                core::hint::spin_loop();
-            }
-        }
+    // 服务表：按名寻址。
+    let by_name = |name: &str| {
+        handles
+            .iter()
+            .find(|h| h.name == name)
+            .ok_or_else(|| alloc::format!("{name} not spawned"))
+    };
+    let hello = match by_name("svc-hello") {
+        Ok(h) => *h,
+        Err(e) => ipc_fail_closed("lookup svc-hello", e),
+    };
+    let fault = match by_name("svc-fault") {
+        Ok(h) => *h,
+        Err(e) => ipc_fail_closed("lookup svc-fault", e),
     };
 
+    // 故障注入只执行一次（svc-fault 触发真实异常后挂起，不再接收消息；
+    // 重复 send 会永久阻塞——seL4_Send 是同步原语）。
+    let mut fault_injected = false;
+
     loop {
-        // 1. hello 请求 → svc-hello（帧 → MR）。
-        let req = encode_frame(El0FrameType::Report, b"hello");
-        let mrs = match frame_into_mrs(&req) {
-            Ok(m) => m,
-            Err(e) => ipc_fail_closed("encode hello", e),
-        };
-        for (i, w) in mrs.iter().enumerate() {
-            if let Err(e) = set_mr(i as u64, *w) {
-                ipc_fail_closed("set_mr", e);
-            }
-        }
-        let mi = match message_info_new(El0FrameType::Report as u64, 0, 0, mrs.len() as u64) {
-            Ok(m) => m,
-            Err(e) => ipc_fail_closed("message_info_new", e),
-        };
-        eneros_runtime::println!("[eneros-root-task] IPC: send hello-req to svc-hello");
-        let reply = match ipc_call(hello_ep, mi) {
-            Ok(r) => r,
-            Err(e) => ipc_fail_closed("ipc_call hello", e),
-        };
-        let words = message_info_length(reply);
-        let mut mr_buf = alloc::vec::Vec::with_capacity(words as usize);
-        for i in 0..words {
-            match get_mr(i) {
-                Ok(w) => mr_buf.push(w),
-                Err(e) => ipc_fail_closed("get_mr", e),
-            }
-        }
-        let resp = match frame_from_mrs(&mr_buf) {
+        // 1. hello 往返。
+        let resp = match hello_roundtrip(hello.ep) {
             Ok(f) => f,
-            Err(e) => ipc_fail_closed("decode reply", e),
+            Err(e) => ipc_fail_closed("hello roundtrip", e),
+        };
+        let payload = match eneros_ipc_wire::el0::decode_frame(&resp) {
+            Ok(f) => f.payload,
+            Err(e) => ipc_fail_closed("decode hello resp", e),
         };
         eneros_runtime::println!(
-            "[eneros-root-task] IPC: recv {} bytes from svc-hello",
-            resp.len()
+            "[eneros-root-task] IPC: recv {}",
+            core::str::from_utf8(payload).unwrap_or("<non-utf8>")
         );
 
-        // 2. 阻塞接收任意服务消息（Ready/Report 帧；K2.3 起按帧分发）。
-        let mut sender = 0u64;
-        match ipc_recv(0, Some(&mut sender)) {
-            Ok(_info) => {}
-            Err(e) => ipc_fail_closed("ipc_recv", e),
+        // 2. 故障注入（仅首轮）：aarch64 无除零异常（SDIV 结果 0），
+        // 用非法内存访问（null 写 → Data Abort）触发真实故障。
+        if !fault_injected {
+            fault_injected = true;
+            eneros_runtime::println!("[eneros-root-task] IPC: send fault to svc-fault");
+            let req = encode_frame(El0FrameType::Report, b"fault=IllegalAccess");
+            if let Err(e) = send_frame(fault.ep, &req) {
+                ipc_fail_closed("send fault", e);
+            }
+
+            // 3. 等 svc-fault 故障通知（服务异常 → 内核挂起 TCB → 通知到达）。
+            let mut sender = 0u64;
+            match ipc_recv(fault.ntfn, Some(&mut sender)) {
+                Ok(_) => {
+                    eneros_runtime::println!("[eneros-root-task] svc-fault suspended (isolated)");
+                }
+                Err(e) => ipc_fail_closed("recv fault ntfn", e),
+            }
+
+            // 4. 复验 svc-hello 仍响应（隔离成立）。
+            let resp = match hello_roundtrip(hello.ep) {
+                Ok(f) => f,
+                Err(e) => ipc_fail_closed("hello recheck", e),
+            };
+            let payload = match eneros_ipc_wire::el0::decode_frame(&resp) {
+                Ok(f) => f.payload,
+                Err(e) => ipc_fail_closed("decode recheck resp", e),
+            };
+            eneros_runtime::println!(
+                "[eneros-root-task] IPC: svc-hello still responsive ({})",
+                core::str::from_utf8(payload).unwrap_or("<non-utf8>")
+            );
         }
+
+        // 循环回到 1：hello 心跳持续（svc-hello tick 递增可见）。
     }
+}
+
+/// hello 请求→响应往返（K2.2 契约）。返回完整响应帧字节。
+#[cfg(target_os = "none")]
+fn hello_roundtrip(ep: u64) -> Result<alloc::vec::Vec<u8>, eneros_sel4_sys::safe::Sel4Error> {
+    use eneros_ipc_wire::el0::{encode_frame, El0FrameType};
+    use eneros_sel4_sys::safe::{get_mr, ipc_call, message_info_new, set_mr};
+    use eneros_sel4_sys::types::message_info_length;
+
+    let req = encode_frame(El0FrameType::Report, b"hello");
+    let mrs = eneros_ipc_wire::mr::frame_into_mrs(&req)
+        .map_err(|_| eneros_sel4_sys::safe::Sel4Error::InvalidArgument)?;
+    for (i, w) in mrs.iter().enumerate() {
+        set_mr(i as u64, *w)?;
+    }
+    let mi = message_info_new(El0FrameType::Report as u64, 0, 0, mrs.len() as u64)?;
+    eneros_runtime::println!("[eneros-root-task] IPC: send hello-req to svc-hello");
+    let reply = ipc_call(ep, mi)?;
+    let words = message_info_length(reply);
+    let mut mr_buf = alloc::vec::Vec::with_capacity(words as usize);
+    for i in 0..words {
+        mr_buf.push(get_mr(i)?);
+    }
+    eneros_ipc_wire::mr::frame_from_mrs(&mr_buf)
+        .map_err(|_| eneros_sel4_sys::safe::Sel4Error::InvalidArgument)
+}
+
+/// 发送一帧（fire-and-forget，K2.3 故障注入用）。
+#[cfg(target_os = "none")]
+fn send_frame(ep: u64, frame: &[u8]) -> Result<(), eneros_sel4_sys::safe::Sel4Error> {
+    use eneros_ipc_wire::el0::El0FrameType;
+    use eneros_sel4_sys::safe::{ipc_send, message_info_new, set_mr};
+
+    let mrs = eneros_ipc_wire::mr::frame_into_mrs(frame)
+        .map_err(|_| eneros_sel4_sys::safe::Sel4Error::InvalidArgument)?;
+    for (i, w) in mrs.iter().enumerate() {
+        set_mr(i as u64, *w)?;
+    }
+    let mi = message_info_new(El0FrameType::Report as u64, 0, 0, mrs.len() as u64)?;
+    ipc_send(ep, mi)
 }
 
 #[cfg(test)]

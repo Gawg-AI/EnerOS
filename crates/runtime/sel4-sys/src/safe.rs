@@ -482,6 +482,30 @@ pub fn tcb_set_ipcbuffer(tcb: CPtr, buffer: CPtr, buffer_data: Word) -> Sel4Resu
     }
 }
 
+/// TCB 绑定 notification 封装（`seL4_TCB_BindNotification`，K2.3）。
+///
+/// 服务 TCB 发生异常（除零/非法访问等）时，内核向绑定的 notification
+/// 发信号——root-task 在该 notification 上接收即检测到服务故障（21-A
+/// K2.3 故障隔离验证）。
+///
+/// # Safety
+/// 前置条件：`tcb` 有效；`ntfn` 是已 retype 的 notification 能力。
+///
+/// 目标构建真调 FFI；host 构建返回 [`Sel4Error::HostUnsupported`]（红线 2）。
+pub fn tcb_bind_notification(tcb: CPtr, ntfn: CPtr) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；前置条件见函数文档。
+        let err = unsafe { crate::ffi::eneros_sel4_tcb_bind_notification(tcb, ntfn) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (tcb, ntfn);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
 /// CNode_Mint 封装（派生带权限的能力）。
 pub fn cnode_mint(
     dest_root: CPtr,

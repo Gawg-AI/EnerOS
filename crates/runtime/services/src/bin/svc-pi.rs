@@ -1,4 +1,4 @@
-//! svc-pi — EnerOS CPU 密集型（π 计算）参考 EL0 服务（M0 占位）.
+//! svc-pi — EnerOS CPU 密集型（π 计算）参考 EL0 服务（K2.3：Endpoint IPC 入口）.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -17,13 +17,10 @@ extern crate eneros_services;
 
 #[cfg(not(test))]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    // v0.200.0 (P0-3)：真实 CPU 密集计算——π 级数循环（100 万项/轮）。
-    // 迭代结果（收敛于 π）可作 CPU 负载真实性的可验证证据。
-    loop {
-        let _ = eneros_services::compute_pi(1_000_000);
-        core::hint::spin_loop();
-    }
+pub extern "C" fn _start(ep: u64, _ipc_buffer: u64) -> ! {
+    // K2.3：π 计算由 IPC 请求驱动（pi=<n>），见 handle_request。
+    eneros_runtime::init();
+    eneros_services::svc_entry(ep, "pi")
 }
 
 #[cfg(not(test))]

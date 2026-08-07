@@ -172,6 +172,9 @@ extern "C" {
     ) -> Error;
 
     pub fn eneros_sel4_tcb_set_ipcbuffer(tcb: CPtr, buffer: CPtr, buffer_data: Word) -> Error;
+
+    // ADR-0034/K2.3：把 notification 绑到 TCB（服务故障通知）。
+    pub fn eneros_sel4_tcb_bind_notification(tcb: CPtr, ntfn: CPtr) -> Error;
 }
 
 // ----------------------------------------------------------------------------

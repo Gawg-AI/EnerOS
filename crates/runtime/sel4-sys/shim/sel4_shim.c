@@ -268,6 +268,12 @@ seL4_Word eneros_sel4_arm_default_attributes(void)
     return seL4_ARM_Default_VMAttributes;
 }
 
+/* K2.3：seL4_TCB_BindNotification（服务故障通知，21-A K2.3 隔离验证）。 */
+seL4_Error eneros_sel4_tcb_bind_notification(seL4_CPtr tcb, seL4_CPtr ntfn)
+{
+    return seL4_TCB_BindNotification(tcb, ntfn);
+}
+
 /* ================================================================== */
 /* G-KERNEL K1.2：真实 spawn 缺口（ADR-0034）。                        */
 /*   TCB_SetSpace / TCB_SetIPCBuffer / ASIDPool_Assign / Page_Unmap   */

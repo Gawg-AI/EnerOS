@@ -1,4 +1,4 @@
-//! svc-fault — EnerOS 故障注入参考 EL0 服务（M0 占位）.
+//! svc-fault — EnerOS 故障注入参考 EL0 服务（K2.3：Endpoint IPC 入口）.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -17,11 +17,11 @@ extern crate eneros_services;
 
 #[cfg(not(test))]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    // v0.200.0 (P0-3)：故障注入服务——默认无故障（供 root-task 按需注入）。
-    // 故障类型经 IPC 控制（M2.1 后）；当前保持无故障运行。
-    let _ = eneros_services::inject_fault(None);
-    eneros_services::svc_loop()
+pub extern "C" fn _start(ep: u64, _ipc_buffer: u64) -> ! {
+    // K2.3：故障注入由 IPC 请求驱动（fault=<kind>），见 handle_request；
+    // 触发真实异常路径（除零/非法访问）→ 服务 TCB 被内核挂起（隔离验证）。
+    eneros_runtime::init();
+    eneros_services::svc_entry(ep, "fault")
 }
 
 #[cfg(not(test))]

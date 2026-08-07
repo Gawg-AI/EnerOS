@@ -1,4 +1,4 @@
-//! svc-hello — EnerOS hello-world 参考 EL0 服务（M0 占位）.
+//! svc-hello — EnerOS hello-world 参考 EL0 服务（K2.3：Endpoint IPC 入口）.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -17,13 +17,11 @@ extern crate eneros_services;
 
 #[cfg(not(test))]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    // v0.200.0 (P0-3)：真实功能——循环输出带心跳计数的 banner。
-    // M2.1 Endpoint IPC 接入后，banner 经 seL4 Endpoint 上报 root-task。
-    loop {
-        let _ = eneros_services::svc_hello("eneros");
-        core::hint::spin_loop();
-    }
+pub extern "C" fn _start(ep: u64, _ipc_buffer: u64) -> ! {
+    // K2.3：root-task spawn 时寄存器 X0=ep cap、X1=IPC buffer vaddr，
+    // aarch64 ABI 自动成为本函数参数。进入 Endpoint IPC 主循环。
+    eneros_runtime::init();
+    eneros_services::svc_entry(ep, "hello")
 }
 
 #[cfg(not(test))]
