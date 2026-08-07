@@ -82,6 +82,7 @@ pub(super) fn command_qa(root: &Path, args: &[String]) -> DynResult<()> {
         "boot-reset" => command_boot_reset(root, tail),
         "soak" => command_soak(root, tail),
         "soak-run" => command_soak_run(root, tail),
+        "soak-report" => command_soak_report(root, tail),
         "perf-baseline" => command_perf_baseline(root, tail),
         "perf-gate" => command_perf_gate(root, tail),
         "trace" => command_trace(root, tail),
@@ -264,6 +265,198 @@ struct SoakRestart {
 ///
 /// 无硬件环境的 QEMU 侧浸泡基线；真机 72h 浸泡由 `tests/soak/` 脚本集执行
 /// （硬件就绪时），本命令是 CI 可自动跑的浸泡冒烟。
+///
+/// `qa soak-report [--bundle <evidence-bundle-dir>] [--out <json>]`
+///
+/// v0.255.0（D1c）：从浸泡证据包生成 D1 验收报告——六类验收项逐项判定：
+/// - `PASS`：证据文件存在（boot-chain/power-cut/pcap/point-consistency/
+///   schedule/blocked-events/secure-boot/ota-rollback/attestation/exported/
+///   symbolize-report）；
+/// - `BLOCKED`：证据缺失且缺失清单注明硬件/外设依赖（真机浸泡未执行）；
+/// - 报告含每项证据的 sha256（来自 MANIFEST，防篡改引用）。
+///
+/// 产出 schema=eneros.d1-soak-report.v1，供 D1 验收与阶段 D 出口评审。
+fn command_soak_report(root: &Path, args: &[String]) -> DynResult<()> {
+    #[derive(Serialize)]
+    struct D1Report {
+        schema: &'static str,
+        campaign: D1CampaignSummary,
+        categories: Vec<D1Category>,
+        verdict: &'static str,
+    }
+    #[derive(Serialize)]
+    struct D1CampaignSummary {
+        present: bool,
+        campaign_id: Option<String>,
+        duration_days: Option<u64>,
+    }
+    #[derive(Serialize)]
+    struct D1Category {
+        name: &'static str,
+        evidence: Vec<D1EvidenceItem>,
+        status: &'static str,
+    }
+    #[derive(Serialize)]
+    struct D1EvidenceItem {
+        file: String,
+        present: bool,
+        sha256: Option<String>,
+        note: &'static str,
+    }
+
+    let mut bundle_dir = root.join("target/soak/evidence-bundle");
+    let mut out_path = root.join("target/soak/d1-soak-report.json");
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || {
+            it.next()
+                .ok_or_else(|| invalid(format!("{a} requires a value")))
+        };
+        match a.as_str() {
+            "--bundle" => bundle_dir = root.join(val()?),
+            "--out" => out_path = root.join(val()?),
+            other => return Err(invalid(format!("unknown soak-report arg '{other}'"))),
+        }
+    }
+
+    // 读取 MANIFEST（sha256 清单）→ 文件哈希索引。
+    let manifest_path = bundle_dir.join("MANIFEST.sha256");
+    let mut hashes: std::collections::BTreeMap<String, String> = Default::default();
+    if let Ok(text) = fs::read_to_string(&manifest_path) {
+        for line in text.lines() {
+            if let Some((hash, name)) = line.split_once("  ") {
+                hashes.insert(name.trim_start_matches("./").to_owned(), hash.trim().to_owned());
+            }
+        }
+    }
+
+    let evidence = |f: &str, note: &'static str| D1EvidenceItem {
+        file: f.to_owned(),
+        present: hashes.contains_key(f),
+        sha256: hashes.get(f).cloned(),
+        note,
+    };
+
+    // 六类验收项（14 号文 D1）。
+    let categories = vec![
+        D1Category {
+            name: "boot_chain",
+            evidence: vec![
+                evidence("boot-chain.log", "串口日志：100 次冷启动零失败"),
+                evidence("boot-times.csv", "启动时间分布（avg/min/max）"),
+            ],
+            status: "assessment",
+        },
+        D1Category {
+            name: "storage",
+            evidence: vec![
+                evidence("power-cut.log", "随机断电 50 次注入记录"),
+                evidence("recovery-check.log", "断电恢复校验（数据可读+校验和一致）"),
+            ],
+            status: "assessment",
+        },
+        D1Category {
+            name: "protocol",
+            evidence: vec![
+                evidence("point-consistency.json", "点表一致性报告（72h 无失联）"),
+            ],
+            status: "assessment",
+        },
+        D1Category {
+            name: "decision_chain",
+            evidence: vec![
+                evidence("schedule.log", "真实 HiGHS 日前调度日志"),
+                evidence("blocked-events.json", "safety Fatal 阻断事件记录"),
+            ],
+            status: "assessment",
+        },
+        D1Category {
+            name: "security_chain",
+            evidence: vec![
+                evidence("secure-boot.log", "安全启动验签日志"),
+                evidence("ota-rollback.log", "OTA-A/B 升级+回滚日志"),
+                evidence("attestation.log", "远程证明日志"),
+            ],
+            status: "assessment",
+        },
+        D1Category {
+            name: "ops",
+            evidence: vec![
+                evidence("symbolize-report.json", "crash-dump 符号化报告"),
+            ],
+            status: "assessment",
+        },
+    ];
+
+    // 判定：某类全部证据 present → PASS；部分/全缺 → BLOCKED（缺失清单
+    // 存在即说明硬件/外设依赖未满足）。
+    let missing_report = bundle_dir.join("missing-evidence.txt");
+    let hardware_blocked = missing_report.exists();
+    let mut all_pass = true;
+    let mut categories = categories;
+    for cat in &mut categories {
+        let present = cat.evidence.iter().filter(|e| e.present).count();
+        cat.status = if present == cat.evidence.len() {
+            "PASS"
+        } else {
+            all_pass = false;
+            if hardware_blocked {
+                "BLOCKED"
+            } else {
+                "PARTIAL"
+            }
+        };
+    }
+
+    // campaign 摘要（soak-campaign.json 存在则带出）。
+    let campaign_path = root.join("target/soak/soak-campaign.json");
+    let campaign = if campaign_path.exists() {
+        if let Ok(c) = read_json::<serde_json::Value>(&campaign_path) {
+            D1CampaignSummary {
+                present: true,
+                campaign_id: c
+                    .get("campaign_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_owned()),
+                duration_days: c.get("duration_days").and_then(|v| v.as_u64()),
+            }
+        } else {
+            D1CampaignSummary {
+                present: true,
+                campaign_id: None,
+                duration_days: None,
+            }
+        }
+    } else {
+        D1CampaignSummary {
+            present: false,
+            campaign_id: None,
+            duration_days: None,
+        }
+    };
+
+    let verdict = if all_pass {
+        "D1-PASS"
+    } else if hardware_blocked {
+        "D1-BLOCKED-HARDWARE"
+    } else {
+        "D1-PARTIAL"
+    };
+
+    let report = D1Report {
+        schema: "eneros.d1-soak-report.v1",
+        campaign,
+        categories,
+        verdict,
+    };
+    fs::create_dir_all(out_path.parent().unwrap_or(root))?;
+    fs::write(&out_path, serde_json::to_vec_pretty(&report)?)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    println!("SOAK-REPORT verdict={verdict} → {}", out_path.display());
+    // 报告生成本身必须成功；verdict 由验收方判定（BLOCKED 不是生成失败）。
+    Ok(())
+}
+
 fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
     use std::time::Instant;
 
