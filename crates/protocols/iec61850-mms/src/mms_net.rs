@@ -134,11 +134,68 @@ impl<D: eneros_net::NetDevice> MmsTransport for NetMmsTransport<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eneros_net::mac::NetDevice;
+    use eneros_net::{NetError, NetStats};
+
+    /// 链路断开模拟设备：send/recv 均失败（无对端）。
+    struct DeadNetDevice;
+
+    impl NetDevice for DeadNetDevice {
+        fn send(&mut self, _frame: &[u8]) -> Result<(), NetError> {
+            Err(NetError::LinkDown)
+        }
+        fn recv(&mut self, _buf: &mut [u8]) -> Result<usize, NetError> {
+            Err(NetError::LinkDown)
+        }
+        fn mac_address(&self) -> [u8; 6] {
+            [0x02, 0x00, 0x00, 0x00, 0x00, 0x01]
+        }
+        fn mtu(&self) -> usize {
+            1500
+        }
+        fn link_up(&self) -> bool {
+            false
+        }
+        fn set_promiscuous(&mut self, _on: bool) {}
+        fn stats(&self) -> NetStats {
+            NetStats::default()
+        }
+    }
 
     #[test]
     fn test_rx_tx_buf_sizes() {
         // 常量语义：读/写缓冲 4KiB（MMS PDU 最大帧）。
         assert_eq!(RX_BUF, 4096);
         assert_eq!(TX_BUF, 4096);
+    }
+
+    #[test]
+    fn test_net_transport_fail_closed_on_dead_link() {
+        // 蓝图/20 R2-5：真实 TCP 传输（smoltcp）fail-closed——
+        // 链路断开时 connect 必须失败（不静默成功/不悬挂）。
+        let device = DeadNetDevice;
+        let config = eneros_net::tcpip::InterfaceConfig {
+            mac_addr: device.mac_address(),
+            ipv4_addr: Some(eneros_net::tcpip::Ipv4Cidr::new(
+                [192, 168, 1, 10].into(),
+                24,
+            )),
+            gateway: Some([192, 168, 1, 1].into()),
+            dhcp: false,
+        };
+        let mut t = NetMmsTransport::new(device, config, "192.168.1.20", 102).unwrap();
+        assert_eq!(
+            t.connect("192.168.1.20", 102),
+            Err(crate::MmsError::Timeout),
+            "无链路必须超时失败"
+        );
+        assert_eq!(t.send(b"x"), Err(crate::MmsError::NotConnected));
+    }
+
+    #[test]
+    fn test_mms_client_generic_compiles_with_net_transport() {
+        // MmsClient<T: MmsTransport> 泛型接线（生产可注入 NetMmsTransport）。
+        use crate::mms_client::MmsClient;
+        let _ = core::mem::size_of::<MmsClient<NetMmsTransport<DeadNetDevice>>>();
     }
 }
