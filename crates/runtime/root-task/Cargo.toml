@@ -7,6 +7,7 @@ license.workspace = true
 description = "EnerOS seL4 root task — G2 closure + init bundle handoff (no_std, aarch64-unknown-none)"
 
 [dependencies]
+eneros-tenant = { path = "../../agents/tenant" }
 eneros-runtime = { path = "../runtime" }
 eneros-boot-protocol = { path = "../../boot/boot-protocol" }
 eneros-ipc-wire = { path = "../../abi/ipc-wire" }

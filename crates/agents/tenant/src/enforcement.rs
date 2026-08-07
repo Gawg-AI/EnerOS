@@ -22,11 +22,46 @@ pub struct SpawnReq {
     pub resource: ResourceReq,
 }
 
+/// 租户隔离强制力抽象（蓝图/20 R2-3）：
+/// spawn 前必须通过 [`Enforcer::check_spawn`]，超配拒绝；通过后 usage
+/// 真实累计。实现方为 [`TenantEnforcer`]；seL4 真实 spawn 路径经此接口
+/// 获得强制力（不再咨询性）。
+pub trait Enforcer {
+    /// 检查并记账一次 spawn（超配 → `QuotaExceeded` / `TenantNotFound`）。
+    fn check_spawn(&mut self, req: &SpawnReq) -> Result<(), PlatformError>;
+
+    /// 释放一次 spawn（失败/退出时扣减，幂等）。
+    fn release_spawn(&mut self, tenant_id: u64, mem_kb: usize, cpu_pct: f32)
+        -> Result<(), PlatformError>;
+
+    /// 查询真实 usage。
+    fn usage(&self, tenant_id: u64) -> Result<QuotaUsage, PlatformError>;
+}
+
 /// 配额强制执行器。
 #[derive(Debug, Clone)]
 pub struct TenantEnforcer {
     /// 租户存储（配额与 usage 事实源）。
     store: TenantStore,
+}
+
+impl Enforcer for TenantEnforcer {
+    fn check_spawn(&mut self, req: &SpawnReq) -> Result<(), PlatformError> {
+        self.try_spawn(req)
+    }
+
+    fn release_spawn(
+        &mut self,
+        tenant_id: u64,
+        mem_kb: usize,
+        cpu_pct: f32,
+    ) -> Result<(), PlatformError> {
+        self.release_agent(tenant_id, mem_kb, cpu_pct)
+    }
+
+    fn usage(&self, tenant_id: u64) -> Result<QuotaUsage, PlatformError> {
+        TenantEnforcer::usage(self, tenant_id)
+    }
 }
 
 impl TenantEnforcer {

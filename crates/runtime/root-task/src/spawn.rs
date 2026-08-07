@@ -200,6 +200,32 @@ pub fn plan_spawn(
     Ok(SpawnPlan { root, services })
 }
 
+/// 租户强制力校验（蓝图/20 R2-3）：spawn 计划就绪后、真实 spawn 前执行。
+///
+/// 通过 `Enforcer::check_spawn` 记账（超配 → 拒绝，usage 不增长）；
+/// 调用方在 spawn 失败/退出时必须 `release_spawn` 扣减。
+pub fn enforce_spawn<E: eneros_tenant::Enforcer>(
+    enforcer: &mut E,
+    tenant_id: u64,
+    mem_kb: usize,
+    cpu_pct: f32,
+) -> Result<(), eneros_tenant::PlatformError> {
+    enforcer.check_spawn(&eneros_tenant::SpawnReq {
+        tenant_id,
+        resource: eneros_tenant::ResourceReq { cpu_pct, mem_kb },
+    })
+}
+
+/// 释放一次 spawn 记账（幂等）。
+pub fn release_spawn<E: eneros_tenant::Enforcer>(
+    enforcer: &mut E,
+    tenant_id: u64,
+    mem_kb: usize,
+    cpu_pct: f32,
+) -> Result<(), eneros_tenant::PlatformError> {
+    enforcer.release_spawn(tenant_id, mem_kb, cpu_pct)
+}
+
 // ============================================================================
 // seL4 FFI 接入点（M2.1 sel4-sys，目标编译；host 构建不含）
 // ============================================================================
@@ -376,6 +402,58 @@ mod tests {
         let raw = build_bundle(&[("root-task", crate::bundle::MODULE_KIND_ROOT, minimal_exec_elf())]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
         assert_eq!(plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100), Err(SpawnError::NoServices));
+    }
+
+    #[test]
+    fn test_tenant_enforce_spawn_tracks_usage() {
+        // 蓝图/20 R2-3 验收：spawn 前/后 usage 差异真实累计；release 扣减。
+        use eneros_tenant::manager::TenantManager;
+        use eneros_tenant::{TenantEnforcer, TenantQuota, TenantStore};
+        let mut store = TenantStore::new();
+        let quota = TenantQuota {
+            max_cpu_pct: 100.0,
+            max_mem_kb: 8192,
+            max_storage_kb: 65536,
+            max_agents: 4,
+            max_bandwidth_kbps: 1000,
+        };
+        let tenant = store.create("t0", quota).expect("create");
+        let tid = tenant.tenant_id;
+        let mut enf = TenantEnforcer::new(store);
+
+        assert_eq!(enf.usage(tid).unwrap().mem_kb, 0, "spawn 前 usage 为零");
+        enforce_spawn(&mut enf, tid, 500, 10.0).expect("spawn 记账");
+        let u = enf.usage(tid).unwrap();
+        assert_eq!(u.mem_kb, 500, "spawn 后 usage 真实累计");
+        assert!((u.cpu_pct - 10.0).abs() < 1e-6);
+
+        release_spawn(&mut enf, tid, 500, 10.0).expect("释放");
+        assert_eq!(enf.usage(tid).unwrap().mem_kb, 0, "释放后扣减归零");
+    }
+
+    #[test]
+    fn test_tenant_enforce_spawn_over_quota_rejected() {
+        use eneros_tenant::manager::TenantManager;
+        use eneros_tenant::{PlatformError, TenantEnforcer, TenantQuota, TenantStore};
+        let mut store = TenantStore::new();
+        let quota = TenantQuota {
+            max_cpu_pct: 100.0,
+            max_mem_kb: 1024,
+            max_storage_kb: 65536,
+            max_agents: 4,
+            max_bandwidth_kbps: 1000,
+        };
+        let tenant = store.create("t1", quota).expect("create");
+        let tid = tenant.tenant_id;
+        let mut enf = TenantEnforcer::new(store);
+
+        enforce_spawn(&mut enf, tid, 800, 10.0).expect("spawn 1");
+        assert_eq!(
+            enforce_spawn(&mut enf, tid, 800, 10.0),
+            Err(PlatformError::QuotaExceeded),
+            "超配必须拒绝且 usage 不增长"
+        );
+        assert_eq!(enf.usage(tid).unwrap().mem_kb, 800, "拒绝后 usage 不变");
     }
 
     #[test]

@@ -19,7 +19,8 @@ pub mod quota;
 pub mod types;
 
 pub use isolation::{IsolationBoundary, TenantIsolation};
-pub use enforcement::TenantEnforcer;
+pub use enforcement::{Enforcer, TenantEnforcer};
+pub use enforcement::SpawnReq;
 pub use manager::{TenantManager, TenantStore};
 pub use quota::{check_quota, check_resource, remaining};
 pub use types::{QuotaUsage, ResourceReq, Tenant, TenantQuota};
