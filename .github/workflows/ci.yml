@@ -226,6 +226,14 @@ jobs:
           bash tests/soak/soak72.sh
           test -f target/soak/soak-skip-evidence.json             || test -f target/soak/soak-campaign.json
 
+      - name: D5 release engineering rehearsal (RC-5, rebuild + OTA plan)
+        run: |
+          # 换机可复现：CI 环境（nightly + 完整缓存）执行重建脚本；
+          # OTA 升级演练：QEMU 可用则实演，否则产出演练预案。
+          bash tests/rebuild-ci.sh --skip-tests
+          bash tests/ota-rehearsal.sh --skip-qemu
+          test -f target/ota-rehearsal/ota-rehearsal-plan.json
+
       - name: D4 compliance pipeline (RC-4, machine-recomputable evidence)
         run: |
           # 合规报告流水线：信创/等保动态探测 + KAT + QA-017~022 证据
