@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 description = "固件闭包 Agent 场景（ARC-008）：设备轮询 + 市场结算闭包启动器"
 
+[features]
+default = ["mock"]
+# 场景演示默认 mock 设备（蓝图/20 R2-1：Mock 收编——release 构建场景
+# 用 --no-default-features 走真实注入分支；VRF-002 构建真实固件闭包）
+mock = ["eneros-device-agent/mock"]
+
 [dependencies]
-eneros-device-agent = { path = "../../agents/device-agent", features = ["mock"] }
+eneros-device-agent = { path = "../../agents/device-agent" }
 eneros-agent = { path = "../../agents/agent" }
 eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
 eneros-modbus-rtu = { path = "../../protocols/modbus-rtu" }

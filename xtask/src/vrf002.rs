@@ -2,8 +2,9 @@
 //!
 //! 两个隔离构建环境（不同 `CARGO_TARGET_DIR`）构建同一未签名 payload，
 //! 比对产物 sha256 —— 证明构建确定性（bit-identical）。
-//! payload 选用纯 Rust 固件场景 binary `eneros-firmware-agent`（不依赖
-//! sel4 构建链，sandbox 可复算）；CI 中同一步骤扩展到全 profile。
+//! payload 选用真实固件闭包 binary `eneros-firmware-agent`（蓝图/20 R2-7：
+//! 修正 v0.193 失实——不再用 `eneros-hello` 顶包）。构建带
+//! `--no-default-features`（无 mock），验证真实闭包确定性。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,7 +21,13 @@ fn sha256_file(p: &Path) -> String {
 
 fn build_in(dir: &Path, target_dir: &str, bin: &str) -> DynResult<PathBuf> {
     let status = Command::new("cargo")
-        .args(["build", "--release", "-p", "eneros-hello"])
+        .args([
+            "build",
+            "--release",
+            "--no-default-features",
+            "-p",
+            "eneros-firmware-agent",
+        ])
         .env("CARGO_TARGET_DIR", target_dir)
         .current_dir(dir)
         .status()?;
@@ -31,7 +38,7 @@ fn build_in(dir: &Path, target_dir: &str, bin: &str) -> DynResult<PathBuf> {
 }
 
 pub fn command_build_compare(root: &Path) -> DynResult<()> {
-    let bin = "eneros-hello";
+    let bin = "eneros-firmware-agent";
     let ta = root.join("target/compare-a");
     let tb = root.join("target/compare-b");
     let pa = build_in(root, ta.to_str().unwrap(), bin)?;

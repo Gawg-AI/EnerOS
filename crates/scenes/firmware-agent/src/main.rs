@@ -8,7 +8,9 @@
 //! 真机数据路径（modbus-rtu/iec104 等真实传输）由设备层注入（BLOCKED 缺硬件）。
 
 use eneros_account::{create_entry, AccountStore, FlowDir};
-use eneros_device_agent::{DeviceRegistry, DeviceType, MockPointDevice};
+use eneros_device_agent::{DeviceRegistry, DeviceType};
+#[cfg(feature = "mock")]
+use eneros_device_agent::MockPointDevice;
 use eneros_market_types::{MilliYuan, TimeSlot, TradeDir, YuanPerKwh};
 use eneros_protocol_abstract::PointAccess;
 use eneros_settlement::{ClearingEngine, ClearingJob};
@@ -16,9 +18,15 @@ use eneros_settlement::{ClearingEngine, ClearingJob};
 fn main() {
     // 1. 设备注册 + 点轮询（PointAccess 统一抽象）
     let mut registry = DeviceRegistry::new();
+    #[cfg(feature = "mock")]
     let mut adapter: Box<dyn PointAccess> = Box::new(MockPointDevice::new(3));
-    // 空 Mock 设备 → PointNotFound 容忍（闭包可达性验证；真实设备接入
-    // 后此处改为错误上报路径）。
+    #[cfg(not(feature = "mock"))]
+    let mut adapter: Box<dyn PointAccess> = {
+        // 真实固件闭包（蓝图/20 R2-1 + R2-7）：无真实设备驱动时 fail-closed
+        // 拒绝启动——VRF-002 双构建字节比对验证的是闭包确定性。
+        eprintln!("firmware-agent: no real device adapter injected (R2-1)");
+        std::process::exit(2);
+    };
     let _ = adapter.read_point(1);
     registry.register("battery-01", DeviceType::Battery, adapter, Default::default());
 
