@@ -280,3 +280,77 @@ jobs:
           bash tests/soak/collect-evidence.sh
           test -f target/soak/evidence-bundle/MANIFEST.sha256
           test -f target/soak/evidence-bundle/missing-evidence.txt
+
+  gkernel-qemu-spawn-ipc:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly-2026-04-04
+        with:
+          components: rust-src, clippy, rustfmt
+          targets: aarch64-unknown-none,aarch64-unknown-uefi
+
+      - name: Cargo fetch locked
+        run: cargo fetch --locked
+
+      - name: seL4 kernel toolchain cache (restore)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.tool_cache }}/sel4
+            target/sel4
+          key: sel4-${{ runner.os }}-v0.192.0
+
+      - name: Build seL4 kernel + root image (ADR-0023)
+        run: |
+          if [ ! -f target/sel4/elfloader-arm-qemu-arm-virt ]; then
+            SEL4_CACHE="${{ runner.tool_cache }}/sel4" third_party/sel4-build.sh
+          else
+            echo "target/sel4 already present, skipping seL4 rebuild"
+          fi
+
+      - name: Build qemu-prod image (root-task + services ELF + init bundle)
+        run: cargo xtask image qemu-prod
+
+      - name: Run QEMU full boot chain (21-A G-KERNEL K3.1)
+        run: |
+          set -euo pipefail
+          cargo xtask run qemu-prod --evidence-dir target/gkernel-evidence
+
+      - name: G-KERNEL log sequence gate (K3.3, fail-closed; any line missing = red)
+        run: |
+          set -euo pipefail
+          LOG=target/gkernel-evidence/qemu-serial.log
+          test -s "$LOG" || { echo "qemu-serial.log empty or missing" >&2; exit 1; }
+          # K3.1 完整序列（启动→spawn→IPC→故障隔离→复验），逐行必现。
+          for pat in \
+            "[eneros-root-task] Rust root task alive on seL4" \
+            "init_bundle @ paddr=" \
+            "spawn plan: root=" \
+            "[eneros-root-task]   spawn svc-hello entry=" \
+            "[eneros-root-task]   spawn svc-fault entry=" \
+            "EL0 services spawned" \
+            "[eneros-root-task] IPC: send hello-req to svc-hello" \
+            "[svc-hello] IPC: recv" \
+            "[eneros-root-task] IPC: recv hello:eneros:tick=" \
+            "[eneros-root-task] IPC: send fault to svc-fault" \
+            "[svc-fault] FAULT" \
+            "[eneros-root-task] svc-fault suspended (isolated)" \
+            "[eneros-root-task] IPC: svc-hello still responsive" \
+          ; do
+            grep -Fq "$pat" "$LOG" || { echo "G-KERNEL sequence missing: $pat" >&2; exit 1; }
+          done
+          echo "G-KERNEL log sequence: 13/13 PASS"
+
+      - name: Persist evidence (K3.2)
+        run: |
+          mkdir -p product/evidence/kernel
+          cp target/gkernel-evidence/qemu-serial.log product/evidence/kernel/gkernel-qemu-boot.log
+
+      - name: Upload evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gkernel-qemu-boot.log
+          path: product/evidence/kernel/gkernel-qemu-boot.log

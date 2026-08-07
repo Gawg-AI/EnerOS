@@ -1,6 +1,6 @@
 {
   "schema": "eneros.requirement-registry.v1",
-  "gates": ["G0", "G1"],
+  "gates": ["G0", "G1", "GK"],
   "requirements": [
     { "requirement_id": "REQ-G0-BASE-001", "task_id": "BASE-001", "artifact_role": "source" },
     { "requirement_id": "REQ-G0-BASE-002", "task_id": "BASE-002", "artifact_role": "closure" },
@@ -60,7 +60,8 @@
     { "requirement_id": "REQ-G1-REL-007", "task_id": "REL-007", "artifact_role": "sbom" },
     { "requirement_id": "REQ-G1-QA-003", "task_id": "QA-003", "artifact_role": "raw" },
     { "requirement_id": "REQ-G1-QA-004", "task_id": "QA-004", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-QA-005", "task_id": "QA-005", "artifact_role": "raw" }
+    { "requirement_id": "REQ-G1-QA-005", "task_id": "QA-005", "artifact_role": "raw" },
+    { "requirement_id": "REQ-GK-KERNEL-001", "task_id": "KERNEL-001", "artifact_role": "log" }
   ],
   "artifacts": [
     { "role": "source", "path": "Cargo.lock" },
@@ -71,6 +72,7 @@
     { "role": "recovery", "path": "target/eneros/artifacts/recovery/eneros-qemu-prod-recovery.raw" },
     { "role": "update", "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod-full.enupd" },
     { "role": "flash", "path": "target/eneros/evidence/IMG-011/bound-flash-report.json" },
-    { "role": "sbom", "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod.cdx.json" }
+    { "role": "sbom", "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod.cdx.json" },
+    { "role": "log", "path": "product/evidence/kernel/gkernel-qemu-boot.log" }
   ]
 }

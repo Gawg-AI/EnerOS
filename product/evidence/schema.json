@@ -6,14 +6,14 @@
   "required": ["schema", "gates", "requirements", "artifacts"],
   "properties": {
     "schema": { "const": "eneros.requirement-registry.v1" },
-    "gates": { "type": "array", "minItems": 2, "items": { "enum": ["G0", "G1"] } },
+    "gates": { "type": "array", "minItems": 3, "items": { "enum": ["G0", "G1", "GK"] } },
     "requirements": {
       "type": "array", "minItems": 1,
       "items": {
         "type": "object", "additionalProperties": false,
         "required": ["requirement_id", "task_id", "artifact_role"],
         "properties": {
-          "requirement_id": { "type": "string", "pattern": "^REQ-(G0|G1)-[A-Z]+-[0-9]{3}$" },
+          "requirement_id": { "type": "string", "pattern": "^REQ-(G0|G1|GK)-[A-Z]+-[0-9]{3}$" },
           "task_id": { "type": "string", "pattern": "^[A-Z]+-[0-9]{3}$" },
           "artifact_role": { "type": "string", "pattern": "^[a-z][a-z0-9-]+$" }
         }
