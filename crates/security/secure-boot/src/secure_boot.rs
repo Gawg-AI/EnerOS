@@ -134,6 +134,10 @@ impl SecureBoot for EnerosSecureBoot<'_> {
         images: &BootImages<'_>,
         manifest: &crate::manifest::BootManifest,
     ) -> Result<BootChainReport, BootError> {
+        // 信任边界（蓝图/20 R2-6）：`manifest` 必须来自安全引导可信源
+        // （ROM 固件/安全存储中锁定的引导配置区），本函数不自行校验其
+        // 来源——bl_key 只从该已验证 manifest 提取，BootImages 不再携带
+        // 独立公钥（类型级绑定，杜绝调用方任意提供下级验签公钥）。
         let mut report = BootChainReport::new();
 
         // 验证信任根

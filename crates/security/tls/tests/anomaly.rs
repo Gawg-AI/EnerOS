@@ -68,6 +68,16 @@ fn dt_utc(year: i32, month: Month, day: u8, hour: u8, min: u8, sec: u8) -> Offse
     d.with_time(t).assume_utc()
 }
 
+/// 并行测试下确定性安装 rustls 默认 crypto provider（蓝图/20 R2 修复：
+/// 多个测试并发首次触发 `install_default` 时存在偶发竞争）。
+fn ensure_provider() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 fn build_test_pki() -> TestPki {
     // ---- Root CA ----
     let ca_key = make_key();
@@ -237,6 +247,7 @@ fn client_trusting(ca_pem: &str) -> TlsClientConfig {
 /// SAN (localhost). The handshake MUST succeed and the echo MUST round-trip.
 #[test]
 fn test_positive_valid_server_cert() {
+    ensure_provider();
     let pki = build_test_pki();
     let server = TlsServerConfig::new_server_only(
         pki.server_cert_pem.as_bytes(),
@@ -259,6 +270,7 @@ fn test_positive_valid_server_cert() {
 /// reject it at the handshake — the client's `connect` fails.
 #[test]
 fn test_anomaly_expired_server_cert_rejected() {
+    ensure_provider();
     let pki = build_test_pki();
     let server = TlsServerConfig::new_server_only(
         pki.expired_cert_pem.as_bytes(),
@@ -284,6 +296,7 @@ fn test_anomaly_expired_server_cert_rejected() {
 /// rustls must reject the cert (name mismatch).
 #[test]
 fn test_anomaly_wrong_san_rejected() {
+    ensure_provider();
     let pki = build_test_pki();
     let server = TlsServerConfig::new_server_only(
         pki.wrong_san_cert_pem.as_bytes(),
@@ -307,6 +320,7 @@ fn test_anomaly_wrong_san_rejected() {
 /// client's trust store. rustls must reject it (untrusted issuer).
 #[test]
 fn test_anomaly_untrusted_self_signed_rejected() {
+    ensure_provider();
     let pki = build_test_pki();
     let server = TlsServerConfig::new_server_only(
         pki.self_signed_cert_pem.as_bytes(),
@@ -331,6 +345,7 @@ fn test_anomaly_untrusted_self_signed_rejected() {
 /// certificate. The server MUST abort the handshake.
 #[test]
 fn test_anomaly_mtls_client_cert_missing_rejected() {
+    ensure_provider();
     let pki = build_test_pki();
     let server = TlsServerConfig::new_mtls(
         pki.server_cert_pem.as_bytes(),
@@ -357,6 +372,7 @@ fn test_anomaly_mtls_client_cert_missing_rejected() {
 /// round-trip.
 #[test]
 fn test_positive_mtls_with_valid_client_cert() {
+    ensure_provider();
     let pki = build_test_pki();
     let server = TlsServerConfig::new_mtls(
         pki.server_cert_pem.as_bytes(),

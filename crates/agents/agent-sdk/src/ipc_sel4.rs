@@ -135,18 +135,21 @@ impl Sel4IpcClient {
         )
         .map_err(|_| self.ipc_err("wire encode failed"))?;
 
+        // 蓝图/20 R2-2：MR 区 120 字节 = 15 words——MR[0] 为关联 ID，
+        // wire 帧最多 14 words（112 字节）；超限必须显式拒绝
+        // （fail-closed：禁止静默截断 + length 谎报）。
+        let max_frame = MAX_MR_BYTES - core::mem::size_of::<u64>();
+        if n > max_frame {
+            self.errors += 1;
+            return Err(self.ipc_err("request frame exceeds MR budget (120B)"));
+        }
         // 写入 MR：MR[0] = 关联 ID，MR[1..] = 帧字节。
         // SAFETY: `eneros_sel4_set_mr` 为 C shim 封装（host 为 stub），
-        // 索引 `i + 1 < 64` 保证在 seL4 MR 槽位范围内；写入值均为
+        // 索引 `i + 1 < 15` 保证在 seL4 MR 槽位范围内；写入值均为
         // 纯数据（无指针），无内存安全风险。
         unsafe {
             eneros_sel4_set_mr(0, id);
-            // 蓝图/20 R2-2：MR 区上限 120 字节（15 × u64 word）——
-            // MR[0] 占 1 word，帧字节最多 14 words。
             for (i, b) in frame[..n].iter().enumerate() {
-                if i + 1 >= MAX_MR_BYTES / core::mem::size_of::<u64>() {
-                    break;
-                }
                 eneros_sel4_set_mr(i as u64 + 1, *b as u64);
             }
         }

@@ -454,12 +454,16 @@ impl DefaultGate {
                     let lines: Vec<&str> = text.lines().collect();
                     for (i, line) in lines.iter().enumerate() {
                         if line.trim_start().starts_with("pub struct Mock") {
+                            // 蓝图/20 R2-1 收紧：必须精确 `#[cfg(any(test, feature = "mock"))]`
+                            // 保护（任意 #[cfg] 可绕过，如 `#[cfg(any())]`）。
                             let window_start = i.saturating_sub(3);
                             let window = &lines[window_start..i];
-                            let protected = window.iter().any(|w| w.contains("#[cfg"));
+                            let protected = window
+                                .iter()
+                                .any(|w| w.contains("#[cfg(any(test, feature = \"mock\"))]"));
                             if !protected {
                                 violations.push(format!(
-                                    "{}:{}: pub struct Mock 无 cfg 保护",
+                                    "{}:{}: pub struct Mock 无精确 mock-cfg 保护",
                                     f.display(),
                                     i + 1
                                 ));

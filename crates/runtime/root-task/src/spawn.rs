@@ -30,6 +30,8 @@ pub enum SpawnError {
     BadElf,
     /// 段违反 W^X（可写且可执行）。
     WxViolation,
+    /// 租户强制力拒绝（超配/租户不存在，蓝图/20 R2-3）。
+    QuotaExceeded,
     /// 虚拟地址空间越界。
     OutOfVaddrSpace,
 }
@@ -216,6 +218,25 @@ pub fn enforce_spawn<E: eneros_tenant::Enforcer>(
         tenant_id,
         resource: eneros_tenant::ResourceReq { cpu_pct, mem_kb },
     })
+}
+
+/// 带租户强制力的 spawn 计划（蓝图/20 R2-3）：计划生成后、真实 spawn
+/// 前执行 `Enforcer::check_spawn`——超配拒绝 → 计划不落地（fail-closed）。
+#[allow(clippy::too_many_arguments)]
+pub fn plan_spawn_with_enforcement<E: eneros_tenant::Enforcer>(
+    enforcer: &mut E,
+    bundle: &crate::bundle::InitBundle,
+    vspace_base: u64,
+    page_size: u64,
+    stack_size: u64,
+    ep_base: u64,
+    tenant_id: u64,
+    mem_kb: usize,
+    cpu_pct: f32,
+) -> Result<SpawnPlan, SpawnError> {
+    let plan = plan_spawn(bundle, vspace_base, page_size, stack_size, ep_base)?;
+    enforce_spawn(enforcer, tenant_id, mem_kb, cpu_pct).map_err(|_| SpawnError::QuotaExceeded)?;
+    Ok(plan)
 }
 
 /// 释放一次 spawn 记账（幂等）。
@@ -497,6 +518,60 @@ mod tests {
             "超配必须拒绝且 usage 不增长"
         );
         assert_eq!(enf.usage(tid).unwrap().mem_kb, 800, "拒绝后 usage 不变");
+    }
+
+    #[test]
+    fn test_plan_spawn_with_enforcement_rejects_over_quota() {
+        // 蓝图/20 R2-3 验收：强制力接入 spawn 路径——超配时计划不落地。
+        use eneros_tenant::manager::TenantManager;
+        use eneros_tenant::{TenantEnforcer, TenantQuota, TenantStore};
+        let mut store = TenantStore::new();
+        let quota = TenantQuota {
+            max_cpu_pct: 100.0,
+            max_mem_kb: 512,
+            max_storage_kb: 65536,
+            max_agents: 4,
+            max_bandwidth_kbps: 1000,
+        };
+        let tenant = store.create("t2", quota).expect("create");
+        let tid = tenant.tenant_id;
+        let mut enf = TenantEnforcer::new(store);
+
+        let raw = build_bundle(&[
+            (
+                "root-task",
+                crate::bundle::MODULE_KIND_ROOT,
+                minimal_data_elf(),
+            ),
+            (
+                "svc-fault",
+                crate::bundle::MODULE_KIND_SERVICE,
+                minimal_data_elf(),
+            ),
+            (
+                "svc-proc-ts",
+                crate::bundle::MODULE_KIND_SERVICE,
+                minimal_data_elf(),
+            ),
+        ]);
+        let bundle = InitBundle::parse(&raw).expect("bundle parse");
+        let result = plan_spawn_with_enforcement(
+            &mut enf,
+            &bundle,
+            0x4000_0000,
+            4096,
+            16384,
+            100,
+            tid,
+            4096,
+            50.0,
+        );
+        assert_eq!(
+            result,
+            Err(SpawnError::QuotaExceeded),
+            "超配必须拒绝且计划不落地"
+        );
+        assert_eq!(enf.usage(tid).unwrap().mem_kb, 0, "拒绝后 usage 不增长");
     }
 
     #[test]
