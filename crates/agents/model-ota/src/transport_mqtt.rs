@@ -265,10 +265,14 @@ where
             return Err(OtaError::TransportError);
         }
         frame.push(byte[0]);
-        // 剩余长度 varint（最多 4 字节）。
+        // 剩余长度 varint（MQTT 3.1.1 §2.2.3：最多 4 字节）——
+        // 第 5 个 RL 字节必须拒绝（检查在 break/累加之前，防帧错位）。
         let mut multiplier = 1usize;
         let mut rl = 0usize;
         loop {
+            if frame.len() > 4 {
+                return Err(OtaError::TransportError);
+            }
             if (self.poll)(&mut byte)? == 0 {
                 return Err(OtaError::TransportError);
             }
@@ -279,9 +283,6 @@ where
                 break;
             }
             multiplier *= 128;
-            if frame.len() - 1 > 4 {
-                return Err(OtaError::TransportError);
-            }
         }
         // 载荷：完整帧长 = 1 + RL 字节数 + rl；按需精确读取（不多读
         // 下一帧字节——流式对端语义）。
@@ -522,10 +523,10 @@ mod tests {
             "1.0.0",
             "篡改/验签未过禁止落盘：当前模型必须仍是 v1"
         );
-        // transport 拉取篡改 payload 后验签失败 → rejected 统计（若到达
-        // 验签阶段）；transport 层失败则不计 rejected（语义正确）。
+        // transport 拉取篡改 payload（长度与清单 size 匹配、hash 不匹配）
+        // → update_once 到达验签阶段并拒绝 → rejected 统计必须为 1。
         let rejected = client.stats().total_rejected;
-        assert!(rejected == 1 || rejected == 0, "拒绝统计必须为真值");
+        assert_eq!(rejected, 1, "验签拒绝必须计入统计");
     }
 
     /// broker 双闭包测试：xmit 收到帧时按协议应答，poll 返回应答帧。

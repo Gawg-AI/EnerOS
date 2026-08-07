@@ -210,14 +210,20 @@ impl Sel4IpcClient {
             &mut frame,
         )
         .map_err(|_| self.ipc_err("wire encode failed"))?;
-        // SAFETY: 同上——`set_mr` 为 C shim（host stub），索引 < 64。
+        // 蓝图/20 R2-2：send 与 request 同语义——超限显式拒绝 + 8 字节打包。
+        let max_frame = MAX_MR_BYTES - core::mem::size_of::<u64>();
+        if n > max_frame {
+            self.errors += 1;
+            return Err(self.ipc_err("send frame exceeds MR budget (120B)"));
+        }
+        // SAFETY: `set_mr` 为 C shim（host stub）；帧 ≤112 字节 → 打包后
+        // ≤14 words，索引在 MR 槽位范围内。
         unsafe {
             eneros_sel4_set_mr(0, 0);
-            for (i, b) in frame[..n].iter().enumerate() {
-                if i + 1 >= 64 {
-                    break;
-                }
-                eneros_sel4_set_mr(i as u64 + 1, *b as u64);
+            for (i, chunk) in frame[..n].chunks(8).enumerate() {
+                let mut word = [0u8; 8];
+                word[..chunk.len()].copy_from_slice(chunk);
+                eneros_sel4_set_mr(i as u64 + 1, u64::from_le_bytes(word));
             }
         }
         // SAFETY: `message_info_new` 为纯值构造（host stub），无指针参数。
