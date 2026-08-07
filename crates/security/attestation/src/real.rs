@@ -30,6 +30,9 @@ use crate::{AttestError, AttestResult, AttestTransport};
 pub struct Tpm2Backend<T> {
     /// 硬件 TPM 驱动。
     tpm: T,
+    /// 证明密钥（AK）公钥——由集成层从 TPM 持久化句柄加载后注入
+    /// （蓝图/20 R3-1：未注入 → `attestation_pubkey` 返回错误，禁占位）。
+    ak_pubkey: Option<eneros_crypto::Sm2PublicKey>,
 }
 
 #[cfg(feature = "tpm2")]
@@ -37,9 +40,15 @@ impl<T> Tpm2Backend<T>
 where
     T: eneros_tpm::TpmDriver,
 {
-    /// 创建真实 TPM2 后端。
+    /// 创建真实 TPM2 后端（AK 公钥未注入——证明前必须 [`Self::with_ak`]）。
     pub fn new(tpm: T) -> Self {
-        Self { tpm }
+        Self { tpm, ak_pubkey: None }
+    }
+
+    /// 注入 AK 公钥（从 TPM 持久化句柄 / EK 派生加载，集成层调用）。
+    pub fn with_ak(mut self, ak_pubkey: eneros_crypto::Sm2PublicKey) -> Self {
+        self.ak_pubkey = Some(ak_pubkey);
+        self
     }
 }
 
@@ -57,12 +66,14 @@ where
             .map_err(|_| TpmError::ExtendFailed)
     }
 
-    fn pcr_read(&self, pcr_idx: u8) -> Result<[u8; 32], TpmError> {
+    fn pcr_read(&mut self, pcr_idx: u8) -> Result<[u8; 32], TpmError> {
         if pcr_idx >= 24 {
             return Err(TpmError::InvalidPcrIndex);
         }
-        // TpmDriver::pcr_read 需要 &mut self。
-        Err(TpmError::ReadFailed)
+        // 蓝图/20 R3-1：真实 TPM2_PCR_Read（占位失败清零）。
+        self.tpm
+            .pcr_read(pcr_idx as u32)
+            .map_err(|_| TpmError::ReadFailed)
     }
 
     fn quote(
@@ -99,14 +110,15 @@ where
         let mut sig_bytes = [0u8; 64];
         let n = sig.len().min(64);
         sig_bytes[..n].copy_from_slice(&sig[..n]);
-        let _ = rng;
+        // 蓝图/20 R3-1：rng 显式标注未用（TPM 硬件签名使用内部熵）。
+        let _rng = rng;
         Ok((quote, sig_bytes))
     }
 
-    fn attestation_pubkey(&self) -> eneros_crypto::Sm2PublicKey {
-        // AK 公钥由集成层从 TPM 持久化句柄加载；此处占位（真实路径
-        // 由 AK 持久化或 EK 派生，阶段 D 补齐）。
-        eneros_crypto::Sm2PublicKey::from_bytes(&[4u8; 65]).expect("placeholder ak")
+    fn attestation_pubkey(&self) -> Result<eneros_crypto::Sm2PublicKey, TpmError> {
+        // 蓝图/20 R3-1：AK 未注入 → 明确失败（禁占位公钥）。
+        self.ak_pubkey
+            .ok_or(TpmError::KeyUnavailable)
     }
 }
 

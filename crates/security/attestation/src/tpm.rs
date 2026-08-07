@@ -85,7 +85,7 @@ pub trait TpmBackend {
     fn pcr_extend(&mut self, pcr_idx: u8, digest: &[u8; 32]) -> Result<(), TpmError>;
 
     /// 读取 PCR 当前值；idx ≥ 24 → `Err(InvalidPcrIndex)`.
-    fn pcr_read(&self, pcr_idx: u8) -> Result<[u8; 32], TpmError>;
+    fn pcr_read(&mut self, pcr_idx: u8) -> Result<[u8; 32], TpmError>;
 
     /// 生成 PCR Quote + 签名二元组（D6：修复蓝图签名永不填充 bug）.
     ///
@@ -104,8 +104,9 @@ pub trait TpmBackend {
         rng: &mut CsRng,
     ) -> Result<(PcrQuote, [u8; 64]), TpmError>;
 
-    /// 返回证明密钥（AK）公钥（验证方据此验签 Quote）.
-    fn attestation_pubkey(&self) -> Sm2PublicKey;
+    /// 返回证明密钥（AK）公钥（验证方据此验签 Quote）——蓝图/20 R3-1：
+    /// fail-closed：AK 未注入/不可用必须返回错误，禁止占位公钥。
+    fn attestation_pubkey(&self) -> Result<Sm2PublicKey, TpmError>;
 }
 
 /// 软件 TPM（D4：蓝图 §4.4/§5.1 软件度量降级方案的一等实现 + 故障注入）.
@@ -197,7 +198,7 @@ impl TpmBackend for SoftTpm {
         Ok(())
     }
 
-    fn pcr_read(&self, pcr_idx: u8) -> Result<[u8; 32], TpmError> {
+    fn pcr_read(&mut self, pcr_idx: u8) -> Result<[u8; 32], TpmError> {
         self.gate()?;
         if pcr_idx as usize >= PCR_COUNT {
             return Err(TpmError::InvalidPcrIndex);
@@ -241,8 +242,8 @@ impl TpmBackend for SoftTpm {
         Ok((quote, signature.to_bytes()))
     }
 
-    fn attestation_pubkey(&self) -> Sm2PublicKey {
-        self.ak.public_key
+    fn attestation_pubkey(&self) -> Result<Sm2PublicKey, TpmError> {
+        Ok(self.ak.public_key)
     }
 }
 
@@ -271,8 +272,8 @@ mod tests {
         let sig1 = sm2_sign(&digest, &tpm1.ak.private_key, &tpm1.ak.public_key, &mut rng1).unwrap();
         let mut rng2 = CsRng::new();
         let sig2 = sm2_sign(&digest, &tpm2.ak.private_key, &tpm2.ak.public_key, &mut rng2).unwrap();
-        assert!(sm2_verify(&digest, &sig1, &tpm2.attestation_pubkey()).unwrap());
-        assert!(sm2_verify(&digest, &sig2, &tpm1.attestation_pubkey()).unwrap());
+        assert!(sm2_verify(&digest, &sig1, &tpm2.attestation_pubkey().unwrap()).unwrap());
+        assert!(sm2_verify(&digest, &sig2, &tpm1.attestation_pubkey().unwrap()).unwrap());
     }
 
     #[test]
@@ -302,7 +303,7 @@ mod tests {
     /// TPM1 新实例 24 个 PCR 全部为零值（TCG 复位态）.
     #[test]
     fn tpm1_initial_pcrs_all_zero() {
-        let (tpm, _rng) = make_tpm();
+        let (mut tpm, _rng) = make_tpm();
         for idx in 0..PCR_COUNT as u8 {
             assert_eq!(tpm.pcr_read(idx), Ok([0u8; 32]), "PCR{} 应为零值", idx);
         }
@@ -428,7 +429,7 @@ mod tests {
         assert_eq!(quote.pcr_values[2], [0u8; 32], "PCR2 未度量应为零值");
         // 签名可验（quote_digest + AK 公钥）
         let sig = Sm2Signature::from_bytes(&sig_bytes);
-        let verified = sm2_verify(&quote_digest(&quote), &sig, &tpm.attestation_pubkey());
+        let verified = sm2_verify(&quote_digest(&quote), &sig, &tpm.attestation_pubkey().unwrap());
         assert_eq!(verified, Ok(true), "quote 签名应可被 AK 公钥验证");
     }
 }

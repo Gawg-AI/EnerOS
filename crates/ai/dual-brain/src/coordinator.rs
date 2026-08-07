@@ -191,10 +191,10 @@ impl<S: Solver> DualBrainCoordinator<S> {
             market_price: state.current_price,
             soc: state.system.soc_pct * 100.0,
             power_current: state.system.current_a * state.system.voltage_v / 1000.0,
-            // 输入占位（非遥测观测值）：温度/时段无传感器数据源，
-            // 传感器接入后从 RealtimeState 扩展字段替换（标注 demo-only）。
-            temperature: 25.0,
-            time_of_day: String::from("谷时"),
+            // 蓝图/20 R3-1：无传感器数据源时显式 None（禁假值占位）——
+            // prompt 渲染 "N/A"；传感器接入后从 RealtimeState 扩展字段填充。
+            temperature: None,
+            time_of_day: None,
             historical_data: state.load_demand.clone().unwrap_or_default(),
         };
         let prompt = self.prompt_template.build(&t_ctx);
@@ -212,6 +212,8 @@ impl<S: Solver> DualBrainCoordinator<S> {
             .intent_parser
             .parse_json(&llm_output)
             .map_err(|e| DualBrainError::ParseError(format!("{:?}", e)))?;
+        // 蓝图/20 R3-1：意图置信度在移动前拷贝（LLM 输出真实解析值）。
+        let intent_confidence = intent.confidence;
         self.request_counter += 1;
         let request_id = format!("req-{}-{}", now_ms, self.request_counter);
         let contract = IntentContract {
@@ -230,7 +232,9 @@ impl<S: Solver> DualBrainCoordinator<S> {
                     .unwrap_or_else(|| String::from("unloaded")),
                 inference_ms: latency.llm_inference_ms,
                 token_count: self.llm_engine.stats().total_tokens_generated as usize,
-                confidence: 0.85,
+                // 蓝图/20 R3-1：置信度取意图解析真实值（LLM 输出 JSON 解析），
+                // 不再硬编码 0.85。
+                confidence: intent_confidence,
             },
         };
         self.contract_validator

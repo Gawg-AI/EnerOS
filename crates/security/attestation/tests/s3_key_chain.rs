@@ -43,7 +43,7 @@ fn test_s3_full_key_chain() {
     let quote_nonce = [0x77; 20];
     let ra = RemoteAttestation::generate(&mut tpm, &[0, 1], &quote_nonce, 1_000, &log, &mut rng)
         .expect("远程证明生成");
-    let mut verifier = AttestVerifier::new(tpm.attestation_pubkey());
+    let mut verifier = AttestVerifier::new(tpm.attestation_pubkey().unwrap());
     let check = verifier.verify(&ra, &log, &quote_nonce);
     assert!(check.trusted, "Quote 验签通过");
 }

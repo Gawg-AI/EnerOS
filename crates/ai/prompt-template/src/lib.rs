@@ -126,15 +126,15 @@ mod tests {
             0.8,
             65.0,
             -30.0,
-            28.5,
-            String::from("峰时"),
+            Some(28.5),
+            Some(String::from("峰时")),
             vec![1.0, 2.0, 3.0],
         );
         assert_eq!(ctx.market_price, 0.8);
         assert_eq!(ctx.soc, 65.0);
         assert_eq!(ctx.power_current, -30.0);
-        assert_eq!(ctx.temperature, 28.5);
-        assert_eq!(ctx.time_of_day, "峰时");
+        assert_eq!(ctx.temperature, Some(28.5));
+        assert_eq!(ctx.time_of_day.as_deref(), Some("峰时"));
         assert_eq!(ctx.historical_data, vec![1.0, 2.0, 3.0]);
     }
 
@@ -145,8 +145,8 @@ mod tests {
         assert_eq!(ctx.market_price, 0.5);
         assert_eq!(ctx.soc, 50.0);
         assert_eq!(ctx.power_current, 0.0);
-        assert_eq!(ctx.temperature, 25.0);
-        assert_eq!(ctx.time_of_day, "谷时");
+        assert_eq!(ctx.temperature, Some(25.0));
+        assert_eq!(ctx.time_of_day.as_deref(), Some("谷时"));
         assert!(ctx.historical_data.is_empty());
     }
 
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn test_t11_charge_discharge_template_build() {
         let ctx =
-            TemplateContext::new(0.8, 65.0, -30.0, 28.5, String::from("峰时"), vec![1.0, 2.0]);
+            TemplateContext::new(0.8, 65.0, -30.0, Some(28.5), Some(String::from("峰时")), vec![1.0, 2.0]);
         let prompt = ChargeDischargeTemplate.build(&ctx);
         assert!(prompt.contains("0.8"));
         assert!(prompt.contains("65"));

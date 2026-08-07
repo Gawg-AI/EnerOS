@@ -4,7 +4,7 @@
 //! 运行时零分配）。
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 
 use crate::context::TemplateContext;
 use crate::schema::{SchemaField, SchemaSpec, SchemaType};
@@ -68,7 +68,7 @@ impl PromptTemplate for ChargeDischargeTemplate {
                 "{{ \"intent_type\": \"Charge\" | \"Discharge\" | \"Hold\", \"time_range\": {{\"start_period\": <起始时段>, \"end_period\": <结束时段>}}, \"power\": {{\"power_kw\": <浮点数，充电为负>}}, \"reason\": \"<简短理由>\", \"confidence\": <0.0~1.0> }}\n\n",
                 "只输出 JSON，不要其他文字。",
             ),
-            ctx.market_price, ctx.soc, ctx.power_current, ctx.temperature, ctx.time_of_day
+            ctx.market_price, ctx.soc, ctx.power_current, ctx.temperature.map_or("N/A".to_string(), |v| format!("{v}")), ctx.time_of_day.clone().unwrap_or_else(|| "N/A".to_string())
         )
     }
 
@@ -135,7 +135,7 @@ impl PromptTemplate for DispatchTemplate {
                 "{{ \"target_power\": <目标功率 kW>, \"ramp_rate\": <爬坡率 kW/min>, \"duration_minutes\": <持续分钟>, \"reason\": \"<简短理由> }}\n\n",
                 "只输出 JSON，不要其他文字。",
             ),
-            ctx.market_price, ctx.soc, ctx.power_current, ctx.temperature, ctx.time_of_day
+            ctx.market_price, ctx.soc, ctx.power_current, ctx.temperature.map_or("N/A".to_string(), |v| format!("{v}")), ctx.time_of_day.clone().unwrap_or_else(|| "N/A".to_string())
         )
     }
 
@@ -207,7 +207,7 @@ impl PromptTemplate for AlarmTemplate {
                 "{{ \"alarm_type\": \"overvoltage\" | \"undervoltage\" | \"overcurrent\" | \"overtemperature\" | \"fault\", \"severity\": \"info\" | \"warning\" | \"critical\", \"action\": \"<处理动作>\", \"target_device\": \"<目标设备>\" }}\n\n",
                 "只输出 JSON，不要其他文字。",
             ),
-            ctx.soc, ctx.power_current, ctx.temperature, ctx.time_of_day
+            ctx.soc, ctx.power_current, ctx.temperature.map_or("N/A".to_string(), |v| format!("{v}")), ctx.time_of_day.clone().unwrap_or_else(|| "N/A".to_string())
         )
     }
 

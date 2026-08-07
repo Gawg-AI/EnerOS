@@ -11,6 +11,7 @@
 //! 构造器显式注入（B3 纪律）。
 
 use alloc::string::{String, ToString};
+use alloc::format;
 use alloc::vec::Vec;
 
 use eneros_fs::fs_trait::FileSystem;
@@ -55,9 +56,19 @@ impl<F: FileSystem> DataSink for FsDataSink<F> {
         line.push(',');
         line.push_str(&format_f32(m1));
         line.push('\n');
-        let _ = now_ms;
+        // 蓝图/20 R3-1：now_ms 真实使用——文件首行记录最近写入时刻
+        // （审计用，不破坏 CSV 数据列）。
+        let existing = self.fs.read_file(&self.path).unwrap_or_default();
+        let first = if existing.starts_with(b"# eneros cloud telemetry") {
+            String::new()
+        } else {
+            format!("# eneros cloud telemetry dump; last write at {now_ms}\n")
+        };
         // 追加写：读现有 + 新行。
         let mut existing = self.fs.read_file(&self.path).unwrap_or_default();
+        if !first.is_empty() && !existing.starts_with(first.as_bytes()) {
+            existing = first.into_bytes();
+        }
         existing.extend_from_slice(line.as_bytes());
         self.fs
             .write_file(&self.path, &existing)
@@ -192,11 +203,12 @@ mod tests {
         let mut sink = FsDataSink::new(fs, "/cloud/domain1.dat");
         sink.store(&domain_data(1000), 1000).expect("store 1");
         sink.store(&domain_data(2000), 2000).expect("store 2");
-        // 读回验证两行。
+        // 读回验证两行 + 首行写入时间戳注释（蓝图/20 R3-1：now_ms 真实使用）。
         let mut fs2 = sink.fs;
         let data = fs2.read_file("/cloud/domain1.dat").expect("read");
         let text = core::str::from_utf8(&data).expect("utf8");
-        assert_eq!(text.lines().count(), 2);
+        assert!(text.starts_with("# eneros cloud telemetry dump; last write at 1000"));
+        assert_eq!(text.lines().filter(|l| !l.starts_with('#')).count(), 2);
         assert!(text.contains("1,1000,2,"));
         assert!(text.contains("1,2000,2,"));
     }

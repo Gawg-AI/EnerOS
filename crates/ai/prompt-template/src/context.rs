@@ -14,10 +14,10 @@ pub struct TemplateContext {
     pub soc: f64,
     /// 当前充放电功率（kW，正=放电，负=充电）.
     pub power_current: f64,
-    /// 电池温度（℃）.
-    pub temperature: f64,
-    /// 当前时段（"峰时" / "平时" / "谷时"）.
-    pub time_of_day: String,
+    /// 电池温度（℃）——`None` = 传感器未接入（蓝图/20 R3-1：禁假值占位）.
+    pub temperature: Option<f64>,
+    /// 当前时段（"峰时" / "平时" / "谷时"）——`None` = 时段源未接入.
+    pub time_of_day: Option<String>,
     /// 历史功率数据（最近 N 个采样点）.
     pub historical_data: Vec<f64>,
 }
@@ -28,8 +28,8 @@ impl TemplateContext {
         market_price: f64,
         soc: f64,
         power_current: f64,
-        temperature: f64,
-        time_of_day: String,
+        temperature: Option<f64>,
+        time_of_day: Option<String>,
         historical_data: Vec<f64>,
     ) -> Self {
         Self {
@@ -50,8 +50,8 @@ impl Default for TemplateContext {
             market_price: 0.5,
             soc: 50.0,
             power_current: 0.0,
-            temperature: 25.0,
-            time_of_day: String::from("谷时"),
+            temperature: Some(25.0),
+            time_of_day: Some(String::from("谷时")),
             historical_data: Vec::new(),
         }
     }

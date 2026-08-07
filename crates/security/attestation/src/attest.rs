@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn att11_verify_happy_path() {
         let (mut tpm, log, mut rng) = make_measured();
-        let ak_pubkey = tpm.attestation_pubkey();
+        let ak_pubkey = tpm.attestation_pubkey().expect("ak available in test");
         let attest = make_attestation(&mut tpm, &log, &mut rng);
         let expected_log = make_expected_log(b"runtime-image");
         let mut verifier = AttestVerifier::new(ak_pubkey);
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn att12_nonce_mismatch_rejected() {
         let (mut tpm, log, mut rng) = make_measured();
-        let ak_pubkey = tpm.attestation_pubkey();
+        let ak_pubkey = tpm.attestation_pubkey().expect("ak available in test");
         let attest = make_attestation(&mut tpm, &log, &mut rng);
         let expected_log = make_expected_log(b"runtime-image");
         let mut verifier = AttestVerifier::new(ak_pubkey);
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn att13_tampered_signature_rejected() {
         let (mut tpm, log, mut rng) = make_measured();
-        let ak_pubkey = tpm.attestation_pubkey();
+        let ak_pubkey = tpm.attestation_pubkey().expect("ak available in test");
         let mut attest = make_attestation(&mut tpm, &log, &mut rng);
         attest.signature[0] ^= 0x01;
         let expected_log = make_expected_log(b"runtime-image");
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn att14_expected_log_extra_event_rejected() {
         let (mut tpm, log, mut rng) = make_measured();
-        let ak_pubkey = tpm.attestation_pubkey();
+        let ak_pubkey = tpm.attestation_pubkey().expect("ak available in test");
         let attest = make_attestation(&mut tpm, &log, &mut rng);
         // 期望侧在 PCR1 上多度量一笔（期望值偏离证明侧）
         let mut expected_log = make_expected_log(b"runtime-image");
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn att15_event_log_inconsistent_rejected() {
         let (mut tpm, log, mut rng) = make_measured();
-        let ak_pubkey = tpm.attestation_pubkey();
+        let ak_pubkey = tpm.attestation_pubkey().expect("ak available in test");
         let mut attest = make_attestation(&mut tpm, &log, &mut rng);
         // 篡改证明日志第一笔事件的 digest（签名不覆盖日志，验签仍过，
         // 但自一致性重放值 ≠ quote 值）
@@ -409,7 +409,7 @@ mod tests {
         // 另一密钥对的公钥（错误 AK）：CsRng 固定种子（eneros-crypto 偏差
         // 声明 ①），须复用状态已推进的 rng 才能生成不同密钥
         let other_tpm = SoftTpm::new(&mut rng);
-        let mut verifier = AttestVerifier::new(other_tpm.attestation_pubkey());
+        let mut verifier = AttestVerifier::new(other_tpm.attestation_pubkey().expect("ak"));
         let result = verifier.verify(&attest, &expected_log, &NONCE);
         assert!(!result.trusted);
         assert_eq!(result.reason, AttestReason::SignatureInvalid);
@@ -447,7 +447,7 @@ mod tests {
             log.measure(&mut tpm, 2, EV_RUNTIME, b"runtime-image"),
             Ok(())
         );
-        let ak_pubkey = tpm.attestation_pubkey();
+        let ak_pubkey = tpm.attestation_pubkey().expect("ak available in test");
         // 生成证明（PCR[0..7]，含未度量 PCR3~7）
         let attest = RemoteAttestation::generate(
             &mut tpm,
@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn int21_tampered_runtime_image_rejected() {
         let (mut tpm, log, mut rng) = make_measured();
-        let ak_pubkey = tpm.attestation_pubkey();
+        let ak_pubkey = tpm.attestation_pubkey().expect("ak available in test");
         let attest = make_attestation(&mut tpm, &log, &mut rng);
         // 攻击场景：期望侧（白名单）Runtime 镜像被替换
         let expected_log = make_expected_log(b"runtime-image-evil");
