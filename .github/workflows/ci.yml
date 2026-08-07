@@ -219,6 +219,11 @@ jobs:
       - name: VRF-003 gate semantics (no silent pass)
         run: cargo xtask test gate-semantics
 
+      - name: 蓝图/20 R1-1 version-gate-consistency (explicit gate run)
+        run: |
+          # 版本闸门显式执行：Go/No-Go 非全 PASS → 版本必须带 -rc.N（当前 rc.0 合法）
+          cargo xtask qa gng-version
+
       - name: D1 soak infrastructure (RC-1a, skip-evidence on no hardware)
         run: |
           # 真机浸泡执行器：无硬件 → 跳过证据+就绪清单（exit 0）；
