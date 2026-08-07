@@ -4,6 +4,7 @@
 
 use alloc::vec::Vec;
 
+use eneros_market_types::YuanPerKwh;
 use crate::types::{Settlement, TradeContext, TradePhase};
 use crate::TradeError;
 
@@ -36,7 +37,7 @@ impl TradeOrchestrator {
     /// 创建交易，返回 deal_id
     ///
     /// 初始阶段为 Matched。
-    pub fn create_trade(&mut self, seller: u64, buyer: u64, volume: crate::MilliKwh, price: f64) -> u64 {
+    pub fn create_trade(&mut self, seller: u64, buyer: u64, volume: crate::MilliKwh, price: YuanPerKwh) -> u64 {
         let deal_id = self.next_id;
         self.next_id += 1;
         let ctx = TradeContext {
@@ -140,7 +141,7 @@ mod tests {
 
     fn make_orchestrator() -> TradeOrchestrator {
         let mut orch = TradeOrchestrator::new();
-        orch.create_trade(1, 2, crate::MilliKwh::from_kwh(100.0), 0.5);
+        orch.create_trade(1, 2, crate::MilliKwh::from_kwh(100.0), YuanPerKwh(0.5));
         orch
     }
 

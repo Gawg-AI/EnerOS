@@ -15,6 +15,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::market_feed::YuanPerKwh;
 use eneros_market_types::TradeDir;
 use eneros_solver_core::solver::Solver;
 
@@ -33,9 +34,9 @@ use crate::market_feed::MarketFeed;
 /// - 否则不报价（`IntentFailed` 表示无意图）。
 pub struct RuleBidIntentSource {
     /// 卖出触发电价（元/kWh）。
-    pub sell_price_threshold: f64,
+    pub sell_price_threshold: YuanPerKwh,
     /// 买入触发电价（元/kWh）。
-    pub buy_price_threshold: f64,
+    pub buy_price_threshold: YuanPerKwh,
     /// 卖出 SOC 门限（0..1）。
     pub soc_threshold: f32,
     /// 目标报价电量（MW）。
@@ -45,8 +46,8 @@ pub struct RuleBidIntentSource {
 impl Default for RuleBidIntentSource {
     fn default() -> Self {
         Self {
-            sell_price_threshold: 0.8,
-            buy_price_threshold: 0.2,
+            sell_price_threshold: YuanPerKwh(0.8),
+            buy_price_threshold: YuanPerKwh(0.2),
             soc_threshold: 0.3,
             target_quantity: 1.0,
         }
@@ -60,9 +61,9 @@ impl BidIntentSource for RuleBidIntentSource {
             .first()
             .map(|p| p.price)
             .ok_or(BidError::IntentFailed)?;
-        let side = if price >= self.sell_price_threshold as f32 && soc >= self.soc_threshold {
+        let side = if price >= self.sell_price_threshold && soc >= self.soc_threshold {
             TradeDir::Sell
-        } else if price <= self.buy_price_threshold as f32 {
+        } else if price <= self.buy_price_threshold {
             TradeDir::Buy
         } else {
             return Err(BidError::IntentFailed);
@@ -114,7 +115,7 @@ impl<S: Solver> BidOptimizer for SolverBidOptimizer<S> {
             lower_bounds: vec![0.0],
             upper_bounds: vec![capacity as f64],
             var_types: vec![eneros_solver_core::problem::VarType::Continuous],
-            objective: vec![price as f64],
+            objective: vec![price.0],
             sense: eneros_solver_core::problem::ObjectiveSense::Maximize,
             constraints: eneros_solver_core::problem::ConstraintMatrix {
                 num_rows: 0,
@@ -138,8 +139,8 @@ impl<S: Solver> BidOptimizer for SolverBidOptimizer<S> {
         };
         // 价格调整：按意图方向微调（Sell 加价 2%，Buy 减价 2%）。
         let adjust = match intent.side {
-            TradeDir::Sell => price * 0.02,
-            TradeDir::Buy => -price * 0.02,
+            TradeDir::Sell => (price.0 * 0.02) as f32,
+            TradeDir::Buy => -(price.0 * 0.02) as f32,
         };
         Ok(BidOptimization {
             price_adjust: adjust,
@@ -213,7 +214,7 @@ mod tests {
             timestamp: 1000,
             prices: vec![PricePoint {
                 time: 0,
-                price: price as f32,
+                price: YuanPerKwh(price),
                 period: crate::market_feed::Period::Peak,
             }],
             dr_signals: Vec::new(),

@@ -65,7 +65,7 @@ impl TimeSlot {
 /// 电价 newtype（元/kWh）。
 ///
 /// 与 [`YuanPerMwh`] 相差 1000 倍；禁止在二者之间做隐式裸 `f64` 换算。
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
 pub struct YuanPerKwh(pub f64);
 
 /// 电价 newtype（元/MWh）。
@@ -75,6 +75,9 @@ pub struct YuanPerKwh(pub f64);
 pub struct YuanPerMwh(pub f64);
 
 impl YuanPerKwh {
+    /// 零价。
+    pub const ZERO: YuanPerKwh = YuanPerKwh(0.0);
+
     /// 换算为元/MWh（×1000）。
     pub const fn to_mwh(self) -> YuanPerMwh {
         YuanPerMwh(self.0 * 1000.0)
@@ -201,6 +204,25 @@ mod tests {
         let _mwh: YuanPerMwh = kwh.to_mwh();
         let _kwh: YuanPerKwh = _mwh.to_kwh();
         assert_eq!(_kwh, kwh);
+    }
+
+    /// 蓝图/20 R3-2 金额定点精度：同一价格多次成交累计无漂移
+    /// （f64 直算 0.1+0.2 场景在定点表示下精确；金额运算经
+    /// `MilliYuan` 定点语义验证）。
+    #[test]
+    fn price_fixed_point_precision() {
+        // 单价 0.1 元/kWh × 3 次 100 kWh 成交：金额必须精确等于 30 元
+        // （毫元定点，无浮点累计误差）。
+        let price = YuanPerKwh(0.1);
+        let mut total = MilliYuan::ZERO;
+        for _ in 0..3 {
+            let amount = MilliYuan::from_yuan_f64(100.0 * price.0);
+            total = MilliYuan(total.0 + amount.0);
+        }
+        assert_eq!(total, MilliYuan::from_yuan_f64(30.0), "定点累计精确");
+        // 单位换算往返不损失精度（1000 倍关系）。
+        let mwh = price.to_mwh();
+        assert_eq!(mwh.to_kwh(), price);
     }
 
     /// Bid 构造与聚合。

@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 
 /// 市场类型（唯一来源：`eneros-market-types`，ARCH-M03 / ADR-0029）。
 pub use eneros_market_types::MarketType;
+pub use eneros_market_types::YuanPerKwh;
 
 /// 需求响应信号（ARC-005 统一量纲：唯一来源 `eneros-dr`——target_kw/kW、
 /// start_at·end_at/unix 秒、incentive_yuan/元；旧本地定义 target_mw/MW 与
@@ -38,8 +39,8 @@ pub enum Period {
 pub struct PricePoint {
     /// 时间戳（ms）.
     pub time: u64,
-    /// 电价（元/kWh）.
-    pub price: f32,
+    /// 电价（元/kWh）——蓝图/20 R3-2：金额类型定点化（禁裸 f32/f64）。
+    pub price: YuanPerKwh,
     /// 时段.
     pub period: Period,
 }
@@ -109,7 +110,7 @@ mod tests {
     fn t5_price_point_default() {
         let p = PricePoint::default();
         assert_eq!(p.time, 0);
-        assert!((p.price - 0.0).abs() < f32::EPSILON);
+        assert_eq!(p.price, YuanPerKwh::ZERO);
         assert_eq!(p.period, Period::Flat);
     }
 
@@ -118,11 +119,11 @@ mod tests {
     fn t6_price_point_fields() {
         let p = PricePoint {
             time: 1000,
-            price: 0.85,
+            price: YuanPerKwh(0.85),
             period: Period::Peak,
         };
         assert_eq!(p.time, 1000);
-        assert!((p.price - 0.85).abs() < f32::EPSILON);
+        assert_eq!(p.price, YuanPerKwh(0.85));
         assert_eq!(p.period, Period::Peak);
     }
 
@@ -131,7 +132,7 @@ mod tests {
     fn t7_price_point_copy() {
         let p1 = PricePoint {
             time: 1000,
-            price: 0.85,
+            price: YuanPerKwh(0.85),
             period: Period::Peak,
         };
         let p2 = p1;

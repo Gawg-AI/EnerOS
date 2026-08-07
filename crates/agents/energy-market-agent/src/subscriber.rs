@@ -270,7 +270,7 @@ mod tests {
     use alloc::vec;
 
     use super::*;
-    use crate::market_feed::{DrSignal, Period, PricePoint};
+    use crate::market_feed::{DrSignal, Period, PricePoint, YuanPerKwh};
 
     /// 辅助：构造含 1 个 PricePoint + 1 个 DrSignal 的 feed（便于发布分支测试）.
     fn make_feed(mt: MarketType) -> MarketFeed {
@@ -279,7 +279,7 @@ mod tests {
             timestamp: 1000,
             prices: vec![PricePoint {
                 time: 1000,
-                price: 0.85,
+                price: YuanPerKwh(0.85),
                 period: Period::Peak,
             }],
             dr_signals: vec![DrSignal {

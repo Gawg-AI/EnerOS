@@ -4,6 +4,7 @@
 
 use crate::orchestrator::TradeOrchestrator;
 use crate::settlement::{AutoSettlement, SettlementTrigger};
+use eneros_market_types::YuanPerKwh;
 use crate::types::TradePhase;
 use crate::TradeError;
 
@@ -81,7 +82,7 @@ impl ClosedLoop for ClosedLoopImpl {
                     let ctx = self.orchestrator.find(deal_id)?;
                     let seller = ctx.seller;
                     let amount =
-                        eneros_market_types::MilliYuan::from_yuan_f64(ctx.volume_kwh.as_kwh() * ctx.price);
+                        eneros_market_types::MilliYuan::from_yuan_f64(ctx.volume_kwh.as_kwh() * ctx.price.0);
                     let _ = account.freeze(seller, amount); // 失败不阻断状态机（由对账暴露）
                 }
                 self.orchestrator.freeze(deal_id, fid)?;
@@ -119,7 +120,7 @@ mod tests {
 
     fn make_loop() -> ClosedLoopImpl {
         let mut orch = TradeOrchestrator::new();
-        orch.create_trade(1, 2, crate::MilliKwh::from_kwh(200.0), 0.8);
+        orch.create_trade(1, 2, crate::MilliKwh::from_kwh(200.0), YuanPerKwh(0.8));
         let settlement = AutoSettlement::new(9999);
         // v0.230.0：注入真实计量闭包（全额交付 200 kWh）。
         ClosedLoopImpl::new(orch, settlement)

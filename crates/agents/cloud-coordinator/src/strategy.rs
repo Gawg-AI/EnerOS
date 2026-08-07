@@ -215,7 +215,7 @@ mod tests {
 
         let p = StrategyContent::PriceForecast(vec![PricePoint {
             time: 0,
-            price: 0.5,
+            price: eneros_energy_market_agent::YuanPerKwh(0.5),
             period: Period::Peak,
         }]);
         assert_eq!(p, p.clone());
@@ -394,7 +394,7 @@ mod tests {
             targets: Vec::new(),
             content: StrategyContent::PriceForecast(vec![PricePoint {
                 time: 0,
-                price: 0.5,
+                price: eneros_energy_market_agent::YuanPerKwh(0.5),
                 period: Period::Valley,
             }]),
             deadline: 0,

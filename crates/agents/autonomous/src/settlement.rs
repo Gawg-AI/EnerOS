@@ -2,6 +2,7 @@
 //!
 //! 定义结算 trait 及自动结算实现。
 
+use eneros_market_types::YuanPerKwh;
 use crate::types::{MilliYuan, Settlement, TradeContext};
 use crate::TradeError;
 
@@ -35,7 +36,7 @@ impl SettlementTrigger for AutoSettlement {
             return Err(TradeError::SettlementFailed);
         }
         // ARC-003：金额定点（delivered × price 精确积 round-half-up 定毫）
-        let amount = MilliYuan::from_yuan_f64(ctx.delivered_kwh.as_kwh() * ctx.price);
+        let amount = MilliYuan::from_yuan_f64(ctx.delivered_kwh.as_kwh() * ctx.price.0);
         Ok(Settlement {
             deal_id: ctx.deal_id,
             seller_credit_kwh: ctx.delivered_kwh,
@@ -51,7 +52,7 @@ mod tests {
     use super::*;
     use crate::types::TradePhase;
 
-    fn make_ctx(delivered: crate::MilliKwh, price: f64) -> TradeContext {
+    fn make_ctx(delivered: crate::MilliKwh, price: YuanPerKwh) -> TradeContext {
         TradeContext {
             deal_id: 1,
             seller: 10,
@@ -68,7 +69,7 @@ mod tests {
     #[test]
     fn auto_settlement_calculates() {
         let mut s = AutoSettlement::new(5000);
-        let ctx = make_ctx(crate::MilliKwh::from_kwh(150.0), 0.6);
+        let ctx = make_ctx(crate::MilliKwh::from_kwh(150.0), YuanPerKwh(0.6));
         let result = s.settle(&ctx).unwrap();
         assert_eq!(result.deal_id, 1);
         assert_eq!(result.seller_credit_kwh, crate::MilliKwh(150_000));
@@ -80,14 +81,14 @@ mod tests {
     #[test]
     fn auto_settlement_zero_delivery_fails() {
         let mut s = AutoSettlement::new(1000);
-        let ctx = make_ctx(crate::MilliKwh::from_kwh(0.0), 0.5);
+        let ctx = make_ctx(crate::MilliKwh::from_kwh(0.0), YuanPerKwh(0.5));
         assert_eq!(s.settle(&ctx), Err(TradeError::SettlementFailed));
     }
 
     #[test]
     fn auto_settlement_negative_delivery_fails() {
         let mut s = AutoSettlement::new(1000);
-        let ctx = make_ctx(crate::MilliKwh::from_kwh(-10.0), 0.5);
+        let ctx = make_ctx(crate::MilliKwh::from_kwh(-10.0), YuanPerKwh(0.5));
         assert_eq!(s.settle(&ctx), Err(TradeError::SettlementFailed));
     }
 }

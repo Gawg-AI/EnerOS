@@ -19,6 +19,7 @@
 
 use alloc::vec::Vec;
 
+use crate::market_feed::YuanPerKwh;
 use crate::market_feed::{DrSignal, MarketError, MarketFeed, MarketType, Period, PricePoint};
 
 /// 解析时段字符串（大小写不敏感）.
@@ -61,10 +62,13 @@ pub fn parse_price_point(line: &str) -> Result<PricePoint, MarketError> {
         .trim()
         .parse::<u64>()
         .map_err(|_| MarketError::ParseFailed)?;
-    let price = fields[2]
-        .trim()
-        .parse::<f32>()
-        .map_err(|_| MarketError::ParseFailed)?;
+    // 蓝图/20 R3-2：解析直接进金额类型（禁裸 f32）。
+    let price = YuanPerKwh(
+        fields[2]
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| MarketError::ParseFailed)?,
+    );
     let period = parse_period(fields[3].trim())?;
     Ok(PricePoint {
         time,
@@ -169,7 +173,7 @@ mod tests {
     fn t13_parse_price_point_peak() {
         let p = parse_price_point("P,1000,0.85,peak").unwrap();
         assert_eq!(p.time, 1000);
-        assert!((p.price - 0.85).abs() < f32::EPSILON);
+        assert!((p.price.0 - 0.85).abs() < f64::EPSILON);
         assert_eq!(p.period, Period::Peak);
     }
 
@@ -178,7 +182,7 @@ mod tests {
     fn t14_parse_price_point_flat() {
         let p = parse_price_point("P,2000,0.50,flat").unwrap();
         assert_eq!(p.time, 2000);
-        assert!((p.price - 0.50).abs() < f32::EPSILON);
+        assert!((p.price.0 - 0.50).abs() < f64::EPSILON);
         assert_eq!(p.period, Period::Flat);
     }
 
@@ -187,7 +191,7 @@ mod tests {
     fn t15_parse_price_point_valley() {
         let p = parse_price_point("P,3000,0.30,valley").unwrap();
         assert_eq!(p.time, 3000);
-        assert!((p.price - 0.30).abs() < f32::EPSILON);
+        assert!((p.price.0 - 0.30).abs() < f64::EPSILON);
         assert_eq!(p.period, Period::Valley);
     }
 
@@ -305,7 +309,7 @@ mod tests {
         assert_eq!(feed.prices.len(), 1);
         let p = feed.prices[0];
         assert_eq!(p.time, 1000);
-        assert!((p.price - 0.85).abs() < f32::EPSILON);
+        assert!((p.price.0 - 0.85).abs() < f64::EPSILON);
         assert_eq!(p.period, Period::Peak);
         assert_eq!(feed.timestamp, 5);
     }

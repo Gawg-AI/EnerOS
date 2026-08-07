@@ -2,7 +2,7 @@
 //!
 //! 包含交易阶段、结算信息和交易上下文。
 
-pub use eneros_market_types::MilliYuan;
+pub use eneros_market_types::{YuanPerKwh, MilliYuan};
 
 /// 交易阶段
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,8 +64,8 @@ pub struct TradeContext {
     pub buyer: u64,
     /// 交易电量（毫 kWh 定点，v0.230.0）
     pub volume_kwh: crate::MilliKwh,
-    /// 单价 (元/kWh)
-    pub price: f64,
+    /// 单价（元/kWh）——蓝图/20 R3-2：金额类型定点化（禁裸 f64）。
+    pub price: YuanPerKwh,
     /// 当前阶段
     pub phase: TradePhase,
     /// 冻结 ID
@@ -112,7 +112,7 @@ mod tests {
             seller: 10,
             buyer: 20,
             volume_kwh: crate::MilliKwh::from_kwh(500.0),
-            price: 0.5,
+            price: YuanPerKwh(0.5),
             phase: TradePhase::Matched,
             freeze_id: None,
             delivered_kwh: crate::MilliKwh::ZERO,

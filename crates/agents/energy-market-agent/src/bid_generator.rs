@@ -272,10 +272,10 @@ pub fn conservative_optimize(intent: &BidIntent, strategy: &BidStrategy) -> BidO
 }
 
 /// 计算报价价格：Sell 加价，Buy 减价且不低于 0.
-fn compute_price(side: BidSide, base: f32, adjust: f32) -> f32 {
+fn compute_price(side: BidSide, base: YuanPerKwh, adjust: f32) -> YuanPerKwh {
     match side {
-        BidSide::Sell => base + adjust,
-        BidSide::Buy => (base - adjust).max(0.0),
+        BidSide::Sell => YuanPerKwh(base.0 + adjust as f64),
+        BidSide::Buy => YuanPerKwh((base.0 - adjust as f64).max(0.0)),
     }
 }
 
@@ -360,7 +360,7 @@ impl BidGenerator {
                 segments: vec![BidSegment {
                     period: TimeSlot::new(point.time, point.time + 3_600_000),
                     volume_kwh: quantity_kw as f64 * 1000.0,
-                    price: YuanPerKwh(price_yuan_per_kwh as f64),
+                    price: price_yuan_per_kwh,
                     direction: intent.side,
                 }],
                 submit_at: now_ms,
@@ -405,13 +405,11 @@ mod tests {
             timestamp: 1000,
             prices: vec![
                 PricePoint {
-                    time: 1000,
-                    price: 0.9,
+                    time: 1000, price: YuanPerKwh(0.9),
                     period: Period::Peak,
                 },
                 PricePoint {
-                    time: 2000,
-                    price: 0.3,
+                    time: 2000, price: YuanPerKwh(0.3),
                     period: Period::Valley,
                 },
             ],
@@ -706,9 +704,9 @@ mod tests {
     // ===== T60: compute_price —— Sell 加价 / Buy 减价 / Buy 地板 0 =====
     #[test]
     fn t60_compute_price() {
-        assert!((compute_price(BidSide::Sell, 0.9, 0.1) - 1.0).abs() < 1e-6);
-        assert!((compute_price(BidSide::Buy, 0.3, 0.1) - 0.2).abs() < 1e-6);
-        assert!((compute_price(BidSide::Buy, 0.05, 0.1) - 0.0).abs() < f32::EPSILON);
+        assert!((compute_price(BidSide::Sell, YuanPerKwh(0.9), 0.1).0 - 1.0).abs() < 1e-6);
+        assert!((compute_price(BidSide::Buy, YuanPerKwh(0.3), 0.1).0 - 0.2).abs() < 1e-6);
+        assert!((compute_price(BidSide::Buy, YuanPerKwh(0.05), 0.1).0 - 0.0).abs() < f64::EPSILON);
     }
 
     // ===== T61: clamp_quantity —— max / capacity / 负值归零 =====
@@ -783,8 +781,7 @@ mod tests {
             market_type: MarketType::Spot,
             timestamp: 2000,
             prices: vec![PricePoint {
-                time: 2000,
-                price: 0.5,
+                time: 2000, price: YuanPerKwh(0.5),
                 period: Period::Flat,
             }],
             dr_signals: Vec::new(),
@@ -839,8 +836,7 @@ mod tests {
             market_type: MarketType::Spot,
             timestamp: 1000,
             prices: vec![PricePoint {
-                time: 1000,
-                price: 0.05,
+                time: 1000, price: YuanPerKwh(0.05),
                 period: Period::Valley,
             }],
             dr_signals: Vec::new(),
@@ -1060,8 +1056,7 @@ mod tests {
             market_type: MarketType::DemandResponse,
             timestamp: 1000,
             prices: vec![PricePoint {
-                time: 1000,
-                price: 0.9,
+                time: 1000, price: YuanPerKwh(0.9),
                 period: Period::Peak,
             }],
             dr_signals: Vec::new(),

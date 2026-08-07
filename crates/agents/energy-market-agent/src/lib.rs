@@ -196,6 +196,7 @@ pub use market::{MarketChannel, MarketData, MarketDataSource, MarketSignal};
 pub use market::MockMarketSource;
 pub use market_agent::MarketAgent;
 pub use market_feed::{DrSignal, MarketError, MarketFeed, MarketType, Period, PricePoint};
+pub use market_feed::YuanPerKwh;
 pub use multi_dispatch::{
     equal_split, DeviceAssignment, DispatchError, DispatchPlan, MultiDeviceDispatcher,
 };
