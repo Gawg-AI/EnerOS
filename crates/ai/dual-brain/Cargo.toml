@@ -10,6 +10,9 @@ description = "EnerOS v0.71.0 Dual-brain coordinator (LLM + Solver end-to-end, <
 # v0.248.0（C-248）：遥测真实性——latency 各字段接真实单调时钟
 # （eneros-time::get_monotonic_ns；boot 后可用，未初始化回退 0）。
 eneros-time = { path = "../../drivers/time" }
+# 22 §2.W2.2：AI→设备经 ControlChain（锁定 5）。
+eneros-control-gateway = { path = "../../protocols/control-gateway" }
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 eneros-solver-core = { path = "../solver-core" }
 eneros-energy-lp-model = { path = "../energy-lp-model" }
 eneros-safety-validator = { path = "../safety-validator" }

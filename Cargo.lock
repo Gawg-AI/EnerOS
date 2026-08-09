@@ -529,12 +529,14 @@ dependencies = [
 name = "eneros-ai-runner"
 version = "1.0.0-rc.0"
 dependencies = [
+ "eneros-control-gateway",
  "eneros-dual-brain",
  "eneros-energy-lp-model",
  "eneros-fast-path",
  "eneros-llm-engine",
  "eneros-safety-validator",
  "eneros-solver-core",
+ "eneros-telemetry-model",
  "serde_json",
 ]
 
@@ -768,6 +770,7 @@ version = "1.0.0-rc.0"
 name = "eneros-dual-brain"
 version = "1.0.0-rc.0"
 dependencies = [
+ "eneros-control-gateway",
  "eneros-energy-lp-model",
  "eneros-fast-path",
  "eneros-intent-contract",
@@ -776,6 +779,7 @@ dependencies = [
  "eneros-prompt-template",
  "eneros-safety-validator",
  "eneros-solver-core",
+ "eneros-telemetry-model",
  "eneros-time",
  "serde",
  "serde_json",

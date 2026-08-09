@@ -28,7 +28,7 @@ use eneros_llm_engine::stats::{EngineHealth, EngineStats};
 use eneros_solver_core::highs::HighsSolver;
 
 use crate::scenario::{Overrides, Scenario};
-use crate::sink::FileCommandSink;
+use crate::sink::{FileCommandSink, FileExecutor};
 
 pub mod scenario;
 pub mod sink;
@@ -48,6 +48,8 @@ pub enum RunnerError {
     DualBrain(DualBrainError),
     /// 证据 JSON 序列化失败.
     Evidence(String),
+    /// 22 §2.W2.2：ControlChain 装配失败（租约/策略/安全点）.
+    Chain(String),
 }
 
 impl fmt::Display for RunnerError {
@@ -59,6 +61,7 @@ impl fmt::Display for RunnerError {
             Self::Io(e) => write!(f, "sink io error ({}): {:?}", e.path, e.source),
             Self::DualBrain(e) => write!(f, "dual-brain error: {e:?}"),
             Self::Evidence(m) => write!(f, "evidence error: {m}"),
+            Self::Chain(m) => write!(f, "chain error: {m}"),
         }
     }
 }
@@ -202,7 +205,23 @@ pub fn run_once(
     });
     llm.load_model(model_path).map_err(RunnerError::Llm)?;
     let solver = HighsSolver::new().map_err(|e| RunnerError::Solver(format!("{e:?}")))?;
-    let sink: Box<dyn CommandSink> = Box::new(FileCommandSink::new(sink_path)?);
+    // 22 §2.W2.2：AI→设备必经 ControlChain（锁定 5）——ChainCommandSink
+    // 授权（default-deny 链：租约+策略+SBO+安全）→ FileExecutor 文件总线
+    // 真实写入。链装配（ADR-029）：默认策略放行 Ai→dev1/pt10，租约签发。
+    let chain = build_chain()?;
+    let sink: Box<dyn CommandSink> =
+        Box::new(eneros_dual_brain::chain_sink::ChainCommandSink::new(
+            chain,
+            Box::new(FileExecutor::new(sink_path)?),
+            CHAIN_KEY,
+            CHAIN_LEASE_ID,
+            1,
+            CHAIN_ISSUER,
+            1,
+            10,
+            CHAIN_POLICY_VERSION,
+            now_fn,
+        ));
     let mut coord = DualBrainCoordinator::new(config, llm, solver, sink);
 
     // 首次 execute 必走慢路径（PathSelector 首次 `last_slow_path_ms == None`）。
@@ -348,4 +367,77 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+}
+
+// ============================================================================
+// 22 §2.W2.2：ControlChain 装配（默认策略/租约/安全点；key 注入）。
+// ============================================================================
+
+/// 链密钥（HMAC 信封签名；生产由运维注入——v1.0 交付项，见 ADR-029）。
+const CHAIN_KEY: &[u8] = b"eneros-runner-chain-key-000000000000000000";
+/// AI 租约 ID（装配时签发，3 600 s）。
+const CHAIN_LEASE_ID: [u8; 16] = [0xE1; 16];
+/// 信封签发者标识。
+const CHAIN_ISSUER: [u8; 16] = [0xE2; 16];
+/// 策略代次（Policy::new(1) + with_rule 不 bump generation）。
+const CHAIN_POLICY_VERSION: u64 = 1;
+
+/// 时间源（毫秒；runner 单次执行用系统时钟）。
+fn now_fn() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// ControlChain 装配：策略放行 Ai→dev1/pt10，租约签发，安全点注册。
+/// default-deny：未配置规则的点一律拒绝（fail-closed）。
+pub fn build_chain() -> Result<eneros_control_gateway::chain::ControlChain, RunnerError> {
+    use eneros_control_gateway::chain::ControlChain;
+    use eneros_control_gateway::envelope::ActorKind;
+    use eneros_control_gateway::lease::LeaseScope;
+    use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
+    use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
+    use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
+    use eneros_telemetry_model::unit::PhysicalUnit;
+
+    let policy = Policy::new(1).with_rule(PolicyRule {
+        actor_kind: Some(ActorKind::Ai),
+        devices: vec![1],
+        points: vec![10],
+        kinds: vec![CommandClass::Switch],
+        time_window: (0, 0),
+        obligations: vec![],
+    });
+    let mut chain = ControlChain::new(CHAIN_KEY, 5, 64, policy, 60, 300, 64, 30);
+    let scope = LeaseScope {
+        devices: vec![1],
+        points: vec![10],
+        max_class: 1,
+    };
+    if chain
+        .lease_service_mut()
+        .issue(CHAIN_LEASE_ID, scope, 3_600, now_fn())
+        .is_none()
+    {
+        return Err(RunnerError::Chain("lease issue failed".into()));
+    }
+    chain.safety_mut().register(
+        1,
+        10,
+        SafetyPoint {
+            role: SafetyRole::PccBreaker,
+            spec: PointSpec {
+                point_id: 10,
+                device_id: 1,
+                unit: PhysicalUnit::Kilowatts,
+                safe_min: -500.0,
+                safe_max: 500.0,
+                max_ramp_per_sec: None,
+                direction: ControlDirection::Discrete,
+                remote_controllable: true,
+            },
+        },
+    );
+    Ok(chain)
 }
