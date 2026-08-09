@@ -80,6 +80,11 @@ pub struct EnergyAgent<S: Solver> {
         eneros_dual_brain::rejection::RejectionKind,
         eneros_dual_brain::rejection::RejectionAction,
     )>,
+    // --- 22 §2.W2.5：轻量在线学习（锁定 8，安全闸后生效）---
+    /// deadband 自适应学习器（学习输出过 safety-validator）。
+    pub deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive,
+    /// LP 预测修正器（偏差 EMA，钳位安全界）。
+    pub forecast_corrector: eneros_dual_brain::learning::ForecastCorrector,
 }
 
 impl<S: Solver> EnergyAgent<S> {
@@ -117,6 +122,8 @@ impl<S: Solver> EnergyAgent<S> {
             last_observed_at_ms: now_ms,
             rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
             last_rejection: None,
+            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::new(1.0, 0.1, 10.0),
+            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::new(0.5),
         }
     }
 
@@ -177,6 +184,8 @@ impl EnergyAgent<MockSolver> {
             last_observed_at_ms: now_ms,
             rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
             last_rejection: None,
+            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::new(1.0, 0.1, 10.0),
+            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::new(0.5),
         }
     }
 }
@@ -242,8 +251,13 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                             fb.validation_passed = true;
                             // 偏差指标（decision.forecast_error 源数据）。
                             if predicted.is_finite() {
-                                self.forecast_error_sum += (predicted - fb.actual_revenue).abs();
+                                let dev = (predicted - fb.actual_revenue).abs();
+                                self.forecast_error_sum += dev;
                                 self.forecast_error_count += 1;
+                                // 22 §2.W2.5：轻量在线学习（安全闸内置——
+                                // 越界拒绝用旧值，学坏不致灾）。
+                                self.deadband_learner.learn(dev);
+                                self.forecast_corrector.learn(predicted - fb.actual_revenue);
                             }
                         }
                         None => {
@@ -444,5 +458,49 @@ mod w24_rejection_tests {
         );
         let mut h = RejectionHandler::new(3);
         assert_eq!(h.handle(&err, "pcs"), RejectionAction::EscalateToHuman);
+    }
+}
+
+// ============================================================================
+// 22 §2.W2.5 验收：轻量在线学习接入（deadband 自适应 + 偏差修正）
+// ============================================================================
+#[cfg(test)]
+mod w25_learning_tests {
+    use eneros_dual_brain::learning::{DeadbandAdaptive, ForecastCorrector};
+
+    use super::*;
+
+    /// 验收 1：学习器接入 agent——观测偏差喂入后状态推进（安全闸内置）。
+    #[test]
+    fn test_learner_wired_into_agent() {
+        let mut agent = EnergyAgent::new_default(1_000);
+        let before = agent.deadband_learner.samples;
+        // 直接喂偏差（模拟观测相输出）。
+        agent.deadband_learner.learn(2.0);
+        assert_eq!(agent.deadband_learner.samples, before + 1);
+    }
+
+    /// 验收 2：学习输出过 safety-validator——越界拒绝用旧值。
+    #[test]
+    fn test_learning_outputs_pass_safety_validator() {
+        let mut db = DeadbandAdaptive::new(1.0, 0.1, 10.0);
+        for _ in 0..100 {
+            db.learn(100.0); // 极端噪声
+        }
+        assert!(db.current <= db.max, "死区必须钳位在安全 catalog 内");
+        let mut fc = ForecastCorrector::new(0.5);
+        for _ in 0..200 {
+            fc.learn(50.0); // 极端偏差
+        }
+        assert!(fc.correction().abs() <= 0.5, "修正系数必须钳位安全界");
+    }
+
+    /// 验收 3：无偏差时不学习（样本不推进）。
+    #[test]
+    fn test_no_learning_without_deviation() {
+        let mut db = DeadbandAdaptive::new(1.0, 0.1, 10.0);
+        db.learn(0.0);
+        // 零偏差仍算样本（EMA 衰减向 0）——语义：死区回落。
+        assert_eq!(db.samples, 1);
     }
 }

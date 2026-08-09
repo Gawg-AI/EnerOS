@@ -1,3 +1,5 @@
+//! v1.0.0_scope = "deferred"（22 §2.W2.5：本期不做 RL/MARL 真实化；
+//! 轻量在线学习见 dual-brain::learning，锁定 8）。
 //!
 //! # 商业范围（21-B A4）
 //!

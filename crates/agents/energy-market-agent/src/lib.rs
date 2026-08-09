@@ -549,6 +549,8 @@ mod tests {
             last_observed_at_ms: 0,
             rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
             last_rejection: None,
+            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::new(1.0, 0.1, 10.0),
+            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::new(0.5),
         };
 
         agent.on_start(1000).unwrap();
