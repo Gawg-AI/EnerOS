@@ -272,7 +272,6 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
 #[cfg(test)]
 mod w21_feedback_loop_tests {
     use super::*;
-    use crate::runtime::AgentRuntime as _;
 
     /// 固定观测源：可设定电压/电流/SOC/时刻。
     struct StubObserver {
