@@ -119,32 +119,110 @@ impl ActorKind {
 
 /// 已通过控制链全部裁决、可施加于设备的写命令（蓝图/24 D4）。
 ///
-/// 只能由 `ControlGateway::authorize` 产出（控制网关是唯一构造路径）。
+/// **26-B WP-26.4（P1-1）封焊**：字段私有——生产代码中"字面量构造
+/// `AuthorizedCommand { .. }`"编译失败（P1-1：旧全 pub 字段使任何依赖
+/// telemetry-model 的 crate 可伪造已授权命令，绕过 HMAC/租约/防重放）。
+/// 构造通道：
+/// - 生产：`ControlGateway::authorize` 经 [`AuthorizedCommand::from_parts`]
+///   （`#[doc(hidden)]`；WP-26.1 门禁执法封死其他生产调用）；
+/// - 测试：`from_parts` 或契约套件 `protocol-abstract::contract::authorized_command`。
 /// `device_id` 为 upa-model `DeviceId(u16)`、`point_id` 为 `PointId(u32)`；
 /// 信封 wire 布局不变（wire 上 device_id 仍占 4 字节，见 control-gateway
 /// envelope 编解码；u32→u16 的收窄在 HMAC 验证之后、default-deny）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuthorizedCommand {
     /// 目标设备 ID（upa-model `DeviceId`，u16）。
-    pub device_id: eneros_upa_model::DeviceId,
+    device_id: eneros_upa_model::DeviceId,
     /// 目标点 ID（upa-model `PointId`，u32）。
-    pub point_id: eneros_upa_model::PointId,
+    point_id: eneros_upa_model::PointId,
     /// 开关语义命令（Single/Double）。
-    pub command: ControlCommand,
+    command: ControlCommand,
     /// 签发者身份类别。
-    pub actor_kind: ActorKind,
+    actor_kind: ActorKind,
     /// 签发者标识（固定 16 字节）。
-    pub issuer: [u8; 16],
+    issuer: [u8; 16],
     /// 关联 ID（请求→结果链追踪）。
-    pub correlation_id: [u8; 16],
+    correlation_id: [u8; 16],
     /// 序列号（签发方单调）。
-    pub sequence: u64,
+    sequence: u64,
     /// 本命令所骑乘的租约 ID（CTL-006）。
-    pub lease_id: [u8; 16],
+    lease_id: [u8; 16],
     /// fencing token（单调；吊销围栏，CTL-006）。
-    pub fencing_token: u64,
+    fencing_token: u64,
     /// 策略代次（PDP/PEP，CTL-005）。
-    pub policy_version: u64,
+    policy_version: u64,
     /// 幂等键（CTL-007 去重）。
-    pub idempotency_key: [u8; 16],
+    idempotency_key: [u8; 16],
+}
+
+impl AuthorizedCommand {
+    /// 只读访问器（WP-26.4：字段私有后全字段经访问器读取）。
+    pub fn device_id(&self) -> eneros_upa_model::DeviceId {
+        self.device_id
+    }
+    pub fn point_id(&self) -> eneros_upa_model::PointId {
+        self.point_id
+    }
+    pub fn command(&self) -> ControlCommand {
+        self.command
+    }
+    pub fn actor_kind(&self) -> ActorKind {
+        self.actor_kind
+    }
+    pub fn issuer(&self) -> [u8; 16] {
+        self.issuer
+    }
+    pub fn correlation_id(&self) -> [u8; 16] {
+        self.correlation_id
+    }
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+    pub fn lease_id(&self) -> [u8; 16] {
+        self.lease_id
+    }
+    pub fn fencing_token(&self) -> u64 {
+        self.fencing_token
+    }
+    pub fn policy_version(&self) -> u64 {
+        self.policy_version
+    }
+    pub fn idempotency_key(&self) -> [u8; 16] {
+        self.idempotency_key
+    }
+
+    /// 构造通道（`#[doc(hidden)]`，WP-26.4）。
+    ///
+    /// **生产唯一合法调用方**：`ControlGateway::authorize`（control-gateway
+    /// gateway.rs）。WP-26.1 门禁执法：其他生产 crate 调用本函数 → 门禁
+    /// FAIL（与字面量构造同样封死）。测试装配可用（测试不受门禁执法约束）。
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        device_id: eneros_upa_model::DeviceId,
+        point_id: eneros_upa_model::PointId,
+        command: ControlCommand,
+        actor_kind: ActorKind,
+        issuer: [u8; 16],
+        correlation_id: [u8; 16],
+        sequence: u64,
+        lease_id: [u8; 16],
+        fencing_token: u64,
+        policy_version: u64,
+        idempotency_key: [u8; 16],
+    ) -> Self {
+        Self {
+            device_id,
+            point_id,
+            command,
+            actor_kind,
+            issuer,
+            correlation_id,
+            sequence,
+            lease_id,
+            fencing_token,
+            policy_version,
+            idempotency_key,
+        }
+    }
 }

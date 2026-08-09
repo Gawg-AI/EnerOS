@@ -174,8 +174,8 @@ impl Iec104Slave {
         match &self.authorized_write {
             None => false,
             Some(auth) => {
-                // （蓝图/24 D4：auth.device_id 已类型化为 u16，与 common_addr 同宽直比）
-                auth.device_id == common_addr && auth.point_id == ioa && &auth.command == cmd
+                // （蓝图/24 D4：auth.device_id() 已类型化为 u16，与 common_addr 同宽直比）
+                auth.device_id() == common_addr && auth.point_id() == ioa && &auth.command() == cmd
             }
         }
     }
@@ -939,20 +939,20 @@ mod tests {
     // ===== 14. 单点遥控执行 =====
     /// 构造一条与 (common_addr, ioa, cmd) 匹配的 AuthorizedCommand (CTL-004)。
     fn auth_for(common_addr: u16, ioa: u32, cmd: ControlCommand) -> AuthorizedCommand {
-        AuthorizedCommand {
-            // （蓝图/24 D4：device_id 已类型化为 u16，与 common_addr 同宽）
-            device_id: common_addr,
-            point_id: ioa,
-            command: cmd,
-            actor_kind: eneros_control_gateway::ActorKind::Operator,
-            issuer: [0xCD; 16],
-            correlation_id: [1; 16],
-            sequence: 1,
-            lease_id: [3; 16],
-            fencing_token: 7,
-            policy_version: 3,
-            idempotency_key: [4; 16],
-        }
+        // （蓝图/24 D4：device_id 已类型化为 u16，与 common_addr 同宽）
+        AuthorizedCommand::from_parts(
+            common_addr,
+            ioa,
+            cmd,
+            eneros_control_gateway::ActorKind::Operator,
+            [0xCD; 16],
+            [1; 16],
+            1,
+            [3; 16],
+            7,
+            3,
+            [4; 16],
+        )
     }
 
     /// 解码 mock 发送的最后一帧 I 格式 ASDU 的 Cot。

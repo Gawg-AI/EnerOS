@@ -197,19 +197,20 @@ pub fn run_adapter_contract<A: ProtocolAdapter + PointAccessExt + AuthorizedWrit
 /// `AuthorizedCommand` 只能由控制网关产出（编译期事实，§8.2 第一层）。
 pub fn authorized_command(device_id: DeviceId, point_id: PointId) -> AuthorizedCommand {
     use eneros_telemetry_model::command::{ActorKind, ControlCommand, SingleCommand};
-    AuthorizedCommand {
+    // WP-26.4：字段私有后经 from_parts 构造（契约套件唯一 fixture 入口）。
+    AuthorizedCommand::from_parts(
         device_id,
         point_id,
-        command: ControlCommand::Single(SingleCommand::On),
-        actor_kind: ActorKind::Operator,
-        issuer: [0xAB; 16],
-        correlation_id: [0xCD; 16],
-        sequence: 1,
-        lease_id: [0xE1; 16],
-        fencing_token: 7,
-        policy_version: 3,
-        idempotency_key: [0x01; 16],
-    }
+        ControlCommand::Single(SingleCommand::On),
+        ActorKind::Operator,
+        [0xAB; 16],
+        [0xCD; 16],
+        1,
+        [0xE1; 16],
+        7,
+        3,
+        [0x01; 16],
+    )
 }
 
 /// 便捷包装：从配置构造适配器配置（供各适配器测试复用）。

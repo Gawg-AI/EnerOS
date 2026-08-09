@@ -335,7 +335,7 @@ mod tests {
                 return Err(e.clone());
             }
             self.writes
-                .push((cmd.point_id, cmd.lease_id[0] as u32, power_kw));
+                .push((cmd.point_id(), cmd.lease_id()[0] as u32, power_kw));
             Ok(())
         }
     }

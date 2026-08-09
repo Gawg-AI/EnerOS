@@ -663,15 +663,15 @@ mod tests {
             cmd: &eneros_protocol_abstract::AuthorizedCommand,
             value: PointValue,
         ) -> Result<WriteOutcome, WriteError> {
-            if cmd.device_id != self.device_id {
+            if cmd.device_id() != self.device_id {
                 return Err(WriteError::CommandMismatch);
             }
-            if !self.points.contains_key(&cmd.point_id) {
+            if !self.points.contains_key(&cmd.point_id()) {
                 return Err(WriteError::CommandMismatch);
             }
             let echoed = value.clone();
             if let PointValue::Float(v) = value {
-                self.points.insert(cmd.point_id, v);
+                self.points.insert(cmd.point_id(), v);
             }
             Ok(WriteOutcome {
                 echoed: Some(echoed),
@@ -1047,21 +1047,21 @@ mod tests {
             2,
         )
         .with_backoff(|_| 0);
-        let cmd = eneros_control_gateway::gateway::AuthorizedCommand {
-            device_id: 1,
-            point_id: 10,
-            command: eneros_telemetry_model::command::ControlCommand::Single(
+        let cmd = eneros_control_gateway::gateway::AuthorizedCommand::from_parts(
+            1,
+            10,
+            eneros_telemetry_model::command::ControlCommand::Single(
                 eneros_telemetry_model::command::SingleCommand::On,
             ),
-            actor_kind: ActorKind::Ai,
-            issuer: [0u8; 16],
-            correlation_id: [0u8; 16],
-            sequence: 1,
-            lease_id: [0u8; 16],
-            fencing_token: 1,
-            policy_version: 1,
-            idempotency_key: [0u8; 16],
-        };
+            ActorKind::Ai,
+            [0u8; 16],
+            [0u8; 16],
+            1,
+            [0u8; 16],
+            1,
+            1,
+            [0u8; 16],
+        );
         let r = d.write(&cmd, &[0u8; 172], 50.0);
         assert_eq!(
             r,

@@ -306,14 +306,20 @@ mod tests {
         for _ in 0..1000 {
             db.learn(1e9);
         }
-        assert!(catalog.check_deadband(db.current), "死区必须始终在 catalog 界内");
+        assert!(
+            catalog.check_deadband(db.current),
+            "死区必须始终在 catalog 界内"
+        );
         assert_eq!(db.current, 1.0, "极端输入下保持初始安全值");
 
         let mut fc = ForecastCorrector::with_catalog(catalog);
         for _ in 0..1000 {
             fc.learn(1e9);
         }
-        assert!(catalog.check_correction(fc.correction()), "修正系数必须始终在界内");
+        assert!(
+            catalog.check_correction(fc.correction()),
+            "修正系数必须始终在界内"
+        );
         assert_eq!(fc.correction(), 0.0);
     }
 }

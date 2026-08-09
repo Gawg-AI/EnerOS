@@ -116,8 +116,8 @@ impl DeviceExecutor for FileExecutor {
         let line = serde_json::json!({
             "schema": "eneros.executor-file.v1",
             "envelope_hex": envelope_hex,
-            "device_id": cmd.device_id,
-            "point_id": cmd.point_id,
+            "device_id": cmd.device_id(),
+            "point_id": cmd.point_id(),
             "power_kw": power_kw,
         });
         let mut bytes = serde_json::to_vec(&line)

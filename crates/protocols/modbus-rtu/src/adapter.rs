@@ -187,10 +187,10 @@ impl<T: RtuTransport> AuthorizedWriter for ModbusRtuAdapter<T> {
     ) -> Result<WriteOutcome, WriteError> {
         // 蓝图/24 §6.1：命令点/设备匹配校验通过后才落写；不匹配 →
         // CommandMismatch，设备状态不变。
-        if cmd.device_id != self.device_id {
+        if cmd.device_id() != self.device_id {
             return Err(WriteError::CommandMismatch);
         }
-        if self.find_mapping(cmd.point_id).is_none() {
+        if self.find_mapping(cmd.point_id()).is_none() {
             return Err(WriteError::CommandMismatch);
         }
         // 篡改防御：载荷类型与点类型矛盾（Analog 寄存器只接受数值载荷）。
@@ -200,7 +200,7 @@ impl<T: RtuTransport> AuthorizedWriter for ModbusRtuAdapter<T> {
         ) {
             return Err(WriteError::Unauthorized);
         }
-        self.write_point_impl(cmd.point_id, value)
+        self.write_point_impl(cmd.point_id(), value)
             .map_err(WriteError::Protocol)?;
         // 回读确认可空：Modbus 主站以协议应答（写单寄存器响应）为确认。
         Ok(WriteOutcome { echoed: None })

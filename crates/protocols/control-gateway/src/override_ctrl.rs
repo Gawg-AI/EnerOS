@@ -106,8 +106,8 @@ impl OverrideAuthority {
 
     /// Decide how a command should be routed.
     pub fn decide(&self, cmd: &AuthorizedCommand, now: u64) -> OverrideDecision {
-        let under_override = self.is_active(cmd.point_id, now);
-        match (cmd.actor_kind, under_override) {
+        let under_override = self.is_active(cmd.point_id(), now);
+        match (cmd.actor_kind(), under_override) {
             (ActorKind::Emergency, _) => OverrideDecision::EmergencyBypass,
             (_, true) => OverrideDecision::SupersededByOverride,
             (_, false) => OverrideDecision::Normal,
@@ -138,19 +138,19 @@ mod tests {
     use crate::gateway::AuthorizedCommand;
 
     fn make_cmd(actor: ActorKind, point: u32) -> AuthorizedCommand {
-        AuthorizedCommand {
-            device_id: 1,
-            point_id: point,
-            command: ControlCommand::Single(SingleCommand::On),
-            actor_kind: actor,
-            issuer: [0; 16],
-            correlation_id: [0; 16],
-            sequence: 1,
-            lease_id: [0; 16],
-            fencing_token: 1,
-            policy_version: 1,
-            idempotency_key: [0; 16],
-        }
+        AuthorizedCommand::from_parts(
+            1,
+            point,
+            ControlCommand::Single(SingleCommand::On),
+            actor,
+            [0; 16],
+            [0; 16],
+            1,
+            [0; 16],
+            1,
+            1,
+            [0; 16],
+        )
     }
 
     #[test]

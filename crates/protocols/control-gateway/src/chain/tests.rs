@@ -115,8 +115,8 @@ fn test_full_chain_executes_valid_command() {
     let fb = FeedbackBundle::fresh(true, 50.0, now());
     match chain.execute(&buf, now(), &fb) {
         ChainOutcome::Executed { cmd, obligations } => {
-            assert_eq!(cmd.device_id, 1);
-            assert_eq!(cmd.point_id, 10);
+            assert_eq!(cmd.device_id(), 1);
+            assert_eq!(cmd.point_id(), 10);
             assert!(obligations.is_empty());
         }
         other => panic!("expected Executed, got {:?}", other),
@@ -371,7 +371,7 @@ fn test_chain_dry_run_obligation_intercepts_execution() {
     let fb = FeedbackBundle::fresh(true, 50.0, now());
     match chain.execute(&buf, now(), &fb) {
         ChainOutcome::DryRun { cmd, obligations } => {
-            assert_eq!(cmd.point_id, 10);
+            assert_eq!(cmd.point_id(), 10);
             assert!(obligations.iter().any(|o| matches!(o, Obligation::DryRun)));
         }
         other => panic!("expected DryRun, got {:?}", other),

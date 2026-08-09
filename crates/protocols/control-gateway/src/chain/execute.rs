@@ -20,7 +20,7 @@ impl ControlChain {
         //    enforce that the lease is still active and the token is current.
         match self
             .lease_service
-            .check(&cmd.lease_id, cmd.fencing_token, now)
+            .check(&cmd.lease_id(), cmd.fencing_token(), now)
         {
             LeaseStatus::Valid => {}
             LeaseStatus::Revoked => {
@@ -35,7 +35,7 @@ impl ControlChain {
         }
 
         // 3. Idempotency (CTL-007) — exactly-once for retransmits.
-        if let Some(prior) = self.idempotency.check(&cmd.idempotency_key, now) {
+        if let Some(prior) = self.idempotency.check(&cmd.idempotency_key(), now) {
             return ChainOutcome::IdempotentHit(prior);
         }
 
@@ -43,7 +43,7 @@ impl ControlChain {
         let obligations = match self.override_auth.decide(&cmd, now) {
             OverrideDecision::SupersededByOverride => {
                 self.idempotency
-                    .record(cmd.idempotency_key, OpOutcome::Rejected, now);
+                    .record(cmd.idempotency_key(), OpOutcome::Rejected, now);
                 return ChainOutcome::Denied(ChainDenyReason::SupersededByOverride);
             }
             OverrideDecision::EmergencyBypass => {
@@ -52,12 +52,12 @@ impl ControlChain {
             }
             OverrideDecision::Normal => {
                 // 5. Policy PDP (CTL-005) — semantic authorization, default-deny.
-                let scope: LeaseScope = match self.lease_service.scope(&cmd.lease_id, now) {
+                let scope: LeaseScope = match self.lease_service.scope(&cmd.lease_id(), now) {
                     Some(s) => s.clone(),
                     None => {
                         // Lease vanished between check and scope — treat as revoked.
                         self.idempotency
-                            .record(cmd.idempotency_key, OpOutcome::Rejected, now);
+                            .record(cmd.idempotency_key(), OpOutcome::Rejected, now);
                         return ChainOutcome::Denied(ChainDenyReason::LeaseRevoked);
                     }
                 };
@@ -65,7 +65,7 @@ impl ControlChain {
                     Decision::Allow { obligations } => obligations,
                     Decision::Deny(reason) => {
                         self.idempotency
-                            .record(cmd.idempotency_key, OpOutcome::Rejected, now);
+                            .record(cmd.idempotency_key(), OpOutcome::Rejected, now);
                         return ChainOutcome::Denied(ChainDenyReason::Policy(reason));
                     }
                 }
@@ -74,16 +74,16 @@ impl ControlChain {
 
         // 6. Select-before-execute (CTL-007) — discrete commands require a
         //    prior, non-expired select.
-        match self.sbo.execute(cmd.point_id, now) {
+        match self.sbo.execute(cmd.point_id(), now) {
             SboExecuteResult::Executed => {}
             SboExecuteResult::NotSelected => {
                 self.idempotency
-                    .record(cmd.idempotency_key, OpOutcome::Rejected, now);
+                    .record(cmd.idempotency_key(), OpOutcome::Rejected, now);
                 return ChainOutcome::Denied(ChainDenyReason::NotSelected);
             }
             SboExecuteResult::SelectExpired => {
                 self.idempotency
-                    .record(cmd.idempotency_key, OpOutcome::Rejected, now);
+                    .record(cmd.idempotency_key(), OpOutcome::Rejected, now);
                 return ChainOutcome::Denied(ChainDenyReason::SelectExpired);
             }
         }
@@ -101,7 +101,7 @@ impl ControlChain {
             let v = self.safety.validate(&cmd, &ctx);
             if let SafetyVerdict::Unsafe(safety_reason) = v {
                 self.idempotency
-                    .record(cmd.idempotency_key, OpOutcome::Rejected, now);
+                    .record(cmd.idempotency_key(), OpOutcome::Rejected, now);
                 return ChainOutcome::Denied(ChainDenyReason::FeedbackUntrusted(format!(
                     "{reason}; safety={safety_reason}"
                 )));
@@ -109,7 +109,7 @@ impl ControlChain {
             // Validator said Safe despite untrusted feedback — but we still
             // deny: acting on untrusted feedback is forbidden by CTL-010.
             self.idempotency
-                .record(cmd.idempotency_key, OpOutcome::Rejected, now);
+                .record(cmd.idempotency_key(), OpOutcome::Rejected, now);
             return ChainOutcome::Denied(ChainDenyReason::FeedbackUntrusted(reason));
         }
 
@@ -118,7 +118,7 @@ impl ControlChain {
             SafetyVerdict::Safe => {}
             SafetyVerdict::Unsafe(reason) => {
                 self.idempotency
-                    .record(cmd.idempotency_key, OpOutcome::Rejected, now);
+                    .record(cmd.idempotency_key(), OpOutcome::Rejected, now);
                 return ChainOutcome::Denied(ChainDenyReason::Unsafe(reason));
             }
         }
@@ -126,13 +126,13 @@ impl ControlChain {
         // 9. PEP: DryRun obligation — intercept before execution.
         if obligations.iter().any(|o| matches!(o, Obligation::DryRun)) {
             self.idempotency
-                .record(cmd.idempotency_key, OpOutcome::Applied, now);
+                .record(cmd.idempotency_key(), OpOutcome::Applied, now);
             return ChainOutcome::DryRun { cmd, obligations };
         }
 
         // 10. All checks passed — record as applied for idempotency.
         self.idempotency
-            .record(cmd.idempotency_key, OpOutcome::Applied, now);
+            .record(cmd.idempotency_key(), OpOutcome::Applied, now);
         ChainOutcome::Executed { cmd, obligations }
     }
 

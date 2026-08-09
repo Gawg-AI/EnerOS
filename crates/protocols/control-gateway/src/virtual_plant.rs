@@ -151,7 +151,7 @@ impl VirtualPlant {
 
         let stuck = self
             .stuck_points
-            .get(&cmd.point_id)
+            .get(&cmd.point_id())
             .copied()
             .unwrap_or(false);
         // Apply the physical effect. If the actuator is stuck, state does NOT change.
@@ -175,9 +175,11 @@ impl VirtualPlant {
     fn mutate_for(&mut self, cmd: &AuthorizedCommand) {
         use eneros_telemetry_model::command::{ControlCommand, DoubleCommand, SingleCommand};
         // Map (point) → effect by consulting the validator's role table.
-        // （蓝图/24 D4：cmd.device_id 已类型化为 u16，无损加宽）
-        let role = self.validator.role_of(cmd.device_id as u32, cmd.point_id);
-        match (role, &cmd.command) {
+        // （蓝图/24 D4：cmd.device_id() 已类型化为 u16，无损加宽）
+        let role = self
+            .validator
+            .role_of(cmd.device_id() as u32, cmd.point_id());
+        match (role, &cmd.command()) {
             (
                 Some(crate::safety::SafetyRole::PccBreaker),
                 ControlCommand::Single(SingleCommand::On),
@@ -241,19 +243,9 @@ mod tests {
     use crate::safety::{SafetyPoint, SafetyRole};
 
     fn auth(point: u32, cmd: ControlCommand, actor: ActorKind) -> AuthorizedCommand {
-        AuthorizedCommand {
-            device_id: 1,
-            point_id: point,
-            command: cmd,
-            actor_kind: actor,
-            issuer: [0; 16],
-            correlation_id: [0; 16],
-            sequence: 1,
-            lease_id: [0; 16],
-            fencing_token: 1,
-            policy_version: 1,
-            idempotency_key: [0; 16],
-        }
+        AuthorizedCommand::from_parts(
+            1, point, cmd, actor, [0; 16], [0; 16], 1, [0; 16], 1, 1, [0; 16],
+        )
     }
 
     fn pcc_spec() -> PointSpec {

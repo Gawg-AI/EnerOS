@@ -45,7 +45,7 @@ impl CommandClass {
     /// Discrete Single/Double commands are `Switch`; the caller may upgrade to
     /// `Emergency` when `actor_kind == Emergency`.
     pub fn from_command(cmd: &AuthorizedCommand) -> Self {
-        match cmd.actor_kind {
+        match cmd.actor_kind() {
             ActorKind::Emergency => Emergency,
             _ => Switch, // ControlCommand is discrete in v1; setpoint class added with analog cmds
         }
@@ -137,18 +137,18 @@ impl<'a> Pdp<'a> {
     pub fn decide(&self, cmd: &AuthorizedCommand, lease: &LeaseScope, now: u64) -> Decision {
         // 1. Policy-version staleness: the issuer must have seen the current
         //    generation. A stale version is a hard deny.
-        if cmd.policy_version != self.policy.generation {
+        if cmd.policy_version() != self.policy.generation {
             return Decision::Deny(DenyReason::StalePolicyVersion {
                 current: self.policy.generation,
-                presented: cmd.policy_version,
+                presented: cmd.policy_version(),
             });
         }
 
         // 2. Lease scope: the target device/point must be within the lease.
-        //    （蓝图/24 D4：cmd.device_id 类型化为 u16，此处无损加宽比较）
+        //    （蓝图/24 D4：cmd.device_id() 类型化为 u16，此处无损加宽比较）
         let in_scope = (lease.devices.is_empty()
-            || lease.devices.contains(&(cmd.device_id as u32)))
-            && (lease.points.is_empty() || lease.points.contains(&cmd.point_id));
+            || lease.devices.contains(&(cmd.device_id() as u32)))
+            && (lease.points.is_empty() || lease.points.contains(&cmd.point_id()));
         if !in_scope {
             return Decision::Deny(DenyReason::OutsideLeaseScope);
         }
@@ -158,14 +158,14 @@ impl<'a> Pdp<'a> {
         // 3. Find the first matching rule. No match → deny.
         for rule in &self.policy.rules {
             if let Some(ak) = rule.actor_kind {
-                if ak != cmd.actor_kind {
+                if ak != cmd.actor_kind() {
                     continue;
                 }
             }
-            if !rule.devices.is_empty() && !rule.devices.contains(&(cmd.device_id as u32)) {
+            if !rule.devices.is_empty() && !rule.devices.contains(&(cmd.device_id() as u32)) {
                 continue;
             }
-            if !rule.points.is_empty() && !rule.points.contains(&cmd.point_id) {
+            if !rule.points.is_empty() && !rule.points.contains(&cmd.point_id()) {
                 continue;
             }
             if !rule.kinds.is_empty() && !rule.kinds.contains(&class) {
@@ -204,19 +204,19 @@ mod tests {
         point: u32,
         policy_version: u64,
     ) -> AuthorizedCommand {
-        AuthorizedCommand {
-            device_id: device,
-            point_id: point,
-            command: ControlCommand::Single(SingleCommand::On),
-            actor_kind: actor,
-            issuer: [0; 16],
-            correlation_id: [0; 16],
-            sequence: 1,
-            lease_id: [0; 16],
-            fencing_token: 1,
+        AuthorizedCommand::from_parts(
+            device,
+            point,
+            ControlCommand::Single(SingleCommand::On),
+            actor,
+            [0; 16],
+            [0; 16],
+            1,
+            [0; 16],
+            1,
             policy_version,
-            idempotency_key: [0; 16],
-        }
+            [0; 16],
+        )
     }
 
     fn full_scope() -> LeaseScope {

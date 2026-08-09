@@ -503,11 +503,11 @@ impl EnvelopeIngress {
             ChainOutcome::Executed { cmd, .. } => {
                 // 6. 授权落写（适配器二次匹配校验；功率载荷 ADR-029）。
                 //    路由已在步骤 3 确认；此处再次查找以执行写。
-                let Some(info) = devices.find_by_device_id(cmd.device_id) else {
+                let Some(info) = devices.find_by_device_id(cmd.device_id()) else {
                     // 防御性：步骤 3 已确认存在，不应到达（仍 fail-closed）。
                     return self.deny(
                         DenyClass::Mismatch,
-                        &format!("device_id={}", cmd.device_id),
+                        &format!("device_id={}", cmd.device_id()),
                         Some(&audit_ctx),
                         now_ms,
                     );
@@ -524,7 +524,7 @@ impl EnvelopeIngress {
                             Some(v) => Some(v.clone()),
                             None => info
                                 .adapter
-                                .read_point(cmd.point_id)
+                                .read_point(cmd.point_id())
                                 .ok()
                                 .map(|dp| dp.value),
                         };
@@ -536,15 +536,15 @@ impl EnvelopeIngress {
                         self.log_audit(
                             AuditEvent::new(
                                 AuditEventType::WriteExecuted,
-                                actor_str_byte(cmd.actor_kind as u8),
-                                &format!("device={} point={}", cmd.device_id, cmd.point_id),
+                                actor_str_byte(cmd.actor_kind() as u8),
+                                &format!("device={} point={}", cmd.device_id(), cmd.point_id()),
                                 &audit_ctx.detail("outcome=applied"),
                             ),
                             now_ms,
                         );
                         IngressOutcome::Applied {
-                            device_id: cmd.device_id,
-                            point_id: cmd.point_id,
+                            device_id: cmd.device_id(),
+                            point_id: cmd.point_id(),
                             power_kw: frame.power_kw,
                             echoed: readback,
                         }
@@ -589,8 +589,8 @@ impl EnvelopeIngress {
                 self.log_audit(
                     AuditEvent::new(
                         AuditEventType::WriteExecuted,
-                        actor_str_byte(cmd.actor_kind as u8),
-                        &format!("device={} point={}", cmd.device_id, cmd.point_id),
+                        actor_str_byte(cmd.actor_kind() as u8),
+                        &format!("device={} point={}", cmd.device_id(), cmd.point_id()),
                         &audit_ctx.detail("outcome=dry-run"),
                     ),
                     now_ms,

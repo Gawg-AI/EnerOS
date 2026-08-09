@@ -407,6 +407,38 @@ pub fn command_mock_leak(root: &Path, _args: &[String]) -> DynResult<()> {
                     crate_name
                 ));
             }
+            // WP-26.4：AuthorizedCommand 构造执法——非 control-gateway crate 的
+            // 顶层（非缩进）出现 from_parts 调用或字面量 → 违规。
+            // 字段私有已使生产字面量编译失败（类型系统强制）；本规则封死
+            // from_parts 的生产调用（测试区域为缩进块，不受影响）。
+            // 豁免定义侧 crate（control-gateway = 唯一生产构造方；
+            // telemetry-model = 类型与 from_parts 定义处）。
+            if crate_name != "control-gateway" && crate_name != "telemetry-model" {
+                let Ok(text) = fs::read_to_string(&file) else {
+                    continue;
+                };
+                for (i, line) in text.lines().enumerate() {
+                    let t = line.trim_start();
+                    if line.starts_with(char::is_whitespace)
+                        || t.starts_with("//")
+                        || t.starts_with("pub struct AuthorizedCommand")
+                        || t.contains("-> AuthorizedCommand")
+                    {
+                        continue;
+                    }
+                    if t.contains("AuthorizedCommand::from_parts(")
+                        || t.starts_with("AuthorizedCommand {")
+                    {
+                        violations.push(format!(
+                            "{}:{}:{} (crate={}, rule=authorized-construction)",
+                            file.display(),
+                            i + 1,
+                            t,
+                            crate_name
+                        ));
+                    }
+                }
+            }
         }
     }
     violations.sort();

@@ -215,18 +215,18 @@ mod tests {
 
     fn test_cmd() -> AuthorizedCommand {
         use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
-        AuthorizedCommand {
-            device_id: 1,
-            point_id: 10,
-            command: ControlCommand::Single(SingleCommand::On),
-            actor_kind: eneros_telemetry_model::command::ActorKind::Ai,
-            issuer: [0u8; 16],
-            correlation_id: [0u8; 16],
-            sequence: 1,
-            lease_id: [0u8; 16],
-            fencing_token: 1,
-            policy_version: 1,
-            idempotency_key: [0u8; 16],
-        }
+        AuthorizedCommand::from_parts(
+            1,
+            10,
+            ControlCommand::Single(SingleCommand::On),
+            eneros_telemetry_model::command::ActorKind::Ai,
+            [0u8; 16],
+            [0u8; 16],
+            1,
+            [0u8; 16],
+            1,
+            1,
+            [0u8; 16],
+        )
     }
 }

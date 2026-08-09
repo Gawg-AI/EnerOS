@@ -87,13 +87,13 @@ impl AuthorizedWriter for MockAdapter {
         value: PointValue,
     ) -> Result<WriteOutcome, WriteError> {
         // 1. 设备匹配（蓝图/24 §6.1：不匹配 → CommandMismatch，状态不变）。
-        if cmd.device_id != self.device_id {
+        if cmd.device_id() != self.device_id {
             return Err(WriteError::CommandMismatch);
         }
         // 2. 点匹配。
         let point = self
             .points
-            .get_mut(&cmd.point_id)
+            .get_mut(&cmd.point_id())
             .ok_or(WriteError::CommandMismatch)?;
         // 3. 篡改防御：载荷值类型与点类型矛盾 → 拒绝（类型级不一致）。
         let type_ok = match (&point.point_type, &value) {

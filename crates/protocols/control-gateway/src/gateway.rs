@@ -225,19 +225,20 @@ impl ControlGateway {
         // upa-model DeviceId(u16)。越界（签名合法但 id 超出 u16 范围）属
         // 签发方配置错误，default-deny。
         let device_id = u16::try_from(env.device_id).map_err(|_| GatewayError::BadDeviceId)?;
-        Ok(AuthorizedCommand {
+        // WP-26.4：构造经 from_parts（字段私有；本处为生产唯一合法构造方）。
+        Ok(AuthorizedCommand::from_parts(
             device_id,
-            point_id: env.point_id,
-            command: env.command,
-            actor_kind: env.actor_kind,
-            issuer: env.issuer,
-            correlation_id: env.correlation_id,
-            sequence: env.sequence,
-            lease_id: env.lease_id,
-            fencing_token: env.fencing_token,
-            policy_version: env.policy_version,
-            idempotency_key: env.idempotency_key,
-        })
+            env.point_id,
+            env.command,
+            env.actor_kind,
+            env.issuer,
+            env.correlation_id,
+            env.sequence,
+            env.lease_id,
+            env.fencing_token,
+            env.policy_version,
+            env.idempotency_key,
+        ))
     }
 
     /// Number of entries currently held in the replay cache.
@@ -296,12 +297,12 @@ mod tests {
             now() + 30,
         );
         let cmd = gw.authorize(&buf, now()).unwrap();
-        assert_eq!(cmd.device_id, 42);
-        assert_eq!(cmd.point_id, 7);
-        assert_eq!(cmd.issuer, [0xCD; 16]);
-        assert_eq!(cmd.fencing_token, 7);
-        assert_eq!(cmd.policy_version, 3);
-        assert_eq!(cmd.actor_kind, ActorKind::Agent);
+        assert_eq!(cmd.device_id(), 42);
+        assert_eq!(cmd.point_id(), 7);
+        assert_eq!(cmd.issuer(), [0xCD; 16]);
+        assert_eq!(cmd.fencing_token(), 7);
+        assert_eq!(cmd.policy_version(), 3);
+        assert_eq!(cmd.actor_kind(), ActorKind::Agent);
     }
 
     #[test]

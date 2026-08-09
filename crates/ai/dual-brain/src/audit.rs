@@ -99,7 +99,10 @@ impl DecisionAudit {
     ///
     /// `deviation` 为 W2.1 偏差指标（观测值相对预测的偏差，可负）；
     /// 返回链上条目（含 event_hash/combined_hash，供追溯）。
-    pub fn log_decision(&mut self, r: &DecisionRecord) -> Result<eneros_audit::ChainEntry, AuditError> {
+    pub fn log_decision(
+        &mut self,
+        r: &DecisionRecord,
+    ) -> Result<eneros_audit::ChainEntry, AuditError> {
         let detail = format!(
             "i={};p={};s={};x={};d={:.3}",
             r.intent,
@@ -119,7 +122,11 @@ impl DecisionAudit {
     }
 
     /// 读取链上条目（按 seq 范围）。
-    pub fn read_range(&self, start: u64, end: u64) -> Result<alloc::vec::Vec<eneros_audit::ChainEntry>, AuditError> {
+    pub fn read_range(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> Result<alloc::vec::Vec<eneros_audit::ChainEntry>, AuditError> {
         self.logger.store().read_range(start, end)
     }
 

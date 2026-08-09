@@ -193,17 +193,17 @@ impl AuthorizedWriter for Iec104Adapter {
     ) -> Result<WriteOutcome, WriteError> {
         // 蓝图/24 §6.1：命令点/设备匹配校验通过后才落写；不匹配 →
         // CommandMismatch，设备状态不变。
-        if cmd.device_id != self.device_id {
+        if cmd.device_id() != self.device_id {
             return Err(WriteError::CommandMismatch);
         }
         let mapping = self
-            .find_mapping(cmd.point_id)
+            .find_mapping(cmd.point_id())
             .ok_or(WriteError::CommandMismatch)?;
         if self.state != AdapterState::Running && self.state != AdapterState::Initialized {
             return Err(WriteError::Protocol(ProtocolError::ProtocolNotStarted));
         }
         // 篡改防御：载荷类型与点类型矛盾（C_SC/C_DC 遥控只接受数值语义载荷；
-        // 开关语义来自 cmd.command，value 为工程载荷，ADR-029）。
+        // 开关语义来自 cmd.command()，value 为工程载荷，ADR-029）。
         if !matches!(
             value,
             PointValue::Float(_) | PointValue::Int(_) | PointValue::Enum(_)

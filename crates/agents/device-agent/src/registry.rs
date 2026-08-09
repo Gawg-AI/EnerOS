@@ -32,7 +32,7 @@ use crate::device_type::DeviceType;
 pub struct DeviceInfo {
     /// 设备类型.
     pub device_type: DeviceType,
-    /// 设备 ID（信封路由：cmd.device_id → 适配器）。
+    /// 设备 ID（信封路由：cmd.device_id() → 适配器）。
     pub device_id: DeviceId,
     /// 设备点访问适配器（读 seam + 授权写接缝）。
     pub adapter: Box<dyn PointAccessWriter>,
@@ -201,17 +201,17 @@ impl AuthorizedWriter for MockPointDevice {
         value: PointValue,
     ) -> Result<WriteOutcome, WriteError> {
         // 蓝图/24 §6.1：命令点/设备匹配校验通过后才落写；不匹配 → 拒绝。
-        if cmd.device_id != self.device_id {
+        if cmd.device_id() != self.device_id {
             return Err(WriteError::CommandMismatch);
         }
-        if !self.points.contains_key(&cmd.point_id) {
+        if !self.points.contains_key(&cmd.point_id()) {
             return Err(WriteError::CommandMismatch);
         }
         if self.offline || self.write_fail {
             return Err(WriteError::Protocol(ProtocolError::WriteFailed));
         }
         // 篡改防御：载荷类型与点类型矛盾 → 拒绝。
-        let point_type_ok = self.points.get(&cmd.point_id).is_some_and(|p| {
+        let point_type_ok = self.points.get(&cmd.point_id()).is_some_and(|p| {
             matches!(
                 (&p.point_type, &value),
                 (PointType::Analog, PointValue::Float(_) | PointValue::Int(_))
@@ -225,7 +225,7 @@ impl AuthorizedWriter for MockPointDevice {
             return Err(WriteError::Unauthorized);
         }
         let echoed = value.clone();
-        if let Some(p) = self.points.get_mut(&cmd.point_id) {
+        if let Some(p) = self.points.get_mut(&cmd.point_id()) {
             p.value = value;
         }
         Ok(WriteOutcome {

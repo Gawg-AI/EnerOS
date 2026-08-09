@@ -11,10 +11,10 @@
 //! 全部断言通过 = G-R5 判据「W5.1-W5.3 验收全 PASS」的端到端证据，
 //! 可声称"AI 决策可审计可控"。
 
+use eneros_audit::{ChainVerifier, ChainVerifierImpl};
 use eneros_dual_brain::audit::{DecisionAudit, DecisionRecord, ExecOutcome, SafetyOutcome};
 use eneros_dual_brain::gate::{DecisionGate, GateDecision};
 use eneros_dual_brain::learning::{DeadbandAdaptive, ForecastCorrector};
-use eneros_audit::{ChainVerifier, ChainVerifierImpl};
 use eneros_safety_validator::SafetyCatalog;
 
 #[test]

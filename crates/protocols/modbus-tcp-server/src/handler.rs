@@ -197,9 +197,9 @@ fn handle_write_single(
     let allowed = match write_policy {
         WritePolicy::DenyAll => false,
         WritePolicy::Authorized(auth) => {
-            auth.device_id == header.unit_id as u16
-                && auth.point_id as u16 == addr
-                && single_command_matches_on(&auth.command, value)
+            auth.device_id() == header.unit_id as u16
+                && auth.point_id() as u16 == addr
+                && single_command_matches_on(&auth.command(), value)
         }
     };
     if !allowed {
@@ -252,9 +252,9 @@ fn handle_write_multiple(
         WritePolicy::DenyAll => false,
         WritePolicy::Authorized(auth) => {
             quantity == 1
-                && auth.device_id == header.unit_id as u16
-                && auth.point_id as u16 == start
-                && single_command_matches_on(&auth.command, values[0])
+                && auth.device_id() == header.unit_id as u16
+                && auth.point_id() as u16 == start
+                && single_command_matches_on(&auth.command(), values[0])
         }
     };
     if !allowed {

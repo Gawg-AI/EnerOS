@@ -119,8 +119,8 @@ impl SafetyValidator {
 
     /// Validate a verified, lease-bound command against the current plant state.
     pub fn validate(&self, cmd: &AuthorizedCommand, ctx: &PlantContext) -> SafetyVerdict {
-        // （蓝图/24 D4：cmd.device_id 类型化为 u16，无损加宽作表 key）
-        let key = (cmd.device_id as u32, cmd.point_id);
+        // （蓝图/24 D4：cmd.device_id() 类型化为 u16，无损加宽作表 key）
+        let key = (cmd.device_id() as u32, cmd.point_id());
         let Some(point) = self.table.get(&key) else {
             // Default-deny: unassigned points are never writable.
             return SafetyVerdict::Unsafe(String::from("point not in safety table"));
@@ -142,7 +142,7 @@ impl SafetyValidator {
     fn validate_pcc(&self, cmd: &AuthorizedCommand, ctx: &PlantContext) -> SafetyVerdict {
         // Closing PCC (Single On / Double On) requires grid up + no maintenance lockout.
         let is_close = matches!(
-            cmd.command,
+            cmd.command(),
             ControlCommand::Single(SingleCommand::On) | ControlCommand::Double(DoubleCommand::On)
         );
         if is_close {
@@ -168,7 +168,7 @@ impl SafetyValidator {
     ) -> SafetyVerdict {
         // Enabling charge (On) when SOC already at/above ceiling → overcharge.
         let enable = matches!(
-            cmd.command,
+            cmd.command(),
             ControlCommand::Single(SingleCommand::On) | ControlCommand::Double(DoubleCommand::On)
         );
         if enable && ctx.soc_pct >= point.spec.safe_max {
@@ -187,7 +187,7 @@ impl SafetyValidator {
         point: &SafetyPoint,
     ) -> SafetyVerdict {
         let enable = matches!(
-            cmd.command,
+            cmd.command(),
             ControlCommand::Single(SingleCommand::On) | ControlCommand::Double(DoubleCommand::On)
         );
         if enable && ctx.soc_pct <= point.spec.safe_min {
@@ -203,7 +203,7 @@ impl SafetyValidator {
     ) -> SafetyVerdict {
         // UNblocking (turning block Off) while overcurrent → UCA-PCS-001.
         let unblock = matches!(
-            cmd.command,
+            cmd.command(),
             ControlCommand::Single(SingleCommand::Off) | ControlCommand::Double(DoubleCommand::Off)
         );
         if unblock && ctx.overcurrent {
@@ -231,19 +231,19 @@ mod tests {
     use crate::envelope::ActorKind;
 
     fn auth(device: u16, point: u32, cmd: ControlCommand) -> AuthorizedCommand {
-        AuthorizedCommand {
-            device_id: device,
-            point_id: point,
-            command: cmd,
-            actor_kind: ActorKind::Agent,
-            issuer: [0; 16],
-            correlation_id: [0; 16],
-            sequence: 1,
-            lease_id: [0; 16],
-            fencing_token: 1,
-            policy_version: 1,
-            idempotency_key: [0; 16],
-        }
+        AuthorizedCommand::from_parts(
+            device,
+            point,
+            cmd,
+            ActorKind::Agent,
+            [0; 16],
+            [0; 16],
+            1,
+            [0; 16],
+            1,
+            1,
+            [0; 16],
+        )
     }
 
     fn soc_spec(min: f64, max: f64) -> PointSpec {

@@ -70,17 +70,17 @@ mod tests {
     use alloc::string::String;
     use alloc::vec::Vec;
 
-    use crate::gate::{DecisionGate, GateDecision};
     use eneros_energy_lp_model::config::ScheduleConfig;
     use eneros_fast_path::selector::PathType;
     use eneros_fast_path::state::RealtimeState;
     use eneros_llm_engine::engine::LlmEngine;
     use eneros_safety_validator::state::SystemState;
-    use eneros_solver_core::result::{SolveResult, SolveStatus};
     #[cfg(any(test, feature = "mock"))]
     use eneros_solver_core::mock::MockSolver;
+    use eneros_solver_core::result::{SolveResult, SolveStatus};
 
     use super::*;
+    use crate::gate::{DecisionGate, GateDecision};
 
     // ===== T1: LatencyBreakdown::default 全 0 =====
     #[test]
@@ -358,7 +358,10 @@ mod tests {
         let state = safe_state();
         let err = coord.execute(&state, 0).unwrap_err();
         assert!(
-            matches!(err, DualBrainError::GateRejected(GateDecision::EnergyExceeded)),
+            matches!(
+                err,
+                DualBrainError::GateRejected(GateDecision::EnergyExceeded)
+            ),
             "能量超限必须拒绝: {err:?}"
         );
         assert_eq!(coord.gate.rejected_energy(), 1);
