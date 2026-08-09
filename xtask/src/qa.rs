@@ -936,6 +936,7 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
 /// - 生产路径 mock 引用（cfg(test) 外）→ 违规；
 /// - 文档宣称能力 vs 代码实现状态逐项对照（预置清单）；
 /// - 无 Mock 能力被宣称为真实能力 → G7-PASS。
+///
 /// 按 Cargo.toml 的 `name` 字段查找 crate 目录（crate 名 ≠ 目录名）。
 fn find_crate_dir(root: &Path, crate_name: &str) -> Option<std::path::PathBuf> {
     let crates_dir = root.join("crates");
