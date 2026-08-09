@@ -126,6 +126,7 @@ impl ActorKind {
 /// - 生产：`ControlGateway::authorize` 经 [`AuthorizedCommand::from_parts`]
 ///   （`#[doc(hidden)]`；WP-26.1 门禁执法封死其他生产调用）；
 /// - 测试：`from_parts` 或契约套件 `protocol-abstract::contract::authorized_command`。
+///
 /// `device_id` 为 upa-model `DeviceId(u16)`、`point_id` 为 `PointId(u32)`；
 /// 信封 wire 布局不变（wire 上 device_id 仍占 4 字节，见 control-gateway
 /// envelope 编解码；u32→u16 的收窄在 HMAC 验证之后、default-deny）。
