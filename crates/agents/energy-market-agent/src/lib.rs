@@ -541,6 +541,12 @@ mod tests {
             current_price: 0.5,
             state: AgentState::Created,
             tick_count: 0,
+            observer: None,
+            last_feedback: None,
+            outcome_unknown_count: 0,
+            forecast_error_sum: 0.0,
+            forecast_error_count: 0,
+            last_observed_at_ms: 0,
         };
 
         agent.on_start(1000).unwrap();

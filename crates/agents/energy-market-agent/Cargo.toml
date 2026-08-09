@@ -17,6 +17,7 @@ eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
 eneros-solver-core = { path = "../../ai/solver-core" }
 eneros-llm-engine = { path = "../../ai/llm-engine", features = ["llama-cpp"] }
 eneros-safety-validator = { path = "../../ai/safety-validator" }
+eneros-intent-contract = { path = "../../ai/intent-contract" }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 

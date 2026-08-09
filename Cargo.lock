@@ -804,6 +804,7 @@ dependencies = [
  "eneros-energy-lp-model",
  "eneros-energy-market-agent",
  "eneros-fast-path",
+ "eneros-intent-contract",
  "eneros-llm-engine",
  "eneros-market-types",
  "eneros-safety-validator",
