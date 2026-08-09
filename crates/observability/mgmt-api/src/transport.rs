@@ -9,7 +9,7 @@
 use alloc::format;
 use alloc::string::String;
 
-use crate::rbac::{Permission, Role};
+use crate::rbac::Role;
 use crate::schema::{ApiAction, ApiRequest, ApiResponse, ApiVersion, StatusCode};
 use crate::ManagementApi;
 
@@ -132,7 +132,6 @@ mod tests {
     use super::*;
     use crate::rate_limit::RateLimiter;
     use crate::rbac::RbacPolicy;
-    use crate::schema::ApiVersion;
 
     /// 装配 API（放行 Operator 的 ConfigSet/AgentRestart）。
     fn api() -> ManagementApi {
