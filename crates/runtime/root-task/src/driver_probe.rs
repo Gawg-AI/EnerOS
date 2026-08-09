@@ -29,18 +29,24 @@ use eneros_driver_framework::{
     BindingTable, DeviceDriver, DriverBinding, DriverError, DriverId, PlatformCtx,
 };
 use eneros_rs485::{Pl011UartHw, Rs485Config, Rs485Driver};
+use eneros_uart::{Pl011Mmio, UartDriver};
 
 /// 绑定表：全部已接入 seam 的生产驱动（编译期可审计）。
 ///
-/// 登记（WP-27.2）：
+/// 登记：
+/// - D1（WP-27.3）UART：`arm,pl011`（PL011 标准 compatible，QEMU 可得）
 /// - CAN：`nxp,sja1000`（SJA1000 控制器标准 compatible；真机 dts 填空项引用）
 /// - RS485：`eneros,rs485-uart`（自定义 compatible；后端为 PL011 硬件，
 ///   语义是 RS485 半双工端口；真机 dts 填空项引用）
 ///
-/// QEMU virt 的 DTB 无这两类节点 → 活体报告中如实列为 unbound（真机
-/// 填空项，蓝图/27 §16）。
+/// QEMU virt 的 DTB 无 CAN/RS485 节点 → 活体报告中如实列为 unbound（真机
+/// 填空项，蓝图/27 §16）；pl011 节点绑定为 UART。
 pub fn binding_table() -> BindingTable {
     const ENTRIES: &[DriverBinding] = &[
+        DriverBinding {
+            compatible: "arm,pl011",
+            factory: uart_factory,
+        },
         DriverBinding {
             compatible: "nxp,sja1000",
             factory: can_factory,
@@ -53,12 +59,51 @@ pub fn binding_table() -> BindingTable {
     BindingTable::new(ENTRIES)
 }
 
+/// UART 波特率（D1：115200 8N1 默认；真机按协议层配置）。
+const UART_BAUD: u32 = 115_200;
+/// PL011 时钟（Hz）。qemu-virt.dts 的 `clk24mhz` 固定 24 MHz；真机按平台
+/// dts `clocks` 填空（蓝图/27 §16）。
+const PL011_CLOCK_HZ: u32 = 24_000_000;
+
+/// UART 驱动 factory（D1）：`reg[0]` → MMIO 映射 → Pl011Mmio → UartDriver，
+/// 并把节点 `interrupts` 首个 SPI 号转为 GIC 中断号绑定（QEMU pl011 =
+/// SPI 1 → 中断 33）。
+fn uart_factory(
+    node: &eneros_board::device_tree::DeviceNode,
+    ctx: &mut dyn PlatformCtx,
+) -> Result<Box<dyn DeviceDriver>, DriverError> {
+    let (base, size) = node.regs.first().copied().ok_or(DriverError::NotFound)?;
+    let virt = ctx.map_mmio(base, size)?;
+    // SAFETY: `virt` 为 `PlatformCtx::map_mmio` 返回的已映射 MMIO 基址
+    // （1:1，FIX-BUGS-0810 两件套保证映射成功 ⇔ 正确物理页）；`Pl011Mmio`
+    // 生命周期由装配层（root-task 常驻）保证。
+    let mmio = unsafe { Pl011Mmio::new(virt as *mut u8) };
+    let mut driver = UartDriver::new(
+        DriverId(0x0A11_0001),
+        "pl011-uart0",
+        Box::new(mmio),
+        PL011_CLOCK_HZ,
+        UART_BAUD,
+    );
+    // IRQ 接线：`interrupts` = <GIC_SPI 号 触发类型>（QEMU pl011: <0 1 4>）
+    // → GIC SPI 全局中断号 = 32 + 号。
+    if let Some(irq) = node
+        .interrupts
+        .chunks_exact(3)
+        .find(|cell| cell[0] == 0)
+        .map(|cell| 32 + cell[1])
+    {
+        // 绑定失败不阻断装配（驱动仍可轮询收发；IRQ 收包缺失如实记录）。
+        if let Ok(badge) = ctx.bind_irq(irq) {
+            driver.set_irq_badge(badge);
+        }
+    }
+    Ok(Box::new(driver))
+}
+
 /// SJA1000 晶振频率（Hz）。真机填空项：应从 dts `clocks`/`clock-frequency`
 /// 读取（蓝图/27 §16 平台 dts 节点补全）；仓库无解析前用典型 16 MHz。
 const SJA1000_CLOCK_HZ: u32 = 16_000_000;
-/// RS485 后端 PL011 时钟（Hz）。qemu-virt.dts 的 `clk24mhz` 固定 24 MHz；
-/// 真机按平台 dts 填空。
-const PL011_CLOCK_HZ: u32 = 24_000_000;
 
 /// CAN 驱动 factory：`reg[0]` → MMIO 映射 → SJA1000 控制器 → CanDriver。
 fn can_factory(
@@ -99,6 +144,17 @@ fn rs485_factory(
     )))
 }
 
+/// 一条已接线的驱动 IRQ：事件循环 poll ntfn → 驱动 `handle_irq` → ack。
+#[cfg(target_os = "none")]
+pub struct IrqDriver {
+    /// 中断号（GIC 全局号）。
+    pub irq: u32,
+    /// IRQ 绑定链（ntfn_slot/handler_cap/badge）。
+    pub binding: crate::irq::IrqBinding,
+    /// 驱动（handle_irq 收包）。
+    pub driver: Box<dyn DeviceDriver>,
+}
+
 /// root-task 装配平台资源：SpawnCtx（MMIO，FIX-BUGS-0810 两件套）+ IrqTable。
 ///
 /// host 构建不可用（无 seL4）——host 测试用 mock ctx 直接调 factory。
@@ -106,6 +162,8 @@ fn rs485_factory(
 pub struct RootPlatformCtx<'a> {
     spawn: &'a mut crate::spawn::SpawnCtx,
     irq_table: &'a mut crate::irq::IrqTable,
+    /// factory 经 `bind_irq` 建立的 (irq, badge) 记录（顺序与 bound 对齐）。
+    bindings: alloc::vec::Vec<(u32, u32)>,
 }
 
 #[cfg(target_os = "none")]
@@ -114,16 +172,21 @@ impl<'a> RootPlatformCtx<'a> {
         spawn: &'a mut crate::spawn::SpawnCtx,
         irq_table: &'a mut crate::irq::IrqTable,
     ) -> Self {
-        Self { spawn, irq_table }
+        Self {
+            spawn,
+            irq_table,
+            bindings: alloc::vec::Vec::new(),
+        }
     }
 }
 
-/// size_bytes → seL4 frame size_bits（ARM 小页 4K / 大页 64K / 2M / 1G；
-/// 超出 1G 拒绝）。设备 reg 长度不足一页时按 4K 页映射。
+/// size_bytes → seL4 arm64 帧 size_bits（**合法值 12/21/30**——arm64 无
+/// 64K 用户帧，64K 用 2 MiB 块覆盖；WP-27.3 D1 QEMU 实测 size_bits=16
+/// 在 Page_Map 中与页表槽粒度不匹配）。超出 1 GiB 拒绝。
 #[cfg(target_os = "none")]
 fn frame_size_bits(size_bytes: u64) -> Result<u64, DriverError> {
     let size = size_bytes.max(0x1000);
-    for (limit, bits) in [(0x1_0000, 16u64), (0x20_0000, 21), (0x4000_0000, 30)] {
+    for (limit, bits) in [(0x20_0000u64, 21u64), (0x4000_0000, 30)] {
         if size <= limit {
             return Ok(bits);
         }
@@ -143,10 +206,13 @@ impl PlatformCtx for RootPlatformCtx<'_> {
 
     fn bind_irq(&mut self, irq: u32) -> Result<u32, DriverError> {
         // IrqTable::bind 返回 badge_bit（= 绑定索引 + 1；0 保留未知）。
-        self.irq_table
+        let badge = self
+            .irq_table
             .bind(self.spawn, irq)
             .map(|badge| badge as u32)
-            .map_err(|_| DriverError::NotFound)
+            .map_err(|_| DriverError::NotFound)?;
+        self.bindings.push((irq, badge));
+        Ok(badge)
     }
 }
 
@@ -185,7 +251,8 @@ fn runtime_dtb_slice(bundle_len: u64) -> Option<(&'static [u8], u64)> {
     Some((blob, dtb_phys))
 }
 
-/// 装配并打印 ProbeReport（root-task 启动日志；指标 = 结构化数值字段）。
+/// 装配并打印 ProbeReport（root-task 启动日志；指标 = 结构化数值字段），
+/// 返回已接线的驱动 IRQ 列表（事件循环 poll → handle_irq → ack）。
 ///
 /// 任一步失败（无 DTB/解析失败）→ 打印 fail 行并继续（不挂起：驱动缺失
 /// 不应阻断 EL0 服务 spawn；真机 bring-up 依赖报告定位缺口）。
@@ -194,7 +261,7 @@ pub fn probe_and_report(
     spawn: &mut crate::spawn::SpawnCtx,
     irq_table: &mut crate::irq::IrqTable,
     bundle_len: u64,
-) {
+) -> alloc::vec::Vec<IrqDriver> {
     use eneros_board::device_tree::parse_fdt;
 
     let Some((blob, dtb_phys)) = runtime_dtb_slice(bundle_len) else {
@@ -202,7 +269,7 @@ pub fn probe_and_report(
             "[eneros-root-task] ENEROS stage=probe-report error=no-runtime-dtb bundle_len={}",
             bundle_len
         );
-        return;
+        return alloc::vec::Vec::new();
     };
     let inventory = match parse_fdt(&blob) {
         Ok(inv) => inv,
@@ -212,7 +279,7 @@ pub fn probe_and_report(
                 e,
                 blob.len()
             );
-            return;
+            return alloc::vec::Vec::new();
         }
     };
     crate::println!(
@@ -251,6 +318,65 @@ pub fn probe_and_report(
         "[eneros-root-task] ENEROS stage=probe-report-done {}",
         report.metrics_line()
     );
+    // 组装 IRQ 接线：bound 驱动顺序与 ctx.bindings 顺序对齐（每个 factory
+    // 至多 bind 一次；未 bind 的驱动无 IRQ 条目 → 轮询模式）。
+    let mut irq_drivers = alloc::vec::Vec::new();
+    for (bound, (irq, badge)) in report.into_bound().iter_mut().zip(ctx.bindings.iter()) {
+        let Some(binding) = irq_table.binding((*badge - 1) as usize) else {
+            continue;
+        };
+        crate::println!(
+            "[eneros-root-task]   probe irq-wired driver={} irq={} badge={}",
+            bound.driver.name(),
+            irq,
+            badge
+        );
+        // 取出驱动所有权（BoundEntry 其余字段丢弃）。
+        let driver = core::mem::replace(&mut bound.driver, Box::new(NoopDriver));
+        irq_drivers.push(IrqDriver {
+            irq: *irq,
+            binding,
+            driver,
+        });
+    }
+    irq_drivers
+}
+
+/// 占位驱动（BoundEntry 消费时的替身；永不使用——BoundEntry 随即丢弃）。
+#[cfg(target_os = "none")]
+struct NoopDriver;
+
+#[cfg(target_os = "none")]
+impl DeviceDriver for NoopDriver {
+    fn id(&self) -> &DriverId {
+        static ID: DriverId = DriverId(0);
+        &ID
+    }
+    fn name(&self) -> &str {
+        "noop"
+    }
+    fn driver_type(&self) -> eneros_driver_framework::DriverType {
+        eneros_driver_framework::DriverType::Custom(0)
+    }
+    fn state(&self) -> eneros_driver_framework::DriverState {
+        eneros_driver_framework::DriverState::Dead
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn start(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn stop(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn deinit(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn handle_irq(&mut self, _irq_id: u32) {}
+    fn health_check(&self) -> eneros_driver_framework::DriverHealth {
+        eneros_driver_framework::DriverHealth::Unknown
+    }
 }
 
 #[cfg(test)]
@@ -325,22 +451,24 @@ mod tests {
         assert_eq!(report.failed()[0].error, DriverError::NotFound);
     }
 
-    /// 真实 qemu-virt.dtb fixture：全部节点如实 unbound（无 can/rs485 节点）。
+    /// 真实 qemu-virt.dtb fixture：pl011 绑定为 UART（D1），其余如实 unbound。
     #[test]
-    fn qemu_virt_dtb_probe_reports_all_unbound() {
+    fn qemu_virt_dtb_probe_binds_pl011_and_reports_rest_unbound() {
         use eneros_board::device_tree::parse_fdt;
         const QEMU_VIRT_DTB: &[u8] =
             include_bytes!("../../../hal/board/tests/fixtures/qemu-virt.dtb");
         let inventory = parse_fdt(QEMU_VIRT_DTB).expect("fixture dtb 必须可解析");
         let mut ctx = MockCtx::default();
         let report = binding_table().probe_all(&inventory, &mut ctx);
-        assert_eq!(report.bound_count(), 0);
+        assert_eq!(report.bound_count(), 1, "pl011 绑定为 UART");
         assert_eq!(report.failed_count(), 0);
-        // qemu-virt.dts 的全部设备节点都应在 unbound 清单中（节点一致）
+        assert_eq!(report.bound()[0].compatible, "arm,pl011");
+        assert_eq!(report.bound()[0].driver.name(), "pl011-uart0");
+        // qemu-virt.dts 的其余设备节点都应在 unbound 清单中（节点一致）
         let unbound: Vec<&str> = report.unbound().iter().map(|u| u.node.as_str()).collect();
         assert!(
-            unbound.contains(&"uart@9000000"),
-            "pl011 节点必须在报告中: {unbound:?}"
+            unbound.contains(&"uart@9000000") == false,
+            "pl011 已绑定，不应在 unbound: {unbound:?}"
         );
         assert!(
             report

@@ -179,6 +179,12 @@ impl ProbeReport {
         &self.bound
     }
 
+    /// 消费型：取出全部绑定条目（装配层移动驱动所有权——IRQ 接线/生命周期
+    /// 由装配层持有）。
+    pub fn into_bound(self) -> Vec<BoundEntry> {
+        self.bound
+    }
+
     /// 无匹配节点。
     pub fn unbound(&self) -> &[UnboundEntry] {
         &self.unbound

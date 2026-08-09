@@ -1,0 +1,14 @@
+[package]
+name = "eneros-uart"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS UART driver — PL011 register layer + DeviceDriver with IRQ RX ring (WP-27.3 D1)"
+
+[dependencies]
+eneros-driver-framework = { path = "../framework" }
+spin = "0.9"
+
+[features]
+mock = []

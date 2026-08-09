@@ -769,6 +769,7 @@ version = "1.0.0-rc.0"
 name = "eneros-driver-framework"
 version = "1.0.0-rc.0"
 dependencies = [
+ "eneros-board",
  "eneros-driver-framework",
 ]
 
@@ -1285,14 +1286,19 @@ name = "eneros-root-task"
 version = "1.0.0-rc.0"
 dependencies = [
  "eneros-audit",
+ "eneros-board",
  "eneros-boot-protocol",
+ "eneros-can",
+ "eneros-driver-framework",
  "eneros-elf-loader",
  "eneros-hal",
  "eneros-ipc-wire",
+ "eneros-rs485",
  "eneros-runtime",
  "eneros-sel4-sys",
  "eneros-tenant",
  "eneros-time",
+ "eneros-uart",
  "eneros-watchdog",
  "heapless 0.8.0",
  "linked_list_allocator",
@@ -1539,6 +1545,14 @@ version = "1.0.0-rc.0"
 dependencies = [
  "eneros-solver-core",
  "eneros-twin-global",
+]
+
+[[package]]
+name = "eneros-uart"
+version = "1.0.0-rc.0"
+dependencies = [
+ "eneros-driver-framework",
+ "spin",
 ]
 
 [[package]]

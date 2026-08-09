@@ -1032,10 +1032,33 @@ pub fn map_device_mmio(ctx: &mut SpawnCtx, paddr: u64, size_bits: u64) -> Result
     // 平台未导出覆盖 paddr 的 device untyped → Err → main.rs 软件模式兜底
     // （"映射成功 ⇔ 正确物理页"，杜绝错页映射成功）。
     retype_device_one(ctx, types.arm_frame, size_bits, paddr, slot)?;
-    // SAFETY: slot 为刚 retype 的 frame cap；root_vspace 已绑 ASID；
-    // paddr 页对齐（调用方保证）；设备内存 map 用读写权限。
-    arm_page_map(ctx.root_vspace, slot, paddr, rights.read | rights.write)
-        .map_err(SpawnError::Sel4)?;
+    // WP-27.3 D1（QEMU 实测 FailedLookup）：Page_Map 的 lookupPTSlot 需要
+    // vaddr 所在层级的页表链——root vspace 的内核初始映射只覆盖 kernel
+    // image 与 init bundle 区域（PGD 槽 0 → PUD 表），设备地址（如
+    // 0x09000000）的 PUD/PD/PT 槽为空 → 帧无法插入（ptBitsLeft 与
+    // frameSize 不匹配）。逐级补建页表（arm_page_table_map 自动挂到
+    // lookupPTSlot 返回的缺失槽），直到 Page_Map 成功（最多 3 级）。
+    // 非 FailedLookup 错误不重试（fail-closed）。
+    let mut mapped = false;
+    for _level in 0..3 {
+        let result = arm_page_map(ctx.root_vspace, slot, paddr, rights.read | rights.write);
+        match result {
+            Ok(()) => {
+                mapped = true;
+                break;
+            }
+            Err(eneros_sel4_sys::safe::Sel4Error::FailedLookup) => {
+                let pt_slot = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
+                retype_one(ctx, types.arm_page_table, OBJ_BITS_PAGE_TABLE, pt_slot)?;
+                arm_page_table_map(ctx.root_vspace, pt_slot, paddr)
+                    .map_err(SpawnError::Sel4)?;
+            }
+            Err(e) => return Err(SpawnError::Sel4(e)),
+        }
+    }
+    if !mapped {
+        return Err(SpawnError::Sel4(eneros_sel4_sys::safe::Sel4Error::FailedLookup));
+    }
     Ok(())
 }
 

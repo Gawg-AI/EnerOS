@@ -47,6 +47,7 @@ pub fn run_ipc_loop(
     handles: &[crate::spawn::SpawnedHandle],
     irq_table: crate::irq::IrqTable,
     irq_binding: Option<crate::irq::IrqBinding>,
+    mut irq_drivers: alloc::vec::Vec<crate::driver_probe::IrqDriver>,
 ) -> ! {
     use eneros_ipc_wire::el0::{encode_frame, El0FrameType};
     use eneros_sel4_sys::safe::{get_mr, ipc_call, ipc_poll, ipc_send, message_info_new, set_mr};
@@ -128,6 +129,21 @@ pub fn run_ipc_loop(
                         ipc_fail_closed("irq ack", e);
                     }
                     irq_seq += 1;
+                }
+            }
+        }
+
+        // WP-27.3 D1：驱动 IRQ 收包接线（S4：IRQ ntfn 与服务 EP 分槽——
+        // 每个驱动 IRQ 独立 ntfn，与既有 timer IRQ 并行走 poll；badge 由
+        // IrqTable::route 语义保证唯一）。
+        for drv in irq_drivers.iter_mut() {
+            let mut drv_sender = 0u64;
+            if let Ok(_mi) = ipc_poll(drv.binding.ntfn_slot, Some(&mut drv_sender)) {
+                if drv_sender != 0 {
+                    drv.driver.handle_irq(drv.irq);
+                    if let Err(e) = irq_table.ack(&drv.binding) {
+                        ipc_fail_closed("driver irq ack", e);
+                    }
                 }
             }
         }

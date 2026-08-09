@@ -49,6 +49,7 @@ members = [
     "crates/drivers/framework",
     "crates/drivers/rs485",
     "crates/drivers/can",
+    "crates/drivers/uart",
     "crates/protocols/modbus-rtu",
     "crates/protocols/modbus-tcp",
     "crates/protocols/modbus-tcp-server",
