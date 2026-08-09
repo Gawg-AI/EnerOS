@@ -42,7 +42,7 @@ pub mod supervisor;
 // 全局分配器（no_std aarch64：spawn/IPC 路径使用 alloc，见 allocator.rs）。
 #[cfg(target_os = "none")]
 #[global_allocator]
-static ALLOCATOR: allocator::BumpAllocator = allocator::BumpAllocator::new();
+static ALLOCATOR: allocator::HeapAllocator = allocator::HeapAllocator::new();
 
 /// boot manager 加载 init bundle 的物理地址（boot-protocol boot_info.rs）。
 /// M0 阶段只读 header 确认存在；M2+ 阶段解析 modules 并 spawn。
@@ -96,6 +96,9 @@ core::arch::global_asm!(
 pub extern "C" fn rust_entry(bi: u64) -> ! {
     init();
     eneros_sel4_sys::safe::boot_init(bi);
+    // 22 §2.W1.4：可回收堆初始化（首次分配前；println/boot_init 无分配）。
+    // SAFETY: rust_entry 仅执行一次且早于任何 alloc 调用。
+    unsafe { ALLOCATOR.init() };
     // 22 §2.W1.2：panic 审计链初始化（panic handler 最简路径的前提）。
     crate::panic::init_panic_audit();
     println!("[eneros-root-task] Rust root task alive on seL4");

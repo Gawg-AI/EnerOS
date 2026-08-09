@@ -1,15 +1,118 @@
-//! 静态 bump 分配器（VRF-003：EL0 服务 bin 在 host clippy/测试编译下
-//! 需要 `#[global_allocator]`；no_std 固件路径用本分配器——静态 64KB 堆 +
-//! 单调 bump，永不释放（占位服务语义，svc-hog 除外——它专门测 OOM 隔离）。
+//! 可回收堆分配器（22 §2.W1.4）：linked_list_allocator（vetted、no_std）。
+//!
+//! 替换旧 bump 分配器（`dealloc` 空实现 → 长跑服务堆占用单调增长，
+//! 必然 OOM-abort）。`HeapAllocator` 为生产分配器（真实 `dealloc` 回收 +
+//! 内部自旋锁，并发安全）；`BumpAllocator` 保留供 loom 并发模型验证与
+//! 参考（见 `loom_allocator.rs`，`feature = "loom"`）。
+//!
+//! 堆大小编译期配置注入：`ENEROS_HEAP_SIZE_BYTES` 环境变量（默认 64 KiB，
+//! 真机按板载 RAM 调——构建时注入，无需改代码）。
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// 静态堆大小（64 KiB）。
-const HEAP_SIZE: usize = 64 * 1024;
+use linked_list_allocator::LockedHeap;
 
-/// 单调 bump 分配器（no_std 静态）。
+/// 堆大小（字节）：编译期注入（`ENEROS_HEAP_SIZE_BYTES`），默认 64 KiB；
+/// 非法/过小值回退默认（fail-closed：不允许配置出不可用堆）。
+const HEAP_SIZE: usize = match option_env!("ENEROS_HEAP_SIZE_BYTES") {
+    Some(s) => match parse_heap_size(s) {
+        Some(n) if n >= 4096 => n,
+        _ => 64 * 1024,
+    },
+    None => 64 * 1024,
+};
+
+/// const 十进制解析（`str::parse` 非 const fn；仅用于编译期配置注入）。
+const fn parse_heap_size(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut v: usize = 0;
+    let mut i = 0;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            return None;
+        }
+        v = match v.checked_mul(10) {
+            Some(x) => x,
+            None => return None,
+        };
+        v = match v.checked_add((b[i] - b'0') as usize) {
+            Some(x) => x,
+            None => return None,
+        };
+        i += 1;
+    }
+    Some(v)
+}
+
+/// 生产全局分配器：free-list 可回收堆（22 §2.W1.4）。
+pub struct HeapAllocator {
+    heap: LockedHeap,
+    storage: UnsafeCell<[u8; HEAP_SIZE]>,
+}
+
+// SAFETY: `storage` 经 UnsafeCell 提供内部可变性；LockedHeap 内部自旋锁
+// 串行化所有 alloc/dealloc——并发访问安全（GlobalAlloc 的 `&self` 契约）。
+unsafe impl Sync for HeapAllocator {}
+
+impl HeapAllocator {
+    /// 创建空堆（必须先 [`HeapAllocator::init`] 才能分配）。
+    pub const fn new() -> Self {
+        Self {
+            heap: LockedHeap::empty(),
+            storage: UnsafeCell::new([0u8; HEAP_SIZE]),
+        }
+    }
+
+    /// 初始化堆存储（bin `_start` 在首次分配前调用一次）。
+    ///
+    /// # Safety
+    /// 调用方保证：①仅调用一次；②在首次 `alloc` 之前调用；③本分配器
+    /// 生命周期覆盖全部使用（static 实例满足）。
+    pub unsafe fn init(&self) {
+        // SAFETY: `storage` 生命周期 = 'static（static 实例）；LockedHeap
+        // 只在其生命周期内使用该区域且 init 只调用一次。
+        unsafe {
+            self.heap
+                .lock()
+                .init(self.storage.get() as *mut u8, HEAP_SIZE)
+        }
+    }
+
+    /// 当前已用字节数（长跑稳定性测试/指标用）。
+    pub fn used(&self) -> usize {
+        self.heap.lock().used()
+    }
+
+    /// 堆容量（字节）。
+    pub const fn capacity(&self) -> usize {
+        HEAP_SIZE
+    }
+}
+
+impl Default for HeapAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// SAFETY: 委托 LockedHeap（自旋锁 + free-list，GlobalAlloc 契约完整实现）。
+unsafe impl GlobalAlloc for HeapAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: 调用方保证 layout 合法；LockedHeap 返回 null 表示 OOM。
+        unsafe { self.heap.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: 调用方保证 ptr 由本分配器 alloc 返回且 layout 匹配。
+        // 真实回收（22 §2.W1.4：长跑堆占用不单调增长）。
+        unsafe { self.heap.dealloc(ptr, layout) }
+    }
+}
+
+/// 静态 bump 分配器（保留：loom 并发模型验证 + host 参考；生产路径已由
+/// [`HeapAllocator`] 取代，见 22 §2.W1.4）。
 ///
 /// # 并发安全（v0.243.0 修复 UB）
 /// 旧实现经 `self.heap.as_ptr()` 从共享引用派生可写指针，违反共享引用
@@ -146,5 +249,79 @@ mod tests {
             assert!(count * 64 <= HEAP_SIZE, "分配总量越界");
         }
         assert_eq!(count, HEAP_SIZE / 64);
+    }
+}
+
+#[cfg(test)]
+mod heap_reclaim_tests {
+    use super::*;
+
+    /// 长跑稳定性（22 §2.W1.4 验收）：1000 轮分配/释放后 used 不单调增长
+    /// （bump 分配器此测试必失败——dealloc 空实现 → used 单调增长到满）。
+    #[test]
+    fn test_heap_reclaims_memory_stable() {
+        let alloc = HeapAllocator::new();
+        // SAFETY: 测试专用——init 一次且在首次 alloc 前。
+        unsafe { alloc.init() };
+        let base = alloc.used();
+        let layout = Layout::from_size_align(256, 8).expect("layout");
+        for _ in 0..1000 {
+            // SAFETY: 测试专用，配对 alloc/dealloc。
+            let p = unsafe { alloc.alloc(layout) };
+            assert!(!p.is_null(), "堆耗尽（不应发生：每轮都释放）");
+            // SAFETY: 写回验证可写（回收后的内存复用）。
+            unsafe { core::ptr::write_bytes(p, 0x5A, 256) };
+            // SAFETY: 配对释放。
+            unsafe { alloc.dealloc(p, layout) };
+        }
+        let after = alloc.used();
+        assert!(
+            after <= base + 1024,
+            "dealloc 必须真实回收：used {after} > base {base} + 1KiB（单调增长 = bump 语义泄漏）"
+        );
+    }
+
+    /// 交错大小分配/释放：占用收敛（碎片上限内），不 OOM。
+    #[test]
+    fn test_heap_reusable_under_mixed_sizes() {
+        let alloc = HeapAllocator::new();
+        // SAFETY: 测试专用——init 一次且在首次 alloc 前。
+        unsafe { alloc.init() };
+        for round in 0..200 {
+            let mut ptrs = alloc::vec::Vec::new();
+            for size in [16usize, 64, 256, 1024, 4096] {
+                let layout = Layout::from_size_align(size, 8).expect("layout");
+                // SAFETY: 测试专用。
+                let p = unsafe { alloc.alloc(layout) };
+                assert!(!p.is_null(), "round {round}: {size}B 分配失败（回收失效）");
+                ptrs.push((p, layout));
+            }
+            for (p, layout) in ptrs {
+                // SAFETY: 测试专用，配对释放。
+                unsafe { alloc.dealloc(p, layout) };
+            }
+        }
+        assert!(
+            alloc.used() < alloc.capacity(),
+            "used {} 必须低于容量 {}（无泄漏）",
+            alloc.used(),
+            alloc.capacity()
+        );
+    }
+
+    /// 堆大小配置：默认 64 KiB，容量与配置一致。
+    #[test]
+    fn test_heap_capacity_default() {
+        assert_eq!(HeapAllocator::new().capacity(), 64 * 1024);
+    }
+
+    /// const 解析：合法/非法/溢出。
+    #[test]
+    fn test_parse_heap_size() {
+        assert_eq!(parse_heap_size("131072"), Some(131072));
+        assert_eq!(parse_heap_size("0"), Some(0));
+        assert_eq!(parse_heap_size("abc"), None);
+        assert_eq!(parse_heap_size("12x"), None);
+        assert_eq!(parse_heap_size("99999999999999999999999999"), None);
     }
 }

@@ -7,8 +7,8 @@
 
 #[cfg(target_os = "none")]
 #[global_allocator]
-static ALLOC: eneros_services::allocator::BumpAllocator =
-    eneros_services::allocator::BumpAllocator::new();
+static ALLOC: eneros_services::allocator::HeapAllocator =
+    eneros_services::allocator::HeapAllocator::new();
 
 #[cfg(target_os = "none")]
 use core::panic::PanicInfo;
@@ -27,6 +27,9 @@ pub extern "C" fn _start(ep: u64, ipc_buffer: u64) -> ! {
     eneros_sel4_sys::seL4_put_char(b'I');
     eneros_sel4_sys::seL4_put_char(b'\n');
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
+    // 22 §2.W1.4：可回收堆初始化（首次分配前；println/put_char 无分配）。
+    // SAFETY: _start 仅执行一次且早于任何 alloc 调用。
+    unsafe { ALLOC.init() };
     // K2.3：root-task spawn 时寄存器 X0=ep cap、X1=IPC buffer vaddr，
     // aarch64 ABI 自动成为本函数参数。进入 Endpoint IPC 主循环。
     eneros_runtime::println!(

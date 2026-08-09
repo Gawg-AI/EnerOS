@@ -7,8 +7,8 @@
 
 #[cfg(target_os = "none")]
 #[global_allocator]
-static ALLOC: eneros_services::allocator::BumpAllocator =
-    eneros_services::allocator::BumpAllocator::new();
+static ALLOC: eneros_services::allocator::HeapAllocator =
+    eneros_services::allocator::HeapAllocator::new();
 
 #[cfg(target_os = "none")]
 use core::panic::PanicInfo;
@@ -23,6 +23,9 @@ pub extern "C" fn _start(ep: u64, ipc_buffer: u64) -> ! {
     // bootinfo，libsel4 的 ipc_recv/get_mr 依赖该指针；不设置会在 NULL
     // buffer 上解引用（21-A 遗留缺陷：svc_ipc_loop 首轮 recv 卡死）。
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
+    // 22 §2.W1.4：可回收堆初始化（首次分配前；println/put_char 无分配）。
+    // SAFETY: _start 仅执行一次且早于任何 alloc 调用。
+    unsafe { ALLOC.init() };
     // K2.3：内存占用由 IPC 请求驱动（hog=<n>），见 handle_request。
     eneros_runtime::init();
     eneros_services::panic::init_svc_panic_audit();
