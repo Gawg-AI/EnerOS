@@ -44,6 +44,7 @@
 
 extern crate alloc;
 
+pub mod catalog;
 pub mod electrical;
 pub mod protection;
 pub mod result;
@@ -51,6 +52,7 @@ pub mod rule;
 pub mod state;
 pub mod validator;
 
+pub use catalog::SafetyCatalog;
 pub use electrical::ElectricalSafetyRule;
 pub use protection::ProtectionCoordinationRule;
 pub use result::{Severity, ValidationResult, Violation};

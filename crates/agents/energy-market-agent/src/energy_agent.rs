@@ -127,8 +127,8 @@ impl<S: Solver> EnergyAgent<S> {
             last_observed_at_ms: now_ms,
             rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
             last_rejection: None,
-            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::new(1.0, 0.1, 10.0),
-            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::new(0.5),
+            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(1.0, eneros_safety_validator::SafetyCatalog::default_eps()),
+            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(eneros_safety_validator::SafetyCatalog::default_eps()),
             twin_forecast: None,
             twin_confidence: 0.0,
         }
@@ -200,8 +200,8 @@ impl EnergyAgent<MockSolver> {
             last_observed_at_ms: now_ms,
             rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
             last_rejection: None,
-            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::new(1.0, 0.1, 10.0),
-            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::new(0.5),
+            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(1.0, eneros_safety_validator::SafetyCatalog::default_eps()),
+            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(eneros_safety_validator::SafetyCatalog::default_eps()),
             twin_forecast: None,
             twin_confidence: 0.0,
         }
