@@ -174,13 +174,9 @@ pub fn read_last(
     device: DeviceId,
     metric: MetricId,
 ) -> Result<Option<TimeSeriesPoint>, TsdbError> {
-    // Scan all entries in reverse time order (BTreeMap is sorted ascending,
-    // so find_range returns ascending order — iterate from the end).
-    let entries = index.find_range(0, u64::MAX);
-    for entry in entries.iter().rev() {
-        if !path_matches(&entry.file_path, device, metric) {
-            continue;
-        }
+    // 22 §2.W3.2：尾指针查询——索引 rev 迭代不物化全量（原 find_range(0,
+    // u64::MAX) 物化全部条目，GB 级数据下 OOM）。
+    if let Some(entry) = index.find_last(|e| path_matches(&e.file_path, device, metric)) {
         let points = read_chunk_file(fs, compressor, &entry.file_path)?;
         if let Some(last) = points.last() {
             return Ok(Some(last.clone()));

@@ -64,6 +64,19 @@ impl TimeIndex {
         result
     }
 
+    /// 22 §2.W3.2：尾指针查询——从索引末尾反向找第一个匹配条目
+    /// （BTreeMap rev 迭代，**不物化全索引**；read_last 用）。
+    pub fn find_last(&self, mut matches: impl FnMut(&IndexEntry) -> bool) -> Option<&IndexEntry> {
+        for (_, entries) in self.entries.iter().rev() {
+            for entry in entries.iter().rev() {
+                if matches(entry) {
+                    return Some(entry);
+                }
+            }
+        }
+        None
+    }
+
     /// Removes all entries whose `time` is strictly less than `time`
     /// and returns them (used for TTL cleanup).
     pub fn remove_before(&mut self, time: u64) -> Vec<IndexEntry> {

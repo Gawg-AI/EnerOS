@@ -96,12 +96,14 @@
 
 extern crate alloc;
 
+pub mod block_store;
 pub mod compression;
 pub mod db;
 pub mod error;
 pub mod index;
 pub mod reader;
 pub mod retention;
+pub mod rollup;
 pub mod schema;
 pub mod writer;
 
