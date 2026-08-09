@@ -169,7 +169,6 @@ impl Sm2Signer {
 
     /// 确定性签名（v0.234.0，B4-01）。
     ///
-    /// k 由 RFC 6979 风格派生：`k = SM3(sk.d ‖ msg) mod (n-1) + 1`——
     /// 同私钥同消息产生相同签名，从而可用官方 KAT 向量验证。
     /// 仅供测试向量/可复现场景使用；生产路径仍用随机 k（防侧信道）。
     pub fn sign_deterministic(
@@ -178,15 +177,16 @@ impl Sm2Signer {
         sk: &Sm2PrivateKey,
         pk: &Sm2PublicKey,
     ) -> Result<Sm2Signature, CryptoError> {
-        // k = SM3(d ‖ msg) 截断到 [1, n-1]。
+        // 21-B C4：RFC 6979（SM3 变体）确定性 nonce，替代旧 `SM3(d‖msg)`
+        // 截断（非标）。h1 = e = SM3(Z ‖ M)，k 由 HMAC-SM3 驱动派生
+        // （rfc6979.rs：V/K 状态 + bits2octets(e) + 候选 [1, n-1] 循环）。
+        let z = self.compute_z(pk);
         let mut hasher = Sm3Hasher::new();
-        hasher.update(&sk.d.to_be_bytes());
+        hasher.update(&z);
         hasher.update(msg);
-        let k_bytes = hasher.finalize();
-        let mut k = U256::from_be_bytes(&k_bytes);
-        if k.is_zero() || k >= SM2_N {
-            k = U256::from_be_bytes(&[1u8; 32]); // 退化回退（不会发生）
-        }
+        let e_bytes = hasher.finalize();
+        let e = U256::from_be_bytes(&e_bytes);
+        let k = super::rfc6979::rfc6979_nonce(&sk.d, &e);
         self.sign_with_k(msg, sk, pk, &k)
     }
 

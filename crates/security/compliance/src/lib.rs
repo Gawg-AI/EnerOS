@@ -98,9 +98,9 @@ mod tests {
         assert!(!xc.all_passed(), "无证据信创不得全过");
         assert_eq!(xc.total, 7);
 
-        // 等保检查
+        // 等保检查（21-B C3：无证据不全过，对齐信创 P0-13）
         let db = verifier.verify_dengbao_level3();
-        assert!(db.all_passed());
+        assert!(!db.all_passed(), "无证据等保不得全过");
         assert_eq!(db.total, 15);
 
         // 综合出口验证（v0.212.0 P0-13：无证据不全过）

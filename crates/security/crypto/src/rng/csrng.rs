@@ -1,20 +1,11 @@
 //! 基于 SM3 的密码学安全随机数生成器 (CSRNG).
 //!
-//! 设计参考 NIST SP 800-90A Hash DRBG，将底层哈希函数替换为 SM3 (GB/T 32905-2016)。
-//!
-//! # 状态
-//! - `V`：256-bit（32 字节）内部状态
-//! - `counter`：64-bit 计数器，用于每次输出的额外混合
-//!
-//! # 输出生成
-//! 对每个 32 字节块：
-//! 1. 构造输入 `input = V || counter`（40 字节）
-//! 2. 计算 `V = SM3(input)`
-//! 3. 输出 `V` 作为随机字节
-//! 4. `counter += 1`
-//!
-//! # 重播种
-//! `reseed(seed)`：`V = SM3(V || seed || counter)`，然后 `counter += 1`。
+//! # SP 800-90A Hash_DRBG（SM3 变体，21-B C4 标准化）
+//! 2026-08-09 起按 NIST SP 800-90A Rev.1 §10.1.1 Hash_DRBG 的结构实现，
+//! 底层哈希替换为 SM3（GB/T 32905-2016）：状态 `(V, C, reseed_counter)`，
+//! `Hash_DRBG_Update` 用 0x00/0x03 域分隔符，Generate 用 `V = Hash(0x03‖V)`
+//! 循环输出。旧版"计数器模式（V=SM3(V‖counter)）"为 SP 800-90A 风格但
+//! 非标准结构（蓝图 21-B C4 指定项），已替换。
 //!
 //! # 安全警告
 //! 固定种子构造器仅在 test/debug 或显式 `insecure-test-rng` feature 下编译。
@@ -24,19 +15,55 @@
 use alloc::vec::Vec;
 
 use crate::constant_time::ct_zeroize;
-use crate::sm3::hash as sm3_hash;
 use crate::sm3::hmac::Sm3Hmac;
 
-/// 基于 SM3 Hash DRBG 的密码学安全随机数生成器.
+/// SP 800-90A Hash_DRBG 输出块长度（SM3 摘要 = 32 字节）。
+const OUTLEN: usize = 32;
+
+/// 基于 SM3 的 SP 800-90A Hash_DRBG.
 ///
-/// 状态由 256-bit `V` 和 64-bit `counter` 组成。输出通过反复哈希状态产生。
+/// 状态 `(V, C, reseed_counter)`：`V` 与 `C` 各 32 字节，
+/// `reseed_counter` 记录自上次实例化/重播种以来的生成次数。
 ///
 /// release 构造必须显式注入熵；固定种子便捷构造器不会进入 release API。
 pub struct CsRng {
-    /// 内部状态 V（256-bit = 32 字节）.
+    /// 内部状态 V（outlen = 32 字节）.
     v: [u8; 32],
-    /// 用于额外混合的计数器.
-    counter: u64,
+    /// 内部常量 C（outlen = 32 字节）.
+    c: [u8; 32],
+    /// 自上次实例化/重播种以来的生成次数.
+    reseed_counter: u64,
+}
+
+/// SP 800-90A §10.1.1.2 Hash_DRBG_Update(provided_data)。
+///
+/// ```text
+/// if provided_data != NULL:
+///   temp = Hash(0x00 ‖ V ‖ provided_data)
+/// else:
+///   temp = Hash(0x00 ‖ V)
+/// V = temp
+/// temp = Hash(0x03 ‖ V); V = temp
+/// temp = Hash(0x03 ‖ V); C = temp
+/// ```
+fn hash_drbg_update(provided_data: Option<&[u8]>, v: &mut [u8; 32], c: &mut [u8; 32]) {
+    let mut hasher = crate::sm3::Sm3Hasher::new();
+    hasher.update(&[0x00]);
+    hasher.update(v);
+    if let Some(data) = provided_data {
+        hasher.update(data);
+    }
+    *v = hasher.finalize();
+
+    let mut hasher = crate::sm3::Sm3Hasher::new();
+    hasher.update(&[0x03]);
+    hasher.update(v);
+    *v = hasher.finalize();
+
+    let mut hasher = crate::sm3::Sm3Hasher::new();
+    hasher.update(&[0x03]);
+    hasher.update(v);
+    *c = hasher.finalize();
 }
 
 impl CsRng {
@@ -56,13 +83,18 @@ impl CsRng {
         Self::from_seed(&seed)
     }
 
-    /// 使用显式 32 字节种子创建 CSRNG.
+    /// 使用显式 32 字节种子创建 CSRNG（SP 800-90A Instantiate）。
     ///
     /// 生产环境中，种子应来自硬件 TRNG。
-    /// 内部状态初始化为 `V = SM3(seed)`，计数器初始化为 0。
+    /// `Hash_DRBG_Update(seed)` 后 `reseed_counter = 1`。
     pub fn from_seed(seed: &[u8; 32]) -> Self {
-        let v = sm3_hash(seed);
-        Self { v, counter: 0 }
+        let mut rng = Self {
+            v: [0u8; 32],
+            c: [0u8; 32],
+            reseed_counter: 1,
+        };
+        hash_drbg_update(Some(seed), &mut rng.v, &mut rng.c);
+        rng
     }
 
     /// 为确定性签名 nonce 派生一个域分离 DRBG。
@@ -81,29 +113,30 @@ impl CsRng {
         Self::from_seed(&seed)
     }
 
-    /// 用随机字节填充缓冲区.
+    /// 用随机字节填充缓冲区（SP 800-90A Generate）。
     ///
-    /// 对每个 32 字节块：`V = SM3(V || counter)`，输出 `V`，`counter += 1`。
-    /// 若缓冲区长度不是 32 的倍数，最后一个块的部分字节被截取使用。
+    /// 每 32 字节块：`V = Hash(0x03 ‖ V)`；完成后执行
+    /// `Hash_DRBG_Update(no provided data)` 并递增 `reseed_counter`。
     pub fn fill_bytes(&mut self, buf: &mut [u8]) {
         let mut offset = 0;
         while offset < buf.len() {
-            // 构造输入：V (32) || counter (8) = 40 字节
-            let mut input = [0u8; 40];
-            input[..32].copy_from_slice(&self.v);
-            input[32..].copy_from_slice(&self.counter.to_be_bytes());
+            let mut hasher = crate::sm3::Sm3Hasher::new();
+            hasher.update(&[0x03]);
+            hasher.update(&self.v);
+            self.v = hasher.finalize();
 
-            // V = SM3(V || counter)
-            let next_v = sm3_hash(&input);
-            self.v = next_v;
-            self.counter = self.counter.wrapping_add(1);
-
-            // 拷贝到输出缓冲区
             let remaining = buf.len() - offset;
-            let to_copy = if remaining < 32 { remaining } else { 32 };
-            buf[offset..offset + to_copy].copy_from_slice(&next_v[..to_copy]);
+            let to_copy = if remaining < OUTLEN {
+                remaining
+            } else {
+                OUTLEN
+            };
+            buf[offset..offset + to_copy].copy_from_slice(&self.v[..to_copy]);
             offset += to_copy;
         }
+        // 生成完成后状态更新（SP 800-90A §10.1.1.4 步骤 7）
+        hash_drbg_update(None, &mut self.v, &mut self.c);
+        self.reseed_counter = self.reseed_counter.wrapping_add(1);
     }
 
     /// 生成一个随机 `u32`（大端字节序解析）.
@@ -120,17 +153,17 @@ impl CsRng {
         u64::from_be_bytes(buf)
     }
 
-    /// 用新熵重播种 CSRNG.
+    /// 用新熵重播种 CSRNG（SP 800-90A Reseed）。
     ///
-    /// 更新公式：`V = SM3(old_V || seed || counter)`，然后 `counter += 1`。
+    /// `Hash_DRBG_Update(0x01 ‖ V ‖ entropy)` 后 `reseed_counter = 1`。
     /// 重种后输出序列将发生改变。
     pub fn reseed(&mut self, seed: &[u8]) {
-        let mut input = Vec::with_capacity(32 + seed.len() + 8);
+        let mut input = Vec::with_capacity(1 + OUTLEN + seed.len());
+        input.push(0x01);
         input.extend_from_slice(&self.v);
         input.extend_from_slice(seed);
-        input.extend_from_slice(&self.counter.to_be_bytes());
-        self.v = sm3_hash(&input);
-        self.counter = self.counter.wrapping_add(1);
+        hash_drbg_update(Some(&input), &mut self.v, &mut self.c);
+        self.reseed_counter = 1;
     }
 }
 
@@ -145,10 +178,10 @@ impl Drop for CsRng {
     fn drop(&mut self) {
         // 恒定时间清零敏感状态
         ct_zeroize(&mut self.v);
-        // counter 是 u64 标量，使用 volatile 写入清零以防编译器优化删除
+        // reseed_counter 是 u64 标量，使用 volatile 写入清零以防编译器优化删除
         // SAFETY: write_volatile 写入栈上变量的可变引用，不会触发 UB
         unsafe {
-            core::ptr::write_volatile(&mut self.counter, 0);
+            core::ptr::write_volatile(&mut self.reseed_counter, 0);
         }
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     }

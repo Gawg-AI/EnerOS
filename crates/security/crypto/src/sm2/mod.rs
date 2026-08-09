@@ -16,6 +16,7 @@ use crate::bigint::U256;
 
 pub mod encrypt;
 pub mod keypair;
+pub mod rfc6979;
 pub mod sign;
 
 pub use encrypt::{sm2_decrypt, sm2_encrypt};

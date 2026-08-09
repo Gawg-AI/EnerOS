@@ -3,10 +3,9 @@
 //! 综合信创认证与等保 2.0 三级检查结果，生成 Phase 3 出口验证报告。
 
 use crate::dengbao::DengbaoChecker;
-use crate::types::{Phase3ExitReport, VerificationReport};
-
 #[cfg(test)]
 use crate::types::CheckStatus;
+use crate::types::{Phase3ExitReport, VerificationReport};
 use crate::xinchuang::XinchuangChecker;
 
 /// 合规验证 trait.
@@ -101,8 +100,13 @@ mod tests {
     fn test_verify_dengbao() {
         let verifier = Phase3ExitVerification::new();
         let report = verifier.verify_dengbao_level3();
-        assert!(report.all_passed());
+        // 21-B C3：无证据时等保不得硬编码 Passed（对齐信创 P0-13）。
+        assert!(!report.all_passed(), "无证据等保不得 all_passed");
         assert_eq!(report.total, 15);
+        assert!(report
+            .items
+            .iter()
+            .any(|i| i.status == CheckStatus::Pending));
     }
 
     #[test]
@@ -119,14 +123,14 @@ mod tests {
     fn test_phase3_exit_report_structure() {
         let verifier = Phase3ExitVerification::new();
         let report = verifier.phase3_exit_check();
-        // v0.212.0（P0-13）：无证据时信创项 false（dengbao 保持其状态）。
+        // v0.212.0（P0-13）+ 21-B C3：无证据时信创与等保均 false。
         assert_eq!(
             report,
             Phase3ExitReport {
                 kernel_ok: false,
                 cpu_ok: false,
                 xinchuang_ok: false,
-                dengbao_ok: true,
+                dengbao_ok: false,
             }
         );
     }

@@ -2,24 +2,114 @@
 //!
 //! 验证 EnerOS 满足《信息安全技术 网络安全等级保护基本要求》(GB/T 22239-2019)
 //! 三级安全要求，覆盖安全物理环境、通信网络、计算环境、管理中心等 15 项。
+//!
+//! # 证据驱动（21-B C3，2026-08-09）
+//! `check_level3()` 默认走**动态证据判定**：无证据的项标 `Pending`
+//! （待验证），**禁止硬编码 `Passed`**（对齐 `xinchuang` P0-13 先例）。
+//! 调用方（宿主 / xtask qa）注入 `DengbaoEvidence`（每项一个可追溯证据
+//! 指针 + 检查结果）后，`Passed` 项附带证据指针、`Failed` 项标注未通过。
+//! 静态枚举仅 `#[cfg(test)]` 可见（测试参考，非生产路径）。
 
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::types::{CheckItem, CheckStatus, VerificationReport};
 
-/// 运行时探测结果（VRF-006：动态检测输入，替换静态 Passed）。
+/// 单项证据来源（21-B C3）：可追溯指针 + 检查结果。
 ///
-/// 由宿主在检查时注入真实运行时数据；`None` 表示该面无运行时数据（保留静态项）。
+/// `pointer` 必须是可追溯的证据位置（配置文件路径 / 日志路径 /
+/// 运行时检查名），禁止空指针配 `Passed`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceSource {
+    /// 证据指针（如 `configs/dengbao.toml` 的项声明或产物文件路径）。
+    pub pointer: String,
+    /// 该项运行时检查结果。
+    pub ok: bool,
+}
+
+impl EvidenceSource {
+    /// 构造证据源。
+    pub fn new(pointer: impl Into<String>, ok: bool) -> Self {
+        Self {
+            pointer: pointer.into(),
+            ok,
+        }
+    }
+}
+
+/// 等保 2.0 三级运行时证据集（15 项，与检查项一一对应）。
+///
+/// `None` = 该面无运行时证据（判定为 `Pending`，不硬编码 Passed）。
 #[derive(Debug, Clone, Default)]
-pub struct RuntimeProbe {
-    /// SM2 签名验签能力是否可用（身份鉴别，项 4）。
-    pub sm2_sign_available: Option<bool>,
-    /// 审计链是否已写入（审计记录，项 8）。
-    pub audit_chain_written: Option<bool>,
-    /// 异常检测器是否激活（入侵防范，项 9）。
-    pub anomaly_detector_active: Option<bool>,
-    /// 时间同步是否有效（时间戳完整性，项 7）。
-    pub time_sync_valid: Option<bool>,
+pub struct DengbaoEvidence {
+    /// 1. 安全物理环境：物理访问控制证据（机房/部署记录）。
+    pub physical_access: Option<EvidenceSource>,
+    /// 2. 安全通信网络：网络架构证据（TSN/61850 配置审计）。
+    pub network_architecture: Option<EvidenceSource>,
+    /// 3. 安全区域边界：边界防护证据（微内核 IPC 隔离验证记录）。
+    pub boundary_protection: Option<EvidenceSource>,
+    /// 4. 安全计算环境：计算安全证据（SM2 身份鉴别能力实测）。
+    pub compute_security: Option<EvidenceSource>,
+    /// 5. 安全管理中心：集中管理证据（agent/hmi 运行状态）。
+    pub management_center: Option<EvidenceSource>,
+    /// 6. 安全通信完整性：SM3 摘要校验证据。
+    pub comm_integrity: Option<EvidenceSource>,
+    /// 7. 安全通信保密性：SM4 加密 + mTLS 证据。
+    pub comm_confidentiality: Option<EvidenceSource>,
+    /// 8. 可信验证：Secure Boot + TPM 度量证据。
+    pub trusted_boot: Option<EvidenceSource>,
+    /// 9. 入侵防范：异常检测器激活证据。
+    pub intrusion_prevention: Option<EvidenceSource>,
+    /// 10. 恶意代码防范：签名 OTA + 无 unsafe 核心证据。
+    pub malware_prevention: Option<EvidenceSource>,
+    /// 11. 安全审计：审计日志落盘证据。
+    pub security_audit: Option<EvidenceSource>,
+    /// 12. 数据完整性：SM3 校验 + A/B 回滚证据。
+    pub data_integrity: Option<EvidenceSource>,
+    /// 13. 数据保密性：SM4 静态加密 + TPM 封存证据。
+    pub data_confidentiality: Option<EvidenceSource>,
+    /// 14. 剩余信息保护：内存零化证据。
+    pub residual_info: Option<EvidenceSource>,
+    /// 15. 个人信息保护：本地处理 + 最小化原则证据。
+    pub personal_info: Option<EvidenceSource>,
+}
+
+impl DengbaoEvidence {
+    /// 从 15 项证据源数组构造（数组顺序与检查项编号一致）。
+    pub fn from_array(items: [Option<EvidenceSource>; 15]) -> Self {
+        let mut it = items.into_iter();
+        Self {
+            physical_access: it.next().unwrap(),
+            network_architecture: it.next().unwrap(),
+            boundary_protection: it.next().unwrap(),
+            compute_security: it.next().unwrap(),
+            management_center: it.next().unwrap(),
+            comm_integrity: it.next().unwrap(),
+            comm_confidentiality: it.next().unwrap(),
+            trusted_boot: it.next().unwrap(),
+            intrusion_prevention: it.next().unwrap(),
+            malware_prevention: it.next().unwrap(),
+            security_audit: it.next().unwrap(),
+            data_integrity: it.next().unwrap(),
+            data_confidentiality: it.next().unwrap(),
+            residual_info: it.next().unwrap(),
+            personal_info: it.next().unwrap(),
+        }
+    }
+}
+
+/// 按证据判定单项状态：Some(true) → Passed（附指针），
+/// Some(false) → Failed（附指针），None → Pending（附缺失原因）。
+fn status_of(evidence: &Option<EvidenceSource>, missing: &str) -> (CheckStatus, String) {
+    match evidence {
+        Some(source) if source.ok => (CheckStatus::Passed, format!("证据: {}", source.pointer)),
+        Some(source) => (
+            CheckStatus::Failed,
+            format!("证据未通过: {}", source.pointer),
+        ),
+        None => (CheckStatus::Pending, format!("证据缺失: {missing}")),
+    }
 }
 
 /// 等保 2.0 三级检查器.
@@ -27,86 +117,70 @@ pub struct RuntimeProbe {
 pub struct DengbaoChecker;
 
 impl DengbaoChecker {
-    /// 执行等保 2.0 三级全部检查项，返回验证报告（VRF-006：支持运行时探测
-    /// 动态判定——`probe` 中提供的面按真实结果判定，其余保留静态项）。
-    pub fn check_level3_dynamic(&self, probe: &RuntimeProbe) -> VerificationReport {
-        let mut report = self.check_level3();
-        for item in report.items_mut() {
-            let status = match (item.id, probe) {
-                (
-                    4,
-                    RuntimeProbe {
-                        sm2_sign_available: Some(true),
-                        ..
-                    },
-                ) => CheckStatus::Passed,
-                (
-                    4,
-                    RuntimeProbe {
-                        sm2_sign_available: Some(false),
-                        ..
-                    },
-                ) => CheckStatus::Failed,
-                (
-                    8,
-                    RuntimeProbe {
-                        audit_chain_written: Some(true),
-                        ..
-                    },
-                ) => CheckStatus::Passed,
-                (
-                    8,
-                    RuntimeProbe {
-                        audit_chain_written: Some(false),
-                        ..
-                    },
-                ) => CheckStatus::Failed,
-                (
-                    9,
-                    RuntimeProbe {
-                        anomaly_detector_active: Some(true),
-                        ..
-                    },
-                ) => CheckStatus::Passed,
-                (
-                    9,
-                    RuntimeProbe {
-                        anomaly_detector_active: Some(false),
-                        ..
-                    },
-                ) => CheckStatus::Failed,
-                (
-                    7,
-                    RuntimeProbe {
-                        time_sync_valid: Some(true),
-                        ..
-                    },
-                ) => CheckStatus::Passed,
-                (
-                    7,
-                    RuntimeProbe {
-                        time_sync_valid: Some(false),
-                        ..
-                    },
-                ) => CheckStatus::Failed,
-                _ => continue,
-            };
-            item.set_status(status);
-        }
-        report.recompute();
-        report
-    }
-}
-
-impl DengbaoChecker {
     /// 创建检查器实例.
     pub fn new() -> Self {
         Self
     }
 
-    /// 静态基准检查（VRF-006：15 项中可动态判定的面由
-    /// `check_level3_dynamic` 覆盖，本方法保留静态枚举）。
-    fn check_level3_static(&self) -> VerificationReport {
+    /// 执行等保 2.0 三级全部检查项（21-B C3：默认证据驱动）。
+    ///
+    /// 无任何证据注入 → 全部 `Pending`（干净环境不得出现硬编码 Passed）。
+    pub fn check_level3(&self) -> VerificationReport {
+        self.check_level3_with_evidence(&DengbaoEvidence::default())
+    }
+
+    /// 基于运行时证据执行等保 2.0 三级检查（21-B C3）。
+    pub fn check_level3_with_evidence(&self, evidence: &DengbaoEvidence) -> VerificationReport {
+        let (s1, e1) = status_of(
+            &evidence.physical_access,
+            "物理访问控制证据（机房/部署记录）",
+        );
+        let (s2, e2) = status_of(&evidence.network_architecture, "网络架构审计（TSN/61850）");
+        let (s3, e3) = status_of(&evidence.boundary_protection, "边界防护验证（IPC 隔离）");
+        let (s4, e4) = status_of(&evidence.compute_security, "计算安全验证（SM2 身份鉴别）");
+        let (s5, e5) = status_of(&evidence.management_center, "集中管理运行状态（agent/hmi）");
+        let (s6, e6) = status_of(&evidence.comm_integrity, "SM3 摘要校验验证");
+        let (s7, e7) = status_of(&evidence.comm_confidentiality, "SM4 加密 + mTLS 验证");
+        let (s8, e8) = status_of(&evidence.trusted_boot, "Secure Boot + TPM 度量验证");
+        let (s9, e9) = status_of(&evidence.intrusion_prevention, "异常检测器激活状态");
+        let (s10, e10) = status_of(&evidence.malware_prevention, "签名 OTA + 无 unsafe 审计");
+        let (s11, e11) = status_of(&evidence.security_audit, "审计日志落盘验证");
+        let (s12, e12) = status_of(&evidence.data_integrity, "SM3 校验 + A/B 回滚验证");
+        let (s13, e13) = status_of(&evidence.data_confidentiality, "SM4 静态加密 + TPM 封存");
+        let (s14, e14) = status_of(&evidence.residual_info, "内存零化验证");
+        let (s15, e15) = status_of(&evidence.personal_info, "本地处理 + 最小化原则");
+
+        let items: Vec<CheckItem> = alloc::vec![
+            CheckItem::new(1, "安全物理环境", "物理安全", s1, &e1, "v0.170.0"),
+            CheckItem::new(2, "安全通信网络", "网络安全", s2, &e2, "v0.170.0"),
+            CheckItem::new(3, "安全区域边界", "边界防护", s3, &e3, "v0.170.0"),
+            CheckItem::new(4, "安全计算环境", "计算安全", s4, &e4, "v0.170.0"),
+            CheckItem::new(5, "安全管理中心", "管理安全", s5, &e5, "v0.170.0"),
+            CheckItem::new(6, "安全通信完整性", "通信安全", s6, &e6, "v0.170.0"),
+            CheckItem::new(7, "安全通信保密性", "通信安全", s7, &e7, "v0.170.0"),
+            CheckItem::new(8, "可信验证", "可信计算", s8, &e8, "v0.170.0"),
+            CheckItem::new(9, "入侵防范", "主动防御", s9, &e9, "v0.170.0"),
+            CheckItem::new(10, "恶意代码防范", "主动防御", s10, &e10, "v0.170.0"),
+            CheckItem::new(11, "安全审计", "审计追踪", s11, &e11, "v0.170.0"),
+            CheckItem::new(12, "数据完整性", "数据安全", s12, &e12, "v0.170.0"),
+            CheckItem::new(13, "数据保密性", "数据安全", s13, &e13, "v0.170.0"),
+            CheckItem::new(14, "剩余信息保护", "数据安全", s14, &e14, "v0.170.0"),
+            CheckItem::new(15, "个人信息保护", "隐私保护", s15, &e15, "v0.170.0"),
+        ];
+        VerificationReport::new("等保 2.0 三级验证报告（证据驱动）", items)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 静态参考枚举（21-B C3：仅测试可见，生产路径不得使用）。
+    ///
+    /// 保留 v0.170.0 的 15 项描述作为测试基线；真实判定一律走
+    /// `check_level3_with_evidence`。
+    #[allow(dead_code)]
+    fn check_level3_static() -> VerificationReport {
         let items: Vec<CheckItem> = alloc::vec![
             CheckItem::new(
                 1,
@@ -229,64 +303,128 @@ impl DengbaoChecker {
                 "v0.170.0"
             ),
         ];
-
         VerificationReport::new("等保 2.0 三级验证报告", items)
     }
 
-    /// 执行等保 2.0 三级全部检查项（静态基准；动态判定见 `check_level3_dynamic`）。
-    pub fn check_level3(&self) -> VerificationReport {
-        self.check_level3_static()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use alloc::string::String;
-
-    use super::*;
-
     #[test]
-    fn test_dengbao_check_level3_count() {
+    fn test_clean_env_no_hardcoded_passed() {
+        // C3 判据 1：干净环境（无证据）→ 全部 Pending，不得 Passed。
         let checker = DengbaoChecker::new();
         let report = checker.check_level3();
         assert_eq!(report.total, 15);
-        assert_eq!(report.items.len(), 15);
+        assert_eq!(report.passed_count, 0, "干净环境不得有 Passed");
+        assert!(report
+            .items
+            .iter()
+            .all(|i| i.status == CheckStatus::Pending));
+        for item in report.items.iter() {
+            assert!(
+                item.evidence.starts_with("证据缺失:"),
+                "Pending 项必须标注缺失原因: {}",
+                item.evidence
+            );
+        }
     }
 
     #[test]
-    fn test_dengbao_all_passed() {
+    fn test_full_evidence_passed_with_pointers() {
+        // C3 判据 2：完整证据 → Passed 项带证据指针。
         let checker = DengbaoChecker::new();
-        let report = checker.check_level3();
-        assert!(report.all_passed());
+        let evidence = DengbaoEvidence {
+            physical_access: Some(EvidenceSource::new(
+                "configs/dengbao.toml#physical_access",
+                true,
+            )),
+            network_architecture: Some(EvidenceSource::new(
+                "configs/dengbao.toml#network_architecture",
+                true,
+            )),
+            boundary_protection: Some(EvidenceSource::new(
+                "configs/dengbao.toml#boundary_protection",
+                true,
+            )),
+            compute_security: Some(EvidenceSource::new(
+                "configs/dengbao.toml#compute_security",
+                true,
+            )),
+            management_center: Some(EvidenceSource::new(
+                "configs/dengbao.toml#management_center",
+                true,
+            )),
+            comm_integrity: Some(EvidenceSource::new(
+                "configs/dengbao.toml#comm_integrity",
+                true,
+            )),
+            comm_confidentiality: Some(EvidenceSource::new(
+                "configs/dengbao.toml#comm_confidentiality",
+                true,
+            )),
+            trusted_boot: Some(EvidenceSource::new(
+                "configs/dengbao.toml#trusted_boot",
+                true,
+            )),
+            intrusion_prevention: Some(EvidenceSource::new(
+                "configs/dengbao.toml#intrusion_prevention",
+                true,
+            )),
+            malware_prevention: Some(EvidenceSource::new(
+                "configs/dengbao.toml#malware_prevention",
+                true,
+            )),
+            security_audit: Some(EvidenceSource::new(
+                "configs/dengbao.toml#security_audit",
+                true,
+            )),
+            data_integrity: Some(EvidenceSource::new(
+                "configs/dengbao.toml#data_integrity",
+                true,
+            )),
+            data_confidentiality: Some(EvidenceSource::new(
+                "configs/dengbao.toml#data_confidentiality",
+                true,
+            )),
+            residual_info: Some(EvidenceSource::new(
+                "configs/dengbao.toml#residual_info",
+                true,
+            )),
+            personal_info: Some(EvidenceSource::new(
+                "configs/dengbao.toml#personal_info",
+                true,
+            )),
+        };
+        let report = checker.check_level3_with_evidence(&evidence);
+        assert_eq!(report.total, 15);
         assert_eq!(report.passed_count, 15);
-        assert_eq!(report.failed_count, 0);
+        for item in report.items.iter() {
+            assert_eq!(item.status, CheckStatus::Passed);
+            assert!(
+                item.evidence.starts_with("证据: "),
+                "Passed 必须附带证据指针: {}",
+                item.evidence
+            );
+        }
     }
 
     #[test]
-    fn test_dengbao_item_names() {
+    fn test_mixed_evidence_statuses() {
+        // 混合证据：失败项 Failed、缺失项 Pending、通过项 Passed。
         let checker = DengbaoChecker::new();
-        let report = checker.check_level3();
-        assert_eq!(report.items[0].name, "安全物理环境");
-        assert_eq!(report.items[4].name, "安全管理中心");
-        assert_eq!(report.items[7].name, "可信验证");
-        assert_eq!(report.items[14].name, "个人信息保护");
-    }
-
-    #[test]
-    fn test_dengbao_report_title() {
-        let checker = DengbaoChecker::new();
-        let report = checker.check_level3();
-        assert_eq!(report.title, String::from("等保 2.0 三级验证报告"));
-    }
-
-    #[test]
-    fn test_dengbao_categories() {
-        let checker = DengbaoChecker::new();
-        let report = checker.check_level3();
-        assert_eq!(report.items[0].category, "物理安全");
-        assert_eq!(report.items[5].category, "通信安全");
-        assert_eq!(report.items[10].category, "审计追踪");
-        assert_eq!(report.items[14].category, "隐私保护");
+        let evidence = DengbaoEvidence {
+            compute_security: Some(EvidenceSource::new("runtime:sm2_sign_available", false)),
+            security_audit: Some(EvidenceSource::new("log:audit_chain", true)),
+            ..DengbaoEvidence::default()
+        };
+        let report = checker.check_level3_with_evidence(&evidence);
+        let item4 = report.items.iter().find(|i| i.id == 4).unwrap();
+        assert_eq!(item4.status, CheckStatus::Failed);
+        assert!(item4.evidence.contains("未通过"));
+        let item11 = report.items.iter().find(|i| i.id == 11).unwrap();
+        assert_eq!(item11.status, CheckStatus::Passed);
+        let item1 = report.items.iter().find(|i| i.id == 1).unwrap();
+        assert_eq!(item1.status, CheckStatus::Pending);
+        assert_eq!(report.failed_count, 1);
+        assert_eq!(report.passed_count, 1);
+        assert_eq!(report.total, 15);
     }
 
     #[test]
@@ -297,43 +435,14 @@ mod tests {
             assert_eq!(item.id, (idx + 1) as u32);
         }
     }
-}
-
-#[cfg(test)]
-mod vrf006_tests {
-    use super::*;
 
     #[test]
-    fn test_vrf006_dynamic_detection_overrides_static() {
-        let checker = DengbaoChecker::new();
-        // 全部静态 Passed
-        let static_report = checker.check_level3();
-        assert_eq!(static_report.failed_count, 0);
-        // 动态探测：SM2 不可用 → 项 4 变 Failed（运行时真实判定）
-        let probe = RuntimeProbe {
-            sm2_sign_available: Some(false),
-            ..RuntimeProbe::default()
-        };
-        let dyn_report = checker.check_level3_dynamic(&probe);
-        let item4 = dyn_report
-            .items
-            .iter()
-            .find(|i| i.id == 4)
-            .expect("项 4 存在");
-        assert_eq!(
-            item4.status,
-            CheckStatus::Failed,
-            "动态探测 SM2 不可用 → 项 4 Failed"
-        );
-        assert_eq!(dyn_report.failed_count, 1, "动态检测使出口可对假实现失败");
-        // 全部通过探测 → 全 Passed
-        let ok_probe = RuntimeProbe {
-            sm2_sign_available: Some(true),
-            audit_chain_written: Some(true),
-            anomaly_detector_active: Some(true),
-            time_sync_valid: Some(true),
-        };
-        let ok_report = checker.check_level3_dynamic(&ok_probe);
-        assert_eq!(ok_report.failed_count, 0);
+    fn test_from_array_roundtrip() {
+        let sources =
+            core::array::from_fn(|i| Some(EvidenceSource::new(format!("evidence-{i}"), true)));
+        let evidence = DengbaoEvidence::from_array(sources);
+        assert!(evidence.physical_access.is_some());
+        assert!(evidence.personal_info.is_some());
+        assert!(evidence.compute_security.is_some());
     }
 }
