@@ -33,15 +33,16 @@
 //! | D12 | 4 个 pub 计数器替代外部连接状态 metric |
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::net::SocketAddr;
 
+use eneros_crypto::rng::fill_bytes_or_reseed;
 use eneros_crypto::rng::CsRng;
 use eneros_crypto::sm3::Sm3Hasher;
 use eneros_crypto::sm4::gcm::Sm4Gcm;
 
 use crate::discovery::CertVerifier;
+use crate::tunnel::VerticalEncryptDevice;
 
 /// 握手帧魔数 "ECH0"（EnerOS Cross-domain Handshake v0）
 const MAGIC: [u8; 4] = *b"ECH0";
@@ -103,59 +104,6 @@ pub struct Endpoint {
     pub session_key: [u8; 16],
     /// 发送序号（每 call 递增，GCM nonce/aad 组成部分）
     pub send_seq: u64,
-}
-
-/// 安全传输抽象（sync，无 Send+Sync，D3）
-pub trait SecureTransport {
-    /// 向指定节点发送数据
-    fn send(&mut self, node_id: u64, data: &[u8]) -> Result<(), ChannelError>;
-    /// 从指定节点接收数据
-    fn recv(&mut self, node_id: u64) -> Result<Vec<u8>, ChannelError>;
-}
-
-/// Mock 安全传输（故障注入，D11）
-#[derive(Debug, Clone, Default)]
-#[cfg(any(test, feature = "mock"))]
-pub struct MockSecureTransport {
-    /// 已成功发送的记录 `(node_id, data)`
-    pub sent: Vec<(u64, Vec<u8>)>,
-    /// 按节点分桶的待接收队列（每次 recv 弹队首）
-    pub inbox: BTreeMap<u64, Vec<Vec<u8>>>,
-    /// 剩余 send 应失败次数（>0 → `Err(ConnectionRefused)` 并递减）
-    pub fail_send_times: u32,
-    /// 剩余 recv 应失败次数（>0 → `Err(TransportFailed)` 并递减）
-    pub fail_recv_times: u32,
-}
-
-#[cfg(any(test, feature = "mock"))]
-impl MockSecureTransport {
-    /// 创建空 Mock 传输（无故障注入）
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-#[cfg(any(test, feature = "mock"))]
-impl SecureTransport for MockSecureTransport {
-    fn send(&mut self, node_id: u64, data: &[u8]) -> Result<(), ChannelError> {
-        if self.fail_send_times > 0 {
-            self.fail_send_times -= 1;
-            return Err(ChannelError::ConnectionRefused);
-        }
-        self.sent.push((node_id, data.to_vec()));
-        Ok(())
-    }
-
-    fn recv(&mut self, node_id: u64) -> Result<Vec<u8>, ChannelError> {
-        if self.fail_recv_times > 0 {
-            self.fail_recv_times -= 1;
-            return Err(ChannelError::TransportFailed);
-        }
-        match self.inbox.get_mut(&node_id) {
-            Some(queue) if !queue.is_empty() => Ok(queue.remove(0)),
-            _ => Err(ChannelError::TransportFailed),
-        }
-    }
 }
 
 /// 解析握手应答帧 `MAGIC‖cert_len:u32be‖cert`，返回对端证书
@@ -225,14 +173,19 @@ fn gcm_aad(node_id: u64, seq: u64) -> [u8; 16] {
     aad
 }
 
-/// 跨域通信通道（v0.98.0）：mTLS 双向认证握手 + SM4-GCM 加密通话 + 4 计数器
-pub struct FederationChannel {
+/// 跨域通信通道（v0.98.0）：mTLS 双向认证握手 + SM4-GCM 加密通话 + 4 计数器。
+///
+/// W3.1（蓝图23）：传输抽象收敛为唯一 seam `VerticalEncryptDevice`——
+/// 删除了零实现的 `SecureTransport`，本通道直接经纵向加密装置的字节管道
+/// （`xmit`/`poll`）收发握手帧与加密通话帧。会话层（SM4-GCM）与隧道层
+/// （IKE/重放窗口）职责不重叠，本通道只做会话层。
+pub struct FederationChannel<D: VerticalEncryptDevice> {
     /// TLS 配置（纯数据）
     pub tls: TlsConfig,
     /// 证书验证器（复用 v0.97.0 CertVerifier，D5）
     pub verifier: Box<dyn CertVerifier>,
-    /// 安全传输层（依赖注入，D3）
-    pub transport: Box<dyn SecureTransport>,
+    /// 纵向加密装置（唯一传输 seam，W3.1：字节管道）
+    pub device: D,
     /// 随机数生成器（握手 nonce 来源；测试用 `CsRng::new()` 确定性）
     pub rng: CsRng,
     /// 已建立端点列表
@@ -247,18 +200,13 @@ pub struct FederationChannel {
     pub crypto_fail_count: u64,
 }
 
-impl FederationChannel {
+impl<D: VerticalEncryptDevice> FederationChannel<D> {
     /// 创建通道：endpoints 为空，4 计数器全零
-    pub fn new(
-        tls: TlsConfig,
-        verifier: Box<dyn CertVerifier>,
-        transport: Box<dyn SecureTransport>,
-        rng: CsRng,
-    ) -> Self {
+    pub fn new(tls: TlsConfig, verifier: Box<dyn CertVerifier>, device: D, rng: CsRng) -> Self {
         Self {
             tls,
             verifier,
-            transport,
+            device,
             rng,
             endpoints: Vec::new(),
             connect_count: 0,
@@ -277,7 +225,7 @@ impl FederationChannel {
         self.tls.validate()?;
 
         let mut nonce = [0u8; NONCE_LEN];
-        self.rng.fill_bytes(&mut nonce);
+        fill_bytes_or_reseed(&mut self.rng, &mut nonce).map_err(|_| ChannelError::CryptoFailed)?;
 
         // hello 帧：MAGIC‖cert_len:u32be‖client_cert‖nonce[32]
         let mut hello = Vec::with_capacity(8 + self.tls.client_cert.len() + NONCE_LEN);
@@ -286,15 +234,15 @@ impl FederationChannel {
         hello.extend_from_slice(&self.tls.client_cert);
         hello.extend_from_slice(&nonce);
 
-        if self.transport.send(node_id, &hello).is_err() {
+        if self.device.xmit(&hello).is_err() {
             // 忽略底层错误细节，统一为 ConnectionRefused
             self.handshake_fail_count += 1;
             return Err(ChannelError::ConnectionRefused);
         }
 
-        let reply = match self.transport.recv(node_id) {
-            Ok(r) => r,
-            Err(_) => {
+        let reply = match self.device.poll() {
+            Some(r) => r,
+            None => {
                 self.handshake_fail_count += 1;
                 return Err(ChannelError::HandshakeFailed);
             }
@@ -346,12 +294,12 @@ impl FederationChannel {
         frame.extend_from_slice(&ct);
         frame.extend_from_slice(&tag);
 
-        if self.transport.send(node_id, &frame).is_err() {
+        if self.device.xmit(&frame).is_err() {
             return Err(ChannelError::ConnectionRefused);
         }
-        let reply = match self.transport.recv(node_id) {
-            Ok(r) => r,
-            Err(_) => return Err(ChannelError::TransportFailed),
+        let reply = match self.device.poll() {
+            Some(r) => r,
+            None => return Err(ChannelError::TransportFailed),
         };
 
         // 应答帧：seq:u64be‖ct‖tag（至少 8+16 字节）
@@ -411,15 +359,63 @@ impl FederationChannel {
 mod tests {
     use core::net::{IpAddr, Ipv4Addr};
 
+    use eneros_crypto::rng::fill_bytes_or_reseed;
     use eneros_crypto::rng::CsRng;
     use eneros_crypto::sm4::gcm::Sm4Gcm;
 
     use super::*;
     use crate::discovery::MockCertVerifier;
+    use crate::tunnel::EncryptError;
 
     // ------------------------------------------------------------
-    // 测试辅助
+    // 测试辅助：ChannelTestDevice（实现 VerticalEncryptDevice，W3.1）
+    //
+    // 替代已删的 MockSecureTransport——提供单队列字节管道 + 独立 send/recv
+    // 故障注入，保持 channel 测试的契约覆盖。node_id 路由在单设备语义下
+    // 退化为 FIFO 单队列（与 tunnel.rs 测试同模式）。
     // ------------------------------------------------------------
+
+    /// 测试用纵向加密装置：记录发送、按 FIFO 弹出预填队列、独立收发故障注入。
+    #[derive(Default)]
+    struct ChannelTestDevice {
+        /// 已成功发送的帧。
+        sent: Vec<Vec<u8>>,
+        /// 待接收队列（poll 弹队首）。
+        inbox: Vec<Vec<u8>>,
+        /// 剩余 xmit 应失败次数（>0 → `Err` 并递减）。
+        fail_send_times: u32,
+        /// 剩余 poll 应失败次数（>0 → `None` 并递减）。
+        fail_recv_times: u32,
+    }
+
+    impl ChannelTestDevice {
+        fn new() -> Self {
+            Self::default()
+        }
+    }
+
+    impl VerticalEncryptDevice for ChannelTestDevice {
+        fn xmit(&mut self, data: &[u8]) -> Result<(), EncryptError> {
+            if self.fail_send_times > 0 {
+                self.fail_send_times -= 1;
+                return Err(EncryptError::DeviceError);
+            }
+            self.sent.push(data.to_vec());
+            Ok(())
+        }
+
+        fn poll(&mut self) -> Option<Vec<u8>> {
+            if self.fail_recv_times > 0 {
+                self.fail_recv_times -= 1;
+                return None;
+            }
+            if self.inbox.is_empty() {
+                None
+            } else {
+                Some(self.inbox.remove(0))
+            }
+        }
+    }
 
     const CA_CERT: &[u8] = b"eneros-test-ca-cert";
     const CLIENT_CERT: &[u8] = b"eneros-test-client-cert";
@@ -463,11 +459,14 @@ mod tests {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, n)), 8443)
     }
 
-    fn make_channel(accept: bool, transport: MockSecureTransport) -> FederationChannel {
+    fn make_channel(
+        accept: bool,
+        device: ChannelTestDevice,
+    ) -> FederationChannel<ChannelTestDevice> {
         FederationChannel::new(
             make_tls(),
             Box::new(MockCertVerifier::new(accept)),
-            Box::new(transport),
+            device,
             CsRng::new(),
         )
     }
@@ -476,15 +475,18 @@ mod tests {
     fn preset_nonces() -> ([u8; 32], [u8; 32]) {
         let mut rng = CsRng::new();
         let mut n1 = [0u8; 32];
-        rng.fill_bytes(&mut n1);
+        fill_bytes_or_reseed(&mut rng, &mut n1).expect("阈值内生成必须成功");
         let mut n2 = [0u8; 32];
-        rng.fill_bytes(&mut n2);
+        fill_bytes_or_reseed(&mut rng, &mut n2).expect("阈值内生成必须成功");
         (n1, n2)
     }
 
     /// 手工构造已建立 endpoint（绕过 connect，供 call 系列测试）
-    fn channel_with_endpoint(transport: MockSecureTransport, key: [u8; 16]) -> FederationChannel {
-        let mut ch = make_channel(true, transport);
+    fn channel_with_endpoint(
+        device: ChannelTestDevice,
+        key: [u8; 16],
+    ) -> FederationChannel<ChannelTestDevice> {
+        let mut ch = make_channel(true, device);
         ch.endpoints.push(Endpoint {
             node_id: 2,
             addr: test_addr(2),
@@ -572,77 +574,75 @@ mod tests {
     }
 
     // ------------------------------------------------------------
-    // TC7~TC12：MockSecureTransport
+    // TC7~TC12：ChannelTestDevice（VerticalEncryptDevice 测试双）
     // ------------------------------------------------------------
 
-    // TC7: send 成功 → Ok 且入 sent
+    // TC7: xmit 成功 → Ok 且入 sent
     #[test]
     fn tc07_mock_send_success() {
-        let mut t = MockSecureTransport::new();
-        assert_eq!(t.send(2, b"hello"), Ok(()));
+        let mut t = ChannelTestDevice::new();
+        assert_eq!(t.xmit(b"hello"), Ok(()));
         assert_eq!(t.sent.len(), 1);
-        assert_eq!(t.sent[0], (2, b"hello".to_vec()));
+        assert_eq!(t.sent[0], b"hello".to_vec());
     }
 
-    // TC8: send 故障注入 fail_send_times=2 → 2 次 Err(ConnectionRefused) 递减后成功入 sent
+    // TC8: xmit 故障注入 fail_send_times=2 → 2 次 Err(DeviceError) 递减后成功入 sent
     #[test]
     fn tc08_mock_send_fail_injection() {
-        let mut t = MockSecureTransport {
+        let mut t = ChannelTestDevice {
             fail_send_times: 2,
-            ..MockSecureTransport::new()
+            ..ChannelTestDevice::new()
         };
-        assert_eq!(t.send(2, b"a"), Err(ChannelError::ConnectionRefused));
+        assert_eq!(t.xmit(b"a"), Err(EncryptError::DeviceError));
         assert_eq!(t.fail_send_times, 1);
-        assert_eq!(t.send(2, b"b"), Err(ChannelError::ConnectionRefused));
+        assert_eq!(t.xmit(b"b"), Err(EncryptError::DeviceError));
         assert_eq!(t.fail_send_times, 0);
         assert!(t.sent.is_empty()); // 失败期间不记录
-        assert_eq!(t.send(2, b"c"), Ok(()));
+        assert_eq!(t.xmit(b"c"), Ok(()));
         assert_eq!(t.sent.len(), 1);
-        assert_eq!(t.sent[0], (2, b"c".to_vec()));
+        assert_eq!(t.sent[0], b"c".to_vec());
     }
 
-    // TC9: recv 成功 → 按队列顺序弹队首
+    // TC9: poll 成功 → 按队列顺序弹队首
     #[test]
     fn tc09_mock_recv_success_fifo() {
-        let mut t = MockSecureTransport::new();
-        t.inbox
-            .insert(2, vec![b"first".to_vec(), b"second".to_vec()]);
-        assert_eq!(t.recv(2), Ok(b"first".to_vec()));
-        assert_eq!(t.recv(2), Ok(b"second".to_vec()));
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(b"first".to_vec());
+        t.inbox.push(b"second".to_vec());
+        assert_eq!(t.poll(), Some(b"first".to_vec()));
+        assert_eq!(t.poll(), Some(b"second".to_vec()));
     }
 
-    // TC10: recv 故障注入 fail_recv_times=1 → 先 Err(TransportFailed) 递减后成功
+    // TC10: poll 故障注入 fail_recv_times=1 → 先 None 递减后成功
     #[test]
     fn tc10_mock_recv_fail_injection() {
-        let mut t = MockSecureTransport {
+        let mut t = ChannelTestDevice {
             fail_recv_times: 1,
-            ..MockSecureTransport::new()
+            ..ChannelTestDevice::new()
         };
-        t.inbox.insert(2, vec![b"data".to_vec()]);
-        assert_eq!(t.recv(2), Err(ChannelError::TransportFailed));
+        t.inbox.push(b"data".to_vec());
+        assert_eq!(t.poll(), None);
         assert_eq!(t.fail_recv_times, 0);
-        assert_eq!(t.recv(2), Ok(b"data".to_vec()));
+        assert_eq!(t.poll(), Some(b"data".to_vec()));
     }
 
-    // TC11: recv 空 inbox → Err(TransportFailed)
+    // TC11: poll 空队列 → None
     #[test]
     fn tc11_mock_recv_empty_inbox() {
-        let mut t = MockSecureTransport::new();
-        assert_eq!(t.recv(2), Err(ChannelError::TransportFailed));
-        t.inbox.insert(2, Vec::new()); // 队列存在但为空
-        assert_eq!(t.recv(2), Err(ChannelError::TransportFailed));
+        let mut t = ChannelTestDevice::new();
+        assert_eq!(t.poll(), None);
     }
 
-    // TC12: recv 按 node_id 路由，各节点队列互不影响
+    // TC12: poll 按 FIFO 单队列弹帧（W3.1：单设备无 node_id 路由，
+    // 原 node 路由语义由 FederationChannel 的 endpoint 表在上层管理）
     #[test]
-    fn tc12_mock_recv_routing_by_node() {
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(2, vec![b"for-2".to_vec()]);
-        t.inbox.insert(3, vec![b"for-3".to_vec()]);
-        assert_eq!(t.recv(3), Ok(b"for-3".to_vec()));
-        assert_eq!(t.recv(2), Ok(b"for-2".to_vec()));
-        assert_eq!(t.recv(2), Err(ChannelError::TransportFailed)); // 已弹空
-        assert_eq!(t.recv(99), Err(ChannelError::TransportFailed)); // 未知节点
+    fn tc12_mock_recv_fifo_ordering() {
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(b"first".to_vec());
+        t.inbox.push(b"second".to_vec());
+        assert_eq!(t.poll(), Some(b"first".to_vec()));
+        assert_eq!(t.poll(), Some(b"second".to_vec()));
+        assert_eq!(t.poll(), None); // 已弹空
     }
 
     // ------------------------------------------------------------
@@ -652,8 +652,8 @@ mod tests {
     // TC13: connect 成功路径 → connect_count==1、established、send_seq==0、字段正确
     #[test]
     fn tc13_connect_success() {
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(2, vec![make_reply_frame(PEER_CERT)]);
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(make_reply_frame(PEER_CERT));
         let mut ch = make_channel(true, t);
         assert_eq!(ch.connect(2, test_addr(2)), Ok(()));
         assert_eq!(ch.connect_count, 1);
@@ -669,7 +669,7 @@ mod tests {
     // TC14: tls validate 失败 → Err(CertInvalid)，计数器全零、endpoints 空、未发送
     #[test]
     fn tc14_connect_validate_fail_not_counted() {
-        let mut ch = make_channel(true, MockSecureTransport::new());
+        let mut ch = make_channel(true, ChannelTestDevice::new());
         ch.tls.ca_cert = Vec::new();
         assert_eq!(ch.connect(2, test_addr(2)), Err(ChannelError::CertInvalid));
         assert_eq!(ch.connect_count, 0);
@@ -682,9 +682,9 @@ mod tests {
     // TC15: connect send 失败 → Err(ConnectionRefused) + handshake_fail_count==1
     #[test]
     fn tc15_connect_send_fail() {
-        let t = MockSecureTransport {
+        let t = ChannelTestDevice {
             fail_send_times: 1,
-            ..MockSecureTransport::new()
+            ..ChannelTestDevice::new()
         };
         let mut ch = make_channel(true, t);
         assert_eq!(
@@ -699,7 +699,7 @@ mod tests {
     // TC16: connect recv 失败（空 inbox）→ Err(HandshakeFailed) + handshake_fail_count==1
     #[test]
     fn tc16_connect_recv_fail() {
-        let mut ch = make_channel(true, MockSecureTransport::new());
+        let mut ch = make_channel(true, ChannelTestDevice::new());
         assert_eq!(
             ch.connect(2, test_addr(2)),
             Err(ChannelError::HandshakeFailed)
@@ -713,8 +713,8 @@ mod tests {
     #[test]
     fn tc17_connect_bad_reply_frame() {
         // 坏 MAGIC
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(2, vec![b"BAD!not-a-frame".to_vec()]);
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(b"BAD!not-a-frame".to_vec());
         let mut ch = make_channel(true, t);
         assert_eq!(
             ch.connect(2, test_addr(2)),
@@ -724,8 +724,8 @@ mod tests {
         // cert_len 与实际长度不符
         let mut bad = make_reply_frame(PEER_CERT);
         bad.truncate(bad.len() - 2);
-        let mut t2 = MockSecureTransport::new();
-        t2.inbox.insert(3, vec![bad]);
+        let mut t2 = ChannelTestDevice::new();
+        t2.inbox.push(bad);
         let mut ch2 = make_channel(true, t2);
         assert_eq!(
             ch2.connect(3, test_addr(3)),
@@ -737,8 +737,8 @@ mod tests {
     // TC18: verifier reject → Err(CertInvalid) + handshake_fail_count==1 + endpoints 空
     #[test]
     fn tc18_connect_verifier_reject() {
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(2, vec![make_reply_frame(PEER_CERT)]);
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(make_reply_frame(PEER_CERT));
         let mut ch = make_channel(false, t);
         assert_eq!(ch.connect(2, test_addr(2)), Err(ChannelError::CertInvalid));
         assert_eq!(ch.handshake_fail_count, 1);
@@ -750,8 +750,8 @@ mod tests {
     #[test]
     fn tc19_connect_session_key_matches_derive() {
         let (nonce, _) = preset_nonces();
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(2, vec![make_reply_frame(PEER_CERT)]);
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(make_reply_frame(PEER_CERT));
         let mut ch = make_channel(true, t);
         ch.connect(2, test_addr(2)).unwrap();
         let expected = derive_session_key(CLIENT_CERT, PEER_CERT, &nonce);
@@ -822,11 +822,9 @@ mod tests {
     // TC22: 二次 connect 同 node_id → push 第二个 endpoint，connect_count==2
     #[test]
     fn tc22_connect_twice_same_node() {
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(
-            2,
-            vec![make_reply_frame(PEER_CERT), make_reply_frame(PEER_CERT)],
-        );
+        let mut t = ChannelTestDevice::new();
+        t.inbox
+            .extend([make_reply_frame(PEER_CERT), make_reply_frame(PEER_CERT)]);
         let mut ch = make_channel(true, t);
         ch.connect(2, test_addr(2)).unwrap();
         ch.connect(2, test_addr(2)).unwrap();
@@ -838,9 +836,9 @@ mod tests {
     // TC23: 多端点 connect（2 个 node 各自建立）
     #[test]
     fn tc23_connect_multiple_nodes() {
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(2, vec![make_reply_frame(PEER_CERT)]);
-        t.inbox.insert(3, vec![make_reply_frame(PEER_CERT)]);
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(make_reply_frame(PEER_CERT));
+        t.inbox.push(make_reply_frame(PEER_CERT));
         let mut ch = make_channel(true, t);
         ch.connect(2, test_addr(2)).unwrap();
         ch.connect(3, test_addr(3)).unwrap();
@@ -856,11 +854,9 @@ mod tests {
     fn tc24_connect_nonces_unique_keys_differ() {
         let (n1, n2) = preset_nonces();
         assert_ne!(n1, n2);
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(
-            2,
-            vec![make_reply_frame(PEER_CERT), make_reply_frame(PEER_CERT)],
-        );
+        let mut t = ChannelTestDevice::new();
+        t.inbox
+            .extend([make_reply_frame(PEER_CERT), make_reply_frame(PEER_CERT)]);
         let mut ch = make_channel(true, t);
         ch.connect(2, test_addr(2)).unwrap();
         ch.connect(2, test_addr(2)).unwrap();
@@ -883,9 +879,8 @@ mod tests {
     #[test]
     fn tc25_call_success() {
         let key = [0x42u8; 16];
-        let mut t = MockSecureTransport::new();
-        t.inbox
-            .insert(2, vec![make_call_reply(&key, 2, 1, b"pong")]);
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(make_call_reply(&key, 2, 1, b"pong"));
         let mut ch = channel_with_endpoint(t, key);
         assert_eq!(ch.call(2, b"ping"), Ok(b"pong".to_vec()));
         assert_eq!(ch.call_count, 1);
@@ -896,7 +891,7 @@ mod tests {
     // TC26: call 未知节点 → Err(UnknownNode)，计数器不变
     #[test]
     fn tc26_call_unknown_node() {
-        let mut ch = make_channel(true, MockSecureTransport::new());
+        let mut ch = make_channel(true, ChannelTestDevice::new());
         assert_eq!(ch.call(99, b"ping"), Err(ChannelError::UnknownNode));
         assert_eq!(ch.call_count, 0);
         assert_eq!(ch.crypto_fail_count, 0);
@@ -905,7 +900,7 @@ mod tests {
     // TC27: established=false → Err(ConnectionRefused)（手工构造 endpoint）
     #[test]
     fn tc27_call_not_established() {
-        let mut ch = make_channel(true, MockSecureTransport::new());
+        let mut ch = make_channel(true, ChannelTestDevice::new());
         ch.endpoints.push(Endpoint {
             node_id: 2,
             addr: test_addr(2),
@@ -922,8 +917,8 @@ mod tests {
     #[test]
     fn tc28_call_reply_too_short() {
         let key = [0x42u8; 16];
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(2, vec![vec![0u8; 10]]);
+        let mut t = ChannelTestDevice::new();
+        t.inbox.extend([vec![0u8; 10]]);
         let mut ch = channel_with_endpoint(t, key);
         assert_eq!(ch.call(2, b"ping"), Err(ChannelError::CryptoFailed));
         assert_eq!(ch.crypto_fail_count, 1);
@@ -937,8 +932,8 @@ mod tests {
         let mut reply = make_call_reply(&key, 2, 1, b"pong");
         let last = reply.len() - 1;
         reply[last] ^= 0x01; // 篡改 tag 末字节
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(2, vec![reply]);
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(reply);
         let mut ch = channel_with_endpoint(t, key);
         assert_eq!(ch.call(2, b"ping"), Err(ChannelError::CryptoFailed));
         assert_eq!(ch.crypto_fail_count, 1);
@@ -950,8 +945,8 @@ mod tests {
         let key = [0x42u8; 16];
         let mut reply = make_call_reply(&key, 2, 1, b"pong");
         reply[8] ^= 0x01; // 篡改 ct 首字节
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(2, vec![reply]);
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(reply);
         let mut ch = channel_with_endpoint(t, key);
         assert_eq!(ch.call(2, b"ping"), Err(ChannelError::CryptoFailed));
         assert_eq!(ch.crypto_fail_count, 1);
@@ -964,8 +959,8 @@ mod tests {
         // 用 seq=1 加密，但帧头写 seq=99 → 接收方按 99 重建 aad/nonce → 解密失败
         let mut reply = make_call_reply(&key, 2, 1, b"pong");
         reply[..8].copy_from_slice(&99u64.to_be_bytes());
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(2, vec![reply]);
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(reply);
         let mut ch = channel_with_endpoint(t, key);
         assert_eq!(ch.call(2, b"ping"), Err(ChannelError::CryptoFailed));
         assert_eq!(ch.crypto_fail_count, 1);
@@ -974,9 +969,9 @@ mod tests {
     // TC32: call send 失败 → Err(ConnectionRefused)
     #[test]
     fn tc32_call_send_fail() {
-        let t = MockSecureTransport {
+        let t = ChannelTestDevice {
             fail_send_times: 1,
-            ..MockSecureTransport::new()
+            ..ChannelTestDevice::new()
         };
         let mut ch = channel_with_endpoint(t, [0x42u8; 16]);
         assert_eq!(ch.call(2, b"ping"), Err(ChannelError::ConnectionRefused));
@@ -987,9 +982,9 @@ mod tests {
     // TC33: call recv 失败 → Err(TransportFailed)
     #[test]
     fn tc33_call_recv_fail() {
-        let t = MockSecureTransport {
+        let t = ChannelTestDevice {
             fail_recv_times: 1,
-            ..MockSecureTransport::new()
+            ..ChannelTestDevice::new()
         };
         let mut ch = channel_with_endpoint(t, [0x42u8; 16]);
         assert_eq!(ch.call(2, b"ping"), Err(ChannelError::TransportFailed));
@@ -1000,14 +995,11 @@ mod tests {
     #[test]
     fn tc34_call_twice_seq_increment() {
         let key = [0x42u8; 16];
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(
-            2,
-            vec![
-                make_call_reply(&key, 2, 1, b"pong-1"),
-                make_call_reply(&key, 2, 2, b"pong-2"),
-            ],
-        );
+        let mut t = ChannelTestDevice::new();
+        t.inbox.extend([
+            make_call_reply(&key, 2, 1, b"pong-1"),
+            make_call_reply(&key, 2, 2, b"pong-2"),
+        ]);
         let mut ch = channel_with_endpoint(t, key);
         assert_eq!(ch.call(2, b"ping"), Ok(b"pong-1".to_vec()));
         assert_eq!(ch.call(2, b"ping"), Ok(b"pong-2".to_vec()));
@@ -1024,7 +1016,7 @@ mod tests {
     // TC35: disconnect 存在的节点 → true，endpoint 被移除
     #[test]
     fn tc35_disconnect_existing() {
-        let mut ch = channel_with_endpoint(MockSecureTransport::new(), [0x42u8; 16]);
+        let mut ch = channel_with_endpoint(ChannelTestDevice::new(), [0x42u8; 16]);
         assert!(ch.disconnect(2));
         assert!(ch.endpoints.is_empty());
     }
@@ -1032,7 +1024,7 @@ mod tests {
     // TC36: disconnect 不存在 → false；移除后 call → Err(UnknownNode)
     #[test]
     fn tc36_disconnect_unknown_then_call_unknown() {
-        let mut ch = channel_with_endpoint(MockSecureTransport::new(), [0x42u8; 16]);
+        let mut ch = channel_with_endpoint(ChannelTestDevice::new(), [0x42u8; 16]);
         assert!(!ch.disconnect(99)); // 不存在 → false
         assert_eq!(ch.endpoints.len(), 1);
         assert!(ch.disconnect(2)); // 移除
@@ -1043,11 +1035,9 @@ mod tests {
     #[test]
     fn tc37_reconnect_unknown_and_success() {
         let (n1, n2) = preset_nonces();
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(
-            2,
-            vec![make_reply_frame(PEER_CERT), make_reply_frame(PEER_CERT)],
-        );
+        let mut t = ChannelTestDevice::new();
+        t.inbox
+            .extend([make_reply_frame(PEER_CERT), make_reply_frame(PEER_CERT)]);
         let mut ch = make_channel(true, t);
         assert_eq!(ch.reconnect(2), Err(ChannelError::UnknownNode)); // 未知节点
         ch.connect(2, test_addr(2)).unwrap();
@@ -1076,9 +1066,9 @@ mod tests {
     // TC38: 计数器跨多次调用累计正确
     #[test]
     fn tc38_counters_accumulate() {
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(2, vec![make_reply_frame(PEER_CERT)]); // connect(2) 握手应答
-        t.inbox.insert(3, vec![make_reply_frame(PEER_CERT)]); // connect(3) 握手应答
+        let mut t = ChannelTestDevice::new();
+        t.inbox.push(make_reply_frame(PEER_CERT)); // connect(2) 握手应答
+        t.inbox.push(make_reply_frame(PEER_CERT)); // connect(3) 握手应答
         let mut ch = make_channel(true, t);
         ch.connect(2, test_addr(2)).unwrap(); // connect_count=1
         ch.connect(3, test_addr(3)).unwrap(); // connect_count=2
@@ -1092,14 +1082,11 @@ mod tests {
         let key2 = ch.endpoints[0].session_key;
         assert_eq!(key2, derive_session_key(CLIENT_CERT, PEER_CERT, &n1));
         // 用同密钥手工构造新 channel 验证 call/crypto 计数累计
-        let mut t2 = MockSecureTransport::new();
-        t2.inbox.insert(
-            2,
-            vec![
-                make_call_reply(&key2, 2, 1, b"ok"),
-                vec![0u8; 4], // 过短应答帧 → CryptoFailed
-            ],
-        );
+        let mut t2 = ChannelTestDevice::new();
+        t2.inbox.extend([
+            make_call_reply(&key2, 2, 1, b"ok"),
+            vec![0u8; 4], // 过短应答帧 → CryptoFailed
+        ]);
         let mut ch2 = channel_with_endpoint(t2, key2);
         assert_eq!(ch2.call(2, b"a"), Ok(b"ok".to_vec())); // call_count=1
         assert_eq!(ch2.call(2, b"b"), Err(ChannelError::CryptoFailed)); // crypto_fail=1
@@ -1116,16 +1103,13 @@ mod tests {
         let (n1, n2) = preset_nonces();
         let key1 = derive_session_key(CLIENT_CERT, PEER_CERT, &n1);
         let key2 = derive_session_key(CLIENT_CERT, PEER_CERT, &n2);
-        let mut t = MockSecureTransport::new();
-        t.inbox.insert(
-            2,
-            vec![
-                make_reply_frame(PEER_CERT),             // connect 握手应答
-                make_call_reply(&key1, 2, 1, b"pong-1"), // 第一次 call 应答
-                make_reply_frame(PEER_CERT),             // reconnect 握手应答
-                make_call_reply(&key2, 2, 1, b"pong-2"), // 重连后 call 应答（新密钥、seq 归零）
-            ],
-        );
+        let mut t = ChannelTestDevice::new();
+        t.inbox.extend([
+            make_reply_frame(PEER_CERT),             // connect 握手应答
+            make_call_reply(&key1, 2, 1, b"pong-1"), // 第一次 call 应答
+            make_reply_frame(PEER_CERT),             // reconnect 握手应答
+            make_call_reply(&key2, 2, 1, b"pong-2"), // 重连后 call 应答（新密钥、seq 归零）
+        ]);
         let mut ch = make_channel(true, t);
         ch.connect(2, test_addr(2)).unwrap();
         assert_eq!(ch.call(2, b"ping"), Ok(b"pong-1".to_vec()));
@@ -1146,14 +1130,11 @@ mod tests {
         for use_sm in [true, false] {
             let (n1, _) = preset_nonces();
             let key = derive_session_key(CLIENT_CERT, PEER_CERT, &n1);
-            let mut t = MockSecureTransport::new();
-            t.inbox.insert(
-                2,
-                vec![
-                    make_reply_frame(PEER_CERT),
-                    make_call_reply(&key, 2, 1, b"pong"),
-                ],
-            );
+            let mut t = ChannelTestDevice::new();
+            t.inbox.extend([
+                make_reply_frame(PEER_CERT),
+                make_call_reply(&key, 2, 1, b"pong"),
+            ]);
             let mut ch = make_channel(true, t);
             ch.tls.use_sm = use_sm;
             assert_eq!(ch.connect(2, test_addr(2)), Ok(()));

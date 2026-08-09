@@ -179,23 +179,31 @@ pub struct CsRngAdapter(pub eneros_crypto::rng::CsRng);
 impl rand_core::RngCore for CsRngAdapter {
     fn next_u32(&mut self) -> u32 {
         let mut b = [0u8; 4];
-        self.0.fill_bytes(&mut b);
+        self.fill_bytes(&mut b);
         u32::from_le_bytes(b)
     }
 
     fn next_u64(&mut self) -> u64 {
         let mut b = [0u8; 8];
-        self.0.fill_bytes(&mut b);
+        self.fill_bytes(&mut b);
         u64::from_le_bytes(b)
     }
 
     fn fill_bytes(&mut self, dst: &mut [u8]) {
-        self.0.fill_bytes(dst);
+        // FIX-BUGS-0810 B5：rand_core trait 契约要求 fill_bytes 以 panic 表达
+        // 不可恢复错误——内部走"重播种+重试一次"（fill_bytes_or_reseed）；
+        // 仅熵源彻底不可用（ReseedRequired 且平台熵失败）时 panic。
+        // 豁免理由（铁律 3）：rand_core 接口契约 + 熵枯竭属 fatal。
+        if eneros_crypto::rng::fill_bytes_or_reseed(&mut self.0, dst).is_err() {
+            panic!("csrng: entropy exhausted and platform reseed unavailable");
+        }
     }
 
     fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), rand_core::Error> {
-        self.0.fill_bytes(dst);
-        Ok(())
+        // FIX-BUGS-0810 B5：Result 路径直接承接（重播种+重试一次，
+        // 熵不可用 → Err，不 panic）。
+        eneros_crypto::rng::fill_bytes_or_reseed(&mut self.0, dst)
+            .map_err(|_| rand_core::Error::from(rand_core::ErrorKind::Unavailable))
     }
 }
 

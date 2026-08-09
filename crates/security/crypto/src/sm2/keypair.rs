@@ -14,6 +14,7 @@
 use super::{SM2_A, SM2_B, SM2_GX, SM2_GY, SM2_N, SM2_P};
 use crate::bigint::U256;
 use crate::error::CryptoError;
+use crate::rng::fill_bytes_or_reseed;
 
 // ============================================================
 // EcPoint: 椭圆曲线点（Jacobian 投影坐标，CRY-001）
@@ -409,7 +410,7 @@ impl Sm2KeyPair {
     pub fn generate(rng: &mut crate::rng::CsRng) -> Result<Self, CryptoError> {
         loop {
             let mut buf = [0u8; 32];
-            rng.fill_bytes(&mut buf);
+            fill_bytes_or_reseed(rng, &mut buf).map_err(|_| CryptoError::RngFailed)?;
             match Sm2PrivateKey::from_bytes(&buf) {
                 Ok(sk) => return Self::from_private_key(&sk),
                 Err(CryptoError::ScalarOutOfRange) => continue,

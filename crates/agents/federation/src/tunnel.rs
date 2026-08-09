@@ -52,7 +52,7 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use eneros_crypto::rng::CsRng;
+use eneros_crypto::rng::{fill_bytes_or_reseed, CsRng};
 use eneros_crypto::sm2::{sm2_decrypt, sm2_encrypt};
 use eneros_crypto::sm4::cbc::Sm4Cbc;
 use eneros_crypto::{
@@ -150,7 +150,7 @@ pub fn initiator_hello(
     rng: &mut CsRng,
 ) -> Result<(Vec<u8>, [u8; 32]), EncryptError> {
     let mut pms = [0u8; PMS_LEN];
-    rng.fill_bytes(&mut pms);
+    fill_bytes_or_reseed(rng, &mut pms).map_err(|_| EncryptError::HandshakeFailed)?;
 
     let pms_ct = sm2_encrypt(&pms, peer_pk, rng).map_err(|_| EncryptError::HandshakeFailed)?;
 
@@ -352,7 +352,11 @@ impl VerticalEncryptTunnel {
         let seq = self.send_seq;
 
         let mut iv = [0u8; BLOCK_LEN];
-        rng.fill_bytes(&mut iv);
+        if fill_bytes_or_reseed(rng, &mut iv).is_err() {
+            // FIX-BUGS-0810 B5：IV 生成失败（ReseedRequired + 熵不可用）→
+            // 返回空帧（fail-closed）；encrypt_send 检测空帧并上抛。
+            return Vec::new();
+        }
         let ct = Sm4Cbc::new(self.keys.encrypt_key(), &iv).encrypt(plaintext);
 
         let mut frame = Vec::with_capacity(HEADER_LEN + ct.len() + TAG_LEN);
@@ -594,6 +598,10 @@ impl<D: VerticalEncryptDevice> TunnelManager<D> {
             None => return Err(EncryptError::UnknownTunnel),
         };
         let frame = tunnel.tunnel_send(plaintext, rng);
+        if frame.is_empty() {
+            // FIX-BUGS-0810 B5：空帧 = IV 生成失败（fail-closed 显式表达）。
+            return Err(EncryptError::HandshakeFailed);
+        }
         self.device.xmit(&frame)?;
         self.send_count += 1;
         Ok(())

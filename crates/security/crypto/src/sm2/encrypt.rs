@@ -35,6 +35,7 @@ use super::{EcPoint, Sm2PrivateKey, Sm2PublicKey, SM2_N};
 use crate::bigint::U256;
 use crate::constant_time::ct_eq;
 use crate::error::CryptoError;
+use crate::rng::fill_bytes_or_reseed;
 use crate::rng::CsRng;
 use crate::sm3::Sm3Hasher;
 
@@ -109,7 +110,7 @@ pub fn sm2_encrypt(
         // 1. 生成随机 k ∈ [1, n-1]
         let k = loop {
             let mut buf = [0u8; 32];
-            rng.fill_bytes(&mut buf);
+            fill_bytes_or_reseed(rng, &mut buf).map_err(|_| CryptoError::RngFailed)?;
             let candidate = U256::from_be_bytes(&buf);
             if !candidate.is_zero() && candidate < SM2_N {
                 break candidate;

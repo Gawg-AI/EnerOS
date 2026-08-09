@@ -20,6 +20,20 @@ use crate::sm3::hmac::Sm3Hmac;
 /// SP 800-90A Hash_DRBG 输出块长度（SM3 摘要 = 32 字节）。
 const OUTLEN: usize = 32;
 
+/// 重播种间隔（FIX-BUGS-0810 B5）：SP 800-90A §10.1.1.4 步骤 7 要求
+/// `reseed_counter > seedlife` 时必须重播种；`2^48` 为 NIST 保守上限。
+pub const RESEED_INTERVAL: u64 = 1 << 48;
+
+/// DRBG 错误（FIX-BUGS-0810 B5）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrbgError {
+    /// 生成次数达到 [`RESEED_INTERVAL`]：必须重播种后才能继续出数
+    /// （SP 800-90A §10.1.1.4 步骤 7；旧实现仅自增计数从不检查阈值）。
+    ReseedRequired,
+    /// 重播种所需熵源不可用（fail-closed：不静默回退固定种子）。
+    EntropyUnavailable,
+}
+
 /// 基于 SM3 的 SP 800-90A Hash_DRBG.
 ///
 /// 状态 `(V, C, reseed_counter)`：`V` 与 `C` 各 32 字节，
@@ -117,7 +131,15 @@ impl CsRng {
     ///
     /// 每 32 字节块：`V = Hash(0x03 ‖ V)`；完成后执行
     /// `Hash_DRBG_Update(no provided data)` 并递增 `reseed_counter`。
-    pub fn fill_bytes(&mut self, buf: &mut [u8]) {
+    ///
+    /// FIX-BUGS-0810 B5：生成前检查 `reseed_counter` 阈值——达到
+    /// [`RESEED_INTERVAL`] 返回 [`DrbgError::ReseedRequired`] 且**状态不变**
+    /// （停止出数），调用方必须重播种（处置模板见 [`fill_bytes_checked`]）。
+    /// 旧实现仅自增计数从不检查阈值（SP 800-90A §10.1.1.4 步骤 7 违规）。
+    pub fn fill_bytes(&mut self, buf: &mut [u8]) -> Result<(), DrbgError> {
+        if self.reseed_counter >= RESEED_INTERVAL {
+            return Err(DrbgError::ReseedRequired);
+        }
         let mut offset = 0;
         while offset < buf.len() {
             let mut hasher = crate::sm3::Sm3Hasher::new();
@@ -136,21 +158,29 @@ impl CsRng {
         }
         // 生成完成后状态更新（SP 800-90A §10.1.1.4 步骤 7）
         hash_drbg_update(None, &mut self.v, &mut self.c);
-        self.reseed_counter = self.reseed_counter.wrapping_add(1);
+        // 检查先行，此处不可能溢出（counter 到达阈值即拒）。
+        self.reseed_counter += 1;
+        Ok(())
     }
 
-    /// 生成一个随机 `u32`（大端字节序解析）.
-    pub fn next_u32(&mut self) -> u32 {
+    /// 生成一个随机 `u32`（大端字节序解析；FIX-BUGS-0810 B5：阈值语义同上）。
+    pub fn next_u32(&mut self) -> Result<u32, DrbgError> {
         let mut buf = [0u8; 4];
-        self.fill_bytes(&mut buf);
-        u32::from_be_bytes(buf)
+        self.fill_bytes(&mut buf)?;
+        Ok(u32::from_be_bytes(buf))
     }
 
-    /// 生成一个随机 `u64`（大端字节序解析）.
-    pub fn next_u64(&mut self) -> u64 {
+    /// 生成一个随机 `u64`（大端字节序解析；FIX-BUGS-0810 B5：阈值语义同上）。
+    pub fn next_u64(&mut self) -> Result<u64, DrbgError> {
         let mut buf = [0u8; 8];
-        self.fill_bytes(&mut buf);
-        u64::from_be_bytes(buf)
+        self.fill_bytes(&mut buf)?;
+        Ok(u64::from_be_bytes(buf))
+    }
+
+    /// 测试专用：直接设置 reseed 计数（预置阈值场景；仅同 crate 测试）。
+    #[cfg(test)]
+    pub(crate) fn reseed_counter_mut(&mut self) -> &mut u64 {
+        &mut self.reseed_counter
     }
 
     /// 用新熵重播种 CSRNG（SP 800-90A Reseed）。
@@ -164,6 +194,52 @@ impl CsRng {
         input.extend_from_slice(seed);
         hash_drbg_update(Some(&input), &mut self.v, &mut self.c);
         self.reseed_counter = 1;
+    }
+}
+
+/// 统一处置模板（FIX-BUGS-0810 B5，蓝图/25 §4.4）：
+/// `fill_bytes` 遇 [`DrbgError::ReseedRequired`] → 从注入熵源取熵重播种 →
+/// 重试一次；熵源失败 → [`DrbgError::EntropyUnavailable`]（fail-closed，
+/// 不静默回退固定种子）。测试可注入桩熵源验证模板；生产经
+/// [`fill_bytes_or_reseed`] 使用平台熵。
+pub fn fill_bytes_checked(
+    rng: &mut CsRng,
+    buf: &mut [u8],
+    entropy: &mut dyn crate::rng::EntropySource,
+) -> Result<(), DrbgError> {
+    match rng.fill_bytes(buf) {
+        Ok(()) => Ok(()),
+        Err(DrbgError::ReseedRequired) => {
+            let mut seed = [0u8; 32];
+            entropy
+                .fill_entropy(&mut seed)
+                .map_err(|_| DrbgError::EntropyUnavailable)?;
+            rng.reseed(&seed);
+            // 重试一次；仍失败上抛（不无限重试）。
+            rng.fill_bytes(buf)
+        }
+        // fill_bytes 当前仅返回 ReseedRequired；其他变体透传（fail-closed）。
+        Err(e) => Err(e),
+    }
+}
+
+/// 便捷模板：仅当 `fill_bytes` 返回 [`DrbgError::ReseedRequired`] 时才从
+/// 平台熵源取熵重播种（正常路径零熵源接触；`platform_entropy_source`
+/// fail-closed——熵不可用 → [`DrbgError::EntropyUnavailable`] 上抛）。
+pub fn fill_bytes_or_reseed(rng: &mut CsRng, buf: &mut [u8]) -> Result<(), DrbgError> {
+    match rng.fill_bytes(buf) {
+        Ok(()) => Ok(()),
+        Err(DrbgError::ReseedRequired) => {
+            let mut src =
+                crate::rng::platform_entropy_source().map_err(|_| DrbgError::EntropyUnavailable)?;
+            let mut seed = [0u8; 32];
+            src.fill_entropy(&mut seed)
+                .map_err(|_| DrbgError::EntropyUnavailable)?;
+            rng.reseed(&seed);
+            // 重试一次；仍失败上抛（不无限重试）。
+            rng.fill_bytes(buf)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -196,6 +272,94 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+    use crate::rng::EntropySource;
+
+    /// 测试桩熵源（注入固定熵；仅测试）。
+    struct StubEntropy([u8; 32]);
+    impl EntropySource for StubEntropy {
+        fn fill_entropy(&mut self, out: &mut [u8; 32]) -> Result<(), crate::rng::EntropyError> {
+            out.copy_from_slice(&self.0);
+            Ok(())
+        }
+    }
+
+    // ===== FIX-BUGS-0810 B5 防回归 1：阈值前成功、达阈值 ReseedRequired 且
+    // 停止出数（证伪旧行为——旧 fill_bytes 仅自增计数从不检查阈值）=====
+    #[test]
+    fn test_b5_reseed_required_at_threshold_stops_output() {
+        let mut rng = CsRng::new();
+        *rng.reseed_counter_mut() = RESEED_INTERVAL - 1;
+
+        let mut buf = [0u8; 32];
+        // 阈值前最后一次生成：成功（counter → RESEED_INTERVAL）。
+        assert!(rng.fill_bytes(&mut buf).is_ok(), "阈值前必须成功");
+        // 达阈值：ReseedRequired，且状态不变（不再出数——重试仍失败）。
+        assert_eq!(
+            rng.fill_bytes(&mut buf),
+            Err(DrbgError::ReseedRequired),
+            "达阈值必须 ReseedRequired（证伪旧行为：永不停止）"
+        );
+        assert_eq!(
+            rng.fill_bytes(&mut buf),
+            Err(DrbgError::ReseedRequired),
+            "拒绝后状态不变：持续停止出数"
+        );
+    }
+
+    // ===== FIX-BUGS-0810 B5 防回归 2：重播种后恢复出数 =====
+    #[test]
+    fn test_b5_reseed_recovers_output() {
+        let mut rng = CsRng::new();
+        *rng.reseed_counter_mut() = RESEED_INTERVAL; // 已达阈值
+
+        let mut buf = [0u8; 32];
+        assert_eq!(rng.fill_bytes(&mut buf), Err(DrbgError::ReseedRequired));
+
+        let seed = [0x5Au8; 32];
+        rng.reseed(&seed);
+        assert_eq!(*rng.reseed_counter_mut(), 1, "重播种后计数归 1");
+        assert!(rng.fill_bytes(&mut buf).is_ok(), "重播种后必须恢复出数");
+    }
+
+    // ===== FIX-BUGS-0810 B5 防回归 3：统一处置模板（重播种+重试一次）=====
+    #[test]
+    fn test_b5_disposal_template_reseeds_and_retries() {
+        let mut rng = CsRng::new();
+        *rng.reseed_counter_mut() = RESEED_INTERVAL; // 已达阈值
+
+        let mut buf = [0u8; 32];
+        let mut entropy = StubEntropy([0x11; 32]);
+        // 模板：ReseedRequired → 注入熵重播种 → 重试一次成功。
+        assert!(
+            fill_bytes_checked(&mut rng, &mut buf, &mut entropy).is_ok(),
+            "处置模板必须在重播种后恢复出数"
+        );
+        // 重播种后计数归 1，后续正常生成。
+        assert!(rng.fill_bytes(&mut buf).is_ok());
+    }
+
+    // ===== FIX-BUGS-0810 B5 防回归 4：熵源失败 → 模板上抛（fail-closed）=====
+    #[test]
+    fn test_b5_template_fails_closed_when_entropy_unavailable() {
+        use crate::rng::EntropyError;
+        struct DeadEntropy;
+        impl EntropySource for DeadEntropy {
+            fn fill_entropy(&mut self, _out: &mut [u8; 32]) -> Result<(), EntropyError> {
+                Err(EntropyError::Unavailable)
+            }
+        }
+
+        let mut rng = CsRng::new();
+        *rng.reseed_counter_mut() = RESEED_INTERVAL;
+        let mut buf = [0u8; 32];
+        assert_eq!(
+            fill_bytes_checked(&mut rng, &mut buf, &mut DeadEntropy),
+            Err(DrbgError::EntropyUnavailable),
+            "熵不可用必须上抛（不静默回退固定种子）"
+        );
+        // 状态保持拒绝（未出数）。
+        assert_eq!(rng.fill_bytes(&mut buf), Err(DrbgError::ReseedRequired));
+    }
 
     #[test]
     fn test_csrng_deterministic_same_seed() {
@@ -299,7 +463,7 @@ mod tests {
         let mut min_val = u32::MAX;
         let mut max_val = u32::MIN;
         for _ in 0..100 {
-            let v = rng.next_u32();
+            let v = rng.next_u32().expect("阈值内生成必须成功");
             // u32 范围天然在 [0, u32::MAX]，无需额外断言；
             // 这里记录最小/最大值以观察分布。
             if v < min_val {
@@ -319,7 +483,7 @@ mod tests {
         let mut min_val = u64::MAX;
         let mut max_val = u64::MIN;
         for _ in 0..100 {
-            let v = rng.next_u64();
+            let v = rng.next_u64().expect("阈值内生成必须成功");
             if v < min_val {
                 min_val = v;
             }

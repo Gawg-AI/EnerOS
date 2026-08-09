@@ -177,7 +177,7 @@ mod tests {
         assert_ne!(seed, [0u8; 32], "夹具熵非全零");
         let mut rng = CsRng::from_seed(&seed);
         let mut out = [0u8; 32];
-        rng.fill_bytes(&mut out);
+        rng.fill_bytes(&mut out).expect("阈值内");
         assert_ne!(out, [0u8; 32]);
         // 同种子可复现（DRBG 确定性）
         let mut src2 = TestFixedEntropy;
@@ -185,7 +185,7 @@ mod tests {
         src2.fill_entropy(&mut seed2).unwrap();
         let mut rng2 = CsRng::from_seed(&seed2);
         let mut out2 = [0u8; 32];
-        rng2.fill_bytes(&mut out2);
+        rng2.fill_bytes(&mut out2).expect("阈值内");
         assert_eq!(out, out2, "同种子输出可复现");
     }
 
@@ -215,14 +215,14 @@ mod tests {
         let mut rng_b = CsRng::from_seed(&seed_b);
         let mut out_a = [0u8; 32];
         let mut out_b = [0u8; 32];
-        rng_a.fill_bytes(&mut out_a);
-        rng_b.fill_bytes(&mut out_b);
+        rng_a.fill_bytes(&mut out_a).expect("阈值内");
+        rng_b.fill_bytes(&mut out_b).expect("阈值内");
         assert_ne!(out_a, out_b, "不同种子必须产生不同输出");
         // 同种子可复现（DRBG 确定性）
         seed_a[0] = 0x11;
         let mut rng_a2 = CsRng::from_seed(&seed_a);
         let mut out_a2 = [0u8; 32];
-        rng_a2.fill_bytes(&mut out_a2);
+        rng_a2.fill_bytes(&mut out_a2).expect("阈值内");
         assert_eq!(out_a, out_a2, "同种子输出可复现（DRBG 确定性）");
     }
 

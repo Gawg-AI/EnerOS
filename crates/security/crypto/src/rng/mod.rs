@@ -13,7 +13,7 @@
 
 pub mod csrng;
 
-pub use csrng::CsRng;
+pub use csrng::{fill_bytes_checked, fill_bytes_or_reseed, CsRng, DrbgError, RESEED_INTERVAL};
 
 pub mod entropy;
 pub mod virtio_rng;

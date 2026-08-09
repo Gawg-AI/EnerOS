@@ -10,6 +10,7 @@
 //! # no_std 合规
 //! 仅使用 `alloc::*` / `core::*`，不依赖 `std::*`。
 
+use eneros_crypto::rng::fill_bytes_or_reseed;
 use eneros_crypto::{sm2_sign, CsRng, Sm2KeyPair};
 
 use crate::capability::token::{CapabilityToken, ConstraintPack, PermissionSet, ResourceTarget};
@@ -122,7 +123,7 @@ impl CapabilityTokenBuilder {
     ) -> Result<CapabilityToken, AgentError> {
         // 1. 生成随机 token_id (D2)
         let mut id_buf = [0u8; 8];
-        rng.fill_bytes(&mut id_buf);
+        fill_bytes_or_reseed(rng, &mut id_buf).map_err(|_| AgentError::CryptoFailed)?;
         let token_id = u64::from_be_bytes(id_buf);
 
         // 2. 计算过期时间

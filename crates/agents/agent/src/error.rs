@@ -77,6 +77,8 @@ pub enum AgentError {
     CircularDependency,
     /// 恢复失败（超过最大尝试次数仍未恢复）
     RecoveryFailed { agent: AgentId, attempts: u32 },
+    /// 密码运算失败（FIX-BUGS-0810 B5：token 随机数生成/重播种失败）。
+    CryptoFailed,
 }
 
 impl fmt::Display for AgentError {
@@ -159,6 +161,7 @@ impl fmt::Display for AgentError {
                     agent, attempts
                 )
             }
+            AgentError::CryptoFailed => write!(f, "crypto operation failed"),
         }
     }
 }
