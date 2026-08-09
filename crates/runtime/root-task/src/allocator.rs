@@ -13,13 +13,17 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use linked_list_allocator::LockedHeap;
 
-/// 堆大小（字节）：编译期注入（`ENEROS_HEAP_SIZE_BYTES`），默认 512 KiB。
+/// 堆大小（字节）：编译期注入（`ENEROS_HEAP_SIZE_BYTES`），默认 1 MiB。
+///
+/// G-R1 QEMU 实测：512 KiB bump 时代刚好够（无 header 开销）；LockedHeap
+/// 的块头/对齐开销使 spawn 后剩余不足（OOM 8776B——supervisor 表分配
+/// 失败）。1 MiB 留足余量（真机按板载 RAM 构建时注入调整）。
 const HEAP_SIZE: usize = match option_env!("ENEROS_HEAP_SIZE_BYTES") {
     Some(s) => match parse_heap_size(s) {
         Some(n) if n >= 4096 => n,
-        _ => 512 * 1024,
+        _ => 1024 * 1024,
     },
-    None => 512 * 1024,
+    None => 1024 * 1024,
 };
 
 /// const 十进制解析（`str::parse` 非 const fn；仅用于编译期配置注入）。
