@@ -103,6 +103,7 @@ pub mod error;
 pub mod index;
 pub mod reader;
 pub mod retention;
+pub mod ring;
 pub mod rollup;
 pub mod schema;
 pub mod writer;
