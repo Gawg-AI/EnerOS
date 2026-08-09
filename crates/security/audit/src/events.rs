@@ -4,7 +4,7 @@
 //! detail ≤ 256B），保证 no_std 无堆场景可用，且编码长度有界（actor/target
 //! 长度可用 u8 前缀表达）。
 
-/// 审计事件类型（11 类，判别值 1~11 连续）.
+/// 审计事件类型（12 类，判别值 1~12 连续）.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditEventType {
@@ -30,6 +30,8 @@ pub enum AuditEventType {
     FederateLeave = 10,
     /// 安全告警.
     SecurityAlert = 11,
+    /// AI 决策（W5.1：意图/LP 解/安全校验/执行/偏差入链可追溯）.
+    AiDecision = 12,
 }
 
 /// 审计事件（`seq == 0` 表示由日志器自动赋序）.
@@ -109,9 +111,9 @@ pub struct HashChain {
 mod tests {
     use super::*;
 
-    /// EVT1：事件类型判别值覆盖 1~11 全值域且无重复.
+    /// EVT1：事件类型判别值覆盖 1~12 全值域且无重复.
     #[test]
-    fn evt1_event_type_discriminants_cover_1_to_11() {
+    fn evt1_event_type_discriminants_cover_1_to_12() {
         let cases = [
             (AuditEventType::AuthLogin, 1u8),
             (AuditEventType::AuthLogout, 2),
@@ -124,6 +126,7 @@ mod tests {
             (AuditEventType::FederateJoin, 9),
             (AuditEventType::FederateLeave, 10),
             (AuditEventType::SecurityAlert, 11),
+            (AuditEventType::AiDecision, 12),
         ];
         for (ty, expect) in cases {
             assert_eq!(ty as u8, expect);

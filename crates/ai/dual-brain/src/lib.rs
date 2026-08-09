@@ -46,6 +46,7 @@ compile_error!(
 
 extern crate alloc;
 
+pub mod audit;
 pub mod chain_sink;
 pub mod coordinator;
 pub mod error;
