@@ -1,6 +1,14 @@
 //! EnerOS v0.77.0 DDS 中间件集成与 Rust 封装（Phase 2 P2-A 路由层）.
 //!
 //! Agent Bus 三层总线之一的 DDS 发布/订阅抽象。提供统一的 [`node::DdsNode`] trait、
+//! # 商业范围（21-B B2，ADR-021 预设裁决）
+//!
+//! **`commercial_scope = "out-of-v1.0"`**（与 Cargo.toml
+//! `[package.metadata.eneros]` 双处声明）：v1.0.0 agent 总线改用 MQTT
+//! （`eneros-mqtt` 真实可用），agent-bus-dds 不进入 v1.0.0 发布闭包——
+//! CycloneDdsNode 接 C 库未通（`Ffi(-1)`），`MockDdsNode` 仅
+//! `cfg(any(test, feature = "mock"))` 可见。
+//!
 //! [`mock::MockDdsNode`]（默认可用，纯 Rust）与 `CycloneDdsNode`
 //!（feature = "cyclone-dds"，封装 Eclipse Cyclone DDS C 库），并在 v0.76.0 引入
 //! 语义层：[`topic::TopicSpec`] / [`topic::TopicCategory`] / [`topic::standard_topics`]
@@ -65,6 +73,7 @@ extern crate alloc;
 pub mod codec;
 pub mod config;
 pub mod error;
+#[cfg(any(test, feature = "mock"))]
 pub mod mock;
 pub mod node;
 pub mod policy;
@@ -84,18 +93,22 @@ pub mod ffi;
 pub use codec::{CodecError, CodecKind};
 pub use config::{DdsConfig, DiscoveryPolicy};
 pub use error::DdsError;
+#[cfg(any(test, feature = "mock"))]
 pub use mock::MockDdsNode;
 pub use node::{DdsNode, DdsNodeConfig};
+#[cfg(any(test, feature = "mock"))]
+pub use policy::MockCapabilityVerifier;
 pub use policy::{
-    AgentId, CapabilityVerifier, DropReason, MockCapabilityVerifier, Permission, RouteDecision,
-    RouteError, RoutingPolicy,
+    AgentId, CapabilityVerifier, DropReason, Permission, RouteDecision, RouteError, RoutingPolicy,
 };
 pub use qos::{Durability, History, QosPolicy, Reliability};
 pub use registry::TopicRegistry;
 pub use router::{pattern_matches, MessageRouter, RouterStats, SubId, Subscription};
+#[cfg(any(test, feature = "mock"))]
+pub use signing::MockSigner;
 pub use signing::{
-    pack_and_sign, unpack_and_verify, EnvelopeHeader, KeyId, MessageSigner, MockSigner, MsgId,
-    SignError, SignedEnvelope,
+    pack_and_sign, unpack_and_verify, EnvelopeHeader, KeyId, MessageSigner, MsgId, SignError,
+    SignedEnvelope,
 };
 #[cfg(feature = "sm2")]
 pub use signing::{KeyStore, Sm2Signer};

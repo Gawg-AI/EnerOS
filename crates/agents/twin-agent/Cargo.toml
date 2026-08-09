@@ -12,3 +12,7 @@ eneros-grid-agent = { path = "../grid_agent" }
 eneros-device-agent = { path = "../device-agent" }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+# 测试使用 MockDdsNode（21-B B2：agent-bus-dds mock 仅测试/显式 feature）。
+eneros-agent-bus-dds = { path = "../../protocols/agent-bus-dds", features = ["mock"] }

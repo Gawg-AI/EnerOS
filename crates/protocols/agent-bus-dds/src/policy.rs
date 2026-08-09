@@ -136,9 +136,14 @@ pub trait CapabilityVerifier {
 ///
 /// **D10**：默认实现，用于 v0.77.0 路由器在不依赖 v0.39.0 能力 Token 模型时运行。
 /// 真实能力校验由 [`CapabilityTicketVerifier`]（v0.208.0 P0-11）提供。
+///
+/// 21-B B2：mock 仅测试/显式 feature（agent-bus-dds 已降级为
+/// out-of-v1.0，agent 总线由 MQTT 承担——ADR-021）。
+#[cfg(any(test, feature = "mock"))]
 #[derive(Debug, Default)]
 pub struct MockCapabilityVerifier;
 
+#[cfg(any(test, feature = "mock"))]
 impl CapabilityVerifier for MockCapabilityVerifier {
     fn verify(&self, _perm: Permission, _agent: AgentId, _pattern: &str) -> Result<(), DropReason> {
         Ok(())

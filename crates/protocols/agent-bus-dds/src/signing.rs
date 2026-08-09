@@ -110,9 +110,14 @@ pub trait MessageSigner {
 /// 签名算法：确定性 — 前 8 字节为 header.timestamp 大端序，第 9 字节为 payload.len() 低 8 位，
 /// 字节 9..17 为 payload 字节求和校验和（使篡改可检测），其余为 0。
 /// 用于测试 pack/unpack 流程，不提供任何密码学安全保证。
+///
+/// 21-B B2：mock 仅测试/显式 feature（agent-bus-dds 已降级为
+/// out-of-v1.0，agent 总线由 MQTT 承担——ADR-021）。
+#[cfg(any(test, feature = "mock"))]
 #[derive(Debug, Default)]
 pub struct MockSigner;
 
+#[cfg(any(test, feature = "mock"))]
 impl MockSigner {
     /// 计算确定性签名（不依赖任何密钥）。
     fn compute_sig(header: &EnvelopeHeader, payload: &[u8]) -> [u8; 64] {
@@ -129,6 +134,7 @@ impl MockSigner {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MessageSigner for MockSigner {
     fn sign(&self, header: &EnvelopeHeader, payload: &[u8]) -> Result<[u8; 64], SignError> {
         Ok(Self::compute_sig(header, payload))

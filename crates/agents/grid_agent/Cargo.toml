@@ -16,3 +16,7 @@ eneros-agent = { path = "../agent" }
 eneros-energy-market-agent = { path = "../energy-market-agent" }
 # v0.225.0（B3-02）：真实发布接 agent-bus-dds。
 eneros-agent-bus-dds = { path = "../../protocols/agent-bus-dds" }
+
+[dev-dependencies]
+# 测试使用 MockDdsNode（21-B B2：agent-bus-dds mock 仅测试/显式 feature）。
+eneros-agent-bus-dds = { path = "../../protocols/agent-bus-dds", features = ["mock"] }

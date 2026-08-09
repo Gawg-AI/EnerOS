@@ -12,8 +12,17 @@ slotmap = { version = "1.0", default-features = false }
 eneros-crypto = { path = "../../security/crypto", default-features = false, optional = true }
 
 [features]
+# 测试专用 mock（显式启用；release 不得启用——mock 纪律）。
+mock = []
 default = []
 # D3: Cyclone DDS C library bindings + CycloneDdsNode (disabled by default; enable when libddsc.so is available)
 cyclone-dds = []
 # D14: SM2 签名器（封装 eneros-crypto v0.32.0）
 sm2 = ["eneros-crypto"]
+
+[package.metadata.eneros]
+# 21-B B2（ADR-021 预设裁决）：v1.0.0 agent 总线改用 MQTT（真实可用），
+# DDS 接 C 库工程量高且 CycloneDdsNode 当前返回 Ffi(-1)——agent-bus-dds
+# 标注 out-of-v1.0，不进入 v1.0.0 发布闭包。
+commercial_scope = "out-of-v1.0"
+agent_bus_role = "replaced-by-mqtt"
