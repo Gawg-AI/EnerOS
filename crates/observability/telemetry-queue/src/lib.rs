@@ -16,6 +16,7 @@
 
 extern crate alloc;
 
+pub mod mqtt_export;
 pub mod persist;
 pub mod privacy;
 pub mod queue;
