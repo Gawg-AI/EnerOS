@@ -298,8 +298,10 @@ mod tests {
     /// normal 场景必须产出调度方案并写入 sink。
     #[test]
     fn pipeline_normal_writes_sink_with_real_solver() {
-        let dir =
-            std::env::temp_dir().join(format!("eneros-ai-runner-pipe-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "eneros-ai-runner-pipe-normal-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let sink_path = dir.join("pipe-normal.jsonl").to_str().unwrap().to_owned();
 
@@ -321,8 +323,10 @@ mod tests {
     /// fatal-soc 场景必须 SafetyFatal 且 sink 零写入。
     #[test]
     fn pipeline_fatal_soc_blocks_sink_with_real_solver() {
-        let dir =
-            std::env::temp_dir().join(format!("eneros-ai-runner-pipe-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "eneros-ai-runner-pipe-fatal-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let sink_path = dir.join("pipe-fatal.jsonl").to_str().unwrap().to_owned();
 
