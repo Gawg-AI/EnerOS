@@ -2,9 +2,9 @@ name: EnerOS formal baseline
 
 on:
   push:
-    branches: [main, develop]
+    branches: ['*']
   pull_request:
-    branches: [main, develop]
+    branches: ['*']
 
 permissions:
   contents: read
@@ -229,10 +229,12 @@ jobs:
         run: |
           # 生成真实测量基线（unsigned——CI 无签名密钥；篡改保护由
           # 发布流程 --sign-key 提供，见 xtask qa perf-baseline --help 文档）。
-          cargo xtask qa perf-baseline
-          # 门禁：无签名文件时 perf-gate 直接评估 SLO/回归（首次基线 SLO=0 跳过）。
-          rm -f target/perf-results.json.sig
-          cargo xtask qa perf-gate target/perf-results.json
+          # WP-26.1：签名链 fail-closed——CI 现场生成临时密钥对（不落库），
+          # 签名 → 门禁用同一公钥验证；签名缺失 → FAIL（不再 rm -f 绕过）。
+          cargo xtask qa perf-keygen --out /tmp/perf-key.bin --pubkey-out /tmp/perf-pk.hex
+          cargo xtask qa perf-baseline --sign-key /tmp/perf-key.bin
+          ENEROS_PERF_VERIFY_PUBKEY=$(cat /tmp/perf-pk.hex) \
+            cargo xtask qa perf-gate target/perf-results.json
 
       - name: VRF-003 gate semantics (no silent pass)
         run: cargo xtask test gate-semantics

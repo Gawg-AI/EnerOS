@@ -8,6 +8,7 @@ publish = false
 description = "Single fail-closed EnerOS product build, image, run, inspect, release and flash entry"
 
 [dependencies]
+getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 eneros-image-format = { path = "../crates/boot/image-format" }

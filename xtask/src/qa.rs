@@ -76,7 +76,7 @@ fn finalize(root: &Path, report: &QaReport) -> DynResult<()> {
 
 pub(super) fn command_qa(root: &Path, args: &[String]) -> DynResult<()> {
     let (mode, tail) = args.split_first().ok_or_else(|| {
-        invalid("qa requires a subcommand: boot-reset|soak|perf-gate|trace|proof|validation")
+        invalid("qa requires a subcommand: boot-reset|soak|perf-keygen|perf-gate|trace|proof|validation")
     })?;
     match mode.as_str() {
         "boot-reset" => command_boot_reset(root, tail),
@@ -88,6 +88,7 @@ pub(super) fn command_qa(root: &Path, args: &[String]) -> DynResult<()> {
         "compliance-report" => command_compliance_report(root, tail),
         "g7-audit" => command_g7_audit(root, tail),
         "perf-baseline" => command_perf_baseline(root, tail),
+        "perf-keygen" => command_perf_keygen(root, tail),
         "perf-gate" => command_perf_gate(root, tail),
         "trace" => command_trace(root, tail),
         "proof" => command_proof(root, tail),
@@ -568,6 +569,9 @@ fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
     struct PeerRow {
         peer: &'static str,
         status: &'static str,
+        /// WP-26.1：证据类别——VERIFIED（真实执行）/ PENDING（skip 证据，
+        /// 不计入通过，发布判定阻断）。
+        classification: &'static str,
         cases: Vec<String>,
         evidence: String,
         required_peer: String,
@@ -635,6 +639,11 @@ fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
         rows.push(PeerRow {
             peer,
             status,
+            classification: if status == "PASS" {
+                "VERIFIED"
+            } else {
+                "PENDING"
+            },
             cases: cases.iter().map(|s| s.to_string()).collect(),
             evidence: if status == "PASS" {
                 format!("{}/result.json", dir.display())
@@ -927,20 +936,218 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
 /// - 生产路径 mock 引用（cfg(test) 外）→ 违规；
 /// - 文档宣称能力 vs 代码实现状态逐项对照（预置清单）；
 /// - 无 Mock 能力被宣称为真实能力 → G7-PASS。
+/// 按 Cargo.toml 的 `name` 字段查找 crate 目录（crate 名 ≠ 目录名）。
+fn find_crate_dir(root: &Path, crate_name: &str) -> Option<std::path::PathBuf> {
+    let crates_dir = root.join("crates");
+    let mut stack: Vec<std::path::PathBuf> = vec![crates_dir];
+    while let Some(dir) = stack.pop() {
+        if dir.ends_with("target") || dir.ends_with("fuzz") {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+            }
+        }
+        let manifest = dir.join("Cargo.toml");
+        if manifest.is_file() {
+            if let Ok(text) = fs::read_to_string(&manifest) {
+                if text.lines().any(|l| {
+                    l.trim() == format!("name = \"{crate_name}\"")
+                        || l.trim() == format!("name = '{crate_name}'")
+                }) {
+                    return Some(dir);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 递归收集 crates/** 下每个 crate（含 Cargo.toml 的目录）的 src/**/*.rs
+/// 文件（排除 target/、fuzz/）。FIX-BUGS-0810/WP-26.1：旧实现仅扫一层
+/// `crates/<x>/src/lib.rs`——全仓 crate 均位于两层路径，扫描零命中。
+fn collect_crate_lib_files(crates_dir: &Path) -> Vec<(String, Vec<std::path::PathBuf>)> {
+    let mut out: Vec<(String, Vec<std::path::PathBuf>)> = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = vec![crates_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if dir.ends_with("target") || dir.ends_with("fuzz") {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+            }
+        }
+        // 本目录是 crate 根（含 Cargo.toml）→ 收集 src/**/*.rs。
+        if dir.join("Cargo.toml").is_file() {
+            let name = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let src = dir.join("src");
+            if src.is_dir() {
+                let mut files = Vec::new();
+                let mut fstack: Vec<std::path::PathBuf> = vec![src];
+                while let Some(fd) = fstack.pop() {
+                    let Ok(fe) = fs::read_dir(&fd) else { continue };
+                    for f in fe.flatten() {
+                        let fp = f.path();
+                        if fp.is_dir() {
+                            fstack.push(fp);
+                        } else if fp.extension().map(|e| e == "rs").unwrap_or(false) {
+                            files.push(fp);
+                        }
+                    }
+                }
+                files.sort();
+                out.push((name, files));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// 检测一个文件里未门控的 mock 引用：
+/// 1. lib.rs 顶层（非缩进）`use ...::mock` 且无 cfg 前缀（旧语义）；
+/// 2. 任意 src 文件顶层 `pub mod mock` 且无 cfg(any(test, feature="mock")) 门
+///    （WP-26.1：扩展检测面，与 WP-26.2 门禁共用）。
+fn mock_leak_lines(path: &std::path::Path, is_lib: bool) -> Vec<(usize, String)> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut hits = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        // 缩进行 = 模块（mod tests 等）内部——不算顶层泄漏。
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let t = line.trim_start();
+        if is_lib && t.starts_with("use ") && t.contains("::mock") {
+            let prev = i
+                .checked_sub(1)
+                .and_then(|p| lines.get(p))
+                .map(|l| l.trim_start())
+                .unwrap_or("");
+            let prev2 = i
+                .checked_sub(2)
+                .and_then(|p| lines.get(p))
+                .map(|l| l.trim_start())
+                .unwrap_or("");
+            if !prev.starts_with("#[cfg(") && !prev2.starts_with("#[cfg(") {
+                hits.push((i + 1, t.to_owned()));
+            }
+        }
+        if t == "pub mod mock" || t.starts_with("pub mod mock;") {
+            let prev = i
+                .checked_sub(1)
+                .and_then(|p| lines.get(p))
+                .map(|l| l.trim_start())
+                .unwrap_or("");
+            if !prev.starts_with("#[cfg(") {
+                hits.push((i + 1, t.to_owned()));
+            }
+        }
+    }
+    hits
+}
+
 fn command_g7_audit(root: &Path, args: &[String]) -> DynResult<()> {
     #[derive(Serialize)]
     struct G7Report {
         schema: &'static str,
         production_mock_refs: Vec<String>,
-        claimed_capabilities: Vec<CapabilityRow>,
+        claimed_capabilities: Vec<serde_json::Value>,
         verdict: &'static str,
     }
     #[derive(Serialize)]
     struct CapabilityRow {
-        capability: &'static str,
-        claim_source: &'static str,
-        implementation: &'static str,
-        status: &'static str,
+        id: &'static str,
+        name: &'static str,
+        detector: CapabilityDetector,
+    }
+
+    /// 能力检测器（WP-26.1：status 由 detector 运行时求值，禁止字面量）。
+    #[derive(Serialize, Clone, Copy)]
+    enum CapabilityDetector {
+        /// crate 的 src/**/*.rs 中存在测试（test_name_substr 为空 = 任意
+        /// `#[cfg(test)] mod tests`；非空 = 测试名包含该子串）。
+        TestPresence {
+            crate_name: &'static str,
+            test_name_substr: &'static str,
+        },
+        /// 证据文件存在（可选 JSON 字段校验）。
+        EvidenceFile {
+            path: &'static str,
+            required_fields: &'static [&'static str],
+        },
+    }
+
+    impl CapabilityDetector {
+        /// 运行时求值：VERIFIED / UNVERIFIED / PENDING。
+        fn evaluate(self, root: &Path) -> &'static str {
+            match self {
+                CapabilityDetector::TestPresence {
+                    crate_name,
+                    test_name_substr,
+                } => {
+                    // crate 名 ≠ 目录名（如 eneros-crypto 位于
+                    // crates/security/crypto）：按 Cargo.toml 的 name 匹配。
+                    let Some(crate_dir) = find_crate_dir(root, crate_name) else {
+                        return "UNVERIFIED";
+                    };
+                    let mut found = false;
+                    let mut files = Vec::new();
+                    let mut stack = vec![crate_dir.join("src")];
+                    while let Some(d) = stack.pop() {
+                        let Ok(entries) = fs::read_dir(&d) else {
+                            continue;
+                        };
+                        for e in entries.flatten() {
+                            let p = e.path();
+                            if p.is_dir() {
+                                stack.push(p);
+                            } else if p.extension().map(|x| x == "rs").unwrap_or(false) {
+                                files.push(p);
+                            }
+                        }
+                    }
+                    for f in files {
+                        let Ok(text) = fs::read_to_string(&f) else {
+                            continue;
+                        };
+                        if text.contains("#[cfg(test)]")
+                            && (test_name_substr.is_empty() || text.contains(test_name_substr))
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if found {
+                        "VERIFIED"
+                    } else {
+                        "UNVERIFIED"
+                    }
+                }
+                CapabilityDetector::EvidenceFile { path, .. } => {
+                    if root.join(path).is_file() {
+                        "VERIFIED"
+                    } else {
+                        "UNVERIFIED"
+                    }
+                }
+            }
+        }
     }
 
     let mut out_path = root.join("target/g7-report.json");
@@ -956,98 +1163,114 @@ fn command_g7_audit(root: &Path, args: &[String]) -> DynResult<()> {
         }
     }
 
-    // 1. 生产路径 mock 引用扫描（crates/ 下 cfg(test) 外的 mock 模块引用）。
-    let mut prod_mock_refs = Vec::new();
+    // 1. 生产路径 mock 引用扫描（WP-26.1：递归全量——crates/** 两层 crate
+    //    全部命中；lib.rs 顶层 `use ...::mock` 无 cfg 门 + 任意 src 文件
+    //    `pub mod mock` 无 cfg(any(test, feature="mock")) 门）。
     let crates_dir = root.join("crates");
-    if let Ok(entries) = fs::read_dir(&crates_dir) {
-        for e in entries.flatten() {
-            let path = e.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let lib = path.join("src/lib.rs");
-            if !lib.exists() {
-                continue;
-            }
-            if let Ok(text) = fs::read_to_string(&lib) {
-                // 粗略：lib.rs 顶层（非缩进）出现 `use ...mock` 且无 cfg(test) 前缀。
-                for line in text.lines() {
-                    let t = line.trim_start();
-                    if t.starts_with("use ")
-                        && t.contains("::mock")
-                        && !t.starts_with("#[cfg(test)]")
-                    {
-                        // 检查前一行是否 cfg(test)。
-                        prod_mock_refs.push(format!("{}: {}", path.display(), t));
-                    }
-                }
-            }
-        }
-    }
-    // 精确判定：仅当引用行不在 mod tests 内且无 cfg 保护。
     let mut real_violations = Vec::new();
-    for r in prod_mock_refs {
-        // lib.rs 顶层 use 若在 mod tests 内会有缩进；无缩进 = 模块级。
-        if r.split_once(':')
-            .map(|(_, s)| s.starts_with("use "))
-            .unwrap_or(false)
-        {
-            real_violations.push(r);
+    for (crate_name, files) in collect_crate_lib_files(&crates_dir) {
+        for file in files {
+            let is_lib = file.file_name().map(|n| n == "lib.rs").unwrap_or(false);
+            for (line, text) in mock_leak_lines(&file, is_lib) {
+                real_violations.push(format!(
+                    "{}:{}:{} (crate={})",
+                    file.display(),
+                    line,
+                    text,
+                    crate_name
+                ));
+            }
         }
     }
+    real_violations.sort();
+    real_violations.dedup();
 
-    // 2. 宣称能力 vs 实现（预置清单——文档/代码双源对照）。
+    // 2. 宣称能力 vs 实现（WP-26.1：detector 运行时求值，禁止字面量 status）。
+    //    status 由 detector 求值：VERIFIED / UNVERIFIED（计入失败）/ PENDING。
     let claimed = vec![
         CapabilityRow {
-            capability: "安全启动（SM2 验签）",
-            claim_source: "docs/security/secure-boot-design.md",
-            implementation: "crates/boot/boot-manager-uefi + eneros-secure-boot",
-            status: "IMPLEMENTED",
+            id: "cap-secure-boot",
+            name: "安全启动（SM2 验签）",
+            detector: CapabilityDetector::TestPresence {
+                crate_name: "eneros-secure-boot",
+                test_name_substr: "",
+            },
         },
         CapabilityRow {
-            capability: "OTA A/B 升级+回滚",
-            claim_source: "docs/security/ota-ab-design.md",
-            implementation: "crates/security/ota-ab + boot control",
-            status: "IMPLEMENTED",
+            id: "cap-ota-ab",
+            name: "OTA A/B 升级+回滚",
+            detector: CapabilityDetector::TestPresence {
+                crate_name: "eneros-ota-ab",
+                test_name_substr: "",
+            },
         },
         CapabilityRow {
-            capability: "国密 SM2/3/4",
-            claim_source: "docs/security/sm-crypto-design.md",
-            implementation: "crates/security/crypto（KAT-ALL-PASS）",
-            status: "IMPLEMENTED（独立评审待 D3）",
+            id: "cap-sm-crypto",
+            name: "国密 SM2/3/4",
+            detector: CapabilityDetector::TestPresence {
+                crate_name: "eneros-crypto",
+                test_name_substr: "test_",
+            },
         },
         CapabilityRow {
-            capability: "IEC104/Modbus/IEC61850 协议",
-            claim_source: "docs/protocols/",
-            implementation: "crates/protocols/（互操作待 D2 真实对端）",
-            status: "IMPLEMENTED（真实对端验证待 D2）",
+            id: "cap-protocols",
+            name: "IEC104/Modbus/IEC61850 协议",
+            detector: CapabilityDetector::TestPresence {
+                crate_name: "eneros-iec104-master",
+                test_name_substr: "contract",
+            },
         },
         CapabilityRow {
-            capability: "AI 决策链（LLM+MILP）",
-            claim_source: "CONTEXT.md §4",
-            implementation: "crates/ai/（llama-cpp/HiGHS feature 门控）",
-            status: "IMPLEMENTED（feature 门控）",
+            id: "cap-ai-chain",
+            name: "AI 决策链（LLM+MILP）",
+            detector: CapabilityDetector::TestPresence {
+                crate_name: "eneros-dual-brain",
+                test_name_substr: "",
+            },
         },
         CapabilityRow {
-            capability: "远程证明",
-            claim_source: "docs/security/attestation-design.md",
-            implementation: "crates/security/attestation（tpm2 feature）",
-            status: "IMPLEMENTED（硬件 TPM 待 D2）",
+            id: "cap-attestation",
+            name: "远程证明",
+            detector: CapabilityDetector::EvidenceFile {
+                path: "docs/security/attestation-design.md",
+                required_fields: &[],
+            },
         },
     ];
 
-    let all_claimed_ok = claimed.iter().all(|c| c.status.starts_with("IMPLEMENTED"));
+    let mut statuses = Vec::new();
+    for row in &claimed {
+        statuses.push((row.id, row.detector.evaluate(root)));
+    }
+    // WP-26.1：PENDING/UNVERIFIED 均不计入通过（发布判定显式阻断）。
+    let all_claimed_ok = statuses.iter().all(|(_, st)| *st == "VERIFIED");
+    let any_pending = statuses.iter().any(|(_, st)| *st == "PENDING");
     let no_mock_leak = real_violations.is_empty();
     let verdict = if no_mock_leak && all_claimed_ok {
         "G7-PASS"
+    } else if no_mock_leak && any_pending {
+        "G7-PENDING"
     } else {
         "G7-REVIEW"
     };
 
+    // 报告行：detector 求值结果入 status（可复算、随代码事实变化）。
+    let capability_rows: Vec<serde_json::Value> = claimed
+        .iter()
+        .zip(statuses.iter())
+        .map(|(row, (_, st))| {
+            serde_json::json!({
+                "id": row.id,
+                "name": row.name,
+                "detector": row.detector,
+                "status": st,
+            })
+        })
+        .collect();
     let report = G7Report {
         schema: "eneros.g7-consistency.v1",
         production_mock_refs: real_violations,
-        claimed_capabilities: claimed,
+        claimed_capabilities: capability_rows,
         verdict,
     };
     fs::create_dir_all(out_path.parent().unwrap_or(root))?;
@@ -1560,6 +1783,44 @@ fn hex_decode(s: &str) -> Vec<u8> {
         .collect()
 }
 
+/// `qa perf-keygen --out <privkey-file> [--pubkey-out <hex-file>]`
+///
+/// WP-26.1：生成 CI 用的临时 ed25519 签名密钥对（私钥 32 字节 raw seed；
+/// 公钥 32 字节 hex 写入 `--pubkey-out`）。CI 无持久密钥的现实下，现场
+/// 生成密钥 → perf-baseline --sign-key 签名 → perf-gate 用同一公钥验证，
+/// 使签名链真实存在（不再 rm -f 绕过）。
+fn command_perf_keygen(root: &Path, args: &[String]) -> DynResult<()> {
+    let mut out: Option<std::path::PathBuf> = None;
+    let mut pubkey_out: Option<std::path::PathBuf> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || {
+            it.next()
+                .ok_or_else(|| invalid(format!("{a} requires a value")))
+        };
+        match a.as_str() {
+            "--out" => out = Some(root.join(val()?)),
+            "--pubkey-out" => pubkey_out = Some(root.join(val()?)),
+            other => return Err(invalid(format!("unknown perf-keygen arg '{other}'"))),
+        }
+    }
+    let out = out.ok_or_else(|| invalid("perf-keygen requires --out <file>"))?;
+    let mut seed = [0u8; 32];
+    getrandom::getrandom(&mut seed).map_err(|e| invalid(format!("getrandom: {e}")))?;
+    let keypair = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let pubkey = keypair.verifying_key().to_bytes();
+    fs::write(&out, seed)?;
+    let pk_note = match &pubkey_out {
+        Some(pk) => {
+            fs::write(pk, hex_encode(&pubkey))?;
+            pk.display().to_string()
+        }
+        None => "not written".to_owned(),
+    };
+    println!("PERF-KEYGEN → {} (pubkey {pk_note})", out.display());
+    Ok(())
+}
+
 fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
     let path = match args {
         [p] => root.join(p),
@@ -1575,7 +1836,12 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
     // v0.251.0（C-251）：基线签名防篡改——若存在 <results>.sig（由
     // perf-baseline --sign-key 生成），用 CI 注入的公钥验证；签名缺失
     // 或无效 → 门禁失败（防篡改要求，13 号文 QA-021 基线签名）。
+    // WP-26.1：签名文件缺失 → 该项 FAIL（fail-closed）——旧行为（CI 先
+    // rm -f *.sig 再校验）主动绕过签名链，已删除。
     let sig_path = path.with_extension("json.sig");
+    if !sig_path.exists() {
+        report.violations.push("signature-missing".to_owned());
+    }
     if sig_path.exists() {
         let sig_hex = fs::read_to_string(&sig_path).unwrap_or_default();
         let sig_bytes = hex_decode(sig_hex.trim());
@@ -2248,7 +2514,59 @@ mod tests {
         });
         let p = root.join("perf.json");
         write_json(&p, &results);
-        assert!(command_perf_gate(root, &[p.to_string_lossy().into()]).is_ok());
+        // WP-26.1：签名缺失 → FAIL（fail-closed；证伪旧行为——旧代码
+        // 无签名文件时直接评估 SLO/回归，且 CI 先 rm -f *.sig 绕过）。
+        let err = command_perf_gate(root, &[p.to_string_lossy().into()]);
+        assert!(err.is_err(), "签名缺失必须 FAIL（fail-closed）");
+    }
+
+    /// WP-26.1：签名闭环——perf-keygen → perf-baseline --sign-key →
+    /// perf-gate（同一公钥验证）通过（证伪"签名链被绕过"的旧行为）。
+    #[test]
+    fn t5b_perf_gate_signature_chain() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let key = root.join("perf-key.bin");
+        let pk = root.join("perf-pk.hex");
+        assert!(command_perf_keygen(
+            root,
+            &[
+                "--out".into(),
+                key.to_string_lossy().into(),
+                "--pubkey-out".into(),
+                pk.to_string_lossy().into(),
+            ]
+        )
+        .is_ok());
+        let results = serde_json::json!({
+            "schema": "eneros.perf-regression.v1",
+            "baseline_sha256": "abc",
+            "candidate_sha256": "def",
+            "metrics": [
+                {"metric_id": "boot-time", "slo_threshold": 5000, "measured": 4000, "regression_tolerance_pct": 5, "baseline_value": 3900, "critical_path": true, "unit": "ms"},
+            ],
+        });
+        let p = root.join("perf.json");
+        write_json(&p, &results);
+        // 签名（复用 perf-baseline 的签名逻辑：读 32 字节 seed 签名）。
+        let json_signed = serde_json::to_vec_pretty(&results).unwrap();
+        let key_bytes = std::fs::read(&key).unwrap();
+        let keypair = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into().unwrap());
+        use ed25519_dalek::Signer;
+        let sig = hex_encode(&keypair.sign(&json_signed).to_bytes());
+        std::fs::write(p.with_extension("json.sig"), sig).unwrap();
+        // 门禁用同一公钥验证 → 通过。
+        unsafe {
+            std::env::set_var(
+                "ENEROS_PERF_VERIFY_PUBKEY",
+                std::fs::read_to_string(&pk).unwrap().trim().to_owned(),
+            );
+        }
+        let r = command_perf_gate(root, &[p.to_string_lossy().into()]);
+        unsafe {
+            std::env::remove_var("ENEROS_PERF_VERIFY_PUBKEY");
+        }
+        assert!(r.is_ok(), "签名存在且有效必须通过门禁: {r:?}");
     }
 
     #[test]

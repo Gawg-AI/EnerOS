@@ -1,0 +1,26 @@
+{
+  "schema": "eneros.gate-baseline.v1",
+  "git_rev": "71baf7deddbb38367f98e6d10562188168e1d77c",
+  "generated_at": "2026-08-10T02:01:08.932226",
+  "verdict": "G7-REVIEW",
+  "violations": [
+    {
+      "rule": "mock-leak",
+      "crate": "storage",
+      "file": "/home/ahx/文档/EnerOS/crates/drivers/storage/src/driver/mod.rs",
+      "line": 19,
+      "severity": "PROD_BLOCK",
+      "classification": "violation"
+    }
+  ],
+  "triage": [
+    {
+      "rule": "mock-leak",
+      "crate": "storage",
+      "file": "crates/drivers/storage/src/driver/mod.rs:19",
+      "classification": "PROD_BLOCK",
+      "owner_wp": "WP-26.3",
+      "note": "pub mod mock 无任何 cfg 门（26-B §4.1 清单外新发现）；release 可达"
+    }
+  ]
+}

@@ -107,6 +107,8 @@ struct GateEvidence {
     completed_count: usize,
     open_count: usize,
     blocked_count: usize,
+    /// WP-26.1：PENDING 类别证据逐条列出（发布判定显式阻断，非静默）。
+    pending_requirements: Vec<String>,
     requirements: Vec<RequirementEvidence>,
     artifacts: Vec<ArtifactEvidence>,
     violations: Vec<String>,
@@ -200,6 +202,7 @@ fn verify(root: &Path, fault: Option<&str>) -> DynResult<GateEvidence> {
     let mut completed = 0usize;
     let mut open = 0usize;
     let mut blocked = 0usize;
+    let mut pending_list: Vec<String> = Vec::new();
     for requirement in &registry.requirements {
         if !observed.insert(requirement.requirement_id.as_str()) {
             violations.push(format!(
@@ -227,6 +230,12 @@ fn verify(root: &Path, fault: Option<&str>) -> DynResult<GateEvidence> {
         match status.as_str() {
             "completed" => completed += 1,
             "candidate" => blocked += 1,
+            // WP-26.1（PENDING 政策）：pending = 证据为 skip/PENDING 类别，
+            // 不计入通过；gate 判定中显式阻断（gate_status != PASSED）。
+            "pending" => {
+                blocked += 1;
+                pending_list.push(requirement.requirement_id.clone());
+            }
             "in-progress" => open += 1,
             other => violations.push(format!(
                 "unknown-task-status:{}:{other}",
@@ -333,6 +342,7 @@ fn verify(root: &Path, fault: Option<&str>) -> DynResult<GateEvidence> {
         } else {
             "OPEN"
         },
+        pending_requirements: pending_list,
         source_commit,
         tree_state: if dirty_entry_count == 0 {
             "clean"

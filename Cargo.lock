@@ -530,13 +530,16 @@ name = "eneros-ai-runner"
 version = "1.0.0-rc.0"
 dependencies = [
  "eneros-control-gateway",
+ "eneros-device-agent",
  "eneros-dual-brain",
  "eneros-energy-lp-model",
  "eneros-fast-path",
  "eneros-llm-engine",
+ "eneros-protocol-abstract",
  "eneros-safety-validator",
  "eneros-solver-core",
  "eneros-telemetry-model",
+ "eneros-upa-model",
  "serde_json",
 ]
 
@@ -734,10 +737,17 @@ name = "eneros-device-agent"
 version = "1.0.0-rc.0"
 dependencies = [
  "eneros-agent",
+ "eneros-audit",
+ "eneros-control-gateway",
+ "eneros-crypto",
  "eneros-energy-market-agent",
  "eneros-fs",
+ "eneros-metrics",
  "eneros-protocol-abstract",
+ "eneros-telemetry-model",
+ "eneros-telemetry-queue",
  "eneros-upa-model",
+ "heapless 0.8.0",
 ]
 
 [[package]]
@@ -1229,6 +1239,7 @@ dependencies = [
 name = "eneros-protocol-abstract"
 version = "1.0.0-rc.0"
 dependencies = [
+ "eneros-telemetry-model",
  "eneros-upa-model",
 ]
 
@@ -1276,6 +1287,7 @@ dependencies = [
  "eneros-audit",
  "eneros-boot-protocol",
  "eneros-elf-loader",
+ "eneros-hal",
  "eneros-ipc-wire",
  "eneros-runtime",
  "eneros-sel4-sys",
@@ -1574,6 +1586,7 @@ dependencies = [
  "eneros-image-format",
  "eneros-ipc-wire",
  "eneros-modbus-rtu",
+ "getrandom 0.2.17",
  "object",
  "serde",
  "serde_json",
