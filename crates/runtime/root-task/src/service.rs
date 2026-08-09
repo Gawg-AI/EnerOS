@@ -187,15 +187,25 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
     // sender(TCB cap) → 服务索引 映射。故障注入周期性执行（注入前检查
     // supervisor 状态：Suspended/Faulted 不注入——seL4_Send 同步语义，
     // 向挂起服务 send 会永久阻塞 root-task）。
+    // 22 §2.W1.6：看门狗全程接入——root-task 每轮喂硬件狗；root-task
+    // 卡死（含服务卡死阻塞 IPC call）→ 不喂狗 → SP805 超时整机复位
+    // （supervisor 先兜底 fault，看门狗是最后防线）。QEMU 无 SP805 时
+    // MMIO 写为 no-op（无害）；硬超时 10s。
+    eneros_watchdog::api::wdt_init(10_000, crate::panic::WDT_BASE);
+
     let mut supervisor = crate::supervisor::Supervisor::new_for_count(handles.len(), now_ms());
     let tcb_to_index: alloc::vec::Vec<u64> = handles.iter().map(|h| h.tcb).collect();
     let mut fault_tick = 0u64;
+    let mut tick = 0u64;
     let mut fault_idx = match tcb_to_index.iter().position(|&t| t == fault.tcb) {
         Some(i) => i,
         None => ipc_fail_closed("svc-fault not in supervisor table", "no tcb"),
     };
 
     loop {
+        // 22 §2.W1.6：每轮喂硬件狗（喂狗间隔 < 看门狗超时 10s）。
+        eneros_watchdog::api::wdt_kick();
+
         // 1. hello 往返。
         let resp = match hello_roundtrip(hello.ep) {
             Ok(f) => f,
@@ -210,6 +220,7 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
             core::str::from_utf8(payload).unwrap_or("<non-utf8>")
         );
 
+        tick += 1;
         // 2. supervisor：轮询 fault ep（非阻塞）——检测服务故障并决策。
         let mut sender = 0u64;
         if let Ok(mi) = ipc_poll(fault.ntfn, Some(&mut sender)) {
@@ -271,6 +282,24 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
                     eneros_runtime::println!(
                         "[eneros-root-task] SUPERVISOR: unknown fault sender={} — ignore (fail-closed)",
                         sender
+                    );
+                }
+            }
+        }
+
+        // 22 §2.W1.6：定期检查分层看门狗状态（诊断；无 layer 时为 AllFed）。
+        if tick % 100 == 0 {
+            match eneros_watchdog::api::wdt_check() {
+                eneros_watchdog::layered::WatchdogStatus::AllFed => {}
+                eneros_watchdog::layered::WatchdogStatus::LayerTimeout(id) => {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] WDT: layer {:?} timeout — supervisor path",
+                        id
+                    );
+                }
+                eneros_watchdog::layered::WatchdogStatus::HardReset => {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] WDT: HARD RESET due — arming reset"
                     );
                 }
             }
