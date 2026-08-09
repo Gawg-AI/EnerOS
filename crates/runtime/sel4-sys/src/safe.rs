@@ -781,6 +781,24 @@ pub fn ipc_recv(src: CPtr, sender: Option<&mut Word>) -> Sel4Result<MessageInfo>
     }
 }
 
+/// 非阻塞接收封装（`seL4_Poll`；22 §2.W1.3 supervisor 轮询 fault 用）。
+///
+/// 无消息时立即返回 `Ok(msg=0)`（不阻塞）；有消息时返回消息信息。
+/// `sender` 为 `Some` 时写入发送者 cap。目标侧转裸指针传给 FFI。
+pub fn ipc_poll(src: CPtr, sender: Option<&mut Word>) -> Sel4Result<MessageInfo> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 同 ipc_recv——sender 生命周期与调用一致；seL4_Poll 无阻塞。
+        let sender_ptr = sender.map_or(core::ptr::null_mut(), |w| w as *mut Word);
+        Ok(unsafe { crate::ffi::eneros_sel4_poll(src, sender_ptr) })
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (src, sender);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
 /// 同步调用封装（`seL4_Call`，请求→等待回复）。
 ///
 /// # Safety

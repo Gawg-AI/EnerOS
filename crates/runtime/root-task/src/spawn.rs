@@ -588,6 +588,12 @@ pub struct SpawnedHandle {
     /// TCB 的 fault_ep（=服务 CSpace 槽 1 的 mint 副本）发 fault IPC，
     /// root-task 在此 ep 上 recv 检测故障隔离）。
     pub ntfn: u64,
+    /// 22 §2.W1.3：重启寄存器参数——ELF 入口（PC）。
+    pub entry: u64,
+    /// 22 §2.W1.3：重启寄存器参数——栈顶（SP）。
+    pub stack_top: u64,
+    /// 22 §2.W1.3：重启寄存器参数——IPC buffer 虚拟地址（X1）。
+    pub buffer_vaddr: u64,
 }
 
 /// 目标端真实 spawn：按计划逐服务执行 seL4 FFI（21-A K1.2，ADR-0034）。
@@ -652,6 +658,11 @@ pub fn sel4_spawn_services(
             tcb,
             ep,
             ntfn: fault_ep,
+            // 22 §2.W1.3：重启寄存器参数（entry 由 ELF 解析；buffer 紧邻
+            // 栈顶上方，与 configure_service 的 buffer_vaddr 计算一致）。
+            entry,
+            stack_top: svc.stack_top,
+            buffer_vaddr: align_up(svc.stack_top, PAGE_SIZE),
         });
     }
 

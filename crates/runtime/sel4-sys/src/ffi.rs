@@ -134,6 +134,7 @@ extern "C" {
     /// `seL4_Send` — send-only (no reply); returns nothing.
     pub fn eneros_sel4_send(dest: CPtr, msg_info: MessageInfo);
     pub fn eneros_sel4_recv(src: CPtr, sender: *mut Word) -> MessageInfo;
+    pub fn eneros_sel4_poll(src: CPtr, sender: *mut Word) -> MessageInfo;
     pub fn eneros_sel4_call(dest: CPtr, msg_info: MessageInfo) -> MessageInfo;
     pub fn eneros_sel4_reply_recv(
         dest: CPtr,

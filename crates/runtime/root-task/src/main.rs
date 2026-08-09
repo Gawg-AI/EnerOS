@@ -37,6 +37,7 @@ pub mod frame;
 pub mod panic;
 pub mod service;
 pub mod spawn;
+pub mod supervisor;
 
 // 全局分配器（no_std aarch64：spawn/IPC 路径使用 alloc，见 allocator.rs）。
 #[cfg(target_os = "none")]

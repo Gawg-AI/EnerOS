@@ -1262,6 +1262,7 @@ dependencies = [
  "eneros-runtime",
  "eneros-sel4-sys",
  "eneros-tenant",
+ "eneros-time",
  "eneros-watchdog",
  "heapless 0.8.0",
  "spin",

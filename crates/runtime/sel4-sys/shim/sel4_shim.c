@@ -252,6 +252,13 @@ seL4_MessageInfo_t eneros_sel4_recv(seL4_CPtr src, seL4_Word *sender)
     return seL4_Recv(src, sender);
 }
 
+/* 22 §2.W1.3：非阻塞 recv（seL4_Poll：无消息立即返回，errno=seL4_NoError 且
+ * msg=0 表示无消息）。supervisor 轮询服务 fault 用，不阻塞 hello 心跳。 */
+seL4_MessageInfo_t eneros_sel4_poll(seL4_CPtr src, seL4_Word *sender)
+{
+    return seL4_Poll(src, sender);
+}
+
 seL4_MessageInfo_t eneros_sel4_call(seL4_CPtr dest, seL4_MessageInfo_t msg_info)
 {
     return seL4_Call(dest, msg_info);

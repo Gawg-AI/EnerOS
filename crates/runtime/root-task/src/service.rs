@@ -154,7 +154,7 @@ fn ipc_fail_closed(step: &str, e: impl core::fmt::Debug) -> ! {
 #[cfg(target_os = "none")]
 pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
     use eneros_ipc_wire::el0::{encode_frame, El0FrameType};
-    use eneros_sel4_sys::safe::{get_mr, ipc_call, ipc_recv, ipc_send, message_info_new, set_mr};
+    use eneros_sel4_sys::safe::{get_mr, ipc_call, ipc_poll, ipc_send, message_info_new, set_mr};
 
     // 服务表：按名寻址。
     let by_name = |name: &str| {
@@ -183,9 +183,17 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
         fault.ntfn
     );
 
-    // 故障注入只执行一次（svc-fault 触发真实异常后挂起，不再接收消息；
-    // 重复 send 会永久阻塞——seL4_Send 是同步原语）。
-    let mut fault_injected = false;
+    // 22 §2.W1.3：supervisor——每服务故障状态机（按 handles 顺序）+ fault
+    // sender(TCB cap) → 服务索引 映射。故障注入周期性执行（注入前检查
+    // supervisor 状态：Suspended/Faulted 不注入——seL4_Send 同步语义，
+    // 向挂起服务 send 会永久阻塞 root-task）。
+    let mut supervisor = crate::supervisor::Supervisor::new_for_count(handles.len(), now_ms());
+    let tcb_to_index: alloc::vec::Vec<u64> = handles.iter().map(|h| h.tcb).collect();
+    let mut fault_tick = 0u64;
+    let mut fault_idx = match tcb_to_index.iter().position(|&t| t == fault.tcb) {
+        Some(i) => i,
+        None => ipc_fail_closed("svc-fault not in supervisor table", "no tcb"),
+    };
 
     loop {
         // 1. hello 往返。
@@ -202,46 +210,126 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
             core::str::from_utf8(payload).unwrap_or("<non-utf8>")
         );
 
-        // 2. 故障注入（仅首轮）：aarch64 无除零异常（SDIV 结果 0），
-        // 用非法内存访问（null 写 → Data Abort）触发真实故障。
-        if !fault_injected {
-            fault_injected = true;
-            eneros_runtime::println!("[eneros-root-task] IPC: send fault to svc-fault");
+        // 2. supervisor：轮询 fault ep（非阻塞）——检测服务故障并决策。
+        let mut sender = 0u64;
+        if let Ok(mi) = ipc_poll(fault.ntfn, Some(&mut sender)) {
+            let has_msg = eneros_sel4_sys::types::message_info_length(mi) > 0 || sender != 0;
+            if has_msg {
+                let name = |i: usize| handles[i].name.as_str();
+                if let Some(idx) = tcb_to_index.iter().position(|&t| t == sender) {
+                    supervisor.advance(now_ms());
+                    match supervisor.on_service_fault(idx) {
+                        Some(crate::supervisor::Action::Restart { delay_ms }) => {
+                            eneros_runtime::println!(
+                                "[eneros-root-task] SUPERVISOR: {} fault → restart in {}ms (fault_count={})",
+                                name(idx),
+                                delay_ms,
+                                supervisor
+                                    .services
+                                    .get(idx)
+                                    .map(|s| s.fault_count)
+                                    .unwrap_or(0)
+                            );
+                            busy_wait_ms(delay_ms);
+                            if let Err(e) = restart_service(&handles[idx]) {
+                                ipc_fail_closed("restart service", e);
+                            }
+                            supervisor.on_restart_done(idx);
+                            eneros_runtime::println!(
+                                "[eneros-root-task] SUPERVISOR: {} restarted (total={})",
+                                name(idx),
+                                supervisor
+                                    .services
+                                    .get(idx)
+                                    .map(|s| s.restart_count)
+                                    .unwrap_or(0)
+                            );
+                            // 复验 svc-hello 仍响应（隔离成立）。
+                            match hello_roundtrip(hello.ep) {
+                                Ok(f) => {
+                                    if let Ok(fr) = eneros_ipc_wire::el0::decode_frame(&f) {
+                                        eneros_runtime::println!(
+                                            "[eneros-root-task] SUPERVISOR: svc-hello still responsive ({})",
+                                            core::str::from_utf8(&fr.payload)
+                                                .unwrap_or("<non-utf8>")
+                                        );
+                                    }
+                                }
+                                Err(e) => ipc_fail_closed("hello recheck", e),
+                            }
+                        }
+                        Some(crate::supervisor::Action::MarkFaulted) => {
+                            eneros_runtime::println!(
+                                "[eneros-root-task] SUPERVISOR: {} FAULTED (≥{} faults/hour) — no auto restart, alert",
+                                name(idx),
+                                crate::supervisor::FAULT_THRESHOLD_PER_HOUR
+                            );
+                        }
+                        None => {}
+                    }
+                } else {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] SUPERVISOR: unknown fault sender={} — ignore (fail-closed)",
+                        sender
+                    );
+                }
+            }
+        }
+
+        // 3. 周期故障注入（每 50 轮 hello）：svc-fault Running 时才注入
+        // （Suspended/Faulted 不注入，防 seL4_Send 阻塞 root-task）。
+        fault_tick += 1;
+        if fault_tick % 50 == 0
+            && supervisor.state_of(fault_idx) == Some(crate::supervisor::ServiceState::Running)
+        {
+            eneros_runtime::println!("[eneros-root-task] IPC: send fault to svc-fault (cycle)");
             let req = encode_frame(El0FrameType::Report, b"fault=IllegalAccess");
             if let Err(e) = send_frame(fault.ep, &req) {
                 ipc_fail_closed("send fault", e);
             }
-
-            // 3. 等 svc-fault 故障通知（服务异常 → 内核挂起 TCB → 通知到达）。
-            let mut sender = 0u64;
-            eneros_runtime::println!("[eneros-root-task] DBG recv fault ntfn={}", fault.ntfn);
-            match ipc_recv(fault.ntfn, Some(&mut sender)) {
-                Ok(mi) => {
-                    eneros_runtime::println!(
-                        "[eneros-root-task] svc-fault suspended (isolated) mi_label={}",
-                        eneros_sel4_sys::types::message_info_label(mi)
-                    );
-                }
-                Err(e) => ipc_fail_closed("recv fault ntfn", e),
-            }
-
-            // 4. 复验 svc-hello 仍响应（隔离成立）。
-            let resp = match hello_roundtrip(hello.ep) {
-                Ok(f) => f,
-                Err(e) => ipc_fail_closed("hello recheck", e),
-            };
-            let payload = match eneros_ipc_wire::el0::decode_frame(&resp) {
-                Ok(f) => f.payload,
-                Err(e) => ipc_fail_closed("decode recheck resp", e),
-            };
-            eneros_runtime::println!(
-                "[eneros-root-task] IPC: svc-hello still responsive ({})",
-                core::str::from_utf8(payload).unwrap_or("<non-utf8>")
-            );
         }
 
         // 循环回到 1：hello 心跳持续（svc-hello tick 递增可见）。
     }
+}
+
+/// 当前毫秒时间（supervisor 退避/窗口用；无墙钟，用单调时钟折算）。
+#[cfg(target_os = "none")]
+fn now_ms() -> u64 {
+    eneros_time::get_monotonic_ns() / 1_000_000
+}
+
+/// 忙等指定毫秒（root-task 单线程无睡眠原语；退避等待用）。
+#[cfg(target_os = "none")]
+fn busy_wait_ms(ms: u64) {
+    let start = eneros_time::get_monotonic_ns();
+    let target = start + ms.saturating_mul(1_000_000);
+    while eneros_time::get_monotonic_ns() < target {
+        core::hint::spin_loop();
+    }
+}
+
+/// 重启服务（22 §2.W1.3）：fault 后 TCB 被内核挂起且对象保留——
+/// `tcb_write_registers` 重置 PC/SP/X0/X1（与 configure_service 相同的
+/// 5 寄存器布局）+ `tcb_resume` 即从 `_start` 重新执行（无需
+/// revoke/retype 对象；bss 未清零为已知语义——服务重启保留静态状态，
+/// 生产服务由 supervisor 重启策略保证幂等性）。
+#[cfg(target_os = "none")]
+fn restart_service(
+    handle: &crate::spawn::SpawnedHandle,
+) -> Result<(), eneros_sel4_sys::safe::Sel4Error> {
+    use eneros_sel4_sys::safe::{tcb_resume, tcb_write_registers};
+    use eneros_sel4_sys::types::UserContext;
+
+    let mut regs = UserContext::zeroed();
+    regs.set_pc(handle.entry);
+    regs.set_sp(handle.stack_top);
+    regs.set_x(0, 0); // ep cap 在服务 CSpace 槽 0
+    regs.set_x(1, handle.buffer_vaddr);
+    // count=5: pc/sp/spsr/x0/x1（同 configure_service；漏写 x1 →
+    // ipcbuf=0 → set_ipc_buffer(NULL) → VMFAULT）。
+    tcb_write_registers(handle.tcb, 0, 5, &regs)?;
+    tcb_resume(handle.tcb)
 }
 
 /// hello 请求→响应往返（K2.2 契约）。返回完整响应帧字节。
