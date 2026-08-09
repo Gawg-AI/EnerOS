@@ -9,6 +9,7 @@
 //! - 发送/接收/解码失败 → `state = Error`；再次 `connect` 成功后可恢复
 //! - 对端返回 ConfirmedErrorPDU（0xA2）→ `MmsResponse::Error { code }`（不置 Error 状态）
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;

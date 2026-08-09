@@ -1,5 +1,6 @@
 //! MQTT 传输层抽象（D12：trait + 内存 mock，解耦 smoltcp TCP）.
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
