@@ -405,10 +405,10 @@ mod w21_feedback_loop_tests {
 // ============================================================================
 #[cfg(test)]
 mod w24_rejection_tests {
+    use eneros_dual_brain::error::DualBrainError;
     use eneros_dual_brain::rejection::{RejectionAction, RejectionHandler, RejectionKind};
 
     use super::*;
-    use crate::runtime::AgentRuntime as _;
 
     /// 验收：设备拒绝 → 分类 + 计数（不静默），错误仍上抛（决策感知）。
     #[test]
