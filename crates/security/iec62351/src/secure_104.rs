@@ -1,14 +1,15 @@
-//! IEC 104 over TLS 安全层（v0.237.0，B4-04）。
+//! IEC 104 over TLS 安全层（v0.237.0，B4-04；26-B WP-26.5 诚实命名）。
 //!
-//! 为 IEC104 通道加真实安全层（IEC 62351-3 语义）：
+//! # 诚实声明（首行）
+//! **本模块的 [`FramingRecordCodec`]（原 `FramingRecordCodec`）仅做记录分帧
+//! （`type(1) ‖ len(2 BE) ‖ payload`），不含任何加密。** 真 IEC 62351-3 TLS
+//! 为独立未实现能力（依赖 `eneros-tls` 的 target 支持，蓝图/19 P0-14）；
+//! `PlainRecordCodec` 明文直通是显式降级（B4-04 遗留，非安全声明）。
 //!
 //! - [`Secure104Session`] — 会话抽象：握手 → 记录保护（加密）→ 收发；
-//! - [`TlsRecordCodec`] — 记录层编解码（IEC 62351-3 TLS 记录封装，
-//!   长度前缀 + 类型标记）；
+//! - [`FramingRecordCodec`] — 记录层**分帧**编解码（长度前缀 + 类型标记）；
 //! - feature `tls`：std 侧 rustls 实现（对接 `eneros-tls`
 //!   `TlsClientConfig`/`TlsServerConfig`）。
-//!
-//! 无 TLS 编译目标时提供 [`PlainRecordCodec`] 明文直通（显式降级）。
 
 use alloc::vec::Vec;
 
@@ -33,10 +34,12 @@ pub trait RecordCodec {
     fn decode(&self, bytes: &[u8]) -> Result<(RecordType, Vec<u8>), SecError>;
 }
 
-/// TLS 记录编解码（真实 IEC 62351-3 记录格式）。
-pub struct TlsRecordCodec;
+/// 记录**分帧**编解码（WP-26.5：原 `FramingRecordCodec` 更名——本 codec 仅做
+/// 记录分帧（`type(1) ‖ len(2 BE) ‖ payload`），**不含任何加密**；真
+/// 62351-3 TLS 为独立未实现能力，见模块文档首行）。
+pub struct FramingRecordCodec;
 
-impl RecordCodec for TlsRecordCodec {
+impl RecordCodec for FramingRecordCodec {
     fn encode(&self, rtype: RecordType, payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(3 + payload.len());
         out.push(rtype as u8);
@@ -169,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_tls_record_roundtrip() {
-        let codec = TlsRecordCodec;
+        let codec = FramingRecordCodec;
         let rec = codec.encode(RecordType::ApplicationData, &[0x68, 0x0A, 1, 2, 3]);
         let (t, payload) = codec.decode(&rec).expect("decode");
         assert_eq!(t, RecordType::ApplicationData);
@@ -178,14 +181,14 @@ mod tests {
 
     #[test]
     fn test_record_truncated_rejected() {
-        let codec = TlsRecordCodec;
+        let codec = FramingRecordCodec;
         assert_eq!(codec.decode(&[2, 0, 5, 1]), Err(SecError::FrameInvalid));
         assert_eq!(codec.decode(&[9, 0, 0]), Err(SecError::FrameInvalid));
     }
 
     #[test]
     fn test_handshake_record_type() {
-        let codec = TlsRecordCodec;
+        let codec = FramingRecordCodec;
         let rec = codec.encode(RecordType::Handshake, b"clienthello");
         let (t, p) = codec.decode(&rec).expect("decode");
         assert_eq!(t, RecordType::Handshake);
@@ -194,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_session_requires_handshake_before_send() {
-        let mut session = Secure104Session::new(TlsRecordCodec);
+        let mut session = Secure104Session::new(FramingRecordCodec);
         // 未握手 → 拒绝应用发送。
         assert_eq!(session.send_application(b"apdu"), Err(SecError::NotReady));
         // 握手后允许。
@@ -207,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_session_receive_application_data() {
-        let mut session = Secure104Session::new(TlsRecordCodec);
+        let mut session = Secure104Session::new(FramingRecordCodec);
         session.handshake(b"h").expect("handshake");
         let rec = session.send_application(&[0x68, 0x0A]).expect("send");
         let data = session.receive(&rec).expect("recv").expect("app data");
@@ -216,8 +219,8 @@ mod tests {
 
     #[test]
     fn test_session_alert_rejected() {
-        let codec = TlsRecordCodec;
-        let mut session = Secure104Session::new(TlsRecordCodec);
+        let codec = FramingRecordCodec;
+        let mut session = Secure104Session::new(FramingRecordCodec);
         session.handshake(b"h").expect("handshake");
         let alert = codec.encode(RecordType::Alert, b"peer-error");
         assert_eq!(session.receive(&alert), Err(SecError::PeerAlert));
@@ -231,5 +234,27 @@ mod tests {
         let (t, p) = codec.decode(&rec).expect("decode");
         assert_eq!(t, RecordType::ApplicationData);
         assert_eq!(p, b"data");
+    }
+
+    // ===== WP-26.5：无加密事实固定——FramingRecordCodec 仅分帧不加密 =====
+    // 把"当前无加密"变成可回归的事实：payload 明文原样出现在输出中
+    // （偏移 3 起逐字节相等）。未来接入真 62351-3 TLS 时本测试必须被
+    // 显式重写，并在提交说明中引用本 WP（26-B §6 第 3 条）。
+    #[test]
+    fn test_wp265_framing_codec_plaintext_fact() {
+        let codec = FramingRecordCodec;
+        let payload = b"P_total=123.45;Q=0.0;timestamp=1700000000";
+        let encoded = codec.encode(RecordType::ApplicationData, payload);
+        // 帧格式：type(1) ‖ len(2 BE) ‖ payload——payload 明文原样出现。
+        assert_eq!(encoded.len(), 3 + payload.len());
+        assert_eq!(
+            &encoded[3..],
+            payload,
+            "payload 必须明文原样出现（无加密事实）"
+        );
+        // 解码还原明文。
+        let (rtype, decoded) = codec.decode(&encoded).expect("decode");
+        assert_eq!(rtype, RecordType::ApplicationData);
+        assert_eq!(&decoded, payload);
     }
 }

@@ -50,7 +50,9 @@ pub mod secure_goose;
 pub mod secure_sv;
 
 pub use key_mgmt::{KeyMgmt, SessionKey};
-pub use secure_104::{PlainRecordCodec, RecordCodec, RecordType, Secure104Session, TlsRecordCodec};
+pub use secure_104::{
+    FramingRecordCodec, PlainRecordCodec, RecordCodec, RecordType, Secure104Session,
+};
 pub use secure_goose::{SecureFrame, SecureGoose};
 pub use secure_sv::SecureSv;
 
