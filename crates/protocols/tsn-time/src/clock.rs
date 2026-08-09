@@ -85,8 +85,13 @@ impl PtpTime {
         }
     }
 
-    /// 计算 `self - other` 的纳秒差（`i64`，测试用例范围内不会溢出）.
-    pub fn diff_ns(&self, other: &PtpTime) -> i64 {
-        (self.to_ns() - other.to_ns()) as i64
+    /// 计算 `self - other` 的纳秒差。
+    ///
+    /// 对端时间戳不可信（网络可控输入，FIX-BUGS-0810 B3）：差值超出
+    /// `i64` 可表示范围时返回 `None`，调用方必须 fail-closed（跳过本次
+    /// 同步更新）；不得静默环绕（铁律 5：禁 `as` 截断，用 `try_from`）。
+    pub fn diff_ns(&self, other: &PtpTime) -> Option<i64> {
+        let diff = self.to_ns() - other.to_ns();
+        i64::try_from(diff).ok()
     }
 }

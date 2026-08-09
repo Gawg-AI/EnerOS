@@ -59,9 +59,9 @@
 //!
 //! 目标板网卡不支持硬件时间戳/taprio（QEMU virt 与首款交付板评估结论），
 //! 按蓝图选项 ② 执行：**移除 TSN 硬实时承诺**，gPTP 保留为软件时间同步
-//! 原语。参见 [`degraded::SoftSyncClaim`]（能力一致性机器可查）与
-//! [`degraded::SoftSyncClock`]。真实硬件路径（taprio/gPTP 硬件时间戳）
-//! 在具备能力的网卡接入后另行评估（选项 ①）。
+//! 原语。参见 [`degraded::SoftSyncClaim`]（能力一致性机器可查；W3.4 删除了
+//! 纯委托 wrapper `SoftSyncClock`，能力检查收敛到 `SoftSyncClaim::verify_claim`）。
+//! 真实硬件路径（taprio/gPTP 硬件时间戳）在具备能力的网卡接入后另行评估（选项 ①）。
 //!
 //! # 核心类型
 //!
@@ -136,7 +136,6 @@
 //! ```
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 // v0.81.0：`LatencyProbe::measure_round_trip` 返回 `Result<Duration, ()>` 与
 // `send: impl FnMut() -> Result<(), ()>` 闭包参数为 spec 批准的设计选择（D26：
 // 仅传递成败，错误细节丢弃，由调用者通过 `driver_send_failure` 等场景区分），
@@ -227,7 +226,7 @@ mod tests {
     fn test_t6_ptp_time_diff_ns_positive() {
         assert_eq!(
             PtpTime::new(2, 0).diff_ns(&PtpTime::new(1, 0)),
-            1_000_000_000i64
+            Some(1_000_000_000i64)
         );
     }
 
@@ -236,8 +235,23 @@ mod tests {
     fn test_t7_ptp_time_diff_ns_negative() {
         assert_eq!(
             PtpTime::new(1, 0).diff_ns(&PtpTime::new(2, 0)),
-            -1_000_000_000i64
+            Some(-1_000_000_000i64)
         );
+    }
+
+    // ===== FIX-BUGS-0810 B3 防回归：超 i64 范围差值 → None（证伪旧环绕）=====
+    #[test]
+    fn test_b3_diff_ns_out_of_range_returns_none() {
+        // 构造差值超出 i64 可表示范围的时间戳对（秒级差异 2^63 ns 量级）。
+        // 旧行为：`as i64` 静默环绕出错误正值/负值；新行为：None。
+        let far = PtpTime::new(u64::MAX / 2, 0);
+        let base = PtpTime::new(0, 0);
+        assert_eq!(far.diff_ns(&base), None, "超出 i64 范围必须返回 None");
+        assert_eq!(base.diff_ns(&far), None);
+        // i64 边界内仍正常工作（正/负）。
+        let max = PtpTime::new(9_223_372_036, 854_775_807);
+        let min = PtpTime::new(0, 0);
+        assert_eq!(max.diff_ns(&min), Some(i64::MAX));
     }
 
     // ===== T8：PortRole 各变体 Display 输出非空 =====
@@ -435,11 +449,11 @@ mod tests {
         assert!(matches!(r, BmcaResult::ElectedAsMaster));
     }
 
-    // ===== T25：handle_sync 偏移低通滤波 (0*7 + 900_000_000)/8 = 112_500_000 =====
-    // clippy::erasing_op / identity_op：此处显式保留滤波公式 (offset*7 + new_offset)/8 的字面形态
+    // ===== T25（FIX-BUGS-0810 B1 重写）：two-step 单一 offset 出口 =====
+    // 用例 1：Sync 携带粗略 origin 不得扰动 offset（证伪旧行为——旧代码
+    // 在 handle_sync 用粗略值更新 offset，会推向巨大值）。
     #[test]
-    #[allow(clippy::erasing_op, clippy::identity_op)]
-    fn test_t25_handle_sync_offset_filter() {
+    fn test_t25a_sync_does_not_disturb_offset() {
         let identity = ClockIdentity::new([1; 8]);
         let mut clk = GptpClock::new(identity, PtpTime::new(100, 0), &GptpConfig::default());
         let sync = SyncMessage {
@@ -448,9 +462,60 @@ mod tests {
             steps_removed: 0,
         };
         clk.handle_sync(&sync, PtpTime::new(1, 0), 100_000_000);
-        // 低通滤波：offset 初始 0 → (0*7 + 900_000_000)/8 = 112_500_000
+        // 旧行为：offset 被粗略 origin_timestamp 污染为 112_500_000；
+        // 新行为（two-step）：Sync 仅暂存，offset 保持不变。
+        assert_eq!(clk.offset, 0, "Sync 不得扰动 offset（精确值在 FollowUp）");
+        // 暂存就位（供 FollowUp 配对）。
+        assert_eq!(clk.last_sync_seq_id, Some(1));
+        assert!(clk.last_sync_rx_ts.is_some());
+    }
+
+    // 用例 2：配对 FollowUp 恰好一次精确更新（低通滤波
+    // (0*7 + 900_000_000)/8 = 112_500_000）。
+    #[test]
+    #[allow(clippy::erasing_op, clippy::identity_op)]
+    fn test_t25b_follow_up_is_the_only_offset_update() {
+        let identity = ClockIdentity::new([1; 8]);
+        let mut clk = GptpClock::new(identity, PtpTime::new(100, 0), &GptpConfig::default());
+        let sync = SyncMessage {
+            origin_timestamp: PtpTime::new(0, 0),
+            sequence_id: 1,
+            steps_removed: 0,
+        };
+        clk.handle_sync(&sync, PtpTime::new(1, 0), 100_000_000);
+        let fu = FollowUpMessage {
+            precise_origin_timestamp: PtpTime::new(0, 0),
+            sequence_id: 1,
+        };
+        clk.handle_follow_up(&fu);
         assert_eq!(clk.offset, (0 * 7 + 900_000_000) / 8);
         assert_eq!(clk.offset, 112_500_000);
+        // 序列号已消费：重复 FollowUp 不再更新。
+        clk.handle_follow_up(&fu);
+        assert_eq!(clk.offset, 112_500_000, "消费后不得重复更新");
+    }
+
+    // ===== FIX-BUGS-0810 B3 防回归：超范围差值 → FollowUp 跳过更新 =====
+    #[test]
+    fn test_b3_follow_up_out_of_range_skips_update() {
+        let identity = ClockIdentity::new([1; 8]);
+        let mut clk = GptpClock::new(identity, PtpTime::new(100, 0), &GptpConfig::default());
+        let sync = SyncMessage {
+            origin_timestamp: PtpTime::new(0, 0),
+            sequence_id: 7,
+            steps_removed: 0,
+        };
+        // rx_ts 取极端值使差值超 i64 范围。
+        clk.handle_sync(&sync, PtpTime::new(u64::MAX / 2, 0), 0);
+        let fu = FollowUpMessage {
+            precise_origin_timestamp: PtpTime::new(0, 0),
+            sequence_id: 7,
+        };
+        clk.handle_follow_up(&fu);
+        assert_eq!(
+            clk.offset, 0,
+            "超范围差值必须 fail-closed 跳过（offset 保持旧值，不触碰时钟）"
+        );
     }
 
     // ===== v0.80.0 TAS 测试（T26~T55）=====
