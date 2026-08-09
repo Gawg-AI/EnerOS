@@ -1,3 +1,11 @@
+//! # 商业范围（21-B B3）
+//!
+//! **`v1.0.0_scope = "trait-only"`**（与 Cargo.toml `[package.metadata.eneros]`
+//! 双处声明）：v1.0.0 交付 TSN trait/算法层（gPTP 状态机/TAS 调度/时延探针），
+//! 无真实 netlink/taprio 数据面。依赖 TSN 真数据面的 release 路径必须走
+//! [`degradation::degraded_or`] 降级分支并记录指标（可观测），禁止静默
+//! 假装 TSN 生效。
+//!
 //! EnerOS v0.79.0 gPTP（IEEE 802.1AS）时间同步层 — 类型与算法（无真实网络 I/O）.
 //!
 //! Phase 2 多机联邦协议栈的精密时间同步基础。提供 [`clock::ClockIdentity`] /
@@ -1492,3 +1500,6 @@ mod tests {
         }
     }
 }
+
+pub mod degradation;
+pub use degradation::{dataplane_available, degraded_or, DegradationCounter};

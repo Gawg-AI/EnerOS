@@ -6,3 +6,8 @@ description = "EnerOS v0.81.0 gPTP + TSN 802.1Qbv 调度 + 端到端时延探针
 license = "MIT"
 
 [dependencies]
+
+[package.metadata.eneros]
+# 21-B B3：v1.0.0 无真实 netlink/taprio 数据面——TSN 仅 trait/算法层。
+v1.0.0_scope = "trait-only"
+commercial_scope = "out-of-v1.0"
