@@ -7,6 +7,8 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 
+use eneros_control_gateway::gateway::AuthorizedCommand;
+use eneros_dual_brain::chain_sink::{DeviceExecError, DeviceExecutor};
 use eneros_dual_brain::sink::{CommandSink, DispatchCommand};
 use eneros_dual_brain::DualBrainError;
 
@@ -156,9 +158,6 @@ mod tests {
 // 22 §2.W2.2：FileExecutor——ChainCommandSink 的设备执行器适配器。
 // ControlChain 授权后的命令经文件总线落盘（真实设备通道；AI 不直接写设备）。
 // ============================================================================
-
-use eneros_control_gateway::gateway::AuthorizedCommand;
-use eneros_dual_brain::chain_sink::{DeviceExecError, DeviceExecutor};
 
 /// 文件执行器：授权命令 → JSON Lines 落盘（复用 FileCommandSink 通道）。
 pub struct FileExecutor {

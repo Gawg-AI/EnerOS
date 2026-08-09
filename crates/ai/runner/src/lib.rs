@@ -28,7 +28,7 @@ use eneros_llm_engine::stats::{EngineHealth, EngineStats};
 use eneros_solver_core::highs::HighsSolver;
 
 use crate::scenario::{Overrides, Scenario};
-use crate::sink::{FileCommandSink, FileExecutor};
+use crate::sink::FileExecutor;
 
 pub mod scenario;
 pub mod sink;
@@ -258,8 +258,82 @@ pub fn run_once(
     })
 }
 
+// ============================================================================
+// 22 §2.W2.2：ControlChain 装配（默认策略/租约/安全点；key 注入）。
+// ============================================================================
+
+/// 链密钥（HMAC 信封签名；生产由运维注入——v1.0 交付项，见 ADR-029）。
+const CHAIN_KEY: &[u8] = b"eneros-runner-chain-key-000000000000000000";
+/// AI 租约 ID（装配时签发，3 600 s）。
+const CHAIN_LEASE_ID: [u8; 16] = [0xE1; 16];
+/// 信封签发者标识。
+const CHAIN_ISSUER: [u8; 16] = [0xE2; 16];
+/// 策略代次（Policy::new(1) + with_rule 不 bump generation）。
+const CHAIN_POLICY_VERSION: u64 = 1;
+
+/// 时间源（毫秒；runner 单次执行用系统时钟）。
+fn now_fn() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// ControlChain 装配：策略放行 Ai→dev1/pt10，租约签发，安全点注册。
+/// default-deny：未配置规则的点一律拒绝（fail-closed）。
+pub fn build_chain() -> Result<eneros_control_gateway::chain::ControlChain, RunnerError> {
+    use eneros_control_gateway::chain::ControlChain;
+    use eneros_control_gateway::envelope::ActorKind;
+    use eneros_control_gateway::lease::LeaseScope;
+    use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
+    use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
+    use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
+    use eneros_telemetry_model::unit::PhysicalUnit;
+
+    let policy = Policy::new(1).with_rule(PolicyRule {
+        actor_kind: Some(ActorKind::Ai),
+        devices: vec![1],
+        points: vec![10],
+        kinds: vec![CommandClass::Switch],
+        time_window: (0, 0),
+        obligations: vec![],
+    });
+    let mut chain = ControlChain::new(CHAIN_KEY, 5, 64, policy, 60, 300, 64, 30);
+    let scope = LeaseScope {
+        devices: vec![1],
+        points: vec![10],
+        max_class: 1,
+    };
+    if chain
+        .lease_service_mut()
+        .issue(CHAIN_LEASE_ID, scope, 3_600, now_fn())
+        .is_none()
+    {
+        return Err(RunnerError::Chain("lease issue failed".into()));
+    }
+    chain.safety_mut().register(
+        1,
+        10,
+        SafetyPoint {
+            role: SafetyRole::PccBreaker,
+            spec: PointSpec {
+                point_id: 10,
+                device_id: 1,
+                unit: PhysicalUnit::Kilowatts,
+                safe_min: -500.0,
+                safe_max: 500.0,
+                max_ramp_per_sec: None,
+                direction: ControlDirection::Discrete,
+                remote_controllable: true,
+            },
+        },
+    );
+    Ok(chain)
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::sink::FileCommandSink;
     use super::*;
 
     /// 测试专用 LLM 引擎：返回合法 Charge intent JSON（本 crate 测试私有，
@@ -369,75 +443,3 @@ mod tests {
     }
 }
 
-// ============================================================================
-// 22 §2.W2.2：ControlChain 装配（默认策略/租约/安全点；key 注入）。
-// ============================================================================
-
-/// 链密钥（HMAC 信封签名；生产由运维注入——v1.0 交付项，见 ADR-029）。
-const CHAIN_KEY: &[u8] = b"eneros-runner-chain-key-000000000000000000";
-/// AI 租约 ID（装配时签发，3 600 s）。
-const CHAIN_LEASE_ID: [u8; 16] = [0xE1; 16];
-/// 信封签发者标识。
-const CHAIN_ISSUER: [u8; 16] = [0xE2; 16];
-/// 策略代次（Policy::new(1) + with_rule 不 bump generation）。
-const CHAIN_POLICY_VERSION: u64 = 1;
-
-/// 时间源（毫秒；runner 单次执行用系统时钟）。
-fn now_fn() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-/// ControlChain 装配：策略放行 Ai→dev1/pt10，租约签发，安全点注册。
-/// default-deny：未配置规则的点一律拒绝（fail-closed）。
-pub fn build_chain() -> Result<eneros_control_gateway::chain::ControlChain, RunnerError> {
-    use eneros_control_gateway::chain::ControlChain;
-    use eneros_control_gateway::envelope::ActorKind;
-    use eneros_control_gateway::lease::LeaseScope;
-    use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
-    use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
-    use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
-    use eneros_telemetry_model::unit::PhysicalUnit;
-
-    let policy = Policy::new(1).with_rule(PolicyRule {
-        actor_kind: Some(ActorKind::Ai),
-        devices: vec![1],
-        points: vec![10],
-        kinds: vec![CommandClass::Switch],
-        time_window: (0, 0),
-        obligations: vec![],
-    });
-    let mut chain = ControlChain::new(CHAIN_KEY, 5, 64, policy, 60, 300, 64, 30);
-    let scope = LeaseScope {
-        devices: vec![1],
-        points: vec![10],
-        max_class: 1,
-    };
-    if chain
-        .lease_service_mut()
-        .issue(CHAIN_LEASE_ID, scope, 3_600, now_fn())
-        .is_none()
-    {
-        return Err(RunnerError::Chain("lease issue failed".into()));
-    }
-    chain.safety_mut().register(
-        1,
-        10,
-        SafetyPoint {
-            role: SafetyRole::PccBreaker,
-            spec: PointSpec {
-                point_id: 10,
-                device_id: 1,
-                unit: PhysicalUnit::Kilowatts,
-                safe_min: -500.0,
-                safe_max: 500.0,
-                max_ramp_per_sec: None,
-                direction: ControlDirection::Discrete,
-                remote_controllable: true,
-            },
-        },
-    );
-    Ok(chain)
-}
