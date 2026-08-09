@@ -33,7 +33,8 @@ use eneros_runtime::{init, println};
 pub mod allocator;
 pub mod boot;
 pub mod bundle;
-pub mod frame;
+// W4.3（蓝图23）：frame.rs 兼容垫片（`pub use eneros_ipc_wire::el0::*`）已删除——
+// 全 crate `frame::` 零引用（main.rs 已直接 use ipc-wire el0 类型）。
 pub mod panic;
 pub mod service;
 pub mod spawn;
@@ -101,6 +102,11 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
     unsafe { ALLOCATOR.init() };
     // 22 §2.W1.2：panic 审计链初始化（panic handler 最简路径的前提）。
     crate::panic::init_panic_audit();
+    // 23 G-I 总出口修复：单调时钟初始化（Arm64Timer = CNTPCT_EL0 generic
+    // timer）。supervisor 的 busy_wait/退避依赖 get_monotonic_ns——此前未
+    // time_init 恒 0 → fault 重启的 1000ms 忙等死循环（22 G-R1 未系统级
+    // 验证，bootctrl Crc 阻断期；23 G-I 暴露并修复）。
+    eneros_time::time_init(eneros_hal::arm64::timer::clock(), 0);
     println!("[eneros-root-task] Rust root task alive on seL4");
     println!("[eneros-root-task] G2 closure: bootinfo/cap/IPC (inherited from elfloader boot)");
     println!(
@@ -222,8 +228,12 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
             );
         }
         Err(e) => {
-            // QEMU（xpack 无 SP805）/平台未导出设备区域 → 软件模式：
+            // FIX-BUGS-0810 B2 语义：平台未导出覆盖 WDT_BASE 的 device
+            // untyped（QEMU xpack 无 SP805 / dts 未导出）→ 软件模式：
             // 看门狗不武装（wdt_init 用 base=0），避免访问未映射 MMIO fault。
+            // 注意：出现 "WDT device map OK" 即意味着平台已导出 SP805——
+            // 必须触发 R-B2b bring-up 验证（arm 序列 + kick 周期），
+            // 不得视为常规成功（蓝图/25 §3.2 观察点）。
             crate::println!(
                 "[eneros-root-task] WDT device map FAILED: {:?} — 看门狗软件模式",
                 e

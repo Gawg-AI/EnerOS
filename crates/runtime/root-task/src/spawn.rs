@@ -98,11 +98,24 @@ pub struct SpawnedService {
     pub pages: Vec<PageEntry>,
 }
 
+/// Root Task 的 spawn 计划精简视图（W4.3 蓝图23）。
+///
+/// root 由 elfloader 加载（不经 EL0 spawn），生产中仅 `name`（main.rs 打印）
+/// 与 `stack_top`（服务 vaddr 布局起点）被使用——完整 `SpawnedService` 的
+/// entry/pages/ipc_ep 从未被消费，降级为本结构。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnRoot {
+    /// Root Task 名（bundle manifest）。
+    pub name: String,
+    /// 栈顶虚拟地址（= 服务 vaddr 布局起点）。
+    pub stack_top: u64,
+}
+
 /// 全部 spawn 计划（root + ≥2 服务）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpawnPlan {
-    /// Root Task 自身。
-    pub root: SpawnedService,
+    /// Root Task 自身（精简视图）。
+    pub root: SpawnRoot,
     /// EL0 服务（≥2）。
     pub services: Vec<SpawnedService>,
 }
@@ -199,7 +212,9 @@ pub fn plan_spawn(
     if !root_elf.has_executable() {
         return Err(SpawnError::BadElf);
     }
-    let root = plan_one(
+    // root 由 elfloader 加载（不经 EL0 spawn）——只需 name + stack_top
+    // （服务 vaddr 布局起点）。完整 plan_one 只为 EL0 服务保留。
+    let root_plan = plan_one(
         &root_module.name,
         &root_elf,
         vspace_base,
@@ -207,6 +222,10 @@ pub fn plan_spawn(
         stack_size,
         ep_base,
     )?;
+    let root = SpawnRoot {
+        name: root_plan.name,
+        stack_top: root_plan.stack_top,
+    };
 
     // 2. EL0 服务（≥2，fail-closed）
     let mut services = Vec::new();
@@ -443,36 +462,34 @@ impl UntypedAllocator {
         }
     }
 
-    /// 从 device untyped 分配（设备内存：MMIO frame；22 §2.W1.6）。
+    /// 分配覆盖指定物理地址的 **device** 对象（FIX-BUGS-0810 B2 两件套之二）。
     ///
-    /// 与 [`UntypedAllocator::alloc`] 同记账语义，但**只**匹配
-    /// `is_device` untyped（普通 untyped 不能 retype device frame）。
-    pub fn alloc_device(&mut self, size_bits: u64) -> Option<(u64, u64)> {
+    /// [`alloc_device`]（first-fit）**不校验物理地址**——MMIO 映射若用它，
+    /// 修好 node_offset 后会把"别的设备的物理页"映射到请求的虚拟地址
+    /// （静默乱写，比软件模式更糟）。本函数按物理定位 device untyped
+    /// （镜像 [`alloc_at`] 的覆盖检查结构，条件反转为 `is_device` 必须为真），
+    /// 返回 `(untyped_cap, byte_offset)`；找不到覆盖 `phys` 的 device untyped
+    /// 返回 `None`（调用方 fail-closed 走软件模式兜底）。
+    pub fn alloc_device_at(&mut self, phys: u64, size_bits: u64) -> Option<(u64, u64)> {
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
             if !desc.is_device || desc.size_bits < size_bits {
                 continue;
             }
             if desc.size_bits >= u64::BITS as u64 {
-                continue;
+                continue; // 防移位溢出（红线 6）
             }
-            let capacity = 1u64 << desc.size_bits;
             let obj_size = 1u64 << size_bits;
-            let used = self.used[i];
-            let aligned = used
-                .checked_add(obj_size - 1)
-                .map(|v| v & !(obj_size - 1))?;
-            if aligned
-                .checked_add(obj_size)
-                .map(|end| end > capacity)
-                .unwrap_or(true)
-            {
-                continue;
+            let aligned = phys & !(obj_size - 1);
+            let desc_end = desc.paddr.checked_add(1u64 << desc.size_bits)?;
+            if aligned >= desc.paddr && aligned < desc_end {
+                let byte_off = aligned - desc.paddr;
+                // 标记已用（字节偏移，与 freeIndex 一致）。
+                if self.used[i] < byte_off + obj_size {
+                    self.used[i] = byte_off + obj_size;
+                }
+                return Some((self.cap_base + i as u64, byte_off));
             }
-            self.used[i] = aligned + obj_size;
-            let offset = aligned / obj_size;
-            let cap = self.cap_base + i as u64;
-            return Some((cap, offset));
         }
         None
     }
@@ -526,16 +543,28 @@ impl UntypedAllocator {
             if desc.size_bits >= u64::BITS as u64 {
                 continue;
             }
+            // FIX-BUGS-0810 B4：CNode 槽数 = 2^size_bits、每槽 2^5 字节，
+            // 故 size_bits + 5 必须 < 64，否则移位按 64 取模回绕（release
+            // 得到错误 obj_size，debug 下 panic）——红线 6 守卫。
+            if size_bits.checked_add(5).map_or(true, |b| b >= 64) {
+                return None;
+            }
             let capacity = 1u64 << desc.size_bits;
             // CNode 实际大小：槽数 × 每槽字节 = 2^size_bits × 2^SlotBits。
             let obj_size = (1u64 << size_bits) << 5; // seL4_SlotBits = 5
             let used = self.used[i];
-            if used
+            // FIX-BUGS-0810 B4：与 [`alloc`] 完全一致的 alignUp 记账
+            // （seL4 freeIndex 按对象大小对齐）——CNode 记账同样必须对齐，
+            // 否则与内核 freeIndex 脱节（QEMU 实测事故见 [`alloc`] 注释）。
+            let aligned = used
+                .checked_add(obj_size - 1)
+                .map(|v| v & !(obj_size - 1))?;
+            if aligned
                 .checked_add(obj_size)
                 .is_some_and(|end| end <= capacity)
             {
-                self.used[i] = used + obj_size;
-                return Some((self.cap_base + i as u64, used));
+                self.used[i] = aligned + obj_size;
+                return Some((self.cap_base + i as u64, aligned));
             }
         }
         None
@@ -684,7 +713,7 @@ pub fn sel4_spawn_services(
             .ok_or(SpawnError::MissingBundleModule)?;
         let elf = LoadedElf::parse(&module.blob).map_err(|_| SpawnError::BadElf)?;
         let entry = entry_mapped(&svc.pages, &elf)?;
-        let (tcb, ep, _ntfn) = configure_service(
+        let (tcb, ep, root_fault_ep) = configure_service(
             svc,
             &elf,
             module,
@@ -693,14 +722,18 @@ pub fn sel4_spawn_services(
             &types,
             &rights,
             fault_ep,
-            svc_idx as u64 + 1, // notification badge（0 保留）
+            svc_idx as u64 + 1, // fault_ep badge（0 保留；supervisor 识别服务用）
         )?;
         tcb_slots.push(tcb);
         handles.push(SpawnedHandle {
             name: svc.name.clone(),
             tcb,
             ep,
-            ntfn: fault_ep,
+            // K2.3 fault 检测：root 侧带 badge 的 fault_ep 副本（G-R1 修复，
+            // 23 G-I 总出口）——fault IPC 走 fault_ep endpoint，接收方 badge
+            // = 持有 cap 的 badge；root 在此 poll 得 sender=badge 识别服务
+            // （1368180 的 notification badge 方案错位，QEMU 实测 sender=0）。
+            ntfn: root_fault_ep,
             // 22 §2.W1.3：重启寄存器参数（entry 由 ELF 解析；buffer 紧邻
             // 栈顶上方，与 configure_service 的 buffer_vaddr 计算一致）。
             entry,
@@ -715,6 +748,26 @@ pub fn sel4_spawn_services(
         tcb_resume(*tcb).map_err(SpawnError::Sel4)?;
     }
     Ok(handles)
+}
+
+/// 构造 EL0 服务初始寄存器上下文（W2.1 不变量单一持有）。
+///
+/// seL4 aarch64 `UserContext` 布局：`pc(0) sp(1) spsr(2) x0(3) x1(4)`，需以
+/// `count=5` 写入 `tcb_write_registers`。这是 spawn（`configure_service`）与
+/// restart（`restart_service`）共享的唯一构造点——寄存器布局知识不再分散在两处
+/// 靠注释同步。
+///
+/// - `entry`：ELF 入口（PC）。
+/// - `stack_top`：栈顶（SP）。
+/// - `buffer_vaddr`：IPC buffer 虚拟地址（X1；X0 固定为 0 = 服务 CSpace 槽 0 的 ep cap）。
+#[cfg(target_os = "none")]
+pub(crate) fn initial_registers(entry: u64, stack_top: u64, buffer_vaddr: u64) -> UserContext {
+    let mut regs = UserContext::zeroed();
+    regs.set_pc(entry);
+    regs.set_sp(stack_top);
+    regs.set_x(0, 0); // ep cap 在服务 CSpace 槽 0
+    regs.set_x(1, buffer_vaddr);
+    regs
 }
 
 /// 配置单个服务（阶段一）：对象 retype / ASID / 页表 / 页映射与拷贝 /
@@ -889,6 +942,11 @@ fn configure_service(
     // TCB 的 fault_ep（SetSpace 参数）在该槽解析；服务异常时内核向此
     // endpoint 发 fault IPC，root-task 在 root 侧副本（fault_ep cap）上
     // recv 检测故障。mint 用全部权限（服务侧持有可回复的 ep 副本）。
+    //
+    // 23 G-I 总出口修复：fault IPC 的 sender = fault_ep 的 badge（seL4
+    // doFaultTransfer 把 badge 写入接收方 badge 寄存器）——每服务 mint 时
+    // 设 badge = 服务索引+1，root-task poll 得 sender 即可识别 faulting 服务
+    // （1368180 想实现此机制但错放在 notification 上，QEMU 实测 sender=0）。
     cnode_mint(
         cnode,
         1,
@@ -897,7 +955,7 @@ fn configure_service(
         fault_ep,
         64,
         rights.all,
-        0,
+        ntfn_badge,
     )
     .map_err(SpawnError::Sel4)?;
     crate::println!(
@@ -907,44 +965,56 @@ fn configure_service(
         eneros_sel4_sys::safe::debug_cap_identify(fault_ep)
     );
 
-    // 8b. K2.3：故障 notification——mint 带 badge（= 服务索引）进服务
-    // CSpace 槽 2 并绑定 TCB（22 §2.W1.3：root 侧 poll 得 badge → 识别
-    // faulting 服务；21-A 的 badge=0 无法区分共享 notification）。
-    let ntfn = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
-    retype_one(ctx, types.notification, OBJ_BITS_NOTIFICATION, ntfn)?;
-    // SAFETY: cnode 为服务 CSpace（一阶，dest_depth=0）；槽 2 空闲；
-    // badge = 服务索引（root 侧 poll 识别用）。
+    // 8c. G-R1（23 G-I 总出口修复）：root 侧 fault_ep 副本——mint 带 badge
+    // （= 服务索引+1）到 root CSpace（新槽 `root_fault_ep`）。seL4 fault IPC
+    // 接收方的 badge = 接收者持有的 endpoint cap badge（doFaultTransfer 把
+    // 该 badge 写入 badge 寄存器）——root 侧必须持带 badge 的 fault_ep 副本，
+    // run_ipc_loop 在此 poll 得 sender=badge 识别 faulting 服务。服务侧槽 1
+    // 的 mint badge 不影响 root 收到的 badge（1368180 的 notification badge
+    // 方案 + 服务侧 badge 均无法让 root 侧收到非零 sender，QEMU 实测 sender=0）。
+    let root_fault_ep = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
     cnode_mint(
-        cnode,
-        2,
-        OBJ_BITS_CNODE,
+        ctx.root_cnode,
+        root_fault_ep,
+        64, // root cnode 的 levelBits = radix(12)+guard(52) = 64；
+        // lookupSlotForCNodeOp 要求 depth ∈ [1, wordBits] 且 n_bits=64
+        // 才能 guard 匹配（0 直接 RangeError，QEMU 实测）
         root_cnode,
-        ntfn,
+        fault_ep,
         64,
         rights.all,
         ntfn_badge,
     )
     .map_err(SpawnError::Sel4)?;
-    // SAFETY: tcb/ntfn 均为刚 retype 的有效 cap（绑定服务侧槽 2 的 mint）。
-    eneros_sel4_sys::safe::tcb_bind_notification(tcb, 2).map_err(SpawnError::Sel4)?;
 
-    // 9. 寄存器：PC=entry_mapped, SP=stack_top, X0=服务 CSpace 槽 0 的 ep cap,
-    //    X1=IPC buffer 虚拟地址。
-    let mut regs = UserContext::zeroed();
-    regs.set_pc(entry);
-    regs.set_sp(svc.stack_top);
-    regs.set_x(0, 0); // ep cap 在服务 CSpace 槽 0
-    regs.set_x(1, buffer_vaddr);
-    // SAFETY: regs 指向有效 UserContext（栈上），count=5 写 pc/sp/spsr/x0/x1
-    // （seL4 aarch64 UserContext 布局 pc(0) sp(1) spsr(2) x0(3) x1(4)；
-    // count=4 漏写 x1 → 服务 ipcbuf=0 → set_ipc_buffer(NULL) → VMFAULT）。
+    // 8b. K2.3：故障 notification——retype + 绑定 TCB（21-A 设计）。
+    //
+    // 23 G-I 总出口纠偏（相对 1368180）：badge mint 方案（服务 CSpace 槽 2 +
+    // root 侧带 badge 副本）与 seL4 fault 通知机制不符——fault IPC 走 fault_ep
+    // endpoint（run_ipc_loop 的 `handle.ntfn = fault_ep`），不走 notification
+    // badge；1368180 因此从未系统级验证（bootctrl Crc 阻断期，ADR-033），
+    // QEMU 实测 `unknown fault sender=0`。回退 21-A 的 notification 绑定
+    // （保留 `tcb_bind_notification(tcb, ntfn)` 的槽号修复）。
+    let ntfn = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
+    retype_one(ctx, types.notification, OBJ_BITS_NOTIFICATION, ntfn)?;
+    // SAFETY: tcb/ntfn 均为刚 retype 的有效 cap。bind 的 ntfn 参数是调用者
+    // （root-task）CNode 中的 cap 槽——必须传 root 侧槽 `ntfn`（=939 等），
+    // 不是服务 CSpace 槽 2。1368180 硬编码 2（root CSpace 槽 2 非 notification）
+    // 导致 QEMU `BindNotification: Notification is invalid`（22 G-R1 遗留，
+    // 从未系统级验证；23 G-I 总出口暴露并修复）。
+    eneros_sel4_sys::safe::tcb_bind_notification(tcb, ntfn).map_err(SpawnError::Sel4)?;
+
+    // 9. 寄存器：PC=entry_mapped, SP=stack_top, X0=0(ep cap 槽), X1=IPC buffer vaddr。
+    //    布局知识由 `initial_registers` 单一持有（W2.1）；count=5 由该函数契约保证。
+    let regs = initial_registers(entry, svc.stack_top, buffer_vaddr);
+    // SAFETY: regs 指向有效 UserContext（栈上），count=5 写 pc/sp/spsr/x0/x1。
     tcb_write_registers(tcb, 0, 5, &regs).map_err(SpawnError::Sel4)?;
 
     // 10. 优先级（authority = root TCB cap）。
     // SAFETY: root_tcb 为 root-task 自身 TCB cap（有效且有权）。
     tcb_set_priority(tcb, ctx.root_tcb, SVC_PRIORITY).map_err(SpawnError::Sel4)?;
 
-    Ok((tcb, ep, ntfn))
+    Ok((tcb, ep, root_fault_ep))
 }
 
 /// 22 §2.W1.6：映射设备 MMIO 区域进 root-task VSpace（1:1）。
@@ -958,7 +1028,10 @@ pub fn map_device_mmio(ctx: &mut SpawnCtx, paddr: u64, size_bits: u64) -> Result
     let rights = RightsTable::resolve();
     // 分配 frame 槽并 retype（device untyped 承载设备内存）。
     let slot = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
-    retype_device_one(ctx, types.arm_frame, size_bits, slot)?;
+    // FIX-BUGS-0810 B2：按物理地址定位 device untyped（alloc_device_at）；
+    // 平台未导出覆盖 paddr 的 device untyped → Err → main.rs 软件模式兜底
+    // （"映射成功 ⇔ 正确物理页"，杜绝错页映射成功）。
+    retype_device_one(ctx, types.arm_frame, size_bits, paddr, slot)?;
     // SAFETY: slot 为刚 retype 的 frame cap；root_vspace 已绑 ASID；
     // paddr 页对齐（调用方保证）；设备内存 map 用读写权限。
     arm_page_map(ctx.root_vspace, slot, paddr, rights.read | rights.write)
@@ -972,14 +1045,18 @@ fn retype_device_one(
     ctx: &mut SpawnCtx,
     object_type: u64,
     size_bits: u64,
+    paddr: u64,
     slot: u64,
 ) -> Result<(), SpawnError> {
-    let (untyped, offset) = ctx
+    // FIX-BUGS-0810 B2：物理地址定位（alloc_device_at），丢弃返回偏移。
+    let (untyped, _byte_off) = ctx
         .untyped
-        .alloc_device(size_bits)
+        .alloc_device_at(paddr, size_bits)
         .ok_or(SpawnError::NoUntyped)?;
-    // SAFETY: untyped 为 device untyped cap；slot 为 root CSpace 空闲槽；
-    // offset 由 alloc_device 记账保证界内（同 retype_one 调用模式）。
+    // SAFETY: untyped 为覆盖 paddr 的 device untyped cap；slot 为 root CSpace
+    // 空闲槽；node_offset = slot（BOOT-010：seL4 的 node_offset 是 dest cnode
+    // 槽，不是 untyped 偏移——旧实现传 alloc_device 的 offset 导致 cap 写入
+    // cnode[offset] 而非目标槽；FIX-BUGS-0810 B2 两件套之一）。
     eneros_sel4_sys::safe::retype(
         untyped,
         object_type,
@@ -988,7 +1065,7 @@ fn retype_device_one(
         ctx.root_cnode,
         slot,
         0,
-        offset,
+        slot,
     )
     .map_err(SpawnError::Sel4)
 }
@@ -1228,8 +1305,9 @@ mod tests {
         assert_eq!(plan.services[0].stack_top, plan.services[1].stack_top);
         assert_eq!(plan.services[0].ipc_ep, 101);
         assert_eq!(plan.services[1].ipc_ep, 102);
-        // 页表 W^X：无可写可执行页
-        for s in plan.services.iter().chain(core::iter::once(&plan.root)) {
+        // 页表 W^X：无可写可执行页（root 的 W^X 已由 plan_one 内部校验——
+        // W4.3 后 SpawnRoot 不含 pages）
+        for s in &plan.services {
             for p in &s.pages {
                 assert!(!p.is_wx_violation(), "{} 页违反 W^X", s.name);
             }
@@ -1453,6 +1531,125 @@ mod tests {
             "8 KiB 对象从 8 KiB 对齐处开始（seL4 alignUp 语义）"
         );
         assert_eq!(alloc.alloc(22), None, "无 4 MiB 以上空间 → None");
+    }
+
+    // ---- FIX-BUGS-0810 B2 防回归：alloc_device_at（物理定位，两件套之二）----
+
+    /// device untyped 列表（SP805 区域 + UART 区域）。
+    fn device_descs() -> Vec<UntypedDesc> {
+        vec![
+            UntypedDesc {
+                paddr: 0x0905_0000, // SP805 WDT
+                size_bits: 16, // 64 KiB
+                is_device: true,
+            },
+            UntypedDesc {
+                paddr: 0x0900_0000, // UART
+                size_bits: 16,
+                is_device: true,
+            },
+        ]
+    }
+
+    #[test]
+    fn alloc_device_at_covers_phys() {
+        let mut alloc = UntypedAllocator::new(30, device_descs());
+        // 请求被 device untyped 覆盖的物理地址 → 返回该 untyped 与字节偏移。
+        let (cap, off) = alloc
+            .alloc_device_at(0x0905_0000, 12)
+            .expect("SP805 区域必须被覆盖");
+        assert_eq!(cap, 30, "cap 槽 = cap_base + SP805 untyped 索引");
+        assert_eq!(off, 0, "区域首块字节偏移为 0");
+        // 同一区域内再次分配（页内偏移推进）。
+        let (cap2, off2) = alloc
+            .alloc_device_at(0x0905_1000, 12)
+            .expect("同区域次页");
+        assert_eq!(cap2, 30);
+        assert_eq!(off2, 0x1000);
+    }
+
+    #[test]
+    fn alloc_device_at_uncovered_returns_none() {
+        let mut alloc = UntypedAllocator::new(30, device_descs());
+        // 请求未被任何 device untyped 覆盖的物理地址 → None（不得 first-fit
+        // 兜底——R-B2a：错误物理页映射必须不可能）。
+        assert_eq!(
+            alloc.alloc_device_at(0x0800_0000, 12),
+            None,
+            "未覆盖 phys 必须 None（禁 first-fit 兜底）"
+        );
+        // 覆盖但大小不足 → None。
+        assert_eq!(alloc.alloc_device_at(0x0905_0000, 20), None);
+    }
+
+    #[test]
+    fn alloc_device_at_does_not_mix_non_device() {
+        // 非 device untyped 即使物理覆盖也不得使用（普通 untyped 不能
+        // retype device frame）。
+        let descs = vec![UntypedDesc {
+            paddr: 0x0905_0000,
+            size_bits: 16,
+            is_device: false,
+        }];
+        let mut alloc = UntypedAllocator::new(30, descs);
+        assert_eq!(
+            alloc.alloc_device_at(0x0905_0000, 12),
+            None,
+            "非 device untyped 不得用于设备分配"
+        );
+    }
+
+    #[test]
+    fn alloc_device_at_overlapping_region_still_bounded() {
+        // 多 device untyped 重叠物理区域：请求落在第二个 untyped 覆盖内
+        // 必须选第二个（cap 索引正确），不得错选。
+        let mut alloc = UntypedAllocator::new(40, device_descs());
+        let (cap, off) = alloc
+            .alloc_device_at(0x0900_1000, 12)
+            .expect("UART 区域覆盖");
+        assert_eq!(cap, 41, "UART untyped = cap_base + 1");
+        assert_eq!(off, 0x1000);
+    }
+
+    // ---- FIX-BUGS-0810 B4 防回归：alloc_cap_table 对齐与守卫 ----
+
+    #[test]
+    fn alloc_cap_table_aligns_accounting() {
+        let descs = vec![UntypedDesc {
+            paddr: 0x1000,
+            size_bits: 20, // 1 MiB
+            is_device: false,
+        }];
+        let mut alloc = UntypedAllocator::new(30, descs);
+        // 先分配 16 B / 32 B 小对象（普通 alloc，alignUp 记账）。
+        let (_, off16) = alloc.alloc(4).expect("16 B");
+        assert_eq!(off16, 0);
+        let (_, off32) = alloc.alloc(5).expect("32 B");
+        assert_eq!(off32, 32, "16 B 后 32 B 对象从 32 B 对齐处开始（alignUp 语义）");
+        // 再分配 CNode（size_bits=8 → 2^8 槽 × 32 B = 8 KiB）：
+        // 旧行为：used=48 直接累加 → 48（与 seL4 freeIndex 对齐语义脱节）；
+        // 新行为：alignUp(48, 8192) = 8192。
+        let (_, off_cnode) = alloc.alloc_cap_table(8).expect("CNode");
+        assert_eq!(
+            off_cnode, 8192,
+            "CNode 记账必须按对象大小对齐（alignUp(48, 8192)=8192，证伪旧直接累加）"
+        );
+    }
+
+    #[test]
+    fn alloc_cap_table_guards_oversize() {
+        let descs = vec![UntypedDesc {
+            paddr: 0x1000,
+            size_bits: 63, // 合法超大 untyped（< 64，通过 desc 守卫）
+            is_device: false,
+        }];
+        let mut alloc = UntypedAllocator::new(30, descs);
+        // size_bits + 5 >= 64 → None（红线 6：防移位回绕；旧行为 release 下
+        // 移位取模回绕得到错误 obj_size）。
+        assert_eq!(alloc.alloc_cap_table(59), None);
+        assert_eq!(alloc.alloc_cap_table(60), None);
+        // 合理大小仍可分配。
+        assert!(alloc.alloc_cap_table(8).is_some());
     }
 
     #[test]
