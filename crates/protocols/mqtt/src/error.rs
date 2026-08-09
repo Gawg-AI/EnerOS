@@ -23,4 +23,6 @@ pub enum MqttError {
     PacketIdInUse,
     /// 等待 ACK 时收到非预期报文.
     UnexpectedPacket,
+    /// 内存分配失败（22 §2.W1.1：解码路径 try_reserve 失败，不 panic）.
+    OutOfMemory,
 }

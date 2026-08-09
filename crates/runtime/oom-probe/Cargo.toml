@@ -1,0 +1,14 @@
+[package]
+name = "eneros-oom-probe"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "22 W1.1 验收探针：aarch64 裸机构造堆耗尽 → 验证 #[alloc_error_handler] 触发而非 abort（零依赖，QEMU -kernel 直跑）"
+
+[[bin]]
+name = "oom-probe"
+path = "src/main.rs"
+
+[dependencies]

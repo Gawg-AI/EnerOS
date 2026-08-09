@@ -1,0 +1,7 @@
+[target.aarch64-unknown-none]
+# 裸机探针：rust-lld 直接链接（无启动文件），panic=abort 免除 eh_personality。
+rustflags = [
+    "-C", "panic=abort",
+    "-C", "link-arg=-Tlinker.ld",
+    "-C", "link-arg=--gc-sections",
+]

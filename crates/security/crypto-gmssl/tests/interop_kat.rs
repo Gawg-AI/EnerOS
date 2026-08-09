@@ -7,6 +7,9 @@
 //! 判据：10 组 openssl 签名全部被 binding 验签为有效；篡改消息/签名
 //! 必须验签失败。
 
+// 测试文件允许 panic 断言（仓库惯例：测试模块豁免 disallowed-macros）。
+#![allow(clippy::disallowed_macros)]
+
 use eneros_crypto_gmssl::sm2;
 
 fn vectors_path() -> std::path::PathBuf {

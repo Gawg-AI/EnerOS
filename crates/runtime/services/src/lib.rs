@@ -296,6 +296,9 @@ pub fn svc_ipc_loop(ep: u64, name: &'static str) -> ! {
             }
         };
         // 读载荷 MR → 帧。
+        // 22 §2.W1.1（OOM 豁免标注）：MR 数受 seL4 消息上限约束（<128），
+        // with_capacity 已预分配，push 失败概率极低。
+        // OOM-risk: handled by alloc_error_handler（记录+挂起 fail-safe）。
         let words = message_info_length(mi);
         let mut mrs = alloc::vec::Vec::with_capacity(words as usize);
         for i in 0..words {

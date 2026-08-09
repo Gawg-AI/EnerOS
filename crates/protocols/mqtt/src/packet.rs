@@ -186,6 +186,13 @@ fn encode_string(s: &str, out: &mut Vec<u8>) {
     out.extend_from_slice(s.as_bytes());
 }
 
+/// try_reserve 失败映射（22 §2.W1.1：网络 I/O 解码路径分配不 panic，
+/// 失败返回 [`MqttError::OutOfMemory`]——由调用方处理/上报，非 abort）。
+fn try_reserve_or_oom<T>(v: &mut Vec<T>, additional: usize) -> Result<(), MqttError> {
+    v.try_reserve(additional)
+        .map_err(|_| MqttError::OutOfMemory)
+}
+
 /// 读取长度前缀字符串，返回 (字符串, 消耗字节数).
 fn decode_string(bytes: &[u8]) -> Result<(String, usize), MqttError> {
     if bytes.len() < 2 {
@@ -195,8 +202,12 @@ fn decode_string(bytes: &[u8]) -> Result<(String, usize), MqttError> {
     if bytes.len() < 2 + len {
         return Err(MqttError::PacketDecodeError);
     }
-    let s =
-        String::from_utf8(bytes[2..2 + len].to_vec()).map_err(|_| MqttError::PacketDecodeError)?;
+    // 22 §2.W1.1：预分配 try_reserve（含 CapacityOverflow 检查），
+    // 失败 → OutOfMemory（非 abort）；reserve 成功后 extend 必成功。
+    let mut v = Vec::new();
+    try_reserve_or_oom(&mut v, len)?;
+    v.extend_from_slice(&bytes[2..2 + len]);
+    let s = String::from_utf8(v).map_err(|_| MqttError::PacketDecodeError)?;
     Ok((s, 2 + len))
 }
 
@@ -339,6 +350,9 @@ fn decode_subscribe(bytes: &[u8]) -> Result<SubscribePacket, MqttError> {
     let (packet_id, c) = decode_u16(bytes)?;
     let mut offset = c;
     let mut topics = Vec::new();
+    // 22 §2.W1.1：每 topic 至少 3 字节（2B 长度前缀 + ≥0B 串 + 1B QoS），
+    // 预分配最坏上界，分配失败 → OutOfMemory（非 abort）。
+    try_reserve_or_oom(&mut topics, bytes.len() / 3)?;
     while offset < bytes.len() {
         let (topic, c2) = decode_string(&bytes[offset..])?;
         offset += c2;
@@ -355,7 +369,10 @@ fn decode_subscribe(bytes: &[u8]) -> Result<SubscribePacket, MqttError> {
 
 fn decode_suback(bytes: &[u8]) -> Result<SubackPacket, MqttError> {
     let (packet_id, c) = decode_u16(bytes)?;
-    let return_codes = bytes[c..].to_vec();
+    // 22 §2.W1.1：try_reserve 预分配，失败 → OutOfMemory（非 abort）。
+    let mut return_codes = Vec::new();
+    try_reserve_or_oom(&mut return_codes, bytes.len() - c)?;
+    return_codes.extend_from_slice(&bytes[c..]);
     Ok(SubackPacket {
         packet_id,
         return_codes,
@@ -366,6 +383,8 @@ fn decode_unsubscribe(bytes: &[u8]) -> Result<UnsubscribePacket, MqttError> {
     let (packet_id, c) = decode_u16(bytes)?;
     let mut offset = c;
     let mut topics = Vec::new();
+    // 22 §2.W1.1：每 topic ≥2 字节（2B 长度前缀 + ≥0B 串）。
+    try_reserve_or_oom(&mut topics, bytes.len() / 2)?;
     while offset < bytes.len() {
         let (topic, c2) = decode_string(&bytes[offset..])?;
         offset += c2;
@@ -377,6 +396,12 @@ fn decode_unsubscribe(bytes: &[u8]) -> Result<UnsubscribePacket, MqttError> {
 // ===== 公共 API =====
 
 /// 编码报文为字节流.
+///
+/// 22 §2.W1.1（OOM 豁免标注）：编码路径的 `Vec::new()`+push 分配量以
+/// 报文内容为界（协议包上限 256 MiB 剩余长度字段，实际受上层发送缓冲
+/// 约束），且本函数签名 `-> Vec<u8>` 无错误通道——若改 try_* 需破坏
+/// 公共 API（client/real/transport 调用方）。OOM-risk: handled by
+/// alloc_error_handler（fail-safe 记录+挂起，见 runtime::oom）。
 pub fn encode(packet: &MqttPacket) -> Vec<u8> {
     let (ptype, flags, vh_payload): (u8, u8, Vec<u8>) = match packet {
         MqttPacket::Connect(p) => (packet_type::CONNECT, 0u8, encode_connect(p)),

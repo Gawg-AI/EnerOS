@@ -16,6 +16,7 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
 #![cfg_attr(target_os = "none", feature(lang_items))]
+#![cfg_attr(target_os = "none", feature(alloc_error_handler))]
 #![allow(internal_features)]
 #![allow(clippy::empty_loop)]
 
@@ -293,4 +294,12 @@ fn panic(_info: &PanicInfo) -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+// 22 §2.W1.1：OOM 不 abort——记录指标 + 打印 + 挂起（fail-closed；
+// 512 KiB bump 堆满 = spawn 计划失败，挂起由看门狗兜底，见 W1.2/W1.6）。
+#[cfg(target_os = "none")]
+#[alloc_error_handler]
+fn oom(layout: core::alloc::Layout) -> ! {
+    eneros_runtime::oom::oom_fail_safe(layout)
 }

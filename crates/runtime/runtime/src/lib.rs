@@ -8,6 +8,7 @@
 #![allow(clippy::empty_loop)]
 
 pub mod console;
+pub mod oom;
 pub mod serial;
 
 pub use console::init;

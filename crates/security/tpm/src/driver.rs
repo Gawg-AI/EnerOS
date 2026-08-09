@@ -437,6 +437,10 @@ impl TpmDriver for SpiTpmDriver {
             core::hint::spin_loop();
         }
         // 读取响应
+        // 22 §2.W1.1（OOM 豁免标注）：响应缓冲无预分配上限——该循环的
+        // 容量上限 + deadline 超时由 W1.5（TPM 读循环超时治理）添加，
+        // 避免两工单在同一循环上重复改动。OOM-risk: handled by
+        // alloc_error_handler（记录+挂起 fail-safe，非 abort）。
         let mut response = Vec::new();
         loop {
             let sts = self.read_reg(TPM_STS_REG)?;

@@ -35,6 +35,8 @@ pub enum FrameMrError {
     NoLengthSlot,
     /// 长度与 MR 载荷不一致。
     BadLength,
+    /// 内存分配失败（22 §2.W1.1：try_reserve 失败，不 panic）。
+    OutOfMemory,
 }
 
 /// 帧字节 → MR words（[`MR_FRAME_LEN_SLOT`] 布局）。
@@ -42,7 +44,8 @@ pub fn frame_into_mrs(frame: &[u8]) -> Result<Vec<u64>, FrameMrError> {
     if frame.len() > MAX_FRAME_BYTES {
         return Err(FrameMrError::FrameTooLong);
     }
-    let mut mrs = alloc::vec![frame.len() as u64];
+    let mut mrs = Vec::with_capacity(1 + frame.len().div_ceil(8));
+    mrs.push(frame.len() as u64);
     let mut i = 0;
     while i < frame.len() {
         let mut word = 0u64;
@@ -67,7 +70,12 @@ pub fn frame_from_mrs(mrs: &[u64]) -> Result<Vec<u8>, FrameMrError> {
     if mrs.len() < words {
         return Err(FrameMrError::BadLength);
     }
-    let mut out = alloc::vec![0u8; len];
+    // 22 §2.W1.1：IPC 热路径预分配 try_reserve（len 已有 MAX_FRAME_BYTES
+    // 上限；CapacityOverflow/OOM 均映射 OutOfMemory，不 panic）。
+    let mut out = Vec::new();
+    out.try_reserve(len)
+        .map_err(|_| FrameMrError::OutOfMemory)?;
+    out.resize(len, 0u8);
     for i in 0..len {
         let word = mrs[1 + i / 8];
         out[i] = (word >> (8 * (i % 8))) as u8;

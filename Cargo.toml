@@ -37,6 +37,7 @@ members = [
     "crates/runtime/hello",
     "crates/runtime/root-task",
     "crates/runtime/services",
+    "crates/runtime/oom-probe",
     "crates/drivers/time",
     "crates/drivers/watchdog",
     "crates/drivers/power",

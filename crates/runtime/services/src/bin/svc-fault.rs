@@ -2,6 +2,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
+#![cfg_attr(not(test), feature(alloc_error_handler))]
 #![allow(clippy::empty_loop)]
 
 #[cfg(not(test))]
@@ -32,4 +33,12 @@ pub extern "C" fn _start(ep: u64, ipc_buffer: u64) -> ! {
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     eneros_services::svc_loop()
+}
+
+// 22 §2.W1.1：OOM 不 abort——记录指标 + 打印 + 挂起（fail-closed，
+// watchdog 兜底见 W1.2/W1.6）。各 bin 独立定义（lang item 每二进制一个）。
+#[cfg(not(test))]
+#[alloc_error_handler]
+fn oom(layout: core::alloc::Layout) -> ! {
+    eneros_runtime::oom::oom_fail_safe(layout)
 }

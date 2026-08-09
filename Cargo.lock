@@ -1143,6 +1143,10 @@ name = "eneros-online-learning"
 version = "1.0.0-rc.0"
 
 [[package]]
+name = "eneros-oom-probe"
+version = "1.0.0-rc.0"
+
+[[package]]
 name = "eneros-ops-lifecycle"
 version = "1.0.0-rc.0"
 dependencies = [
