@@ -55,6 +55,7 @@ where
 
     /// 导出一条 OTLP 行：先直发；失败（网络断）→ 进有界缓冲（满
     /// DropOldest + 计数）。返回是否直发成功。
+    #[allow(clippy::result_unit_err)]
     pub fn export(&mut self, line: &str) -> Result<(), ()> {
         let topic = self.metrics_topic();
         match (self.send_fn)(&topic, line) {
