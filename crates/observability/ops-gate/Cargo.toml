@@ -1,0 +1,14 @@
+[package]
+name = "eneros-ops-gate"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "22 G-R4 可运维闸门：远程能看/能管/能升级端到端证据（W4.1-W4.5 五通道串联）"
+
+[dependencies]
+eneros-dashboard = { path = "../dashboard" }
+eneros-mgmt-api = { path = "../mgmt-api" }
+eneros-ota-ab = { path = "../../security/ota-ab" }
+eneros-slo-alert = { path = "../slo-alert" }
+eneros-telemetry-queue = { path = "../telemetry-queue" }

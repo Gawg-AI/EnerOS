@@ -134,6 +134,7 @@ members = [
     "crates/observability/mgmt-cli",
     "crates/observability/slo-alert",
     "crates/observability/telemetry-queue",
+    "crates/observability/ops-gate",
     "ci",
 ]
 

@@ -19,13 +19,11 @@ pub struct DownloadProgress {
 }
 
 impl DownloadProgress {
-    /// 百分比（0-100）；`downloaded * 100` 用 saturating_mul 防 u64 溢出。
+    /// 百分比（0-100）；`downloaded * 100` 用 saturating_mul 防 u64 溢出，
+    /// total=0 时 checked_div 归零。
     pub fn percent(&self) -> u8 {
-        if self.total == 0 {
-            0
-        } else {
-            (self.downloaded.saturating_mul(100) / self.total).min(100) as u8
-        }
+        let scaled = self.downloaded.saturating_mul(100);
+        scaled.checked_div(self.total).unwrap_or(0).min(100) as u8
     }
 }
 
@@ -77,6 +75,7 @@ where
     }
 
     /// 流式下载全镜像（分块 fetch；进度可观测）。失败即中断（fail-closed）。
+    #[allow(clippy::result_unit_err)]
     pub fn download_all(&mut self) -> Result<(Vec<u8>, Vec<DownloadProgress>), ()> {
         let mut image = Vec::with_capacity(self.total_size as usize);
         let mut progress = Vec::new();

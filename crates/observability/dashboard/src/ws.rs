@@ -90,6 +90,17 @@ pub fn encode_frame(opcode: u8, payload: &[u8], mask: Option<[u8; 4]>) -> Vec<u8
 /// MSB 非零——全部 `Err`（fail-closed，红线4）。
 #[allow(clippy::result_unit_err)]
 pub fn parse_frame(buf: &[u8]) -> Result<WsFrame, ()> {
+    parse_frame_impl(buf, true)
+}
+
+/// 解析服务器→客户端帧（RFC 6455：server→client 不掩码；运维侧/浏览器
+/// 模拟解析用）。
+#[allow(clippy::result_unit_err)]
+pub fn parse_server_frame(buf: &[u8]) -> Result<WsFrame, ()> {
+    parse_frame_impl(buf, false)
+}
+
+fn parse_frame_impl(buf: &[u8], require_mask: bool) -> Result<WsFrame, ()> {
     if buf.len() < 2 {
         return Err(());
     }
@@ -100,7 +111,8 @@ pub fn parse_frame(buf: &[u8]) -> Result<WsFrame, ()> {
     }
     let fin = (b0 & 0x80) != 0;
     let opcode = b0 & 0x0F;
-    if (b1 & 0x80) == 0 {
+    let masked = (b1 & 0x80) != 0;
+    if require_mask && !masked {
         return Err(()); // client→server 必须掩码
     }
     let mut len = (b1 & 0x7F) as u64;
@@ -124,14 +136,16 @@ pub fn parse_frame(buf: &[u8]) -> Result<WsFrame, ()> {
     if len as usize > MAX_FRAME_BYTES {
         return Err(()); // 防内存炸弹
     }
-    if buf.len() < idx + 4 + len as usize {
+    let payload_start = if masked { idx + 4 } else { idx };
+    if buf.len() < payload_start + len as usize {
         return Err(()); // 不完整帧
     }
-    let mask = [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]];
-    idx += 4;
-    let mut payload = buf[idx..idx + len as usize].to_vec();
-    for (i, b) in payload.iter_mut().enumerate() {
-        *b ^= mask[i % 4];
+    let mut payload = buf[payload_start..payload_start + len as usize].to_vec();
+    if masked {
+        let mask = [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]];
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b ^= mask[i % 4];
+        }
     }
     Ok(WsFrame { fin, opcode, payload })
 }
@@ -625,6 +639,19 @@ mod tests {
         hdr.extend_from_slice(&(MAX_FRAME_BYTES as u64 + 1).to_be_bytes());
         hdr.extend_from_slice(&[0, 0, 0, 0]);
         assert!(parse_frame(&hdr).is_err());
+    }
+
+    #[test]
+    fn test_parse_server_frame_unmasked() {
+        // server→client 帧（不掩码）→ 运维侧/浏览器模拟解析。
+        let raw = encode_frame(OP_TEXT, b"{\"type\":\"topology\"}", None);
+        let frame = parse_server_frame(&raw).expect("server 帧解析");
+        assert_eq!(frame.payload, b"{\"type\":\"topology\"}");
+        // 掩码帧也接受（同一解析器宽松模式）。
+        let masked = encode_frame(OP_TEXT, b"hi", Some([1, 2, 3, 4]));
+        assert_eq!(parse_server_frame(&masked).unwrap().payload, b"hi");
+        // 反之：parse_frame（严格）拒绝未掩码。
+        assert!(parse_frame(&raw).is_err());
     }
 
     #[test]

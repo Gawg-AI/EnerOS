@@ -37,7 +37,10 @@ pub use types::{
     EdgeKind, FlowDirection, NodeKind, NodeStatus, Position3D, PowerFlowSample, TopologyEdge,
     TopologyGraph, TopologyNode,
 };
-pub use ws::{WsServer, MAX_FRAME_BYTES, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG, OP_TEXT};
+pub use ws::{
+    WsServer, MAX_FRAME_BYTES, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG, OP_TEXT, parse_frame,
+    parse_server_frame,
+};
 
 /// 仪表盘错误类型.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
