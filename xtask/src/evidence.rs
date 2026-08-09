@@ -67,6 +67,8 @@ const EXPECTED_REQUIREMENTS: &[&str] = &[
     "REQ-G1-QA-005",
     // 21-A G-KERNEL 闸门（K3.2）：端到端 QEMU 启动日志证据。
     "REQ-GK-KERNEL-001",
+    // 21-B G-SW1 闸门（A3）：AI 决策链端到端证据（runner 真后端装配 trace）。
+    "REQ-GS1-AI-001",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -186,7 +188,9 @@ fn verify(root: &Path, fault: Option<&str>) -> DynResult<GateEvidence> {
         Some(other) => return Err(invalid(format!("unknown evidence fault '{other}'"))),
     }
     let mut violations = Vec::new();
-    if registry.schema != "eneros.requirement-registry.v1" || registry.gates != ["G0", "G1", "GK"] {
+    if registry.schema != "eneros.requirement-registry.v1"
+        || registry.gates != ["G0", "G1", "GK", "GS1"]
+    {
         violations.push("registry-header".to_owned());
     }
     let expected: BTreeSet<&str> = EXPECTED_REQUIREMENTS.iter().copied().collect();
@@ -392,6 +396,7 @@ mod tests {
             .iter()
             .all(|id| id.starts_with("REQ-G0-")
                 || id.starts_with("REQ-G1-")
-                || id.starts_with("REQ-GK-")));
+                || id.starts_with("REQ-GK-")
+                || id.starts_with("REQ-GS1-")));
     }
 }

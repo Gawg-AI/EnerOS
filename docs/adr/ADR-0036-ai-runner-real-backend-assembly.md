@@ -44,9 +44,20 @@
    fatal-soc（`soc_final=Some(0.02)`，期望 `DualBrainError::SafetyFatal` + sink 零写入）。
 4. **feature 纪律**：runner 不声明 mock feature；依赖链（dual-brain → llm-engine/llama-cpp、
    solver-core default highs-ffi）自带 release compile_error 熔断（lib.rs:56-66、solver-core lib.rs:64-72）。
-5. **OS 承载标注**：A1 本期在 host 侧闭环（llama/highs 静态链接原生二进制）；
-   EL0 spawn 承载（runner 作为 EL0 服务经 G-KERNEL spawn + IPC）列入 A3 方案——
-   受 491MB 模型文件无法进 init bundle 限制，A3 设计 guest 侧模型供给（data 盘/网络）。
+5. **OS 承载标注（A3 细化）**：A1 本期在 host 侧闭环（llama/highs 静态链接原生
+   二进制）。EL0 spawn 承载（runner 作为 EL0 服务经 G-KERNEL spawn + IPC）的
+   现实约束与路径：
+   - **约束**：test-model.gguf 491MB 无法进 init bundle（当前 213KB）；
+     本机 x86_64 无法直接交叉运行 aarch64 llama 推理（QEMU TCG 模拟 0.5B
+     推理单次分钟级）。
+   - **承载路径（G-SW1 完成后的演进）**：① 决策核心（意图→LP→求解→安全→
+     sink）交叉编译为 EL0 服务（HiGHS 纯 C++，aarch64 交叉编译成熟）；
+     ② LLM 感知段作为 host/边缘模型服务，经 virtio-net 或 IPC 向 guest
+     供给 intent JSON（产品形态：边缘 LLM 服务与调度服务分离）；③ 模型
+     文件经 data 盘/网络加载（boot 链已有 virtio-blk 数据盘）。
+   - **本期证据**：host 端到端闭环（A1 证据 + manifest 哈希锚定）+ QEMU
+     承载能力（G-KERNEL 13/13：EL0 服务 spawn + IPC 闭环）——两者联合
+     构成"OS 可承载决策链"证据，REQ-GS1-AI-001 注册入 evidence registry。
 
 ## 验收映射（21-B §2.A1 四条）
 

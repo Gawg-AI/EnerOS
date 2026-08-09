@@ -1,78 +1,347 @@
 {
   "schema": "eneros.requirement-registry.v1",
-  "gates": ["G0", "G1", "GK"],
+  "gates": [
+    "G0",
+    "G1",
+    "GK",
+    "GS1"
+  ],
   "requirements": [
-    { "requirement_id": "REQ-G0-BASE-001", "task_id": "BASE-001", "artifact_role": "source" },
-    { "requirement_id": "REQ-G0-BASE-002", "task_id": "BASE-002", "artifact_role": "closure" },
-    { "requirement_id": "REQ-G0-BASE-003", "task_id": "BASE-003", "artifact_role": "source" },
-    { "requirement_id": "REQ-G0-BASE-004", "task_id": "BASE-004", "artifact_role": "closure" },
-    { "requirement_id": "REQ-G0-BASE-005", "task_id": "BASE-005", "artifact_role": "closure" },
-    { "requirement_id": "REQ-G0-BASE-006", "task_id": "BASE-006", "artifact_role": "source" },
-    { "requirement_id": "REQ-G0-BASE-007", "task_id": "BASE-007", "artifact_role": "source" },
-    { "requirement_id": "REQ-G0-BASE-008", "task_id": "BASE-008", "artifact_role": "source" },
-    { "requirement_id": "REQ-G0-BASE-009", "task_id": "BASE-009", "artifact_role": "source" },
-    { "requirement_id": "REQ-G0-BASE-010", "task_id": "BASE-010", "artifact_role": "source" },
-    { "requirement_id": "REQ-G0-BASE-011", "task_id": "BASE-011", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G0-BASE-012", "task_id": "BASE-012", "artifact_role": "source" },
-    { "requirement_id": "REQ-G0-SEC-001", "task_id": "SEC-001", "artifact_role": "closure" },
-    { "requirement_id": "REQ-G0-SEC-002", "task_id": "SEC-002", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G0-SEC-003", "task_id": "SEC-003", "artifact_role": "closure" },
-    { "requirement_id": "REQ-G0-REL-001", "task_id": "REL-001", "artifact_role": "toolchain" },
-    { "requirement_id": "REQ-G0-REL-002", "task_id": "REL-002", "artifact_role": "closure" },
-    { "requirement_id": "REQ-G0-REL-004", "task_id": "REL-004", "artifact_role": "source" },
-    { "requirement_id": "REQ-G0-QA-001", "task_id": "QA-001", "artifact_role": "source" },
-    { "requirement_id": "REQ-G0-QA-002", "task_id": "QA-002", "artifact_role": "source" },
-
-    { "requirement_id": "REQ-G1-IMG-001", "task_id": "IMG-001", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-IMG-002", "task_id": "IMG-002", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-IMG-003", "task_id": "IMG-003", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-IMG-004", "task_id": "IMG-004", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-IMG-005", "task_id": "IMG-005", "artifact_role": "installer" },
-    { "requirement_id": "REQ-G1-IMG-006", "task_id": "IMG-006", "artifact_role": "recovery" },
-    { "requirement_id": "REQ-G1-IMG-007", "task_id": "IMG-007", "artifact_role": "update" },
-    { "requirement_id": "REQ-G1-IMG-008", "task_id": "IMG-008", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-IMG-009", "task_id": "IMG-009", "artifact_role": "flash" },
-    { "requirement_id": "REQ-G1-IMG-010", "task_id": "IMG-010", "artifact_role": "flash" },
-    { "requirement_id": "REQ-G1-IMG-011", "task_id": "IMG-011", "artifact_role": "flash" },
-
-    { "requirement_id": "REQ-G1-BOOT-001", "task_id": "BOOT-001", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-002", "task_id": "BOOT-002", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-003", "task_id": "BOOT-003", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-004", "task_id": "BOOT-004", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-005", "task_id": "BOOT-005", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-006", "task_id": "BOOT-006", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-007", "task_id": "BOOT-007", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-008", "task_id": "BOOT-008", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-009", "task_id": "BOOT-009", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-010", "task_id": "BOOT-010", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-011", "task_id": "BOOT-011", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-012", "task_id": "BOOT-012", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-013", "task_id": "BOOT-013", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-BOOT-014", "task_id": "BOOT-014", "artifact_role": "recovery" },
-
-    { "requirement_id": "REQ-G1-SEC-002", "task_id": "SEC-002", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-SEC-005", "task_id": "SEC-005", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-SEC-006", "task_id": "SEC-006", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-SEC-007", "task_id": "SEC-007", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-SEC-008", "task_id": "SEC-008", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-REL-002", "task_id": "REL-002", "artifact_role": "closure" },
-    { "requirement_id": "REQ-G1-REL-003", "task_id": "REL-003", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-REL-007", "task_id": "REL-007", "artifact_role": "sbom" },
-    { "requirement_id": "REQ-G1-QA-003", "task_id": "QA-003", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-QA-004", "task_id": "QA-004", "artifact_role": "raw" },
-    { "requirement_id": "REQ-G1-QA-005", "task_id": "QA-005", "artifact_role": "raw" },
-    { "requirement_id": "REQ-GK-KERNEL-001", "task_id": "KERNEL-001", "artifact_role": "log" }
+    {
+      "requirement_id": "REQ-G0-BASE-001",
+      "task_id": "BASE-001",
+      "artifact_role": "source"
+    },
+    {
+      "requirement_id": "REQ-G0-BASE-002",
+      "task_id": "BASE-002",
+      "artifact_role": "closure"
+    },
+    {
+      "requirement_id": "REQ-G0-BASE-003",
+      "task_id": "BASE-003",
+      "artifact_role": "source"
+    },
+    {
+      "requirement_id": "REQ-G0-BASE-004",
+      "task_id": "BASE-004",
+      "artifact_role": "closure"
+    },
+    {
+      "requirement_id": "REQ-G0-BASE-005",
+      "task_id": "BASE-005",
+      "artifact_role": "closure"
+    },
+    {
+      "requirement_id": "REQ-G0-BASE-006",
+      "task_id": "BASE-006",
+      "artifact_role": "source"
+    },
+    {
+      "requirement_id": "REQ-G0-BASE-007",
+      "task_id": "BASE-007",
+      "artifact_role": "source"
+    },
+    {
+      "requirement_id": "REQ-G0-BASE-008",
+      "task_id": "BASE-008",
+      "artifact_role": "source"
+    },
+    {
+      "requirement_id": "REQ-G0-BASE-009",
+      "task_id": "BASE-009",
+      "artifact_role": "source"
+    },
+    {
+      "requirement_id": "REQ-G0-BASE-010",
+      "task_id": "BASE-010",
+      "artifact_role": "source"
+    },
+    {
+      "requirement_id": "REQ-G0-BASE-011",
+      "task_id": "BASE-011",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G0-BASE-012",
+      "task_id": "BASE-012",
+      "artifact_role": "source"
+    },
+    {
+      "requirement_id": "REQ-G0-SEC-001",
+      "task_id": "SEC-001",
+      "artifact_role": "closure"
+    },
+    {
+      "requirement_id": "REQ-G0-SEC-002",
+      "task_id": "SEC-002",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G0-SEC-003",
+      "task_id": "SEC-003",
+      "artifact_role": "closure"
+    },
+    {
+      "requirement_id": "REQ-G0-REL-001",
+      "task_id": "REL-001",
+      "artifact_role": "toolchain"
+    },
+    {
+      "requirement_id": "REQ-G0-REL-002",
+      "task_id": "REL-002",
+      "artifact_role": "closure"
+    },
+    {
+      "requirement_id": "REQ-G0-REL-004",
+      "task_id": "REL-004",
+      "artifact_role": "source"
+    },
+    {
+      "requirement_id": "REQ-G0-QA-001",
+      "task_id": "QA-001",
+      "artifact_role": "source"
+    },
+    {
+      "requirement_id": "REQ-G0-QA-002",
+      "task_id": "QA-002",
+      "artifact_role": "source"
+    },
+    {
+      "requirement_id": "REQ-G1-IMG-001",
+      "task_id": "IMG-001",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-IMG-002",
+      "task_id": "IMG-002",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-IMG-003",
+      "task_id": "IMG-003",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-IMG-004",
+      "task_id": "IMG-004",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-IMG-005",
+      "task_id": "IMG-005",
+      "artifact_role": "installer"
+    },
+    {
+      "requirement_id": "REQ-G1-IMG-006",
+      "task_id": "IMG-006",
+      "artifact_role": "recovery"
+    },
+    {
+      "requirement_id": "REQ-G1-IMG-007",
+      "task_id": "IMG-007",
+      "artifact_role": "update"
+    },
+    {
+      "requirement_id": "REQ-G1-IMG-008",
+      "task_id": "IMG-008",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-IMG-009",
+      "task_id": "IMG-009",
+      "artifact_role": "flash"
+    },
+    {
+      "requirement_id": "REQ-G1-IMG-010",
+      "task_id": "IMG-010",
+      "artifact_role": "flash"
+    },
+    {
+      "requirement_id": "REQ-G1-IMG-011",
+      "task_id": "IMG-011",
+      "artifact_role": "flash"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-001",
+      "task_id": "BOOT-001",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-002",
+      "task_id": "BOOT-002",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-003",
+      "task_id": "BOOT-003",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-004",
+      "task_id": "BOOT-004",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-005",
+      "task_id": "BOOT-005",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-006",
+      "task_id": "BOOT-006",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-007",
+      "task_id": "BOOT-007",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-008",
+      "task_id": "BOOT-008",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-009",
+      "task_id": "BOOT-009",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-010",
+      "task_id": "BOOT-010",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-011",
+      "task_id": "BOOT-011",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-012",
+      "task_id": "BOOT-012",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-013",
+      "task_id": "BOOT-013",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-BOOT-014",
+      "task_id": "BOOT-014",
+      "artifact_role": "recovery"
+    },
+    {
+      "requirement_id": "REQ-G1-SEC-002",
+      "task_id": "SEC-002",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-SEC-005",
+      "task_id": "SEC-005",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-SEC-006",
+      "task_id": "SEC-006",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-SEC-007",
+      "task_id": "SEC-007",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-SEC-008",
+      "task_id": "SEC-008",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-REL-002",
+      "task_id": "REL-002",
+      "artifact_role": "closure"
+    },
+    {
+      "requirement_id": "REQ-G1-REL-003",
+      "task_id": "REL-003",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-REL-007",
+      "task_id": "REL-007",
+      "artifact_role": "sbom"
+    },
+    {
+      "requirement_id": "REQ-G1-QA-003",
+      "task_id": "QA-003",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-QA-004",
+      "task_id": "QA-004",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-G1-QA-005",
+      "task_id": "QA-005",
+      "artifact_role": "raw"
+    },
+    {
+      "requirement_id": "REQ-GK-KERNEL-001",
+      "task_id": "KERNEL-001",
+      "artifact_role": "log"
+    },
+    {
+      "requirement_id": "REQ-GS1-AI-001",
+      "task_id": "AI-001",
+      "artifact_role": "ai-runner"
+    }
   ],
   "artifacts": [
-    { "role": "source", "path": "Cargo.lock" },
-    { "role": "closure", "path": "product/closure/binary-boms.json" },
-    { "role": "toolchain", "path": "target/eneros/evidence/REL-001/toolchain-report.json" },
-    { "role": "raw", "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw" },
-    { "role": "installer", "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod-installer.iso" },
-    { "role": "recovery", "path": "target/eneros/artifacts/recovery/eneros-qemu-prod-recovery.raw" },
-    { "role": "update", "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod-full.enupd" },
-    { "role": "flash", "path": "target/eneros/evidence/IMG-011/bound-flash-report.json" },
-    { "role": "sbom", "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod.cdx.json" },
-    { "role": "log", "path": "product/evidence/kernel/gkernel-qemu-boot.log" }
+    {
+      "role": "source",
+      "path": "Cargo.lock"
+    },
+    {
+      "role": "closure",
+      "path": "product/closure/binary-boms.json"
+    },
+    {
+      "role": "toolchain",
+      "path": "target/eneros/evidence/REL-001/toolchain-report.json"
+    },
+    {
+      "role": "raw",
+      "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
+    },
+    {
+      "role": "installer",
+      "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod-installer.iso"
+    },
+    {
+      "role": "recovery",
+      "path": "target/eneros/artifacts/recovery/eneros-qemu-prod-recovery.raw"
+    },
+    {
+      "role": "update",
+      "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod-full.enupd"
+    },
+    {
+      "role": "flash",
+      "path": "target/eneros/evidence/IMG-011/bound-flash-report.json"
+    },
+    {
+      "role": "sbom",
+      "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod.cdx.json"
+    },
+    {
+      "role": "log",
+      "path": "product/evidence/kernel/gkernel-qemu-boot.log"
+    },
+    {
+      "role": "ai-runner",
+      "path": "product/evidence/ai-runner/manifest.json"
+    }
   ]
 }
