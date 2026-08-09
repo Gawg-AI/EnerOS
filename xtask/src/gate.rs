@@ -1,0 +1,537 @@
+//! 26-B WP-26.2 新门禁：孤儿源文件 / 配置引用 / mock 执法。
+
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use super::qa::{collect_crate_lib_files, mock_leak_lines};
+use super::{invalid, DynResult};
+
+/// 解析一个文件的 `mod name;` / `pub mod name;` 声明（含 `#[path = "..."]`）。
+/// 返回 (模块名, 显式 path 或 None)。
+fn parse_mod_decls(text: &str) -> Vec<(String, Option<String>)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let t = lines[i].trim();
+        // #[path = "x.rs"] 属性（必须紧跟其后的 mod 声明行）。
+        let mut path_attr: Option<String> = None;
+        if t.starts_with("#[path") {
+            if let Some(inner) = t
+                .strip_prefix("#[path = ")
+                .and_then(|s| s.strip_suffix(']'))
+            {
+                path_attr = Some(inner.trim_matches('"').to_owned());
+            }
+            // 下一行应为 mod 声明；若下一行也是属性则跳过（不处理嵌套）。
+            i += 1;
+            let next = lines.get(i).map(|l| l.trim()).unwrap_or("");
+            let body = next
+                .strip_prefix("pub mod ")
+                .or_else(|| next.strip_prefix("pub(crate) mod "))
+                .or_else(|| next.strip_prefix("pub(super) mod "))
+                .or_else(|| next.strip_prefix("mod "));
+            if let Some(name) = body.and_then(|s| s.strip_suffix(';')) {
+                if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    out.push((name.to_owned(), path_attr.clone()));
+                }
+            }
+            i += 1;
+            continue;
+        }
+        let body = t
+            .strip_prefix("pub mod ")
+            .or_else(|| t.strip_prefix("pub(crate) mod "))
+            .or_else(|| t.strip_prefix("pub(super) mod "))
+            .or_else(|| t.strip_prefix("mod "));
+        if let Some(name) = body.and_then(|s| s.strip_suffix(';')) {
+            if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                out.push((name.to_owned(), path_attr.clone()));
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// 解析模块声明所在文件的模块文件路径（Rust 2018 规则）：
+/// - `foo.rs` 内的 `mod bar;` → `foo/bar.rs` 或 `foo/bar/mod.rs`；
+/// - `mod.rs` 内的 `mod bar;` → `bar.rs` 或 `bar/mod.rs`（同目录）；
+/// - `#[path]` 显式指定优先（相对当前文件目录）。
+fn resolve_mod_file(file: &Path, name: &str, explicit: Option<&str>) -> Option<PathBuf> {
+    let dir = file.parent()?;
+    if let Some(p) = explicit {
+        let candidate = dir.join(p);
+        return candidate.is_file().then_some(candidate);
+    }
+    // crate root 模块文件（mod.rs / lib.rs / main.rs）的子模块在同目录；
+    // 其他模块文件（foo.rs）的子模块在 foo/ 目录。
+    let is_root_mod = file
+        .file_stem()
+        .map(|s| matches!(s.to_str(), Some("mod" | "lib" | "main")))
+        .unwrap_or(false);
+    let base = if is_root_mod {
+        dir.to_path_buf()
+    } else {
+        dir.join(file.file_stem()?)
+    };
+    let a = base.join(format!("{name}.rs"));
+    if a.is_file() {
+        return Some(a);
+    }
+    let b = base.join(name).join("mod.rs");
+    if b.is_file() {
+        return Some(b);
+    }
+    None
+}
+
+/// 全 crate 扫描 `include!("...rs")` 引用（孤儿排除项）。
+fn collect_include_refs(src_dir: &Path) -> BTreeSet<PathBuf> {
+    let mut out = BTreeSet::new();
+    let mut stack = vec![src_dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().map(|x| x == "rs").unwrap_or(false) {
+                if let Ok(text) = fs::read_to_string(&p) {
+                    for line in text.lines() {
+                        let t = line.trim();
+                        if let Some(inner) = t
+                            .strip_prefix("include!(")
+                            .and_then(|s| s.strip_suffix(')'))
+                        {
+                            let rel = inner.trim_matches('"');
+                            let cand = p.parent().unwrap_or(&p).join(rel);
+                            if cand.is_file() {
+                                out.insert(cand);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 读取豁免表 tools/gate-exemptions.toml（若存在）。
+/// 行格式：`"crate/file" = { rule = "...", reason = "...", expires_at = "..." }`。
+fn load_exemptions(root: &Path) -> Vec<(String, String)> {
+    let path = root.join("tools/gate-exemptions.toml");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') || t.starts_with('[') {
+            continue;
+        }
+        if let Some((key, _)) = t.split_once('=') {
+            let key = key.trim().trim_matches('"');
+            if !key.is_empty() {
+                out.push((key.to_owned(), path.display().to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// `qa orphan-check`：孤儿源文件检测（26-B §3.1 算法）。
+pub fn command_orphan_check(root: &Path, _args: &[String]) -> DynResult<()> {
+    let crates_dir = root.join("crates");
+    let mut orphans: Vec<String> = Vec::new();
+    let mut stack = vec![crates_dir.clone()];
+    let mut crate_dirs: Vec<PathBuf> = Vec::new();
+    while let Some(d) = stack.pop() {
+        if d.ends_with("target") || d.ends_with("fuzz") {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            }
+        }
+        if d.join("Cargo.toml").is_file() {
+            crate_dirs.push(d.clone());
+        }
+    }
+    crate_dirs.sort();
+
+    for crate_dir in crate_dirs {
+        let src = crate_dir.join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        // 1. 收集全部 src/**/*.rs（排除 build.rs）。
+        let mut all: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut fstack = vec![src.clone()];
+        while let Some(d) = fstack.pop() {
+            let Ok(entries) = fs::read_dir(&d) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    fstack.push(p);
+                } else if p.extension().map(|x| x == "rs").unwrap_or(false)
+                    && p.file_name().map(|n| n != "build.rs").unwrap_or(false)
+                {
+                    all.insert(p);
+                }
+            }
+        }
+        // 2. 入口：src/lib.rs、src/main.rs、src/bin/*.rs。
+        let mut entries: Vec<PathBuf> = Vec::new();
+        if src.join("lib.rs").is_file() {
+            entries.push(src.join("lib.rs"));
+        }
+        if src.join("main.rs").is_file() {
+            entries.push(src.join("main.rs"));
+        }
+        if src.join("bin").is_dir() {
+            let Ok(bin_entries) = fs::read_dir(src.join("bin")) else {
+                continue;
+            };
+            for b in bin_entries.flatten() {
+                if b.path().extension().map(|x| x == "rs").unwrap_or(false) {
+                    entries.push(b.path());
+                }
+            }
+        }
+        // 3. BFS 解析 mod 声明。
+        let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut queue: Vec<PathBuf> = entries.clone();
+        while let Some(f) = queue.pop() {
+            if !reachable.insert(f.clone()) {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&f) else {
+                continue;
+            };
+            for (name, explicit) in parse_mod_decls(&text) {
+                if let Some(mf) = resolve_mod_file(&f, &name, explicit.as_deref()) {
+                    queue.push(mf);
+                }
+            }
+        }
+        // 4. include! 引用。
+        let included = collect_include_refs(&src);
+        // 5. 孤儿 = all - reachable - included。
+        let exemptions = load_exemptions(root);
+        for f in all.difference(&reachable) {
+            if included.contains(f) {
+                continue;
+            }
+            let rel = f.strip_prefix(root).unwrap_or(f);
+            if exemptions
+                .iter()
+                .any(|(key, _)| rel.to_string_lossy().ends_with(key))
+            {
+                continue;
+            }
+            orphans.push(format!("{}: {}", crate_dir.display(), f.display()));
+        }
+    }
+
+    let out_path = root.join("target/orphan-check.json");
+    fs::create_dir_all(out_path.parent().unwrap_or(root))?;
+    fs::write(
+        &out_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "eneros.orphan-check.v1",
+            "orphans": orphans,
+        }))?,
+    )?;
+    if orphans.is_empty() {
+        println!("ORPHAN-CHECK → 0 orphans（{}）", out_path.display());
+        Ok(())
+    } else {
+        for o in &orphans {
+            println!("ORPHAN: {o}");
+        }
+        Err(invalid(format!(
+            "orphan-check: {} orphan source file(s) — 见 target/orphan-check.json",
+            orphans.len()
+        )))
+    }
+}
+
+/// `qa config-refs`：配置引用检测（26-B §3.2；阶段 0 只告警不阻断）。
+pub fn command_config_refs(root: &Path, _args: &[String]) -> DynResult<()> {
+    let configs_dir = root.join("configs");
+    let Ok(entries) = fs::read_dir(&configs_dir) else {
+        return Err(invalid("configs/ 不存在"));
+    };
+    let entry_list: Vec<fs::DirEntry> = entries.flatten().collect();
+    // 被引用的 config 文件名（去扩展名）。
+    let mut referenced: BTreeSet<String> = BTreeSet::new();
+    for scan_root in ["crates", "xtask", "ci", "tests"] {
+        let base = root.join(scan_root);
+        if !base.is_dir() {
+            continue;
+        }
+        let mut stack = vec![base];
+        while let Some(d) = stack.pop() {
+            let Ok(es) = fs::read_dir(&d) else { continue };
+            for e in es.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if matches!(
+                    p.extension().and_then(|x| x.to_str()),
+                    Some("rs") | Some("sh")
+                ) {
+                    if let Ok(text) = fs::read_to_string(&p) {
+                        for line in text.lines() {
+                            let t = line.trim();
+                            if t.starts_with("//") || t.starts_with('#') {
+                                continue;
+                            }
+                            for name in config_names(&entry_list) {
+                                if t.contains(&format!("{name}.toml")) {
+                                    referenced.insert(name.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let all_names = config_names(&entry_list);
+    let unreferenced: Vec<String> = all_names
+        .iter()
+        .filter(|n| !referenced.contains(*n))
+        .cloned()
+        .collect();
+    let out_dir = root.join("evidence/config-refs");
+    fs::create_dir_all(&out_dir)?;
+    let out = out_dir.join(format!("{}-unreferenced.json", chrono_like_today()));
+    fs::write(
+        &out,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "eneros.config-refs.v1",
+            "referenced": referenced.iter().collect::<Vec<_>>(),
+            "unreferenced": unreferenced,
+        }))?,
+    )?;
+    println!(
+        "CONFIG-REFS → {}（unreferenced {}）",
+        out.display(),
+        unreferenced.len()
+    );
+    // 阶段 0：只告警不阻断。
+    Ok(())
+}
+
+fn config_names(entries: &[fs::DirEntry]) -> Vec<String> {
+    let mut names: Vec<String> = entries
+        .iter()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().map(|x| x == "toml").unwrap_or(false) {
+                p.file_stem().map(|s| s.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// 日期（YYYY-MM-DD）——不依赖 chrono。
+fn chrono_like_today() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = now / 86400;
+    // 1970-01-01 起的天数 → 简单公历转换。
+    let (y, m, d) = civil_from_days(days as i64);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// `qa gate ...` 分发。
+pub fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
+    let (mode, tail) = args
+        .split_first()
+        .ok_or_else(|| invalid("gate requires a subcommand: orphan-check|config-refs|mock-leak"))?;
+    match mode.as_str() {
+        "orphan-check" => command_orphan_check(root, tail),
+        "config-refs" => command_config_refs(root, tail),
+        "mock-leak" => command_mock_leak(root, tail),
+        other => Err(invalid(format!("unknown gate subcommand '{other}'"))),
+    }
+}
+
+/// `qa gate mock-leak`：mock 泄漏执法（26-B §3.3）——WP-26.1 扫描器升级为
+/// CI 阻断项（非零退出即红）。WP-26.3 完成后必须全绿。
+pub fn command_mock_leak(root: &Path, _args: &[String]) -> DynResult<()> {
+    let crates_dir = root.join("crates");
+    let mut violations: Vec<String> = Vec::new();
+    for (crate_name, files) in collect_crate_lib_files(&crates_dir) {
+        for file in files {
+            let is_lib = file.file_name().map(|n| n == "lib.rs").unwrap_or(false);
+            for (line, text) in mock_leak_lines(&file, is_lib) {
+                violations.push(format!(
+                    "{}:{}:{} (crate={})",
+                    file.display(),
+                    line,
+                    text,
+                    crate_name
+                ));
+            }
+        }
+    }
+    violations.sort();
+    violations.dedup();
+    let out_path = root.join("target/mock-leak.json");
+    fs::create_dir_all(out_path.parent().unwrap_or(root))?;
+    fs::write(
+        &out_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "eneros.mock-leak.v1",
+            "violations": violations,
+        }))?,
+    )?;
+    if violations.is_empty() {
+        println!("MOCK-LEAK → 0 violations（{}）", out_path.display());
+        Ok(())
+    } else {
+        for v in &violations {
+            println!("MOCK-LEAK: {v}");
+        }
+        Err(invalid(format!(
+            "mock-leak: {} violation(s) — 见 target/mock-leak.json",
+            violations.len()
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_simple_mod() {
+        let decls = parse_mod_decls("pub mod entry;\npub mod history;\n");
+        assert_eq!(decls.len(), 2);
+        assert_eq!(decls[0].0, "entry");
+        assert_eq!(decls[1].0, "history");
+    }
+
+    #[test]
+    fn parse_cfg_prefixed_mod() {
+        let decls = parse_mod_decls("#[cfg(feature = \"loom\")]\npub mod loom_freeze;\n");
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0].0, "loom_freeze");
+    }
+
+    #[test]
+    fn resolve_2018_rules() {
+        // foo.rs 内 mod bar; → foo/bar.rs
+        let dir = std::env::temp_dir().join(format!("modres-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("foo")).unwrap();
+        let foo = dir.join("foo.rs");
+        std::fs::write(&foo, "").unwrap();
+        std::fs::write(dir.join("foo/bar.rs"), "").unwrap();
+        let r = resolve_mod_file(&foo, "bar", None).expect("foo/bar.rs");
+        assert_eq!(r, dir.join("foo/bar.rs"));
+        // mod.rs 内 mod bar; → bar.rs（同目录）
+        let modrs = dir.join("mod.rs");
+        std::fs::write(&modrs, "").unwrap();
+        std::fs::write(dir.join("bar.rs"), "").unwrap();
+        let r2 = resolve_mod_file(&modrs, "bar", None).expect("bar.rs");
+        assert_eq!(r2, dir.join("bar.rs"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn orphan_bfs_reaches_lib_mods() {
+        // 模拟 account 结构：lib.rs 声明 entry，entry.rs 可达。
+        let dir = std::env::temp_dir().join(format!("orphan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let crate_dir = dir.join("crates/agents/account");
+        std::fs::create_dir_all(crate_dir.join("src")).unwrap();
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname=\"account\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            crate_dir.join("src/lib.rs"),
+            "pub mod entry;\npub mod ledger;\n",
+        )
+        .unwrap();
+        std::fs::write(crate_dir.join("src/entry.rs"), "").unwrap();
+        std::fs::write(crate_dir.join("src/ledger.rs"), "").unwrap();
+        std::fs::write(crate_dir.join("src/orphan.rs"), "").unwrap();
+
+        // 复刻 command_orphan_check 的核心 BFS。
+        let src = crate_dir.join("src");
+        let mut all: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut fstack = vec![src.clone()];
+        while let Some(d) = fstack.pop() {
+            let Ok(entries) = fs::read_dir(&d) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    fstack.push(p);
+                } else if p.extension().map(|x| x == "rs").unwrap_or(false) {
+                    all.insert(p);
+                }
+            }
+        }
+        let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut queue = vec![src.join("lib.rs")];
+        while let Some(f) = queue.pop() {
+            if !reachable.insert(f.clone()) {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&f) else {
+                continue;
+            };
+            for (name, explicit) in parse_mod_decls(&text) {
+                if let Some(mf) = resolve_mod_file(&f, &name, explicit.as_deref()) {
+                    queue.push(mf);
+                }
+            }
+        }
+        assert!(reachable.contains(&src.join("entry.rs")), "entry 必须可达");
+        assert!(
+            reachable.contains(&src.join("ledger.rs")),
+            "ledger 必须可达"
+        );
+        assert!(!reachable.contains(&src.join("orphan.rs")), "orphan 不可达");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

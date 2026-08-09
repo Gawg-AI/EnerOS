@@ -89,6 +89,7 @@ pub(super) fn command_qa(root: &Path, args: &[String]) -> DynResult<()> {
         "g7-audit" => command_g7_audit(root, tail),
         "perf-baseline" => command_perf_baseline(root, tail),
         "perf-keygen" => command_perf_keygen(root, tail),
+        "gate" => super::gate::command_gate(root, tail),
         "perf-gate" => command_perf_gate(root, tail),
         "trace" => command_trace(root, tail),
         "proof" => command_proof(root, tail),
@@ -972,7 +973,7 @@ fn find_crate_dir(root: &Path, crate_name: &str) -> Option<std::path::PathBuf> {
 /// 递归收集 crates/** 下每个 crate（含 Cargo.toml 的目录）的 src/**/*.rs
 /// 文件（排除 target/、fuzz/）。FIX-BUGS-0810/WP-26.1：旧实现仅扫一层
 /// `crates/<x>/src/lib.rs`——全仓 crate 均位于两层路径，扫描零命中。
-fn collect_crate_lib_files(crates_dir: &Path) -> Vec<(String, Vec<std::path::PathBuf>)> {
+pub(crate) fn collect_crate_lib_files(crates_dir: &Path) -> Vec<(String, Vec<std::path::PathBuf>)> {
     let mut out: Vec<(String, Vec<std::path::PathBuf>)> = Vec::new();
     let mut stack: Vec<std::path::PathBuf> = vec![crates_dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -1022,7 +1023,7 @@ fn collect_crate_lib_files(crates_dir: &Path) -> Vec<(String, Vec<std::path::Pat
 /// 1. lib.rs 顶层（非缩进）`use ...::mock` 且无 cfg 前缀（旧语义）；
 /// 2. 任意 src 文件顶层 `pub mod mock` 且无 cfg(any(test, feature="mock")) 门
 ///    （WP-26.1：扩展检测面，与 WP-26.2 门禁共用）。
-fn mock_leak_lines(path: &std::path::Path, is_lib: bool) -> Vec<(usize, String)> {
+pub(crate) fn mock_leak_lines(path: &std::path::Path, is_lib: bool) -> Vec<(usize, String)> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };

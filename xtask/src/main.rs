@@ -15,6 +15,7 @@ mod evidence;
 mod fault_factory;
 mod flasher;
 mod fuzz_driver;
+mod gate;
 mod image_factory;
 mod qa;
 mod qemu_harness;
@@ -305,7 +306,7 @@ fn print_help() {
            release sbom|verify ...\n\
            symbolize <crash-dump.bin> <elf-file>\n\
            flash inventory|file-lab ...\n\
-           qa boot-reset|soak|perf-gate|trace|proof|validation ...\n\
+           qa boot-reset|soak|perf-gate|trace|proof|validation|gate orphan-check|config-refs|mock-leak ...\n\
          \n\
          reserved fail-closed command:\n\
            image factory"

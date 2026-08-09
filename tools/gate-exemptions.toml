@@ -1,0 +1,8 @@
+# 26-B WP-26.2 门禁豁免登记（孤儿源文件 / mock 泄漏）
+# 格式：key（相对仓库根的路径后缀）= { rule, reason, expires_at, owner_wp }
+# expires_at = "WP-xx.yy" 表示由该 WP 完成时移除；"never" 表示有意保留。
+
+"crates/agents/device-agent/src/persist.rs" = { rule = "orphan", reason = "注册表持久化模块（v0.227.0 B3-04）——26-B §3.1 活体验收项；WP-26.12 挂载落盘后移除", expires_at = "WP-26.12", owner_wp = "26.12" }
+"crates/ai/gguf-loader/src/gpu_ops.rs" = { rule = "orphan", reason = "AI-002 封印虚构 eneros_gpu_* FFI（compile_error 熔断，不得启用）", expires_at = "never", owner_wp = "21-B" }
+"crates/ai/solver-warm/src/ffi.rs" = { rule = "orphan", reason = "AI-002 封印虚构 ort_* FFI（compile_error 熔断，不得启用）", expires_at = "never", owner_wp = "21-B" }
+"crates/agents/model-ota/src/real.rs" = { rule = "orphan", reason = "未挂载历史文件（26-C 处置或删除）", expires_at = "WP-26.15", owner_wp = "26.15" }

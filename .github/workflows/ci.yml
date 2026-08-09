@@ -236,6 +236,15 @@ jobs:
           ENEROS_PERF_VERIFY_PUBKEY=$(cat /tmp/perf-pk.hex) \
             cargo xtask qa perf-gate target/perf-results.json
 
+      - name: 26-B WP-26.2 gate: orphan sources (no silent dead files)
+        run: cargo xtask qa gate orphan-check
+
+      - name: 26-B WP-26.2 gate: config references (warn-only, stage 0)
+        run: cargo xtask qa gate config-refs
+
+      - name: 26-B WP-26.2 gate: mock leak enforcement (blocking)
+        run: cargo xtask qa gate mock-leak
+
       - name: VRF-003 gate semantics (no silent pass)
         run: cargo xtask test gate-semantics
 
