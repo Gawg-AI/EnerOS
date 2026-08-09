@@ -47,6 +47,7 @@ const fn parse_heap_size(s: &str) -> Option<usize> {
 /// 堆存储（对齐 16：LockedHeap 要求堆基址按指针宽度对齐——`[u8]` 数组
 /// 对齐 1 会导致 target 下 alloc 全失败（QEMU 实测 OOM 8776B），G-R1 修复）。
 #[repr(align(16))]
+#[allow(dead_code)] // 存储介质：仅经指针交给 LockedHeap 使用
 struct HeapStorage([u8; HEAP_SIZE]);
 
 /// 生产全局分配器：free-list 可回收堆（22 §2.W1.4）。
