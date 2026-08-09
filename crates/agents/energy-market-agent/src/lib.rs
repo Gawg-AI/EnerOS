@@ -547,6 +547,8 @@ mod tests {
             forecast_error_sum: 0.0,
             forecast_error_count: 0,
             last_observed_at_ms: 0,
+            rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
+            last_rejection: None,
         };
 
         agent.on_start(1000).unwrap();

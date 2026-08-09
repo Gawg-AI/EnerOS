@@ -50,6 +50,7 @@ pub mod chain_sink;
 pub mod coordinator;
 pub mod error;
 pub mod latency;
+pub mod rejection;
 pub mod sink;
 
 #[cfg(any(test, feature = "mock"))]

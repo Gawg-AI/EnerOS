@@ -72,6 +72,14 @@ pub struct EnergyAgent<S: Solver> {
     pub forecast_error_count: u64,
     /// 上一轮观测时刻（毫秒；时窗 = 本轮观测 − 上轮观测）。
     pub last_observed_at_ms: u64,
+    // --- 22 §2.W2.4：设备拒绝/异常处理 ---
+    /// 拒绝处理器（分类计数 + 重试预算，防无限重试）。
+    pub rejections: eneros_dual_brain::rejection::RejectionHandler,
+    /// 最近一次拒绝（分类 + 策略；None = 无拒绝）。
+    pub last_rejection: Option<(
+        eneros_dual_brain::rejection::RejectionKind,
+        eneros_dual_brain::rejection::RejectionAction,
+    )>,
 }
 
 impl<S: Solver> EnergyAgent<S> {
@@ -107,6 +115,8 @@ impl<S: Solver> EnergyAgent<S> {
             forecast_error_sum: 0.0,
             forecast_error_count: 0,
             last_observed_at_ms: now_ms,
+            rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
+            last_rejection: None,
         }
     }
 
@@ -165,6 +175,8 @@ impl EnergyAgent<MockSolver> {
             forecast_error_sum: 0.0,
             forecast_error_count: 0,
             last_observed_at_ms: now_ms,
+            rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
+            last_rejection: None,
         }
     }
 }
@@ -246,6 +258,10 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
             }
             Err(e) => {
                 // D14：安全默认策略 — 标记错误状态，不 panic
+                // 22 §2.W2.4：拒绝分类 + 预算（防无限重试，不静默丢弃）。
+                let kind = eneros_dual_brain::rejection::RejectionHandler::classify(&e);
+                let action = self.rejections.handle(&e, "pcs");
+                self.last_rejection = Some((kind, action));
                 self.state = AgentState::Error;
                 Err(AgentRuntimeError::DualBrainError(e))
             }
@@ -381,5 +397,52 @@ mod w21_feedback_loop_tests {
         agent.on_tick(3_600_000).expect("tick");
         assert!(agent.forecast_error_count >= 1, "偏差样本必须累计");
         assert!(agent.forecast_error_sum >= 0.0, "偏差和为绝对误差（非负）");
+    }
+}
+
+// ============================================================================
+// 22 §2.W2.4 验收：设备拒绝分类处理（接入 agent 决策路径）
+// ============================================================================
+#[cfg(test)]
+mod w24_rejection_tests {
+    use eneros_dual_brain::rejection::{RejectionAction, RejectionHandler, RejectionKind};
+
+    use super::*;
+    use crate::runtime::AgentRuntime as _;
+
+    /// 验收：设备拒绝 → 分类 + 计数（不静默），错误仍上抛（决策感知）。
+    #[test]
+    fn test_device_rejection_classified_not_silent() {
+        let mut agent = EnergyAgent::new_default(1_000);
+        agent.on_start(1_000).expect("start");
+        // 用 FailingSink 类路径：构造 coordinator 直接注入失败 sink 的
+        // agent 不可行（new_default 固定）——直接测 handler 在 agent 上。
+        let err = DualBrainError::DispatchError(String::from("device-exec: Offline"));
+        let kind = RejectionHandler::classify(&err);
+        assert_eq!(kind, RejectionKind::Offline);
+        let action = agent.rejections.handle(&err, "pcs");
+        assert_eq!(action, RejectionAction::Retry { attempt: 1 });
+        assert_eq!(agent.rejections.total_rejections(), 1, "拒绝必须计数");
+        // 预算耗尽 → 上报人工（绝不无限重试）。
+        for _ in 0..4 {
+            let _ = agent.rejections.handle(&err, "pcs");
+        }
+        assert_eq!(
+            agent.rejections.handle(&err, "pcs"),
+            RejectionAction::EscalateToHuman,
+            "超预算必须上报人工"
+        );
+    }
+
+    /// 验收：安全阻断分类独立（不重试，立即上报）。
+    #[test]
+    fn test_safety_blocked_escalates() {
+        let err = DualBrainError::SafetyFatal(String::from("soc below minimum"));
+        assert_eq!(
+            RejectionHandler::classify(&err),
+            RejectionKind::SafetyBlocked
+        );
+        let mut h = RejectionHandler::new(3);
+        assert_eq!(h.handle(&err, "pcs"), RejectionAction::EscalateToHuman);
     }
 }
