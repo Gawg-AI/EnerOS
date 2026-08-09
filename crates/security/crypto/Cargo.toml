@@ -8,11 +8,13 @@ description = "EnerOS 国密算法库 (SM2/SM3/SM4 + CSRNG) — pure Rust, no_st
 publish = false
 
 [package.metadata.eneros]
-# v0.234.0（B4-01）裁决：保持 product_allowed=false（fail-closed）——
-# 确定性 KAT（GB/T 32918.5 附录向量路径）已就绪，独立密码学评审
-# （送审或换经审计库）为阶段 D 前置；解锁前禁止进入产品闭包。
+# ADR-022（2026-08-09）裁决：双实现架构——std 面由 eneros-crypto-gmssl
+# （OpenSSL 3 binding，vetted）承担；本 crate 为 no_std 目标（seL4 EL0）
+# 唯一可链接实现，保持 product_allowed=false（fail-closed）。手卷正确性
+# 由 crypto-gmssl 互操作 KAT 交叉验证（tests/vectors/sm2-interop，
+# openssl 第三方向量）；target 端送审（商密认证）为解锁前置。
 product_allowed = false
-isolation_reason = "v0.234.0: SM2 deterministic KAT in place; awaiting independent cryptographic review (Phase D gate) before product inclusion"
+isolation_reason = "ADR-022: no_std target hand-rolled SM2/SM3/SM4 verified against OpenSSL-3 interop KAT; awaiting commercial crypto review (Phase D) before product inclusion"
 
 [dependencies]
 # No external dependencies — pure Rust implementation
@@ -23,6 +25,10 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 [dev-dependencies]
 # 测试专用（ECDSA 测试签名需要 rng）
 rand_core = { version = "0.6", features = ["std"] }
+# 互操作 KAT（21-B C2）：DER 签名编解码（eneros-crypto-gmssl::der）。
+eneros-crypto-gmssl = { path = "../crypto-gmssl" }
+serde_json = "1"
+hex = "0.4"
 
 [features]
 qemu-entropy = []

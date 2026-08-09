@@ -526,6 +526,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "eneros-ai-runner"
+version = "1.0.0-rc.0"
+dependencies = [
+ "eneros-dual-brain",
+ "eneros-energy-lp-model",
+ "eneros-fast-path",
+ "eneros-llm-engine",
+ "eneros-safety-validator",
+ "eneros-solver-core",
+ "serde_json",
+]
+
+[[package]]
 name = "eneros-aiops"
 version = "1.0.0-rc.0"
 dependencies = [
@@ -685,8 +698,21 @@ dependencies = [
 name = "eneros-crypto"
 version = "1.0.0-rc.0"
 dependencies = [
+ "eneros-crypto-gmssl",
+ "hex",
  "p256",
  "rand_core 0.6.4",
+ "serde_json",
+]
+
+[[package]]
+name = "eneros-crypto-gmssl"
+version = "1.0.0-rc.0"
+dependencies = [
+ "cc",
+ "hex",
+ "pkg-config",
+ "serde_json",
 ]
 
 [[package]]
@@ -890,6 +916,8 @@ name = "eneros-iec104-slave"
 version = "1.0.0-rc.0"
 dependencies = [
  "eneros-control-gateway",
+ "eneros-hal",
+ "eneros-net",
  "eneros-telemetry-model",
  "eneros-time",
 ]
@@ -1030,7 +1058,9 @@ name = "eneros-modbus-rtu"
 version = "1.0.0-rc.0"
 dependencies = [
  "eneros-driver-framework",
+ "eneros-hal",
  "eneros-protocol-abstract",
+ "eneros-rs485",
  "eneros-upa-model",
 ]
 
@@ -1038,8 +1068,11 @@ dependencies = [
 name = "eneros-modbus-tcp"
 version = "1.0.0-rc.0"
 dependencies = [
+ "eneros-hal",
  "eneros-modbus-rtu",
+ "eneros-net",
  "eneros-protocol-abstract",
+ "eneros-time",
  "eneros-upa-model",
 ]
 
@@ -1679,6 +1712,12 @@ dependencies = [
  "hash32",
  "stable_deref_trait",
 ]
+
+[[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hkdf"

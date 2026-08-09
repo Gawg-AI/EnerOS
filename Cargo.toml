@@ -71,6 +71,7 @@ members = [
     "crates/drivers/calibration",
     "crates/drivers/drv-svc",
     "crates/security/crypto",
+    "crates/security/crypto-gmssl",
     "crates/security/iec62351",
     "crates/security/secure-boot",
     "crates/security/attestation",

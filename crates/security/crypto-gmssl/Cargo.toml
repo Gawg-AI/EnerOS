@@ -1,0 +1,28 @@
+[package]
+name = "eneros-crypto-gmssl"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "国密 vetted binding（ADR-022）：OpenSSL 3 libcrypto 的 SM2/SM3/SM4。std 面（host 工具/富 OS/互操作验证对端）；target no_std EL0 端国密由 eneros-crypto 手卷承担并由此 binding 交叉验证"
+publish = false
+
+[package.metadata.eneros]
+# vetted 库（OpenSSL 3，发行版审计）——binding 本身可进产品闭包；
+# 但 target no_std 端不可链接 C 库，产品授权仍受 eneros-crypto 手卷
+# 审计状态约束（product_allowed=false），见 ADR-022。
+product_allowed = true
+isolation_reason = "ADR-022: OpenSSL-SM binding（std）；target no_std 手卷由本 crate KAT 交叉验证，crypto 自身 product_allowed 维持 false"
+
+[dependencies]
+
+[build-dependencies]
+# 编译 src/gmssl_helpers.c（SM2/SM3/SM4 最小调用序列，见 ADR-022）。
+cc = "1"
+# 仅 build 期用 pkg-config 定位系统 libcrypto（OpenSSL 3）。
+pkg-config = "0.3"
+
+[dev-dependencies]
+# 互操作 KAT：读向量 JSON（openssl 生成）+ 十六进制编解码。
+serde_json = "1"
+hex = "0.4"
