@@ -20,8 +20,9 @@ pub use boot_control::{
     BOOT_CONTROL_RECORD_SIZE,
 };
 pub use boot_info::{
-    validate_memory_map_bytes, BootInfo, BootInfoError, BootReason, BootSlot, MemoryMapEntry,
-    MemoryRegionKind, BOOT_INFO_ABI_MAJOR, BOOT_INFO_ABI_MINOR, BOOT_INFO_SIZE,
+    dtb_window_for, validate_memory_map_bytes, BootInfo, BootInfoError, BootReason, BootSlot,
+    MemoryMapEntry, MemoryRegionKind, BOOT_INFO_ABI_MAJOR, BOOT_INFO_ABI_MINOR, BOOT_INFO_SIZE,
+    ENEROS_DTB_MAX_LEN, ENEROS_INIT_BUNDLE_PHYS, ENEROS_MAPPED_WINDOW_LEN,
 };
 pub use entropy::{
     condition_boot_entropy, EntropyError, CONDITIONED_BOOT_SEED_SIZE, RAW_BOOT_ENTROPY_SIZE,

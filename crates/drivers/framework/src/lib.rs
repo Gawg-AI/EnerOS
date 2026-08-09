@@ -22,6 +22,7 @@
 
 extern crate alloc;
 
+pub mod binding;
 pub mod handle;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
@@ -158,6 +159,7 @@ impl core::error::Error for DriverError {}
 
 // Re-export submodule types for convenience.
 // lib.rs 自身定义的类型（DeviceDriver/DriverId 等）已为 pub，无需再次 re-export。
+pub use binding::{BindingTable, BoundEntry, DriverBinding, FailedEntry, PlatformCtx, ProbeReport, UnboundEntry};
 pub use handle::{DriverCapability, DriverHandle, DriverPermission};
 #[cfg(any(test, feature = "mock"))]
 pub use mock::MockDriver;

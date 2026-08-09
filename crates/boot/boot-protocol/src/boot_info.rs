@@ -184,6 +184,39 @@ pub fn validate_memory_map_bytes(bytes: &[u8], count: u32) -> Result<(), BootInf
     Ok(())
 }
 
+/// WP-27.2（蓝图/27 §6 装配链）：boot-manager 把运行时 DTB 拷贝到内核
+/// BOOT-007 映射窗口内（`third_party/sel4-patches/0001-init-bundle-mapping.patch`，
+/// 2 MiB 1:1 映射进初始线程 VSpace），root-task 与 init bundle 同模式直接读
+/// 物理地址。DTB 源为 UEFI 配置表（gFdtTableGuid，boot-manager
+/// `locate_device_tree`），拷贝保证 root-task 拿到**运行时真实 DTB**（非
+/// 构建期快照）。DTB 起点为**动态**（bundle 之后页对齐，见
+/// [`dtb_window_for`]）——QEMU virt 实测运行时 DTB ≈ 1 MiB + 4 KiB，固定
+/// 起点方案对 DTB 大小脆弱（WP-27.2 QEMU 实测 NO_DEVICE_TREE 后改进）。
+pub const ENEROS_INIT_BUNDLE_PHYS: u64 = 0x4200_0000;
+/// BOOT-007 内核映射窗口长度（2 MiB，kernel boot.c 常量）。
+pub const ENEROS_MAPPED_WINDOW_LEN: u64 = 0x200_000;
+/// 单 DTB 硬上限（2 MiB = BOOT-007 窗口全尺寸；QEMU virt 运行时 DTB ≈
+/// 0x101000，真机平台 dts 一般更小）。实际边界由 [`dtb_window_for`] 的
+/// 窗口剩余空间决定（bundle 已占部分之外）；本常量是独立于 bundle 的
+/// 防御上限，超限 fail-closed。
+pub const ENEROS_DTB_MAX_LEN: u64 = 0x200_000;
+
+/// bundle 之后的 DTB 放置窗口：起点 = bundle 末端页对齐，长度 = 窗口内
+/// 剩余空间。bundle 超出窗口 → `None`（fail-closed）。
+///
+/// 调用方（boot-manager 拷贝处 / root-task 读取处）必须用**同一 bundle
+/// 长度**推导，否则 DTB 位置漂移——boot-manager 用验签后的
+/// `init.media_length` 并交叉校验 bundle header `total_len` 一致；
+/// root-task 用已解析的 bundle header `total_len`。
+pub const fn dtb_window_for(bundle_len: u64) -> Option<(u64, u64)> {
+    let start = (ENEROS_INIT_BUNDLE_PHYS + bundle_len + 0xFFF) & !0xFFF;
+    let end = ENEROS_INIT_BUNDLE_PHYS + ENEROS_MAPPED_WINDOW_LEN;
+    if start >= end {
+        return None;
+    }
+    Some((start, end - start))
+}
+
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootInfo {

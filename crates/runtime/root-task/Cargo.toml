@@ -20,6 +20,11 @@ eneros-time = { path = "../../drivers/time" }
 # 23 G-I 总出口修复：Arm64Timer（CNTPCT_EL0 generic timer）→ time_init，
 # supervisor 的 busy_wait/退避依赖单调时钟（此前未初始化恒 0 → 死循环）。
 eneros-hal = { path = "../../hal/hal" }
+# WP-27.2：驱动装配（FDT 解析 + 绑定表 + can/rs485 迁入绑定表）。
+eneros-board = { path = "../../hal/board" }
+eneros-driver-framework = { path = "../../drivers/framework" }
+eneros-can = { path = "../../drivers/can" }
+eneros-rs485 = { path = "../../drivers/rs485" }
 heapless = "0.8"
 spin = "0.9"
 linked_list_allocator = "0.10"

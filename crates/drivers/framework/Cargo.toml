@@ -7,7 +7,8 @@ license.workspace = true
 description = "EnerOS user-space device driver framework — DeviceDriver trait, registry, capability"
 
 [dependencies]
-# Zero external dependencies — pure Rust no_std
+# WP-27.2：绑定框架消费 FDT 设备节点类型（零依赖叶子 crate，无环）。
+eneros-board = { path = "../../hal/board" }
 
 [features]
 # v0.217.0（B1-05）：MockDriver 收编——仅测试或显式启用 mock 时可见。

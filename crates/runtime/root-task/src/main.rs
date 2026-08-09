@@ -35,6 +35,7 @@ pub mod boot;
 pub mod bundle;
 // W4.3（蓝图23）：frame.rs 兼容垫片（`pub use eneros_ipc_wire::el0::*`）已删除——
 // 全 crate `frame::` 零引用（main.rs 已直接 use ipc-wire el0 类型）。
+pub mod driver_probe;
 pub mod irq;
 pub mod irq_timer;
 pub mod panic;
@@ -265,6 +266,9 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
                     }
                 };
                 // K2.2：IPC 调度主循环（替换 spin_loop，21-A）。
+                // WP-27.2：驱动装配（DTB → 绑定表 → ProbeReport 启动日志），
+                // 在进入服务循环前完成；驱动缺失不阻断 spawn（fail 行如实）。
+                crate::driver_probe::probe_and_report(&mut ctx, &mut irq_table, u64::from(bundle.total_len));
                 crate::service::run_ipc_loop(&handles, irq_table, irq_binding);
             }
             Err(e) => {

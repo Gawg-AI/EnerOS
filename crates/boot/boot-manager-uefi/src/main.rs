@@ -20,8 +20,9 @@ use eneros_boot_protocol::{
     BootControlTransaction, BootInfo, BootReason, BootSelection, BootSlot, Component,
     ComponentRole, ManifestSlot, MeasurementKind, MeasurementLog, MemoryMapEntry, MemoryRegionKind,
     ReleaseManifest, ResolvedBootControl, BOOT_CONTROL_ANCHOR_SIZE, BOOT_CONTROL_COPY_OFFSETS,
-    BOOT_CONTROL_FLAG_MANUAL_RECOVERY, BOOT_CONTROL_RECORD_SIZE, MANIFEST_HEADER_LEN,
-    MEASUREMENT_LOG_SIZE, RAW_BOOT_ENTROPY_SIZE,
+    BOOT_CONTROL_FLAG_MANUAL_RECOVERY, BOOT_CONTROL_RECORD_SIZE, ENEROS_DTB_MAX_LEN,
+    ENEROS_INIT_BUNDLE_PHYS, MANIFEST_HEADER_LEN, MEASUREMENT_LOG_SIZE, RAW_BOOT_ENTROPY_SIZE,
+    dtb_window_for,
 };
 use eneros_image_format::{
     read_gpt, BlockDevice, BlockReadError, Gpt, Guid, ParsedPartition, PartitionReader,
@@ -62,6 +63,9 @@ enum BootFailure {
     ProtectedState,
     BootControlWrite,
     Measurement,
+    /// WP-27.2：DTB 装配布局不一致（bundle header 与 manifest 长度不符 /
+    /// DTB 超窗口）——fail-closed，不静默截断。
+    DtLayout,
 }
 
 impl BootFailure {
@@ -82,6 +86,7 @@ impl BootFailure {
             Self::ProtectedState => "PROTECTED_STATE",
             Self::BootControlWrite => "BOOTCTRL_WRITE",
             Self::Measurement => "MEASUREMENT",
+            Self::DtLayout => "DT_LAYOUT",
         }
     }
 }
@@ -516,7 +521,54 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
         let dtb = locate_device_tree();
         match dtb {
             Some((phys, len)) => {
-                info.dtb_phys = phys;
+                // WP-27.2 诊断：DTB 定位实况（失败时定位检查点）。
+                println!(
+                    "ENEROS stage=dtb-locate phys=0x{:x} len={} max={} init_media_length={}",
+                    phys, len, ENEROS_DTB_MAX_LEN, init.media_length
+                );
+                // WP-27.2（蓝图/27 §6）：把运行时 DTB 拷贝到内核 BOOT-007
+                // 映射窗口内 bundle 之后的动态位置（dtb_window_for），
+                // root-task 以相同推导直接读物理地址 → parse_fdt → 驱动绑定。
+                // 约束（fail-closed，超限即引导失败，不静默截断）：
+                //   1) bundle header total_len 必须与验签的 init.media_length
+                //      一致（否则 root-task 推导的 DTB 位置漂移）；
+                //   2) len ≤ ENEROS_DTB_MAX_LEN；
+                //   3) len ≤ 窗口剩余空间（dtb_window_for）。
+                let mut bundle_header = [0u8; 16];
+                // SAFETY: `ENEROS_INIT_BUNDLE_PHYS` 处为 install_component
+                // 刚写入的 init bundle（LOADER_DATA 分配），16 字节头可读。
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        ENEROS_INIT_BUNDLE_PHYS as *const u8,
+                        bundle_header.as_mut_ptr(),
+                        16,
+                    );
+                }
+                let header_total =
+                    u32::from_le_bytes(bundle_header[12..16].try_into().unwrap_or([0; 4])) as u64;
+                if header_total != init.media_length {
+                    return Err(BootFailure::DtLayout);
+                }
+                let Some((dtb_phys, window)) = dtb_window_for(init.media_length) else {
+                    return Err(BootFailure::DtLayout);
+                };
+                if len > ENEROS_DTB_MAX_LEN || len > window {
+                    return Err(BootFailure::DtLayout);
+                }
+                // SAFETY: `phys` 来自 UEFI 配置表项（firmware 拥有的有效
+                // 内存，boot services 阶段可读）；`dtb_phys` 为 BOOT-007
+                // 窗口内普通 RAM（未分配 untyped，见 BOOT-007 预留），
+                // 长度已受 `ENEROS_DTB_MAX_LEN` 与窗口剩余空间双重约束；
+                // 与 bundle 不重叠（页对齐起点在 bundle 末端之后）。拷贝
+                // 发生在 exit_boot_services 之前，UEFI 内存仍有效。
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        phys as *const u8,
+                        dtb_phys as *mut u8,
+                        len as usize,
+                    );
+                }
+                info.dtb_phys = dtb_phys;
                 info.dtb_len = len;
             }
             None => {
