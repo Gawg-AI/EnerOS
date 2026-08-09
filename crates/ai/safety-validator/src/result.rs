@@ -4,7 +4,7 @@
 //! D9：`ValidationResult` / `Violation` 仅派生 `Debug + Clone`（不派生 `PartialEq`，
 //!     Karpathy "Simplicity First"：当前测试不需要）。
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use eneros_energy_lp_model::result::ScheduleResult;
@@ -27,6 +27,23 @@ pub enum Severity {
     Fatal,
 }
 
+/// 违规原因（结构化枚举，WP-26.6：对齐蓝图/24 结构化拒绝方向，禁止字符串分类）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViolationReason {
+    /// 常规越限（默认）。
+    Normal,
+    /// 输入非有限（NaN/±Inf）——WP-26.6：任一电气量非有限即拒绝。
+    NonFinite(&'static str),
+    /// 电流越限（WP-26.6 电气量启用）。
+    OverCurrent,
+    /// 电压越上限。
+    OverVoltage,
+    /// 电压越下限。
+    UnderVoltage,
+    /// 频率越限。
+    FreqOutOfRange,
+}
+
 /// 单条违规记录.
 #[derive(Debug, Clone)]
 pub struct Violation {
@@ -42,6 +59,30 @@ pub struct Violation {
     pub safe_value: f64,
     /// 严重等级。
     pub severity: Severity,
+    /// 结构化原因（WP-26.6）。
+    pub reason: ViolationReason,
+}
+
+impl Violation {
+    /// 构造常规越限违规（reason = Normal；WP-26.6 后所有构造点统一入口）。
+    pub fn normal(
+        rule: &str,
+        period: usize,
+        field: &str,
+        original_value: f64,
+        safe_value: f64,
+        severity: Severity,
+    ) -> Self {
+        Self {
+            rule: rule.to_string(),
+            period,
+            field: field.to_string(),
+            original_value,
+            safe_value,
+            severity,
+            reason: ViolationReason::Normal,
+        }
+    }
 }
 
 /// 校验结果.

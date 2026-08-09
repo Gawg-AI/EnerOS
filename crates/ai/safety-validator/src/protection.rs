@@ -17,9 +17,15 @@ use crate::state::SystemState;
 
 /// 保护配合校验规则.
 pub struct ProtectionCoordinationRule {
+    // W1.1（蓝图23）：电气保护阈值（过流/过压/欠压/频率）当前仅校验爬坡率，
+    // 这些字段是领域预留——真机保护配合策略对接后启用（见 new() 参数文档与 D12 偏差）。
+    #[allow(dead_code)]
     overcurrent_threshold: f64,
+    #[allow(dead_code)]
     overvoltage_threshold: f64,
+    #[allow(dead_code)]
     undervoltage_threshold: f64,
+    #[allow(dead_code)]
     freq_protection: (f64, f64),
     max_ramp_rate: f64,
 }
@@ -78,14 +84,14 @@ impl SafetyRule for ProtectionCoordinationRule {
                 // D11：精确复制蓝图截断逻辑
                 let safe_delta = self.max_ramp_rate * 0.25 * curr.signum();
                 let safe_value = prev + safe_delta;
-                violations.push(Violation {
-                    rule: self.name().to_string(),
-                    period: i,
-                    field: "ramp_rate".to_string(),
-                    original_value: curr,
+                violations.push(Violation::normal(
+                    self.name(),
+                    i,
+                    "ramp_rate",
+                    curr,
                     safe_value,
-                    severity: Severity::Critical,
-                });
+                    Severity::Critical,
+                ));
                 // 截断功率变化（D11：PRESERVE EXACTLY — 不"修复"符号逻辑）
                 let diff = safe_value - curr;
                 clamped_schedule.schedule[i].discharge_power_kw += diff.max(0.0);

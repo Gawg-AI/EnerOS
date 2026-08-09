@@ -40,7 +40,6 @@
 //! 仅使用 `alloc::*` 与 `core::*`，可交叉编译到 `aarch64-unknown-none`。
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 
 extern crate alloc;
 
@@ -55,7 +54,7 @@ pub mod validator;
 pub use catalog::SafetyCatalog;
 pub use electrical::ElectricalSafetyRule;
 pub use protection::ProtectionCoordinationRule;
-pub use result::{Severity, ValidationResult, Violation};
+pub use result::{Severity, ValidationResult, Violation, ViolationReason};
 pub use rule::SafetyRule;
 pub use state::SystemState;
 pub use validator::SafetyValidator;
@@ -116,14 +115,14 @@ mod tests {
     // T3: Violation 构造 + 字段访问
     #[test]
     fn t3_violation_construction() {
-        let v = Violation {
-            rule: "electrical_safety".to_string(),
-            period: 2,
-            field: "charge_power".to_string(),
-            original_value: 120.0,
-            safe_value: 100.0,
-            severity: Severity::Critical,
-        };
+        let v = Violation::normal(
+            "electrical_safety",
+            2,
+            "charge_power",
+            120.0,
+            100.0,
+            Severity::Critical,
+        );
         assert_eq!(v.rule, "electrical_safety");
         assert_eq!(v.period, 2);
         assert_eq!(v.field, "charge_power");
@@ -154,6 +153,124 @@ mod tests {
         assert_eq!(rule.name(), "electrical_safety");
         assert_eq!(rule.priority(), 10);
         assert!(rule.is_hard());
+    }
+
+    // ===== WP-26.6 防回归：NaN/±Inf 前置拒绝（证伪旧 NaN > limit == false 放行）=====
+    #[test]
+    fn t_wp266_nonfinite_rejected_structured() {
+        let rule = ElectricalSafetyRule::new(100.0, 200.0, (340.0, 420.0), (49.5, 50.5));
+        let entries = [make_entry(0, 50.0, 50.0, 0.5)];
+        let sched = make_schedule(&entries);
+        // 逐字段注入 NaN/±Inf：state 三字段 + 调度三字段。
+        let nan_cases: [SystemState; 3] = [
+            SystemState {
+                voltage_v: f64::NAN,
+                ..SystemState::default()
+            },
+            SystemState {
+                current_a: f64::INFINITY,
+                ..SystemState::default()
+            },
+            SystemState {
+                frequency_hz: f64::NEG_INFINITY,
+                ..SystemState::default()
+            },
+        ];
+        for st in nan_cases {
+            let r = rule.validate(&sched, &st);
+            assert!(!r.passed, "非有限电气量必须拒绝（旧行为 NaN 比较静默放行）");
+            assert!(
+                r.violations
+                    .iter()
+                    .any(|v| matches!(v.reason, ViolationReason::NonFinite(_))),
+                "拒绝原因必须为结构化 NonFinite: {:?}",
+                r.violations
+            );
+        }
+        // 调度量 NaN。
+        let bad_sched = ScheduleResult {
+            schedule: vec![ScheduleEntry {
+                charge_power_kw: f64::NAN,
+                ..make_entry(0, 50.0, 50.0, 0.5)
+            }],
+            ..make_schedule(&[])
+        };
+        let r = rule.validate(&bad_sched, &SystemState::default());
+        assert!(!r.passed);
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| matches!(v.reason, ViolationReason::NonFinite("charge_power"))));
+    }
+
+    // ===== WP-26.6 防回归：电气量越限（P1-4 启用）=====
+    #[test]
+    fn t_wp266_electrical_limits_enforced() {
+        let rule = ElectricalSafetyRule::new(100.0, 200.0, (340.0, 420.0), (49.5, 50.5));
+        let entries = [make_entry(0, 50.0, 50.0, 0.5)];
+        let sched = make_schedule(&entries);
+        // 电流越限。
+        let r = rule.validate(
+            &sched,
+            &SystemState {
+                current_a: 250.0,
+                ..SystemState::default()
+            },
+        );
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.reason == ViolationReason::OverCurrent));
+        // 电压上/下越限。
+        let r = rule.validate(
+            &sched,
+            &SystemState {
+                voltage_v: 430.0,
+                ..SystemState::default()
+            },
+        );
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.reason == ViolationReason::OverVoltage));
+        let r = rule.validate(
+            &sched,
+            &SystemState {
+                voltage_v: 300.0,
+                ..SystemState::default()
+            },
+        );
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.reason == ViolationReason::UnderVoltage));
+        // 频率越限（上下界）。
+        let r = rule.validate(
+            &sched,
+            &SystemState {
+                frequency_hz: 51.0,
+                ..SystemState::default()
+            },
+        );
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.reason == ViolationReason::FreqOutOfRange));
+        let r = rule.validate(
+            &sched,
+            &SystemState {
+                frequency_hz: 49.0,
+                ..SystemState::default()
+            },
+        );
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.reason == ViolationReason::FreqOutOfRange));
+        // 边界内正常值不误报（基线防回归）。
+        let r = rule.validate(&sched, &SystemState::default());
+        assert!(r.passed, "正常值必须放行（基线）");
+        assert!(r.violations.is_empty());
     }
 
     // T6: ElectricalSafetyRule validate 全部通过（功率/SOC 正常）
