@@ -112,10 +112,27 @@ fn assembly_injection_path_and_metric_samples() {
     assert!(ingress.lease_ok(), "本地租约必须以重启计数为种子签发成功");
 
     // ---- 装配设备（模拟 PCS；生产为真实协议适配器）----
-    let dev = MockPointDevice::new(device_id).with_point("power_setpoint", 0.0);
+    // FIX-24.R3：CTL-010 真实反馈需要全部遥测点（无遥测 → 复验 fail-safe deny）。
+    let mut dev = MockPointDevice::new(device_id)
+        .with_point("power_setpoint", 0.0)
+        .with_point("grid_up", 1.0)
+        .with_point("soc_pct", 50.0)
+        .with_point("dc_bus_v", 600.0)
+        .with_point("overcurrent", 0.0)
+        .with_point("overtemp", 0.0);
+    dev.touch(1_700_000_000_000);
     let mut pm = BTreeMap::new();
-    if let Some(id) = dev.point_id_of("power_setpoint") {
-        pm.insert(String::from("power_setpoint"), id);
+    for n in [
+        "power_setpoint",
+        "grid_up",
+        "soc_pct",
+        "dc_bus_v",
+        "overcurrent",
+        "overtemp",
+    ] {
+        if let Some(id) = dev.point_id_of(n) {
+            pm.insert(String::from(n), id);
+        }
     }
     // ---- 启动握手（签发方经 EIPC 通道取 fencing_token）----
     let handshake = ingress.handshake_response().expect("handshake");

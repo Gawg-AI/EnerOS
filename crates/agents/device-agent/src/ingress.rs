@@ -30,6 +30,7 @@
 //!   见 [`handshake_response`](Self::handshake_response)）；
 //! - 签发方（AI runner）经一次启动握手取当前 token（§6.4 投递器消费）。
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -40,13 +41,15 @@ use eneros_control_gateway::envelope::CommandEnvelope;
 use eneros_control_gateway::gateway::GatewayError;
 use eneros_control_gateway::lease::LeaseScope;
 use eneros_control_gateway::policy::Policy;
+use eneros_control_gateway::reconcile::FeedbackSample;
 use eneros_control_gateway::safety::SafetyPoint;
 use eneros_crypto::{ct_eq, hmac_sm3};
 use eneros_metrics::{
     MemoryMetricsStore, MetricDef, MetricType, MetricsCollector, MetricsCollectorImpl, MetricsStore,
 };
 use eneros_protocol_abstract::access::WriteError;
-use eneros_upa_model::{DeviceId, PointId, PointValue};
+use eneros_telemetry_model::quality::QualityFlag;
+use eneros_upa_model::{DeviceId, PointId, PointQuality, PointValue};
 
 use crate::delivery::{DeliveryFrame, OutcomeFrame};
 use crate::registry::DeviceRegistry;
@@ -77,9 +80,12 @@ pub const METRIC_DENIED_LEGACY: &str = "eneros_write_denied_legacy_total";
 pub const METRIC_IDEMPOTENT_HIT: &str = "eneros_write_idempotent_hit_total";
 /// 协议写失败计数（D14：跳过本条）。
 pub const METRIC_FAILED_PROTOCOL: &str = "eneros_write_failed_protocol_total";
+/// 审计写入失败兜底计数（FIX-24.R3：audit.log 失败 → 递增；主计数为
+/// infallible 字段，随本指标导出可见）。
+pub const METRIC_AUDIT_DROPPED: &str = "eneros_audit_dropped_total";
 
 /// 全部写接缝指标（构造时注册；increment 失败仅在未注册时发生，注册后不可达）。
-const WRITE_METRICS: [(&str, &str); 11] = [
+const WRITE_METRICS: [(&str, &str); 12] = [
     (METRIC_WRITE_ALLOWED, "authorized writes applied to devices"),
     (
         METRIC_DENIED_DECODE,
@@ -120,6 +126,10 @@ const WRITE_METRICS: [(&str, &str); 11] = [
     (
         METRIC_FAILED_PROTOCOL,
         "write failed at protocol layer (skipped, D14)",
+    ),
+    (
+        METRIC_AUDIT_DROPPED,
+        "audit log failures (infallible field-backed counter)",
     ),
 ];
 
@@ -205,6 +215,9 @@ pub enum IngressOutcome {
         device_id: DeviceId,
         point_id: PointId,
         power_kw: f64,
+        /// 回读确认值（FIX-24.R3：WriteOutcome.echoed 优先复用；None 时经
+        /// PointAccess 真实回读；仍无 → None，以适配器协议应答为准）。
+        echoed: Option<PointValue>,
     },
     /// 幂等命中：先前结果已返回，未二次执行（exactly-once）。
     IdempotentHit,
@@ -284,7 +297,13 @@ pub struct EnvelopeIngress {
     /// 拒绝分类指标（§6.6 计数器，构造时注册）。
     metrics: MetricsCollectorImpl<MemoryMetricsStore>,
     /// 审计链（§6.6：写执行/每类拒绝/握手/租约签发）。
-    audit: AuditLoggerImpl<MemStore>,
+    ///
+    /// `Box<dyn AuditLogger>`：FIX-24.R3 可注入失败实现以验证兜底计数
+    /// （生产为 `AuditLoggerImpl<MemStore>`，哈希链完整性不变）。
+    audit: Box<dyn AuditLogger>,
+    /// 审计写入失败兜底计数（infallible 主计数；`eneros_audit_dropped_total`
+    /// 指标据此导出，FIX-24.R3）。
+    audit_dropped: u64,
     /// 成功落写计数（外部可观测）。
     write_count: u64,
     /// 本地租约是否签发成功（失败 → 全部拒绝，fail-closed）。
@@ -343,23 +362,45 @@ impl EnvelopeIngress {
         }
 
         // 租约签发入审计（§6.6：租约本地签发）。
-        let mut audit = AuditLoggerImpl::new(MemStore::new(), [0u8; 32]);
-        let _ = audit.log(AuditEvent::new(
-            AuditEventType::LeaseGranted,
-            "device-agent",
-            "local-lease",
-            &format!("lease_id={:02x?} epoch_seed={epoch_seed}", lease_id),
-        ));
-
-        Self {
+        let audit: Box<dyn AuditLogger> =
+            Box::new(AuditLoggerImpl::new(MemStore::new(), [0u8; 32]));
+        let mut ingress = Self {
             chain,
             key: key.to_vec(),
             lease_id,
             metrics,
             audit,
+            audit_dropped: 0,
             write_count: 0,
             lease_ok,
+        };
+        ingress.log_audit(
+            AuditEvent::new(
+                AuditEventType::LeaseGranted,
+                "device-agent",
+                "local-lease",
+                &format!("lease_id={:02x?} epoch_seed={epoch_seed}", lease_id),
+            ),
+            now_ms,
+        );
+        ingress
+    }
+
+    /// 审计写入（FIX-24.R3，铁律 3）：失败 → 递增不会失败的兜底计数
+    /// `audit_dropped`（`eneros_audit_dropped_total` 随既有指标导出可见）。
+    /// 主计数为字段（infallible）；metrics 通道为 best-effort（豁免注释见
+    /// [`METRIC_WRITE_ALLOWED`] 使用处）。
+    fn log_audit(&mut self, event: AuditEvent, now_ms: u64) {
+        if self.audit.log(event).is_err() {
+            self.audit_dropped += 1;
+            let _ = self.metrics.increment(METRIC_AUDIT_DROPPED, 1, &[], now_ms);
         }
+    }
+
+    /// 审计链可注入实现（测试用：验证审计写失败 → 兜底计数）。
+    pub fn with_audit(mut self, audit: Box<dyn AuditLogger>) -> Self {
+        self.audit = audit;
+        self
     }
 
     /// 本地租约是否签发成功（`false` = 生而为 default-deny）。
@@ -416,15 +457,54 @@ impl EnvelopeIngress {
             correlation_id: &env.correlation_id,
         };
 
-        // 2. ControlChain 复验（HMAC/租约/幂等/越权/策略PDP/安全，default-deny）。
+        // 2.5 轻量 HMAC 预检（FIX-24.R3 分类保真）：路由/反馈需要设备上下文，
+        //    但篡改信封必须先归 Hmac 桶（§6.2 失败表）——在设备检查前先验
+        //    一次 HMAC（微秒级，T6 可接受；execute 内仍复验同一 HMAC）。
+        if !env.verify_hmac(&self.key) {
+            return self.deny(
+                DenyClass::Hmac,
+                "gateway:Unauthorized",
+                Some(&audit_ctx),
+                now_ms,
+            );
+        }
+
+        // 3. 路由与点匹配（存在性，提前到复验前——FIX-24.R3：真实反馈回读
+        //    需要目标设备上下文；拒绝分类与 §6.2 步骤 3/4 语义一致）。
+        let device_id = u16::try_from(env.device_id).unwrap_or(u16::MAX);
+        let Some(info) = devices.find_by_device_id(device_id) else {
+            return self.deny(
+                DenyClass::Mismatch,
+                &format!("device_id={device_id}"),
+                Some(&audit_ctx),
+                now_ms,
+            );
+        };
+        if !info.point_map.values().any(|&v| v == env.point_id) {
+            return self.deny(
+                DenyClass::Mismatch,
+                &format!("point_id={}", env.point_id),
+                Some(&audit_ctx),
+                now_ms,
+            );
+        }
+
+        // 4. 真实反馈（FIX-24.R3，CTL-010 真实化）：经 PointAccess 真实回读
+        //    设备遥测点构建 FeedbackBundle；无对应点/回读失败/质量非 Good →
+        //    该字段显式不可信 → 链按真实状态裁决（fail-safe deny）。禁止
+        //    常量捏造（旧行为 `FeedbackBundle::fresh(true, 50.0, …)` 已移除）。
+        let feedback = self.build_feedback(devices, device_id, now_secs);
+
+        // 5. ControlChain 复验（HMAC/租约/幂等/越权/策略PDP/安全，default-deny）。
         //    SBO 以"信封到达即选择+执行原子"处理（与签发侧 ChainCommandSink
         //    语义一致；两阶段人工 SBO 属就地操作员流程，非本路径）。
         self.chain.sbo_select(env.point_id, now_secs);
-        let feedback = FeedbackBundle::fresh(true, 50.0, now_secs);
         match self.chain.execute(&frame.envelope, now_secs, &feedback) {
             ChainOutcome::Executed { cmd, .. } => {
-                // 3. 路由：device_id → 适配器。
+                // 6. 授权落写（适配器二次匹配校验；功率载荷 ADR-029）。
+                //    路由已在步骤 3 确认；此处再次查找以执行写。
                 let Some(info) = devices.find_by_device_id(cmd.device_id) else {
+                    // 防御性：步骤 3 已确认存在，不应到达（仍 fail-closed）。
                     return self.deny(
                         DenyClass::Mismatch,
                         &format!("device_id={}", cmd.device_id),
@@ -432,34 +512,41 @@ impl EnvelopeIngress {
                         now_ms,
                     );
                 };
-                // 4. 点匹配：point_id 必须在设备 point_map 内。
-                if !info.point_map.values().any(|&v| v == cmd.point_id) {
-                    return self.deny(
-                        DenyClass::Mismatch,
-                        &format!("point_id={}", cmd.point_id),
-                        Some(&audit_ctx),
-                        now_ms,
-                    );
-                }
-                // 5. 授权落写（适配器二次匹配校验；功率载荷 ADR-029）。
                 match info
                     .adapter
                     .write_authorized(&cmd, PointValue::Float(frame.power_kw))
                 {
-                    Ok(_outcome) => {
-                        // 回读确认：WriteOutcome.echoed 可空；以适配器协议应答为准。
+                    Ok(outcome) => {
+                        // 落写确认（FIX-24.R3：不捏造）：WriteOutcome.echoed
+                        // 优先复用；None 时经 PointAccess 真实回读同一 PointId；
+                        // 仍无 → None（以适配器协议应答为准）。
+                        let readback = match &outcome.echoed {
+                            Some(v) => Some(v.clone()),
+                            None => info
+                                .adapter
+                                .read_point(cmd.point_id)
+                                .ok()
+                                .map(|dp| dp.value),
+                        };
                         self.write_count += 1;
+                        // metrics 为 best-effort 通道（注册后 increment 仅在
+                        // 存储满丢弃最旧时静默降级，不影响写路径——豁免，
+                        // 铁律 3 注释豁免理由）。
                         let _ = self.metrics.increment(METRIC_WRITE_ALLOWED, 1, &[], now_ms);
-                        let _ = self.audit.log(AuditEvent::new(
-                            AuditEventType::WriteExecuted,
-                            actor_str_byte(cmd.actor_kind as u8),
-                            &format!("device={} point={}", cmd.device_id, cmd.point_id),
-                            &audit_ctx.detail("outcome=applied"),
-                        ));
+                        self.log_audit(
+                            AuditEvent::new(
+                                AuditEventType::WriteExecuted,
+                                actor_str_byte(cmd.actor_kind as u8),
+                                &format!("device={} point={}", cmd.device_id, cmd.point_id),
+                                &audit_ctx.detail("outcome=applied"),
+                            ),
+                            now_ms,
+                        );
                         IngressOutcome::Applied {
                             device_id: cmd.device_id,
                             point_id: cmd.point_id,
                             power_kw: frame.power_kw,
+                            echoed: readback,
                         }
                     }
                     Err(e) => {
@@ -482,25 +569,32 @@ impl EnvelopeIngress {
             }
             ChainOutcome::IdempotentHit(_) => {
                 // 幂等命中：返回先前结果，不二次执行（exactly-once）。
+                // metrics best-effort 豁免（见 WRITE_ALLOWED 处注释）。
                 let _ = self
                     .metrics
                     .increment(METRIC_IDEMPOTENT_HIT, 1, &[], now_ms);
-                let _ = self.audit.log(AuditEvent::new(
-                    AuditEventType::WriteExecuted,
-                    actor_str_byte(env.actor_kind as u8),
-                    &format!("device={} point={}", env.device_id, env.point_id),
-                    &audit_ctx.detail("outcome=idempotent-hit"),
-                ));
+                self.log_audit(
+                    AuditEvent::new(
+                        AuditEventType::WriteExecuted,
+                        actor_str_byte(env.actor_kind as u8),
+                        &format!("device={} point={}", env.device_id, env.point_id),
+                        &audit_ctx.detail("outcome=idempotent-hit"),
+                    ),
+                    now_ms,
+                );
                 IngressOutcome::IdempotentHit
             }
             ChainOutcome::DryRun { cmd, .. } => {
                 // 策略允许但为干跑：不落写（PEP 执行 DryRun obligation）。
-                let _ = self.audit.log(AuditEvent::new(
-                    AuditEventType::WriteExecuted,
-                    actor_str_byte(cmd.actor_kind as u8),
-                    &format!("device={} point={}", cmd.device_id, cmd.point_id),
-                    &audit_ctx.detail("outcome=dry-run"),
-                ));
+                self.log_audit(
+                    AuditEvent::new(
+                        AuditEventType::WriteExecuted,
+                        actor_str_byte(cmd.actor_kind as u8),
+                        &format!("device={} point={}", cmd.device_id, cmd.point_id),
+                        &audit_ctx.detail("outcome=dry-run"),
+                    ),
+                    now_ms,
+                );
                 IngressOutcome::DryRun
             }
             ChainOutcome::Denied(reason) => {
@@ -508,6 +602,40 @@ impl EnvelopeIngress {
                 self.deny(class, &deny_reason_str(&reason), Some(&audit_ctx), now_ms)
             }
         }
+    }
+
+    /// 遥测反馈字段 ↔ 设备 point_map 点名（FIX-24.R3，CTL-010 真实化）。
+    ///
+    /// 禁止常量捏造：无对应点 / 回读失败 / 值不可转 / 质量非 Good → 该字段
+    /// 保持显式不可信（`QualityFlag::Invalid`）→ reconcile 拒绝 →
+    /// 链按真实状态裁决（fail-safe deny）。设备必须提供全部遥测点
+    /// （grid_up/soc_pct/dc_bus_v/overcurrent/overtemp），否则复验拒写。
+    fn build_feedback(
+        &self,
+        devices: &mut DeviceRegistry,
+        device_id: DeviceId,
+        now_secs: u64,
+    ) -> FeedbackBundle {
+        let mut bundle = FeedbackBundle::untrusted(now_secs);
+        let Some(info) = devices.find_by_device_id(device_id) else {
+            return bundle; // 防御性：调用方已确认设备存在
+        };
+        // maintenance_lockout：operator 直接标志（非 reconcile 输入），当前
+        // 无注入源（装配配置项）——保持 false，不属于遥测捏造（FIX-24.R3
+        // 范围 = reconcile 输入字段）。
+        for name in ["grid_up", "soc_pct", "dc_bus_v", "overcurrent", "overtemp"] {
+            if let Some(sample) = read_telemetry_sample(info, name, now_secs) {
+                match name {
+                    "grid_up" => bundle.grid_up = sample,
+                    "soc_pct" => bundle.soc_pct = sample,
+                    "dc_bus_v" => bundle.dc_bus_v = sample,
+                    "overcurrent" => bundle.overcurrent = sample,
+                    "overtemp" => bundle.overtemp = sample,
+                    _ => {}
+                }
+            }
+        }
+        bundle
     }
 
     /// 拒绝公共路径：指标 + 审计（detail 键值编码，含精确原因），绝不 panic。
@@ -518,6 +646,7 @@ impl EnvelopeIngress {
         ctx: Option<&AuditCtx<'_>>,
         now_ms: u64,
     ) -> IngressOutcome {
+        // metrics best-effort 豁免（见 WRITE_ALLOWED 处注释）。
         let _ = self.metrics.increment(class.metric(), 1, &[], now_ms);
         let detail = match ctx {
             Some(c) => format!("{} deny_reason={}", c.detail("outcome=denied"), reason),
@@ -529,12 +658,10 @@ impl EnvelopeIngress {
         let target = ctx
             .map(|c| format!("device={} point={}", c.device_id, c.point_id))
             .unwrap_or_default();
-        let _ = self.audit.log(AuditEvent::new(
-            AuditEventType::WriteDenied,
-            actor,
-            &target,
-            &detail,
-        ));
+        self.log_audit(
+            AuditEvent::new(AuditEventType::WriteDenied, actor, &target, &detail),
+            now_ms,
+        );
         IngressOutcome::Denied {
             class,
             reason: String::from(reason),
@@ -543,13 +670,17 @@ impl EnvelopeIngress {
 
     /// 旧匿名命令双轨（§6.2/6.6/D12）：收到不执行，记拒绝指标 + 审计。
     pub fn record_legacy_denied(&mut self, now_ms: u64) {
+        // metrics best-effort 豁免（见 WRITE_ALLOWED 处注释）。
         let _ = self.metrics.increment(METRIC_DENIED_LEGACY, 1, &[], now_ms);
-        let _ = self.audit.log(AuditEvent::new(
-            AuditEventType::WriteDenied,
-            "legacy",
-            "device-agent",
-            "outcome=denied deny_reason=legacy-anonymous",
-        ));
+        self.log_audit(
+            AuditEvent::new(
+                AuditEventType::WriteDenied,
+                "legacy",
+                "device-agent",
+                "outcome=denied deny_reason=legacy-anonymous",
+            ),
+            now_ms,
+        );
     }
 
     /// 启动握手（§6.3）：返回 `{lease_id, fencing_token}` 的 HMAC 保护响应。
@@ -576,17 +707,26 @@ impl EnvelopeIngress {
         let mut resp = [0u8; HANDSHAKE_LEN];
         resp[..24].copy_from_slice(&payload);
         resp[24..].copy_from_slice(&hmac);
-        let _ = self.audit.log(AuditEvent::new(
-            AuditEventType::HandshakeCompleted,
-            "device-agent",
-            "handshake",
-            &format!("lease_id={:02x?} token={token}", self.lease_id),
-        ));
+        self.log_audit(
+            AuditEvent::new(
+                AuditEventType::HandshakeCompleted,
+                "device-agent",
+                "handshake",
+                &format!("lease_id={:02x?} token={token}", self.lease_id),
+            ),
+            0,
+        );
         Ok(resp)
     }
 
     /// 指标当前值（刷入存储后读取；测试/观测用）。
     pub fn metric_total(&mut self, name: &str, now_ms: u64) -> u64 {
+        // audit_dropped 主计数为 infallible 字段（FIX-24.R3）：直接返回，
+        // 不依赖 best-effort metrics 通道。
+        if name == METRIC_AUDIT_DROPPED {
+            return self.audit_dropped;
+        }
+        // maybe_flush best-effort 豁免（同 WRITE_ALLOWED 处注释）。
         let _ = self.metrics.maybe_flush(now_ms);
         self.metrics.store().get_latest(name).unwrap_or(0)
     }
@@ -634,6 +774,54 @@ pub fn verify_handshake_response(key: &[u8], resp: &[u8]) -> Option<([u8; 16], u
     let mut token = [0u8; 8];
     token.copy_from_slice(&resp[16..24]);
     Some((lease_id, u64::from_le_bytes(token)))
+}
+
+/// 经 PointAccess 真实回读一个遥测点 → CTL-010 反馈样本。
+/// 回读失败 / 值类型不可转 → `None`（该字段保持显式不可信）。
+fn read_telemetry_sample(
+    info: &mut crate::registry::DeviceInfo,
+    name: &str,
+    _now_secs: u64,
+) -> Option<FeedbackSample> {
+    let id = info.point_map.get(name)?;
+    let dp = info.adapter.read_point(*id).ok()?;
+    Some(FeedbackSample {
+        value: sample_to_f64(&dp.value)?,
+        quality: quality_flag(&dp.quality),
+        timestamp_epoch: dp.timestamp_ms / 1000,
+    })
+}
+
+/// 点值 → 遥测数值（Float/Int 直取；Bool → 0/1；其余类型不可信 → None）。
+fn sample_to_f64(v: &PointValue) -> Option<f64> {
+    match v {
+        PointValue::Float(f) => Some(*f),
+        PointValue::Int(i) => Some(*i as f64),
+        PointValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        _ => None,
+    }
+}
+
+/// PointQuality（upa-model）→ QualityFlag（telemetry-model，CTL-010 输入）。
+/// ADR-0027 语义映射；全空标志 → Invalid（不可信）。
+fn quality_flag(q: &PointQuality) -> QualityFlag {
+    if q.valid {
+        QualityFlag::Good
+    } else if q.invalid {
+        QualityFlag::Invalid
+    } else if q.questionable {
+        QualityFlag::Questionable
+    } else if q.substituted {
+        QualityFlag::Substituted
+    } else if q.blocked {
+        QualityFlag::Blocked
+    } else if q.overflow {
+        QualityFlag::Overflow
+    } else if q.outdated {
+        QualityFlag::Outdated
+    } else {
+        QualityFlag::Invalid
+    }
 }
 
 /// 审计上下文（信封已解码字段；detail 键值编码，§6.6）。
@@ -760,11 +948,27 @@ mod tests {
 
     /// 注册含 power_setpoint 点的测试设备（device_id 可定制）。
     fn registry_with(device_id: u16, offline: bool) -> DeviceRegistry {
-        let mut dev = MockPointDevice::new(device_id).with_point("power_setpoint", 0.0);
+        let mut dev = MockPointDevice::new(device_id)
+            .with_point("power_setpoint", 0.0)
+            .with_point("grid_up", 1.0)
+            .with_point("soc_pct", 50.0)
+            .with_point("dc_bus_v", 600.0)
+            .with_point("overcurrent", 0.0)
+            .with_point("overtemp", 0.0);
+        dev.touch(NOW_MS); // 新鲜时间戳（CTL-010 新鲜度）
         dev.set_offline(offline);
         let mut pm = BTreeMap::new();
-        if let Some(id) = dev.point_id_of("power_setpoint") {
-            pm.insert(String::from("power_setpoint"), id);
+        for n in [
+            "power_setpoint",
+            "grid_up",
+            "soc_pct",
+            "dc_bus_v",
+            "overcurrent",
+            "overtemp",
+        ] {
+            if let Some(id) = dev.point_id_of(n) {
+                pm.insert(String::from(n), id);
+            }
         }
         let mut reg = DeviceRegistry::new();
         reg.register("pcs", DeviceType::Pcs, device_id, Box::new(dev), pm);
@@ -826,6 +1030,8 @@ mod tests {
                 device_id: 1,
                 point_id: 1,
                 power_kw: 50.0,
+                // FIX-24.R3：MockPointDevice write_authorized 回显 echoed。
+                echoed: Some(PointValue::Float(50.0)),
             }
         );
         // 回读确认：设备点值已更新。
@@ -1019,7 +1225,32 @@ mod tests {
     #[test]
     fn protocol_failure_denied_and_skipped() {
         let mut ingress = ingress_with(1, 1);
-        let mut devices = registry_with(1, true); // 离线
+        // FIX-24.R3：设备在线（遥测可信，复验通过）但写失败——独立开关，
+        // 与离线（读质量 invalid，复验阶段即拒）解耦。
+        let mut dev = MockPointDevice::new(1)
+            .with_point("power_setpoint", 0.0)
+            .with_point("grid_up", 1.0)
+            .with_point("soc_pct", 50.0)
+            .with_point("dc_bus_v", 600.0)
+            .with_point("overcurrent", 0.0)
+            .with_point("overtemp", 0.0);
+        dev.touch(NOW_MS);
+        dev.set_write_fail(true);
+        let mut pm = BTreeMap::new();
+        for n in [
+            "power_setpoint",
+            "grid_up",
+            "soc_pct",
+            "dc_bus_v",
+            "overcurrent",
+            "overtemp",
+        ] {
+            if let Some(id) = dev.point_id_of(n) {
+                pm.insert(String::from(n), id);
+            }
+        }
+        let mut devices = DeviceRegistry::new();
+        devices.register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm);
         let token = ingress
             .chain
             .lease_service_mut()
@@ -1055,6 +1286,107 @@ mod tests {
         assert_eq!(verify_handshake_response(b"wrong-key", &resp), None);
         // 握手完成入审计。
         assert_eq!(ingress.audit_entry_count(), 2); // LeaseGranted + HandshakeCompleted
+    }
+
+    // ===== FIX-24.R3 用例 A：无遥测点 → 复验按真实状态裁决（fail-safe deny）=====
+    #[test]
+    fn missing_telemetry_denies_via_feedback_untrusted() {
+        let mut ingress = ingress_with(1, 1);
+        // 设备只有 power_setpoint，无任何 CTL-010 遥测点。
+        let mut dev = MockPointDevice::new(1).with_point("power_setpoint", 0.0);
+        dev.touch(NOW_MS);
+        let mut pm = BTreeMap::new();
+        if let Some(id) = dev.point_id_of("power_setpoint") {
+            pm.insert(String::from("power_setpoint"), id);
+        }
+        let mut devices = DeviceRegistry::new();
+        devices.register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm);
+
+        let token = ingress
+            .chain
+            .lease_service_mut()
+            .token_of(&LEASE_ID)
+            .unwrap();
+        let env = signed_envelope(KEY, 1, 1, token, [0x1A; 16], 30, 1);
+        let out = ingress.process(&mut devices, &delivery(env, 50.0), NOW_MS);
+        // 旧行为（常量捏造 fresh(true,50.0)）会放行；新行为按真实状态
+        // （无遥测 = 未知）裁决 → 拒绝且不落写。
+        assert!(
+            matches!(
+                out,
+                IngressOutcome::Denied {
+                    class: DenyClass::Safety,
+                    ..
+                }
+            ),
+            "无遥测必须按真实状态（未知）拒绝: {out:?}"
+        );
+        assert_eq!(ingress.metric_total(METRIC_DENIED_SAFETY, NOW_MS), 1);
+        assert_eq!(ingress.write_count(), 0, "无遥测时不得落写");
+    }
+
+    // ===== FIX-24.R3 用例 B：遥测质量非 Good（离线）→ fail-safe deny =====
+    #[test]
+    fn bad_quality_telemetry_denies() {
+        let mut ingress = ingress_with(1, 1);
+        // 离线设备：读点返回 invalid 品质 → 遥测不可信。
+        let mut devices = registry_with(1, true);
+        let token = ingress
+            .chain
+            .lease_service_mut()
+            .token_of(&LEASE_ID)
+            .unwrap();
+        let env = signed_envelope(KEY, 1, 1, token, [0x1B; 16], 30, 1);
+        let out = ingress.process(&mut devices, &delivery(env, 50.0), NOW_MS);
+        assert!(
+            matches!(
+                out,
+                IngressOutcome::Denied {
+                    class: DenyClass::Safety,
+                    ..
+                }
+            ),
+            "质量非 Good 遥测必须按真实状态拒绝: {out:?}"
+        );
+        assert_eq!(ingress.metric_total(METRIC_DENIED_SAFETY, NOW_MS), 1);
+        assert_eq!(ingress.write_count(), 0);
+    }
+
+    // ===== FIX-24.R3 用例 C：audit 写失败 → audit_dropped_total 兜底递增 =====
+    #[test]
+    fn audit_failure_increments_audit_dropped() {
+        use eneros_audit::{AuditError, ChainEntry, HashChain};
+
+        struct FailingAudit;
+        impl AuditLogger for FailingAudit {
+            fn log(&mut self, _e: AuditEvent) -> Result<ChainEntry, AuditError> {
+                Err(AuditError::SeqOutOfOrder { expect: 1, got: 0 })
+            }
+            fn log_batch(&mut self, _e: &[AuditEvent]) -> Result<Vec<ChainEntry>, AuditError> {
+                Err(AuditError::SeqOutOfOrder { expect: 1, got: 0 })
+            }
+            fn chain_state(&self) -> &HashChain {
+                panic!("not used")
+            }
+        }
+
+        let mut ingress = ingress_with(1, 1).with_audit(Box::new(FailingAudit));
+        let mut devices = registry_with(1, false);
+        let token = ingress
+            .chain
+            .lease_service_mut()
+            .token_of(&LEASE_ID)
+            .unwrap();
+        // 一条拒绝（走 deny → log_audit 失败 → 兜底计数）。
+        let mut env = signed_envelope(KEY, 1, 1, token, [0x1C; 16], 30, 1);
+        env[45] ^= 0xFF;
+        let _ = ingress.process(&mut devices, &delivery(env, 50.0), NOW_MS);
+        // 主计数为 infallible 字段：audit_dropped_total == 1（随指标导出可见）。
+        assert_eq!(
+            ingress.metric_total(METRIC_AUDIT_DROPPED, NOW_MS),
+            1,
+            "audit 写失败必须递增兜底计数"
+        );
     }
 
     // ===== 用例 10：租约 epoch 单调性——重启后新 token 高于旧 token =====

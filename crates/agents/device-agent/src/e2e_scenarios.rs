@@ -89,10 +89,27 @@ fn assembled_agent() -> (DeviceAgent, [u8; 16], u64) {
         NOW_MS,
     );
     // 显式 point_id 10（与链策略/租约/信封目标一致）。
-    let dev = MockPointDevice::new(1).with_point_at("power_setpoint", 0.0, 10);
+    // FIX-24.R3：CTL-010 真实反馈需要全部遥测点（无遥测 → 复验 fail-safe deny）。
+    let mut dev = MockPointDevice::new(1)
+        .with_point_at("power_setpoint", 0.0, 10)
+        .with_point("grid_up", 1.0)
+        .with_point("soc_pct", 50.0)
+        .with_point("dc_bus_v", 600.0)
+        .with_point("overcurrent", 0.0)
+        .with_point("overtemp", 0.0);
+    dev.touch(NOW_MS);
     let mut pm = BTreeMap::new();
-    if let Some(id) = dev.point_id_of("power_setpoint") {
-        pm.insert(String::from("power_setpoint"), id);
+    for n in [
+        "power_setpoint",
+        "grid_up",
+        "soc_pct",
+        "dc_bus_v",
+        "overcurrent",
+        "overtemp",
+    ] {
+        if let Some(id) = dev.point_id_of(n) {
+            pm.insert(String::from(n), id);
+        }
     }
 
     let mut agent =

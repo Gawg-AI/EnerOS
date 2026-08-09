@@ -123,6 +123,9 @@ pub struct ChainCommandSink {
     policy_version: u64,
     /// 信封序列号（防重放 + 审计）。
     seq: u64,
+    /// CTL-010 反馈构造注入点（FIX-24.R3：禁止常量捏造——签发侧无真实
+    /// 遥测可接时注入显式"未知"语义，见蓝图/24 修订记录 R3 偏差登记）。
+    feedback_fn: fn(u64) -> FeedbackBundle,
     /// 已成功写入命令数。
     written: usize,
     /// 最近一次拒绝原因（诊断/审计）。
@@ -143,6 +146,7 @@ impl ChainCommandSink {
         point_id: u32,
         policy_version: u64,
         now_fn: fn() -> u64,
+        feedback_fn: fn(u64) -> FeedbackBundle,
     ) -> Self {
         Self {
             chain,
@@ -155,6 +159,7 @@ impl ChainCommandSink {
             point_id,
             policy_version,
             now_fn,
+            feedback_fn,
             seq: 0,
             written: 0,
             last_deny: None,
@@ -199,7 +204,9 @@ impl CommandSink for ChainCommandSink {
         .build(&self.key)
         .encode();
         // 3. ControlChain：授权 → 租约 → 策略 → SBO → 安全（default-deny）。
-        let fb = FeedbackBundle::fresh(true, 50.0, now);
+        //    CTL-010 反馈经构造注入点提供（FIX-24.R3：不再硬编码常量；
+        //    无真实遥测时装配注入显式"未知"语义）。
+        let fb = (self.feedback_fn)(now);
         match self.chain.execute(&buf, now, &fb) {
             ChainOutcome::Executed { cmd, .. } => {
                 // 4. 真实设备写入（obligations 已由链 discharge；功率载荷
@@ -333,6 +340,11 @@ mod tests {
         }
     }
 
+    /// 测试用反馈注入：遥测可信（模拟有遥测的签发侧装配）。
+    fn feedback_fresh(now: u64) -> FeedbackBundle {
+        FeedbackBundle::fresh(true, 50.0, now)
+    }
+
     fn sink_with(executor: RecordingExecutor) -> ChainCommandSink {
         ChainCommandSink::new(
             chain_allow_ai(),
@@ -345,6 +357,7 @@ mod tests {
             10,
             4,
             now,
+            feedback_fresh,
         )
     }
 
@@ -397,6 +410,7 @@ mod tests {
             99, // 点 99 无策略规则 → NoPolicy 拒绝
             4,
             now,
+            feedback_fresh,
         );
         let r = sink.write(dispatch(10.0));
         assert!(

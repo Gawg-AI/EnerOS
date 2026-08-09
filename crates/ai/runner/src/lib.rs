@@ -196,6 +196,7 @@ pub fn run_once(
     model_path: &str,
     sink_path: &str,
     now_ms: u64,
+    feedback_fn: fn(u64) -> eneros_control_gateway::chain::FeedbackBundle,
 ) -> Result<RunnerOutcome, RunnerError> {
     let config = overrides.apply(scenario.config());
     let state = scenario.state();
@@ -224,6 +225,7 @@ pub fn run_once(
             10,
             CHAIN_POLICY_VERSION,
             now_fn,
+            feedback_fn,
         ));
     let mut coord = DualBrainCoordinator::new(config, llm, solver, sink);
 
@@ -282,25 +284,36 @@ pub fn build_production_sink(
     policy_version: u64,
     handshake_retries: u32,
     now_fn: fn() -> u64,
+    feedback_fn: fn(u64) -> eneros_control_gateway::chain::FeedbackBundle,
 ) -> Result<Box<dyn CommandSink>, RunnerError> {
-    // 两侧同源（§6.3/D7）：签发侧与 device-agent 都以平台重启计数为 epoch
-    // 种子铸造 fencing token——投递器握手取到的 token 与链内 grant 一致。
-    let (chain, token) = build_chain_with(key, lease_id, epoch_seed, policy_version)?;
-    let dispatcher = EnvelopeDispatcher::new(channel, key, lease_id, handshake_retries);
-    Ok(Box::new(
-        eneros_dual_brain::chain_sink::ChainCommandSink::new(
-            chain,
-            Box::new(dispatcher),
-            key,
-            lease_id,
-            token,
-            issuer,
-            device_id,
-            point_id,
-            policy_version,
-            now_fn,
-        ),
-    ))
+    // 链装配：租约 grant 保留（自证链校验）；信封 token 的**唯一权威来源**
+    // 为复验侧握手（FIX-24.R3，D7 语义归位——不再以本地 grant 铸造值进
+    // 生产信封）。两侧同源（同一 epoch 种子）时握手值 == 本地 grant 值，
+    // 不破坏 LeaseService 双侧校验（侦察结论，见 fix-r3 证据文档）。
+    let (chain, _local_token) = build_chain_with(key, lease_id, epoch_seed, policy_version)?;
+    let mut dispatcher = EnvelopeDispatcher::new(channel, key, lease_id, handshake_retries);
+    // 装配期握手（fail-closed：握手失败 → 装配失败；首个信封必然在握手
+    // 完成后发出；有界重试 ≤5 与零降级语义在 dispatcher 内部不变）。
+    let token = dispatcher
+        .handshake()
+        .map_err(|e| RunnerError::Chain(format!("startup handshake failed: {e:?}")))?;
+    let mut sink = eneros_dual_brain::chain_sink::ChainCommandSink::new(
+        chain,
+        Box::new(dispatcher),
+        key,
+        lease_id,
+        token,
+        issuer,
+        device_id,
+        point_id,
+        policy_version,
+        now_fn,
+        feedback_fn,
+    );
+    // D7 语义归位：将复验侧铸造的 fencing token 注入签发侧（租约续期/
+    // 轮换时同步机制就位；FIX-24.R3 前该 API 全仓零调用）。
+    sink.update_fencing_token(token);
+    Ok(Box::new(sink))
 }
 
 /// 链装配（key/lease/epoch/策略版本参数化；`build_chain` 保持默认参数演示）。
@@ -556,7 +569,8 @@ mod tests {
     use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
     use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
     use eneros_device_agent::{
-        outcome_to_frame, DenyClass, EnvelopeIngress, OutcomeFrame, HANDSHAKE_MARKER,
+        outcome_to_frame, verify_handshake_response, DenyClass, EnvelopeIngress, OutcomeFrame,
+        HANDSHAKE_MARKER,
     };
     use eneros_dual_brain::chain_sink::{DeviceExecError, DeviceExecutor, DeviceReject};
     use eneros_protocol_abstract::access::{
@@ -579,6 +593,17 @@ mod tests {
         NOW_SECS
     }
 
+    /// 测试装配用反馈注入：遥测可信（模拟有真实遥测的签发侧；FIX-24.R3
+    /// 注入点——测试装置可注入任意语义，生产路径见 R3 偏差登记）。
+    fn feedback_trusted(now: u64) -> eneros_control_gateway::chain::FeedbackBundle {
+        eneros_control_gateway::chain::FeedbackBundle::fresh(true, 50.0, now)
+    }
+
+    /// 测试装配用反馈注入：显式"未知"（验证注入生效 + fail-closed）。
+    fn feedback_unknown(now: u64) -> eneros_control_gateway::chain::FeedbackBundle {
+        eneros_control_gateway::chain::FeedbackBundle::untrusted(now)
+    }
+
     /// 测试设备（本 crate 测试私有；实现 PointAccess + AuthorizedWriter）。
     struct TestPointDevice {
         device_id: DeviceId,
@@ -589,6 +614,13 @@ mod tests {
         fn new(device_id: DeviceId) -> Self {
             let mut points = BTreeMap::new();
             points.insert(10, 0.0);
+            // FIX-24.R3：CTL-010 真实反馈需要全部遥测点（缺任一 → 复验
+            // fail-safe deny）。
+            points.insert(11, 1.0); // grid_up
+            points.insert(12, 50.0); // soc_pct
+            points.insert(13, 600.0); // dc_bus_v
+            points.insert(14, 0.0); // overcurrent
+            points.insert(15, 0.0); // overtemp
             Self { device_id, points }
         }
 
@@ -612,7 +644,8 @@ mod tests {
                     point_type: PointType::Analog,
                     value: PointValue::Float(v),
                     quality: PointQuality::good(),
-                    timestamp_ms: 0,
+                    // FIX-24.R3：新鲜时间戳（CTL-010 新鲜度；过时 → Stale 拒绝）。
+                    timestamp_ms: NOW_SECS * 1000,
                     source: DataSource::Internal,
                     unit: None,
                 })
@@ -701,7 +734,14 @@ mod tests {
                 eneros_device_agent::DeviceType::Pcs,
                 1,
                 Box::new(TestPointDevice::new(1)),
-                BTreeMap::from([(String::from("power_setpoint"), 10)]),
+                BTreeMap::from([
+                    (String::from("power_setpoint"), 10),
+                    (String::from("grid_up"), 11),
+                    (String::from("soc_pct"), 12),
+                    (String::from("dc_bus_v"), 13),
+                    (String::from("overcurrent"), 14),
+                    (String::from("overtemp"), 15),
+                ]),
             );
             Self {
                 ingress,
@@ -770,6 +810,7 @@ mod tests {
             POLICY_VER,
             3,
             now_secs_fn,
+            feedback_trusted,
         )
         .expect("sink assembly");
 
@@ -814,6 +855,7 @@ mod tests {
             POLICY_VER,
             3,
             now_secs_fn,
+            feedback_trusted,
         )
         .expect("sink assembly");
 
@@ -834,7 +876,10 @@ mod tests {
         assert_eq!(coord.sink.write_count(), 0, "被拒命令不得计入成功");
     }
 
-    /// 场景 ③：握手失败 fail-closed（有界重试 ≤5 → Offline，禁止绕过）。
+    /// 场景 ③：握手失败 fail-closed——FIX-24.R3 后装配期即握手（fail-fast）：
+    /// 握手不可用 → 装配失败（更早阻断）；≤5 次有界重试与零降级由
+    /// dispatcher 层单测覆盖（handshake_bounded_retries_then_offline /
+    /// write_fails_closed_without_handshake）。
     #[test]
     fn handshake_failure_fails_closed() {
         struct DeadChannel;
@@ -843,7 +888,7 @@ mod tests {
                 Err(ChannelError::Unreachable)
             }
         }
-        let mut sink = build_production_sink(
+        let r = build_production_sink(
             Box::new(DeadChannel),
             CHAIN_KEY,
             CHAIN_LEASE,
@@ -854,21 +899,123 @@ mod tests {
             POLICY_VER,
             2,
             now_secs_fn,
+            feedback_trusted,
+        );
+        assert!(
+            matches!(r, Err(RunnerError::Chain(msg)) if msg.contains("handshake")),
+            "握手不可用 = 装配失败（fail-closed，fail-fast）"
+        );
+    }
+
+    /// FIX-24.R3 修复 3 防回归：信封 fencing_token 必须 == 握手返回值
+    /// （复验侧铸造权威；证伪"本地 grant 铸造值进生产信封"的旧机制——
+    /// 旧代码 update_fencing_token 全仓零调用，token 来源未归位）。
+    /// 注：D7 同源约束（两侧同 epoch 种子）下握手值 == 本地 grant 值，
+    /// 数值不可区分；本测试断言**机制**：捕获握手响应携带的 token，断言
+    /// 信封携带同一值（token 来源 = 握手通道）。
+    #[test]
+    fn envelope_fencing_token_equals_handshake_token() {
+        use eneros_control_gateway::envelope::CommandEnvelope;
+
+        // 捕获通道：记录握手响应 token + 投递帧的信封字节。
+        struct CaptureChannel {
+            inner: InMemoryChannel,
+            handshake_token: std::rc::Rc<std::cell::RefCell<Option<u64>>>,
+            envelopes: std::rc::Rc<std::cell::RefCell<Vec<[u8; 172]>>>,
+        }
+        impl DeliveryChannel for CaptureChannel {
+            fn request(&mut self, t: &str, payload: &[u8]) -> Result<Vec<u8>, ChannelError> {
+                if payload == HANDSHAKE_MARKER {
+                    let resp = self.inner.request(t, payload)?;
+                    if let Some((_, token)) = verify_handshake_response(CHAIN_KEY, &resp) {
+                        *self.handshake_token.borrow_mut() = Some(token);
+                    }
+                    return Ok(resp);
+                }
+                if payload.len() >= 172 {
+                    let mut env = [0u8; 172];
+                    env.copy_from_slice(&payload[..172]);
+                    self.envelopes.borrow_mut().push(env);
+                }
+                self.inner.request(t, payload)
+            }
+        }
+
+        let channel = CaptureChannel {
+            inner: device_side_channel(),
+            handshake_token: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            envelopes: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        };
+        let handshake_handle = channel.handshake_token.clone();
+        let envelopes_handle = channel.envelopes.clone();
+        let mut sink = build_production_sink(
+            Box::new(channel),
+            CHAIN_KEY,
+            CHAIN_LEASE,
+            EPOCH_SEED,
+            CHAIN_ISSUER,
+            1,
+            10,
+            POLICY_VER,
+            3,
+            now_secs_fn,
+            feedback_trusted,
         )
         .expect("sink assembly");
 
-        // 直接走 ChainCommandSink（经 ChainCommandSink 写 → 投递器握手失败）。
-        // 握手失败路径在 dispatcher 层单测覆盖（bounded retries + Offline）；
-        // 此处验证 sink 全链不 panic、失败可观测。
         let dc = eneros_dual_brain::sink::DispatchCommand {
             target_device: "pcs".into(),
-            power_kw: 50.0,
+            power_kw: 30.0,
+            ttl_ms: 60_000,
+            timestamp: NOW_SECS * 1000,
+        };
+        sink.write(dc).expect("写必须成功（握手后发出）");
+
+        // 握手返回值（复验侧铸造）。
+        let handshake_token = handshake_handle.borrow().expect("装配期握手必须发生");
+        assert_eq!(handshake_token, EPOCH_SEED + 1, "token 以重启计数为种子");
+        // 信封携带的 fencing_token == 握手返回值（D7 语义归位）。
+        let envelopes = envelopes_handle.borrow();
+        assert_eq!(envelopes.len(), 1, "恰好投递一个信封");
+        let env = CommandEnvelope::decode(&envelopes[0]).expect("信封解码");
+        assert_eq!(
+            env.fencing_token, handshake_token,
+            "信封 fencing_token 必须等于握手返回值（复验侧权威）"
+        );
+        // stale token 仍被拒（既有语义）：手动构造旧 token 信封 → 复验拒。
+        // （由 ingress 用例 5 stale_token_denied + 本测试共同覆盖。）
+    }
+
+    /// FIX-24.R3 修复 1 防回归（签发侧）：feedback 注入点生效——注入显式
+    /// "未知" → 自证链按真实状态裁决（fail-safe deny）；旧行为（硬编码
+    /// fresh 常量）无法注入、必然放行。
+    #[test]
+    fn injected_unknown_feedback_denies_chain() {
+        let channel = device_side_channel();
+        let mut sink = build_production_sink(
+            Box::new(channel),
+            CHAIN_KEY,
+            CHAIN_LEASE,
+            EPOCH_SEED,
+            CHAIN_ISSUER,
+            1,
+            10,
+            POLICY_VER,
+            3,
+            now_secs_fn,
+            feedback_unknown,
+        )
+        .expect("sink assembly");
+
+        let dc = eneros_dual_brain::sink::DispatchCommand {
+            target_device: "pcs".into(),
+            power_kw: 30.0,
             ttl_ms: 60_000,
             timestamp: NOW_SECS * 1000,
         };
         let r = sink.write(dc);
-        assert!(r.is_err(), "握手不可用 = 写不可用（fail-closed）: {r:?}");
-        assert_eq!(sink.write_count(), 0);
+        assert!(r.is_err(), "显式未知反馈必须 fail-closed: {r:?}");
+        assert_eq!(sink.write_count(), 0, "未知反馈不得落写");
     }
 
     /// 结构化拒绝可精确断言（dispatcher 层）：握手走真实收口点，投递结果

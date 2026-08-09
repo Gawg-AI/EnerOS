@@ -28,9 +28,9 @@ eneros-metrics = { path = "../../observability/metrics" }
 eneros-audit = { path = "../../security/audit" }
 # 指标注册定容字符串（与 metrics crate 同版本）。
 heapless = { version = "0.8", default-features = false }
+# FIX-24.R3：CTL-010 真实反馈（QualityFlag 为 reconcile 输入类型）。
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 
 [dev-dependencies]
-# 测试用四遥模型（策略/安全点/命令构造）。
-eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 # §8.2 场景④：指标 telemetry 导出验证（OtlpExporter 真实导出路径）。
 eneros-telemetry-queue = { path = "../../observability/telemetry-queue" }

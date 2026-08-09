@@ -143,6 +143,27 @@ impl FeedbackBundle {
             maintenance_lockout: false,
         }
     }
+
+    /// Build a bundle where **every** sample is explicitly untrusted
+    /// (`QualityFlag::Invalid`). CTL-010 reconciliation rejects every field,
+    /// driving the safety validator to fail-safe (deny) — this is the honest
+    /// representation of "feedback unknown" (蓝图/24 FIX-24.R3：禁止常量捏造，
+    /// 无真实遥测时以显式未知表达，让链按真实状态裁决).
+    pub fn untrusted(now: u64) -> Self {
+        let bad = FeedbackSample {
+            value: 0.0,
+            quality: QualityFlag::Invalid,
+            timestamp_epoch: now,
+        };
+        Self {
+            grid_up: bad,
+            soc_pct: bad,
+            dc_bus_v: bad,
+            overcurrent: bad,
+            overtemp: bad,
+            maintenance_lockout: false,
+        }
+    }
 }
 
 /// The complete control chain. Owns every CTL component.

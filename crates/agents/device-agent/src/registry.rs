@@ -54,6 +54,9 @@ pub struct MockPointDevice {
     device_id: DeviceId,
     /// 离线标志（读点返回 invalid 品质）.
     offline: bool,
+    /// 写失败开关（FIX-24.R3：模拟"遥测正常但写失败"——独立于离线，
+    /// 离线同时影响读质量）。
+    write_fail: bool,
 }
 
 #[cfg(any(test, feature = "mock"))]
@@ -65,6 +68,7 @@ impl MockPointDevice {
             next_id: 1,
             device_id,
             offline: false,
+            write_fail: false,
         }
     }
 
@@ -134,6 +138,19 @@ impl MockPointDevice {
         self.offline = offline;
     }
 
+    /// 设置写失败开关（FIX-24.R3：模拟协议写失败；读路径不受影响）。
+    pub fn set_write_fail(&mut self, fail: bool) {
+        self.write_fail = fail;
+    }
+
+    /// 全部点的时间戳设为 `ts_ms`（FIX-24.R3：CTL-010 真实反馈需要新鲜
+    /// 时间戳——reconcile 对过时样本判 Stale → 不可信 → fail-safe deny）。
+    pub fn touch(&mut self, ts_ms: u64) {
+        for p in self.points.values_mut() {
+            p.timestamp_ms = ts_ms;
+        }
+    }
+
     /// 全部点 ID 列表。
     pub fn point_ids(&self) -> alloc::vec::Vec<PointId> {
         self.points.keys().copied().collect()
@@ -190,7 +207,7 @@ impl AuthorizedWriter for MockPointDevice {
         if !self.points.contains_key(&cmd.point_id) {
             return Err(WriteError::CommandMismatch);
         }
-        if self.offline {
+        if self.offline || self.write_fail {
             return Err(WriteError::Protocol(ProtocolError::WriteFailed));
         }
         // 篡改防御：载荷类型与点类型矛盾 → 拒绝。

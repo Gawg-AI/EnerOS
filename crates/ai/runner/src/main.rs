@@ -145,6 +145,9 @@ fn main() {
         }
     };
 
+    // FIX-24.R3：演示/证据路径无真实遥测可接 → 注入显式"未知"反馈语义
+    // （untrusted → CTL-010 fail-safe deny）。偏差登记见蓝图/24 修订记录 R3；
+    // 清偿条件：遥测源接入后注入真实 bundle。
     match run_once(
         args.scenario,
         Overrides {
@@ -153,6 +156,7 @@ fn main() {
         &args.model,
         &args.sink,
         args.now_ms,
+        eneros_control_gateway::chain::FeedbackBundle::untrusted,
     ) {
         Ok(outcome) => {
             // stdout 只输出证据 JSON（llama 日志在 stderr）——证据文件可

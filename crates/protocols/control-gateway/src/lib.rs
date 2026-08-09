@@ -19,7 +19,6 @@
 //! `eneros-telemetry-model` (ControlCommand). No third-party deps.
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 
 extern crate alloc;
 
@@ -57,7 +56,8 @@ pub use incident_replay::{
 pub use lease::{LeaseScope, LeaseService};
 pub use override_ctrl::{OverrideAuthority, OverrideDecision, OverrideSession};
 pub use policy::{CommandClass, Decision, DenyReason, Obligation, Pdp, Policy, PolicyRule};
-pub use reconcile::{reconcile, FeedbackSample, Reconciled};
+pub use reconcile::FeedbackSample;
+pub use reconcile::{reconcile, Reconciled};
 pub use safety::{PlantContext, SafetyPoint, SafetyRole, SafetyValidator, SafetyVerdict};
 pub use slo::{
     frozen_slo, DeadlineMonitor, DegradationAction, LatencySample, MissClass, SloId, SloSnapshot,
