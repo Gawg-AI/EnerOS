@@ -17,9 +17,24 @@ use super::{invalid, DynResult};
 
 const DEFAULT_FIRMWARE: &str = "/usr/share/AAVMF/AAVMF_CODE.secboot.fd";
 
-/// 固件路径解析：环境变量 `ENEROS_QEMU_FIRMWARE` 优先（本机 /usr/share
-/// 不可写、或使用 xPack QEMU 自带 edk2-arm-code.fd 的测试环境）；
-/// 否则回落到发行版 AAVMF 默认路径。
+/// WP-27.1 AAVMF 固件锁定声明（R27-2 供应链缓解）。
+///
+/// 锁定记录（本环境 2026-08-10 实测，evidence/boot-unblock/ 有导出字节）：
+/// - 路径：`/usr/share/AAVMF/AAVMF_CODE.secboot.fd`（Ubuntu 发行版包
+///   `qemu-efi-aarch64`，版本字符串 `2025.11-3ubuntu7`，edk2-2025.11
+///   构建于 2026-03-31，见固件内 `Sec.dll` 构建路径与启动日志首行）
+/// - SHA256：`aafedb40e155a33ef37da3f94169352c111356c6c510359dd25fdfb4817bc2d6`
+/// - VARS 模板：`/usr/share/AAVMF/AAVMF_VARS.fd`（64 MiB，全零化后作为
+///   qemu-prod 模板；全零 VARS 使固件不含任何 Boot 项/anchor 变量）
+///
+/// 判定事实（WP-27.1 诊断结论）：2025.11 固件下 G1 日志（2026-08-09
+/// 21:31）完整复现过 13 行启动断言——BOOTCTRL 分区由 xtask 镜像工厂与
+/// boot-manager 自身写入，固件不写该分区；"bootctrl-resolve-fail
+/// error=Genesis" 根因是磁盘 BOOTCTRL 被上次运行写为 seq=1 而 VARS 模板
+/// 无保护锚点（fail-closed 语义正确），与固件版本无因果。更换/升级固件
+/// 前必须重跑 qemu-prod 全链证据并在此更新版本+哈希。
+/// 环境变量 `ENEROS_QEMU_FIRMWARE` 可指向替代固件（测试环境用 xPack
+/// edk2-arm-code.fd 时）。
 fn firmware_path() -> String {
     std::env::var("ENEROS_QEMU_FIRMWARE").unwrap_or_else(|_| DEFAULT_FIRMWARE.to_owned())
 }
@@ -38,6 +53,13 @@ struct RunOptions {
     data_disk: Option<PathBuf>,
     expected_slot: Option<String>,
     expected_reason: Option<String>,
+    /// WP-27.1：运行前把镜像 BOOTCTRL 双副本归零（seq=0、双副本一致、
+    /// 重算 CRC）。QEMU cache=none 直写镜像，上次成功引导会把 seq 递增为
+    /// 1，而每次运行都复制全新 VARS 模板（无保护锚点）→ 无锚点路径
+    /// Genesis 拒绝（fail-closed 语义正确，非 bug）。本开关把"重建镜像
+    /// （约 10 分钟）等效于归零（秒级）"自动化，默认关闭（不破坏
+    /// Reject/CUT/fault 注入等依赖磁盘特定状态的场景）。
+    reset_bootctrl: bool,
 }
 
 #[derive(Debug)]
@@ -309,9 +331,16 @@ fn parse_options(args: &[String]) -> DynResult<RunOptions> {
     let mut data_disk = None;
     let mut expected_slot = None;
     let mut expected_reason = None;
+    let mut reset_bootctrl = false;
     let mut index = 0usize;
     while index < args.len() {
         let flag = &args[index];
+        if flag == "--reset-bootctrl" {
+            // 无值布尔开关：运行前归零镜像 BOOTCTRL 双副本（WP-27.1）。
+            reset_bootctrl = true;
+            index += 1;
+            continue;
+        }
         let value = args
             .get(index + 1)
             .ok_or_else(|| invalid(format!("{flag} requires a value")))?;
@@ -404,6 +433,7 @@ fn parse_options(args: &[String]) -> DynResult<RunOptions> {
         data_disk,
         expected_slot,
         expected_reason,
+        reset_bootctrl,
     })
 }
 
@@ -580,6 +610,7 @@ fn run_installer(root: &Path, options: InstallRunOptions) -> DynResult<()> {
                     data_disk: None,
                     expected_slot: None,
                     expected_reason: None,
+                    reset_bootctrl: false,
                 },
             )?;
             (
@@ -662,6 +693,20 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
     let vars_template = rooted_target_path(root, &options.vars_template)?;
     if !image.is_file() || !vars_template.is_file() {
         return Err(invalid("QEMU image and vars template must both exist"));
+    }
+    if options.reset_bootctrl {
+        // WP-27.1：同盘重跑（cache=none 直写）后 BOOTCTRL seq≠0 + VARS 无锚点
+        // 会触发 fail-closed Genesis。运行前显式归零（seq=0、双副本一致、
+        // 重算 CRC）等价于重建镜像的 BOOTCTRL 状态；仅对显式请求生效。
+        let before = fs::read(&image)?;
+        let mut mutable = before.clone();
+        reset_bootctrl_copies(&mut mutable)?;
+        fs::write(&image, &mutable)?;
+        println!(
+            "QEMU profile=qemu-prod bootctrl reset before_sha256={} after_sha256={}",
+            hex(&Sha256::digest(&before)),
+            hex(&Sha256::digest(&mutable))
+        );
     }
     let image_initial_bytes = fs::read(&image)?;
     let image_initial_sha256 = hex(&Sha256::digest(&image_initial_bytes));
@@ -996,6 +1041,43 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
         "QEMU profile=qemu-prod result=PASS expected={} image_initial_sha256={} image_final_sha256={}",
         result.expected, result.image_initial_sha256, result.image_final_sha256
     );
+    Ok(())
+}
+
+/// WP-27.1：把镜像的 BOOTCTRL 双副本归零（seq=0、双副本一致、重算 CRC）。
+///
+/// 用 `BootControl::decode` 解码现有合法记录 → 置 `sequence=0` →
+/// `encode` 重算 CRC 并保证 canonical 布局 → 双副本写回。与 boot-manager
+/// 的编码完全同源（无 python 侧重复实现，规避 reset-bootctrl.py 曾有的
+/// CRC 最终异或不一致缺陷）。Genesis/Anchor 判定语义不被触碰。
+fn reset_bootctrl_copies(image: &mut [u8]) -> DynResult<()> {
+    let gpt = parse_gpt(image, 512)
+        .map_err(|error| invalid(format!("BOOTCTRL reset GPT parse failed: {error:?}")))?;
+    let partition = gpt
+        .find_by_name("BOOTCTRL")
+        .ok_or_else(|| invalid("image has no BOOTCTRL partition"))?;
+    let partition_start = usize::try_from(
+        partition
+            .first_lba
+            .checked_mul(512)
+            .ok_or_else(|| invalid("BOOTCTRL offset overflow"))?,
+    )?;
+    let (first, second) = image
+        .get_mut(
+            partition_start..partition_start
+                .checked_add(BOOT_CONTROL_RECORD_SIZE * 2)
+                .ok_or_else(|| invalid("BOOTCTRL copy range overflow"))?,
+        )
+        .ok_or_else(|| invalid("BOOTCTRL copies truncated"))?
+        .split_at_mut(BOOT_CONTROL_RECORD_SIZE);
+    let mut control = BootControl::decode(first)
+        .map_err(|error| invalid(format!("BOOTCTRL reset source decode failed: {error:?}")))?;
+    control.sequence = 0;
+    let record = control
+        .encode()
+        .map_err(|error| invalid(format!("BOOTCTRL reset encode failed: {error:?}")))?;
+    first.copy_from_slice(&record);
+    second.copy_from_slice(&record);
     Ok(())
 }
 

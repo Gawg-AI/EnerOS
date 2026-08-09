@@ -9,7 +9,6 @@ anchor 由 boot-manager 首次引导重新初始化。
 """
 import struct
 import sys
-import zlib
 
 path = sys.argv[1] if len(sys.argv) > 1 else "target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
 first_lba = int(sys.argv[2], 0) if len(sys.argv) > 2 else 18432
@@ -19,13 +18,15 @@ CRC_OFFSET = 4092  # BootControl::CRC_OFFSET = RECORD_SIZE(4096) - 4
 
 def crc32(data: bytes) -> int:
     # 与 ipc-wire 的 crc32 一致（IEEE 802.3 0xEDB88320，初值 0xFFFFFFFF，
-    # 无最终异或）——zlib 有最终异或，需回退。
+    # 末尾最终异或）——ipc-wire 实现循环后执行 `!crc`；旧版本脚本省略该
+    # 异或，写出的副本被 BootControl::decode 判 Crc（WP-27.1 真实字节验证，
+    # "重置脚本与 boot-manager 的 CRC 不一致"的根因，已修复）。
     crc = 0xFFFFFFFF
     for b in data:
         crc ^= b
         for _ in range(8):
             crc = (crc >> 1) ^ 0xEDB88320 if crc & 1 else crc >> 1
-    return crc & 0xFFFFFFFF
+    return (~crc) & 0xFFFFFFFF
 
 with open(path, "r+b") as f:
     # 读 first copy（4096 B 记录）
