@@ -40,15 +40,6 @@ pub trait DeviceObserver {
     fn observe_device(&self) -> Option<DeviceObservation>;
 }
 
-/// 观测相结果标记（W2.1）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutcomeKind {
-    /// 观测到执行后真实状态（feedback 用观测值）。
-    Observed,
-    /// 观测超时/不可用（feedback 标记 OutcomeUnknown + 告警）。
-    Unknown,
-}
-
 /// 能源调度 Agent.
 ///
 /// 持有 `DualBrainCoordinator<S>`（泛型求解器，构造器注入，P0-27）。
