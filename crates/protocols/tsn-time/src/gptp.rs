@@ -87,8 +87,6 @@ pub struct GptpClock {
     pub last_sync_rx_ts: core::option::Option<PtpTime>,
     /// 最近 Sync 的 `delay_ns`（FollowUp 重算偏移用，D9）.
     pub last_sync_delay_ns: i64,
-    /// 最近 Sync 的原时间戳（FollowUp 配对校验用）.
-    pub last_sync_origin_ts: core::option::Option<PtpTime>,
 }
 
 impl GptpClock {
@@ -111,7 +109,6 @@ impl GptpClock {
             last_sync_seq_id: None,
             last_sync_rx_ts: None,
             last_sync_delay_ns: 0,
-            last_sync_origin_ts: None,
         }
     }
 
@@ -144,26 +141,35 @@ impl GptpClock {
         }
     }
 
-    /// 处理 Sync 报文（D9：`delay_ns` 为参数，修正蓝图 bug）.
+    /// 处理 Sync 报文（D9：`delay_ns` 为参数，修正蓝图 bug；FIX-BUGS-0810
+    /// B1：two-step 语义）。
     ///
-    /// 低通滤波：`offset = (offset * 7 + new_offset) / 8`，
-    /// 其中 `new_offset = rx_ts.diff_ns(origin_timestamp) - delay_ns`.
+    /// IEEE 802.1AS two-step：Sync 携带的 `origin_timestamp` 是**粗略**值，
+    /// 精确原时间戳在配对 FollowUp 中——offset 只能由 FollowUp 更新（单一
+    /// 出口）。本函数仅暂存 seq/rx_ts/delay 供 FollowUp 配对；若此处也更新
+    /// offset，会先被粗略值污染、再被精确值二次覆盖（双重滤波，旧缺陷）。
+    /// 假设：本实现仅支持 two-step 时钟（one-step 的 correctionField 不在
+    /// 消息模型中）。
     pub fn handle_sync(&mut self, sync: &SyncMessage, rx_ts: PtpTime, delay_ns: i64) {
-        let new_offset = rx_ts.diff_ns(&sync.origin_timestamp) - delay_ns;
-        self.offset = (self.offset * 7 + new_offset) / 8;
         self.last_sync_seq_id = Some(sync.sequence_id);
         self.last_sync_rx_ts = Some(rx_ts);
         self.last_sync_delay_ns = delay_ns;
-        self.last_sync_origin_ts = Some(sync.origin_timestamp);
     }
 
-    /// 处理 FollowUp 报文：序列号匹配时用精确时间戳重算偏移.
+    /// 处理 FollowUp 报文：序列号匹配时用精确时间戳重算偏移——**offset 的
+    /// 唯一更新出口**（FIX-BUGS-0810 B1）。
+    ///
+    /// 差值超范围（对端时间戳不可信，B3）→ `diff_ns` 返回 `None` →
+    /// fail-closed 跳过本次更新（offset 保持旧值，不触碰 `current_time`；
+    /// 后续合法报文可恢复）。
     pub fn handle_follow_up(&mut self, fu: &FollowUpMessage) {
         if self.last_sync_seq_id == Some(fu.sequence_id) {
             if let Some(rx_ts) = self.last_sync_rx_ts {
-                let new_offset =
-                    rx_ts.diff_ns(&fu.precise_origin_timestamp) - self.last_sync_delay_ns;
-                self.offset = (self.offset * 7 + new_offset) / 8;
+                if let Some(diff) = rx_ts.diff_ns(&fu.precise_origin_timestamp) {
+                    let new_offset = diff - self.last_sync_delay_ns;
+                    self.offset = (self.offset * 7 + new_offset) / 8;
+                }
+                // diff_ns None：对端时间戳超范围，跳过（fail-closed）。
             }
             // 序列号匹配，消费之.
             self.last_sync_seq_id = None;
