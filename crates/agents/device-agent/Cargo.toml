@@ -32,3 +32,5 @@ heapless = { version = "0.8", default-features = false }
 [dev-dependencies]
 # 测试用四遥模型（策略/安全点/命令构造）。
 eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
+# §8.2 场景④：指标 telemetry 导出验证（OtlpExporter 真实导出路径）。
+eneros-telemetry-queue = { path = "../../observability/telemetry-queue" }

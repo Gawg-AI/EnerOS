@@ -81,3 +81,7 @@ mod tests;
 // 蓝图/24 §7.4 装配检查点演示（密钥/lease_id/重启计数注入路径 + 拒绝指标样例）。
 #[cfg(test)]
 mod assembly_demo;
+
+// 蓝图/24 §8.2 第三层端到端场景（host 先行；QEMU 挂 22 系列）。
+#[cfg(test)]
+mod e2e_scenarios;

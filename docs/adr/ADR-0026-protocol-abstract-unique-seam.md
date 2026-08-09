@@ -79,3 +79,49 @@ device-agent 明确绕开。设计术语上这是 **hypothetical seam**——"�
 - 蓝图：07 §1.2、§2.3、§4.1；MASTER §G4 NET-009～011。
 - 实施：ARCH-P01（modbus 适配器 + 共享套件）、ARCH-P02（device-agent 去旁路）、
   ARCH-P03（seam 收缩）、ARCH-P04（iec104 第三适配器）。
+
+## 7. 补充说明（2026-08-09，蓝图/24 D10）：控制写接缝 AuthorizedWriter
+
+> 蓝图/24《控制写接缝（AuthorizedWriter）开发规格与计划》实施补充。本 ADR 的
+> "唯一协议 seam"结论不推翻，seam 内部分级（读写信任分级）按蓝图/24 D1 扩展。
+
+### 7.1 读写信任分级（蓝图/24 §1.1 推论 A）
+
+读操作幂等、无副作用（错了可以重读）；**写操作改变物理世界状态**（功率设定值
+下发到 PCS 就是真实的充放电），错误代价以设备损伤与安全事故计。因此整个系统中
+唯一需要"裁决接缝"的操作类是写——把读写放进同一个信任等级的接口（原
+`PointAccess` 含 `write_point`）是范畴错误。
+
+**落地**：`PointAccess` 收窄为纯读（`read_point`/`read_points`/`protocol_type`），
+`write_point`/`write_points` 移除；新增 [`AuthorizedWriter`]（`write_authorized(cmd,
+value) -> Result<WriteOutcome, WriteError>`），只接受 [`AuthorizedCommand`]
+（控制链裁决产物）。
+
+### 7.2 AuthorizedWriter 与 PointAccess 的关系
+
+- **分离而非继承**：`AuthorizedWriter` 不继承 `PointAccess`（读消费方不应被迫
+  携带写知识，写接缝不应暴露读能力）；设备注册表持组合形态
+  `PointAccessWriter: PointAccess + AuthorizedWriter`（`dyn` 双 trait 不合法，
+  以单一 principal trait 表达，E0225 规避）。
+- **编译期强制（蓝图/24 §1.2 推论 C）**：`PointAccess` 无写方法——读接缝消费方
+  在编译期无法写；唯一写入口要求 `AuthorizedCommand` 参数（类型形状强制）。
+  命令"真实性"由 device-agent 收口复验保证（运行时强制，纵深防御）。
+- **类型化（蓝图/24 D4）**：`AuthorizedCommand` 的 `device_id` 为 upa-model
+  `DeviceId(u16)`、`point_id` 为 `PointId(u32)`；信封 wire 布局不变（wire 上
+  device_id 仍 4 字节，`ControlGateway::authorize` 在 HMAC 验证后收窄，
+  越界 → `GatewayError::BadDeviceId` default-deny）。
+- **落位**：`AuthorizedCommand`/`ActorKind` 随 `ControlCommand` 下移
+  telemetry-model（共享模型层），control-gateway re-export 保持导入路径；
+  protocol-abstract 不反向依赖 control-gateway（依赖方向约束）。
+
+### 7.3 急停与逃生门（蓝图/24 §1.4 推论 F、D8）
+
+"安全默认拒绝"的反面不是"默认放行"，而是设计过的最小逃生门：
+
+- 急停/就地操作走**正常信封路径**（预置租约 + `ActorKind::Operator`/`Emergency`）——
+  急停也进审计链（合规卖点）；
+- `EmergencyBypass`（CTL-009）保留为**租约机制故障时**的逃生门：只绕策略 PDP，
+  不绕安全校验（CTL-008），全程留审计——三条逃生门原则（显式设计/最小化/
+  全程留审计）满足；
+- 断网本地自治写完整可用（本地租约本地签发，§6.3）；fencing epoch 以平台
+  重启计数为种子（单调性，§1.5 推论 G）。

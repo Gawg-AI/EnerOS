@@ -16,6 +16,8 @@
 | `DataSource` | 采集来源：ModbusRtu/ModbusTcp/Iec104/Can/Internal/Manual | `upa-model` | — |
 | `ProtocolAdapter` | 协议适配器 trait（生命周期 + 点访问），唯一协议 seam | `protocol-abstract`（ADR-0026） | driver-sdk/protocol-sdk 插件 trait（宿主内接口） |
 | `PointAccess` | 统一点读写 trait（唯一协议 seam 底座） | `protocol-abstract` | device-agent 旧 `DeviceAdapter`（已删除） |
+| `AuthorizedWriter` | 协议侧写接缝：只接受 `AuthorizedCommand` 的写能力，与 `PointAccess`（读）信任分级（蓝图/24 D1 已落地：写从 PointAccess 分离，读写信任分级） | `protocol-abstract`（蓝图/24，ADR-0026 §7） | 裸 `write_point` 无授权写（已移除，删除闸门见蓝图/24 R2） |
+| `AuthorizedCommand` | 控制链裁决产物：device_id(u16)/point_id(u32)/command/actor_kind/issuer/lease/fencing 等；唯一构造路径 `ControlGateway::authorize` | `telemetry-model::command`（蓝图/24 D4 下移，control-gateway re-export） | 信封 wire 上的裸 u32 字段（仅 wire 编解码内部） |
 | `ProtocolPointMapping` | 点 ID ↔ 协议地址映射 + 工程量变换（scale/offset） | `protocol-abstract` | — |
 | `DeviceDriver` | 用户态设备驱动 trait（生命周期/状态/健康），唯一驱动 seam | `drivers/framework`（ADR-0028） | `DriverPlugin`（driver-sdk，已删除） |
 | `MockAdapter`/`MockDriver` | 契约测试用 mock（seam 层共享套件成员） | `protocol-abstract`/`framework` | — |
@@ -31,6 +33,7 @@
 | `YuanPerMwh` | 价格 newtype（元/MWh） | `market-types` | realtime-market 裸 f64（已替换） |
 | `BidSegment` | 报价段：period + volume_kwh + price + direction | `market-types` | spot-market 旧定义收敛 |
 | `BidAck` | 报价回执 | `market-types` | spot-market/ancillary 旧定义收敛 |
+| `Period` | 时段（峰/平/谷），进入 `PricePoint.period`/`ResourceBid.period` 跨 crate 契约 | `market-types`（ADR-0029，W5.1 蓝图23） | market_feed 旧定义已收敛为 re-export |
 | `aggregator` | 仅用于"聚合计算"（见 §3 归属） | 各领域保留 | 见 ADR-0029 |
 
 ## 3. aggregator 归属边界（ADR-0029）

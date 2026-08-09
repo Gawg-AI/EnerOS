@@ -90,6 +90,28 @@ impl MockPointDevice {
         self
     }
 
+    /// 添加点位并显式指定 PointId（测试/仿真：对齐链策略/租约的 point_id；
+    /// 与自动分配语义一致，重复 id 覆盖）。
+    pub fn with_point_at(mut self, name: &str, value: f64, point_id: PointId) -> Self {
+        self.next_id = self.next_id.max(point_id + 1);
+        self.points.insert(
+            point_id,
+            DataPoint {
+                point_id,
+                device_id: self.device_id,
+                name: String::from(name),
+                description: None,
+                point_type: PointType::Analog,
+                value: PointValue::Float(value),
+                quality: PointQuality::good(),
+                timestamp_ms: 0,
+                source: DataSource::Internal,
+                unit: None,
+            },
+        );
+        self
+    }
+
     /// 收集点名为 name 的 PointId（供 DeviceInfo.point_map 使用）。
     pub fn point_id_of(&self, name: &str) -> Option<PointId> {
         self.points
