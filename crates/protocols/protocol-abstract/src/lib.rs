@@ -54,10 +54,13 @@ pub mod mapping;
 pub mod mock;
 
 // 重导出公共 API
-pub use access::{PointAccess, PointAccessExt};
+pub use access::{AuthorizedWriter, PointAccess, PointAccessExt, WriteError, WriteOutcome};
 pub use adapter::{AdapterState, ProtocolAdapter};
 pub use address::ProtocolAddress;
 pub use config::{AdapterConfig, DeviceConfig, ProtocolType};
+// 蓝图/24 D1：写接缝的类型签名引用 AuthorizedCommand；经本 seam 层 re-export，
+// 适配器实现 crate 无需直接依赖 telemetry-model。
+pub use eneros_telemetry_model::command::AuthorizedCommand;
 pub use error::ProtocolError;
 pub use manager::ProtocolManager;
 pub use mapping::ProtocolPointMapping;
@@ -75,11 +78,11 @@ mod tests {
         DataPoint, DataSource, DeviceId, PointId, PointQuality, PointType, PointValue,
     };
 
-    use crate::access::PointAccess;
-    use crate::access::PointAccessExt;
+    use crate::access::{AuthorizedWriter, PointAccess, PointAccessExt, WriteError};
     use crate::adapter::{AdapterState, ProtocolAdapter};
     use crate::address::ProtocolAddress;
     use crate::config::{AdapterConfig, DeviceConfig, ProtocolType};
+    use crate::contract::{authorized_command, simple_adapter_config};
     use crate::error::ProtocolError;
     use crate::manager::ProtocolManager;
     use crate::mapping::ProtocolPointMapping;
@@ -129,24 +132,32 @@ mod tests {
         assert!(matches!(result, Err(ProtocolError::PointNotFound)));
     }
 
-    // ===== T3：MockAdapter write_point 更新点值 =====
+    // ===== T3：MockAdapter 授权写更新点值（蓝图/24 D1 写接缝）=====
     #[test]
-    fn test_t3_mock_write_point_updates_value() {
+    fn test_t3_mock_write_authorized_updates_value() {
         let mut adapter = MockAdapter::new(ProtocolType::Iec104);
         adapter.set_point(5, make_point(5, 1, PointValue::Float(10.0)));
+        let cfg = simple_adapter_config(ProtocolType::Iec104, 1);
+        adapter.init(&cfg).expect("init ok");
 
-        // 写入新值
-        adapter
-            .write_point(5, PointValue::Float(99.0))
-            .expect("write ok");
-
-        // 读回验证
+        // 授权写（设备/点匹配）→ 更新 + 回读确认。
+        let outcome = adapter
+            .write_authorized(&authorized_command(1, 5), PointValue::Float(99.0))
+            .expect("授权写必须成功");
+        assert_eq!(outcome.echoed, Some(PointValue::Float(99.0)));
         let point = adapter.read_point(5).expect("read ok");
         assert_eq!(point.value, PointValue::Float(99.0));
 
-        // 写入不存在的点返回错误
-        let result = adapter.write_point(888, PointValue::Bool(true));
-        assert_eq!(result, Err(ProtocolError::PointNotFound));
+        // 设备不匹配 → CommandMismatch（运行时防线；编译期防线见 access.rs）。
+        assert_eq!(
+            adapter.write_authorized(&authorized_command(2, 5), PointValue::Float(1.0)),
+            Err(WriteError::CommandMismatch)
+        );
+        // 点不存在 → CommandMismatch。
+        assert_eq!(
+            adapter.write_authorized(&authorized_command(1, 888), PointValue::Bool(true)),
+            Err(WriteError::CommandMismatch)
+        );
     }
 
     // ===== T4：MockAdapter read_points 批量读取 =====
@@ -440,41 +451,34 @@ mod tests {
         assert!(results[0].is_ok());
         assert!(results[1].is_ok());
 
-        // 写入跨协议
-        manager
-            .write_point(1, PointValue::Float(9.9))
-            .expect("write modbus ok");
-        manager
-            .write_point(2, PointValue::Float(8.8))
-            .expect("write iec104 ok");
-
-        // 验证写入生效
-        let p1 = manager.read_point(1).expect("read ok");
-        assert_eq!(p1.value, PointValue::Float(9.9));
-        let p2 = manager.read_point(2).expect("read ok");
-        assert_eq!(p2.value, PointValue::Float(8.8));
+        // 蓝图/24 D1：写不再经 manager 路由（读管理面不承载写旁路）；
+        // 写必须经 AuthorizedWriter 施加——见 T3/契约套件。
 
         // poll_all 轮询两个适配器
         manager.poll_all(10000);
     }
 
-    // ===== 附加测试：write_points 批量写入 =====
+    // ===== 附加测试：授权批量写（write_points 已随 D1 移除，语义迁移到写接缝）=====
     #[test]
-    fn test_write_points_batch() {
+    fn test_authorized_batch_write() {
         let mut adapter = MockAdapter::new(ProtocolType::ModbusRtu);
         adapter.set_point(1, make_point(1, 1, PointValue::Float(0.0)));
         adapter.set_point(2, make_point(2, 1, PointValue::Float(0.0)));
+        let cfg = simple_adapter_config(ProtocolType::ModbusRtu, 1);
+        adapter.init(&cfg).expect("init ok");
 
-        let cmds: Vec<(PointId, PointValue)> = vec![
-            (1, PointValue::Float(1.1)),
-            (2, PointValue::Float(2.2)),
-            (3, PointValue::Float(3.3)), // 不存在
-        ];
-        let results = adapter.write_points(&cmds);
-        assert_eq!(results.len(), 3);
-        assert!(results[0].is_ok());
-        assert!(results[1].is_ok());
-        assert_eq!(results[2], Err(ProtocolError::PointNotFound));
+        // 逐点授权写（批量语义在接缝上以逐点组合实现；失败项不阻塞其余）。
+        for (id, v) in [(1u32, PointValue::Float(1.1)), (2, PointValue::Float(2.2))] {
+            adapter
+                .write_authorized(&authorized_command(1, id), v)
+                .expect("授权写必须成功");
+        }
+
+        // 点 3 未注册 → CommandMismatch，不影响已写入点。
+        assert_eq!(
+            adapter.write_authorized(&authorized_command(1, 3), PointValue::Float(3.3)),
+            Err(WriteError::CommandMismatch)
+        );
 
         // 验证已写入
         assert_eq!(adapter.read_point(1).unwrap().value, PointValue::Float(1.1));

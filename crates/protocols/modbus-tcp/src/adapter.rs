@@ -9,10 +9,13 @@
 
 use alloc::vec::Vec;
 
-use eneros_protocol_abstract::access::{PointAccess, PointAccessExt};
+use eneros_protocol_abstract::access::{
+    AuthorizedWriter, PointAccess, PointAccessExt, WriteError, WriteOutcome,
+};
 use eneros_protocol_abstract::adapter::{AdapterState, ProtocolAdapter};
 use eneros_protocol_abstract::config::{AdapterConfig, ProtocolType};
 use eneros_protocol_abstract::error::ProtocolError;
+use eneros_protocol_abstract::AuthorizedCommand;
 use eneros_upa_model::{
     DataPoint, DataSource, DeviceId, PointId, PointQuality, PointType, PointValue,
 };
@@ -147,12 +150,36 @@ impl<T: TcpTransport> PointAccess for ModbusTcpAdapter<T> {
         self.read_point_impl(point_id)
     }
 
-    fn write_point(&mut self, point_id: PointId, value: PointValue) -> Result<(), ProtocolError> {
-        self.write_point_impl(point_id, value)
-    }
-
     fn protocol_type(&self) -> ProtocolType {
         ProtocolType::ModbusTcp
+    }
+}
+
+impl<T: TcpTransport> AuthorizedWriter for ModbusTcpAdapter<T> {
+    fn write_authorized(
+        &mut self,
+        cmd: &AuthorizedCommand,
+        value: PointValue,
+    ) -> Result<WriteOutcome, WriteError> {
+        // 蓝图/24 §6.1：命令点/设备匹配校验通过后才落写；不匹配 →
+        // CommandMismatch，设备状态不变。
+        if cmd.device_id != self.device_id {
+            return Err(WriteError::CommandMismatch);
+        }
+        if self.find_mapping(cmd.point_id).is_none() {
+            return Err(WriteError::CommandMismatch);
+        }
+        // 篡改防御：载荷类型与点类型矛盾（Analog 寄存器只接受数值载荷）。
+        if !matches!(
+            value,
+            PointValue::Float(_) | PointValue::Int(_) | PointValue::Enum(_)
+        ) {
+            return Err(WriteError::Unauthorized);
+        }
+        self.write_point_impl(cmd.point_id, value)
+            .map_err(WriteError::Protocol)?;
+        // 回读确认可空：Modbus TCP 主站以协议应答（写单寄存器响应）为确认。
+        Ok(WriteOutcome { echoed: None })
     }
 }
 
@@ -309,15 +336,19 @@ mod tests {
     #[test]
     fn modbus_tcp_adapter_passes_shared_contract() {
         // 契约执行顺序（每次请求新建 master → 事务 ID 从 0 起 → txn=0 匹配）：
-        // read_point(1) → read_point(2) → read_points(1,2) → write_point →
-        // read_device_points(2 点)
+        // read_point(1) → read_point(2) → read_points(1,2) → write_authorized
+        // （scale=1.0，Float(1.5) → raw 2）→ 落写后回读基线 ×1 → 不匹配/篡改
+        // 拒绝后回读 ×2 → read_device_points(2 点)
         let mut adapter = contract_adapter();
         adapter.transport.push_response(read_resp(0, &[100u16]));
         adapter.transport.push_response(read_resp(0, &[200u16]));
         adapter.transport.push_response(read_resp(0, &[100u16]));
         adapter.transport.push_response(read_resp(0, &[200u16]));
         adapter.transport.push_response(write_resp(0, 100, 2));
-        adapter.transport.push_response(read_resp(0, &[100u16]));
+        adapter.transport.push_response(read_resp(0, &[2u16]));
+        adapter.transport.push_response(read_resp(0, &[2u16]));
+        adapter.transport.push_response(read_resp(0, &[2u16]));
+        adapter.transport.push_response(read_resp(0, &[2u16]));
         adapter.transport.push_response(read_resp(0, &[200u16]));
 
         let cfg = simple_adapter_config(ProtocolType::ModbusTcp, 7);

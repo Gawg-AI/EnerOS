@@ -145,7 +145,9 @@ impl<'a> Pdp<'a> {
         }
 
         // 2. Lease scope: the target device/point must be within the lease.
-        let in_scope = (lease.devices.is_empty() || lease.devices.contains(&cmd.device_id))
+        //    （蓝图/24 D4：cmd.device_id 类型化为 u16，此处无损加宽比较）
+        let in_scope = (lease.devices.is_empty()
+            || lease.devices.contains(&(cmd.device_id as u32)))
             && (lease.points.is_empty() || lease.points.contains(&cmd.point_id));
         if !in_scope {
             return Decision::Deny(DenyReason::OutsideLeaseScope);
@@ -160,7 +162,7 @@ impl<'a> Pdp<'a> {
                     continue;
                 }
             }
-            if !rule.devices.is_empty() && !rule.devices.contains(&cmd.device_id) {
+            if !rule.devices.is_empty() && !rule.devices.contains(&(cmd.device_id as u32)) {
                 continue;
             }
             if !rule.points.is_empty() && !rule.points.contains(&cmd.point_id) {
@@ -198,7 +200,7 @@ mod tests {
 
     fn auth_cmd(
         actor: ActorKind,
-        device: u32,
+        device: u16,
         point: u32,
         policy_version: u64,
     ) -> AuthorizedCommand {

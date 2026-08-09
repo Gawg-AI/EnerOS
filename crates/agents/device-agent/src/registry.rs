@@ -120,17 +120,9 @@ impl PointAccess for MockPointDevice {
         Ok(dp)
     }
 
-    fn write_point(&mut self, point_id: PointId, value: PointValue) -> Result<(), ProtocolError> {
-        if self.offline {
-            return Err(ProtocolError::WriteFailed);
-        }
-        let point = self
-            .points
-            .get_mut(&point_id)
-            .ok_or(ProtocolError::PointNotFound)?;
-        point.value = value;
-        Ok(())
-    }
+    // 蓝图/24 D1：写已移出 PointAccess（读写信任分级）。
+    // TODO(WP-24.3)：为 MockPointDevice 实现 AuthorizedWriter
+    // （write_authorized：设备/点匹配校验通过后才落写）。
 
     fn protocol_type(&self) -> ProtocolType {
         ProtocolType::Internal

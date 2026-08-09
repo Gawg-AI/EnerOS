@@ -37,6 +37,9 @@ pub struct DeviceAgent {
     pub state: AgentState,
     /// tick 计数.
     pub tick_count: u64,
+    /// 旧匿名命令拒绝计数（蓝图/24 §6.2 双轨：收到不执行，仅留痕；
+    /// WP-24.3 接入 `eneros_write_denied_legacy_total` 指标）。
+    pub legacy_denied: u64,
 }
 
 impl DeviceAgent {
@@ -52,6 +55,7 @@ impl DeviceAgent {
             last_snapshot: DeviceSnapshot::new(),
             state: AgentState::Created,
             tick_count: 0,
+            legacy_denied: 0,
         }
     }
 
@@ -113,6 +117,7 @@ impl DeviceAgent {
             last_snapshot: DeviceSnapshot::new(),
             state: AgentState::Created,
             tick_count: 0,
+            legacy_denied: 0,
         }
     }
 
@@ -185,21 +190,19 @@ impl DeviceAgent {
         self.last_snapshot = snapshot;
     }
 
-    /// 执行命令（D14：跳过失败命令，不中断）.
+    /// 执行命令（蓝图/24 §6.2 双轨过渡期临时处置）。
     ///
-    /// 从 `command_source` 读取命令，查找目标设备，经 point_map 桥接调用
-    /// `write_point(power_setpoint 的 PointId, PointValue::Float(power_kw))`。
-    /// 设备未找到或写入失败时跳过，继续下一条命令。
+    /// 旧匿名 `CommandSource` 输入的 `DeviceCommand` **收到不执行**——
+    /// 记 `legacy_denied` 计数后丢弃（§6.2 双轨：旧匿名路径只拒不执行）。
+    /// 设备未找到同样跳过，不中断（D14 语义保留）。
+    ///
+    /// TODO(WP-24.3)：此处接信封输入状态机（帧解码 → ControlChain 复验 →
+    /// device_id 路由 → point_id 匹配 → `write_authorized`）；`legacy_denied`
+    /// 改为 `eneros_write_denied_legacy_total` 指标 + 审计事件（§6.6）。
     fn execute_commands(&mut self, _now_ms: u64) -> Result<(), AgentRuntimeError> {
-        while let Some(cmd) = self.command_source.try_read() {
-            if let Some(info) = self.devices.get_mut(&cmd.target_device) {
-                if let Some(&id) = info.point_map.get("power_setpoint") {
-                    let _ = info
-                        .adapter
-                        .write_point(id, PointValue::Float(cmd.power_kw));
-                }
-            }
-            // Device not found or write failed: skip (D14, don't interrupt)
+        while let Some(_cmd) = self.command_source.try_read() {
+            // 双轨：匿名命令不执行，仅留痕计数（WP-24.3 接入指标/审计）。
+            self.legacy_denied += 1;
         }
         Ok(())
     }

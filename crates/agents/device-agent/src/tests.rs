@@ -270,10 +270,10 @@ fn t19_device_agent_on_tick_polls_devices() {
     assert_eq!(agent.tick_count, 1);
 }
 
-// ===== T20: DeviceAgent::on_tick 执行命令（经 point_map 写 power_setpoint）=====
+// ===== T20: DeviceAgent::on_tick 旧匿名命令双轨——收到不执行、留痕（蓝图/24 §6.2）=====
 #[test]
 #[allow(clippy::disallowed_macros)] // 测试断言允许 panic
-fn t20_device_agent_on_tick_executes_commands() {
+fn t20_device_agent_on_tick_denies_legacy_command() {
     let mut source = MockCommandSource::new();
     source.push(DeviceCommand {
         target_device: String::from("pcs"),
@@ -293,7 +293,8 @@ fn t20_device_agent_on_tick_executes_commands() {
         .register("pcs", DeviceType::Pcs, Box::new(dev), pm);
     agent.on_start(1000).unwrap();
     agent.on_tick(2000).unwrap();
-    // Verify power_setpoint was written (经 PointAccess 读回)
+    // 旧行为（匿名命令直接落写）已判定为错误：必须收到不执行。
+    // 防回归：power_setpoint 保持初始值 0.0（未被写入）。
     let info = agent
         .registry_mut()
         .get_mut("pcs")
@@ -304,9 +305,14 @@ fn t20_device_agent_on_tick_executes_commands() {
         .expect("point_map 应含 power_setpoint");
     let dp = info.adapter.read_point(*id).expect("read should succeed");
     match dp.value {
-        PointValue::Float(v) => assert!((v - 50.0).abs() < 1e-9),
+        PointValue::Float(v) => assert!(
+            (v - 0.0).abs() < 1e-9,
+            "旧匿名命令不得落写：power_setpoint 必须保持 0.0，got {v}"
+        ),
         other => panic!("power_setpoint 应为 Float，got {other:?}"),
     }
+    // 留痕：拒绝计数 +1（WP-24.3 接入 write_denied_legacy 指标 + 审计）。
+    assert_eq!(agent.legacy_denied, 1, "旧匿名命令必须计数留痕");
 }
 
 // ===== T21: DeviceAgent::on_tick 设备离线（质量位 invalid → online:false）=====

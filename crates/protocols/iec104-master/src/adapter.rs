@@ -18,10 +18,13 @@ use alloc::vec::Vec;
 
 use eneros_iec104_slave::IoValue;
 use eneros_iec104_slave::SinglePointValue;
-use eneros_protocol_abstract::access::{PointAccess, PointAccessExt};
+use eneros_protocol_abstract::access::{
+    AuthorizedWriter, PointAccess, PointAccessExt, WriteError, WriteOutcome,
+};
 use eneros_protocol_abstract::adapter::{AdapterState, ProtocolAdapter};
 use eneros_protocol_abstract::config::{AdapterConfig, ProtocolType};
 use eneros_protocol_abstract::error::ProtocolError;
+use eneros_protocol_abstract::AuthorizedCommand;
 use eneros_upa_model::{
     DataPoint, DataSource, DeviceId, PointId, PointQuality, PointType, PointValue,
 };
@@ -182,21 +185,43 @@ impl Iec104Adapter {
     }
 }
 
-impl PointAccess for Iec104Adapter {
-    fn read_point(&mut self, point_id: PointId) -> Result<DataPoint, ProtocolError> {
-        self.read_point_impl(point_id)
-    }
-
-    fn write_point(&mut self, point_id: PointId, _value: PointValue) -> Result<(), ProtocolError> {
-        if self.state != AdapterState::Running && self.state != AdapterState::Initialized {
-            return Err(ProtocolError::ProtocolNotStarted);
+impl AuthorizedWriter for Iec104Adapter {
+    fn write_authorized(
+        &mut self,
+        cmd: &AuthorizedCommand,
+        value: PointValue,
+    ) -> Result<WriteOutcome, WriteError> {
+        // 蓝图/24 §6.1：命令点/设备匹配校验通过后才落写；不匹配 →
+        // CommandMismatch，设备状态不变。
+        if cmd.device_id != self.device_id {
+            return Err(WriteError::CommandMismatch);
         }
         let mapping = self
-            .find_mapping(point_id)
-            .ok_or(ProtocolError::PointNotFound)?;
+            .find_mapping(cmd.point_id)
+            .ok_or(WriteError::CommandMismatch)?;
+        if self.state != AdapterState::Running && self.state != AdapterState::Initialized {
+            return Err(WriteError::Protocol(ProtocolError::ProtocolNotStarted));
+        }
+        // 篡改防御：载荷类型与点类型矛盾（C_SC/C_DC 遥控只接受数值语义载荷；
+        // 开关语义来自 cmd.command，value 为工程载荷，ADR-029）。
+        if !matches!(
+            value,
+            PointValue::Float(_) | PointValue::Int(_) | PointValue::Enum(_)
+        ) {
+            return Err(WriteError::Unauthorized);
+        }
         self.master
             .send_single_command(mapping.common_addr, mapping.ioa, SinglePointValue::On)
             .map_err(iec104_to_protocol)
+            .map_err(WriteError::Protocol)?;
+        // 回读确认可空：以 IEC 104 链路确认（命令传输确认）为确认。
+        Ok(WriteOutcome { echoed: None })
+    }
+}
+
+impl PointAccess for Iec104Adapter {
+    fn read_point(&mut self, point_id: PointId) -> Result<DataPoint, ProtocolError> {
+        self.read_point_impl(point_id)
     }
 
     fn protocol_type(&self) -> ProtocolType {

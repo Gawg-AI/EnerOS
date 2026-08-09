@@ -175,7 +175,8 @@ impl VirtualPlant {
     fn mutate_for(&mut self, cmd: &AuthorizedCommand) {
         use eneros_telemetry_model::command::{ControlCommand, DoubleCommand, SingleCommand};
         // Map (point) → effect by consulting the validator's role table.
-        let role = self.validator.role_of(cmd.device_id, cmd.point_id);
+        // （蓝图/24 D4：cmd.device_id 已类型化为 u16，无损加宽）
+        let role = self.validator.role_of(cmd.device_id as u32, cmd.point_id);
         match (role, &cmd.command) {
             (
                 Some(crate::safety::SafetyRole::PccBreaker),

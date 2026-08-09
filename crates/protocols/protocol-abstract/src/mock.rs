@@ -1,15 +1,19 @@
 //! MockAdapter — 测试用模拟适配器（仅 `#[cfg(test)]`）.
 //!
-//! [`MockAdapter`] 实现 [`crate::adapter::ProtocolAdapter`]，内部用
-//! `BTreeMap<PointId, DataPoint>` 模拟点表，`poll` 仅自增计数器，
+//! [`MockAdapter`] 实现 [`crate::adapter::ProtocolAdapter`] + [`crate::access::AuthorizedWriter`]，
+//! 内部用 `BTreeMap<PointId, DataPoint>` 模拟点表，`poll` 仅自增计数器，
 //! 用于 [`crate::manager::ProtocolManager`] 与 trait 契约的单元/集成测试。
+//!
+//! 写接缝（蓝图/24 D1）：`write_authorized` 只接受 [`AuthorizedCommand`]——
+//! 设备/点不匹配 → `CommandMismatch`；载荷类型与点类型矛盾 → 拒绝（篡改防御）。
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use eneros_upa_model::{DataPoint, DeviceId, PointId, PointValue};
+use eneros_telemetry_model::command::AuthorizedCommand;
+use eneros_upa_model::{DataPoint, DeviceId, PointId, PointType, PointValue};
 
-use crate::access::{PointAccess, PointAccessExt};
+use crate::access::{AuthorizedWriter, PointAccess, PointAccessExt, WriteError, WriteOutcome};
 use crate::adapter::{AdapterState, ProtocolAdapter};
 use crate::config::{AdapterConfig, ProtocolType};
 use crate::error::ProtocolError;
@@ -24,6 +28,8 @@ pub struct MockAdapter {
     protocol_type: ProtocolType,
     /// poll 调用计数。
     poll_count: u32,
+    /// 关联设备 ID（init 时从配置读取；写接缝匹配用）。
+    device_id: DeviceId,
 }
 
 impl MockAdapter {
@@ -34,6 +40,7 @@ impl MockAdapter {
             state: AdapterState::Uninitialized,
             protocol_type,
             poll_count: 0,
+            device_id: 0,
         }
     }
 
@@ -56,15 +63,6 @@ impl PointAccess for MockAdapter {
             .ok_or(ProtocolError::PointNotFound)
     }
 
-    fn write_point(&mut self, point_id: PointId, value: PointValue) -> Result<(), ProtocolError> {
-        if let Some(point) = self.points.get_mut(&point_id) {
-            point.value = value;
-            Ok(())
-        } else {
-            Err(ProtocolError::PointNotFound)
-        }
-    }
-
     fn protocol_type(&self) -> ProtocolType {
         self.protocol_type
     }
@@ -82,8 +80,55 @@ impl PointAccessExt for MockAdapter {
     }
 }
 
+impl AuthorizedWriter for MockAdapter {
+    fn write_authorized(
+        &mut self,
+        cmd: &AuthorizedCommand,
+        value: PointValue,
+    ) -> Result<WriteOutcome, WriteError> {
+        // 1. 设备匹配（蓝图/24 §6.1：不匹配 → CommandMismatch，状态不变）。
+        if cmd.device_id != self.device_id {
+            return Err(WriteError::CommandMismatch);
+        }
+        // 2. 点匹配。
+        let point = self
+            .points
+            .get_mut(&cmd.point_id)
+            .ok_or(WriteError::CommandMismatch)?;
+        // 3. 篡改防御：载荷值类型与点类型矛盾 → 拒绝（类型级不一致）。
+        let type_ok = match (&point.point_type, &value) {
+            (PointType::Analog, PointValue::Float(_) | PointValue::Int(_)) => true,
+            (PointType::Analog, _) => false,
+            (
+                PointType::Digital | PointType::Control,
+                PointValue::Bool(_) | PointValue::Enum(_),
+            ) => true,
+            (PointType::Digital | PointType::Control, _) => false,
+            (PointType::Setpoint, PointValue::Float(_) | PointValue::Int(_)) => true,
+            (PointType::Setpoint, _) => false,
+            (PointType::Counter, PointValue::Int(_)) => true,
+            (PointType::Counter, _) => false,
+        };
+        if !type_ok {
+            return Err(WriteError::Unauthorized);
+        }
+        // 4. 落写 + 回读确认（mock 可本地确认）。
+        let echoed = value.clone();
+        point.value = value;
+        Ok(WriteOutcome {
+            echoed: Some(echoed),
+        })
+    }
+}
+
 impl ProtocolAdapter for MockAdapter {
-    fn init(&mut self, _config: &AdapterConfig) -> Result<(), ProtocolError> {
+    fn init(&mut self, config: &AdapterConfig) -> Result<(), ProtocolError> {
+        // 读接缝匹配用的设备 ID（与真实适配器一致：取自 device_configs[0]）。
+        self.device_id = config
+            .device_configs
+            .first()
+            .map(|d| d.device_id)
+            .unwrap_or(0);
         self.state = AdapterState::Initialized;
         Ok(())
     }

@@ -161,7 +161,8 @@ impl From<&GatewayError> for RejectionGate {
             | GatewayError::Expired
             | GatewayError::Future
             | GatewayError::Replayed
-            | GatewayError::StaleFencing => RejectionGate::Gateway,
+            | GatewayError::StaleFencing
+            | GatewayError::BadDeviceId => RejectionGate::Gateway,
             GatewayError::NoLease | GatewayError::LeaseRevoked => RejectionGate::Lease,
             GatewayError::NoPolicy => RejectionGate::Policy,
         }

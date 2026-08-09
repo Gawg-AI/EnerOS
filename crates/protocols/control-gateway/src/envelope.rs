@@ -43,6 +43,9 @@
 //! oracles. A missing or mismatched HMAC is a hard deny.
 
 use eneros_crypto::{ct_eq, hmac_sm3};
+// 蓝图/24 D4：`ActorKind` 下移至共享模型层（telemetry-model::command），
+// re-export 保持 `crate::envelope::ActorKind` 既有导入路径。
+pub use eneros_telemetry_model::command::ActorKind;
 use eneros_telemetry_model::command::{ControlCommand, DoubleCommand, SingleCommand};
 
 /// Total envelope length in bytes.
@@ -51,30 +54,6 @@ pub const ENVELOPE_LEN: usize = 172;
 pub const HEADER_LEN: usize = 140;
 /// Current envelope version.
 pub const VERSION: u8 = 2;
-
-/// Who issued the command. Drives policy (CTL-005) and audit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum ActorKind {
-    Operator = 0,
-    Agent = 1,
-    Ai = 2,
-    System = 3,
-    Emergency = 4,
-}
-
-impl ActorKind {
-    fn from_byte(b: u8) -> Option<Self> {
-        match b {
-            0 => Some(ActorKind::Operator),
-            1 => Some(ActorKind::Agent),
-            2 => Some(ActorKind::Ai),
-            3 => Some(ActorKind::System),
-            4 => Some(ActorKind::Emergency),
-            _ => None,
-        }
-    }
-}
 
 /// Errors raised by the envelope codec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

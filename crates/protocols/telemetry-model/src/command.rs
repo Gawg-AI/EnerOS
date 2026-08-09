@@ -78,3 +78,73 @@ impl ControlExecState {
         )
     }
 }
+
+// ============================================================================
+// 控制写接缝类型（蓝图/24 D1/D4：随 ControlCommand 下移共享模型层，
+// 使 protocol-abstract 的 AuthorizedWriter 可引用而不破坏依赖方向）
+// ============================================================================
+
+/// 命令签发者身份类别。驱动策略（CTL-005）与审计。
+///
+/// 原定义于 control-gateway::envelope；蓝图/24 D4 类型化接缝时随
+/// [`AuthorizedCommand`] 一并下移至共享模型层（control-gateway re-export）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ActorKind {
+    /// 就地操作员。
+    Operator = 0,
+    /// 代理（Agent）。
+    Agent = 1,
+    /// AI 双脑。
+    Ai = 2,
+    /// 系统（计划任务等）。
+    System = 3,
+    /// 急停（Emergency）。
+    Emergency = 4,
+}
+
+impl ActorKind {
+    /// 从信封 wire 字节解码（非法编码返回 None，由解码器 default-deny）。
+    pub fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(ActorKind::Operator),
+            1 => Some(ActorKind::Agent),
+            2 => Some(ActorKind::Ai),
+            3 => Some(ActorKind::System),
+            4 => Some(ActorKind::Emergency),
+            _ => None,
+        }
+    }
+}
+
+/// 已通过控制链全部裁决、可施加于设备的写命令（蓝图/24 D4）。
+///
+/// 只能由 `ControlGateway::authorize` 产出（控制网关是唯一构造路径）。
+/// `device_id` 为 upa-model `DeviceId(u16)`、`point_id` 为 `PointId(u32)`；
+/// 信封 wire 布局不变（wire 上 device_id 仍占 4 字节，见 control-gateway
+/// envelope 编解码；u32→u16 的收窄在 HMAC 验证之后、default-deny）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthorizedCommand {
+    /// 目标设备 ID（upa-model `DeviceId`，u16）。
+    pub device_id: eneros_upa_model::DeviceId,
+    /// 目标点 ID（upa-model `PointId`，u32）。
+    pub point_id: eneros_upa_model::PointId,
+    /// 开关语义命令（Single/Double）。
+    pub command: ControlCommand,
+    /// 签发者身份类别。
+    pub actor_kind: ActorKind,
+    /// 签发者标识（固定 16 字节）。
+    pub issuer: [u8; 16],
+    /// 关联 ID（请求→结果链追踪）。
+    pub correlation_id: [u8; 16],
+    /// 序列号（签发方单调）。
+    pub sequence: u64,
+    /// 本命令所骑乘的租约 ID（CTL-006）。
+    pub lease_id: [u8; 16],
+    /// fencing token（单调；吊销围栏，CTL-006）。
+    pub fencing_token: u64,
+    /// 策略代次（PDP/PEP，CTL-005）。
+    pub policy_version: u64,
+    /// 幂等键（CTL-007 去重）。
+    pub idempotency_key: [u8; 16],
+}

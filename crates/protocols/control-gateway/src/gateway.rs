@@ -35,26 +35,12 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use eneros_telemetry_model::command::ControlCommand;
+// 蓝图/24 D4：`AuthorizedCommand`/`ActorKind` 下移至共享模型层
+// （telemetry-model::command），本处 re-export 保持既有导入路径
+// （`eneros_control_gateway::AuthorizedCommand` / `crate::envelope::ActorKind`）。
+pub use eneros_telemetry_model::command::AuthorizedCommand;
 
-use crate::envelope::{ActorKind, CommandEnvelope, EnvelopeError};
-
-/// A write command that has passed every gateway check and may be applied to a
-/// device. It can only be constructed by [`ControlGateway::authorize`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AuthorizedCommand {
-    pub device_id: u32,
-    pub point_id: u32,
-    pub command: ControlCommand,
-    pub actor_kind: ActorKind,
-    pub issuer: [u8; 16],
-    pub correlation_id: [u8; 16],
-    pub sequence: u64,
-    pub lease_id: [u8; 16],
-    pub fencing_token: u64,
-    pub policy_version: u64,
-    pub idempotency_key: [u8; 16],
-}
+use crate::envelope::{CommandEnvelope, EnvelopeError};
 
 /// Lease revocation status, computed by a [`LeaseChecker`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +95,9 @@ pub enum GatewayError {
     LeaseRevoked,
     /// `fencing_token` is stale (older than the current token for the lease).
     StaleFencing,
+    /// Wire `device_id` (u32) does not fit the typed `DeviceId` (u16) range
+    /// (蓝图/24 D4 类型化；签发方配置错误，default-deny).
+    BadDeviceId,
 }
 
 impl core::fmt::Display for GatewayError {
@@ -123,6 +112,7 @@ impl core::fmt::Display for GatewayError {
             GatewayError::NoPolicy => write!(f, "gateway no policy version"),
             GatewayError::LeaseRevoked => write!(f, "gateway lease revoked"),
             GatewayError::StaleFencing => write!(f, "gateway stale fencing token"),
+            GatewayError::BadDeviceId => write!(f, "gateway device_id out of u16 range"),
         }
     }
 }
@@ -231,8 +221,12 @@ impl ControlGateway {
 
         // All checks passed — record and authorize.
         self.record(env.command_id);
+        // D4：wire 上 device_id 仍为 u32（4 字节，布局不动）；类型化为
+        // upa-model DeviceId(u16)。越界（签名合法但 id 超出 u16 范围）属
+        // 签发方配置错误，default-deny。
+        let device_id = u16::try_from(env.device_id).map_err(|_| GatewayError::BadDeviceId)?;
         Ok(AuthorizedCommand {
-            device_id: env.device_id,
+            device_id,
             point_id: env.point_id,
             command: env.command,
             actor_kind: env.actor_kind,

@@ -46,7 +46,9 @@ pub mod telemetry;
 pub mod telesignaling;
 pub mod unit;
 
-pub use command::{ControlCommand, ControlExecState, DoubleCommand, SingleCommand};
+pub use command::{
+    ActorKind, AuthorizedCommand, ControlCommand, ControlExecState, DoubleCommand, SingleCommand,
+};
 pub use deadband::DeadbandFilter;
 pub use digital::DigitalState;
 pub use point_spec::{ControlDirection, PointSpec, RampViolation};

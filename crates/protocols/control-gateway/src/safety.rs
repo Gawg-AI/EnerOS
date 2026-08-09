@@ -119,7 +119,8 @@ impl SafetyValidator {
 
     /// Validate a verified, lease-bound command against the current plant state.
     pub fn validate(&self, cmd: &AuthorizedCommand, ctx: &PlantContext) -> SafetyVerdict {
-        let key = (cmd.device_id, cmd.point_id);
+        // （蓝图/24 D4：cmd.device_id 类型化为 u16，无损加宽作表 key）
+        let key = (cmd.device_id as u32, cmd.point_id);
         let Some(point) = self.table.get(&key) else {
             // Default-deny: unassigned points are never writable.
             return SafetyVerdict::Unsafe(String::from("point not in safety table"));
@@ -229,7 +230,7 @@ mod tests {
     use super::*;
     use crate::envelope::ActorKind;
 
-    fn auth(device: u32, point: u32, cmd: ControlCommand) -> AuthorizedCommand {
+    fn auth(device: u16, point: u32, cmd: ControlCommand) -> AuthorizedCommand {
         AuthorizedCommand {
             device_id: device,
             point_id: point,

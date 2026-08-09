@@ -12,10 +12,13 @@
 
 use alloc::vec::Vec;
 
-use eneros_protocol_abstract::access::{PointAccess, PointAccessExt};
+use eneros_protocol_abstract::access::{
+    AuthorizedWriter, PointAccess, PointAccessExt, WriteError, WriteOutcome,
+};
 use eneros_protocol_abstract::adapter::{AdapterState, ProtocolAdapter};
 use eneros_protocol_abstract::config::{AdapterConfig, ProtocolType};
 use eneros_protocol_abstract::error::ProtocolError;
+use eneros_protocol_abstract::AuthorizedCommand;
 use eneros_upa_model::{
     DataPoint, DataSource, DeviceId, PointId, PointQuality, PointType, PointValue,
 };
@@ -171,12 +174,36 @@ impl<T: RtuTransport> PointAccess for ModbusRtuAdapter<T> {
         self.read_point_impl(point_id)
     }
 
-    fn write_point(&mut self, point_id: PointId, value: PointValue) -> Result<(), ProtocolError> {
-        self.write_point_impl(point_id, value)
-    }
-
     fn protocol_type(&self) -> ProtocolType {
         ProtocolType::ModbusRtu
+    }
+}
+
+impl<T: RtuTransport> AuthorizedWriter for ModbusRtuAdapter<T> {
+    fn write_authorized(
+        &mut self,
+        cmd: &AuthorizedCommand,
+        value: PointValue,
+    ) -> Result<WriteOutcome, WriteError> {
+        // 蓝图/24 §6.1：命令点/设备匹配校验通过后才落写；不匹配 →
+        // CommandMismatch，设备状态不变。
+        if cmd.device_id != self.device_id {
+            return Err(WriteError::CommandMismatch);
+        }
+        if self.find_mapping(cmd.point_id).is_none() {
+            return Err(WriteError::CommandMismatch);
+        }
+        // 篡改防御：载荷类型与点类型矛盾（Analog 寄存器只接受数值载荷）。
+        if !matches!(
+            value,
+            PointValue::Float(_) | PointValue::Int(_) | PointValue::Enum(_)
+        ) {
+            return Err(WriteError::Unauthorized);
+        }
+        self.write_point_impl(cmd.point_id, value)
+            .map_err(WriteError::Protocol)?;
+        // 回读确认可空：Modbus 主站以协议应答（写单寄存器响应）为确认。
+        Ok(WriteOutcome { echoed: None })
     }
 }
 
@@ -307,9 +334,12 @@ mod tests {
         // 契约执行顺序的响应队列（MockRtuTransport 先进先出）：
         // 1. read_point 逐个：2 帧
         // 2. read_points：2 帧
-        // 3. write_point：1 帧
-        // 4. read_device_points：2 帧
-        // 5. read_point(missing)：不发帧（Err 路径）
+        // 3. write_authorized：1 帧（写单寄存器应答）
+        // 4. 不匹配拒绝后回读：1 帧（raw 15 → scale 0.1 → 1.5）
+        // 5. 篡改值拒绝后回读：1 帧
+        // 6. read_device_points：2 帧
+        // 7. read_point(missing)：不发帧（Err 路径）
+        // （不匹配写/篡改写在前置校验早退，不发帧）
         for _ in 0..2 {
             adapter
                 .transport_mut()
@@ -318,10 +348,21 @@ mod tests {
                 .transport_mut()
                 .push_response(read_resp(2, &[200u16]));
         }
-        adapter.transport_mut().push_response(write_resp(1, 0, 1));
+        adapter.transport_mut().push_response(write_resp(1, 0, 15));
+        // 落写后回读基线 + 不匹配/篡改拒绝后回读：3 帧
         adapter
             .transport_mut()
-            .push_response(read_resp(1, &[100u16]));
+            .push_response(read_resp(1, &[15u16]));
+        adapter
+            .transport_mut()
+            .push_response(read_resp(1, &[15u16]));
+        adapter
+            .transport_mut()
+            .push_response(read_resp(1, &[15u16]));
+        // read_device_points：2 帧
+        adapter
+            .transport_mut()
+            .push_response(read_resp(1, &[15u16]));
         adapter
             .transport_mut()
             .push_response(read_resp(2, &[200u16]));

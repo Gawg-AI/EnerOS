@@ -9,7 +9,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use eneros_upa_model::{DataPoint, PointId, PointValue};
+use eneros_upa_model::{DataPoint, PointId};
 
 use crate::adapter::{AdapterState, ProtocolAdapter};
 use crate::config::ProtocolType;
@@ -67,23 +67,8 @@ impl ProtocolManager {
         point_ids.iter().map(|&id| self.read_point(id)).collect()
     }
 
-    /// 按路由写入单点。
-    pub fn write_point(
-        &mut self,
-        point_id: PointId,
-        value: PointValue,
-    ) -> Result<(), ProtocolError> {
-        let pt = self
-            .point_routes
-            .get(&point_id)
-            .copied()
-            .ok_or(ProtocolError::AdapterNotFound)?;
-        let adapter = self
-            .adapters
-            .get_mut(&pt)
-            .ok_or(ProtocolError::AdapterNotFound)?;
-        adapter.write_point(point_id, value)
-    }
+    // 蓝图/24 D1：`write_point` 已移除——写必须经 [`crate::access::AuthorizedWriter`]
+    // 施加（本管理器是读路由管理面，不承载写旁路）。
 
     /// 轮询所有适配器（`now_ms` 注入时间戳，D5）。
     ///
