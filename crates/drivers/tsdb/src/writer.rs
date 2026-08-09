@@ -210,15 +210,31 @@ pub fn flush_chunk(
         chunk.header.metric,
     )?;
 
-    // Write the chunk file: header + section lengths + compressed payloads.
-    let mut file = fs.create(&path, FileMode::default_file())?;
-    file.write(fs, &chunk.header.to_bytes())?;
+    // 22 §2.W3.4：真算 payload CRC（ipc-wire crc32，KAT 验证实现）——
+    // 填 ChunkHeader.crc32（旧实现恒 0 = 校验摆设）。
+    let mut payload = alloc::vec::Vec::with_capacity(
+        compressed_ts.len() + compressed_val.len() + compressed_qual.len(),
+    );
+    payload.extend_from_slice(&compressed_ts);
+    payload.extend_from_slice(&compressed_val);
+    payload.extend_from_slice(&compressed_qual);
+    let payload_crc = eneros_ipc_wire::crc32(&payload);
+    let mut header = chunk.header.clone();
+    header.crc32 = payload_crc;
+    drop(payload);
+
+    // 22 §2.W3.4：原子写（锁定 3）——写临时文件 → rename（掉电中断不
+    // 产生半写 chunk；读时 CRC 校验拒绝损坏）。
+    let tmp_path = format!("{path}.tmp");
+    let mut file = fs.create(&tmp_path, FileMode::default_file())?;
+    file.write(fs, &header.to_bytes())?;
     file.write(fs, &(compressed_ts.len() as u32).to_le_bytes())?;
     file.write(fs, &(compressed_val.len() as u32).to_le_bytes())?;
     file.write(fs, &(compressed_qual.len() as u32).to_le_bytes())?;
     file.write(fs, &compressed_ts)?;
     file.write(fs, &compressed_val)?;
     file.write(fs, &compressed_qual)?;
+    fs.rename(&tmp_path, &path)?;
 
     // Update the index with the new chunk entry.
     let chunk_id = *next_chunk_id;

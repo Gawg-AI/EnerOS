@@ -15,5 +15,6 @@ eneros-fs = { path = "../fs" }
 # The Compressor trait abstracts the backend, so the upper layers are unaffected.
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
 eneros-storage = { path = "../storage" }
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 
 

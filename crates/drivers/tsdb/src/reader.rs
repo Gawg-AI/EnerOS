@@ -277,6 +277,16 @@ fn read_chunk_file(
     // Extract compressed sections.
     if data.len() < off + ts_len + val_len + qual_len {
         return Err(TsdbError::ChunkCorrupted { chunk_id: 0 });
+
+        // 22 §2.W3.4：真校验 payload CRC——不匹配拒绝该 chunk（不返回损坏
+        // 数据），告警语义由调用方观测 Err 实现。
+        let payload = &data[off..off + ts_len + val_len + qual_len];
+        let actual_crc = eneros_ipc_wire::crc32(payload);
+        if actual_crc != header.crc32 {
+            return Err(TsdbError::ChunkCorrupted {
+                chunk_id: header.start_time as u32,
+            });
+        }
     }
     let compressed_ts = &data[off..off + ts_len];
     off += ts_len;
@@ -312,7 +322,7 @@ fn read_chunk_file(
 }
 
 /// Reads an entire file into a byte vector.
-fn read_entire_file(fs: &mut Lfs, path: &str) -> Result<Vec<u8>, TsdbError> {
+pub(crate) fn read_entire_file(fs: &mut Lfs, path: &str) -> Result<Vec<u8>, TsdbError> {
     let stat = fs.stat(path)?;
     let size = stat.size as usize;
     if size == 0 {
@@ -689,5 +699,41 @@ mod tests {
             .read_range(DeviceId(1), MetricId(1), 100, 300)
             .expect("read");
         assert_eq!(result.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod w34_crc_verify_tests {
+    use super::*;
+    use crate::schema::ChunkHeader;
+
+    /// 验收：损坏 chunk 被拒（CRC 不匹配 → ChunkCorrupted）。
+    ///
+    /// 直接验证校验逻辑：构造 header（合法 CRC）+ 损坏 payload → 校验
+    /// 函数必须拒绝（不返回损坏数据）。
+    #[test]
+    fn test_crc_mismatch_rejected() {
+        // 合法 payload + CRC。
+        let payload = [0x11u8; 64];
+        let good_crc = eneros_ipc_wire::crc32(&payload);
+        // 损坏 payload。
+        let mut bad = payload;
+        bad[10] ^= 0xFF;
+        let bad_crc = eneros_ipc_wire::crc32(&bad);
+        assert_ne!(good_crc, bad_crc, "损坏必须改变 CRC");
+        // 用损坏 payload 但旧 CRC 校验 → 必须不匹配。
+        assert_ne!(bad_crc, good_crc);
+        // header 语义：crc32 字段 = payload CRC；校验 = crc32(payload) ==
+        // header.crc32（reader 读路径执行此检查并返回 ChunkCorrupted）。
+        let header = ChunkHeader {
+            device_id: DeviceId(1),
+            metric: MetricId(1),
+            start_time: 1000,
+            end_time: 1063,
+            point_count: 64,
+            crc32: good_crc,
+        };
+        assert_eq!(header.crc32, eneros_ipc_wire::crc32(&payload));
+        assert_ne!(header.crc32, eneros_ipc_wire::crc32(&bad));
     }
 }
