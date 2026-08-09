@@ -217,11 +217,12 @@ fn modbus_tcp_to_protocol(e: ModbusTcpError) -> ProtocolError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::mock::MockTcpTransport;
     use eneros_modbus_rtu::point::RegToPoint;
     use eneros_protocol_abstract::config::{AdapterConfig, DeviceConfig, ProtocolType};
     use eneros_protocol_abstract::contract::run_adapter_contract;
+
+    use super::*;
+    use crate::mock::MockTcpTransport;
 
     /// 构造 MBAP + 读保持寄存器响应帧（txn 须匹配请求事务 ID）。
     fn read_resp(txn: u16, regs: &[u16]) -> Vec<u8> {

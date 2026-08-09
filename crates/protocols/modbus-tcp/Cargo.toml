@@ -10,3 +10,17 @@ description = "EnerOS Modbus TCP master protocol stack"
 eneros-modbus-rtu = { path = "../modbus-rtu" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
 eneros-upa-model = { path = "../upa-model" }
+eneros-time = { path = "../../drivers/time" }
+
+# 21-B B1：真实 TCP 传输（smoltcp 经 eneros-net）。默认启用——release
+# 默认 transport 必须是生产实现（mock 仅 cfg(test)）。
+eneros-net = { path = "../../drivers/net", optional = true }
+
+[features]
+default = ["net"]
+# 真实 TCP 传输层（NetDevice + smoltcp 协议栈）。
+net = ["dep:eneros-net"]
+
+[dev-dependencies]
+# host 集成测试：注入真实单调时钟（time_init）驱动 smoltcp 时间推进。
+eneros-hal = { path = "../../../crates/hal/hal" }

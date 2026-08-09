@@ -40,16 +40,15 @@ pub mod transport;
 #[cfg(test)]
 pub mod mock;
 
-pub use device::TcpDevice;
 // 重导出 v0.45.0 应用层类型，便于上游统一从本 crate 引用
 pub use adapter::ModbusTcpAdapter;
+pub use device::TcpDevice;
 pub use eneros_modbus_rtu::{
     AccessMode, ExceptionCode, FunctionCode, ModbusDataType, ModbusError, ModbusRequest,
     ModbusResponse, PointMapping, RegToPoint,
 };
 pub use error::ModbusTcpError;
 pub use master::ModbusTcpMaster;
-
 pub use mbap::{MbapHeader, MbapStreamDecoder};
 pub use transport::{TcpStats, TcpTransport};
 

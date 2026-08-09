@@ -63,15 +63,22 @@ impl<D: NetDevice> SmolcpDevice<D> {
     ///
     /// Should be called before each `poll()` to drain hardware RX buffers.
     /// Returns `true` if a frame was successfully read, `false` otherwise.
+    ///
+    /// # NetDevice recv 契约（21-B B1 实测确立）
+    ///
+    /// `NetDevice::recv` 无帧时必须返回 `Err`（真驱动语义：`NoBuffer`，
+    /// 见 `MacController::recv` mac.rs:345）——`drain_rx` 的 `while` 循环
+    /// 依赖该契约终止。`Ok(0)` 视为无帧（防御：任何返回 `Ok(0)` 的设备
+    /// 实现若按 `while` 循环入队空帧，将无限增长内存并死循环）。
     pub fn recv_frame(&mut self) -> bool {
         let mut buf: Vec<u8> = alloc::vec![0u8; self.mtu];
         match self.device.recv(&mut buf) {
-            Ok(len) => {
+            Ok(len) if len > 0 => {
                 buf.truncate(len);
                 self.rx_queue.push_back(buf);
                 true
             }
-            Err(_) => false,
+            _ => false,
         }
     }
 
