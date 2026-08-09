@@ -35,6 +35,8 @@ pub mod boot;
 pub mod bundle;
 // W4.3（蓝图23）：frame.rs 兼容垫片（`pub use eneros_ipc_wire::el0::*`）已删除——
 // 全 crate `frame::` 零引用（main.rs 已直接 use ipc-wire el0 类型）。
+pub mod irq;
+pub mod irq_timer;
 pub mod panic;
 pub mod service;
 pub mod spawn;
@@ -248,8 +250,22 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
         match crate::spawn::sel4_spawn_services(&plan, &bundle, &mut ctx) {
             Ok(handles) => {
                 println!("[eneros-root-task] EL0 services spawned — entering service loop");
+                // WP-26.8：绑定 QEMU virt arch timer（虚拟 timer IRQ 27；物理
+                // timer 26 被 seL4 内核时钟占用）+ 使能虚拟定时器。
+                // bind 失败 → 打印并继续（中断计数保持 0，证据如实，不伪造）。
+                let mut irq_table = crate::irq::IrqTable::new();
+                let irq_binding = match irq_table.bind(&mut ctx, 27) {
+                    Ok(idx) => {
+                        crate::irq_timer::enable_arch_timer_virtual();
+                        irq_table.binding(idx)
+                    }
+                    Err(e) => {
+                        println!("[eneros-root-task] IRQ bind failed: {e:?} — 中断计数将保持 0");
+                        None
+                    }
+                };
                 // K2.2：IPC 调度主循环（替换 spin_loop，21-A）。
-                crate::service::run_ipc_loop(&handles);
+                crate::service::run_ipc_loop(&handles, irq_table, irq_binding);
             }
             Err(e) => {
                 println!(

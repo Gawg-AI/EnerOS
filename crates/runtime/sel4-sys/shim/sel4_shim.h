@@ -238,3 +238,12 @@ seL4_Word eneros_sel4_cap_init_thread_asid_pool(void);
 #endif
 
 #endif /* ENEROS_SEL4_SHIM_H */
+
+/* WP-26.8：IRQ 子系统绑定。 */
+seL4_Error eneros_sel4_irq_control_get(seL4_CPtr irq_ctrl, seL4_Word irq,
+                                       seL4_CPtr dest_root, seL4_Word dest_index,
+                                       seL4_Word dest_depth);
+seL4_Error eneros_sel4_irq_handler_set_notification(seL4_CPtr handler, seL4_CPtr ntfn);
+seL4_Error eneros_sel4_irq_handler_ack(seL4_CPtr handler);
+seL4_Error eneros_sel4_irq_handler_clear(seL4_CPtr handler);
+seL4_Word eneros_sel4_cap_irq_control(void);

@@ -22,95 +22,15 @@ pub fn consume_boot_info(raw: &[u8]) -> Result<BootInfo, BootInfoError> {
     Ok(bi)
 }
 
-// ============================================================================
-// Root Task 镜像物理页映射页表（蓝图/20 R1-2）
-// ============================================================================
-
-/// 物理页映射条目（Root Task 镜像装载：paddr → vaddr 页表计划）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhysPageMap {
-    /// 物理地址（页对齐）。
-    pub paddr: u64,
-    /// 映射到的虚拟地址。
-    pub vaddr: u64,
-    /// 映射大小（页对齐）。
-    pub size: u64,
-    /// 可写。
-    pub writable: bool,
-    /// 可执行（W^X：与 writable 互斥）。
-    pub executable: bool,
-}
-
-impl PhysPageMap {
-    /// W^X 校验：可执行页不得可写。
-    pub fn is_wx_violation(&self) -> bool {
-        self.executable && self.writable
-    }
-}
-
-/// 生成物理页映射计划：把 `paddr` 起始的连续 `len` 字节映射到
-/// `vaddr`，按 `page_size` 切页（蓝图/20 R1-2：boot.rs 扩展）。
-///
-/// - 非页对齐 / 零长 → `Err`（fail-closed）；
-/// - `executable` 与 `writable` 同时为真 → `Err`（W^X 硬性拒绝）。
-pub fn map_physical_pages(
-    paddr: u64,
-    vaddr: u64,
-    len: u64,
-    page_size: u64,
-    writable: bool,
-    executable: bool,
-) -> Result<alloc::vec::Vec<PhysPageMap>, &'static str> {
-    if page_size == 0 || paddr % page_size != 0 || vaddr % page_size != 0 {
-        return Err("physical page mapping: address not page-aligned");
-    }
-    if len == 0 {
-        return Err("physical page mapping: zero length");
-    }
-    if writable && executable {
-        return Err("physical page mapping: W^X violation");
-    }
-    let pages = len.div_ceil(page_size);
-    let mut out = alloc::vec::Vec::with_capacity(pages as usize);
-    for i in 0..pages {
-        out.push(PhysPageMap {
-            paddr: paddr + i * page_size,
-            vaddr: vaddr + i * page_size,
-            size: page_size,
-            writable,
-            executable,
-        });
-    }
-    Ok(out)
-}
+// W4.3（蓝图23）：删除了 `PhysPageMap`/`map_physical_pages`——零生产调用方，
+// 其页对齐校验 + W^X 拒绝逻辑已由 `spawn.rs` 的 `PageEntry::is_wx_violation` +
+// `plan_one` 等价覆盖（deletion test 通过，运行时零变化）。
 
 #[cfg(test)]
 mod tests {
     use eneros_boot_protocol::boot_info::{BootInfo, BootSlot};
 
     use super::*;
-
-    #[test]
-    fn test_map_physical_pages_basic() {
-        let maps = map_physical_pages(0x4000_0000, 0x4000_0000, 0x3000, 0x1000, false, true)
-            .expect("mapping");
-        assert_eq!(maps.len(), 3);
-        assert_eq!(maps[0].paddr, 0x4000_0000);
-        assert_eq!(maps[2].vaddr, 0x4000_2000);
-        assert!(maps[0].executable && !maps[0].writable);
-        assert!(maps.iter().all(|m| !m.is_wx_violation()));
-    }
-
-    #[test]
-    fn test_map_physical_pages_wx_rejected() {
-        assert!(map_physical_pages(0x4000_0000, 0x4000_0000, 0x1000, 0x1000, true, true).is_err());
-    }
-
-    #[test]
-    fn test_map_physical_pages_unaligned_rejected() {
-        assert!(map_physical_pages(0x4000_0001, 0x4000_0000, 0x1000, 0x1000, false, true).is_err());
-        assert!(map_physical_pages(0x4000_0000, 0x4000_0000, 0, 0x1000, false, true).is_err());
-    }
 
     fn valid_boot_info() -> BootInfo {
         let mut bi = BootInfo::new(BootSlot::A, BootReason::Cold);

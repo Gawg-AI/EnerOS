@@ -216,3 +216,19 @@ extern "C" {
     pub fn eneros_sel4_arm_asid_pool_assign(pool: CPtr, vspace: CPtr) -> Error;
     pub fn eneros_sel4_arm_page_unmap(page: CPtr) -> Error;
 }
+extern "C" {
+    // WP-26.8：IRQ 子系统绑定（shim/sel4_shim.c）。
+    pub fn eneros_sel4_irq_control_get(
+        irq_ctrl: u64,
+        irq: u64,
+        dest_root: u64,
+        dest_index: u64,
+        dest_depth: u64,
+    ) -> Error;
+    pub fn eneros_sel4_irq_handler_set_notification(handler: u64, ntfn: u64) -> Error;
+    pub fn eneros_sel4_irq_handler_ack(handler: u64) -> Error;
+    pub fn eneros_sel4_irq_handler_clear(handler: u64) -> Error;
+}
+extern "C" {
+    pub fn eneros_sel4_cap_irq_control() -> u64;
+}

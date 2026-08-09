@@ -1072,7 +1072,7 @@ fn retype_device_one(
 
 /// retype 单个对象到 root CSpace 的 `slot` 槽。
 #[cfg(target_os = "none")]
-fn retype_one(
+pub(crate) fn retype_one(
     ctx: &mut SpawnCtx,
     object_type: u64,
     size_bits: u64,
@@ -1540,7 +1540,7 @@ mod tests {
         vec![
             UntypedDesc {
                 paddr: 0x0905_0000, // SP805 WDT
-                size_bits: 16, // 64 KiB
+                size_bits: 16,      // 64 KiB
                 is_device: true,
             },
             UntypedDesc {
@@ -1561,9 +1561,7 @@ mod tests {
         assert_eq!(cap, 30, "cap 槽 = cap_base + SP805 untyped 索引");
         assert_eq!(off, 0, "区域首块字节偏移为 0");
         // 同一区域内再次分配（页内偏移推进）。
-        let (cap2, off2) = alloc
-            .alloc_device_at(0x0905_1000, 12)
-            .expect("同区域次页");
+        let (cap2, off2) = alloc.alloc_device_at(0x0905_1000, 12).expect("同区域次页");
         assert_eq!(cap2, 30);
         assert_eq!(off2, 0x1000);
     }
@@ -1625,7 +1623,10 @@ mod tests {
         let (_, off16) = alloc.alloc(4).expect("16 B");
         assert_eq!(off16, 0);
         let (_, off32) = alloc.alloc(5).expect("32 B");
-        assert_eq!(off32, 32, "16 B 后 32 B 对象从 32 B 对齐处开始（alignUp 语义）");
+        assert_eq!(
+            off32, 32,
+            "16 B 后 32 B 对象从 32 B 对齐处开始（alignUp 语义）"
+        );
         // 再分配 CNode（size_bits=8 → 2^8 槽 × 32 B = 8 KiB）：
         // 旧行为：used=48 直接累加 → 48（与 seL4 freeIndex 对齐语义脱节）；
         // 新行为：alignUp(48, 8192) = 8192。

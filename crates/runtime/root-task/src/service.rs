@@ -1,126 +1,17 @@
-//! root-task 服务化主循环（KRN-004）：BootInfo 消费后进入 EL0 服务调度。
+//! root-task IPC 主循环（KRN-004 / K2.2 / 21-A）：BootInfo 消费后进入
+//! EL0 服务 IPC 调度——hello 往返、故障注入、supervisor 重启。
 //!
-//! M2.1（seL4 TCB/CSpace/VSpace FFI）前，服务循环以纯逻辑形式存在并
-//! host 可测：接收 EL0 帧（ipc-wire el0），按类型分发——
-//! - `Ready`：服务就绪上报 → 记录服务集（svc-hello/svc-pi/svc-hog/svc-fault）；
-//! - `Report`：数据上报（含 config 请求，KRN-004 config 服务接入点）；
-//! - `Control`：root-task 下发（spawn 确认 / 心跳）。
-//!
-//! QEMU 端到端（真实 seL4 Endpoint IPC）验证 BLOCKED（见
-//! evidence/arch-convergence/krn-003.md 解锁条件）。
+//! W2.2（蓝图23）：删除了"帧分发影子 API"（`dispatch_frame`/
+//! `DispatchAction`/`config_service_roundtrip`/`service_name`/
+//! `load_services_from_bundle`）——这套纯函数有测试但真实 [`run_ipc_loop`]
+//! 从不调用它（用的是 `hello_roundtrip`/`send_frame` 直连 seL4 IPC），
+//! 测的不是跑的。MR 帧编解码契约（真实路径共享）保留 host 测试覆盖。
 
-use eneros_ipc_wire::el0::El0FrameType;
 pub use eneros_ipc_wire::mr::{
     frame_from_mrs, frame_into_mrs, FrameMrError, MAX_FRAME_BYTES, MR_FRAME_LEN_SLOT,
 };
 
 extern crate alloc;
-
-use alloc::string::ToString;
-
-/// 服务调度结果。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DispatchAction {
-    /// 记录就绪服务
-    ServiceReady(alloc::string::String),
-    /// 转发数据上报（config 服务入口，KRN-004）
-    ForwardReport,
-    /// 下发控制帧
-    EmitControl,
-    /// 未知帧类型（解码已拒绝，不扩散）
-    Ignore,
-}
-
-/// 服务循环单步：解码一帧并分发。
-///
-/// `registered` 是来自 init bundle manifest 的真实服务注册表
-/// （v0.199.0 P0-2：`service_name()` 硬编码表已替换）。
-pub fn dispatch_frame(
-    buf: &[u8],
-    registered: &[&str],
-) -> Result<DispatchAction, eneros_ipc_wire::el0::El0FrameError> {
-    let frame = eneros_ipc_wire::el0::decode_frame(buf)?;
-    Ok(match frame.frame_type {
-        El0FrameType::Ready => {
-            DispatchAction::ServiceReady(service_name(frame.payload, registered))
-        }
-        El0FrameType::Report => DispatchAction::ForwardReport,
-        El0FrameType::Control => DispatchAction::EmitControl,
-    })
-}
-
-/// 从 Ready 帧 payload 提取服务名（首个 NUL 截断），并在注册表中匹配。
-///
-/// 未注册的服务名返回 "unknown"（fail-closed：不将未知服务记为就绪）。
-/// v0.199.0：注册表来自 bundle manifest 而非硬编码字节表。
-pub fn service_name(payload: &[u8], registered: &[&str]) -> alloc::string::String {
-    let end = payload
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(payload.len());
-    let name = &payload[..end];
-    match core::str::from_utf8(name) {
-        Ok(name) if registered.contains(&name) => name.to_string(),
-        _ => "unknown".to_string(),
-    }
-}
-
-/// KRN-004：config 服务接入点——Report 帧携带 config 读请求时，
-/// 返回当前服务集合规模（host 侧闭环演示；真实 ConfigStore 服务由
-/// runtime 层在 M2.1 后以 EL0 服务形态接入）。
-pub fn config_service_roundtrip(
-    registered_services: usize,
-    buf: &[u8],
-) -> Result<alloc::vec::Vec<u8>, eneros_ipc_wire::el0::El0FrameError> {
-    let frame = eneros_ipc_wire::el0::decode_frame(buf)?;
-    if frame.frame_type != El0FrameType::Report {
-        return Err(eneros_ipc_wire::el0::El0FrameError::BadType);
-    }
-    let resp = alloc::format!("config:services={}", registered_services);
-    Ok(eneros_ipc_wire::el0::encode_frame(
-        El0FrameType::Report,
-        resp.as_bytes(),
-    ))
-}
-
-/// 一个已校验的 EL0 服务（可 spawn）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServiceEntry {
-    /// 服务名（bundle manifest）。
-    pub name: alloc::string::String,
-    /// 服务 ELF（经 W^X 校验）。
-    pub elf: alloc::vec::Vec<u8>,
-}
-
-/// 从 init bundle 解析并校验可 spawn 的 EL0 服务（P0-2，v0.199.0）。
-///
-/// 遍历 bundle 的 service/driver 模块，对每个 ELF 做 W^X 校验
-/// （`eneros-elf-loader`，与 boot 链一致）；通过者进入服务注册表。
-/// 这是 `_start` 在 M2.1 后执行的真实装载逻辑的 host 可测形式。
-pub fn load_services_from_bundle(
-    bundle: &crate::bundle::InitBundle,
-) -> alloc::vec::Vec<ServiceEntry> {
-    let mut services = alloc::vec::Vec::new();
-    for module in &bundle.modules {
-        if module.kind != crate::bundle::MODULE_KIND_SERVICE
-            && module.kind != crate::bundle::MODULE_KIND_DRIVER
-        {
-            continue;
-        }
-        // W^X 校验：ELF 可执行段不得同时可写。
-        match eneros_elf_loader::LoadedElf::parse(&module.blob) {
-            Ok(_) => services.push(ServiceEntry {
-                name: module.name.clone(),
-                elf: module.blob.clone(),
-            }),
-            Err(_) => {
-                // 校验失败的服务不入注册表（fail-closed）。
-                continue;
-            }
-        }
-    }
-    services
-}
 
 // ============================================================================
 // K2.2：root-task IPC 调度主循环（21-A，替换 spin_loop）
@@ -152,7 +43,11 @@ fn ipc_fail_closed(step: &str, e: impl core::fmt::Debug) -> ! {
 ///
 /// 任何 IPC 步骤失败 → [`ipc_fail_closed`] 挂起（红线 4）。
 #[cfg(target_os = "none")]
-pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
+pub fn run_ipc_loop(
+    handles: &[crate::spawn::SpawnedHandle],
+    irq_table: crate::irq::IrqTable,
+    irq_binding: Option<crate::irq::IrqBinding>,
+) -> ! {
     use eneros_ipc_wire::el0::{encode_frame, El0FrameType};
     use eneros_sel4_sys::safe::{get_mr, ipc_call, ipc_poll, ipc_send, message_info_new, set_mr};
 
@@ -188,8 +83,11 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
     // supervisor 状态：Suspended/Faulted 不注入——seL4_Send 同步语义，
     // 向挂起服务 send 会永久阻塞 root-task）。
     let mut supervisor = crate::supervisor::Supervisor::new_for_count(handles.len(), now_ms());
-    // fault 识别：poll 的 sender = notification badge（服务索引+1，
-    // spawn 时 mint 设置；0 保留 = 未知）。
+    // fault 识别：poll 的 sender = fault_ep 的 badge（服务索引+1，spawn 时
+    // mint 设置；0 保留 = 未知）。23 G-I 总出口确认：seL4 fault IPC 的
+    // sender = fault handler endpoint 的 badge（doFaultTransfer 写入 badge
+    // 寄存器）——badge 必须设在 fault_ep mint（服务 CSpace 槽 1），而非
+    // notification（1368180 的错位实现，QEMU 实测 sender=0）。
     // 22 §2.W1.6：看门狗接入（hello 心跳后第一轮喂狗；QEMU 无 SP805
     // 时软件模式 base=0，MMIO 不写）。
     let wdt_base = if crate::panic::WDT_MMIO_MAPPED.load(core::sync::atomic::Ordering::Relaxed) {
@@ -205,9 +103,34 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
         None => ipc_fail_closed("svc-fault not in supervisor table", "no name"),
     };
 
+    let mut irq_count: u64 = 0;
+    let mut irq_seq: u64 = 0;
     loop {
         // 22 §2.W1.6：每轮喂硬件狗（喂狗间隔 < 看门狗超时 10s）。
         eneros_watchdog::api::wdt_kick();
+
+        // WP-26.8（26-C §2.2）：IRQ poll（方案乙：独立 ntfn）——中断触发 →
+        // badge ntfn 置位；sender != 0 即有中断；处理后必须 Ack。
+        if let Some(binding) = &irq_binding {
+            let mut irq_sender = 0u64;
+            if let Ok(_mi) = ipc_poll(binding.ntfn_slot, Some(&mut irq_sender)) {
+                if irq_sender != 0 {
+                    irq_count += 1;
+                    if irq_count % 8 == 1 || irq_count < 4 {
+                        eneros_runtime::println!(
+                            "[eneros-root-task] IRQ: irq={} badge={} count={}",
+                            binding.irq,
+                            irq_sender,
+                            irq_count
+                        );
+                    }
+                    if let Err(e) = irq_table.ack(binding) {
+                        ipc_fail_closed("irq ack", e);
+                    }
+                    irq_seq += 1;
+                }
+            }
+        }
 
         // 1. hello 往返。
         let resp = match hello_roundtrip(hello.ep) {
@@ -225,9 +148,13 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
 
         tick += 1;
         // 2. supervisor：轮询 fault ep（非阻塞）——检测服务故障并决策。
+        // 23 G-I 总出口修复：`seL4_Poll` 无消息时返回的 MessageInfo 未定义
+        // （QEMU 实测 0x2239c8——垃圾值，length>0 误判为有消息 → 每轮
+        // `unknown fault sender=0`）。fault IPC 必有 badge（= 服务索引+1），
+        // 以 `sender != 0` 为有消息判据。
         let mut sender = 0u64;
-        if let Ok(mi) = ipc_poll(fault.ntfn, Some(&mut sender)) {
-            let has_msg = eneros_sel4_sys::types::message_info_length(mi) > 0 || sender != 0;
+        if let Ok(_mi) = ipc_poll(fault.ntfn, Some(&mut sender)) {
+            let has_msg = sender != 0;
             if has_msg {
                 let name = |i: usize| handles[i].name.as_str();
                 if let Some(idx) = sender
@@ -355,15 +282,10 @@ fn restart_service(
     handle: &crate::spawn::SpawnedHandle,
 ) -> Result<(), eneros_sel4_sys::safe::Sel4Error> {
     use eneros_sel4_sys::safe::{tcb_resume, tcb_write_registers};
-    use eneros_sel4_sys::types::UserContext;
 
-    let mut regs = UserContext::zeroed();
-    regs.set_pc(handle.entry);
-    regs.set_sp(handle.stack_top);
-    regs.set_x(0, 0); // ep cap 在服务 CSpace 槽 0
-    regs.set_x(1, handle.buffer_vaddr);
-    // count=5: pc/sp/spsr/x0/x1（同 configure_service；漏写 x1 →
-    // ipcbuf=0 → set_ipc_buffer(NULL) → VMFAULT）。
+    // 寄存器布局由 spawn::initial_registers 单一持有（W2.1）——与 configure_service
+    // 共享同一构造点，count=5 契约由该函数保证。
+    let regs = crate::spawn::initial_registers(handle.entry, handle.stack_top, handle.buffer_vaddr);
     tcb_write_registers(handle.tcb, 0, 5, &regs)?;
     tcb_resume(handle.tcb)
 }
@@ -412,67 +334,13 @@ fn send_frame(ep: u64, frame: &[u8]) -> Result<(), eneros_sel4_sys::safe::Sel4Er
 
 #[cfg(test)]
 mod tests {
-    use eneros_ipc_wire::el0::{encode_frame, El0FrameType};
+    use eneros_ipc_wire::el0::{decode_frame, encode_frame, El0FrameType};
 
     use super::*;
 
-    const REGISTERED: &[&str] = &["svc-hello", "svc-pi", "svc-hog", "svc-fault"];
-
-    #[test]
-    fn test_krn004_ready_dispatch() {
-        let buf = encode_frame(El0FrameType::Ready, b"svc-hello\0");
-        assert_eq!(
-            dispatch_frame(&buf, REGISTERED).unwrap(),
-            DispatchAction::ServiceReady("svc-hello".to_string())
-        );
-    }
-
-    #[test]
-    fn test_krn004_report_dispatch() {
-        let buf = encode_frame(El0FrameType::Report, b"data");
-        assert_eq!(
-            dispatch_frame(&buf, REGISTERED).unwrap(),
-            DispatchAction::ForwardReport
-        );
-    }
-
-    #[test]
-    fn test_krn004_config_service_roundtrip() {
-        let buf = encode_frame(El0FrameType::Report, b"get:/runtime/services");
-        let resp = config_service_roundtrip(4, &buf).expect("config roundtrip");
-        let frame = eneros_ipc_wire::el0::decode_frame(&resp).expect("resp frame");
-        assert_eq!(frame.payload, b"config:services=4");
-    }
-
-    #[test]
-    fn test_krn004_corrupt_frame_ignored() {
-        let mut buf = encode_frame(El0FrameType::Ready, b"svc-pi\0");
-        let n = buf.len();
-        buf[n - 1] ^= 0xff;
-        assert_eq!(
-            dispatch_frame(&buf, REGISTERED),
-            Err(eneros_ipc_wire::el0::El0FrameError::BadCrc)
-        );
-    }
-
-    // v0.199.0 (P0-2)：服务注册表来自 bundle manifest。
-    #[test]
-    fn test_ready_unregistered_service_unknown() {
-        let buf = encode_frame(El0FrameType::Ready, b"svc-malicious\0");
-        assert_eq!(
-            dispatch_frame(&buf, REGISTERED).unwrap(),
-            DispatchAction::ServiceReady("unknown".to_string())
-        );
-    }
-
-    #[test]
-    fn test_service_name_from_manifest_registry() {
-        let manifest: &[&str] = &["svc-drv-rng", "svc-storage"];
-        assert_eq!(service_name(b"svc-drv-rng\0", manifest), "svc-drv-rng");
-        assert_eq!(service_name(b"svc-hello\0", manifest), "unknown");
-    }
-
     // 21-A K2.2：MR 帧编解码往返（root-task ↔ 服务共享契约）。
+    // 真实路径 `hello_roundtrip`/`send_frame` 走的就是 frame_into_mrs/
+    // frame_from_mrs——这是测的即跑的（W2.2 红线5）。
     #[test]
     fn test_frame_mr_roundtrip() {
         let frame = encode_frame(El0FrameType::Report, b"hello:eneros:tick=1");
@@ -480,6 +348,26 @@ mod tests {
         assert_eq!(mrs[MR_FRAME_LEN_SLOT as usize], frame.len() as u64);
         let out = frame_from_mrs(&mrs).expect("decode");
         assert_eq!(out, frame, "MR 往返必须无损");
+    }
+
+    // W2.2（蓝图23）：真实 run_ipc_loop 往返契约——hello 请求帧与 fault 注入帧
+    // 经 MR 编码→解码后，帧类型与 payload 必须完整保留（hello_roundtrip 依赖此
+    // 契约解析响应；send_frame 依赖此契约投递故障请求）。这是真实 IPC loop 的
+    // host 可测覆盖，替代已删的影子 API 测试。
+    #[test]
+    fn test_ipc_loop_frame_contract_roundtrip() {
+        // hello 请求（hello_roundtrip 发送/接收的帧）。
+        let hello = encode_frame(El0FrameType::Report, b"hello");
+        let hello_back = frame_from_mrs(&frame_into_mrs(&hello).expect("enc")).expect("dec");
+        let f = decode_frame(&hello_back).unwrap();
+        assert_eq!(f.frame_type, El0FrameType::Report);
+        assert_eq!(f.payload, b"hello");
+
+        // fault 注入请求（send_frame 每 50 tick 发送一次）。
+        let fault = encode_frame(El0FrameType::Report, b"fault=IllegalAccess");
+        let fault_back = frame_from_mrs(&frame_into_mrs(&fault).expect("enc")).expect("dec");
+        let f2 = decode_frame(&fault_back).unwrap();
+        assert_eq!(f2.payload, b"fault=IllegalAccess");
     }
 
     #[test]

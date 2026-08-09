@@ -1254,3 +1254,92 @@ mod tests {
         assert_eq!(slot.cptr(), 7);
     }
 }
+
+// ============================================================================
+// WP-26.8：IRQ 子系统安全封装（26-C §2.2 步骤 1）
+// ============================================================================
+
+/// IRQControl_Get 封装：从 IRQControl cap 获取 IRQHandler cap 到目标槽。
+/// host 构建返回 [`Sel4Error::HostUnsupported`]（红线 2：禁止假 Ok）。
+pub fn irq_control_get(
+    irq_ctrl: CPtr,
+    irq: Word,
+    dest_root: CPtr,
+    dest_index: CPtr,
+    dest_depth: Word,
+) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；参数由调用方保证（irq 号合法、目标槽区间）。
+        let err = unsafe {
+            crate::ffi::eneros_sel4_irq_control_get(
+                irq_ctrl, irq, dest_root, dest_index, dest_depth,
+            )
+        };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (irq_ctrl, irq, dest_root, dest_index, dest_depth);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// IRQHandler_SetNotification 封装：IRQHandler cap 绑定 notification。
+pub fn irq_handler_set_notification(handler: CPtr, ntfn: CPtr) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；handler 必须为已 Get 的 IRQHandler cap。
+        let err = unsafe { crate::ffi::eneros_sel4_irq_handler_set_notification(handler, ntfn) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (handler, ntfn);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// IRQHandler_Ack 封装：中断处理完成后必须 Ack（否则中断不重触发）。
+pub fn irq_handler_ack(handler: CPtr) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；handler 必须为已绑定的 IRQHandler cap。
+        let err = unsafe { crate::ffi::eneros_sel4_irq_handler_ack(handler) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = handler;
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// IRQHandler_Clear 封装：解绑中断。
+pub fn irq_handler_clear(handler: CPtr) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；handler 必须为已 Get 的 IRQHandler cap。
+        let err = unsafe { crate::ffi::eneros_sel4_irq_handler_clear(handler) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = handler;
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// 初始 IRQControl cap 槽号（编译期取 seL4_CapIRQControl，不硬编码）。
+pub fn cap_irq_control() -> u64 {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 无参数纯查询。
+        unsafe { crate::ffi::eneros_sel4_cap_irq_control() }
+    }
+    #[cfg(host_build)]
+    {
+        // host 侧常量对齐（seL4 aarch64 初始 cap 编号）。
+        5
+    }
+}

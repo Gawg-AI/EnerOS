@@ -474,3 +474,40 @@ seL4_Word eneros_sel4_cap_init_thread_asid_pool(void)
 {
     return seL4_CapInitThreadASIDPool;
 }
+
+/* ============================================================
+ * WP-26.8（26-C §2.2）：IRQ 子系统绑定（seL4 14 API）
+ * ============================================================ */
+
+/* 从 IRQControl cap 获取 IRQHandler cap（Get）→ 目标槽。
+ * seL4_IRQControl_Get(irq_ctrl, irq, dest_root, dest_index, dest_depth)。 */
+seL4_Error eneros_sel4_irq_control_get(seL4_CPtr irq_ctrl, seL4_Word irq,
+                                       seL4_CPtr dest_root, seL4_Word dest_index,
+                                       seL4_Word dest_depth)
+{
+    return seL4_IRQControl_Get(irq_ctrl, irq, dest_root, dest_index, dest_depth);
+}
+
+/* IRQHandler cap 绑定 notification：中断触发 → ntfn 置位（badge 由 mint 设定）。 */
+seL4_Error eneros_sel4_irq_handler_set_notification(seL4_CPtr handler, seL4_CPtr ntfn)
+{
+    return seL4_IRQHandler_SetNotification(handler, ntfn);
+}
+
+/* 中断处理完成后 Ack（必须 Ack，否则中断不重触发）。 */
+seL4_Error eneros_sel4_irq_handler_ack(seL4_CPtr handler)
+{
+    return seL4_IRQHandler_Ack(handler);
+}
+
+/* 解绑中断（handler cap 生命周期结束）。 */
+seL4_Error eneros_sel4_irq_handler_clear(seL4_CPtr handler)
+{
+    return seL4_IRQHandler_Clear(handler);
+}
+
+/* 初始 IRQControl cap 槽号（seL4_CapIRQControl；Rust 侧不硬编码）。 */
+seL4_Word eneros_sel4_cap_irq_control(void)
+{
+    return seL4_CapIRQControl;
+}
