@@ -1,10 +1,10 @@
 //! 仪表盘事件与 WebSocket 推送（v0.190.0）.
 //!
-//! 定义 [`DashboardEvent`] 推送事件、[`DashboardWsServer`] 广播抽象，
-//! 以及 [`MockWsServer`] 模拟实现（记录最近一次广播事件，便于测试）。
+//! 定义 [`DashboardEvent`] 推送事件、[`DashboardWsServer`] 广播抽象。
+//! 真 WebSocket 服务端在 [`crate::ws::WsServer`]（RFC 6455 实现）；
+//! `MockWsServer` 仅 `#[cfg(test)]` 测试替身（验收：非生产代码）。
 
 use alloc::vec::Vec;
-use core::cell::RefCell;
 
 use crate::types::{NodeStatus, PowerFlowSample, TopologyGraph};
 use crate::ObsError;
@@ -26,45 +26,43 @@ pub trait DashboardWsServer {
     fn broadcast(&self, event: &DashboardEvent) -> Result<(), ObsError>;
 }
 
-/// 模拟 WebSocket 服务端：记录最近一次广播事件与广播计数.
-#[derive(Debug, Default)]
-pub struct MockWsServer {
-    last: RefCell<Option<DashboardEvent>>,
-    count: RefCell<u64>,
-}
-
-impl MockWsServer {
-    /// 构造一个空的模拟服务端.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// 获取最近一次广播事件的克隆.
-    pub fn last_event(&self) -> Option<DashboardEvent> {
-        self.last.borrow().clone()
-    }
-
-    /// 获取累计广播次数.
-    pub fn broadcast_count(&self) -> u64 {
-        *self.count.borrow()
-    }
-}
-
-impl DashboardWsServer for MockWsServer {
-    fn broadcast(&self, event: &DashboardEvent) -> Result<(), ObsError> {
-        *self.last.borrow_mut() = Some(event.clone());
-        *self.count.borrow_mut() += 1;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::disallowed_macros)]
     use alloc::string::String;
+    use core::cell::RefCell;
 
     use super::*;
     use crate::types::{EdgeKind, FlowDirection, NodeKind, Position3D, TopologyEdge, TopologyNode};
+
+    /// 模拟 WebSocket 服务端（仅测试替身）：记录最近一次广播事件与计数.
+    #[derive(Debug, Default)]
+    struct MockWsServer {
+        last: RefCell<Option<DashboardEvent>>,
+        count: RefCell<u64>,
+    }
+
+    impl MockWsServer {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn last_event(&self) -> Option<DashboardEvent> {
+            self.last.borrow().clone()
+        }
+
+        fn broadcast_count(&self) -> u64 {
+            *self.count.borrow()
+        }
+    }
+
+    impl DashboardWsServer for MockWsServer {
+        fn broadcast(&self, event: &DashboardEvent) -> Result<(), ObsError> {
+            *self.last.borrow_mut() = Some(event.clone());
+            *self.count.borrow_mut() += 1;
+            Ok(())
+        }
+    }
 
     fn sample_graph() -> TopologyGraph {
         TopologyGraph {

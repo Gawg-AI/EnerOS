@@ -8,8 +8,10 @@
 //!   [`topology::MockTopology`] 样例实现与节点查找 / 邻居查询
 //! - [`powerflow`] — [`powerflow::PowerFlowCalculator`] 功率流计算抽象
 //!   与 [`powerflow::SimplePowerFlow`] 简化实现
-//! - [`render`] — [`render::DashboardEvent`] 推送事件、
-//!   [`render::DashboardWsServer`] 广播抽象与 [`render::MockWsServer`]
+//! - [`render`] — [`render::DashboardEvent`] 推送事件与
+//!   [`render::DashboardWsServer`] 广播抽象
+//! - [`ws`] — 真 WebSocket 服务端（RFC 6455 握手 + 帧编解码 +
+//!   事件 JSON 推送，[`ws::WsServer`]）
 //!
 //! # no_std 合规
 //!
@@ -26,14 +28,16 @@ pub mod real_render;
 pub mod render;
 pub mod topology;
 pub mod types;
+pub mod ws;
 
 pub use powerflow::{PowerFlowCalculator, SimplePowerFlow, NOMINAL_VOLTAGE};
-pub use render::{DashboardEvent, DashboardWsServer, MockWsServer};
+pub use render::{DashboardEvent, DashboardWsServer};
 pub use topology::{find_node, neighbors, MockTopology, TopologyProvider};
 pub use types::{
     EdgeKind, FlowDirection, NodeKind, NodeStatus, Position3D, PowerFlowSample, TopologyEdge,
     TopologyGraph, TopologyNode,
 };
+pub use ws::{WsServer, MAX_FRAME_BYTES, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG, OP_TEXT};
 
 /// 仪表盘错误类型.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
