@@ -333,8 +333,8 @@ pub fn build_chain() -> Result<eneros_control_gateway::chain::ControlChain, Runn
 
 #[cfg(test)]
 mod tests {
-    use crate::sink::FileCommandSink;
     use super::*;
+    use crate::sink::FileCommandSink;
 
     /// 测试专用 LLM 引擎：返回合法 Charge intent JSON（本 crate 测试私有，
     /// 生产装配路径只使用 RecordingLlmEngine + LlamaCppEngine）。
@@ -442,4 +442,3 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
-

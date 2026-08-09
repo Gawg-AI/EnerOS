@@ -81,6 +81,40 @@ impl CommandSink for FileCommandSink {
     }
 }
 
+/// 文件执行器：授权命令 → JSON Lines 落盘（复用 FileCommandSink 通道）。
+pub struct FileExecutor {
+    inner: FileCommandSink,
+}
+
+impl FileExecutor {
+    /// 打开文件执行器（sink 文件必填——fail-closed）。
+    pub fn new(path: &str) -> Result<Self, RunnerIoError> {
+        Ok(Self {
+            inner: FileCommandSink::new(path)?,
+        })
+    }
+
+    /// 文件路径（证据输出用）。
+    pub fn path(&self) -> &std::path::Path {
+        self.inner.path()
+    }
+}
+
+impl DeviceExecutor for FileExecutor {
+    fn write(&mut self, cmd: &AuthorizedCommand, power_kw: f64) -> Result<(), DeviceExecError> {
+        // 授权命令 → DispatchCommand 载荷（写入文件总线；设备侧消费）。
+        let dc = DispatchCommand {
+            target_device: format!("dev-{}", cmd.device_id),
+            power_kw,
+            ttl_ms: 60_000,
+            timestamp: cmd.sequence,
+        };
+        self.inner
+            .write(dc)
+            .map_err(|e| DeviceExecError::Comm(format!("{e:?}")))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,37 +192,3 @@ mod tests {
 // 22 §2.W2.2：FileExecutor——ChainCommandSink 的设备执行器适配器。
 // ControlChain 授权后的命令经文件总线落盘（真实设备通道；AI 不直接写设备）。
 // ============================================================================
-
-/// 文件执行器：授权命令 → JSON Lines 落盘（复用 FileCommandSink 通道）。
-pub struct FileExecutor {
-    inner: FileCommandSink,
-}
-
-impl FileExecutor {
-    /// 打开文件执行器（sink 文件必填——fail-closed）。
-    pub fn new(path: &str) -> Result<Self, RunnerIoError> {
-        Ok(Self {
-            inner: FileCommandSink::new(path)?,
-        })
-    }
-
-    /// 文件路径（证据输出用）。
-    pub fn path(&self) -> &std::path::Path {
-        self.inner.path()
-    }
-}
-
-impl DeviceExecutor for FileExecutor {
-    fn write(&mut self, cmd: &AuthorizedCommand, power_kw: f64) -> Result<(), DeviceExecError> {
-        // 授权命令 → DispatchCommand 载荷（写入文件总线；设备侧消费）。
-        let dc = DispatchCommand {
-            target_device: format!("dev-{}", cmd.device_id),
-            power_kw,
-            ttl_ms: 60_000,
-            timestamp: cmd.sequence,
-        };
-        self.inner
-            .write(dc)
-            .map_err(|e| DeviceExecError::Comm(format!("{e:?}")))
-    }
-}
