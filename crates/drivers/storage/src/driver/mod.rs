@@ -16,7 +16,10 @@
 pub mod dma;
 pub mod emmc;
 pub mod factory;
+#[cfg(any(test, feature = "mock"))]
 pub mod mock;
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!("feature `mock` 禁止进入 release 构建（铁律 1）");
 pub mod nvme;
 pub mod types;
 pub mod virtio_blk;
@@ -28,6 +31,7 @@ pub use dma::MockDmaTransfer;
 pub use emmc::RamEmmcMmio;
 pub use emmc::{EmmcCmdType, EmmcDriver};
 pub use factory::create_block_device;
+#[cfg(any(test, feature = "mock"))]
 pub use mock::MockBlockDevice;
 pub use nvme::NvmeDriver;
 pub use types::{DeviceHealth, StorageConfig, StorageType};

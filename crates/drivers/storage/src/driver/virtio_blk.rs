@@ -478,11 +478,6 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
         Ok(())
     }
 
-    /// Physical address of a pool offset.
-    fn pa_of(&self, offset: usize) -> u64 {
-        self.pool.borrow().phys_base() + offset as u64
-    }
-
     /// Virtual address of a pool offset (for cache ops).
     fn va_of(&self, offset: usize) -> usize {
         self.pool.borrow().as_bytes().as_ptr() as usize + offset

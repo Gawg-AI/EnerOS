@@ -17,6 +17,7 @@ eneros-time = { path = "../../drivers/time" }
 eneros-net = { path = "../../drivers/net", optional = true }
 
 [features]
+mock = []
 default = ["net"]
 # 真实 TCP 传输层（NetDevice + smoltcp 协议栈）。
 net = ["dep:eneros-net"]

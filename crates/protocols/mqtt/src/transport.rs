@@ -30,6 +30,7 @@ pub trait MqttTransport {
 /// - `recv_queue`：预置的入站报文队列（`recv()` 弹出一个）
 /// - `connected`：连接状态（可通过 `set_connected()` 切换）
 #[derive(Debug, Default)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockTransport {
     /// 已发送报文记录.
     sent_packets: Vec<Vec<u8>>,
@@ -39,6 +40,7 @@ pub struct MockTransport {
     connected: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockTransport {
     /// 构造空 mock（默认未连接）.
     pub fn new() -> Self {
@@ -71,6 +73,7 @@ impl MockTransport {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MqttTransport for MockTransport {
     fn connect(&mut self, _host: &str, _port: u16) -> Result<(), MqttError> {
         self.connected = true;

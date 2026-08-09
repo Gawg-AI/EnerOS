@@ -9,6 +9,7 @@ use alloc::boxed::Box;
 use crate::driver::emmc::EmmcDriver;
 #[cfg(test)]
 use crate::driver::emmc::RamEmmcMmio;
+#[cfg(any(test, feature = "mock"))]
 use crate::driver::mock::MockBlockDevice;
 use crate::driver::types::{StorageConfig, StorageType};
 use crate::driver::BlockDevice;
@@ -59,6 +60,7 @@ pub fn create_block_device(config: &StorageConfig) -> Result<Box<dyn BlockDevice
 }
 
 /// Convenience helper for creating a [`MockBlockDevice`] in host tests.
+#[cfg(any(test, feature = "mock"))]
 pub fn create_mock_device(block_count: u64, block_size: usize) -> MockBlockDevice {
     MockBlockDevice::new(block_count, block_size)
 }

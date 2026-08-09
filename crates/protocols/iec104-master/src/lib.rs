@@ -61,8 +61,10 @@ pub mod transport;
 /// IEC 104 协议适配器（ARCH-P04）— 第三个真实 `ProtocolAdapter`。
 pub mod adapter;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "mock"))]
 pub mod mock;
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!("feature `mock` 禁止进入 release 构建（铁律 1）");
 
 // 重导出公共 API
 pub use adapter::{Iec104Adapter, IecPointMapping};

@@ -34,8 +34,10 @@ pub mod request;
 /// Modbus RTU 协议适配器（ARCH-P01）— 第一个真实 `ProtocolAdapter`。
 pub mod adapter;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "mock"))]
 pub mod mock;
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!("feature `mock` 禁止进入 release 构建（铁律 1）");
 
 pub use adapter::ModbusRtuAdapter;
 pub use crc::crc16_modbus;

@@ -78,6 +78,7 @@ pub trait L2Transport {
 /// - 可注入一次性 send/recv 错误
 /// - 可启用 loopback：publish 的帧立即可被 poll 收到
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(any(test, feature = "mock"))]
 pub struct MockL2 {
     rx_frames: alloc::collections::VecDeque<alloc::vec::Vec<u8>>,
     tx_frames: alloc::vec::Vec<alloc::vec::Vec<u8>>,
@@ -86,6 +87,7 @@ pub struct MockL2 {
     loopback: bool,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockL2 {
     /// 创建空 mock（默认 loopback 关闭）。
     pub fn new() -> Self {
@@ -134,12 +136,14 @@ impl MockL2 {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for MockL2 {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl L2Transport for MockL2 {
     fn send(&mut self, frame: &[u8]) -> Result<(), SvError> {
         if let Some(e) = self.inject_send_error.take() {

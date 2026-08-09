@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 description = "EnerOS Modbus RTU master protocol stack"
 
+[features]
+mock = []
+
 [dependencies]
 eneros-driver-framework = { path = "../../drivers/framework" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }

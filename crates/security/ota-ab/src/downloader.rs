@@ -184,7 +184,9 @@ where
         self.audit.push((OtaStage::Rollback, true));
         if self.attempts > 3 {
             // 3 次失败：不再自动回滚（防抖，标记人工介入）。
-            Some(OtaOutcome::RolledBack { attempts: self.attempts })
+            Some(OtaOutcome::RolledBack {
+                attempts: self.attempts,
+            })
         } else {
             None
         }
@@ -211,11 +213,7 @@ mod tests {
         assert_eq!(progress.len(), 4); // 32+32+32+4
         assert_eq!(progress.last().unwrap().percent(), 100);
 
-        let mut pipe = OtaPipeline::new(
-            |_img: &[u8]| Ok(()),
-            |_img: &[u8]| Ok(()),
-            || true,
-        );
+        let mut pipe = OtaPipeline::new(|_img: &[u8]| Ok(()), |_img: &[u8]| Ok(()), || true);
         let outcome = pipe.run(&image);
         assert_eq!(outcome, OtaOutcome::Success { slot: 1 });
         assert_eq!(pipe.attempts, 0);

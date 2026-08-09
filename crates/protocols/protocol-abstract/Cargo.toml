@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 description = "EnerOS protocol abstraction layer — PointAccess / ProtocolAdapter / ProtocolManager traits (v0.51.0)"
 
+[features]
+mock = []
+
 [dependencies]
 eneros-upa-model = { path = "../upa-model" }
 # 蓝图/24 D1：AuthorizedWriter 引用 AuthorizedCommand（下移至共享模型层，

@@ -57,9 +57,11 @@ pub mod mms_net;
 
 pub use ber_decode::{decode_read_response, decode_write_response, read_tag_length};
 pub use ber_encode::BerEncoder;
+#[cfg(any(test, feature = "mock"))]
+pub use mms_client::MockTransport;
 pub use mms_client::{
     ConnState, MmsClient, MmsConnection, MmsErrorCode, MmsReadResult, MmsRequest, MmsResponse,
-    MmsTransport, MmsWriteResult, MockTransport, VarAccessSpec,
+    MmsTransport, MmsWriteResult, VarAccessSpec,
 };
 
 /// MMS 协议错误（D10：统一错误模型，区分本地解码失败与对端拒绝）。

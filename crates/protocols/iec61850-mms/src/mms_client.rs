@@ -361,6 +361,7 @@ fn map_error_code(code: u16) -> MmsErrorCode {
 /// - `connect`：前 `fail_connects` 次尝试返回 `Timeout`，其后成功；计数可查
 /// - `send`：记录已发字节序列（供时序断言：COTP CR 在 AARQ 之前）
 /// - `recv`：依次弹出预置响应；无响应 → `Timeout`；可注入一次性错误
+#[cfg(any(test, feature = "mock"))]
 pub struct MockTransport {
     responses: VecDeque<Vec<u8>>,
     sent: Vec<Vec<u8>>,
@@ -370,6 +371,7 @@ pub struct MockTransport {
     send_error: Option<MmsError>,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockTransport {
     /// 创建空 mock。
     pub fn new() -> Self {
@@ -414,12 +416,14 @@ impl MockTransport {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl Default for MockTransport {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MmsTransport for MockTransport {
     fn connect(&mut self, _addr: &str, _port: u16) -> Result<(), MmsError> {
         self.connect_attempts += 1;

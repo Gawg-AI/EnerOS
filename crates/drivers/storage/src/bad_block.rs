@@ -25,8 +25,6 @@ pub struct BadBlockTable {
     bad_blocks: Vec<u64>,
     /// First reserved block index (start of the replacement pool).
     reserved_start: u64,
-    /// Total number of reserved blocks available for replacement.
-    reserved_count: u64,
     /// Next available reserved block to hand out as a replacement.
     next_reserved: u64,
     /// Total blocks in the device (including reserved).
@@ -54,7 +52,6 @@ impl BadBlockTable {
         BadBlockTable {
             bad_blocks: Vec::new(),
             reserved_start,
-            reserved_count,
             next_reserved: reserved_start,
             total_blocks,
             last_check_time: 0,

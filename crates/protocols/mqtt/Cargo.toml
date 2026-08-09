@@ -13,6 +13,7 @@ eneros-fs = { path = "../../drivers/fs" }
 eneros-net = { path = "../../drivers/net", optional = true }
 
 [features]
+mock = []
 # 真实传输层（默认关闭保持无外部依赖；启用后提供 NetTcpTransport）。
 net = ["dep:eneros-net"]
 # TLS 层（std 侧 rustls；与 eneros-tls 一致，默认关闭）。

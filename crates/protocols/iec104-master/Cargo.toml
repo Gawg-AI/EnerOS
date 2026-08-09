@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 description = "EnerOS IEC 60870-5-104 master protocol stack — interrogation, command, clock sync, multi-device polling"
 
+[features]
+mock = []
+
 [dependencies]
 eneros-iec104-slave = { path = "../iec104-slave" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }

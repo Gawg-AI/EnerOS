@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 
 [features]
+mock = []
 default = []
 # RAM 模拟 eMMC 控制器（RamEmmcMmio）——仅测试/仿真；release 下启用即编译失败（蓝图/20 R1-7）。
 emmc-ram-sim = []

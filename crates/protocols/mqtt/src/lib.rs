@@ -57,7 +57,9 @@ pub use packet::{
 pub use qos::QoS;
 pub use qos_store::{FsQosStore, InMemoryQosStore, PendingMessage, QosStore};
 pub use topic::TopicFilter;
-pub use transport::{MockTransport, MqttTransport};
+#[cfg(any(test, feature = "mock"))]
+pub use transport::MockTransport;
+pub use transport::MqttTransport;
 pub use will::LastWill;
 
 #[cfg(test)]

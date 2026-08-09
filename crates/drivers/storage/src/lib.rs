@@ -53,7 +53,6 @@
 //! ```
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 
 // 蓝图/20 R1-7：RAM 模拟 eMMC 控制器（emmc-ram-sim）只允许测试/仿真；
 // release 构建启用即熔断，保证生产产物不含模拟控制器符号。
@@ -78,11 +77,13 @@ pub use driver::emmc::RamEmmcMmio;
 pub use driver::virtio_blk::{
     Aarch64Cache, ArmCache, NoopCache, RamMmio, RamPool, VirtioBlkDriver, VirtioMmio,
 };
+#[cfg(any(test, feature = "mock"))]
+pub use driver::MockBlockDevice;
 #[cfg(test)]
 pub use driver::MockDmaTransfer;
 pub use driver::{
-    create_block_device, BlockDevice, DeviceHealth, DmaTransfer, MockBlockDevice, StorageConfig,
-    StorageMmio, StorageType,
+    create_block_device, BlockDevice, DeviceHealth, DmaTransfer, StorageConfig, StorageMmio,
+    StorageType,
 };
 pub use driver::{DmaBuffer, EmmcCmdType, EmmcDriver, NvmeDriver};
 pub use error::StorageError;

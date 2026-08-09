@@ -37,8 +37,10 @@ pub mod master;
 pub mod mbap;
 pub mod transport;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "mock"))]
 pub mod mock;
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!("feature `mock` 禁止进入 release 构建（铁律 1）");
 
 // 重导出 v0.45.0 应用层类型，便于上游统一从本 crate 引用
 pub use adapter::ModbusTcpAdapter;

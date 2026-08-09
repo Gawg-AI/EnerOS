@@ -22,6 +22,8 @@ eneros-logging = { path = "../../observability/logging" }
 eneros-tracing = { path = "../../observability/tracing" }
 
 [dev-dependencies]
-# 集成测试（tests/vpp_e2e.rs）使用 federation 的 Mock 类型（蓝图/20 R2-1：
-# mock feature 显式开启，仅测试构建生效）
+# 集成测试（tests/vpp_e2e.rs）使用 mock 类型（蓝图/20 R2-1：mock feature
+# 显式开启，仅测试构建生效）
 eneros-federation = { path = "../federation", features = ["mock"] }
+eneros-iec61850-goose = { path = "../../protocols/iec61850-goose", features = ["mock"] }
+eneros-storage = { path = "../../drivers/storage", features = ["mock"] }

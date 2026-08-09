@@ -10,3 +10,6 @@ description = "EnerOS A/B 分区 OTA 升级 (v0.123.0) — SM2/SM3 签名校验 
 heapless = { version = "0.8", default-features = false }
 eneros-crypto = { path = "../crypto" }
 eneros-storage = { path = "../../drivers/storage" }
+
+[dev-dependencies]
+eneros-storage = { path = "../../drivers/storage", features = ["mock"] }

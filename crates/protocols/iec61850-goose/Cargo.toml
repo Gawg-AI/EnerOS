@@ -12,4 +12,5 @@ eneros-iec61850-model = { path = "../iec61850-model" }
 eneros-net = { path = "../../drivers/net", optional = true }
 
 [features]
+mock = []
 net = ["dep:eneros-net"]

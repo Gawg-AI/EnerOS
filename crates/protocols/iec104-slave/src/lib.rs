@@ -55,8 +55,10 @@ pub mod point;
 pub mod slave;
 pub mod transport;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "mock"))]
 pub mod mock;
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!("feature `mock` 禁止进入 release 构建（铁律 1）");
 
 pub use apdu::{Apdu, ControlField, UFormatFunction};
 pub use asdu::{

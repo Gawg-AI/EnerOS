@@ -11,3 +11,6 @@ heapless = { version = "0.8", default-features = false }
 eneros-crypto = { path = "../crypto" }
 eneros-storage = { path = "../../drivers/storage" }
 eneros-ota-ab = { path = "../ota-ab" }
+
+[dev-dependencies]
+eneros-storage = { path = "../../drivers/storage", features = ["mock"] }
