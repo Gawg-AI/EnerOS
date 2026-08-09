@@ -1091,3 +1091,149 @@ mod w36_compaction_tests {
         assert_eq!(after_all, before_all, "合并后数据必须完整（不丢）");
     }
 }
+
+// ============================================================================
+// 22 §2.G-R3 闸门：kHz 摄入压测（不丢不 OOM）+ 掉电不损坏
+// ============================================================================
+#[cfg(test)]
+mod gr3_gate_tests {
+    use eneros_storage::{NoopCache, RamMmio, RamPool, StorageConfig, StorageType, VirtioBlkDriver};
+
+    use super::*;
+    use crate::CompressionType;
+
+    fn make_config() -> TsdbConfig {
+        TsdbConfig {
+            data_dir: String::from("/tsdb"),
+            chunk_duration_ms: 3_600_000,
+            max_points_per_chunk: 100,
+            compression: CompressionType::Snappy,
+            retention_ms: 2_592_000_000,
+            flush_interval_ms: 5_000,
+        }
+    }
+
+    fn make_point(ts: u64, device: u32, metric: u32, value: f64) -> TimeSeriesPoint {
+        TimeSeriesPoint {
+            timestamp: ts,
+            device_id: DeviceId(device),
+            metric: MetricId(metric),
+            value,
+            quality: DataQuality::Good,
+        }
+    }
+
+    /// G-R3 判据 1：kHz 摄入压测——10 秒 × 1kHz（10k 点）不丢不 OOM。
+    ///
+    /// 采样率 = 每毫秒 1 点（1kHz），持续 10 秒；介质受适配器 BLOCK_COUNT
+    /// 上限 64 块 × 4096B = 256 KiB 约束（功率流 10s 已远超单秒验收）。
+    /// 不丢：total_written 与读回计数一致；不 OOM：索引按设备/指标键
+    /// 有界（单键）、内存 chunk 缓冲有界（flush 后释放）。
+    #[test]
+    fn gr3_khz_ingest_no_loss_no_oom() {
+        let dev: Box<dyn eneros_storage::BlockDevice> =
+            Box::new(eneros_storage::MockBlockDevice::new(64, 4096));
+        let fs = Lfs::format(dev).expect("format");
+        let mut db = TimeSeriesDB::open(fs, make_config()).expect("open");
+
+        // kHz 摄入：每 ms 1 点（时间戳 0,1,2,...），持续 10 秒 = 10k 点。
+        for sec in 0..10u64 {
+            let batch: Vec<TimeSeriesPoint> = (0..1000)
+                .map(|i| make_point(sec * 1000 + i, 1, 1, i as f64))
+                .collect();
+            db.write_batch(&batch).expect("kHz 写入");
+        }
+        // 不丢：写入计数。
+        assert_eq!(db.total_written(), 10_000, "10k 点全部写入（不丢）");
+        // 不 OOM：索引按 chunk 有界（10k 点 / 100 每 chunk ≈ 100 项，
+        // 不随点数线性膨胀）；内存缓冲 ≤ chunk 容量。
+        assert!(db.index_len() <= 100, "索引按 chunk 有界: {}", db.index_len());
+        assert!(
+            db.buffered_points() <= 100,
+            "内存缓冲有界: {}",
+            db.buffered_points()
+        );
+
+        // 强制落盘（compact 内部 flush_all_chunks）→ 读回全量一致。
+        db.compact().expect("compact");
+        let recovered = db
+            .query_range(DeviceId(1), MetricId(1), 0, u64::MAX)
+            .expect("读回");
+        assert_eq!(recovered.len(), 10_000, "落盘后读回 10k 点（不丢）");
+        // 抽查首尾（CRC/索引一致）。
+        assert_eq!(recovered[0].timestamp, 0);
+        assert_eq!(recovered[9_999].timestamp, 9_999);
+        db.close().expect("close");
+    }
+
+    /// G-R3 判据 2：掉电不损坏——close 持久化后掉电 → 数据完整（CRC 过）；
+    /// 原子写残留（.tmp 半成品，掉电中断写路径产物）→ open 清理不损坏。
+    #[test]
+    fn gr3_power_loss_no_corruption() {
+        // virtio-blk 共享介质（先例模式：第 1 驱动实例丢弃 = 掉电）。
+        let mmio = RamMmio::new(2048);
+        let disk_handle = mmio.disk_handle();
+        let pool = RamPool::new(9);
+        let cfg = StorageConfig {
+            storage_type: StorageType::VirtioBlk,
+            base_addr: 0x0A00_0000,
+            irq_num: 48,
+            dma_channel: 0,
+            block_size: 4096,
+            max_transfer_blocks: 256,
+        };
+        let dev = VirtioBlkDriver::new(mmio, pool, NoopCache, cfg).expect("virtio-blk init");
+        dev.set_block_count(64);
+        let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(dev);
+        let mut db = TimeSeriesDB::open(Lfs::format(dev).expect("format"), make_config())
+            .expect("open");
+
+        // 写入 300 点并 close（完整持久化：chunk 原子写 + 索引落盘）。
+        let committed: Vec<TimeSeriesPoint> =
+            (0..300).map(|i| make_point(1000 + i, 3, 2, i as f64 * 0.25)).collect();
+        db.write_batch(&committed).expect("write");
+        db.close().expect("close 持久化");
+        // 掉电：驱动实例销毁（介质保留）。
+
+        // 重挂载同一介质（模拟上电）。
+        let mmio2 = RamMmio::with_disk_rc(disk_handle);
+        let pool2 = RamPool::new(9);
+        let dev2 = VirtioBlkDriver::new(
+            mmio2,
+            pool2,
+            NoopCache,
+            StorageConfig {
+                storage_type: StorageType::VirtioBlk,
+                base_addr: 0x0A00_0000,
+                irq_num: 48,
+                dma_channel: 0,
+                block_size: 4096,
+                max_transfer_blocks: 256,
+            },
+        )
+        .expect("virtio-blk reinit");
+        dev2.set_block_count(64);
+        let dev2: Box<dyn eneros_storage::BlockDevice> = Box::new(dev2);
+        let mut fs2 = Lfs::mount(dev2).expect("mount");
+        // 模拟掉电中断写路径：制造 .tmp 原子写残留（半成品垃圾字节）。
+        let _ = fs2.mkdir("/tsdb");
+        let mut tmp = fs2
+            .open("/tsdb/chunk_orphan.tmp", OpenFlags::WRITE | OpenFlags::CREATE)
+            .expect("创建 .tmp 残留");
+        tmp.write(&mut fs2, &[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01])
+            .expect("写 .tmp 残留");
+
+        // open 自动清理残留（不 panic）→ 已提交数据完整（CRC 校验在
+        // reader 内：损坏 → Err，不产生损坏数据）。
+        let mut db2 = TimeSeriesDB::open(fs2, make_config()).expect("reopen with residue");
+        let recovered = db2
+            .query_range(DeviceId(3), MetricId(2), 0, u64::MAX)
+            .expect("query after power loss");
+        assert_eq!(recovered.len(), 300, "掉电后已持久化数据完整");
+        for (i, p) in recovered.iter().enumerate() {
+            assert_eq!(p.timestamp, 1000 + i as u64);
+            assert_eq!(p.value, i as f64 * 0.25);
+            assert_eq!(p.quality, DataQuality::Good);
+        }
+    }
+}
