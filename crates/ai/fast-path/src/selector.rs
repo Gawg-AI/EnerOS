@@ -11,6 +11,8 @@ pub enum PathType {
     SlowPath,
     /// 快路径（Solver only，<500ms）.
     FastPath,
+    /// 22 §2.W2.3：降级模式（连续 LLM 超时后用上一次成功决策）.
+    Degraded,
 }
 
 /// 路径选择器.

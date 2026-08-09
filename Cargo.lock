@@ -773,6 +773,7 @@ dependencies = [
  "eneros-control-gateway",
  "eneros-energy-lp-model",
  "eneros-fast-path",
+ "eneros-infer-scheduler",
  "eneros-intent-contract",
  "eneros-intent-parser",
  "eneros-llm-engine",

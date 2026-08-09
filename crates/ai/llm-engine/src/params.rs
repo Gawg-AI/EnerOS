@@ -17,6 +17,8 @@ pub struct InferParams {
     pub repeat_penalty: f32,
     /// 停止 token 列表（默认空）.
     pub stop_tokens: alloc::vec::Vec<alloc::string::String>,
+    /// 推理超时（毫秒；22 §2.W2.3——LLM 调用有界延迟，默认 5000）。
+    pub timeout_ms: u64,
 }
 
 impl Default for InferParams {
@@ -28,6 +30,7 @@ impl Default for InferParams {
             top_k: 40,
             repeat_penalty: 1.1,
             stop_tokens: alloc::vec::Vec::new(),
+            timeout_ms: 5_000,
         }
     }
 }

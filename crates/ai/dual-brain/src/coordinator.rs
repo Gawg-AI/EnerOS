@@ -14,6 +14,9 @@ use eneros_energy_lp_model::result::ScheduleResult;
 use eneros_fast_path::engine::RealtimePathEngine;
 use eneros_fast_path::selector::{PathSelector, PathType};
 use eneros_fast_path::state::RealtimeState;
+use eneros_infer_scheduler::error::SchedulerError;
+use eneros_infer_scheduler::request::InferRequest;
+use eneros_infer_scheduler::scheduler::InferScheduler;
 use eneros_intent_contract::contract::{
     DeviceStatus, FeedbackContract, IntentContract, LlmMeta, SystemContext,
 };
@@ -98,6 +101,15 @@ pub struct DualBrainCoordinator<S: Solver> {
     /// 单调时钟（毫秒；v0.248.0 真实计时——默认 eneros-time 全局时钟，
     /// 测试可注入可控时钟）。
     pub clock_fn: fn() -> u64,
+    // --- 22 §2.W2.3：LLM 有界延迟（经 InferScheduler）---
+    /// LLM 推理调度器（deadline 检测 + 统计）。
+    pub infer_scheduler: InferScheduler,
+    /// 连续 LLM 超时计数（≥2 → 降级模式 + 告警）。
+    pub llm_timeout_streak: u32,
+    /// 是否处于降级模式（连续超时后）。
+    pub degraded: bool,
+    /// 上次成功决策（降级模式用：上一次成功决策 + 安全钳位）。
+    pub last_successful_schedule: Option<ScheduleResult>,
 }
 
 impl<S: Solver> DualBrainCoordinator<S> {
@@ -122,6 +134,14 @@ impl<S: Solver> DualBrainCoordinator<S> {
             sink,
             request_counter: 0,
             clock_fn: default_clock_ms,
+            infer_scheduler: InferScheduler::new(
+                1,
+                64 * 1024 * 1024,
+                eneros_llm_engine::device::ComputeDevice::Cpu,
+            ),
+            llm_timeout_streak: 0,
+            degraded: false,
+            last_successful_schedule: None,
         }
     }
 
@@ -129,6 +149,51 @@ impl<S: Solver> DualBrainCoordinator<S> {
     pub fn with_clock(mut self, clock_fn: fn() -> u64) -> Self {
         self.clock_fn = clock_fn;
         self
+    }
+
+    /// 22 §2.W2.3：LLM 有界推理（经 InferScheduler，带 deadline）。
+    ///
+    /// 同步适配：submit → 轮询 tick 直到该请求完成（成功/超时/失败）。
+    /// 超时语义：`InferRequest::with_timeout`（deadline 检测在 tick 的
+    /// 队列清理步）；同步引擎的单次推理中断不在 no_std 单线程能力内
+    /// （推理时长由 `params.max_tokens` 预算约束）——deadline 保证排队/
+    /// 调度不无限阻塞 + 连续超时降级（ADR-030）。
+    fn llm_infer_bounded(
+        &mut self,
+        prompt: &str,
+        params: &InferParams,
+    ) -> Result<String, DualBrainError> {
+        let now_ns = (self.clock_fn)() * 1_000_000;
+        let req = InferRequest::new(0, prompt, params.clone())
+            .with_timestamp(now_ns)
+            .with_timeout(params.timeout_ms.saturating_mul(1_000_000));
+        let id = self.infer_scheduler.submit(req);
+        loop {
+            // deadline 检测用**当前**时钟（每次轮询推进；禁止无限阻塞）。
+            let now_ns = (self.clock_fn)() * 1_000_000;
+            let results = self.infer_scheduler.tick(now_ns, self.llm_engine.as_mut());
+            if let Some(r) = results.into_iter().find(|r| r.id == id) {
+                return match r.result {
+                    Ok(out) => {
+                        self.llm_timeout_streak = 0;
+                        self.degraded = false;
+                        Ok(out)
+                    }
+                    Err(e) => {
+                        if matches!(e, SchedulerError::Timeout) {
+                            self.llm_timeout_streak += 1;
+                            if self.llm_timeout_streak >= 2 {
+                                // 连续超时：降级模式（告警由上层观测 degraded）。
+                                self.degraded = true;
+                            }
+                        }
+                        Err(DualBrainError::LlmError(format!("{e:?}")))
+                    }
+                };
+            }
+            // 让出 CPU（同步等待）。
+            core::hint::spin_loop();
+        }
     }
 
     /// 端到端执行双脑链路.
@@ -148,7 +213,8 @@ impl<S: Solver> DualBrainCoordinator<S> {
     ) -> Result<DualBrainResult, DualBrainError> {
         // v0.248.0：真实计时时钟（单调毫秒；默认 eneros-time 全局时钟，
         // 测试经 with_clock 注入可控时钟）。
-        let tic = || (self.clock_fn)();
+        let clock = self.clock_fn; // fn 指针 Copy（避免闭包长期借用 self）
+        let tic = || clock();
         let mut latency = LatencyBreakdown::default();
 
         // Step 1: 路径选择
@@ -199,12 +265,41 @@ impl<S: Solver> DualBrainCoordinator<S> {
         };
         let prompt = self.prompt_template.build(&t_ctx);
         let infer_params = InferParams::default();
-        // v0.248.0：LLM 推理真实计时（替换硬编码 1200ms）。
+        // 22 §2.W2.3：LLM 经 InferScheduler 有界推理（deadline 在 params）。
         let t_llm = tic();
-        let llm_output = self
-            .llm_engine
-            .infer(&prompt, &infer_params)
-            .map_err(|e| DualBrainError::LlmError(format!("{:?}", e)))?;
+        let llm_output = match self.llm_infer_bounded(&prompt, &infer_params) {
+            Ok(out) => out,
+            Err(_e) => {
+                latency.llm_inference_ms = tic().saturating_sub(t_llm);
+                // 超时回退策略（蓝图 W2.3）：
+                // - 首次超时：回退 fast-path（真查表 + 微调，不阻塞决策）；
+                // - 连续超时（≥2）：降级模式——用上一次成功决策（安全钳位
+                //   由 validator 保证），degraded 标记供上层告警。
+                if self.llm_timeout_streak >= 2 {
+                    if let Some(last) = self.last_successful_schedule.clone() {
+                        // 降级模式（degraded 标记供上层告警/审计）。
+                        self.degraded = true;
+                        return Ok(DualBrainResult {
+                            schedule: last,
+                            path_type: PathType::Degraded,
+                            latency,
+                            feedback: None,
+                        });
+                    }
+                }
+                // 首次超时：回退 fast-path（不阻塞决策）。
+                let fast = self
+                    .fast_path
+                    .execute(state, now_ms)
+                    .map_err(|fe| DualBrainError::SolveError(format!("fast fallback: {fe:?}")))?;
+                return Ok(DualBrainResult {
+                    schedule: fast.schedule,
+                    path_type: PathType::FastPath,
+                    latency,
+                    feedback: None,
+                });
+            }
+        };
         latency.llm_inference_ms = tic().saturating_sub(t_llm);
 
         // Step 4: 意图解析（D9）

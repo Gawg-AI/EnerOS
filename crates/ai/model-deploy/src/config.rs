@@ -53,6 +53,7 @@ impl Default for QuantConfig7B {
                 top_k: 40,
                 repeat_penalty: 1.1,
                 stop_tokens: Vec::new(),
+                timeout_ms: 5_000,
             },
         }
     }
