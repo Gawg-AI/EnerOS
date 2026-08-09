@@ -36,6 +36,7 @@
 extern crate alloc;
 
 pub mod ab_partition;
+pub mod downloader;
 pub mod hot_migrate;
 pub mod kernel_ota;
 pub mod rollback;
