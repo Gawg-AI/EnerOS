@@ -28,6 +28,7 @@ pub mod idempotency;
 pub mod rate_limit;
 pub mod rbac;
 pub mod schema;
+pub mod transport;
 
 use alloc::format;
 use alloc::string::String;

@@ -210,6 +210,18 @@ pub struct ApiResponse {
 }
 
 impl ApiResponse {
+    /// 序列化为 JSON（传输层/证据用；无 serde 依赖的极简序列化）。
+    pub fn to_json(&self) -> String {
+        alloc::format!(
+            "{{\"request_id\":{},\"version\":{},\"status\":{},\"body\":\"{}\",\"replayed\":{}}}",
+            self.request_id,
+            self.api_version.0,
+            self.status as u16,
+            self.body,
+            self.replayed
+        )
+    }
+
     /// 构造错误响应。
     pub fn error(request_id: u64, status: StatusCode, message: &str) -> Self {
         Self {
