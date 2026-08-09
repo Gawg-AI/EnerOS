@@ -48,7 +48,7 @@ use eneros_metrics::{
 use eneros_protocol_abstract::access::WriteError;
 use eneros_upa_model::{DeviceId, PointId, PointValue};
 
-use crate::delivery::DeliveryFrame;
+use crate::delivery::{DeliveryFrame, OutcomeFrame};
 use crate::registry::DeviceRegistry;
 
 // ============================================================================
@@ -163,6 +163,21 @@ impl DenyClass {
             DenyClass::Mismatch => METRIC_DENIED_MISMATCH,
             DenyClass::Protocol => METRIC_FAILED_PROTOCOL,
             DenyClass::Legacy => METRIC_DENIED_LEGACY,
+        }
+    }
+
+    /// wire 分类码（OutcomeFrame.class；与 label 一一对应）。
+    pub const fn code(self) -> u8 {
+        match self {
+            DenyClass::Decode => 1,
+            DenyClass::Hmac => 2,
+            DenyClass::Lease => 3,
+            DenyClass::StaleToken => 4,
+            DenyClass::Policy => 5,
+            DenyClass::Safety => 6,
+            DenyClass::Mismatch => 7,
+            DenyClass::Protocol => 8,
+            DenyClass::Legacy => 9,
         }
     }
 
@@ -579,6 +594,28 @@ impl EnvelopeIngress {
     /// 审计链条目数（外部留痕可观测）。
     pub fn audit_entry_count(&self) -> u64 {
         self.audit.chain_state().entry_count
+    }
+}
+
+/// 处理结果 → 响应帧（§6.4：device-agent 侧 EIPC handler 编码返回）。
+pub fn outcome_to_frame(out: &IngressOutcome) -> OutcomeFrame {
+    match out {
+        IngressOutcome::Applied { .. } => OutcomeFrame {
+            code: OutcomeFrame::CODE_APPLIED,
+            class: 0,
+        },
+        IngressOutcome::IdempotentHit => OutcomeFrame {
+            code: OutcomeFrame::CODE_IDEMPOTENT_HIT,
+            class: 0,
+        },
+        IngressOutcome::DryRun => OutcomeFrame {
+            code: OutcomeFrame::CODE_DRY_RUN,
+            class: 0,
+        },
+        IngressOutcome::Denied { class, .. } => OutcomeFrame {
+            code: OutcomeFrame::CODE_DENIED,
+            class: class.code(),
+        },
     }
 }
 

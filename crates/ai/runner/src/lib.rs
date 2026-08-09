@@ -30,8 +30,11 @@ use eneros_solver_core::highs::HighsSolver;
 use crate::scenario::{Overrides, Scenario};
 use crate::sink::FileExecutor;
 
+pub mod dispatcher;
 pub mod scenario;
 pub mod sink;
+
+pub use dispatcher::{ChannelError, DeliveryChannel, EnvelopeDispatcher};
 
 /// Runner 错误（装配/执行/证据输出）.
 #[derive(Debug)]
@@ -259,6 +262,104 @@ pub fn run_once(
 }
 
 // ============================================================================
+// 蓝图/24 §6.4：生产装配——AI 决策链经信封投递器直达 device-agent。
+// ============================================================================
+
+/// 生产 sink 装配（§6.4：ChainCommandSink 自证链 + 信封投递器 executor；
+/// `FileCommandSink` 保留为测试/演示装配，见 [`run_once`]）。
+///
+/// `key`/`lease_id` 与 device-agent 侧同源（装配注入，§2.6：密钥不落明文）；
+/// `handshake_retries` ≤ 5（§6.3 有界重试，失败 fail-closed 报 Offline）。
+#[allow(clippy::too_many_arguments)]
+pub fn build_production_sink(
+    channel: Box<dyn DeliveryChannel>,
+    key: &[u8],
+    lease_id: [u8; 16],
+    epoch_seed: u64,
+    issuer: [u8; 16],
+    device_id: u32,
+    point_id: u32,
+    policy_version: u64,
+    handshake_retries: u32,
+    now_fn: fn() -> u64,
+) -> Result<Box<dyn CommandSink>, RunnerError> {
+    // 两侧同源（§6.3/D7）：签发侧与 device-agent 都以平台重启计数为 epoch
+    // 种子铸造 fencing token——投递器握手取到的 token 与链内 grant 一致。
+    let (chain, token) = build_chain_with(key, lease_id, epoch_seed, policy_version)?;
+    let dispatcher = EnvelopeDispatcher::new(channel, key, lease_id, handshake_retries);
+    Ok(Box::new(
+        eneros_dual_brain::chain_sink::ChainCommandSink::new(
+            chain,
+            Box::new(dispatcher),
+            key,
+            lease_id,
+            token,
+            issuer,
+            device_id,
+            point_id,
+            policy_version,
+            now_fn,
+        ),
+    ))
+}
+
+/// 链装配（key/lease/epoch/策略版本参数化；`build_chain` 保持默认参数演示）。
+/// 返回 `(chain, fencing_token)`——token 与 device-agent 侧同源铸造。
+fn build_chain_with(
+    key: &[u8],
+    lease_id: [u8; 16],
+    epoch_seed: u64,
+    policy_version: u64,
+) -> Result<(eneros_control_gateway::chain::ControlChain, u64), RunnerError> {
+    use eneros_control_gateway::chain::ControlChain;
+    use eneros_control_gateway::envelope::ActorKind;
+    use eneros_control_gateway::lease::LeaseScope;
+    use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
+    use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
+    use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
+    use eneros_telemetry_model::unit::PhysicalUnit;
+
+    let policy = Policy::new(policy_version).with_rule(PolicyRule {
+        actor_kind: Some(ActorKind::Ai),
+        devices: vec![1],
+        points: vec![10],
+        kinds: vec![CommandClass::Switch],
+        time_window: (0, 0),
+        obligations: vec![],
+    });
+    let mut chain = ControlChain::new(key, 5, 64, policy, 60, 300, 64, 30);
+    // D7：fencing epoch 以平台重启计数为种子（与 device-agent 同源）。
+    chain.lease_service_mut().seed_epoch(epoch_seed);
+    let scope = LeaseScope {
+        devices: vec![1],
+        points: vec![10],
+        max_class: 1,
+    };
+    let (token, _expiry) = chain
+        .lease_service_mut()
+        .issue(lease_id, scope, 3_600, now_fn())
+        .ok_or_else(|| RunnerError::Chain("lease issue failed".into()))?;
+    chain.safety_mut().register(
+        1,
+        10,
+        SafetyPoint {
+            role: SafetyRole::PccBreaker,
+            spec: PointSpec {
+                point_id: 10,
+                device_id: 1,
+                unit: PhysicalUnit::Kilowatts,
+                safe_min: -500.0,
+                safe_max: 500.0,
+                max_ramp_per_sec: None,
+                direction: ControlDirection::Discrete,
+                remote_controllable: true,
+            },
+        },
+    );
+    Ok((chain, token))
+}
+
+// ============================================================================
 // 22 §2.W2.2：ControlChain 装配（默认策略/租约/安全点；key 注入）。
 // ============================================================================
 
@@ -271,11 +372,13 @@ const CHAIN_ISSUER: [u8; 16] = [0xE2; 16];
 /// 策略代次（Policy::new(1) + with_rule 不 bump generation）。
 const CHAIN_POLICY_VERSION: u64 = 1;
 
-/// 时间源（毫秒；runner 单次执行用系统时钟）。
+/// 时间源（epoch **秒**；信封 timestamp/expiry 规格为 epoch-secs（envelope.rs），
+/// device-agent 复验链按秒判时——签发与复验必须同基准。原实现误用毫秒
+/// （链内自洽、跨进程不一致），本 WP 修正并记录差异）。
 fn now_fn() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
+        .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
@@ -440,5 +543,383 @@ mod tests {
         assert_eq!(coord.sink.write_count(), 0, "Fatal 违规下 sink 必须零写入");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ============================================================================
+    // 蓝图/24 §6.4 host 集成测试：决策 → 自证 → 投递 → 复验 → 落写
+    // ============================================================================
+
+    use std::collections::BTreeMap;
+
+    use eneros_control_gateway::envelope::ActorKind;
+    use eneros_control_gateway::lease::LeaseScope;
+    use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
+    use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
+    use eneros_device_agent::{
+        outcome_to_frame, DenyClass, EnvelopeIngress, OutcomeFrame, HANDSHAKE_MARKER,
+    };
+    use eneros_dual_brain::chain_sink::{DeviceExecError, DeviceExecutor, DeviceReject};
+    use eneros_protocol_abstract::access::{
+        AuthorizedWriter, PointAccess, WriteError, WriteOutcome,
+    };
+    use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
+    use eneros_telemetry_model::unit::PhysicalUnit;
+    use eneros_upa_model::{
+        DataPoint, DataSource, DeviceId, PointId, PointQuality, PointType, PointValue,
+    };
+
+    const CHAIN_KEY: &[u8] = b"w24-host-it-key-000000000000000000000000";
+    const CHAIN_LEASE: [u8; 16] = [0x42; 16];
+    const CHAIN_ISSUER: [u8; 16] = [0x24; 16];
+    const EPOCH_SEED: u64 = 11; // 模拟重启计数
+    const POLICY_VER: u64 = 3;
+    const NOW_SECS: u64 = 1_700_000_000;
+
+    fn now_secs_fn() -> u64 {
+        NOW_SECS
+    }
+
+    /// 测试设备（本 crate 测试私有；实现 PointAccess + AuthorizedWriter）。
+    struct TestPointDevice {
+        device_id: DeviceId,
+        points: BTreeMap<PointId, f64>,
+    }
+
+    impl TestPointDevice {
+        fn new(device_id: DeviceId) -> Self {
+            let mut points = BTreeMap::new();
+            points.insert(10, 0.0);
+            Self { device_id, points }
+        }
+
+        fn value_of(&self, point_id: PointId) -> f64 {
+            self.points.get(&point_id).copied().unwrap_or(0.0)
+        }
+    }
+
+    impl PointAccess for TestPointDevice {
+        fn read_point(
+            &mut self,
+            point_id: PointId,
+        ) -> Result<DataPoint, eneros_protocol_abstract::error::ProtocolError> {
+            self.points
+                .get(&point_id)
+                .map(|&v| DataPoint {
+                    point_id,
+                    device_id: self.device_id,
+                    name: String::from("power_setpoint"),
+                    description: None,
+                    point_type: PointType::Analog,
+                    value: PointValue::Float(v),
+                    quality: PointQuality::good(),
+                    timestamp_ms: 0,
+                    source: DataSource::Internal,
+                    unit: None,
+                })
+                .ok_or(eneros_protocol_abstract::error::ProtocolError::PointNotFound)
+        }
+
+        fn protocol_type(&self) -> eneros_protocol_abstract::config::ProtocolType {
+            eneros_protocol_abstract::config::ProtocolType::Internal
+        }
+    }
+
+    impl AuthorizedWriter for TestPointDevice {
+        fn write_authorized(
+            &mut self,
+            cmd: &eneros_protocol_abstract::AuthorizedCommand,
+            value: PointValue,
+        ) -> Result<WriteOutcome, WriteError> {
+            if cmd.device_id != self.device_id {
+                return Err(WriteError::CommandMismatch);
+            }
+            if !self.points.contains_key(&cmd.point_id) {
+                return Err(WriteError::CommandMismatch);
+            }
+            let echoed = value.clone();
+            if let PointValue::Float(v) = value {
+                self.points.insert(cmd.point_id, v);
+            }
+            Ok(WriteOutcome {
+                echoed: Some(echoed),
+            })
+        }
+    }
+
+    /// 进程内 EIPC 通道：直连 device-agent 收口点（信封投递/握手路由）。
+    /// `applied` 记录每次 Applied 结果的功率（外部可观测：落写含回读断言）。
+    struct InMemoryChannel {
+        ingress: EnvelopeIngress,
+        devices: eneros_device_agent::DeviceRegistry,
+        applied: std::rc::Rc<std::cell::RefCell<Vec<f64>>>,
+    }
+
+    impl InMemoryChannel {
+        fn new(now_ms: u64) -> Self {
+            let policy = Policy::new(POLICY_VER).with_rule(PolicyRule {
+                actor_kind: Some(ActorKind::Ai),
+                devices: vec![1],
+                points: vec![10],
+                kinds: vec![CommandClass::Switch],
+                time_window: (0, 0),
+                obligations: vec![],
+            });
+            let ingress = EnvelopeIngress::new(
+                CHAIN_KEY,
+                CHAIN_LEASE,
+                LeaseScope {
+                    devices: vec![1],
+                    points: vec![10],
+                    max_class: 1,
+                },
+                3_600,
+                EPOCH_SEED,
+                policy,
+                60,
+                &[(
+                    1,
+                    10,
+                    SafetyPoint {
+                        role: SafetyRole::PccBreaker,
+                        spec: PointSpec {
+                            point_id: 10,
+                            device_id: 1,
+                            unit: PhysicalUnit::Kilowatts,
+                            safe_min: -500.0,
+                            safe_max: 500.0,
+                            max_ramp_per_sec: None,
+                            direction: ControlDirection::Discrete,
+                            remote_controllable: true,
+                        },
+                    },
+                )],
+                now_ms,
+            );
+            let mut devices = eneros_device_agent::DeviceRegistry::new();
+            devices.register(
+                "pcs",
+                eneros_device_agent::DeviceType::Pcs,
+                1,
+                Box::new(TestPointDevice::new(1)),
+                BTreeMap::from([(String::from("power_setpoint"), 10)]),
+            );
+            Self {
+                ingress,
+                devices,
+                applied: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            }
+        }
+
+        /// 已 Applied 的功率列表（落写可观测证据）。
+        fn applied_powers(&self) -> Vec<f64> {
+            self.applied.borrow().clone()
+        }
+    }
+
+    impl DeliveryChannel for InMemoryChannel {
+        fn request(&mut self, _target: &str, payload: &[u8]) -> Result<Vec<u8>, ChannelError> {
+            if payload == HANDSHAKE_MARKER {
+                return self
+                    .ingress
+                    .handshake_response()
+                    .map(|r| r.to_vec())
+                    .map_err(|_| ChannelError::BadResponse);
+            }
+            let out = self
+                .ingress
+                .process(&mut self.devices, payload, NOW_SECS * 1000);
+            if let eneros_device_agent::IngressOutcome::Applied { power_kw, .. } = &out {
+                self.applied.borrow_mut().push(*power_kw);
+            }
+            Ok(outcome_to_frame(&out).encode().to_vec())
+        }
+    }
+
+    /// 篡改注入通道：转发前翻转信封 device_id 字节（HMAC 覆盖区）。
+    struct TamperChannel {
+        inner: InMemoryChannel,
+    }
+    impl DeliveryChannel for TamperChannel {
+        fn request(&mut self, target: &str, payload: &[u8]) -> Result<Vec<u8>, ChannelError> {
+            let mut p = payload.to_vec();
+            if p != HANDSHAKE_MARKER && p.len() > 45 {
+                p[45] ^= 0xFF;
+            }
+            self.inner.request(target, &p)
+        }
+    }
+
+    /// 装配与 device-agent 同源的收口点（§6.3 两侧同源）。
+    fn device_side_channel() -> InMemoryChannel {
+        InMemoryChannel::new(NOW_SECS * 1000)
+    }
+
+    /// 场景 ①：AI 决策 → 自证 → 投递 → 复验 → 落写（含回读确认）。
+    #[test]
+    fn full_chain_decision_to_device_write() {
+        let channel = device_side_channel();
+        let applied = channel.applied.clone();
+        let sink = build_production_sink(
+            Box::new(channel),
+            CHAIN_KEY,
+            CHAIN_LEASE,
+            EPOCH_SEED,
+            CHAIN_ISSUER,
+            1,
+            10,
+            POLICY_VER,
+            3,
+            now_secs_fn,
+        )
+        .expect("sink assembly");
+
+        let config = Scenario::Normal.config();
+        let state = Scenario::Normal.state();
+        let solver = HighsSolver::new().expect("highs init");
+        let llm: Box<dyn LlmEngine> = Box::new(TestIntentLlm::new());
+        let mut coord = DualBrainCoordinator::new(config, llm, solver, sink);
+        let result = coord.execute(&state, NOW_SECS * 1000).expect("execute ok");
+        assert_eq!(coord.sink.write_count(), 1, "决策链必须写入 1 条命令");
+        // 落写含回读：device-agent 复验通过并 Applied——落写功率必须与
+        // 决策链实际下发的调度值一致（外部可观测证据，非占位）。
+        let expected = result
+            .schedule
+            .schedule
+            .first()
+            .expect("调度首条")
+            .net_power_kw;
+        let powers = applied.borrow();
+        assert_eq!(powers.len(), 1, "必须恰好落写一次");
+        assert!(
+            (powers[0] - expected).abs() < 1e-9,
+            "落写功率必须等于决策下发值 {expected}，got {}",
+            powers[0]
+        );
+    }
+
+    /// 场景 ②：篡改注入被拒（结构化拒绝可断言）。
+    #[test]
+    fn tampered_envelope_rejected_structured() {
+        let channel = TamperChannel {
+            inner: device_side_channel(),
+        };
+        let sink = build_production_sink(
+            Box::new(channel),
+            CHAIN_KEY,
+            CHAIN_LEASE,
+            EPOCH_SEED,
+            CHAIN_ISSUER,
+            1,
+            10,
+            POLICY_VER,
+            3,
+            now_secs_fn,
+        )
+        .expect("sink assembly");
+
+        let config = Scenario::Normal.config();
+        let state = Scenario::Normal.state();
+        let solver = HighsSolver::new().expect("highs init");
+        let llm: Box<dyn LlmEngine> = Box::new(TestIntentLlm::new());
+        let mut coord = DualBrainCoordinator::new(config, llm, solver, sink);
+        let err = coord
+            .execute(&state, NOW_SECS * 1000)
+            .expect_err("篡改信封必须被拒");
+        // 结构化拒绝原因经 DispatchError 文本可断言（候选 5 将直接消费载荷）。
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("Rejected(Hmac)"),
+            "拒绝原因必须结构化传递（Hmac），got: {msg}"
+        );
+        assert_eq!(coord.sink.write_count(), 0, "被拒命令不得计入成功");
+    }
+
+    /// 场景 ③：握手失败 fail-closed（有界重试 ≤5 → Offline，禁止绕过）。
+    #[test]
+    fn handshake_failure_fails_closed() {
+        struct DeadChannel;
+        impl DeliveryChannel for DeadChannel {
+            fn request(&mut self, _t: &str, _p: &[u8]) -> Result<Vec<u8>, ChannelError> {
+                Err(ChannelError::Unreachable)
+            }
+        }
+        let mut sink = build_production_sink(
+            Box::new(DeadChannel),
+            CHAIN_KEY,
+            CHAIN_LEASE,
+            EPOCH_SEED,
+            CHAIN_ISSUER,
+            1,
+            10,
+            POLICY_VER,
+            2,
+            now_secs_fn,
+        )
+        .expect("sink assembly");
+
+        // 直接走 ChainCommandSink（经 ChainCommandSink 写 → 投递器握手失败）。
+        // 握手失败路径在 dispatcher 层单测覆盖（bounded retries + Offline）；
+        // 此处验证 sink 全链不 panic、失败可观测。
+        let dc = eneros_dual_brain::sink::DispatchCommand {
+            target_device: "pcs".into(),
+            power_kw: 50.0,
+            ttl_ms: 60_000,
+            timestamp: NOW_SECS * 1000,
+        };
+        let r = sink.write(dc);
+        assert!(r.is_err(), "握手不可用 = 写不可用（fail-closed）: {r:?}");
+        assert_eq!(sink.write_count(), 0);
+    }
+
+    /// 结构化拒绝可精确断言（dispatcher 层）：握手走真实收口点，投递结果
+    /// 由通道伪造为 Denied{Hmac} → 必须映射为 Rejected(DeviceReject::Hmac)。
+    #[test]
+    fn dispatcher_maps_denied_outcome_to_structured_reject() {
+        struct DeniedChannel {
+            inner: InMemoryChannel,
+        }
+        impl DeliveryChannel for DeniedChannel {
+            fn request(&mut self, t: &str, payload: &[u8]) -> Result<Vec<u8>, ChannelError> {
+                if payload == HANDSHAKE_MARKER {
+                    return self.inner.request(t, payload);
+                }
+                Ok(OutcomeFrame {
+                    code: OutcomeFrame::CODE_DENIED,
+                    class: DenyClass::Hmac.code(),
+                }
+                .encode()
+                .to_vec())
+            }
+        }
+        let mut d = EnvelopeDispatcher::new(
+            Box::new(DeniedChannel {
+                inner: device_side_channel(),
+            }),
+            CHAIN_KEY,
+            CHAIN_LEASE,
+            2,
+        )
+        .with_backoff(|_| 0);
+        let cmd = eneros_control_gateway::gateway::AuthorizedCommand {
+            device_id: 1,
+            point_id: 10,
+            command: eneros_telemetry_model::command::ControlCommand::Single(
+                eneros_telemetry_model::command::SingleCommand::On,
+            ),
+            actor_kind: ActorKind::Ai,
+            issuer: [0u8; 16],
+            correlation_id: [0u8; 16],
+            sequence: 1,
+            lease_id: [0u8; 16],
+            fencing_token: 1,
+            policy_version: 1,
+            idempotency_key: [0u8; 16],
+        };
+        let r = d.write(&cmd, &[0u8; 172], 50.0);
+        assert_eq!(
+            r,
+            Err(DeviceExecError::Rejected(DeviceReject::Hmac)),
+            "复验拒绝必须结构化为 DeviceReject::Hmac"
+        );
     }
 }

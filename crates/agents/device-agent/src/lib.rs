@@ -63,12 +63,12 @@ pub use agent::DeviceAgent;
 #[cfg(any(test, feature = "mock"))]
 pub use command::MockCommandSource;
 pub use command::{CommandSource, DeviceCommand};
-pub use delivery::{DeliveryFrame, FrameError};
+pub use delivery::{DeliveryFrame, FrameError, OutcomeFrame, HANDSHAKE_MARKER};
 pub use device_type::{DeviceSnapshot, DeviceState, DeviceType};
 pub use error::DeviceError;
 pub use ingress::{
-    verify_handshake_response, DenyClass, EnvelopeIngress, IngressError, IngressOutcome,
-    HANDSHAKE_LEN,
+    outcome_to_frame, verify_handshake_response, DenyClass, EnvelopeIngress, IngressError,
+    IngressOutcome, HANDSHAKE_LEN,
 };
 #[cfg(any(test, feature = "mock"))]
 #[cfg(any(test, feature = "mock"))]

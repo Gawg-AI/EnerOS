@@ -8,6 +8,8 @@ description = "EnerOS AI 决策链 release 端到端入口（LlamaCppEngine + Hi
 
 [dependencies]
 eneros-dual-brain = { path = "../dual-brain" }
+# 蓝图/24 §6.4：信封投递帧/握手响应/结果帧编解码（投递器与 device-agent 同源消费）。
+eneros-device-agent = { path = "../../agents/device-agent" }
 eneros-control-gateway = { path = "../../protocols/control-gateway" }
 eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 eneros-energy-lp-model = { path = "../energy-lp-model" }
@@ -16,6 +18,11 @@ eneros-llm-engine = { path = "../llm-engine", features = ["llama-cpp"] }
 eneros-safety-validator = { path = "../safety-validator" }
 eneros-solver-core = { path = "../solver-core" }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+# host 集成测试：测试设备实现 PointAccess + AuthorizedWriter（接缝类型）。
+eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
+eneros-upa-model = { path = "../../protocols/upa-model" }
 
 [features]
 default = []

@@ -101,17 +101,33 @@ impl FileExecutor {
 }
 
 impl DeviceExecutor for FileExecutor {
-    fn write(&mut self, cmd: &AuthorizedCommand, power_kw: f64) -> Result<(), DeviceExecError> {
-        // 授权命令 → DispatchCommand 载荷（写入文件总线；设备侧消费）。
-        let dc = DispatchCommand {
-            target_device: format!("dev-{}", cmd.device_id),
-            power_kw,
-            ttl_ms: 60_000,
-            timestamp: cmd.sequence,
-        };
+    fn write(
+        &mut self,
+        cmd: &AuthorizedCommand,
+        envelope: &[u8],
+        power_kw: f64,
+    ) -> Result<(), DeviceExecError> {
+        // 授权命令 → 文件总线（演示/测试装配；§6.4 FileCommandSink 保留）。
+        // 信封字节（hex）随行落盘，供证据追溯。
+        let envelope_hex = envelope
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let line = serde_json::json!({
+            "schema": "eneros.executor-file.v1",
+            "envelope_hex": envelope_hex,
+            "device_id": cmd.device_id,
+            "point_id": cmd.point_id,
+            "power_kw": power_kw,
+        });
+        let mut bytes = serde_json::to_vec(&line)
+            .map_err(|e| DeviceExecError::Comm(format!("executor json serialize failed: {e}")))?;
+        bytes.push(b'\n');
         self.inner
-            .write(dc)
-            .map_err(|e| DeviceExecError::Comm(format!("{e:?}")))
+            .file
+            .write_all(&bytes)
+            .map_err(|e| DeviceExecError::Comm(format!("executor write failed: {e}")))?;
+        Ok(())
     }
 }
 

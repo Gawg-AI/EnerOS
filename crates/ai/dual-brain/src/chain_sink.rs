@@ -28,13 +28,60 @@ use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
 use crate::error::DualBrainError;
 use crate::sink::{CommandSink, DispatchCommand};
 
+/// 设备侧复验拒绝原因（结构化载荷；蓝图/24 §6.4 候选 5 预留——未来
+/// `RejectionKind` 的直接数据源；`rejection.rs` 的字符串分类删除归候选 5，
+/// 本轮不动）。
+///
+/// 由投递器（runner）将 device-agent 的拒绝分类（`DenyClass`）映射而来，
+/// AI 侧不再靠字符串匹配猜语义（用户故事 7）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceReject {
+    /// 帧/信封解码失败。
+    Decode,
+    /// HMAC 复验失败（疑似伪造）。
+    Hmac,
+    /// 租约失效/过期/未知。
+    Lease,
+    /// fencing token 过期。
+    StaleToken,
+    /// 策略/越权/SBO 拒绝。
+    Policy,
+    /// 安全校验拒绝。
+    Safety,
+    /// 设备/点不匹配。
+    Mismatch,
+    /// 协议层写失败。
+    Protocol,
+    /// 旧匿名命令（过渡期双轨）。
+    Legacy,
+}
+
+impl DeviceReject {
+    /// wire 分类码 → 结构化拒绝（未知码 → `Mismatch` 兜底，fail-closed
+    /// 不静默；与 device-agent `DenyClass::code` 对应）。
+    pub fn from_code(code: u8) -> Self {
+        match code {
+            1 => DeviceReject::Decode,
+            2 => DeviceReject::Hmac,
+            3 => DeviceReject::Lease,
+            4 => DeviceReject::StaleToken,
+            5 => DeviceReject::Policy,
+            6 => DeviceReject::Safety,
+            7 => DeviceReject::Mismatch,
+            8 => DeviceReject::Protocol,
+            9 => DeviceReject::Legacy,
+            _ => DeviceReject::Mismatch,
+        }
+    }
+}
+
 /// 设备执行错误（executor 层；`write` 映射为 [`DualBrainError::DispatchError`]）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceExecError {
-    /// 设备离线/不可达。
+    /// 设备离线/不可达（含握手失败 fail-closed）。
     Offline,
-    /// 设备拒绝（值越限/模式拒绝）。
-    Rejected(String),
+    /// 设备侧复验拒绝（结构化原因，候选 5 消费）。
+    Rejected(DeviceReject),
     /// 通信失败/超时。
     Comm(String),
 }
@@ -42,9 +89,16 @@ pub enum DeviceExecError {
 /// 设备执行器：`Executed` 后的真实设备写入 + 结果回读。
 ///
 /// AI 侧禁止直接写设备（锁定 5）；本 trait 由设备服务/驱动适配层实现。
+/// `envelope` 为签发侧构造的**签名信封字节**（蓝图/24 §6.4：投递器将同一
+/// 信封经 EIPC 投递，device-agent 对同一信封复验——§1.3 推论 D）。
 pub trait DeviceExecutor {
-    /// 执行授权命令（含功率载荷）。`Err` = 设备拒绝/超时/离线。
-    fn write(&mut self, cmd: &AuthorizedCommand, power_kw: f64) -> Result<(), DeviceExecError>;
+    /// 执行授权命令（含签名信封与功率载荷）。`Err` = 复验拒绝/超时/离线。
+    fn write(
+        &mut self,
+        cmd: &AuthorizedCommand,
+        envelope: &[u8],
+        power_kw: f64,
+    ) -> Result<(), DeviceExecError>;
 }
 
 /// AI 命令经 ControlChain 下发的生产 sink（22 §2.W2.2）。
@@ -150,8 +204,9 @@ impl CommandSink for ChainCommandSink {
             ChainOutcome::Executed { cmd, .. } => {
                 // 4. 真实设备写入（obligations 已由链 discharge；功率载荷
                 // 直接来自 DispatchCommand——AuthorizedCommand 无功率字段）。
+                //    投递签名信封原字节（§6.4：device-agent 复验同一信封）。
                 let power = cmd_power;
-                self.executor.write(&cmd, power).map_err(|e| {
+                self.executor.write(&cmd, &buf, power).map_err(|e| {
                     self.last_deny = Some(format!("device-exec: {e:?}"));
                     DualBrainError::DispatchError(format!("device rejected: {e:?}"))
                 })?;
@@ -263,7 +318,12 @@ mod tests {
         fail: Option<DeviceExecError>,
     }
     impl DeviceExecutor for RecordingExecutor {
-        fn write(&mut self, cmd: &AuthorizedCommand, power_kw: f64) -> Result<(), DeviceExecError> {
+        fn write(
+            &mut self,
+            cmd: &AuthorizedCommand,
+            _envelope: &[u8],
+            power_kw: f64,
+        ) -> Result<(), DeviceExecError> {
             if let Some(e) = &self.fail {
                 return Err(e.clone());
             }
@@ -313,7 +373,7 @@ mod tests {
     #[test]
     fn test_device_rejection_maps_to_error() {
         let mut sink = sink_with(RecordingExecutor {
-            fail: Some(DeviceExecError::Rejected("over-limit".into())),
+            fail: Some(DeviceExecError::Rejected(DeviceReject::Mismatch)),
             ..Default::default()
         });
         let r = sink.write(dispatch(-20.0));

@@ -55,6 +55,45 @@ impl DeliveryFrame {
     }
 }
 
+/// 握手请求标记（EIPC 载荷单字节，与 180B 投递帧可区分；device-agent 侧
+/// EIPC handler 依此路由到 [`crate::ingress::EnvelopeIngress::handshake_response`]）。
+pub const HANDSHAKE_MARKER: [u8; 1] = [0x00];
+
+/// 处理结果帧（EIPC 响应载荷，2 字节定长）：结果码 + 拒绝分类码。
+///
+/// 由 device-agent 侧 [`crate::ingress::outcome_to_frame`] 编码，
+/// 签发侧（ai/runner 投递器）解码映射（§6.4）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutcomeFrame {
+    /// 结果码：0=Applied 1=IdempotentHit 2=DryRun 3=Denied。
+    pub code: u8,
+    /// 拒绝分类码（仅 Denied 时有意义，见 DenyClass::code；否则 0）。
+    pub class: u8,
+}
+
+impl OutcomeFrame {
+    pub const CODE_APPLIED: u8 = 0;
+    pub const CODE_IDEMPOTENT_HIT: u8 = 1;
+    pub const CODE_DRY_RUN: u8 = 2;
+    pub const CODE_DENIED: u8 = 3;
+
+    /// 编码为 2 字节定长响应载荷。
+    pub fn encode(&self) -> [u8; 2] {
+        [self.code, self.class]
+    }
+
+    /// 解码 2 字节响应载荷；长度不符 → None。
+    pub fn decode(buf: &[u8]) -> Option<Self> {
+        if buf.len() != 2 {
+            return None;
+        }
+        Some(Self {
+            code: buf[0],
+            class: buf[1],
+        })
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
