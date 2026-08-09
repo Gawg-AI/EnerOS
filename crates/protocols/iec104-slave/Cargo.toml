@@ -10,3 +10,16 @@ description = "EnerOS IEC 60870-5-104 slave protocol stack — APDU/ASDU codec, 
 eneros-control-gateway = { path = "../control-gateway" }
 eneros-telemetry-model = { path = "../telemetry-model" }
 eneros-time = { path = "../../drivers/time" }
+
+# 21-B B1：真实 TCP 传输（smoltcp 经 eneros-net）。默认启用——release
+# 默认 transport 必须是生产实现（mock 仅 cfg(test)）。
+eneros-net = { path = "../../drivers/net", optional = true }
+
+[features]
+default = ["net"]
+# 真实 TCP 传输层（NetDevice + smoltcp 协议栈）。
+net = ["dep:eneros-net"]
+
+[dev-dependencies]
+# 集成测试注入真实单调时钟（eneros-time boot 前恒 0）。
+eneros-hal = { path = "../../../crates/hal/hal" }
