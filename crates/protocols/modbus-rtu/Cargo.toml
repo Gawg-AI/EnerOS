@@ -10,3 +10,8 @@ description = "EnerOS Modbus RTU master protocol stack"
 eneros-driver-framework = { path = "../../drivers/framework" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
 eneros-upa-model = { path = "../upa-model" }
+eneros-rs485 = { path = "../../drivers/rs485", features = ["mock"] }
+
+[dev-dependencies]
+# 集成测试：真实单调时钟（eneros-time boot 前恒 0）。
+eneros-hal = { path = "../../../crates/hal/hal" }

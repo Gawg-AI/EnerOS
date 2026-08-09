@@ -285,8 +285,9 @@ impl core::fmt::Debug for Pl011UartHw {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use core::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
 
     /// 测试时钟（静态原子，满足 ClockFn 的 Send+Sync）。
     static TEST_CLOCK: AtomicU64 = AtomicU64::new(0);

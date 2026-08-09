@@ -247,14 +247,15 @@ fn modbus_to_protocol(e: ModbusError) -> ProtocolError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::string::String;
     use alloc::vec;
 
+    use eneros_protocol_abstract::contract::{run_adapter_contract, simple_adapter_config};
+
+    use super::*;
     use crate::frame::ModbusFrame;
     use crate::mock::MockRtuTransport;
     use crate::point::ModbusDataType;
-    use eneros_protocol_abstract::contract::{run_adapter_contract, simple_adapter_config};
 
     /// 构建读保持寄存器响应帧。
     fn read_resp(slave: u8, regs: &[u16]) -> Vec<u8> {

@@ -36,7 +36,7 @@ pub mod pl011_uart_hw;
 pub mod ring;
 pub mod uart_hw;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "mock"))]
 pub mod mock;
 
 pub use config::{GpioPin, Parity, Rs485Config, StopBits, UartPort};

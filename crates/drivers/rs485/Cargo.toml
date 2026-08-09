@@ -9,3 +9,7 @@ description = "EnerOS RS485 serial driver — half-duplex differential serial bu
 [dependencies]
 eneros-driver-framework = { path = "../framework" }
 eneros-hal = { path = "../../hal/hal" }
+
+[features]
+# 测试专用 mock（显式启用；release 构建不得启用——mock 纪律）。
+mock = []
