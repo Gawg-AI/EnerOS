@@ -45,6 +45,7 @@ use eneros_solver_core::mock::MockSolver;
 use eneros_solver_core::solver::Solver;
 
 use crate::error::DualBrainError;
+use crate::gate::{DecisionGate, GateDecision};
 use crate::latency::LatencyBreakdown;
 #[cfg(any(test, feature = "mock"))]
 use crate::sink::MockCommandSink;
@@ -110,7 +111,28 @@ pub struct DualBrainCoordinator<S: Solver> {
     pub degraded: bool,
     /// 上次成功决策（降级模式用：上一次成功决策 + 安全钳位）。
     pub last_successful_schedule: Option<ScheduleResult>,
+    // --- 22 §2.W5.2：决策闸（速率 + 能量；防 AI 失控高频下发）---
+    /// AI 决策全局闸（fail-closed：0 上限 = 全拒；默认保守可用配置）。
+    pub gate: DecisionGate,
 }
+
+/// 调度窗口（小时）——能量预算估算系数：单次决策调度能量
+/// ≈ `|net_power_kw| × SCHEDULE_WINDOW_HOURS`（15 分钟调度窗）。
+pub const SCHEDULE_WINDOW_HOURS: f64 = 0.25;
+
+/// 单次决策的调度能量估算（首时段功率 × 调度窗；空调度 = 0）。
+pub fn schedule_energy_kwh(s: &ScheduleResult) -> f64 {
+    s.schedule
+        .first()
+        .map(|e| e.net_power_kw.abs() * SCHEDULE_WINDOW_HOURS)
+        .unwrap_or(0.0)
+}
+
+/// 默认决策闸配置（保守可用：60 决策/分钟、1000kWh/小时——真实设备
+/// 不可能触达；显式 `DecisionGate::new(0, 0.0, _)` 即 fail-closed 全拒）。
+const DEFAULT_GATE_MAX_PER_MINUTE: u32 = 60;
+const DEFAULT_GATE_MAX_KWH: f64 = 1000.0;
+const DEFAULT_GATE_PERIOD_MS: u64 = 3_600_000;
 
 impl<S: Solver> DualBrainCoordinator<S> {
     /// 构造协调器.
@@ -142,12 +164,24 @@ impl<S: Solver> DualBrainCoordinator<S> {
             llm_timeout_streak: 0,
             degraded: false,
             last_successful_schedule: None,
+            gate: DecisionGate::new(
+                DEFAULT_GATE_MAX_PER_MINUTE,
+                DEFAULT_GATE_MAX_KWH,
+                DEFAULT_GATE_PERIOD_MS,
+            ),
         }
     }
 
     /// 注入可控单调时钟（毫秒）——测试与仿真用；生产用默认全局时钟。
     pub fn with_clock(mut self, clock_fn: fn() -> u64) -> Self {
         self.clock_fn = clock_fn;
+        self
+    }
+
+    /// 22 §2.W5.2：注入决策闸（速率 + 能量；`DecisionGate::new(0, 0.0, _)`
+    /// 即 fail-closed 全拒）。
+    pub fn with_gate(mut self, gate: DecisionGate) -> Self {
+        self.gate = gate;
         self
     }
 
@@ -217,6 +251,12 @@ impl<S: Solver> DualBrainCoordinator<S> {
         let tic = || clock();
         let mut latency = LatencyBreakdown::default();
 
+        // 22 §2.W5.2：速率闸在 execute 入口——快/慢/降级所有决策路径
+        // 全过闸（防 FastPath 绕过；fail-closed：超限丢弃 + 调用方告警）。
+        if self.gate.check_rate(now_ms) != GateDecision::Allow {
+            return Err(DualBrainError::GateRejected(GateDecision::RateLimited));
+        }
+
         // Step 1: 路径选择
         let path_type = self.path_selector.select(state, now_ms);
 
@@ -228,6 +268,12 @@ impl<S: Solver> DualBrainCoordinator<S> {
                 .execute(state, now_ms)
                 .map_err(|e| DualBrainError::SolveError(format!("{:?}", e)))?;
             latency.perception_ms = tic().saturating_sub(t0);
+            // 22 §2.W5.2：能量闸（FastPath 同样过闸记账）。
+            let energy = schedule_energy_kwh(&fast_result.schedule);
+            if self.gate.check_energy(now_ms, energy) != GateDecision::Allow {
+                return Err(DualBrainError::GateRejected(GateDecision::EnergyExceeded));
+            }
+            self.gate.record(now_ms, energy);
             latency.calculate_total();
             return Ok(DualBrainResult {
                 path_type: PathType::FastPath,
@@ -374,6 +420,13 @@ impl<S: Solver> DualBrainCoordinator<S> {
         }
         let final_schedule = validation.clamped_schedule.clone().unwrap_or(schedule);
 
+        // 22 §2.W5.2：能量闸（安全校验之后、命令下发之前；速率闸已在
+        // execute 入口通过）。超限拒绝返回 GateRejected（调用方告警/审计）。
+        let gate_energy_kwh = schedule_energy_kwh(&final_schedule);
+        if self.gate.check_energy(now_ms, gate_energy_kwh) != GateDecision::Allow {
+            return Err(DualBrainError::GateRejected(GateDecision::EnergyExceeded));
+        }
+
         // Step 7: 命令下发（D6）
         if let Some(entry) = final_schedule.schedule.first() {
             let cmd = DispatchCommand {
@@ -387,6 +440,8 @@ impl<S: Solver> DualBrainCoordinator<S> {
             self.sink.write(cmd)?;
             latency.command_dispatch_ms = tic().saturating_sub(t_dispatch);
         }
+        // 下发成功才记账（失败不占速率/能量额度）。
+        self.gate.record(now_ms, gate_energy_kwh);
 
         // 构建反馈契约
         let feedback = self.converter.to_feedback(

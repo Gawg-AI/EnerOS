@@ -50,6 +50,7 @@ pub mod audit;
 pub mod chain_sink;
 pub mod coordinator;
 pub mod error;
+pub mod gate;
 pub mod latency;
 pub mod learning;
 pub mod rejection;
@@ -69,11 +70,13 @@ mod tests {
     use alloc::string::String;
     use alloc::vec::Vec;
 
+    use crate::gate::{DecisionGate, GateDecision};
     use eneros_energy_lp_model::config::ScheduleConfig;
     use eneros_fast_path::selector::PathType;
     use eneros_fast_path::state::RealtimeState;
     use eneros_llm_engine::engine::LlmEngine;
     use eneros_safety_validator::state::SystemState;
+    use eneros_solver_core::result::{SolveResult, SolveStatus};
     #[cfg(any(test, feature = "mock"))]
     use eneros_solver_core::mock::MockSolver;
 
@@ -308,6 +311,68 @@ mod tests {
         let state = safe_state();
         let result = coord.execute(&state, 0).unwrap();
         assert!(result.feedback.is_some());
+    }
+
+    // ===== T18b: W5.2 决策闸——速率超限被拒（GateRejected + 告警计数）=====
+    #[test]
+    fn t18b_gate_rate_limit_rejects_execute() {
+        // 1 决策/分钟：第一次放行，第二次（同分钟）拒绝。
+        let mut coord = DualBrainCoordinator::default_with_mock()
+            .with_gate(DecisionGate::new(1, 1000.0, 3_600_000));
+        let state = safe_state();
+        let r1 = coord.execute(&state, 0).unwrap();
+        assert_eq!(r1.path_type, PathType::SlowPath);
+        let err = coord.execute(&state, 1000).unwrap_err();
+        assert!(
+            matches!(err, DualBrainError::GateRejected(GateDecision::RateLimited)),
+            "速率超限必须拒绝: {err:?}"
+        );
+        // 下一分钟窗口（速率放行）；310s 后慢路径间隔到期 → SlowPath。
+        let r2 = coord.execute(&state, 310_000).unwrap();
+        assert_eq!(r2.path_type, PathType::SlowPath);
+    }
+
+    // ===== T18c: W5.2 决策闸——能量超限被拒（正路径：非零调度超预算）=====
+    #[test]
+    fn t18c_gate_energy_budget_rejects_execute() {
+        // 注入非零解：period 0 放电 5kW → 调度能量 = 5 × 0.25h = 1.25 kWh。
+        let n = 96usize;
+        let mut solution = vec![0.0; 3 * n];
+        solution[n] = 5.0; // discharge[0] = 5kW（变量布局：charge[0..n] → discharge[n..2n]）
+        solution[2 * n..3 * n].fill(100.0); // soc 初值 0.5×200kWh（防 Fatal 违规）
+        let solver = MockSolver::with_result(SolveResult {
+            status: SolveStatus::Optimal,
+            objective_value: 0.0,
+            solution,
+            elapsed_ms: 0,
+            dual_solution: None,
+        });
+        let mut coord = DualBrainCoordinator::new(
+            ScheduleConfig::default(),
+            Box::new(DualBrainMockEngine::new()),
+            solver,
+            Box::new(MockCommandSink::new()),
+        )
+        // 能量上限 0.1 kWh/周期 < 1.25 kWh → 必拒（fail-closed 不静默）。
+        .with_gate(DecisionGate::new(100, 0.1, 3_600_000));
+        let state = safe_state();
+        let err = coord.execute(&state, 0).unwrap_err();
+        assert!(
+            matches!(err, DualBrainError::GateRejected(GateDecision::EnergyExceeded)),
+            "能量超限必须拒绝: {err:?}"
+        );
+        assert_eq!(coord.gate.rejected_energy(), 1);
+    }
+
+    // ===== T18d: W5.2 决策闸——放行决策记账（速率窗口计入）=====
+    #[test]
+    fn t18d_gate_allowed_decision_recorded() {
+        let mut coord = DualBrainCoordinator::default_with_mock()
+            .with_gate(DecisionGate::new(1, 1000.0, 3_600_000));
+        let state = safe_state();
+        coord.execute(&state, 0).unwrap();
+        assert_eq!(coord.gate.rejected_rate(), 0);
+        assert!(coord.gate.used_kwh() >= 0.0);
     }
 
     // ===== T18: execute 慢路径 schedule 非空 =====

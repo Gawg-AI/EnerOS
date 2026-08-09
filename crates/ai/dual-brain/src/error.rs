@@ -17,4 +17,6 @@ pub enum DualBrainError {
     DispatchError(String),
     /// 安全校验 Fatal（v0.206.0 P0-17：Fatal 违规阻断命令下发）.
     SafetyFatal(String),
+    /// 决策闸拒绝（22 §2.W5.2：速率超限/能量超限；调用方告警，fail-closed）.
+    GateRejected(crate::gate::GateDecision),
 }
