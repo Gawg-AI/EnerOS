@@ -408,6 +408,7 @@ mod tests {
                 original_value: 120.0,
                 safe_value: 100.0,
                 severity: Severity::Critical,
+                reason: eneros_safety_validator::result::ViolationReason::Normal,
             }],
         };
         let feedback2 =

@@ -6,7 +6,6 @@
 //! D12：保留 `overcurrent_threshold` / `overvoltage_threshold` /
 //!      `undervoltage_threshold` / `freq_protection` 字段供未来扩展。
 
-use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use eneros_energy_lp_model::result::ScheduleResult;
