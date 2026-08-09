@@ -507,7 +507,7 @@ fn run_installer(root: &Path, options: InstallRunOptions) -> DynResult<()> {
         "-drive".to_owned(),
         format!("if=none,format=raw,file={target_wsl},id=enerosdisk"),
         "-device".to_owned(),
-        "virtio-blk-device,drive=enerosdisk".to_owned(),
+        "virtio-blk-device,bus=virtio-mmio-bus.0,drive=enerosdisk".to_owned(),
         "-device".to_owned(),
         "virtio-scsi-device,id=installscsi".to_owned(),
         "-drive".to_owned(),
@@ -784,7 +784,7 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
             format!("if=none,format=raw,file={disk_file},id=enerosdisk")
         },
         "-device".to_owned(),
-        "virtio-blk-device,drive=enerosdisk".to_owned(),
+        "virtio-blk-device,bus=virtio-mmio-bus.0,drive=enerosdisk".to_owned(),
     ];
     if options.rng_present {
         qemu_args.extend([
@@ -820,7 +820,7 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
             // socket 后端：QEMU 监听，外部对端进程连接后形成 L2 桥。
             "socket,id=enerosnet,listen=127.0.0.1:5577".to_owned(),
             "-device".to_owned(),
-            "virtio-net-device,netdev=enerosnet".to_owned(),
+            "virtio-net-device,bus=virtio-mmio-bus.1,netdev=enerosnet".to_owned(),
         ]);
     }
     validate_argv(&qemu_args)?;
@@ -1819,7 +1819,7 @@ fn run_g3_once(
         "-drive".to_owned(),
         format!("if=none,format=raw,file={image_wsl},id=enerosdisk"),
         "-device".to_owned(),
-        "virtio-blk-device,drive=enerosdisk".to_owned(),
+        "virtio-blk-device,bus=virtio-mmio-bus.0,drive=enerosdisk".to_owned(),
         "-object".to_owned(),
         "rng-random,filename=/dev/urandom,id=enerosrng".to_owned(),
         "-device".to_owned(),
@@ -1831,7 +1831,7 @@ fn run_g3_once(
         "-netdev".to_owned(),
         "socket,id=enerosnet,listen=127.0.0.1:5577".to_owned(),
         "-device".to_owned(),
-        "virtio-net-device,netdev=enerosnet".to_owned(),
+        "virtio-net-device,bus=virtio-mmio-bus.1,netdev=enerosnet".to_owned(),
     ];
     validate_argv(&qemu_args)?;
     let qemu_bin = find_qemu_binary()?;

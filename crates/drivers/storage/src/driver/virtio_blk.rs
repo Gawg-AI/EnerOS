@@ -380,8 +380,10 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
     /// DRIVER_OK handshake (mirrors `vmmio_device_init`).
     fn device_init(&self) -> Result<(), StorageError> {
         let mut mmio = self.mmio.borrow_mut();
-        // Explicit reset on (re)bind.
-        mmio.write_reg(VMMIO_STATUS, 0);
+        // WP-27.3 D4 修复（QEMU 9.2.4 virtio-mmio legacy 实测）：写 STATUS=0
+        // 复位后 DEVICE_ID 读 0（C 参考 `root_task.c vmmio_device_init` 不
+        // 复位直接读 device id，QEMU 9.2 验证通过）——删除显式复位，按
+        // C 参考顺序：magic → version → device_id → ACK/DRIVER。
         if mmio.read_reg(VMMIO_MAGIC_VALUE) != VIRTIO_MMIO_MAGIC {
             return Err(StorageError::HardwareFault {
                 detail: "virtio-mmio magic mismatch",

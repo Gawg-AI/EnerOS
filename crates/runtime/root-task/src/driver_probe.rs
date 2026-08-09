@@ -29,12 +29,20 @@ use eneros_driver_framework::{
     BindingTable, DeviceDriver, DriverBinding, DriverError, DriverId, PlatformCtx,
 };
 use eneros_rs485::{Pl011UartHw, Rs485Config, Rs485Driver};
+use eneros_storage::driver::virtio_blk::{
+    DmaPool, NoopCache, VirtioBlkDriver, VirtioMmio, VIRTIO_BLK_DEVICE_ID, VIRTIO_MMIO_MAGIC,
+    VMMIO_DEVICE_ID, VMMIO_MAGIC_VALUE, VMMIO_STATUS,
+};
+use eneros_storage::driver::virtio_blk::VolatileMmio as BlkVolatileMmio;
+use eneros_storage::StorageConfig;
 use eneros_uart::{Pl011Mmio, UartDriver};
 
 /// 绑定表：全部已接入 seam 的生产驱动（编译期可审计）。
 ///
 /// 登记：
 /// - D1（WP-27.3）UART：`arm,pl011`（PL011 标准 compatible，QEMU 可得）
+/// - D4（WP-27.3）块设备：`virtio,mmio`（QEMU virtio-blk；factory 按
+///   device-id 探测分流，D2 virtio-net 同 compatible 后续并入）
 /// - CAN：`nxp,sja1000`（SJA1000 控制器标准 compatible；真机 dts 填空项引用）
 /// - RS485：`eneros,rs485-uart`（自定义 compatible；后端为 PL011 硬件，
 ///   语义是 RS485 半双工端口；真机 dts 填空项引用）
@@ -48,6 +56,10 @@ pub fn binding_table() -> BindingTable {
             factory: uart_factory,
         },
         DriverBinding {
+            compatible: "virtio,mmio",
+            factory: virtio_factory,
+        },
+        DriverBinding {
             compatible: "nxp,sja1000",
             factory: can_factory,
         },
@@ -57,6 +69,142 @@ pub fn binding_table() -> BindingTable {
         },
     ];
     BindingTable::new(ENTRIES)
+}
+
+/// QEMU virt virtio-mmio 区域（32 个槽 × 0x200；blk/net 在低槽，其余空槽）。
+const VIRTIO_REGION_BASE: u64 = 0x0a00_0000;
+const VIRTIO_REGION_SIZE: u64 = 0x20_0000;
+const VIRTIO_MMIO_SLOT_STRIDE: u64 = 0x200;
+/// QEMU virt 的 virtio-mmio 槽数（32；探测上限，防越界读）。
+const VIRTIO_MMIO_SLOT_COUNT: u64 = 32;
+
+/// root-task DMA 池（静态 9 页 = 36 KiB，virtio_blk 需求下限）。
+///
+/// root-task 镜像区域 1:1 映射（物理 == 虚拟），`phys_base` = 静态地址。
+/// `static mut`：root-task 单线程装配/事件循环，`&mut self` 方法独占访问
+///（驱动内部 RefCell 串行化），无并发别名。
+static mut DMA_POOL_BYTES: [u8; 9 * 4096] = [0u8; 9 * 4096];
+
+struct RootDmaPool;
+
+impl DmaPool for RootDmaPool {
+    fn len(&self) -> usize {
+        9 * 4096
+    }
+    fn phys_base(&self) -> u64 {
+        // SAFETY: 静态数组地址恒定；1:1 映射下即 guest 物理地址。
+        unsafe { DMA_POOL_BYTES.as_ptr() as u64 }
+    }
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: 只读借用；单线程 + 驱动独占（&mut self 调用方保证）。
+        unsafe { &DMA_POOL_BYTES }
+    }
+    fn as_bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: `&mut self` 独占；root-task 单线程无并发。
+        unsafe { &mut DMA_POOL_BYTES }
+    }
+}
+
+/// D4：VirtioBlkDriver（BlockDevice seam）的 DeviceDriver 适配。
+struct BlkAdapter {
+    inner: VirtioBlkDriver<BlkVolatileMmio, RootDmaPool, NoopCache>,
+}
+
+// SAFETY: root-task 单线程装配 + 事件循环（无并发访问）；VirtioBlkDriver
+// 内部 RefCell 仅在驱动自身方法内短临界使用，不存在跨线程共享。
+unsafe impl Send for BlkAdapter {}
+unsafe impl Sync for BlkAdapter {}
+
+impl DeviceDriver for BlkAdapter {
+    fn id(&self) -> &DriverId {
+        static ID: DriverId = DriverId(0xB10C_0001);
+        &ID
+    }
+    fn name(&self) -> &str {
+        "virtio-blk0"
+    }
+    fn driver_type(&self) -> eneros_driver_framework::DriverType {
+        eneros_driver_framework::DriverType::Storage
+    }
+    fn state(&self) -> eneros_driver_framework::DriverState {
+        eneros_driver_framework::DriverState::Running
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn start(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn stop(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn deinit(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn handle_irq(&mut self, _irq_id: u32) {}
+    fn health_check(&self) -> eneros_driver_framework::DriverHealth {
+        eneros_driver_framework::DriverHealth::Healthy
+    }
+}
+
+/// D4：virtio 设备 factory——按 device-id 探测分流（当前：blk；net 留
+/// D2）。只认区域起点节点（QEMU 32 个 virtio,mmio 节点中空槽无设备 →
+/// NotFound 如实）；区域整体映射（分段 2 MiB 帧）后逐槽探测。
+fn virtio_factory(
+    node: &eneros_board::device_tree::DeviceNode,
+    ctx: &mut dyn PlatformCtx,
+) -> Result<Box<dyn DeviceDriver>, DriverError> {
+    let (base, _size) = node.regs.first().copied().ok_or(DriverError::NotFound)?;
+    if base != VIRTIO_REGION_BASE {
+        // 非区域起点槽：真实设备只挂在前几个槽；空槽无设备（fail-closed）。
+        return Err(DriverError::NotFound);
+    }
+    let virt = ctx.map_mmio(base, VIRTIO_REGION_SIZE)?;
+    // SAFETY: `virt` 为 map_mmio 返回的已映射区域基址（1:1，FIX-BUGS-0810
+    // 两件套保证映射成功 ⇔ 正确物理页）；探测只读寄存器（magic/device-id）。
+    let mut probe = unsafe { BlkVolatileMmio::new(virt as usize) };
+    for slot in 0..VIRTIO_MMIO_SLOT_COUNT {
+        let off = (slot * VIRTIO_MMIO_SLOT_STRIDE) as usize;
+        let magic = probe.read_reg(off + VMMIO_MAGIC_VALUE);
+        crate::println!(
+            "[eneros-root-task] DBG virtio probe slot={} magic=0x{:08x}",
+            slot,
+            magic
+        );
+        if magic != VIRTIO_MMIO_MAGIC {
+            continue; // 空槽
+        }
+        // QEMU 9.2.4 virtio-mmio 实测：STATUS==0 时 DEVICE_ID 读 0（proxy
+        // 未激活）；写 STATUS=ACKNOWLEDGE(1) 后 device_id 才有效（WP-27.3
+        // D4 迭代定位）。
+        let version = probe.read_reg(off + 0x004);
+        probe.write_reg(off + VMMIO_STATUS, 1); // ACKNOWLEDGE
+        let device_id = probe.read_reg(off + VMMIO_DEVICE_ID);
+        let vendor = probe.read_reg(off + 0x00C);
+        crate::println!(
+            "[eneros-root-task] DBG virtio probe slot={} version={} device_id={} vendor=0x{:x}",
+            slot,
+            version,
+            device_id,
+            vendor
+        );
+        if device_id == VIRTIO_BLK_DEVICE_ID {
+            // SAFETY: 槽内寄存器块（0x200）位于已映射区域内；驱动存续期
+            // 由装配层保证。queue DMA 用 RootDmaPool（1:1 物理地址）。
+            let mmio = unsafe { BlkVolatileMmio::new((virt + off as u64) as usize) };
+            let driver = VirtioBlkDriver::new(
+                mmio,
+                RootDmaPool,
+                NoopCache,
+                StorageConfig::default(),
+            )
+            .map_err(|_| DriverError::InitFailed)?;
+            return Ok(Box::new(BlkAdapter { inner: driver }));
+        }
+        // 有设备但不是 blk（如 net=1）→ D2 范围；当前如实 failed。
+        return Err(DriverError::NotFound);
+    }
+    Err(DriverError::NotFound)
 }
 
 /// UART 波特率（D1：115200 8N1 默认；真机按协议层配置）。
@@ -194,13 +342,40 @@ fn frame_size_bits(size_bytes: u64) -> Result<u64, DriverError> {
     Err(DriverError::NotFound)
 }
 
+/// arm64 帧位宽层级（降级用）。
+#[cfg(target_os = "none")]
+const FRAME_BITS_4K: u64 = 12;
+#[cfg(target_os = "none")]
+const FRAME_BITS_2M: u64 = 21;
+#[cfg(target_os = "none")]
+const FRAME_BITS_1G: u64 = 30;
+
 #[cfg(target_os = "none")]
 impl PlatformCtx for RootPlatformCtx<'_> {
     fn map_mmio(&mut self, phys: u64, size_bytes: u64) -> Result<u64, DriverError> {
-        let size_bits = frame_size_bits(size_bytes)?;
-        crate::spawn::map_device_mmio(self.spawn, phys, size_bits)
-            .map_err(|_| DriverError::NotFound)?;
-        // 1:1 映射（arm_page_map 以 paddr 为虚拟地址），虚拟基址 = 物理基址。
+        // WP-27.3 D4：大区域（如 virtio-mmio 32 MiB）按合法帧分段映射
+        //（1:1，虚拟连续）；帧位宽按 phys 对齐度降级（1GiB → 2MiB → 4K）。
+        let mut remaining = size_bytes;
+        let mut cursor = phys;
+        while remaining > 0 {
+            let mut bits = frame_size_bits(remaining)?;
+            while bits > FRAME_BITS_4K
+                && (cursor & ((1u64 << bits) - 1)) != 0
+            {
+                bits = if bits == FRAME_BITS_1G {
+                    FRAME_BITS_2M
+                } else {
+                    FRAME_BITS_4K
+                };
+            }
+            crate::spawn::map_device_mmio(self.spawn, cursor, bits)
+                .map_err(|_| DriverError::NotFound)?;
+            let mapped = 1u64 << bits;
+            cursor = cursor
+                .checked_add(mapped)
+                .ok_or(DriverError::NotFound)?;
+            remaining = remaining.saturating_sub(mapped);
+        }
         Ok(phys)
     }
 
@@ -393,7 +568,11 @@ mod tests {
     impl PlatformCtx for MockCtx {
         fn map_mmio(&mut self, phys: u64, size_bytes: u64) -> Result<u64, DriverError> {
             self.mapped.push((phys, size_bytes));
-            Ok(phys)
+            // 返回**可读**模拟寄存器内存（全零 = 空槽 magic）：virtio factory
+            // 探测会读 MMIO，返回 phys 会导致 host 测试 SIGSEGV（WP-27.3 D4）；
+            // u64 数组保证 8 字节对齐（read_volatile u32 对齐要求）。
+            static SIM_REGISTERS: [u64; 2048] = [0u64; 2048];
+            Ok(SIM_REGISTERS.as_ptr() as u64)
         }
         fn bind_irq(&mut self, _irq: u32) -> Result<u32, DriverError> {
             Ok(1)
@@ -443,6 +622,32 @@ mod tests {
                 regs: alloc::vec![],
                 interrupts: alloc::vec![],
             }],
+        };
+        let mut ctx = MockCtx::default();
+        let report = table.probe_all(&inventory, &mut ctx);
+        assert_eq!(report.bound_count(), 0);
+        assert_eq!(report.failed_count(), 1);
+        assert_eq!(report.failed()[0].error, DriverError::NotFound);
+    }
+
+    /// D4：virtio 非区域起点槽（空槽/后续槽）→ NotFound（fail-closed）。
+    #[test]
+    fn virtio_non_region_start_fails_closed() {
+        let table = binding_table();
+        let inventory = eneros_board::device_tree::DeviceInventory {
+            nodes: alloc::vec![
+                // QEMU 32 个 virtio,mmio 节点中的空槽（base ≠ 区域起点）
+                node("virtio_mmio@a000200", "virtio,mmio", 0x0a00_0200, 0x200),
+            ],
+        };
+        let mut ctx = MockCtx::default();
+        let report = table.probe_all(&inventory, &mut ctx);
+        assert_eq!(report.bound_count(), 0);
+        assert_eq!(report.failed_count(), 1);
+        assert_eq!(report.failed()[0].error, DriverError::NotFound);
+        // 区域起点在 mock（无真实设备）下同样 NotFound——不静默构造
+        let inventory = eneros_board::device_tree::DeviceInventory {
+            nodes: alloc::vec![node("virtio_mmio@a000000", "virtio,mmio", 0x0a00_0000, 0x200)],
         };
         let mut ctx = MockCtx::default();
         let report = table.probe_all(&inventory, &mut ctx);
