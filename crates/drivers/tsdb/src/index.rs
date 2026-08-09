@@ -10,6 +10,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::error::TsdbError;
+use crate::schema::{DeviceId, MetricId};
 
 /// A single index record pointing to a persisted chunk file.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +63,29 @@ impl TimeIndex {
             }
         }
         result
+    }
+
+    /// 22 §2.W3.6：唯一 (device, metric) 对列表（compaction 用；
+    /// 从 chunk 路径 `{data_dir}/{device}/{metric}/...` 解析）。
+    pub fn unique_pairs(&self) -> alloc::vec::Vec<(DeviceId, MetricId)> {
+        let mut out: alloc::vec::Vec<(DeviceId, MetricId)> = alloc::vec::Vec::new();
+        for entries in self.entries.values() {
+            for e in entries {
+                let parts: alloc::vec::Vec<&str> = e.file_path.split('/').collect();
+                if parts.len() >= 3 {
+                    if let (Ok(d), Ok(m)) = (
+                        parts[parts.len() - 3].parse::<u32>(),
+                        parts[parts.len() - 2].parse::<u32>(),
+                    ) {
+                        let pair = (DeviceId(d), MetricId(m));
+                        if !out.contains(&pair) {
+                            out.push(pair);
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// 22 §2.W3.2：尾指针查询——从索引末尾反向找第一个匹配条目

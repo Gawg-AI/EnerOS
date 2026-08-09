@@ -315,6 +315,67 @@ impl TimeSeriesDB {
         )
     }
 
+    /// 22 §2.W3.6：compaction——合并小 chunk（同一 device/metric 的
+    /// 相邻 chunk，合并后点数 ≤ max_points_per_chunk）为一个新 chunk，
+    /// 删除原文件回收空间。低峰调度（调用方控制，不在写路径内联）。
+    ///
+    /// 返回合并的 chunk 文件数（0 = 无需合并）。
+    pub fn compact_chunks(&mut self) -> Result<u64, TsdbError> {
+        // 收集 (device, metric) 对。
+        let pairs = self.index.unique_pairs();
+        let mut merged = 0u64;
+        for (device, metric) in pairs {
+            // 读该对的所有点（流式——read_range 已逐 chunk 读）。
+            let points = reader::read_range(
+                &mut self.fs,
+                &self.index,
+                self.compressor.as_ref(),
+                self.config.chunk_duration_ms,
+                device,
+                metric,
+                0,
+                u64::MAX,
+            )?;
+            if points.len() < 2 || points.len() > self.config.max_points_per_chunk as usize {
+                continue; // 单 chunk 或超容量不合并
+            }
+            // 该对当前 chunk 数 >1 才需要合并。
+            let chunk_count = self
+                .index
+                .find_range(0, u64::MAX)
+                .iter()
+                .filter(|e| {
+                    e.file_path.contains(&format!("/{}/", metric.0))
+                        && e.file_path.contains(&format!("{}/", device.0))
+                })
+                .count();
+            if chunk_count <= 1 {
+                continue;
+            }
+            // 合并：清内存缓冲 → 批量写（自动成 chunk）→ 删旧文件。
+            self.chunks.clear();
+            for p in &points {
+                self.write(p)?;
+            }
+            // 删旧 chunk 文件（索引由 write 的 flush 更新；旧条目移除）。
+            let old_entries: alloc::vec::Vec<String> = self
+                .index
+                .find_range(0, u64::MAX)
+                .iter()
+                .filter(|e| {
+                    e.file_path.contains(&format!("/{}/", metric.0))
+                        && e.file_path.contains(&format!("{}/", device.0))
+                })
+                .map(|e| e.file_path.clone())
+                .collect();
+            for path in old_entries {
+                let _ = self.fs.remove(&path);
+            }
+            merged += 1;
+        }
+        Ok(merged)
+    }
+
     /// Removes expired chunk files based on the configured retention period.
     ///
     /// Returns the number of chunk files removed.
@@ -953,5 +1014,68 @@ mod w34_crc_tests {
         // （header.crc32 非零 = 真算，见 writer 单测）。
         let _ = ok;
         // 损坏拒绝路径：reader 的 CRC 校验单测（见 reader.rs w34 测试）。
+    }
+}
+
+#[cfg(test)]
+mod w36_compaction_tests {
+    use eneros_storage::MockBlockDevice;
+
+    use super::*;
+    use crate::CompressionType;
+
+    fn make_fs() -> Lfs {
+        let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(MockBlockDevice::new(64, 4096));
+        Lfs::format(dev).expect("format")
+    }
+    fn make_config() -> TsdbConfig {
+        TsdbConfig {
+            data_dir: String::from("/tsdb"),
+            chunk_duration_ms: 3_600_000,
+            max_points_per_chunk: 100,
+            compression: CompressionType::Snappy,
+            retention_ms: 2_592_000_000,
+            flush_interval_ms: 5_000,
+        }
+    }
+    fn make_point(ts: u64, device: u32, metric: u32, value: f64) -> TimeSeriesPoint {
+        TimeSeriesPoint {
+            timestamp: ts,
+            device_id: DeviceId(device),
+            metric: MetricId(metric),
+            value,
+            quality: DataQuality::Good,
+        }
+    }
+
+    /// 验收：小 chunk 合并（回收空间）——多 chunk 写后 compact_chunks
+    /// 合并为单 chunk，文件数减少，数据完整。
+    #[test]
+    fn test_compaction_merges_small_chunks() {
+        let fs = make_fs();
+        let config = make_config();
+        let mut db = TimeSeriesDB::open(fs, config).expect("open");
+        // 每 30 点一个 chunk（max=100）——写 3 组不同时段。
+        for batch in 0..3u64 {
+            for i in 0..30u64 {
+                db.write(&make_point(
+                    1_000_000 + batch * 3_600_000 + i * 1000,
+                    7,
+                    3,
+                    i as f64,
+                ))
+                .expect("write");
+            }
+        }
+        let before = db.index_len();
+        assert!(before >= 2, "必须产生多个 chunk: {before}");
+        // 低峰 compaction（不在写路径内联）。
+        let merged = db.compact_chunks().expect("compact");
+        assert!(merged >= 1, "必须合并: {merged}");
+        // 数据完整。
+        let all = db
+            .query_range(DeviceId(7), MetricId(3), 0, u64::MAX)
+            .expect("query");
+        assert_eq!(all.len(), 90, "合并后数据必须完整");
     }
 }
