@@ -171,6 +171,7 @@ pub fn decode_frame(buf: &[u8]) -> Result<DecodedFrame<'_>, DecodeError> {
     }
     let msg_type = MsgType::from_u8(buf[5]).ok_or(DecodeError::UnknownMessageType)?;
 
+    // Reason: 前置长度校验（buf.len() < total_len）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
     let payload_len = u32::from_le_bytes(buf[8..12].try_into().expect("8..12 in bounds")) as usize;
     if payload_len > MAX_PAYLOAD_LEN {
         return Err(DecodeError::LengthOutOfBounds);
@@ -182,6 +183,7 @@ pub fn decode_frame(buf: &[u8]) -> Result<DecodedFrame<'_>, DecodeError> {
     }
 
     let crc_offset = HEADER_LEN + payload_len;
+    // Reason: 前置长度校验（buf.len() < total_len）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
     let expected_crc = u32::from_le_bytes(buf[crc_offset..crc_offset + 4].try_into().unwrap());
     let actual_crc = crc32(&buf[..crc_offset]);
     if actual_crc != expected_crc {
@@ -216,6 +218,7 @@ pub fn decode_len_str(buf: &[u8]) -> Result<(&str, usize), DecodeError> {
     if buf.len() < 2 {
         return Err(DecodeError::InvalidPayload);
     }
+    // Reason: 前置长度校验（payload 长度检查）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
     let len = u16::from_le_bytes(buf[0..2].try_into().unwrap()) as usize;
     if len > MAX_PAYLOAD_LEN || buf.len() < 2 + len {
         return Err(DecodeError::InvalidPayload);
@@ -312,6 +315,7 @@ pub fn decode_point_value(buf: &[u8]) -> Result<(PointValue, usize), DecodeError
             if rest.len() < 8 {
                 return Err(DecodeError::InvalidPayload);
             }
+            // Reason: 前置长度校验（rest.len() 检查）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
             let f = f64::from_le_bytes(rest[0..8].try_into().unwrap());
             Ok((PointValue::Float(f), 9))
         }
@@ -319,6 +323,7 @@ pub fn decode_point_value(buf: &[u8]) -> Result<(PointValue, usize), DecodeError
             if rest.len() < 8 {
                 return Err(DecodeError::InvalidPayload);
             }
+            // Reason: 前置长度校验（rest.len() 检查）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
             let i = i64::from_le_bytes(rest[0..8].try_into().unwrap());
             Ok((PointValue::Int(i), 9))
         }
@@ -332,6 +337,7 @@ pub fn decode_point_value(buf: &[u8]) -> Result<(PointValue, usize), DecodeError
             if rest.len() < 2 {
                 return Err(DecodeError::InvalidPayload);
             }
+            // Reason: 前置长度校验（rest.len() 检查）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
             let e = u16::from_le_bytes(rest[0..2].try_into().unwrap());
             Ok((PointValue::Enum(e), 3))
         }
@@ -424,6 +430,7 @@ pub fn decode_request(buf: &[u8]) -> Result<ProtocolRequest, DecodeError> {
             if f.payload.len() < 4 {
                 return Err(DecodeError::InvalidPayload);
             }
+            // Reason: 前置长度校验（payload 长度检查）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
             let config_id = u32::from_le_bytes(f.payload[0..4].try_into().unwrap());
             Ok(ProtocolRequest::Connect { config_id })
         }
@@ -431,6 +438,7 @@ pub fn decode_request(buf: &[u8]) -> Result<ProtocolRequest, DecodeError> {
             if f.payload.len() < 4 {
                 return Err(DecodeError::InvalidPayload);
             }
+            // Reason: 前置长度校验（payload 长度检查）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
             let point_id = u32::from_le_bytes(f.payload[0..4].try_into().unwrap());
             Ok(ProtocolRequest::ReadPoint { point_id })
         }
@@ -438,6 +446,7 @@ pub fn decode_request(buf: &[u8]) -> Result<ProtocolRequest, DecodeError> {
             if f.payload.len() < 4 {
                 return Err(DecodeError::InvalidPayload);
             }
+            // Reason: 前置长度校验（payload 长度检查）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
             let point_id = u32::from_le_bytes(f.payload[0..4].try_into().unwrap());
             let (value, consumed) = decode_point_value(&f.payload[4..])?;
             if consumed != f.payload.len() - 4 {
@@ -492,6 +501,7 @@ pub fn decode_response(buf: &[u8]) -> Result<ProtocolResponse, DecodeError> {
             if f.payload.len() < 2 {
                 return Err(DecodeError::InvalidPayload);
             }
+            // Reason: 前置长度校验（payload 长度检查）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
             let code = u16::from_le_bytes(f.payload[0..2].try_into().unwrap());
             let (message, consumed) = decode_len_str(&f.payload[2..])?;
             if consumed != f.payload.len() - 2 {
@@ -529,8 +539,10 @@ pub fn decode_data_point(buf: &[u8]) -> Result<(DataPoint, usize), DecodeError> 
     if buf.len() < 4 + 2 {
         return Err(DecodeError::InvalidPayload);
     }
+    // Reason: 前置长度校验（payload 长度检查）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
     let point_id = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap());
     pos += 4;
+    // Reason: 前置长度校验（payload 长度检查）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
     let device_id = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap());
     pos += 2;
 
@@ -548,6 +560,7 @@ pub fn decode_data_point(buf: &[u8]) -> Result<(DataPoint, usize), DecodeError> 
     if buf.len() < pos + 8 {
         return Err(DecodeError::InvalidPayload);
     }
+    // Reason: 前置长度校验（payload 长度检查）保证切片长度恰好匹配，try_into 不可达失败（21-B D1 豁免）
     let timestamp_ms = u64::from_le_bytes(buf[pos..pos + 8].try_into().unwrap());
     pos += 8;
 
@@ -597,8 +610,9 @@ pub fn decode_data_point(buf: &[u8]) -> Result<(DataPoint, usize), DecodeError> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use eneros_upa_model::{DataSource, PointQuality, PointType};
+
+    use super::*;
 
     fn sample_point(name: &str, value: PointValue, q: PointQuality) -> DataPoint {
         DataPoint {

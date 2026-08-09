@@ -391,6 +391,8 @@ pub fn deserialize_values(data: &[u8]) -> Result<Vec<f64>, TsdbError> {
     }
     let mut result = Vec::with_capacity(data.len() / 8);
     for chunk in data.chunks_exact(8) {
+        // Reason: chunks_exact(8) 保证每个 chunk 恰为 8 字节，
+        // try_into 不可达失败（21-B D1 豁免）。
         let bytes: [u8; 8] = chunk.try_into().unwrap();
         result.push(f64::from_le_bytes(bytes));
     }

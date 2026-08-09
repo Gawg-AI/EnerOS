@@ -295,6 +295,7 @@ impl CommandEnvelope {
         command_id.copy_from_slice(&buf[1..17]);
         let mut correlation_id = [0u8; 16];
         correlation_id.copy_from_slice(&buf[17..33]);
+        // Reason: decode 前置已校验 buf.len() == ENVELOPE_LEN，切片长度恒定，try_into 不可达失败（21-B D1 豁免）
         let sequence = u64::from_le_bytes(buf[33..41].try_into().unwrap());
         let device_id = u32::from_le_bytes([buf[41], buf[42], buf[43], buf[44]]);
         let point_id = u32::from_le_bytes([buf[45], buf[46], buf[47], buf[48]]);
@@ -303,12 +304,17 @@ impl CommandEnvelope {
             ActorKind::from_byte(buf[51]).ok_or(EnvelopeError::BadActor { got: buf[51] })?;
         let mut issuer = [0u8; 16];
         issuer.copy_from_slice(&buf[52..68]);
+        // Reason: decode 前置已校验 buf.len() == ENVELOPE_LEN，切片长度恒定，try_into 不可达失败（21-B D1 豁免）
         let timestamp = u64::from_le_bytes(buf[68..76].try_into().unwrap());
+        // Reason: decode 前置已校验 buf.len() == ENVELOPE_LEN，切片长度恒定，try_into 不可达失败（21-B D1 豁免）
         let expiry = u64::from_le_bytes(buf[76..84].try_into().unwrap());
         let mut lease_id = [0u8; 16];
         lease_id.copy_from_slice(&buf[84..100]);
+        // Reason: decode 前置已校验 buf.len() == ENVELOPE_LEN，切片长度恒定，try_into 不可达失败（21-B D1 豁免）
         let fencing_token = u64::from_le_bytes(buf[100..108].try_into().unwrap());
+        // Reason: decode 前置已校验 buf.len() == ENVELOPE_LEN，切片长度恒定，try_into 不可达失败（21-B D1 豁免）
         let policy_version = u64::from_le_bytes(buf[108..116].try_into().unwrap());
+        // Reason: decode 前置已校验 buf.len() == ENVELOPE_LEN，切片长度恒定，try_into 不可达失败（21-B D1 豁免）
         let config_version = u64::from_le_bytes(buf[116..124].try_into().unwrap());
         let mut idempotency_key = [0u8; 16];
         idempotency_key.copy_from_slice(&buf[124..140]);

@@ -100,6 +100,8 @@ impl Watchdog {
                 self.hw.stop();
                 WatchdogStatus::HardReset
             }
+            // Reason: !all_fed 意味着存在未喂食层，timeout_layer 在循环中
+            // 必被设置为该层（逻辑不变量），unwrap 不可达（21-B D1 豁免）。
             None if !all_fed => WatchdogStatus::LayerTimeout(timeout_layer.unwrap()),
             None => {
                 self.hw.kick();

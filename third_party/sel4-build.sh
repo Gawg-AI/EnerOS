@@ -8,7 +8,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CACHE="${SEL4_CACHE:-$HOME/.cache}"
 
-# 依赖（均已在 $CACHE 就绪）
+# 依赖（缺失时自动引导下载，21-B D3：干净容器无预置缓存可成功）
 SEL4_SRC="$CACHE/sel4-src"
 ELFLOADER_SRC="$CACHE/seL4_tools-master/elfloader-tool"
 GCC_BIN="$CACHE/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin"
@@ -16,6 +16,16 @@ CMAKE_BIN="$CACHE/cmake-3.31.6-linux-x86_64/bin"
 NINJA="$CACHE/ninja-bin/ninja"
 DTC_BIN="$CACHE/dtc-deb/usr/bin"
 XMLLINT_BIN="$CACHE/xmllint-bin"
+for required in "$SEL4_SRC/CMakeLists.txt" "$ELFLOADER_SRC/CMakeLists.txt" \
+                "$GCC_BIN/aarch64-none-elf-gcc" "$CMAKE_BIN/cmake" "$NINJA" \
+                "$DTC_BIN/dtc" "$XMLLINT_BIN/xmllint"; do
+  if [ ! -e "$required" ]; then
+    echo "[bootstrap] missing cache dependency: $required"
+    echo "[bootstrap] running third_party/sel4-bootstrap.sh (SEL4_CACHE=$CACHE)"
+    bash "$ROOT/third_party/sel4-bootstrap.sh"
+    break
+  fi
+done
 export PATH="$GCC_BIN:$CMAKE_BIN:$DTC_BIN:$XMLLINT_BIN:$PATH"
 export LD_LIBRARY_PATH="$CACHE/libxml2-deb/usr/lib/x86_64-linux-gnu:$CACHE/libicu74-deb/usr/lib/x86_64-linux-gnu"
 export PYTHONUSERBASE="$CACHE/pyuser"
@@ -34,6 +44,28 @@ mkdir -p "$BUILD"
   "$GCC_BIN/aarch64-none-elf-gcc" -ffreestanding -fno-pic -fno-pie -march=armv8-a \
     -I include -c src/cpio.c -o "$BUILD/elfloader/cpio.o" && \
   ar rcs "$BUILD/elfloader/libcpio.a" "$BUILD/elfloader/cpio.o")
+
+# 1.5) EnerOS 内核补丁（third_party/sel4-patches/）：源码级可复现——
+#      C2 (BOOT-007) init bundle 映射（kernel/boot.c + arm64 vspace.c）。
+#      ~/.cache/sel4-src 由官方 sel4-14.0.0.tar.gz 解压而来。幂等用
+#      特征标记判断（补丁在已应用树上的 patch --dry-run 行为不稳定：
+#      部分 hunk fuzz 匹配、部分 reversed，见 21-A 迭代）。
+PATCHES_DIR="$ROOT/third_party/sel4-patches"
+for P in "$PATCHES_DIR"/*.patch; do
+  MARKER=$(grep -m1 '^+.*ENEROS_INIT_BUNDLE_PHYS' "$P" | sed 's/^+//;s/ =.*//')
+  if [ -z "$MARKER" ]; then
+    echo "ERROR: patch $(basename "$P") has no idempotency marker" >&2
+    exit 1
+  fi
+  if grep -rqF "$MARKER" "$SEL4_SRC/src"; then
+    echo "  [patch] already applied: $(basename "$P")"
+  elif patch -p0 -d "$SEL4_SRC" -f < "$P" >/dev/null 2>&1; then
+    echo "  [patch] applied: $(basename "$P")"
+  else
+    echo "ERROR: failed to apply $(basename "$P") to $SEL4_SRC" >&2
+    exit 1
+  fi
+done
 
 # 2) 顶层 CMake 配置 + 构建
 "$CMAKE_BIN/cmake" -G Ninja \
