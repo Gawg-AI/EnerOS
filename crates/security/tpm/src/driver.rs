@@ -392,6 +392,23 @@ impl SpiTpmDriver {
     }
 }
 
+/// TPM 2.0 规范最大响应长度（头部 10 B + 标签/长度/返回码/参数；4096 安全上界）。
+pub const TPM_RESPONSE_MAX_BYTES: usize = 4096;
+
+/// 响应读取迭代上限（deadline；与等待响应段的 10000 次同量级——
+/// 每迭代读一个字节，FIFO 卡住 10000 字节即判定超时，不挂启动）。
+pub const TPM_RESPONSE_MAX_ITERS: u32 = 10_000;
+
+/// 响应读取边界检查（22 §2.W1.5）：容量/迭代超限返回 [`TpmError::Timeout`]。
+///
+/// 纯逻辑（host 可测）；生产路径由 `send_command` 读循环每迭代调用。
+pub fn check_read_limits(response_len: usize, iters: u32) -> Result<(), TpmError> {
+    if response_len >= TPM_RESPONSE_MAX_BYTES || iters >= TPM_RESPONSE_MAX_ITERS {
+        return Err(TpmError::Timeout);
+    }
+    Ok(())
+}
+
 impl TpmDriver for SpiTpmDriver {
     fn init(&mut self) -> Result<(), TpmError> {
         if self.simulate {
@@ -436,19 +453,20 @@ impl TpmDriver for SpiTpmDriver {
             }
             core::hint::spin_loop();
         }
-        // 读取响应
-        // 22 §2.W1.1（OOM 豁免标注）：响应缓冲无预分配上限——该循环的
-        // 容量上限 + deadline 超时由 W1.5（TPM 读循环超时治理）添加，
-        // 避免两工单在同一循环上重复改动。OOM-risk: handled by
-        // alloc_error_handler（记录+挂起 fail-safe，非 abort）。
+        // 读取响应（22 §2.W1.5：deadline + 容量上限——FIFO 卡住/异常
+        // 数据不挂启动、不 OOM；OOM-risk: handled by alloc_error_handler，
+        // 此处已由 try_reserve 语义 + 容量上限收敛）。
         let mut response = Vec::new();
+        let mut iters = 0u32;
         loop {
             let sts = self.read_reg(TPM_STS_REG)?;
             if sts & TPM_STS_DATA_AVAIL == 0 {
                 break;
             }
+            check_read_limits(response.len(), iters)?;
             let data = self.read_reg(TPM_DATA_FIFO)?;
             response.push(data);
+            iters += 1;
         }
         self.release_locality()?;
         Ok(response)
@@ -707,5 +725,45 @@ mod tests {
         let resp = tpm.send_command(&cmd).unwrap();
         let header = TpmResponseHeader::from_bytes(&resp).unwrap();
         assert!(header.is_success());
+    }
+
+    // --- 22 §2.W1.5：读循环超时/容量上限 ---
+
+    #[test]
+    fn test_read_limits_capacity_exceeded_timeout() {
+        // 容量达上限（4096 B）仍满 → Timeout（不挂启动、不 OOM）。
+        assert_eq!(
+            check_read_limits(TPM_RESPONSE_MAX_BYTES, 0),
+            Err(TpmError::Timeout)
+        );
+        assert_eq!(
+            check_read_limits(TPM_RESPONSE_MAX_BYTES + 1, 0),
+            Err(TpmError::Timeout)
+        );
+    }
+
+    #[test]
+    fn test_read_limits_iteration_deadline_timeout() {
+        // 迭代超限（FIFO 卡住持续有数据）→ Timeout。
+        assert_eq!(
+            check_read_limits(0, TPM_RESPONSE_MAX_ITERS),
+            Err(TpmError::Timeout)
+        );
+        assert_eq!(
+            check_read_limits(100, TPM_RESPONSE_MAX_ITERS + 1),
+            Err(TpmError::Timeout)
+        );
+    }
+
+    #[test]
+    fn test_read_limits_inside_bounds_ok() {
+        // 边界内 → Ok（正常响应路径不受影响）。
+        assert_eq!(check_read_limits(0, 0), Ok(()));
+        assert_eq!(
+            check_read_limits(TPM_RESPONSE_MAX_BYTES - 1, TPM_RESPONSE_MAX_ITERS - 1),
+            Ok(())
+        );
+        // 真实响应（头部 10 B + 参数）远低于上限。
+        assert_eq!(check_read_limits(42, 42), Ok(()));
     }
 }
