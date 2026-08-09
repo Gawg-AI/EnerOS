@@ -6,6 +6,7 @@
 //! 回传（背压语义与 W3.3 同款，锁定 2）。
 
 use alloc::collections::VecDeque;
+use alloc::format;
 use alloc::string::String;
 
 /// MQTT 导出器（发送闭包注入：`FnMut(topic, payload)`）。
