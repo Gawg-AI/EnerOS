@@ -443,6 +443,40 @@ impl UntypedAllocator {
         }
     }
 
+    /// 从 device untyped 分配（设备内存：MMIO frame；22 §2.W1.6）。
+    ///
+    /// 与 [`UntypedAllocator::alloc`] 同记账语义，但**只**匹配
+    /// `is_device` untyped（普通 untyped 不能 retype device frame）。
+    pub fn alloc_device(&mut self, size_bits: u64) -> Option<(u64, u64)> {
+        for i in 0..self.descs.len() {
+            let desc = self.descs[i];
+            if !desc.is_device || desc.size_bits < size_bits {
+                continue;
+            }
+            if desc.size_bits >= u64::BITS as u64 {
+                continue;
+            }
+            let capacity = 1u64 << desc.size_bits;
+            let obj_size = 1u64 << size_bits;
+            let used = self.used[i];
+            let aligned = used
+                .checked_add(obj_size - 1)
+                .map(|v| v & !(obj_size - 1))?;
+            if aligned
+                .checked_add(obj_size)
+                .map(|end| end > capacity)
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            self.used[i] = aligned + obj_size;
+            let offset = aligned / obj_size;
+            let cap = self.cap_base + i as u64;
+            return Some((cap, offset));
+        }
+        None
+    }
+
     /// 分配一个 `size_bits` 对象，返回 `(untyped_cap, byte_offset)`；不足返回 `None`。
     ///
     /// 记账镜像 seL4 `decodeUntypedInvocation`：freeIndex 先按对象大小对齐
@@ -887,6 +921,52 @@ fn configure_service(
     tcb_set_priority(tcb, ctx.root_tcb, SVC_PRIORITY).map_err(SpawnError::Sel4)?;
 
     Ok((tcb, ep, ntfn))
+}
+
+/// 22 §2.W1.6：映射设备 MMIO 区域进 root-task VSpace（1:1）。
+///
+/// SP805 看门狗 @ `paddr`（QEMU 无设备时读写为 no-op 不 fault；真机有效）。
+/// 用 device untyped retype frame → map 到同一物理地址（`arm_page_map`
+/// 物理地址 = 虚拟地址的 1:1 语义由调用方保证）。
+#[cfg(target_os = "none")]
+pub fn map_device_mmio(ctx: &mut SpawnCtx, paddr: u64, size_bits: u64) -> Result<(), SpawnError> {
+    let types = ObjectTypeTable::resolve();
+    let rights = RightsTable::resolve();
+    // 分配 frame 槽并 retype（device untyped 承载设备内存）。
+    let slot = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
+    retype_device_one(ctx, types.arm_frame, size_bits, slot)?;
+    // SAFETY: slot 为刚 retype 的 frame cap；root_vspace 已绑 ASID；
+    // paddr 页对齐（调用方保证）；设备内存 map 用读写权限。
+    arm_page_map(ctx.root_vspace, slot, paddr, rights.read | rights.write)
+        .map_err(SpawnError::Sel4)?;
+    Ok(())
+}
+
+/// retype 设备 frame（从 device untyped；22 §2.W1.6 SP805 等 MMIO）。
+#[cfg(target_os = "none")]
+fn retype_device_one(
+    ctx: &mut SpawnCtx,
+    object_type: u64,
+    size_bits: u64,
+    slot: u64,
+) -> Result<(), SpawnError> {
+    let (untyped, offset) = ctx
+        .untyped
+        .alloc_device(size_bits)
+        .ok_or(SpawnError::NoUntyped)?;
+    // SAFETY: untyped 为 device untyped cap；slot 为 root CSpace 空闲槽；
+    // offset 由 alloc_device 记账保证界内（同 retype_one 调用模式）。
+    eneros_sel4_sys::safe::retype(
+        untyped,
+        object_type,
+        size_bits,
+        1,
+        ctx.root_cnode,
+        slot,
+        0,
+        offset,
+    )
+    .map_err(SpawnError::Sel4)
 }
 
 /// retype 单个对象到 root CSpace 的 `slot` 槽。

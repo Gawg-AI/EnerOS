@@ -277,16 +277,15 @@ fn read_chunk_file(
     // Extract compressed sections.
     if data.len() < off + ts_len + val_len + qual_len {
         return Err(TsdbError::ChunkCorrupted { chunk_id: 0 });
-
-        // 22 §2.W3.4：真校验 payload CRC——不匹配拒绝该 chunk（不返回损坏
-        // 数据），告警语义由调用方观测 Err 实现。
-        let payload = &data[off..off + ts_len + val_len + qual_len];
-        let actual_crc = eneros_ipc_wire::crc32(payload);
-        if actual_crc != header.crc32 {
-            return Err(TsdbError::ChunkCorrupted {
-                chunk_id: header.start_time as u32,
-            });
-        }
+    }
+    // 22 §2.W3.4：真校验 payload CRC——不匹配拒绝该 chunk（不返回损坏
+    // 数据），告警语义由调用方观测 Err 实现。
+    let payload = &data[off..off + ts_len + val_len + qual_len];
+    let actual_crc = eneros_ipc_wire::crc32(payload);
+    if actual_crc != header.crc32 {
+        return Err(TsdbError::ChunkCorrupted {
+            chunk_id: header.start_time as u32,
+        });
     }
     let compressed_ts = &data[off..off + ts_len];
     off += ts_len;

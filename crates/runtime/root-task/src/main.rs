@@ -211,6 +211,26 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
         );
     }
 
+    // 22 §2.W1.6：映射 SP805 看门狗设备区域（root-task 访问 0x09050000
+    // 不 vm fault；QEMU 无设备时读写 no-op，真机有效）。
+    match crate::spawn::map_device_mmio(&mut ctx, crate::panic::WDT_BASE, 12) {
+        Ok(()) => {
+            crate::panic::WDT_MMIO_MAPPED.store(true, core::sync::atomic::Ordering::Relaxed);
+            crate::println!(
+                "[eneros-root-task] WDT device mapped (SP805 @ 0x{:x})",
+                crate::panic::WDT_BASE
+            );
+        }
+        Err(e) => {
+            // QEMU（xpack 无 SP805）/平台未导出设备区域 → 软件模式：
+            // 看门狗不武装（wdt_init 用 base=0），避免访问未映射 MMIO fault。
+            crate::println!(
+                "[eneros-root-task] WDT device map FAILED: {:?} — 看门狗软件模式",
+                e
+            );
+        }
+    }
+
     // R1-2：真实 spawn（21-A K1.2：sel4-sys FFI 完整序列，ADR-0034）
     #[cfg(target_os = "none")]
     {
@@ -306,5 +326,11 @@ fn panic(info: &PanicInfo) -> ! {
 #[cfg(target_os = "none")]
 #[alloc_error_handler]
 fn oom(layout: core::alloc::Layout) -> ! {
+    // G-R1 诊断：堆使用/容量（定位 OOM 根因——init 未执行 or 碎片）。
+    println!(
+        "[eneros-root-task] OOM-DIAG used={} cap={}",
+        ALLOCATOR.used(),
+        ALLOCATOR.capacity()
+    );
     eneros_runtime::oom::oom_fail_safe(layout)
 }

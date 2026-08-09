@@ -101,6 +101,18 @@ impl TimeIndex {
         None
     }
 
+    /// 22 §2.W3.6：删除匹配条目（compaction 合并后清旧 chunk 索引）。
+    pub fn remove_matching(&mut self, mut matches: impl FnMut(&IndexEntry) -> bool) -> usize {
+        let mut removed = 0;
+        for entries in self.entries.values_mut() {
+            let before = entries.len();
+            entries.retain(|e| !matches(e));
+            removed += before - entries.len();
+        }
+        self.entries.retain(|_, v| !v.is_empty());
+        removed
+    }
+
     /// Removes all entries whose `time` is strictly less than `time`
     /// and returns them (used for TTL cleanup).
     pub fn remove_before(&mut self, time: u64) -> Vec<IndexEntry> {

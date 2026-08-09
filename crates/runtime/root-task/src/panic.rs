@@ -19,6 +19,11 @@ use spin::Mutex;
 /// SP805 看门狗 MMIO 基址（QEMU virt 平台标准地址；真机按 BSP 替换）。
 pub const WDT_BASE: u64 = 0x0905_0000;
 
+/// SP805 设备区域是否已映射进 root-task VSpace（QEMU 无设备时 map 失败
+/// → 软件模式；真机 map 成功 → 硬件模式）。
+pub static WDT_MMIO_MAPPED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// panic 触发后的重启计数（内存；跨掉电持久化挂 W3.5，ADR-026）。
 pub static PANIC_REBOOT_COUNT: AtomicUsize = AtomicUsize::new(0);
 

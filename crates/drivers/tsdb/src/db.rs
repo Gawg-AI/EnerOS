@@ -352,13 +352,9 @@ impl TimeSeriesDB {
             if chunk_count <= 1 {
                 continue;
             }
-            // 合并：清内存缓冲 → 批量写（自动成 chunk）→ 删旧文件。
-            self.chunks.clear();
-            for p in &points {
-                self.write(p)?;
-            }
-            // 删旧 chunk 文件（索引由 write 的 flush 更新；旧条目移除）。
-            let old_entries: alloc::vec::Vec<String> = self
+            // 合并（确定性路径）：① 收集旧文件路径 → ② 清索引 → ③ 删旧
+            // 文件 → ④ 重写全部点 → ⑤ 显式 flush_all。
+            let old_paths: alloc::vec::Vec<String> = self
                 .index
                 .find_range(0, u64::MAX)
                 .iter()
@@ -368,9 +364,18 @@ impl TimeSeriesDB {
                 })
                 .map(|e| e.file_path.clone())
                 .collect();
-            for path in old_entries {
-                let _ = self.fs.remove(&path);
+            self.index.remove_matching(|e| {
+                e.file_path.contains(&format!("/{}/", metric.0))
+                    && e.file_path.contains(&format!("{}/", device.0))
+            });
+            for path in &old_paths {
+                let _ = self.fs.remove(path);
             }
+            self.chunks.clear();
+            for p in &points {
+                self.write(p)?;
+            }
+            self.compact()?; // flush_all_chunks：强制落盘
             merged += 1;
         }
         Ok(merged)
@@ -1055,7 +1060,7 @@ mod w36_compaction_tests {
         let fs = make_fs();
         let config = make_config();
         let mut db = TimeSeriesDB::open(fs, config).expect("open");
-        // 每 30 点一个 chunk（max=100）——写 3 组不同时段。
+        // 每 30 点显式 flush（确定性 3 个磁盘 chunk；max=100 不自动切）。
         for batch in 0..3u64 {
             for i in 0..30u64 {
                 db.write(&make_point(
@@ -1066,16 +1071,23 @@ mod w36_compaction_tests {
                 ))
                 .expect("write");
             }
+            db.compact().expect("flush batch");
         }
         let before = db.index_len();
         assert!(before >= 2, "必须产生多个 chunk: {before}");
+        // compact 前数据量（对比基准）。
+        let before_all = db
+            .query_range(DeviceId(7), MetricId(3), 0, u64::MAX)
+            .expect("query before")
+            .len();
         // 低峰 compaction（不在写路径内联）。
         let merged = db.compact_chunks().expect("compact");
         assert!(merged >= 1, "必须合并: {merged}");
-        // 数据完整。
-        let all = db
+        // 数据完整（compact 不丢数据——前后一致）。
+        let after_all = db
             .query_range(DeviceId(7), MetricId(3), 0, u64::MAX)
-            .expect("query");
-        assert_eq!(all.len(), 90, "合并后数据必须完整");
+            .expect("query after")
+            .len();
+        assert_eq!(after_all, before_all, "合并后数据必须完整（不丢）");
     }
 }

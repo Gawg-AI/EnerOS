@@ -190,8 +190,13 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
     // 22 §2.W1.6：看门狗全程接入——root-task 每轮喂硬件狗；root-task
     // 卡死（含服务卡死阻塞 IPC call）→ 不喂狗 → SP805 超时整机复位
     // （supervisor 先兜底 fault，看门狗是最后防线）。QEMU 无 SP805 时
-    // MMIO 写为 no-op（无害）；硬超时 10s。
-    eneros_watchdog::api::wdt_init(10_000, crate::panic::WDT_BASE);
+    // MMIO 写为 no-op（无害）；硬超时 10s。未映射（软件模式）用 base=0。
+    let wdt_base = if crate::panic::WDT_MMIO_MAPPED.load(core::sync::atomic::Ordering::Relaxed) {
+        crate::panic::WDT_BASE
+    } else {
+        0
+    };
+    eneros_watchdog::api::wdt_init(10_000, wdt_base);
 
     let mut supervisor = crate::supervisor::Supervisor::new_for_count(handles.len(), now_ms());
     let tcb_to_index: alloc::vec::Vec<u64> = handles.iter().map(|h| h.tcb).collect();
