@@ -763,6 +763,36 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> fmt::Debug for VirtioBlkDriver<M, P
 
 /// RAM-backed virtio-mmio register simulation with QEMU-like semantics.
 ///
+/// WP-26.10（26-C §4.2）：真实 MMIO 后端（生产路径）——`read_volatile`/
+/// `write_volatile` 访问真实 virtio-mmio 寄存器；映射成功 ⇔ 正确物理页由
+/// FIX-BUGS-0810 两件套（alloc_device_at + node_offset=slot）保证。
+pub struct VolatileMmio {
+    /// 寄存器基址（已映射虚拟地址）。
+    base: usize,
+}
+
+impl VolatileMmio {
+    /// 构造真实 MMIO 后端。`base` 必须是已映射（且覆盖足够长度）的
+    /// virtio-mmio 寄存器基址。
+    pub fn new(base: usize) -> Self {
+        Self { base }
+    }
+}
+
+impl VirtioMmio for VolatileMmio {
+    fn read_reg(&self, offset: usize) -> u32 {
+        // SAFETY: base 由调用方保证指向已映射的 virtio-mmio 寄存器区；
+        // offset 为 virtio 规范寄存器偏移，调用方保证界内；32 位对齐读
+        // （virtio-mmio 规范要求）。
+        unsafe { core::ptr::read_volatile((self.base + offset) as *const u32) }
+    }
+
+    fn write_reg(&mut self, offset: usize, value: u32) {
+        // SAFETY: 同上；32 位对齐写。
+        unsafe { core::ptr::write_volatile((self.base + offset) as *mut u32, value) }
+    }
+}
+
 /// Models the registers the driver touches. The backing `disk` stores sector
 /// data; after the driver writes `QueueNotify`, the test drives
 /// [`RamMmio::process_queues`] (the role QEMU's device model plays) to consume

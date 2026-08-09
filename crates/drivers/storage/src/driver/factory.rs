@@ -33,17 +33,13 @@ use crate::error::StorageError;
 pub fn create_block_device(config: &StorageConfig) -> Result<Box<dyn BlockDevice>, StorageError> {
     match config.storage_type {
         StorageType::VirtioBlk => {
-            // Host-test wiring: RAM-simulated MMIO + DMA pool + no-op cache.
-            // Real targets construct VirtioBlkDriver with their own backends.
-            let mmio = crate::driver::virtio_blk::RamMmio::new(config.max_transfer_blocks as u64);
-            let pool = crate::driver::virtio_blk::RamPool::new(9);
-            let driver = crate::driver::virtio_blk::VirtioBlkDriver::new(
-                mmio,
-                pool,
-                crate::driver::virtio_blk::NoopCache,
-                config.clone(),
-            )?;
-            Ok(Box::new(driver))
+            // WP-26.10：生产分派禁止 RAM 模拟控制器（RamMmio 仅
+            // test/mock 装配）。真实后端经发现层注入
+            // `VirtioBlkDriver::new(VolatileMmio, ..)`——工厂无发现结果时
+            // fail-closed（26-C §4.2 不变量：RamMmio 生产不可达）。
+            Err(StorageError::Unsupported {
+                detail: "virtio-blk: no real MMIO backend injected (WP-26.10)",
+            })
         }
         StorageType::Emmc => {
             // 蓝图/20 R1-7：生产分派禁止 RAM 模拟控制器（RamEmmcMmio 仅
@@ -153,12 +149,12 @@ mod tests {
             block_size: 512,
             max_transfer_blocks: 256,
         };
-        let dev = create_block_device(&cfg).expect("should create virtio-blk device");
-        assert_eq!(dev.block_size(), 512);
-        // RamMmio 盘默认 16 扇区上限受 max_transfer_blocks 影响，直接读写验证往返。
-        let mut out = [0u8; 512];
-        dev.read_block(0, &mut out).expect("read block 0");
-        assert_eq!(out, [0u8; 512]);
+        // WP-26.10：生产分派 fail-closed（无发现注入后端 → Unsupported，
+        // 证伪旧行为——工厂直接构造 RamMmio 模拟盘）。
+        match create_block_device(&cfg) {
+            Err(StorageError::Unsupported { .. }) => {}
+            _other => panic!("VirtioBlk 生产分派必须 fail-closed"),
+        }
     }
 
     #[test]
@@ -188,6 +184,11 @@ mod tests {
             block_size: 512,
             max_transfer_blocks: 256,
         };
-        let _dev: Box<dyn BlockDevice> = create_block_device(&cfg).expect("should create");
+        // WP-26.10：host 测试装配走 create_mock_device（RamMmio 仅
+        // test/mock 门控路径）。
+        let mut dev = create_mock_device(100, 512);
+        assert_eq!(dev.block_count(), 100);
+        let mut out = [0u8; 512];
+        dev.read_block(0, &mut out).expect("read block 0");
     }
 }
