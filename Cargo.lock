@@ -1255,12 +1255,16 @@ version = "1.0.0-rc.0"
 name = "eneros-root-task"
 version = "1.0.0-rc.0"
 dependencies = [
+ "eneros-audit",
  "eneros-boot-protocol",
  "eneros-elf-loader",
  "eneros-ipc-wire",
  "eneros-runtime",
  "eneros-sel4-sys",
  "eneros-tenant",
+ "eneros-watchdog",
+ "heapless 0.8.0",
+ "spin",
 ]
 
 [[package]]
@@ -1309,10 +1313,13 @@ dependencies = [
 name = "eneros-services"
 version = "1.0.0-rc.0"
 dependencies = [
+ "eneros-audit",
  "eneros-ipc-wire",
  "eneros-runtime",
  "eneros-sel4-sys",
+ "heapless 0.8.0",
  "loom",
+ "spin",
 ]
 
 [[package]]

@@ -29,6 +29,14 @@ const FR_TXFF: u32 = 1 << 5; // Transmit FIFO Full
 const FR_RXFE: u32 = 1 << 4; // Receive FIFO Empty
 const FR_BUSY: u32 = 1 << 3; // UART Busy
 
+// ---------------------------------------------------------------------------
+// 有界忙等上限（HAL-005）
+// ---------------------------------------------------------------------------
+/// TX FIFO 空出轮询上限（HAL-005：有界忙等，防死循环）。
+const UART_TX_MAX_ITERS: u32 = 10_000;
+/// BUSY 清除轮询上限（HAL-005：有界忙等，防死循环）。
+const UART_FLUSH_MAX_ITERS: u32 = 10_000;
+
 /// ARM PrimeCell PL011 UART HAL implementation.
 pub struct Pl011Uart {
     base: u64,

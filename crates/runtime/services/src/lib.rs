@@ -17,6 +17,7 @@
 extern crate alloc;
 
 pub mod allocator;
+pub mod panic;
 
 #[cfg(all(test, feature = "loom"))]
 pub mod loom_allocator;

@@ -11,4 +11,8 @@ description = "22 W1.1 验收探针：aarch64 裸机构造堆耗尽 → 验证 #
 name = "oom-probe"
 path = "src/main.rs"
 
+[[bin]]
+name = "panic-probe"
+path = "src/bin/panic-probe.rs"
+
 [dependencies]

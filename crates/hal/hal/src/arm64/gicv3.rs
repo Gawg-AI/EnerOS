@@ -167,7 +167,7 @@ impl Arm64Gic {
         let irq = irq as u32;
         // HAL-001：保留 INTID 边界检查——IRQ 超出 handler 表（>= MAX_IRQ，
         // 如 1022 保留中断或非法 INTID）不得索引 panic，EOI 清除 active 后返回。
-        if let Some(handler) = resolve_handler(irq) {
+        if let Some(handler) = Self::resolve_handler(irq) {
             let _ = handler(irq);
         }
         // Always EOI (including for unknown IRQs) to clear the active state.

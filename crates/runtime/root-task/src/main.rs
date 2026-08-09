@@ -34,6 +34,7 @@ pub mod allocator;
 pub mod boot;
 pub mod bundle;
 pub mod frame;
+pub mod panic;
 pub mod service;
 pub mod spawn;
 
@@ -94,6 +95,8 @@ core::arch::global_asm!(
 pub extern "C" fn rust_entry(bi: u64) -> ! {
     init();
     eneros_sel4_sys::safe::boot_init(bi);
+    // 22 §2.W1.2：panic 审计链初始化（panic handler 最简路径的前提）。
+    crate::panic::init_panic_audit();
     println!("[eneros-root-task] Rust root task alive on seL4");
     println!("[eneros-root-task] G2 closure: bootinfo/cap/IPC (inherited from elfloader boot)");
     println!(
@@ -289,11 +292,9 @@ extern "C" fn eh_personality() {}
 
 #[cfg(target_os = "none")]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    println!("[eneros-root-task] PANIC");
-    loop {
-        core::hint::spin_loop();
-    }
+fn panic(info: &PanicInfo) -> ! {
+    // 22 §2.W1.2：审计 + 重启计数 + 武装看门狗短超时复位（不返回）。
+    crate::panic::panic_reboot(info)
 }
 
 // 22 §2.W1.1：OOM 不 abort——记录指标 + 打印 + 挂起（fail-closed；
