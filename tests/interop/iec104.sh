@@ -12,6 +12,9 @@
 #
 # 对端地址：ENEROS_INTEROP_IEC104_ADDR（如 tcp://1.2.3.4:2404）
 # 本环境无真实主站 → skip 证据（用例清单 + 连接要求）。
+# 21-B B1（2026-08-09）：对端已从"无"升级为 QEMU loopback——生产
+# transport（SmoltcpSlaveTransport）已在 loopback 集成测试中完成
+# STARTDT act→con 闭环（tests/loopback.rs）。真主站到位仅换对端地址。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,8 +29,8 @@ if [ -z "${ADDR}" ]; then
 {
   "schema": "eneros.interop-skip.v1",
   "peer": "iec104-master",
-  "reason": "no real IEC104 master address (set ENEROS_INTEROP_IEC104_ADDR)",
-  "required_peer": "lib60870 or commercial master",
+  "reason": "no real IEC104 master address (set ENEROS_INTEROP_IEC104_ADDR); QEMU loopback 对通已完成（21-B B1）",
+  "required_peer": "lib60870 or commercial master（QEMU loopback 已闭环）",
   "cases": ${CASES},
   "acceptance": "全用例通过，报告含抓包（14 号文 D2）"
 }
