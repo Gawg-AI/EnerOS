@@ -13,9 +13,8 @@ use sha2::{Digest, Sha256};
 mod artifact_inspector;
 mod evidence;
 mod fault_factory;
-mod fuzz_driver;
-mod vrf002;
 mod flasher;
+mod fuzz_driver;
 mod image_factory;
 mod qa;
 mod qemu_harness;
@@ -25,6 +24,7 @@ mod test_results;
 mod toolchain;
 mod trust;
 mod update_package;
+mod vrf002;
 
 type DynResult<T> = Result<T, Box<dyn Error>>;
 struct ClosureRecord {
@@ -427,7 +427,10 @@ fn audit_unsafe_safety(root: &Path, args: &[String]) -> DynResult<()> {
     }
 
     if !violations.is_empty() {
-        eprintln!("audit-unsafe-safety: FAIL ({} 处 unsafe 缺少 SAFETY 注释)", violations.len());
+        eprintln!(
+            "audit-unsafe-safety: FAIL ({} 处 unsafe 缺少 SAFETY 注释)",
+            violations.len()
+        );
         for v in &violations {
             eprintln!("{v}");
         }
@@ -456,7 +459,8 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> DynResult<()> {
     Ok(())
 }
 
-fn command_audit(root: &Path, args: &[String]) -> DynResult<()> {    let (mode, tail) = args
+fn command_audit(root: &Path, args: &[String]) -> DynResult<()> {
+    let (mode, tail) = args
         .split_first()
         .ok_or_else(|| invalid("audit requires 'all' or 'profile <id>'"))?;
     match mode.as_str() {

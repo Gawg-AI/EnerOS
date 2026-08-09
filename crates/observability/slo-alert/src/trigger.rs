@@ -148,8 +148,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec::Vec;
+
+    use super::*;
 
     #[test]
     fn test_evaluate_normal_no_notify() {

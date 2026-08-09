@@ -13,14 +13,13 @@
 
 use alloc::vec::Vec;
 
-/// 市场类型（唯一来源：`eneros-market-types`，ARCH-M03 / ADR-0029）。
-pub use eneros_market_types::MarketType;
-pub use eneros_market_types::YuanPerKwh;
-
 /// 需求响应信号（ARC-005 统一量纲：唯一来源 `eneros-dr`——target_kw/kW、
 /// start_at·end_at/unix 秒、incentive_yuan/元；旧本地定义 target_mw/MW 与
 /// ms 时间戳量纲冲突已消除）。
 pub use eneros_dr::types::DrSignal;
+/// 市场类型（唯一来源：`eneros-market-types`，ARCH-M03 / ADR-0029）。
+pub use eneros_market_types::MarketType;
+pub use eneros_market_types::YuanPerKwh;
 
 /// 时段类型（D6：蓝图引用未定义，本版本定义峰/平/谷）.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

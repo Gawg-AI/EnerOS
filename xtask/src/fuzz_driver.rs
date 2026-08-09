@@ -69,8 +69,8 @@ fn seed_for(target: &str) -> &'static [u8] {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // dt_phys
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // dt_size
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
         ],
         "ipc_wire" => &[
             0x45, 0x4c, 0x30, 0x46, // EL0F magic
@@ -83,8 +83,8 @@ fn seed_for(target: &str) -> &'static [u8] {
         "iec104" => &[0x68, 0x04, 0x07, 0x00, 0x00, 0x00],
         "elf_loader" => &[
             0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, // ELF64 LE
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_type..e_flags
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, // e_type..e_flags
             0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_ehsize=64
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_phentsize
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_phnum
@@ -107,14 +107,12 @@ fn exercise(target: &str, data: &[u8]) {
     match target {
         "boot_protocol" => {
             let _ = eneros_boot_protocol::boot_info::BootInfo::decode(data);
-            
         }
         "ipc_wire" => {
             let _ = eneros_ipc_wire::el0::decode_frame(data);
         }
         "modbus_rtu" => {
             let _ = eneros_modbus_rtu::frame::ModbusFrame::decode(data);
-
         }
         "iec104" => {
             let _ = eneros_iec104_slave::apdu::Apdu::decode(data);
@@ -123,9 +121,7 @@ fn exercise(target: &str, data: &[u8]) {
             let _ = eneros_elf_loader::LoadedElf::parse(data);
         }
         "gguf_loader" => {
-            if let Ok((header, consumed)) =
-                eneros_gguf_loader::header::GgufHeader::parse(data)
-            {
+            if let Ok((header, consumed)) = eneros_gguf_loader::header::GgufHeader::parse(data) {
                 let _ = eneros_gguf_loader::metadata::GgufMetadata::parse(
                     data,
                     consumed,
@@ -165,7 +161,11 @@ pub fn command_fuzz(target: &str, iterations: usize) -> DynResult<()> {
             exercise(target, &data);
         }));
         if result.is_err() {
-            crashes.push(format!("iter={i} len={} bytes={:02x?}", data.len(), &data[..data.len().min(64)]));
+            crashes.push(format!(
+                "iter={i} len={} bytes={:02x?}",
+                data.len(),
+                &data[..data.len().min(64)]
+            ));
             // v0.250.0（C-250）：崩溃复现输入落盘（target/fuzz-crashes/），
             // 供 nightly 归档与回归测试复用。
             save_crash_input(target, i, &data);

@@ -69,9 +69,10 @@ impl ClearingProcessor {
 
 #[cfg(test)]
 mod tests {
+    use eneros_market_types::YuanPerKwh;
+
     use super::*;
     use crate::types::{ClearedSegment, TimeSlot};
-    use eneros_market_types::YuanPerKwh;
 
     fn make_clearing(bid_id: u64) -> ClearingResult {
         ClearingResult {

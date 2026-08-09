@@ -32,10 +32,9 @@
 //! A block request uses a 3-descriptor chain: `req` (read), `data`
 //! (read/write), `status` (write), exactly as the C reference.
 
+use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{compiler_fence, Ordering};
-
-use alloc::vec::Vec;
 
 use crate::driver::types::{DeviceHealth, StorageConfig};
 use crate::driver::BlockDevice;
@@ -963,9 +962,10 @@ impl DmaPool for RamPool {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::RefCell;
+
     use super::*;
     use crate::driver::StorageType;
-    use core::cell::RefCell;
 
     /// 追踪型 cache：记录 clean/invalidate 调用，用于验证 DMA cache
     /// 维护时序（v0.214.0 B1-02 压测：无 cache 一致性数据损坏）。

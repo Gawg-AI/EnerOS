@@ -453,13 +453,21 @@ fn run_installer(root: &Path, options: InstallRunOptions) -> DynResult<()> {
         // icount：TCG 下虚拟时钟随指令推进，arch timer 可靠触发
         // （无 icount 时空闲/WFE 下 QEMU 虚拟时钟停滞，timer IRQ 不产生）。
         "-machine".to_owned(),
-        "virt,gic-version=3".to_owned(),
+        "virt,gic-version=2".to_owned(),
         "-smp".to_owned(),
         "4".to_owned(),
         "-cpu".to_owned(),
         "cortex-a57".to_owned(),
         "-m".to_owned(),
-        "512M".to_owned(),
+        // BOOT-003：内存必须与 sel4 qemu-arm-virt DTB 一致（1GB）——内核按 DTB
+        // 的 memory 描述初始化并清零（memzero），512M 时访问 0x7ffc0000 区域
+        // （phys 超出实际 RAM）触发 KERNEL DATA ABORT（translation fault L0）。
+        "1G".to_owned(),
+        // BOOT-006：强制磁盘 boot 优先——AAVMF 的 PXE boot 项（vars 模板自带）
+        // 会随机抢跑（DHCP 超时可达 60s+），导致 qemu-prod 验证超时；order=c
+        // 让 UEFI 直接尝试磁盘（BOOTAA64.EFI）。
+        "-boot".to_owned(),
+        "order=c".to_owned(),
         "-nographic".to_owned(),
         "-no-reboot".to_owned(),
         "-drive".to_owned(),
@@ -696,13 +704,24 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
         // icount：TCG 下虚拟时钟随指令推进，arch timer 可靠触发
         // （无 icount 时空闲/WFE 下 QEMU 虚拟时钟停滞，timer IRQ 不产生）。
         "-machine".to_owned(),
-        "virt,gic-version=3".to_owned(),
+        // acpi=off：AAVMF 固件在 ACPI 存在时选择 ACPI 硬件描述，
+        // 不把 FDT 注册进 UEFI 配置表（gFdtTableGuid）；关闭 ACPI 后
+        // 固件才安装 FDT 配置表，boot-manager 才能定位 DTB（BOOT-001）。
+        "virt,gic-version=2,acpi=off".to_owned(),
         "-smp".to_owned(),
         "4".to_owned(),
         "-cpu".to_owned(),
         "cortex-a57".to_owned(),
         "-m".to_owned(),
-        "512M".to_owned(),
+        // BOOT-003：内存必须与 sel4 qemu-arm-virt DTB 一致（1GB）——内核按 DTB
+        // 的 memory 描述初始化并清零（memzero），512M 时访问 0x7ffc0000 区域
+        // （phys 超出实际 RAM）触发 KERNEL DATA ABORT（translation fault L0）。
+        "1G".to_owned(),
+        // BOOT-006：强制磁盘 boot 优先——AAVMF 的 PXE boot 项（vars 模板自带）
+        // 会随机抢跑（DHCP 超时可达 60s+），导致 qemu-prod 验证超时；order=c
+        // 让 UEFI 直接尝试磁盘（BOOTAA64.EFI）。
+        "-boot".to_owned(),
+        "order=c".to_owned(),
         "-nographic".to_owned(),
         "-no-reboot".to_owned(),
         "-drive".to_owned(),
@@ -782,7 +801,7 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
             command.output()?
         } else {
             let mut command = Command::new("timeout");
-            command.args(["--signal=KILL", "60s"]);
+            command.args(["--signal=KILL", "200s"]);
             command.args(&qemu_args);
             command.output()?
         };
@@ -1694,13 +1713,21 @@ fn run_g3_once(
         // icount：TCG 下虚拟时钟随指令推进，arch timer 可靠触发
         // （无 icount 时空闲/WFE 下 QEMU 虚拟时钟停滞，timer IRQ 不产生）。
         "-machine".to_owned(),
-        "virt,gic-version=3".to_owned(),
+        "virt,gic-version=2".to_owned(),
         "-smp".to_owned(),
         "4".to_owned(),
         "-cpu".to_owned(),
         "cortex-a57".to_owned(),
         "-m".to_owned(),
-        "512M".to_owned(),
+        // BOOT-003：内存必须与 sel4 qemu-arm-virt DTB 一致（1GB）——内核按 DTB
+        // 的 memory 描述初始化并清零（memzero），512M 时访问 0x7ffc0000 区域
+        // （phys 超出实际 RAM）触发 KERNEL DATA ABORT（translation fault L0）。
+        "1G".to_owned(),
+        // BOOT-006：强制磁盘 boot 优先——AAVMF 的 PXE boot 项（vars 模板自带）
+        // 会随机抢跑（DHCP 超时可达 60s+），导致 qemu-prod 验证超时；order=c
+        // 让 UEFI 直接尝试磁盘（BOOTAA64.EFI）。
+        "-boot".to_owned(),
+        "order=c".to_owned(),
         "-nographic".to_owned(),
         "-no-reboot".to_owned(),
         "-drive".to_owned(),

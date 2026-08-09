@@ -125,9 +125,10 @@ mod tests {
 
 #[cfg(test)]
 mod arc004_tests {
+    use eneros_crypto::{sm2_sign, CsRng, Sm2KeyPair};
+
     use super::*;
     use crate::Chain;
-    use eneros_crypto::{sm2_sign, CsRng, Sm2KeyPair};
 
     fn signed_tx(id: u64, payload: &[u8], kp: &Sm2KeyPair, rng: &mut CsRng) -> TxRecord {
         let mut tx = TxRecord {

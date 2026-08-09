@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # ============================================================
-# Track A2: Build seL4 with Rust root task (eneros-hello)
+# G-KERNEL（21-A）：Build seL4 with Rust root task (eneros-root-task)
 #
-# 证明 Rust→seL4 FFI 端到端通：Rust ELF 经 seL4 elfloader 加载，
-# 调用真实 libsel4 的 seL4_DebugPutChar 打印 banner。
+# 产出 elfloader 镜像（RUST_ROOT_TASK=ON，root task = eneros-root-task
+# release ELF），供 `cargo xtask image qemu-prod` 打包（K3.1 端到端
+# 启动→spawn→IPC→故障隔离）。C2 (BOOT-007) 内核补丁由 sel4-build.sh
+# 的幂等 patch 步骤（third_party/sel4-patches/）保证，本脚本假定
+# $CACHE/sel4-src 已由 sel4-build.sh 准备（含补丁）。
 #
-# 前置：third_party/sel4-build.sh 已运行至少一次
-#      （产出 libsel4.a + 填充 $HOME/.cache/sel4-src 等）
+# 前置：third_party/sel4-build.sh 已运行至少一次（工具链 + libsel4.a +
+#       $CACHE/sel4-src 就绪）
 #
-# 成功标准：QEMU 串口输出包含 "Hello from Rust on seL4!"
-#
-# 不替代 C root task 的产品地位（C root task 含 G3 virtio I/O）。
-# 本脚本仅用于 Track A2 FFI 验证。
+# 产物：third_party/sel4-build/top-rust/elfloader/elfloader →
+#       target/sel4/elfloader-arm-qemu-arm-virt（xtask 从此读取）
 # ============================================================
 set -euo pipefail
 
@@ -30,23 +31,27 @@ export PATH="$GCC_BIN:$CMAKE_BIN:$DTC_BIN:$XMLLINT_BIN:$PATH"
 export LD_LIBRARY_PATH="$CACHE/libxml2-deb/usr/lib/x86_64-linux-gnu:$CACHE/libicu74-deb/usr/lib/x86_64-linux-gnu"
 export PYTHONUSERBASE="$CACHE/pyuser"
 
-# 告诉 eneros-sel4-sys/build.rs 去哪找 libsel4.a 和 seL4 头文件
-export SEL4_BUILD_DIR="$ROOT/third_party/sel4-build/top"
+# 告诉 eneros-sel4-sys/build.rs 去哪找 libsel4.a 和 seL4 头文件。
+# 必须指向 top-rust（本脚本构建的 RUST_ROOT_TASK 内核目录）：invocation
+# label（如 ARMPageTableMap）由 SEL4_BUILD_DIR 的 kernel_all_pp_prune.c
+# 决定，root-task 与内核 label 不一致会在 PageTable_Map 处返回
+# IllegalOperation（QEMU 实测 DBG-PTMAP err=3，21-A label 36/38 同类坑）。
+export SEL4_BUILD_DIR="$ROOT/third_party/sel4-build/top-rust"
 export SEL4_SRC="$SEL4_SRC_DIR"
 export CROSS_COMPILE="aarch64-none-elf-"
 
 echo "============================================================"
-echo "Track A2: Rust root task on seL4 (FFI end-to-end proof)"
+echo "G-KERNEL (21-A): Rust root task (eneros-root-task) on seL4"
 echo "============================================================"
 
-# ---- Step 1: 构建 Rust root task ELF ----
+# ---- Step 1: 构建 Rust root task ELF（release，与 init bundle 同一产物）----
 echo ""
-echo "[1/3] Building Rust root task (eneros-hello) for aarch64-unknown-none..."
+echo "[1/3] Building Rust root task (eneros-root-task, release)..."
 cd "$ROOT"
-cargo build -p eneros-hello --target aarch64-unknown-none \
-  -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+cargo build -p eneros-root-task --target aarch64-unknown-none --release \
+  -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem --locked
 
-RUST_ELF="$ROOT/target/aarch64-unknown-none/debug/eneros-hello"
+RUST_ELF="$ROOT/target/aarch64-unknown-none/release/eneros-root-task"
 if [[ ! -f "$RUST_ELF" ]]; then
   echo "ERROR: Rust ELF not found at $RUST_ELF" >&2
   exit 1
@@ -94,21 +99,10 @@ mkdir -p "$BUILD/elfloader"
   -B "$BUILD" "$ROOT/third_party/sel4-top"
 "$NINJA" -C "$BUILD"
 
-IMAGE="$BUILD/images/eneros-root-image-arm-qemu-arm-virt"
-if [[ ! -f "$IMAGE" ]]; then
-  echo "ERROR: seL4 image not found at $IMAGE" >&2
-  exit 1
-fi
-echo "  ✓ seL4 image: $IMAGE ($(stat -c%s "$IMAGE") bytes)"
-
-# ---- Step 3: QEMU 启动 ----
+# ---- Step 3: 产物对齐到 target/sel4（image 构建从此读取）----
+TARGET_SEL4="$ROOT/target/sel4"
+mkdir -p "$TARGET_SEL4"
+cp -f "$BUILD/elfloader/elfloader" "$TARGET_SEL4/elfloader-arm-qemu-arm-virt"
 echo ""
-echo "[3/3] Booting in QEMU..."
-echo "  期望串口输出: 'Hello from Rust on seL4!'"
-echo "  退出 QEMU: Ctrl-A 然后按 X"
-echo "------------------------------------------------------------"
-"$CACHE/xpack-qemu-arm-9.2.4-1/bin/qemu-system-aarch64" \
-  -machine virt,gic-version=3,secure=off \
-  -cpu cortex-a57 -smp 4 -m 1024M \
-  -nographic \
-  -kernel "$IMAGE"
+echo "[3/3] elfloader (Rust root task) → $TARGET_SEL4/elfloader-arm-qemu-arm-virt"
+echo "  后续：SOURCE_DATE_EPOCH=... cargo xtask image qemu-prod"

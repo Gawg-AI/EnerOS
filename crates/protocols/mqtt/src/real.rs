@@ -18,16 +18,16 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::error::MqttError;
-#[cfg(feature = "net")]
-use crate::transport::MqttTransport;
-
 #[cfg(feature = "net")]
 use eneros_net::tcpip::Ipv4Addr;
 #[cfg(feature = "net")]
 use eneros_net::tcpip::{NetworkInterface, SocketSet, TcpSocket};
 #[cfg(feature = "net")]
 use eneros_net::NetDevice;
+
+use crate::error::MqttError;
+#[cfg(feature = "net")]
+use crate::transport::MqttTransport;
 
 // ============================================================================
 // TCP 传输（feature: net）

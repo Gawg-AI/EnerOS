@@ -222,14 +222,8 @@ fn build_qemu_prod(root: &Path, args: &[String]) -> DynResult<()> {
         "ENEROS_IMAGE_SIGNING_KEY",
         Path::new("product/security/dev-signing.key"),
     )?;
-    let uefi_key = env_value_or(
-        "ENEROS_IMAGE_UEFI_KEY",
-        "product/security/uefi-test.key",
-    )?;
-    let uefi_cert = env_value_or(
-        "ENEROS_IMAGE_UEFI_CERT",
-        "product/security/uefi-test.pem",
-    )?;
+    let uefi_key = env_value_or("ENEROS_IMAGE_UEFI_KEY", "product/security/uefi-test.key")?;
+    let uefi_cert = env_value_or("ENEROS_IMAGE_UEFI_CERT", "product/security/uefi-test.pem")?;
     build_raw(
         root,
         RawOptions {
@@ -1905,6 +1899,17 @@ fn build_user_elf(root: &Path, package: &str, bin: &str) -> DynResult<()> {
         "--bin",
         bin,
     ]);
+    // BOOT-013：sel4-sys 的 shim/libsel4 头必须与运行内核同源（top-rust，
+    // label 偏移一致）。默认 build.rs 用 third_party/sel4-build/top（旧 C
+    // root-task 构建，invocation label 不同）——用户态 ELF 与 top-rust
+    // 内核 label 错位导致 IPC 等系统调用行为异常（QEMU 实测服务不响应）。
+    // 显式指定 SEL4_BUILD_DIR=top-rust，与 sel4-build 产物（内核/elfloader）
+    // 保持一致。
+    command.env(
+        "SEL4_BUILD_DIR",
+        root.join("third_party/sel4-build/top-rust"),
+    );
+    command.env("CROSS_COMPILE", "aarch64-none-elf-");
     run(&mut command)
 }
 

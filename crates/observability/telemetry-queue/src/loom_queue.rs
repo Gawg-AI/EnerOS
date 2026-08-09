@@ -9,8 +9,9 @@
 
 extern crate std;
 
-use loom::sync::Mutex;
 use std::vec::Vec;
+
+use loom::sync::Mutex;
 
 /// 与生产 `TelemetryQueue` 有界语义同构的 loom 复刻。
 struct LoomTelemetryQueue {

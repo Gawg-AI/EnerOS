@@ -1,0 +1,31 @@
+/*
+ * EnerOS overlay: 保留 init bundle 物理区域（C2/BOOT-007 修复）。
+ *
+ * boot-manager 把 init bundle 预加载到 0x4200_0000（INIT_LOAD_ADDRESS，
+ * 见 xtask/src/image_factory.rs）。若不保留，seL4 会把该区域当作可用内存
+ * 生成 untyped，root-task 的分配器可能 retype 它（freeIndex 消耗）导致
+ * bundle 内容被覆盖。
+ *
+ * 本 overlay 把 [0x42000000, 0x44000000) 标记为 reserved-memory：
+ * hardware_gen.py 的 parse_reserved_regions 会把它从 avail_p_regs 剔除，
+ * seL4 不为其生成 untyped（不清零、不分配）。该区域由 seL4 内核 boot 代码
+ * （C2 patch，src/arch/arm/kernel/boot.c）显式映射进初始线程 VSpace，
+ * root-task 直接 1:1 读取。
+ *
+ * 注意：no-map 属性避免内核为保留区建立内核映射（内核侧由 boot.c 显式映射）。
+ * 本文件作为 overlay 拼接进 kernel.dts（config.cmake KernelCustomDTSOverlay），
+ * 因此不写 /dts-v1/ 头（拼接文件已含）。
+ */
+/ {
+    reserved-memory {
+        #address-cells = <0x02>;
+        #size-cells = <0x02>;
+        ranges;
+
+        /* init bundle 区域：boot-manager 预加载，root-task 经内核映射读取 */
+        eneros-init-bundle@42000000 {
+            reg = <0x00 0x42000000 0x00 0x02000000>;
+            no-map;
+        };
+    };
+};

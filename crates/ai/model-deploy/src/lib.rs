@@ -292,10 +292,11 @@ mod tests {
 
 #[cfg(test)]
 mod arc006_tests {
+    use eneros_llm_engine::{ComputeDevice, MockEngine};
+
     use crate::config::QuantConfig7B;
     use crate::error::DeployError;
     use crate::verifier::DeployVerifier;
-    use eneros_llm_engine::{ComputeDevice, MockEngine};
 
     #[test]
     #[allow(clippy::field_reassign_with_default)]

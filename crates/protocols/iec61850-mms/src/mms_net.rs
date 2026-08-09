@@ -132,9 +132,10 @@ impl<D: eneros_net::NetDevice> MmsTransport for NetMmsTransport<D> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use eneros_net::mac::NetDevice;
     use eneros_net::{NetError, NetStats};
+
+    use super::*;
 
     /// 链路断开模拟设备：send/recv 均失败（无对端）。
     struct DeadNetDevice;

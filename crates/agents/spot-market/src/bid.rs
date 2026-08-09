@@ -93,8 +93,9 @@ impl BidBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use eneros_market_types::MarketType;
+
+    use super::*;
 
     fn make_valid_bid() -> Bid {
         BidBuilder::new(1, SpotMarketType::DayAhead, 100)

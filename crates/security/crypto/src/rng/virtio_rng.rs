@@ -241,9 +241,10 @@ fn read_entropy<M: Mmio>(
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
     use crate::sm2::Sm2Signature;
-    use core::sync::atomic::{AtomicU64, Ordering};
 
     /// RAM 仿真 MMIO（QEMU 设备模型语义；queue 指针经全局桥接）。
     /// 每次 `new()` 递增熵 epoch（R1-4：模拟真实设备每次产生不同熵）。

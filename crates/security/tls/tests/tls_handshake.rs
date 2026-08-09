@@ -5,11 +5,12 @@
 //! 握手并往返应用数据。设备端（aarch64-unknown-none）rustls no_std
 //! 编译路径在 CI（nightly build-std）验证（本地 rustup 只读无法装目标）。
 
-use eneros_tls::{TlsAcceptor, TlsClientConfig, TlsConnector, TlsServerConfig};
-use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
+
+use eneros_tls::{TlsAcceptor, TlsClientConfig, TlsConnector, TlsServerConfig};
+use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
 
 /// 生成自签 CA 证书（PEM）。
 fn gen_ca() -> (rcgen::Certificate, KeyPair) {

@@ -22,6 +22,11 @@ add_subdirectory(${ELFLOADER_SRC} elfloader)
 # libcpio（util_libs 的 cpio 库，本环境手工构建为静态库）
 target_link_directories(elfloader PRIVATE ${CMAKE_BINARY_DIR}/elfloader)
 target_link_libraries(elfloader PRIVATE ${CMAKE_BINARY_DIR}/elfloader/libcpio.a)
+# elfloader 源（master 版 common.c）引用 <cpio/cpio.h>：提供 util_libs 头文件路径。
+set(UTIL_LIBS_INCLUDE "" CACHE PATH "util_libs libcpio include dir")
+if(NOT "${UTIL_LIBS_INCLUDE}" STREQUAL "")
+  target_include_directories(elfloader PRIVATE ${UTIL_LIBS_INCLUDE})
+endif()
 
 # ---- root task（无 libc，链接 libsel4 的 sel4 target）----
 #
@@ -32,19 +37,31 @@ target_link_libraries(elfloader PRIVATE ${CMAKE_BINARY_DIR}/elfloader/libcpio.a)
 option(RUST_ROOT_TASK "Use pre-built Rust ELF as root task (Track A2 FFI proof)" OFF)
 
 if(RUST_ROOT_TASK)
-  # 使用预编译的 Rust ELF——cargo build -p eneros-hello --target aarch64-unknown-none
-  # 在 sel4-build-rust.sh 中完成。CMake 只负责把它复制到 elfloader 期望的位置。
-  set(RUST_ROOT_ELF "" CACHE PATH "Path to pre-built Rust root task ELF (eneros-hello)")
+  # 使用预编译的 Rust ELF（eneros-root-task）——cargo build 在
+  # sel4-build-rust.sh 中完成。CMake 只负责把它复制到 elfloader 期望的
+  # 位置。
+  # 注意：不能经 add_custom_target(eneros-root) + 同路径 custom_command
+  # （ninja 同名输出冲突：phony target 与 OUTPUT 均叫 eneros-root），
+  # 也不能用 DeclareRootserver（其 ROOTSERVER_IMAGE 推导依赖
+  # OUTPUT_NAME/BINARY_DIR，对 custom target 指向 eneros-root 文件本身）。
+  # 因此本分支手工构造 rootserver_image target 并显式设置
+  # ROOTSERVER_IMAGE 属性（elfloader-tool 经该属性读取 rootserver）。
+  set(RUST_ROOT_ELF "" CACHE PATH "Path to pre-built Rust root task ELF (eneros-root-task)")
   if(NOT RUST_ROOT_ELF)
-    message(FATAL_ERROR "RUST_ROOT_TASK=ON requires -DRUST_ROOT_ELF=<path-to-eneros-hello-elf>")
+    message(FATAL_ERROR "RUST_ROOT_TASK=ON requires -DRUST_ROOT_ELF=<path-to-eneros-root-task-elf>")
   endif()
-  add_custom_target(eneros-root ALL
+  set(ROOTSERVER_IMAGE "${CMAKE_BINARY_DIR}/rootserver.elf")
+  add_custom_command(
+    OUTPUT "${ROOTSERVER_IMAGE}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${RUST_ROOT_ELF} ${CMAKE_BINARY_DIR}/eneros-root
-    BYPRODUCTS ${CMAKE_BINARY_DIR}/eneros-root
+            ${RUST_ROOT_ELF} "${ROOTSERVER_IMAGE}"
     DEPENDS ${RUST_ROOT_ELF}
     COMMENT "Using Rust root task: ${RUST_ROOT_ELF}"
   )
+  add_custom_target(eneros-root ALL DEPENDS "${ROOTSERVER_IMAGE}")
+  # elfloader 需要 rootserver_image target + ROOTSERVER_IMAGE 属性。
+  add_custom_target(rootserver_image ALL DEPENDS elfloader "${ROOTSERVER_IMAGE}")
+  set_property(TARGET rootserver_image PROPERTY ROOTSERVER_IMAGE "${ROOTSERVER_IMAGE}")
 else()
   add_executable(eneros-root
     ${CMAKE_CURRENT_LIST_DIR}/../sel4-root/root_task.c
@@ -65,7 +82,7 @@ else()
   )
   target_link_libraries(eneros-root PRIVATE sel4 gcc)
   target_link_options(eneros-root PRIVATE -nostdlib -static -Wl,-u_sel4_start -Wl,-e_start)
-endif()
 
-include(rootserver)
-DeclareRootserver(eneros-root)
+  include(rootserver)
+  DeclareRootserver(eneros-root)
+endif()

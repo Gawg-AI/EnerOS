@@ -85,10 +85,9 @@ impl QuoteValidator {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::YuanPerMwh;
-
     use super::*;
     use crate::types::TradeDir;
+    use crate::types::YuanPerMwh;
 
     #[test]
     fn test_should_quote_initial() {

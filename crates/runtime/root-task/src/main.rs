@@ -29,11 +29,17 @@ extern crate alloc;
 
 use eneros_runtime::{init, println};
 
+pub mod allocator;
 pub mod boot;
 pub mod bundle;
 pub mod frame;
 pub mod service;
 pub mod spawn;
+
+// 全局分配器（no_std aarch64：spawn/IPC 路径使用 alloc，见 allocator.rs）。
+#[cfg(target_os = "none")]
+#[global_allocator]
+static ALLOCATOR: allocator::BumpAllocator = allocator::BumpAllocator::new();
 
 /// boot manager 加载 init bundle 的物理地址（boot-protocol boot_info.rs）。
 /// M0 阶段只读 header 确认存在；M2+ 阶段解析 modules 并 spawn。
@@ -49,10 +55,44 @@ const INIT_BUNDLE_PHYS: u64 = 0x4200_0000;
 /// 4. `spawn::plan_spawn` 生成 spawn 计划（root + ≥2 服务，W^X 页表）
 /// 5. `spawn::sel4_spawn_services` 真实 spawn（M2.1 sel4-sys FFI）
 /// 6. 失败即挂起（fail-closed，不进入伪运行态）
+///
+/// # 入口 SP（BOOT-004）
+/// seL4 `create_initial_thread` 只设置 PC 与 capRegister（x0），**不设置 SP**；
+/// Rust 函数序言（`stp x29,x30,[sp,#-N]!`）在 SP 未初始化时即触发 vm fault
+/// （QEMU 实测 `vm fault on data at 0xffffffffffffffa0 ... at 0x215780`）。
+/// 故 `_start` 必须为汇编：先设 SP（.bss 栈顶）再跳 `rust_entry`——与
+/// `third_party/sel4-root/root_task.c` 的 C 入口同模式。
+#[cfg(target_os = "none")]
+core::arch::global_asm!(
+    ".pushsection .bss",
+    ".balign 16",
+    "root_task_stack_space: .skip 65536",
+    "root_task_stack_top:",
+    ".popsection",
+    ".text",
+    ".global _start",
+    ".type _start, %function",
+    "_start:",
+    "    mov x19, x0", // 保存 bootinfo 指针（capRegister，内核设置）
+    "    adrp x0, root_task_stack_top",
+    "    add x0, x0, :lo12:root_task_stack_top",
+    "    mov sp, x0",
+    "    mov x0, x19", // 恢复 bootinfo 指针
+    "    b {rust_entry}",
+    rust_entry = sym rust_entry,
+);
+
+/// Rust 侧入口（由汇编 `_start` 设置 SP 后跳转）。
+///
+/// `bi` = seL4 内核在 capRegister（x0）传入的 bootinfo 物理指针。
+/// 必须先 `boot_init(bi)`（BOOT-008）：root-task 的 Rust 汇编 `_start` 不经过
+/// libsel4 的 sel4_start，libsel4 的 `bootinfo` 全局与 `__sel4_ipc_buffer` TLS
+/// 均未初始化（GetBootInfo 返回 NULL、IPC 的 MR 访问会 vm fault）。
 #[cfg(target_os = "none")]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn rust_entry(bi: u64) -> ! {
     init();
+    eneros_sel4_sys::safe::boot_init(bi);
     println!("[eneros-root-task] Rust root task alive on seL4");
     println!("[eneros-root-task] G2 closure: bootinfo/cap/IPC (inherited from elfloader boot)");
     println!(
@@ -60,7 +100,27 @@ pub extern "C" fn _start() -> ! {
         INIT_BUNDLE_PHYS
     );
 
-    // R1-2：从物理地址读取 init bundle（header 64 B → total_len → 全量）
+    // BOOT-007（C2 修复）：init bundle 区域由 seL4 内核 boot.c 显式映射进
+    // 初始线程 VSpace（1:1 @ 0x4200_0000，DTB /reserved-memory 排除 untyped
+    // 防止 retype 消耗）。root-task 直接读物理地址即可，无需自建映射。
+    // （21-A 方案 A 的 map_bundle_window 已被证伪：seL4_Untyped_Retype 的
+    // node_offset 是 cnode 槽号而非 untyped 偏移，且 bundle 区域在 untyped
+    // 列表中会被分配器 freeIndex 消耗——见 docs/adr/ 与 21-A K1.3 修订。）
+    use eneros_sel4_sys::safe::{get_boot_info, BootInfoReader, CapInitThreadTable};
+    let bi = get_boot_info();
+    let reader = BootInfoReader::from_bootinfo_ptr(bi);
+    let caps = CapInitThreadTable::resolve();
+    let mut ctx = crate::spawn::SpawnCtx::from_bootinfo_reader(&reader, &caps);
+
+    // 校验内核映射生效：读 bundle 首 8 字节（magic）。
+    // SAFETY: 内核 boot.c 已把 [0x42000000, 0x42200000) 映射进初始 VSpace。
+    let probe = unsafe { core::ptr::read_volatile(INIT_BUNDLE_PHYS as *const [u8; 8]) };
+    crate::println!(
+        "[eneros-root-task] BOOT-007 kernel-mapped bundle probe={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        probe[0], probe[1], probe[2], probe[3], probe[4], probe[5], probe[6], probe[7]
+    );
+
+    // 从物理地址读取 init bundle（header 64 B → total_len → 全量）
     let raw = read_bundle_from_phys(INIT_BUNDLE_PHYS);
     let bundle = match raw {
         Some(raw) => match crate::bundle::InitBundle::parse(&raw) {
@@ -87,10 +147,33 @@ pub extern "C" fn _start() -> ! {
     };
 
     // R1-2：spawn 计划（root + ≥2 服务，W^X 页表 + 栈 + IPC EP）
-    const VSPACE_BASE: u64 = 0x4000_0000;
+    // VSPACE_BASE = 0x200000：服务 ELF 链接基址（aarch64-unknown-none
+    // 默认），服务映射到同一虚拟地址区域——ET_EXEC 固定地址代码的绝对
+    // 引用才能解析（用 0x40000000 导致服务执行即 VMFAULT，QEMU 实测
+    // type=1 pc=0x203554）。每个服务独立 VSpace，虚拟地址可相同。
+    const VSPACE_BASE: u64 = 0x200000;
     const PAGE_SIZE: u64 = 0x1000;
     const STACK_SIZE: u64 = 0x4000;
     const EP_BASE: u64 = 100;
+    // BOOT-007 诊断：打印 bundle 与 root 模块头部（定位 BadElf 根因）。
+    crate::println!(
+        "[eneros-root-task] DBG bundle total_len={} modules={}",
+        bundle.total_len,
+        bundle.modules.len()
+    );
+    for (i, m) in bundle.modules.iter().take(2).enumerate() {
+        crate::println!(
+            "[eneros-root-task] DBG mod[{}] kind={} name='{}' blob_len={} blob_magic={:02x}{:02x}{:02x}{:02x}",
+            i,
+            m.kind,
+            m.name,
+            m.blob.len(),
+            m.blob.first().copied().unwrap_or(0),
+            m.blob.get(1).copied().unwrap_or(0),
+            m.blob.get(2).copied().unwrap_or(0),
+            m.blob.get(3).copied().unwrap_or(0)
+        );
+    }
     let plan = match crate::spawn::plan_spawn(&bundle, VSPACE_BASE, PAGE_SIZE, STACK_SIZE, EP_BASE)
     {
         Ok(plan) => plan,
@@ -123,12 +206,7 @@ pub extern "C" fn _start() -> ! {
     // R1-2：真实 spawn（21-A K1.2：sel4-sys FFI 完整序列，ADR-0034）
     #[cfg(target_os = "none")]
     {
-        use eneros_sel4_sys::safe::{get_boot_info, BootInfoReader, CapInitThreadTable};
-        // 从 bootinfo 构建 spawn 上下文（untyped 分配器 + cap 槽 + 固定 cap）。
-        let bi = get_boot_info();
-        let reader = BootInfoReader::from_bootinfo_ptr(bi);
-        let caps = CapInitThreadTable::resolve();
-        let mut ctx = crate::spawn::SpawnCtx::from_bootinfo_reader(&reader, &caps);
+        // ctx/types/rights 已在上面（bundle 映射）创建，复用同一个。
         match crate::spawn::sel4_spawn_services(&plan, &bundle, &mut ctx) {
             Ok(handles) => {
                 println!("[eneros-root-task] EL0 services spawned — entering service loop");

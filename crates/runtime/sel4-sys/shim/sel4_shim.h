@@ -213,12 +213,11 @@ seL4_Error eneros_sel4_tcb_bind_notification(seL4_CPtr tcb, seL4_CPtr ntfn);
 /* G-KERNEL K1.2：真实 spawn 缺口（ADR-0034）。                        */
 /* ------------------------------------------------------------------ */
 seL4_Error eneros_sel4_tcb_set_space(seL4_CPtr tcb,
+                                     seL4_Word fault_ep,
                                      seL4_CPtr cspace_root,
                                      seL4_Word cspace_root_data,
                                      seL4_CPtr vspace_root,
-                                     seL4_Word vspace_root_data,
-                                     seL4_CPtr buffer,
-                                     seL4_Word buffer_data);
+                                     seL4_Word vspace_root_data);
 
 seL4_Error eneros_sel4_tcb_set_ipcbuffer(seL4_CPtr tcb,
                                          seL4_CPtr buffer,

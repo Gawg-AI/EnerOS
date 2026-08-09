@@ -11,6 +11,7 @@
 #![allow(clippy::disallowed_macros)]
 
 use core::sync::atomic::Ordering;
+
 use loom::sync::atomic::AtomicPtr;
 use loom::sync::Arc;
 

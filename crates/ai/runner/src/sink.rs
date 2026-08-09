@@ -85,8 +85,10 @@ mod tests {
 
     #[test]
     fn sink_writes_json_lines_and_counts() {
-        let dir =
-            std::env::temp_dir().join(format!("eneros-ai-runner-sink-write-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "eneros-ai-runner-sink-write-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("commands.jsonl");
         let path_str = path.to_str().unwrap().to_owned();
@@ -116,8 +118,10 @@ mod tests {
 
     #[test]
     fn sink_append_preserves_prior_lines() {
-        let dir =
-            std::env::temp_dir().join(format!("eneros-ai-runner-sink-append-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "eneros-ai-runner-sink-append-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("commands-append.jsonl");
         let path_str = path.to_str().unwrap().to_owned();

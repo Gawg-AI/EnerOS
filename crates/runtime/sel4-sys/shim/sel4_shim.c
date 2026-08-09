@@ -25,7 +25,60 @@
  * Platform: aarch64 / qemu-arm-virt / seL4 14.0.0.
  */
 
+#include <stdint.h>
 #include "sel4_shim.h"
+
+/* DBG 调试打印前向声明（arm_page_map / retype 错误路径使用，定义在文件后部）。 */
+static void dbg_print(const char *s);
+static void dbg_hex(seL4_Word v);
+
+/* ================================================================== */
+/* Minimal freestanding libc stubs（no_std 链接需求）。                */
+/* ================================================================== */
+/* libsel4 的 __emutls（TLS emulation）与断言在无 libc 环境下需要这些
+ * 符号；与 third_party/sel4-root/root_task.c 的最小 stub 同模式。     */
+void *malloc(unsigned long size) {
+    static unsigned char heap[16384];
+    static unsigned long offset = 0;
+    unsigned long aligned = (offset + 7u) & ~7u;
+    if (aligned + size > sizeof(heap)) {
+        return 0;
+    }
+    offset = aligned + size;
+    return heap + aligned;
+}
+
+void *memset(void *s, int c, unsigned long n) {
+    unsigned char *p = s;
+    while (n-- > 0) {
+        *p++ = (unsigned char)c;
+    }
+    return s;
+}
+
+void *memcpy(void *dst, const void *src, unsigned long n) {
+    unsigned char *d = dst;
+    const unsigned char *s = src;
+    while (n-- > 0) {
+        *d++ = *s++;
+    }
+    return dst;
+}
+
+void abort(void) {
+    for (;;) {
+        __asm__ volatile("wfe");
+    }
+}
+
+void __assert_fail(const char *assertion, const char *file, int line,
+                   const char *function) {
+    (void)assertion;
+    (void)file;
+    (void)line;
+    (void)function;
+    abort();
+}
 
 /* ================================================================== */
 /* Platform-constant getters.                                          */
@@ -68,6 +121,32 @@ seL4_Word eneros_sel4_get_boot_info(void)
     return (seL4_Word)seL4_GetBootInfo();
 }
 
+/* root-task 启动初始化（BOOT-008）：root-task 用 Rust 汇编 _start（不经过
+ * libsel4 的 sel4_start），内核在 capRegister（x0）传入 bootinfo 指针；
+ * 这里把 bootinfo 注册进 libsel4（seL4_InitBootInfo），并把 IPC buffer 的
+ * 虚拟地址写入 libsel4 的 TLS 变量（__sel4_ipc_buffer），使
+ * seL4_Send/Recv/SetMR/GetMR 等 libsel4 API 可用（21-A 遗留缺陷：绕过
+ * sel4_start 后 bootinfo=NULL、__sel4_ipc_buffer=NULL）。 */
+extern __thread seL4_IPCBuffer *__sel4_ipc_buffer;
+void eneros_sel4_boot_init(seL4_Word bi)
+{
+    seL4_BootInfo *info = (seL4_BootInfo *)bi;
+    seL4_InitBootInfo(info);
+    __sel4_ipc_buffer = (seL4_IPCBuffer *)(uintptr_t)info->ipcBuffer;
+}
+
+/* 设置当前线程的 IPC buffer 指针（__sel4_ipc_buffer，libsel4 TLS）。
+ *
+ * 被 spawn 的 EL0 服务不是 rootserver：没有 bootinfo（boot_init 不可用），
+ * 但 root-task 已通过 seL4_TCB_SetIPCBuffer 为服务 TCB 绑定 buffer 帧并
+ * 把 buffer 虚拟地址经 X1（_start 第二参数）传入。服务入口必须调用本函数
+ * 把 __sel4_ipc_buffer 指向该地址，否则 ipc_recv/get_mr 等 libsel4 API
+ * 在 NULL buffer 上解引用（K2.3 遗留缺陷：svc_ipc_loop 首轮 recv 卡死）。 */
+void eneros_sel4_set_ipc_buffer(seL4_Word vaddr)
+{
+    __sel4_ipc_buffer = (seL4_IPCBuffer *)(uintptr_t)vaddr;
+}
+
 /* ================================================================== */
 /* Untyped retype.                                                     */
 /* seL4 14.0.0: seL4_Untyped_Retype(_service, type, size_bits, root,   */
@@ -82,9 +161,19 @@ seL4_Error eneros_sel4_untyped_retype(seL4_CPtr service,
                                       seL4_Word dest_depth,
                                       seL4_Word offset)
 {
-    return seL4_Untyped_Retype(service, dest_type, size_bits,
-                               dest_root, dest_index, dest_depth,
-                               offset, dest_count);
+    seL4_Error err = seL4_Untyped_Retype(service, dest_type, size_bits,
+                                         dest_root, dest_index, dest_depth,
+                                         offset, dest_count);
+    if (err != 0) {
+        dbg_print("DBG-RETYPE-ERR err="); dbg_hex(err);
+        dbg_print(" svc="); dbg_hex(service);
+        dbg_print(" type="); dbg_hex(dest_type);
+        dbg_print(" sz="); dbg_hex(size_bits);
+        dbg_print(" idx="); dbg_hex(dest_index);
+        dbg_print(" off="); dbg_hex(offset);
+        dbg_print("\n");
+    }
+    return err;
 }
 
 /* ================================================================== */
@@ -166,6 +255,12 @@ seL4_MessageInfo_t eneros_sel4_recv(seL4_CPtr src, seL4_Word *sender)
 seL4_MessageInfo_t eneros_sel4_call(seL4_CPtr dest, seL4_MessageInfo_t msg_info)
 {
     return seL4_Call(dest, msg_info);
+}
+
+/* 让出 CPU（seL4_Yield）：root-task 阻塞前主动让出，服务有机会运行。 */
+void eneros_sel4_yield(void)
+{
+    seL4_Yield();
 }
 
 seL4_MessageInfo_t eneros_sel4_reply_recv(seL4_CPtr dest, seL4_MessageInfo_t msg_info, seL4_Word *sender)
@@ -255,12 +350,41 @@ seL4_Error eneros_sel4_arm_page_map(seL4_CPtr page,
     return seL4_ARM_Page_Map(page, vspace, vaddr, rights, attr);
 }
 
+/* DBG-TEMP: 经 seL4_DebugPutChar（内核 syscall）的调试打印（用后还原）。 */
+static void dbg_putc(char c) {
+    seL4_DebugPutChar((seL4_Uint8)c);
+}
+static void dbg_print(const char *s) {
+    while (*s) { dbg_putc(*s++); }
+}
+static void dbg_hex(seL4_Word v) {
+    const char *h = "0123456789abcdef";
+    char buf[17]; buf[16] = 0;
+    for (int i = 15; i >= 0; i--) { buf[i] = h[v & 0xf]; v >>= 4; }
+    dbg_print(buf);
+}
+
+seL4_Word eneros_sel4_debug_cap_identify(seL4_CPtr cap)
+{
+    return seL4_DebugCapIdentify(cap);
+}
+
 seL4_Error eneros_sel4_arm_page_table_map(seL4_CPtr pt,
                                           seL4_CPtr vspace,
                                           seL4_Word vaddr,
                                           seL4_Word attr)
 {
-    return seL4_ARM_PageTable_Map(pt, vspace, vaddr, attr);
+    seL4_Error err = seL4_ARM_PageTable_Map(pt, vspace, vaddr, attr);
+    if (err != 0) {
+        dbg_print("DBG-PTMAP err="); dbg_hex(err);
+        dbg_print(" pt="); dbg_hex(pt);
+        dbg_print(" vs="); dbg_hex(vspace);
+        dbg_print(" va="); dbg_hex(vaddr);
+        dbg_print(" mr0="); dbg_hex(seL4_GetMR(0));
+        dbg_print(" mr1="); dbg_hex(seL4_GetMR(1));
+        dbg_print("\n");
+    }
+    return err;
 }
 
 seL4_Word eneros_sel4_arm_default_attributes(void)
@@ -280,26 +404,31 @@ seL4_Error eneros_sel4_tcb_bind_notification(seL4_CPtr tcb, seL4_CPtr ntfn)
 /*   与 root-task 固定 cap 常量 getter。                              */
 /* ================================================================== */
 
-/* seL4_TCB_SetSpace：把 CSpace / VSpace / IPC buffer 绑到 TCB。      */
+/* seL4_TCB_SetSpace：把 CSpace / VSpace 绑到 TCB（seL4 14.0.0 API：
+ * fault_ep 为独立 word 参数；IPC buffer 经 seL4_TCB_SetIPCBuffer 单独绑定）。
+ * 非 MCS 配置下 fault_ep 仅作 word 记录（内核不校验其有效性）。         */
 seL4_Error eneros_sel4_tcb_set_space(seL4_CPtr tcb,
+                                     seL4_Word fault_ep,
                                      seL4_CPtr cspace_root,
                                      seL4_Word cspace_root_data,
                                      seL4_CPtr vspace_root,
-                                     seL4_Word vspace_root_data,
-                                     seL4_CPtr buffer,
-                                     seL4_Word buffer_data)
+                                     seL4_Word vspace_root_data)
 {
-    return seL4_TCB_SetSpace(tcb, cspace_root, cspace_root_data,
-                             vspace_root, vspace_root_data,
-                             buffer, buffer_data);
+    return seL4_TCB_SetSpace(tcb, fault_ep, cspace_root, cspace_root_data,
+                             vspace_root, vspace_root_data);
 }
 
-/* seL4_TCB_SetIPCBuffer：设置线程的 IPC buffer（帧 cap + 虚拟地址）。 */
+/* seL4_TCB_SetIPCBuffer：设置线程的 IPC buffer（帧 cap + 虚拟地址）。
+ * 注意：libsel4 生成的签名是 `(_service, buffer_addr, bufferFrame_cap)`——
+ * 第二个参数是 buffer 的虚拟地址（MR0），第三个才是帧 cap（SetCap 0）。
+ * 本 shim 的参数名沿用 Rust safe 封装语义（buffer=帧 cap、buffer_data=地址），
+ * 因此必须交换顺序再传给 seL4（21-A 遗留缺陷：参数错位导致
+ * `Lookup of extra caps failed`，QEMU 实测 fault 地址 = buffer 虚拟地址）。 */
 seL4_Error eneros_sel4_tcb_set_ipcbuffer(seL4_CPtr tcb,
                                          seL4_CPtr buffer,
                                          seL4_Word buffer_data)
 {
-    return seL4_TCB_SetIPCBuffer(tcb, buffer, buffer_data);
+    return seL4_TCB_SetIPCBuffer(tcb, buffer_data, buffer);
 }
 
 /* seL4_ARM_ASIDPool_Assign：从 ASID pool 给 VSpace 分配 ASID。       */

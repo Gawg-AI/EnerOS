@@ -18,10 +18,10 @@
 
 #![allow(non_camel_case_types)]
 
-use crate::types::*;
-
 #[cfg(test)]
 use alloc::vec;
+
+use crate::types::*;
 
 // ============================================================================
 // 错误码 → Result 映射
@@ -403,28 +403,26 @@ pub fn tcb_set_priority(tcb: CPtr, authority: CPtr, priority: Word) -> Sel4Resul
 
 /// TCB 绑定地址空间封装（`seL4_TCB_SetSpace`，ADR-0034）。
 ///
-/// 把服务的 CSpace / VSpace / IPC buffer 绑到 TCB——spawn 可运行进程的
-/// 必需步骤（TCB 创建后无地址空间，直接 resume 即 CapFault）。
-/// `cspace_root_data` / `vspace_root_data` 为一阶 cnode/vspace 时传 0；
-/// `buffer` 为 IPC buffer 帧 cap，`buffer_data` 为其在服务地址空间的虚拟地址。
+/// 把服务的 CSpace / VSpace 绑到 TCB——spawn 可运行进程的必需步骤
+/// （TCB 创建后无地址空间，直接 resume 即 CapFault）。seL4 14.0.0 API：
+/// `fault_ep` 为独立 word 参数（非 MCS 配置下内核仅记录不校验，传 0 安全）；
+/// IPC buffer 由 [`tcb_set_ipcbuffer`] 单独绑定。
+/// `cspace_root_data` / `vspace_root_data` 为一阶 cnode/vspace 时传 0。
 ///
 /// # Safety
 /// 前置条件（调用方必须保证，封装不校验）：
 /// - `tcb`、`cspace_root`、`vspace_root` 必须有效且已 retype；
-/// - `buffer` 必须是已映射到服务地址空间的帧 cap（映射 vaddr 与
-///   `buffer_data` 一致）；
 /// - 一阶 CSpace/VSpace 时 `cspace_root_data`/`vspace_root_data` 必须为 0。
 ///
 /// 目标构建真调 FFI；host 构建返回 [`Sel4Error::HostUnsupported`]（红线 2）。
 #[allow(clippy::too_many_arguments)]
 pub fn tcb_set_space(
     tcb: CPtr,
+    fault_ep: Word,
     cspace_root: CPtr,
     cspace_root_data: Word,
     vspace_root: CPtr,
     vspace_root_data: Word,
-    buffer: CPtr,
-    buffer_data: Word,
 ) -> Sel4Result<()> {
     #[cfg(sel4_target)]
     {
@@ -432,12 +430,11 @@ pub fn tcb_set_space(
         let err = unsafe {
             crate::ffi::eneros_sel4_tcb_set_space(
                 tcb,
+                fault_ep,
                 cspace_root,
                 cspace_root_data,
                 vspace_root,
                 vspace_root_data,
-                buffer,
-                buffer_data,
             )
         };
         to_sel4_result(err, ())
@@ -446,12 +443,11 @@ pub fn tcb_set_space(
     {
         let _ = (
             tcb,
+            fault_ep,
             cspace_root,
             cspace_root_data,
             vspace_root,
             vspace_root_data,
-            buffer,
-            buffer_data,
         );
         Err(Sel4Error::HostUnsupported)
     }
@@ -506,7 +502,8 @@ pub fn tcb_bind_notification(tcb: CPtr, ntfn: CPtr) -> Sel4Result<()> {
     }
 }
 
-/// CNode_Mint 封装（派生带权限的能力）。
+/// CNode_Mint 封装（派生带权限的能力；seL4 14.0.0 含 badge 参数）。
+#[allow(clippy::too_many_arguments)]
 pub fn cnode_mint(
     dest_root: CPtr,
     dest_index: CPtr,
@@ -515,13 +512,14 @@ pub fn cnode_mint(
     src_index: CPtr,
     src_depth: Word,
     rights: CapRights,
+    badge: Word,
 ) -> Sel4Result<()> {
     #[cfg(sel4_target)]
     {
         // SAFETY: 封装 ffi；槽区间与权限由调用方保证。
         let err = unsafe {
             crate::ffi::eneros_sel4_cnode_mint(
-                dest_root, dest_index, dest_depth, src_root, src_index, src_depth, rights,
+                dest_root, dest_index, dest_depth, src_root, src_index, src_depth, rights, badge,
             )
         };
         to_sel4_result(err, ())
@@ -529,7 +527,7 @@ pub fn cnode_mint(
     #[cfg(host_build)]
     {
         let _ = (
-            dest_root, dest_index, dest_depth, src_root, src_index, src_depth, rights,
+            dest_root, dest_index, dest_depth, src_root, src_index, src_depth, rights, badge,
         );
         Ok(())
     }
@@ -555,6 +553,20 @@ pub fn cnode_mint(
 ///
 /// 目标构建真调 FFI；host 构建返回 [`Sel4Error::HostUnsupported`]
 /// （21-A 红线 2：禁止 host stub 模拟成功——页映射在 host 无意义）。
+/// 调试：识别 cap 类型（`seL4_DebugCapIdentify`，仅 CONFIG_DEBUG_BUILD）。
+pub fn debug_cap_identify(cap: CPtr) -> Word {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；无指针参数，无内存安全风险。
+        unsafe { crate::ffi::eneros_sel4_debug_cap_identify(cap) }
+    }
+    #[cfg(host_build)]
+    {
+        let _ = cap;
+        0
+    }
+}
+
 pub fn arm_page_map(vspace: CPtr, page: CPtr, vaddr: Word, rights: CapRights) -> Sel4Result<()> {
     #[cfg(sel4_target)]
     {
@@ -825,6 +837,54 @@ pub fn ipc_reply_recv(
 /// # Safety
 /// 封装 ffi；返回值仅目标构建下有效，调用方必须结合
 /// [`BootInfoReader::from_bootinfo_ptr`] 使用。
+/// root-task 启动初始化（BOOT-008）：把内核传入的 bootinfo（capRegister/x0）
+/// 注册进 libsel4（`seL4_InitBootInfo` + IPC buffer TLS），使
+/// `seL4_GetBootInfo`/`seL4_Send`/`seL4_GetMR` 等 libsel4 API 可用。
+/// root-task 用 Rust 汇编 `_start`（不经过 libsel4 的 sel4_start），
+/// 必须调用本函数后才能使用 bootinfo 与 IPC（21-A 遗留缺陷）。
+pub fn boot_init(bi: u64) {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；bi 为内核传入的有效 bootinfo 指针。
+        unsafe { crate::ffi::eneros_sel4_boot_init(bi) }
+    }
+    #[cfg(host_build)]
+    {
+        let _ = bi;
+    }
+}
+
+/// 设置当前线程的 IPC buffer 指针（`__sel4_ipc_buffer` TLS）。
+///
+/// 被 spawn 的 EL0 服务不是 rootserver：无 bootinfo，但 root-task 已通过
+/// `seL4_TCB_SetIPCBuffer` 绑定 buffer 帧并把 vaddr 经 `_start` 第二参数
+/// 传入。服务入口必须调用本函数，否则 `ipc_recv`/`get_mr` 在 NULL buffer
+/// 上解引用（K2.3 遗留缺陷：svc_ipc_loop 首轮 recv 卡死）。
+pub fn set_ipc_buffer(vaddr: u64) {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；vaddr 为 root-task 映射进服务 VSpace 的 buffer
+        // 地址（4 KiB 对齐），无内存安全风险。
+        unsafe { crate::ffi::eneros_sel4_set_ipc_buffer(vaddr) }
+    }
+    #[cfg(host_build)]
+    {
+        let _ = vaddr;
+    }
+}
+
+/// 让出 CPU（`seL4_Yield`）。
+///
+/// root-task 在阻塞式 `ipc_call` 前主动让出，使被 spawn 的服务（优先级 10）
+/// 有机会被调度执行（否则若 root-task 优先级最高，服务可能长时间不被调度）。
+pub fn yield_cpu() {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；无参数，无内存安全风险。
+        unsafe { crate::ffi::eneros_sel4_yield() }
+    }
+}
+
 pub fn get_boot_info() -> *const crate::types::BootInfo {
     #[cfg(sel4_target)]
     {
@@ -857,11 +917,20 @@ pub struct UntypedDesc {
 ///   C shim 提供校正 getter（见 `docs/runtime/sel4-api-bindings.md`）。
 pub mod bootinfo_offsets {
     /// `untyped.start`（cap 区间起点）。
-    pub const UNTYPED_START: usize = 0x28;
+    ///
+    /// BOOT-009：seL4 14.0.0（无 MCS）的 `seL4_BootInfo` 字段布局（对照
+    /// `libsel4/include/sel4/bootinfo_types.h`）：extraLen(0x0)/nodeID(0x8)/
+    /// numNodes(0x10)/numIOPTLevels(0x18)/ipcBuffer(0x20)/empty(0x28)/
+    /// sharedFrames(0x38)/userImageFrames(0x48)/userImagePaging(0x58)/
+    /// ioSpaceCaps(0x68)/extraBIPages(0x78)/initThreadCNodeSizeBits(0x88)/
+    /// initThreadDomain(0x90) → untyped(0x98)、untypedList(0xa8)。
+    /// 旧值 0x28/0x30/0x38 是 empty/sharedFrames 的偏移（21-A 遗留缺陷，
+    /// QEMU 实测 cap fault）。
+    pub const UNTYPED_START: usize = 0x98;
     /// `untyped.end`（cap 区间终点）。
-    pub const UNTYPED_END: usize = 0x30;
+    pub const UNTYPED_END: usize = 0xa0;
     /// `untypedList`（`seL4_UntypedDesc*` 指针）。
-    pub const UNTYPED_LIST: usize = 0x38;
+    pub const UNTYPED_LIST: usize = 0xa8;
 }
 
 /// BootInfo 解析访问器。
@@ -893,7 +962,8 @@ impl BootInfoReader {
         };
         let start = read_u64(bootinfo_offsets::UNTYPED_START)?;
         let end = read_u64(bootinfo_offsets::UNTYPED_END)?;
-        let list = read_u64(bootinfo_offsets::UNTYPED_LIST)?;
+        // BOOT-009：untypedList 是内嵌数组（非指针），基址 = blob 基址 + 偏移。
+        let list = bootinfo_offsets::UNTYPED_LIST as u64;
         Some(Self {
             base: 0,
             untyped_start: start,
@@ -914,7 +984,8 @@ impl BootInfoReader {
             base,
             untyped_start: read(bootinfo_offsets::UNTYPED_START),
             untyped_end: read(bootinfo_offsets::UNTYPED_END),
-            untyped_list: read(bootinfo_offsets::UNTYPED_LIST),
+            // BOOT-009：untypedList 是内嵌数组（不是指针），基址 = bootinfo 基址 + 偏移。
+            untyped_list: base + bootinfo_offsets::UNTYPED_LIST as u64,
         }
     }
 
@@ -958,8 +1029,11 @@ impl BootInfoReader {
         {
             // SAFETY: untypedList 由内核保证指向有效数组。
             let paddr = unsafe { core::ptr::read_volatile(off as *const u64) };
-            let size_bits = unsafe { core::ptr::read_volatile((off + 8) as *const u64) };
-            let is_device = unsafe { core::ptr::read_volatile((off + 16) as *const u8) } != 0;
+            // seL4_UntypedDesc: paddr(8) + sizeBits(1) + isDevice(1) + padding(6)。
+            // sizeBits 是 Uint8（低字节）；旧实现读 u64 会把 isDevice/padding 混入
+            // （QEMU 实测 size_bits=283 之类，alloc 全部跳过）。
+            let size_bits = u64::from(unsafe { core::ptr::read_volatile((off + 8) as *const u8) });
+            let is_device = unsafe { core::ptr::read_volatile((off + 9) as *const u8) } != 0;
             Some(UntypedDesc {
                 paddr,
                 size_bits,
@@ -1006,8 +1080,9 @@ pub(crate) fn build_test_bootinfo_blob(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+
+    use super::*;
 
     #[test]
     fn error_mapping_roundtrip() {
@@ -1058,7 +1133,7 @@ mod tests {
         assert!(tcb_suspend(5).is_ok());
         assert!(tcb_set_priority(5, 2, 10).is_ok());
         assert!(tcb_write_registers(5, 0, 0, core::ptr::null()).is_ok());
-        assert!(cnode_mint(2, 0, 0, 2, 1, 0, 1).is_ok());
+        assert!(cnode_mint(2, 0, 0, 2, 1, 0, 1, 0).is_ok());
     }
 
     // 21-A K1.1 验收：页映射在 host 构建必须返回 HostUnsupported（非 Ok），
@@ -1083,7 +1158,7 @@ mod tests {
     #[test]
     fn spawn_ffi_host_unsupported() {
         assert_eq!(
-            tcb_set_space(0x10, 0x20, 0, 0x30, 0, 0x40, 0x2000_0000),
+            tcb_set_space(0x10, 0, 0x20, 0, 0x30, 0),
             Err(Sel4Error::HostUnsupported)
         );
         assert_eq!(

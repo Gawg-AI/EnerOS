@@ -1583,12 +1583,14 @@ where
 // ============================================================================
 #[cfg(test)]
 mod tls_transport_tests {
-    use super::*;
-    use eneros_tls::{TlsClientConfig, TlsServerConfig};
-    use rcgen::generate_simple_self_signed;
     use std::cell::RefCell;
     use std::io::{Read, Write};
     use std::sync::Arc;
+
+    use eneros_tls::{TlsClientConfig, TlsServerConfig};
+    use rcgen::generate_simple_self_signed;
+
+    use super::*;
 
     /// rustls ring provider 安装（进程级，幂等）。
     fn install_ring() {

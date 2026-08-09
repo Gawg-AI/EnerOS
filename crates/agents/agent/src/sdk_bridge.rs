@@ -50,8 +50,9 @@ fn agent_sdk_id(id: AgentId) -> eneros_agent_sdk::AgentId {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use eneros_agent_sdk::{Agent, AgentDescriptor, AgentError as SdkError, Context};
+
+    use super::*;
 
     struct MockSdkAgent {
         inited: bool,

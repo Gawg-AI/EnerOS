@@ -2,7 +2,6 @@ use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
-use eneros_solver_core::mock::MockSolver;
 
 use eneros_agent::AgentState;
 use eneros_energy_lp_model::config::ScheduleConfig;
@@ -10,6 +9,7 @@ use eneros_energy_market_agent::{
     AgentRuntimeError, EnergyAgent, MarketAgent, MarketData, MarketDataSource, MarketSignal,
     MockMarketSource,
 };
+use eneros_solver_core::mock::MockSolver;
 
 use crate::error::MvpError;
 use crate::orchestrator::{MvpOrchestrator, MvpTickReport};

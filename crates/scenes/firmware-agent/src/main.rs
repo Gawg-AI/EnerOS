@@ -70,8 +70,9 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use eneros_account::AccountManager;
+
+    use super::*;
 
     /// 场景端到端断言（v0.233.0 B3-10：固件闭包场景可验证）。
     #[test]

@@ -21,7 +21,7 @@
 //! 0x40 + 96n  payload
 //! ```
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 extern crate alloc;
@@ -171,8 +171,9 @@ impl InitBundle {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+
+    use super::*;
 
     /// 构造一个最小 bundle（对齐 compose 布局）。
     fn build_bundle(modules: &[(&str, u32, u32, &[u8])]) -> Vec<u8> {

@@ -37,6 +37,9 @@ extern "C" {
     pub fn eneros_sel4_user_context_n_registers() -> Word;
     pub fn eneros_sel4_arm_default_attributes() -> Word;
 
+    /// 调试：识别 cap 类型（`seL4_DebugCapIdentify`，CONFIG_DEBUG_BUILD）。
+    pub fn eneros_sel4_debug_cap_identify(cap: Word) -> Word;
+
     // ADR-0034（K1.2）：root-task 固定 cap 常量（bootinfo.h 宏，经 shim getter）。
     pub fn eneros_sel4_cap_init_thread_tcb() -> Word;
     pub fn eneros_sel4_cap_init_thread_cnode() -> Word;
@@ -54,6 +57,17 @@ extern "C" {
     /// `seL4_GetBootInfo()` — return the capability to the bootinfo page.
     /// The returned word is a `seL4_BootInfo*` cast to `seL4_Word`.
     pub fn eneros_sel4_get_boot_info() -> Word;
+
+    /// root-task 启动初始化（BOOT-008）：注册 bootinfo + IPC buffer TLS。
+    pub fn eneros_sel4_boot_init(bi: Word);
+
+    /// 设置当前线程 IPC buffer 指针（`__sel4_ipc_buffer` TLS）。
+    /// 被 spawn 的 EL0 服务无 bootinfo，用 root-task 传入的 buffer vaddr
+    /// 初始化（K2.3：否则 ipc_recv 在 NULL buffer 上解引用卡死）。
+    pub fn eneros_sel4_set_ipc_buffer(vaddr: Word);
+
+    /// 让出 CPU（`seL4_Yield`）：root-task 阻塞前主动让出，服务有机会运行。
+    pub fn eneros_sel4_yield();
 }
 
 // ----------------------------------------------------------------------------
@@ -160,15 +174,15 @@ extern "C" {
     pub fn eneros_sel4_tcb_set_affinity(tcb: CPtr, affinity: Word) -> Error;
     pub fn eneros_sel4_tcb_set_priority(tcb: CPtr, authority: CPtr, priority: Word) -> Error;
 
-    // ADR-0034（K1.2）：TCB 绑定 CSpace/VSpace/IPC buffer（真实 spawn 必需）。
+    // ADR-0034（K1.2）：TCB 绑定 CSpace/VSpace（真实 spawn 必需；seL4 14.0.0
+    // API 含 fault_ep word 参数，IPC buffer 由 tcb_set_ipcbuffer 单独绑定）。
     pub fn eneros_sel4_tcb_set_space(
         tcb: CPtr,
+        fault_ep: Word,
         cspace_root: CPtr,
         cspace_root_data: Word,
         vspace_root: CPtr,
         vspace_root_data: Word,
-        buffer: CPtr,
-        buffer_data: Word,
     ) -> Error;
 
     pub fn eneros_sel4_tcb_set_ipcbuffer(tcb: CPtr, buffer: CPtr, buffer_data: Word) -> Error;

@@ -271,14 +271,15 @@ fn iec104_to_protocol(e: MasterError) -> ProtocolError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
 
-    use crate::mock::MockMasterTransport;
     use eneros_iec104_slave::{
         Apdu, Asdu, Cot, InformationObject, IoValue, QualityDescriptor, TypeId,
     };
     use eneros_protocol_abstract::contract::{run_adapter_contract, simple_adapter_config};
+
+    use super::*;
+    use crate::mock::MockMasterTransport;
 
     /// 构造包含一个遥测点的 M_ME_NC 数据帧。
     fn telemetry_frame(common_addr: u16, ioa: u32, value: f32) -> Vec<u8> {

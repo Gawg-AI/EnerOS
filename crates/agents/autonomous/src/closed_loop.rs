@@ -2,12 +2,13 @@
 //!
 //! 自动推进交易至最终状态（Settled 或 Failed）。
 
+#[cfg(test)]
+use eneros_market_types::YuanPerKwh;
+
 use crate::orchestrator::TradeOrchestrator;
 use crate::settlement::{AutoSettlement, SettlementTrigger};
 use crate::types::TradePhase;
 use crate::TradeError;
-#[cfg(test)]
-use eneros_market_types::YuanPerKwh;
 
 /// 闭环驱动 trait
 ///

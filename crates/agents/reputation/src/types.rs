@@ -194,8 +194,9 @@ pub fn score_from_trust_level(tl: &eneros_agent::types::TrustLevel) -> f64 {
 
 #[cfg(test)]
 mod arc002_tests {
-    use super::*;
     use eneros_agent::types::TrustLevel;
+
+    use super::*;
 
     fn score(v: f64) -> ReputationScore {
         ReputationScore {

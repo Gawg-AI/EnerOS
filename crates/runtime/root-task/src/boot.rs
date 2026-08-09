@@ -86,8 +86,9 @@ pub fn map_physical_pages(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use eneros_boot_protocol::boot_info::{BootInfo, BootSlot};
+
+    use super::*;
 
     #[test]
     fn test_map_physical_pages_basic() {

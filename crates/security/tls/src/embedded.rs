@@ -13,10 +13,9 @@
 
 extern crate alloc;
 
-use core::marker::PhantomData;
-
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use digest::Digest;
 use embedded_tls::blocking::{
@@ -378,11 +377,13 @@ impl<'b, S: embedded_io::Read + embedded_io::Write + 'b> EmbeddedTlsStream<'b, S
 // ============================================================================
 #[cfg(all(test, feature = "embedded"))]
 mod tests {
-    use super::*;
+    use std::io::{Read as _, Write as _};
+
     use eneros_crypto::pki::parser::to_der;
     use eneros_crypto::pki::x509::{DistinguishedName, SignatureAlgorithm};
     use p256::ecdsa::signature::Signer;
-    use std::io::{Read as _, Write as _};
+
+    use super::*;
 
     const NOW: u64 = 1_700_000_000;
 

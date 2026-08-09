@@ -228,7 +228,10 @@ pub fn handle_request(payload: &[u8]) -> RequestOutcome {
             _ => None,
         };
         // 触发真实故障：除零/非法访问走异常路径，服务 TCB 被内核挂起
-        // （21-A K2.3 隔离验证核心）；不再回复。
+        // （21-A K2.3 隔离验证核心）；不再回复。打印须在注入之前——
+        // IllegalAccess 的异常在写指令处同步触发，控制流立即进内核 fault
+        // handler，注入后的任何代码（含 println）不可达。
+        eneros_runtime::println!("[svc-fault] FAULT triggered — suspending");
         if let Err(()) = inject_fault(kind) {
             return RequestOutcome::FaultTriggered;
         }
@@ -277,6 +280,7 @@ pub fn svc_ipc_loop(ep: u64, name: &'static str) -> ! {
 
     let mut sender = 0u64;
     let mut reply_info = 0u64; // 首轮 recv 前无 reply
+    eneros_runtime::println!("[svc-{}] svc_ipc_loop entered ep={}", name, ep);
 
     loop {
         // 接收（首轮 recv；后续 reply_recv 回复上一请求并继续收）。
@@ -338,8 +342,9 @@ pub fn svc_ipc_loop(ep: u64, name: &'static str) -> ! {
                 };
             }
             RequestOutcome::FaultTriggered => {
-                eneros_runtime::println!("[svc-{}] FAULT triggered — suspending", name);
-                // 不回复：服务预期被内核挂起（隔离验证）。
+                // 正常路径不可达：IllegalAccess/除零已在 handle_request 的
+                // inject_fault 中触发异常（线程被内核挂起，fault IPC 已送
+                // root-task）。此处为 fail-closed 兜底（如注入未产生异常）。
                 loop {
                     core::hint::spin_loop();
                 }

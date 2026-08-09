@@ -8,8 +8,9 @@
 
 extern crate std;
 
-use loom::sync::Mutex;
 use std::vec::Vec;
+
+use loom::sync::Mutex;
 
 /// 订单（与生产 P2pBid 同构的简化版）。
 #[derive(Debug, Clone, PartialEq)]

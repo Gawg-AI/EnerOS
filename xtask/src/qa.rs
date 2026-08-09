@@ -127,7 +127,9 @@ fn parse_go_no_go_statuses(root: &Path) -> DynResult<BTreeMap<String, bool>> {
         }
     }
     if statuses.is_empty() {
-        return Err(invalid("go-no-go 文档中未解析到任何 G 项状态行（表格结构异常）"));
+        return Err(invalid(
+            "go-no-go 文档中未解析到任何 G 项状态行（表格结构异常）",
+        ));
     }
     Ok(statuses)
 }
@@ -155,7 +157,9 @@ fn workspace_version(root: &Path) -> DynResult<String> {
             }
         }
     }
-    Err(invalid("Cargo.toml 中未找到 [workspace.package] version 字段"))
+    Err(invalid(
+        "Cargo.toml 中未找到 [workspace.package] version 字段",
+    ))
 }
 
 /// 版本闸门一致性校验：全 PASS 才允许 1.0.0；否则必须 -rc.N（fail-closed）。
@@ -342,7 +346,6 @@ struct SoakRestart {
     root_cause: Option<String>,
 }
 
-
 /// `qa soak-run --cycles N [--image <path> --vars-template <path>] [--out <json>]`
 ///
 /// v0.253.0（D1a）：QEMU 浸泡循环——黑盒复用 `xtask run qemu-prod`（同一
@@ -413,7 +416,10 @@ fn command_soak_report(root: &Path, args: &[String]) -> DynResult<()> {
     if let Ok(text) = fs::read_to_string(&manifest_path) {
         for line in text.lines() {
             if let Some((hash, name)) = line.split_once("  ") {
-                hashes.insert(name.trim_start_matches("./").to_owned(), hash.trim().to_owned());
+                hashes.insert(
+                    name.trim_start_matches("./").to_owned(),
+                    hash.trim().to_owned(),
+                );
             }
         }
     }
@@ -445,9 +451,10 @@ fn command_soak_report(root: &Path, args: &[String]) -> DynResult<()> {
         },
         D1Category {
             name: "protocol",
-            evidence: vec![
-                evidence("point-consistency.json", "点表一致性报告（72h 无失联）"),
-            ],
+            evidence: vec![evidence(
+                "point-consistency.json",
+                "点表一致性报告（72h 无失联）",
+            )],
             status: "assessment",
         },
         D1Category {
@@ -469,9 +476,7 @@ fn command_soak_report(root: &Path, args: &[String]) -> DynResult<()> {
         },
         D1Category {
             name: "ops",
-            evidence: vec![
-                evidence("symbolize-report.json", "crash-dump 符号化报告"),
-            ],
+            evidence: vec![evidence("symbolize-report.json", "crash-dump 符号化报告")],
             status: "assessment",
         },
     ];
@@ -545,7 +550,6 @@ fn command_soak_report(root: &Path, args: &[String]) -> DynResult<()> {
     Ok(())
 }
 
-
 /// `qa interop-report [--dir <interop-out>] [--out <json>]`
 ///
 /// v0.256.0（D2）：从四类对端互操作结果（skip/结果 JSON）生成互操作矩阵
@@ -585,10 +589,26 @@ fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
     }
 
     let peers: [(&str, &str, Vec<&str>); 4] = [
-        ("iec104", "iec104-skip.json", vec!["总召唤", "SBO", "时标 SOE", "时钟同步", "突变上送"]),
-        ("modbus", "modbus-skip.json", vec!["全功能码", "异常码", "边界地址", "长时轮询"]),
-        ("mms", "mms-skip.json", vec!["关联", "读写", "报告订阅", "GOOSE 订阅"]),
-        ("mqtt", "mqtt-skip.json", vec!["TLS", "QoS0/1/2", "断链重连"]),
+        (
+            "iec104",
+            "iec104-skip.json",
+            vec!["总召唤", "SBO", "时标 SOE", "时钟同步", "突变上送"],
+        ),
+        (
+            "modbus",
+            "modbus-skip.json",
+            vec!["全功能码", "异常码", "边界地址", "长时轮询"],
+        ),
+        (
+            "mms",
+            "mms-skip.json",
+            vec!["关联", "读写", "报告订阅", "GOOSE 订阅"],
+        ),
+        (
+            "mqtt",
+            "mqtt-skip.json",
+            vec!["TLS", "QoS0/1/2", "断链重连"],
+        ),
     ];
 
     let mut rows = Vec::new();
@@ -625,7 +645,11 @@ fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
         });
     }
 
-    let verdict = if all_pass { "D2-PASS" } else { "D2-PENDING-REAL-PEERS" };
+    let verdict = if all_pass {
+        "D2-PASS"
+    } else {
+        "D2-PENDING-REAL-PEERS"
+    };
     let report = InteropMatrix {
         schema: "eneros.interop-matrix.v1",
         peers: rows,
@@ -637,7 +661,6 @@ fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
     println!("INTEROP-MATRIX verdict={verdict} → {}", out_path.display());
     Ok(())
 }
-
 
 /// `qa kat-report [--out <json>]`
 ///
@@ -718,13 +741,18 @@ fn command_kat_report(root: &Path, args: &[String]) -> DynResult<()> {
     fs::create_dir_all(out_path.parent().unwrap_or(root))?;
     fs::write(&out_path, serde_json::to_vec_pretty(&report)?)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
-    println!("KAT-REPORT verdict={} → {}", report.verdict, out_path.display());
+    println!(
+        "KAT-REPORT verdict={} → {}",
+        report.verdict,
+        out_path.display()
+    );
     if !all_pass {
-        return Err(invalid("crypto KAT suite has failures — block product_allowed release"));
+        return Err(invalid(
+            "crypto KAT suite has failures — block product_allowed release",
+        ));
     }
     Ok(())
 }
-
 
 /// `qa compliance-report [--out <json>] [--sign-key <path>]`
 ///
@@ -785,7 +813,16 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
     let mut dengbao_items = Vec::new();
     // 直接运行 compliance crate 的探测逻辑（host 可测）。
     if let Ok(output) = std::process::Command::new("cargo")
-        .args(["test", "-p", "eneros-compliance", "--lib", "--", "--list", "--format", "terse"])
+        .args([
+            "test",
+            "-p",
+            "eneros-compliance",
+            "--lib",
+            "--",
+            "--list",
+            "--format",
+            "terse",
+        ])
         .current_dir(root)
         .output()
     {
@@ -858,8 +895,8 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
     let json_signed = serde_json::to_vec_pretty(&report)?;
     let signature = match &sign_key {
         Some(key_path) => {
-            let key_bytes = fs::read(key_path)
-                .map_err(|e| invalid(format!("read sign key: {e}")))?;
+            let key_bytes =
+                fs::read(key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
             let keypair = ed25519_dalek::SigningKey::from_bytes(
                 &key_bytes[..32]
                     .try_into()
@@ -881,7 +918,6 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
     println!("COMPLIANCE-REPORT → {}", out_path.display());
     Ok(())
 }
-
 
 /// `qa g7-audit [--out <json>]`
 ///
@@ -937,7 +973,10 @@ fn command_g7_audit(root: &Path, args: &[String]) -> DynResult<()> {
                 // 粗略：lib.rs 顶层（非缩进）出现 `use ...mock` 且无 cfg(test) 前缀。
                 for line in text.lines() {
                     let t = line.trim_start();
-                    if t.starts_with("use ") && t.contains("::mock") && !t.starts_with("#[cfg(test)]") {
+                    if t.starts_with("use ")
+                        && t.contains("::mock")
+                        && !t.starts_with("#[cfg(test)]")
+                    {
                         // 检查前一行是否 cfg(test)。
                         prod_mock_refs.push(format!("{}: {}", path.display(), t));
                     }
@@ -949,7 +988,10 @@ fn command_g7_audit(root: &Path, args: &[String]) -> DynResult<()> {
     let mut real_violations = Vec::new();
     for r in prod_mock_refs {
         // lib.rs 顶层 use 若在 mod tests 内会有缩进；无缩进 = 模块级。
-        if r.split_once(':').map(|(_, s)| s.starts_with("use ")).unwrap_or(false) {
+        if r.split_once(':')
+            .map(|(_, s)| s.starts_with("use "))
+            .unwrap_or(false)
+        {
             real_violations.push(r);
         }
     }
@@ -1032,7 +1074,9 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
         };
         match a.as_str() {
             "--cycles" => {
-                cycles = val()?.parse().map_err(|_| invalid("--cycles must be usize"))?
+                cycles = val()?
+                    .parse()
+                    .map_err(|_| invalid("--cycles must be usize"))?
             }
             "--max-fail" => {
                 max_fail = val()?
@@ -1246,7 +1290,6 @@ struct PerfMetric {
     unit: String,
 }
 
-
 // ============================================================
 // QA-019b: performance baseline generation (v0.251.0, C-251)
 // ============================================================
@@ -1277,10 +1320,12 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
                 );
             }
             "--sign-key" => {
-                sign_key = Some(root.join(
-                    it.next()
-                        .ok_or_else(|| invalid("perf-baseline --sign-key requires <path>"))?,
-                ));
+                sign_key = Some(
+                    root.join(
+                        it.next()
+                            .ok_or_else(|| invalid("perf-baseline --sign-key requires <path>"))?,
+                    ),
+                );
             }
             other => return Err(invalid(format!("unknown perf-baseline arg '{other}'"))),
         }
@@ -1405,10 +1450,12 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
     // 3. 可选签名。
     let signature = match &sign_key {
         Some(key_path) => {
-            let key_bytes = fs::read(key_path)
-                .map_err(|e| invalid(format!("read sign key: {e}")))?;
+            let key_bytes =
+                fs::read(key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
             let keypair = ed25519_dalek::SigningKey::from_bytes(
-                &key_bytes[..32].try_into().map_err(|_| invalid("key must be 32 bytes"))?,
+                &key_bytes[..32]
+                    .try_into()
+                    .map_err(|_| invalid("key must be 32 bytes"))?,
             );
             use ed25519_dalek::Signer;
             let sig = keypair.sign(&json_signed);
@@ -1468,9 +1515,9 @@ fn minimal_elf64() -> Vec<u8> {
     elf[20..24].copy_from_slice(&1u32.to_le_bytes()); // EV_CURRENT
     elf[40..48].copy_from_slice(&0x1000u64.to_le_bytes()); // entry
     elf[56..64].copy_from_slice(&64u64.to_le_bytes()); // phoff
-    // 一个 PT_LOAD 段（R|X，非 W——满足 W^X）。
-    // ELF64 Phdr: type(0,4) flags(4,8) offset(8,16) vaddr(16,24)
-    //             paddr(24,32) filesz(32,40) memsz(40,48) align(48,56)
+                                                       // 一个 PT_LOAD 段（R|X，非 W——满足 W^X）。
+                                                       // ELF64 Phdr: type(0,4) flags(4,8) offset(8,16) vaddr(16,24)
+                                                       //             paddr(24,32) filesz(32,40) memsz(40,48) align(48,56)
     let mut ph = vec![0u8; 56];
     ph[0..4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
     ph[4..8].copy_from_slice(&5u32.to_le_bytes()); // flags R|X
@@ -1513,7 +1560,6 @@ fn hex_decode(s: &str) -> Vec<u8> {
         .collect()
 }
 
-
 fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
     let path = match args {
         [p] => root.join(p),
@@ -1538,7 +1584,9 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
                 let pk_bytes: [u8; 32] = match hex_decode(pk_hex.trim()).try_into() {
                     Ok(b) => b,
                     Err(_) => {
-                        report.violations.push("signature-verify:bad-pubkey".to_owned());
+                        report
+                            .violations
+                            .push("signature-verify:bad-pubkey".to_owned());
                         return Err(invalid("bad verify pubkey (need 32-byte ed25519 pk)"));
                     }
                 };
@@ -1551,8 +1599,7 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
                     let pk = ed25519_dalek::VerifyingKey::from_bytes(&pk_bytes);
                     let sig = ed25519_dalek::Signature::from_bytes(&sig);
                     let raw = fs::read(&path).unwrap_or_default();
-                    pk.map(|p| p.verify(&raw, &sig).is_ok())
-                        .unwrap_or(false)
+                    pk.map(|p| p.verify(&raw, &sig).is_ok()).unwrap_or(false)
                 } else {
                     false
                 }
@@ -2081,7 +2128,10 @@ mod tests {
         let parsed: SoakCampaign = read_json(&out).expect("campaign parses");
         assert_eq!(parsed.schema, "eneros.soak-campaign.v1");
         assert_eq!(parsed.metric_samples, 1);
-        assert!(parsed.min_duration_days == 3, "min_duration_days must default to 3");
+        assert!(
+            parsed.min_duration_days == 3,
+            "min_duration_days must default to 3"
+        );
         // boot-times.csv 必须产出（14 号文 D1 启动时间分布证据）。
         let csv = out.with_file_name("boot-times.csv");
         assert!(csv.exists(), "boot-times.csv must be written");

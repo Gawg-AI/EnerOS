@@ -16,7 +16,17 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use eneros_elf_loader::LoadedElf;
+// K1.2（21-A）：spawn 真实 FFI 封装（configure_service / copy_segment_via_window
+// 等函数签名直接引用，模块级导入保证 cfg(target_os = "none") 路径一致）。
+#[cfg(target_os = "none")]
+use eneros_sel4_sys::safe::{
+    arm_asid_pool_assign, arm_page_map, arm_page_table_map, arm_page_unmap, cnode_mint, retype,
+    tcb_resume, tcb_set_ipcbuffer, tcb_set_priority, tcb_set_space, tcb_write_registers,
+    ObjectTypeTable, RightsTable,
+};
 use eneros_sel4_sys::safe::{CapAllocator, Sel4Error, UntypedDesc};
+#[cfg(target_os = "none")]
+use eneros_sel4_sys::UserContext;
 
 /// spawn 计划错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +133,10 @@ fn plan_one(
         return Err(SpawnError::PlanMismatch);
     }
     let mut pages = Vec::new();
+    // 服务映射到 ELF 链接地址（seg.vaddr）：ET_EXEC 固定地址代码的绝对
+    // 引用（跳转/数据）指向链接地址，映射必须与链接一致。每个服务独立
+    // VSpace，虚拟地址区间可相同（页表隔离）。用 vspace_base 连续分配
+    // 会导致服务映射 ≠ 链接 → 执行即 VMFAULT（QEMU 实测 pc=0x203554）。
     let mut vaddr = vspace_base;
     for seg in elf.segments() {
         let flags = seg.flags;
@@ -130,15 +144,22 @@ fn plan_one(
             return Err(SpawnError::WxViolation);
         }
         let size = align_up(seg.memsz.max(1), page_size);
+        let mapped_vaddr = if seg.vaddr % page_size == 0 {
+            seg.vaddr // 与链接地址一致（页对齐）
+        } else {
+            return Err(SpawnError::PlanMismatch);
+        };
         pages.push(PageEntry {
-            vaddr,
+            vaddr: mapped_vaddr,
             phys: 0,
             size,
             read: flags.read,
             write: flags.write,
             exec: flags.execute,
         });
-        vaddr = vaddr.checked_add(size).ok_or(SpawnError::OutOfVaddrSpace)?;
+        vaddr = mapped_vaddr
+            .checked_add(size)
+            .ok_or(SpawnError::OutOfVaddrSpace)?;
     }
     let stack_top = vaddr
         .checked_add(stack_size)
@@ -319,11 +340,25 @@ impl SpawnCtx {
         let mut descs = Vec::new();
         for i in 0..reader.untyped_count() {
             if let Some(d) = reader.untyped_at(i) {
+                crate::println!(
+                    "[eneros-root-task] DBG untyped[{}] cap={} paddr=0x{:x} size_bits={} dev={}",
+                    i,
+                    reader.untyped_start() + i,
+                    d.paddr,
+                    d.size_bits,
+                    d.is_device
+                );
                 descs.push(d);
             }
         }
         // 空闲槽从 untyped cap 区间之后开始（untyped caps 占据
         // [untyped_start, untyped_end) 槽位，不可复用）。
+        crate::println!(
+            "[eneros-root-task] DBG untyped_start={} untyped_end={} count={}",
+            reader.untyped_start(),
+            reader.untyped_end(),
+            reader.untyped_count()
+        );
         let slots = CapAllocator::new(reader.untyped_end(), ROOT_CNODE_SLOTS);
         Self {
             untyped: UntypedAllocator::new(reader.untyped_start(), descs),
@@ -339,14 +374,28 @@ impl SpawnCtx {
 /// root CSpace 容量上限（seL4 14.0.0 aarch64 默认 `seL4_CNodeSizeBits` = 12）。
 pub const ROOT_CNODE_SLOTS: u64 = 1 << 12;
 
-/// seL4 对象大小（aarch64 14.0.0 默认配置，单位：log2 字节）。
-pub const OBJ_BITS_TCB: u64 = 12; // 4 KiB
+/// seL4 对象大小（aarch64 14.0.0，单位：log2 字节）。
+///
+/// 与 `libsel4/sel4_arch_include/aarch64/sel4/sel4_arch/constants.h` 对齐：
+/// - `seL4_TCBBits`：debug build（CONFIG_HARDWARE_DEBUG_API）=12（4 KiB）
+/// - `seL4_VSpaceBits`：非 HYP + PA 非 40 =12（4 KiB）
+/// - CapTable：`2^(size_bits + seL4_SlotBits)`，`seL4_SlotBits=5`（每槽 32 B）
+///   → `OBJ_BITS_CNODE=7` = 128 槽 × 32 B = 4 KiB（服务 CSpace 只需少量槽：
+///   endpoint + ipcbuf；21-A 用 12 导致 2^17=128 KiB CapTable，超出
+///   untyped 剩余（QEMU 实测 `Insufficient memory (1 * 131072)`））
+/// - `seL4_PageTableBits`=12、`seL4_PageBits`=12、`seL4_EndpointBits`=4
+/// - `seL4_NotificationBits`=5（非 MCS；21-A 用 4 导致 16 B 对象实际 32 B）
+pub const OBJ_BITS_TCB: u64 = 12; // 4 KiB（debug build）
 pub const OBJ_BITS_VSPACE: u64 = 12; // 4 KiB（L0 表）
-pub const OBJ_BITS_CNODE: u64 = 12; // 4 KiB = 4096 槽
+pub const OBJ_BITS_CNODE: u64 = 7; // 128 槽 × 32 B = 4 KiB（seL4_SlotBits=5）
+                                   // 服务 CSpace 的 guard_size：内核 lookupCap 总是用 wordBits=64 解析 cptr，
+                                   // 一阶 cnode 需 guard_size = wordBits - radix 才能把 cptr 低 7 位映射为槽
+                                   // （radix=OBJ_BITS_CNODE=7 → guard_size=57；CapData word = guard<<6 | guardSize）。
+pub const SVC_CSPACE_CAPDATA: u64 = 64 - OBJ_BITS_CNODE; // = 57
 pub const OBJ_BITS_PAGE_TABLE: u64 = 12; // 4 KiB（L1/L2/L3 通用）
 pub const OBJ_BITS_SMALL_PAGE: u64 = 12; // 4 KiB
 pub const OBJ_BITS_ENDPOINT: u64 = 4; // 16 B
-pub const OBJ_BITS_NOTIFICATION: u64 = 4; // 16 B
+pub const OBJ_BITS_NOTIFICATION: u64 = 5; // 32 B（非 MCS）
 pub const PAGE_SIZE: u64 = 1 << OBJ_BITS_SMALL_PAGE;
 
 /// 方案 A 临时窗口基址（root-task 自身 VSpace，1 GiB 区域；与 root 镜像
@@ -354,7 +403,12 @@ pub const PAGE_SIZE: u64 = 1 << OBJ_BITS_SMALL_PAGE;
 pub const WINDOW_BASE: u64 = 0x8000_0000;
 
 /// 服务地址空间基址（与 main.rs VSPACE_BASE 一致）。
-pub const SVC_VSPACE_BASE: u64 = 0x4000_0000;
+///
+/// 0x200000 = 服务 ELF 链接基址（aarch64-unknown-none 默认）：ET_EXEC
+/// 固定地址代码的绝对引用（跳转/数据）指向链接地址，映射必须与链接一致，
+/// 否则服务执行即 VMFAULT（QEMU 实测 type=1 pc=0x203554）。每个服务
+/// 独立 VSpace，虚拟地址区间可与其他服务/root-task 相同（页表隔离）。
+pub const SVC_VSPACE_BASE: u64 = 0x200000;
 
 /// 服务静态优先级（seL4 静态优先级调度，低于 root-task）。
 pub const SVC_PRIORITY: u64 = 10;
@@ -370,7 +424,11 @@ pub struct UntypedAllocator {
     cap_base: u64,
     /// 过滤掉 device 内存后的 untyped 描述。
     descs: Vec<UntypedDesc>,
-    /// 每 untyped 已切对象数。
+    /// 每 untyped 已分配字节偏移（镜像 seL4 freeIndex 语义：按对象大小
+    /// 对齐递增；21-A 用「对象数」导致混合 size 对象时容量检查错误——
+    /// QEMU 实测 `Insufficient memory (1 * 16 bytes needed, 0 bytes
+    /// available)`：64 KiB untyped 分配 16 个 4 KiB 帧后，16 B endpoint
+    /// 的检查 `16 << 4 = 256 < 65536` 误判可分配）。
     used: Vec<u64>,
 }
 
@@ -385,28 +443,97 @@ impl UntypedAllocator {
         }
     }
 
-    /// 分配一个 `size_bits` 对象，返回 `(untyped_cap, offset)`；不足返回 `None`。
+    /// 分配一个 `size_bits` 对象，返回 `(untyped_cap, byte_offset)`；不足返回 `None`。
+    ///
+    /// 记账镜像 seL4 `decodeUntypedInvocation`：freeIndex 先按对象大小对齐
+    /// （`alignUp(freeRef, objectSize)`）再递增。简单累加会在对象大小不是
+    /// `seL4_MinUntypedBits` 粒度对齐时与 seL4 freeIndex 脱节（QEMU 实测：
+    /// 32 B notification 在 80 B 处对齐到 96 B，Rust 记 112 而 seL4 记 128，
+    /// 之后 endpoint `Insufficient memory (16 bytes needed, 0 available)`）。
     pub fn alloc(&mut self, size_bits: u64) -> Option<(u64, u64)> {
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
             if desc.is_device || desc.size_bits < size_bits {
                 continue;
             }
-            let used = self.used[i];
             if desc.size_bits >= u64::BITS as u64 {
                 continue; // 超 64 位的对象不存在；防移位溢出（红线 6）
             }
             let capacity = 1u64 << desc.size_bits;
-            let consumed = used.checked_shl(size_bits as u32)?;
-            if consumed < capacity {
-                self.used[i] = used + 1;
+            let obj_size = 1u64 << size_bits;
+            let used = self.used[i];
+            // seL4 freeIndex 语义：alignUp(used, obj_size) + obj_size。
+            let aligned = used
+                .checked_add(obj_size - 1)
+                .map(|v| v & !(obj_size - 1))?;
+            if aligned
+                .checked_add(obj_size)
+                .is_some_and(|end| end <= capacity)
+            {
+                self.used[i] = aligned + obj_size;
+                return Some((self.cap_base + i as u64, aligned));
+            }
+        }
+        None
+    }
+
+    /// 分配一个 CapTable（CNode）对象：seL4 的 CNode 大小是
+    /// `2^(size_bits + seL4_SlotBits)`（每槽 `2^SlotBits` 字节），与
+    /// [`alloc`](Self::alloc) 的 `2^size_bits` 记账不同——混用会导致
+    /// freeIndex 与 Rust 记账脱节（QEMU 实测 endpoint 的
+    /// `Insufficient memory (1 * 16 bytes needed, 0 bytes available)`：
+    /// CNode 实际占 4 KiB 但 Rust 只记 128 B，之后 3968 B 被 seL4 判满）。
+    pub fn alloc_cap_table(&mut self, size_bits: u64) -> Option<(u64, u64)> {
+        for i in 0..self.descs.len() {
+            let desc = self.descs[i];
+            if desc.is_device || desc.size_bits < size_bits {
+                continue;
+            }
+            if desc.size_bits >= u64::BITS as u64 {
+                continue;
+            }
+            let capacity = 1u64 << desc.size_bits;
+            // CNode 实际大小：槽数 × 每槽字节 = 2^size_bits × 2^SlotBits。
+            let obj_size = (1u64 << size_bits) << 5; // seL4_SlotBits = 5
+            let used = self.used[i];
+            if used
+                .checked_add(obj_size)
+                .is_some_and(|end| end <= capacity)
+            {
+                self.used[i] = used + obj_size;
                 return Some((self.cap_base + i as u64, used));
             }
         }
         None
     }
 
-    /// 已分配对象总数（host 测试统计用）。
+    /// 分配覆盖指定物理地址的对象（G-KERNEL BOOT-007：init_bundle 的物理页）。
+    ///
+    /// first-fit [`alloc`](Self::alloc) 不指定物理；bundle 由 boot-manager 加载
+    /// 到固定物理地址（`INIT_BUNDLE_PHYS`），必须按物理定位 untyped。
+    /// 返回 `(untyped_cap, byte_offset)`；找不到覆盖该物理的 untyped 返回 `None`。
+    pub fn alloc_at(&mut self, phys: u64, size_bits: u64) -> Option<(u64, u64)> {
+        for i in 0..self.descs.len() {
+            let desc = self.descs[i];
+            if desc.is_device || desc.size_bits < size_bits {
+                continue;
+            }
+            let obj_size = 1u64 << size_bits;
+            let aligned = phys & !(obj_size - 1);
+            let desc_end = desc.paddr.checked_add(1u64 << desc.size_bits)?;
+            if aligned >= desc.paddr && aligned < desc_end {
+                let byte_off = aligned - desc.paddr;
+                // 标记已用（字节偏移，与 freeIndex 一致）。
+                if self.used[i] < byte_off + obj_size {
+                    self.used[i] = byte_off + obj_size;
+                }
+                return Some((self.cap_base + i as u64, byte_off));
+            }
+        }
+        None
+    }
+
+    /// 已分配字节总数（host 测试统计用）。
     pub fn allocated(&self) -> u64 {
         self.used.iter().sum()
     }
@@ -457,7 +584,9 @@ pub struct SpawnedHandle {
     pub tcb: u64,
     /// 服务 endpoint cap（root CSpace 槽；root 侧发 IPC 用）。
     pub ep: u64,
-    /// 服务故障 notification cap（K2.3：服务异常时内核发通知）。
+    /// 服务故障 handler endpoint（root CSpace 槽；服务异常时内核向服务
+    /// TCB 的 fault_ep（=服务 CSpace 槽 1 的 mint 副本）发 fault IPC，
+    /// root-task 在此 ep 上 recv 检测故障隔离）。
     pub ntfn: u64,
 }
 
@@ -471,21 +600,25 @@ pub struct SpawnedHandle {
 /// （K2.2）按名寻址服务。
 ///
 /// host 构建下不存在（真实 FFI 在目标验证环境执行）。
+
 #[cfg(target_os = "none")]
 pub fn sel4_spawn_services(
     plan: &SpawnPlan,
     bundle: &crate::bundle::InitBundle,
     ctx: &mut SpawnCtx,
 ) -> Result<Vec<SpawnedHandle>, SpawnError> {
-    use eneros_sel4_sys::safe::{
-        arm_asid_pool_assign, arm_page_map, arm_page_table_map, arm_page_unmap, cnode_mint, retype,
-        tcb_resume, tcb_set_ipcbuffer, tcb_set_priority, tcb_set_space, tcb_write_registers,
-        ObjectTypeTable, RightsTable, UserContext,
-    };
-
     let types = ObjectTypeTable::resolve();
     let rights = RightsTable::resolve();
-    let root_cnode = ctx.root_cnode;
+    crate::println!(
+        "[eneros-root-task] DBG types tcb={} vspace={} cnode={} pt={} frame={} ep={} ntfn={}",
+        types.tcb,
+        types.arm_vspace,
+        types.captable,
+        types.arm_page_table,
+        types.arm_frame,
+        types.endpoint,
+        types.notification
+    );
 
     // 阶段 0：root 临时窗口页表（L2/L3；L0/L1 由 elfloader 提供）。
     let window_pt = retype_objects(ctx, &types, OBJ_BITS_PAGE_TABLE, 2)?;
@@ -495,6 +628,12 @@ pub fn sel4_spawn_services(
     arm_page_table_map(ctx.root_vspace, window_pt[1], WINDOW_BASE).map_err(SpawnError::Sel4)?;
 
     // 阶段一：全部服务配置（对象创建 + 映射 + 寄存器 + 优先级）。
+    // K2.3：root 侧 fault handler endpoint——每个服务的 TCB fault_ep 指向
+    // 同一 endpoint 的 mint 副本（服务 CSpace 槽 1），root-task 在此 ep 上
+    // recv 所有服务的 fault 通知。
+    let fault_ep = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
+    retype_one(ctx, types.endpoint, OBJ_BITS_ENDPOINT, fault_ep)?;
+    crate::println!("[eneros-root-task] DBG fault_ep={}", fault_ep);
     let mut handles = Vec::with_capacity(plan.services.len());
     let mut tcb_slots = Vec::with_capacity(plan.services.len());
     for svc in &plan.services {
@@ -505,13 +644,14 @@ pub fn sel4_spawn_services(
             .ok_or(SpawnError::MissingBundleModule)?;
         let elf = LoadedElf::parse(&module.blob).map_err(|_| SpawnError::BadElf)?;
         let entry = entry_mapped(&svc.pages, &elf)?;
-        let (tcb, ep, ntfn) = configure_service(svc, &elf, module, entry, ctx, &types, &rights)?;
+        let (tcb, ep, _ntfn) =
+            configure_service(svc, &elf, module, entry, ctx, &types, &rights, fault_ep)?;
         tcb_slots.push(tcb);
         handles.push(SpawnedHandle {
             name: svc.name.clone(),
             tcb,
             ep,
-            ntfn,
+            ntfn: fault_ep,
         });
     }
 
@@ -524,10 +664,11 @@ pub fn sel4_spawn_services(
 }
 
 /// 配置单个服务（阶段一）：对象 retype / ASID / 页表 / 页映射与拷贝 /
-/// CSpace mint / 寄存器 / 优先级。返回 `(TCB cap, endpoint cap, ntfn cap)`。
+/// CSpace mint / 寄存器 / 优先级。返回 `(TCB cap, endpoint cap, fault ep cap)`。
 ///
 /// # 返回值
-/// 元组：服务 TCB / endpoint / 故障 notification 的 root CSpace 槽号。
+/// 元组：服务 TCB / 服务 endpoint / root 侧 fault handler ep（同一
+/// endpoint 对象的 root 视角 cap；服务侧在 CSpace 槽 1 持 mint 副本）。
 #[cfg(target_os = "none")]
 #[allow(clippy::too_many_arguments)]
 fn configure_service(
@@ -538,6 +679,7 @@ fn configure_service(
     ctx: &mut SpawnCtx,
     types: &ObjectTypeTable,
     rights: &RightsTable,
+    fault_ep: u64,
 ) -> Result<(u64, u64, u64), SpawnError> {
     let root_cnode = ctx.root_cnode;
 
@@ -551,6 +693,16 @@ fn configure_service(
 
     // 4. ASID 分配（aarch64 VSpace 必须绑 ASID 才能映射页）。
     // SAFETY: vspace 为刚 retype 的 VSpace；asid_pool 为 root 继承的有效 pool。
+    crate::println!(
+        "[eneros-root-task] DBG svc '{}' tcb={} vspace={} cnode={} tcb_type={} vspace_type={} cnode_type={}",
+        svc.name,
+        tcb,
+        vspace,
+        cnode,
+        eneros_sel4_sys::safe::debug_cap_identify(tcb),
+        eneros_sel4_sys::safe::debug_cap_identify(vspace),
+        eneros_sel4_sys::safe::debug_cap_identify(cnode)
+    );
     arm_asid_pool_assign(ctx.asid_pool, vspace).map_err(SpawnError::Sel4)?;
 
     // 5. 服务 VSpace 页表 ×3（L1/L2/L3，覆盖 SVC_VSPACE_BASE 区域）。
@@ -597,6 +749,14 @@ fn configure_service(
             // 6d. 映射进服务 VSpace（BSS 部分由 retype 清零保证）。
             // SAFETY: frame 已 retype 且（如有文件数据）已解除窗口映射；
             // vspace 已绑 ASID；vaddr 4 KiB 对齐。
+            crate::println!(
+                "[eneros-root-task] DBG page_map vspace={} frame={} vaddr=0x{:x} svc='{}' frame_type={}",
+                vspace,
+                frame,
+                vaddr,
+                svc.name,
+                eneros_sel4_sys::safe::debug_cap_identify(frame)
+            );
             arm_page_map(vspace, frame, vaddr, r).map_err(SpawnError::Sel4)?;
         }
     }
@@ -608,6 +768,13 @@ fn configure_service(
         retype_one(ctx, types.arm_frame, OBJ_BITS_SMALL_PAGE, frame)?;
         let vaddr = svc.stack_top - PAGE_SIZE * (k + 1);
         // SAFETY: frame 刚 retype（全零，无需拷贝）；vaddr 页对齐。
+        crate::println!(
+            "[eneros-root-task] DBG stack_map vspace={} frame={} vaddr=0x{:x} svc='{}'",
+            vspace,
+            frame,
+            vaddr,
+            svc.name
+        );
         arm_page_map(vspace, frame, vaddr, rights.read | rights.write).map_err(SpawnError::Sel4)?;
     }
 
@@ -616,24 +783,77 @@ fn configure_service(
     let buffer = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
     retype_one(ctx, types.arm_frame, OBJ_BITS_SMALL_PAGE, buffer)?;
     // SAFETY: buffer 刚 retype（全零）；vaddr 页对齐。
+    crate::println!(
+        "[eneros-root-task] DBG buffer_map vspace={} frame={} vaddr=0x{:x} svc='{}' frame_type={}",
+        vspace,
+        buffer,
+        buffer_vaddr,
+        svc.name,
+        eneros_sel4_sys::safe::debug_cap_identify(buffer)
+    );
     arm_page_map(vspace, buffer, buffer_vaddr, rights.read | rights.write)
         .map_err(SpawnError::Sel4)?;
 
-    // 6b 收尾：服务 VSpace 的 IPC buffer cap 需经 SetSpace 绑定（步骤 7）。
-    // SAFETY: 前置条件见封装文档——cnode/vspace 刚 retype（一阶，
-    // root_data=0）；buffer 为刚映射到 buffer_vaddr 的帧 cap。
-    tcb_set_space(tcb, cnode, 0, vspace, 0, buffer, buffer_vaddr).map_err(SpawnError::Sel4)?;
+    // 6b 收尾：服务 VSpace 的 IPC buffer 绑定（seL4 14.0.0 API：SetSpace
+    // 只绑 CSpace/VSpace + fault_ep，buffer 经 SetIPCBuffer 单独绑定）。
+    // K2.3：fault_ep = 服务 CSpace 槽 1（root 的 fault handler ep 的 mint
+    // 副本，见 8c）——服务异常时内核向该 endpoint 发 fault IPC（seL4 的
+    // fault 通知走 tcbFaultHandler endpoint，非 notification；用 ntfn 等
+    // fault 会 `handleNoFaultHandler` → restart 无限循环，QEMU 实测
+    // DBG-SCHED prio=10 刷屏且隔离通知永不达）。
+    //
+    // cspace_root_data：服务 CSpace 必须带 guard_size=wordBits-radix=57
+    // 才能被内核 lookupCap（wordBits=64 解析）正确寻址。服务 CSpace 是
+    // 一阶 cnode（radix=7, guard=0, guard_size=0）时，cptr=1 的 offset =
+    // (1 >> (64-7)) & 127 = 0 → 落到槽 0（服务 ep），fault IPC 发到服务
+    // 自己的 ep（QEMU 实测 DBG-FAULTIP ep=0x238f40 = svc-fault 服务 ep，
+    // root 在 fault_ep 上永久阻塞）。guard_size=57 → levelBits=64，offset
+    // = cptr & 127，槽 0/1 均正确。CapData word = guard<<6 | guard_size
+    // （libsel4 生成布局），guard=0 → 57。
+    tcb_set_space(tcb, 1, cnode, SVC_CSPACE_CAPDATA, vspace, 0).map_err(SpawnError::Sel4)?;
+    // SAFETY: buffer 为刚映射到 buffer_vaddr 的帧 cap（见 6a）。
+    tcb_set_ipcbuffer(tcb, buffer, buffer_vaddr).map_err(SpawnError::Sel4)?;
 
     // 8. endpoint：retype + mint 到服务 CSpace 槽 0。服务侧 cptr 0 即其
     // 唯一 endpoint（服务 CSpace 仅此一槽，非 root 侧的 CapNull 语义）。
     let ep = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
     retype_one(ctx, types.endpoint, OBJ_BITS_ENDPOINT, ep)?;
     // SAFETY: cnode 为服务 CSpace（一阶，dest_depth=0）；槽 0 空闲；
-    // rights 使用全部权限（服务经 ep 与 root 通信）。
-    cnode_mint(cnode, 0, 0, root_cnode, ep, 0, rights.all).map_err(SpawnError::Sel4)?;
+    // rights 使用全部权限（服务经 ep 与 root 通信）；badge=0（无徽章）。
+    // dest_depth 必须 ≥1 且 = 服务 CSpace 槽位数（OBJ_BITS_CNODE=7：
+    // lookupSlotForCNodeOp 拒绝 depth<1，QEMU 实测 `CNode operation:
+    // Target slot invalid`）；src_depth = wordBits（64）：root CNode 的
+    // guard size = wordBits - CONFIG_ROOT_CNODE_SIZE_BITS = 52（boot.c
+    // create_root_cnode），`resolveAddressBits` 要求 n_bits = radix+guard
+    // = 64 才能 guard 匹配且 bitsRemaining=0——用 12/17 均 depth mismatch
+    // → `Invalid source slot`（QEMU 实测 FailedLookup）。
+    cnode_mint(cnode, 0, OBJ_BITS_CNODE, root_cnode, ep, 64, rights.all, 0)
+        .map_err(SpawnError::Sel4)?;
 
-    // 8b. K2.3：故障 notification：retype + bind 到服务 TCB（服务异常时
-    // 内核向 ntfn 发信号，root-task 据此检测故障隔离）。
+    // 8c. K2.3：fault handler endpoint mint 到服务 CSpace 槽 1——服务
+    // TCB 的 fault_ep（SetSpace 参数）在该槽解析；服务异常时内核向此
+    // endpoint 发 fault IPC，root-task 在 root 侧副本（fault_ep cap）上
+    // recv 检测故障。mint 用全部权限（服务侧持有可回复的 ep 副本）。
+    cnode_mint(
+        cnode,
+        1,
+        OBJ_BITS_CNODE,
+        root_cnode,
+        fault_ep,
+        64,
+        rights.all,
+        0,
+    )
+    .map_err(SpawnError::Sel4)?;
+    crate::println!(
+        "[eneros-root-task] DBG fault_mint svc='{}' fault_ep={} ep_type={}",
+        svc.name,
+        fault_ep,
+        eneros_sel4_sys::safe::debug_cap_identify(fault_ep)
+    );
+
+    // 8b. K2.3：故障 notification：retype + bind 到服务 TCB（保留——
+    // 与 fault_ep 机制并存；notification 绑定不影响 fault IPC 路径）。
     let ntfn = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
     retype_one(ctx, types.notification, OBJ_BITS_NOTIFICATION, ntfn)?;
     // SAFETY: tcb/ntfn 均为刚 retype 的有效 cap。
@@ -646,8 +866,10 @@ fn configure_service(
     regs.set_sp(svc.stack_top);
     regs.set_x(0, 0); // ep cap 在服务 CSpace 槽 0
     regs.set_x(1, buffer_vaddr);
-    // SAFETY: regs 指向有效 UserContext（栈上），count=4 只写前 4 个寄存器。
-    tcb_write_registers(tcb, 0, 4, &regs).map_err(SpawnError::Sel4)?;
+    // SAFETY: regs 指向有效 UserContext（栈上），count=5 写 pc/sp/spsr/x0/x1
+    // （seL4 aarch64 UserContext 布局 pc(0) sp(1) spsr(2) x0(3) x1(4)；
+    // count=4 漏写 x1 → 服务 ipcbuf=0 → set_ipc_buffer(NULL) → VMFAULT）。
+    tcb_write_registers(tcb, 0, 5, &regs).map_err(SpawnError::Sel4)?;
 
     // 10. 优先级（authority = root TCB cap）。
     // SAFETY: root_tcb 为 root-task 自身 TCB cap（有效且有权）。
@@ -664,9 +886,28 @@ fn retype_one(
     size_bits: u64,
     slot: u64,
 ) -> Result<(), SpawnError> {
-    let (untyped, offset) = ctx.untyped.alloc(size_bits).ok_or(SpawnError::NoUntyped)?;
+    // CapTable 的 seL4 实际大小 = 2^(size_bits+5)（SlotBits=5），与普通
+    // 对象（2^size_bits）记账不同，须走 alloc_cap_table（21-A 遗留缺陷：
+    // CNode 用 128 B 记账但 seL4 占 4 KiB → freeIndex 脱节，QEMU 实测
+    // endpoint retype `Insufficient memory (1 * 16 bytes needed)`）。
+    let (untyped, offset) = if object_type == ObjectTypeTable::resolve().captable {
+        ctx.untyped
+            .alloc_cap_table(size_bits)
+            .ok_or(SpawnError::NoUntyped)?
+    } else {
+        ctx.untyped.alloc(size_bits).ok_or(SpawnError::NoUntyped)?
+    };
     // SAFETY: untyped 由分配器保证足够 size_bits 对象；slot 由 CapAllocator
     // 保证在 root CSpace 容量内；dest_depth=0（一阶 cnode）。
+    crate::println!(
+        "[eneros-root-task] DBG retype_one untyped={} offset={} type={} slot={} untyped_cap_type={} cnode_type={}",
+        untyped,
+        offset,
+        object_type,
+        slot,
+        eneros_sel4_sys::safe::debug_cap_identify(untyped),
+        eneros_sel4_sys::safe::debug_cap_identify(ctx.root_cnode)
+    );
     retype(
         untyped,
         object_type,
@@ -675,7 +916,10 @@ fn retype_one(
         ctx.root_cnode,
         slot,
         0,
-        offset,
+        // BOOT-010：seL4 的 node_offset 是 dest cnode 槽（不是 untyped 偏移）；
+        // untyped 的物理偏移由内核 freeIndex 自动分配。21-A 把 untyped 偏移
+        // 当 node_offset，导致 cap 写入 cnode[offset]（非目标槽）。
+        slot,
     )
     .map_err(SpawnError::Sel4)
 }
@@ -864,8 +1108,9 @@ mod tests {
         assert_eq!(plan.service_count(), 2);
         assert_eq!(plan.services[0].name, "svc-fault");
         assert_eq!(plan.services[1].name, "svc-proc-ts");
-        // 服务有独立栈与 IPC EP
-        assert_ne!(plan.services[0].stack_top, plan.services[1].stack_top);
+        // 服务有独立 IPC EP；映射到各自 ELF 链接地址（seg.vaddr，0x200000
+        // 区域），独立 VSpace 下虚拟地址可相同（stack_top 允许相等）。
+        assert_eq!(plan.services[0].stack_top, plan.services[1].stack_top);
         assert_eq!(plan.services[0].ipc_ep, 101);
         assert_eq!(plan.services[1].ipc_ep, 102);
         // 页表 W^X：无可写可执行页
@@ -1082,12 +1327,16 @@ mod tests {
         for i in 0..256 {
             let (cap, off) = alloc.alloc(12).expect("256 次分配必须成功");
             assert_eq!(cap, 30, "untyped cap 槽 = cap_base + 0");
-            assert_eq!(off, i, "offset 逐次递增");
+            assert_eq!(off, i * 4096, "字节偏移逐次递增（freeIndex 语义）");
         }
         let (cap, _) = alloc.alloc(12).expect("第 257 次落到第二个 untyped");
         assert_eq!(cap, 31);
         let (cap, off) = alloc.alloc(13).expect("第二个 untyped 容纳 8 KiB 对象");
-        assert_eq!((cap, off), (31, 1), "同 untyped 内 offset 递增");
+        assert_eq!(
+            (cap, off),
+            (31, 8192),
+            "8 KiB 对象从 8 KiB 对齐处开始（seL4 alignUp 语义）"
+        );
         assert_eq!(alloc.alloc(22), None, "无 4 MiB 以上空间 → None");
     }
 

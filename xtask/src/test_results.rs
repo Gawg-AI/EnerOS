@@ -106,7 +106,9 @@ pub(super) fn command_ci_policy(root: &Path) -> DynResult<()> {
             ));
         }
         if line.contains("--kernel") {
-            violations.push(format!("ci.yml:{line_no}: qemu-kernel-injection (--kernel)" ));
+            violations.push(format!(
+                "ci.yml:{line_no}: qemu-kernel-injection (--kernel)"
+            ));
         }
     }
     for required in [
@@ -147,21 +149,38 @@ pub(super) fn command_ci_policy(root: &Path) -> DynResult<()> {
 /// xtask 子命令 → 首参数（mode）白名单。与 xtask/src/main.rs 的 real_main 分派一致；
 /// 只校验 mode 级合法性，后续参数由命令自身在真实执行时校验。
 /// 末尾的 `None` 表示该子命令不接受 mode（无参数或参数由实现自行解析）。
-fn xtask_command_modes() -> &'static [(&'static str, Option<&'static [&'static str]>, &'static str)] {
+fn xtask_command_modes() -> &'static [(&'static str, Option<&'static [&'static str]>, &'static str)]
+{
     &[
-        ("audit", Some(&["all", "profile", "layout", "toolchain", "trust"]), "audit"),
+        (
+            "audit",
+            Some(&["all", "profile", "layout", "toolchain", "trust"]),
+            "audit",
+        ),
         ("build", Some(&["all"]), "build <profile-id>|all"),
-        ("test", Some(&["unit", "result", "gate-semantics", "ci-policy"]), "test"),
+        (
+            "test",
+            Some(&["unit", "result", "gate-semantics", "ci-policy"]),
+            "test",
+        ),
         (
             "image",
             Some(&["raw", "iso", "recovery", "vars", "update", "qemu-prod"]),
             "image",
         ),
-        ("fault", Some(&["manifest", "bootctrl", "installer", "artifact"]), "fault"),
+        (
+            "fault",
+            Some(&["manifest", "bootctrl", "installer", "artifact"]),
+            "fault",
+        ),
         ("fuzz", None, "fuzz <target> <iterations>"),
         ("build-compare", None, "build-compare"),
         ("audit-unsafe-safety", None, "audit-unsafe-safety"),
-        ("run", Some(&["qemu-prod", "qemu-g3", "qemu-install"]), "run"),
+        (
+            "run",
+            Some(&["qemu-prod", "qemu-g3", "qemu-install"]),
+            "run",
+        ),
         (
             "inspect",
             Some(&["raw", "recovery", "installer", "update"]),
@@ -170,12 +189,32 @@ fn xtask_command_modes() -> &'static [(&'static str, Option<&'static [&'static s
         ("evidence", Some(&["verify", "gate"]), "evidence"),
         (
             "flash",
-            Some(&["list", "verify-inventory", "lab-create", "authorize-file", "write"]),
+            Some(&[
+                "list",
+                "verify-inventory",
+                "lab-create",
+                "authorize-file",
+                "write",
+            ]),
             "flash",
         ),
         (
             "qa",
-            Some(&["boot-reset", "soak", "soak-run", "soak-report", "interop-report", "kat-report", "compliance-report", "g7-audit", "perf-baseline", "perf-gate", "trace", "proof", "validation"]),
+            Some(&[
+                "boot-reset",
+                "soak",
+                "soak-run",
+                "soak-report",
+                "interop-report",
+                "kat-report",
+                "compliance-report",
+                "g7-audit",
+                "perf-baseline",
+                "perf-gate",
+                "trace",
+                "proof",
+                "validation",
+            ]),
             "qa",
         ),
         ("release", Some(&["sbom", "verify-sbom"]), "release"),
@@ -205,7 +244,9 @@ fn validate_xtask_steps(workflow: &str) -> Vec<String> {
         };
         let schema = xtask_command_modes();
         let Some((_, modes, usage)) = schema.iter().find(|(name, _, _)| *name == command) else {
-            violations.push(format!("ci.yml:{line_no}: unknown xtask command '{command}'"));
+            violations.push(format!(
+                "ci.yml:{line_no}: unknown xtask command '{command}'"
+            ));
             continue;
         };
         let mode = tokens.next();
@@ -223,9 +264,7 @@ fn validate_xtask_steps(workflow: &str) -> Vec<String> {
                 // 无固定 mode 的子命令：校验至少存在一个参数
                 // （fuzz/symbolize；build-compare 与 audit-unsafe-safety
                 // 为无参数命令，豁免）。
-                if mode.is_none()
-                    && command != "build-compare"
-                    && command != "audit-unsafe-safety"
+                if mode.is_none() && command != "build-compare" && command != "audit-unsafe-safety"
                 {
                     violations.push(format!(
                         "ci.yml:{line_no}: xtask {command} requires arguments (usage: {usage})"
@@ -237,7 +276,8 @@ fn validate_xtask_steps(workflow: &str) -> Vec<String> {
     violations
 }
 
-fn validate_suite(suite: &TestSuite) -> ValidationReport {    let mut violations = Vec::new();
+fn validate_suite(suite: &TestSuite) -> ValidationReport {
+    let mut violations = Vec::new();
     if suite.schema != "eneros.test-result.v1" {
         violations.push("schema".to_owned());
     }
@@ -365,9 +405,7 @@ mod tests {
         );
         let missing_mode = validate_xtask_steps("run: cargo xtask image\n");
         assert!(
-            missing_mode
-                .iter()
-                .any(|v| v.contains("requires a mode")),
+            missing_mode.iter().any(|v| v.contains("requires a mode")),
             "violations: {missing_mode:?}"
         );
     }
@@ -384,7 +422,8 @@ mod tests {
     fn kernel_injection_allows_only_sel4_white_list() {
         // `-kernel target/sel4/`（seL4 elfloader 官方验证，ADR-0023）放行；
         // 其他 `-kernel` / `--kernel`（绕过 UEFI 启动链注入自研内核）拒绝。
-        let allowed = "run: qemu-system-aarch64 -kernel target/sel4/eneros-root-image-arm-qemu-arm-virt\n";
+        let allowed =
+            "run: qemu-system-aarch64 -kernel target/sel4/eneros-root-image-arm-qemu-arm-virt\n";
         assert!(!allowed.contains("-kernel ") || allowed.contains("-kernel target/sel4/"));
         let blocked = "run: qemu-system-aarch64 -kernel foo.elf\n";
         assert!(blocked.contains("-kernel ") && !blocked.contains("-kernel target/sel4/"));

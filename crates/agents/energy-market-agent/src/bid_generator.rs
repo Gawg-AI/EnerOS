@@ -385,9 +385,10 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use eneros_market_types::MarketType;
+
     use super::*;
     use crate::market_feed::{DrSignal, PricePoint};
-    use eneros_market_types::MarketType;
 
     /// 辅助：默认报价策略（margin=0.1 / max=5.0 / threshold=0.2）.
     fn make_strategy() -> BidStrategy {

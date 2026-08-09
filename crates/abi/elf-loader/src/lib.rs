@@ -1,9 +1,12 @@
-//! ELF64 PIE loader（共享 no_std crate，KRN-002）。
+//! ELF64 loader（共享 no_std crate，KRN-002）。
 //!
 //! 由 agent（AGT-003 包装载）与 EnerOS root-task（EL0 服务装载，KRN-002/003）
 //! 共用：解析 ELF header、遍历 program headers、提取 PT_LOAD 段，并强制：
 //! - ELF64 + AArch64（拒绝 ELF32 / 非 AArch64）；
-//! - PIE（ET_DYN）；
+//! - 可执行格式：ET_DYN（PIE，agent 场景）或 ET_EXEC（固定地址，
+//!   aarch64-unknown-none 裸机 EL0 服务与 rootserver——C2/BOOT-007 修复后
+//!   root-task 经 plan_spawn 解析自身 ET_EXEC ELF，原 PIE-only 校验导致
+//!   BadElf）；
 //! - W^X（禁止可写且可执行段）；
 //! - 有界（所有 offset/size 相对输入缓冲校验）；
 //! - 不跨二进制的 Rust ABI（返回 LoadedElf 段描述符，而非 trait 对象）。
@@ -17,7 +20,6 @@ extern crate alloc;
 
 #[cfg(test)]
 use alloc::vec;
-
 use alloc::vec::Vec;
 use core::convert::TryInto;
 
@@ -36,6 +38,9 @@ pub const ELFDATA2LSB: u8 = 1;
 
 /// ELF type: 3 = ET_DYN (shared object / PIE)
 pub const ET_DYN: u16 = 3;
+
+/// ELF type: 2 = ET_EXEC (fixed-address executable, bare-metal EL0)
+pub const ET_EXEC: u16 = 2;
 
 /// ELF machine: 183 = EM_AARCH64
 pub const EM_AARCH64: u16 = 183;
@@ -191,7 +196,7 @@ impl LoadedElf {
         let e_phentsize = u16::from_le_bytes(data[54..56].try_into().unwrap());
         let e_phnum = u16::from_le_bytes(data[56..58].try_into().unwrap());
 
-        if e_type != ET_DYN {
+        if e_type != ET_DYN && e_type != ET_EXEC {
             return Err(ElfError::NotPie);
         }
         if e_machine != EM_AARCH64 {
@@ -407,9 +412,18 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_not_pie() {
+    fn test_accept_et_exec() {
+        // ET_EXEC（固定地址裸机 EL0/rootserver，C2/BOOT-007）必须被接受。
         let mut elf_data = build_minimal_elf();
         elf_data[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+        assert!(LoadedElf::parse(&elf_data).is_ok());
+    }
+
+    #[test]
+    fn test_reject_et_rel() {
+        // ET_REL（可重定位目标文件，无固定段）仍必须拒绝。
+        let mut elf_data = build_minimal_elf();
+        elf_data[16..18].copy_from_slice(&1u16.to_le_bytes()); // ET_REL
         assert_eq!(LoadedElf::parse(&elf_data).unwrap_err(), ElfError::NotPie);
     }
 

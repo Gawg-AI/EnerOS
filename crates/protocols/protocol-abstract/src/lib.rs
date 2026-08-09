@@ -71,13 +71,12 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use crate::access::PointAccessExt;
-
     use eneros_upa_model::{
         DataPoint, DataSource, DeviceId, PointId, PointQuality, PointType, PointValue,
     };
 
     use crate::access::PointAccess;
+    use crate::access::PointAccessExt;
     use crate::adapter::{AdapterState, ProtocolAdapter};
     use crate::address::ProtocolAddress;
     use crate::config::{AdapterConfig, DeviceConfig, ProtocolType};

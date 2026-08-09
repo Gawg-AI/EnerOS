@@ -2,10 +2,11 @@
 //!
 //! 定义结算 trait 及自动结算实现。
 
-use crate::types::{MilliYuan, Settlement, TradeContext};
-use crate::TradeError;
 #[cfg(test)]
 use eneros_market_types::YuanPerKwh;
+
+use crate::types::{MilliYuan, Settlement, TradeContext};
+use crate::TradeError;
 
 /// 结算触发器 trait
 ///

@@ -95,8 +95,9 @@ impl<T: Agent> AgentRuntime for AgentRuntimeAdapter<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use eneros_agent_sdk::{AgentDescriptor as SdkDescriptor, AgentError as SdkError, Context};
+
+    use super::*;
 
     struct MockSdkAgent {
         ticks: u32,

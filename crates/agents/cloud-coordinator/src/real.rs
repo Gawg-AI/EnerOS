@@ -14,13 +14,13 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use eneros_coordinator::EdgeBoxState;
 use eneros_fs::fs_trait::FileSystem;
 
 use crate::aggregator::{AggError, DataSink, DataSource, DomainData};
 use crate::channel::{CloudChannel, CloudError};
 use crate::strategy::EdgeAck;
 use crate::strategy::Strategy;
-use eneros_coordinator::EdgeBoxState;
 
 /// 真实数据存储：经 fs 落盘（每帧一行紧凑格式，重启可读）。
 pub struct FsDataSink<F> {
@@ -165,8 +165,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::collections::BTreeMap;
+
+    use super::*;
 
     fn domain_data(now_ms: u64) -> DomainData {
         let mut metrics = BTreeMap::new();

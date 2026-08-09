@@ -15,8 +15,9 @@
 extern crate std;
 
 use core::alloc::Layout;
-use loom::sync::atomic::{AtomicUsize, Ordering};
 use std::vec::Vec;
+
+use loom::sync::atomic::{AtomicUsize, Ordering};
 
 /// 与生产 `BumpAllocator` 同构的 loom 复刻（UnsafeCell 堆 + CAS offset）。
 struct LoomBumpAllocator {

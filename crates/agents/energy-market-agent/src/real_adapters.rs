@@ -15,7 +15,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::market_feed::YuanPerKwh;
 use eneros_market_types::TradeDir;
 use eneros_solver_core::solver::Solver;
 
@@ -23,6 +22,7 @@ use crate::bid_generator::{
     BidError, BidIntent, BidIntentSource, BidOptimization, BidOptimizer, BidPublisher, ResourceBid,
 };
 use crate::market_feed::MarketFeed;
+use crate::market_feed::YuanPerKwh;
 
 /// 规则意图源：电价与 SOC 驱动的报价意图。
 ///
@@ -199,11 +199,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::market_feed::PricePoint;
     use eneros_market_types::{Bid, BidSegment, MarketType, TimeSlot, YuanPerKwh};
     use eneros_solver_core::problem::LpProblem;
     use eneros_solver_core::result::SolveResult;
+
+    use super::*;
+    use crate::market_feed::PricePoint;
 
     fn feed_with_price(price: f64) -> MarketFeed {
         MarketFeed {

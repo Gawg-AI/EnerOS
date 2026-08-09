@@ -16,6 +16,8 @@ pub use eneros_ipc_wire::mr::{
 
 extern crate alloc;
 
+use alloc::string::ToString;
+
 /// 服务调度结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchAction {
@@ -162,13 +164,24 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
             .ok_or_else(|| alloc::format!("{name} not spawned"))
     };
     let hello = match by_name("svc-hello") {
-        Ok(h) => *h,
+        Ok(h) => h.clone(),
         Err(e) => ipc_fail_closed("lookup svc-hello", e),
     };
+    eneros_runtime::println!(
+        "[eneros-root-task] DBG hello.ep={} hello.tcb={} ep_type={}",
+        hello.ep,
+        hello.tcb,
+        eneros_sel4_sys::safe::debug_cap_identify(hello.ep)
+    );
     let fault = match by_name("svc-fault") {
-        Ok(h) => *h,
+        Ok(h) => h.clone(),
         Err(e) => ipc_fail_closed("lookup svc-fault", e),
     };
+    eneros_runtime::println!(
+        "[eneros-root-task] DBG fault.ep={} fault.ntfn={}",
+        fault.ep,
+        fault.ntfn
+    );
 
     // 故障注入只执行一次（svc-fault 触发真实异常后挂起，不再接收消息；
     // 重复 send 会永久阻塞——seL4_Send 是同步原语）。
@@ -201,9 +214,13 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
 
             // 3. 等 svc-fault 故障通知（服务异常 → 内核挂起 TCB → 通知到达）。
             let mut sender = 0u64;
+            eneros_runtime::println!("[eneros-root-task] DBG recv fault ntfn={}", fault.ntfn);
             match ipc_recv(fault.ntfn, Some(&mut sender)) {
-                Ok(_) => {
-                    eneros_runtime::println!("[eneros-root-task] svc-fault suspended (isolated)");
+                Ok(mi) => {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] svc-fault suspended (isolated) mi_label={}",
+                        eneros_sel4_sys::types::message_info_label(mi)
+                    );
                 }
                 Err(e) => ipc_fail_closed("recv fault ntfn", e),
             }
@@ -242,6 +259,8 @@ fn hello_roundtrip(ep: u64) -> Result<alloc::vec::Vec<u8>, eneros_sel4_sys::safe
     }
     let mi = message_info_new(El0FrameType::Report as u64, 0, 0, mrs.len() as u64)?;
     eneros_runtime::println!("[eneros-root-task] IPC: send hello-req to svc-hello");
+    // 阻塞 call 前让出 CPU：服务（优先级 10）有机会先运行并 recv。
+    eneros_sel4_sys::safe::yield_cpu();
     let reply = ipc_call(ep, mi)?;
     let words = message_info_length(reply);
     let mut mr_buf = alloc::vec::Vec::with_capacity(words as usize);
@@ -269,8 +288,9 @@ fn send_frame(ep: u64, frame: &[u8]) -> Result<(), eneros_sel4_sys::safe::Sel4Er
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use eneros_ipc_wire::el0::{encode_frame, El0FrameType};
+
+    use super::*;
 
     const REGISTERED: &[&str] = &["svc-hello", "svc-pi", "svc-hog", "svc-fault"];
 

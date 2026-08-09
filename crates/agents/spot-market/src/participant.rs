@@ -121,10 +121,11 @@ impl SpotMarketParticipant for MockParticipant {
 
 #[cfg(test)]
 mod tests {
+    use eneros_market_types::YuanPerKwh;
+
     use super::*;
     use crate::bid::BidBuilder;
     use crate::types::{ClearedSegment, MarketType, SpotMarketType, TimeSlot, TradeDir};
-    use eneros_market_types::YuanPerKwh;
 
     fn make_bid(id: u64) -> Bid {
         BidBuilder::new(id, SpotMarketType::DayAhead, 1)

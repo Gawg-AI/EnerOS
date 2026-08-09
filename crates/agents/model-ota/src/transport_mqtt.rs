@@ -353,8 +353,9 @@ where
 // ============================================================================
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+
+    use super::*;
 
     /// 内存 broker：收到帧 → 按帧类型应答（CONNACK/SUBACK/PUBLISH）。
     #[allow(dead_code)]
@@ -438,9 +439,10 @@ mod tests {
     /// `OtaClient::update_once` 验签失败 → 热加载器不落盘（current 不变）。
     #[test]
     fn test_update_once_rejects_tampered_payload_no_landing() {
+        use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair};
+
         use crate::model_loader::{HotLoader, ModelInstance};
         use crate::ota_client::OtaClient;
-        use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair};
 
         let mut rng = CsRng::from_seed(&[7u8; 32]);
         let kp = Sm2KeyPair::generate(&mut rng).unwrap();

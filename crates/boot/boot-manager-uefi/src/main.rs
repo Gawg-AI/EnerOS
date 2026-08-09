@@ -225,23 +225,32 @@ fn parse_fdt_header(header: &[u8]) -> Option<u32> {
 /// 返回 `(物理地址, 长度)`；长度从 FDT 头部的 `totalsize` 字段读取。
 /// 未找到或 DTB 无效时返回 `None`。
 fn locate_device_tree() -> Option<(u64, u64)> {
-    // UEFI 规范：Linux 设备树配置表 GUID。
-    const DEVICE_TREE_GUID: uefi::Guid = uefi::guid!("b1b621d5-f19c-41a5-830b-d9152c69aabe");
-    for entry in uefi::system::config_table() {
-        if entry.guid != DEVICE_TREE_GUID {
-            continue;
+    // BOOT-001：从 UEFI 配置表定位设备树。
+    // 注意：edk2/AAVMF 固件注册的 FDT 配置表 GUID 是 gFdtTableGuid
+    // （b1b621d5-f19c-41a5-830b-d9152c69aae0，MdePkg.dec），与 Linux
+    // 内核使用的 FDT GUID（...aabe）不同——以固件实际注册值为准。
+    const DEVICE_TREE_GUID: uefi::Guid = uefi::guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
+    uefi::system::with_config_table(|entries| {
+        println!("ENEROS stage=config-table-entries count={}", entries.len());
+        for entry in entries {
+            println!("ENEROS stage=config-table-entry guid={}", entry.guid);
         }
-        let ptr = entry.address as *const u8;
-        if ptr.is_null() {
-            return None;
+        for entry in entries {
+            if entry.guid != DEVICE_TREE_GUID {
+                continue;
+            }
+            let ptr = entry.address as *const u8;
+            if ptr.is_null() {
+                return None;
+            }
+            // SAFETY: `entry.address` 来自 UEFI 配置表项，指向有效的 FDT 内存；
+            // 先读 8 字节头（`magic`/`totalsize`），长度校验在 `parse_fdt_header` 内完成。
+            let header = unsafe { core::slice::from_raw_parts(ptr, 8) };
+            let totalsize = parse_fdt_header(header)?;
+            return Some((entry.address as u64, totalsize as u64));
         }
-        // SAFETY: `entry.address` 来自 UEFI 配置表项，指向有效的 FDT 内存；
-        // 先读 8 字节头（`magic`/`totalsize`），长度校验在 `parse_fdt_header` 内完成。
-        let header = unsafe { core::slice::from_raw_parts(ptr, 8) };
-        let totalsize = parse_fdt_header(header)?;
-        return Some((entry.address as u64, totalsize as u64));
-    }
-    None
+        None
+    })
 }
 
 #[entry]
@@ -366,8 +375,12 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
             kernel_payload,
             init_payload,
         } = verified;
-        install_component(&kernel, &kernel_payload)?;
-        install_component(&init, &init_payload)?;
+        // BOOT-002：kernel（elfloader）必须用 LOADER_CODE 分配——UEFI 对
+        // LOADER_DATA 页设置 NX（不可执行），跳转进入会触发指令预取异常
+        // （QEMU 实测 "Synchronous Exception at 0x41000000"）；LOADER_CODE
+        // 保留可执行属性。init bundle 为纯数据，维持 LOADER_DATA。
+        install_component(&kernel, &kernel_payload, MemoryType::LOADER_CODE)?;
+        install_component(&init, &init_payload, MemoryType::LOADER_DATA)?;
         drop(kernel_payload);
         drop(init_payload);
 
@@ -741,14 +754,18 @@ fn read_verified_component<D: BlockDevice>(
     Ok(payload)
 }
 
-fn install_component(component: &Component, payload: &[u8]) -> Result<(), BootFailure> {
+fn install_component(
+    component: &Component,
+    payload: &[u8],
+    memory_type: MemoryType,
+) -> Result<(), BootFailure> {
     verify_component(component, payload).map_err(BootFailure::Manifest)?;
     let memory_length =
         usize::try_from(component.memory_length).map_err(|_| BootFailure::Allocation)?;
     let pages = pages_for(memory_length)?;
     let allocation = boot::allocate_pages(
         AllocateType::Address(component.load_address),
-        MemoryType::LOADER_DATA,
+        memory_type,
         pages,
     )
     .map_err(|_| BootFailure::Allocation)?;

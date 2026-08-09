@@ -581,8 +581,9 @@ impl<M: Sja1000Mmio> CanController for Sja1000Controller<M> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use core::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
 
     // ---- 模拟 MMIO（回环模块：寄存到内存，模拟芯片行为） ----
 
@@ -906,9 +907,10 @@ mod tests {
 
     #[test]
     fn test_driver_with_sja1000_loopback() {
+        use eneros_driver_framework::{DeviceDriver, DriverId};
+
         use crate::config::{CanConfig, CanControllerType};
         use crate::driver::CanDriver;
-        use eneros_driver_framework::{DeviceDriver, DriverId};
 
         let sim = SimRegs::new();
         let ctrl = Sja1000Controller::new(sim, DEFAULT_CLOCK_HZ, test_now);

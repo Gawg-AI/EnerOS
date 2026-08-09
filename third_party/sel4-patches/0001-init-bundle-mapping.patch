@@ -1,0 +1,66 @@
+--- src/arch/arm/kernel/boot.c	2025-11-25 06:33:58.000000000 +0800
++++ src/arch/arm/kernel/boot.c	2026-08-08 21:02:04.631566720 +0800
+@@ -550,6 +550,42 @@
+     }
+     ndks_boot.bi_frame->userImageFrames = create_frames_ret.region;
+ 
++    /* EnerOS C2 (BOOT-007): 把 init bundle 区域映射进初始线程 VSpace。
++     *
++     * boot-manager 把 init bundle 预加载到 ENEROS_INIT_BUNDLE_PHYS，该区域
++     * 已被 DTB /reserved-memory 从可用内存排除（不生成 untyped、不清零）。
++     * 这里显式创建页表链（PUD/PD/PT，1:1 映射）并逐 4 KiB 页映射 frame cap，
++     * root-task 直接读物理地址即可访问 bundle。页表内存已在
++     * arch_get_n_paging（arm64 vspace.c）中预留 3 个。 */
++    {
++        /* 2 MiB 窗口：覆盖 133 KiB init bundle（xtask INIT_LOAD_ADDRESS）*/
++        const paddr_t ENEROS_INIT_BUNDLE_PHYS = 0x42000000UL;
++        const paddr_t ENEROS_INIT_BUNDLE_SIZE = 0x200000UL;
++        vptr_t bv = (vptr_t)ENEROS_INIT_BUNDLE_PHYS; /* 1:1（物理==虚拟）*/
++        /* PUD 槽（512 GiB 粒度）已由 create_it_address_space 为 it_v_reg
++         * 创建（0x42000000 落在 PGD 槽 0 / PUD 槽 0）。此处只需创建
++         * PD（1 GiB 粒度槽 1）与 PT（2 MiB 粒度槽 1）；若重复创建 PUD
++         * 会覆盖 PGD 槽 0 的既有页表（0x212c40 等 root-task 代码区的
++         * 页表链被破坏 → prefetch abort，C2 迭代修复）。 */
++        cap_t b_pd  = create_it_pd_cap(it_pd_cap, it_alloc_paging(), bv, IT_ASID);
++        cap_t b_pt  = create_it_pt_cap(it_pd_cap, it_alloc_paging(), bv, IT_ASID);
++        (void)b_pd; (void)b_pt;
++        word_t f;
++        for (f = (word_t)paddr_to_pptr(ENEROS_INIT_BUNDLE_PHYS);
++             f < (word_t)paddr_to_pptr(ENEROS_INIT_BUNDLE_PHYS + ENEROS_INIT_BUNDLE_SIZE);
++             f += BIT(PAGE_BITS)) {
++            cap_t fc = create_mapped_it_frame_cap(
++                it_pd_cap, f, pptr_to_paddr((void *)f), IT_ASID, false, false);
++            if (!provide_cap(root_cnode_cap, fc)) {
++                printf("ERROR: could not provide init bundle frame cap\n");
++                return false;
++            }
++        }
++        printf("EnerOS: init bundle mapped [0x%lx..0x%lx) for initial thread\n",
++               (unsigned long)ENEROS_INIT_BUNDLE_PHYS,
++               (unsigned long)(ENEROS_INIT_BUNDLE_PHYS + ENEROS_INIT_BUNDLE_SIZE));
++    }
++
+     /* create/initialise the initial thread's ASID pool */
+     it_ap_cap = create_it_asid_pool(root_cnode_cap);
+     if (cap_get_capType(it_ap_cap) == cap_null_cap) {
+--- src/arch/arm/64/kernel/vspace.c	2025-11-25 06:33:58.000000000 +0800
++++ src/arch/arm/64/kernel/vspace.c	2026-08-08 21:02:04.644015229 +0800
+@@ -465,12 +465,17 @@
+ #endif /* AARCH64_VSPACE_S2_START_L1 */
+ BOOT_CODE word_t arch_get_n_paging(v_region_t it_v_reg)
+ {
+-    return
++    word_t n =
+ #ifndef AARCH64_VSPACE_S2_START_L1
+         get_n_paging(it_v_reg, GET_ULVL_PGSIZE_BITS(ULVL_FRM_ARM_PT_LVL(0))) +
+ #endif
+         get_n_paging(it_v_reg, GET_ULVL_PGSIZE_BITS(ULVL_FRM_ARM_PT_LVL(1))) +
+         get_n_paging(it_v_reg, GET_ULVL_PGSIZE_BITS(ULVL_FRM_ARM_PT_LVL(2)));
++    /* EnerOS C2 (BOOT-007): init bundle 区域（0x42000000，2 MiB）由
++     * kernel/boot.c 显式映射进初始线程 VSpace，需额外 PD+PT 两个页表
++     * （PUD 槽已由 it_v_reg 页表链覆盖，勿重复创建）。 */
++    n += 2;
++    return n;
+ }
+ 
+ BOOT_CODE cap_t create_it_address_space(cap_t root_cnode_cap, v_region_t it_v_reg)

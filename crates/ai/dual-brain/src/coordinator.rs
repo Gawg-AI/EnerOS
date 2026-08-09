@@ -20,15 +20,15 @@ use eneros_intent_contract::contract::{
 use eneros_intent_contract::converter::ContractConverter;
 use eneros_intent_contract::validator::ContractValidator;
 use eneros_intent_parser::parser::IntentParser;
-use eneros_llm_engine::engine::LlmEngine;
-use eneros_llm_engine::params::InferParams;
 // 以下类型仅 mock 引擎（cfg(any(test, feature="mock"))）使用。
 #[cfg(any(test, feature = "mock"))]
 use eneros_llm_engine::device::ComputeDevice;
+use eneros_llm_engine::engine::LlmEngine;
 #[cfg(any(test, feature = "mock"))]
 use eneros_llm_engine::error::LlmError;
 #[cfg(any(test, feature = "mock"))]
 use eneros_llm_engine::model::{ModelInfo, Quantization};
+use eneros_llm_engine::params::InferParams;
 #[cfg(any(test, feature = "mock"))]
 use eneros_llm_engine::stats::{EngineHealth, EngineStats};
 use eneros_prompt_template::context::TemplateContext;
