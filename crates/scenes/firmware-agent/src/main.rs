@@ -12,16 +12,16 @@ use eneros_account::{create_entry, AccountStore, FlowDir};
 use eneros_device_agent::MockPointDevice;
 use eneros_device_agent::{DeviceRegistry, DeviceType};
 use eneros_market_types::{MilliYuan, TimeSlot, TradeDir, YuanPerKwh};
-use eneros_protocol_abstract::PointAccess;
+use eneros_protocol_abstract::{PointAccess, PointAccessWriter};
 use eneros_settlement::{ClearingEngine, ClearingJob};
 
 fn main() {
     // 1. 设备注册 + 点轮询（PointAccess 统一抽象）
     let mut registry = DeviceRegistry::new();
     #[cfg(feature = "mock")]
-    let mut adapter: Box<dyn PointAccess> = Box::new(MockPointDevice::new(3));
+    let mut adapter: Box<dyn PointAccessWriter> = Box::new(MockPointDevice::new(3));
     #[cfg(not(feature = "mock"))]
-    let mut adapter: Box<dyn PointAccess> = {
+    let mut adapter: Box<dyn PointAccessWriter> = {
         // 真实固件闭包（蓝图/20 R2-1 + R2-7）：无真实设备驱动时 fail-closed
         // 拒绝启动——VRF-002 双构建字节比对验证的是闭包确定性。
         eprintln!("firmware-agent: no real device adapter injected (R2-1)");
@@ -31,6 +31,7 @@ fn main() {
     registry.register(
         "battery-01",
         DeviceType::Battery,
+        3,
         adapter,
         Default::default(),
     );
@@ -82,6 +83,7 @@ mod tests {
         registry.register(
             "battery-01",
             DeviceType::Battery,
+            3,
             Box::new(MockPointDevice::new(3)),
             Default::default(),
         );

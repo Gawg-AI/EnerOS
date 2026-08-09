@@ -54,7 +54,9 @@ pub mod mapping;
 pub mod mock;
 
 // 重导出公共 API
-pub use access::{AuthorizedWriter, PointAccess, PointAccessExt, WriteError, WriteOutcome};
+pub use access::{
+    AuthorizedWriter, PointAccess, PointAccessExt, PointAccessWriter, WriteError, WriteOutcome,
+};
 pub use adapter::{AdapterState, ProtocolAdapter};
 pub use address::ProtocolAddress;
 pub use config::{AdapterConfig, DeviceConfig, ProtocolType};

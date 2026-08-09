@@ -1,0 +1,14 @@
+# 蓝图/24 §6.7 控制写配置（control-write）
+# HMAC 密钥不在本文件（§2.6：只经装配层注入，不落明文、不进镜像）。
+
+[control_write]
+# 本地预置租约 ID：16 字节 hex，两侧同源（device-agent 复验 / AI runner 签发），
+# 产线烧录（batch_config）。不得动态生成——两侧必须同源（D7）。
+lease_id = "33112233445566778899aabbccddeeff"
+
+# 旧匿名输入过渡期策略：唯一合法值 "deny-and-log"（收到不执行、记指标+审计）。
+# 删除闸门（§6.5：WP-24.5 后一版本）到期后移除本键。
+legacy_input = "deny-and-log"
+
+# 启动握手客户端有界重试次数（≤5；失败 fail-closed 报 Offline，§6.3）。
+handshake_retries = 5

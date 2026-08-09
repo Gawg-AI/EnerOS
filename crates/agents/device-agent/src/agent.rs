@@ -15,7 +15,10 @@ use eneros_upa_model::{DataPoint, PointId, PointValue};
 use crate::command::CommandSource;
 #[cfg(any(test, feature = "mock"))]
 use crate::command::MockCommandSource;
-use crate::device_type::{DeviceSnapshot, DeviceState, DeviceType};
+#[cfg(any(test, feature = "mock"))]
+use crate::device_type::DeviceType;
+use crate::device_type::{DeviceSnapshot, DeviceState};
+use crate::ingress::{EnvelopeIngress, IngressOutcome};
 use crate::registry::DeviceRegistry;
 #[cfg(any(test, feature = "mock"))]
 use crate::registry::MockPointDevice;
@@ -37,9 +40,10 @@ pub struct DeviceAgent {
     pub state: AgentState,
     /// tick 计数.
     pub tick_count: u64,
-    /// 旧匿名命令拒绝计数（蓝图/24 §6.2 双轨：收到不执行，仅留痕；
-    /// WP-24.3 接入 `eneros_write_denied_legacy_total` 指标）。
+    /// 旧匿名命令拒绝计数（蓝图/24 §6.2 双轨：收到不执行，仅留痕）。
     pub legacy_denied: u64,
+    /// 信封输入收口点（蓝图/24 §6.2：唯一写裁决收口）。
+    pub ingress: EnvelopeIngress,
 }
 
 impl DeviceAgent {
@@ -48,6 +52,38 @@ impl DeviceAgent {
     /// `descriptor = AgentDescriptor::new(AgentType::Device, name, now_ms)`。
     /// `devices` 为空注册表，由调用方通过 `registry_mut()` 注册设备。
     pub fn new(name: &str, command_source: Box<dyn CommandSource>, now_ms: u64) -> Self {
+        Self::new_with_ingress(
+            name,
+            command_source,
+            now_ms,
+            // 默认收口点：空策略/空安全点/零密钥 → 一切命令 default-deny
+            // （fail-closed）；生产装配必须使用 EnvelopeIngress::new 注入。
+            EnvelopeIngress::new(
+                b"",
+                [0u8; 16],
+                eneros_control_gateway::lease::LeaseScope {
+                    devices: alloc::vec::Vec::new(),
+                    points: alloc::vec::Vec::new(),
+                    max_class: 0,
+                },
+                0,
+                0,
+                eneros_control_gateway::policy::Policy::new(1),
+                60,
+                &[],
+                now_ms,
+            ),
+        )
+    }
+
+    /// 构造设备 Agent 并注入信封收口点（蓝图/24 §7.4 装配检查点：
+    /// HMAC 密钥/lease_id/重启计数经装配层传入 EnvelopeIngress::new）。
+    pub fn new_with_ingress(
+        name: &str,
+        command_source: Box<dyn CommandSource>,
+        now_ms: u64,
+        ingress: EnvelopeIngress,
+    ) -> Self {
         Self {
             descriptor: AgentDescriptor::new(AgentType::Device, name, now_ms),
             devices: DeviceRegistry::new(),
@@ -56,6 +92,7 @@ impl DeviceAgent {
             state: AgentState::Created,
             tick_count: 0,
             legacy_denied: 0,
+            ingress,
         }
     }
 
@@ -78,7 +115,7 @@ impl DeviceAgent {
                     pm.insert(String::from(n), id);
                 }
             }
-            devices.register("pcs", DeviceType::Pcs, Box::new(dev), pm);
+            devices.register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm);
         }
         // Battery：电池
         {
@@ -94,7 +131,7 @@ impl DeviceAgent {
                     pm.insert(String::from(n), id);
                 }
             }
-            devices.register("battery", DeviceType::Battery, Box::new(dev), pm);
+            devices.register("battery", DeviceType::Battery, 2, Box::new(dev), pm);
         }
         // Meter：电表
         {
@@ -108,17 +145,36 @@ impl DeviceAgent {
                     pm.insert(String::from(n), id);
                 }
             }
-            devices.register("meter", DeviceType::Meter, Box::new(dev), pm);
+            devices.register("meter", DeviceType::Meter, 3, Box::new(dev), pm);
         }
-        Self {
-            descriptor: AgentDescriptor::new(AgentType::Device, "device-agent", now_ms),
-            devices,
-            command_source: Box::new(MockCommandSource::new()),
-            last_snapshot: DeviceSnapshot::new(),
-            state: AgentState::Created,
-            tick_count: 0,
-            legacy_denied: 0,
-        }
+        Self::new_with_ingress(
+            "device-agent",
+            Box::new(MockCommandSource::new()),
+            now_ms,
+            EnvelopeIngress::new(
+                b"",
+                [0u8; 16],
+                eneros_control_gateway::lease::LeaseScope {
+                    devices: alloc::vec::Vec::new(),
+                    points: alloc::vec::Vec::new(),
+                    max_class: 0,
+                },
+                0,
+                0,
+                eneros_control_gateway::policy::Policy::new(1),
+                60,
+                &[],
+                now_ms,
+            ),
+        )
+        .with_devices(devices)
+    }
+
+    /// 装配辅助：注入预注册设备（new_default 用）。
+    #[cfg(any(test, feature = "mock"))]
+    fn with_devices(mut self, devices: DeviceRegistry) -> Self {
+        self.devices = devices;
+        self
     }
 
     /// 获取设备注册表可变引用（供测试注册设备）.
@@ -199,12 +255,22 @@ impl DeviceAgent {
     /// TODO(WP-24.3)：此处接信封输入状态机（帧解码 → ControlChain 复验 →
     /// device_id 路由 → point_id 匹配 → `write_authorized`）；`legacy_denied`
     /// 改为 `eneros_write_denied_legacy_total` 指标 + 审计事件（§6.6）。
-    fn execute_commands(&mut self, _now_ms: u64) -> Result<(), AgentRuntimeError> {
+    fn execute_commands(&mut self, now_ms: u64) -> Result<(), AgentRuntimeError> {
         while let Some(_cmd) = self.command_source.try_read() {
-            // 双轨：匿名命令不执行，仅留痕计数（WP-24.3 接入指标/审计）。
+            // 双轨（§6.2/D12）：匿名命令收到不执行，记 write_denied_legacy
+            // 指标 + 审计 + 本地计数。
             self.legacy_denied += 1;
+            self.ingress.record_legacy_denied(now_ms);
         }
         Ok(())
+    }
+
+    /// 处理一帧信封投递（EIPC 载荷 → 复验 → 路由 → 落写；§6.2 状态机）。
+    ///
+    /// 返回外部可观察结果（Applied/IdempotentHit/DryRun/Denied），
+    /// 全部失败路径已有指标 + 审计，不 panic。
+    pub fn process_envelope(&mut self, payload: &[u8], now_ms: u64) -> IngressOutcome {
+        self.ingress.process(&mut self.devices, payload, now_ms)
     }
 }
 

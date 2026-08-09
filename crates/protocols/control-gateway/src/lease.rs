@@ -71,6 +71,20 @@ impl LeaseService {
         }
     }
 
+    /// 以平台重启计数为种子设定 fencing epoch（蓝图/24 D7：跨重启单调，
+    /// 重启不能洗白旧命令；种子必须来自单调重启计数而非墙钟）。
+    ///
+    /// 仅允许在**签发任何租约之前**的启动期调用；事后调用会破坏已签发
+    /// token 的单调性（调用方违反时行为未定义，本服务不校验）。
+    pub fn seed_epoch(&mut self, seed: u64) {
+        self.epoch = seed;
+    }
+
+    /// 读取指定租约的当前 fencing token（`None` = 租约未知/已吊销/已过期）。
+    pub fn token_of(&self, lease_id: &[u8; 16]) -> Option<u64> {
+        self.grants.get(lease_id).map(|g| g.token)
+    }
+
     /// Issue a new lease. Returns the `(lease_id, fencing_token, expiry)` the
     /// caller must embed in every command envelope that rides on this lease.
     /// `lease_id` must be fresh (not previously revoked); if it collides with a

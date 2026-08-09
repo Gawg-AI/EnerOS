@@ -29,7 +29,7 @@ fn register_mock(
             pm.insert(String::from(*n), id);
         }
     }
-    reg.register(name, device_type, Box::new(dev), pm);
+    reg.register(name, device_type, 1, Box::new(dev), pm);
 }
 
 // ===== T1: DeviceType 变体构造 =====
@@ -290,7 +290,7 @@ fn t20_device_agent_on_tick_denies_legacy_command() {
     }
     agent
         .registry_mut()
-        .register("pcs", DeviceType::Pcs, Box::new(dev), pm);
+        .register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm);
     agent.on_start(1000).unwrap();
     agent.on_tick(2000).unwrap();
     // 旧行为（匿名命令直接落写）已判定为错误：必须收到不执行。
@@ -313,6 +313,14 @@ fn t20_device_agent_on_tick_denies_legacy_command() {
     }
     // 留痕：拒绝计数 +1（WP-24.3 接入 write_denied_legacy 指标 + 审计）。
     assert_eq!(agent.legacy_denied, 1, "旧匿名命令必须计数留痕");
+    // §6.6：write_denied_legacy 指标同步留痕（D12 双轨）。
+    assert_eq!(
+        agent
+            .ingress
+            .metric_total(crate::ingress::METRIC_DENIED_LEGACY, 2000),
+        1,
+        "旧匿名命令必须产生 write_denied_legacy 指标"
+    );
 }
 
 // ===== T21: DeviceAgent::on_tick 设备离线（质量位 invalid → online:false）=====
@@ -327,7 +335,7 @@ fn t21_device_agent_on_tick_offline_device() {
     }
     agent
         .registry_mut()
-        .register("battery", DeviceType::Battery, Box::new(dev), pm);
+        .register("battery", DeviceType::Battery, 1, Box::new(dev), pm);
     agent.on_start(1000).unwrap();
     agent.on_tick(2000).unwrap();
     let snap = agent.last_snapshot();

@@ -1,7 +1,9 @@
 //! 命令源 — DeviceCommand + CommandSource trait + MockCommandSource.
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::collections::VecDeque;
 use alloc::string::String;
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec::Vec;
 
 /// 设备控制命令（D7：本地定义，匹配蓝图语义）.

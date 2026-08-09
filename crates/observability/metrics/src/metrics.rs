@@ -193,6 +193,11 @@ impl<S: MetricsStore> MetricsCollectorImpl<S> {
     }
 
     /// 尝试将缓冲批量刷入存储：距上次刷入不足间隔时返回 0.
+    /// 只读访问存储后端（观测/测试查询用）。
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
     pub fn maybe_flush(&mut self, now_ms: u64) -> Result<usize, MetricsError> {
         if now_ms.saturating_sub(self.last_flush_ms) < self.flush_interval_ms {
             return Ok(0);

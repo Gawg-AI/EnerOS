@@ -32,6 +32,15 @@ pub enum AuditEventType {
     SecurityAlert = 11,
     /// AI 决策（W5.1：意图/LP 解/安全校验/执行/偏差入链可追溯）.
     AiDecision = 12,
+    /// 控制写执行成功（蓝图/24 §6.6：写执行成功入审计链）.
+    WriteExecuted = 13,
+    /// 控制写被拒绝（蓝图/24 §6.6：每类拒绝入审计链，detail 键值编码携带
+    /// actor_kind/issuer/device_id/point_id/deny_reason/correlation_id）.
+    WriteDenied = 14,
+    /// 本地租约签发（蓝图/24 §6.6：device-agent 启动本地 grant 入审计链）.
+    LeaseGranted = 15,
+    /// 启动握手完成（蓝图/24 §6.6：握手返回 {lease_id, fencing_token}）.
+    HandshakeCompleted = 16,
 }
 
 /// 审计事件（`seq == 0` 表示由日志器自动赋序）.

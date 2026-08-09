@@ -18,3 +18,17 @@ eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
 # v0.227.0（B3-04）：注册表持久化经 fs。
 eneros-fs = { path = "../../drivers/fs" }
 eneros-upa-model = { path = "../../protocols/upa-model" }
+# 蓝图/24 §6.2/6.3：信封复验（ControlChain/租约/信封编解码）。
+eneros-control-gateway = { path = "../../protocols/control-gateway" }
+# 蓝图/24 §6.3：握手响应 HMAC 保护。
+eneros-crypto = { path = "../../security/crypto" }
+# 蓝图/24 §6.6：拒绝分类指标。
+eneros-metrics = { path = "../../observability/metrics" }
+# 蓝图/24 §6.6：写执行/拒绝/握手/租约签发审计事件（eneros-audit 兼容结构）。
+eneros-audit = { path = "../../security/audit" }
+# 指标注册定容字符串（与 metrics crate 同版本）。
+heapless = { version = "0.8", default-features = false }
+
+[dev-dependencies]
+# 测试用四遥模型（策略/安全点/命令构造）。
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }

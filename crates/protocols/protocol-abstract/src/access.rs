@@ -88,6 +88,14 @@ pub trait AuthorizedWriter {
     ) -> Result<WriteOutcome, WriteError>;
 }
 
+/// 组合接缝：读 + 授权写（设备注册表/管理器持有的适配器形态）。
+///
+/// `dyn PointAccess + AuthorizedWriter` 双非 auto trait 不合法（E0225），
+/// 以单一 principal trait 表达"既读又授权写"的持有类型（蓝图/24 D1/D3）。
+pub trait PointAccessWriter: PointAccess + AuthorizedWriter {}
+
+impl<T: PointAccess + AuthorizedWriter> PointAccessWriter for T {}
+
 /// `Box<dyn PointAccess>` 透传实现（ARCH-P02：注册表持 `Box<dyn PointAccess>` 时
 /// 可直接调用读方法）。
 impl PointAccess for Box<dyn PointAccess + '_> {
@@ -106,6 +114,31 @@ impl PointAccess for Box<dyn PointAccess + '_> {
 
 /// `Box<dyn AuthorizedWriter>` 透传实现（写接缝同样可装箱透传）。
 impl AuthorizedWriter for Box<dyn AuthorizedWriter + '_> {
+    fn write_authorized(
+        &mut self,
+        cmd: &AuthorizedCommand,
+        value: PointValue,
+    ) -> Result<WriteOutcome, WriteError> {
+        (**self).write_authorized(cmd, value)
+    }
+}
+
+/// `Box<dyn PointAccessWriter>` 透传实现（注册表持有的组合形态）。
+impl PointAccess for Box<dyn PointAccessWriter + '_> {
+    fn read_point(&mut self, point_id: PointId) -> Result<DataPoint, ProtocolError> {
+        (**self).read_point(point_id)
+    }
+
+    fn protocol_type(&self) -> ProtocolType {
+        (**self).protocol_type()
+    }
+
+    fn read_points(&mut self, point_ids: &[PointId]) -> Vec<Result<DataPoint, ProtocolError>> {
+        (**self).read_points(point_ids)
+    }
+}
+
+impl AuthorizedWriter for Box<dyn PointAccessWriter + '_> {
     fn write_authorized(
         &mut self,
         cmd: &AuthorizedCommand,

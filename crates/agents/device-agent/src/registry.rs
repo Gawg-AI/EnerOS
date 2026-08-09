@@ -9,21 +9,33 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 
-use eneros_protocol_abstract::access::{PointAccess, PointAccessExt};
-use eneros_protocol_abstract::config::ProtocolType;
-use eneros_protocol_abstract::error::ProtocolError;
-use eneros_upa_model::{
-    DataPoint, DataSource, DeviceId, PointId, PointQuality, PointType, PointValue,
+use eneros_protocol_abstract::access::PointAccessWriter;
+// Mock 类型专用导入（仅测试/仿真编译，release 由 compile_error! 熔断）。
+#[cfg(any(test, feature = "mock"))]
+use eneros_protocol_abstract::access::{
+    AuthorizedWriter, PointAccess, PointAccessExt, WriteError, WriteOutcome,
 };
+#[cfg(any(test, feature = "mock"))]
+use eneros_protocol_abstract::config::ProtocolType;
+#[cfg(any(test, feature = "mock"))]
+use eneros_protocol_abstract::error::ProtocolError;
+#[cfg(any(test, feature = "mock"))]
+use eneros_protocol_abstract::AuthorizedCommand;
+#[cfg(any(test, feature = "mock"))]
+use eneros_upa_model::{DataPoint, DataSource, PointQuality, PointType, PointValue};
+use eneros_upa_model::{DeviceId, PointId};
 
 use crate::device_type::DeviceType;
 
-/// 设备元信息（ARCH-P02：adapter 为 `PointAccess`，字符串点名经 point_map 桥接）.
+/// 设备元信息（ARCH-P02：adapter 为 `PointAccess` + `AuthorizedWriter`，
+/// 字符串点名经 point_map 桥接；蓝图/24 D3：写路由经 AuthorizedWriter）。
 pub struct DeviceInfo {
     /// 设备类型.
     pub device_type: DeviceType,
-    /// 设备点访问适配器（统一协议 seam）.
-    pub adapter: Box<dyn PointAccess>,
+    /// 设备 ID（信封路由：cmd.device_id → 适配器）。
+    pub device_id: DeviceId,
+    /// 设备点访问适配器（读 seam + 授权写接缝）。
+    pub adapter: Box<dyn PointAccessWriter>,
     /// 字符串点名 → PointId 映射（由 `ProtocolPointMapping` 构建或 mock 自动分配）.
     pub point_map: BTreeMap<String, PointId>,
 }
@@ -142,6 +154,47 @@ impl PointAccessExt for MockPointDevice {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
+impl AuthorizedWriter for MockPointDevice {
+    fn write_authorized(
+        &mut self,
+        cmd: &AuthorizedCommand,
+        value: PointValue,
+    ) -> Result<WriteOutcome, WriteError> {
+        // 蓝图/24 §6.1：命令点/设备匹配校验通过后才落写；不匹配 → 拒绝。
+        if cmd.device_id != self.device_id {
+            return Err(WriteError::CommandMismatch);
+        }
+        if !self.points.contains_key(&cmd.point_id) {
+            return Err(WriteError::CommandMismatch);
+        }
+        if self.offline {
+            return Err(WriteError::Protocol(ProtocolError::WriteFailed));
+        }
+        // 篡改防御：载荷类型与点类型矛盾 → 拒绝。
+        let point_type_ok = self.points.get(&cmd.point_id).is_some_and(|p| {
+            matches!(
+                (&p.point_type, &value),
+                (PointType::Analog, PointValue::Float(_) | PointValue::Int(_))
+                    | (
+                        PointType::Digital | PointType::Control,
+                        PointValue::Bool(_) | PointValue::Enum(_)
+                    )
+            )
+        });
+        if !point_type_ok {
+            return Err(WriteError::Unauthorized);
+        }
+        let echoed = value.clone();
+        if let Some(p) = self.points.get_mut(&cmd.point_id) {
+            p.value = value;
+        }
+        Ok(WriteOutcome {
+            echoed: Some(echoed),
+        })
+    }
+}
+
 /// 设备注册表（BTreeMap-backed）.
 pub struct DeviceRegistry {
     /// 设备名 → 设备信息映射.
@@ -156,18 +209,21 @@ impl DeviceRegistry {
         }
     }
 
-    /// 注册设备（adapter 为统一 `PointAccess`；point_map 为字符串点名 → PointId）.
+    /// 注册设备（adapter 为统一 `PointAccess` + `AuthorizedWriter`；
+    /// point_map 为字符串点名 → PointId；device_id 供信封路由）。
     pub fn register(
         &mut self,
         name: &str,
         device_type: DeviceType,
-        adapter: Box<dyn PointAccess>,
+        device_id: DeviceId,
+        adapter: Box<dyn PointAccessWriter>,
         point_map: BTreeMap<String, PointId>,
     ) {
         self.devices.insert(
             String::from(name),
             DeviceInfo {
                 device_type,
+                device_id,
                 adapter,
                 point_map,
             },
@@ -177,6 +233,11 @@ impl DeviceRegistry {
     /// 获取设备可变引用.
     pub fn get_mut(&mut self, name: &str) -> Option<&mut DeviceInfo> {
         self.devices.get_mut(name)
+    }
+
+    /// 按设备 ID 路由（蓝图/24 §6.2 状态机步骤 3：device_id → 适配器）。
+    pub fn find_by_device_id(&mut self, device_id: DeviceId) -> Option<&mut DeviceInfo> {
+        self.devices.values_mut().find(|d| d.device_id == device_id)
     }
 
     /// 设备数量.

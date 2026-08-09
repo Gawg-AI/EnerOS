@@ -52,8 +52,10 @@ extern crate alloc;
 
 mod agent;
 mod command;
+mod delivery;
 mod device_type;
 mod error;
+mod ingress;
 mod registry;
 
 pub use agent::DeviceAgent;
@@ -61,8 +63,13 @@ pub use agent::DeviceAgent;
 #[cfg(any(test, feature = "mock"))]
 pub use command::MockCommandSource;
 pub use command::{CommandSource, DeviceCommand};
+pub use delivery::{DeliveryFrame, FrameError};
 pub use device_type::{DeviceSnapshot, DeviceState, DeviceType};
 pub use error::DeviceError;
+pub use ingress::{
+    verify_handshake_response, DenyClass, EnvelopeIngress, IngressError, IngressOutcome,
+    HANDSHAKE_LEN,
+};
 #[cfg(any(test, feature = "mock"))]
 #[cfg(any(test, feature = "mock"))]
 pub use registry::MockPointDevice;
@@ -70,3 +77,7 @@ pub use registry::{DeviceInfo, DeviceRegistry};
 
 #[cfg(test)]
 mod tests;
+
+// 蓝图/24 §7.4 装配检查点演示（密钥/lease_id/重启计数注入路径 + 拒绝指标样例）。
+#[cfg(test)]
+mod assembly_demo;
