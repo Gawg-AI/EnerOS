@@ -10,6 +10,8 @@ use alloc::format;
 use alloc::string::String;
 
 /// MQTT 导出器（发送闭包注入：`FnMut(topic, payload)`）。
+// 通道不可用错误无附加信息（Err(())——与 OtlpExporter 同契约）。
+#[allow(clippy::result_unit_err)]
 pub struct MqttMetricsExporter<F> {
     /// 设备标识（topic 前缀 `eneros/{device}/metrics`）。
     device_id: String,
@@ -113,6 +115,7 @@ mod tests {
     use super::*;
 
     /// 收集发送的闭包（模拟真 MQTT broker）；返回 (共享收集器, 发送闭包)。
+    #[allow(clippy::type_complexity)]
     fn collector() -> (
         std::rc::Rc<core::cell::RefCell<Vec<(String, String)>>>,
         impl FnMut(&str, &str) -> Result<(), ()>,
