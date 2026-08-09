@@ -18,11 +18,13 @@
 extern crate alloc;
 
 pub mod alert_catalog;
+pub mod mqtt_sink;
 pub mod runbook;
 pub mod slo_baseline;
 pub mod trigger;
 
 pub use alert_catalog::{Alert, AlertCatalog, AlertSeverity, AlertStatus};
+pub use mqtt_sink::MqttAlertSink;
 pub use runbook::{Runbook, RunbookStep, RunbookStepType};
 pub use slo_baseline::{SloBaseline, SloCompliance, SloStatus, WorkloadProfile, FROZEN_BASELINES};
 pub use trigger::{
