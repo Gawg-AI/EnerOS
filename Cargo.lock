@@ -770,6 +770,7 @@ version = "1.0.0-rc.0"
 name = "eneros-dual-brain"
 version = "1.0.0-rc.0"
 dependencies = [
+ "eneros-audit",
  "eneros-control-gateway",
  "eneros-energy-lp-model",
  "eneros-fast-path",
@@ -1153,6 +1154,17 @@ name = "eneros-oom-probe"
 version = "1.0.0-rc.0"
 
 [[package]]
+name = "eneros-ops-gate"
+version = "1.0.0-rc.0"
+dependencies = [
+ "eneros-dashboard",
+ "eneros-mgmt-api",
+ "eneros-ota-ab",
+ "eneros-slo-alert",
+ "eneros-telemetry-queue",
+]
+
+[[package]]
 name = "eneros-ops-lifecycle"
 version = "1.0.0-rc.0"
 dependencies = [
@@ -1489,6 +1501,7 @@ name = "eneros-tsdb"
 version = "0.25.0"
 dependencies = [
  "eneros-fs",
+ "eneros-ipc-wire",
  "eneros-storage",
  "lz4_flex",
 ]

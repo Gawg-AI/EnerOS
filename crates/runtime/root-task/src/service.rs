@@ -187,24 +187,22 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
     // sender(TCB cap) → 服务索引 映射。故障注入周期性执行（注入前检查
     // supervisor 状态：Suspended/Faulted 不注入——seL4_Send 同步语义，
     // 向挂起服务 send 会永久阻塞 root-task）。
-    // 22 §2.W1.6：看门狗全程接入——root-task 每轮喂硬件狗；root-task
-    // 卡死（含服务卡死阻塞 IPC call）→ 不喂狗 → SP805 超时整机复位
-    // （supervisor 先兜底 fault，看门狗是最后防线）。QEMU 无 SP805 时
-    // MMIO 写为 no-op（无害）；硬超时 10s。未映射（软件模式）用 base=0。
+    let mut supervisor = crate::supervisor::Supervisor::new_for_count(handles.len(), now_ms());
+    // fault 识别：poll 的 sender = notification badge（服务索引+1，
+    // spawn 时 mint 设置；0 保留 = 未知）。
+    // 22 §2.W1.6：看门狗接入（hello 心跳后第一轮喂狗；QEMU 无 SP805
+    // 时软件模式 base=0，MMIO 不写）。
     let wdt_base = if crate::panic::WDT_MMIO_MAPPED.load(core::sync::atomic::Ordering::Relaxed) {
         crate::panic::WDT_BASE
     } else {
         0
     };
     eneros_watchdog::api::wdt_init(10_000, wdt_base);
-
-    let mut supervisor = crate::supervisor::Supervisor::new_for_count(handles.len(), now_ms());
-    let tcb_to_index: alloc::vec::Vec<u64> = handles.iter().map(|h| h.tcb).collect();
     let mut fault_tick = 0u64;
     let mut tick = 0u64;
-    let mut fault_idx = match tcb_to_index.iter().position(|&t| t == fault.tcb) {
+    let fault_idx = match handles.iter().position(|h| h.name == "svc-fault") {
         Some(i) => i,
-        None => ipc_fail_closed("svc-fault not in supervisor table", "no tcb"),
+        None => ipc_fail_closed("svc-fault not in supervisor table", "no name"),
     };
 
     loop {
@@ -232,7 +230,11 @@ pub fn run_ipc_loop(handles: &[crate::spawn::SpawnedHandle]) -> ! {
             let has_msg = eneros_sel4_sys::types::message_info_length(mi) > 0 || sender != 0;
             if has_msg {
                 let name = |i: usize| handles[i].name.as_str();
-                if let Some(idx) = tcb_to_index.iter().position(|&t| t == sender) {
+                if let Some(idx) = sender
+                    .checked_sub(1)
+                    .filter(|&b| (b as usize) < handles.len())
+                    .map(|b| b as usize)
+                {
                     supervisor.advance(now_ms());
                     match supervisor.on_service_fault(idx) {
                         Some(crate::supervisor::Action::Restart { delay_ms }) => {

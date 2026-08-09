@@ -676,7 +676,7 @@ pub fn sel4_spawn_services(
     crate::println!("[eneros-root-task] DBG fault_ep={}", fault_ep);
     let mut handles = Vec::with_capacity(plan.services.len());
     let mut tcb_slots = Vec::with_capacity(plan.services.len());
-    for svc in &plan.services {
+    for (svc_idx, svc) in plan.services.iter().enumerate() {
         let module = bundle
             .modules
             .iter()
@@ -684,8 +684,17 @@ pub fn sel4_spawn_services(
             .ok_or(SpawnError::MissingBundleModule)?;
         let elf = LoadedElf::parse(&module.blob).map_err(|_| SpawnError::BadElf)?;
         let entry = entry_mapped(&svc.pages, &elf)?;
-        let (tcb, ep, _ntfn) =
-            configure_service(svc, &elf, module, entry, ctx, &types, &rights, fault_ep)?;
+        let (tcb, ep, _ntfn) = configure_service(
+            svc,
+            &elf,
+            module,
+            entry,
+            ctx,
+            &types,
+            &rights,
+            fault_ep,
+            svc_idx as u64 + 1, // notification badge（0 保留）
+        )?;
         tcb_slots.push(tcb);
         handles.push(SpawnedHandle {
             name: svc.name.clone(),
@@ -725,6 +734,7 @@ fn configure_service(
     types: &ObjectTypeTable,
     rights: &RightsTable,
     fault_ep: u64,
+    ntfn_badge: u64,
 ) -> Result<(u64, u64, u64), SpawnError> {
     let root_cnode = ctx.root_cnode;
 
@@ -897,12 +907,26 @@ fn configure_service(
         eneros_sel4_sys::safe::debug_cap_identify(fault_ep)
     );
 
-    // 8b. K2.3：故障 notification：retype + bind 到服务 TCB（保留——
-    // 与 fault_ep 机制并存；notification 绑定不影响 fault IPC 路径）。
+    // 8b. K2.3：故障 notification——mint 带 badge（= 服务索引）进服务
+    // CSpace 槽 2 并绑定 TCB（22 §2.W1.3：root 侧 poll 得 badge → 识别
+    // faulting 服务；21-A 的 badge=0 无法区分共享 notification）。
     let ntfn = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
     retype_one(ctx, types.notification, OBJ_BITS_NOTIFICATION, ntfn)?;
-    // SAFETY: tcb/ntfn 均为刚 retype 的有效 cap。
-    eneros_sel4_sys::safe::tcb_bind_notification(tcb, ntfn).map_err(SpawnError::Sel4)?;
+    // SAFETY: cnode 为服务 CSpace（一阶，dest_depth=0）；槽 2 空闲；
+    // badge = 服务索引（root 侧 poll 识别用）。
+    cnode_mint(
+        cnode,
+        2,
+        OBJ_BITS_CNODE,
+        root_cnode,
+        ntfn,
+        64,
+        rights.all,
+        ntfn_badge,
+    )
+    .map_err(SpawnError::Sel4)?;
+    // SAFETY: tcb/ntfn 均为刚 retype 的有效 cap（绑定服务侧槽 2 的 mint）。
+    eneros_sel4_sys::safe::tcb_bind_notification(tcb, 2).map_err(SpawnError::Sel4)?;
 
     // 9. 寄存器：PC=entry_mapped, SP=stack_top, X0=服务 CSpace 槽 0 的 ep cap,
     //    X1=IPC buffer 虚拟地址。
