@@ -133,21 +133,36 @@ pub(super) fn command_audit_toolchain(root: &Path, args: &[String]) -> DynResult
         });
     }
     for expected in manifest.wsl_tools {
+        // WSL 段仅适用于 Windows/WSL 发布环境（pinned-tools.json 的
+        // wsl_distribution 承载）。非 Windows 平台（Linux CI/开发机）没有
+        // wsl.exe——如实记录为 violation 并继续，保证报告始终可落盘、
+        // 由调用方（evidence verify 的存在性检查）与平台化 manifest 把关。
         let version_args = if expected.name == "xorriso" {
             vec!["-version"]
         } else {
             vec!["--version"]
         };
-        let version_output = Command::new("wsl.exe")
+        let version_output = match Command::new("wsl.exe")
             .args(["-d", &manifest.wsl_distribution, "--", &expected.path])
             .args(version_args)
-            .output()?;
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => {
+                violations.push(format!(
+                    "wsl-unavailable:{}:{}",
+                    expected.name,
+                    error.kind()
+                ));
+                continue;
+            }
+        };
         if !version_output.status.success() {
             violations.push(format!("wsl-version-failed:{}", expected.name));
             continue;
         }
         let version = combined_output(&version_output)?;
-        let hash_output = Command::new("wsl.exe")
+        let hash_output = match Command::new("wsl.exe")
             .args([
                 "-d",
                 &manifest.wsl_distribution,
@@ -155,11 +170,18 @@ pub(super) fn command_audit_toolchain(root: &Path, args: &[String]) -> DynResult
                 "sha256sum",
                 &expected.path,
             ])
-            .output()?;
-        if !hash_output.status.success() {
-            violations.push(format!("wsl-digest-failed:{}", expected.name));
-            continue;
-        }
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => {
+                violations.push(format!(
+                    "wsl-unavailable:{}:{}",
+                    expected.name,
+                    error.kind()
+                ));
+                continue;
+            }
+        };
         let digest = String::from_utf8_lossy(&hash_output.stdout)
             .split_ascii_whitespace()
             .next()
@@ -226,8 +248,17 @@ pub(super) fn command_audit_toolchain(root: &Path, args: &[String]) -> DynResult
                 .map_err(|_| invalid("material size is not an unsigned integer"))?;
             (digest, size_bytes)
         } else {
-            let bytes = fs::read(&expected.path)?;
-            (hex(&Sha256::digest(&bytes)), u64::try_from(bytes.len())?)
+            match fs::read(&expected.path) {
+                Ok(bytes) => (hex(&Sha256::digest(&bytes)), u64::try_from(bytes.len())?),
+                Err(error) => {
+                    violations.push(format!(
+                        "wsl-material-unavailable:{}:{}",
+                        expected.name,
+                        error.kind()
+                    ));
+                    continue;
+                }
+            }
         };
         let expected_hash = if fault == Some(expected.name.as_str()) {
             "00"

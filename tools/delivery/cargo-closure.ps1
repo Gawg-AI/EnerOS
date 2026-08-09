@@ -12,7 +12,14 @@ param(
 
     [Parameter(ParameterSetName = "Create")]
     [Parameter(ParameterSetName = "Verify")]
-    [string[]] $Binary = @()
+    [string[]] $Binary = @(),
+
+    # 外部（非 cargo workspace）二进制选择器，如 seL4 elfloader（C 构建产物）。
+    # 每条生成一个闭包为空的 BOM 条目：外部产物无 cargo 依赖闭包，其
+    # 完整性由 profile audit 的 selectors 覆盖性检查另行保证。
+    [Parameter(ParameterSetName = "Create")]
+    [Parameter(ParameterSetName = "Verify")]
+    [string[]] $ExternalBinary = @()
 )
 
 Set-StrictMode -Version Latest
@@ -253,6 +260,18 @@ foreach ($root in @($binaryRoots | Sort-Object selector)) {
         closure_package_count = $closureIds.Count
         workspace_closure_package_count = $workspaceClosureCount
         packages = @($closurePackages)
+    })
+}
+
+foreach ($external in @($ExternalBinary | Sort-Object -Unique)) {
+    $binaryBoms.Add([ordered]@{
+        selector = [string] $external
+        package_id = $null
+        target_name = $null
+        src_path = $null
+        closure_package_count = 0
+        workspace_closure_package_count = 0
+        packages = @()
     })
 }
 
