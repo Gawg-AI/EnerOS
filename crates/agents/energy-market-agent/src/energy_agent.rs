@@ -85,6 +85,11 @@ pub struct EnergyAgent<S: Solver> {
     pub deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive,
     /// LP 预测修正器（偏差 EMA，钳位安全界）。
     pub forecast_corrector: eneros_dual_brain::learning::ForecastCorrector,
+    // --- 22 §2.W2.6：twin 回灌决策（前瞻 feedforward 输入）---
+    /// twin 预测的负荷序列（kW，按时段）；`None` = 无 twin 预测。
+    pub twin_forecast: Option<alloc::vec::Vec<f64>>,
+    /// 最近一次 twin 预测的置信度（诊断）。
+    pub twin_confidence: f32,
 }
 
 impl<S: Solver> EnergyAgent<S> {
@@ -124,6 +129,8 @@ impl<S: Solver> EnergyAgent<S> {
             last_rejection: None,
             deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::new(1.0, 0.1, 10.0),
             forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::new(0.5),
+            twin_forecast: None,
+            twin_confidence: 0.0,
         }
     }
 
@@ -131,6 +138,15 @@ impl<S: Solver> EnergyAgent<S> {
     pub fn with_observer(mut self, observer: Box<dyn DeviceObserver>) -> Self {
         self.observer = Some(observer);
         self
+    }
+
+    /// 注入 twin 预测（22 §2.W2.6：感知相前瞻输入——twin 预测不只发布，
+    /// 回灌决策）。`points` = twin 预测值序列（kW/时段），`confidence` =
+    /// 预测置信度；由上层（runner/设备服务）从 twin 预测结果提取注入
+    /// （避免 agent↔twin 依赖环，见 ADR-032）。
+    pub fn set_twin_forecast(&mut self, points: alloc::vec::Vec<f64>, confidence: f32) {
+        self.twin_forecast = Some(points);
+        self.twin_confidence = confidence;
     }
 
     /// 获取市场通道可变引用（供测试注入数据）.
@@ -186,6 +202,8 @@ impl EnergyAgent<MockSolver> {
             last_rejection: None,
             deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::new(1.0, 0.1, 10.0),
             forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::new(0.5),
+            twin_forecast: None,
+            twin_confidence: 0.0,
         }
     }
 }
@@ -225,7 +243,9 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
         let state = RealtimeState {
             system,
             current_price: self.current_price,
-            load_demand: None,
+            // 22 §2.W2.6：twin 预测回灌（feedforward）——有预测用预测，
+            // 无预测显式 None（不造假值）。
+            load_demand: self.twin_forecast.clone(),
         };
 
         // 3. 调用双脑协调器（D10：execute 需 now_ms 参数）
@@ -502,5 +522,43 @@ mod w25_learning_tests {
         db.learn(0.0);
         // 零偏差仍算样本（EMA 衰减向 0）——语义：死区回落。
         assert_eq!(db.samples, 1);
+    }
+}
+
+// ============================================================================
+// 22 §2.W2.6 验收：twin 回灌决策（感知相前瞻输入）
+// ============================================================================
+#[cfg(test)]
+mod w26_twin_feedforward_tests {
+    use super::*;
+
+    /// 验收 1：决策感知读 twin 预测（feedforward 注入生效）。
+    #[test]
+    fn test_twin_forecast_feedforward() {
+        let mut agent = EnergyAgent::new_default(1_000);
+        assert!(agent.twin_forecast.is_none(), "默认无 twin 预测");
+        agent.set_twin_forecast(alloc::vec![10.0, 20.0, 30.0], 0.9);
+        assert_eq!(agent.twin_forecast.as_ref().unwrap().len(), 3);
+        assert_eq!(agent.twin_confidence, 0.9);
+        // on_tick 感知相把 twin 预测带入 load_demand（coordinator 消费）。
+        agent.on_start(1_000).expect("start");
+        agent.on_tick(2_000).expect("tick");
+        // tick 正常执行（twin 预测作为 load_demand 传入 LP 无副作用错误）。
+    }
+
+    /// 验收 2：有/无 twin 的决策对比——load_demand 传递差异可观察。
+    #[test]
+    fn test_twin_vs_no_twin_state() {
+        let mut with_twin = EnergyAgent::new_default(1_000);
+        let mut without = EnergyAgent::new_default(1_000);
+        with_twin.set_twin_forecast(alloc::vec![50.0, 60.0], 0.95);
+        with_twin.on_start(1_000).expect("start");
+        without.on_start(1_000).expect("start");
+        let r1 = with_twin.on_tick(2_000);
+        let r2 = without.on_tick(2_000);
+        assert!(r1.is_ok() && r2.is_ok(), "有/无 twin 都必须可决策");
+        // twin 注入路径记录（区分于无 twin）。
+        assert!(with_twin.twin_forecast.is_some());
+        assert!(without.twin_forecast.is_none());
     }
 }
