@@ -131,7 +131,7 @@ fn parse_request(raw: &str) -> Result<ApiRequest, StatusCode> {
 mod tests {
     use super::*;
     use crate::rate_limit::RateLimiter;
-    use crate::rbac::RbacPolicy;
+    use crate::rbac::{Permission, RbacPolicy};
 
     /// 装配 API（放行 Operator 的 ConfigSet/AgentRestart）。
     fn api() -> ManagementApi {
