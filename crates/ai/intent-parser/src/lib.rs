@@ -510,4 +510,49 @@ mod tests {
         let i = parser.parse_json(&normalized).unwrap();
         assert_eq!(i.intent_type, IntentType::Discharge);
     }
+
+    // === 21-B A1：字符串数字宽容转换（真实 LLM 输出适配） ===
+    #[test]
+    fn a1_string_number_start_period_parses() {
+        use crate::parser::normalize_llm_json;
+        // 真实 Qwen2.5-0.5B 实测输出：`"start_period": "0"`（字符串）。
+        let llm_out = r#"{"intent_type":"Charge","power":{"power_kw":50.0,"power_ratio":0.5},"time_range":{"start_period":"0","end_period":"5"},"reason":"price low","confidence":"0.85"}"#;
+        let normalized = normalize_llm_json(llm_out);
+        let parser = IntentParser::default();
+        let i = parser
+            .parse_json(&normalized)
+            .expect("string numbers must parse");
+        assert_eq!(i.intent_type, IntentType::Charge);
+        let tr = i.time_range.expect("time_range present");
+        assert_eq!(tr.start_period, 0);
+        assert_eq!(tr.end_period, 5);
+        assert!((i.confidence - 0.85).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a1_non_numeric_string_untouched() {
+        use crate::parser::normalize_llm_json;
+        // 非数字字符串必须保持原样（由契约校验拦截，不静默吞掉）。
+        let llm_out = r#"{"intent_type":"Charge","reason":"0.85confidence"}"#;
+        let normalized = normalize_llm_json(llm_out);
+        let parser = IntentParser::default();
+        let i = parser
+            .parse_json(&normalized)
+            .expect("non-numeric string stays string");
+        assert_eq!(i.reason, "0.85confidence");
+    }
+
+    #[test]
+    fn a1_nested_string_number_coerced() {
+        use crate::parser::normalize_llm_json;
+        // 嵌套对象/数组中的字符串数字同样转换。
+        let llm_out = r#"{"intent_type":"Charge","power":{"power_kw":"50.0"},"time_range":{"start_period":0,"end_period":"3"}}"#;
+        let normalized = normalize_llm_json(llm_out);
+        let parser = IntentParser::default();
+        let i = parser
+            .parse_json(&normalized)
+            .expect("nested string number parses");
+        let p = i.power.expect("power present");
+        assert!((p.power_kw - 50.0).abs() < 1e-9);
+    }
 }

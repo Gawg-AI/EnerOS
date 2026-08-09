@@ -92,7 +92,10 @@ fn main() {
 
         std::fs::create_dir_all(&llama_build).expect("failed to create llama.cpp build dir");
 
-        // cmake configure — 仅静态库，关闭所有可执行目标
+        // cmake configure — 仅静态库，关闭所有可执行目标。
+        // GGML_NATIVE=OFF（官方默认）：禁止 -march=native——否则产物携带
+        // 构建机专属指令（如 AVX-VNNI 的 vpdpbusd），在无该特性的运行机
+        // 上 SIGILL（21-B A1 实测：Zen3+ 机器跑 Zen4 编译的 libllama.a）。
         let cmake_status = Command::new("cmake")
             .arg(&llama_src)
             .arg("-DBUILD_SHARED_LIBS=OFF")
@@ -100,6 +103,7 @@ fn main() {
             .arg("-DLLAMA_BUILD_EXAMPLES=OFF")
             .arg("-DLLAMA_BUILD_SERVER=OFF")
             .arg("-DGGML_BUILD_NUMBER=0")
+            .arg("-DGGML_NATIVE=OFF")
             .arg("-DCMAKE_BUILD_TYPE=Release")
             .current_dir(&llama_build)
             .status()

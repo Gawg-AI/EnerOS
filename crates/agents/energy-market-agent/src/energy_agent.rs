@@ -9,10 +9,9 @@ use eneros_energy_lp_model::result::ScheduleResult;
 use eneros_fast_path::state::RealtimeState;
 use eneros_llm_engine::engine::LlmEngine;
 use eneros_safety_validator::state::SystemState;
-use eneros_solver_core::solver::Solver;
-
 #[cfg(any(test, feature = "mock"))]
 use eneros_solver_core::mock::MockSolver;
+use eneros_solver_core::solver::Solver;
 
 use crate::error::AgentRuntimeError;
 use crate::market::MarketChannel;
@@ -72,6 +71,29 @@ impl<S: Solver> EnergyAgent<S> {
     /// 获取市场通道可变引用（供测试注入数据）.
     pub fn market_channel_mut(&mut self) -> &mut MarketChannel {
         &mut self.market_channel
+    }
+}
+
+impl<S: Solver> EnergyAgent<S> {
+    /// Release 真后端构造器（21-B §2.A2）。
+    ///
+    /// 与 [`EnergyAgent::new`] 相同装配（`DualBrainCoordinator::new` 注入
+    /// 真 LlmEngine + 真 Solver + 真 Sink），显式命名对齐蓝图 A2：
+    /// release 构建下 `new_default` 不可见（mock 门控），真后端装配必须走
+    /// `new` / `new_real`。本构造器不绑定任何 mock 类型——`S: Solver`
+    /// 在 release 装配 `HighsSolver`（solver-core `highs-ffi`）。
+    ///
+    /// `#[cfg(not(any(test, feature = "mock")))]` 语义由调用方保证：
+    /// 依赖本 crate 的 release 构建不得启用 `mock` feature。
+    pub fn new_real<S2: Solver>(
+        name: &str,
+        config: ScheduleConfig,
+        now_ms: u64,
+        llm_engine: Box<dyn LlmEngine>,
+        solver: S2,
+        sink: Box<dyn eneros_dual_brain::sink::CommandSink>,
+    ) -> EnergyAgent<S2> {
+        Self::new(name, config, now_ms, llm_engine, solver, sink)
     }
 }
 

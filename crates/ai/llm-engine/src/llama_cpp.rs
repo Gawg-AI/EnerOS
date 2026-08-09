@@ -310,6 +310,11 @@ impl LlmEngine for LlamaCppEngine {
         }
         let mut next_token = argmax(logits_ptr, vocab_size);
 
+        // 跨 token UTF-8 累积缓冲：llama_token_to_piece 可能把一个多字节
+        // 字符（如中文）拆到相邻 token 的 piece 中，逐 piece from_utf8 会
+        // 误报 Utf8Error（21-B A1 实测：Qwen2.5-0.5B 中文输出）。
+        // 每 token 追加字节，仅当累积序列是完整 UTF-8 时才回调。
+        let mut pending: Vec<u8> = Vec::new();
         let mut generated = 0u32;
         while generated < params.max_tokens {
             // EOG 检查
@@ -332,10 +337,13 @@ impl LlmEngine for LlamaCppEngine {
                 )
             };
             if n > 0 {
-                let text =
-                    core::str::from_utf8(&buf[..n as usize]).map_err(|_| LlmError::Utf8Error)?;
-                if !callback(text) {
-                    break;
+                pending.extend_from_slice(&buf[..n as usize]);
+                // 累积序列完整 → 回调并清空；不完整 → 等下一 token 补齐。
+                if let Ok(text) = core::str::from_utf8(&pending) {
+                    if !text.is_empty() && !callback(text) {
+                        break;
+                    }
+                    pending.clear();
                 }
             }
 

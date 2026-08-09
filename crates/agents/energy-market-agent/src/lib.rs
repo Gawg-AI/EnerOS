@@ -548,4 +548,41 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(agent.state, AgentState::Error);
     }
+
+    // ===== 21-B A2：release 真后端装配（new_real + HighsSolver 端到端） =====
+    // 测试构建与 mock feature 共存（solver-core 的 release 熔断仅作用于
+    // 非 debug）；HighsSolver 经 dev-dependencies 的 highs-ffi 启用。
+    #[test]
+    fn a2_new_real_with_highs_solver_end_to_end() {
+        use eneros_solver_core::highs::HighsSolver;
+
+        struct CollectSink {
+            written: usize,
+        }
+        impl CommandSink for CollectSink {
+            fn write(&mut self, _cmd: DispatchCommand) -> Result<(), DualBrainError> {
+                self.written += 1;
+                Ok(())
+            }
+        }
+
+        let llm: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
+        let solver = HighsSolver::new().expect("highs init");
+        let sink: Box<dyn CommandSink> = Box::new(CollectSink { written: 0 });
+
+        let mut agent = EnergyAgent::<HighsSolver>::new_real(
+            "a2-e2e",
+            ScheduleConfig::default(),
+            1000,
+            llm,
+            solver,
+            sink,
+        );
+        agent.on_start(1000).unwrap();
+        agent.on_tick(2000).unwrap();
+        assert!(
+            agent.current_schedule.is_some(),
+            "真后端装配必须产出调度方案"
+        );
+    }
 }

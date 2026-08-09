@@ -15,4 +15,6 @@ default = []
 [package.metadata.eneros]
 # v0.212.0（A11 研究线隔离）：伪训练/实验性 crate 不入产品发布闭包。
 product_allowed = false
+# 21-B A4：RL 不在 v1.0.0 主链路（mock 算法层，PyTorch FFI 后续预留）。
+commercial_scope = "out-of-v1.0"
 

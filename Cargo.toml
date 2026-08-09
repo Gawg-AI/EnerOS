@@ -29,6 +29,7 @@ members = [
     "crates/ai/rl",
     "crates/ai/marl",
     "crates/ai/dialog",
+    "crates/ai/runner",
     "crates/hal/hal",
     "crates/hal/board",
     "crates/runtime/runtime",

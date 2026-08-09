@@ -51,6 +51,8 @@ pub mod error;
 pub mod latency;
 pub mod sink;
 
+#[cfg(any(test, feature = "mock"))]
+pub use coordinator::DualBrainMockEngine;
 pub use coordinator::{DualBrainCoordinator, DualBrainResult};
 pub use error::DualBrainError;
 pub use latency::LatencyBreakdown;
@@ -376,10 +378,11 @@ mod tests {
     // ======================================================================
     #[test]
     fn p017_fatal_soc_blocks_sink_and_reports() {
-        use crate::coordinator::DualBrainMockEngine;
-        use crate::sink::MockCommandSink;
         use eneros_llm_engine::engine::LlmEngine;
         use eneros_solver_core::result::{SolveResult, SolveStatus};
+
+        use crate::coordinator::DualBrainMockEngine;
+        use crate::sink::MockCommandSink;
 
         let config = ScheduleConfig::default();
         let n = config.num_periods;
@@ -417,9 +420,10 @@ mod tests {
 
     #[test]
     fn p017_normal_soc_writes_sink() {
+        use eneros_llm_engine::engine::LlmEngine;
+
         use crate::coordinator::DualBrainMockEngine;
         use crate::sink::MockCommandSink;
-        use eneros_llm_engine::engine::LlmEngine;
 
         let config = ScheduleConfig::default();
         let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());

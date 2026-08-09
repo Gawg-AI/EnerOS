@@ -64,8 +64,13 @@ impl PromptTemplate for ChargeDischargeTemplate {
                 "当前功率: {} kW\n",
                 "温度: {}℃\n",
                 "时段: {}\n\n",
+                "业务决策规则（必须遵守）：\n",
+                "1. 电价低（≤0.4 元/kWh）时输出 Charge（充电），power_kw 为负；\n",
+                "2. 电价高（≥0.7 元/kWh）时输出 Discharge（放电），power_kw 为正；\n",
+                "3. 其余情况输出 Hold（保持），power_kw 为 0。\n\n",
                 "请输出 JSON 格式的充放电策略（意图契约 v0.203.0），包含以下字段：\n",
                 "{{ \"intent_type\": \"Charge\" | \"Discharge\" | \"Hold\", \"time_range\": {{\"start_period\": <起始时段>, \"end_period\": <结束时段>}}, \"power\": {{\"power_kw\": <浮点数，充电为负>}}, \"reason\": \"<简短理由>\", \"confidence\": <0.0~1.0> }}\n\n",
+                "示例（电价 0.3 元/kWh）：{{\"intent_type\": \"Charge\", \"time_range\": {{\"start_period\": 0, \"end_period\": 47}}, \"power\": {{\"power_kw\": -50.0}}, \"reason\": \"谷电充电\", \"confidence\": 0.9}}\n\n",
                 "只输出 JSON，不要其他文字。",
             ),
             ctx.market_price, ctx.soc, ctx.power_current, ctx.temperature.map_or("N/A".to_string(), |v| format!("{v}")), ctx.time_of_day.clone().unwrap_or_else(|| "N/A".to_string())

@@ -1,3 +1,9 @@
+//!
+//! # 商业范围（21-B A4）
+//!
+//! **`commercial_scope = "out-of-v1.0"`**（与 Cargo.toml `[package.metadata.eneros]`
+//! 双处声明）：RL 不在 v1.0.0 主链路——当前实现为 mock 算法层
+//! （PyTorch FFI 后续预留），与 AI 决策主链路（eneros-ai-runner）解耦。
 //! EnerOS Agent 强化学习 (workspace v0.192.0) — P4-D 高级 AI.
 //!
 //! 实现 Agent RL 框架：PPO 策略训练 + Reward 设计 + Replay Buffer。

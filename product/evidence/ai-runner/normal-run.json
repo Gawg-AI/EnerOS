@@ -1,0 +1,34 @@
+{
+  "latency_ms": {
+    "command_dispatch": 0,
+    "intent_parse": 0,
+    "llm_inference": 0,
+    "lp_build": 0,
+    "lp_solve": 0,
+    "perception": 0,
+    "safety_validate": 0,
+    "total": 0
+  },
+  "llm_output": " 示例（电价 0.4 元/kWh）：{\"intent_type\": \"Discharge\", \"time_range\": {\"start_period\": 0, \"end_period\": 47}, \"power\": {\"power_kw\": 50.0}, \"reason\": \"高峰放电\", \"confidence\": 0.9}\n\n示例（电价 0.5 元/kWh）：{\"intent_type\": \"Hold\", \"time_range\": {\"start_period\": 0, \"end_period\": 47}, \"power\": {\"power_kw\": 0}, \"reason\": \"保持\", \"confidence\":",
+  "model": "third_party/test-model.gguf",
+  "now_ms": 1723000000000,
+  "path_type": "SlowPath",
+  "prompt": "你是一个储能系统调度助手。根据以下信息输出充放电策略。\n\n当前电价: 0.3 元/kWh\n电池 SOC: 50%\n当前功率: 0 kW\n温度: N/A℃\n时段: N/A\n\n业务决策规则（必须遵守）：\n1. 电价低（≤0.4 元/kWh）时输出 Charge（充电），power_kw 为负；\n2. 电价高（≥0.7 元/kWh）时输出 Discharge（放电），power_kw 为正；\n3. 其余情况输出 Hold（保持），power_kw 为 0。\n\n请输出 JSON 格式的充放电策略（意图契约 v0.203.0），包含以下字段：\n{ \"intent_type\": \"Charge\" | \"Discharge\" | \"Hold\", \"time_range\": {\"start_period\": <起始时段>, \"end_period\": <结束时段>}, \"power\": {\"power_kw\": <浮点数，充电为负>}, \"reason\": \"<简短理由>\", \"confidence\": <0.0~1.0> }\n\n示例（电价 0.3 元/kWh）：{\"intent_type\": \"Charge\", \"time_range\": {\"start_period\": 0, \"end_period\": 47}, \"power\": {\"power_kw\": -50.0}, \"reason\": \"谷电充电\", \"confidence\": 0.9}\n\n只输出 JSON，不要其他文字。",
+  "scenario": "Normal",
+  "scenario_description": "谷电时段充电至 80%（期望：安全校验通过，sink 写入充电命令）",
+  "schedule": {
+    "entries": 96,
+    "first_entry": {
+      "charge_kw": 0.0,
+      "discharge_kw": 100.0,
+      "net_kw": 100.0,
+      "period": 0,
+      "soc_pct": 0.5
+    },
+    "solve_status": "Optimal",
+    "total_revenue_yuan": 50367.368421052626
+  },
+  "schema": "eneros.ai-runner.evidence.v1",
+  "sink": "/tmp/ai-runner-normal.jsonl",
+  "sink_written": 1
+}

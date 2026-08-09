@@ -1,0 +1,31 @@
+{
+  "schema": "eneros.ai-runner.evidence.v1",
+  "generated_at": "2026-08-09",
+  "source_commit": "a4356c0",
+  "binary": {
+    "path": "target/release/eneros-ai-runner",
+    "sha256": "7009fb96ffc52a2a607f5b8cc8c14944192ca04f48d4110c69988979b72719c7",
+    "features": [
+      "llm-engine/llama-cpp",
+      "solver-core/highs-ffi (default)"
+    ]
+  },
+  "model": {
+    "path": "third_party/test-model.gguf",
+    "bytes": 491400032
+  },
+  "artifacts": {
+    "fatal-commands.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fatal-run.json": "a59d3e15991da96b05d382f6ca018da351f370686ce570a50b94676e1cf3b42e",
+    "normal-commands.jsonl": "26644e1a5b17d7c08d2adcdbc85886578099d1a9f71144f122586fb6b5719d2b",
+    "normal-run.json": "edf21bc9c3855331f7798beb1fe78558a1497ed915f86dfaae11ba66729f5bb4"
+  },
+  "acceptance": {
+    "A1-1_release_build": "PASS",
+    "A1-2_end_to_end_sink_command": "PASS (normal: sink_written=1, objective=50367.37)",
+    "A1-3_zero_mock": "PASS (strings | grep -i mock: 0 hits)",
+    "A1-4_fatal_blocks_sink": "PASS (fatal-soc: SafetyFatal, sink 0 lines, exit 3)",
+    "A2-1_new_default_invisible_in_release": "PASS (E0599 probe)",
+    "A2-2_new_real_end_to_end": "PASS (a2_new_real_with_highs_solver_end_to_end)"
+  }
+}

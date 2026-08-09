@@ -3,12 +3,12 @@
 //! 桥接 LLM 输出（`Intent`）与 Solver 输入（`ScheduleConfig` / `LpProblem`），
 //! 是双脑架构的关键转换环节。
 
+use alloc::string::{String, ToString};
+
 use eneros_energy_lp_model::config::ScheduleConfig;
 use eneros_energy_lp_model::model::EnergyScheduleModel;
 use eneros_safety_validator::state::SystemState;
 use eneros_solver_core::problem::LpProblem;
-
-use alloc::string::{String, ToString};
 
 use crate::error::IntentError;
 use crate::intent::{Intent, IntentType};
@@ -75,7 +75,42 @@ pub fn normalize_llm_json(raw: &str) -> String {
         }
     }
 
+    // 3) 字符串数字 → 数字（真实 LLM 输出的常见偏离，如 `"start_period": "0"`）。
+    //    仅转换纯数字字符串；非数字字符串保持原样。
+    for value in obj.values_mut() {
+        coerce_string_numbers(value);
+    }
+
     serde_json::Value::Object(obj.clone()).to_string()
+}
+
+/// 递归把纯数字字符串（如 `"0"`、`"4.5"`、`"-3"`）转换为 JSON 数字。
+///
+/// 真实小模型（如 Qwen2.5-0.5B）输出意图 JSON 时可能给数字字段加引号；
+/// 解析器按"真实互操作"原则宽容适配（21-B A1 实测：`"start_period": "0"`
+/// 导致 `expected usize` 解析失败）。非数字字符串（如 `"0.85confidence"`）
+/// 保持字符串不变，由后续契约校验拦截。
+fn coerce_string_numbers(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => {
+            if let Ok(i) = s.parse::<i64>() {
+                *value = serde_json::Value::Number(i.into());
+            } else if let Some(n) = s.parse::<f64>().ok().and_then(serde_json::Number::from_f64) {
+                *value = serde_json::Value::Number(n);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                coerce_string_numbers(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for v in map.values_mut() {
+                coerce_string_numbers(v);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// 提取字符串中首个平衡的 JSON 对象 `{...}`（含嵌套）。
