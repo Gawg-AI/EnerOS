@@ -44,10 +44,15 @@ const fn parse_heap_size(s: &str) -> Option<usize> {
     Some(v)
 }
 
+/// 堆存储（对齐 16：LockedHeap 要求堆基址按指针宽度对齐——`[u8]` 数组
+/// 对齐 1 会导致 target 下 alloc 全失败（QEMU 实测 OOM 8776B），G-R1 修复）。
+#[repr(align(16))]
+struct HeapStorage([u8; HEAP_SIZE]);
+
 /// 生产全局分配器：free-list 可回收堆（22 §2.W1.4）。
 pub struct HeapAllocator {
     heap: LockedHeap,
-    storage: UnsafeCell<[u8; HEAP_SIZE]>,
+    storage: UnsafeCell<HeapStorage>,
 }
 
 // SAFETY: `storage` 经 UnsafeCell 提供内部可变性；LockedHeap 内部自旋锁
@@ -59,7 +64,7 @@ impl HeapAllocator {
     pub const fn new() -> Self {
         Self {
             heap: LockedHeap::empty(),
-            storage: UnsafeCell::new([0u8; HEAP_SIZE]),
+            storage: UnsafeCell::new(HeapStorage([0u8; HEAP_SIZE])),
         }
     }
 
