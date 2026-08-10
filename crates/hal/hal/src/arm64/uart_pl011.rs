@@ -146,11 +146,11 @@ impl crate::HalSerial for Pl011Uart {
 
 /// 30 RT-025：UART 单例基址不再硬编码——经 [`init_uart`] 从
 /// PlatformConfig 注入（console 初始化顺序：init_uart 先于首个 println）。
-static ARM64_UART: core::cell::OnceCell<Pl011Uart> = core::cell::OnceCell::new();
+static ARM64_UART: spin::Once<Pl011Uart> = spin::Once::new();
 
 /// 30 RT-025：以平台配置初始化 UART 单例（装配期调用）。
 pub fn init_uart(cfg: &crate::arm64::PlatformConfig) {
-    let _ = ARM64_UART.set(Pl011Uart::new(cfg.uart_base));
+    let _ = ARM64_UART.call_once(|| Pl011Uart::new(cfg.uart_base));
 }
 
 /// Returns the ARM64 PL011 UART serial HAL singleton.

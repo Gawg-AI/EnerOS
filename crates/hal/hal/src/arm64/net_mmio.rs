@@ -127,12 +127,12 @@ impl NetMmio {
 /// 地址（模块注释 HAL-004 自认"不预设默认基址"却预置，若被接线消费即把
 /// RTC 寄存器当网卡读写）。真实 NetDevice 经 PlatformConfig/绑定表注入
 /// （31 域 D2 接线前必须关闭本条）。
-static ARM64_NET: core::cell::OnceCell<NetMmio> = core::cell::OnceCell::new();
+static ARM64_NET: spin::Once<NetMmio> = spin::Once::new();
 
 /// 30 RT-025：以平台配置初始化 NET 单例（装配期注入基址；未初始化时
 /// [`net`] 返回 Err(fail-closed)）。
 pub fn init_net(cfg: &crate::arm64::PlatformConfig) {
-    let _ = ARM64_NET.set(NetMmio::new(cfg.net_base));
+    let _ = ARM64_NET.call_once(|| NetMmio::new(cfg.net_base));
 }
 
 /// Returns the ARM64 network MMIO helper singleton（未初始化 → Err）。

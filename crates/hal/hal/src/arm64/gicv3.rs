@@ -8,6 +8,9 @@
 //! - GICD at `0x0800_0000`
 //! - GICR at `0x080A_0000`
 
+use crate::HalError;
+use crate::arm64::PlatformConfig;
+
 // ---------------------------------------------------------------------------
 // GICD (Distributor) register offsets
 // ---------------------------------------------------------------------------
@@ -125,6 +128,7 @@ impl Arm64Gic {
                 w32(gicr, GICR_IPRIORITYR + (i as u64), 0x8080_8080);
             }
         }
+        Ok(())
     }
 
     /// Wake the current core's redistributor and wait for it to be ready.
@@ -141,11 +145,12 @@ impl Arm64Gic {
         waker &= !GICR_WAKER_PROCESSING_SLEEP;
         w32(gicr, GICR_WAKER, waker);
         // HAL-005：有界忙等——等待 ChildrenAsleep 清除（重分发器就绪）。
+        // wait_until 已返回 Result<(), HalError>（Timeout 由 HAL-005 层
+        // 给出）——直接传播。
         crate::wait_until(
             || r32(gicr, GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP == 0,
             GICR_WAKEUP_MAX_ITERS,
         )
-        .ok_or(HalError::Timeout)
     }
 
     /// Locate the GICR base for the current core.
@@ -267,14 +272,14 @@ impl crate::HalIrq for Arm64Gic {
 /// 30 RT-011：GIC 单例不再硬编码 QEMU 基址——经 [`init_with`] 从
 /// PlatformConfig 注入（装配期从 DTB 读取 GIC 基址填 cfg；未初始化访问
 /// 返回明确错误，禁访问占位地址）。
-static ARM64_GIC: core::cell::OnceCell<Arm64Gic> = core::cell::OnceCell::new();
+static ARM64_GIC: spin::Once<Arm64Gic> = spin::Once::new();
 
 /// 30 RT-011/024：以平台配置初始化 GIC（分配器 + 重分发器 + CPU 接口）。
 /// GICR 就绪为有界轮询（HAL-005），超时返回 Err（boot 关键路径不 panic）。
 pub fn init_with(cfg: &crate::arm64::PlatformConfig) -> Result<(), HalError> {
     let gic = Arm64Gic::new(cfg.gicd_base, cfg.gicr_base);
     gic.init()?;
-    let _ = ARM64_GIC.set(gic);
+    let _ = ARM64_GIC.call_once(|| gic);
     Ok(())
 }
 

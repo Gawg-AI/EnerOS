@@ -431,7 +431,7 @@ impl PlatformCtx for RootPlatformCtx<'_> {
 /// 返回的切片指向 BOOT-007 常驻映射窗口（root-task 生命周期内有效），
 /// 解析器（`parse_fdt`）直接在窗口内存上工作，仅节点/属性分配走堆。
 #[cfg(target_os = "none")]
-fn runtime_dtb_slice(bundle_len: u64) -> Option<(&'static [u8], u64)> {
+pub(crate) fn runtime_dtb_slice(bundle_len: u64) -> Option<(&'static [u8], u64)> {
     let (dtb_phys, window) = dtb_window_for(bundle_len)?;
     let header_ptr = dtb_phys as *const u8;
     let mut header = [0u8; 8];
