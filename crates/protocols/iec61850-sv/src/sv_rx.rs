@@ -103,7 +103,9 @@ impl<T: L2Transport> SvSubscriber<T> {
         if u16::from_be_bytes([frame[14], frame[15]]) != self.app_id {
             return Ok(false);
         }
-        let (smp_cnt, timestamp, channels) = decode_pdu(&frame[16..])?;
+        // 31 PR-03：剥 IEC 61850-9-2 四字节头（Length + Reserved1 +
+        // Reserved2）——SV 与 GOOSE 同构（旧实现无头，标准帧无法解析）。
+        let (smp_cnt, timestamp, channels) = decode_pdu(&frame[22..])?;
         let status = self.classify(smp_cnt);
         self.last_smp_cnt = smp_cnt;
         self.has_last = true;
@@ -270,6 +272,11 @@ mod tests {
         f.extend_from_slice(&src_mac);
         f.extend_from_slice(&ETHERTYPE_SV.to_be_bytes());
         f.extend_from_slice(&app_id.to_be_bytes());
+        // 31 PR-03：四字节头（Length + Reserved1 + Reserved2，IEC 61850-9-2）。
+        let payload_len = 2 + 2 + 8 + 1 + 2 + channels.len() * 4; // smpCnt TLV + ts TLV + ch TLV
+        f.extend_from_slice(&(6u16 + payload_len as u16).to_be_bytes());
+        f.extend_from_slice(&[0, 0]);
+        f.extend_from_slice(&[0, 0]);
         f.extend_from_slice(&[TAG_SMP_CNT, 0x02]);
         f.extend_from_slice(&smp_cnt.to_be_bytes());
         f.extend_from_slice(&[TAG_TIMESTAMP, 0x08]);

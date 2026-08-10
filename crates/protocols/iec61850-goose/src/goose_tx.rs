@@ -59,8 +59,9 @@ pub(crate) const TAG_NUM_ENTRIES: u8 = 0x8A;
 /// allData（SEQUENCE OF Data）tag。
 pub(crate) const TAG_ALL_DATA: u8 = 0xAB;
 
-/// allData 条目：boolean tag（D8，与 MMS 一致）。
-pub(crate) const DATA_BOOLEAN: u8 = 0x80;
+/// allData 条目：boolean tag（31 PR-03 标准化：IEC 61850-8-1 §19
+/// BOOLEAN = 0x83——旧值 0x80 为自定义方言，第三方解码器无法解析）。
+pub(crate) const DATA_BOOLEAN: u8 = 0x83;
 /// allData 条目：integer tag。
 pub(crate) const DATA_INTEGER: u8 = 0x85;
 /// allData 条目：floating-point tag（4B→Float32、8B→Float64）。
@@ -206,12 +207,21 @@ impl<T: L2Transport> GoosePublisher<T> {
         }
         push_tlv(&mut content, TAG_ALL_DATA, &all_data);
 
-        let mut frame = Vec::with_capacity(content.len() + 20);
+        let mut frame = Vec::with_capacity(content.len() + 24);
         frame.extend_from_slice(&self.cb.dst_addr);
         frame.extend_from_slice(&SRC_MULTICAST);
         frame.extend_from_slice(&ETHERTYPE_GOOSE.to_be_bytes());
         frame.extend_from_slice(&self.cb.app_id.to_be_bytes());
-        push_tlv(&mut frame, TAG_GOOSE_PDU, &content);
+        // 31 PR-03：IEC 61850-8-1 §12 四字节头——Length（含自身 2B +
+        // Reserved1 2B + Reserved2 2B + 完整 APDU）+ Reserved1 + Reserved2
+        //（旧实现省略，第三方设备无法互操作）。
+        let mut pdu = Vec::new();
+        push_tlv(&mut pdu, TAG_GOOSE_PDU, &content);
+        let length = 6u16 + pdu.len() as u16;
+        frame.extend_from_slice(&length.to_be_bytes());
+        frame.extend_from_slice(&[0, 0]); // Reserved1
+        frame.extend_from_slice(&[0, 0]); // Reserved2
+        frame.extend_from_slice(&pdu);
         frame
     }
 }
@@ -318,7 +328,13 @@ mod tests {
         assert_eq!(&frame[6..12], &[0x01, 0x0C, 0xCD, 0x01, 0x00, 0x00]);
         assert_eq!(&frame[12..14], &0x88B8u16.to_be_bytes());
         assert_eq!(&frame[14..16], &0x0001u16.to_be_bytes());
-        assert_eq!(frame[16], TAG_GOOSE_PDU);
+        // 31 PR-03：Length + Reserved1 + Reserved2 四字节头（IEC 61850-8-1
+        // §12）——Length 含自身 2B + Reserved 4B + APDU。
+        let length = u16::from_be_bytes([frame[16], frame[17]]);
+        assert_eq!(length as usize, frame.len() - 16, "Length 字段必须覆盖到帧尾");
+        assert_eq!(&frame[18..20], &[0, 0], "Reserved1");
+        assert_eq!(&frame[20..22], &[0, 0], "Reserved2");
+        assert_eq!(frame[22], TAG_GOOSE_PDU);
     }
 
     // ===== TX8：gocbRef 0x80 VisibleString 编码 =====
@@ -390,8 +406,9 @@ mod tests {
         p.update_value("A", DaValue::Bool(true));
         p.publish(1000).unwrap();
         let frame = &p.transport().tx_frames()[0];
-        // allData 内容 = [0x80, 0x01, 0x01]（3 字节）→ [0xAB, 0x03, 0x80, 0x01, 0x01]
-        assert!(contains(frame, &[TAG_ALL_DATA, 0x03, 0x80, 0x01, 0x01]));
+        // 31 PR-03：allData 内容 = [0x83, 0x01, 0x01]（BOOLEAN 标准 tag）
+        // → [0xAB, 0x03, 0x83, 0x01, 0x01]
+        assert!(contains(frame, &[TAG_ALL_DATA, 0x03, DATA_BOOLEAN, 0x01, 0x01]));
         // 用 read_tag_length 解出声明长度 == 实际内容长度
         let ab_pos = frame
             .windows(2)
@@ -505,8 +522,8 @@ mod tests {
         p.publish(0xAABB_CCDDu64).unwrap();
         let frame = p.transport().tx_frames()[0].clone();
 
-        // 以太网头 16 字节（6+6+2+2）后为 GOOSE PDU
-        let mut pos = 16usize;
+        // 以太网头 16 字节（6+6+2+2）+ 四字节头（31 PR-03）后为 GOOSE PDU
+        let mut pos = 22usize;
         let (tag, pdu_len) = read_tag_length(&frame, &mut pos).unwrap();
         assert_eq!(tag, TAG_GOOSE_PDU);
         assert_eq!(pos + pdu_len, frame.len());

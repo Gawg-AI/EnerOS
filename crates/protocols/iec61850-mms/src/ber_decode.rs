@@ -47,6 +47,11 @@ pub fn read_tag_length(data: &[u8], pos: &mut usize) -> Result<(u8, usize), MmsE
     *pos += 1;
     let len = if first < 0x80 {
         first
+    } else if first == 0x81 {
+        // 31 PR-04：单字节长型（0x81）——BER 三型统一。
+        let v = usize::from(*data.get(*pos).ok_or(MmsError::BerDecodeError)?);
+        *pos += 1;
+        v
     } else if first == 0x82 {
         let hi = usize::from(*data.get(*pos).ok_or(MmsError::BerDecodeError)?);
         let lo = usize::from(*data.get(*pos + 1).ok_or(MmsError::BerDecodeError)?);

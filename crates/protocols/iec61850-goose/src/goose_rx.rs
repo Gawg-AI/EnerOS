@@ -108,7 +108,15 @@ impl<T: L2Transport> GooseSubscriber<T> {
         if u16::from_be_bytes([frame[14], frame[15]]) != self.app_id {
             return Ok(None);
         }
-        let pdu = decode_pdu(&frame[16..])?;
+        // 31 PR-03/PR-16：剥 IEC 61850-8-1 §12 四字节头（Length +
+        // Reserved1 + Reserved2）——旧实现直接读 PDU（无头），标准帧无法
+        // 互操作。Length 字段必须覆盖到帧尾（malformed 声称长度与实际
+        // 不符 → 拒绝）。
+        let declared = u16::from_be_bytes([frame[16], frame[17]]) as usize;
+        if declared != frame.len() - 16 {
+            return Err(GooseError::BerDecodeError);
+        }
+        let pdu = decode_pdu(&frame[22..])?;
         let status = self.classify(pdu.st_num, pdu.sq_num);
         if status != RxStatus::Duplicate {
             self.last_st_num = pdu.st_num;
@@ -162,6 +170,11 @@ pub(crate) fn read_tag_length(data: &[u8], pos: &mut usize) -> Result<(u8, usize
     *pos += 1;
     let len = if first < 0x80 {
         first
+    } else if first == 0x81 {
+        // 31 PR-04：单字节长型（0x81）——BER 三型统一。
+        let v = usize::from(*data.get(*pos).ok_or(GooseError::BerDecodeError)?);
+        *pos += 1;
+        v
     } else if first == 0x82 {
         let hi = usize::from(*data.get(*pos).ok_or(GooseError::BerDecodeError)?);
         let lo = usize::from(*data.get(*pos + 1).ok_or(GooseError::BerDecodeError)?);
@@ -376,10 +389,61 @@ mod tests {
         frame.extend_from_slice(&[0x01, 0x0C, 0xCD, 0x01, 0x00, 0x00]);
         frame.extend_from_slice(&ETHERTYPE_GOOSE.to_be_bytes());
         frame.extend_from_slice(&APP_ID.to_be_bytes());
-        frame.push(TAG_GOOSE_PDU);
-        push_len(&mut frame, content.len());
-        frame.extend_from_slice(&content);
+        // 31 PR-03：四字节头（Length + Reserved1 + Reserved2）——先编
+        // APDU 再算精确长度（len 字段短型/0x82 可变宽）。
+        let mut apdu = Vec::new();
+        apdu.push(TAG_GOOSE_PDU);
+        push_len(&mut apdu, content.len());
+        apdu.extend_from_slice(&content);
+        frame.extend_from_slice(&(6u16 + apdu.len() as u16).to_be_bytes());
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&apdu);
         frame
+    }
+
+    /// 31 PR-16 判据：第三方参考报文 fixture（goose_peer.py 标准帧）——
+    /// valid 帧解码 PASS，malformed 帧拒绝（互操作证据）。
+    #[test]
+    fn test_reference_frames_decode() {
+        let fixture: &[u8] = include_bytes!("../../../../tests/vectors/goose_ref.bin");
+        let mut pos = 0usize;
+        let mut pass = 0u32;
+        let mut reject = 0u32;
+        while pos + 2 <= fixture.len() {
+            let len = u16::from_be_bytes([fixture[pos], fixture[pos + 1]]) as usize;
+            pos += 2;
+            let frame = &fixture[pos..pos + len];
+            pos += len;
+            let mut sub = make_sub();
+            sub.transport_mut().push_rx_frame(frame);
+            match sub.poll() {
+                Ok(Some((pdu, _status))) => {
+                    assert!(pdu.st_num >= 1, "参考帧 stNum 解码");
+                    pass += 1;
+                }
+                Ok(None) => reject += 1,
+                Err(_) => reject += 1,
+            }
+        }
+        assert!(pass >= 2, "参考帧 valid 必须解码（31 PR-16 判据），pass={pass}");
+        assert!(reject >= 1, "malformed 必须拒绝（31 PR-16 判据），reject={reject}");
+    }
+
+    /// 31 PR-04 判据：0x81 单字节长型（BER 三型统一）——200 字节 TLV
+    /// 经 0x81 编码必须解析成功（旧实现只认短型/0x82）。
+    #[test]
+    fn test_rx81_single_byte_long_form_length() {
+        let mut data = Vec::new();
+        data.push(0x30);
+        data.push(0x81); // 单字节长型
+        data.push(200);
+        data.extend_from_slice(&[0xAA; 200]);
+        let mut pos = 0usize;
+        let (tag, len) = read_tag_length(&data, &mut pos).unwrap();
+        assert_eq!(tag, 0x30);
+        assert_eq!(len, 200);
+        assert_eq!(pos, 3);
     }
 
     // ===== RX19：有效帧解码 =====
