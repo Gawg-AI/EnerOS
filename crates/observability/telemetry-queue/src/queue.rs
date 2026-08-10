@@ -49,8 +49,10 @@ impl TelemetryCategory {
 
 /// 溢出策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum OverflowPolicy {
     /// 丢弃最旧的事件（FIFO 驱逐）。
+    #[default]
     DropOldest,
     /// 拒绝新事件（保持队列不变）。
     RejectNew,
@@ -125,6 +127,8 @@ impl TelemetryQueue {
         crate::persist::QueueSnapshot {
             last_acked_id,
             events: self.events.clone(),
+            capacity: self.capacity,
+            policy: self.overflow_policy,
         }
     }
 
@@ -132,7 +136,13 @@ impl TelemetryQueue {
     ///
     /// 返回 `(队列, last_acked_id)`——调用方据此从断点继续补传。
     pub fn restore(snap: crate::persist::QueueSnapshot) -> (Self, u64) {
-        let capacity = snap.events.len().max(16) * 2;
+        // 33 OB-03：恢复原始容量/策略（旧快照缺省推导——len×2 与
+        // DropOldest 硬编码丢失原配置）。
+        let capacity = if snap.capacity >= 16 {
+            snap.capacity
+        } else {
+            snap.events.len().max(16) * 2
+        };
         let next_id = snap
             .events
             .iter()
@@ -140,7 +150,7 @@ impl TelemetryQueue {
             .max()
             .map(|m| m + 1)
             .unwrap_or(snap.last_acked_id + 1);
-        let mut q = Self::new(capacity, OverflowPolicy::DropOldest);
+        let mut q = Self::new(capacity, snap.policy);
         q.events = snap.events;
         q.next_id = next_id.max(1);
         (q, snap.last_acked_id)

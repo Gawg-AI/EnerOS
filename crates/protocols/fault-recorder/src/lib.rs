@@ -333,7 +333,7 @@ impl FaultRecorder {
         for i in 0..frames {
             records.push(SampleRecord {
                 sample_num: i as u32 + 1,
-                timestamp_us: ts[i].wrapping_sub(base_ts) as u32,
+                timestamp_us: ts[i].wrapping_sub(base_ts),
                 analog: analog_vals[i * self.n_analog..(i + 1) * self.n_analog].to_vec(),
                 digital: digital_vals[i * self.n_digital..(i + 1) * self.n_digital].to_vec(),
             });

@@ -18,6 +18,10 @@ pub struct QueueSnapshot {
     pub last_acked_id: u64,
     /// 待补传事件。
     pub events: Vec<TelemetryEvent>,
+    /// 33 OB-03：原队列容量（缺省 = 按事件数推导，兼容旧快照）。
+    pub capacity: usize,
+    /// 33 OB-03：溢出策略（缺省 DropOldest，兼容旧快照）。
+    pub policy: crate::queue::OverflowPolicy,
 }
 
 /// 序列化快照为文本行。
@@ -188,6 +192,8 @@ mod tests {
         let snap = QueueSnapshot {
             last_acked_id: 42,
             events: vec![ev(43, "cpu=50%"), ev(44, "mem=1.2GB")],
+                    capacity: 16,
+            policy: crate::queue::OverflowPolicy::DropOldest,
         };
         let data = persist_snapshot(&snap);
         let loaded = load_snapshot(&data);
@@ -218,6 +224,8 @@ mod tests {
         let snap = QueueSnapshot {
             last_acked_id: 1,
             events: vec![ev(2, "温度=35.5°C")],
+                    capacity: 16,
+            policy: crate::queue::OverflowPolicy::DropOldest,
         };
         let data = persist_snapshot(&snap);
         let loaded = load_snapshot(&data);

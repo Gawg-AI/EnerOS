@@ -91,7 +91,7 @@ pub struct SampleRecord {
     /// 采样序号（从 1 起）。
     pub sample_num: u32,
     /// 相对首帧时间戳（微秒）。
-    pub timestamp_us: u32,
+    pub timestamp_us: u64, // 33 OB-04：u64（旧 u32 >71.6 分钟回卷）
     /// 模拟量通道值（与 `channels` 中模拟量子序列一一对应）。
     pub analog: Vec<f32>,
     /// 数字量通道值。
@@ -375,19 +375,19 @@ mod tests {
             digital_ch("CB"),
         ];
         let dat = ComtradeWriter::write_dat(&records, &chs, ComtradeFormat::Binary);
-        // 8 + 2×2 + 2 = 14 字节/记录
-        assert_eq!(dat.len(), 14);
+        // 33 OB-04：timestamp 8B → 12 + 2×2 + 2 = 18 字节/记录
+        assert_eq!(dat.len(), 18);
         assert_eq!(
             u32::from_le_bytes([dat[0], dat[1], dat[2], dat[3]]),
             0x0102_0304
         );
         assert_eq!(
-            u32::from_le_bytes([dat[4], dat[5], dat[6], dat[7]]),
-            0x0506_0708
+            u64::from_le_bytes(dat[4..12].try_into().unwrap()),
+            0x0506_0708u64
         );
-        assert_eq!(i16::from_le_bytes([dat[8], dat[9]]), 10);
-        assert_eq!(i16::from_le_bytes([dat[10], dat[11]]), 20);
-        assert_eq!(u16::from_le_bytes([dat[12], dat[13]]), 1);
+        assert_eq!(i16::from_le_bytes([dat[12], dat[13]]), 10);
+        assert_eq!(i16::from_le_bytes([dat[14], dat[15]]), 20);
+        assert_eq!(u16::from_le_bytes([dat[16], dat[17]]), 1);
     }
 
     #[test]
@@ -400,8 +400,8 @@ mod tests {
             digital: vec![],
         }];
         let dat = ComtradeWriter::write_dat(&records, &chs, ComtradeFormat::Binary);
-        assert_eq!(i16::from_le_bytes([dat[8], dat[9]]), 123);
-        assert_eq!(i16::from_le_bytes([dat[10], dat[11]]), 32767);
+        assert_eq!(i16::from_le_bytes([dat[12], dat[13]]), 123); // 33 OB-04：timestamp 8B 偏移 +4
+        assert_eq!(i16::from_le_bytes([dat[14], dat[15]]), 32767);
         let records = vec![SampleRecord {
             sample_num: 1,
             timestamp_us: 0,
@@ -409,7 +409,7 @@ mod tests {
             digital: vec![],
         }];
         let dat = ComtradeWriter::write_dat(&records, &chs, ComtradeFormat::Binary);
-        assert_eq!(i16::from_le_bytes([dat[10], dat[11]]), -32767);
+        assert_eq!(i16::from_le_bytes([dat[14], dat[15]]), -32767);
     }
 
     #[test]
@@ -422,9 +422,12 @@ mod tests {
             digital: vec![],
         }];
         let dat = ComtradeWriter::write_dat(&records, &chs, ComtradeFormat::Binary32);
-        // 8 + 4 = 12 字节；模拟量 i32 LE
-        assert_eq!(dat.len(), 12);
-        assert_eq!(i32::from_le_bytes([dat[8], dat[9], dat[10], dat[11]]), 123);
+        // 33 OB-04：timestamp 8B → 12 + 4 = 16 字节；模拟量 i32 LE
+        assert_eq!(dat.len(), 16);
+        assert_eq!(
+            i32::from_le_bytes([dat[12], dat[13], dat[14], dat[15]]),
+            123
+        );
     }
 
     #[test]
@@ -437,9 +440,9 @@ mod tests {
             digital: vec![true, false, true],
         }];
         let dat = ComtradeWriter::write_dat(&records, &chs, ComtradeFormat::Binary);
-        // [true,false,true] → 0b101 = 5，u16 LE
-        assert_eq!(dat.len(), 10);
-        assert_eq!(u16::from_le_bytes([dat[8], dat[9]]), 5);
+        // 33 OB-04：timestamp 8B → 12 + 2 = 14 字节；u16 LE
+        assert_eq!(dat.len(), 14);
+        assert_eq!(u16::from_le_bytes([dat[12], dat[13]]), 5);
     }
 
     #[test]
@@ -455,6 +458,6 @@ mod tests {
         let dat = ComtradeWriter::write_dat(&records, &chs, ComtradeFormat::Ascii);
         assert_eq!(dat, b"1,0,124\n".to_vec());
         let dat = ComtradeWriter::write_dat(&records, &chs, ComtradeFormat::Binary);
-        assert_eq!(i16::from_le_bytes([dat[8], dat[9]]), 124);
+        assert_eq!(i16::from_le_bytes([dat[12], dat[13]]), 124); // 33 OB-04：偏移 +4
     }
 }

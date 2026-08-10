@@ -235,16 +235,22 @@ impl StructuredLoggerImpl {
 
     /// 批量刷入存储：逐条序列化并 append 后清空缓冲，返回刷入条数.
     pub fn flush_to<S: LogStorage>(&mut self, store: &mut S) -> Result<usize, LogError> {
-        let count = self.buffer.len();
-        // heapless::Vec 无 drain：按索引逐条刷入后清空缓冲
-        for i in 0..count {
-            let entry = self.buffer[i].clone();
+        // 33 OB-02：按成功进度收缩——逐条 append，成功即 remove（旧实现
+        // 批量刷入失败后 buffer 未收缩 → 已成功条目下次重复写）。
+        let mut flushed = 0usize;
+        while !self.buffer.is_empty() {
+            let entry = self.buffer[0].clone();
             let json = to_json(&entry);
-            store.append(&entry, json.as_bytes())?;
+            match store.append(&entry, json.as_bytes()) {
+                Ok(()) => {
+                    self.buffer.remove(0);
+                    flushed += 1;
+                }
+                Err(e) => return Err(e),
+            }
         }
-        self.buffer.clear();
         self.flush_count += 1;
-        Ok(count)
+        Ok(flushed)
     }
 }
 

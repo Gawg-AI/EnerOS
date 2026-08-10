@@ -117,6 +117,9 @@ pub struct MetricsCollectorImpl<S: MetricsStore> {
     registry: MetricRegistry,
     /// 内存环形缓冲（满 256 丢弃最旧）.
     buffer: heapless::Vec<Metric, 256>,
+    /// 32/33 OB-01：未 flush 到 store 的 increment 累计（基数 = store +
+    /// pending——旧实现只读 store 最新值，漏 buffer 未 flush 增量）。
+    pending: heapless::Vec<(heapless::String<64>, u64), 32>,
     /// 刷入间隔（毫秒）.
     flush_interval_ms: u64,
     /// 上次刷入时刻（毫秒）.
@@ -131,6 +134,7 @@ impl<S: MetricsStore> MetricsCollectorImpl<S> {
         Self {
             registry: MetricRegistry::new(),
             buffer: heapless::Vec::new(),
+            pending: heapless::Vec::new(),
             flush_interval_ms,
             last_flush_ms: 0,
             store,
@@ -208,6 +212,8 @@ impl<S: MetricsStore> MetricsCollectorImpl<S> {
             self.store.append(&self.buffer[i])?;
         }
         self.buffer.clear();
+        // 33 OB-01：flush 后 pending 归零（store 已见全部增量）。
+        self.pending.clear();
         self.last_flush_ms = now_ms;
         Ok(count)
     }
@@ -256,9 +262,34 @@ impl<S: MetricsStore> MetricsCollector for MetricsCollectorImpl<S> {
         labels: &[Label],
         now_ms: u64,
     ) -> Result<(), MetricsError> {
-        // 读取 store 当前最新值并累加后记录
+        // 33 OB-01：基数 = store 最新值 + 未 flush 的 pending 累计（旧实现
+        // 只读 store——buffer 未 flush 的增量丢失，col10 测试靠手工 flush
+        // 掩盖）。
+        let mut pending_delta = 0u64;
+        {
+            let mut found = false;
+            for (n, d) in self.pending.iter_mut() {
+                if n.as_str() == name {
+                    *d = d.saturating_add(delta);
+                    pending_delta = *d;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                let mut n: heapless::String<64> = heapless::String::new();
+                let _ = n.push_str(name);
+                let _ = self.pending.push((n, delta));
+                pending_delta = delta;
+            }
+        }
         let current = self.store.get_latest(name).unwrap_or(0);
-        self.record(name, MetricValue::U64(current + delta), labels, now_ms)
+        self.record(
+            name,
+            MetricValue::U64(current.saturating_add(pending_delta)),
+            labels,
+            now_ms,
+        )
     }
 
     fn query(&self, name: &str, start_ms: u64, end_ms: u64) -> Result<Vec<Metric>, MetricsError> {
@@ -275,6 +306,31 @@ mod tests {
 
     use super::*;
     use crate::store::MemoryMetricsStore;
+    /// 33 OB-01 判据：连续 increment 不 flush → flush 后总值 = 累计和
+    ///（旧实现基数只读 store，未 flush 增量丢失）。
+    #[test]
+    fn test_increment_pending_accumulates() {
+        let mut c = MetricsCollectorImpl::new(MemoryMetricsStore::new(16), 1_000_000);
+        let _ = c.register(MetricDef {
+            name: HString::<64>::try_from("counter").unwrap(),
+            metric_type: MetricType::Counter,
+            help: HString::<128>::try_from("counter").unwrap(),
+            unit: HString::<16>::try_from("count").unwrap(),
+        });
+        for _ in 0..5 {
+            c.increment("counter", 3, &[], 100).unwrap();
+        }
+        // 不 flush：store 无值（间隔 1_000_000 未到）——pending 累计 15。
+        assert_eq!(c.store.get_latest("counter").unwrap_or(0), 0);
+        let n = c.maybe_flush(1_000_001).unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(
+            c.store.get_latest("counter").unwrap(),
+            15,
+            "flush 后总值必须=累计和"
+        );
+    }
+
 
     /// 构造注册表 + 内存存储采集器，并注册一项测试指标.
     fn new_collector() -> MetricsCollectorImpl<MemoryMetricsStore> {
