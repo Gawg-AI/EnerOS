@@ -23,6 +23,8 @@ use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+// 33 GV-05：soak-run artifact_sha256 实算（sha2 为 xtask 既有依赖）。
+use sha2::{Digest, Sha256};
 
 use super::{invalid, read_json, DynResult};
 
@@ -1290,6 +1292,11 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
     let mut image: Option<std::path::PathBuf> = None;
     let mut vars_template: Option<std::path::PathBuf> = None;
     let mut out_path = root.join("target/soak-campaign.json");
+    // 33 GV-05：最短浸泡天数可配（默认 3=72h 14 号文 D1；CI 短周期显式
+    // 传 0，禁止静默）。
+    let mut min_duration_days: u64 = 3;
+    // 33 GV-05：内存泄漏阈值（字节/天）——实测 RSS 回归斜率与之比较。
+    let mut leak_threshold: u64 = 64 * 1024 * 1024;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -1311,32 +1318,54 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
             "--image" => image = Some(std::path::PathBuf::from(val()?)),
             "--vars-template" => vars_template = Some(std::path::PathBuf::from(val()?)),
             "--out" => out_path = root.join(val()?),
+            "--min-duration-days" => {
+                min_duration_days = val()?
+                    .parse()
+                    .map_err(|_| invalid("--min-duration-days must be u64"))?;
+                if min_duration_days == 0 {
+                    println!(
+                        "WARNING: --min-duration-days=0 —— CI 短周期浸泡冒烟，\
+                         非 14 号文 D1 72h 浸泡证据（显式标注，不得静默）"
+                    );
+                }
+            }
+            "--leak-threshold" => {
+                leak_threshold = val()?
+                    .parse()
+                    .map_err(|_| invalid("--leak-threshold must be u64 (bytes/day)"))?;
+            }
             other => return Err(invalid(format!("unknown soak-run arg '{other}'"))),
         }
     }
     if cycles == 0 {
         return Err(invalid("soak-run --cycles must be > 0"));
     }
+    // 33 GV-05：artifact_sha256 实算需要产物路径（qemu-prod --image 本
+    // 就强制），缺省显式报错而非带病运行。
+    let image =
+        image.ok_or_else(|| invalid("soak-run requires --image <path> (for artifact_sha256)"))?;
 
     // 1. 构造 qemu-prod 命令行（复用同一入口）。
     let mut cmd = std::process::Command::new("cargo");
     cmd.arg("xtask").arg("run").arg("qemu-prod");
-    if let Some(img) = &image {
-        cmd.arg("--image").arg(img);
-    }
+    cmd.arg("--image").arg(&image);
     if let Some(vt) = &vars_template {
         cmd.arg("--vars-template").arg(vt);
     }
     cmd.arg("--expect").arg("PASS");
 
-    // 2. 循环启动。
+    // 2. 循环启动；每轮结束后采样宿主 RSS（/proc/self/status VmRSS）与
+    // 累计耗时，供泄漏回归（33 GV-05）。
     let mut restarts: Vec<SoakRestart> = Vec::new();
     let mut boot_secs: Vec<u64> = Vec::new();
+    let mut rss_samples: Vec<(u64, u64)> = Vec::new(); // (累计秒, rss 字节)
     let mut failures: usize = 0;
+    let mut elapsed_total: u64 = 0;
     for cycle in 0..cycles {
         let start = Instant::now();
         let status = cmd.output();
         let elapsed = start.elapsed().as_secs();
+        elapsed_total += elapsed;
         boot_secs.push(elapsed.max(1));
         match status {
             Ok(out) if out.status.success() => {
@@ -1368,6 +1397,9 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
                 });
             }
         }
+        if let Some(rss) = vm_rss_bytes() {
+            rss_samples.push((elapsed_total, rss));
+        }
         if failures > max_fail {
             return Err(invalid(format!(
                 "soak-run aborted: {failures} failures exceed --max-fail {max_fail}"
@@ -1389,15 +1421,49 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
         .collect();
     fs::write(&csv_path, csv)?;
 
-    // 4. 产出 QA-018 证据 JSON。
+    // 4. 33 GV-05：artifact_sha256 实算（SHA-256——与验证判据 sha256sum
+    // 一致；sha2 为 xtask 既有依赖）。
+    let artifact_bytes = fs::read(&image).map_err(|e| {
+        invalid(format!(
+            "soak-run cannot read --image {}: {e}",
+            image.display()
+        ))
+    })?;
+    let artifact_sha256 = hex_encode(&Sha256::digest(&artifact_bytes));
+    println!(
+        "soak artifact sha256={artifact_sha256} ({})",
+        image.display()
+    );
+
+    // 5. 33 GV-05：宿主 RSS 采样序列线性回归 → 泄漏率（字节/天）。
+    // 采样不足（非 Linux /proc 缺失或样本 <2）→ 0 并显式警告（不静默）。
+    let memory_leak_bytes_per_day = if rss_samples.len() >= 2 {
+        linear_slope_per_day(&rss_samples)
+    } else {
+        println!(
+            "WARNING: RSS 采样不足（{} 样本），memory_leak 记 0——非静默",
+            rss_samples.len()
+        );
+        0
+    };
+    println!(
+        "soak memory-leak regression: {} bytes/day (threshold {})",
+        memory_leak_bytes_per_day, leak_threshold
+    );
+
+    // 6. 产出 QA-018 证据 JSON。
     let campaign = SoakCampaign {
         schema: "eneros.soak-campaign.v1".into(),
         campaign_id: format!("qemu-soak-{cycles}x-{avg}s"),
-        artifact_sha256: String::new(),
+        artifact_sha256,
+        // duration 以实际秒数为准（33 GV-05：门禁阈值经 --min-duration-days
+        // 可配，短周期 CI 显式 0）。
         duration_days: ((total as f64 / 86400.0).max(0.0)) as u64,
-        min_duration_days: 3,
-        memory_leak_bytes_per_day: 0,
-        memory_leak_threshold: 0,
+        min_duration_days,
+        memory_leak_bytes_per_day,
+        memory_leak_threshold: leak_threshold,
+        // QEMU 浸泡仅验证引导链（无数据负载写入），数据腐化检测不适用
+        //（真机 72h 浸泡脚本负责数据面）——false 为如实声明（33 GV-05）。
         data_corruption: false,
         restarts,
         metric_samples: cycles as u64,
@@ -1414,6 +1480,44 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
     Ok(())
 }
 
+/// 宿主 RSS（字节）：/proc/self/status VmRSS（33 GV-05 泄漏回归采样源）。
+/// 非 Linux 或无 /proc 返回 None。
+fn vm_rss_bytes() -> Option<u64> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb: u64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
+            return Some(kb * 1024);
+        }
+    }
+    None
+}
+
+/// RSS 采样序列（x=累计秒, y=字节）线性回归斜率 → 字节/天。
+/// 负斜率（RSS 下降）钳为 0；样本 <2 或分母为 0 返回 0。
+fn linear_slope_per_day(samples: &[(u64, u64)]) -> u64 {
+    let n = samples.len();
+    if n < 2 {
+        return 0;
+    }
+    let (sum_x, sum_y, sum_xy, sum_xx) = samples.iter().fold(
+        (0f64, 0f64, 0f64, 0f64),
+        |(sx, sy, sxy, sxx), &(x, y)| {
+            let (x, y) = (x as f64, y as f64);
+            (sx + x, sy + y, sxy + x * y, sxx + x * x)
+        },
+    );
+    let denom = n as f64 * sum_xx - sum_x * sum_x;
+    if denom.abs() < f64::EPSILON {
+        return 0;
+    }
+    let slope_per_sec = (n as f64 * sum_xy - sum_x * sum_y) / denom;
+    if slope_per_sec <= 0.0 {
+        return 0;
+    }
+    (slope_per_sec * 86400.0) as u64
+}
+
 fn command_soak(root: &Path, args: &[String]) -> DynResult<()> {
     let path = match args {
         [p] => root.join(p),
@@ -1424,6 +1528,12 @@ fn command_soak(root: &Path, args: &[String]) -> DynResult<()> {
 
     if campaign.schema != "eneros.soak-campaign.v1" {
         report.violations.push("schema-mismatch".to_owned());
+    }
+    // 33 GV-05：artifact_sha256 必须实算（自证链——硬编码空串不得过门）。
+    if campaign.artifact_sha256.is_empty() {
+        report
+            .violations
+            .push("missing-artifact-sha256".to_owned());
     }
     if campaign.duration_days < campaign.min_duration_days {
         report.violations.push(format!(
@@ -2439,6 +2549,10 @@ mod tests {
         let dir = tempdir();
         let root = Path::new(&dir);
         let out = root.join("soak-campaign.json");
+        // 33 GV-05：--image 强制（artifact_sha256 实算需要产物）；用
+        // 一个真实小文件模拟镜像产物。
+        let image = root.join("fake-image.raw");
+        fs::write(&image, b"fake qemu image payload 1234567890").expect("write image");
         // cycles=1、max-fail=1：本机无 QEMU 时命令可能 spawn 失败——
         // 但证据文件仍应产出（restarts 记录 spawn-error）。
         let r = command_soak_run(
@@ -2448,6 +2562,10 @@ mod tests {
                 "1".into(),
                 "--max-fail".into(),
                 "5".into(),
+                "--image".into(),
+                image.to_string_lossy().into(),
+                "--min-duration-days".into(),
+                "0".into(),
                 "--out".into(),
                 out.to_string_lossy().into(),
             ],
@@ -2457,9 +2575,12 @@ mod tests {
         let parsed: SoakCampaign = read_json(&out).expect("campaign parses");
         assert_eq!(parsed.schema, "eneros.soak-campaign.v1");
         assert_eq!(parsed.metric_samples, 1);
-        assert!(
-            parsed.min_duration_days == 3,
-            "min_duration_days must default to 3"
+        // 33 GV-05：artifact_sha256 实算非空且等于镜像 sha256sum。
+        let want = hex_encode(&Sha256::digest(b"fake qemu image payload 1234567890"));
+        assert_eq!(parsed.artifact_sha256, want, "artifact_sha256 必须实算");
+        assert_eq!(
+            parsed.min_duration_days, 0,
+            "--min-duration-days=0 显式传入"
         );
         // boot-times.csv 必须产出（14 号文 D1 启动时间分布证据）。
         let csv = out.with_file_name("boot-times.csv");
@@ -2476,6 +2597,23 @@ mod tests {
                 "failure reason must be explicit: {msg}"
             );
         }
+    }
+
+    /// 33 GV-05：soak-run 缺 --image → 显式报错（不再带病产出空哈希）。
+    #[test]
+    fn t5b_soak_run_requires_image() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let r = command_soak_run(
+            root,
+            &["--cycles".into(), "1".into(), "--max-fail".into(), "5".into()],
+        );
+        let msg = format!("{:?}", r);
+        assert!(r.is_err(), "缺 --image 必须报错");
+        assert!(
+            msg.contains("--image"),
+            "错误信息须指出 --image: {msg}"
+        );
     }
 
     #[test]
@@ -2496,6 +2634,31 @@ mod tests {
         let p = root.join("soak.json");
         write_json(&p, &campaign);
         assert!(command_soak(root, &[p.to_string_lossy().into()]).is_ok());
+    }
+
+    /// 33 GV-05：artifact_sha256 空串（旧 soak-run 硬编码产物）→ 门禁必拒。
+    #[test]
+    fn t3c_soak_missing_artifact_sha_rejected() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let campaign = serde_json::json!({
+            "schema": "eneros.soak-campaign.v1",
+            "campaign_id": "soak-empty-hash",
+            "artifact_sha256": "",
+            "duration_days": 30,
+            "min_duration_days": 3,
+            "memory_leak_bytes_per_day": 0,
+            "memory_leak_threshold": 0,
+            "data_corruption": false,
+            "restarts": [],
+            "metric_samples": 100,
+        });
+        let p = root.join("soak.json");
+        write_json(&p, &campaign);
+        let r = command_soak(root, &[p.to_string_lossy().into()]);
+        assert!(r.is_err(), "空 artifact_sha256 必须拒绝");
+        // 门禁错误为通用串（"QA-018 gate did not pass"），违规明细在
+        // QaReport violations 内；此处以拒绝本身为判据。
     }
 
     /// v0.253.0（D1）：72h（3 天）浸泡证据可通过门禁（14 号文 D1 标准）。
@@ -2649,7 +2812,7 @@ mod tests {
         unsafe {
             std::env::set_var(
                 "ENEROS_PERF_VERIFY_PUBKEY",
-                std::fs::read_to_string(&pk).unwrap().trim().to_owned(),
+                std::fs::read_to_string(&pk).unwrap().trim(),
             );
         }
         let r = command_perf_gate(root, &[p.to_string_lossy().into()]);
