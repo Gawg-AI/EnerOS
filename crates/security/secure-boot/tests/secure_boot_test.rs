@@ -55,7 +55,18 @@ fn test_full_chain_with_tpm() {
         rt_sig: &rt_sig,
     };
     let (raw, raw_len) = BootManifest::encode(&bl.public_key);
-    let manifest = BootManifest::parse(&raw[..raw_len]).unwrap();
+    let mut bl_img_with_manifest = vec![0x51u8; 64];
+    bl_img_with_manifest.extend_from_slice(&raw[..raw_len]);
+    let manifest_sig = sign_image(&bl_img_with_manifest, &root, &mut rng, 100);
+    // 29 SE-02：manifest 必须经 verify_and_parse 验签解析（未验签 parse
+    // 暴露下级公钥绑定断裂，B4-02 失效）。
+    let manifest = BootManifest::verify_and_parse(
+        &bl_img_with_manifest,
+        &root.public_key,
+        &manifest_sig,
+        0,
+    )
+    .unwrap();
 
     let report = sb.verify_boot_chain(&images, &manifest).unwrap();
 
@@ -98,8 +109,19 @@ fn test_tamper_bootloader_rejected() {
         rt_sig: &rt_sig,
     };
 
-    let (raw_m, raw_m_len) = BootManifest::encode(&bl.public_key);
-    let manifest = BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+    let (raw, raw_len) = BootManifest::encode(&bl.public_key);
+    let mut bl_img_with_manifest = vec![0x51u8; 64];
+    bl_img_with_manifest.extend_from_slice(&raw[..raw_len]);
+    let manifest_sig = sign_image(&bl_img_with_manifest, &root, &mut rng, 100);
+    // 29 SE-02：manifest 必须经 verify_and_parse 验签解析（未验签 parse
+    // 暴露下级公钥绑定断裂，B4-02 失效）。
+    let manifest = BootManifest::verify_and_parse(
+        &bl_img_with_manifest,
+        &root.public_key,
+        &manifest_sig,
+        0,
+    )
+    .unwrap();
     let result = sb.verify_boot_chain(&images, &manifest);
     assert_eq!(result, Err(BootError::HashMismatch));
 }
@@ -132,8 +154,19 @@ fn test_tamper_kernel_rejected() {
         rt_sig: &rt_sig,
     };
 
-    let (raw_m, raw_m_len) = BootManifest::encode(&bl.public_key);
-    let manifest = BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+    let (raw, raw_len) = BootManifest::encode(&bl.public_key);
+    let mut bl_img_with_manifest = vec![0x51u8; 64];
+    bl_img_with_manifest.extend_from_slice(&raw[..raw_len]);
+    let manifest_sig = sign_image(&bl_img_with_manifest, &root, &mut rng, 100);
+    // 29 SE-02：manifest 必须经 verify_and_parse 验签解析（未验签 parse
+    // 暴露下级公钥绑定断裂，B4-02 失效）。
+    let manifest = BootManifest::verify_and_parse(
+        &bl_img_with_manifest,
+        &root.public_key,
+        &manifest_sig,
+        0,
+    )
+    .unwrap();
     let result = sb.verify_boot_chain(&images, &manifest);
     assert_eq!(result, Err(BootError::HashMismatch));
 }
@@ -164,8 +197,19 @@ fn test_forged_signature_rejected() {
         rt_sig: &rt_sig,
     };
 
-    let (raw_m, raw_m_len) = BootManifest::encode(&bl.public_key);
-    let manifest = BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+    let (raw, raw_len) = BootManifest::encode(&bl.public_key);
+    let mut bl_img_with_manifest = vec![0x51u8; 64];
+    bl_img_with_manifest.extend_from_slice(&raw[..raw_len]);
+    let manifest_sig = sign_image(&bl_img_with_manifest, &root, &mut rng, 100);
+    // 29 SE-02：manifest 必须经 verify_and_parse 验签解析（未验签 parse
+    // 暴露下级公钥绑定断裂，B4-02 失效）。
+    let manifest = BootManifest::verify_and_parse(
+        &bl_img_with_manifest,
+        &root.public_key,
+        &manifest_sig,
+        0,
+    )
+    .unwrap();
     let result = sb.verify_boot_chain(&images, &manifest);
     assert_eq!(result, Err(BootError::SignatureInvalid));
 }
@@ -199,7 +243,18 @@ fn test_tpm_unavailable_degraded_boot() {
         rt_sig: &rt_sig,
     };
     let (raw, raw_len) = BootManifest::encode(&bl.public_key);
-    let manifest = BootManifest::parse(&raw[..raw_len]).unwrap();
+    let mut bl_img_with_manifest = vec![0x51u8; 64];
+    bl_img_with_manifest.extend_from_slice(&raw[..raw_len]);
+    let manifest_sig = sign_image(&bl_img_with_manifest, &root, &mut rng, 100);
+    // 29 SE-02：manifest 必须经 verify_and_parse 验签解析（未验签 parse
+    // 暴露下级公钥绑定断裂，B4-02 失效）。
+    let manifest = BootManifest::verify_and_parse(
+        &bl_img_with_manifest,
+        &root.public_key,
+        &manifest_sig,
+        0,
+    )
+    .unwrap();
 
     let report = sb.verify_boot_chain(&images, &manifest).unwrap();
     assert!(report.can_boot());
@@ -236,8 +291,19 @@ fn test_stale_image_rejected() {
         rt_sig: &rt_sig,
     };
 
-    let (raw_m, raw_m_len) = BootManifest::encode(&bl.public_key);
-    let manifest = BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+    let (raw, raw_len) = BootManifest::encode(&bl.public_key);
+    let mut bl_img_with_manifest = vec![0x51u8; 64];
+    bl_img_with_manifest.extend_from_slice(&raw[..raw_len]);
+    let manifest_sig = sign_image(&bl_img_with_manifest, &root, &mut rng, 100);
+    // 29 SE-02：manifest 必须经 verify_and_parse 验签解析（未验签 parse
+    // 暴露下级公钥绑定断裂，B4-02 失效）。
+    let manifest = BootManifest::verify_and_parse(
+        &bl_img_with_manifest,
+        &root.public_key,
+        &manifest_sig,
+        0,
+    )
+    .unwrap();
     let result = sb.verify_boot_chain(&images, &manifest);
     assert_eq!(result, Err(BootError::StaleImage));
 }

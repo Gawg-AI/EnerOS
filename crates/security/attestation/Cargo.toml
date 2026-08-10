@@ -10,6 +10,12 @@ description = "EnerOS 测量启动与远程证明 (v0.114.0) — TPM PCR 度量 
 eneros-crypto = { path = "../crypto" }
 # v0.236.0（B4-03）：真实 TPM2 适配器（硬件路径）。
 eneros-tpm = { path = "../tpm", optional = true }
+# 29 SE-03：TPM2 真实签名输出 DER（≤72B）——DER→r‖s 解析复用 crypto-gmssl
+# vetted binding（ADR-022）；std 面，仅 tpm2 feature（真实 TPM2 适配器路径）。
+eneros-crypto-gmssl = { path = "../crypto-gmssl", optional = true }
 
 [features]
-tpm2 = ["dep:eneros-tpm"]
+tpm2 = ["dep:eneros-tpm", "dep:eneros-crypto-gmssl"]
+# 29 SE-05：MockAttestTransport 门控（S2）——生产构建默认不含 Mock 面；
+# 仅测试（cfg(test)）或显式启用本 feature 时编译。
+mock = []

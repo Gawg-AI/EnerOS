@@ -213,6 +213,13 @@ jobs:
           # 手卷 ↔ openssl 双向互操作 KAT（10 组第三方向量）
           cargo test --locked -p eneros-crypto --test sm2_interop_kat
 
+      - name: attestation tpm2 feature compile+test (29 SE-01, fail-closed)
+        # SE-01：真实 TPM2 适配器路径曾引用不存在的 TpmError::KeyUnavailable
+        # 导致 --features tpm2 编译失败——本矩阵项使其回归必现。
+        run: |
+          cargo check --locked -p eneros-attestation --features tpm2
+          cargo test --locked -p eneros-attestation --features tpm2
+
       - name: D1 hot-path unwrap/expect discipline (21-B D1, fail-closed)
         run: bash tests/delivery/no-unwrap-hotpaths.sh
 

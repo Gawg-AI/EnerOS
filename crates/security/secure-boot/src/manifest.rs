@@ -7,9 +7,9 @@
 //! 类型系统约束：`BootManifest` 仅在
 //! [`BootManifest::verify_and_parse`] 成功后存在；`extract_bl_key`
 //! 返回 `&Sm2PublicKey` 生命周期绑定到已验签镜像——装配方无法在
-use eneros_crypto::Sm2PublicKey;
+use eneros_crypto::{sm2_verify, sm3_hash, Sm2PublicKey, Sm2Signature};
 
-use crate::header::{encode_header, ImageSignature};
+use crate::header::ImageSignature;
 use crate::BootError;
 
 pub const MANIFEST_MAGIC: [u8; 4] = *b"BMAN";
@@ -70,27 +70,53 @@ impl BootManifest {
         Err(BootError::ManifestNotFound)
     }
 
-    /// 验签并解析 manifest（v0.235.0 核心路径）。
+    /// 验签并解析 manifest（v0.235.0 核心路径；29 SE-02 修真）。
     ///
     /// `image` = 完整 bootloader 镜像；`root_key` = 信任根公钥；
-    /// `sig` = bootloader 签名。验签通过后从镜像尾部解析 manifest，
-    /// 提取下级 BL 公钥——密码学绑定（未验签镜像无法取得公钥）。
+    /// `sig` = bootloader 签名；`min_timestamp` = 防降级时间戳下限
+    /// （集成层与 secure-boot.toml `[anti_rollback]` 对齐）。
+    /// 验签通过后从镜像尾部解析 manifest，提取下级 BL 公钥——密码学绑定
+    /// （未验签镜像无法取得公钥）。
+    ///
+    /// 29 SE-02：原实现复用有状态 `BootVerifier`（初始 stage=Rom）直验
+    /// Bootloader → 恒 `WrongStage`，成功路径数学上不可达，全仓实际消费
+    /// 未验签 `parse()`（信任链下级公钥绑定断裂，B4-02 失效）。现改为
+    /// 无状态直验：长度/哈希/时间戳/SM2 验签全部通过后才 parse。
     pub fn verify_and_parse(
         image: &[u8],
         root_key: &Sm2PublicKey,
         sig: &ImageSignature,
+        min_timestamp: u64,
     ) -> Result<Self, BootError> {
-        // 1. 信任根验签（与 verifier 相同的 SM2 验签路径）。
-        let _header = encode_header(sig);
-        let mut verifier = crate::verifier::BootVerifier::new(*root_key, 0);
-        verifier.verify_stage(crate::BootStage::Bootloader, image, sig)?;
-
-        // 2. 解析 manifest。
+        // 1. 显式长度校验（防截断镜像）。
+        if image.len() as u64 != sig.image_size {
+            return Err(BootError::SizeMismatch);
+        }
+        // 2. SM3 哈希比对（镜像被篡改即拒）。
+        if sm3_hash(image) != sig.image_hash {
+            return Err(BootError::HashMismatch);
+        }
+        // 3. 防降级时间戳下限（29 SE-02：参数化替代硬编码 0）。
+        if sig.timestamp < min_timestamp {
+            return Err(BootError::StaleImage);
+        }
+        // 4. 信任根 SM2 验签（签名消息 = 镜像 SM3 哈希，与 verifier 同路径）。
+        let sm2_sig = Sm2Signature::from_bytes(&sig.signature);
+        match sm2_verify(&sig.image_hash, &sm2_sig, root_key) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => return Err(BootError::SignatureInvalid),
+        }
+        // 5. 验签通过后才解析 manifest，提取下级 BL 公钥。
         let (manifest_bytes, _prefix) = Self::locate(image)?;
         Self::parse(manifest_bytes)
     }
 
-    /// 从 manifest 字节解析（验签后调用）。
+    /// 从 manifest 字节解析（**未验签**——29 SE-02：生产路径禁止直接调用，
+    /// 必须经 [`BootManifest::verify_and_parse`] 验签后解析；保留供测试夹具
+    /// 与离线工具使用）。
+    #[deprecated(
+        note = "29 SE-02：未验签解析暴露下级公钥绑定断裂——生产路径请使用 verify_and_parse"
+    )]
     pub fn parse(manifest: &[u8]) -> Result<Self, BootError> {
         if manifest.len() < 12 {
             return Err(BootError::ManifestCorrupt);
@@ -206,8 +232,78 @@ mod tests {
             timestamp: 0,
         };
         assert!(
-            BootManifest::verify_and_parse(&image, &kp.public_key, &bad_sig).is_err(),
+            BootManifest::verify_and_parse(&image, &kp.public_key, &bad_sig, 0).is_err(),
             "未验签镜像的 manifest 必须拒绝"
+        );
+    }
+
+    /// 构造"带合法 root 签名的镜像"（测试夹具）。
+    fn signed_image(
+        manifest_owner: &eneros_crypto::Sm2KeyPair,
+        root: &eneros_crypto::Sm2KeyPair,
+        rng: &mut eneros_crypto::CsRng,
+        timestamp: u64,
+    ) -> (alloc::vec::Vec<u8>, ImageSignature) {
+        let (manifest, manifest_len) = BootManifest::encode(&manifest_owner.public_key);
+        let mut image = alloc::vec![0x44u8; 64];
+        image.extend_from_slice(&manifest[..manifest_len]);
+        let hash = eneros_crypto::sm3_hash(&image);
+        let sig = eneros_crypto::sm2_sign(&hash, &root.private_key, &root.public_key, rng)
+            .expect("sign");
+        let header = ImageSignature {
+            magic: *b"ESIG",
+            version: 1,
+            image_size: image.len() as u64,
+            image_hash: hash,
+            signature: sig.to_bytes(),
+            timestamp,
+        };
+        (image, header)
+    }
+
+    /// 29 SE-02 判据正例：合法 root 签名镜像 → verify_and_parse 必须 Ok
+    /// 且提取的 bl_key 与 manifest 声明一致（现状此断言必失败——恒 WrongStage）。
+    #[test]
+    fn test_verify_and_parse_accepts_signed_image() {
+        let (bl, mut rng) = keypair();
+        let (root, _) = keypair();
+        let (image, sig) = signed_image(&bl, &root, &mut rng, 100);
+        let manifest = BootManifest::verify_and_parse(&image, &root.public_key, &sig, 0)
+            .expect("合法 root 签名镜像必须通过验签解析（29 SE-02 判据）");
+        assert_eq!(manifest.bl_key, bl.public_key, "bl_key 必须来自已验签 manifest");
+        assert_eq!(manifest.version, MANIFEST_VERSION);
+    }
+
+    /// 29 SE-02 张冠李戴负例：manifest 声明的 bl_key 与签名方不符（镜像由
+    /// 攻击者 C 签名，root 未背书）→ 必 Err。另：root 合法签名但 manifest
+    /// 内 bl_key 被篡改 → 哈希/验签必失败。
+    #[test]
+    fn test_verify_and_parse_rejects_mismatched_signer() {
+        let (bl, _) = keypair();
+        let (root, _) = keypair();
+        let (attacker, _) = keypair();
+        // 注意：keypair() 固定种子会生成相同密钥——此处强制三方可区分，
+        // 用独立 rng 重新生成 attacker。
+        let mut rng = eneros_crypto::CsRng::from_seed(&[0xAA; 32]);
+        let attacker = eneros_crypto::Sm2KeyPair::generate(&mut rng).expect("kp");
+        assert_ne!(attacker.public_key, root.public_key);
+        // 攻击者签名（非信任根）——张冠李戴：装配方想用未背书的 bl_key。
+        let (image, sig) = signed_image(&bl, &attacker, &mut rng, 100);
+        assert!(
+            BootManifest::verify_and_parse(&image, &root.public_key, &sig, 0).is_err(),
+            "非 root 签名的镜像必须拒绝（信任链下级公钥绑定）"
+        );
+    }
+
+    /// 29 SE-02 防降级：timestamp < min_timestamp → Err(StaleImage)。
+    #[test]
+    fn test_verify_and_parse_rejects_stale_timestamp() {
+        let (bl, mut rng) = keypair();
+        let (root, _) = keypair();
+        let (image, sig) = signed_image(&bl, &root, &mut rng, 100);
+        assert_eq!(
+            BootManifest::verify_and_parse(&image, &root.public_key, &sig, 200),
+            Err(BootError::StaleImage)
         );
     }
 }

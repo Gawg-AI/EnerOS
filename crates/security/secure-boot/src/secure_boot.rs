@@ -263,7 +263,14 @@ mod tests {
             rt_sig: &rt_sig,
         };
         let (raw, raw_len) = crate::manifest::BootManifest::encode(&bl.public_key);
-        let manifest = crate::manifest::BootManifest::parse(&raw[..raw_len]).unwrap();
+        let mut bl_img = alloc::vec![0x51u8; 64];
+        bl_img.extend_from_slice(&raw[..raw_len]);
+        let manifest_sig = sign_image(&bl_img, &root, &mut rng, 100);
+        // 29 SE-02：manifest 必须经 verify_and_parse 验签解析（未验签 parse
+        // 暴露下级公钥绑定断裂）。
+        let manifest =
+            crate::manifest::BootManifest::verify_and_parse(&bl_img, &root.public_key, &manifest_sig, 0)
+                .unwrap();
 
         let report = sb.verify_boot_chain(&images, &manifest).unwrap();
 
@@ -300,7 +307,14 @@ mod tests {
             rt_sig: &rt_sig,
         };
         let (raw, raw_len) = crate::manifest::BootManifest::encode(&bl.public_key);
-        let manifest = crate::manifest::BootManifest::parse(&raw[..raw_len]).unwrap();
+        let mut bl_img = alloc::vec![0x51u8; 64];
+        bl_img.extend_from_slice(&raw[..raw_len]);
+        let manifest_sig = sign_image(&bl_img, &root, &mut rng, 100);
+        // 29 SE-02：manifest 必须经 verify_and_parse 验签解析（未验签 parse
+        // 暴露下级公钥绑定断裂）。
+        let manifest =
+            crate::manifest::BootManifest::verify_and_parse(&bl_img, &root.public_key, &manifest_sig, 0)
+                .unwrap();
 
         let report = sb.verify_boot_chain(&images, &manifest).unwrap();
 
@@ -340,7 +354,17 @@ mod tests {
         };
 
         let (raw_m, raw_m_len) = crate::manifest::BootManifest::encode(&bl.public_key);
-        let manifest = crate::manifest::BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+        let mut bl_img = alloc::vec![0x52u8; 64];
+        bl_img.extend_from_slice(&raw_m[..raw_m_len]);
+        let manifest_sig = sign_image(&bl_img, &root, &mut rng, 100);
+        // 29 SE-02：manifest 经 verify_and_parse 验签解析。
+        let manifest = crate::manifest::BootManifest::verify_and_parse(
+            &bl_img,
+            &root.public_key,
+            &manifest_sig,
+            0,
+        )
+        .unwrap();
         let result = sb.verify_boot_chain(&images, &manifest);
         assert_eq!(result, Err(BootError::HashMismatch));
     }
@@ -374,7 +398,17 @@ mod tests {
         };
 
         let (raw_m, raw_m_len) = crate::manifest::BootManifest::encode(&bl.public_key);
-        let manifest = crate::manifest::BootManifest::parse(&raw_m[..raw_m_len]).unwrap();
+        let mut bl_img = alloc::vec![0x52u8; 64];
+        bl_img.extend_from_slice(&raw_m[..raw_m_len]);
+        let manifest_sig = sign_image(&bl_img, &root, &mut rng, 100);
+        // 29 SE-02：manifest 经 verify_and_parse 验签解析。
+        let manifest = crate::manifest::BootManifest::verify_and_parse(
+            &bl_img,
+            &root.public_key,
+            &manifest_sig,
+            0,
+        )
+        .unwrap();
         let result = sb.verify_boot_chain(&images, &manifest);
         assert_eq!(result, Err(BootError::SignatureInvalid));
     }

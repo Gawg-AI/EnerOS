@@ -75,6 +75,9 @@ pub enum TpmError {
     ReadFailed,
     /// Quote 生成失败（含 SoftTpm 空 PCR 选择 / SM2 签名内部错误）.
     QuoteFailed,
+    /// AK 密钥不可用（29 SE-01：真实 TPM2 路径引用不存在的变体导致
+    /// `--features tpm2` 编译失败；`attestation_pubkey` 在 AK 未注入时返回）.
+    KeyUnavailable,
 }
 
 /// 远程证明错误（D5/D6：6 变体，Copy 对齐 v0.111.0 OtaError 惯例）.
@@ -99,14 +102,16 @@ pub enum AttestError {
 
 impl From<TpmError> for AttestError {
     /// TPM 错误 → 证明错误映射：TpmUnavailable/InvalidPcrIndex/QuoteFailed
-    /// 同名转换；ExtendFailed/ReadFailed 归并 QuoteFailed.
+    /// 同名转换；ExtendFailed/ReadFailed 归并 QuoteFailed；KeyUnavailable
+    /// （AK 未注入）归并 QuoteFailed——任一环节失败即证明失败（fail-closed）.
     fn from(e: TpmError) -> Self {
         match e {
             TpmError::TpmUnavailable => AttestError::TpmUnavailable,
             TpmError::InvalidPcrIndex => AttestError::InvalidPcrIndex,
-            TpmError::QuoteFailed | TpmError::ExtendFailed | TpmError::ReadFailed => {
-                AttestError::QuoteFailed
-            }
+            TpmError::QuoteFailed
+            | TpmError::ExtendFailed
+            | TpmError::ReadFailed
+            | TpmError::KeyUnavailable => AttestError::QuoteFailed,
         }
     }
 }
@@ -132,9 +137,12 @@ pub trait AttestTransport {
     fn verify_remote(&mut self, attest: &RemoteAttestation) -> Result<AttestResult, AttestError>;
 }
 
-/// Mock 远程传输（测试用：预设结果 + 故障注入 + 调用计数）.
+/// Mock 远程传输（测试用：预设结果 + 故障注入 + 调用计数）。
 ///
 /// `calls` 统计 `verify_remote` 全部调用次数（含故障注入拦截的调用）。
+/// 29 SE-05：mock/test 门控（S2 不可回退清单）——生产二进制不得存在可
+/// 实例化的 Mock 证明面（此前为全项目唯一 S2 违规）。
+#[cfg(any(test, feature = "mock"))]
 pub struct MockAttestTransport {
     /// 预设返回结果（None 时返回 `Err(ServerRejected)`）.
     preset: Option<AttestResult>,
@@ -144,6 +152,7 @@ pub struct MockAttestTransport {
     pub calls: u32,
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl MockAttestTransport {
     /// 构造 Mock 传输（preset 为预设返回结果）.
     pub fn new(preset: Option<AttestResult>) -> Self {
@@ -160,6 +169,7 @@ impl MockAttestTransport {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl AttestTransport for MockAttestTransport {
     fn verify_remote(&mut self, _attest: &RemoteAttestation) -> Result<AttestResult, AttestError> {
         self.calls += 1;
