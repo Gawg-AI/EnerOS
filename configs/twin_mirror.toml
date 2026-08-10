@@ -1,3 +1,4 @@
+# consumer: 集成层占位（产线注入）——当前无 Rust 解析代码，仅交付模板
 # EnerOS v0.89.0 数字孪生数据镜像配置模板
 # Digital Twin Agent 数据镜像：旁路只读订阅 → TwinModel 实时镜像 → 周期摘要快照发布
 #

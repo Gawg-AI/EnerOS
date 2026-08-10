@@ -1,3 +1,4 @@
+# consumer: 集成层占位（产线注入）——当前无 Rust 解析代码，仅交付模板
 # 实时市场配置 (v0.174.0)
 
 [realtime_market]

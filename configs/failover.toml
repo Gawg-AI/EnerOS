@@ -1,3 +1,4 @@
+# consumer: 集成层占位（产线注入）——当前无 Rust 解析代码，仅交付模板
 # EnerOS Dual-Network Redundancy Configuration (v0.30.2)
 # Heartbeat monitoring and failover settings.
 

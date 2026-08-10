@@ -1,3 +1,4 @@
+# consumer: 集成层占位（产线注入）——当前无 Rust 解析代码，仅交付模板
 # 辅助服务参与配置 (v0.172.0)
 
 [frequency_regulation]

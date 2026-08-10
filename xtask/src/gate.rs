@@ -375,6 +375,29 @@ pub fn command_config_refs(root: &Path, _args: &[String]) -> DynResult<()> {
             missing.len()
         )));
     }
+    // CF-01（29 WP-29.2）：configs/** 每个 toml 头部必须声明 consumer
+    // （`# consumer: <crate::path | 集成层占位（产线注入）>`）——配置存在
+    // 但无消费者必须显式声明（S6）。头部 12 行内查找。
+    let mut no_consumer: Vec<String> = Vec::new();
+    for path in collect_toml_files(&configs_dir) {
+        let text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let header: String = text.lines().take(12).collect::<Vec<_>>().join("\n");
+        if !header.contains("# consumer:") {
+            no_consumer.push(path.display().to_string());
+        }
+    }
+    if !no_consumer.is_empty() {
+        for n in &no_consumer {
+            println!("CONFIG-REFS-NO-CONSUMER: {n}");
+        }
+        return Err(invalid(format!(
+            "config-refs: {} 个 toml 无 consumer 声明（CF-01 纪律：配置存在但无消费者必须显式声明）",
+            no_consumer.len()
+        )));
+    }
     Ok(())
 }
 
@@ -470,15 +493,79 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// `qa gate config-syntax`：configs/** 全部 toml 语法校验（29 CF-01）。
+/// host 侧用 toml crate 解析（含 compliance/、platform-contracts/、power/、
+/// time/ 子目录），语法错 FAIL——堵住"81 个 toml 无语法校验"缺口。
+pub fn command_config_syntax(root: &Path, _args: &[String]) -> DynResult<()> {
+    let configs_dir = root.join("configs");
+    let mut bad: Vec<String> = Vec::new();
+    let mut count = 0usize;
+    for path in collect_toml_files(&configs_dir) {
+        count += 1;
+        let text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                bad.push(format!("{}: read {}", path.display(), e));
+                continue;
+            }
+        };
+        if let Err(e) = text.parse::<toml::Value>() {
+            bad.push(format!("{}: {e}", path.display()));
+        }
+    }
+    let out_dir = root.join("evidence/config-syntax");
+    fs::create_dir_all(&out_dir)?;
+    let out = out_dir.join(format!("{}.json", chrono_like_today()));
+    fs::write(
+        &out,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": "eneros.config-syntax.v1",
+            "checked": count,
+            "errors": bad,
+        }))?,
+    )?;
+    println!("CONFIG-SYNTAX → {}（checked {}，errors {}）", out.display(), count, bad.len());
+    if !bad.is_empty() {
+        for b in &bad {
+            println!("CONFIG-SYNTAX-ERROR: {b}");
+        }
+        return Err(invalid(format!(
+            "config-syntax: {} 个 toml 语法错误（configs/ 全量）",
+            bad.len()
+        )));
+    }
+    Ok(())
+}
+
+/// 递归收集 configs/ 下全部 toml 文件。
+fn collect_toml_files(configs_dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![configs_dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(es) = fs::read_dir(&d) else { continue };
+        for e in es.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().map(|x| x == "toml").unwrap_or(false) {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// `qa gate ...` 分发。
 pub fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
     let (mode, tail) = args
         .split_first()
-        .ok_or_else(|| invalid("gate requires a subcommand: orphan-check|config-refs|mock-leak"))?;
+        .ok_or_else(|| invalid("gate requires a subcommand: orphan-check|config-refs|mock-leak|config-syntax"))?;
     match mode.as_str() {
         "orphan-check" => command_orphan_check(root, tail),
         "config-refs" => command_config_refs(root, tail),
         "mock-leak" => command_mock_leak(root, tail),
+        "config-syntax" => command_config_syntax(root, tail),
         other => Err(invalid(format!("unknown gate subcommand '{other}'"))),
     }
 }

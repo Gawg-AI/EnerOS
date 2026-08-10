@@ -1,3 +1,4 @@
+# consumer: 集成层占位（产线注入）——当前无 Rust 解析代码，仅交付模板
 # EnerOS v0.91.0 数字孪生 What-if 分析配置模板
 # Digital Twin Agent What-if 分析：TwinModel 当前镜像 → clone 副本 → 逐 Action 应用
 # → SimModel 仿真推演 → compute_outcomes（3 指标）→ assess_risk（取最重）→ ScenarioResult

@@ -1,3 +1,4 @@
+# consumer: crates/agents/device-agent/src/assembly_demo.rs（唯一真实加载方，测试路径）
 # 蓝图/24 §6.7 控制写配置（control-write）
 # HMAC 密钥不在本文件（§2.6：只经装配层注入，不落明文、不进镜像）。
 
