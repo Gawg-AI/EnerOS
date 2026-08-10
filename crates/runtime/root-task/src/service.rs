@@ -104,6 +104,8 @@ pub fn run_ipc_loop(
     eneros_watchdog::api::wdt_init(10_000, wdt_base);
     let mut fault_tick = 0u64;
     let mut tick = 0u64;
+    // 33 WP-33.5：驱动 IRQ 计数（每驱动一槽；UART RX 注入时递增）。
+    let mut drv_irq_counts: alloc::vec::Vec<u64> = alloc::vec![0; irq_drivers.len()];
     let fault_idx = match handles.iter().position(|h| h.name == "svc-fault") {
         Some(i) => i,
         None => ipc_fail_closed("svc-fault not in supervisor table", "no name"),
@@ -141,13 +143,23 @@ pub fn run_ipc_loop(
         // WP-27.3 D1：驱动 IRQ 收包接线（S4：IRQ ntfn 与服务 EP 分槽——
         // 每个驱动 IRQ 独立 ntfn，与既有 timer IRQ 并行走 poll；badge 由
         // IrqTable::route 语义保证唯一）。
-        for drv in irq_drivers.iter_mut() {
+        // 33 WP-33.5：驱动 IRQ 计数判据行（pl011 RX 等驱动中断 → 计数
+        // 递增打印；UART 输入注入时可见递增，不注入则保持 0 如实）。
+        for (i, drv) in irq_drivers.iter_mut().enumerate() {
             let mut drv_sender = 0u64;
             if let Ok(_mi) = ipc_poll(drv.binding.ntfn_slot, Some(&mut drv_sender)) {
                 if drv_sender != 0 {
                     drv.driver.handle_irq(drv.irq);
                     if let Err(e) = irq_table.ack(&drv.binding) {
                         ipc_fail_closed("driver irq ack", e);
+                    }
+                    drv_irq_counts[i] += 1;
+                    if drv_irq_counts[i] % 8 == 1 || drv_irq_counts[i] < 4 {
+                        eneros_runtime::println!(
+                            "[eneros-root-task] DRIVER-IRQ: irq={} count={}",
+                            drv.irq,
+                            drv_irq_counts[i]
+                        );
                     }
                 }
             }

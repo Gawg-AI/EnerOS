@@ -68,7 +68,11 @@ impl IrqTable {
         let badge_bit = self.bindings.len() as u64 + 1; // 0 保留未知
                                                         // 1. Get：IRQControl → IRQHandler cap。
         let handler = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
-        irq_control_get(cap_irq_control(), irq as u64, ctx.root_cnode, handler, 0)
+        // 33 WP-33.5：dest_depth=64（root cnode levelBits = radix+guard；
+        // 见 spawn.rs:989）——旧值 0 使 lookupTargetSlot 判 depth<1 →
+        // RangeError（QEMU 活体实测 `Target slot for new IRQ Handler cap
+        // invalid`；Retype 有 depth=0 特例而 IRQControl_Get 没有）。
+        irq_control_get(cap_irq_control(), irq as u64, ctx.root_cnode, handler, 64)
             .map_err(SpawnError::Sel4)?;
         // 2. 独立 ntfn（retype notification 对象）。
         let ntfn_raw = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
@@ -76,13 +80,15 @@ impl IrqTable {
         retype_one(ctx, types.notification, OBJ_BITS_NOTIFICATION, ntfn_raw)?;
         // 3. mint 带 badge 的副本（SetNotification + Poll 用）。
         let ntfn_badge = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
+        // 33 WP-33.5：dest/src depth = 64（root cnode levelBits；见
+        // spawn.rs 23 G-I 同款注释——0 直接 RangeError，QEMU 实测）。
         cnode_mint(
             ctx.root_cnode,
             ntfn_badge,
-            0,
+            64,
             ctx.root_cnode,
             ntfn_raw,
-            0,
+            64,
             RightsTable::resolve().all,
             badge_bit,
         )

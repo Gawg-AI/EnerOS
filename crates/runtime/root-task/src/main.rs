@@ -265,10 +265,12 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
         match crate::spawn::sel4_spawn_services(&plan, &bundle, &mut ctx) {
             Ok(handles) => {
                 println!("[eneros-root-task] EL0 services spawned — entering service loop");
-                // WP-26.8 + 30 RT-008：绑定 arch timer 虚拟中断——IRQ 号从
+                // WP-26.8 + 30 RT-008：绑定 arch timer 中断——IRQ 号从
                 // 运行时 DTB（arm,armv8-timer 节点）提取；DTB 缺失/解析失败
-                // 时回退 QEMU 兜底值 27 并打印判据行（禁止静默）。
+                // 时回退 QEMU 兜底值 30 并打印判据行（禁止静默）。
                 // bind 失败 → 打印并继续（中断计数保持 0，证据如实，不伪造）。
+                // 33 WP-33.5：物理定时器（IRQ 30）——虚拟定时器 27 被 seL4
+                // 内核占用（KERNEL_TIMER_IRQ=27，RevokeFirst 实测）。
                 let timer_irq = crate::driver_probe::timer_irq_from_dtb(
                     crate::driver_probe::runtime_dtb_slice(u64::from(bundle.total_len))
                         .map(|(b, _)| b)
@@ -276,14 +278,14 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
                 )
                 .unwrap_or_else(|| {
                     crate::println!(
-                        "[eneros-root-task] timer IRQ from fallback=27 (DTB arch-timer 缺失)"
+                        "[eneros-root-task] timer IRQ from fallback=30 (DTB arch-timer 缺失)"
                     );
-                    27
+                    30
                 });
                 let mut irq_table = crate::irq::IrqTable::new();
                 let irq_binding = match irq_table.bind(&mut ctx, timer_irq) {
                     Ok(idx) => {
-                        crate::irq_timer::enable_arch_timer_virtual();
+                        crate::irq_timer::enable_arch_timer_phys();
                         irq_table.binding(idx)
                     }
                     Err(e) => {

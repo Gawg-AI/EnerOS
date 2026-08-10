@@ -79,6 +79,11 @@ mkdir -p "$BUILD/elfloader"
     -I include -c src/cpio.c -o "$BUILD/elfloader/cpio.o" && \
   ar rcs "$BUILD/elfloader/libcpio.a" "$BUILD/elfloader/cpio.o")
 
+# 33 WP-33.5（中断计数转真）：-DKernelArmExportPTMRUser=ON —— 允许
+# EL0 写 CNTP_CTL_EL0/CNTP_TVAL_EL0（seL4 aarch64 用户态在 EL0；
+# root-task 使能物理定时器需 EXPORT_PTMR_USER=EL0PTEN——缺省时
+# msr cntp_ctl_el0 触发 user exception EC=0x18，QEMU 实测）。与 PCNT
+# 同属开发/证据配置（存储通道警告接受：QEMU 证据用途）。
 "$CMAKE_BIN/cmake" -G Ninja \
   -DCMAKE_MAKE_PROGRAM="$NINJA" \
   -DCMAKE_TOOLCHAIN_FILE="$SEL4_SRC_DIR/gcc.cmake" \
@@ -96,7 +101,13 @@ mkdir -p "$BUILD/elfloader"
   -DQEMU_BINARY="$CACHE/xpack-qemu-arm-9.2.4-1/bin/qemu-system-aarch64" \
   -DRUST_ROOT_TASK=ON \
   -DRUST_ROOT_ELF="$RUST_ELF" \
+  -DKernelArmExportPCNTUser=ON \
+  -DKernelArmExportPTMRUser=ON \
   -B "$BUILD" "$ROOT/third_party/sel4-top"
+# 23 G-I 总出口修复（KernelArmExportPCNTUser=ON）：允许 EL0 读
+# CNTPCT_EL0/CNTFRQ_EL0（root-task time_init 的 Arm64Timer 依赖）。seL4
+# 默认关闭（EXPORT_PCNT_USER disabled）→ `mrs cntpct_el0` 触发 cap fault
+# （QEMU 实测）。注释放 cmake 命令之后，避免破坏 `\` 续行。
 "$NINJA" -C "$BUILD"
 
 # ---- Step 3: 产物对齐到 target/sel4（image 构建从此读取）----

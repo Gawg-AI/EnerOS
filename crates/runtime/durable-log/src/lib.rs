@@ -26,6 +26,41 @@ use alloc::vec::Vec;
 use eneros_ipc_wire::crc32;
 use eneros_storage::BlockDevice;
 
+/// 33 WP-33.5：借用式设备包装——`BlockDurableLog` 可作用于 `&mut D`
+/// 而不转移所有权（root-task 在驱动工厂内对数据盘执行掉电自检
+/// （format/recover/append）后把设备归还给驱动适配器）。
+pub struct RefMutDevice<'a, D: BlockDevice>(pub &'a mut D);
+
+impl<D: BlockDevice> BlockDevice for RefMutDevice<'_, D> {
+    fn read_block(&self, block_idx: u64, buf: &mut [u8]) -> Result<(), eneros_storage::StorageError> {
+        self.0.read_block(block_idx, buf)
+    }
+
+    fn write_block(&mut self, block_idx: u64, buf: &[u8]) -> Result<(), eneros_storage::StorageError> {
+        self.0.write_block(block_idx, buf)
+    }
+
+    fn erase_block(&mut self, block_idx: u64) -> Result<(), eneros_storage::StorageError> {
+        self.0.erase_block(block_idx)
+    }
+
+    fn block_count(&self) -> u64 {
+        self.0.block_count()
+    }
+
+    fn block_size(&self) -> usize {
+        self.0.block_size()
+    }
+
+    fn flush(&mut self) -> Result<(), eneros_storage::StorageError> {
+        self.0.flush()
+    }
+
+    fn health_status(&self) -> eneros_storage::DeviceHealth {
+        self.0.health_status()
+    }
+}
+
 /// 日志序号（单调递增；0 保留给创世）。
 pub type Seq = u64;
 
@@ -58,8 +93,6 @@ pub trait DurableLog {
 pub const LOG_MAGIC: [u8; 6] = *b"EDLOG1";
 /// 日志格式版本。
 pub const LOG_VERSION: u16 = 1;
-/// 头块大小（512B 块设备最小粒度；实际以设备块大小为准）。
-const HEADER_LEN: usize = 32;
 
 /// 基于 [`BlockDevice`] 的持久化日志实现。
 pub struct BlockDurableLog<D: BlockDevice> {
@@ -391,5 +424,43 @@ mod tests {
         assert_eq!(got[0].combined_hash, entry.combined_hash);
         assert_eq!(got[0].timestamp_ms, entry.timestamp_ms);
         assert_eq!(eneros_audit::AuditStore::count(&store).unwrap(), 1);
+    }
+
+    /// 33 WP-33.5 判据：掉电 ≥20 次恢复（host 模拟）——每次"断电"后
+    /// recover committed 单调续增（recover 读磁盘头块/记录区，等价新实例
+    /// 重启恢复）；每 5 轮在记录区注入半写脏字节（记录区损坏但头块已
+    /// 提交）模拟断电窗口，recover 以已提交序号截断（不返回损坏数据、
+    /// 不重复）。
+    #[test]
+    fn powercut_20_cycles_monotonic_recovery() {
+        let dev = MockBlockDevice::new(256, 4096);
+        let mut log = BlockDurableLog::format(dev, 4096).expect("format");
+        let mut committed_seq = 0u64;
+        for cycle in 1..=20u64 {
+            // 追加（模拟一次上电的启动记录）。
+            let seq = log.append(b"boot-record").expect("append");
+            assert_eq!(seq, cycle, "序号必须单调连续");
+            // 断电窗口模拟：偶尔在记录区留下半写（下一条记录的 len 字段
+            // 被破坏——记录写入后头块提交前断电的等价形态）。
+            if cycle % 5 == 0 {
+                let mut buf = [0u8; 4096];
+                log.dev
+                    .read_block(cycle + 1, &mut buf)
+                    .expect("read dirty block");
+                buf[8] ^= 0x5A; // 破坏下一条记录区的 len 字段
+                log.dev
+                    .write_block(cycle + 1, &buf)
+                    .expect("write dirty block");
+            }
+            // 断电重启：recover 读磁盘态（新实例语义）。
+            let recovered = log.recover().expect("recover");
+            assert_eq!(
+                recovered, cycle,
+                "第 {cycle} 次掉电后 recover 必须恢复已确认序号"
+            );
+            assert!(recovered >= committed_seq, "committed 单调不减");
+            committed_seq = recovered;
+        }
+        assert_eq!(committed_seq, 20, "20 次掉电后共恢复 20 条");
     }
 }

@@ -15,6 +15,8 @@ eneros-elf-loader = { path = "../../abi/elf-loader" }
 eneros-sel4-sys = { path = "../sel4-sys" }
 # 22 §2.W1.2：panic 审计（SM3 哈希链）+ 看门狗复位（SP805）。
 eneros-audit = { path = "../../security/audit" }
+# 33 WP-33.5：掉电持久化启动计数（30 WP-30.7 机制接线）。
+eneros-durable-log = { path = "../durable-log" }
 # 30 RT-028①：创世根真实 SM3（sm3_hash）。
 eneros-crypto = { path = "../../security/crypto" }
 eneros-watchdog = { path = "../../drivers/watchdog" }

@@ -29,6 +29,9 @@ use eneros_driver_framework::{
     BindingTable, DeviceDriver, DriverBinding, DriverError, DriverId, PlatformCtx,
 };
 use eneros_rs485::{Pl011UartHw, Rs485Config, Rs485Driver};
+// 33 WP-33.5：数据盘掉电持久化自检（30 WP-30.7 机制接线；recover/append
+// 为 DurableLog trait 方法，需在作用域内）。
+use eneros_durable_log::DurableLog;
 use eneros_storage::driver::virtio_blk::{
     DmaPool, NoopCache, VirtioBlkDriver, VirtioMmio, VIRTIO_BLK_DEVICE_ID, VIRTIO_MMIO_MAGIC,
     VMMIO_DEVICE_ID, VMMIO_MAGIC_VALUE, VMMIO_STATUS,
@@ -139,6 +142,9 @@ impl DmaPool for RootDmaPool {
 
 /// D4：VirtioBlkDriver（BlockDevice seam）的 DeviceDriver 适配。
 struct BlkAdapter {
+    /// 数据盘驱动实例——字段本身无读取方（驱动方法经 DeviceDriver 生命周期
+    /// 保持 MMIO 映射与 DMA 池存活；33 WP-33.5 掉电自检在装箱前借用完成）。
+    #[allow(dead_code)]
     inner: VirtioBlkDriver<BlkVolatileMmio, RootDmaPool, NoopCache>,
 }
 
@@ -191,10 +197,25 @@ fn virtio_factory(
         // 非区域起点槽：真实设备只挂在前几个槽；空槽无设备（fail-closed）。
         return Err(DriverError::NotFound);
     }
-    let virt = ctx.map_mmio(base, VIRTIO_REGION_SIZE)?;
-    // SAFETY: `virt` 为 map_mmio 返回的已映射区域基址（1:1，FIX-BUGS-0810
-    // 两件套保证映射成功 ⇔ 正确物理页）；探测只读寄存器（magic/device-id）。
-    let mut probe = unsafe { BlkVolatileMmio::new(virt as usize) };
+    // 33 WP-33.5：区域按 4 × 4K 帧分段映射（QEMU 活体实测：单次 2M 帧
+    // 映射仅首 4K 生效——槽 8 起读 0xa001000 触发 translation fault；
+    // 4K 帧路径已被 D1 pl011 与 D4 槽 0 验证可靠）。32 槽 × 0x200 =
+    // 0x4000 恰 4 帧。
+    let mut virt = 0u64;
+    for i in 0..4u64 {
+        let mapped = ctx.map_mmio(base + i * 0x1000, 0x1000)?;
+        if i == 0 {
+            virt = mapped;
+        }
+    }
+    // BlkVolatileMmio::new 为安全函数（封装内做 volatile 读写）；
+    // `virt` 为首帧映射基址（生产 1:1 = base；host mock 为可读模拟寄存器
+    // 区）；探测只读寄存器（magic/device-id）。
+    let mut probe = BlkVolatileMmio::new(virt as usize);
+    // 33 WP-33.5：绑定**最后一块** virtio-blk 作为持久化数据盘（QEMU：
+    // 槽 0 = 系统盘、槽 2 = 数据盘；系统盘由固件 BlockIO 处理，root-task
+    // 不写系统盘——旧实现绑第一块 blk，DurableLog 写它会破坏 GPT）。
+    let mut bound_blk: Option<VirtioBlkDriver<BlkVolatileMmio, RootDmaPool, NoopCache>> = None;
     for slot in 0..VIRTIO_MMIO_SLOT_COUNT {
         let off = (slot * VIRTIO_MMIO_SLOT_STRIDE) as usize;
         let magic = probe.read_reg(off + VMMIO_MAGIC_VALUE);
@@ -221,9 +242,9 @@ fn virtio_factory(
             vendor
         );
         if device_id == VIRTIO_BLK_DEVICE_ID {
-            // SAFETY: 槽内寄存器块（0x200）位于已映射区域内；驱动存续期
-            // 由装配层保证。queue DMA 用 RootDmaPool（1:1 物理地址）。
-            let mmio = unsafe { BlkVolatileMmio::new((virt + off as u64) as usize) };
+            // 槽内寄存器块（0x200）位于已映射区域内；驱动存续期由装配层
+            // 保证。queue DMA 用 RootDmaPool（1:1 物理地址）。
+            let mmio = BlkVolatileMmio::new((base + off as u64) as usize);
             let driver = VirtioBlkDriver::new(
                 mmio,
                 RootDmaPool,
@@ -231,16 +252,64 @@ fn virtio_factory(
                 StorageConfig::default(),
             )
             .map_err(|_| DriverError::InitFailed)?;
-            return Ok(Box::new(BlkAdapter { inner: driver }));
+            // 33 WP-33.5：记录最后一块 blk（数据盘语义；多块时取高槽位）
+            bound_blk = Some(driver);
+            continue;
         }
-        // 有设备但不是 blk（如 net=1）→ D2 范围；当前如实 failed。
-        // 30 RT-018：探测失败复位 STATUS（virtio 规范 STATUS=0 复位）——
-        // 旧实现写 ACKNOWLEDGE 后直接返回，设备状态被污染（后续探测/
-        // 驱动接入看到半初始化状态）。
+        // 有设备但不是 blk（如 rng=4/net=1）→ 跳过继续扫描（33 WP-33.5：
+        // 旧实现直接返回——rng 在槽 1 会阻断槽 2 数据盘的到达）。
+        // 30 RT-018：探测失败复位 STATUS（virtio 规范 STATUS=0 复位）。
         probe.write_reg(off + VMMIO_STATUS, 0);
-        return Err(DriverError::NotFound);
     }
-    Err(DriverError::NotFound)
+    // 33 WP-33.5：数据盘掉电持久化自检（30 WP-30.7 DurableLog 机制接线；
+    // 判据行 = 每次掉电后下次启动的 recover 输出 + 启动计数续增）。
+    // 借用式（RefMutDevice）——自检后驱动归还适配器。
+    match bound_blk {
+        Some(mut driver) => {
+            match eneros_durable_log::BlockDurableLog::format(
+                eneros_durable_log::RefMutDevice(&mut driver),
+                512,
+            ) {
+                Ok(mut log) => match log.recover() {
+                    Ok(committed) => {
+                        crate::println!(
+                            "[eneros-root-task] durable-log: recover committed={}",
+                            committed
+                        );
+                        match log.append(b"boot") {
+                            Ok(seq) => {
+                                crate::println!(
+                                    "[eneros-root-task] durable-log: append seq={} (boot count)",
+                                    seq
+                                );
+                            }
+                            Err(e) => {
+                                crate::println!(
+                                    "[eneros-root-task] durable-log: append failed {:?}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        crate::println!(
+                            "[eneros-root-task] durable-log: recover failed {:?}",
+                            e
+                        );
+                    }
+                },
+                Err(e) => {
+                    crate::println!(
+                        "[eneros-root-task] durable-log: format failed {:?}（判据行缺失，\
+                         掉电证据受影响）",
+                        e
+                    );
+                }
+            }
+            Ok(Box::new(BlkAdapter { inner: driver }))
+        }
+        None => Err(DriverError::NotFound),
+    }
 }
 
 /// UART 波特率（D1：115200 8N1 默认；真机按协议层配置）。
@@ -372,6 +441,9 @@ pub struct RootPlatformCtx<'a> {
     irq_table: &'a mut crate::irq::IrqTable,
     /// factory 经 `bind_irq` 建立的 (irq, badge) 记录（顺序与 bound 对齐）。
     bindings: alloc::vec::Vec<(u32, u32)>,
+    /// 33 WP-33.5：最近一次 bind_irq 的 badge（probe_all 取走写入
+    /// BoundEntry.irq_badge——索引配对在未绑 IRQ 的驱动存在时错位）。
+    last_badge: Option<u32>,
 }
 
 #[cfg(target_os = "none")]
@@ -384,6 +456,7 @@ impl<'a> RootPlatformCtx<'a> {
             spawn,
             irq_table,
             bindings: alloc::vec::Vec::new(),
+            last_badge: None,
         }
     }
 }
@@ -450,7 +523,14 @@ impl PlatformCtx for RootPlatformCtx<'_> {
             .map(|badge| badge as u32)
             .map_err(|_| DriverError::NotFound)?;
         self.bindings.push((irq, badge));
+        // 33 WP-33.5：记录最近 badge（probe_all 经 take_last_badge 写入
+        // BoundEntry.irq_badge）。
+        self.last_badge = Some(badge);
         Ok(badge)
+    }
+
+    fn take_last_badge(&mut self) -> Option<u32> {
+        self.last_badge.take()
     }
 }
 
@@ -491,18 +571,22 @@ pub(crate) fn runtime_dtb_slice(bundle_len: u64) -> Option<(&'static [u8], u64)>
 
 /// 30 RT-008：从运行时 DTB 提取 arch timer 虚拟中断号（零硬件依赖——
 /// 原 main.rs 硬编码 27）。FDT `arm,armv8-timer` 节点 interrupts 属性按
-/// arm 规范为 4 个三元组（phys-secure / phys-nonsecure / **virt** / hyp，
-/// GIC 编码 [type, ppi, flags]）；虚拟 timer 取第 3 个三元组的 PPI 单元
-/// +16 = 中断号（QEMU virt 为 PPI 11 → 27，与 WP-26.8 基线一致）。
+/// arm 规范为 4 个三元组（phys-secure / **phys-nonsecure** / virt / hyp，
+/// GIC 编码 [type, ppi, flags]）。
+///
+/// 33 WP-33.5：取 **phys-nonsecure（第 2 个三元组）** 而非 virt——seL4
+/// 内核无 hypervisor 配置下 KERNEL_TIMER_IRQ=27（虚拟定时器）已被占用，
+/// QEMU 活体绑定 27 返回 seL4_RevokeFirst（实测 `IRQ bind failed:
+/// Sel4(Other(9))`）；phys PPI 14 → 30 空闲且 EL1 可驱动 CNTP。
 pub fn timer_irq_from_dtb(dtb: &[u8]) -> Option<u32> {
     let inventory = eneros_board::device_tree::parse_fdt(dtb).ok()?;
     let timer = inventory.find_by_compatible("arm,armv8-timer")?;
     let triples: alloc::vec::Vec<&[u32]> = timer.interrupts.chunks_exact(3).collect();
-    // 第 3 个三元组 = 虚拟 timer（QEMU virt/arm 规范顺序）；PPI 编码
-    // [1, ppi, flags]（type=1）。
-    let virt = triples.get(2)?;
-    if virt[0] == 1 {
-        Some(virt[1].checked_add(16)?)
+    // 第 2 个三元组 = phys-nonsecure timer（QEMU virt/arm 规范顺序）；
+    // PPI 编码 [1, ppi, flags]（type=1）。
+    let phys = triples.get(1)?;
+    if phys[0] == 1 {
+        Some(phys[1].checked_add(16)?)
     } else {
         None
     }
@@ -575,27 +659,17 @@ pub fn probe_and_report(
         "[eneros-root-task] ENEROS stage=probe-report-done {}",
         report.metrics_line()
     );
-    // 组装 IRQ 接线（30 RT-009：取消 zip 静默截断——旧实现
-    // `bound.zip(bindings)` 按短者截断，任一驱动 bind 失败/跳过即整体
-    // 错位（IRQ 接给错误驱动）；badge 解码 `*badge - 1` 在 badge=0 时
-    // u32 回绕。现改为显式索引配对 + 越界/回绕防御（fail-closed 打印
-    // 判据行，不静默错位）。每个 factory 至多 bind 一次；未 bind 的驱动
-    // 无 IRQ 条目 → 轮询模式。
+    // 组装 IRQ 接线（30 RT-009 后 33 WP-33.5 修正：索引配对在"未绑 IRQ
+    // 的驱动"存在时错位——QEMU 活体实测 pl011 的 IRQ 33 被接到
+    // virtio-blk0（bound[0] 未绑 IRQ）。现按 badge 配对：factory 经
+    // bind_irq 绑定的 badge 由 probe_all 写入 BoundEntry.irq_badge，
+    // 与 ctx.bindings 的 (irq, badge) 精确匹配；匹配不到 = 装配异常
+    // 打印判据行并跳过（fail-closed，不静默错位）。
     let mut irq_drivers = alloc::vec::Vec::new();
     let mut bound = report.into_bound();
-    for (i, (irq, badge)) in ctx.bindings.iter().enumerate() {
-        // 配对防御：bindings 索引必须落在 bound 内（长度不一致 = 装配
-        // 异常，打印判据行并跳过，不静默截断）。
-        let Some(entry) = bound.get_mut(i) else {
-            crate::println!(
-                "[eneros-root-task]   probe irq-wire MISMATCH bindings[{}] beyond bound[{}] — 跳过",
-                i,
-                bound.len()
-            );
-            continue;
-        };
+    for (irq, badge) in ctx.bindings.iter().copied() {
         // badge 解码防御：badge = 绑定索引 + 1（0 保留未知）——回绕防护。
-        let Some(binding) = badge_to_binding_index(*badge)
+        let Some(binding) = badge_to_binding_index(badge)
             .and_then(|idx| irq_table.binding(idx))
         else {
             crate::println!(
@@ -604,6 +678,19 @@ pub fn probe_and_report(
             );
             continue;
         };
+        // 按 badge 找持有该绑定的驱动（BoundEntry.irq_badge）。
+        let Some(idx) = bound
+            .iter()
+            .position(|e| e.irq_badge == Some(badge))
+        else {
+            crate::println!(
+                "[eneros-root-task]   probe irq-wire NO-DRIVER badge={} irq={} — 跳过",
+                badge,
+                irq
+            );
+            continue;
+        };
+        let entry = &mut bound[idx];
         crate::println!(
             "[eneros-root-task]   probe irq-wired driver={} irq={} badge={}",
             entry.driver.name(),
@@ -613,7 +700,7 @@ pub fn probe_and_report(
         // 取出驱动所有权（BoundEntry 其余字段丢弃）。
         let driver = core::mem::replace(&mut entry.driver, Box::new(NoopDriver));
         irq_drivers.push(IrqDriver {
-            irq: *irq,
+            irq,
             binding,
             driver,
         });
@@ -780,13 +867,14 @@ mod tests {
     /// 30 RT-008 判据：真实 qemu-virt.dtb → timer IRQ = 27（虚拟 timer
     /// PPI 11 + 16；与 WP-26.8 基线一致）；破坏 DTB → None（fallback 路径）。
     #[test]
-    fn timer_irq_from_dtb_returns_qemu_virt_27() {
+    fn timer_irq_from_dtb_returns_qemu_phys_30() {
         const QEMU_VIRT_DTB: &[u8] =
             include_bytes!("../../../hal/board/tests/fixtures/qemu-virt.dtb");
         assert_eq!(
             timer_irq_from_dtb(QEMU_VIRT_DTB),
-            Some(27),
-            "QEMU virt 虚拟 timer = PPI 11 → IRQ 27（30 RT-008 判据）"
+            Some(30),
+            "QEMU virt phys-nonsecure timer = PPI 14 → IRQ 30（33 WP-33.5 判据；\
+             虚拟 timer 27 被 seL4 内核占用）"
         );
         assert_eq!(timer_irq_from_dtb(b"not-a-dtb"), None);
         assert_eq!(timer_irq_from_dtb(&[]), None);

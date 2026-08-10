@@ -40,6 +40,15 @@ pub trait PlatformCtx {
 
     /// 绑定设备中断，返回 badge（事件循环 `route` 依据；0 保留未知）。
     fn bind_irq(&mut self, irq: u32) -> Result<u32, DriverError>;
+
+    /// 33 WP-33.5：取走最近一次 `bind_irq` 的 badge（工厂绑定后由
+    /// `probe_all` 写入 [`BoundEntry::irq_badge`]，供装配层按 badge 配对
+    /// 驱动——索引配对在"未绑 IRQ 的驱动"存在时错位，QEMU 活体实测
+    /// pl011 的 IRQ 33 被接到 virtio-blk0）。默认 None（host mock 等
+    /// 不跟踪绑定的 ctx）。
+    fn take_last_badge(&mut self) -> Option<u32> {
+        None
+    }
 }
 
 /// 一条驱动绑定：`compatible` 串 → 驱动 factory。
@@ -145,7 +154,9 @@ impl BindingTable {
                     node: node.name.clone(),
                     driver,
                     mmio_base: None,
-                    irq_badge: None,
+                    // 33 WP-33.5：工厂经 ctx.bind_irq 绑定的 badge（装配层
+                    // 按 badge 配对驱动，杜绝索引错位）。
+                    irq_badge: ctx.take_last_badge(),
                 }),
                 Err(error) => report.failed.push(FailedEntry {
                     compatible: entry.compatible,
