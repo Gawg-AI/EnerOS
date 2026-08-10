@@ -353,8 +353,9 @@ mod tests {
             (config.price[6] - 0.5).abs() < 1e-9,
             "price[6] should be 0.5"
         );
-        // LP problem variables = 3 * 96 = 288
-        assert_eq!(problem.variables.len(), 288);
+        // LP problem variables = 3 * 96 = 288（32 AI-05 SOC n+1 后含
+        // 时段 0 初值变量 → 289；32 遗漏本消费方测试，33 回归修正）
+        assert_eq!(problem.variables.len(), 289);
     }
 
     // === T18: to_feedback 反向转换（构造 SolveResult/ScheduleResult/ValidationResult） ===
