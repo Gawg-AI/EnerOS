@@ -233,13 +233,8 @@ seL4_Word eneros_sel4_cap_init_thread_cnode(void);
 seL4_Word eneros_sel4_cap_init_thread_vspace(void);
 seL4_Word eneros_sel4_cap_init_thread_asid_pool(void);
 
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
-
-#endif /* ENEROS_SEL4_SHIM_H */
-
-/* WP-26.8：IRQ 子系统绑定。 */
+/* WP-26.8 + 30 RT-015：IRQ 子系统绑定（移入 header guard——旧实现位于
+ * #endif 之后，重复包含时守卫失效；若后续在声明区加宏定义将重复定义）。 */
 seL4_Error eneros_sel4_irq_control_get(seL4_CPtr irq_ctrl, seL4_Word irq,
                                        seL4_CPtr dest_root, seL4_Word dest_index,
                                        seL4_Word dest_depth);
@@ -247,3 +242,9 @@ seL4_Error eneros_sel4_irq_handler_set_notification(seL4_CPtr handler, seL4_CPtr
 seL4_Error eneros_sel4_irq_handler_ack(seL4_CPtr handler);
 seL4_Error eneros_sel4_irq_handler_clear(seL4_CPtr handler);
 seL4_Word eneros_sel4_cap_irq_control(void);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
+#endif /* ENEROS_SEL4_SHIM_H */

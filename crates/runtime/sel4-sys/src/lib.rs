@@ -104,6 +104,10 @@ pub mod ffi {
 
     /// Build a seL4 message-info word (host stub: length-only packing).
     ///
+    /// 30 RT-013：编码与 types.rs 位段统一（length 在 bits 0-7）——旧实现
+    /// `(length & 0xFF) << 8` 与 `message_info_length`（取 bits 0-7）解码
+    /// 方向不一致，host 自回环读回错误 length。
+    ///
     /// # Safety
     /// Host stub：纯值构造，无指针参数。
     pub unsafe fn eneros_sel4_message_info_new(
@@ -112,7 +116,7 @@ pub mod ffi {
         _extra_caps: u64,
         length: u64,
     ) -> u64 {
-        (length & 0xFF) << 8
+        crate::types::message_info_new(0, 0, 0, length)
     }
 
     /// Synchronous call (host stub: returns immediately, no peer).

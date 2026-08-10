@@ -26,6 +26,19 @@ pub const MR_FRAME_LEN_SLOT: u64 = 0;
 /// 上限——EL0 帧必须 ≤ 952 字节（root-task ↔ 服务契约，K2.2/K2.3）。
 pub const MAX_FRAME_BYTES: usize = 952;
 
+/// 30 RT-020：MR 单帧可承载的最大 EL0 payload（契约常量）——
+/// `MAX_FRAME_BYTES - EL0 帧开销(10B 头 + 4B crc)`。el0 层
+/// `DEFAULT_MAX_PAYLOAD_LEN=1024` 超出 MR 单帧容量（满载荷必然
+/// FrameTooLong）——载荷 > 本常量必须分帧。
+pub const MAX_EL0_PAYLOAD_IN_MR: usize = MAX_FRAME_BYTES - crate::el0::EL0_FRAME_HEADER_LEN - crate::el0::EL0_FRAME_CRC_LEN;
+
+/// 30 RT-020：编译期断言——MR 契约常量与 el0 常量互相引用（防止两侧
+/// 各自为政漂移）。
+const _: () = assert!(
+    MAX_EL0_PAYLOAD_IN_MR > 0 && MAX_EL0_PAYLOAD_IN_MR < crate::DEFAULT_MAX_PAYLOAD_LEN,
+    "MR 单帧 payload 容量必须小于 el0 默认上限（超限需分帧）"
+);
+
 /// 帧 ↔ MR 编解码错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameMrError {
@@ -114,5 +127,29 @@ mod tests {
             Err(FrameMrError::FrameTooLong)
         );
         assert_eq!(frame_from_mrs(&[16, 0]), Err(FrameMrError::BadLength));
+    }
+
+    /// 30 RT-020 判据：payload = MAX_EL0_PAYLOAD_IN_MR 恰好成帧（MR 单帧
+    /// 容量）；+1 拒绝（FrameTooLong）——旧常量各自为政（el0 1024 >
+    /// MR 952），满载荷必然 FrameTooLong。
+    #[test]
+    fn el0_payload_at_mr_capacity_roundtrips() {
+        let payload = [0x5Au8; MAX_EL0_PAYLOAD_IN_MR];
+        // 构造完整 el0 帧（10B 头 + payload + 4B crc）。
+        let mut frame = alloc::vec![0u8; 10 + payload.len() + 4];
+        frame[0..4].copy_from_slice(b"EL0F");
+        frame[6..10].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        frame[10..10 + payload.len()].copy_from_slice(&payload);
+        let mrs = frame_into_mrs(&frame).expect("恰好 MR 容量必须成帧");
+        let back = frame_from_mrs(&mrs).expect("解码");
+        assert_eq!(back.len(), frame.len());
+        assert_eq!(&back[10..10 + payload.len()], &payload[..]);
+        // +1 超限拒绝。
+        let mut too_long = frame.clone();
+        too_long.push(0);
+        assert_eq!(
+            frame_into_mrs(&too_long),
+            Err(FrameMrError::FrameTooLong)
+        );
     }
 }

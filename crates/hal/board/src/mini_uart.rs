@@ -54,13 +54,23 @@ impl Pl011Serial {
     }
 }
 
+/// 30 RT-026：TX FIFO 有界等待上限（HAL-005 原则——设备无响应时
+/// 不得无界忙等；旧实现 `while ... {}` 死循环）。
+const TX_BUSY_MAX_ITERS: u32 = 100_000;
+
 impl SerialOut for Pl011Serial {
     fn putc(&self, c: u8) {
         // SAFETY: `self.base` 由构造方保证为有效 PL011 MMIO 基址；
         // FR/DR 访问为 volatile 硬件语义（启动阶段单线程）。
         unsafe {
-            // 等待发送 FIFO 不满
-            while (self.read(UART_FR) & FR_TXFF as u32) != 0 {}
+            // 等待发送 FIFO 不满（30 RT-026：有界——超限静默丢弃该字符
+            // 继续；console 字符级丢弃可接受，绝不死循环）。
+            for _ in 0..TX_BUSY_MAX_ITERS {
+                if (self.read(UART_FR) & FR_TXFF as u32) == 0 {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
             self.write(UART_DR, c as u32);
         }
     }

@@ -80,28 +80,49 @@ const VIRTIO_MMIO_SLOT_COUNT: u64 = 32;
 
 /// root-task DMA 池（静态 9 页 = 36 KiB，virtio_blk 需求下限）。
 ///
-/// root-task 镜像区域 1:1 映射（物理 == 虚拟），`phys_base` = 静态地址。
-/// `static mut`：root-task 单线程装配/事件循环，`&mut self` 方法独占访问
-///（驱动内部 RefCell 串行化），无并发别名。
-static mut DMA_POOL_BYTES: [u8; 9 * 4096] = [0u8; 9 * 4096];
+/// 30 RT-019：`static mut` 数组收进私有模块内聚封装——外部只经
+/// `RootDmaPool` 方法访问（消除散落的 static mut 引用面）。
+mod dma_pool {
+    /// root-task 镜像区域 1:1 映射（物理 == 虚拟），`phys_base` = 静态地址。
+    ///
+    /// # SAFETY（单线程独占不变量）
+    /// root-task 单线程装配/事件循环，DmaPool 消费者（virtio_blk）以
+    /// `&mut self` 方法独占访问（驱动内部 RefCell 串行化），无并发别名；
+    /// SMP 启用前禁止多线程访问本池（与 IRQ_HANDLERS 同登记）。
+    #[allow(static_mut_refs)]
+    static mut BYTES: [u8; 9 * 4096] = [0u8; 9 * 4096];
+
+    pub(super) const fn len() -> usize {
+        9 * 4096
+    }
+    pub(super) fn phys_base() -> u64 {
+        // SAFETY: 静态数组地址恒定；1:1 映射下即 guest 物理地址。
+        unsafe { BYTES.as_ptr() as u64 }
+    }
+    pub(super) fn as_bytes() -> &'static [u8] {
+        // SAFETY: 只读借用；单线程 + 驱动独占（&mut self 调用方保证）。
+        unsafe { &BYTES }
+    }
+    pub(super) fn as_bytes_mut() -> &'static mut [u8] {
+        // SAFETY: 调用方以 `&mut self` 独占；root-task 单线程无并发。
+        unsafe { &mut BYTES }
+    }
+}
 
 struct RootDmaPool;
 
 impl DmaPool for RootDmaPool {
     fn len(&self) -> usize {
-        9 * 4096
+        dma_pool::len()
     }
     fn phys_base(&self) -> u64 {
-        // SAFETY: 静态数组地址恒定；1:1 映射下即 guest 物理地址。
-        unsafe { DMA_POOL_BYTES.as_ptr() as u64 }
+        dma_pool::phys_base()
     }
     fn as_bytes(&self) -> &[u8] {
-        // SAFETY: 只读借用；单线程 + 驱动独占（&mut self 调用方保证）。
-        unsafe { &DMA_POOL_BYTES }
+        dma_pool::as_bytes()
     }
     fn as_bytes_mut(&mut self) -> &mut [u8] {
-        // SAFETY: `&mut self` 独占；root-task 单线程无并发。
-        unsafe { &mut DMA_POOL_BYTES }
+        dma_pool::as_bytes_mut()
     }
 }
 
@@ -202,6 +223,10 @@ fn virtio_factory(
             return Ok(Box::new(BlkAdapter { inner: driver }));
         }
         // 有设备但不是 blk（如 net=1）→ D2 范围；当前如实 failed。
+        // 30 RT-018：探测失败复位 STATUS（virtio 规范 STATUS=0 复位）——
+        // 旧实现写 ACKNOWLEDGE 后直接返回，设备状态被污染（后续探测/
+        // 驱动接入看到半初始化状态）。
+        probe.write_reg(off + VMMIO_STATUS, 0);
         return Err(DriverError::NotFound);
     }
     Err(DriverError::NotFound)
@@ -333,8 +358,11 @@ impl<'a> RootPlatformCtx<'a> {
 /// 在 Page_Map 中与页表槽粒度不匹配）。超出 1 GiB 拒绝。
 #[cfg(target_os = "none")]
 fn frame_size_bits(size_bytes: u64) -> Result<u64, DriverError> {
+    // 30 RT-017：按实际尺寸选帧（4KiB 设备 → 12-bit 帧）——旧实现 ≤2MiB
+    // 一律 21-bit，4KiB 设备基址恰 2M 对齐时过度映射（浪费 511/512 内存
+    // 且扩大 MMIO 暴露面）。层级：4K → 2M → 1G（arm64 合法 size_bits）。
     let size = size_bytes.max(0x1000);
-    for (limit, bits) in [(0x20_0000u64, 21u64), (0x4000_0000, 30)] {
+    for (limit, bits) in [(0x1000u64, 12u64), (0x20_0000, 21), (0x4000_0000, 30)] {
         if size <= limit {
             return Ok(bits);
         }

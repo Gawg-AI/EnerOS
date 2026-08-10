@@ -30,6 +30,14 @@ pub const CRC_LEN: usize = 4;
 /// 默认载荷长度上界（字节）。
 pub const DEFAULT_MAX_PAYLOAD_LEN: usize = 1024;
 
+/// 30 RT-020：MR 单帧可承载的最大 EL0 payload（mr.rs 契约常量）——
+/// 载荷超过本值必须分帧（`DEFAULT_MAX_PAYLOAD_LEN` 为协议层上限，
+/// 单帧受 MR 容量约束）。
+pub const MAX_EL0_PAYLOAD_IN_MR: usize = crate::mr::MAX_EL0_PAYLOAD_IN_MR;
+
+/// 30 RT-020：编译期断言（el0/协议层引用 MR 契约，防两侧各自为政漂移）。
+const _: () = assert!(MAX_EL0_PAYLOAD_IN_MR < DEFAULT_MAX_PAYLOAD_LEN);
+
 /// 返回当前 wire 协议版本（版本发现，供插件与宿主握手）。
 pub const fn wire_version() -> u8 {
     WIRE_VERSION

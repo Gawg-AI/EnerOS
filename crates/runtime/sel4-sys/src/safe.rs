@@ -951,6 +951,11 @@ pub mod bootinfo_offsets {
     pub const UNTYPED_LIST: usize = 0xa8;
 }
 
+/// 30 RT-014：`seL4_UntypedDesc` 中 `isDevice` 标志偏移（paddr(8)+
+/// sizeBits(1) 之后）——读侧 `untyped_at` 与写侧 `build_test_bootinfo_blob`
+/// 共享单一事实源（旧写侧 off+16 与读侧 off+9 错位，device 标志恒读 0）。
+pub const UNTYPED_FLAGS_OFFSET: usize = 9;
+
 /// BootInfo 解析访问器。
 ///
 /// 从 seL4_GetBootInfo 返回的指针解析 untyped 列表与空闲 cap 区间。
@@ -1091,7 +1096,11 @@ pub(crate) fn build_test_bootinfo_blob(
         let off = 0x100 + i * 16;
         put(&mut blob, off, desc.paddr);
         put(&mut blob, off + 8, desc.size_bits);
-        blob[off + 16] = desc.is_device as u8;
+        // 30 RT-014：isDevice 标志偏移与读取方（untyped_at，off+9）对齐——
+        // 旧实现写 off+16（seL4_UntypedDesc 布局：paddr(8)+sizeBits(1)+
+        // isDevice(1)），测试辅助构造的 device 标志恒读为 0，掩盖 device
+        // 判定测试意图（假绿）。
+        blob[off + UNTYPED_FLAGS_OFFSET] = desc.is_device as u8;
     }
     blob
 }

@@ -700,7 +700,7 @@ pub fn sel4_spawn_services(
     );
 
     // 阶段 0：root 临时窗口页表（L2/L3；L0/L1 由 elfloader 提供）。
-    let window_pt = retype_objects(ctx, &types, OBJ_BITS_PAGE_TABLE, 2)?;
+    let window_pt = retype_page_tables(ctx, &types, OBJ_BITS_PAGE_TABLE, 2)?;
     // SAFETY: 前置条件由 spawn 序列保证（window_pt 为刚 retype 的页表、
     // root_vspace 有效、WINDOW_BASE 1 GiB 对齐）；默认 attr 由封装解析。
     arm_page_table_map(ctx.root_vspace, window_pt[0], WINDOW_BASE).map_err(SpawnError::Sel4)?;
@@ -824,7 +824,7 @@ fn configure_service(
     arm_asid_pool_assign(ctx.asid_pool, vspace).map_err(SpawnError::Sel4)?;
 
     // 5. 服务 VSpace 页表 ×3（L1/L2/L3，覆盖 SVC_VSPACE_BASE 区域）。
-    let pt = retype_objects(ctx, types, OBJ_BITS_PAGE_TABLE, 3)?;
+    let pt = retype_page_tables(ctx, types, OBJ_BITS_PAGE_TABLE, 3)?;
     for pt_cap in &pt {
         // SAFETY: pt_cap 为刚 retype 的页表；vspace 已绑 ASID；
         // SVC_VSPACE_BASE 1 GiB 对齐（各层级 lookup 槽 0）。
@@ -1151,7 +1151,7 @@ pub(crate) fn retype_one(
 
 /// retype `count` 个同类型对象，返回它们的槽号。
 #[cfg(target_os = "none")]
-fn retype_objects(
+fn retype_page_tables(
     ctx: &mut SpawnCtx,
     types: &ObjectTypeTable,
     size_bits: u64,

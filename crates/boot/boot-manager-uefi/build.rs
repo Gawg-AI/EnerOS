@@ -96,28 +96,4 @@ fn main() {
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is provided by Cargo"))
         .join("trust_anchor.rs");
     fs::write(output, source).expect("write generated public trust anchor");
-
-    // BOOT-001：EXPECTED_DISK_GUID 构建期注入——从 `ENEROS_DISK_GUID_HEX`
-    // （32 个 hex 字符 = 16 字节 GUID）读取；未设置时回退到默认开发 GUID
-    // 并打印 warning（生产构建必须显式注入，避免与镜像工厂 GUID 漂移）。
-    println!("cargo:rerun-if-env-changed=ENEROS_DISK_GUID_HEX");
-    let disk_guid = match env::var("ENEROS_DISK_GUID_HEX") {
-        Ok(_v) => decode_hex::<16>("ENEROS_DISK_GUID_HEX"),
-        Err(_) => {
-            eprintln!(
-                "warning: ENEROS_DISK_GUID_HEX not set; using default dev disk GUID                  (BOOT-001: production builds must inject the disk GUID at build time)"
-            );
-            [
-                0x45, 0x4e, 0x45, 0x52, 0x4f, 0x53, 0x40, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x01,
-            ]
-        }
-    };
-    let guid_source = format!(
-        "pub const EXPECTED_DISK_GUID_BYTES: [u8; 16] = {};\n",
-        array_literal(&disk_guid)
-    );
-    let guid_output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is provided by Cargo"))
-        .join("expected_disk_guid.rs");
-    fs::write(guid_output, guid_source).expect("write generated disk guid");
 }

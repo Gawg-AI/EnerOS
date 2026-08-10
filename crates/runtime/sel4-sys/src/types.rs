@@ -81,42 +81,48 @@ pub fn error_name(e: Error) -> &'static str {
 //   index 2..32 = X0..X30
 //   index 33 = NZCV (PSTATE flags)
 //
+// 30 RT-012：索引与注释对齐——旧代码 X 寄存器偏移 +1（X0=3...X30=33）
+// 且 REG_X30 与 REG_NZCV 同为 33（碰撞，二者只能其一正确）；现修正为
+// X0=2...X30=32（NZCV=33 不变）。REG_X0 消费方（spawn initial_registers）
+// 同步修正（index 2 = x0——旧值 3 实为 x1，服务参数错位被 QEMU 运行
+// 掩盖：svc 不依赖参数）。
+//
 // These are needed by AGT-003 to set the entry point + stack of a spawned
 // Agent thread (TCB_WriteRegisters).
 // ----------------------------------------------------------------------------
 pub const REG_PC: usize = 0;
 pub const REG_SP: usize = 1;
-pub const REG_X0: usize = 3;
-pub const REG_X1: usize = 4;
-pub const REG_X2: usize = 5;
-pub const REG_X3: usize = 6;
-pub const REG_X4: usize = 7;
-pub const REG_X5: usize = 8;
-pub const REG_X6: usize = 9;
-pub const REG_X7: usize = 10;
-pub const REG_X8: usize = 11;
-pub const REG_X9: usize = 12;
-pub const REG_X10: usize = 13;
-pub const REG_X11: usize = 14;
-pub const REG_X12: usize = 15;
-pub const REG_X13: usize = 16;
-pub const REG_X14: usize = 17;
-pub const REG_X15: usize = 18;
-pub const REG_X16: usize = 19;
-pub const REG_X17: usize = 20;
-pub const REG_X18: usize = 21;
-pub const REG_X19: usize = 22;
-pub const REG_X20: usize = 23;
-pub const REG_X21: usize = 24;
-pub const REG_X22: usize = 25;
-pub const REG_X23: usize = 26;
-pub const REG_X24: usize = 27;
-pub const REG_X25: usize = 28;
-pub const REG_X26: usize = 29;
-pub const REG_X27: usize = 30;
-pub const REG_X28: usize = 31;
-pub const REG_X29: usize = 32; // FP
-pub const REG_X30: usize = 33; // LR
+pub const REG_X0: usize = 2;
+pub const REG_X1: usize = 3;
+pub const REG_X2: usize = 4;
+pub const REG_X3: usize = 5;
+pub const REG_X4: usize = 6;
+pub const REG_X5: usize = 7;
+pub const REG_X6: usize = 8;
+pub const REG_X7: usize = 9;
+pub const REG_X8: usize = 10;
+pub const REG_X9: usize = 11;
+pub const REG_X10: usize = 12;
+pub const REG_X11: usize = 13;
+pub const REG_X12: usize = 14;
+pub const REG_X13: usize = 15;
+pub const REG_X14: usize = 16;
+pub const REG_X15: usize = 17;
+pub const REG_X16: usize = 18;
+pub const REG_X17: usize = 19;
+pub const REG_X18: usize = 20;
+pub const REG_X19: usize = 21;
+pub const REG_X20: usize = 22;
+pub const REG_X21: usize = 23;
+pub const REG_X22: usize = 24;
+pub const REG_X23: usize = 25;
+pub const REG_X24: usize = 26;
+pub const REG_X25: usize = 27;
+pub const REG_X26: usize = 28;
+pub const REG_X27: usize = 29;
+pub const REG_X28: usize = 30;
+pub const REG_X29: usize = 31; // FP
+pub const REG_X30: usize = 32; // LR
 pub const REG_NZCV: usize = 33;
 
 /// Conservative upper bound on `seL4_UserContext` register count across
@@ -271,6 +277,30 @@ pub struct RightsTable {
 
 #[cfg(test)]
 mod tests {
+    /// 30 RT-012 判据：36 个 REG 索引常量互不相等（X30 与 NZCV 碰撞回归
+    /// 防护）；X0=2 / X30=32 / NZCV=33 与 seL4 aarch64 布局一致。
+    #[test]
+    fn reg_indices_unique() {
+        let all = [
+            REG_PC, REG_SP, REG_X0, REG_X1, REG_X2, REG_X3, REG_X4, REG_X5, REG_X6, REG_X7,
+            REG_X8, REG_X9, REG_X10, REG_X11, REG_X12, REG_X13, REG_X14, REG_X15, REG_X16,
+            REG_X17, REG_X18, REG_X19, REG_X20, REG_X21, REG_X22, REG_X23, REG_X24, REG_X25,
+            REG_X26, REG_X27, REG_X28, REG_X29, REG_X30, REG_NZCV,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "REG 索引碰撞：index {i} 与 {j} 同为 {a}");
+                }
+            }
+        }
+        assert_eq!(REG_PC, 0);
+        assert_eq!(REG_SP, 1);
+        assert_eq!(REG_X0, 2, "x0 必须位于 index 2（seL4 aarch64 布局）");
+        assert_eq!(REG_X30, 32, "x30 必须位于 index 32（非 33）");
+        assert_eq!(REG_NZCV, 33);
+    }
+
     use super::*;
 
     #[test]
