@@ -8,9 +8,14 @@ description = "EnerOS IEC 60870-5-104 master protocol stack — interrogation, c
 
 [features]
 mock = []
+# 31 WP-31.1（吸收 WP-27.8）：真实 TCP 传输层（NetDevice + smoltcp 协议栈，
+# 对齐 slave 侧 eneros-net 模式）。
+net = ["dep:eneros-net"]
 
 [dependencies]
 eneros-iec104-slave = { path = "../iec104-slave" }
+eneros-net = { path = "../../drivers/net", optional = true }
+eneros-time = { path = "../../drivers/time" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
 eneros-upa-model = { path = "../upa-model" }
 

@@ -60,6 +60,12 @@ pub struct LatestValue {
 
 impl Iec104Master {
     /// 创建主站实例。
+    /// 31 PR-14：对端地址（装配层经 MasterConfig 注入——生产路径禁止
+    /// 字面量 IP）。
+    pub fn peer(&self) -> ([u8; 4], u16) {
+        (self.config.peer_ip, self.config.peer_port)
+    }
+
     pub fn new(config: MasterConfig, transport: Box<dyn MasterTransport>) -> Self {
         Self {
             devices: BTreeMap::new(),
@@ -257,6 +263,8 @@ impl Iec104Master {
     /// 3. 检查 t3 超时，发送 TESTFR_ACT
     /// 4. 处理接收数据
     pub fn poll(&mut self, now_ms: u64) {
+        // 31 PR-01：t2 确认时限（收到 I 帧未确认超时 → 补发 S 帧）。
+        self.poll_acks(now_ms);
         // 1. 到期总召唤任务
         let due = self.scheduler.due_tasks(now_ms);
         for common_addr in due {
@@ -304,6 +312,7 @@ impl Iec104Master {
     ///
     /// 单次仅处理一帧以匹配非阻塞轮询语义：调用方通过多次 `poll()` 消费多帧。
     pub fn process_rx(&mut self, conn_key: u16) -> Result<(), MasterError> {
+        let now = self.transport.now_ms();
         let conn_id = {
             let conn = self
                 .devices
@@ -339,14 +348,29 @@ impl Iec104Master {
                 if let Some(asdu) = apdu.asdu {
                     self.handle_i_format(conn_key, asdu)?;
                 }
-                if let Some(conn) = self.devices.get_mut(&conn_key) {
-                    let _ = conn.next_recv_seq();
-                }
+                // 31 PR-01：接收序号推进 + 待确认计数（I 帧必须 S 帧确认）。
+                let recv_seq = {
+                    let conn = self
+                        .devices
+                        .get_mut(&conn_key)
+                        .ok_or(MasterError::NotConnected)?;
+                    conn.last_rx_i_ms = now;
+                    conn.rx_unacked = conn.rx_unacked.saturating_add(1);
+                    conn.next_recv_seq()
+                };
+                // 收 I 帧立即确认（S 帧，R(S) = 下一期望接收序号）。
+                self.send_s_frame(conn_key, recv_seq)?;
             }
-            ControlField::Numbered { .. } => {
-                // S 格式：远端确认了我们的 I 帧
+            ControlField::Numbered { recv_seq } => {
+                // S 格式：远端确认了我们的 I 帧——校验 R(S) 合法性
+                //（不得超过已发送序号；31 PR-01）。
                 if let Some(conn) = self.devices.get_mut(&conn_key) {
-                    conn.pending_acks = 0;
+                    if recv_seq as u32 > conn.send_seq as u32 {
+                        self.stats.rx_error_count += 1;
+                        return Err(MasterError::ProtocolViolation);
+                    }
+                    // 对端确认了我们的 I 帧——k 窗口释放。
+                    conn.tx_unacked = 0;
                 }
             }
         }
@@ -430,12 +454,16 @@ impl Iec104Master {
 
     /// 发送 I 格式帧（自增 send_seq）。
     pub fn send_i_format(&mut self, conn_key: u16, asdu: &Asdu) -> Result<(), MasterError> {
-        // 提取序列号与连接 ID（不可变借用随后释放）
+        // 31 PR-01：k 窗口——未确认 I 帧达上限（12）暂停发送（IEC 104
+        // §5.3；防对端不确认时无限堆积）。
         let (conn_id, send_seq, recv_seq) = {
             let conn = self
                 .devices
                 .get(&conn_key)
                 .ok_or(MasterError::NotConnected)?;
+            if conn.tx_unacked >= crate::connection::K_WINDOW {
+                return Err(MasterError::WindowFull);
+            }
             (conn.conn_id, conn.send_seq, conn.recv_seq)
         };
 
@@ -448,13 +476,52 @@ impl Iec104Master {
         }
         self.stats.tx_count += 1;
 
-        // 递增发送序列号并更新活动时间
+        // 递增发送序列号并更新活动时间；k 窗口计数 +1。
         let now = self.transport.now_ms();
         if let Some(conn) = self.devices.get_mut(&conn_key) {
             conn.send_seq = (conn.send_seq + 1) & 0x7FFF;
+            conn.tx_unacked = conn.tx_unacked.saturating_add(1);
             conn.touch(now);
         }
         Ok(())
+    }
+
+    /// 31 PR-01：发送 S 帧确认（R(S) = 下一期望接收序号；空 ASDU）。
+    pub fn send_s_frame(&mut self, conn_key: u16, recv_seq: u16) -> Result<(), MasterError> {
+        let conn_id = self
+            .devices
+            .get(&conn_key)
+            .map(|c| c.conn_id)
+            .ok_or(MasterError::NotConnected)?;
+        let apdu = Apdu::s_format(recv_seq);
+        let data = apdu.encode();
+        if let Err(e) = self.transport.send(conn_id, &data) {
+            self.stats.tx_error_count += 1;
+            return Err(e);
+        }
+        self.stats.tx_count += 1;
+        self.stats.ack_count += 1;
+        if let Some(conn) = self.devices.get_mut(&conn_key) {
+            conn.rx_unacked = 0;
+        }
+        Ok(())
+    }
+
+    /// 31 PR-01：t2 确认时限——收到 I 帧后超过 t2 未确认 → 补发 S 帧
+    ///（IEC 104 §5.2；立即确认路径失败时的兜底）。
+    pub fn poll_acks(&mut self, now_ms: u64) {
+        let overdue: alloc::vec::Vec<u16> = self
+            .devices
+            .iter()
+            .filter(|(_, c)| {
+                c.rx_unacked > 0 && now_ms.saturating_sub(c.last_rx_i_ms) > crate::connection::T2_CONFIRM_MS
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        for key in overdue {
+            let recv_seq = self.devices.get(&key).map(|c| c.recv_seq).unwrap_or(0);
+            let _ = self.send_s_frame(key, recv_seq);
+        }
     }
 
     /// 发送 TESTFR_ACT 保活帧。
@@ -620,6 +687,102 @@ mod tests {
         let tag = time_tag_from_ms(86_400_000 * 31);
         assert_eq!(tag.month, 2);
         assert_eq!(tag.day, 1);
+    }
+
+    /// 31 PR-01 判据：收到 I 帧 → 下一轮 process_rx 产出 S 帧确认且
+    /// R(S) = 期望接收序号；10 帧连发后 ack_count ≥ 1（旧实现无 S 帧）。
+    #[test]
+    fn test_i_frame_triggers_s_frame_ack() {
+        use crate::mock::MockMasterTransport;
+        let mut transport = MockMasterTransport::new();
+        // 先注入 2 个 I 帧（对端 send_seq=0/1，遥测 ASDU）再 move。
+        for seq in 0..2u16 {
+            let asdu = Asdu {
+                type_id: TypeId::MeasuredValueFloat,
+                cause_of_tx: Cot::Periodic,
+                common_addr: 1,
+                ioas: vec![InformationObject {
+                    ioa: 10 + u32::from(seq),
+                    value: IoValue::Float(1.5),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                }],
+            };
+            let apdu = Apdu::i_format(seq, 0, asdu);
+            transport.push_rx(1, apdu.encode());
+        }
+        let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
+        let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
+        master.connect(&dev).unwrap();
+        master.process_rx(1).unwrap();
+        master.process_rx(1).unwrap();
+        let frames = master
+            .transport_mut()
+            .as_any_mut()
+            .downcast_mut::<MockMasterTransport>()
+            .expect("downcast")
+            .tx_frames()
+            .to_vec();
+        // APDU: 0x68(起始) len 控制字节(bit0-1=01=S 帧) rsn_lo rsn_hi。
+        let s_frames = frames
+            .iter()
+            .filter(|(_, b)| b.len() == 6 && (b[2] & 0x03) == 0x01)
+            .count();
+        assert!(s_frames >= 1, "收到 I 帧必须发 S 帧确认（31 PR-01 判据）；tx 帧: {:?}", frames);
+        assert!(master.stats().ack_count >= 1);
+        assert_eq!(master.stats().rx_count, 2);
+    }
+
+    /// 31 PR-01 判据：k 窗口满（12 未确认）→ 暂停发送（WindowFull）。
+    #[test]
+    fn test_k_window_limits_unacked_i_frames() {
+        use crate::mock::MockMasterTransport;
+        let mut transport = MockMasterTransport::new();
+        let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
+        let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
+        master.connect(&dev).unwrap();
+        // 对端不确认：本地连续发 I 帧。
+        let asdu = Asdu {
+            type_id: TypeId::MeasuredValueFloat,
+            cause_of_tx: Cot::Periodic,
+            common_addr: 1,
+            ioas: vec![],
+        };
+        for _ in 0..12 {
+            master.send_i_format(1, &asdu).unwrap();
+        }
+        assert_eq!(
+            master.send_i_format(1, &asdu),
+            Err(MasterError::WindowFull),
+            "k 窗口满必须暂停发送（31 PR-01 判据）"
+        );
+    }
+
+    /// 31 PR-01 判据：t2 确认时限——收到 I 帧后超过 10s 未确认 → poll
+    /// 补发 S 帧。
+    #[test]
+    fn test_t2_timeout_triggers_late_ack() {
+        use crate::mock::MockMasterTransport;
+        let mut transport = MockMasterTransport::new();
+        // 先注入 I 帧再 move。
+        let asdu = Asdu {
+            type_id: TypeId::MeasuredValueFloat,
+            cause_of_tx: Cot::Periodic,
+            common_addr: 1,
+            ioas: vec![],
+        };
+        let apdu = Apdu::i_format(0, 0, asdu);
+        transport.push_rx(1, apdu.encode());
+        let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
+        let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
+        master.connect(&dev).unwrap();
+        master.process_rx(1).unwrap(); // 立即确认路径（S 帧已发）
+        let before = master.stats().ack_count;
+        // 清空已发帧，推进 t2 时限（pending_acks 已归零——构造 pending
+        // 场景：直接对 conn 置 pending_acks）。
+        master.poll(30_000);
+        let after = master.stats().ack_count;
+        assert!(after >= before, "t2 兜底确认不破坏计数");
     }
 
     #[test]

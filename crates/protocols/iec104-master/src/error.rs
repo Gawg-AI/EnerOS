@@ -22,6 +22,10 @@ pub enum MasterError {
     Timeout,
     /// IEC 104 协议层错误
     Iec104(Iec104Error),
+    /// 31 PR-01：k 窗口满（未确认 I 帧达上限，暂停发送）。
+    WindowFull,
+    /// 31 PR-01：协议违规（对端 R(S) 超过已发送序号）。
+    ProtocolViolation,
 }
 
 impl From<Iec104Error> for MasterError {

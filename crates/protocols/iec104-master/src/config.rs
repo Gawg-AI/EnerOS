@@ -15,6 +15,11 @@ pub struct MasterConfig {
     pub poll_interval_ms: u32,
     /// 默认端口（IEC 104 标准端口 2404）
     pub default_port: u16,
+    /// 31 PR-14：对端地址（装配层从 configs/*.toml 注入——生产路径禁止
+    /// 字面量 IP；默认值仅供测试/开发兜底）。
+    pub peer_ip: [u8; 4],
+    /// 31 PR-14：对端端口。
+    pub peer_port: u16,
 }
 
 impl Default for MasterConfig {
@@ -24,6 +29,8 @@ impl Default for MasterConfig {
             t3_timeout_ms: 20_000,
             poll_interval_ms: 30_000,
             default_port: 2404,
+            peer_ip: [127, 0, 0, 1], // 测试/开发兜底——生产经装配注入
+            peer_port: 2404,
         }
     }
 }

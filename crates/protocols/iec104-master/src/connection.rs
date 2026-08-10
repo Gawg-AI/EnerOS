@@ -27,9 +27,21 @@ pub struct MasterConnection {
     pub last_activity_ms: u64,
     /// 连接状态
     pub state: ConnState,
-    /// 待确认 I 帧数
-    pub pending_acks: u16,
+    /// 31 PR-01：发送侧未确认 I 帧数（本地发出 I 帧 +1，收到对端 S 帧
+    /// 归零）——k 窗口（12）超限暂停发送（IEC 104 §5.3）。旧实现为
+    /// 死字段从未写入/消费。
+    pub tx_unacked: u16,
+    /// 31 PR-01：接收侧待确认 I 帧数（收到对端 I 帧 +1，发 S 帧归零）——
+    /// t2 确认时限（10s）驱动。
+    pub rx_unacked: u16,
+    /// 31 PR-01：最近收到 I 帧的时间戳（t2 确认时限用）。
+    pub last_rx_i_ms: u64,
 }
+
+/// 31 PR-01：k 窗口（未确认 I 帧上限，IEC 104 §5.3 默认 12）。
+pub const K_WINDOW: u16 = 12;
+/// 31 PR-01：t2 确认时限（默认 10s——收到 I 帧后应在 t2 内发 S 帧）。
+pub const T2_CONFIRM_MS: u64 = 10_000;
 
 impl MasterConnection {
     /// 创建连接，初始序列号为 0，状态为 `StartDtPending`。
@@ -43,7 +55,9 @@ impl MasterConnection {
             last_clock_sync_ms: 0,
             last_activity_ms: now_ms,
             state: ConnState::StartDtPending,
-            pending_acks: 0,
+            tx_unacked: 0,
+            rx_unacked: 0,
+            last_rx_i_ms: now_ms,
         }
     }
 
@@ -86,7 +100,7 @@ mod tests {
         assert_eq!(conn.recv_seq, 0);
         assert_eq!(conn.state, ConnState::StartDtPending);
         assert_eq!(conn.last_activity_ms, 1000);
-        assert_eq!(conn.pending_acks, 0);
+        assert_eq!(conn.tx_unacked, 0);
     }
 
     #[test]

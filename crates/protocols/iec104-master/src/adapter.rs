@@ -86,7 +86,9 @@ impl Iec104Adapter {
     /// 对单个设备执行一轮召唤（连接 + 总召唤 + 消费帧），填充该设备缓存。
     fn poll_device(&mut self, common_addr: u16, now_ms: u64) {
         if !self.master.conn_keys().contains(&common_addr) {
-            let dev = RemoteDevice::new([127, 0, 0, 1], 2404, common_addr, 30_000);
+            // 31 PR-14：对端地址经 MasterConfig 注入（生产路径禁字面量 IP）。
+            let (peer_ip, peer_port) = self.master.peer();
+            let dev = RemoteDevice::new(peer_ip, peer_port, common_addr, 30_000);
             let _ = self.master.connect(&dev);
         }
         // 只消费一帧：STARTDT_CON 握手确认（此时 confirm/数据帧仍在队列，
@@ -262,7 +264,9 @@ impl ProtocolAdapter for Iec104Adapter {
     fn start(&mut self) -> Result<(), ProtocolError> {
         // 启动即连接首个映射设备（connect 内含 STARTDT_ACT 握手）
         if let Some(m) = self.mappings.first() {
-            let dev = RemoteDevice::new([127, 0, 0, 1], 2404, m.common_addr, 30_000);
+            // 31 PR-14：对端地址经 MasterConfig 注入。
+            let (peer_ip, peer_port) = self.master.peer();
+            let dev = RemoteDevice::new(peer_ip, peer_port, m.common_addr, 30_000);
             let _ = self.master.connect(&dev);
         }
         self.state = AdapterState::Running;
@@ -291,6 +295,8 @@ fn iec104_to_protocol(e: MasterError) -> ProtocolError {
     match e {
         NotConnected | StateError => ProtocolError::ProtocolNotStarted,
         ConnectFailed | SendFailed | RecvFailed | Timeout | Iec104(_) => ProtocolError::ReadFailed,
+        // 31 PR-01：k 窗口满/协议违规 → 读失败（调用方重试语义不变）。
+        WindowFull | ProtocolViolation => ProtocolError::ReadFailed,
     }
 }
 

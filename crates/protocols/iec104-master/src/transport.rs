@@ -51,6 +51,8 @@ pub struct MasterStats {
     pub interrogation_count: u64,
     /// 遥控命令执行次数
     pub command_count: u64,
+    /// 31 PR-01：S 帧确认发送次数。
+    pub ack_count: u64,
     /// 时钟同步执行次数
     pub clock_sync_count: u64,
     /// 接收点值总数（数据面，ARCH-P04）
