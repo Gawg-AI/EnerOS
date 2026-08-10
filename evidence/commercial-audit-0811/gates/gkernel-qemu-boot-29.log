@@ -1,0 +1,1283 @@
+UEFI firmware (version 2025.11-3ubuntu7 built at 11:11:58 on Mar 31 2026)
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001HBdsDxe: loading Boot0001 "UEFI Misc Device" from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0000000A00000000)
+BdsDxe: starting Boot0001 "UEFI Misc Device" from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0000000A00000000)
+ENEROS stage=uefi-entry profile=qemu-prod secure=required
+ENEROS stage=bootctrl-target-written generation=2
+ENEROS stage=bootctrl-anchor-committed generation=2
+ENEROS stage=bootctrl-mirror-written generation=2
+ENEROS stage=config-table-entries count=8
+ENEROS stage=config-table-entry guid=fc1bcdb0-7d31-49aa-936a-a4600d9dd083
+ENEROS stage=config-table-entry guid=05ad34ba-6f02-4214-952e-4da0398e2bb9
+ENEROS stage=config-table-entry guid=7739f24c-93d7-11d4-9a3a-0090273fc14d
+ENEROS stage=config-table-entry guid=4c19049f-4137-4dd3-9c10-8b97a83ffdfa
+ENEROS stage=config-table-entry guid=49152e77-1ada-4764-b7a2-7afefed95e8b
+ENEROS stage=config-table-entry guid=f2fd1544-9794-4a2c-992e-e5bbcf20e394
+ENEROS stage=config-table-entry guid=b1b621d5-f19c-41a5-830b-d9152c69aae0
+ENEROS stage=config-table-entry guid=dcfa911d-26eb-469f-a220-38b7dc461220
+ENEROS stage=dtb-locate phys=0x47ef9000 len=1052672 max=2097152 init_media_length=303376
+ENEROS stage=verified slot=A security_version=1 bootctrl_generation=2 media_reads=1463 media_writes=16 kernel_bytes=385168 init_bytes=303376
+
+ELF-loader started on CPU: ARM Ltd. Cortex-A57 r1p0
+  paddr=[41000000..4105e08f]
+No DTB passed in from boot loader.
+Looking for DTB in CPIO archive...found at 41038c30.
+Loaded DTB from 41038c30.
+   paddr=[40237000..40238fff]
+ELF-loading image 'kernel' to 40000000
+  paddr=[40000000..40236fff]
+  vaddr=[ffffff8040000000..ffffff8040236fff]
+  virt_entry=ffffff8040000000
+ELF-loading image 'rootserver' to 40239000
+  paddr=[40239000..40371fff]
+  vaddr=[200000..338fff]
+  virt_entry=207000
+Enabling MMU and jumping to entry point...
+
+Bootstrapping kernel
+available phys memory regions: 2
+  [40000000..42000000)
+  [44000000..80000000)
+reserved virt address space regions: 3
+  [ffffff8040000000..ffffff8040237000)
+  [ffffff8040237000..ffffff8040238ea8)
+  [ffffff8040239000..ffffff8040372000)
+EnerOS: init bundle mapped [0x42000000..0x42200000) for initial thread
+Booting all finished, dropped to user space
+[eneros-root-task] Rust root task alive on seL4
+[eneros-root-task] G2 closure: bootinfo/cap/IPC (inherited from elfloader boot)
+[eneros-root-task] init_bundle @ paddr=0x42000000
+[eneros-root-task] DBG untyped[0] cap=846 paddr=0x0 size_bits=27 dev=true
+[eneros-root-task] DBG untyped[1] cap=847 paddr=0x8001000 size_bits=12 dev=true
+[eneros-root-task] DBG untyped[2] cap=848 paddr=0x8002000 size_bits=13 dev=true
+[eneros-root-task] DBG untyped[3] cap=849 paddr=0x8004000 size_bits=14 dev=true
+[eneros-root-task] DBG untyped[4] cap=850 paddr=0x8008000 size_bits=15 dev=true
+[eneros-root-task] DBG untyped[5] cap=851 paddr=0x8011000 size_bits=12 dev=true
+[eneros-root-task] DBG untyped[6] cap=852 paddr=0x8012000 size_bits=13 dev=true
+[eneros-root-task] DBG untyped[7] cap=853 paddr=0x8014000 size_bits=14 dev=true
+[eneros-root-task] DBG untyped[8] cap=854 paddr=0x8018000 size_bits=15 dev=true
+[eneros-root-task] DBG untyped[9] cap=855 paddr=0x8020000 size_bits=17 dev=true
+[eneros-root-task] DBG untyped[10] cap=856 paddr=0x8040000 size_bits=18 dev=true
+[eneros-root-task] DBG untyped[11] cap=857 paddr=0x8080000 size_bits=19 dev=true
+[eneros-root-task] DBG untyped[12] cap=858 paddr=0x8100000 size_bits=20 dev=true
+[eneros-root-task] DBG untyped[13] cap=859 paddr=0x8200000 size_bits=21 dev=true
+[eneros-root-task] DBG untyped[14] cap=860 paddr=0x8400000 size_bits=22 dev=true
+[eneros-root-task] DBG untyped[15] cap=861 paddr=0x8800000 size_bits=23 dev=true
+[eneros-root-task] DBG untyped[16] cap=862 paddr=0x9000000 size_bits=24 dev=true
+[eneros-root-task] DBG untyped[17] cap=863 paddr=0xa000000 size_bits=25 dev=true
+[eneros-root-task] DBG untyped[18] cap=864 paddr=0xc000000 size_bits=26 dev=true
+[eneros-root-task] DBG untyped[19] cap=865 paddr=0x10000000 size_bits=28 dev=true
+[eneros-root-task] DBG untyped[20] cap=866 paddr=0x20000000 size_bits=29 dev=true
+[eneros-root-task] DBG untyped[21] cap=867 paddr=0x42000000 size_bits=25 dev=true
+[eneros-root-task] DBG untyped[22] cap=868 paddr=0x80000000 size_bits=31 dev=true
+[eneros-root-task] DBG untyped[23] cap=869 paddr=0x100000000 size_bits=32 dev=true
+[eneros-root-task] DBG untyped[24] cap=870 paddr=0x200000000 size_bits=33 dev=true
+[eneros-root-task] DBG untyped[25] cap=871 paddr=0x400000000 size_bits=34 dev=true
+[eneros-root-task] DBG untyped[26] cap=872 paddr=0x800000000 size_bits=35 dev=true
+[eneros-root-task] DBG untyped[27] cap=873 paddr=0x1000000000 size_bits=36 dev=true
+[eneros-root-task] DBG untyped[28] cap=874 paddr=0x2000000000 size_bits=37 dev=true
+[eneros-root-task] DBG untyped[29] cap=875 paddr=0x4000000000 size_bits=38 dev=true
+[eneros-root-task] DBG untyped[30] cap=876 paddr=0x8000000000 size_bits=43 dev=true
+[eneros-root-task] DBG untyped[31] cap=877 paddr=0x88000000000 size_bits=42 dev=true
+[eneros-root-task] DBG untyped[32] cap=878 paddr=0xc8000000000 size_bits=41 dev=true
+[eneros-root-task] DBG untyped[33] cap=879 paddr=0xe8000000000 size_bits=40 dev=true
+[eneros-root-task] DBG untyped[34] cap=880 paddr=0xf8000000000 size_bits=39 dev=true
+[eneros-root-task] DBG untyped[35] cap=881 paddr=0x40000000 size_bits=16 dev=false
+[eneros-root-task] DBG untyped[36] cap=882 paddr=0x40238eb0 size_bits=4 dev=false
+[eneros-root-task] DBG untyped[37] cap=883 paddr=0x40238ec0 size_bits=6 dev=false
+[eneros-root-task] DBG untyped[38] cap=884 paddr=0x40238f00 size_bits=8 dev=false
+[eneros-root-task] DBG untyped[39] cap=885 paddr=0x40372000 size_bits=13 dev=false
+[eneros-root-task] DBG untyped[40] cap=886 paddr=0x40374000 size_bits=14 dev=false
+[eneros-root-task] DBG untyped[41] cap=887 paddr=0x40378000 size_bits=15 dev=false
+[eneros-root-task] DBG untyped[42] cap=888 paddr=0x40380000 size_bits=19 dev=false
+[eneros-root-task] DBG untyped[43] cap=889 paddr=0x40400000 size_bits=22 dev=false
+[eneros-root-task] DBG untyped[44] cap=890 paddr=0x40800000 size_bits=23 dev=false
+[eneros-root-task] DBG untyped[45] cap=891 paddr=0x41000000 size_bits=24 dev=false
+[eneros-root-task] DBG untyped[46] cap=892 paddr=0x44000000 size_bits=26 dev=false
+[eneros-root-task] DBG untyped[47] cap=893 paddr=0x48000000 size_bits=27 dev=false
+[eneros-root-task] DBG untyped[48] cap=894 paddr=0x50000000 size_bits=28 dev=false
+[eneros-root-task] DBG untyped[49] cap=895 paddr=0x60000000 size_bits=28 dev=false
+[eneros-root-task] DBG untyped[50] cap=896 paddr=0x70000000 size_bits=27 dev=false
+[eneros-root-task] DBG untyped[51] cap=897 paddr=0x78000000 size_bits=26 dev=false
+[eneros-root-task] DBG untyped[52] cap=898 paddr=0x7c000000 size_bits=25 dev=false
+[eneros-root-task] DBG untyped[53] cap=899 paddr=0x7e000000 size_bits=24 dev=false
+[eneros-root-task] DBG untyped[54] cap=900 paddr=0x7f000000 size_bits=23 dev=false
+[eneros-root-task] DBG untyped[55] cap=901 paddr=0x7f800000 size_bits=22 dev=false
+[eneros-root-task] DBG untyped[56] cap=902 paddr=0x7fc00000 size_bits=21 dev=false
+[eneros-root-task] DBG untyped[57] cap=903 paddr=0x7fe00000 size_bits=20 dev=false
+[eneros-root-task] DBG untyped[58] cap=904 paddr=0x7ff00000 size_bits=19 dev=false
+[eneros-root-task] DBG untyped[59] cap=905 paddr=0x7ff80000 size_bits=18 dev=false
+[eneros-root-task] DBG untyped[60] cap=906 paddr=0x7ffeb800 size_bits=11 dev=false
+[eneros-root-task] DBG untyped[61] cap=907 paddr=0x7ffec000 size_bits=14 dev=false
+[eneros-root-task] DBG untyped[62] cap=908 paddr=0x7fff0000 size_bits=16 dev=false
+[eneros-root-task] DBG untyped_start=846 untyped_end=909 count=63
+[eneros-root-task] BOOT-007 kernel-mapped bundle probe=454e52494e495432
+[eneros-root-task] DBG bundle total_len=303376 modules=11
+[eneros-root-task] DBG mod[0] kind=1 name='root-task' blob_len=114528 blob_magic=7f454c46
+[eneros-root-task] DBG mod[1] kind=2 name='svc-hello' blob_len=33768 blob_magic=7f454c46
+[eneros-root-task] spawn plan: root=root-task services=10 (≥2 验收口径)
+[eneros-root-task]   spawn svc-hello entry=0x202024 stack_top=0x221000 ipc_ep=101 pages=3
+[eneros-root-task]   spawn svc-pi entry=0x202024 stack_top=0x221000 ipc_ep=102 pages=3
+[eneros-root-task]   spawn svc-hog entry=0x202024 stack_top=0x221000 ipc_ep=103 pages=3
+[eneros-root-task]   spawn svc-fault entry=0x202024 stack_top=0x221000 ipc_ep=104 pages=3
+[eneros-root-task]   spawn svc-drv-rng entry=0x201000 stack_top=0x206000 ipc_ep=105 pages=2
+[eneros-root-task]   spawn svc-drv-blk entry=0x201000 stack_top=0x206000 ipc_ep=106 pages=2
+[eneros-root-task]   spawn svc-drv-net entry=0x201000 stack_top=0x206000 ipc_ep=107 pages=2
+[eneros-root-task]   spawn svc-drv-console entry=0x201000 stack_top=0x206000 ipc_ep=108 pages=2
+[eneros-root-task]   spawn svc-storage entry=0x201000 stack_top=0x206000 ipc_ep=109 pages=2
+[eneros-root-task]   spawn svc-drv-fault entry=0x201000 stack_top=0x206000 ipc_ep=110 pages=2
+[eneros-root-task] DBG retype_one untyped=881 offset=0 type=9 slot=910 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] WDT device mapped (SP805 @ 0x9050000)
+[eneros-root-task] DBG types tcb=1 vspace=6 cnode=4 pt=9 frame=7 ep=2 ntfn=3
+[eneros-root-task] DBG retype_one untyped=881 offset=4096 type=9 slot=911 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=881 offset=8192 type=9 slot=912 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=881 offset=12288 type=2 slot=913 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG fault_ep=913
+[eneros-root-task] DBG retype_one untyped=881 offset=16384 type=1 slot=914 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=881 offset=20480 type=6 slot=915 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=881 offset=24576 type=4 slot=916 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG svc 'svc-hello' tcb=914 vspace=915 cnode=916 tcb_type=12 vspace_type=9 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=881 offset=28672 type=9 slot=917 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=881 offset=32768 type=9 slot=918 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=881 offset=36864 type=9 slot=919 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=881 offset=40960 type=7 slot=920 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=920 vaddr=0x200000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=881 offset=45056 type=7 slot=921 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=921 vaddr=0x201000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=881 offset=49152 type=7 slot=922 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=922 vaddr=0x202000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=881 offset=53248 type=7 slot=923 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=923 vaddr=0x203000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=881 offset=57344 type=7 slot=924 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=924 vaddr=0x204000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=881 offset=61440 type=7 slot=925 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=925 vaddr=0x205000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=885 offset=0 type=7 slot=926 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=926 vaddr=0x206000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=885 offset=4096 type=7 slot=927 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=927 vaddr=0x207000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=886 offset=0 type=7 slot=928 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=928 vaddr=0x208000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=886 offset=4096 type=7 slot=929 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=929 vaddr=0x209000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=886 offset=8192 type=7 slot=930 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=930 vaddr=0x20a000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=886 offset=12288 type=7 slot=931 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=931 vaddr=0x20b000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=887 offset=0 type=7 slot=932 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=932 vaddr=0x20c000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=887 offset=4096 type=7 slot=933 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=933 vaddr=0x20d000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=887 offset=8192 type=7 slot=934 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=934 vaddr=0x20e000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=887 offset=12288 type=7 slot=935 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=935 vaddr=0x20f000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=887 offset=16384 type=7 slot=936 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=936 vaddr=0x210000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=887 offset=20480 type=7 slot=937 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=937 vaddr=0x211000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=887 offset=24576 type=7 slot=938 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=938 vaddr=0x212000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=887 offset=28672 type=7 slot=939 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=939 vaddr=0x213000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=0 type=7 slot=940 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=940 vaddr=0x214000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=4096 type=7 slot=941 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=941 vaddr=0x215000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=8192 type=7 slot=942 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=942 vaddr=0x216000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=12288 type=7 slot=943 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=943 vaddr=0x217000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=16384 type=7 slot=944 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=944 vaddr=0x218000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=20480 type=7 slot=945 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=945 vaddr=0x219000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=24576 type=7 slot=946 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=946 vaddr=0x21a000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=28672 type=7 slot=947 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=947 vaddr=0x21b000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=32768 type=7 slot=948 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=915 frame=948 vaddr=0x21c000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=36864 type=7 slot=949 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=915 frame=949 vaddr=0x220000 svc='svc-hello'
+[eneros-root-task] DBG retype_one untyped=888 offset=40960 type=7 slot=950 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=915 frame=950 vaddr=0x21f000 svc='svc-hello'
+[eneros-root-task] DBG retype_one untyped=888 offset=45056 type=7 slot=951 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=915 frame=951 vaddr=0x21e000 svc='svc-hello'
+[eneros-root-task] DBG retype_one untyped=888 offset=49152 type=7 slot=952 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=915 frame=952 vaddr=0x21d000 svc='svc-hello'
+[eneros-root-task] DBG retype_one untyped=888 offset=53248 type=7 slot=953 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG buffer_map vspace=915 frame=953 vaddr=0x221000 svc='svc-hello' frame_type=1
+[eneros-root-task] DBG retype_one untyped=882 offset=0 type=2 slot=954 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG fault_mint svc='svc-hello' fault_ep=913 ep_type=4
+[eneros-root-task] DBG retype_one untyped=883 offset=0 type=3 slot=956 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=57344 type=1 slot=957 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=61440 type=6 slot=958 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=65536 type=4 slot=959 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG svc 'svc-pi' tcb=957 vspace=958 cnode=959 tcb_type=12 vspace_type=9 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=69632 type=9 slot=960 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=73728 type=9 slot=961 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=77824 type=9 slot=962 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=81920 type=7 slot=963 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=963 vaddr=0x200000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=86016 type=7 slot=964 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=964 vaddr=0x201000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=90112 type=7 slot=965 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=965 vaddr=0x202000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=94208 type=7 slot=966 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=966 vaddr=0x203000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=98304 type=7 slot=967 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=967 vaddr=0x204000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=102400 type=7 slot=968 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=968 vaddr=0x205000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=106496 type=7 slot=969 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=969 vaddr=0x206000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=110592 type=7 slot=970 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=970 vaddr=0x207000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=114688 type=7 slot=971 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=971 vaddr=0x208000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=118784 type=7 slot=972 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=972 vaddr=0x209000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=122880 type=7 slot=973 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=973 vaddr=0x20a000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=126976 type=7 slot=974 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=974 vaddr=0x20b000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=131072 type=7 slot=975 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=975 vaddr=0x20c000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=135168 type=7 slot=976 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=976 vaddr=0x20d000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=139264 type=7 slot=977 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=977 vaddr=0x20e000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=143360 type=7 slot=978 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=978 vaddr=0x20f000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=147456 type=7 slot=979 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=979 vaddr=0x210000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=151552 type=7 slot=980 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=980 vaddr=0x211000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=155648 type=7 slot=981 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=981 vaddr=0x212000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=159744 type=7 slot=982 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=982 vaddr=0x213000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=163840 type=7 slot=983 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=983 vaddr=0x214000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=167936 type=7 slot=984 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=984 vaddr=0x215000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=172032 type=7 slot=985 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=985 vaddr=0x216000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=176128 type=7 slot=986 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=986 vaddr=0x217000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=180224 type=7 slot=987 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=987 vaddr=0x218000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=184320 type=7 slot=988 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=988 vaddr=0x219000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=188416 type=7 slot=989 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=989 vaddr=0x21a000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=192512 type=7 slot=990 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=990 vaddr=0x21b000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=196608 type=7 slot=991 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=958 frame=991 vaddr=0x21c000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=200704 type=7 slot=992 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=958 frame=992 vaddr=0x220000 svc='svc-pi'
+[eneros-root-task] DBG retype_one untyped=888 offset=204800 type=7 slot=993 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=958 frame=993 vaddr=0x21f000 svc='svc-pi'
+[eneros-root-task] DBG retype_one untyped=888 offset=208896 type=7 slot=994 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=958 frame=994 vaddr=0x21e000 svc='svc-pi'
+[eneros-root-task] DBG retype_one untyped=888 offset=212992 type=7 slot=995 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=958 frame=995 vaddr=0x21d000 svc='svc-pi'
+[eneros-root-task] DBG retype_one untyped=888 offset=217088 type=7 slot=996 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG buffer_map vspace=958 frame=996 vaddr=0x221000 svc='svc-pi' frame_type=1
+[eneros-root-task] DBG retype_one untyped=883 offset=32 type=2 slot=997 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG fault_mint svc='svc-pi' fault_ep=913 ep_type=4
+[eneros-root-task] DBG retype_one untyped=884 offset=0 type=3 slot=999 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=221184 type=1 slot=1000 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=225280 type=6 slot=1001 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=229376 type=4 slot=1002 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG svc 'svc-hog' tcb=1000 vspace=1001 cnode=1002 tcb_type=12 vspace_type=9 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=233472 type=9 slot=1003 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=237568 type=9 slot=1004 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=241664 type=9 slot=1005 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=245760 type=7 slot=1006 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1006 vaddr=0x200000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=249856 type=7 slot=1007 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1007 vaddr=0x201000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=253952 type=7 slot=1008 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1008 vaddr=0x202000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=258048 type=7 slot=1009 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1009 vaddr=0x203000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=262144 type=7 slot=1010 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1010 vaddr=0x204000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=266240 type=7 slot=1011 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1011 vaddr=0x205000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=270336 type=7 slot=1012 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1012 vaddr=0x206000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=274432 type=7 slot=1013 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1013 vaddr=0x207000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=278528 type=7 slot=1014 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1014 vaddr=0x208000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=282624 type=7 slot=1015 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1015 vaddr=0x209000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=286720 type=7 slot=1016 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1016 vaddr=0x20a000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=290816 type=7 slot=1017 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1017 vaddr=0x20b000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=294912 type=7 slot=1018 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1018 vaddr=0x20c000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=299008 type=7 slot=1019 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1019 vaddr=0x20d000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=303104 type=7 slot=1020 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1020 vaddr=0x20e000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=307200 type=7 slot=1021 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1021 vaddr=0x20f000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=311296 type=7 slot=1022 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1022 vaddr=0x210000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=315392 type=7 slot=1023 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1023 vaddr=0x211000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=319488 type=7 slot=1024 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1024 vaddr=0x212000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=323584 type=7 slot=1025 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1025 vaddr=0x213000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=327680 type=7 slot=1026 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1026 vaddr=0x214000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=331776 type=7 slot=1027 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1027 vaddr=0x215000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=335872 type=7 slot=1028 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1028 vaddr=0x216000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=339968 type=7 slot=1029 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1029 vaddr=0x217000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=344064 type=7 slot=1030 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1030 vaddr=0x218000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=348160 type=7 slot=1031 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1031 vaddr=0x219000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=352256 type=7 slot=1032 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1032 vaddr=0x21a000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=356352 type=7 slot=1033 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1033 vaddr=0x21b000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=360448 type=7 slot=1034 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1001 frame=1034 vaddr=0x21c000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=364544 type=7 slot=1035 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1001 frame=1035 vaddr=0x220000 svc='svc-hog'
+[eneros-root-task] DBG retype_one untyped=888 offset=368640 type=7 slot=1036 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1001 frame=1036 vaddr=0x21f000 svc='svc-hog'
+[eneros-root-task] DBG retype_one untyped=888 offset=372736 type=7 slot=1037 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1001 frame=1037 vaddr=0x21e000 svc='svc-hog'
+[eneros-root-task] DBG retype_one untyped=888 offset=376832 type=7 slot=1038 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1001 frame=1038 vaddr=0x21d000 svc='svc-hog'
+[eneros-root-task] DBG retype_one untyped=888 offset=380928 type=7 slot=1039 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG buffer_map vspace=1001 frame=1039 vaddr=0x221000 svc='svc-hog' frame_type=1
+[eneros-root-task] DBG retype_one untyped=883 offset=48 type=2 slot=1040 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG fault_mint svc='svc-hog' fault_ep=913 ep_type=4
+[eneros-root-task] DBG retype_one untyped=884 offset=32 type=3 slot=1042 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=385024 type=1 slot=1043 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=389120 type=6 slot=1044 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=393216 type=4 slot=1045 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG svc 'svc-fault' tcb=1043 vspace=1044 cnode=1045 tcb_type=12 vspace_type=9 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=397312 type=9 slot=1046 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=401408 type=9 slot=1047 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=405504 type=9 slot=1048 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=888 offset=409600 type=7 slot=1049 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1049 vaddr=0x200000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=413696 type=7 slot=1050 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1050 vaddr=0x201000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=417792 type=7 slot=1051 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1051 vaddr=0x202000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=421888 type=7 slot=1052 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1052 vaddr=0x203000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=425984 type=7 slot=1053 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1053 vaddr=0x204000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=430080 type=7 slot=1054 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1054 vaddr=0x205000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=434176 type=7 slot=1055 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1055 vaddr=0x206000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=438272 type=7 slot=1056 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1056 vaddr=0x207000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=442368 type=7 slot=1057 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1057 vaddr=0x208000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=446464 type=7 slot=1058 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1058 vaddr=0x209000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=450560 type=7 slot=1059 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1059 vaddr=0x20a000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=454656 type=7 slot=1060 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1060 vaddr=0x20b000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=458752 type=7 slot=1061 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1061 vaddr=0x20c000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=462848 type=7 slot=1062 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1062 vaddr=0x20d000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=466944 type=7 slot=1063 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1063 vaddr=0x20e000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=471040 type=7 slot=1064 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1064 vaddr=0x20f000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=475136 type=7 slot=1065 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1065 vaddr=0x210000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=479232 type=7 slot=1066 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1066 vaddr=0x211000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=483328 type=7 slot=1067 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1067 vaddr=0x212000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=487424 type=7 slot=1068 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1068 vaddr=0x213000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=491520 type=7 slot=1069 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1069 vaddr=0x214000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=495616 type=7 slot=1070 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1070 vaddr=0x215000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=499712 type=7 slot=1071 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1071 vaddr=0x216000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=503808 type=7 slot=1072 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1072 vaddr=0x217000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=507904 type=7 slot=1073 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1073 vaddr=0x218000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=512000 type=7 slot=1074 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1074 vaddr=0x219000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=516096 type=7 slot=1075 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1075 vaddr=0x21a000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=888 offset=520192 type=7 slot=1076 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1076 vaddr=0x21b000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=0 type=7 slot=1077 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1044 frame=1077 vaddr=0x21c000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=4096 type=7 slot=1078 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1044 frame=1078 vaddr=0x220000 svc='svc-fault'
+[eneros-root-task] DBG retype_one untyped=889 offset=8192 type=7 slot=1079 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1044 frame=1079 vaddr=0x21f000 svc='svc-fault'
+[eneros-root-task] DBG retype_one untyped=889 offset=12288 type=7 slot=1080 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1044 frame=1080 vaddr=0x21e000 svc='svc-fault'
+[eneros-root-task] DBG retype_one untyped=889 offset=16384 type=7 slot=1081 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1044 frame=1081 vaddr=0x21d000 svc='svc-fault'
+[eneros-root-task] DBG retype_one untyped=889 offset=20480 type=7 slot=1082 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG buffer_map vspace=1044 frame=1082 vaddr=0x221000 svc='svc-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=884 offset=64 type=2 slot=1083 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG fault_mint svc='svc-fault' fault_ep=913 ep_type=4
+[eneros-root-task] DBG retype_one untyped=884 offset=96 type=3 slot=1085 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=24576 type=1 slot=1086 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=28672 type=6 slot=1087 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=32768 type=4 slot=1088 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG svc 'svc-drv-rng' tcb=1086 vspace=1087 cnode=1088 tcb_type=12 vspace_type=9 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=36864 type=9 slot=1089 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=40960 type=9 slot=1090 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=45056 type=9 slot=1091 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=49152 type=7 slot=1092 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1087 frame=1092 vaddr=0x200000 svc='svc-drv-rng' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=53248 type=7 slot=1093 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1087 frame=1093 vaddr=0x201000 svc='svc-drv-rng' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=57344 type=7 slot=1094 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1087 frame=1094 vaddr=0x205000 svc='svc-drv-rng'
+[eneros-root-task] DBG retype_one untyped=889 offset=61440 type=7 slot=1095 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1087 frame=1095 vaddr=0x204000 svc='svc-drv-rng'
+[eneros-root-task] DBG retype_one untyped=889 offset=65536 type=7 slot=1096 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1087 frame=1096 vaddr=0x203000 svc='svc-drv-rng'
+[eneros-root-task] DBG retype_one untyped=889 offset=69632 type=7 slot=1097 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1087 frame=1097 vaddr=0x202000 svc='svc-drv-rng'
+[eneros-root-task] DBG retype_one untyped=889 offset=73728 type=7 slot=1098 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG buffer_map vspace=1087 frame=1098 vaddr=0x206000 svc='svc-drv-rng' frame_type=1
+[eneros-root-task] DBG retype_one untyped=884 offset=128 type=2 slot=1099 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG fault_mint svc='svc-drv-rng' fault_ep=913 ep_type=4
+[eneros-root-task] DBG retype_one untyped=884 offset=160 type=3 slot=1101 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=77824 type=1 slot=1102 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=81920 type=6 slot=1103 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=86016 type=4 slot=1104 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG svc 'svc-drv-blk' tcb=1102 vspace=1103 cnode=1104 tcb_type=12 vspace_type=9 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=90112 type=9 slot=1105 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=94208 type=9 slot=1106 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=98304 type=9 slot=1107 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=102400 type=7 slot=1108 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1103 frame=1108 vaddr=0x200000 svc='svc-drv-blk' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=106496 type=7 slot=1109 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1103 frame=1109 vaddr=0x201000 svc='svc-drv-blk' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=110592 type=7 slot=1110 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1103 frame=1110 vaddr=0x205000 svc='svc-drv-blk'
+[eneros-root-task] DBG retype_one untyped=889 offset=114688 type=7 slot=1111 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1103 frame=1111 vaddr=0x204000 svc='svc-drv-blk'
+[eneros-root-task] DBG retype_one untyped=889 offset=118784 type=7 slot=1112 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1103 frame=1112 vaddr=0x203000 svc='svc-drv-blk'
+[eneros-root-task] DBG retype_one untyped=889 offset=122880 type=7 slot=1113 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1103 frame=1113 vaddr=0x202000 svc='svc-drv-blk'
+[eneros-root-task] DBG retype_one untyped=889 offset=126976 type=7 slot=1114 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG buffer_map vspace=1103 frame=1114 vaddr=0x206000 svc='svc-drv-blk' frame_type=1
+[eneros-root-task] DBG retype_one untyped=884 offset=192 type=2 slot=1115 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG fault_mint svc='svc-drv-blk' fault_ep=913 ep_type=4
+[eneros-root-task] DBG retype_one untyped=884 offset=224 type=3 slot=1117 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=131072 type=1 slot=1118 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=135168 type=6 slot=1119 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=139264 type=4 slot=1120 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG svc 'svc-drv-net' tcb=1118 vspace=1119 cnode=1120 tcb_type=12 vspace_type=9 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=143360 type=9 slot=1121 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=147456 type=9 slot=1122 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=151552 type=9 slot=1123 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=155648 type=7 slot=1124 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1119 frame=1124 vaddr=0x200000 svc='svc-drv-net' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=159744 type=7 slot=1125 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1119 frame=1125 vaddr=0x201000 svc='svc-drv-net' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=163840 type=7 slot=1126 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1119 frame=1126 vaddr=0x205000 svc='svc-drv-net'
+[eneros-root-task] DBG retype_one untyped=889 offset=167936 type=7 slot=1127 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1119 frame=1127 vaddr=0x204000 svc='svc-drv-net'
+[eneros-root-task] DBG retype_one untyped=889 offset=172032 type=7 slot=1128 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1119 frame=1128 vaddr=0x203000 svc='svc-drv-net'
+[eneros-root-task] DBG retype_one untyped=889 offset=176128 type=7 slot=1129 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1119 frame=1129 vaddr=0x202000 svc='svc-drv-net'
+[eneros-root-task] DBG retype_one untyped=889 offset=180224 type=7 slot=1130 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG buffer_map vspace=1119 frame=1130 vaddr=0x206000 svc='svc-drv-net' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=184320 type=2 slot=1131 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG fault_mint svc='svc-drv-net' fault_ep=913 ep_type=4
+[eneros-root-task] DBG retype_one untyped=889 offset=184352 type=3 slot=1133 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=188416 type=1 slot=1134 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=192512 type=6 slot=1135 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=196608 type=4 slot=1136 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG svc 'svc-drv-console' tcb=1134 vspace=1135 cnode=1136 tcb_type=12 vspace_type=9 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=200704 type=9 slot=1137 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=204800 type=9 slot=1138 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=208896 type=9 slot=1139 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=212992 type=7 slot=1140 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1135 frame=1140 vaddr=0x200000 svc='svc-drv-console' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=217088 type=7 slot=1141 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1135 frame=1141 vaddr=0x201000 svc='svc-drv-console' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=221184 type=7 slot=1142 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1135 frame=1142 vaddr=0x205000 svc='svc-drv-console'
+[eneros-root-task] DBG retype_one untyped=889 offset=225280 type=7 slot=1143 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1135 frame=1143 vaddr=0x204000 svc='svc-drv-console'
+[eneros-root-task] DBG retype_one untyped=889 offset=229376 type=7 slot=1144 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1135 frame=1144 vaddr=0x203000 svc='svc-drv-console'
+[eneros-root-task] DBG retype_one untyped=889 offset=233472 type=7 slot=1145 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1135 frame=1145 vaddr=0x202000 svc='svc-drv-console'
+[eneros-root-task] DBG retype_one untyped=889 offset=237568 type=7 slot=1146 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG buffer_map vspace=1135 frame=1146 vaddr=0x206000 svc='svc-drv-console' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=241664 type=2 slot=1147 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG fault_mint svc='svc-drv-console' fault_ep=913 ep_type=4
+[eneros-root-task] DBG retype_one untyped=889 offset=241696 type=3 slot=1149 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=245760 type=1 slot=1150 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=249856 type=6 slot=1151 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=253952 type=4 slot=1152 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG svc 'svc-storage' tcb=1150 vspace=1151 cnode=1152 tcb_type=12 vspace_type=9 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=258048 type=9 slot=1153 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=262144 type=9 slot=1154 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=266240 type=9 slot=1155 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=270336 type=7 slot=1156 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1151 frame=1156 vaddr=0x200000 svc='svc-storage' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=274432 type=7 slot=1157 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1151 frame=1157 vaddr=0x201000 svc='svc-storage' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=278528 type=7 slot=1158 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1151 frame=1158 vaddr=0x205000 svc='svc-storage'
+[eneros-root-task] DBG retype_one untyped=889 offset=282624 type=7 slot=1159 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1151 frame=1159 vaddr=0x204000 svc='svc-storage'
+[eneros-root-task] DBG retype_one untyped=889 offset=286720 type=7 slot=1160 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1151 frame=1160 vaddr=0x203000 svc='svc-storage'
+[eneros-root-task] DBG retype_one untyped=889 offset=290816 type=7 slot=1161 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1151 frame=1161 vaddr=0x202000 svc='svc-storage'
+[eneros-root-task] DBG retype_one untyped=889 offset=294912 type=7 slot=1162 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG buffer_map vspace=1151 frame=1162 vaddr=0x206000 svc='svc-storage' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=299008 type=2 slot=1163 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG fault_mint svc='svc-storage' fault_ep=913 ep_type=4
+[eneros-root-task] DBG retype_one untyped=889 offset=299040 type=3 slot=1165 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=303104 type=1 slot=1166 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=307200 type=6 slot=1167 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=311296 type=4 slot=1168 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG svc 'svc-drv-fault' tcb=1166 vspace=1167 cnode=1168 tcb_type=12 vspace_type=9 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=315392 type=9 slot=1169 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=319488 type=9 slot=1170 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=323584 type=9 slot=1171 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG retype_one untyped=889 offset=327680 type=7 slot=1172 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1167 frame=1172 vaddr=0x200000 svc='svc-drv-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=331776 type=7 slot=1173 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG page_map vspace=1167 frame=1173 vaddr=0x201000 svc='svc-drv-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=335872 type=7 slot=1174 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1167 frame=1174 vaddr=0x205000 svc='svc-drv-fault'
+[eneros-root-task] DBG retype_one untyped=889 offset=339968 type=7 slot=1175 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1167 frame=1175 vaddr=0x204000 svc='svc-drv-fault'
+[eneros-root-task] DBG retype_one untyped=889 offset=344064 type=7 slot=1176 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1167 frame=1176 vaddr=0x203000 svc='svc-drv-fault'
+[eneros-root-task] DBG retype_one untyped=889 offset=348160 type=7 slot=1177 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG stack_map vspace=1167 frame=1177 vaddr=0x202000 svc='svc-drv-fault'
+[eneros-root-task] DBG retype_one untyped=889 offset=352256 type=7 slot=1178 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG buffer_map vspace=1167 frame=1178 vaddr=0x206000 svc='svc-drv-fault' frame_type=1
+[eneros-root-task] DBG retype_one untyped=889 offset=356352 type=2 slot=1179 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG fault_mint svc='svc-drv-fault' fault_ep=913 ep_type=4
+[eneros-root-task] DBG retype_one untyped=889 offset=356384 type=3 slot=1181 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] EL0 services spawned — entering service loop
+[0m[1m<<[0m[32mseL4(CPU 0)[0m[1m [decodeIRQControlInvocation/52 T0xffffff807ffeb400 "rootserver" @21985c]: Rejecting request for IRQ 27. Already active.>>[0m
+[eneros-root-task] IRQ bind failed: Sel4(Other(9)) — 中断计数将保持 0
+[eneros-root-task] ENEROS stage=probe-report dtb-phys=0x4204b000 dtb-bytes=1052672 nodes=56 compatibles=["arm,pl011", "virtio,mmio", "nxp,sja1000", "eneros,rs485-uart"]
+[eneros-root-task] DBG retype_one untyped=889 offset=360448 type=9 slot=1184 untyped_cap_type=2 cnode_type=10
+[eneros-root-task] DBG virtio probe slot=0 magic=0x74726976
+[eneros-root-task] DBG virtio probe slot=0 version=1 device_id=2 vendor=0x554d4551
+[0m[1m<<[0m[32mseL4(CPU 0)[0m[1m [decodeIRQControlInvocation/58 T0xffffff807ffeb400 "rootserver" @21985c]: Target slot for new IRQ Handler cap invalid: cap 2, IRQ 33.>>[0m
+[eneros-root-task]   probe bound compatible=virtio,mmio node=virtio_mmio@a000000 driver=virtio-blk0
+[eneros-root-task]   probe bound compatible=arm,pl011 node=pl011@9000000 driver=pl011-uart0
+[eneros-root-task]   probe unbound compatible=arm,psci-1.0 node=psci
+[eneros-root-task]   probe unbound compatible= node=memory@40000000
+[eneros-root-task]   probe unbound compatible=qemu,platform node=platform-bus@c000000
+[eneros-root-task]   probe unbound compatible=qemu,fw-cfg-mmio node=fw-cfg@9020000
+[eneros-root-task]   probe unbound compatible= node=poweroff
+[eneros-root-task]   probe unbound compatible=arm,pl061 node=pl061@9030000
+[eneros-root-task]   probe unbound compatible=pci-host-ecam-generic node=pcie@10000000
+[eneros-root-task]   probe unbound compatible=arm,pl031 node=pl031@9010000
+[eneros-root-task]   probe unbound compatible=arm,armv8-pmuv3 node=pmu
+[eneros-root-task]   probe unbound compatible=arm,gic-v2m-frame node=v2m@8020000
+[eneros-root-task]   probe unbound compatible=cfi-flash node=flash@0
+[eneros-root-task]   probe unbound compatible= node=core0
+[eneros-root-task]   probe unbound compatible= node=core1
+[eneros-root-task]   probe unbound compatible= node=core2
+[eneros-root-task]   probe unbound compatible= node=core3
+[eneros-root-task]   probe unbound compatible=arm,cortex-a57 node=cpu@0
+[eneros-root-task]   probe unbound compatible=arm,cortex-a57 node=cpu@1
+[eneros-root-task]   probe unbound compatible=arm,cortex-a57 node=cpu@2
+[eneros-root-task]   probe unbound compatible=arm,cortex-a57 node=cpu@3
+[eneros-root-task]   probe unbound compatible=arm,armv8-timer node=timer
+[eneros-root-task]   probe unbound compatible=fixed-clock node=apb-pclk
+[eneros-root-task]   probe unbound compatible= node=aliases
+[eneros-root-task]   probe unbound compatible= node=chosen
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000200 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000400 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000600 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000800 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000a00 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000c00 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000e00 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001000 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001200 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001400 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001600 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001800 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001a00 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001c00 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001e00 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002000 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002200 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002400 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002600 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002800 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002a00 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002c00 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002e00 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003000 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003200 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003400 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003600 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003800 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003a00 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003c00 error=NotFound
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003e00 error=NotFound
+[eneros-root-task] ENEROS stage=probe-report-done bound=2 unbound=23 failed=31
+[eneros-root-task] DBG hello.ep=954 hello.tcb=914 ep_type=4
+[eneros-root-task] DBG fault.ep=1083 fault.ntfn=1084
+�[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-fault] svc_ipc_loop entered ep=0
+[svc-hog] svc_ipc_loop entered ep=0
+[svc-pi] svc_ipc_loop entered ep=0
+HI
+[svc-hello] _start entered ep=0 ipcbuf=0x221000
+[svc-hello] svc_ipc_loop entered ep=0
+[svc-hello] IPC: recv req, replying 33 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=1
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 33 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=2
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 33 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=3
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 33 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=4
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 33 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=5
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 33 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=6
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 33 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=7
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 33 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=8
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 33 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=9
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=10
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=11
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=12
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=13
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=14
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=15
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=16
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=17
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=18
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=19
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=20
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=21
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=22
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=23
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=24
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=25
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=26
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=27
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=28
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=29
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=30
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=31
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=32
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=33
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=34
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=35
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=36
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=37
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=38
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=39
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=40
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=41
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=42
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=43
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=44
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=45
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=46
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=47
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=48
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=49
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=50
+[eneros-root-task] IPC: send fault to svc-fault (cycle)
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=51
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=52
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=53
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=54
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=55
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=56
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=57
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=58
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=59
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=60
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=61
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=62
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=63
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=64
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=65
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=66
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=67
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=68
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=69
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=70
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=71
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=72
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=73
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=74
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=75
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=76
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=77
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=78
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=79
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=80
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=81
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=82
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=83
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=84
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=85
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=86
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=87
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=88
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=89
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=90
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=91
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=92
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=93
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=94
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, reply[svc-fault] FAULT triggered — suspending
+ing 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=95
+[eneros-root-task] SUPERVISOR: svc-fault fault → restart in 1000ms (fault_count=1)
+[eneros-root-task] SUPERVISOR: svc-fault restarted (total=1)
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] SUPERVISOR: svc-hello still responsive (hello:eneros:tick=96)
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=97
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=98
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 34 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=99
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=100
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=101
+[eneros-root-task] IPC: send fault to svc-fault (cycle)
+[svc-fault] svc_ipc_loop entered ep=0
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=102
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=103
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=104
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=105
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=106
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=107
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=108
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=109
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=110
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=111
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=112
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=113
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=114
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=115
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=116
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=117
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=118
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=119
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=120
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=121
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=122
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=123
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=124
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=125
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=126
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=127
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=128
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=129
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=130
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=131
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=132
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=133
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=134
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=135
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=136
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=137
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=138
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=139
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=140
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=141
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=142
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=143
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=144
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=145
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=146
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=147
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=148
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=149
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=150
+[eneros-root-task] IPC: send hello-req to svc-hello
+[[svc-fault] FAULT triggered — suspending
+svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=151
+[eneros-root-task] SUPERVISOR: svc-fault fault → restart in 2000ms (fault_count=2)
+[eneros-root-task] SUPERVISOR: svc-fault restarted (total=2)
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] SUPERVISOR: svc-hello still responsive (hello:eneros:tick=152)
+[eneros-root-task] IPC: send fault to svc-fault (cycle)
+[svc-fault] svc_ipc_loop entered ep=0
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=153
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=154
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=155
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=156
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=157
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=158
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=159
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=160
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=161
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=162
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=163
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=164
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=165
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=166
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=167
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=168
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=169
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=170
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=171
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=172
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=173
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=174
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=175
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=176
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=177
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=178
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=179
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=180
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=181
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=182
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=183
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=184
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=185
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=186
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=187
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=188
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=189
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=190
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=191
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=192
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=193
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=194
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=195
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=196
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=197
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=198
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=199
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=200
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=201
+[eneros-root-task] IPC: send hello-req to svc-hello
+[svc-hello] IPC: recv req, replying 35 bytes
+[eneros-root-task] IPC: recv hello:eneros:tick=202
+[eneros-root-task] IPC: send fault to svc-fault (cycle)
+[svc-fault] FAULT triggered — suspending
+qemu-system-aarch64: terminating on signal 15 from pid 2102138 (timeout)
