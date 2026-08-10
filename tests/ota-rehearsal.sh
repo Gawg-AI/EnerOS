@@ -44,6 +44,47 @@ cat > "${OUT_DIR}/ota-rehearsal-plan.json" <<EOF
 }
 EOF
 
+echo "[ota] 负例演练（33 SE-15/18/19 硬化后判据）："
+echo "[ota]   1. 伪造分区表（重算 CRC 无 HMAC）→ 必拒"
+echo "[ota]   2. 不可解析版本（check_monotonic fail-closed）→ 必拒"
+echo "[ota]   3. 超尺寸镜像（total_size > 分区容量）→ 必拒"
+
+REJECT_JSON="${OUT_DIR}/ota-rejection-evidence.json"
+TMP_LOG="$(mktemp /tmp/ota-reject.XXXXXX)"
+# 注：不用 grep -q 直连管道（pipefail 下 grep 提前关管 → SIGPIPE → 误判 FAIL）
+{
+  echo "{"
+  echo "  \"schema\": \"eneros.ota-rejection-evidence.v1\","
+  echo "  \"cases\": ["
+  # 1. 伪造分区表（pst8 判据：重算 CRC 无 HMAC 必拒）
+  if cargo test -p eneros-ota-ab pst8_forged_table_without_hmac_rejected > "${TMP_LOG}" 2>&1 && grep -q "test result: ok" "${TMP_LOG}"; then
+    echo "    {\"case\": \"forged-partition-table-without-hmac\", \"verdict\": \"PASS\"},"
+  else
+    echo "    {\"case\": \"forged-partition-table-without-hmac\", \"verdict\": \"FAIL\"},"
+  fi
+  # 2. 不可解析版本（check_monotonic(dev, 0.123.0) 必 Err）
+  if cargo test -p eneros-ota-ab test_cry006_check_monotonic_rejects_downgrade > "${TMP_LOG}" 2>&1 && grep -q "test result: ok" "${TMP_LOG}"; then
+    echo "    {\"case\": \"unparseable-version-rejected\", \"verdict\": \"PASS\"},"
+  else
+    echo "    {\"case\": \"unparseable-version-rejected\", \"verdict\": \"FAIL\"},"
+  fi
+  # 3. 超尺寸镜像（构造器校验 + 运行时防越界）
+  if cargo test -p eneros-ota-ab test_oversize_total_rejected_fail_closed > "${TMP_LOG}" 2>&1 && grep -q "test result: ok" "${TMP_LOG}"; then
+    echo "    {\"case\": \"oversize-image-rejected\", \"verdict\": \"PASS\"}"
+  else
+    echo "    {\"case\": \"oversize-image-rejected\", \"verdict\": \"FAIL\"}"
+  fi
+  echo "  ]"
+  echo "}"
+} > "${REJECT_JSON}"
+rm -f "${TMP_LOG}"
+
+echo "[ota] 三连拒绝证据：${REJECT_JSON}"
+if grep -q '"verdict": "FAIL"' "${REJECT_JSON}"; then
+  echo "[ota] FAIL: 存在未通过的负例判据" >&2
+  exit 1
+fi
+
 if command -v qemu-system-aarch64 > /dev/null 2>&1 && [ "${1:-}" != "--skip-qemu" ]; then
     echo "[ota] QEMU 可用 —— 执行 QEMU 侧演练"
     # 接入点：cargo xtask image update --from ... --to ... （差分生成）
