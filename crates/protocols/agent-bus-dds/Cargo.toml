@@ -4,21 +4,15 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS v0.78.0 DDS middleware + Agent Bus router + signed envelope (Cyclone DDS via FFI + MockDdsNode + MockSigner/Sm2Signer, no_std)"
+description = "EnerOS v0.78.0 DDS middleware + Agent Bus router (34 SE-11: 签名层退役——传输层已有等价保护; Cyclone DDS via FFI + MockDdsNode, no_std)"
 
 [dependencies]
 slotmap = { version = "1.0", default-features = false }
-# D14: SM2 签名支持（可选，启用 sm2 feature 时引入）
-eneros-crypto = { path = "../../security/crypto", default-features = false, optional = true }
 
 [features]
 # 测试专用 mock（显式启用；release 不得启用——mock 纪律）。
 mock = []
 default = []
-# D3: Cyclone DDS C library bindings + CycloneDdsNode (disabled by default; enable when libddsc.so is available)
-cyclone-dds = []
-# D14: SM2 签名器（封装 eneros-crypto v0.32.0）
-sm2 = ["eneros-crypto"]
 
 [package.metadata.eneros]
 # 21-B B2（ADR-021 预设裁决）：v1.0.0 agent 总线改用 MQTT（真实可用），

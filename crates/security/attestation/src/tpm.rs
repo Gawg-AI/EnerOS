@@ -159,9 +159,13 @@ impl SoftTpm {
         let mut material = [0u8; 32 + 6];
         material[..32].copy_from_slice(seed);
         material[32..].copy_from_slice(b"AK/v1\0");
-        let sk_bytes = sm3_hash(&material);
+        let mut sk_bytes = sm3_hash(&material);
+        // 34 SE-16：中间密钥材料即时清零（派生材料 + 私钥种子字节——
+        // 旧实现留栈上明文，调试器/core dump 可读）。
+        eneros_crypto::ct_zeroize(&mut material);
         let sk = eneros_crypto::Sm2PrivateKey::from_bytes(&sk_bytes)
             .map_err(|_| TpmError::QuoteFailed)?;
+        eneros_crypto::ct_zeroize(&mut sk_bytes);
         let kp =
             eneros_crypto::Sm2KeyPair::from_private_key(&sk).map_err(|_| TpmError::QuoteFailed)?;
         Ok(Self {

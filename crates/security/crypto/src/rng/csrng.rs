@@ -254,6 +254,8 @@ impl Drop for CsRng {
     fn drop(&mut self) {
         // 恒定时间清零敏感状态
         ct_zeroize(&mut self.v);
+        // 34 SE-12：补齐常量 C 清零（旧实现仅清 v——C 与输出同源敏感）。
+        ct_zeroize(&mut self.c);
         // reseed_counter 是 u64 标量，使用 volatile 写入清零以防编译器优化删除
         // SAFETY: write_volatile 写入栈上变量的可变引用，不会触发 UB
         unsafe {

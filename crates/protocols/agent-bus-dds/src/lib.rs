@@ -17,9 +17,8 @@
 //! / [`policy::CapabilityVerifier`] / [`router::Subscription`] / [`policy::RouteDecision`]
 //! / [`policy::DropReason`]，支持 topic 通配匹配（`*` 后缀）、能力校验与优先级路由。
 //! 为后续 v0.78.0（Agent 调度器）、v0.89.0（联邦消息总线）、v0.92.0（VPP 聚合）提供路由基础。
-//! v0.78.0 在路由层之上引入签名层：[`codec::CodecKind`] / [`signing::SignedEnvelope`]
-//! / [`signing::EnvelopeHeader`] / [`signing::MessageSigner`] / [`signing::MockSigner`]
-//! / [`signing::pack_and_sign`] / [`signing::unpack_and_verify`]，支持 SM2 签名（feature = "sm2"）
+//! 34 SE-11（决策②）：签名层（signing.rs）已退役——传输层已有等价保护；
+//! 见 docs/dead-surface-audit.md 登记。
 //! 与 5 秒防重放窗口。为后续 v0.98.0 mTLS、v0.117.0 审计哈希链提供签名基础。
 //!
 //! # 核心类型
@@ -36,17 +35,12 @@
 //! - [`policy::AgentId`] / [`policy::Permission`] / [`policy::DropReason`] / [`policy::RoutingPolicy`] / [`policy::RouteError`] / [`policy::RouteDecision`] / [`policy::CapabilityVerifier`] / [`policy::MockCapabilityVerifier`] — 路由策略层（v0.77.0 新增，D7/D10/D12）
 //! - [`router::SubId`] / [`router::Subscription`] / [`router::RouterStats`] / [`router::pattern_matches`] / [`router::MessageRouter`] — 消息路由器（v0.77.0 新增，D5/D7/D8/D9/D11）
 //! - [`codec::CodecKind`] / [`codec::CodecError`] — 编解码元数据 tag（v0.78.0 新增，D6 不实现实际编解码）
-//! - [`signing::KeyId`] / [`signing::MsgId`] / [`signing::EnvelopeHeader`] / [`signing::SignedEnvelope`] / [`signing::SignError`] / [`signing::MessageSigner`] / [`signing::MockSigner`] / [`signing::pack_and_sign`] / [`signing::unpack_and_verify`] — 消息签名层（v0.78.0 新增，D7/D8/D9/D10/D11/D13/D14）
 //!
 //! # 偏差声明（D1~D14）
 //!
 //! | 偏差 | 说明 |
 //! |------|------|
 //! | **D1** | 扩展 v0.75.0 `eneros-agent-bus-dds` crate（不新建 crate）；签名层与 DDS 同属协议层（项目规则 §2.3.1，沿用 v0.77.0 D1） |
-//! | **D2** | 文档位于 `docs/protocols/message-signing-design.md`（项目规则 §2.3.3，非蓝图 `docs/phase2/message_signing.md`） |
-//! | **D3** | 配置位于 `configs/signing_keys.toml`（项目规则 §2.3，非蓝图 `config/`） |
-//! | **D4** | 测试内嵌 `src/lib.rs` T49~T63（沿用 v0.75.0~v0.77.0 模式，非蓝图 `tests/signing_verify.rs` / `tests/codec_bench.rs`） |
-//! | **D5** | `KeyStore.keys: BTreeMap<KeyId, Sm2PublicKey>` 替代 `HashMap`（no_std 合规，v0.76.0 D1 先例） |
 //! | **D6** | `CodecKind` 仅作为 header 元数据 tag，**不实现**实际 CDR/Bincode/JSON 编解码（避免引入 `cdr` / `bincode` / `serde_json` 三个 crate；扩展 v0.76.0 D6） |
 //! | **D7** | `MessageCodec` / `MessageSigner` trait 无 `Send + Sync` bound（no_std 单线程，v0.59.0/v0.64.0/v0.72.0/v0.77.0 先例） |
 //! | **D8** | `MsgId(pub u64)` newtype 替代 `Uuid::new_v4()`（无 `uuid` crate 依赖；Karpathy 简化） |
@@ -55,7 +49,6 @@
 //! | **D11** | 复用 `policy::AgentId(pub u64)`（v0.77.0 已定义），不重复定义 |
 //! | **D12** | 不实现性能基准测试（CI 无法稳定验证 ≥1000 sig/s），仅保留正确性测试；性能延后到 v0.158.0 硬件加速 |
 //! | **D13** | `KeyId(pub u64)` newtype（与 `AgentId` 解耦：密钥轮换允许 key_id ≠ agent_id） |
-//! | **D14** | `MessageSigner` trait + `MockSigner` 默认实现；`Sm2Signer` + `KeyStore` 在 `sm2` feature 后（默认 build 不引入 `eneros-crypto`，保持 no_std 最小依赖） |
 //!
 //! # no_std 合规
 //!
@@ -80,7 +73,6 @@ pub mod policy;
 pub mod qos;
 pub mod registry;
 pub mod router;
-pub mod signing;
 pub mod topic;
 pub mod types;
 
@@ -105,13 +97,6 @@ pub use qos::{Durability, History, QosPolicy, Reliability};
 pub use registry::TopicRegistry;
 pub use router::{pattern_matches, MessageRouter, RouterStats, SubId, Subscription};
 #[cfg(any(test, feature = "mock"))]
-pub use signing::MockSigner;
-pub use signing::{
-    pack_and_sign, unpack_and_verify, EnvelopeHeader, KeyId, MessageSigner, MsgId, SignError,
-    SignedEnvelope,
-};
-#[cfg(feature = "sm2")]
-pub use signing::{KeyStore, Sm2Signer};
 pub use topic::{
     standard_topics, validate_topic_name, PayloadType, TopicCategory, TopicError, TopicSpec,
 };
@@ -896,8 +881,6 @@ mod tests_v0780 {
     //! v0.78.0 签名层测试 T49~T63（覆盖 D6~D14 偏差声明与 spec 验收场景）.
     //!
     //! - T49~T50：编解码元数据 tag（CodecKind / CodecError）
-    //! - T51~T55：签名层基础类型（KeyId / MsgId / EnvelopeHeader / SignedEnvelope / SignError）
-    //! - T56~T58：MockSigner 签名/验签/防重放
     //! - T59~T63：pack_and_sign / unpack_and_verify 端到端流程
 
     use super::*;
@@ -926,313 +909,4 @@ mod tests_v0780 {
         assert!(!s3.is_empty());
     }
 
-    // T51: KeyId newtype 基本访问
-    #[test]
-    fn test_t51_key_id_access() {
-        let id = KeyId(42);
-        assert_eq!(id.0, 42);
-        let id2 = KeyId(42);
-        assert_eq!(id, id2);
-    }
-
-    // T52: MsgId newtype 基本访问
-    #[test]
-    fn test_t52_msg_id_access() {
-        let id = MsgId(99);
-        assert_eq!(id.0, 99);
-    }
-
-    // T53: EnvelopeHeader 构造与字段访问
-    #[test]
-    fn test_t53_envelope_header_construction() {
-        let h = EnvelopeHeader {
-            msg_id: MsgId(1),
-            timestamp: 1000,
-            source: AgentId(7),
-            topic: String::from("/power/state"),
-            qos: 5,
-            codec: CodecKind::Bincode,
-            key_id: KeyId(10),
-        };
-        assert_eq!(h.msg_id, MsgId(1));
-        assert_eq!(h.timestamp, 1000);
-        assert_eq!(h.source, AgentId(7));
-        assert_eq!(h.topic, "/power/state");
-        assert_eq!(h.qos, 5);
-        assert_eq!(h.codec, CodecKind::Bincode);
-        assert_eq!(h.key_id, KeyId(10));
-    }
-
-    // T54: SignedEnvelope 字段访问
-    #[test]
-    fn test_t54_signed_envelope_access() {
-        let h = EnvelopeHeader {
-            msg_id: MsgId(1),
-            timestamp: 1000,
-            source: AgentId(7),
-            topic: String::from("/t"),
-            qos: 0,
-            codec: CodecKind::Cdr,
-            key_id: KeyId(1),
-        };
-        let env = SignedEnvelope {
-            header: h.clone(),
-            payload: vec![0xDE, 0xAD],
-            signature: [0u8; 64],
-        };
-        assert_eq!(env.header, h);
-        assert_eq!(env.payload, vec![0xDE, 0xAD]);
-        assert_eq!(env.signature.len(), 64);
-    }
-
-    // T55: SignError::Display 输出非空（6 变体）
-    #[test]
-    fn test_t55_sign_error_display() {
-        let cases = [
-            format!("{}", SignError::EncodeFailed),
-            format!("{}", SignError::UnknownKey(KeyId(1))),
-            format!("{}", SignError::StaleTimestamp),
-            format!("{}", SignError::SigningFailed),
-            format!("{}", SignError::VerifyFailed),
-            format!("{}", SignError::MockError),
-        ];
-        for s in cases.iter() {
-            assert!(!s.is_empty());
-        }
-    }
-
-    // T56: MockSigner::sign() 返回 Ok(64 字节)
-    #[test]
-    fn test_t56_mock_signer_sign() {
-        let signer = MockSigner;
-        let h = EnvelopeHeader {
-            msg_id: MsgId(1),
-            timestamp: 5000,
-            source: AgentId(1),
-            topic: String::from("/t"),
-            qos: 0,
-            codec: CodecKind::Bincode,
-            key_id: KeyId(1),
-        };
-        let sig = signer.sign(&h, b"payload").unwrap();
-        assert_eq!(sig.len(), 64);
-        // 前 8 字节 = timestamp.to_be_bytes()
-        assert_eq!(&sig[..8], &5000u64.to_be_bytes());
-        // 第 9 字节 = payload.len() & 0xFF = 7
-        assert_eq!(sig[8], 7);
-    }
-
-    // T57: MockSigner::verify() 匹配签名返回 Ok(true)
-    #[test]
-    fn test_t57_mock_signer_verify_match() {
-        let signer = MockSigner;
-        let h = EnvelopeHeader {
-            msg_id: MsgId(1),
-            timestamp: 5000,
-            source: AgentId(1),
-            topic: String::from("/t"),
-            qos: 0,
-            codec: CodecKind::Bincode,
-            key_id: KeyId(1),
-        };
-        let sig = signer.sign(&h, b"payload").unwrap();
-        let ok = signer.verify(&h, b"payload", &sig, 5000).unwrap();
-        assert!(ok);
-    }
-
-    // T58: MockSigner::verify() 时间戳过期返回 Err(StaleTimestamp)
-    #[test]
-    fn test_t58_mock_signer_stale_timestamp() {
-        let signer = MockSigner;
-        let h = EnvelopeHeader {
-            msg_id: MsgId(1),
-            timestamp: 1000,
-            source: AgentId(1),
-            topic: String::from("/t"),
-            qos: 0,
-            codec: CodecKind::Bincode,
-            key_id: KeyId(1),
-        };
-        let sig = signer.sign(&h, b"payload").unwrap();
-        // now = 1000 + 5001 = 6001，差 5001 > 5000
-        let res = signer.verify(&h, b"payload", &sig, 6001);
-        assert_eq!(res, Err(SignError::StaleTimestamp));
-    }
-
-    // T59: pack_and_sign() + MockSigner 成功构造 SignedEnvelope
-    #[test]
-    fn test_t59_pack_and_sign() {
-        let signer = MockSigner;
-        let env = pack_and_sign(
-            &signer,
-            b"hello",
-            AgentId(1),
-            "/topic",
-            3,
-            CodecKind::Bincode,
-            KeyId(1),
-            MsgId(42),
-            1000,
-        )
-        .unwrap();
-        assert_eq!(env.header.msg_id, MsgId(42));
-        assert_eq!(env.header.timestamp, 1000);
-        assert_eq!(env.header.source, AgentId(1));
-        assert_eq!(env.header.topic, "/topic");
-        assert_eq!(env.header.qos, 3);
-        assert_eq!(env.header.codec, CodecKind::Bincode);
-        assert_eq!(env.header.key_id, KeyId(1));
-        assert_eq!(env.payload, b"hello");
-        assert_eq!(env.signature.len(), 64);
-    }
-
-    // T60: unpack_and_verify() + MockSigner 匹配返回 Ok(true)
-    #[test]
-    fn test_t60_unpack_and_verify_match() {
-        let signer = MockSigner;
-        let env = pack_and_sign(
-            &signer,
-            b"payload",
-            AgentId(1),
-            "/t",
-            0,
-            CodecKind::Bincode,
-            KeyId(1),
-            MsgId(1),
-            5000,
-        )
-        .unwrap();
-        let ok = unpack_and_verify(&signer, &env, 5000).unwrap();
-        assert!(ok);
-    }
-
-    // T61: unpack_and_verify() 篡改 payload 返回 Ok(false)
-    #[test]
-    fn test_t61_unpack_and_verify_tampered_payload() {
-        let signer = MockSigner;
-        let mut env = pack_and_sign(
-            &signer,
-            b"original",
-            AgentId(1),
-            "/t",
-            0,
-            CodecKind::Bincode,
-            KeyId(1),
-            MsgId(1),
-            5000,
-        )
-        .unwrap();
-        env.payload[0] ^= 0xFF;
-        let ok = unpack_and_verify(&signer, &env, 5000).unwrap();
-        assert!(!ok);
-    }
-
-    // T62: unpack_and_verify() 篡改 signature 返回 Ok(false)
-    #[test]
-    fn test_t62_unpack_and_verify_tampered_signature() {
-        let signer = MockSigner;
-        let mut env = pack_and_sign(
-            &signer,
-            b"payload",
-            AgentId(1),
-            "/t",
-            0,
-            CodecKind::Bincode,
-            KeyId(1),
-            MsgId(1),
-            5000,
-        )
-        .unwrap();
-        env.signature[0] ^= 0xFF;
-        let ok = unpack_and_verify(&signer, &env, 5000).unwrap();
-        assert!(!ok);
-    }
-
-    // T63: unpack_and_verify() 时间戳过期返回 Err(StaleTimestamp)
-    #[test]
-    fn test_t63_unpack_and_verify_stale_timestamp() {
-        let signer = MockSigner;
-        let env = pack_and_sign(
-            &signer,
-            b"payload",
-            AgentId(1),
-            "/t",
-            0,
-            CodecKind::Bincode,
-            KeyId(1),
-            MsgId(1),
-            1000, // header.timestamp
-        )
-        .unwrap();
-        // now = 1000 + 5001 = 6001，过期
-        let res = unpack_and_verify(&signer, &env, 6001);
-        assert_eq!(res, Err(SignError::StaleTimestamp));
-    }
-
-    // ======================================================================
-    // v0.208.0 (P0-11)：真实 SM2 签名——篡改签名消息被拒绝
-    // ======================================================================
-    #[cfg(feature = "sm2")]
-    #[test]
-    fn p011_tampered_signature_rejected() {
-        use crate::codec::CodecKind;
-        use crate::policy::AgentId;
-        use crate::signing::{EnvelopeHeader, KeyId, MessageSigner, Sm2Signer};
-
-        // 发送方密钥对（signer 自身持有私钥）。
-        let mut rng = eneros_crypto::CsRng::from_seed(&[3u8; 32]);
-        let kp = eneros_crypto::Sm2KeyPair::generate(&mut rng).expect("keygen");
-        let key_id = KeyId(7);
-        let mut signer = Sm2Signer::new(kp.private_key.clone(), kp.public_key, key_id);
-        // 注册 peer 公钥（验签方持有的同一公钥）。
-        signer.register_peer_key(key_id, kp.public_key);
-
-        let header = EnvelopeHeader {
-            msg_id: crate::signing::MsgId(42),
-            timestamp: 1_700_000_000,
-            source: AgentId(7),
-            topic: "/power/state".to_string(),
-            qos: 0,
-            codec: CodecKind::Json,
-            key_id,
-        };
-        // 签名原始 payload。
-        let sig = signer.sign(&header, b"charge").expect("sign");
-        // 原始 payload 验签通过。
-        assert!(
-            signer
-                .verify(&header, b"charge", &sig, 1_700_000_000)
-                .expect("verify ok"),
-            "原始 payload 验签应通过"
-        );
-        // 篡改 payload → 验签失败（消息被拒绝）。
-        assert!(
-            !signer
-                .verify(&header, b"discharge", &sig, 1_700_000_000)
-                .expect("verify tampered"),
-            "篡改 payload 后验签必须失败（P0-11）"
-        );
-    }
-
-    // 无 sm2 feature 时也验证 MockSigner 可检测篡改（校验和）。
-    #[test]
-    fn p011_mock_signer_detects_tamper() {
-        use crate::codec::CodecKind;
-        use crate::policy::AgentId;
-        use crate::signing::{EnvelopeHeader, KeyId, MessageSigner, MockSigner};
-
-        let signer = MockSigner;
-        let header = EnvelopeHeader {
-            timestamp: 1,
-            msg_id: crate::signing::MsgId(1),
-            source: AgentId(1),
-            key_id: KeyId(1),
-            qos: 0,
-            codec: CodecKind::Json,
-            topic: "/t".to_string(),
-        };
-        let sig = signer.sign(&header, b"abc").unwrap();
-        assert!(signer.verify(&header, b"abc", &sig, 1).unwrap());
-        assert!(!signer.verify(&header, b"abd", &sig, 1).unwrap());
-    }
 }

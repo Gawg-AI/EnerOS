@@ -20,7 +20,14 @@ if [[ -n "${ENEROS_QEMU_BIN:-}" ]]; then
 elif command -v qemu-system-aarch64 >/dev/null 2>&1; then
     QEMU_BIN="$(command -v qemu-system-aarch64)"
 else
-    QEMU_BIN="/home/ahx/.cache/xpack-qemu-arm-9.2.4-1/bin/qemu-system-aarch64"
+    # 34 GV-20：无 PATH 中的 QEMU → fail-closed（旧实现硬编码个人主机
+    # 路径；换机即碎）。显式要求 ENEROS_QEMU_BIN。
+    if [ -n "${ENEROS_QEMU_BIN:-}" ] && [ -x "${ENEROS_QEMU_BIN}" ]; then
+        QEMU_BIN="${ENEROS_QEMU_BIN}"
+    else
+        echo "qemu-system-aarch64 not found in PATH; set ENEROS_QEMU_BIN" >&2
+        exit 2
+    fi
 fi
 
 echo "==> building panic-probe (aarch64-unknown-none)"

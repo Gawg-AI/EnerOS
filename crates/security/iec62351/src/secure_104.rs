@@ -102,7 +102,8 @@ pub struct Secure104Session<C: RecordCodec> {
     /// 记录编解码。
     codec: C,
     /// 握手是否完成。
-    handshake_done: bool,
+    /// 会话就绪标记（34 SE-14 更名：无密码学握手）。
+    session_ready: bool,
     /// 已收/已发记录计数。
     sent: u64,
     recvd: u64,
@@ -113,31 +114,33 @@ impl<C: RecordCodec> Secure104Session<C> {
     pub fn new(codec: C) -> Self {
         Self {
             codec,
-            handshake_done: false,
+            session_ready: false,
             sent: 0,
             recvd: 0,
         }
     }
 
-    /// 握手：发送 ClientHello 记录并期待 ServerHello 完成。
+    /// 标记会话就绪（34 SE-14 更名：旧 `handshake` 是空壳——只编码
+    /// 记录、无任何密码学握手；**本方法不进行安全握手**，仅由集成层在
+    /// 真实 TLS 握手（rustls 等）完成后调用。真握手立项见 SE-10 协同。
     ///
     /// `hello` 为握手载荷（std TLS 路径由 rustls 生成；测试注入）。
-    pub fn handshake(&mut self, hello: &[u8]) -> Result<(), SecError> {
+    pub fn mark_session_ready(&mut self, hello: &[u8]) -> Result<(), SecError> {
         let rec = self.codec.encode(RecordType::Handshake, hello);
         // 真实路径：发送 rec 并等待对端握手完成（此处由集成层闭环）。
         let _ = rec;
-        self.handshake_done = true;
+        self.session_ready = true;
         Ok(())
     }
 
-    /// 是否握手完成（未完成时 `send_application` 拒绝）。
-    pub fn handshake_done(&self) -> bool {
-        self.handshake_done
+    /// 会话是否就绪（未就绪时 `send_application` 拒绝）。
+    pub fn session_ready(&self) -> bool {
+        self.session_ready
     }
 
     /// 发送应用记录（IEC104 APDU 封装）。
     pub fn send_application(&mut self, apdu: &[u8]) -> Result<Vec<u8>, SecError> {
-        if !self.handshake_done {
+        if !self.session_ready {
             return Err(SecError::NotReady);
         }
         let rec = self.codec.encode(RecordType::ApplicationData, apdu);
@@ -201,8 +204,8 @@ mod tests {
         // 未握手 → 拒绝应用发送。
         assert_eq!(session.send_application(b"apdu"), Err(SecError::NotReady));
         // 握手后允许。
-        session.handshake(b"hello").expect("handshake");
-        assert!(session.handshake_done());
+        session.mark_session_ready(b"hello").expect("ready");
+        assert!(session.session_ready());
         let rec = session.send_application(b"apdu").expect("send");
         assert_eq!(rec[0], 2); // ApplicationData
         assert_eq!(rec.len(), 3 + 4);
@@ -211,7 +214,7 @@ mod tests {
     #[test]
     fn test_session_receive_application_data() {
         let mut session = Secure104Session::new(FramingRecordCodec);
-        session.handshake(b"h").expect("handshake");
+        session.mark_session_ready(b"h").expect("ready");
         let rec = session.send_application(&[0x68, 0x0A]).expect("send");
         let data = session.receive(&rec).expect("recv").expect("app data");
         assert_eq!(data, vec![0x68, 0x0A]);
@@ -221,7 +224,7 @@ mod tests {
     fn test_session_alert_rejected() {
         let codec = FramingRecordCodec;
         let mut session = Secure104Session::new(FramingRecordCodec);
-        session.handshake(b"h").expect("handshake");
+        session.mark_session_ready(b"h").expect("ready");
         let alert = codec.encode(RecordType::Alert, b"peer-error");
         assert_eq!(session.receive(&alert), Err(SecError::PeerAlert));
     }

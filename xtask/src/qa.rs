@@ -2025,12 +2025,12 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
                 }
             }
             _ => {
-                // 无公钥环境：签名存在但无法验证 → 要求显式跳过标志。
-                if std::env::var("ENEROS_PERF_ALLOW_UNVERIFIED").is_err() {
-                    report
-                        .violations
-                        .push("signature-unverifiable:set-ENEROS_PERF_VERIFY_PUBKEY".to_owned());
-                }
+                // 无公钥环境：签名存在但无法验证 → 违规（34 GV-11：
+                // 移除 ENEROS_PERF_ALLOW_UNVERIFIED 逃生门——旧实现可
+                // 静默跳过未验证签名，证据链断裂）。
+                report
+                    .violations
+                    .push("signature-unverifiable:set-ENEROS_PERF_VERIFY_PUBKEY".to_owned());
                 true
             }
         };
@@ -2336,9 +2336,10 @@ fn command_proof(root: &Path, args: &[String]) -> DynResult<()> {
         report.pass();
     }
 
-    // 降级声明（B6）：生成证据 JSON 并标注降级状态，门禁返回 PASS
-    //（显式降级：TCB 形式化进行中，非 admitted-proof——与蓝图
-    //  QA-021 降级路径一致）。
+    // 降级声明（B6 → 34 GV-06）：生成证据 JSON 并标注降级状态，结果记
+    // DEGRADED（**非 PASS**——旧实现 `report.pass()` 把 sorry 证明强改
+    // PASS，是证据伪造开关；finalize 对非 PASS 返回 Err，qa 汇总按
+    // 非 PASS 计，go-no-go 如实降级）。
     if degrade {
         report.summary.insert("degraded", String::from("true"));
         report.summary.insert(
@@ -2346,7 +2347,7 @@ fn command_proof(root: &Path, args: &[String]) -> DynResult<()> {
             String::from("TCB formalisation in progress; not an admitted-proof gate (no Isabelle environment). Re-run with real Isabelle for full proof scan."),
         );
         if report.result != "PASS" {
-            report.pass();
+            report.result = "DEGRADED";
         }
     }
     finalize(root, &report)

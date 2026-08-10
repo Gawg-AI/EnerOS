@@ -503,7 +503,6 @@ dependencies = [
 name = "eneros-agent-bus-dds"
 version = "1.0.0-rc.0"
 dependencies = [
- "eneros-crypto",
  "slotmap",
 ]
 
@@ -1308,6 +1307,7 @@ dependencies = [
  "eneros-can",
  "eneros-crypto",
  "eneros-driver-framework",
+ "eneros-durable-log",
  "eneros-elf-loader",
  "eneros-hal",
  "eneros-ipc-wire",

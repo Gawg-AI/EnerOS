@@ -334,10 +334,26 @@ impl TlsConnector {
     }
 }
 
-/// Convenience: read everything the peer sends until EOF, returning the bytes.
-pub fn read_to_end<R: Read>(r: &mut R) -> std::io::Result<Vec<u8>> {
+/// 有界读取：读至 EOF 或 `max_bytes` 上限（34 SE-13：旧 `read_to_end`
+/// 无界 Vec = 对端 DoS——恶意对端可无限撑爆内存；调用方按协议上限
+/// 传 `max_bytes`，超限返回 [`std::io::ErrorKind::OutOfMemory`]）。
+pub fn read_to_end_limited<R: Read>(r: &mut R, max_bytes: usize) -> std::io::Result<Vec<u8>> {
     let mut v = Vec::new();
-    r.read_to_end(&mut v)?;
+    let mut buf = [0u8; 4096];
+    loop {
+        if v.len() >= max_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                "peer sent more than max_bytes",
+            ));
+        }
+        let n = r.read(&mut buf)?;
+        if n == 0 {
+            break; // EOF
+        }
+        let take = n.min(max_bytes - v.len());
+        v.extend_from_slice(&buf[..take]);
+    }
     Ok(v)
 }
 

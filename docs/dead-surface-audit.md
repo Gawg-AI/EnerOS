@@ -211,5 +211,10 @@ $ cargo test -p eneros-storage --lib → 128 passed; 0 failed
   扩展校验 consumer 声明存在（S6：配置存在但无消费者必须显式声明）。
 - **go-no-go 口径：不得将 configs/ 宣称为活配置**。产线注入为集成层动作，
   配置键值未经代码消费不构成能力证据（宣称一致性，G7）。
+- **34 SE-11（决策②）**：agent-bus-dds 签名层（signing.rs + configs/
+  signing_keys.toml + sm2 feature）已退役删除——零生产消费（grep 实证）；
+  "传输层已有等价保护"依据：agent-bus-dds 标注 out-of-v1.0（ADR-021：
+  v1.0.0 agent 总线改用 MQTT 真实可用），跨节点消息真实性由 MQTT/
+  上层安全机制覆盖；go-no-go 不得宣称 DDS 消息签名能力。
 - 遗留（34 域）：consumer 声明"深度校验"（声明的消费者存在性，GV-15）、
   孤儿模板清理（CF-02/03）在蓝图/34 关闭。
