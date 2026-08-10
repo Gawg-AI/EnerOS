@@ -540,21 +540,43 @@ pub fn probe_and_report(
         "[eneros-root-task] ENEROS stage=probe-report-done {}",
         report.metrics_line()
     );
-    // 组装 IRQ 接线：bound 驱动顺序与 ctx.bindings 顺序对齐（每个 factory
-    // 至多 bind 一次；未 bind 的驱动无 IRQ 条目 → 轮询模式）。
+    // 组装 IRQ 接线（30 RT-009：取消 zip 静默截断——旧实现
+    // `bound.zip(bindings)` 按短者截断，任一驱动 bind 失败/跳过即整体
+    // 错位（IRQ 接给错误驱动）；badge 解码 `*badge - 1` 在 badge=0 时
+    // u32 回绕。现改为显式索引配对 + 越界/回绕防御（fail-closed 打印
+    // 判据行，不静默错位）。每个 factory 至多 bind 一次；未 bind 的驱动
+    // 无 IRQ 条目 → 轮询模式。
     let mut irq_drivers = alloc::vec::Vec::new();
-    for (bound, (irq, badge)) in report.into_bound().iter_mut().zip(ctx.bindings.iter()) {
-        let Some(binding) = irq_table.binding((*badge - 1) as usize) else {
+    let mut bound = report.into_bound();
+    for (i, (irq, badge)) in ctx.bindings.iter().enumerate() {
+        // 配对防御：bindings 索引必须落在 bound 内（长度不一致 = 装配
+        // 异常，打印判据行并跳过，不静默截断）。
+        let Some(entry) = bound.get_mut(i) else {
+            crate::println!(
+                "[eneros-root-task]   probe irq-wire MISMATCH bindings[{}] beyond bound[{}] — 跳过",
+                i,
+                bound.len()
+            );
+            continue;
+        };
+        // badge 解码防御：badge = 绑定索引 + 1（0 保留未知）——回绕防护。
+        let Some(binding) = badge_to_binding_index(*badge)
+            .and_then(|idx| irq_table.binding(idx))
+        else {
+            crate::println!(
+                "[eneros-root-task]   probe irq-wire badge decode FAILED badge={} — 跳过",
+                badge
+            );
             continue;
         };
         crate::println!(
             "[eneros-root-task]   probe irq-wired driver={} irq={} badge={}",
-            bound.driver.name(),
+            entry.driver.name(),
             irq,
             badge
         );
         // 取出驱动所有权（BoundEntry 其余字段丢弃）。
-        let driver = core::mem::replace(&mut bound.driver, Box::new(NoopDriver));
+        let driver = core::mem::replace(&mut entry.driver, Box::new(NoopDriver));
         irq_drivers.push(IrqDriver {
             irq: *irq,
             binding,
@@ -562,6 +584,12 @@ pub fn probe_and_report(
         });
     }
     irq_drivers
+}
+
+/// 30 RT-009：badge → 绑定索引解码（badge = 绑定索引 + 1，0 保留未知）。
+/// `badge=0` 返回 None（防 u32 回绕成 u32::MAX 索引）。
+fn badge_to_binding_index(badge: u32) -> Option<usize> {
+    badge.checked_sub(1).map(|b| b as usize)
 }
 
 /// 占位驱动（BoundEntry 消费时的替身；永不使用——BoundEntry 随即丢弃）。
@@ -603,6 +631,18 @@ impl DeviceDriver for NoopDriver {
 
 #[cfg(test)]
 mod tests {
+    use super::badge_to_binding_index;
+
+    /// 30 RT-009 判据：badge 解码（绑定索引+1 语义；0 保留未知必须拒绝——
+    /// 旧实现 `badge - 1` 在 badge=0 时 u32 回绕成 u32::MAX 索引）。
+    #[test]
+    fn badge_to_index_decode() {
+        assert_eq!(badge_to_binding_index(1), Some(0));
+        assert_eq!(badge_to_binding_index(2), Some(1));
+        assert_eq!(badge_to_binding_index(17), Some(16));
+        assert_eq!(badge_to_binding_index(0), None, "badge=0（未知）必须拒绝");
+    }
+
     use super::*;
     use eneros_board::device_tree::DeviceNode;
 
