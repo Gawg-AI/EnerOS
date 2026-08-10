@@ -67,6 +67,17 @@ pub fn binding_table() -> BindingTable {
             compatible: "eneros,rs485-uart",
             factory: rs485_factory,
         },
+        // 31 D6：SP805 看门狗（基址经 FDT reg 注入——装配层 0x0905_0000
+        // 字面量退役）。
+        DriverBinding {
+            compatible: "arm,sp805",
+            factory: wdt_factory,
+        },
+        // 31 D5：PL031 RTC（基址经 FDT reg 注入——time_init 占位 0 退役）。
+        DriverBinding {
+            compatible: "arm,pl031",
+            factory: rtc_factory,
+        },
     ];
     BindingTable::new(ENTRIES)
 }
@@ -272,6 +283,30 @@ fn uart_factory(
         }
     }
     Ok(Box::new(driver))
+}
+
+/// 31 D6：SP805 看门狗工厂——基址经 FDT reg 注入并注册到 panic 全局
+///（软件模式语义不变，30 RT-001 守约）。
+fn wdt_factory(
+    node: &eneros_board::device_tree::DeviceNode,
+    ctx: &mut dyn PlatformCtx,
+) -> Result<Box<dyn DeviceDriver>, DriverError> {
+    let (base, size) = node.regs.first().copied().ok_or(DriverError::NotFound)?;
+    let _virt = ctx.map_mmio(base, size)?;
+    // 注册到 panic 模块（panic 路径经 WDT_MMIO_MAPPED + 注册基址武装）。
+    crate::panic::register_wdt_base(base);
+    Ok(Box::new(NoopDriver)) // 事件循环不消费 WDT 中断——注册即装配
+}
+
+/// 31 D5：PL031 RTC 工厂——基址经 FDT reg 注入并注册（time_init 装配）。
+fn rtc_factory(
+    node: &eneros_board::device_tree::DeviceNode,
+    ctx: &mut dyn PlatformCtx,
+) -> Result<Box<dyn DeviceDriver>, DriverError> {
+    let (base, size) = node.regs.first().copied().ok_or(DriverError::NotFound)?;
+    let _virt = ctx.map_mmio(base, size)?;
+    crate::panic::register_rtc_base(base);
+    Ok(Box::new(NoopDriver))
 }
 
 /// SJA1000 晶振频率（Hz）。真机填空项：应从 dts `clocks`/`clock-frequency`
@@ -593,10 +628,9 @@ fn badge_to_binding_index(badge: u32) -> Option<usize> {
 }
 
 /// 占位驱动（BoundEntry 消费时的替身；永不使用——BoundEntry 随即丢弃）。
-#[cfg(target_os = "none")]
+/// 31 D5/D6：WDT/RTC 工厂返回本占位（注册即装配）；host 编译亦需要。
 struct NoopDriver;
 
-#[cfg(target_os = "none")]
 impl DeviceDriver for NoopDriver {
     fn id(&self) -> &DriverId {
         static ID: DriverId = DriverId(0);

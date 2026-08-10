@@ -17,7 +17,21 @@ use heapless::String;
 use spin::Mutex;
 
 /// SP805 看门狗 MMIO 基址（QEMU virt 平台标准地址；真机按 BSP 替换）。
-pub const WDT_BASE: u64 = 0x0905_0000;
+/// 31 D6：SP805 基址（FDT reg 注入后更新；默认值仅 QEMU 兜底）。
+pub static WDT_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0x0905_0000);
+
+/// 31 D5：PL031 RTC 基址（FDT reg 注入后更新；0 = 未装配）。
+pub static RTC_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// 31 D6：注册 SP805 基址（driver_probe wdt_factory 调用）。
+pub fn register_wdt_base(base: u64) {
+    WDT_BASE.store(base, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// 31 D5：注册 PL031 RTC 基址（driver_probe rtc_factory 调用）。
+pub fn register_rtc_base(base: u64) {
+    RTC_BASE.store(base, core::sync::atomic::Ordering::Relaxed);
+}
 
 /// SP805 设备区域是否已映射进 root-task VSpace（QEMU 无设备时 map 失败
 /// → 软件模式；真机 map 成功 → 硬件模式）。
@@ -75,7 +89,7 @@ pub fn panic_reboot(info: &PanicInfo) -> ! {
             n,
             detail
         );
-        let wdt = eneros_watchdog::wdt::HwWatchdog::new(WDT_BASE);
+        let wdt = eneros_watchdog::wdt::HwWatchdog::new(WDT_BASE.load(core::sync::atomic::Ordering::Relaxed));
         wdt.init(10);
     } else {
         // 30 RT-001：软件模式（无 SP805 映射）——不写未映射 MMIO，打印

@@ -79,8 +79,10 @@ pub struct Pl011UartHw {
     clock_hz: u32,
     /// 单调时钟来源（纳秒）。
     clock: ClockFn,
-    /// DE/RE 方向控制 GPIO 引脚（`None` = 无方向控制）。
+    /// DE/RE 方向控制 GPIO 引脚号（`None` = 无方向控制）。
     de_re_pin: Option<u32>,
+    /// 31 DR-07：注入的 GPIO 控制器（真实电平切换；None = 仅记录状态）。
+    gpio: Option<alloc::boxed::Box<dyn GpioPin>>,
     /// DE/RE 当前状态（true = 发送模式）。
     de_re_high: bool,
     /// RX 中断是否已启用。
@@ -111,6 +113,7 @@ impl Pl011UartHw {
             },
             clock,
             de_re_pin: None,
+            gpio: None,
             de_re_high: false,
             rx_irq_enabled: false,
             rx_irq: 0,
@@ -169,9 +172,11 @@ impl UartHw for Pl011UartHw {
             self.w32(PL011_CR, 0);
             // 2. 波特率分频：divisor = (clock * 4) / baud；ibrd = divisor>>6,
             //    fbrd = divisor & 0x3f（与 hal PL011 一致）。
-            let divisor = (self.clock_hz * 4) / baud_rate;
-            let ibrd = divisor >> 6;
-            let fbrd = divisor & 0x3f;
+            // 31 DR-07：u64 中间量（旧 u32 在 clock_hz ≥ ~1.074 GHz 时
+            // *4 溢出回绕 → 波特率错）。
+            let divisor = ((self.clock_hz as u64) * 4) / u64::from(baud_rate);
+            let ibrd = (divisor >> 6) as u32;
+            let fbrd = (divisor & 0x3f) as u32;
             self.w32(PL011_IBRD, ibrd);
             self.w32(PL011_FBRD, fbrd);
             // 3. 行控制：字长 + FIFO + 校验/停止位。
@@ -259,12 +264,72 @@ impl UartHw for Pl011UartHw {
     }
 
     fn set_de_re(&mut self, high: bool) -> Result<(), DriverError> {
-        // 真实 DE/RE 需 GPIO 驱动（阶段 B 接 hal::HalGpio）。此处记录状态，
-        // 使半双工方向语义在驱动层成立；GPIO 接线在 BSP/真机路径完成。
+        // 31 DR-07：DE/RE 经 GpioPin 注入（对齐 PowerRail 模式）——旧实现
+        // 仅记录状态位不操作 GPIO；注入后真实电平切换。GPIO 接线登记
+        // 33 §真机填空（板级 GpioPin 实现）。
+        if let Some(gpio) = &mut self.gpio {
+            gpio.set(high);
+        }
         self.de_re_high = high;
         Ok(())
     }
+
 }
+
+impl Pl011UartHw {
+    /// 31 DR-07：注入 DE/RE GPIO 控制器（装配层）。
+    pub fn inject_gpio(&mut self, gpio: alloc::boxed::Box<dyn GpioPin>) {
+        self.gpio = Some(gpio);
+    }
+}
+
+/// 31 DR-07：DE/RE 方向控制 GPIO 抽象（注入面）。
+pub trait GpioPin: Send + Sync {
+    /// 设置电平（true = 发送方向 DE=1）。
+    fn set(&mut self, high: bool);
+}
+
+/// RAM 桩 GPIO（host 测试；真机板级实现经绑定表注入）。
+pub struct RamGpioPin {
+    /// 当前电平（测试可读）。
+    pub level: bool,
+}
+
+impl RamGpioPin {
+    /// 构造桩。
+    pub fn new() -> Self {
+        Self { level: false }
+    }
+}
+
+impl GpioPin for RamGpioPin {
+    fn set(&mut self, high: bool) {
+        self.level = high;
+    }
+}
+
+    /// 31 DR-07 判据：高时钟（1.2 GHz）下 divisor 无 u32 回绕。
+    #[test]
+    fn test_divisor_no_overflow() {
+        // 1.2 GHz / 115200：divisor = (1200000000 * 4) / 115200 = 41666。
+        let divisor = ((1_200_000_000u64) * 4) / 115_200;
+        assert_eq!(divisor, 41666);
+        let ibrd = divisor >> 6;
+        let fbrd = divisor & 0x3f;
+        assert_eq!(ibrd, 651);
+        assert_eq!(fbrd, 2);
+    }
+
+    /// 31 DR-07 判据：RamGpioPin 电平切换。
+    #[test]
+    fn test_ram_gpio_pin_level() {
+        let mut pin = RamGpioPin::new();
+        assert!(!pin.level);
+        pin.set(true);
+        assert!(pin.level);
+        pin.set(false);
+        assert!(!pin.level);
+    }
 
 impl core::fmt::Debug for Pl011UartHw {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
