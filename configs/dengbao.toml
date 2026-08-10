@@ -1,0 +1,16 @@
+# consumer: crates/security/compliance/src/dengbao.rs（测试证据指针样例，仅引用格式）
+# 29 CF-01：本文件为等保（等级保护）evidence 指针模板——DengbaoChecker 的
+# 证据源以 `configs/dengbao.toml#<section>` 锚点形式引用本文件的键路径。
+# 当前无解析代码（compliance 域），键值为模板占位，产线注入真实策略。
+
+[evidence]
+# 物理访问控制证据指针（C3 判据 2 锚点示例）
+physical_access = "physical_access"
+# 网络架构证据指针
+network_architecture = "network_architecture"
+# 边界防护证据指针
+boundary_protection = "boundary_protection"
+# 计算环境安全证据指针
+compute_security = "compute_security"
+# 管理中心证据指针
+management_center = "management_center"

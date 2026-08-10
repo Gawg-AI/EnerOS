@@ -25,3 +25,4 @@ net = ["dep:eneros-net"]
 [dev-dependencies]
 # host 集成测试：注入真实单调时钟（time_init）驱动 smoltcp 时间推进。
 eneros-hal = { path = "../../../crates/hal/hal" }
+eneros-protocol-abstract = { path = "../protocol-abstract", features = ["mock"] }

@@ -55,6 +55,25 @@ fn parse_mod_decls(text: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
+/// 若行是 `#[cfg(...)]` 属性，返回其 cfg 内容（不含属性包裹符）。
+fn cfg_attr_text(line: &str) -> Option<String> {
+    let t = line.trim_start();
+    let inner = t
+        .strip_prefix("#[cfg(")
+        .and_then(|s| s.split(']').next())
+        .map(|s| s.trim().to_owned())?;
+    (!inner.is_empty()).then_some(inner)
+}
+
+/// 保护窗口内任一 cfg 属性含 `test` 或 `feature = "mock"`（且非 `not(...)`）
+/// 即视为 mock/test 保护——from_parts 调用在该块内合法。
+fn cfg_protects_test_or_mock(protected: &std::collections::BTreeMap<i32, String>) -> bool {
+    protected.values().any(|cfg| {
+        !cfg.contains("not(")
+            && (cfg.contains("test") || cfg.contains("feature = \"mock\""))
+    })
+}
+
 /// 解析模块声明所在文件的模块文件路径（Rust 2018 规则）：
 /// - `foo.rs` 内的 `mod bar;` → `foo/bar.rs` 或 `foo/bar/mod.rs`；
 /// - `mod.rs` 内的 `mod bar;` → `bar.rs` 或 `bar/mod.rs`（同目录）；
@@ -268,7 +287,11 @@ pub fn command_orphan_check(root: &Path, _args: &[String]) -> DynResult<()> {
     }
 }
 
-/// `qa config-refs`：配置引用检测（26-B §3.2；阶段 0 只告警不阻断）。
+/// `qa config-refs`：配置引用检测（26-B §3.2；29 GV-01 转阻断）。
+///
+/// 阻断语义（GV-01）：代码中引用 `configs/<name>.toml` 但文件不存在 → 违规。
+/// 未引用的配置（unreferenced）仅登记 evidence（CF-01 处置：consumer 注释
+/// 声明 + 34 域清理），不阻断——否则 80 个模板 toml 会整体变红。
 pub fn command_config_refs(root: &Path, _args: &[String]) -> DynResult<()> {
     let configs_dir = root.join("configs");
     let Ok(entries) = fs::read_dir(&configs_dir) else {
@@ -277,6 +300,8 @@ pub fn command_config_refs(root: &Path, _args: &[String]) -> DynResult<()> {
     let entry_list: Vec<fs::DirEntry> = entries.flatten().collect();
     // 被引用的 config 文件名（去扩展名）。
     let mut referenced: BTreeSet<String> = BTreeSet::new();
+    // 代码引用但 configs/ 不存在的 toml 名（GV-01 阻断项）。
+    let mut missing: Vec<String> = Vec::new();
     for scan_root in ["crates", "xtask", "ci", "tests"] {
         let base = root.join(scan_root);
         if !base.is_dir() {
@@ -304,6 +329,12 @@ pub fn command_config_refs(root: &Path, _args: &[String]) -> DynResult<()> {
                                     referenced.insert(name.clone());
                                 }
                             }
+                            // 正向检测：`<word>.toml` 字样但 configs/ 下无此文件。
+                            for hit in toml_refs_in_line(t) {
+                                if !configs_dir.join(format!("{hit}.toml")).is_file() {
+                                    missing.push(format!("{hit}.toml（{}）", p.display()));
+                                }
+                            }
                         }
                     }
                 }
@@ -325,15 +356,77 @@ pub fn command_config_refs(root: &Path, _args: &[String]) -> DynResult<()> {
             "schema": "eneros.config-refs.v1",
             "referenced": referenced.iter().collect::<Vec<_>>(),
             "unreferenced": unreferenced,
+            "missing": missing,
         }))?,
     )?;
     println!(
-        "CONFIG-REFS → {}（unreferenced {}）",
+        "CONFIG-REFS → {}（unreferenced {}，missing {}）",
         out.display(),
-        unreferenced.len()
+        unreferenced.len(),
+        missing.len()
     );
-    // 阶段 0：只告警不阻断。
+    // GV-01：转阻断——代码引用了不存在的配置即 FAIL。
+    if !missing.is_empty() {
+        for m in &missing {
+            println!("CONFIG-REFS-MISSING: {m}");
+        }
+        return Err(invalid(format!(
+            "config-refs: {} 处引用不存在的配置（孤儿引用）——宣称的配置必须存在（G7）",
+            missing.len()
+        )));
+    }
     Ok(())
+}
+
+/// 提取一行中出现的 `<word>.toml` 字样（word = [A-Za-z0-9_-]+），用于正向
+/// 检测"代码引用了 configs/ 下不存在的 toml"。
+///
+/// 仅计两种形态（避免 tools/、/etc/ 等非 configs 路径误报）：
+/// - 显式 `configs/<word>.toml`（含 `configs/dengbao.toml#section` 锚点形式）；
+/// - 裸 `<word>.toml`（无路径前缀，代码以配置文件名宣称）。
+fn toml_refs_in_line(line: &str) -> Vec<String> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        while i < bytes.len()
+            && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'-')
+        {
+            i += 1;
+        }
+        if i > start && bytes[i..].starts_with(b".toml") {
+            let word = &line[start..i];
+            // 排除 Cargo/lockfile 等已知非 configs 模板名。
+            let is_known_other = matches!(
+                word,
+                "Cargo" | "cargo" | "deny" | "clippy" | "rust-toolchain" | "gate-exemptions"
+            );
+            let dir = dir_of(&line[..start]);
+            if !is_known_other && (dir.is_empty() || dir == "configs") {
+                out.push(word.to_owned());
+            }
+            i += 5;
+        } else {
+            i = (i + 1).max(start + 1);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// word 前导目录名：`configs/foo.toml` → "configs"；`tools/x.toml` → "tools"；
+/// 裸词 → ""。
+fn dir_of(prefix: &str) -> &str {
+    let Some(idx) = prefix.rfind('/') else {
+        return "";
+    };
+    let rest = &prefix[..idx];
+    match rest.rfind('/') {
+        Some(idx2) => &rest[idx2 + 1..],
+        None => rest,
+    }
 }
 
 fn config_names(entries: &[fs::DirEntry]) -> Vec<String> {
@@ -407,27 +500,55 @@ pub fn command_mock_leak(root: &Path, _args: &[String]) -> DynResult<()> {
                     crate_name
                 ));
             }
-            // WP-26.4：AuthorizedCommand 构造执法——非 control-gateway crate 的
-            // 顶层（非缩进）出现 from_parts 调用或字面量 → 违规。
+            // WP-26.4 + 29 GV-02：AuthorizedCommand 构造执法——非 control-gateway
+            // crate 出现 from_parts 调用且不在 cfg(any(test, feature="mock"))
+            // 保护的模块/块内 → 违规。
             // 字段私有已使生产字面量编译失败（类型系统强制）；本规则封死
-            // from_parts 的生产调用（测试区域为缩进块，不受影响）。
+            // from_parts 的生产调用。GV-02 修复：不再跳过缩进行（旧版只查
+            // 顶层 → 恒 PASS），改为全行扫描 + 模块级 cfg 保护窗口（向上
+            // 回溯到最近的块声明，覆盖 `#[cfg(test)] mod tests { ... }`）。
             // 豁免定义侧 crate（control-gateway = 唯一生产构造方；
             // telemetry-model = 类型与 from_parts 定义处）。
             if crate_name != "control-gateway" && crate_name != "telemetry-model" {
                 let Ok(text) = fs::read_to_string(&file) else {
                     continue;
                 };
-                for (i, line) in text.lines().enumerate() {
-                    let t = line.trim_start();
-                    if line.starts_with(char::is_whitespace)
-                        || t.starts_with("//")
-                        || t.starts_with("pub struct AuthorizedCommand")
-                        || t.contains("-> AuthorizedCommand")
-                    {
+                let lines: Vec<&str> = text.lines().collect();
+                // 每行块的 cfg 保护栈：块深度 → 该块的 cfg 属性文本。
+                let mut depth: i32 = 0;
+                let mut protected: std::collections::BTreeMap<i32, String> =
+                    std::collections::BTreeMap::new();
+                // 上一个待绑定的 cfg 属性（下一块开始行生效）。
+                let mut pending: Option<String> = None;
+                for (i, raw) in lines.iter().enumerate() {
+                    let t = raw.trim();
+                    if let Some(cfg) = cfg_attr_text(t) {
+                        pending = Some(cfg);
+                        if t.contains('{') {
+                            // 属性与块同行：`#[cfg(test)] mod tests {`
+                            if let Some(cfg) = pending.take() {
+                                depth += 1;
+                                protected.insert(depth, cfg);
+                            }
+                        }
                         continue;
                     }
+                    if t.is_empty() || t.starts_with("//") || t.starts_with("/*") {
+                        continue; // 空行/注释不打断待绑定属性
+                    }
+                    let opens = t.matches('{').count() as i32;
+                    let closes = t.matches('}').count() as i32;
+                    if opens > 0 {
+                        if let Some(cfg) = pending.take() {
+                            for l in (depth + 1)..=(depth + opens) {
+                                protected.insert(l, cfg.clone());
+                            }
+                        }
+                    }
+                    depth += opens - closes;
+                    protected.retain(|&d, _| d <= depth);
                     if t.contains("AuthorizedCommand::from_parts(")
-                        || t.starts_with("AuthorizedCommand {")
+                        && !cfg_protects_test_or_mock(&protected)
                     {
                         violations.push(format!(
                             "{}:{}:{} (crate={}, rule=authorized-construction)",

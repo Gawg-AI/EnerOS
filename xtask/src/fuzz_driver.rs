@@ -1,7 +1,10 @@
-//! VRF-001：stable 可运行 fuzz driver（sandbox 无 clang/nightly rustc，libFuzzer
-//! 实际执行受限——本 driver 以确定性 PRNG 变异驱动各解析器 + catch_unwind
-//! 崩溃检测，产生崩溃清零记录；`fuzz/` 目录的 libFuzzer harness 源码在
-//! 有 clang + nightly 的 CI 环境执行同一组解析面）。
+//! VRF-001 / 29 GV-04：**fuzz-smoke-prng** —— stable 可运行的确定性 PRNG
+//! 冒烟 driver（sandbox 无 clang/nightly rustc 时 libFuzzer 不可执行）。
+//! 本 driver 以固定种子 xorshift64* 变异驱动各解析器 + catch_unwind 崩溃
+//! 检测；**无覆盖率反馈，每次运行输入序列相同**——仅作冒烟，不作深 fuzz
+//! 证据。真实 fuzz 由 CI 的 cargo-fuzz job 执行 `fuzz/` 目录 libFuzzer
+//! harness（消费 fuzz/corpus/ 语料，见 .github/workflows/ci.yml 与
+//! nightly-fuzz.yml）。
 //!
 //! 用法：`cargo xtask fuzz <target> <iterations>`
 //! target ∈ {boot_protocol, ipc_wire, modbus_rtu, iec104, elf_loader, gguf_loader}

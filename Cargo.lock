@@ -1296,6 +1296,7 @@ dependencies = [
  "eneros-rs485",
  "eneros-runtime",
  "eneros-sel4-sys",
+ "eneros-storage",
  "eneros-tenant",
  "eneros-time",
  "eneros-uart",

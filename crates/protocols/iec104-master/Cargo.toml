@@ -13,3 +13,8 @@ mock = []
 eneros-iec104-slave = { path = "../iec104-slave" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
 eneros-upa-model = { path = "../upa-model" }
+
+# 29 GV-02：契约套件经 mock feature 门控（cfg(test) 不跨 crate 传播），
+# 测试构建需显式启用。
+[dev-dependencies]
+eneros-protocol-abstract = { path = "../protocol-abstract", features = ["mock"] }

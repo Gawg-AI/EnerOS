@@ -10,14 +10,23 @@
 //! 契约只断言外部可观察行为（点读写结果、状态迁移、错误），不依赖适配器内部
 //! 实现；不使用"方法被调用计数"替代结果断言（MASTER §0 规则 3/4）。
 
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec;
 
+// 29 GV-02：契约套件整体为测试设施（消费方全部在 cfg(test) 内），生产构建
+// 不编译本模块体——导入随门控一并收紧，避免生产构建 unused 警告。
+#[cfg(any(test, feature = "mock"))]
 use eneros_telemetry_model::command::AuthorizedCommand;
+#[cfg(any(test, feature = "mock"))]
 use eneros_upa_model::{DeviceId, PointId, PointValue};
 
+#[cfg(any(test, feature = "mock"))]
 use crate::access::{AuthorizedWriter, PointAccessExt, WriteError};
+#[cfg(any(test, feature = "mock"))]
 use crate::adapter::{AdapterState, ProtocolAdapter};
+#[cfg(any(test, feature = "mock"))]
 use crate::config::{AdapterConfig, ProtocolType};
+#[cfg(any(test, feature = "mock"))]
 use crate::error::ProtocolError;
 
 /// 运行协议适配器 seam 层契约测试。
@@ -41,6 +50,10 @@ use crate::error::ProtocolError;
 /// # Panics
 /// 任一契约断言失败即 panic，测试直接失败。
 #[allow(clippy::disallowed_macros)] // 测试辅助代码允许 panic 断言
+/// 29 GV-02：契约套件全部消费方在 `#[cfg(test)]` 模块内（grep 核实 modbus-tcp/
+/// rtu/iec104-master adapter.rs + 本 crate lib.rs tests），生产构建无需编译
+/// ——随 authorized_command 一并 mock/test 门控（S2 范式）。
+#[cfg(any(test, feature = "mock"))]
 pub fn run_adapter_contract<A: ProtocolAdapter + PointAccessExt + AuthorizedWriter>(
     adapter: &mut A,
     cfg: &AdapterConfig,
@@ -195,6 +208,9 @@ pub fn run_adapter_contract<A: ProtocolAdapter + PointAccessExt + AuthorizedWrit
 ///
 /// 其余字段取固定合法值；本 helper 仅用于契约测试——生产路径的
 /// `AuthorizedCommand` 只能由控制网关产出（编译期事实，§8.2 第一层）。
+/// 29 GV-02：authorized-construction 门禁转全行扫描后，此 helper 位于
+/// 生产文件且无 cfg 保护会被拦——补 mock/test 门控（S2 mock 门控范式）。
+#[cfg(any(test, feature = "mock"))]
 pub fn authorized_command(device_id: DeviceId, point_id: PointId) -> AuthorizedCommand {
     use eneros_telemetry_model::command::{ActorKind, ControlCommand, SingleCommand};
     // WP-26.4：字段私有后经 from_parts 构造（契约套件唯一 fixture 入口）。
@@ -214,6 +230,7 @@ pub fn authorized_command(device_id: DeviceId, point_id: PointId) -> AuthorizedC
 }
 
 /// 便捷包装：从配置构造适配器配置（供各适配器测试复用）。
+#[cfg(any(test, feature = "mock"))]
 pub fn simple_adapter_config(protocol_type: ProtocolType, device_id: DeviceId) -> AdapterConfig {
     AdapterConfig {
         name: alloc::string::String::from("contract-device"),

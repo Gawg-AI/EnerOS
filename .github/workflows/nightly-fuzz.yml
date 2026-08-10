@@ -1,8 +1,10 @@
 name: nightly-fuzz
 
-# v0.250.0（C-250）：每夜长跑模糊测试（比 PR 门禁 10k 迭代更深的 500k
-# 迭代）+ 崩溃语料归档：崩溃发生时上传复现输入（libFuzzer 语料格式），
-# 供次日 triage 与回归测试复用。
+# v0.250.0（C-250）初版 + 29 GV-04/GV-17 修真：
+# - 深 fuzz 从 PRNG driver（500k 固定输入序列）改为真 libFuzzer harness，
+#   消费 fuzz/corpus/ 语料，-max_total_time=5400 每面；
+# - 崩溃语料归档条件 `if: failure()` → `if: always()`（job 被 cancel/超时
+#   时语料不再丢失），if-no-files-found: ignore 保持不变。
 
 on:
   schedule:
@@ -25,15 +27,18 @@ jobs:
       - name: Cargo fetch locked
         run: cargo fetch --locked
 
-      - name: Deep fuzz 6 parse surfaces (500k iterations each)
+      - name: Deep fuzz 6 parse surfaces (libFuzzer, 5400s each, GV-04)
         id: fuzz
         run: |
+          cargo install cargo-fuzz --locked
           set +e
           FAILED=""
           for t in boot_protocol ipc_wire modbus_rtu iec104 elf_loader gguf_loader; do
             echo "=== deep fuzz: $t ==="
-            cargo xtask fuzz $t 500000
+            cd fuzz
+            cargo +nightly-2026-04-04 fuzz run fuzz_$t corpus/$t/ -- -timeout=60 -max_total_time=5400
             rc=$?
+            cd ..
             if [ $rc -ne 0 ]; then
               FAILED="$FAILED $t"
             fi
@@ -47,7 +52,9 @@ jobs:
           echo "DEEP FUZZ ALL PASS"
 
       - name: Archive crash corpus (if any)
-        if: failure()
+        # GV-17：`if: always()`——崩溃归档不得因 job 提前结束（cancel/超时）
+        # 而丢失；无语料时 ignore。
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-crash-corpus

@@ -1513,6 +1513,43 @@ struct PerfMetric {
     /// 是否为关键路径（关键路径不允许超 SLO）.
     critical_path: bool,
     unit: String,
+    /// 29 GV-03：指标方向（higher_is_better 语义）。缺省按指标名白名单
+    /// 推断（`default_higher_is_better`），兼容旧基线 JSON。
+    #[serde(default)]
+    direction: Option<MetricDirection>,
+}
+
+/// 指标方向：吞吐类（frames/s、parses/s）越高越好；延迟/耗时类越低越好。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MetricDirection {
+    HigherIsBetter,
+    LowerIsBetter,
+}
+
+/// 指标方向白名单（缺省推断）：现存 5 项基线全部为吞吐类。
+fn default_higher_is_better(metric_id: &str) -> bool {
+    matches!(
+        metric_id,
+        "iec104_encode" | "ipc_wire_roundtrip" | "modbus_rtu_frame" | "elf_parse" | "gguf_parse"
+    )
+}
+
+/// 29 GV-03：回归判定（方向感知）。GV-03 修复前方向反了——`measured >
+/// baseline` 才计 delta，真实退化（measured 下降）静默放行。
+///
+/// - higher_is_better（吞吐）：measured < baseline * (1 - max_pct%) → 退化；
+/// - lower_is_better（延迟）：measured > baseline * (1 + max_pct%) → 退化。
+fn regressed(measured: f64, baseline: f64, higher_is_better: bool, max_regression_pct: f64) -> bool {
+    if baseline <= 0.0 {
+        return false;
+    }
+    let tolerance = max_regression_pct / 100.0;
+    if higher_is_better {
+        measured < baseline * (1.0 - tolerance)
+    } else {
+        measured > baseline * (1.0 + tolerance)
+    }
 }
 
 // ============================================================
@@ -1618,6 +1655,7 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
             baseline_value: iec104_throughput as u64,
             critical_path: false,
             unit: "frames/s".into(),
+            direction: Some(MetricDirection::HigherIsBetter),
         },
         PerfMetric {
             metric_id: "ipc_wire_roundtrip".into(),
@@ -1627,6 +1665,7 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
             baseline_value: wire_throughput as u64,
             critical_path: true,
             unit: "frames/s".into(),
+            direction: Some(MetricDirection::HigherIsBetter),
         },
         PerfMetric {
             metric_id: "modbus_rtu_frame".into(),
@@ -1636,6 +1675,7 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
             baseline_value: modbus_throughput as u64,
             critical_path: false,
             unit: "frames/s".into(),
+            direction: Some(MetricDirection::HigherIsBetter),
         },
         PerfMetric {
             metric_id: "elf_parse".into(),
@@ -1645,6 +1685,7 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
             baseline_value: elf_throughput as u64,
             critical_path: true,
             unit: "parses/s".into(),
+            direction: Some(MetricDirection::HigherIsBetter),
         },
         PerfMetric {
             metric_id: "gguf_parse".into(),
@@ -1654,6 +1695,7 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
             baseline_value: gguf_throughput as u64,
             critical_path: false,
             unit: "parses/s".into(),
+            direction: Some(MetricDirection::HigherIsBetter),
         },
     ];
 
@@ -1890,7 +1932,7 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
         report.violations.push("no-metrics".to_owned());
     }
 
-    let mut regressed = 0usize;
+    let mut regressed_count = 0usize;
     let mut slo_violations = 0usize;
     for metric in &results.metrics {
         // 关键路径：实测不得超过 SLO 阈值（slo_threshold=0 表示未冻结，
@@ -1905,19 +1947,38 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
             ));
             slo_violations += 1;
         }
-        // 回归检查：实测相对基线退化不得超过容忍度
+        // 回归检查：实测相对基线退化不得超过容忍度（29 GV-03：方向感知
+        // 判定——旧逻辑 measured>baseline 才计 delta，吞吐退化静默放行）。
         if metric.baseline_value > 0 {
-            let delta_pct = if metric.measured > metric.baseline_value {
-                ((metric.measured - metric.baseline_value) * 100) / metric.baseline_value
-            } else {
-                0
-            };
-            if delta_pct > metric.regression_tolerance_pct {
+            let higher_is_better = metric
+                .direction
+                .map(|d| d == MetricDirection::HigherIsBetter)
+                .unwrap_or_else(|| default_higher_is_better(&metric.metric_id));
+            if regressed(
+                metric.measured as f64,
+                metric.baseline_value as f64,
+                higher_is_better,
+                metric.regression_tolerance_pct as f64,
+            ) {
+                let delta_pct = if higher_is_better {
+                    (metric.baseline_value.saturating_sub(metric.measured) * 100)
+                        / metric.baseline_value
+                } else {
+                    (metric.measured.saturating_sub(metric.baseline_value) * 100)
+                        / metric.baseline_value
+                };
                 report.violations.push(format!(
-                    "regression:{}:{}%>{}%",
-                    metric.metric_id, delta_pct, metric.regression_tolerance_pct
+                    "regression:{}:{}%>{}%（{}）",
+                    metric.metric_id,
+                    delta_pct,
+                    metric.regression_tolerance_pct,
+                    if higher_is_better {
+                        "吞吐退化"
+                    } else {
+                        "延迟恶化"
+                    }
                 ));
-                regressed += 1;
+                regressed_count += 1;
             }
         }
     }
@@ -1928,7 +1989,7 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
     report
         .summary
         .insert("slo_violations", slo_violations.to_string());
-    report.summary.insert("regressions", regressed.to_string());
+    report.summary.insert("regressions", regressed_count.to_string());
     report
         .summary
         .insert("baseline_sha256", results.baseline_sha256.clone());
@@ -2586,6 +2647,98 @@ mod tests {
         let p = root.join("perf.json");
         write_json(&p, &results);
         assert!(command_perf_gate(root, &[p.to_string_lossy().into()]).is_err());
+    }
+
+    /// 签名 + 门禁闭环 helper（29 GV-03 新增用例共用）。
+    /// 环境变量（ENEROS_PERF_VERIFY_PUBKEY）在并行测试间竞争——用静态
+    /// Mutex 串行化 set_var→gate→remove_var 临界区。
+    fn perf_gate_signed(root: &Path, results: &serde_json::Value) -> Result<(), String> {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let key = root.join("perf-key.bin");
+        let pk = root.join("perf-pk.hex");
+        command_perf_keygen(
+            root,
+            &[
+                "--out".into(),
+                key.to_string_lossy().into(),
+                "--pubkey-out".into(),
+                pk.to_string_lossy().into(),
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let p = root.join("perf.json");
+        write_json(&p, results);
+        let json_signed = serde_json::to_vec_pretty(results).unwrap();
+        let key_bytes = std::fs::read(&key).unwrap();
+        let keypair = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into().unwrap());
+        use ed25519_dalek::Signer;
+        let sig = hex_encode(&keypair.sign(&json_signed).to_bytes());
+        std::fs::write(p.with_extension("json.sig"), sig).unwrap();
+        unsafe {
+            std::env::set_var(
+                "ENEROS_PERF_VERIFY_PUBKEY",
+                std::fs::read_to_string(&pk).unwrap().trim().to_owned(),
+            );
+        }
+        let r = command_perf_gate(root, &[p.to_string_lossy().into()]);
+        unsafe {
+            std::env::remove_var("ENEROS_PERF_VERIFY_PUBKEY");
+        }
+        r.map_err(|e| e.to_string())
+    }
+
+    /// 29 GV-03 判据负例：吞吐类（higher_is_better）实测 = 基线 × 0.5
+    /// → 必拦（旧逻辑方向反，此处真实退化曾被静默放行）。
+    #[test]
+    fn t6b_perf_gate_throughput_regression_caught() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let results = serde_json::json!({
+            "schema": "eneros.perf-regression.v1",
+            "baseline_sha256": "abc",
+            "candidate_sha256": "def",
+            "metrics": [
+                {"metric_id": "iec104_encode", "slo_threshold": 0, "measured": 50000, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
+            ],
+        });
+        let r = perf_gate_signed(root, &results);
+        assert!(r.is_err(), "吞吐退化 50% 必须被拦: {r:?}");
+    }
+
+    /// 29 GV-03 正例：吞吐类实测 = 基线 × 2（性能提高）→ 不误伤。
+    #[test]
+    fn t6c_perf_gate_throughput_improvement_passes() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let results = serde_json::json!({
+            "schema": "eneros.perf-regression.v1",
+            "baseline_sha256": "abc",
+            "candidate_sha256": "def",
+            "metrics": [
+                {"metric_id": "iec104_encode", "slo_threshold": 0, "measured": 200000, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
+            ],
+        });
+        let r = perf_gate_signed(root, &results);
+        assert!(r.is_ok(), "吞吐提高不得误拦: {r:?}");
+    }
+
+    /// 29 GV-03：延迟类（lower_is_better）缺省白名单外推断——实测超基线
+    /// 15%（tolerance 5%）→ 必拦。
+    #[test]
+    fn t6d_perf_gate_latency_default_direction_caught() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let results = serde_json::json!({
+            "schema": "eneros.perf-regression.v1",
+            "baseline_sha256": "abc",
+            "candidate_sha256": "def",
+            "metrics": [
+                {"metric_id": "boot-time", "slo_threshold": 0, "measured": 4600, "regression_tolerance_pct": 5, "baseline_value": 4000, "critical_path": true, "unit": "ms"},
+            ],
+        });
+        let r = perf_gate_signed(root, &results);
+        assert!(r.is_err(), "延迟恶化 15% 必须被拦（缺省 direction 推断）: {r:?}");
     }
 
     #[test]

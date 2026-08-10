@@ -219,10 +219,24 @@ jobs:
       - name: Evidence gate (fail-closed, machine-recomputable)
         run: cargo xtask evidence verify
 
-      - name: libFuzzer 6 parse surfaces (VRF-001, fail-closed)
+      - name: fuzz-smoke-prng: deterministic PRNG smoke (6 parse surfaces, 29 GV-04)
+        # 29 GV-04：PRNG driver 降级为 smoke（固定种子确定性冒烟，无覆盖率
+        # 反馈）；真实 libFuzzer harness 由下方 cargo-fuzz job 执行。
         run: |
           for t in boot_protocol ipc_wire modbus_rtu iec104 elf_loader gguf_loader; do
             cargo xtask fuzz $t 10000
+          done
+
+      - name: libFuzzer real harness (29 GV-04, 6 targets x 300s, fail-closed)
+        # 真 libFuzzer：消费 fuzz/corpus/ 语料，-max_total_time 控制时长。
+        # cargo-fuzz 需要 clang（ubuntu-22.04 自带）+ nightly-2026-04-04；
+        # bin target 名为 fuzz_<surface>（fuzz/Cargo.toml [[bin]]）。
+        run: |
+          cargo install cargo-fuzz --locked
+          for t in boot_protocol ipc_wire modbus_rtu iec104 elf_loader gguf_loader; do
+            cd fuzz
+            cargo +nightly-2026-04-04 fuzz run fuzz_$t corpus/$t/ -- -timeout=60 -max_total_time=300
+            cd ..
           done
 
       - name: Perf baseline + regression gate (C-251, real measurement)
