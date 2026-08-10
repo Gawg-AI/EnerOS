@@ -143,18 +143,25 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
     // 从物理地址读取 init bundle（header 64 B → total_len → 全量）
     let raw = read_bundle_from_phys(INIT_BUNDLE_PHYS);
     let bundle = match raw {
-        Some(raw) => match crate::bundle::InitBundle::parse(&raw) {
-            Ok(b) => b,
-            Err(e) => {
-                println!(
-                    "[eneros-root-task] init bundle parse FAILED: {:?} — 挂起（fail-closed）",
-                    e
-                );
-                loop {
-                    core::hint::spin_loop();
+        Some(raw) => {
+            // 30 RT-004：验签式解析——模块 sha256 必须与打包侧摘要一致
+            // （供应链完整性；DigestMismatch 即挂起 fail-closed）。
+            match crate::bundle::InitBundle::parse_verified(&raw, |blob| {
+                use sha2::{Digest, Sha256};
+                Sha256::digest(blob).into()
+            }) {
+                Ok(b) => b,
+                Err(e) => {
+                    println!(
+                        "[eneros-root-task] init bundle parse FAILED: {:?} — 挂起（fail-closed）",
+                        e
+                    );
+                    loop {
+                        core::hint::spin_loop();
+                    }
                 }
             }
-        },
+        }
         None => {
             println!(
                 "[eneros-root-task] init bundle missing @ paddr=0x{:x} — 挂起（fail-closed）",

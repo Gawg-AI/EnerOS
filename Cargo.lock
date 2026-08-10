@@ -1304,6 +1304,7 @@ dependencies = [
  "eneros-watchdog",
  "heapless 0.8.0",
  "linked_list_allocator",
+ "sha2",
  "spin",
 ]
 

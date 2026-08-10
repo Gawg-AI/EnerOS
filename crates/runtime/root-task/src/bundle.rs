@@ -57,6 +57,8 @@ pub enum BundleError {
     Truncated,
     /// 模块名非法（超长/含 NUL）。
     BadName,
+    /// 模块 blob 摘要与表项 sha256 不符（30 RT-004：供应链完整性校验）。
+    DigestMismatch,
 }
 
 /// bundle 中的一个模块。
@@ -159,6 +161,24 @@ impl InitBundle {
         })
     }
 
+    /// 验签式解析（30 RT-004）：在 [`Self::parse`] 基础上校验每个模块 blob
+    /// 的摘要与模块表项 sha256 一致——init bundle 模块 sha256 字段此前
+    /// 从不校验（供应链完整性缺口，测试注释自认占位）。哈希实现经函数
+    /// 注入（target 与打包侧同一算法：sha2 Sha256——打包侧 xtask 已写
+    /// 真实摘要，存量全零摘要 bundle 会被拒，属应拦项）。
+    pub fn parse_verified(
+        raw: &[u8],
+        expect_sha256: fn(&[u8]) -> [u8; 32],
+    ) -> Result<Self, BundleError> {
+        let bundle = Self::parse(raw)?;
+        for module in &bundle.modules {
+            if expect_sha256(&module.blob) != module.sha256 {
+                return Err(BundleError::DigestMismatch);
+            }
+        }
+        Ok(bundle)
+    }
+
     /// 返回指定 kind 的模块名列表。
     pub fn names_of_kind(&self, kind: u32) -> Vec<&str> {
         self.modules
@@ -172,6 +192,8 @@ impl InitBundle {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+
+    use sha2::{Digest, Sha256};
 
     use super::*;
 
@@ -199,11 +221,45 @@ mod tests {
             bytes[entry + 16..entry + 24].copy_from_slice(&(blob.len() as u64).to_le_bytes());
             let nb = name.as_bytes();
             bytes[entry + 24..entry + 24 + nb.len()].copy_from_slice(nb);
-            // sha256 占位（全零；解析器不校验摘要）。
+            // 30 RT-004：写真实摘要（对齐打包侧 compose_init_bundle）。
+            let digest: [u8; 32] = Sha256::digest(blob).into();
+            bytes[entry + 56..entry + 88].copy_from_slice(&digest);
             bytes[cursor..cursor + blob.len()].copy_from_slice(blob);
             cursor += blob.len();
         }
         bytes
+    }
+
+    /// 30 RT-004 判据正例：合法摘要 bundle → parse_verified Ok。
+    #[test]
+    fn test_parse_verified_accepts_matching_digest() {
+        let raw = build_bundle(&[
+            ("svc-hello", MODULE_KIND_SERVICE, 20, &[1, 2, 3, 4]),
+        ]);
+        let bundle = InitBundle::parse_verified(&raw, |blob| {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(blob).into()
+        })
+        .expect("真实摘要必须通过（30 RT-004）");
+        assert_eq!(bundle.modules.len(), 1);
+    }
+
+    /// 30 RT-004 判据负例：篡改模块 blob 任一字节 → DigestMismatch
+    /// （修复前解析器从不校验摘要，篡改静默通过）。
+    #[test]
+    fn test_parse_verified_rejects_tampered_blob() {
+        let mut raw = build_bundle(&[
+            ("svc-hello", MODULE_KIND_SERVICE, 20, &[1, 2, 3, 4]),
+        ]);
+        // 篡改 payload 区（header 64 + 表 96 = 160 之后）。
+        raw[160] ^= 0xFF;
+        assert_eq!(
+            InitBundle::parse_verified(&raw, |blob| {
+                use sha2::{Digest, Sha256};
+                Sha256::digest(blob).into()
+            }),
+            Err(BundleError::DigestMismatch)
+        );
     }
 
     #[test]

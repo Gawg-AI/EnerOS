@@ -137,6 +137,9 @@ pub enum ElfError {
     NoLoadSegments,
     /// Entry point not within any executable segment.
     EntryNotInExecutableSegment,
+    /// 30 RT-006：PT_LOAD 段 vaddr 区间重叠（或段边界回绕）——非单调段
+    /// 导致同一虚拟页两次映射/与栈区碰撞。
+    SegmentOverlap,
 }
 
 impl core::fmt::Display for ElfError {
@@ -155,6 +158,7 @@ impl core::fmt::Display for ElfError {
             ElfError::EntryNotInExecutableSegment => {
                 write!(f, "entry point not in executable segment")
             }
+            ElfError::SegmentOverlap => write!(f, "segment vaddr range overlap or wrap"),
         }
     }
 }
@@ -273,12 +277,20 @@ impl LoadedElf {
         }
 
         // --- Entry point must be within an executable segment ---
-        let entry_in_exec = segments
-            .iter()
-            .any(|s| s.flags.execute && e_entry >= s.vaddr && e_entry < s.vaddr + s.memsz);
+        // 30 RT-005：`vaddr + memsz` 必须 checked_add——恶意段头
+        // (vaddr=0xFFFF_FFFF_FFFF_F000, memsz=0x2000) 使和回绕为小数，
+        // 入口校验被绕过。
+        let entry_in_exec = segments.iter().any(|s| {
+            s.flags.execute
+                && s.vaddr.checked_add(s.memsz).is_some_and(|end| e_entry >= s.vaddr && e_entry < end)
+        });
         if !entry_in_exec {
             return Err(ElfError::EntryNotInExecutableSegment);
         }
+
+        // 30 RT-006：段区间重叠/回绕校验（落点统一——与 spawn.rs 共用
+        // validate_segments 纯函数）。
+        Self::validate_segments(&segments)?;
 
         Ok(Self {
             entry: e_entry,
@@ -294,6 +306,30 @@ impl LoadedElf {
     /// All PT_LOAD segments.
     pub fn segments(&self) -> &[LoadedSegment] {
         &self.segments
+    }
+
+    /// 30 RT-006 落点统一：段 vaddr 区间校验纯函数（spawn.rs 复用，禁止
+    /// 两处各写）。检查：①每段边界 `vaddr+memsz` 无回绕；②段区间两两不
+    /// 重叠（排序后相邻比较）——非单调/重叠段 → 同一虚拟页两次映射或与
+    /// 栈区碰撞。
+    pub fn validate_segments(segs: &[LoadedSegment]) -> Result<(), ElfError> {
+        let mut spans: alloc::vec::Vec<(u64, u64)> = segs
+            .iter()
+            .map(|s| {
+                let end = s
+                    .vaddr
+                    .checked_add(s.memsz)
+                    .ok_or(ElfError::SegmentOverlap)?;
+                Ok((s.vaddr, end))
+            })
+            .collect::<Result<_, ElfError>>()?;
+        spans.sort_unstable();
+        for pair in spans.windows(2) {
+            if pair[0].1 > pair[1].0 {
+                return Err(ElfError::SegmentOverlap);
+            }
+        }
+        Ok(())
     }
 
     /// Total virtual memory size (sum of all segment memsz).
@@ -524,5 +560,53 @@ mod tests {
         assert!(elf.segments()[1].flags.write);
         assert!(!elf.segments()[1].flags.execute);
         assert_eq!(elf.total_vmem(), text_size + data_size);
+    }
+
+    /// 30 RT-005 判据：段边界回绕（vaddr+memsz 溢出）→ validate_segments
+    /// 必须 Err（修复前普通加法回绕为小数，入口校验被绕过）。
+    #[test]
+    fn test_validate_segments_rejects_wrapping_range() {
+        let segs = alloc::vec![LoadedSegment {
+            vaddr: 0xFFFF_FFFF_FFFF_F000,
+            memsz: 0x2000,
+            filesz: 0,
+            offset: 0,
+            flags: SegmentFlags {
+                read: true,
+                write: false,
+                execute: true,
+            },
+            align: 0x1000,
+        }];
+        assert_eq!(
+            LoadedElf::validate_segments(&segs),
+            Err(ElfError::SegmentOverlap)
+        );
+    }
+
+    /// 30 RT-006 判据：两段 vaddr 区间重叠 → SegmentOverlap。
+    #[test]
+    fn test_validate_segments_rejects_overlap() {
+        let seg = |vaddr: u64, memsz: u64| LoadedSegment {
+            vaddr,
+            memsz,
+            filesz: 0,
+            offset: 0,
+            flags: SegmentFlags {
+                read: true,
+                write: false,
+                execute: true,
+            },
+            align: 0x1000,
+        };
+        // [0x1000, 0x3000) 与 [0x2000, 0x4000) 重叠。
+        let segs = alloc::vec![seg(0x1000, 0x2000), seg(0x2000, 0x2000)];
+        assert_eq!(
+            LoadedElf::validate_segments(&segs),
+            Err(ElfError::SegmentOverlap)
+        );
+        // 相邻不重叠：[0x1000, 0x2000) 与 [0x2000, 0x3000) 合法。
+        let ok = alloc::vec![seg(0x1000, 0x1000), seg(0x2000, 0x1000)];
+        assert!(LoadedElf::validate_segments(&ok).is_ok());
     }
 }
