@@ -15,6 +15,8 @@ eneros-elf-loader = { path = "../../abi/elf-loader" }
 eneros-sel4-sys = { path = "../sel4-sys" }
 # 22 §2.W1.2：panic 审计（SM3 哈希链）+ 看门狗复位（SP805）。
 eneros-audit = { path = "../../security/audit" }
+# 30 RT-028①：创世根真实 SM3（sm3_hash）。
+eneros-crypto = { path = "../../security/crypto" }
 eneros-watchdog = { path = "../../drivers/watchdog" }
 eneros-time = { path = "../../drivers/time" }
 # 23 G-I 总出口修复：Arm64Timer（CNTPCT_EL0 generic timer）→ time_init，

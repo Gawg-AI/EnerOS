@@ -32,6 +32,8 @@ eneros-runtime = { path = "../runtime" }
 eneros-sel4-sys = { path = "../sel4-sys" }
 # 22 §2.W1.2：服务 panic 审计（SM3 哈希链，无堆定容）。
 eneros-audit = { path = "../../security/audit" }
+# 30 RT-028①：创世根真实 SM3（sm3_hash）。
+eneros-crypto = { path = "../../security/crypto" }
 heapless = "0.8"
 spin = "0.9"
 # v0.243.0（C-243）：BumpAllocator 并发模型验证（loom；feature 门控，

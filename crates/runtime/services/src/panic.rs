@@ -21,15 +21,15 @@ static PANIC_LOGGER: Mutex<Option<AuditLoggerImpl<MemStore>>> = Mutex::new(None)
 /// 服务 panic 总次数（指标）。
 pub static SVC_PANIC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// 创世哈希：固定常量（跨重启不变；W3 持久化后由 boot-manager 统一提供）。
-const PANIC_GENESIS: [u8; 32] = [
-    0x73, 0x76, 0x63, 0x2d, 0x70, 0x61, 0x6e, 0x69, 0x63, 0x2d, 0x67, 0x65, 0x6e, 0x65, 0x73, 0x69,
-    0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
+/// 30 RT-028①：创世根 = 真实 SM3 摘要（运行时计算——SM3 非 const fn）。
+/// 旧实现为 ASCII "svc-panic-genesis" 补零占位（可被离线伪造）。
+fn genesis() -> [u8; 32] {
+    eneros_crypto::sm3_hash(b"svc-panic-genesis")
+}
 
 /// 初始化服务 panic 审计链（svc_entry 启动时调用一次）。
 pub fn init_svc_panic_audit() {
-    *PANIC_LOGGER.lock() = Some(AuditLoggerImpl::new(MemStore::new(), PANIC_GENESIS));
+    *PANIC_LOGGER.lock() = Some(AuditLoggerImpl::new(MemStore::new(), genesis()));
 }
 
 /// 服务 panic 钩子：审计 → 打印 → 挂起（不返回）。
@@ -41,9 +41,11 @@ pub fn svc_panic_hook(svc_name: &'static str, info: &PanicInfo) -> ! {
     let detail = format_location(info.location());
     // 30 RT-028②：try_lock——panic 由持锁代码（logger 内部/重入）触发时
     // lock() 死锁挂起连打印都没有；拿不到锁跳过审计，保证打印与挂起可达。
-    if let Some(logger) = PANIC_LOGGER.try_lock().as_mut() {
-        let ev = AuditEvent::new(AuditEventType::SecurityAlert, svc_name, "panic", &detail);
-        let _ = logger.log(ev);
+    if let Some(mut guard) = PANIC_LOGGER.try_lock() {
+        if let Some(logger) = guard.as_mut() {
+            let ev = AuditEvent::new(AuditEventType::SecurityAlert, svc_name, "panic", &detail);
+            let _ = logger.log(ev);
+        }
     }
     eneros_runtime::println!(
         "[svc-{}] PANIC #{} at {} — suspending (supervisor restart, W1.3)",

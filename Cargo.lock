@@ -800,6 +800,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "eneros-durable-log"
+version = "1.0.0-rc.0"
+dependencies = [
+ "eneros-audit",
+ "eneros-ipc-wire",
+ "eneros-storage",
+]
+
+[[package]]
 name = "eneros-elf-loader"
 version = "1.0.0-rc.0"
 
@@ -1293,6 +1302,7 @@ dependencies = [
  "eneros-board",
  "eneros-boot-protocol",
  "eneros-can",
+ "eneros-crypto",
  "eneros-driver-framework",
  "eneros-elf-loader",
  "eneros-hal",
@@ -1358,6 +1368,7 @@ name = "eneros-services"
 version = "1.0.0-rc.0"
 dependencies = [
  "eneros-audit",
+ "eneros-crypto",
  "eneros-ipc-wire",
  "eneros-runtime",
  "eneros-sel4-sys",

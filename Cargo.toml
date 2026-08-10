@@ -34,6 +34,7 @@ members = [
     "crates/hal/board",
     "crates/runtime/runtime",
     "crates/runtime/sel4-sys",
+    "crates/runtime/durable-log",
     "crates/runtime/hello",
     "crates/runtime/root-task",
     "crates/runtime/services",

@@ -30,19 +30,18 @@ pub static PANIC_REBOOT_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// panic 审计链（预分配：MemStore + 链头，panic 路径零堆分配）。
 static PANIC_LOGGER: Mutex<Option<AuditLoggerImpl<MemStore>>> = Mutex::new(None);
 
-/// 创世哈希：**占位**（字节 = ASCII "eneros-root-task-panic" 补零，非真实
-/// SM3 摘要——30 RT-028① 诚实化：原注释声称 SM3 哈希实为 ASCII，审计链
-/// "创世"可被离线伪造）。链恢复语义要求创世跨重启不变；真实 SM3 创世根
-/// 由 boot-manager 装配期提供并经 DurableLog 持久化（WP-30.7 收口，蓝图
-/// 27.5）。
-const PANIC_GENESIS: [u8; 32] = [
-    0x6e, 0x65, 0x72, 0x6f, 0x73, 0x2d, 0x72, 0x6f, 0x6f, 0x74, 0x2d, 0x74, 0x61, 0x73, 0x6b, 0x2d,
-    0x70, 0x61, 0x6e, 0x69, 0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
+/// 30 RT-028①：创世根 = 真实 SM3 摘要（运行时计算——SM3 非 const fn）。
+/// 旧实现为 ASCII "eneros-root-task-panic" 补零占位（注释却声称 SM3 哈希，
+/// 审计链"创世"可被离线伪造）。链恢复语义要求创世跨重启不变：真实创世根
+/// 由本函数确定并经 DurableLog 持久化（WP-30.7 机制；root-task 装配接线
+/// 随 33 域 WP-27.4 掉电证据落地）。
+pub fn genesis() -> [u8; 32] {
+    eneros_crypto::sm3_hash(b"eneros-root-task-panic")
+}
 
 /// 初始化 panic 审计链（启动早期调用一次；重复调用重置链）。
 pub fn init_panic_audit() {
-    *PANIC_LOGGER.lock() = Some(AuditLoggerImpl::new(MemStore::new(), PANIC_GENESIS));
+    *PANIC_LOGGER.lock() = Some(AuditLoggerImpl::new(MemStore::new(), genesis()));
 }
 
 /// 追加一条 panic 审计事件（无堆：heapless 定容 + 定长编码）。

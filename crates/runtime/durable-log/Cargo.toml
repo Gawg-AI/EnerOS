@@ -1,0 +1,17 @@
+[package]
+name = "eneros-durable-log"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS DurableLog (WP-27.5/30-30.7) — 块设备日志：CRC 真校验 + 原子追加 + 掉电恢复（S5 第三层）, no_std"
+
+[dependencies]
+eneros-storage = { path = "../../drivers/storage" }
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }
+eneros-audit = { path = "../../security/audit" }
+
+# 30 WP-30.7：MockBlockDevice 门控 cfg(any(test, feature="mock")) 不跨 crate
+# 传播——host 测试显式启用 mock feature（release compile_error 保护）。
+[dev-dependencies]
+eneros-storage = { path = "../../drivers/storage", features = ["mock"] }
