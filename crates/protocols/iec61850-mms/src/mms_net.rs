@@ -77,7 +77,7 @@ impl<D: eneros_net::NetDevice> MmsTransport for NetMmsTransport<D> {
             .connect(&mut self.iface, remote, local_port)
             .map_err(|_| MmsError::ConnRefused)?;
         for _ in 0..100 {
-            self.now_ms += 1;
+            self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
             let _ = self.iface.poll(self.now_ms);
             if self.tcp.state(&self.iface).is_connected() {
                 self.connected = true;
@@ -93,14 +93,14 @@ impl<D: eneros_net::NetDevice> MmsTransport for NetMmsTransport<D> {
         }
         let mut sent = 0usize;
         while sent < pdu.len() {
-            self.now_ms += 1;
+            self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
             let _ = self.iface.poll(self.now_ms);
             let n = self
                 .tcp
                 .send(&mut self.iface, &pdu[sent..])
                 .map_err(|_| MmsError::TransportError)?;
             if n == 0 {
-                self.now_ms += 1;
+                self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
                 let _ = self.iface.poll(self.now_ms);
                 continue;
             }
@@ -114,7 +114,7 @@ impl<D: eneros_net::NetDevice> MmsTransport for NetMmsTransport<D> {
             return Err(MmsError::NotConnected);
         }
         for _ in 0..100 {
-            self.now_ms += 1;
+            self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
             let _ = self.iface.poll(self.now_ms);
             match self.tcp.recv(&mut self.iface, buf) {
                 Ok(n) if n > 0 => return Ok(n),

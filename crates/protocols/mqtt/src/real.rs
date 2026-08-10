@@ -58,6 +58,8 @@ pub struct NetTcpTransport<D: NetDevice> {
     connected: bool,
     /// 最近 poll 时间戳（ms）。
     now_ms: u64,
+    /// 31 PR-15：单调时钟注入（生产接系统 tick；host 测试用假时钟）。
+    clock: ClockRef,
 }
 
 #[cfg(feature = "net")]
@@ -120,7 +122,7 @@ impl<D: NetDevice> MqttTransport for NetTcpTransport<D> {
             .map_err(|_| MqttError::BrokerUnreachable)?;
         // 有限轮询推进握手。
         for _ in 0..100 {
-            self.now_ms += 1;
+            self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
             let _ = self.iface.poll(self.now_ms);
             if self.tcp.state(&self.iface).is_connected() {
                 self.connected = true;
@@ -136,7 +138,7 @@ impl<D: NetDevice> MqttTransport for NetTcpTransport<D> {
         }
         let mut sent = 0usize;
         while sent < data.len() {
-            self.now_ms += 1;
+            self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
             let _ = self.iface.poll(self.now_ms);
             let n = self
                 .tcp
@@ -144,7 +146,7 @@ impl<D: NetDevice> MqttTransport for NetTcpTransport<D> {
                 .map_err(|_| MqttError::TransportError)?;
             if n == 0 {
                 // TX 缓冲满：推进协议栈等待腾出空间。
-                self.now_ms += 1;
+                self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
                 let _ = self.iface.poll(self.now_ms);
                 continue;
             }
@@ -160,7 +162,7 @@ impl<D: NetDevice> MqttTransport for NetTcpTransport<D> {
         let mut buf = [0u8; RX_BUF];
         // 轮询直到收到数据（或连接关闭）。
         for _ in 0..100 {
-            self.now_ms += 1;
+            self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
             let _ = self.iface.poll(self.now_ms);
             match self.tcp.recv(&mut self.iface, &mut buf) {
                 Ok(n) if n > 0 => return Ok(buf[..n].to_vec()),
@@ -182,6 +184,10 @@ impl<D: NetDevice> MqttTransport for NetTcpTransport<D> {
     fn is_connected(&self) -> bool {
         self.connected
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
 }
 
 // ============================================================================
@@ -202,9 +208,11 @@ pub trait TlsLayer {
 }
 
 /// 明文直通（无 TLS 编译目标时）。
-pub struct PlainTls;
+/// 明文直通（无 TLS 编译目标时）——31 PR-11 更名：名字含 Tls 但无 TLS
+/// 语义（S8 诚实命名，TlsRecordCodec 先例）。
+pub struct PlainTcp;
 
-impl TlsLayer for PlainTls {
+impl TlsLayer for PlainTcp {
     fn handshake(&mut self) -> Result<(), MqttError> {
         Ok(())
     }
@@ -226,14 +234,14 @@ mod tests {
 
     #[test]
     fn test_plain_tls_handshake_ok() {
-        let mut tls = PlainTls;
+        let mut tls = PlainTcp;
         assert!(tls.handshake().is_ok());
     }
 
     #[test]
     fn test_plain_tls_default_behavior() {
         // 明文直通层：send 恒 OK；recv 无数据 → 超时。
-        let mut tls = PlainTls;
+        let mut tls = PlainTcp;
         assert!(tls.send(b"hello").is_ok());
         assert_eq!(tls.recv(), Err(MqttError::PublishTimeout));
     }

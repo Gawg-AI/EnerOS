@@ -228,7 +228,7 @@ fn decode_u16(bytes: &[u8]) -> Result<(u16, usize), MqttError> {
 
 // ===== 子报文编码 =====
 
-fn encode_connect(p: &ConnectPacket) -> Vec<u8> {
+fn encode_connect(p: &ConnectPacket) -> Option<Vec<u8>> {
     let mut vh = Vec::new();
     // 协议名 "MQTT"
     encode_string("MQTT", &mut vh);
@@ -259,6 +259,11 @@ fn encode_connect(p: &ConnectPacket) -> Vec<u8> {
     encode_string(&p.client_id, &mut vh);
     // Will Topic + Will Payload
     if let Some(will) = &p.will {
+        // 31 PR-10：payload 超 u16::MAX 时长度字段截断与实际不符——
+        // 前置校验（encode 入口统一处理）。
+        if will.payload.len() > u16::MAX as usize {
+            return None;
+        }
         encode_string(&will.topic, &mut vh);
         // Will Payload 为长度前缀字节流
         let plen = will.payload.len();
@@ -275,7 +280,7 @@ fn encode_connect(p: &ConnectPacket) -> Vec<u8> {
         encode_u16(plen as u16, &mut vh);
         vh.extend_from_slice(pass);
     }
-    vh
+    Some(vh)
 }
 
 fn encode_publish(p: &PublishPacket) -> Vec<u8> {
@@ -404,7 +409,12 @@ fn decode_unsubscribe(bytes: &[u8]) -> Result<UnsubscribePacket, MqttError> {
 /// alloc_error_handler（fail-safe 记录+挂起，见 runtime::oom）。
 pub fn encode(packet: &MqttPacket) -> Vec<u8> {
     let (ptype, flags, vh_payload): (u8, u8, Vec<u8>) = match packet {
-        MqttPacket::Connect(p) => (packet_type::CONNECT, 0u8, encode_connect(p)),
+        MqttPacket::Connect(p) => match encode_connect(p) {
+            // 31 PR-10：will payload 超限 → 编码失败（返回空 Vec，调用方
+            // 视为病态输入拒绝——协议包上限远小于此）。
+            Some(vh) => (packet_type::CONNECT, 0u8, vh),
+            None => return Vec::new(),
+        },
         MqttPacket::Connack(p) => {
             let mut vh = Vec::new();
             vh.push(if p.session_present { 0x01 } else { 0x00 });
@@ -478,6 +488,22 @@ pub fn encode(packet: &MqttPacket) -> Vec<u8> {
 /// 从字节流解码一个完整报文.
 ///
 /// 输入应为一个完整报文（含固定头 + 可变头 + 负载），函数内部解析剩余长度。
+/// 31 PR-13：固定头 flags 校验——SUBSCRIBE(8)/PUBREL(6)/UNSUBSCRIBE(10)
+/// 低四位必须 0b0010（MQTT 3.1.1 规范）；其余类型 flags 为保留位（宽松
+/// 容忍，但三类强校验）。
+fn check_fixed_flags(ptype: u8, flags: u8) -> Result<(), MqttError> {
+    let required = match ptype {
+        packet_type::SUBSCRIBE | packet_type::PUBREL | packet_type::UNSUBSCRIBE => Some(0b0010),
+        _ => None,
+    };
+    if let Some(expect) = required {
+        if flags != expect {
+            return Err(MqttError::PacketDecodeError);
+        }
+    }
+    Ok(())
+}
+
 pub fn decode(bytes: &[u8]) -> Result<MqttPacket, MqttError> {
     if bytes.is_empty() {
         return Err(MqttError::PacketDecodeError);
@@ -485,6 +511,9 @@ pub fn decode(bytes: &[u8]) -> Result<MqttPacket, MqttError> {
     let first_byte = bytes[0];
     let ptype = (first_byte >> 4) & 0x0F;
     let flags = first_byte & 0x0F;
+    // 31 PR-13：固定头低四位 flags 校验（MQTT-3.8.1-1 等——SUBSCRIBE/
+    // PUBREL/UNSUBSCRIBE 必须为 0b0010；违规 ProtocolError 断连）。
+    check_fixed_flags(ptype, flags)?;
     let (rem_len, header_consumed) = decode_remaining_length(&bytes[1..])?;
     let payload_start = 1 + header_consumed;
     if payload_start + rem_len > bytes.len() {

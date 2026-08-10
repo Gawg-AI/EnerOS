@@ -63,13 +63,19 @@ impl<'a> ModbusTcpMaster<'a> {
         pdu
     }
 
-    /// 构建完整 TCP 帧：MBAP 头(7B) + PDU。
-    pub fn build_frame(txn_id: u16, unit_id: u8, pdu: &[u8]) -> Vec<u8> {
-        let header = MbapHeader::new(txn_id, unit_id, pdu.len() as u16);
+    /// 构建完整 TCP 帧：MBAP 头(7B) + PDU（31 PR-09：PDU 超 252 字节 →
+    /// Err(PduTooLong)，u16 回绕防护）。
+    pub fn build_frame(
+        txn_id: u16,
+        unit_id: u8,
+        pdu: &[u8],
+    ) -> Result<Vec<u8>, ModbusTcpError> {
+        let header = MbapHeader::try_new(txn_id, unit_id, pdu.len() as u16)
+            .ok_or(ModbusTcpError::PduTooLong)?;
         let mut frame = Vec::with_capacity(7 + pdu.len());
         frame.extend_from_slice(&header.encode());
         frame.extend_from_slice(pdu);
-        frame
+        Ok(frame)
     }
 
     /// 解析响应帧（MBAP + PDU），无 CRC 校验（D5：TCP 无 CRC）。
@@ -223,7 +229,7 @@ impl<'a> ModbusTcpMaster<'a> {
         let txn_id = self.next_txn_id();
         let unit_id = device.unit_id;
         let pdu = Self::build_pdu(req);
-        let frame = Self::build_frame(txn_id, unit_id, &pdu);
+        let frame = Self::build_frame(txn_id, unit_id, &pdu)?;
 
         for _attempt in 0..=self.retry_count {
             self.stats.request_count += 1;
@@ -491,7 +497,7 @@ mod tests {
     // ===== 测试辅助函数 =====
 
     /// 构建读保持寄存器响应帧（MBAP + PDU）
-    fn build_read_response(txn_id: u16, unit_id: u8, regs: &[u16]) -> Vec<u8> {
+    fn build_read_response(txn_id: u16, unit_id: u8, regs: &[u16]) -> Result<Vec<u8>, ModbusTcpError> {
         let mut pdu = vec![0x03]; // func_code
         pdu.push((regs.len() * 2) as u8); // byte_count
         for r in regs {
@@ -501,7 +507,12 @@ mod tests {
     }
 
     /// 构建写单寄存器响应帧
-    fn build_write_single_response(txn_id: u16, unit_id: u8, addr: u16, value: u16) -> Vec<u8> {
+    fn build_write_single_response(
+        txn_id: u16,
+        unit_id: u8,
+        addr: u16,
+        value: u16,
+    ) -> Result<Vec<u8>, ModbusTcpError> {
         let mut pdu = vec![0x06];
         pdu.extend_from_slice(&addr.to_be_bytes());
         pdu.extend_from_slice(&value.to_be_bytes());
@@ -514,7 +525,7 @@ mod tests {
         unit_id: u8,
         start_addr: u16,
         quantity: u16,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, ModbusTcpError> {
         let mut pdu = vec![0x10];
         pdu.extend_from_slice(&start_addr.to_be_bytes());
         pdu.extend_from_slice(&quantity.to_be_bytes());
@@ -527,7 +538,7 @@ mod tests {
         unit_id: u8,
         func_code: u8,
         exc: ExceptionCode,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, ModbusTcpError> {
         let pdu = vec![func_code | 0x80, exc as u8];
         ModbusTcpMaster::build_frame(txn_id, unit_id, &pdu)
     }
@@ -540,7 +551,7 @@ mod tests {
     #[test]
     fn test_read_holding_registers_success() {
         let mut mock = MockTcpTransport::new();
-        mock.push_response(build_read_response(0, 1, &[0x1234, 0x5678]));
+        mock.push_response(build_read_response(0, 1, &[0x1234, 0x5678]).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -561,7 +572,7 @@ mod tests {
     #[test]
     fn test_read_holding_registers_single_reg() {
         let mut mock = MockTcpTransport::new();
-        mock.push_response(build_read_response(0, 2, &[0xABCD]));
+        mock.push_response(build_read_response(0, 2, &[0xABCD]).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = TcpDevice::new([10, 0, 0, 1], 502, 2);
@@ -597,7 +608,7 @@ mod tests {
     #[test]
     fn test_write_single_register_success() {
         let mut mock = MockTcpTransport::new();
-        mock.push_response(build_write_single_response(0, 1, 0x0102, 0x0304));
+        mock.push_response(build_write_single_response(0, 1, 0x0102, 0x0304).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -615,7 +626,7 @@ mod tests {
     #[test]
     fn test_write_multiple_registers_success() {
         let mut mock = MockTcpTransport::new();
-        mock.push_response(build_write_multiple_response(0, 1, 0, 2));
+        mock.push_response(build_write_multiple_response(0, 1, 0, 2).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -652,7 +663,7 @@ mod tests {
     fn test_transaction_mismatch() {
         let mut mock = MockTcpTransport::new();
         // 请求用 txn_id=0，响应用 txn_id=999
-        mock.push_response(build_read_response(999, 1, &[0x1234]));
+        mock.push_response(build_read_response(999, 1, &[0x1234]).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -697,7 +708,8 @@ mod tests {
             1,
             0x03,
             ExceptionCode::IllegalDataAddress,
-        ));
+        )
+        .unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -719,9 +731,9 @@ mod tests {
     fn test_poll_devices_success() {
         let mut mock = MockTcpTransport::new();
         // 设备 1 (unit_id=1): txn_id=0, raw=100 → 10.0
-        mock.push_response(build_read_response(0, 1, &[100u16]));
+        mock.push_response(build_read_response(0, 1, &[100u16]).unwrap());
         // 设备 2 (unit_id=2): txn_id=1, raw=200 → 20.0
-        mock.push_response(build_read_response(1, 2, &[200u16]));
+        mock.push_response(build_read_response(1, 2, &[200u16]).unwrap());
 
         let mapping = PointMapping {
             mappings: vec![
@@ -779,7 +791,7 @@ mod tests {
     fn test_poll_devices_with_error() {
         let mut mock = MockTcpTransport::new();
         // 设备 1 成功
-        mock.push_response(build_read_response(0, 1, &[100u16]));
+        mock.push_response(build_read_response(0, 1, &[100u16]).unwrap());
         // 设备 2 无响应 → 超时
 
         let mapping = PointMapping {
@@ -885,7 +897,7 @@ mod tests {
     #[test]
     fn test_build_frame_content() {
         let pdu = [0x03, 0x00, 0x00, 0x00, 0x01]; // read 1 reg at addr 0
-        let frame = ModbusTcpMaster::build_frame(0x1234, 0x05, &pdu);
+        let frame = ModbusTcpMaster::build_frame(0x1234, 0x05, &pdu).unwrap();
         // MBAP: txn=1234, proto=0000, length=0006 (5+1), unit=05
         // PDU: 03 00 00 00 01
         assert_eq!(
@@ -932,7 +944,7 @@ mod tests {
     #[test]
     fn test_connect_increments_reconnect_count() {
         let mut mock = MockTcpTransport::new();
-        mock.push_response(build_read_response(0, 1, &[0x1234]));
+        mock.push_response(build_read_response(0, 1, &[0x1234]).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -947,7 +959,7 @@ mod tests {
     #[test]
     fn test_sent_frame_structure() {
         let mut mock = MockTcpTransport::new();
-        mock.push_response(build_read_response(0, 1, &[0x1234]));
+        mock.push_response(build_read_response(0, 1, &[0x1234]).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -976,7 +988,7 @@ mod tests {
     fn test_stats_comprehensive() {
         let mut mock = MockTcpTransport::new();
         // 第一次成功
-        mock.push_response(build_read_response(0, 1, &[0x1234]));
+        mock.push_response(build_read_response(0, 1, &[0x1234]).unwrap());
         // 第二次超时（队列将空）
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
@@ -1000,7 +1012,7 @@ mod tests {
     #[test]
     fn test_write_multiple_sent_frame() {
         let mut mock = MockTcpTransport::new();
-        mock.push_response(build_write_multiple_response(0, 1, 0x0010, 2));
+        mock.push_response(build_write_multiple_response(0, 1, 0x0010, 2).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);

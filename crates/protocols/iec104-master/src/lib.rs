@@ -110,12 +110,12 @@ mod tests {
 
     /// 构造 STARTDT_CON 的字节流.
     fn startdt_con_bytes() -> Vec<u8> {
-        Apdu::u_format(UFormatFunction::StartDtCon).encode()
+        Apdu::u_format(UFormatFunction::StartDtCon).encode().unwrap()
     }
 
     /// 构造 TESTFR_CON 的字节流.
     fn testfr_con_bytes() -> Vec<u8> {
-        Apdu::u_format(UFormatFunction::TestFrCon).encode()
+        Apdu::u_format(UFormatFunction::TestFrCon).encode().unwrap()
     }
 
     /// 构造总召唤激活确认 ASDU（从站 → 主站）.
@@ -135,7 +135,9 @@ mod tests {
 
     /// 构造总召唤激活确认 I 帧（从站 → 主站）.
     fn interrogation_confirm_bytes(common_addr: u16) -> Vec<u8> {
-        Apdu::i_format(0, 0, interrogation_confirm_asdu(common_addr)).encode()
+        Apdu::i_format(0, 0, interrogation_confirm_asdu(common_addr))
+            .encode()
+            .unwrap()
     }
 
     /// 构造遥测数据 I 帧（从站 → 主站，单点遥信）.
@@ -155,7 +157,7 @@ mod tests {
                 }],
             },
         )
-        .encode()
+        .encode().unwrap()
     }
 
     /// 创建主站并连接设备，预填 STARTDT_CON，完成握手后状态为 Connected.
@@ -396,7 +398,7 @@ mod tests {
             }],
         };
         let apdu = Apdu::i_format(32767, 0, asdu);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         let decoded = Apdu::decode(&bytes).expect("decode ok");
         assert!(matches!(
             decoded.control_field,

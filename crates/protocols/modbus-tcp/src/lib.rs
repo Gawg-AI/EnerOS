@@ -70,7 +70,11 @@ mod tests {
     // ===== 测试辅助函数（仅使用公共 API 构帧）=====
 
     /// 构建读保持寄存器响应帧（MBAP + PDU），通过公共 `build_frame` 编帧.
-    fn build_read_response(txn_id: u16, unit_id: u8, regs: &[u16]) -> Vec<u8> {
+    fn build_read_response(
+        txn_id: u16,
+        unit_id: u8,
+        regs: &[u16],
+    ) -> Result<Vec<u8>, ModbusTcpError> {
         let mut pdu = vec![0x03u8]; // func_code
         pdu.push((regs.len() * 2) as u8); // byte_count
         for r in regs {
@@ -80,7 +84,12 @@ mod tests {
     }
 
     /// 构建写单寄存器响应帧.
-    fn build_write_single_response(txn_id: u16, unit_id: u8, addr: u16, value: u16) -> Vec<u8> {
+    fn build_write_single_response(
+        txn_id: u16,
+        unit_id: u8,
+        addr: u16,
+        value: u16,
+    ) -> Result<Vec<u8>, ModbusTcpError> {
         let mut pdu = vec![0x06u8];
         pdu.extend_from_slice(&addr.to_be_bytes());
         pdu.extend_from_slice(&value.to_be_bytes());
@@ -93,7 +102,7 @@ mod tests {
         unit_id: u8,
         func_code: u8,
         exc: ExceptionCode,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, ModbusTcpError> {
         let pdu = vec![func_code | 0x80, exc as u8];
         ModbusTcpMaster::build_frame(txn_id, unit_id, &pdu)
     }
@@ -133,7 +142,7 @@ mod tests {
     #[test]
     fn test_master_read_holding_registers_integration() {
         let mut mock = MockTcpTransport::new();
-        mock.push_response(build_read_response(0, 1, &[0x1234, 0x5678]));
+        mock.push_response(build_read_response(0, 1, &[0x1234, 0x5678]).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -173,7 +182,7 @@ mod tests {
     #[test]
     fn test_master_write_single_register_integration() {
         let mut mock = MockTcpTransport::new();
-        mock.push_response(build_write_single_response(0, 1, 0x0102, 0x0304));
+        mock.push_response(build_write_single_response(0, 1, 0x0102, 0x0304).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -212,7 +221,7 @@ mod tests {
     fn test_transaction_mismatch_integration() {
         let mut mock = MockTcpTransport::new();
         // 请求用 txn_id=0，响应用 txn_id=999（不匹配）
-        mock.push_response(build_read_response(999, 1, &[0x1234]));
+        mock.push_response(build_read_response(999, 1, &[0x1234]).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -263,7 +272,7 @@ mod tests {
             1,
             0x03,
             ExceptionCode::IllegalDataAddress,
-        ));
+        ).unwrap());
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -287,11 +296,11 @@ mod tests {
     fn test_poll_devices_integration() {
         let mut mock = MockTcpTransport::new();
         // 设备 1 (unit_id=1): txn_id=0, raw=100 → 10.0
-        mock.push_response(build_read_response(0, 1, &[100u16]));
+        mock.push_response(build_read_response(0, 1, &[100u16]).unwrap());
         // 设备 2 (unit_id=2): txn_id=1, raw=200 → 20.0
-        mock.push_response(build_read_response(1, 2, &[200u16]));
+        mock.push_response(build_read_response(1, 2, &[200u16]).unwrap());
         // 设备 3 (unit_id=3): txn_id=2, raw=300 → 30.0
-        mock.push_response(build_read_response(2, 3, &[300u16]));
+        mock.push_response(build_read_response(2, 3, &[300u16]).unwrap());
 
         let mapping = PointMapping {
             mappings: vec![
@@ -370,7 +379,7 @@ mod tests {
     fn test_txn_id_wraparound_integration() {
         let mut mock = MockTcpTransport::new();
         // 预置响应（txn_id=0xFFFF，将与 65535 次 next_txn_id 后的请求配对）
-        mock.push_response(build_read_response(0xFFFF, 1, &[0x1234]));
+        mock.push_response(build_read_response(0xFFFF, 1, &[0x1234]).unwrap());
 
         // 用块作用域限定 master 生命周期，便于块外访问 mock
         let (first_after, second_after) = {

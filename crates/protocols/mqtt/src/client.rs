@@ -105,6 +105,8 @@ pub struct MqttClient {
     pub pending_publish_packet_id: u16,
     /// 在途 QoS 1/2 消息（packet_id → 状态）.
     pub pending_acks: BTreeMap<u16, PendingAck>,
+    /// 31 PR-12：in-flight 报文缓存（QoS1/2 超时重传用；ack 后移除）。
+    inflight: BTreeMap<u16, PublishPacket>,
     /// QoS 1/2 在途消息持久化（v0.221.0；None = 不持久化）。
     pub qos_store: Option<Box<dyn QosStore>>,
 }
@@ -123,6 +125,7 @@ impl MqttClient {
             reconnect_state: ReconnectState::new(),
             pending_publish_packet_id: 1,
             pending_acks: BTreeMap::new(),
+            inflight: BTreeMap::new(),
             qos_store: None,
         }
     }
@@ -183,6 +186,11 @@ impl MqttClient {
             clean_session: true,
         };
         let bytes = packet::encode(&MqttPacket::Connect(connect));
+        // 31 PR-10：will payload 超限（编码失败）→ 拒绝连接（fail-closed，
+        // 不发送损坏报文）。
+        if bytes.is_empty() {
+            return Err(MqttError::PacketEncode);
+        }
         transport
             .send(&bytes)
             .map_err(|_| MqttError::TransportError)?;
@@ -237,6 +245,10 @@ impl MqttClient {
             dup: false,
             payload: Vec::from(payload),
         };
+        // 31 PR-12：in-flight 缓存（重传用）。
+        if let Some(id) = packet_id {
+            self.inflight.insert(id, publish.clone());
+        }
         let bytes = packet::encode(&MqttPacket::Publish(publish));
         // v0.221.0：QoS1/2 发送前持久化（断网/重启可补传）。
         if let (Some(id), Some(state)) = (packet_id, pending) {
@@ -276,22 +288,57 @@ impl MqttClient {
         }
     }
 
+    /// 测试访问：传输层（downcast 用）。
+    #[cfg(test)]
+    pub fn transport_mut(&mut self) -> &mut dyn crate::transport::MqttTransport {
+        self.transport.as_mut().expect("transport").as_mut()
+    }
+
     /// 等待 PUBACK（QoS 1）.
+    ///
+    /// 31 PR-12：transport recv 超时（PublishTimeout）→ DUP=1 同 packet id
+    /// 重发（MQTT 3.1.1 §4.4 超时重传），最多 2 次；仍超时 → Err。
     fn wait_for_ack(&mut self, packet_id: u16, _now_ms: u64) -> Result<(), MqttError> {
-        let transport = self.transport.as_mut().ok_or(MqttError::NotConnected)?;
-        let bytes = transport.recv().map_err(|_| MqttError::PublishTimeout)?;
-        let pkt = packet::decode(&bytes).map_err(|_| MqttError::PacketDecodeError)?;
-        match pkt {
-            MqttPacket::Puback(id) if id == packet_id => {
-                self.pending_acks.remove(&packet_id);
-                // v0.221.0：确认后清除持久化记录。
-                if let Some(store) = &mut self.qos_store {
-                    let _ = store.remove(packet_id);
+        for attempt in 0..=2 {
+            let transport = self.transport.as_mut().ok_or(MqttError::NotConnected)?;
+            let bytes = match transport.recv() {
+                Ok(b) => b,
+                // 31 PR-12：recv 错误（超时/无数据）→ DUP 重传（≤2 次）。
+                Err(_) if attempt < 2 => {
+                    // 重发（DUP=1，同 packet id）。
+                    drop(transport);
+                    let mut publish = self
+                        .inflight
+                        .get(&packet_id)
+                        .cloned()
+                        .ok_or(MqttError::PublishTimeout)?;
+                    publish.dup = true;
+                    let bytes = packet::encode(&MqttPacket::Publish(publish));
+                    self.transport
+                        .as_mut()
+                        .ok_or(MqttError::NotConnected)?
+                        .send(&bytes)
+                        .map_err(|_| MqttError::TransportError)?;
+                    continue;
                 }
-                Ok(())
+                Err(e) => return Err(e),
+                Ok(_) => unreachable!(),
+            };
+            let pkt = packet::decode(&bytes).map_err(|_| MqttError::PacketDecodeError)?;
+            match pkt {
+                MqttPacket::Puback(id) if id == packet_id => {
+                    self.pending_acks.remove(&packet_id);
+                    self.inflight.remove(&packet_id);
+                    // v0.221.0：确认后清除持久化记录。
+                    if let Some(store) = &mut self.qos_store {
+                        let _ = store.remove(packet_id);
+                    }
+                    return Ok(());
+                }
+                _ => return Err(MqttError::UnexpectedPacket),
             }
-            _ => Err(MqttError::UnexpectedPacket),
         }
+        Err(MqttError::PublishTimeout)
     }
 
     /// QoS 2 四次握手：等待 PUBREC → 发 PUBREL → 等待 PUBCOMP.
@@ -529,6 +576,36 @@ fn parse_broker(broker: &str) -> (String, u16) {
 
 #[cfg(test)]
 mod tests {
+    use crate::transport::MockTransport;
+    use crate::packet::{self, MqttPacket};
+
+    /// 31 PR-12 判据：mock 不返回 PUBACK（recv 空 → PublishTimeout）→
+    /// DUP=1 同 packet id 重发（MQTT 3.1.1 §4.4）。
+    #[test]
+    fn test_qos1_timeout_retransmits_dup() {
+        let mut transport = MockTransport::new();
+        transport.set_connected(true);
+        let mut client = crate::client::MqttClient::new("eneros-test", "client-1", 30);
+        client.set_transport(Box::new(transport));
+        // 直接构造 Connected 状态发布。
+        client.state = crate::client::ConnectionState::Connected;
+        // mock recv 空队列 → PublishTimeout → DUP 重传路径触发。
+        let result = client.publish("t", b"payload", crate::qos::QoS::AtLeastOnce, 0);
+        let _ = result;
+        let sent = client
+            .transport_mut()
+            .as_any_mut()
+            .downcast_ref::<MockTransport>()
+            .expect("downcast")
+            .sent_packets()
+            .to_vec();
+        let dup_frames = sent
+            .iter()
+            .filter(|b| b.first() == Some(&0x3A)) // PUBLISH QoS1 DUP=1 (0b00111010)
+            .count();
+        assert!(dup_frames >= 1, "超时后必须 DUP=1 重发（31 PR-12 判据）");
+    }
+
     use super::*;
 
     #[test]

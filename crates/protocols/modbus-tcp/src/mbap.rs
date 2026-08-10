@@ -28,6 +28,15 @@ impl MbapHeader {
     ///
     /// - `protocol_id` 固定为 0（Modbus 协议）
     /// - `length` = `data_len`（PDU 字节数） + 1（unit_id 占 1 字节）
+    /// 31 PR-09：data_len 超 Modbus 协议上限（252）时 u16 回绕——返回
+    /// None（调用方拒绝该帧）。
+    pub fn try_new(transaction_id: u16, unit_id: u8, data_len: u16) -> Option<Self> {
+        if data_len > 252 {
+            return None;
+        }
+        Some(Self::new(transaction_id, unit_id, data_len))
+    }
+
     pub fn new(transaction_id: u16, unit_id: u8, data_len: u16) -> Self {
         Self {
             transaction_id,
@@ -163,6 +172,13 @@ impl MbapStreamDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 31 PR-09 判据：data_len > 252 → try_new None（u16 回绕防护）。
+    #[test]
+    fn test_mbap_rejects_oversized_pdu() {
+        assert!(MbapHeader::try_new(1, 1, 252).is_some());
+        assert!(MbapHeader::try_new(1, 1, 253).is_none());
+    }
 
     #[test]
     fn test_new_sets_protocol_id_zero() {

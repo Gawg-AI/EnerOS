@@ -131,7 +131,7 @@ impl Iec104Adapter {
             Some(v) => v,
             None => {
                 // lazy poll：仅召唤目标设备，消费响应后重查
-                self.now_ms += 1;
+                self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
                 self.poll_device(common_addr, self.now_ms);
                 self.master
                     .latest_value(common_addr, ioa)
@@ -325,7 +325,7 @@ mod tests {
                 time_tag: None,
             }],
         };
-        Apdu::i_format(0, 0, asdu).encode()
+        Apdu::i_format(0, 0, asdu).encode().unwrap()
     }
 
     /// 构造总召唤激活确认帧（C_IC_NA，COT=ActivationConfirm）。
@@ -341,7 +341,7 @@ mod tests {
                 time_tag: None,
             }],
         };
-        Apdu::i_format(0, 0, asdu).encode()
+        Apdu::i_format(0, 0, asdu).encode().unwrap()
     }
 
     /// ARCH-P04：iec104-master 与 modbus 跑同一 seam 契约测试套件。
@@ -382,7 +382,7 @@ mod tests {
             for (conn, ioa) in [(1u32, 100u32), (2u32, 200u32)] {
                 mock.push_rx(
                     conn,
-                    Apdu::u_format(eneros_iec104_slave::UFormatFunction::StartDtCon).encode(),
+                    Apdu::u_format(eneros_iec104_slave::UFormatFunction::StartDtCon).encode().unwrap(),
                 );
                 mock.push_rx(conn, interrogation_confirm(conn as u16));
                 mock.push_rx(conn, telemetry_frame(conn as u16, ioa, 42.0));

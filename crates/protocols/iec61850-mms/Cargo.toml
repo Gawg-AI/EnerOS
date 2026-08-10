@@ -7,6 +7,7 @@ license.workspace = true
 description = "EnerOS v0.106.0 IEC 61850 MMS protocol stack (BER + ACSE/COTP + MmsClient, no_std)"
 
 [dependencies]
+eneros-time = { path = "../../drivers/time" }
 eneros-iec61850-model = { path = "../iec61850-model" }
 # v0.222.0（B2-05）：真实 TCP 传输（smoltcp）。
 eneros-net = { path = "../../drivers/net", optional = true }

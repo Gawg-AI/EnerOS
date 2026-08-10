@@ -21,6 +21,8 @@ pub enum ModbusTcpError {
     Closed,
     /// 帧过短（MBAP 头部不足 7 字节）
     FrameTooShort,
+    /// 31 PR-09：PDU 超长（>252，Modbus 协议上限）——u16 回绕防护。
+    PduTooLong,
     /// MBAP 协议 ID 非 0（仅 Modbus 协议 = 0 合法）
     InvalidProtocolId,
 }
@@ -36,6 +38,7 @@ impl fmt::Display for ModbusTcpError {
             Self::Closed => write!(f, "modbus tcp connection closed"),
             Self::FrameTooShort => write!(f, "modbus tcp frame too short"),
             Self::InvalidProtocolId => write!(f, "modbus tcp invalid protocol id"),
+            Self::PduTooLong => write!(f, "modbus tcp pdu too long (>252)"),
         }
     }
 }

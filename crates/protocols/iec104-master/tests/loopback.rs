@@ -155,7 +155,7 @@ fn spawn_slave_stub(port: u16) -> mpsc::Receiver<()> {
                             ioas: vec![],
                         },
                     );
-                    let _ = stream.write_all(&ack.encode());
+                    let _ = stream.write_all(&ack.encode().unwrap());
                     let tele = Apdu::i_format(
                         1,
                         1,
@@ -171,7 +171,7 @@ fn spawn_slave_stub(port: u16) -> mpsc::Receiver<()> {
                             }],
                         },
                     );
-                    let _ = stream.write_all(&tele.encode());
+                    let _ = stream.write_all(&tele.encode().unwrap());
                 }
                 _ => {}
             }

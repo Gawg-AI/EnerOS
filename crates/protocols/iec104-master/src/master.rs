@@ -110,7 +110,7 @@ impl Iec104Master {
 
         // 发送 STARTDT_ACT
         let startdt = Apdu::u_format(UFormatFunction::StartDtAct);
-        let data = startdt.encode();
+        let data = startdt.encode()?;
         if let Err(e) = self.transport.send(conn_id, &data) {
             self.stats.tx_error_count += 1;
             return Err(e);
@@ -469,7 +469,7 @@ impl Iec104Master {
 
         // 构造并发送 APDU
         let apdu = Apdu::i_format(send_seq, recv_seq, asdu.clone());
-        let data = apdu.encode();
+        let data = apdu.encode()?;
         if let Err(e) = self.transport.send(conn_id, &data) {
             self.stats.tx_error_count += 1;
             return Err(e);
@@ -494,7 +494,7 @@ impl Iec104Master {
             .map(|c| c.conn_id)
             .ok_or(MasterError::NotConnected)?;
         let apdu = Apdu::s_format(recv_seq);
-        let data = apdu.encode();
+        let data = apdu.encode()?;
         if let Err(e) = self.transport.send(conn_id, &data) {
             self.stats.tx_error_count += 1;
             return Err(e);
@@ -535,7 +535,7 @@ impl Iec104Master {
         };
 
         let testfr = Apdu::u_format(UFormatFunction::TestFrAct);
-        let data = testfr.encode();
+        let data = testfr.encode()?;
         if let Err(e) = self.transport.send(conn_id, &data) {
             self.stats.tx_error_count += 1;
             return Err(e);
@@ -709,7 +709,7 @@ mod tests {
                 }],
             };
             let apdu = Apdu::i_format(seq, 0, asdu);
-            transport.push_rx(1, apdu.encode());
+            transport.push_rx(1, apdu.encode().unwrap());
         }
         let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
         let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
@@ -772,7 +772,7 @@ mod tests {
             ioas: vec![],
         };
         let apdu = Apdu::i_format(0, 0, asdu);
-        transport.push_rx(1, apdu.encode());
+        transport.push_rx(1, apdu.encode().unwrap());
         let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
         let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
         master.connect(&dev).unwrap();

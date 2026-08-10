@@ -969,6 +969,7 @@ version = "1.0.0-rc.0"
 dependencies = [
  "eneros-iec61850-model",
  "eneros-net",
+ "eneros-time",
 ]
 
 [[package]]
@@ -1148,6 +1149,7 @@ version = "1.0.0-rc.0"
 dependencies = [
  "eneros-fs",
  "eneros-net",
+ "eneros-time",
  "eneros-upa-model",
 ]
 

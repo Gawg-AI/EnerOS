@@ -23,6 +23,9 @@ pub trait MqttTransport {
     fn close(&mut self) -> Result<(), MqttError>;
     /// 是否已连接.
     fn is_connected(&self) -> bool;
+
+    /// 类型擦除向下转换（测试注入 mock 用，对齐 iec104 模式）。
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any;
 }
 
 /// 内存 mock 传输（用于测试）.
@@ -106,6 +109,10 @@ impl MqttTransport for MockTransport {
 
     fn is_connected(&self) -> bool {
         self.connected
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }
 

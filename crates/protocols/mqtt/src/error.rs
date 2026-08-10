@@ -3,6 +3,8 @@
 /// MQTT 客户端错误.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MqttError {
+    /// 31 PR-10：报文编码失败（will payload 超限等病态输入）。
+    PacketEncode,
     /// 未连接（操作前需先 connect）.
     NotConnected,
     /// Broker 不可达（CONNACK 返回非 0 或传输失败）.
