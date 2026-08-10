@@ -12,3 +12,10 @@ generic-array = "0.14"
 typenum = "1.20"
 bitflags = "2.13"
 spin = "0.9"
+
+# 29 DR-01：MockBlockDevice 门控 cfg(any(test, feature="mock")) 不跨 crate
+# 传播——真实 Lfs（littlefs2 + RAM 后端）测试从未编译通过（测试盲区根因，
+# 新路径首写失败被掩盖）。测试构建显式启用 mock feature（release 由
+# compile_error 门禁保护）。
+[dev-dependencies]
+eneros-storage = { path = "../storage", features = ["mock"] }

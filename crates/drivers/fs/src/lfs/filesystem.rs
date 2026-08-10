@@ -380,10 +380,21 @@ impl FileSystem for Lfs {
     }
 
     fn write_file(&mut self, path: &str, data: &[u8]) -> Result<(), FsError> {
-        // 截断重写：先移除再全量写入（read_file_at/write_file_at 不做截断）。
+        // 29 DR-01（方案 B）：tmp+rename 原子写——先写 `<path>.tmp`
+        // （create=true，空文件），全量写入后再 rename 到目标；掉电不丢
+        // 旧数据（旧文件在 rename 前保持完整）。
+        // 原实现 `remove(path)` 后 `write_file_at`（open 无 create）→ 新
+        // 路径首写必失败（NO_SUCH_ENTRY）；测试盲区根因：fs 泛型测试全走
+        // MockFileSystem（内存版正常），真实 littlefs2 路径从未覆盖。
+        let tmp_path = alloc::format!("{path}.tmp");
+        // 清理上次崩溃残留的 tmp。
+        let _ = self.remove(&tmp_path);
+        self.create(&tmp_path, FileMode::default_file())?;
+        self.write_file_at(&tmp_path, 0, data)?;
+        // 原子替换目标（littlefs2 rename 覆盖语义；先清目标防 rename 语义
+        // 差异——崩溃时 tmp 保留，旧数据在 remove 前仍完整）。
         let _ = self.remove(path);
-        self.write_file_at(path, 0, data)?;
-        Ok(())
+        self.rename(&tmp_path, path)
     }
 }
 
@@ -532,6 +543,30 @@ mod tests {
         fs.remove("/rm.txt").expect("remove should succeed");
         let err = fs.stat("/rm.txt").unwrap_err();
         assert!(matches!(err, FsError::NotFound { .. }));
+    }
+
+    /// 29 DR-01 判据：真实 littlefs2 + RAM 后端，空文件系统新路径首写
+    /// 必须成功且可读回——修复前 remove 后 write_file_at（open 无 create）
+    /// 必 NO_SUCH_ENTRY 失败（MockFileSystem 内存版正常，测试盲区根因）。
+    #[test]
+    fn test_write_file_new_path_first_write_ok() {
+        let mut fs = make_fs();
+        fs.write_file("/a.txt", b"x")
+            .expect("新路径首写必须成功（29 DR-01 判据）");
+        let back = fs.read_file("/a.txt").expect("read back");
+        assert_eq!(back, b"x");
+    }
+
+    /// 29 DR-01：覆盖写（目标已存在）保持旧语义——全量替换 + 可读回；
+    /// tmp 文件不得残留。
+    #[test]
+    fn test_write_file_overwrite_no_tmp_left() {
+        let mut fs = make_fs();
+        fs.write_file("/b.txt", b"old-content").expect("first write");
+        fs.write_file("/b.txt", b"new").expect("overwrite");
+        let back = fs.read_file("/b.txt").expect("read back");
+        assert_eq!(back, b"new");
+        assert!(fs.stat("/b.txt.tmp").is_err(), "tmp 文件必须清理");
     }
 
     #[test]

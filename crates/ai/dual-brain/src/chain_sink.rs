@@ -188,13 +188,19 @@ impl CommandSink for ChainCommandSink {
         // 2. 构造签名信封。
         let mut id_bytes = [0u8; 16];
         id_bytes[..8].copy_from_slice(&self.seq.to_le_bytes());
+        // 29 AI-01：ttl_ms 为毫秒、now 为 epoch 秒——原实现毫秒 TTL 直接加
+        // 到秒基准，信封有效期放大 1000 倍（名义 5 分钟 → ~3.5 天，重放
+        // 窗口扩 1000 倍）。统一秒基准（ttl ≥ 1s 防零有效期）。
+        // 字段名 ttl_ms 暂保持——32 域 coordinator 装配点适配时一并改名
+        // ttl_secs（本版本排斥矩阵禁止触碰 coordinator.rs）。
+        let ttl_secs = (cmd.ttl_ms / 1000).max(1);
         let buf = EnvelopeBuilder::new(
             id_bytes,
             self.device_id,
             self.point_id,
             ControlCommand::Single(single),
             now,
-            now.saturating_add(cmd.ttl_ms as u64),
+            now.saturating_add(ttl_secs as u64),
             self.issuer,
         )
         .lease(self.lease_id, self.fencing_token)
@@ -322,18 +328,34 @@ mod tests {
     #[derive(Default)]
     struct RecordingExecutor {
         writes: alloc::vec::Vec<(u32, u32, f64)>,
+        envelopes: alloc::vec::Vec<alloc::vec::Vec<u8>>,
         fail: Option<DeviceExecError>,
     }
+
+    /// Rc 适配器：测试经共享引用读取写入记录（29 AI-01 信封判据用）。
+    struct RcExecutor(std::rc::Rc<std::cell::RefCell<RecordingExecutor>>);
+    impl DeviceExecutor for RcExecutor {
+        fn write(
+            &mut self,
+            cmd: &AuthorizedCommand,
+            envelope: &[u8],
+            power_kw: f64,
+        ) -> Result<(), DeviceExecError> {
+            self.0.borrow_mut().write(cmd, envelope, power_kw)
+        }
+    }
+
     impl DeviceExecutor for RecordingExecutor {
         fn write(
             &mut self,
             cmd: &AuthorizedCommand,
-            _envelope: &[u8],
+            envelope: &[u8],
             power_kw: f64,
         ) -> Result<(), DeviceExecError> {
             if let Some(e) = &self.fail {
                 return Err(e.clone());
             }
+            self.envelopes.push(envelope.to_vec());
             self.writes
                 .push((cmd.point_id(), cmd.lease_id()[0] as u32, power_kw));
             Ok(())
@@ -380,6 +402,37 @@ mod tests {
         // executor 收到写入（设备写真实发生）。
         let exec = sink.executor;
         let _ = exec;
+    }
+
+    /// 29 AI-01 判据：信封 expiry 必须为秒基准（expiry − timestamp ==
+    /// ttl_ms/1000 ± 1）——修复前毫秒 TTL 直接加到秒基准（60_000ms →
+    /// expiry = now + 60000s ≈ 16.7h，有效期放大 1000 倍）。
+    #[test]
+    fn test_chain_sink_envelope_expiry_in_seconds() {
+        let shared = std::rc::Rc::new(std::cell::RefCell::new(RecordingExecutor::default()));
+        let mut sink = ChainCommandSink::new(
+            chain_allow_ai(),
+            Box::new(RcExecutor(shared.clone())),
+            KEY,
+            LEASE_ID,
+            1,
+            ISSUER,
+            1,
+            10,
+            4,
+            now,
+            feedback_fresh,
+        );
+        let mut cmd = dispatch(50.0);
+        cmd.ttl_ms = 300_000; // 名义 5 分钟
+        sink.write(cmd).expect("write ok");
+        let enc = shared.borrow().envelopes[0].clone();
+        let env = eneros_control_gateway::envelope::CommandEnvelope::decode(&enc).expect("decode");
+        let delta = env.expiry - env.timestamp;
+        assert!(
+            (delta as i64 - 300).abs() <= 1,
+            "expiry 必须为秒基准：ttl 300_000ms → 300s，got {delta}s（29 AI-01 判据）"
+        );
     }
 
     /// 验收：设备拒绝 → DualBrainError（非 Ok）。
