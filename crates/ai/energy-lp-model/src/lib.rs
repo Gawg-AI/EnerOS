@@ -34,7 +34,6 @@
 //! 仅使用 `alloc::*` 与 `core::*`，可交叉编译到 `aarch64-unknown-none`。
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 
 extern crate alloc;
 
@@ -139,7 +138,7 @@ mod tests {
         let model = EnergyScheduleModel::new(ScheduleConfig::default());
         assert_eq!(model.charge_var_idx.len(), 96);
         assert_eq!(model.discharge_var_idx.len(), 96);
-        assert_eq!(model.soc_var_idx.len(), 96);
+        assert_eq!(model.soc_var_idx.len(), 97); // 32 AI-05：soc[n]
     }
 
     // === T4: 变量索引正确 — charge 0..96, discharge 96..192, soc 192..288 ===
@@ -165,7 +164,7 @@ mod tests {
     fn t6_lp_variable_count() {
         let model = EnergyScheduleModel::new(ScheduleConfig::default());
         let lp = model.compile().unwrap();
-        assert_eq!(lp.variables.len(), 288);
+        assert_eq!(lp.variables.len(), 289); // 32 AI-05：soc[n]
     }
 
     // === T7: CSR row_start.len() == num_constraints + 1 ===
@@ -182,7 +181,7 @@ mod tests {
     fn t8_soc_dynamics_constraint_count() {
         let model = EnergyScheduleModel::new(ScheduleConfig::default());
         // SOC 动态约束 = Eq with 4 terms
-        assert_eq!(count_eq_with_terms(&model, 4), 95);
+        assert_eq!(count_eq_with_terms(&model, 4), 96); // 32 AI-05：守恒从 t=0
     }
 
     // === T9: 爬坡约束数 = 190 ===
@@ -321,11 +320,11 @@ mod tests {
         // 变量：3 × 4 = 12
         assert_eq!(model.charge_var_idx.len(), 4);
         assert_eq!(model.discharge_var_idx.len(), 4);
-        assert_eq!(model.soc_var_idx.len(), 4);
+        assert_eq!(model.soc_var_idx.len(), 5); // 32 AI-05：soc[n]
         let lp = model.compile().unwrap();
-        assert_eq!(lp.variables.len(), 12);
+        assert_eq!(lp.variables.len(), 13); // 32 AI-05：soc[n]
         // 约束：soc_dynamics(3) + ramp(6) + mutex(4) + soc_init(1) + soc_final(1) = 15
-        assert_eq!(lp.constraints.num_rows, 15);
+        assert_eq!(lp.constraints.num_rows, 16); // 32 AI-05：守恒 t=0
     }
 
     // === T20: 小规模模型 compile + MockSolver 端到端 ===

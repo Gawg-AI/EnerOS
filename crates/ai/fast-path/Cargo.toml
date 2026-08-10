@@ -15,3 +15,7 @@ eneros-safety-validator = { path = "../safety-validator" }
 default = []
 # v0.212.0（P0-27）：mock 仅测试/显式启用；生产不依赖 mock。
 mock = ["eneros-solver-core/mock"]
+
+# 32 AI-03：MockSolver 门控不跨 crate——测试显式启用。
+[dev-dependencies]
+eneros-solver-core = { path = "../../ai/solver-core", features = ["mock"] }

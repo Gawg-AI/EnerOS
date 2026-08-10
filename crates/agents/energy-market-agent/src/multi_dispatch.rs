@@ -20,11 +20,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use eneros_solver_core::{
-    problem::{ConstraintMatrix, LpProblem, ObjectiveSense, VarType},
-    result::SolveStatus,
-    solver::Solver,
-};
+use eneros_solver_core::{problem::LpProblem, result::SolveStatus, solver::Solver};
 
 use crate::device_pool::{DeviceCapability, DeviceMode, DevicePool};
 
@@ -171,79 +167,29 @@ impl MultiDeviceDispatcher {
     }
 }
 
+/// 构建损耗最小化 LP（W4.1 蓝图23：约束骨架由 `multi_objective::build_weighted_lp`
+/// 单一持有——两处逐字重复已合并；objective 系数 = `1 - efficiency` 在此生成）。
 fn build_lp_problem(
     eligible: &[(u64, DeviceCapability)],
     target: f32,
     last_setpoints: &BTreeMap<u64, f32>,
 ) -> LpProblem {
-    let n = eligible.len();
-    let mut variables = Vec::with_capacity(n);
-    let mut lower_bounds = Vec::with_capacity(n);
-    let mut upper_bounds = Vec::with_capacity(n);
-    let mut var_types = Vec::with_capacity(n);
-    let mut objective = Vec::with_capacity(n);
-
-    for (id, cap) in eligible.iter() {
-        variables.push(alloc::format!("p_{}", id));
-        lower_bounds.push(cap.p_min as f64);
-        upper_bounds.push(cap.p_max as f64);
-        var_types.push(VarType::Continuous);
-        objective.push(1.0 - cap.efficiency as f64);
-    }
-
-    // 平衡行 + 每个有上次设定点的设备 1 条爬坡行
-    let num_ramp = eligible
+    let objective: Vec<f64> = eligible
         .iter()
-        .filter(|(id, _)| last_setpoints.contains_key(id))
-        .count();
-    let num_rows = 1 + num_ramp;
-    let num_nz = n + num_ramp;
-
-    let mut row_start = Vec::with_capacity(num_rows + 1);
-    let mut col_index = Vec::with_capacity(num_nz);
-    let mut values = Vec::with_capacity(num_nz);
-    let mut rhs_lower = Vec::with_capacity(num_rows);
-    let mut rhs_upper = Vec::with_capacity(num_rows);
-
-    // 平衡行：Σ p_i = target
-    row_start.push(0);
-    for i in 0..n {
-        col_index.push(i as i32);
-        values.push(1.0);
-    }
-    row_start.push(n as i32);
-    rhs_lower.push(target as f64);
-    rhs_upper.push(target as f64);
-
-    // 爬坡行（D9）：prev - ramp <= p_i <= prev + ramp，每行 1 个非零
-    for (i, (id, cap)) in eligible.iter().enumerate() {
-        if let Some(prev) = last_setpoints.get(id) {
-            col_index.push(i as i32);
-            values.push(1.0);
-            row_start.push(col_index.len() as i32);
-            rhs_lower.push((*prev as f64) - (cap.ramp_rate as f64));
-            rhs_upper.push((*prev as f64) + (cap.ramp_rate as f64));
-        }
-    }
-
-    LpProblem {
-        variables,
-        lower_bounds,
-        upper_bounds,
-        var_types,
-        objective,
-        sense: ObjectiveSense::Minimize,
-        constraints: ConstraintMatrix::new(num_rows, num_nz, row_start, col_index, values),
-        rhs_lower,
-        rhs_upper,
-    }
+        .map(|(_, cap)| 1.0 - cap.efficiency as f64)
+        .collect();
+    crate::multi_objective::build_weighted_lp(eligible, target, last_setpoints, objective)
 }
 
 #[cfg(test)]
 mod tests {
     use alloc::vec;
 
-    use eneros_solver_core::{error::SolverError, result::SolveResult};
+    use eneros_solver_core::{
+        error::SolverError,
+        problem::{ObjectiveSense, VarType},
+        result::SolveResult,
+    };
 
     use super::*;
 

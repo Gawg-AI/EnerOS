@@ -9,3 +9,6 @@ description = "EnerOS v0.66.0 Energy schedule LP model (DSL-based, no_std)"
 [dependencies]
 eneros-solver-core = { path = "../solver-core" }
 eneros-solver-model = { path = "../solver-model" }
+
+[dev-dependencies]
+eneros-solver-core = { path = "../solver-core", features = ["mock"] }

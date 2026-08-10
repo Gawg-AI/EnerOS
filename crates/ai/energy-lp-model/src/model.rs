@@ -72,8 +72,10 @@ impl EnergyScheduleModel {
         }
 
         // 决策变量：soc[0..n]（单位 kWh，边界已乘容量）
-        let mut soc_var_idx = Vec::with_capacity(n);
-        for t in 0..n {
+        // 32 AI-05：SOC 变量 num_periods+1 个（动态从 t=0 起——时段 0 的
+        // 充放电必须进守恒约束，旧实现从 t=1 起留下免费能量窗口）。
+        let mut soc_var_idx = Vec::with_capacity(n + 1);
+        for t in 0..=n {
             let idx = problem.add_var(
                 VarBuilder::new(&format!("soc_{}", t))
                     .range(soc_lo, soc_hi)
@@ -124,10 +126,12 @@ impl EnergyScheduleModel {
         let charge_coeff = eta_c * dt;
         let discharge_coeff = dt / eta_d;
 
-        for t in 1..self.config.num_periods {
+        // 32 AI-05：守恒从 t=0 起——soc[1] = soc[0] + η_c·ch[0] − dch[0]/η_d
+        //（旧实现 t=0 的充放电不进约束，免费能量窗口）。
+        for t in 0..self.config.num_periods {
             let mut expr = LinearExpr::new();
-            expr.add_term(self.soc_var_idx[t], 1.0);
-            expr.add_term(self.soc_var_idx[t - 1], -1.0);
+            expr.add_term(self.soc_var_idx[t + 1], 1.0);
+            expr.add_term(self.soc_var_idx[t], -1.0);
             expr.add_term(self.charge_var_idx[t], -charge_coeff);
             expr.add_term(self.discharge_var_idx[t], discharge_coeff);
             self.problem

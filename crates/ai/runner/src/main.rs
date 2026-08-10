@@ -30,11 +30,14 @@ struct Args {
     now_ms: u64,
     /// 覆盖 `ScheduleConfig.soc_min`.
     soc_min: Option<f64>,
+    /// 32 AI-07：链密钥（--chain-key-file 读取；缺省拒绝启动）。
+    chain_key: Vec<u8>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut model = None;
     let mut sink = None;
+    let mut chain_key: Option<Vec<u8>> = None;
     let mut scenario = Scenario::Normal;
     let mut now_ms = None;
     let mut soc_min = None;
@@ -47,6 +50,16 @@ fn parse_args() -> Result<Args, String> {
         match flag.as_str() {
             "--model" => model = Some(value),
             "--sink" => sink = Some(value),
+            // 32 AI-07：链密钥文件（fail-closed 缺省拒绝）。
+            "--chain-key-file" => {
+                let raw = std::fs::read(&value)
+                    .map_err(|e| format!("--chain-key-file read failed: {e}"))?;
+                let key: Vec<u8> = raw.into_iter().filter(|b| *b != b'\n' && *b != b'\r').collect();
+                if key.len() < 16 {
+                    return Err("chain key must be >=16 bytes".into());
+                }
+                chain_key = Some(key);
+            }
             "--scenario" => scenario = Scenario::parse(&value)?,
             "--now-ms" => {
                 now_ms = Some(
@@ -67,6 +80,8 @@ fn parse_args() -> Result<Args, String> {
     }
 
     Ok(Args {
+        chain_key: chain_key
+            .ok_or_else(|| "--chain-key-file is mandatory (fail-closed; 32 AI-07)".to_owned())?,
         model: model.ok_or_else(|| "--model is mandatory".to_owned())?,
         sink: sink.ok_or_else(|| "--sink is mandatory".to_owned())?,
         scenario,
@@ -157,6 +172,7 @@ fn main() {
         &args.sink,
         args.now_ms,
         eneros_control_gateway::chain::FeedbackBundle::untrusted,
+        &args.chain_key,
     ) {
         Ok(outcome) => {
             // stdout 只输出证据 JSON（llama 日志在 stderr）——证据文件可

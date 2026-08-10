@@ -419,8 +419,9 @@ impl MultiObjectiveOptimizer {
     }
 }
 
-// 构建加权目标 LP（与 v0.87.0 build_lp_problem 同构，objective 外部传入）.
-fn build_weighted_lp(
+// 构建加权目标 LP（W4.1 蓝图23：与 v0.87.0 build_lp_problem 合并后的单一
+// LP 构建函数——约束骨架单一持有，objective 系数由调用方传入）.
+pub(crate) fn build_weighted_lp(
     eligible: &[(u64, DeviceCapability)],
     target: f32,
     last_setpoints: &BTreeMap<u64, f32>,

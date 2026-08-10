@@ -49,7 +49,6 @@
 //! 不引入任何 `std::*`，不调用 `panic!` / `todo!` / `unimplemented!`，无 `unsafe` 块。
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 
 extern crate alloc;
 
@@ -168,9 +167,9 @@ mod tests {
     #[test]
     fn test_t6_submit_incrementing_ids() {
         let mut sched = InferScheduler::new(2, TEST_CACHE_BUDGET, ComputeDevice::Cpu);
-        let id1 = sched.submit(InferRequest::new(0, "a", InferParams::default()));
-        let id2 = sched.submit(InferRequest::new(0, "b", InferParams::default()));
-        let id3 = sched.submit(InferRequest::new(0, "c", InferParams::default()));
+        let id1 = sched.submit(InferRequest::new(0, "a", InferParams::default())).unwrap();
+        let id2 = sched.submit(InferRequest::new(0, "b", InferParams::default())).unwrap();
+        let id3 = sched.submit(InferRequest::new(0, "c", InferParams::default())).unwrap();
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         assert_eq!(id3, 3);
@@ -194,7 +193,7 @@ mod tests {
         let mut engine = MockEngine::new(ComputeDevice::Cpu);
         engine.load_model("/test.gguf").unwrap();
         let mut sched = InferScheduler::new(2, TEST_CACHE_BUDGET, ComputeDevice::Cpu);
-        let id = sched.submit(InferRequest::new(0, "hello", InferParams::default()));
+        let id = sched.submit(InferRequest::new(0, "hello", InferParams::default())).unwrap();
         let results = sched.tick(0, &mut engine);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, id);
@@ -228,7 +227,7 @@ mod tests {
         let req = InferRequest::new(0, "timeout", InferParams::default())
             .with_timeout(1000)
             .with_timestamp(0);
-        let id = sched.submit(req);
+        let id = sched.submit(req).unwrap();
         // now=2000: 2000 - 0 = 2000 > 1000，超时
         let results = sched.tick(2000, &mut engine);
         assert_eq!(results.len(), 1);
@@ -248,11 +247,11 @@ mod tests {
         let _id_normal = sched.submit(
             InferRequest::new(0, "normal", InferParams::default())
                 .with_priority(RequestPriority::Normal),
-        );
+        ).unwrap();
         let id_high = sched.submit(
             InferRequest::new(0, "high", InferParams::default())
                 .with_priority(RequestPriority::High),
-        );
+        ).unwrap();
         let results = sched.tick(0, &mut engine);
         // High 优先级应先执行
         assert_eq!(results.len(), 1);

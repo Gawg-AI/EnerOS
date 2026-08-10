@@ -1,3 +1,5 @@
+# status: deferred (v1.x)——32 AG-03 决策 B：零生产消费，能力未实装
+# consumer: 集成层占位（产线注入）——当前无 Rust 解析代码，仅交付模板
 # consumer: 集成层占位（产线注入）——当前无 Rust 解析代码，仅交付模板
 # EnerOS v0.88.0 多目标优化配置模板
 # 经济 vs 寿命 vs 安全 vs 碳排 4 目标加权和 + Pareto 前沿求解参数

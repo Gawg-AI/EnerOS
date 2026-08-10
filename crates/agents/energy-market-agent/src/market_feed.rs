@@ -19,19 +19,10 @@ use alloc::vec::Vec;
 pub use eneros_dr::types::DrSignal;
 /// 市场类型（唯一来源：`eneros-market-types`，ARCH-M03 / ADR-0029）。
 pub use eneros_market_types::MarketType;
+/// 时段类型（唯一来源：`eneros-market-types`，W5.1 蓝图23 / ADR-0029——
+/// 峰/平/谷进入跨 crate 契约，收敛到市场域共享词汇）。
+pub use eneros_market_types::Period;
 pub use eneros_market_types::YuanPerKwh;
-
-/// 时段类型（D6：蓝图引用未定义，本版本定义峰/平/谷）.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Period {
-    /// 峰时段.
-    Peak,
-    /// 平时段.
-    #[default]
-    Flat,
-    /// 谷时段.
-    Valley,
-}
 
 /// 电价点（D5：蓝图交付物 PriceSignal 视为 PricePoint 别名）.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

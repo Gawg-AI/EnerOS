@@ -57,6 +57,9 @@ pub struct EnergyAgent<S: Solver> {
     pub current_price: f64,
     /// 生命周期状态.
     pub state: AgentState,
+    /// 32 AG-01：连续错误计数（Transient 错误 N 次连续才 Error——
+    /// 旧实现任何 Err 即永久 Error，限流常态导致一次拒绝即离线）。
+    pub consecutive_errors: u32,
     /// tick 计数.
     pub tick_count: u64,
     // --- 22 §2.W2.1：act→observe 反馈环 ---
@@ -118,6 +121,7 @@ impl<S: Solver> EnergyAgent<S> {
             current_schedule: None,
             current_price: 0.5,
             state: AgentState::Created,
+            consecutive_errors: 0,
             tick_count: 0,
             observer: None,
             last_feedback: None,
@@ -127,8 +131,13 @@ impl<S: Solver> EnergyAgent<S> {
             last_observed_at_ms: now_ms,
             rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
             last_rejection: None,
-            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(1.0, eneros_safety_validator::SafetyCatalog::default_eps()),
-            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(eneros_safety_validator::SafetyCatalog::default_eps()),
+            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(
+                1.0,
+                eneros_safety_validator::SafetyCatalog::default_eps(),
+            ),
+            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(
+                eneros_safety_validator::SafetyCatalog::default_eps(),
+            ),
             twin_forecast: None,
             twin_confidence: 0.0,
         }
@@ -144,6 +153,9 @@ impl<S: Solver> EnergyAgent<S> {
     /// 回灌决策）。`points` = twin 预测值序列（kW/时段），`confidence` =
     /// 预测置信度；由上层（runner/设备服务）从 twin 预测结果提取注入
     /// （避免 agent↔twin 依赖环，见 ADR-032）。
+    /// 32 AG-01：连续 Transient 错误上限（≥ 才转 Error）。
+    pub const MAX_CONSECUTIVE_ERRORS: u32 = 3;
+
     pub fn set_twin_forecast(&mut self, points: alloc::vec::Vec<f64>, confidence: f32) {
         self.twin_forecast = Some(points);
         self.twin_confidence = confidence;
@@ -191,6 +203,7 @@ impl EnergyAgent<MockSolver> {
             current_schedule: None,
             current_price: 0.5,
             state: AgentState::Created,
+            consecutive_errors: 0,
             tick_count: 0,
             observer: None,
             last_feedback: None,
@@ -200,8 +213,13 @@ impl EnergyAgent<MockSolver> {
             last_observed_at_ms: now_ms,
             rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
             last_rejection: None,
-            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(1.0, eneros_safety_validator::SafetyCatalog::default_eps()),
-            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(eneros_safety_validator::SafetyCatalog::default_eps()),
+            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(
+                1.0,
+                eneros_safety_validator::SafetyCatalog::default_eps(),
+            ),
+            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(
+                eneros_safety_validator::SafetyCatalog::default_eps(),
+            ),
             twin_forecast: None,
             twin_confidence: 0.0,
         }
@@ -240,9 +258,12 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                 SystemState::default()
             }
         };
+        // 32 AG-02②：修正器接线消费——学习后的价格修正进 LP 输入
+        //（旧实现 correct 生产零消费，"只学不用"）。
+        let corrected_price = self.forecast_corrector.correct(self.current_price);
         let state = RealtimeState {
             system,
-            current_price: self.current_price,
+            current_price: corrected_price,
             // 22 §2.W2.6：twin 预测回灌（feedforward）——有预测用预测，
             // 无预测显式 None（不造假值）。
             load_demand: self.twin_forecast.clone(),
@@ -276,8 +297,16 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                                 self.forecast_error_count += 1;
                                 // 22 §2.W2.5：轻量在线学习（安全闸内置——
                                 // 越界拒绝用旧值，学坏不致灾）。
+                                // 32 AG-02：归一化——绝对偏差（元）喂无量纲
+                                // 修正器恒超 max_correction 回退 0，学习失效；
+                                // 相对偏差在 ±1 内。
+                                let rel_bias = if predicted.abs() > 1e-9 {
+                                    (predicted - fb.actual_revenue) / predicted.abs()
+                                } else {
+                                    0.0
+                                };
                                 self.deadband_learner.learn(dev);
-                                self.forecast_corrector.learn(predicted - fb.actual_revenue);
+                                self.forecast_corrector.learn(rel_bias);
                             }
                         }
                         None => {
@@ -288,6 +317,8 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                     }
                     self.last_feedback = Some(fb);
                 }
+                // 32 AG-01：成功 tick 归零连续错误计数。
+                self.consecutive_errors = 0;
                 Ok(())
             }
             Err(e) => {
@@ -296,7 +327,20 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                 let kind = eneros_dual_brain::rejection::RejectionHandler::classify(&e);
                 let action = self.rejections.handle(&e, "pcs");
                 self.last_rejection = Some((kind, action));
-                self.state = AgentState::Error;
+                // 32 AG-01：错误分级——SafetyBlocked（安全阻断）立即
+                // Error；其余（限流/通信常态）N 次连续才 Error，成功
+                // 归零（心跳语义从"一次失败即死"变"N 次连续失败才死"）。
+                match kind {
+                    eneros_dual_brain::rejection::RejectionKind::SafetyBlocked => {
+                        self.state = AgentState::Error;
+                    }
+                    _ => {
+                        self.consecutive_errors += 1;
+                        if self.consecutive_errors >= Self::MAX_CONSECUTIVE_ERRORS {
+                            self.state = AgentState::Error;
+                        }
+                    }
+                }
                 Err(AgentRuntimeError::DualBrainError(e))
             }
         }

@@ -94,7 +94,25 @@ impl PathSelector {
             }
         }
 
-        // 5. 默认走快路径
+        // 5. 32 AI-06：负荷跳变（> threshold）→ 慢路径（声明兑现——
+        // load_change_threshold 此前从未使用）。
+        if let Some(last_state) = &self.last_state {
+            let load_delta = match (&state.load_demand, &last_state.load_demand) {
+                (Some(cur), Some(prev)) => cur
+                    .iter()
+                    .zip(prev.iter())
+                    .map(|(c, p)| (c - p).abs())
+                    .fold(0.0f64, f64::max),
+                _ => 0.0,
+            };
+            if load_delta > self.load_change_threshold {
+                self.last_slow_path_ms = Some(now_ms);
+                self.last_state = Some(state.clone());
+                return PathType::SlowPath;
+            }
+        }
+
+        // 6. 默认走快路径
         self.last_state = Some(state.clone());
         PathType::FastPath
     }

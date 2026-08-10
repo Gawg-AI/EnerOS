@@ -50,7 +50,6 @@
 //! 默认 feature 下不引入任何 `std::*`，不调用 `panic!` / `todo!` / `unimplemented!`。
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 
 // 蓝图/20 R2-1：Mock 类型只允许测试/仿真（feature=mock）；release 构建
 // 启用即熔断（B3 换皮清偿：禁换名 mock 顶包生产）。

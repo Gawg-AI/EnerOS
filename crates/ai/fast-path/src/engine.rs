@@ -92,6 +92,12 @@ impl<S: Solver> RealtimePathEngine<S> {
 
         // 6. 安全校验（D12: 传 state.system 给 v0.67.0 SafetyValidator）
         let validation = self.validator.validate(&schedule, &state.system);
+        // 32 AI-03：Fatal 闸对称化——慢路径 P0-17（coordinator Fatal →
+        // Err）的闭环；快路径 Fatal 必须 Err（不得把越限当建议——任何
+        // 未来把快路径接 sink 的改动都不得破封焊）。
+        if !validation.passed {
+            return Err(FastPathError::SafetyFatal(validation.violations.len()));
+        }
 
         // 7. 返回结果（elapsed_ms 暂用 0，D6）
         Ok(FastPathResult {

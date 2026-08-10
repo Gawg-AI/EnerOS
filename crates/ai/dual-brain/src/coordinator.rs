@@ -40,7 +40,6 @@ use eneros_prompt_template::templates::ChargeDischargeTemplate;
 use eneros_safety_validator::state::SystemState;
 use eneros_safety_validator::validator::SafetyValidator;
 #[cfg(any(test, feature = "mock"))]
-#[cfg(any(test, feature = "mock"))]
 use eneros_solver_core::mock::MockSolver;
 use eneros_solver_core::solver::Solver;
 
@@ -97,6 +96,9 @@ pub struct DualBrainCoordinator<S: Solver> {
     pub contract_validator: ContractValidator,
     /// 命令下发 sink（D6）.
     pub sink: Box<dyn CommandSink>,
+    /// 32 AG-04：决策审计（W5.1 接线——旧实现 audit.rs 实现+测试在位但
+    /// 零生产消费）。
+    pub audit: Option<crate::audit::DecisionAudit>,
     /// 请求计数器（D2：生成 `request_id`）.
     pub request_counter: u64,
     /// 单调时钟（毫秒；v0.248.0 真实计时——默认 eneros-time 全局时钟，
@@ -154,6 +156,7 @@ impl<S: Solver> DualBrainCoordinator<S> {
             validator: SafetyValidator::new(),
             contract_validator: ContractValidator::new(),
             sink,
+            audit: None,
             request_counter: 0,
             clock_fn: default_clock_ms,
             infer_scheduler: InferScheduler::new(
@@ -201,7 +204,11 @@ impl<S: Solver> DualBrainCoordinator<S> {
         let req = InferRequest::new(0, prompt, params.clone())
             .with_timestamp(now_ns)
             .with_timeout(params.timeout_ms.saturating_mul(1_000_000));
-        let id = self.infer_scheduler.submit(req);
+        // 32 AI-04：背压——QueueFull 按超时降级同等处理。
+        let id = match self.infer_scheduler.submit(req) {
+            Ok(id) => id,
+            Err(_) => return Err(DualBrainError::SolveError("infer queue full".into())),
+        };
         loop {
             // deadline 检测用**当前**时钟（每次轮询推进；禁止无限阻塞）。
             let now_ns = (self.clock_fn)() * 1_000_000;
@@ -266,7 +273,16 @@ impl<S: Solver> DualBrainCoordinator<S> {
             let fast_result = self
                 .fast_path
                 .execute(state, now_ms)
-                .map_err(|e| DualBrainError::SolveError(format!("{:?}", e)))?;
+                .map_err(|e| match e {
+                    // 32 AI-03：Fatal 闸对称化——快路径 Fatal 与慢路径
+                    // 同语义（Err → run_once 零写入）。
+                    eneros_fast_path::error::FastPathError::SafetyFatal(n) => {
+                        DualBrainError::SafetyFatal(format!(
+                            "fast-path safety validation FATAL: {n} violation(s)"
+                        ))
+                    }
+                    other => DualBrainError::SolveError(format!("{other:?}")),
+                })?;
             latency.perception_ms = tic().saturating_sub(t0);
             // 22 §2.W5.2：能量闸（FastPath 同样过闸记账）。
             let energy = schedule_energy_kwh(&fast_result.schedule);
@@ -419,6 +435,9 @@ impl<S: Solver> DualBrainCoordinator<S> {
             )));
         }
         let final_schedule = validation.clamped_schedule.clone().unwrap_or(schedule);
+        // 32 AI-02：慢路径成功产出 → 记录"上次成功决策"（旧实现字段
+        // 声明+初始化+读取全在但**零赋值**——降级模式永不生效）。
+        self.last_successful_schedule = Some(final_schedule.clone());
 
         // 22 §2.W5.2：能量闸（安全校验之后、命令下发之前；速率闸已在
         // execute 入口通过）。超限拒绝返回 GateRejected（调用方告警/审计）。

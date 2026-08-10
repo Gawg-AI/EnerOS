@@ -197,7 +197,15 @@ pub fn run_once(
     sink_path: &str,
     now_ms: u64,
     feedback_fn: fn(u64) -> eneros_control_gateway::chain::FeedbackBundle,
+    chain_key: &[u8],
 ) -> Result<RunnerOutcome, RunnerError> {
+    // 32 AI-07：链密钥注入（旧实现编译期常量——生产固定密钥可复制；
+    // fail-closed：调用方（CLI）负责读取密钥文件，缺省拒绝启动）。
+    if chain_key.len() < 16 {
+        return Err(RunnerError::Config(String::from(
+            "chain key too short (>=16 bytes required)",
+        )));
+    }
     let config = overrides.apply(scenario.config());
     let state = scenario.state();
 
@@ -217,7 +225,7 @@ pub fn run_once(
         Box::new(eneros_dual_brain::chain_sink::ChainCommandSink::new(
             chain,
             Box::new(FileExecutor::new(sink_path)?),
-            CHAIN_KEY,
+            chain_key,
             CHAIN_LEASE_ID,
             1,
             CHAIN_ISSUER,

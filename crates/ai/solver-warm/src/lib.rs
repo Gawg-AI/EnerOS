@@ -44,7 +44,6 @@
 //! 不调用 `panic!` / `todo!` / `unimplemented!`，可交叉编译到 `aarch64-unknown-none`。
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 
 extern crate alloc;
 

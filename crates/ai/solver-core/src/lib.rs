@@ -48,7 +48,6 @@
 //! 默认 feature 下不引入任何 `std::*`，不调用 `panic!` / `todo!` / `unimplemented!`。
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 
 // ============================================================================
 // G7 Fail-closed Mock gate (MASTER §G7 禁止捷径 L2118:

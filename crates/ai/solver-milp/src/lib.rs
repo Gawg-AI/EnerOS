@@ -41,7 +41,6 @@
 //! 仅使用 `alloc::*` 与 `core::*`，零 unsafe，可交叉编译到 `aarch64-unknown-none`。
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 
 extern crate alloc;
 

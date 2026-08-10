@@ -47,13 +47,24 @@ impl InferScheduler {
     /// 提交请求到队列，返回调度器分配的请求 ID.
     ///
     /// 请求的 `id` 字段会被调度器分配的 ID 覆盖。
-    pub fn submit(&mut self, mut req: InferRequest) -> u64 {
+    /// 32 AI-04：队列深度上限（背压——QueueFull 声明兑现）。
+    pub const MAX_QUEUE_DEPTH: usize = 64;
+
+    pub fn submit(
+        &mut self,
+        mut req: InferRequest,
+    ) -> Result<u64, crate::error::SchedulerError> {
+        // 32 AI-04：背压——队列超限返回 QueueFull（声明兑现；旧实现
+        // 无上限增长面）。
+        if self.queue.len() >= Self::MAX_QUEUE_DEPTH {
+            return Err(crate::error::SchedulerError::QueueFull);
+        }
         req.id = self.next_request_id;
         self.next_request_id += 1;
         let id = req.id;
         self.queue.push_back(req);
         self.stats.record_submit();
-        id
+        Ok(id)
     }
 
     /// 轮询调度器：清理超时请求，按优先级派发最多 `max_concurrent` 个请求.

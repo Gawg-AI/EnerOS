@@ -177,38 +177,56 @@ pub mod market_feed;
 pub mod multi_dispatch;
 pub mod multi_objective;
 pub mod parser;
+// W4.1（蓝图23）：real_adapters（RuleBidIntentSource/SolverBidOptimizer/
+// MarketChannelBidPublisher）与 sdk_bridge（AgentRuntimeAdapter）零生产消费者，
+// 整模块降级 cfg(any(test, feature="mock"))——待真机报价胶水需求时接线。
+#[cfg(any(test, feature = "mock"))]
 pub mod real_adapters;
 mod runtime;
+#[cfg(any(test, feature = "mock"))]
 pub mod sdk_bridge;
 pub mod subscriber;
 
+// W4.1（蓝图23）：re-export 收缩——interface 诚实原则（§1 锁定 1）。
+// 保留真实非测试消费者；零生产消费者符号降级 `cfg(any(test, feature="mock"))`，
+// 算法逻辑与测试全部保留（mock feature 下仍可完整验证）。
+#[cfg(any(test, feature = "mock"))]
 pub use bid_generator::{
     conservative_optimize, rule_intent, BidError, BidGenerator, BidIntent, BidIntentSource,
-    BidOptimization, BidOptimizer, BidPublisher, BidSide, BidStrategy, ResourceBid,
+    BidOptimization, BidOptimizer, BidPublisher, BidSide, MockBidIntentSource, MockBidOptimizer,
+    MockBidPublisher,
 };
-#[cfg(any(test, feature = "mock"))]
-pub use bid_generator::{MockBidIntentSource, MockBidOptimizer, MockBidPublisher};
+pub use bid_generator::{BidStrategy, ResourceBid};
 pub use device_pool::{DeviceCapability, DeviceMode, DevicePool};
 pub use energy_agent::EnergyAgent;
 pub use error::AgentRuntimeError;
+pub use market::MarketData;
 #[cfg(any(test, feature = "mock"))]
 pub use market::MockMarketSource;
-pub use market::{MarketChannel, MarketData, MarketDataSource, MarketSignal};
+#[cfg(any(test, feature = "mock"))]
+pub use market::{MarketChannel, MarketDataSource, MarketSignal};
 pub use market_agent::MarketAgent;
 pub use market_feed::YuanPerKwh;
-pub use market_feed::{DrSignal, MarketError, MarketFeed, MarketType, Period, PricePoint};
-pub use multi_dispatch::{
-    equal_split, DeviceAssignment, DispatchError, DispatchPlan, MultiDeviceDispatcher,
-};
+pub use market_feed::{DrSignal, MarketType, Period, PricePoint};
+#[cfg(any(test, feature = "mock"))]
+pub use market_feed::{MarketError, MarketFeed};
+#[cfg(any(test, feature = "mock"))]
+pub use multi_dispatch::MultiDeviceDispatcher;
+pub use multi_dispatch::{equal_split, DeviceAssignment, DispatchError, DispatchPlan};
+pub use multi_objective::Objective;
+#[cfg(any(test, feature = "mock"))]
 pub use multi_objective::{
     eval_plan_objectives, filter_dominated, generate_weight_sample, normalize_costs,
-    objective_costs, MultiObjectiveOptimizer, Objective, ParetoFront, ParetoSolution, WeightedSum,
+    objective_costs, MultiObjectiveOptimizer, ParetoFront, ParetoSolution, WeightedSum,
 };
+#[cfg(any(test, feature = "mock"))]
 pub use parser::{parse_dr_signal, parse_feed, parse_price_point};
 pub use runtime::{AgentRuntime, HeartbeatStatus};
-pub use subscriber::{MarketFeedCache, MarketFeedPublisher, MarketFeedSource, MarketSubscriber};
 #[cfg(any(test, feature = "mock"))]
-pub use subscriber::{MockMarketFeedPublisher, MockMarketFeedSource};
+pub use subscriber::{
+    MarketFeedCache, MarketFeedPublisher, MarketFeedSource, MarketSubscriber,
+    MockMarketFeedPublisher, MockMarketFeedSource,
+};
 
 #[cfg(test)]
 mod tests {
@@ -529,7 +547,14 @@ mod tests {
 
         let config = ScheduleConfig::default();
         let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
-        let solver = MockSolver::new();
+        // 非空解（含一个调度条目）——空解会跳过 sink.write 无法复现失败。
+        let solver = MockSolver::with_result(eneros_solver_core::result::SolveResult {
+            status: eneros_solver_core::result::SolveStatus::Optimal,
+            objective_value: 1.0,
+            solution: alloc::vec![0.5, -0.3],
+            elapsed_ms: 1,
+            dual_solution: None,
+        });
         let sink: Box<dyn CommandSink> = Box::new(FailingSink);
         let coordinator = DualBrainCoordinator::new(config, llm_engine, solver, sink);
 
@@ -540,6 +565,7 @@ mod tests {
             current_schedule: None,
             current_price: 0.5,
             state: AgentState::Created,
+            consecutive_errors: 0,
             tick_count: 0,
             observer: None,
             last_feedback: None,
@@ -549,8 +575,13 @@ mod tests {
             last_observed_at_ms: 0,
             rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
             last_rejection: None,
-            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(1.0, eneros_safety_validator::SafetyCatalog::default_eps()),
-            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(eneros_safety_validator::SafetyCatalog::default_eps()),
+            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(
+                1.0,
+                eneros_safety_validator::SafetyCatalog::default_eps(),
+            ),
+            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(
+                eneros_safety_validator::SafetyCatalog::default_eps(),
+            ),
             twin_forecast: None,
             twin_confidence: 0.0,
         };
@@ -558,7 +589,13 @@ mod tests {
         agent.on_start(1000).unwrap();
         let result = agent.on_tick(2000);
         assert!(result.is_err());
-        assert_eq!(agent.state, AgentState::Error);
+        // 32 AG-01：一次 Transient 失败保持 Running（N 次连续才 Error）。
+        assert_eq!(agent.state, AgentState::Running);
+        // 连续 N 次 → Error。
+        for i in 0..(EnergyAgent::<MockSolver>::MAX_CONSECUTIVE_ERRORS - 1) {
+            let _ = agent.on_tick(3_000_000 + u64::from(i) * 600_000);
+        }
+        assert_eq!(agent.state, AgentState::Error, "连续 N 次失败必须 Error");
     }
 
     // ===== 21-B A2：release 真后端装配（new_real + HighsSolver 端到端） =====
