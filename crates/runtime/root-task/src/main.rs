@@ -232,12 +232,16 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
 
     // 22 §2.W1.6：映射 SP805 看门狗设备区域（root-task 访问 0x09050000
     // 不 vm fault；QEMU 无设备时读写 no-op，真机有效）。
-    match crate::spawn::map_device_mmio(&mut ctx, crate::panic::WDT_BASE, 12) {
+    match crate::spawn::map_device_mmio(
+        &mut ctx,
+        crate::panic::WDT_BASE.load(core::sync::atomic::Ordering::Relaxed),
+        12,
+    ) {
         Ok(()) => {
             crate::panic::WDT_MMIO_MAPPED.store(true, core::sync::atomic::Ordering::Relaxed);
             crate::println!(
                 "[eneros-root-task] WDT device mapped (SP805 @ 0x{:x})",
-                crate::panic::WDT_BASE
+                crate::panic::WDT_BASE.load(core::sync::atomic::Ordering::Relaxed)
             );
         }
         Err(e) => {

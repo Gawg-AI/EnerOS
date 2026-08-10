@@ -192,6 +192,9 @@ impl From<StorageError> for FsError {
                 actual,
             },
             StorageError::BadBlock { block_idx } => FsError::CorruptedBlock { block: block_idx },
+            StorageError::UnsupportedBlockSize => FsError::IoError {
+                detail: String::from("unsupported block size (>4096)"),
+            },
             StorageError::NotInitialized => FsError::IoError {
                 detail: String::from("storage not initialized"),
             },

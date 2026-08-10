@@ -97,7 +97,7 @@ pub fn run_ipc_loop(
     // 22 §2.W1.6：看门狗接入（hello 心跳后第一轮喂狗；QEMU 无 SP805
     // 时软件模式 base=0，MMIO 不写）。
     let wdt_base = if crate::panic::WDT_MMIO_MAPPED.load(core::sync::atomic::Ordering::Relaxed) {
-        crate::panic::WDT_BASE
+        crate::panic::WDT_BASE.load(core::sync::atomic::Ordering::Relaxed)
     } else {
         0
     };

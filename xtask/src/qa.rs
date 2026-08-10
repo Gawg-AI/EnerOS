@@ -1611,7 +1611,7 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
         ioas: vec![],
     };
     let iec104_apdu = eneros_iec104_slave::apdu::Apdu::i_format(1, 1, asdu);
-    let iec104_bytes = iec104_apdu.encode();
+    let iec104_bytes = iec104_apdu.encode().unwrap();
     let iec104_throughput = bench_ops(50_000, || {
         let _ = eneros_iec104_slave::apdu::Apdu::decode(&iec104_bytes);
     });
@@ -2589,18 +2589,6 @@ mod tests {
     fn t5b_perf_gate_signature_chain() {
         let dir = tempdir();
         let root = Path::new(&dir);
-        let key = root.join("perf-key.bin");
-        let pk = root.join("perf-pk.hex");
-        assert!(command_perf_keygen(
-            root,
-            &[
-                "--out".into(),
-                key.to_string_lossy().into(),
-                "--pubkey-out".into(),
-                pk.to_string_lossy().into(),
-            ]
-        )
-        .is_ok());
         let results = serde_json::json!({
             "schema": "eneros.perf-regression.v1",
             "baseline_sha256": "abc",
@@ -2609,26 +2597,9 @@ mod tests {
                 {"metric_id": "boot-time", "slo_threshold": 5000, "measured": 4000, "regression_tolerance_pct": 5, "baseline_value": 3900, "critical_path": true, "unit": "ms"},
             ],
         });
-        let p = root.join("perf.json");
-        write_json(&p, &results);
-        // 签名（复用 perf-baseline 的签名逻辑：读 32 字节 seed 签名）。
-        let json_signed = serde_json::to_vec_pretty(&results).unwrap();
-        let key_bytes = std::fs::read(&key).unwrap();
-        let keypair = ed25519_dalek::SigningKey::from_bytes(&key_bytes[..32].try_into().unwrap());
-        use ed25519_dalek::Signer;
-        let sig = hex_encode(&keypair.sign(&json_signed).to_bytes());
-        std::fs::write(p.with_extension("json.sig"), sig).unwrap();
-        // 门禁用同一公钥验证 → 通过。
-        unsafe {
-            std::env::set_var(
-                "ENEROS_PERF_VERIFY_PUBKEY",
-                std::fs::read_to_string(&pk).unwrap().trim().to_owned(),
-            );
-        }
-        let r = command_perf_gate(root, &[p.to_string_lossy().into()]);
-        unsafe {
-            std::env::remove_var("ENEROS_PERF_VERIFY_PUBKEY");
-        }
+        // 29 GV-03：统一走 perf_gate_signed（静态 Mutex 串行化环境变量临界区，
+        // 与 t6b/t6c/t6d 并行无竞争）。签名存在且有效必须通过门禁。
+        let r = perf_gate_signed(root, &results);
         assert!(r.is_ok(), "签名存在且有效必须通过门禁: {r:?}");
     }
 
