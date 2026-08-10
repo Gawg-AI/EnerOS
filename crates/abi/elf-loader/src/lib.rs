@@ -47,6 +47,20 @@ pub const EM_AARCH64: u16 = 183;
 
 /// Program header type: PT_LOAD
 pub const PT_LOAD: u32 = 1;
+/// Program header type: PT_DYNAMIC（30 WP-27.7 重定位用）。
+pub const PT_DYNAMIC: u32 = 2;
+/// Dynamic tag: DT_NULL（.dynamic 表终止符）。
+pub const DT_NULL: u64 = 0;
+/// Dynamic tag: DT_RELA（重定位表文件偏移）。
+pub const DT_RELA: u64 = 7;
+/// Dynamic tag: DT_RELASZ（重定位表字节数）。
+pub const DT_RELASZ: u64 = 8;
+/// Dynamic tag: DT_RELAENT（单条重定位大小）。
+pub const DT_RELAENT: u64 = 9;
+/// AArch64 重定位类型：R_AARCH64_RELATIVE（`*(base + r_offset) = base + r_addend`）。
+pub const R_AARCH64_RELATIVE: u64 = 1027;
+/// 重定位条目大小（Elf64_Rela：r_offset(8) + r_info(8) + r_addend(8)）。
+pub const ELF64_RELA_SIZE: u64 = 24;
 
 /// Program header flags
 pub const PF_X: u32 = 1;
@@ -103,6 +117,17 @@ pub struct LoadedSegment {
     pub align: u64,
 }
 
+/// 30 WP-27.7：动态段信息（重定位输入）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DynamicInfo {
+    /// DT_RELA：重定位表文件偏移。
+    pub rela_offset: u64,
+    /// DT_RELASZ：重定位表字节数。
+    pub rela_size: u64,
+    /// DT_RELAENT：单条重定位大小（缺省 = 24B）。
+    pub rela_ent: u64,
+}
+
 /// Parsed and validated ELF64 binary.
 #[derive(Debug)]
 pub struct LoadedElf {
@@ -140,6 +165,15 @@ pub enum ElfError {
     /// 30 RT-006：PT_LOAD 段 vaddr 区间重叠（或段边界回绕）——非单调段
     /// 导致同一虚拟页两次映射/与栈区碰撞。
     SegmentOverlap,
+    /// 30 WP-27.7：PT_DYNAMIC 缺失/损坏（重定位前必须存在）。
+    BadDynamic,
+    /// 30 WP-27.7：重定位表缺失/异常（DT_RELA/DT_RELASZ/DT_RELAENT 非法）。
+    BadRelaTable,
+    /// 30 WP-27.7：重定位写入目标越界（不在任何可写段内——恶意 Rela 防
+    /// 越界写）。
+    RelocOutOfBounds,
+    /// 30 WP-27.7：不支持的 Rela 类型（fail-closed，不静默跳过）。
+    UnsupportedReloc,
 }
 
 impl core::fmt::Display for ElfError {
@@ -159,6 +193,10 @@ impl core::fmt::Display for ElfError {
                 write!(f, "entry point not in executable segment")
             }
             ElfError::SegmentOverlap => write!(f, "segment vaddr range overlap or wrap"),
+            ElfError::BadDynamic => write!(f, "PT_DYNAMIC missing or corrupt"),
+            ElfError::BadRelaTable => write!(f, "relocation table missing or malformed"),
+            ElfError::RelocOutOfBounds => write!(f, "relocation write target out of writable segments"),
+            ElfError::UnsupportedReloc => write!(f, "unsupported relocation type"),
         }
     }
 }
@@ -327,6 +365,130 @@ impl LoadedElf {
         for pair in spans.windows(2) {
             if pair[0].1 > pair[1].0 {
                 return Err(ElfError::SegmentOverlap);
+            }
+        }
+        Ok(())
+    }
+
+    /// 30 WP-27.7：解析 PT_DYNAMIC 段（重定位输入）——缺失/损坏 → Err。
+    ///
+    /// `data` = 完整 ELF 文件字节（与 parse 同输入）。
+    pub fn parse_dynamic(data: &[u8]) -> Result<DynamicInfo, ElfError> {
+        if data.len() < ELF64_EHDR_SIZE {
+            return Err(ElfError::TruncatedHeader);
+        }
+        let e_phoff = u64::from_le_bytes(data[32..40].try_into().unwrap()) as usize;
+        let e_phentsize = u16::from_le_bytes(data[54..56].try_into().unwrap()) as usize;
+        let e_phnum = u16::from_le_bytes(data[56..58].try_into().unwrap()) as usize;
+        if e_phentsize < ELF64_PHDR_SIZE {
+            return Err(ElfError::PhdrOutOfBounds);
+        }
+        let phdr_end = e_phoff
+            .checked_add(e_phentsize.checked_mul(e_phnum).ok_or(ElfError::PhdrOutOfBounds)?)
+            .ok_or(ElfError::PhdrOutOfBounds)?;
+        if phdr_end > data.len() {
+            return Err(ElfError::PhdrOutOfBounds);
+        }
+        let mut dyn_off = None;
+        let mut dyn_filesz = 0u64;
+        for i in 0..e_phnum {
+            let off = e_phoff + i * e_phentsize;
+            let p_type = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
+            if p_type == PT_DYNAMIC {
+                dyn_off = Some(u64::from_le_bytes(data[off + 8..off + 16].try_into().unwrap()));
+                dyn_filesz = u64::from_le_bytes(data[off + 32..off + 40].try_into().unwrap());
+            }
+        }
+        let dyn_off = dyn_off.ok_or(ElfError::BadDynamic)?;
+        let dyn_end = dyn_off
+            .checked_add(dyn_filesz)
+            .ok_or(ElfError::BadDynamic)?;
+        if dyn_end > data.len() as u64 {
+            return Err(ElfError::BadDynamic);
+        }
+        // 遍历 .dynamic（Elf64_Dyn：tag(8) + val(8)，DT_NULL 终止）。
+        let mut rela_offset: Option<u64> = None;
+        let mut rela_size: Option<u64> = None;
+        let mut rela_ent: Option<u64> = None;
+        let mut cursor = dyn_off as usize;
+        let end = dyn_end as usize;
+        while cursor + 16 <= end {
+            let tag = u64::from_le_bytes(data[cursor..cursor + 8].try_into().unwrap());
+            let val = u64::from_le_bytes(data[cursor + 8..cursor + 16].try_into().unwrap());
+            if tag == DT_NULL {
+                break;
+            }
+            match tag {
+                DT_RELA => rela_offset = Some(val),
+                DT_RELASZ => rela_size = Some(val),
+                DT_RELAENT => rela_ent = Some(val),
+                _ => {}
+            }
+            cursor += 16;
+        }
+        Ok(DynamicInfo {
+            rela_offset: rela_offset.ok_or(ElfError::BadRelaTable)?,
+            rela_size: rela_size.ok_or(ElfError::BadRelaTable)?,
+            rela_ent: rela_ent.unwrap_or(ELF64_RELA_SIZE),
+        })
+    }
+
+    /// 30 WP-27.7：应用重定位（S7 顺序：验签 → 映射 → 重定位 → 跳转）。
+    ///
+    /// `img` = **已加载到目标内存的镜像字节**（段已按 vaddr 放置）；
+    /// `base` = 加载基址（链接地址偏移）；`segments` = PT_LOAD 段描述。
+    ///
+    /// 校验（fail-closed）：
+    /// - Rela 表边界（r_offset 与 8 字节写入目标完全落在某**可写**段内，
+    ///   防恶意 Rela 越界写）；
+    /// - 仅支持 `R_AARCH64_RELATIVE`；其他类型 → `Err(UnsupportedReloc)`。
+    pub fn apply_relocations(
+        img: &mut [u8],
+        base: u64,
+        dyn_: &DynamicInfo,
+        segments: &[LoadedSegment],
+    ) -> Result<(), ElfError> {
+        if dyn_.rela_ent < ELF64_RELA_SIZE || dyn_.rela_ent % 8 != 0 {
+            return Err(ElfError::BadRelaTable);
+        }
+        let rela_end = dyn_
+            .rela_offset
+            .checked_add(dyn_.rela_size)
+            .ok_or(ElfError::BadRelaTable)?;
+        if rela_end > img.len() as u64 {
+            return Err(ElfError::BadRelaTable);
+        }
+        let count = dyn_.rela_size / dyn_.rela_ent;
+        for i in 0..count {
+            let off = (dyn_.rela_offset + i * dyn_.rela_ent) as usize;
+            let r_offset = u64::from_le_bytes(img[off..off + 8].try_into().unwrap());
+            let r_info = u64::from_le_bytes(img[off + 8..off + 16].try_into().unwrap());
+            let r_addend = u64::from_le_bytes(img[off + 16..off + 24].try_into().unwrap());
+            let r_type = r_info & 0xFFFF_FFFF;
+            let target = base
+                .checked_add(r_offset)
+                .ok_or(ElfError::RelocOutOfBounds)?;
+            let target_end = target
+                .checked_add(8)
+                .ok_or(ElfError::RelocOutOfBounds)?;
+            // 边界校验：写入目标（虚拟地址）必须完全落在某个可写段内。
+            let in_writable = segments.iter().any(|s| {
+                s.flags.write
+                    && target >= base + s.vaddr
+                    && target_end <= base + s.vaddr + s.memsz
+            });
+            if !in_writable {
+                return Err(ElfError::RelocOutOfBounds);
+            }
+            match r_type {
+                R_AARCH64_RELATIVE => {
+                    let value = base.wrapping_add(r_addend);
+                    // img = 已加载镜像（文件偏移 == 段 vaddr 的平坦布局），
+                    // 写入槽 = r_offset（链接地址相对加载基址的偏移）。
+                    let slot = r_offset as usize;
+                    img[slot..slot + 8].copy_from_slice(&value.to_le_bytes());
+                }
+                _ => return Err(ElfError::UnsupportedReloc),
             }
         }
         Ok(())
@@ -608,5 +770,111 @@ mod tests {
         // 相邻不重叠：[0x1000, 0x2000) 与 [0x2000, 0x3000) 合法。
         let ok = alloc::vec![seg(0x1000, 0x1000), seg(0x2000, 0x1000)];
         assert!(LoadedElf::validate_segments(&ok).is_ok());
+    }
+
+    /// 构造最小重定位测试镜像：文件偏移 0x100 处为 .rela.dyn（3 条
+    /// R_AARCH64_RELATIVE），PT_DYNAMIC 指向它。
+    fn relocation_fixture() -> (alloc::vec::Vec<u8>, DynamicInfo, alloc::vec::Vec<LoadedSegment>) {
+        // 布局：段（可写，vaddr=0x1000，memsz=0x2000，含 3 个 8B 槽）+ rela 表。
+        let mut img = alloc::vec![0u8; 0x4000];
+        // 段：vaddr 0x1000，文件偏移 0x1000，memsz 0x2000（可写）。
+        for slot in [0x1000usize, 0x1010, 0x1020] {
+            img[slot..slot + 8].copy_from_slice(&0xDEAD_BEEFu64.to_le_bytes());
+        }
+        // .rela.dyn @ 0x3000：3 条 RELATIVE（r_offset 相对链接地址）。
+        let rela_off = 0x3000u64;
+        let relas: [(u64, u64, u64); 3] = [
+            (0x1000, R_AARCH64_RELATIVE, 0x1111),
+            (0x1010, R_AARCH64_RELATIVE, 0x2222),
+            (0x1020, R_AARCH64_RELATIVE, 0x3333),
+        ];
+        for (i, (off, typ, addend)) in relas.iter().enumerate() {
+            let at = (rela_off + i as u64 * 24) as usize;
+            img[at..at + 8].copy_from_slice(&off.to_le_bytes());
+            img[at + 8..at + 16].copy_from_slice(&typ.to_le_bytes());
+            img[at + 16..at + 24].copy_from_slice(&addend.to_le_bytes());
+        }
+        let dyn_info = DynamicInfo {
+            rela_offset: rela_off,
+            rela_size: 3 * 24,
+            rela_ent: 24,
+        };
+        let segments = alloc::vec![LoadedSegment {
+            vaddr: 0x1000,
+            memsz: 0x2000,
+            filesz: 0x2000,
+            offset: 0x1000,
+            flags: SegmentFlags {
+                read: true,
+                write: true,
+                execute: false,
+            },
+            align: 0x1000,
+        }];
+        (img, dyn_info, segments)
+    }
+
+    /// 30 WP-27.7 判据正例（黄金向量）：3 条 RELATIVE 在非零 base 下全部
+    /// 解析为 `base + r_addend`（静态数据/函数指针/字符串三类语义）。
+    #[test]
+    fn apply_relocations_golden_vector() {
+        let (mut img, dyn_info, segments) = relocation_fixture();
+        let base = 0x4000_0000u64;
+        LoadedElf::apply_relocations(&mut img, base, &dyn_info, &segments).expect("relocate");
+        let read_u64 = |off: usize| u64::from_le_bytes(img[off..off + 8].try_into().unwrap());
+        assert_eq!(read_u64(0x1000), base + 0x1111);
+        assert_eq!(read_u64(0x1010), base + 0x2222);
+        assert_eq!(read_u64(0x1020), base + 0x3333);
+    }
+
+    /// 30 WP-27.7 判据负例：恶意 Rela 写入目标越出可写段（指向段外）→
+    /// RelocOutOfBounds（防任意写）。
+    #[test]
+    fn apply_relocations_rejects_out_of_bounds() {
+        let (mut img, mut dyn_info, segments) = relocation_fixture();
+        dyn_info.rela_offset = 0x3000;
+        // 把第一条 r_offset 改成段外（0x5000 > 段末 0x1000+0x2000）。
+        img[0x3000..0x3008].copy_from_slice(&0x5000u64.to_le_bytes());
+        assert_eq!(
+            LoadedElf::apply_relocations(&mut img, 0x4000_0000, &dyn_info, &segments),
+            Err(ElfError::RelocOutOfBounds)
+        );
+        // 指向只读段同样拒绝（segments 只有可写段，0x0 不在任何段）。
+        img[0x3000..0x3008].copy_from_slice(&0x100u64.to_le_bytes());
+        assert_eq!(
+            LoadedElf::apply_relocations(&mut img, 0x4000_0000, &dyn_info, &segments),
+            Err(ElfError::RelocOutOfBounds)
+        );
+    }
+
+    /// 30 WP-27.7 判据负例：不支持的 Rela 类型 → UnsupportedReloc
+    /// （fail-closed，不静默跳过）。
+    #[test]
+    fn apply_relocations_rejects_unsupported_type() {
+        let (mut img, mut dyn_info, segments) = relocation_fixture();
+        // 第一条 r_info 类型改为 0x401（R_AARCH64_GLOB_DAT——不支持）。
+        let typ = 0x401u64;
+        img[0x3008..0x3010].copy_from_slice(&typ.to_le_bytes());
+        assert_eq!(
+            LoadedElf::apply_relocations(&mut img, 0x4000_0000, &dyn_info, &segments),
+            Err(ElfError::UnsupportedReloc)
+        );
+    }
+
+    /// 30 WP-27.7 判据负例：PT_DYNAMIC 缺失 → BadDynamic。
+    #[test]
+    fn parse_dynamic_rejects_missing() {
+        // 无 PT_DYNAMIC 的最小 ELF 头（phnum=0）。
+        let mut data = alloc::vec![0u8; ELF64_EHDR_SIZE];
+        data[0..4].copy_from_slice(&ELFMAG);
+        data[4] = ELFCLASS64;
+        data[5] = ELFDATA2LSB;
+        data[16..18].copy_from_slice(&ET_DYN.to_le_bytes());
+        data[18..20].copy_from_slice(&EM_AARCH64.to_le_bytes());
+        data[54..56].copy_from_slice(&(ELF64_PHDR_SIZE as u16).to_le_bytes());
+        assert_eq!(
+            LoadedElf::parse_dynamic(&data),
+            Err(ElfError::BadDynamic)
+        );
     }
 }
