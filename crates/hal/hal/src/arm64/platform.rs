@@ -21,6 +21,8 @@ pub struct PlatformConfig {
     pub gicr_base: u64,
     /// 通用定时器中断号（PPI 16 = 0x1B 减去 16 的 SPI 编号规则，arm 标准）。
     pub timer_irq: u32,
+    /// 网络 MMIO 基址（30 RT-025：NetMmio 单例注入用；无网卡平台为 0）。
+    pub net_base: u64,
 }
 
 /// QEMU `virt` 平台（S2/S3 验证环境，4 核）。
@@ -30,6 +32,7 @@ pub const QEMU_VIRT: PlatformConfig = PlatformConfig {
     gicd_base: 0x0800_0000,
     gicr_base: 0x080A_0000,
     timer_irq: 27, // PPI 11（EL1 物理定时器）
+    net_base: 0x0A00_0000, // QEMU virt virtio-mmio 区（virtio-net 槽 1）
 };
 
 /// 飞腾 D2000 平台（**BLOCKED 缺硬件**；基址基于公开数据手册，
@@ -40,6 +43,7 @@ pub const PHYTIUM_D2000: PlatformConfig = PlatformConfig {
     gicd_base: 0x2980_0000, // D2000 GICD（公开资料）
     gicr_base: 0x2982_0000, // D2000 GICR（公开资料）
     timer_irq: 27,          // ARM 通用定时器 PPI（与 QEMU 相同，arm 规范）
+    net_base: 0,            // D2000 网卡基址待真机设备树校准（不虚构）
 };
 
 #[cfg(test)]

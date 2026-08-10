@@ -7,6 +7,9 @@ license.workspace = true
 description = "EnerOS Hardware Abstraction Layer trait specifications (no_std)"
 
 [dependencies]
+# 30 RT-027：HAL 全局单例 OnceCell（&dyn HalProvider 非 Sync，core OnceCell
+# 不可用——spin::Once 是 Sync 且 no_std）。
+spin = "0.9"
 
 [features]
 default = []

@@ -74,6 +74,9 @@ pub enum HalError {
     PermissionDenied,
     /// Hardware busy-wait timed out (HAL-005).
     Timeout,
+    /// 30 RT-011/025：单例未初始化（init_with/init_uart 未调用或硬件
+    /// 初始化失败）——fail-closed，禁止访问未映射/占位基址。
+    NotInitialized,
 }
 
 impl core::fmt::Display for HalError {
@@ -85,6 +88,7 @@ impl core::fmt::Display for HalError {
             HalError::HardwareFault => write!(f, "hardware fault"),
             HalError::PermissionDenied => write!(f, "permission denied"),
             HalError::Timeout => write!(f, "hardware timeout"),
+            HalError::NotInitialized => write!(f, "singleton not initialized"),
         }
     }
 }

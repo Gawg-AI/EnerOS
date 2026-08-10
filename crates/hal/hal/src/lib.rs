@@ -162,34 +162,25 @@ pub trait HalProvider {
 
 /// Global HAL reference (injected by BSP during early boot).
 ///
-/// # Safety
-/// This is a `static mut` accessed only from [`init_hal`] (write-once)
-/// and [`hal()`] (read-after-init). No concurrent mutation occurs.
-#[allow(static_mut_refs)]
-static mut HAL: Option<&'static dyn HalProvider> = None;
+/// 30 RT-027：`static mut` → `OnceCell`（write-once 语义由类型表达；
+/// 旧实现依赖调用约定 + 注释，`hal()` 未初始化时 expect panic——语义保留
+/// 但消除 `static mut` 面）。
+static HAL: spin::Once<&'static (dyn HalProvider + Sync)> = spin::Once::new();
 
 /// Initialize the global HAL with a BSP-provided implementation.
 ///
 /// Must be called exactly once during early boot, before any HAL usage.
-///
-/// # Safety
-/// This function writes to a `static mut`. It must be called from a
-/// single-threaded boot context before the scheduler starts.
-pub fn init_hal(provider: &'static dyn HalProvider) {
-    unsafe {
-        HAL = Some(provider);
-    }
+/// （重复调用静默忽略——Once 语义；调用方为 boot 装配期单线程上下文。）
+pub fn init_hal(provider: &'static (dyn HalProvider + Sync)) {
+    let _ = HAL.call_once(|| provider);
 }
 
 /// Returns the global HAL provider.
 ///
 /// # Panics
-/// Panics if [`init_hal`] has not been called yet.
-pub fn hal() -> &'static dyn HalProvider {
-    // SAFETY: `HAL` 为 boot 期 write-once 的全局单例（见 `init_hal` 的
-    // # Safety 契约）；`init_hal()` 在 boot 期间调用，此后读取恒为
-    // Some（expect 仅在未初始化时 panic——这是启动顺序 bug，应尽早暴露）。
-    unsafe { HAL.expect("HAL not initialized: call init_hal() during boot first") }
+/// Panics if [`init_hal`] has not been called yet（启动顺序 bug，尽早暴露）。
+pub fn hal() -> &'static (dyn HalProvider + Sync) {
+    *HAL.get().expect("HAL not initialized: call init_hal() during boot first")
 }
 
 #[cfg(feature = "mock")]

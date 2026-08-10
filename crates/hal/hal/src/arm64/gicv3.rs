@@ -50,6 +50,12 @@ pub struct Arm64Gic {
 /// Stored in a `static mut` because [`crate::HalIrq::register`] takes `&self`
 /// (not `&mut self`); registration is expected to happen during boot before
 /// concurrency is enabled.
+///
+/// # SAFETY（30 RT-016 单核不变量）
+/// 本表仅在**单核启动阶段**（SMP bring-up 之前）由 [`crate::HalIrq::register`]
+/// 写入、由 [`Arm64Gic::dispatch_irq`] 读取；两者都在中断关闭的 boot 上下
+/// 文执行，无并发访问。SMP 启用前禁止在中断上下文注册/注销 handler
+/// （SMP bring-up 为未来版本，届时须改 SpinLock 或每核表）。
 #[allow(static_mut_refs)]
 static mut IRQ_HANDLERS: [Option<crate::IrqHandler>; MAX_IRQ as usize] = [None; MAX_IRQ as usize];
 
@@ -84,15 +90,18 @@ impl Arm64Gic {
 
     /// Initialize the GIC: distributor, redistributor, and CPU interface.
     ///
+    /// 30 RT-024：返回 Result——GICR 就绪超时 → Err(HalError::Timeout)
+    /// （旧实现 .expect() 在 boot 路径 panic，整机不可恢复）。
+    ///
     /// # Safety
     /// Touches memory-mapped hardware registers and ICC system registers.
-    pub fn init(&self) {
+    pub fn init(&self) -> Result<(), HalError> {
         // SAFETY: MMIO writes and system-register accesses are required to
         // bring the GIC online; caller must ensure base addresses are valid.
         unsafe {
             // Enable GICD: ARE_NS (bit 4) + EnableGrp1 (bit 1) + Enable (bit 0).
             w32(self.gicd_base, GICD_CTLR, 1 | (1 << 4) | (1 << 1));
-            self.init_redistributor();
+            self.init_redistributor()?;
             // Enable CPU interface via ICC system registers.
             let igrpen1: u64 = 1;
             core::arch::asm!(
@@ -120,21 +129,23 @@ impl Arm64Gic {
 
     /// Wake the current core's redistributor and wait for it to be ready.
     ///
+    /// 30 RT-024：有界轮询超时 → `Err(HalError::Timeout)`（HAL-005 原则；
+    /// 旧实现 .expect() panic）。
+    ///
     /// # Safety
     /// Touches memory-mapped GICR registers.
-    unsafe fn init_redistributor(&self) {
+    unsafe fn init_redistributor(&self) -> Result<(), HalError> {
         let gicr = self.locate_current_core_gicr();
         // Clear ProcessorSleep to wake the redistributor.
         let mut waker = r32(gicr, GICR_WAKER);
         waker &= !GICR_WAKER_PROCESSING_SLEEP;
         w32(gicr, GICR_WAKER, waker);
         // HAL-005：有界忙等——等待 ChildrenAsleep 清除（重分发器就绪）。
-        // 旧代码无限忙等；超时返回 Err(HalError::Timeout)。
         crate::wait_until(
             || r32(gicr, GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP == 0,
             GICR_WAKEUP_MAX_ITERS,
         )
-        .expect("GICR redistributor failed to become ready");
+        .ok_or(HalError::Timeout)
     }
 
     /// Locate the GICR base for the current core.
@@ -253,11 +264,28 @@ impl crate::HalIrq for Arm64Gic {
     }
 }
 
-static ARM64_GIC: Arm64Gic = Arm64Gic::new(0x08000000, 0x080A0000);
+/// 30 RT-011：GIC 单例不再硬编码 QEMU 基址——经 [`init_with`] 从
+/// PlatformConfig 注入（装配期从 DTB 读取 GIC 基址填 cfg；未初始化访问
+/// 返回明确错误，禁访问占位地址）。
+static ARM64_GIC: core::cell::OnceCell<Arm64Gic> = core::cell::OnceCell::new();
+
+/// 30 RT-011/024：以平台配置初始化 GIC（分配器 + 重分发器 + CPU 接口）。
+/// GICR 就绪为有界轮询（HAL-005），超时返回 Err（boot 关键路径不 panic）。
+pub fn init_with(cfg: &crate::arm64::PlatformConfig) -> Result<(), HalError> {
+    let gic = Arm64Gic::new(cfg.gicd_base, cfg.gicr_base);
+    gic.init()?;
+    let _ = ARM64_GIC.set(gic);
+    Ok(())
+}
 
 /// Returns the ARM64 GICv3 IRQ HAL singleton.
+///
+/// # Panics
+/// 未调用 [`init_with`]（启动装配顺序 bug）——boot 路径尽早暴露。
 pub fn irq() -> &'static dyn crate::HalIrq {
-    &ARM64_GIC
+    ARM64_GIC
+        .get()
+        .expect("GIC not initialized: call gicv3::init_with(&PlatformConfig) during boot")
 }
 
 #[cfg(test)]

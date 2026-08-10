@@ -426,6 +426,25 @@ fn runtime_dtb_slice(bundle_len: u64) -> Option<(&'static [u8], u64)> {
     Some((blob, dtb_phys))
 }
 
+/// 30 RT-008：从运行时 DTB 提取 arch timer 虚拟中断号（零硬件依赖——
+/// 原 main.rs 硬编码 27）。FDT `arm,armv8-timer` 节点 interrupts 属性按
+/// arm 规范为 4 个三元组（phys-secure / phys-nonsecure / **virt** / hyp，
+/// GIC 编码 [type, ppi, flags]）；虚拟 timer 取第 3 个三元组的 PPI 单元
+/// +16 = 中断号（QEMU virt 为 PPI 11 → 27，与 WP-26.8 基线一致）。
+pub fn timer_irq_from_dtb(dtb: &[u8]) -> Option<u32> {
+    let inventory = eneros_board::device_tree::parse_fdt(dtb).ok()?;
+    let timer = inventory.find_by_compatible("arm,armv8-timer")?;
+    let triples: alloc::vec::Vec<&[u32]> = timer.interrupts.chunks_exact(3).collect();
+    // 第 3 个三元组 = 虚拟 timer（QEMU virt/arm 规范顺序）；PPI 编码
+    // [1, ppi, flags]（type=1）。
+    let virt = triples.get(2)?;
+    if virt[0] == 1 {
+        Some(virt[1].checked_add(16)?)
+    } else {
+        None
+    }
+}
+
 /// 装配并打印 ProbeReport（root-task 启动日志；指标 = 结构化数值字段），
 /// 返回已接线的驱动 IRQ 列表（事件循环 poll → handle_irq → ack）。
 ///
@@ -654,6 +673,21 @@ mod tests {
         assert_eq!(report.bound_count(), 0);
         assert_eq!(report.failed_count(), 1);
         assert_eq!(report.failed()[0].error, DriverError::NotFound);
+    }
+
+    /// 30 RT-008 判据：真实 qemu-virt.dtb → timer IRQ = 27（虚拟 timer
+    /// PPI 11 + 16；与 WP-26.8 基线一致）；破坏 DTB → None（fallback 路径）。
+    #[test]
+    fn timer_irq_from_dtb_returns_qemu_virt_27() {
+        const QEMU_VIRT_DTB: &[u8] =
+            include_bytes!("../../../hal/board/tests/fixtures/qemu-virt.dtb");
+        assert_eq!(
+            timer_irq_from_dtb(QEMU_VIRT_DTB),
+            Some(27),
+            "QEMU virt 虚拟 timer = PPI 11 → IRQ 27（30 RT-008 判据）"
+        );
+        assert_eq!(timer_irq_from_dtb(b"not-a-dtb"), None);
+        assert_eq!(timer_irq_from_dtb(&[]), None);
     }
 
     /// 真实 qemu-virt.dtb fixture：pl011 绑定为 UART（D1），其余如实 unbound。
