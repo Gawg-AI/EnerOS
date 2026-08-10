@@ -4,7 +4,7 @@
 //! `HeapAllocator` 为生产分配器（真实 `dealloc` 回收 + 内部自旋锁）。
 //! `BumpAllocator` 保留为参考/测试（与 services 的 loom 验证同源）。
 //!
-//! 堆大小编译期配置注入：`ENEROS_HEAP_SIZE_BYTES`（默认 512 KiB——init
+//! 堆大小编译期配置注入：`ENEROS_HEAP_SIZE_BYTES`（默认 1 MiB——init
 //! bundle ~133 KiB + spawn 计划 + IPC 帧缓冲，留足余量；真机按板载 RAM 调）。
 
 use core::alloc::{GlobalAlloc, Layout};
@@ -15,7 +15,7 @@ use linked_list_allocator::LockedHeap;
 
 /// 堆大小（字节）：编译期注入（`ENEROS_HEAP_SIZE_BYTES`），默认 1 MiB。
 ///
-/// G-R1 QEMU 实测：512 KiB bump 时代刚好够（无 header 开销）；LockedHeap
+/// G-R1 QEMU 实测：1 MiB bump 时代刚好够（无 header 开销）；LockedHeap
 /// 的块头/对齐开销使 spawn 后剩余不足（OOM 8776B——supervisor 表分配
 /// 失败）。1 MiB 留足余量（真机按板载 RAM 构建时注入调整）。
 const HEAP_SIZE: usize = match option_env!("ENEROS_HEAP_SIZE_BYTES") {
@@ -121,7 +121,7 @@ unsafe impl GlobalAlloc for HeapAllocator {
 
 /// 静态 bump 分配器（保留：参考实现与并发模型验证；生产路径已由
 /// [`HeapAllocator`] 取代，见 22 §2.W1.4）。
-/// 静态堆大小（512 KiB，同默认配置）。
+/// 静态堆大小（1 MiB，同默认配置）。
 pub struct BumpAllocator {
     heap: UnsafeCell<[u8; HEAP_SIZE]>,
     offset: AtomicUsize,

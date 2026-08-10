@@ -30,8 +30,11 @@ pub static PANIC_REBOOT_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// panic 审计链（预分配：MemStore + 链头，panic 路径零堆分配）。
 static PANIC_LOGGER: Mutex<Option<AuditLoggerImpl<MemStore>>> = Mutex::new(None);
 
-/// 创世哈希：固定常量（SM3("eneros-root-task-panic") 的一次性值；链恢复
-/// 语义要求创世跨重启不变，W3 持久化后由 boot-manager 统一提供）。
+/// 创世哈希：**占位**（字节 = ASCII "eneros-root-task-panic" 补零，非真实
+/// SM3 摘要——30 RT-028① 诚实化：原注释声称 SM3 哈希实为 ASCII，审计链
+/// "创世"可被离线伪造）。链恢复语义要求创世跨重启不变；真实 SM3 创世根
+/// 由 boot-manager 装配期提供并经 DurableLog 持久化（WP-30.7 收口，蓝图
+/// 27.5）。
 const PANIC_GENESIS: [u8; 32] = [
     0x6e, 0x65, 0x72, 0x6f, 0x73, 0x2d, 0x72, 0x6f, 0x6f, 0x74, 0x2d, 0x74, 0x61, 0x73, 0x6b, 0x2d,
     0x70, 0x61, 0x6e, 0x69, 0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -55,24 +58,35 @@ pub fn log_panic_event(actor: &str, detail: &str) {
 
 /// panic 复位序列（不返回）：审计 → 计数 → 武装 SP805 10 ms 超时 → 复位。
 ///
-/// `wdt_base == 0`（无 SP805 的平台/软件模式）时纯挂起——QEMU 验证与
-/// 真机 BSP 均以 [`WDT_BASE`] 武装复位。SP805 写序列见 [`sp805_arm_sequence`]
-/// （host 测试断言寄存器序列）；硬件复位动作（超时→SoC 复位）为真机/
-/// QEMU 完整版验证项（xpack QEMU 9.2.4 无 SP805 设备，ADR-026）。
+/// 30 RT-001：武装前必须检查 [`WDT_MMIO_MAPPED`]——旧实现软件模式（MMIO
+/// 映射失败，如 QEMU xpack 无 SP805 节点）下 panic 路径写未映射
+/// 0x0905_0000 → 二次 VM fault，审计链/计数后续步骤不可达。软件模式打印
+/// 判据行后 spin（与 `ipc_fail_closed` 同语义；依赖外部看门狗/人工复位）。
+/// SP805 写序列见 [`sp805_arm_sequence`]（host 测试断言寄存器序列）。
 pub fn panic_reboot(info: &PanicInfo) -> ! {
     // ① 审计（无堆；location 为 &'static str 可直接定容写入）
     let detail = format_location(info.location());
     log_panic_event("root-task", &detail);
     // ② 重启计数（内存指标）
     let n = PANIC_REBOOT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    eneros_runtime::println!(
-        "[eneros-root-task] PANIC reboot #{} at {} — arming watchdog reset",
-        n,
-        detail
-    );
-    // ③ 武装 SP805 短超时 → 超时硬件复位（10 ms 内；无 SP805 时挂起）
-    let wdt = eneros_watchdog::wdt::HwWatchdog::new(WDT_BASE);
-    wdt.init(10);
+    // ③ 武装 SP805 短超时 → 超时硬件复位（10 ms 内）
+    if WDT_MMIO_MAPPED.load(core::sync::atomic::Ordering::Relaxed) {
+        eneros_runtime::println!(
+            "[eneros-root-task] PANIC reboot #{} at {} — arming watchdog reset",
+            n,
+            detail
+        );
+        let wdt = eneros_watchdog::wdt::HwWatchdog::new(WDT_BASE);
+        wdt.init(10);
+    } else {
+        // 30 RT-001：软件模式（无 SP805 映射）——不写未映射 MMIO，打印
+        // 判据行后 spin（防二次 VM fault）。
+        eneros_runtime::println!(
+            "[eneros-root-task] PANIC #{} at {} — WDT unmapped — spin, awaiting external reset",
+            n,
+            detail
+        );
+    }
     loop {
         core::hint::spin_loop();
     }

@@ -156,7 +156,9 @@ impl Supervisor {
         self.now_ms = now_ms;
     }
 
-    /// 按服务数新建（root-task 侧：spawn 计划动态，名字占位 `svc-<i>`）。
+    /// 按服务数新建（占位名 `svc-<i>`——30 RT-029：生产路径已改用
+    /// [`Supervisor::new`] 真实服务名；本构造仅测试批量便捷，禁止生产消费）。
+    #[cfg(test)]
     pub fn new_for_count(count: usize, now_ms: u64) -> Self {
         Self {
             services: (0..count)

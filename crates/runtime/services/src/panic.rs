@@ -39,7 +39,9 @@ pub fn init_svc_panic_audit() {
 pub fn svc_panic_hook(svc_name: &'static str, info: &PanicInfo) -> ! {
     let n = SVC_PANIC_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     let detail = format_location(info.location());
-    if let Some(logger) = PANIC_LOGGER.lock().as_mut() {
+    // 30 RT-028②：try_lock——panic 由持锁代码（logger 内部/重入）触发时
+    // lock() 死锁挂起连打印都没有；拿不到锁跳过审计，保证打印与挂起可达。
+    if let Some(logger) = PANIC_LOGGER.try_lock().as_mut() {
         let ev = AuditEvent::new(AuditEventType::SecurityAlert, svc_name, "panic", &detail);
         let _ = logger.log(ev);
     }

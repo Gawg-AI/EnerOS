@@ -83,7 +83,12 @@ pub fn run_ipc_loop(
     // sender(TCB cap) → 服务索引 映射。故障注入周期性执行（注入前检查
     // supervisor 状态：Suspended/Faulted 不注入——seL4_Send 同步语义，
     // 向挂起服务 send 会永久阻塞 root-task）。
-    let mut supervisor = crate::supervisor::Supervisor::new_for_count(handles.len(), now_ms());
+    // 30 RT-029：真实服务名（旧实现 new_for_count 用占位名 `svc-<i>`，
+    // SUPERVISOR 故障日志服务名无定位价值——故障重启真证据（WP-27.4）
+    // 出证前必须关闭）。
+    let service_names: alloc::vec::Vec<&str> =
+        handles.iter().map(|h| h.name.as_str()).collect();
+    let mut supervisor = crate::supervisor::Supervisor::new(&service_names, now_ms());
     // fault 识别：poll 的 sender = fault_ep 的 badge（服务索引+1，spawn 时
     // mint 设置；0 保留 = 未知）。23 G-I 总出口确认：seL4 fault IPC 的
     // sender = fault handler endpoint 的 badge（doFaultTransfer 写入 badge
