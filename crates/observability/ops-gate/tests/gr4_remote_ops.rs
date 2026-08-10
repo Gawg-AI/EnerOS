@@ -15,8 +15,8 @@
 
 use eneros_dashboard::ws::{parse_server_frame, OP_TEXT};
 use eneros_dashboard::{
-    DashboardEvent, DashboardWsServer, EdgeKind, FlowDirection, NodeKind, NodeStatus,
-    Position3D, TopologyEdge, TopologyGraph, TopologyNode, WsServer,
+    DashboardEvent, DashboardWsServer, EdgeKind, FlowDirection, NodeKind, NodeStatus, Position3D,
+    TopologyEdge, TopologyGraph, TopologyNode, WsServer,
 };
 use eneros_mgmt_api::rate_limit::{RateLimitConfig, RateLimiter};
 use eneros_mgmt_api::rbac::{Permission, RbacPolicy};
@@ -48,13 +48,18 @@ fn gr4_remote_ops_session_full() {
 
     // ── 1. 能看：metrics 经 MQTT 到达运维侧 ─────────────────────────
     let mut exporter = session.metrics_exporter();
-    exporter.export("{\"metric\":\"cpu\",\"v\":0.42}").expect("导出");
+    exporter
+        .export("{\"metric\":\"cpu\",\"v\":0.42}")
+        .expect("导出");
     let line = session.take_metrics().expect("运维侧收到 metrics");
     assert!(line.contains("cpu"), "metrics 行内容: {line}");
 
     // ── 2. 能看（告警）：SLO 超阈值 → alerts topic ──────────────────
     let mut engine = TriggerEngine::new(session.alert_sink());
-    assert!(engine.evaluate("ipc", 6_000_000, 2_000_000, 5_000_000, 1000), "触发告警");
+    assert!(
+        engine.evaluate("ipc", 6_000_000, 2_000_000, 5_000_000, 1000),
+        "触发告警"
+    );
     let alert = session.take_alert().expect("运维侧收到告警");
     assert!(alert.contains("state=Critical"), "告警内容: {alert}");
 
@@ -82,9 +87,10 @@ fn gr4_remote_ops_session_full() {
     assert!(resp.contains("\"status\":3"), "拒绝响应: {resp}");
 
     // ── 4. 能升级：镜像下载 + OTA 回路 → Success ────────────────────
-    let mut dl = OtaDownloader::new("http://ota/fw.bin", 1000, 256, |off, want| {
+    let mut dl = OtaDownloader::new("http://ota/fw.bin", 1000, 256, 4096, |off, want| {
         Ok(vec![(off % 256) as u8; want as usize])
-    });
+    })
+    .expect("构造器校验通过");
     let (image, progress) = dl.download_all().expect("下载完成");
     assert_eq!(progress.last().unwrap().percent(), 100);
     let mut pipe = OtaPipeline::new(
@@ -118,7 +124,8 @@ fn gr4_remote_ops_session_full() {
         }],
         timestamp: 2000,
     };
-    ws.broadcast(&DashboardEvent::TopologyUpdate(graph)).expect("广播");
+    ws.broadcast(&DashboardEvent::TopologyUpdate(graph))
+        .expect("广播");
     let raw = frames.borrow();
     let frame = parse_server_frame(&raw[0]).expect("运维侧解析 WS 帧");
     assert_eq!(frame.opcode, OP_TEXT, "文本帧");
@@ -145,6 +152,7 @@ fn gr4_alert_recovery_published() {
 /// 验收：OTA 下载失败（短分块）不进入回路（fail-closed）。
 #[test]
 fn gr4_ota_download_fail_closed() {
-    let mut dl = OtaDownloader::new("http://ota/bad.bin", 1000, 256, |_o, _w| Ok(Vec::new()));
+    let mut dl = OtaDownloader::new("http://ota/bad.bin", 1000, 256, 4096, |_o, _w| Ok(Vec::new()))
+        .expect("构造器校验通过");
     assert!(dl.download_all().is_err(), "空分块必须 Err（防死循环）");
 }

@@ -36,22 +36,24 @@ pub enum OtaError {
     DowngradeRejected,
 }
 
+/// 解析 "X.Y.Z" 三段数字版本；非该形态返回 `None`.
+fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+    let mut it = v.trim().split('.');
+    let major = it.next()?.parse::<u64>().ok()?;
+    let minor = it.next()?.parse::<u64>().ok()?;
+    let patch = it.next()?.parse::<u64>().ok()?;
+    if it.next().is_some() {
+        return None; // 多于三段
+    }
+    Some((major, minor, patch))
+}
+
 /// 语义版本比较（CRY-006）：解析 "X.Y.Z" 三段数字并逐段比较。
 ///
-/// 解析失败（非 "X.Y.Z" 形态）视为 `Equal`（不拦截、也不误判升级）——
-/// 调用方对未知格式版本应另行校验；本函数只保证数字段单调。
+/// 解析失败（非 "X.Y.Z" 形态）视为 `Equal`——本函数只保证数字段单调；
+/// 版本合法性由 [`check_monotonic`] fail-closed 把关（33 SE-15）。
 pub fn compare_versions(a: &str, b: &str) -> core::cmp::Ordering {
-    fn parse(v: &str) -> Option<(u64, u64, u64)> {
-        let mut it = v.trim().split('.');
-        let major = it.next()?.parse::<u64>().ok()?;
-        let minor = it.next()?.parse::<u64>().ok()?;
-        let patch = it.next()?.parse::<u64>().ok()?;
-        if it.next().is_some() {
-            return None; // 多于三段
-        }
-        Some((major, minor, patch))
-    }
-    match (parse(a), parse(b)) {
+    match (parse_version(a), parse_version(b)) {
         (Some(x), Some(y)) => {
             if x.0 != y.0 {
                 x.0.cmp(&y.0)
@@ -68,9 +70,15 @@ pub fn compare_versions(a: &str, b: &str) -> core::cmp::Ordering {
 /// 版本单调检查（CRY-006）：target 不得低于 current（防降级）。
 ///
 /// `target < current` → `Err(OtaError::DowngradeRejected)`；
-/// 相等/升级/不可解析版本均放行（不可解析由调用方另行把关）。
+/// **任一侧版本不可解析 → `Err(OtaError::VerifyFailed)`**（33 SE-15：
+/// fail-closed——旧实现把不可解析当 Equal 放行，未知格式版本可绕过
+/// 防降级门禁）。
 pub fn check_monotonic(target: &str, current: &str) -> Result<(), OtaError> {
-    if compare_versions(target, current) == core::cmp::Ordering::Less {
+    let (Some(target_ver), Some(current_ver)) = (parse_version(target), parse_version(current))
+    else {
+        return Err(OtaError::VerifyFailed);
+    };
+    if target_ver < current_ver {
         return Err(OtaError::DowngradeRejected);
     }
     Ok(())
@@ -151,7 +159,16 @@ mod tests {
         );
         assert!(check_monotonic("0.124.0", "0.123.0").is_ok(), "升级放行");
         assert!(check_monotonic("0.123.0", "0.123.0").is_ok(), "同版本放行");
-        // 不可解析 target 放行（由调用方另行把关，不静默拒绝升级）
-        assert!(check_monotonic("dev", "0.123.0").is_ok());
+        // 33 SE-15：不可解析版本 fail-closed（旧判据为放行）
+        assert_eq!(
+            check_monotonic("dev", "0.123.0"),
+            Err(OtaError::VerifyFailed),
+            "不可解析 target 必须拒绝"
+        );
+        assert_eq!(
+            check_monotonic("0.123.0", "dev"),
+            Err(OtaError::VerifyFailed),
+            "不可解析 current 必须拒绝"
+        );
     }
 }

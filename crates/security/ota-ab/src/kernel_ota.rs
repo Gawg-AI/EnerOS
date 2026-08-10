@@ -83,6 +83,8 @@ pub struct KernelOta<D: BlockDevice> {
     ab: AbPartitionOta<D>,
     /// 分区容量（字节）
     partition_capacity: u64,
+    /// 分区表认证密钥（33 SE-18：与 OTA root_key 同源派生注入）。
+    table_hmac_key: [u8; 32],
 }
 
 impl<D: BlockDevice> KernelOta<D> {
@@ -92,15 +94,19 @@ impl<D: BlockDevice> KernelOta<D> {
     /// - `root_key`：设备根公钥（SM2 验签）
     /// - `now_ms`：当前时间戳（毫秒）
     /// - `partition_capacity`：单分区容量（字节）
+    /// - `table_hmac_key`：分区表 HMAC 密钥（33 SE-18，由集成层从
+    ///   与 `root_key` 同源的设备根密钥派生注入，禁止硬编码）
     pub fn new(
         device: D,
         root_key: eneros_crypto::Sm2PublicKey,
         now_ms: u64,
         partition_capacity: u64,
+        table_hmac_key: [u8; 32],
     ) -> Self {
         Self {
             ab: AbPartitionOta::new(device, root_key, now_ms),
             partition_capacity,
+            table_hmac_key,
         }
     }
 
@@ -171,7 +177,7 @@ impl<D: BlockDevice> KernelOta<D> {
         self.ab.activate(slot)?;
 
         // 7. 持久化分区表
-        save_to_device(&mut self.ab)?;
+        save_to_device(&mut self.ab, &self.table_hmac_key)?;
 
         Ok(())
     }
@@ -245,7 +251,7 @@ impl<D: BlockDevice> KernelOta<D> {
 
         // 6. 激活新分区
         self.ab.activate(slot)?;
-        save_to_device(&mut self.ab)?;
+        save_to_device(&mut self.ab, &self.table_hmac_key)?;
 
         Ok(())
     }
@@ -257,10 +263,10 @@ impl<D: BlockDevice> KernelOta<D> {
         let ok = boot_health_check(&mut self.ab, now_ms);
         if !ok {
             // 自动回滚已触发
-            save_to_device(&mut self.ab)?;
+            save_to_device(&mut self.ab, &self.table_hmac_key)?;
             return Err(KernelOtaError::Ota(OtaError::BootFailed));
         }
-        save_to_device(&mut self.ab)?;
+        save_to_device(&mut self.ab, &self.table_hmac_key)?;
         Ok(())
     }
 
@@ -286,7 +292,7 @@ impl<D: BlockDevice> KernelOta<D> {
     /// 手动回滚到旧版本分区。
     pub fn rollback(&mut self) -> Result<PartitionSlot, KernelOtaError> {
         let slot = self.ab.rollback()?;
-        save_to_device(&mut self.ab)?;
+        save_to_device(&mut self.ab, &self.table_hmac_key)?;
         Ok(slot)
     }
 }
@@ -323,12 +329,14 @@ mod tests {
     const TEST_BLOCKS: u64 = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
     /// 测试分区容量（字节）
     const TEST_CAPACITY: u64 = PARTITION_BLOCKS * 512;
+    /// 33 SE-18：测试用分区表 HMAC 密钥。
+    const TEST_HMAC_KEY: [u8; 32] = [0x42; 32];
 
     fn setup() -> (KernelOta<MockBlockDevice>, Sm2KeyPair, CsRng) {
         let mut rng = CsRng::new();
         let kp = Sm2KeyPair::generate(&mut rng).expect("密钥对生成失败");
         let dev = MockBlockDevice::new(TEST_BLOCKS, 512);
-        let ota = KernelOta::new(dev, kp.public_key, 1_000, TEST_CAPACITY);
+        let ota = KernelOta::new(dev, kp.public_key, 1_000, TEST_CAPACITY, TEST_HMAC_KEY);
         (ota, kp, rng)
     }
 

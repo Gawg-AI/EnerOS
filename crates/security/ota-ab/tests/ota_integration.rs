@@ -39,6 +39,9 @@ use eneros_ota_ab::{
 use eneros_storage::{BlockDevice, DeviceHealth, MockBlockDevice, StorageError};
 use heapless::String as HString;
 
+/// 33 SE-18：测试用分区表 HMAC 密钥。
+const TEST_HMAC_KEY: [u8; 32] = [0x42; 32];
+
 /// 10 MiB 镜像大小（蓝图 §6.3/§7.2 性能口径 10MB）。
 const IMAGE_SIZE_10MB: usize = 10 * 1024 * 1024;
 /// OTA 下载分块大小（64 KiB，对应 configs/ota.toml [upgrade] chunk_size）。
@@ -199,7 +202,7 @@ fn int1_full_upgrade_persist_reboot() {
     );
 
     // 分区表持久化到保留块（魔数 "EOTA" 落盘），随后掉电丢弃内存态
-    save_to_device(&mut ota).expect("save 应成功");
+    save_to_device(&mut ota, &TEST_HMAC_KEY).expect("save 应成功");
     drop(ota);
     {
         let bs = storage.block_size();
@@ -215,7 +218,7 @@ fn int1_full_upgrade_persist_reboot() {
     assert_eq!(ota2.get_active_slot(), PartitionSlot::A, "冷启动默认为 A");
     assert_eq!(part(&ota2, PartitionSlot::A).version.as_str(), "0.0.0");
     assert_eq!(part(&ota2, PartitionSlot::B).state, PartitionState::Empty);
-    let loaded = load_from_device(&mut ota2, 3_000).expect("load 不应 I/O 失败");
+    let loaded = load_from_device(&mut ota2, &TEST_HMAC_KEY, 3_000).expect("load 不应 I/O 失败");
     assert!(loaded, "应从保留块恢复分区表");
 
     // 新分区 Active 且元数据完整（版本/大小/哈希/签名逐字段一致）

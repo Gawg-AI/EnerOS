@@ -39,6 +39,9 @@ use eneros_recovery::{
 use eneros_storage::{BlockDevice, DeviceHealth, MockBlockDevice, StorageError};
 use heapless::String as HString;
 
+/// 33 SE-18（签名变更涟漪）：测试用分区表 HMAC 密钥。
+const TEST_HMAC_KEY: [u8; 32] = [0x42; 32];
+
 /// 10 MiB 镜像大小（蓝图 §6.3/§7.2 性能口径 10MB）。
 const IMAGE_SIZE_10MB: usize = 10 * 1024 * 1024;
 /// 恢复刷写流式接收分块大小（4 KiB，对应 configs/recovery.toml [flash] chunk_size）。
@@ -213,7 +216,7 @@ fn attach_partition_table<D: BlockDevice, P: eneros_recovery::HealthProbe>(
     ota: &mut AbPartitionOta<D>,
     now_ms: u64,
 ) -> PartitionTable {
-    let loaded = load_from_device(ota, now_ms).expect("load 不应 I/O 失败");
+    let loaded = load_from_device(ota, &TEST_HMAC_KEY, now_ms).expect("load 不应 I/O 失败");
     assert!(loaded, "应从保留块恢复分区表");
     let table = PartitionTable::snapshot(ota);
     rec.diagnostician_mut().set_partition_table(table.clone());
@@ -241,7 +244,7 @@ fn int1_corrupted_partition_recovery_end_to_end() {
         "篡改镜像 verify 应拒绝并置 B Failed"
     );
     assert_eq!(part(&ota, PartitionSlot::B).state, PartitionState::Failed);
-    save_to_device(&mut ota).expect("save 应成功");
+    save_to_device(&mut ota, &TEST_HMAC_KEY).expect("save 应成功");
     drop(ota); // 主系统"损坏无法启动"，丢弃内存态
 
     // ── 恢复模式侧：enter → 恢复分区表注入诊断器 → Diagnose 检出 B 非 ok ──
@@ -331,7 +334,7 @@ fn int2_ota_ab_compat_partition_table_regression() {
         4,
         "boot_count 非零"
     );
-    save_to_device(&mut ota).expect("save 应成功");
+    save_to_device(&mut ota, &TEST_HMAC_KEY).expect("save 应成功");
     drop(ota);
 
     // ── 恢复会话：load_from_device 读回 → Diagnostician 逐字段一致 ──
@@ -398,7 +401,7 @@ fn int3_exit_criteria_full_recovery_flow() {
     let slot = ota.prepare_upgrade(meta).expect("prepare");
     ota_write_image(&mut ota, slot, &bad);
     assert!(ota.verify(slot).is_err());
-    save_to_device(&mut ota).expect("save");
+    save_to_device(&mut ota, &TEST_HMAC_KEY).expect("save");
     drop(ota);
 
     let mut rec = RecoveryModeImpl::new(storage.handle(), kp.public_key);

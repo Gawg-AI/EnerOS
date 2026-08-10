@@ -4,8 +4,10 @@
 //! - [`boot_health_check`]：每次启动调用，连续失败超过 `max_boot_attempts`
 //!   （默认 3）自动触发回滚；
 //! - [`PartitionTable`] + [`save_to_device`] / [`load_from_device`]：分区表
-//!   定长序列化（魔数 "EOTA" + CRC32）持久化到保留块，断电后上电恢复；
-//!   校验失败回退安全默认（A Active v0.0.0）。
+//!   定长序列化（魔数 "EOTA" + CRC32 + **SM3-HMAC**）持久化到保留块，
+//!   断电后上电恢复；校验失败回退安全默认（A Active v0.0.0）。
+//!   33 SE-18：HMAC 密钥由集成层注入（与 OTA root_key 同源派生），
+//!   伪造分区表（重算 CRC 无密钥 HMAC）必拒。
 //!
 //! 注：`PartitionState::Rolling` 为回滚切换的瞬时中间态语义：实际实现中
 //! 状态切换在同一调用内原子完成（Failed/Active 一次性落位），Rolling 仅作
@@ -13,6 +15,7 @@
 
 use alloc::vec;
 
+use eneros_crypto::{ct_eq, hmac_sm3};
 use eneros_storage::{crc32, BlockDevice};
 
 use crate::ab_partition::{AbPartitionOta, Partition, PartitionSlot, PartitionState, META_BLOCK};
@@ -69,8 +72,11 @@ const TABLE_MAGIC: [u8; 4] = *b"EOTA";
 /// 单分区定长编码长度：slot 1B + state 1B + version_len 1B + version 32B
 /// + size 8B + hash 32B + signature 64B + boot_count 4B + last_boot_ms 8B。
 const PARTITION_LEN: usize = 1 + 1 + 1 + 32 + 8 + 32 + 64 + 4 + 8;
-/// 分区表序列化总长度：魔数 4B + active_slot 1B + 双分区 + CRC32 4B。
-pub const TABLE_LEN: usize = 4 + 1 + 2 * PARTITION_LEN + 4;
+/// SM3-HMAC 摘要长度（33 SE-18：分区表认证）。
+pub const TABLE_HMAC_LEN: usize = 32;
+/// 分区表序列化总长度：魔数 4B + active_slot 1B + 双分区 + CRC32 4B
+/// + HMAC-SM3 32B。
+pub const TABLE_LEN: usize = 4 + 1 + 2 * PARTITION_LEN + 4 + TABLE_HMAC_LEN;
 
 /// 分区表快照（用于持久化）。
 #[derive(Debug, Clone)]
@@ -130,8 +136,12 @@ impl PartitionTable {
         }
     }
 
-    /// 定长序列化：魔数 + active_slot + 双分区全字段 + CRC32（末尾 4B）。
-    pub fn serialize(&self) -> [u8; TABLE_LEN] {
+    /// 定长序列化：魔数 + active_slot + 双分区全字段 + CRC32（末尾 4B）
+    /// + SM3-HMAC（覆盖全表含 CRC，最末 32B）。
+    ///
+    /// `hmac_key`：分区表认证密钥（33 SE-18，由集成层从 OTA root_key
+    /// 同源派生注入，禁止硬编码）。
+    pub fn serialize(&self, hmac_key: &[u8]) -> [u8; TABLE_LEN] {
         let mut out = [0u8; TABLE_LEN];
         out[..4].copy_from_slice(&TABLE_MAGIC);
         out[4] = encode_slot(self.active_slot);
@@ -149,24 +159,35 @@ impl PartitionTable {
             out[pos + 143..pos + 151].copy_from_slice(&p.last_boot_ms.to_be_bytes());
             pos += PARTITION_LEN;
         }
-        // CRC32 覆盖魔数至双分区末尾，追加在最后 4 字节
-        let crc = crc32(&out[..TABLE_LEN - 4]);
-        out[TABLE_LEN - 4..].copy_from_slice(&crc.to_be_bytes());
+        // CRC32 覆盖魔数至双分区末尾，追加在 HMAC 之前
+        let crc = crc32(&out[..TABLE_LEN - 4 - TABLE_HMAC_LEN]);
+        out[TABLE_LEN - 4 - TABLE_HMAC_LEN..TABLE_LEN - TABLE_HMAC_LEN]
+            .copy_from_slice(&crc.to_be_bytes());
+        // 33 SE-18：SM3-HMAC 覆盖全表（含 CRC）——伪造表（重算 CRC 但
+        // 无密钥）必拒。
+        let mac = hmac_sm3(hmac_key, &out[..TABLE_LEN - TABLE_HMAC_LEN]);
+        out[TABLE_LEN - TABLE_HMAC_LEN..].copy_from_slice(&mac);
         out
     }
 
-    /// 反序列化：校验魔数与 CRC32，任一失败返回 `None`。
-    pub fn deserialize(buf: &[u8]) -> Option<Self> {
+    /// 反序列化：校验魔数、SM3-HMAC（常量时间比较）与 CRC32，任一失败
+    /// 返回 `None`。
+    pub fn deserialize(buf: &[u8], hmac_key: &[u8]) -> Option<Self> {
         if buf.len() < TABLE_LEN {
             return None;
         }
         if buf[..4] != TABLE_MAGIC {
             return None;
         }
+        // 33 SE-18：先验 HMAC——CRC 可被无密钥方重算，HMAC 不可伪造。
+        let mac = hmac_sm3(hmac_key, &buf[..TABLE_LEN - TABLE_HMAC_LEN]);
+        if !ct_eq(&mac, &buf[TABLE_LEN - TABLE_HMAC_LEN..TABLE_LEN]) {
+            return None;
+        }
         let mut crc_bytes = [0u8; 4];
-        crc_bytes.copy_from_slice(&buf[TABLE_LEN - 4..TABLE_LEN]);
+        crc_bytes.copy_from_slice(&buf[TABLE_LEN - 4 - TABLE_HMAC_LEN..TABLE_LEN - TABLE_HMAC_LEN]);
         let expected = u32::from_be_bytes(crc_bytes);
-        if crc32(&buf[..TABLE_LEN - 4]) != expected {
+        if crc32(&buf[..TABLE_LEN - 4 - TABLE_HMAC_LEN]) != expected {
             return None;
         }
         let active_slot = decode_slot(buf[4])?;
@@ -213,9 +234,14 @@ impl PartitionTable {
 }
 
 /// 将分区表写入后端设备保留块（块 0）。
-pub fn save_to_device<D: BlockDevice>(ota: &mut AbPartitionOta<D>) -> Result<(), OtaError> {
+///
+/// `hmac_key`：分区表认证密钥（33 SE-18，与 [`load_from_device`] 一致）。
+pub fn save_to_device<D: BlockDevice>(
+    ota: &mut AbPartitionOta<D>,
+    hmac_key: &[u8],
+) -> Result<(), OtaError> {
     let table = PartitionTable::snapshot(ota);
-    let bytes = table.serialize();
+    let bytes = table.serialize(hmac_key);
     let bs = ota.device.block_size();
     if bs < TABLE_LEN {
         return Err(OtaError::WriteFailed { offset: 0 });
@@ -229,10 +255,11 @@ pub fn save_to_device<D: BlockDevice>(ota: &mut AbPartitionOta<D>) -> Result<(),
 
 /// 从后端设备保留块读回分区表。
 ///
-/// 返回 `Ok(true)` 表示成功恢复；魔数或 CRC32 校验失败时回退安全默认
+/// 返回 `Ok(true)` 表示成功恢复；魔数/HMAC/CRC32 校验失败时回退安全默认
 /// （A Active v0.0.0）并返回 `Ok(false)`；仅设备 I/O 错误返回 `Err`。
 pub fn load_from_device<D: BlockDevice>(
     ota: &mut AbPartitionOta<D>,
+    hmac_key: &[u8],
     now_ms: u64,
 ) -> Result<bool, OtaError> {
     let bs = ota.device.block_size();
@@ -244,7 +271,7 @@ pub fn load_from_device<D: BlockDevice>(
     ota.device
         .read_block(META_BLOCK, &mut buf)
         .map_err(|_| OtaError::VerifyFailed)?;
-    match PartitionTable::deserialize(&buf[..TABLE_LEN]) {
+    match PartitionTable::deserialize(&buf[..TABLE_LEN], hmac_key) {
         Some(table) => {
             ota.partitions = table.partitions;
             ota.active_slot = table.active_slot;
@@ -296,6 +323,9 @@ mod tests {
 
     /// 设备总块数：保留块 + 双分区。
     const TEST_BLOCKS: u64 = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
+
+    /// 33 SE-18：测试用分区表 HMAC 密钥（生产由集成层从 root_key 派生注入）。
+    const TEST_HMAC_KEY: [u8; 32] = [0x42; 32];
 
     /// 构造测试环境：真实 SM2 密钥对 + MockBlockDevice。
     fn setup() -> (AbPartitionOta<MockBlockDevice>, Sm2KeyPair, CsRng) {
@@ -407,9 +437,9 @@ mod tests {
         // 让字段非平凡：boot_count / last_boot_ms 非零
         assert!(boot_health_check(&mut ota, 3_333));
         let table = PartitionTable::snapshot(&ota);
-        let bytes = table.serialize();
+        let bytes = table.serialize(&TEST_HMAC_KEY);
         assert_eq!(bytes.len(), TABLE_LEN);
-        let restored = PartitionTable::deserialize(&bytes).expect("反序列化应成功");
+        let restored = PartitionTable::deserialize(&bytes, &TEST_HMAC_KEY).expect("反序列化应成功");
         assert_eq!(restored.active_slot, table.active_slot);
         for (a, b) in restored.partitions.iter().zip(table.partitions.iter()) {
             assert_eq!(a.slot, b.slot);
@@ -429,29 +459,29 @@ mod tests {
         let (mut ota, kp, mut rng) = setup();
         upgrade_to_b(&mut ota, &kp, &mut rng);
         let table = PartitionTable::snapshot(&ota);
-        let mut bytes = table.serialize();
+        let mut bytes = table.serialize(&TEST_HMAC_KEY);
         // 篡改数据区一个字节
         bytes[10] ^= 0x5A;
         assert!(
-            PartitionTable::deserialize(&bytes).is_none(),
+            PartitionTable::deserialize(&bytes, &TEST_HMAC_KEY).is_none(),
             "CRC 不匹配应拒绝"
         );
         // 篡改魔数
-        let mut bad_magic = table.serialize();
+        let mut bad_magic = table.serialize(&TEST_HMAC_KEY);
         bad_magic[0] = b'X';
         assert!(
-            PartitionTable::deserialize(&bad_magic).is_none(),
+            PartitionTable::deserialize(&bad_magic, &TEST_HMAC_KEY).is_none(),
             "魔数错误应拒绝"
         );
 
         // 持久化后篡改保留块，load 应回退安全默认
-        save_to_device(&mut ota).expect("save 应成功");
+        save_to_device(&mut ota, &TEST_HMAC_KEY).expect("save 应成功");
         let bs = ota.device.block_size();
         let mut buf = alloc::vec![0u8; bs];
         ota.device.read_block(META_BLOCK, &mut buf).expect("read");
         buf[7] ^= 0xFF;
         ota.device.write_block(META_BLOCK, &buf).expect("write");
-        let loaded = load_from_device(&mut ota, 9_999).expect("load 不应 I/O 失败");
+        let loaded = load_from_device(&mut ota, &TEST_HMAC_KEY, 9_999).expect("load 不应 I/O 失败");
         assert!(!loaded, "CRC 不匹配应回退安全默认");
         let parts = ota.get_partitions();
         assert_eq!(ota.get_active_slot(), PartitionSlot::A);
@@ -469,12 +499,12 @@ mod tests {
         assert!(boot_health_check(&mut ota, 4_444));
         // 保存前快照
         let before = PartitionTable::snapshot(&ota);
-        save_to_device(&mut ota).expect("save 应成功");
+        save_to_device(&mut ota, &TEST_HMAC_KEY).expect("save 应成功");
         // 破坏内存态（模拟断电后重新上电的脏状态）
         assert!(boot_health_check(&mut ota, 5_000));
         let _ = rollback(&mut ota);
         // 从保留块恢复
-        let loaded = load_from_device(&mut ota, 6_000).expect("load 应成功");
+        let loaded = load_from_device(&mut ota, &TEST_HMAC_KEY, 6_000).expect("load 应成功");
         assert!(loaded, "应从保留块恢复");
         assert_eq!(ota.get_active_slot(), before.active_slot);
         let after = ota.get_partitions();
@@ -489,5 +519,59 @@ mod tests {
             assert_eq!(a.last_boot_ms, b.last_boot_ms);
         }
         assert_eq!(ota.boot_attempts, 0);
+    }
+
+    /// PST8（33 SE-18）：伪造分区表——重算 CRC 但无 HMAC → 必拒；
+    /// 错误密钥 → 必拒；正确密钥 → 通过。
+    #[test]
+    fn pst8_forged_table_without_hmac_rejected() {
+        let (mut ota, kp, mut rng) = setup();
+        upgrade_to_b(&mut ota, &kp, &mut rng);
+        let table = PartitionTable::snapshot(&ota);
+        let bytes = table.serialize(&TEST_HMAC_KEY);
+
+        // 攻击者模型：无 HMAC 密钥，篡改 active_slot（upgrade_to_b 后为
+        // B，改为 A 是真实变更）后重算 CRC 并重写 CRC 区（旧实现只验
+        // CRC——此表可通过）。
+        let mut forged = bytes;
+        forged[4] = encode_slot(PartitionSlot::A); // 篡改 active_slot
+        assert_ne!(forged[4], bytes[4], "篡改必须产生真实变更");
+        let crc = crc32(&forged[..TABLE_LEN - 4 - TABLE_HMAC_LEN]);
+        forged[TABLE_LEN - 4 - TABLE_HMAC_LEN..TABLE_LEN - TABLE_HMAC_LEN]
+            .copy_from_slice(&crc.to_be_bytes());
+        // 无 HMAC 重算：即使 CRC 正确，HMAC 不匹配 → 拒绝
+        assert!(
+            PartitionTable::deserialize(&forged, &TEST_HMAC_KEY).is_none(),
+            "重算 CRC 无 HMAC 的伪造表必须拒绝"
+        );
+
+        // 错误密钥（哪怕表未篡改）→ 拒绝
+        let wrong_key = [0x24u8; 32];
+        assert!(
+            PartitionTable::deserialize(&bytes, &wrong_key).is_none(),
+            "错误 HMAC 密钥必须拒绝"
+        );
+
+        // 正确密钥 → 通过
+        let restored =
+            PartitionTable::deserialize(&bytes, &TEST_HMAC_KEY).expect("正确密钥应通过");
+        assert_eq!(restored.active_slot, table.active_slot);
+
+        // 持久化路径：伪造保留块（重算 CRC 无 HMAC）→ load 回退安全默认
+        save_to_device(&mut ota, &TEST_HMAC_KEY).expect("save 应成功");
+        let bs = ota.device.block_size();
+        let mut buf = alloc::vec![0u8; bs];
+        ota.device.read_block(META_BLOCK, &mut buf).expect("read");
+        // 篡改 active_slot 字节（B→A，真实变更）后重算 CRC（无 HMAC）
+        buf[4] = encode_slot(PartitionSlot::A);
+        assert_ne!(buf[4], bytes[4], "篡改必须产生真实变更");
+        let crc2 = crc32(&buf[..TABLE_LEN - 4 - TABLE_HMAC_LEN]);
+        buf[TABLE_LEN - 4 - TABLE_HMAC_LEN..TABLE_LEN - TABLE_HMAC_LEN]
+            .copy_from_slice(&crc2.to_be_bytes());
+        ota.device.write_block(META_BLOCK, &buf).expect("write");
+        let loaded = load_from_device(&mut ota, &TEST_HMAC_KEY, 9_999).expect("load 不应 I/O 失败");
+        assert!(!loaded, "伪造表（无 HMAC）应回退安全默认");
+        assert_eq!(ota.get_active_slot(), PartitionSlot::A);
+        assert_eq!(ota.get_partitions()[0].version.as_str(), "0.0.0");
     }
 }
