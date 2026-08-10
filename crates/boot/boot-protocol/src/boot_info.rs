@@ -17,7 +17,11 @@ pub const BOOT_INFO_KNOWN_FLAGS: u64 = BOOT_FLAG_SECURE_BOOT
     | BOOT_FLAG_MEASUREMENTS_VALID;
 
 const CRC_OFFSET: usize = 240;
-const MAX_INIT_BUNDLE_LEN: u64 = 256 * 1024 * 1024;
+/// 30 RT-022：init bundle 上限单一事实源——与内核 BOOT-007 映射窗口对齐
+/// （ENEROS_MAPPED_WINDOW_LEN，2 MiB）。旧值 256 MiB 与 root-task 64 MiB 与
+/// 内核窗口 2 MiB 三重不一致（契约违背：bundle 超窗即越窗读 VM fault）。
+/// bundle >2 MiB 需求须先扩内核窗口（R30-1，登记）。
+pub const ENEROS_INIT_BUNDLE_MAX_LEN: u64 = ENEROS_MAPPED_WINDOW_LEN;
 const MAX_DTB_LEN: u64 = 16 * 1024 * 1024;
 const MAX_MEMORY_MAP_LEN: u64 = 1024 * 1024;
 const MAX_MEASUREMENT_LOG_LEN: u64 = 1024 * 1024;
@@ -330,7 +334,7 @@ impl BootInfo {
         validate_pair(
             self.init_bundle_phys,
             self.init_bundle_len,
-            MAX_INIT_BUNDLE_LEN,
+            ENEROS_INIT_BUNDLE_MAX_LEN,
         )?;
         validate_pair(self.dtb_phys, self.dtb_len, MAX_DTB_LEN)?;
         validate_pair(

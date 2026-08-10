@@ -13,8 +13,13 @@ pub const MANIFEST_MEDIA_OFFSET: u64 = 0;
 pub const MANIFEST_RESERVED_BYTES: u64 = 64 * 1024;
 pub const KERNEL_LOAD_START: u64 = 0x4100_0000;
 pub const KERNEL_LOAD_END: u64 = 0x4180_0000;
-pub const INIT_LOAD_START: u64 = 0x4200_0000;
-pub const INIT_LOAD_END: u64 = 0x4280_0000;
+/// 30 RT-010：init bundle 加载区间单一事实源——引用 boot-protocol 常量
+/// （0x4200_0000 起 2 MiB 内核 BOOT-007 窗口）。旧实现允许 8 MiB 浮动区间，
+/// 与内核固定映射/root-task 固定读冲突（load_address ≠ 0x4200_0000 即静默
+/// 断裂）。validate 收紧：load_address 必须 == INIT_LOAD_START。
+pub const INIT_LOAD_START: u64 = eneros_boot_protocol::ENEROS_INIT_BUNDLE_PHYS;
+pub const INIT_LOAD_END: u64 =
+    INIT_LOAD_START + eneros_boot_protocol::ENEROS_INIT_BUNDLE_MAX_LEN;
 
 #[derive(Debug, Clone, Copy)]
 pub struct TrustPolicy {
@@ -197,7 +202,10 @@ fn validate_components(
                 if init.replace(component).is_some() {
                     return Err(LoaderError::DuplicateComponent);
                 }
-                if component.load_address < INIT_LOAD_START
+                // 30 RT-010：收紧——load_address 必须 == INIT_LOAD_START
+                // （内核 2 MiB 固定窗口 + root-task 固定读，浮动区间必然
+                // 静默断裂）；load_end 不得超过窗口末端。
+                if component.load_address != INIT_LOAD_START
                     || load_end > INIT_LOAD_END
                     || component.entry_address != 0
                 {
@@ -389,6 +397,37 @@ mod tests {
             verify_component(&manifest.components[0], &payload),
             Err(LoaderError::PayloadDigest)
         );
+    }
+
+    /// 30 RT-010 判据：init bundle load_address 浮动（≠ INIT_LOAD_START）
+    /// → LoadRange（旧实现允许 8 MiB 区间内任意浮动，与内核固定窗口/
+    /// root-task 固定读静默断裂）。
+    #[test]
+    fn floating_init_load_address_rejected() {
+        let (encoded, policy, payload) = signed_fixture();
+        let manifest = verify_manifest(&encoded, &policy).unwrap();
+        let mut init = manifest.components[1].clone();
+        assert_eq!(init.role, ComponentRole::InitBundle);
+        init.load_address = INIT_LOAD_START + 0x1000; // 浮动
+        let result = validate_components(
+            &ReleaseManifest {
+                components: alloc::vec![manifest.components[0].clone(), init],
+                ..manifest.clone()
+            },
+            &policy,
+        );
+        assert_eq!(result, Err(LoaderError::LoadRange));
+        // 窗口末端越界同样拒绝。
+        let mut init2 = manifest.components[1].clone();
+        init2.memory_length = eneros_boot_protocol::ENEROS_INIT_BUNDLE_MAX_LEN + 1;
+        let result2 = validate_components(
+            &ReleaseManifest {
+                components: alloc::vec![manifest.components[0].clone(), init2],
+                ..manifest.clone()
+            },
+            &policy,
+        );
+        assert_eq!(result2, Err(LoaderError::LoadRange));
     }
 
     #[test]

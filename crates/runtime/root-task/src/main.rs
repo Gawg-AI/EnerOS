@@ -48,10 +48,13 @@ pub mod supervisor;
 #[global_allocator]
 static ALLOCATOR: allocator::HeapAllocator = allocator::HeapAllocator::new();
 
-/// boot manager 加载 init bundle 的物理地址（boot-protocol boot_info.rs）。
-/// M0 阶段只读 header 确认存在；M2+ 阶段解析 modules 并 spawn。
+/// boot manager 加载 init bundle 的物理地址（30 RT-002：单一事实源 =
+/// boot-protocol ENEROS_INIT_BUNDLE_PHYS——boot-manager validate 已收紧
+/// load_address == 本常量（RT-010），root-task 固定读与 BootInfo 声明一致；
+/// 完整"消费 BootInfo.init_bundle_phys 字段"需 elfloader 传参通道（第三方
+/// ABI），登记 34 域）。
 #[cfg(target_os = "none")]
-const INIT_BUNDLE_PHYS: u64 = 0x4200_0000;
+const INIT_BUNDLE_PHYS: u64 = eneros_boot_protocol::ENEROS_INIT_BUNDLE_PHYS;
 
 /// Root task 入口 — 由 seL4 elfloader 在 rootserver 模式下调用。
 ///
@@ -268,8 +271,9 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
                 // K2.2：IPC 调度主循环（替换 spin_loop，21-A）。
                 // WP-27.2：驱动装配（DTB → 绑定表 → ProbeReport 启动日志），
                 // 在进入服务循环前完成；驱动缺失不阻断 spawn（fail 行如实）。
-                crate::driver_probe::probe_and_report(&mut ctx, &mut irq_table, u64::from(bundle.total_len));
-                crate::service::run_ipc_loop(&handles, irq_table, irq_binding);
+                let irq_drivers =
+                    crate::driver_probe::probe_and_report(&mut ctx, &mut irq_table, u64::from(bundle.total_len));
+                crate::service::run_ipc_loop(&handles, irq_table, irq_binding, irq_drivers);
             }
             Err(e) => {
                 println!(
@@ -296,10 +300,15 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
 
 /// 从物理地址读取 init bundle（目标环境：seL4 页表直接映射，物理地址可读）。
 ///
-/// header 中的 `total_len` 无信任：超过 [`MAX_BUNDLE_LEN`]（64 MiB）即拒绝
-/// （fail-closed，防损坏/恶意 header 触发巨量分配）。
-#[cfg(target_os = "none")]
-const MAX_BUNDLE_LEN: usize = 64 * 1024 * 1024;
+/// header 中的 `total_len` 无信任：超过 [`ENEROS_INIT_BUNDLE_MAX_LEN`]（2 MiB
+/// 内核 BOOT-007 窗口，30 RT-003 收紧——旧值 64 MiB 远超内核映射窗口，
+/// 越窗 copy_nonoverlapping 即 VM fault；单一事实源在 boot-protocol）即拒绝
+/// （fail-closed，防损坏/恶意 header 触发巨量分配与越窗读）。
+/// 30 RT-003：bundle total_len 窗口校验（host 可测纯函数）——header 声明
+/// 长度必须落在 [64, 内核映射窗口] 内；越窗（含 >2MiB）拒绝。
+fn bundle_len_within_window(total: usize) -> bool {
+    total >= 64 && total <= eneros_boot_protocol::ENEROS_INIT_BUNDLE_MAX_LEN as usize
+}
 
 /// 从物理地址读取 init bundle。
 #[cfg(target_os = "none")]
@@ -313,7 +322,7 @@ fn read_bundle_from_phys(phys: u64) -> Option<alloc::vec::Vec<u8>> {
         return None;
     }
     let total = u32::from_le_bytes(header[12..16].try_into().ok()?) as usize;
-    if total < 64 || total > MAX_BUNDLE_LEN {
+    if !bundle_len_within_window(total) {
         return None;
     }
     let mut buf = alloc::vec![0u8; total];
@@ -340,6 +349,32 @@ fn main() {
     }
     println!("[eneros-root-task] host build (no seL4)");
 }
+
+/// 30 RT-003 判据：bundle total_len 窗口校验（host）——3MiB header 声明
+/// 必须拒绝（修复前 64MiB 上限放行，越窗 copy_nonoverlapping → VM fault）。
+#[cfg(test)]
+mod tests {
+    use super::bundle_len_within_window;
+
+    #[test]
+    fn bundle_len_within_window_accepts_normal() {
+        assert!(bundle_len_within_window(64));
+        assert!(bundle_len_within_window(133 * 1024)); // 现行 bundle ≈133 KiB
+        assert!(bundle_len_within_window(0x200000)); // 恰为窗口上限
+    }
+
+    #[test]
+    fn bundle_len_within_window_rejects_oversized() {
+        assert!(!bundle_len_within_window(63), "小于 64B 头拒绝");
+        assert!(
+            !bundle_len_within_window(3 * 1024 * 1024),
+            "3MiB 超出内核 2MiB 窗口必须拒绝（30 RT-003 判据）"
+        );
+        assert!(!bundle_len_within_window(64 * 1024 * 1024), "旧 64MiB 上限值必须拒绝");
+        assert!(!bundle_len_within_window(0x4000_0000), "1GiB 拒绝");
+    }
+}
+
 #[cfg(target_os = "none")]
 #[lang = "eh_personality"]
 extern "C" fn eh_personality() {}
