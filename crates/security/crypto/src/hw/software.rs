@@ -164,8 +164,19 @@ impl CryptoEngine for SoftwareCryptoEngine {
                 let mut nonce = [0u8; 12];
                 nonce.copy_from_slice(&iv_bytes[..12]);
                 let gcm = Sm4Gcm::new(key);
-                let (ciphertext, _tag) = gcm.encrypt(&nonce, data, &[]);
-                ciphertext
+                let (ciphertext, tag) = gcm.encrypt(&nonce, data, &[]);
+                if matches!(mode, Sm4Mode::Gcm) {
+                    // 29 SE-06：GCM 分支返回 ciphertext ‖ tag——与 decrypt
+                    // 契约对齐（原实现丢弃 tag，产物无法被 decrypt 消费，
+                    // 加解密不对称，语义退化为无认证 CTR）。
+                    let mut out = Vec::with_capacity(ciphertext.len() + 16);
+                    out.extend_from_slice(&ciphertext);
+                    out.extend_from_slice(&tag);
+                    out
+                } else {
+                    // Ctr 分支：无认证语义（调用方自行承担完整性风险）。
+                    ciphertext
+                }
             }
         };
         self.stats.record_success(data.len());
@@ -378,6 +389,50 @@ mod tests {
             result,
             Err(CryptoError::InvalidNonceLength { .. })
         ));
+    }
+
+    /// 29 SE-06 判据：GCM 分支 encrypt 产物（ciphertext ‖ tag）必须能被
+    /// decrypt 消费（修复前 encrypt 丢弃 tag，产物尾部被当 tag 解析 →
+    /// 解密必失败，加解密不对称）。
+    #[test]
+    fn test_software_sm4_gcm_roundtrip_with_tag() {
+        let mut engine = SoftwareCryptoEngine::new();
+        let key = [0x42u8; 16];
+        let iv = [0x24u8; 12];
+        let plaintext = b"SM4-GCM authenticated payload 0123456789";
+        let ct = engine
+            .sm4_encrypt(&key, Some(&iv), Sm4Mode::Gcm, plaintext)
+            .expect("encrypt");
+        assert_eq!(
+            ct.len(),
+            plaintext.len() + 16,
+            "GCM 产物必须携带尾部 16B tag"
+        );
+        let back = engine
+            .sm4_decrypt(&key, Some(&iv), Sm4Mode::Gcm, &ct)
+            .expect("decrypt");
+        assert_eq!(back, plaintext, "GCM 环回必须一致（SE-06 判据）");
+    }
+
+    /// 29 SE-06：篡改 GCM 产物尾部 tag 任一字节 → 解密必 Err（AEAD 认证
+    /// 语义——修复前 tag 从未参与认证，篡改尾 16B 无法被发现）。
+    #[test]
+    fn test_software_sm4_gcm_tampered_tag_rejected() {
+        let mut engine = SoftwareCryptoEngine::new();
+        let key = [0x42u8; 16];
+        let iv = [0x24u8; 12];
+        let ct = engine
+            .sm4_encrypt(&key, Some(&iv), Sm4Mode::Gcm, b"integrity check")
+            .expect("encrypt");
+        let mut tampered = ct.clone();
+        let n = tampered.len();
+        tampered[n - 1] ^= 0xFF; // 篡改 tag 末字节
+        assert!(
+            engine
+                .sm4_decrypt(&key, Some(&iv), Sm4Mode::Gcm, &tampered)
+                .is_err(),
+            "GCM tag 篡改必须 Err（AEAD 认证）"
+        );
     }
 
     #[test]

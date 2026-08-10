@@ -540,14 +540,17 @@ impl TpmDriver for SpiTpmDriver {
             return Ok(alloc::vec![]);
         }
         // CRY-003：真实 TPM2_Create（Seal 语义：data 入 inSensitive）。
-        // 无真实 TPM 时 send_command 失败（fail-closed）。返回响应字节
-        // 作为 sealed blob（含 newHandle + 对象私钥），unseal 前 4 字节为句柄。
+        // 无真实 TPM 时 send_command 失败（fail-closed）。
+        // 29 SE-07 契约：返回**剥离 TPM2 响应头（10B）后的 sealed blob**，
+        // 首 4 字节 = newHandle（TPM2_Create 响应的句柄区）——与 unseal 的
+        // `sealed[0..4]` 解析对齐（修复前返回完整 resp，unseal 按裸句柄
+        // 契约解析 → 偏移差 10B，seal 产物无法 unseal）。
         let cmd = build_create_cmd(parent, data);
         let resp = self.send_command(&cmd)?;
         if resp.len() < 14 {
             return Err(TpmError::SealFailed("TPM2_Create(seal) 响应过短".into()));
         }
-        Ok(resp)
+        Ok(strip_resp_header(&resp).to_vec())
     }
 
     fn unseal(&mut self, sealed: &[u8]) -> Result<Vec<u8>, TpmError> {
@@ -555,7 +558,9 @@ impl TpmDriver for SpiTpmDriver {
             return Ok(alloc::vec![]);
         }
         // CRY-003：真实 TPM2_Unseal 命令序列（build_unseal_cmd 已补全）。
-        // sealed blob 前 4 字节为对象句柄（见 seal）。
+        // 29 SE-07 契约：sealed blob 首 4 字节为对象句柄（seal 已剥离 TPM2
+        // 响应头，见 seal 契约注释——修复前 seal 返回完整 resp，此处按
+        // 裸句柄解析偏移差 10B，seal 产物无法 unseal）。
         if sealed.len() < 4 {
             return Err(TpmError::SealFailed("sealed blob 过短".into()));
         }
@@ -598,6 +603,12 @@ impl TpmDriver for SpiTpmDriver {
         // 探测 DID/VID 寄存器
         self.write_reg(TPM_DID_VID_REG, 0).is_ok()
     }
+}
+
+/// 29 SE-07：剥离 TPM2 响应头（10B：tag2 + size4 + code4），返回参数区
+/// 切片。seal/unseal 的响应体契约由此统一（seal 产物首 4B = newHandle）。
+fn strip_resp_header(resp: &[u8]) -> &[u8] {
+    &resp[10..]
 }
 
 // ============================================================
@@ -765,5 +776,30 @@ mod tests {
         );
         // 真实响应（头部 10 B + 参数）远低于上限。
         assert_eq!(check_read_limits(42, 42), Ok(()));
+    }
+
+    /// 29 SE-07 判据（host 可验证的偏移契约）：模拟 TPM2_Create 响应
+    /// （10B 头 + 4B newHandle + 载荷），seal 剥离头后 unseal 按首 4B 解析
+    /// 的句柄必须等于 newHandle——修复前 seal 返回完整 resp，unseal 解析
+    /// 到的是头 4B（tag），seal 产物无法 unseal（偏移差 10 字节）。
+    #[test]
+    fn seal_unseal_handle_offset_contract() {
+        // 模拟 TPM2_Create 响应：tag(2) ‖ size(4) ‖ code(4) ‖ newHandle(4) ‖ payload。
+        let mut resp = alloc::vec![0u8; 10 + 4 + 16];
+        resp[0..2].copy_from_slice(&0x8001u16.to_be_bytes());
+        resp[2..6].copy_from_slice(&(10u32 + 4 + 16).to_be_bytes());
+        resp[6..10].copy_from_slice(&0u32.to_be_bytes());
+        let new_handle = 0x8000_000Au32;
+        resp[10..14].copy_from_slice(&new_handle.to_be_bytes());
+        resp[14..].copy_from_slice(&[0xAB; 16]);
+        // seal 契约：剥离 10B 头后的 blob。
+        let sealed = strip_resp_header(&resp);
+        assert_eq!(sealed.len(), 4 + 16);
+        // unseal 契约：首 4B 为对象句柄。
+        let handle = u32::from_be_bytes([sealed[0], sealed[1], sealed[2], sealed[3]]);
+        assert_eq!(
+            handle, new_handle,
+            "seal→unseal 句柄偏移必须对齐（29 SE-07）"
+        );
     }
 }

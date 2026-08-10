@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use eneros_crypto::ct_eq;
 use eneros_crypto::sm3::hmac::hmac_sm3;
 use eneros_crypto::sm4::gcm::Sm4Gcm;
+use eneros_crypto::CsRng;
 
 use crate::key_mgmt::SessionKey;
 use crate::SecError;
@@ -39,26 +40,37 @@ pub(crate) struct SecureChannel {
     mac_key: [u8; 32],
     /// 密钥标识符（随帧携带）。
     key_id: u32,
-    /// IV 计数器（每次加密自增，保证 Nonce 唯一）。
-    iv_counter: u64,
+    /// IV 计数器（每次加密自增，保证同实例 Nonce 唯一）。
+    iv_counter: u32,
+    /// 29 SE-10：构造时注入的随机 4B 前缀——同密钥跨实例/重启重装载后
+    /// IV 不再复用（原 IV 唯一性仅依赖进程内计数器，密钥重装载后归零 →
+    /// GCM nonce 复用可导出认证密钥）。IV = random(4B) ‖ counter(4B) ‖
+    /// key_id(4B)。
+    iv_random: [u8; 4],
 }
 
 impl SecureChannel {
-    /// 以会话密钥初始化安全通道。
-    pub(crate) fn new(session: &SessionKey) -> Self {
+    /// 以会话密钥初始化安全通道（29 SE-10：rng 注入随机 IV 前缀）。
+    pub(crate) fn new(session: &SessionKey, rng: &mut CsRng) -> Self {
+        let mut iv_random = [0u8; 4];
+        // DRBG 熵失败时保持全零前缀——计数器仍保证同实例唯一；熵失败由
+        // CsRng 层显式报告（fail-closed 不吞错到通道外）。
+        let _ = eneros_crypto::rng::fill_bytes_or_reseed(rng, &mut iv_random);
         Self {
             cipher: Sm4Gcm::new(&session.key_data),
             mac_key: session.mac_key,
             key_id: session.key_id,
             iv_counter: 0,
+            iv_random,
         }
     }
 
-    /// 生成 12 字节 IV（蓝图 §4.5：iv[0..8] = 计数器 BE，iv[8..12] = key_id BE）。
+    /// 生成 12 字节 IV（29 SE-10：random(4B) ‖ counter(4B) BE ‖ key_id(4B) BE）。
     fn generate_iv(&mut self) -> [u8; 12] {
-        self.iv_counter += 1;
+        self.iv_counter = self.iv_counter.wrapping_add(1);
         let mut iv = [0u8; 12];
-        iv[0..8].copy_from_slice(&self.iv_counter.to_be_bytes());
+        iv[0..4].copy_from_slice(&self.iv_random);
+        iv[4..8].copy_from_slice(&self.iv_counter.to_be_bytes());
         iv[8..12].copy_from_slice(&self.key_id.to_be_bytes());
         iv
     }
@@ -109,10 +121,10 @@ pub struct SecureGoose {
 }
 
 impl SecureGoose {
-    /// 以会话密钥初始化 GOOSE 安全通道。
-    pub fn new(session: &SessionKey) -> Self {
+    /// 以会话密钥初始化 GOOSE 安全通道（29 SE-10：rng 注入 IV 随机前缀）。
+    pub fn new(session: &SessionKey, rng: &mut CsRng) -> Self {
         Self {
-            channel: SecureChannel::new(session),
+            channel: SecureChannel::new(session, rng),
         }
     }
 
@@ -144,7 +156,7 @@ mod tests {
     /// SG9: 加密后立即解密，往返结果等于原明文。
     #[test]
     fn sg9_encrypt_decrypt_roundtrip() {
-        let mut sg = SecureGoose::new(&test_session());
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let plaintext = b"GOOSE PDU payload";
         let frame = sg.encrypt(plaintext).unwrap();
         let decrypted = sg.decrypt(&frame).unwrap();
@@ -154,29 +166,46 @@ mod tests {
     /// SG10: SecureFrame 携带的 key_id 与会话密钥一致。
     #[test]
     fn sg10_frame_key_id_matches_session() {
-        let mut sg = SecureGoose::new(&test_session());
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let frame = sg.encrypt(b"key id check").unwrap();
         assert_eq!(frame.key_id, 7);
     }
 
-    /// SG11: 同一实例连续加密两次，IV 不同（计数器递增），且 iv[8..12] 为 key_id 大端。
+    /// SG11: 同一实例连续加密两次，IV 不同（计数器递增），且 iv[8..12] 为
+    /// key_id 大端、iv[0..4] 为构造时随机前缀（29 SE-10 布局）。
     #[test]
     fn sg11_iv_counter_increments() {
-        let mut sg = SecureGoose::new(&test_session());
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let f1 = sg.encrypt(b"first").unwrap();
         let f2 = sg.encrypt(b"second").unwrap();
         assert_ne!(f1.iv, f2.iv);
         assert_eq!(&f1.iv[8..12], &7u32.to_be_bytes());
         assert_eq!(&f2.iv[8..12], &7u32.to_be_bytes());
-        let c1 = u64::from_be_bytes(f1.iv[0..8].try_into().unwrap());
-        let c2 = u64::from_be_bytes(f2.iv[0..8].try_into().unwrap());
+        // 29 SE-10：随机前缀随帧稳定（同实例不变），counter 在 iv[4..8]。
+        assert_eq!(&f1.iv[0..4], &f2.iv[0..4]);
+        let c1 = u32::from_be_bytes(f1.iv[4..8].try_into().unwrap());
+        let c2 = u32::from_be_bytes(f2.iv[4..8].try_into().unwrap());
         assert_eq!(c2, c1 + 1);
+    }
+
+    /// 29 SE-10 判据：同一密钥两次构造 channel（模拟重启/密钥重装载）→
+    /// 首帧 IV 必须不同（GCM nonce 不复用——修复前 counter 归零必复用）。
+    #[test]
+    fn sg20_same_key_reloaded_channel_iv_differs() {
+        let mut sg_a = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x11; 32]));
+        let mut sg_b = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x22; 32]));
+        let fa = sg_a.encrypt(b"a").unwrap();
+        let fb = sg_b.encrypt(b"b").unwrap();
+        assert_ne!(
+            fa.iv, fb.iv,
+            "同密钥重装载后首帧 IV 必须不同（SE-10 nonce 复用判据）"
+        );
     }
 
     /// SG12: 基线——合法帧先通过 HMAC 校验再成功解密（HMAC 先于解密校验）。
     #[test]
     fn sg12_valid_frame_decrypts_ok() {
-        let mut sg = SecureGoose::new(&test_session());
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let frame = sg.encrypt(b"baseline hmac-then-decrypt").unwrap();
         assert!(sg.decrypt(&frame).is_ok());
     }
@@ -184,7 +213,7 @@ mod tests {
     /// SG13: 篡改密文首字节 → HmacMismatch（HMAC 先于解密校验）。
     #[test]
     fn sg13_tamper_ciphertext_detected() {
-        let mut sg = SecureGoose::new(&test_session());
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let mut frame = sg.encrypt(b"tamper me").unwrap();
         frame.ciphertext[0] ^= 0xFF;
         assert_eq!(sg.decrypt(&frame), Err(SecError::HmacMismatch));
@@ -193,7 +222,7 @@ mod tests {
     /// SG14: 篡改 GCM tag 首字节 → HmacMismatch（HMAC 覆盖 tag，先校验 HMAC）。
     #[test]
     fn sg14_tamper_tag_detected() {
-        let mut sg = SecureGoose::new(&test_session());
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let mut frame = sg.encrypt(b"tamper tag").unwrap();
         frame.tag[0] ^= 0xFF;
         assert_eq!(sg.decrypt(&frame), Err(SecError::HmacMismatch));
@@ -202,7 +231,7 @@ mod tests {
     /// SG15: 篡改 HMAC 首字节 → HmacMismatch。
     #[test]
     fn sg15_tamper_hmac_detected() {
-        let mut sg = SecureGoose::new(&test_session());
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let mut frame = sg.encrypt(b"tamper hmac").unwrap();
         frame.hmac[0] ^= 0xFF;
         assert_eq!(sg.decrypt(&frame), Err(SecError::HmacMismatch));
@@ -211,7 +240,7 @@ mod tests {
     /// SG16: 解密空密文帧（空明文加密产物）→ Ok(空)。
     #[test]
     fn sg16_decrypt_empty_ciphertext() {
-        let mut sg = SecureGoose::new(&test_session());
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let frame = sg.encrypt(b"").unwrap();
         let decrypted = sg.decrypt(&frame).unwrap();
         assert!(decrypted.is_empty());
@@ -220,7 +249,7 @@ mod tests {
     /// SG17: 加密空明文 → 密文为空；解密后仍为空。
     #[test]
     fn sg17_encrypt_empty_plaintext() {
-        let mut sg = SecureGoose::new(&test_session());
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let frame = sg.encrypt(b"").unwrap();
         assert!(frame.ciphertext.is_empty());
         let decrypted = sg.decrypt(&frame).unwrap();
@@ -230,7 +259,7 @@ mod tests {
     /// SG18: 不同会话（mac_key 不同）解密他人帧 → Err(HmacMismatch)。
     #[test]
     fn sg18_different_session_fails() {
-        let mut sender = SecureGoose::new(&test_session());
+        let mut sender = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let frame = sender.encrypt(b"cross session").unwrap();
 
         let other_session = SessionKey {
@@ -239,7 +268,7 @@ mod tests {
             mac_key: [0x99u8; 32],
             expiry: 9999,
         };
-        let receiver = SecureGoose::new(&other_session);
+        let receiver = SecureGoose::new(&other_session, &mut CsRng::from_seed(&[0x99; 32]));
         assert_eq!(receiver.decrypt(&frame), Err(SecError::HmacMismatch));
     }
 
@@ -248,7 +277,7 @@ mod tests {
     #[test]
     fn sg19_perf_and_goose_pdu_loopback() {
         // ---- 性能断言：256 字节载荷 × 100 次加密+解密 < 50ms ----
-        let mut sg = SecureGoose::new(&test_session());
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let payload = [0xABu8; 256];
         let start = std::time::Instant::now();
         for _ in 0..100 {

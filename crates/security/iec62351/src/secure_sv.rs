@@ -5,6 +5,8 @@
 
 use alloc::vec::Vec;
 
+use eneros_crypto::CsRng;
+
 use crate::key_mgmt::SessionKey;
 use crate::secure_goose::{SecureChannel, SecureFrame};
 use crate::SecError;
@@ -16,10 +18,10 @@ pub struct SecureSv {
 }
 
 impl SecureSv {
-    /// 以会话密钥初始化 SV 安全通道。
-    pub fn new(session: &SessionKey) -> Self {
+    /// 以会话密钥初始化 SV 安全通道（29 SE-10：rng 注入 IV 随机前缀）。
+    pub fn new(session: &SessionKey, rng: &mut CsRng) -> Self {
         Self {
-            channel: SecureChannel::new(session),
+            channel: SecureChannel::new(session, rng),
         }
     }
 
@@ -51,7 +53,7 @@ mod tests {
     /// SS20: SecureSv 加密后立即解密，往返结果等于原明文。
     #[test]
     fn ss20_encrypt_decrypt_roundtrip() {
-        let mut sv = SecureSv::new(&test_session());
+        let mut sv = SecureSv::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let plaintext = b"SV sample payload 9-2";
         let frame = sv.encrypt(plaintext).unwrap();
         let decrypted = sv.decrypt(&frame).unwrap();
@@ -61,7 +63,7 @@ mod tests {
     /// SS21: SecureSv 同一实例连续加密两次，IV 计数器递增。
     #[test]
     fn ss21_iv_counter_increments() {
-        let mut sv = SecureSv::new(&test_session());
+        let mut sv = SecureSv::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let f1 = sv.encrypt(b"sv first").unwrap();
         let f2 = sv.encrypt(b"sv second").unwrap();
         assert_ne!(f1.iv, f2.iv);
@@ -74,7 +76,7 @@ mod tests {
     /// SS22: SecureSv 篡改密文首字节 → HmacMismatch（与 SG13 同构抽样验证）。
     #[test]
     fn ss22_tamper_ciphertext_detected() {
-        let mut sv = SecureSv::new(&test_session());
+        let mut sv = SecureSv::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
         let mut frame = sv.encrypt(b"sv tamper me").unwrap();
         frame.ciphertext[0] ^= 0xFF;
         assert_eq!(sv.decrypt(&frame), Err(SecError::HmacMismatch));
