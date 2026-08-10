@@ -345,8 +345,9 @@ impl TimeSeriesDB {
                 .find_range(0, u64::MAX)
                 .iter()
                 .filter(|e| {
-                    e.file_path.contains(&format!("/{}/", metric.0))
-                        && e.file_path.contains(&format!("{}/", device.0))
+                    // 31 DR-03：精确分段匹配（旧 contains 子串误匹配——
+                    // 设备 "2" 命中 "12/" 前缀）。
+                    crate::reader::path_matches(&e.file_path, device, metric)
                 })
                 .count();
             if chunk_count <= 1 {
@@ -359,14 +360,15 @@ impl TimeSeriesDB {
                 .find_range(0, u64::MAX)
                 .iter()
                 .filter(|e| {
-                    e.file_path.contains(&format!("/{}/", metric.0))
-                        && e.file_path.contains(&format!("{}/", device.0))
+                    // 31 DR-03：精确分段匹配（旧 contains 子串误匹配——
+                    // 设备 "2" 命中 "12/" 前缀）。
+                    crate::reader::path_matches(&e.file_path, device, metric)
                 })
                 .map(|e| e.file_path.clone())
                 .collect();
             self.index.remove_matching(|e| {
-                e.file_path.contains(&format!("/{}/", metric.0))
-                    && e.file_path.contains(&format!("{}/", device.0))
+                // 31 DR-03：与 compact 同一精确匹配。
+                crate::reader::path_matches(&e.file_path, device, metric)
             });
             for path in &old_paths {
                 let _ = self.fs.remove(path);
@@ -463,8 +465,11 @@ fn cleanup_tmp_residue(fs: &mut Lfs, data_dir: &str) -> Result<(), TsdbError> {
         for metric in fs.readdir(&dev_path)? {
             let metric_path = format!("{dev_path}/{}", metric.name);
             for entry in fs.readdir(&metric_path)? {
+                // 31 DR-02：删除必须拼完整路径（旧实现只删基名，必失败
+                // 且错误被吞——残留 .tmp 永久堆积）。
                 if entry.name.ends_with(".tmp") {
-                    let _ = fs.remove(&entry.name);
+                    let full = alloc::format!("{metric_path}/{}", entry.name);
+                    let _ = fs.remove(&full);
                 }
             }
         }
@@ -1097,7 +1102,9 @@ mod w36_compaction_tests {
 // ============================================================================
 #[cfg(test)]
 mod gr3_gate_tests {
-    use eneros_storage::{NoopCache, RamMmio, RamPool, StorageConfig, StorageType, VirtioBlkDriver};
+    use eneros_storage::{
+        NoopCache, RamMmio, RamPool, StorageConfig, StorageType, VirtioBlkDriver,
+    };
 
     use super::*;
     use crate::CompressionType;
@@ -1147,7 +1154,11 @@ mod gr3_gate_tests {
         assert_eq!(db.total_written(), 10_000, "10k 点全部写入（不丢）");
         // 不 OOM：索引按 chunk 有界（10k 点 / 100 每 chunk ≈ 100 项，
         // 不随点数线性膨胀）；内存缓冲 ≤ chunk 容量。
-        assert!(db.index_len() <= 100, "索引按 chunk 有界: {}", db.index_len());
+        assert!(
+            db.index_len() <= 100,
+            "索引按 chunk 有界: {}",
+            db.index_len()
+        );
         assert!(
             db.buffered_points() <= 100,
             "内存缓冲有界: {}",
@@ -1185,12 +1196,13 @@ mod gr3_gate_tests {
         let dev = VirtioBlkDriver::new(mmio, pool, NoopCache, cfg).expect("virtio-blk init");
         dev.set_block_count(64);
         let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(dev);
-        let mut db = TimeSeriesDB::open(Lfs::format(dev).expect("format"), make_config())
-            .expect("open");
+        let mut db =
+            TimeSeriesDB::open(Lfs::format(dev).expect("format"), make_config()).expect("open");
 
         // 写入 300 点并 close（完整持久化：chunk 原子写 + 索引落盘）。
-        let committed: Vec<TimeSeriesPoint> =
-            (0..300).map(|i| make_point(1000 + i, 3, 2, i as f64 * 0.25)).collect();
+        let committed: Vec<TimeSeriesPoint> = (0..300)
+            .map(|i| make_point(1000 + i, 3, 2, i as f64 * 0.25))
+            .collect();
         db.write_batch(&committed).expect("write");
         db.close().expect("close 持久化");
         // 掉电：驱动实例销毁（介质保留）。
@@ -1218,7 +1230,10 @@ mod gr3_gate_tests {
         // 模拟掉电中断写路径：制造 .tmp 原子写残留（半成品垃圾字节）。
         let _ = fs2.mkdir("/tsdb");
         let mut tmp = fs2
-            .open("/tsdb/chunk_orphan.tmp", OpenFlags::WRITE | OpenFlags::CREATE)
+            .open(
+                "/tsdb/chunk_orphan.tmp",
+                OpenFlags::WRITE | OpenFlags::CREATE,
+            )
             .expect("创建 .tmp 残留");
         tmp.write(&mut fs2, &[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01])
             .expect("写 .tmp 残留");

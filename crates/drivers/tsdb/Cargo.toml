@@ -18,3 +18,8 @@ eneros-storage = { path = "../storage" }
 eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 
 
+
+# 31 DR-03 附带：MockBlockDevice 门控不跨 crate——测试显式启用 mock
+# feature（与 eneros-fs 同模式）。
+[dev-dependencies]
+eneros-storage = { path = "../storage", features = ["mock"] }

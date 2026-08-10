@@ -16,6 +16,8 @@ use core::fmt;
 /// Unified error type for all storage driver operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageError {
+    /// 31 DR-09：块大小超上限（>4096，内部缓冲越界防护）。
+    UnsupportedBlockSize,
     /// Driver has not been initialized (no `init()` call or hardware absent).
     NotInitialized,
     /// Operation did not complete within the timeout window.
@@ -82,6 +84,7 @@ impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StorageError::NotInitialized => write!(f, "storage driver not initialized"),
+            StorageError::UnsupportedBlockSize => write!(f, "unsupported block size (>4096)"),
             StorageError::Timeout { operation, ms } => {
                 write!(f, "timeout during '{}' after {} ms", operation, ms)
             }

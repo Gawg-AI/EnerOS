@@ -353,7 +353,22 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
     /// 3 pages for data slots, 3 pages for status slots. The physical base of
     /// `pool` is used to program the queue address.
     pub fn new(mmio: M, pool: P, cache: C, config: StorageConfig) -> Result<Self, StorageError> {
-        let block_count = config.max_transfer_blocks as u64 * 16; // placeholder until capacity read
+        // 31 DR-09：block_size > 4096 拒绝（内部 4KiB 栈缓冲越界 panic 面）。
+        if config.block_size > 4096 {
+            return Err(StorageError::UnsupportedBlockSize);
+        }
+        // 31 DR-09：capacity 读 config space offset 0（legacy virtio-blk
+        // capacity 字段，8 字节 LE）——旧实现 max_transfer_blocks*16 占位。
+        let capacity = {
+            let lo = mmio.read_reg(0x100 + 0) as u64;
+            let hi = mmio.read_reg(0x100 + 4) as u64;
+            (hi << 32) | lo
+        };
+        let block_count = if capacity > 0 {
+            capacity / (config.block_size as u64 / SECTOR_SIZE as u64)
+        } else {
+            config.max_transfer_blocks as u64 * 16
+        };
         let mut drv = Self {
             mmio: core::cell::RefCell::new(mmio),
             pool: core::cell::RefCell::new(pool),
@@ -632,9 +647,19 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             let used = unsafe { &*(bytes[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
             let used_idx = used.idx;
             if used_idx != self.last_used.get() {
-                let elem = used.ring[self.last_used.get() as usize & QUEUE_MASK];
+                let idx = self.last_used.get() as usize & QUEUE_MASK;
+                let elem = used.ring[idx];
                 self.last_used.set(self.last_used.get().wrapping_add(1));
-                // Sanity: the element id must match a descriptor we handed out.
+                // 31 DR-09（注释诚实化）：旧注释声称校验 used_elem.id 与
+                // 下发描述符一致但从未实现。精确一致性校验依赖 avail ring
+                // 快照与多缓冲在飞场景的槽位同步（真机语义复杂），此处
+                // 落地**范围防御**（id 越界 = 设备行为异常，fail-closed）；
+                // 精确 head 一致性校验登记为真机项（33 §真机填空）。
+                if (elem.id as usize) >= QUEUE_MAX {
+                    return Err(StorageError::HardwareFault {
+                        detail: "virtio-blk used ring id out of range",
+                    });
+                }
                 return Ok(elem.len);
             }
         }
@@ -944,7 +969,9 @@ const POOL_PHYS_BASE: u64 = 0x1000_0000;
 
 impl VirtioMmio for RamMmio {
     fn read_reg(&self, offset: usize) -> u32 {
-        self.regs[offset / 4]
+        // 31 DR-09：config space 读取越界防护（mock regs 只有 0x100 字节；
+        // capacity 探测越界 → 0 → 上层回退占位）。
+        self.regs.get(offset / 4).copied().unwrap_or(0)
     }
     fn write_reg(&mut self, offset: usize, value: u32) {
         // QueueNotify signals the (virtual) device to process the ring.

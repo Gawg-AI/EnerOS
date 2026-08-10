@@ -177,68 +177,25 @@ pub fn record_power_switch(source: PowerSource) {
     });
 }
 
-/// ADC base address (example: platform-specific, set by board config).
-#[cfg(target_arch = "aarch64")]
-const ADC_BASE: u64 = 0x0906_0000;
-/// ADC data register offset.
-#[cfg(target_arch = "aarch64")]
-const ADC_DATA_REG: u64 = 0x00;
-/// Main power OK threshold in millivolts (4.75 V for a 5 V rail).
+/// 主电源 OK 电压阈值（4.75 V @ 5 V rail）。
 pub const POWER_OK_THRESHOLD_MV: u32 = 4750;
 
-/// GPIO base address (example: platform-specific).
-#[cfg(target_arch = "aarch64")]
-const GPIO_BASE: u64 = 0x0907_0000;
-/// GPIO data register offset.
-#[cfg(target_arch = "aarch64")]
-const GPIO_DATA_REG: u64 = 0x00;
-/// Bit 0 of GPIO data indicates power-fail (1 = fail, 0 = ok).
-#[cfg(target_arch = "aarch64")]
-const POWER_FAIL_BIT: u32 = 0x1;
-
-/// Read the main supply voltage via ADC and compare against threshold.
-///
-/// Returns `true` if voltage is at or above the OK threshold.
-#[cfg(target_arch = "aarch64")]
-fn adc_check_voltage() -> bool {
-    // SAFETY: reading a 32-bit MMIO register at the configured ADC base.
-    // The caller (board init) is responsible for ensuring the address is valid.
-    let adc_raw = unsafe { core::ptr::read_volatile((ADC_BASE + ADC_DATA_REG) as *const u32) };
-    // Convert ADC raw value to millivolts.
-    // Real conversion depends on ADC resolution and reference voltage;
-    // simplified here as a direct mapping (platform-specific).
-    let voltage_mv = adc_raw;
-    voltage_mv >= POWER_OK_THRESHOLD_MV
-}
-
-/// Read the GPIO power-fail signal.
-///
-/// Returns `true` if the power-fail signal is NOT asserted (power OK).
-#[cfg(target_arch = "aarch64")]
-fn gpio_check_signal() -> bool {
-    // SAFETY: reading a 32-bit MMIO register at the configured GPIO base.
-    let gpio_val = unsafe { core::ptr::read_volatile((GPIO_BASE + GPIO_DATA_REG) as *const u32) };
-    (gpio_val & POWER_FAIL_BIT) == 0
-}
-
-/// Check if main power is OK using dual-redundant ADC + GPIO.
-///
-/// Both paths must agree: returns `true` only if ADC voltage is above
-/// threshold AND GPIO power-fail signal is not asserted.
-#[cfg(target_arch = "aarch64")]
-pub fn is_main_power_ok() -> bool {
-    adc_check_voltage() && gpio_check_signal()
-}
+/// 31 DR-06：**零硬件依赖红线**——aarch64 虚构 ADC/GPIO 地址（0x0906_0000/
+/// 0x0907_0000 并非真实设备）已整体删除。电源检测唯一入口 =
+/// [`PowerRail`] 注入（真机 ADC/GPIO 作为 `impl PowerRail` 板级注入，
+/// 基址来自 FDT，走绑定表 map_mmio——对齐 PL011 模式）；未注入时
+/// fail-safe 回退缓存状态（不读虚构地址）。
 
 // ============================================================================
-// Power status check — host mock
+// Power status check — PowerRail 注入（单一实现，host/真机一致）
 // ============================================================================
 
-/// Host mock: check cached power state from [`crate::POWER_STATE`].
+// ============================================================================
+
+/// 检查主电源是否正常（31 DR-06：单一实现，host/真机一致）。
 ///
-/// v0.216.0（B1-04）：已注入 [`PowerRail`] 时以真实检测为准（电压阈值 +
-/// power-fail 信号）；未注入时回退缓存状态（旧 mock 语义）。
-#[cfg(not(target_arch = "aarch64"))]
+/// 已注入 [`PowerRail`] 时以真实检测为准（电压阈值 + power-fail 信号）；
+/// 未注入时 fail-safe 回退缓存状态。
 pub fn is_main_power_ok() -> bool {
     let rail = *POWER_RAIL.lock();
     match rail {

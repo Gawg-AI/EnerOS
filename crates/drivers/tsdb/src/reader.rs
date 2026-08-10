@@ -344,7 +344,7 @@ pub(crate) fn read_entire_file(fs: &mut Lfs, path: &str) -> Result<Vec<u8>, Tsdb
 /// Checks whether a chunk file path corresponds to the given device/metric.
 ///
 /// Path format: `{data_dir}/{device_id}/{metric}/{start_time:020}`
-fn path_matches(path: &str, device: DeviceId, metric: MetricId) -> bool {
+pub(crate) fn path_matches(path: &str, device: DeviceId, metric: MetricId) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() < 3 {
         return false;
