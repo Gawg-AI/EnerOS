@@ -113,7 +113,7 @@ impl Apdu {
     }
 
     /// 编码 APDU 为字节流。
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Result<Vec<u8>, Iec104Error> {
         let mut ctrl = [0u8; 4];
         match &self.control_field {
             ControlField::Information { send_seq, recv_seq } => {
@@ -142,13 +142,18 @@ impl Apdu {
             }
         }
         let asdu_bytes = self.asdu.as_ref().map(|a| a.encode()).unwrap_or_default();
+        // 31 PR-06：APDU ≤ 253 字节（IEC 104 §5）——ASDU 超 249 字节
+        // 时长度字段 u8 截断（旧实现静默截断，超长总召响应损坏）。
         let total_len = 4 + asdu_bytes.len();
+        if total_len > 253 {
+            return Err(Iec104Error::ApduTooLong);
+        }
         let mut buf = Vec::with_capacity(2 + total_len);
         buf.push(0x68); // 起始字节
         buf.push(total_len as u8); // 长度
         buf.extend_from_slice(&ctrl);
         buf.extend_from_slice(&asdu_bytes);
-        buf
+        Ok(buf)
     }
 
     /// 从字节流解码 APDU。
@@ -221,43 +226,70 @@ mod tests {
     #[test]
     fn test_u_format_startdt_act() {
         let apdu = Apdu::u_format(UFormatFunction::StartDtAct);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         assert_eq!(bytes, [0x68, 0x04, 0x07, 0x00, 0x00, 0x00]);
     }
 
     #[test]
     fn test_u_format_startdt_con() {
         let apdu = Apdu::u_format(UFormatFunction::StartDtCon);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         assert_eq!(bytes, [0x68, 0x04, 0x0B, 0x00, 0x00, 0x00]);
     }
 
     #[test]
     fn test_u_format_stopdt_act() {
         let apdu = Apdu::u_format(UFormatFunction::StopDtAct);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         assert_eq!(bytes, [0x68, 0x04, 0x13, 0x00, 0x00, 0x00]);
     }
 
     #[test]
     fn test_u_format_stopdt_con() {
         let apdu = Apdu::u_format(UFormatFunction::StopDtCon);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         assert_eq!(bytes, [0x68, 0x04, 0x17, 0x00, 0x00, 0x00]);
     }
 
     #[test]
     fn test_u_format_testfr_act() {
         let apdu = Apdu::u_format(UFormatFunction::TestFrAct);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         assert_eq!(bytes, [0x68, 0x04, 0x43, 0x00, 0x00, 0x00]);
     }
 
     #[test]
     fn test_u_format_testfr_con() {
         let apdu = Apdu::u_format(UFormatFunction::TestFrCon);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         assert_eq!(bytes, [0x68, 0x04, 0x83, 0x00, 0x00, 0x00]);
+    }
+
+    /// 31 PR-06 判据：ASDU 超 249 字节 → 编码拒绝（长度 u8 截断防护）。
+    #[test]
+    fn test_encode_rejects_oversized_asdu() {
+        // 构造超长 ASDU（250+ 个信息对象——每个最小 8 字节）。
+        let mut ioas = alloc::vec::Vec::new();
+        for i in 0..64u32 {
+            ioas.push(crate::asdu::InformationObject {
+                ioa: i,
+                value: crate::asdu::IoValue::Float(1.0),
+                quality: crate::asdu::QualityDescriptor::good(),
+                time_tag: None,
+            });
+        }
+        let asdu = crate::asdu::Asdu {
+            type_id: crate::asdu::TypeId::MeasuredValueFloat,
+            cause_of_tx: crate::asdu::Cot::Periodic,
+            common_addr: 1,
+            ioas,
+        };
+        let apdu = Apdu::i_format(0, 0, asdu);
+        assert_eq!(
+            apdu.encode(),
+            Err(Iec104Error::ApduTooLong),
+            "超长 ASDU 必须编码拒绝（31 PR-06 判据）"
+        );
     }
 
     #[test]
@@ -272,7 +304,7 @@ mod tests {
         ];
         for func in &funcs {
             let apdu = Apdu::u_format(*func);
-            let bytes = apdu.encode();
+            let bytes = apdu.encode().unwrap();
             let decoded = Apdu::decode(&bytes).expect("decode ok");
             assert_eq!(decoded, apdu);
         }
@@ -283,7 +315,7 @@ mod tests {
     #[test]
     fn test_s_format_encode() {
         let apdu = Apdu::s_format(0);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         assert_eq!(bytes, [0x68, 0x04, 0x01, 0x00, 0x00, 0x00]);
     }
 
@@ -302,7 +334,7 @@ mod tests {
     fn test_s_format_roundtrip_various() {
         for recv_seq in [0u16, 1, 100, 32767] {
             let apdu = Apdu::s_format(recv_seq);
-            let bytes = apdu.encode();
+            let bytes = apdu.encode().unwrap();
             let decoded = Apdu::decode(&bytes).expect("decode ok");
             assert_eq!(decoded, apdu);
         }
@@ -314,7 +346,7 @@ mod tests {
     fn test_i_format_encode_bit0_zero() {
         let asdu = make_simple_asdu();
         let apdu = Apdu::i_format(0, 0, asdu);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         assert_eq!(bytes[0], 0x68);
         assert_eq!(bytes[2] & 0x01, 0); // I 格式 bit0=0
     }
@@ -323,7 +355,7 @@ mod tests {
     fn test_i_format_roundtrip() {
         let asdu = make_simple_asdu();
         let apdu = Apdu::i_format(5, 3, asdu);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         let decoded = Apdu::decode(&bytes).expect("decode ok");
         assert!(matches!(
             &decoded.control_field,
@@ -336,7 +368,7 @@ mod tests {
     fn test_i_format_seq_zero() {
         let asdu = make_simple_asdu();
         let apdu = Apdu::i_format(0, 0, asdu);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         assert_eq!(bytes[2], 0x00); // send_seq=0 → 0<<1=0
         assert_eq!(bytes[3], 0x00);
         assert_eq!(bytes[4], 0x00); // recv_seq=0
@@ -350,7 +382,7 @@ mod tests {
         let asdu = make_simple_asdu();
         // send_seq=32767 → 32767<<1 = 65534 = 0xFFFE
         let apdu = Apdu::i_format(32767, 0, asdu);
-        let bytes = apdu.encode();
+        let bytes = apdu.encode().unwrap();
         assert_eq!(bytes[2], 0xFE);
         assert_eq!(bytes[3], 0xFF);
         let decoded = Apdu::decode(&bytes).expect("decode ok");

@@ -20,6 +20,9 @@ pub struct Iec104Config {
     pub k: u16,
     /// w：最迟确认 I 帧数，收到 w 个 I 帧后必须发 S 帧（默认 8）
     pub w: u16,
+    /// 31 PR-07：允许对端时钟同步（C_CS_NA 写 RTC）——默认拒绝
+    /// （控制授权矩阵纪律，S3 同族；装配层按策略放行）。
+    pub allow_clock_sync: bool,
 }
 
 impl Default for Iec104Config {
@@ -32,6 +35,7 @@ impl Default for Iec104Config {
             t3_timeout_ms: 20000,
             k: 12,
             w: 8,
+            allow_clock_sync: false,
         }
     }
 }

@@ -17,6 +17,8 @@ pub enum Iec104Error {
     InvalidFrame,
     /// 超时
     Timeout,
+    /// 31 PR-06：APDU 超长（>253 字节，IEC 104 §5）——编码拒绝。
+    ApduTooLong,
     /// 连接已关闭
     ConnectionClosed,
     /// 点不存在（IOA 未注册）
@@ -51,6 +53,7 @@ impl fmt::Display for Iec104Error {
                 "iec104 sequence mismatch: expected {expected}, got {actual}"
             ),
             Self::WindowFull => write!(f, "iec104 k-window full"),
+            Self::ApduTooLong => write!(f, "iec104 apdu too long (>253)"),
         }
     }
 }
