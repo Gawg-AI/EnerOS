@@ -12,3 +12,5 @@ eneros-time = { path = "../../drivers/time" }
 
 [features]
 default = []
+# 33 OB-06：Mock 自愈执行器（仅测试/显式 mock 场景；生产路径无执行器必须失败）。
+mock = []

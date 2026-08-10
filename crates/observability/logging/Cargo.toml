@@ -9,5 +9,10 @@ description = "EnerOS 结构化日志 (v0.121.0) — JSON 序列化/分级缓冲
 [dependencies]
 heapless = { version = "0.8", default-features = false }
 
+[features]
+default = []
+# 33 OB-07：JSONL 文件导出后端（FileStorage；host 端到端导出证据链）。
+std = []
+
 [dev-dependencies]
 eneros-metrics = { path = "../metrics" }

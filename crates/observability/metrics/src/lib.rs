@@ -33,13 +33,15 @@
 //! `panic!` / `todo!` / `unimplemented!` / `unwrap()`，可交叉编译到
 //! `aarch64-unknown-none`。
 
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(all(not(test), not(feature = "std")), no_std)]
 
 extern crate alloc;
 
 pub mod metrics;
 pub mod registry;
 pub mod store;
+#[cfg(feature = "std")]
+pub mod file_store;
 
 pub use metrics::{
     Label, Metric, MetricDef, MetricType, MetricValue, MetricsCollector, MetricsCollectorImpl,
@@ -47,6 +49,8 @@ pub use metrics::{
 };
 pub use registry::MetricRegistry;
 pub use store::{MemoryMetricsStore, MetricsStore};
+#[cfg(feature = "std")]
+pub use file_store::FileMetricsStore;
 
 #[cfg(all(test, feature = "loom"))]
 pub mod loom_increment;

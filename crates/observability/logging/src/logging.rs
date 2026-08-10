@@ -61,6 +61,8 @@ pub enum LogError {
     FilterInvalid,
     /// 字段数超限.
     FieldLimitExceeded,
+    /// 文件 I/O 失败（33 OB-07：FileStorage 导出后端）.
+    IoFailed,
 }
 
 /// 结构化日志器 trait（蓝图 §4.2；偏差 D1 查询返回 alloc Vec）.

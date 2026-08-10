@@ -41,13 +41,15 @@
 //! `panic!` / `todo!` / `unimplemented!` / `unwrap()`，可交叉编译到
 //! `aarch64-unknown-none`。
 
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(all(not(test), not(feature = "std")), no_std)]
 
 extern crate alloc;
 
 pub mod log_filter;
 pub mod log_query;
 pub mod logging;
+#[cfg(feature = "std")]
+pub mod file_store;
 
 pub use log_filter::LogFilter;
 pub use log_query::MemoryLogStorage;
@@ -55,3 +57,5 @@ pub use logging::{
     to_json, LogBuilder, LogEntry, LogError, LogLevel, LogStorage, StructuredLogger,
     StructuredLoggerImpl,
 };
+#[cfg(feature = "std")]
+pub use file_store::FileStorage;

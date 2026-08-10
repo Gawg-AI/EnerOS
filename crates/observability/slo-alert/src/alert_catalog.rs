@@ -10,6 +10,28 @@ use alloc::vec::Vec;
 
 use crate::runbook::{Runbook, RunbookStep};
 
+/// 告警状态流转错误（33 OB-05：AlertStatus 从零引用死类型 → 状态机）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertError {
+    /// 非法状态流转（`from` → `to` 不在允许矩阵内）.
+    InvalidTransition {
+        /// 当前状态.
+        from: AlertStatus,
+        /// 请求的目标状态.
+        to: AlertStatus,
+    },
+}
+
+impl core::fmt::Display for AlertError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidTransition { from, to } => {
+                write!(f, "非法告警状态流转: {} -> {}", from.label(), to.label())
+            }
+        }
+    }
+}
+
 /// 告警严重级别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AlertSeverity {
@@ -77,6 +99,8 @@ pub struct Alert {
     pub name: &'static str,
     /// 严重级别。
     pub severity: AlertSeverity,
+    /// 当前状态（33 OB-05：初始 Firing，经 `transition` 流转）.
+    pub status: AlertStatus,
     /// 负责 owner（团队/角色）。
     pub owner: &'static str,
     /// 关联的 SLO 基线 ID（可选）。
@@ -103,13 +127,44 @@ impl Alert {
         self.last_drill_unix = now_unix;
     }
 
+    /// 告警状态流转（33 OB-05：将零引用死类型实现为状态机）。
+    ///
+    /// 允许矩阵（OPEN/ACKED/RESOLVED + SUPPRESSED）：
+    /// - Firing → Acknowledged / Resolved / Suppressed
+    /// - Acknowledged → Resolved / Suppressed / Firing（重新触发）
+    /// - Resolved → Firing（再次触发）
+    /// - Suppressed → Firing（解除抑制）/ Resolved
+    ///
+    /// 矩阵外流转返回 [`AlertError::InvalidTransition`]。
+    pub fn transition(&mut self, to: AlertStatus) -> Result<(), AlertError> {
+        let from = self.status;
+        let valid = matches!(
+            (from, to),
+            (AlertStatus::Firing, AlertStatus::Acknowledged)
+                | (AlertStatus::Firing, AlertStatus::Resolved)
+                | (AlertStatus::Firing, AlertStatus::Suppressed)
+                | (AlertStatus::Acknowledged, AlertStatus::Resolved)
+                | (AlertStatus::Acknowledged, AlertStatus::Suppressed)
+                | (AlertStatus::Acknowledged, AlertStatus::Firing)
+                | (AlertStatus::Resolved, AlertStatus::Firing)
+                | (AlertStatus::Suppressed, AlertStatus::Firing)
+                | (AlertStatus::Suppressed, AlertStatus::Resolved)
+        );
+        if !valid {
+            return Err(AlertError::InvalidTransition { from, to });
+        }
+        self.status = to;
+        Ok(())
+    }
+
     /// 生成告警目录 JSON。
     pub fn to_catalog_json(&self) -> String {
         format!(
-            r#"{{"id":"{}","name":"{}","severity":"{}","owner":"{}","slo":"{}","runbook_steps":{},"last_drill":{},"needs_drill":{}}}"#,
+            r#"{{"id":"{}","name":"{}","severity":"{}","status":"{}","owner":"{}","slo":"{}","runbook_steps":{},"last_drill":{},"needs_drill":{}}}"#,
             self.id,
             self.name,
             self.severity.label(),
+            self.status.label(),
             self.owner,
             self.related_slo.unwrap_or("null"),
             self.runbook.step_count(),
@@ -198,6 +253,7 @@ fn standard_alerts() -> Vec<Alert> {
             id: "ALR-001",
             name: "Control loop deadline miss",
             severity: AlertSeverity::Emergency,
+            status: AlertStatus::Firing,
             owner: "control-team",
             related_slo: Some("control-loop-latency"),
             runbook: Runbook::new(
@@ -232,6 +288,7 @@ fn standard_alerts() -> Vec<Alert> {
             id: "ALR-002",
             name: "Agent process crash",
             severity: AlertSeverity::Critical,
+            status: AlertStatus::Firing,
             owner: "agent-team",
             related_slo: Some("agent-response"),
             runbook: Runbook::new(
@@ -264,6 +321,7 @@ fn standard_alerts() -> Vec<Alert> {
             id: "ALR-003",
             name: "SLO violation — IPC latency",
             severity: AlertSeverity::Critical,
+            status: AlertStatus::Firing,
             owner: "runtime-team",
             related_slo: Some("ipc-round-trip"),
             runbook: Runbook::new(
@@ -295,6 +353,7 @@ fn standard_alerts() -> Vec<Alert> {
             id: "ALR-004",
             name: "Disk space low",
             severity: AlertSeverity::Warning,
+            status: AlertStatus::Firing,
             owner: "ops-team",
             related_slo: None,
             runbook: Runbook::new(
@@ -326,6 +385,7 @@ fn standard_alerts() -> Vec<Alert> {
             id: "ALR-005",
             name: "AI inference timeout",
             severity: AlertSeverity::Warning,
+            status: AlertStatus::Firing,
             owner: "ai-team",
             related_slo: Some("llm-inference"),
             runbook: Runbook::new(
@@ -360,6 +420,7 @@ fn standard_alerts() -> Vec<Alert> {
             id: "ALR-006",
             name: "Security certificate expiring",
             severity: AlertSeverity::Critical,
+            status: AlertStatus::Firing,
             owner: "security-team",
             related_slo: None,
             runbook: Runbook::new(
@@ -389,6 +450,7 @@ fn standard_alerts() -> Vec<Alert> {
             id: "ALR-007",
             name: "Gateway authorization failure spike",
             severity: AlertSeverity::Critical,
+            status: AlertStatus::Firing,
             owner: "security-team",
             related_slo: Some("gateway-authorize"),
             runbook: Runbook::new(
@@ -423,6 +485,7 @@ fn standard_alerts() -> Vec<Alert> {
             id: "ALR-008",
             name: "Memory budget exceeded",
             severity: AlertSeverity::Critical,
+            status: AlertStatus::Firing,
             owner: "runtime-team",
             related_slo: None,
             runbook: Runbook::new(
@@ -573,5 +636,61 @@ mod tests {
                 alert.id
             );
         }
+    }
+
+    // ===== 33 OB-05：AlertStatus 状态机（零引用死类型 → 真实流转） =====
+
+    #[test]
+    fn transition_firing_to_acknowledged() {
+        let mut catalog = AlertCatalog::with_standard_alerts();
+        let alert = catalog.find_mut("ALR-001").unwrap();
+        assert_eq!(alert.status, AlertStatus::Firing);
+        alert.transition(AlertStatus::Acknowledged).unwrap();
+        assert_eq!(alert.status, AlertStatus::Acknowledged);
+    }
+
+    #[test]
+    fn transition_full_lifecycle() {
+        // Firing → Acknowledged → Resolved → Firing（再次触发）
+        let mut catalog = AlertCatalog::with_standard_alerts();
+        let alert = catalog.find_mut("ALR-001").unwrap();
+        alert.transition(AlertStatus::Acknowledged).unwrap();
+        alert.transition(AlertStatus::Resolved).unwrap();
+        assert_eq!(alert.status, AlertStatus::Resolved);
+        alert.transition(AlertStatus::Firing).unwrap();
+        assert_eq!(alert.status, AlertStatus::Firing);
+    }
+
+    #[test]
+    fn transition_suppressed_roundtrip() {
+        let mut catalog = AlertCatalog::with_standard_alerts();
+        let alert = catalog.find_mut("ALR-001").unwrap();
+        alert.transition(AlertStatus::Suppressed).unwrap();
+        alert.transition(AlertStatus::Firing).unwrap();
+        assert_eq!(alert.status, AlertStatus::Firing);
+    }
+
+    #[test]
+    fn transition_invalid_rejected() {
+        // Resolved → Suppressed 不在矩阵内（合法边是 Suppressed → Resolved）
+        let mut catalog = AlertCatalog::with_standard_alerts();
+        let alert = catalog.find_mut("ALR-001").unwrap();
+        alert.transition(AlertStatus::Resolved).unwrap();
+        let err = alert.transition(AlertStatus::Suppressed).unwrap_err();
+        assert_eq!(
+            err,
+            AlertError::InvalidTransition {
+                from: AlertStatus::Resolved,
+                to: AlertStatus::Suppressed,
+            }
+        );
+        assert_eq!(alert.status, AlertStatus::Resolved, "非法流转不改状态");
+    }
+
+    #[test]
+    fn catalog_json_contains_status() {
+        let catalog = AlertCatalog::with_standard_alerts();
+        let json = catalog.to_catalog_json();
+        assert!(json.contains("\"status\":\"FIRING\""));
     }
 }

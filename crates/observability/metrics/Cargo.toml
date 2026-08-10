@@ -15,3 +15,5 @@ loom = { version = "0.7", optional = true }
 default = []
 # v0.247.0（C-247）：loom 并发模型检验。
 loom = ["dep:loom"]
+# 33 OB-07：JSONL 文件导出后端（FileMetricsStore；host 端到端导出证据链）。
+std = []

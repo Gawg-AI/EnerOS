@@ -48,6 +48,52 @@ where
     }
 }
 
+/// Mock 自愈执行器（33 OB-06：Mock 回退限 cfg(test/mock)，生产路径
+/// 无执行器必须 Err(HealFailed)）。
+///
+/// 记录已执行动作的 target，恒返回 Ok；供测试与 mock 装配显式注入，
+/// 替代旧实现"无执行器即 Mock 成功"的隐式回退。
+#[cfg(any(test, feature = "mock"))]
+pub struct MockHealExecutor {
+    /// 已执行动作的 target 序列.
+    executed: core::cell::RefCell<alloc::vec::Vec<u64>>,
+}
+
+#[cfg(any(test, feature = "mock"))]
+impl MockHealExecutor {
+    /// 创建 Mock 执行器.
+    pub fn new() -> Self {
+        Self {
+            executed: core::cell::RefCell::new(alloc::vec::Vec::new()),
+        }
+    }
+
+    /// 已执行动作的 target 列表（按执行顺序）.
+    pub fn executed_targets(&self) -> alloc::vec::Vec<u64> {
+        self.executed.borrow().clone()
+    }
+
+    /// 已执行动作数.
+    pub fn executed_len(&self) -> usize {
+        self.executed.borrow().len()
+    }
+}
+
+#[cfg(any(test, feature = "mock"))]
+impl Default for MockHealExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(any(test, feature = "mock"))]
+impl HealActionExecutor for MockHealExecutor {
+    fn execute_action(&mut self, action: &HealAction) -> Result<(), AiOpsError> {
+        self.executed.borrow_mut().push(action.target);
+        Ok(())
+    }
+}
+
 /// 从 metric 名派生组件 ID（v0.241.0，确定性：FNV-1a）。
 ///
 /// HealAction.target 错位修复：target 为组件 ID（metric 确定性派生），
@@ -63,7 +109,8 @@ pub fn component_id_of(metric: &str) -> u64 {
 
 /// 基于规则的自愈器
 pub struct RuleBasedHealer {
-    /// 真实动作执行器（v0.241.0；None = 回退 Mock 成功）。
+    /// 真实动作执行器（v0.241.0 注入；33 OB-06：None = 无执行器——
+    /// 执行 fail-closed，不再回退 Mock 成功）。
     /// RefCell：`SelfHealEngine::execute(&self)` 需要内部可变性。
     executor: core::cell::RefCell<Option<alloc::boxed::Box<dyn HealActionExecutor>>>,
 }
@@ -159,27 +206,28 @@ impl SelfHealEngine for RuleBasedHealer {
         // v0.248.0：真实计时——执行动作前后取单调时钟差值（替换硬编码 150ms）。
         let t0 = eneros_time::get_monotonic_ns();
 
-        // v0.241.0：真实执行器（注入时逐动作执行；无执行器回退 Mock）。
-        let side_effects: Vec<String> = match &mut *self.executor.borrow_mut() {
-            Some(ex) => {
-                let mut effects = Vec::new();
-                let mut ok = true;
-                for a in &plan.actions {
-                    match ex.execute_action(a) {
-                        Ok(()) => effects.push(a.description.clone()),
-                        Err(_) => {
-                            ok = false;
-                            effects.push(alloc::format!("{}:FAILED", a.description));
-                        }
-                    }
-                }
-                if !ok {
-                    return Err(AiOpsError::HealFailed);
-                }
-                effects
-            }
-            None => plan.actions.iter().map(|a| a.description.clone()).collect(),
+        // v0.241.0：真实执行器（注入时逐动作执行）。
+        // 33 OB-06：无执行器 = Err(HealFailed)（fail-closed）——旧实现
+        // 回退"Mock 成功"谎报自愈已执行；Mock 回退仅限 cfg(test/mock)
+        // 的显式 MockHealExecutor（见 tests）。
+        let mut guard = self.executor.borrow_mut();
+        let Some(ex) = guard.as_mut() else {
+            return Err(AiOpsError::HealFailed);
         };
+        let mut side_effects: Vec<String> = Vec::new();
+        let mut ok = true;
+        for a in &plan.actions {
+            match ex.execute_action(a) {
+                Ok(()) => side_effects.push(a.description.clone()),
+                Err(_) => {
+                    ok = false;
+                    side_effects.push(alloc::format!("{}:FAILED", a.description));
+                }
+            }
+        }
+        if !ok {
+            return Err(AiOpsError::HealFailed);
+        }
 
         // v0.248.0：耗时接真实时钟（boot 后单调纳秒；未初始化回退 0）。
         let duration_ms = eneros_time::get_monotonic_ns().saturating_sub(t0) / 1_000_000;
@@ -235,7 +283,10 @@ mod tests {
 
     #[test]
     fn test_execute_succeeds_without_approval() {
-        let healer = RuleBasedHealer::new();
+        // 33 OB-06：显式注入 Mock 执行器（旧实现靠"无执行器回退 Mock
+        // 成功"，已 fail-closed）。
+        let mock = alloc::boxed::Box::new(MockHealExecutor::new());
+        let healer = RuleBasedHealer::new().with_executor(mock);
         let anomaly = make_anomaly(0.6);
         let plan = healer.diagnose(&anomaly);
         let outcome = healer.execute(&plan).unwrap();
@@ -245,6 +296,31 @@ mod tests {
         // 真实执行耗时）。断言不再依赖硬编码值。
         assert!(outcome.duration_ms <= 1000, "真实执行耗时不应异常");
         assert!(!outcome.side_effects.is_empty());
+    }
+
+    #[test]
+    fn test_execute_without_executor_fails_closed() {
+        // 33 OB-06 判据：无执行器 → Err(HealFailed)（生产路径不得谎报
+        // 自愈成功；Mock 回退仅限 cfg(test/mock) 显式注入）。
+        let healer = RuleBasedHealer::new();
+        let anomaly = make_anomaly(0.6);
+        let plan = healer.diagnose(&anomaly);
+        let result = healer.execute(&plan);
+        assert!(matches!(result, Err(AiOpsError::HealFailed)));
+    }
+
+    #[test]
+    fn test_mock_executor_records_targets() {
+        // Mock 执行器：显式注入路径可用，逐动作记录 target。
+        let mut mock = MockHealExecutor::new();
+        let action = HealAction {
+            action_type: HealActionType::ClearCache,
+            target: 42,
+            description: String::from("test"),
+        };
+        mock.execute_action(&action).expect("mock executes");
+        assert_eq!(mock.executed_len(), 1);
+        assert_eq!(mock.executed_targets(), alloc::vec![42]);
     }
 
     #[test]

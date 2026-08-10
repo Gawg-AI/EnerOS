@@ -85,6 +85,8 @@ pub enum MetricsError {
     StorageFull,
     /// 查询范围非法.
     QueryRangeInvalid,
+    /// 文件 I/O 失败（33 OB-07：FileMetricsStore 导出后端）.
+    IoFailed,
 }
 
 /// 指标采集器 trait（蓝图 §4.2；偏差 D2 增加 `now_ms` 参数）.
