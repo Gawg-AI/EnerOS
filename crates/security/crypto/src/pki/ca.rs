@@ -159,11 +159,14 @@ impl CaIssuer {
     ///
     /// # 返回
     /// 包含所有已吊销证书的 CRL。
-    pub fn generate_crl(&self, next_update: u64) -> Result<Crl, PkiError> {
+    pub fn generate_crl(&mut self, next_update: u64) -> Result<Crl, PkiError> {
         let mut crl = Crl::new(self.ca_cert.subject.clone(), next_update);
         for revoked in &self.revoked {
             crl.add_revoked(revoked.clone());
         }
+        // 34 SE-17：CRL 由 CA 私钥签名（issuer_sig）——未签名 CRL 在
+        // 验证路径被拒（fail-closed）。CsRng 非 Clone，签名推进内部 RNG。
+        crl.sign_with(&self.ca_key, &self.ca_pk, &mut self.rng)?;
         Ok(crl)
     }
 
@@ -416,7 +419,7 @@ mod tests {
         let crl = ca.generate_crl(NOW + 86_400).unwrap();
 
         assert_eq!(crl.revoked.len(), 1, "CRL 应含 1 条吊销记录");
-        assert!(crl.is_revoked(&serial), "CRL 应包含被吊销的序列号");
+        assert!(crl.is_revoked(&serial, NOW).unwrap(), "CRL 应包含被吊销的序列号");
         assert_eq!(crl.next_update, NOW + 86_400);
     }
 
@@ -426,7 +429,7 @@ mod tests {
         let ca_kp = gen_keypair();
         let ca_cert = build_root(&ca_kp, "My CA", NOW);
         let ca_subject = ca_cert.subject.clone();
-        let ca = CaIssuer::new(ca_cert, ca_kp.private_key.clone(), CsRng::new()).unwrap();
+        let mut ca = CaIssuer::new(ca_cert, ca_kp.private_key.clone(), CsRng::new()).unwrap();
 
         let crl = ca.generate_crl(NOW + 86_400).unwrap();
 
@@ -438,7 +441,7 @@ mod tests {
         // 11. generate_crl 空 CRL（无吊销）revoked 为空
         let ca_kp = gen_keypair();
         let ca_cert = build_root(&ca_kp, "Test CA", NOW);
-        let ca = CaIssuer::new(ca_cert, ca_kp.private_key.clone(), CsRng::new()).unwrap();
+        let mut ca = CaIssuer::new(ca_cert, ca_kp.private_key.clone(), CsRng::new()).unwrap();
 
         let crl = ca.generate_crl(NOW + 86_400).unwrap();
 

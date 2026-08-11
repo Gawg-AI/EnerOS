@@ -56,7 +56,8 @@
 //! 仅使用 `alloc::*` 与 `core::*`，默认外部依赖仅 `slotmap`（`default-features = false`）。
 //! 默认 feature 下不引入任何 `std::*`，不调用 `panic!` / `todo!` / `unimplemented!`，
 //! 不含 `unsafe` 块（仅 `cyclone-dds` feature 启用时 `ffi` / `cyclone_dds` 模块含 `unsafe`）。
-//! 启用 `sm2` feature 时引入 `eneros-crypto`（同样 no_std，纯 Rust 无 C FFI）。
+//! 34 SE-11（复验）：signing.rs 已退役（sm2 feature 已移除）——本段为陈旧文档，
+//! 不再有 feature 门控引入 eneros-crypto。
 
 #![cfg_attr(not(test), no_std)]
 #![allow(dead_code)]

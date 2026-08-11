@@ -78,6 +78,22 @@ fn cfg_protects_test_or_mock(protected: &std::collections::BTreeMap<i32, String>
 /// - `foo.rs` 内的 `mod bar;` → `foo/bar.rs` 或 `foo/bar/mod.rs`；
 /// - `mod.rs` 内的 `mod bar;` → `bar.rs` 或 `bar/mod.rs`（同目录）；
 /// - `#[path]` 显式指定优先（相对当前文件目录）。
+/// 34 GV-09（复验）：mod 是否被同文件真实引用——`{name}::` 路径或 `use` 语句
+/// 引用才算（声明行 `mod name;` 本身不计）。返回 false = 假声明（死文件）。
+fn mod_is_referenced(text: &str, name: &str) -> bool {
+    if text.contains(&format!("{name}::")) {
+        return true;
+    }
+    for line in text.lines() {
+        let t = line.trim();
+        // `use` 引用（含 `use crate::x::name;` / `use name;` / `use name::…`）。
+        if t.starts_with("use ") && t.contains(name) {
+            return true;
+        }
+    }
+    false
+}
+
 fn resolve_mod_file(file: &Path, name: &str, explicit: Option<&str>) -> Option<PathBuf> {
     let dir = file.parent()?;
     if let Some(p) = explicit {
@@ -241,7 +257,12 @@ pub fn command_orphan_check(root: &Path, _args: &[String]) -> DynResult<()> {
             };
             for (name, explicit) in parse_mod_decls(&text) {
                 if let Some(mf) = resolve_mod_file(&f, &name, explicit.as_deref()) {
-                    queue.push(mf);
+                    // 34 GV-09（复验）：假 mod 声明绕过——声明但同文件无符号引用
+                    //（`name::`/use）的 mod 视为死文件，不纳入可达集（复验已实测
+                    // 复现绕过：裸 `pub mod hidden;` 藏死文件）。
+                    if mod_is_referenced(&text, &name) {
+                        queue.push(mf);
+                    }
                 }
             }
         }
@@ -254,10 +275,12 @@ pub fn command_orphan_check(root: &Path, _args: &[String]) -> DynResult<()> {
                 continue;
             }
             let rel = f.strip_prefix(root).unwrap_or(f);
-            if exemptions
-                .iter()
-                .any(|(key, _)| rel.to_string_lossy().ends_with(key))
-            {
+            let rel_s = rel.to_string_lossy();
+            // 34 GV-09：豁免精确化——旧 ends_with(key) 过松
+            //（foo.rs 豁免 barfoo.rs）；仅允许完全相等或路径段后缀。
+            if exemptions.iter().any(|(key, _)| {
+                rel_s == *key || rel_s.ends_with(&format!("/{key}"))
+            }) {
                 continue;
             }
             orphans.push(format!("{}: {}", crate_dir.display(), f.display()));
@@ -294,15 +317,18 @@ pub fn command_orphan_check(root: &Path, _args: &[String]) -> DynResult<()> {
 /// 声明 + 34 域清理），不阻断——否则 80 个模板 toml 会整体变红。
 pub fn command_config_refs(root: &Path, _args: &[String]) -> DynResult<()> {
     let configs_dir = root.join("configs");
-    let Ok(entries) = fs::read_dir(&configs_dir) else {
+    if !configs_dir.is_dir() {
         return Err(invalid("configs/ 不存在"));
-    };
-    let entry_list: Vec<fs::DirEntry> = entries.flatten().collect();
+    }
+    // 34 GV-15：配置清单递归 configs/**（纳入 4 个子目录）——与
+    // config-syntax 共用 collect_toml_files（禁两套扫描）。
+    let config_files = collect_toml_files(&configs_dir);
     // 被引用的 config 文件名（去扩展名）。
     let mut referenced: BTreeSet<String> = BTreeSet::new();
     // 代码引用但 configs/ 不存在的 toml 名（GV-01 阻断项）。
     let mut missing: Vec<String> = Vec::new();
-    for scan_root in ["crates", "xtask", "ci", "tests"] {
+    // 34 GV-15：引用扫描根扩至 tools/ 与 .github/（CI 工作流引用可见）。
+    for scan_root in ["crates", "xtask", "ci", "tests", "tools", ".github"] {
         let base = root.join(scan_root);
         if !base.is_dir() {
             continue;
@@ -316,7 +342,7 @@ pub fn command_config_refs(root: &Path, _args: &[String]) -> DynResult<()> {
                     stack.push(p);
                 } else if matches!(
                     p.extension().and_then(|x| x.to_str()),
-                    Some("rs") | Some("sh")
+                    Some("rs") | Some("sh") | Some("yml") | Some("yaml")
                 ) {
                     if let Ok(text) = fs::read_to_string(&p) {
                         for line in text.lines() {
@@ -324,14 +350,14 @@ pub fn command_config_refs(root: &Path, _args: &[String]) -> DynResult<()> {
                             if t.starts_with("//") || t.starts_with('#') {
                                 continue;
                             }
-                            for name in config_names(&entry_list) {
+                            for name in config_names(&config_files) {
                                 if t.contains(&format!("{name}.toml")) {
                                     referenced.insert(name.clone());
                                 }
                             }
                             // 正向检测：`<word>.toml` 字样但 configs/ 下无此文件。
                             for hit in toml_refs_in_line(t) {
-                                if !configs_dir.join(format!("{hit}.toml")).is_file() {
+                                if !find_config_file(&config_files, &hit) {
                                     missing.push(format!("{hit}.toml（{}）", p.display()));
                                 }
                             }
@@ -341,7 +367,7 @@ pub fn command_config_refs(root: &Path, _args: &[String]) -> DynResult<()> {
             }
         }
     }
-    let all_names = config_names(&entry_list);
+    let all_names = config_names(&config_files);
     let unreferenced: Vec<String> = all_names
         .iter()
         .filter(|n| !referenced.contains(*n))
@@ -420,10 +446,13 @@ fn toml_refs_in_line(line: &str) -> Vec<String> {
         }
         if i > start && bytes[i..].starts_with(b".toml") {
             let word = &line[start..i];
-            // 排除 Cargo/lockfile 等已知非 configs 模板名。
+            // 排除 Cargo/lockfile 等已知非 configs 模板名，及工具
+            // usage 帮助文本中的通用示例文件名（sim/tpl = 用户自带
+            // 路径占位，非仓内配置宣称；34 GV-15）。
             let is_known_other = matches!(
                 word,
-                "Cargo" | "cargo" | "deny" | "clippy" | "rust-toolchain" | "gate-exemptions"
+                "Cargo" | "cargo" | "deny" | "clippy" | "rust-toolchain"
+                    | "gate-exemptions" | "sim" | "tpl"
             );
             let dir = dir_of(&line[..start]);
             if !is_known_other && (dir.is_empty() || dir == "configs") {
@@ -446,26 +475,33 @@ fn dir_of(prefix: &str) -> &str {
         return "";
     };
     let rest = &prefix[..idx];
-    match rest.rfind('/') {
+    let seg = match rest.rfind('/') {
         Some(idx2) => &rest[idx2 + 1..],
         None => rest,
+    };
+    // 34 GV-15：取段内最后一个路径片段——剔除行内代码/引号前缀
+    //（如 `let _ = "configs/` 旧实现整段返回导致 dir 误判漏检）。
+    match seg.rfind(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
+        Some(i) => &seg[i + 1..],
+        None => seg,
     }
 }
 
-fn config_names(entries: &[fs::DirEntry]) -> Vec<String> {
-    let mut names: Vec<String> = entries
+fn config_names(files: &[PathBuf]) -> Vec<String> {
+    let mut names: Vec<String> = files
         .iter()
-        .filter_map(|e| {
-            let p = e.path();
-            if p.extension().map(|x| x == "toml").unwrap_or(false) {
-                p.file_stem().map(|s| s.to_string_lossy().into_owned())
-            } else {
-                None
-            }
-        })
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
         .collect();
     names.sort();
+    names.dedup();
     names
+}
+
+/// 34 GV-15：按 stem 在递归配置清单中查文件存在性（含子目录）。
+fn find_config_file(files: &[PathBuf], stem: &str) -> bool {
+    files
+        .iter()
+        .any(|p| p.file_stem().map(|s| s == stem).unwrap_or(false))
 }
 
 /// 日期（YYYY-MM-DD）——不依赖 chrono。
@@ -574,9 +610,19 @@ pub fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
 /// CI 阻断项（非零退出即红）。WP-26.3 完成后必须全绿。
 pub fn command_mock_leak(root: &Path, _args: &[String]) -> DynResult<()> {
     let crates_dir = root.join("crates");
+    // 34 GV-08（复验）：豁免表接入 mock-leak（旧实现仅 orphan-check 消费）。
+    let exemptions = load_exemptions(root);
     let mut violations: Vec<String> = Vec::new();
     for (crate_name, files) in collect_crate_lib_files(&crates_dir) {
         for file in files {
+            // 豁免：路径相等或路径段后缀（与 orphan-check 同语义）。
+            let rel = file.strip_prefix(root).unwrap_or(&file);
+            let rel_s = rel.to_string_lossy();
+            if exemptions.iter().any(|(key, _)| {
+                rel_s == *key || rel_s.ends_with(&format!("/{key}"))
+            }) {
+                continue;
+            }
             let is_lib = file.file_name().map(|n| n == "lib.rs").unwrap_or(false);
             for (line, text) in mock_leak_lines(&file, is_lib) {
                 violations.push(format!(
@@ -727,11 +773,13 @@ mod tests {
         .unwrap();
         std::fs::write(
             crate_dir.join("src/lib.rs"),
-            "pub mod entry;\npub mod ledger;\n",
+            "pub mod entry;\npub mod ledger;\npub mod hidden;\npub fn use_entry() { entry::touch(); }\npub fn use_ledger() { ledger::touch(); }\n",
         )
         .unwrap();
-        std::fs::write(crate_dir.join("src/entry.rs"), "").unwrap();
-        std::fs::write(crate_dir.join("src/ledger.rs"), "").unwrap();
+        std::fs::write(crate_dir.join("src/entry.rs"), "pub fn touch() {}\n").unwrap();
+        std::fs::write(crate_dir.join("src/ledger.rs"), "pub fn touch() {}\n").unwrap();
+        // 34 GV-09（复验）：hidden 为假声明——lib.rs 声明但不引用 → 死文件不可达。
+        std::fs::write(crate_dir.join("src/hidden.rs"), "").unwrap();
         std::fs::write(crate_dir.join("src/orphan.rs"), "").unwrap();
 
         // 复刻 command_orphan_check 的核心 BFS。
@@ -762,7 +810,10 @@ mod tests {
             };
             for (name, explicit) in parse_mod_decls(&text) {
                 if let Some(mf) = resolve_mod_file(&f, &name, explicit.as_deref()) {
-                    queue.push(mf);
+                    // 与生产 BFS 一致：假声明（无符号引用）不纳入可达集。
+                    if mod_is_referenced(&text, &name) {
+                        queue.push(mf);
+                    }
                 }
             }
         }
@@ -770,6 +821,10 @@ mod tests {
         assert!(
             reachable.contains(&src.join("ledger.rs")),
             "ledger 必须可达"
+        );
+        assert!(
+            !reachable.contains(&src.join("hidden.rs")),
+            "假 mod 声明（无符号引用）必须不可达（34 GV-09 复验）"
         );
         assert!(!reachable.contains(&src.join("orphan.rs")), "orphan 不可达");
         let _ = std::fs::remove_dir_all(&dir);

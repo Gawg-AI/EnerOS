@@ -193,8 +193,14 @@ impl CertVerifier {
         }
 
         // 2. CRL 吊销检查（如果设置了 CRL）
+        // 34 SE-17：CRL 验签（颁发者公钥，未签名/验签失败 fail-closed）+
+        // 时效前置（过期 → CrlExpired）。
         if let Some(ref crl) = self.crl {
-            if crl.is_revoked(&cert.serial_number) {
+            match issuer.public_key() {
+                SubjectPublicKey::Sm2(pk) => crl.verify_sig(pk)?,
+                _ => return Err(PkiError::UnsupportedAlgorithm),
+            }
+            if crl.is_revoked(&cert.serial_number, now)? {
                 return Err(PkiError::CertRevoked {
                     serial: hex_string(&cert.serial_number),
                 });
@@ -572,6 +578,9 @@ mod tests {
         ));
 
         let mut verifier = CertVerifier::new(vec![cert.clone()]);
+        // 34 SE-17：CRL 须由 CA 密钥签名（未签名 CRL 在验证路径被拒）。
+        crl.sign_with(&kp.private_key, &kp.public_key, &mut crate::CsRng::new())
+            .unwrap();
         verifier.set_crl(crl);
 
         let result = verifier.verify(&cert, &cert, NOW);
@@ -730,6 +739,9 @@ mod tests {
         crl.add_revoked(RevokedCert::new(&[2], NOW, RevocationReason::KeyCompromise));
 
         let mut verifier = CertVerifier::new(vec![cert.clone()]);
+        // 34 SE-17：CRL 须由 CA 密钥签名（未签名 CRL 在验证路径被拒）。
+        crl.sign_with(&kp.private_key, &kp.public_key, &mut crate::CsRng::new())
+            .unwrap();
         verifier.set_crl(crl);
 
         let result = verifier.verify(&cert, &cert, NOW);
@@ -755,6 +767,9 @@ mod tests {
             NOW,
             RevocationReason::KeyCompromise,
         ));
+        // 34 SE-17：CRL 须由 CA 密钥签名（未签名 CRL 在验证路径被拒）。
+        crl.sign_with(&kp.private_key, &kp.public_key, &mut crate::CsRng::new())
+            .unwrap();
         verifier.set_crl(crl);
 
         // 有 CRL 后验证失败

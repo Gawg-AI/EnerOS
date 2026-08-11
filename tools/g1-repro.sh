@@ -3,7 +3,15 @@
 # 全零 VARS → 跑 qemu-prod → 输出 supervisor 序列摘要。
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-QEMU_BIN="${ENEROS_QEMU_BIN:-/home/ahx/.cache/xpack-qemu-arm-9.2.4-1/bin/qemu-system-aarch64}"
+# 34 GV-20（复验）：fail-closed QEMU 解析——旧实现硬编码个人主机路径，换机即碎。
+if [[ -n "${ENEROS_QEMU_BIN:-}" ]]; then
+    QEMU_BIN="${ENEROS_QEMU_BIN}"
+elif command -v qemu-system-aarch64 >/dev/null 2>&1; then
+    QEMU_BIN="$(command -v qemu-system-aarch64)"
+else
+    echo "qemu-system-aarch64 not found in PATH; set ENEROS_QEMU_BIN" >&2
+    exit 2
+fi
 
 pkill -9 -f qemu-system 2>/dev/null || true
 sleep 2
@@ -15,7 +23,6 @@ cp /tmp/G1_VARS.fd "${REPO}/target/g1-evidence/VARS.fd"
 python3 "${REPO}/tools/reset-bootctrl.py" "${REPO}/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw" >/dev/null 2>&1 || true
 
 cd "${REPO}"
-export PATH="/home/ahx/.cache/xpack-qemu-arm-9.2.4-1/bin:$PATH"
 ENEROS_QEMU_BIN="${QEMU_BIN}" cargo xtask run qemu-prod \
   --image "${REPO}/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw" \
   --vars-template "${REPO}/target/g1-evidence/VARS.fd" \

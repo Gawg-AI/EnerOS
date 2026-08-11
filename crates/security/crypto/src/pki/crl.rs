@@ -195,23 +195,92 @@ pub struct Crl {
     pub revoked: Vec<RevokedCert>,
     /// 下次更新时间（Unix 时间戳，秒）
     pub next_update: u64,
+    /// 34 SE-17：颁发者签名（SM2，r‖s 64 字节；`None` = 未签名/旧版）。
+    pub issuer_sig: Option<Vec<u8>>,
 }
 
 impl Crl {
-    /// 创建空的吊销列表（无吊销条目）.
+    /// 创建空的吊销列表（无吊销条目；34 SE-17：未签名，须经 [`Crl::sign_with`]）。
     pub fn new(issuer: DistinguishedName, next_update: u64) -> Self {
         Self {
             issuer,
             revoked: Vec::new(),
             next_update,
+            issuer_sig: None,
         }
     }
 
-    /// 检查指定序列号的证书是否已被吊销.
+    /// 检查指定序列号的证书是否已被吊销（34 SE-17：时效前置，fail-closed）。
     ///
-    /// 遍历 `revoked` 列表，比较 `serial_number` 字节（精确匹配）。
-    pub fn is_revoked(&self, serial: &[u8]) -> bool {
-        self.revoked.iter().any(|c| c.serial_number == serial)
+    /// 过期 CRL（`now > next_update`）→ `Err(PkiError::CrlExpired)`，不得用于
+    /// 吊销判定；未过期 → `Ok(revoked 列表精确匹配)`。
+    pub fn is_revoked(&self, serial: &[u8], now: u64) -> Result<bool, PkiError> {
+        if now > self.next_update {
+            return Err(PkiError::CrlExpired {
+                next_update: self.next_update,
+            });
+        }
+        Ok(self.revoked.iter().any(|c| c.serial_number == serial))
+    }
+
+    /// 34 SE-17：对 CRL 内容（issuer + revoked serials + next_update）签名。
+    pub fn sign_with(
+        &mut self,
+        sk: &crate::sm2::Sm2PrivateKey,
+        pk: &crate::sm2::Sm2PublicKey,
+        rng: &mut crate::CsRng,
+    ) -> Result<(), PkiError> {
+        let content = self.content_bytes();
+        let signer = crate::sm2::Sm2Signer::new();
+        let sig = signer
+            .sign(&content, sk, pk, rng)
+            .map_err(|_| PkiError::SignatureInvalid)?;
+        self.issuer_sig = Some(sig.to_bytes().to_vec());
+        Ok(())
+    }
+
+    /// 34 SE-17：验证 CRL 签名（颁发者公钥）——未签名/验签失败 → Err。
+    pub fn verify_sig(&self, pk: &crate::sm2::Sm2PublicKey) -> Result<(), PkiError> {
+        let Some(sig_bytes) = &self.issuer_sig else {
+            // 未签名 CRL → fail-closed（不得用于吊销判定）。
+            return Err(PkiError::SignatureInvalid);
+        };
+        if sig_bytes.len() != 64 {
+            return Err(PkiError::SignatureInvalid);
+        }
+        let mut b = [0u8; 64];
+        b.copy_from_slice(sig_bytes);
+        let sig = crate::sm2::Sm2Signature::from_bytes(&b);
+        let signer = crate::sm2::Sm2Signer::new();
+        match signer.verify(&self.content_bytes(), &sig, pk) {
+            Ok(true) => Ok(()),
+            _ => Err(PkiError::SignatureInvalid),
+        }
+    }
+
+    /// 规范内容字节（签名/验签的对象）：issuer DN 文本 + 各吊销序列号
+    /// （长度前缀）+ next_update（LE）。确定性、跨实现可重算。
+    fn content_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(self.issuer.cn.as_bytes());
+        if let Some(o) = &self.issuer.o {
+            buf.push(0xFF);
+            buf.extend_from_slice(o.as_bytes());
+        }
+        if let Some(ou) = &self.issuer.ou {
+            buf.push(0xFE);
+            buf.extend_from_slice(ou.as_bytes());
+        }
+        if let Some(c) = &self.issuer.c {
+            buf.push(0xFD);
+            buf.extend_from_slice(c.as_bytes());
+        }
+        for r in &self.revoked {
+            buf.push(r.serial_number.len() as u8);
+            buf.extend_from_slice(&r.serial_number);
+        }
+        buf.extend_from_slice(&self.next_update.to_le_bytes());
+        buf
     }
 
     /// 添加一个被吊销的证书条目.
@@ -288,6 +357,7 @@ impl Crl {
             issuer,
             revoked,
             next_update,
+            issuer_sig: None, // 34 SE-17：解码不携带签名（签名经 verify_sig 校验）
         })
     }
 }
@@ -411,12 +481,38 @@ mod tests {
         assert_eq!(crl.next_update, 1800000000);
     }
 
+    /// 34 SE-17：过期 CRL → CrlExpired（fail-closed，不得用于吊销判定）。
+    #[test]
+    fn test_crl_expired_rejected() {
+        let mut crl = Crl::new(
+            DistinguishedName {
+                cn: String::from("Test CA"),
+                o: None,
+                ou: None,
+                c: None,
+            },
+            1_000,
+        );
+        crl.add_revoked(RevokedCert {
+            serial_number: alloc::vec![0x01, 0x02, 0x03],
+            revocation_date: 500,
+            reason: RevocationReason::KeyCompromise,
+        });
+        // now > next_update → Err(CrlExpired)（即使序列号在吊销列表）。
+        assert_eq!(
+            crl.is_revoked(&[0x01, 0x02, 0x03], 1_001).unwrap_err(),
+            PkiError::CrlExpired { next_update: 1_000 }
+        );
+        // now == next_update → 正常判定。
+        assert!(crl.is_revoked(&[0x01, 0x02, 0x03], 1_000).unwrap());
+    }
+
     #[test]
     fn test_crl_add_revoked_and_is_revoked() {
         let mut crl = Crl::new(DistinguishedName::new("Test CA"), 1800000000);
 
         // 初始状态：无吊销
-        assert!(!crl.is_revoked(&[0x01, 0x02, 0x03]));
+        assert!(!crl.is_revoked(&[0x01, 0x02, 0x03], 1_000).unwrap());
 
         // 添加吊销条目
         crl.add_revoked(RevokedCert::new(
@@ -426,7 +522,7 @@ mod tests {
         ));
 
         // 添加后能查到
-        assert!(crl.is_revoked(&[0x01, 0x02, 0x03]));
+        assert!(crl.is_revoked(&[0x01, 0x02, 0x03], 1_000).unwrap());
         assert_eq!(crl.revoked.len(), 1);
     }
 
@@ -440,9 +536,9 @@ mod tests {
         ));
 
         // 未吊销的 serial 返回 false
-        assert!(!crl.is_revoked(&[0x04, 0x05, 0x06]));
-        assert!(!crl.is_revoked(&[]));
-        assert!(!crl.is_revoked(&[0x01])); // 前缀不匹配
+        assert!(!crl.is_revoked(&[0x04, 0x05, 0x06], 1_000).unwrap());
+        assert!(!crl.is_revoked(&[], 1_000).unwrap());
+        assert!(!crl.is_revoked(&[0x01], 1_000).unwrap()); // 前缀不匹配
     }
 
     #[test]
@@ -522,9 +618,9 @@ mod tests {
         assert_eq!(decoded.revoked[1].revocation_date, 1700001000);
 
         // 验证 is_revoked 仍可正常工作
-        assert!(decoded.is_revoked(&[0x01, 0x02, 0x03]));
-        assert!(decoded.is_revoked(&[0xAA, 0xBB, 0xCC]));
-        assert!(!decoded.is_revoked(&[0xFF]));
+        assert!(decoded.is_revoked(&[0x01, 0x02, 0x03], 1_000).unwrap());
+        assert!(decoded.is_revoked(&[0xAA, 0xBB, 0xCC], 1_000).unwrap());
+        assert!(!decoded.is_revoked(&[0xFF], 1_000).unwrap());
     }
 
     #[test]

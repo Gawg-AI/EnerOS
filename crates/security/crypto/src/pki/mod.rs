@@ -47,6 +47,9 @@ pub enum PkiError {
     CertNotYetValid { not_before: u64 },
     /// 证书已被吊销（serial 为证书序列号的十六进制字符串）
     CertRevoked { serial: alloc::string::String },
+    /// 34 SE-17：CRL 已过期（next_update 为 CRL 下次更新时间，Unix 秒）——
+    /// 过期 CRL 不得用于吊销判定（fail-closed）。
+    CrlExpired { next_update: u64 },
     /// 不可信的根证书
     UntrustedRoot,
     /// 链 issuer/subject 不一致或根非自签（v0.207.0 P0-12）

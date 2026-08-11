@@ -6,3 +6,4 @@
 "crates/ai/gguf-loader/src/gpu_ops.rs" = { rule = "orphan", reason = "AI-002 封印虚构 eneros_gpu_* FFI（compile_error 熔断，不得启用）", expires_at = "never", owner_wp = "21-B" }
 "crates/ai/solver-warm/src/ffi.rs" = { rule = "orphan", reason = "AI-002 封印虚构 ort_* FFI（compile_error 熔断，不得启用）", expires_at = "never", owner_wp = "21-B" }
 "crates/agents/model-ota/src/real.rs" = { rule = "orphan", reason = "未挂载历史文件（26-C 处置或删除）", expires_at = "WP-26.15", owner_wp = "26.15" }
+"crates/agents/mvp-scenario/src/tests.rs" = { rule = "mock-leak", reason = "34 GV-08：经 lib.rs `#[cfg(test)] mod tests;` 整体门控的测试文件（use MockSolver 仅测试构建）", expires_at = "never", owner_wp = "34" }

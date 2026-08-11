@@ -313,7 +313,9 @@ jobs:
         run: |
           # 合规报告流水线：信创/等保动态探测 + KAT + QA-017~022 证据
           # 存在性汇总（机器可重算，14 号文 G5）。
-          cargo xtask qa compliance-report
+          # 34 GV-07（复验）：签名强制——无 --sign-key 即 Err；dev key 入仓
+          # 先例（product/security/dev-signing.key）。
+          cargo xtask qa compliance-report --sign-key product/security/dev-signing.key
           test -f target/compliance-report.json
 
       - name: D3b crypto KAT evidence (RC-3b, fail-closed on any KAT failure)

@@ -88,6 +88,8 @@ pub(super) fn command_qa(root: &Path, args: &[String]) -> DynResult<()> {
         "interop-report" => command_interop_report(root, tail),
         "kat-report" => command_kat_report(root, tail),
         "compliance-report" => command_compliance_report(root, tail),
+        "sign-evidence" => command_sign_evidence(root, tail),
+        "verify-evidence-sig" => command_verify_evidence_sig(root, tail),
         "g7-audit" => command_g7_audit(root, tail),
         "perf-baseline" => command_perf_baseline(root, tail),
         "perf-keygen" => command_perf_keygen(root, tail),
@@ -786,6 +788,11 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
         dengbao: Vec<ComplianceItem>,
         kat_verdict: String,
         qa_gates: Vec<QaGateRow>,
+        /// 34 GV-14：字段拆分——代码自测结果（动态探测 recompute）。
+        self_test_status: String,
+        /// 34 GV-14：字段拆分——外部认证状态（人工/流程写入并签名，
+        /// PENDING|SUBMITTED|CERTIFIED；与 self_test 不得混淆）。
+        external_certification: &'static str,
         sha256: String,
         signature: String,
         verdict: &'static str,
@@ -801,6 +808,8 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
         gate: &'static str,
         evidence_file: String,
         present: bool,
+        /// 34 GV-07：侧车签名（<file>.sig）经 ed25519 验证为真。
+        signed: bool,
     }
 
     use sha2::{Digest, Sha256};
@@ -819,6 +828,20 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
             other => return Err(invalid(format!("unknown compliance-report arg '{other}'"))),
         }
     }
+
+    // 34 GV-07：签名强制——无 --sign-key 即 Err（旧实现仅 WARN，
+    // 证据可无签名产出 = 防篡改未达成）。
+    let key_path = sign_key.ok_or_else(|| {
+        invalid("compliance-report requires --sign-key（34 GV-07：证据签名强制，dev key 入仓先例 product/security/dev-signing.key）")
+    })?;
+    let key_bytes = fs::read(&key_path)
+        .map_err(|e| invalid(format!("read sign key: {e}")))?;
+    let keypair = ed25519_dalek::SigningKey::from_bytes(
+        &key_bytes[..32]
+            .try_into()
+            .map_err(|_| invalid("key must be 32 bytes"))?,
+    );
+    let verify_key = keypair.verifying_key();
 
     // 1. 信创/等保动态探测（真实 recompute，非硬编码）。
     let mut xinchuang_items = Vec::new();
@@ -867,7 +890,8 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
         .and_then(|v| v.as_str().map(|s| s.to_owned()))
         .unwrap_or_else(|| "KAT-NOT-RUN".to_owned());
 
-    // 3. QA-017~022 门禁证据文件。
+    // 3. QA-017~022 门禁证据文件（34 GV-07：存在性 + 侧车签名验证，
+    // 旧实现仅文件存在性检查）。
     let evidence_dir = root.join("target/eneros/evidence/g9");
     let qa_gates = vec![
         ("QA-017", "qa_017.json"),
@@ -878,21 +902,32 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
         ("QA-022", "qa_022.json"),
     ]
     .into_iter()
-    .map(|(gate, f)| QaGateRow {
-        gate,
-        evidence_file: f.to_owned(),
-        present: evidence_dir.join(f).exists(),
+    .map(|(gate, f)| {
+        let fp = evidence_dir.join(f);
+        let sigp = std::path::PathBuf::from(format!("{}.sig", fp.display()));
+        QaGateRow {
+            gate,
+            evidence_file: f.to_owned(),
+            present: fp.exists(),
+            signed: fp.exists() && verify_evidence_sig(&fp, &sigp, &verify_key),
+        }
     })
     .collect::<Vec<_>>();
 
-    // 4. 摘要 + 可选签名。
+    // 4. 摘要 + 签名（34 GV-07：签名强制；generated_at 取系统
+    // RFC3339，禁止空串占位）。
     let report = ComplianceReport {
         schema: "eneros.compliance-report.v1",
-        generated_at: String::new(), // 占位（无时钟）
+        generated_at: rfc3339_now(),
         xinchuang: xinchuang_items,
         dengbao: dengbao_items,
         kat_verdict,
         qa_gates,
+        // 34 GV-14：判定字段拆分——旧实现合规判定仅凭单测退出码
+        // 混同“自测通过”与“已认证”；自测状态如实上报，外部
+        // 认证未经人工/流程写入恒为 PENDING（fail-closed）。
+        self_test_status: if compliance_pass { "PASS" } else { "FAIL" }.to_owned(),
+        external_certification: "PENDING",
         sha256: String::new(),
         signature: String::new(),
         verdict: "assessment",
@@ -903,24 +938,11 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
     let mut report = report;
     report.sha256 = digest_hex;
 
-    // 签名在带摘要的 JSON 上。
+    // 签名在带摘要的 JSON 上（34 GV-07：key 已在入口强制，必签）。
     let json_signed = serde_json::to_vec_pretty(&report)?;
-    let signature = match &sign_key {
-        Some(key_path) => {
-            let key_bytes =
-                fs::read(key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
-            let keypair = ed25519_dalek::SigningKey::from_bytes(
-                &key_bytes[..32]
-                    .try_into()
-                    .map_err(|_| invalid("key must be 32 bytes"))?,
-            );
-            use ed25519_dalek::Signer;
-            hex_encode(&keypair.sign(&json_signed).to_bytes())
-        }
-        None => {
-            println!("WARN: compliance-report unsigned (pass --sign-key for tamper protection)");
-            String::new()
-        }
+    let signature = {
+        use ed25519_dalek::Signer;
+        hex_encode(&keypair.sign(&json_signed).to_bytes())
     };
     report.signature = signature;
 
@@ -929,6 +951,133 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
     println!("{}", serde_json::to_string_pretty(&report)?);
     println!("COMPLIANCE-REPORT → {}", out_path.display());
     Ok(())
+}
+
+/// 34 GV-07：RFC3339 UTC 时间戳（系统时钟；禁止空串占位）。
+fn rfc3339_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // 自 1970-01-01 的天数 → 公历日期（civil-from-days 算法）。
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mth = if mp < 10 { mp + 3 } else { mp - 9 };
+    if mth <= 2 {
+        y += 1;
+    }
+    format!("{y:04}-{mth:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
+/// 34 GV-07：证据侧车签名验证 `verify_evidence_sig(path, sig_path, pubkey)`。
+///
+/// 侧车签名文件内容 = `hex(ed25519(文件字节))`；文件缺失/签名长度
+/// 非法/验签失败一律 false（fail-closed，不静默放行）。
+pub fn verify_evidence_sig(
+    path: &Path,
+    sig_path: &Path,
+    pubkey: &ed25519_dalek::VerifyingKey,
+) -> bool {
+    let (Ok(raw), Ok(sig_hex)) = (fs::read(path), fs::read_to_string(sig_path)) else {
+        return false;
+    };
+    let sig_bytes = hex_decode(sig_hex.trim());
+    let Ok(sig): Result<[u8; 64], _> = sig_bytes.try_into() else {
+        return false;
+    };
+    use ed25519_dalek::Verifier;
+    pubkey
+        .verify(&raw, &ed25519_dalek::Signature::from_bytes(&sig))
+        .is_ok()
+}
+
+/// `qa sign-evidence <path> --sign-key <key>`
+///
+/// 34 GV-07：为证据文件生成侧车签名 `<path>.sig`（既有证据一次性
+/// 补签迁移用；dev key 入仓先例 product/security/dev-signing.key）。
+/// 输出同时打印公钥 hex（供 verify-evidence-sig 使用）。
+fn command_sign_evidence(root: &Path, args: &[String]) -> DynResult<()> {
+    let mut path: Option<std::path::PathBuf> = None;
+    let mut sign_key: Option<std::path::PathBuf> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || it.next().ok_or_else(|| invalid(format!("{a} requires a value")));
+        match a.as_str() {
+            "--sign-key" => sign_key = Some(root.join(val()?)),
+            other if other.starts_with("--") => {
+                return Err(invalid(format!("unknown sign-evidence arg '{other}'")))
+            }
+            other => path = Some(root.join(other)),
+        }
+    }
+    let path = path.ok_or_else(|| invalid("sign-evidence requires <path>"))?;
+    let key_path = sign_key.ok_or_else(|| invalid("sign-evidence requires --sign-key"))?;
+    let raw = fs::read(&path)
+        .map_err(|e| invalid(format!("read {}: {e}", path.display())))?;
+    let key_bytes = fs::read(&key_path)
+        .map_err(|e| invalid(format!("read sign key: {e}")))?;
+    let keypair = ed25519_dalek::SigningKey::from_bytes(
+        &key_bytes[..32]
+            .try_into()
+            .map_err(|_| invalid("key must be 32 bytes"))?,
+    );
+    use ed25519_dalek::Signer;
+    let sig = hex_encode(&keypair.sign(&raw).to_bytes());
+    let sig_path = std::path::PathBuf::from(format!("{}.sig", path.display()));
+    fs::write(&sig_path, format!("{sig}\n"))?;
+    println!("SIGN-EVIDENCE → {}", sig_path.display());
+    println!("pubkey={}", hex_encode(keypair.verifying_key().as_bytes()));
+    Ok(())
+}
+
+/// `qa verify-evidence-sig <path> --pub-key <hex>`
+///
+/// 34 GV-07：证据侧车签名验证（fail-closed：缺失/不匹配 → exit 非 0）。
+fn command_verify_evidence_sig(root: &Path, args: &[String]) -> DynResult<()> {
+    let mut path: Option<std::path::PathBuf> = None;
+    let mut pub_key: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || it.next().ok_or_else(|| invalid(format!("{a} requires a value")));
+        match a.as_str() {
+            "--pub-key" => pub_key = Some(val()?.clone()),
+            other if other.starts_with("--") => {
+                return Err(invalid(format!("unknown verify-evidence-sig arg '{other}'")))
+            }
+            other => path = Some(root.join(other)),
+        }
+    }
+    let path = path.ok_or_else(|| invalid("verify-evidence-sig requires <path>"))?;
+    let pk_hex = pub_key.ok_or_else(|| invalid("verify-evidence-sig requires --pub-key <hex>"))?;
+    let pk_bytes: [u8; 32] = hex_decode(pk_hex.trim())
+        .try_into()
+        .map_err(|_| invalid("pub-key must be 32-byte ed25519 pk (hex)"))?;
+    let pk = ed25519_dalek::VerifyingKey::from_bytes(&pk_bytes)
+        .map_err(|e| invalid(format!("bad pubkey: {e}")))?;
+    let sig_path = std::path::PathBuf::from(format!("{}.sig", path.display()));
+    if verify_evidence_sig(&path, &sig_path, &pk) {
+        println!(
+            "VERIFY-EVIDENCE-SIG → OK（{} ← {}）",
+            path.display(),
+            sig_path.display()
+        );
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "verify-evidence-sig: 签名缺失或验证失败（{} / {}）",
+            path.display(),
+            sig_path.display()
+        )))
+    }
 }
 
 /// `qa g7-audit [--out <json>]`
@@ -1025,7 +1174,7 @@ pub(crate) fn collect_crate_lib_files(crates_dir: &Path) -> Vec<(String, Vec<std
 /// 1. lib.rs 顶层（非缩进）`use ...::mock` 且无 cfg 前缀（旧语义）；
 /// 2. 任意 src 文件顶层 `pub mod mock` 且无 cfg(any(test, feature="mock")) 门
 ///    （WP-26.1：扩展检测面，与 WP-26.2 门禁共用）。
-pub(crate) fn mock_leak_lines(path: &std::path::Path, is_lib: bool) -> Vec<(usize, String)> {
+pub(crate) fn mock_leak_lines(path: &std::path::Path, _is_lib: bool) -> Vec<(usize, String)> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -1037,33 +1186,45 @@ pub(crate) fn mock_leak_lines(path: &std::path::Path, is_lib: bool) -> Vec<(usiz
             continue;
         }
         let t = line.trim_start();
-        if is_lib && t.starts_with("use ") && t.contains("::mock") {
-            let prev = i
-                .checked_sub(1)
-                .and_then(|p| lines.get(p))
-                .map(|l| l.trim_start())
-                .unwrap_or("");
-            let prev2 = i
-                .checked_sub(2)
-                .and_then(|p| lines.get(p))
-                .map(|l| l.trim_start())
-                .unwrap_or("");
-            if !prev.starts_with("#[cfg(") && !prev2.starts_with("#[cfg(") {
+        // 34 GV-08（复验）：use-mock 检查对所有 .rs 生效（旧实现仅 lib.rs）。
+        if t.starts_with("use ") && t.contains("::mock") {
+            if !protected_by_test_cfg(&lines, i) {
                 hits.push((i + 1, t.to_owned()));
             }
         }
-        if t == "pub mod mock" || t.starts_with("pub mod mock;") {
-            let prev = i
-                .checked_sub(1)
-                .and_then(|p| lines.get(p))
-                .map(|l| l.trim_start())
-                .unwrap_or("");
-            if !prev.starts_with("#[cfg(") {
+        // 34 GV-08（复验）：mod 匹配含 pub(crate)/pub(super) 可见性变体
+        //（旧实现仅 `pub mod mock`）。
+        let is_mock_mod = t == "pub mod mock"
+            || t.starts_with("pub mod mock;")
+            || t.starts_with("pub(crate) mod mock")
+            || t.starts_with("pub(super) mod mock")
+            || t.starts_with("pub(crate) mod mock;")
+            || t.starts_with("pub(super) mod mock;");
+        if is_mock_mod {
+            if !protected_by_test_cfg(&lines, i) {
                 hits.push((i + 1, t.to_owned()));
             }
         }
     }
     hits
+}
+
+/// 34 GV-08（复验）：cfg 保护窗口——向上找最近属性行，须含 `test`/`mock`
+/// feature 才算豁免（旧实现仅查上方 1-2 行是否 `#[cfg(`，不验 feature 内容、
+/// 窗口过短）。
+fn protected_by_test_cfg(lines: &[&str], i: usize) -> bool {
+    for p in (0..i).rev() {
+        let pt = lines[p].trim_start();
+        if pt.is_empty() || pt.starts_with("//") || pt.starts_with("/*") {
+            continue; // 空行/注释不打断窗口
+        }
+        if pt.starts_with("#[") {
+            return pt.contains("test") || pt.contains("mock");
+        }
+        // 非属性代码行 → 属性不紧邻，窗口中断。
+        break;
+    }
+    false
 }
 
 fn command_g7_audit(root: &Path, args: &[String]) -> DynResult<()> {
@@ -2026,7 +2187,7 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
             }
             _ => {
                 // 无公钥环境：签名存在但无法验证 → 违规（34 GV-11：
-                // 移除 ENEROS_PERF_ALLOW_UNVERIFIED 逃生门——旧实现可
+                // 移除 perf 逃生门（旧实现可
                 // 静默跳过未验证签名，证据链断裂）。
                 report
                     .violations
@@ -2346,9 +2507,10 @@ fn command_proof(root: &Path, args: &[String]) -> DynResult<()> {
             "degradation_note",
             String::from("TCB formalisation in progress; not an admitted-proof gate (no Isabelle environment). Re-run with real Isabelle for full proof scan."),
         );
-        if report.result != "PASS" {
-            report.result = "DEGRADED";
-        }
+        // 34 GV-06（复验）：无条件置 DEGRADED——degrade 模式下门禁按定义未
+        // 完整运行（无 Isabelle 环境），干净扫描亦不得输出 PASS（旧实现仅
+        // 在非 PASS 时改标，sorry-free 树在 --degrade 下仍谎报 PASS）。
+        report.result = "DEGRADED";
     }
     finalize(root, &report)
 }
@@ -2920,6 +3082,33 @@ mod tests {
         )
         .unwrap();
         assert!(command_proof(root, &[]).is_err());
+    }
+
+    /// 34 GV-06（复验回归）：--degrade 必须无条件输出 DEGRADED（非 PASS）——
+    /// 旧实现仅非 PASS 时改标，sorry-free 树在 --degrade 下谎报 PASS。
+    #[test]
+    fn t9b_degrade_emits_degraded() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let formal = root.join("formal/Isabelle");
+        fs::create_dir_all(&formal).unwrap();
+        fs::write(formal.join("ROOT"), "session Test = HOL +").unwrap();
+        fs::write(
+            formal.join("Test.thy"),
+            "theory Test imports Main begin\nlemma t: True sorry\nend",
+        )
+        .unwrap();
+        // --degrade → DEGRADED 非 PASS → finalize 报错（exit != 0）。
+        assert!(command_proof(root, &["--degrade".to_string()]).is_err());
+        // 落盘报告 result 必须为 DEGRADED。
+        let path = root.join("target/eneros/evidence/g9/qa_021.json");
+        let rep: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(rep["result"].as_str(), Some("DEGRADED"), "--degrade 必须产出 DEGRADED");
+        // 干净树 + --degrade 也必须 DEGRADED（不得谎报 PASS）。
+        fs::write(formal.join("Test.thy"), "theory Test imports Main begin\nend").unwrap();
+        assert!(command_proof(root, &["--degrade".to_string()]).is_err());
+        let rep2: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(rep2["result"].as_str(), Some("DEGRADED"), "干净树 + --degrade 仍须 DEGRADED");
     }
 
     #[test]

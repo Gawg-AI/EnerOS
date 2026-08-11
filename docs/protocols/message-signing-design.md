@@ -121,7 +121,7 @@ v0.78.0 在 v0.75.0~v0.77.0 已建立的 DDS 总线骨架之上，为 Agent 间�
 
 | 路径 | 内容 |
 |------|------|
-| `configs/signing_keys.toml` | 密钥配置模板（仅示例公钥，不含私钥；偏差声明 D3） |
+| `configs/signing_keys.toml（34 SE-11 已退役删除——设计文档遗留引用）` | 密钥配置模板（仅示例公钥，不含私钥；偏差声明 D3） |
 
 ---
 
@@ -785,7 +785,7 @@ pub use signing::{KeyStore, Sm2Signer};
 
 - [ ] **S1**：默认 build 不引入任何密码学依赖（`cargo tree -p eneros-agent-bus-dds` 无 sm_crypto）
 - [ ] **S2**：`sm2` feature 启用后，私钥不通过日志 / Debug 输出泄露
-- [ ] **S3**：`configs/signing_keys.toml` 仅包含示例公钥，不含私钥
+- [ ] **S3**：`configs/signing_keys.toml（34 SE-11 已退役删除——设计文档遗留引用）` 仅包含示例公钥，不含私钥
 - [ ] **S4**：`SignError` 不泄露敏感信息（如私钥内容）
 
 ### 10.4 文档验收
@@ -820,7 +820,7 @@ pub use signing::{KeyStore, Sm2Signer};
 
 | 风险 | 影响 | 缓解措施 | 解决版本 |
 |------|------|---------|---------|
-| 私钥泄露 | 攻击者可伪造签名 | 私钥仅在内存中，不落盘；`configs/signing_keys.toml` 仅存公钥 | v0.98.0 mTLS + HSM |
+| 私钥泄露 | 攻击者可伪造签名 | 私钥仅在内存中，不落盘；`configs/signing_keys.toml（34 SE-11 已退役删除——设计文档遗留引用）` 仅存公钥 | v0.98.0 mTLS + HSM |
 | 密钥轮换期间旧密钥失效 | 正在传输的消息验签失败 | `KeyStore` 支持多密钥共存，旧密钥保留宽限期 | 本版本已支持（`KeyId` 独立 newtype，偏差 D13） |
 | 密钥分发不安全 | 中间人攻击 | 本版本假设密钥预置，不处理在线分发 | v0.98.0 mTLS 证书链 |
 
@@ -859,7 +859,7 @@ pub use signing::{KeyStore, Sm2Signer};
 |------|---------|---------|------|
 | D1 | `crates/agent_bus_dds/src/` | `crates/protocols/agent-bus-dds/src/` | 项目规则 §2.3.1 子系统分组：所有协议栈 crate 必须放入 `crates/protocols/` 下 |
 | D2 | `docs/phase2/message_signing.md` | `docs/protocols/message-signing-design.md` | 项目规则 §2.3.3 文档分类：协议相关文档必须归入 `docs/protocols/`，禁止按 Phase 平面化 |
-| D3 | `config/` | `configs/signing_keys.toml` | 项目规则 §2.3 配置位置：配置文件模板统一放入 `configs/` 目录 |
+| D3 | `config/` | `configs/signing_keys.toml（34 SE-11 已退役删除——设计文档遗留引用）` | 项目规则 §2.3 配置位置：配置文件模板统一放入 `configs/` 目录 |
 | D4 | `tests/signing_verify.rs` / `tests/codec_bench.rs` | `src/lib.rs` T49~T63 | 沿用 v0.75.0~v0.77.0 模式：测试内联在 `src/lib.rs` 的 `#[cfg(test)] mod tests` 中，避免 `tests/` 目录分散 |
 | D5 | `HashMap<KeyId, Sm2PublicKey>` | `BTreeMap<KeyId, Sm2PublicKey>` | no_std 合规：`std::collections::HashMap` 不可用，`alloc::collections::BTreeMap` 满足需求且键有序 |
 | D6 | 实现 CDR/Bincode/JSON 编解码 | 仅 `CodecKind` 元数据 tag | 避免引入 cdr/bincode/serde_json 依赖：实际编解码由上层 DDS 集成时按需引入，本层仅保留 tag 用于自描述 |

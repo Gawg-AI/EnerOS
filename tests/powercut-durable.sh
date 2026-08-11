@@ -11,7 +11,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-QEMU_BIN="${ENEROS_QEMU_BIN:-/home/ahx/.cache/xpack-qemu-arm-9.2.4-1/bin/qemu-system-aarch64}"
+# 34 GV-20（复验）：fail-closed QEMU 解析——旧实现硬编码个人主机路径，换机即碎。
+if [[ -n "${ENEROS_QEMU_BIN:-}" ]]; then
+    QEMU_BIN="${ENEROS_QEMU_BIN}"
+elif command -v qemu-system-aarch64 >/dev/null 2>&1; then
+    QEMU_BIN="$(command -v qemu-system-aarch64)"
+else
+    echo "qemu-system-aarch64 not found in PATH; set ENEROS_QEMU_BIN" >&2
+    exit 2
+fi
 FIRMWARE="/usr/share/AAVMF/AAVMF_CODE.secboot.fd"
 CYCLES=20
 OUT_DIR=""
