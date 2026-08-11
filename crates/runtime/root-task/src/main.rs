@@ -230,31 +230,28 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
         );
     }
 
-    // 22 §2.W1.6：映射 SP805 看门狗设备区域（root-task 访问 0x09050000
-    // 不 vm fault；QEMU 无设备时读写 no-op，真机有效）。
-    match crate::spawn::map_device_mmio(
-        &mut ctx,
-        crate::panic::WDT_BASE.load(core::sync::atomic::Ordering::Relaxed),
-        12,
-    ) {
-        Ok(()) => {
-            crate::panic::WDT_MMIO_MAPPED.store(true, core::sync::atomic::Ordering::Relaxed);
-            crate::println!(
-                "[eneros-root-task] WDT device mapped (SP805 @ 0x{:x})",
-                crate::panic::WDT_BASE.load(core::sync::atomic::Ordering::Relaxed)
-            );
-        }
-        Err(e) => {
-            // FIX-BUGS-0810 B2 语义：平台未导出覆盖 WDT_BASE 的 device
-            // untyped（QEMU xpack 无 SP805 / dts 未导出）→ 软件模式：
-            // 看门狗不武装（wdt_init 用 base=0），避免访问未映射 MMIO fault。
-            // 注意：出现 "WDT device map OK" 即意味着平台已导出 SP805——
-            // 必须触发 R-B2b bring-up 验证（arm 序列 + kick 周期），
-            // 不得视为常规成功（蓝图/25 §3.2 观察点）。
-            crate::println!(
-                "[eneros-root-task] WDT device map FAILED: {:?} — 看门狗软件模式",
-                e
-            );
+    // 22 §2.W1.6：映射 SP805 看门狗设备区域。31-review（C3）：WDT_BASE 默认 0
+    //（未装配）；真机经 driver_probe wdt_factory 映射**虚拟**地址 + 武装
+    // WDT_MMIO_MAPPED。此处仅当 base 已注入（!=0）时提前映射，否则跳过——
+    // QEMU 无 sp805 时 base=0 → 软件模式（语义不变，与 30 RT-001 守约一致）。
+    let wdt_base = crate::panic::WDT_BASE.load(core::sync::atomic::Ordering::Relaxed);
+    if wdt_base != 0 {
+        match crate::spawn::map_device_mmio(&mut ctx, wdt_base, 12) {
+            Ok(()) => {
+                crate::panic::WDT_MMIO_MAPPED.store(true, core::sync::atomic::Ordering::Relaxed);
+                crate::println!(
+                    "[eneros-root-task] WDT device mapped (SP805 @ 0x{:x})",
+                    wdt_base
+                );
+            }
+            Err(e) => {
+                // 平台未导出覆盖 WDT_BASE 的 device untyped → 软件模式：
+                // 看门狗不武装，避免访问未映射 MMIO fault（蓝图/25 §3.2 观察点）。
+                crate::println!(
+                    "[eneros-root-task] WDT device map FAILED: {:?} — 看门狗软件模式",
+                    e
+                );
+            }
         }
     }
 
@@ -298,6 +295,11 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
                 // 在进入服务循环前完成；驱动缺失不阻断 spawn（fail 行如实）。
                 let irq_drivers =
                     crate::driver_probe::probe_and_report(&mut ctx, &mut irq_table, u64::from(bundle.total_len));
+                // 31 D5（review）：probe 已经 rtc_factory 注入 RTC 虚拟基址——
+                // 接进时钟子系统（time_init 会重建 TimerWheel 丢定时器，故用 set_rtc_base）。
+                eneros_time::set_rtc_base(
+                    crate::panic::RTC_BASE.load(core::sync::atomic::Ordering::Relaxed),
+                );
                 crate::service::run_ipc_loop(&handles, irq_table, irq_binding, irq_drivers);
             }
             Err(e) => {

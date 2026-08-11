@@ -361,10 +361,13 @@ fn wdt_factory(
     ctx: &mut dyn PlatformCtx,
 ) -> Result<Box<dyn DeviceDriver>, DriverError> {
     let (base, size) = node.regs.first().copied().ok_or(DriverError::NotFound)?;
-    let _virt = ctx.map_mmio(base, size)?;
-    // 注册到 panic 模块（panic 路径经 WDT_MMIO_MAPPED + 注册基址武装）。
-    crate::panic::register_wdt_base(base);
-    Ok(Box::new(NoopDriver)) // 事件循环不消费 WDT 中断——注册即装配
+    let virt = ctx.map_mmio(base, size)?;
+    // 31-review：注册**虚拟**地址（map_mmio 返回值，非物理 base——与 can_factory
+    // 同模式；panic 路径经此 VSpace 地址写 SP805 寄存器）+ 武装 WDT_MMIO_MAPPED
+    //（旧实现注册物理 base 且不置 MAPPED，致真机 panic 路径永不武装 HW 看门狗）。
+    crate::panic::register_wdt_base(virt);
+    crate::panic::WDT_MMIO_MAPPED.store(true, core::sync::atomic::Ordering::Relaxed);
+    Ok(Box::new(NoopDriver)) // 事件循环不消费 WDT 中断——映射+武装即装配
 }
 
 /// 31 D5：PL031 RTC 工厂——基址经 FDT reg 注入并注册（time_init 装配）。
@@ -373,8 +376,10 @@ fn rtc_factory(
     ctx: &mut dyn PlatformCtx,
 ) -> Result<Box<dyn DeviceDriver>, DriverError> {
     let (base, size) = node.regs.first().copied().ok_or(DriverError::NotFound)?;
-    let _virt = ctx.map_mmio(base, size)?;
-    crate::panic::register_rtc_base(base);
+    let virt = ctx.map_mmio(base, size)?;
+    // 31-review：注册虚拟地址（map_mmio 返回值，非物理 base）——
+    // set_rtc_base 的 Pl031Rtc 经此 VSpace 地址读 RTC 秒计数。
+    crate::panic::register_rtc_base(virt);
     Ok(Box::new(NoopDriver))
 }
 

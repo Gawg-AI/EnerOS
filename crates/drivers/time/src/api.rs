@@ -41,6 +41,21 @@ pub fn time_init(clock: &'static dyn HalClock, rtc_base: u64) {
     *RTC_OFFSET_NS.lock() = offset;
 }
 
+/// 31 D5（review）：仅注入/更新 RTC 基址与墙钟偏移，**不**重置 CLOCK/MONO/WHEEL。
+///
+/// `time_init` 会重建 `TimerWheel`，boot 后再调会丢弃已注册定时器——故提供此
+/// 轻量入口供 driver_probe rtc_factory 装配后调用。`rtc_base` 为已映射的 MMIO
+/// **虚拟**地址（由 `map_mmio` 取得）；0 = 无 RTC，偏移留零。
+pub fn set_rtc_base(rtc_base: u64) {
+    *RTC_BASE.lock() = rtc_base;
+    let offset = if rtc_base == 0 {
+        0
+    } else {
+        Pl031Rtc::new(rtc_base).read_secs() * 1_000_000_000
+    };
+    *RTC_OFFSET_NS.lock() = offset;
+}
+
 /// Returns monotonic nanoseconds since boot, or `0` before `time_init`.
 pub fn get_monotonic_ns() -> u64 {
     let clock = CLOCK.lock().0;

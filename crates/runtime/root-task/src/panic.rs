@@ -16,9 +16,10 @@ use eneros_audit::{AuditEvent, AuditEventType, AuditLogger, AuditLoggerImpl, Mem
 use heapless::String;
 use spin::Mutex;
 
-/// SP805 看门狗 MMIO 基址（QEMU virt 平台标准地址；真机按 BSP 替换）。
-/// 31 D6：SP805 基址（FDT reg 注入后更新；默认值仅 QEMU 兜底）。
-pub static WDT_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0x0905_0000);
+/// SP805 看门狗 MMIO 基址（**虚拟地址**——driver_probe wdt_factory 经 map_mmio
+/// 注入；0 = 未装配 → panic 路径走软件模式）。
+/// 31 D6（review）：默认改 0（旧 0x0905_0000 硬编码已退役；真机经 FDT 注入）。
+pub static WDT_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// 31 D5：PL031 RTC 基址（FDT reg 注入后更新；0 = 未装配）。
 pub static RTC_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);

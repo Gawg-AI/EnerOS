@@ -325,6 +325,10 @@ impl TimeSeriesDB {
         let pairs = self.index.unique_pairs();
         let mut merged = 0u64;
         for (device, metric) in pairs {
+            // 31-review（C1 数据丢失）：read_range 只读磁盘，旧实现紧随其后的
+            // chunks.clear() 抹掉所有 (device,metric) 的在内存未刷新点 → 永久丢失。
+            // 先 flush_all_chunks 落盘，使 read_range 捕获到内存点，clear() 才安全。
+            self.compact()?;
             // 读该对的所有点（流式——read_range 已逐 chunk 读）。
             let points = reader::read_range(
                 &mut self.fs,
