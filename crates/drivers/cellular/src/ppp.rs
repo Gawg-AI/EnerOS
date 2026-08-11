@@ -518,8 +518,11 @@ mod tests {
         assert_eq!(fcs16(b"123456789"), 0x906E);
     }
 
+    #[test]
     fn decode_basic_frame() {
-        let raw: &[u8] = &[0x7E, 0xC0, 0x21, 0x01, 0x02, 0x03, 0x00, 0x00, 0x7E];
+        // 31-review：FCS 用真实值 0x4C1F（LE=1F 4C，与 encode_basic_frame 配对），
+        // 非 0x0000 旧占位——此前漏 #[test] 为死测试；补属性使其真正跑解码路径。
+        let raw: &[u8] = &[0x7E, 0xC0, 0x21, 0x01, 0x02, 0x03, 0x1F, 0x4C, 0x7E];
         let frame = PppFrame::decode(raw).unwrap();
         assert_eq!(frame.protocol, PPP_LCP);
         assert_eq!(frame.data, alloc::vec![0x01, 0x02, 0x03]);

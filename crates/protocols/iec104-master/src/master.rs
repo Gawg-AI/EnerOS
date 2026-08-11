@@ -356,7 +356,11 @@ impl Iec104Master {
                         .ok_or(MasterError::NotConnected)?;
                     conn.last_rx_i_ms = now;
                     conn.rx_unacked = conn.rx_unacked.saturating_add(1);
-                    conn.next_recv_seq()
+                    conn.next_recv_seq();
+                    // 31-review：next_recv_seq() 返回递增前的旧值；S 帧 R(S) 须为
+                    // 递增后值（= 下一期望 N(S)）。改读字段取新值，与 t2 兜底路径
+                    // （poll_acks 读 c.recv_seq）及 slave 侧一致，修 off-by-one。
+                    conn.recv_seq
                 };
                 // 收 I 帧立即确认（S 帧，R(S) = 下一期望接收序号）。
                 self.send_s_frame(conn_key, recv_seq)?;
@@ -733,11 +737,62 @@ mod tests {
         assert_eq!(master.stats().rx_count, 2);
     }
 
+    /// 31-review 回归：S 帧 R(S) 必须是"递增后"的期望接收序号（= 已收 I 帧数），
+    /// 而非 next_recv_seq() 返回的递增前旧值。收 2 个 I 帧 → S 帧 R(S) 最大值=2。
+    /// 修复前为 {0,1}（递增前）→ max=1；修复后 {1,2} → max=2。原
+    /// test_i_frame_triggers_s_frame_ack 只数 S 帧个数、不校验 R(S) 值，故漏检。
+    #[test]
+    fn test_s_frame_carries_post_increment_rs() {
+        use crate::mock::MockMasterTransport;
+        let mut transport = MockMasterTransport::new();
+        for seq in 0..2u16 {
+            let asdu = Asdu {
+                type_id: TypeId::MeasuredValueFloat,
+                cause_of_tx: Cot::Periodic,
+                common_addr: 1,
+                ioas: vec![InformationObject {
+                    ioa: 10 + u32::from(seq),
+                    value: IoValue::Float(1.5),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                }],
+            };
+            let apdu = Apdu::i_format(seq, 0, asdu);
+            transport.push_rx(1, apdu.encode().unwrap());
+        }
+        let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
+        let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
+        master.connect(&dev).unwrap();
+        master.process_rx(1).unwrap();
+        master.process_rx(1).unwrap();
+        let frames = master
+            .transport_mut()
+            .as_any_mut()
+            .downcast_mut::<MockMasterTransport>()
+            .expect("downcast")
+            .tx_frames()
+            .to_vec();
+        // S 帧 = 6 字节：[0]=0x68 [1]=len [2]=0x01 [3]=0x00 [4..6]=R(S)<<1（LE）。
+        // 解码 recv_seq = (le_u16([4],[5]) >> 1) & 0x7FFF（与 apdu.rs decode 一致）。
+        let s_rs: Vec<u16> = frames
+            .iter()
+            .filter(|(_, b)| b.len() == 6 && (b[2] & 0x03) == 0x01)
+            .map(|(_, b)| (u16::from_le_bytes([b[4], b[5]]) >> 1) & 0x7FFF)
+            .collect();
+        assert!(!s_rs.is_empty(), "应有 S 帧；tx: {:?}", frames);
+        assert_eq!(
+            *s_rs.iter().max().unwrap(),
+            2,
+            "收 2 个 I 帧 → S 帧 R(S) max 须=2（递增后值）；实际 R(S) 序列: {:?}",
+            s_rs
+        );
+    }
+
     /// 31 PR-01 判据：k 窗口满（12 未确认）→ 暂停发送（WindowFull）。
     #[test]
     fn test_k_window_limits_unacked_i_frames() {
         use crate::mock::MockMasterTransport;
-        let mut transport = MockMasterTransport::new();
+        let transport = MockMasterTransport::new();
         let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
         let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
         master.connect(&dev).unwrap();

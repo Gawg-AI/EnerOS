@@ -353,14 +353,15 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
     /// 3 pages for data slots, 3 pages for status slots. The physical base of
     /// `pool` is used to program the queue address.
     pub fn new(mmio: M, pool: P, cache: C, config: StorageConfig) -> Result<Self, StorageError> {
-        // 31 DR-09：block_size > 4096 拒绝（内部 4KiB 栈缓冲越界 panic 面）。
-        if config.block_size > 4096 {
+        // 31 DR-09：block_size 范围校验——>4096 内部 4KiB 栈缓冲越界；
+        // <SECTOR_SIZE(512) 致 capacity/(block_size/512) 除零 panic（31-review 补下界）。
+        if config.block_size > 4096 || config.block_size < SECTOR_SIZE {
             return Err(StorageError::UnsupportedBlockSize);
         }
         // 31 DR-09：capacity 读 config space offset 0（legacy virtio-blk
         // capacity 字段，8 字节 LE）——旧实现 max_transfer_blocks*16 占位。
         let capacity = {
-            let lo = mmio.read_reg(0x100 + 0) as u64;
+            let lo = mmio.read_reg(0x100) as u64; // config offset 0
             let hi = mmio.read_reg(0x100 + 4) as u64;
             (hi << 32) | lo
         };

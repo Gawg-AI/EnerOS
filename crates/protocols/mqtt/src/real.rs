@@ -58,8 +58,6 @@ pub struct NetTcpTransport<D: NetDevice> {
     connected: bool,
     /// 最近 poll 时间戳（ms）。
     now_ms: u64,
-    /// 31 PR-15：单调时钟注入（生产接系统 tick；host 测试用假时钟）。
-    clock: ClockRef,
 }
 
 #[cfg(feature = "net")]
@@ -101,7 +99,7 @@ impl<D: NetDevice> NetTcpTransport<D> {
 }
 
 #[cfg(feature = "net")]
-impl<D: NetDevice> MqttTransport for NetTcpTransport<D> {
+impl<D: NetDevice + 'static> MqttTransport for NetTcpTransport<D> { // 31-review：as_any_mut→&mut dyn Any 需 Self:'static（PR-15 引入该方法时漏约束致 net feature 编译失败）
     fn connect(&mut self, host: &str, port: u16) -> Result<(), MqttError> {
         if self.connected {
             return Ok(());
