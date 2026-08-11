@@ -22,7 +22,8 @@
   引导 → 11 服务 spawn → IPC hello 循环 → fault 周期注入 → `[svc-fault]
   FAULT triggered — suspending`。
 - harness 内部 timeout=200s 截断在 fault 隔离确认（tick=101 轮 poll）前——
-  时序竞态，非回归；以 420s 手动运行补全序列（见 gates/wp29-acceptance-qemu.md）。
+  时序竞态，非回归；以 420s 手动运行补全序列（见 gates/wp29-acceptance.md
+  下文"420s 延长运行补全隔离确认"）。
 - **420s 延长运行补全隔离确认**（QEMU_EXIT=124 为 seL4 无 ACPI 关机预期）：
   `SUPERVISOR: svc-fault fault → restart in 1000ms (fault_count=1)` →
   `restarted (total=1)` → `SUPERVISOR: svc-hello still responsive
@@ -32,7 +33,9 @@
   `[svc-fault] FAULT triggered — suspending` + `SUPERVISOR: ... restart` +
   `SUPERVISOR: svc-hello still responsive`）——既有漂移（非 29 引入），
   语义等价 4/4 核验通过；登记至 34 域 CI 治理（GV-12 同族）。
-- QEMU 活体日志证据：`product/evidence/kernel/gkernel-qemu-boot.log`（95919 B）。
+- QEMU 活体日志证据：`gates/gkernel-qemu-boot-29.log`（95919 B，本次 420s
+  延长运行全序列；与验收报告同批落盘，CI 归档路径
+  `product/evidence/kernel/gkernel-qemu-boot.log` 为 21-A 时代旧约定）。
 
 ## 治理自查（28-00 §5）
 
@@ -44,4 +47,4 @@
 
 ## 未达成项
 
-无（QEMU 13/13 序列以 420s 运行补全后核验，见 gates/wp29-acceptance-qemu.md）。
+无（QEMU 13/13 序列以 420s 运行补全后核验，见上文"QEMU 活体验证"段 + `gates/gkernel-qemu-boot-29.log`）。

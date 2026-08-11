@@ -260,7 +260,7 @@ jobs:
       - name: 26-B WP-26.2 gate: orphan sources (no silent dead files)
         run: cargo xtask qa gate orphan-check
 
-      - name: 26-B WP-26.2 gate: config references (warn-only, stage 0)
+      - name: 26-B WP-26.2 gate: config references (blocking since 29 GV-01)
         run: cargo xtask qa gate config-refs
 
       - name: 26-B WP-26.2 gate: mock leak enforcement (blocking)
