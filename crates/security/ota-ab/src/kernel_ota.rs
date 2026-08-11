@@ -94,15 +94,20 @@ impl<D: BlockDevice> KernelOta<D> {
     /// - `root_key`：设备根公钥（SM2 验签）
     /// - `now_ms`：当前时间戳（毫秒）
     /// - `partition_capacity`：单分区容量（字节）
-    /// - `table_hmac_key`：分区表 HMAC 密钥（33 SE-18，由集成层从
-    ///   与 `root_key` 同源的设备根密钥派生注入，禁止硬编码）
+    /// - `device_root_secret`：设备根密钥（与 `root_key` 同源）。33 SE-18 复验：
+    ///   旧实现 `table_hmac_key` 由调用方直传，全仓调用点均传公开常量
+    ///   `[0x42; 32]`——分区表认证密钥在所有执行路径为公开常量、可伪造。
+    ///   现于构造器内派生 `table_hmac_key = HMAC-SM3(root_secret, 域常量)`，
+    ///   密钥不再可经参数直传常量。
     pub fn new(
         device: D,
         root_key: eneros_crypto::Sm2PublicKey,
         now_ms: u64,
         partition_capacity: u64,
-        table_hmac_key: [u8; 32],
+        device_root_secret: [u8; 32],
     ) -> Self {
+        const TABLE_KEY_DOMAIN: &[u8] = b"eneros-ota-partition-table-v1|";
+        let table_hmac_key = eneros_crypto::hmac_sm3(&device_root_secret, TABLE_KEY_DOMAIN);
         Self {
             ab: AbPartitionOta::new(device, root_key, now_ms),
             partition_capacity,
@@ -329,14 +334,15 @@ mod tests {
     const TEST_BLOCKS: u64 = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
     /// 测试分区容量（字节）
     const TEST_CAPACITY: u64 = PARTITION_BLOCKS * 512;
-    /// 33 SE-18：测试用分区表 HMAC 密钥。
-    const TEST_HMAC_KEY: [u8; 32] = [0x42; 32];
+    /// 33 SE-18（复验）：测试用设备根密钥（KernelOta::new 内派生分区表 HMAC 密钥，
+    /// 密钥不再直传常量）。
+    const TEST_ROOT_SECRET: [u8; 32] = [0x42; 32];
 
     fn setup() -> (KernelOta<MockBlockDevice>, Sm2KeyPair, CsRng) {
         let mut rng = CsRng::new();
         let kp = Sm2KeyPair::generate(&mut rng).expect("密钥对生成失败");
         let dev = MockBlockDevice::new(TEST_BLOCKS, 512);
-        let ota = KernelOta::new(dev, kp.public_key, 1_000, TEST_CAPACITY, TEST_HMAC_KEY);
+        let ota = KernelOta::new(dev, kp.public_key, 1_000, TEST_CAPACITY, TEST_ROOT_SECRET);
         (ota, kp, rng)
     }
 

@@ -16,13 +16,16 @@
   无其他新增。
 - **测试基线**：root-task 61 / durable-log 4 / framework 42 全绿（开工前）。
 
-## M1 对通（转真 ✅，host 双端回环）
+## M1 对通（host 回环完成 ⚠️；QEMU 双端对通仍 PENDING，B1）
 
+- 33 复验订正：原"转真 ✅"言过其实——M1 解锁条件是 **QEMU 双端 IPC/协议
+  对通抓包**（蓝图/33 §7），证据为 host 侧 cargo test 回环日志（非抓包、
+  非 QEMU）；QEMU 网络面（D2 virtio-net）已登记真机填空清单 B1。
 - 104 回环：iec104-master loopback（127.0.0.1:2404 对拉，总召→遥测回包）
-  + iec104-slave loopback，host 抓包日志入
-  `evidence/stage1-foundation/m1-loopback/`（1+1 全绿）。
+  + iec104-slave loopback，host 回环测试日志入
+  `evidence/stage1-foundation/m1-loopback/`（1+1 全绿，host 范围）。
 - Modbus 对通：modbus-tcp loopback + modbus-rtu loopback（含 pl011 串口
-  回环），抓包日志同上（1+2 全绿）。
+  回环），回环测试日志同上（1+2 全绿，host 范围）。
 - **D2 virtio-net 依赖部分**（Modbus-TCP-over-virtio-net 的 QEMU 侧）：
   R31-2 已登记转 33 真机填空清单——此处如实声明：host 双端回环对通
   完成，QEMU 网络面挂真机清单（D2）。
@@ -47,8 +50,9 @@
    触发 user exception EC=0x18（QEMU 实测）；导出后无异常。定时器 IRQ
    选 30（phys）而非 27（virt）——27 是 KERNEL_TIMER_IRQ（RevokeFirst）。
 6. **驱动 IRQ 计数判据行**（service.rs DRIVER-IRQ 打印）+ socket 串口
-   注入脚本（tests/uart-irq-client.py）——UART RX 注入到达 pl011
-   （串口流可见注入字节，判据行在 bind 后注入）。
+   注入脚本（tests/uart-irq-client.py）——33 复验订正：注入已执行
+   （client.log 确认 55s 尝试），但串口流无回显、计数 0（PENDING C1
+   如实声明——原"串口流可见注入字节"与证据日志矛盾，撤除）。
 
 **仍 PENDING（如实声明）**：IRQ→badge ntfn→poll 投递链在 QEMU 侧不达
 ——定时器 IRQ 30 与 pl011 IRQ 33 均未触发计数（注入时序 20s/55s/120s

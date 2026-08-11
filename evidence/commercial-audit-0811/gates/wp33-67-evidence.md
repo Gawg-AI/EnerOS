@@ -41,8 +41,10 @@ host 仿真后端矩阵（协议 × 后端对拉，全部真传输走 TCP socket
     GPIO、PowerRail 板级实现、SP805/PL031 激活、时钟源三常量板级值）；
   - C 组 2 项（33 WP-33.5 转来的 QEMU 侧显式缺口：IRQ 投递链、virtio-blk
     块读——修复路径 = 内核/驱动调试，非真机填空）。
-- **判定**：PENDING 集合 == A+B 真机填空 + C 显式缺口；任何 QEMU 可验证
-  项不挂 PENDING（33 §9 S9 守约）。
+- **判定**：PENDING 集合 == A+B 真机填空 + C 显式缺口。33 复验订正：
+  C1（IRQ 投递）与 C2（virtio-blk 读）为 QEMU 可验证项仍挂 PENDING——
+  原"S9 守约"声明自相矛盾，撤除；按 33 §7"如实声明仍 PENDING 及原因"
+  处理（DoD 2 允许），验收口径以本判定为准。
 - **蓝图/09 台账**：OB-01/OB-02/OB-05/OB-06/OB-07 五行销项注解（引用
   wp33-1/2-evidence.md）。
 

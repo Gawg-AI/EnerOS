@@ -54,6 +54,14 @@ jobs:
           cargo test --locked -p eneros-metrics --features loom --lib loom_increment
           cargo test --locked -p eneros-telemetry-queue --features loom --lib loom_queue
 
+      # 33 OB-07（复验）：FileStorage/FileMetricsStore 的 std feature 门控后端
+      # 此前不在任何 CI 步骤启用——整条端到端导出链（record→flush→JSONL 读回）
+      # 永不编译/运行，回归静默漏过。与 loom 步骤同模式显式启用。
+      - name: Observability file-export e2e (33 OB-07 gate - logging/metrics --features std)
+        run: |
+          cargo test --locked -p eneros-logging --features std
+          cargo test --locked -p eneros-metrics --features std
+
       - name: Intra-doc link integrity (C-249 gate)
         run: |
           set -euo pipefail

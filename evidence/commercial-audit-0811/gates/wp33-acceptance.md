@@ -15,7 +15,7 @@
    - GV-05（wp33-4-evidence.md：soak artifact_sha256 实算、RSS 泄漏回归、
      --min-duration-days 可配；xtask 61 全绿）。
 2. **三项 PENDING 转真证据入 evidence/stage1-foundation/** ✅（部分，
-   如实声明）：M1 host 双端回环对通 4 组抓包全绿；掉电 20 轮恢复机制
+   如实声明）：M1 host 双端回环对通 4 组回环测试日志全绿（host 范围）；掉电 20 轮恢复机制
    host 模拟（committed=20 单调）；**中断计数与掉电 QEMU 判据行**按
    §7 允许如实声明仍 PENDING 及原因（wp33-5-evidence.md：IRQ→ntfn
    投递链 QEMU 侧不达需内核调试；virtio-blk 块读路径 Io 需驱动调试）——

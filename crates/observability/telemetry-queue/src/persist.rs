@@ -30,9 +30,15 @@ pub struct QueueSnapshot {
 /// `<id>,<category>,<timestamp>,<payload_hex>`。
 pub fn persist_snapshot(snapshot: &QueueSnapshot) -> Vec<u8> {
     let mut out = Vec::new();
-    let header = alloc::format!("#last_acked={}", snapshot.last_acked_id);
+    // 33 OB-03（复验）：capacity/policy 一并落盘——旧实现仅存 #last_acked，
+    // 重启 restore 丢队列配置（回退硬编码 DropOldest + len×2 推导）。
+    let header = alloc::format!(
+        "#last_acked={}\n#capacity={}\n#policy={}\n",
+        snapshot.last_acked_id,
+        snapshot.capacity,
+        policy_tag(snapshot.policy)
+    );
     out.extend_from_slice(header.as_bytes());
-    out.push(b'\n');
     for e in &snapshot.events {
         let mut line = String::new();
         line.push_str(&e.id.to_string());
@@ -53,6 +59,24 @@ pub fn persist_snapshot(snapshot: &QueueSnapshot) -> Vec<u8> {
 
 const HEX: [u8; 16] = *b"0123456789abcdef";
 
+/// 33 OB-03（复验）：溢出策略 ↔ 快照文本标签（显式映射，不依赖变体顺序）。
+fn policy_tag(p: crate::queue::OverflowPolicy) -> u8 {
+    match p {
+        crate::queue::OverflowPolicy::DropOldest => 0,
+        crate::queue::OverflowPolicy::RejectNew => 1,
+        crate::queue::OverflowPolicy::DropLowPriority => 2,
+    }
+}
+
+fn policy_from_tag(tag: &str) -> Option<crate::queue::OverflowPolicy> {
+    match tag {
+        "0" => Some(crate::queue::OverflowPolicy::DropOldest),
+        "1" => Some(crate::queue::OverflowPolicy::RejectNew),
+        "2" => Some(crate::queue::OverflowPolicy::DropLowPriority),
+        _ => None,
+    }
+}
+
 /// 解析快照文本；格式非法行跳过。
 pub fn load_snapshot(data: &[u8]) -> QueueSnapshot {
     let mut snap = QueueSnapshot::default();
@@ -67,6 +91,19 @@ pub fn load_snapshot(data: &[u8]) -> QueueSnapshot {
         if let Some(rest) = line.strip_prefix("#last_acked=") {
             if let Ok(id) = rest.parse::<u64>() {
                 snap.last_acked_id = id;
+            }
+            continue;
+        }
+        // 33 OB-03（复验）：解析容量/策略（旧快照无此行 → 保持默认，兼容）。
+        if let Some(rest) = line.strip_prefix("#capacity=") {
+            if let Ok(c) = rest.trim().parse::<usize>() {
+                snap.capacity = c;
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("#policy=") {
+            if let Some(p) = policy_from_tag(rest.trim()) {
+                snap.policy = p;
             }
             continue;
         }
@@ -192,7 +229,7 @@ mod tests {
         let snap = QueueSnapshot {
             last_acked_id: 42,
             events: vec![ev(43, "cpu=50%"), ev(44, "mem=1.2GB")],
-                    capacity: 16,
+            capacity: 16,
             policy: crate::queue::OverflowPolicy::DropOldest,
         };
         let data = persist_snapshot(&snap);
@@ -202,6 +239,34 @@ mod tests {
         assert_eq!(loaded.events[0].id, 43);
         assert_eq!(loaded.events[0].payload, "cpu=50%");
         assert_eq!(loaded.events[1].id, 44);
+    }
+
+    #[test]
+    fn test_snapshot_roundtrip_preserves_capacity_policy() {
+        // 33 OB-03（复验）：capacity/policy 必须经 persist→load 存活
+        //（旧实现仅存 #last_acked，restore 丢配置回退硬编码推导）。
+        let snap = QueueSnapshot {
+            last_acked_id: 7,
+            events: Vec::new(),
+            capacity: 1024,
+            policy: crate::queue::OverflowPolicy::RejectNew,
+        };
+        let loaded = load_snapshot(&persist_snapshot(&snap));
+        assert_eq!(loaded.capacity, 1024, "capacity 必须落盘存活");
+        assert_eq!(
+            loaded.policy,
+            crate::queue::OverflowPolicy::RejectNew,
+            "policy 必须落盘存活"
+        );
+    }
+
+    #[test]
+    fn test_old_snapshot_without_config_defaults() {
+        // 旧格式（仅 #last_acked）→ capacity=0/policy=DropOldest 默认，兼容。
+        let loaded = load_snapshot(b"#last_acked=3\n");
+        assert_eq!(loaded.last_acked_id, 3);
+        assert_eq!(loaded.capacity, 0);
+        assert_eq!(loaded.policy, crate::queue::OverflowPolicy::DropOldest);
     }
 
     #[test]

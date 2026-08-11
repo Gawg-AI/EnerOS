@@ -464,7 +464,7 @@ mod tests {
         bytes[10] ^= 0x5A;
         assert!(
             PartitionTable::deserialize(&bytes, &TEST_HMAC_KEY).is_none(),
-            "CRC 不匹配应拒绝"
+            "HMAC/CRC 校验失败应拒绝（HMAC 先验，伪造表在此被拒）"
         );
         // 篡改魔数
         let mut bad_magic = table.serialize(&TEST_HMAC_KEY);

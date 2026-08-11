@@ -1,7 +1,7 @@
 //! EnerOS A/B 分区 OTA 升级 (workspace v0.192.0) — Phase 2 P2-K OTA 与 Recovery 第 1 版。
 //!
 //! 实现 A/B 双分区镜像级 OTA 升级机制：SM2/SM3 签名校验、原子切换、
-//! 启动健康检查与失败自动回滚、分区表断电持久化（魔数 + CRC32）。
+//! 启动健康检查与失败自动回滚、分区表断电持久化（魔数 + CRC32 + SM3-HMAC，33 SE-18）。
 //!
 //! # 交付物
 //! - [`ab_partition`] — `PartitionSlot` / `PartitionState` / `Partition` / `AbPartitionOta`
@@ -27,7 +27,8 @@
 //! - **D4**：`AbPartitionOta` 泛型化后端存储 `<D: BlockDevice>`
 //!   （v0.23.0 eneros-storage），`write_chunk` 真实写盘、`verify` 真实回读；
 //!   测试使用 `MockBlockDevice`。
-//! - **D5**：断电恢复以分区表定长序列化 + CRC32（eneros-storage `crc32`）
+//! - **D5**：断电恢复以分区表定长序列化 + CRC32 + SM3-HMAC（33 SE-18：CRC 仅检误码，
+//!   HMAC 防伪造——密钥由设备根密钥派生，见 kernel_ota.rs）
 //!   持久化到保留块交付（蓝图 §5.4 难点仅列"需能恢复"未给接口，此处补
 //!   最小实现：`PartitionTable` + `save_to_device` / `load_from_device`）。
 

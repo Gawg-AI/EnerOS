@@ -47,8 +47,14 @@
     artifact_sha256 实算 == `hex(Sha256::digest(image))`；campaign 产出。
   - t5b：缺 --image → 显式报错（fail-closed）。
   - t3c：空 artifact_sha256 的 campaign → 门禁拒绝。
-- 蓝图验证命令 `cargo xtask qa soak-run` 的完整 QEMU 实跑（真镜像 +
-  门禁通过）随 WP-33.5 QEMU 证据链一并执行（同镜像产物）。
+- 33 复验订正：蓝图验证命令 `cargo xtask qa soak-run` 的完整 QEMU 实跑
+  **未保留产物**（仓库内无 soak-campaign.json / boot-times.csv 落盘）——
+  原"随 WP-33.5 一并执行"的声明不成立，撤除。GV-05 代码路径（artifact_sha256
+  实算 / RSS 回归 / 实际时长 / --min-duration-days 可配）由单测 t5/t5b/t3c
+  与 fail-closed 门禁覆盖；曾被伪造成"13 文件全 PASS"的 target/soak/
+  d1-soak-report.json 已删除（campaign.present=false 但证据 present=true、
+  11 个相同 sha256——伪造证据，见 33 复验提交）。真机 soak 完整运行留
+  真机填空清单。
 - clippy `-p eneros-xtask --all-targets --no-deps -D warnings` clean；
   顺手修复 qa.rs 既有 `unnecessary_to_owned` lint 一处（perf-gate 测试，
   文件在矩阵内一行修复，明示）。
