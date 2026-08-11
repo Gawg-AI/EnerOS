@@ -91,10 +91,31 @@ impl SafetyRule for ProtectionCoordinationRule {
                     safe_value,
                     Severity::Critical,
                 ));
-                // 截断功率变化（D11：PRESERVE EXACTLY — 不"修复"符号逻辑）
+                // 截断功率变化。31-review（AI-05）：旧实现
+                // `discharge += diff.max(0); charge += (-diff).max(0)` 会在已有
+                // 充电的时段凭空加放电 → 同时充放（MIP 方向二元互斥被此 clamp
+                // 破坏，见 pipeline 复现）。新逻辑保持方向互斥：先消减同方向
+                //（净增 → 先减 charge；净减 → 先减 discharge），剩余才增另一
+                // 方向——charge/discharge 永不同时为正；净功率同步更新。
                 let diff = safe_value - curr;
-                clamped_schedule.schedule[i].discharge_power_kw += diff.max(0.0);
-                clamped_schedule.schedule[i].charge_power_kw += (-diff).max(0.0);
+                {
+                    let entry = &mut clamped_schedule.schedule[i];
+                    let mut remaining = diff;
+                    if remaining > 0.0 {
+                        // 需要更多净放电：先消减充电，再增放电。
+                        let take = remaining.min(entry.charge_power_kw);
+                        entry.charge_power_kw -= take;
+                        remaining -= take;
+                        entry.discharge_power_kw += remaining;
+                    } else {
+                        // 需要更多净充电：先消减放电，再增充电。
+                        let take = (-remaining).min(entry.discharge_power_kw);
+                        entry.discharge_power_kw -= take;
+                        remaining += take;
+                        entry.charge_power_kw += -remaining;
+                    }
+                    entry.net_power_kw = entry.discharge_power_kw - entry.charge_power_kw;
+                }
                 clamped = true;
             }
         }

@@ -86,6 +86,9 @@ pub struct EnergyAgent<S: Solver> {
     // --- 22 §2.W2.5：轻量在线学习（锁定 8，安全闸后生效）---
     /// deadband 自适应学习器（学习输出过 safety-validator）。
     pub deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive,
+    /// 31-review（P1 AG-02②）：deadband 学习器输出接入生产消费——on_tick 每轮
+    /// 更新，供遥测/上报层读取（旧实现 learn() 后输出零消费，"只学不用"）。
+    pub deadband_kw: f64,
     /// LP 预测修正器（偏差 EMA，钳位安全界）。
     pub forecast_corrector: eneros_dual_brain::learning::ForecastCorrector,
     // --- 22 §2.W2.6：twin 回灌决策（前瞻 feedforward 输入）---
@@ -135,6 +138,8 @@ impl<S: Solver> EnergyAgent<S> {
                 1.0,
                 eneros_safety_validator::SafetyCatalog::default_eps(),
             ),
+            // 31-review（P1 AG-02②）：学习器输出接入生产消费（每轮更新）。
+            deadband_kw: 0.0,
             forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(
                 eneros_safety_validator::SafetyCatalog::default_eps(),
             ),
@@ -217,6 +222,8 @@ impl EnergyAgent<MockSolver> {
                 1.0,
                 eneros_safety_validator::SafetyCatalog::default_eps(),
             ),
+            // 31-review（P1 AG-02②）：学习器输出接入生产消费（每轮更新）。
+            deadband_kw: 0.0,
             forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(
                 eneros_safety_validator::SafetyCatalog::default_eps(),
             ),
@@ -306,6 +313,9 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                                     0.0
                                 };
                                 self.deadband_learner.learn(dev);
+                                // 31-review（P1 AG-02②）：学习器输出接入生产
+                                // 消费（遥测/上报层读取；旧实现"只学不用"）。
+                                self.deadband_kw = self.deadband_learner.current;
                                 self.forecast_corrector.learn(rel_bias);
                             }
                         }
@@ -317,8 +327,12 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                     }
                     self.last_feedback = Some(fb);
                 }
-                // 32 AG-01：成功 tick 归零连续错误计数。
+                // 32 AG-01：成功 tick 归零连续错误计数 + 状态恢复
+                //（Error → Running；心跳语义 N 次连续失败才死，成功即恢复）。
                 self.consecutive_errors = 0;
+                if self.state == AgentState::Error {
+                    self.state = AgentState::Running;
+                }
                 Ok(())
             }
             Err(e) => {
@@ -534,6 +548,19 @@ mod w25_learning_tests {
 
     use super::*;
 
+    /// 固定观测源（w21 兄弟模块的 StubObserver 为私有，此处自含）。
+    struct W25Observer;
+    impl DeviceObserver for W25Observer {
+        fn observe_device(&self) -> Option<DeviceObservation> {
+            Some(DeviceObservation {
+                voltage_v: 380.0,
+                current_a: 50.0,
+                soc_pct: 0.6,
+                observed_at_ms: 1_800_000,
+            })
+        }
+    }
+
     /// 验收 1：学习器接入 agent——观测偏差喂入后状态推进（安全闸内置）。
     #[test]
     fn test_learner_wired_into_agent() {
@@ -566,6 +593,64 @@ mod w25_learning_tests {
         db.learn(0.0);
         // 零偏差仍算样本（EMA 衰减向 0）——语义：死区回落。
         assert_eq!(db.samples, 1);
+    }
+
+    /// 32 AG-02 判据：归一化后 20% 相对偏差喂 100 轮 →
+    /// correction ≈ +0.2 且 ≠ 0；界内学习零拒绝（rejected 不增长）。
+    /// 旧实现喂绝对偏差（元）恒超 max_correction 回退 0——本判据
+    /// 直接复现修复前失效形态。
+    #[test]
+    fn test_ag02_relative_bias_converges_and_no_rejection() {
+        let mut fc = ForecastCorrector::new(0.5);
+        for _ in 0..100 {
+            fc.learn(0.2); // 预测高于实际 20%（相对偏差）
+        }
+        let c = fc.correction();
+        assert!(c > 0.19 && c < 0.21, "收敛到 +0.2：{c}");
+        assert_ne!(c, 0.0, "修正必须生效（非旧实现的恒 0 回退）");
+        assert_eq!(fc.rejected_updates, 0, "界内相对偏差不得被拒");
+        // 消费侧生效：correct(100) ≈ 120。
+        let corrected = fc.correct(100.0);
+        assert!((corrected - 120.0).abs() < 1.0, "correct 消费生效：{corrected}");
+
+        // 负向对称：预测低于实际 20% → 收敛 − 0.2。
+        let mut fc_neg = ForecastCorrector::new(0.5);
+        for _ in 0..100 {
+            fc_neg.learn(-0.2);
+        }
+        assert!(
+            fc_neg.correction() < -0.19 && fc_neg.correction() > -0.21,
+            "负向收敛：{}",
+            fc_neg.correction()
+        );
+
+        // 旧实现失效形态复现：绝对偏差（元量级）恒越界回退 0 + 拒绝计数。
+        let mut fc_abs = ForecastCorrector::new(0.5);
+        for _ in 0..100 {
+            fc_abs.learn(4.75); // 绝对偏差（元）
+        }
+        assert_eq!(fc_abs.correction(), 0.0, "绝对偏差恒回退（修复前形态）");
+        assert_eq!(fc_abs.rejected_updates, 100, "绝对偏差恒被拒");
+    }
+
+    /// 32 AG-02 接线判据：agent 反馈回路喂入的是归一化相对偏差——
+    /// 真实观测 tick 后修正器样本推进，且修正系数被界约束
+    /// （归一化后喂入量不再出现元量级绝对偏差）。
+    #[test]
+    fn test_ag02_agent_feedback_feeds_normalized_bias() {
+        let mut agent = EnergyAgent::new_default(1_000);
+        agent = agent.with_observer(Box::new(W25Observer));
+        agent.on_start(1_000).expect("start");
+        agent.on_tick(1_800_000).expect("tick");
+        assert!(agent.forecast_corrector.samples >= 1, "修正器必须被喂入");
+        assert!(
+            agent.forecast_corrector.correction().abs() <= 0.5,
+            "修正系数在安全界内（归一化后不再元量级恒拒）"
+        );
+        assert!(
+            agent.forecast_corrector.correction().is_finite(),
+            "修正系数有限（相对偏差分母防零）"
+        );
     }
 }
 

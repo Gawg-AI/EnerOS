@@ -14,90 +14,14 @@
 //! - 1：装配/执行失败（LLM 加载、HiGHS 初始化、sink 打开、链路错误）
 //! - 3：Fatal 安全违规阻断（sink 零写入——P0-17 语义）
 
-use eneros_ai_runner::scenario::{Overrides, Scenario};
+use eneros_ai_runner::cli::CliArgs;
+use eneros_ai_runner::scenario::Overrides;
 use eneros_ai_runner::{run_once, RunnerError};
 use eneros_dual_brain::DualBrainError;
 
-/// CLI 参数（全部显式注入；模型路径/sink 目标禁止硬编码——21-B §2.A1）.
-struct Args {
-    /// llama.cpp GGUF 模型路径（必填）.
-    model: String,
-    /// 命令 sink 文件路径（必填，JSON Lines）.
-    sink: String,
-    /// 场景名.
-    scenario: Scenario,
-    /// 决策时刻（默认系统真实时钟）.
-    now_ms: u64,
-    /// 覆盖 `ScheduleConfig.soc_min`.
-    soc_min: Option<f64>,
-    /// 32 AI-07：链密钥（--chain-key-file 读取；缺省拒绝启动）。
-    chain_key: Vec<u8>,
-}
-
-fn parse_args() -> Result<Args, String> {
-    let mut model = None;
-    let mut sink = None;
-    let mut chain_key: Option<Vec<u8>> = None;
-    let mut scenario = Scenario::Normal;
-    let mut now_ms = None;
-    let mut soc_min = None;
-
-    let mut it = std::env::args().skip(1);
-    while let Some(flag) = it.next() {
-        let value = it
-            .next()
-            .ok_or_else(|| format!("{flag} requires a value"))?;
-        match flag.as_str() {
-            "--model" => model = Some(value),
-            "--sink" => sink = Some(value),
-            // 32 AI-07：链密钥文件（fail-closed 缺省拒绝）。
-            "--chain-key-file" => {
-                let raw = std::fs::read(&value)
-                    .map_err(|e| format!("--chain-key-file read failed: {e}"))?;
-                let key: Vec<u8> = raw.into_iter().filter(|b| *b != b'\n' && *b != b'\r').collect();
-                if key.len() < 16 {
-                    return Err("chain key must be >=16 bytes".into());
-                }
-                chain_key = Some(key);
-            }
-            "--scenario" => scenario = Scenario::parse(&value)?,
-            "--now-ms" => {
-                now_ms = Some(
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| "--now-ms must be an unsigned integer")?,
-                )
-            }
-            "--soc-min" => {
-                soc_min = Some(
-                    value
-                        .parse::<f64>()
-                        .map_err(|_| "--soc-min must be a float")?,
-                )
-            }
-            other => return Err(format!("unknown option '{other}'")),
-        }
-    }
-
-    Ok(Args {
-        chain_key: chain_key
-            .ok_or_else(|| "--chain-key-file is mandatory (fail-closed; 32 AI-07)".to_owned())?,
-        model: model.ok_or_else(|| "--model is mandatory".to_owned())?,
-        sink: sink.ok_or_else(|| "--sink is mandatory".to_owned())?,
-        scenario,
-        now_ms: now_ms.unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0)
-        }),
-        soc_min,
-    })
-}
-
 /// 输出端到端证据 JSON（stdout；A3 落盘复用此结构）.
 fn print_evidence(
-    args: &Args,
+    args: &CliArgs,
     outcome: &eneros_ai_runner::RunnerOutcome,
 ) -> Result<(), RunnerError> {
     let entry = outcome
@@ -152,7 +76,9 @@ fn print_evidence(
 }
 
 fn main() {
-    let args = match parse_args() {
+    // 32 AI-07：参数解析在 lib（cli 模块，host 可测）；缺密钥/非法
+    // 参数 → exit 2（非零，fail-closed）。
+    let args = match eneros_ai_runner::cli::parse_cli_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(msg) => {
             eprintln!("eneros-ai-runner: {msg}");

@@ -140,6 +140,40 @@ mod tests {
         assert_eq!(p2, PathType::FastPath);
     }
 
+    // T6b: 32 AI-06 负荷跳变接线——>20kW 阈值 → 慢路径；阈值内 → 快路径。
+    #[test]
+    fn t6b_load_jump_triggers_slow_path() {
+        let mut selector = PathSelector::new();
+        // 两态必须都是 Some（(Some, None) 组合按 0 处理）。
+        let mut state = RealtimeState {
+            system: SystemState::default(),
+            current_price: 0.5,
+            load_demand: Some(vec![20.0; 96]),
+        };
+        // 第一次：初始化基线 → SlowPath（记录 last_state 含负荷 20kW）。
+        assert_eq!(selector.select(&state, 0), PathType::SlowPath);
+        // 负荷跳变 20→50kW（Δ30 > 20 阈值）→ SlowPath（AI-06 判据）。
+        state.load_demand = Some(vec![50.0; 96]);
+        assert_eq!(
+            selector.select(&state, 1000),
+            PathType::SlowPath,
+            "负荷跳变 30kW > 20 阈值必须走慢路径"
+        );
+        // 控制组：阈值内跳变（Δ10 < 20）→ FastPath。
+        let mut state2 = RealtimeState {
+            system: SystemState::default(),
+            current_price: 0.5,
+            load_demand: Some(vec![20.0; 96]),
+        };
+        assert_eq!(selector.select(&state2, 2000), PathType::SlowPath);
+        state2.load_demand = Some(vec![30.0; 96]);
+        assert_eq!(
+            selector.select(&state2, 3000),
+            PathType::FastPath,
+            "负荷跳变 10kW 在阈值内应走快路径"
+        );
+    }
+
     // T7: 第一次走慢路径，第二次间隔超过 300s 走 SlowPath
     #[test]
     fn t7_select_interval_exceeded_returns_slow_path() {

@@ -422,8 +422,9 @@ mod tests {
     fn t15_validator_validate_all_pass() {
         let v = SafetyValidator::new();
         let entries = [
-            make_entry(0, 50.0, 50.0, 0.5),
-            make_entry(1, 50.0, 75.0, 0.5),
+            // 31-review（AI-05）：夹具不得同时充放（后置校验 Fatal）。
+            make_entry(0, 0.0, 50.0, 0.5),
+            make_entry(1, 0.0, 75.0, 0.5),
         ];
         let sched = make_schedule(&entries);
         let state = SystemState::default();
@@ -579,7 +580,8 @@ mod tests {
     fn t22_end_to_end_mixed_schedule() {
         let v = SafetyValidator::new();
         let entries = [
-            make_entry(0, 50.0, 50.0, 0.5), // 正常
+            // 31-review（AI-05）：夹具不得同时充放（后置校验 Fatal）。
+            make_entry(0, 0.0, 50.0, 0.5), // 正常（仅放电）
             make_entry(1, 120.0, 0.0, 0.5), // 充电超限 → electrical 截断
             make_entry(2, 0.0, 50.0, 0.98), // SOC 超限 → electrical 截断（Critical）
         ];
@@ -610,9 +612,11 @@ mod tests {
             "passed should be true (no Fatal); violations={}",
             result.violations.len()
         );
-        // 验证截断后值
+        // 验证截断后值。31-review（AI-05）：protection 爬坡调整在 electrical 截断后
+        // 运行——方向互斥逻辑将 ch[1] 归零（net 拉回爬坡上限 safe_value=0），
+        // 旧断言 ch[1]==100 反映的只是 electrical 中间态。
         let clamped = result.clamped_schedule.as_ref().unwrap();
-        assert!((clamped.schedule[1].charge_power_kw - 100.0).abs() < 1e-9);
+        assert!(clamped.schedule[1].charge_power_kw.abs() < 1e-9);
         assert!((clamped.schedule[2].soc_pct - 0.95).abs() < 1e-9);
     }
 

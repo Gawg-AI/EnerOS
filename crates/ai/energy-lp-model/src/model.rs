@@ -31,6 +31,8 @@ pub struct EnergyScheduleModel {
     pub charge_var_idx: Vec<usize>,
     /// 放电功率变量索引列表.
     pub discharge_var_idx: Vec<usize>,
+    /// 31-review（P1 AI-05）：充放方向二元变量 y[t]（MIP 精确互斥）。
+    pub y_var_idx: Vec<usize>,
     /// SOC 变量索引列表.
     pub soc_var_idx: Vec<usize>,
 }
@@ -71,6 +73,19 @@ impl EnergyScheduleModel {
             discharge_var_idx.push(idx);
         }
 
+        // 31-review（P1 AI-05）：充放方向二元变量 y[0..n]——MIP 精确互斥
+        //（旧线性松弛 charge+discharge ≤ pcs 允许部分同时，如 60+40≤100；
+        // 蓝图首选"方向二元变量"，后置校验仅作纵深防御）。
+        let mut y_var_idx = Vec::with_capacity(n);
+        for t in 0..n {
+            let idx = problem.add_var(
+                VarBuilder::new(&format!("charge_dir_{}", t))
+                    .binary()
+                    .build(),
+            );
+            y_var_idx.push(idx);
+        }
+
         // 决策变量：soc[0..n]（单位 kWh，边界已乘容量）
         // 32 AI-05：SOC 变量 num_periods+1 个（动态从 t=0 起——时段 0 的
         // 充放电必须进守恒约束，旧实现从 t=1 起留下免费能量窗口）。
@@ -89,6 +104,7 @@ impl EnergyScheduleModel {
             problem,
             charge_var_idx,
             discharge_var_idx,
+            y_var_idx,
             soc_var_idx,
         };
 
@@ -190,19 +206,30 @@ impl EnergyScheduleModel {
 
     /// AI-003：充放电互斥约束——同一时段不得同时充电与放电。
     ///
-    /// 物理约束：储能设备不能同时充放电。线性互斥近似
-    /// `charge[t] + discharge[t] <= pcs`（各变量上界均为 pcs，若同时为
-    /// pcs 则和为 2·pcs > pcs 被排除）。旧实现缺此约束，优化器可在同一
-    /// 时段同时充放电制造虚假收益。
+    /// 31-review（P1 AI-05）：改用**方向二元变量**（MIP）精确互斥——
+    /// `charge[t] ≤ pcs·y[t]` 且 `discharge[t] ≤ pcs·(1−y[t])`（y[t]∈{0,1}），
+    /// 任一方向为 0 时另一方向必为 0。旧线性松弛 `charge+discharge ≤ pcs`
+    /// 允许部分同时（如 pcs=100 时 60+40≤100 可行），优化器可制造物理
+    /// 不可能的调度（零收益充放互抵）；safety-validator 侧另加后置校验
+    /// 作纵深防御（见 safety-validator/src/validator.rs）。
     pub fn add_mutex_constraints(&mut self) {
         let pcs = self.config.pcs_power_kw;
         for t in 0..self.config.num_periods {
-            let mut expr = LinearExpr::new();
-            expr.add_term(self.charge_var_idx[t], 1.0);
-            expr.add_term(self.discharge_var_idx[t], 1.0);
+            // charge[t] − pcs·y[t] ≤ 0
+            let mut c1 = LinearExpr::new();
+            c1.add_term(self.charge_var_idx[t], 1.0);
+            c1.add_term(self.y_var_idx[t], -pcs);
             self.problem.add_constraint(
-                &format!("charge_discharge_mutex_{}", t),
-                Constraint::Le(expr, pcs),
+                &format!("charge_dir_mutex_{}", t),
+                Constraint::Le(c1, 0.0),
+            );
+            // discharge[t] + pcs·y[t] ≤ pcs
+            let mut c2 = LinearExpr::new();
+            c2.add_term(self.discharge_var_idx[t], 1.0);
+            c2.add_term(self.y_var_idx[t], pcs);
+            self.problem.add_constraint(
+                &format!("discharge_dir_mutex_{}", t),
+                Constraint::Le(c2, pcs),
             );
         }
     }

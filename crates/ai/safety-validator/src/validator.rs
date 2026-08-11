@@ -10,7 +10,7 @@ use eneros_energy_lp_model::result::ScheduleResult;
 
 use crate::electrical::ElectricalSafetyRule;
 use crate::protection::ProtectionCoordinationRule;
-use crate::result::{Severity, ValidationResult};
+use crate::result::{Severity, ValidationResult, Violation};
 use crate::rule::SafetyRule;
 use crate::state::SystemState;
 
@@ -88,6 +88,24 @@ impl SafetyValidator {
                     clamped_schedule: Some(current_schedule),
                     violations: all_violations,
                 };
+            }
+        }
+
+        // 31-review（P1 AI-05）：后置校验（规则链之后、最终调度上）——同一时段
+        // 不得同时充电与放电。LP 线性互斥允许部分同时（60+40≤100），蓝图要求
+        // 二元变量（MIP，已入模型）或 safety-validator 后置拒绝；此处为纵深
+        // 防御：任何来源（解算器/规则 clamp）的同时充放一律 Fatal。
+        const SIMUL_EPS: f64 = 1e-6;
+        for entry in current_schedule.schedule.iter() {
+            if entry.charge_power_kw > SIMUL_EPS && entry.discharge_power_kw > SIMUL_EPS {
+                all_violations.push(Violation::normal(
+                    "charge_discharge_mutex",
+                    entry.period,
+                    "charge_power_kw",
+                    entry.charge_power_kw,
+                    0.0,
+                    Severity::Fatal,
+                ));
             }
         }
 

@@ -85,16 +85,43 @@ pub struct DecisionRecord<'a> {
 pub struct DecisionAudit {
     /// 底层审计日志器（内存存储）。
     logger: AuditLoggerImpl<MemStore>,
+    /// 31-review（P1 AG-04）：有界缓冲上限（链条目数；超限丢弃新记录）。
+    max_entries: usize,
+    /// 31-review：因缓冲上限被丢弃的记录数（写失败计数）。
+    dropped: u64,
 }
+
+/// 31-review：内存审计链的默认有界上限（条目数）。
+pub const MAX_AUDIT_ENTRIES: usize = 4096;
 
 impl DecisionAudit {
     /// 新建决策审计器（`genesis` = 创世锚哈希）。
     pub fn new(genesis: [u8; 32]) -> Self {
         Self {
             logger: AuditLoggerImpl::new(MemStore::new(), genesis),
+            max_entries: MAX_AUDIT_ENTRIES,
+            dropped: 0,
         }
     }
 
+    /// 31-review：因缓冲上限被丢弃的记录数（写失败计数，决策路径不阻塞）。
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped
+    }
+}
+
+/// 32 AG-04：从会话密钥材料派生决策审计器——创世锚 =
+/// `SM3("eneros-decision-audit-v1|" ‖ key_material)`，与封焊链
+/// chain_key 同源（AI-07 fail-closed 注入），无密钥即无审计器。
+pub fn decision_audit_from_key(key_material: &[u8]) -> DecisionAudit {
+    const DOMAIN: &[u8] = b"eneros-decision-audit-v1|";
+    let mut buf = alloc::vec::Vec::with_capacity(DOMAIN.len() + key_material.len());
+    buf.extend_from_slice(DOMAIN);
+    buf.extend_from_slice(key_material);
+    DecisionAudit::new(eneros_crypto::sm3_hash(&buf))
+}
+
+impl DecisionAudit {
     /// 记录一条完整 AI 决策（意图 → LP 解 → 安全 → 执行 → 偏差）。
     ///
     /// `deviation` 为 W2.1 偏差指标（观测值相对预测的偏差，可负）；
@@ -103,6 +130,12 @@ impl DecisionAudit {
         &mut self,
         r: &DecisionRecord,
     ) -> Result<eneros_audit::ChainEntry, AuditError> {
+        // 31-review（P1 AG-04）：有界缓冲——链满后丢弃新记录并计数
+        //（MemStore 为无界 Vec，旧实现永不失败 → audit_drop_count 死计数器）。
+        if self.chain_state().entry_count as usize >= self.max_entries {
+            self.dropped += 1;
+            return Err(AuditError::BufferFull);
+        }
         let detail = format!(
             "i={};p={};s={};x={};d={:.3}",
             r.intent,
@@ -232,5 +265,68 @@ mod tests {
         assert_eq!(entry.seq, 1);
         let report = audit.verify().expect("校验");
         assert!(report.valid);
+    }
+
+    /// 验收：AG-04 密钥派生创世锚——同密钥同锚、异密钥异锚，
+    /// 派生链可正常入链/校验。
+    #[test]
+    fn test_decision_audit_from_key_derivation() {
+        let mut a1 = decision_audit_from_key(b"test-key-material-16b");
+        let a2 = decision_audit_from_key(b"test-key-material-16b");
+        let a3 = decision_audit_from_key(b"other-key-material!");
+        assert_eq!(
+            a1.chain_state().genesis_hash,
+            a2.chain_state().genesis_hash,
+            "同密钥派生同创世锚"
+        );
+        assert_ne!(
+            a1.chain_state().genesis_hash,
+            a3.chain_state().genesis_hash,
+            "异密钥派生异创世锚"
+        );
+        a1.log_decision(&rec(0)).expect("入链");
+        assert!(a1.verify().expect("校验").valid);
+    }
+
+    /// 31-review（P2）：审计 detail（p/s/x 字段）必须编码进哈希——不同
+    /// gate/exec 结果 → 不同 event_hash（篡改可检出；旧测试只数条数不断言内容）。
+    #[test]
+    fn test_audit_encodes_gate_and_exec_fields() {
+        let mut a1 = DecisionAudit::new([0x42; 32]);
+        let mut r_allow = rec(0);
+        r_allow.lp_solution = "path=SlowPath;gate=allow;energy_kwh=1.000;violations=0";
+        r_allow.exec = ExecOutcome::Succeeded;
+        let e1 = a1.log_decision(&r_allow).expect("allow 入链");
+
+        let mut a2 = DecisionAudit::new([0x42; 32]);
+        let mut r_reject = rec(0);
+        r_reject.lp_solution = "path=SlowPath;gate=energy_exceeded;energy_kwh=999.000;violations=0";
+        r_reject.exec = ExecOutcome::Failed;
+        let e2 = a2.log_decision(&r_reject).expect("reject 入链");
+
+        assert_ne!(
+            e1.event_hash, e2.event_hash,
+            "gate/exec 字段必须编码进审计哈希"
+        );
+    }
+
+    /// 31-review（P1 AG-04）：有界缓冲——超过上限丢弃新记录并计数（BufferFull），
+    /// 决策路径不阻塞（MemStore 无界 Vec 的旧行为已封顶）。
+    #[test]
+    fn test_audit_bounded_buffer_drops_overflow() {
+        let mut audit = DecisionAudit::new([0x11; 32]);
+        for _ in 0..MAX_AUDIT_ENTRIES {
+            audit.log_decision(&rec(0)).expect("上限内必须入链");
+        }
+        assert_eq!(
+            audit.chain_state().entry_count,
+            MAX_AUDIT_ENTRIES as u64,
+            "链条目数必须封顶"
+        );
+        assert!(
+            audit.log_decision(&rec(0)).is_err(),
+            "超上限必须返回 Err（BufferFull）"
+        );
+        assert_eq!(audit.dropped_count(), 1, "丢弃计数必须递增");
     }
 }

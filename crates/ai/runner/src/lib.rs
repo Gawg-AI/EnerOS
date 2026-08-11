@@ -221,7 +221,11 @@ pub fn run_once(
     // 22 §2.W2.2：AI→设备必经 ControlChain（锁定 5）——ChainCommandSink
     // 授权（default-deny 链：租约+策略+SBO+安全）→ FileExecutor 文件总线
     // 真实写入。链装配（ADR-029）：默认策略放行 Ai→dev1/pt10，租约签发。
-    let chain = build_chain()?;
+    // 31-review（P1 chain-key）：链必须以**注入**的 chain_key 装配——旧实现
+    // build_chain() 内部用编译期 CHAIN_KEY 常量，而 ChainCommandSink 用注入 key
+    // 签名 → 两把不同 key → 每次 write 被 GatewayError::Unauthorized 拒绝，
+    // run_once 无论密钥文件内容如何必然失败。
+    let chain = build_chain(chain_key)?;
     let sink: Box<dyn CommandSink> =
         Box::new(eneros_dual_brain::chain_sink::ChainCommandSink::new(
             chain,
@@ -257,6 +261,30 @@ pub fn run_once(
             return Err(RunnerError::DualBrain(e));
         }
     };
+
+    // 31-review（P1 AG-04）：决策审计链文件落盘——内存链随进程退出即失，
+    // 落盘（`{sink_path}.audit`）保证篡改可检证据持久化（FileCommandSink
+    // 同模式；写失败仅告警不阻断决策路径）。
+    if let Some(audit) = coord.audit.as_ref() {
+        let audit_path = format!("{sink_path}.audit");
+        let entries = audit.read_range(0, u64::MAX).unwrap_or_default();
+        let valid = audit.verify().map(|v| v.valid).unwrap_or(false);
+        let mut content = String::new();
+        content.push_str(&format!(
+            "# eneros decision audit chain: entries={} verified={valid}\n",
+            entries.len()
+        ));
+        for e in entries {
+            content.push_str(&format!(
+                "seq={} combined={}\n",
+                e.seq,
+                e.combined_hash.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            ));
+        }
+        if let Err(err) = std::fs::write(&audit_path, content) {
+            eprintln!("[ai-runner] audit dump failed: {err}");
+        }
+    }
 
     let rec = recording.borrow();
     let llm_output = rec
@@ -388,8 +416,6 @@ fn build_chain_with(
 // 22 §2.W2.2：ControlChain 装配（默认策略/租约/安全点；key 注入）。
 // ============================================================================
 
-/// 链密钥（HMAC 信封签名；生产由运维注入——v1.0 交付项，见 ADR-029）。
-const CHAIN_KEY: &[u8] = b"eneros-runner-chain-key-000000000000000000";
 /// AI 租约 ID（装配时签发，3 600 s）。
 const CHAIN_LEASE_ID: [u8; 16] = [0xE1; 16];
 /// 信封签发者标识。
@@ -409,7 +435,9 @@ fn now_fn() -> u64 {
 
 /// ControlChain 装配：策略放行 Ai→dev1/pt10，租约签发，安全点注册。
 /// default-deny：未配置规则的点一律拒绝（fail-closed）。
-pub fn build_chain() -> Result<eneros_control_gateway::chain::ControlChain, RunnerError> {
+/// 31-review（P1 chain-key）：密钥由调用方注入（AI-07 fail-closed ≥16B 校验），
+/// 编译期常量已删除。
+pub fn build_chain(key: &[u8]) -> Result<eneros_control_gateway::chain::ControlChain, RunnerError> {
     use eneros_control_gateway::chain::ControlChain;
     use eneros_control_gateway::envelope::ActorKind;
     use eneros_control_gateway::lease::LeaseScope;
@@ -426,7 +454,7 @@ pub fn build_chain() -> Result<eneros_control_gateway::chain::ControlChain, Runn
         time_window: (0, 0),
         obligations: vec![],
     });
-    let mut chain = ControlChain::new(CHAIN_KEY, 5, 64, policy, 60, 300, 64, 30);
+    let mut chain = ControlChain::new(key, 5, 64, policy, 60, 300, 64, 30);
     let scope = LeaseScope {
         devices: vec![1],
         points: vec![10],
@@ -536,6 +564,19 @@ mod tests {
         let result = coord.execute(&state, 1000).expect("execute ok");
         assert_eq!(coord.sink.write_count(), 1, "normal 场景必须写入 1 条命令");
         assert!(!result.schedule.schedule.is_empty());
+
+        // 31-review（AI-05）：最终下发调度（经 safety-validator 全部规则）全时段
+        // 不得同时充放——MIP 方向二元互斥 + validator 后置校验（含规则 clamp 后）
+        // 双保险；旧实现爬坡 clamp 会在已有充电的时段凭空加放电（同时充放）。
+        let sched = &result.schedule.schedule;
+        for (i, e) in sched.iter().enumerate() {
+            assert!(
+                e.charge_power_kw < 1e-6 || e.discharge_power_kw < 1e-6,
+                "period {i} 同时充放（charge={} discharge={}）——AI-05 互斥失效",
+                e.charge_power_kw,
+                e.discharge_power_kw
+            );
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1081,4 +1122,7 @@ mod tests {
             "复验拒绝必须结构化为 DeviceReject::Hmac"
         );
     }
+
+
+
 }

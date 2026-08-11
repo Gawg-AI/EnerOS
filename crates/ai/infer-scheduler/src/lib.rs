@@ -177,6 +177,23 @@ mod tests {
         assert_eq!(sched.stats().total_requests, 3);
     }
 
+    // ===== T6b：AI-04 背压——队列满（≥MAX_QUEUE_DEPTH=64）返回 QueueFull =====
+    #[test]
+    fn test_queue_full_backpressure() {
+        let mut sched = InferScheduler::new(2, TEST_CACHE_BUDGET, ComputeDevice::Cpu);
+        // 填满 64 个（无 tick 排空）。
+        for i in 0..64 {
+            let req = InferRequest::new(0, &format!("req-{i}"), InferParams::default());
+            sched.submit(req).expect("前 64 个必须入队");
+        }
+        assert_eq!(sched.queue_len(), 64);
+        // 第 65 个 → QueueFull（31 AI-04 判据；旧实现声明未兑现）。
+        assert_eq!(
+            sched.submit(InferRequest::new(0, "overflow", InferParams::default())),
+            Err(SchedulerError::QueueFull)
+        );
+    }
+
     // ===== T7：tick 空队列返回空 Vec =====
     #[test]
     fn test_t7_tick_empty_queue() {

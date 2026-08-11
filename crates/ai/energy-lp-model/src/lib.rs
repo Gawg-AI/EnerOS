@@ -141,14 +141,15 @@ mod tests {
         assert_eq!(model.soc_var_idx.len(), 97); // 32 AI-05：soc[n]
     }
 
-    // === T4: 变量索引正确 — charge 0..96, discharge 96..192, soc 192..288 ===
+    // === T4: 变量索引正确 — charge 0..96, discharge 96..192, y 192..288, soc 288..385 ===
     #[test]
     fn t4_variable_indices() {
         let model = EnergyScheduleModel::new(ScheduleConfig::default());
         for t in 0..96 {
             assert_eq!(model.charge_var_idx[t], t);
             assert_eq!(model.discharge_var_idx[t], 96 + t);
-            assert_eq!(model.soc_var_idx[t], 192 + t);
+            assert_eq!(model.y_var_idx[t], 192 + t); // 31-review：二元变量
+            assert_eq!(model.soc_var_idx[t], 288 + t);
         }
     }
 
@@ -159,12 +160,12 @@ mod tests {
         assert!(model.compile().is_ok());
     }
 
-    // === T6: LpProblem 变量数 = 288 ===
+    // === T6: LpProblem 变量数 = 385（charge+discharge+y 各 96 + soc 97）===
     #[test]
     fn t6_lp_variable_count() {
         let model = EnergyScheduleModel::new(ScheduleConfig::default());
         let lp = model.compile().unwrap();
-        assert_eq!(lp.variables.len(), 289); // 32 AI-05：soc[n]
+        assert_eq!(lp.variables.len(), 385); // 32 AI-05：soc[n]；31-review：+96 二元变量
     }
 
     // === T7: CSR row_start.len() == num_constraints + 1 ===
@@ -188,9 +189,9 @@ mod tests {
     #[test]
     fn t9_ramp_constraint_count() {
         let model = EnergyScheduleModel::new(ScheduleConfig::default());
-        // Le with 2 terms = 爬坡(190) + AI-003 充放电互斥(num_periods=96)
-        // 旧断言 190 未计入互斥约束；互斥加入后总数为 286。
-        assert_eq!(count_le_with_terms(&model, 2), 190 + 96);
+        // Le with 2 terms = 爬坡(190) + 方向二元互斥(2×96=192：
+        // charge_dir 与 discharge_dir 各一，均为 2 terms)。
+        assert_eq!(count_le_with_terms(&model, 2), 190 + 192);
     }
 
     // === T10: SOC 初始约束数 = 1 ===
@@ -317,14 +318,15 @@ mod tests {
             load_demand: None,
         };
         let model = EnergyScheduleModel::new(config);
-        // 变量：3 × 4 = 12
+        // 变量：charge/discharge/y 各 4 + soc 5
         assert_eq!(model.charge_var_idx.len(), 4);
         assert_eq!(model.discharge_var_idx.len(), 4);
+        assert_eq!(model.y_var_idx.len(), 4); // 31-review：二元变量
         assert_eq!(model.soc_var_idx.len(), 5); // 32 AI-05：soc[n]
         let lp = model.compile().unwrap();
-        assert_eq!(lp.variables.len(), 13); // 32 AI-05：soc[n]
-        // 约束：soc_dynamics(3) + ramp(6) + mutex(4) + soc_init(1) + soc_final(1) = 15
-        assert_eq!(lp.constraints.num_rows, 16); // 32 AI-05：守恒 t=0
+        assert_eq!(lp.variables.len(), 17); // 13 + 4 二元变量
+        // 约束：soc_dynamics(4) + ramp(6) + 方向互斥(2×4=8) + soc_init(1) + soc_final(1)
+        assert_eq!(lp.constraints.num_rows, 20);
     }
 
     // === T20: 小规模模型 compile + MockSolver 端到端 ===
@@ -406,8 +408,9 @@ mod tests {
 
     // === AI-003: 充放电互斥约束 + 负电价 ================
 
-    /// AI-003：每个时段都存在互斥约束 `charge[t] + discharge[t] <= pcs`
-    /// （旧模型无此约束——优化器可同时充放电制造虚假收益，旧代码失败证据）。
+    /// AI-003：每个时段都存在方向二元互斥约束 `discharge[t] + pcs·y[t] ≤ pcs`
+    /// （31-review：旧线性近似 charge+discharge≤pcs 允许部分同时，优化器可
+    /// 制造虚假收益；MIP 二元形式精确互斥）。
     #[test]
     fn t23_mutex_constraint_present_each_period() {
         let config = ScheduleConfig {
@@ -419,7 +422,7 @@ mod tests {
         for c in &model.problem.constraints {
             if let Constraint::Le(e, rhs) = c {
                 if e.terms.len() == 2 && *rhs == config.pcs_power_kw {
-                    // terms 为 charge_t + discharge_t
+                    // terms 为 discharge_t + pcs·y_t（discharge_dir 行）。
                     mutex_count += 1;
                 }
             }
@@ -427,7 +430,9 @@ mod tests {
         assert_eq!(mutex_count, 3, "each period must have a mutex constraint");
     }
 
-    /// AI-003：互斥约束语义——charge 与 discharge 系数各为 1，上界 pcs。
+    /// AI-003（31-review）：方向二元互斥语义——`charge[t] − pcs·y[t] ≤ 0` 与
+    /// `discharge[t] + pcs·y[t] ≤ pcs`（y∈{0,1} → charge/discharge 精确互斥；
+    /// 旧线性近似 charge+discharge≤pcs 允许 60+40≤100 式部分同时）。
     #[test]
     fn t24_mutex_constraint_terms() {
         let config = ScheduleConfig {
@@ -436,18 +441,29 @@ mod tests {
             ..Default::default()
         };
         let model = EnergyScheduleModel::new(config);
-        let mut found = false;
+        let mut found_charge = false;
+        let mut found_discharge = false;
         for c in &model.problem.constraints {
             if let Constraint::Le(e, rhs) = c {
-                if e.terms.len() == 2 && *rhs == 10.0 {
-                    found = true;
-                    for coef in e.terms.values() {
-                        assert_eq!(*coef, 1.0);
+                let has_one = e.terms.values().any(|v| (*v - 1.0).abs() < 1e-9);
+                // discharge_dir：discharge + pcs·y ≤ pcs（rhs=10，系数 {1, pcs}）。
+                if e.terms.len() == 2 && (*rhs - 10.0).abs() < 1e-9 {
+                    let has_pcs = e.terms.values().any(|v| (*v - 10.0).abs() < 1e-9);
+                    if has_one && has_pcs {
+                        found_discharge = true;
+                    }
+                }
+                // charge_dir：charge − pcs·y ≤ 0（rhs=0，系数 {1, −pcs}）。
+                if e.terms.len() == 2 && (*rhs).abs() < 1e-9 {
+                    let has_neg = e.terms.values().any(|v| (*v + 10.0).abs() < 1e-9);
+                    if has_one && has_neg {
+                        found_charge = true;
                     }
                 }
             }
         }
-        assert!(found, "mutex constraint with rhs = pcs must exist");
+        assert!(found_charge, "charge_dir constraint (charge − pcs·y ≤ 0) must exist");
+        assert!(found_discharge, "discharge_dir constraint (discharge + pcs·y ≤ pcs) must exist");
     }
 
     /// AI-003：负电价时段，模型应选择充电（charge > 0）而非放电——
@@ -479,8 +495,10 @@ mod tests {
         );
     }
 
-    /// AI-003：无互斥约束时模型允许同时充放电（旧缺陷可被求解器利用）；
-    /// 加入互斥后同一时段 charge+discharge <= pcs 成立。
+    /// AI-003（31-review）：方向二元互斥——compile 后 discharge_dir 行
+    /// `discharge + pcs·y ≤ pcs`（系数 {1, pcs}）；y∈{0,1} 时同一时段
+    /// charge 与 discharge 不可能同时为正（旧线性近似 60+40≤100 可被利用；
+    /// safety-validator 侧另有后置 Fatal 校验作纵深防御）。
     #[test]
     fn t26_mutex_prevents_simultaneous() {
         let config = ScheduleConfig {
@@ -490,19 +508,23 @@ mod tests {
         };
         let model = EnergyScheduleModel::new(config.clone());
         let lp = model.compile().expect("compile");
-        // 检查互斥约束行：charge_t + discharge_t <= pcs（Le 行 rhs = 8.0）
+        // discharge_dir 行（rhs = pcs=8）：系数排序后须为 [1.0, 8.0]。
         let mut found = 0;
         for (i, rhs_upper) in lp.rhs_upper.iter().enumerate() {
-            if *rhs_upper == 8.0 {
-                // 对应行两个系数 1.0
+            if (*rhs_upper - 8.0).abs() < 1e-9 {
                 let row_start = lp.constraints.row_start[i] as usize;
                 let row_end = lp.constraints.row_start[i + 1] as usize;
-                let row_vals: alloc::vec::Vec<f64> =
+                let mut row_vals: alloc::vec::Vec<f64> =
                     lp.constraints.values[row_start..row_end].to_vec();
-                assert_eq!(row_vals, alloc::vec![1.0, 1.0]);
-                found += 1;
+                row_vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                if row_vals.len() == 2
+                    && (row_vals[0] - 1.0).abs() < 1e-9
+                    && (row_vals[1] - 8.0).abs() < 1e-9
+                {
+                    found += 1;
+                }
             }
         }
-        assert_eq!(found, 2, "two mutex rows with rhs=pcs");
+        assert_eq!(found, 2, "two discharge_dir rows with rhs=pcs");
     }
 }

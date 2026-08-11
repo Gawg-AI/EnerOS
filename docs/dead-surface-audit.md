@@ -218,3 +218,11 @@ $ cargo test -p eneros-storage --lib → 128 passed; 0 failed
   上层安全机制覆盖；go-no-go 不得宣称 DDS 消息签名能力。
 - 遗留（34 域）：consumer 声明"深度校验"（声明的消费者存在性，GV-15）、
   孤儿模板清理（CF-02/03）在蓝图/34 关闭。
+
+- **32 AG-03（决策 B）**：5 个市场/优化 TOML（configs/bid_strategy.toml、
+  spot_market.toml、realtime_market.toml、domain_optimizer.toml、
+  multi_objective.toml）标注 `# status: deferred (v1.x)`——零生产消费
+  （grep 实证，对应符号仅测试使用）；蓝图/34 验收**不得**声称具备该能力。
+  修复前状态：这些 toml 无任何消费方（audit 0804 登记）；32 采纳决策 B
+  （S6/S8 纪律优先），决策 A（energy-market-agent 补 load_market_config
+  闭环）待产品确认后另开工单。

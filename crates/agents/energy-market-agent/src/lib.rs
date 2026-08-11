@@ -579,6 +579,7 @@ mod tests {
                 1.0,
                 eneros_safety_validator::SafetyCatalog::default_eps(),
             ),
+            deadband_kw: 0.0,
             forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(
                 eneros_safety_validator::SafetyCatalog::default_eps(),
             ),
@@ -596,6 +597,86 @@ mod tests {
             let _ = agent.on_tick(3_000_000 + u64::from(i) * 600_000);
         }
         assert_eq!(agent.state, AgentState::Error, "连续 N 次失败必须 Error");
+    }
+
+    // ===== T24b: 32 AG-01 成功恢复 — Error 后成功 tick 恢复 Running =====
+    #[test]
+    fn t24b_energy_agent_recovers_after_transient_errors() {
+        // 前 N 次下发失败（Transient），之后恢复成功。
+        struct FlakySink {
+            fail_remaining: u32,
+        }
+        impl CommandSink for FlakySink {
+            fn write(&mut self, _cmd: DispatchCommand) -> Result<(), DualBrainError> {
+                if self.fail_remaining > 0 {
+                    self.fail_remaining -= 1;
+                    Err(DualBrainError::DispatchError(String::from("transient")))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let config = ScheduleConfig::default();
+        let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
+        let solver = MockSolver::with_result(eneros_solver_core::result::SolveResult {
+            status: eneros_solver_core::result::SolveStatus::Optimal,
+            objective_value: 1.0,
+            solution: alloc::vec![0.5, -0.3],
+            elapsed_ms: 1,
+            dual_solution: None,
+        });
+        let n = EnergyAgent::<MockSolver>::MAX_CONSECUTIVE_ERRORS;
+        let sink: Box<dyn CommandSink> = Box::new(FlakySink { fail_remaining: n });
+        let coordinator = DualBrainCoordinator::new(config, llm_engine, solver, sink);
+
+        let mut agent = EnergyAgent {
+            descriptor: eneros_agent::AgentDescriptor::new(AgentType::Energy, "test", 0),
+            coordinator,
+            market_channel: MarketChannel::new(16),
+            current_schedule: None,
+            current_price: 0.5,
+            state: AgentState::Created,
+            consecutive_errors: 0,
+            tick_count: 0,
+            observer: None,
+            last_feedback: None,
+            outcome_unknown_count: 0,
+            forecast_error_sum: 0.0,
+            forecast_error_count: 0,
+            last_observed_at_ms: 0,
+            rejections: eneros_dual_brain::rejection::RejectionHandler::new(16),
+            last_rejection: None,
+            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(
+                1.0,
+                eneros_safety_validator::SafetyCatalog::default_eps(),
+            ),
+            deadband_kw: 0.0,
+            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(
+                eneros_safety_validator::SafetyCatalog::default_eps(),
+            ),
+            twin_forecast: None,
+            twin_confidence: 0.0,
+        };
+
+        agent.on_start(1000).unwrap();
+        // N 次连续 Transient 失败 → Error。
+        for i in 0..n {
+            let _ = agent.on_tick(2000 + u64::from(i) * 600_000);
+        }
+        assert_eq!(agent.state, AgentState::Error, "连续 N 次失败必须 Error");
+        assert_eq!(agent.consecutive_errors, n);
+
+        // 32 AG-01 判据：随后成功 tick → 恢复 Running + 计数归零 +
+        // 心跳 Alive（不得永久离线）。
+        agent.on_tick(2000 + u64::from(n) * 600_000).expect("恢复 tick");
+        assert_eq!(agent.state, AgentState::Running, "成功 tick 必须恢复 Running");
+        assert_eq!(agent.consecutive_errors, 0, "成功后连续错误计数归零");
+        assert_eq!(
+            agent.on_heartbeat(0),
+            crate::runtime::HeartbeatStatus::Alive,
+            "恢复后心跳必须 Alive"
+        );
     }
 
     // ===== 21-B A2：release 真后端装配（new_real + HighsSolver 端到端） =====

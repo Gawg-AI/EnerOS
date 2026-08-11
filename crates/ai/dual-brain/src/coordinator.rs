@@ -362,10 +362,18 @@ impl<S: Solver> DualBrainCoordinator<S> {
                     }
                 }
                 // 首次超时：回退 fast-path（不阻塞决策）。
-                let fast = self
-                    .fast_path
-                    .execute(state, now_ms)
-                    .map_err(|fe| DualBrainError::SolveError(format!("fast fallback: {fe:?}")))?;
+                // 31-review（P1）：Fatal 分类必须保留——旧实现 map_err 折叠为
+                // SolveError，Fatal 被 rejection 归类为 CommFailed（瞬态重试）
+                // 而非 SafetyBlocked（立即 Error + 上报人工），代理会持续重试
+                // 安全违规而不升级。
+                let fast = self.fast_path.execute(state, now_ms).map_err(|fe| match fe {
+                    eneros_fast_path::error::FastPathError::SafetyFatal(n) => {
+                        DualBrainError::SafetyFatal(format!(
+                            "fast fallback safety FATAL: {n} violation(s)"
+                        ))
+                    }
+                    other => DualBrainError::SolveError(format!("fast fallback: {other:?}")),
+                })?;
                 return Ok(DualBrainResult {
                     schedule: fast.schedule,
                     path_type: PathType::FastPath,
@@ -447,61 +455,79 @@ impl<S: Solver> DualBrainCoordinator<S> {
             )));
         }
         let final_schedule = validation.clamped_schedule.clone().unwrap_or(schedule);
-        // 32 AI-02：慢路径成功产出 → 记录"上次成功决策"（旧实现字段
-        // 声明+初始化+读取全在但**零赋值**——降级模式永不生效）。
-        self.last_successful_schedule = Some(final_schedule.clone());
-
-        // 22 §2.W5.2：能量闸（安全校验之后、命令下发之前；速率闸已在
-        // execute 入口通过）。超限拒绝返回 GateRejected（调用方告警/审计）。
         let gate_energy_kwh = schedule_energy_kwh(&final_schedule);
-        if self.gate.check_energy(now_ms, gate_energy_kwh) != GateDecision::Allow {
-            return Err(DualBrainError::GateRejected(GateDecision::EnergyExceeded));
-        }
 
-        // Step 7: 命令下发（D6）
-        if let Some(entry) = final_schedule.schedule.first() {
-            let cmd = DispatchCommand {
-                target_device: String::from("pcs"),
-                power_kw: entry.net_power_kw,
-                // 29 AI-01：ttl_secs 秒基准（原 300_000ms → 300s，语义不变；
-                // 字段改名强制单位契约归一）。
-                ttl_secs: 300,
-                timestamp: now_ms,
-            };
-            // v0.248.0：真实计时。
-            let t_dispatch = tic();
-            self.sink.write(cmd)?;
-            latency.command_dispatch_ms = tic().saturating_sub(t_dispatch);
-        }
-        // 下发成功才记账（失败不占速率/能量额度）。
-        self.gate.record(now_ms, gate_energy_kwh);
+        // 31-review（P1 AG-04 + P2 AI-02）：gate+下发执行并收集结果——
+        // 审计覆盖**全部**结果（成功/能量闸拒/下发失败），旧实现审计仅在
+        // sink.write 成功之后、拒/失败路径零记录（篡改链恰好漏掉关键决策）。
+        // "上次成功决策"也仅在真正下发成功后记录（旧实现在 gate 前赋值，
+        // 被拒/失败的调度同样污染降级基线）。
+        let mut audit_gate = "allow";
+        let mut dispatch_ok = false;
+        let dispatch: Result<(), DualBrainError> = (|| {
+            // 22 §2.W5.2：能量闸（安全校验之后、命令下发之前；速率闸已在
+            // execute 入口通过）。超限拒绝返回 GateRejected（调用方告警/审计）。
+            if self.gate.check_energy(now_ms, gate_energy_kwh) != GateDecision::Allow {
+                audit_gate = "energy_exceeded";
+                return Err(DualBrainError::GateRejected(GateDecision::EnergyExceeded));
+            }
+            // Step 7: 命令下发（D6）
+            if let Some(entry) = final_schedule.schedule.first() {
+                let cmd = DispatchCommand {
+                    target_device: String::from("pcs"),
+                    power_kw: entry.net_power_kw,
+                    // 29 AI-01：ttl_secs 秒基准（原 300_000ms → 300s，语义不变；
+                    // 字段改名强制单位契约归一）。
+                    ttl_secs: 300,
+                    timestamp: now_ms,
+                };
+                // v0.248.0：真实计时。
+                let t_dispatch = tic();
+                self.sink.write(cmd)?;
+                latency.command_dispatch_ms = tic().saturating_sub(t_dispatch);
+            }
+            // 下发成功才记账（失败不占速率/能量额度）。
+            self.gate.record(now_ms, gate_energy_kwh);
+            dispatch_ok = true;
+            Ok(())
+        })();
 
-        // 32 AG-04：决策审计接线（W5.1）——慢路径下发成功后决策入链，
-        // 记录含 path/validation/gate 字段；写失败计数丢弃不阻塞决策。
-        if let Some(audit) = self.audit.as_mut() {
-            let safety = if validation.clamped_schedule.is_some() {
-                crate::audit::SafetyOutcome::Degraded
+        // 32 AG-04：决策审计（W5.1）——慢路径决策入链（成功/拒绝/失败均记录，
+        // 含 path/validation/gate 字段；写失败仅计数丢弃，不阻塞决策路径）。
+        let safety = if validation.clamped_schedule.is_some() {
+            crate::audit::SafetyOutcome::Degraded
+        } else {
+            crate::audit::SafetyOutcome::Passed
+        };
+        let lp_summary = format!(
+            "path=SlowPath;gate={};energy_kwh={:.3};violations=0",
+            audit_gate, gate_energy_kwh
+        );
+        let rec = crate::audit::DecisionRecord {
+            actor: "dual-brain",
+            target: "pcs",
+            intent: "slow-path-decision",
+            lp_solution: &lp_summary,
+            safety,
+            exec: if dispatch_ok {
+                crate::audit::ExecOutcome::Succeeded
             } else {
-                crate::audit::SafetyOutcome::Passed
-            };
-            let lp_summary = format!(
-                "path=SlowPath;gate=allow;energy_kwh={:.3};violations=0",
-                gate_energy_kwh
-            );
-            let rec = crate::audit::DecisionRecord {
-                actor: "dual-brain",
-                target: "pcs",
-                intent: "slow-path-decision",
-                lp_solution: &lp_summary,
-                safety,
-                exec: crate::audit::ExecOutcome::Succeeded,
-                deviation: 0.0,
-                now_ms,
-            };
+                crate::audit::ExecOutcome::Failed
+            },
+            deviation: 0.0,
+            now_ms,
+        };
+        if let Some(audit) = self.audit.as_mut() {
             if audit.log_decision(&rec).is_err() {
                 self.audit_drop_count += 1;
             }
         }
+        // 32 AI-02（review）：仅真正下发成功后记录"上次成功决策"
+        //（降级模式回放基线不得含被拒/失败调度）。
+        if dispatch_ok {
+            self.last_successful_schedule = Some(final_schedule.clone());
+        }
+        dispatch?;
 
         // 构建反馈契约
         let feedback = self.converter.to_feedback(

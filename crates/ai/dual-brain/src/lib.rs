@@ -295,6 +295,19 @@ mod tests {
         // 快路径不入链（仅慢路径决策审计）。
         let _ = coord.execute(&state, 1000).expect("fast-path");
         assert_eq!(coord.audit.as_ref().expect("audit").chain_state().entry_count, 1);
+
+        // 31-review（P1 AG-04）：gate 拒绝也必须入审计链（旧实现仅成功路径
+        // 记录——篡改链漏掉恰好最关键的决策）。
+        let mut coord2 = DualBrainCoordinator::default_with_mock()
+            .with_audit(crate::audit::DecisionAudit::new([0x33; 32]))
+            .with_gate(DecisionGate::new(1000, 0.0, 60_000)); // 零能量预算 → 必拒
+        let rejected = coord2.execute(&state, 0);
+        assert!(rejected.is_err(), "零能量预算必须拒");
+        assert_eq!(
+            coord2.audit.as_ref().expect("audit").chain_state().entry_count,
+            1,
+            "gate 拒绝也必须入审计链（AG-04 全结果）"
+        );
     }
 
     /// 验收：未注入审计时慢路径正常决策且不 panic（可选装配）。
@@ -371,10 +384,12 @@ mod tests {
     #[test]
     fn t18c_gate_energy_budget_rejects_execute() {
         // 注入非零解：period 0 放电 5kW → 调度能量 = 5 × 0.25h = 1.25 kWh。
+        // 变量布局（31-review AI-05 增二元变量后 4n+1）：
+        // charge[0..n] → discharge[n..2n] → y[2n..3n] → soc[3n..4n+1]。
         let n = 96usize;
-        let mut solution = vec![0.0; 3 * n];
-        solution[n] = 5.0; // discharge[0] = 5kW（变量布局：charge[0..n] → discharge[n..2n]）
-        solution[2 * n..3 * n].fill(100.0); // soc 初值 0.5×200kWh（防 Fatal 违规）
+        let mut solution = vec![0.0; 4 * n + 1];
+        solution[n] = 5.0; // discharge[0] = 5kW
+        solution[3 * n..4 * n + 1].fill(100.0); // soc 初值 0.5×200kWh（防 Fatal 违规）
         let solver = MockSolver::with_result(SolveResult {
             status: SolveStatus::Optimal,
             objective_value: 0.0,
@@ -495,10 +510,11 @@ mod tests {
         let n = config.num_periods;
         let cap = config.battery_capacity_kwh;
         // 故障注入：求解器输出 SOC = 0.02（< 0.05 安全下限）→ Fatal。
-        // solution 布局：charge[0..n]=0、discharge[n..2n]=0、soc[2n..3n]=0.02*cap。
-        let mut solution = alloc::vec![0.0f64; 3 * n];
+        // solution 布局（31-review AI-05 增二元变量后 4n+1）：
+        // charge[0..n]=0、discharge[n..2n]=0、y[2n..3n]=0、soc[3n..4n+1]=0.02*cap。
+        let mut solution = alloc::vec![0.0f64; 4 * n + 1];
         for t in 0..n {
-            solution[2 * n + t] = 0.02 * cap;
+            solution[3 * n + t] = 0.02 * cap;
         }
         let solver = MockSolver::with_result(SolveResult {
             status: SolveStatus::Optimal,
@@ -636,29 +652,71 @@ mod w23_bounded_llm_tests {
         );
     }
 
-    /// 验收 2：连续超时 → 降级模式（degraded 标记）。
+    /// 验收 2：连续超时 → 降级模式（degraded 标记 + 复用上次成功决策）。
+    ///
+    /// 31-review（P2）：旧版用 AlwaysFailEngine（InferFailed 非 Timeout，
+    /// streak 永不涨）且从不断言 degraded——假测试。本版：① 阶段 1 成功慢路径
+    /// 记录 last_successful；② 时钟切跳变模式（每读 +6s > 5s 超时窗）使 LLM
+    /// 每次请求真超时；③ 慢路径间隔（300s）用 now_ms 拉开——两次慢路径超时
+    /// → streak=2 → PathType::Degraded 且复用上次成功调度。
+    static TIMEOUT_MODE: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+    fn timeout_jump_clock_fn() -> u64 {
+        if TIMEOUT_MODE.load(core::sync::atomic::Ordering::SeqCst) {
+            CLOCK_NOW.fetch_add(6_000, core::sync::atomic::Ordering::SeqCst)
+        } else {
+            CLOCK_NOW.fetch_add(10, core::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
     #[test]
     fn test_consecutive_timeout_marks_degraded() {
-        let clock = advancing_clock_fn;
+        use crate::coordinator::DualBrainMockEngine;
+        CLOCK_NOW.store(1_000_000, core::sync::atomic::Ordering::SeqCst);
+        TIMEOUT_MODE.store(false, core::sync::atomic::Ordering::SeqCst);
         let config = ScheduleConfig::default();
-        let llm: Box<dyn LlmEngine> = Box::new(AlwaysFailEngine);
+        let llm: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
         let solver = MockSolver::new();
         let sink: Box<dyn CommandSink> = Box::new(MockCommandSink::new());
-        let mut coord = DualBrainCoordinator::new(config, llm, solver, sink).with_clock(clock);
+        let mut coord = DualBrainCoordinator::new(config, llm, solver, sink)
+            .with_clock(timeout_jump_clock_fn);
+        // 安全系统状态（默认态 SOC=0 会触发 Fatal 校验失败——同另一测试模块
+        // safe_state 的取值，此处内联）。
         let state = RealtimeState {
-            system: SystemState::default(),
+            system: SystemState {
+                voltage_v: 380.0,
+                current_a: 10.0,
+                frequency_hz: 50.0,
+                soc_pct: 0.8,
+                timestamp_ms: 0,
+            },
             current_price: 0.5,
             load_demand: None,
         };
-        // 第一次：回退 fast-path。
-        let _ = coord.execute(&state, 0).expect("first");
-        assert!(!coord.degraded);
-        // 第二次：仍失败 → streak 增长（失败非超时 → streak 不重置但
-        // degraded 需超时触发——用超时引擎场景在 scheduler 层验证；
-        // 这里验证失败回退路径不 panic 且可连续调用）。
-        let r2 = coord.execute(&state, 1).expect("second");
-        assert_eq!(r2.path_type, PathType::FastPath);
-        let _ = coord.execute(&state, 2).expect("third");
+        // 阶段 1：成功慢路径（AI-02 赋值生效）。
+        let r1 = coord.execute(&state, 0).expect("slow path ok");
+        assert_eq!(r1.path_type, PathType::SlowPath);
+        assert!(
+            coord.last_successful_schedule.is_some(),
+            "AI-02 必须记录上次成功决策"
+        );
+        // 阶段 2：时钟跳变 → LLM 真超时。慢路径间隔 300s 用 now_ms 拉开。
+        TIMEOUT_MODE.store(true, core::sync::atomic::Ordering::SeqCst);
+        let r2 = coord.execute(&state, 310_000).expect("timeout #1");
+        assert_eq!(r2.path_type, PathType::FastPath, "首次超时应回退 fast-path");
+        let r3 = coord.execute(&state, 620_000).expect("degraded");
+        assert_eq!(
+            r3.path_type,
+            PathType::Degraded,
+            "连续超时必须降级（AI-02）"
+        );
+        assert!(coord.degraded, "degraded 标记必须置位（供上层告警）");
+        let same_sched = r1.schedule.schedule.len() == r3.schedule.schedule.len()
+            && r1.schedule.schedule.iter().zip(&r3.schedule.schedule).all(|(a, b)| {
+                a.period == b.period && (a.net_power_kw - b.net_power_kw).abs() < 1e-9
+            });
+        assert!(same_sched, "降级必须复用上次成功调度（AI-02）");
+        TIMEOUT_MODE.store(false, core::sync::atomic::Ordering::SeqCst);
     }
 
     /// 验收 3：InferParams 默认 timeout 有界（5s），scheduler 超时检测生效。
