@@ -72,58 +72,87 @@ pub fn error_name(e: Error) -> &'static str {
 }
 
 // ----------------------------------------------------------------------------
-// seL4_UserContext register indices (aarch64).
+// seL4_UserContext register indices (aarch64, seL4 14.0.0).
 //
-// seL4_UserContext on aarch64 is a flat array of seL4_Word. The first N
-// entries have fixed meanings (see libsel4 sel4_arch_include/aarch64/types.h):
-//   index 0  = PC
-//   index 1  = SP
-//   index 2..32 = X0..X30
-//   index 33 = NZCV (PSTATE flags)
+// 权威布局（本仓库构建同源：libsel4/sel4_arch_include/aarch64/sel4/sel4_arch/
+// types.h 的 seL4_UserContext 字段序 + 内核 src/arch/arm/64/machine/
+// registerset.c 的 frameRegisters/gpRegisters 顺序）——**X 寄存器不连续**
+// （帧寄存器组 X0..X8/X16..X18/X29/X30 在前，其余 X9..X15/X19..X28 在后）：
 //
-// 30 RT-012：索引与注释对齐——旧代码 X 寄存器偏移 +1（X0=3...X30=33）
-// 且 REG_X30 与 REG_NZCV 同为 33（碰撞，二者只能其一正确）；现修正为
-// X0=2...X30=32（NZCV=33 不变）。REG_X0 消费方（spawn initial_registers）
-// 同步修正（index 2 = x0——旧值 3 实为 x1，服务参数错位被 QEMU 运行
-// 掩盖：svc 不依赖参数）。
+//   index 0   = PC（FaultIP）
+//   index 1   = SP（SP_EL0）
+//   index 2   = SPSR（PSTATE——aarch64 UserContext **无独立 NZCV 字段**，
+//               NZCV 是 SPSR 的位）
+//   index 3..11  = X0..X8
+//   index 12..14 = X16..X18
+//   index 15..16 = X29..X30
+//   index 17..23 = X9..X15
+//   index 24..33 = X19..X28
+//   index 34..35 = TPIDR_EL0 / TPIDRRO_EL0
+//   共 36 words = 288 B（sel4_client.h `assert_size_correct(..., 288)`）。
+//
+// 30 RT-012 纠偏（相对上一轮错误修正）：上一轮把 X0 从 3 改为 2、X30 从
+// 33 改为 32、引入 REG_NZCV=33——与权威布局矛盾（index 2 实为 SPSR、
+// index 3 实为 X0、index 16 实为 X30、index 33 实为 X28）。spawn 的
+// `initial_registers`（X0=ep cap 槽、X1=IPC buffer vaddr）会把 ep 写进
+// SPSR、buffer 写进 x0 → 服务 `_start(ep, ipc_buffer)` 参数错位（NULL
+// IPC buffer + 无效 cptr → fail-closed 挂起）。本修正恢复权威索引
+// （X0=3/X1=4...），`set_x` 改表驱动映射（X 索引不连续，禁止线性 +n）。
 //
 // These are needed by AGT-003 to set the entry point + stack of a spawned
 // Agent thread (TCB_WriteRegisters).
 // ----------------------------------------------------------------------------
 pub const REG_PC: usize = 0;
 pub const REG_SP: usize = 1;
-pub const REG_X0: usize = 2;
-pub const REG_X1: usize = 3;
-pub const REG_X2: usize = 4;
-pub const REG_X3: usize = 5;
-pub const REG_X4: usize = 6;
-pub const REG_X5: usize = 7;
-pub const REG_X6: usize = 8;
-pub const REG_X7: usize = 9;
-pub const REG_X8: usize = 10;
-pub const REG_X9: usize = 11;
-pub const REG_X10: usize = 12;
-pub const REG_X11: usize = 13;
-pub const REG_X12: usize = 14;
-pub const REG_X13: usize = 15;
-pub const REG_X14: usize = 16;
-pub const REG_X15: usize = 17;
-pub const REG_X16: usize = 18;
-pub const REG_X17: usize = 19;
-pub const REG_X18: usize = 20;
-pub const REG_X19: usize = 21;
-pub const REG_X20: usize = 22;
-pub const REG_X21: usize = 23;
-pub const REG_X22: usize = 24;
-pub const REG_X23: usize = 25;
-pub const REG_X24: usize = 26;
-pub const REG_X25: usize = 27;
-pub const REG_X26: usize = 28;
-pub const REG_X27: usize = 29;
-pub const REG_X28: usize = 30;
-pub const REG_X29: usize = 31; // FP
-pub const REG_X30: usize = 32; // LR
-pub const REG_NZCV: usize = 33;
+pub const REG_SPSR: usize = 2;
+pub const REG_X0: usize = 3;
+pub const REG_X1: usize = 4;
+pub const REG_X2: usize = 5;
+pub const REG_X3: usize = 6;
+pub const REG_X4: usize = 7;
+pub const REG_X5: usize = 8;
+pub const REG_X6: usize = 9;
+pub const REG_X7: usize = 10;
+pub const REG_X8: usize = 11;
+pub const REG_X16: usize = 12;
+pub const REG_X17: usize = 13;
+pub const REG_X18: usize = 14;
+pub const REG_X29: usize = 15;
+pub const REG_X30: usize = 16;
+pub const REG_X9: usize = 17;
+pub const REG_X10: usize = 18;
+pub const REG_X11: usize = 19;
+pub const REG_X12: usize = 20;
+pub const REG_X13: usize = 21;
+pub const REG_X14: usize = 22;
+pub const REG_X15: usize = 23;
+pub const REG_X19: usize = 24;
+pub const REG_X20: usize = 25;
+pub const REG_X21: usize = 26;
+pub const REG_X22: usize = 27;
+pub const REG_X23: usize = 28;
+pub const REG_X24: usize = 29;
+pub const REG_X25: usize = 30;
+pub const REG_X26: usize = 31;
+pub const REG_X27: usize = 32;
+pub const REG_X28: usize = 33;
+pub const REG_TPIDR_EL0: usize = 34;
+pub const REG_TPIDRRO_EL0: usize = 35;
+
+/// Xn → UserContext 索引（aarch64 X 寄存器组不连续，30 RT-012 纠偏后
+/// 唯一映射入口——禁止线性 `REG_X0 + n`）。
+/// 非法 n（>30）→ None。
+pub const fn reg_x_index(n: usize) -> Option<usize> {
+    match n {
+        0..=8 => Some(REG_X0 + n),           // X0..X8 @ 3..=11
+        9..=15 => Some(REG_X9 + (n - 9)),    // X9..X15 @ 17..=23
+        16..=18 => Some(REG_X16 + (n - 16)), // X16..X18 @ 12..=14
+        19..=28 => Some(REG_X19 + (n - 19)), // X19..X28 @ 24..=33
+        29 => Some(REG_X29),                 // @ 15
+        30 => Some(REG_X30),                 // @ 16
+        _ => None,
+    }
+}
 
 /// Conservative upper bound on `seL4_UserContext` register count across
 /// supported seL4 aarch64 configs. The actual count is returned by
@@ -160,8 +189,12 @@ impl UserContext {
 
     /// Set a general-purpose register Xn (0..=30).
     pub fn set_x(&mut self, n: usize, val: Word) {
-        if n <= 30 {
-            self.regs[REG_X0 + n] = val;
+        // 30 RT-012 纠偏：X 寄存器在 seL4 aarch64 UserContext 中**不连续**
+        // （帧寄存器组 X0..X8/X16..X18/X29/X30 在前，X9..X15/X19..X28 在
+        // 后），经 reg_x_index 表映射——禁止线性 `REG_X0 + n`（X0=3 起
+        // 连续 +8 后跳到 X16=12，X9=17）。
+        if let Some(idx) = reg_x_index(n) {
+            self.regs[idx] = val;
         }
     }
 
@@ -277,15 +310,33 @@ pub struct RightsTable {
 
 #[cfg(test)]
 mod tests {
-    /// 30 RT-012 判据：36 个 REG 索引常量互不相等（X30 与 NZCV 碰撞回归
-    /// 防护）；X0=2 / X30=32 / NZCV=33 与 seL4 aarch64 布局一致。
+    /// 30 RT-012 判据（权威布局，seL4 14.0.0 aarch64）：REG 常量锚定 +
+    /// 36 索引两两不等 + `reg_x_index` 与常量表一致（X 不连续映射）。
     #[test]
-    fn reg_indices_unique() {
+    fn reg_indices_match_authoritative_aarch64_layout() {
+        // 锚定（libsel4 types.h 字段序 + 内核 registerset.c frameRegisters/
+        // gpRegisters 顺序；spawn 服务参数链依赖 X0/X1）。
+        assert_eq!(REG_PC, 0);
+        assert_eq!(REG_SP, 1);
+        assert_eq!(REG_SPSR, 2, "index 2 = SPSR（aarch64 无独立 NZCV 字段）");
+        assert_eq!(REG_X0, 3, "x0 必须位于 index 3（spawn 服务参数依赖）");
+        assert_eq!(REG_X1, 4);
+        assert_eq!(REG_X8, 11);
+        assert_eq!(REG_X16, 12);
+        assert_eq!(REG_X17, 13);
+        assert_eq!(REG_X18, 14);
+        assert_eq!(REG_X29, 15);
+        assert_eq!(REG_X30, 16, "x30 位于 index 16（帧寄存器组末尾）");
+        assert_eq!(REG_X9, 17, "x9 位于 index 17（其他整数寄存器组）");
+        assert_eq!(REG_X28, 33);
+        assert_eq!(REG_TPIDR_EL0, 34);
+        assert_eq!(REG_TPIDRRO_EL0, 35);
+        // 唯一性：全部 36 个索引两两不等。
         let all = [
-            REG_PC, REG_SP, REG_X0, REG_X1, REG_X2, REG_X3, REG_X4, REG_X5, REG_X6, REG_X7,
-            REG_X8, REG_X9, REG_X10, REG_X11, REG_X12, REG_X13, REG_X14, REG_X15, REG_X16,
+            REG_PC, REG_SP, REG_SPSR, REG_X0, REG_X1, REG_X2, REG_X3, REG_X4, REG_X5, REG_X6,
+            REG_X7, REG_X8, REG_X9, REG_X10, REG_X11, REG_X12, REG_X13, REG_X14, REG_X15, REG_X16,
             REG_X17, REG_X18, REG_X19, REG_X20, REG_X21, REG_X22, REG_X23, REG_X24, REG_X25,
-            REG_X26, REG_X27, REG_X28, REG_X29, REG_X30, REG_NZCV,
+            REG_X26, REG_X27, REG_X28, REG_X29, REG_X30, REG_TPIDR_EL0, REG_TPIDRRO_EL0,
         ];
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate() {
@@ -294,11 +345,20 @@ mod tests {
                 }
             }
         }
-        assert_eq!(REG_PC, 0);
-        assert_eq!(REG_SP, 1);
-        assert_eq!(REG_X0, 2, "x0 必须位于 index 2（seL4 aarch64 布局）");
-        assert_eq!(REG_X30, 32, "x30 必须位于 index 32（非 33）");
-        assert_eq!(REG_NZCV, 33);
+        // reg_x_index 与常量表一致（Xn 全部命中且索引正确；X31 非法）。
+        for n in 0..=30usize {
+            let expect = match n {
+                0..=8 => 3 + n,
+                9..=15 => 17 + (n - 9),
+                16..=18 => 12 + (n - 16),
+                19..=28 => 24 + (n - 19),
+                29 => 15,
+                30 => 16,
+                _ => unreachable!(),
+            };
+            assert_eq!(reg_x_index(n), Some(expect), "X{n} 映射错误");
+        }
+        assert_eq!(reg_x_index(31), None, "X31 不存在");
     }
 
     use super::*;
@@ -327,5 +387,23 @@ mod tests {
         assert_eq!(ctx.pc(), 0x4000_0000);
         assert_eq!(ctx.sp(), 0x7000_0000);
         assert_eq!(ctx.regs[REG_X0], 0x1234);
+    }
+
+    /// 30 RT-012 回归锚点：spawn `initial_registers` 契约（固定索引 3/4，
+    /// 不引用常量）——服务 `_start(ep, ipc_buffer)` 经 aarch64 ABI 从
+    /// x0/x1 读参；索引错位（x0 被写进 spsr=2、buffer 被写进 x0=3）时
+    /// 服务收到 NULL IPC buffer + 无效 cptr → fail-closed 挂起。
+    #[test]
+    fn spawn_register_contract_x0_ep_x1_buffer() {
+        let mut regs = UserContext::zeroed();
+        regs.set_pc(0x202_024);
+        regs.set_sp(0x221_000);
+        regs.set_x(0, 0); // ep cap 槽 0
+        regs.set_x(1, 0x221_000); // IPC buffer vaddr
+        assert_eq!(regs.regs[0], 0x202_024, "pc 位于 index 0");
+        assert_eq!(regs.regs[1], 0x221_000, "sp 位于 index 1");
+        assert_eq!(regs.regs[2], 0, "spsr=0（合法 EL0 PSTATE，不得被污染）");
+        assert_eq!(regs.regs[3], 0, "x0 必须是 ep（index 3）");
+        assert_eq!(regs.regs[4], 0x221_000, "x1 必须是 buffer vaddr（index 4）");
     }
 }

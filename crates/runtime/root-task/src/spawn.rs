@@ -161,6 +161,11 @@ fn plan_one(
     // VSpace，虚拟地址区间可相同（页表隔离）。用 vspace_base 连续分配
     // 会导致服务映射 ≠ 链接 → 执行即 VMFAULT（QEMU 实测 pc=0x203554）。
     let mut vaddr = vspace_base;
+    // 审查修复（蓝图 RT-006 规格补全）：栈区起点 = vaddr（布局末端 =
+    // ELF 序最后一段的 end）。乱序非重叠段（最后一段不是最高 vaddr）时
+    // 栈起点低于前面段的末端 → 栈与段重叠。max_seg_end 追踪所有段末端
+    // 的最大值，超出栈起点即拒绝。
+    let mut max_seg_end = 0u64;
     for seg in elf.segments() {
         let flags = seg.flags;
         if flags.is_wx_violation() {
@@ -180,9 +185,16 @@ fn plan_one(
             write: flags.write,
             exec: flags.execute,
         });
-        vaddr = mapped_vaddr
+        let seg_end = mapped_vaddr
             .checked_add(size)
             .ok_or(SpawnError::OutOfVaddrSpace)?;
+        max_seg_end = max_seg_end.max(seg_end);
+        vaddr = seg_end;
+    }
+    // 栈区 [stack_top - stack_size, stack_top) 起点 = vaddr：任何段末端
+    // 超出该起点 → 栈与段重叠（同一虚拟页两次映射，后写覆盖/执行损坏）。
+    if max_seg_end > vaddr {
+        return Err(SpawnError::SegmentOverlap);
     }
     let stack_top = vaddr
         .checked_add(stack_size)
@@ -1166,6 +1178,16 @@ fn retype_page_tables(
     Ok(slots)
 }
 
+/// 30 RT-007：单次窗口拷贝长度校验（release 构建也生效——旧
+/// `debug_assert!(len <= PAGE_SIZE)` 在 release 剔除后越页写 WINDOW_BASE
+/// 窗口）。纯函数，host 可直接测。
+pub(crate) fn window_copy_len_ok(len: usize) -> Result<(), SpawnError> {
+    if len > PAGE_SIZE as usize {
+        return Err(SpawnError::WindowOverflow);
+    }
+    Ok(())
+}
+
 /// 方案 A 页内容拷贝：窗口映射 → 拷贝 → 卸载（ADR-0034）。
 ///
 /// 把 bundle blob `[src_offset, src_offset+len)` 的 `len` 字节拷入 `frame`
@@ -1182,11 +1204,8 @@ fn copy_segment_via_window(
     rights: &RightsTable,
 ) -> Result<(), SpawnError> {
     use core::ptr::copy_nonoverlapping;
-    // 30 RT-007：release 构建剔除 debug_assert 后越页写窗口——显式
-    // 检查（fail-closed）。
-    if len > PAGE_SIZE as usize {
-        return Err(SpawnError::WindowOverflow);
-    }
+    // 30 RT-007：显式检查（fail-closed；纯函数 host 可测）。
+    window_copy_len_ok(len)?;
     // SAFETY: WINDOW_BASE 为 root VSpace 内已建页表的窗口槽；frame 刚
     // retype 且未映射（unmap 后 cap 已解除，可重新映射）。
     arm_page_map(
@@ -1376,23 +1395,54 @@ mod tests {
         );
     }
 
-    /// 30 RT-007 判据：copy_segment_via_window 对 len > PAGE_SIZE 必须
-    /// Err(WindowOverflow)（release 构建 debug_assert 被剔除——显式检查）。
+    /// 30 RT-007 判据：copy_segment_via_window 的窗口长度检查（release
+    /// 构建 debug_assert 被剔除——显式纯函数）。审查修复：旧测试用
+    /// include_str 检查源码字符串（假测），现直接调用纯函数验证行为。
     #[test]
-    fn test_copy_segment_via_window_rejects_oversized_len() {
-        // 直接调用私有函数：构造最小 SpawnCtx 成本高——验证其校验函数
-        // 语义已由 elf-loader 测试覆盖；此处验证 spawn.rs 的检查路径存在。
-        // （len 检查在函数首行，无法 host 侧构造完整 SpawnCtx 时以代码
-        // 走查 + elf-loader 重叠/回绕测试闭环；QEMU 回归见版本验收。）
-        // 检查函数体包含显式错误返回（防 debug_assert 回退）。
-        let src = include_str!("spawn.rs");
-        assert!(
-            src.contains("if len > PAGE_SIZE as usize"),
-            "copy_segment_via_window 必须保留显式窗口检查（30 RT-007）"
+    fn test_window_copy_len_ok() {
+        assert_eq!(window_copy_len_ok(PAGE_SIZE as usize), Ok(()));
+        assert_eq!(
+            window_copy_len_ok(PAGE_SIZE as usize + 1),
+            Err(SpawnError::WindowOverflow)
         );
+        assert_eq!(window_copy_len_ok(0), Ok(()));
+    }
+
+    /// 审查修复判据（蓝图 RT-006 规格补全）：乱序非重叠段（ELF 序最后
+    /// 一段不是最高 vaddr）→ 栈起点低于前面段的末端 → 栈与段重叠必须
+    /// 拒绝（旧实现只查段间重叠，栈区 [stack_top-stack_size, stack_top)
+    /// 与段共享虚拟页，后写覆盖/执行损坏）。
+    #[test]
+    fn test_plan_one_rejects_stack_collision_with_out_of_order_segments() {
+        let mut buf = minimal_data_elf(); // 段序 0x1000(R-X), 0x2000(RW-)
+        // 交换两段 vaddr：先 0x2000 后 0x1000（非重叠但乱序）。
+        let ph1 = 64;
+        let ph2 = 64 + 56;
+        buf[ph1 + 16..ph1 + 24].copy_from_slice(&0x2000u64.to_le_bytes());
+        buf[ph1 + 24..ph1 + 32].copy_from_slice(&0x2000u64.to_le_bytes());
+        buf[ph2 + 16..ph2 + 24].copy_from_slice(&0x1000u64.to_le_bytes());
+        buf[ph2 + 24..ph2 + 32].copy_from_slice(&0x1000u64.to_le_bytes());
+        // entry 必须落在可执行段（0x2000，R-X 段）。
+        buf[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
+        let elf = eneros_elf_loader::LoadedElf::parse(&buf).expect("parse");
+        // 前提：乱序非重叠段必须通过 validate_segments（否则测试前提
+        // 不成立——检查的是栈碰撞而非段重叠）。
         assert!(
-            src.contains("SpawnError::WindowOverflow"),
-            "SpawnError::WindowOverflow 变体必须存在"
+            eneros_elf_loader::LoadedElf::validate_segments(elf.segments()).is_ok(),
+            "测试前提：乱序非重叠段不得触发段重叠"
+        );
+        assert_eq!(
+            plan_one("svc-x", &elf, 0x4000_0000, 0x1000, 0x4000, 5),
+            Err(SpawnError::SegmentOverlap),
+            "栈起点低于段末端必须拒绝（栈与段重叠）"
+        );
+        // 升序（正常）段序不拒绝。
+        let mut ok = minimal_data_elf();
+        ok[24..32].copy_from_slice(&0x1000u64.to_le_bytes());
+        let elf_ok = eneros_elf_loader::LoadedElf::parse(&ok).expect("parse");
+        assert!(
+            plan_one("svc-x", &elf_ok, 0x4000_0000, 0x1000, 0x4000, 5).is_ok(),
+            "升序段序必须照常通过"
         );
     }
 

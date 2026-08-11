@@ -15,9 +15,10 @@ use linked_list_allocator::LockedHeap;
 
 /// 堆大小（字节）：编译期注入（`ENEROS_HEAP_SIZE_BYTES`），默认 1 MiB。
 ///
-/// G-R1 QEMU 实测：1 MiB bump 时代刚好够（无 header 开销）；LockedHeap
+/// G-R1 QEMU 实测：512 KiB bump 时代刚好够（无 header 开销）；LockedHeap
 /// 的块头/对齐开销使 spawn 后剩余不足（OOM 8776B——supervisor 表分配
-/// 失败）。1 MiB 留足余量（真机按板载 RAM 构建时注入调整）。
+/// 失败），故 G-R1 把默认提到 1 MiB 留足余量（真机按板载 RAM 构建时注入
+/// 调整）。
 const HEAP_SIZE: usize = match option_env!("ENEROS_HEAP_SIZE_BYTES") {
     Some(s) => match parse_heap_size(s) {
         Some(n) if n >= 4096 => n,

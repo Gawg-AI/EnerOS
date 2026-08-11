@@ -435,12 +435,17 @@ impl LoadedElf {
 
     /// 30 WP-27.7：应用重定位（S7 顺序：验签 → 映射 → 重定位 → 跳转）。
     ///
-    /// `img` = **已加载到目标内存的镜像字节**（段已按 vaddr 放置）；
+    /// `img` = **链接地址平坦化镜像**（`img[k]` = 虚拟地址 k 处的字节，
+    /// 段间空洞由装配层填零；**当前支持形态要求文件偏移 == 链接地址**——
+    /// DT_RELA 以文件偏移语义定位、r_offset 以链接地址语义写入，二者在
+    /// img 中重合；真实 ELF（vaddr ≠ p_offset）重定位须先扩展本函数，
+    /// 31 域装配层接线时处理）。
     /// `base` = 加载基址（链接地址偏移）；`segments` = PT_LOAD 段描述。
     ///
     /// 校验（fail-closed）：
-    /// - Rela 表边界（r_offset 与 8 字节写入目标完全落在某**可写**段内，
-    ///   防恶意 Rela 越界写）；
+    /// - Rela 表边界（rela_ent 合法且 size 整除、r_offset 与 8 字节写入
+    ///   目标完全落在某**可写**段内且不越 img 界——防恶意 Rela 越界写
+    ///   与切片 panic）；
     /// - 仅支持 `R_AARCH64_RELATIVE`；其他类型 → `Err(UnsupportedReloc)`。
     pub fn apply_relocations(
         img: &mut [u8],
@@ -449,6 +454,11 @@ impl LoadedElf {
         segments: &[LoadedSegment],
     ) -> Result<(), ElfError> {
         if dyn_.rela_ent < ELF64_RELA_SIZE || dyn_.rela_ent % 8 != 0 {
+            return Err(ElfError::BadRelaTable);
+        }
+        // 审查修复：size 必须整除 ent——旧实现余数条目被静默忽略
+        // （fail-closed 红线：表截断即拒绝）。
+        if dyn_.rela_size % dyn_.rela_ent != 0 {
             return Err(ElfError::BadRelaTable);
         }
         let rela_end = dyn_
@@ -471,11 +481,19 @@ impl LoadedElf {
             let target_end = target
                 .checked_add(8)
                 .ok_or(ElfError::RelocOutOfBounds)?;
-            // 边界校验：写入目标（虚拟地址）必须完全落在某个可写段内。
+            // 边界校验：写入目标（虚拟地址）必须完全落在某个可写段内
+            //（段边界算术 checked——恶意 base/vaddr 回绕不得绕过检查）。
             let in_writable = segments.iter().any(|s| {
                 s.flags.write
-                    && target >= base + s.vaddr
-                    && target_end <= base + s.vaddr + s.memsz
+                    && target
+                        >= base
+                            .checked_add(s.vaddr)
+                            .unwrap_or(u64::MAX)
+                    && target_end
+                        <= base
+                            .checked_add(s.vaddr)
+                            .and_then(|b| b.checked_add(s.memsz))
+                            .unwrap_or(0)
             });
             if !in_writable {
                 return Err(ElfError::RelocOutOfBounds);
@@ -483,10 +501,15 @@ impl LoadedElf {
             match r_type {
                 R_AARCH64_RELATIVE => {
                     let value = base.wrapping_add(r_addend);
-                    // img = 已加载镜像（文件偏移 == 段 vaddr 的平坦布局），
-                    // 写入槽 = r_offset（链接地址相对加载基址的偏移）。
+                    // 写入槽 = r_offset（链接地址 == 文件偏移的平坦布局）；
+                    // 审查修复：越 img 界 → Err（旧实现 `img[slot..slot+8]`
+                    // 直接 panic——装配层传入未铺到段末端的镜像即触发）。
                     let slot = r_offset as usize;
-                    img[slot..slot + 8].copy_from_slice(&value.to_le_bytes());
+                    let slot_end = slot.checked_add(8).ok_or(ElfError::RelocOutOfBounds)?;
+                    if slot_end > img.len() {
+                        return Err(ElfError::RelocOutOfBounds);
+                    }
+                    img[slot..slot_end].copy_from_slice(&value.to_le_bytes());
                 }
                 _ => return Err(ElfError::UnsupportedReloc),
             }
@@ -858,6 +881,35 @@ mod tests {
         assert_eq!(
             LoadedElf::apply_relocations(&mut img, 0x4000_0000, &dyn_info, &segments),
             Err(ElfError::UnsupportedReloc)
+        );
+    }
+
+    /// 审查修复判据：写入槽超出 img 界（装配层传入未铺到段末端的镜像，
+    /// 如文件字节）→ RelocOutOfBounds（旧实现 `img[slot..slot+8]` 切片
+    /// panic——库公开契约不得 panic）。
+    #[test]
+    fn apply_relocations_rejects_slot_beyond_img() {
+        let (mut img, dyn_info, mut segments) = relocation_fixture();
+        // 段链接地址抬到 rela 表之后（vaddr=0x5000，base=0）：in_writable
+        // 检查通过（target=0x5000 ∈ [0x5000, 0x7000)），但写入槽 0x5000
+        // 超出 img（rela 表 @ 0x3000 之后无内容）——必须 Err 而非 panic。
+        segments[0].vaddr = 0x5000;
+        img[0x3000..0x3008].copy_from_slice(&0x5000u64.to_le_bytes());
+        assert_eq!(
+            LoadedElf::apply_relocations(&mut img, 0, &dyn_info, &segments),
+            Err(ElfError::RelocOutOfBounds)
+        );
+    }
+
+    /// 审查修复判据：rela_size 非 rela_ent 整数倍 → BadRelaTable
+    /// （旧实现余数条目被静默忽略）。
+    #[test]
+    fn apply_relocations_rejects_non_integral_rela_size() {
+        let (mut img, mut dyn_info, segments) = relocation_fixture();
+        dyn_info.rela_size = 3 * 24 + 8; // 余 8B
+        assert_eq!(
+            LoadedElf::apply_relocations(&mut img, 0x4000_0000, &dyn_info, &segments),
+            Err(ElfError::BadRelaTable)
         );
     }
 

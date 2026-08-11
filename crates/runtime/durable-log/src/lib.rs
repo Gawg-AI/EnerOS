@@ -167,11 +167,23 @@ impl<D: BlockDevice> BlockDurableLog<D> {
             .map_err(|_| StoreError::Io)
     }
 
+    /// 单块可容纳的最大记录字节数（16B 头 + payload；每条记录独占一块，
+    /// 块内剩余 padding）。block_size < 16 的设备 → 0（任何记录拒绝，
+    /// fail-closed）。
+    fn record_capacity(&self) -> usize {
+        self.block_size.saturating_sub(16).min(4096 - 16)
+    }
+
 }
 
 impl<D: BlockDevice> DurableLog for BlockDurableLog<D> {
     fn append(&mut self, rec: &[u8]) -> Result<Seq, StoreError> {
-        if rec.len() > 0xFFFF_FFFF {
+        // 审查修复（30 版后）：记录必须 ≤ 单块容量——旧实现仅查
+        // `rec.len() > 0xFFFF_FFFF`，超出 4080B 时 `buf[..record.len()]`
+        // 越界 panic、超出块大小时写入被块边界静默截断（append 返回
+        // Ok 但数据损坏）。fail-closed：超容量拒绝（不 panic、不截断）。
+        let cap = self.record_capacity();
+        if rec.len() > cap {
             return Err(StoreError::Full);
         }
         let seq = self.tail_seq;
@@ -209,7 +221,9 @@ impl<D: BlockDevice> DurableLog for BlockDurableLog<D> {
             let rec_seq = u64::from_le_bytes(buf[0..8].try_into().unwrap());
             let len = u32::from_le_bytes(buf[8..12].try_into().unwrap()) as usize;
             let stored_crc = u32::from_le_bytes(buf[12..16].try_into().unwrap());
-            if rec_seq != s || len > 4096 - 16 {
+            // 长度上限与 append 的 record_capacity 一致（防半写/损坏记录
+            // 的 payload 越界切片——buf 内切片本身安全，超限即 Corrupt）。
+            if rec_seq != s || len > self.record_capacity() {
                 return Err(StoreError::Corrupt);
             }
             let payload = &buf[16..16 + len];
@@ -235,7 +249,10 @@ impl<D: BlockDevice> DurableLog for BlockDurableLog<D> {
             let rec_seq = u64::from_le_bytes(buf[0..8].try_into().unwrap());
             let len = u32::from_le_bytes(buf[8..12].try_into().unwrap()) as usize;
             let stored_crc = u32::from_le_bytes(buf[12..16].try_into().unwrap());
-            if rec_seq != s || len > 4096 - 16 || crc32(&buf[16..16 + len]) != stored_crc {
+            // 长度上限与 append/read_from 一致；超限/CRC 不符即视为
+            // 损坏/半写记录，停在该序号（不返回损坏数据）。
+            if rec_seq != s || len > self.record_capacity() || crc32(&buf[16..16 + len]) != stored_crc
+            {
                 break;
             }
             s += 1;
@@ -309,15 +326,23 @@ impl<D: BlockDevice> eneros_audit::AuditStore for PersistentAuditStore<D> {
         end_seq: u64,
     ) -> Result<alloc::vec::Vec<eneros_audit::ChainEntry>, eneros_audit::AuditError> {
         let mut out = alloc::vec::Vec::new();
+        // 审查修复（30 版后）：解码失败（记录长度 ≠ ChainEntry 定长 112B）
+        // 不得静默跳过——旧实现 `if let Some` 丢条目不报错（数据静默丢失，
+        // 违反 fail-closed）。置标志后整体报错。
+        let mut malformed = false;
         self.log
             .read_from(start_seq, &mut |seq, rec| {
                 if seq <= end_seq {
-                    if let Some(e) = Self::decode(rec) {
-                        out.push(e);
+                    match Self::decode(rec) {
+                        Some(e) => out.push(e),
+                        None => malformed = true,
                     }
                 }
             })
             .map_err(|_| eneros_audit::AuditError::StorageReadFailed)?;
+        if malformed {
+            return Err(eneros_audit::AuditError::StorageReadFailed);
+        }
         Ok(out)
     }
 
@@ -401,6 +426,27 @@ mod tests {
             Err(StoreError::Corrupt)
         );
         assert_eq!(seen.len(), 1, "损坏记录之后不得返回数据");
+    }
+
+    /// 审查修复判据（512B 块设备）：记录 ≤ 单块容量（512-16=496B）才可
+    /// 追加；497B 拒绝（旧实现静默截断——append 返回 Ok 但数据损坏）。
+    #[test]
+    fn append_rejects_record_larger_than_block() {
+        let dev = MockBlockDevice::new(64, 512);
+        let mut log = BlockDurableLog::format(dev, 512).expect("format");
+        let ok = log.append(&[0x5A; 496]).expect("496B 恰好一块，必须成功");
+        assert_eq!(ok, 1);
+        assert_eq!(log.append(&[0x5A; 497]), Err(StoreError::Full));
+    }
+
+    /// 审查修复判据（4096B 块设备）：4080B 恰好容量；4081B 拒绝（旧实现
+    /// 在 `buf[..record.len()]` 越界 panic——库公开契约不得 panic）。
+    #[test]
+    fn append_rejects_record_exceeding_buffer() {
+        let dev = MockBlockDevice::new(64, 4096);
+        let mut log = BlockDurableLog::format(dev, 4096).expect("format");
+        assert_eq!(log.append(&[0x5A; 4080]).expect("4080B 恰好容量"), 1);
+        assert_eq!(log.append(&[0x5A; 4081]), Err(StoreError::Full));
     }
 
     /// 30 WP-30.7：PersistentAuditStore 经 AuditStore trait 落盘/读回。
