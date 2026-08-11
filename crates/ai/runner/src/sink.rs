@@ -59,7 +59,7 @@ impl CommandSink for FileCommandSink {
             "schema": "eneros.command-sink.v1",
             "target_device": cmd.target_device,
             "power_kw": cmd.power_kw,
-            "ttl_ms": cmd.ttl_ms,
+            "ttl_secs": cmd.ttl_secs,
             "timestamp": cmd.timestamp,
         });
         let mut bytes = serde_json::to_vec(&line).map_err(|e| {
@@ -151,7 +151,7 @@ mod tests {
         sink.write(DispatchCommand {
             target_device: "pcs".into(),
             power_kw: 12.5,
-            ttl_ms: 300_000,
+            ttl_secs: 300,
             timestamp: 42,
         })
         .expect("write");
@@ -183,7 +183,7 @@ mod tests {
             sink.write(DispatchCommand {
                 target_device: "pcs".into(),
                 power_kw: 1.0,
-                ttl_ms: 1,
+                ttl_secs: 1,
                 timestamp: 1,
             })
             .expect("write");
@@ -192,7 +192,7 @@ mod tests {
         sink.write(DispatchCommand {
             target_device: "pcs".into(),
             power_kw: 2.0,
-            ttl_ms: 2,
+            ttl_secs: 2,
             timestamp: 2,
         })
         .expect("write");

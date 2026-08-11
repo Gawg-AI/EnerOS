@@ -16,8 +16,10 @@ pub struct DispatchCommand {
     pub target_device: String,
     /// 功率设定（kW）.
     pub power_kw: f64,
-    /// 命令有效期（ms）.
-    pub ttl_ms: u32,
+    /// 命令有效期（**秒**，epoch 秒基准——29 AI-01：原 `ttl_ms` 毫秒值直接
+    /// 加到秒基准的 `now` 上，信封有效期放大 1000 倍；改名 `ttl_secs`
+    /// 编译器强制所有消费方按秒契约适配）.
+    pub ttl_secs: u32,
     /// 时间戳（ms）.
     pub timestamp: u64,
 }

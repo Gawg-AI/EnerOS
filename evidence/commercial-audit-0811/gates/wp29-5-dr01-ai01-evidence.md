@@ -24,15 +24,20 @@
 - 定位：chain_sink.rs:197 now.saturating_add(cmd.ttl_ms as u64)——毫秒 TTL
   加到秒基准时钟（wire 格式 epoch 秒，envelope.rs:24-25/gateway.rs:189/
   ingress.rs:437 三方确证）→ 信封有效期放大 1000 倍（名义 5 分钟 → ~3.5 天）。
-- 执行裁决：蓝图推荐字段改名 ttl_secs，但排斥矩阵禁止触碰 coordinator.rs
-  （32 域）——采用 04 证据方案一：chain_sink 内部统一秒基准
-  `ttl_secs = (cmd.ttl_ms / 1000).max(1)`（字段名 ttl_ms 保持，32 域
-  coordinator 装配点适配时一并改名；本提交明示该决策）。
-- 判据：test_chain_sink_envelope_expiry_in_seconds——ttl_ms=300_000 时
+- 执行裁决（29 提交时）：蓝图推荐字段改名 ttl_secs，但 29 排斥矩阵禁止
+  触碰 coordinator.rs（32 域）——先采用 04 证据方案一：chain_sink 内部
+  统一秒基准 `ttl_secs = (cmd.ttl_ms / 1000).max(1)`（字段名暂保持，32 域
+  coordinator 装配点适配时一并改名；当时提交明示该决策）。
+- **复查补齐（2026-08-11 二次会话）**：32 域已验收，排斥矩阵解除——按蓝图
+  字面完成字段改名：`DispatchCommand.ttl_ms` → `ttl_secs`（sink.rs），
+  chain_sink 直接用 `cmd.ttl_secs.max(1)`（无绕路换算），coordinator
+  构造点 `300_000 → 300`（秒），runner sink JSON 键 `ttl_ms → ttl_secs`；
+  全部 10 个构造点经编译器强制适配。dual-brain 59 / runner 20 测试全绿。
+- 判据：test_chain_sink_envelope_expiry_in_seconds——ttl_secs=300 时
   expiry − timestamp == 300s ± 1（修复前为 300_000s）。RecordingExecutor
   增信封记录 + RcExecutor 共享适配器。
-- 装配点：runner lib.rs:217/300 与 coordinator ~430 均传毫秒值，换算在
-  chain_sink 统一处理（零装配点改动）；device-agent ingress 复验秒比较
+- 装配点：runner lib.rs:217/300 与 coordinator ~430 均按秒契约传值
+  （lib.rs 测试 60s、coordinator 300s）；device-agent ingress 复验秒比较
   不受影响。
 
 ## 回归

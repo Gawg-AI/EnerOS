@@ -30,6 +30,7 @@ use eneros_solver_core::highs::HighsSolver;
 use crate::scenario::{Overrides, Scenario};
 use crate::sink::FileExecutor;
 
+pub mod cli;
 pub mod dispatcher;
 pub mod scenario;
 pub mod sink;
@@ -235,7 +236,10 @@ pub fn run_once(
             now_fn,
             feedback_fn,
         ));
-    let mut coord = DualBrainCoordinator::new(config, llm, solver, sink);
+    let mut coord = DualBrainCoordinator::new(config, llm, solver, sink)
+        // 32 AG-04：决策审计装配——创世锚从 chain_key SM3 派生（与封焊链
+        // 同源；chain_key 已经 AI-07 fail-closed 校验 ≥16B）。
+        .with_audit(eneros_dual_brain::audit::decision_audit_from_key(chain_key));
 
     // 首次 execute 必走慢路径（PathSelector 首次 `last_slow_path_ms == None`）。
     let result = match coord.execute(&state, now_ms) {
@@ -974,7 +978,7 @@ mod tests {
         let dc = eneros_dual_brain::sink::DispatchCommand {
             target_device: "pcs".into(),
             power_kw: 30.0,
-            ttl_ms: 60_000,
+            ttl_secs: 60,
             timestamp: NOW_SECS * 1000,
         };
         sink.write(dc).expect("写必须成功（握手后发出）");
@@ -1018,7 +1022,7 @@ mod tests {
         let dc = eneros_dual_brain::sink::DispatchCommand {
             target_device: "pcs".into(),
             power_kw: 30.0,
-            ttl_ms: 60_000,
+            ttl_secs: 60,
             timestamp: NOW_SECS * 1000,
         };
         let r = sink.write(dc);

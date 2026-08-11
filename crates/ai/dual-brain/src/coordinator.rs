@@ -99,6 +99,9 @@ pub struct DualBrainCoordinator<S: Solver> {
     /// 32 AG-04：决策审计（W5.1 接线——旧实现 audit.rs 实现+测试在位但
     /// 零生产消费）。
     pub audit: Option<crate::audit::DecisionAudit>,
+    /// 32 AG-04：审计写入失败丢弃计数（不阻塞决策路径，fail-open 计数
+    /// 供告警/可观测）。
+    pub audit_drop_count: u64,
     /// 请求计数器（D2：生成 `request_id`）.
     pub request_counter: u64,
     /// 单调时钟（毫秒；v0.248.0 真实计时——默认 eneros-time 全局时钟，
@@ -157,6 +160,7 @@ impl<S: Solver> DualBrainCoordinator<S> {
             contract_validator: ContractValidator::new(),
             sink,
             audit: None,
+            audit_drop_count: 0,
             request_counter: 0,
             clock_fn: default_clock_ms,
             infer_scheduler: InferScheduler::new(
@@ -185,6 +189,14 @@ impl<S: Solver> DualBrainCoordinator<S> {
     /// 即 fail-closed 全拒）。
     pub fn with_gate(mut self, gate: DecisionGate) -> Self {
         self.gate = gate;
+        self
+    }
+
+    /// 32 AG-04：注入决策审计（W5.1 接线）——慢路径命令下发后把决策
+    /// 记入 SM3 哈希链（含 path/validation/gate 字段）；写失败仅计数
+    /// 丢弃，不阻塞决策路径。
+    pub fn with_audit(mut self, audit: crate::audit::DecisionAudit) -> Self {
+        self.audit = Some(audit);
         self
     }
 
@@ -451,7 +463,9 @@ impl<S: Solver> DualBrainCoordinator<S> {
             let cmd = DispatchCommand {
                 target_device: String::from("pcs"),
                 power_kw: entry.net_power_kw,
-                ttl_ms: 300_000,
+                // 29 AI-01：ttl_secs 秒基准（原 300_000ms → 300s，语义不变；
+                // 字段改名强制单位契约归一）。
+                ttl_secs: 300,
                 timestamp: now_ms,
             };
             // v0.248.0：真实计时。
@@ -461,6 +475,33 @@ impl<S: Solver> DualBrainCoordinator<S> {
         }
         // 下发成功才记账（失败不占速率/能量额度）。
         self.gate.record(now_ms, gate_energy_kwh);
+
+        // 32 AG-04：决策审计接线（W5.1）——慢路径下发成功后决策入链，
+        // 记录含 path/validation/gate 字段；写失败计数丢弃不阻塞决策。
+        if let Some(audit) = self.audit.as_mut() {
+            let safety = if validation.clamped_schedule.is_some() {
+                crate::audit::SafetyOutcome::Degraded
+            } else {
+                crate::audit::SafetyOutcome::Passed
+            };
+            let lp_summary = format!(
+                "path=SlowPath;gate=allow;energy_kwh={:.3};violations=0",
+                gate_energy_kwh
+            );
+            let rec = crate::audit::DecisionRecord {
+                actor: "dual-brain",
+                target: "pcs",
+                intent: "slow-path-decision",
+                lp_solution: &lp_summary,
+                safety,
+                exec: crate::audit::ExecOutcome::Succeeded,
+                deviation: 0.0,
+                now_ms,
+            };
+            if audit.log_decision(&rec).is_err() {
+                self.audit_drop_count += 1;
+            }
+        }
 
         // 构建反馈契约
         let feedback = self.converter.to_feedback(

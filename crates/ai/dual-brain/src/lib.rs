@@ -170,12 +170,12 @@ mod tests {
         let cmd = DispatchCommand {
             target_device: String::from("pcs"),
             power_kw: 50.0,
-            ttl_ms: 300_000,
+            ttl_secs: 300,
             timestamp: 1000,
         };
         assert_eq!(cmd.target_device, "pcs");
         assert!((cmd.power_kw - 50.0).abs() < 1e-9);
-        assert_eq!(cmd.ttl_ms, 300_000);
+        assert_eq!(cmd.ttl_secs, 300);
         assert_eq!(cmd.timestamp, 1000);
     }
 
@@ -193,7 +193,7 @@ mod tests {
         let cmd = DispatchCommand {
             target_device: String::from("pcs"),
             power_kw: 50.0,
-            ttl_ms: 300_000,
+            ttl_secs: 300,
             timestamp: 1000,
         };
         sink.write(cmd).unwrap();
@@ -270,6 +270,41 @@ mod tests {
         let state = safe_state();
         let result = coord.execute(&state, 0).unwrap();
         assert_eq!(result.path_type, PathType::SlowPath);
+    }
+
+    // ===== 32 AG-04 判据：audit_wired — 慢路径决策入审计链 =====
+    /// 验收：with_audit 注入后，慢路径决策产生审计记录（含
+    /// path/validation/gate 字段），全链 verify 绿；未注入时零记录。
+    #[test]
+    fn audit_wired_slow_path_records_decision() {
+        let mut coord = DualBrainCoordinator::default_with_mock()
+            .with_audit(crate::audit::DecisionAudit::new([0x32; 32]));
+        let state = safe_state();
+        let result = coord.execute(&state, 0).expect("slow-path ok");
+        assert_eq!(result.path_type, PathType::SlowPath);
+        assert_eq!(
+            coord.audit.as_ref().expect("audit 已注入").chain_state().entry_count,
+            1,
+            "慢路径决策必须入链"
+        );
+        assert_eq!(coord.audit_drop_count, 0, "写入不得失败");
+        assert!(
+            coord.audit.as_ref().expect("audit").verify().expect("verify").valid,
+            "审计链自洽"
+        );
+        // 快路径不入链（仅慢路径决策审计）。
+        let _ = coord.execute(&state, 1000).expect("fast-path");
+        assert_eq!(coord.audit.as_ref().expect("audit").chain_state().entry_count, 1);
+    }
+
+    /// 验收：未注入审计时慢路径正常决策且不 panic（可选装配）。
+    #[test]
+    fn audit_absent_slow_path_still_works() {
+        let mut coord = DualBrainCoordinator::default_with_mock();
+        let state = safe_state();
+        let result = coord.execute(&state, 0).expect("ok");
+        assert_eq!(result.path_type, PathType::SlowPath);
+        assert!(coord.audit.is_none());
     }
 
     // ===== T16: execute 慢路径 latency 各字段（llm_inference_ms > 0）=====
