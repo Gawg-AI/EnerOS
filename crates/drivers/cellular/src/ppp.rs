@@ -154,49 +154,37 @@ impl PppFrame {
         Self { protocol, data }
     }
 
-    /// Encode this frame to HDLC-encoded bytes.
+    /// Encode this frame to HDLC-encoded bytes per RFC 1662.
     ///
-    /// Layout: `Flag | Protocol(2, BE) | Data(escaped) | FCS(2) | Flag`.
-    ///
-    /// The FCS is a simplified fixed `0x0000`. A complete implementation
-    /// must compute CRC-16-CCITT over `Protocol + Data` and escape the FCS
-    /// bytes alongside the data.
+    /// 布局：`Flag | escape(Protocol(2,BE) + Data + FCS(2,LE)) | Flag`。
+    /// 31-review（B3）：FCS 算**原始** protocol+data（非转义后），转义作用于
+    /// content+FCS 整体——旧实现算转义后数据且 FCS 字节不转义，含 0x7E/0x7D
+    /// 的帧被对端误读为假 flag/假转义。
     pub fn encode(&self) -> Vec<u8> {
+        // 原始内容（未转义）：protocol + data。
+        let mut content = Vec::with_capacity(2 + self.data.len());
+        content.push((self.protocol >> 8) as u8);
+        content.push((self.protocol & 0xFF) as u8);
+        content.extend_from_slice(&self.data);
+        // FCS 覆盖原始内容（RFC 1662 §6.2）。
+        let fcs = fcs16(&content);
         let mut out = Vec::new();
         out.push(HDLC_FLAG);
-        // Protocol field, big-endian, not escaped (standard protocols never
-        // contain 0x7E/0x7D).
-        out.push((self.protocol >> 8) as u8);
-        out.push((self.protocol & 0xFF) as u8);
-        // Data with HDLC byte-stuffing.
-        for &b in &self.data {
-            match b {
-                HDLC_FLAG => {
-                    out.push(HDLC_ESCAPE);
-                    out.push(0x5E);
-                }
-                HDLC_ESCAPE => {
-                    out.push(HDLC_ESCAPE);
-                    out.push(0x5D);
-                }
-                _ => out.push(b),
-            }
+        for &b in &content {
+            push_escaped(&mut out, b);
         }
-        // 31 DR-05：真实 FCS16（RFC 1662 CRC-16-CCITT，初始 0xFFFF，
-        // 校验余数 0xF0B8）——旧实现固定 0x0000 无认证语义。FCS 覆盖
-        // protocol+data（不含起始 flag）。
-        let fcs = fcs16(&out[1..]);
-        out.push((fcs & 0xFF) as u8);
-        out.push((fcs >> 8) as u8);
+        // FCS 字节同样转义（小端，与 decode 的 LE 读取一致）。
+        push_escaped(&mut out, (fcs & 0xFF) as u8);
+        push_escaped(&mut out, (fcs >> 8) as u8);
         out.push(HDLC_FLAG);
         out
     }
 
-    /// Decode an HDLC-encoded frame.
+    /// Decode an HDLC-encoded frame per RFC 1662.
     ///
-    /// Expects `Flag | Protocol(2, BE) | Data(escaped) | FCS(2) | Flag`.
-    /// 31 DR-05：FCS 校验（RFC 1662——完整帧（含 FCS）的 CRC 余数必须
-    /// 为 0xF0B8；不符 → Err（旧实现读取不校验）。
+    /// 31-review（B3）：先 unescape 整个中间字段（content+FCS），再按原始字节
+    /// 实校验 FCS（全帧余数须 0xF0B8）——旧实现读转义后字节 + BE 读 FCS + body
+    /// 为 `let _ = 0;` 空操作，坏帧静默接受。
     pub fn decode(raw: &[u8]) -> Result<PppFrame, CellularError> {
         // Minimum: Flag + Protocol(2) + FCS(2) + Flag = 6 bytes.
         if raw.len() < 6 {
@@ -205,44 +193,67 @@ impl PppFrame {
         if raw.first() != Some(&HDLC_FLAG) || raw.last() != Some(&HDLC_FLAG) {
             return Err(CellularError::PppNegotiationFailed);
         }
-        let middle = &raw[1..raw.len() - 1];
+        let middle = &raw[1..raw.len() - 1]; // 转义后的 content+FCS（去首尾 flag）
         if middle.len() < 4 {
             return Err(CellularError::DialFailed);
         }
-        // 31 DR-05：FCS 校验（协议+数据 的余数 0xF0B8）。
-        let fcs_expected = ((middle[middle.len() - 2] as u16) << 8) | (middle[middle.len() - 1] as u16);
-        // FCS 按原始字节（未转义前）计算——此处 middle 为转义后字节，
-        // 校验对象为 unescape 前的 HDLC 载荷；对简化实现（无转义路径）
-        // 直接校验。
-        if fcs16(&middle[..middle.len() - 2]).wrapping_add(fcs_expected) != 0xF0B8 {
-            // 宽松：转义路径下余数校验在 unescape 后不精确——标记诊断，
-            // 不阻断（严格校验留真机验证）。
-            let _ = 0;
+        // 先 unescape 整个 middle（content+FCS）。
+        let decoded = unescape(middle)?;
+        if decoded.len() < 4 {
+            return Err(CellularError::PppNegotiationFailed);
         }
-        let protocol = ((middle[0] as u16) << 8) | (middle[1] as u16);
-        // Last 2 bytes = FCS (skipped), middle = escaped data.
-        let escaped = &middle[2..middle.len() - 2];
-        let mut data = Vec::with_capacity(escaped.len());
-        let mut i = 0;
-        while i < escaped.len() {
-            let b = escaped[i];
-            if b == HDLC_ESCAPE {
-                if i + 1 >= escaped.len() {
-                    return Err(CellularError::PppNegotiationFailed);
-                }
-                match escaped[i + 1] {
-                    0x5E => data.push(HDLC_FLAG),
-                    0x5D => data.push(HDLC_ESCAPE),
-                    _ => return Err(CellularError::PppNegotiationFailed),
-                }
-                i += 2;
-            } else {
-                data.push(b);
-                i += 1;
-            }
+        let fcs_off = decoded.len() - 2;
+        let content = &decoded[..fcs_off];
+        // 31-review（B3）：实校验——重算 content 的 FCS 与收到的 FCS（LE）比对。
+        // encode 存 fcs16(content) 的 LE；此处对称重算（不依赖 0xF0B8 余数恒等式，
+        // 该恒等式要求 FCS 经特定补码变换——本实现 fcs16 已返回补码，直接比对更稳）。
+        let received_fcs = u16::from_le_bytes([decoded[fcs_off], decoded[fcs_off + 1]]);
+        if fcs16(content) != received_fcs {
+            return Err(CellularError::PppNegotiationFailed);
         }
+        let protocol = ((decoded[0] as u16) << 8) | (decoded[1] as u16);
+        let data = content[2..].to_vec();
         Ok(PppFrame { protocol, data })
     }
+}
+
+/// 31-review（B3）：HDLC transparency——单字节写入 out（0x7E→7D 5E，0x7D→7D 5D）。
+fn push_escaped(out: &mut Vec<u8>, b: u8) {
+    match b {
+        HDLC_FLAG => {
+            out.push(HDLC_ESCAPE);
+            out.push(0x5E);
+        }
+        HDLC_ESCAPE => {
+            out.push(HDLC_ESCAPE);
+            out.push(0x5D);
+        }
+        _ => out.push(b),
+    }
+}
+
+/// 31-review（B3）：反转义 HDLC 字节流（0x7D 5E→7E，0x7D 5D→7D）；非法转义序列 → Err。
+fn unescape(esc: &[u8]) -> Result<Vec<u8>, CellularError> {
+    let mut out = Vec::with_capacity(esc.len());
+    let mut i = 0;
+    while i < esc.len() {
+        let b = esc[i];
+        if b == HDLC_ESCAPE {
+            if i + 1 >= esc.len() {
+                return Err(CellularError::PppNegotiationFailed);
+            }
+            match esc[i + 1] {
+                0x5E => out.push(HDLC_FLAG),
+                0x5D => out.push(HDLC_ESCAPE),
+                _ => return Err(CellularError::PppNegotiationFailed),
+            }
+            i += 2;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    Ok(out)
 }
 
 /// 31 DR-05：PPP FCS16（CRC-16-CCITT，RFC 1662 §6.2——多项式 0x8408
@@ -538,39 +549,61 @@ mod tests {
 
     #[test]
     fn encode_escapes_flag_byte_in_data() {
-        // Data contains 0x7E -> 0x7D 0x5E
+        // Data contains 0x7E -> 0x7D 0x5E。31-review（B3）：FCS 现按原始数据算，
+        // 旧硬编码向量（FCS=52 39）失效——改为结构断言 + roundtrip 解码恢复。
         let frame = PppFrame::new(PPP_IP, alloc::vec![0x7E, 0x41]);
         let enc = frame.encode();
-        assert_eq!(
-            enc,
-            alloc::vec![0x7E, 0x00, 0x21, 0x7D, 0x5E, 0x41, 0x52, 0x39, 0x7E]
+        assert!(
+            enc.windows(2).any(|w| w == [0x7D, 0x5E]),
+            "0x7E 未转义为 7D 5E: {:?}",
+            enc
         );
+        let decoded = PppFrame::decode(&enc).expect("roundtrip decode");
+        assert_eq!(decoded.data, alloc::vec![0x7E, 0x41]);
     }
 
     #[test]
     fn encode_escapes_escape_byte_in_data() {
-        // Data contains 0x7D -> 0x7D 0x5D
+        // Data contains 0x7D -> 0x7D 0x5D（同上，roundtrip 验证）。
         let frame = PppFrame::new(PPP_IP, alloc::vec![0x7D, 0x42]);
         let enc = frame.encode();
-        assert_eq!(
-            enc,
-            alloc::vec![0x7E, 0x00, 0x21, 0x7D, 0x5D, 0x42, 0xA1, 0x21, 0x7E]
+        assert!(
+            enc.windows(2).any(|w| w == [0x7D, 0x5D]),
+            "0x7D 未转义为 7D 5D: {:?}",
+            enc
         );
+        let decoded = PppFrame::decode(&enc).expect("roundtrip decode");
+        assert_eq!(decoded.data, alloc::vec![0x7D, 0x42]);
     }
 
     #[test]
     fn decode_unescapes_flag_byte() {
-        let raw: &[u8] = &[0x7E, 0x00, 0x21, 0x7D, 0x5E, 0x41, 0x00, 0x00, 0x7E];
-        let frame = PppFrame::decode(raw).unwrap();
+        // 31-review（B3）：用 encode 产出有效 FCS 帧（旧硬编码 FCS=0x0000 现被实校验拒）。
+        let raw = PppFrame::new(PPP_IP, alloc::vec![0x7E, 0x41]).encode();
+        let frame = PppFrame::decode(&raw).unwrap();
         assert_eq!(frame.protocol, PPP_IP);
         assert_eq!(frame.data, alloc::vec![0x7E, 0x41]);
     }
 
     #[test]
     fn decode_unescapes_escape_byte() {
-        let raw: &[u8] = &[0x7E, 0x00, 0x21, 0x7D, 0x5D, 0x42, 0x00, 0x00, 0x7E];
-        let frame = PppFrame::decode(raw).unwrap();
+        let raw = PppFrame::new(PPP_IP, alloc::vec![0x7D, 0x42]).encode();
+        let frame = PppFrame::decode(&raw).unwrap();
         assert_eq!(frame.data, alloc::vec![0x7D, 0x42]);
+    }
+
+    #[test]
+    fn decode_rejects_bad_fcs() {
+        // 31-review（B3）：实校验判据——篡改 FCS 必须被拒
+        //（旧实现 body=`let _ = 0;` 空操作，坏帧静默接受）。
+        let mut raw = PppFrame::new(PPP_LCP, alloc::vec![0x01, 0x02, 0x03]).encode();
+        // 布局：[FLAG, content..., fcs_lo, fcs_hi, FLAG] —— 翻转 fcs_lo。
+        let fcs_lo_idx = raw.len() - 3;
+        raw[fcs_lo_idx] ^= 0xFF;
+        assert_eq!(
+            PppFrame::decode(&raw).unwrap_err(),
+            CellularError::PppNegotiationFailed
+        );
     }
 
     #[test]

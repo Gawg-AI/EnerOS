@@ -343,6 +343,11 @@ impl Iec104Master {
         match apdu.control_field {
             ControlField::Unnumbered(func) => {
                 self.handle_u_format(conn_key, func);
+                // 31-review：IEC 104 §5——收到 TestFrAct 必须回 TestFrCon
+                //（旧 _ =>{} 吞掉 → 对端 t1 重传 3 次后断开健康链路）。
+                if matches!(func, UFormatFunction::TestFrAct) {
+                    self.send_u_frame(conn_key, UFormatFunction::TestFrCon)?;
+                }
             }
             ControlField::Information { .. } => {
                 if let Some(asdu) = apdu.asdu {
@@ -508,6 +513,23 @@ impl Iec104Master {
         if let Some(conn) = self.devices.get_mut(&conn_key) {
             conn.rx_unacked = 0;
         }
+        Ok(())
+    }
+
+    /// 31-review：发送 U 帧（TestFrCon 等；无窗口/序号副作用，不触 rx_unacked）。
+    fn send_u_frame(&mut self, conn_key: u16, func: UFormatFunction) -> Result<(), MasterError> {
+        let conn_id = self
+            .devices
+            .get(&conn_key)
+            .map(|c| c.conn_id)
+            .ok_or(MasterError::NotConnected)?;
+        let apdu = Apdu::u_format(func);
+        let data = apdu.encode()?;
+        if let Err(e) = self.transport.send(conn_id, &data) {
+            self.stats.tx_error_count += 1;
+            return Err(e);
+        }
+        self.stats.tx_count += 1;
         Ok(())
     }
 
@@ -786,6 +808,33 @@ mod tests {
             "收 2 个 I 帧 → S 帧 R(S) max 须=2（递增后值）；实际 R(S) 序列: {:?}",
             s_rs
         );
+    }
+
+    /// 31-review（B1）回归：收到 TestFrAct 必须回 TestFrCon（IEC 104 §5）。
+    /// 旧 handle_u_format 的 `_ =>{}` 吞掉 TestFrAct，致对端 t1 重传 3 次后断开健康链路。
+    #[test]
+    fn test_testfr_act_replies_testfr_con() {
+        use crate::mock::MockMasterTransport;
+        let mut transport = MockMasterTransport::new();
+        transport.push_rx(1, Apdu::u_format(UFormatFunction::TestFrAct).encode().unwrap());
+        let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
+        let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
+        master.connect(&dev).unwrap();
+        master.process_rx(1).unwrap();
+        let frames = master
+            .transport_mut()
+            .as_any_mut()
+            .downcast_mut::<MockMasterTransport>()
+            .expect("downcast")
+            .tx_frames()
+            .to_vec();
+        // 解码每个 tx 帧，确认至少一个是 TestFrCon。
+        let replied = frames.iter().any(|(_, b)| {
+            Apdu::decode(b)
+                .map(|a| matches!(a.control_field, ControlField::Unnumbered(UFormatFunction::TestFrCon)))
+                .unwrap_or(false)
+        });
+        assert!(replied, "收到 TestFrAct 必须回 TestFrCon；tx: {:?}", frames);
     }
 
     /// 31 PR-01 判据：k 窗口满（12 未确认）→ 暂停发送（WindowFull）。

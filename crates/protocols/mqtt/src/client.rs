@@ -275,14 +275,23 @@ impl MqttClient {
             Some(PendingAck::WaitingPuback) => {
                 let pid = packet_id.unwrap_or(0);
                 self.pending_acks.insert(pid, PendingAck::WaitingPuback);
-                // 同步等待 PUBACK（小循环）
-                self.wait_for_ack(pid, now_ms)
+                // 同步等待 PUBACK。31-review：失败（超时/错包/断连）→ 清 inflight，
+                // 防 u16 回绕后 id 复用、DUP 重发陈旧 payload（旧实现所有错误路径泄漏）。
+                if let Err(e) = self.wait_for_ack(pid, now_ms) {
+                    self.inflight.remove(&pid);
+                    return Err(e);
+                }
+                Ok(())
             }
             Some(PendingAck::WaitingPubrec { packet_id: pid }) => {
                 self.pending_acks
                     .insert(pid, PendingAck::WaitingPubrec { packet_id: pid });
-                // QoS 2：等待 PUBREC → 发 PUBREL → 等待 PUBCOMP
-                self.wait_for_qos2(pid, now_ms)
+                // QoS 2：等待 PUBREC → 发 PUBREL → 等待 PUBCOMP（同上错误清理）。
+                if let Err(e) = self.wait_for_qos2(pid, now_ms) {
+                    self.inflight.remove(&pid);
+                    return Err(e);
+                }
+                Ok(())
             }
             _ => Ok(()),
         }
@@ -365,6 +374,8 @@ impl MqttClient {
         match pkt {
             MqttPacket::Pubcomp(id) if id == packet_id => {
                 self.pending_acks.remove(&packet_id);
+                // 31-review：QoS2 成功路径漏清 inflight（旧实现永不删 → 每条 QoS2 publish 泄漏）。
+                self.inflight.remove(&packet_id);
                 // v0.221.0：确认后清除持久化记录。
                 if let Some(store) = &mut self.qos_store {
                     let _ = store.remove(packet_id);
@@ -470,6 +481,7 @@ impl MqttClient {
         }
         self.state = ConnectionState::Disconnected;
         self.pending_acks.clear();
+        self.inflight.clear(); // 31-review：断开清在途表（防重连后 id 复用错发）。
         Ok(())
     }
 
@@ -550,6 +562,7 @@ impl MqttClient {
     pub fn mark_disconnected(&mut self) {
         self.state = ConnectionState::Reconnecting;
         self.pending_acks.clear();
+        self.inflight.clear(); // 31-review：同 disconnect。
     }
 
     /// 返回当前在途 QoS 1/2 消息数.

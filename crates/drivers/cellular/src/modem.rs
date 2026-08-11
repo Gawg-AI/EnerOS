@@ -258,14 +258,44 @@ impl<S: HalSerial> CellularModem<S> {
         Err(CellularError::PppNegotiationFailed)
     }
 
+    /// 31-review（B4）：构造并发送一个 PPP 控制帧（LCP/IPCP）经串口。
+    ///
+    /// 回 ACK 时 `code` 用我方 code、id 取对端帧 id、options 原样回显——使对端
+    /// 知道我们接受了其选项（旧实现只推进本地状态机、从不回 ACK，对端永远收
+    /// 不到确认 → 链路建不起来，正是 DR-04/D10 要消灭的"被动镜像"）。
+    fn send_ppp_control(
+        &mut self,
+        protocol: u16,
+        code: u8,
+        peer: &PppFrame,
+    ) -> Result<(), CellularError> {
+        // data 布局：[code, id, len_hi, len_lo, options...]。
+        let id = peer.data.get(1).copied().unwrap_or(0);
+        let opts: &[u8] = if peer.data.len() > 4 {
+            &peer.data[4..]
+        } else {
+            &[]
+        };
+        let len: u16 = 4 + opts.len() as u16;
+        let mut payload = alloc::vec![code, id, (len >> 8) as u8, (len & 0xFF) as u8];
+        payload.extend_from_slice(opts);
+        let bytes = PppFrame::new(protocol, payload).encode();
+        self.serial
+            .write(&bytes)
+            .map_err(|_| CellularError::PppNegotiationFailed)?;
+        Ok(())
+    }
+
     /// 处理一帧 PPP 报文，推进状态机；返回 IPCP 协商出的 IP（若有）。
     fn handle_ppp_frame(&mut self, frame: &PppFrame) -> Result<Option<Ipv4Addr>, CellularError> {
         if frame.protocol == PPP_LCP {
             let code = crate::ppp::parse_lcp_code(frame);
             match code {
                 Some(crate::ppp::lcp::CONFIGURE_REQUEST) => {
-                    // 对端发起 LCP；本端 ACK 推进。
+                    // 31-review（B4）：对端发起 LCP——推进本地状态机 + 回 CONFIGURE_ACK
+                    //（旧实现只推进不回，对端收不到确认）。
                     self.ppp.on_lcp_config_ack()?;
+                    self.send_ppp_control(PPP_LCP, crate::ppp::lcp::CONFIGURE_ACK, frame)?;
                 }
                 Some(crate::ppp::lcp::CONFIGURE_ACK) => {
                     self.ppp.on_lcp_config_ack()?;
@@ -624,19 +654,13 @@ mod tests {
         let lcp_payload = [0x01u8, 0x01, 0x00, 0x04];
         // IPCP Configure-Ack: code=2, id=1, len=10, IP-Address opt(3,6,10.1.2.3)。
         let ipcp_payload = [0x02u8, 0x01, 0x00, 0x0A, 0x03, 0x06, 10, 1, 2, 3];
+        // 31-review（B3）：用 PppFrame::encode 产出有效 FCS（旧手工编 FCS=0x0000
+        // 现 decode 实校验拒绝）。
+        let lcp = PppFrame::new(PPP_LCP, lcp_payload.to_vec()).encode();
+        let ipcp = PppFrame::new(PPP_IPCP, ipcp_payload.to_vec()).encode();
         let mut stream = alloc::vec::Vec::new();
-        // LCP 帧：0x7E C0 21 payload FCS(00 00) 0x7E。
-        stream.push(0x7E);
-        stream.push(0xC0);
-        stream.push(0x21);
-        stream.extend_from_slice(&lcp_payload);
-        stream.extend_from_slice(&[0x00, 0x00, 0x7E]);
-        // IPCP 帧：0x7E 80 21 payload FCS 0x7E。
-        stream.push(0x7E);
-        stream.push(0x80);
-        stream.push(0x21);
-        stream.extend_from_slice(&ipcp_payload);
-        stream.extend_from_slice(&[0x00, 0x00, 0x7E]);
+        stream.extend_from_slice(&lcp);
+        stream.extend_from_slice(&ipcp);
         stream
     }
 

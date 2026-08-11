@@ -368,6 +368,14 @@ impl Iec104Slave {
                 let con = Apdu::u_format(UFormatFunction::TestFrCon);
                 self.send_apdu(&con)?;
             }
+            UFormatFunction::TestFrCon | UFormatFunction::StartDtCon | UFormatFunction::StopDtCon => {
+                // 31-review：收到对端 CON → 我们先前发的 ACT 已确认，清 pending
+                // + 重置重试计数（防 t1 误重传 CON 致断连；旧 _ =>{} 吞掉 TestFrCon）。
+                if let Some(conn) = &mut self.connection {
+                    conn.pending_u_frame = None;
+                    conn.t1_retry_count = 0;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -653,10 +661,19 @@ impl Iec104Slave {
             // v0.244.0：与 send_i_format 同——无连接发送静默成功掩盖故障。
             None => return Err(Iec104Error::ConnectionClosed),
         };
-        // t1 跟踪：U 帧发送后记录 pending，等待确认。
+        // t1 跟踪：仅 ACT 帧发送后记录 pending 待确认（31-review：CON 帧是确认
+        // 本身，不应等 ACK——旧实现对所有 U 帧置 pending，致发 CON 后 t1 重传并断连）。
         if let ControlField::Unnumbered(func) = apdu.control_field {
-            if let Some(conn) = &mut self.connection {
-                conn.pending_u_frame = Some(func);
+            if matches!(
+                func,
+                UFormatFunction::StartDtAct | UFormatFunction::StopDtAct | UFormatFunction::TestFrAct
+            ) {
+                if let Some(conn) = &mut self.connection {
+                    conn.pending_u_frame = Some(func);
+                    // 注：不在此重置 t1_retry_count——重传路径也走 send_apdu，
+                    // 若重置则计数永远到不了 3（断连判据失效）。重置只在收到 CON 时
+                    //（handle_u_format）做，开启新一轮预算。
+                }
             }
         }
         let data = apdu.encode()?;
