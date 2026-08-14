@@ -18,7 +18,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 
 use eneros_driver_framework::{
-    DeviceDriver, DriverError, DriverHealth, DriverId, DriverState, DriverType,
+    CapabilityKind, DeviceDriver, DriverError, DriverHealth, DriverId, DriverState, DriverType,
 };
 
 // ============================================================================
@@ -125,13 +125,7 @@ pub struct UartDriver {
 }
 
 impl UartDriver {
-    pub fn new(
-        id: DriverId,
-        name: &str,
-        io: Box<dyn Pl011Io>,
-        clock_hz: u32,
-        baud: u32,
-    ) -> Self {
+    pub fn new(id: DriverId, name: &str, io: Box<dyn Pl011Io>, clock_hz: u32, baud: u32) -> Self {
         Self {
             id,
             name: String::from(name),
@@ -157,7 +151,8 @@ impl UartDriver {
         self.io.write(PL011_IBRD, brd);
         self.io.write(PL011_FBRD, 0);
         self.io.write(PL011_LCRH, PL011_LCRH_WLEN8);
-        self.io.write(PL011_CR, PL011_CR_UARTEN | PL011_CR_TXE | PL011_CR_RXE);
+        self.io
+            .write(PL011_CR, PL011_CR_UARTEN | PL011_CR_TXE | PL011_CR_RXE);
         self.io.write(PL011_IMSC, PL011_IMSC_RXIM | PL011_IMSC_RTIM);
     }
 
@@ -279,15 +274,21 @@ impl DeviceDriver for UartDriver {
     fn health_check(&self) -> DriverHealth {
         DriverHealth::Healthy
     }
+    fn capabilities(&self) -> &'static [CapabilityKind] {
+        // 38（蓝图 §7）：UART 发布 Console + SerialBus。
+        &[CapabilityKind::Console, CapabilityKind::SerialBus]
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::sync::Arc;
     use alloc::vec;
     use alloc::vec::Vec;
+
     use spin::Mutex;
+
+    use super::*;
 
     /// 内存模拟后端（共享状态：测试侧可直接注入字节，host 纯逻辑测试）。
     #[derive(Default)]

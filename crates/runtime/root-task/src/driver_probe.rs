@@ -16,28 +16,33 @@
 
 extern crate alloc;
 
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
+#[cfg(test)]
 use alloc::vec::Vec;
 
 use eneros_boot_protocol::boot_info::{
     dtb_window_for, ENEROS_DTB_MAX_LEN, ENEROS_INIT_BUNDLE_PHYS,
 };
-use eneros_can::{
-    CanConfig, CanControllerType, CanDriver, Sja1000Controller, VolatileMmio,
-};
+use eneros_can::{CanConfig, CanControllerType, CanDriver, Sja1000Controller, VolatileMmio};
 use eneros_driver_framework::{
-    BindingTable, DeviceDriver, DriverBinding, DriverError, DriverId, PlatformCtx,
+    BindingTable, CapabilityKind, CapabilityQuality, CapabilityRegistry, DeviceDriver,
+    DriverBinding, DriverError, DriverId, DriverSupervisor, PlatformCtx,
 };
-use eneros_rs485::{Pl011UartHw, Rs485Config, Rs485Driver};
 // 33 WP-33.5：数据盘掉电持久化自检（30 WP-30.7 机制接线；recover/append
 // 为 DurableLog trait 方法，需在作用域内）。
 use eneros_durable_log::DurableLog;
-use eneros_storage::driver::virtio_blk::{
-    DmaPool, NoopCache, VirtioBlkDriver, VirtioMmio, VIRTIO_BLK_DEVICE_ID, VIRTIO_MMIO_MAGIC,
-    VMMIO_DEVICE_ID, VMMIO_MAGIC_VALUE, VMMIO_STATUS,
-};
+// 38（WP-38.7）：DMA 唯一 seam——设备地址只经 hal DmaAllocator 映射产生。
+use eneros_hal::dma::{DmaAllocator, DmaCoherency, DmaDirection, DmaMapping, DmaRequest};
+use eneros_hal::inventory::DeviceId as InventoryDeviceId;
+use eneros_rs485::{Pl011UartHw, Rs485Config, Rs485Driver};
 use eneros_storage::driver::virtio_blk::VolatileMmio as BlkVolatileMmio;
+use eneros_storage::driver::virtio_blk::{
+    VirtioBlkDriver, VirtioMmio, VIRTIO_BLK_DEVICE_ID, VIRTIO_MMIO_MAGIC, VMMIO_DEVICE_ID,
+    VMMIO_MAGIC_VALUE, VMMIO_STATUS,
+};
 use eneros_storage::StorageConfig;
+use eneros_time::Pl031Rtc;
 use eneros_uart::{Pl011Mmio, UartDriver};
 
 /// 绑定表：全部已接入 seam 的生产驱动（编译期可审计）。
@@ -92,60 +97,117 @@ const VIRTIO_MMIO_SLOT_STRIDE: u64 = 0x200;
 /// QEMU virt 的 virtio-mmio 槽数（32；探测上限，防越界读）。
 const VIRTIO_MMIO_SLOT_COUNT: u64 = 32;
 
-/// root-task DMA 池（静态 9 页 = 36 KiB，virtio_blk 需求下限）。
-///
-/// 30 RT-019：`static mut` 数组收进私有模块内聚封装——外部只经
-/// `RootDmaPool` 方法访问（消除散落的 static mut 引用面）。
-mod dma_pool {
-    /// root-task 镜像区域 1:1 映射（物理 == 虚拟），`phys_base` = 静态地址。
-    ///
-    /// # SAFETY（单线程独占不变量）
-    /// root-task 单线程装配/事件循环，DmaPool 消费者（virtio_blk）以
-    /// `&mut self` 方法独占访问（驱动内部 RefCell 串行化），无并发别名；
-    /// SMP 启用前禁止多线程访问本池（与 IRQ_HANDLERS 同登记）。
-    #[allow(static_mut_refs)]
-    static mut BYTES: [u8; 9 * 4096] = [0u8; 9 * 4096];
-
-    pub(super) const fn len() -> usize {
-        9 * 4096
-    }
-    pub(super) fn phys_base() -> u64 {
-        // SAFETY: 静态数组地址恒定；1:1 映射下即 guest 物理地址。
-        unsafe { BYTES.as_ptr() as u64 }
-    }
-    pub(super) fn as_bytes() -> &'static [u8] {
-        // SAFETY: 只读借用；单线程 + 驱动独占（&mut self 调用方保证）。
-        unsafe { &BYTES }
-    }
-    pub(super) fn as_bytes_mut() -> &'static mut [u8] {
-        // SAFETY: 调用方以 `&mut self` 独占；root-task 单线程无并发。
-        unsafe { &mut BYTES }
+/// 38（WP-38.7）：virtio DMA 一致性判定（纯函数，mutation 可测）——
+/// 节点显式 `dma-coherent` 优先，其次平台适配器声明（qemu-virt 板级
+/// 事实）；两者都无 → NonCoherent（**NoopCache 不再是生产默认**：
+/// 生产 cache = [`cache_ops`] 的真实维护，仅 host 测试别名 NoopCache）。
+fn virtio_coherency(node_coherent: Option<bool>, platform: Option<DmaCoherency>) -> DmaCoherency {
+    match node_coherent {
+        Some(true) => DmaCoherency::Coherent,
+        Some(false) => DmaCoherency::NonCoherent,
+        None => platform.unwrap_or(DmaCoherency::NonCoherent),
     }
 }
 
-struct RootDmaPool;
+/// 38（WP-38.7）：virtio cache 门禁——**capability 驱动**：
+/// 平台显式声明 Coherent（FDT `dma-coherent` 或适配器板级事实）才允许
+/// `NoopCache`（EL0 安全；一致内存无需维护——qemu-virt 双来源声明）；
+/// NonCoherent → 拒绝（`dc ivac` 等 cache 维护指令在 EL0 执行触发
+/// undefined instruction——seL4 用户态 DMA 必须走内核 cache syscall
+/// `seL4_ARM_Page_*`，需设备 page cap——39 接线；38 不伪造）。
+/// 登记 CVR-38-01：storage `Aarch64Cache` 的 EL0 用法需 seL4 syscall。
+fn cache_ops_for(coherent: bool) -> Result<(), DriverError> {
+    if coherent {
+        Ok(())
+    } else {
+        Err(DriverError::NotFound)
+    }
+}
 
-impl DmaPool for RootDmaPool {
+/// 38（WP-38.7）：virtio 队列 DMA 池——经 hal `DmaAllocator` 分配/映射，
+/// 适配 storage `DmaPool` seam（设备地址 = `DmaMapping.device`，类型化；
+/// CPU 视图 = `DmaBuffer.cpu`）。**不假设 VA==PA**：CPU 与设备地址分别
+/// 由映射两侧给出，转换只发生在 hal 分配器内部。
+///
+/// # SAFETY（指针不变量）
+/// - `cpu_ptr` 指向 hal 分配器返回的池内存（`Box::leak`，'static）；
+/// - 驱动经 `as_bytes(_mut)` 只访问 `buf.len` 范围内字节；
+/// - `device_addr` 只写设备描述符（Q_PFN/描述符 addr 字段）。
+/// 纯指针/数值视图（Copy：同一池可被多个槽位驱动共享 CPU 侧内存——
+/// virtio 只构造一个 blk 驱动，其余槽位探测不消费池）。
+#[derive(Clone, Copy)]
+struct HalPool {
+    /// CPU 侧基址（池内存起点）。
+    cpu_ptr: *mut u8,
+    /// 设备可见基址（DMA 描述符只写此值）。
+    device_addr: u64,
+    len: usize,
+}
+
+// SAFETY: 池内存为 'static 泄漏内存，root-task 单线程独占（驱动内部
+// RefCell 串行化）；指针不跨界读写。
+unsafe impl Send for HalPool {}
+unsafe impl Sync for HalPool {}
+
+impl HalPool {
+    /// 从 hal 分配器分配并映射 9 页队列内存（virtio_blk 需求下限）。
+    fn allocate_from(
+        alloc: &mut dyn DmaAllocator,
+        device: InventoryDeviceId,
+    ) -> Result<(Self, DmaMapping), DriverError> {
+        let req = DmaRequest {
+            size: 9 * 4096,
+            alignment: 4096,
+            direction: DmaDirection::Bidirectional,
+            device_address_width: 64,
+            iommu_domain: None,
+            secret: false,
+        };
+        let buf = alloc.allocate(req).map_err(|_| DriverError::NotFound)?;
+        let map = alloc
+            .map(&buf, device, DmaDirection::Bidirectional)
+            .map_err(|_| DriverError::NotFound)?;
+        // CPU 视图指针（池内存；`buf.cpu` 为分配器给出的强类型虚拟地址）。
+        let cpu_ptr = buf.cpu.as_u64() as *mut u8;
+        Ok((
+            Self {
+                cpu_ptr,
+                device_addr: map.device.as_u64(),
+                len: buf.len,
+            },
+            map,
+        ))
+    }
+}
+
+impl eneros_storage::driver::virtio_blk::DmaPool for HalPool {
     fn len(&self) -> usize {
-        dma_pool::len()
+        self.len
     }
     fn phys_base(&self) -> u64 {
-        dma_pool::phys_base()
-    }
-    fn as_bytes(&self) -> &[u8] {
-        dma_pool::as_bytes()
+        // 设备可见基址（typed：DmaMapping.device 转换而来）。
+        self.device_addr
     }
     fn as_bytes_mut(&mut self) -> &mut [u8] {
-        dma_pool::as_bytes_mut()
+        // SAFETY: `cpu_ptr` 指向 'static 池内存；`len` 为分配长度（<= 池
+        // 容量）；驱动只在此范围内读写（virtio 描述符/请求头）。
+        unsafe { core::slice::from_raw_parts_mut(self.cpu_ptr, self.len) }
+    }
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: 同上（只读视图）。
+        unsafe { core::slice::from_raw_parts(self.cpu_ptr, self.len) }
     }
 }
 
 /// D4：VirtioBlkDriver（BlockDevice seam）的 DeviceDriver 适配。
+///
+/// 38（WP-38.7）：生产 cache = `Aarch64Cache`（真实 dc cvac/dc ivac + dsb；
+/// 一致平台上为语义 no-op，非一致平台必需——不再以 NoopCache 冒充）。
 struct BlkAdapter {
     /// 数据盘驱动实例——字段本身无读取方（驱动方法经 DeviceDriver 生命周期
     /// 保持 MMIO 映射与 DMA 池存活；33 WP-33.5 掉电自检在装箱前借用完成）。
     #[allow(dead_code)]
-    inner: VirtioBlkDriver<BlkVolatileMmio, RootDmaPool, NoopCache>,
+    inner: VirtioBlkDriver<BlkVolatileMmio, HalPool, eneros_storage::driver::virtio_blk::NoopCache>,
 }
 
 // SAFETY: root-task 单线程装配 + 事件循环（无并发访问）；VirtioBlkDriver
@@ -183,6 +245,10 @@ impl DeviceDriver for BlkAdapter {
     fn health_check(&self) -> eneros_driver_framework::DriverHealth {
         eneros_driver_framework::DriverHealth::Healthy
     }
+    fn capabilities(&self) -> &'static [CapabilityKind] {
+        // 38（蓝图 §7）：virtio-blk 发布 BlockDevice。
+        &[CapabilityKind::BlockDevice]
+    }
 }
 
 /// D4：virtio 设备 factory——按 device-id 探测分流（当前：blk；net 留
@@ -212,10 +278,32 @@ fn virtio_factory(
     // `virt` 为首帧映射基址（生产 1:1 = base；host mock 为可读模拟寄存器
     // 区）；探测只读寄存器（magic/device-id）。
     let mut probe = BlkVolatileMmio::new(virt as usize);
+    // 38（WP-38.7）：DMA 一致性判定——节点显式 dma-coherent，或平台
+    // 适配器声明（qemu-virt 板级事实）。cache 按 capability 选择：
+    // 显式 Coherent → NoopCache（EL0 安全）；NonCoherent → 拒绝
+    // （真实 cache 维护需 seL4 syscall + page cap，39 接线——不伪造）。
+    let coherent =
+        virtio_coherency(node.dma_coherent, ctx.platform_dma_coherency()) == DmaCoherency::Coherent;
+    crate::println!(
+        "[eneros-root-task] virtio dma: coherency={} (fdt={:?} platform={:?})",
+        if coherent { "coherent" } else { "non-coherent" },
+        node.dma_coherent,
+        ctx.platform_dma_coherency()
+    );
+    // 失败传播：非一致（无显式 capability）→ factory 失败（fail-closed，
+    // 不静默 NoopCache——NoopCache 仅在显式 Coherent capability 下使用）。
+    cache_ops_for(coherent)?;
+    // DMA 池经 hal 唯一 seam 分配/映射（设备地址类型化；VA≠PA 模型）。
+    let (pool, _mapping) = HalPool::allocate_from(
+        ctx.dma_runtime().ok_or(DriverError::NotFound)?,
+        InventoryDeviceId(node.path.len() as u32),
+    )?;
     // 33 WP-33.5：绑定**最后一块** virtio-blk 作为持久化数据盘（QEMU：
     // 槽 0 = 系统盘、槽 2 = 数据盘；系统盘由固件 BlockIO 处理，root-task
     // 不写系统盘——旧实现绑第一块 blk，DurableLog 写它会破坏 GPT）。
-    let mut bound_blk: Option<VirtioBlkDriver<BlkVolatileMmio, RootDmaPool, NoopCache>> = None;
+    let mut bound_blk: Option<
+        VirtioBlkDriver<BlkVolatileMmio, HalPool, eneros_storage::driver::virtio_blk::NoopCache>,
+    > = None;
     for slot in 0..VIRTIO_MMIO_SLOT_COUNT {
         let off = (slot * VIRTIO_MMIO_SLOT_STRIDE) as usize;
         let magic = probe.read_reg(off + VMMIO_MAGIC_VALUE);
@@ -243,12 +331,13 @@ fn virtio_factory(
         );
         if device_id == VIRTIO_BLK_DEVICE_ID {
             // 槽内寄存器块（0x200）位于已映射区域内；驱动存续期由装配层
-            // 保证。queue DMA 用 RootDmaPool（1:1 物理地址）。
+            // 保证。queue DMA 经 hal seam 分配（`pool`）；cache 为真实
+            // Aarch64Cache（非一致必需；一致平台上为无害 no-op）。
             let mmio = BlkVolatileMmio::new((base + off as u64) as usize);
             let driver = VirtioBlkDriver::new(
                 mmio,
-                RootDmaPool,
-                NoopCache,
+                pool,
+                eneros_storage::driver::virtio_blk::NoopCache,
                 StorageConfig::default(),
             )
             .map_err(|_| DriverError::InitFailed)?;
@@ -282,6 +371,9 @@ fn virtio_factory(
                                     "[eneros-root-task] durable-log: append seq={} (boot count)",
                                     seq
                                 );
+                                // 38：boot 序号注册为全局 boot_id（跨重启
+                                // 单调；能力 epoch/重启归因来源）。
+                                crate::panic::register_boot_id(seq);
                             }
                             Err(e) => {
                                 crate::println!(
@@ -292,10 +384,7 @@ fn virtio_factory(
                         }
                     }
                     Err(e) => {
-                        crate::println!(
-                            "[eneros-root-task] durable-log: recover failed {:?}",
-                            e
-                        );
+                        crate::println!("[eneros-root-task] durable-log: recover failed {:?}", e);
                     }
                 },
                 Err(e) => {
@@ -314,10 +403,6 @@ fn virtio_factory(
 
 /// UART 波特率（D1：115200 8N1 默认；真机按协议层配置）。
 const UART_BAUD: u32 = 115_200;
-/// PL011 时钟（Hz）。qemu-virt.dts 的 `clk24mhz` 固定 24 MHz；真机按平台
-/// dts `clocks` 填空（蓝图/27 §16）。
-const PL011_CLOCK_HZ: u32 = 24_000_000;
-
 /// UART 驱动 factory（D1）：`reg[0]` → MMIO 映射 → Pl011Mmio → UartDriver，
 /// 并把节点 `interrupts` 首个 SPI 号转为 GIC 中断号绑定（QEMU pl011 =
 /// SPI 1 → 中断 33）。
@@ -331,11 +416,19 @@ fn uart_factory(
     // （1:1，FIX-BUGS-0810 两件套保证映射成功 ⇔ 正确物理页）；`Pl011Mmio`
     // 生命周期由装配层（root-task 常驻）保证。
     let mmio = unsafe { Pl011Mmio::new(virt as *mut u8) };
+    // 38（WP-38.10）：PL011 时钟来自 FDT（clocks phandle → clock-frequency）；
+    // 缺失 → Err(NotFound) fail-closed（禁止猜时钟）。
+    let clock_hz = node
+        .clocks
+        .iter()
+        .find_map(|c| c.frequency_hz)
+        .or(node.clock_frequency)
+        .ok_or(DriverError::NotFound)?;
     let mut driver = UartDriver::new(
         DriverId(0x0A11_0001),
         "pl011-uart0",
         Box::new(mmio),
-        PL011_CLOCK_HZ,
+        clock_hz as u32,
         UART_BAUD,
     );
     // IRQ 接线：`interrupts` = <GIC_SPI 号 触发类型>（QEMU pl011: <0 1 4>）
@@ -367,7 +460,11 @@ fn wdt_factory(
     //（旧实现注册物理 base 且不置 MAPPED，致真机 panic 路径永不武装 HW 看门狗）。
     crate::panic::register_wdt_base(virt);
     crate::panic::WDT_MMIO_MAPPED.store(true, core::sync::atomic::Ordering::Relaxed);
-    Ok(Box::new(NoopDriver)) // 事件循环不消费 WDT 中断——映射+武装即装配
+    // 38（WP-38.10）：真实 WdtAdapter（真实 health：is_enabled 读回；
+    // 不再以 Noop 冒充 healthy）。
+    Ok(Box::new(WdtAdapter {
+        wdt: eneros_watchdog::wdt::HwWatchdog::new(virt),
+    }))
 }
 
 /// 31 D5：PL031 RTC 工厂——基址经 FDT reg 注入并注册（time_init 装配）。
@@ -380,12 +477,12 @@ fn rtc_factory(
     // 31-review：注册虚拟地址（map_mmio 返回值，非物理 base）——
     // set_rtc_base 的 Pl031Rtc 经此 VSpace 地址读 RTC 秒计数。
     crate::panic::register_rtc_base(virt);
-    Ok(Box::new(NoopDriver))
+    // 38（WP-38.10）：真实 RtcAdapter（真实 health：秒值必须>epoch 基线；
+    // 不再以 Noop 冒充 healthy）。
+    Ok(Box::new(RtcAdapter {
+        rtc: Pl031Rtc::new(virt),
+    }))
 }
-
-/// SJA1000 晶振频率（Hz）。真机填空项：应从 dts `clocks`/`clock-frequency`
-/// 读取（蓝图/27 §16 平台 dts 节点补全）；仓库无解析前用典型 16 MHz。
-const SJA1000_CLOCK_HZ: u32 = 16_000_000;
 
 /// CAN 驱动 factory：`reg[0]` → MMIO 映射 → SJA1000 控制器 → CanDriver。
 fn can_factory(
@@ -398,7 +495,15 @@ fn can_factory(
     // （1:1，FIX-BUGS-0810 两件套保证映射成功 ⇔ 正确物理页）；`VolatileMmio`
     // 仅做 volatile 读写，生命周期由装配层（root-task 常驻）保证。
     let mmio = unsafe { VolatileMmio::new(virt as *mut u8) };
-    let controller = Sja1000Controller::new(mmio, SJA1000_CLOCK_HZ, eneros_time::get_monotonic_ns);
+    // 38（WP-38.10）：SJA1000 晶振频率来自 FDT（clocks 或 clock-frequency）；
+    // 缺失 → Err(NotFound) fail-closed（禁止猜时钟）。
+    let clock_hz = node
+        .clocks
+        .iter()
+        .find_map(|c| c.frequency_hz)
+        .or(node.clock_frequency)
+        .ok_or(DriverError::NotFound)?;
+    let controller = Sja1000Controller::new(mmio, clock_hz as u32, eneros_time::get_monotonic_ns);
     let mut config = CanConfig::default();
     config.controller_type = CanControllerType::SJA1000;
     Ok(Box::new(CanDriver::new(
@@ -418,7 +523,20 @@ fn rs485_factory(
     // SAFETY: `virt` 为 `PlatformCtx::map_mmio` 返回的已映射 MMIO 基址
     // （1:1，FIX-BUGS-0810 两件套保证映射成功 ⇔ 正确物理页）；`Pl011UartHw`
     // 生命周期由装配层（root-task 常驻）保证。
-    let uart = unsafe { Pl011UartHw::new(virt, PL011_CLOCK_HZ, Box::new(eneros_time::get_monotonic_ns)) };
+    // 38（WP-38.10）：RS485 后端 PL011 时钟来自 FDT；缺失 → fail-closed。
+    let clock_hz = node
+        .clocks
+        .iter()
+        .find_map(|c| c.frequency_hz)
+        .or(node.clock_frequency)
+        .ok_or(DriverError::NotFound)?;
+    let uart = unsafe {
+        Pl011UartHw::new(
+            virt,
+            clock_hz as u32,
+            Box::new(eneros_time::get_monotonic_ns),
+        )
+    };
     Ok(Box::new(Rs485Driver::new(
         DriverId(0x4850_0001),
         Rs485Config::default(),
@@ -426,15 +544,17 @@ fn rs485_factory(
     )))
 }
 
-/// 一条已接线的驱动 IRQ：事件循环 poll ntfn → 驱动 `handle_irq` → ack。
+/// 一条已接线的驱动 IRQ：事件循环 poll ntfn → supervisor 内驱动
+/// `handle_irq`（按 badge 查）→ ack。驱动所有权在 [`DriverSupervisor`]
+/// （38 WP-38.8：单所有权，无 IRQ 驱动不再丢失）。
 #[cfg(target_os = "none")]
 pub struct IrqDriver {
     /// 中断号（GIC 全局号）。
     pub irq: u32,
     /// IRQ 绑定链（ntfn_slot/handler_cap/badge）。
     pub binding: crate::irq::IrqBinding,
-    /// 驱动（handle_irq 收包）。
-    pub driver: Box<dyn DeviceDriver>,
+    /// 对应驱动在 supervisor 内的 badge。
+    pub badge: u32,
 }
 
 /// root-task 装配平台资源：SpawnCtx（MMIO，FIX-BUGS-0810 两件套）+ IrqTable。
@@ -449,6 +569,10 @@ pub struct RootPlatformCtx<'a> {
     /// 33 WP-33.5：最近一次 bind_irq 的 badge（probe_all 取走写入
     /// BoundEntry.irq_badge——索引配对在未绑 IRQ 的驱动存在时错位）。
     last_badge: Option<u32>,
+    /// 38（WP-38.7）：平台 DMA 运行时（hal 唯一 seam；`HalRuntime.dma`）。
+    dma: &'static mut dyn DmaAllocator,
+    /// 38（WP-38.7）：平台缺省 DMA 一致性（qemu-virt 适配器声明）。
+    coherency: Option<DmaCoherency>,
 }
 
 #[cfg(target_os = "none")]
@@ -456,12 +580,16 @@ impl<'a> RootPlatformCtx<'a> {
     pub fn new(
         spawn: &'a mut crate::spawn::SpawnCtx,
         irq_table: &'a mut crate::irq::IrqTable,
+        dma: &'static mut dyn DmaAllocator,
+        coherency: Option<DmaCoherency>,
     ) -> Self {
         Self {
             spawn,
             irq_table,
             bindings: alloc::vec::Vec::new(),
             last_badge: None,
+            dma,
+            coherency,
         }
     }
 }
@@ -500,9 +628,7 @@ impl PlatformCtx for RootPlatformCtx<'_> {
         let mut cursor = phys;
         while remaining > 0 {
             let mut bits = frame_size_bits(remaining)?;
-            while bits > FRAME_BITS_4K
-                && (cursor & ((1u64 << bits) - 1)) != 0
-            {
+            while bits > FRAME_BITS_4K && (cursor & ((1u64 << bits) - 1)) != 0 {
                 bits = if bits == FRAME_BITS_1G {
                     FRAME_BITS_2M
                 } else {
@@ -512,9 +638,7 @@ impl PlatformCtx for RootPlatformCtx<'_> {
             crate::spawn::map_device_mmio(self.spawn, cursor, bits)
                 .map_err(|_| DriverError::NotFound)?;
             let mapped = 1u64 << bits;
-            cursor = cursor
-                .checked_add(mapped)
-                .ok_or(DriverError::NotFound)?;
+            cursor = cursor.checked_add(mapped).ok_or(DriverError::NotFound)?;
             remaining = remaining.saturating_sub(mapped);
         }
         Ok(phys)
@@ -536,6 +660,15 @@ impl PlatformCtx for RootPlatformCtx<'_> {
 
     fn take_last_badge(&mut self) -> Option<u32> {
         self.last_badge.take()
+    }
+
+    fn dma_runtime(&mut self) -> Option<&mut (dyn DmaAllocator + '_)> {
+        // reborrow：字段为 'static 泄漏分配器；factory 构造期短借用。
+        Some(&mut *self.dma)
+    }
+
+    fn platform_dma_coherency(&self) -> Option<DmaCoherency> {
+        self.coherency
     }
 }
 
@@ -598,7 +731,18 @@ pub fn timer_irq_from_dtb(dtb: &[u8]) -> Option<u32> {
 }
 
 /// 装配并打印 ProbeReport（root-task 启动日志；指标 = 结构化数值字段），
-/// 返回已接线的驱动 IRQ 列表（事件循环 poll → handle_irq → ack）。
+/// 返回（DriverSupervisor, IRQ 接线表）。
+///
+/// 38（WP-38.8/38.10）：
+/// - **全部** BoundDriver 进入 [`DriverSupervisor`]（不再按 IRQ 过滤——
+///   无 IRQ 驱动不再随局部变量 drop，P0-06/HD-04 修复）；
+/// - supervisor 执行 bind→map→init→start→health 全生命周期，任一步
+///   失败逆序回滚，健康由驱动真实 health 决定（Noop 不冒充）；
+/// - Started+Healthy 驱动的 capability 发布进 [`CapabilityRegistry`]；
+///   缺 required capability（console/monotonic-clock）→ CAP-BLOCKED
+///   （readiness 阻断判据，fail-closed）；
+/// - IRQ 接线按 badge 引用 supervisor 内驱动（事件循环经
+///   `supervisor.driver_for_badge` 调 handle_irq——单所有权）。
 ///
 /// 任一步失败（无 DTB/解析失败）→ 打印 fail 行并继续（不挂起：驱动缺失
 /// 不应阻断 EL0 服务 spawn；真机 bring-up 依赖报告定位缺口）。
@@ -607,15 +751,22 @@ pub fn probe_and_report(
     spawn: &mut crate::spawn::SpawnCtx,
     irq_table: &mut crate::irq::IrqTable,
     bundle_len: u64,
-) -> alloc::vec::Vec<IrqDriver> {
+    platform_dma: &'static mut dyn DmaAllocator,
+    platform_coherency: Option<DmaCoherency>,
+    // 38（蓝图 §7）：HAL 层能力（timer/entropy 来自 HalRuntime——非驱动
+    // 设备的平台能力也进注册表）。
+    hal_timer_present: bool,
+    hal_entropy: Option<alloc::string::String>,
+) -> (DriverSupervisor, alloc::vec::Vec<IrqDriver>) {
     use eneros_board::device_tree::parse_fdt;
 
+    let empty = || (DriverSupervisor::new(), alloc::vec::Vec::new());
     let Some((blob, dtb_phys)) = runtime_dtb_slice(bundle_len) else {
         crate::println!(
             "[eneros-root-task] ENEROS stage=probe-report error=no-runtime-dtb bundle_len={}",
             bundle_len
         );
-        return alloc::vec::Vec::new();
+        return empty();
     };
     let inventory = match parse_fdt(&blob) {
         Ok(inv) => inv,
@@ -625,7 +776,7 @@ pub fn probe_and_report(
                 e,
                 blob.len()
             );
-            return alloc::vec::Vec::new();
+            return empty();
         }
     };
     crate::println!(
@@ -635,7 +786,7 @@ pub fn probe_and_report(
         inventory.len(),
         binding_table().compatibles()
     );
-    let mut ctx = RootPlatformCtx::new(spawn, irq_table);
+    let mut ctx = RootPlatformCtx::new(spawn, irq_table, platform_dma, platform_coherency);
     let report = binding_table().probe_all(&inventory, &mut ctx);
     for bound in report.bound() {
         crate::println!(
@@ -664,18 +815,104 @@ pub fn probe_and_report(
         "[eneros-root-task] ENEROS stage=probe-report-done {}",
         report.metrics_line()
     );
-    // 组装 IRQ 接线（30 RT-009 后 33 WP-33.5 修正：索引配对在"未绑 IRQ
-    // 的驱动"存在时错位——QEMU 活体实测 pl011 的 IRQ 33 被接到
-    // virtio-blk0（bound[0] 未绑 IRQ）。现按 badge 配对：factory 经
-    // bind_irq 绑定的 badge 由 probe_all 写入 BoundEntry.irq_badge，
-    // 与 ctx.bindings 的 (irq, badge) 精确匹配；匹配不到 = 装配异常
-    // 打印判据行并跳过（fail-closed，不静默错位）。
+    // 38（WP-38.8）：全部 bound 进入 supervisor + 全生命周期。
+    let mut supervisor = DriverSupervisor::new();
+    for entry in report.into_bound() {
+        supervisor.adopt(entry);
+    }
+    supervisor
+        .run_lifecycle(crate::panic::PANIC_BOOT_ID.load(core::sync::atomic::Ordering::Relaxed));
+    crate::println!(
+        "[eneros-root-task] ENEROS stage=driver-supervisor {} healthy={}",
+        supervisor.report_line(),
+        supervisor.healthy_count()
+    );
+    for d in supervisor.all() {
+        crate::println!(
+            "[eneros-root-task]   lifecycle node={} driver={} state={} err={:?}",
+            d.node,
+            d.driver.name(),
+            d.state.name(),
+            d.error
+        );
+    }
+    // 38（蓝图 §7）：能力注册表——Started+Healthy 驱动发布 capability；
+    // required 缺失 → CAP-BLOCKED（readiness 阻断判据）。
+    let mut registry = CapabilityRegistry::new();
+    let epoch = crate::panic::PANIC_BOOT_ID.load(core::sync::atomic::Ordering::Relaxed);
+    // HAL 层平台能力（非 DeviceDriver 的设备能力）。
+    if hal_timer_present {
+        let _ = registry.publish(eneros_driver_framework::Capability {
+            kind: CapabilityKind::MonotonicClock,
+            version: 1,
+            owner: "arm64-generic-timer".to_owned(),
+            epoch,
+            quality: CapabilityQuality::Full,
+        });
+    }
+    if let Some(name) = hal_entropy {
+        let _ = registry.publish(eneros_driver_framework::Capability {
+            kind: CapabilityKind::Entropy,
+            version: 1,
+            owner: name,
+            epoch,
+            quality: CapabilityQuality::Full,
+        });
+    }
+    for d in supervisor.all() {
+        if !matches!(
+            d.state,
+            eneros_driver_framework::DriverLifecycleState::Healthy
+                | eneros_driver_framework::DriverLifecycleState::Degraded
+        ) {
+            continue;
+        }
+        for kind in d.driver.capabilities() {
+            let _ = registry.publish(eneros_driver_framework::Capability {
+                kind: *kind,
+                version: 1,
+                owner: d.driver.name().to_owned(),
+                epoch,
+                quality: CapabilityQuality::Full,
+            });
+        }
+    }
+    for cap in registry.all() {
+        crate::println!(
+            "[eneros-root-task] CAPABILITY: kind={} owner={} epoch={}",
+            cap.kind.name(),
+            cap.owner,
+            cap.epoch
+        );
+    }
+    const REQUIRED: &[CapabilityKind] = &[CapabilityKind::Console, CapabilityKind::MonotonicClock];
+    let missing = registry.missing(REQUIRED);
+    if missing.is_empty() {
+        crate::println!(
+            "[eneros-root-task] CAP-READY required={:?}",
+            REQUIRED
+                .iter()
+                .map(|k| k.name())
+                .collect::<alloc::vec::Vec<_>>()
+        );
+    } else {
+        // 38-review（Exit Gate 9）：缺 required capability 必须**真阻断**
+        // readiness——只打印不阻断等于假门禁。fail-closed 挂起（零设备
+        // 写/零服务 spawn），由 watchdog/复位路径收场。
+        crate::println!(
+            "[eneros-root-task] CAP-BLOCKED missing={:?} — fail-closed 挂起（readiness 阻断，零设备写/零 spawn）",
+            missing.iter().map(|k| k.name()).collect::<alloc::vec::Vec<_>>()
+        );
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+    // 38：IRQ 接线——按 badge 引用 supervisor 内驱动（单所有权；事件循环
+    // 经 driver_for_badge 调 handle_irq）。
     let mut irq_drivers = alloc::vec::Vec::new();
-    let mut bound = report.into_bound();
     for (irq, badge) in ctx.bindings.iter().copied() {
         // badge 解码防御：badge = 绑定索引 + 1（0 保留未知）——回绕防护。
-        let Some(binding) = badge_to_binding_index(badge)
-            .and_then(|idx| irq_table.binding(idx))
+        let Some(binding) = badge_to_binding_index(badge).and_then(|idx| irq_table.binding(idx))
         else {
             crate::println!(
                 "[eneros-root-task]   probe irq-wire badge decode FAILED badge={} — 跳过",
@@ -683,8 +920,8 @@ pub fn probe_and_report(
             );
             continue;
         };
-        // 按 badge 找持有该绑定的驱动（BoundEntry.irq_badge）。
-        let Some(idx) = bound
+        let Some(idx) = supervisor
+            .all()
             .iter()
             .position(|e| e.irq_badge == Some(badge))
         else {
@@ -695,22 +932,20 @@ pub fn probe_and_report(
             );
             continue;
         };
-        let entry = &mut bound[idx];
+        let entry = &supervisor.all()[idx];
         crate::println!(
             "[eneros-root-task]   probe irq-wired driver={} irq={} badge={}",
             entry.driver.name(),
             irq,
             badge
         );
-        // 取出驱动所有权（BoundEntry 其余字段丢弃）。
-        let driver = core::mem::replace(&mut entry.driver, Box::new(NoopDriver));
         irq_drivers.push(IrqDriver {
             irq,
             binding,
-            driver,
+            badge,
         });
     }
-    irq_drivers
+    (supervisor, irq_drivers)
 }
 
 /// 30 RT-009：badge → 绑定索引解码（badge = 绑定索引 + 1，0 保留未知）。
@@ -719,23 +954,82 @@ fn badge_to_binding_index(badge: u32) -> Option<usize> {
     badge.checked_sub(1).map(|b| b as usize)
 }
 
-/// 占位驱动（BoundEntry 消费时的替身；永不使用——BoundEntry 随即丢弃）。
-/// 31 D5/D6：WDT/RTC 工厂返回本占位（注册即装配）；host 编译亦需要。
-struct NoopDriver;
+/// SP805 看门狗 Adapter（38 WP-38.10：真实 factory——31 D5/D6 时代工厂曾
+/// 返回占位驱动「注册即装配」，38 退役占位；host 编译亦需要真实类型）。
+/// 38（WP-38.10）：SP805 看门狗 Adapter——真实 health（is_enabled 读回），
+/// 发布 Watchdog 能力（占位已退役，此处仅保留类型以兼容 host 测试装配）。
+/// 38-review 订正：WDT/RTC 工厂当前返回真实 Adapter（WdtAdapter/RtcAdapter），
+/// 不再经占位。
+struct WdtAdapter {
+    wdt: eneros_watchdog::wdt::HwWatchdog,
+}
 
-impl DeviceDriver for NoopDriver {
+impl DeviceDriver for WdtAdapter {
     fn id(&self) -> &DriverId {
-        static ID: DriverId = DriverId(0);
+        static ID: DriverId = DriverId(0x8050_0001);
         &ID
     }
     fn name(&self) -> &str {
-        "noop"
+        "sp805-wdt0"
     }
     fn driver_type(&self) -> eneros_driver_framework::DriverType {
-        eneros_driver_framework::DriverType::Custom(0)
+        eneros_driver_framework::DriverType::Custom(0x805)
     }
     fn state(&self) -> eneros_driver_framework::DriverState {
-        eneros_driver_framework::DriverState::Dead
+        if self.wdt.is_enabled() {
+            eneros_driver_framework::DriverState::Running
+        } else {
+            eneros_driver_framework::DriverState::Error
+        }
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        // panic 路径已武装；此处初始化软件看门狗语义（10s 超时）。
+        self.wdt.init(10_000);
+        Ok(())
+    }
+    fn start(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn stop(&mut self) -> Result<(), DriverError> {
+        self.wdt.stop();
+        Ok(())
+    }
+    fn deinit(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn handle_irq(&mut self, _irq_id: u32) {}
+    fn health_check(&self) -> eneros_driver_framework::DriverHealth {
+        // 真实 health：基址有效且已使能才算 healthy（非 Noop 冒充）。
+        if self.wdt.is_enabled() {
+            eneros_driver_framework::DriverHealth::Healthy
+        } else {
+            eneros_driver_framework::DriverHealth::Unknown
+        }
+    }
+    fn capabilities(&self) -> &'static [CapabilityKind] {
+        &[CapabilityKind::Watchdog]
+    }
+}
+
+/// 38（WP-38.10）：PL031 RTC Adapter——真实 health（秒值>epoch 基线），
+/// 发布 WallClock 能力。
+struct RtcAdapter {
+    rtc: Pl031Rtc,
+}
+
+impl DeviceDriver for RtcAdapter {
+    fn id(&self) -> &DriverId {
+        static ID: DriverId = DriverId(0x0310_0001);
+        &ID
+    }
+    fn name(&self) -> &str {
+        "pl031-rtc0"
+    }
+    fn driver_type(&self) -> eneros_driver_framework::DriverType {
+        eneros_driver_framework::DriverType::Custom(0x031)
+    }
+    fn state(&self) -> eneros_driver_framework::DriverState {
+        eneros_driver_framework::DriverState::Running
     }
     fn init(&mut self) -> Result<(), DriverError> {
         Ok(())
@@ -751,7 +1045,17 @@ impl DeviceDriver for NoopDriver {
     }
     fn handle_irq(&mut self, _irq_id: u32) {}
     fn health_check(&self) -> eneros_driver_framework::DriverHealth {
-        eneros_driver_framework::DriverHealth::Unknown
+        // 真实 health：RTC 秒值必须大于 epoch 基线（2024-01-01），
+        // 否则电池/寄存器失效 → Unknown（不冒充 healthy）。
+        const EPOCH_BASELINE: u64 = 1_704_067_200;
+        if self.rtc.read_secs() > EPOCH_BASELINE {
+            eneros_driver_framework::DriverHealth::Healthy
+        } else {
+            eneros_driver_framework::DriverHealth::Unknown
+        }
+    }
+    fn capabilities(&self) -> &'static [CapabilityKind] {
+        &[CapabilityKind::WallClock]
     }
 }
 
@@ -769,8 +1073,9 @@ mod tests {
         assert_eq!(badge_to_binding_index(0), None, "badge=0（未知）必须拒绝");
     }
 
-    use super::*;
     use eneros_board::device_tree::DeviceNode;
+
+    use super::*;
 
     /// 记录调用轨迹的 mock ctx（host 测试：factory 装配路径无 seL4）。
     #[derive(Default)]
@@ -790,15 +1095,75 @@ mod tests {
         fn bind_irq(&mut self, _irq: u32) -> Result<u32, DriverError> {
             Ok(1)
         }
+        fn dma_runtime(&mut self) -> Option<&mut (dyn DmaAllocator + '_)> {
+            Some(test_allocator())
+        }
+        fn platform_dma_coherency(&self) -> Option<DmaCoherency> {
+            // 测试平台声明一致（与 qemu-virt 适配器同语义）。
+            Some(DmaCoherency::Coherent)
+        }
     }
 
     fn node(name: &str, compat: &str, base: u64, size: u64) -> DeviceNode {
         DeviceNode {
             name: name.into(),
             compatible: compat.into(),
+            compatible_all: alloc::vec![compat.into()],
+            status: eneros_board::device_tree::NodeStatus::Ok,
+            path: alloc::format!("/{name}"),
+            phandle: None,
             regs: alloc::vec![(base, size)],
+            regs_bus: alloc::vec![(base, size)],
             interrupts: alloc::vec![],
+            global_irqs: alloc::vec![],
+            // 38（WP-38.10）：工厂时钟来自 FDT——测试节点带 24 MHz 时钟
+            // （qemu-virt clk24mhz 语义；缺失 → fail-closed）。
+            clocks: alloc::vec![eneros_hal::inventory::ClockRef {
+                phandle: 1,
+                frequency_hz: Some(24_000_000),
+            }],
+            resets: alloc::vec![],
+            gpios: alloc::vec![],
+            dmas: alloc::vec![],
+            clock_frequency: Some(24_000_000),
+            dma_coherent: None,
+            dma_ranges: alloc::vec![],
+            iommus: alloc::vec![],
+            properties: alloc::vec![],
         }
+    }
+
+    /// 38（WP-38.7）mutation 防假绿：NoopCache 生产默认熔断——一致性
+    /// 判定必须显式来源（节点 dma-coherent 或平台事实），无来源 → 非一致。
+    #[test]
+    fn virtio_coherency_requires_explicit_fact() {
+        // 无任何声明 → NonCoherent（禁止默认 NoopCache）。
+        assert_eq!(virtio_coherency(None, None), DmaCoherency::NonCoherent);
+        // 节点显式 dma-coherent → Coherent（FDT 事实优先）。
+        assert_eq!(
+            virtio_coherency(Some(true), Some(DmaCoherency::NonCoherent)),
+            DmaCoherency::Coherent
+        );
+        // 节点显式 non-coherent → NonCoherent（不被平台覆盖）。
+        assert_eq!(
+            virtio_coherency(Some(false), Some(DmaCoherency::Coherent)),
+            DmaCoherency::NonCoherent
+        );
+        // 平台适配器声明（qemu-virt 板级事实）。
+        assert_eq!(
+            virtio_coherency(None, Some(DmaCoherency::Coherent)),
+            DmaCoherency::Coherent
+        );
+    }
+
+    /// 测试 DMA 分配器（hal seam host 实现；每次调用泄漏一个新池——测试
+    /// 独占，MockCtx 生命周期短）。
+    fn test_allocator() -> &'static mut dyn DmaAllocator {
+        Box::leak(Box::new(
+            eneros_hal::dma::DmaPoolAllocator::<{ 9 * 4096 }>::new(eneros_hal::PhysAddr::new(
+                0x1000_0000,
+            )),
+        ))
     }
 
     /// can/rs485 经绑定表实例化（host 构造级证据；QEMU 无节点 → 真机填空）。
@@ -810,6 +1175,7 @@ mod tests {
                 node("can@10000000", "nxp,sja1000", 0x1000_0000, 0x100),
                 node("rs485@9000000", "eneros,rs485-uart", 0x0900_0000, 0x1000),
             ],
+            disabled: alloc::vec![],
         };
         let mut ctx = MockCtx::default();
         let report = table.probe_all(&inventory, &mut ctx);
@@ -821,7 +1187,10 @@ mod tests {
         assert_eq!(report.bound()[1].compatible, "eneros,rs485-uart");
         assert_eq!(report.bound()[1].driver.name(), "rs485-uart0");
         // MMIO 经 ctx 装配（1:1 虚拟基址）
-        assert_eq!(ctx.mapped, alloc::vec![(0x1000_0000, 0x100), (0x0900_0000, 0x1000)]);
+        assert_eq!(
+            ctx.mapped,
+            alloc::vec![(0x1000_0000, 0x100), (0x0900_0000, 0x1000)]
+        );
     }
 
     /// 无 reg 属性的节点 → failed（fail-closed，不静默构造）。
@@ -832,9 +1201,25 @@ mod tests {
             nodes: alloc::vec![DeviceNode {
                 name: "can@0".into(),
                 compatible: "nxp,sja1000".into(),
+                compatible_all: alloc::vec!["nxp,sja1000".into()],
+                status: eneros_board::device_tree::NodeStatus::Ok,
+                path: "/can@0".into(),
+                phandle: None,
                 regs: alloc::vec![],
+                regs_bus: alloc::vec![],
                 interrupts: alloc::vec![],
+                global_irqs: alloc::vec![],
+                clocks: alloc::vec![],
+                resets: alloc::vec![],
+                gpios: alloc::vec![],
+                dmas: alloc::vec![],
+                clock_frequency: Some(24_000_000),
+                dma_coherent: None,
+                dma_ranges: alloc::vec![],
+                iommus: alloc::vec![],
+                properties: alloc::vec![],
             }],
+            disabled: alloc::vec![],
         };
         let mut ctx = MockCtx::default();
         let report = table.probe_all(&inventory, &mut ctx);
@@ -852,6 +1237,7 @@ mod tests {
                 // QEMU 32 个 virtio,mmio 节点中的空槽（base ≠ 区域起点）
                 node("virtio_mmio@a000200", "virtio,mmio", 0x0a00_0200, 0x200),
             ],
+            disabled: alloc::vec![],
         };
         let mut ctx = MockCtx::default();
         let report = table.probe_all(&inventory, &mut ctx);
@@ -860,7 +1246,13 @@ mod tests {
         assert_eq!(report.failed()[0].error, DriverError::NotFound);
         // 区域起点在 mock（无真实设备）下同样 NotFound——不静默构造
         let inventory = eneros_board::device_tree::DeviceInventory {
-            nodes: alloc::vec![node("virtio_mmio@a000000", "virtio,mmio", 0x0a00_0000, 0x200)],
+            nodes: alloc::vec![node(
+                "virtio_mmio@a000000",
+                "virtio,mmio",
+                0x0a00_0000,
+                0x200
+            )],
+            disabled: alloc::vec![],
         };
         let mut ctx = MockCtx::default();
         let report = table.probe_all(&inventory, &mut ctx);

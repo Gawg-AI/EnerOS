@@ -9,7 +9,6 @@
 //! - GICR at `0x080A_0000`
 
 use crate::HalError;
-use crate::arm64::PlatformConfig;
 
 // ---------------------------------------------------------------------------
 // GICD (Distributor) register offsets
@@ -19,6 +18,7 @@ const GICD_ISENABLER: u64 = 0x100;
 const GICD_ICENABLER: u64 = 0x180;
 #[allow(dead_code)] // GICv3 register map; pending-clear not needed yet in v0.6.0
 const GICD_ICPENDR: u64 = 0x280;
+#[allow(dead_code)] // GICv3 寄存器图；优先级默认 0x80 经 GICR_IPRIORITYR 写
 const GICD_PRI: u64 = 0x400;
 
 // ---------------------------------------------------------------------------
@@ -39,7 +39,8 @@ const GICR_IGROUPR0: u64 = 0x100;
 const GICR_WAKER_PROCESSING_SLEEP: u32 = 1 << 1; // bit 1
 const GICR_WAKER_CHILDREN_ASLEEP: u32 = 1 << 2; // bit 2
 
-/// Maximum number of IRQs supported.
+/// Maximum number of IRQs supported（GICv3 分发器 INTID 上限）。
+#[allow(dead_code)] // 保留：文档化 INTID 上限（表容量在 [`crate::irq_table`]）
 const MAX_IRQ: u32 = 256;
 
 /// ARM64 GICv3 interrupt controller HAL implementation.
@@ -48,19 +49,8 @@ pub struct Arm64Gic {
     gicr_base: u64,
 }
 
-/// Static IRQ handler table.
-///
-/// Stored in a `static mut` because [`crate::HalIrq::register`] takes `&self`
-/// (not `&mut self`); registration is expected to happen during boot before
-/// concurrency is enabled.
-///
-/// # SAFETY（30 RT-016 单核不变量）
-/// 本表仅在**单核启动阶段**（SMP bring-up 之前）由 [`crate::HalIrq::register`]
-/// 写入、由 [`Arm64Gic::dispatch_irq`] 读取；两者都在中断关闭的 boot 上下
-/// 文执行，无并发访问。SMP 启用前禁止在中断上下文注册/注销 handler
-/// （SMP bring-up 为未来版本，届时须改 SpinLock 或每核表）。
-#[allow(static_mut_refs)]
-static mut IRQ_HANDLERS: [Option<crate::IrqHandler>; MAX_IRQ as usize] = [None; MAX_IRQ as usize];
+/// 全局 IRQ 注册表（38 WP-38.5：boot-only 冻结表，见 [`crate::irq_table`]）。
+static IRQ_HANDLERS: crate::irq_table::IrqHandlerTable = crate::irq_table::IrqHandlerTable::new();
 
 /// Write a 32-bit MMIO register.
 ///
@@ -196,12 +186,9 @@ impl Arm64Gic {
     ///
     /// `irq >= MAX_IRQ`（含 1022 保留 INTID 与任何非法 INTID）返回 `None`，
     /// 绝不以越界索引触发 panic。调用方（`dispatch_irq`）EOI 后返回。
+    /// 38（WP-38.5）：经冻结表只读路径（无 static mut 面）。
     fn resolve_handler(irq: u32) -> Option<crate::IrqHandler> {
-        if !crate::timer_math::irq_in_range(irq, MAX_IRQ) {
-            return None;
-        }
-        // SAFETY: `irq < MAX_IRQ` 已由 `irq_in_range` 保证，索引必然在表内。
-        unsafe { IRQ_HANDLERS[irq as usize] }
+        IRQ_HANDLERS.resolve(irq)
     }
 }
 
@@ -212,25 +199,12 @@ impl crate::HalIrq for Arm64Gic {
         _trigger: crate::IrqTrigger,
         handler: crate::IrqHandler,
     ) -> Result<(), crate::HalError> {
-        if irq >= MAX_IRQ {
-            return Err(crate::HalError::InvalidParam);
-        }
-        // SAFETY: single-threaded boot registration; IRQ_HANDLERS bounds-checked.
-        unsafe {
-            IRQ_HANDLERS[irq as usize] = Some(handler);
-        }
-        Ok(())
+        // 38（WP-38.5）：冻结表注册（boot-only；冻结后 fail-closed）。
+        IRQ_HANDLERS.register(irq, handler)
     }
 
     fn unregister(&self, irq: u32) -> Result<(), crate::HalError> {
-        if irq >= MAX_IRQ {
-            return Err(crate::HalError::InvalidParam);
-        }
-        // SAFETY: see `register`.
-        unsafe {
-            IRQ_HANDLERS[irq as usize] = None;
-        }
-        Ok(())
+        IRQ_HANDLERS.unregister(irq)
     }
 
     fn enable(&self, irq: u32) {
@@ -331,26 +305,40 @@ mod tests {
     #[test]
     fn resolve_handler_registered_in_range() {
         fn dummy(_irq: u32) {}
-        // SAFETY: 测试专用——`IRQ_HANDLERS` 为静态表，测试线程独占访问
-        // （host 单线程测试），写入后立即断言并复位。
-        unsafe {
-            IRQ_HANDLERS[42] = Some(dummy);
-        }
+        // 38（WP-38.5）：经冻结表 API 注册（boot 阶段；测试单线程）。
+        IRQ_HANDLERS
+            .register(42, dummy)
+            .expect("freeze 前注册必须成功");
         assert!(resolve_handler(42).is_some());
-        // SAFETY: 同上——测试线程独占访问静态表。
-        unsafe {
-            IRQ_HANDLERS[42] = None;
-        }
+        IRQ_HANDLERS.unregister(42).expect("freeze 前注销必须成功");
     }
 
     /// 未注册 IRQ（< MAX_IRQ）→ None，不 panic。
     #[test]
     fn resolve_handler_unregistered_in_range() {
-        // SAFETY: 测试专用——静态表由测试线程独占访问。
-        unsafe {
-            IRQ_HANDLERS[7] = None;
-        }
         assert!(resolve_handler(7).is_none());
+    }
+
+    /// 38（WP-38.5）：冻结后注册必须拒绝（boot-only typestate）。
+    #[test]
+    fn register_after_freeze_rejected() {
+        fn dummy(_irq: u32) {}
+        IRQ_HANDLERS.freeze();
+        assert!(IRQ_HANDLERS.is_frozen());
+        assert_eq!(
+            IRQ_HANDLERS.register(42, dummy),
+            Err(crate::HalError::RegistrationAfterFreeze)
+        );
+        assert_eq!(
+            IRQ_HANDLERS.unregister(42),
+            Err(crate::HalError::RegistrationAfterFreeze)
+        );
+        // 冻结后 resolve 仍可读（中断上下文路径）。
+        assert!(resolve_handler(42).is_none());
+        // 复位（其他测试依赖未冻结状态）。
+        IRQ_HANDLERS
+            .frozen
+            .store(false, core::sync::atomic::Ordering::Release);
     }
 
     /// HAL-001 回归：1022 保留 INTID → None，不 panic（旧代码

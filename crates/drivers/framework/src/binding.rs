@@ -49,7 +49,24 @@ pub trait PlatformCtx {
     fn take_last_badge(&mut self) -> Option<u32> {
         None
     }
+
+    /// 38（WP-38.7）：平台 DMA 运行时（`DmaAllocator` 唯一来源；None =
+    /// 平台未提供 DMA——factory 不得猜测地址路径）。返回短借用——factory
+    /// 仅在构造期使用（allocate/map 后只保留数值视图）。
+    fn dma_runtime(&mut self) -> Option<&mut (dyn eneros_hal::dma::DmaAllocator + '_)> {
+        None
+    }
+
+    /// 38（WP-38.7）：平台缺省 DMA 一致性（**经验证**的平台事实；None =
+    /// 未声明 → 按节点 `dma-coherent` 或缺省 NonCoherent 处理）。
+    fn platform_dma_coherency(&self) -> Option<eneros_hal::dma::DmaCoherency> {
+        None
+    }
 }
+
+/// 驱动 factory 签名（装配 seam：节点资源 → 驱动实例）。
+pub type DriverFactory =
+    fn(&DeviceNode, &mut dyn PlatformCtx) -> Result<Box<dyn DeviceDriver>, DriverError>;
 
 /// 一条驱动绑定：`compatible` 串 → 驱动 factory。
 #[derive(Clone, Copy)]
@@ -57,8 +74,7 @@ pub struct DriverBinding {
     /// FDT `compatible` 串（匹配 `DeviceNode::compatible` 首个值）。
     pub compatible: &'static str,
     /// 驱动构造器：从节点属性（reg/interrupts）装配硬件 + 驱动。
-    pub factory:
-        fn(&DeviceNode, &mut dyn PlatformCtx) -> Result<Box<dyn DeviceDriver>, DriverError>,
+    pub factory: DriverFactory,
 }
 
 /// 静态绑定表（编译期可审计的 `&'static` 数组）。
@@ -220,9 +236,10 @@ impl ProbeReport {
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
+
     use super::*;
     use crate::{DriverHealth, DriverId, DriverState, DriverType};
-    use alloc::boxed::Box;
 
     /// 测试驱动（实现 DeviceDriver seam 的最简形态）。
     struct TestDriver {
@@ -287,8 +304,23 @@ mod tests {
         DeviceNode {
             name: name.into(),
             compatible: compat.into(),
+            compatible_all: alloc::vec![compat.into()],
+            status: eneros_board::device_tree::NodeStatus::Ok,
+            path: alloc::format!("/{name}"),
+            phandle: None,
             regs: alloc::vec![(0x0900_0000, 0x1000)],
+            regs_bus: alloc::vec![(0x0900_0000, 0x1000)],
             interrupts: alloc::vec![0, 1, 4],
+            global_irqs: alloc::vec![],
+            clocks: alloc::vec![],
+            resets: alloc::vec![],
+            gpios: alloc::vec![],
+            dmas: alloc::vec![],
+            clock_frequency: None,
+            dma_coherent: None,
+            dma_ranges: alloc::vec![],
+            iommus: alloc::vec![],
+            properties: alloc::vec![],
         }
     }
 
@@ -330,6 +362,7 @@ mod tests {
                 node("can@10000000", "nxp,sja1000"),
                 node("timer", "arm,armv8-timer"),
             ],
+            disabled: alloc::vec![],
         };
         let mut ctx = MockCtx::default();
         let report = table.probe_all(&inventory, &mut ctx);
@@ -355,6 +388,7 @@ mod tests {
         }]);
         let inventory = DeviceInventory {
             nodes: alloc::vec![node("uart@9000000", "arm,pl011")],
+            disabled: alloc::vec![],
         };
         let mut ctx = MockCtx {
             fail_map: true,

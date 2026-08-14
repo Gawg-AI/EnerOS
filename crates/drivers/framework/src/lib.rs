@@ -23,12 +23,17 @@
 extern crate alloc;
 
 pub mod binding;
+pub mod capability;
 pub mod handle;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 pub mod registry;
+pub mod supervisor;
 
 use core::fmt;
+
+pub use capability::{Capability, CapabilityKind, CapabilityQuality, CapabilityRegistry};
+pub use supervisor::{DriverState as DriverLifecycleState, DriverSupervisor, SupervisedDriver};
 
 /// 驱动唯一标识
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -111,6 +116,11 @@ pub trait DeviceDriver: Send + Sync {
     fn handle_irq(&mut self, irq_id: u32);
     /// 健康检查
     fn health_check(&self) -> DriverHealth;
+    /// 38（蓝图 §7）：驱动成功 Started+Healthy 后发布的能力。
+    /// 缺省空（驱动未声明能力——不发布任何 capability）。
+    fn capabilities(&self) -> &'static [CapabilityKind] {
+        &[]
+    }
 }
 
 /// 驱动框架错误
@@ -159,7 +169,9 @@ impl core::error::Error for DriverError {}
 
 // Re-export submodule types for convenience.
 // lib.rs 自身定义的类型（DeviceDriver/DriverId 等）已为 pub，无需再次 re-export。
-pub use binding::{BindingTable, BoundEntry, DriverBinding, FailedEntry, PlatformCtx, ProbeReport, UnboundEntry};
+pub use binding::{
+    BindingTable, BoundEntry, DriverBinding, FailedEntry, PlatformCtx, ProbeReport, UnboundEntry,
+};
 pub use handle::{DriverCapability, DriverHandle, DriverPermission};
 #[cfg(any(test, feature = "mock"))]
 pub use mock::MockDriver;

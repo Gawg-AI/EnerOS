@@ -10,6 +10,15 @@ description = "EnerOS driver/storage EL0 services — rng/blk/net/console/storag
 name = "eneros_drv_svc"
 path = "src/lib.rs"
 
+[dependencies]
+# 38（WP-38.9）：驱动服务通用 IPC runtime——真实 IPC loop（envelope/
+# bounded queue/deadline/epoch），不再 spin_loop 占位。
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }
+eneros-runtime = { path = "../../runtime/runtime" }
+eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
+eneros-hal = { path = "../../hal/hal" }
+linked_list_allocator = "0.10"
+
 [[bin]]
 name = "svc-drv-rng"
 path = "src/bin/svc-drv-rng.rs"

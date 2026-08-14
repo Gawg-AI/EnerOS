@@ -11,6 +11,7 @@
 
 #![no_std]
 
+pub mod adapter;
 pub mod boot_info;
 pub mod device_tree;
 pub mod mini_uart;

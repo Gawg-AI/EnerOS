@@ -7,6 +7,9 @@ license.workspace = true
 description = "EnerOS board support crate (no_std, hardware boot + serial driver)"
 
 [dependencies]
+# 38（WP-38.2/38.3）：FDT walker 产出 hal 归一化 inventory/资源模型；
+# eneros-hal 不依赖本 crate（无环）。
+eneros-hal = { path = "../hal" }
 
 [features]
 default = []

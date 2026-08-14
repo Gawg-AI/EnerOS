@@ -3,8 +3,25 @@
 //! This crate defines the complete HAL trait interface set for EnerOS.
 //! It is a pure design crate (no hardware implementations); BSPs implement
 //! these traits in v0.6.0+.
+//!
+//! 38（蓝图 38）：平台资源唯一事实（[`inventory`]）、DMA 唯一 seam
+//! （[`dma`]）、平台装配唯一入口（[`platform_adapter`]）与地址强类型
+//! （[`addr`]）——核心业务只消费这些模型，禁止板卡名/厂商常量分支。
 
 #![cfg_attr(not(test), no_std)]
+
+extern crate alloc;
+
+pub mod addr;
+pub mod dma;
+pub mod inventory;
+pub mod irq_table;
+pub mod platform_adapter;
+
+pub use addr::{BusAddr, CpuVaddr, DeviceAddr, Iova, PhysAddr};
+pub use dma::{DmaAllocator, DmaCoherency, DmaDirection, DmaMapping};
+pub use inventory::{DeviceResources, PlatformInventory, ValidatedInventory};
+pub use platform_adapter::{HalRuntime, PlatformAdapter, PlatformDescriptionProvider};
 
 pub mod types;
 pub use types::*;
@@ -180,7 +197,8 @@ pub fn init_hal(provider: &'static (dyn HalProvider + Sync)) {
 /// # Panics
 /// Panics if [`init_hal`] has not been called yet（启动顺序 bug，尽早暴露）。
 pub fn hal() -> &'static (dyn HalProvider + Sync) {
-    *HAL.get().expect("HAL not initialized: call init_hal() during boot first")
+    *HAL.get()
+        .expect("HAL not initialized: call init_hal() during boot first")
 }
 
 #[cfg(feature = "mock")]

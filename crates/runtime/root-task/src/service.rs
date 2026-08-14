@@ -30,6 +30,48 @@ fn ipc_fail_closed(step: &str, e: impl core::fmt::Debug) -> ! {
     }
 }
 
+/// WP-37.1 #8：readiness 判定结果（readiness 来自 IPC handshake/health
+/// probe，非"spawn 返回成功"）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadinessVerdict {
+    /// 就绪通知在 deadline 内到达（handshake 通过）。
+    Ready,
+    /// deadline 内无就绪通知（服务未响应/未实现 IPC 循环）→ 显式降级，
+    /// 不虚报 Ready（蓝图：optional 失败写 CapabilityUnavailable）。
+    Degraded,
+}
+
+/// WP-37.1 #8：单服务 readiness 判定（**异步收集**，纯函数 host 可测）——
+/// 每轮调用一次，非忙等轮询。语义：
+/// - 就绪信号已到 → `Ready`；
+/// - 未到且已超 deadline → `Degraded`（不虚报 Ready）；
+/// - 未到且未超时 → `None`（继续轮询）。
+/// target 主循环在 hello 等阻塞点之间调用（服务在此期间运行并 Signal
+/// 就绪通知）；QEMU 实测 root 高优先级自旋 busy_wait 会饿死 EL0 服务，
+/// 禁止用忙等实现 deadline。
+pub fn check_readiness(
+    start_ms: u64,
+    deadline_ms: u64,
+    now_ms: u64,
+    signaled: bool,
+) -> Option<ReadinessVerdict> {
+    if signaled {
+        Some(ReadinessVerdict::Ready)
+    } else if now_ms.saturating_sub(start_ms) >= deadline_ms {
+        Some(ReadinessVerdict::Degraded)
+    } else {
+        None
+    }
+}
+
+/// WP-37.1 #8：readiness 探测 deadline（每服务；就绪 Signal 在服务 init
+/// 完成后首个调度周期内到达，drv 占位服务自旋不 Signal → 超时降级）。
+/// 单位毫秒（虚拟时钟；QEMU TCG 无 icount 时约慢 50-60×，1s 虚拟 ≈ 60s
+/// 真实，落在 200s QEMU 预算内；真机虚拟≈真实时间时 1s 对首调度周期
+/// 内到达的 Signal 仍属宽裕）。与 [`ReadinessContract::default_handshake`]
+/// 同语义（超时 → 显式降级）。
+const READINESS_DEADLINE_MS: u64 = 1_000;
+
 /// K2.2/K2.3：root-task IPC 主循环（21-A §2.K2.2/K2.3）。
 ///
 /// 首轮迭代（fault 注入只执行一次，svc-fault 挂起后不再接收消息）：
@@ -48,6 +90,9 @@ pub fn run_ipc_loop(
     irq_table: crate::irq::IrqTable,
     irq_binding: Option<crate::irq::IrqBinding>,
     mut irq_drivers: alloc::vec::Vec<crate::driver_probe::IrqDriver>,
+    // 38（WP-38.8）：驱动所有权在 driver_supervisor——事件循环经 badge
+    // 路由 handle_irq；存活期 = 本循环（驱动不再随局部变量 drop）。
+    mut driver_supervisor: eneros_driver_framework::DriverSupervisor,
 ) -> ! {
     use eneros_ipc_wire::el0::{encode_frame, El0FrameType};
     use eneros_sel4_sys::safe::{get_mr, ipc_call, ipc_poll, ipc_send, message_info_new, set_mr};
@@ -86,9 +131,24 @@ pub fn run_ipc_loop(
     // 30 RT-029：真实服务名（旧实现 new_for_count 用占位名 `svc-<i>`，
     // SUPERVISOR 故障日志服务名无定位价值——故障重启真证据（WP-27.4）
     // 出证前必须关闭）。
-    let service_names: alloc::vec::Vec<&str> =
-        handles.iter().map(|h| h.name.as_str()).collect();
+    let service_names: alloc::vec::Vec<&str> = handles.iter().map(|h| h.name.as_str()).collect();
     let mut supervisor = crate::supervisor::Supervisor::new(&service_names, now_ms());
+    // WP-37.2：能力授权填充——bundle flags 高 16 位（唯一授权来源）→
+    // CapabilityGrantSet；未声明能力一律拒绝（构造保证）。打印 CAPS 行
+    // 作为机器可读证据（声明即授予，无隐式授权）。
+    for (idx, handle) in handles.iter().enumerate() {
+        let caps = crate::bundle::capability_names(handle.capabilities)
+            .unwrap_or_default()
+            .join(",");
+        for name in crate::bundle::capability_names(handle.capabilities).unwrap_or_default() {
+            supervisor.services[idx].grants.grant(name);
+        }
+        eneros_runtime::println!(
+            "[eneros-root-task] CAPS: {}={}",
+            handle.name,
+            if caps.is_empty() { "<none>" } else { &caps }
+        );
+    }
     // fault 识别：poll 的 sender = fault_ep 的 badge（服务索引+1，spawn 时
     // mint 设置；0 保留 = 未知）。23 G-I 总出口确认：seL4 fault IPC 的
     // sender = fault handler endpoint 的 badge（doFaultTransfer 写入 badge
@@ -102,6 +162,12 @@ pub fn run_ipc_loop(
         0
     };
     eneros_watchdog::api::wdt_init(10_000, wdt_base);
+    // 38（WP-38.8）：进入事件循环前打印驱动生命周期汇总（证据行）。
+    eneros_runtime::println!(
+        "[eneros-root-task] ENEROS stage=event-loop-drivers {} healthy={}",
+        driver_supervisor.report_line(),
+        driver_supervisor.healthy_count()
+    );
     let mut fault_tick = 0u64;
     let mut tick = 0u64;
     // 33 WP-33.5：驱动 IRQ 计数（每驱动一槽；UART RX 注入时递增）。
@@ -110,6 +176,21 @@ pub fn run_ipc_loop(
         Some(i) => i,
         None => ipc_fail_closed("svc-fault not in supervisor table", "no name"),
     };
+
+    // WP-37.1 #8：readiness **异步收集**——readiness 必须来自 IPC
+    // handshake/health probe，非"spawn 返回成功"（蓝图 WP-37.1 #8）。
+    // 服务 resume 后在其首个调度周期内 Signal 就绪 ntfn；root 在主循环
+    // 阻塞点（hello 往返）之间 poll 收集。QEMU 实测：root 高优先级
+    // 自旋 busy_wait 饿死 EL0 服务，故禁止同步忙等探测。
+    // - 就绪 → 生命周期 Started→Ready；
+    // - deadline 内无信号（svc-drv-* 占位自旋）→ Started→Degraded，
+    //   显式降级不虚报（35-00 P0-08 占位债务由 38/39 清偿）；
+    // 全部判定后打印汇总行 PRODUCT-READY（Exit Gate #1 判据）。
+    let mut readiness_start_ms: alloc::vec::Vec<u64> = alloc::vec![now_ms(); handles.len()];
+    // None = 未判定（继续收集）；Some = 已判定。
+    let mut readiness_state: alloc::vec::Vec<Option<ReadinessVerdict>> =
+        alloc::vec![None; handles.len()];
+    let mut readiness_summary_printed = false;
 
     let mut irq_count: u64 = 0;
     let mut irq_seq: u64 = 0;
@@ -149,7 +230,11 @@ pub fn run_ipc_loop(
             let mut drv_sender = 0u64;
             if let Ok(_mi) = ipc_poll(drv.binding.ntfn_slot, Some(&mut drv_sender)) {
                 if drv_sender != 0 {
-                    drv.driver.handle_irq(drv.irq);
+                    // 38（WP-38.8）：驱动在 driver_supervisor 内（单所有权），
+                    // 按 badge 路由 handle_irq。
+                    if let Some(d) = driver_supervisor.driver_for_badge(drv.badge) {
+                        d.handle_irq(drv.irq);
+                    }
                     if let Err(e) = irq_table.ack(&drv.binding) {
                         ipc_fail_closed("driver irq ack", e);
                     }
@@ -180,6 +265,73 @@ pub fn run_ipc_loop(
         );
 
         tick += 1;
+
+        // WP-37.1 #8：readiness 异步收集（每轮在 hello 阻塞点后 poll；
+        // 服务在此期间已运行并 Signal 就绪通知）。全部判定后打印一次
+        // 汇总行 PRODUCT-READY。
+        let mut any_pending = false;
+        for (idx, handle) in handles.iter().enumerate() {
+            if readiness_state[idx].is_some() {
+                continue;
+            }
+            let mut sender = 0u64;
+            let signaled = if let Ok(_mi) = ipc_poll(handle.ready_ntfn, Some(&mut sender)) {
+                sender != 0
+            } else {
+                false
+            };
+            match check_readiness(
+                readiness_start_ms[idx],
+                READINESS_DEADLINE_MS,
+                now_ms(),
+                signaled,
+            ) {
+                Some(verdict) => {
+                    // spawn 已完成 → 生命周期推进到 Started（readiness
+                    // 判定的合法基线），再转 Ready/Degraded。
+                    supervisor.services[idx].advance_lifecycle_to_started();
+                    let _ = supervisor.services[idx].lifecycle_transition(match verdict {
+                        ReadinessVerdict::Ready => crate::supervisor::LifecycleState::Ready,
+                        ReadinessVerdict::Degraded => crate::supervisor::LifecycleState::Degraded,
+                    });
+                    readiness_state[idx] = Some(verdict);
+                    eneros_runtime::println!(
+                        "[eneros-root-task] READINESS: {}={:?}",
+                        handle.name,
+                        verdict
+                    );
+                }
+                None => any_pending = true,
+            }
+        }
+        if !any_pending && !readiness_summary_printed {
+            readiness_summary_printed = true;
+            let degraded: alloc::vec::Vec<&str> = handles
+                .iter()
+                .zip(readiness_state.iter())
+                .filter(|(_, v)| **v == Some(ReadinessVerdict::Degraded))
+                .map(|(h, _)| h.name.as_str())
+                .collect();
+            // WP-37.1：PRODUCT-READY 判据 = **required 服务**全 Ready
+            // （root 运行到本行即 Ready——elfloader 装载，无 readiness
+            // 轮询；optional 降级只写 CapabilityUnavailable，不阻断）。
+            let required_degraded: alloc::vec::Vec<&str> = handles
+                .iter()
+                .zip(readiness_state.iter())
+                .filter(|(h, v)| {
+                    h.requirement == crate::bundle::Requirement::Required
+                        && **v == Some(ReadinessVerdict::Degraded)
+                })
+                .map(|(h, _)| h.name.as_str())
+                .collect();
+            eneros_runtime::println!(
+                "[eneros-root-task] PRODUCT-READY: {} (degraded: {}; required degraded: {})",
+                required_degraded.is_empty(),
+                degraded.join(","),
+                required_degraded.join(",")
+            );
+        }
+
         // 2. supervisor：轮询 fault ep（非阻塞）——检测服务故障并决策。
         // 23 G-I 总出口修复：`seL4_Poll` 无消息时返回的 MessageInfo 未定义
         // （QEMU 实测 0x2239c8——垃圾值，length>0 误判为有消息 → 每轮
@@ -190,11 +342,28 @@ pub fn run_ipc_loop(
             let has_msg = sender != 0;
             if has_msg {
                 let name = |i: usize| handles[i].name.as_str();
+                // WP-37.3：fault 详情（seL4 VMFault IPC 消息布局，
+                // aarch64 constants.h：MR0=fault IP, MR1=addr,
+                // MR2=PrefetchFault(1=取指故障), MR3=FSR）——NX 证据：
+                // ExecStack 注入后 MR2=1 且 addr 落在栈区 → 可归因取指
+                // 故障（NX 生效）。读取失败仅影响证据行，不阻断决策。
+                let fault_ip = get_mr(0).unwrap_or(u64::MAX);
+                let fault_addr = get_mr(1).unwrap_or(u64::MAX);
+                let prefetch = get_mr(2).unwrap_or(u64::MAX);
+                let fsr = get_mr(3).unwrap_or(u64::MAX);
                 if let Some(idx) = sender
                     .checked_sub(1)
                     .filter(|&b| (b as usize) < handles.len())
                     .map(|b| b as usize)
                 {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] FAULT-INFO: {} ip=0x{:x} addr=0x{:x} prefetch={} fsr=0x{:x}",
+                        name(idx),
+                        fault_ip,
+                        fault_addr,
+                        prefetch,
+                        fsr
+                    );
                     supervisor.advance(now_ms());
                     match supervisor.on_service_fault(idx) {
                         Some(crate::supervisor::Action::Restart { delay_ms }) => {
@@ -273,13 +442,18 @@ pub fn run_ipc_loop(
         }
 
         // 3. 周期故障注入（每 50 轮 hello）：svc-fault Running 时才注入
-        // （Suspended/Faulted 不注入，防 seL4_Send 阻塞 root-task）。
+        //    （Suspended/Faulted 不注入，防 seL4_Send 阻塞 root-task）。
+        //    WP-37.3：注入 ExecStack（栈页取指）——NX 生效时产生
+        //    instruction-fetch vm fault（可归因：栈地址），supervisor
+        //    restart 证明隔离；旧 IllegalAccess（null 写）不证明 NX。
         fault_tick += 1;
         if fault_tick % 50 == 0
             && supervisor.state_of(fault_idx) == Some(crate::supervisor::ServiceState::Running)
         {
-            eneros_runtime::println!("[eneros-root-task] IPC: send fault to svc-fault (cycle)");
-            let req = encode_frame(El0FrameType::Report, b"fault=IllegalAccess");
+            eneros_runtime::println!(
+                "[eneros-root-task] IPC: send fault=ExecStack to svc-fault (cycle)"
+            );
+            let req = encode_frame(El0FrameType::Report, b"fault=ExecStack");
             if let Err(e) = send_frame(fault.ep, &req) {
                 ipc_fail_closed("send fault", e);
             }
@@ -306,10 +480,12 @@ fn busy_wait_ms(ms: u64) {
 }
 
 /// 重启服务（22 §2.W1.3）：fault 后 TCB 被内核挂起且对象保留——
-/// `tcb_write_registers` 重置 PC/SP/X0/X1（与 configure_service 相同的
-/// 5 寄存器布局）+ `tcb_resume` 即从 `_start` 重新执行（无需
+/// `tcb_write_registers` 重置 PC/SP/X0/X1/X2（与 configure_service 相同的
+/// 6 寄存器布局）+ `tcb_resume` 即从 `_start` 重新执行（无需
 /// revoke/retype 对象；bss 未清零为已知语义——服务重启保留静态状态，
-/// 生产服务由 supervisor 重启策略保证幂等性）。
+/// 生产服务由 supervisor 重启策略保证幂等性）。重启后服务重新执行
+/// init → 重新 Signal 就绪 ntfn（X2=READY_NTFN_CSPACE_SLOT；root 侧
+/// readiness 重新判定，见 [`poll_readiness`]）。
 #[cfg(target_os = "none")]
 fn restart_service(
     handle: &crate::spawn::SpawnedHandle,
@@ -317,9 +493,14 @@ fn restart_service(
     use eneros_sel4_sys::safe::{tcb_resume, tcb_write_registers};
 
     // 寄存器布局由 spawn::initial_registers 单一持有（W2.1）——与 configure_service
-    // 共享同一构造点，count=5 契约由该函数保证。
-    let regs = crate::spawn::initial_registers(handle.entry, handle.stack_top, handle.buffer_vaddr);
-    tcb_write_registers(handle.tcb, 0, 5, &regs)?;
+    // 共享同一构造点，count=6 契约由该函数保证。
+    let regs = crate::spawn::initial_registers(
+        handle.entry,
+        handle.stack_top,
+        handle.buffer_vaddr,
+        crate::spawn::READY_NTFN_CSPACE_SLOT,
+    );
+    tcb_write_registers(handle.tcb, 0, 6, &regs)?;
     tcb_resume(handle.tcb)
 }
 
@@ -423,5 +604,57 @@ mod tests {
         assert_eq!(mrs, vec![1, 0xAB]);
         let out = frame_from_mrs(&mrs).expect("decode");
         assert_eq!(out, vec![0xAB]);
+    }
+
+    // ==================== WP-37.1 #8：readiness 判定 ====================
+
+    /// 就绪信号已到 → Ready（首轮即判定）。
+    #[test]
+    fn test_check_readiness_signaled_ready() {
+        assert_eq!(
+            check_readiness(0, 5_000, 100, true),
+            Some(ReadinessVerdict::Ready)
+        );
+        // 信号优先于 deadline（即使已超时）。
+        assert_eq!(
+            check_readiness(0, 5_000, 9_999, true),
+            Some(ReadinessVerdict::Ready)
+        );
+    }
+
+    /// deadline 内无信号 → None（继续收集，不提前降级）。
+    #[test]
+    fn test_check_readiness_pending_before_deadline() {
+        assert_eq!(check_readiness(0, 5_000, 4_999, false), None);
+        assert_eq!(check_readiness(1_000, 5_000, 5_999, false), None);
+    }
+
+    /// 超过 deadline 无信号 → Degraded（不虚报 Ready）。
+    #[test]
+    fn test_check_readiness_timeout_degrades() {
+        assert_eq!(
+            check_readiness(0, 5_000, 5_000, false),
+            Some(ReadinessVerdict::Degraded)
+        );
+        assert_eq!(
+            check_readiness(1_000, 5_000, 6_001, false),
+            Some(ReadinessVerdict::Degraded)
+        );
+    }
+
+    /// 异步收集全流程：先 None（未到期），信号后 Ready；无信号超时
+    /// Degraded（drv 占位服务语义）。
+    #[test]
+    fn test_check_readiness_async_collection_flow() {
+        // 参考服务：第二轮信号到达 → Ready。
+        let mut v = check_readiness(0, 5_000, 500, false);
+        assert_eq!(v, None);
+        v = check_readiness(0, 5_000, 1_000, true);
+        assert_eq!(v, Some(ReadinessVerdict::Ready));
+        // 占位服务：永不信号 → 超时 Degraded。
+        v = check_readiness(0, 5_000, 4_999, false);
+        assert_eq!(v, None);
+        v = check_readiness(0, 5_000, 5_000, false);
+        assert_eq!(v, Some(ReadinessVerdict::Degraded));
     }
 }

@@ -28,7 +28,10 @@ extern crate eneros_runtime;
 #[cfg(target_os = "none")]
 extern crate alloc;
 
+// target 分支必须显式导入（三审 E0599 修复）
 use eneros_runtime::{init, println};
+#[cfg(target_os = "none")]
+use eneros_tenant::TenantManager; // WP-37.2：`TenantStore::create` 是 trait 方法，
 
 pub mod allocator;
 pub mod boot;
@@ -39,6 +42,8 @@ pub mod driver_probe;
 pub mod irq;
 pub mod irq_timer;
 pub mod panic;
+pub mod platform;
+pub mod runtime_spec;
 pub mod service;
 pub mod spawn;
 pub mod supervisor;
@@ -48,20 +53,37 @@ pub mod supervisor;
 #[global_allocator]
 static ALLOCATOR: allocator::HeapAllocator = allocator::HeapAllocator::new();
 
-/// boot manager 加载 init bundle 的物理地址（30 RT-002：单一事实源 =
-/// boot-protocol ENEROS_INIT_BUNDLE_PHYS——boot-manager validate 已收紧
-/// load_address == 本常量（RT-010），root-task 固定读与 BootInfo 声明一致；
-/// 完整"消费 BootInfo.init_bundle_phys 字段"需 elfloader 传参通道（第三方
-/// ABI），登记 34 域）。
+/// WP-37.6：bundle 物理地址解析——BootInfo 值（elfloader 通道建立后）
+/// 优先；当前正式链无该通道，回落内核 BOOT-007 契约窗口常量
+/// （kernel boot.c 映射 + boot manager 装载的同一地址；消费仍经
+/// magic 探测 + 模块 sha256 验证，验证失败 fail-closed 挂起——
+/// 不是无验证盲猜）。elfloader 通道建立后本函数切换为真实
+/// BootInfo 值（RECON-37 §5 CROSS_VERSION_CHANGE_REQUEST）。
 #[cfg(target_os = "none")]
-const INIT_BUNDLE_PHYS: u64 = eneros_boot_protocol::ENEROS_INIT_BUNDLE_PHYS;
+fn resolve_init_bundle_phys() -> u64 {
+    // BootInfo 值来源：elfloader 传参通道（未建）→ 当前恒 0，
+    // 走 BOOT-007 契约窗口。debug 与 release 同语义（契约窗口 +
+    // 强制验证），不再区分策略。
+    match crate::boot::resolve_bundle_phys(0) {
+        Ok(phys) => phys,
+        Err(e) => {
+            crate::println!(
+                "[eneros-root-task] WP-37.6: bundle phys resolve FAILED: {:?} — hang (fail-closed)",
+                e
+            );
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    }
+}
 
 /// Root task 入口 — 由 seL4 elfloader 在 rootserver 模式下调用。
 ///
 /// M0+ 行为（蓝图/20 R1-2）：
 /// 1. `eneros_runtime::init()` 初始化串口控制台
 /// 2. 打印 root task banner（证明 Rust→seL4 FFI 真实启动）
-/// 3. 消费 BootInfo + 解析 init bundle（INIT_BUNDLE_PHYS）
+/// 3. 消费 BootInfo + 解析 init bundle（resolve_init_bundle_phys）
 /// 4. `spawn::plan_spawn` 生成 spawn 计划（root + ≥2 服务，W^X 页表）
 /// 5. `spawn::sel4_spawn_services` 真实 spawn（M2.1 sel4-sys FFI）
 /// 6. 失败即挂起（fail-closed，不进入伪运行态）
@@ -108,16 +130,17 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
     unsafe { ALLOCATOR.init() };
     // 22 §2.W1.2：panic 审计链初始化（panic handler 最简路径的前提）。
     crate::panic::init_panic_audit();
-    // 23 G-I 总出口修复：单调时钟初始化（Arm64Timer = CNTPCT_EL0 generic
-    // timer）。supervisor 的 busy_wait/退避依赖 get_monotonic_ns——此前未
-    // time_init 恒 0 → fault 重启的 1000ms 忙等死循环（22 G-R1 未系统级
-    // 验证，bootctrl Crc 阻断期；23 G-I 暴露并修复）。
-    eneros_time::time_init(eneros_hal::arm64::timer::clock(), 0);
+    // 23 G-I 总出口修复：单调时钟初始化。38（WP-38.4）：时钟经
+    // PlatformAdapter 装配——time_init 移至平台装配之后（timer 频率经
+    // TimerHandle 校验非零，fail-closed 不猜时钟）。
     println!("[eneros-root-task] Rust root task alive on seL4");
     println!("[eneros-root-task] G2 closure: bootinfo/cap/IPC (inherited from elfloader boot)");
+    // WP-37.6：bundle 物理地址经 resolve_init_bundle_phys 解析（debug 允许
+    // 固定常量 fallback；release 严格——无 BootInfo 值即 fail-closed）。
+    let init_bundle_phys = resolve_init_bundle_phys();
     println!(
         "[eneros-root-task] init_bundle @ paddr=0x{:x}",
-        INIT_BUNDLE_PHYS
+        init_bundle_phys
     );
 
     // BOOT-007（C2 修复）：init bundle 区域由 seL4 内核 boot.c 显式映射进
@@ -134,14 +157,14 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
 
     // 校验内核映射生效：读 bundle 首 8 字节（magic）。
     // SAFETY: 内核 boot.c 已把 [0x42000000, 0x42200000) 映射进初始 VSpace。
-    let probe = unsafe { core::ptr::read_volatile(INIT_BUNDLE_PHYS as *const [u8; 8]) };
+    let probe = unsafe { core::ptr::read_volatile(init_bundle_phys as *const [u8; 8]) };
     crate::println!(
         "[eneros-root-task] BOOT-007 kernel-mapped bundle probe={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         probe[0], probe[1], probe[2], probe[3], probe[4], probe[5], probe[6], probe[7]
     );
 
     // 从物理地址读取 init bundle（header 64 B → total_len → 全量）
-    let raw = read_bundle_from_phys(INIT_BUNDLE_PHYS);
+    let raw = read_bundle_from_phys(init_bundle_phys);
     let bundle = match raw {
         Some(raw) => {
             // 30 RT-004：验签式解析——模块 sha256 必须与打包侧摘要一致
@@ -165,13 +188,89 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
         None => {
             println!(
                 "[eneros-root-task] init bundle missing @ paddr=0x{:x} — 挂起（fail-closed）",
-                INIT_BUNDLE_PHYS
+                init_bundle_phys
             );
             loop {
                 core::hint::spin_loop();
             }
         }
     };
+
+    // WP-37.9：panic 审计记录本次启动消费的制品摘要（bundle payload
+    // sha256——parse_verified 已验证的介质事实；panic 路径只读静态）。
+    crate::panic::register_artifact_digest(bundle.payload_sha256);
+
+    // 38（WP-38.4）：平台装配——PlatformAdapter（QEMU virt）→
+    // ValidatedInventory → HalRuntime（timer/CPU/console/DMA）。
+    // 只读 discovery：不触发设备写/格式化（固定不变量 1）。
+    let platform = {
+        use eneros_hal::platform_adapter::source_name;
+        let (dtb, _phys) = match crate::driver_probe::runtime_dtb_slice(u64::from(bundle.total_len))
+        {
+            Some(v) => v,
+            None => {
+                println!("[eneros-root-task] 38 platform: no runtime dtb — 挂起（fail-closed）");
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+        };
+        match crate::platform::assemble(dtb, 0) {
+            Ok(p) => {
+                let inv = &p.inventory.inventory;
+                println!(
+                    "[eneros-root-task] 38 HAL: source={} cpus={} enabled={} mem={} devices={}",
+                    source_name(inv.provenance.source),
+                    inv.cpus.len(),
+                    p.hal.cpu.core_count,
+                    inv.memory.len(),
+                    inv.devices.len()
+                );
+                println!(
+                    "[eneros-root-task] 38 HAL: timer-freq={} console={} entropy={} iommu={}",
+                    p.hal.timer.as_ref().map(|t| t.frequency_hz).unwrap_or(0),
+                    p.hal
+                        .console
+                        .as_ref()
+                        .map(|c| c.name.as_str())
+                        .unwrap_or("none"),
+                    p.hal
+                        .entropy
+                        .as_ref()
+                        .map(|e| e.name.as_str())
+                        .unwrap_or("none"),
+                    p.hal.dma.iommu_present
+                );
+                p
+            }
+            Err(e) => {
+                println!(
+                    "[eneros-root-task] 38 HAL: assembly FAILED {:?} — 挂起（fail-closed，零设备写）",
+                    e
+                );
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+        }
+    };
+    // 23 G-I：单调时钟初始化——timer 来自 HalRuntime（频率已校验非零）；
+    // supervisor busy_wait/退避依赖 get_monotonic_ns。
+    match platform.hal.timer.as_ref() {
+        Some(t) => {
+            eneros_time::time_init(t.clock, 0);
+            println!(
+                "[eneros-root-task] time: monotonic init via HAL timer freq={} Hz",
+                t.frequency_hz
+            );
+        }
+        None => {
+            println!("[eneros-root-task] time: HAL timer MISSING — 挂起（fail-closed，不猜时钟）");
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    }
 
     // R1-2：spawn 计划（root + ≥2 服务，W^X 页表 + 栈 + IPC EP）
     // VSPACE_BASE = 0x200000：服务 ELF 链接基址（aarch64-unknown-none
@@ -201,8 +300,14 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
             m.blob.get(3).copied().unwrap_or(0)
         );
     }
-    let plan = match crate::spawn::plan_spawn(&bundle, VSPACE_BASE, PAGE_SIZE, STACK_SIZE, EP_BASE)
-    {
+    let plan = match crate::spawn::plan_spawn_dyn_aware(
+        &bundle,
+        VSPACE_BASE,
+        PAGE_SIZE,
+        STACK_SIZE,
+        EP_BASE,
+        VSPACE_BASE, // WP-37.4：ET_DYN 装载基址（独立 VSpace，可复用区域）
+    ) {
         Ok(plan) => plan,
         Err(e) => {
             println!(
@@ -214,6 +319,53 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
             }
         }
     };
+
+    // WP-37.2：主路径必须经过租户强制（RT-06：旧主路径用不带 enforcement
+    // 的 plan_spawn，enforcement 只是备用 helper）。系统租户 id 由
+    // TenantStore::create 分配（自增，首个为 1）：
+    // - 预算来源：计划实际占用（plan 已解析真实 ELF 段/栈大小，非猜测）；
+    //   manifest ResourceBudget 注入 bundle wire 后替换本策略常量（37.1 后续）。
+    // - 记账真实发生：enforce 后 usage 累计；spawn 失败/退出必须 release。
+    let mut tenant_store = eneros_tenant::TenantStore::new();
+    let system_quota = eneros_tenant::TenantQuota {
+        max_cpu_pct: 100.0,
+        max_mem_kb: 131_072, // 128 MiB 平台策略上限（系统租户）
+        max_storage_kb: 0,
+        max_agents: 64,
+        max_bandwidth_kbps: 0,
+    };
+    let system_tenant_id = match tenant_store.create("system", system_quota) {
+        Ok(t) => t.tenant_id,
+        Err(e) => {
+            println!(
+                "[eneros-root-task] system tenant create FAILED: {:?} — 挂起（fail-closed）",
+                e
+            );
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+    let mut enforcer = eneros_tenant::TenantEnforcer::new(tenant_store);
+    let plan_mem_kb = crate::spawn::plan_mem_kb(&plan, PAGE_SIZE);
+    match crate::spawn::enforce_spawn(&mut enforcer, system_tenant_id, plan_mem_kb, 100.0) {
+        Ok(()) => {
+            crate::println!(
+                "[eneros-root-task] tenant enforce: tenant={} mem_kb={} cpu=100.0 — 记账生效",
+                system_tenant_id,
+                plan_mem_kb
+            );
+        }
+        Err(e) => {
+            println!(
+                "[eneros-root-task] tenant enforce FAILED: {:?} — 挂起（fail-closed）",
+                e
+            );
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    }
     println!(
         "[eneros-root-task] spawn plan: root={} services={} (≥2 验收口径)",
         plan.root.name,
@@ -293,16 +445,39 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
                 // K2.2：IPC 调度主循环（替换 spin_loop，21-A）。
                 // WP-27.2：驱动装配（DTB → 绑定表 → ProbeReport 启动日志），
                 // 在进入服务循环前完成；驱动缺失不阻断 spawn（fail 行如实）。
-                let irq_drivers =
-                    crate::driver_probe::probe_and_report(&mut ctx, &mut irq_table, u64::from(bundle.total_len));
+                // 38（WP-38.8）：probe → DriverSupervisor（全持有+生命周期）
+                // + IRQ 接线；DMA/一致性来自 HalRuntime（hal 唯一 seam）。
+                let (supervisor, irq_drivers) = crate::driver_probe::probe_and_report(
+                    &mut ctx,
+                    &mut irq_table,
+                    u64::from(bundle.total_len),
+                    platform.hal.dma.allocator,
+                    Some(platform.hal.dma.default_coherency),
+                    platform.hal.timer.is_some(),
+                    platform.hal.entropy.as_ref().map(|e| e.name.clone()),
+                );
                 // 31 D5（review）：probe 已经 rtc_factory 注入 RTC 虚拟基址——
                 // 接进时钟子系统（time_init 会重建 TimerWheel 丢定时器，故用 set_rtc_base）。
                 eneros_time::set_rtc_base(
                     crate::panic::RTC_BASE.load(core::sync::atomic::Ordering::Relaxed),
                 );
-                crate::service::run_ipc_loop(&handles, irq_table, irq_binding, irq_drivers);
+                crate::service::run_ipc_loop(
+                    &handles,
+                    irq_table,
+                    irq_binding,
+                    irq_drivers,
+                    supervisor,
+                );
             }
             Err(e) => {
+                // WP-37.2：spawn 失败必须 release 租户记账（幂等），
+                // 再挂起 fail-closed。
+                let _ = crate::spawn::release_spawn(
+                    &mut enforcer,
+                    system_tenant_id,
+                    plan_mem_kb,
+                    100.0,
+                );
                 println!(
                     "[eneros-root-task] spawn FAILED: {:?} — 挂起（fail-closed）",
                     e
@@ -397,7 +572,10 @@ mod tests {
             !bundle_len_within_window(3 * 1024 * 1024),
             "3MiB 超出内核 2MiB 窗口必须拒绝（30 RT-003 判据）"
         );
-        assert!(!bundle_len_within_window(64 * 1024 * 1024), "旧 64MiB 上限值必须拒绝");
+        assert!(
+            !bundle_len_within_window(64 * 1024 * 1024),
+            "旧 64MiB 上限值必须拒绝"
+        );
         assert!(!bundle_len_within_window(0x4000_0000), "1GiB 拒绝");
     }
 }

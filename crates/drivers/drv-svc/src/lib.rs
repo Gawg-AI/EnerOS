@@ -9,27 +9,54 @@
 //! - `svc-storage`：存储事务日志服务（STO-002）
 //! - `svc-drv-fault`：驱动故障注入服务
 //!
-//! 实现状态（v0.249.0 注释校正）：
+//! 实现状态（v0.165.0 注释校正）：
 //! - `svc-drv-rng` 已实现真实 virtio-rng 队列 I/O（v0.200.0 P0-9，
 //!   `VirtioRngDriver::read_entropy`，host 仿真测试覆盖）；
-//! - 其余服务仍为 `_start` loop 占位（ELF 合法装载），真实 virtio I/O
-//!   在 M2+ 接入（从 C root_task.c 的 G3 实现移植）。
+//! - 38（WP-38.9）：六个 bin 全部执行真实 IPC loop
+//!   （[`runtime::driver_service_main`]——envelope/bounded queue/
+//!   deadline/epoch），不再 spin 占位；设备分配（blk/net/storage/fault
+//!   的真实队列 I/O）由 39 接入——未分配服务显式回 `ST_UNAVAILABLE`。
 //!
 //! no_std 合规：仅 core，无 alloc 依赖（virtio 队列用固定大小缓冲）。
 
 #![no_std]
 #![allow(clippy::empty_loop)]
 
-/// 驱动 EL0 服务公共入口 — 永久 loop。
-///
-/// v0.200.0 (P0-9)：svc-drv-rng 实现真实 virtio-rng 队列 I/O
-/// （[`crate::VirtioRng::read_entropy`]，host 可测的 virtqueue 语义）；其余服务保持
-/// 占位，M2.1（seL4 MMIO 映射 + Endpoint IPC）后接线。
+// 测试 harness 需要 std（crate 本体保持 no_std 无 alloc）。
+#[cfg(test)]
+extern crate std;
+
+/// 38（WP-38.9）：通用驱动服务 IPC runtime（envelope/bounded queue/
+/// deadline/epoch；替代自旋占位）。
+pub mod runtime;
+
+/// 服务进程全局分配器（linked_list_allocator；runtime 本体无 alloc）。
+pub mod allocator;
+
+/// host 构建下的公共入口兜底（lib 测试使用；target 服务入口在各 bin
+/// `_start` 中调用 [`runtime::driver_service_main`]——真实 IPC loop）。
 #[inline]
 pub fn drv_loop() -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// 单调毫秒时钟（EL0 服务侧；Arm64Timer CNTPCT_EL0——root 同 EL 可读，
+/// 37 证据验证）。host 构建无目标时钟 → 0（测试注入 now）。
+#[cfg(target_arch = "aarch64")]
+pub fn now_ms() -> u64 {
+    eneros_hal::arm64::timer::clock().now_ns() / 1_000_000
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn now_ms() -> u64 {
+    0
+}
+
+/// 服务实例 epoch：启动时刻单调毫秒（重启后必变——旧客户端句柄失效）。
+pub fn instance_epoch() -> u64 {
+    now_ms()
 }
 
 // ============================================================================
@@ -401,5 +428,39 @@ mod tests {
         assert!(sim.entropy.iter().any(|&b| b != 0));
         // 且不是全 0xFF（有变化）。
         assert!(sim.entropy.windows(2).any(|w| w[0] != w[1]));
+    }
+}
+
+// ============================================================================
+// 38（WP-38.9）：console 适配模板（蓝图：38 建模板，39 接设备）
+// ============================================================================
+
+/// Console 服务模板：声明 console 能力；设备（pl011 资源/收发）在 39
+/// 分配——无设备时 EXECUTE 由 [`runtime::process_request`] 回
+/// `ST_UNAVAILABLE`（不伪造控制台 I/O）。
+pub struct ConsoleService;
+
+impl ConsoleService {
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for ConsoleService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl runtime::DriverService for ConsoleService {
+    fn capability(&self) -> Option<&'static str> {
+        Some("console")
+    }
+    fn handle(&mut self, req: &runtime::DriverRequest, resp: &mut runtime::DriverResponse) {
+        // 回声模板：载荷原样回写（模板语义；真机收发 39 接线）。
+        let n = core::cmp::min(req.payload_len as usize, runtime::PAYLOAD_CAP);
+        resp.payload[..n].copy_from_slice(&req.payload[..n]);
+        resp.payload_len = n as u16;
+        resp.status = runtime::ST_OK;
     }
 }

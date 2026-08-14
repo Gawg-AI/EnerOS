@@ -52,11 +52,12 @@ impl MemFlags {
 
 /// Interrupt trigger type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub enum IrqTrigger {
     /// Edge-triggered.
-    Edge,
+    Edge = 0,
     /// Level-triggered.
-    Level,
+    Level = 1,
 }
 
 /// HAL error codes.
@@ -77,6 +78,8 @@ pub enum HalError {
     /// 30 RT-011/025：单例未初始化（init_with/init_uart 未调用或硬件
     /// 初始化失败）——fail-closed，禁止访问未映射/占位基址。
     NotInitialized,
+    /// 38（WP-38.5）：boot-only 注册表已冻结（装配完成后注册/注销拒绝）。
+    RegistrationAfterFreeze,
 }
 
 impl core::fmt::Display for HalError {
@@ -89,6 +92,7 @@ impl core::fmt::Display for HalError {
             HalError::PermissionDenied => write!(f, "permission denied"),
             HalError::Timeout => write!(f, "hardware timeout"),
             HalError::NotInitialized => write!(f, "singleton not initialized"),
+            HalError::RegistrationAfterFreeze => write!(f, "registration after freeze"),
         }
     }
 }
