@@ -19,6 +19,36 @@
 > 测试数（22→23）。复验镜像 sha256 见 §6，观察点 OBS-01~04 见
 > `CROSS_VERSION-38.md`。
 
+> **38-review2 复验订正（2026-08-14，commit `fix wp38-review2` = `4d28805`）**：
+> 对已提交 38 做隔离复验（git worktree @4d28805 干净检出 + host/target 构建 +
+> 全 crate 测试 + 镜像重建 + QEMU）发现：
+> ① **P0 一致性缺陷（登记，待 36/37 收口）**：clean committed 38 的 root-task
+> 单独不可编译——`main.rs:46 pub mod runtime_spec;` 无条件声明但 `runtime_spec.rs`
+> 未提交（仅工作树，非 gitignore）；且 `cfg(target_os="none")` 代码引用未提交
+> 36/37 符号（resolve_bundle_phys/register_artifact_digest/register_boot_id/
+> PANIC_BOOT_ID/capability_names/READY_NTFN_CSPACE_SLOT/LifecycleState）。
+> 因此本卷所有 host 测试与 QEMU 验证均在含 36/37 未提交代码的工作树进行
+> （38-review 提交信息已注明 service.rs/main.rs 含 37 未交付行）；36/37 提交后
+> clean 38 即可构建。
+> ② **P1 修复（4d28805）**：drv-svc 6 bin host 编译断裂——`_start` 仅
+> `#[cfg(not(test))]` 而 `driver_service_main` 为 `#[cfg(target_os="none")]`
+> （38-review 从 drv_loop 换 driver_service_main 时漏配），`cargo clippy`/
+> `cargo build`（host 非 test）6 bin 全报 E0425，「38 范围 clippy 零告警」为假；
+> 改 svc-hello 同款模式（target_os="none" 门 + host main 兜底），host clippy/
+> build + aarch64 target 构建 + 10 测试全绿。
+> ③ **P2 修复（4d28805）**：rs485 `RamGpioPin` 缺 `Default`（clippy 告警，HEAD
+> 已存在）→ `#[derive(Default)]`。
+> ④ **QEMU 复验（38-reverify，工作树态 38+36/37+4d28805——唯一可构建态）**：
+> 重建镜像 sha256=`aa7bbb092739…`（SOURCE_DATE_EPOCH=1785465257 + pyfdt
+> PYTHONPATH 重链接 elfloader），日志
+> `target/eneros/evidence/38-reverify/qemu-serial.log`：38 HAL cpus=4
+> devices=48、driver-supervisor healthy=2、CAP-READY、6 svc 全部 ipc loop
+> entered、PRODUCT-READY true（degraded 空）、0 user exception、200 hello
+> ticks；harness exit=124 判 FAIL 为已知限制（seL4 无 ACPI 关机；日志序列门
+> 通过，同 38-review 手法）。
+> ⑤ **计数订正**：uart 实测 4（非 129）、can 实测 129（非 50）、services 实测
+> 25（非 38）——129 属 can，证据初版与 38-review 均标错，以实测为准。
+
 ## 0. 结论
 
 **38 Exit Gate：10/10 PASS（38 范围）。** 本版本完成，允许进入 39。
@@ -88,7 +118,7 @@
 | DMA | VA≠PA、池耗尽、越界 sync、32-bit 设备高地址 | 全部拒绝/类型化（hal 测试） |
 | 超时 | deadline 过期 | ST_TIMEOUT（drv-svc 测试） |
 | 并发 | frozen 表冻结后注册 | RegistrationAfterFreeze（hal 测试） |
-| 回归 | uart/can/rs485/storage/time/watchdog/services/sel4-sys/audit | 全绿（38-review 实测：uart 129/can 50/rs485 50/storage 128/time 128/watchdog 22/services 38/sel4-sys 24/boot-protocol 38/elf-loader 20——初版记录的 rs485 4/time 4/watchdog 4/storage 47 为过时快照，以实测为准；38 核心 hal 54/board 23/framework 61/root-task 97/drv-svc 10） |
+| 回归 | uart/can/rs485/storage/time/watchdog/services/sel4-sys/audit | 全绿（38-review2 复验实测：uart 4/can 129/rs485 50/storage 128/time 128/watchdog 22/services 25/sel4-sys 24/boot-protocol 38/elf-loader 20——38-review 记录的 uart 129/can 50/services 38 为计数标错（129 属 can、uart 实为 4、services 实为 25），以实测为准；38 核心 hal 54/board 23/framework 61/root-task 97/drv-svc 10） |
 
 ## 5. Mutation 防假绿（实弹验证）
 
@@ -115,9 +145,9 @@
 - 镜像：`target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw`
   38-review sha256=`280a925d6b8f91ba4bd91f7354f448d8ba325b99c3bfb0f4b1fe90f6fdf09e9a`
   （初版 `bef8afe3…` 已被 38-review 重建取代）
-- host 测试（38-review 实测）：root-task 97 / framework 61（51 unit + 10
-  integration）/ board 23 / hal 54 / drv-svc 10 / uart 129 / can 50 /
-  rs485 50 / storage 128 / time 128 / watchdog 22 / services 38 /
+- host 测试（38-review2 复验实测）：root-task 97 / framework 61（51 unit +
+  10 integration）/ board 23 / hal 54 / drv-svc 10 / uart 4 / can 129 /
+  rs485 50 / storage 128 / time 128 / watchdog 22 / services 25 /
   sel4-sys 24 / boot-protocol 38 / elf-loader 20（全绿）
 - 36 Gate：kernel/adr/closure/verify-bundle 全 PASS（Exit Gate 10）
 - aarch64 target check（root-task/drv-svc 6 bins）干净（仅预存 sel4-sys C
