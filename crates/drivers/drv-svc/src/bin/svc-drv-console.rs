@@ -1,21 +1,21 @@
 //! svc-drv-console — 串口控制台驱动 EL0 服务（38 WP-38.9：console 适配模板）。
 
-#![cfg_attr(not(test), no_std)]
-#![cfg_attr(not(test), no_main)]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 #![allow(clippy::empty_loop)]
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 use core::panic::PanicInfo;
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 extern crate eneros_drv_svc;
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 #[global_allocator]
 static ALLOC: eneros_drv_svc::allocator::HeapAllocator =
     eneros_drv_svc::allocator::HeapAllocator::new();
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 #[no_mangle]
 pub extern "C" fn _start(ep: u64, ipc_buffer: u64, ready_ntfn: u64) -> ! {
     // K2.3：设置 IPC buffer TLS（__sel4_ipc_buffer）——libsel4 的
@@ -36,7 +36,7 @@ pub extern "C" fn _start(ep: u64, ipc_buffer: u64, ready_ntfn: u64) -> ! {
     )
 }
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     // fail-closed：panic 挂起，由 root/watchdog 复位（不伪装继续服务）。
@@ -44,3 +44,8 @@ fn panic(_info: &PanicInfo) -> ! {
         core::hint::spin_loop();
     }
 }
+
+/// host 构建 no-op 入口（target 用 [`_start`]；与 svc-hello 同模式——
+/// 使 `cargo clippy`/`cargo build` 在 host 上能编译本 target-only bin）。
+#[cfg(all(not(test), not(target_os = "none")))]
+fn main() {}

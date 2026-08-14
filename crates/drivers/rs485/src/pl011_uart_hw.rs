@@ -290,6 +290,7 @@ pub trait GpioPin: Send + Sync {
 }
 
 /// RAM 桩 GPIO（host 测试；真机板级实现经绑定表注入）。
+#[derive(Default)]
 pub struct RamGpioPin {
     /// 当前电平（测试可读）。
     pub level: bool,
