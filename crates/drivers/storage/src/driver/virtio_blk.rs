@@ -36,81 +36,29 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{compiler_fence, Ordering};
 
+// ============================================================================
+// virtio-mmio 共享原语（39 WP-39.5：抽取至 eneros-virtio-core，此处 re-export
+// 保持既有消费方 API 不变——禁止另造同义 ring/常量类型）
+// ============================================================================
+pub use eneros_virtio_core::{
+    DmaPool, VirtioMmio, VirtqAvail, VirtqDesc, VirtqUsed, VirtqUsedElem, QUEUE_MASK, QUEUE_MAX,
+    VIRTIO_MMIO_MAGIC, VIRTIO_MMIO_VERSION_1, VIRTIO_MMIO_VERSION_2, VIRTIO_STATUS_ACKNOWLEDGE,
+    VIRTIO_STATUS_DRIVER, VIRTIO_STATUS_DRIVER_OK, VIRTIO_STATUS_FEATURES_OK, VIRTQ_DESC_F_NEXT,
+    VIRTQ_DESC_F_WRITE, VMMIO_DEVICE_FEATURES, VMMIO_DEVICE_FEATURES_SEL, VMMIO_DEVICE_ID,
+    VMMIO_DRIVER_FEATURES, VMMIO_DRIVER_FEATURES_SEL, VMMIO_GUEST_PAGE_SIZE, VMMIO_INTERRUPT_ACK,
+    VMMIO_INTERRUPT_STATUS, VMMIO_MAGIC_VALUE, VMMIO_QUEUE_ALIGN, VMMIO_QUEUE_DESC_HIGH,
+    VMMIO_QUEUE_DESC_LOW, VMMIO_QUEUE_DEVICE_HIGH, VMMIO_QUEUE_DEVICE_LOW, VMMIO_QUEUE_DRIVER_HIGH,
+    VMMIO_QUEUE_DRIVER_LOW, VMMIO_QUEUE_NOTIFY, VMMIO_QUEUE_NUM, VMMIO_QUEUE_NUM_MAX,
+    VMMIO_QUEUE_PFN, VMMIO_QUEUE_READY, VMMIO_QUEUE_SEL, VMMIO_STATUS, VMMIO_VENDOR_ID,
+    VMMIO_VERSION,
+};
+
 use crate::driver::types::{DeviceHealth, StorageConfig};
 use crate::driver::BlockDevice;
 use crate::error::StorageError;
 
-// ============================================================================
-// virtio-mmio register offsets (matching root_task.c VMMIO_*)
-// ============================================================================
-
-/// Magic value register — must read 0x7472_6976 ("virt").
-pub const VMMIO_MAGIC_VALUE: usize = 0x000;
-/// Device version (1 = legacy, 2 = modern).
-pub const VMMIO_VERSION: usize = 0x004;
-/// Device ID (2 = block).
-pub const VMMIO_DEVICE_ID: usize = 0x008;
-/// Device vendor ID.
-pub const VMMIO_VENDOR_ID: usize = 0x00C;
-/// Device features word 0.
-pub const VMMIO_DEVICE_FEATURES: usize = 0x010;
-/// Device features select (0/1).
-pub const VMMIO_DEVICE_FEATURES_SEL: usize = 0x014;
-/// Driver features word 0.
-pub const VMMIO_DRIVER_FEATURES: usize = 0x020;
-/// Driver features select (0/1).
-pub const VMMIO_DRIVER_FEATURES_SEL: usize = 0x024;
-/// Queue selector.
-pub const VMMIO_QUEUE_SEL: usize = 0x030;
-/// Maximum queue size (read-only).
-pub const VMMIO_QUEUE_NUM_MAX: usize = 0x034;
-/// Queue size (write to set).
-pub const VMMIO_QUEUE_NUM: usize = 0x038;
-/// Legacy queue PFN (guest physical frame number).
-pub const VMMIO_QUEUE_PFN: usize = 0x040;
-/// Queue ready (modern).
-pub const VMMIO_QUEUE_READY: usize = 0x044;
-/// Queue notify.
-pub const VMMIO_QUEUE_NOTIFY: usize = 0x050;
-/// Interrupt status.
-pub const VMMIO_INTERRUPT_STATUS: usize = 0x060;
-/// Interrupt acknowledge.
-pub const VMMIO_INTERRUPT_ACK: usize = 0x064;
-/// Device status.
-pub const VMMIO_STATUS: usize = 0x070;
-/// Guest page size (legacy).
-pub const VMMIO_GUEST_PAGE_SIZE: usize = 0x08C;
-/// Queue descriptor low/high (modern).
-pub const VMMIO_QUEUE_DESC_LOW: usize = 0x080;
-pub const VMMIO_QUEUE_DESC_HIGH: usize = 0x084;
-/// Queue driver (avail) low/high (modern).
-pub const VMMIO_QUEUE_DRIVER_LOW: usize = 0x090;
-pub const VMMIO_QUEUE_DRIVER_HIGH: usize = 0x094;
-/// Queue device (used) low/high (modern).
-pub const VMMIO_QUEUE_DEVICE_LOW: usize = 0x0A0;
-pub const VMMIO_QUEUE_DEVICE_HIGH: usize = 0x0A4;
-/// Queue align (legacy).
-pub const VMMIO_QUEUE_ALIGN: usize = 0x0AC;
-
-/// virtio-mmio magic ("virt" little-endian).
-pub const VIRTIO_MMIO_MAGIC: u32 = 0x7472_6976;
-/// Version 1 (legacy transport).
-pub const VIRTIO_MMIO_VERSION_1: u32 = 1;
-/// Version 2 (modern transport).
-pub const VIRTIO_MMIO_VERSION_2: u32 = 2;
-
-/// Device status bits.
-pub const VIRTIO_STATUS_ACKNOWLEDGE: u32 = 1;
-pub const VIRTIO_STATUS_DRIVER: u32 = 2;
-pub const VIRTIO_STATUS_DRIVER_OK: u32 = 4;
-pub const VIRTIO_STATUS_FEATURES_OK: u32 = 8;
-
 /// Block device ID (virtio-blk).
 pub const VIRTIO_BLK_DEVICE_ID: u32 = 2;
-
-/// Descriptor flags.
-pub const VIRTQ_DESC_F_NEXT: u16 = 1;
-pub const VIRTQ_DESC_F_WRITE: u16 = 2;
 
 /// Block request types.
 pub const VIRTIO_BLK_T_IN: u32 = 0;
@@ -121,83 +69,11 @@ pub const VIRTIO_BLK_T_FLUSH: u32 = 4;
 pub const VIRTIO_BLK_S_OK: u8 = 0;
 pub const VIRTIO_BLK_S_IOERR: u8 = 1;
 
-/// Queue capacity (16 descriptors, matching C reference).
-pub const QUEUE_MAX: usize = 16;
-const QUEUE_MASK: usize = QUEUE_MAX - 1;
-
 /// Sector size for virtio-blk (always 512 bytes).
 const SECTOR_SIZE: usize = 512;
 
 /// Number of request slots for data/status rotation (C uses 3 data + 4 status).
 const REQ_SLOTS: usize = 3;
-
-// ============================================================================
-// virtqueue structures (legacy layout)
-// ============================================================================
-
-/// Virtqueue descriptor (16 bytes).
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct VirtqDesc {
-    /// Guest physical address of the buffer.
-    pub addr: u64,
-    /// Buffer length in bytes.
-    pub len: u32,
-    /// Descriptor flags (`VIRTQ_DESC_F_*`).
-    pub flags: u16,
-    /// Index of the next descriptor in the chain.
-    pub next: u16,
-}
-
-/// Virtqueue available ring.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct VirtqAvail {
-    pub flags: u16,
-    pub idx: u16,
-    pub ring: [u16; QUEUE_MAX],
-    pub used_event: u16,
-}
-
-impl Default for VirtqAvail {
-    fn default() -> Self {
-        Self {
-            flags: 0,
-            idx: 0,
-            ring: [0; QUEUE_MAX],
-            used_event: 0,
-        }
-    }
-}
-
-/// Virtqueue used ring element.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct VirtqUsedElem {
-    pub id: u32,
-    pub len: u32,
-}
-
-/// Virtqueue used ring.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct VirtqUsed {
-    pub flags: u16,
-    pub idx: u16,
-    pub ring: [VirtqUsedElem; QUEUE_MAX],
-    pub avail_event: u16,
-}
-
-impl Default for VirtqUsed {
-    fn default() -> Self {
-        Self {
-            flags: 0,
-            idx: 0,
-            ring: [VirtqUsedElem::default(); QUEUE_MAX],
-            avail_event: 0,
-        }
-    }
-}
 
 /// Block request header (16 bytes, virtio-blk request).
 #[repr(C)]
@@ -209,44 +85,8 @@ pub struct VirtioBlkReq {
 }
 
 // ============================================================================
-// Transport / memory / cache abstractions
+// Cache abstractions（virtio-mmio 寄存器/ring/DMA 池在 eneros-virtio-core）
 // ============================================================================
-
-/// virtio-mmio register file access.
-///
-/// Real hardware: volatile MMIO at the device base address. Host tests:
-/// a RAM-backed simulation of QEMU's register semantics.
-pub trait VirtioMmio {
-    /// Reads a 32-bit register at `offset` (device endianness: LE).
-    fn read_reg(&self, offset: usize) -> u32;
-    /// Writes `value` to the 32-bit register at `offset`.
-    fn write_reg(&mut self, offset: usize, value: u32);
-    /// Optional hook invoked after queue setup with the DMA pool pointer.
-    ///
-    /// RAM-simulated backends use this to wire the device model to the pool
-    /// (so `QueueNotify` can be processed synchronously); real MMIO backends
-    /// leave it as a no-op.
-    fn post_init(&self, _pool: *mut u8) {}
-}
-
-/// Contiguous DMA memory pool (descriptor ring + request buffers).
-///
-/// Real hardware/seL4: untyped retype frames with a physical address. Host
-/// tests: `Vec<u8>` arena with an assigned physical base.
-pub trait DmaPool {
-    /// Returns the number of bytes available in the pool.
-    fn len(&self) -> usize;
-    /// Returns `true` if the pool is empty.
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-    /// Returns the physical base address of the pool.
-    fn phys_base(&self) -> u64;
-    /// Returns a mutable byte slice of the whole pool.
-    fn as_bytes_mut(&mut self) -> &mut [u8];
-    /// Returns a byte slice of the whole pool.
-    fn as_bytes(&self) -> &[u8];
-}
 
 /// ARM64 dcache maintenance around DMA buffers.
 ///
@@ -277,17 +117,35 @@ impl ArmCache for NoopCache {
 #[cfg(target_arch = "aarch64")]
 pub struct Aarch64Cache;
 
+/// 读取 CTR_EL0 的 DminLine 字段推导 dcache line 大小（字节）。
+///
+/// CVR-38-01：ARMv8 允许实现定义的 cache line（64B 只是常见值），
+/// 固定 64B 会在 128B line 的盒子上做不全的 clean/invalidate。DminLine
+/// 为 4 位字段：`(DminLine + 1) * 4` 字节；值为 0 表示实现不支持
+/// 读/写分配（此时维护无法进行，调用方按失败处理由调用者保证不会到达）。
+#[cfg(target_arch = "aarch64")]
+fn cache_line_bytes() -> usize {
+    let ctr_el0: u64;
+    // SAFETY: `mrs ctr_el0` 是 EL0 可读的系统寄存器（读缓存类型寄存器），
+    // 无副作用；在 aarch64 目标上始终合法。
+    unsafe {
+        core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr_el0, options(nostack));
+    }
+    ((ctr_el0 & 0xF) as usize + 1) * 4
+}
+
 #[cfg(target_arch = "aarch64")]
 impl ArmCache for Aarch64Cache {
     fn clean(&self, va: usize, len: usize) {
         // SAFETY: inline asm `dc cvac` operates on a virtual address that the
         // caller guarantees is mapped and valid for `len` bytes.
         unsafe {
+            let line = cache_line_bytes();
             let mut addr = va;
             let end = va.wrapping_add(len);
             while addr < end {
                 core::arch::asm!("dc cvac, {addr}", addr = in(reg) addr, options(nostack));
-                addr = addr.wrapping_add(64); // cache line size (64 B for ARMv8)
+                addr = addr.wrapping_add(line);
             }
             core::arch::asm!("dsb ish", options(nostack));
         }
@@ -297,11 +155,12 @@ impl ArmCache for Aarch64Cache {
         // SAFETY: `dc ivac` invalidates the cache line for the given VA; the
         // caller guarantees the VA is mapped and valid for `len` bytes.
         unsafe {
+            let line = cache_line_bytes();
             let mut addr = va;
             let end = va.wrapping_add(len);
             while addr < end {
                 core::arch::asm!("dc ivac, {addr}", addr = in(reg) addr, options(nostack));
-                addr = addr.wrapping_add(64); // cache line size (64 B for ARMv8)
+                addr = addr.wrapping_add(line);
             }
             core::arch::asm!("dsb ish", options(nostack));
         }
@@ -365,11 +224,18 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             let hi = mmio.read_reg(0x100 + 4) as u64;
             (hi << 32) | lo
         };
-        let block_count = if capacity > 0 {
-            capacity / (config.block_size as u64 / SECTOR_SIZE as u64)
-        } else {
-            config.max_transfer_blocks as u64 * 16
-        };
+        // 39 WP-39.5（P1-14）：capacity=0 **不得虚构**（旧实现回退
+        // `max_transfer_blocks*16` 占位——容量是设备事实，猜容量即
+        // 允许越界写）。设备未报告容量 → fail-closed。
+        if capacity == 0 {
+            return Err(StorageError::Unsupported {
+                detail: "virtio-blk capacity=0 (device did not report capacity)",
+            });
+        }
+        let block_count = capacity / (config.block_size as u64 / SECTOR_SIZE as u64);
+        // 下界保护：至少 1 块（容量 < 块大小时按 1 块处理仍可读头块诊断；
+        // 正常介质不会出现，防御除零后的空盘面）。
+        let block_count = block_count.max(1);
         let mut drv = Self {
             mmio: core::cell::RefCell::new(mmio),
             pool: core::cell::RefCell::new(pool),
@@ -516,7 +382,10 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
         if !self.initialized {
             return Err(StorageError::NotInitialized);
         }
-        if self.desc_used.get() + 3 > QUEUE_MAX {
+        // FLUSH 不需要数据描述符；QEMU legacy 拒绝 zero-sized buffer，
+        // 因此 flush 使用 2 描述符链（req→status），读写仍为 3 描述符。
+        let ndesc = if kind == VIRTIO_BLK_T_FLUSH { 2 } else { 3 };
+        if self.desc_used.get() + ndesc > QUEUE_MAX {
             return Err(StorageError::HardwareFault {
                 detail: "virtqueue full",
             });
@@ -557,29 +426,45 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
                     QUEUE_MAX,
                 )
             };
-            descs[head] = VirtqDesc {
-                addr: base_pa + req_off as u64,
-                len: 16,
-                flags: VIRTQ_DESC_F_NEXT,
-                next: (head + 1) as u16 & QUEUE_MASK as u16,
-            };
-            descs[(head + 1) & QUEUE_MASK] = VirtqDesc {
-                addr: base_pa + data_off as u64,
-                len: datalen as u32,
-                flags: VIRTQ_DESC_F_NEXT
-                    | if kind == VIRTIO_BLK_T_IN {
-                        VIRTQ_DESC_F_WRITE
-                    } else {
-                        0
-                    },
-                next: (head + 2) as u16 & QUEUE_MASK as u16,
-            };
-            descs[(head + 2) & QUEUE_MASK] = VirtqDesc {
-                addr: base_pa + status_off as u64,
-                len: 1,
-                flags: VIRTQ_DESC_F_WRITE,
-                next: 0,
-            };
+            if kind == VIRTIO_BLK_T_FLUSH {
+                // FLUSH：仅请求头 + 状态字节，避免 zero-sized data 描述符。
+                descs[head] = VirtqDesc {
+                    addr: base_pa + req_off as u64,
+                    len: 16,
+                    flags: VIRTQ_DESC_F_NEXT,
+                    next: (head + 1) as u16 & QUEUE_MASK as u16,
+                };
+                descs[(head + 1) & QUEUE_MASK] = VirtqDesc {
+                    addr: base_pa + status_off as u64,
+                    len: 1,
+                    flags: VIRTQ_DESC_F_WRITE,
+                    next: 0,
+                };
+            } else {
+                descs[head] = VirtqDesc {
+                    addr: base_pa + req_off as u64,
+                    len: 16,
+                    flags: VIRTQ_DESC_F_NEXT,
+                    next: (head + 1) as u16 & QUEUE_MASK as u16,
+                };
+                descs[(head + 1) & QUEUE_MASK] = VirtqDesc {
+                    addr: base_pa + data_off as u64,
+                    len: datalen as u32,
+                    flags: VIRTQ_DESC_F_NEXT
+                        | if kind == VIRTIO_BLK_T_IN {
+                            VIRTQ_DESC_F_WRITE
+                        } else {
+                            0
+                        },
+                    next: (head + 2) as u16 & QUEUE_MASK as u16,
+                };
+                descs[(head + 2) & QUEUE_MASK] = VirtqDesc {
+                    addr: base_pa + status_off as u64,
+                    len: 1,
+                    flags: VIRTQ_DESC_F_WRITE,
+                    next: 0,
+                };
+            }
 
             // SAFETY: avail 视图区间 [0x0100, 0x1100) 与 desc/used 区间不重叠，
             // 布局与 VirtioAvail 匹配；pool 借用独占。
@@ -588,8 +473,28 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             compiler_fence(Ordering::SeqCst);
             avail.idx = avail.idx.wrapping_add(1);
         }
-        self.desc_head.set((self.desc_head.get() + 3) & QUEUE_MASK);
-        self.desc_used.set(self.desc_used.get() + 3);
+        #[cfg(feature = "diag")]
+        {
+            let b = self.pool.borrow();
+            let bytes = b.as_bytes();
+            // SAFETY: diag-only read of the pre-validated MMIO pool; fixed offsets and bounds.
+            let avail = unsafe { &*(bytes[0x0100..0x1100].as_ptr() as *const VirtqAvail) };
+            // SAFETY: diag-only read of the pre-validated MMIO pool; fixed offsets and bounds.
+            let used = unsafe { &*(bytes[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
+            eneros_runtime::println!(
+                "[diag] issue kind={} sector={} head={} slot={} avail.idx={} used.idx={} desc0.addr=0x{:x}",
+                kind,
+                sector,
+                head,
+                slot,
+                avail.idx,
+                used.idx,
+                base_pa + req_off as u64,
+            );
+        }
+        self.desc_head
+            .set((self.desc_head.get() + ndesc) & QUEUE_MASK);
+        self.desc_used.set(self.desc_used.get() + ndesc);
 
         // Clean descriptors + req + OUT data before notify.
         self.cache.clean(self.va_of(0x0000), 256);
@@ -625,7 +530,7 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
                 data[..datalen].copy_from_slice(&bytes[data_off..data_off + datalen]);
             }
         }
-        self.desc_used.set(self.desc_used.get() - 3);
+        self.desc_used.set(self.desc_used.get() - ndesc);
         Ok(used_len)
     }
 
@@ -636,7 +541,7 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
     /// 元素（此前缺失，真机 cache 一致性缺口）。
     fn wait_used(&self) -> Result<u32, StorageError> {
         let used_va = self.va_of(0x1000);
-        for _ in 0..20_000_000u32 {
+        for spin in 0..200_000_000u32 {
             compiler_fence(Ordering::SeqCst);
             // 设备写 used ring（DMA）：轮询前使缓存失效。
             self.cache
@@ -647,6 +552,20 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             // 布局与 VirtqUsed 匹配；仅读取（cache invalidate 已刷新）。
             let used = unsafe { &*(bytes[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
             let used_idx = used.idx;
+            #[cfg(feature = "diag")]
+            if spin % 20_000_000 == 0 {
+                let b2 = self.pool.borrow();
+                let by = b2.as_bytes();
+                let av = unsafe { &*(by[0x0100..0x1100].as_ptr() as *const VirtqAvail) };
+                eneros_runtime::println!(
+                    "[diag] poll spin={} used.idx={} avail.idx={} used.ring0=({:#x},{:#x})",
+                    spin,
+                    used_idx,
+                    av.idx,
+                    used.ring[0].id,
+                    used.ring[0].len,
+                );
+            }
             if used_idx != self.last_used.get() {
                 let idx = self.last_used.get() as usize & QUEUE_MASK;
                 let elem = used.ring[idx];
@@ -664,6 +583,30 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
                 return Ok(elem.len);
             }
         }
+        #[cfg(feature = "diag")]
+        {
+            let b = self.pool.borrow();
+            let bytes = b.as_bytes();
+            // SAFETY: diag-only read of the pre-validated MMIO pool; fixed offsets and bounds.
+            let avail = unsafe { &*(bytes[0x0100..0x1100].as_ptr() as *const VirtqAvail) };
+            // SAFETY: diag-only read of the pre-validated MMIO pool; fixed offsets and bounds.
+            let used = unsafe { &*(bytes[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
+            eneros_runtime::println!(
+                "[diag] TIMEOUT used.idx={} avail.idx={} last_used={} used.ring0.id=0x{:x} len=0x{:x}",
+                used.idx,
+                avail.idx,
+                self.last_used.get(),
+                used.ring[0].id,
+                used.ring[0].len,
+            );
+            eneros_runtime::println!(
+                "[diag] TIMEOUT desc0={:02x?} avail16={:02x?} used16={:02x?} mark@1010={:02x?}",
+                &bytes[0x0000..0x0010],
+                &bytes[0x0100..0x0110],
+                &bytes[0x1000..0x1010],
+                &bytes[0x1010..0x1014],
+            );
+        }
         Err(StorageError::Timeout {
             operation: "virtio-blk request",
             ms: 2000,
@@ -673,6 +616,10 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
     /// Returns the negotiated device capacity in blocks (via a flush request
     /// probe is not possible; callers set it through `set_block_count` after
     /// device config, or rely on the configured max).
+    ///
+    /// 39 收尾复验（P2-1）：容量事实不得被生产代码任意覆写——仅
+    /// 测试/仿真可用（release 无 mock feature，编译期隔离）。
+    #[cfg(any(test, feature = "mock"))]
     pub fn set_block_count(&self, blocks: u64) {
         self.block_count.set(blocks);
     }
@@ -826,7 +773,9 @@ impl VirtioMmio for VolatileMmio {
 /// [`RamMmio::process_queues`] (the role QEMU's device model plays) to consume
 /// the avail ring and produce used entries.
 pub struct RamMmio {
-    regs: [u32; 64],
+    /// 寄存器文件覆盖到 config space（0x100..0x10C：capacity 8 字节 +
+    /// size_max 4 字节——39 WP-39.5 后 capacity 是驱动事实，mock 必须提供）。
+    regs: [u32; 68],
     /// Shared persistent disk storage. `Rc<RefCell<..>>` lets the test keep
     /// the "media" alive across driver instances (power-loss → remount).
     disk: alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<u8>>>,
@@ -849,12 +798,15 @@ impl RamMmio {
     /// Creates a simulation bound to an existing persistent disk (for
     /// power-loss → remount tests).
     pub fn with_disk(disk: alloc::vec::Vec<u8>) -> Self {
-        let mut regs = [0u32; 64];
+        let mut regs = [0u32; 68];
         regs[VMMIO_MAGIC_VALUE / 4] = VIRTIO_MMIO_MAGIC;
         regs[VMMIO_VERSION / 4] = VIRTIO_MMIO_VERSION_1;
         regs[VMMIO_DEVICE_ID / 4] = VIRTIO_BLK_DEVICE_ID;
         regs[VMMIO_QUEUE_NUM_MAX / 4] = 32; // > QUEUE_MAX
         let blocks = (disk.len() / SECTOR_SIZE) as u64;
+        // config space offset 0：capacity（512B 扇区数，8 字节 LE）。
+        regs[0x100 / 4] = (blocks & 0xFFFF_FFFF) as u32;
+        regs[0x104 / 4] = (blocks >> 32) as u32;
         RamMmio {
             regs,
             disk: alloc::rc::Rc::new(core::cell::RefCell::new(disk)),
@@ -867,12 +819,14 @@ impl RamMmio {
     /// Creates a simulation sharing an existing persistent disk handle
     /// (zero-copy; used by power-loss → remount tests).
     pub fn with_disk_rc(disk: alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<u8>>>) -> Self {
-        let mut regs = [0u32; 64];
+        let mut regs = [0u32; 68];
         regs[VMMIO_MAGIC_VALUE / 4] = VIRTIO_MMIO_MAGIC;
         regs[VMMIO_VERSION / 4] = VIRTIO_MMIO_VERSION_1;
         regs[VMMIO_DEVICE_ID / 4] = VIRTIO_BLK_DEVICE_ID;
         regs[VMMIO_QUEUE_NUM_MAX / 4] = 32; // > QUEUE_MAX
         let blocks = (disk.borrow().len() / SECTOR_SIZE) as u64;
+        regs[0x100 / 4] = (blocks & 0xFFFF_FFFF) as u32;
+        regs[0x104 / 4] = (blocks >> 32) as u32;
         RamMmio {
             regs,
             disk,
@@ -922,9 +876,22 @@ impl RamMmio {
             // SAFETY: `req_off` 来自 desc.addr - 池基址，位于池内；
             // 16 字节请求头不越界（生产路径同布局）。
             let req = unsafe { &*(pool[req_off..req_off + 16].as_ptr() as *const VirtioBlkReq) };
-            let data_desc = &descs[req_desc.next as usize];
-            let status_desc = &descs[data_desc.next as usize];
-            let data_off = (data_desc.addr - POOL_PHYS_BASE) as usize;
+            let is_flush = req.kind == VIRTIO_BLK_T_FLUSH;
+            // FLUSH 使用 2 描述符链（req→status）；读写使用 3 描述符链。
+            let data_desc;
+            let status_desc;
+            if is_flush {
+                status_desc = &descs[req_desc.next as usize];
+                data_desc = status_desc;
+            } else {
+                data_desc = &descs[req_desc.next as usize];
+                status_desc = &descs[data_desc.next as usize];
+            }
+            let data_off = if is_flush {
+                0
+            } else {
+                (data_desc.addr - POOL_PHYS_BASE) as usize
+            };
             let status_off = (status_desc.addr - POOL_PHYS_BASE) as usize;
             match req.kind {
                 VIRTIO_BLK_T_IN => {
@@ -958,7 +925,11 @@ impl RamMmio {
             }
             used.ring[used.idx as usize & QUEUE_MASK] = VirtqUsedElem {
                 id: head as u32,
-                len: data_desc.len,
+                len: if is_flush {
+                    status_desc.len
+                } else {
+                    data_desc.len
+                },
             };
             used.idx = used.idx.wrapping_add(1);
         }
@@ -1057,6 +1028,19 @@ mod tests {
         let mmio = RamMmio::new(1024);
         assert_eq!(mmio.read_reg(VMMIO_MAGIC_VALUE), VIRTIO_MMIO_MAGIC);
         assert_eq!(mmio.read_reg(VMMIO_DEVICE_ID), VIRTIO_BLK_DEVICE_ID);
+    }
+
+    /// 39 WP-39.5（P1-14）mutation：capacity=0 必须拒绝（旧实现虚构
+    /// max_transfer_blocks*16 块——猜容量即允许越界写）。
+    #[test]
+    fn test_capacity_zero_rejected_no_fabrication() {
+        let mmio = RamMmio::new(0); // 0 扇区 → config capacity = 0
+        let pool = RamPool::new(9);
+        let result = VirtioBlkDriver::new(mmio, pool, NoopCache, config());
+        assert!(
+            matches!(result, Err(StorageError::Unsupported { .. })),
+            "capacity=0 必须 fail-closed，不得虚构容量"
+        );
     }
 
     #[test]

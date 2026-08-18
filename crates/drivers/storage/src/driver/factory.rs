@@ -140,6 +140,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
     fn test_create_virtio_blk_device() {
         let cfg = StorageConfig {
             storage_type: StorageType::VirtioBlk,
@@ -176,17 +177,9 @@ mod tests {
 
     #[test]
     fn test_factory_returns_trait_object() {
-        let cfg = StorageConfig {
-            storage_type: StorageType::VirtioBlk,
-            base_addr: 0x0A00_0000,
-            irq_num: 48,
-            dma_channel: 0,
-            block_size: 512,
-            max_transfer_blocks: 256,
-        };
         // WP-26.10：host 测试装配走 create_mock_device（RamMmio 仅
         // test/mock 门控路径）。
-        let mut dev = create_mock_device(100, 512);
+        let dev = create_mock_device(100, 512);
         assert_eq!(dev.block_count(), 100);
         let mut out = [0u8; 512];
         dev.read_block(0, &mut out).expect("read block 0");

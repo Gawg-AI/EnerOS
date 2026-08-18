@@ -406,17 +406,26 @@ pub fn driver_service_main(
             }
         };
         // 帧载荷 MR → 信封字节（有界：MR 数受 seL4 消息上限约束）。
+        // 41 存储句柄移交修复：REQUEST_LEN=83 非 4 倍数——`/4` 截断到
+        // 20 words=80B，decode_request 要求 83B 必失败（QEMU 实弹
+        // status=5）。改 div_ceil（21 words=84B ≥ 83）。
         let words = message_info_length(mi);
         let mut raw = [0u8; wire::REQUEST_LEN];
         let mut filled = 0usize;
-        for i in 0..core::cmp::min(words as usize, wire::REQUEST_LEN / 4) {
+        for i in 0..core::cmp::min(words as usize, wire::REQUEST_LEN.div_ceil(4)) {
             match get_mr(i as u64) {
                 Ok(w) => {
-                    raw[filled] = (w & 0xff) as u8;
-                    raw[filled + 1] = ((w >> 8) & 0xff) as u8;
-                    raw[filled + 2] = ((w >> 16) & 0xff) as u8;
-                    raw[filled + 3] = ((w >> 24) & 0xff) as u8;
-                    filled += 4;
+                    // 越界保护：最后一 word 可能超出 REQUEST_LEN（83 非
+                    // 4 倍数）——只写剩余字节，不越界（raw 数组边界）。
+                    let remaining = raw.len().saturating_sub(filled);
+                    if remaining == 0 {
+                        break;
+                    }
+                    let n = core::cmp::min(4, remaining);
+                    for k in 0..n {
+                        raw[filled + k] = ((w >> (8 * k)) & 0xff) as u8;
+                    }
+                    filled += n;
                 }
                 Err(e) => svc_fail_closed("get_mr", e),
             }

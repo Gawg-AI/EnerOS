@@ -87,7 +87,7 @@ pub mod manager;
 pub mod poll;
 
 // Re-export all public types for convenience.
-pub use api::{Socket, SocketError, SocketId, SocketKind, TcpListener, TcpStream, UdpSocket};
+pub use api::{SocketError, SocketId, SocketKind, TcpListener, TcpStream, UdpSocket};
 pub use event::Event;
 pub use manager::SocketManager;
 pub use poll::{Interest, Poll, Readiness};

@@ -17,6 +17,9 @@ eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 eneros-runtime = { path = "../../runtime/runtime" }
 eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
 eneros-hal = { path = "../../hal/hal" }
+# 41（WP-41.1 存储句柄移交）：svc-storage 真块服务——VirtioBlkDriver
+# 作为 BlockBackend（no_std，host 测试用 mock）。
+eneros-storage = { path = "../../drivers/storage", features = ["diag"] }
 linked_list_allocator = "0.10"
 
 [[bin]]
@@ -44,4 +47,6 @@ name = "svc-drv-fault"
 path = "src/bin/svc-drv-fault.rs"
 
 [features]
+# 蓝图 40：控制服务大堆（256 KiB——ingress/chain 装配）；默认 64 KiB。
+heap-large = []
 default = []

@@ -47,20 +47,33 @@ impl ArmCache for NoopCache {
     fn invalidate(&self, _va: usize, _len: usize) {}
 }
 
-/// aarch64 真实 dcache 维护（`dc cvac`/`dc ivac` + `dsb ish`，64 B cache line）。
+/// aarch64 真实 dcache 维护（`dc cvac`/`dc ivac` + `dsb ish`）。
 #[cfg(target_arch = "aarch64")]
 pub struct Aarch64Cache;
+
+/// 读取 CTR_EL0 的 DminLine 推导 dcache line 大小（CVR-38-01：固定 64B
+/// 会在 128B line 的盒子上做不全的维护；`(DminLine+1)*4` 字节）。
+#[cfg(target_arch = "aarch64")]
+fn cache_line_bytes() -> usize {
+    let ctr_el0: u64;
+    // SAFETY: `mrs ctr_el0` 是 EL0 可读系统寄存器，无副作用。
+    unsafe {
+        core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr_el0, options(nostack));
+    }
+    ((ctr_el0 & 0xF) as usize + 1) * 4
+}
 
 #[cfg(target_arch = "aarch64")]
 impl ArmCache for Aarch64Cache {
     fn clean(&self, va: usize, len: usize) {
         // SAFETY: `dc cvac` 作用于调用方保证已映射且长度合法的虚拟地址。
         unsafe {
+            let line = cache_line_bytes();
             let mut addr = va;
             let end = va.wrapping_add(len);
             while addr < end {
                 core::arch::asm!("dc cvac, {addr}", addr = in(reg) addr, options(nostack));
-                addr = addr.wrapping_add(64);
+                addr = addr.wrapping_add(line);
             }
             core::arch::asm!("dsb ish", options(nostack));
         }
@@ -69,11 +82,12 @@ impl ArmCache for Aarch64Cache {
     fn invalidate(&self, va: usize, len: usize) {
         // SAFETY: `dc ivac` 作用于调用方保证已映射且长度合法的虚拟地址。
         unsafe {
+            let line = cache_line_bytes();
             let mut addr = va;
             let end = va.wrapping_add(len);
             while addr < end {
                 core::arch::asm!("dc ivac, {addr}", addr = in(reg) addr, options(nostack));
-                addr = addr.wrapping_add(64);
+                addr = addr.wrapping_add(line);
             }
             core::arch::asm!("dsb ish", options(nostack));
         }

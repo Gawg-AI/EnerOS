@@ -63,12 +63,27 @@ compile_error!(
      on target, or run tests with `cargo test`."
 );
 
+// 39 收尾复验：mock 作用域（MockPartitionScope/MockBlockDevice）只允许
+// 测试/仿真；release 启用即熔断——否则 ScopedBlockDevice 类型门可被
+// 伪作用域绕过（Exit Gate #2）。
+#[cfg(all(feature = "mock", not(debug_assertions)))]
+compile_error!(
+    "eneros-storage: mock (MockBlockDevice/MockPartitionScope) is FORBIDDEN in \
+     release builds. Target assembly must obtain scoped partition handles via \
+     GptResolver::open, or run tests with `cargo test`."
+);
+
 extern crate alloc;
 
 pub mod bad_block;
+// 39 排障诊断钩子（临时）。
 pub mod crc32;
+pub mod diag;
 pub mod driver;
 pub mod error;
+// 39 WP-39.1~39.3：角色化发现/识别/授权写分离（BlockRole/PartitionHandle/
+// GptResolver/ProvisioningGate/BlockTrace）。
+pub mod partition;
 
 pub use bad_block::BadBlockTable;
 pub use crc32::crc32;
@@ -87,3 +102,7 @@ pub use driver::{
 };
 pub use driver::{DmaBuffer, EmmcCmdType, EmmcDriver, NvmeDriver};
 pub use error::StorageError;
+#[cfg(any(test, feature = "mock"))]
+pub use partition::MockPartitionScope;
+// 39 收尾复验：作用域块设备类型门（DurableLog/FS/TSDB 只接受 role 分区）。
+pub use partition::ScopedBlockDevice;

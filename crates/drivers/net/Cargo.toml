@@ -6,6 +6,8 @@ authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+# 39 WP-39.7：virtio-mmio 原语共享 crate（寄存器偏移/ring/DMA 池）。
+eneros-virtio-core = { path = "../virtio-core" }
 # smoltcp v0.13 — no_std TCP/IP protocol stack (蓝图 §5.5 默认集成清单)
 smoltcp = { version = "0.13", default-features = false, features = [
     "alloc",

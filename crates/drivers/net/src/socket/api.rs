@@ -1,4 +1,4 @@
-//! Socket API types — `SocketId`, `SocketKind`, `SocketError`, `Socket` trait,
+//! Socket API types — `SocketId`, `SocketKind`, `SocketError`,
 //! and zero-cost handle newtypes (`TcpStream` / `TcpListener` / `UdpSocket`).
 //!
 //! # Design
@@ -8,21 +8,16 @@
 //! [`crate::socket::manager::SocketManager`]. This follows the "Simplicity
 //! First" principle: no `Rc`/`RefCell`/`Box` is needed, and handles are `Copy`.
 //!
-//! # `Socket` trait deviation
-//!
-//! The [`Socket`] trait is defined for documentation and future extensions
-//! (e.g. mock sockets in tests, alternative backends). It is **not** implemented
-//! for the smoltcp backend because doing so would require shared ownership of
-//! `NetworkInterface` (`Rc<RefCell<>>` or unsafe globals), violating
-//! "Simplicity First". The [`SocketManager`](crate::socket::manager::SocketManager)
-//! method API provides equivalent functionality.
+//! W3.2（蓝图23）：删除了零实现的 `Socket` trait（原"retained for Mock/Future
+//! backends"，但全仓 `impl Socket for` 零命中）。socket 层功能由
+//! [`SocketManager`](crate::socket::manager::SocketManager) 的方法 API 提供。
+//! 未来若需非 smoltcp 后端，按 ADR-0026 纪律"先有真实需求再加"。
 
 use alloc::format;
 use alloc::string::String;
 use core::fmt;
 
 use crate::error::NetError;
-use crate::tcpip::addr::SocketAddr;
 use crate::tcpip::error::TcpIpError;
 
 /// Opaque identifier for a socket managed by `SocketManager`.
@@ -155,37 +150,6 @@ impl From<NetError> for SocketError {
             NetError::PhyError => SocketError::IoError(String::from("PHY error")),
         }
     }
-}
-
-/// Unified socket interface (trait definition only).
-///
-/// Defines the standard read/write/close/non-blocking/query API. **Not
-/// implemented for the smoltcp backend** — see the [module-level deviation
-/// note](../index.html#偏差声明). The
-/// [`SocketManager`](crate::socket::manager::SocketManager) methods provide
-/// equivalent functionality without requiring shared ownership of
-/// `NetworkInterface`.
-///
-/// The trait is retained for:
-/// - Mock testing (test-only `MockSocket` can implement `Socket`).
-/// - Future backends (e.g. a non-smoltcp socket implementation).
-pub trait Socket {
-    /// Read data into `buf`, returning the number of bytes read.
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, SocketError>;
-    /// Write data from `buf`, returning the number of bytes written.
-    fn write(&mut self, buf: &[u8]) -> Result<usize, SocketError>;
-    /// Close the socket gracefully.
-    fn close(&mut self) -> Result<(), SocketError>;
-    /// Enable or disable non-blocking mode.
-    fn set_nonblocking(&mut self, nonblocking: bool);
-    /// Returns `true` if the socket has data ready to read.
-    fn is_readable(&self) -> bool;
-    /// Returns `true` if the socket can accept data for writing.
-    fn is_writable(&self) -> bool;
-    /// Returns the local socket address.
-    fn local_addr(&self) -> Result<SocketAddr, SocketError>;
-    /// Returns the remote socket address.
-    fn remote_addr(&self) -> Result<SocketAddr, SocketError>;
 }
 
 // ---------------------------------------------------------------------------

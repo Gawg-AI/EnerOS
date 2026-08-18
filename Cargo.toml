@@ -75,6 +75,7 @@ members = [
     "crates/protocols/safety-catalog",
     "crates/drivers/calibration",
     "crates/drivers/drv-svc",
+    "crates/drivers/virtio-core",
     "crates/security/crypto",
     "crates/security/crypto-gmssl",
     "crates/security/iec62351",

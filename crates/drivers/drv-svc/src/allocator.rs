@@ -9,7 +9,18 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use linked_list_allocator::LockedHeap;
 
-/// 堆大小（字节）：编译期注入（`ENEROS_HEAP_SIZE_BYTES`），默认 64 KiB。
+/// 堆大小（字节）：编译期注入（`ENEROS_HEAP_SIZE_BYTES`）或 `heap-large`
+/// feature（蓝图 40：svc-device-agent 的 EnvelopeIngress/ControlChain 装配
+/// 需要 64 KiB 以上堆；默认 64 KiB 保持 svc-drv-*/协议服务 bss 紧凑——root CSpace
+/// 4096 槽上限，bss 每 64 KiB = 16 槽）。
+#[cfg(feature = "heap-large")]
+// 蓝图 40：384 KiB——Box 化 MetricsCollectorImpl（heapless::Vec<Metric,256>
+// 内嵌，结构体 276,040 B）的堆分配 + chain/key/审计余量（QEMU 实测
+// OOM size=276040 于 256 KiB 堆）。bss 预算：384 KiB × 5 控制服务 = 480
+// cap 槽 + 现有 ~1500 < ROOT_CNODE 4096。
+const HEAP_SIZE: usize = 384 * 1024;
+
+#[cfg(not(feature = "heap-large"))]
 const HEAP_SIZE: usize = match option_env!("ENEROS_HEAP_SIZE_BYTES") {
     Some(s) => match parse_heap_size(s) {
         Some(n) if n >= 4096 => n,
@@ -18,6 +29,7 @@ const HEAP_SIZE: usize = match option_env!("ENEROS_HEAP_SIZE_BYTES") {
     None => 64 * 1024,
 };
 
+#[cfg(not(feature = "heap-large"))]
 const fn parse_heap_size(s: &str) -> Option<usize> {
     let b = s.as_bytes();
     let mut v: usize = 0;

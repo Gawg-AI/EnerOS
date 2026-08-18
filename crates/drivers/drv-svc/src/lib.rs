@@ -30,6 +30,13 @@ extern crate std;
 /// deadline/epoch；替代自旋占位）。
 pub mod runtime;
 
+/// 39（WP-39.12）：块设备命令面（svc-storage 真实命令集 + StorageService）。
+pub mod block_cmd;
+
+/// 41（WP-41 存储句柄移交）：svc-storage 真块后端——VirtioBlkBackend
+/// （storage VirtioBlkDriver 适配 BlockBackend）+ 服务侧 SvcDmaPool。
+pub mod blk_backend;
+
 /// 服务进程全局分配器（linked_list_allocator；runtime 本体无 alloc）。
 pub mod allocator;
 
@@ -51,6 +58,18 @@ pub fn now_ms() -> u64 {
 
 #[cfg(not(target_arch = "aarch64"))]
 pub fn now_ms() -> u64 {
+    0
+}
+
+/// 单调纳秒时钟（40 收尾：EIPC 客户端超时计算用——`Sel4IpcClient` 的
+/// `now_ns` 注入点；与 now_ms 同源 Arm64Timer）。
+#[cfg(target_arch = "aarch64")]
+pub fn now_ns() -> u64 {
+    eneros_hal::arm64::timer::clock().now_ns()
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn now_ns() -> u64 {
     0
 }
 
@@ -78,8 +97,11 @@ pub mod vmmio {
     pub const QUEUE_PFN: usize = 0x040;
     pub const QUEUE_NOTIFY: usize = 0x050;
     pub const STATUS: usize = 0x070;
-    pub const GUEST_PAGE_SIZE: usize = 0x08C;
-    pub const QUEUE_ALIGN: usize = 0x0AC;
+    // 0x028/0x03C：QEMU/Linux UAPI 偏移（与 root_task.c 一致）——旧值
+    // 0x08C/0x0AC 是无效偏移，QEMU 忽略 → guest_page_shift=0 → desc 错位
+    // （41 virtio-blk 同根因；本 rng 驱动 QEMU cap=None 未激活未暴露）。
+    pub const GUEST_PAGE_SIZE: usize = 0x028;
+    pub const QUEUE_ALIGN: usize = 0x03C;
 }
 
 /// virtio-rng 设备 ID。
@@ -314,6 +336,40 @@ impl<M: VirtioMmio> VirtioRng<M> {
 // host 仿真测试：virtio-rng 队列语义
 // ============================================================================
 
+// ============================================================================
+// 38（WP-38.9）：console 适配模板（蓝图：38 建模板，39 接设备）
+// ============================================================================
+
+/// Console 服务模板：声明 console 能力；设备（pl011 资源/收发）在 39
+/// 分配——无设备时 EXECUTE 由 [`runtime::process_request`] 回
+/// `ST_UNAVAILABLE`（不伪造控制台 I/O）。
+pub struct ConsoleService;
+
+impl ConsoleService {
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for ConsoleService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl runtime::DriverService for ConsoleService {
+    fn capability(&self) -> Option<&'static str> {
+        Some("console")
+    }
+    fn handle(&mut self, req: &runtime::DriverRequest, resp: &mut runtime::DriverResponse) {
+        // 回声模板：载荷原样回写（模板语义；真机收发 39 接线）。
+        let n = core::cmp::min(req.payload_len as usize, runtime::PAYLOAD_CAP);
+        resp.payload[..n].copy_from_slice(&req.payload[..n]);
+        resp.payload_len = n as u16;
+        resp.status = runtime::ST_OK;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate alloc;
@@ -428,39 +484,5 @@ mod tests {
         assert!(sim.entropy.iter().any(|&b| b != 0));
         // 且不是全 0xFF（有变化）。
         assert!(sim.entropy.windows(2).any(|w| w[0] != w[1]));
-    }
-}
-
-// ============================================================================
-// 38（WP-38.9）：console 适配模板（蓝图：38 建模板，39 接设备）
-// ============================================================================
-
-/// Console 服务模板：声明 console 能力；设备（pl011 资源/收发）在 39
-/// 分配——无设备时 EXECUTE 由 [`runtime::process_request`] 回
-/// `ST_UNAVAILABLE`（不伪造控制台 I/O）。
-pub struct ConsoleService;
-
-impl ConsoleService {
-    pub const fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for ConsoleService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl runtime::DriverService for ConsoleService {
-    fn capability(&self) -> Option<&'static str> {
-        Some("console")
-    }
-    fn handle(&mut self, req: &runtime::DriverRequest, resp: &mut runtime::DriverResponse) {
-        // 回声模板：载荷原样回写（模板语义；真机收发 39 接线）。
-        let n = core::cmp::min(req.payload_len as usize, runtime::PAYLOAD_CAP);
-        resp.payload[..n].copy_from_slice(&req.payload[..n]);
-        resp.payload_len = n as u16;
-        resp.status = runtime::ST_OK;
     }
 }

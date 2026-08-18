@@ -72,7 +72,11 @@ pub mod perf;
 pub mod phy;
 pub mod security;
 pub mod socket;
+// 39 WP-39.8：EL0 NetworkStackService（有界 socket + connection epoch）。
+pub mod stack;
 pub mod tcpip;
+// 39 WP-39.7：virtio-net 驱动（QEMU virt 网卡；实现 NetDevice）。
+pub mod virtio_net;
 
 /// Crate version string.
 pub const VERSION: &str = "0.30.0";
@@ -94,7 +98,7 @@ pub use phy::{
 // name collision with tcpip::UdpSocket (v0.28.0 handle-based wrapper). Access
 // the v0.29.0 UdpSocket via `eneros_net::socket::UdpSocket`.
 pub use socket::{
-    Event, Interest, Poll, Readiness, Socket, SocketError, SocketId, SocketKind, SocketManager,
+    Event, Interest, Poll, Readiness, SocketError, SocketId, SocketKind, SocketManager,
     TcpListener, TcpStream,
 };
 // Re-export tcpip module types (v0.28.0 TCP/IP protocol stack).
@@ -102,4 +106,8 @@ pub use tcpip::{
     DhcpClient, DhcpLease, DhcpState, HardwareAddress, IcmpSocket, InterfaceConfig, Ipv4Addr,
     Ipv4Cidr, NetworkInterface, SmolcpDevice, SocketAddr, SocketHandle, SocketSet, TcpIpError,
     TcpSocket, TcpState, UdpSocket,
+};
+pub use virtio_net::{
+    VirtioNetDriver, VIRTIO_NET_DEVICE_ID, VIRTIO_NET_F_MAC, VIRTIO_NET_F_STATUS,
+    VIRTIO_NET_POOL_SIZE, VIRTIO_NET_S_LINK_UP,
 };
