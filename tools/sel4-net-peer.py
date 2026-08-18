@@ -10,15 +10,19 @@ while True:
         time.sleep(0.1)
 s.settimeout(0.5)
 frame = bytes.fromhex('020000000001') + bytes.fromhex('525400123456') + b'\x88\xb5' + b'ENEROS-NET-RX'
-# 发 2 帧后持续读（root 收到后会 TX 回应）
-for _ in range(2):
-    try: s.sendall(struct.pack('!I', len(frame)) + frame)
-    except OSError: break
-    time.sleep(0.2)
+# 36 收尾加固：周期重发（root 的 vnet_rx 只等约 2s，单次突发可能错过），
+# 直到收到 root 的 TX 回应或超时；收到即停止重发。
 data = b''
 t0 = time.time()
 got = False
-while time.time() - t0 < 8:
+last_send = 0.0
+while time.time() - t0 < 20 and not got:
+    if time.time() - last_send >= 1.0:
+        try:
+            s.sendall(struct.pack('!I', len(frame)) + frame)
+        except OSError:
+            break
+        last_send = time.time()
     r, _, _ = select.select([s], [], [], 0.5)
     if r:
         try:

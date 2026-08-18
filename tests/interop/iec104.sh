@@ -45,4 +45,15 @@ echo "[iec104] cases: ${CASES}"
 # 1. cargo run -p eneros-interop-iec104 -- --addr "${ADDR}"  （用例矩阵执行器）
 # 2. tcpdump -i any port 2404 -w "${OUT_DIR}/iec104.pcap"   （抓包证据）
 # 3. 断言：总召唤三步/ SBO 一致性 / SOE 时标 / 对时成功 / 突变收到
-echo "[iec104] PASS (placeholder: harness ready, real peer required)"
+# 蓝图 36 WP-36.10 #1：placeholder 分支只能写 PENDING 并非零退出；
+# 不允许把"harness 就绪"当作互操作 PASS。
+cat > "${OUT_DIR}/iec104-placeholder-evidence.json" <<'PEOF'
+{
+  "schema": "eneros.interop-placeholder.v1",
+  "verdict": "PENDING",
+  "reason": "placeholder: real peer required (no result JSON / peer identity / oracle)",
+  "non_release": true
+}
+PEOF
+echo "[iec104] PENDING (placeholder: harness ready, real peer required)"
+exit 1

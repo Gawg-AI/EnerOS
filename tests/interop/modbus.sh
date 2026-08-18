@@ -31,4 +31,15 @@ fi
 
 echo "[modbus] devices=${DEVICES} — 真实设备互操作（硬件就绪后执行）"
 echo "[modbus] cases: ${CASES}"
-echo "[modbus] PASS (placeholder: harness ready, real devices required)"
+# 蓝图 36 WP-36.10 #1：placeholder 分支只能写 PENDING 并非零退出；
+# 不允许把"harness 就绪"当作互操作 PASS。
+cat > "${OUT_DIR}/modbus-placeholder-evidence.json" <<'PEOF'
+{
+  "schema": "eneros.interop-placeholder.v1",
+  "verdict": "PENDING",
+  "reason": "placeholder: real peer required (no result JSON / peer identity / oracle)",
+  "non_release": true
+}
+PEOF
+echo "[modbus] PENDING (placeholder: harness ready, real peer required)"
+exit 1

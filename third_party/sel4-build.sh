@@ -78,6 +78,7 @@ done
   -DPLATFORM=qemu-arm-virt \
   -DARM_CPU=cortex-a57 -DQEMU_GIC_VERSION=3 \
   -DKernelVerificationBuild=OFF -DKernelPrinting=ON \
+  -DKernelRootCNodeSizeBits=13 \
   -DSEL4_SRC="$SEL4_SRC" \
   -DELFLOADER_SRC="$ELFLOADER_SRC" \
   -DCMAKE_MODULE_PATH="$SEL4_SRC;$CACHE/seL4_tools-master/cmake-tool/helpers;$ELFLOADER_SRC" \

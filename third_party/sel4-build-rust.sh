@@ -48,8 +48,11 @@ echo "============================================================"
 echo ""
 echo "[1/3] Building Rust root task (eneros-root-task, release)..."
 cd "$ROOT"
+# 蓝图 40 收尾：sel4-eipc feature——root 驱动控制链（INGEST/TICK）的
+# Sel4IpcClient/ChunkedClient（EIPC 端点 cap 已由 spawn 授予）。
 cargo build -p eneros-root-task --target aarch64-unknown-none --release \
-  -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem --locked
+  -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem --locked \
+  --features sel4-eipc
 
 RUST_ELF="$ROOT/target/aarch64-unknown-none/release/eneros-root-task"
 if [[ ! -f "$RUST_ELF" ]]; then
@@ -73,12 +76,31 @@ echo "[2/3] Building seL4 with RUST_ROOT_TASK=ON..."
 BUILD="$ROOT/third_party/sel4-build/top-rust"
 mkdir -p "$BUILD/elfloader"
 
+# 38（WP-38.4/装载损坏根因）：elfloader DBG-TEMP 写（0x41060040 硬编码
+# CurrentEL）落在内嵌 rootserver ELF 偏移 0x254ec 处——破坏加载内容
+# （QEMU 实测 undefined instruction @ text+0x244ec）。补丁移除该写入
+# （幂等：已应用则跳过；sel4-patches 同风格）。文件不存在 → 视为已应用。
+ELFLOADER_PATCH="$ROOT/third_party/sel4-patches/0002-elfloader-remove-dbg-temp-write.patch"
+if [ -f "$ELFLOADER_PATCH" ]; then
+  if grep -q "DBG-TEMP" "$ELFLOADER_SRC/src/arch-arm/sys_boot.c"; then
+    echo "applying elfloader patch: $(basename "$ELFLOADER_PATCH")"
+    (cd "$ELFLOADER_SRC" && patch -p1 < "$ELFLOADER_PATCH")
+  else
+    echo "elfloader patch already applied: $(basename "$ELFLOADER_PATCH")"
+  fi
+fi
+
 # libcpio（elfloader 依赖，与 sel4-build.sh 一致）
 (cd "$CACHE/util_libs-master/libcpio" && \
   "$GCC_BIN/aarch64-none-elf-gcc" -ffreestanding -fno-pic -fno-pie -march=armv8-a \
     -I include -c src/cpio.c -o "$BUILD/elfloader/cpio.o" && \
   ar rcs "$BUILD/elfloader/libcpio.a" "$BUILD/elfloader/cpio.o")
 
+# 41（WP 装配）：root CSpace 12→13 bits（4096→8192 槽）——34 个 EL0
+# 服务（40 控制链 5 + 41 业务/运维 8 + 协议/驱动/demo）spawn 期
+# NoCapSlot 挂起（QEMU 实测 root_slot=4089 时耗尽）；8192 槽余量
+# > 2× 当前 34 服务峰值，为后续服务预留（跨版本变更登记见
+# evidence/41/CROSS_VERSION-41.md CV-41-1）。
 # 33 WP-33.5（中断计数转真）：-DKernelArmExportPTMRUser=ON —— 允许
 # EL0 写 CNTP_CTL_EL0/CNTP_TVAL_EL0（seL4 aarch64 用户态在 EL0；
 # root-task 使能物理定时器需 EXPORT_PTMR_USER=EL0PTEN——缺省时
@@ -94,6 +116,7 @@ mkdir -p "$BUILD/elfloader"
   -DPLATFORM=qemu-arm-virt \
   -DARM_CPU=cortex-a57 -DQEMU_GIC_VERSION=3 \
   -DKernelVerificationBuild=OFF -DKernelPrinting=ON \
+  -DKernelRootCNodeSizeBits=13 \
   -DSEL4_SRC="$SEL4_SRC_DIR" \
   -DELFLOADER_SRC="$ELFLOADER_SRC" \
   -DCMAKE_MODULE_PATH="$SEL4_SRC_DIR;$CACHE/seL4_tools-master/cmake-tool/helpers;$ELFLOADER_SRC" \

@@ -38,10 +38,10 @@ members = [
     "crates/runtime/hello",
     "crates/runtime/root-task",
     "crates/runtime/services",
-    "crates/agents/business-services",
     "crates/runtime/svc-pie",
     "crates/runtime/config-bundle",
     "crates/runtime/durable-state",
+    "crates/agents/business-services",
     "crates/runtime/oom-probe",
     "crates/drivers/time",
     "crates/drivers/watchdog",
@@ -160,14 +160,38 @@ license = "MIT OR Apache-2.0"
 
 [profile.dev]
 panic = "abort"
-opt-level = 1
+opt-level = 2
 
 [profile.release]
 panic = "abort"
 opt-level = 3
-lto = true
+# 39 收尾复验：LTO 对 EL0 用户态程序产生过可疑寄存器/控制流异常
+#（见下方注释；39 复验实测启动期非确定挂起与其吻合）。seL4 内核为
+# C/cmake 构建，不受 cargo lto 设置影响（“内核本身保持 LTO”仍成立）。
+lto = false
 codegen-units = 1
 strip = true
 
 # 用户态 EL0 程序：LTO+opt3 曾产生可疑的寄存器/控制流异常；降级为
 # opt1 + 多 codegen units（内核本身保持 LTO）。证据正确性优先于尺寸。
+# 39 收尾复验：上述降级长期仅有注释无实现——39 复验实测启动期非确定
+# 挂起（root-task 自旋锁字节被野写/堆 hole 列表乱序 panic，GDB 实证），
+# 与本注释描述的异常类别吻合；按注释意图补齐包级降级（lto=false +
+# 降级优化 + 多 codegen units；seL4 内核为 C 构建，不受 cargo profile
+# 影响）。注：实测 opt1 使 bundle 超出 BOOT-007 2MiB 窗口的 DTB 容纳
+# 上限（DT_LAYOUT 拒绝），取 opt2 兼顾尺寸与代码生成保守性。
+[profile.release.package.eneros-root-task]
+opt-level = 2
+codegen-units = 16
+
+[profile.release.package.eneros-services]
+opt-level = 2
+codegen-units = 16
+
+[profile.release.package.eneros-drv-svc]
+opt-level = 2
+codegen-units = 16
+
+[profile.release.package.eneros-protocol-services]
+opt-level = 2
+codegen-units = 16

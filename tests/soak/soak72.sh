@@ -132,14 +132,35 @@ run_checks() {
 # 接入后每个 cycle/cut 写一行 "…: ok …" 到对应日志。
 # ============================================================
 run_executors() {
-    # 接入点（真实硬件就绪后替换）：
+    # 42 零硬件验收：优先使用 QEMU software adapter（cargo xtask qa soak-run）
+    # 作为真实执行器；未配置任何 adapter 时明确 BLOCKED，禁止空函数占位。
+    if [ -n "${ENEROS_SOAK_QEMU_IMAGE:-}" ]; then
+        local cycles="${ENEROS_SOAK_QEMU_CYCLES:-10}"
+        local vars_args=()
+        if [ -n "${ENEROS_SOAK_QEMU_VARS:-}" ]; then
+            vars_args=(--vars-template "${ENEROS_SOAK_QEMU_VARS}")
+        fi
+        cargo xtask qa soak-run --cycles "${cycles}" --image "${ENEROS_SOAK_QEMU_IMAGE}"             "${vars_args[@]}" --min-duration-days 0 --out "${OUT_DIR}/soak-campaign.json"
+        return
+    fi
+
+    # 真实硬件接入点（43 L4）：
     # 1. 加载 UEFI 应用，断言串口序列 [kernel] booting + [eneros-root-task]
     #    alive + EL0 banner，逐 cycle 写 boot-chain.log（含耗时 boot_ms）
     # 2. TSDB 写样本 → 随机时刻断电（SSH 电源控制器）→ 恢复 → 校验和一致，
     #    逐 cut 写 power-cut.log
     # 3. Modbus/IEC104 对通轮询 72h，写 protocol-soak.log
     # 4. 每日执行决策/安全/运维断言，写 chains-daily.log
-    :
+    cat > "${OUT_DIR}/soak-empty-executor-evidence.json" <<'EOF'
+{
+  "schema": "eneros.soak-executor.v1",
+  "verdict": "BLOCKED",
+  "non_release": true,
+  "reason": "no QEMU image (ENEROS_SOAK_QEMU_IMAGE) and no real hardware executor configured"
+}
+EOF
+    echo "[soak] BLOCKED: no software/hardware executor configured" >&2
+    exit 1
 }
 
 # ============================================================
@@ -218,8 +239,9 @@ if [ -z "${HARDWARE}" ] && [ -z "${ENEROS_SOAK_FORCE:-}" ]; then
     cat > "${OUT_DIR}/soak-skip-evidence.json" <<'EOF'
 {
   "schema": "eneros.soak-skip-evidence.v1",
-  "verdict": "SKIP",
-  "reason": "no hardware detected",
+  "verdict": "PENDING",
+  "non_release": true,
+  "reason": "no hardware detected; no 72h soak execution",
   "hardware_required": ["phytium-d2000", "kunpeng-920"],
   "readiness_checks": {
     "boot_chain": "UEFI -> boot-manager -> seL4 -> root-task -> EL0 spawn",
@@ -233,16 +255,30 @@ if [ -z "${HARDWARE}" ] && [ -z "${ENEROS_SOAK_FORCE:-}" ]; then
 }
 EOF
     echo "[soak] readiness checklist written to ${OUT_DIR}/soak-skip-evidence.json"
-    echo "[soak] 真机浸泡留待硬件就绪（D1 三层口径：跳过证据+就绪清单）"
+    echo "[soak] 真机浸泡留待硬件就绪（蓝图 36 WP-36.10 #3：无执行器/无硬件 = PENDING，非 PASS，退出非零）"
     # v0.254.0（D1b）：跳过路径也产证据包（跳过证据 + 缺失清单），
     # 使 CI 门禁可验证"证据采集器本身工作正常"。
     bash "${SCRIPT_DIR}/collect-evidence.sh" > /dev/null 2>&1 || true
-    exit 0
+    exit 1
 fi
 
 echo "[soak] hardware=${HARDWARE} boot_cycles=${BOOT_CYCLES} power_cuts=${POWER_CUTS} protocol_hours=${PROTOCOL_HOURS}"
 
 # ── 2. 执行器（真实硬件命令）→ 检查器（读证据，fail-closed）──
+# 蓝图 36 WP-36.10 #3：空执行器（仅占位注释）只能 PENDING 并非零——
+# 不允许"预置少量日志"冒充 72h 浸泡。
+if awk '/^run_executors\(\) \{/,/^\}/' "${BASH_SOURCE[0]}" | grep -qE '^    :$'; then
+    cat > "${OUT_DIR}/soak-empty-executor-evidence.json" <<'EOF'
+{
+  "schema": "eneros.soak-executor.v1",
+  "verdict": "PENDING",
+  "non_release": true,
+  "reason": "run_executors is an empty placeholder; no real 72h execution"
+}
+EOF
+    echo "[soak] PENDING: run_executors is empty (no real executor) - not PASS" >&2
+    exit 1
+fi
 run_executors
 run_checks
 
@@ -269,11 +305,28 @@ fi
 
 V_VERDICT="PASS"
 echo "[soak] VERDICT: ${V_VERDICT} — all checks derived from evidence files"
-cat > "${OUT_DIR}/soak-campaign.json" <<EOF
+# 蓝图 36 WP-36.10 #3：artifact_sha256 为空 → 直接 FAIL（无候选绑定不得 PASS）。
+ARTIFACT_HASH="$(sha256sum "${OUT_DIR}/../eneros/artifacts/qemu-prod/eneros-qemu-prod.raw" 2>/dev/null | cut -d' ' -f1 || true)"
+if [ -z "${ARTIFACT_HASH}" ]; then
+    V_VERDICT="FAIL"
+    echo "[soak] FAIL: artifact_sha256 empty (no candidate artifact bound)" >&2
+    cat > "${OUT_DIR}/soak-campaign.json" <<FAILED_EOF
 {
   "schema": "eneros.soak-campaign.v1",
   "campaign_id": "real-hardware-${HARDWARE}-${BOOT_CYCLES}x",
   "artifact_sha256": "",
+  "verdict": "${V_VERDICT}",
+  "reason": "no candidate artifact bound to soak evidence",
+  "duration_days": ${DURATION_DAYS}
+}
+FAILED_EOF
+    exit 1
+fi
+cat > "${OUT_DIR}/soak-campaign.json" <<CAMPAIGN_EOF
+{
+  "schema": "eneros.soak-campaign.v1",
+  "campaign_id": "real-hardware-${HARDWARE}-${BOOT_CYCLES}x",
+  "artifact_sha256": "${ARTIFACT_HASH}",
   "verdict": "${V_VERDICT}",
   "duration_days": ${DURATION_DAYS},
   "min_duration_days": 3,
@@ -283,7 +336,7 @@ cat > "${OUT_DIR}/soak-campaign.json" <<EOF
   "restarts": [],
   "metric_samples": ${BOOT_CYCLES}
 }
-EOF
+CAMPAIGN_EOF
 echo "[soak] campaign evidence: ${OUT_DIR}/soak-campaign.json"
 echo "[soak] DONE"
 # v0.254.0（D1b）：打包六类证据（含 sha256 清单）。

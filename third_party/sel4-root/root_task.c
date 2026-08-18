@@ -2923,6 +2923,10 @@ void _sel4_start(seL4_BootInfo *bi) {
 
     emit("eneros.g3.v1", "root-heartbeat", "PASS");
     emit("eneros.svc.v1", "mbus-serving", "PASS");
+    /* 36 WP-36.10（security review 收尾）：QEMU 永不退出的完成哨兵。
+     * CI 的 QEMU boot 步骤以 timeout 结束，必须见到此哨兵才允许
+     * 将 124 视为证据采集完成；未见哨兵的 124 = NO_RESULT = FAIL。 */
+    emit("eneros.sel4.v1", "evidence-complete", "PASS");
     for (;;) {
         mbus_poll();
     }

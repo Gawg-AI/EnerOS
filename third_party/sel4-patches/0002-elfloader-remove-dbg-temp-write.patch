@@ -1,0 +1,15 @@
+--- a/src/arch-arm/sys_boot.c	2026-08-14 12:40:00.000000000 +0800
++++ b/src/arch-arm/sys_boot.c	2026-08-14 12:40:00.000000000 +0800
+@@ -101,13 +101,6 @@
+ void main(UNUSED void *arg)
+ {
+-    /* DBG-TEMP: CurrentEL 打印 + 写内存（用后还原） */
+-    {
+-        uint64_t el_v;
+-        asm volatile("mrs %0, CurrentEL" : "=r"(el_v));
+-        *(volatile uint64_t *)0x41060040 = el_v;
+-        printf("DBG-ELF: CurrentEL=%lx\n", (unsigned long)el_v);
+-    }
+     void *bootloader_dtb = NULL;
+ 
+     /* initialize platform to a state where we can print to a UART */

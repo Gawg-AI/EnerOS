@@ -26,4 +26,15 @@ fi
 
 echo "[mqtt] brokers=${BROKERS} — 真实 broker 互操作（外设就绪后执行）"
 echo "[mqtt] cases: ${CASES}"
-echo "[mqtt] PASS (placeholder: harness ready, real brokers required)"
+# 蓝图 36 WP-36.10 #1：placeholder 分支只能写 PENDING 并非零退出；
+# 不允许把"harness 就绪"当作互操作 PASS。
+cat > "${OUT_DIR}/mqtt-placeholder-evidence.json" <<'PEOF'
+{
+  "schema": "eneros.interop-placeholder.v1",
+  "verdict": "PENDING",
+  "reason": "placeholder: real peer required (no result JSON / peer identity / oracle)",
+  "non_release": true
+}
+PEOF
+echo "[mqtt] PENDING (placeholder: harness ready, real peer required)"
+exit 1
