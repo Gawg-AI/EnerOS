@@ -1,0 +1,19 @@
+[package]
+name = "eneros-durable-state"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图 41 WP-41.3：DurableStateStore / DurableOutbox 跨重启副作用唯一模式（no_std + alloc）"
+
+[lib]
+name = "eneros_durable_state"
+path = "src/lib.rs"
+
+[dependencies]
+# CRC32（记录完整性；与 agent-sdk wire 同源实现避免重复依赖）。
+# 直接内联实现，零第三方。
+
+[features]
+default = []
+std = []

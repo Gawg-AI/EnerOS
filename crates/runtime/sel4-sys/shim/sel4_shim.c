@@ -121,6 +121,23 @@ seL4_Word eneros_sel4_get_boot_info(void)
     return (seL4_Word)seL4_GetBootInfo();
 }
 
+/* 39 CVR-39-06：root 镜像物理基址——BootInfo 的 userImageFrames 首个
+ * cap 经 seL4_ARM_Page_GetAddress 取物理地址（rootserver 加载地址随
+ * 内核/镜像尺寸漂移，DMA VA→PA 偏移必须运行时推导；0 = 不可用）。 */
+uint64_t eneros_sel4_user_image_phys_base(void)
+{
+    seL4_BootInfo *bi = seL4_GetBootInfo();
+    if (bi == 0 || bi->userImageFrames.start == 0) {
+        return 0;
+    }
+    seL4_ARM_Page_GetAddress_t res =
+        seL4_ARM_Page_GetAddress((seL4_ARM_Page)bi->userImageFrames.start);
+    if (res.error != 0) {
+        return 0;
+    }
+    return (uint64_t)res.paddr;
+}
+
 /* root-task 启动初始化（BOOT-008）：root-task 用 Rust 汇编 _start（不经过
  * libsel4 的 sel4_start），内核在 capRegister（x0）传入 bootinfo 指针；
  * 这里把 bootinfo 注册进 libsel4（seL4_InitBootInfo），并把 IPC buffer 的
@@ -510,4 +527,17 @@ seL4_Error eneros_sel4_irq_handler_clear(seL4_CPtr handler)
 seL4_Word eneros_sel4_cap_irq_control(void)
 {
     return seL4_CapIRQControl;
+}
+
+/* ============================================================
+ * WP-37.1 #8：服务就绪 notification 信令（readiness IPC handshake）
+ * ============================================================ */
+
+/* 服务侧就绪上报：服务 init 完成后 Signal 就绪 notification，
+ * root-task 在 deadline 内 Poll 判定 Ready（readiness 来自 IPC
+ * handshake/health probe，非 spawn 返回成功——蓝图 WP-37.1 #8）。 */
+void eneros_sel4_signal(seL4_CPtr ntfn)
+{
+    /* seL4_Signal 返回 void（无错误面）；调用本身即完成信令。 */
+    seL4_Signal(ntfn);
 }

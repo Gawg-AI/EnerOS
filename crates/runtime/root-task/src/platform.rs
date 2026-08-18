@@ -17,9 +17,7 @@
 //!   以 0（未知）跳过，机制（[`cross_check_cpu_count`]）host 已测；
 //!   真机交叉验证登记 42/43。
 
-use eneros_hal::platform_adapter::{
-    cross_check_cpu_count, HalRuntime, PlatformAdapter, PlatformError, PlatformInput,
-};
+use eneros_hal::platform_adapter::HalRuntime;
 use eneros_hal::ValidatedInventory;
 
 /// 装配失败类型（打印 + fail-closed 挂起由调用方执行）。
@@ -50,6 +48,14 @@ pub struct RootPlatform {
 /// 从运行时 DTB 装配平台（只读；不触发设备写/格式化/业务 I/O）。
 #[cfg(target_os = "none")]
 pub fn assemble(dtb: &[u8], bootinfo_cpu_count: u32) -> Result<RootPlatform, AssemblyError> {
+    // 39 CVR-39-06：DMA VA→PA 偏移运行时推导——root 镜像物理基址
+    // （userImageFrames 首个 cap）减去镜像链接基址 0x200000。
+    // rootserver 加载地址随内核/镜像尺寸漂移，禁止硬编码。
+    let image_phys = eneros_sel4_sys::safe::user_image_phys_base();
+    if image_phys != 0 {
+        let offset = image_phys.saturating_sub(0x200_000);
+        eneros_hal::dma::set_identity_offset(offset);
+    }
     let adapter = eneros_board::adapter::QemuVirtAdapter::new();
     let input = PlatformInput {
         runtime_dtb: Some(dtb),

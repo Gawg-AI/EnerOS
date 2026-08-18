@@ -13,12 +13,10 @@ eneros-boot-protocol = { path = "../../boot/boot-protocol" }
 eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 eneros-elf-loader = { path = "../../abi/elf-loader" }
 eneros-sel4-sys = { path = "../sel4-sys" }
-# 22 §2.W1.2：panic 审计（SM3 哈希链）+ 看门狗复位（SP805）。
+# 22 §2.W1.2：panic 审计（SHA-256 哈希链，36 WP-36.2 SM3→SHA-256 迁移）+ 看门狗复位（SP805）。
 eneros-audit = { path = "../../security/audit" }
 # 33 WP-33.5：掉电持久化启动计数（30 WP-30.7 机制接线）。
 eneros-durable-log = { path = "../durable-log" }
-# 30 RT-028①：创世根真实 SM3（sm3_hash）。
-eneros-crypto = { path = "../../security/crypto" }
 eneros-watchdog = { path = "../../drivers/watchdog" }
 eneros-time = { path = "../../drivers/time" }
 # 23 G-I 总出口修复：Arm64Timer（CNTPCT_EL0 generic timer）→ time_init，
@@ -31,6 +29,15 @@ eneros-can = { path = "../../drivers/can" }
 eneros-rs485 = { path = "../../drivers/rs485" }
 eneros-uart = { path = "../../drivers/uart" }
 eneros-storage = { path = "../../drivers/storage" }
+eneros-crypto = { path = "../../security/crypto" }
+# 39 WP-39.7：virtio-net 驱动（NetDevice seam；0x88b5 外部 peer 回显）。
+eneros-net = { path = "../../drivers/net" }
+# 蓝图 40 收尾：EIPC 客户端（分块传输 + 服务端点 cap——root 驱动控制链
+# INGEST/TICK 用）+ 槽位常量（spawn 授予表）。
+eneros-agent-sdk = { path = "../../agents/agent-sdk" }
+# 蓝图 40 收尾：遥测样本构造（控制链采集代理 INGEST——39 设备句柄移交
+# 前的 QEMU 装配路径；样本经 svc-telemetry evaluator 全量校验）。
+eneros-safety-validator = { path = "../../ai/safety-validator" }
 heapless = "0.8"
 # 30 RT-004：init bundle 模块 sha256 校验（打包侧 xtask 用 sha2 0.10
 # Sha256 写摘要——解析侧必须同算法；sha2 no_std 兼容）。
@@ -40,3 +47,6 @@ linked_list_allocator = "0.10"
 
 [features]
 default = []
+# 蓝图 40 收尾：target 构建启用 agent-sdk sel4 客户端（ipc_sel4 模块）。
+# host 构建（lib 测试）不需要——xtask build_user_elf 特判传参。
+sel4-eipc = ["eneros-agent-sdk/sel4"]

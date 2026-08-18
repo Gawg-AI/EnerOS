@@ -1,0 +1,23 @@
+[package]
+name = "eneros-svc-pie"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS static-PIE (ET_DYN) reference EL0 service — WP-37.4 PIE loader target evidence"
+
+# WP-37.4：静态 PIE 构建——build.rs 注入：
+#  - cargo:rustc-flags=-C relocation-model=pic（PIC 代码生成，crate 级）
+#  - cargo:rustc-link-arg-bin=svc-pie=-pie（仅本 bin 链接 ET_DYN）
+# 产物为静态 PIE：仅 R_AARCH64_RELATIVE 重定位 + 无 PT_INTERP/TLS，
+# 与 elf-loader 冻结的 relocation 白名单一致（load_verified_elf）。
+
+[[bin]]
+name = "svc-pie"
+path = "src/main.rs"
+
+[dependencies]
+eneros-services = { path = "../services" }
+eneros-sel4-sys = { path = "../sel4-sys" }
+eneros-runtime = { path = "../runtime" }
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }

@@ -21,10 +21,12 @@ static PANIC_LOGGER: Mutex<Option<AuditLoggerImpl<MemStore>>> = Mutex::new(None)
 /// 服务 panic 总次数（指标）。
 pub static SVC_PANIC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// 30 RT-028①：创世根 = 真实 SM3 摘要（运行时计算——SM3 非 const fn）。
+/// 30 RT-028①：创世根 = 真实摘要（运行时计算）。
 /// 旧实现为 ASCII "svc-panic-genesis" 补零占位（可被离线伪造）。
+/// 36 WP-36.2/SC-03：SM3 → SHA-256（eneros-crypto 无商业批准，不入产品闭包）。
 fn genesis() -> [u8; 32] {
-    eneros_crypto::sm3_hash(b"svc-panic-genesis")
+    use sha2::{Digest, Sha256};
+    Sha256::digest(b"svc-panic-genesis").into()
 }
 
 /// 初始化服务 panic 审计链（svc_entry 启动时调用一次）。

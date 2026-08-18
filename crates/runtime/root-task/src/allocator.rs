@@ -4,8 +4,11 @@
 //! `HeapAllocator` 为生产分配器（真实 `dealloc` 回收 + 内部自旋锁）。
 //! `BumpAllocator` 保留为参考/测试（与 services 的 loom 验证同源）。
 //!
-//! 堆大小编译期配置注入：`ENEROS_HEAP_SIZE_BYTES`（默认 1 MiB——init
-//! bundle ~133 KiB + spawn 计划 + IPC 帧缓冲，留足余量；真机按板载 RAM 调）。
+//! 堆大小编译期配置注入：`ENEROS_HEAP_SIZE_BYTES`（默认 2 MiB——init
+//! bundle 原始缓冲 + 逐模块 blob 拷贝 + spawn 计划 + ET_DYN staging
+//! （WP-37.4：每 PIE 服务 ~316 KiB 重定位镜像，双实例 ~624 KiB）——
+//! QEMU 实测 1 MiB 在双 PIE 时 OOM（fail-closed 正确触发，37 记录 §15）；
+//! 真机按板载 RAM 注入调整）。
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
@@ -13,18 +16,27 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use linked_list_allocator::LockedHeap;
 
-/// 堆大小（字节）：编译期注入（`ENEROS_HEAP_SIZE_BYTES`），默认 1 MiB。
+/// 堆大小（字节）：编译期注入（`ENEROS_HEAP_SIZE_BYTES`），默认 5 MiB
+/// （39 收尾复验由 2 MiB 上调：EL0 服务增至 19 个，bundle ~1.3 MiB +
+/// DTB ~1 MiB 使 2 MiB 堆 OOM（used=2056360 时 42KB 申请失败）；
+/// 蓝图 40 上调至 4 MiB：控制闭环 5 服务入 bundle（25 服务，init_bytes
+/// 1.69 MiB），OOM-DIAG used=3130304 时 132KB 申请失败。
+/// 蓝图 41 上调至 5 MiB：业务/运维 8 服务入 bundle（34 服务，init_bytes
+/// 2.23 MiB），OOM-DIAG used=4111472 时 89KB 申请失败（svc-config ELF
+/// staging）——静态审计后 5 MiB 余量 ~1.1 MiB；kernel 早期崩溃点
+/// 4.3 MB 阈值以 QEMU 复验为准（40 已以 4 MiB 实跑通过，5 MiB 复验）。
 ///
-/// G-R1 QEMU 实测：512 KiB bump 时代刚好够（无 header 开销）；LockedHeap
-/// 的块头/对齐开销使 spawn 后剩余不足（OOM 8776B——supervisor 表分配
-/// 失败），故 G-R1 把默认提到 1 MiB 留足余量（真机按板载 RAM 构建时注入
-/// 调整）。
+/// 历史：G-R1 QEMU 实测 512 KiB bump 时代刚好够（无 header 开销）；
+/// LockedHeap 的块头/对齐开销使 spawn 后剩余不足（OOM 8776B——
+/// supervisor 表分配失败），G-R1 提到 1 MiB；WP-37.4 双 PIE staging
+/// （bundle 466 KiB + 模块拷贝 + 2×316 KiB 重定位镜像）超出 1 MiB，
+/// 37 实测 OOM（OOM-DIAG used=831296 + 319488 申请），提到 4 MiB；第八轮 QEMU 实测 rootserver 4.3 MB 触发 kernel 早期崩溃（SHA-256 处 user exception），降回 2 MiB（OOM 峰值 ~1.15 MiB + 余量足够）。
 const HEAP_SIZE: usize = match option_env!("ENEROS_HEAP_SIZE_BYTES") {
     Some(s) => match parse_heap_size(s) {
         Some(n) if n >= 4096 => n,
-        _ => 1024 * 1024,
+        _ => 5 * 1024 * 1024,
     },
-    None => 1024 * 1024,
+    None => 5 * 1024 * 1024,
 };
 
 /// const 十进制解析（`str::parse` 非 const fn；仅用于编译期配置注入）。
@@ -122,7 +134,7 @@ unsafe impl GlobalAlloc for HeapAllocator {
 
 /// 静态 bump 分配器（保留：参考实现与并发模型验证；生产路径已由
 /// [`HeapAllocator`] 取代，见 22 §2.W1.4）。
-/// 静态堆大小（1 MiB，同默认配置）。
+/// 静态堆大小（4 MiB，同默认配置——WP-37.4 双 PIE staging 需求）。
 pub struct BumpAllocator {
     heap: UnsafeCell<[u8; HEAP_SIZE]>,
     offset: AtomicUsize,
@@ -199,10 +211,13 @@ mod tests {
 
     #[test]
     fn bump_allocates_within_heap() {
-        let allocator = BumpAllocator::new();
+        // 4 MiB 内联数组必须 Box（栈上实例化会溢出测试线程栈）。
+        let allocator = Box::new(BumpAllocator::new());
         let layout = Layout::from_size_align(16, 8).unwrap();
+        // SAFETY: test-only allocation from a fresh BumpAllocator; layout is valid and heap is large enough.
         let ptr = unsafe { allocator.alloc(layout) };
         assert!(!ptr.is_null());
+        // SAFETY: second allocation from the same fresh BumpAllocator; layout is valid and heap has remaining space.
         let ptr2 = unsafe { allocator.alloc(layout) };
         assert!(!ptr2.is_null());
         assert_ne!(ptr as usize, ptr2 as usize);
@@ -210,8 +225,9 @@ mod tests {
 
     #[test]
     fn bump_oom_returns_null() {
-        let allocator = BumpAllocator::new();
+        let allocator = Box::new(BumpAllocator::new());
         let layout = Layout::from_size_align(HEAP_SIZE + 1, 1).unwrap();
+        // SAFETY: test-only allocation with an oversized layout; BumpAllocator returns null without touching memory.
         let ptr = unsafe { allocator.alloc(layout) };
         assert!(ptr.is_null());
     }

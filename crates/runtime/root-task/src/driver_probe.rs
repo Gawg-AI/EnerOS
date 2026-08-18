@@ -16,18 +16,13 @@
 
 extern crate alloc;
 
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 #[cfg(test)]
 use alloc::vec::Vec;
 
-use eneros_boot_protocol::boot_info::{
-    dtb_window_for, ENEROS_DTB_MAX_LEN, ENEROS_INIT_BUNDLE_PHYS,
-};
 use eneros_can::{CanConfig, CanControllerType, CanDriver, Sja1000Controller, VolatileMmio};
 use eneros_driver_framework::{
-    BindingTable, CapabilityKind, CapabilityQuality, CapabilityRegistry, DeviceDriver,
-    DriverBinding, DriverError, DriverId, DriverSupervisor, PlatformCtx,
+    BindingTable, CapabilityKind, DeviceDriver, DriverBinding, DriverError, DriverId, PlatformCtx,
 };
 // 33 WP-33.5：数据盘掉电持久化自检（30 WP-30.7 机制接线；recover/append
 // 为 DurableLog trait 方法，需在作用域内）。
@@ -35,13 +30,13 @@ use eneros_durable_log::DurableLog;
 // 38（WP-38.7）：DMA 唯一 seam——设备地址只经 hal DmaAllocator 映射产生。
 use eneros_hal::dma::{DmaAllocator, DmaCoherency, DmaDirection, DmaMapping, DmaRequest};
 use eneros_hal::inventory::DeviceId as InventoryDeviceId;
+use eneros_net::NetDevice as _;
 use eneros_rs485::{Pl011UartHw, Rs485Config, Rs485Driver};
 use eneros_storage::driver::virtio_blk::VolatileMmio as BlkVolatileMmio;
 use eneros_storage::driver::virtio_blk::{
     VirtioBlkDriver, VirtioMmio, VIRTIO_BLK_DEVICE_ID, VIRTIO_MMIO_MAGIC, VMMIO_DEVICE_ID,
     VMMIO_MAGIC_VALUE, VMMIO_STATUS,
 };
-use eneros_storage::StorageConfig;
 use eneros_time::Pl031Rtc;
 use eneros_uart::{Pl011Mmio, UartDriver};
 
@@ -93,8 +88,10 @@ pub fn binding_table() -> BindingTable {
 /// QEMU virt virtio-mmio 区域（32 个槽 × 0x200；blk/net 在低槽，其余空槽）。
 const VIRTIO_REGION_BASE: u64 = 0x0a00_0000;
 const VIRTIO_REGION_SIZE: u64 = 0x20_0000;
+#[allow(dead_code)] // 44.2：qemu-virt 板级槽位常数，当前路径未用（44.4 冻结登记）
 const VIRTIO_MMIO_SLOT_STRIDE: u64 = 0x200;
 /// QEMU virt 的 virtio-mmio 槽数（32；探测上限，防越界读）。
+#[allow(dead_code)] // 44.2：同上（44.4 冻结登记）
 const VIRTIO_MMIO_SLOT_COUNT: u64 = 32;
 
 /// 38（WP-38.7）：virtio DMA 一致性判定（纯函数，mutation 可测）——
@@ -133,6 +130,7 @@ fn cache_ops_for(coherent: bool) -> Result<(), DriverError> {
 /// - `cpu_ptr` 指向 hal 分配器返回的池内存（`Box::leak`，'static）；
 /// - 驱动经 `as_bytes(_mut)` 只访问 `buf.len` 范围内字节；
 /// - `device_addr` 只写设备描述符（Q_PFN/描述符 addr 字段）。
+///
 /// 纯指针/数值视图（Copy：同一池可被多个槽位驱动共享 CPU 侧内存——
 /// virtio 只构造一个 blk 驱动，其余槽位探测不消费池）。
 #[derive(Clone, Copy)]
@@ -215,6 +213,64 @@ struct BlkAdapter {
 unsafe impl Send for BlkAdapter {}
 unsafe impl Sync for BlkAdapter {}
 
+/// 39 WP-39.7：virtio 复合驱动（blk 数据盘 + net 网卡）。
+struct VirtioFabric {
+    /// 数据盘驱动（可选——区域无 blk 时缺省）。
+    blk: Option<BlkAdapter>,
+    /// virtio-net 驱动（可选——区域无网卡时缺省）。
+    net: Option<
+        eneros_net::VirtioNetDriver<BlkVolatileMmio, HalPool, eneros_net::dma_mem::NoopCache>,
+    >,
+}
+
+// SAFETY: 同 BlkAdapter（单线程装配 + 事件循环；驱动内部 RefCell 短临界）。
+unsafe impl Send for VirtioFabric {}
+unsafe impl Sync for VirtioFabric {}
+
+impl DeviceDriver for VirtioFabric {
+    fn id(&self) -> &DriverId {
+        static ID: DriverId = DriverId(0xB10C_0002);
+        &ID
+    }
+    fn name(&self) -> &str {
+        "virtio-fabric"
+    }
+    fn driver_type(&self) -> eneros_driver_framework::DriverType {
+        eneros_driver_framework::DriverType::Storage
+    }
+    fn state(&self) -> eneros_driver_framework::DriverState {
+        eneros_driver_framework::DriverState::Running
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn start(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn stop(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn deinit(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
+    fn handle_irq(&mut self, _irq_id: u32) {}
+    fn health_check(&self) -> eneros_driver_framework::DriverHealth {
+        // 健康来自真实组件：blk 存在 → 其 health；否则 net link。
+        if let Some(blk) = &self.blk {
+            return blk.health_check();
+        }
+        match &self.net {
+            Some(net) if net.link_up() => eneros_driver_framework::DriverHealth::Healthy,
+            _ => eneros_driver_framework::DriverHealth::Unhealthy,
+        }
+    }
+    fn capabilities(&self) -> &'static [CapabilityKind] {
+        // 38 语义：virtio 复合发布 BlockDevice（blk 存在时）；net 的
+        // NetworkDevice 能力随 39 服务化在 40/41 消费。
+        &[CapabilityKind::BlockDevice]
+    }
+}
+
 impl DeviceDriver for BlkAdapter {
     fn id(&self) -> &DriverId {
         static ID: DriverId = DriverId(0xB10C_0001);
@@ -251,24 +307,53 @@ impl DeviceDriver for BlkAdapter {
     }
 }
 
-/// D4：virtio 设备 factory——按 device-id 探测分流（当前：blk；net 留
-/// D2）。只认区域起点节点（QEMU 32 个 virtio,mmio 节点中空槽无设备 →
-/// NotFound 如实）；区域整体映射（分段 2 MiB 帧）后逐槽探测。
+/// D4/39：virtio 设备 factory——复合驱动（blk 数据盘 + net 网卡）。
+///
+/// 39 WP-39.5/39.7（OBS-04）：区域常量迁至 DeviceResources——base/size
+/// 来自节点 regs，槽数由 size 派生（0x200 = virtio-mmio legacy 传输
+/// 步长；上限 32 防越界读）；不再要求 base == 固定区域起点（QEMU 的
+/// virtio-mmio-bus.1 等第二区域由此可探测）。blk 取最后一块（数据盘
+/// 语义），net 取第一块网卡；无设备 → NotFound（fail-closed）。
+#[allow(unreachable_code)] // 44.2 收口：函数尾部保留 41 起不执行的区域扫描回退实现（见函数内注释）
 fn virtio_factory(
     node: &eneros_board::device_tree::DeviceNode,
     ctx: &mut dyn PlatformCtx,
 ) -> Result<Box<dyn DeviceDriver>, DriverError> {
+    // 41（WP-41 存储句柄移交，CVR-39-02 剩余面）：root **不再绑定任何
+    // virtio 设备**——数据盘（blk）由 svc-storage 独占初始化（root 再
+    // retype 同一 device untyped 会推进内核 freeIndex，导致 alloc_device_at
+    // 的物理定位与内核分配错位，QEMU 实测 vm fault 0xa003000）；virtio-net
+    // 由 EL0 网络服务接（41 外部 peer 面，未装配前诚实 UnassignedService）。
+    // durable-log 在无 blk 时零写保留（已有分支）。探测只读 magic 打
+    // 印（不写 STATUS——避免重置 svc-storage 已初始化设备）。
     let (base, _size) = node.regs.first().copied().ok_or(DriverError::NotFound)?;
-    if base != VIRTIO_REGION_BASE {
-        // 非区域起点槽：真实设备只挂在前几个槽；空槽无设备（fail-closed）。
-        return Err(DriverError::NotFound);
+    if base == VIRTIO_REGION_BASE {
+        crate::println!(
+            "[eneros-root-task] virtio: region reserved for EL0 services (svc-storage data disk)"
+        );
     }
-    // 33 WP-33.5：区域按 4 × 4K 帧分段映射（QEMU 活体实测：单次 2M 帧
-    // 映射仅首 4K 生效——槽 8 起读 0xa001000 触发 translation fault；
-    // 4K 帧路径已被 D1 pl011 与 D4 槽 0 验证可靠）。32 槽 × 0x200 =
-    // 0x4000 恰 4 帧。
+    // 消费 ctx（探测代码保留为回退路径；41 起不执行）。
+    let _ = ctx;
+    return Err(DriverError::NotFound);
+    // 39 WP-39.5/39.7（OBS-04 回退修订，CVR-39-04）：QEMU virt 的 DTB 为
+    // **每槽位一个 virtio_mmio 节点**（reg 0x200）；设备 untyped 按 4K 帧
+    // retype——逐节点独立映射会在同帧内冲突（retype 偏移碰撞，QEMU 实测
+    // vm fault 0xa001000）。恢复**区域扫描**：仅区域起点节点
+    // （base == VIRTIO_REGION_BASE，qemu-virt 板级事实）映射 4 帧并扫描
+    // 全部槽位；其余槽位节点在映射前快速拒绝（NotFound，零副作用）。
+    const SLOT_STRIDE: u64 = 0x200;
+    let slot_count = if base == VIRTIO_REGION_BASE {
+        // 区域 32 槽（QEMU virt 板级事实；上限防越界读）。
+        (VIRTIO_REGION_SIZE / SLOT_STRIDE).clamp(1, 32)
+    } else {
+        return Err(DriverError::NotFound);
+    };
+    // 映射帧数 = ceil(slot_count × 0x200 / 0x1000)（8 槽/帧；≤ 4 帧）。
+    let frames = slot_count.div_ceil(8).max(1);
+    // 33 WP-33.5：区域按 4K 帧分段映射（QEMU 活体实测：单次 2M 帧
+    // 映射仅首 4K 生效；4K 帧路径已被 D1 pl011 与 D4 槽 0 验证可靠）。
     let mut virt = 0u64;
-    for i in 0..4u64 {
+    for i in 0..frames {
         let mapped = ctx.map_mmio(base + i * 0x1000, 0x1000)?;
         if i == 0 {
             virt = mapped;
@@ -293,19 +378,21 @@ fn virtio_factory(
     // 失败传播：非一致（无显式 capability）→ factory 失败（fail-closed，
     // 不静默 NoopCache——NoopCache 仅在显式 Coherent capability 下使用）。
     cache_ops_for(coherent)?;
-    // DMA 池经 hal 唯一 seam 分配/映射（设备地址类型化；VA≠PA 模型）。
-    let (pool, _mapping) = HalPool::allocate_from(
-        ctx.dma_runtime().ok_or(DriverError::NotFound)?,
-        InventoryDeviceId(node.path.len() as u32),
-    )?;
-    // 33 WP-33.5：绑定**最后一块** virtio-blk 作为持久化数据盘（QEMU：
-    // 槽 0 = 系统盘、槽 2 = 数据盘；系统盘由固件 BlockIO 处理，root-task
-    // 不写系统盘——旧实现绑第一块 blk，DurableLog 写它会破坏 GPT）。
-    let mut bound_blk: Option<
+    // 39 WP-39.5/39.7：DMA 池按设备**按需**分配（hal seam；每个 virtio
+    // 设备一个 9 页池——hal 板级池容量见 CROSS_VERSION-39 CVR-39-01）。
+    // 41（WP-41 存储句柄移交）：root **不再绑定 blk 驱动**——数据盘由
+    // svc-storage 独占（再初始化同一 virtio 设备会覆盖 queue 配置）；
+    // 系统盘（boot 介质）不写。durable-log 在无 blk 时零写保留。
+    // （VirtioBlkDriver 类型保留供 host 测试/回退路径编译。）
+    let bound_blk: Option<
         VirtioBlkDriver<BlkVolatileMmio, HalPool, eneros_storage::driver::virtio_blk::NoopCache>,
     > = None;
-    for slot in 0..VIRTIO_MMIO_SLOT_COUNT {
-        let off = (slot * VIRTIO_MMIO_SLOT_STRIDE) as usize;
+    // 39 WP-39.7：virtio-net（NetDevice seam；QEMU bus.1 槽 0）。
+    let mut bound_net: Option<
+        eneros_net::VirtioNetDriver<BlkVolatileMmio, HalPool, eneros_net::dma_mem::NoopCache>,
+    > = None;
+    for slot in 0..slot_count {
+        let off = (slot * SLOT_STRIDE) as usize;
         let magic = probe.read_reg(off + VMMIO_MAGIC_VALUE);
         crate::println!(
             "[eneros-root-task] DBG virtio probe slot={} magic=0x{:08x}",
@@ -316,88 +403,251 @@ fn virtio_factory(
             continue; // 空槽
         }
         // QEMU 9.2.4 virtio-mmio 实测：STATUS==0 时 DEVICE_ID 读 0（proxy
-        // 未激活）；写 STATUS=ACKNOWLEDGE(1) 后 device_id 才有效（WP-27.3
-        // D4 迭代定位）。
+        // 未激活）。41 起数据盘由 svc-storage 独占初始化（DRIVER_OK）——
+        // **只读 STATUS 不写**：写 STATUS 会覆盖设备状态（virtio STATUS
+        // 是覆盖写，写 1 会把 DRIVER_OK 重置为 ACK），svc-storage 的队列
+        // 配置立即失效（QEMU 实测 device_id 读 0 + root IPC 卡死）。设备
+        // 未激活（STATUS==0）时 device_id 读 0 是诚实探测结果（该槽不可
+        // 用），不伪造。
         let version = probe.read_reg(off + 0x004);
-        probe.write_reg(off + VMMIO_STATUS, 1); // ACKNOWLEDGE
-        let device_id = probe.read_reg(off + VMMIO_DEVICE_ID);
+        let dev_status = probe.read_reg(off + VMMIO_STATUS);
+        let device_id = if dev_status != 0 {
+            probe.read_reg(off + VMMIO_DEVICE_ID)
+        } else {
+            0
+        };
         let vendor = probe.read_reg(off + 0x00C);
         crate::println!(
-            "[eneros-root-task] DBG virtio probe slot={} version={} device_id={} vendor=0x{:x}",
+            "[eneros-root-task] DBG virtio probe slot={} version={} device_id={} status={} vendor=0x{:x}",
             slot,
             version,
             device_id,
+            dev_status,
             vendor
         );
         if device_id == VIRTIO_BLK_DEVICE_ID {
-            // 槽内寄存器块（0x200）位于已映射区域内；驱动存续期由装配层
-            // 保证。queue DMA 经 hal seam 分配（`pool`）；cache 为真实
-            // Aarch64Cache（非一致必需；一致平台上为无害 no-op）。
-            let mmio = BlkVolatileMmio::new((base + off as u64) as usize);
-            let driver = VirtioBlkDriver::new(
-                mmio,
-                pool,
-                eneros_storage::driver::virtio_blk::NoopCache,
-                StorageConfig::default(),
-            )
-            .map_err(|_| DriverError::InitFailed)?;
-            // 33 WP-33.5：记录最后一块 blk（数据盘语义；多块时取高槽位）
-            bound_blk = Some(driver);
+            // 41（WP-41 存储句柄移交，CVR-39-02 剩余面）：blk 驱动不再由
+            // root 绑定——数据盘（槽 2）由 svc-storage 独占初始化（root
+            // 再初始化同一设备会覆盖 queue 配置，QEMU 实测设备状态破坏）。
+            // 系统盘（槽 0）root 亦无需驱动（boot 介质不写）。durable-log
+            // 装配自检在无 blk 时零写保留（已有分支）。
+            crate::println!(
+                "[eneros-root-task] virtio-blk: reserved for svc-storage (slot={})",
+                slot
+            );
             continue;
         }
-        // 有设备但不是 blk（如 rng=4/net=1）→ 跳过继续扫描（33 WP-33.5：
+        if device_id == eneros_net::VIRTIO_NET_DEVICE_ID {
+            // 39 WP-39.7：绑定 virtio-net（独立 DMA 池——net 队列 9 页；
+            // 同一节点内 blk/net 并存时各持一池）。
+            let mmio = BlkVolatileMmio::new((base + off as u64) as usize);
+            let (net_pool, _net_map) = HalPool::allocate_from(
+                ctx.dma_runtime().ok_or(DriverError::NotFound)?,
+                InventoryDeviceId((node.path.len() + 100) as u32),
+            )?;
+            let driver =
+                eneros_net::VirtioNetDriver::new(mmio, net_pool, eneros_net::dma_mem::NoopCache)
+                    .map_err(|_| DriverError::InitFailed)?;
+            crate::println!(
+                "[eneros-root-task] virtio-net: bound slot={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} link={}",
+                slot,
+                driver.mac_address()[0],
+                driver.mac_address()[1],
+                driver.mac_address()[2],
+                driver.mac_address()[3],
+                driver.mac_address()[4],
+                driver.mac_address()[5],
+                driver.link_up()
+            );
+            bound_net = Some(driver);
+            continue;
+        }
+        // 有设备但不是 blk/net（如 rng=4）→ 跳过继续扫描（33 WP-33.5：
         // 旧实现直接返回——rng 在槽 1 会阻断槽 2 数据盘的到达）。
         // 30 RT-018：探测失败复位 STATUS（virtio 规范 STATUS=0 复位）。
         probe.write_reg(off + VMMIO_STATUS, 0);
     }
-    // 33 WP-33.5：数据盘掉电持久化自检（30 WP-30.7 DurableLog 机制接线；
-    // 判据行 = 每次掉电后下次启动的 recover 输出 + 启动计数续增）。
-    // 借用式（RefMutDevice）——自检后驱动归还适配器。
-    match bound_blk {
-        Some(mut driver) => {
-            match eneros_durable_log::BlockDurableLog::format(
-                eneros_durable_log::RefMutDevice(&mut driver),
-                512,
-            ) {
-                Ok(mut log) => match log.recover() {
-                    Ok(committed) => {
-                        crate::println!(
-                            "[eneros-root-task] durable-log: recover committed={}",
-                            committed
-                        );
-                        match log.append(b"boot") {
-                            Ok(seq) => {
-                                crate::println!(
-                                    "[eneros-root-task] durable-log: append seq={} (boot count)",
-                                    seq
-                                );
-                                // 38：boot 序号注册为全局 boot_id（跨重启
-                                // 单调；能力 epoch/重启归因来源）。
-                                crate::panic::register_boot_id(seq);
-                            }
-                            Err(e) => {
-                                crate::println!(
-                                    "[eneros-root-task] durable-log: append failed {:?}",
-                                    e
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        crate::println!("[eneros-root-task] durable-log: recover failed {:?}", e);
-                    }
-                },
-                Err(e) => {
+    // 39 WP-39.1/39.6（P0-07）：durable-log **零写发现**在装配层执行
+    // （`durable_log_probe` 对最后一块 blk）——工厂只做绑定，不写盘。
+    let fabric_blk = bound_blk.map(|driver| BlkAdapter { inner: driver });
+    if fabric_blk.is_none() && bound_net.is_none() {
+        return Err(DriverError::NotFound);
+    }
+    let mut fabric = VirtioFabric {
+        blk: fabric_blk,
+        net: bound_net,
+    };
+    // 39：**装箱后**注册全局指针（Box 分配稳定；栈上注册会在 move 后
+    // 悬垂——39 QEMU 排障教训）。net → 事件循环 0x88b5 回显；blk →
+    // 装配层 durable_log_probe（最后一块 = 数据盘）。
+    let mut boxed = Box::new(fabric);
+    if let Some(net) = boxed.net.as_mut() {
+        let ptr = net as *mut eneros_net::VirtioNetDriver<
+            BlkVolatileMmio,
+            HalPool,
+            eneros_net::dma_mem::NoopCache,
+        >;
+        NET_DRIVER.store(ptr as usize, core::sync::atomic::Ordering::Relaxed);
+    }
+    if let Some(blk) = boxed.blk.as_mut() {
+        let ptr = &mut blk.inner
+            as *mut VirtioBlkDriver<
+                BlkVolatileMmio,
+                HalPool,
+                eneros_storage::driver::virtio_blk::NoopCache,
+            >;
+        LAST_BLK_DRIVER.store(ptr as usize, core::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(boxed)
+}
+
+/// 39 WP-39.7：virtio-net 全局驱动指针（事件循环回显用；0 = 未装配）。
+static NET_DRIVER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 39 WP-39.1/39.6：最后一块 virtio-blk 驱动指针（数据盘语义；装配层
+/// `durable_log_probe` 使用；0 = 无 blk）。指针指向 fabric 内的驱动
+/// （Box 稳定分配，root-task 常驻）。
+static LAST_BLK_DRIVER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 39 WP-39.1/39.6（P0-07）：数据盘 durable-log **零写发现**（装配层）。
+///
+/// 39 收尾复验（P0-1）：发现/识别/授权写严格分离——不再对裸整盘
+/// 直接构造日志（那会写 LBA0/GPT 保护区），而是：
+/// 1. `GptResolver::open::<AuditRole>`（零读发现 + role 匹配）拿
+///    `PartitionHandle<AuditRole>`（LOGS 分区）；
+/// 2. 句柄上 `open_existing`（零写；未初始化保持零写）；
+/// 3. 识别成功才认领并 append "boot"（正常业务写，非发现写）。
+///
+/// 无 GPT/无 audit 分区/GPT 损坏 → 零写保留，boot_id 不注册。
+pub fn durable_log_probe() {
+    let ptr = LAST_BLK_DRIVER.load(core::sync::atomic::Ordering::Relaxed);
+    if ptr == 0 {
+        crate::println!("[eneros-root-task] durable-log: no data disk bound —— 零写保留");
+        return;
+    }
+    // SAFETY: 指针由 virtio_factory 注册（Box 稳定分配）；root-task 单
+    // 线程装配期独占访问。
+    let driver = unsafe {
+        &mut *(ptr as *mut VirtioBlkDriver<
+            BlkVolatileMmio,
+            HalPool,
+            eneros_storage::driver::virtio_blk::NoopCache,
+        >)
+    };
+    // 角色解析（零写）：默认 policy 对齐 qemu-v1 布局（LOGS→Audit）。
+    crate::println!(
+        "[eneros-root-task] durable-log: probe target blocks={} block_size={}",
+        eneros_storage::driver::BlockDevice::block_count(&*driver),
+        eneros_storage::driver::BlockDevice::block_size(&*driver)
+    );
+    let policy = eneros_storage::partition::RolePolicy::default();
+    let dev = eneros_durable_log::RefMutDevice(driver);
+    let handle = match eneros_storage::partition::GptResolver::open::<
+        eneros_storage::partition::AuditRole,
+        _,
+    >(dev, &policy)
+    {
+        Ok(h) => {
+            crate::println!(
+                "[eneros-root-task] durable-log: resolved audit partition start_lba={} blocks={}",
+                h.range().start_lba,
+                h.block_count()
+            );
+            h
+        }
+        Err(e) => {
+            // 零写：未知/无 GPT/无角色分区——不认领、不初始化。
+            crate::println!(
+                "[eneros-root-task] durable-log: discovery {:?} —— 零写保留 \
+                 （无 audit 角色分区；provisioning 需显式授权，normal release 无 capability）",
+                e
+            );
+            return;
+        }
+    };
+    match eneros_durable_log::BlockDurableLog::open_existing(handle, 512) {
+        Ok(mut log) => {
+            crate::println!(
+                "[eneros-root-task] durable-log: open_existing committed={}",
+                log.committed_seq()
+            );
+            match log.append(b"boot") {
+                Ok(seq) => {
                     crate::println!(
-                        "[eneros-root-task] durable-log: format failed {:?}（判据行缺失，\
-                         掉电证据受影响）",
-                        e
+                        "[eneros-root-task] durable-log: append seq={} (boot count)",
+                        seq
                     );
+                    // 38：boot 序号注册为全局 boot_id（跨重启单调；
+                    // 能力 epoch/重启归因来源）。
+                    crate::panic::register_boot_id(seq);
+                }
+                Err(e) => {
+                    crate::println!("[eneros-root-task] durable-log: append failed {:?}", e);
                 }
             }
-            Ok(Box::new(BlkAdapter { inner: driver }))
         }
-        None => Err(DriverError::NotFound),
+        Err(e) => {
+            // 零写：不 format、不写头块、不自动初始化。
+            crate::println!(
+                "[eneros-root-task] durable-log: open_existing {:?} —— 零写保留 \
+                 （provisioning 需显式授权，normal release 无 capability）",
+                e
+            );
+        }
+    }
+}
+
+/// 39 WP-39.7：外部 peer 回显轮询——收到 EtherType=0x88b5 且 payload 为
+/// `ENEROS-NET-RX` 的帧时回 `ENEROS-NET-TX`（`tools/sel4-net-peer.py`
+/// 的期望）。非阻塞（try_recv）：无帧立即返回，不拖慢事件循环。
+pub fn net_echo_poll() {
+    let ptr = NET_DRIVER.load(core::sync::atomic::Ordering::Relaxed);
+    if ptr == 0 {
+        return;
+    }
+    // SAFETY: 指针由 virtio_factory 注册（Box 稳定分配）；root-task 单
+    // 线程事件循环独占访问；驱动内部 RefCell 串行化。
+    let drv = unsafe {
+        &mut *(ptr as *mut eneros_net::VirtioNetDriver<
+            BlkVolatileMmio,
+            HalPool,
+            eneros_net::dma_mem::NoopCache,
+        >)
+    };
+    if !drv.link_up() {
+        return;
+    }
+    let mut buf = [0u8; 2048];
+    match drv.try_recv(&mut buf) {
+        Ok(Some(n)) => {
+            // 以太帧：dst(6) + src(6) + ethertype(2) + payload。
+            if n >= 27 && buf[12..14] == [0x88, 0xB5] && &buf[14..27] == b"ENEROS-NET-RX" {
+                let mut reply = [0u8; 27];
+                // 39 收尾复验（F12）：回复目的 MAC = 入帧源 MAC
+                //（旧实现硬编码 02:00:00:00:00:01，仅对单一 peer 脚本成立）。
+                reply[..6].copy_from_slice(&buf[6..12]);
+                reply[6..12].copy_from_slice(&drv.mac_address());
+                reply[12..14].copy_from_slice(&[0x88, 0xB5]);
+                reply[14..27].copy_from_slice(b"ENEROS-NET-TX");
+                match drv.send(&reply) {
+                    Ok(()) => {
+                        crate::println!(
+                            "[eneros-root-task] virtio-net: echoed ENEROS-NET-TX ({} bytes)",
+                            n
+                        );
+                    }
+                    Err(e) => {
+                        crate::println!("[eneros-root-task] virtio-net: echo send failed {:?}", e);
+                    }
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            // 39 收尾复验（F12）：接收错误不再静默吞掉（RingCorrupt/
+            // DmaError 与无帧 Timeout 一并不可观测——损坏必须可见）。
+            crate::println!("[eneros-root-task] virtio-net: rx poll error {:?}", e);
+        }
     }
 }
 
@@ -504,8 +754,10 @@ fn can_factory(
         .or(node.clock_frequency)
         .ok_or(DriverError::NotFound)?;
     let controller = Sja1000Controller::new(mmio, clock_hz as u32, eneros_time::get_monotonic_ns);
-    let mut config = CanConfig::default();
-    config.controller_type = CanControllerType::SJA1000;
+    let config = CanConfig {
+        controller_type: CanControllerType::SJA1000,
+        ..Default::default()
+    };
     Ok(Box::new(CanDriver::new(
         DriverId(0xCA11_0001),
         config,
@@ -788,6 +1040,9 @@ pub fn probe_and_report(
     );
     let mut ctx = RootPlatformCtx::new(spawn, irq_table, platform_dma, platform_coherency);
     let report = binding_table().probe_all(&inventory, &mut ctx);
+    // 39 WP-39.1/39.6：数据盘 durable-log 零写发现（最后一块 blk；
+    // 装配层执行——工厂内不做写盘判断）。
+    durable_log_probe();
     for bound in report.bound() {
         crate::println!(
             "[eneros-root-task]   probe bound compatible={} node={} driver={}",
@@ -950,6 +1205,7 @@ pub fn probe_and_report(
 
 /// 30 RT-009：badge → 绑定索引解码（badge = 绑定索引 + 1，0 保留未知）。
 /// `badge=0` 返回 None（防 u32 回绕成 u32::MAX 索引）。
+#[allow(dead_code)] // 44.2：badge→绑定槽位换算，当前路径未用（44.4 冻结登记）
 fn badge_to_binding_index(badge: u32) -> Option<usize> {
     badge.checked_sub(1).map(|b| b as usize)
 }
@@ -1293,7 +1549,7 @@ mod tests {
         // qemu-virt.dts 的其余设备节点都应在 unbound 清单中（节点一致）
         let unbound: Vec<&str> = report.unbound().iter().map(|u| u.node.as_str()).collect();
         assert!(
-            unbound.contains(&"uart@9000000") == false,
+            !unbound.contains(&"uart@9000000"),
             "pl011 已绑定，不应在 unbound: {unbound:?}"
         );
         assert!(

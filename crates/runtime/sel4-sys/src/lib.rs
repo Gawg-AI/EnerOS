@@ -23,6 +23,7 @@
 extern crate alloc;
 
 pub mod safe;
+pub mod typed;
 pub mod types;
 
 #[cfg(sel4_target)]

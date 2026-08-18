@@ -1,0 +1,26 @@
+[package]
+name = "eneros-config-bundle"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图 41 RuntimeConfigBundle：签名、类型化、可迁移运行配置唯一事实（no_std + alloc，target 可链接）"
+
+[lib]
+name = "eneros_config_bundle"
+path = "src/lib.rs"
+
+[dependencies]
+# ADR-022：no_std target 唯一可链接国密实现（sm2_sign/sm2_verify/sm3_hash）。
+eneros-crypto = { path = "../../security/crypto" }
+# host 侧 TOML 编译面（feature `compile`；target 闭包不启用）。
+toml = { version = "0.8", optional = true }
+
+[features]
+default = []
+# host 侧 TOML → canonical 编译面（xtask config compile / 测试用）；target 闭包不启用。
+compile = ["std", "dep:toml"]
+std = []
+
+[dev-dependencies]
+toml = "0.8"

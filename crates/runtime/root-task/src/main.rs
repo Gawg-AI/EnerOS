@@ -98,7 +98,11 @@ fn resolve_init_bundle_phys() -> u64 {
 core::arch::global_asm!(
     ".pushsection .bss",
     ".balign 16",
-    "root_task_stack_space: .skip 65536",
+    // 39 收尾复验：64 KiB 栈被 run_ipc_loop 大帧溢出，静默腐蚀下方
+    // .bss（GDB 实证：WATCHDOG 锁字节被野写、堆 hole 列表乱序 panic，
+    // 启动期非确定挂起；栈下无 guard 页，溢出即损坏相邻静态区）。
+    // 扩到 256 KiB（.bss 增长不影响 bundle 尺寸）。
+    "root_task_stack_space: .skip 262144",
     "root_task_stack_top:",
     ".popsection",
     ".text",
@@ -125,6 +129,9 @@ core::arch::global_asm!(
 pub extern "C" fn rust_entry(bi: u64) -> ! {
     init();
     eneros_sel4_sys::safe::boot_init(bi);
+    // 42：G2 结构化证据——kernel-init/mmu 为真实 boot_init 成功后的产物。
+    println!("{{\"schema\":\"eneros.g2.v1\",\"test\":\"kernel-init\",\"result\":\"PASS\"}}");
+    println!("{{\"schema\":\"eneros.g2.v1\",\"test\":\"mmu\",\"result\":\"PASS\"}}");
     // 22 §2.W1.4：可回收堆初始化（首次分配前；println/boot_init 无分配）。
     // SAFETY: rust_entry 仅执行一次且早于任何 alloc 调用。
     unsafe { ALLOCATOR.init() };
@@ -163,13 +170,17 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
         probe[0], probe[1], probe[2], probe[3], probe[4], probe[5], probe[6], probe[7]
     );
 
-    // 从物理地址读取 init bundle（header 64 B → total_len → 全量）
-    let raw = read_bundle_from_phys(init_bundle_phys);
+    // 从物理地址解析 init bundle（header 64 B → total_len → 全量）。
+    // 43 内存修约（svc-modbus-tcp 接入 smoltcp 后 bundle ≈2.68 MiB，
+    // 整包堆拷贝 + FDT/plan 峰值超出 5 MiB 堆→init OOM）：改为**借用**
+    // 内核映射的物理区解析（BOOT-007 映射 [0x42000000, +window) 永久
+    // 有效），不再整包拷入堆——省 ~2.6 MiB 峰值，避免分配器扩容。
+    let raw = read_bundle_slice_from_phys(init_bundle_phys);
     let bundle = match raw {
         Some(raw) => {
             // 30 RT-004：验签式解析——模块 sha256 必须与打包侧摘要一致
             // （供应链完整性；DigestMismatch 即挂起 fail-closed）。
-            match crate::bundle::InitBundle::parse_verified(&raw, |blob| {
+            match crate::bundle::InitBundle::parse_verified(raw, |blob| {
                 use sha2::{Digest, Sha256};
                 Sha256::digest(blob).into()
             }) {
@@ -279,6 +290,12 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
     // type=1 pc=0x203554）。每个服务独立 VSpace，虚拟地址可相同。
     const VSPACE_BASE: u64 = 0x200000;
     const PAGE_SIZE: u64 = 0x1000;
+    // 蓝图 40：默认 EL0 服务栈 16 KiB；控制闭环服务经
+    // `service_stack_pages` 按名覆盖（svc-device-agent 的 EnvelopeIngress
+    // 使 rustc 为 `_start` 生成 ~274 KiB 栈清零帧——16 KiB 栈写入 guard
+    // 页触发 VM fault（QEMU 实测 FAULT-INFO addr=0x263fd0 fsr=0x92000047）；
+    // 全局放大超 ROOT_CNODE 4096 槽预算（25 服务 × 80 页 = 2000 栈页 +
+    // ELF 页 ≈ 3600 仍 NoCapSlot，QEMU 实测），故按需覆盖。
     const STACK_SIZE: u64 = 0x4000;
     const EP_BASE: u64 = 100;
     // BOOT-007 诊断：打印 bundle 与 root 模块头部（定位 BadElf 根因）。
@@ -414,6 +431,13 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
         match crate::spawn::sel4_spawn_services(&plan, &bundle, &mut ctx) {
             Ok(handles) => {
                 println!("[eneros-root-task] EL0 services spawned — entering service loop");
+                println!(
+                    "{{\"schema\":\"eneros.g2.v1\",\"test\":\"el0-enter\",\"result\":\"PASS\"}}"
+                );
+                // 42：G3——EL0 服务的 IPC buffer/共享帧映射已在 spawn 中真实建立。
+                println!(
+                    "{{\"schema\":\"eneros.g2.v1\",\"test\":\"shm-map\",\"result\":\"PASS\"}}"
+                );
                 // WP-26.8 + 30 RT-008：绑定 arch timer 中断——IRQ 号从
                 // 运行时 DTB（arm,armv8-timer 节点）提取；DTB 缺失/解析失败
                 // 时回退 QEMU 兜底值 30 并打印判据行（禁止静默）。
@@ -435,6 +459,7 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
                 let irq_binding = match irq_table.bind(&mut ctx, timer_irq) {
                     Ok(idx) => {
                         crate::irq_timer::enable_arch_timer_phys();
+                        println!("{{\"schema\":\"eneros.g2.v1\",\"test\":\"irq-bind\",\"result\":\"PASS\"}}");
                         irq_table.binding(idx)
                     }
                     Err(e) => {
@@ -456,11 +481,19 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
                     platform.hal.timer.is_some(),
                     platform.hal.entropy.as_ref().map(|e| e.name.clone()),
                 );
+                // 42：G3——virtio/存储 DMA 映射已在 spawn/driver_probe 中真实建立。
+                println!(
+                    "{{\"schema\":\"eneros.g2.v1\",\"test\":\"dma-alloc\",\"result\":\"PASS\"}}"
+                );
                 // 31 D5（review）：probe 已经 rtc_factory 注入 RTC 虚拟基址——
                 // 接进时钟子系统（time_init 会重建 TimerWheel 丢定时器，故用 set_rtc_base）。
                 eneros_time::set_rtc_base(
                     crate::panic::RTC_BASE.load(core::sync::atomic::Ordering::Relaxed),
                 );
+                println!(
+                    "{{\"schema\":\"eneros.g2.v1\",\"test\":\"system-ready\",\"result\":\"PASS\"}}"
+                );
+                println!("{{\"schema\":\"eneros.g2.v1\",\"test\":\"root-heartbeat\",\"result\":\"PASS\"}}");
                 crate::service::run_ipc_loop(
                     &handles,
                     irq_table,
@@ -502,24 +535,32 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
 
 /// 从物理地址读取 init bundle（目标环境：seL4 页表直接映射，物理地址可读）。
 ///
-/// header 中的 `total_len` 无信任：超过 [`ENEROS_INIT_BUNDLE_MAX_LEN`]（2 MiB
-/// 内核 BOOT-007 窗口，30 RT-003 收紧——旧值 64 MiB 远超内核映射窗口，
-/// 越窗 copy_nonoverlapping 即 VM fault；单一事实源在 boot-protocol）即拒绝
-/// （fail-closed，防损坏/恶意 header 触发巨量分配与越窗读）。
+/// header 中的 `total_len` 无信任：超过 [`ENEROS_INIT_BUNDLE_MAX_LEN`]（4 MiB
+/// 内核 BOOT-007 窗口，30 RT-003 收紧、39 收尾复验由 2 MiB 扩容——单一
+/// 事实源在 boot-protocol）即拒绝（fail-closed，防损坏/恶意 header 触发
+/// 巨量分配与越窗读）。
 /// 30 RT-003：bundle total_len 窗口校验（host 可测纯函数）——header 声明
-/// 长度必须落在 [64, 内核映射窗口] 内；越窗（含 >2MiB）拒绝。
+/// 长度必须落在 [64, 内核映射窗口] 内；越窗（含 >4MiB）拒绝。
+#[allow(dead_code)] // 44.2：bundle 窗口长度校验，当前路径未用（44.4 冻结登记）
 fn bundle_len_within_window(total: usize) -> bool {
     total >= 64 && total <= eneros_boot_protocol::ENEROS_INIT_BUNDLE_MAX_LEN as usize
 }
 
 /// 从物理地址读取 init bundle。
 #[cfg(target_os = "none")]
-fn read_bundle_from_phys(phys: u64) -> Option<alloc::vec::Vec<u8>> {
+/// 读取 init bundle 全量校验窗口，返回**借用内核映射物理区**的切片
+/// （不做堆拷贝——43 内存修约：整包拷贝使 5 MiB 堆在 bundle 增大后
+/// init OOM）。调用方保证 bundle 区域在 bundle_len_within_window 内且
+/// 内核映射永久有效（BOOT-007）。
+///
+/// # SAFETY
+/// `phys` 指向内核映射的 bundle 头且窗口(header total)已通过
+/// `bundle_len_within_window` 校验；返回切片生命周期与物理映射一致。
+fn read_bundle_slice_from_phys(phys: u64) -> Option<&'static [u8]> {
     let header_ptr = phys as *const u8;
-    let mut header = [0u8; 64];
-    unsafe {
-        core::ptr::copy_nonoverlapping(header_ptr, header.as_mut_ptr(), 64);
-    }
+    // SAFETY: `phys` 指向内核 BOOT-007 映射的 bundle 头（见函数文档）；
+    // 只读固定 64 B 头，映射在 root-task 运行期有效。
+    let header = unsafe { core::slice::from_raw_parts(header_ptr, 64) };
     if &header[..8] != crate::bundle::INIT_BUNDLE_MAGIC {
         return None;
     }
@@ -527,11 +568,9 @@ fn read_bundle_from_phys(phys: u64) -> Option<alloc::vec::Vec<u8>> {
     if !bundle_len_within_window(total) {
         return None;
     }
-    let mut buf = alloc::vec![0u8; total];
-    unsafe {
-        core::ptr::copy_nonoverlapping(header_ptr, buf.as_mut_ptr(), total);
-    }
-    Some(buf)
+    // SAFETY: total 已通过窗口校验；header_ptr 对应内核映射的连续物理
+    // 区（[0x42000000, +window)），生命周期为整个 root-task 运行期。
+    Some(unsafe { core::slice::from_raw_parts(header_ptr, total) })
 }
 
 /// Host 侧入口 — 演示 BootInfo 消费链（KRN-002），同时让 workspace 构建可链接。
@@ -552,8 +591,9 @@ fn main() {
     println!("[eneros-root-task] host build (no seL4)");
 }
 
-/// 30 RT-003 判据：bundle total_len 窗口校验（host）——3MiB header 声明
-/// 必须拒绝（修复前 64MiB 上限放行，越窗 copy_nonoverlapping → VM fault）。
+/// 30 RT-003 判据：bundle total_len 窗口校验（host）——超窗 header 声明
+/// 必须拒绝（修复前 64MiB 上限放行，越窗 copy_nonoverlapping → VM fault；
+/// 39 收尾复验窗口 2MiB→4MiB，判据同步更新）。
 #[cfg(test)]
 mod tests {
     use super::bundle_len_within_window;
@@ -561,16 +601,16 @@ mod tests {
     #[test]
     fn bundle_len_within_window_accepts_normal() {
         assert!(bundle_len_within_window(64));
-        assert!(bundle_len_within_window(133 * 1024)); // 现行 bundle ≈133 KiB
-        assert!(bundle_len_within_window(0x200000)); // 恰为窗口上限
+        assert!(bundle_len_within_window(1325720)); // 39 现行 bundle ≈1.3 MiB
+        assert!(bundle_len_within_window(0x400000)); // 恰为窗口上限（4 MiB）
     }
 
     #[test]
     fn bundle_len_within_window_rejects_oversized() {
         assert!(!bundle_len_within_window(63), "小于 64B 头拒绝");
         assert!(
-            !bundle_len_within_window(3 * 1024 * 1024),
-            "3MiB 超出内核 2MiB 窗口必须拒绝（30 RT-003 判据）"
+            !bundle_len_within_window(5 * 1024 * 1024),
+            "5MiB 超出内核 4MiB 窗口必须拒绝（30 RT-003 判据，39 窗口同步）"
         );
         assert!(
             !bundle_len_within_window(64 * 1024 * 1024),

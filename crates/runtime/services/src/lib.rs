@@ -97,6 +97,11 @@ pub enum FaultKind {
     IllegalAccess,
     /// 显式 panic（panicking 路径）。
     Panic,
+    /// WP-37.3：从**栈页取指执行**——NX 负例。栈/数据页映射带
+    /// ExecuteNever 时触发 instruction-fetch vm fault（服务被内核挂起，
+    /// 可归因 fault 证明 NX 生效）；NX 缺失时栈上 ret 指令返回后执行
+    /// 0x00 字节（UDF）→ 不同 fault 类型，QEMU 日志可区分。
+    ExecStack,
 }
 
 /// svc-fault：真实触发指定故障。
@@ -128,6 +133,22 @@ pub fn inject_fault(kind: Option<FaultKind>) -> Result<(), ()> {
             {
                 panic!("svc-fault: injected panic");
             }
+        }
+        Some(FaultKind::ExecStack) => {
+            // WP-37.3：NX 负例——从栈页取指执行。栈上构造 AArch64 `ret`
+            // 指令（0xD65F03C0，LE 字节 C0 03 5F D6）+ 0x00 填充；经函数
+            // 指针跳入栈页。NX 生效 → 取指 vm fault（栈地址可归因）；
+            // NX 缺失 → ret 后执行 UDF（0x00000000）→ 也 fault 但类型不同。
+            // 仅 target 真实执行（host 无 seL4 页语义，不执行）。
+            #[cfg(target_os = "none")]
+            {
+                let stack_slot: [u8; 8] = [0xC0, 0x03, 0x5F, 0xD6, 0x00, 0x00, 0x00, 0x00];
+                // SAFETY: 故意从栈页取指——NX 验证负例（服务预期被内核
+                // 挂起；transmute 栈字节为函数指针是注入语义本身）。
+                let f: extern "C" fn() = unsafe { core::mem::transmute(stack_slot.as_ptr()) };
+                f();
+            }
+            Err(())
         }
     }
 }
@@ -222,10 +243,12 @@ pub fn handle_request(payload: &[u8]) -> RequestOutcome {
         let kind = match rest {
             // 注：aarch64 无除零异常（SDIV 结果 0 不触发 Data Abort）——
             // DivideByZero 分支仅保留协议兼容与 host 测试语义，目标平台
-            // 隔离验证请用 IllegalAccess（null 写 → Data Abort）。
+            // 隔离验证请用 IllegalAccess（null 写 → Data Abort）或
+            // ExecStack（栈页取指 → instruction-fetch fault，WP-37.3 NX 负例）。
             b"DivByZero" => Some(FaultKind::DivideByZero),
             b"IllegalAccess" => Some(FaultKind::IllegalAccess),
             b"Panic" => Some(FaultKind::Panic),
+            b"ExecStack" => Some(FaultKind::ExecStack),
             _ => None,
         };
         // 触发真实故障：除零/非法访问走异常路径，服务 TCB 被内核挂起
@@ -251,37 +274,48 @@ fn encode_report(payload: &[u8]) -> alloc::vec::Vec<u8> {
 
 /// 服务入口（bin `_start` 统一调用，K2.3）。
 ///
-/// 目标构建：进入 Endpoint IPC 主循环（[`svc_ipc_loop`]）；
+/// 目标构建：Signal 就绪 ntfn（WP-37.1 #8 readiness handshake——root-task
+/// 在 deadline 内 poll 判定 Ready；readiness 来自 IPC 通知，非 spawn
+/// 成功）→ 进入 Endpoint IPC 主循环（[`svc_ipc_loop`]）；
 /// host 构建：无 seL4，回到 M0 占位空转（[`svc_loop`]，非假成功——
 /// 服务在 host 本就不存在运行环境，21-A 红线 2 只禁"模拟成功的系统调用"）。
-pub fn svc_entry(ep: u64, name: &'static str) -> ! {
+pub fn svc_entry(ep: u64, name: &'static str, ready_ntfn: u64) -> ! {
     #[cfg(target_os = "none")]
     {
-        svc_ipc_loop(ep, name)
+        svc_ipc_loop(ep, name, ready_ntfn)
     }
     #[cfg(not(target_os = "none"))]
     {
-        let _ = (ep, name);
+        let _ = (ep, name, ready_ntfn);
         svc_loop()
     }
 }
 
 /// K2.3：服务 IPC 主循环（21-A §2.K2.3，替换空 svc_loop）。
 ///
-/// 服务入口（root-task spawn 时寄存器 X0=ep cap、X1=IPC buffer vaddr，
-/// aarch64 ABI 自动成为 `_start(ep, buffer)` 参数）。
+/// 服务入口（root-task spawn 时寄存器 X0=ep cap、X1=IPC buffer vaddr、
+/// X2=就绪 ntfn 槽，aarch64 ABI 自动成为 `_start(ep, buffer, ready_ntfn)`
+/// 参数）。就绪上报（WP-37.1 #8）：init 完成后先 Signal 就绪 ntfn——
+/// root-task 在 deadline 内 poll 到即判定 Ready（readiness 来自 IPC
+/// handshake，非 spawn 返回成功）。
 ///
 /// 循环：`ipc_recv` 收请求（第一轮）→ 解码帧 → [`handle_request`] →
 /// 编码响应帧入 MR → `ipc_reply_recv` 回复并继续接收。
 /// 任何解码/IPC 错误 → 打印 + 挂起（fail-closed，红线 4 精神）。
 #[cfg(target_os = "none")]
-pub fn svc_ipc_loop(ep: u64, name: &'static str) -> ! {
+pub fn svc_ipc_loop(ep: u64, name: &'static str, ready_ntfn: u64) -> ! {
     use eneros_sel4_sys::safe::{get_mr, ipc_recv, ipc_reply_recv, message_info_new, set_mr};
     use eneros_sel4_sys::types::message_info_length;
 
     let mut sender = 0u64;
     let mut reply_info = 0u64; // 首轮 recv 前无 reply
     eneros_runtime::println!("[svc-{}] svc_ipc_loop entered ep={}", name, ep);
+    // WP-37.1 #8：就绪上报（init 完成；Signal 失败 = 无 ntfn cap/坏槽，
+    // fail-closed 挂起——root 侧 deadline 到后按 Degraded 处理并如实记录）。
+    if let Err(e) = eneros_sel4_sys::safe::ipc_signal(ready_ntfn) {
+        svc_fail_closed("ready signal", e);
+    }
+    eneros_runtime::println!("[svc-{}] READY-SIGNALED ntfn_slot={}", name, ready_ntfn);
 
     loop {
         // 接收（首轮 recv；后续 reply_recv 回复上一请求并继续收）。
@@ -479,6 +513,30 @@ mod tests {
             }
             _ => panic!("bad kind 必须 noop 回复"),
         }
+    }
+
+    /// WP-37.3：`fault=ExecStack`（NX 负例）协议路由——host 侧不执行
+    /// 取指（cfg(target_os="none") 分支），返回 FaultTriggered（服务
+    /// 预期挂起，不再回复）。
+    #[test]
+    fn test_handle_request_fault_exec_stack_routes() {
+        match handle_request(b"fault=ExecStack") {
+            RequestOutcome::FaultTriggered => {}
+            other => panic!("ExecStack 必须 FaultTriggered，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_inject_fault_exec_stack_kind_parses() {
+        // kind 枚举与协议串映射（host 可验证的部分；真实取指在 target）。
+        let k = match &b"ExecStack"[..] {
+            b"DivByZero" => Some(FaultKind::DivideByZero),
+            b"IllegalAccess" => Some(FaultKind::IllegalAccess),
+            b"Panic" => Some(FaultKind::Panic),
+            b"ExecStack" => Some(FaultKind::ExecStack),
+            _ => None,
+        };
+        assert_eq!(k, Some(FaultKind::ExecStack));
     }
 
     #[test]

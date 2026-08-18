@@ -1,0 +1,44 @@
+[package]
+name = "eneros-control-services"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图 40 控制闭环 EL0 服务（svc-telemetry/svc-device-agent/svc-control-dispatch/svc-ai-worker/svc-energy-agent）"
+
+[dependencies]
+# EIPC 分块传输协议（ControlEnvelope 270B 超 MR 预算）。
+eneros-agent-sdk = { path = "../../agents/agent-sdk" }
+# 目标服务循环（seL4 IPC 原语）。
+eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
+# 服务进程分配器（no_std，无 native 依赖；大堆 128 KiB——Box 化
+# EnvelopeIngress 的 heapless 大缓冲仍需 ~64 KiB 堆分配）。
+eneros-drv-svc = { path = "../../drivers/drv-svc", features = ["heap-large"] }
+# 诊断打印。
+eneros-runtime = { path = "../../runtime/runtime" }
+# 可信遥测评估器。
+eneros-safety-validator = { path = "../../ai/safety-validator" }
+# 设备侧收口点 + 注册表（agent-runtime 桥接关闭——target 闭包无 llama/highs）。
+eneros-device-agent = { path = "../../agents/device-agent", default-features = false }
+# 唯一 ControlDispatch 引擎。
+eneros-control-dispatch = { path = "../../protocols/control-dispatch" }
+# 线上信封/结果帧编解码。
+eneros-control-gateway = { path = "../../protocols/control-gateway" }
+# 点/设备 ID 类型。
+eneros-upa-model = { path = "../../protocols/upa-model" }
+# 点规格/单位（测试装配）。
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
+# proposal/schedule 类型（worker 逻辑）。
+eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
+eneros-solver-core = { path = "../../ai/solver-core", default-features = false }
+eneros-dual-brain = { path = "../../ai/dual-brain" }
+heapless = { version = "0.8", default-features = false }
+
+[features]
+default = []
+# 生产 DeliveryChannel（seL4 EIPC）——host 禁。
+sel4 = ["eneros-control-dispatch/sel4", "eneros-agent-sdk/sel4"]
+
+[dev-dependencies]
+# 服务逻辑 host 测试：内存通道 + mock 设备。
+eneros-device-agent = { path = "../../agents/device-agent", default-features = false, features = ["mock"] }

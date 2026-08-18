@@ -18,7 +18,7 @@ extern crate eneros_services;
 
 #[cfg(target_os = "none")]
 #[no_mangle]
-pub extern "C" fn _start(ep: u64, ipc_buffer: u64) -> ! {
+pub extern "C" fn _start(ep: u64, ipc_buffer: u64, ready_ntfn: u64) -> ! {
     // K2.3：设置 IPC buffer TLS（__sel4_ipc_buffer）——被 spawn 的服务无
     // bootinfo，libsel4 的 ipc_recv/get_mr 依赖该指针；不设置会在 NULL
     // buffer 上解引用（21-A 遗留缺陷：svc_ipc_loop 首轮 recv 卡死）。
@@ -29,7 +29,7 @@ pub extern "C" fn _start(ep: u64, ipc_buffer: u64) -> ! {
     // K2.3：内存占用由 IPC 请求驱动（hog=<n>），见 handle_request。
     eneros_runtime::init();
     eneros_services::panic::init_svc_panic_audit();
-    eneros_services::svc_entry(ep, "hog")
+    eneros_services::svc_entry(ep, "hog", ready_ntfn)
 }
 
 #[cfg(target_os = "none")]

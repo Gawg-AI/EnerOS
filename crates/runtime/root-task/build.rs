@@ -21,5 +21,11 @@ fn main() {
         // 非页对齐）；separate-code 强制每个 PT_LOAD 页对齐。
         println!("cargo:rustc-link-arg=-z");
         println!("cargo:rustc-link-arg=separate-code");
+        // WP-37.4（rootserver 装载对齐敏感）：强制 .text 起始 0x210000
+        // （64K 边界）——QEMU 实测 text 起始 0x208000（0x8000 偏移）时
+        // text 尾部页内容异常（EC=0 user exception）；64K 对齐起始布局
+        // 正常。确定性锚（非布局碰运气）：37 记录 §16 登记 kernel 侧
+        // 根因调查（42/43）。
+        println!("cargo:rustc-link-arg=--section-start=.text=0x210000");
     }
 }

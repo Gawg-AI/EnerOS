@@ -537,22 +537,6 @@ pub fn cnode_mint(
 // ARM VSpace / 页映射（21-A K1.1：补齐 arm_page_map / arm_page_table_map）
 // ============================================================================
 
-/// ARM 页映射封装（`seL4_ARM_PageMap`，4 KiB SmallPage）。
-///
-/// 把已 retype 的页对象映射到 `vspace` 的 `vaddr` 处，权限为 `rights`。
-/// 映射属性使用平台默认值（`seL4_ARM_Default_VMAttributes`，由 C shim
-/// 解析，safe 层统一收口，调用方无需关心平台差异）。
-///
-/// # Safety
-/// 前置条件（调用方必须保证，封装不校验）：
-/// - `page` 必须是已 retype 的 `SmallPage`（4 KiB 页）能力，且尚未映射；
-/// - `vspace` 必须是已创建的 VSpace 能力（`arm_vspace` 对象）；
-/// - `vaddr` 必须 4 KiB 页对齐，且其所在的 1 GiB 区域已由
-///   [`arm_page_table_map`] 建立页表；
-/// - `rights` 必须是合法权限位（见 [`RightsTable`]）。
-///
-/// 目标构建真调 FFI；host 构建返回 [`Sel4Error::HostUnsupported`]
-/// （21-A 红线 2：禁止 host stub 模拟成功——页映射在 host 无意义）。
 /// 调试：识别 cap 类型（`seL4_DebugCapIdentify`，仅 CONFIG_DEBUG_BUILD）。
 pub fn debug_cap_identify(cap: CPtr) -> Word {
     #[cfg(sel4_target)]
@@ -567,23 +551,82 @@ pub fn debug_cap_identify(cap: CPtr) -> Word {
     }
 }
 
-pub fn arm_page_map(vspace: CPtr, page: CPtr, vaddr: Word, rights: CapRights) -> Sel4Result<()> {
+/// ARM 页映射封装（`seL4_ARM_PageMap`，4 KiB SmallPage）。
+///
+/// 把已 retype 的页对象映射到 `vspace` 的 `vaddr` 处，权限为 `rights`，
+/// 属性为 `attrs`（WP-37.3：调用方必须显式传入 [`arm_vm_attributes`]
+/// 换算的属性——禁止再用平台默认值隐式放行可执行页）。
+///
+/// # Safety
+/// 前置条件（调用方必须保证，封装不校验）：
+/// - `page` 必须是已 retype 的 `SmallPage`（4 KiB 页）能力，且尚未映射；
+/// - `vspace` 必须是已创建的 VSpace 能力（`arm_vspace` 对象）；
+/// - `vaddr` 必须 4 KiB 页对齐，且其所在的 1 GiB 区域已由
+///   [`arm_page_table_map`] 建立页表；
+/// - `rights` 必须是合法权限位（见 [`RightsTable`]）。
+///
+/// 目标构建真调 FFI；host 构建返回 [`Sel4Error::HostUnsupported`]
+/// （21-A 红线 2：禁止 host stub 模拟成功——页映射在 host 无意义）。
+pub fn arm_page_map(
+    vspace: CPtr,
+    page: CPtr,
+    vaddr: Word,
+    rights: CapRights,
+    attrs: ArmVmAttributes,
+) -> Sel4Result<()> {
     #[cfg(sel4_target)]
     {
         // SAFETY: 封装 ffi；前置条件见函数文档（page 已 retype、
-        // vspace 有效、vaddr 4 KiB 对齐）。attr 为平台默认值 getter，
+        // vspace 有效、vaddr 4 KiB 对齐）。attrs 由调用方换算（WP-37.3），
         // 无指针参数，无内存安全风险。
-        let attr = unsafe { crate::ffi::eneros_sel4_arm_default_attributes() };
-        // SAFETY: 同上；传参顺序对齐 C shim（page, vspace, vaddr, rights, attr）。
         let err =
-            unsafe { crate::ffi::eneros_sel4_arm_page_map(page, vspace, vaddr, rights, attr) };
+            unsafe { crate::ffi::eneros_sel4_arm_page_map(page, vspace, vaddr, rights, attrs) };
         to_sel4_result(err, ())
     }
     #[cfg(host_build)]
     {
-        let _ = (vspace, page, vaddr, rights);
+        let _ = (vspace, page, vaddr, rights, attrs);
         Err(Sel4Error::HostUnsupported)
     }
+}
+
+/// `seL4_ARM_ExecuteNever`（AArch64 seL4 VMAttributes 位，`arch/types.h`：
+/// Default=0x03 = PageCacheable|ParityEnabled，ExecuteNever=0x04）。
+/// 数据/栈/IPC/MMIO 页必须设置该位（P0-03：旧实现恒用默认属性，
+/// 数据页实际可执行）。
+pub const EXECUTE_NEVER: ArmVmAttributes = 0x04;
+
+/// 换算执行位 → seL4 ARM VMAttributes（WP-37.3）。
+///
+/// `execute_never=true`（数据/栈/IPC/MMIO）→ `Default | ExecuteNever`；
+/// `false`（text）→ 平台默认（可执行）。常量与 seL4 ABI 对齐，host 与
+/// target 行为一致（C shim `eneros_sel4_arm_default_attributes` 返回同一
+/// Default 值，host 测试不依赖 shim）。
+/// 换算执行位/缓存位 → seL4 ARM VMAttributes（WP-37.3）。
+///
+/// seL4 AArch64 VMAttributes：`PageCacheable=0x01`、`ParityEnabled=0x02`、
+/// `Default=0x03`、`ExecuteNever=0x04`。`execute_never=true`（数据/栈/
+/// IPC/MMIO）→ 置 XN 位；`cacheable=false`（device 页）→ 不置
+/// PageCacheable 位（device-nGnRE 语义）。常量与 seL4 ABI 对齐，host 与
+/// target 行为一致（C shim `eneros_sel4_arm_default_attributes` 返回同一
+/// Default 值，host 测试不依赖 shim）。
+pub fn arm_vm_attributes(execute_never: bool) -> ArmVmAttributes {
+    arm_vm_attributes_full(execute_never, true)
+}
+
+/// WP-37.3：完整换算（含 cache 位）。`cacheable=false` 时结果不含
+/// `PageCacheable` 位（device 页）。
+pub fn arm_vm_attributes_full(execute_never: bool, cacheable: bool) -> ArmVmAttributes {
+    const PARITY: ArmVmAttributes = 0x02; // seL4_ARM_ParityEnabled
+    let mut attr: ArmVmAttributes = 0;
+    if cacheable {
+        attr |= 0x01; // seL4_ARM_PageCacheable
+    }
+    attr |= PARITY;
+    if execute_never {
+        attr |= EXECUTE_NEVER;
+    }
+    attr
 }
 
 /// ARM 页表映射封装（`seL4_ARM_PageTableMap`，1 GiB 区域）。
@@ -903,6 +946,21 @@ pub fn yield_cpu() {
     }
 }
 
+/// 39 CVR-39-06：root 镜像物理基址（userImageFrames 首个 cap →
+/// seL4_ARM_Page_GetAddress）。0 = 不可用（host/无 bootinfo）。
+/// DMA VA→PA 偏移 = 返回值 - 镜像链接基址（0x200000）。
+pub fn user_image_phys_base() -> u64 {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；rootserver 环境内核保证返回值有效。
+        unsafe { crate::ffi::eneros_sel4_user_image_phys_base() }
+    }
+    #[cfg(host_build)]
+    {
+        0
+    }
+}
+
 pub fn get_boot_info() -> *const crate::types::BootInfo {
     #[cfg(sel4_target)]
     {
@@ -1105,6 +1163,113 @@ pub(crate) fn build_test_bootinfo_blob(
     blob
 }
 
+// ============================================================================
+// WP-26.8：IRQ 子系统安全封装（26-C §2.2 步骤 1）
+// ============================================================================
+
+/// IRQControl_Get 封装：从 IRQControl cap 获取 IRQHandler cap 到目标槽。
+/// host 构建返回 [`Sel4Error::HostUnsupported`]（红线 2：禁止假 Ok）。
+pub fn irq_control_get(
+    irq_ctrl: CPtr,
+    irq: Word,
+    dest_root: CPtr,
+    dest_index: CPtr,
+    dest_depth: Word,
+) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；参数由调用方保证（irq 号合法、目标槽区间）。
+        let err = unsafe {
+            crate::ffi::eneros_sel4_irq_control_get(
+                irq_ctrl, irq, dest_root, dest_index, dest_depth,
+            )
+        };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (irq_ctrl, irq, dest_root, dest_index, dest_depth);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// IRQHandler_SetNotification 封装：IRQHandler cap 绑定 notification。
+pub fn irq_handler_set_notification(handler: CPtr, ntfn: CPtr) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；handler 必须为已 Get 的 IRQHandler cap。
+        let err = unsafe { crate::ffi::eneros_sel4_irq_handler_set_notification(handler, ntfn) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = (handler, ntfn);
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// IRQHandler_Ack 封装：中断处理完成后必须 Ack（否则中断不重触发）。
+pub fn irq_handler_ack(handler: CPtr) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；handler 必须为已绑定的 IRQHandler cap。
+        let err = unsafe { crate::ffi::eneros_sel4_irq_handler_ack(handler) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = handler;
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// IRQHandler_Clear 封装：解绑中断。
+pub fn irq_handler_clear(handler: CPtr) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；handler 必须为已 Get 的 IRQHandler cap。
+        let err = unsafe { crate::ffi::eneros_sel4_irq_handler_clear(handler) };
+        to_sel4_result(err, ())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = handler;
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
+/// 初始 IRQControl cap 槽号（编译期取 seL4_CapIRQControl，不硬编码）。
+pub fn cap_irq_control() -> u64 {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 无参数纯查询。
+        unsafe { crate::ffi::eneros_sel4_cap_irq_control() }
+    }
+    #[cfg(host_build)]
+    {
+        // host 侧常量对齐（seL4 aarch64 初始 cap 编号）。
+        5
+    }
+}
+
+/// WP-37.1 #8：通知信令封装（`seL4_Signal`，非阻塞）——服务侧就绪上报
+/// （服务 init 完成后 Signal 就绪 notification，root-task 在 deadline 内
+/// Poll 判定 Ready）。target 真调 FFI；host 返回 [`Sel4Error::HostUnsupported`]
+/// （红线 2：禁止 host stub 模拟成功）。
+pub fn ipc_signal(ntfn: CPtr) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 封装 ffi；前置条件：ntfn 为有效 notification cap。
+        unsafe { crate::ffi::eneros_sel4_signal(ntfn) };
+        Ok(())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = ntfn;
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -1168,9 +1333,24 @@ mod tests {
     #[test]
     fn arm_page_map_host_unsupported() {
         assert_eq!(
-            arm_page_map(0x100, 0x200, 0x4000_0000, 0x0F),
+            arm_page_map(0x100, 0x200, 0x4000_0000, 0x0F, 0x03),
             Err(Sel4Error::HostUnsupported)
         );
+    }
+
+    /// WP-37.3：执行位 → VMAttributes 换算（P0-03 判据：数据页必须 XN）。
+    /// seL4 AArch64：Default=0x03（PageCacheable|ParityEnabled），
+    /// ExecuteNever=0x04 → 数据页 attr = 0x07，text 页 attr = 0x03。
+    #[test]
+    fn arm_vm_attributes_execute_never_mapping() {
+        assert_eq!(arm_vm_attributes(true), 0x03 | EXECUTE_NEVER);
+        assert_eq!(arm_vm_attributes(false), 0x03);
+        assert_ne!(
+            arm_vm_attributes(true),
+            arm_vm_attributes(false),
+            "NX 位必须真实存在，禁止空操作换算"
+        );
+        assert_eq!(EXECUTE_NEVER, 0x04, "与 seL4 ARM VMAttributes ABI 对齐");
     }
 
     #[test]
@@ -1261,94 +1441,5 @@ mod tests {
     fn cap_slot_typed_right() {
         let slot = CapSlot::new(7, ObjectTypeTable::resolve().tcb);
         assert_eq!(slot.cptr(), 7);
-    }
-}
-
-// ============================================================================
-// WP-26.8：IRQ 子系统安全封装（26-C §2.2 步骤 1）
-// ============================================================================
-
-/// IRQControl_Get 封装：从 IRQControl cap 获取 IRQHandler cap 到目标槽。
-/// host 构建返回 [`Sel4Error::HostUnsupported`]（红线 2：禁止假 Ok）。
-pub fn irq_control_get(
-    irq_ctrl: CPtr,
-    irq: Word,
-    dest_root: CPtr,
-    dest_index: CPtr,
-    dest_depth: Word,
-) -> Sel4Result<()> {
-    #[cfg(sel4_target)]
-    {
-        // SAFETY: 封装 ffi；参数由调用方保证（irq 号合法、目标槽区间）。
-        let err = unsafe {
-            crate::ffi::eneros_sel4_irq_control_get(
-                irq_ctrl, irq, dest_root, dest_index, dest_depth,
-            )
-        };
-        to_sel4_result(err, ())
-    }
-    #[cfg(host_build)]
-    {
-        let _ = (irq_ctrl, irq, dest_root, dest_index, dest_depth);
-        Err(Sel4Error::HostUnsupported)
-    }
-}
-
-/// IRQHandler_SetNotification 封装：IRQHandler cap 绑定 notification。
-pub fn irq_handler_set_notification(handler: CPtr, ntfn: CPtr) -> Sel4Result<()> {
-    #[cfg(sel4_target)]
-    {
-        // SAFETY: 封装 ffi；handler 必须为已 Get 的 IRQHandler cap。
-        let err = unsafe { crate::ffi::eneros_sel4_irq_handler_set_notification(handler, ntfn) };
-        to_sel4_result(err, ())
-    }
-    #[cfg(host_build)]
-    {
-        let _ = (handler, ntfn);
-        Err(Sel4Error::HostUnsupported)
-    }
-}
-
-/// IRQHandler_Ack 封装：中断处理完成后必须 Ack（否则中断不重触发）。
-pub fn irq_handler_ack(handler: CPtr) -> Sel4Result<()> {
-    #[cfg(sel4_target)]
-    {
-        // SAFETY: 封装 ffi；handler 必须为已绑定的 IRQHandler cap。
-        let err = unsafe { crate::ffi::eneros_sel4_irq_handler_ack(handler) };
-        to_sel4_result(err, ())
-    }
-    #[cfg(host_build)]
-    {
-        let _ = handler;
-        Err(Sel4Error::HostUnsupported)
-    }
-}
-
-/// IRQHandler_Clear 封装：解绑中断。
-pub fn irq_handler_clear(handler: CPtr) -> Sel4Result<()> {
-    #[cfg(sel4_target)]
-    {
-        // SAFETY: 封装 ffi；handler 必须为已 Get 的 IRQHandler cap。
-        let err = unsafe { crate::ffi::eneros_sel4_irq_handler_clear(handler) };
-        to_sel4_result(err, ())
-    }
-    #[cfg(host_build)]
-    {
-        let _ = handler;
-        Err(Sel4Error::HostUnsupported)
-    }
-}
-
-/// 初始 IRQControl cap 槽号（编译期取 seL4_CapIRQControl，不硬编码）。
-pub fn cap_irq_control() -> u64 {
-    #[cfg(sel4_target)]
-    {
-        // SAFETY: 无参数纯查询。
-        unsafe { crate::ffi::eneros_sel4_cap_irq_control() }
-    }
-    #[cfg(host_build)]
-    {
-        // host 侧常量对齐（seL4 aarch64 初始 cap 编号）。
-        5
     }
 }

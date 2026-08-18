@@ -57,6 +57,7 @@ extern "C" {
     /// `seL4_GetBootInfo()` — return the capability to the bootinfo page.
     /// The returned word is a `seL4_BootInfo*` cast to `seL4_Word`.
     pub fn eneros_sel4_get_boot_info() -> Word;
+    pub fn eneros_sel4_user_image_phys_base() -> u64;
 
     /// root-task 启动初始化（BOOT-008）：注册 bootinfo + IPC buffer TLS。
     pub fn eneros_sel4_boot_init(bi: Word);
@@ -231,4 +232,9 @@ extern "C" {
 }
 extern "C" {
     pub fn eneros_sel4_cap_irq_control() -> u64;
+}
+extern "C" {
+    // WP-37.1 #8：服务就绪 notification 信令（seL4_Signal 返回 void——
+    // 调用本身即完成，无错误面；host 侧由 safe 封装返回 HostUnsupported）。
+    pub fn eneros_sel4_signal(ntfn: u64);
 }
