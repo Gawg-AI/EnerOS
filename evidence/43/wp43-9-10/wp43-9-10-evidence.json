@@ -1,0 +1,72 @@
+{
+  "schema": "eneros.flash-wp43910-evidence.v1",
+  "blueprint": "43",
+  "wps": [
+    "WP-43.9",
+    "WP-43.10"
+  ],
+  "generated_at": "2026-08-18T00:00:00Z",
+  "baseline_note": "development-evidence on dirty worktree baseline; full 42/43 envelope rebind is WP-43.14 owner clean-baseline action",
+  "summary": {
+    "WP-43.9": [
+      "signed provisioning job: authorize-file emits ed25519-signed token (key_id fingerprint + embedded pubkey, self-verifying) binding operator/station/candidate/tool-version/readback-policy/key-domain",
+      "sparse write: only populated extents written (23 extents over 134217728-byte image)",
+      "interruptible resume: mid-write-interrupt leaves a resume journal; re-run resumes partial state; partial state is never reported as success (resumed=true on completion)",
+      "readback policy full|sample (sample = extent-manifest digest over non-zero extents, deterministic)",
+      "report binds operator/station/candidate/key-domain/key-id + resume/extent info"
+    ],
+    "WP-43.10": [
+      "key domain separation declaration: product/factory/key-domains.json (factory/release/recovery, structural Gate validates all three + allowed uses)",
+      "per-device signed birth record: factory-domain ed25519 birth record binds device serial/model/candidate/image digest/readback/station/operator; only PASS write reports accepted"
+    ]
+  },
+  "artifacts": {
+    "birth-record.json": "ede60dad45db969bb7b96093526cdfce9d7d077032b2d08754eb8a8bcaea08c5",
+    "key-domains.json": "89182ae957ab766c2fdc3c961ecfc242fac21ee58d4698ad0de7e23f4285ae79",
+    "report-corrupt-negative.json": "fbb451c1e065528692709bb68656b7e9bb61b9af587e3c6f74e068167ed8bfcf",
+    "report-full.json": "32d3473dbcbe0ed52bcfb25174e288a4dede0fd8915142f00d61163bce2eee53",
+    "report-resumed.json": "7a07f01c41af01a57ab5ae8f3224d0fe390c7a24cc9255bdf80c633684134895",
+    "token-full.json": "8916c023bb94fa35b81ddc3cc0d132b88437072b3bb69ac944d548c204d54bdd",
+    "token-sample.json": "65ddbc62d5acfde5593ba89df735d9e867ecbc7f392370465b04f517acdd217c",
+    "token-tamper-negative.json": "57c5a4e11dfc971cc86437ffcf412010af0d3856443608fbfb20707f6ed0fa01"
+  },
+  "verdicts": {
+    "full-write": {
+      "result": "PASS",
+      "readback": "PASS",
+      "policy": "full",
+      "extents_written": 23,
+      "resumed": false
+    },
+    "interrupt_resume_sample": {
+      "interrupt_observed": "mid-write-interrupt -> non-zero exit, no success report, journal left on disk",
+      "final_result": "PASS",
+      "resumed": true,
+      "policy": "sample",
+      "readback": "PASS",
+      "extents_written": 23
+    },
+    "post-write-corruption-negative": {
+      "result": "FAIL",
+      "readback": "FAIL"
+    },
+    "tampered-token-negative": "rejected: token integrity digest does not match its content",
+    "birth-record": {
+      "result": "PASS",
+      "domain": "factory",
+      "serial": "SN-0001",
+      "verify": "PASS"
+    },
+    "birth-record-fail-report-negative": "rejected: birth record requires a PASS write report",
+    "key-domains": {
+      "result": "PASS",
+      "domains": [
+        "factory",
+        "release",
+        "recovery"
+      ]
+    }
+  },
+  "unit_tests": "xtask flasher 10/10 (sign/verify/mutation, sparse extents, resume journal, sample digest, birth record, key domains)",
+  "full_suite": "cargo test -p eneros-xtask --bin eneros-xtask: 127 passed"
+}

@@ -1,0 +1,11 @@
+{
+  "conclusion": "42 software L0-L3 evidence tooling READY (15/15 gates PASS; audit-all READY). Remaining items are environment/external BLOCKED: Windows native run, 72h wall-clock soak, clean locked CI dual-build, L2 independent protocol peers (39/40 endpoints).",
+  "external_blockers": [
+    "independent-peer-interop: modbus L1 VERIFIED (independent raw peer); L2 product-endpoint peers for iec104/mms/mqtt not configured (39/40 产品端点)",
+    "72h-software-soak: not executed in this session (smoke 3/5 cycles PASS)",
+    "windows-native-run: not executed in this Linux session",
+    "clean-locked-ci-dual-build: not executed (local component/update rebuild bit-identical; full-media candidate sv2 not regenerable from current profile sv1 — 见 RETURN_TO_OWNER-42)"
+  ],
+  "failing_legacy_gates": [],
+  "schema": "eneros.blockers.v1"
+}

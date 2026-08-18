@@ -1,0 +1,74 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-cbed25f91e95",
+  "run_id": "run-18cc52f5161ac049",
+  "nonce": "18cc52f5161ac63b",
+  "test_id": "qemu-recovery-round39",
+  "scope": "L2",
+  "started_at": "2026-08-16T15:32:44Z",
+  "ended_at": "2026-08-16T15:32:44Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "dd0896ffab78313a03fd60cf3db50352df955075b546f77556bae062c380159f",
+  "product_manifest_digest": "ed63d2942bfbd726573cf7e18a679cc963c918cf5655befa9f41608db22fbc2e",
+  "profile_digest": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1",
+  "artifact_sha256": "46520e1f561af82da1c53ba43ceca3b496af7a0c1ff0495e3364cd6963c91188",
+  "toolchain_digest": "7ec0c9e2ed3c9927229c71c32fae32a9f3eff537029bce3b3e80b0a486962842",
+  "platform_inventory_digest": "b3d4a71e6fd08c3ce712eb522db8b870df07a5a6ce0664a4699659526b56e0a5",
+  "command": "cargo xtask run qemu-prod --image target/eneros/artifacts/recovery/eneros-recovery.raw --vars-template target/eneros/artifacts/qemu-prod/AAVMF_VARS.fd --evidence-dir target/evidence42/round39-recovery --expect PASS --qmp-shutdown --reset-bootctrl",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "d05079eda6092c544d0c58bcf7f9f921f991cd359138e02204b4072a09f4d328"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "ed63d2942bfbd726573cf7e18a679cc963c918cf5655befa9f41608db22fbc2e"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "qmp exit=0 ready=all readback=ok recovery-slot"
+  },
+  "positive_results": [
+    {
+      "id": "recovery",
+      "status": "PASS",
+      "detail": "qemu_exit=0 slot=RECOVERY"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "bad-sig",
+      "status": "FAIL",
+      "detail": "rejected"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "qemu-result.json",
+      "path": "target/evidence42/round39-recovery/qemu-result.json",
+      "sha256": "eb357a4cb83db422c51bf263efed1dadd05c6ba80ee9b83432f0552be70b02ea"
+    },
+    {
+      "name": "qemu-serial.log",
+      "path": "target/evidence42/round39-recovery/qemu-serial.log",
+      "sha256": "5c23918015f5f0d99d8130e73dfd4d6578e00e0ab9e8ee97bc51d82593b8cc3b"
+    }
+  ],
+  "signer": "dev",
+  "signature": "5704ef642a7f0cee9de9dea257b3f2f642d7920e9978bbe3888678229d038011a0a66650f91f97f27fc0aedc0e40b37b5f0b725048af434ecf9b2756aa2ec301"
+}

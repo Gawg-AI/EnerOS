@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-9fdb15ed24ea",
+  "run_id": "run-18cc5981fe9532b9",
+  "nonce": "18cc5981fe953879",
+  "test_id": "qemu-soak-smoke-round94",
+  "scope": "L2",
+  "started_at": "2026-08-16T17:32:47Z",
+  "ended_at": "2026-08-16T17:32:47Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "1868b3b75615cee4aa67228be3aed74e94ee3d79968bafad292ae0748641515a",
+  "product_manifest_digest": "ed63d2942bfbd726573cf7e18a679cc963c918cf5655befa9f41608db22fbc2e",
+  "profile_digest": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1",
+  "artifact_sha256": "c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec",
+  "toolchain_digest": "7ec0c9e2ed3c9927229c71c32fae32a9f3eff537029bce3b3e80b0a486962842",
+  "platform_inventory_digest": "b3d4a71e6fd08c3ce712eb522db8b870df07a5a6ce0664a4699659526b56e0a5",
+  "command": "cargo xtask qa soak-run --cycles 2 --min-duration-days 0 --image target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw --vars-template target/eneros/artifacts/qemu-prod/AAVMF_VARS.fd --out target/round94-soak.json",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "d05079eda6092c544d0c58bcf7f9f921f991cd359138e02204b4072a09f4d328"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "ed63d2942bfbd726573cf7e18a679cc963c918cf5655befa9f41608db22fbc2e"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "qemu restart 2 cycles pass artifact_sha256=raw metric_samples=2"
+  },
+  "positive_results": [
+    {
+      "id": "soak",
+      "status": "PASS",
+      "detail": "cycles=2 restarts=0 corruption=false"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "bad-sig",
+      "status": "FAIL",
+      "detail": "rejected"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "soak-campaign.json",
+      "path": "target/round94-soak.json",
+      "sha256": "3323d04edc257760ff21d845359ca157e7ac9bfbefed6507fefc8b60706792b7"
+    }
+  ],
+  "signer": "dev",
+  "signature": "cd9810adbecf158f4ef2f61765742bc1940646898443fe32112ba2fb851377ec1036a23768eb7c9ef6ca8d54476c5ded4af262304d0075692e221717d11c3106"
+}

@@ -1,0 +1,42 @@
+[
+  {
+    "item": "Resolve closure crypto policy (eneros-crypto product_allowed / ecdsa registration)",
+    "order": 1,
+    "owner": "36/41"
+  },
+  {
+    "item": "Resolve orphan-check 146 files",
+    "order": 2,
+    "owner": "36/41"
+  },
+  {
+    "item": "Resolve legacy G0/G1 evidence gate",
+    "order": 3,
+    "owner": "36"
+  },
+  {
+    "item": "Configure independent protocol peers and produce transaction/negative/capture evidence",
+    "order": 4,
+    "owner": "39/40/42"
+  },
+  {
+    "item": "Run RC 72h software soak with real executor/workload/telemetry",
+    "order": 5,
+    "owner": "42"
+  },
+  {
+    "item": "Run Windows native xtask evidence42 tools",
+    "order": 6,
+    "owner": "42/CI"
+  },
+  {
+    "item": "Run clean locked CI dual-build reproducibility",
+    "order": 7,
+    "owner": "42/CI"
+  },
+  {
+    "item": "Run QEMU A/B update boot matrix",
+    "order": 8,
+    "owner": "42"
+  }
+]

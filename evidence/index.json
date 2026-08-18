@@ -1,0 +1,23 @@
+{
+  "schema": "eneros.evidence-index.v1",
+  "baseline_commit": "473b1e26681be33acc654f32e88251d8c19ad3cf",
+  "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46",
+  "stale_since": "2026-08-12",
+  "note": "蓝图 36 WP-36.11：35 系列全量审查前产生的 evidence 全部标记 stale（旧 run_id/旧 source_commit/旧 profile digest），release Gate 不得消费。只有绑定当前候选（当前 HEAD + dirty_tree_digest + 新 run_id + 新 signature）的新 evidence 才可消费。",
+  "entries": [
+    { "path": "evidence/arch-convergence", "status": "stale", "stale_reason": "审查前快照，旧 source_commit", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/blueprint-24", "status": "stale", "stale_reason": "旧蓝图 24 验收证据，执行权已撤销", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/blueprint-26b", "status": "stale", "stale_reason": "旧蓝图 26B 验收证据，执行权已撤销", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/boot-unblock", "status": "stale", "stale_reason": "审查前快照，旧 source_commit", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/bugfix-20260810", "status": "stale", "stale_reason": "审查前修复证据，旧 run_id", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/commercial-audit-0811", "status": "stale", "stale_reason": "审查前商业审计快照，旧 source_commit", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/config-refs", "status": "stale", "stale_reason": "审查前配置引用快照", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/config-syntax", "status": "stale", "stale_reason": "审查前配置语法快照", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/crypto-review", "status": "stale", "stale_reason": "审查前密码评审快照；36 起以 crypto-policy.toml 为权威", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/driver-binding", "status": "stale", "stale_reason": "审查前驱动绑定快照（bound != init/start）", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/gate-baseline", "status": "stale", "stale_reason": "审查前 Gate 基线", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/s1", "status": "stale", "stale_reason": "审查前阶段证据", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "evidence/stage1-foundation", "status": "stale", "stale_reason": "审查前地基证据", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" },
+    { "path": "product/evidence/ai-runner", "status": "stale", "stale_reason": "AI runner 旧 host 证据（JSONL sink，非产品路径）", "baseline_digest": "1d02aa4d268c39855b031487802e04585a9ecf512e9e0d8f259794464dcd0a46" }
+  ]
+}

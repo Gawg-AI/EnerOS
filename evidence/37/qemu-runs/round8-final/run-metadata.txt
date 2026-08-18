@@ -1,0 +1,4 @@
+run_id=37-qemu-round8-final-2026-08-14
+candidate_pre_run_sha256=df7017f4e216beea8e7a1d30b399a22bb4ebe8389dd0ed8c40cb068d595ebe63
+purpose=第八轮完整状态：capabilities v3 + 确定性布局锚 + drv optional 化
+key_evidence=CAPS 行；PRODUCT-READY: true；双 bias PIE Ready；NX prefetch=1

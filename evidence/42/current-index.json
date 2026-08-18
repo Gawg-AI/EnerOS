@@ -1,0 +1,48 @@
+{
+  "current_candidate_id": "3b94d483759e55af59bd366b74ff40f043f1e677318f50c9feb1428e3793bd4b",
+  "current_dirty_tree_digest": "85bab0162ba91aa1c7af569e530ee1123eb6f66d4fb44fbcb1aa0ec9ab9623c7",
+  "current_source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "entries": [
+    {
+      "path": "evidence/42/round131-ab-update.json",
+      "test_id": "qemu-ab-update-round131",
+      "verdict": "PASS"
+    },
+    {
+      "path": "evidence/42/round131-formal-boot.json",
+      "test_id": "qemu-formal-boot-round131",
+      "verdict": "PASS"
+    },
+    {
+      "path": "evidence/42/round131-install.json",
+      "test_id": "qemu-install-round131",
+      "verdict": "PASS"
+    },
+    {
+      "path": "evidence/42/round131-recovery.json",
+      "test_id": "qemu-recovery-round131",
+      "verdict": "PASS"
+    },
+    {
+      "path": "evidence/42/round131-soak-100x.json",
+      "test_id": "qemu-soak-100x-round131",
+      "verdict": "PASS"
+    },
+    {
+      "path": "evidence/42/round131-soak-12x.json",
+      "test_id": "qemu-soak-12x-round131",
+      "verdict": "PASS"
+    },
+    {
+      "path": "evidence/42/round131-soak-smoke.json",
+      "test_id": "qemu-soak-smoke-round131",
+      "verdict": "PASS"
+    },
+    {
+      "path": "evidence/42/round131-update.json",
+      "test_id": "qemu-update-round131",
+      "verdict": "PASS"
+    }
+  ],
+  "schema": "eneros.current-evidence-index.v1"
+}

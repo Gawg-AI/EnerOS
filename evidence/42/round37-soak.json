@@ -1,0 +1,19 @@
+{
+  "schema": "eneros.soak-campaign.v1",
+  "campaign_id": "qemu-soak-2x-8s",
+  "artifact_sha256": "c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec",
+  "candidate_id": "62f4aae5b47f26016cff3875df25fd3b73ce648c9e9ac9b5a9a37cd89843df40",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "b7b9a7d378e30ed91443b38bb4ddbf3650a81d1cbf16c9068b9fed88318c7152",
+  "product_manifest_digest": "ed63d2942bfbd726573cf7e18a679cc963c918cf5655befa9f41608db22fbc2e",
+  "profile_digest": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1",
+  "toolchain_digest": "7ec0c9e2ed3c9927229c71c32fae32a9f3eff537029bce3b3e80b0a486962842",
+  "platform_inventory_digest": "b3d4a71e6fd08c3ce712eb522db8b870df07a5a6ce0664a4699659526b56e0a5",
+  "duration_days": 0,
+  "min_duration_days": 0,
+  "memory_leak_bytes_per_day": 2433024000,
+  "memory_leak_threshold": 67108864,
+  "data_corruption": false,
+  "restarts": [],
+  "metric_samples": 2
+}

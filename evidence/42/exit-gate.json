@@ -1,0 +1,72 @@
+{
+  "conclusion": "NOT_READY",
+  "current_envelope_count": 5,
+  "gates": [
+    {
+      "gate": 1,
+      "note": "current L2 envelopes exist but full capability evidence not generated",
+      "status": "PARTIAL"
+    },
+    {
+      "gate": 2,
+      "note": "role-specific verifier implemented broadly but not all CI-wired",
+      "status": "PARTIAL"
+    },
+    {
+      "gate": 3,
+      "note": "verify/gate separated",
+      "status": "PASS"
+    },
+    {
+      "gate": 4,
+      "note": "Windows native run not executed",
+      "status": "PARTIAL"
+    },
+    {
+      "gate": 5,
+      "note": "clean locked CI dual-build not executed",
+      "status": "PARTIAL"
+    },
+    {
+      "gate": 6,
+      "note": "raw/install/recovery/update/soak pass; QEMU A/B boot not run",
+      "status": "PARTIAL"
+    },
+    {
+      "gate": 7,
+      "note": "no real independent peer",
+      "status": "BLOCKED"
+    },
+    {
+      "gate": 8,
+      "note": "72h soak not run",
+      "status": "PARTIAL"
+    },
+    {
+      "gate": 9,
+      "note": "frozen perf baseline/candidate",
+      "status": "PASS"
+    },
+    {
+      "gate": 10,
+      "note": "fuzz smoke/unsafe pass; full fuzz not run",
+      "status": "PARTIAL"
+    },
+    {
+      "gate": 11,
+      "note": "12 mutation cases all rejected",
+      "status": "PASS"
+    },
+    {
+      "gate": 12,
+      "note": "stale/current indexes automated; not all legacy migrated",
+      "status": "PARTIAL"
+    },
+    {
+      "gate": 13,
+      "note": "failing upstream gates: closure, orphan-check, evidence-gate",
+      "status": "FAIL"
+    }
+  ],
+  "schema": "eneros.exit-gate-status.v1"
+}

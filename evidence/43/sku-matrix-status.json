@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-2269a71d2638",
+  "run_id": "run-18cccb814489bbc0",
+  "nonce": "18cccb814489c180",
+  "test_id": "43-sku-matrix-status",
+  "scope": "L1",
+  "started_at": "2026-08-18T04:21:48Z",
+  "ended_at": "2026-08-18T04:21:48Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "2879c91c0a93e729e7b69e24d53fcc25ce02ead2bf0f0052179478cdf7eca2cf",
+  "product_manifest_digest": "bcb25f4019d995c26b7545d13ba1510baf9ba26e5e68b25aca06531a3009e8e4",
+  "profile_digest": "c8c4a6f39c0ffd4f7ce527d1f73b63a834af407ff8a55dc1544313487c718f9a",
+  "artifact_sha256": "130779ff5a77a2172b4e092cf8ae5f59027ebc49b24e6f9435d2b0d3bf396c0f",
+  "toolchain_digest": "bc558abd14ca3edef4f9718c3c30f1a6744873a4a3fe9c87d6ac08f36ddb84d3",
+  "platform_inventory_digest": "9652ec80ad52fb91190da067f43f049e180121c5cfe090bbb0c424361214f269",
+  "command": "catalog derive (sku-matrix derivation)",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "750d948199496d09538fa564a351e92d4ab339afbc211faceb2ae9682285870c"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "bcb25f4019d995c26b7545d13ba1510baf9ba26e5e68b25aca06531a3009e8e4"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "c8c4a6f39c0ffd4f7ce527d1f73b63a834af407ff8a55dc1544313487c718f9a"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "matrix per-combination independent evidence; Modbus TCP L2 VERIFIED; others L2 BLOCKED (39/40)"
+  },
+  "positive_results": [
+    {
+      "id": "matrix",
+      "status": "VERIFIED",
+      "detail": "modbus-tcp L2 product-endpoint VERIFIED per-row independent evidence"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "l2",
+      "status": "BLOCKED",
+      "detail": "iec104/mms/goose/sv/mqtt/modbus-rtu endpoints pending"
+    }
+  ],
+  "verdict": "BLOCKED",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "matrix",
+      "path": "product/sku-matrix.json",
+      "sha256": "68fc596e76c353c80685942c2bb24dfa014f1b01f02240646bb4fd585a868d5b"
+    }
+  ],
+  "signer": "dev",
+  "signature": "f3a58b4d3610edefb49034c3c1996aeed5997902942fb4f51d6841a53f864acaec87a1543e29c6aa9a8da7726e812a2b624f15d17838872fb2852de92cf33002"
+}

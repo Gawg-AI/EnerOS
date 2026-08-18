@@ -1,0 +1,32 @@
+{
+ "schema": "eneros.loom-model.v1",
+ "result": "PASS",
+ "command": "cargo test --locked -p <crate> --features loom --lib <model>",
+ "models": [
+  {
+   "name": "services-loom_allocator",
+   "pass": true,
+   "detail": "3 passed"
+  },
+  {
+   "name": "account-loom_freeze",
+   "pass": true,
+   "detail": "3 passed"
+  },
+  {
+   "name": "p2p-match-loom_orderbook",
+   "pass": true,
+   "detail": "2 passed"
+  },
+  {
+   "name": "metrics-loom_increment",
+   "pass": true,
+   "detail": "2 passed"
+  },
+  {
+   "name": "telemetry-queue-loom_queue",
+   "pass": true,
+   "detail": "2 passed"
+  }
+ ]
+}

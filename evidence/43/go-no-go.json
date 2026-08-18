@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-2269a71d2638",
+  "run_id": "run-18cccb814c3a6ab5",
+  "nonce": "18cccb814c3a7012",
+  "test_id": "43-go-no-go",
+  "scope": "GATE",
+  "started_at": "2026-08-18T04:21:48Z",
+  "ended_at": "2026-08-18T04:21:48Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "2879c91c0a93e729e7b69e24d53fcc25ce02ead2bf0f0052179478cdf7eca2cf",
+  "product_manifest_digest": "bcb25f4019d995c26b7545d13ba1510baf9ba26e5e68b25aca06531a3009e8e4",
+  "profile_digest": "c8c4a6f39c0ffd4f7ce527d1f73b63a834af407ff8a55dc1544313487c718f9a",
+  "artifact_sha256": "130779ff5a77a2172b4e092cf8ae5f59027ebc49b24e6f9435d2b0d3bf396c0f",
+  "toolchain_digest": "bc558abd14ca3edef4f9718c3c30f1a6744873a4a3fe9c87d6ac08f36ddb84d3",
+  "platform_inventory_digest": "9652ec80ad52fb91190da067f43f049e180121c5cfe090bbb0c424361214f269",
+  "command": "docs/v1.0.0-go-no-go.md unique verdict check (43.17)",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "750d948199496d09538fa564a351e92d4ab339afbc211faceb2ae9682285870c"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "bcb25f4019d995c26b7545d13ba1510baf9ba26e5e68b25aca06531a3009e8e4"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "c8c4a6f39c0ffd4f7ce527d1f73b63a834af407ff8a55dc1544313487c718f9a"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "NO-GO: L4 hardware/HIL/EMC/production/certification absent; external approvals absent"
+  },
+  "positive_results": [
+    {
+      "id": "gate",
+      "status": "PASS",
+      "detail": "catalog machine gate PASS catalog consistent zero qualified sku"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "qualify",
+      "status": "BLOCKED",
+      "detail": "no L4 real-SKU evidence; clean baseline/signoff incomplete"
+    }
+  ],
+  "verdict": "BLOCKED",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "catalog",
+      "path": "product/compatibility-catalog.json",
+      "sha256": "4631979a7444d79ad565f524760f63718d9747ad66843cc27113168b12798337"
+    }
+  ],
+  "signer": "dev",
+  "signature": "4346a13705139a12620d76c2d4e54ef0b9394d60ac1b43ca4f0c24435d58096e16b2f67b783740fd7672825f45fb263ec91a33dda01b14f49ccf05bb5e3de403"
+}

@@ -1,0 +1,10 @@
+[package]
+name = "eneros-interop-server-modbus"
+version = "1.0.0-rc.0"
+edition = "2021"
+
+# 独立于 EnerOS workspace 的测试宿主工程（evidence/42/ 下，不进产品闭包）。
+[workspace]
+
+[dependencies]
+eneros-modbus-tcp-server = { path = "../../../crates/protocols/modbus-tcp-server" }

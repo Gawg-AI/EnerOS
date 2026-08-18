@@ -1,0 +1,14 @@
+{
+  "conclusion": "READY",
+  "release_readiness": {
+    "detail": "RELEASE-READINESS → /home/ahx/文档/EnerOS/target/eneros/evidence/42/release-readiness.json",
+    "exit_code": 0,
+    "pass": true
+  },
+  "schema": "eneros.evidence42-audit.v1",
+  "self_test": {
+    "detail": "SELF-TEST → /home/ahx/文档/EnerOS/target/eneros/evidence/42/self-test.json",
+    "exit_code": 0,
+    "pass": true
+  }
+}

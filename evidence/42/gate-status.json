@@ -1,0 +1,112 @@
+{
+  "failures": [],
+  "gates": [
+    {
+      "command": "cargo xtask policy kernel",
+      "detail": "KERNEL-POLICY-GATE PASS product_kernel=sel4",
+      "exit_code": 0,
+      "gate": "policy-kernel",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask policy adr",
+      "detail": "ADR-REGISTRY-GATE PASS entries=39",
+      "exit_code": 0,
+      "gate": "policy-adr",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask manifest verify-bundle --profile qemu-prod",
+      "detail": "REVERSE-PARSE-GATE PASS entries=34 (root=true)",
+      "exit_code": 0,
+      "gate": "manifest-verify-bundle",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask qa gate config-refs",
+      "detail": "CONFIG-REFS-CF01 → OK（active 5，templates 74，deleted 3）",
+      "exit_code": 0,
+      "gate": "config-refs",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask qa gate mock-leak",
+      "detail": "MOCK-LEAK → 0 violations（/home/ahx/文档/EnerOS/target/mock-leak.json）",
+      "exit_code": 0,
+      "gate": "mock-leak",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask qa gng-version",
+      "detail": "GNG-VERSION-PASS version=1.0.0-rc.0 all_pass=false rc_suffix=true",
+      "exit_code": 0,
+      "gate": "gng-version",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask closure gate --profile qemu-prod",
+      "detail": "CLOSURE-GATE PASS",
+      "exit_code": 0,
+      "gate": "closure",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask qa gate orphan-check",
+      "detail": "ORPHAN-CHECK → 0 orphans（/home/ahx/文档/EnerOS/target/orphan-check.json）",
+      "exit_code": 0,
+      "gate": "orphan-check",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask evidence gate",
+      "detail": "}",
+      "exit_code": 0,
+      "gate": "evidence-gate",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask audit-unsafe-safety",
+      "detail": "AUDIT-UNSAFE-SAFETY result=PASS files_with_unsafe=89 unsafe_sites=478",
+      "exit_code": 0,
+      "gate": "unsafe-audit",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask evidence42 mutation",
+      "detail": "MUTATION-SUITE PASS cases=13 → /home/ahx/文档/EnerOS/target/eneros/evidence/42/mutations",
+      "exit_code": 0,
+      "gate": "mutation",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask evidence42 media-check",
+      "detail": "MEDIA-CHECK verdict=PASS → /home/ahx/文档/EnerOS/target/eneros/evidence/42/media-check.json",
+      "exit_code": 0,
+      "gate": "media-check",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask evidence42 repro",
+      "detail": "REPRO-REPORT → /home/ahx/文档/EnerOS/target/eneros/evidence/42/repro.json",
+      "exit_code": 0,
+      "gate": "repro",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask evidence42 check-current",
+      "detail": "CHECK-CURRENT PASS total=8",
+      "exit_code": 0,
+      "gate": "check-current",
+      "pass": true
+    },
+    {
+      "command": "cargo xtask evidence42 fuzz-report --iterations 100",
+      "detail": "FUZZ-REPORT → /home/ahx/文档/EnerOS/target/eneros/evidence/42/fuzz-smoke.json",
+      "exit_code": 0,
+      "gate": "fuzz-smoke",
+      "pass": true
+    }
+  ],
+  "result": "PASS",
+  "schema": "eneros.legacy-gate-status.v1"
+}

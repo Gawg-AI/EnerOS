@@ -1,0 +1,23 @@
+{
+  "schema": "eneros.update-inspection.v1",
+  "result": "PASS",
+  "payload_kind": "full",
+  "package_path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod-round39-full.enupd",
+  "package_size_bytes": 134218048,
+  "package_sha256": "7b7a56703d3737928d06e12a8eca19e464f82a8127102305a92df3a395f5d6de",
+  "manifest_sha256": "3c3faa9fe776cddeb8ccf480144b2c7a6e4c2fd28540ff77e9361ee2c7a72c96",
+  "platform_id": "6afc39cf058a1ca52a5e36d8eefa1463",
+  "key_id": "712b01b0402a500dc68a78949d60188d",
+  "update_id": "6ba5edc8b3ffbdf17a5bb3e462331a26",
+  "base_release_id": "dc690186926dfda8d4932a14ca2d15b9",
+  "target_release_id": "76d1da7497ee0bc8c61e83064ac625a7",
+  "base_security_version": 1,
+  "target_security_version": 2,
+  "payload_size_bytes": 134217728,
+  "payload_sha256": "c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec",
+  "base_image_sha256": "9d207ed66736176b3e407263d047093225c002ffbbf6fc383367dd3262ef6db0",
+  "target_image_sha256": "c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec",
+  "signature": "PASS",
+  "base_binding": "PASS",
+  "target_binding": "PASS"
+}

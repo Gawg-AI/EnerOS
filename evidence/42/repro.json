@@ -1,0 +1,14 @@
+{
+  "artifact_a_sha256": "84c0d88fbab8ae2233c1e17cd7036064d91c2141f43bc8072d06c11c2bf1ac72",
+  "artifact_b_sha256": "84c0d88fbab8ae2233c1e17cd7036064d91c2141f43bc8072d06c11c2bf1ac72",
+  "candidate_id": "c3021c7843612c427e2eac9ec9a8acf247e03ba0ed998dec45bf88725c84986e",
+  "dirty_tree_digest": "b53754bc0ad810394cc76266a5a3e1a77bf4a69901107e8700c5b682238f513f",
+  "env_a": "target/compare-a",
+  "env_b": "target/compare-b",
+  "len_a": 340888,
+  "len_b": 340888,
+  "payload": "eneros-firmware-agent",
+  "result": "PASS",
+  "schema": "eneros.repro-report.v1",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b"
+}

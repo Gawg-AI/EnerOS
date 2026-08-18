@@ -1,0 +1,43 @@
+{
+  "failures": [],
+  "result": "PASS",
+  "schema": "eneros.release-readiness.v1",
+  "steps": [
+    {
+      "detail": "CHECK-CURRENT PASS total=8",
+      "exit_code": 0,
+      "pass": true,
+      "step": "check-current"
+    },
+    {
+      "detail": "MUTATION-SUITE PASS cases=13 → /home/ahx/文档/EnerOS/target/eneros/evidence/42/mutations",
+      "exit_code": 0,
+      "pass": true,
+      "step": "mutation"
+    },
+    {
+      "detail": "MEDIA-CHECK verdict=PASS → /home/ahx/文档/EnerOS/target/eneros/evidence/42/media-check.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "media-check"
+    },
+    {
+      "detail": "AUDIT-UNSAFE-SAFETY result=PASS files_with_unsafe=89 unsafe_sites=478",
+      "exit_code": 0,
+      "pass": true,
+      "step": "unsafe-audit"
+    },
+    {
+      "detail": "REPRO-REPORT → /home/ahx/文档/EnerOS/target/eneros/evidence/42/repro.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "repro"
+    },
+    {
+      "detail": "GATE-STATUS → /home/ahx/文档/EnerOS/target/eneros/evidence/42/gate-status.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "legacy-gates"
+    }
+  ]
+}

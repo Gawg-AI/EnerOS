@@ -1,0 +1,368 @@
+# EnerOS ADR 唯一 registry（蓝图 36 WP-36.1）
+# 字段：id / path / title / status / supersedes / superseded_by / decision_digest
+# status: Accepted | Superseded | Deprecated | Draft
+# 规则（cargo xtask policy adr）：
+#   - 重复 ID（非 Deprecated）拒绝；
+#   - 多个 Accepted 冲突 kernel 决策拒绝；
+#   - decision_adr（ADR-0043）必须 Accepted 且未被 supersede；
+#   - 恢复旧 ADR-0001 为 Accepted（无 superseded_by）时 Gate 红。
+schema = "eneros.adr-registry.v1"
+
+# ---- 产品内核决策链（唯一主线，36 裁决） ----
+
+[[adrs]]
+id = "ADR-0001"
+path = "docs/architecture/adr/ADR-0001-product-kernel-mainline.md"
+title = "Single product kernel mainline (自研内核唯一主线，已被 ADR-0043 取代)"
+status = "Superseded"
+supersedes = []
+superseded_by = "ADR-0043"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0023"
+path = "docs/adr/ADR-0023-sel4-kernel-baseline.md"
+title = "seL4 微内核作为 EnerOS 内核基座（并入 ADR-0043 统一裁决）"
+status = "Accepted"
+supersedes = []
+superseded_by = "ADR-0043"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0030"
+path = "docs/adr/ADR-0030-sel4-unique-kernel-execution.md"
+title = "唯一内核路线执行裁决 = seL4（并入 ADR-0043 统一裁决）"
+status = "Accepted"
+supersedes = []
+superseded_by = "ADR-0043"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0043"
+path = "docs/adr/ADR-0043-product-kernel-mainline-sel4.md"
+title = "唯一产品内核路线裁决 = seL4（蓝图 36 决策 Gate）"
+status = "Accepted"
+supersedes = ["ADR-0001"]
+superseded_by = ""
+decision_digest = ""
+
+# ---- 架构基线（0002/0003） ----
+
+[[adrs]]
+id = "ADR-0002"
+path = "docs/architecture/adr/ADR-0002-agent-v1-el0-process.md"
+title = "Agent v1 = EL0 受限进程"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0003"
+path = "docs/architecture/adr/ADR-0003-canonical-wire-and-image-format.md"
+title = "规范 wire 与镜像格式"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+# ---- 历史短 ID（Deprecated：与新规范 ID 重复，仅追溯） ----
+
+[[adrs]]
+id = "ADR-021"
+path = "docs/adr/ADR-021-dds-mqtt-fallback.md"
+title = "DDS → MQTT fallback（历史短 ID，被 ADR-0021 规范编号取代）"
+status = "Deprecated"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-022"
+path = "docs/adr/ADR-022-gmssl-binding.md"
+title = "GMSSL binding（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0022"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-023"
+path = "docs/adr/ADR-023-qemu-first-transport.md"
+title = "QEMU-first transport（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0023"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-024"
+path = "docs/adr/ADR-024-rng-standardization.md"
+title = "RNG 标准化（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0024"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-025"
+path = "docs/adr/ADR-025-alloc-error-handler.md"
+title = "alloc error handler（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0025"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-026"
+path = "docs/adr/ADR-026-panic-reboot-hierarchy.md"
+title = "panic reboot hierarchy（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0026"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-027"
+path = "docs/adr/ADR-027-heap-allocator.md"
+title = "heap allocator（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0027"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-028"
+path = "docs/adr/ADR-028-watchdog-integration.md"
+title = "watchdog integration（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0028"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-029"
+path = "docs/adr/ADR-029-chain-command-sink.md"
+title = "chain command sink（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0029"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-030"
+path = "docs/adr/ADR-030-llm-bounded-inference.md"
+title = "LLM bounded inference（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0030"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-031"
+path = "docs/adr/ADR-031-online-learning-scope.md"
+title = "online learning scope（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0031"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-032"
+path = "docs/adr/ADR-032-twin-feedforward.md"
+title = "twin feedforward（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0032"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-033"
+path = "docs/adr/ADR-033-gr1-evidence-layering.md"
+title = "GR1 evidence layering（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0033"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-034"
+path = "docs/adr/ADR-034-ws-protocol-on-device.md"
+title = "WS protocol on device（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0034"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-035"
+path = "docs/adr/ADR-035-ai-decision-audit.md"
+title = "AI decision audit（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0035"
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-036"
+path = "docs/adr/ADR-036-decision-gate.md"
+title = "decision gate（历史短 ID）"
+status = "Deprecated"
+supersedes = []
+superseded_by = "ADR-0036"
+decision_digest = ""
+
+# ---- 规范编号 ADR（0024–0042） ----
+
+[[adrs]]
+id = "ADR-0024"
+path = "docs/adr/ADR-0024-redox-evaluation.md"
+title = "Redox 评估"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0025"
+path = "docs/adr/ADR-0025-plugin-execution-model-ipc-wire.md"
+title = "插件执行模型（签名 ELF PIE → EL0 → IPC wire）"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0026"
+path = "docs/adr/ADR-0026-protocol-abstract-unique-seam.md"
+title = "protocol-abstract 唯一协议 seam"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0027"
+path = "docs/adr/ADR-0027-upa-model-canonical-point-model.md"
+title = "upa-model 规范点模型"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0028"
+path = "docs/adr/ADR-0028-driver-framework-unique-seam.md"
+title = "driver framework 唯一驱动 seam"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0029"
+path = "docs/adr/ADR-0029-domain-vocabulary-ownership.md"
+title = "领域词汇归属"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0031"
+path = "docs/adr/ADR-0031-no-std-tls-selection.md"
+title = "no_std TLS 选型"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0032"
+path = "docs/adr/ADR-0032-trust-reputation-mapping.md"
+title = "信任/信誉映射"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0034"
+path = "docs/adr/ADR-0034-sel4-spawn-ffi-gap.md"
+title = "seL4 spawn FFI 缺口"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0035"
+path = "docs/adr/ADR-0035-kernel-spawn-page-content.md"
+title = "kernel spawn 页内容"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0036"
+path = "docs/adr/ADR-0036-ai-runner-real-backend-assembly.md"
+title = "AI runner 真后端装配"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0037"
+path = "docs/adr/ADR-037-learning-safety-gate.md"
+title = "learning safety gate"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0038"
+path = "docs/adr/ADR-0038-federation-unique-transport-seam.md"
+title = "federation 唯一 transport seam"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0039"
+path = "docs/adr/ADR-0039-dds-cyclone-skeleton-removal.md"
+title = "DDS Cyclone skeleton 移除"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0040"
+path = "docs/adr/ADR-0040-tsn-traits-trait-only-scope.md"
+title = "TSN traits 仅 trait 范围"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0041"
+path = "docs/adr/ADR-0041-energy-market-surface-contraction.md"
+title = "energy market 面收缩"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
+
+[[adrs]]
+id = "ADR-0042"
+path = "docs/adr/ADR-0042-decision-audit-role-boundary.md"
+title = "decision audit 角色边界"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""

@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-ffe8d01b9fcb",
+  "run_id": "run-18cca8e07457a3bf",
+  "nonce": "18cca8e07457aef0",
+  "test_id": "qemu-recovery-round131",
+  "scope": "L2",
+  "started_at": "2026-08-17T17:47:14Z",
+  "ended_at": "2026-08-17T17:47:14Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "ecc30608ec7e5a7b23098f30f2fe2b5239794cbce758350b3f23ab6c2a430246",
+  "product_manifest_digest": "012610ebbddfb6e65a61ee193abb7d4bb7700fe480b13277759cfb011b2e1a20",
+  "profile_digest": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1",
+  "artifact_sha256": "46520e1f561af82da1c53ba43ceca3b496af7a0c1ff0495e3364cd6963c91188",
+  "toolchain_digest": "7ec0c9e2ed3c9927229c71c32fae32a9f3eff537029bce3b3e80b0a486962842",
+  "platform_inventory_digest": "b3d4a71e6fd08c3ce712eb522db8b870df07a5a6ce0664a4699659526b56e0a5",
+  "command": "cargo xtask run qemu-prod --image target/eneros/artifacts/recovery/eneros-recovery.raw --vars-template target/eneros/artifacts/qemu-prod/AAVMF_VARS.fd --evidence-dir target/evidence42/round131-recovery --expect PASS --qmp-shutdown --reset-bootctrl --ready-marker product-ready --qmp-deadline-secs 420 --expect-slot RECOVERY --expect-reason MANUAL_RECOVERY",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "d05079eda6092c544d0c58bcf7f9f921f991cd359138e02204b4072a09f4d328"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "012610ebbddfb6e65a61ee193abb7d4bb7700fe480b13277759cfb011b2e1a20"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "qmp exit=0 slot=RECOVERY reason=MANUAL_RECOVERY product-ready readback=ok"
+  },
+  "positive_results": [
+    {
+      "id": "recovery",
+      "status": "PASS",
+      "detail": "qemu_exit=0 slot=RECOVERY product_ready"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "rollback",
+      "status": "FAIL",
+      "detail": "bad-verification-falls-back"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "recovery-evidence",
+      "path": "target/evidence42/round131-recovery/qemu-result.json",
+      "sha256": "9c0d2b052a5f2e8314f76c6219989d47439a71e212ab4b903fa648aa8df6c58d"
+    }
+  ],
+  "signer": "dev",
+  "signature": "97261d88685b67c4b9a4c3d4e1e36a8a3e37f62f4bb0ed11ac1374dd14a4825a787793f6e0b56834ff24f2782e2744a6b69c955ee7cce30d38083cfdfbae8107"
+}

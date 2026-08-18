@@ -1,0 +1,23 @@
+[
+  {
+    "gate": "closure",
+    "observed": "4 crypto violations: eneros-crypto allowed=false in attestation/device_identity/ota_signature; ecdsa unregistered",
+    "owner": "36/41 crypto policy / product closure",
+    "reproduction": "cargo xtask closure gate --profile qemu-prod",
+    "suggested_next": "Complete commercial crypto review or remove unauthorized crypto usages from product closure."
+  },
+  {
+    "gate": "orphan-check",
+    "observed": "146 orphan source files",
+    "owner": "36/41 dead-surface / orphan cleanup",
+    "reproduction": "cargo xtask qa gate orphan-check",
+    "suggested_next": "Wire or remove dead files after owner review."
+  },
+  {
+    "gate": "evidence-gate",
+    "observed": "G0/G1 Gate remains BLOCKED (only PASS releases)",
+    "owner": "36 evidence gate owner",
+    "reproduction": "cargo xtask evidence gate",
+    "suggested_next": "Refresh legacy G0/G1 evidence or mark as superseded by EvidenceEnvelope."
+  }
+]

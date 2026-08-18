@@ -1,0 +1,84 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-741d10ab73c3",
+  "run_id": "run-18cca8e09bc40f2f",
+  "nonce": "18cca8e09bc4175d",
+  "test_id": "qemu-ab-update-round131",
+  "scope": "L3",
+  "started_at": "2026-08-17T17:47:14Z",
+  "ended_at": "2026-08-17T17:47:14Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "ecc30608ec7e5a7b23098f30f2fe2b5239794cbce758350b3f23ab6c2a430246",
+  "product_manifest_digest": "012610ebbddfb6e65a61ee193abb7d4bb7700fe480b13277759cfb011b2e1a20",
+  "profile_digest": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1",
+  "artifact_sha256": "c1d85b4e5c6385224b7e230c0519be2873fac5026508a34dda07002ec64897a7",
+  "toolchain_digest": "7ec0c9e2ed3c9927229c71c32fae32a9f3eff537029bce3b3e80b0a486962842",
+  "platform_inventory_digest": "b3d4a71e6fd08c3ce712eb522db8b870df07a5a6ce0664a4699659526b56e0a5",
+  "command": "ab_build.py base->trial disk; run qemu-prod disk-trial (expect UPDATE_TRIAL B); run qemu-prod disk-trial same-vars (expect COLD A); run qemu-prod disk-commit (expect COLD B)",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "d05079eda6092c544d0c58bcf7f9f921f991cd359138e02204b4072a09f4d328"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "012610ebbddfb6e65a61ee193abb7d4bb7700fe480b13277759cfb011b2e1a20"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "boot1:slot=B reason=UPDATE_TRIAL sv=2 product-ready; boot2:slot=A reason=COLD sv=1 rollback-on-no-commit; boot3:slot=B reason=COLD sv=2 committed"
+  },
+  "positive_results": [
+    {
+      "id": "trial",
+      "status": "PASS",
+      "detail": "slot=B UPDATE_TRIAL sv=2 bootctrl_generation=1 manifest=597cc65ce8cd26246644a42af0494ecbe7395ac77c83600f391e22c4efc968ad"
+    },
+    {
+      "id": "rollback",
+      "status": "PASS",
+      "detail": "slot=A COLD sv=1 trial-not-committed-falls-back"
+    },
+    {
+      "id": "commit",
+      "status": "PASS",
+      "detail": "slot=B COLD sv=2 active"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "timeout",
+      "status": "FAIL",
+      "detail": "marker-not-found-NO_RESULT"
+    },
+    {
+      "id": "bad-manifest",
+      "status": "FAIL",
+      "detail": "slot-verification-failed-code"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "trial-evidence",
+      "path": "target/evidence42/round131-ab/boot1-trial/qemu-result.json",
+      "sha256": "4137463cb5f5cd61353f6250e0abc2d3cca369724f80abe96ba7dda69e751a8d"
+    }
+  ],
+  "signer": "dev",
+  "signature": "13d6b79f3764566eba57fb5192c27282eebf58db17dd3af52e364dd2b8f35ca012a9476472d9ce4324225d35272a1a93e3bf6dc6d58120d86297a38ca29e8508"
+}

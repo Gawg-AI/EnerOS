@@ -1,0 +1,74 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-2269a71d2638",
+  "run_id": "run-18cccb81539a839f",
+  "nonce": "18cccb81539a883e",
+  "test_id": "43-l2-modbus-tcp-interop",
+  "scope": "INTEROP",
+  "started_at": "2026-08-18T04:21:48Z",
+  "ended_at": "2026-08-18T04:21:48Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "2879c91c0a93e729e7b69e24d53fcc25ce02ead2bf0f0052179478cdf7eca2cf",
+  "product_manifest_digest": "bcb25f4019d995c26b7545d13ba1510baf9ba26e5e68b25aca06531a3009e8e4",
+  "profile_digest": "c8c4a6f39c0ffd4f7ce527d1f73b63a834af407ff8a55dc1544313487c718f9a",
+  "artifact_sha256": "130779ff5a77a2172b4e092cf8ae5f59027ebc49b24e6f9435d2b0d3bf396c0f",
+  "toolchain_digest": "bc558abd14ca3edef4f9718c3c30f1a6744873a4a3fe9c87d6ac08f36ddb84d3",
+  "platform_inventory_digest": "9652ec80ad52fb91190da067f43f049e180121c5cfe090bbb0c424361214f269",
+  "command": "bash evidence/43/l2-modbus-tcp.sh (svc-modbus-tcp virtio-net slot8 + independent raw slave)",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "750d948199496d09538fa564a351e92d4ab339afbc211faceb2ae9682285870c"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "bcb25f4019d995c26b7545d13ba1510baf9ba26e5e68b25aca06531a3009e8e4"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "c8c4a6f39c0ffd4f7ce527d1f73b63a834af407ff8a55dc1544313487c718f9a"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "independent-raw-peer Modbus-TCP slave transaction transcript: 3 read-holding-registers requests answered ok; serial MODBUS-L2-SELFCHECK ok values=[4369,8738,13107]"
+  },
+  "positive_results": [
+    {
+      "id": "interop",
+      "status": "PASS",
+      "detail": "independent-peer observed 3 transactions; readback values matched 0x1111/0x2222/0x3333"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "bad",
+      "status": "FAIL",
+      "detail": "malformed-rejected; slave-default-deny"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "transcript",
+      "path": "target/evidence43/l2-modbus-tcp/peer-transcript.jsonl",
+      "sha256": "0a5fa4ad3039dd5a96fae9090fe6a62b448e2e1d78c1d6614eed5ee473a2ceae"
+    },
+    {
+      "name": "serial",
+      "path": "target/evidence43/l2-modbus-tcp/qemu-serial.log",
+      "sha256": "d722b778c81b51c769d1fa1ba02ac3dbd26a11136bb6841c5a95a0c94ab9f258"
+    }
+  ],
+  "signer": "dev",
+  "signature": "b791340af83a6a213f63a630d57e55a678b439ced89782d4e5780aa2d393f756ad7074946b5dfbc31f23893c2e7e89ada7b21bee02a4d25a73868cbaa3664007"
+}

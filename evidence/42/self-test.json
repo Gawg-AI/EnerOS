@@ -1,0 +1,85 @@
+{
+  "failures": [],
+  "result": "PASS",
+  "schema": "eneros.evidence42-self-test.v1",
+  "steps": [
+    {
+      "detail": "MUTATION-SUITE PASS cases=12 → /home/ahx/文档/EnerOS/target/eneros/evidence/42/mutations",
+      "exit_code": 0,
+      "pass": true,
+      "step": "mutation"
+    },
+    {
+      "detail": "FUZZ-REPORT → /home/ahx/文档/EnerOS/target/eneros/evidence/42/fuzz-smoke.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "fuzz-report"
+    },
+    {
+      "detail": "UNSAFE-REPORT → /home/ahx/文档/EnerOS/target/eneros/evidence/42/unsafe-audit.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "unsafe-report"
+    },
+    {
+      "detail": "REPRO-REPORT → /home/ahx/文档/EnerOS/target/eneros/evidence/42/repro.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "repro"
+    },
+    {
+      "detail": "STALE-INDEX → /home/ahx/文档/EnerOS/evidence/42/stale-index.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "stale-index"
+    },
+    {
+      "detail": "CURRENT-INDEX → /home/ahx/文档/EnerOS/target/eneros/evidence/42/current-index.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "current-index"
+    },
+    {
+      "detail": "CHECK-CURRENT PASS total=5",
+      "exit_code": 0,
+      "pass": true,
+      "step": "check-current"
+    },
+    {
+      "detail": "GATE-STATUS → /home/ahx/文档/EnerOS/target/eneros/evidence/42/gate-status.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "gate-status"
+    },
+    {
+      "detail": "SUMMARY → /home/ahx/文档/EnerOS/evidence/42/summary.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "summary"
+    },
+    {
+      "detail": "BLOCKERS → /home/ahx/文档/EnerOS/evidence/42/blockers.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "blockers"
+    },
+    {
+      "detail": "ea644a8b8085e8619f8ce21aca7fc261d479b0d9298782ddd05b8f26150042e1  gate-status.json",
+      "exit_code": 0,
+      "pass": true,
+      "step": "evidence-bundle"
+    },
+    {
+      "detail": "CHECK-BUNDLE PASS files=18 dir=/home/ahx/文档/EnerOS/target/evidence42/bundle",
+      "exit_code": 0,
+      "pass": true,
+      "step": "check-bundle"
+    },
+    {
+      "detail": "FINAL-STATUS → /home/ahx/文档/EnerOS/evidence/42/FINAL-STATUS.md",
+      "exit_code": 0,
+      "pass": true,
+      "step": "final-status"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+run_id=37-qemu-uefi-signature-2026-08-14
+candidate_pre_run_sha256=b9fe92904115f922dae36e359bc79c89499e4fedf2dc3c78a1632a44a34e5cbe
+purpose=WP-37.7 签名域接入后 UEFI 全链验证 + WP-37.4 PIE 全链
+key_evidence=stage=verified（check_signature_domain 生效）；svc-pie-a/b Ready；FAULT-INFO prefetch=1

@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-882626dd2a1e",
+  "run_id": "run-18cca8e07c543aa7",
+  "nonce": "18cca8e07c54402b",
+  "test_id": "qemu-update-round131",
+  "scope": "L2",
+  "started_at": "2026-08-17T17:47:14Z",
+  "ended_at": "2026-08-17T17:47:14Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "ecc30608ec7e5a7b23098f30f2fe2b5239794cbce758350b3f23ab6c2a430246",
+  "product_manifest_digest": "012610ebbddfb6e65a61ee193abb7d4bb7700fe480b13277759cfb011b2e1a20",
+  "profile_digest": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1",
+  "artifact_sha256": "7b7a56703d3737928d06e12a8eca19e464f82a8127102305a92df3a395f5d6de",
+  "toolchain_digest": "7ec0c9e2ed3c9927229c71c32fae32a9f3eff537029bce3b3e80b0a486962842",
+  "platform_inventory_digest": "b3d4a71e6fd08c3ce712eb522db8b870df07a5a6ce0664a4699659526b56e0a5",
+  "command": "cargo xtask image update qemu-prod --kind full --base target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw.previous --target target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw --signing-key product/security/dev-signing.key --output target/eneros/artifacts/qemu-prod/eneros-qemu-prod-round131-full.enupd",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "d05079eda6092c544d0c58bcf7f9f921f991cd359138e02204b4072a09f4d328"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "012610ebbddfb6e65a61ee193abb7d4bb7700fe480b13277759cfb011b2e1a20"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "signed update manifest verified payload_sha256=target raw binding=pass"
+  },
+  "positive_results": [
+    {
+      "id": "update",
+      "status": "PASS",
+      "detail": "package_sha256=7b7a56703d3737928d06e12a8eca19e464f82a8127102305a92df3a395f5d6de base_binding=pass target_binding=pass"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "bad-sig",
+      "status": "FAIL",
+      "detail": "malformed-signature-rejected"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "update-report",
+      "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod-round131-full.enupd.report.json",
+      "sha256": "68641ca7d5ff4497a0092f9db7e2c3957e4bf96a0f7b7cb351eae9906c9542ec"
+    }
+  ],
+  "signer": "dev",
+  "signature": "fda322acc268f9d40d9d19e9b50af06e1f11cd3a264b0653faeba877e7329054ff2ca84334aff0b81596a52da60f49c37b0accb8bfe6404e7211cf9d4fefb007"
+}

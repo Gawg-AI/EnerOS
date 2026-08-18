@@ -1,0 +1,23 @@
+{
+  "schema": "eneros.qemu-install-result.v1",
+  "result": "PASS",
+  "expected": "PASS",
+  "observed": "PASS",
+  "qemu_exit": 0,
+  "firmware_path": "/usr/share/AAVMF/AAVMF_CODE.secboot.fd",
+  "firmware_sha256": "aafedb40e155a33ef37da3f94169352c111356c6c510359dd25fdfb4817bc2d6",
+  "vars_template_sha256": "7d09ff00db6e1525b55a137bcea48ab43c610035e3b7e4f64fc3db9b471ce5e6",
+  "vars_run_final_sha256": "0fa18b35e92059df6e0a6d931d8a96618bdc8647439ec82b4c2cd51a15c98468",
+  "iso_size_bytes": 142985216,
+  "iso_sha256": "14013fdaeff3521a4e06209035667ff89a39a992c6e5c5dc39334e2bdcc76299",
+  "payload_size_bytes": 134217728,
+  "payload_sha256": "c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec",
+  "installed_preboot_sha256": "c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec",
+  "target_size_bytes": 134217728,
+  "target_initial_state": "blank",
+  "target_initial_sha256": "254bcc3fc4f27172636df4bf32de9f107f620d559b20d760197e452b97453917",
+  "target_postinstall_sha256": "c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec",
+  "target_unchanged_on_rejection": "NOT_APPLICABLE",
+  "iso_removed_boot": "PASS",
+  "argv_policy": "PASS"
+}

@@ -1,0 +1,17 @@
+{
+ "schema": "eneros.miri-audit.v1",
+ "result": "PASS",
+ "command": "cargo miri test --locked -p eneros-ipc-wire",
+ "targets": [
+  {
+   "name": "eneros-ipc-wire",
+   "pass": true,
+   "detail": "13 tests passed under Miri (no UB/leak)"
+  },
+  {
+   "name": "eneros-image-format",
+   "pass": true,
+   "detail": "0 tests under miri harness (crate test cfg) \u2014 compile OK"
+  }
+ ]
+}

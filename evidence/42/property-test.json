@@ -1,0 +1,32 @@
+{
+ "schema": "eneros.property-test.v1",
+ "result": "PASS",
+ "command": "cargo test --locked -p eneros-modbus-tcp-server --test fuzz (PROPTEST_CASES=4096)",
+ "cases": [
+  {
+   "name": "parser-total-no-panic",
+   "pass": true,
+   "detail": "arbitrary bytes -> no panic (NET-016)"
+  },
+  {
+   "name": "bounded-allocation",
+   "pass": true,
+   "detail": "Vec capacity <= spec caps (125/123 regs)"
+  },
+  {
+   "name": "no-out-of-bounds-store",
+   "pass": true,
+   "detail": "register store intact"
+  },
+  {
+   "name": "default-deny-writes",
+   "pass": true,
+   "detail": "DenyAll -> no store mutation (control-gateway chokepoint)"
+  },
+  {
+   "name": "exception-or-close-on-garbage",
+   "pass": true,
+   "detail": "garbage -> exception/close, never wrong success"
+  }
+ ]
+}

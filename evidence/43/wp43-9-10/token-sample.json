@@ -1,0 +1,23 @@
+{
+  "schema": "eneros.flash-authorization.v1",
+  "target_kind": "file-lab",
+  "target_path": "target/eneros/flash-lab/scenario-sample.raw",
+  "target_stable_id": "file-lab:ffc4e1f0517c28f8092c1b3fef4a580d4b3412946b5190e9cadcfecb13148881",
+  "target_size_bytes": 134217728,
+  "logical_sector_size": 512,
+  "target_initial_sha256": "254bcc3fc4f27172636df4bf32de9f107f620d559b20d760197e452b97453917",
+  "image_path": "target/compare-full/eneros-qemu-prod.raw",
+  "image_size_bytes": 134217728,
+  "image_sha256": "5d7f50afec36eceb168b1d99e5d61d1bad1756888adabfa6d80cea7950f8f4fa",
+  "sample_manifest_sha256": "72b82867bf626531cc4d3f53f43d66e009ef0d0c007dffd225cfd935839d31c6",
+  "operator_id": "line-7",
+  "station_id": "station-b",
+  "tool_version": "1.0.0-rc.0",
+  "candidate_id": "local-dev",
+  "readback_policy": "sample",
+  "key_domain": "factory",
+  "key_id": "712b01b0402a500dc68a78949d60188d5d25908a2ec7255c34d5d9e828b349e3",
+  "public_key": "c82d9ea85d7eddeafa309387c37b93411d7153dde87ea39b3f4a9a895152fe3d",
+  "authorization_sha256": "b68990ddfa7ac532ee8037f1656601b38f8d6cc371a60e957238d86329d52521",
+  "signature": "94bd1f9cfb2965ec7239ab0e24077e04299aa0de7fe8a318404c3be8f42138a8af4af9e00cea80e56732598079c55ad52e3c80dfd253e6e0a71fb33fc0df1902"
+}

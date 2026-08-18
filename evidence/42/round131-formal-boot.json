@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-3fa992c87017",
+  "run_id": "run-18cca8e064bb3f23",
+  "nonce": "18cca8e064bb4520",
+  "test_id": "qemu-formal-boot-round131",
+  "scope": "L2",
+  "started_at": "2026-08-17T17:47:13Z",
+  "ended_at": "2026-08-17T17:47:13Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "ecc30608ec7e5a7b23098f30f2fe2b5239794cbce758350b3f23ab6c2a430246",
+  "product_manifest_digest": "012610ebbddfb6e65a61ee193abb7d4bb7700fe480b13277759cfb011b2e1a20",
+  "profile_digest": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1",
+  "artifact_sha256": "c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec",
+  "toolchain_digest": "7ec0c9e2ed3c9927229c71c32fae32a9f3eff537029bce3b3e80b0a486962842",
+  "platform_inventory_digest": "b3d4a71e6fd08c3ce712eb522db8b870df07a5a6ce0664a4699659526b56e0a5",
+  "command": "cargo xtask run qemu-prod --image target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw --vars-template target/eneros/artifacts/qemu-prod/AAVMF_VARS.fd --evidence-dir target/evidence42/round131-boot-pr --expect PASS --qmp-shutdown --reset-bootctrl --ready-marker product-ready --qmp-deadline-secs 420",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "d05079eda6092c544d0c58bcf7f9f921f991cd359138e02204b4072a09f4d328"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "012610ebbddfb6e65a61ee193abb7d4bb7700fe480b13277759cfb011b2e1a20"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "qmp exit=0 product-ready all-required-services-ready readback=ok boot_slot=B"
+  },
+  "positive_results": [
+    {
+      "id": "boot",
+      "status": "PASS",
+      "detail": "qemu_exit=0 product_ready=34/34 required_degraded_empty"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "timeout",
+      "status": "FAIL",
+      "detail": "marker-not-found-returns-NO_RESULT"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "boot-evidence",
+      "path": "target/evidence42/round131-boot-pr/qemu-result.json",
+      "sha256": "6ecf6cfa0def885f57f23efca365ce7870d324885c7a80038e980c89c04fa4aa"
+    }
+  ],
+  "signer": "dev",
+  "signature": "b2d9c8260b1331d85901bd5897dde1f884548a1b7d787f328011059b53f2007f62d10ba9904b4aa08c0da1450c89445e79e2a5f21c9db3dc9f4c005edd75b908"
+}

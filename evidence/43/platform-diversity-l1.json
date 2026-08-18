@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-2269a71d2638",
+  "run_id": "run-18cccb813c8327cb",
+  "nonce": "18cccb813c832d46",
+  "test_id": "43-platform-diversity-l1",
+  "scope": "L1",
+  "started_at": "2026-08-18T04:21:48Z",
+  "ended_at": "2026-08-18T04:21:48Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "2879c91c0a93e729e7b69e24d53fcc25ce02ead2bf0f0052179478cdf7eca2cf",
+  "product_manifest_digest": "bcb25f4019d995c26b7545d13ba1510baf9ba26e5e68b25aca06531a3009e8e4",
+  "profile_digest": "c8c4a6f39c0ffd4f7ce527d1f73b63a834af407ff8a55dc1544313487c718f9a",
+  "artifact_sha256": "130779ff5a77a2172b4e092cf8ae5f59027ebc49b24e6f9435d2b0d3bf396c0f",
+  "toolchain_digest": "bc558abd14ca3edef4f9718c3c30f1a6744873a4a3fe9c87d6ac08f36ddb84d3",
+  "platform_inventory_digest": "9652ec80ad52fb91190da067f43f049e180121c5cfe090bbb0c424361214f269",
+  "command": "cargo test -p eneros-board; cargo test -p eneros-hal",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "750d948199496d09538fa564a351e92d4ab339afbc211faceb2ae9682285870c"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "bcb25f4019d995c26b7545d13ba1510baf9ba26e5e68b25aca06531a3009e8e4"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "c8c4a6f39c0ffd4f7ce527d1f73b63a834af407ff8a55dc1544313487c718f9a"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "host L1: qemu-virt DTB + synthetic platform B resolved without core changes"
+  },
+  "positive_results": [
+    {
+      "id": "diversity",
+      "status": "PASS",
+      "detail": "board 23/23 hal 54/54 synthetic_platform_b PASS"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "malformed",
+      "status": "FAIL",
+      "detail": "malformed-ranges/unknown-phandle-fails-closed"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "summary",
+      "path": "target/evidence43/board-l1-summary.json",
+      "sha256": "3891c052ea0b16bf94cc95684b22dca7ac8c1362f78d2a82e2e0aec151d2c68a"
+    }
+  ],
+  "signer": "dev",
+  "signature": "f964e976c769de5776cdf2415b54e7bd8e0faf29ec144349f75420e2105eaa8f27af1591f7e770f4b9f7d620b7ae0fb097d85a0d56fff39024cb543ce6cb7e0f"
+}

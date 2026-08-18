@@ -1,0 +1,266 @@
+{
+  "current_dirty_tree_digest": "2879c91c0a93e729e7b69e24d53fcc25ce02ead2bf0f0052179478cdf7eca2cf",
+  "current_source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "entries": [
+    {
+      "note": "stale candidate: dirty=348d8f6f78e4 commit=b96774e3a20a",
+      "path": "evidence/42/round101-formal-boot.json"
+    },
+    {
+      "note": "stale candidate: dirty=348d8f6f78e4 commit=b96774e3a20a",
+      "path": "evidence/42/round101-install.json"
+    },
+    {
+      "note": "stale candidate: dirty=348d8f6f78e4 commit=b96774e3a20a",
+      "path": "evidence/42/round101-recovery.json"
+    },
+    {
+      "note": "stale candidate: dirty=348d8f6f78e4 commit=b96774e3a20a",
+      "path": "evidence/42/round101-soak-smoke.json"
+    },
+    {
+      "note": "stale candidate: dirty=348d8f6f78e4 commit=b96774e3a20a",
+      "path": "evidence/42/round101-update.json"
+    },
+    {
+      "note": "stale candidate: dirty=fb3880586e97 commit=b96774e3a20a",
+      "path": "evidence/42/round115-formal-boot.json"
+    },
+    {
+      "note": "stale candidate: dirty=fb3880586e97 commit=b96774e3a20a",
+      "path": "evidence/42/round115-install.json"
+    },
+    {
+      "note": "stale candidate: dirty=fb3880586e97 commit=b96774e3a20a",
+      "path": "evidence/42/round115-recovery.json"
+    },
+    {
+      "note": "stale candidate: dirty=fb3880586e97 commit=b96774e3a20a",
+      "path": "evidence/42/round115-soak-smoke.json"
+    },
+    {
+      "note": "stale candidate: dirty=fb3880586e97 commit=b96774e3a20a",
+      "path": "evidence/42/round115-update.json"
+    },
+    {
+      "note": "stale candidate: dirty=51e4b465382d commit=b96774e3a20a",
+      "path": "evidence/42/round117-formal-boot.json"
+    },
+    {
+      "note": "stale candidate: dirty=51e4b465382d commit=b96774e3a20a",
+      "path": "evidence/42/round117-install.json"
+    },
+    {
+      "note": "stale candidate: dirty=51e4b465382d commit=b96774e3a20a",
+      "path": "evidence/42/round117-recovery.json"
+    },
+    {
+      "note": "stale candidate: dirty=51e4b465382d commit=b96774e3a20a",
+      "path": "evidence/42/round117-soak-smoke.json"
+    },
+    {
+      "note": "stale candidate: dirty=51e4b465382d commit=b96774e3a20a",
+      "path": "evidence/42/round117-update.json"
+    },
+    {
+      "note": "stale candidate: dirty=ecc30608ec7e commit=b96774e3a20a",
+      "path": "evidence/42/round131-ab-update.json"
+    },
+    {
+      "note": "stale candidate: dirty=ecc30608ec7e commit=b96774e3a20a",
+      "path": "evidence/42/round131-formal-boot.json"
+    },
+    {
+      "note": "stale candidate: dirty=ecc30608ec7e commit=b96774e3a20a",
+      "path": "evidence/42/round131-install.json"
+    },
+    {
+      "note": "stale candidate: dirty=ecc30608ec7e commit=b96774e3a20a",
+      "path": "evidence/42/round131-recovery.json"
+    },
+    {
+      "note": "stale candidate: dirty=ecc30608ec7e commit=b96774e3a20a",
+      "path": "evidence/42/round131-soak-100x.json"
+    },
+    {
+      "note": "stale candidate: dirty=ecc30608ec7e commit=b96774e3a20a",
+      "path": "evidence/42/round131-soak-12x.json"
+    },
+    {
+      "note": "stale candidate: dirty=ecc30608ec7e commit=b96774e3a20a",
+      "path": "evidence/42/round131-soak-smoke.json"
+    },
+    {
+      "note": "stale candidate: dirty=ecc30608ec7e commit=b96774e3a20a",
+      "path": "evidence/42/round131-update.json"
+    },
+    {
+      "note": "stale candidate: dirty=c78b60814ece commit=b96774e3a20a",
+      "path": "evidence/42/round34-formal-boot.json"
+    },
+    {
+      "note": "stale candidate: dirty=c78b60814ece commit=b96774e3a20a",
+      "path": "evidence/42/round34-install.json"
+    },
+    {
+      "note": "stale candidate: dirty=c78b60814ece commit=b96774e3a20a",
+      "path": "evidence/42/round34-recovery.json"
+    },
+    {
+      "note": "stale candidate: dirty=c78b60814ece commit=b96774e3a20a",
+      "path": "evidence/42/round34-soak-smoke.json"
+    },
+    {
+      "note": "stale candidate: dirty=c78b60814ece commit=b96774e3a20a",
+      "path": "evidence/42/round34-update.json"
+    },
+    {
+      "note": "stale candidate: dirty=b7b9a7d378e3 commit=b96774e3a20a",
+      "path": "evidence/42/round37-formal-boot.json"
+    },
+    {
+      "note": "stale candidate: dirty=b7b9a7d378e3 commit=b96774e3a20a",
+      "path": "evidence/42/round37-install.json"
+    },
+    {
+      "note": "stale candidate: dirty=b7b9a7d378e3 commit=b96774e3a20a",
+      "path": "evidence/42/round37-recovery.json"
+    },
+    {
+      "note": "stale candidate: dirty=b7b9a7d378e3 commit=b96774e3a20a",
+      "path": "evidence/42/round37-soak-smoke.json"
+    },
+    {
+      "note": "stale candidate: dirty=b7b9a7d378e3 commit=b96774e3a20a",
+      "path": "evidence/42/round37-update.json"
+    },
+    {
+      "note": "stale candidate: dirty=dd0896ffab78 commit=b96774e3a20a",
+      "path": "evidence/42/round39-formal-boot.json"
+    },
+    {
+      "note": "stale candidate: dirty=dd0896ffab78 commit=b96774e3a20a",
+      "path": "evidence/42/round39-install.json"
+    },
+    {
+      "note": "stale candidate: dirty=dd0896ffab78 commit=b96774e3a20a",
+      "path": "evidence/42/round39-recovery.json"
+    },
+    {
+      "note": "stale candidate: dirty=dd0896ffab78 commit=b96774e3a20a",
+      "path": "evidence/42/round39-soak-smoke.json"
+    },
+    {
+      "note": "stale candidate: dirty=dd0896ffab78 commit=b96774e3a20a",
+      "path": "evidence/42/round39-update.json"
+    },
+    {
+      "note": "stale candidate: dirty=1868b3b75615 commit=b96774e3a20a",
+      "path": "evidence/42/round94-formal-boot.json"
+    },
+    {
+      "note": "stale candidate: dirty=1868b3b75615 commit=b96774e3a20a",
+      "path": "evidence/42/round94-install.json"
+    },
+    {
+      "note": "stale candidate: dirty=1868b3b75615 commit=b96774e3a20a",
+      "path": "evidence/42/round94-recovery.json"
+    },
+    {
+      "note": "stale candidate: dirty=1868b3b75615 commit=b96774e3a20a",
+      "path": "evidence/42/round94-soak-smoke.json"
+    },
+    {
+      "note": "stale candidate: dirty=1868b3b75615 commit=b96774e3a20a",
+      "path": "evidence/42/round94-update.json"
+    },
+    {
+      "note": "stale candidate: dirty=5af3c934d61f commit=b96774e3a20a",
+      "path": "evidence/42/round95-formal-boot.json"
+    },
+    {
+      "note": "stale candidate: dirty=5af3c934d61f commit=b96774e3a20a",
+      "path": "evidence/42/round95-install.json"
+    },
+    {
+      "note": "stale candidate: dirty=5af3c934d61f commit=b96774e3a20a",
+      "path": "evidence/42/round95-recovery.json"
+    },
+    {
+      "note": "stale candidate: dirty=5af3c934d61f commit=b96774e3a20a",
+      "path": "evidence/42/round95-soak-smoke.json"
+    },
+    {
+      "note": "stale candidate: dirty=5af3c934d61f commit=b96774e3a20a",
+      "path": "evidence/42/round95-update.json"
+    },
+    {
+      "note": "stale candidate: dirty=f3191136d571 commit=b96774e3a20a",
+      "path": "evidence/42/round96-formal-boot.json"
+    },
+    {
+      "note": "stale candidate: dirty=f3191136d571 commit=b96774e3a20a",
+      "path": "evidence/42/round96-install.json"
+    },
+    {
+      "note": "stale candidate: dirty=f3191136d571 commit=b96774e3a20a",
+      "path": "evidence/42/round96-recovery.json"
+    },
+    {
+      "note": "stale candidate: dirty=f3191136d571 commit=b96774e3a20a",
+      "path": "evidence/42/round96-soak-smoke.json"
+    },
+    {
+      "note": "stale candidate: dirty=f3191136d571 commit=b96774e3a20a",
+      "path": "evidence/42/round96-update.json"
+    },
+    {
+      "note": "stale candidate: dirty=99f1644a1f03 commit=b96774e3a20a",
+      "path": "evidence/42/round43-formal-boot.json"
+    },
+    {
+      "note": "stale candidate: dirty=99f1644a1f03 commit=b96774e3a20a",
+      "path": "evidence/42/round43-install.json"
+    },
+    {
+      "note": "stale candidate: dirty=99f1644a1f03 commit=b96774e3a20a",
+      "path": "evidence/42/round43-recovery.json"
+    },
+    {
+      "note": "stale candidate: dirty=99f1644a1f03 commit=b96774e3a20a",
+      "path": "evidence/42/round43-update.json"
+    },
+    {
+      "note": "old G0/G1 reports do not use EvidenceEnvelope",
+      "path": "target/eneros/evidence/g0-g1/*.json"
+    },
+    {
+      "note": "superseded by evidence/42/perf-baseline.json + perf-candidate.json",
+      "path": "target/perf-results.json"
+    },
+    {
+      "note": "previous candidate lineage; must be regenerated for final candidate",
+      "path": "target/eneros/evidence/42/qemu-formal-boot.json"
+    },
+    {
+      "note": "previous candidate lineage dd0896...; superseded by current dirty tree",
+      "path": "evidence/42/round34-*.json"
+    },
+    {
+      "note": "previous candidate lineage dd0896...; superseded by current dirty tree",
+      "path": "evidence/42/round37-*.json"
+    },
+    {
+      "note": "previous candidate lineage dd0896...; superseded by current dirty tree",
+      "path": "evidence/42/round39-*.json"
+    },
+    {
+      "note": "previous candidate lineage 1868...; superseded by current dirty tree",
+      "path": "evidence/42/round94-*.json"
+    }
+  ],
+  "reason": "BASELINE_OR_SCHEMA_CHANGED",
+  "replacement_run_id": null,
+  "schema": "eneros.evidence-stale-index.v1",
+  "status": "SUPERSEDED"
+}

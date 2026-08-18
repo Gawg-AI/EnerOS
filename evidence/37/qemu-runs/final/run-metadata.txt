@@ -1,0 +1,5 @@
+run_id=37-qemu-final-2026-08-13
+candidate_pre_run_sha256=a92d72775c7d61f57e22773bd6d799de0a3a9ccc761234fa456019f1f4809143
+post_run_image_sha256=d03de50d6c4c437aa4d9bfbd9fd9e45c876f4bfc5402bed9aa5f148fbfe17a16
+expected=exit124-timeout(PASS 序列门)
+vars=64MiB 全零模板 + --reset-bootctrl

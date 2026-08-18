@@ -1,0 +1,79 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-b6a636e741ac",
+  "run_id": "run-18cc5f972f46089f",
+  "nonce": "18cc5f972f460e10",
+  "test_id": "qemu-install-round117",
+  "scope": "L2",
+  "started_at": "2026-08-16T19:24:15Z",
+  "ended_at": "2026-08-16T19:24:15Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "51e4b465382d29526282c160840d147d42835b0d260e8abab9424dd3aba3ba0c",
+  "product_manifest_digest": "ed63d2942bfbd726573cf7e18a679cc963c918cf5655befa9f41608db22fbc2e",
+  "profile_digest": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1",
+  "artifact_sha256": "c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec",
+  "toolchain_digest": "7ec0c9e2ed3c9927229c71c32fae32a9f3eff537029bce3b3e80b0a486962842",
+  "platform_inventory_digest": "b3d4a71e6fd08c3ce712eb522db8b870df07a5a6ce0664a4699659526b56e0a5",
+  "command": "cargo xtask run qemu-install --iso target/eneros/artifacts/qemu-prod/eneros-qemu-prod-round34-installer.iso --payload target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw --vars-template target/eneros/artifacts/qemu-prod/AAVMF_VARS.fd --evidence-dir target/evidence42/round117-install --expect PASS",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "d05079eda6092c544d0c58bcf7f9f921f991cd359138e02204b4072a09f4d328"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "ed63d2942bfbd726573cf7e18a679cc963c918cf5655befa9f41608db22fbc2e"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "qmp exit=0 installed_payload_sha256=raw readback=ok boot-after-iso-removal=pass"
+  },
+  "positive_results": [
+    {
+      "id": "install",
+      "status": "PASS",
+      "detail": "payload_sha256=c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "bad-sig",
+      "status": "FAIL",
+      "detail": "rejected"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "qemu-install-result.json",
+      "path": "target/evidence42/round117-install/qemu-install-result.json",
+      "sha256": "94198db85ad15e6c8727e46eebfef84a6ebd0be8253543cbeb0b0c6d84cd8ede"
+    },
+    {
+      "name": "install-evidence.json",
+      "path": "target/evidence42/round117-install/install-evidence.json",
+      "sha256": "0bd4072283fe709ee31ba0dc66c6e174047e5148537825b48b07f58d77de6879"
+    },
+    {
+      "name": "boot-after-qemu-result.json",
+      "path": "target/evidence42/round117-install/boot-after-iso-removal/qemu-result.json",
+      "sha256": "f9e6d245239372b7bfd39acb3514743b880506b9c3b30b96c0c59e9faeef212f"
+    }
+  ],
+  "signer": "dev",
+  "signature": "69b24e11054242f9a43002d85626042e182c50f026a460c10de83c2677a9fb052eb19c896650e3564912a8746e084f2a14bd7f264f934dafc1dc5ded1698320a"
+}

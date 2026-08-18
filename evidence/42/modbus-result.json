@@ -1,0 +1,44 @@
+{
+ "schema": "eneros.interop-result.v1",
+ "verdict": "PASS",
+ "peer": "independent-raw-modbus-tcp-master",
+ "peer_identity": "spec-level raw Modbus TCP peer (self-built MBAP+PDU, no EnerOS framing code)",
+ "version": "MODBUS-TCP RFC-style (MBAP+PDU), run 2026-08-17",
+ "transactions": [
+  {
+   "id": "read-holding-registers",
+   "pdu": "03 00 00 00 03",
+   "expected": "0x1111,0x2222,0x3333",
+   "observed": [
+    "0x1111",
+    "0x2222",
+    "0x3333"
+   ]
+  }
+ ],
+ "negative_cases": [
+  {
+   "id": "illegal-function-code",
+   "observed": "0x82 0x01 IllegalFunction"
+  },
+  {
+   "id": "illegal-data-address",
+   "observed": "0x83 0x02 IllegalDataAddress"
+  },
+  {
+   "id": "illegal-data-value",
+   "observed": "0x83 0x03 IllegalDataValue"
+  },
+  {
+   "id": "write-default-deny",
+   "observed": "0x86 0x01 illegal-function (AuthorizedWriter \u7f3a\u6388\u6743\u9ed8\u8ba4\u62d2\u7edd)"
+  },
+  {
+   "id": "malformed-mbap-proto",
+   "observed": "connection closed (fail-closed)"
+  }
+ ],
+ "capture": "target/interop/modbus-transcript.json",
+ "oracle": "raw peer readback matches seeded registers; exceptions match Modbus spec; write default-denied without AuthorizedCommand",
+ "started_at": "2026-08-17T03:25:33Z"
+}

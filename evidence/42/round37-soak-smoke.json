@@ -1,0 +1,74 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-62f4aae5b47f",
+  "run_id": "run-18cc520865fafb0d",
+  "nonce": "18cc520865fb004b",
+  "test_id": "qemu-soak-smoke-round37",
+  "scope": "SOAK",
+  "started_at": "2026-08-16T15:15:48Z",
+  "ended_at": "2026-08-16T15:15:48Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "b7b9a7d378e30ed91443b38bb4ddbf3650a81d1cbf16c9068b9fed88318c7152",
+  "product_manifest_digest": "ed63d2942bfbd726573cf7e18a679cc963c918cf5655befa9f41608db22fbc2e",
+  "profile_digest": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1",
+  "artifact_sha256": "c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec",
+  "toolchain_digest": "7ec0c9e2ed3c9927229c71c32fae32a9f3eff537029bce3b3e80b0a486962842",
+  "platform_inventory_digest": "b3d4a71e6fd08c3ce712eb522db8b870df07a5a6ce0664a4699659526b56e0a5",
+  "command": "cargo xtask qa soak-run --cycles 2 --min-duration-days 0 --image target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw --vars-template target/eneros/artifacts/qemu-prod/AAVMF_VARS.fd --out target/round37-soak.json",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "d05079eda6092c544d0c58bcf7f9f921f991cd359138e02204b4072a09f4d328"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "ed63d2942bfbd726573cf7e18a679cc963c918cf5655befa9f41608db22fbc2e"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "2 QEMU controlled exits; campaign artifact bound"
+  },
+  "positive_results": [
+    {
+      "id": "soak",
+      "status": "PASS",
+      "detail": "2 cycles"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "bad-image",
+      "status": "FAIL",
+      "detail": "bootctrl stale rejected"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "soak-campaign.json",
+      "path": "target/round37-soak.json",
+      "sha256": "d828f2b5020b6397eb61381851d10750352781666b826e17cc33fbd622d975a7"
+    },
+    {
+      "name": "boot-times.csv",
+      "path": "target/boot-times.csv",
+      "sha256": "f45a96fae0d39490190a2f5ce603626594f912163304df1b2be588bc020ce8b9"
+    }
+  ],
+  "signer": "dev",
+  "signature": "b55170c6703e339467dc37f1538e191c157a9a7964e4ccdbe707835cb8e5eb7e64a8955d2a9019881ddd39f2444e94f48355dfb2e52d6ea5ae6a24cd0631320f"
+}

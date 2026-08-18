@@ -1,0 +1,60 @@
+{
+  "exit_gate_1": [
+    "evidence/42/round117-*.json",
+    "candidate-lineage.json",
+    "current-index.json"
+  ],
+  "exit_gate_10": [
+    "fuzz-smoke.json",
+    "unsafe-audit.json",
+    "property/loom/miri verifier"
+  ],
+  "exit_gate_11": [
+    "mutation"
+  ],
+  "exit_gate_12": [
+    "stale-index.json",
+    "current-index.json"
+  ],
+  "exit_gate_13": [
+    "gate-status.json",
+    "blockers.json",
+    "upstream-handoff.json"
+  ],
+  "exit_gate_2": [
+    "evidence42 report-gate",
+    "gate-status.json"
+  ],
+  "exit_gate_3": [
+    "evidence42 verify",
+    "evidence42 gate"
+  ],
+  "exit_gate_4": [
+    ".github/workflows/ci.yml evidence42-portable-tools"
+  ],
+  "exit_gate_5": [
+    "repro.json",
+    "build-compare"
+  ],
+  "exit_gate_6": [
+    "round117-formal-boot.json",
+    "round117-install.json",
+    "round117-recovery.json",
+    "round117-update.json",
+    "round117-soak-smoke.json"
+  ],
+  "exit_gate_7": [
+    "interop verifier",
+    "tests/interop/*.sh"
+  ],
+  "exit_gate_8": [
+    "round117-soak-smoke.json",
+    "soak-run"
+  ],
+  "exit_gate_9": [
+    "perf-baseline.json",
+    "perf-candidate.json",
+    "perf-gate"
+  ],
+  "schema": "eneros.evidence-map.v1"
+}

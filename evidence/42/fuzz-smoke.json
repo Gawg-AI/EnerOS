@@ -1,0 +1,45 @@
+{
+  "candidate_id": "5dacc967f6d472d61a74964f7bd4c5bdce8bbe437f42cd7ecf9a31a9c046ca2d",
+  "iterations": 100,
+  "result": "PASS",
+  "schema": "eneros.fuzz-smoke.v1",
+  "targets": [
+    {
+      "crashes": 0,
+      "elapsed_ms": 0,
+      "iterations": 100,
+      "target": "boot_protocol"
+    },
+    {
+      "crashes": 0,
+      "elapsed_ms": 0,
+      "iterations": 100,
+      "target": "ipc_wire"
+    },
+    {
+      "crashes": 0,
+      "elapsed_ms": 0,
+      "iterations": 100,
+      "target": "modbus_rtu"
+    },
+    {
+      "crashes": 0,
+      "elapsed_ms": 0,
+      "iterations": 100,
+      "target": "iec104"
+    },
+    {
+      "crashes": 0,
+      "elapsed_ms": 0,
+      "iterations": 100,
+      "target": "elf_loader"
+    },
+    {
+      "crashes": 0,
+      "elapsed_ms": 0,
+      "iterations": 100,
+      "target": "gguf_loader"
+    }
+  ],
+  "violations": []
+}

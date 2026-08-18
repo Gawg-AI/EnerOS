@@ -1,0 +1,66 @@
+{
+  "schema": "eneros.interop-matrix.v1",
+  "peers": [
+    {
+      "peer": "iec104",
+      "status": "SKIP",
+      "classification": "PENDING",
+      "cases": [
+        "总召唤",
+        "SBO",
+        "时标 SOE",
+        "时钟同步",
+        "突变上送"
+      ],
+      "evidence": "/home/ahx/文档/EnerOS/target/interop/iec104-skip.json",
+      "required_peer": "lib60870 or commercial master（QEMU loopback 已闭环）"
+    },
+    {
+      "peer": "modbus",
+      "status": "PASS",
+      "classification": "VERIFIED",
+      "cases": [
+        "全功能码",
+        "异常码",
+        "边界地址",
+        "长时轮询"
+      ],
+      "evidence": "/home/ahx/文档/EnerOS/target/interop/modbus-result.json",
+      "required_peer": "real peer (result JSON with verdict=PASS + peer_identity + oracle)"
+    },
+    {
+      "peer": "mms",
+      "status": "SKIP",
+      "classification": "PENDING",
+      "cases": [
+        "关联",
+        "读写",
+        "报告订阅",
+        "GOOSE 订阅"
+      ],
+      "evidence": "/home/ahx/文档/EnerOS/target/interop/mms-skip.json",
+      "required_peer": "libiec61850 client"
+    },
+    {
+      "peer": "mqtt",
+      "status": "SKIP",
+      "classification": "PENDING",
+      "cases": [
+        "TLS",
+        "QoS0/1/2",
+        "断链重连"
+      ],
+      "evidence": "/home/ahx/文档/EnerOS/target/interop/mqtt-skip.json",
+      "required_peer": "≥2 款 broker（如 mosquitto/emqx）"
+    }
+  ],
+  "verdict": "D2-PENDING-REAL-PEERS",
+  "non_release": true,
+  "candidate_id": "52477b173b14913a9854ffc6709e783cce0d836c4f3d4350d25a9bb385d6d8e7",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "0bf7bd3d016a5a3a99b85b91602523cd0e65a771edb61800dcac5759f1c7a973",
+  "product_manifest_digest": "ed63d2942bfbd726573cf7e18a679cc963c918cf5655befa9f41608db22fbc2e",
+  "profile_digest": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1",
+  "toolchain_digest": "7ec0c9e2ed3c9927229c71c32fae32a9f3eff537029bce3b3e80b0a486962842",
+  "platform_inventory_digest": "b3d4a71e6fd08c3ce712eb522db8b870df07a5a6ce0664a4699659526b56e0a5"
+}

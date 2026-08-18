@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    {
+      "kind": "raw",
+      "path": "eneros-qemu-prod.raw",
+      "sha256": "c8c9dd45cb3c65ede682ca63b30c9bc27e496b9bc3a5d2c968a5b7a5b82ea4ec",
+      "size_bytes": 134217728
+    },
+    {
+      "kind": "iso",
+      "path": "eneros-qemu-prod-installer.iso",
+      "sha256": "a87ba9d4e42a4a97983843e1f4147c85355108180603757ad22b342e5e4d8f1a",
+      "size_bytes": 142985216
+    },
+    {
+      "kind": "update",
+      "path": "eneros-qemu-prod-full.enupd",
+      "sha256": "a2a447a1e1f550128d866188bbebee0aa1f6a4379633f5b0c0f067b02b62c557",
+      "size_bytes": 134218048
+    }
+  ],
+  "missing": [],
+  "non_release": false,
+  "profile": "qemu-prod",
+  "qemu_available": true,
+  "schema": "eneros.media-check.v1",
+  "verdict": "PASS"
+}

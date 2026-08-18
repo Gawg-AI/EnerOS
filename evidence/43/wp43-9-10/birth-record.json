@@ -1,0 +1,19 @@
+{
+  "schema": "eneros.device-birth-record.v1",
+  "result": "PASS",
+  "report_path": "target/eneros/evidence43-wp/cand-report-full.json",
+  "device_serial": "SN-0001",
+  "device_model": "qemu-virt-d2000-dev",
+  "candidate_id": "local-dev",
+  "image_sha256": "5d7f50afec36eceb168b1d99e5d61d1bad1756888adabfa6d80cea7950f8f4fa",
+  "readback_sha256": "5d7f50afec36eceb168b1d99e5d61d1bad1756888adabfa6d80cea7950f8f4fa",
+  "readback_policy": "full",
+  "station_id": "station-b",
+  "operator_id": "line-7",
+  "key_domain": "factory",
+  "key_id": "712b01b0402a500dc68a78949d60188d5d25908a2ec7255c34d5d9e828b349e3",
+  "public_key": "c82d9ea85d7eddeafa309387c37b93411d7153dde87ea39b3f4a9a895152fe3d",
+  "generated_at": "2026-08-18T05:08:32Z",
+  "generated_unix": 1787029712,
+  "signature": "630be79aec07966a6091c0b4d060ee0e0b5a9453d584cc16179a6f5a5a408d71b4be32daa5b7f7cf538f32e50c2693276855d08e3e18a1318881eacd41bf410d"
+}

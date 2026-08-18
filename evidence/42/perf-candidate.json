@@ -1,0 +1,64 @@
+{
+  "schema": "eneros.perf-regression.v1",
+  "baseline_sha256": "86395f14b4aa016822f8537c3d132ce7113c3a26ca4ef2021bf713fece717a86",
+  "candidate_sha256": "0f4fc0d5a8da6f93e556a3098413b0868672a5ee132f2db3612c4ca8bd8f0767",
+  "candidate_id": "ece490a6c150b8662f2d3ec35367fa0e74e179802ad31e71f75152bbab45cb64",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "dirty_tree_digest": "dd0896ffab78313a03fd60cf3db50352df955075b546f77556bae062c380159f",
+  "product_manifest_digest": "ed63d2942bfbd726573cf7e18a679cc963c918cf5655befa9f41608db22fbc2e",
+  "profile_digest": "f0fccb79b76f2eb9c8edfe0d1cd311ca061957f449c36cce70217ff81b922ff1",
+  "toolchain_digest": "7ec0c9e2ed3c9927229c71c32fae32a9f3eff537029bce3b3e80b0a486962842",
+  "platform_inventory_digest": "b3d4a71e6fd08c3ce712eb522db8b870df07a5a6ce0664a4699659526b56e0a5",
+  "metrics": [
+    {
+      "metric_id": "iec104_encode",
+      "slo_threshold": 10000000,
+      "measured": 83347224,
+      "regression_tolerance_pct": 25,
+      "baseline_value": 84098489,
+      "critical_path": false,
+      "unit": "frames/s",
+      "direction": "higher_is_better"
+    },
+    {
+      "metric_id": "ipc_wire_roundtrip",
+      "slo_threshold": 10000000,
+      "measured": 25908883,
+      "regression_tolerance_pct": 25,
+      "baseline_value": 25712519,
+      "critical_path": true,
+      "unit": "frames/s",
+      "direction": "higher_is_better"
+    },
+    {
+      "metric_id": "modbus_rtu_frame",
+      "slo_threshold": 10000000,
+      "measured": 81558617,
+      "regression_tolerance_pct": 25,
+      "baseline_value": 82320109,
+      "critical_path": false,
+      "unit": "frames/s",
+      "direction": "higher_is_better"
+    },
+    {
+      "metric_id": "elf_parse",
+      "slo_threshold": 10000000,
+      "measured": 374594969,
+      "regression_tolerance_pct": 25,
+      "baseline_value": 372703216,
+      "critical_path": true,
+      "unit": "parses/s",
+      "direction": "higher_is_better"
+    },
+    {
+      "metric_id": "gguf_parse",
+      "slo_threshold": 10000000,
+      "measured": 750345158,
+      "regression_tolerance_pct": 25,
+      "baseline_value": 745845639,
+      "critical_path": false,
+      "unit": "parses/s",
+      "direction": "higher_is_better"
+    }
+  ]
+}
