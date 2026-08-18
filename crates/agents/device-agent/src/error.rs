@@ -3,6 +3,8 @@
 use alloc::string::String;
 use core::fmt;
 
+#[cfg(feature = "agent-runtime")]
+#[cfg(feature = "agent-runtime")]
 use eneros_energy_market_agent::AgentRuntimeError;
 
 /// 设备错误.
@@ -32,6 +34,7 @@ impl fmt::Display for DeviceError {
     }
 }
 
+#[cfg(feature = "agent-runtime")]
 impl From<DeviceError> for AgentRuntimeError {
     fn from(e: DeviceError) -> Self {
         AgentRuntimeError::DeviceError(alloc::format!("{:?}", e))

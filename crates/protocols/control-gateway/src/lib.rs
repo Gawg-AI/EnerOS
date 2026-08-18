@@ -35,6 +35,7 @@ pub mod reconcile;
 pub mod safety;
 pub mod slo;
 pub mod virtual_plant;
+pub mod wire;
 
 pub use chain::{ChainDenyReason, ChainOutcome, ControlChain, FeedbackBundle};
 pub use commissioning::{
@@ -64,3 +65,4 @@ pub use slo::{
     SloSnapshotEntry, SloSpec, SloStats, WorkloadProfile, FROZEN_SLOS,
 };
 pub use virtual_plant::{ApplyOutcome, Fault, PlantState, VirtualPlant};
+pub use wire::{OutcomeCode, OutcomeFrame, WireError};

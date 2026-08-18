@@ -25,21 +25,22 @@
 use alloc::boxed::Box;
 use core::fmt;
 
-use eneros_storage::BlockDevice;
+use eneros_storage::{BlockDevice, ScopedBlockDevice};
 use generic_array::typenum::{U4096, U8};
 use littlefs2::driver::Storage;
 use littlefs2::io::{Error as LfsError, Result as LfsResult};
 
 use crate::error::FsError;
 
-/// Adapter wrapping a [`BlockDevice`] as a littlefs2 [`Storage`].
+/// Adapter wrapping a scoped block device as a littlefs2 [`Storage`].
 ///
-/// Construct with [`BlockDeviceStorage::new`], passing a boxed block device
-/// (e.g. `MockBlockDevice`, `EmmcDriver`, or `NvmeDriver`). The device's
-/// `block_size()` must equal 4096 and its `block_count()` must not exceed
-/// [`Self::BLOCK_COUNT`].
+/// Construct with [`BlockDeviceStorage::new`], passing a boxed **role
+/// partition scope** (39 收尾复验 Exit Gate #2：FS 只接受角色分区
+/// 作用域，整盘裸 handle 在类型上无法传入——写面永不触及 LBA0/GPT)。
+/// The device's `block_size()` must equal 4096 and its `block_count()`
+/// must not exceed [`Self::BLOCK_COUNT`].
 pub struct BlockDeviceStorage {
-    device: Box<dyn BlockDevice>,
+    device: Box<dyn ScopedBlockDevice>,
     /// Actual block count of the underlying device (≤ `BLOCK_COUNT`).
     block_count: usize,
 }
@@ -61,7 +62,7 @@ impl BlockDeviceStorage {
     /// Returns [`FsError::InvalidArgument`] if the device's block size is not
     /// 4096, or [`FsError::NoSpace`] if the device's block count exceeds the
     /// adapter's `BLOCK_COUNT`.
-    pub fn new(device: Box<dyn BlockDevice>) -> Result<Self, FsError> {
+    pub fn new(device: Box<dyn ScopedBlockDevice>) -> Result<Self, FsError> {
         let bs = device.block_size();
         let bc = device.block_count() as usize;
         if bs != Self::BLOCK_SIZE {
@@ -163,12 +164,17 @@ fn map_storage_error(err: eneros_storage::StorageError) -> LfsError {
 mod tests {
     #![allow(clippy::disallowed_macros)]
 
+    use eneros_storage::partition::{boxed_mock_scope, BlockRole};
     use eneros_storage::MockBlockDevice;
 
     use super::*;
 
+    fn scope(dev: MockBlockDevice) -> Box<dyn ScopedBlockDevice> {
+        boxed_mock_scope(dev, BlockRole::Data)
+    }
+
     fn make_storage(blocks: u64) -> BlockDeviceStorage {
-        let dev: Box<dyn BlockDevice> = Box::new(MockBlockDevice::new(blocks, 4096));
+        let dev = scope(MockBlockDevice::new(blocks, 4096));
         BlockDeviceStorage::new(dev).expect("storage creation should succeed")
     }
 
@@ -180,21 +186,21 @@ mod tests {
 
     #[test]
     fn test_new_wrong_block_size() {
-        let dev: Box<dyn BlockDevice> = Box::new(MockBlockDevice::new(32, 512));
+        let dev = scope(MockBlockDevice::new(32, 512));
         let err = BlockDeviceStorage::new(dev).unwrap_err();
         assert_eq!(err, FsError::InvalidArgument);
     }
 
     #[test]
     fn test_new_too_many_blocks() {
-        let dev: Box<dyn BlockDevice> = Box::new(MockBlockDevice::new(128, 4096));
+        let dev = scope(MockBlockDevice::new(128, 4096));
         let err = BlockDeviceStorage::new(dev).unwrap_err();
         assert_eq!(err, FsError::NoSpace);
     }
 
     #[test]
     fn test_new_zero_blocks() {
-        let dev: Box<dyn BlockDevice> = Box::new(MockBlockDevice::new(0, 4096));
+        let dev = scope(MockBlockDevice::new(0, 4096));
         let err = BlockDeviceStorage::new(dev).unwrap_err();
         assert_eq!(err, FsError::InvalidArgument);
     }

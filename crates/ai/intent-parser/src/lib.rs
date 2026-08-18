@@ -49,9 +49,17 @@ mod tests {
     use alloc::string::ToString;
 
     use eneros_energy_lp_model::config::ScheduleConfig;
-    use eneros_safety_validator::state::SystemState;
+    use eneros_safety_validator::{state::SystemState, TestSystemStateBuilder};
 
     use super::*;
+
+    /// 测试夹具（蓝图 40 WP-40.1：显式构造，无 Default）。
+    fn parser() -> IntentParser {
+        IntentParser::new(
+            ScheduleConfig::default(),
+            TestSystemStateBuilder::unknown().build(),
+        )
+    }
 
     // === T1: IntentType 变体 + PartialEq（D8） ===
     #[test]
@@ -146,22 +154,43 @@ mod tests {
     #[test]
     fn t7_intent_parser_new() {
         let cfg = ScheduleConfig::default();
-        let state = SystemState::default();
+        let state = TestSystemStateBuilder::unknown().build();
         let _ = IntentParser::new(cfg, state);
     }
 
-    // === T8: IntentParser::default() == new(default, default) ===
+    // === T8: 显式构造 + set_state（蓝图 40 WP-40.1：无 Default） ===
     #[test]
-    fn t8_intent_parser_default_equivalent() {
-        let _d = IntentParser::default();
-        let _n = IntentParser::new(ScheduleConfig::default(), SystemState::default());
-        // 两者均成功构造即视为等价（IntentError 未派生 PartialEq，无法直接比较内部状态）
+    fn t8_intent_parser_explicit_construction_and_set_state() {
+        let _n = IntentParser::new(
+            ScheduleConfig::default(),
+            TestSystemStateBuilder::unknown().build(),
+        );
+        // set_state 覆写为受信任状态（EmergencyStop 锁定 SOC 用）。
+        let mut p = IntentParser::new(
+            ScheduleConfig::default(),
+            TestSystemStateBuilder::unknown().build(),
+        );
+        p.set_state(TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.7, 0).build());
+        let intent = Intent {
+            intent_type: IntentType::EmergencyStop,
+            time_range: None,
+            power: None,
+            soc_target: None,
+            priority: 3,
+            reason: String::from("test"),
+            confidence: 1.0,
+        };
+        let cfg = p.to_schedule_config(&intent).expect("cfg");
+        assert!(
+            (cfg.soc_min - 0.7).abs() < 1e-9,
+            "soc 锁定到 set_state 注入的受信任值"
+        );
     }
 
     // === T9: parse_json 完整 JSON ===
     #[test]
     fn t9_parse_json_complete() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let json = r#"{"intent_type":"Charge","time_range":{"start_period":0,"end_period":4},"power":{"power_kw":-50.0},"priority":2,"reason":"谷时充电","confidence":0.9}"#;
         let i = parser.parse_json(json).unwrap();
         assert_eq!(i.intent_type, IntentType::Charge);
@@ -180,7 +209,7 @@ mod tests {
     // === T10: parse_json 缺失可选字段（D9） ===
     #[test]
     fn t10_parse_json_missing_optional_fields() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let json = r#"{"intent_type":"Hold"}"#;
         let i = parser.parse_json(json).unwrap();
         assert_eq!(i.intent_type, IntentType::Hold);
@@ -195,7 +224,7 @@ mod tests {
     // === T11: parse_json 非法 JSON → ParseError ===
     #[test]
     fn t11_parse_json_invalid_returns_parse_error() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let json = r#"{"invalid""#;
         let result = parser.parse_json(json);
         assert!(result.is_err());
@@ -210,7 +239,7 @@ mod tests {
     // === T12: to_schedule_config AutonomousSchedule + soc_target → soc_final ===
     #[test]
     fn t12_autonomous_schedule_sets_soc_final() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let intent = Intent {
             intent_type: IntentType::AutonomousSchedule,
             time_range: None,
@@ -230,7 +259,7 @@ mod tests {
     // === T13: to_schedule_config Charge → price[0..4] 为负 ===
     #[test]
     fn t13_charge_makes_price_negative_in_range() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let intent = Intent {
             intent_type: IntentType::Charge,
             time_range: Some(TimeRange {
@@ -263,7 +292,7 @@ mod tests {
     // === T14: to_schedule_config Discharge → price[0..4] 为 power_kw * 10.0 ===
     #[test]
     fn t14_discharge_makes_price_high_in_range() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let intent = Intent {
             intent_type: IntentType::Discharge,
             time_range: Some(TimeRange {
@@ -295,7 +324,7 @@ mod tests {
     // === T15: to_schedule_config Hold → pcs_power_kw == 0.0 ===
     #[test]
     fn t15_hold_sets_pcs_power_zero() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let intent = Intent {
             intent_type: IntentType::Hold,
             time_range: None,
@@ -312,7 +341,7 @@ mod tests {
     // === T16: to_schedule_config Stop → pcs_power_kw == 0.0 ===
     #[test]
     fn t16_stop_sets_pcs_power_zero() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let intent = Intent {
             intent_type: IntentType::Stop,
             time_range: None,
@@ -356,7 +385,7 @@ mod tests {
     // === T18: to_schedule_config SetSetpoint → pcs_power_kw == |power_kw| ===
     #[test]
     fn t18_set_setpoint_overrides_pcs_power() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let intent = Intent {
             intent_type: IntentType::SetSetpoint,
             time_range: None,
@@ -376,7 +405,7 @@ mod tests {
     // === T19: validate_config 合法配置 → Ok ===
     #[test]
     fn t19_validate_config_valid_ok() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let cfg = ScheduleConfig::default();
         assert!(parser.validate_config(&cfg).is_ok());
     }
@@ -384,7 +413,7 @@ mod tests {
     // === T20: validate_config 4 种非法配置（D12） ===
     #[test]
     fn t20_validate_config_invalid_configs() {
-        let parser = IntentParser::default();
+        let parser = parser();
 
         // 子测试 1: num_periods = 0（price 同步清空，避免触发 price.len() 不匹配）
         let cfg = ScheduleConfig {
@@ -424,7 +453,7 @@ mod tests {
     // === T21: to_opt_problem AutonomousSchedule → 返回 (ScheduleConfig, LpProblem) ===
     #[test]
     fn t21_to_opt_problem_autonomous_schedule() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let intent = Intent {
             intent_type: IntentType::AutonomousSchedule,
             time_range: None,
@@ -439,14 +468,16 @@ mod tests {
         };
         let (cfg, lp) = parser.to_opt_problem(&intent).unwrap();
         assert_eq!(cfg.soc_final, Some(0.8));
-        // LP 问题变量数 = 3 × 96 = 288
-        assert_eq!(lp.variables.len(), 288);
+        // LP 变量数 = 96 charge + 96 discharge + 96 charge_dir（31-review
+        // P1 AI-05 MIP 互斥二元变量）+ 97 soc（32 AI-05：n+1 个含末态）
+        // = 4×96+1 = 385（39 收尾复验：旧断言 289 未同步 MIP 变量，钉住现值）。
+        assert_eq!(lp.variables.len(), 385);
     }
 
     // === T22: 端到端 JSON → parse_json → to_schedule_config → validate_config Ok ===
     #[test]
     fn t22_end_to_end_json_to_config() {
-        let parser = IntentParser::default();
+        let parser = parser();
         let json = r#"{"intent_type":"Charge","time_range":{"start_period":0,"end_period":4},"power":{"power_kw":-50.0},"priority":2,"reason":"谷时充电","confidence":0.9}"#;
         let intent = parser.parse_json(json).unwrap();
         let cfg = parser.to_schedule_config(&intent).unwrap();
@@ -468,7 +499,7 @@ mod tests {
         let llm_out =
             r#"{"action":"charge","power_kw":-50.0,"reason":"谷时充电","confidence":0.9}"#;
         let normalized = normalize_llm_json(llm_out);
-        let parser = IntentParser::default();
+        let parser = parser();
         let i = parser.parse_json(&normalized).unwrap();
         assert_eq!(i.intent_type, IntentType::Charge, "action 别名→intent_type");
         let p = i.power.unwrap();
@@ -482,7 +513,7 @@ mod tests {
     fn p016_llm_output_with_markdown_wrapper_parses() {
         // LLM 用 ```json 围栏 + 前后说明文字包裹。
         let llm_out = "好的，以下是策略：\n```json\n{\"intent_type\":\"Discharge\",\"time_range\":{\"start_period\":6,\"end_period\":10},\"power\":{\"power_kw\":80.0}}\n```\n以上为参考。";
-        let parser = IntentParser::default();
+        let parser = parser();
         let i = parser.parse_json(llm_out).unwrap();
         assert_eq!(i.intent_type, IntentType::Discharge);
         let tr = i.time_range.unwrap();
@@ -496,7 +527,7 @@ mod tests {
         use crate::parser::normalize_llm_json;
         let llm_out = r#"{"action":"standby","reason":"等待调度"}"#;
         let normalized = normalize_llm_json(llm_out);
-        let parser = IntentParser::default();
+        let parser = parser();
         let i = parser.parse_json(&normalized).unwrap();
         assert_eq!(i.intent_type, IntentType::Hold, "standby→Hold");
     }
@@ -506,7 +537,7 @@ mod tests {
         use crate::parser::normalize_llm_json;
         let llm_out = r#"{"action":"discharging","power_kw":100.0}"#;
         let normalized = normalize_llm_json(llm_out);
-        let parser = IntentParser::default();
+        let parser = parser();
         let i = parser.parse_json(&normalized).unwrap();
         assert_eq!(i.intent_type, IntentType::Discharge);
     }
@@ -518,7 +549,7 @@ mod tests {
         // 真实 Qwen2.5-0.5B 实测输出：`"start_period": "0"`（字符串）。
         let llm_out = r#"{"intent_type":"Charge","power":{"power_kw":50.0,"power_ratio":0.5},"time_range":{"start_period":"0","end_period":"5"},"reason":"price low","confidence":"0.85"}"#;
         let normalized = normalize_llm_json(llm_out);
-        let parser = IntentParser::default();
+        let parser = parser();
         let i = parser
             .parse_json(&normalized)
             .expect("string numbers must parse");
@@ -535,7 +566,7 @@ mod tests {
         // 非数字字符串必须保持原样（由契约校验拦截，不静默吞掉）。
         let llm_out = r#"{"intent_type":"Charge","reason":"0.85confidence"}"#;
         let normalized = normalize_llm_json(llm_out);
-        let parser = IntentParser::default();
+        let parser = parser();
         let i = parser
             .parse_json(&normalized)
             .expect("non-numeric string stays string");
@@ -548,7 +579,7 @@ mod tests {
         // 嵌套对象/数组中的字符串数字同样转换。
         let llm_out = r#"{"intent_type":"Charge","power":{"power_kw":"50.0"},"time_range":{"start_period":0,"end_period":"3"}}"#;
         let normalized = normalize_llm_json(llm_out);
-        let parser = IntentParser::default();
+        let parser = parser();
         let i = parser
             .parse_json(&normalized)
             .expect("nested string number parses");

@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "EnerOS AI 决策链 release 端到端入口（LlamaCppEngine + HighsSolver + SafetyValidator + 真实 sink，21-B A1）"
 
+[[bin]]
+name = "eneros-ai-runner-demo"
+path = "src/main.rs"
+
 [dependencies]
 eneros-dual-brain = { path = "../dual-brain" }
 # 蓝图/24 §6.4：信封投递帧/握手响应/结果帧编解码（投递器与 device-agent 同源消费）。
@@ -16,7 +20,7 @@ eneros-energy-lp-model = { path = "../energy-lp-model" }
 eneros-fast-path = { path = "../fast-path" }
 eneros-llm-engine = { path = "../llm-engine", features = ["llama-cpp"] }
 eneros-safety-validator = { path = "../safety-validator" }
-eneros-solver-core = { path = "../solver-core" }
+eneros-solver-core = { path = "../solver-core", features = ["highs-ffi"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

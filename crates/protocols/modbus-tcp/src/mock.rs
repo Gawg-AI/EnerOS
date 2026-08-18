@@ -17,6 +17,8 @@ pub struct MockTcpTransport {
     sent_frames: Vec<Vec<u8>>,
     connect_calls: Vec<TcpDevice>,
     recv_timeout: bool,
+    /// 39 §6.3 负例：send 失败注入（backpressure 测试——窗口/链路边界）。
+    send_fail: Option<ModbusTcpError>,
     /// PTC-002：当前连接的设备（连接复用判断——同设备复用）.
     connected_device: Option<TcpDevice>,
     /// 调试：recv 历史（每次弹出的帧）.
@@ -31,6 +33,7 @@ impl MockTcpTransport {
             sent_frames: Vec::new(),
             connect_calls: Vec::new(),
             recv_timeout: false,
+            send_fail: None,
             connected_device: None,
             recv_log: Vec::new(),
         }
@@ -56,12 +59,18 @@ impl MockTcpTransport {
         self.recv_timeout = timeout;
     }
 
+    /// 39 §6.3 负例：设置 `send()` 失败注入的错误（None = 恢复正常）。
+    pub fn set_send_fail(&mut self, err: Option<ModbusTcpError>) {
+        self.send_fail = err;
+    }
+
     /// 清空所有状态
     pub fn clear(&mut self) {
         self.rx_queue.clear();
         self.sent_frames.clear();
         self.connect_calls.clear();
         self.recv_timeout = false;
+        self.send_fail = None;
     }
 }
 
@@ -73,6 +82,9 @@ impl Default for MockTcpTransport {
 
 impl TcpTransport for MockTcpTransport {
     fn send(&mut self, data: &[u8]) -> Result<(), ModbusTcpError> {
+        if let Some(e) = &self.send_fail {
+            return Err(e.clone());
+        }
         self.sent_frames.push(data.to_vec());
         Ok(())
     }

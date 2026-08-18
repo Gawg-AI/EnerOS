@@ -32,11 +32,19 @@ use eneros_storage::BlockDevice;
 pub struct RefMutDevice<'a, D: BlockDevice>(pub &'a mut D);
 
 impl<D: BlockDevice> BlockDevice for RefMutDevice<'_, D> {
-    fn read_block(&self, block_idx: u64, buf: &mut [u8]) -> Result<(), eneros_storage::StorageError> {
+    fn read_block(
+        &self,
+        block_idx: u64,
+        buf: &mut [u8],
+    ) -> Result<(), eneros_storage::StorageError> {
         self.0.read_block(block_idx, buf)
     }
 
-    fn write_block(&mut self, block_idx: u64, buf: &[u8]) -> Result<(), eneros_storage::StorageError> {
+    fn write_block(
+        &mut self,
+        block_idx: u64,
+        buf: &[u8],
+    ) -> Result<(), eneros_storage::StorageError> {
         self.0.write_block(block_idx, buf)
     }
 
@@ -64,6 +72,20 @@ impl<D: BlockDevice> BlockDevice for RefMutDevice<'_, D> {
 /// 日志序号（单调递增；0 保留给创世）。
 pub type Seq = u64;
 
+/// 打开已存在日志的错误（**零写**——open_existing 绝不写盘）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenError {
+    /// 底层块 I/O 失败。
+    Io,
+    /// 头块全零（从未格式化——需要显式 provisioning，见
+    /// [`BlockDurableLog::provision_new`]；探测阶段保持零写）。
+    Uninitialized,
+    /// 头块非零但 magic 不匹配（外来格式/其他文件系统）。
+    ForeignFormat,
+    /// 版本或 CRC 不符（损坏头）。
+    Corrupt,
+}
+
 /// 存储错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
@@ -77,6 +99,9 @@ pub enum StoreError {
     Full,
     /// 序号回退/跳跃（append 必须严格单调）。
     SeqGap,
+    /// provisioning 授权校验失败（39 收尾复验：profile/角色/容量
+    /// 与授权不符——fail-closed，不写盘）。
+    ProvisionDenied,
 }
 
 /// 持久化日志抽象（WP-27.5 规格）。
@@ -108,8 +133,111 @@ pub struct BlockDurableLog<D: BlockDevice> {
 }
 
 impl<D: BlockDevice> BlockDurableLog<D> {
+    /// 打开**已存在**的日志（39 WP-39.6：零写——magic 不符绝不写盘）。
+    ///
+    /// - 头块全零 → `Uninitialized`（需要显式 provisioning）；
+    /// - 非零但非本格式 → `ForeignFormat`（不覆盖外来数据）；
+    /// - 版本/CRC 不符 → `Corrupt`（只读导出，不静默重建）。
+    ///
+    /// committed 由只读扫描得出（同 recover 判据，但不重写头块）。
+    ///
+    /// 39 收尾复验（Exit Gate #2）：只接受**角色分区作用域**
+    /// （[`eneros_storage::ScopedBlockDevice`]）——整盘裸 handle
+    /// 在类型上无法传入，写面永不触及 LBA0/GPT。
+    pub fn open_existing(dev: D, block_size: usize) -> Result<Self, OpenError>
+    where
+        D: eneros_storage::ScopedBlockDevice,
+    {
+        let mut log = Self {
+            dev,
+            block_size,
+            data_start: 1,
+            tail_seq: 1,
+            committed_seq: 0,
+        };
+        let mut header = [0u8; 512];
+        log.dev
+            .read_block(0, &mut header[..log.block_size.min(512)])
+            .map_err(|_| OpenError::Io)?;
+        if header[..6] != LOG_MAGIC {
+            if header[..log.block_size.min(512)].iter().all(|b| *b == 0) {
+                return Err(OpenError::Uninitialized);
+            }
+            return Err(OpenError::ForeignFormat);
+        }
+        let (head, tail) = log.read_header().map_err(|e| match e {
+            StoreError::BadHeader => OpenError::Corrupt,
+            StoreError::Io => OpenError::Io,
+            _ => OpenError::Corrupt,
+        })?;
+        let _ = head;
+        log.tail_seq = tail;
+        log.committed_seq = 0;
+        // 只读扫描 committed（损坏/空洞即停——与 recover 一致但不写盘）。
+        let mut s: Seq = 1;
+        while s < tail {
+            let block = log.data_start + (s - 1);
+            let mut buf = [0u8; 4096];
+            log.dev
+                .read_block(block, &mut buf[..log.block_size.min(4096)])
+                .map_err(|_| OpenError::Io)?;
+            let rec_seq = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+            let len = u32::from_le_bytes(buf[8..12].try_into().unwrap()) as usize;
+            let stored_crc = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+            if rec_seq != s
+                || len > log.record_capacity()
+                || crc32(&buf[16..16 + len]) != stored_crc
+            {
+                break;
+            }
+            s += 1;
+        }
+        log.committed_seq = s - 1;
+        Ok(log)
+    }
+
+    /// 显式 provisioning 格式化（39 WP-39.3/39.6）——**唯一**带授权
+    /// capability 的格式化入口。`auth` 只能由
+    /// [`eneros_storage::partition::ProvisioningGate::authorize`] 产出；
+    /// normal release profile 构造不出授权（编译期+运行期双门）。
+    ///
+    /// 39 收尾复验（P0-3）：授权不再被丢弃——执行点再次校验：
+    /// ① profile 允许；② 目标作用域角色与授权请求一致；③ 作用域
+    /// 容量 ≥ 请求最小值；格式化后执行**操作后 readback**（头块
+    /// magic/版本/CRC 回读验证，WP-39.3 条件⑧）。
+    pub fn provision_new(
+        dev: D,
+        block_size: usize,
+        auth: &eneros_storage::partition::ProvisionAuthorization,
+    ) -> Result<Self, StoreError>
+    where
+        D: eneros_storage::ScopedBlockDevice,
+    {
+        if !auth.profile_class().allows_provisioning() {
+            return Err(StoreError::ProvisionDenied);
+        }
+        if dev.scope_role() != auth.request().role {
+            return Err(StoreError::ProvisionDenied);
+        }
+        let capacity = dev.block_count().saturating_mul(block_size as u64);
+        if capacity < auth.request().min_capacity_bytes {
+            return Err(StoreError::ProvisionDenied);
+        }
+        let log = Self::format(dev, block_size)?;
+        // 条件⑧：操作后 readback——头块回读必须通过 magic/版本/CRC。
+        log.read_header().map_err(|e| match e {
+            StoreError::BadHeader => StoreError::Corrupt,
+            other => other,
+        })?;
+        Ok(log)
+    }
+
     /// 格式化设备为日志（幂等：已格式化则恢复）。
-    pub fn format(dev: D, block_size: usize) -> Result<Self, StoreError> {
+    ///
+    /// 39 收尾复验（P0-3）：**不再公开**——唯一生产入口是带授权
+    /// 校验的 [`Self::provision_new`]；本函数仅供 crate 内测试与
+    /// provision_new 内部使用（pub(crate) 封堵旁路）。
+    pub(crate) fn format(dev: D, block_size: usize) -> Result<Self, StoreError> {
         let mut log = Self {
             dev,
             block_size,
@@ -129,6 +257,16 @@ impl<D: BlockDevice> BlockDurableLog<D> {
             log.committed_seq = log.tail_seq.saturating_sub(1);
         }
         Ok(log)
+    }
+
+    /// 已确认的最大连续序号（open_existing 只读扫描结果；不写盘）。
+    pub fn committed_seq(&self) -> Seq {
+        self.committed_seq
+    }
+
+    /// 释放日志，取回底层设备（测试/迁移用）。
+    pub fn into_inner(self) -> D {
+        self.dev
     }
 
     /// 读头块 → (head_seq, tail_seq)。
@@ -173,7 +311,6 @@ impl<D: BlockDevice> BlockDurableLog<D> {
     fn record_capacity(&self) -> usize {
         self.block_size.saturating_sub(16).min(4096 - 16)
     }
-
 }
 
 impl<D: BlockDevice> DurableLog for BlockDurableLog<D> {
@@ -212,7 +349,8 @@ impl<D: BlockDevice> DurableLog for BlockDurableLog<D> {
     fn read_from(&self, seq: Seq, f: &mut dyn FnMut(Seq, &[u8])) -> Result<(), StoreError> {
         let (_, tail) = self.read_header()?;
         let mut s = seq;
-        while s < tail { // tail = 下一条序号，读 [seq, tail-1]
+        while s < tail {
+            // tail = 下一条序号，读 [seq, tail-1]
             let block = self.data_start + (s - 1);
             let mut buf = [0u8; 4096];
             self.dev
@@ -251,7 +389,9 @@ impl<D: BlockDevice> DurableLog for BlockDurableLog<D> {
             let stored_crc = u32::from_le_bytes(buf[12..16].try_into().unwrap());
             // 长度上限与 append/read_from 一致；超限/CRC 不符即视为
             // 损坏/半写记录，停在该序号（不返回损坏数据）。
-            if rec_seq != s || len > self.record_capacity() || crc32(&buf[16..16 + len]) != stored_crc
+            if rec_seq != s
+                || len > self.record_capacity()
+                || crc32(&buf[16..16 + len]) != stored_crc
             {
                 break;
             }
@@ -274,10 +414,18 @@ pub struct PersistentAuditStore<D: BlockDevice> {
 }
 
 impl<D: BlockDevice> PersistentAuditStore<D> {
-    /// 以持久化日志构造审计存储（未格式化自动格式化）。
-    pub fn new(dev: D, block_size: usize) -> Result<Self, StoreError> {
+    /// 以持久化日志构造审计存储。
+    ///
+    /// 39 WP-39.6：**不再自动格式化**——未初始化/外来格式返回错误，
+    /// 绝不隐式写盘；显式 provisioning 由 `provision_new` 完成。
+    ///
+    /// 39 收尾复验（Exit Gate #2）：审计存储只接受角色分区作用域。
+    pub fn open_existing(dev: D, block_size: usize) -> Result<Self, OpenError>
+    where
+        D: eneros_storage::ScopedBlockDevice,
+    {
         Ok(Self {
-            log: BlockDurableLog::format(dev, block_size)?,
+            log: BlockDurableLog::open_existing(dev, block_size)?,
         })
     }
 
@@ -316,7 +464,9 @@ impl<D: BlockDevice> PersistentAuditStore<D> {
 impl<D: BlockDevice> eneros_audit::AuditStore for PersistentAuditStore<D> {
     fn append(&mut self, entry: &eneros_audit::ChainEntry) -> Result<(), eneros_audit::AuditError> {
         let rec = Self::encode(entry);
-        self.log.append(&rec).map_err(|_| eneros_audit::AuditError::StorageWriteFailed)?;
+        self.log
+            .append(&rec)
+            .map_err(|_| eneros_audit::AuditError::StorageWriteFailed)?;
         Ok(())
     }
 
@@ -367,11 +517,20 @@ impl<D: BlockDevice> eneros_audit::AuditStore for PersistentAuditStore<D> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use eneros_storage::MockBlockDevice;
+    use eneros_storage::partition::BlockRole;
+    use eneros_storage::{MockBlockDevice, MockPartitionScope};
 
-    fn make_log() -> BlockDurableLog<MockBlockDevice> {
-        let dev = MockBlockDevice::new(64, 4096);
+    use super::*;
+
+    /// 测试作用域：审计角色（PersistentAuditStore/启动计数日志语义）。
+    type AuditScope = MockPartitionScope<MockBlockDevice>;
+
+    fn audit_scope(blocks: u64, block_size: usize) -> AuditScope {
+        MockPartitionScope::new(MockBlockDevice::new(blocks, block_size), BlockRole::Audit)
+    }
+
+    fn make_log() -> BlockDurableLog<AuditScope> {
+        let dev = audit_scope(64, 4096);
         BlockDurableLog::format(dev, 4096).expect("format")
     }
 
@@ -432,7 +591,7 @@ mod tests {
     /// 追加；497B 拒绝（旧实现静默截断——append 返回 Ok 但数据损坏）。
     #[test]
     fn append_rejects_record_larger_than_block() {
-        let dev = MockBlockDevice::new(64, 512);
+        let dev = audit_scope(64, 512);
         let mut log = BlockDurableLog::format(dev, 512).expect("format");
         let ok = log.append(&[0x5A; 496]).expect("496B 恰好一块，必须成功");
         assert_eq!(ok, 1);
@@ -443,7 +602,7 @@ mod tests {
     /// 在 `buf[..record.len()]` 越界 panic——库公开契约不得 panic）。
     #[test]
     fn append_rejects_record_exceeding_buffer() {
-        let dev = MockBlockDevice::new(64, 4096);
+        let dev = audit_scope(64, 4096);
         let mut log = BlockDurableLog::format(dev, 4096).expect("format");
         assert_eq!(log.append(&[0x5A; 4080]).expect("4080B 恰好容量"), 1);
         assert_eq!(log.append(&[0x5A; 4081]), Err(StoreError::Full));
@@ -452,8 +611,11 @@ mod tests {
     /// 30 WP-30.7：PersistentAuditStore 经 AuditStore trait 落盘/读回。
     #[test]
     fn persistent_audit_store_roundtrip() {
-        let dev = MockBlockDevice::new(64, 4096);
-        let mut store = PersistentAuditStore::new(dev, 4096).expect("new");
+        let dev = audit_scope(64, 4096);
+        // 39 WP-39.6：测试先显式 format（等价 provision_new 授权路径），
+        // 再经 open_existing 打开——不隐式格式化。
+        let dev = BlockDurableLog::format(dev, 4096).unwrap().into_inner();
+        let mut store = PersistentAuditStore::open_existing(dev, 4096).expect("open");
         let entry = eneros_audit::ChainEntry {
             seq: 1,
             prev_hash: [0xAA; 32],
@@ -479,7 +641,7 @@ mod tests {
     /// 不重复）。
     #[test]
     fn powercut_20_cycles_monotonic_recovery() {
-        let dev = MockBlockDevice::new(256, 4096);
+        let dev = audit_scope(256, 4096);
         let mut log = BlockDurableLog::format(dev, 4096).expect("format");
         let mut committed_seq = 0u64;
         for cycle in 1..=20u64 {
@@ -508,5 +670,111 @@ mod tests {
             committed_seq = recovered;
         }
         assert_eq!(committed_seq, 20, "20 次掉电后共恢复 20 条");
+    }
+
+    /// 39 WP-39.6：open_existing 语义与零写。
+    #[test]
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
+    fn open_existing_reports_kinds_without_writing() {
+        use eneros_storage::partition::BlockTrace;
+        // 未初始化（全零）→ Uninitialized
+        let traced = BlockTrace::new(audit_scope(64, 4096));
+        match BlockDurableLog::open_existing(traced, 4096) {
+            Err(OpenError::Uninitialized) => {}
+            other => panic!("expected Uninitialized, got {:?}", other.map(|_| ())),
+        }
+        // 外来格式（非零、非本 magic）→ ForeignFormat
+        let mut dev = audit_scope(64, 4096);
+        let foreign = [0xFFu8; 4096];
+        dev.write_block(0, &foreign).unwrap();
+        let traced = BlockTrace::new(dev);
+        match BlockDurableLog::open_existing(traced, 4096) {
+            Err(OpenError::ForeignFormat) => {}
+            other => panic!("expected ForeignFormat, got {:?}", other.map(|_| ())),
+        }
+        // 本 magic 但版本非法 → Corrupt
+        let mut dev = audit_scope(64, 4096);
+        let mut bad = [0u8; 4096];
+        bad[..6].copy_from_slice(&LOG_MAGIC);
+        bad[6..8].copy_from_slice(&99u16.to_le_bytes());
+        dev.write_block(0, &bad).unwrap();
+        match BlockDurableLog::open_existing(dev, 4096) {
+            Err(OpenError::Corrupt) => {}
+            other => panic!("expected Corrupt, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// 39 WP-39.6：open_existing 不得重写头块（字节级证明）。
+    #[test]
+    fn open_existing_does_not_rewrite_header() {
+        let dev = audit_scope(64, 4096);
+        let log = BlockDurableLog::format(dev, 4096).expect("format");
+        let dev = log.into_inner();
+        let mut before = [0u8; 4096];
+        dev.read_block(0, &mut before).unwrap();
+        let log2 = BlockDurableLog::open_existing(dev, 4096).expect("open");
+        assert_eq!(log2.committed_seq(), 0);
+        let dev = log2.into_inner();
+        let mut after = [0u8; 4096];
+        dev.read_block(0, &mut after).unwrap();
+        assert_eq!(before, after, "open_existing 不得重写头块（零写）");
+    }
+
+    /// 39 收尾复验（P0-3）：provision_new 真校验授权——角色不符/
+    /// 容量不足拒绝（零写）；合规授权成功且 readback 通过。
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
+    #[test]
+    fn provision_new_validates_authorization() {
+        use eneros_storage::partition::{
+            BlockIdentity, ProfileClass, ProvisionRequest, ProvisioningGate,
+        };
+        // factory 授权（Audit 角色，最小容量 4096）。
+        let gate = ProvisioningGate::new(ProfileClass::Factory, 1000);
+        let mut req = ProvisionRequest {
+            target_stable_path: [0u8; 64],
+            target_stable_path_len: 4,
+            role: BlockRole::Audit,
+            min_capacity_bytes: 4096,
+            nonce: [9; 16],
+            expires_at_unix_s: 2000,
+        };
+        req.target_stable_path[..4].copy_from_slice(b"disk");
+        let mut identity = BlockIdentity {
+            device_id: 1,
+            stable_path: [0u8; 64],
+            stable_path_len: 4,
+            capacity_bytes: 64 * 4096,
+            logical_sector: 512,
+            physical_sector: 512,
+            gpt_disk_guid: None,
+            media_serial_hash: None,
+        };
+        identity.stable_path[..4].copy_from_slice(b"disk");
+        let auth = gate
+            .authorize(&req, &[3u8; 32], &identity, &identity, true)
+            .expect("authorize");
+
+        // 角色不符（Data 作用域 vs Audit 授权）→ ProvisionDenied 零写。
+        let wrong_role = MockPartitionScope::new(MockBlockDevice::new(64, 4096), BlockRole::Data);
+        assert!(matches!(
+            BlockDurableLog::provision_new(wrong_role, 4096, &auth),
+            Err(StoreError::ProvisionDenied)
+        ));
+        // 容量不足（min_capacity_bytes 提高后重新授权）。
+        let mut req_big = req.clone();
+        req_big.nonce = [10; 16];
+        req_big.min_capacity_bytes = 64 * 4096 + 1;
+        let mut id_big = identity.clone();
+        id_big.capacity_bytes = 64 * 4096;
+        assert!(
+            gate.authorize(&req_big, &[3u8; 32], &id_big, &id_big, true)
+                .is_err(),
+            "容量不足应在 gate 层拒绝（CapacityBelowMinimum）"
+        );
+
+        // 合规路径：Audit 作用域 + 匹配授权 → 成功，readback 通过。
+        let dev = audit_scope(64, 4096);
+        let log = BlockDurableLog::provision_new(dev, 4096, &auth).expect("provision");
+        assert_eq!(log.committed_seq(), 0);
     }
 }

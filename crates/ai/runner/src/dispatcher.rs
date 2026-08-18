@@ -149,13 +149,19 @@ impl DeviceExecutor for EnvelopeDispatcher {
             .map_err(|e| DeviceExecError::Comm(format!("delivery channel: {e:?}")))?;
         // 3. 结果映射（§6.4）：成功/幂等/干跑 → Ok；复验拒绝 → 结构化原因。
         let frame = OutcomeFrame::decode(&resp)
-            .ok_or(DeviceExecError::Comm(String::from("bad outcome frame")))?;
+            .map_err(|e| DeviceExecError::Comm(format!("bad outcome frame: {e:?}")))?;
         match frame.code {
-            OutcomeFrame::CODE_APPLIED
-            | OutcomeFrame::CODE_IDEMPOTENT_HIT
-            | OutcomeFrame::CODE_DRY_RUN => Ok(()),
-            OutcomeFrame::CODE_DENIED => Err(DeviceExecError::Rejected(DeviceReject::from_code(
-                frame.class,
+            eneros_device_agent::CODE_APPLIED
+            | eneros_device_agent::CODE_IDEMPOTENT_HIT
+            | eneros_device_agent::CODE_DRY_RUN => Ok(()),
+            eneros_device_agent::CODE_DENIED => Err(DeviceExecError::Rejected(
+                DeviceReject::from_code(frame.class),
+            )),
+            eneros_device_agent::CODE_APPLIED_READBACK_UNAVAILABLE
+            | eneros_device_agent::CODE_APPLIED_READBACK_MISMATCH
+            | eneros_device_agent::CODE_FAILED => Err(DeviceExecError::Comm(format!(
+                "device outcome code {}（读回未验证/不符——不得视为成功）",
+                frame.code
             ))),
             _ => Err(DeviceExecError::Comm(format!(
                 "unknown outcome code {}",

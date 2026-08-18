@@ -68,9 +68,14 @@ impl Scenario {
     }
 
     /// 场景初始系统状态.
+    ///
+    /// 蓝图 40 WP-40.1：`SystemState` 无控制用 Default——host demo 场景
+    /// 显式构造演示工况（`TestSystemStateBuilder` 仅测试/演示装配，
+    /// 不进入产品控制链；证据类别 `DEMO_ONLY`）。
     pub fn state(self) -> RealtimeState {
         RealtimeState {
-            system: eneros_safety_validator::state::SystemState::default(),
+            system: eneros_safety_validator::TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.5, 0)
+                .build(),
             current_price: 0.3,
             load_demand: None,
         }

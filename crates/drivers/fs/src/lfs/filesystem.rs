@@ -31,7 +31,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt;
 
-use eneros_storage::BlockDevice;
+use eneros_storage::ScopedBlockDevice;
 use littlefs2::fs::{Filesystem, OpenOptions};
 use littlefs2::io::SeekFrom as LfsSeekFrom;
 use littlefs2::path::PathBuf;
@@ -66,13 +66,17 @@ impl Lfs {
     ///
     /// This is equivalent to `format` followed by `mount`. Use on a fresh
     /// device or to wipe an existing filesystem.
-    pub fn format(device: Box<dyn BlockDevice>) -> Result<Self, FsError> {
+    ///
+    /// 39 收尾复验（Exit Gate #2）：只接受角色分区作用域；格式化
+    /// 能力受作用域来源约束（生产路径经 ProvisioningGate 授权后
+    /// 的分区句柄）。
+    pub fn format(device: Box<dyn ScopedBlockDevice>) -> Result<Self, FsError> {
         Self::format_with_config(device, LfsConfig::default())
     }
 
     /// Formats the block device with the given configuration.
     pub fn format_with_config(
-        device: Box<dyn BlockDevice>,
+        device: Box<dyn ScopedBlockDevice>,
         config: LfsConfig,
     ) -> Result<Self, FsError> {
         let mut storage = BlockDeviceStorage::new(device)?;
@@ -86,13 +90,15 @@ impl Lfs {
     /// Mounts an already-formatted filesystem.
     ///
     /// Returns [`FsError::BadSuperBlock`] if the device is not formatted.
-    pub fn mount(device: Box<dyn BlockDevice>) -> Result<Self, FsError> {
+    ///
+    /// 39 收尾复验（Exit Gate #2）：只接受角色分区作用域。
+    pub fn mount(device: Box<dyn ScopedBlockDevice>) -> Result<Self, FsError> {
         Self::mount_with_config(device, LfsConfig::default())
     }
 
     /// Mounts an already-formatted filesystem with the given configuration.
     pub fn mount_with_config(
-        device: Box<dyn BlockDevice>,
+        device: Box<dyn ScopedBlockDevice>,
         config: LfsConfig,
     ) -> Result<Self, FsError> {
         let mut storage = BlockDeviceStorage::new(device)?;
@@ -416,12 +422,17 @@ fn make_path(path: &str) -> Result<PathBuf, FsError> {
 mod tests {
     #![allow(clippy::disallowed_macros)]
 
+    use eneros_storage::partition::{boxed_mock_scope, BlockRole};
     use eneros_storage::MockBlockDevice;
 
     use super::*;
 
+    fn data_scope(blocks: u64) -> Box<dyn ScopedBlockDevice> {
+        boxed_mock_scope(MockBlockDevice::new(blocks, 4096), BlockRole::Data)
+    }
+
     fn make_fs() -> Lfs {
-        let dev: Box<dyn BlockDevice> = Box::new(MockBlockDevice::new(64, 4096));
+        let dev = data_scope(64);
         Lfs::format(dev).expect("format should succeed")
     }
 
@@ -434,7 +445,7 @@ mod tests {
 
     #[test]
     fn test_mount_unformatted_fails() {
-        let dev: Box<dyn BlockDevice> = Box::new(MockBlockDevice::new(64, 4096));
+        let dev = data_scope(64);
         let err = Lfs::mount(dev).unwrap_err();
         assert_eq!(err, FsError::BadSuperBlock);
     }
@@ -562,7 +573,8 @@ mod tests {
     #[test]
     fn test_write_file_overwrite_no_tmp_left() {
         let mut fs = make_fs();
-        fs.write_file("/b.txt", b"old-content").expect("first write");
+        fs.write_file("/b.txt", b"old-content")
+            .expect("first write");
         fs.write_file("/b.txt", b"new").expect("overwrite");
         let back = fs.read_file("/b.txt").expect("read back");
         assert_eq!(back, b"new");
@@ -731,7 +743,7 @@ mod tests {
     fn test_persistence_across_remount() {
         // Write some data, then drop the Lfs and re-mount to verify
         // persistence.
-        let dev: Box<dyn BlockDevice> = Box::new(MockBlockDevice::new(64, 4096));
+        let dev = data_scope(64);
         let mut fs = Lfs::format(dev).expect("format should succeed");
         let mut f = fs
             .create("/persist.txt", FileMode::default_file())
@@ -745,7 +757,7 @@ mod tests {
         // Note: MockBlockDevice state is in-memory and lost on drop, so this
         // test verifies the littlefs2 metadata is consistent within a single
         // device lifetime. For true persistence we would need a shared mock.
-        let dev2: Box<dyn BlockDevice> = Box::new(MockBlockDevice::new(64, 4096));
+        let dev2 = data_scope(64);
         let err = Lfs::mount(dev2).unwrap_err();
         assert_eq!(err, FsError::BadSuperBlock);
     }

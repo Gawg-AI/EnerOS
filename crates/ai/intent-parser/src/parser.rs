@@ -170,6 +170,13 @@ impl IntentParser {
         }
     }
 
+    /// 覆写当前系统状态（蓝图 40 WP-40.1：决策前由协调器注入受信任状态；
+    /// 构造期状态只为 `EmergencyStop` 提供占位——`SystemState::unknown()`
+    /// NaN fail-closed，不允许"健康默认值"进入）。
+    pub fn set_state(&mut self, state: SystemState) {
+        self.system_state = state;
+    }
+
     /// 解析 JSON 字符串为 `Intent`.
     ///
     /// 失败返回 `IntentError::ParseError`（D1：使用 `serde_json::from_str`）。
@@ -298,8 +305,6 @@ impl IntentParser {
     }
 }
 
-impl Default for IntentParser {
-    fn default() -> Self {
-        Self::new(ScheduleConfig::default(), SystemState::default())
-    }
-}
+// 蓝图 40 WP-40.1：`IntentParser` 不再实现 `Default`——`Default` 隐含
+// `SystemState::default()`（"健康默认状态"），已从 `SystemState` 移除。
+// 测试用 `IntentParser::new(cfg, state)` 显式构造。

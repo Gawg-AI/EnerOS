@@ -14,10 +14,14 @@ eneros-dr = { path = "../dr" }
 eneros-dual-brain = { path = "../../ai/dual-brain" }
 eneros-fast-path = { path = "../../ai/fast-path" }
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
-eneros-solver-core = { path = "../../ai/solver-core" }
+eneros-solver-core = { path = "../../ai/solver-core", features = ["highs-ffi"] }
 eneros-llm-engine = { path = "../../ai/llm-engine", features = ["llama-cpp"] }
 eneros-safety-validator = { path = "../../ai/safety-validator" }
 eneros-intent-contract = { path = "../../ai/intent-contract" }
+# 蓝图 40 WP-40.6：唯一 ControlDispatch（唯一控制写出口）。
+eneros-control-dispatch = { path = "../../protocols/control-dispatch" }
+# 蓝图 40：调用方角色（ActorKind）。
+eneros-control-gateway = { path = "../../protocols/control-gateway" }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 

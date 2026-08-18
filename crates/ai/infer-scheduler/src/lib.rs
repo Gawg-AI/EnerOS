@@ -167,9 +167,15 @@ mod tests {
     #[test]
     fn test_t6_submit_incrementing_ids() {
         let mut sched = InferScheduler::new(2, TEST_CACHE_BUDGET, ComputeDevice::Cpu);
-        let id1 = sched.submit(InferRequest::new(0, "a", InferParams::default())).unwrap();
-        let id2 = sched.submit(InferRequest::new(0, "b", InferParams::default())).unwrap();
-        let id3 = sched.submit(InferRequest::new(0, "c", InferParams::default())).unwrap();
+        let id1 = sched
+            .submit(InferRequest::new(0, "a", InferParams::default()))
+            .unwrap();
+        let id2 = sched
+            .submit(InferRequest::new(0, "b", InferParams::default()))
+            .unwrap();
+        let id3 = sched
+            .submit(InferRequest::new(0, "c", InferParams::default()))
+            .unwrap();
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         assert_eq!(id3, 3);
@@ -210,7 +216,9 @@ mod tests {
         let mut engine = MockEngine::new(ComputeDevice::Cpu);
         engine.load_model("/test.gguf").unwrap();
         let mut sched = InferScheduler::new(2, TEST_CACHE_BUDGET, ComputeDevice::Cpu);
-        let id = sched.submit(InferRequest::new(0, "hello", InferParams::default())).unwrap();
+        let id = sched
+            .submit(InferRequest::new(0, "hello", InferParams::default()))
+            .unwrap();
         let results = sched.tick(0, &mut engine);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, id);
@@ -226,9 +234,9 @@ mod tests {
         let mut engine = MockEngine::new(ComputeDevice::Cpu);
         engine.load_model("/test.gguf").unwrap();
         let mut sched = InferScheduler::new(2, TEST_CACHE_BUDGET, ComputeDevice::Cpu);
-        sched.submit(InferRequest::new(0, "a", InferParams::default()));
-        sched.submit(InferRequest::new(0, "b", InferParams::default()));
-        sched.submit(InferRequest::new(0, "c", InferParams::default()));
+        let _ = sched.submit(InferRequest::new(0, "a", InferParams::default()));
+        let _ = sched.submit(InferRequest::new(0, "b", InferParams::default()));
+        let _ = sched.submit(InferRequest::new(0, "c", InferParams::default()));
         let results = sched.tick(0, &mut engine);
         assert_eq!(results.len(), 2);
         assert_eq!(sched.queue_len(), 1);
@@ -261,14 +269,18 @@ mod tests {
         engine.load_model("/test.gguf").unwrap();
         // max_concurrent=1：每次 tick 只处理 1 个，验证优先级排序
         let mut sched = InferScheduler::new(1, TEST_CACHE_BUDGET, ComputeDevice::Cpu);
-        let _id_normal = sched.submit(
-            InferRequest::new(0, "normal", InferParams::default())
-                .with_priority(RequestPriority::Normal),
-        ).unwrap();
-        let id_high = sched.submit(
-            InferRequest::new(0, "high", InferParams::default())
-                .with_priority(RequestPriority::High),
-        ).unwrap();
+        let _id_normal = sched
+            .submit(
+                InferRequest::new(0, "normal", InferParams::default())
+                    .with_priority(RequestPriority::Normal),
+            )
+            .unwrap();
+        let id_high = sched
+            .submit(
+                InferRequest::new(0, "high", InferParams::default())
+                    .with_priority(RequestPriority::High),
+            )
+            .unwrap();
         let results = sched.tick(0, &mut engine);
         // High 优先级应先执行
         assert_eq!(results.len(), 1);
@@ -337,9 +349,9 @@ mod tests {
         let mut sched = InferScheduler::new(2, TEST_CACHE_BUDGET, ComputeDevice::Cpu);
 
         // 提交 3 个请求
-        sched.submit(InferRequest::new(0, "a", InferParams::default()));
-        sched.submit(InferRequest::new(0, "b", InferParams::default()));
-        sched.submit(InferRequest::new(0, "c", InferParams::default()));
+        let _ = sched.submit(InferRequest::new(0, "a", InferParams::default()));
+        let _ = sched.submit(InferRequest::new(0, "b", InferParams::default()));
+        let _ = sched.submit(InferRequest::new(0, "c", InferParams::default()));
         assert_eq!(sched.stats().total_requests, 3);
 
         // tick：处理 2 个，剩 1 个在队列
@@ -360,5 +372,64 @@ mod tests {
         assert_eq!(results2.len(), 1);
         assert_eq!(sched.stats().completed_requests, 3);
         assert_eq!(sched.queue_len(), 0);
+    }
+
+    // ============================================================================
+    // 蓝图 40 WP-40.4：可取消 worker——cancel/cancel_by_correlation + late result
+    // ============================================================================
+
+    use crate::request::InferRequest as IR;
+
+    fn req(id: u64, correlation: [u8; 16]) -> IR {
+        IR::new(id, "p", InferParams::default())
+            .with_timestamp(1_000)
+            .with_timeout(10_000_000_000)
+            .with_correlation(correlation)
+            .with_budget_tokens(256)
+    }
+
+    /// 排队请求可显式取消（WP-40.4）。
+    #[test]
+    fn test_cancel_removes_queued_request() {
+        let mut sched = InferScheduler::new(1, 1 << 20, ComputeDevice::Cpu);
+        let id1 = sched.submit(req(1, [0x11; 16])).expect("q1");
+        let id2 = sched.submit(req(2, [0x22; 16])).expect("q2");
+        assert_eq!(sched.queue_len(), 2);
+        assert!(sched.cancel(id1), "必须找到并移除");
+        assert_eq!(sched.queue_len(), 1);
+        assert!(!sched.cancel(id1), "二次取消返回 false");
+        assert_eq!(sched.stats().cancelled, 1);
+        // 取消后 tick 不产出该请求结果。
+        let mut engine = MockEngine::new(ComputeDevice::Cpu);
+        let results = sched.tick(2_000, &mut engine);
+        assert!(results.iter().all(|r| r.id != id1));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, id2);
+    }
+
+    /// 按 correlation 取消（同决策请求全部排队项）。
+    #[test]
+    fn test_cancel_by_correlation() {
+        let mut sched = InferScheduler::new(1, 1 << 20, ComputeDevice::Cpu);
+        let _ = sched.submit(req(1, [0xAA; 16])).expect("a1");
+        let _ = sched.submit(req(2, [0xAA; 16])).expect("a2");
+        let _ = sched.submit(req(3, [0xBB; 16])).expect("b");
+        assert_eq!(sched.cancel_by_correlation(&[0xAA; 16]), 2);
+        assert_eq!(sched.queue_len(), 1);
+    }
+
+    /// 结果携带 correlation——调用方可据此丢弃 late result（WP-40.4）。
+    #[test]
+    fn test_result_carries_correlation_for_late_drop() {
+        let mut sched = InferScheduler::new(1, 1 << 20, ComputeDevice::Cpu);
+        let id = sched
+            .submit(req(9, [0x42; 16]).with_timeout(u64::MAX))
+            .expect("q");
+        let mut engine = MockEngine::new(ComputeDevice::Cpu);
+        let results = sched.tick(2_000, &mut engine);
+        let r = results.into_iter().find(|r| r.id == id).expect("result");
+        assert_eq!(r.correlation, [0x42; 16]);
+        // 调用方 epoch 已推进（correlation 不匹配）→ LateResult 丢弃并审计。
+        assert_ne!(r.correlation, [0x43; 16]);
     }
 }

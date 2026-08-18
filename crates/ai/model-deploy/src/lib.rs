@@ -70,8 +70,6 @@ pub mod report;
 pub mod verifier;
 
 #[cfg(feature = "llama-cpp")]
-pub mod llama_backend;
-
 #[cfg(test)]
 mod tests {
     //! 集成测试 T1~T15（覆盖 D1~D12 偏差声明）.

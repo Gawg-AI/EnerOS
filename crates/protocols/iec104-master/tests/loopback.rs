@@ -14,7 +14,7 @@ use eneros_iec104_master::config::MasterConfig;
 use eneros_iec104_master::device::RemoteDevice;
 use eneros_iec104_master::master::Iec104Master;
 use eneros_iec104_master::transport::{ConnId, MasterTransport};
-use eneros_iec104_slave::apdu::{Apdu, ControlField};
+use eneros_iec104_slave::apdu::Apdu;
 
 /// 互操作测试专用 std 传输（TCP stream）。
 struct StdMasterTransport {
@@ -35,10 +35,14 @@ impl StdMasterTransport {
 }
 
 impl MasterTransport for StdMasterTransport {
-    fn connect(&mut self, ip: [u8; 4], port: u16) -> Result<ConnId, eneros_iec104_master::error::MasterError> {
+    fn connect(
+        &mut self,
+        ip: [u8; 4],
+        port: u16,
+    ) -> Result<ConnId, eneros_iec104_master::error::MasterError> {
         let addr = std::net::SocketAddr::from((ip, port));
-        let stream =
-            TcpStream::connect(addr).map_err(|_| eneros_iec104_master::error::MasterError::ConnectFailed)?;
+        let stream = TcpStream::connect(addr)
+            .map_err(|_| eneros_iec104_master::error::MasterError::ConnectFailed)?;
         // 非阻塞：process_rx 轮询语义（无帧 → Ok(None)）。
         stream
             .set_nonblocking(true)
@@ -46,14 +50,21 @@ impl MasterTransport for StdMasterTransport {
         self.stream = Some(stream);
         Ok(1)
     }
-    fn send(&mut self, _conn: ConnId, data: &[u8]) -> Result<(), eneros_iec104_master::error::MasterError> {
+    fn send(
+        &mut self,
+        _conn: ConnId,
+        data: &[u8],
+    ) -> Result<(), eneros_iec104_master::error::MasterError> {
         self.stream
             .as_mut()
             .ok_or(eneros_iec104_master::error::MasterError::NotConnected)?
             .write_all(data)
             .map_err(|_| eneros_iec104_master::error::MasterError::SendFailed)
     }
-    fn recv(&mut self, _conn: ConnId) -> Result<Option<Vec<u8>>, eneros_iec104_master::error::MasterError> {
+    fn recv(
+        &mut self,
+        _conn: ConnId,
+    ) -> Result<Option<Vec<u8>>, eneros_iec104_master::error::MasterError> {
         // 先消费粘包缓冲（上一轮 read 剩余字节）。
         if self.pending.len() >= 2 && self.pending[0] == 0x68 {
             let frame_len = 2 + self.pending[1] as usize;
@@ -123,6 +134,7 @@ fn read_frame(stream: &mut TcpStream) -> Option<Vec<u8>> {
 
 /// IEC104 slave 测试桩：接受连接 → 回 STARTDT_CON → 收总召 → 回遥测帧。
 /// 经 mpsc 上报收到总召（供断言）。
+#[allow(clippy::approx_constant)] // 3.14 是 loopback 判据的固定遥测值（ioa 42）
 fn spawn_slave_stub(port: u16) -> mpsc::Receiver<()> {
     let (tx, rx) = mpsc::channel();
     // 先 bind（主线程）再 accept（子线程）——消除启动竞态。
@@ -131,16 +143,11 @@ fn spawn_slave_stub(port: u16) -> mpsc::Receiver<()> {
         let (mut stream, _) = listener.accept().expect("accept");
         // STARTDT_CON（U 格式 0x0B）。
         let _ = stream.write_all(&[0x68, 0x04, 0x0B, 0x00, 0x00, 0x00]);
-        loop {
-            let Some(frame) = read_frame(&mut stream) else {
-                break;
-            };
+        while let Some(frame) = read_frame(&mut stream) {
             match frame[2] & 0x03 {
-                0x03 => {
+                0x03 if frame[2] == 0x07 => {
                     // U 格式：STARTDT_ACT（0x07）→ 回 STARTDT_CON。
-                    if frame[2] == 0x07 {
-                        let _ = stream.write_all(&[0x68, 0x04, 0x0B, 0x00, 0x00, 0x00]);
-                    }
+                    let _ = stream.write_all(&[0x68, 0x04, 0x0B, 0x00, 0x00, 0x00]);
                 }
                 0x00 => {
                     // I 格式：总召（C_IC_NA，type 0x64）→ 回激活确认 + 遥测。
@@ -185,12 +192,14 @@ fn spawn_slave_stub(port: u16) -> mpsc::Receiver<()> {
 fn loopback_interrogation_telemetry() {
     let port = 24040u16;
     let rx = spawn_slave_stub(port);
-    let mut config = MasterConfig::default();
-    config.peer_ip = [127, 0, 0, 1];
-    config.peer_port = port;
-    config.poll_interval_ms = 100;
+    let config = MasterConfig {
+        peer_ip: [127, 0, 0, 1],
+        peer_port: port,
+        poll_interval_ms: 100,
+        ..Default::default()
+    };
 
-    let mut transport = StdMasterTransport::new();
+    let transport = StdMasterTransport::new();
     let mut master = Iec104Master::new(config, Box::new(transport));
     let dev = RemoteDevice::new([127, 0, 0, 1], port, 1, 30_000);
     master.connect(&dev).expect("connect");
@@ -198,10 +207,7 @@ fn loopback_interrogation_telemetry() {
     let mut connected = false;
     for _ in 0..200 {
         master.process_rx(1).ok();
-        if master
-            .interrogation(1, 0)
-            .is_ok()
-        {
+        if master.interrogation(1, 0).is_ok() {
             connected = true;
             break;
         }
@@ -212,7 +218,7 @@ fn loopback_interrogation_telemetry() {
     master.interrogation(1, 0).expect("interrogation");
     // 消费激活确认 + 遥测（多轮直至缓存命中）。
     let mut got = None;
-    for i in 0..8 {
+    for _ in 0..8 {
         let _ = master.process_rx(1);
         if let Some(v) = master.latest_value(1, 42) {
             got = Some(v.clone());

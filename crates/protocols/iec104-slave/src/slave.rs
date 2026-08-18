@@ -368,7 +368,9 @@ impl Iec104Slave {
                 let con = Apdu::u_format(UFormatFunction::TestFrCon);
                 self.send_apdu(&con)?;
             }
-            UFormatFunction::TestFrCon | UFormatFunction::StartDtCon | UFormatFunction::StopDtCon => {
+            UFormatFunction::TestFrCon
+            | UFormatFunction::StartDtCon
+            | UFormatFunction::StopDtCon => {
                 // 31-review：收到对端 CON → 我们先前发的 ACT 已确认，清 pending
                 // + 重置重试计数（防 t1 误重传 CON 致断连；旧 _ =>{} 吞掉 TestFrCon）。
                 if let Some(conn) = &mut self.connection {
@@ -376,7 +378,6 @@ impl Iec104Slave {
                     conn.t1_retry_count = 0;
                 }
             }
-            _ => {}
         }
         Ok(())
     }
@@ -666,7 +667,9 @@ impl Iec104Slave {
         if let ControlField::Unnumbered(func) = apdu.control_field {
             if matches!(
                 func,
-                UFormatFunction::StartDtAct | UFormatFunction::StopDtAct | UFormatFunction::TestFrAct
+                UFormatFunction::StartDtAct
+                    | UFormatFunction::StopDtAct
+                    | UFormatFunction::TestFrAct
             ) {
                 if let Some(conn) = &mut self.connection {
                     conn.pending_u_frame = Some(func);
@@ -759,7 +762,12 @@ mod tests {
     fn test_startdt_act_to_con() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
         slave.poll(100).expect("poll ok");
@@ -772,7 +780,10 @@ mod tests {
     fn test_testfr_act_to_con() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::TestFrAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::TestFrAct).encode().unwrap(),
+        );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
         slave.poll(100).expect("poll ok");
@@ -785,7 +796,12 @@ mod tests {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
         // 先 STARTDT 激活
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
         slave.poll(100).expect("poll startdt");
@@ -812,7 +828,12 @@ mod tests {
     fn test_t3_timeout_testfr() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
         slave.poll(100).expect("poll startdt");
@@ -828,7 +849,12 @@ mod tests {
     fn test_w_threshold_s_frame() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         // 推入 w+1 个 I 帧（w=8）— 每个是一个单点遥控命令（v0.219.0：
         // 序号须连续递增）。
         for i in 0..9u16 {
@@ -849,7 +875,8 @@ mod tests {
                         }],
                     },
                 )
-                .encode().unwrap(),
+                .encode()
+                .unwrap(),
             );
         }
         let mut db = InMemoryPointDatabase::new();
@@ -877,7 +904,12 @@ mod tests {
         // 直接验证 send_i_format 的回绕逻辑
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
         slave.poll(100).expect("poll startdt");
@@ -957,7 +989,12 @@ mod tests {
     fn test_stats_increment() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
         assert_eq!(slave.stats().connections_accepted, 0);
@@ -1032,7 +1069,12 @@ mod tests {
     fn test_single_command_executes_when_authorized() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         // PTC-003 SBO：select（不执行）
         mock.push_rx_data(
             conn,
@@ -1055,7 +1097,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         // execute：与 select 匹配（序号连续：select=0, execute=1）
         mock.push_rx_data(
@@ -1075,7 +1118,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let mut db = InMemoryPointDatabase::new();
         db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
@@ -1110,7 +1154,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let mut db = InMemoryPointDatabase::new();
         db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
@@ -1152,7 +1197,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         // execute Off（与 select On 不匹配；序号连续：select=0, execute=1）
         mock.push_rx_data(
@@ -1172,7 +1218,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let mut db = InMemoryPointDatabase::new();
         db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
@@ -1209,7 +1256,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let mut db = InMemoryPointDatabase::new();
         db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
@@ -1227,7 +1275,12 @@ mod tests {
     fn test_single_command_denied_without_authorization() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         mock.push_rx_data(
             conn,
             Apdu::i_format(
@@ -1245,7 +1298,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let mut db = InMemoryPointDatabase::new();
         db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
@@ -1261,7 +1315,12 @@ mod tests {
     fn test_single_command_denied_wrong_value() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         mock.push_rx_data(
             conn,
             Apdu::i_format(
@@ -1279,7 +1338,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let mut db = InMemoryPointDatabase::new();
         db.set_value(10, IoValue::SinglePoint(SinglePointValue::Off));
@@ -1296,7 +1356,12 @@ mod tests {
     fn test_double_command_executes_when_authorized() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         // 31 PR-08：双点 SBO——先 select（Dco::select=true）再 execute。
         let mut select_dco = Dco::new(DoublePointValue::On);
         select_dco.select = true;
@@ -1317,7 +1382,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let mut db = InMemoryPointDatabase::new();
         db.set_value(20, IoValue::DoublePoint(DoublePointValue::Off));
@@ -1339,7 +1405,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let mut slave = make_slave(mock, db);
         slave.set_authorized_write(auth_for(1, 20, ControlCommand::Double(DoubleCommand::On)));
@@ -1355,7 +1422,12 @@ mod tests {
     fn test_double_command_direct_execute_rejected() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         mock.push_rx_data(
             conn,
             Apdu::i_format(
@@ -1373,7 +1445,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let mut db = InMemoryPointDatabase::new();
         db.set_value(20, IoValue::DoublePoint(DoublePointValue::Off));
@@ -1393,7 +1466,12 @@ mod tests {
     fn test_double_command_denied_without_authorization() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         mock.push_rx_data(
             conn,
             Apdu::i_format(
@@ -1411,7 +1489,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let mut db = InMemoryPointDatabase::new();
         db.set_value(20, IoValue::DoublePoint(DoublePointValue::Off));
@@ -1426,7 +1505,12 @@ mod tests {
     fn test_clock_sync_confirm() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         mock.push_rx_data(
             conn,
             Apdu::i_format(
@@ -1454,7 +1538,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
@@ -1471,7 +1556,12 @@ mod tests {
     fn test_clock_sync_denied_without_policy() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         mock.push_rx_data(
             conn,
             Apdu::i_format(
@@ -1499,7 +1589,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
@@ -1522,7 +1613,12 @@ mod tests {
         let conn = mock.accept_conn();
         // STARTDT_ACT 由 slave 发送（进入 Active 前）——构造 pending U 帧
         // 场景：发送 U 帧后对端永不确认。
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         let mut slave = make_slave(mock, InMemoryPointDatabase::new());
         slave.poll(100).expect("poll startdt");
         // t3=20s 空闲 → TestFrAct 发出（pending_u_frame 置位，t1 跟踪）。
@@ -1580,7 +1676,12 @@ mod tests {
     fn test_multiple_polls_accumulate() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
         slave.poll(100).expect("poll 1");
@@ -1613,7 +1714,12 @@ mod tests {
         // 重放检测：同一序号重复到达 → SeqMismatch（旧行为静默接受）。
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         let i_frame = Apdu::i_format(
             0,
             0,
@@ -1629,7 +1735,8 @@ mod tests {
                 }],
             },
         )
-        .encode().unwrap();
+        .encode()
+        .unwrap();
         mock.push_rx_data(conn, i_frame.clone());
         mock.push_rx_data(conn, i_frame.clone()); // 重放同一帧
         let db = InMemoryPointDatabase::new();
@@ -1653,7 +1760,12 @@ mod tests {
         // k 窗口：未确认 I 帧达到 k（12）→ 拒绝继续发送。
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
         slave.poll(100).expect("startdt");
@@ -1687,7 +1799,12 @@ mod tests {
         // S 帧确认释放 k 窗口。
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         // 主站 S 帧确认（recv_seq 指向从站下一发送序号 12）——提前 push，
         // 随后 mock 被 move 进 slave。
         mock.push_rx_data(conn, Apdu::s_format(12).encode().unwrap());
@@ -1734,7 +1851,12 @@ mod tests {
         // t1 超时：TestFrAct 发出后 t1 内未收到 TestFrCon → 重发（t1=15s）。
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
         slave.poll(100).expect("startdt");
@@ -1752,7 +1874,12 @@ mod tests {
         // t2 超时：收到 1 个 I 帧但未达 w 阈值 → t2 后强制发 S 帧。
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         // 1 个 I 帧（未达 w=8）——提前 push，随后 mock 被 move。
         mock.push_rx_data(
             conn,
@@ -1771,7 +1898,8 @@ mod tests {
                     }],
                 },
             )
-            .encode().unwrap(),
+            .encode()
+            .unwrap(),
         );
         let db = InMemoryPointDatabase::new();
         let mut slave = make_slave(mock, db);
@@ -1789,7 +1917,9 @@ mod tests {
         // TCP 粘包：多帧一次到达 → 全部处理（粘包吃全）。
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        let start = Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap();
+        let start = Apdu::u_format(UFormatFunction::StartDtAct)
+            .encode()
+            .unwrap();
         let i1 = Apdu::i_format(
             0,
             0,
@@ -1805,7 +1935,8 @@ mod tests {
                 }],
             },
         )
-        .encode().unwrap();
+        .encode()
+        .unwrap();
         let i2 = Apdu::i_format(
             1,
             0,
@@ -1821,7 +1952,8 @@ mod tests {
                 }],
             },
         )
-        .encode().unwrap();
+        .encode()
+        .unwrap();
         // 全部粘在一起一次投递。
         let mut glued = start.clone();
         glued.extend_from_slice(&i1);
@@ -1855,7 +1987,8 @@ mod tests {
                 }],
             },
         )
-        .encode().unwrap();
+        .encode()
+        .unwrap();
         // 先喂前半帧。
         mock.push_rx_data(conn, frame[..frame.len() / 2].to_vec());
         let db = InMemoryPointDatabase::new();

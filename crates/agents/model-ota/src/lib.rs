@@ -65,7 +65,6 @@ mod model_loader;
 mod ota_client;
 mod rollback;
 mod signature;
-pub mod transport_mqtt;
 
 use alloc::vec::Vec;
 

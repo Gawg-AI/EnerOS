@@ -77,8 +77,17 @@ impl PlatformAdapter for QemuVirtAdapter {
         // None——host 不得生成 target 时钟证据）。
         let timer = timer_handle();
         // DMA：root 镜像 1:1 板级事实——池内存地址即物理地址。
+        // 39 WP-39.5/39.7（CVR-39-01）：virtio 设备按需各持一个 9 页队列池
+        // （系统盘 blk + 数据盘 blk + virtio-net = 3 池；36 页留裕量）。
+        // 39 CVR-39-04/06：rootserver 链接于低 VA（0x200000 起）、加载于
+        // guest RAM 内（随内核/镜像尺寸漂移）——DMA 设备地址必须带
+        // VA→PA 偏移（root 装配时从 userImageFrames 推导注入
+        // `hal::dma::set_identity_offset`；未注入时 0 = identity）。
+        let offset = eneros_hal::dma::identity_offset();
         let allocator: &'static mut dyn DmaAllocator =
-            Box::leak(Box::new(DmaPoolAllocator::<{ 9 * 4096 }>::new_identity()));
+            Box::leak(Box::new(
+                DmaPoolAllocator::<{ 36 * 4096 }>::new_identity_offset(offset),
+            ));
         Ok(HalRuntime {
             cpu: topo,
             interrupts: InterruptControllerHandle {
@@ -133,10 +142,6 @@ mod tests {
     #[test]
     fn adapter_discovers_qemu_virt() {
         let adapter = QemuVirtAdapter::new();
-        let input = PlatformInput {
-            runtime_dtb: Some(QEMU_VIRT_DTB),
-            bootinfo_cpu_count: 2,
-        };
         let inv = adapter
             .discover(&PlatformInput {
                 runtime_dtb: Some(QEMU_VIRT_DTB),

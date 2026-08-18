@@ -219,10 +219,8 @@ impl EnergyScheduleModel {
             let mut c1 = LinearExpr::new();
             c1.add_term(self.charge_var_idx[t], 1.0);
             c1.add_term(self.y_var_idx[t], -pcs);
-            self.problem.add_constraint(
-                &format!("charge_dir_mutex_{}", t),
-                Constraint::Le(c1, 0.0),
-            );
+            self.problem
+                .add_constraint(&format!("charge_dir_mutex_{}", t), Constraint::Le(c1, 0.0));
             // discharge[t] + pcs·y[t] ≤ pcs
             let mut c2 = LinearExpr::new();
             c2.add_term(self.discharge_var_idx[t], 1.0);

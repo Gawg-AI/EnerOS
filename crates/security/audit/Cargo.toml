@@ -7,5 +7,8 @@ license.workspace = true
 description = "EnerOS 审计日志与哈希链 (v0.117.0) — 审计事件编码 + SM3 哈希链存证 + 链校验与恢复, no_std"
 
 [dependencies]
-eneros-crypto = { path = "../crypto" }
+# 蓝图 36 WP-36.2/SC-03：eneros-crypto (SM2/SM3/SM4) 无商业批准
+# (product_allowed=false)，不得进入产品闭包。审计链哈希改用已批准
+# SHA-256（sha2，与正式 UEFI/SBOM/init bundle 同算法族）。
+sha2 = { version = "0.10.9", default-features = false }
 heapless = "0.8"

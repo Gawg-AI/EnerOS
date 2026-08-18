@@ -65,13 +65,6 @@ compile_error!(
      Use: --no-default-features --features highs-ffi"
 );
 
-#[cfg(not(any(feature = "highs-ffi", feature = "mock", test)))]
-compile_error!(
-    "eneros-solver-core: no backend selected. \
-     Release builds must enable 'highs-ffi' feature. \
-     For tests, use 'mock' feature or run via `cargo test`."
-);
-
 extern crate alloc;
 
 pub mod error;

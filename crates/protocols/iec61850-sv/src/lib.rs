@@ -43,7 +43,8 @@
 extern crate alloc;
 
 #[cfg(feature = "net")]
-pub mod l2_raw;
+// 39 WP-39.11：协议插件（服务装配统一入口）。
+pub mod plugin;
 pub mod sv_buffer;
 pub mod sv_rx;
 

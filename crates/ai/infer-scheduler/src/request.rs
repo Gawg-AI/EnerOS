@@ -10,6 +10,10 @@ use crate::priority::RequestPriority;
 ///
 /// 包含提示词、推理参数、优先级、提交时间戳与超时阈值。
 /// 超时判定为 `now_ns - submitted_at_ns > timeout_ns`（饱和减法）。
+///
+/// 蓝图 40 WP-40.4：请求携带 correlation/deadline/budget/model digest——
+/// 调用方（svc-ai-worker/supervisor）可取消已排队请求；late result 因
+/// correlation/epoch 不匹配被丢弃并审计。
 #[derive(Debug, Clone)]
 pub struct InferRequest {
     /// 请求 ID（由调度器 `submit` 分配，构造时传入的值会被覆盖）.
@@ -24,6 +28,13 @@ pub struct InferRequest {
     pub submitted_at_ns: u64,
     /// 超时阈值（纳秒，默认 `u64::MAX` 表示永不超时）.
     pub timeout_ns: u64,
+    /// 蓝图 40 WP-40.4：调用方关联 ID（决策请求 correlation；late result
+    /// 丢弃与审计的依据）。
+    pub correlation: [u8; 16],
+    /// 蓝图 40 WP-40.4：输出预算（max tokens 上限；None = 引擎默认）。
+    pub budget_tokens: Option<u32>,
+    /// 蓝图 40 WP-40.4：模型摘要（与 ProductManifest 绑定；None = 未绑定）。
+    pub model_digest: Option<[u8; 32]>,
 }
 
 impl InferRequest {
@@ -38,7 +49,28 @@ impl InferRequest {
             priority: RequestPriority::default(),
             submitted_at_ns: 0,
             timeout_ns: u64::MAX,
+            correlation: [0u8; 16],
+            budget_tokens: None,
+            model_digest: None,
         }
+    }
+
+    /// 设置关联 ID（builder；WP-40.4：late result 丢弃依据）。
+    pub fn with_correlation(mut self, correlation: [u8; 16]) -> Self {
+        self.correlation = correlation;
+        self
+    }
+
+    /// 设置输出预算（builder；WP-40.4：CPU/memory/output size 预算）。
+    pub fn with_budget_tokens(mut self, budget: u32) -> Self {
+        self.budget_tokens = Some(budget);
+        self
+    }
+
+    /// 设置模型摘要（builder；WP-40.4：模型 digest 与 ProductManifest 绑定）。
+    pub fn with_model_digest(mut self, digest: [u8; 32]) -> Self {
+        self.model_digest = Some(digest);
+        self
     }
 
     /// 设置优先级（builder）.

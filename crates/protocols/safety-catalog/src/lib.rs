@@ -24,7 +24,6 @@
 //! `#![cfg_attr(not(test), no_std)]`。目录为静态切片，无 `alloc` 依赖。
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 
 pub mod catalog;
 pub mod fmea;

@@ -57,9 +57,16 @@ pub mod error;
 pub mod master;
 pub mod poll;
 pub mod transport;
+// 39 WP-39.11：协议插件（服务装配统一入口）。
+pub mod plugin;
 
 /// IEC 104 协议适配器（ARCH-P04）— 第三个真实 `ProtocolAdapter`。
 pub mod adapter;
+
+/// 31 WP-31.1（吸收 WP-27.8）：基于 eneros-net 的真实 TCP 传输层。
+/// `net` feature 门控（生产装配启用）；未启用时文件不参与编译。
+#[cfg(feature = "net")]
+pub mod real;
 
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
@@ -110,7 +117,9 @@ mod tests {
 
     /// 构造 STARTDT_CON 的字节流.
     fn startdt_con_bytes() -> Vec<u8> {
-        Apdu::u_format(UFormatFunction::StartDtCon).encode().unwrap()
+        Apdu::u_format(UFormatFunction::StartDtCon)
+            .encode()
+            .unwrap()
     }
 
     /// 构造 TESTFR_CON 的字节流.
@@ -157,7 +166,8 @@ mod tests {
                 }],
             },
         )
-        .encode().unwrap()
+        .encode()
+        .unwrap()
     }
 
     /// 创建主站并连接设备，预填 STARTDT_CON，完成握手后状态为 Connected.

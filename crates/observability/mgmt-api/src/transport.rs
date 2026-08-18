@@ -1,10 +1,15 @@
 //! 22 §2.W4.2：mgmt-api 远程管理通道——MQTT RPC 传输层。
 //!
-//! `ManagementApi`（RBAC + 幂等 + 限流 + 分发器）在此接**真传输层**：
-//! 请求经 MQTT topic `eneros/{device}/cmd` 到达 → 解析 `ApiRequest` →
-//! `ManagementApi::handle`（版本→限流→RBAC→幂等→执行）→ 响应发布到
-//! `eneros/{device}/resp`。远程命令（重启/配置推送/诊断/撤销）全部经
-//! RBAC + 审计（调用方 handler 负责审计落链，W5.1）。
+//! 蓝图 41 WP-41.11 修真（35-00 P0-13）：
+//! - **身份在 transport session**：`poll_once` 接收 transport 层认证的
+//!   `role`（TLS/mTLS/session token 验证后才 decode action），请求
+//!   payload 中的 `role` 字段**忽略并拒绝冲突**（不再信任自报角色，
+//!   "security" 不再映射 Operator）；
+//! - **malformed/unknown action 返回错误**（400），不再默认
+//!   Operator/StatusQuery；
+//! - **执行错误传播**：publish 失败返回 Err（不吞 `let _ =`）；
+//!   `execute_remote_action` 固定 Ok 的默认实现删除——调用方必须注入
+//!   真实 executor，未注入 → 显式 501/500（不空成功）。
 
 use alloc::format;
 use alloc::string::String;
@@ -13,7 +18,7 @@ use crate::rbac::Role;
 use crate::schema::{ApiAction, ApiRequest, ApiResponse, ApiVersion, StatusCode};
 use crate::ManagementApi;
 
-/// MQTT RPC 传输层（注入 publish/subscribe 闭包——与 W4.1 同模式）。
+/// MQTT RPC 传输层（注入 publish/subscribe 闭包 + 真实动作执行器）。
 pub struct MqttRpcTransport<F, G> {
     /// 设备标识（topic 前缀）。
     device_id: String,
@@ -49,49 +54,54 @@ where
 
     /// 处理一条远程请求（非阻塞：无请求返回 None）。
     ///
-    /// 请求 → `ManagementApi::handle`（RBAC/限流/幂等）→ 响应发布。
-    /// 返回 (request_id, status)。
-    pub fn poll_once(&mut self, api: &mut ManagementApi, now_unix: u64) -> Option<(u64, u16)> {
+    /// `session_role` = transport 层认证的角色（payload 自报 role 无效）；
+    /// `executor` = 真实动作执行器（每种 action 有实现；未接线的动作
+    /// 由调用方返回显式错误，不得固定 Ok）。
+    ///
+    /// 返回 (request_id, status)；**publish 失败 → `Ok(None)` 之上的
+    /// `Err(())`**——执行成功但响应未达 = 调用方可见的失败，不吞。
+    pub fn poll_once(
+        &mut self,
+        api: &mut ManagementApi,
+        session_role: Role,
+        now_unix: u64,
+        executor: &mut dyn FnMut(&ApiAction, &str) -> (StatusCode, String),
+    ) -> Option<Result<(u64, u16), ()>> {
         let topic = self.cmd_topic();
         let raw = (self.subscribe)(&topic)?;
-        let request = match parse_request(&raw) {
+        let request = match parse_request(&raw, session_role) {
             Ok(r) => r,
             Err(status) => {
-                // 无法解析 → 错误响应（fail-closed，不静默）。
-                let resp = ApiResponse::error(0, status, "malformed request");
+                // 无法解析/未知 action → 错误响应（fail-closed，不静默、
+                // 不默认 StatusQuery）。
+                let resp = ApiResponse::error(0, status, "malformed or unknown request");
                 let topic = self.resp_topic();
-                let _ = (self.publish)(&topic, &resp.to_json());
-                return Some((0, status as u16));
+                if (self.publish)(&topic, &resp.to_json()).is_err() {
+                    return Some(Err(()));
+                }
+                return Some(Ok((0, status.code())));
             }
         };
-        let response = api.handle(&request, now_unix, |action, payload| {
-            execute_remote_action(action, payload)
-        });
+        let response = api.handle(&request, now_unix, executor);
         let status = response.status;
         let topic = self.resp_topic();
-        let _ = (self.publish)(&topic, &response.to_json());
-        Some((response.request_id, status as u16))
+        if (self.publish)(&topic, &response.to_json()).is_err() {
+            return Some(Err(()));
+        }
+        Some(Ok((response.request_id, status.code())))
     }
 }
 
-/// 远程动作执行（设备侧真实操作由上层 runner 注入——本层做动作到
-/// 操作的映射 + 返回码；重启/配置等副作用经 handler 回调执行）。
-fn execute_remote_action(_action: &ApiAction, payload: &str) -> (StatusCode, String) {
-    // 动作执行由注入 handler 完成（调用方在 poll_once 的 handle 闭包中
-    // 提供真实设备操作）；此处提供默认实现：动作已由 RBAC 放行，返回
-    // 接受的 payload（调用方应覆写）。
-    (StatusCode::Ok, String::from(payload))
-}
-
-/// 解析 MQTT 请求 payload → ApiRequest（极简格式：JSON Lines 兼容）。
+/// 解析 MQTT 请求 payload → ApiRequest（极简 JSON Lines 兼容）。
 ///
-/// 格式：`{"version":1,"role":"operator","action":"ConfigSet","payload":"..."}`
-fn parse_request(raw: &str) -> Result<ApiRequest, StatusCode> {
-    // 无 serde 依赖的极简解析（no_std 友好）：逗号分隔键值。
+/// 蓝图 41：`role` 不得来自 payload——`session_role`（transport 认证）
+/// 是唯一角色来源；payload 中出现的 `role` 键若与 session 冲突 → 400。
+/// 未知 action/role → Err（不再默认 Operator/StatusQuery）。
+fn parse_request(raw: &str, session_role: Role) -> Result<ApiRequest, StatusCode> {
     let mut version = 1u32;
-    let mut role = Role::Operator;
-    let mut action = ApiAction::StatusQuery;
+    let mut action = None;
     let mut payload = String::new();
+    let mut payload_role: Option<Role> = None;
     for part in raw.trim_matches(['{', '}']).split(',') {
         let mut it = part.splitn(2, ':');
         let (k, v) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
@@ -99,29 +109,57 @@ fn parse_request(raw: &str) -> Result<ApiRequest, StatusCode> {
         match k.trim().trim_matches('"') {
             "version" => version = v.parse().unwrap_or(1),
             "role" => {
-                role = match v {
+                // payload 自报角色：仅接受与 session 一致的显式声明；
+                // 未知角色值一律 400。
+                payload_role = Some(match v {
                     "operator" => Role::Operator,
                     "viewer" => Role::Viewer,
-                    "security" => Role::Operator,
-                    _ => Role::Viewer,
-                }
+                    "admin" => Role::Admin,
+                    "superuser" => Role::Superuser,
+                    _ => return Err(StatusCode::BadRequest),
+                });
             }
             "action" => {
-                action = match v {
-                    "ConfigSet" => ApiAction::ConfigSet,
+                action = Some(match v {
+                    "StatusQuery" => ApiAction::StatusQuery,
+                    "SloQuery" => ApiAction::SloQuery,
+                    "AgentList" => ApiAction::AgentList,
+                    "AgentStart" => ApiAction::AgentStart,
+                    "AgentStop" => ApiAction::AgentStop,
                     "AgentRestart" => ApiAction::AgentRestart,
+                    "ConfigGet" => ApiAction::ConfigGet,
+                    "ConfigSet" => ApiAction::ConfigSet,
+                    "LogQuery" => ApiAction::LogQuery,
+                    "SupportBundleExport" => ApiAction::SupportBundleExport,
+                    "CrashDumpSymbolize" => ApiAction::CrashDumpSymbolize,
+                    "UpdateCheck" => ApiAction::UpdateCheck,
+                    "UpdateApply" => ApiAction::UpdateApply,
+                    "UpdateRollback" => ApiAction::UpdateRollback,
+                    "MaintenanceEnter" => ApiAction::MaintenanceEnter,
+                    "MaintenanceExit" => ApiAction::MaintenanceExit,
+                    "BackupCreate" => ApiAction::BackupCreate,
+                    "Restore" => ApiAction::BackupRestore,
                     "Revoke" => ApiAction::Revoke,
-                    _ => ApiAction::StatusQuery,
-                }
+                    "FactoryReset" => ApiAction::FactoryReset,
+                    "SecureErase" => ApiAction::SecureErase,
+                    // 未知/拼错 action → 400（不再映射 StatusQuery）。
+                    _ => return Err(StatusCode::BadRequest),
+                });
             }
             "payload" => payload = String::from(v),
             _ => {}
         }
     }
+    if let Some(payload_role) = payload_role {
+        if payload_role != session_role {
+            // payload 自报角色与认证会话冲突 → 拒绝（防自报提权）。
+            return Err(StatusCode::BadRequest);
+        }
+    }
     Ok(ApiRequest {
         api_version: ApiVersion(version),
-        role,
-        action,
+        role: session_role,
+        action: action.ok_or(StatusCode::BadRequest)?,
         payload,
         idempotency_key: None,
     })
@@ -147,10 +185,23 @@ mod tests {
         )
     }
 
-    /// 验收：远程命令经 MQTT RPC 端到端（请求→RBAC→执行→响应发布）。
+    /// 真实执行器（固定 Ok 已删除——调用方必须注入；失败显式返回）。
+    fn executor(
+        executed: &std::rc::Rc<core::cell::RefCell<Vec<String>>>,
+    ) -> impl FnMut(&ApiAction, &str) -> (StatusCode, String) + '_ {
+        let state = std::rc::Rc::clone(executed);
+        move |action: &ApiAction, payload: &str| {
+            state.borrow_mut().push(format!("{action:?}"));
+            (StatusCode::Ok, String::from(payload))
+        }
+    }
+
+    /// 验收：远程命令经 MQTT RPC 端到端（请求→RBAC→真实执行→响应发布）。
     #[test]
     fn test_remote_command_roundtrip() {
         let published: std::rc::Rc<core::cell::RefCell<Vec<String>>> =
+            std::rc::Rc::new(core::cell::RefCell::new(Vec::new()));
+        let executed: std::rc::Rc<core::cell::RefCell<Vec<String>>> =
             std::rc::Rc::new(core::cell::RefCell::new(Vec::new()));
         let pub_state = std::rc::Rc::clone(&published);
         let publish = move |_t: &str, payload: &str| {
@@ -159,7 +210,7 @@ mod tests {
         };
         // 一条 ConfigSet 请求。
         let requests: Vec<String> = vec![String::from(
-            r#"{"version":1,"role":"operator","action":"ConfigSet","payload":"{\"param\":1}"}"#,
+            r#"{"version":1,"action":"ConfigSet","payload":"{\"param\":1}"}"#,
         )];
         let mut idx = 0;
         let subscribe = move |_t: &str| {
@@ -169,30 +220,102 @@ mod tests {
         };
         let mut transport = MqttRpcTransport::new("dev-1", publish, subscribe);
         let mut api = api();
-        let result = transport.poll_once(&mut api, 1_700_000_000).expect("响应");
-        assert_eq!(result.1, 0, "Ok=0（StatusCode 判别值）");
-        let p = published.borrow();
-        assert_eq!(p.len(), 1, "响应必须发布到 resp topic");
+        let mut exec = executor(&executed);
+        let result = transport
+            .poll_once(&mut api, Role::Operator, 1_700_000_000, &mut exec)
+            .expect("响应")
+            .expect("发布成功");
+        assert_eq!(result.1, 200, "Ok=200");
+        assert_eq!(published.borrow().len(), 1, "响应必须发布到 resp topic");
+        assert_eq!(executed.borrow().len(), 1, "真实 executor 必须被调用");
     }
 
-    /// 验收：RBAC 拒绝未授权命令（Role::Viewer 的 ConfigSet → 403）。
+    /// 验收：RBAC 拒绝未授权命令（Viewer 的 ConfigSet → 403）。
     #[test]
     fn test_rbac_rejects_unauthorized() {
         let publish = |_t: &str, _p: &str| Ok(());
         let subscribe = |_t: &str| {
             Some(String::from(
-                r#"{"version":1,"role":"viewer","action":"ConfigSet","payload":"x"}"#,
+                r#"{"version":1,"action":"ConfigSet","payload":"x"}"#,
             ))
         };
         let mut transport = MqttRpcTransport::new("dev-1", publish, subscribe);
         let mut api = api();
+        let mut exec = |_a: &ApiAction, _p: &str| (StatusCode::InternalError, String::new());
         let (_, status) = transport
-            .poll_once(&mut api, 1_700_000_000)
-            .expect("拒绝响应");
-        assert_eq!(
-            status, 3,
-            "Forbidden=3（StatusCode 判别值）——Viewer 必须被 RBAC 拒绝"
-        );
+            .poll_once(&mut api, Role::Viewer, 1_700_000_000, &mut exec)
+            .expect("拒绝响应")
+            .expect("发布成功");
+        assert_eq!(status, 403, "Forbidden=403——Viewer 必须被 RBAC 拒绝");
+    }
+
+    /// 验收：畸形/未知 action fail-closed（400，不默认 StatusQuery）。
+    #[test]
+    fn test_unknown_action_fail_closed() {
+        let published: std::rc::Rc<core::cell::RefCell<Vec<String>>> =
+            std::rc::Rc::new(core::cell::RefCell::new(Vec::new()));
+        let pub_state = std::rc::Rc::clone(&published);
+        let publish = move |_t: &str, payload: &str| {
+            pub_state.borrow_mut().push(payload.to_string());
+            Ok(())
+        };
+        let subscribe = |_t: &str| {
+            Some(String::from(
+                r#"{"version":1,"action":"HackTheSystem","payload":"x"}"#,
+            ))
+        };
+        let mut transport = MqttRpcTransport::new("dev-1", publish, subscribe);
+        let mut api = api();
+        let mut exec = |_a: &ApiAction, _p: &str| (StatusCode::InternalError, String::new());
+        let (_, status) = transport
+            .poll_once(&mut api, Role::Operator, 1_700_000_000, &mut exec)
+            .expect("响应")
+            .expect("发布成功");
+        assert_eq!(status, 400, "未知 action 必须 400（不默认 StatusQuery）");
+    }
+
+    /// 验收：payload 自报 role 冲突 → 400（不再信任自报角色）。
+    #[test]
+    fn test_payload_role_conflict_rejected() {
+        let published: std::rc::Rc<core::cell::RefCell<Vec<String>>> =
+            std::rc::Rc::new(core::cell::RefCell::new(Vec::new()));
+        let pub_state = std::rc::Rc::clone(&published);
+        let publish = move |_t: &str, payload: &str| {
+            pub_state.borrow_mut().push(payload.to_string());
+            Ok(())
+        };
+        // payload 自称 superuser，但 transport 会话是 viewer。
+        let subscribe = |_t: &str| {
+            Some(String::from(
+                r#"{"version":1,"role":"superuser","action":"FactoryReset","payload":"x"}"#,
+            ))
+        };
+        let mut transport = MqttRpcTransport::new("dev-1", publish, subscribe);
+        let mut api = api();
+        let mut exec = |_a: &ApiAction, _p: &str| (StatusCode::InternalError, String::new());
+        let (_, status) = transport
+            .poll_once(&mut api, Role::Viewer, 1_700_000_000, &mut exec)
+            .expect("响应")
+            .expect("发布成功");
+        assert_eq!(status, 400, "自报角色与认证会话冲突必须 400");
+    }
+
+    /// 验收：publish 失败传播（不吞错误）。
+    #[test]
+    fn test_publish_failure_propagates() {
+        let publish = |_t: &str, _p: &str| Err(());
+        let subscribe = |_t: &str| {
+            Some(String::from(
+                r#"{"version":1,"action":"StatusQuery","payload":""}"#,
+            ))
+        };
+        let mut transport = MqttRpcTransport::new("dev-1", publish, subscribe);
+        let mut api = api();
+        let mut exec = |_a: &ApiAction, _p: &str| (StatusCode::Ok, String::new());
+        let result = transport
+            .poll_once(&mut api, Role::Operator, 1_700_000_000, &mut exec)
+            .expect("有请求");
+        assert!(result.is_err(), "publish 失败必须可见（Err），不伪装成功");
     }
 
     /// 验收：畸形请求 fail-closed（错误响应，不静默）。
@@ -208,8 +331,11 @@ mod tests {
         let subscribe = |_t: &str| Some(String::from("not-json-at-all"));
         let mut transport = MqttRpcTransport::new("dev-1", publish, subscribe);
         let mut api = api();
-        let result = transport.poll_once(&mut api, 1_700_000_000);
-        assert!(result.is_some(), "畸形请求必须产生响应（不静默）");
+        let mut exec = |_a: &ApiAction, _p: &str| (StatusCode::InternalError, String::new());
+        let result = transport
+            .poll_once(&mut api, Role::Operator, 1_700_000_000, &mut exec)
+            .expect("畸形请求必须产生响应（不静默）");
+        assert!(result.is_ok());
         assert_eq!(published.borrow().len(), 1);
     }
 }

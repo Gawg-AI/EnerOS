@@ -167,7 +167,8 @@ impl<'a> Scan<'a> {
                             let mut code = 0u32;
                             for _ in 0..4 {
                                 let d = self.bump().ok_or(LogError::SerializeFailed)?;
-                                code = code * 16 + d.to_digit(16).ok_or(LogError::SerializeFailed)?;
+                                code =
+                                    code * 16 + d.to_digit(16).ok_or(LogError::SerializeFailed)?;
                             }
                             out.push(char::from_u32(code).ok_or(LogError::SerializeFailed)?);
                         }

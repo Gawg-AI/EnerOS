@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(model.soc_var_idx.len(), 5); // 32 AI-05：soc[n]
         let lp = model.compile().unwrap();
         assert_eq!(lp.variables.len(), 17); // 13 + 4 二元变量
-        // 约束：soc_dynamics(4) + ramp(6) + 方向互斥(2×4=8) + soc_init(1) + soc_final(1)
+                                            // 约束：soc_dynamics(4) + ramp(6) + 方向互斥(2×4=8) + soc_init(1) + soc_final(1)
         assert_eq!(lp.constraints.num_rows, 20);
     }
 
@@ -462,8 +462,14 @@ mod tests {
                 }
             }
         }
-        assert!(found_charge, "charge_dir constraint (charge − pcs·y ≤ 0) must exist");
-        assert!(found_discharge, "discharge_dir constraint (discharge + pcs·y ≤ pcs) must exist");
+        assert!(
+            found_charge,
+            "charge_dir constraint (charge − pcs·y ≤ 0) must exist"
+        );
+        assert!(
+            found_discharge,
+            "discharge_dir constraint (discharge + pcs·y ≤ pcs) must exist"
+        );
     }
 
     /// AI-003：负电价时段，模型应选择充电（charge > 0）而非放电——

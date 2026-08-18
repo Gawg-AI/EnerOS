@@ -312,8 +312,9 @@ mod tests {
     use super::*;
     use crate::mock::MockMasterTransport;
 
-    /// 构造包含一个遥测点的 M_ME_NC 数据帧。
-    fn telemetry_frame(common_addr: u16, ioa: u32, value: f32) -> Vec<u8> {
+    /// 构造包含一个遥测点的 M_ME_NC 数据帧（`send_seq` = 对端 N(S)，
+    /// 39 收尾复验 P1-3 后必须与 master 期望序号一致）。
+    fn telemetry_frame(common_addr: u16, ioa: u32, value: f32, send_seq: u16) -> Vec<u8> {
         let asdu = Asdu {
             type_id: TypeId::MeasuredValueFloat,
             cause_of_tx: Cot::Spontaneous,
@@ -325,11 +326,11 @@ mod tests {
                 time_tag: None,
             }],
         };
-        Apdu::i_format(0, 0, asdu).encode().unwrap()
+        Apdu::i_format(send_seq, 0, asdu).encode().unwrap()
     }
 
     /// 构造总召唤激活确认帧（C_IC_NA，COT=ActivationConfirm）。
-    fn interrogation_confirm(common_addr: u16) -> Vec<u8> {
+    fn interrogation_confirm(common_addr: u16, send_seq: u16) -> Vec<u8> {
         let asdu = Asdu {
             type_id: TypeId::InterrogationCommand,
             cause_of_tx: Cot::ActivationConfirm,
@@ -341,7 +342,7 @@ mod tests {
                 time_tag: None,
             }],
         };
-        Apdu::i_format(0, 0, asdu).encode().unwrap()
+        Apdu::i_format(send_seq, 0, asdu).encode().unwrap()
     }
 
     /// ARCH-P04：iec104-master 与 modbus 跑同一 seam 契约测试套件。
@@ -378,14 +379,18 @@ mod tests {
             let mock = adapter
                 .master_mut()
                 .expect("内部 transport 必须是 MockMasterTransport");
-            // 每设备：STARTDT_CON + 总召唤激活确认 + 遥测帧
+            // 每设备：STARTDT_CON + 总召唤激活确认(N(S)=0) + 遥测帧(N(S)=1)
+            //——39 收尾复验（P1-3）：注入帧序号必须协议合法（旧测试
+            // 两帧均 N(S)=0，本身就是乱序/重放样本）。
             for (conn, ioa) in [(1u32, 100u32), (2u32, 200u32)] {
                 mock.push_rx(
                     conn,
-                    Apdu::u_format(eneros_iec104_slave::UFormatFunction::StartDtCon).encode().unwrap(),
+                    Apdu::u_format(eneros_iec104_slave::UFormatFunction::StartDtCon)
+                        .encode()
+                        .unwrap(),
                 );
-                mock.push_rx(conn, interrogation_confirm(conn as u16));
-                mock.push_rx(conn, telemetry_frame(conn as u16, ioa, 42.0));
+                mock.push_rx(conn, interrogation_confirm(conn as u16, 0));
+                mock.push_rx(conn, telemetry_frame(conn as u16, ioa, 42.0, 1));
             }
         }
 

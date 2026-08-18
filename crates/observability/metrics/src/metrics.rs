@@ -333,7 +333,6 @@ mod tests {
         );
     }
 
-
     /// 构造注册表 + 内存存储采集器，并注册一项测试指标.
     fn new_collector() -> MetricsCollectorImpl<MemoryMetricsStore> {
         let mut c = MetricsCollectorImpl::new(MemoryMetricsStore::new(16), 1000);

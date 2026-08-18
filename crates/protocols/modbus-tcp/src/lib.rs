@@ -36,6 +36,8 @@ pub mod error;
 pub mod master;
 pub mod mbap;
 pub mod transport;
+// 39 WP-39.11：协议插件（服务装配统一入口）。
+pub mod plugin;
 
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
@@ -267,12 +269,9 @@ mod tests {
     #[test]
     fn test_exception_response_integration() {
         let mut mock = MockTcpTransport::new();
-        mock.push_response(build_exception_response(
-            0,
-            1,
-            0x03,
-            ExceptionCode::IllegalDataAddress,
-        ).unwrap());
+        mock.push_response(
+            build_exception_response(0, 1, 0x03, ExceptionCode::IllegalDataAddress).unwrap(),
+        );
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);

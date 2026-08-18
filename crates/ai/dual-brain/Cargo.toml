@@ -12,16 +12,20 @@ description = "EnerOS v0.71.0 Dual-brain coordinator (LLM + Solver end-to-end, <
 eneros-time = { path = "../../drivers/time" }
 # 22 §2.W5.1：AI 决策入审计链（SM3 哈希链可追溯/篡改检出）。
 eneros-audit = { path = "../../security/audit" }
+# 32 AG-04：审计创世锚从会话密钥材料 SM3 派生（decision_audit_from_key）。
+eneros-crypto = { path = "../../security/crypto" }
 # 22 §2.W2.2：AI→设备经 ControlChain（锁定 5）。
 eneros-control-gateway = { path = "../../protocols/control-gateway" }
 eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
-eneros-solver-core = { path = "../solver-core" }
+eneros-solver-core = { path = "../solver-core", default-features = false }
 eneros-energy-lp-model = { path = "../energy-lp-model" }
 eneros-safety-validator = { path = "../safety-validator" }
 eneros-intent-parser = { path = "../intent-parser" }
 eneros-intent-contract = { path = "../intent-contract" }
 eneros-fast-path = { path = "../fast-path" }
-eneros-llm-engine = { path = "../llm-engine", features = ["llama-cpp"] }
+# 蓝图 40 WP-40.4：llama-cpp 为 host native 后端——target 闭包经
+# `llm-native` feature 选择；默认不启用（profile 不声明 → 服务 Unavailable）。
+eneros-llm-engine = { path = "../llm-engine" }
 eneros-infer-scheduler = { path = "../infer-scheduler" }
 eneros-prompt-template = { path = "../prompt-template" }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
@@ -31,6 +35,8 @@ serde_json = { version = "1", default-features = false, features = ["alloc"] }
 default = []
 # v0.212.0（P0-27）：mock 仅测试/显式启用；生产不依赖 mock。
 mock = ["eneros-solver-core/mock"]
+# 蓝图 40 WP-40.4：host LLM 后端（llama.cpp native）——target 不声明。
+llm-native = ["eneros-llm-engine/llama-cpp", "eneros-infer-scheduler/llm-native"]
 
 [dev-dependencies]
 # v0.244.0：lib 测试使用 MockSolver（solver-core 的 mock 模块在 test 构建

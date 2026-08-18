@@ -3,6 +3,7 @@ name = "eneros-firmware-agent"
 version.workspace = true
 edition.workspace = true
 description = "固件闭包 Agent 场景（ARC-008）：设备轮询 + 市场结算闭包启动器"
+license.workspace = true
 
 [features]
 default = ["mock"]

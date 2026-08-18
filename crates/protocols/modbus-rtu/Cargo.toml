@@ -13,9 +13,13 @@ mock = []
 eneros-driver-framework = { path = "../../drivers/framework" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
 eneros-upa-model = { path = "../upa-model" }
-eneros-rs485 = { path = "../../drivers/rs485", features = ["mock"] }
+# 36 WP-36.6：rs485 是生产 transport 依赖，但不得携带 mock feature
+# （release resolved graph 零 mock）；mock 仅测试构建可见（dev-dependencies）。
+eneros-rs485 = { path = "../../drivers/rs485" }
 
 [dev-dependencies]
 # 集成测试：真实单调时钟（eneros-time boot 前恒 0）。
 eneros-hal = { path = "../../../crates/hal/hal" }
 eneros-protocol-abstract = { path = "../protocol-abstract", features = ["mock"] }
+# 集成测试：MockUartHw（tests/loopback.rs）——仅测试构建启用 mock。
+eneros-rs485 = { path = "../../drivers/rs485", features = ["mock"] }

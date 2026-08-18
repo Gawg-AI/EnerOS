@@ -57,7 +57,6 @@ pub mod lifecycle;
 pub mod process;
 pub mod recovery;
 pub mod registry;
-pub mod sdk_bridge;
 pub mod spawner;
 pub mod system_agent;
 pub mod types;

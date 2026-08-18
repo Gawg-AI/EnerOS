@@ -373,7 +373,10 @@ mod tests {
     use crate::writer::{make_chunk_path, TsdbWriter, TsdbWriterImpl};
 
     fn make_fs() -> Lfs {
-        let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(MockBlockDevice::new(64, 4096));
+        let dev = eneros_storage::partition::boxed_mock_scope(
+            MockBlockDevice::new(64, 4096),
+            eneros_storage::partition::BlockRole::Data,
+        );
         Lfs::format(dev).expect("format should succeed")
     }
 

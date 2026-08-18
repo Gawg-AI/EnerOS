@@ -194,10 +194,7 @@ impl<S: HalSerial> CellularModem<S> {
         // 2. 记录 APN；先下发 AT+CGDCONT 配置 PDP 上下文（31 DR-04：
         //    旧实现 APN 存而不下发——ATD 前无 APN 配置，真机拨号必失败）。
         self.apn = apn.to_string();
-        let cgdcont = AtCommand::new(
-            &alloc::format!("AT+CGDCONT=1,\"IP\",\"{apn}\""),
-            5000,
-        );
+        let cgdcont = AtCommand::new(&alloc::format!("AT+CGDCONT=1,\"IP\",\"{apn}\""), 5000);
         self.send_at(&cgdcont)?;
         // 3. 发送 ATD*99# 拨号命令（带超时窗口）。
         let dial_cmd = AtCommand::new("ATD*99#", 5000);

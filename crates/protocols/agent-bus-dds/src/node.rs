@@ -14,8 +14,9 @@ use crate::types::{DdsSample, ParticipantId, ReaderId, WriterId};
 /// DDS 节点统一接口.
 ///
 /// 定义 DDS 节点的生命周期与资源管理接口：创建 participant / reader / writer，
-/// 读写样本，关闭节点。实现方包括 [`crate::mock::MockDdsNode`]（默认可用）与
-/// `CycloneDdsNode`（feature = "cyclone-dds"，D3）。
+/// 读写样本，关闭节点。实现方包括 [`crate::mock::MockDdsNode`]（默认可用）。
+/// Cyclone DDS 路线已于蓝图 35 系列撤销（P1-25/P1-29：删除未完成，
+/// 39 清理残留；AgentBus 统一走 41 的 MQTT/IPC）。
 ///
 /// # 广播语义
 ///

@@ -22,6 +22,11 @@ pub enum SchedulerError {
     Engine(LlmError),
     /// 请求未调度（未提交到队列）.
     NotScheduled,
+    /// 蓝图 40 WP-40.4：请求被显式取消（supervisor/调用方）。
+    Cancelled,
+    /// 蓝图 40 WP-40.4：late result——结果到达时调用方已不再等待该
+    /// correlation/epoch（应丢弃并审计）。
+    LateResult,
 }
 
 // 手动实现 PartialEq：LlmError 未派生 PartialEq，用 discriminant 比较（全单元变体）.
@@ -32,6 +37,8 @@ impl PartialEq for SchedulerError {
             (Self::Timeout, Self::Timeout) => true,
             (Self::CacheExhausted, Self::CacheExhausted) => true,
             (Self::NotScheduled, Self::NotScheduled) => true,
+            (Self::Cancelled, Self::Cancelled) => true,
+            (Self::LateResult, Self::LateResult) => true,
             (Self::Engine(a), Self::Engine(b)) => {
                 core::mem::discriminant(a) == core::mem::discriminant(b)
             }
@@ -48,6 +55,8 @@ impl fmt::Display for SchedulerError {
             SchedulerError::CacheExhausted => f.write_str("kv cache exhausted"),
             SchedulerError::Engine(e) => write!(f, "engine error: {}", e),
             SchedulerError::NotScheduled => f.write_str("not scheduled"),
+            SchedulerError::Cancelled => f.write_str("request cancelled"),
+            SchedulerError::LateResult => f.write_str("late result (correlation/epoch mismatch)"),
         }
     }
 }

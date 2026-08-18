@@ -298,6 +298,7 @@ mod tests {
     }
 
     impl MockIo {
+        #[allow(dead_code)] // 44.2：测试注入辅助（44.4 冻结登记）
         fn push_rx(&self, bytes: &[u8]) {
             self.rx_fifo.lock().extend_from_slice(bytes);
         }
@@ -311,7 +312,11 @@ mod tests {
             match offset {
                 PL011_FR => {
                     let rxfe = self.rx_empty();
-                    (if rxfe { PL011_FR_RXFE } else { 0 })
+                    if rxfe {
+                        PL011_FR_RXFE
+                    } else {
+                        0
+                    }
                 }
                 PL011_DR => {
                     let mut fifo = self.rx_fifo.lock();
@@ -373,7 +378,7 @@ mod tests {
         let (mut driver, fifo) = mock_driver();
         driver.init().unwrap();
         driver.start().unwrap();
-        fifo.lock().extend_from_slice(&[b'A', b'B']);
+        fifo.lock().extend_from_slice(b"AB");
         driver.handle_irq(33);
         assert_eq!(driver.irq_count, 1);
         assert_eq!(driver.recv(), Some(b'A'));
@@ -384,7 +389,7 @@ mod tests {
     /// 五步模板 ①：发送回环。
     #[test]
     fn send_byte_loopback() {
-        let (mut driver, fifo) = mock_driver();
+        let (mut driver, _fifo) = mock_driver();
         driver.init().unwrap();
         driver.send_byte(b'X').unwrap();
         // 回环：发送字节进入 FIFO → IRQ 收包读回。

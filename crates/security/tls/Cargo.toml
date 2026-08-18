@@ -14,7 +14,6 @@ replaces_reason = "eneros-mtls 是自定义伪 mTLS，非标准 TLS，禁止生�
 
 [dependencies]
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
-rustls-pemfile = "2.2"
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["ring", "std"] }
 # 设备端 TLS（蓝图/20 R1-3）：embedded-tls no_std + 本仓 PKI 证书链验证
 embedded-tls = { version = "0.19", default-features = false, optional = true }

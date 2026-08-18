@@ -289,7 +289,7 @@ mod tests {
         let snap = QueueSnapshot {
             last_acked_id: 1,
             events: vec![ev(2, "温度=35.5°C")],
-                    capacity: 16,
+            capacity: 16,
             policy: crate::queue::OverflowPolicy::DropOldest,
         };
         let data = persist_snapshot(&snap);

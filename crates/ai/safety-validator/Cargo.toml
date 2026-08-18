@@ -8,6 +8,9 @@ description = "EnerOS v0.67.0 Safety validator (rule chain + clamp, no_std)"
 
 [dependencies]
 eneros-energy-lp-model = { path = "../energy-lp-model" }
+# 蓝图 40 WP-40.1：可信遥测评估器（点 ID 类型 + SM3 provenance 摘要）。
+eneros-upa-model = { path = "../../protocols/upa-model" }
+eneros-crypto = { path = "../../security/crypto" }
 
 [dev-dependencies]
 eneros-solver-core = { path = "../solver-core" }

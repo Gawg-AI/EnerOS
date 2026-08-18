@@ -149,12 +149,29 @@ pub trait DmaAllocator {
 /// `phys_base` 由构造者给出（宿主测试用可读写内存地址；真机由装配层
 /// 提供已验证的 1:1 窗口地址）。`DmaPoolAllocator` 不假设 VA==PA 之外
 /// 的任何映射关系——设备地址由 map 显式给出。
+/// 39 CVR-39-06：VA→PA 偏移（root 装配时从
+/// `sel4_sys::safe::user_image_phys_base` 推导注入；0 = identity）。
+pub static IDENTITY_OFFSET: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// 设置 VA→PA 偏移（root 装配期调用一次）。
+pub fn set_identity_offset(offset: u64) {
+    IDENTITY_OFFSET.store(offset, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// 读取 VA→PA 偏移。
+pub fn identity_offset() -> u64 {
+    IDENTITY_OFFSET.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct DmaPoolAllocator<const N: usize> {
-    /// 池内存（CPU 侧视图）。
-    memory: Box<[u8; N]>,
+    /// 池内存（N + 4095 字节，含 4K 对齐余量；`aligned_off` 起为可用区）。
+    memory: Box<[u8]>,
+    /// 可用区起点在 `memory` 内的偏移（4K 对齐——virtio 队列 PFN 要求
+    /// 页对齐；39 CVR-39-05 根因：未对齐 phys_base 截断后设备读错页）。
+    aligned_off: usize,
     /// 分配位图（页粒度；const 泛型表达式不可用，用 Vec 运行时构建）。
     used: Vec<bool>,
-    /// 物理基址（宿主注入；= memory 地址在 1:1 窗口下的值）。
+    /// 物理基址（宿主注入；= 可用区起点在 1:1 窗口下的值）。
     phys_base: PhysAddr,
     /// 活动映射（生命周期追踪）。
     active: Vec<DmaMapping>,
@@ -164,21 +181,50 @@ impl<const N: usize> DmaPoolAllocator<N> {
     pub const PAGE: usize = 4096;
 
     pub fn new(phys_base: PhysAddr) -> Self {
-        Self {
-            memory: alloc::boxed::Box::new([0u8; N]),
+        // 39 CVR-39-01 排障：`Box::new([0u8; N])` 先构造**栈上** N 字节
+        // 数组再搬入堆——root 栈仅 64KB，36 页池（144KB）直接栈溢出
+        // （QEMU 实测 blk DMA 超时）。改为堆上直接分配零化内存。
+        // 39 CVR-39-05：池可用区 4K 对齐（virtio QUEUE_PFN 页对齐要求）。
+        let memory: Box<[u8]> = alloc::vec![0u8; N + 4095].into_boxed_slice();
+        let start = memory.as_ptr() as usize;
+        let aligned_off = (4096 - (start & 4095)) & 4095;
+        let mut pool = Self {
+            memory,
+            aligned_off,
             used: alloc::vec![false; N / Self::PAGE],
             phys_base,
             active: Vec::new(),
+        };
+        // 物理基址默认指向可用区起点（调用方可按平台覆盖）。
+        if phys_base.as_u64() == 0 {
+            pool.phys_base = PhysAddr::new(pool.cpu_base() as u64);
         }
+        pool
     }
 
-    /// 1:1 映射平台构造（**平台已验证**的板级事实：root 镜像身份映射，
-    /// 池内存地址即物理地址——qemu-virt/seL4 rootserver；调用方负责声明
-    /// 该事实，禁止在其他平台上使用）。
+    /// 可用区起点（CPU 地址；4K 对齐）。
+    fn cpu_base(&self) -> usize {
+        self.memory.as_ptr() as usize + self.aligned_off
+    }
+
+    /// 1:1 映射平台构造（**平台已验证**的板级事实：池内存地址即物理
+    /// 地址）。仅适用于 root 镜像链接基址 == 物理加载基址的平台；对
+    /// qemu-virt rootserver（低链接 VA ↔ 高物理地址）**不成立**——
+    /// 用 [`Self::new_identity_offset`]。
     pub fn new_identity() -> Self {
+        // phys_base 由 new() 默认置为可用区起点（4K 对齐）。
+        Self::new(PhysAddr::new(0))
+    }
+
+    /// 带 VA→PA 偏移的 identity 构造（qemu-virt/seL4 rootserver 板级
+    /// 事实，39 CVR-39-04）：root 镜像链接于低地址（0x200000 起），
+    /// 内核/rootserver 加载于 guest RAM（0x40000000 起）——VA→PA 偏移
+    /// = RAM 基址。无此偏移时设备 DMA 落到 RAM 之外的客户机物理地址，
+    /// QEMU 静默丢弃（virtio-blk 读超时根因，37 起"format failed Io"）。
+    pub fn new_identity_offset(offset: u64) -> Self {
         let mut pool = Self::new(PhysAddr::new(0));
-        let ptr = pool.memory.as_ptr() as u64;
-        pool.phys_base = PhysAddr::new(ptr);
+        let base = pool.cpu_base() as u64;
+        pool.phys_base = PhysAddr::new(base.wrapping_add(offset));
         pool
     }
 
@@ -187,9 +233,9 @@ impl<const N: usize> DmaPoolAllocator<N> {
         N / Self::PAGE
     }
 
-    /// CPU 侧内存切片（测试/驱动经 mapping 访问）。
+    /// CPU 侧内存切片（可用区；测试/驱动经 mapping 访问）。
     pub fn cpu_slice(&self) -> &[u8] {
-        &self.memory[..]
+        &self.memory[self.aligned_off..self.aligned_off + N]
     }
 
     /// 映射前设备地址计算：无 IOMMU 时 = 物理地址（`PhysAddr` 显式转换），
@@ -233,7 +279,7 @@ impl<const N: usize> DmaAllocator for DmaPoolAllocator<N> {
             self.used[page + k] = true;
         }
         let off = page * Self::PAGE;
-        let cpu = self.memory.as_ptr() as u64 + off as u64;
+        let cpu = self.cpu_base() as u64 + off as u64;
         Ok(DmaBuffer {
             cpu: CpuVaddr::new(cpu),
             len: req.size,
@@ -250,7 +296,7 @@ impl<const N: usize> DmaAllocator for DmaPoolAllocator<N> {
         dir: DmaDirection,
     ) -> Result<DmaMapping, DmaError> {
         // CPU 缓冲 → 物理地址（池内偏移；1:1 窗口语义由 phys_base 表达）。
-        let cpu_base = self.memory.as_ptr() as u64;
+        let cpu_base = self.cpu_base() as u64;
         let off = buffer
             .cpu
             .as_u64()

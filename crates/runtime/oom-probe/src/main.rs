@@ -72,6 +72,7 @@ mod probe {
         offset: AtomicUsize,
     }
 
+    // SAFETY: TinyBump shares only `offset` via AtomicUsize; heap bytes are never concurrently mutated through shared references.
     unsafe impl Sync for TinyBump {}
     impl TinyBump {
         const fn new() -> Self {
@@ -103,11 +104,13 @@ mod probe {
                     Ordering::Relaxed,
                     Ordering::Relaxed,
                 ) {
+                    // SAFETY: `aligned` is derived from heap_start and a successful CAS; it is within HEAP_SIZE and satisfies layout alignment.
                     Ok(_) => return unsafe { heap_ptr.add(aligned) },
                     Err(cur) => off = cur,
                 }
             }
         }
+        // SAFETY: dealloc is a no-op for a bump allocator; no memory is dereferenced or reused.
         unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
     }
 

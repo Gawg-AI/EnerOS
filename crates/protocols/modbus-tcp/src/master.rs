@@ -65,11 +65,7 @@ impl<'a> ModbusTcpMaster<'a> {
 
     /// 构建完整 TCP 帧：MBAP 头(7B) + PDU（31 PR-09：PDU 超 252 字节 →
     /// Err(PduTooLong)，u16 回绕防护）。
-    pub fn build_frame(
-        txn_id: u16,
-        unit_id: u8,
-        pdu: &[u8],
-    ) -> Result<Vec<u8>, ModbusTcpError> {
+    pub fn build_frame(txn_id: u16, unit_id: u8, pdu: &[u8]) -> Result<Vec<u8>, ModbusTcpError> {
         let header = MbapHeader::try_new(txn_id, unit_id, pdu.len() as u16)
             .ok_or(ModbusTcpError::PduTooLong)?;
         let mut frame = Vec::with_capacity(7 + pdu.len());
@@ -497,7 +493,11 @@ mod tests {
     // ===== 测试辅助函数 =====
 
     /// 构建读保持寄存器响应帧（MBAP + PDU）
-    fn build_read_response(txn_id: u16, unit_id: u8, regs: &[u16]) -> Result<Vec<u8>, ModbusTcpError> {
+    fn build_read_response(
+        txn_id: u16,
+        unit_id: u8,
+        regs: &[u16],
+    ) -> Result<Vec<u8>, ModbusTcpError> {
         let mut pdu = vec![0x03]; // func_code
         pdu.push((regs.len() * 2) as u8); // byte_count
         for r in regs {
@@ -703,13 +703,9 @@ mod tests {
     #[test]
     fn test_exception_response() {
         let mut mock = MockTcpTransport::new();
-        mock.push_response(build_exception_response(
-            0,
-            1,
-            0x03,
-            ExceptionCode::IllegalDataAddress,
-        )
-        .unwrap());
+        mock.push_response(
+            build_exception_response(0, 1, 0x03, ExceptionCode::IllegalDataAddress).unwrap(),
+        );
 
         let mut master = ModbusTcpMaster::new(&mut mock, 0);
         let dev = make_device(1);
@@ -1039,5 +1035,104 @@ mod tests {
                 0x00, 0x02, // value 2
             ]
         );
+    }
+
+    // ===== 39 §6.3 负例：流量突发（粘连）/ 重复 / backpressure =====
+
+    /// 39 收尾复验（§6.3 流量突发/粘连）：一次 recv 返回两个完整 MBAP 帧
+    /// 粘连——重组路径（MbapStreamDecoder）两帧都被处理且各自可解析；
+    /// 同时钉住 master 层现状：window=1 每次 recv 只解析首帧，粘连尾部
+    /// 不污染解析结果（parse 按 length 字段有界，不 panic、不误读）。
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
+    #[test]
+    fn test_39_glued_burst_both_frames_processed() {
+        let f1 = build_read_response(0, 1, &[0x1111]).unwrap();
+        let f2 = build_read_response(1, 1, &[0x2222]).unwrap();
+        let mut glued = f1.clone();
+        glued.extend_from_slice(&f2);
+
+        // 重组路径：粘连 chunk → 两帧均重组成功，且各自 parse_response 通过。
+        let mut dec = crate::mbap::MbapStreamDecoder::new();
+        let frames = dec.feed(&glued);
+        assert_eq!(frames.len(), 2, "粘连双帧必须都被重组处理");
+        let req = ModbusRequest::ReadHoldingRegisters {
+            slave_addr: 1,
+            start_addr: 0,
+            quantity: 1,
+        };
+        let r1 = ModbusTcpMaster::parse_response(&req, 0, &frames[0]).unwrap();
+        let r2 = ModbusTcpMaster::parse_response(&req, 1, &frames[1]).unwrap();
+        match r1 {
+            ModbusResponse::ReadHoldingRegisters(v) => assert_eq!(v, vec![0x1111]),
+            _ => panic!("帧 1 解析类型错误"),
+        }
+        match r2 {
+            ModbusResponse::ReadHoldingRegisters(v) => assert_eq!(v, vec![0x2222]),
+            _ => panic!("帧 2 解析类型错误"),
+        }
+
+        // master 层（transport 注入粘连 chunk）：首帧正常解析，尾部粘连
+        // 字节不污染结果（parse_reg_read 按 byte_count 有界）；下一请求
+        // 从队列取独立帧，链路语义不被粘连破坏。
+        let mut mock = MockTcpTransport::new();
+        mock.push_response(glued); // 请求 1：收到粘连 chunk（首帧 txn=0）
+        mock.push_response(f2.clone()); // 请求 2：独立帧 txn=1
+        let mut master = ModbusTcpMaster::new(&mut mock, 0);
+        let dev = make_device(1);
+        let regs1 = master
+            .read_holding_registers(&dev, 0, 1)
+            .expect("粘连首帧解析");
+        assert_eq!(regs1, vec![0x1111]);
+        let regs2 = master
+            .read_holding_registers(&dev, 0, 1)
+            .expect("后续帧解析");
+        assert_eq!(regs2, vec![0x2222]);
+        assert_eq!(master.stats().error_count, 0);
+    }
+
+    /// 39 收尾复验（§6.3 重复）：同一 transaction id 的响应重复送达两次——
+    /// 第一次正常消费；重复帧命中下一请求（新 txn id）时 fail-closed 丢弃
+    /// （TransactionMismatch），不产生重复应用计数、不 panic。
+    #[test]
+    fn test_39_duplicate_txn_response_idempotent_discard() {
+        let mut mock = MockTcpTransport::new();
+        let dup = build_read_response(0, 1, &[0x1234]).unwrap();
+        mock.push_response(dup.clone()); // 请求 1 的正响应（txn=0）
+        mock.push_response(dup); // 同 txn=0 响应的重复投递
+
+        let mut master = ModbusTcpMaster::new(&mut mock, 0);
+        let dev = make_device(1);
+        // 请求 1：正常消费。
+        let regs = master.read_holding_registers(&dev, 0, 1).expect("首次响应");
+        assert_eq!(regs, vec![0x1234]);
+        // 请求 2（txn=1）：recv 到旧 txn=0 的重复帧 → 拒绝，不重复计数。
+        let result = master.read_holding_registers(&dev, 0, 1);
+        assert_eq!(result, Err(ModbusTcpError::TransactionMismatch));
+        let stats = master.stats().clone();
+        // 重复帧计入 response_count（确实收到了字节），但不计入成功应用
+        // 结果，也不计 error_count（幂等丢弃语义由调用方重试接管）。
+        assert_eq!(stats.response_count, 2);
+        assert_eq!(stats.error_count, 0);
+        assert_eq!(stats.request_count, 2);
+    }
+
+    /// 39 收尾复验（§6.3 backpressure）：master 为 window=1 同步模型，
+    /// 无请求队列——链路边界即 send 本身。send 失败（窗口/链路满）必须
+    /// 立即返回错误而非静默丢：不重试（仅 Timeout 重试）、不吞错误。
+    #[test]
+    fn test_39_send_failure_fails_closed_no_silent_drop() {
+        let mut mock = MockTcpTransport::new();
+        mock.set_send_fail(Some(ModbusTcpError::Closed));
+
+        let mut master = ModbusTcpMaster::new(&mut mock, 3); // retry_count=3 也不得重试
+        let dev = make_device(1);
+        let result = master.read_holding_registers(&dev, 0, 1);
+        assert_eq!(result, Err(ModbusTcpError::Closed));
+        let stats = master.stats().clone();
+        assert_eq!(stats.request_count, 1, "send 失败不重试（fail-closed）");
+        assert_eq!(stats.error_count, 1);
+        assert_eq!(stats.timeout_count, 0);
+        assert_eq!(stats.response_count, 0);
+        assert!(mock.sent_frames().is_empty(), "注入失败时未产生发送");
     }
 }

@@ -64,10 +64,7 @@ impl<D: NetDevice> RealMasterTransport<D> {
 #[cfg(feature = "net")]
 impl<D: NetDevice + 'static> MasterTransport for RealMasterTransport<D> {
     fn connect(&mut self, ip: [u8; 4], port: u16) -> Result<ConnId, MasterError> {
-        let remote: SocketAddr = ip_endpoint(
-            ipv4_addr(ip[0], ip[1], ip[2], ip[3]),
-            port,
-        );
+        let remote: SocketAddr = ip_endpoint(ipv4_addr(ip[0], ip[1], ip[2], ip[3]), port);
         // 本地端口：自动选择（从 20000 起扫描可用）。
         for local in 20000u16..20100 {
             if self.tcp.connect(&mut self.iface, remote, local).is_err() {
@@ -181,8 +178,9 @@ impl<D: NetDevice + 'static> MasterTransport for RealMasterTransport<D> {
 
 #[cfg(all(test, feature = "net"))]
 mod tests {
-    use super::*;
     use eneros_net::{NetError, NetStats};
+
+    use super::*;
 
     /// 最小测试网卡（无帧进出）——eneros-net 的 MockNetDevice 仅
     /// cfg(test) 内部可见不跨 crate，此处自含 stub（仅测试装配）。

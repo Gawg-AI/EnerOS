@@ -293,8 +293,9 @@ mod tests {
     /// 验收：下载进度指标（percent 单调）。
     #[test]
     fn test_download_progress() {
-        let mut dl = OtaDownloader::new("http://x", 100, 50, 1024, |_o, w| Ok(vec![0u8; w as usize]))
-            .expect("new");
+        let mut dl =
+            OtaDownloader::new("http://x", 100, 50, 1024, |_o, w| Ok(vec![0u8; w as usize]))
+                .expect("new");
         let (_, progress) = dl.download_all().expect("dl");
         assert_eq!(progress[0].percent(), 50);
         assert_eq!(progress[1].percent(), 100);
@@ -303,11 +304,11 @@ mod tests {
     /// 验收：空/短分块 → 传输失败（fail-closed，防 offset 卡死 → 无限循环/OOM）。
     #[test]
     fn test_short_chunk_fails_closed() {
-        let mut dl = OtaDownloader::new("http://x", 100, 50, 1024, |_o, _w| Ok(Vec::new()))
-            .expect("new");
+        let mut dl =
+            OtaDownloader::new("http://x", 100, 50, 1024, |_o, _w| Ok(Vec::new())).expect("new");
         assert!(dl.download_all().is_err(), "空分块必须 Err，不得死循环");
-        let mut dl = OtaDownloader::new("http://x", 100, 50, 1024, |_o, _w| Ok(vec![1u8; 10]))
-            .expect("new");
+        let mut dl =
+            OtaDownloader::new("http://x", 100, 50, 1024, |_o, _w| Ok(vec![1u8; 10])).expect("new");
         assert!(dl.download_all().is_err(), "短分块必须 Err（长度 != want）");
     }
 
@@ -317,19 +318,22 @@ mod tests {
     fn test_oversize_total_rejected_fail_closed() {
         // 构造器校验：未信任 total_size > max_image_size → Err
         assert!(
-            OtaDownloader::new("http://x", 2048, 512, 1024, |_o, _w| Ok(vec![0u8; 0]))
-                .is_err(),
+            OtaDownloader::new("http://x", 2048, 512, 1024, |_o, _w| Ok(vec![0u8; 0])).is_err(),
             "total_size 超过分区容量必须拒绝"
         );
         // 边界：恰等于容量 → 通过
         assert!(
-            OtaDownloader::new("http://x", 1024, 512, 1024, |_o, w| Ok(vec![0u8; w as usize]))
-                .is_ok(),
+            OtaDownloader::new("http://x", 1024, 512, 1024, |_o, w| Ok(vec![
+                0u8;
+                w as usize
+            ]))
+            .is_ok(),
             "total_size == 分区容量应通过"
         );
         // 运行时防越界：pub total_size 被改大 → download 拒绝
-        let mut dl = OtaDownloader::new("http://x", 100, 50, 1024, |_o, w| Ok(vec![0u8; w as usize]))
-            .expect("new");
+        let mut dl =
+            OtaDownloader::new("http://x", 100, 50, 1024, |_o, w| Ok(vec![0u8; w as usize]))
+                .expect("new");
         dl.total_size = 4096; // 绕过构造器校验的恶意修改
         assert!(dl.download_all().is_err(), "改大 total_size 必须运行时拒绝");
     }

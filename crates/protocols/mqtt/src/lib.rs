@@ -46,6 +46,8 @@ pub mod qos_store;
 pub mod real;
 pub mod topic;
 pub mod transport;
+// 39 WP-39.11：协议插件（服务装配统一入口）。
+pub mod plugin;
 pub mod will;
 
 pub use client::{ConnectionState, MqttClient, PendingAck, ReconnectState};
@@ -55,7 +57,9 @@ pub use packet::{
     UnsubscribePacket,
 };
 pub use qos::QoS;
-pub use qos_store::{FsQosStore, InMemoryQosStore, PendingMessage, QosStore};
+#[cfg(feature = "fs-persist")]
+pub use qos_store::FsQosStore;
+pub use qos_store::{InMemoryQosStore, PendingMessage, QosStore};
 pub use topic::TopicFilter;
 #[cfg(any(test, feature = "mock"))]
 pub use transport::MockTransport;

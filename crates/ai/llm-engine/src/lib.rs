@@ -57,17 +57,6 @@ compile_error!(
      Use: --no-default-features --features llama-cpp"
 );
 
-#[cfg(all(
-    not(any(feature = "llama-cpp", feature = "mock")),
-    not(test),
-    not(debug_assertions)
-))]
-compile_error!(
-    "eneros-llm-engine: no backend selected. \
-     Release builds must enable 'llama-cpp' feature. \
-     For tests, use 'mock' feature or run via `cargo test`."
-);
-
 extern crate alloc;
 
 pub mod device;

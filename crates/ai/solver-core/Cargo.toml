@@ -12,7 +12,7 @@ description = "EnerOS LP/MILP solver integration (HiGHS via FFI + MockSolver for
 # v0.212.0（P0-27）：移除 default=["mock"]——release 必须显式选真实后端。
 # Dev/test 构建自动有 `test` cfg（mock 模块可用）；生产构建必须
 # `--no-default-features --features highs-ffi`。
-default = ["highs-ffi"]
+default = []
 # Real HiGHS backend (statically linked C library).
 # Release builds MUST enable this feature — Mock is test-only.
 highs-ffi = []

@@ -196,6 +196,7 @@ mod tests {
         assert!(reg.missing(&required).is_empty());
     }
 
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
     #[test]
     fn registry_bounded() {
         let mut reg = CapabilityRegistry::new();

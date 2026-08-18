@@ -6,8 +6,14 @@ authors.workspace = true
 license.workspace = true
 description = "EnerOS v0.62.0 LLM inference scheduler with concurrency control and KV Cache tracking"
 
+[features]
+# 蓝图 40：host LLM 后端（llama.cpp native）——target 不声明。
+llm-native = ["eneros-llm-engine/llama-cpp"]
+
 [dependencies]
-eneros-llm-engine = { path = "../llm-engine", features = ["llama-cpp"] }
+# 蓝图 40 WP-40.4：llama-cpp 为 host native 后端——经 `llm-native` 选择；
+# target 闭包不声明（profile 不声明 → 服务 Unavailable）。
+eneros-llm-engine = { path = "../llm-engine" }
 
 [dev-dependencies]
 eneros-llm-engine = { path = "../llm-engine", features = ["mock"] }

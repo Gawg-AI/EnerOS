@@ -51,10 +51,38 @@ pub struct MvpOrchestrator<S: Solver> {
 impl<S: Solver> MvpOrchestrator<S> {
     /// 默认构造（3 个 Agent 用 `new_default`）——仅测试/仿真（蓝图/20 R2-1：
     /// Mock 收编；生产必须经 [`Self::new`] 注入真实 solver/Agent）。
+    ///
+    /// 蓝图 40 WP-40.1/40.6：EnergyAgent 经 test-support 的受信任遥测 +
+    /// 记录式唯一 dispatch 装配（Committed 回执——demo 决策链可走通）。
+    #[allow(clippy::field_reassign_with_default)] // 44.2：测试夹具 default+覆写模式（语义等价）
     #[cfg(any(test, feature = "mock"))]
     pub fn new_default(now_ms: u64) -> MvpOrchestrator<MockSolver> {
+        use eneros_energy_market_agent::agent_test_support::{
+            RecordingDispatch, StubTelemetryProvider,
+        };
+        use eneros_energy_market_agent::EnergyAgent;
+        let mut dispatch = RecordingDispatch::default();
+        dispatch.result = Some(Ok(eneros_control_dispatch::DispatchReceipt {
+            command_id: [1; 16],
+            correlation_id: [2; 16],
+            final_state: eneros_control_dispatch::DispatchState::Committed,
+            state_path: alloc::vec![eneros_control_dispatch::DispatchState::Committed],
+            committed_at_ms: Some(now_ms),
+            note: None,
+            latency_ms: 1,
+        }));
         MvpOrchestrator::<MockSolver> {
-            energy_agent: EnergyAgent::new_default(now_ms),
+            energy_agent: EnergyAgent::<MockSolver>::new(
+                "energy-agent",
+                ScheduleConfig::default(),
+                now_ms,
+                Box::new(eneros_dual_brain::DualBrainMockEngine::new()),
+                MockSolver::new(),
+                Box::new(dispatch),
+                Box::new(StubTelemetryProvider::new(Some(
+                    StubTelemetryProvider::full_base(),
+                ))),
+            ),
             market_agent: MarketAgent::new_default(now_ms),
             device_agent: DeviceAgent::new_default(now_ms),
             revenue_comparator: RevenueComparator::new(),

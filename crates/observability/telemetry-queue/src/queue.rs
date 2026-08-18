@@ -48,8 +48,7 @@ impl TelemetryCategory {
 }
 
 /// 溢出策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OverflowPolicy {
     /// 丢弃最旧的事件（FIFO 驱逐）。
     #[default]

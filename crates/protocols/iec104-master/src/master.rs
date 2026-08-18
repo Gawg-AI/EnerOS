@@ -349,7 +349,21 @@ impl Iec104Master {
                     self.send_u_frame(conn_key, UFormatFunction::TestFrCon)?;
                 }
             }
-            ControlField::Information { .. } => {
+            ControlField::Information { send_seq, .. } => {
+                // 39 收尾复验（P1-3）：N(S) 必须等于期望接收序号——
+                // 乱序/重复/重放 I 帧不得静默接受并确认（与 S 帧
+                // R(S) 校验对称；旧实现不读帧内序号照单全收）。
+                // fail-closed：序号不符 → ProtocolViolation（不推进
+                // recv_seq、不发送 S 确认，上层按错误处置/重连）。
+                let expected = self
+                    .devices
+                    .get(&conn_key)
+                    .map(|c| c.recv_seq)
+                    .ok_or(MasterError::NotConnected)?;
+                if send_seq != expected {
+                    self.stats.rx_error_count += 1;
+                    return Err(MasterError::ProtocolViolation);
+                }
                 if let Some(asdu) = apdu.asdu {
                     self.handle_i_format(conn_key, asdu)?;
                 }
@@ -540,7 +554,8 @@ impl Iec104Master {
             .devices
             .iter()
             .filter(|(_, c)| {
-                c.rx_unacked > 0 && now_ms.saturating_sub(c.last_rx_i_ms) > crate::connection::T2_CONFIRM_MS
+                c.rx_unacked > 0
+                    && now_ms.saturating_sub(c.last_rx_i_ms) > crate::connection::T2_CONFIRM_MS
             })
             .map(|(k, _)| *k)
             .collect();
@@ -754,7 +769,11 @@ mod tests {
             .iter()
             .filter(|(_, b)| b.len() == 6 && (b[2] & 0x03) == 0x01)
             .count();
-        assert!(s_frames >= 1, "收到 I 帧必须发 S 帧确认（31 PR-01 判据）；tx 帧: {:?}", frames);
+        assert!(
+            s_frames >= 1,
+            "收到 I 帧必须发 S 帧确认（31 PR-01 判据）；tx 帧: {:?}",
+            frames
+        );
         assert!(master.stats().ack_count >= 1);
         assert_eq!(master.stats().rx_count, 2);
     }
@@ -810,13 +829,54 @@ mod tests {
         );
     }
 
+    /// 39 收尾复验（P1-3）：乱序/重复/重放 I 帧（N(S) ≠ 期望序号）
+    /// → ProtocolViolation，不接受不确认（旧实现不读帧内序号照单全收）。
+    #[test]
+    fn test_out_of_order_and_replayed_i_frames_rejected() {
+        use crate::mock::MockMasterTransport;
+        fn make_asdu(ioa: u32) -> Asdu {
+            Asdu {
+                type_id: TypeId::MeasuredValueFloat,
+                cause_of_tx: Cot::Periodic,
+                common_addr: 1,
+                ioas: vec![InformationObject {
+                    ioa,
+                    value: IoValue::Float(1.5),
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                }],
+            }
+        }
+        let mut transport = MockMasterTransport::new();
+        // 首帧 N(S)=1（跳过 0）——乱序。
+        transport.push_rx(1, Apdu::i_format(1, 0, make_asdu(11)).encode().unwrap());
+        let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
+        let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
+        master.connect(&dev).unwrap();
+        assert_eq!(master.process_rx(1), Err(MasterError::ProtocolViolation));
+        assert_eq!(master.stats().rx_error_count, 1);
+
+        // 重放：先正常收 N(S)=0，再重发 N(S)=0 → 期望已推进到 1 → 拒绝。
+        let mut transport = MockMasterTransport::new();
+        transport.push_rx(1, Apdu::i_format(0, 0, make_asdu(10)).encode().unwrap());
+        transport.push_rx(1, Apdu::i_format(0, 0, make_asdu(10)).encode().unwrap());
+        let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
+        master.connect(&dev).unwrap();
+        master.process_rx(1).unwrap(); // 首帧合法
+        assert_eq!(master.process_rx(1), Err(MasterError::ProtocolViolation));
+        assert_eq!(master.stats().rx_count, 2);
+    }
+
     /// 31-review（B1）回归：收到 TestFrAct 必须回 TestFrCon（IEC 104 §5）。
     /// 旧 handle_u_format 的 `_ =>{}` 吞掉 TestFrAct，致对端 t1 重传 3 次后断开健康链路。
     #[test]
     fn test_testfr_act_replies_testfr_con() {
         use crate::mock::MockMasterTransport;
         let mut transport = MockMasterTransport::new();
-        transport.push_rx(1, Apdu::u_format(UFormatFunction::TestFrAct).encode().unwrap());
+        transport.push_rx(
+            1,
+            Apdu::u_format(UFormatFunction::TestFrAct).encode().unwrap(),
+        );
         let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
         let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
         master.connect(&dev).unwrap();
@@ -831,7 +891,12 @@ mod tests {
         // 解码每个 tx 帧，确认至少一个是 TestFrCon。
         let replied = frames.iter().any(|(_, b)| {
             Apdu::decode(b)
-                .map(|a| matches!(a.control_field, ControlField::Unnumbered(UFormatFunction::TestFrCon)))
+                .map(|a| {
+                    matches!(
+                        a.control_field,
+                        ControlField::Unnumbered(UFormatFunction::TestFrCon)
+                    )
+                })
                 .unwrap_or(false)
         });
         assert!(replied, "收到 TestFrAct 必须回 TestFrCon；tx: {:?}", frames);

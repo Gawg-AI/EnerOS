@@ -102,8 +102,10 @@ fn install_ring_provider() {
 /// DER-encoded certificate chain. Each `-----BEGIN CERTIFICATE-----` block
 /// becomes one `CertificateDer`.
 pub fn parse_cert_chain_pem(pem_bytes: &[u8]) -> Result<Vec<CertificateDer<'static>>, TlsError> {
-    let mut reader = std::io::BufReader::new(pem_bytes);
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
+    // RUSTSEC-2025-0134：rustls-pemfile 已归档——迁移到 rustls-pki-types
+    // PemObject（rustls 重导出）。
+    use rustls::pki_types::pem::PemObject;
+    let certs = CertificateDer::pem_slice_iter(pem_bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| TlsError::Pem(e.to_string()))?;
     if certs.is_empty() {
@@ -116,10 +118,10 @@ pub fn parse_cert_chain_pem(pem_bytes: &[u8]) -> Result<Vec<CertificateDer<'stat
 
 /// Parses a single PEM-encoded PKCS#8 / PKCS#1 / SEC1 private key.
 pub fn parse_private_key_pem(pem_bytes: &[u8]) -> Result<PrivateKeyDer<'static>, TlsError> {
-    let mut reader = std::io::BufReader::new(pem_bytes);
-    let key = rustls_pemfile::private_key(&mut reader)
-        .map_err(|e| TlsError::Pem(e.to_string()))?
-        .ok_or(TlsError::EmptyMaterial("private key (no PEM key found)"))?;
+    // RUSTSEC-2025-0134：迁移到 rustls-pki-types PemObject。
+    use rustls::pki_types::pem::PemObject;
+    let key = PrivateKeyDer::from_pem_slice(pem_bytes)
+        .map_err(|e| TlsError::Pem(e.to_string()))?;
     Ok(key)
 }
 

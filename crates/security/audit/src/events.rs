@@ -43,6 +43,33 @@ pub enum AuditEventType {
     HandshakeCompleted = 16,
 }
 
+impl TryFrom<u8> for AuditEventType {
+    type Error = ();
+
+    /// 判别值 → 事件类型；未知判别值拒绝（WP-37.8：解码不误读未知类型）。
+    fn try_from(v: u8) -> Result<Self, ()> {
+        match v {
+            1 => Ok(Self::AuthLogin),
+            2 => Ok(Self::AuthLogout),
+            3 => Ok(Self::ConfigChange),
+            4 => Ok(Self::ControlCommand),
+            5 => Ok(Self::ModelLoad),
+            6 => Ok(Self::KeyUse),
+            7 => Ok(Self::AgentStart),
+            8 => Ok(Self::AgentStop),
+            9 => Ok(Self::FederateJoin),
+            10 => Ok(Self::FederateLeave),
+            11 => Ok(Self::SecurityAlert),
+            12 => Ok(Self::AiDecision),
+            13 => Ok(Self::WriteExecuted),
+            14 => Ok(Self::WriteDenied),
+            15 => Ok(Self::LeaseGranted),
+            16 => Ok(Self::HandshakeCompleted),
+            _ => Err(()),
+        }
+    }
+}
+
 /// 审计事件（`seq == 0` 表示由日志器自动赋序）.
 #[derive(Debug, Clone)]
 pub struct AuditEvent {
@@ -95,9 +122,9 @@ pub struct ChainEntry {
     pub seq: u64,
     /// 前一条目的组合哈希（首条为创世哈希）.
     pub prev_hash: [u8; 32],
-    /// 本条事件的 SM3 哈希.
+    /// 本条事件的 SHA-256 哈希.
     pub event_hash: [u8; 32],
-    /// 组合哈希 `SM3(prev_hash ‖ event_hash)`，作为下一条的 `prev_hash`.
+    /// 组合哈希 `SHA-256(prev_hash ‖ event_hash)`，作为下一条的 `prev_hash`.
     pub combined_hash: [u8; 32],
     /// 事件时间戳（毫秒，冗余自事件便于按时间检索）.
     pub timestamp_ms: u64,

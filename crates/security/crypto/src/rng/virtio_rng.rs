@@ -23,8 +23,11 @@ pub mod vmmio {
     pub const QUEUE_PFN: usize = 0x040;
     pub const QUEUE_NOTIFY: usize = 0x050;
     pub const STATUS: usize = 0x070;
-    pub const GUEST_PAGE_SIZE: usize = 0x08C;
-    pub const QUEUE_ALIGN: usize = 0x0AC;
+    // 0x028/0x03C：QEMU/Linux UAPI 偏移（与 root_task.c 一致）——旧值
+    // 0x08C/0x0AC 是无效偏移，QEMU 忽略 → guest_page_shift=0 → desc 错位
+    // （41 virtio-blk 同根因；rng 未在 QEMU 实跑暴露）。
+    pub const GUEST_PAGE_SIZE: usize = 0x028;
+    pub const QUEUE_ALIGN: usize = 0x03C;
 }
 
 /// virtio-rng 设备 ID。

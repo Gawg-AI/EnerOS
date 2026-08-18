@@ -125,8 +125,8 @@ where
                 out
             }
             _ => {
-                let (r, s) = eneros_crypto_gmssl::der::der_to_rs(&sig)
-                    .map_err(|_| TpmError::QuoteFailed)?;
+                let (r, s) =
+                    eneros_crypto_gmssl::der::der_to_rs(&sig).map_err(|_| TpmError::QuoteFailed)?;
                 let mut out = [0u8; 64];
                 out[..32].copy_from_slice(&r);
                 out[32..].copy_from_slice(&s);
@@ -175,7 +175,16 @@ where
 
     /// 编码证明：magic "RATT" + 格式版本 + 完整 Quote 材料 + 签名。
     pub fn encode(attest: &RemoteAttestation) -> Vec<u8> {
-        let mut out = Vec::with_capacity(4 + 1 + 20 + 1 + attest.quote.pcr_select.len() + 1 + attest.quote.pcr_values.len() * 32 + 8 + 64);
+        let mut out = Vec::with_capacity(
+            4 + 1
+                + 20
+                + 1
+                + attest.quote.pcr_select.len()
+                + 1
+                + attest.quote.pcr_values.len() * 32
+                + 8
+                + 64,
+        );
         out.extend_from_slice(b"RATT");
         out.push(ENCODE_VERSION);
         out.extend_from_slice(&attest.quote.nonce);
@@ -348,13 +357,19 @@ mod tests {
         };
         let redigest = crate::tpm::quote_digest(&requote);
         assert_eq!(redigest, digest, "远端重算 digest 必须与签名方一致");
-        let ok = sm2_verify(&redigest, &Sm2Signature::from_bytes(&signature), &kp.public_key)
-            .expect("verify");
+        let ok = sm2_verify(
+            &redigest,
+            &Sm2Signature::from_bytes(&signature),
+            &kp.public_key,
+        )
+        .expect("verify");
         assert!(ok, "远端离线验签必须通过（证据链自包含）");
     }
 
     /// 29 SE-03 判据：TPM2 真实签名 DER（72B）注入 → r‖s 转换后验签通过。
     /// 直接验证 DER→r‖s 转换路径与 64B 直通路径一致性。
+    /// 依赖 eneros-crypto-gmssl（仅 tpm2 feature 启用）——非 tpm2 构建跳过。
+    #[cfg(feature = "tpm2")]
     #[test]
     fn test_der_signature_to_rs_verify() {
         use eneros_crypto::{sm2_sign, sm2_verify, CsRng, Sm2KeyPair, Sm2Signature};
@@ -372,12 +387,13 @@ mod tests {
         rs[32..].copy_from_slice(&s);
         assert_eq!(rs, sig.to_bytes());
         // 用转换后的 r‖s 验签（等价于 real.rs quote() 的 DER 分支产物）。
-        let ok = sm2_verify(&digest, &Sm2Signature::from_bytes(&rs), &kp.public_key)
-            .expect("verify");
+        let ok =
+            sm2_verify(&digest, &Sm2Signature::from_bytes(&rs), &kp.public_key).expect("verify");
         assert!(ok, "DER→r‖s 转换后必须可验签");
     }
 
     /// 最小 SM2 DER 签名编码（测试夹具：0x30 len 0x02 r 0x02 s）。
+    #[allow(dead_code)] // 44.2：DER 编码辅助（44.4 冻结登记）
     fn der_encode(r: &[u8; 32], s: &[u8; 32]) -> Vec<u8> {
         let mut out = Vec::new();
         let r_trim = trim_leading_zero(r);
@@ -394,6 +410,7 @@ mod tests {
         out
     }
 
+    #[allow(dead_code)] // 44.2：DER 前缀归零辅助（44.4 冻结登记）
     fn trim_leading_zero(b: &[u8; 32]) -> &[u8] {
         let mut i = 0;
         while i < b.len() - 1 && b[i] == 0 {
@@ -445,7 +462,12 @@ mod tests {
                 fn(&[u8]) -> Result<(), AttestError>,
                 fn() -> Result<Vec<u8>, AttestError>,
             >::decode_result(resp);
-            assert_eq!(r.reason, *expect, "resp={:?}", String::from_utf8_lossy(resp));
+            assert_eq!(
+                r.reason,
+                *expect,
+                "resp={:?}",
+                String::from_utf8_lossy(resp)
+            );
         }
     }
 

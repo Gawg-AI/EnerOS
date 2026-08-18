@@ -268,9 +268,13 @@ mod tests {
         let manifest_sig = sign_image(&bl_img, &root, &mut rng, 100);
         // 29 SE-02：manifest 必须经 verify_and_parse 验签解析（未验签 parse
         // 暴露下级公钥绑定断裂）。
-        let manifest =
-            crate::manifest::BootManifest::verify_and_parse(&bl_img, &root.public_key, &manifest_sig, 0)
-                .unwrap();
+        let manifest = crate::manifest::BootManifest::verify_and_parse(
+            &bl_img,
+            &root.public_key,
+            &manifest_sig,
+            0,
+        )
+        .unwrap();
 
         let report = sb.verify_boot_chain(&images, &manifest).unwrap();
 
@@ -312,9 +316,13 @@ mod tests {
         let manifest_sig = sign_image(&bl_img, &root, &mut rng, 100);
         // 29 SE-02：manifest 必须经 verify_and_parse 验签解析（未验签 parse
         // 暴露下级公钥绑定断裂）。
-        let manifest =
-            crate::manifest::BootManifest::verify_and_parse(&bl_img, &root.public_key, &manifest_sig, 0)
-                .unwrap();
+        let manifest = crate::manifest::BootManifest::verify_and_parse(
+            &bl_img,
+            &root.public_key,
+            &manifest_sig,
+            0,
+        )
+        .unwrap();
 
         let report = sb.verify_boot_chain(&images, &manifest).unwrap();
 

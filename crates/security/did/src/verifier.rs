@@ -90,7 +90,7 @@ impl DidVerifier {
             return Err(DidError::InvalidSignature);
         }
         // 29 SE-08：root 公钥验链签名（签名材料 = 链字段定序编码 SM3）。
-        let mut digest = [0u8; 32];
+        let digest;
         {
             let mut hasher = eneros_crypto::sm3::Sm3Hasher::new();
             let mut update = |d: &Did| {
@@ -110,8 +110,12 @@ impl DidVerifier {
         }
         let mut sig_bytes = [0u8; 64];
         sig_bytes.copy_from_slice(&chain.signature);
-        let ok = sm2_verify(&digest, &Sm2Signature::from_bytes(&sig_bytes), root_public_key)
-            .map_err(|_| DidError::InvalidSignature)?;
+        let ok = sm2_verify(
+            &digest,
+            &Sm2Signature::from_bytes(&sig_bytes),
+            root_public_key,
+        )
+        .map_err(|_| DidError::InvalidSignature)?;
         if !ok {
             return Err(DidError::InvalidSignature);
         }

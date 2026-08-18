@@ -37,20 +37,20 @@
 
 extern crate alloc;
 
+#[cfg(feature = "std")]
+pub mod file_store;
 pub mod metrics;
 pub mod registry;
 pub mod store;
-#[cfg(feature = "std")]
-pub mod file_store;
 
+#[cfg(feature = "std")]
+pub use file_store::FileMetricsStore;
 pub use metrics::{
     Label, Metric, MetricDef, MetricType, MetricValue, MetricsCollector, MetricsCollectorImpl,
     MetricsError,
 };
 pub use registry::MetricRegistry;
 pub use store::{MemoryMetricsStore, MetricsStore};
-#[cfg(feature = "std")]
-pub use file_store::FileMetricsStore;
 
 #[cfg(all(test, feature = "loom"))]
 pub mod loom_increment;

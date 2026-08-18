@@ -8,6 +8,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 
 use eneros_agent::{AgentDescriptor, AgentState, AgentType};
+#[cfg(feature = "agent-runtime")]
 use eneros_energy_market_agent::{AgentRuntime, AgentRuntimeError, HeartbeatStatus};
 use eneros_protocol_abstract::access::PointAccess;
 use eneros_upa_model::{DataPoint, PointId, PointValue};
@@ -274,6 +275,7 @@ impl DeviceAgent {
     }
 }
 
+#[cfg(feature = "agent-runtime")]
 impl AgentRuntime for DeviceAgent {
     fn descriptor(&self) -> &AgentDescriptor {
         &self.descriptor

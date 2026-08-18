@@ -82,9 +82,8 @@ where
 mod tests {
     use core::cell::RefCell;
 
-    use crate::trigger::{AlertState, TriggerEngine};
-
     use super::*;
+    use crate::trigger::{AlertState, TriggerEngine};
 
     /// 收集发送的闭包（模拟真 MQTT broker）。
     #[allow(clippy::type_complexity)]
@@ -114,7 +113,11 @@ mod tests {
         let s = sent.borrow();
         assert_eq!(s.len(), 1, "告警必须发出 1 条");
         assert_eq!(s[0].0, "eneros/dev-1/alerts", "topic 契约");
-        assert!(s[0].1.contains("state=Warning"), "payload 含状态: {}", s[0].1);
+        assert!(
+            s[0].1.contains("state=Warning"),
+            "payload 含状态: {}",
+            s[0].1
+        );
         assert!(s[0].1.contains("id=ipc-1"), "payload 含告警 id");
         assert!(s[0].1.contains("value_ns=3000000"), "payload 含实测值");
     }
@@ -124,14 +127,15 @@ mod tests {
     fn test_send_failure_counts_and_advances() {
         let fail = |_t: &str, _p: &str| -> Result<(), ()> { Err(()) };
         let mut sink = MqttAlertSink::new("dev-2", fail);
-        assert!(sink.notify(&TriggeredAlert {
-            id: String::from("ipc-1"),
-            state: AlertState::Critical,
-            value_ns: 6_000_000,
-            threshold_ns: 5_000_000,
-            at_unix: 1000,
-        })
-        .is_err());
+        assert!(sink
+            .notify(&TriggeredAlert {
+                id: String::from("ipc-1"),
+                state: AlertState::Critical,
+                value_ns: 6_000_000,
+                threshold_ns: 5_000_000,
+                at_unix: 1000,
+            })
+            .is_err());
         assert_eq!(sink.failed(), 1);
         assert_eq!(sink.sent(), 0);
 

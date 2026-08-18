@@ -158,13 +158,16 @@ fn test_ca_issue_revoke_verify_fails() {
     )
     .unwrap();
 
-    // 3. 吊销叶子证书
+    // 3. 吊销叶子证书（39 收尾复验：34 SE-17 后 CRL 必须签名才可用于
+    // 吊销判定——未签名 CRL 被 fail-closed 拒绝，集成测试同步补齐签名）。
     let mut crl = Crl::new(root_cert.subject.clone(), NOW + ONE_YEAR);
     crl.add_revoked(RevokedCert::new(
         &leaf_cert.serial_number,
         NOW,
         RevocationReason::KeyCompromise,
     ));
+    crl.sign_with(&ca_kp.private_key, &ca_kp.public_key, &mut gen_rng())
+        .unwrap();
 
     // 4. 验证应返回 CertRevoked
     let mut verifier = CertVerifier::new(vec![root_cert.clone()]);

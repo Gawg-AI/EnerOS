@@ -32,11 +32,12 @@ pub enum TsnError {
     NotInitialized,
 }
 
-/// TSN 网络驱动数据面 trait.
+/// TSN 网络驱动数据面 trait（trait-only scope，W3.4 / ADR-0040）.
 ///
 /// 抽象 TSN 网卡的数据面操作：按 [`TrafficClass`] 发送 payload，以及接收下一个
-/// 数据包。真实实现由 v0.82.0+ Agent Runtime 提供（封装 netlink socket 或硬件驱动
-/// 接口）；本版本仅提供 [`MockTsnDriver`] 用于测试.
+/// 数据包。当前唯一实现者是 [`MockTsnDriver`]（测试用）——tsn 数据面已正式降级
+/// （`degradation::dataplane_available() -> false`）。真实实现待硬件对接后按
+/// ADR-0026 纪律"先有真实需求再加"。
 pub trait TsnDriver {
     /// 按 `tc` 优先级发送 `payload`，失败返回 [`TsnError::SendFailed`] 等.
     fn send(&mut self, tc: TrafficClass, payload: &[u8]) -> Result<(), TsnError>;

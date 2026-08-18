@@ -553,8 +553,7 @@ mod tests {
         );
 
         // 正确密钥 → 通过
-        let restored =
-            PartitionTable::deserialize(&bytes, &TEST_HMAC_KEY).expect("正确密钥应通过");
+        let restored = PartitionTable::deserialize(&bytes, &TEST_HMAC_KEY).expect("正确密钥应通过");
         assert_eq!(restored.active_slot, table.active_slot);
 
         // 持久化路径：伪造保留块（重算 CRC 无 HMAC）→ load 回退安全默认

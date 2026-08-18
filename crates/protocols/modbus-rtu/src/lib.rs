@@ -45,6 +45,8 @@ pub use error::ModbusError;
 pub use frame::ModbusFrame;
 pub use framer::{char_time_35_ns, RtuFramer, DEFAULT_BAUD};
 pub mod transport;
+// 39 WP-39.11：协议插件（服务装配统一入口）。
+pub mod plugin;
 pub use master::{ModbusRtuMaster, ModbusStats, RtuTransport};
 pub use point::{AccessMode, ModbusDataType, PointMapping, RegToPoint};
 pub use request::{parse_bit_data, ExceptionCode, FunctionCode, ModbusRequest, ModbusResponse};

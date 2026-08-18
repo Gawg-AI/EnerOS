@@ -331,7 +331,11 @@ mod tests {
         // 31 PR-03：Length + Reserved1 + Reserved2 四字节头（IEC 61850-8-1
         // §12）——Length 含自身 2B + Reserved 4B + APDU。
         let length = u16::from_be_bytes([frame[16], frame[17]]);
-        assert_eq!(length as usize, frame.len() - 16, "Length 字段必须覆盖到帧尾");
+        assert_eq!(
+            length as usize,
+            frame.len() - 16,
+            "Length 字段必须覆盖到帧尾"
+        );
         assert_eq!(&frame[18..20], &[0, 0], "Reserved1");
         assert_eq!(&frame[20..22], &[0, 0], "Reserved2");
         assert_eq!(frame[22], TAG_GOOSE_PDU);
@@ -408,7 +412,10 @@ mod tests {
         let frame = &p.transport().tx_frames()[0];
         // 31 PR-03：allData 内容 = [0x83, 0x01, 0x01]（BOOLEAN 标准 tag）
         // → [0xAB, 0x03, 0x83, 0x01, 0x01]
-        assert!(contains(frame, &[TAG_ALL_DATA, 0x03, DATA_BOOLEAN, 0x01, 0x01]));
+        assert!(contains(
+            frame,
+            &[TAG_ALL_DATA, 0x03, DATA_BOOLEAN, 0x01, 0x01]
+        ));
         // 用 read_tag_length 解出声明长度 == 实际内容长度
         let ab_pos = frame
             .windows(2)

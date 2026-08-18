@@ -7,6 +7,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::string::String;
 
 use eneros_protocol_abstract::access::PointAccessWriter;
@@ -27,6 +28,115 @@ use eneros_upa_model::{DeviceId, PointId};
 
 use crate::device_type::DeviceType;
 
+/// 适配器种类（持久化登记；与 [`DeviceType`] 一一对应，未知种类拒绝加载）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterKind {
+    Pcs,
+    Battery,
+    Bms,
+    Meter,
+    Temperature,
+    Other,
+}
+
+impl AdapterKind {
+    /// 行编码。
+    pub fn code(self) -> u8 {
+        match self {
+            AdapterKind::Pcs => 0,
+            AdapterKind::Battery => 1,
+            AdapterKind::Bms => 2,
+            AdapterKind::Meter => 3,
+            AdapterKind::Temperature => 4,
+            AdapterKind::Other => 5,
+        }
+    }
+
+    /// 行编码 → 种类（未知码 → None，fail-closed 不猜）。
+    pub fn from_code(code: u8) -> Option<AdapterKind> {
+        match code {
+            0 => Some(AdapterKind::Pcs),
+            1 => Some(AdapterKind::Battery),
+            2 => Some(AdapterKind::Bms),
+            3 => Some(AdapterKind::Meter),
+            4 => Some(AdapterKind::Temperature),
+            5 => Some(AdapterKind::Other),
+            _ => None,
+        }
+    }
+
+    /// 从设备类型推导（未列出的类型 → Other）。
+    pub fn from_device_type(t: &DeviceType) -> AdapterKind {
+        match t {
+            DeviceType::Pcs => AdapterKind::Pcs,
+            DeviceType::Battery => AdapterKind::Battery,
+            DeviceType::Bms => AdapterKind::Bms,
+            DeviceType::Meter => AdapterKind::Meter,
+            DeviceType::Temperature => AdapterKind::Temperature,
+        }
+    }
+}
+
+/// 端点引用（EIPC 服务名/协议端点地址；持久化登记）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndpointRef(pub String);
+
+/// 点 schema 版本。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PointSchemaVersion(pub u32);
+
+/// 允许操作集合（位标志）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OperationSet(u8);
+
+impl OperationSet {
+    pub const READ: u8 = 1;
+    pub const WRITE: u8 = 2;
+    pub const READBACK: u8 = 4;
+
+    /// 构造（非法位 → None）。
+    pub fn new(bits: u8) -> Option<OperationSet> {
+        if bits & !0b111 != 0 {
+            return None;
+        }
+        Some(OperationSet(bits))
+    }
+
+    /// 默认：读 + 写 + 读回。
+    pub fn read_write_readback() -> OperationSet {
+        OperationSet(Self::READ | Self::WRITE | Self::READBACK)
+    }
+
+    /// 是否允许指定操作。
+    pub fn allows(&self, op: u8) -> bool {
+        self.0 & op != 0
+    }
+
+    /// 位值（持久化）。
+    pub fn bits(&self) -> u8 {
+        self.0
+    }
+}
+
+/// 设备登记（蓝图 40 WP-40.10：持久化的设备元数据——不含任何运行期句柄）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRegistration {
+    /// 设备 ID（信封路由）。
+    pub device_id: DeviceId,
+    /// 适配器种类。
+    pub adapter_kind: AdapterKind,
+    /// 端点引用。
+    pub endpoint: EndpointRef,
+    /// 点 schema 版本。
+    pub point_schema: PointSchemaVersion,
+    /// 允许操作。
+    pub allowed_ops: OperationSet,
+    /// 适配器能力摘要（SM3；运行期由装配注入，不持久化裸指针/CPtr）。
+    pub capability_digest: [u8; 32],
+    /// 配置代次（stale config 检测）。
+    pub config_generation: u64,
+}
+
 /// 设备元信息（ARCH-P02：adapter 为 `PointAccess` + `AuthorizedWriter`，
 /// 字符串点名经 point_map 桥接；蓝图/24 D3：写路由经 AuthorizedWriter）。
 pub struct DeviceInfo {
@@ -38,6 +148,11 @@ pub struct DeviceInfo {
     pub adapter: Box<dyn PointAccessWriter>,
     /// 字符串点名 → PointId 映射（由 `ProtocolPointMapping` 构建或 mock 自动分配）.
     pub point_map: BTreeMap<String, PointId>,
+    /// 蓝图 40 WP-40.10：持久化登记元数据（不含运行期句柄）。
+    pub registration: DeviceRegistration,
+    /// 蓝图 40 WP-40.10：适配器是否可用（factory 重建失败 → false，
+    /// **不静默丢设备**；不可用设备路由时明确失败）。
+    pub available: bool,
 }
 
 /// Mock 点访问设备（BTreeMap-backed，实现 `PointAccess`）.
@@ -234,6 +349,39 @@ impl AuthorizedWriter for MockPointDevice {
     }
 }
 
+/// 不可用适配器占位（蓝图 40 WP-40.10：adapter factory 缺失时登记——
+/// 设备保留、`available = false`，路由层明确失败，不静默丢设备）。
+#[derive(Debug)]
+pub struct UnavailableAdapter;
+
+impl eneros_protocol_abstract::access::PointAccess for UnavailableAdapter {
+    fn read_point(
+        &mut self,
+        _point_id: PointId,
+    ) -> Result<eneros_upa_model::DataPoint, eneros_protocol_abstract::error::ProtocolError> {
+        Err(eneros_protocol_abstract::error::ProtocolError::Unsupported)
+    }
+
+    fn protocol_type(&self) -> eneros_protocol_abstract::config::ProtocolType {
+        eneros_protocol_abstract::config::ProtocolType::Internal
+    }
+}
+
+impl eneros_protocol_abstract::access::AuthorizedWriter for UnavailableAdapter {
+    fn write_authorized(
+        &mut self,
+        _cmd: &eneros_protocol_abstract::AuthorizedCommand,
+        _value: eneros_upa_model::PointValue,
+    ) -> Result<
+        eneros_protocol_abstract::access::WriteOutcome,
+        eneros_protocol_abstract::access::WriteError,
+    > {
+        Err(eneros_protocol_abstract::access::WriteError::Protocol(
+            eneros_protocol_abstract::error::ProtocolError::Unsupported,
+        ))
+    }
+}
+
 /// 设备注册表（BTreeMap-backed）.
 pub struct DeviceRegistry {
     /// 设备名 → 设备信息映射.
@@ -250,6 +398,10 @@ impl DeviceRegistry {
 
     /// 注册设备（adapter 为统一 `PointAccess` + `AuthorizedWriter`；
     /// point_map 为字符串点名 → PointId；device_id 供信封路由）。
+    ///
+    /// 蓝图 40 WP-40.10：登记元数据取默认（endpoint = 设备名、ops =
+    /// 读+写+读回、schema v1、generation 0、能力摘要全零占位——完整
+    /// 元数据经 [`Self::register_with_registration`]）。
     pub fn register(
         &mut self,
         name: &str,
@@ -258,15 +410,80 @@ impl DeviceRegistry {
         adapter: Box<dyn PointAccessWriter>,
         point_map: BTreeMap<String, PointId>,
     ) {
+        let registration = DeviceRegistration {
+            device_id,
+            adapter_kind: AdapterKind::from_device_type(&device_type),
+            endpoint: EndpointRef(String::from(name)),
+            point_schema: PointSchemaVersion(1),
+            allowed_ops: OperationSet::read_write_readback(),
+            capability_digest: [0u8; 32],
+            config_generation: 0,
+        };
+        self.register_with_registration(name, device_type, registration, adapter, point_map);
+    }
+
+    /// 注册设备（完整登记元数据——持久化加载/服务装配路径）。
+    pub fn register_with_registration(
+        &mut self,
+        name: &str,
+        device_type: DeviceType,
+        registration: DeviceRegistration,
+        adapter: Box<dyn PointAccessWriter>,
+        point_map: BTreeMap<String, PointId>,
+    ) {
+        let available = true;
         self.devices.insert(
             String::from(name),
             DeviceInfo {
                 device_type,
-                device_id,
+                device_id: registration.device_id,
                 adapter,
                 point_map,
+                registration,
+                available,
             },
         );
+    }
+
+    /// 标记设备可用性（adapter factory 重建失败 → false；不静默丢设备）。
+    pub fn set_available(&mut self, name: &str, available: bool) -> bool {
+        let Some(info) = self.devices.get_mut(name) else {
+            return false;
+        };
+        info.available = available;
+        true
+    }
+
+    /// 更新设备元数据（类型/ID/点映射；适配器保持——运行期句柄不重建）。
+    ///
+    /// 返回 Err = 设备不存在（明确失败，不静默）。
+    pub fn update(
+        &mut self,
+        name: &str,
+        device_type: DeviceType,
+        device_id: DeviceId,
+        point_map: BTreeMap<String, PointId>,
+    ) -> Result<(), String> {
+        let Some(info) = self.devices.get_mut(name) else {
+            return Err(format!("unknown device '{name}'"));
+        };
+        info.device_type = device_type;
+        info.device_id = device_id;
+        info.point_map = point_map;
+        info.registration.device_id = device_id;
+        info.registration.adapter_kind = AdapterKind::from_device_type(&device_type);
+        info.registration.config_generation = info.registration.config_generation.saturating_add(1);
+        Ok(())
+    }
+
+    /// 移除设备。返回是否移除成功。
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.devices.remove(name).is_some()
+    }
+
+    /// 设备是否存在。
+    pub fn contains(&self, name: &str) -> bool {
+        self.devices.contains_key(name)
     }
 
     /// 获取设备可变引用.

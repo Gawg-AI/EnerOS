@@ -45,7 +45,6 @@ mod tests {
     use eneros_energy_lp_model::result::{ScheduleEntry, ScheduleResult};
     use eneros_intent_parser::intent::{Intent, IntentType, PowerIntent, SocIntent, TimeRange};
     use eneros_safety_validator::result::{Severity, ValidationResult, Violation};
-    use eneros_safety_validator::state::SystemState;
     use eneros_solver_core::result::{SolveResult, SolveStatus};
 
     use super::*;
@@ -334,7 +333,8 @@ mod tests {
     fn t17_to_solver_params() {
         let converter = ContractConverter::default();
         let contract = make_valid_contract();
-        let state = SystemState::default();
+        let state =
+            eneros_safety_validator::TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.5, 0).build();
         let result = converter.to_solver_params(&contract, &state);
         assert!(result.is_ok(), "to_solver_params should succeed");
         let (config, problem) = result.unwrap();
@@ -456,7 +456,8 @@ mod tests {
             "parsed contract should validate"
         );
         let converter = ContractConverter::default();
-        let state = SystemState::default();
+        let state =
+            eneros_safety_validator::TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.5, 0).build();
         let result = converter.to_solver_params(&parsed, &state);
         assert!(result.is_ok(), "to_solver_params should succeed");
         let (config, _problem) = result.unwrap();

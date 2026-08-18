@@ -21,7 +21,7 @@ use eneros_dashboard::{
 use eneros_mgmt_api::rate_limit::{RateLimitConfig, RateLimiter};
 use eneros_mgmt_api::rbac::{Permission, RbacPolicy};
 use eneros_mgmt_api::transport::MqttRpcTransport;
-use eneros_mgmt_api::{IdempotencyStore, ManagementApi, Role};
+use eneros_mgmt_api::{IdempotencyStore, ManagementApi, Role, StatusCode};
 use eneros_ops_gate::{attach_rpc_transport, RemoteOpsSession};
 use eneros_ota_ab::downloader::{OtaDownloader, OtaOutcome, OtaPipeline};
 use eneros_slo_alert::{AlertState, TriggerEngine};
@@ -69,22 +69,34 @@ fn gr4_remote_ops_session_full() {
     let cmd = r#"{"version":1,"role":"operator","action":"ConfigSet","payload":"{\"param\":1}"}"#;
     session.broker.publish(cmd_topic, cmd).expect("发布 cmd");
     let handled = transport
-        .poll_once(&mut api, 1_700_000_000)
-        .expect("设备侧处理远程命令");
-    assert_eq!(handled.1, 0, "Ok=0（StatusCode 判别值）");
+        .poll_once(
+            &mut api,
+            Role::Operator,
+            1_700_000_000,
+            &mut |_action, _arg| (StatusCode::Ok, "ok".into()),
+        )
+        .expect("设备侧处理远程命令")
+        .expect("发布成功");
+    assert_eq!(handled.1, 200, "Ok=200（HTTP 风格判别值）");
     let resp = session.take_response().expect("运维侧收到响应");
     assert!(resp.contains("\"request_id\":"), "响应: {resp}");
-    assert!(resp.contains("\"status\":0"), "响应状态: {resp}");
+    assert!(resp.contains("\"status\":200"), "响应状态: {resp}");
 
     // Viewer 发 AgentRestart（未授权）→ Forbidden=3，运维侧收到拒绝。
     let bad = r#"{"version":1,"role":"viewer","action":"AgentRestart","payload":"x"}"#;
     session.broker.publish(cmd_topic, bad).expect("发布 cmd");
     let (_, status) = transport
-        .poll_once(&mut api, 1_700_000_001)
-        .expect("拒绝响应");
-    assert_eq!(status, 3, "Forbidden=3——RBAC 拒绝未授权命令");
+        .poll_once(
+            &mut api,
+            Role::Viewer,
+            1_700_000_001,
+            &mut |_action, _arg| (StatusCode::Ok, "ok".into()),
+        )
+        .expect("设备侧处理")
+        .expect("发布成功");
+    assert_eq!(status, 403, "Forbidden=403——RBAC 拒绝未授权命令");
     let resp = session.take_response().expect("运维侧收到拒绝响应");
-    assert!(resp.contains("\"status\":3"), "拒绝响应: {resp}");
+    assert!(resp.contains("\"status\":403"), "拒绝响应: {resp}");
 
     // ── 4. 能升级：镜像下载 + OTA 回路 → Success ────────────────────
     let mut dl = OtaDownloader::new("http://ota/fw.bin", 1000, 256, 4096, |off, want| {
@@ -152,7 +164,9 @@ fn gr4_alert_recovery_published() {
 /// 验收：OTA 下载失败（短分块）不进入回路（fail-closed）。
 #[test]
 fn gr4_ota_download_fail_closed() {
-    let mut dl = OtaDownloader::new("http://ota/bad.bin", 1000, 256, 4096, |_o, _w| Ok(Vec::new()))
-        .expect("构造器校验通过");
+    let mut dl = OtaDownloader::new("http://ota/bad.bin", 1000, 256, 4096, |_o, _w| {
+        Ok(Vec::new())
+    })
+    .expect("构造器校验通过");
     assert!(dl.download_all().is_err(), "空分块必须 Err（防死循环）");
 }

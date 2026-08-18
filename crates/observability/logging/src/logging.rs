@@ -470,4 +470,60 @@ mod tests {
         logger.flush_to(&mut store).unwrap();
         assert_eq!(logger.flush_count(), 2);
     }
+
+    /// 33 OB-02 判据：store 容量 3、flush 10 条 → store 恰 3 条且
+    /// buffer 剩 7 条（无重复）——失败后按成功进度收缩，已成功
+    /// 条目不得重复写（旧实现变体）。
+    #[test]
+    fn log17_ob02_partial_flush_no_duplicate() {
+        /// 容量受限存储：写满即 Err（模拟磁盘配额/后端限容）。
+        struct CappedStore {
+            entries: Vec<(u64, String)>,
+            capacity: usize,
+        }
+        impl LogStorage for CappedStore {
+            fn append(&mut self, entry: &LogEntry, json: &[u8]) -> Result<(), LogError> {
+                if self.entries.len() >= self.capacity {
+                    return Err(LogError::StorageFull);
+                }
+                let text = core::str::from_utf8(json).map_err(|_| LogError::SerializeFailed)?;
+                self.entries.push((entry.timestamp_ms, String::from(text)));
+                Ok(())
+            }
+            fn query(&self, _filter: &LogFilter) -> Result<Vec<LogEntry>, LogError> {
+                Ok(Vec::new())
+            }
+        }
+
+        let mut logger = StructuredLoggerImpl::new(LogLevel::Debug);
+        let mut store = CappedStore {
+            entries: Vec::new(),
+            capacity: 3,
+        };
+        for i in 0..10u64 {
+            logger
+                .log(LogBuilder::new(LogLevel::Info, "t", "m", i).build())
+                .unwrap();
+        }
+
+        // 首次 flush：前 3 条成功，第 4 条被 store 拒 → Err。
+        let r = logger.flush_to(&mut store);
+        assert!(r.is_err(), "store 写满必须报错（fail-closed）");
+        assert_eq!(store.entries.len(), 3, "store 恰 3 条");
+        assert_eq!(logger.buffered(), 7, "buffer 恰剩 7 条（按成功进度收缩）");
+
+        // 再次 flush（store 仍满）：零新增且**不重复写**已成功条目。
+        let r2 = logger.flush_to(&mut store);
+        assert!(r2.is_err());
+        assert_eq!(store.entries.len(), 3, "不得重复写已成功条目");
+        assert_eq!(logger.buffered(), 7);
+
+        // 扩容后继续 flush：剩余 7 条依序入 store，无重复无遗漏。
+        store.capacity = 16;
+        let n = logger.flush_to(&mut store).unwrap();
+        assert_eq!(n, 7);
+        assert_eq!(logger.buffered(), 0);
+        let ts: Vec<u64> = store.entries.iter().map(|(t, _)| *t).collect();
+        assert_eq!(ts, (0..10u64).collect::<Vec<_>>(), "顺序完整无重复");
+    }
 }

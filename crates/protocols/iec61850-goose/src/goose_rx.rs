@@ -426,8 +426,14 @@ mod tests {
                 Err(_) => reject += 1,
             }
         }
-        assert!(pass >= 2, "参考帧 valid 必须解码（31 PR-16 判据），pass={pass}");
-        assert!(reject >= 1, "malformed 必须拒绝（31 PR-16 判据），reject={reject}");
+        assert!(
+            pass >= 2,
+            "参考帧 valid 必须解码（31 PR-16 判据），pass={pass}"
+        );
+        assert!(
+            reject >= 1,
+            "malformed 必须拒绝（31 PR-16 判据），reject={reject}"
+        );
     }
 
     /// 31 PR-04 判据：0x81 单字节长型（BER 三型统一）——200 字节 TLV

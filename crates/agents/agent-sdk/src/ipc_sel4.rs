@@ -197,6 +197,156 @@ impl Sel4IpcClient {
         Ok(decoded.payload.to_vec())
     }
 
+    /// 裸帧同步请求（无 wire 封装；蓝图 40 收尾）。
+    ///
+    /// 与 [`Self::request`] 的差异：payload **不经** `wire::encode` 封装
+    /// （16B 头 + target + CRC 会把 109B 分块帧推到 130B+，超出 MR 112B
+    /// 有效载荷预算，且目标服务循环按裸帧字节喂分块状态机——两端从未
+    /// 对齐，QEMU 实弹暴露）。
+    ///
+    /// MR 布局（QEMU 实弹修正）：**数据从 MR[0] 开始**（与 hello/svc_entry
+    /// 全仓实测语义一致——seL4 非 MCS IPC 拷贝发送方 ipc buffer 前
+    /// `length` words 到接收方，从 offset 0 起；40 原始设计的 MR[1..]
+    /// 数据区在实弹下永远拷不到，响应端残留垃圾）。响应同样读 MR[0..]；
+    /// 同步 `seL4_Call` 语义下请求-响应天然配对，无需响应 ID 校验。
+    pub fn request_raw(&mut self, req: &[u8], timeout_ns: u64) -> Result<Vec<u8>, AgentError> {
+        use eneros_sel4_sys::ffi::{
+            eneros_sel4_call, eneros_sel4_get_mr, eneros_sel4_message_info_new, eneros_sel4_set_mr,
+        };
+        use eneros_sel4_sys::types::message_info_length;
+        let id = self.request_id.next_id();
+        let deadline = self
+            .now()
+            .checked_add(timeout_ns)
+            .ok_or_else(|| self.ipc_err("deadline overflow"))?;
+        self.pending.insert(id, deadline);
+        let max_frame = MAX_MR_BYTES - core::mem::size_of::<u64>();
+        if req.len() > max_frame {
+            self.errors += 1;
+            return Err(self.ipc_err("raw frame exceeds MR budget (112B)"));
+        }
+        // SAFETY: `set_mr` 为 C shim（host stub）；req ≤112B → ≤14 words，
+        // 写 MR[0..]（数据区从 0 起，QEMU 实弹语义）。
+        unsafe {
+            for (i, chunk) in req.chunks(8).enumerate() {
+                let mut word = [0u8; 8];
+                word[..chunk.len()].copy_from_slice(chunk);
+                eneros_sel4_set_mr(i as u64, u64::from_le_bytes(word));
+            }
+        }
+        // SAFETY: 纯值构造（host stub）。length = **words 数**（与
+        // hello/svc_entry 全仓语义一致；内核拷贝 length words）。
+        let mr_words = req.len().div_ceil(8);
+        let msg_info = unsafe { eneros_sel4_message_info_new(0, 0, 0, mr_words as u64) };
+        // SAFETY: `dest_cap` 为构造方注入的合法 endpoint 能力；Call 同步阻塞。
+        let reply = unsafe { eneros_sel4_call(self.dest_cap, msg_info) };
+        if is_expired(self.now(), deadline) {
+            self.pending.remove(&id);
+            self.errors += 1;
+            return Err(self.ipc_err("request timeout"));
+        }
+        self.sent += 1;
+        self.pending.remove(&id);
+        // 响应数据在 MR[0..]（length = words 数；数据区从 0 起）。
+        let words = core::cmp::min(message_info_length(reply) as usize, 14);
+        let mut resp = Vec::with_capacity(words * 8);
+        for i in 0..words {
+            // SAFETY: 索引 < 15 在 MR 槽位范围内。
+            let word = unsafe { eneros_sel4_get_mr(i as u64) };
+            resp.extend_from_slice(&word.to_le_bytes());
+        }
+        self.recvd += 1;
+        Ok(resp)
+    }
+
+    /// drv-svc 信封协议同步调用（41 存储句柄移交：svc-storage 等驱动
+    /// 服务的 `driver_service_main` 按 **4 字节/word** 打包 MR——与
+    /// [`Self::request_raw`]（8 字节/word）不同，两者混用会错位截断，
+    /// QEMU 实弹 op=0）。
+    ///
+    /// MR 布局：请求字节每 4 字节一个 word（低 4 字节 = 信封 4 字节，
+    /// 与 drv-svc `wire::encode_request` 的 u32 语义一致）；响应同读
+    /// （每 word 低 4 字节拼回）。
+    pub fn drv_call(&mut self, req: &[u8], timeout_ns: u64) -> Result<Vec<u8>, AgentError> {
+        use eneros_sel4_sys::ffi::{
+            eneros_sel4_call, eneros_sel4_get_mr, eneros_sel4_message_info_new, eneros_sel4_set_mr,
+        };
+        use eneros_sel4_sys::types::message_info_length;
+        let id = self.request_id.next_id();
+        let deadline = self
+            .now()
+            .checked_add(timeout_ns)
+            .ok_or_else(|| self.ipc_err("deadline overflow"))?;
+        self.pending.insert(id, deadline);
+        // 4 字节/word 打包（drv-svc 服务端语义）。
+        let max_words = MAX_MR_BYTES / 4;
+        if req.len().div_ceil(4) > max_words {
+            self.errors += 1;
+            return Err(self.ipc_err("drv frame exceeds MR budget"));
+        }
+        // SAFETY: `set_mr` 为 C shim（host stub）；req ≤ 4×words 字节。
+        unsafe {
+            for (i, chunk) in req.chunks(4).enumerate() {
+                let mut word = [0u8; 4];
+                word[..chunk.len()].copy_from_slice(chunk);
+                eneros_sel4_set_mr(i as u64, u32::from_le_bytes(word) as u64);
+            }
+        }
+        // SAFETY: 纯值构造。length = words 数（4 字节/word）。
+        let mr_words = req.len().div_ceil(4);
+        let msg_info = unsafe { eneros_sel4_message_info_new(0, 0, 0, mr_words as u64) };
+        // SAFETY: `dest_cap` 为合法 endpoint 能力；Call 同步阻塞。
+        let reply = unsafe { eneros_sel4_call(self.dest_cap, msg_info) };
+        if is_expired(self.now(), deadline) {
+            self.pending.remove(&id);
+            self.errors += 1;
+            return Err(self.ipc_err("request timeout"));
+        }
+        self.sent += 1;
+        self.pending.remove(&id);
+        // 响应：每 word 低 4 字节（drv-svc 服务端 set_mr(u32)）。
+        let words = core::cmp::min(message_info_length(reply) as usize, max_words);
+        let mut resp = Vec::with_capacity(words * 4);
+        for i in 0..words {
+            // SAFETY: 索引 < MR 槽位范围。
+            let word = unsafe { eneros_sel4_get_mr(i as u64) };
+            let b = (word & 0xFFFF_FFFF) as u32;
+            resp.extend_from_slice(&b.to_le_bytes());
+        }
+        self.recvd += 1;
+        Ok(resp)
+    }
+
+    /// 裸帧单向发送（无 wire 封装；与 [`Self::request_raw`] 对应——
+    /// 数据从 MR[0] 开始）。
+    pub fn send_raw(&mut self, msg: &[u8]) -> Result<(), AgentError> {
+        use eneros_sel4_sys::ffi::{
+            eneros_sel4_message_info_new, eneros_sel4_send, eneros_sel4_set_mr,
+        };
+        let max_frame = MAX_MR_BYTES - core::mem::size_of::<u64>();
+        if msg.len() > max_frame {
+            self.errors += 1;
+            return Err(self.ipc_err("raw frame exceeds MR budget (112B)"));
+        }
+        // SAFETY: `set_mr` 为 C shim（host stub）；msg ≤112B → ≤14 words。
+        unsafe {
+            for (i, chunk) in msg.chunks(8).enumerate() {
+                let mut word = [0u8; 8];
+                word[..chunk.len()].copy_from_slice(chunk);
+                eneros_sel4_set_mr(i as u64, u64::from_le_bytes(word));
+            }
+        }
+        // SAFETY: 纯值构造（host stub）。length = words 数。
+        let mr_words = msg.len().div_ceil(8);
+        let msg_info = unsafe { eneros_sel4_message_info_new(0, 0, 0, mr_words as u64) };
+        // SAFETY: `dest_cap` 为合法 endpoint 能力；Send 无返回数据依赖。
+        unsafe {
+            eneros_sel4_send(self.dest_cap, msg_info);
+        }
+        self.sent += 1;
+        Ok(())
+    }
+
     /// 单向发送（`seL4_Send`，无响应等待）。
     pub fn send(&mut self, target: &str, msg: &[u8]) -> Result<(), AgentError> {
         use eneros_sel4_sys::ffi::{
@@ -318,5 +468,19 @@ mod tests {
             let ok = Sel4IpcClient::new("agent-a", 1, || 0);
             assert!(ok.is_ok());
         }
+    }
+
+    #[test]
+    fn test_request_raw_rejects_oversize() {
+        // 裸帧预算 112B（MR[0] 为关联 ID）——超限显式拒绝，不静默截断。
+        let mut c = Sel4IpcClient::new("agent-a", 1, || 0).unwrap();
+        let big = alloc::vec![0u8; 113];
+        assert!(c.request_raw(&big, 1_000).is_err());
+        assert!(c.send_raw(&big).is_err());
+        assert_eq!(c.stats().2, 2, "超限必须计入错误");
+        let ok = alloc::vec![0u8; 112];
+        // host stub：调用本身可完成（stub 数据），断言不超限路径不报错计数。
+        let _ = c.request_raw(&ok, 1_000);
+        assert_eq!(c.stats().2, 2, "112B 恰好在预算内");
     }
 }

@@ -204,10 +204,11 @@ pub enum TasError {
     InvalidConfig,
 }
 
-/// NIC 下发抽象（D6：无真实 netlink/taprio，通过 trait 注入）.
+/// NIC 下发抽象（trait-only scope，W3.4 / ADR-0040；D6：无真实 netlink/taprio，通过 trait 注入）.
 ///
-/// 真实网卡下发（Linux taprio / netlink）由实现此 trait 的具体类型提供；
-/// 测试与算法验证使用 [`MockNicApplier`].
+/// 当前唯一实现者是 [`MockNicApplier`]——tsn 数据面已正式降级
+/// （`degradation::dataplane_available() -> false`）。真实网卡下发（Linux taprio /
+/// netlink）待硬件对接后按 ADR-0026 纪律"先有真实需求再加"。
 pub trait NicApplier {
     /// 将门控列表应用到指定网卡接口.
     fn apply(&mut self, iface: &str, config: &GateControlList) -> Result<(), TasError>;

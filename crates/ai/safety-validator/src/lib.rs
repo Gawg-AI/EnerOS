@@ -49,6 +49,7 @@ pub mod protection;
 pub mod result;
 pub mod rule;
 pub mod state;
+pub mod trusted;
 pub mod validator;
 
 pub use catalog::SafetyCatalog;
@@ -56,7 +57,12 @@ pub use electrical::ElectricalSafetyRule;
 pub use protection::ProtectionCoordinationRule;
 pub use result::{Severity, ValidationResult, Violation, ViolationReason};
 pub use rule::SafetyRule;
-pub use state::SystemState;
+pub use state::{SystemState, TestSystemStateBuilder};
+pub use trusted::{
+    EvaluatorConfig, IntegrityStatus, PointUnit, QualityReason, RequiredPoint,
+    RequiredPointCoverage, SampleQuality, StateBindings, TelemetrySample, TelemetryTrustEvaluator,
+    TrustRejection, TrustedTelemetry,
+};
 pub use validator::SafetyValidator;
 
 #[cfg(test)]
@@ -89,14 +95,27 @@ mod tests {
         }
     }
 
-    // T1: SystemState::default 默认值（D2）
+    /// 测试电气工况夹具（蓝图 40 WP-40.1：显式构造，不再有"健康默认值"）。
+    fn st() -> SystemState {
+        TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.5, 0).build()
+    }
+
+    // T1: SystemState 无可用于控制的 Default（蓝图 40 WP-40.1）
     #[test]
-    fn t1_system_state_default() {
-        let s = SystemState::default();
+    fn t1_system_state_no_control_default() {
+        // 编译期保证：`SystemState` 不再实现 `Default`——任何
+        // `st()` 都无法编译（40 Exit #1）。
+        // 运行时契约：TestSystemStateBuilder::unknown() 为 NaN fail-closed
+        // 形态（误入控制链会经安全校验/求解传播为拒绝，不产生控制）。
+        let unknown = TestSystemStateBuilder::unknown().build();
+        assert!(unknown.voltage_v.is_nan());
+        assert!(unknown.current_a.is_nan());
+        assert!(unknown.frequency_hz.is_nan());
+        assert!(unknown.soc_pct.is_nan());
+        assert_eq!(unknown.timestamp_ms, 0);
+        // 显式构造保持可用（测试/可信评估器）。
+        let s = SystemState::new(380.0, 0.0, 50.0, 0.5, 0);
         assert!((s.voltage_v - 380.0).abs() < 1e-9);
-        assert!((s.current_a - 0.0).abs() < 1e-9);
-        assert!((s.frequency_hz - 50.0).abs() < 1e-9);
-        assert!((s.soc_pct - 0.5).abs() < 1e-9);
         assert_eq!(s.timestamp_ms, 0);
     }
 
@@ -165,15 +184,15 @@ mod tests {
         let nan_cases: [SystemState; 3] = [
             SystemState {
                 voltage_v: f64::NAN,
-                ..SystemState::default()
+                ..st()
             },
             SystemState {
                 current_a: f64::INFINITY,
-                ..SystemState::default()
+                ..st()
             },
             SystemState {
                 frequency_hz: f64::NEG_INFINITY,
-                ..SystemState::default()
+                ..st()
             },
         ];
         for st in nan_cases {
@@ -195,7 +214,7 @@ mod tests {
             }],
             ..make_schedule(&[])
         };
-        let r = rule.validate(&bad_sched, &SystemState::default());
+        let r = rule.validate(&bad_sched, &st());
         assert!(!r.passed);
         assert!(r
             .violations
@@ -214,7 +233,7 @@ mod tests {
             &sched,
             &SystemState {
                 current_a: 250.0,
-                ..SystemState::default()
+                ..st()
             },
         );
         assert!(r
@@ -226,7 +245,7 @@ mod tests {
             &sched,
             &SystemState {
                 voltage_v: 430.0,
-                ..SystemState::default()
+                ..st()
             },
         );
         assert!(r
@@ -237,7 +256,7 @@ mod tests {
             &sched,
             &SystemState {
                 voltage_v: 300.0,
-                ..SystemState::default()
+                ..st()
             },
         );
         assert!(r
@@ -249,7 +268,7 @@ mod tests {
             &sched,
             &SystemState {
                 frequency_hz: 51.0,
-                ..SystemState::default()
+                ..st()
             },
         );
         assert!(r
@@ -260,7 +279,7 @@ mod tests {
             &sched,
             &SystemState {
                 frequency_hz: 49.0,
-                ..SystemState::default()
+                ..st()
             },
         );
         assert!(r
@@ -268,7 +287,7 @@ mod tests {
             .iter()
             .any(|v| v.reason == ViolationReason::FreqOutOfRange));
         // 边界内正常值不误报（基线防回归）。
-        let r = rule.validate(&sched, &SystemState::default());
+        let r = rule.validate(&sched, &st());
         assert!(r.passed, "正常值必须放行（基线）");
         assert!(r.violations.is_empty());
     }
@@ -282,7 +301,7 @@ mod tests {
             make_entry(1, 50.0, 50.0, 0.5),
         ];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = rule.validate(&sched, &state);
         assert!(result.passed);
         assert!(!result.clamped);
@@ -296,7 +315,7 @@ mod tests {
         let rule = ElectricalSafetyRule::new(100.0, 200.0, (340.0, 420.0), (49.5, 50.5));
         let entries = [make_entry(0, 120.0, 0.0, 0.5)];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = rule.validate(&sched, &state);
         assert!(result.clamped);
         assert!(result.passed); // Critical 不影响 passed
@@ -316,7 +335,7 @@ mod tests {
         let rule = ElectricalSafetyRule::new(100.0, 200.0, (340.0, 420.0), (49.5, 50.5));
         let entries = [make_entry(0, 0.0, 120.0, 0.5)];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = rule.validate(&sched, &state);
         assert!(result.clamped);
         assert_eq!(result.violations.len(), 1);
@@ -333,7 +352,7 @@ mod tests {
         let rule = ElectricalSafetyRule::new(100.0, 200.0, (340.0, 420.0), (49.5, 50.5));
         let entries = [make_entry(0, 50.0, 0.0, 0.98)];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = rule.validate(&sched, &state);
         assert!(result.clamped);
         assert!(result.passed);
@@ -351,7 +370,7 @@ mod tests {
         let rule = ElectricalSafetyRule::new(100.0, 200.0, (340.0, 420.0), (49.5, 50.5));
         let entries = [make_entry(0, 50.0, 0.0, 0.03)];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = rule.validate(&sched, &state);
         assert!(!result.passed);
         assert!(result.clamped);
@@ -379,7 +398,7 @@ mod tests {
         // 相邻时段 net 功率差 25kW，delta_per_min = 25/0.25 = 100 < 200
         let entries = [make_entry(0, 0.0, 50.0, 0.5), make_entry(1, 0.0, 75.0, 0.5)];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = rule.validate(&sched, &state);
         assert!(result.passed);
         assert!(!result.clamped);
@@ -393,7 +412,7 @@ mod tests {
         // prev net=0, curr net=100, delta=100, delta_per_min = 100/0.25 = 400 > 200
         let entries = [make_entry(0, 0.0, 0.0, 0.5), make_entry(1, 0.0, 100.0, 0.5)];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = rule.validate(&sched, &state);
         assert!(result.clamped);
         assert!(result.passed); // Critical 不影响 passed
@@ -427,7 +446,7 @@ mod tests {
             make_entry(1, 0.0, 75.0, 0.5),
         ];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = v.validate(&sched, &state);
         assert!(result.passed);
         assert!(!result.clamped);
@@ -446,7 +465,7 @@ mod tests {
             make_entry(1, 120.0, 0.0, 0.5), // charge > 100，net=-120
         ];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = v.validate(&sched, &state);
         assert!(result.clamped);
         // 应同时包含 electrical（charge_power）+ protection（ramp_rate）违规
@@ -473,7 +492,7 @@ mod tests {
             make_entry(1, 0.0, 200.0, 0.5), // 若 protection 运行会触发 ramp_rate
         ];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = v.validate(&sched, &state);
         assert!(!result.passed);
         // 所有 violation 应来自 electrical_safety（protection 未运行）
@@ -521,7 +540,7 @@ mod tests {
         let v = SafetyValidator::new();
         let entries = [make_entry(0, 120.0, 0.0, 0.5)]; // charge 超限
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = v.validate(&sched, &state);
         assert!(result.clamped);
         assert!(result.clamped_schedule.is_some());
@@ -537,7 +556,7 @@ mod tests {
         // 原始 net = discharge - charge = 0 - 120 = -120
         let entries = [make_entry(0, 120.0, 0.0, 0.5)];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = rule.validate(&sched, &state);
         let clamped = result.clamped_schedule.as_ref().unwrap();
         // charge 已截断为 100
@@ -581,12 +600,12 @@ mod tests {
         let v = SafetyValidator::new();
         let entries = [
             // 31-review（AI-05）：夹具不得同时充放（后置校验 Fatal）。
-            make_entry(0, 0.0, 50.0, 0.5), // 正常（仅放电）
+            make_entry(0, 0.0, 50.0, 0.5),  // 正常（仅放电）
             make_entry(1, 120.0, 0.0, 0.5), // 充电超限 → electrical 截断
             make_entry(2, 0.0, 50.0, 0.98), // SOC 超限 → electrical 截断（Critical）
         ];
         let sched = make_schedule(&entries);
-        let state = SystemState::default();
+        let state = st();
         let result = v.validate(&sched, &state);
         // 应发生截断
         assert!(result.clamped);

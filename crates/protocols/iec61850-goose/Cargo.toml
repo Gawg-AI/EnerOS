@@ -8,8 +8,13 @@ description = "EnerOS v0.107.0 IEC 61850 GOOSE protocol stack (L2 multicast + BE
 
 [dependencies]
 eneros-iec61850-model = { path = "../iec61850-model" }
+# 39 WP-39.11：协议插件合同（ProtocolPlugin/TransportFactory）。
+eneros-protocol-abstract = { path = "../protocol-abstract" }
 # v0.222.0（B2-05）：真实 L2 收发（NetDevice raw 帧）。
 eneros-net = { path = "../../drivers/net", optional = true }
+
+[dev-dependencies]
+eneros-protocol-abstract = { path = "../protocol-abstract", features = ["mock"] }
 
 [features]
 mock = []

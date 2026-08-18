@@ -17,8 +17,9 @@ eneros-market-types = { path = "../market-types" }
 eneros-energy-market-agent = { path = "../energy-market-agent" }
 eneros-device-agent = { path = "../device-agent" }
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
-eneros-solver-core = { path = "../../ai/solver-core" }
+eneros-solver-core = { path = "../../ai/solver-core", features = ["highs-ffi"] }
 eneros-dual-brain = { path = "../../ai/dual-brain" }
+eneros-control-dispatch = { path = "../../protocols/control-dispatch" }
 
 [dev-dependencies]
 # 测试构建合并 mock features（蓝图/20 R2-1：生产构建不含 mock）

@@ -21,6 +21,9 @@ pub struct CliArgs {
     pub soc_min: Option<f64>,
     /// 32 AI-07：链密钥（--chain-key-file 读取；缺省拒绝启动）。
     pub chain_key: Vec<u8>,
+    /// 蓝图 40 WP-40.5：显式启用 demo 可信反馈（仅 DEMO_ONLY 证据；
+    /// 缺省 false = untrusted → 授权链拒绝，demo 诚实失败）。
+    pub demo_trusted_feedback: bool,
 }
 
 /// 解析 CLI 参数（`argv` 不含程序名；`main.rs` 传 `env::args().skip(1)`）。
@@ -38,9 +41,14 @@ where
     let mut scenario = Scenario::Normal;
     let mut now_ms = None;
     let mut soc_min = None;
+    let mut demo_trusted_feedback = false;
 
     while let Some(flag_ref) = it.next() {
         let flag = flag_ref.as_ref().to_string();
+        if flag == "--demo-trusted-feedback" {
+            demo_trusted_feedback = true;
+            continue;
+        }
         let value_ref = it
             .next()
             .ok_or_else(|| format!("{flag} requires a value"))?;
@@ -81,9 +89,8 @@ where
     }
 
     Ok(CliArgs {
-        chain_key: chain_key.ok_or_else(|| {
-            "--chain-key-file is mandatory (fail-closed; 32 AI-07)".to_owned()
-        })?,
+        chain_key: chain_key
+            .ok_or_else(|| "--chain-key-file is mandatory (fail-closed; 32 AI-07)".to_owned())?,
         model: model.ok_or_else(|| "--model is mandatory".to_owned())?,
         sink: sink.ok_or_else(|| "--sink is mandatory".to_owned())?,
         scenario,
@@ -94,6 +101,7 @@ where
                 .unwrap_or(0)
         }),
         soc_min,
+        demo_trusted_feedback,
     })
 }
 

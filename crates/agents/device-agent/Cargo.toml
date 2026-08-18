@@ -7,16 +7,25 @@ license.workspace = true
 description = "EnerOS v0.73.0 Device Agent (设备管理: 状态采集/命令执行/多设备, no_std)"
 
 [features]
-default = []
+default = ["agent-runtime"]
 # 蓝图/20 R2-1：Mock 类型仅测试/仿真；release 启用即熔断
 mock = []
+# AgentRuntime 桥接（DeviceAgent: AgentRuntime）——svc 闭包可关闭。
+agent-runtime = ["dep:eneros-energy-market-agent"]
+# 注册表持久化（FileSystem 实现绑定）。
+persist-fs = ["dep:eneros-fs"]
 
 [dependencies]
+# 蓝图 40 诊断打印（target 服务侧）。
+eneros-runtime = { path = "../../runtime/runtime" }
 eneros-agent = { path = "../agent" }
-eneros-energy-market-agent = { path = "../energy-market-agent" }
+# 蓝图 40 WP-40.4：AgentRuntime 桥接可选（svc-device-agent target 闭包
+# 不需要 EnergyAgent 链——避免 llama/highs native 污染 target）。
+eneros-energy-market-agent = { path = "../energy-market-agent", optional = true }
 eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
-# v0.227.0（B3-04）：注册表持久化经 fs。
-eneros-fs = { path = "../../drivers/fs" }
+# v0.227.0（B3-04）：注册表持久化经 fs（蓝图 40：target 闭包可选——
+# EL0 存储句柄移交后启用；svc 闭包不拉 littlefs C 构建）。
+eneros-fs = { path = "../../drivers/fs", optional = true }
 eneros-upa-model = { path = "../../protocols/upa-model" }
 # 蓝图/24 §6.2/6.3：信封复验（ControlChain/租约/信封编解码）。
 eneros-control-gateway = { path = "../../protocols/control-gateway" }
@@ -34,3 +43,5 @@ eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 [dev-dependencies]
 # §8.2 场景④：指标 telemetry 导出验证（OtlpExporter 真实导出路径）。
 eneros-telemetry-queue = { path = "../../observability/telemetry-queue" }
+# 持久化测试（MockFileSystem）。
+eneros-fs = { path = "../../drivers/fs" }

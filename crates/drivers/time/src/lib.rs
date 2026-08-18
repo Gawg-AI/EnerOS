@@ -32,7 +32,7 @@ pub mod rtc;
 
 pub use api::{
     cancel_timer, get_monotonic_ns, get_time, register_periodic, register_timer, rtc_read,
-    rtc_write, sleep_until, time_init, timer_expired_count,
+    rtc_write, set_rtc_base, sleep_until, time_init, timer_expired_count,
 };
 pub use hrtimer::{HrTimer, TimerId, TimerWheel};
 pub use monotonic::MonotonicClock;

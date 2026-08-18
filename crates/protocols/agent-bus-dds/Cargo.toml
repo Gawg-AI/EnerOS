@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS v0.78.0 DDS middleware + Agent Bus router (34 SE-11: 签名层退役——传输层已有等价保护; Cyclone DDS via FFI + MockDdsNode, no_std)"
+description = "EnerOS v0.78.0 DDS middleware + Agent Bus router (34 SE-11: 签名层退役——传输层已有等价保护; Cyclone DDS 路线已撤销(35 系列 P1-25/P1-29)，残留清理完成，AgentBus 走 41 MQTT/IPC; no_std)"
 
 [dependencies]
 slotmap = { version = "1.0", default-features = false }
@@ -12,6 +12,8 @@ slotmap = { version = "1.0", default-features = false }
 [features]
 # 测试专用 mock（显式启用；release 不得启用——mock 纪律）。
 mock = []
+# DDS 后端（CycloneDDS FFI）——默认不编译（T17 契约测试门控该 feature）。
+cyclone-dds = []
 default = []
 
 [package.metadata.eneros]

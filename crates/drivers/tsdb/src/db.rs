@@ -504,7 +504,10 @@ mod tests {
     use crate::schema::{Aggregation, CompressionType, DataQuality, Query};
 
     fn make_fs() -> Lfs {
-        let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(MockBlockDevice::new(64, 4096));
+        let dev = eneros_storage::partition::boxed_mock_scope(
+            MockBlockDevice::new(64, 4096),
+            eneros_storage::partition::BlockRole::Data,
+        );
         Lfs::format(dev).expect("format should succeed")
     }
 
@@ -902,7 +905,10 @@ mod tests {
             };
             let dev = VirtioBlkDriver::new(mmio, pool, NoopCache, cfg).expect("virtio-blk init");
             dev.set_block_count(64); // 适配器 BLOCK_COUNT 上限 64 × 4096 B = 256 KiB
-            let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(dev);
+            let dev = eneros_storage::partition::boxed_mock_scope(
+                dev,
+                eneros_storage::partition::BlockRole::Data,
+            );
             (Lfs::format(dev).expect("format on virtio-blk"), disk_handle)
         }
 
@@ -922,7 +928,10 @@ mod tests {
             };
             let dev = VirtioBlkDriver::new(mmio, pool, NoopCache, cfg).expect("virtio-blk reinit");
             dev.set_block_count(64);
-            let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(dev);
+            let dev = eneros_storage::partition::boxed_mock_scope(
+                dev,
+                eneros_storage::partition::BlockRole::Data,
+            );
             Lfs::mount(dev).expect("mount on virtio-blk")
         }
 
@@ -961,7 +970,10 @@ mod w34_crc_tests {
 
     // 本地 helper（与 tests 模块同构）。
     fn make_fs() -> Lfs {
-        let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(MockBlockDevice::new(64, 4096));
+        let dev = eneros_storage::partition::boxed_mock_scope(
+            MockBlockDevice::new(64, 4096),
+            eneros_storage::partition::BlockRole::Data,
+        );
         Lfs::format(dev).expect("format should succeed")
     }
     fn make_config() -> TsdbConfig {
@@ -1039,7 +1051,10 @@ mod w36_compaction_tests {
     use crate::CompressionType;
 
     fn make_fs() -> Lfs {
-        let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(MockBlockDevice::new(64, 4096));
+        let dev = eneros_storage::partition::boxed_mock_scope(
+            MockBlockDevice::new(64, 4096),
+            eneros_storage::partition::BlockRole::Data,
+        );
         Lfs::format(dev).expect("format")
     }
     fn make_config() -> TsdbConfig {
@@ -1142,8 +1157,10 @@ mod gr3_gate_tests {
     /// 有界（单键）、内存 chunk 缓冲有界（flush 后释放）。
     #[test]
     fn gr3_khz_ingest_no_loss_no_oom() {
-        let dev: Box<dyn eneros_storage::BlockDevice> =
-            Box::new(eneros_storage::MockBlockDevice::new(64, 4096));
+        let dev = eneros_storage::partition::boxed_mock_scope(
+            eneros_storage::MockBlockDevice::new(64, 4096),
+            eneros_storage::partition::BlockRole::Data,
+        );
         let fs = Lfs::format(dev).expect("format");
         let mut db = TimeSeriesDB::open(fs, make_config()).expect("open");
 
@@ -1199,7 +1216,10 @@ mod gr3_gate_tests {
         };
         let dev = VirtioBlkDriver::new(mmio, pool, NoopCache, cfg).expect("virtio-blk init");
         dev.set_block_count(64);
-        let dev: Box<dyn eneros_storage::BlockDevice> = Box::new(dev);
+        let dev = eneros_storage::partition::boxed_mock_scope(
+            dev,
+            eneros_storage::partition::BlockRole::Data,
+        );
         let mut db =
             TimeSeriesDB::open(Lfs::format(dev).expect("format"), make_config()).expect("open");
 
@@ -1229,7 +1249,10 @@ mod gr3_gate_tests {
         )
         .expect("virtio-blk reinit");
         dev2.set_block_count(64);
-        let dev2: Box<dyn eneros_storage::BlockDevice> = Box::new(dev2);
+        let dev2 = eneros_storage::partition::boxed_mock_scope(
+            dev2,
+            eneros_storage::partition::BlockRole::Data,
+        );
         let mut fs2 = Lfs::mount(dev2).expect("mount");
         // 模拟掉电中断写路径：制造 .tmp 原子写残留（半成品垃圾字节）。
         let _ = fs2.mkdir("/tsdb");

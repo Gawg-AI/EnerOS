@@ -6,10 +6,9 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::types::{
-    EdgeKind, FlowDirection, NodeKind, NodeStatus, Position3D, TopologyEdge, TopologyGraph,
-    TopologyNode,
-};
+#[cfg(test)]
+use crate::types::{EdgeKind, FlowDirection, TopologyEdge};
+use crate::types::{NodeKind, NodeStatus, Position3D, TopologyGraph, TopologyNode};
 
 /// 拓扑提供者抽象.
 pub trait TopologyProvider {
@@ -17,10 +16,73 @@ pub trait TopologyProvider {
     fn snapshot(&self) -> TopologyGraph;
 }
 
-/// 模拟拓扑提供者：固定生成 3 节点 + 2 边的样例图.
+/// 注册表拓扑提供者（蓝图 41 WP-41.13）：从 Device/Service/Capability
+/// registry 获取数据，timestamp 来自可信时间——不再固定 3 点/0 时间戳
+/// 伪造健康。未知/降级状态如实呈现（NodeStatus::Unknown/Degraded）。
+pub trait RegistrySource {
+    /// 设备快照（registry 数据；空 = 无设备，图如实为空）。
+    fn snapshot_devices(&self) -> alloc::vec::Vec<DeviceEntry>;
+}
+
+/// registry 设备条目（提供者输入）。
+#[derive(Debug, Clone)]
+pub struct DeviceEntry {
+    pub device_id: u16,
+    pub name: String,
+    pub kind: NodeKind,
+    pub healthy: bool,
+    pub degraded: bool,
+}
+
+/// 基于注册表的正式拓扑提供者。
+#[derive(Debug, Clone)]
+pub struct RegistryTopologyProvider<R: RegistrySource> {
+    pub registry: R,
+    /// 可信时间源（now_ms）。
+    pub now_ms: fn() -> u64,
+}
+
+impl<R: RegistrySource> RegistryTopologyProvider<R> {
+    pub fn new(registry: R, now_ms: fn() -> u64) -> Self {
+        RegistryTopologyProvider { registry, now_ms }
+    }
+}
+
+impl<R: RegistrySource> TopologyProvider for RegistryTopologyProvider<R> {
+    fn snapshot(&self) -> TopologyGraph {
+        let devices = self.registry.snapshot_devices();
+        let nodes = devices
+            .iter()
+            .map(|d| TopologyNode {
+                node_id: d.device_id as u64,
+                label: d.name.clone(),
+                kind: d.kind,
+                position: Position3D::new(0.0, 0.0, 0.0),
+                // 如实：healthy → Healthy；degraded → Degraded；
+                // 其余 → Unknown（不伪造 Healthy）。
+                status: if d.healthy {
+                    NodeStatus::Healthy
+                } else if d.degraded {
+                    NodeStatus::Degraded
+                } else {
+                    NodeStatus::Unknown
+                },
+            })
+            .collect();
+        TopologyGraph {
+            nodes,
+            edges: alloc::vec![],
+            timestamp: (self.now_ms)(),
+        }
+    }
+}
+
+/// 测试/仿真专用模拟拓扑（蓝图 41：移入 test-support，release 不导出）。
+#[cfg(any(test, feature = "mock"))]
 #[derive(Debug, Clone, Default)]
 pub struct MockTopology;
 
+#[cfg(any(test, feature = "mock"))]
 impl MockTopology {
     /// 构造一个空的模拟拓扑提供者.
     pub const fn new() -> Self {
@@ -28,6 +90,7 @@ impl MockTopology {
     }
 }
 
+#[cfg(any(test, feature = "mock"))]
 impl TopologyProvider for MockTopology {
     fn snapshot(&self) -> TopologyGraph {
         let nodes = alloc::vec![

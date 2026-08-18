@@ -9,6 +9,9 @@ use alloc::vec::Vec;
 use crate::error::MqttError;
 use crate::packet::{self, MqttPacket, PublishPacket, SubscribePacket, UnsubscribePacket};
 use crate::qos::QoS;
+#[cfg(not(any(feature = "fs-persist", test)))]
+use crate::qos_store::{InMemoryQosStore as _, PendingMessage, QosStore};
+#[cfg(any(feature = "fs-persist", test))]
 use crate::qos_store::{PendingMessage, QosStore};
 use crate::transport::MqttTransport;
 use crate::will::LastWill;
@@ -315,7 +318,6 @@ impl MqttClient {
                 // 31 PR-12：recv 错误（超时/无数据）→ DUP 重传（≤2 次）。
                 Err(_) if attempt < 2 => {
                     // 重发（DUP=1，同 packet id）。
-                    drop(transport);
                     let mut publish = self
                         .inflight
                         .get(&packet_id)
@@ -331,7 +333,6 @@ impl MqttClient {
                     continue;
                 }
                 Err(e) => return Err(e),
-                Ok(_) => unreachable!(),
             };
             let pkt = packet::decode(&bytes).map_err(|_| MqttError::PacketDecodeError)?;
             match pkt {
@@ -590,7 +591,6 @@ fn parse_broker(broker: &str) -> (String, u16) {
 #[cfg(test)]
 mod tests {
     use crate::transport::MockTransport;
-    use crate::packet::{self, MqttPacket};
 
     /// 31 PR-12 判据：mock 不返回 PUBACK（recv 空 → PublishTimeout）→
     /// DUP=1 同 packet id 重发（MQTT 3.1.1 §4.4）。
@@ -675,5 +675,88 @@ mod tests {
         c.pending_publish_packet_id = 65535;
         assert_eq!(c.allocate_packet_id(), 65535);
         assert_eq!(c.allocate_packet_id(), 1); // 回绕
+    }
+
+    // ===== 39 §6.3 负例：流量突发/backpressure + 坏报文突发 =====
+
+    /// 构造已连接状态的客户端（mock 预置 PUBACK 可选）。
+    fn connected_client(transport: MockTransport) -> MqttClient {
+        let mut client = MqttClient::new("eneros-test", "client-1", 60_000);
+        client.set_transport(Box::new(transport));
+        client.state = ConnectionState::Connected;
+        client
+    }
+
+    /// 读取 mock 已发送报文数（downcast）。
+    fn sent_count(client: &mut MqttClient) -> usize {
+        client
+            .transport_mut()
+            .as_any_mut()
+            .downcast_ref::<MockTransport>()
+            .expect("downcast")
+            .sent_count()
+    }
+
+    /// 39 收尾复验（§6.3 流量突发/backpressure）：客户端为同步 publish
+    /// 模型（window=1，无 inflight 窗口上限）——实际边界即"每次 publish
+    /// 同步等 ACK"。突发三条 QoS1 publish（broker 逐条回 PUBACK）全部
+    /// 确认、无积压、不 panic；ACK 缺失时不静默丢：DUP 重传 ≤2 次后
+    /// 返回 PublishTimeout，消息保留在 pending_acks（at-least-once 语义，
+    /// 可由调用方补传），而非静默吞掉。
+    #[test]
+    fn test_39_qos1_burst_all_acked_and_missing_ack_not_silently_dropped() {
+        // 突发路径：三条 publish 各自预置 PUBACK（pid 1/2/3）。
+        let mut transport = MockTransport::new();
+        transport.set_connected(true);
+        for pid in 1u16..=3 {
+            transport.enqueue_recv(vec![0x40, 0x02, (pid >> 8) as u8, pid as u8]);
+        }
+        let mut client = connected_client(transport);
+        for i in 0..3u8 {
+            client
+                .publish("t", &[i], crate::qos::QoS::AtLeastOnce, 0)
+                .expect("突发 publish 必须逐条确认");
+        }
+        assert_eq!(client.pending_count(), 0, "全部 ACK 后无积压");
+        assert_eq!(sent_count(&mut client), 3);
+
+        // 无 ACK 路径：不静默丢——DUP 重传后 Err，消息仍在途表。
+        let mut transport = MockTransport::new();
+        transport.set_connected(true);
+        let mut client = connected_client(transport);
+        let result = client.publish("t", b"x", crate::qos::QoS::AtLeastOnce, 0);
+        // 不静默成功：无 ACK 时必须报错（PublishTimeout，或 mock 空队列
+        // 语义下第三次 recv 的 NotConnected——两者均为显式失败路径）。
+        assert!(
+            result == Err(MqttError::PublishTimeout) || result == Err(MqttError::NotConnected),
+            "无 ACK 不得静默成功: {result:?}"
+        );
+        // 首发 1 + DUP 重传 2 = 3 帧（31 PR-12 重传语义，非静默丢）。
+        assert_eq!(sent_count(&mut client), 3);
+        // 未确认消息保留在 pending_acks（不得静默吞 ACK 语义）。
+        assert_eq!(client.pending_count(), 1);
+    }
+
+    /// 39 收尾复验（§6.3 坏报文突发）：一次 recv 注入超长垃圾字节流
+    ///（远超典型报文），解码路径拒绝（PacketDecodeError）且不 panic；
+    /// 客户端状态保持可继续运行。
+    #[test]
+    fn test_39_garbage_byte_burst_rejected_without_panic() {
+        let mut transport = MockTransport::new();
+        transport.set_connected(true);
+        // 超长垃圾流：非法报文类型 + 剩余长度编码损坏。
+        let garbage = vec![0xFFu8; 16_384];
+        transport.enqueue_recv(garbage);
+        // 再注一段伪 PUBLISH（剩余长度声称远超实际）。
+        transport.enqueue_recv(vec![0x30, 0xFF, 0xFF, 0xFF, 0xFF, 0x01]);
+        let mut client = connected_client(transport);
+        let r1 = client.poll(0);
+        assert_eq!(r1, Err(MqttError::PacketDecodeError));
+        let r2 = client.poll(0);
+        assert_eq!(r2, Err(MqttError::PacketDecodeError));
+        // 解码拒绝后状态不损坏：队列排空后 poll 返回空（不 panic）。
+        let r3 = client.poll(0);
+        assert!(r3.is_ok());
+        assert!(r3.unwrap().is_empty());
     }
 }

@@ -19,6 +19,8 @@
 //!   调用方在确认 `Ok` 后自行 `cache.clear()`；若同步中止或 sink 侧需
 //!   反查，缓存数据不丢。
 
+// MockSyncSink（cfg(any(test, feature="mock"))）用 Vec——条件 import 避免默认构建 unused 警告。
+#[cfg(any(test, feature = "mock"))]
 use alloc::vec::Vec;
 
 use crate::cache::EventCache;

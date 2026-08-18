@@ -9,5 +9,10 @@ description = "EnerOS v0.92.0+v0.93.0+v0.94.0 Edge Coordinator (域内仲裁 + �
 [dependencies]
 eneros-market-types = { path = "../market-types" }
 eneros-agent = { path = "../agent" }
-eneros-solver-core = { path = "../../ai/solver-core" }
+eneros-solver-core = { path = "../../ai/solver-core", features = ["highs-ffi"] }
 eneros-energy-market-agent = { path = "../energy-market-agent" }
+
+[dev-dependencies]
+# W4.1（蓝图23）：energy-market-agent 的 MarketSignal 等测试双已降级
+# cfg(any(test, feature="mock"))——coordinator 测试需 mock feature 才能访问。
+eneros-energy-market-agent = { path = "../energy-market-agent", features = ["mock"] }

@@ -16,7 +16,6 @@
 pub mod cpu;
 pub mod gicv3;
 pub mod gpio;
-pub mod net_mmio;
 pub mod platform;
 pub use platform::{PlatformConfig, PHYTIUM_D2000, QEMU_VIRT};
 pub mod provider;

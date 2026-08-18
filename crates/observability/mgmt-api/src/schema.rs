@@ -216,7 +216,7 @@ impl ApiResponse {
             "{{\"request_id\":{},\"version\":{},\"status\":{},\"body\":\"{}\",\"replayed\":{}}}",
             self.request_id,
             self.api_version.0,
-            self.status as u16,
+            self.status.code(),
             self.body,
             self.replayed
         )

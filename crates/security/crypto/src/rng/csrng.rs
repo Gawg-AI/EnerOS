@@ -372,13 +372,13 @@ mod tests {
 
         let mut buf1 = [0u8; 64];
         let mut buf2 = [0u8; 64];
-        rng1.fill_bytes(&mut buf1);
-        rng2.fill_bytes(&mut buf2);
+        let _ = rng1.fill_bytes(&mut buf1);
+        let _ = rng2.fill_bytes(&mut buf2);
         assert_eq!(buf1, buf2, "same seed must yield same output sequence");
 
         // 第二次生成也应一致
-        rng1.fill_bytes(&mut buf1);
-        rng2.fill_bytes(&mut buf2);
+        let _ = rng1.fill_bytes(&mut buf1);
+        let _ = rng2.fill_bytes(&mut buf2);
         assert_eq!(buf1, buf2, "second block must also match");
     }
 
@@ -391,8 +391,8 @@ mod tests {
 
         let mut buf1 = [0u8; 32];
         let mut buf2 = [0u8; 32];
-        rng1.fill_bytes(&mut buf1);
-        rng2.fill_bytes(&mut buf2);
+        let _ = rng1.fill_bytes(&mut buf1);
+        let _ = rng2.fill_bytes(&mut buf2);
         assert_ne!(buf1, buf2, "different seeds must yield different outputs");
     }
 
@@ -401,7 +401,7 @@ mod tests {
         let mut rng = CsRng::new();
         for size in [1usize, 4, 16, 31] {
             let mut buf = vec![0xFFu8; size];
-            rng.fill_bytes(&mut buf);
+            let _ = rng.fill_bytes(&mut buf);
             // 验证非全 0xFF（应该已被覆盖）
             assert!(
                 buf.iter().any(|&b| b != 0xFF),
@@ -422,7 +422,7 @@ mod tests {
         // 恰好 32 字节 = 一个 SM3 块
         let mut rng = CsRng::new();
         let mut buf = [0u8; 32];
-        rng.fill_bytes(&mut buf);
+        let _ = rng.fill_bytes(&mut buf);
         assert!(
             buf.iter().any(|&b| b != 0),
             "exact block should not be all zero"
@@ -430,7 +430,7 @@ mod tests {
 
         // 与下一步生成不同
         let mut next = [0u8; 32];
-        rng.fill_bytes(&mut next);
+        let _ = rng.fill_bytes(&mut next);
         assert_ne!(buf, next, "consecutive blocks must differ");
     }
 
@@ -439,7 +439,7 @@ mod tests {
         // 1000 字节填充不应 panic
         let mut rng = CsRng::new();
         let mut buf = vec![0u8; 1000];
-        rng.fill_bytes(&mut buf);
+        let _ = rng.fill_bytes(&mut buf);
         assert_eq!(buf.len(), 1000);
         // 非全零
         assert!(buf.iter().any(|&b| b != 0));
@@ -449,7 +449,7 @@ mod tests {
     fn test_csrng_fill_bytes_not_all_zero() {
         let mut rng = CsRng::new();
         let mut buf = [0u8; 256];
-        rng.fill_bytes(&mut buf);
+        let _ = rng.fill_bytes(&mut buf);
         let zero_count = buf.iter().filter(|&&b| b == 0).count();
         // 全零几乎不可能发生（2^2048 概率）
         assert!(
@@ -500,13 +500,13 @@ mod tests {
     fn test_csrng_reseed_changes_output() {
         let mut rng = CsRng::new();
         let mut buf1 = [0u8; 32];
-        rng.fill_bytes(&mut buf1);
+        let _ = rng.fill_bytes(&mut buf1);
 
         // 重播种
         rng.reseed(&[0xFFu8; 16]);
 
         let mut buf2 = [0u8; 32];
-        rng.fill_bytes(&mut buf2);
+        let _ = rng.fill_bytes(&mut buf2);
         assert_ne!(buf1, buf2, "reseed must change the output sequence");
 
         // 不同重种值产生不同序列
@@ -516,8 +516,8 @@ mod tests {
         rng_b.reseed(&[0x02u8; 8]);
         let mut out_a = [0u8; 32];
         let mut out_b = [0u8; 32];
-        rng_a.fill_bytes(&mut out_a);
-        rng_b.fill_bytes(&mut out_b);
+        let _ = rng_a.fill_bytes(&mut out_a);
+        let _ = rng_b.fill_bytes(&mut out_b);
         assert_ne!(
             out_a, out_b,
             "different reseed values must yield different sequences"
@@ -531,7 +531,7 @@ mod tests {
         let mut blocks: Vec<[u8; 32]> = Vec::with_capacity(1000);
         for _ in 0..1000 {
             let mut blk = [0u8; 32];
-            rng.fill_bytes(&mut blk);
+            let _ = rng.fill_bytes(&mut blk);
             blocks.push(blk);
         }
         let original_len = blocks.len();
@@ -551,7 +551,7 @@ mod tests {
         let mut seen: HashSet<[u8; 32]> = HashSet::new();
         for _ in 0..1000 {
             let mut blk = [0u8; 32];
-            rng.fill_bytes(&mut blk);
+            let _ = rng.fill_bytes(&mut blk);
             assert!(seen.insert(blk), "duplicate block encountered");
         }
         assert_eq!(seen.len(), 1000, "all 1000 blocks must be unique");
@@ -562,7 +562,7 @@ mod tests {
         // new() 应产生确定性、非零输出
         let mut rng = CsRng::default();
         let mut buf = [0u8; 32];
-        rng.fill_bytes(&mut buf);
+        let _ = rng.fill_bytes(&mut buf);
         assert!(
             buf.iter().any(|&b| b != 0),
             "default CsRng should produce non-zero output"
@@ -571,7 +571,7 @@ mod tests {
         // 与 new() 一致
         let mut rng2 = CsRng::new();
         let mut buf2 = [0u8; 32];
-        rng2.fill_bytes(&mut buf2);
+        let _ = rng2.fill_bytes(&mut buf2);
         assert_eq!(buf, buf2, "default() and new() must yield same output");
     }
 
@@ -590,10 +590,10 @@ mod tests {
         let mut b = [0u8; 32];
         let mut c = [0u8; 32];
         let mut d = [0u8; 32];
-        first.fill_bytes(&mut a);
-        repeat.fill_bytes(&mut b);
-        changed_message.fill_bytes(&mut c);
-        changed_domain.fill_bytes(&mut d);
+        let _ = first.fill_bytes(&mut a);
+        let _ = repeat.fill_bytes(&mut b);
+        let _ = changed_message.fill_bytes(&mut c);
+        let _ = changed_domain.fill_bytes(&mut d);
         assert_eq!(
             a, b,
             "same secret/message/domain must reproduce the nonce stream"

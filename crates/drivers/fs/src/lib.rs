@@ -65,7 +65,6 @@
 //! [`BlockDevice`]: eneros_storage::BlockDevice
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
 
 extern crate alloc;
 

@@ -182,14 +182,15 @@ mod tests {
         use eneros_slo_alert::NotificationSink;
         let s = RemoteOpsSession::new("dev-x");
         s.metrics_exporter().export("row").unwrap();
-        s.alert_sink().notify(&eneros_slo_alert::TriggeredAlert {
-            id: alloc::string::String::from("a1"),
-            state: eneros_slo_alert::AlertState::Critical,
-            value_ns: 1,
-            threshold_ns: 2,
-            at_unix: 3,
-        })
-        .unwrap();
+        s.alert_sink()
+            .notify(&eneros_slo_alert::TriggeredAlert {
+                id: alloc::string::String::from("a1"),
+                state: eneros_slo_alert::AlertState::Critical,
+                value_ns: 1,
+                threshold_ns: 2,
+                at_unix: 3,
+            })
+            .unwrap();
         assert!(s.take_metrics().unwrap().contains("row"));
         assert!(s.take_alert().unwrap().contains("a1"));
     }

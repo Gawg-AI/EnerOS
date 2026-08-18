@@ -242,7 +242,8 @@ impl<'a> Scan<'a> {
                             let mut code = 0u32;
                             for _ in 0..4 {
                                 let d = self.bump().ok_or(MetricsError::InvalidValue)?;
-                                code = code * 16 + d.to_digit(16).ok_or(MetricsError::InvalidValue)?;
+                                code =
+                                    code * 16 + d.to_digit(16).ok_or(MetricsError::InvalidValue)?;
                             }
                             out.push(char::from_u32(code).ok_or(MetricsError::InvalidValue)?);
                         }
@@ -336,7 +337,11 @@ impl<'a> Scan<'a> {
                 Ok(())
             }
             Some('{') | Some('[') => {
-                let (open, close) = if self.peek() == Some('{') { ('{', '}') } else { ('[', ']') };
+                let (open, close) = if self.peek() == Some('{') {
+                    ('{', '}')
+                } else {
+                    ('[', ']')
+                };
                 let mut depth = 0usize;
                 loop {
                     let ch = self.bump().ok_or(MetricsError::InvalidValue)?;
@@ -404,7 +409,11 @@ fn parse_metric_json(line: &str) -> Result<Metric, MetricsError> {
                 sc.expect(':')?;
                 value = match vk.as_str() {
                     "u" => MetricValue::U64(sc.read_u64()?),
-                    "i" => MetricValue::I64(sc.read_number_text()?.parse().map_err(|_| MetricsError::InvalidValue)?),
+                    "i" => MetricValue::I64(
+                        sc.read_number_text()?
+                            .parse()
+                            .map_err(|_| MetricsError::InvalidValue)?,
+                    ),
                     "f" => MetricValue::F64(sc.read_f64()?),
                     _ => return Err(MetricsError::InvalidValue),
                 };
@@ -466,7 +475,9 @@ mod tests {
         let mut m = mk_metric("agent.error_count", MetricValue::U64(3), 1000);
         m.labels.push(mk_label("agent_id", "7")).unwrap();
         store.append(&m).unwrap();
-        store.append(&mk_metric("agent.error_count", MetricValue::U64(4), 2000)).unwrap();
+        store
+            .append(&mk_metric("agent.error_count", MetricValue::U64(4), 2000))
+            .unwrap();
 
         let read_back = store.read_all().unwrap();
         assert_eq!(read_back.len(), 2);
@@ -492,19 +503,38 @@ mod tests {
         let path_str = path.to_str().unwrap();
 
         let mut store = FileMetricsStore::open(path_str).unwrap();
-        store.append(&mk_metric("system.temperature", MetricValue::F64(36.5), 100)).unwrap();
-        store.append(&mk_metric("system.temperature", MetricValue::F64(37.2), 200)).unwrap();
-        store.append(&mk_metric("agent.error_count", MetricValue::I64(-2), 300)).unwrap();
+        store
+            .append(&mk_metric(
+                "system.temperature",
+                MetricValue::F64(36.5),
+                100,
+            ))
+            .unwrap();
+        store
+            .append(&mk_metric(
+                "system.temperature",
+                MetricValue::F64(37.2),
+                200,
+            ))
+            .unwrap();
+        store
+            .append(&mk_metric("agent.error_count", MetricValue::I64(-2), 300))
+            .unwrap();
 
         // 重启语义：新实例读回
         let reopened = FileMetricsStore::open(path_str).unwrap();
-        let got = reopened.query_range("system.temperature", 100, 200).unwrap();
+        let got = reopened
+            .query_range("system.temperature", 100, 200)
+            .unwrap();
         assert_eq!(got.len(), 2);
         match got[1].value {
             MetricValue::F64(v) => assert_eq!(v, 37.2),
             _ => panic!("期望 F64"),
         }
-        assert_eq!(reopened.get_latest("agent.error_count"), Some((-2i64) as u64));
+        assert_eq!(
+            reopened.get_latest("agent.error_count"),
+            Some((-2i64) as u64)
+        );
         assert_eq!(reopened.get_latest("missing"), None);
 
         let _ = std::fs::remove_dir_all(&dir);

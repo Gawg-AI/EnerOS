@@ -181,7 +181,12 @@ mod tests {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
         // 推入一个 STARTDT_ACT 先激活连接
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         // 推入一个总召唤 I 帧
         mock.push_rx_data(conn, build_i_frame(0, 0, build_interrogation_asdu(1)));
 
@@ -211,7 +216,12 @@ mod tests {
     fn test_interrogation_full_flow() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         mock.push_rx_data(conn, build_i_frame(0, 0, build_interrogation_asdu(1)));
 
         // 收集 tx 帧需在 slave 消费 mock 后访问 mock，故用块作用域释放 slave
@@ -233,7 +243,12 @@ mod tests {
         // 为保持测试自洽，重做一次：将 mock 留在外层
         let mut mock2 = MockSlaveTransport::new();
         let conn2 = mock2.accept_conn();
-        mock2.push_rx_data(conn2, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock2.push_rx_data(
+            conn2,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         mock2.push_rx_data(conn2, build_i_frame(0, 0, build_interrogation_asdu(1)));
 
         let point_db2 = make_point_db();
@@ -263,7 +278,12 @@ mod tests {
     fn test_single_command_execute_and_confirm() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         // 单点遥控：IOA=10, value=true
         mock.push_rx_data(
             conn,
@@ -292,7 +312,12 @@ mod tests {
     fn test_double_command_execute_and_confirm() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         mock.push_rx_data(
             conn,
             build_i_frame(0, 0, build_double_command_asdu(1, 20, DoublePointValue::On)),
@@ -318,7 +343,12 @@ mod tests {
     fn test_clock_sync_confirm() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
         mock.push_rx_data(conn, build_i_frame(0, 0, build_clock_sync_asdu(1)));
 
         let point_db = InMemoryPointDatabase::new();
@@ -343,7 +373,12 @@ mod tests {
     fn test_startdt_handshake() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
 
         let point_db = InMemoryPointDatabase::new();
         let mut slave =
@@ -365,7 +400,12 @@ mod tests {
     fn test_sequence_management() {
         let mut mock = MockSlaveTransport::new();
         let conn = mock.accept_conn();
-        mock.push_rx_data(conn, Apdu::u_format(UFormatFunction::StartDtAct).encode().unwrap());
+        mock.push_rx_data(
+            conn,
+            Apdu::u_format(UFormatFunction::StartDtAct)
+                .encode()
+                .unwrap(),
+        );
 
         let point_db = InMemoryPointDatabase::new();
         let mut slave =

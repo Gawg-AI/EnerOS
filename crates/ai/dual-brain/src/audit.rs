@@ -39,15 +39,19 @@ impl SafetyOutcome {
     }
 }
 
-/// 执行结果（W2.1 反馈环的 execute 阶段）。
+/// 执行结果（W2.1 反馈环的 execute 阶段；蓝图 40 WP-40.3 扩展）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecOutcome {
-    /// 执行成功。
+    /// 执行成功（dispatch Committed）。
     Succeeded,
-    /// 执行失败（设备拒绝/超时）。
+    /// 执行失败（设备拒绝/超时/读回不符）。
     Failed,
     /// 降级执行。
     Degraded,
+    /// 蓝图 40：已产生 Proposal（无副作用，dispatch 阶段另行审计）。
+    Proposed,
+    /// 蓝图 40：明确不动作（NoAction——不是成功下发）。
+    NoAction,
 }
 
 impl ExecOutcome {
@@ -56,6 +60,8 @@ impl ExecOutcome {
             ExecOutcome::Succeeded => "succeeded",
             ExecOutcome::Failed => "failed",
             ExecOutcome::Degraded => "degraded",
+            ExecOutcome::Proposed => "proposed",
+            ExecOutcome::NoAction => "noaction",
         }
     }
 }

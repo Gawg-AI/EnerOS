@@ -32,6 +32,10 @@ pub enum NodeStatus {
     Fault,
     /// 离线.
     Offline,
+    /// 未知（无观测数据——诚实显示，不伪造健康；蓝图 41 WP-41.13）。
+    Unknown,
+    /// 降级（能力不足但可运行）。
+    Degraded,
 }
 
 /// 边类型.

@@ -207,17 +207,42 @@ impl DenyClass {
     }
 }
 
-/// 信封处理结果（外部可观察行为）。
+/// 独立读回结果（WP-40.11：读回必须来自独立 read operation）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReadbackResult {
+    /// 读回符合策略（物理状态达到目标容差）。
+    Verified { actual: f64 },
+    /// 读回不符（ACK 成功但物理状态未达目标）。
+    Mismatch { expected: f64, actual: f64 },
+    /// 读回不可得（无读通道/超时/非数值点）。
+    Unavailable,
+}
+
+/// 信封处理结果（外部可观察行为；蓝图 40 WP-40.11 分层成功语义）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum IngressOutcome {
-    /// 复验通过并落写成功（含回读确认，可空）。
+    /// 复验通过、落写成功且**独立读回已验证**（物理状态达到目标）。
     Applied {
         device_id: DeviceId,
         point_id: PointId,
         power_kw: f64,
-        /// 回读确认值（FIX-24.R3：WriteOutcome.echoed 优先复用；None 时经
-        /// PointAccess 真实回读；仍无 → None，以适配器协议应答为准）。
+        /// 独立读回值（WP-40.11：非 WriteOutcome.echoed）。
         echoed: Option<PointValue>,
+    },
+    /// 已落写但读回不可得（写可能已发生，物理状态未确认 → dispatch
+    /// 按 `Indeterminate` 对账，不猜成功）。
+    AppliedReadbackUnavailable {
+        device_id: DeviceId,
+        point_id: PointId,
+        power_kw: f64,
+    },
+    /// 已落写但读回不符（ACK 成功 ≠ 物理成功 → dispatch `Failed`）。
+    AppliedReadbackMismatch {
+        device_id: DeviceId,
+        point_id: PointId,
+        power_kw: f64,
+        expected: f64,
+        actual: f64,
     },
     /// 幂等命中：先前结果已返回，未二次执行（exactly-once）。
     IdempotentHit,
@@ -286,6 +311,55 @@ pub enum IngressError {
     LeaseIssueFailed,
 }
 
+/// 读回校验方式（蓝图 40 WP-40.11：readback policy 按点类型定义——
+/// 精确/容差/状态枚举/单调变化/异步目标）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReadbackKind {
+    /// 精确相等（Bool/Enum 状态点）。
+    Exact,
+    /// 容差（Float 遥调点：`|readback − target| <= tol`）。
+    Tolerance(f64),
+    /// 枚举集合（状态点：readback ∈ allowed 集合）。
+    Enumerated(u16),
+    /// 单调变化（目标方向：readback 较写前值单调向目标移动）。
+    MonotonicUp,
+    /// 单调变化（向下）。
+    MonotonicDown,
+    /// 异步目标（写后仅需确认"目标已记录"，不做物理比对）。
+    AsyncTarget,
+}
+
+/// 读回策略（独立 read operation；**不得**回显刚写 payload——WP-40.11）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReadbackPolicy {
+    /// 校验方式。
+    pub kind: ReadbackKind,
+    /// 读回时限（ms；超时 = 读回不可得）。
+    pub timeout_ms: u64,
+}
+
+impl ReadbackPolicy {
+    /// 默认：Float 容差（5% 相对 + 0.1 绝对兜底），2s 时限。
+    pub fn tolerance(tol: f64) -> Self {
+        Self {
+            kind: ReadbackKind::Tolerance(tol),
+            timeout_ms: 2000,
+        }
+    }
+
+    /// 校验一次读回（`target` = 写入目标值；`readback` = 独立读回值）。
+    pub fn verify(&self, target: f64, readback: f64) -> bool {
+        match self.kind {
+            ReadbackKind::Exact => target == readback,
+            ReadbackKind::Tolerance(tol) => (target - readback).abs() <= tol.max(f64::EPSILON),
+            ReadbackKind::Enumerated(_) => target == readback,
+            ReadbackKind::MonotonicUp => readback >= target,
+            ReadbackKind::MonotonicDown => readback <= target,
+            ReadbackKind::AsyncTarget => true,
+        }
+    }
+}
+
 /// 信封输入状态机（蓝图/24 §6.2）。
 pub struct EnvelopeIngress {
     /// 复验链（HMAC/租约/幂等/越权/策略/安全；default-deny）。
@@ -295,7 +369,12 @@ pub struct EnvelopeIngress {
     /// 本地预置租约 ID（两侧同源）。
     lease_id: [u8; 16],
     /// 拒绝分类指标（§6.6 计数器，构造时注册）。
-    metrics: MetricsCollectorImpl<MemoryMetricsStore>,
+    ///
+    /// 蓝图 40：`MetricsCollectorImpl` 含 `heapless::Vec<Metric,256>`
+    /// 大缓冲（结构体 ~276 KiB）——栈持有会使 rustc 为 `_start` 生成
+    /// ~274 KiB 栈清零帧，16 KiB 服务栈写入 guard 页触发 VM fault
+    /// （QEMU 实测）；改堆持有（Box）后结构体降到 ~KB 级。
+    metrics: Box<MetricsCollectorImpl<MemoryMetricsStore>>,
     /// 审计链（§6.6：写执行/每类拒绝/握手/租约签发）。
     ///
     /// `Box<dyn AuditLogger>`：FIX-24.R3 可注入失败实现以验证兜底计数
@@ -308,6 +387,8 @@ pub struct EnvelopeIngress {
     write_count: u64,
     /// 本地租约是否签发成功（失败 → 全部拒绝，fail-closed）。
     lease_ok: bool,
+    /// 读回策略（WP-40.11：独立读回校验；默认 Float 容差）。
+    readback: ReadbackPolicy,
 }
 
 impl EnvelopeIngress {
@@ -333,18 +414,52 @@ impl EnvelopeIngress {
         safety_points: &[(u32, u32, SafetyPoint)],
         now_ms: u64,
     ) -> Self {
+        Self::with_readback(
+            key,
+            lease_id,
+            lease_scope,
+            lease_ttl_secs,
+            epoch_seed,
+            policy,
+            feedback_max_age_secs,
+            safety_points,
+            now_ms,
+            ReadbackPolicy::tolerance(0.1),
+        )
+    }
+
+    /// 构造收口点（可指定读回策略，WP-40.11）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_readback(
+        key: &[u8],
+        lease_id: [u8; 16],
+        lease_scope: LeaseScope,
+        lease_ttl_secs: u64,
+        epoch_seed: u64,
+        policy: Policy,
+        feedback_max_age_secs: u64,
+        safety_points: &[(u32, u32, SafetyPoint)],
+        now_ms: u64,
+        readback: ReadbackPolicy,
+    ) -> Self {
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[device-agent-ingress] chain new");
         let mut chain = ControlChain::new(key, 5, 64, policy, feedback_max_age_secs, 300, 64, 30);
         // D7：fencing epoch 以平台重启计数为种子（签发任何租约之前）。
         chain.lease_service_mut().seed_epoch(epoch_seed);
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[device-agent-ingress] lease issue");
         let lease_ok = chain
             .lease_service_mut()
             .issue(lease_id, lease_scope, lease_ttl_secs, now_ms / 1000)
             .is_some();
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[device-agent-ingress] safety register");
         for (device, point, spec) in safety_points {
             chain.safety_mut().register(*device, *point, *spec);
         }
 
-        let mut metrics = MetricsCollectorImpl::new(MemoryMetricsStore::new(16), 1000);
+        let mut metrics = Box::new(MetricsCollectorImpl::new(MemoryMetricsStore::new(16), 1000));
         for (name, help) in WRITE_METRICS {
             // 名称/help 均为编译期常量，定容转换不可达失败；注册冲突静默跳过。
             if let (Ok(n), Ok(h), Ok(u)) = (
@@ -361,6 +476,8 @@ impl EnvelopeIngress {
             }
         }
 
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[device-agent-ingress] metrics+audit");
         // 租约签发入审计（§6.6：租约本地签发）。
         let audit: Box<dyn AuditLogger> =
             Box::new(AuditLoggerImpl::new(MemStore::new(), [0u8; 32]));
@@ -373,6 +490,7 @@ impl EnvelopeIngress {
             audit_dropped: 0,
             write_count: 0,
             lease_ok,
+            readback,
         };
         ingress.log_audit(
             AuditEvent::new(
@@ -436,14 +554,42 @@ impl EnvelopeIngress {
     ) -> IngressOutcome {
         let now_secs = now_ms / 1000;
 
-        // 1. 帧解码：投递帧长度不符 → 丢弃 + 计数（不喂给解码器）。
-        let frame = match DeliveryFrame::decode(payload) {
-            Ok(f) => f,
-            Err(e) => return self.deny(DenyClass::Decode, &format!("frame:{e:?}"), None, now_ms),
-        };
+        // 1. 帧解码（双长度）：蓝图 40 WP-40.8 主路径 = 270B
+        //    `ControlEnvelope`（payload_digest 覆盖域外功率——engine 投递
+        //    的真实线上格式）；24 兼容路径 = 180B `DeliveryFrame`。
+        //    其他长度 → 丢弃 + 计数。
+        let (envelope_bytes, power_kw) =
+            if payload.len() == eneros_control_gateway::wire::CONTROL_ENVELOPE_LEN {
+                match eneros_control_gateway::wire::ControlEnvelope::decode(payload) {
+                    Ok(ce) if ce.verify_payload_digest() => (ce.envelope, ce.power_kw),
+                    Ok(_) => {
+                        return self.deny(
+                            DenyClass::Decode,
+                            "control-envelope:payload-digest-mismatch（功率被篡改）",
+                            None,
+                            now_ms,
+                        )
+                    }
+                    Err(e) => {
+                        return self.deny(
+                            DenyClass::Decode,
+                            &format!("control-envelope:{e:?}"),
+                            None,
+                            now_ms,
+                        )
+                    }
+                }
+            } else {
+                match DeliveryFrame::decode(payload) {
+                    Ok(f) => (f.envelope, f.power_kw),
+                    Err(e) => {
+                        return self.deny(DenyClass::Decode, &format!("frame:{e:?}"), None, now_ms)
+                    }
+                }
+            };
 
         // 信封结构解码（供 SBO 选择与审计 detail；HMAC 由链复验）。
-        let env = match CommandEnvelope::decode(&frame.envelope) {
+        let env = match CommandEnvelope::decode(&envelope_bytes) {
             Ok(e) => e,
             Err(e) => {
                 return self.deny(DenyClass::Decode, &format!("envelope:{e:?}"), None, now_ms)
@@ -499,7 +645,7 @@ impl EnvelopeIngress {
         //    SBO 以"信封到达即选择+执行原子"处理（与签发侧 ChainCommandSink
         //    语义一致；两阶段人工 SBO 属就地操作员流程，非本路径）。
         self.chain.sbo_select(env.point_id, now_secs);
-        match self.chain.execute(&frame.envelope, now_secs, &feedback) {
+        match self.chain.execute(&envelope_bytes, now_secs, &feedback) {
             ChainOutcome::Executed { cmd, .. } => {
                 // 6. 授权落写（适配器二次匹配校验；功率载荷 ADR-029）。
                 //    路由已在步骤 3 确认；此处再次查找以执行写。
@@ -514,39 +660,112 @@ impl EnvelopeIngress {
                 };
                 match info
                     .adapter
-                    .write_authorized(&cmd, PointValue::Float(frame.power_kw))
+                    .write_authorized(&cmd, PointValue::Float(power_kw))
                 {
                     Ok(outcome) => {
-                        // 落写确认（FIX-24.R3：不捏造）：WriteOutcome.echoed
-                        // 优先复用；None 时经 PointAccess 真实回读同一 PointId；
-                        // 仍无 → None（以适配器协议应答为准）。
-                        let readback = match &outcome.echoed {
-                            Some(v) => Some(v.clone()),
-                            None => info
-                                .adapter
-                                .read_point(cmd.point_id())
-                                .ok()
-                                .map(|dp| dp.value),
+                        // 蓝图 40 WP-40.11：独立读回——**不得**回显刚写 payload
+                        //（WriteOutcome.echoed 只作诊断记录，不参与验证）。
+                        // 读回必须来自独立 read operation（PointAccess）。
+                        let _diag_echo = outcome.echoed;
+                        let target = power_kw;
+                        let readback = info
+                            .adapter
+                            .read_point(cmd.point_id())
+                            .ok()
+                            .map(|dp| dp.value);
+                        let readback_result = match &readback {
+                            Some(PointValue::Float(v)) => {
+                                if self.readback.verify(target, *v) {
+                                    ReadbackResult::Verified { actual: *v }
+                                } else {
+                                    ReadbackResult::Mismatch {
+                                        expected: target,
+                                        actual: *v,
+                                    }
+                                }
+                            }
+                            Some(PointValue::Int(v)) => {
+                                let v = *v as f64;
+                                if self.readback.verify(target, v) {
+                                    ReadbackResult::Verified { actual: v }
+                                } else {
+                                    ReadbackResult::Mismatch {
+                                        expected: target,
+                                        actual: v,
+                                    }
+                                }
+                            }
+                            _ => ReadbackResult::Unavailable,
                         };
                         self.write_count += 1;
                         // metrics 为 best-effort 通道（注册后 increment 仅在
                         // 存储满丢弃最旧时静默降级，不影响写路径——豁免，
                         // 铁律 3 注释豁免理由）。
                         let _ = self.metrics.increment(METRIC_WRITE_ALLOWED, 1, &[], now_ms);
-                        self.log_audit(
-                            AuditEvent::new(
-                                AuditEventType::WriteExecuted,
-                                actor_str_byte(cmd.actor_kind() as u8),
-                                &format!("device={} point={}", cmd.device_id(), cmd.point_id()),
-                                &audit_ctx.detail("outcome=applied"),
-                            ),
-                            now_ms,
-                        );
-                        IngressOutcome::Applied {
-                            device_id: cmd.device_id(),
-                            point_id: cmd.point_id(),
-                            power_kw: frame.power_kw,
-                            echoed: readback,
+                        match &readback_result {
+                            ReadbackResult::Verified { actual } => {
+                                self.log_audit(
+                                    AuditEvent::new(
+                                        AuditEventType::WriteExecuted,
+                                        actor_str_byte(cmd.actor_kind() as u8),
+                                        &format!(
+                                            "device={} point={}",
+                                            cmd.device_id(),
+                                            cmd.point_id()
+                                        ),
+                                        &audit_ctx.detail(&format!(
+                                            "outcome=applied;readback=verified;actual={actual}"
+                                        )),
+                                    ),
+                                    now_ms,
+                                );
+                                IngressOutcome::Applied {
+                                    device_id: cmd.device_id(),
+                                    point_id: cmd.point_id(),
+                                    power_kw,
+                                    echoed: readback,
+                                }
+                            }
+                            ReadbackResult::Mismatch { expected, actual } => {
+                                self.log_audit(
+                                    AuditEvent::new(
+                                        AuditEventType::WriteExecuted,
+                                        actor_str_byte(cmd.actor_kind() as u8),
+                                        &format!("device={} point={}", cmd.device_id(), cmd.point_id()),
+                                        &audit_ctx.detail(&format!(
+                                            "outcome=applied;readback=MISMATCH;expected={expected};actual={actual}"
+                                        )),
+                                    ),
+                                    now_ms,
+                                );
+                                IngressOutcome::AppliedReadbackMismatch {
+                                    device_id: cmd.device_id(),
+                                    point_id: cmd.point_id(),
+                                    power_kw,
+                                    expected: *expected,
+                                    actual: *actual,
+                                }
+                            }
+                            ReadbackResult::Unavailable => {
+                                self.log_audit(
+                                    AuditEvent::new(
+                                        AuditEventType::WriteExecuted,
+                                        actor_str_byte(cmd.actor_kind() as u8),
+                                        &format!(
+                                            "device={} point={}",
+                                            cmd.device_id(),
+                                            cmd.point_id()
+                                        ),
+                                        &audit_ctx.detail("outcome=applied;readback=unavailable"),
+                                    ),
+                                    now_ms,
+                                );
+                                IngressOutcome::AppliedReadbackUnavailable {
+                                    device_id: cmd.device_id(),
+                                    point_id: cmd.point_id(),
+                                    power_kw,
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -741,19 +960,27 @@ impl EnvelopeIngress {
 pub fn outcome_to_frame(out: &IngressOutcome) -> OutcomeFrame {
     match out {
         IngressOutcome::Applied { .. } => OutcomeFrame {
-            code: OutcomeFrame::CODE_APPLIED,
+            code: crate::delivery::CODE_APPLIED,
+            class: 0,
+        },
+        IngressOutcome::AppliedReadbackUnavailable { .. } => OutcomeFrame {
+            code: crate::delivery::CODE_APPLIED_READBACK_UNAVAILABLE,
+            class: 0,
+        },
+        IngressOutcome::AppliedReadbackMismatch { .. } => OutcomeFrame {
+            code: crate::delivery::CODE_APPLIED_READBACK_MISMATCH,
             class: 0,
         },
         IngressOutcome::IdempotentHit => OutcomeFrame {
-            code: OutcomeFrame::CODE_IDEMPOTENT_HIT,
+            code: crate::delivery::CODE_IDEMPOTENT_HIT,
             class: 0,
         },
         IngressOutcome::DryRun => OutcomeFrame {
-            code: OutcomeFrame::CODE_DRY_RUN,
+            code: crate::delivery::CODE_DRY_RUN,
             class: 0,
         },
         IngressOutcome::Denied { class, .. } => OutcomeFrame {
-            code: OutcomeFrame::CODE_DENIED,
+            code: crate::delivery::CODE_DENIED,
             class: class.code(),
         },
     }
@@ -1008,6 +1235,70 @@ mod tests {
 
     fn delivery(envelope: [u8; 172], power_kw: f64) -> Vec<u8> {
         DeliveryFrame { envelope, power_kw }.encode().to_vec()
+    }
+
+    /// 270B `ControlEnvelope`（蓝图 40 WP-40.8 主路径——engine 真实投递格式）。
+    fn control_delivery(envelope: [u8; 172], power_kw: f64) -> Vec<u8> {
+        use eneros_control_gateway::wire::ControlEnvelope;
+        ControlEnvelope::new(
+            [0x44; 16],
+            ISSUER,
+            0,
+            NOW_MS,
+            NOW_MS + 60_000,
+            envelope,
+            power_kw,
+        )
+        .encode()
+        .to_vec()
+    }
+
+    // ===== 用例 1b：270B ControlEnvelope 主路径（engine 投递格式）落写 =====
+    #[test]
+    fn control_envelope_main_path_applied() {
+        let mut ingress = ingress_with(1, 1);
+        let mut devices = registry_with(1, false);
+        let token = ingress
+            .chain
+            .lease_service_mut()
+            .token_of(&LEASE_ID)
+            .unwrap();
+        let env = signed_envelope(KEY, 1, 1, token, [0x2A; 16], 30, 1);
+        let out = ingress.process(&mut devices, &control_delivery(env, 50.0), NOW_MS);
+        assert!(
+            matches!(out, IngressOutcome::Applied { power_kw, .. } if power_kw == 50.0),
+            "270B 主路径必须与 180B 同语义落写：{out:?}"
+        );
+        assert_eq!(ingress.write_count(), 1);
+    }
+
+    // ===== 用例 1c：270B 功率被篡改 → payload_digest 拒绝（零写） =====
+    #[test]
+    fn control_envelope_tampered_power_denied() {
+        use eneros_control_gateway::wire::ControlEnvelope;
+        let mut ingress = ingress_with(1, 1);
+        let mut devices = registry_with(1, false);
+        let token = ingress
+            .chain
+            .lease_service_mut()
+            .token_of(&LEASE_ID)
+            .unwrap();
+        let env = signed_envelope(KEY, 1, 1, token, [0x2B; 16], 30, 1);
+        let mut buf =
+            ControlEnvelope::new([0x44; 16], ISSUER, 0, NOW_MS, NOW_MS + 60_000, env, 50.0)
+                .encode();
+        // 篡改域外功率字节（digest 不重算）。
+        let last = buf.len() - 1;
+        buf[last] ^= 0xFF;
+        let out = ingress.process(&mut devices, &buf, NOW_MS);
+        assert_eq!(
+            out,
+            IngressOutcome::Denied {
+                class: DenyClass::Decode,
+                reason: String::from("control-envelope:payload-digest-mismatch（功率被篡改）"),
+            }
+        );
+        assert_eq!(ingress.write_count(), 0, "篡改路径零写");
     }
 
     // ===== 用例 1：有效信封落写（含回读） =====

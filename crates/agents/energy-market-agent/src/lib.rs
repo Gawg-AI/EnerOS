@@ -170,6 +170,10 @@ extern crate alloc;
 pub mod bid_generator;
 pub mod device_pool;
 mod energy_agent;
+
+// 蓝图 40：测试/仿真支撑（release 不可达）。
+#[cfg(any(test, feature = "mock"))]
+pub mod agent_test_support;
 mod error;
 mod market;
 mod market_agent;
@@ -236,7 +240,7 @@ mod tests {
 
     use eneros_agent::{AgentState, AgentType};
     use eneros_dual_brain::coordinator::DualBrainMockEngine;
-    use eneros_dual_brain::{CommandSink, DispatchCommand, DualBrainCoordinator, DualBrainError};
+    use eneros_dual_brain::DualBrainError;
     use eneros_energy_lp_model::config::ScheduleConfig;
     use eneros_llm_engine::engine::LlmEngine;
     use eneros_solver_core::mock::MockSolver;
@@ -416,15 +420,41 @@ mod tests {
         assert_eq!(agent.state, AgentState::Running);
     }
 
-    // ===== T15: EnergyAgent::on_tick 执行双脑（慢路径）=====
+    // ===== T15: EnergyAgent::on_tick 可信遥测 → Proposal → 唯一 dispatch（WP-40.6）=====
+    #[allow(clippy::field_reassign_with_default)] // 44.2：测试夹具 default+覆写模式（语义等价）
     #[test]
     fn t15_energy_agent_on_tick_slow_path() {
-        let mut agent = EnergyAgent::new_default(0);
+        use eneros_control_dispatch::{DispatchReceipt, DispatchState};
+        let mut dispatch = crate::agent_test_support::RecordingDispatch::default();
+        dispatch.result = Some(Ok(DispatchReceipt {
+            command_id: [1; 16],
+            correlation_id: [2; 16],
+            final_state: DispatchState::Committed,
+            state_path: alloc::vec![DispatchState::Committed],
+            committed_at_ms: Some(2000),
+            note: None,
+            latency_ms: 1,
+        }));
+        let mut agent = EnergyAgent::<MockSolver>::new(
+            "energy-agent",
+            ScheduleConfig::default(),
+            0,
+            Box::new(eneros_dual_brain::DualBrainMockEngine::new()),
+            MockSolver::new(),
+            Box::new(dispatch),
+            Box::new(crate::agent_test_support::StubTelemetryProvider::new(Some(
+                crate::agent_test_support::StubTelemetryProvider::full_base(),
+            ))),
+        );
         agent.on_start(1000).unwrap();
         let result = agent.on_tick(2000);
         assert!(result.is_ok());
-        assert!(agent.current_schedule.is_some());
+        assert!(agent.current_schedule.is_some(), "Committed 后必须记录调度");
         assert_eq!(agent.tick_count, 1);
+        assert_eq!(
+            agent.last_dispatch.as_ref().unwrap().final_state,
+            DispatchState::Committed
+        );
     }
 
     // ===== T16: EnergyAgent::on_tick 接收市场数据 =====
@@ -527,69 +557,37 @@ mod tests {
         energy.on_start(1000).unwrap();
         energy.market_channel_mut().send(data).unwrap();
 
-        // 3. Energy Agent 接收市场数据并执行双脑
+        // 3. Energy Agent 接收市场数据并执行双脑（无可信遥测 → 不动作，
+        //    但市场数据先更新——感知相时序保留）。
         let result = energy.on_tick(3000);
         assert!(result.is_ok());
         assert!((energy.current_price - 0.33).abs() < 1e-9);
-        assert!(energy.current_schedule.is_some());
+        assert!(energy.current_schedule.is_none(), "无可信遥测不得产生调度");
     }
 
-    // ===== T24: EnergyAgent 双脑失败降级（state = Error）=====
+    // ===== T24: EnergyAgent dispatch 失败降级（state = Error）=====
+    #[allow(clippy::field_reassign_with_default)] // 44.2：测试夹具 default+覆写模式（语义等价）
     #[test]
-    fn t24_energy_agent_dual_brain_failure_degrade() {
-        // 构造一个总是失败的 CommandSink，使 coordinator.execute 在命令下发步骤失败
-        struct FailingSink;
-        impl CommandSink for FailingSink {
-            fn write(&mut self, _cmd: DispatchCommand) -> Result<(), DualBrainError> {
-                Err(DualBrainError::DispatchError(String::from("test failure")))
-            }
-        }
-
-        let config = ScheduleConfig::default();
-        let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
-        // 非空解（含一个调度条目）——空解会跳过 sink.write 无法复现失败。
-        let solver = MockSolver::with_result(eneros_solver_core::result::SolveResult {
-            status: eneros_solver_core::result::SolveStatus::Optimal,
-            objective_value: 1.0,
-            solution: alloc::vec![0.5, -0.3],
-            elapsed_ms: 1,
-            dual_solution: None,
-        });
-        let sink: Box<dyn CommandSink> = Box::new(FailingSink);
-        let coordinator = DualBrainCoordinator::new(config, llm_engine, solver, sink);
-
-        let mut agent = EnergyAgent {
-            descriptor: eneros_agent::AgentDescriptor::new(AgentType::Energy, "test", 0),
-            coordinator,
-            market_channel: MarketChannel::new(16),
-            current_schedule: None,
-            current_price: 0.5,
-            state: AgentState::Created,
-            consecutive_errors: 0,
-            tick_count: 0,
-            observer: None,
-            last_feedback: None,
-            outcome_unknown_count: 0,
-            forecast_error_sum: 0.0,
-            forecast_error_count: 0,
-            last_observed_at_ms: 0,
-            rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
-            last_rejection: None,
-            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(
-                1.0,
-                eneros_safety_validator::SafetyCatalog::default_eps(),
-            ),
-            deadband_kw: 0.0,
-            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(
-                eneros_safety_validator::SafetyCatalog::default_eps(),
-            ),
-            twin_forecast: None,
-            twin_confidence: 0.0,
-        };
-
+    fn t24_energy_agent_dispatch_failure_degrade() {
+        // 唯一 dispatch 恒失败（前置错误 → 零投递）——连续 N 次 → Error。
+        let mut dispatch = crate::agent_test_support::RecordingDispatch::default();
+        dispatch.result = Some(Err(eneros_control_dispatch::DispatchError::Internal(
+            String::from("test failure"),
+        )));
+        let mut agent = EnergyAgent::<MockSolver>::new(
+            "test",
+            ScheduleConfig::default(),
+            0,
+            Box::new(eneros_dual_brain::DualBrainMockEngine::new()),
+            MockSolver::new(),
+            Box::new(dispatch),
+            Box::new(crate::agent_test_support::StubTelemetryProvider::new(Some(
+                crate::agent_test_support::StubTelemetryProvider::full_base(),
+            ))),
+        );
         agent.on_start(1000).unwrap();
         let result = agent.on_tick(2000);
-        assert!(result.is_err());
+        assert!(result.is_ok(), "失败以状态表达（不 panic）");
         // 32 AG-01：一次 Transient 失败保持 Running（N 次连续才 Error）。
         assert_eq!(agent.state, AgentState::Running);
         // 连续 N 次 → Error。
@@ -602,62 +600,40 @@ mod tests {
     // ===== T24b: 32 AG-01 成功恢复 — Error 后成功 tick 恢复 Running =====
     #[test]
     fn t24b_energy_agent_recovers_after_transient_errors() {
-        // 前 N 次下发失败（Transient），之后恢复成功。
-        struct FlakySink {
-            fail_remaining: u32,
-        }
-        impl CommandSink for FlakySink {
-            fn write(&mut self, _cmd: DispatchCommand) -> Result<(), DualBrainError> {
-                if self.fail_remaining > 0 {
-                    self.fail_remaining -= 1;
-                    Err(DualBrainError::DispatchError(String::from("transient")))
-                } else {
-                    Ok(())
-                }
-            }
-        }
-
-        let config = ScheduleConfig::default();
-        let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
-        let solver = MockSolver::with_result(eneros_solver_core::result::SolveResult {
-            status: eneros_solver_core::result::SolveStatus::Optimal,
-            objective_value: 1.0,
-            solution: alloc::vec![0.5, -0.3],
-            elapsed_ms: 1,
-            dual_solution: None,
-        });
+        // 前 N 次 dispatch 失败（Transient），之后恢复成功。
+        use eneros_control_dispatch::{DispatchReceipt, DispatchState};
+        let mut dispatch = crate::agent_test_support::RecordingDispatch::default();
         let n = EnergyAgent::<MockSolver>::MAX_CONSECUTIVE_ERRORS;
-        let sink: Box<dyn CommandSink> = Box::new(FlakySink { fail_remaining: n });
-        let coordinator = DualBrainCoordinator::new(config, llm_engine, solver, sink);
-
-        let mut agent = EnergyAgent {
-            descriptor: eneros_agent::AgentDescriptor::new(AgentType::Energy, "test", 0),
-            coordinator,
-            market_channel: MarketChannel::new(16),
-            current_schedule: None,
-            current_price: 0.5,
-            state: AgentState::Created,
-            consecutive_errors: 0,
-            tick_count: 0,
-            observer: None,
-            last_feedback: None,
-            outcome_unknown_count: 0,
-            forecast_error_sum: 0.0,
-            forecast_error_count: 0,
-            last_observed_at_ms: 0,
-            rejections: eneros_dual_brain::rejection::RejectionHandler::new(16),
-            last_rejection: None,
-            deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(
-                1.0,
-                eneros_safety_validator::SafetyCatalog::default_eps(),
-            ),
-            deadband_kw: 0.0,
-            forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(
-                eneros_safety_validator::SafetyCatalog::default_eps(),
-            ),
-            twin_forecast: None,
-            twin_confidence: 0.0,
-        };
+        let fail_remaining = core::cell::Cell::new(n);
+        dispatch.result_fn = Some(Box::new(move || {
+            if fail_remaining.get() > 0 {
+                fail_remaining.set(fail_remaining.get() - 1);
+                Err(eneros_control_dispatch::DispatchError::Internal(
+                    String::from("transient"),
+                ))
+            } else {
+                Ok(DispatchReceipt {
+                    command_id: [1; 16],
+                    correlation_id: [2; 16],
+                    final_state: DispatchState::Committed,
+                    state_path: alloc::vec![DispatchState::Committed],
+                    committed_at_ms: Some(2_000),
+                    note: None,
+                    latency_ms: 1,
+                })
+            }
+        }));
+        let mut agent = EnergyAgent::<MockSolver>::new(
+            "test",
+            ScheduleConfig::default(),
+            0,
+            Box::new(eneros_dual_brain::DualBrainMockEngine::new()),
+            MockSolver::new(),
+            Box::new(dispatch),
+            Box::new(crate::agent_test_support::StubTelemetryProvider::new(Some(
+                crate::agent_test_support::StubTelemetryProvider::full_base(),
+            ))),
+        );
 
         agent.on_start(1000).unwrap();
         // N 次连续 Transient 失败 → Error。
@@ -669,8 +645,14 @@ mod tests {
 
         // 32 AG-01 判据：随后成功 tick → 恢复 Running + 计数归零 +
         // 心跳 Alive（不得永久离线）。
-        agent.on_tick(2000 + u64::from(n) * 600_000).expect("恢复 tick");
-        assert_eq!(agent.state, AgentState::Running, "成功 tick 必须恢复 Running");
+        agent
+            .on_tick(2000 + u64::from(n) * 600_000)
+            .expect("恢复 tick");
+        assert_eq!(
+            agent.state,
+            AgentState::Running,
+            "成功 tick 必须恢复 Running"
+        );
         assert_eq!(agent.consecutive_errors, 0, "成功后连续错误计数归零");
         assert_eq!(
             agent.on_heartbeat(0),
@@ -682,23 +664,24 @@ mod tests {
     // ===== 21-B A2：release 真后端装配（new_real + HighsSolver 端到端） =====
     // 测试构建与 mock feature 共存（solver-core 的 release 熔断仅作用于
     // 非 debug）；HighsSolver 经 dev-dependencies 的 highs-ffi 启用。
+    #[allow(clippy::field_reassign_with_default)] // 44.2：测试夹具 default+覆写模式（语义等价）
     #[test]
     fn a2_new_real_with_highs_solver_end_to_end() {
+        use eneros_control_dispatch::{DispatchReceipt, DispatchState};
         use eneros_solver_core::highs::HighsSolver;
 
-        struct CollectSink {
-            written: usize,
-        }
-        impl CommandSink for CollectSink {
-            fn write(&mut self, _cmd: DispatchCommand) -> Result<(), DualBrainError> {
-                self.written += 1;
-                Ok(())
-            }
-        }
-
+        let mut dispatch = crate::agent_test_support::RecordingDispatch::default();
+        dispatch.result = Some(Ok(DispatchReceipt {
+            command_id: [1; 16],
+            correlation_id: [2; 16],
+            final_state: DispatchState::Committed,
+            state_path: alloc::vec![DispatchState::Committed],
+            committed_at_ms: Some(2000),
+            note: None,
+            latency_ms: 1,
+        }));
         let llm: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
         let solver = HighsSolver::new().expect("highs init");
-        let sink: Box<dyn CommandSink> = Box::new(CollectSink { written: 0 });
 
         let mut agent = EnergyAgent::<HighsSolver>::new_real(
             "a2-e2e",
@@ -706,13 +689,16 @@ mod tests {
             1000,
             llm,
             solver,
-            sink,
+            Box::new(dispatch),
+            Box::new(crate::agent_test_support::StubTelemetryProvider::new(Some(
+                crate::agent_test_support::StubTelemetryProvider::full_base(),
+            ))),
         );
         agent.on_start(1000).unwrap();
         agent.on_tick(2000).unwrap();
         assert!(
             agent.current_schedule.is_some(),
-            "真后端装配必须产出调度方案"
+            "真后端装配必须产出调度方案（Committed 后记录）"
         );
     }
 }

@@ -9,7 +9,6 @@
 //! （默认 `cargo test --workspace` 下本文件整体 cfg 关闭，no_std 面不受影响）
 
 #![cfg(feature = "std")]
-
 // 测试代码允许 panic!/unwrap（与 src 内嵌测试模块同口径）
 #![allow(clippy::disallowed_macros)]
 
@@ -57,7 +56,9 @@ fn e2e_record_flush_jsonl_readback() {
 
     // 4) 重启语义：新实例打开同一文件 → query_range / get_latest
     let reopened = FileMetricsStore::open(path_str).unwrap();
-    let got = reopened.query_range("agent.error_count", 1000, 2000).unwrap();
+    let got = reopened
+        .query_range("agent.error_count", 1000, 2000)
+        .unwrap();
     assert_eq!(got.len(), 2);
     match got[1].value {
         MetricValue::U64(v) => assert_eq!(v, 2),

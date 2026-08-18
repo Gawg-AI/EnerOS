@@ -9,9 +9,10 @@
 //! CycloneDdsNode 接 C 库未通（`Ffi(-1)`），`MockDdsNode` 仅
 //! `cfg(any(test, feature = "mock"))` 可见。
 //!
-//! [`mock::MockDdsNode`]（默认可用，纯 Rust）与 `CycloneDdsNode`
-//!（feature = "cyclone-dds"，封装 Eclipse Cyclone DDS C 库），并在 v0.76.0 引入
-//! 语义层：[`topic::TopicSpec`] / [`topic::TopicCategory`] / [`topic::standard_topics`]
+//! [`mock::MockDdsNode`]（默认可用，纯 Rust）——原 `CycloneDdsNode`
+//!（feature = "cyclone-dds"，封装 Eclipse Cyclone DDS C 库）已于蓝图 39
+//! WP-39.11 删除（DDS 路线退役；AgentBus 统一走 41 MQTT/IPC）。
+//! v0.76.0 引入语义层：[`topic::TopicSpec`] / [`topic::TopicCategory`] / [`topic::standard_topics`]
 //! / [`registry::TopicRegistry`] / 扩展的 [`qos::QosPolicy`]（含 deadline/lifespan/priority）。
 //! v0.77.0 在语义层之上引入路由层：[`router::MessageRouter`] / [`policy::RoutingPolicy`]
 //! / [`policy::CapabilityVerifier`] / [`router::Subscription`] / [`policy::RouteDecision`]
@@ -25,7 +26,7 @@
 //!
 //! - [`node::DdsNode`] — DDS 节点统一 trait（D2 无 Send + Sync bound，D7 合并 reader/writer）
 //! - [`mock::MockDdsNode`] — 默认可用的 Mock 实现（D3，纯 Rust）
-//! - `CycloneDdsNode` — Cyclone DDS C 库实现（feature = "cyclone-dds"，D3）
+//! - ~~`CycloneDdsNode`~~ — 已删除（蓝图 39 WP-39.11：DDS 路线退役，Cyclone 依赖清零）
 //! - [`config::DdsConfig`] / [`config::DiscoveryPolicy`] — 节点配置与发现策略（D5 / D6）
 //! - [`qos::QosPolicy`] / [`qos::Reliability`] / [`qos::Durability`] / [`qos::History`] — QoS 策略（D2/D3：History::KeepLast(u32) + deadline/lifespan/priority）
 //! - [`topic::TopicSpec`] / [`topic::TopicCategory`] / [`topic::PayloadType`] / [`topic::TopicError`] / [`topic::standard_topics`] / [`topic::validate_topic_name`] — Topic 语义层（v0.76.0 新增）
@@ -76,12 +77,6 @@ pub mod registry;
 pub mod router;
 pub mod topic;
 pub mod types;
-
-#[cfg(feature = "cyclone-dds")]
-pub mod cyclone_dds;
-
-#[cfg(feature = "cyclone-dds")]
-pub mod ffi;
 
 pub use codec::{CodecError, CodecKind};
 pub use config::{DdsConfig, DiscoveryPolicy};
@@ -885,7 +880,6 @@ mod tests_v0780 {
     //! - T59~T63：pack_and_sign / unpack_and_verify 端到端流程
 
     use super::*;
-    use crate::policy::AgentId;
 
     // T49: CodecKind 变体与 as_u8/from_u8 往返
     #[test]
@@ -909,5 +903,4 @@ mod tests_v0780 {
         assert!(!s2.is_empty());
         assert!(!s3.is_empty());
     }
-
 }

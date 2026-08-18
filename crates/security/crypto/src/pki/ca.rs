@@ -419,7 +419,10 @@ mod tests {
         let crl = ca.generate_crl(NOW + 86_400).unwrap();
 
         assert_eq!(crl.revoked.len(), 1, "CRL 应含 1 条吊销记录");
-        assert!(crl.is_revoked(&serial, NOW).unwrap(), "CRL 应包含被吊销的序列号");
+        assert!(
+            crl.is_revoked(&serial, NOW).unwrap(),
+            "CRL 应包含被吊销的序列号"
+        );
         assert_eq!(crl.next_update, NOW + 86_400);
     }
 

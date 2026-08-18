@@ -43,20 +43,20 @@ use eneros_safety_validator::validator::SafetyValidator;
 use eneros_solver_core::mock::MockSolver;
 use eneros_solver_core::solver::Solver;
 
+use crate::decision::{
+    DecisionOutcome, DecisionPath, DecisionRejection, NoActionReason, ProposedControlPlan,
+    RejectionReason,
+};
 use crate::error::DualBrainError;
-use crate::gate::{DecisionGate, GateDecision};
 use crate::latency::LatencyBreakdown;
-#[cfg(any(test, feature = "mock"))]
-use crate::sink::MockCommandSink;
-use crate::sink::{CommandSink, DispatchCommand};
 
 /// Mock LLM 输出（合法 Charge intent JSON，满足 ContractValidator 6 项校验）.
 #[cfg(any(test, feature = "mock"))]
 const MOCK_INTENT_JSON: &str = r#"{"intent_type":"Charge","power":{"power_kw":50.0,"power_ratio":0.5},"time_range":{"start_period":0,"end_period":5},"reason":"price low","confidence":0.85}"#;
 
-/// 双脑结果.
-///
-/// 包含路径类型、调度方案、延迟分解与反馈契约（快路径 `feedback` 为 `None`）。
+/// 双脑结果（蓝图 40 WP-40.3 之前的返回形态；现由 [`DecisionOutcome`]
+/// 取代——四路径只产 Proposal/NoAction/Rejected，本类型保留仅供旧测试
+/// 追溯，不再由 `execute` 返回）。
 #[derive(Debug)]
 pub struct DualBrainResult {
     /// 路径类型（FastPath / SlowPath）.
@@ -94,8 +94,8 @@ pub struct DualBrainCoordinator<S: Solver> {
     pub validator: SafetyValidator,
     /// 契约校验器.
     pub contract_validator: ContractValidator,
-    /// 命令下发 sink（D6）.
-    pub sink: Box<dyn CommandSink>,
+    // 蓝图 40 WP-40.3：协调器不再持有 sink——决策只产生 Proposal，
+    // 由调用方提交给唯一 ControlDispatch（WP-40.6）。sink 字段已移除。
     /// 32 AG-04：决策审计（W5.1 接线——旧实现 audit.rs 实现+测试在位但
     /// 零生产消费）。
     pub audit: Option<crate::audit::DecisionAudit>,
@@ -114,51 +114,37 @@ pub struct DualBrainCoordinator<S: Solver> {
     pub llm_timeout_streak: u32,
     /// 是否处于降级模式（连续超时后）。
     pub degraded: bool,
-    /// 上次成功决策（降级模式用：上一次成功决策 + 安全钳位）。
-    pub last_successful_schedule: Option<ScheduleResult>,
-    // --- 22 §2.W5.2：决策闸（速率 + 能量；防 AI 失控高频下发）---
-    /// AI 决策全局闸（fail-closed：0 上限 = 全拒；默认保守可用配置）。
-    pub gate: DecisionGate,
+    // 蓝图 40 WP-40.3：降级回放基线 = 上次**已提交**计划（调用方在
+    // ControlDispatch 返回 Committed 后经 `mark_committed` 登记；旧
+    // `last_successful_schedule` 由协调器在 sink 写后自记，已移除）。
+    /// 上次已提交计划（降级模式回放基线；None = 无基线 → NoAction）。
+    pub last_committed_schedule: Option<ScheduleResult>,
+    // 蓝图 40 WP-40.3：决策闸（速率/能量/并发预算）移入唯一 ControlDispatch
+    //（dispatch 层 check+record；拒绝/失败不消耗成功预算）。协调器不再持有。
 }
 
-/// 调度窗口（小时）——能量预算估算系数：单次决策调度能量
-/// ≈ `|net_power_kw| × SCHEDULE_WINDOW_HOURS`（15 分钟调度窗）。
+/// 调度窗口（小时）——能量预算估算系数（蓝图 40：由 control-dispatch 的
+/// DispatchGate 消费：单次调度能量 ≈ `|net_power_kw| × 0.25h`）。
 pub const SCHEDULE_WINDOW_HOURS: f64 = 0.25;
-
-/// 单次决策的调度能量估算（首时段功率 × 调度窗；空调度 = 0）。
-pub fn schedule_energy_kwh(s: &ScheduleResult) -> f64 {
-    s.schedule
-        .first()
-        .map(|e| e.net_power_kw.abs() * SCHEDULE_WINDOW_HOURS)
-        .unwrap_or(0.0)
-}
-
-/// 默认决策闸配置（保守可用：60 决策/分钟、1000kWh/小时——真实设备
-/// 不可能触达；显式 `DecisionGate::new(0, 0.0, _)` 即 fail-closed 全拒）。
-const DEFAULT_GATE_MAX_PER_MINUTE: u32 = 60;
-const DEFAULT_GATE_MAX_KWH: f64 = 1000.0;
-const DEFAULT_GATE_PERIOD_MS: u64 = 3_600_000;
 
 impl<S: Solver> DualBrainCoordinator<S> {
     /// 构造协调器.
     ///
-    /// `IntentParser` 从 `IntentParser::new(config.clone(), SystemState::default())` 构建（D9）。
-    pub fn new(
-        config: ScheduleConfig,
-        llm_engine: Box<dyn LlmEngine>,
-        solver: S,
-        sink: Box<dyn CommandSink>,
-    ) -> Self {
+    /// `IntentParser` 从 `IntentParser::new(config.clone(), SystemState::unknown())`
+    /// 构建（蓝图 40 WP-40.1：构造期状态为 NaN fail-closed 占位；每次慢路径
+    /// 决策前经 `set_state` 覆写为受信任状态）。
+    ///
+    /// 蓝图 40 WP-40.3：不再接收 sink——决策只产 Proposal。
+    pub fn new(config: ScheduleConfig, llm_engine: Box<dyn LlmEngine>, solver: S) -> Self {
         Self {
             path_selector: PathSelector::new(),
             fast_path: RealtimePathEngine::new(config.clone(), solver),
             llm_engine,
             prompt_template: ChargeDischargeTemplate,
-            intent_parser: IntentParser::new(config.clone(), SystemState::default()),
+            intent_parser: IntentParser::new(config.clone(), SystemState::unknown()),
             converter: ContractConverter::new(config),
             validator: SafetyValidator::new(),
             contract_validator: ContractValidator::new(),
-            sink,
             audit: None,
             audit_drop_count: 0,
             request_counter: 0,
@@ -170,25 +156,13 @@ impl<S: Solver> DualBrainCoordinator<S> {
             ),
             llm_timeout_streak: 0,
             degraded: false,
-            last_successful_schedule: None,
-            gate: DecisionGate::new(
-                DEFAULT_GATE_MAX_PER_MINUTE,
-                DEFAULT_GATE_MAX_KWH,
-                DEFAULT_GATE_PERIOD_MS,
-            ),
+            last_committed_schedule: None,
         }
     }
 
     /// 注入可控单调时钟（毫秒）——测试与仿真用；生产用默认全局时钟。
     pub fn with_clock(mut self, clock_fn: fn() -> u64) -> Self {
         self.clock_fn = clock_fn;
-        self
-    }
-
-    /// 22 §2.W5.2：注入决策闸（速率 + 能量；`DecisionGate::new(0, 0.0, _)`
-    /// 即 fail-closed 全拒）。
-    pub fn with_gate(mut self, gate: DecisionGate) -> Self {
-        self.gate = gate;
         self
     }
 
@@ -249,32 +223,31 @@ impl<S: Solver> DualBrainCoordinator<S> {
         }
     }
 
-    /// 端到端执行双脑链路.
+    /// 登记一次已提交的计划（蓝图 40 WP-40.3：调用方在唯一 ControlDispatch
+    /// 返回 `Committed` 后调用——降级模式只回放**已提交**计划，被拒/失败的
+    /// 调度不得污染基线）。
+    pub fn mark_committed(&mut self, plan: &ProposedControlPlan) {
+        self.last_committed_schedule = Some(plan.schedule.clone());
+    }
+
+    /// 端到端执行双脑链路（蓝图 40 WP-40.3：**只产生决策结果，不写设备**）。
     ///
-    /// 7 步流程：
-    /// 1. 路径选择 — `PathSelector::select()`；`FastPath` 早返回
-    /// 2. 感知层 — `RealtimeState` → `SystemContext`（D5）
-    /// 3. LLM 推理 — `build` + `infer`（D9）
-    /// 4. 意图解析 — `parse_json` + `IntentContract` + `validate` + `to_solver_params`（D9）
-    /// 5. LP 求解 — `set_param` + `solve`（D8）
-    /// 6. 安全校验 — `parse_result` + `validate`
-    /// 7. 命令下发 — 构建 `DispatchCommand` + `sink.write`（D6）
-    pub fn execute(
-        &mut self,
-        state: &RealtimeState,
-        now_ms: u64,
-    ) -> Result<DualBrainResult, DualBrainError> {
+    /// 返回 [`DecisionOutcome`]：
+    /// - `Proposal`：无副作用计划——由调用方提交给唯一 `ControlDispatch`
+    ///   完成 validate→authorize→persist→deliver→ACK→readback→audit；
+    /// - `NoAction`：明确不动作（降级无基线/空调度）——审计但不下发；
+    /// - `Rejected`：结构化拒绝（速率/能量闸、SafetyFatal、校验失败）——
+    ///   `SafetyFatal` 分类保留（立即上报人工，不重试）。
+    ///
+    /// 所有路径（Fast/Slow/Fallback/Degraded）都入审计链；`gate.record`
+    /// 不再在协调器内调用——成功预算记账移到 dispatch 的 confirmed
+    /// dispatch 阶段（拒绝/失败不消耗成功预算）。
+    pub fn execute(&mut self, state: &RealtimeState, now_ms: u64) -> DecisionOutcome {
         // v0.248.0：真实计时时钟（单调毫秒；默认 eneros-time 全局时钟，
         // 测试经 with_clock 注入可控时钟）。
         let clock = self.clock_fn; // fn 指针 Copy（避免闭包长期借用 self）
         let tic = || clock();
         let mut latency = LatencyBreakdown::default();
-
-        // 22 §2.W5.2：速率闸在 execute 入口——快/慢/降级所有决策路径
-        // 全过闸（防 FastPath 绕过；fail-closed：超限丢弃 + 调用方告警）。
-        if self.gate.check_rate(now_ms) != GateDecision::Allow {
-            return Err(DualBrainError::GateRejected(GateDecision::RateLimited));
-        }
 
         // Step 1: 路径选择
         let path_type = self.path_selector.select(state, now_ms);
@@ -282,40 +255,53 @@ impl<S: Solver> DualBrainCoordinator<S> {
         if path_type == PathType::FastPath {
             // v0.248.0：真实计时（单调时钟）。
             let t0 = tic();
-            let fast_result = self
-                .fast_path
-                .execute(state, now_ms)
-                .map_err(|e| match e {
-                    // 32 AI-03：Fatal 闸对称化——快路径 Fatal 与慢路径
-                    // 同语义（Err → run_once 零写入）。
-                    eneros_fast_path::error::FastPathError::SafetyFatal(n) => {
-                        DualBrainError::SafetyFatal(format!(
-                            "fast-path safety validation FATAL: {n} violation(s)"
-                        ))
-                    }
-                    other => DualBrainError::SolveError(format!("{other:?}")),
-                })?;
+            let fast_result = match self.fast_path.execute(state, now_ms) {
+                Ok(r) => r,
+                Err(eneros_fast_path::error::FastPathError::SafetyFatal(n)) => {
+                    return self.audit_outcome(
+                        now_ms,
+                        DecisionOutcome::Rejected(DecisionRejection {
+                            reason: RejectionReason::SafetyFatal(format!(
+                                "fast-path safety validation FATAL: {n} violation(s)"
+                            )),
+                            path: DecisionPath::Fast,
+                            issued_at_ms: now_ms,
+                        }),
+                    );
+                }
+                Err(other) => {
+                    return self.audit_outcome(
+                        now_ms,
+                        DecisionOutcome::Rejected(DecisionRejection {
+                            reason: RejectionReason::Internal(format!("fast-path: {other:?}")),
+                            path: DecisionPath::Fast,
+                            issued_at_ms: now_ms,
+                        }),
+                    );
+                }
+            };
             latency.perception_ms = tic().saturating_sub(t0);
-            // 22 §2.W5.2：能量闸（FastPath 同样过闸记账）。
-            let energy = schedule_energy_kwh(&fast_result.schedule);
-            if self.gate.check_energy(now_ms, energy) != GateDecision::Allow {
-                return Err(DualBrainError::GateRejected(GateDecision::EnergyExceeded));
-            }
-            self.gate.record(now_ms, energy);
             latency.calculate_total();
-            return Ok(DualBrainResult {
-                path_type: PathType::FastPath,
-                schedule: fast_result.schedule,
-                latency,
-                feedback: None,
-            });
+            return self.audit_outcome(
+                now_ms,
+                DecisionOutcome::Proposal(self.build_proposal(
+                    DecisionPath::Fast,
+                    fast_result.schedule,
+                    latency,
+                    None,
+                    now_ms,
+                    fast_result.validation.clamped_schedule.is_some(),
+                )),
+            );
         }
 
         // ===== 慢路径：完整 7 步 =====
 
-        // Step 2: 感知层 — 构建 SystemContext（D5）
-        // v0.248.0：真实计时。
+        // Step 2: 感知层 — 构建 SystemContext（D5）。
+        // v0.248.0：真实计时。蓝图 40 WP-40.1：解析器状态在解析前
+        // 覆写为**受信任状态**（构造期 unknown 占位不得用于决策）。
         let t_perception = tic();
+        self.intent_parser.set_state(state.system.clone());
         let system_context = SystemContext {
             current_soc: state.system.soc_pct,
             current_power_kw: state.system.current_a * state.system.voltage_v / 1000.0,
@@ -331,8 +317,7 @@ impl<S: Solver> DualBrainCoordinator<S> {
             market_price: state.current_price,
             soc: state.system.soc_pct * 100.0,
             power_current: state.system.current_a * state.system.voltage_v / 1000.0,
-            // 蓝图/20 R3-1：无传感器数据源时显式 None（禁假值占位）——
-            // prompt 渲染 "N/A"；传感器接入后从 RealtimeState 扩展字段填充。
+            // 蓝图/20 R3-1：无传感器数据源时显式 None（禁假值占位）。
             temperature: None,
             time_of_day: None,
             historical_data: state.load_demand.clone().unwrap_or_default(),
@@ -345,50 +330,89 @@ impl<S: Solver> DualBrainCoordinator<S> {
             Ok(out) => out,
             Err(_e) => {
                 latency.llm_inference_ms = tic().saturating_sub(t_llm);
-                // 超时回退策略（蓝图 W2.3）：
-                // - 首次超时：回退 fast-path（真查表 + 微调，不阻塞决策）；
-                // - 连续超时（≥2）：降级模式——用上一次成功决策（安全钳位
-                //   由 validator 保证），degraded 标记供上层告警。
+                // 超时回退策略（蓝图 W2.3；40 WP-40.3 统一为 Proposal/NoAction）：
+                // - 连续超时（≥2）：降级模式——回放上次**已提交**计划
+                //   （预批准保守 proposal，仍走唯一 dispatch 链复验）；
+                //   无基线 → NoAction（不制造"安全默认计划"）；
+                // - 首次超时：回退 fast-path（保守解，path=Fallback）。
                 if self.llm_timeout_streak >= 2 {
-                    if let Some(last) = self.last_successful_schedule.clone() {
+                    if let Some(last) = self.last_committed_schedule.clone() {
                         // 降级模式（degraded 标记供上层告警/审计）。
                         self.degraded = true;
-                        return Ok(DualBrainResult {
-                            schedule: last,
-                            path_type: PathType::Degraded,
+                        let mut plan = self.build_proposal(
+                            DecisionPath::Degraded,
+                            last,
                             latency,
-                            feedback: None,
-                        });
+                            None,
+                            now_ms,
+                            false,
+                        );
+                        plan.plan_id = format!("req-{}-degraded", now_ms);
+                        return self.audit_outcome(now_ms, DecisionOutcome::Proposal(plan));
                     }
+                    return self.audit_outcome(
+                        now_ms,
+                        DecisionOutcome::NoAction(NoActionReason::NoSafeFallback),
+                    );
                 }
                 // 首次超时：回退 fast-path（不阻塞决策）。
-                // 31-review（P1）：Fatal 分类必须保留——旧实现 map_err 折叠为
-                // SolveError，Fatal 被 rejection 归类为 CommFailed（瞬态重试）
-                // 而非 SafetyBlocked（立即 Error + 上报人工），代理会持续重试
-                // 安全违规而不升级。
-                let fast = self.fast_path.execute(state, now_ms).map_err(|fe| match fe {
-                    eneros_fast_path::error::FastPathError::SafetyFatal(n) => {
-                        DualBrainError::SafetyFatal(format!(
-                            "fast fallback safety FATAL: {n} violation(s)"
-                        ))
+                // 31-review（P1）：Fatal 分类必须保留。
+                let fast = match self.fast_path.execute(state, now_ms) {
+                    Ok(f) => f,
+                    Err(eneros_fast_path::error::FastPathError::SafetyFatal(n)) => {
+                        return self.audit_outcome(
+                            now_ms,
+                            DecisionOutcome::Rejected(DecisionRejection {
+                                reason: RejectionReason::SafetyFatal(format!(
+                                    "fast fallback safety FATAL: {n} violation(s)"
+                                )),
+                                path: DecisionPath::Fallback,
+                                issued_at_ms: now_ms,
+                            }),
+                        );
                     }
-                    other => DualBrainError::SolveError(format!("fast fallback: {other:?}")),
-                })?;
-                return Ok(DualBrainResult {
-                    schedule: fast.schedule,
-                    path_type: PathType::FastPath,
-                    latency,
-                    feedback: None,
-                });
+                    Err(other) => {
+                        return self.audit_outcome(
+                            now_ms,
+                            DecisionOutcome::Rejected(DecisionRejection {
+                                reason: RejectionReason::Internal(format!(
+                                    "fast fallback: {other:?}"
+                                )),
+                                path: DecisionPath::Fallback,
+                                issued_at_ms: now_ms,
+                            }),
+                        );
+                    }
+                };
+                return self.audit_outcome(
+                    now_ms,
+                    DecisionOutcome::Proposal(self.build_proposal(
+                        DecisionPath::Fallback,
+                        fast.schedule,
+                        latency,
+                        None,
+                        now_ms,
+                        fast.validation.clamped_schedule.is_some(),
+                    )),
+                );
             }
         };
         latency.llm_inference_ms = tic().saturating_sub(t_llm);
 
         // Step 4: 意图解析（D9）
-        let intent = self
-            .intent_parser
-            .parse_json(&llm_output)
-            .map_err(|e| DualBrainError::ParseError(format!("{:?}", e)))?;
+        let intent = match self.intent_parser.parse_json(&llm_output) {
+            Ok(i) => i,
+            Err(e) => {
+                return self.audit_outcome(
+                    now_ms,
+                    DecisionOutcome::Rejected(DecisionRejection {
+                        reason: RejectionReason::Validation(format!("parse: {e:?}")),
+                        path: DecisionPath::Slow,
+                        issued_at_ms: now_ms,
+                    }),
+                );
+            }
+        };
         // 蓝图/20 R3-1：意图置信度在移动前拷贝（LLM 输出真实解析值）。
         let intent_confidence = intent.confidence;
         self.request_counter += 1;
@@ -400,8 +424,7 @@ impl<S: Solver> DualBrainCoordinator<S> {
             intent,
             context: system_context,
             llm_meta: LlmMeta {
-                // v0.248.0：真实模型标识与 token 计数（引擎提供的能力查询；
-                // 未加载模型时回退为占位名，token 计数取累计统计）。
+                // v0.248.0：真实模型标识与 token 计数。
                 model_name: self
                     .llm_engine
                     .model_info()
@@ -409,30 +432,51 @@ impl<S: Solver> DualBrainCoordinator<S> {
                     .unwrap_or_else(|| String::from("unloaded")),
                 inference_ms: latency.llm_inference_ms,
                 token_count: self.llm_engine.stats().total_tokens_generated as usize,
-                // 蓝图/20 R3-1：置信度取意图解析真实值（LLM 输出 JSON 解析），
-                // 不再硬编码 0.85。
                 confidence: intent_confidence,
             },
         };
-        self.contract_validator
-            .validate(&contract)
-            .map_err(|e| DualBrainError::ContractError(format!("{:?}", e)))?;
-        let (config, problem) = self
-            .converter
-            .to_solver_params(&contract, &state.system)
-            .map_err(|e| DualBrainError::ContractError(format!("{:?}", e)))?;
+        if let Err(e) = self.contract_validator.validate(&contract) {
+            return self.audit_outcome(
+                now_ms,
+                DecisionOutcome::Rejected(DecisionRejection {
+                    reason: RejectionReason::Validation(format!("contract: {e:?}")),
+                    path: DecisionPath::Slow,
+                    issued_at_ms: now_ms,
+                }),
+            );
+        }
+        let (config, problem) = match self.converter.to_solver_params(&contract, &state.system) {
+            Ok(v) => v,
+            Err(e) => {
+                return self.audit_outcome(
+                    now_ms,
+                    DecisionOutcome::Rejected(DecisionRejection {
+                        reason: RejectionReason::Validation(format!("convert: {e:?}")),
+                        path: DecisionPath::Slow,
+                        issued_at_ms: now_ms,
+                    }),
+                );
+            }
+        };
         // v0.248.0：真实计时（意图解析整段：parse→validate→convert）。
         latency.intent_parse_ms = tic().saturating_sub(t_llm);
 
         // Step 5: LP 求解（D8）
         let _ = self.fast_path.solver.set_param("time_limit", "0.5");
-        // v0.248.0：LP 模型构建真实计时（solve 前一刻）。
         let t_lp_build = tic();
-        let solve_result = self
-            .fast_path
-            .solver
-            .solve(&problem, now_ms)
-            .map_err(|e| DualBrainError::SolveError(format!("{:?}", e)))?;
+        let solve_result = match self.fast_path.solver.solve(&problem, now_ms) {
+            Ok(r) => r,
+            Err(e) => {
+                return self.audit_outcome(
+                    now_ms,
+                    DecisionOutcome::Rejected(DecisionRejection {
+                        reason: RejectionReason::Validation(format!("solve: {e:?}")),
+                        path: DecisionPath::Slow,
+                        issued_at_ms: now_ms,
+                    }),
+                );
+            }
+        };
         latency.lp_build_ms = tic().saturating_sub(t_lp_build);
         latency.lp_solve_ms = solve_result.elapsed_ms;
 
@@ -444,92 +488,33 @@ impl<S: Solver> DualBrainCoordinator<S> {
         let validation = self.validator.validate(&schedule, &state.system);
         latency.safety_validate_ms = tic().saturating_sub(t_safety);
 
-        // v0.206.0（P0-17）：安全屏障闭环——Fatal 违规（validation.passed ==
-        // false，如 SOC<0.05）拒绝命令下发并上报告警，不再取 clamped_schedule
-        // 照常写入 sink。clamped_schedule 仅在非 Fatal（passed）时使用。
+        // v0.206.0（P0-17）：安全屏障闭环——Fatal 违规拒绝（passed==false），
+        // 不取 clamped_schedule 继续。分类保留：SafetyFatal → 立即上报人工。
         if !validation.passed {
-            // v0.206.0（P0-17）：Fatal 违规阻断命令下发。
-            return Err(DualBrainError::SafetyFatal(format!(
-                "safety validation FATAL: {} violation(s)",
-                validation.violations.len()
-            )));
+            return self.audit_outcome(
+                now_ms,
+                DecisionOutcome::Rejected(DecisionRejection {
+                    reason: RejectionReason::SafetyFatal(format!(
+                        "safety validation FATAL: {} violation(s)",
+                        validation.violations.len()
+                    )),
+                    path: DecisionPath::Slow,
+                    issued_at_ms: now_ms,
+                }),
+            );
         }
         let final_schedule = validation.clamped_schedule.clone().unwrap_or(schedule);
-        let gate_energy_kwh = schedule_energy_kwh(&final_schedule);
 
-        // 31-review（P1 AG-04 + P2 AI-02）：gate+下发执行并收集结果——
-        // 审计覆盖**全部**结果（成功/能量闸拒/下发失败），旧实现审计仅在
-        // sink.write 成功之后、拒/失败路径零记录（篡改链恰好漏掉关键决策）。
-        // "上次成功决策"也仅在真正下发成功后记录（旧实现在 gate 前赋值，
-        // 被拒/失败的调度同样污染降级基线）。
-        let mut audit_gate = "allow";
-        let mut dispatch_ok = false;
-        let dispatch: Result<(), DualBrainError> = (|| {
-            // 22 §2.W5.2：能量闸（安全校验之后、命令下发之前；速率闸已在
-            // execute 入口通过）。超限拒绝返回 GateRejected（调用方告警/审计）。
-            if self.gate.check_energy(now_ms, gate_energy_kwh) != GateDecision::Allow {
-                audit_gate = "energy_exceeded";
-                return Err(DualBrainError::GateRejected(GateDecision::EnergyExceeded));
-            }
-            // Step 7: 命令下发（D6）
-            if let Some(entry) = final_schedule.schedule.first() {
-                let cmd = DispatchCommand {
-                    target_device: String::from("pcs"),
-                    power_kw: entry.net_power_kw,
-                    // 29 AI-01：ttl_secs 秒基准（原 300_000ms → 300s，语义不变；
-                    // 字段改名强制单位契约归一）。
-                    ttl_secs: 300,
-                    timestamp: now_ms,
-                };
-                // v0.248.0：真实计时。
-                let t_dispatch = tic();
-                self.sink.write(cmd)?;
-                latency.command_dispatch_ms = tic().saturating_sub(t_dispatch);
-            }
-            // 下发成功才记账（失败不占速率/能量额度）。
-            self.gate.record(now_ms, gate_energy_kwh);
-            dispatch_ok = true;
-            Ok(())
-        })();
+        // 蓝图 40 WP-40.3：速率/能量/并发预算在唯一 ControlDispatch 的
+        // reserve 阶段（步骤 5）执行——协调器只产 Proposal。
 
-        // 32 AG-04：决策审计（W5.1）——慢路径决策入链（成功/拒绝/失败均记录，
-        // 含 path/validation/gate 字段；写失败仅计数丢弃，不阻塞决策路径）。
-        let safety = if validation.clamped_schedule.is_some() {
-            crate::audit::SafetyOutcome::Degraded
-        } else {
-            crate::audit::SafetyOutcome::Passed
-        };
-        let lp_summary = format!(
-            "path=SlowPath;gate={};energy_kwh={:.3};violations=0",
-            audit_gate, gate_energy_kwh
-        );
-        let rec = crate::audit::DecisionRecord {
-            actor: "dual-brain",
-            target: "pcs",
-            intent: "slow-path-decision",
-            lp_solution: &lp_summary,
-            safety,
-            exec: if dispatch_ok {
-                crate::audit::ExecOutcome::Succeeded
-            } else {
-                crate::audit::ExecOutcome::Failed
-            },
-            deviation: 0.0,
-            now_ms,
-        };
-        if let Some(audit) = self.audit.as_mut() {
-            if audit.log_decision(&rec).is_err() {
-                self.audit_drop_count += 1;
-            }
+        // 空调度（无控制需要）→ 明确 NoAction（不是成功下发）。
+        if final_schedule.schedule.is_empty() {
+            return self
+                .audit_outcome(now_ms, DecisionOutcome::NoAction(NoActionReason::EmptyPlan));
         }
-        // 32 AI-02（review）：仅真正下发成功后记录"上次成功决策"
-        //（降级模式回放基线不得含被拒/失败调度）。
-        if dispatch_ok {
-            self.last_successful_schedule = Some(final_schedule.clone());
-        }
-        dispatch?;
 
-        // 构建反馈契约
+        // 构建反馈契约（预测反馈——仅供学习参考，学习门控在 Committed）。
         let feedback = self.converter.to_feedback(
             &request_id,
             &solve_result,
@@ -540,27 +525,110 @@ impl<S: Solver> DualBrainCoordinator<S> {
 
         latency.calculate_total();
 
-        Ok(DualBrainResult {
-            path_type: PathType::SlowPath,
-            schedule: final_schedule,
+        self.audit_outcome(
+            now_ms,
+            DecisionOutcome::Proposal(self.build_proposal(
+                DecisionPath::Slow,
+                final_schedule,
+                latency,
+                Some(feedback),
+                now_ms,
+                validation.clamped_schedule.is_some(),
+            )),
+        )
+    }
+
+    /// 从调度结果构建无副作用计划。
+    fn build_proposal(
+        &self,
+        path: DecisionPath,
+        schedule: ScheduleResult,
+        latency: LatencyBreakdown,
+        feedback: Option<FeedbackContract>,
+        now_ms: u64,
+        safety_clamped: bool,
+    ) -> ProposedControlPlan {
+        let power_kw = schedule
+            .schedule
+            .first()
+            .map(|e| e.net_power_kw)
+            .unwrap_or(0.0);
+        ProposedControlPlan {
+            plan_id: format!("req-{}-{}", now_ms, self.request_counter),
+            path,
+            schedule,
+            power_kw,
+            target_device: String::from("pcs"),
+            // 29 AI-01：ttl_secs 秒基准（300s）。
+            ttl_secs: 300,
+            issued_at_ms: now_ms,
+            // 调用方提交时填入 TrustedTelemetry.provenance_digest。
+            input_digest: None,
+            model_digest: None,
             latency,
-            feedback: Some(feedback),
-        })
+            safety_violations: 0,
+            safety_clamped,
+            feedback,
+        }
+    }
+
+    /// 统一审计出口：所有 DecisionOutcome（Proposal/NoAction/Rejected）入链；
+    /// 写失败仅计数丢弃，不阻塞决策路径。
+    fn audit_outcome(&mut self, now_ms: u64, outcome: DecisionOutcome) -> DecisionOutcome {
+        let label = outcome.audit_label();
+        let (safety, exec) = match &outcome {
+            DecisionOutcome::Proposal(p) => {
+                let s = if p.safety_clamped {
+                    crate::audit::SafetyOutcome::Degraded
+                } else {
+                    crate::audit::SafetyOutcome::Passed
+                };
+                (s, crate::audit::ExecOutcome::Proposed)
+            }
+            DecisionOutcome::NoAction(_) => (
+                crate::audit::SafetyOutcome::Passed,
+                crate::audit::ExecOutcome::NoAction,
+            ),
+            DecisionOutcome::Rejected(r) => {
+                let s = if matches!(r.reason, RejectionReason::SafetyFatal(_)) {
+                    crate::audit::SafetyOutcome::Blocked
+                } else {
+                    crate::audit::SafetyOutcome::Passed
+                };
+                (s, crate::audit::ExecOutcome::Failed)
+            }
+        };
+        let rec = crate::audit::DecisionRecord {
+            actor: "dual-brain",
+            target: "pcs",
+            intent: "decision",
+            lp_solution: &label,
+            safety,
+            exec,
+            deviation: 0.0,
+            now_ms,
+        };
+        if let Some(audit) = self.audit.as_mut() {
+            if audit.log_decision(&rec).is_err() {
+                self.audit_drop_count += 1;
+            }
+        }
+        outcome
     }
 }
 
 #[cfg(any(test, feature = "mock"))]
 impl DualBrainCoordinator<MockSolver> {
-    /// 默认构造（MockSolver + DualBrainMockEngine + MockCommandSink）.
+    /// 默认构造（MockSolver + DualBrainMockEngine）.
     ///
     /// v0.205.0（P0-27）：仅 test/mock feature 可用；生产用
-    /// [`DualBrainCoordinator::new`] 构造器注入真实 Solver/Engine/Sink。
+    /// [`DualBrainCoordinator::new`] 构造器注入真实 Solver/Engine。
+    /// 蓝图 40 WP-40.3：协调器不持 sink（决策只产 Proposal）。
     pub fn default_with_mock() -> Self {
         let config = ScheduleConfig::default();
         let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
         let solver = MockSolver::new();
-        let sink: Box<dyn CommandSink> = Box::new(MockCommandSink::new());
-        Self::new(config, llm_engine, solver, sink)
+        Self::new(config, llm_engine, solver)
     }
 }
 

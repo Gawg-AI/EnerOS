@@ -49,6 +49,7 @@ extern crate alloc;
 pub mod audit;
 pub mod chain_sink;
 pub mod coordinator;
+pub mod decision;
 pub mod error;
 pub mod gate;
 pub mod latency;
@@ -59,6 +60,10 @@ pub mod sink;
 #[cfg(any(test, feature = "mock"))]
 pub use coordinator::DualBrainMockEngine;
 pub use coordinator::{DualBrainCoordinator, DualBrainResult};
+pub use decision::{
+    DecisionOutcome, DecisionPath, DecisionRejection, NoActionReason, ProposedControlPlan,
+    RejectionReason,
+};
 pub use error::DualBrainError;
 pub use latency::LatencyBreakdown;
 #[cfg(any(test, feature = "mock"))]
@@ -68,10 +73,8 @@ pub use sink::{CommandSink, DispatchCommand};
 #[cfg(test)]
 mod tests {
     use alloc::string::String;
-    use alloc::vec::Vec;
 
     use eneros_energy_lp_model::config::ScheduleConfig;
-    use eneros_fast_path::selector::PathType;
     use eneros_fast_path::state::RealtimeState;
     use eneros_llm_engine::engine::LlmEngine;
     use eneros_safety_validator::state::SystemState;
@@ -80,7 +83,6 @@ mod tests {
     use eneros_solver_core::result::{SolveResult, SolveStatus};
 
     use super::*;
-    use crate::gate::{DecisionGate, GateDecision};
 
     // ===== T1: LatencyBreakdown::default 全 0 =====
     #[test]
@@ -217,8 +219,8 @@ mod tests {
         let config = ScheduleConfig::default();
         let llm_engine: Box<dyn LlmEngine> = Box::new(coordinator::DualBrainMockEngine::new());
         let solver = MockSolver::new();
-        let sink: Box<dyn CommandSink> = Box::new(MockCommandSink::new());
-        let _coord = DualBrainCoordinator::new(config, llm_engine, solver, sink);
+        // 蓝图 40 WP-40.3：协调器不持 sink（决策只产 Proposal）。
+        let _coord = DualBrainCoordinator::new(config, llm_engine, solver);
     }
 
     // ===== T12: DualBrainCoordinator::default_with_mock 构造 =====
@@ -248,10 +250,16 @@ mod tests {
         let mut coord = DualBrainCoordinator::default_with_mock();
         let state = safe_state();
         // 第一次：SlowPath（初始化基线）
-        let _ = coord.execute(&state, 0).unwrap();
+        assert!(matches!(
+            coord.execute(&state, 0),
+            DecisionOutcome::Proposal(_)
+        ));
         // 第二次：状态未变，间隔内 → FastPath
-        let result = coord.execute(&state, 1000).unwrap();
-        assert_eq!(result.path_type, PathType::FastPath);
+        let result = coord.execute(&state, 1000);
+        assert!(
+            matches!(&result, DecisionOutcome::Proposal(p) if p.path == DecisionPath::Fast),
+            "间隔内必须走快路径（Proposal, Fast）：{result:?}"
+        );
     }
 
     // ===== T14: execute 慢路径端到端 =====
@@ -260,7 +268,10 @@ mod tests {
         let mut coord = DualBrainCoordinator::default_with_mock();
         let state = safe_state();
         let result = coord.execute(&state, 0);
-        assert!(result.is_ok());
+        assert!(
+            matches!(result, DecisionOutcome::Proposal(_)),
+            "慢路径端到端必须产出 Proposal（WP-40.3）"
+        );
     }
 
     // ===== T15: execute 慢路径返回 SlowPath =====
@@ -268,8 +279,8 @@ mod tests {
     fn t15_execute_slow_path_returns_slow_path() {
         let mut coord = DualBrainCoordinator::default_with_mock();
         let state = safe_state();
-        let result = coord.execute(&state, 0).unwrap();
-        assert_eq!(result.path_type, PathType::SlowPath);
+        let result = coord.execute(&state, 0);
+        assert!(matches!(&result, DecisionOutcome::Proposal(p) if p.path == DecisionPath::Slow));
     }
 
     // ===== 32 AG-04 判据：audit_wired — 慢路径决策入审计链 =====
@@ -280,33 +291,80 @@ mod tests {
         let mut coord = DualBrainCoordinator::default_with_mock()
             .with_audit(crate::audit::DecisionAudit::new([0x32; 32]));
         let state = safe_state();
-        let result = coord.execute(&state, 0).expect("slow-path ok");
-        assert_eq!(result.path_type, PathType::SlowPath);
+        let result = coord.execute(&state, 0);
+        assert!(matches!(&result, DecisionOutcome::Proposal(p) if p.path == DecisionPath::Slow));
         assert_eq!(
-            coord.audit.as_ref().expect("audit 已注入").chain_state().entry_count,
+            coord
+                .audit
+                .as_ref()
+                .expect("audit 已注入")
+                .chain_state()
+                .entry_count,
             1,
             "慢路径决策必须入链"
         );
         assert_eq!(coord.audit_drop_count, 0, "写入不得失败");
         assert!(
-            coord.audit.as_ref().expect("audit").verify().expect("verify").valid,
+            coord
+                .audit
+                .as_ref()
+                .expect("audit")
+                .verify()
+                .expect("verify")
+                .valid,
             "审计链自洽"
         );
-        // 快路径不入链（仅慢路径决策审计）。
-        let _ = coord.execute(&state, 1000).expect("fast-path");
-        assert_eq!(coord.audit.as_ref().expect("audit").chain_state().entry_count, 1);
-
-        // 31-review（P1 AG-04）：gate 拒绝也必须入审计链（旧实现仅成功路径
-        // 记录——篡改链漏掉恰好最关键的决策）。
-        let mut coord2 = DualBrainCoordinator::default_with_mock()
-            .with_audit(crate::audit::DecisionAudit::new([0x33; 32]))
-            .with_gate(DecisionGate::new(1000, 0.0, 60_000)); // 零能量预算 → 必拒
-        let rejected = coord2.execute(&state, 0);
-        assert!(rejected.is_err(), "零能量预算必须拒");
+        // 蓝图 40 WP-40.3：所有路径（含快路径）都入审计链。
+        let _ = coord.execute(&state, 1000);
         assert_eq!(
-            coord2.audit.as_ref().expect("audit").chain_state().entry_count,
+            coord
+                .audit
+                .as_ref()
+                .expect("audit")
+                .chain_state()
+                .entry_count,
+            2,
+            "快路径也必须入审计链（WP-40.3 全路径审计）"
+        );
+
+        // 31-review（P1 AG-04）：拒绝/失败也必须入审计链（旧实现仅成功路径
+        // 记录——篡改链漏掉恰好最关键的决策）。蓝图 40 WP-40.3：gate 预算
+        // 在 dispatch 层（control-dispatch 测试覆盖 gate 拒绝审计）；
+        // 协调器侧以 SafetyFatal 拒绝验证"拒绝也入链"。
+        let _coord2 = DualBrainCoordinator::default_with_mock()
+            .with_audit(crate::audit::DecisionAudit::new([0x33; 32]));
+        // 故障注入：求解器输出 SOC=0.02（< 0.05 Fatal 阈值）→ SafetyFatal。
+        let config = ScheduleConfig::default();
+        let n = config.num_periods;
+        let cap = config.battery_capacity_kwh;
+        let mut solution = alloc::vec![0.0f64; 4 * n + 1];
+        for t in 0..n {
+            solution[3 * n + t] = 0.02 * cap;
+        }
+        let solver = MockSolver::with_result(SolveResult {
+            status: SolveStatus::Optimal,
+            objective_value: 0.0,
+            solution,
+            elapsed_ms: 0,
+            dual_solution: None,
+        });
+        let mut coord3 =
+            DualBrainCoordinator::new(config, Box::new(DualBrainMockEngine::new()), solver)
+                .with_audit(crate::audit::DecisionAudit::new([0x33; 32]));
+        let rejected = coord3.execute(&state, 0);
+        assert!(
+            matches!(&rejected, DecisionOutcome::Rejected(r) if matches!(r.reason, RejectionReason::SafetyFatal(_))),
+            "Fatal 必须拒（Rejected）"
+        );
+        assert_eq!(
+            coord3
+                .audit
+                .as_ref()
+                .expect("audit")
+                .chain_state()
+                .entry_count,
             1,
-            "gate 拒绝也必须入审计链（AG-04 全结果）"
+            "拒绝也必须入审计链（AG-04 全结果）"
         );
     }
 
@@ -315,8 +373,8 @@ mod tests {
     fn audit_absent_slow_path_still_works() {
         let mut coord = DualBrainCoordinator::default_with_mock();
         let state = safe_state();
-        let result = coord.execute(&state, 0).expect("ok");
-        assert_eq!(result.path_type, PathType::SlowPath);
+        let result = coord.execute(&state, 0);
+        assert!(matches!(&result, DecisionOutcome::Proposal(p) if p.path == DecisionPath::Slow));
         assert!(coord.audit.is_none());
     }
 
@@ -325,6 +383,7 @@ mod tests {
     // 时钟——注入已知延迟可观测到对应数值（验收标准）。
     static TEST_NOW_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
     #[test]
     fn t16_execute_slow_path_latency() {
         // 时钟：每次调用推进 10ms（模拟真实执行耗时）。
@@ -332,22 +391,25 @@ mod tests {
         let clock = || TEST_NOW_MS.fetch_add(10, core::sync::atomic::Ordering::SeqCst);
         let mut coord = DualBrainCoordinator::default_with_mock().with_clock(clock);
         let state = safe_state();
-        let result = coord.execute(&state, 0).unwrap();
+        let result = coord.execute(&state, 0);
+        let DecisionOutcome::Proposal(plan) = result else {
+            panic!("慢路径必须产出 Proposal");
+        };
         // 每个计时步骤至少推进一次（每步 ≥ 10ms）。
-        assert!(result.latency.llm_inference_ms >= 10);
-        assert!(result.latency.perception_ms >= 10);
-        assert!(result.latency.intent_parse_ms >= 10);
-        assert!(result.latency.lp_build_ms >= 10);
-        assert!(result.latency.safety_validate_ms >= 10);
+        assert!(plan.latency.llm_inference_ms >= 10);
+        assert!(plan.latency.perception_ms >= 10);
+        assert!(plan.latency.intent_parse_ms >= 10);
+        assert!(plan.latency.lp_build_ms >= 10);
+        assert!(plan.latency.safety_validate_ms >= 10);
         // total = 各字段之和（calculate_total）。
-        let parts = result.latency.perception_ms
-            + result.latency.llm_inference_ms
-            + result.latency.intent_parse_ms
-            + result.latency.lp_build_ms
-            + result.latency.lp_solve_ms
-            + result.latency.safety_validate_ms
-            + result.latency.command_dispatch_ms;
-        assert_eq!(result.latency.total_ms, parts);
+        let parts = plan.latency.perception_ms
+            + plan.latency.llm_inference_ms
+            + plan.latency.intent_parse_ms
+            + plan.latency.lp_build_ms
+            + plan.latency.lp_solve_ms
+            + plan.latency.safety_validate_ms
+            + plan.latency.command_dispatch_ms;
+        assert_eq!(plan.latency.total_ms, parts);
         // FeedbackContract 不含 llm_meta；模型标识真实性由 coordinator
         // 构造 IntentContract 时从 engine.model_info() 获取（v0.248.0）。
     }
@@ -357,75 +419,30 @@ mod tests {
     fn t17_execute_slow_path_feedback_some() {
         let mut coord = DualBrainCoordinator::default_with_mock();
         let state = safe_state();
-        let result = coord.execute(&state, 0).unwrap();
-        assert!(result.feedback.is_some());
-    }
-
-    // ===== T18b: W5.2 决策闸——速率超限被拒（GateRejected + 告警计数）=====
-    #[test]
-    fn t18b_gate_rate_limit_rejects_execute() {
-        // 1 决策/分钟：第一次放行，第二次（同分钟）拒绝。
-        let mut coord = DualBrainCoordinator::default_with_mock()
-            .with_gate(DecisionGate::new(1, 1000.0, 3_600_000));
-        let state = safe_state();
-        let r1 = coord.execute(&state, 0).unwrap();
-        assert_eq!(r1.path_type, PathType::SlowPath);
-        let err = coord.execute(&state, 1000).unwrap_err();
+        let result = coord.execute(&state, 0);
         assert!(
-            matches!(err, DualBrainError::GateRejected(GateDecision::RateLimited)),
-            "速率超限必须拒绝: {err:?}"
+            matches!(&result, DecisionOutcome::Proposal(p) if p.feedback.is_some()),
+            "慢路径 Proposal 必须带预测反馈"
         );
-        // 下一分钟窗口（速率放行）；310s 后慢路径间隔到期 → SlowPath。
-        let r2 = coord.execute(&state, 310_000).unwrap();
-        assert_eq!(r2.path_type, PathType::SlowPath);
     }
 
-    // ===== T18c: W5.2 决策闸——能量超限被拒（正路径：非零调度超预算）=====
+    // ===== T18b/c/d（蓝图 40 WP-40.3）：决策闸移入唯一 ControlDispatch =====
+    // 速率/能量预算的 check+record 现在只发生在 dispatch 层（confirmed
+    // dispatch 记账；拒绝/失败不消耗成功预算）——协调器只产 Proposal，
+    // 不再持有/消费决策闸。对应 gate 行为测试移到 control-dispatch crate
+    //（`DispatchGate` 单测 + dispatch 集成测试）。此处保留回归：Proposal
+    // 可无限产出（协调器无副作用），预算语义由 dispatch 保证。
     #[test]
-    fn t18c_gate_energy_budget_rejects_execute() {
-        // 注入非零解：period 0 放电 5kW → 调度能量 = 5 × 0.25h = 1.25 kWh。
-        // 变量布局（31-review AI-05 增二元变量后 4n+1）：
-        // charge[0..n] → discharge[n..2n] → y[2n..3n] → soc[3n..4n+1]。
-        let n = 96usize;
-        let mut solution = vec![0.0; 4 * n + 1];
-        solution[n] = 5.0; // discharge[0] = 5kW
-        solution[3 * n..4 * n + 1].fill(100.0); // soc 初值 0.5×200kWh（防 Fatal 违规）
-        let solver = MockSolver::with_result(SolveResult {
-            status: SolveStatus::Optimal,
-            objective_value: 0.0,
-            solution,
-            elapsed_ms: 0,
-            dual_solution: None,
-        });
-        let mut coord = DualBrainCoordinator::new(
-            ScheduleConfig::default(),
-            Box::new(DualBrainMockEngine::new()),
-            solver,
-            Box::new(MockCommandSink::new()),
-        )
-        // 能量上限 0.1 kWh/周期 < 1.25 kWh → 必拒（fail-closed 不静默）。
-        .with_gate(DecisionGate::new(100, 0.1, 3_600_000));
+    fn t18_coordinator_proposals_have_no_gate_side_effects() {
+        let mut coord = DualBrainCoordinator::default_with_mock();
         let state = safe_state();
-        let err = coord.execute(&state, 0).unwrap_err();
-        assert!(
-            matches!(
-                err,
-                DualBrainError::GateRejected(GateDecision::EnergyExceeded)
-            ),
-            "能量超限必须拒绝: {err:?}"
-        );
-        assert_eq!(coord.gate.rejected_energy(), 1);
-    }
-
-    // ===== T18d: W5.2 决策闸——放行决策记账（速率窗口计入）=====
-    #[test]
-    fn t18d_gate_allowed_decision_recorded() {
-        let mut coord = DualBrainCoordinator::default_with_mock()
-            .with_gate(DecisionGate::new(1, 1000.0, 3_600_000));
-        let state = safe_state();
-        coord.execute(&state, 0).unwrap();
-        assert_eq!(coord.gate.rejected_rate(), 0);
-        assert!(coord.gate.used_kwh() >= 0.0);
+        for now in [0u64, 1000, 2000, 3000] {
+            let r = coord.execute(&state, now);
+            assert!(
+                matches!(r, DecisionOutcome::Proposal(_)),
+                "协调器只产 Proposal（无预算副作用）：{r:?}"
+            );
+        }
     }
 
     // ===== T18: execute 慢路径 schedule 非空 =====
@@ -433,49 +450,45 @@ mod tests {
     fn t18_execute_slow_path_schedule_non_empty() {
         let mut coord = DualBrainCoordinator::default_with_mock();
         let state = safe_state();
-        let result = coord.execute(&state, 0).unwrap();
-        assert!(!result.schedule.schedule.is_empty());
+        let result = coord.execute(&state, 0);
+        assert!(matches!(&result, DecisionOutcome::Proposal(p) if !p.schedule.schedule.is_empty()));
     }
 
-    // ===== T19: execute 命令下发到 sink =====
+    // ===== T19: execute 只产 Proposal，不写任何设备（WP-40.3） =====
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
     #[test]
-    fn t19_command_dispatched_to_sink() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        struct RecordingSink {
-            commands: Rc<RefCell<Vec<DispatchCommand>>>,
-        }
-
-        impl CommandSink for RecordingSink {
-            fn write(&mut self, cmd: DispatchCommand) -> Result<(), DualBrainError> {
-                self.commands.borrow_mut().push(cmd);
-                Ok(())
-            }
-        }
-
-        let commands = Rc::new(RefCell::new(Vec::new()));
-        let sink: Box<dyn CommandSink> = Box::new(RecordingSink {
-            commands: commands.clone(),
-        });
-
+    fn t19_execute_produces_proposal_without_write() {
         let config = ScheduleConfig::default();
         let llm_engine: Box<dyn LlmEngine> = Box::new(coordinator::DualBrainMockEngine::new());
         let solver = MockSolver::new();
-        let mut coord = DualBrainCoordinator::new(config, llm_engine, solver, sink);
+        // 协调器不再持有 sink——编译期保证"决策路径不写设备"。
+        let mut coord = DualBrainCoordinator::new(config, llm_engine, solver);
 
         let state = safe_state();
-        let _result = coord.execute(&state, 0).unwrap();
-        assert_eq!(commands.borrow().len(), 1);
+        let result = coord.execute(&state, 0);
+        let DecisionOutcome::Proposal(plan) = result else {
+            panic!("慢路径必须产出 Proposal");
+        };
+        // Proposal 携带执行目标（提交给 ControlDispatch 后才可能产生设备写）。
+        assert_eq!(plan.target_device, "pcs");
+        assert_eq!(plan.ttl_secs, 300);
+        assert!(plan.power_kw.is_finite());
+        // mark_committed 登记后降级基线可用。
+        coord.mark_committed(&plan);
+        assert!(coord.last_committed_schedule.is_some());
     }
 
     // ===== T20: execute request_id 格式 req-{ms}-{counter} =====
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
     #[test]
     fn t20_request_id_format() {
         let mut coord = DualBrainCoordinator::default_with_mock();
         let state = safe_state();
-        let result = coord.execute(&state, 0).unwrap();
-        let feedback = result.feedback.as_ref().unwrap();
+        let result = coord.execute(&state, 0);
+        let DecisionOutcome::Proposal(plan) = result else {
+            panic!("慢路径必须产出 Proposal");
+        };
+        let feedback = plan.feedback.as_ref().unwrap();
         assert_eq!(feedback.request_id, "req-0-1");
     }
 
@@ -484,8 +497,8 @@ mod tests {
     fn t21_end_to_end_state_to_path_type() {
         let mut coord = DualBrainCoordinator::default_with_mock();
         let state = safe_state();
-        let result = coord.execute(&state, 0).unwrap();
-        assert_eq!(result.path_type, PathType::SlowPath);
+        let result = coord.execute(&state, 0);
+        assert!(matches!(&result, DecisionOutcome::Proposal(p) if p.path == DecisionPath::Slow));
     }
 
     // ===== T22: LatencyBreakdown::bottleneck 全 0 返回 "none" =====
@@ -504,7 +517,6 @@ mod tests {
         use eneros_solver_core::result::{SolveResult, SolveStatus};
 
         use crate::coordinator::DualBrainMockEngine;
-        use crate::sink::MockCommandSink;
 
         let config = ScheduleConfig::default();
         let n = config.num_periods;
@@ -524,20 +536,21 @@ mod tests {
             dual_solution: None,
         });
         let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
-        let sink = alloc::boxed::Box::new(MockCommandSink::new());
-        let mut coord = DualBrainCoordinator::new(config, llm_engine, solver, sink);
+        let mut coord = DualBrainCoordinator::new(config, llm_engine, solver);
 
         let state = safe_state();
-        let err = coord.execute(&state, 1000).unwrap_err();
+        let err = coord.execute(&state, 1000);
         assert!(
-            matches!(err, DualBrainError::SafetyFatal(_)),
-            "SOC<0.05 必须 Fatal，实际 {err:?}"
+            matches!(
+                &err,
+                DecisionOutcome::Rejected(r) if matches!(r.reason, RejectionReason::SafetyFatal(_))
+            ),
+            "SOC<0.05 必须 Fatal（Rejected），实际 {err:?}"
         );
-        // sink 零写入（命令未下发）。
-        assert_eq!(
-            coord.sink.write_count(),
-            0,
-            "Fatal 违规下 sink 必须零写入（P0-17）"
+        // 零 Proposal = 零设备写（协调器不持 sink，P0-17 语义保留）。
+        assert!(
+            !matches!(err, DecisionOutcome::Proposal(_)),
+            "Fatal 违规不得产出 Proposal"
         );
     }
 
@@ -546,21 +559,18 @@ mod tests {
         use eneros_llm_engine::engine::LlmEngine;
 
         use crate::coordinator::DualBrainMockEngine;
-        use crate::sink::MockCommandSink;
 
         let config = ScheduleConfig::default();
         let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
         let solver = MockSolver::new();
-        let sink = alloc::boxed::Box::new(MockCommandSink::new());
-        let mut coord = DualBrainCoordinator::new(config, llm_engine, solver, sink);
+        let mut coord = DualBrainCoordinator::new(config, llm_engine, solver);
 
-        // 正常 SOC=0.8 → 慢路径可下发命令（sink 有写入）。
+        // 正常 SOC=0.8 → 慢路径产出 Proposal（dispatch 阶段才写设备）。
         let state = safe_state();
-        let _ = coord.execute(&state, 0).unwrap();
+        let r = coord.execute(&state, 0);
         assert!(
-            coord.sink.write_count() >= 1,
-            "正常路径应下发命令，实际 {} 条",
-            coord.sink.write_count()
+            matches!(&r, DecisionOutcome::Proposal(p) if p.path == DecisionPath::Slow),
+            "正常路径必须产出 Proposal"
         );
     }
 }
@@ -571,12 +581,12 @@ mod tests {
 #[cfg(test)]
 mod w23_bounded_llm_tests {
     use eneros_energy_lp_model::config::ScheduleConfig;
-    use eneros_fast_path::selector::PathType;
     use eneros_fast_path::state::RealtimeState;
     use eneros_llm_engine::engine::LlmEngine;
     use eneros_llm_engine::error::LlmError;
     use eneros_llm_engine::params::InferParams;
     use eneros_safety_validator::state::SystemState;
+    use eneros_safety_validator::TestSystemStateBuilder;
     use eneros_solver_core::mock::MockSolver;
 
     use super::*;
@@ -637,18 +647,16 @@ mod w23_bounded_llm_tests {
         let config = ScheduleConfig::default();
         let llm: Box<dyn LlmEngine> = Box::new(AlwaysFailEngine);
         let solver = MockSolver::new();
-        let sink: Box<dyn CommandSink> = Box::new(MockCommandSink::new());
-        let mut coord = DualBrainCoordinator::new(config, llm, solver, sink).with_clock(clock);
+        let mut coord = DualBrainCoordinator::new(config, llm, solver).with_clock(clock);
         let state = RealtimeState {
-            system: SystemState::default(),
+            system: TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.5, 0).build(),
             current_price: 0.5,
             load_demand: None,
         };
-        let result = coord.execute(&state, 0).expect("fast-path 回退必须成功");
-        assert_eq!(
-            result.path_type,
-            PathType::FastPath,
-            "LLM 失败必须回退 fast-path（不阻塞决策）"
+        let result = coord.execute(&state, 0);
+        assert!(
+            matches!(&result, DecisionOutcome::Proposal(p) if p.path == DecisionPath::Fallback),
+            "LLM 失败必须回退 fast-path（Proposal, Fallback）：{result:?}"
         );
     }
 
@@ -669,6 +677,7 @@ mod w23_bounded_llm_tests {
         }
     }
 
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
     #[test]
     fn test_consecutive_timeout_marks_degraded() {
         use crate::coordinator::DualBrainMockEngine;
@@ -677,9 +686,8 @@ mod w23_bounded_llm_tests {
         let config = ScheduleConfig::default();
         let llm: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
         let solver = MockSolver::new();
-        let sink: Box<dyn CommandSink> = Box::new(MockCommandSink::new());
-        let mut coord = DualBrainCoordinator::new(config, llm, solver, sink)
-            .with_clock(timeout_jump_clock_fn);
+        let mut coord =
+            DualBrainCoordinator::new(config, llm, solver).with_clock(timeout_jump_clock_fn);
         // 安全系统状态（默认态 SOC=0 会触发 Fatal 校验失败——同另一测试模块
         // safe_state 的取值，此处内联）。
         let state = RealtimeState {
@@ -693,29 +701,41 @@ mod w23_bounded_llm_tests {
             current_price: 0.5,
             load_demand: None,
         };
-        // 阶段 1：成功慢路径（AI-02 赋值生效）。
-        let r1 = coord.execute(&state, 0).expect("slow path ok");
-        assert_eq!(r1.path_type, PathType::SlowPath);
+        // 阶段 1：成功慢路径 → Proposal，并经 mark_committed 登记基线
+        //（蓝图 40 WP-40.3：降级只回放已提交计划）。
+        let r1 = coord.execute(&state, 0);
+        let DecisionOutcome::Proposal(p1) = &r1 else {
+            panic!("slow path 必须产出 Proposal: {r1:?}");
+        };
+        assert_eq!(p1.path, DecisionPath::Slow);
+        coord.mark_committed(p1);
         assert!(
-            coord.last_successful_schedule.is_some(),
-            "AI-02 必须记录上次成功决策"
+            coord.last_committed_schedule.is_some(),
+            "mark_committed 必须登记降级基线"
         );
         // 阶段 2：时钟跳变 → LLM 真超时。慢路径间隔 300s 用 now_ms 拉开。
         TIMEOUT_MODE.store(true, core::sync::atomic::Ordering::SeqCst);
-        let r2 = coord.execute(&state, 310_000).expect("timeout #1");
-        assert_eq!(r2.path_type, PathType::FastPath, "首次超时应回退 fast-path");
-        let r3 = coord.execute(&state, 620_000).expect("degraded");
-        assert_eq!(
-            r3.path_type,
-            PathType::Degraded,
-            "连续超时必须降级（AI-02）"
+        let r2 = coord.execute(&state, 310_000);
+        assert!(
+            matches!(&r2, DecisionOutcome::Proposal(p) if p.path == DecisionPath::Fallback),
+            "首次超时应回退 fast-path（Fallback）：{r2:?}"
         );
+        let r3 = coord.execute(&state, 620_000);
+        let DecisionOutcome::Proposal(p3) = &r3 else {
+            panic!("连续超时必须降级产出 Proposal: {r3:?}");
+        };
+        assert_eq!(p3.path, DecisionPath::Degraded, "连续超时必须降级（AI-02）");
         assert!(coord.degraded, "degraded 标记必须置位（供上层告警）");
-        let same_sched = r1.schedule.schedule.len() == r3.schedule.schedule.len()
-            && r1.schedule.schedule.iter().zip(&r3.schedule.schedule).all(|(a, b)| {
-                a.period == b.period && (a.net_power_kw - b.net_power_kw).abs() < 1e-9
-            });
-        assert!(same_sched, "降级必须复用上次成功调度（AI-02）");
+        let same_sched = p1.schedule.schedule.len() == p3.schedule.schedule.len()
+            && p1
+                .schedule
+                .schedule
+                .iter()
+                .zip(&p3.schedule.schedule)
+                .all(|(a, b)| {
+                    a.period == b.period && (a.net_power_kw - b.net_power_kw).abs() < 1e-9
+                });
+        assert!(same_sched, "降级必须复用上次已提交调度（AI-02 + WP-40.3）");
         TIMEOUT_MODE.store(false, core::sync::atomic::Ordering::SeqCst);
     }
 

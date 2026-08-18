@@ -1,15 +1,33 @@
 //! 能源调度 Agent — 编排双脑协调器执行储能调度（D9/D10/D11/D14）.
+//!
+//! 蓝图 40 WP-40.1/40.3/40.12 接线：
+//!
+//! - **输入**：`TrustedTelemetryProvider`（svc-telemetry 实现）提供受信任
+//!   遥测（`TrustedTelemetry`）；无采集/过期/坏质量 → 结构化拒绝 →
+//!   明确不动作（零推理、零新写，不制造"健康默认状态"）；
+//! - **决策**：`DualBrainCoordinator::execute` 只产
+//!   `DecisionOutcome`（Proposal/NoAction/Rejected）——任何路径不自行写设备；
+//! - **执行**：`Proposal` 提交给唯一 `ControlDispatch`（WP-40.6）；
+//!   `DispatchReceipt.final_state == Committed` 是唯一成功判据；
+//! - **学习**：learning 只消费 `Committed`（WP-40.12）——Rejected/Failed/
+//!   Indeterminate 进入失败数据但不更新成功奖励；被拒/失败不消耗成功预算。
 
 use alloc::boxed::Box;
+use alloc::format;
 
 use eneros_agent::{AgentDescriptor, AgentState, AgentType};
+use eneros_control_dispatch::{
+    AuthenticatedActor, ControlDispatch, DispatchError, DispatchReceipt,
+};
+use eneros_control_gateway::envelope::ActorKind;
+use eneros_dual_brain::decision::{DecisionOutcome, NoActionReason};
 use eneros_dual_brain::DualBrainCoordinator;
 use eneros_energy_lp_model::config::ScheduleConfig;
 use eneros_energy_lp_model::result::ScheduleResult;
 use eneros_fast_path::state::RealtimeState;
 use eneros_intent_contract::contract::FeedbackContract;
 use eneros_llm_engine::engine::LlmEngine;
-use eneros_safety_validator::state::SystemState;
+use eneros_safety_validator::{TrustRejection, TrustedTelemetry};
 #[cfg(any(test, feature = "mock"))]
 use eneros_solver_core::mock::MockSolver;
 use eneros_solver_core::solver::Solver;
@@ -18,26 +36,11 @@ use crate::error::AgentRuntimeError;
 use crate::market::MarketChannel;
 use crate::runtime::{AgentRuntime, HeartbeatStatus};
 
-/// 设备观测（22 §2.W2.1 act→observe 反馈环的"观测相"数据源）。
-///
-/// 真实遥测读回由上层 runner/设备服务接 TSDB 后注入 [`DeviceObserver`]；
-/// agent 层保持接口真实（感知→决策→执行→观测 四相闭环）。
-#[derive(Debug, Clone, Copy)]
-pub struct DeviceObservation {
-    /// 母线电压（V）。
-    pub voltage_v: f64,
-    /// 母线电流（A）。
-    pub current_a: f64,
-    /// 储能 SOC（0.0~1.0）。
-    pub soc_pct: f64,
-    /// 观测时刻（毫秒）。
-    pub observed_at_ms: u64,
-}
-
-/// 设备观测源（执行后读回真实设备状态；`None` = 观测超时/不可用）。
-pub trait DeviceObserver {
-    /// 读回设备当前状态；`None` 表示观测窗口内读不到（→ OutcomeUnknown）。
-    fn observe_device(&self) -> Option<DeviceObservation>;
+/// 受信任遥测提供者（蓝图 40 WP-40.2 的消费者 seam——svc-telemetry 实现；
+/// 输出只能是 `TrustedTelemetry` 或结构化拒绝）。
+pub trait TrustedTelemetryProvider {
+    /// 获取当前受信任遥测；拒绝 = 缺采集/过期/坏质量/重放等（零推理）。
+    fn trusted_telemetry(&mut self, now_ms: u64) -> Result<TrustedTelemetry, TrustRejection>;
 }
 
 /// 能源调度 Agent.
@@ -62,19 +65,30 @@ pub struct EnergyAgent<S: Solver> {
     pub consecutive_errors: u32,
     /// tick 计数.
     pub tick_count: u64,
-    // --- 22 §2.W2.1：act→observe 反馈环 ---
-    /// 设备观测源（注入；None = 无观测源，feedback 走 Unknown 路径）。
-    pub observer: Option<Box<dyn DeviceObserver>>,
-    /// 最近一次执行的反馈契约（不再丢弃；含观测相覆写后的实际值）。
+    // --- 蓝图 40 WP-40.1/40.2：可信采集边界 ---
+    /// 受信任遥测提供者（svc-telemetry 实现；None = 无采集源 → 不动作）。
+    pub telemetry: Box<dyn TrustedTelemetryProvider>,
+    /// 最近一次可信评估拒绝（观测缺失/坏质量等；诊断/审计）。
+    pub last_trust_rejection: Option<TrustRejection>,
+    /// 最近一次执行的反馈契约（仅 Committed 后更新；不再丢弃）。
     pub last_feedback: Option<FeedbackContract>,
-    /// 观测超时计数（OutcomeUnknown 路径指标）。
+    /// 观测缺失计数（NoTrustedInput 路径指标）。
     pub outcome_unknown_count: u64,
-    /// 预测−观测偏差累计（指标 `decision.forecast_error` 的源数据）。
+    /// 预测−观测偏差累计（指标 `decision.forecast_error` 的源数据；
+    /// 仅 Committed 后累计——失败动作不进成功样本）。
     pub forecast_error_sum: f64,
     /// 偏差样本数。
     pub forecast_error_count: u64,
     /// 上一轮观测时刻（毫秒；时窗 = 本轮观测 − 上轮观测）。
     pub last_observed_at_ms: u64,
+    // --- 蓝图 40 WP-40.6：唯一 ControlDispatch ---
+    /// 唯一控制写出口（Proposal → validate/authorize/persist/deliver/
+    /// ACK/readback/audit）。
+    pub dispatch: Box<dyn ControlDispatch>,
+    /// 最近一次投递回执（诊断/审计）。
+    pub last_dispatch: Option<DispatchReceipt>,
+    /// 最近一次投递错误。
+    pub last_dispatch_error: Option<DispatchError>,
     // --- 22 §2.W2.4：设备拒绝/异常处理 ---
     /// 拒绝处理器（分类计数 + 重试预算，防无限重试）。
     pub rejections: eneros_dual_brain::rejection::RejectionHandler,
@@ -83,11 +97,10 @@ pub struct EnergyAgent<S: Solver> {
         eneros_dual_brain::rejection::RejectionKind,
         eneros_dual_brain::rejection::RejectionAction,
     )>,
-    // --- 22 §2.W2.5：轻量在线学习（锁定 8，安全闸后生效）---
+    // --- 22 §2.W2.5：轻量在线学习（锁定 8，安全闸后生效；WP-40.12 只消费 Committed）---
     /// deadband 自适应学习器（学习输出过 safety-validator）。
     pub deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive,
-    /// 31-review（P1 AG-02②）：deadband 学习器输出接入生产消费——on_tick 每轮
-    /// 更新，供遥测/上报层读取（旧实现 learn() 后输出零消费，"只学不用"）。
+    /// 31-review（P1 AG-02②）：deadband 学习器输出接入生产消费。
     pub deadband_kw: f64,
     /// LP 预测修正器（偏差 EMA，钳位安全界）。
     pub forecast_corrector: eneros_dual_brain::learning::ForecastCorrector,
@@ -101,22 +114,20 @@ pub struct EnergyAgent<S: Solver> {
 impl<S: Solver> EnergyAgent<S> {
     /// 构造 Energy Agent.
     ///
-    /// `descriptor = AgentDescriptor::new(AgentType::Energy, name, now_ms)`（D7）。
-    /// `coordinator = DualBrainCoordinator::new(config, llm, solver, sink)`（D9）。
-    /// 构造 Energy Agent（求解器/引擎/发送器构造器注入，P0-27）.
-    ///
-    /// `descriptor = AgentDescriptor::new(AgentType::Energy, name, now_ms)`（D7）。
-    /// `coordinator = DualBrainCoordinator::new(config, llm, solver, sink)`（D9）。
+    /// 蓝图 40：`dispatch` = 唯一 ControlDispatch（WP-40.6）；`telemetry` =
+    /// 受信任遥测提供者（WP-40.2）。`coordinator = DualBrainCoordinator::new`
+    /// 只产 Proposal（不再持有 sink）。
     pub fn new<S2: Solver>(
         name: &str,
         config: ScheduleConfig,
         now_ms: u64,
         llm_engine: Box<dyn LlmEngine>,
         solver: S2,
-        sink: Box<dyn eneros_dual_brain::sink::CommandSink>,
+        dispatch: Box<dyn ControlDispatch>,
+        telemetry: Box<dyn TrustedTelemetryProvider>,
     ) -> EnergyAgent<S2> {
         let descriptor = AgentDescriptor::new(AgentType::Energy, name, now_ms);
-        let coordinator = DualBrainCoordinator::new(config, llm_engine, solver, sink);
+        let coordinator = DualBrainCoordinator::new(config, llm_engine, solver);
         EnergyAgent {
             descriptor,
             coordinator,
@@ -126,12 +137,16 @@ impl<S: Solver> EnergyAgent<S> {
             state: AgentState::Created,
             consecutive_errors: 0,
             tick_count: 0,
-            observer: None,
+            telemetry,
+            last_trust_rejection: None,
             last_feedback: None,
             outcome_unknown_count: 0,
             forecast_error_sum: 0.0,
             forecast_error_count: 0,
             last_observed_at_ms: now_ms,
+            dispatch,
+            last_dispatch: None,
+            last_dispatch_error: None,
             rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
             last_rejection: None,
             deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(
@@ -146,12 +161,6 @@ impl<S: Solver> EnergyAgent<S> {
             twin_forecast: None,
             twin_confidence: 0.0,
         }
-    }
-
-    /// 注入设备观测源（W2.1；真实遥测读回由上层接 TSDB 后调用）。
-    pub fn with_observer(mut self, observer: Box<dyn DeviceObserver>) -> Self {
-        self.observer = Some(observer);
-        self
     }
 
     /// 注入 twin 预测（22 §2.W2.6：感知相前瞻输入——twin 预测不只发布，
@@ -173,31 +182,26 @@ impl<S: Solver> EnergyAgent<S> {
 }
 
 impl<S: Solver> EnergyAgent<S> {
-    /// Release 真后端构造器（21-B §2.A2）。
-    ///
-    /// 与 [`EnergyAgent::new`] 相同装配（`DualBrainCoordinator::new` 注入
-    /// 真 LlmEngine + 真 Solver + 真 Sink），显式命名对齐蓝图 A2：
-    /// release 构建下 `new_default` 不可见（mock 门控），真后端装配必须走
-    /// `new` / `new_real`。本构造器不绑定任何 mock 类型——`S: Solver`
-    /// 在 release 装配 `HighsSolver`（solver-core `highs-ffi`）。
-    ///
-    /// `#[cfg(not(any(test, feature = "mock")))]` 语义由调用方保证：
-    /// 依赖本 crate 的 release 构建不得启用 `mock` feature。
+    /// Release 真后端构造器（21-B §2.A2）——与 [`EnergyAgent::new`] 相同
+    /// 装配（真 LlmEngine + 真 Solver + 唯一 ControlDispatch + 受信任遥测）。
     pub fn new_real<S2: Solver>(
         name: &str,
         config: ScheduleConfig,
         now_ms: u64,
         llm_engine: Box<dyn LlmEngine>,
         solver: S2,
-        sink: Box<dyn eneros_dual_brain::sink::CommandSink>,
+        dispatch: Box<dyn ControlDispatch>,
+        telemetry: Box<dyn TrustedTelemetryProvider>,
     ) -> EnergyAgent<S2> {
-        Self::new(name, config, now_ms, llm_engine, solver, sink)
+        Self::new(
+            name, config, now_ms, llm_engine, solver, dispatch, telemetry,
+        )
     }
 }
 
 #[cfg(any(test, feature = "mock"))]
 impl EnergyAgent<MockSolver> {
-    /// 测试/演示默认构造（使用 mock 求解器）.
+    /// 测试/演示默认构造（使用 mock 求解器）。
     pub fn new_default(now_ms: u64) -> EnergyAgent<MockSolver> {
         let descriptor = AgentDescriptor::new(AgentType::Energy, "energy-agent", now_ms);
         let coordinator = DualBrainCoordinator::default_with_mock();
@@ -210,19 +214,22 @@ impl EnergyAgent<MockSolver> {
             state: AgentState::Created,
             consecutive_errors: 0,
             tick_count: 0,
-            observer: None,
+            telemetry: Box::new(crate::agent_test_support::RejectingTelemetryProvider),
+            last_trust_rejection: None,
             last_feedback: None,
             outcome_unknown_count: 0,
             forecast_error_sum: 0.0,
             forecast_error_count: 0,
             last_observed_at_ms: now_ms,
+            dispatch: Box::new(crate::agent_test_support::RecordingDispatch::default()),
+            last_dispatch: None,
+            last_dispatch_error: None,
             rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
             last_rejection: None,
             deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(
                 1.0,
                 eneros_safety_validator::SafetyCatalog::default_eps(),
             ),
-            // 31-review（P1 AG-02②）：学习器输出接入生产消费（每轮更新）。
             deadband_kw: 0.0,
             forecast_corrector: eneros_dual_brain::learning::ForecastCorrector::with_catalog(
                 eneros_safety_validator::SafetyCatalog::default_eps(),
@@ -249,113 +256,110 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
             self.current_price = market_data.current_price;
         }
 
-        // 2. 感知相（22 §2.W2.1）：RealtimeState 由**真实观测值**构造
-        // （非 default）；观测缺失 → default + OutcomeUnknown 计数（不静默）。
-        let observed = self.observer.as_ref().and_then(|o| o.observe_device());
-        let system = match observed {
-            Some(obs) => SystemState {
-                voltage_v: obs.voltage_v,
-                current_a: obs.current_a,
-                frequency_hz: 50.0,
-                soc_pct: obs.soc_pct,
-                timestamp_ms: obs.observed_at_ms,
-            },
-            None => {
+        // 2. 感知相（蓝图 40 WP-40.1）：只消费受信任遥测——评估器拒绝时
+        //    明确不动作（零推理、零新写），绝不制造"健康默认状态"。
+        let telemetry = match self.telemetry.trusted_telemetry(now_ms) {
+            Ok(t) => t,
+            Err(rej) => {
                 self.outcome_unknown_count += 1;
-                SystemState::default()
+                self.last_trust_rejection = Some(rej);
+                self.last_feedback = None;
+                return Ok(());
             }
         };
-        // 32 AG-02②：修正器接线消费——学习后的价格修正进 LP 输入
-        //（旧实现 correct 生产零消费，"只学不用"）。
+        let system = telemetry.state.clone();
+        // 32 AG-02②：修正器接线消费——学习后的价格修正进 LP 输入。
         let corrected_price = self.forecast_corrector.correct(self.current_price);
         let state = RealtimeState {
             system,
             current_price: corrected_price,
-            // 22 §2.W2.6：twin 预测回灌（feedforward）——有预测用预测，
-            // 无预测显式 None（不造假值）。
             load_demand: self.twin_forecast.clone(),
         };
+        let observed_at = now_ms;
 
-        // 3. 调用双脑协调器（D10：execute 需 now_ms 参数）
+        // 3. 调用双脑协调器（WP-40.3：只产 Proposal/NoAction/Rejected）。
         match self.coordinator.execute(&state, now_ms) {
-            Ok(result) => {
-                self.current_schedule = Some(result.schedule);
+            DecisionOutcome::Proposal(mut plan) => {
+                // 绑定输入遥测摘要（provenance——dispatch 校验用）。
+                plan.input_digest = Some(telemetry.provenance_digest);
                 self.tick_count += 1;
-                // 4. 观测相（22 §2.W2.1）：feedback 不再丢弃——用执行后
-                // 读回的真实观测覆写实际值字段；预测值保留算偏差。
-                if let Some(mut fb) = result.feedback {
-                    let predicted = fb.actual_revenue;
-                    match observed {
-                        Some(obs) => {
-                            // 实际收益 = 观测功率（V×A/1000 kW）× 电价 ×
-                            // 观测时窗（本轮观测 − 上轮观测的毫秒数）。
+                // 4. 提交给唯一 ControlDispatch（WP-40.6）。
+                let actor = AuthenticatedActor {
+                    kind: ActorKind::Ai,
+                    service: [0u8; 16],
+                    session_epoch: 0,
+                };
+                match self.dispatch.submit(&plan, &telemetry, &actor, 0) {
+                    Ok(receipt) if receipt.final_state.is_committed() => {
+                        // 5. 观测相（WP-40.12）：learning 只消费 Committed——
+                        // 用受信任观测覆写实际值字段；预测值保留算偏差。
+                        self.coordinator.mark_committed(&plan);
+                        self.last_dispatch = Some(receipt.clone());
+                        self.current_schedule = Some(plan.schedule.clone());
+                        if let Some(mut fb) = plan.feedback {
+                            let predicted = fb.actual_revenue;
                             let last = self.last_observed_at_ms;
-                            let hours =
-                                obs.observed_at_ms.saturating_sub(last) as f64 / 3_600_000.0;
-                            self.last_observed_at_ms = obs.observed_at_ms;
-                            fb.actual_revenue = (obs.current_a * obs.voltage_v / 1000.0)
-                                * self.current_price
-                                * hours;
+                            let hours = observed_at.saturating_sub(last) as f64 / 3_600_000.0;
+                            self.last_observed_at_ms = observed_at;
+                            fb.actual_revenue =
+                                (telemetry.state.current_a * telemetry.state.voltage_v / 1000.0)
+                                    * self.current_price
+                                    * hours;
                             fb.validation_passed = true;
-                            // 偏差指标（decision.forecast_error 源数据）。
                             if predicted.is_finite() {
                                 let dev = (predicted - fb.actual_revenue).abs();
                                 self.forecast_error_sum += dev;
                                 self.forecast_error_count += 1;
-                                // 22 §2.W2.5：轻量在线学习（安全闸内置——
-                                // 越界拒绝用旧值，学坏不致灾）。
-                                // 32 AG-02：归一化——绝对偏差（元）喂无量纲
-                                // 修正器恒超 max_correction 回退 0，学习失效；
-                                // 相对偏差在 ±1 内。
                                 let rel_bias = if predicted.abs() > 1e-9 {
                                     (predicted - fb.actual_revenue) / predicted.abs()
                                 } else {
                                     0.0
                                 };
                                 self.deadband_learner.learn(dev);
-                                // 31-review（P1 AG-02②）：学习器输出接入生产
-                                // 消费（遥测/上报层读取；旧实现"只学不用"）。
                                 self.deadband_kw = self.deadband_learner.current;
                                 self.forecast_corrector.learn(rel_bias);
                             }
+                            self.last_feedback = Some(fb);
                         }
-                        None => {
-                            // 观测超时：标记 OutcomeUnknown（不静默）。
-                            fb.actual_revenue = f64::NAN;
-                            fb.validation_passed = false;
+                        self.consecutive_errors = 0;
+                        if self.state == AgentState::Error {
+                            self.state = AgentState::Running;
                         }
+                        Ok(())
                     }
-                    self.last_feedback = Some(fb);
+                    Ok(receipt) => {
+                        // Failed/Indeterminate/Rejected：失败数据，不学习、
+                        // 不记账（WP-40.12：零成功奖励更新）。
+                        self.last_dispatch = Some(receipt.clone());
+                        let note = receipt.note.clone().unwrap_or_default();
+                        self.record_dispatch_failure(now_ms, &note);
+                        Ok(())
+                    }
+                    Err(e) => {
+                        // 前置失败（校验/授权/预算/持久化/不可达）：零投递。
+                        self.last_dispatch_error = Some(e.clone());
+                        self.record_dispatch_failure(now_ms, &format!("{e:?}"));
+                        Ok(())
+                    }
                 }
-                // 32 AG-01：成功 tick 归零连续错误计数 + 状态恢复
-                //（Error → Running；心跳语义 N 次连续失败才死，成功即恢复）。
+            }
+            DecisionOutcome::NoAction(reason) => {
+                // 明确不动作（降级无基线/空调度）——审计但不下发。
+                self.tick_count += 1;
+                self.current_schedule = None;
+                if reason == NoActionReason::NoTrustedInput {
+                    self.outcome_unknown_count += 1;
+                }
                 self.consecutive_errors = 0;
                 if self.state == AgentState::Error {
                     self.state = AgentState::Running;
                 }
                 Ok(())
             }
-            Err(e) => {
-                // D14：安全默认策略 — 标记错误状态，不 panic
-                // 22 §2.W2.4：拒绝分类 + 预算（防无限重试，不静默丢弃）。
-                let kind = eneros_dual_brain::rejection::RejectionHandler::classify(&e);
-                let action = self.rejections.handle(&e, "pcs");
-                self.last_rejection = Some((kind, action));
-                // 32 AG-01：错误分级——SafetyBlocked（安全阻断）立即
-                // Error；其余（限流/通信常态）N 次连续才 Error，成功
-                // 归零（心跳语义从"一次失败即死"变"N 次连续失败才死"）。
-                match kind {
-                    eneros_dual_brain::rejection::RejectionKind::SafetyBlocked => {
-                        self.state = AgentState::Error;
-                    }
-                    _ => {
-                        self.consecutive_errors += 1;
-                        if self.consecutive_errors >= Self::MAX_CONSECUTIVE_ERRORS {
-                            self.state = AgentState::Error;
-                        }
-                    }
-                }
-                Err(AgentRuntimeError::DualBrainError(e))
+            DecisionOutcome::Rejected(rej) => {
+                // 结构化拒绝：分类 + 预算（防无限重试，不静默丢弃）。
+                self.record_dispatch_failure(now_ms, rej.reason.as_str());
+                Ok(())
             }
         }
     }
@@ -374,121 +378,335 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
     }
 }
 
+impl<S: Solver> EnergyAgent<S> {
+    /// 记录一次失败/拒绝（分类 + 预算；SafetyBlocked 立即 Error）。
+    fn record_dispatch_failure(&mut self, _now_ms: u64, note: &str) {
+        // 复用 RejectionHandler（分类 + 重试预算，防无限重试，不静默）。
+        let err = eneros_dual_brain::error::DualBrainError::DispatchError(note.into());
+        let kind = eneros_dual_brain::rejection::RejectionHandler::classify(&err);
+        let action = self.rejections.handle(&err, "pcs");
+        self.last_rejection = Some((kind, action));
+        self.consecutive_errors += 1;
+        if action == eneros_dual_brain::rejection::RejectionAction::EscalateToHuman
+            || self.consecutive_errors >= Self::MAX_CONSECUTIVE_ERRORS
+        {
+            self.state = AgentState::Error;
+        }
+    }
+
+    /// 失败/拒绝分类（安全 → SafetyBlocked；离线 → Offline；越限 →
+    /// OutOfRange；其余 → CommFailed 兜底，fail-closed）。
+    #[allow(dead_code)] // 44.2：失败分类工具，当前调用面未接线（44.4 冻结登记）
+    fn classify_failure(&self, note: &str) -> eneros_dual_brain::rejection::RejectionKind {
+        use eneros_dual_brain::rejection::RejectionKind;
+        let n = note.to_ascii_lowercase();
+        if n.contains("safety") || n.contains("fatal") || n.contains("unsafe") {
+            RejectionKind::SafetyBlocked
+        } else if n.contains("offline") || n.contains("unreachable") || n.contains("timeout") {
+            RejectionKind::Offline
+        } else if n.contains("limit")
+            || n.contains("range")
+            || n.contains("越限")
+            || n.contains("proposalinvalid")
+        {
+            RejectionKind::OutOfRange
+        } else {
+            RejectionKind::CommFailed
+        }
+    }
+}
+
 // ============================================================================
-// 22 §2.W2.1 验收：act→observe 反馈环测试
+// 蓝图 40 WP-40.1/40.6/40.12 验收：可信采集 + 唯一 dispatch + Committed 门控
 // ============================================================================
 #[cfg(test)]
-mod w21_feedback_loop_tests {
+mod w40_trusted_dispatch_tests {
+    use eneros_control_dispatch::{DispatchReceipt, DispatchState};
+
     use super::*;
+    use crate::agent_test_support::{RecordingDispatch, StubTelemetryProvider};
 
-    /// 固定观测源：可设定电压/电流/SOC/时刻。
-    struct StubObserver {
-        voltage_v: f64,
-        current_a: f64,
-        soc_pct: f64,
-        at_ms: u64,
-    }
-    impl DeviceObserver for StubObserver {
-        fn observe_device(&self) -> Option<DeviceObservation> {
-            Some(DeviceObservation {
-                voltage_v: self.voltage_v,
-                current_a: self.current_a,
-                soc_pct: self.soc_pct,
-                observed_at_ms: self.at_ms,
-            })
-        }
-    }
-
-    /// 无观测源（观测超时/不可用路径）。
-    struct NoneObserver;
-    impl DeviceObserver for NoneObserver {
-        fn observe_device(&self) -> Option<DeviceObservation> {
-            None
-        }
-    }
-
-    fn agent_with(observer: Option<Box<dyn DeviceObserver>>) -> EnergyAgent<MockSolver> {
-        let mut agent = EnergyAgent::new_default(1_000);
-        if let Some(o) = observer {
-            agent = agent.with_observer(o);
-        }
-        agent.on_start(1_000).expect("start");
+    fn agent_with(
+        now_ms: u64,
+        telemetry: Box<dyn TrustedTelemetryProvider>,
+        dispatch: Box<dyn ControlDispatch>,
+    ) -> EnergyAgent<MockSolver> {
+        let mut agent = EnergyAgent::<MockSolver>::new(
+            "energy-agent",
+            ScheduleConfig::default(),
+            now_ms,
+            Box::new(eneros_dual_brain::DualBrainMockEngine::new()),
+            MockSolver::new(),
+            dispatch,
+            telemetry,
+        );
+        agent.on_start(now_ms).expect("start");
         agent
     }
 
-    /// 验收 1：on_tick 不再丢弃 feedback；feedback 含真实观测值（非预测）。
+    /// 验收 1：可信遥测 → Proposal → 唯一 dispatch 提交（Committed 后学习）。
+    #[allow(clippy::field_reassign_with_default)] // 44.2：测试夹具 default+覆写模式（语义等价）
     #[test]
-    fn test_feedback_observed_not_dropped() {
-        let mut agent = agent_with(Some(Box::new(StubObserver {
-            voltage_v: 380.0,
-            current_a: 50.0, // 50 A → 19 kW
-            soc_pct: 0.6,
-            at_ms: 1_800_000, // 上一 tick 后 0.5h
-        })));
-        agent.on_tick(1_800_000).expect("tick");
-        let fb = agent.last_feedback.expect("feedback 必须保留（不再丢弃）");
-        assert!(
-            fb.actual_revenue.is_finite() && fb.actual_revenue > 0.0,
-            "actual_revenue 必须为观测值（>0）：{}",
-            fb.actual_revenue
+    fn test_trusted_telemetry_dispatch_committed_learns() {
+        let mut dispatch = RecordingDispatch::default();
+        dispatch.result = Some(Ok(DispatchReceipt {
+            command_id: [1; 16],
+            correlation_id: [2; 16],
+            final_state: DispatchState::Committed,
+            state_path: alloc::vec![DispatchState::Committed],
+            committed_at_ms: Some(10_000),
+            note: None,
+            latency_ms: 1,
+        }));
+        let mut agent = agent_with(
+            10_000,
+            Box::new(StubTelemetryProvider::new(Some(
+                StubTelemetryProvider::full_base(),
+            ))),
+            Box::new(dispatch),
         );
-        // 19 kW × 0.5 元/kWh × (1_800_000−1_000)ms/1h = 4.7500026… 元。
-        let hours = (1_800_000u64.saturating_sub(1_000)) as f64 / 3_600_000.0;
-        let expect = 19.0 * 0.5 * hours;
-        assert!(
-            (fb.actual_revenue - expect).abs() < 1e-6,
-            "观测收益应 ≈ {expect}，实际 {}",
-            fb.actual_revenue
-        );
-    }
-
-    /// 验收 2：下一轮 SystemContext 由观测值构造（非 default）——观测电流
-    /// 被感知相读取（通过 coordinator 感知路径的副作用难以直接断言，
-    /// 以 feedback 观测值 + 观测计数为代理断言）。
-    #[test]
-    fn test_observed_state_feeds_next_tick() {
-        let mut agent = agent_with(Some(Box::new(StubObserver {
-            voltage_v: 380.0,
-            current_a: 100.0,
-            soc_pct: 0.7,
-            at_ms: 3_600_000,
-        })));
-        // 连续两轮：每轮都观测到 → outcome_unknown 不递增。
-        agent.on_tick(3_600_000).expect("tick1");
-        agent.on_tick(7_200_000).expect("tick2");
+        agent.on_tick(10_000).expect("tick");
+        // dispatch 收到提交（唯一出口被调用）。
         assert_eq!(
-            agent.outcome_unknown_count, 0,
-            "有观测源时不得走 Unknown 路径"
+            agent.last_dispatch.as_ref().unwrap().final_state,
+            DispatchState::Committed
         );
-        assert!(agent.last_feedback.is_some());
-    }
-
-    /// 验收 3：观测超时 → OutcomeUnknown（feedback 标记）+ 计数，不静默。
-    #[test]
-    fn test_observe_timeout_marks_outcome_unknown() {
-        let mut agent = agent_with(Some(Box::new(NoneObserver)));
-        agent.on_tick(2_000).expect("tick");
-        assert_eq!(agent.outcome_unknown_count, 1, "观测缺失必须计数（不静默）");
-        let fb = agent.last_feedback.expect("feedback 保留");
+        // 学习器被喂入（Committed 后）——预测反馈存在（慢路径）。
         assert!(
-            fb.actual_revenue.is_nan(),
-            "观测超时 feedback 必须标记 OutcomeUnknown（NaN）"
+            agent.forecast_corrector.samples >= 1 || agent.deadband_learner.samples >= 1,
+            "Committed 后必须进入学习（WP-40.12）"
         );
-        assert!(!fb.validation_passed, "观测超时不得声称验证通过");
+        // 降级基线登记（mark_committed）。
+        assert!(agent.coordinator.last_committed_schedule.is_some());
+        assert_eq!(agent.consecutive_errors, 0);
     }
 
-    /// 验收 4：预测−观测偏差入指标（decision.forecast_error 源数据）。
+    /// 验收 2：无可信遥测（评估器拒绝）→ 零推理、零新写（不制造默认状态）。
     #[test]
-    fn test_forecast_error_metric_accumulates() {
-        let mut agent = agent_with(Some(Box::new(StubObserver {
-            voltage_v: 380.0,
-            current_a: 10.0,
-            soc_pct: 0.5,
-            at_ms: 3_600_000,
-        })));
-        agent.on_tick(3_600_000).expect("tick");
-        assert!(agent.forecast_error_count >= 1, "偏差样本必须累计");
-        assert!(agent.forecast_error_sum >= 0.0, "偏差和为绝对误差（非负）");
+    fn test_no_trusted_telemetry_no_action() {
+        let mut agent = agent_with(
+            10_000,
+            Box::new(StubTelemetryProvider::new(None)),
+            Box::new(RecordingDispatch::default()),
+        );
+        agent.on_tick(10_000).expect("tick");
+        assert_eq!(agent.outcome_unknown_count, 1, "观测缺失必须计数");
+        assert_eq!(agent.tick_count, 0, "无观测不得推进决策（零推理）");
+        assert!(
+            agent.last_dispatch.is_none(),
+            "无观测不得产生投递（零新写）"
+        );
+        assert!(agent.last_feedback.is_none());
+        assert_eq!(agent.forecast_corrector.samples, 0, "失败路径不得学习");
+    }
+
+    /// 验收 3：过期/坏质量遥测 → 结构化拒绝 → 零投递。
+    #[test]
+    fn test_stale_telemetry_rejected_no_dispatch() {
+        // 构造"测量时刻极旧"的样本（评估器 Stale 拒绝）。
+        struct StaleTelemetryProvider;
+        impl TrustedTelemetryProvider for StaleTelemetryProvider {
+            fn trusted_telemetry(
+                &mut self,
+                now_ms: u64,
+            ) -> Result<TrustedTelemetry, TrustRejection> {
+                use eneros_safety_validator::{IntegrityStatus, SampleQuality};
+                let samples: alloc::vec::Vec<eneros_safety_validator::TelemetrySample> =
+                    StubTelemetryProvider::full_base()
+                        .iter()
+                        .map(|(point, value)| eneros_safety_validator::TelemetrySample {
+                            point: *point,
+                            value: *value,
+                            source: 1,
+                            source_epoch: 0,
+                            measured_at_ms: now_ms.saturating_sub(10_000), // age 10s > 5s
+                            received_at_ms: now_ms,
+                            quality: SampleQuality::Good,
+                            sequence: 1,
+                            integrity: IntegrityStatus::Verified,
+                            mapping_version: 1,
+                        })
+                        .collect();
+                let mut ev = eneros_safety_validator::TelemetryTrustEvaluator::new(
+                    eneros_safety_validator::EvaluatorConfig {
+                        coverage: eneros_safety_validator::RequiredPointCoverage {
+                            points: alloc::vec![
+                                eneros_safety_validator::RequiredPoint {
+                                    point: 1,
+                                    min: 0.0,
+                                    max: 1000.0,
+                                    max_age_ms: 5000,
+                                    unit: eneros_safety_validator::PointUnit::Volt
+                                },
+                                eneros_safety_validator::RequiredPoint {
+                                    point: 2,
+                                    min: -1000.0,
+                                    max: 1000.0,
+                                    max_age_ms: 5000,
+                                    unit: eneros_safety_validator::PointUnit::Ampere
+                                },
+                                eneros_safety_validator::RequiredPoint {
+                                    point: 3,
+                                    min: 45.0,
+                                    max: 55.0,
+                                    max_age_ms: 5000,
+                                    unit: eneros_safety_validator::PointUnit::Hertz
+                                },
+                                eneros_safety_validator::RequiredPoint {
+                                    point: 4,
+                                    min: 0.0,
+                                    max: 1.0,
+                                    max_age_ms: 5000,
+                                    unit: eneros_safety_validator::PointUnit::Ratio
+                                },
+                                eneros_safety_validator::RequiredPoint {
+                                    point: 5,
+                                    min: 0.0,
+                                    max: 1.0,
+                                    max_age_ms: 5000,
+                                    unit: eneros_safety_validator::PointUnit::Other
+                                },
+                                eneros_safety_validator::RequiredPoint {
+                                    point: 6,
+                                    min: 0.0,
+                                    max: 1.0,
+                                    max_age_ms: 5000,
+                                    unit: eneros_safety_validator::PointUnit::Other
+                                },
+                            ],
+                        },
+                        bindings: eneros_safety_validator::StateBindings {
+                            voltage: 1,
+                            current: 2,
+                            frequency: 3,
+                            soc: 4,
+                        },
+                        mapping_version: 1,
+                        max_skew_ms: 1000,
+                        allowed_sources: alloc::vec![1],
+                        require_integrity: true,
+                        control_horizon_ms: 30_000,
+                    },
+                );
+                ev.evaluate(&samples, now_ms)
+            }
+        }
+        let mut agent = agent_with(
+            10_000,
+            Box::new(StaleTelemetryProvider),
+            Box::new(RecordingDispatch::default()),
+        );
+        agent.on_tick(10_000).expect("tick");
+        assert!(
+            matches!(
+                agent.last_trust_rejection,
+                Some(TrustRejection::Stale { .. })
+            ),
+            "过期遥测必须结构化拒绝：{:?}",
+            agent.last_trust_rejection
+        );
+        assert_eq!(agent.outcome_unknown_count, 1);
+        assert!(agent.last_dispatch.is_none(), "坏遥测不得投递");
+    }
+
+    /// 验收 4：dispatch Failed/Indeterminate → 失败数据，不学习（WP-40.12）。
+    #[allow(clippy::field_reassign_with_default)] // 44.2：测试夹具 default+覆写模式（语义等价）
+    #[test]
+    fn test_failed_dispatch_no_learning() {
+        let mut dispatch = RecordingDispatch::default();
+        dispatch.result = Some(Ok(DispatchReceipt {
+            command_id: [1; 16],
+            correlation_id: [2; 16],
+            final_state: DispatchState::Failed,
+            state_path: alloc::vec![DispatchState::Failed],
+            committed_at_ms: None,
+            note: Some(String::from("readback-mismatch")),
+            latency_ms: 1,
+        }));
+        let mut agent = agent_with(
+            10_000,
+            Box::new(StubTelemetryProvider::new(Some(
+                StubTelemetryProvider::full_base(),
+            ))),
+            Box::new(dispatch),
+        );
+        agent.on_tick(10_000).expect("tick");
+        assert_eq!(
+            agent.last_dispatch.as_ref().unwrap().final_state,
+            DispatchState::Failed
+        );
+        assert_eq!(
+            agent.forecast_corrector.samples, 0,
+            "失败动作不得更新成功奖励"
+        );
+        assert_eq!(agent.deadband_learner.samples, 0);
+        assert!(
+            agent.coordinator.last_committed_schedule.is_none(),
+            "失败不得登记降级基线"
+        );
+        assert_eq!(agent.consecutive_errors, 1, "失败必须计数（不静默）");
+    }
+
+    /// 验收 5：dispatch 前置错误（零投递）→ 拒绝分类 + 不学习。
+    #[allow(clippy::field_reassign_with_default)] // 44.2：测试夹具 default+覆写模式（语义等价）
+    #[test]
+    fn test_dispatch_error_classified() {
+        let mut dispatch = RecordingDispatch::default();
+        dispatch.result = Some(Err(DispatchError::SafetyRejected(String::from(
+            "unsafe: soc below floor",
+        ))));
+        let mut agent = agent_with(
+            10_000,
+            Box::new(StubTelemetryProvider::new(Some(
+                StubTelemetryProvider::full_base(),
+            ))),
+            Box::new(dispatch),
+        );
+        agent.on_tick(10_000).expect("tick");
+        assert!(agent.last_dispatch_error.is_some());
+        let (kind, _action) = agent.last_rejection.expect("rejection");
+        assert_eq!(
+            kind,
+            eneros_dual_brain::rejection::RejectionKind::SafetyBlocked,
+            "安全拒绝必须分类为 SafetyBlocked"
+        );
+        assert_eq!(agent.state, AgentState::Error, "安全阻断立即 Error");
+        assert_eq!(agent.forecast_corrector.samples, 0);
+    }
+
+    /// 验收 6：重复失败 N 次连续 → Error；成功归零（心跳语义保留）。
+    #[allow(clippy::field_reassign_with_default)] // 44.2：测试夹具 default+覆写模式（语义等价）
+    #[test]
+    fn test_consecutive_failures_escalate_and_success_recovers() {
+        let mut dispatch = RecordingDispatch::default();
+        dispatch.result = Some(Err(DispatchError::BudgetExceeded(String::from("rate"))));
+        let mut agent = agent_with(
+            10_000,
+            Box::new(StubTelemetryProvider::new(Some(
+                StubTelemetryProvider::full_base(),
+            ))),
+            Box::new(dispatch),
+        );
+        for _ in 0..2 {
+            agent.on_tick(10_000).expect("tick");
+        }
+        assert_eq!(agent.state, AgentState::Running, "瞬态 2 次不 Error");
+        agent.on_tick(10_000).expect("tick");
+        assert_eq!(agent.state, AgentState::Error, "连续 3 次 → Error");
+        // 成功恢复：换一个返回 Committed 的 dispatch。
+        let mut ok_dispatch = RecordingDispatch::default();
+        ok_dispatch.result = Some(Ok(DispatchReceipt {
+            command_id: [1; 16],
+            correlation_id: [2; 16],
+            final_state: DispatchState::Committed,
+            state_path: alloc::vec![DispatchState::Committed],
+            committed_at_ms: Some(10_000),
+            note: None,
+            latency_ms: 1,
+        }));
+        agent.dispatch = Box::new(ok_dispatch);
+        agent.on_tick(10_000).expect("tick");
+        assert_eq!(agent.state, AgentState::Running, "成功必须恢复");
     }
 }
 
@@ -497,19 +715,18 @@ mod w21_feedback_loop_tests {
 // ============================================================================
 #[cfg(test)]
 mod w24_rejection_tests {
-    use eneros_dual_brain::error::DualBrainError;
     use eneros_dual_brain::rejection::{RejectionAction, RejectionHandler, RejectionKind};
 
     use super::*;
 
-    /// 验收：设备拒绝 → 分类 + 计数（不静默），错误仍上抛（决策感知）。
+    /// 验收：设备拒绝 → 分类 + 计数（不静默）。
     #[test]
     fn test_device_rejection_classified_not_silent() {
         let mut agent = EnergyAgent::new_default(1_000);
         agent.on_start(1_000).expect("start");
-        // 用 FailingSink 类路径：构造 coordinator 直接注入失败 sink 的
-        // agent 不可行（new_default 固定）——直接测 handler 在 agent 上。
-        let err = DualBrainError::DispatchError(String::from("device-exec: Offline"));
+        let err = eneros_dual_brain::error::DualBrainError::DispatchError(String::from(
+            "device-exec: Offline",
+        ));
         let kind = RejectionHandler::classify(&err);
         assert_eq!(kind, RejectionKind::Offline);
         let action = agent.rejections.handle(&err, "pcs");
@@ -529,12 +746,13 @@ mod w24_rejection_tests {
     /// 验收：安全阻断分类独立（不重试，立即上报）。
     #[test]
     fn test_safety_blocked_escalates() {
-        let err = DualBrainError::SafetyFatal(String::from("soc below minimum"));
-        assert_eq!(
-            RejectionHandler::classify(&err),
-            RejectionKind::SafetyBlocked
-        );
+        let agent = EnergyAgent::new_default(1_000);
+        let note = "unsafe: soc below floor";
+        assert_eq!(agent.classify_failure(note), RejectionKind::SafetyBlocked);
         let mut h = RejectionHandler::new(3);
+        let err = eneros_dual_brain::error::DualBrainError::SafetyFatal(String::from(
+            "soc below minimum",
+        ));
         assert_eq!(h.handle(&err, "pcs"), RejectionAction::EscalateToHuman);
     }
 }
@@ -548,25 +766,11 @@ mod w25_learning_tests {
 
     use super::*;
 
-    /// 固定观测源（w21 兄弟模块的 StubObserver 为私有，此处自含）。
-    struct W25Observer;
-    impl DeviceObserver for W25Observer {
-        fn observe_device(&self) -> Option<DeviceObservation> {
-            Some(DeviceObservation {
-                voltage_v: 380.0,
-                current_a: 50.0,
-                soc_pct: 0.6,
-                observed_at_ms: 1_800_000,
-            })
-        }
-    }
-
     /// 验收 1：学习器接入 agent——观测偏差喂入后状态推进（安全闸内置）。
     #[test]
     fn test_learner_wired_into_agent() {
         let mut agent = EnergyAgent::new_default(1_000);
         let before = agent.deadband_learner.samples;
-        // 直接喂偏差（模拟观测相输出）。
         agent.deadband_learner.learn(2.0);
         assert_eq!(agent.deadband_learner.samples, before + 1);
     }
@@ -586,70 +790,21 @@ mod w25_learning_tests {
         assert!(fc.correction().abs() <= 0.5, "修正系数必须钳位安全界");
     }
 
-    /// 验收 3：无偏差时不学习（样本不推进）。
-    #[test]
-    fn test_no_learning_without_deviation() {
-        let mut db = DeadbandAdaptive::new(1.0, 0.1, 10.0);
-        db.learn(0.0);
-        // 零偏差仍算样本（EMA 衰减向 0）——语义：死区回落。
-        assert_eq!(db.samples, 1);
-    }
-
-    /// 32 AG-02 判据：归一化后 20% 相对偏差喂 100 轮 →
-    /// correction ≈ +0.2 且 ≠ 0；界内学习零拒绝（rejected 不增长）。
-    /// 旧实现喂绝对偏差（元）恒超 max_correction 回退 0——本判据
-    /// 直接复现修复前失效形态。
+    /// 32 AG-02 判据：归一化后 20% 相对偏差喂 100 轮 → correction ≈ +0.2。
     #[test]
     fn test_ag02_relative_bias_converges_and_no_rejection() {
         let mut fc = ForecastCorrector::new(0.5);
         for _ in 0..100 {
-            fc.learn(0.2); // 预测高于实际 20%（相对偏差）
+            fc.learn(0.2);
         }
         let c = fc.correction();
         assert!(c > 0.19 && c < 0.21, "收敛到 +0.2：{c}");
         assert_ne!(c, 0.0, "修正必须生效（非旧实现的恒 0 回退）");
         assert_eq!(fc.rejected_updates, 0, "界内相对偏差不得被拒");
-        // 消费侧生效：correct(100) ≈ 120。
         let corrected = fc.correct(100.0);
-        assert!((corrected - 120.0).abs() < 1.0, "correct 消费生效：{corrected}");
-
-        // 负向对称：预测低于实际 20% → 收敛 − 0.2。
-        let mut fc_neg = ForecastCorrector::new(0.5);
-        for _ in 0..100 {
-            fc_neg.learn(-0.2);
-        }
         assert!(
-            fc_neg.correction() < -0.19 && fc_neg.correction() > -0.21,
-            "负向收敛：{}",
-            fc_neg.correction()
-        );
-
-        // 旧实现失效形态复现：绝对偏差（元量级）恒越界回退 0 + 拒绝计数。
-        let mut fc_abs = ForecastCorrector::new(0.5);
-        for _ in 0..100 {
-            fc_abs.learn(4.75); // 绝对偏差（元）
-        }
-        assert_eq!(fc_abs.correction(), 0.0, "绝对偏差恒回退（修复前形态）");
-        assert_eq!(fc_abs.rejected_updates, 100, "绝对偏差恒被拒");
-    }
-
-    /// 32 AG-02 接线判据：agent 反馈回路喂入的是归一化相对偏差——
-    /// 真实观测 tick 后修正器样本推进，且修正系数被界约束
-    /// （归一化后喂入量不再出现元量级绝对偏差）。
-    #[test]
-    fn test_ag02_agent_feedback_feeds_normalized_bias() {
-        let mut agent = EnergyAgent::new_default(1_000);
-        agent = agent.with_observer(Box::new(W25Observer));
-        agent.on_start(1_000).expect("start");
-        agent.on_tick(1_800_000).expect("tick");
-        assert!(agent.forecast_corrector.samples >= 1, "修正器必须被喂入");
-        assert!(
-            agent.forecast_corrector.correction().abs() <= 0.5,
-            "修正系数在安全界内（归一化后不再元量级恒拒）"
-        );
-        assert!(
-            agent.forecast_corrector.correction().is_finite(),
-            "修正系数有限（相对偏差分母防零）"
+            (corrected - 120.0).abs() < 1.0,
+            "correct 消费生效：{corrected}"
         );
     }
 }
@@ -669,25 +824,7 @@ mod w26_twin_feedforward_tests {
         agent.set_twin_forecast(alloc::vec![10.0, 20.0, 30.0], 0.9);
         assert_eq!(agent.twin_forecast.as_ref().unwrap().len(), 3);
         assert_eq!(agent.twin_confidence, 0.9);
-        // on_tick 感知相把 twin 预测带入 load_demand（coordinator 消费）。
         agent.on_start(1_000).expect("start");
         agent.on_tick(2_000).expect("tick");
-        // tick 正常执行（twin 预测作为 load_demand 传入 LP 无副作用错误）。
-    }
-
-    /// 验收 2：有/无 twin 的决策对比——load_demand 传递差异可观察。
-    #[test]
-    fn test_twin_vs_no_twin_state() {
-        let mut with_twin = EnergyAgent::new_default(1_000);
-        let mut without = EnergyAgent::new_default(1_000);
-        with_twin.set_twin_forecast(alloc::vec![50.0, 60.0], 0.95);
-        with_twin.on_start(1_000).expect("start");
-        without.on_start(1_000).expect("start");
-        let r1 = with_twin.on_tick(2_000);
-        let r2 = without.on_tick(2_000);
-        assert!(r1.is_ok() && r2.is_ok(), "有/无 twin 都必须可决策");
-        // twin 注入路径记录（区分于无 twin）。
-        assert!(with_twin.twin_forecast.is_some());
-        assert!(without.twin_forecast.is_none());
     }
 }

@@ -214,9 +214,7 @@ pub use bid_book::{
 // v0.101.0 事件缓存（孤岛自治本地缓冲）
 pub use cache::EventCache;
 // v0.98.0 跨域通信通道
-#[cfg(any(test, feature = "mock"))]
-pub use channel::MockSecureTransport;
-pub use channel::{ChannelError, Endpoint, FederationChannel, SecureTransport, TlsConfig};
+pub use channel::{ChannelError, Endpoint, FederationChannel, TlsConfig};
 // v0.99.0 联邦共识协议（PBFT 变体）
 #[cfg(any(test, feature = "mock"))]
 pub use consensus::MockConsensusBus;

@@ -28,6 +28,7 @@ impl MbapHeader {
     ///
     /// - `protocol_id` 固定为 0（Modbus 协议）
     /// - `length` = `data_len`（PDU 字节数） + 1（unit_id 占 1 字节）
+    ///
     /// 31 PR-09：data_len 超 Modbus 协议上限（252）时 u16 回绕——返回
     /// None（调用方拒绝该帧）。
     pub fn try_new(transaction_id: u16, unit_id: u8, data_len: u16) -> Option<Self> {

@@ -72,6 +72,16 @@
 extern crate alloc;
 
 pub mod agent;
+pub mod chunked;
+
+/// 服务 CSpace 的 EIPC 目标端点基槽（蓝图 40 收尾：root spawn 期 mint
+/// 授予表——`X3` bit i 置位 = 槽 `EIPC_EP_BASE_SLOT + i` 持有效端点 cap）。
+pub const EIPC_EP_BASE_SLOT: u64 = 3;
+
+/// 服务 CSpace 的心跳 notification 槽（`X4` 传入；0 = 未授予不心跳）。
+/// 服务每处理一条消息 signal 一次——supervisor 以"有请求在途却无心跳"
+/// 判定卡死（WP-40.4 隔离：无 fault 的 hang 也能被终止）。
+pub const HEARTBEAT_NTFN_SLOT: u64 = 63;
 pub mod config;
 pub mod context;
 pub mod ipc;
@@ -79,7 +89,11 @@ pub mod ipc;
 pub mod ipc_sel4;
 
 // sel4 feature 仅限目标构建（seL4 userland）：host 上显式拒绝。
-#[cfg(all(feature = "sel4", not(sel4_target)))]
+// 判定与 sel4-sys build.rs 同源（target_os="none" = aarch64-unknown-none；
+// 原 `sel4_target` cfg 为 sel4-sys 的 per-crate cfg，不传播到依赖者——
+// 40 收尾修正：该门控使 sel4 feature 在 target 构建误触发，Sel4EipcChannel
+// 从未真正 target 编译过）。
+#[cfg(all(feature = "sel4", not(target_os = "none")))]
 compile_error!(
     "feature `sel4` requires the seL4 target (aarch64-unknown-none);      host builds must not enable it (use the default SPSC queue)"
 );
@@ -90,11 +104,18 @@ pub mod wire;
 
 // 重导出核心类型
 pub use agent::{Agent, AgentDescriptor, AgentError, AgentId, SDK_VERSION};
+pub use chunked::{
+    ack_bytes, encode_paged_header, final_bytes, is_pull_request, page_slice, plan_chunks,
+    pull_request, ChunkError, ChunkHeader, ChunkedClient, ChunkedEvent, ChunkedReceiver, RawIpc,
+    CHUNK_DATA_MAX, CHUNK_FRAME_LEN, CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER, PAGED_HEADER_LEN,
+    PULL_MAGIC, RESP_PAGE_MAX,
+};
 pub use config::Config;
 pub use context::Context;
 #[cfg(any(test, feature = "mock"))]
 pub use ipc::IpcClient;
 /// seL4 IPC buffer 消息寄存器区上限（120 字节，蓝图/20 R2-2）。
+#[cfg(any(test, feature = "mock"))]
 pub use ipc::MAX_MSG_SIZE;
 pub use lifecycle::{LifecycleManager, LifecycleState};
 pub use logger::{LogLevel, Logger};

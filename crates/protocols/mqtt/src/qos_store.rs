@@ -161,6 +161,8 @@ fn hex_val(c: u8) -> Option<u8> {
 ///
 /// 文件路径：`/mqtt/pending.txt`。每次 save 全量重写（在途消息数量
 /// 有限，简单可靠）；load_all 解析整文件。
+#[cfg(feature = "fs-persist")]
+#[cfg(feature = "fs-persist")]
 pub struct FsQosStore<F> {
     /// 底层文件系统。
     fs: F,
@@ -168,6 +170,7 @@ pub struct FsQosStore<F> {
     path: String,
 }
 
+#[cfg(feature = "fs-persist")]
 impl<F> FsQosStore<F> {
     /// 创建 fs 后端。
     pub fn new(fs: F, path: &str) -> Self {
@@ -178,6 +181,7 @@ impl<F> FsQosStore<F> {
     }
 }
 
+#[cfg(feature = "fs-persist")]
 impl<F: eneros_fs::fs_trait::FileSystem> QosStore for FsQosStore<F> {
     fn save(&mut self, msg: &PendingMessage) -> Result<(), MqttError> {
         // 读现有全部行，覆盖/追加目标条目后全量写回。
@@ -218,6 +222,7 @@ impl<F: eneros_fs::fs_trait::FileSystem> QosStore for FsQosStore<F> {
     }
 }
 
+#[cfg(feature = "fs-persist")]
 impl<F: eneros_fs::fs_trait::FileSystem> FsQosStore<F> {
     /// 全量写回（截断重写）。
     fn write_all(&mut self, messages: &[PendingMessage]) -> Result<(), MqttError> {

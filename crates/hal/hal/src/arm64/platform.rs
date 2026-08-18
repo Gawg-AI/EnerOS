@@ -31,7 +31,7 @@ pub const QEMU_VIRT: PlatformConfig = PlatformConfig {
     uart_base: 0x0900_0000,
     gicd_base: 0x0800_0000,
     gicr_base: 0x080A_0000,
-    timer_irq: 27, // PPI 11（EL1 物理定时器）
+    timer_irq: 27,         // PPI 11（EL1 物理定时器）
     net_base: 0x0A00_0000, // QEMU virt virtio-mmio 区（virtio-net 槽 1）
 };
 

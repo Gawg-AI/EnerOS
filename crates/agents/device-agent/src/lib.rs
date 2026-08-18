@@ -50,30 +50,51 @@ compile_error!(
 
 extern crate alloc;
 
+#[cfg(feature = "agent-runtime")]
 mod agent;
 mod command;
 mod delivery;
 mod device_type;
 mod error;
 mod ingress;
+pub mod persist;
 mod registry;
+mod virtual_device;
 
+#[cfg(feature = "agent-runtime")]
 pub use agent::DeviceAgent;
 #[cfg(any(test, feature = "mock"))]
 #[cfg(any(test, feature = "mock"))]
 pub use command::MockCommandSource;
 pub use command::{CommandSource, DeviceCommand};
-pub use delivery::{DeliveryFrame, FrameError, OutcomeFrame, HANDSHAKE_MARKER};
+pub use delivery::{
+    DeliveryFrame, FrameError, OutcomeFrame, CODE_APPLIED, CODE_APPLIED_READBACK_MISMATCH,
+    CODE_APPLIED_READBACK_UNAVAILABLE, CODE_DENIED, CODE_DRY_RUN, CODE_FAILED, CODE_IDEMPOTENT_HIT,
+    HANDSHAKE_MARKER,
+};
 pub use device_type::{DeviceSnapshot, DeviceState, DeviceType};
 pub use error::DeviceError;
 pub use ingress::{
     outcome_to_frame, verify_handshake_response, DenyClass, EnvelopeIngress, IngressError,
-    IngressOutcome, HANDSHAKE_LEN,
+    IngressOutcome, ReadbackKind, ReadbackPolicy, HANDSHAKE_LEN,
 };
+pub use persist::{
+    encode_wal, parse_snapshot, parse_wal, serialize_snapshot, PersistError, WalEntry,
+    SNAPSHOT_SCHEMA,
+};
+#[cfg(feature = "persist-fs")]
+pub use persist::{load_registry, log_wal_entry, save_snapshot};
 #[cfg(any(test, feature = "mock"))]
 #[cfg(any(test, feature = "mock"))]
 pub use registry::MockPointDevice;
-pub use registry::{DeviceInfo, DeviceRegistry};
+pub use registry::{
+    AdapterKind, DeviceInfo, DeviceRegistration, DeviceRegistry, EndpointRef, OperationSet,
+    PointSchemaVersion, UnavailableAdapter,
+};
+pub use virtual_device::{
+    VirtualPcsDevice, POINT_ALARM, POINT_DC_BUS_V, POINT_GRID_UP, POINT_POWER, POINT_SOC,
+    VIRTUAL_PCS_DEVICE_ID, VIRTUAL_PCS_POINTS,
+};
 
 #[cfg(test)]
 mod tests;

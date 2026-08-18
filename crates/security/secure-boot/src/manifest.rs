@@ -108,7 +108,7 @@ impl BootManifest {
         }
         // 5. 验签通过后才解析 manifest，提取下级 BL 公钥。
         let (manifest_bytes, _prefix) = Self::locate(image)?;
-        Self::parse(manifest_bytes)
+        Self::parse_unchecked(manifest_bytes)
     }
 
     /// 从 manifest 字节解析（**未验签**——29 SE-02：生产路径禁止直接调用，
@@ -118,6 +118,11 @@ impl BootManifest {
         note = "29 SE-02：未验签解析暴露下级公钥绑定断裂——生产路径请使用 verify_and_parse"
     )]
     pub fn parse(manifest: &[u8]) -> Result<Self, BootError> {
+        Self::parse_unchecked(manifest)
+    }
+
+    /// 内部未验签解析（仅供验签后的 `verify_and_parse` 与同模块测试使用）。
+    fn parse_unchecked(manifest: &[u8]) -> Result<Self, BootError> {
         if manifest.len() < 12 {
             return Err(BootError::ManifestCorrupt);
         }
@@ -170,7 +175,7 @@ mod tests {
     fn test_manifest_encode_parse_roundtrip() {
         let (kp, _rng) = keypair();
         let (encoded, _len) = BootManifest::encode(&kp.public_key);
-        let parsed = BootManifest::parse(&encoded[..]).expect("parse");
+        let parsed = BootManifest::parse_unchecked(&encoded[..]).expect("parse");
         assert_eq!(parsed.version, MANIFEST_VERSION);
         assert_eq!(parsed.bl_key, kp.public_key);
     }
@@ -202,7 +207,7 @@ mod tests {
         let (mut manifest, _len) = BootManifest::encode(&kp.public_key);
         manifest[0] = 0x00; // 破坏 magic
         assert_eq!(
-            BootManifest::parse(&manifest),
+            BootManifest::parse_unchecked(&manifest),
             Err(BootError::ManifestCorrupt)
         );
     }
@@ -212,7 +217,7 @@ mod tests {
         let (kp, _rng) = keypair();
         let (mut manifest, _len) = BootManifest::encode(&kp.public_key);
         manifest[6] = 0xFF; // key_len 异常
-        assert!(BootManifest::parse(&manifest).is_err());
+        assert!(BootManifest::parse_unchecked(&manifest).is_err());
     }
 
     #[test]
@@ -248,8 +253,8 @@ mod tests {
         let mut image = alloc::vec![0x44u8; 64];
         image.extend_from_slice(&manifest[..manifest_len]);
         let hash = eneros_crypto::sm3_hash(&image);
-        let sig = eneros_crypto::sm2_sign(&hash, &root.private_key, &root.public_key, rng)
-            .expect("sign");
+        let sig =
+            eneros_crypto::sm2_sign(&hash, &root.private_key, &root.public_key, rng).expect("sign");
         let header = ImageSignature {
             magic: *b"ESIG",
             version: 1,
@@ -270,7 +275,10 @@ mod tests {
         let (image, sig) = signed_image(&bl, &root, &mut rng, 100);
         let manifest = BootManifest::verify_and_parse(&image, &root.public_key, &sig, 0)
             .expect("合法 root 签名镜像必须通过验签解析（29 SE-02 判据）");
-        assert_eq!(manifest.bl_key, bl.public_key, "bl_key 必须来自已验签 manifest");
+        assert_eq!(
+            manifest.bl_key, bl.public_key,
+            "bl_key 必须来自已验签 manifest"
+        );
         assert_eq!(manifest.version, MANIFEST_VERSION);
     }
 
@@ -281,7 +289,7 @@ mod tests {
     fn test_verify_and_parse_rejects_mismatched_signer() {
         let (bl, _) = keypair();
         let (root, _) = keypair();
-        let (attacker, _) = keypair();
+        let (_attacker, _) = keypair();
         // 注意：keypair() 固定种子会生成相同密钥——此处强制三方可区分，
         // 用独立 rng 重新生成 attacker。
         let mut rng = eneros_crypto::CsRng::from_seed(&[0xAA; 32]);

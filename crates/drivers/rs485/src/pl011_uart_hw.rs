@@ -273,7 +273,6 @@ impl UartHw for Pl011UartHw {
         self.de_re_high = high;
         Ok(())
     }
-
 }
 
 impl Pl011UartHw {
@@ -309,28 +308,28 @@ impl GpioPin for RamGpioPin {
     }
 }
 
-    /// 31 DR-07 判据：高时钟（1.2 GHz）下 divisor 无 u32 回绕。
-    #[test]
-    fn test_divisor_no_overflow() {
-        // 1.2 GHz / 115200：divisor = (1200000000 * 4) / 115200 = 41666。
-        let divisor = ((1_200_000_000u64) * 4) / 115_200;
-        assert_eq!(divisor, 41666);
-        let ibrd = divisor >> 6;
-        let fbrd = divisor & 0x3f;
-        assert_eq!(ibrd, 651);
-        assert_eq!(fbrd, 2);
-    }
+/// 31 DR-07 判据：高时钟（1.2 GHz）下 divisor 无 u32 回绕。
+#[test]
+fn test_divisor_no_overflow() {
+    // 1.2 GHz / 115200：divisor = (1200000000 * 4) / 115200 = 41666。
+    let divisor = ((1_200_000_000u64) * 4) / 115_200;
+    assert_eq!(divisor, 41666);
+    let ibrd = divisor >> 6;
+    let fbrd = divisor & 0x3f;
+    assert_eq!(ibrd, 651);
+    assert_eq!(fbrd, 2);
+}
 
-    /// 31 DR-07 判据：RamGpioPin 电平切换。
-    #[test]
-    fn test_ram_gpio_pin_level() {
-        let mut pin = RamGpioPin::new();
-        assert!(!pin.level);
-        pin.set(true);
-        assert!(pin.level);
-        pin.set(false);
-        assert!(!pin.level);
-    }
+/// 31 DR-07 判据：RamGpioPin 电平切换。
+#[test]
+fn test_ram_gpio_pin_level() {
+    let mut pin = RamGpioPin::new();
+    assert!(!pin.level);
+    pin.set(true);
+    assert!(pin.level);
+    pin.set(false);
+    assert!(!pin.level);
+}
 
 impl core::fmt::Debug for Pl011UartHw {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

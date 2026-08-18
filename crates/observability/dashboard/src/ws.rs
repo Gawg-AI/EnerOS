@@ -147,7 +147,11 @@ fn parse_frame_impl(buf: &[u8], require_mask: bool) -> Result<WsFrame, ()> {
             *b ^= mask[i % 4];
         }
     }
-    Ok(WsFrame { fin, opcode, payload })
+    Ok(WsFrame {
+        fin,
+        opcode,
+        payload,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +368,8 @@ fn node_kind_str(k: NodeKind) -> &'static str {
 
 fn node_status_str(s: NodeStatus) -> &'static str {
     match s {
+        NodeStatus::Unknown => "unknown",
+        NodeStatus::Degraded => "degraded",
         NodeStatus::Healthy => "healthy",
         NodeStatus::Warn => "warn",
         NodeStatus::Fault => "fault",
@@ -534,8 +540,8 @@ mod tests {
         assert_eq!(
             sha1(b"abc"),
             [
-                0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e,
-                0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d
+                0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e, 0x25, 0x71, 0x78, 0x50,
+                0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d
             ]
         );
     }
@@ -550,7 +556,10 @@ mod tests {
         assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
         assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
-        assert_eq!(base64_encode(b"the sample nonce"), "dGhlIHNhbXBsZSBub25jZQ==");
+        assert_eq!(
+            base64_encode(b"the sample nonce"),
+            "dGhlIHNhbXBsZSBub25jZQ=="
+        );
     }
 
     #[test]
@@ -670,7 +679,10 @@ mod tests {
         let payload = String::from_utf8(bytes[2..].to_vec()).expect("UTF-8 JSON");
         assert!(payload.contains("\"type\":\"topology\""));
         assert!(payload.contains("\"id\":1"));
-        assert!(payload.contains("\"label\":\"PV \\\"roof\\\"\""), "label 转义: {payload}");
+        assert!(
+            payload.contains("\"label\":\"PV \\\"roof\\\"\""),
+            "label 转义: {payload}"
+        );
         assert!(payload.contains("\"flow\":150.500"));
         assert!(payload.contains("\"status\":\"fault\""));
     }
@@ -725,6 +737,9 @@ mod tests {
     #[test]
     fn test_encode_node_status_json() {
         let json = encode_event_json(&DashboardEvent::NodeStatusChange(7, NodeStatus::Offline));
-        assert_eq!(json, "{\"type\":\"node_status\",\"id\":7,\"status\":\"offline\"}");
+        assert_eq!(
+            json,
+            "{\"type\":\"node_status\",\"id\":7,\"status\":\"offline\"}"
+        );
     }
 }

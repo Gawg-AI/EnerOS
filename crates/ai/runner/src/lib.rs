@@ -16,8 +16,8 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
-use eneros_dual_brain::sink::CommandSink;
-use eneros_dual_brain::{DualBrainCoordinator, DualBrainError, DualBrainResult};
+use eneros_dual_brain::sink::{CommandSink, DispatchCommand};
+use eneros_dual_brain::{DecisionOutcome, DualBrainCoordinator, DualBrainError};
 use eneros_llm_engine::device::ComputeDevice;
 use eneros_llm_engine::engine::LlmEngine;
 use eneros_llm_engine::error::LlmError;
@@ -177,9 +177,9 @@ pub struct RunnerOutcome {
     pub prompt: String,
     /// LLM 原始输出（真 llama.cpp 推理结果）.
     pub llm_output: String,
-    /// 双脑链路结果（路径类型/调度方案/延迟分解/反馈契约）.
-    pub result: DualBrainResult,
-    /// sink 实际写入的命令数.
+    /// 双脑链路结果（蓝图 40 WP-40.3：Proposal/NoAction/Rejected）。
+    pub outcome: DecisionOutcome,
+    /// demo sink 实际写入的命令数（JSONL recording，证据类别 DEMO_ONLY）.
     pub sink_written: usize,
 }
 
@@ -226,7 +226,7 @@ pub fn run_once(
     // 签名 → 两把不同 key → 每次 write 被 GatewayError::Unauthorized 拒绝，
     // run_once 无论密钥文件内容如何必然失败。
     let chain = build_chain(chain_key)?;
-    let sink: Box<dyn CommandSink> =
+    let mut sink: Box<dyn CommandSink> =
         Box::new(eneros_dual_brain::chain_sink::ChainCommandSink::new(
             chain,
             Box::new(FileExecutor::new(sink_path)?),
@@ -240,15 +240,34 @@ pub fn run_once(
             now_fn,
             feedback_fn,
         ));
-    let mut coord = DualBrainCoordinator::new(config, llm, solver, sink)
+    let mut coord = DualBrainCoordinator::new(config, llm, solver)
         // 32 AG-04：决策审计装配——创世锚从 chain_key SM3 派生（与封焊链
         // 同源；chain_key 已经 AI-07 fail-closed 校验 ≥16B）。
         .with_audit(eneros_dual_brain::audit::decision_audit_from_key(chain_key));
 
+    // 蓝图 40 WP-40.3：协调器只产 DecisionOutcome——demo 把 Proposal 投给
+    // 自证链 sink（ChainCommandSink + FileExecutor，JSONL recording）。
     // 首次 execute 必走慢路径（PathSelector 首次 `last_slow_path_ms == None`）。
-    let result = match coord.execute(&state, now_ms) {
-        Ok(result) => result,
-        Err(e) => {
+    let mut sink_written = 0usize;
+    let outcome = match coord.execute(&state, now_ms) {
+        DecisionOutcome::Proposal(plan) => {
+            // demo 投递：Proposal → DispatchCommand → ChainCommandSink
+            //（自证链授权；untrusted 反馈时链拒绝 → Err，demo 诚实失败）。
+            let cmd = DispatchCommand {
+                target_device: plan.target_device.clone(),
+                power_kw: plan.power_kw,
+                ttl_secs: plan.ttl_secs,
+                timestamp: now_ms,
+            };
+            sink.write(cmd).map_err(RunnerError::DualBrain)?;
+            sink_written = sink.write_count();
+            DecisionOutcome::Proposal(plan)
+        }
+        other => other,
+    };
+    match &outcome {
+        DecisionOutcome::Proposal(_) => {}
+        other => {
             // 错误路径可观测性（21-B 错误纪律）：Fatal 违规/链路失败时
             // 输出 LLM 原始输出与场景摘要到 stderr，供证据追溯。
             let rec = recording.borrow();
@@ -258,7 +277,25 @@ pub fn run_once(
                     scenario = scenario
                 );
             }
-            return Err(RunnerError::DualBrain(e));
+            let err = match other {
+                DecisionOutcome::Rejected(r) => match &r.reason {
+                    eneros_dual_brain::RejectionReason::SafetyFatal(d) => {
+                        DualBrainError::SafetyFatal(d.clone())
+                    }
+                    eneros_dual_brain::RejectionReason::Validation(d)
+                    | eneros_dual_brain::RejectionReason::Internal(d) => {
+                        DualBrainError::SolveError(d.clone())
+                    }
+                    eneros_dual_brain::RejectionReason::GateRateLimited
+                    | eneros_dual_brain::RejectionReason::GateEnergyExceeded => {
+                        DualBrainError::GateRejected(
+                            eneros_dual_brain::gate::GateDecision::RateLimited,
+                        )
+                    }
+                },
+                _ => DualBrainError::SolveError(String::from("no-action")),
+            };
+            return Err(RunnerError::DualBrain(err));
         }
     };
 
@@ -278,7 +315,10 @@ pub fn run_once(
             content.push_str(&format!(
                 "seq={} combined={}\n",
                 e.seq,
-                e.combined_hash.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                e.combined_hash
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
             ));
         }
         if let Err(err) = std::fs::write(&audit_path, content) {
@@ -298,8 +338,8 @@ pub fn run_once(
         scenario,
         prompt,
         llm_output,
-        sink_written: coord.sink.write_count(),
-        result,
+        outcome,
+        sink_written,
     })
 }
 
@@ -545,6 +585,7 @@ mod tests {
 
     /// 端到端（真 HighsSolver + 真 SafetyValidator + 测试 LLM）：
     /// normal 场景必须产出调度方案并写入 sink。
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
     #[test]
     fn pipeline_normal_writes_sink_with_real_solver() {
         let dir = std::env::temp_dir().join(format!(
@@ -557,18 +598,30 @@ mod tests {
         let config = Scenario::Normal.config();
         let state = Scenario::Normal.state();
         let solver = HighsSolver::new().expect("highs init");
-        let sink: Box<dyn CommandSink> = Box::new(FileCommandSink::new(&sink_path).unwrap());
+        let mut sink: Box<dyn CommandSink> = Box::new(FileCommandSink::new(&sink_path).unwrap());
         let llm: Box<dyn LlmEngine> = Box::new(TestIntentLlm::new());
-        let mut coord = DualBrainCoordinator::new(config, llm, solver, sink);
+        // 蓝图 40 WP-40.3：协调器只产 Proposal；demo sink 由测试显式投递。
+        let mut coord = DualBrainCoordinator::new(config, llm, solver);
 
-        let result = coord.execute(&state, 1000).expect("execute ok");
-        assert_eq!(coord.sink.write_count(), 1, "normal 场景必须写入 1 条命令");
-        assert!(!result.schedule.schedule.is_empty());
+        let outcome = coord.execute(&state, 1000);
+        let DecisionOutcome::Proposal(plan) = outcome else {
+            panic!("normal 场景必须产出 Proposal: {outcome:?}");
+        };
+        assert!(!plan.schedule.schedule.is_empty());
+        // demo 投递（WP-40.5：host JSONL recording，DEMO_ONLY）。
+        sink.write(DispatchCommand {
+            target_device: plan.target_device.clone(),
+            power_kw: plan.power_kw,
+            ttl_secs: plan.ttl_secs,
+            timestamp: 1000,
+        })
+        .expect("sink write");
+        assert_eq!(sink.write_count(), 1, "normal 场景必须写入 1 条命令");
 
         // 31-review（AI-05）：最终下发调度（经 safety-validator 全部规则）全时段
         // 不得同时充放——MIP 方向二元互斥 + validator 后置校验（含规则 clamp 后）
         // 双保险；旧实现爬坡 clamp 会在已有充电的时段凭空加放电（同时充放）。
-        let sched = &result.schedule.schedule;
+        let sched = &plan.schedule.schedule;
         for (i, e) in sched.iter().enumerate() {
             assert!(
                 e.charge_power_kw < 1e-6 || e.discharge_power_kw < 1e-6,
@@ -597,16 +650,18 @@ mod tests {
         let solver = HighsSolver::new().expect("highs init");
         let sink: Box<dyn CommandSink> = Box::new(FileCommandSink::new(&sink_path).unwrap());
         let llm: Box<dyn LlmEngine> = Box::new(TestIntentLlm::new());
-        let mut coord = DualBrainCoordinator::new(config, llm, solver, sink);
+        let mut coord = DualBrainCoordinator::new(config, llm, solver);
 
-        let err = coord
-            .execute(&state, 1000)
-            .expect_err("must fail with SafetyFatal");
+        let outcome = coord.execute(&state, 1000);
         assert!(
-            matches!(err, DualBrainError::SafetyFatal(_)),
-            "SOC 终值 0.02 必须 Fatal，实际 {err:?}"
+            matches!(
+                &outcome,
+                DecisionOutcome::Rejected(r)
+                    if matches!(r.reason, eneros_dual_brain::RejectionReason::SafetyFatal(_))
+            ),
+            "SOC 终值 0.02 必须 Fatal（Rejected），实际 {outcome:?}"
         );
-        assert_eq!(coord.sink.write_count(), 0, "Fatal 违规下 sink 必须零写入");
+        assert_eq!(sink.write_count(), 0, "Fatal 违规下 sink 必须零写入");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -677,6 +732,8 @@ mod tests {
             Self { device_id, points }
         }
 
+        #[allow(dead_code)] // 44.2：测试辅助（44.4 冻结登记）
+        #[allow(dead_code)] // 44.2：测试辅助（44.4 冻结登记）
         fn value_of(&self, point_id: PointId) -> f64 {
             self.points.get(&point_id).copied().unwrap_or(0.0)
         }
@@ -804,6 +861,8 @@ mod tests {
         }
 
         /// 已 Applied 的功率列表（落写可观测证据）。
+        #[allow(dead_code)] // 44.2：测试辅助（44.4 冻结登记）
+        #[allow(dead_code)] // 44.2：测试辅助（44.4 冻结登记）
         fn applied_powers(&self) -> Vec<f64> {
             self.applied.borrow().clone()
         }
@@ -848,11 +907,12 @@ mod tests {
     }
 
     /// 场景 ①：AI 决策 → 自证 → 投递 → 复验 → 落写（含回读确认）。
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
     #[test]
     fn full_chain_decision_to_device_write() {
         let channel = device_side_channel();
         let applied = channel.applied.clone();
-        let sink = build_production_sink(
+        let mut sink = build_production_sink(
             Box::new(channel),
             CHAIN_KEY,
             CHAIN_LEASE,
@@ -871,12 +931,24 @@ mod tests {
         let state = Scenario::Normal.state();
         let solver = HighsSolver::new().expect("highs init");
         let llm: Box<dyn LlmEngine> = Box::new(TestIntentLlm::new());
-        let mut coord = DualBrainCoordinator::new(config, llm, solver, sink);
-        let result = coord.execute(&state, NOW_SECS * 1000).expect("execute ok");
-        assert_eq!(coord.sink.write_count(), 1, "决策链必须写入 1 条命令");
+        let mut coord = DualBrainCoordinator::new(config, llm, solver);
+        // 蓝图 40 WP-40.3：协调器只产 Proposal——投递给生产 sink 装配
+        //（自证链 + 信封投递器）走完整 24.x 链（host 集成）。
+        let outcome = coord.execute(&state, NOW_SECS * 1000);
+        let DecisionOutcome::Proposal(plan) = outcome else {
+            panic!("normal 场景必须产出 Proposal");
+        };
+        sink.write(eneros_dual_brain::sink::DispatchCommand {
+            target_device: plan.target_device.clone(),
+            power_kw: plan.power_kw,
+            ttl_secs: plan.ttl_secs,
+            timestamp: NOW_SECS * 1000,
+        })
+        .expect("sink write");
+        assert_eq!(sink.write_count(), 1, "决策链必须写入 1 条命令");
         // 落写含回读：device-agent 复验通过并 Applied——落写功率必须与
         // 决策链实际下发的调度值一致（外部可观测证据，非占位）。
-        let expected = result
+        let expected = plan
             .schedule
             .schedule
             .first()
@@ -892,12 +964,13 @@ mod tests {
     }
 
     /// 场景 ②：篡改注入被拒（结构化拒绝可断言）。
+    #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
     #[test]
     fn tampered_envelope_rejected_structured() {
         let channel = TamperChannel {
             inner: device_side_channel(),
         };
-        let sink = build_production_sink(
+        let mut sink = build_production_sink(
             Box::new(channel),
             CHAIN_KEY,
             CHAIN_LEASE,
@@ -916,9 +989,18 @@ mod tests {
         let state = Scenario::Normal.state();
         let solver = HighsSolver::new().expect("highs init");
         let llm: Box<dyn LlmEngine> = Box::new(TestIntentLlm::new());
-        let mut coord = DualBrainCoordinator::new(config, llm, solver, sink);
-        let err = coord
-            .execute(&state, NOW_SECS * 1000)
+        let mut coord = DualBrainCoordinator::new(config, llm, solver);
+        let outcome = coord.execute(&state, NOW_SECS * 1000);
+        let DecisionOutcome::Proposal(plan) = outcome else {
+            panic!("normal 场景必须产出 Proposal");
+        };
+        let err = sink
+            .write(eneros_dual_brain::sink::DispatchCommand {
+                target_device: plan.target_device.clone(),
+                power_kw: plan.power_kw,
+                ttl_secs: plan.ttl_secs,
+                timestamp: NOW_SECS * 1000,
+            })
             .expect_err("篡改信封必须被拒");
         // 结构化拒绝原因经 DispatchError 文本可断言（候选 5 将直接消费载荷）。
         let msg = format!("{err:?}");
@@ -926,7 +1008,7 @@ mod tests {
             msg.contains("Rejected(Hmac)"),
             "拒绝原因必须结构化传递（Hmac），got: {msg}"
         );
-        assert_eq!(coord.sink.write_count(), 0, "被拒命令不得计入成功");
+        assert_eq!(sink.write_count(), 0, "被拒命令不得计入成功");
     }
 
     /// 场景 ③：握手失败 fail-closed——FIX-24.R3 后装配期即握手（fail-fast）：
@@ -1084,7 +1166,7 @@ mod tests {
                     return self.inner.request(t, payload);
                 }
                 Ok(OutcomeFrame {
-                    code: OutcomeFrame::CODE_DENIED,
+                    code: eneros_device_agent::CODE_DENIED,
                     class: DenyClass::Hmac.code(),
                 }
                 .encode()
@@ -1122,7 +1204,4 @@ mod tests {
             "复验拒绝必须结构化为 DeviceReject::Hmac"
         );
     }
-
-
-
 }

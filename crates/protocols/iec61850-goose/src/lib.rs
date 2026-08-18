@@ -50,7 +50,8 @@ pub mod dataset;
 pub mod goose_rx;
 pub mod goose_tx;
 #[cfg(feature = "net")]
-pub mod l2_raw;
+// 39 WP-39.11：协议插件（服务装配统一入口）。
+pub mod plugin;
 
 pub use dataset::{GooseDataset, GooseEntry};
 pub use goose_rx::{GoosePdu, GooseSubscriber, RxStatus};

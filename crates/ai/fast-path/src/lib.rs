@@ -60,6 +60,16 @@ mod tests {
 
     use super::*;
 
+    /// 测试电气工况（蓝图 40 WP-40.1：显式构造）。
+    fn st() -> SystemState {
+        eneros_safety_validator::TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.5, 0).build()
+    }
+
+    /// 测试实时状态（显式构造，无 Default）。
+    fn rt() -> RealtimeState {
+        RealtimeState::new(st(), 0.5, None)
+    }
+
     // T1: PathType PartialEq（D8）— SlowPath != FastPath，FastPath == FastPath
     #[test]
     fn t1_path_type_partial_eq() {
@@ -72,7 +82,7 @@ mod tests {
     #[test]
     fn t2_realtime_state_explicit_construction() {
         let state = RealtimeState {
-            system: SystemState::default(),
+            system: st(),
             current_price: 0.5,
             load_demand: None,
         };
@@ -81,12 +91,12 @@ mod tests {
         assert!(state.load_demand.is_none());
     }
 
-    // T3: RealtimeState::default() 等价显式构造
+    // T3: rt() 等价显式构造
     #[test]
     fn t3_realtime_state_default() {
-        let default_state = RealtimeState::default();
+        let default_state = rt();
         let explicit = RealtimeState {
-            system: SystemState::default(),
+            system: st(),
             current_price: 0.5,
             load_demand: None,
         };
@@ -121,7 +131,7 @@ mod tests {
     #[test]
     fn t5_select_first_call_returns_slow_path() {
         let mut selector = PathSelector::new();
-        let state = RealtimeState::default();
+        let state = rt();
         let path = selector.select(&state, 0);
         assert_eq!(path, PathType::SlowPath);
         assert_eq!(selector.last_slow_path_ms, Some(0));
@@ -131,7 +141,7 @@ mod tests {
     #[test]
     fn t6_select_within_interval_returns_fast_path() {
         let mut selector = PathSelector::new();
-        let state = RealtimeState::default();
+        let state = rt();
         // 第一次：now_ms=0 → SlowPath
         let p1 = selector.select(&state, 0);
         assert_eq!(p1, PathType::SlowPath);
@@ -146,7 +156,7 @@ mod tests {
         let mut selector = PathSelector::new();
         // 两态必须都是 Some（(Some, None) 组合按 0 处理）。
         let mut state = RealtimeState {
-            system: SystemState::default(),
+            system: st(),
             current_price: 0.5,
             load_demand: Some(vec![20.0; 96]),
         };
@@ -161,7 +171,7 @@ mod tests {
         );
         // 控制组：阈值内跳变（Δ10 < 20）→ FastPath。
         let mut state2 = RealtimeState {
-            system: SystemState::default(),
+            system: st(),
             current_price: 0.5,
             load_demand: Some(vec![20.0; 96]),
         };
@@ -178,7 +188,7 @@ mod tests {
     #[test]
     fn t7_select_interval_exceeded_returns_slow_path() {
         let mut selector = PathSelector::new();
-        let state = RealtimeState::default();
+        let state = rt();
         // 第一次：now_ms=0 → SlowPath
         let p1 = selector.select(&state, 0);
         assert_eq!(p1, PathType::SlowPath);
@@ -191,18 +201,12 @@ mod tests {
     #[test]
     fn t8_select_price_change_returns_slow_path() {
         let mut selector = PathSelector::new();
-        let state1 = RealtimeState {
-            current_price: 0.5,
-            ..Default::default()
-        };
+        let state1 = RealtimeState::new(st(), 0.5, None);
         // 第一次：now_ms=0 → SlowPath
         let p1 = selector.select(&state1, 0);
         assert_eq!(p1, PathType::SlowPath);
         // 第二次：now_ms=1000，电价 0.7（变化 0.2 > 0.1）→ SlowPath
-        let state2 = RealtimeState {
-            current_price: 0.7,
-            ..Default::default()
-        };
+        let state2 = RealtimeState::new(st(), 0.7, None);
         let p2 = selector.select(&state2, 1000);
         assert_eq!(p2, PathType::SlowPath);
     }
@@ -211,24 +215,20 @@ mod tests {
     #[test]
     fn t9_select_soc_change_returns_slow_path() {
         let mut selector = PathSelector::new();
-        let state1 = RealtimeState {
-            system: SystemState {
-                soc_pct: 0.5,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let state1 = RealtimeState::new(
+            eneros_safety_validator::TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.5, 0).build(),
+            0.5,
+            None,
+        );
         // 第一次：now_ms=0 → SlowPath
         let p1 = selector.select(&state1, 0);
         assert_eq!(p1, PathType::SlowPath);
         // 第二次：now_ms=1000，soc_pct=0.6（变化 10% > 5%）→ SlowPath
-        let state2 = RealtimeState {
-            system: SystemState {
-                soc_pct: 0.6,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let state2 = RealtimeState::new(
+            eneros_safety_validator::TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.6, 0).build(),
+            0.5,
+            None,
+        );
         let p2 = selector.select(&state2, 1000);
         assert_eq!(p2, PathType::SlowPath);
     }
@@ -249,14 +249,11 @@ mod tests {
     #[test]
     fn t11_strategy_valley_low_soc() {
         let table = StrategyTable::new(ScheduleConfig::default());
-        let state = RealtimeState {
-            current_price: 0.2,
-            system: SystemState {
-                soc_pct: 0.2,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let state = RealtimeState::new(
+            eneros_safety_validator::TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.2, 0).build(),
+            0.2,
+            None,
+        );
         let config = table.get_config(&state);
         assert_eq!(config.soc_final, Some(0.8));
     }
@@ -265,14 +262,11 @@ mod tests {
     #[test]
     fn t12_strategy_peak_high_soc() {
         let table = StrategyTable::new(ScheduleConfig::default());
-        let state = RealtimeState {
-            current_price: 0.8,
-            system: SystemState {
-                soc_pct: 0.8,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let state = RealtimeState::new(
+            eneros_safety_validator::TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.8, 0).build(),
+            0.8,
+            None,
+        );
         let config = table.get_config(&state);
         assert_eq!(config.soc_final, Some(0.3));
     }
@@ -281,14 +275,11 @@ mod tests {
     #[test]
     fn t13_strategy_flat_mid_soc() {
         let table = StrategyTable::new(ScheduleConfig::default());
-        let state = RealtimeState {
-            current_price: 0.5,
-            system: SystemState {
-                soc_pct: 0.5,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let state = RealtimeState::new(
+            eneros_safety_validator::TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.5, 0).build(),
+            0.5,
+            None,
+        );
         let config = table.get_config(&state);
         assert!(config.soc_final.is_none());
     }
@@ -297,14 +288,11 @@ mod tests {
     #[test]
     fn t14_strategy_boundary_price() {
         let table = StrategyTable::new(ScheduleConfig::default());
-        let state = RealtimeState {
-            current_price: 0.29,
-            system: SystemState {
-                soc_pct: 0.2,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let state = RealtimeState::new(
+            eneros_safety_validator::TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.2, 0).build(),
+            0.29,
+            None,
+        );
         let config = table.get_config(&state);
         assert_eq!(config.soc_final, Some(0.8));
     }
@@ -322,7 +310,7 @@ mod tests {
     #[test]
     fn t16_engine_execute_ok() {
         let mut engine = RealtimePathEngine::new(ScheduleConfig::default(), MockSolver::new());
-        let state = RealtimeState::default();
+        let state = rt();
         let result = engine.execute(&state, 0);
         assert!(result.is_ok());
     }
@@ -331,7 +319,7 @@ mod tests {
     #[test]
     fn t17_engine_execute_path_type_fast() {
         let mut engine = RealtimePathEngine::new(ScheduleConfig::default(), MockSolver::new());
-        let state = RealtimeState::default();
+        let state = rt();
         let result = engine.execute(&state, 0).unwrap();
         assert_eq!(result.path_type, PathType::FastPath);
     }
@@ -340,13 +328,11 @@ mod tests {
     #[test]
     fn t18_engine_execute_soc_07_no_panic() {
         let mut engine = RealtimePathEngine::new(ScheduleConfig::default(), MockSolver::new());
-        let state = RealtimeState {
-            system: SystemState {
-                soc_pct: 0.7,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let state = RealtimeState::new(
+            eneros_safety_validator::TestSystemStateBuilder::new(380.0, 0.0, 50.0, 0.7, 0).build(),
+            0.5,
+            None,
+        );
         let result = engine.execute(&state, 0);
         assert!(result.is_ok());
     }
@@ -355,10 +341,7 @@ mod tests {
     #[test]
     fn t19_engine_execute_with_load_demand() {
         let mut engine = RealtimePathEngine::new(ScheduleConfig::default(), MockSolver::new());
-        let state = RealtimeState {
-            load_demand: Some(vec![50.0; 96]),
-            ..Default::default()
-        };
+        let state = RealtimeState::new(st(), 0.5, Some(vec![50.0; 96]));
         let result = engine.execute(&state, 0);
         assert!(result.is_ok());
     }
@@ -382,7 +365,7 @@ mod tests {
     #[test]
     fn t21_end_to_end_selector_fast_path_engine_execute() {
         let mut selector = PathSelector::new();
-        let state = RealtimeState::default();
+        let state = rt();
         // 第一次：now_ms=0 → SlowPath（初始化基线）
         let p1 = selector.select(&state, 0);
         assert_eq!(p1, PathType::SlowPath);
@@ -399,7 +382,7 @@ mod tests {
     #[test]
     fn t22_validation_fields_accessible() {
         let mut engine = RealtimePathEngine::new(ScheduleConfig::default(), MockSolver::new());
-        let state = RealtimeState::default();
+        let state = rt();
         let result = engine.execute(&state, 0).unwrap();
         // validation.passed 是 bool（MockSolver 返回空解 → SOC=0.0 可能触发 Fatal，不假设值）
         let passed: bool = result.validation.passed;

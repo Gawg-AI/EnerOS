@@ -2,15 +2,16 @@
 //!
 //! 等保 2.0 三级「安全审计」要求：对登录、配置变更、控制命令、密钥使用等
 //! 关键安全事件进行完整记录，并保证审计记录**不可篡改、可验证、可追溯**。
-//! 本 crate 以 SM3 哈希链实现审计日志的密码学存证：每条审计事件经定长编码
-//! 后计算事件哈希，再与前一条链上哈希串联计算组合哈希（`SM3(prev ‖
+//! 本 crate 以 SHA-256 哈希链实现审计日志的密码学存证：每条审计事件经定长编码
+//! 后计算事件哈希，再与前一条链上哈希串联计算组合哈希（`SHA-256(prev ‖
 //! event)`），形成单向递进的哈希链；任一历史条目被篡改或删除都会破坏后续
 //! 链接关系，可被 [`ChainVerifier`] 检出。链状态可经 [`AuditLoggerImpl::recover`]
 //! 从存储中恢复，支持断电重启后续链。
 //!
 //! # 国标引用
 //!
-//! - GM/T 0004-2012（GB/T 32905-2016）SM3 密码杂凑算法（事件哈希与链哈希）
+//! - SHA-256 密码杂凑算法（事件哈希与链哈希；36 WP-36.2 由 SM3 迁移，
+//!   eneros-crypto 未批准不得进入产品闭包）
 //!
 //! # 核心类型
 //!
@@ -28,10 +29,11 @@
 //!
 //! 1. **D1 crate 路径**：蓝图声明 `crates/audit/`，按记忆文件 §2.3.1 子系统
 //!    分组规则归入 `crates/security/audit/`（security 子系统）。
-//! 2. **D2 FFI 移除**：蓝图原拟 SM3 C FFI 调用，已决策移除，改复用
-//!    `eneros_crypto::sm3_hash` 纯 Rust 实现，零 unsafe 零 `extern "C"`。
+//! 2. **D2 FFI 移除**：蓝图原拟 SM3 C FFI 调用，已决策移除（36 WP-36.2：
+//!    eneros-crypto 未批准不得进入产品闭包），改复用 `sha2` 纯 Rust 实现，
+//!    零 unsafe 零 `extern "C"`。
 //! 3. **D3 事件哈希仅对已编码前缀计算**：蓝图为 512 字节定长缓冲整体哈希，
-//!    本实现仅对实际写入的前缀 `buf[..pos]` 做 SM3，避免尾部零字节参与
+//!    本实现仅对实际写入的前缀 `buf[..pos]` 做 SHA-256，避免尾部零字节参与
 //!    哈希导致语义含混。
 //! 4. **D4 新增 [`MemStore`]**：蓝图仅声明存储 trait，本实现附带内存存储
 //!    （`Vec`  backed），供单元测试与易失性场景使用。
@@ -60,8 +62,8 @@
 //! # no_std 合规
 //!
 //! 本 crate `#![cfg_attr(not(test), no_std)]` + `extern crate alloc`。
-//! 仅使用 `core::*` / `alloc::*` / `heapless::*`，依赖仅 eneros-crypto
-//! （workspace 内 path 依赖）与 heapless，零 unsafe，不调用 `panic!` /
+//! 仅使用 `core::*` / `alloc::*` / `heapless::*`，依赖仅 sha2 与 heapless，
+//! 零 unsafe，不调用 `panic!` /
 //! `todo!` / `unimplemented!`，可交叉编译到 `aarch64-unknown-none`。
 
 #![cfg_attr(not(test), no_std)]
@@ -72,6 +74,7 @@ pub mod alert;
 pub mod anomaly;
 pub mod baseline;
 pub mod chain;
+pub mod durable;
 pub mod events;
 pub mod store;
 
@@ -88,7 +91,7 @@ pub use store::{AuditStore, MemStore};
 /// 审计错误模型（哈希链全流程错误；`SeqOutOfOrder`/`ChainBroken` 携带序号定位）.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditError {
-    /// 哈希计算失败（底层 SM3 运算异常）.
+    /// 哈希计算失败（底层 SHA-256 运算异常）.
     HashComputeFailed,
     /// 事件序号乱序：`expect` 为期望序号，`got` 为实际提交序号.
     SeqOutOfOrder {

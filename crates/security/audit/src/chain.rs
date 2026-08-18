@@ -1,16 +1,21 @@
 //! 哈希链核心：事件编码哈希、日志器（追加/批量/恢复）与链校验器.
 //!
-//! 哈希方案（偏差 D3：仅对已编码前缀计算 SM3，而非 512 字节定长整体哈希）：
+//! 哈希方案（36 WP-36.2：SM3 → SHA-256，eneros-crypto 未批准不得进入
+//! 产品闭包；仅对已编码前缀计算 SHA-256，而非 512 字节定长整体哈希）：
 //!
 //! - 事件编码（最大 472 字节，缓冲 512 字节有界安全）：
 //!   `seq(8B BE) ‖ ts(8B BE) ‖ type(1B) ‖ severity(1B) ‖ ip(4B) ‖
 //!    actor.len(1B)+actor ‖ target.len(1B)+target ‖ detail(尾部无前缀)`
-//! - 事件哈希：`event_hash = SM3(编码前缀)`
-//! - 组合哈希：`combined = SM3(prev_hash ‖ event_hash)`（64 字节输入）
+//! - 事件哈希：`event_hash = SHA-256(编码前缀)`
+//! - 组合哈希：`combined = SHA-256(prev_hash ‖ event_hash)`（64 字节输入）
+//!
+//! 注意：36 之前的 SM3 链与当前 SHA-256 链不兼容（链算法无标记字段），
+//! 旧链在恢复校验时会因哈希不匹配而失败——这是有意的：旧链作废，
+//! 新链从创世重新开始（见 evidence/36 验证记录）。
 
 use alloc::vec::Vec;
 
-use eneros_crypto::sm3_hash;
+use sha2::{Digest, Sha256};
 
 use crate::events::{AuditEvent, ChainEntry, HashChain};
 use crate::store::AuditStore;
@@ -19,7 +24,7 @@ use crate::{AuditError, VerifyReport};
 /// 事件编码缓冲长度（最大编码 472 字节，留 40 字节余量）.
 const ENCODE_BUF_LEN: usize = 512;
 
-/// 计算事件哈希：定序编码后仅对已写入前缀做 SM3（偏差 D3）.
+/// 计算事件哈希：定序编码后仅对已写入前缀做 SHA-256（偏差 D3）.
 pub fn compute_event_hash(event: &AuditEvent) -> [u8; 32] {
     let mut buf = [0u8; ENCODE_BUF_LEN];
     let mut pos = 0usize;
@@ -55,16 +60,17 @@ pub fn compute_event_hash(event: &AuditEvent) -> [u8; 32] {
     buf[pos..pos + detail.len()].copy_from_slice(detail);
     pos += detail.len();
 
-    // 仅对已编码前缀哈希（尾部零字节不参与）
-    sm3_hash(&buf[..pos])
+    // 仅对已编码前缀哈希（尾部零字节不参与）。
+    // 36 WP-36.2：SM3 → SHA-256（eneros-crypto 未批准，不得进入产品闭包）。
+    Sha256::digest(&buf[..pos]).into()
 }
 
-/// 计算组合哈希：`SM3(prev_hash ‖ event_hash)`，输入恰好 64 字节.
+/// 计算组合哈希：`SHA-256(prev_hash ‖ event_hash)`，输入恰好 64 字节.
 pub fn compute_combined_hash(prev_hash: &[u8; 32], event_hash: &[u8; 32]) -> [u8; 32] {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(prev_hash);
     buf[32..].copy_from_slice(event_hash);
-    sm3_hash(&buf)
+    Sha256::digest(buf).into()
 }
 
 /// 审计日志器（序号检查 → 哈希串联 → 存储追加 → 链状态推进）.

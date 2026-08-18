@@ -30,7 +30,8 @@ pub const MAX_FRAME_BYTES: usize = 952;
 /// `MAX_FRAME_BYTES - EL0 帧开销(10B 头 + 4B crc)`。el0 层
 /// `DEFAULT_MAX_PAYLOAD_LEN=1024` 超出 MR 单帧容量（满载荷必然
 /// FrameTooLong）——载荷 > 本常量必须分帧。
-pub const MAX_EL0_PAYLOAD_IN_MR: usize = MAX_FRAME_BYTES - crate::el0::EL0_FRAME_HEADER_LEN - crate::el0::EL0_FRAME_CRC_LEN;
+pub const MAX_EL0_PAYLOAD_IN_MR: usize =
+    MAX_FRAME_BYTES - crate::el0::EL0_FRAME_HEADER_LEN - crate::el0::EL0_FRAME_CRC_LEN;
 
 /// 30 RT-020：编译期断言——MR 契约常量与 el0 常量互相引用（防止两侧
 /// 各自为政漂移）。
@@ -147,9 +148,6 @@ mod tests {
         // +1 超限拒绝。
         let mut too_long = frame.clone();
         too_long.push(0);
-        assert_eq!(
-            frame_into_mrs(&too_long),
-            Err(FrameMrError::FrameTooLong)
-        );
+        assert_eq!(frame_into_mrs(&too_long), Err(FrameMrError::FrameTooLong));
     }
 }

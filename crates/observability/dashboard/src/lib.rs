@@ -24,7 +24,6 @@
 extern crate alloc;
 
 pub mod powerflow;
-pub mod real_render;
 pub mod render;
 pub mod topology;
 pub mod types;
@@ -32,14 +31,18 @@ pub mod ws;
 
 pub use powerflow::{PowerFlowCalculator, SimplePowerFlow, NOMINAL_VOLTAGE};
 pub use render::{DashboardEvent, DashboardWsServer};
-pub use topology::{find_node, neighbors, MockTopology, TopologyProvider};
+#[cfg(any(test, feature = "mock"))]
+pub use topology::MockTopology;
+pub use topology::{
+    find_node, neighbors, RegistrySource, RegistryTopologyProvider, TopologyProvider,
+};
 pub use types::{
     EdgeKind, FlowDirection, NodeKind, NodeStatus, Position3D, PowerFlowSample, TopologyEdge,
     TopologyGraph, TopologyNode,
 };
 pub use ws::{
-    WsServer, MAX_FRAME_BYTES, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG, OP_TEXT, parse_frame,
-    parse_server_frame,
+    parse_frame, parse_server_frame, WsServer, MAX_FRAME_BYTES, OP_BINARY, OP_CLOSE, OP_PING,
+    OP_PONG, OP_TEXT,
 };
 
 /// 仪表盘错误类型.

@@ -6,14 +6,18 @@
 //! 1. `NetTcpTransport`（feature `net`）— 基于 eneros-net 的
 //!    `TcpSocket`/`NetworkInterface`（smoltcp，经 v0.196 真实 DMA 环）
 //!    的 MQTT 字节流传输；
-//! 2. [`TlsLayer`] — TLS 包装抽象（std 侧 rustls 实现，feature `tls`
-//!    门控；无 TLS 编译目标时降级为明文直通）。
+//! 2. [`SecureMqttTransport`] — 39 WP-39.9：`MqttTransport` +
+//!    `SecureChannel` 组合；明文只能以 `InsecureStream`（security=Plain）
+//!    存在，且必须经 [`eneros_protocol_abstract::ChannelPolicy`] 显式
+//!    放行（release 默认拒绝）。旧 `TlsLayer`/`PlainTcp`（名字含 Tls
+//!    但明文直通）已删除。
 //!
 //! # no_std 合规
 //!
-//! 本模块本体 `no_std` 兼容；TLS 侧因 rustls 依赖 std，以
-//! `#[cfg(feature = "tls")]` 门控（与 `eneros-tls` crate 一致）。
+//! 本模块本体 `no_std` 兼容；TLS 提供方（rustls/商密）在蓝图 41
+//! 安全服务注入（与 `eneros-tls` crate 一致）。
 
+use alloc::boxed::Box;
 #[cfg(feature = "net")]
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -26,7 +30,6 @@ use eneros_net::tcpip::{NetworkInterface, SocketSet, TcpSocket};
 use eneros_net::NetDevice;
 
 use crate::error::MqttError;
-#[cfg(feature = "net")]
 use crate::transport::MqttTransport;
 
 // ============================================================================
@@ -39,6 +42,13 @@ const RX_BUF: usize = 4096;
 /// TCP 发送缓冲大小。
 #[cfg(feature = "net")]
 const TX_BUF: usize = 4096;
+/// 39 收尾复验（F4）：send 总时限（ms）——旧实现 `while sent < len`
+/// 在 TX 满/对端不 ACK 时无限自旋；现有 deadline + 断连检测。
+#[cfg(feature = "net")]
+const SEND_DEADLINE_MS: u64 = 5000;
+/// 39 收尾复验（F4）：连续零入队上限（双保险：时钟异常时也能终止）。
+#[cfg(feature = "net")]
+const SEND_MAX_ZERO_STREAK: u32 = 100_000;
 
 /// 基于 eneros-net（smoltcp）的 MQTT TCP 传输。
 ///
@@ -99,7 +109,8 @@ impl<D: NetDevice> NetTcpTransport<D> {
 }
 
 #[cfg(feature = "net")]
-impl<D: NetDevice + 'static> MqttTransport for NetTcpTransport<D> { // 31-review：as_any_mut→&mut dyn Any 需 Self:'static（PR-15 引入该方法时漏约束致 net feature 编译失败）
+impl<D: NetDevice + 'static> MqttTransport for NetTcpTransport<D> {
+    // 31-review：as_any_mut→&mut dyn Any 需 Self:'static（PR-15 引入该方法时漏约束致 net feature 编译失败）
     fn connect(&mut self, host: &str, port: u16) -> Result<(), MqttError> {
         if self.connected {
             return Ok(());
@@ -134,20 +145,39 @@ impl<D: NetDevice + 'static> MqttTransport for NetTcpTransport<D> { // 31-review
         if !self.connected {
             return Err(MqttError::NotConnected);
         }
+        // 39 收尾复验（F4）：有界重试——deadline（单调时钟）+ 连接
+        // 存活检测 + 零入队连续上限；旧实现对端不 ACK/链路已死而
+        // `connected` 仍 true 时永久自旋。
+        let deadline = self
+            .now_ms
+            .saturating_add(SEND_DEADLINE_MS)
+            .max(eneros_time::get_monotonic_ns() / 1_000_000 + SEND_DEADLINE_MS);
         let mut sent = 0usize;
+        let mut zero_streak = 0u32;
         while sent < data.len() {
             self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
+            if self.now_ms >= deadline {
+                return Err(MqttError::PublishTimeout);
+            }
             let _ = self.iface.poll(self.now_ms);
+            // 链路/连接已死 → 不再重试（fail-closed，不伪装发送成功）。
+            if !self.tcp.state(&self.iface).is_connected() {
+                self.connected = false;
+                return Err(MqttError::NotConnected);
+            }
             let n = self
                 .tcp
                 .send(&mut self.iface, &data[sent..])
                 .map_err(|_| MqttError::TransportError)?;
             if n == 0 {
-                // TX 缓冲满：推进协议栈等待腾出空间。
-                self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
-                let _ = self.iface.poll(self.now_ms);
+                // TX 缓冲满：推进协议栈等待腾出空间（连续零入队有界）。
+                zero_streak += 1;
+                if zero_streak > SEND_MAX_ZERO_STREAK {
+                    return Err(MqttError::PublishTimeout);
+                }
                 continue;
             }
+            zero_streak = 0;
             sent += n;
         }
         Ok(())
@@ -189,36 +219,70 @@ impl<D: NetDevice + 'static> MqttTransport for NetTcpTransport<D> { // 31-review
 }
 
 // ============================================================================
-// TLS 层（std 门控）
+// 安全通道（39 WP-39.9：TlsLayer/PlainTcp 已删除——明文不冒充 secure）
 // ============================================================================
 
-/// TLS 包装抽象（v0.221.0）。
+/// 安全 MQTT 传输组合：`MqttTransport`（明文字节流）+ `SecureChannel`
+/// （加密/身份）。`negotiated_security() == Plain` 的通道（
+/// [`InsecureStream`]）只有显式策略放行才能使用（release 默认拒绝）。
 ///
-/// 对接 `eneros-tls`（std 侧 rustls）；无 TLS 目标降级为明文直通。
-/// 生产组合：`TlsTransport { inner: NetTcpTransport, tls: TlsLayer }`。
-pub trait TlsLayer {
-    /// 握手（在已建立的 TCP 连接上协商 TLS）。
-    fn handshake(&mut self) -> Result<(), MqttError>;
-    /// 加密发送。
-    fn send(&mut self, data: &[u8]) -> Result<(), MqttError>;
-    /// 解密接收。
-    fn recv(&mut self) -> Result<Vec<u8>, MqttError>;
+/// 生产组合：`SecureMqttTransport { inner: NetTcpTransport, channel:
+/// SecureChannel }`——TLS 提供方（rustls/商密）在蓝图 41 安全服务注入；
+/// 本层保证"明文实现不叫 secure 名"。
+pub struct SecureMqttTransport {
+    inner: Box<dyn MqttTransport>,
+    channel: Box<dyn eneros_protocol_abstract::SecureChannel>,
 }
 
-/// 明文直通（无 TLS 编译目标时）。
-/// 明文直通（无 TLS 编译目标时）——31 PR-11 更名：名字含 Tls 但无 TLS
-/// 语义（S8 诚实命名，TlsRecordCodec 先例）。
-pub struct PlainTcp;
-
-impl TlsLayer for PlainTcp {
-    fn handshake(&mut self) -> Result<(), MqttError> {
-        Ok(())
+impl SecureMqttTransport {
+    /// 组合（39 收尾复验 F5：**策略在执行点强制**——不再依赖
+    /// "调用方自觉"或尚不存在的工厂）：`policy.allows(通道安全等级)`
+    /// 为 false 时直接 `PolicyDenied`（release 默认策略下明文通道
+    /// 无法进入）。
+    pub fn new(
+        inner: Box<dyn MqttTransport>,
+        channel: Box<dyn eneros_protocol_abstract::SecureChannel>,
+        policy: &eneros_protocol_abstract::ChannelPolicy,
+    ) -> Result<Self, MqttError> {
+        if !policy.allows(channel.negotiated_security()) {
+            return Err(MqttError::PolicyDenied);
+        }
+        Ok(Self { inner, channel })
     }
-    fn send(&mut self, _data: &[u8]) -> Result<(), MqttError> {
-        Ok(())
+
+    /// 实际安全等级。
+    pub fn security(&self) -> eneros_protocol_abstract::ChannelSecurity {
+        self.channel.negotiated_security()
+    }
+}
+
+impl MqttTransport for SecureMqttTransport {
+    fn connect(&mut self, host: &str, port: u16) -> Result<(), MqttError> {
+        self.inner.connect(host, port)
+    }
+    fn send(&mut self, data: &[u8]) -> Result<(), MqttError> {
+        self.channel
+            .send(data)
+            .map_err(|_| MqttError::TransportError)
     }
     fn recv(&mut self) -> Result<Vec<u8>, MqttError> {
-        Err(MqttError::PublishTimeout)
+        // 有界接收：一次读满缓冲；协议剩余长度由 MqttClient 处理。
+        let mut buf = [0u8; 4096];
+        let n = self
+            .channel
+            .recv(&mut buf)
+            .map_err(|_| MqttError::NotConnected)?;
+        Ok(buf[..n].to_vec())
+    }
+    fn close(&mut self) -> Result<(), MqttError> {
+        let _ = self.channel.close();
+        self.inner.close()
+    }
+    fn is_connected(&self) -> bool {
+        self.inner.is_connected()
+    }
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }
 
@@ -228,19 +292,54 @@ impl TlsLayer for PlainTcp {
 
 #[cfg(test)]
 mod tests {
+    use eneros_protocol_abstract::{
+        ChannelPolicy, ChannelSecurity, InsecureStream, TransportError, TransportHandle,
+    };
+
     use super::*;
 
-    #[test]
-    fn test_plain_tls_handshake_ok() {
-        let mut tls = PlainTcp;
-        assert!(tls.handshake().is_ok());
+    /// 测试用空实现传输句柄（InsecureStream 包装用）。
+    struct NoopHandle;
+
+    impl TransportHandle for NoopHandle {
+        fn send(&mut self, _data: &[u8]) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn recv(&mut self, _buf: &mut [u8]) -> Result<usize, TransportError> {
+            Err(TransportError::Closed)
+        }
+        fn close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+            self
+        }
     }
 
+    fn plain_channel() -> Box<dyn eneros_protocol_abstract::SecureChannel> {
+        Box::new(InsecureStream::new(Box::new(NoopHandle)))
+    }
+
+    /// 39 收尾复验（F5 mutation）：明文通道 + release 默认策略 →
+    /// PolicyDenied（蓝图 §8："PlainTcp 实现 secure → Gate 必须转红"
+    /// 的编码断言；旧实现策略零执行点）。
     #[test]
-    fn test_plain_tls_default_behavior() {
-        // 明文直通层：send 恒 OK；recv 无数据 → 超时。
-        let mut tls = PlainTcp;
-        assert!(tls.send(b"hello").is_ok());
-        assert_eq!(tls.recv(), Err(MqttError::PublishTimeout));
+    fn plain_channel_rejected_under_release_policy() {
+        let inner = Box::new(crate::transport::MockTransport::new());
+        let policy = ChannelPolicy::default_release();
+        let result = SecureMqttTransport::new(inner, plain_channel(), &policy);
+        assert_eq!(result.err(), Some(MqttError::PolicyDenied));
+    }
+
+    /// 显式放行明文（dev/lab 策略）→ 组合成功且 security 如实报 Plain。
+    #[test]
+    fn plain_channel_allowed_only_with_explicit_policy() {
+        let inner = Box::new(crate::transport::MockTransport::new());
+        let policy = ChannelPolicy::default_dev();
+        let t = SecureMqttTransport::new(inner, plain_channel(), &policy).expect("dev policy");
+        assert_eq!(t.security(), ChannelSecurity::Plain);
     }
 }

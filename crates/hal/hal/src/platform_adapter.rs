@@ -367,6 +367,6 @@ mod tests {
             reset: ResetControllerSet { present: false },
             clocks: ClockControllerSet { present: false },
         };
-        assert!(matches!(_rt.timer, Some(_)));
+        assert!(_rt.timer.is_some());
     }
 }

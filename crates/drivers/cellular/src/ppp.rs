@@ -522,7 +522,6 @@ mod tests {
         );
     }
 
-    #[test]
     /// 31 DR-05 判据：RFC 1662 Appendix 已知向量 "123456789" → 0x906E。
     #[test]
     fn test_fcs16_rfc1662_vector() {

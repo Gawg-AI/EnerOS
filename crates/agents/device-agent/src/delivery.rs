@@ -59,40 +59,21 @@ impl DeliveryFrame {
 /// EIPC handler 依此路由到 [`crate::ingress::EnvelopeIngress::handshake_response`]）。
 pub const HANDSHAKE_MARKER: [u8; 1] = [0x00];
 
-/// 处理结果帧（EIPC 响应载荷，2 字节定长）：结果码 + 拒绝分类码。
-///
-/// 由 device-agent 侧 [`crate::ingress::outcome_to_frame`] 编码，
-/// 签发侧（ai/runner 投递器）解码映射（§6.4）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutcomeFrame {
-    /// 结果码：0=Applied 1=IdempotentHit 2=DryRun 3=Denied。
-    pub code: u8,
-    /// 拒绝分类码（仅 Denied 时有意义，见 DenyClass::code；否则 0）。
-    pub class: u8,
-}
+// 蓝图 40 WP-40.11：结果帧统一收敛到 control-gateway 的 `wire` 模块
+//（唯一线上编解码——dispatch 与 device-agent 同源消费）。旧本地定义
+//（2 字节 code/class）由 `OutcomeFrame`/`OutcomeCode` 重导出兼容；
+// 结果码扩展：4=AppliedReadbackUnavailable、5=AppliedReadbackMismatch、
+// 6=Failed（分层成功语义）。
+pub use eneros_control_gateway::wire::OutcomeFrame;
 
-impl OutcomeFrame {
-    pub const CODE_APPLIED: u8 = 0;
-    pub const CODE_IDEMPOTENT_HIT: u8 = 1;
-    pub const CODE_DRY_RUN: u8 = 2;
-    pub const CODE_DENIED: u8 = 3;
-
-    /// 编码为 2 字节定长响应载荷。
-    pub fn encode(&self) -> [u8; 2] {
-        [self.code, self.class]
-    }
-
-    /// 解码 2 字节响应载荷；长度不符 → None。
-    pub fn decode(buf: &[u8]) -> Option<Self> {
-        if buf.len() != 2 {
-            return None;
-        }
-        Some(Self {
-            code: buf[0],
-            class: buf[1],
-        })
-    }
-}
+/// 兼容常量（旧 CODE_* 名称保留；新代码见 [`OutcomeCode`]）。
+pub const CODE_APPLIED: u8 = 0;
+pub const CODE_IDEMPOTENT_HIT: u8 = 1;
+pub const CODE_DRY_RUN: u8 = 2;
+pub const CODE_DENIED: u8 = 3;
+pub const CODE_APPLIED_READBACK_UNAVAILABLE: u8 = 4;
+pub const CODE_APPLIED_READBACK_MISMATCH: u8 = 5;
+pub const CODE_FAILED: u8 = 6;
 
 // ============================================================================
 // Tests

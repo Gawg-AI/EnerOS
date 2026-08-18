@@ -32,6 +32,21 @@ pub enum TradeDir {
     Sell,
 }
 
+/// 时段类型（峰/平/谷，W5.1 蓝图23 / ADR-0029 词汇归属收敛）。
+///
+/// 进入跨 crate 契约（`PricePoint.period`、报价单 `ResourceBid.period`），
+/// 由本 crate 唯一持有；energy-market-agent 等 crate re-export 本定义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Period {
+    /// 峰时段。
+    Peak,
+    /// 平时段。
+    #[default]
+    Flat,
+    /// 谷时段。
+    Valley,
+}
+
 /// 时间段（UTC 秒）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TimeSlot {

@@ -24,7 +24,6 @@ use core::time::Duration;
 use spin::Mutex;
 
 pub mod ocxo;
-pub mod rtc_backup;
 
 // Re-export SwitchError so callers can use `holdover::SwitchError` without
 // importing the redundancy module separately.

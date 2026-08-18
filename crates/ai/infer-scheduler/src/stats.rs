@@ -15,10 +15,17 @@ pub struct SchedulerStats {
     pub failed_requests: u64,
     /// KV Cache 淘汰次数.
     pub cache_evictions: u64,
+    /// 蓝图 40 WP-40.4：显式取消请求数。
+    pub cancelled: u64,
 }
 
 impl SchedulerStats {
     /// 记录一次提交.
+    /// 记录一次取消（WP-40.4）。
+    pub fn record_cancel(&mut self) {
+        self.cancelled += 1;
+    }
+
     pub fn record_submit(&mut self) {
         self.total_requests += 1;
     }

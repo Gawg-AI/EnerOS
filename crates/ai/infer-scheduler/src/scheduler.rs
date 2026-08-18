@@ -50,10 +50,7 @@ impl InferScheduler {
     /// 32 AI-04：队列深度上限（背压——QueueFull 声明兑现）。
     pub const MAX_QUEUE_DEPTH: usize = 64;
 
-    pub fn submit(
-        &mut self,
-        mut req: InferRequest,
-    ) -> Result<u64, crate::error::SchedulerError> {
+    pub fn submit(&mut self, mut req: InferRequest) -> Result<u64, crate::error::SchedulerError> {
         // 32 AI-04：背压——队列超限返回 QueueFull（声明兑现；旧实现
         // 无上限增长面）。
         if self.queue.len() >= Self::MAX_QUEUE_DEPTH {
@@ -78,7 +75,11 @@ impl InferScheduler {
         while let Some(req) = self.queue.pop_front() {
             if req.is_timed_out(now_ns) {
                 self.stats.record_timeout();
-                results.push(InferResult::failure(req.id, SchedulerError::Timeout));
+                results.push(InferResult::failure(
+                    req.id,
+                    req.correlation,
+                    SchedulerError::Timeout,
+                ));
             } else {
                 active.push(req);
             }
@@ -111,26 +112,49 @@ impl InferScheduler {
                             self.kv_cache.release(req.id);
                             self.active_count -= 1;
                             self.stats.record_complete();
-                            results.push(InferResult::success(req.id, output));
+                            results.push(InferResult::success(req.id, req.correlation, output));
                         }
                         Err(e) => {
                             self.kv_cache.release(req.id);
                             self.active_count -= 1;
                             self.stats.record_failure();
                             let err = SchedulerError::from(e);
-                            results.push(InferResult::failure(req.id, err));
+                            results.push(InferResult::failure(req.id, req.correlation, err));
                         }
                     }
                 }
                 Err(err) => {
                     // KV Cache 耗尽
                     self.stats.record_failure();
-                    results.push(InferResult::failure(req.id, err));
+                    results.push(InferResult::failure(req.id, req.correlation, err));
                 }
             }
         }
 
         results
+    }
+
+    /// 蓝图 40 WP-40.4：取消已排队请求（返回是否找到并移除）。
+    ///
+    /// 已开始的推理由 supervisor 进程级取消/重启（svc-ai-worker 隔离）；
+    /// 本 API 覆盖排队/调度阶段的显式取消。
+    pub fn cancel(&mut self, id: u64) -> bool {
+        let before = self.queue.len();
+        self.queue.retain(|r| r.id != id);
+        let removed = self.queue.len() != before;
+        if removed {
+            self.stats.cancelled += 1;
+        }
+        removed
+    }
+
+    /// 蓝图 40 WP-40.4：按 correlation 取消（同决策请求的所有排队项）。
+    pub fn cancel_by_correlation(&mut self, correlation: &[u8; 16]) -> usize {
+        let before = self.queue.len();
+        self.queue.retain(|r| &r.correlation != correlation);
+        let removed = before - self.queue.len();
+        self.stats.cancelled += removed as u64;
+        removed
     }
 
     /// 当前队列长度.

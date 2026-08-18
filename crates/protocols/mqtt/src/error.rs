@@ -27,4 +27,6 @@ pub enum MqttError {
     UnexpectedPacket,
     /// 内存分配失败（22 §2.W1.1：解码路径 try_reserve 失败，不 panic）.
     OutOfMemory,
+    /// 39 收尾复验（F5）：通道安全策略拒绝（明文被禁/等级不足）。
+    PolicyDenied,
 }
