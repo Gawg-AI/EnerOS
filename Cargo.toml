@@ -141,10 +141,11 @@ members = [
 ]
 
 [workspace.package]
-# 版本纪律（蓝图/20 R1-1）：版本号由闸门驱动，只有 docs/v1.0.0-go-no-go.md
-# 全 PASS 才允许写 1.0.0；rc 期间必须带 -rc.N 后缀（xtask qa gng-version /
-# eneros-ci version-gate-consistency 双检查强制）。
-version = "1.0.0-rc.0"
+# 版本纪律（蓝图/44-00 §3，取代 蓝图/20 R1-1）：未过 52 卷 GO 终验不得挂
+# rc/1.0 标记；冲刺期一律 0.x.y（0.313 延续历史 120 版本计划顶格 v0.312）；
+# 每 WP Exit 自证后递增 patch（cargo xtask bump-version patch；
+# xtask qa gng-version / eneros-ci version-gate-consistency 双检查强制）。
+version = "0.313.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
