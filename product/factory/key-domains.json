@@ -1,0 +1,27 @@
+{
+  "schema": "eneros.factory-key-domains.v1",
+  "updated_by": "owner",
+  "updated_at": "2026-08-18T00:00:00Z",
+  "note": "WP-43.10 产线密钥域分离：factory/release/recovery 三域允许用途声明；由 owner 维护 key_ref 并把域固定到厂方公钥指纹；任何域缺声明即不得放行；执行 AI 不得自行把某 key 登记到某域（N/A 须负责人批准）。",
+  "domains": {
+    "factory": {
+      "allowed_uses": [
+        "provisioning",
+        "birth-record"
+      ],
+      "key_ref": "product/security/dev-signing.key (dev 基线；量产须切厂方 factory 域 key)"
+    },
+    "release": {
+      "allowed_uses": [
+        "release-signing"
+      ],
+      "key_ref": "product/security/release-signing.key (TBD by owner)"
+    },
+    "recovery": {
+      "allowed_uses": [
+        "recovery-signing"
+      ],
+      "key_ref": "product/security/recovery-signing.key (TBD by owner)"
+    }
+  }
+}

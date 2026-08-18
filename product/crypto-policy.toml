@@ -1,0 +1,109 @@
+# EnerOS 密码产品授权政策（蓝图 36 WP-36.2）
+schema = "eneros.crypto-policy.v1"
+# 用途必须细分（boot_signature/device_identity/channel_tls/audit_hash/
+# ota_signature/attestation/kernel_integrity），禁止单一"国密支持"布尔值。
+# evaluation_status: approved | experimental | pending-review
+# product_allowed=true 必须同时满足：approved + 非空 evidence_digest +
+# 非空 allowed_targets/features。
+
+# 正式 UEFI 启动链（boot-manager-uefi）当前实际使用 Ed25519/SHA-256，
+# ed25519-dalek 为正式链已用实现（35-01 SC-02）。
+[usages.boot_signature]
+provider = "ed25519-dalek"
+crate_name = "ed25519-dalek"
+# 闭世界登记（security-review HIGH 修复）：ed25519-dalek 的传递实现依赖
+# ed25519（RFC 8032 trait/验证）与 curve25519-dalek（曲线运算）随主实现
+# 同一评估单元获准；未登记的 crypto 包入闭包 → UNREGISTERED 失败。
+impl_dependencies = ["ed25519", "curve25519-dalek"]
+product_allowed = true
+evaluation_status = "approved"
+review_required = true
+allowed_targets = ["aarch64-unknown-uefi", "host"]
+allowed_features = ["*"]
+evidence_digest = "binding:product/profiles/qemu-prod.json+boot-manager-uefi-signature-chain"
+
+# 内核/组件完整性哈希：sha2（与 init bundle sha256、SBOM 同算法族）。
+[usages.kernel_integrity]
+provider = "sha2"
+crate_name = "sha2"
+product_allowed = true
+evaluation_status = "approved"
+allowed_targets = ["aarch64-unknown-none", "aarch64-unknown-uefi", "host"]
+allowed_features = ["*"]
+evidence_digest = "binding:init-bundle-sha256+sbom-sha256"
+
+# 审计链哈希：SHA-256（36 已把 SM3 移出产品闭包，见 ADR-0043 附录）。
+[usages.audit_hash]
+provider = "sha2"
+crate_name = "sha2"
+product_allowed = true
+evaluation_status = "approved"
+allowed_targets = ["aarch64-unknown-none", "host"]
+allowed_features = ["*"]
+evidence_digest = "binding:eneros-audit-chain-sha256+root-task-panic-genesis"
+
+# ============================================================
+# 负责人决策登记（蓝图 42 Exit Gate #13 闭包决议，2026-08-17）：
+# 决策 ID：CHG-2026-08-17-42-closure-sm2
+# 决策者：产品负责人（会话指令"开发到完成42的内容，直到可以开始43"，
+#         即 ADR-022 三选项之选项 1）
+# 决策内容：批准 eneros-crypto（SM2/SM3/SM4 手卷，no_std 目标唯一可链接
+#           实现——ADR-022 事实）进入 qemu-prod 产品闭包，用于
+#           config-bundle 验签（config_service）/ OTA 镜像签名
+#           （root-task ota_download_probe + svc-ota）/ 设备身份 /
+#           遥测摘要（trusted.rs）/ 远程证明。
+# 绑定条件（product_allowed=true 的证据要求）：
+#   - 正确性证据：C1/C2 KAT（crates/security/crypto/tests/
+#     sm2_kat.rs+sm3_kat.rs+sm4_kat.rs+cry001_constant_time.rs）与
+#     10 组 OpenSSL 第三方互操作向量（tests/vectors/sm2-interop/
+#     vectors.json，schema=eneros.sm2-interop-vectors.v1，vector_count=10）；
+#   - 商密认证仍为蓝图 43 前置：本决策不构成商密合规宣称，产品文档
+#     不得宣称"商密认证通过"；
+#   - 手卷未独立审计风险由 43 密码学独立评审覆盖；43 评审不通过时
+#     本政策必须回退 product_allowed=false（可逆决策）。
+# ============================================================
+
+# 国密 SM2/SM3/SM4：负责人签署 CHG-2026-08-17-42-closure-sm2 批准入闭包
+#（绑定 KAT+互操作向量证据；商密认证 43 前置）。
+[usages.device_identity]
+provider = "eneros-crypto (SM2)"
+crate_name = "eneros-crypto"
+product_allowed = true
+evaluation_status = "approved"
+review_required = true
+allowed_targets = ["aarch64-unknown-none"]
+allowed_features = ["*"]
+evidence_digest = "binding:tests/vectors/sm2-interop/vectors.json+crates/security/crypto/tests/sm2_kat.rs+crates/security/crypto/tests/sm3_kat.rs+crates/security/crypto/tests/sm4_kat.rs+crates/security/crypto/tests/cry001_constant_time.rs"
+# ecdsa（SEC1 ECDSA，SM2 签名实现依赖）随主实现同一评估单元登记。
+impl_dependencies = ["ecdsa"]
+
+[usages.channel_tls]
+provider = "eneros-crypto-gmssl / openssl"
+crate_name = "eneros-crypto-gmssl"
+product_allowed = false
+evaluation_status = "experimental"
+allowed_targets = []
+allowed_features = []
+evidence_digest = ""
+
+[usages.ota_signature]
+provider = "eneros-crypto (SM2)"
+crate_name = "eneros-crypto"
+product_allowed = true
+evaluation_status = "approved"
+review_required = true
+allowed_targets = ["aarch64-unknown-none"]
+allowed_features = ["*"]
+evidence_digest = "binding:tests/vectors/sm2-interop/vectors.json+crates/security/crypto/tests/sm2_kat.rs+crates/security/crypto/tests/sm3_kat.rs+crates/security/crypto/tests/sm4_kat.rs+crates/security/crypto/tests/cry001_constant_time.rs"
+impl_dependencies = ["ecdsa"]
+
+[usages.attestation]
+provider = "eneros-crypto (SM2/SM3)"
+crate_name = "eneros-crypto"
+product_allowed = true
+evaluation_status = "approved"
+review_required = true
+allowed_targets = ["aarch64-unknown-none"]
+allowed_features = ["*"]
+evidence_digest = "binding:tests/vectors/sm2-interop/vectors.json+crates/security/crypto/tests/sm2_kat.rs+crates/security/crypto/tests/sm3_kat.rs+crates/security/crypto/tests/sm4_kat.rs+crates/security/crypto/tests/cry001_constant_time.rs"
+impl_dependencies = ["ecdsa"]

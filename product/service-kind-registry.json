@@ -1,0 +1,175 @@
+{
+  "kinds": [
+    {
+      "capability": "root supervisor",
+      "id": "runtime.root",
+      "status": "declared"
+    },
+    {
+      "capability": "signed runtime configuration",
+      "id": "runtime.config",
+      "status": "declared"
+    },
+    {
+      "capability": "audit chain persistence",
+      "id": "runtime.audit",
+      "status": "declared"
+    },
+    {
+      "capability": "console/serial service",
+      "id": "driver.console",
+      "status": "declared"
+    },
+    {
+      "capability": "entropy provider service",
+      "id": "driver.entropy",
+      "status": "declared"
+    },
+    {
+      "capability": "block storage service",
+      "id": "driver.block",
+      "status": "declared"
+    },
+    {
+      "capability": "network service",
+      "id": "driver.network",
+      "status": "declared"
+    },
+    {
+      "capability": "field bus service",
+      "id": "driver.bus",
+      "status": "declared"
+    },
+    {
+      "capability": "time synchronization service",
+      "id": "driver.time",
+      "status": "declared"
+    },
+    {
+      "capability": "watchdog service",
+      "id": "driver.watchdog",
+      "status": "declared"
+    },
+    {
+      "capability": "Modbus RTU master/slave",
+      "id": "protocol.modbus-rtu",
+      "status": "declared"
+    },
+    {
+      "capability": "Modbus TCP",
+      "id": "protocol.modbus-tcp",
+      "status": "declared"
+    },
+    {
+      "capability": "IEC 60870-5-104",
+      "id": "protocol.iec104",
+      "status": "declared"
+    },
+    {
+      "capability": "MMS",
+      "id": "protocol.mms",
+      "status": "declared"
+    },
+    {
+      "capability": "GOOSE",
+      "id": "protocol.goose",
+      "status": "declared"
+    },
+    {
+      "capability": "Sampled Values",
+      "id": "protocol.sv",
+      "status": "declared"
+    },
+    {
+      "capability": "MQTT client",
+      "id": "protocol.mqtt",
+      "status": "declared"
+    },
+    {
+      "capability": "telemetry pipeline",
+      "id": "control.telemetry",
+      "status": "declared"
+    },
+    {
+      "capability": "energy agent",
+      "id": "control.energy-agent",
+      "status": "declared"
+    },
+    {
+      "capability": "AI worker",
+      "id": "control.ai-worker",
+      "status": "declared"
+    },
+    {
+      "capability": "device agent",
+      "id": "control.device-agent",
+      "status": "declared"
+    },
+    {
+      "capability": "energy market",
+      "id": "business.market",
+      "status": "declared"
+    },
+    {
+      "capability": "settlement",
+      "id": "business.settlement",
+      "status": "declared"
+    },
+    {
+      "capability": "account",
+      "id": "business.account",
+      "status": "declared"
+    },
+    {
+      "capability": "system OTA",
+      "id": "business.ota",
+      "status": "declared"
+    },
+    {
+      "capability": "model OTA",
+      "id": "business.model-ota",
+      "status": "declared"
+    },
+    {
+      "capability": "federation",
+      "id": "business.federation",
+      "status": "declared"
+    },
+    {
+      "capability": "cloud sync",
+      "id": "business.cloud-sync",
+      "status": "declared"
+    },
+    {
+      "capability": "management API",
+      "id": "ops.mgmt",
+      "status": "declared"
+    },
+    {
+      "capability": "metrics",
+      "id": "ops.metrics",
+      "status": "declared"
+    },
+    {
+      "capability": "logging",
+      "id": "ops.logging",
+      "status": "declared"
+    },
+    {
+      "capability": "tracing",
+      "id": "ops.tracing",
+      "status": "declared"
+    },
+    {
+      "capability": "dashboard",
+      "id": "ops.dashboard",
+      "status": "declared"
+    },
+    {
+      "capability": "alerting",
+      "id": "ops.alert",
+      "status": "declared"
+    }
+  ],
+  "schema": "eneros.service-kind-registry.v1"
+}

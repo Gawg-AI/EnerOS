@@ -1,0 +1,55 @@
+{
+  "schema": "eneros.external-review-matrix.v1",
+  "generated_at": "2026-08-18T00:00:00Z",
+  "note": "蓝图 43 WP-43.12：按销售区域/行业选择适用项目；不得假定已认证。状态枚举 PASS/FAIL/PENDING/BLOCKED/NOT_APPLICABLE_WITH_APPROVAL——N/A 必须有范围理由与负责人批准，执行 AI 不得自填。",
+  "items": [
+    {
+      "item": "独立密码实现/算法/provider 评审",
+      "scope": "eneros-crypto SM2/SM3/SM4（手卷）入 qemu-prod 闭包（CHG-2026-08-17-42-closure-sm2）",
+      "status": "BLOCKED",
+      "reason": "无外部密码学评审资源；评审不通过时 crypto-policy 三个 usage 必须回退 product_allowed=false"
+    },
+    {
+      "item": "渗透测试与供应链审查",
+      "scope": "release 介质/启动链/管理面",
+      "status": "BLOCKED",
+      "reason": "无外部渗透团队；fuzz 6×50k 0 crash + 12 类 mutation 全红为软件侧内部证据，不替代外部渗透"
+    },
+    {
+      "item": "Secure Boot / key lifecycle / TPM / attestation",
+      "scope": "UEFI Ed25519 启动链 + SM2 OTA/config/遥测链",
+      "status": "PENDING",
+      "reason": "依赖密码学独立评审与真机 TPM（QEMU 无 TPM）"
+    },
+    {
+      "item": "SBOM / VEX / 漏洞响应",
+      "scope": "release sbom 生成链（36/42）",
+      "status": "PENDING",
+      "reason": "SBOM 生成存在；VEX/漏洞响应流程未建立"
+    },
+    {
+      "item": "IEC 62351 / 工业协议互操作",
+      "scope": "IEC104（TLS/IEC62351 policy 角色未测）",
+      "status": "BLOCKED",
+      "reason": "L2 独立对端缺产品端点（39/40 句柄移交）"
+    },
+    {
+      "item": "EMC / 安规 / 环境 / 入网（无线）",
+      "scope": "拟销售 SKU（phytium-d2000/kunpeng-920/hardware）",
+      "status": "BLOCKED",
+      "reason": "无硬件、无实验室"
+    },
+    {
+      "item": "等保 / 行业规范 / 客户安全条款",
+      "scope": "中国市场（适用时）",
+      "status": "NOT_APPLICABLE_WITH_APPROVAL",
+      "reason": "未进入销售试点；由产品/合规负责人批准范围后启用"
+    },
+    {
+      "item": "商密认证（SM2/SM3/SM4 国密合规）",
+      "scope": "eneros-crypto 三个 usage",
+      "status": "BLOCKED",
+      "reason": "43 前置；CHG 决议明确本决策不构成商密合规宣称"
+    }
+  ]
+}

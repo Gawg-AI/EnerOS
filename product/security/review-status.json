@@ -1,0 +1,35 @@
+{
+  "schema": "eneros.crypto-review-status.v1",
+  "generated_at": "2026-08-18T00:00:00Z",
+  "note": "蓝图 43 WP-43.12 密码独立评审状态登记。status=PASS 表示独立评审通过；PENDING/FAIL/BLOCKED 表示未通过/未完成。review_deadline 为下次评审到期日——到期日之后未取得 PASS 续期的用途，closure Gate 机器回退 product_allowed=false（CHG-2026-08-17-42-closure-sm2 回退条件机器化）。登记由 owner/评审方更新，执行 AI 不得自填 PASS。",
+  "reviews": {
+    "boot_signature": {
+      "status": "PENDING",
+      "reviewer": "external-crypto-reviewer (未指定)",
+      "reviewed_at": null,
+      "review_deadline": "2026-12-31T00:00:00Z",
+      "evidence_ref": "product/profiles/qemu-prod.json boot-manager-uefi Ed25519/SHA-256 signature chain; product/crypto-policy.toml usages.boot_signature"
+    },
+    "device_identity": {
+      "status": "PENDING",
+      "reviewer": "external-crypto-reviewer (未指定)",
+      "reviewed_at": null,
+      "review_deadline": "2026-12-31T00:00:00Z",
+      "evidence_ref": "crates/security/crypto/tests/sm2_kat.rs+sm3_kat.rs+sm4_kat.rs+cry001_constant_time.rs; tests/vectors/sm2-interop/vectors.json (10 OpenSSL 互操作向量); CHG-2026-08-17-42-closure-sm2"
+    },
+    "ota_signature": {
+      "status": "PENDING",
+      "reviewer": "external-crypto-reviewer (未指定)",
+      "reviewed_at": null,
+      "review_deadline": "2026-12-31T00:00:00Z",
+      "evidence_ref": "同上（SM2 OTA 签名）；root-task ota_download_probe + svc-ota Sm2PublicKey"
+    },
+    "attestation": {
+      "status": "PENDING",
+      "reviewer": "external-crypto-reviewer (未指定)",
+      "reviewed_at": null,
+      "review_deadline": "2026-12-31T00:00:00Z",
+      "evidence_ref": "同上（SM2/SM3 远程证明）；safety-validator trusted.rs SM3 摘要"
+    }
+  }
+}

@@ -1,55 +1,974 @@
 {
-  "schema": "eneros.product-profile.v1",
-  "id": "qemu-prod",
-  "class": "release",
-  "platform": "qemu-virt-aarch64",
-  "target": "aarch64-unknown-none",
-  "image_layout": "qemu-v1",
-  "artifacts": [
-    "raw-gpt",
-    "installer-iso",
-    "update-package",
-    "sbom",
-    "firmware-bundle"
-  ],
-  "binaries": [
-    {
-      "selector": "eneros-boot-manager-uefi::boot-manager-uefi",
-      "role": "boot-manager",
-      "target": "aarch64-unknown-uefi",
-      "default_features": false,
-      "features": [
-        "uefi-app"
-      ]
-    },
-    {
-      "selector": "sel4:elfloader-arm-qemu-arm-virt",
-      "role": "kernel",
-      "target": "host",
-      "features": [],
-      "default_features": false
-    },
-    {
-      "selector": "eneros-installer-uefi::installer-uefi",
-      "role": "installer",
-      "target": "aarch64-unknown-uefi",
-      "default_features": false,
-      "features": [
-        "uefi-app"
-      ]
-    }
-  ],
-  "signing": {
-    "required": true,
-    "key_source": "external-file",
-    "allow_test_keys": false
+ "schema": "eneros.product-profile.v2",
+ "id": "qemu-prod",
+ "class": "release",
+ "platform": "qemu-virt-aarch64",
+ "target": "aarch64-unknown-none",
+ "image_layout": "qemu-v1",
+ "artifacts": [
+  "raw-gpt",
+  "installer-iso",
+  "update-package",
+  "sbom",
+  "firmware-bundle"
+ ],
+ "kernel": {
+  "name": "sel4",
+  "selector": "sel4:elfloader-arm-qemu-arm-virt",
+  "target": "host",
+  "features": [],
+  "external": true
+ },
+ "binaries": [
+  {
+   "selector": "eneros-boot-manager-uefi::boot-manager-uefi",
+   "role": "boot-manager",
+   "target": "aarch64-unknown-uefi",
+   "default_features": false,
+   "features": [
+    "uefi-app"
+   ]
   },
-  "security": {
-    "allow_mock": false,
-    "allow_unsigned": false,
-    "minimum_security_version": 1,
-    "entropy_sources": [
-      "virtio-rng"
-    ]
+  {
+   "selector": "sel4:elfloader-arm-qemu-arm-virt",
+   "role": "kernel",
+   "target": "host",
+   "features": [],
+   "default_features": false
+  },
+  {
+   "selector": "eneros-installer-uefi::installer-uefi",
+   "role": "installer",
+   "target": "aarch64-unknown-uefi",
+   "default_features": false,
+   "features": [
+    "uefi-app"
+   ]
   }
+ ],
+ "services": [
+  {
+   "id": "root-task",
+   "binary": "eneros-root-task::eneros-root-task",
+   "role": "root-task",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "system",
+   "restart": "never",
+   "dependencies": [],
+   "capabilities": [
+    {
+     "name": "supervisor",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 64,
+    "ipc_buffers": 16,
+    "priority": 1
+   },
+   "readiness": {
+    "probe": "root-task-alive",
+    "timeout_ms": 30000,
+    "required_ack": true
+   }
+  },
+  {
+   "id": "svc-hello",
+   "binary": "eneros-services::svc-hello",
+   "role": "required-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-pi",
+   "binary": "eneros-services::svc-pi",
+   "role": "required-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-hog",
+   "binary": "eneros-services::svc-hog",
+   "role": "required-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-fault",
+   "binary": "eneros-services::svc-fault",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "never",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 3
+   }
+  },
+  {
+   "id": "svc-hang",
+   "binary": "eneros-control-services::svc-hang",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "on-failure",
+   "dependencies": [],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 2,
+    "priority": 1
+   },
+   "readiness": {
+    "probe": "ready-ntfn",
+    "timeout_ms": 2000,
+    "required_ack": true
+   }
+  },
+  {
+   "id": "svc-drv-rng",
+   "binary": "eneros-drv-svc::svc-drv-rng",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-drv-blk",
+   "binary": "eneros-drv-svc::svc-drv-blk",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-drv-net",
+   "binary": "eneros-drv-svc::svc-drv-net",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-drv-console",
+   "binary": "eneros-drv-svc::svc-drv-console",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-storage",
+   "binary": "eneros-drv-svc::svc-storage",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-drv-fault",
+   "binary": "eneros-drv-svc::svc-drv-fault",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "never",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 3
+   }
+  },
+  {
+   "id": "svc-pie-a",
+   "binary": "eneros-svc-pie::svc-pie",
+   "role": "required-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-pie-b",
+   "binary": "eneros-svc-pie::svc-pie",
+   "role": "required-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-modbus-rtu",
+   "binary": "eneros-protocol-services::svc-modbus-rtu",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-modbus-tcp",
+   "binary": "eneros-protocol-services::svc-modbus-tcp",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-iec104",
+   "binary": "eneros-protocol-services::svc-iec104",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-mqtt",
+   "binary": "eneros-protocol-services::svc-mqtt",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-mms",
+   "binary": "eneros-protocol-services::svc-mms",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-goose",
+   "binary": "eneros-protocol-services::svc-goose",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-sv",
+   "binary": "eneros-protocol-services::svc-sv",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "support",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 16,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-telemetry",
+   "binary": "eneros-control-services::svc-telemetry",
+   "role": "required-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "control",
+   "restart": "on-failure",
+   "dependencies": [],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 64,
+    "ipc_buffers": 2,
+    "priority": 100
+   },
+   "readiness": {
+    "probe": "ready-ntfn",
+    "timeout_ms": 2000,
+    "required_ack": true
+   }
+  },
+  {
+   "id": "svc-energy-agent",
+   "binary": "eneros-control-services::svc-energy-agent",
+   "role": "required-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "control",
+   "restart": "on-failure",
+   "dependencies": [
+    "svc-telemetry"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 64,
+    "ipc_buffers": 2,
+    "priority": 100
+   },
+   "readiness": {
+    "probe": "ready-ntfn",
+    "timeout_ms": 2000,
+    "required_ack": true
+   }
+  },
+  {
+   "id": "svc-ai-worker",
+   "binary": "eneros-control-services::svc-ai-worker",
+   "role": "required-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "control",
+   "restart": "on-failure",
+   "dependencies": [
+    "svc-telemetry"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 64,
+    "ipc_buffers": 2,
+    "priority": 100
+   },
+   "readiness": {
+    "probe": "ready-ntfn",
+    "timeout_ms": 2000,
+    "required_ack": true
+   }
+  },
+  {
+   "id": "svc-control-dispatch",
+   "binary": "eneros-control-services::svc-control-dispatch",
+   "role": "required-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "control",
+   "restart": "on-failure",
+   "dependencies": [
+    "svc-device-agent"
+   ],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 64,
+    "ipc_buffers": 2,
+    "priority": 100
+   },
+   "readiness": {
+    "probe": "ready-ntfn",
+    "timeout_ms": 2000,
+    "required_ack": true
+   },
+   "configs": [
+    "control-write"
+   ]
+  },
+  {
+   "id": "svc-device-agent",
+   "binary": "eneros-control-services::svc-device-agent",
+   "role": "required-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "control",
+   "restart": "on-failure",
+   "dependencies": [],
+   "capabilities": [
+    {
+     "name": "ep-send",
+     "required": true
+    },
+    {
+     "name": "ep-recv",
+     "required": true
+    }
+   ],
+   "resources": {
+    "stack_pages": 64,
+    "ipc_buffers": 2,
+    "priority": 100
+   },
+   "readiness": {
+    "probe": "ready-ntfn",
+    "timeout_ms": 2000,
+    "required_ack": true
+   }
+  },
+  {
+   "id": "svc-config",
+   "binary": "eneros-business-services::svc-config",
+   "role": "required-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "required",
+   "criticality": "system",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 32,
+    "ipc_buffers": 8,
+    "priority": 2
+   },
+   "readiness": {
+    "probe": "ready-ntfn",
+    "timeout_ms": 30000,
+    "required_ack": true
+   }
+  },
+  {
+   "id": "svc-ledger",
+   "binary": "eneros-business-services::svc-ledger",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "data",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 32,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-market",
+   "binary": "eneros-business-services::svc-market",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "data",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 32,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-ota",
+   "binary": "eneros-business-services::svc-ota",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "system",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 32,
+    "ipc_buffers": 8,
+    "priority": 2
+   },
+   "configs": [
+    "ota"
+   ]
+  },
+  {
+   "id": "svc-observability",
+   "binary": "eneros-business-services::svc-observability",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "data",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 32,
+    "ipc_buffers": 8,
+    "priority": 2
+   },
+   "configs": [
+    "metrics",
+    "logging"
+   ]
+  },
+  {
+   "id": "svc-cloud-sync",
+   "binary": "eneros-business-services::svc-cloud-sync",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "data",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 32,
+    "ipc_buffers": 8,
+    "priority": 2
+   },
+   "configs": [
+    "cloud-sync"
+   ]
+  },
+  {
+   "id": "svc-agent-bus",
+   "binary": "eneros-business-services::svc-agent-bus",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "data",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 32,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  },
+  {
+   "id": "svc-mgmt",
+   "binary": "eneros-business-services::svc-mgmt",
+   "role": "optional-service",
+   "target": "aarch64-unknown-none",
+   "default_features": false,
+   "requirement": "optional",
+   "criticality": "data",
+   "restart": "always",
+   "dependencies": [
+    "root-task"
+   ],
+   "capabilities": [],
+   "resources": {
+    "stack_pages": 32,
+    "ipc_buffers": 8,
+    "priority": 2
+   }
+  }
+ ],
+ "configs": [
+  {
+   "id": "control-write",
+   "path": "configs/control-write.toml",
+   "consumer": [
+    "svc-control-dispatch"
+   ]
+  },
+  {
+   "id": "ota",
+   "path": "configs/ota.toml",
+   "consumer": [
+    "svc-ota"
+   ]
+  },
+  {
+   "id": "cloud-sync",
+   "path": "configs/cloud-sync.toml",
+   "consumer": [
+    "svc-cloud-sync"
+   ]
+  },
+  {
+   "id": "metrics",
+   "path": "configs/metrics.toml",
+   "consumer": [
+    "svc-observability"
+   ]
+  },
+  {
+   "id": "logging",
+   "path": "configs/logging.toml",
+   "consumer": [
+    "svc-observability"
+   ]
+  }
+ ],
+ "security_policy_ref": {
+  "policy": "product/crypto-policy.toml"
+ },
+ "evidence_policy_ref": {
+  "policy": "product/evidence/schema.json"
+ },
+ "signing": {
+  "required": true,
+  "key_source": "external-file",
+  "allow_test_keys": false
+ },
+ "security": {
+  "allow_mock": false,
+  "allow_unsigned": false,
+  "minimum_security_version": 2,
+  "entropy_sources": [
+   "virtio-rng"
+  ]
+ }
 }

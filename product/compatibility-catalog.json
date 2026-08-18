@@ -1,0 +1,75 @@
+{
+  "catalog_id": "5b2c98b6cf7da003ebe9ce7ecbfb0ac473c71970a4afdeb11d35d971421f10da",
+  "core_arch": "aarch64",
+  "generated_at": "2026-08-18T03:59:05Z",
+  "platform_contract_version": 1,
+  "product_manifest_digest": "6905b759e94c7a574644c91f7732119caaa6969293c7675a97ae313406ae44ee",
+  "schema": "eneros.compatibility-catalog.v1",
+  "signature": "1f85272c86ef204e788bca59cd296a977a1a86920224318b073fceca34aeabee5c226090be673c2dbb43baf643ef6822250946b86b8122b77a327627bb250009",
+  "signer": "dev",
+  "skus": [
+    {
+      "board_revision": "unknown",
+      "bsp_adapter": "FdtDescriptionProvider + <pending-board-adapter>",
+      "drivers": [],
+      "dtb_digest": "35efe47a394aa02533ef75ed66c43e05b63e5bf6114e1fe33b34cd9a7ba5378b",
+      "firmware": {
+        "tfa": "none (QEMU/target boot handoff per BSP contract)",
+        "uefi": "AAVMF UEFI + EnerOS boot-manager-uefi (Ed25519/SHA-256)"
+      },
+      "kind": "product",
+      "protocols": [],
+      "qualification_evidence": [],
+      "sku_id": "kunpeng-920",
+      "status": "not-qualified",
+      "status_reason": "无 L4（真机/HIL/EMC/产线/认证/试点）证据；QEMU/合成平台不得泛化为商业资格。"
+    },
+    {
+      "board_revision": "0.1.0-draft",
+      "bsp_adapter": "FdtDescriptionProvider + <pending-board-adapter>",
+      "drivers": [],
+      "dtb_digest": "3b84d5e0d4e991b425ae70f9fad3bec6c87ee0685654e87f48c09adfd3a4d7a1",
+      "firmware": {
+        "tfa": "none (QEMU/target boot handoff per BSP contract)",
+        "uefi": "AAVMF UEFI + EnerOS boot-manager-uefi (Ed25519/SHA-256)"
+      },
+      "kind": "product",
+      "protocols": [],
+      "qualification_evidence": [],
+      "sku_id": "phytium-d2000",
+      "status": "not-qualified",
+      "status_reason": "无 L4（真机/HIL/EMC/产线/认证/试点）证据；QEMU/合成平台不得泛化为商业资格。"
+    },
+    {
+      "board_revision": "1.0.0",
+      "bsp_adapter": "hal::board::adapter::QemuVirtAdapter",
+      "drivers": [
+        "svc-drv-blk",
+        "svc-drv-console",
+        "svc-drv-fault",
+        "svc-drv-net",
+        "svc-drv-rng",
+        "svc-storage"
+      ],
+      "dtb_digest": "",
+      "firmware": {
+        "tfa": "none (QEMU/target boot handoff per BSP contract)",
+        "uefi": "AAVMF UEFI + EnerOS boot-manager-uefi (Ed25519/SHA-256)"
+      },
+      "kind": "development",
+      "protocols": [
+        "goose",
+        "iec104",
+        "mms",
+        "modbus-rtu",
+        "modbus-tcp",
+        "mqtt",
+        "sv"
+      ],
+      "qualification_evidence": [],
+      "sku_id": "qemu-virt-aarch64",
+      "status": "not-qualified",
+      "status_reason": "无 L4（真机/HIL/EMC/产线/认证/试点）证据；QEMU/合成平台不得泛化为商业资格。"
+    }
+  ]
+}

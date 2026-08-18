@@ -1,0 +1,12 @@
+# Release 闭包豁免 allowlist（蓝图 36 WP-36.6）
+# 规则：release resolved feature graph 中任何命中 deny class
+# （mock/fake/stub/simulated/null/test-support/host-file/host-os）的
+# package+feature 必须在此有精确条目（带到期时间、owner、理由），否则
+# `cargo xtask closure gate` 非零退出。
+# feature="*" 表示该 package 的全部 feature（仅限测试专用包）。
+schema = "eneros.closure-allowlist.v1"
+
+# 当前 36 目标状态：产品闭包零 mock/test-support 泄漏 → 无豁免条目。
+# 若未来版本因真实原因需要豁免，必须在此登记并写明到期/owner/理由；
+# 到期后未续期自动失效（Gate 红）。
+# entries = []

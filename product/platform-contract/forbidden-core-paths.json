@@ -1,0 +1,38 @@
+{
+  "schema": "eneros.forbidden-core-paths.v1",
+  "version": 1,
+  "forbidden_prefixes": [
+    "crates/ai/",
+    "crates/agents/",
+    "crates/runtime/root-task/src/supervisor.rs",
+    "crates/runtime/root-task/src/service.rs",
+    "crates/runtime/root-task/src/main.rs",
+    "crates/protocols/protocol-abstract/",
+    "crates/security/control-gateway/",
+    "crates/security/safety-validator/",
+    "product/security/",
+    "product/policy/",
+    "product/profiles/schema.json",
+    "product/kernel-policy.toml",
+    "product/crypto-policy.toml",
+    "crates/runtime/durable-log/",
+    "crates/observability/"
+  ],
+  "platform_surface_prefixes": [
+    "product/skus/",
+    "product/compatibility-catalog.json",
+    "product/sku-matrix.json",
+    "configs/platform-contracts/",
+    "configs/*.dts",
+    "crates/hal/",
+    "crates/drivers/"
+  ],
+  "vendor_patterns": [
+    "if board ==",
+    "if board==",
+    "match board",
+    "board == \"phytium",
+    "board == \"kunpeng",
+    "board == \"qemu"
+  ]
+}

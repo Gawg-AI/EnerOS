@@ -1,0 +1,61 @@
+{
+  "schema": "eneros.board-fact-freeze.v1",
+  "sku_id": "qemu-virt-aarch64",
+  "frozen_at": "2026-08-18T00:00:00Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "facts": {
+    "soc": {
+      "value": "QEMU ARM Virtual Machine (virt) — GICv3, no vendor SoC",
+      "verified": true,
+      "source": "qemu-system-aarch64 -machine virt (hw/arm/virt.c); boot log '38 HAL: cpus=4 timer-freq=62500000 console=arm,pl011', evidence/38"
+    },
+    "cpu": {
+      "value": "cortex-a57, 4 cores (SMP), armv8-a",
+      "verified": true,
+      "source": "configs/qemu-virt.dts (arm,cortex-a57 x4); qemu boot log cpus=4; configs/platform-contracts/qemu-virt-aarch64.json cpu.cores=4"
+    },
+    "memory": {
+      "value": "1 GiB RAM @ 0x40000000（qemu harness -m 1G；sel4 qemu-arm-virt DTB 一致，BOOT-003）",
+      "verified": true,
+      "source": "xtask/src/qemu_harness.rs:550-556; 注意 configs/platform-contracts/qemu-virt-aarch64.json memory.ram 仍有 512M 旧值（38 owner，登记差异）"
+    },
+    "firmware": {
+      "value": "AAVMF UEFI + EnerOS boot-manager-uefi（Ed25519/SHA-256 验签）；TF-A 不参与（QEMU UEFI 直启）",
+      "verified": true,
+      "source": "product/profiles/qemu-prod.json binaries[0]=eneros-boot-manager-uefi; evidence/42 round131-formal-boot PASS; product/crypto-policy.toml usages.boot_signature"
+    },
+    "uart": {
+      "value": "PL011 x1 @ 0x09000000, irq 33",
+      "verified": true,
+      "source": "configs/qemu-virt.dts:56-58; platform-contract qemu-virt-aarch64.json resources.uart0; boot log 'console=arm,pl011'"
+    },
+    "timer": {
+      "value": "armv8-architected timer, 62.5 MHz (CNTFRQ), irq 30",
+      "verified": true,
+      "source": "boot log timer-freq=62500000; platform-contract qemu-virt-aarch64.json timer"
+    },
+    "gic": {
+      "value": "GICv3（GICD @ 0x08000000，GICR @ 0x080A0000），PPI [11,13,14,26,27,30]，SPI base 32",
+      "verified": true,
+      "source": "configs/qemu-virt.dts:85-92; platform-contract qemu-virt-aarch64.json gic"
+    },
+    "virtio_dma": {
+      "value": "virtio-mmio transports（多实例，irq 32+）；平台声明 cache_coherent=true（FDT dma-coherent + 板级事实双来源）→ EL0 使用 NoopCache；non-coherent 盒子由 38.2 拒绝（fail-closed）",
+      "verified": true,
+      "source": "platform-contract qemu-virt-aarch64.json resources virtio-mmio-*; crates/hal/board/src/adapter.rs QemuVirtAdapter; evidence/38 2.2 dc ivac 根因"
+    },
+    "dtb": {
+      "value": "qemu-virt.dts 编译 DTB（configs/qemu-virt.dts）",
+      "verified": true,
+      "source": "crates/hal/board/tests/fixtures/qemu-virt.dtb（include_bytes! 嵌入 device_tree.rs:1262）；dtb_digest 见 compatibility-catalog"
+    }
+  },
+  "missing": [
+    "storage：QEMU 使用虚拟 virtio-blk 盘，无真实介质 sector/flush/power-loss 特性（真实 SKU 须冻结）",
+    "network PHY/MAC：virtio-net 为虚拟设备，无 PHY/MDIO/clock/reset 事实",
+    "rs485/can：QEMU 无真实 RS485/CAN 收发器与总线特征",
+    "power/thermal/传感器：QEMU 无电源轨/温度传感器",
+    "watchdog/RTC：PL031 RTC 可用；SP805 watchdog 为虚拟",
+    "secure element / TPM：QEMU 无 TPM（swtpm 未启用）"
+  ]
+}

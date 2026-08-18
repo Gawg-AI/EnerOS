@@ -1,0 +1,48 @@
+{
+  "schema": "eneros.board-fact-freeze.v1",
+  "sku_id": "phytium-d2000",
+  "frozen_at": "2026-08-18T00:00:00Z",
+  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
+  "facts": {
+    "soc": {
+      "value": "Phytium D2000（占位骨架，compatible = \"phytium,d2000\"）",
+      "verified": true,
+      "source": "configs/phytium-d2000.dts:28"
+    },
+    "cpu": {
+      "value": "8 cores（PlatformConfig PHYTIUM_D2000）",
+      "verified": true,
+      "source": "crates/hal/hal/src/arm64/platform.rs:40（未真机验证，BLOCKED 缺硬件）"
+    },
+    "uart": {
+      "value": "未知（PL011 假设未证实）",
+      "verified": false,
+      "source": "BLOCKED：无真机 UART 地址/IRQ 事实"
+    },
+    "memory": {
+      "value": "未知（无板级 RAM map）",
+      "verified": false,
+      "source": "BLOCKED：缺硬件与 BSP 文档"
+    },
+    "firmware": {
+      "value": "UEFI/TF-A 版本与配置未冻结",
+      "verified": false,
+      "source": "BLOCKED：缺板级固件事实（configs/phytium-d2000.dts 为占位骨架）"
+    },
+    "dtb": {
+      "value": "configs/phytium-d2000.dts 占位最小骨架",
+      "verified": true,
+      "source": "configs/phytium-d2000.dts（仅 compatible 级别）"
+    }
+  },
+  "missing": [
+    "soc revision / cache / SMMU / GIC 版本与寄存器布局",
+    "RAM map / reserved / CMA / secure world",
+    "storage controller / media / sector / flush / power-loss 特性",
+    "NIC / PHY / MAC / clock / reset / MDIO",
+    "RS485 / CAN / GPIO / transceiver / termination",
+    "power / thermal / sensor",
+    "watchdog / RTC / TRNG / TPM",
+    "known errata / workaround owner"
+  ]
+}

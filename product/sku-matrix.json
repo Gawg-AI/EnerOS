@@ -1,0 +1,79 @@
+{
+  "entries": [
+    {
+      "evidence": "",
+      "interface": "RS485",
+      "level": "L0",
+      "peer": "independent-raw-peer",
+      "protocol": "Modbus RTU",
+      "result": "PENDING",
+      "role": "master",
+      "security_profile": "physical/local"
+    },
+    {
+      "evidence": "evidence/43/l2-modbus-tcp-verified.json",
+      "interface": "Ethernet",
+      "level": "L2",
+      "peer": "independent-raw-peer",
+      "protocol": "Modbus TCP",
+      "result": "VERIFIED",
+      "role": "master",
+      "security_profile": "physical/local"
+    },
+    {
+      "evidence": "",
+      "interface": "Ethernet",
+      "level": "L0",
+      "peer": "independent-raw-peer",
+      "protocol": "IEC104",
+      "result": "PENDING",
+      "role": "master/slave",
+      "security_profile": "TLS/IEC62351 policy"
+    },
+    {
+      "evidence": "",
+      "interface": "Ethernet",
+      "level": "L0",
+      "peer": "independent-raw-peer",
+      "protocol": "MMS",
+      "result": "PENDING",
+      "role": "client",
+      "security_profile": "product policy"
+    },
+    {
+      "evidence": "",
+      "interface": "Ethernet",
+      "level": "L0",
+      "peer": "independent-raw-peer",
+      "protocol": "GOOSE",
+      "result": "PENDING",
+      "role": "pub/sub",
+      "security_profile": "product policy"
+    },
+    {
+      "evidence": "",
+      "interface": "Ethernet",
+      "level": "L0",
+      "peer": "independent-raw-peer",
+      "protocol": "SV",
+      "result": "PENDING",
+      "role": "pub/sub",
+      "security_profile": "product policy"
+    },
+    {
+      "evidence": "",
+      "interface": "Ethernet/Cellular",
+      "level": "L0",
+      "peer": "independent-raw-peer",
+      "protocol": "MQTT",
+      "result": "PENDING",
+      "role": "client",
+      "security_profile": "mTLS"
+    }
+  ],
+  "generated_at": "2026-08-18T03:59:05Z",
+  "schema": "eneros.sku-protocol-matrix.v1",
+  "signature": "d375fe0171c6c12e60d452a669f6e64c0b102ed3ab7d5406f90bf430a914d649f24be7ac069936e621e1833ed943891b8a71340f01781ef0c1ab299a38e57607",
+  "signer": "dev",
+  "sku_id": "qemu-virt-aarch64"
+}

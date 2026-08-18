@@ -1,0 +1,12 @@
+# EnerOS 唯一产品内核政策（蓝图 36 WP-36.1）
+schema = "eneros.kernel-policy.v1"
+
+product_kernel = "sel4"
+runtime_root = "eneros-root-task"
+allowed_release_kernels = ["sel4"]
+research_only = ["eneros-product-kernel"]
+decision_adr = "ADR-0043"
+# 负责人签署（2026-08-12，蓝图 36 WP-36.1 决策 Gate）：
+# 产品路线决策：product_kernel = sel4；自研内核 research_only；
+# ADR-0001 标 Superseded；37–43 按 seL4 唯一主线继续执行。
+owner_approval = "CHG-2026-08-12-36-01-sel4"

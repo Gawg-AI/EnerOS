@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://eneros.invalid/schema/product-profile-v1.json",
-  "title": "EnerOS product profile v1",
+  "$id": "https://eneros.invalid/schema/product-profile-v2.json",
+  "title": "EnerOS product profile v2 (ProductManifest source)",
+  "description": "Profile v2：在 v1 基础上显式 kernel/services/configs/security_policy_ref/evidence_policy_ref。role 枚举覆盖 boot-manager/kernel/root-task/required-service/optional-service/recovery/installer/factory（蓝图 36 WP-36.3）。xtask 以 deny_unknown_fields 严格解析并做等价校验；本 schema 供外部工具与一致性 Gate 使用。",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +18,7 @@
     "security"
   ],
   "properties": {
-    "schema": { "const": "eneros.product-profile.v1" },
+    "schema": { "const": "eneros.product-profile.v2" },
     "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}$" },
     "class": { "enum": ["test", "development", "release", "recovery", "factory"] },
     "platform": { "type": "string", "minLength": 1, "maxLength": 64 },
@@ -34,6 +35,19 @@
       "uniqueItems": true,
       "items": { "enum": ["test-binaries", "raw-gpt", "installer-iso", "recovery-image", "update-package", "sbom", "firmware-bundle", "provisioning-bundle"] }
     },
+    "kernel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "selector"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "selector": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string" },
+        "target": { "type": "string" },
+        "features": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "external": { "type": "boolean" }
+      }
+    },
     "binaries": {
       "type": "array",
       "minItems": 1,
@@ -43,7 +57,7 @@
         "required": ["selector", "role", "default_features", "features"],
         "properties": {
           "selector": { "type": "string", "pattern": "^[A-Za-z0-9_-]+::[A-Za-z0-9_-]+$" },
-          "role": { "enum": ["host-gate", "boot-manager", "kernel", "recovery", "factory"] },
+          "role": { "enum": ["boot-manager", "kernel", "root-task", "required-service", "optional-service", "recovery", "installer", "factory"] },
           "target": { "type": "string", "minLength": 1, "maxLength": 64 },
           "default_features": { "type": "boolean" },
           "features": {
@@ -52,6 +66,93 @@
             "items": { "type": "string", "minLength": 1, "maxLength": 64 }
           }
         }
+      }
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "binary", "role"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$" },
+          "binary": { "type": "string", "minLength": 1 },
+          "digest": { "type": "string" },
+          "role": { "enum": ["boot-manager", "kernel", "root-task", "required-service", "optional-service", "recovery", "installer", "factory"] },
+          "target": { "type": "string" },
+          "features": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+          "default_features": { "type": "boolean" },
+          "requirement": { "enum": ["required", "optional"] },
+          "criticality": { "enum": ["system", "control", "data", "support"] },
+          "restart": { "enum": ["always", "on-failure", "never"] },
+          "dependencies": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "required"],
+              "properties": {
+                "name": { "type": "string" },
+                "required": { "type": "boolean" }
+              }
+            }
+          },
+          "resources": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["stack_pages", "ipc_buffers", "priority"],
+            "properties": {
+              "stack_pages": { "type": "integer", "minimum": 0 },
+              "ipc_buffers": { "type": "integer", "minimum": 0 },
+              "priority": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "configs": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+          "readiness": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["probe", "timeout_ms", "required_ack"],
+            "properties": {
+              "probe": { "type": "string" },
+              "timeout_ms": { "type": "integer", "minimum": 1 },
+              "required_ack": { "type": "boolean" }
+            }
+          },
+          "external": { "type": "boolean" }
+        }
+      }
+    },
+    "configs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "path"],
+        "properties": {
+          "id": { "type": "string" },
+          "path": { "type": "string" },
+          "digest": { "type": "string" },
+          "consumer": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }
+        }
+      }
+    },
+    "security_policy_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy"],
+      "properties": {
+        "policy": { "type": "string" },
+        "digest": { "type": "string" }
+      }
+    },
+    "evidence_policy_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy"],
+      "properties": {
+        "policy": { "type": "string" },
+        "digest": { "type": "string" }
       }
     },
     "signing": {
