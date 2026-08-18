@@ -44,11 +44,21 @@ extern crate alloc;
 pub mod access;
 pub mod adapter;
 pub mod address;
+// 39 WP-39.9：安全通道接缝（SecureChannel/SecureChannelFactory）。
+pub mod channel;
 pub mod config;
 pub mod contract;
 pub mod error;
 pub mod manager;
+// 39 WP-39.10：协议插件合同 + 传输工厂 + 写意图。
+pub mod plugin;
+pub mod transport;
+pub mod write;
+
 pub mod mapping;
+/// 跨 crate 测试支持（EchoTransport/EchoFactory；mock feature 门控）。
+#[cfg(any(test, feature = "mock"))]
+pub mod test_support;
 
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
@@ -61,6 +71,11 @@ pub use access::{
 };
 pub use adapter::{AdapterState, ProtocolAdapter};
 pub use address::ProtocolAddress;
+// 39：安全通道 / 插件合同 / 传输工厂 / 写意图 re-export。
+pub use channel::{
+    ChannelError, ChannelPolicy, ChannelSecurity, Endpoint, IdentityRef, InsecureStream,
+    SecureChannel, SecureChannelFactory,
+};
 pub use config::{AdapterConfig, DeviceConfig, ProtocolType};
 // 蓝图/24 D1：写接缝的类型签名引用 AuthorizedCommand；经本 seam 层 re-export，
 // 适配器实现 crate 无需直接依赖 telemetry-model。
@@ -68,6 +83,15 @@ pub use eneros_telemetry_model::command::AuthorizedCommand;
 pub use error::ProtocolError;
 pub use manager::ProtocolManager;
 pub use mapping::ProtocolPointMapping;
+pub use plugin::{
+    EmptyPointRegistry, InteropLevel, PointRegistry, Progress, ProtocolConfig, ProtocolDescriptor,
+    ProtocolHealth, ProtocolPlugin, ProtocolRole, ResourceBudget, SecurityProfile, WorkBudget,
+};
+pub use transport::{
+    parse_ip_port, tcp_spec, TransportError, TransportFactory, TransportHandle, TransportKind,
+    TransportSpec,
+};
+pub use write::PointWriteIntent;
 
 #[cfg(test)]
 mod tests {
@@ -76,7 +100,6 @@ mod tests {
     use alloc::boxed::Box;
     use alloc::string::String;
     use alloc::vec;
-    use alloc::vec::Vec;
 
     use eneros_upa_model::{
         DataPoint, DataSource, DeviceId, PointId, PointQuality, PointType, PointValue,
