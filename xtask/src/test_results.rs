@@ -157,7 +157,7 @@ fn xtask_command_modes() -> &'static [(&'static str, Option<&'static [&'static s
             Some(&["all", "profile", "layout", "toolchain", "trust"]),
             "audit",
         ),
-        ("build", Some(&["all"]), "build <profile-id>|all"),
+        ("build", None, "build <profile-id>|all"),
         (
             "test",
             Some(&["unit", "result", "gate-semantics", "ci-policy"]),
@@ -188,6 +188,46 @@ fn xtask_command_modes() -> &'static [(&'static str, Option<&'static [&'static s
         ),
         ("evidence", Some(&["verify", "gate"]), "evidence"),
         (
+            "evidence42",
+            Some(&[
+                "lineage",
+                "lineage-check",
+                "envelope",
+                "verify",
+                "gate",
+                "gate-dir",
+                "report-gate",
+                "media-check",
+                "fuzz-report",
+                "unsafe-report",
+                "repro",
+                "stale-index",
+                "current-index",
+                "check-current",
+                "gate-status",
+                "summary",
+                "release-readiness",
+                "blockers",
+                "self-test",
+                "audit-all",
+                "final-status",
+                "upstream-handoff",
+                "next-steps",
+                "evidence-bundle",
+                "check-bundle",
+                "mutation",
+            ]),
+            "evidence42",
+        ),
+        ("config", Some(&["compile"]), "config compile"),
+        ("closure", Some(&["gate"]), "closure gate --profile <id>"),
+        ("policy", Some(&["kernel", "adr"]), "policy kernel|adr"),
+        (
+            "manifest",
+            Some(&["normalize", "derive", "registry", "verify-bundle"]),
+            "manifest normalize|derive|registry|verify-bundle",
+        ),
+        (
             "flash",
             Some(&[
                 "list",
@@ -208,12 +248,18 @@ fn xtask_command_modes() -> &'static [(&'static str, Option<&'static [&'static s
                 "interop-report",
                 "kat-report",
                 "compliance-report",
+                "sign-evidence",
+                "verify-evidence-sig",
                 "g7-audit",
                 "perf-baseline",
+                "perf-measure",
+                "perf-keygen",
+                "gate",
                 "perf-gate",
                 "trace",
                 "proof",
                 "validation",
+                "gng-version",
             ]),
             "qa",
         ),
@@ -377,7 +423,21 @@ mod tests {
                         run: cargo xtask image raw qemu-prod --signing-key x\n\
                         run: cargo xtask fuzz boot_protocol 10000\n\
                         run: cargo xtask build-compare\n\
-                        run: cargo xtask test gate-semantics\n";
+                        run: cargo xtask test gate-semantics\n\
+                        run: cargo xtask evidence42 lineage --profile qemu-prod --artifact Cargo.lock\n\
+                        run: cargo xtask evidence42 report-gate --kind boot --path qemu-result.json\n\
+                        run: cargo xtask evidence42 repro --out target/repro.json\n\
+                        run: cargo xtask evidence42 stale-index --out target/stale-index.json\n\
+                        run: cargo xtask evidence42 self-test --out target/self-test.json\n\
+                        run: cargo xtask evidence42 evidence-bundle --out target/bundle\n\
+                        run: cargo xtask evidence42 check-bundle --dir target/bundle\n\
+                        run: cargo xtask config compile --profile qemu-prod\n\
+                        run: cargo xtask closure gate --profile qemu-prod\n\
+                        run: cargo xtask policy kernel\n\
+                        run: cargo xtask manifest verify-bundle --profile qemu-prod\n\
+                        run: cargo xtask qa perf-keygen --out /tmp/key\n\
+                        run: cargo xtask qa gate orphan-check\n\
+                        run: cargo xtask qa gng-version\n";
         assert!(validate_xtask_steps(workflow).is_empty());
     }
 

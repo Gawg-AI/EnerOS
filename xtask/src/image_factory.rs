@@ -1107,7 +1107,18 @@ fn build_raw(root: &Path, options: RawOptions) -> DynResult<()> {
         bytes
     };
     let kernel = build_and_pack_kernel(root, source_date_epoch)?;
-    let init_bundle = build_init_bundle(root, source_date_epoch)?;
+    let (init_bundle, mut bound_manifest) = build_init_bundle(root, source_date_epoch, &profile)?;
+    // 回填 kernel digest（外部 seL4 elfloader 的真实 hash），写最终绑定 manifest。
+    bound_manifest.bind_digests(
+        &BTreeMap::new(),
+        &crate::product_deriver::hex(&Sha256::digest(&kernel.bytes)),
+    )?;
+    let manifest_dir = crate::product_manifest::manifest_dir(root, &profile.id);
+    fs::create_dir_all(&manifest_dir)?;
+    fs::write(
+        manifest_dir.join("product-manifest.normalized.json"),
+        bound_manifest.normalized_json()?,
+    )?;
     let release_id = release_identity(
         &profile,
         source_date_epoch,
@@ -1837,48 +1848,76 @@ fn pack_elf64(elf: &[u8]) -> DynResult<PackedKernel> {
     })
 }
 
-fn build_init_bundle(root: &Path, source_date_epoch: u64) -> DynResult<Vec<u8>> {
-    // 构建 root task 与参考服务 ELF（独立 EL0 进程）。
-    build_user_elf(root, "eneros-root-task", "eneros-root-task")?;
-    for service in ["svc-hello", "svc-pi", "svc-hog", "svc-fault"] {
-        build_user_elf(root, "eneros-services", service)?;
+fn build_init_bundle(
+    root: &Path,
+    source_date_epoch: u64,
+    profile: &ProductProfile,
+) -> DynResult<(Vec<u8>, crate::product_manifest::ProductManifest)> {
+    // 蓝图 36 WP-36.4：init bundle 条目只从规范化 ProductManifest 派生，
+    // 禁止 image factory 维护独立硬编码服务列表。
+    let mut manifest = crate::product_manifest::normalize_profile(root, profile)?;
+    let bundle = crate::product_deriver::init_bundle(&manifest)
+        .map_err(|e| invalid(format!("init bundle derive failed: {e}")))?;
+    let mut modules: Vec<(u32, u32, String, Vec<u8>)> = Vec::new();
+    let mut service_digests: BTreeMap<String, String> = BTreeMap::new();
+    for entry in &bundle.entries {
+        if entry.external {
+            return Err(invalid(format!(
+                "init bundle entry must be a cargo-built service: {}",
+                entry.name
+            )));
+        }
+        build_user_elf(root, &entry.package, &entry.bin)?;
+        let target_dir = if entry.target.is_empty() {
+            "aarch64-unknown-none".to_owned()
+        } else {
+            entry.target.clone()
+        };
+        let elf_path = root
+            .join("target")
+            .join(&target_dir)
+            .join("release")
+            .join(&entry.bin);
+        let elf = fs::read(&elf_path)
+            .map_err(|e| invalid(format!("bundle elf missing {}: {e}", elf_path.display())))?;
+        service_digests.insert(
+            entry.name.clone(),
+            crate::product_deriver::hex(&Sha256::digest(&elf)),
+        );
+        modules.push((entry.kind, entry.flags, entry.name.clone(), elf));
     }
-    // G3 驱动/存储服务（DRV/STO）。
-    for service in [
-        "svc-drv-rng",
-        "svc-drv-blk",
-        "svc-drv-net",
-        "svc-drv-console",
-        "svc-storage",
-        "svc-drv-fault",
-    ] {
-        build_user_elf(root, "eneros-drv-svc", service)?;
+    if modules.is_empty() {
+        return Err(invalid(
+            "init bundle is empty (manifest declares no bundled service)",
+        ));
     }
-    let root_elf = fs::read(root.join("target/aarch64-unknown-none/release/eneros-root-task"))?;
-    let hello_elf = fs::read(root.join("target/aarch64-unknown-none/release/svc-hello"))?;
-    let pi_elf = fs::read(root.join("target/aarch64-unknown-none/release/svc-pi"))?;
-    let hog_elf = fs::read(root.join("target/aarch64-unknown-none/release/svc-hog"))?;
-    let fault_elf = fs::read(root.join("target/aarch64-unknown-none/release/svc-fault"))?;
-    let rng_elf = fs::read(root.join("target/aarch64-unknown-none/release/svc-drv-rng"))?;
-    let blk_elf = fs::read(root.join("target/aarch64-unknown-none/release/svc-drv-blk"))?;
-    let net_elf = fs::read(root.join("target/aarch64-unknown-none/release/svc-drv-net"))?;
-    let console_elf = fs::read(root.join("target/aarch64-unknown-none/release/svc-drv-console"))?;
-    let storage_elf = fs::read(root.join("target/aarch64-unknown-none/release/svc-storage"))?;
-    let drv_fault_elf = fs::read(root.join("target/aarch64-unknown-none/release/svc-drv-fault"))?;
-    let modules: &[(u32, u32, &str, &[u8])] = &[
-        (1, 31, "root-task", &root_elf),
-        (2, 20, "svc-hello", &hello_elf),
-        (2, 15, "svc-pi", &pi_elf),
-        (2, 25, "svc-hog", &hog_elf),
-        (3, 10, "svc-fault", &fault_elf),
-        (2, 12, "svc-drv-rng", &rng_elf),
-        (2, 12, "svc-drv-blk", &blk_elf),
-        (2, 12, "svc-drv-net", &net_elf),
-        (2, 12, "svc-drv-console", &console_elf),
-        (2, 14, "svc-storage", &storage_elf),
-        (3, 10, "svc-drv-fault", &drv_fault_elf),
-    ];
-    compose_init_bundle(source_date_epoch, modules)
+    let modules_ref: Vec<(u32, u32, &str, &[u8])> = modules
+        .iter()
+        .map(|(kind, flags, name, blob)| (*kind, *flags, name.as_str(), blob.as_slice()))
+        .collect();
+    let bytes = compose_init_bundle(source_date_epoch, &modules_ref)?;
+    // 回填服务 digest（kernel digest 由调用方回填）——先绑定再反解析，
+    // 使 verify_media_bundle 的 digest 交叉比对（WP-36.4 “与 Binary BOM
+    // 一一比对”）真实生效（36 收尾复验修复：原顺序在绑定前反解析，
+    // digest 比对被静默跳过）。
+    manifest.bind_digests(&service_digests, "")?;
+    // 反解析 Gate（WP-36.4）：构建后立即反解析，bundle 与 manifest 一一比对，
+    // 多余二进制同样失败（防止 hidden payload）。
+    let violations = crate::product_deriver::verify_media_bundle(&manifest, &bytes)?;
+    if !violations.is_empty() {
+        return Err(invalid(format!(
+            "REVERSE-PARSE-GATE FAIL after compose: {}",
+            violations.join("; ")
+        )));
+    }
+    let manifest_dir = crate::product_manifest::manifest_dir(root, &manifest.profile_id);
+    fs::create_dir_all(&manifest_dir)?;
+    fs::write(manifest_dir.join("init-bundle.bin"), &bytes)?;
+    fs::write(
+        manifest_dir.join("product-manifest.normalized.json"),
+        manifest.normalized_json()?,
+    )?;
+    Ok((bytes, manifest))
 }
 
 /// 构建用户 ELF（aarch64-unknown-none release）。
@@ -1910,6 +1949,32 @@ fn build_user_elf(root: &Path, package: &str, bin: &str) -> DynResult<()> {
         root.join("third_party/sel4-build/top-rust"),
     );
     command.env("CROSS_COMPILE", "aarch64-none-elf-");
+    // WP-37.4（CROSS_VERSION_CHANGE_REQUEST：37 需要，36 owner 文件最小
+    // 特判）：svc-pie 是静态 PIE（ET_DYN）——PIC 代码生成仅对该 crate
+    // 生效（--config 覆盖 config.toml 的同 key rustflags；QEMU 判别实验
+    // 证实全局 PIC 会使 ET_EXEC 服务在 seL4 EL0 故障——PIC+EXEC 组合
+    // 不可用，PIC+PIE 正常）。其余服务保持非 PIC 编译。
+    if package == "eneros-svc-pie" {
+        command.args([
+            "--config",
+            "target.aarch64-unknown-none.rustflags=[\"-C\",\"relocation-model=pic\"]",
+        ]);
+    }
+    // 蓝图 40 收尾（CROSS_VERSION_CHANGE_REQUEST：EIPC 生产通道 target
+    // 构建）：控制服务（Sel4EipcChannel/ChunkedClient）与 root-task
+    // （Sel4IpcClient 驱动控制链）在 target 构建启用 sel4 feature；
+    // host 构建/测试不启用（sel4-sys 不进 host 依赖图）。
+    if package == "eneros-control-services" {
+        command.args(["--features", "sel4"]);
+    }
+    // 41（WP-41.3 落盘）：业务服务（svc-ota 等）经 EIPC 调 svc-storage
+    // 真落盘——Sel4IpcClient（agent-sdk ipc_sel4）需 sel4 feature。
+    if package == "eneros-business-services" {
+        command.args(["--features", "sel4"]);
+    }
+    if package == "eneros-root-task" {
+        command.args(["--features", "sel4-eipc"]);
+    }
     run(&mut command)
 }
 
@@ -1936,7 +2001,7 @@ fn compose_init_bundle(
     let total = usize::try_from(u32::try_from(offset)?)?;
     let mut bytes = vec![0u8; total];
     bytes[..8].copy_from_slice(b"ENRINIT2");
-    bytes[8..10].copy_from_slice(&2u16.to_le_bytes());
+    bytes[8..10].copy_from_slice(&2u16.to_le_bytes()); // WP-37.2 wire v3：flags 高 16 位携带能力位图
     bytes[10..12].copy_from_slice(&u16::try_from(header_len)?.to_le_bytes());
     bytes[12..16].copy_from_slice(&u32::try_from(total)?.to_le_bytes());
     bytes[16..24].copy_from_slice(&source_date_epoch.to_le_bytes());

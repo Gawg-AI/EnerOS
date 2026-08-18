@@ -150,7 +150,18 @@ fn save_crash_input(target: &str, iter: usize, data: &[u8]) {
     }
 }
 
-pub fn command_fuzz(target: &str, iterations: usize) -> DynResult<()> {
+/// 一次 fuzz smoke 运行的结构化结果。
+#[derive(Debug, Clone)]
+pub struct FuzzRun {
+    pub target: String,
+    pub iterations: usize,
+    pub crashes: usize,
+    pub elapsed_ms: u128,
+}
+
+/// 执行一次确定性 PRNG fuzz smoke。返回结构化结果，供 `command_fuzz`
+/// 和 42 证据链 `fuzz-report` 共用。
+pub fn run_fuzz(target: &str, iterations: usize) -> DynResult<FuzzRun> {
     let seed = seed_for(target);
     let mut rng = Prng(0x4D595DF4D0F33173);
     let mut crashes: Vec<String> = Vec::new();
@@ -184,11 +195,24 @@ pub fn command_fuzz(target: &str, iterations: usize) -> DynResult<()> {
     );
     if crashes.is_empty() {
         println!("FUZZ_CRASH_CLEAN target={}", target);
-        Ok(())
     } else {
         for c in &crashes {
             println!("CRASH {c}");
         }
-        Err(format!("fuzz target {target} crashed {} times", crashes.len()).into())
+    }
+    Ok(FuzzRun {
+        target: target.to_owned(),
+        iterations,
+        crashes: crashes.len(),
+        elapsed_ms: elapsed.as_millis(),
+    })
+}
+
+pub fn command_fuzz(target: &str, iterations: usize) -> DynResult<()> {
+    let run = run_fuzz(target, iterations)?;
+    if run.crashes == 0 {
+        Ok(())
+    } else {
+        Err(format!("fuzz target {} crashed {} times", run.target, run.crashes).into())
     }
 }

@@ -3,11 +3,10 @@
 # 注意：不设置默认 target，允许 host-side 工具（如 ci crate）在主机上编译。
 # 交叉编译时通过 --target aarch64-unknown-none -Z build-std=core,alloc 显式指定。
 
-[env]
-# 本机无独立 clang 二进制：bindgen（littlefs2-sys 等）经 libclang 解析，
-# 需显式给出 libclang 与系统 C 头文件路径。
-LIBCLANG_PATH = "/usr/lib/llvm-21/lib"
-BINDGEN_EXTRA_CLANG_ARGS = "-I/usr/lib/gcc/x86_64-linux-gnu/15/include -I/usr/include"
+# 42 portability：不在全局 Cargo 配置写死 Linux 本机 LLVM/GCC include 路径。
+# 需要 libclang/bindgen 的构建必须在 CI/本地环境变量或 target/tool manifest
+# 中按平台提供 LIBCLANG_PATH 与 BINDGEN_EXTRA_CLANG_ARGS；Windows 不得继承
+# Linux 绝对路径。全局仅保留跨平台无关的 alias/target linker 设置。
 
 [alias]
 xtask = "run --package eneros-xtask --"
@@ -20,6 +19,11 @@ xtask = "run --package eneros-xtask --"
 # linker = "aarch64-linux-gnu-gcc"
 # ar = "aarch64-linux-gnu-ar"
 linker = "rust-lld"
+# WP-37.4（linker contract 冻结）：PIC 代码生成**仅限 svc-pie crate**
+# （image_factory 对该 crate 附加 --config rustflags；QEMU 判别实验证实
+# PIC+ET_EXEC 组合在 seL4 EL0 故障（服务首指令序列寄存器垃圾，data
+# abort 于 ELF 头区域）——全局 PIC 不可行；PIC+PIE（svc-pie）实测正常）。
+# 42 portability 重做本文件时须保留此语义。
 
 [target.aarch64-unknown-uefi]
 # lld-link otherwise leaves a target-directory-dependent CodeView/PDB GUID in

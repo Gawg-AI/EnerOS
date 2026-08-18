@@ -66,6 +66,13 @@ struct MutationRecord {
     manifest_offset: u64,
     manifest_length: usize,
     signing_key_id: String,
+
+    /// 42 WP-42.11：注入期望 oracle（注入后产品必须表现出的行为）。
+    expected_oracle: String,
+    /// 42 WP-42.11：恢复上限（次数/重试上限）。
+    recovery_limit: u64,
+    /// 42 WP-42.11：注入期间不得破坏的数据/安全不变量。
+    invariants: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -77,6 +84,13 @@ struct BootControlMutationRecord {
     sequence: u64,
     security_floor: u64,
     copies_equal: bool,
+
+    /// 42 WP-42.11：注入期望 oracle（注入后产品必须表现出的行为）。
+    expected_oracle: String,
+    /// 42 WP-42.11：恢复上限（次数/重试上限）。
+    recovery_limit: u64,
+    /// 42 WP-42.11：注入期间不得破坏的数据/安全不变量。
+    invariants: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,6 +132,13 @@ struct InstallerMutationRecord {
     output_sha256: String,
     iso_file: &'static str,
     byte_offset: usize,
+
+    /// 42 WP-42.11：注入期望 oracle（注入后产品必须表现出的行为）。
+    expected_oracle: String,
+    /// 42 WP-42.11：恢复上限（次数/重试上限）。
+    recovery_limit: u64,
+    /// 42 WP-42.11：注入期间不得破坏的数据/安全不变量。
+    invariants: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +183,98 @@ struct ArtifactMutationRecord {
     source_sha256: String,
     output_sha256: String,
     byte_offset: usize,
+
+    /// 42 WP-42.11：注入期望 oracle（注入后产品必须表现出的行为）。
+    expected_oracle: String,
+    /// 42 WP-42.11：恢复上限（次数/重试上限）。
+    recovery_limit: u64,
+    /// 42 WP-42.11：注入期间不得破坏的数据/安全不变量。
+    invariants: Vec<String>,
+}
+
+/// 42 WP-42.11：每个故障注入的期望 oracle、恢复上限与数据/安全不变量。
+/// - `expected_oracle`：注入后产品必须表现出的可观察行为（verifier 判定依据）；
+/// - `recovery_limit`：允许的最大恢复次数/重试上限；
+/// - `invariants`：注入期间不得被破坏的数据与安全属性。
+///
+/// 未登记 mutation → fail-closed（空 oracle/0 上限/空不变量，verifier 判红）。
+fn fault_contract(name: &str) -> (String, u64, Vec<String>) {
+    match name {
+        "signature-bitflip" => (
+            "boot manager must reject manifest signature (VERIFICATION_FAILURE)".into(),
+            3,
+            vec!["no-unsigned-exec".into(), "bootctrl-atomicity".into()],
+        ),
+        "security-version-one" => (
+            "security_version below floor must be rejected (ROLLBACK or VERIFICATION_FAILURE)"
+                .into(),
+            3,
+            vec![
+                "no-rollback-below-floor".into(),
+                "bootctrl-atomicity".into(),
+            ],
+        ),
+        "wrong-platform" => (
+            "platform id mismatch must be rejected (VERIFICATION_FAILURE)".into(),
+            3,
+            vec!["no-cross-platform-exec".into()],
+        ),
+        "wx-kernel" => (
+            "W^X-violating kernel image must be rejected (VERIFICATION_FAILURE)".into(),
+            3,
+            vec!["no-exec-from-writable".into()],
+        ),
+        "kernel-load-outside" => (
+            "kernel load outside allowed region must be rejected".into(),
+            3,
+            vec!["no-kernel-load-outside".into()],
+        ),
+        "payload-bitflip" => (
+            "installer payload digest mismatch must fail installation".into(),
+            3,
+            vec!["install-atomicity".into(), "no-partial-install".into()],
+        ),
+        "manifest-signature-bitflip" => (
+            "installer manifest signature mismatch must fail installation".into(),
+            3,
+            vec!["no-unsigned-install".into()],
+        ),
+        "gpt-bitflip" => (
+            "GPT checksum failure must be detected (reject or recover)".into(),
+            3,
+            vec!["no-corrupt-gpt-accept".into()],
+        ),
+        "esp-application-bitflip" => (
+            "boot app digest mismatch must be rejected (VERIFICATION_FAILURE)".into(),
+            3,
+            vec!["no-corrupt-boot-app".into()],
+        ),
+        "component-bitflip" => (
+            "component digest mismatch must be rejected or fall back".into(),
+            3,
+            vec!["no-corrupt-component-exec".into()],
+        ),
+        "bootctrl-bitflip" => (
+            "bootctrl CRC/parity mismatch must be detected and not booted as-is".into(),
+            3,
+            vec!["bootctrl-atomicity".into()],
+        ),
+        "recovery-empty-bitflip" => (
+            "empty recovery partition must trigger recovery flow or explicit failure".into(),
+            3,
+            vec!["no-silent-boot-without-recovery".into()],
+        ),
+        "manual-recovery" => (
+            "manual recovery must set BOOTCTRL to a valid recovery state".into(),
+            3,
+            vec!["bootctrl-atomicity".into(), "copies-equal".into()],
+        ),
+        _ => (
+            format!("unknown mutation {name} has no contract (fail-closed)"),
+            0,
+            vec![],
+        ),
+    }
 }
 
 pub(super) fn command_fault(root: &Path, args: &[String]) -> DynResult<()> {
@@ -352,6 +465,9 @@ fn mutate_artifact(root: &Path, args: &[String]) -> DynResult<()> {
             source_sha256,
             output_sha256: output_sha256.clone(),
             byte_offset,
+            expected_oracle: fault_contract(mutation.name()).0,
+            recovery_limit: fault_contract(mutation.name()).1,
+            invariants: fault_contract(mutation.name()).2,
         })?,
     )?;
     println!(
@@ -437,6 +553,9 @@ fn mutate_installer(root: &Path, args: &[String]) -> DynResult<()> {
             output_sha256: output_sha256.clone(),
             iso_file: name,
             byte_offset,
+            expected_oracle: fault_contract(mutation.name()).0,
+            recovery_limit: fault_contract(mutation.name()).1,
+            invariants: fault_contract(mutation.name()).2,
         })?,
     )?;
     println!(
@@ -623,6 +742,9 @@ fn mutate_boot_control(root: &Path, args: &[String]) -> DynResult<()> {
             sequence: control.sequence,
             security_floor: control.security_floor,
             copies_equal: true,
+            expected_oracle: fault_contract("manual-recovery").0,
+            recovery_limit: fault_contract("manual-recovery").1,
+            invariants: fault_contract("manual-recovery").2,
         })?,
     )?;
     println!(
@@ -792,6 +914,7 @@ fn mutate_manifest(root: &Path, options: Options) -> DynResult<()> {
     fs::write(&temporary, &image)?;
     fs::rename(&temporary, &output)?;
 
+    let contract = fault_contract(options.mutation.name());
     let record = MutationRecord {
         schema: "eneros.boot-mutation.v1",
         mutation: options.mutation.name(),
@@ -801,6 +924,9 @@ fn mutate_manifest(root: &Path, options: Options) -> DynResult<()> {
         manifest_offset,
         manifest_length: length,
         signing_key_id: hex(&signing_key_id),
+        expected_oracle: contract.0,
+        recovery_limit: contract.1,
+        invariants: contract.2,
     };
     fs::write(
         output.with_extension("mutation.json"),

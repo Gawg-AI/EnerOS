@@ -11,12 +11,20 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 mod artifact_inspector;
+mod catalog;
+mod closure;
+mod config_compile;
 mod evidence;
+mod evidence_chain;
 mod fault_factory;
 mod flasher;
 mod fuzz_driver;
 mod gate;
+mod harness;
 mod image_factory;
+mod policy;
+mod product_deriver;
+mod product_manifest;
 mod qa;
 mod qemu_harness;
 mod sbom;
@@ -25,6 +33,7 @@ mod test_results;
 mod toolchain;
 mod trust;
 mod update_package;
+mod verdict;
 mod versioning;
 mod vrf002;
 
@@ -44,6 +53,7 @@ const POLICY_SCHEMA: &str = "eneros.forbidden-policy.v1";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)] // 44.2：serde 反序列化数据模型，字段由 profile JSON 驱动
 struct ProductProfile {
     schema: String,
     id: String,
@@ -55,6 +65,17 @@ struct ProductProfile {
     binaries: Vec<ProfileBinary>,
     signing: SigningPolicy,
     security: SecurityPolicy,
+    // 蓝图 36 profile v2：显式 kernel/services/configs/策略引用。
+    #[serde(default)]
+    kernel: Option<serde_json::Value>,
+    #[serde(default)]
+    services: Option<serde_json::Value>,
+    #[serde(default)]
+    configs: Option<serde_json::Value>,
+    #[serde(default)]
+    security_policy_ref: Option<serde_json::Value>,
+    #[serde(default)]
+    evidence_policy_ref: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -274,14 +295,20 @@ fn real_main() -> DynResult<()> {
         "audit-unsafe-safety" => audit_unsafe_safety(&root, &rest),
         "build" => command_build(&root, &rest),
         "test" => command_test(&root, &rest),
+        "catalog" => catalog::command_catalog(&root, &rest),
         "fault" => fault_factory::command_fault(&root, &rest),
         "fuzz" => command_fuzz(&root, &rest),
         "build-compare" => vrf002::command_build_compare(&root),
         "bump-version" => versioning::command_bump_version(&root, &rest),
+        "manifest" => command_manifest(&root, &rest),
+        "policy" => command_policy(&root, &rest),
+        "closure" => closure::command_closure(&root, &rest),
+        "config" => command_config(&root, &rest),
         "image" => image_factory::command_image(&root, &rest),
         "run" => qemu_harness::command_run(&root, &rest),
         "inspect" => artifact_inspector::command_inspect(&root, &rest),
         "evidence" => evidence::command_evidence(&root, &rest),
+        "evidence42" => evidence_chain::command_evidence_chain(&root, &rest),
         "flash" => flasher::command_flash(&root, &rest),
         "qa" => qa::command_qa(&root, &rest),
         "release" => sbom::command_release(&root, &rest),
@@ -301,19 +328,172 @@ fn print_help() {
            build <profile-id>|all\n\
            bump-version patch|minor|major|--set <x.y.z> [--from <ver>] [--dry-run] [--manifest-path <p>]\n\
            test unit|result <json>|gate-semantics|ci-policy\n\
+           manifest normalize|derive|registry|verify-bundle --profile <id>\n\
+           policy kernel|adr\n\
+           closure gate --profile <id>\n\
            image raw|iso|recovery|vars|update ...\n\
            fault manifest|artifact|installer ...\n\
            run qemu-prod|qemu-install ...\n\
            inspect raw|recovery|installer|update ...\n\
-           evidence verify|gate ...\n\
+           evidence verify|gate [--allow-non-pass] ...\n\
+           evidence42 lineage|lineage-check|envelope|verify|gate|gate-dir|report-gate|media-check|fuzz-report|unsafe-report|repro|stale-index|mutation ...\n\
+           catalog derive|sign|validate|gate|platform-gate ...\n\
            release sbom|verify ...\n\
            symbolize <crash-dump.bin> <elf-file>\n\
-           flash inventory|file-lab ...\n\
-           qa boot-reset|soak|perf-gate|trace|proof|validation|gate orphan-check|config-refs|mock-leak ...\n\
+           flash list|verify-inventory|lab-create|authorize-file|write|birth-record|verify-birth|key-domains ...\n\
+           qa boot-reset|soak|perf-baseline|perf-measure|perf-gate|trace|proof|validation|g7-audit|interop-report|gate orphan-check|config-refs|mock-leak|docs ...\n\
          \n\
          reserved fail-closed command:\n\
            image factory"
     );
+}
+
+/// `manifest normalize --profile <id>`：profile → 规范化 ProductManifest v2。
+/// `manifest derive --profile <id>`：生成 build plan/BOM/bundle/SBOM scope。
+/// `manifest registry`：写 ServiceKind registry。
+/// `manifest verify-bundle --profile <id>`：反解析 Gate（bundle 与 manifest 比对）。
+/// `config compile`：签名配置 bundle 生成（蓝图 41 WP-41.2）。
+fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
+    let mut profile_id = "qemu-prod";
+    let mut sign_key_hex: Option<String> = None;
+    let mut root_key_hex: Option<String> = None;
+    // 子命令形态：`config compile [--profile ...]`。
+    let args: Vec<String> = if args.first().map(|s| s.as_str()) == Some("compile") {
+        args[1..].to_vec()
+    } else {
+        args.to_vec()
+    };
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--profile" => {
+                i += 1;
+                profile_id = args.get(i).ok_or_else(|| invalid("--profile 需要值"))?;
+            }
+            "--sign-key-hex" => {
+                i += 1;
+                sign_key_hex = Some(
+                    args.get(i)
+                        .ok_or_else(|| invalid("--sign-key-hex 需要值"))?
+                        .clone(),
+                );
+            }
+            "--root-key-hex" => {
+                i += 1;
+                root_key_hex = Some(
+                    args.get(i)
+                        .ok_or_else(|| invalid("--root-key-hex 需要值"))?
+                        .clone(),
+                );
+            }
+            other => return Err(invalid(format!("config: 未知参数 {other}"))),
+        }
+        i += 1;
+    }
+    config_compile::config_compile(
+        root,
+        profile_id,
+        sign_key_hex.as_deref(),
+        root_key_hex.as_deref(),
+    )?;
+    Ok(())
+}
+
+fn command_manifest(root: &Path, args: &[String]) -> DynResult<()> {
+    let (mode, tail) = args
+        .split_first()
+        .ok_or_else(|| invalid("manifest requires normalize|derive|registry|verify-bundle"))?;
+    match mode.as_str() {
+        "normalize" => {
+            let profile_id = take_profile_id(tail)?;
+            let profile = load_profile(root, &profile_id)?;
+            let manifest = product_manifest::normalize_profile(root, &profile)?;
+            let path = product_manifest::write_normalized(root, &manifest)?;
+            println!(
+                "MANIFEST-NORMALIZE profile={profile_id} file={}",
+                path.display()
+            );
+            // profile_digest 绑定。
+            let digest = product_deriver::profile_digest(root, &profile_id)?;
+            println!("PROFILE-DIGEST {digest}");
+            Ok(())
+        }
+        "derive" => {
+            let profile_id = take_profile_id(tail)?;
+            let manifest = product_manifest::load_normalized(root, &profile_id)?;
+            let built_dir = root.join("target");
+            product_deriver::write_derivatives(root, &manifest, &built_dir)?;
+            Ok(())
+        }
+        "registry" => {
+            product_manifest::write_service_kind_registry(root)?;
+            Ok(())
+        }
+        "verify-bundle" => {
+            let profile_id = take_profile_id(tail)?;
+            let manifest = product_manifest::load_normalized(root, &profile_id)?;
+            product_deriver::verify_bundle_file(root, &manifest)
+        }
+        other => Err(invalid(format!("unknown manifest subcommand '{other}'"))),
+    }
+}
+
+fn take_profile_id(args: &[String]) -> DynResult<String> {
+    let mut it = args.iter();
+    let mut profile_id = String::new();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--profile" => {
+                profile_id = it
+                    .next()
+                    .ok_or_else(|| invalid("--profile requires a value"))?
+                    .clone()
+            }
+            other => return Err(invalid(format!("unknown manifest arg '{other}'"))),
+        }
+    }
+    if profile_id.is_empty() {
+        return Err(invalid("manifest requires --profile <id>"));
+    }
+    Ok(profile_id)
+}
+
+/// `policy kernel|adr`：kernel-policy / ADR registry Gate（fail-closed）。
+fn command_policy(root: &Path, args: &[String]) -> DynResult<()> {
+    let (mode, _tail) = args
+        .split_first()
+        .ok_or_else(|| invalid("policy requires kernel|adr"))?;
+    match mode.as_str() {
+        "kernel" => {
+            let violations = policy::load_kernel_policy(root)?.validate();
+            if !violations.is_empty() {
+                return Err(invalid(format!(
+                    "KERNEL-POLICY-GATE FAIL: {}",
+                    violations.join("; ")
+                )));
+            }
+            println!(
+                "KERNEL-POLICY-GATE PASS product_kernel={}",
+                policy::load_kernel_policy(root)?.product_kernel
+            );
+            Ok(())
+        }
+        "adr" => {
+            let violations = policy::gate_adr_registry(root)?;
+            if !violations.is_empty() {
+                return Err(invalid(format!(
+                    "ADR-REGISTRY-GATE FAIL: {}",
+                    violations.join("; ")
+                )));
+            }
+            println!(
+                "ADR-REGISTRY-GATE PASS entries={}",
+                policy::load_adr_registry(root)?.adrs.len()
+            );
+            Ok(())
+        }
+        other => Err(invalid(format!("unknown policy subcommand '{other}'"))),
+    }
 }
 
 fn command_fuzz(_root: &Path, args: &[String]) -> DynResult<()> {
@@ -335,6 +515,40 @@ fn command_fuzz(_root: &Path, args: &[String]) -> DynResult<()> {
 /// - 文档注释/字符串中出现的 "unsafe" 字样（如"零 unsafe"声明）不计数。
 fn audit_unsafe_safety(root: &Path, args: &[String]) -> DynResult<()> {
     ensure_empty(args, "audit-unsafe-safety")?;
+    let report = unsafe_audit_report(root)?;
+    if report.result != "PASS" {
+        eprintln!(
+            "audit-unsafe-safety: FAIL ({} 处 unsafe 缺少 SAFETY 注释)",
+            report.violations.len()
+        );
+        for v in &report.violations {
+            eprintln!("{v}");
+        }
+        return Err(invalid(format!(
+            "unsafe SAFETY 注释覆盖率未达 100%（{} 处违规）",
+            report.violations.len()
+        )));
+    }
+    println!(
+        "AUDIT-UNSAFE-SAFETY result=PASS files_with_unsafe={} unsafe_sites={}",
+        report.checked_files, report.unsafe_sites
+    );
+    Ok(())
+}
+
+/// 结构化 unsafe/SAFETY 审计报告，供 `audit-unsafe-safety` 与 42
+/// `evidence42 unsafe-report` 共用。
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct UnsafeAuditReport {
+    schema: &'static str,
+    result: &'static str,
+    checked_files: usize,
+    unsafe_sites: usize,
+    violations: Vec<String>,
+}
+
+/// 执行 unsafe/SAFETY 扫描并返回结构化报告（不直接打印/退出）。
+pub(crate) fn unsafe_audit_report(root: &Path) -> DynResult<UnsafeAuditReport> {
     let crates_dir = root.join("crates");
     let mut violations: Vec<String> = Vec::new();
     let mut checked_files = 0usize;
@@ -430,24 +644,17 @@ fn audit_unsafe_safety(root: &Path, args: &[String]) -> DynResult<()> {
         violations.extend(file_violations);
     }
 
-    if !violations.is_empty() {
-        eprintln!(
-            "audit-unsafe-safety: FAIL ({} 处 unsafe 缺少 SAFETY 注释)",
-            violations.len()
-        );
-        for v in &violations {
-            eprintln!("{v}");
-        }
-        return Err(invalid(format!(
-            "unsafe SAFETY 注释覆盖率未达 100%（{} 处违规）",
-            violations.len()
-        )));
-    }
-    println!(
-        "AUDIT-UNSAFE-SAFETY result=PASS files_with_unsafe={} unsafe_sites={}",
-        checked_files, checked_unsafe
-    );
-    Ok(())
+    Ok(UnsafeAuditReport {
+        schema: "eneros.unsafe-audit.v1",
+        result: if violations.is_empty() {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        checked_files,
+        unsafe_sites: checked_unsafe,
+        violations,
+    })
 }
 
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> DynResult<()> {
@@ -1119,9 +1326,10 @@ fn load_profile(root: &Path, id: &str) -> DynResult<ProductProfile> {
 }
 
 fn validate_profile(profile: &ProductProfile) -> DynResult<()> {
-    if profile.schema != PROFILE_SCHEMA {
+    // 36：接受 v1 与 v2；v1 由 normalize_profile 按旧语义派生。
+    if profile.schema != PROFILE_SCHEMA && profile.schema != product_manifest::PROFILE_SCHEMA_V2 {
         return Err(invalid(format!(
-            "unsupported profile schema '{}'",
+            "unsupported profile schema '{}' (expected v1 or v2)",
             profile.schema
         )));
     }

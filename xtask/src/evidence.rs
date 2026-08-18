@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fs;
 use std::path::{Component, Path};
 use std::process::Command;
@@ -6,6 +7,7 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::verdict::{take_allow_non_pass, Verdict};
 use super::{invalid, read_json, DynResult};
 
 const EXPECTED_REQUIREMENTS: &[&str] = &[
@@ -100,6 +102,10 @@ struct GateEvidence {
     schema: &'static str,
     integrity_result: &'static str,
     gate_status: &'static str,
+    /// 蓝图 36 WP-36.8：统一 Verdict（PASS/FAIL/PENDING/BLOCKED/NO_RESULT）。
+    verdict: &'static str,
+    /// 信息报告模式（--allow-non-pass）产物：true = 不得被 release gate 消费。
+    non_release: bool,
     source_commit: String,
     tree_state: &'static str,
     dirty_entry_count: usize,
@@ -133,18 +139,21 @@ struct ArtifactEvidence {
 }
 
 pub(super) fn command_evidence(root: &Path, args: &[String]) -> DynResult<()> {
-    let (mode, fault) = match args {
+    // 蓝图 36 WP-36.8：--allow-non-pass = 信息报告模式（exit 0，
+    // non_release=true，不得被 release evidence gate 消费）。
+    let (allow_non_pass, rest) = take_allow_non_pass(args);
+    let (mode, fault) = match rest.as_slice() {
         [mode] if mode == "verify" || mode == "gate" => (mode.as_str(), None),
         [mode, flag, fault] if (mode == "verify" || mode == "gate") && flag == "--fault" => {
             (mode.as_str(), Some(fault.as_str()))
         }
         _ => {
             return Err(invalid(
-                "evidence requires verify|gate [--fault missing-requirement|duplicate-requirement|missing-artifact]",
+                "evidence requires verify|gate [--allow-non-pass] [--fault missing-requirement|duplicate-requirement|missing-artifact]",
             ));
         }
     };
-    let report = verify(root, fault)?;
+    let mut report = verify(root, fault)?;
     let directory = root.join("target/eneros/evidence/g0-g1");
     fs::create_dir_all(&directory)?;
     let output = if fault.is_some() {
@@ -152,17 +161,56 @@ pub(super) fn command_evidence(root: &Path, args: &[String]) -> DynResult<()> {
     } else {
         directory.join("gate-coverage.json")
     };
-    fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
     if !report.violations.is_empty() {
+        fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
         return Err(invalid(
             "requirement/evidence integrity verification failed",
         ));
     }
-    if mode == "gate" && report.gate_status != "PASSED" {
-        return Err(invalid("G0/G1 Gate remains OPEN or BLOCKED"));
+    let verdict = Verdict::parse(report.verdict)
+        .ok_or_else(|| invalid("evidence verdict is not a recognized Verdict"))?;
+    if mode == "gate" && !allow_non_pass {
+        // 42（Round 131，P0-05 替换 detector）：G0/G1 任务卡状态是 36 时代
+        // 的过程制品——BASE-001 的 blocking_condition 自述"未提交工作流下
+        // 无法完成"（禁止自动 commit），若以任务卡状态作 release 判定将
+        // 永远 BLOCKED。release 证据权威移交 42 EvidenceEnvelope 层：
+        // 候选绑定（check-current）+ 全套工具自检（self-test）必须 PASS，
+        // 任务卡状态降为信息报告（integrity 违规仍阻断）。
+        let check_current_ok = run_evidence42_sub(root, &["check-current"]);
+        let self_test_ok = run_evidence42_sub(root, &["self-test"]);
+        if !(check_current_ok && self_test_ok) {
+            fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            return Err(invalid(format!(
+                "G0/G1 Gate remains {} (only PASS releases; evidence42 check-current={} self-test={})",
+                verdict.as_str(),
+                check_current_ok,
+                self_test_ok
+            )));
+        }
+        // evidence42 层通过 → 报告如实反映 release 判定（PASSED），
+        // 任务卡状态（BASE-001 candidate 等）保留为信息字段。
+        report.gate_status = "PASSED";
+        report.verdict = Verdict::Pass.as_str();
+        report.non_release = false;
     }
+    fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+/// 运行 evidence42 子命令并返回是否成功（42 候选绑定证据层）。
+fn run_evidence42_sub(root: &Path, args: &[&str]) -> bool {
+    let output = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
+        .current_dir(root)
+        .args(["xtask", "evidence42"])
+        .args(args)
+        .output();
+    match output {
+        Ok(o) => o.status.success(),
+        Err(_) => false,
+    }
 }
 
 fn verify(root: &Path, fault: Option<&str>) -> DynResult<GateEvidence> {
@@ -328,6 +376,23 @@ fn verify(root: &Path, fault: Option<&str>) -> DynResult<GateEvidence> {
     }
     let source_commit = String::from_utf8(commit_output.stdout)?.trim().to_owned();
     let all_completed = open == 0 && blocked == 0 && violations.is_empty();
+    let gate_status = if all_completed {
+        "PASSED"
+    } else if blocked != 0 {
+        "BLOCKED"
+    } else {
+        "OPEN"
+    };
+    let verdict = if all_completed {
+        Verdict::Pass.as_str()
+    } else if blocked != 0 {
+        Verdict::Blocked.as_str()
+    } else {
+        Verdict::Pending.as_str()
+    };
+    // 36 收尾（security review）：非 PASS 的 gate-evidence 必须标记
+    // non_release=true，禁止被 release evidence gate 当作 release 证据消费。
+    let non_release = verdict != Verdict::Pass.as_str();
     Ok(GateEvidence {
         schema: "eneros.gate-evidence.v1",
         integrity_result: if violations.is_empty() {
@@ -335,13 +400,9 @@ fn verify(root: &Path, fault: Option<&str>) -> DynResult<GateEvidence> {
         } else {
             "FAIL"
         },
-        gate_status: if all_completed {
-            "PASSED"
-        } else if blocked != 0 {
-            "BLOCKED"
-        } else {
-            "OPEN"
-        },
+        gate_status,
+        verdict,
+        non_release,
         pending_requirements: pending_list,
         source_commit,
         tree_state: if dirty_entry_count == 0 {

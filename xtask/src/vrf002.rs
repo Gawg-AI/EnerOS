@@ -37,7 +37,22 @@ fn build_in(dir: &Path, target_dir: &str, bin: &str) -> DynResult<PathBuf> {
     Ok(Path::new(target_dir).join("release").join(bin))
 }
 
-pub fn command_build_compare(root: &Path) -> DynResult<()> {
+/// 双构建比对的机器可读结果。
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct BuildCompareReport {
+    pub schema: &'static str,
+    pub result: &'static str,
+    pub payload: String,
+    pub env_a: String,
+    pub env_b: String,
+    pub sha256_a: String,
+    pub sha256_b: String,
+    pub len_a: u64,
+    pub len_b: u64,
+}
+
+/// 执行双构建字节比对并返回结构化结果。
+pub(crate) fn run_build_compare(root: &Path) -> DynResult<BuildCompareReport> {
     let bin = "eneros-firmware-agent";
     let ta = root.join("target/compare-a");
     let tb = root.join("target/compare-b");
@@ -47,13 +62,36 @@ pub fn command_build_compare(root: &Path) -> DynResult<()> {
     let hb = sha256_file(&pb);
     let la = fs::metadata(&pa)?.len();
     let lb = fs::metadata(&pb)?.len();
+    let result = if ha == hb && la == lb { "PASS" } else { "FAIL" };
     println!(
         "BUILD_COMPARE payload={bin} env_a=target/compare-a env_b=target/compare-b sha256_a={ha} sha256_b={hb} len_a={la} len_b={lb}"
     );
-    if ha == hb && la == lb {
+    if result == "PASS" {
         println!("BUILD_COMPARE result=PASS bit-identical");
-        Ok(())
     } else {
-        Err(format!("BUILD_COMPARE result=FAIL: sha256 diverge ({ha} != {hb})").into())
+        println!("BUILD_COMPARE result=FAIL: sha256 diverge ({ha} != {hb})");
     }
+    Ok(BuildCompareReport {
+        schema: "eneros.repro-report.v1",
+        result,
+        payload: bin.to_owned(),
+        env_a: "target/compare-a".to_owned(),
+        env_b: "target/compare-b".to_owned(),
+        sha256_a: ha,
+        sha256_b: hb,
+        len_a: la,
+        len_b: lb,
+    })
+}
+
+pub fn command_build_compare(root: &Path) -> DynResult<()> {
+    let report = run_build_compare(root)?;
+    if report.result != "PASS" {
+        return Err(format!(
+            "BUILD_COMPARE result=FAIL: sha256 diverge ({} != {})",
+            report.sha256_a, report.sha256_b
+        )
+        .into());
+    }
+    Ok(())
 }

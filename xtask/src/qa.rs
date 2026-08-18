@@ -92,6 +92,7 @@ pub(super) fn command_qa(root: &Path, args: &[String]) -> DynResult<()> {
         "verify-evidence-sig" => command_verify_evidence_sig(root, tail),
         "g7-audit" => command_g7_audit(root, tail),
         "perf-baseline" => command_perf_baseline(root, tail),
+        "perf-measure" => command_perf_measure(root, tail),
         "perf-keygen" => command_perf_keygen(root, tail),
         "gate" => super::gate::command_gate(root, tail),
         "perf-gate" => command_perf_gate(root, tail),
@@ -338,6 +339,21 @@ struct SoakCampaign {
     schema: String,
     campaign_id: String,
     artifact_sha256: String,
+    /// 42 candidate lineage 绑定：当前候选血缘，防止旧证据跨候选复用。
+    #[serde(default)]
+    candidate_id: String,
+    #[serde(default)]
+    source_commit: String,
+    #[serde(default)]
+    dirty_tree_digest: String,
+    #[serde(default)]
+    product_manifest_digest: String,
+    #[serde(default)]
+    profile_digest: String,
+    #[serde(default)]
+    toolchain_digest: String,
+    #[serde(default)]
+    platform_inventory_digest: String,
     duration_days: u64,
     /// v0.253.0（D1）：最短浸泡天数（默认 3=72h，对应 14 号文 D1；
     /// 旧证据未声明时按 3 天计）。
@@ -353,6 +369,32 @@ struct SoakCampaign {
     restarts: Vec<SoakRestart>,
     /// 采集的指标样本数.
     metric_samples: u64,
+    /// 42 WP-42.10：工作负载覆盖（真实执行的能力清单；空 = 无负载）。
+    #[serde(default)]
+    workload_coverage: Vec<String>,
+    /// 42 WP-42.10：真实事务/错误/恢复计数（不得写死 0——0 只允许在
+    /// 真为零时出现，且与 cycles 一致）。
+    #[serde(default)]
+    transactions_total: u64,
+    #[serde(default)]
+    errors_total: u64,
+    #[serde(default)]
+    recoveries_total: u64,
+    /// 42 WP-42.2：故障统计（注入/恢复/注入确认）。
+    #[serde(default)]
+    fault_stats: Option<SoakFaultStats>,
+}
+
+/// 42 WP-42.2：浸泡故障统计——injected 为真实注入且经确认的数量，
+/// recovered 为按期望 oracle 恢复的数量；未注入时必须如实声明
+/// injection_confirmed=false（QEMU 适配器无故障注入能力）。
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SoakFaultStats {
+    injected: u64,
+    recovered: u64,
+    injection_confirmed: bool,
 }
 
 fn default_min_soak_days() -> u64 {
@@ -586,6 +628,23 @@ fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
         schema: &'static str,
         peers: Vec<PeerRow>,
         verdict: &'static str,
+        /// 蓝图 36 WP-36.8：非 D2-PASS 时 non_release=true。
+        non_release: bool,
+        /// 42 candidate lineage 绑定。
+        #[serde(default)]
+        candidate_id: String,
+        #[serde(default)]
+        source_commit: String,
+        #[serde(default)]
+        dirty_tree_digest: String,
+        #[serde(default)]
+        product_manifest_digest: String,
+        #[serde(default)]
+        profile_digest: String,
+        #[serde(default)]
+        toolchain_digest: String,
+        #[serde(default)]
+        platform_inventory_digest: String,
     }
     #[derive(Serialize)]
     struct PeerRow {
@@ -601,7 +660,11 @@ fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
 
     let mut dir = root.join("target/interop");
     let mut out_path = root.join("target/interop/interop-matrix.json");
-    let mut it = args.iter();
+    let mut profile_id = "qemu-prod".to_owned();
+    // 蓝图 36 WP-36.8：信息报告模式（--allow-non-pass）——矩阵 verdict
+    // 非 D2-PASS 时写 non_release=true，不得被 release evidence gate 消费。
+    let (allow_non_pass, rest) = crate::verdict::take_allow_non_pass(args);
+    let mut it = rest.iter();
     while let Some(a) = it.next() {
         let mut val = || {
             it.next()
@@ -610,6 +673,7 @@ fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
         match a.as_str() {
             "--dir" => dir = root.join(val()?),
             "--out" => out_path = root.join(val()?),
+            "--profile" => profile_id = val()?.to_owned(),
             other => return Err(invalid(format!("unknown interop-report arg '{other}'"))),
         }
     }
@@ -638,58 +702,123 @@ fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
     ];
 
     let mut rows = Vec::new();
-    let mut all_pass = true;
+    let mut all_verified = true;
     for (peer, skip_file, cases) in peers {
         let skip_path = dir.join(skip_file);
+        let result_path = dir.join(format!("{peer}-result.json"));
         // 读取 skip 证据里的 required_peer（无则 unknown）。
         let required_peer = read_json::<serde_json::Value>(&skip_path)
             .ok()
             .and_then(|v| v.get("required_peer").cloned())
             .and_then(|v| v.as_str().map(|s| s.to_owned()))
             .unwrap_or_else(|| "unknown".to_owned());
-        let status = if skip_path.exists() {
-            all_pass = false;
-            "SKIP"
-        } else {
+        // 蓝图 36 WP-36.10 #2：缺 skip 文件不能推导 VERIFIED；必须有
+        // result JSON（verdict=PASS、peer identity、oracle）才 VERIFIED，
+        // 否则一律 PENDING（非 PASS）。
+        let mut verified = false;
+        let mut detail = format!("{}/{}", dir.display(), skip_file);
+        if let Ok(result) = read_json::<serde_json::Value>(&result_path) {
+            let has_verdict_pass = result
+                .get("verdict")
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| v.eq_ignore_ascii_case("PASS"));
+            let has_peer = result
+                .get("peer_identity")
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| !v.is_empty());
+            let has_oracle = result
+                .get("oracle")
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| !v.is_empty());
+            if has_verdict_pass && has_peer && has_oracle {
+                verified = true;
+                detail = result_path.to_string_lossy().replace('\\', "/");
+            }
+        }
+        let status = if verified {
             "PASS"
+        } else {
+            all_verified = false;
+            if skip_path.exists() {
+                "SKIP"
+            } else {
+                "PENDING"
+            }
         };
-        let required = if status == "PASS" {
-            "real peer (result file present)".to_owned()
+        let required = if verified {
+            "real peer (result JSON with verdict=PASS + peer_identity + oracle)".to_owned()
         } else {
             required_peer
         };
         rows.push(PeerRow {
             peer,
             status,
-            classification: if status == "PASS" {
-                "VERIFIED"
-            } else {
-                "PENDING"
-            },
+            classification: if verified { "VERIFIED" } else { "PENDING" },
             cases: cases.iter().map(|s| s.to_string()).collect(),
-            evidence: if status == "PASS" {
-                format!("{}/result.json", dir.display())
-            } else {
-                format!("{}/{}", dir.display(), skip_file)
-            },
+            evidence: detail,
             required_peer: required,
         });
     }
 
-    let verdict = if all_pass {
+    let verdict = if all_verified {
         "D2-PASS"
     } else {
         "D2-PENDING-REAL-PEERS"
+    };
+    let lineage = if root.join(".git").exists() {
+        Some(super::evidence_chain::compute_lineage(
+            root,
+            &profile_id,
+            None,
+        )?)
+    } else {
+        None
     };
     let report = InteropMatrix {
         schema: "eneros.interop-matrix.v1",
         peers: rows,
         verdict,
+        non_release: !all_verified,
+        candidate_id: lineage
+            .as_ref()
+            .map(|l| l.candidate_id.clone())
+            .unwrap_or_default(),
+        source_commit: lineage
+            .as_ref()
+            .map(|l| l.source_commit.clone())
+            .unwrap_or_default(),
+        dirty_tree_digest: lineage
+            .as_ref()
+            .map(|l| l.dirty_tree_digest.clone())
+            .unwrap_or_default(),
+        product_manifest_digest: lineage
+            .as_ref()
+            .map(|l| l.product_manifest_digest.clone())
+            .unwrap_or_default(),
+        profile_digest: lineage
+            .as_ref()
+            .map(|l| l.profile_digest.clone())
+            .unwrap_or_default(),
+        toolchain_digest: lineage
+            .as_ref()
+            .map(|l| l.toolchain_digest.clone())
+            .unwrap_or_default(),
+        platform_inventory_digest: lineage
+            .as_ref()
+            .map(|l| l.platform_inventory_digest.clone())
+            .unwrap_or_default(),
     };
     fs::create_dir_all(out_path.parent().unwrap_or(root))?;
     fs::write(&out_path, serde_json::to_vec_pretty(&report)?)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     println!("INTEROP-MATRIX verdict={verdict} → {}", out_path.display());
+    // 36 收尾（review should-fix）：interop 矩阵非 D2-PASS 默认非零，
+    // 仅显式 --allow-non-pass 生成信息报告（non_release=true 已写）。
+    if !all_verified && !allow_non_pass {
+        return Err(invalid(format!(
+            "INTEROP-MATRIX remains {verdict} (only D2-PASS releases; use --allow-non-pass for info report)"
+        )));
+    }
     Ok(())
 }
 
@@ -851,8 +980,7 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
     let key_path = sign_key.ok_or_else(|| {
         invalid("compliance-report requires --sign-key（34 GV-07：证据签名强制，dev key 入仓先例 product/security/dev-signing.key）")
     })?;
-    let key_bytes = fs::read(&key_path)
-        .map_err(|e| invalid(format!("read sign key: {e}")))?;
+    let key_bytes = fs::read(&key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
     let keypair = ed25519_dalek::SigningKey::from_bytes(
         &key_bytes[..32]
             .try_into()
@@ -971,7 +1099,16 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
 }
 
 /// 34 GV-07：RFC3339 UTC 时间戳（系统时钟；禁止空串占位）。
-fn rfc3339_now() -> String {
+/// 42 WP-42.12：perf 运行 id——时间纳秒派生（唯一、不可复用）。
+pub(crate) fn perf_run_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("perf-run-{nanos:x}")
+}
+
+pub(crate) fn rfc3339_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -1027,7 +1164,10 @@ fn command_sign_evidence(root: &Path, args: &[String]) -> DynResult<()> {
     let mut sign_key: Option<std::path::PathBuf> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        let mut val = || it.next().ok_or_else(|| invalid(format!("{a} requires a value")));
+        let mut val = || {
+            it.next()
+                .ok_or_else(|| invalid(format!("{a} requires a value")))
+        };
         match a.as_str() {
             "--sign-key" => sign_key = Some(root.join(val()?)),
             other if other.starts_with("--") => {
@@ -1038,10 +1178,8 @@ fn command_sign_evidence(root: &Path, args: &[String]) -> DynResult<()> {
     }
     let path = path.ok_or_else(|| invalid("sign-evidence requires <path>"))?;
     let key_path = sign_key.ok_or_else(|| invalid("sign-evidence requires --sign-key"))?;
-    let raw = fs::read(&path)
-        .map_err(|e| invalid(format!("read {}: {e}", path.display())))?;
-    let key_bytes = fs::read(&key_path)
-        .map_err(|e| invalid(format!("read sign key: {e}")))?;
+    let raw = fs::read(&path).map_err(|e| invalid(format!("read {}: {e}", path.display())))?;
+    let key_bytes = fs::read(&key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
     let keypair = ed25519_dalek::SigningKey::from_bytes(
         &key_bytes[..32]
             .try_into()
@@ -1064,11 +1202,16 @@ fn command_verify_evidence_sig(root: &Path, args: &[String]) -> DynResult<()> {
     let mut pub_key: Option<String> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        let mut val = || it.next().ok_or_else(|| invalid(format!("{a} requires a value")));
+        let mut val = || {
+            it.next()
+                .ok_or_else(|| invalid(format!("{a} requires a value")))
+        };
         match a.as_str() {
             "--pub-key" => pub_key = Some(val()?.clone()),
             other if other.starts_with("--") => {
-                return Err(invalid(format!("unknown verify-evidence-sig arg '{other}'")))
+                return Err(invalid(format!(
+                    "unknown verify-evidence-sig arg '{other}'"
+                )))
             }
             other => path = Some(root.join(other)),
         }
@@ -1204,10 +1347,8 @@ pub(crate) fn mock_leak_lines(path: &std::path::Path, _is_lib: bool) -> Vec<(usi
         }
         let t = line.trim_start();
         // 34 GV-08（复验）：use-mock 检查对所有 .rs 生效（旧实现仅 lib.rs）。
-        if t.starts_with("use ") && t.contains("::mock") {
-            if !protected_by_test_cfg(&lines, i) {
-                hits.push((i + 1, t.to_owned()));
-            }
+        if t.starts_with("use ") && t.contains("::mock") && !protected_by_test_cfg(&lines, i) {
+            hits.push((i + 1, t.to_owned()));
         }
         // 34 GV-08（复验）：mod 匹配含 pub(crate)/pub(super) 可见性变体
         //（旧实现仅 `pub mod mock`）。
@@ -1217,10 +1358,8 @@ pub(crate) fn mock_leak_lines(path: &std::path::Path, _is_lib: bool) -> Vec<(usi
             || t.starts_with("pub(super) mod mock")
             || t.starts_with("pub(crate) mod mock;")
             || t.starts_with("pub(super) mod mock;");
-        if is_mock_mod {
-            if !protected_by_test_cfg(&lines, i) {
-                hits.push((i + 1, t.to_owned()));
-            }
+        if is_mock_mod && !protected_by_test_cfg(&lines, i) {
+            hits.push((i + 1, t.to_owned()));
         }
     }
     hits
@@ -1276,8 +1415,12 @@ fn command_g7_audit(root: &Path, args: &[String]) -> DynResult<()> {
     }
 
     impl CapabilityDetector {
-        /// 运行时求值：VERIFIED / UNVERIFIED / PENDING。
-        fn evaluate(self, root: &Path) -> &'static str {
+        /// 运行时求值（蓝图 36 WP-36.9 止血）：
+        /// TestPresence / EvidenceFile 只证明"存在"，不证明产品闭环
+        /// （manifest service + production call path + evidence oracle），
+        /// 因此只能产生 PENDING——永远不能 VERIFIED。
+        /// 返回 (status, found)。
+        fn evaluate(self, root: &Path) -> (&'static str, bool) {
             match self {
                 CapabilityDetector::TestPresence {
                     crate_name,
@@ -1286,7 +1429,7 @@ fn command_g7_audit(root: &Path, args: &[String]) -> DynResult<()> {
                     // crate 名 ≠ 目录名（如 eneros-crypto 位于
                     // crates/security/crypto）：按 Cargo.toml 的 name 匹配。
                     let Some(crate_dir) = find_crate_dir(root, crate_name) else {
-                        return "UNVERIFIED";
+                        return ("PENDING", false);
                     };
                     let mut found = false;
                     let mut files = Vec::new();
@@ -1315,25 +1458,18 @@ fn command_g7_audit(root: &Path, args: &[String]) -> DynResult<()> {
                             break;
                         }
                     }
-                    if found {
-                        "VERIFIED"
-                    } else {
-                        "UNVERIFIED"
-                    }
+                    ("PENDING", found)
                 }
                 CapabilityDetector::EvidenceFile { path, .. } => {
-                    if root.join(path).is_file() {
-                        "VERIFIED"
-                    } else {
-                        "UNVERIFIED"
-                    }
+                    ("PENDING", root.join(path).is_file())
                 }
             }
         }
     }
 
     let mut out_path = root.join("target/g7-report.json");
-    let mut it = args.iter();
+    let (allow_non_pass, rest) = crate::verdict::take_allow_non_pass(args);
+    let mut it = rest.iter();
     while let Some(a) = it.next() {
         let mut val = || {
             it.next()
@@ -1424,31 +1560,23 @@ fn command_g7_audit(root: &Path, args: &[String]) -> DynResult<()> {
     for row in &claimed {
         statuses.push((row.id, row.detector.evaluate(root)));
     }
-    // WP-26.1：PENDING/UNVERIFIED 均不计入通过（发布判定显式阻断）。
-    let all_claimed_ok = statuses.iter().all(|(_, st)| *st == "VERIFIED");
-    let any_pending = statuses.iter().any(|(_, st)| *st == "PENDING");
-    let no_mock_leak = real_violations.is_empty();
-    let verdict = if no_mock_leak && all_claimed_ok {
-        "G7-PASS"
-    } else if no_mock_leak && any_pending {
-        "G7-PENDING"
-    } else {
-        "G7-REVIEW"
-    };
-
-    // 报告行：detector 求值结果入 status（可复算、随代码事实变化）。
+    // 蓝图 36 WP-36.9 止血：TestPresence/EvidenceFile 只能 PENDING，
+    // 不再产生 VERIFIED（假 PASS 路径封死）；完整产品图验证在 42 实现。
+    // 报告行：detector 求值结果入 status（全部 PENDING 或缺失）。
     let capability_rows: Vec<serde_json::Value> = claimed
         .iter()
         .zip(statuses.iter())
-        .map(|(row, (_, st))| {
+        .map(|(row, (st, found))| {
             serde_json::json!({
                 "id": row.id,
                 "name": row.name,
                 "detector": row.detector,
                 "status": st,
+                "evidence_present": found,
             })
         })
         .collect();
+    let verdict = "G7-REVIEW";
     let report = G7Report {
         schema: "eneros.g7-consistency.v1",
         production_mock_refs: real_violations,
@@ -1459,6 +1587,13 @@ fn command_g7_audit(root: &Path, args: &[String]) -> DynResult<()> {
     fs::write(&out_path, serde_json::to_vec_pretty(&report)?)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     println!("G7-AUDIT verdict={verdict} → {}", out_path.display());
+    // 蓝图 36 WP-36.9：verdict 非 PASS（当前所有能力均为 PENDING）时
+    // 默认非零退出；仅显式 --allow-non-pass 可生成信息报告（non_release）。
+    if !allow_non_pass {
+        return Err(invalid(
+            "G7-AUDIT: capabilities lack product closure (manifest service + production call path + evidence oracle) — PENDING, not PASS",
+        ));
+    }
     Ok(())
 }
 
@@ -1467,6 +1602,7 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
 
     let mut cycles: usize = 10;
     let mut max_fail: usize = 1;
+    let mut profile_id = "qemu-prod".to_owned();
     let mut image: Option<std::path::PathBuf> = None;
     let mut vars_template: Option<std::path::PathBuf> = None;
     let mut out_path = root.join("target/soak-campaign.json");
@@ -1493,6 +1629,7 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
                     .parse()
                     .map_err(|_| invalid("--max-fail must be usize"))?
             }
+            "--profile" => profile_id = val()?.to_owned(),
             "--image" => image = Some(std::path::PathBuf::from(val()?)),
             "--vars-template" => vars_template = Some(std::path::PathBuf::from(val()?)),
             "--out" => out_path = root.join(val()?),
@@ -1524,13 +1661,24 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
         image.ok_or_else(|| invalid("soak-run requires --image <path> (for artifact_sha256)"))?;
 
     // 1. 构造 qemu-prod 命令行（复用同一入口）。
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.arg("xtask").arg("run").arg("qemu-prod");
+    // 42（Round 131）：直接复用当前 xtask 可执行文件（`current_exe`），
+    // 不再每轮 `cargo xtask` 重编译——消除外部源文件同步/改动导致的
+    // 中途编译失败（实测 1000-cycle 在第 232/233 轮因源码被外部瞬时
+    // 改写、`cargo xtask` 编译失败 exit 101 而中止；产品与 harness 本身
+    // 无故障），同时显著降低每轮开销。
+    let mut cmd =
+        std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "cargo".into()));
+    cmd.arg("run").arg("qemu-prod");
     cmd.arg("--image").arg(&image);
     if let Some(vt) = &vars_template {
         cmd.arg("--vars-template").arg(vt);
     }
     cmd.arg("--expect").arg("PASS");
+    // 42：QEMU 受控退出 + 每轮重置 BOOTCTRL，使 soak-run 可重复执行，
+    // 不再把 timeout 当 PASS。
+    if !cfg!(windows) {
+        cmd.arg("--qmp-shutdown").arg("--reset-bootctrl");
+    }
 
     // 2. 循环启动；每轮结束后采样宿主 RSS（/proc/self/status VmRSS）与
     // 累计耗时，供泄漏回归（33 GV-05）。
@@ -1539,6 +1687,13 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
     let mut rss_samples: Vec<(u64, u64)> = Vec::new(); // (累计秒, rss 字节)
     let mut failures: usize = 0;
     let mut elapsed_total: u64 = 0;
+    // 42 WP-42.10：真实事务/错误/恢复统计——恢复 = 失败后的后续 cycle
+    // 成功（故障注入后按 oracle 恢复的对偶；QEMU 适配器无注入时计数为
+    // 引导失败的自动恢复）。
+    let mut transactions_total: u64 = 0;
+    let mut errors_total: u64 = 0;
+    let mut recoveries_total: u64 = 0;
+    let mut pending_recovery: bool = false;
     for cycle in 0..cycles {
         let start = Instant::now();
         let status = cmd.output();
@@ -1548,9 +1703,16 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
         match status {
             Ok(out) if out.status.success() => {
                 println!("soak cycle {}/{} PASS in {}s", cycle + 1, cycles, elapsed);
+                transactions_total += 1;
+                if pending_recovery {
+                    recoveries_total += 1;
+                    pending_recovery = false;
+                }
             }
             Ok(out) => {
                 failures += 1;
+                errors_total += 1;
+                pending_recovery = true;
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 println!(
                     "soak cycle {}/{} FAIL rc={} ({})",
@@ -1567,6 +1729,8 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
             }
             Err(e) => {
                 failures += 1;
+                errors_total += 1;
+                pending_recovery = true;
                 println!("soak cycle {}/{} SPAWN-ERR: {e}", cycle + 1, cycles);
                 restarts.push(SoakRestart {
                     restart_id: cycle as u64 + 1,
@@ -1613,6 +1777,18 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
         image.display()
     );
 
+    // 42：候选血缘绑定——soak 证据必须指向当前候选，禁止旧 evidence 复用。
+    // 非 git 临时目录（单元测试）不伪造血缘，字段留空；正式运行必须 .git 存在。
+    let lineage = if root.join(".git").exists() {
+        Some(super::evidence_chain::compute_lineage(
+            root,
+            &profile_id,
+            Some(&image),
+        )?)
+    } else {
+        None
+    };
+
     // 5. 33 GV-05：宿主 RSS 采样序列线性回归 → 泄漏率（字节/天）。
     // 采样不足（非 Linux /proc 缺失或样本 <2）→ 0 并显式警告（不静默）。
     let memory_leak_bytes_per_day = if rss_samples.len() >= 2 {
@@ -1634,6 +1810,34 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
         schema: "eneros.soak-campaign.v1".into(),
         campaign_id: format!("qemu-soak-{cycles}x-{avg}s"),
         artifact_sha256,
+        candidate_id: lineage
+            .as_ref()
+            .map(|l| l.candidate_id.clone())
+            .unwrap_or_default(),
+        source_commit: lineage
+            .as_ref()
+            .map(|l| l.source_commit.clone())
+            .unwrap_or_default(),
+        dirty_tree_digest: lineage
+            .as_ref()
+            .map(|l| l.dirty_tree_digest.clone())
+            .unwrap_or_default(),
+        product_manifest_digest: lineage
+            .as_ref()
+            .map(|l| l.product_manifest_digest.clone())
+            .unwrap_or_default(),
+        profile_digest: lineage
+            .as_ref()
+            .map(|l| l.profile_digest.clone())
+            .unwrap_or_default(),
+        toolchain_digest: lineage
+            .as_ref()
+            .map(|l| l.toolchain_digest.clone())
+            .unwrap_or_default(),
+        platform_inventory_digest: lineage
+            .as_ref()
+            .map(|l| l.platform_inventory_digest.clone())
+            .unwrap_or_default(),
         // duration 以实际秒数为准（33 GV-05：门禁阈值经 --min-duration-days
         // 可配，短周期 CI 显式 0）。
         duration_days: ((total as f64 / 86400.0).max(0.0)) as u64,
@@ -1645,6 +1849,17 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
         data_corruption: false,
         restarts,
         metric_samples: cycles as u64,
+        // 42 WP-42.10：真实统计——事务=成功引导数，错误=失败引导数，
+        // 恢复=失败后成功数；QEMU 适配器无故障注入，如实声明。
+        workload_coverage: vec!["boot-chain".to_owned()],
+        transactions_total,
+        errors_total,
+        recoveries_total,
+        fault_stats: Some(SoakFaultStats {
+            injected: 0,
+            recovered: 0,
+            injection_confirmed: false,
+        }),
     };
     fs::create_dir_all(out_path.parent().unwrap_or(root))?;
     fs::write(&out_path, serde_json::to_vec_pretty(&campaign)?)?;
@@ -1678,13 +1893,13 @@ fn linear_slope_per_day(samples: &[(u64, u64)]) -> u64 {
     if n < 2 {
         return 0;
     }
-    let (sum_x, sum_y, sum_xy, sum_xx) = samples.iter().fold(
-        (0f64, 0f64, 0f64, 0f64),
-        |(sx, sy, sxy, sxx), &(x, y)| {
-            let (x, y) = (x as f64, y as f64);
-            (sx + x, sy + y, sxy + x * y, sxx + x * x)
-        },
-    );
+    let (sum_x, sum_y, sum_xy, sum_xx) =
+        samples
+            .iter()
+            .fold((0f64, 0f64, 0f64, 0f64), |(sx, sy, sxy, sxx), &(x, y)| {
+                let (x, y) = (x as f64, y as f64);
+                (sx + x, sy + y, sxy + x * y, sxx + x * x)
+            });
     let denom = n as f64 * sum_xx - sum_x * sum_x;
     if denom.abs() < f64::EPSILON {
         return 0;
@@ -1709,9 +1924,7 @@ fn command_soak(root: &Path, args: &[String]) -> DynResult<()> {
     }
     // 33 GV-05：artifact_sha256 必须实算（自证链——硬编码空串不得过门）。
     if campaign.artifact_sha256.is_empty() {
-        report
-            .violations
-            .push("missing-artifact-sha256".to_owned());
+        report.violations.push("missing-artifact-sha256".to_owned());
     }
     if campaign.duration_days < campaign.min_duration_days {
         report.violations.push(format!(
@@ -1782,6 +1995,30 @@ struct PerfResults {
     schema: String,
     baseline_sha256: String,
     candidate_sha256: String,
+    /// 42 WP-42.12：测量时刻与本次运行 id（candidate 必须不同于 baseline
+    /// ——measured_at/run_id 不得复用，防止旧结果冒充新测量）。
+    #[serde(default)]
+    measured_at: String,
+    #[serde(default)]
+    run_id: String,
+    /// 生成候选报告时从冻结 baseline 复制的测量时刻（空 = 首建基线）。
+    #[serde(default)]
+    baseline_measured_at: String,
+    /// 42 candidate lineage 绑定。
+    #[serde(default)]
+    candidate_id: String,
+    #[serde(default)]
+    source_commit: String,
+    #[serde(default)]
+    dirty_tree_digest: String,
+    #[serde(default)]
+    product_manifest_digest: String,
+    #[serde(default)]
+    profile_digest: String,
+    #[serde(default)]
+    toolchain_digest: String,
+    #[serde(default)]
+    platform_inventory_digest: String,
     metrics: Vec<PerfMetric>,
 }
 
@@ -1805,6 +2042,26 @@ struct PerfMetric {
     /// 推断（`default_higher_is_better`），兼容旧基线 JSON。
     #[serde(default)]
     direction: Option<MetricDirection>,
+    /// 42 WP-42.12：采样样本（ops/s 每 rep，排序存储）。
+    #[serde(default)]
+    samples: Vec<u64>,
+    /// 42 WP-42.12：百分位与置信区间（95%）。
+    #[serde(default)]
+    p50: u64,
+    #[serde(default)]
+    p95: u64,
+    #[serde(default)]
+    ci_low: u64,
+    #[serde(default)]
+    ci_high: u64,
+    /// 42 WP-42.12：warmup 迭代次数（不计入样本）。
+    #[serde(default)]
+    warmup_ops: u64,
+    /// 42 WP-42.12：可选区间 SLO（上下双界；任一存在即按 range 校验）。
+    #[serde(default)]
+    slo_lower_bound: Option<u64>,
+    #[serde(default)]
+    slo_upper_bound: Option<u64>,
 }
 
 /// 指标方向：吞吐类（frames/s、parses/s）越高越好；延迟/耗时类越低越好。
@@ -1828,7 +2085,12 @@ fn default_higher_is_better(metric_id: &str) -> bool {
 ///
 /// - higher_is_better（吞吐）：measured < baseline * (1 - max_pct%) → 退化；
 /// - lower_is_better（延迟）：measured > baseline * (1 + max_pct%) → 退化。
-fn regressed(measured: f64, baseline: f64, higher_is_better: bool, max_regression_pct: f64) -> bool {
+fn regressed(
+    measured: f64,
+    baseline: f64,
+    higher_is_better: bool,
+    max_regression_pct: f64,
+) -> bool {
     if baseline <= 0.0 {
         return false;
     }
@@ -1856,10 +2118,10 @@ fn regressed(measured: f64, baseline: f64, higher_is_better: bool, max_regressio
 /// 基线用 ed25519 私钥签名（`--sign-key <path>`，无 key 时仅生成未签名
 /// 基线并警告）；`perf-gate` 校验签名后执行 SLO/回归门禁。
 fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
-    use std::time::Instant;
-
     let mut out_path = root.join("target/perf-results.json");
     let mut sign_key: Option<std::path::PathBuf> = None;
+    let mut slo_threshold: u64 = 0;
+    let mut tolerance_pct: u64 = 10;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -1877,128 +2139,66 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
                     ),
                 );
             }
+            "--slo-threshold" => {
+                slo_threshold = it
+                    .next()
+                    .ok_or_else(|| invalid("perf-baseline --slo-threshold requires <u64>"))?
+                    .parse()
+                    .map_err(|_| invalid("perf-baseline --slo-threshold must be u64"))?;
+                if slo_threshold == 0 {
+                    return Err(invalid(
+                        "perf-baseline --slo-threshold must be > 0 to freeze an SLO",
+                    ));
+                }
+            }
+            "--tolerance-pct" => {
+                tolerance_pct = it
+                    .next()
+                    .ok_or_else(|| invalid("perf-baseline --tolerance-pct requires <u64>"))?
+                    .parse()
+                    .map_err(|_| invalid("perf-baseline --tolerance-pct must be u64"))?;
+                if tolerance_pct == 0 {
+                    return Err(invalid("perf-baseline --tolerance-pct must be > 0"));
+                }
+            }
             other => return Err(invalid(format!("unknown perf-baseline arg '{other}'"))),
         }
     }
 
-    // 1. 真实测量（固定迭代次数取均值，单位换算为吞吐）。
-    fn bench_ops<F: FnMut()>(ops: usize, mut f: F) -> f64 {
-        let start = Instant::now();
-        for _ in 0..ops {
-            f();
-        }
-        let secs = start.elapsed().as_secs_f64();
-        ops as f64 / secs
-    }
-
-    // iec104 APDU I 帧编解码。
-    let asdu = eneros_iec104_slave::asdu::Asdu {
-        type_id: eneros_iec104_slave::asdu::TypeId::MeasuredValueFloat,
-        cause_of_tx: eneros_iec104_slave::asdu::Cot::Periodic,
-        common_addr: 1,
-        ioas: vec![],
-    };
-    let iec104_apdu = eneros_iec104_slave::apdu::Apdu::i_format(1, 1, asdu);
-    let iec104_bytes = iec104_apdu.encode().unwrap();
-    let iec104_throughput = bench_ops(50_000, || {
-        let _ = eneros_iec104_slave::apdu::Apdu::decode(&iec104_bytes);
-    });
-
-    // ipc-wire 帧编解码。
-    let wire_frame = eneros_ipc_wire::el0::encode_frame(
-        eneros_ipc_wire::el0::El0FrameType::Report,
-        b"payload-32-bytes-aaaaaaaaaaaaaaaa",
-    );
-    let wire_throughput = bench_ops(50_000, || {
-        let _ = eneros_ipc_wire::el0::decode_frame(&wire_frame);
-    });
-
-    // Modbus RTU 帧解析（构造含 CRC 的合法帧）。
-    let mut modbus_frame = vec![0x01u8, 0x03, 0x00, 0x00, 0x00, 0x02];
-    let crc = modbus_crc16(&modbus_frame);
-    modbus_frame.push((crc & 0xFF) as u8);
-    modbus_frame.push((crc >> 8) as u8);
-    let modbus_throughput = bench_ops(50_000, || {
-        let _ = eneros_modbus_rtu::frame::ModbusFrame::decode(&modbus_frame);
-    });
-
-    // ELF 解析（构造最小合法 ELF64）。
-    let elf_bytes = minimal_elf64();
-    let elf_throughput = bench_ops(20_000, || {
-        let _ = eneros_elf_loader::LoadedElf::parse(&elf_bytes);
-    });
-
-    // GGUF 头解析。
-    let gguf_bytes = minimal_gguf();
-    let gguf_throughput = bench_ops(50_000, || {
-        let _ = eneros_gguf_loader::header::GgufHeader::parse(&gguf_bytes);
-    });
-
-    let metrics = vec![
-        PerfMetric {
-            metric_id: "iec104_encode".into(),
-            slo_threshold: 0, // 初始基线：SLO 由人工冻结
-            measured: iec104_throughput as u64,
-            regression_tolerance_pct: 10,
-            baseline_value: iec104_throughput as u64,
-            critical_path: false,
-            unit: "frames/s".into(),
-            direction: Some(MetricDirection::HigherIsBetter),
-        },
-        PerfMetric {
-            metric_id: "ipc_wire_roundtrip".into(),
-            slo_threshold: 0,
-            measured: wire_throughput as u64,
-            regression_tolerance_pct: 10,
-            baseline_value: wire_throughput as u64,
-            critical_path: true,
-            unit: "frames/s".into(),
-            direction: Some(MetricDirection::HigherIsBetter),
-        },
-        PerfMetric {
-            metric_id: "modbus_rtu_frame".into(),
-            slo_threshold: 0,
-            measured: modbus_throughput as u64,
-            regression_tolerance_pct: 10,
-            baseline_value: modbus_throughput as u64,
-            critical_path: false,
-            unit: "frames/s".into(),
-            direction: Some(MetricDirection::HigherIsBetter),
-        },
-        PerfMetric {
-            metric_id: "elf_parse".into(),
-            slo_threshold: 0,
-            measured: elf_throughput as u64,
-            regression_tolerance_pct: 10,
-            baseline_value: elf_throughput as u64,
-            critical_path: true,
-            unit: "parses/s".into(),
-            direction: Some(MetricDirection::HigherIsBetter),
-        },
-        PerfMetric {
-            metric_id: "gguf_parse".into(),
-            slo_threshold: 0,
-            measured: gguf_throughput as u64,
-            regression_tolerance_pct: 10,
-            baseline_value: gguf_throughput as u64,
-            critical_path: false,
-            unit: "parses/s".into(),
-            direction: Some(MetricDirection::HigherIsBetter),
-        },
-    ];
+    let metrics = measure_perf_metrics(slo_threshold, tolerance_pct, None);
 
     // 2. 序列化 + 摘要。
-    let results = PerfResults {
+    let mut results = PerfResults {
         schema: "eneros.perf-regression.v1".into(),
         baseline_sha256: String::new(),
         candidate_sha256: String::new(),
+        // 42 WP-42.12：基线本身也是真实测量（时刻/run_id 唯一）。
+        measured_at: rfc3339_now(),
+        run_id: perf_run_id(),
+        baseline_measured_at: String::new(),
+        candidate_id: String::new(),
+        source_commit: String::new(),
+        dirty_tree_digest: String::new(),
+        product_manifest_digest: String::new(),
+        profile_digest: String::new(),
+        toolchain_digest: String::new(),
+        platform_inventory_digest: String::new(),
         metrics,
     };
+    if root.join(".git").exists() {
+        let lineage = super::evidence_chain::compute_lineage(root, "qemu-prod", None)?;
+        results.candidate_id = lineage.candidate_id;
+        results.source_commit = lineage.source_commit;
+        results.dirty_tree_digest = lineage.dirty_tree_digest;
+        results.product_manifest_digest = lineage.product_manifest_digest;
+        results.profile_digest = lineage.profile_digest;
+        results.toolchain_digest = lineage.toolchain_digest;
+        results.platform_inventory_digest = lineage.platform_inventory_digest;
+    }
     let json = serde_json::to_vec_pretty(&results)?;
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(&json);
     let digest_hex = hex_encode(&digest);
-    let mut results = results;
     results.baseline_sha256 = digest_hex.clone();
     let json_signed = serde_json::to_vec_pretty(&results)?;
 
@@ -2028,10 +2228,11 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
     fs::write(&sig_path, &signature)?;
 
     println!(
-        "PERF-BASELINE schema=eneros.perf-regression.v1 metrics={} sha256={} signed={}",
+        "PERF-BASELINE schema=eneros.perf-regression.v1 metrics={} sha256={} signed={} slo={}",
         results.metrics.len(),
         digest_hex,
-        !signature.is_empty()
+        !signature.is_empty(),
+        slo_threshold
     );
     for m in &results.metrics {
         println!(
@@ -2040,6 +2241,424 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
         );
     }
     Ok(())
+}
+
+/// `qa perf-measure --baseline <baseline.json> [--out <candidate.json>] [--sign-key <key>]`
+///
+/// 42：候选性能测量。读取冻结 baseline 的 SLO/基线值/方向，只更新实测值，
+/// 生成 `candidate_sha256` 非空且不等于 baseline 的候选报告，供
+/// `perf-gate` 做外部基线回归。禁止候选自建 baseline。
+fn command_perf_measure(root: &Path, args: &[String]) -> DynResult<()> {
+    let mut out_path = root.join("target/perf-candidate.json");
+    let mut baseline_path: Option<std::path::PathBuf> = None;
+    let mut sign_key: Option<std::path::PathBuf> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--baseline" => {
+                baseline_path = Some(
+                    root.join(
+                        it.next()
+                            .ok_or_else(|| invalid("perf-measure --baseline requires <path>"))?,
+                    ),
+                );
+            }
+            "--out" => {
+                out_path = root.join(
+                    it.next()
+                        .ok_or_else(|| invalid("perf-measure --out requires <path>"))?,
+                );
+            }
+            "--sign-key" => {
+                sign_key = Some(
+                    root.join(
+                        it.next()
+                            .ok_or_else(|| invalid("perf-measure --sign-key requires <path>"))?,
+                    ),
+                );
+            }
+            other => return Err(invalid(format!("unknown perf-measure arg '{other}'"))),
+        }
+    }
+    let baseline_path =
+        baseline_path.ok_or_else(|| invalid("perf-measure requires --baseline <baseline.json>"))?;
+    let baseline: PerfResults = read_json(&baseline_path)?;
+    if baseline.schema != "eneros.perf-regression.v1" {
+        return Err(invalid("perf-measure baseline schema mismatch"));
+    }
+    if baseline.baseline_sha256.is_empty() {
+        return Err(invalid("perf-measure baseline has no baseline_sha256"));
+    }
+    const REQUIRED_PERF_METRICS: [&str; 5] = [
+        "iec104_encode",
+        "ipc_wire_roundtrip",
+        "modbus_rtu_frame",
+        "elf_parse",
+        "gguf_parse",
+    ];
+    for id in REQUIRED_PERF_METRICS {
+        let Some(metric) = baseline.metrics.iter().find(|m| m.metric_id == id) else {
+            return Err(invalid(format!(
+                "perf-measure baseline missing required metric {id}"
+            )));
+        };
+        if metric.slo_threshold == 0 {
+            return Err(invalid(format!(
+                "perf-measure baseline has unfrozen SLO for {id} (slo_threshold=0); freeze baseline first"
+            )));
+        }
+    }
+
+    let metrics = measure_perf_metrics(0, 0, Some(&baseline));
+    let mut results = PerfResults {
+        schema: "eneros.perf-regression.v1".into(),
+        baseline_sha256: baseline.baseline_sha256.clone(),
+        candidate_sha256: String::new(),
+        // 42 WP-42.12：候选测量的时刻/run_id 必须不同于基线（门禁校验）。
+        measured_at: rfc3339_now(),
+        run_id: perf_run_id(),
+        baseline_measured_at: baseline.measured_at.clone(),
+        candidate_id: String::new(),
+        source_commit: String::new(),
+        dirty_tree_digest: String::new(),
+        product_manifest_digest: String::new(),
+        profile_digest: String::new(),
+        toolchain_digest: String::new(),
+        platform_inventory_digest: String::new(),
+        metrics,
+    };
+    if root.join(".git").exists() {
+        let lineage = super::evidence_chain::compute_lineage(root, "qemu-prod", None)?;
+        results.candidate_id = lineage.candidate_id;
+        results.source_commit = lineage.source_commit;
+        results.dirty_tree_digest = lineage.dirty_tree_digest;
+        results.product_manifest_digest = lineage.product_manifest_digest;
+        results.profile_digest = lineage.profile_digest;
+        results.toolchain_digest = lineage.toolchain_digest;
+        results.platform_inventory_digest = lineage.platform_inventory_digest;
+    }
+    let json = serde_json::to_vec_pretty(&results)?;
+    use sha2::{Digest, Sha256};
+    let digest_hex = hex_encode(&Sha256::digest(&json));
+    results.candidate_sha256 = digest_hex.clone();
+    let json_signed = serde_json::to_vec_pretty(&results)?;
+
+    let signature = match &sign_key {
+        Some(key_path) => {
+            let key_bytes =
+                fs::read(key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
+            let keypair = ed25519_dalek::SigningKey::from_bytes(
+                &key_bytes[..32]
+                    .try_into()
+                    .map_err(|_| invalid("key must be 32 bytes"))?,
+            );
+            use ed25519_dalek::Signer;
+            let sig = keypair.sign(&json_signed);
+            hex_encode(&sig.to_bytes())
+        }
+        None => {
+            println!("WARN: perf-measure unsigned (pass --sign-key for tamper protection)");
+            String::new()
+        }
+    };
+
+    fs::create_dir_all(out_path.parent().unwrap_or(root))?;
+    fs::write(&out_path, &json_signed)?;
+    let sig_path = out_path.with_extension("json.sig");
+    fs::write(&sig_path, &signature)?;
+    println!(
+        "PERF-MEASURE schema=eneros.perf-regression.v1 metrics={} baseline={} candidate={} signed={}",
+        results.metrics.len(),
+        results.baseline_sha256,
+        digest_hex,
+        !signature.is_empty()
+    );
+    for m in &results.metrics {
+        println!(
+            "  {} = {} {} (baseline={} slo={})",
+            m.metric_id, m.measured, m.unit, m.baseline_value, m.slo_threshold
+        );
+    }
+    Ok(())
+}
+
+/// 真实测量当前 host 的 5 个性能指标。`baseline` 为 `None` 时生成初始
+/// baseline（`baseline_value` = 本次 measured）；为 `Some` 时生成候选
+/// 报告（`slo_threshold`/`baseline_value`/`direction`/`unit` 继承冻结
+/// baseline，仅 `measured` 为本次实测）。
+fn measure_perf_metrics(
+    slo_threshold: u64,
+    default_tolerance_pct: u64,
+    baseline: Option<&PerfResults>,
+) -> Vec<PerfMetric> {
+    use std::time::Instant;
+    // 42 WP-42.12：采样式测量——1 次 warmup（不计入样本）+ `reps` 次
+    // 计时样本，产出 percentile/置信区间；单次计时受调度噪声支配，
+    // 不可作为冻结 SLO 依据。
+    fn bench_ops_samples<F: FnMut()>(ops: usize, reps: usize, mut f: F) -> Vec<f64> {
+        let _ = Instant::now();
+        for _ in 0..ops {
+            f();
+        }
+        let mut samples = Vec::with_capacity(reps);
+        for _ in 0..reps {
+            let start = Instant::now();
+            for _ in 0..ops {
+                f();
+            }
+            let secs = start.elapsed().as_secs_f64();
+            samples.push(ops as f64 / secs);
+        }
+        samples
+    }
+
+    /// (mean, p50, p95, ci_low, ci_high)；样本 <2 时 CI 记 0（非静默，
+    /// 由调用方按样本数解释）。
+    fn stat_summary(samples: &[f64]) -> (u64, u64, u64, u64, u64) {
+        let n = samples.len() as f64;
+        if n == 0.0 {
+            return (0, 0, 0, 0, 0);
+        }
+        let mean = samples.iter().sum::<f64>() / n;
+        let mut sorted: Vec<u64> = samples.iter().map(|s| *s as u64).collect();
+        sorted.sort_unstable();
+        let p50 = sorted.get(sorted.len() / 2).copied().unwrap_or(0);
+        let p95_idx = ((sorted.len().saturating_sub(1)) as f64 * 0.95) as usize;
+        let p95 = sorted.get(p95_idx).copied().unwrap_or(0);
+        let variance = samples.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n;
+        let std_dev = variance.sqrt();
+        let ci = 1.96 * std_dev / n.sqrt();
+        (
+            mean as u64,
+            p50,
+            p95,
+            (mean - ci).max(0.0) as u64,
+            (mean + ci) as u64,
+        )
+    }
+
+    /// 组装指标：`measured`=均值；samples 排序存储；range（上下双界）
+    /// 为可选冻结区间。
+    #[allow(clippy::too_many_arguments)] // 44.2：perf 指标组装助手（10 参结构化值，重构代价>收益，登记）
+    fn metric(
+        metric_id: &str,
+        samples: Vec<f64>,
+        slo: u64,
+        base: u64,
+        tol: u64,
+        crit: bool,
+        unit: &str,
+        dir: Option<MetricDirection>,
+        lower: Option<u64>,
+        upper: Option<u64>,
+    ) -> PerfMetric {
+        let (measured, p50, p95, ci_low, ci_high) = stat_summary(&samples);
+        let mut sorted: Vec<u64> = samples.iter().map(|v| *v as u64).collect();
+        sorted.sort_unstable();
+        PerfMetric {
+            metric_id: metric_id.into(),
+            slo_threshold: slo,
+            measured,
+            regression_tolerance_pct: tol,
+            baseline_value: base,
+            critical_path: crit,
+            unit: unit.into(),
+            direction: dir,
+            samples: sorted,
+            p50,
+            p95,
+            ci_low,
+            ci_high,
+            warmup_ops: 1,
+            slo_lower_bound: lower,
+            slo_upper_bound: upper,
+        }
+    }
+
+    // iec104 APDU I 帧编解码。
+    let asdu = eneros_iec104_slave::asdu::Asdu {
+        type_id: eneros_iec104_slave::asdu::TypeId::MeasuredValueFloat,
+        cause_of_tx: eneros_iec104_slave::asdu::Cot::Periodic,
+        common_addr: 1,
+        ioas: vec![],
+    };
+    let iec104_apdu = eneros_iec104_slave::apdu::Apdu::i_format(1, 1, asdu);
+    let iec104_bytes = iec104_apdu.encode().unwrap();
+    let iec104_samples = bench_ops_samples(50_000, 5, || {
+        let _ = eneros_iec104_slave::apdu::Apdu::decode(&iec104_bytes);
+    });
+
+    // ipc-wire 帧编解码。
+    let wire_frame = eneros_ipc_wire::el0::encode_frame(
+        eneros_ipc_wire::el0::El0FrameType::Report,
+        b"payload-32-bytes-aaaaaaaaaaaaaaaa",
+    );
+    let wire_samples = bench_ops_samples(50_000, 5, || {
+        let _ = eneros_ipc_wire::el0::decode_frame(&wire_frame);
+    });
+
+    // Modbus RTU 帧解析（构造含 CRC 的合法帧）。
+    let mut modbus_frame = vec![0x01u8, 0x03, 0x00, 0x00, 0x00, 0x02];
+    let crc = modbus_crc16(&modbus_frame);
+    modbus_frame.push((crc & 0xFF) as u8);
+    modbus_frame.push((crc >> 8) as u8);
+    let modbus_samples = bench_ops_samples(50_000, 5, || {
+        let _ = eneros_modbus_rtu::frame::ModbusFrame::decode(&modbus_frame);
+    });
+
+    // ELF 解析（构造最小合法 ELF64）。
+    let elf_bytes = minimal_elf64();
+    let elf_samples = bench_ops_samples(20_000, 5, || {
+        let _ = eneros_elf_loader::LoadedElf::parse(&elf_bytes);
+    });
+
+    // GGUF 头解析。
+    let gguf_bytes = minimal_gguf();
+    let gguf_samples = bench_ops_samples(50_000, 5, || {
+        let _ = eneros_gguf_loader::header::GgufHeader::parse(&gguf_bytes);
+    });
+
+    let s = |id: &str| -> Option<&PerfMetric> {
+        baseline.and_then(|r| r.metrics.iter().find(|m| m.metric_id == id))
+    };
+    let t = |id: &str,
+             fallback_critical: bool,
+             fallback_unit: &str|
+     -> (u64, u64, u64, bool, String, Option<MetricDirection>) {
+        let bm = s(id);
+        (
+            if slo_threshold != 0 {
+                slo_threshold
+            } else {
+                bm.map(|m| m.slo_threshold).unwrap_or(0)
+            },
+            bm.map(|m| m.baseline_value).unwrap_or(0),
+            bm.map(|m| m.regression_tolerance_pct)
+                .unwrap_or(default_tolerance_pct),
+            bm.map(|m| m.critical_path).unwrap_or(fallback_critical),
+            bm.map(|m| m.unit.as_str())
+                .unwrap_or(fallback_unit)
+                .to_owned(),
+            bm.and_then(|m| m.direction)
+                .or(Some(MetricDirection::HigherIsBetter)),
+        )
+    };
+    // range（可选上下双界）从冻结 baseline 继承。
+    let bounds = |id: &str| -> (Option<u64>, Option<u64>) {
+        s(id)
+            .map(|m| (m.slo_lower_bound, m.slo_upper_bound))
+            .unwrap_or((None, None))
+    };
+
+    let (iec104_slo, iec104_base, iec104_tol, iec104_crit, iec104_unit, iec104_dir) =
+        t("iec104_encode", false, "frames/s");
+    let (wire_slo, wire_base, wire_tol, wire_crit, wire_unit, wire_dir) =
+        t("ipc_wire_roundtrip", true, "frames/s");
+    let (modbus_slo, modbus_base, modbus_tol, modbus_crit, modbus_unit, modbus_dir) =
+        t("modbus_rtu_frame", false, "frames/s");
+    let (elf_slo, elf_base, elf_tol, elf_crit, elf_unit, elf_dir) =
+        t("elf_parse", true, "parses/s");
+    let (gguf_slo, gguf_base, gguf_tol, gguf_crit, gguf_unit, gguf_dir) =
+        t("gguf_parse", false, "parses/s");
+
+    let (iec104_lo, iec104_hi) = bounds("iec104_encode");
+    let (wire_lo, wire_hi) = bounds("ipc_wire_roundtrip");
+    let (modbus_lo, modbus_hi) = bounds("modbus_rtu_frame");
+    let (elf_lo, elf_hi) = bounds("elf_parse");
+    let (gguf_lo, gguf_hi) = bounds("gguf_parse");
+
+    let base_of = |measured: &[f64]| -> u64 {
+        let (mean, _, _, _, _) = stat_summary(measured);
+        mean
+    };
+    // baseline 生成时 baseline_value = 本次实测均值（先算，避免移动）。
+    let iec104_measured = base_of(&iec104_samples);
+    let wire_measured = base_of(&wire_samples);
+    let modbus_measured = base_of(&modbus_samples);
+    let elf_measured = base_of(&elf_samples);
+    let gguf_measured = base_of(&gguf_samples);
+    vec![
+        metric(
+            "iec104_encode",
+            iec104_samples,
+            iec104_slo,
+            if baseline.is_some() {
+                iec104_base
+            } else {
+                iec104_measured
+            },
+            iec104_tol,
+            iec104_crit,
+            &iec104_unit,
+            iec104_dir,
+            iec104_lo,
+            iec104_hi,
+        ),
+        metric(
+            "ipc_wire_roundtrip",
+            wire_samples,
+            wire_slo,
+            if baseline.is_some() {
+                wire_base
+            } else {
+                wire_measured
+            },
+            wire_tol,
+            wire_crit,
+            &wire_unit,
+            wire_dir,
+            wire_lo,
+            wire_hi,
+        ),
+        metric(
+            "modbus_rtu_frame",
+            modbus_samples,
+            modbus_slo,
+            if baseline.is_some() {
+                modbus_base
+            } else {
+                modbus_measured
+            },
+            modbus_tol,
+            modbus_crit,
+            &modbus_unit,
+            modbus_dir,
+            modbus_lo,
+            modbus_hi,
+        ),
+        metric(
+            "elf_parse",
+            elf_samples,
+            elf_slo,
+            if baseline.is_some() {
+                elf_base
+            } else {
+                elf_measured
+            },
+            elf_tol,
+            elf_crit,
+            &elf_unit,
+            elf_dir,
+            elf_lo,
+            elf_hi,
+        ),
+        metric(
+            "gguf_parse",
+            gguf_samples,
+            gguf_slo,
+            if baseline.is_some() {
+                gguf_base
+            } else {
+                gguf_measured
+            },
+            gguf_tol,
+            gguf_crit,
+            &gguf_unit,
+            gguf_dir,
+            gguf_lo,
+            gguf_hi,
+        ),
+    ]
 }
 
 /// Modbus CRC16（与 modbus-rtu crate 同算法，构造合法帧用）。
@@ -2165,6 +2784,39 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
         report.violations.push("schema-mismatch".to_owned());
     }
 
+    // 蓝图 36 WP-36.10 #8：perf 不允许 candidate 创建自己的 baseline；
+    // SLO=0（未冻结）或 baseline==candidate（自基线）→ 失败。
+    if results.baseline_sha256.is_empty() {
+        report.violations.push("baseline-missing".to_owned());
+    }
+    if results.baseline_sha256 == results.candidate_sha256 && !results.baseline_sha256.is_empty() {
+        report
+            .violations
+            .push("self-baseline:candidate-created-its-own-baseline".to_owned());
+    }
+    // 42 WP-42.12：measured_at/run_id 必须存在且不同于基线测量时刻
+    // （旧结果冒充新测量 = 自证伪造）。
+    if results.measured_at.is_empty() {
+        report.violations.push("measured-at-missing".to_owned());
+    }
+    if results.run_id.is_empty() {
+        report.violations.push("run-id-missing".to_owned());
+    }
+    if !results.baseline_measured_at.is_empty()
+        && results.baseline_measured_at == results.measured_at
+    {
+        report
+            .violations
+            .push("measured-at-same-as-baseline".to_owned());
+    }
+    for metric in &results.metrics {
+        if metric.slo_threshold == 0 {
+            report
+                .violations
+                .push(format!("slo-unfrozen:{}", metric.metric_id));
+        }
+    }
+
     // v0.251.0（C-251）：基线签名防篡改——若存在 <results>.sig（由
     // perf-baseline --sign-key 生成），用 CI 注入的公钥验证；签名缺失
     // 或无效 → 门禁失败（防篡改要求，13 号文 QA-021 基线签名）。
@@ -2223,17 +2875,28 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
     let mut regressed_count = 0usize;
     let mut slo_violations = 0usize;
     for metric in &results.metrics {
-        // 关键路径：实测不得超过 SLO 阈值（slo_threshold=0 表示未冻结，
-        // 跳过——首次基线不设 SLO，人工冻结后生效）。
-        if metric.critical_path
-            && metric.slo_threshold > 0
-            && metric.measured > metric.slo_threshold
-        {
-            report.violations.push(format!(
-                "slo-violation:{}:{}>{}",
-                metric.metric_id, metric.measured, metric.slo_threshold
-            ));
-            slo_violations += 1;
+        // 关键路径：SLO 必须按方向解释。slo_threshold=0 表示未冻结，
+        // 跳过——首次基线不设 SLO，人工冻结后生效。
+        // - higher_is_better（吞吐/速率）：实测低于下限 → 违规；
+        // - lower_is_better（延迟/耗时）：实测超过上限 → 违规。
+        if metric.critical_path && metric.slo_threshold > 0 {
+            let higher_is_better = metric
+                .direction
+                .map(|d| d == MetricDirection::HigherIsBetter)
+                .unwrap_or_else(|| default_higher_is_better(&metric.metric_id));
+            let slo_bad = if higher_is_better {
+                metric.measured < metric.slo_threshold
+            } else {
+                metric.measured > metric.slo_threshold
+            };
+            if slo_bad {
+                let op = if higher_is_better { "<" } else { ">" };
+                report.violations.push(format!(
+                    "slo-violation:{}:{} {op} {}",
+                    metric.metric_id, metric.measured, metric.slo_threshold
+                ));
+                slo_violations += 1;
+            }
         }
         // 回归检查：实测相对基线退化不得超过容忍度（29 GV-03：方向感知
         // 判定——旧逻辑 measured>baseline 才计 delta，吞吐退化静默放行）。
@@ -2269,6 +2932,37 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
                 regressed_count += 1;
             }
         }
+        // 42 WP-42.12：可选区间 SLO（range，上下双界）——任一界存在即校验。
+        match (metric.slo_lower_bound, metric.slo_upper_bound) {
+            (Some(lo), Some(hi)) => {
+                if metric.measured < lo || metric.measured > hi {
+                    report.violations.push(format!(
+                        "range-violation:{}:measured={} out-of-bounds=[{},{}]",
+                        metric.metric_id, metric.measured, lo, hi
+                    ));
+                    regressed_count += 1;
+                }
+            }
+            (Some(lo), None) => {
+                if metric.measured < lo {
+                    report.violations.push(format!(
+                        "range-violation:{}:measured={} < lower={}",
+                        metric.metric_id, metric.measured, lo
+                    ));
+                    regressed_count += 1;
+                }
+            }
+            (None, Some(hi)) => {
+                if metric.measured > hi {
+                    report.violations.push(format!(
+                        "range-violation:{}:measured={} > upper={}",
+                        metric.metric_id, metric.measured, hi
+                    ));
+                    regressed_count += 1;
+                }
+            }
+            (None, None) => {}
+        }
     }
 
     report
@@ -2277,7 +2971,9 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
     report
         .summary
         .insert("slo_violations", slo_violations.to_string());
-    report.summary.insert("regressions", regressed_count.to_string());
+    report
+        .summary
+        .insert("regressions", regressed_count.to_string());
     report
         .summary
         .insert("baseline_sha256", results.baseline_sha256.clone());
@@ -2786,14 +3482,16 @@ mod tests {
         let root = Path::new(&dir);
         let r = command_soak_run(
             root,
-            &["--cycles".into(), "1".into(), "--max-fail".into(), "5".into()],
+            &[
+                "--cycles".into(),
+                "1".into(),
+                "--max-fail".into(),
+                "5".into(),
+            ],
         );
         let msg = format!("{:?}", r);
         assert!(r.is_err(), "缺 --image 必须报错");
-        assert!(
-            msg.contains("--image"),
-            "错误信息须指出 --image: {msg}"
-        );
+        assert!(msg.contains("--image"), "错误信息须指出 --image: {msg}");
     }
 
     #[test]
@@ -2912,6 +3610,9 @@ mod tests {
         let results = serde_json::json!({
             "schema": "eneros.perf-regression.v1",
             "baseline_sha256": "abc",
+            "measured_at": "2026-08-17T00:00:00Z",
+            "run_id": "perf-run-test1",
+            "baseline_measured_at": "",
             "candidate_sha256": "def",
             "metrics": [
                 {"metric_id": "boot-time", "slo_threshold": 5000, "measured": 4000, "regression_tolerance_pct": 5, "baseline_value": 3900, "critical_path": true, "unit": "ms"},
@@ -2935,6 +3636,9 @@ mod tests {
         let results = serde_json::json!({
             "schema": "eneros.perf-regression.v1",
             "baseline_sha256": "abc",
+            "measured_at": "2026-08-17T00:00:00Z",
+            "run_id": "perf-run-test2",
+            "baseline_measured_at": "",
             "candidate_sha256": "def",
             "metrics": [
                 {"metric_id": "boot-time", "slo_threshold": 5000, "measured": 4000, "regression_tolerance_pct": 5, "baseline_value": 3900, "critical_path": true, "unit": "ms"},
@@ -2953,6 +3657,9 @@ mod tests {
         let results = serde_json::json!({
             "schema": "eneros.perf-regression.v1",
             "baseline_sha256": "abc",
+            "measured_at": "2026-08-17T00:00:00Z",
+            "run_id": "perf-run-test3",
+            "baseline_measured_at": "",
             "candidate_sha256": "def",
             "metrics": [
                 {"metric_id": "boot-time", "slo_threshold": 5000, "measured": 6000, "regression_tolerance_pct": 5, "baseline_value": 4000, "critical_path": true, "unit": "ms"},
@@ -3011,9 +3718,12 @@ mod tests {
         let results = serde_json::json!({
             "schema": "eneros.perf-regression.v1",
             "baseline_sha256": "abc",
+            "measured_at": "2026-08-17T00:00:00Z",
+            "run_id": "perf-run-test4",
+            "baseline_measured_at": "",
             "candidate_sha256": "def",
             "metrics": [
-                {"metric_id": "iec104_encode", "slo_threshold": 0, "measured": 50000, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
+                {"metric_id": "iec104_encode", "slo_threshold": 100000, "measured": 50000, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
             ],
         });
         let r = perf_gate_signed(root, &results);
@@ -3021,6 +3731,7 @@ mod tests {
     }
 
     /// 29 GV-03 正例：吞吐类实测 = 基线 × 2（性能提高）→ 不误伤。
+    /// 蓝图 36 WP-36.10 #8：SLO 必须冻结（>0）且 baseline != candidate。
     #[test]
     fn t6c_perf_gate_throughput_improvement_passes() {
         let dir = tempdir();
@@ -3028,13 +3739,53 @@ mod tests {
         let results = serde_json::json!({
             "schema": "eneros.perf-regression.v1",
             "baseline_sha256": "abc",
+            "measured_at": "2026-08-17T00:00:00Z",
+            "run_id": "perf-run-test5",
+            "baseline_measured_at": "",
+            "candidate_sha256": "def",
+            "metrics": [
+                {"metric_id": "iec104_encode", "slo_threshold": 100000, "measured": 200000, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
+            ],
+        });
+        let r = perf_gate_signed(root, &results);
+        assert!(r.is_ok(), "吞吐提高不得误拦: {r:?}");
+    }
+
+    /// 蓝图 36 WP-36.10 #8：SLO=0（未冻结）→ 必须失败；自基线 → 必须失败。
+    #[test]
+    fn t36_perf_gate_rejects_unfrozen_slo_and_self_baseline() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let results = serde_json::json!({
+            "schema": "eneros.perf-regression.v1",
+            "baseline_sha256": "abc",
+            "measured_at": "2026-08-17T00:00:00Z",
+            "run_id": "perf-run-test6",
+            "baseline_measured_at": "",
             "candidate_sha256": "def",
             "metrics": [
                 {"metric_id": "iec104_encode", "slo_threshold": 0, "measured": 200000, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
             ],
         });
         let r = perf_gate_signed(root, &results);
-        assert!(r.is_ok(), "吞吐提高不得误拦: {r:?}");
+        assert!(
+            r.is_err(),
+            "SLO=0（未冻结）必须失败（36 WP-36.10 #8）: {r:?}"
+        );
+
+        let results2 = serde_json::json!({
+            "schema": "eneros.perf-regression.v1",
+            "baseline_sha256": "same",
+            "candidate_sha256": "same",
+            "metrics": [
+                {"metric_id": "iec104_encode", "slo_threshold": 100000, "measured": 200000, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
+            ],
+        });
+        let r2 = perf_gate_signed(root, &results2);
+        assert!(
+            r2.is_err(),
+            "candidate 自建 baseline 必须失败（36 WP-36.10 #8）: {r2:?}"
+        );
     }
 
     /// 29 GV-03：延迟类（lower_is_better）缺省白名单外推断——实测超基线
@@ -3046,13 +3797,75 @@ mod tests {
         let results = serde_json::json!({
             "schema": "eneros.perf-regression.v1",
             "baseline_sha256": "abc",
+            "measured_at": "2026-08-17T00:00:00Z",
+            "run_id": "perf-run-test7",
+            "baseline_measured_at": "",
             "candidate_sha256": "def",
             "metrics": [
                 {"metric_id": "boot-time", "slo_threshold": 0, "measured": 4600, "regression_tolerance_pct": 5, "baseline_value": 4000, "critical_path": true, "unit": "ms"},
             ],
         });
         let r = perf_gate_signed(root, &results);
-        assert!(r.is_err(), "延迟恶化 15% 必须被拦（缺省 direction 推断）: {r:?}");
+        assert!(
+            r.is_err(),
+            "延迟恶化 15% 必须被拦（缺省 direction 推断）: {r:?}"
+        );
+    }
+
+    #[test]
+    fn t37_perf_measure_rejects_unfrozen_baseline() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let baseline = serde_json::json!({
+            "schema": "eneros.perf-regression.v1",
+            "baseline_sha256": "abc",
+            "measured_at": "2026-08-17T00:00:00Z",
+            "run_id": "perf-run-test8",
+            "baseline_measured_at": "",
+            "candidate_sha256": "",
+            "metrics": [
+                {"metric_id": "iec104_encode", "slo_threshold": 0, "measured": 100, "regression_tolerance_pct": 10, "baseline_value": 100, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
+            ],
+        });
+        let p = root.join("baseline.json");
+        write_json(&p, &baseline);
+        let r = command_perf_measure(root, &["--baseline".into(), p.to_string_lossy().into()]);
+        assert!(r.is_err(), "unfrozen baseline must be rejected: {r:?}");
+    }
+
+    #[test]
+    fn t38_perf_measure_binds_to_frozen_baseline() {
+        let dir = tempdir();
+        let root = Path::new(&dir);
+        let baseline = serde_json::json!({
+            "schema": "eneros.perf-regression.v1",
+            "baseline_sha256": "abc",
+            "measured_at": "2026-08-17T00:00:00Z",
+            "run_id": "perf-run-test9",
+            "baseline_measured_at": "",
+            "candidate_sha256": "",
+            "metrics": [
+                {"metric_id": "iec104_encode", "slo_threshold": 100000, "measured": 100, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
+                {"metric_id": "ipc_wire_roundtrip", "slo_threshold": 100000, "measured": 100, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": true, "unit": "frames/s", "direction": "higher_is_better"},
+                {"metric_id": "modbus_rtu_frame", "slo_threshold": 100000, "measured": 100, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
+                {"metric_id": "elf_parse", "slo_threshold": 100000, "measured": 100, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": true, "unit": "parses/s", "direction": "higher_is_better"},
+                {"metric_id": "gguf_parse", "slo_threshold": 100000, "measured": 100, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "parses/s", "direction": "higher_is_better"},
+            ],
+        });
+        let p = root.join("baseline.json");
+        write_json(&p, &baseline);
+        let r = command_perf_measure(root, &["--baseline".into(), p.to_string_lossy().into()]);
+        assert!(
+            r.is_ok(),
+            "frozen baseline must allow candidate measurement: {r:?}"
+        );
+        let out = root.join("target/perf-candidate.json");
+        let candidate: PerfResults = read_json(&out).expect("candidate parses");
+        assert_eq!(candidate.baseline_sha256, "abc");
+        assert!(!candidate.candidate_sha256.is_empty());
+        assert!(candidate.metrics.iter().all(|m| m.slo_threshold > 0));
+        assert!(candidate.metrics.iter().all(|m| m.baseline_value > 0));
+        assert_ne!(candidate.baseline_sha256, candidate.candidate_sha256);
     }
 
     #[test]
@@ -3120,12 +3933,24 @@ mod tests {
         // 落盘报告 result 必须为 DEGRADED。
         let path = root.join("target/eneros/evidence/g9/qa_021.json");
         let rep: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(rep["result"].as_str(), Some("DEGRADED"), "--degrade 必须产出 DEGRADED");
+        assert_eq!(
+            rep["result"].as_str(),
+            Some("DEGRADED"),
+            "--degrade 必须产出 DEGRADED"
+        );
         // 干净树 + --degrade 也必须 DEGRADED（不得谎报 PASS）。
-        fs::write(formal.join("Test.thy"), "theory Test imports Main begin\nend").unwrap();
+        fs::write(
+            formal.join("Test.thy"),
+            "theory Test imports Main begin\nend",
+        )
+        .unwrap();
         assert!(command_proof(root, &["--degrade".to_string()]).is_err());
         let rep2: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(rep2["result"].as_str(), Some("DEGRADED"), "干净树 + --degrade 仍须 DEGRADED");
+        assert_eq!(
+            rep2["result"].as_str(),
+            Some("DEGRADED"),
+            "干净树 + --degrade 仍须 DEGRADED"
+        );
     }
 
     #[test]

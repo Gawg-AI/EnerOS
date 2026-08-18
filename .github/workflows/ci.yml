@@ -47,7 +47,7 @@ jobs:
       - name: BumpAllocator loom concurrency model (C-243 gate)
         run: cargo test --locked -p eneros-services --features loom --lib loom_allocator
 
-      - name: Concurrency loom models (C-247 gate: account/p2p-match/metrics/telemetry-queue)
+      - name: "Concurrency loom models (C-247 gate: account/p2p-match/metrics/telemetry-queue)"
         run: |
           cargo test --locked -p eneros-account --features loom --lib loom_freeze
           cargo test --locked -p eneros-p2p-match --features loom --lib loom_orderbook
@@ -101,15 +101,44 @@ jobs:
             exit 1
           fi
           set +e
-          timeout 60 qemu-system-aarch64 -machine virt,gic-version=3,secure=off -cpu cortex-a57 \
-            -smp 4 -m 1024M -nographic -kernel target/sel4/eneros-root-image-arm-qemu-arm-virt \
-            > target/qemu-sel4-boot.log 2>&1
+          # canonical 启动（root_task.c:12-14 / docs/sel4/milestone-g3-sel4.md）：
+          # G3 套件需要 virtio-rng/blk/net 三设备，缺任一 → bus-enum FAIL；
+          # virtio-net RX 必须由外部 peer 经 socket 后端主动发帧（root_task.c:2451），
+          # user 模式网卡无 peer 注入 → virtio-net-rx FAIL，故用 socket + sel4-net-peer.py。
+          truncate -s 16M target/sel4/disk.raw
+          timeout 120 qemu-system-aarch64 -machine virt,gic-version=3,secure=off -cpu cortex-a57 \
+            -smp 4 -m 1024M -nographic \
+            -device virtio-rng-device \
+            -device virtio-blk-device,drive=d0 -drive file=target/sel4/disk.raw,if=none,id=d0,format=raw,cache=none \
+            -netdev socket,id=n0,listen=127.0.0.1:5577 \
+            -device virtio-net-device,netdev=n0,mac=52:54:00:12:34:56 \
+            -kernel target/sel4/eneros-root-image-arm-qemu-arm-virt \
+            > target/qemu-sel4-boot.log 2>&1 &
+          QEMU_PID=$!
+          sleep 2
+          PEER_RC=0
+          python3 tools/sel4-net-peer.py > target/sel4-net-peer.log 2>&1 || PEER_RC=$?
+          if [ "$PEER_RC" -ne 0 ]; then
+            # peer 失败不掩盖 QEMU 结果（root_task 会如实 emit virtio-net-rx/tx FAIL，
+            # 下方 FAIL grep 是硬门禁）；但必须可观察，避免 RX/TX 证据静默缺失。
+            echo "sel4-net-peer rc=$PEER_RC (RX/TX 证据依赖 peer；root 侧 FAIL 自报为硬门禁)" >&2
+          fi
+          wait "$QEMU_PID"
           rc=$?
           set -e
-          # 124 = timeout（预期：日志证据已采集完成）；0 = 正常退出；其余视为 QEMU 启动失败。
+          # 36 WP-36.10（security review 收尾）：root_task 永不退出，timeout(124)
+          # 是预期终止方式，但必须以 evidence-complete 哨兵证明证据采集完成；
+          # 无哨兵的 124 = NO_RESULT = FAIL（GV-07 止血，禁止 timeout 容忍）。
+          # security-review MEDIUM：rc==0 也必须确认哨兵在场（杜绝"正常退出
+          # 但证据未完整"的假绿——root 跑完即 emit 哨兵，缺哨兵即流程不完整）。
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
             echo "QEMU seL4 boot failed with exit $rc" >&2
             cat target/qemu-sel4-boot.log >&2
+            exit 1
+          fi
+          if ! grep -q '"test":"evidence-complete","result":"PASS"' target/qemu-sel4-boot.log; then
+            echo "QEMU seL4 boot WITHOUT evidence-complete sentinel (NO_RESULT, rc=$rc)" >&2
+            tail -40 target/qemu-sel4-boot.log >&2
             exit 1
           fi
           for t in sel4-kernel-init bootinfo-valid cap-create ipc-loopback root-heartbeat; do
@@ -118,6 +147,11 @@ jobs:
               exit 1
             fi
           done
+          if grep -q '"result":"FAIL"' target/qemu-sel4-boot.log; then
+            echo "QEMU seL4 boot log contains FAIL result" >&2
+            grep '"result":"FAIL"' target/qemu-sel4-boot.log >&2
+            exit 1
+          fi
           echo "QEMU seL4 boot: 5/5 PASS"
 
       - name: Build every declared profile through the single entry
@@ -163,6 +197,118 @@ jobs:
 
       - name: VRF-002 dual-build byte comparison (bit-identical payload)
         run: cargo xtask build-compare
+
+      - name: "42 reproducibility EvidenceEnvelope report (role-specific semantic gate)"
+        run: |
+          cargo xtask evidence42 repro --out target/repro.json
+          cargo xtask evidence42 report-gate --kind repro --path target/repro.json
+
+  evidence42-portable-tools:
+    name: Evidence42 portable tools (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly-2026-04-04
+        with:
+          components: rust-src, clippy, rustfmt
+          targets: aarch64-unknown-none,aarch64-unknown-uefi
+
+      - name: Fetch locked materials
+        shell: bash
+        run: cargo fetch --locked
+
+      - name: Candidate lineage on current tree
+        shell: bash
+        run: cargo xtask evidence42 lineage --profile qemu-prod --artifact Cargo.lock
+
+      - name: Evidence envelope mutation suite (12 cases must red)
+        shell: bash
+        run: cargo xtask evidence42 mutation
+
+      - name: Envelope create + verify + gate
+        shell: bash
+        run: |
+          ART_SHA=$(sha256sum Cargo.lock | cut -d' ' -f1)
+          cargo xtask evidence42 envelope --lineage target/eneros/evidence/42/candidate-lineage.json --test-id ci-portable --scope L2 --command "cargo xtask run qemu-prod --expect PASS" --oracle "qmp exit=0 ready=all readback=ok" --positive "boot:PASS:qemu_exit=0 ready=all" --negative "bad-sig:FAIL:rejected" --verdict PASS --artifact "Cargo.lock:Cargo.lock:$ART_SHA" --out target/eneros/evidence/42/ci-portable.json
+          cargo xtask evidence42 verify target/eneros/evidence/42/ci-portable.json
+          cargo xtask evidence42 gate target/eneros/evidence/42/ci-portable.json
+          cargo xtask evidence42 lineage-check --envelope target/eneros/evidence/42/ci-portable.json --artifact Cargo.lock
+
+      - name: Fuzz smoke report + role-specific gate (portable)
+        shell: bash
+        run: |
+          cargo xtask evidence42 fuzz-report --iterations 100 --out target/fuzz-smoke.json
+          cargo xtask evidence42 report-gate --kind fuzz --path target/fuzz-smoke.json
+
+      - name: Unsafe audit report (non-release info; current FAIL is visible)
+        shell: bash
+        run: |
+          cargo xtask evidence42 unsafe-report --allow-non-pass --out target/unsafe-audit.json
+          cargo xtask evidence42 report-gate --kind unsafe --path target/unsafe-audit.json --allow-non-pass
+
+      - name: Media artifact check (BLOCKED/FAIL allowed as info in non-release)
+        shell: bash
+        run: cargo xtask evidence42 media-check --allow-non-pass
+
+  catalog-gate-43:
+    name: Catalog / SKU qualification gate (blueprint 43)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly-2026-04-04
+        with:
+          components: rust-src, clippy, rustfmt
+          targets: aarch64-unknown-none,aarch64-unknown-uefi
+
+      - name: Fetch locked materials
+        run: cargo fetch --locked
+
+      # WP-43.1/43.15：兼容性目录派生、签名、校验与机器 Gate。目录只列
+      # 已验证组合（status=qualified 必须有绑定当前候选的 L4 证据——
+      # 当前仓库诚实状态为零个 qualified SKU）。
+      - name: Catalog derive + sign + validate
+        run: |
+          cargo xtask catalog derive
+          cargo xtask catalog sign
+          cargo xtask catalog validate
+
+      # evidence42 check-current（catalog gate 的 42 前置）要求 evidence/42
+      # 存在绑定当前候选的信封。CI 干净检出无本地证据——先按
+      # evidence42-portable-tools 同款手法创建当前候选证据信封再跑 Gate。
+      - name: Bind current-candidate evidence envelope (CI)
+        run: |
+          cargo xtask evidence42 lineage --profile qemu-prod --artifact Cargo.lock --out target/eneros/evidence/42/lineage-ci-catalog.json
+          ART_SHA=$(sha256sum Cargo.lock | cut -d' ' -f1)
+          cargo xtask evidence42 envelope --lineage target/eneros/evidence/42/lineage-ci-catalog.json --test-id ci-catalog-current --scope L2 --command "cargo xtask catalog gate" --oracle "catalog-gate current-candidate evidence pass" --positive "catalog:PASS:catalog_consistent_skus_enumerated" --negative "stale:FAIL:old-candidate-envelope-rejected" --verdict PASS --artifact "Cargo.lock:Cargo.lock:$ART_SHA" --out evidence/42/ci-catalog-current.json
+          cargo xtask evidence42 verify evidence/42/ci-catalog-current.json
+          cargo xtask evidence42 gate evidence/42/ci-catalog-current.json
+
+      - name: Catalog machine gate (43 WP-43.15)
+        run: cargo xtask catalog gate
+
+      # WP-43.2：新平台接入 PR 不得修改 forbidden core paths（Agent/AI/
+      # 控制/协议状态机/安全模型/产品装配）。PR 以 base sha 为 diff 基准；
+      # 直推主分支首推没有 before ref 时由静态 catalog gate 兜底。
+      - name: Platform admission diff gate
+        run: |
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            cargo xtask catalog platform-gate --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.sha }}"
+          else
+            cargo xtask catalog platform-gate --base "${{ github.event.before }}" --head "${{ github.sha }}"
+          fi
+
+      - name: Go/No-Go unique verdict consistency
+        run: |
+          grep -q "当前裁决：NO-GO" docs/v1.0.0-go-no-go.md || { echo "go-no-go unique verdict missing NO-GO" >&2; exit 1; }
+          echo "GO-NO-GO header PASS"
 
   g1-fuzz-gates:
     runs-on: ubuntu-22.04
@@ -231,16 +377,23 @@ jobs:
       - name: D1 hot-path unwrap/expect discipline (21-B D1, fail-closed)
         run: bash tests/delivery/no-unwrap-hotpaths.sh
 
-      - name: Evidence gate (fail-closed, machine-recomputable)
-        run: cargo xtask evidence verify
+      - name: "Evidence gate (fail-closed, machine-recomputable; 36: gate 非 verify)"
+        # 蓝图 36 WP-36.10 #5：release 证据必须 evidence gate（verdict=PASS 才 0），
+        # 不能只 verify（存在性检查）。
+        run: cargo xtask evidence gate
 
-      - name: fuzz-smoke-prng: deterministic PRNG smoke (6 parse surfaces, 29 GV-04)
+      - name: "fuzz-smoke-prng: deterministic PRNG smoke (6 parse surfaces, 29 GV-04)"
         # 29 GV-04：PRNG driver 降级为 smoke（固定种子确定性冒烟，无覆盖率
         # 反馈）；真实 libFuzzer harness 由下方 cargo-fuzz job 执行。
         run: |
           for t in boot_protocol ipc_wire modbus_rtu iec104 elf_loader gguf_loader; do
             cargo xtask fuzz $t 10000
           done
+
+      - name: "42 fuzz smoke EvidenceEnvelope report (role-specific semantic gate)"
+        run: |
+          cargo xtask evidence42 fuzz-report --iterations 10000 --out target/fuzz-smoke-report.json
+          cargo xtask evidence42 report-gate --kind fuzz --path target/fuzz-smoke-report.json
 
       - name: libFuzzer real harness (29 GV-04, 6 targets x 300s, fail-closed)
         # 真 libFuzzer：消费 fuzz/corpus/ 语料，-max_total_time 控制时长。
@@ -254,24 +407,26 @@ jobs:
             cd ..
           done
 
-      - name: Perf baseline + regression gate (C-251, real measurement)
+      - name: Perf baseline + candidate regression gate (C-251/42, real measurement)
         run: |
-          # 生成真实测量基线（unsigned——CI 无签名密钥；篡改保护由
-          # 发布流程 --sign-key 提供，见 xtask qa perf-baseline --help 文档）。
-          # WP-26.1：签名链 fail-closed——CI 现场生成临时密钥对（不落库），
-          # 签名 → 门禁用同一公钥验证；签名缺失 → FAIL（不再 rm -f 绕过）。
+          # 生成真实测量基线（CI 现场生成临时密钥对，不落库），冻结非零 SLO
+          # 和容忍度；随后独立 perf-measure 生成候选，禁止候选自建 baseline。
+          # WP-26.1：签名链 fail-closed——签名 → 门禁用同一公钥验证；签名缺失
+          # 或候选未绑定冻结 baseline → FAIL。
           cargo xtask qa perf-keygen --out /tmp/perf-key.bin --pubkey-out /tmp/perf-pk.hex
-          cargo xtask qa perf-baseline --sign-key /tmp/perf-key.bin
+          cargo xtask qa perf-baseline --sign-key /tmp/perf-key.bin --slo-threshold 10000000 --tolerance-pct 25 --out target/perf-baseline.json
+          cargo xtask qa perf-measure --baseline target/perf-baseline.json --sign-key /tmp/perf-key.bin --out target/perf-candidate.json
           ENEROS_PERF_VERIFY_PUBKEY=$(cat /tmp/perf-pk.hex) \
-            cargo xtask qa perf-gate target/perf-results.json
+            cargo xtask qa perf-gate target/perf-candidate.json
+          cargo xtask evidence42 report-gate --kind perf --path target/perf-candidate.json
 
-      - name: 26-B WP-26.2 gate: orphan sources (no silent dead files)
+      - name: "26-B WP-26.2 gate: orphan sources (no silent dead files)"
         run: cargo xtask qa gate orphan-check
 
-      - name: 26-B WP-26.2 gate: config references (blocking since 29 GV-01)
+      - name: "26-B WP-26.2 gate: config references (blocking since 29 GV-01)"
         run: cargo xtask qa gate config-refs
 
-      - name: 26-B WP-26.2 gate: mock leak enforcement (blocking)
+      - name: "26-B WP-26.2 gate: mock leak enforcement (blocking)"
         run: cargo xtask qa gate mock-leak
 
       - name: VRF-003 gate semantics (no silent pass)
@@ -282,13 +437,15 @@ jobs:
           # 版本闸门显式执行：Go/No-Go 非全 PASS → 版本必须带 -rc.N（当前 rc.0 合法）
           cargo xtask qa gng-version
 
-      - name: D1 soak infrastructure (RC-1a, skip-evidence on no hardware)
+      - name: "D1 soak infrastructure (36 WP-36.10: 无硬件/空执行器 = PENDING 非零)"
         run: |
-          # 真机浸泡执行器：无硬件 → 跳过证据+就绪清单（exit 0）；
-          # 硬件就绪 → 全量浸泡矩阵 + QA-018 证据。
-          bash tests/soak/soak72.sh
-          test -f target/soak/soak-skip-evidence.json             || test -f target/soak/soak-campaign.json
-          # 蓝图/20 R1-5：禁止字面量 "PASS" 直接写入报告的分支（grep 门禁）
+          # 蓝图 36 WP-36.10 #3：soak 无执行器/无硬件时只允许 PENDING 证据
+          # 且非零退出；CI 显式接受 PENDING（当前 NO-GO），禁止任何 PASS 冒充。
+          bash tests/soak/soak72.sh || rc=$?
+          test -f target/soak/soak-skip-evidence.json || test -f target/soak/soak-campaign.json
+          grep -q '"verdict": "PENDING"' target/soak/soak-skip-evidence.json 2>/dev/null \
+            || grep -q '"verdict": "FAIL"' target/soak/soak-campaign.json 2>/dev/null \
+            || { echo "soak evidence must be PENDING/FAIL, not PASS" >&2; exit 1; }
           # 自检：三个篡改用例必须全部判 FAIL
           bash tests/soak/soak72.sh --self-test
           if grep -nE '(^|[;&|]|[[:space:]])echo [^#]*"PASS' tests/soak/soak72.sh; then
@@ -296,10 +453,14 @@ jobs:
             exit 1
           fi
 
-      - name: G7 claim-consistency audit (v1.0.0 gate, no mock claimed as real)
+      - name: "G7 claim-consistency audit (36 WP-36.9: 只能 PENDING/REVIEW, 非 PASS)"
         run: |
-          cargo xtask qa g7-audit
+          # 蓝图 36 WP-36.9 止血：TestPresence/EvidenceFile 只能 PENDING；
+          # g7-audit 默认非零，--allow-non-pass 才 exit 0；报告必须 G7-REVIEW。
+          cargo xtask qa g7-audit --allow-non-pass
           test -f target/g7-report.json
+          grep -q '"verdict": "G7-REVIEW"' target/g7-report.json \
+            || { echo "g7 report must not claim PASS (36 止血)" >&2; exit 1; }
 
       - name: D5 release engineering rehearsal (RC-5, rebuild + OTA plan)
         run: |
@@ -325,13 +486,15 @@ jobs:
           cargo xtask qa kat-report
           test -f target/kat-report.json
 
-      - name: D2 interop framework (RC-2, matrix report on real-peer availability)
+      - name: "D2 interop framework (36 WP-36.10: placeholder = PENDING 非零)"
         run: |
-          # 四类对端互操作 harness：无真实对端 → skip 证据+矩阵报告
-          # （D2-PENDING-REAL-PEERS）；对端地址注入 → 全用例执行。
-          bash tests/interop/interop.sh all
-          cargo xtask qa interop-report
+          # 蓝图 36 WP-36.10 #1/#2：placeholder 分支只能写 PENDING 并非零；
+          # 缺 result JSON（verdict=PASS+peer_identity+oracle）不得推导 VERIFIED。
+          bash tests/interop/interop.sh all || rc=$?
+          cargo xtask qa interop-report --allow-non-pass
           test -f target/interop/interop-matrix.json
+          grep -q '"verdict": "D2-PENDING-REAL-PEERS"' target/interop/interop-matrix.json \
+            || grep -q '"verdict": "D2-PASS"' target/interop/interop-matrix.json
 
       - name: D1 evidence collection (RC-1b, six-category bundle + sha256 manifest)
         run: |
@@ -376,19 +539,52 @@ jobs:
             echo "target/sel4 already present, skipping seL4 rebuild"
           fi
 
+      - name: "41: compile signed config bundle (before image build — svc-config embeds it)"
+        run: |
+          # ACTIVE 配置 → 签名 RuntimeConfigBundle（ota root_key 用测试键注入；
+          # release 由 KMS 密钥注入，见 xtask config compile --help）。
+          cargo xtask config compile --profile qemu-prod --root-key-hex "$(printf '5a%.0s' {1..64})"
+
       - name: Build qemu-prod image (root-task + services ELF + init bundle)
         run: cargo xtask image qemu-prod
+
+      # 42 WP-42.5：锁定媒体双构建可复现性——同一锁定环境第二次装配必须
+      # 与首次字节一致（SOURCE_DATE_EPOCH 全局钉死；ELFs 由 cargo 指纹
+      # 缓存复用，本步验证媒体装配层确定性；编译层确定性由 VRF-002
+      # build-compare 覆盖）。
+      - name: "42 WP-42.5: locked media dual-build reproducibility"
+        run: |
+          FIRST=$(sha256sum target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw | cut -d' ' -f1)
+          cargo xtask image qemu-prod --output target/media-repro-b.raw
+          SECOND=$(sha256sum target/media-repro-b.raw | cut -d' ' -f1)
+          if [ "$FIRST" != "$SECOND" ]; then
+            echo "MEDIA-REPRO FAIL first=$FIRST second=$SECOND" >&2
+            exit 1
+          fi
+          echo "MEDIA-REPRO PASS bit-identical ($FIRST)"
+
+      # 36 release 门显式接线（security review 收尾）：image 构建产出绑定后
+      # normalized manifest，以下 Gate 全部基于它执行；任一红即 CI 失败，
+      # 禁止 release 在未授权 crypto / 政策冲突 / bundle 失配下通过。
+      - name: 36 release gates (closure / kernel policy / ADR registry / bundle reverse-parse)
+        run: |
+          cargo xtask closure gate --profile qemu-prod
+          cargo xtask policy kernel
+          cargo xtask policy adr
+          cargo xtask manifest verify-bundle --profile qemu-prod
 
       - name: Run QEMU full boot chain (21-A G-KERNEL K3.1)
         run: |
           set -euo pipefail
-          # G-KERNEL 场景：root-task 常驻运行（seL4 无 ACPI 关机，QEMU 以
-          # harness 内部 200s 超时结束为预期）；harness 在超时分支先落盘
-          # qemu-serial.log 再报错，随后 K3.3 序列门做 fail-closed 判定。
-          # 此处容忍"QEMU 未正常关机"，但日志缺失（含未生成镜像/早退）仍红。
-          # --expect PASS 依赖 G1 QA-003 的 boot-evidence + 正常关机（遗留，
-          # 非 G-KERNEL 范围）；run 失败但日志存在即继续到序列门。
-          timeout 300 cargo xtask run qemu-prod             --image target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw             --vars-template target/eneros/artifacts/qemu-prod/AAVMF_VARS.fd             --evidence-dir target/gkernel-evidence             --expect PASS 2>&1 || test -s target/gkernel-evidence/qemu-serial.log
+          # 蓝图 36 WP-36.10 #7：QEMU timeout/异常关机 = NO_RESULT/FAIL，
+          # 不得再以"日志非空"容忍继续（GV-07 止血）。harness 必须正常结束
+          # 且证据齐全才可进入序列门；本机环境缺 SEL4_SRC/KVM 时为
+          # BLOCKED_EVIDENCE（记录命令与退出码，不做 PASS）。
+          timeout 300 cargo xtask run qemu-prod             --image target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw             --vars-template target/eneros/artifacts/qemu-prod/AAVMF_VARS.fd             --evidence-dir target/gkernel-evidence             --expect PASS
+
+      - name: "42 role-specific formal-media report gate"
+        run: |
+          cargo xtask evidence42 report-gate --kind boot --path target/gkernel-evidence/qemu-result.json
 
       - name: G-KERNEL log sequence gate (K3.3, fail-closed; any line missing = red)
         run: |

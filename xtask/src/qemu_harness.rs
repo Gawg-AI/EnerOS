@@ -50,6 +50,8 @@ struct RunOptions {
     disk_fault_sector: Option<u64>,
     rng_present: bool,
     net_present: bool,
+    /// 43（L2 协议互操作）：额外挂 user-mode（slirp）net 于槽 8。
+    net_user: bool,
     data_disk: Option<PathBuf>,
     expected_slot: Option<String>,
     expected_reason: Option<String>,
@@ -60,6 +62,47 @@ struct RunOptions {
     /// （约 10 分钟）等效于归零（秒级）"自动化，默认关闭（不破坏
     /// Reject/CUT/fault 注入等依赖磁盘特定状态的场景）。
     reset_bootctrl: bool,
+    /// 42：QEMU QMP 受控退出。检测到 boot-evidence 后由 harness 发送
+    /// `quit`，避免把 timeout 当 PASS。
+    qmp_shutdown: bool,
+    /// 42（WP-42.6）：QMP 退出前等待的就绪标记。`root-heartbeat` 只证明
+    /// root 心跳（G2 链），`product-ready` 还要求根任务打印
+    /// `PRODUCT-READY: true` 且 required degraded 为空（profile 声明集合
+    /// 全部就绪）。默认 root-heartbeat 保持既有场景兼容。
+    ready_marker: ReadyMarker,
+    /// 42（WP-42.6）：QMP 受控退出等待标记的 deadline 秒数；超时 =
+    /// NO_RESULT/FAIL，永远不是 PASS。默认 200s 与既有命令一致，formal
+    /// product 场景用 420s（41 实测 PRODUCT-READY 约 290s）。
+    qmp_deadline_secs: u64,
+}
+
+/// 42（WP-42.6）：QMP 受控退出的就绪标记选择。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadyMarker {
+    RootHeartbeat,
+    ProductReady,
+}
+
+impl ReadyMarker {
+    fn parse(value: &str) -> DynResult<Self> {
+        match value {
+            "root-heartbeat" => Ok(Self::RootHeartbeat),
+            "product-ready" => Ok(Self::ProductReady),
+            _ => Err(invalid(
+                "--ready-marker must be root-heartbeat or product-ready",
+            )),
+        }
+    }
+
+    /// 根任务在 required 服务全部 Ready 后才打印该后缀（WP-37.1 判据：
+    /// `PRODUCT-READY: true (degraded: …; required degraded: )`；required
+    /// degraded 为空时行尾恰为 `required degraded: )`）。
+    fn qmp_marker(self) -> &'static [u8] {
+        match self {
+            Self::RootHeartbeat => br#""test":"root-heartbeat","result":"PASS""#,
+            Self::ProductReady => br#"required degraded: )"#,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -328,16 +371,32 @@ fn parse_options(args: &[String]) -> DynResult<RunOptions> {
     let mut disk_fault_sector = None;
     let mut rng_present = true;
     let mut net_present = true;
+    let mut net_user = false;
     let mut data_disk = None;
     let mut expected_slot = None;
     let mut expected_reason = None;
     let mut reset_bootctrl = false;
+    let mut qmp_shutdown = false;
+    let mut ready_marker = ReadyMarker::RootHeartbeat;
+    let mut qmp_deadline_secs = 200u64;
     let mut index = 0usize;
     while index < args.len() {
         let flag = &args[index];
         if flag == "--reset-bootctrl" {
             // 无值布尔开关：运行前归零镜像 BOOTCTRL 双副本（WP-27.1）。
             reset_bootctrl = true;
+            index += 1;
+            continue;
+        }
+        if flag == "--qmp-shutdown" {
+            // 无值布尔开关：检测到就绪标记后由 QMP `quit` 受控退出。
+            qmp_shutdown = true;
+            index += 1;
+            continue;
+        }
+        if flag == "--net-user" {
+            // 43（L2 协议互操作）：无值布尔开关——user-mode net @槽 8。
+            net_user = true;
             index += 1;
             continue;
         }
@@ -416,6 +475,12 @@ fn parse_options(args: &[String]) -> DynResult<RunOptions> {
                 }
                 expected_reason = Some(value.clone());
             }
+            "--ready-marker" => ready_marker = ReadyMarker::parse(value)?,
+            "--qmp-deadline-secs" => {
+                qmp_deadline_secs = value
+                    .parse::<u64>()
+                    .map_err(|_| invalid("--qmp-deadline-secs must be an unsigned integer"))?
+            }
             _ => return Err(invalid(format!("unknown run qemu-prod option '{flag}'"))),
         }
         index += 2;
@@ -430,10 +495,14 @@ fn parse_options(args: &[String]) -> DynResult<RunOptions> {
         disk_fault_sector,
         rng_present,
         net_present,
+        net_user,
         data_disk,
         expected_slot,
         expected_reason,
         reset_bootctrl,
+        qmp_shutdown,
+        ready_marker,
+        qmp_deadline_secs,
     })
 }
 
@@ -493,11 +562,8 @@ fn run_installer(root: &Path, options: InstallRunOptions) -> DynResult<()> {
         // 的 memory 描述初始化并清零（memzero），512M 时访问 0x7ffc0000 区域
         // （phys 超出实际 RAM）触发 KERNEL DATA ABORT（translation fault L0）。
         "1G".to_owned(),
-        // BOOT-006：强制磁盘 boot 优先——AAVMF 的 PXE boot 项（vars 模板自带）
-        // 会随机抢跑（DHCP 超时可达 60s+），导致 qemu-prod 验证超时；order=c
-        // 让 UEFI 直接尝试磁盘（BOOTAA64.EFI）。
-        "-boot".to_owned(),
-        "order=c".to_owned(),
+        // 42 installer：只使用 `-boot order=d` 从 ISO 启动；不能混入
+        // qemu-prod 的 `order=c`（QEMU 取首个 -boot，导致 installer 走 PXE）。
         "-nographic".to_owned(),
         "-no-reboot".to_owned(),
         "-drive".to_owned(),
@@ -507,17 +573,17 @@ fn run_installer(root: &Path, options: InstallRunOptions) -> DynResult<()> {
         "-drive".to_owned(),
         format!("if=none,format=raw,file={target_wsl},id=enerosdisk"),
         "-device".to_owned(),
-        "virtio-blk-device,bus=virtio-mmio-bus.0,drive=enerosdisk".to_owned(),
+        "virtio-blk-device,bus=virtio-mmio-bus.0,drive=enerosdisk,bootindex=1".to_owned(),
         "-device".to_owned(),
         "virtio-scsi-device,id=installscsi".to_owned(),
         "-drive".to_owned(),
         format!("if=none,format=raw,readonly=on,media=cdrom,file={iso_wsl},id=installcd"),
         "-device".to_owned(),
-        "scsi-cd,drive=installcd".to_owned(),
+        "scsi-cd,drive=installcd,bootindex=0".to_owned(),
         "-object".to_owned(),
         "rng-random,filename=/dev/urandom,id=enerosrng".to_owned(),
         "-device".to_owned(),
-        "virtio-rng-device,rng=enerosrng".to_owned(),
+        "virtio-rng-device,bus=virtio-mmio-bus.3,rng=enerosrng".to_owned(),
         "-boot".to_owned(),
         "order=d".to_owned(),
     ];
@@ -607,10 +673,14 @@ fn run_installer(root: &Path, options: InstallRunOptions) -> DynResult<()> {
                     disk_fault_sector: None,
                     rng_present: true,
                     net_present: true,
+                    net_user: false,
                     data_disk: None,
                     expected_slot: None,
                     expected_reason: None,
-                    reset_bootctrl: false,
+                    reset_bootctrl: true,
+                    qmp_shutdown: !cfg!(windows),
+                    ready_marker: ReadyMarker::RootHeartbeat,
+                    qmp_deadline_secs: 200,
                 },
             )?;
             (
@@ -686,6 +756,118 @@ fn run_installer(root: &Path, options: InstallRunOptions) -> DynResult<()> {
         result.expected, result.iso_sha256, result.payload_sha256
     );
     Ok(())
+}
+
+#[cfg(unix)]
+fn run_qemu_qmp_quit(
+    qemu_args: &[String],
+    evidence_dir: &Path,
+    marker: &[u8],
+    deadline_secs: u64,
+) -> DynResult<(i32, Vec<u8>)> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::process::Stdio;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let sock_path = evidence_dir.join("qmp.sock");
+    let _ = fs::remove_file(&sock_path);
+    let mut args = qemu_args.to_vec();
+    args.push("-qmp".to_owned());
+    args.push(format!("unix:{},server,wait=off", sock_path.display()));
+
+    let mut child = Command::new(&args[0])
+        .args(&args[1..])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| invalid("failed to take QEMU stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| invalid("failed to take QEMU stderr"))?;
+
+    let log: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let log_out = Arc::clone(&log);
+    let out_thread = thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => log_out.lock().unwrap().extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+    });
+    let log_err = Arc::clone(&log);
+    let err_thread = thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => log_err.lock().unwrap().extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(deadline_secs);
+    let found = loop {
+        if let Some(_status) = child.try_wait()? {
+            break false;
+        }
+        let snapshot = log.lock().unwrap().clone();
+        if snapshot.windows(marker.len()).any(|w| w == marker) {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+
+    if !found {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = out_thread.join();
+        let _ = err_thread.join();
+        let snapshot = log.lock().unwrap().clone();
+        fs::write(evidence_dir.join("qemu-serial.log"), &snapshot)?;
+        return Err(invalid(
+            "QEMU QMP shutdown: readiness marker not found before deadline (NO_RESULT, not PASS)",
+        ));
+    }
+
+    let mut stream =
+        UnixStream::connect(&sock_path).map_err(|e| invalid(format!("QMP connect failed: {e}")))?;
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut greeting = String::new();
+    let _ = reader.read_line(&mut greeting);
+    stream.write_all(b"{\"execute\":\"qmp_capabilities\"}\n")?;
+    let mut capability_response = String::new();
+    let _ = reader.read_line(&mut capability_response);
+    stream.write_all(b"{\"execute\":\"quit\"}\n")?;
+    drop(stream);
+
+    let status = child.wait()?;
+    let _ = out_thread.join();
+    let _ = err_thread.join();
+    let snapshot = log.lock().unwrap().clone();
+    Ok((status.code().unwrap_or(-1), snapshot))
+}
+
+#[cfg(not(unix))]
+fn run_qemu_qmp_quit(_qemu_args: &[String], _evidence_dir: &Path) -> DynResult<(i32, Vec<u8>)> {
+    Err(invalid(
+        "QMP shutdown is only implemented on Unix; use WSL/Linux runner",
+    ))
 }
 
 fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
@@ -791,7 +973,7 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
             "-object".to_owned(),
             "rng-random,filename=/dev/urandom,id=enerosrng".to_owned(),
             "-device".to_owned(),
-            "virtio-rng-device,rng=enerosrng".to_owned(),
+            "virtio-rng-device,bus=virtio-mmio-bus.3,rng=enerosrng".to_owned(),
         ]);
     }
     // G3 数据盘（storage 服务）：16MB raw 文件，QEMU 槽 2。
@@ -811,7 +993,7 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
         // 数据不落盘），断电矩阵依赖此语义。
         format!("if=none,format=raw,cache=none,file={data_image_wsl},id=enerosdata"),
         "-device".to_owned(),
-        "virtio-blk-device,drive=enerosdata".to_owned(),
+        "virtio-blk-device,bus=virtio-mmio-bus.2,drive=enerosdata".to_owned(),
     ]);
     // G3 virtio-net（QEMU 槽 3；socket 后端 = 外部独立对端，无 slirp 依赖）。
     if options.net_present {
@@ -823,6 +1005,17 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
             "virtio-net-device,bus=virtio-mmio-bus.1,netdev=enerosnet".to_owned(),
         ]);
     }
+    // 43（L2 协议互操作）：user-mode（slirp）net 挂 virtio-mmio 槽 8
+    // （0x0a001000——svc-modbus-tcp 移交槽位）；guest 10.0.2.15/24，
+    // 10.0.2.2 = host loopback 别名（外部 raw 从站监听 host 端口可达）。
+    if options.net_user {
+        qemu_args.extend([
+            "-netdev".to_owned(),
+            "user,id=enerosnet8".to_owned(),
+            "-device".to_owned(),
+            "virtio-net-device,bus=virtio-mmio-bus.8,netdev=enerosnet8".to_owned(),
+        ]);
+    }
     validate_argv(&qemu_args)?;
     let archived_argv = qemu_args.join(" ");
     fs::write(evidence_dir.join("qemu.argv"), archived_argv.as_bytes())?;
@@ -831,6 +1024,13 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
         run_power_cut(root, &qemu_args, &evidence_dir, *stage)?
     } else if matches!(options.expected, Expected::FirmwareReject) {
         run_firmware_reject(root, &qemu_args, &evidence_dir)?
+    } else if options.qmp_shutdown && !cfg!(windows) {
+        run_qemu_qmp_quit(
+            &qemu_args,
+            &evidence_dir,
+            options.ready_marker.qmp_marker(),
+            options.qmp_deadline_secs,
+        )?
     } else {
         let output = if cfg!(windows) {
             let mut command = Command::new("wsl.exe");
@@ -1064,9 +1264,10 @@ fn reset_bootctrl_copies(image: &mut [u8]) -> DynResult<()> {
     )?;
     let (first, second) = image
         .get_mut(
-            partition_start..partition_start
-                .checked_add(BOOT_CONTROL_RECORD_SIZE * 2)
-                .ok_or_else(|| invalid("BOOTCTRL copy range overflow"))?,
+            partition_start
+                ..partition_start
+                    .checked_add(BOOT_CONTROL_RECORD_SIZE * 2)
+                    .ok_or_else(|| invalid("BOOTCTRL copy range overflow"))?,
         )
         .ok_or_else(|| invalid("BOOTCTRL copies truncated"))?
         .split_at_mut(BOOT_CONTROL_RECORD_SIZE);
@@ -1522,6 +1723,14 @@ struct G2Evidence {
     records: Vec<G2Record>,
     passed: usize,
     failed: usize,
+    /// 42 WP-42.2：W^X 判定（供 isolation report-gate 消费）。
+    /// 推导链：root-task spawn 对每个服务 ELF 页执行
+    /// `PageEntry::is_wx_violation` 断言（crates/runtime/root-task/
+    /// src/spawn.rs:2733，违规即 panic → 引导失败）；本记录集满足
+    /// mmu/el0-enter 全 PASS 且零 FAIL ⇒ 服务均经 W^X 校验成功进入
+    /// EL0。局限：仅覆盖已声明的服务 ELF（受信对端），非对抗性
+    /// W^X 探测——如实声明，不作更多声称。
+    wx_enforced: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1589,6 +1798,7 @@ fn parse_g2_evidence(log: &str) -> DynResult<G2Evidence> {
         records,
         passed,
         failed,
+        wx_enforced: failed == 0,
     })
 }
 
@@ -1823,11 +2033,11 @@ fn run_g3_once(
         "-object".to_owned(),
         "rng-random,filename=/dev/urandom,id=enerosrng".to_owned(),
         "-device".to_owned(),
-        "virtio-rng-device,rng=enerosrng".to_owned(),
+        "virtio-rng-device,bus=virtio-mmio-bus.3,rng=enerosrng".to_owned(),
         "-drive".to_owned(),
         format!("if=none,format=raw,cache=none,file={data_wsl},id=enerosdata"),
         "-device".to_owned(),
-        "virtio-blk-device,drive=enerosdata".to_owned(),
+        "virtio-blk-device,bus=virtio-mmio-bus.2,drive=enerosdata".to_owned(),
         "-netdev".to_owned(),
         "socket,id=enerosnet,listen=127.0.0.1:5577".to_owned(),
         "-device".to_owned(),
