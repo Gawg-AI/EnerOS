@@ -25,6 +25,7 @@ mod test_results;
 mod toolchain;
 mod trust;
 mod update_package;
+mod versioning;
 mod vrf002;
 
 type DynResult<T> = Result<T, Box<dyn Error>>;
@@ -276,6 +277,7 @@ fn real_main() -> DynResult<()> {
         "fault" => fault_factory::command_fault(&root, &rest),
         "fuzz" => command_fuzz(&root, &rest),
         "build-compare" => vrf002::command_build_compare(&root),
+        "bump-version" => versioning::command_bump_version(&root, &rest),
         "image" => image_factory::command_image(&root, &rest),
         "run" => qemu_harness::command_run(&root, &rest),
         "inspect" => artifact_inspector::command_inspect(&root, &rest),
@@ -297,6 +299,7 @@ fn print_help() {
            audit all|profile <id>|layout <id>\n\
            audit toolchain ...|trust ...\n\
            build <profile-id>|all\n\
+           bump-version patch|minor|major|--set <x.y.z> [--from <ver>] [--dry-run] [--manifest-path <p>]\n\
            test unit|result <json>|gate-semantics|ci-policy\n\
            image raw|iso|recovery|vars|update ...\n\
            fault manifest|artifact|installer ...\n\
