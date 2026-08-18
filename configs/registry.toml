@@ -1,0 +1,53 @@
+# configs 清偿注册表（蓝图 41 WP-41.2 唯一分类事实）
+# =====================================================================
+# 每个 configs/**/*.toml 必须在此登记一个状态；gate（xtask qa config-refs
+# CF-01 41 版）据此机器校验：
+#
+#   ACTIVE      有 typed parser + production consumer（manifest configs
+#               声明 + service 声明 configs 字段），进签名 bundle；
+#   TEMPLATE    移出 active bundle（configs/templates/），明确不影响运行，
+#               不进入 release 闭包；产线/KMS 注入后升 ACTIVE；
+#   DELETE      已废弃且无 consumer——文件不得存在（registry 留档）；
+#
+# 注释自证（旧 `# consumer: 集成层占位`）不再算数——gate 只认本表 +
+# ProductManifest 双向链接。
+schema = "eneros.config-registry.v1"
+generation = 1
+owner = "blueprint-41"
+
+# --- ACTIVE：进签名 RuntimeConfigBundle（consumer = manifest 服务 id） ---
+[active."control-write"]
+consumer = ["svc-control-dispatch"]
+note = "控制写租约/握手配置；HMAC 密钥不落文件，经装配层注入"
+
+[active."ota"]
+consumer = ["svc-ota"]
+note = "系统 OTA 分区/升级/安全参数；root_key 构建期注入（KMS），仓内不落明文"
+
+[active."cloud-sync"]
+consumer = ["svc-cloud-sync"]
+note = "云边同步 event_store/delta_sync/retry_queue 参数"
+
+[active."metrics"]
+consumer = ["svc-observability"]
+note = "指标采集/存储/默认项开关"
+
+[active."logging"]
+consumer = ["svc-observability"]
+note = "日志级别/容量/轮转/自定义字段"
+
+# --- TEMPLATE：已移入 configs/templates/，不进 release 闭包 ---
+# （完整清单由 gate 对照目录自动校验；这里登记已知子集 + 豁免说明）
+[template]
+note = "configs/templates/** 全部为 TEMPLATE——产线注入后按 WP-41.2 升 ACTIVE（需 typed parser + consumer + 行为测试），禁止直接改状态绕过"
+
+# --- DELETE：已删除，文件不得存在（git 历史留档） ---
+[deleted]
+dds = "DDS 路线 OutOfV1（35-01 BS-06/39 WP-39.11）；agent-bus-dds 仅 library，不宣称"
+mtls = "废弃（TLS 身份经 security/tls 装配层注入，无独立运行时配置）"
+secure_boot = "废弃（信任根经产线熔丝/安全存储，模板移 templates 后由 KMS 注入；见 secure-boot.toml）"
+
+# --- 非 toml 资产（不参与分类；保持原位置） ---
+[non_toml]
+dts = ["qemu-virt.dts", "phytium-d2000.dts", "kunpeng-920.dts"]
+note = "平台设备树描述（38 HAL/board 消费），非运行配置；platform-contracts/ JSON 同属平台契约"

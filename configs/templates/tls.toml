@@ -1,0 +1,41 @@
+# consumer: 集成层占位（构造参数注入）——host 侧服务 TLS 装配经
+# eneros-tls（crates/security/tls）API 注入 PEM 材料；本文件为交付
+# 模板，产线集成层读取后构造 TlsServerConfig/TlsClientConfig。
+# ============================================================
+# EnerOS TLS 1.3 / mTLS 配置模板（34 SE-09 决策①：取代已删除的
+# mtls.toml——原文件宣称的国密套件/SM2DHE 握手/MtlsContext 无代码
+# 实现，eneros-mtls crate 已删除；本文件只描述真实实现）。
+#
+# 真实实现事实（crates/security/tls，NET-005）：
+#   - 基于 rustls + ring，强制 TLS 1.3（TLS13_ONLY）；
+#   - 证书验证经 rustls-webpki（RFC 5280 路径构建），无自签旁路、
+#     无 dangerous() verifier、无固定随机数握手；
+#   - mTLS 经标准 WebPkiClientVerifier（allow_unauthenticated=false，
+#     客户端不出示证书即握手拒绝）；
+#   - 材料格式为 PEM（证书链 leaf-first；私钥 PKCS#8/SEC1/RSA 均可解析）；
+#   - 国密 TLS 套件不在 v1.0.0 范围（如需立项见 v1.x，禁止宣称）。
+# ============================================================
+
+[tls]
+# 模式：server-only = 单向 TLS（仅客户端验证服务端证书）；
+#       mtls      = 双向认证（服务端强制验证客户端证书链）。
+mode = "mtls"
+
+[server]
+# 服务端证书链（PEM，leaf first + 中间证书）。
+cert_pem_path = "secure-storage/tls/server-cert.pem"
+# 服务端私钥（PEM）。
+key_pem_path = "secure-storage/tls/server-key.pem"
+# mTLS 模式下的客户端 CA 信任锚（PEM）；server-only 模式忽略。
+client_ca_pem_path = "secure-storage/tls/client-ca.pem"
+
+[client]
+# 客户端验证服务端证书的 CA 信任锚（PEM）。
+server_ca_pem_path = "secure-storage/tls/server-ca.pem"
+# mTLS 模式下客户端出示的证书/私钥（PEM）；server-only 模式忽略。
+client_cert_pem_path = "secure-storage/tls/client-cert.pem"
+client_key_pem_path = "secure-storage/tls/client-key.pem"
+
+[limits]
+# 读缓冲上限（34 SE-13：read_to_end_limited，防无界 Vec DoS）。
+max_read_bytes = 1048576
