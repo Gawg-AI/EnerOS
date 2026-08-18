@@ -361,9 +361,9 @@ impl QualityGate for DefaultGate {
 }
 
 impl DefaultGate {
-    /// Go/No-Go 文档与 workspace 版本一致性检查（蓝图/20 R1-1）：
-    /// 任一 G 项非 PASS → 版本必须带 `-rc.` 后缀；全 PASS 才允许发布版。
-    /// 只读文件真实内容，禁止 grep 注释/手工绕过。
+    /// Go/No-Go 文档与 workspace 版本一致性检查（44-00 §3，取代 蓝图/20 R1-1）：
+    /// 未过 GO 终验不得挂 rc/1.0 标记——预发布后缀一律非法；1.x+ 只有全 PASS
+    /// 才允许；冲刺期 0.x.y 合法。只读文件真实内容，禁止 grep 注释/手工绕过。
     fn version_gate_at(root: &Path) -> Result<(), GateError> {
         let gng_path = root.join("docs/v1.0.0-go-no-go.md");
         let gng_text = fs::read_to_string(&gng_path).map_err(|e| {
@@ -418,9 +418,24 @@ impl DefaultGate {
                 "Cargo.toml [workspace.package] version 字段缺失".to_string(),
             )
         })?;
-        if any_non_pass && !version.contains("-rc") {
+        if version.contains('-') {
             return Err(GateError::VersionGateInconsistent(format!(
-                "Go/No-Go 存在非 PASS 项，但 workspace 版本 '{version}' 未带 -rc. 后缀"
+                "workspace 版本 '{version}' 带预发布标记：未过 GO 终验不得挂 rc/1.0 标记（44-00 §3）；终验通过后直接 1.0.0"
+            )));
+        }
+        let major: u64 = version
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .parse()
+            .map_err(|_| {
+                GateError::VersionGateInconsistent(format!(
+                    "workspace 版本 '{version}' 非 x.y.z 语义化格式（44-00 §3 fail-closed）"
+                ))
+            })?;
+        if any_non_pass && major >= 1 {
+            return Err(GateError::VersionGateInconsistent(format!(
+                "Go/No-Go 存在非 PASS 项，workspace 版本 '{version}' 为 1.x+；冲刺期必须 0.x.y，只有全 PASS 才允许 1.0+（44-00 §3）"
             )));
         }
         Ok(())
@@ -666,9 +681,19 @@ mod tests {
         write_scenario(&root, blocked, "1.0.0");
         assert!(DefaultGate::version_gate_at(&root).is_err());
 
-        // 非全 PASS + rc 版本 → 绿
+        // 非全 PASS + 1.5.0 → 红（1.x+ 一律要求全 PASS）
+        let root = scenario_root("blocked-150");
+        write_scenario(&root, blocked, "1.5.0");
+        assert!(DefaultGate::version_gate_at(&root).is_err());
+
+        // 非全 PASS + rc 版本 → 红（44-00 §3：未过终验不得挂 rc/1.0 标记）
         let root = scenario_root("blocked-rc");
         write_scenario(&root, blocked, "1.0.0-rc.0");
+        assert!(DefaultGate::version_gate_at(&root).is_err());
+
+        // 非全 PASS + 0.x → 绿（冲刺期合法版本线）
+        let root = scenario_root("blocked-0x");
+        write_scenario(&root, blocked, "0.313.0");
         assert!(DefaultGate::version_gate_at(&root).is_ok());
 
         // 全 PASS + 1.0.0 → 绿（放行条件）
@@ -676,9 +701,14 @@ mod tests {
         write_scenario(&root, all_pass, "1.0.0");
         assert!(DefaultGate::version_gate_at(&root).is_ok());
 
-        // 全 PASS + rc → 绿（允许但非强制）
+        // 全 PASS + rc → 红（rc 标记一律非法，终验后直接 1.0.0）
         let root = scenario_root("pass-rc");
         write_scenario(&root, all_pass, "1.0.0-rc.1");
+        assert!(DefaultGate::version_gate_at(&root).is_err());
+
+        // 全 PASS + 0.x → 绿（未升 1.0 前仍处 0.x 线）
+        let root = scenario_root("pass-0x");
+        write_scenario(&root, all_pass, "0.313.0");
         assert!(DefaultGate::version_gate_at(&root).is_ok());
 
         // 文档缺失 → fail-closed

@@ -168,7 +168,8 @@ fn workspace_version(root: &Path) -> DynResult<String> {
     ))
 }
 
-/// 版本闸门一致性校验：全 PASS 才允许 1.0.0；否则必须 -rc.N（fail-closed）。
+/// 版本闸门一致性校验（44-00 §3，取代 蓝图/20 R1-1）：
+/// 未过终验不得挂 rc/1.0 标记；1.x+ 只有全 PASS 才允许；0.x 合法（fail-closed）。
 fn command_gng_version(root: &Path, _args: &[String]) -> DynResult<()> {
     let statuses = parse_go_no_go_statuses(root)?;
     let version = workspace_version(root)?;
@@ -178,15 +179,31 @@ fn command_gng_version(root: &Path, _args: &[String]) -> DynResult<()> {
         .map(|(g, _)| g.as_str())
         .collect();
     let all_pass = non_pass.is_empty();
-    let is_candidate = version.contains("-rc");
-    if !all_pass && !is_candidate {
+    // 44-00 §3（取代 蓝图/20 R1-1）：未过 GO 终验不得挂 rc/1.0 标记。
+    if version.contains('-') {
         return Err(invalid(format!(
-            "version-gate-consistency FAIL：Go/No-Go 非 PASS 项 [{}]，但 workspace 版本 '{version}' 未带 -rc. 后缀。\
-             版本由闸门驱动：非全 PASS 一律 -rc.N，只有全 PASS 才允许写 1.0.0",
+            "version-gate-consistency FAIL：workspace 版本 '{version}' 带预发布标记。\
+             44-00 §3：未过 GO 终验不得挂 rc/1.0 标记；终验通过后直接 1.0.0"
+        )));
+    }
+    let major: u64 = version
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .parse()
+        .map_err(|_| {
+            invalid(format!(
+                "version-gate-consistency FAIL：workspace 版本 '{version}' 非 x.y.z 语义化格式"
+            ))
+        })?;
+    if !all_pass && major >= 1 {
+        return Err(invalid(format!(
+            "version-gate-consistency FAIL：Go/No-Go 非 PASS 项 [{}]，但 workspace 版本 '{version}' 为 1.x+。\
+             44-00 §3：冲刺期必须 0.x.y，只有全 PASS 才允许 1.0+",
             non_pass.join(", ")
         )));
     }
-    println!("GNG-VERSION-PASS version={version} all_pass={all_pass} rc_suffix={is_candidate}");
+    println!("GNG-VERSION-PASS version={version} all_pass={all_pass} scheme=0x-44-00-s3");
     Ok(())
 }
 
