@@ -120,8 +120,7 @@ pub fn parse_cert_chain_pem(pem_bytes: &[u8]) -> Result<Vec<CertificateDer<'stat
 pub fn parse_private_key_pem(pem_bytes: &[u8]) -> Result<PrivateKeyDer<'static>, TlsError> {
     // RUSTSEC-2025-0134：迁移到 rustls-pki-types PemObject。
     use rustls::pki_types::pem::PemObject;
-    let key = PrivateKeyDer::from_pem_slice(pem_bytes)
-        .map_err(|e| TlsError::Pem(e.to_string()))?;
+    let key = PrivateKeyDer::from_pem_slice(pem_bytes).map_err(|e| TlsError::Pem(e.to_string()))?;
     Ok(key)
 }
 
