@@ -17,6 +17,8 @@ bench = false
 
 [dependencies]
 eneros-boot-protocol = { path = "../boot-protocol", default-features = false }
+# 39 WP-39.4（P1-07）：安装目标全域安全判定。
+eneros-image-format = { path = "../image-format" }
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["alloc", "fast", "zeroize"] }
 sha2 = { version = "0.10.9", default-features = false }
 uefi = { version = "0.39.0", optional = true, features = ["alloc", "global_allocator", "panic_handler"] }

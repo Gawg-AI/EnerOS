@@ -11,6 +11,7 @@ pub mod install_manifest;
 #[cfg(feature = "alloc")]
 pub mod manifest;
 pub mod measurement;
+pub mod signature;
 pub mod update_manifest;
 
 pub use boot_control::{

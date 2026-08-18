@@ -288,25 +288,64 @@ fn select_blank_target(
     target.ok_or(InstallFailure::TargetMissing)
 }
 
+/// 39 WP-39.4（P1-07 修复）：**全域**空白判定——替代旧"首尾 LBA 空白"
+/// 检查。分层扫描全部 LBA：任何非零内容、protective MBR、GPT 签名或
+/// 已知文件系统/日志 superblock → 拒绝覆盖（默认拒绝；不存在无授权的
+/// `--force`——provisioning 授权属 39 WP-39.3 的显式 capability）。
 fn ensure_blank(target: &mut ScopedProtocol<BlockIO>) -> Result<(), InstallFailure> {
     let media = target.media();
     let media_id = media.media_id();
-    let last = media.last_block();
+    let total_blocks = media
+        .last_block()
+        .checked_add(1)
+        .ok_or(InstallFailure::TargetGeometry)?;
     let sector = usize::try_from(media.block_size()).map_err(|_| InstallFailure::TargetGeometry)?;
-    let mut buffer = vec![0u8; sector];
-    target
-        .read_blocks(media_id, 0, &mut buffer)
-        .map_err(|_| InstallFailure::TargetReadback)?;
-    if buffer.iter().any(|byte| *byte != 0) {
+    if sector == 0 {
+        return Err(InstallFailure::TargetGeometry);
+    }
+    let chunk_sectors = (IO_CHUNK_SIZE / sector) as u64;
+    if chunk_sectors == 0 {
+        return Err(InstallFailure::TargetGeometry);
+    }
+    // 分块缓存：顺序扫描时每块只读一次（1 MiB，与 write_payload 同级）。
+    let mut chunk_cache: Option<(u64, alloc::vec::Vec<u8>)> = None;
+    let mut chunk_reads = 0u64;
+    let probe = eneros_image_format::surface::probe_surface(
+        total_blocks,
+        sector,
+        chunk_sectors,
+        &mut |lba, sector_buf| {
+            let chunk_start = lba / chunk_sectors * chunk_sectors;
+            let cache_miss = chunk_cache
+                .as_ref()
+                .map(|(start, _)| *start != chunk_start)
+                .unwrap_or(true);
+            if cache_miss {
+                let mut buf = alloc::vec![0u8; IO_CHUNK_SIZE];
+                target
+                    .read_blocks(media_id, chunk_start, &mut buf)
+                    .map_err(|_| eneros_image_format::surface::SurfaceError::Io)?;
+                chunk_reads += 1;
+                chunk_cache = Some((chunk_start, buf));
+            }
+            let (start, data) = chunk_cache
+                .as_ref()
+                .ok_or(eneros_image_format::surface::SurfaceError::Io)?;
+            let off = ((lba - start) * sector as u64) as usize;
+            sector_buf.copy_from_slice(&data[off..off + sector]);
+            Ok(())
+        },
+    )
+    .map_err(|_| InstallFailure::TargetReadback)?;
+    // 裁决：默认拒绝任何未知非零内容/已知布局（fail-closed）。
+    if probe.first_nonzero_lba.is_some()
+        || probe.protective_mbr
+        || probe.gpt_signature
+        || !probe.fs_signatures.is_empty()
+    {
         return Err(InstallFailure::TargetNotBlank);
     }
-    buffer.fill(0);
-    target
-        .read_blocks(media_id, last, &mut buffer)
-        .map_err(|_| InstallFailure::TargetReadback)?;
-    if buffer.iter().any(|byte| *byte != 0) {
-        return Err(InstallFailure::TargetNotBlank);
-    }
+    let _ = chunk_reads;
     Ok(())
 }
 

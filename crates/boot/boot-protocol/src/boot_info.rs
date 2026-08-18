@@ -197,8 +197,10 @@ pub fn validate_memory_map_bytes(bytes: &[u8], count: u32) -> Result<(), BootInf
 /// [`dtb_window_for`]）——QEMU virt 实测运行时 DTB ≈ 1 MiB + 4 KiB，固定
 /// 起点方案对 DTB 大小脆弱（WP-27.2 QEMU 实测 NO_DEVICE_TREE 后改进）。
 pub const ENEROS_INIT_BUNDLE_PHYS: u64 = 0x4200_0000;
-/// BOOT-007 内核映射窗口长度（2 MiB，kernel boot.c 常量）。
-pub const ENEROS_MAPPED_WINDOW_LEN: u64 = 0x200_000;
+/// BOOT-007 内核映射窗口长度（4 MiB，kernel boot.c 常量；39 收尾复验
+/// 由 2 MiB 扩容——bundle 随 EL0 服务数量/尺寸增长，2 MiB 窗口的 DTB
+/// 容纳上限被超出（DT_LAYOUT 拒绝））。
+pub const ENEROS_MAPPED_WINDOW_LEN: u64 = 0x400_000;
 /// 单 DTB 硬上限（2 MiB = BOOT-007 窗口全尺寸；QEMU virt 运行时 DTB ≈
 /// 0x101000，真机平台 dts 一般更小）。实际边界由 [`dtb_window_for`] 的
 /// 窗口剩余空间决定（bundle 已占部分之外）；本常量是独立于 bundle 的
@@ -273,6 +275,8 @@ pub enum BootInfoError {
     MissingManifestDigest,
     MemoryMap,
     MeasurementLog,
+    /// WP-37.6：bundle 与 DTB 区间重叠（BOOT-007 窗口内两个负载不能叠放）。
+    Overlap,
 }
 
 impl BootInfo {
@@ -336,7 +340,35 @@ impl BootInfo {
             self.init_bundle_len,
             ENEROS_INIT_BUNDLE_MAX_LEN,
         )?;
+        // WP-37.6：bundle 必须落在 BOOT-007 内核映射窗口内（起始地址校验，
+        // 旧实现只限长度——窗口外地址 root-task 无法读取）。
+        if self.init_bundle_len != 0
+            && (self.init_bundle_phys < ENEROS_INIT_BUNDLE_PHYS
+                || self
+                    .init_bundle_phys
+                    .checked_add(self.init_bundle_len)
+                    .map(|end| end > ENEROS_INIT_BUNDLE_PHYS + ENEROS_MAPPED_WINDOW_LEN)
+                    .unwrap_or(true))
+        {
+            return Err(BootInfoError::Range);
+        }
         validate_pair(self.dtb_phys, self.dtb_len, MAX_DTB_LEN)?;
+        // WP-37.6：bundle 与 DTB 区间不得重叠（dtb_window_for 构造侧保证
+        // DTB 在 bundle 之后页对齐；校验侧独立交叉检查，防构造漂移）。
+        if self.init_bundle_len != 0 && self.dtb_len != 0 {
+            let bundle_end = self
+                .init_bundle_phys
+                .checked_add(self.init_bundle_len)
+                .ok_or(BootInfoError::Range)?;
+            let dtb_end = self
+                .dtb_phys
+                .checked_add(self.dtb_len)
+                .ok_or(BootInfoError::Range)?;
+            let overlap = self.init_bundle_phys < dtb_end && self.dtb_phys < bundle_end;
+            if overlap {
+                return Err(BootInfoError::Overlap);
+            }
+        }
         validate_pair(
             self.memory_map_phys,
             self.memory_map_len,
@@ -516,9 +548,9 @@ mod tests {
         info.flags = BOOT_FLAG_SECURE_BOOT | BOOT_FLAG_ENTROPY_VALID | BOOT_FLAG_MEASUREMENTS_VALID;
         info.boot_id = [0x11; 16];
         info.kernel_entry = 0x4100_0000;
-        info.init_bundle_phys = 0x4200_0000;
+        info.init_bundle_phys = ENEROS_INIT_BUNDLE_PHYS;
         info.init_bundle_len = 0x2000;
-        info.dtb_phys = 0x4300_0000;
+        info.dtb_phys = dtb_window_for(0x2000).unwrap().0;
         info.dtb_len = 0x1000;
         info.memory_map_phys = 0x4400_0000;
         info.memory_map_len = 64;
@@ -695,5 +727,41 @@ mod tests {
             reserved: 0,
         };
         assert_eq!(overflow.to_le_bytes(), Err(BootInfoError::Range));
+    }
+
+    /// WP-37.6：bundle 必须在 BOOT-007 窗口内（旧实现只限长度，窗口外
+    /// 地址 root-task 无法读取却通过校验）。
+    #[test]
+    fn validate_rejects_bundle_outside_boot007_window() {
+        // 起始地址在窗口之前。
+        let mut info = valid_info();
+        info.init_bundle_phys = ENEROS_INIT_BUNDLE_PHYS - 0x1000;
+        info.seal();
+        assert_eq!(info.validate(), Err(BootInfoError::Range));
+        // 末端超出窗口（起始合法但长度越窗）。
+        let mut info2 = valid_info();
+        info2.init_bundle_len = ENEROS_MAPPED_WINDOW_LEN + 1;
+        info2.seal();
+        assert_eq!(info2.validate(), Err(BootInfoError::Range));
+        // 窗口内合法位置照常通过（正例）。
+        let ok = valid_info();
+        assert_eq!(ok.validate(), Ok(()));
+    }
+
+    /// WP-37.6：bundle 与 DTB 区间重叠必须拒绝（构造侧 dtb_window_for
+    /// 保证不重叠；校验侧独立交叉检查防构造漂移）。
+    #[test]
+    fn validate_rejects_bundle_dtb_overlap() {
+        let mut info = valid_info();
+        // DTB 起点压在 bundle 区间内部。
+        info.dtb_phys = info.init_bundle_phys + 0x1000;
+        info.seal();
+        assert_eq!(info.validate(), Err(BootInfoError::Overlap));
+        // DTB 完全包含 bundle（反向重叠）。
+        let mut info2 = valid_info();
+        info2.dtb_phys = ENEROS_INIT_BUNDLE_PHYS - 0x1000;
+        info2.dtb_len = 0x4000;
+        info2.seal();
+        assert_eq!(info2.validate(), Err(BootInfoError::Overlap));
     }
 }

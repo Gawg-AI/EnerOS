@@ -16,13 +16,12 @@ use eneros_boot_protocol::boot_info::{
     BOOT_FLAG_SECURE_BOOT, BOOT_FLAG_TRIAL,
 };
 use eneros_boot_protocol::{
-    condition_boot_entropy, resolve_boot_control, BootControl, BootControlAnchor,
+    condition_boot_entropy, dtb_window_for, resolve_boot_control, BootControl, BootControlAnchor,
     BootControlTransaction, BootInfo, BootReason, BootSelection, BootSlot, Component,
     ComponentRole, ManifestSlot, MeasurementKind, MeasurementLog, MemoryMapEntry, MemoryRegionKind,
     ReleaseManifest, ResolvedBootControl, BOOT_CONTROL_ANCHOR_SIZE, BOOT_CONTROL_COPY_OFFSETS,
     BOOT_CONTROL_FLAG_MANUAL_RECOVERY, BOOT_CONTROL_RECORD_SIZE, ENEROS_DTB_MAX_LEN,
     ENEROS_INIT_BUNDLE_PHYS, MANIFEST_HEADER_LEN, MEASUREMENT_LOG_SIZE, RAW_BOOT_ENTROPY_SIZE,
-    dtb_window_for,
 };
 use eneros_image_format::{
     read_gpt, BlockDevice, BlockReadError, Gpt, Guid, ParsedPartition, PartitionReader,
@@ -194,6 +193,7 @@ struct LoadedBoot {
     kernel_entry: u64,
     manifest_digest: [u8; 32],
     media_reads: u64,
+    source_date_epoch: u64,
 }
 
 struct VerifiedSlot {
@@ -591,6 +591,25 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
             kernel.media_length,
             init.media_length
         );
+        // 42：正式介质黑盒启动的结构化 boot-evidence。必须在
+        // exit_boot_services 之前打印（之后 UEFI console boot service 不可用）。
+        let memory_map_count = boot::memory_map(MemoryType::LOADER_DATA)
+            .map(|map| map.entries().count())
+            .unwrap_or(0);
+        println!(
+            "{{\"schema\":\"eneros.boot-evidence.v1\",\"result\":\"PASS\",\"slot\":\"{}\",\"boot_reason\":\"{}\",\"security_version\":{},\"bootctrl_generation\":{},\"memory_map_count\":{},\"init_bytes\":{},\"source_date_epoch\":{},\"manifest_sha256\":\"{}\",\"measurement_root_sha256\":\"{}\",\"measurement_log_hex\":\"{}\"}}",
+            slot_name(selection.slot),
+            boot_reason_name(reason),
+            manifest.header.security_version,
+            active_control.sequence,
+            memory_map_count,
+            init.media_length,
+            manifest.header.source_date_epoch,
+            hex_encode(&digest),
+            hex_encode(&encoded_measurements[64..96]),
+            hex_encode(&encoded_measurements)
+        );
+        let source_date_epoch = manifest.header.source_date_epoch;
         drop(manifest);
         let media_reads = disk.reads;
         drop(disk);
@@ -601,6 +620,7 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
             kernel_entry: kernel.entry_address,
             manifest_digest: digest,
             media_reads,
+            source_date_epoch,
         });
     }
     Err(BootFailure::DiskIdentity)
@@ -884,6 +904,25 @@ fn pages_for(length: usize) -> Result<usize, BootFailure> {
         .map(|value| value / 4096)
         .filter(|pages| *pages != 0)
         .ok_or(BootFailure::Allocation)
+}
+
+fn boot_reason_name(reason: BootReason) -> &'static str {
+    match reason {
+        BootReason::Cold => "COLD",
+        BootReason::Watchdog => "WATCHDOG",
+        BootReason::UpdateTrial => "UPDATE_TRIAL",
+        BootReason::Rollback => "ROLLBACK",
+        BootReason::ManualRecovery => "MANUAL_RECOVERY",
+        BootReason::VerificationFailure => "VERIFICATION_FAILURE",
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> alloc::string::String {
+    let mut output = alloc::string::String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push_str(&alloc::format!("{byte:02x}"));
+    }
+    output
 }
 
 /// 退出启动服务并跳转内核。

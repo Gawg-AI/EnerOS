@@ -15,16 +15,17 @@ use eneros_boot_protocol::{
     BOOT_CONTROL_RECORD_SIZE,
 };
 
-const COPY_1: &[u8; BOOT_CONTROL_RECORD_SIZE] =
-    include_bytes!("fixtures/bootctrl-seq1-copy1.bin");
-const COPY_2: &[u8; BOOT_CONTROL_RECORD_SIZE] =
-    include_bytes!("fixtures/bootctrl-seq1-copy2.bin");
+const COPY_1: &[u8; BOOT_CONTROL_RECORD_SIZE] = include_bytes!("fixtures/bootctrl-seq1-copy1.bin");
+const COPY_2: &[u8; BOOT_CONTROL_RECORD_SIZE] = include_bytes!("fixtures/bootctrl-seq1-copy2.bin");
 
 /// 真实 seq=1 双副本：decode 必须通过（字段与 CRC 合法），证明失败不是解析 bug。
 #[test]
 fn real_seq1_dual_copy_decodes_with_valid_crc() {
     let control = BootControl::decode(COPY_1).expect("real seq=1 copy must decode");
-    assert_eq!(control.sequence, 1, "fixture must be the post-attempt generation");
+    assert_eq!(
+        control.sequence, 1,
+        "fixture must be the post-attempt generation"
+    );
     assert_eq!(control.security_floor, 1);
     assert_eq!(control.flags, 0);
     // slot A = 尝试中（prepare_attempt 遗留：tries 3→2, last_error=AttemptInProgress, attempts=1）
@@ -46,7 +47,8 @@ fn real_seq1_dual_copy_decodes_with_valid_crc() {
 /// fail-closed 语义锁定。**禁止**通过放宽本判定来"解锁"引导（§5.2 红线）。
 #[test]
 fn real_seq1_dual_copy_without_anchor_is_genesis() {
-    let error = resolve_boot_control(COPY_1, COPY_2, None).expect_err("must reject non-genesis state");
+    let error =
+        resolve_boot_control(COPY_1, COPY_2, None).expect_err("must reject non-genesis state");
     assert_eq!(error, BootControlError::Genesis);
 }
 
@@ -73,7 +75,11 @@ fn crc_without_final_xor_is_rejected() {
         for &byte in data {
             crc ^= byte as u32;
             for _ in 0..8 {
-                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
             }
         }
         crc // 故意省略 ipc-wire 的最终 `!crc`

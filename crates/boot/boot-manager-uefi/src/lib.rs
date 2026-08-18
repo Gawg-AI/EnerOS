@@ -5,6 +5,10 @@ extern crate alloc;
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use eneros_boot_protocol::{
+    signature::{
+        check_signature_domain, BootSignatureProvider, KeyDomain, SignatureAlgorithm,
+        SignatureDomain, SignatureError,
+    },
     Component, ComponentRole, ManifestSlot, ReleaseManifest, MANIFEST_HEADER_LEN, MANIFEST_MAX_LEN,
 };
 use sha2::{Digest, Sha256};
@@ -18,8 +22,7 @@ pub const KERNEL_LOAD_END: u64 = 0x4180_0000;
 /// 与内核固定映射/root-task 固定读冲突（load_address ≠ 0x4200_0000 即静默
 /// 断裂）。validate 收紧：load_address 必须 == INIT_LOAD_START。
 pub const INIT_LOAD_START: u64 = eneros_boot_protocol::ENEROS_INIT_BUNDLE_PHYS;
-pub const INIT_LOAD_END: u64 =
-    INIT_LOAD_START + eneros_boot_protocol::ENEROS_INIT_BUNDLE_MAX_LEN;
+pub const INIT_LOAD_END: u64 = INIT_LOAD_START + eneros_boot_protocol::ENEROS_INIT_BUNDLE_MAX_LEN;
 
 #[derive(Debug, Clone, Copy)]
 pub struct TrustPolicy {
@@ -102,6 +105,40 @@ pub fn declared_manifest_len(header: &[u8]) -> Result<usize, LoaderError> {
     Ok(total)
 }
 
+/// WP-37.7：Ed25519 签名提供者——boot manager 唯一验签入口的实现
+/// （36 批准的 boot 签名 provider；SM2 批准后以同 trait 替换，boot
+/// manager 业务不变）。密码学验证 + 摘要/消息一致性比对。
+pub struct Ed25519SignatureProvider {
+    /// 验证公钥（32 字节）。
+    pub public_key: [u8; 32],
+}
+
+impl BootSignatureProvider for Ed25519SignatureProvider {
+    fn verify(
+        &self,
+        domain: &SignatureDomain,
+        message: &[u8],
+        signature: &[u8],
+    ) -> Result<(), SignatureError> {
+        // 摘要/消息一致性：sha256(message) 必须 == domain.payload_digest
+        // （防止"摘要与消息错配"——替换 payload 的密码学侧防线）。
+        let digest: [u8; 32] = Sha256::digest(message).into();
+        if digest != domain.payload_digest {
+            return Err(SignatureError::PayloadDigestMismatch);
+        }
+        let verifying_key =
+            VerifyingKey::from_bytes(&self.public_key).map_err(|_| SignatureError::InvalidKey)?;
+        // ed25519-dalek 2.x：Signature::from_bytes 接受 64 字节数组。
+        let sig_bytes: [u8; 64] = signature
+            .try_into()
+            .map_err(|_| SignatureError::InvalidSignature)?;
+        let sig = Signature::from_bytes(&sig_bytes);
+        verifying_key
+            .verify_strict(message, &sig)
+            .map_err(|_| SignatureError::InvalidSignature)
+    }
+}
+
 pub fn verify_manifest(
     encoded: &[u8],
     policy: &TrustPolicy,
@@ -133,9 +170,40 @@ pub fn verify_manifest(
     let signature_bytes =
         ReleaseManifest::signature_region(encoded).map_err(|_| LoaderError::ManifestFormat)?;
     let signature = Signature::from_bytes(signature_bytes);
-    verifying_key
-        .verify_strict(signed, &signature)
+
+    // WP-37.7（唯一信任模型收口）：签名域校验先行——算法/签名长度/
+    // 密钥域（normal/recovery/factory 分离）/安全版本单调/dev key/
+    // 零负载 digest 全部进入校验面；密码学验证仍走 Ed25519
+    // verify_strict（36 批准的 boot 签名 provider；SM2 批准前不入链）。
+    let payload_digest: [u8; 32] = Sha256::digest(signed).into();
+    let mut key_id_32 = [0u8; 32];
+    key_id_32[..16].copy_from_slice(&manifest.header.key_id);
+    let domain = SignatureDomain {
+        algorithm: SignatureAlgorithm::Ed25519,
+        key_id: key_id_32,
+        security_version: manifest.header.security_version,
+        key_domain: KeyDomain::Normal,
+        payload_digest,
+    };
+    check_signature_domain(
+        &domain,
+        SignatureAlgorithm::Ed25519,
+        KeyDomain::Normal,
+        policy.minimum_security_version,
+        false, // release：dev/test key 拒绝
+        signature_bytes,
+    )
+    .map_err(|_| LoaderError::Signature)?;
+    // WP-37.7：验签只经 BootSignatureProvider（唯一入口——UEFI 路径与
+    // 其他验证路径共用同一 provider 抽象，禁止各自维护密钥/算法）。
+    let provider = Ed25519SignatureProvider {
+        public_key: policy.public_key,
+    };
+    provider
+        .verify(&domain, signed, signature_bytes)
         .map_err(|_| LoaderError::Signature)?;
+    let _ = verifying_key;
+    let _ = signature;
 
     validate_components(&manifest, policy)?;
     Ok(manifest)
@@ -340,6 +408,141 @@ mod tests {
         )
     }
 
+    /// WP-37.7：签名域负例——dev key（key_id 全 0xDD）在 release 拒绝。
+    #[test]
+    fn signature_domain_rejects_dev_key() {
+        use eneros_boot_protocol::signature::SignatureError;
+        let dev_domain = SignatureDomain {
+            algorithm: SignatureAlgorithm::Ed25519,
+            key_id: [0xDD; 32],
+            security_version: 7,
+            key_domain: KeyDomain::Normal,
+            payload_digest: [1u8; 32],
+        };
+        // release（allow_dev_key=false）：dev key 拒绝（域检查层，先于
+        // 密码学验证——构建期测试签名产物不得进入 release 链）。
+        assert_eq!(
+            check_signature_domain(
+                &dev_domain,
+                SignatureAlgorithm::Ed25519,
+                KeyDomain::Normal,
+                7,
+                false,
+                &[0u8; 64]
+            ),
+            Err(SignatureError::DevKeyRejected)
+        );
+        // 测试签名产物场景（allow_dev_key=true）不拒绝。
+        assert!(check_signature_domain(
+            &dev_domain,
+            SignatureAlgorithm::Ed25519,
+            KeyDomain::Normal,
+            7,
+            true,
+            &[0u8; 64]
+        )
+        .is_ok());
+    }
+
+    /// WP-37.7：签名长度不符（算法混用字节）→ 域检查拒绝。
+    #[test]
+    fn signature_domain_rejects_wrong_length() {
+        let (encoded, _policy, _) = signed_fixture();
+        // 截断签名（64 → 32 字节）：长度检查先于密码学验证——对
+        // signature_region 切片做域检查（纯函数层负例，不改 encoded
+        // 布局）。
+        let sig = ReleaseManifest::signature_region(&encoded).unwrap();
+        let domain = SignatureDomain {
+            algorithm: SignatureAlgorithm::Ed25519,
+            key_id: [0x52; 32],
+            security_version: 7,
+            key_domain: KeyDomain::Normal,
+            payload_digest: [1u8; 32],
+        };
+        let short = &sig[..32];
+        assert_eq!(
+            check_signature_domain(
+                &domain,
+                SignatureAlgorithm::Ed25519,
+                KeyDomain::Normal,
+                7,
+                false,
+                short
+            ),
+            Err(eneros_boot_protocol::signature::SignatureError::SignatureLengthMismatch)
+        );
+        // 零负载 digest → PayloadDigestMismatch。
+        let zero_domain = SignatureDomain {
+            payload_digest: [0u8; 32],
+            ..domain.clone()
+        };
+        assert_eq!(
+            check_signature_domain(
+                &zero_domain,
+                SignatureAlgorithm::Ed25519,
+                KeyDomain::Normal,
+                7,
+                false,
+                sig
+            ),
+            Err(eneros_boot_protocol::signature::SignatureError::PayloadDigestMismatch)
+        );
+        // 密钥域不符（recovery key 验 normal image）。
+        let rec_domain = SignatureDomain {
+            key_domain: KeyDomain::Recovery,
+            ..domain.clone()
+        };
+        assert_eq!(
+            check_signature_domain(
+                &rec_domain,
+                SignatureAlgorithm::Ed25519,
+                KeyDomain::Normal,
+                7,
+                false,
+                sig
+            ),
+            Err(eneros_boot_protocol::signature::SignatureError::KeyDomainMismatch)
+        );
+    }
+
+    /// WP-37.7：provider 消息/摘要一致性——替换 payload 后 digest 失配
+    /// （密码学侧防线，域检查外的第二道）。
+    #[test]
+    fn signature_provider_rejects_message_digest_mismatch() {
+        use eneros_boot_protocol::signature::SignatureError;
+        let (encoded, policy, _) = signed_fixture();
+        let signed = ReleaseManifest::signed_region(&encoded).unwrap();
+        let signature_bytes = ReleaseManifest::signature_region(&encoded).unwrap();
+        // 篡改消息（替换 payload）：digest 与 domain 失配 → 拒绝。
+        let mut tampered = signed.to_vec();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        let provider = Ed25519SignatureProvider {
+            public_key: policy.public_key,
+        };
+        let digest: [u8; 32] = Sha256::digest(&tampered).into();
+        let domain = SignatureDomain {
+            algorithm: SignatureAlgorithm::Ed25519,
+            key_id: [0x52; 32],
+            security_version: 7,
+            key_domain: KeyDomain::Normal,
+            payload_digest: digest,
+        };
+        // 签名是对原始消息的——tampered 摘要虽匹配 domain，但 verify_strict
+        // 对 tampered 验签失败 → InvalidSignature（密码学侧拒绝替换）。
+        assert_eq!(
+            provider.verify(&domain, &tampered, signature_bytes),
+            Err(SignatureError::InvalidSignature)
+        );
+        // 正常路径：原始消息 + 正确摘要 → 通过。
+        let ok_digest: [u8; 32] = Sha256::digest(signed).into();
+        let ok_domain = SignatureDomain {
+            payload_digest: ok_digest,
+            ..domain
+        };
+        assert!(provider.verify(&ok_domain, signed, signature_bytes).is_ok());
+    }
+
     #[test]
     fn signed_manifest_and_payload_are_accepted() {
         let (encoded, policy, payload) = signed_fixture();
@@ -404,7 +607,7 @@ mod tests {
     /// root-task 固定读静默断裂）。
     #[test]
     fn floating_init_load_address_rejected() {
-        let (encoded, policy, payload) = signed_fixture();
+        let (encoded, policy, _payload) = signed_fixture();
         let manifest = verify_manifest(&encoded, &policy).unwrap();
         let mut init = manifest.components[1].clone();
         assert_eq!(init.role, ComponentRole::InitBundle);
