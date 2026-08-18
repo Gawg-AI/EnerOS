@@ -1,0 +1,73 @@
+[package]
+name = "eneros-protocol-services"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS protocol EL0 services — modbus-rtu/modbus-tcp/iec104/mqtt/mms/goose/sv (蓝图 39 WP-39.12 与 39 收尾复验; no_std, aarch64-unknown-none)"
+
+[lib]
+name = "eneros_protocol_services"
+path = "src/lib.rs"
+
+[dependencies]
+# 39（WP-39.12）：协议服务复用驱动服务 IPC runtime（envelope/bounded
+# queue/deadline/epoch——38 WP-38.9 通用面，非自旋占位）。
+eneros-drv-svc = { path = "../../drivers/drv-svc" }
+eneros-runtime = { path = "../../runtime/runtime" }
+eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
+eneros-protocol-abstract = { path = "../protocol-abstract" }
+# 43（L2 协议互操作面）：协议服务网络栈——virtio-net 驱动 + smoltcp+
+# （经 eneros-net）+ root 移交的 DMA 池；modbus-tcp 启用默认 net feature
+# 使 SmoltcpTcpTransport 进入 EL0 二进制。
+eneros-hal = { path = "../../../crates/hal/hal" }
+eneros-time = { path = "../../drivers/time" }
+eneros-net = { path = "../../drivers/net" }
+eneros-virtio-core = { path = "../../drivers/virtio-core" }
+eneros-storage = { path = "../../drivers/storage", default-features = false }
+# 39：协议服务为能力壳（设备移交 40 接通）——不启用 transport 依赖的
+# 默认 feature（net/fs-persist），保持 target 闭包最小。
+eneros-modbus-rtu = { path = "../modbus-rtu", default-features = false }
+eneros-modbus-tcp = { path = "../modbus-tcp" }
+eneros-iec104-master = { path = "../iec104-master", default-features = false }
+eneros-mqtt = { path = "../mqtt", default-features = false }
+# 39 收尾复验（WP-39.11）：MMS/GOOSE/SV plugin+service 补齐。
+# 43 修复（39/40 遗留构建断裂）：这三个 crate 的 `plugin` 模块被其
+# `net` feature 门控（svc-goose/mms/sv 引用 plugin 构造 descriptor），
+# 但此前以 default-features=false 引用导致 target 构建 svc-goose 等
+# 无法解析 `plugin`——显式启用 net（enabler-net 已在包依赖图）。
+eneros-iec61850-mms = { path = "../iec61850-mms", default-features = false, features = ["net"] }
+eneros-iec61850-goose = { path = "../iec61850-goose", default-features = false, features = ["net"] }
+eneros-iec61850-sv = { path = "../iec61850-sv", default-features = false, features = ["net"] }
+linked_list_allocator = "0.10"
+
+[[bin]]
+name = "svc-modbus-rtu"
+path = "src/bin/svc-modbus-rtu.rs"
+
+[[bin]]
+name = "svc-modbus-tcp"
+path = "src/bin/svc-modbus-tcp.rs"
+
+[[bin]]
+name = "svc-iec104"
+path = "src/bin/svc-iec104.rs"
+
+[[bin]]
+name = "svc-mqtt"
+path = "src/bin/svc-mqtt.rs"
+
+[[bin]]
+name = "svc-mms"
+path = "src/bin/svc-mms.rs"
+
+[[bin]]
+name = "svc-goose"
+path = "src/bin/svc-goose.rs"
+
+[[bin]]
+name = "svc-sv"
+path = "src/bin/svc-sv.rs"
+
+[features]
+default = []

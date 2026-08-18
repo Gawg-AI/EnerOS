@@ -1,0 +1,38 @@
+[package]
+name = "eneros-control-dispatch"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS v1.0.0-rc 蓝图 40 WP-40.6/40.7/40.8 唯一 ControlDispatch（validate→authorize→persist→deliver→ACK→readback→audit 闭环，no_std）"
+
+[dependencies]
+# 蓝图 40：决策结果（ProposedControlPlan/DecisionPath）+ 决策闸 + 决策审计。
+eneros-dual-brain = { path = "../../ai/dual-brain" }
+# 蓝图 40 WP-40.1：TrustedTelemetry（控制输入可信边界）。
+eneros-safety-validator = { path = "../../ai/safety-validator" }
+# 蓝图 24/40 WP-40.7：AuthorizedCommand 唯一构造（ControlGateway::authorize）、
+# ControlChain、签名信封、ControlEnvelope wire。
+eneros-control-gateway = { path = "../control-gateway" }
+eneros-telemetry-model = { path = "../telemetry-model" }
+# 蓝图 40 WP-40.8：EIPC 大载荷分块传输（Sel4EipcChannel 生产通道）。
+eneros-agent-sdk = { path = "../../agents/agent-sdk" }
+# 目标设备/点 ID 与点值类型。
+eneros-upa-model = { path = "../upa-model" }
+# 调度结果（能量预算估算）。
+eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
+heapless = { version = "0.8", default-features = false }
+
+[features]
+default = []
+# 生产 DeliveryChannel：seL4 EIPC（agent-sdk sel4 传输）。host 禁止启用。
+sel4 = ["eneros-agent-sdk/sel4"]
+# 测试/仿真专用通道 impl（release 禁）。
+mock = []
+
+[dev-dependencies]
+eneros-solver-core = { path = "../../ai/solver-core", features = ["mock"] }
+eneros-dual-brain = { path = "../../ai/dual-brain", features = ["mock"] }
+# 集成测试：in-process 通道直连 device-agent 收口点（唯一真实路径）。
+eneros-device-agent = { path = "../../agents/device-agent", features = ["mock"] }
+eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
