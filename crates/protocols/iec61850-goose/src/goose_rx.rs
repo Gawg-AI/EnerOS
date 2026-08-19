@@ -27,7 +27,8 @@ use eneros_iec61850_model::DaValue;
 use crate::dataset::{GooseDataset, GooseEntry};
 use crate::goose_tx::{
     DATA_BOOLEAN, DATA_ENUM, DATA_FLOAT, DATA_INTEGER, DATA_STRING, DATA_TIMESTAMP,
-    ETHERTYPE_GOOSE, TAG_ALL_DATA, TAG_GOOSE_PDU, TAG_SQ_NUM, TAG_ST_NUM, TAG_TIMESTAMP,
+    ETHERTYPE_GOOSE, TAG_ALL_DATA, TAG_CONF_REF, TAG_GOOSE_PDU, TAG_SQ_NUM, TAG_ST_NUM,
+    TAG_TIMESTAMP,
 };
 use crate::{GooseError, L2Transport};
 
@@ -62,6 +63,9 @@ pub struct GoosePdu {
     pub sq_num: u32,
     /// 事件时间戳（t 字段，8B BE）。
     pub timestamp: u64,
+    /// 46（WP-46.4）：confRev（0x88 字段；帧未携带 → 0）——插件层与期望值
+    /// 比对做变更告警。
+    pub conf_rev: u32,
     /// 数据集（rx 侧 path 置空字符串，仅值保序）。
     pub dataset: GooseDataset,
 }
@@ -227,6 +231,7 @@ fn decode_pdu(data: &[u8]) -> Result<GoosePdu, GooseError> {
     let mut st_num = 0u32;
     let mut sq_num = 0u32;
     let mut timestamp = 0u64;
+    let mut conf_rev = 0u32;
     let mut dataset = GooseDataset::new();
     while pos < pdu_end {
         let (t, l) = read_tag_length(data, &mut pos)?;
@@ -241,6 +246,11 @@ fn decode_pdu(data: &[u8]) -> Result<GoosePdu, GooseError> {
             }
             TAG_SQ_NUM => {
                 sq_num = read_be_u32(&data[pos..pos + l])?;
+                pos += l;
+            }
+            // 46（WP-46.4）：解码 confRev（0x88；不再跳过——变更告警数据源）。
+            TAG_CONF_REF => {
+                conf_rev = read_be_u32(&data[pos..pos + l])?;
                 pos += l;
             }
             TAG_ALL_DATA => {
@@ -265,6 +275,7 @@ fn decode_pdu(data: &[u8]) -> Result<GoosePdu, GooseError> {
         st_num,
         sq_num,
         timestamp,
+        conf_rev,
         dataset,
     })
 }
@@ -372,6 +383,8 @@ mod tests {
             go_cb_ref: String::from("IED1LD/LLN0$GO$gocb1"),
             app_id: APP_ID,
             dst_addr: DST,
+
+            vlan_id: None,
             min_time: 10,
             max_time: 5000,
             st_num: init_st,
@@ -488,6 +501,45 @@ mod tests {
         let mut sub2 = make_sub();
         sub2.transport_mut().push_rx_frame(&tagged2);
         assert_eq!(sub2.poll(), Ok(None));
+    }
+
+    /// 46（WP-46.4）：confRev（0x88）解码——帧携带 confRev 时 PDU 给出值。
+    #[test]
+    fn test_conf_rev_decode_and_pdu_fields() {
+        // 手工在 APDU 中插入 0x88 confRev 字段（时序：t → st → sq → confRev → allData）。
+        let mut content = Vec::new();
+        content.push(TAG_TIMESTAMP);
+        content.push(8);
+        content.extend_from_slice(&0u64.to_be_bytes());
+        content.push(TAG_ST_NUM);
+        content.push(0x01);
+        content.push(2);
+        content.push(TAG_SQ_NUM);
+        content.push(0x01);
+        content.push(1);
+        content.push(TAG_CONF_REF);
+        content.push(0x01);
+        content.push(7); // confRev = 7（DER 整型短形式）
+        content.push(TAG_ALL_DATA);
+        content.push(0x00);
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&DST);
+        frame.extend_from_slice(&[0x01, 0x0C, 0xCD, 0x01, 0x00, 0x00]);
+        frame.extend_from_slice(&ETHERTYPE_GOOSE.to_be_bytes());
+        frame.extend_from_slice(&APP_ID.to_be_bytes());
+        let mut apdu = Vec::new();
+        apdu.push(TAG_GOOSE_PDU);
+        push_len(&mut apdu, content.len());
+        apdu.extend_from_slice(&content);
+        frame.extend_from_slice(&(6u16 + apdu.len() as u16).to_be_bytes());
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&apdu);
+        let mut sub = make_sub();
+        sub.transport_mut().push_rx_frame(&frame);
+        let (pdu, _status) = sub.poll().expect("poll").expect("pdu");
+        assert_eq!(pdu.st_num, 2);
+        assert_eq!(pdu.conf_rev, 7, "confRev 必须从 0x88 字段解码");
     }
 
     /// 31 PR-16 判据：第三方参考报文 fixture（goose_peer.py 标准帧）——
@@ -721,6 +773,8 @@ mod tests {
             go_cb_ref: String::from("IED1LD/LLN0$GO$gocb1"),
             app_id: APP_ID,
             dst_addr: DST,
+
+            vlan_id: None,
             min_time: 10,
             max_time: 5000,
             st_num: 0,
@@ -750,6 +804,8 @@ mod tests {
             go_cb_ref: String::from("g"),
             app_id: APP_ID,
             dst_addr: DST,
+
+            vlan_id: None,
             min_time: 10,
             max_time: 5000,
             st_num: 0,
@@ -820,6 +876,8 @@ mod tests {
             go_cb_ref: String::from("IED1LD/LLN0$GO$gocb1"),
             app_id: APP_ID,
             dst_addr: DST,
+
+            vlan_id: None,
             min_time: 2,
             max_time: 5000,
             st_num: 0,
@@ -868,6 +926,8 @@ mod tests {
             go_cb_ref: String::from("g"),
             app_id: APP_ID,
             dst_addr: DST,
+
+            vlan_id: None,
             min_time: 10,
             max_time: 5000,
             st_num: 0,

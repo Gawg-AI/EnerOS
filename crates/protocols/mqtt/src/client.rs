@@ -100,6 +100,9 @@ pub struct MqttClient {
     pub last_will: Option<LastWill>,
     /// 心跳间隔（ms）.
     pub keep_alive_ms: u64,
+    /// 46（WP-46.4 keepalive）：最近一次协议活动时间（ms；connect 成功 /
+    /// 任意出站活动置位）——poll 据此在达到 keep_alive 阈值时自动 PINGREQ。
+    pub last_activity_ms: u64,
     /// 传输层.
     pub transport: Option<Box<dyn MqttTransport>>,
     /// 重连状态.
@@ -124,6 +127,7 @@ impl MqttClient {
             subscriptions: Vec::new(),
             last_will: None,
             keep_alive_ms,
+            last_activity_ms: 0,
             transport: None,
             reconnect_state: ReconnectState::new(),
             pending_publish_packet_id: 1,
@@ -204,6 +208,7 @@ impl MqttClient {
             MqttPacket::Connack(c) => {
                 if c.return_code == 0 {
                     self.state = ConnectionState::Connected;
+                    self.last_activity_ms = now_ms;
                     Ok(())
                 } else {
                     self.state = ConnectionState::Disconnected;
@@ -489,7 +494,17 @@ impl MqttClient {
     /// 轮询入站报文（非阻塞：无数据返回空 Vec）.
     ///
     /// 处理 PUBACK/PUBREC/PUBCOMP（移除 pending_acks），返回入站 PUBLISH 列表。
-    pub fn poll(&mut self, _now_ms: u64) -> Result<Vec<MqttPacket>, MqttError> {
+    pub fn poll(&mut self, now_ms: u64) -> Result<Vec<MqttPacket>, MqttError> {
+        // 46（WP-46.4 keepalive）：空闲 ≥ keep_alive_ms 时自动 PINGREQ（有界
+        // 同步等待 PINGRESP——与 ping() 同语义；now_ms 被真实消费，不再忽略）。
+        if self.state == ConnectionState::Connected {
+            if now_ms.saturating_sub(self.last_activity_ms) >= self.keep_alive_ms {
+                self.ping(now_ms)?;
+                self.last_activity_ms = now_ms;
+            }
+        } else {
+            self.last_activity_ms = now_ms;
+        }
         let transport = self.transport.as_mut().ok_or(MqttError::NotConnected)?;
         let bytes = match transport.recv() {
             Ok(b) => b,
@@ -758,5 +773,62 @@ mod tests {
         let r3 = client.poll(0);
         assert!(r3.is_ok());
         assert!(r3.unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod keepalive_tests {
+    use super::ConnectionState;
+    use crate::client::MqttClient;
+    use crate::packet::{self, MqttPacket};
+    use crate::transport::{MockTransport, MqttTransport};
+
+    /// 46（WP-46.4）keepalive：poll 周期按 keep_alive_ms 自动 PINGREQ。
+    #[test]
+    fn keepalive_poll_sends_pingreq_after_keep_alive_interval() {
+        let mut transport = MockTransport::new();
+        transport.set_connected(true);
+        let mut client = MqttClient::new("eneros-test", "keep-1", 5_000);
+        client.set_transport(Box::new(transport));
+        client.last_activity_ms = 1_000;
+        client.state = ConnectionState::Connected;
+        // 阈值内：不发送 PINGREQ（无入站 → 空）。
+        let got = client.poll(4_000).expect("poll");
+        assert!(got.is_empty());
+        let sent = {
+            let t = client
+                .transport
+                .as_mut()
+                .unwrap()
+                .as_any_mut()
+                .downcast_mut::<MockTransport>()
+                .unwrap();
+            t.sent_count()
+        };
+        assert_eq!(sent, 0, "阈值内不得主动 PINGREQ");
+        // 超过阈值：poll 触发 PINGREQ + 等待 PINGRESP（预置应答）→ 刷新活动时间。
+        {
+            let t = client
+                .transport
+                .as_mut()
+                .unwrap()
+                .as_any_mut()
+                .downcast_mut::<MockTransport>()
+                .unwrap();
+            t.enqueue_recv(packet::encode(&MqttPacket::Pingresp));
+        }
+        let _ = client.poll(7_000).expect("poll with ping");
+        {
+            let t = client
+                .transport
+                .as_mut()
+                .unwrap()
+                .as_any_mut()
+                .downcast_mut::<MockTransport>()
+                .unwrap();
+            assert_eq!(t.sent_count(), 1, "达到 keep_alive 阈值必须 PINGREQ");
+            assert!(t.sent_packets()[0].starts_with(&[0xC0, 0x00])); // PINGREQ 固定头
+        }
+        assert_eq!(client.last_activity_ms, 7_000, "PINGREQ 后刷新活动时间");
     }
 }

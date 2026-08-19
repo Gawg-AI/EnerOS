@@ -63,14 +63,17 @@ const KNOWN_KEYS: &[&str] = &[
     "go_cb_ref",
     "dataset_ref",
     "dst_mac",
+    "vlan_id",
 ];
 
 /// GOOSE 插件（发布 + 订阅，PubSub）。
 pub struct GoosePlugin {
     publisher: Option<GoosePublisher<Box<dyn TransportHandle>>>,
     subscriber: Option<GooseSubscriber<Box<dyn TransportHandle>>>,
-    /// 期望 confRev（RX codec 暂不解码 confRev 字段，留存待后续接线——模块文档）。
+    /// 期望 confRev（46.4 起 RX codec 解码 confRev，插件逐帧比对告警）。
     expected_conf_rev: Option<u32>,
+    /// 46（WP-46.4）：confRev 与期望值不符的帧数（变更告警计数）。
+    conf_rev_mismatches: u64,
     /// timeAllowedToLive（毫秒；TX 帧 TTL + RX 插件层监视阈值）。
     ttl_ms: u64,
     /// 最近一次收到新事件的 poll 时刻（TTL 监视基线；None = 尚未收到）。
@@ -91,6 +94,7 @@ impl GoosePlugin {
             publisher: None,
             subscriber: None,
             expected_conf_rev: None,
+            conf_rev_mismatches: 0,
             ttl_ms: 0,
             last_rx_ms: None,
             events: 0,
@@ -107,9 +111,14 @@ impl GoosePlugin {
         self.routed_count
     }
 
-    /// 期望 confRev（配置值留存；RX codec 暂不逐帧校验——模块文档缺口声明）。
+    /// 期望 confRev（配置值）。
     pub fn expected_conf_rev(&self) -> Option<u32> {
         self.expected_conf_rev
+    }
+
+    /// 46.4：confRev 与期望值不符的累计帧数（变更告警；0 = 从未失配）。
+    pub fn conf_rev_mismatches(&self) -> u64 {
+        self.conf_rev_mismatches
     }
 
     /// 配置的 timeAllowedToLive（毫秒）。
@@ -252,10 +261,17 @@ impl ProtocolPlugin for GoosePlugin {
         let peer = mac_hex_string(dst_mac);
         let handle_tx = open_raw(transports, &peer)?;
         let handle_rx = open_raw(transports, &peer)?;
+        // 46.4：可选 vlan_id（1..=4094）→ TX 帧 802.1Q 标签（None = 不标记）。
+        let vlan_id = match eneros_protocol_abstract::plugin::config_u64(cfg, "vlan_id")? {
+            Some(v) if (1..=4094).contains(&v) => Some(v as u16),
+            Some(_) => return Err(ProtocolError::InvalidConfig),
+            None => None,
+        };
         let cb = GooseControlBlock {
             go_cb_ref,
             app_id,
             dst_addr: dst_mac,
+            vlan_id,
             min_time: min_time as u16,
             // max_time 同时作为帧 timeAllowedToLive 字段（goose_tx 语义）。
             max_time: ttl as u16,
@@ -299,6 +315,14 @@ impl ProtocolPlugin for GoosePlugin {
                     if status == RxStatus::StJump {
                         self.error_count += 1;
                         degraded = true;
+                    }
+                    // 46（WP-46.4）：confRev 变更告警——订阅控制块数据集签名
+                    // 版本与期望不符 → 计数 + 降级（不吞帧，逐帧比对）。
+                    if let Some(expected) = self.expected_conf_rev {
+                        if pdu.conf_rev != expected {
+                            self.conf_rev_mismatches += 1;
+                            degraded = true;
+                        }
                     }
                     // 39 §6.3 负例（乱序/重放）：st_num 回跳可检测。
                     // codec 对旧帧乱序归 Duplicate 且不更新状态（静默）；
@@ -436,6 +460,10 @@ mod tests {
     use eneros_protocol_abstract::{EmptyPointRegistry, TransportError};
 
     use super::*;
+    use crate::goose_tx::{
+        ETHERTYPE_GOOSE, TAG_ALL_DATA, TAG_CONF_REF, TAG_GOOSE_PDU, TAG_SQ_NUM, TAG_ST_NUM,
+        TAG_TIMESTAMP,
+    };
 
     /// 支持 RawEthernet 的回环工厂（生命周期测试用）。
     struct RawEchoFactory;
@@ -537,6 +565,7 @@ mod tests {
             go_cb_ref: String::from("IED1LD/LLN0$GO$gocb1"),
             app_id,
             dst_addr: dst,
+            vlan_id: None,
             min_time: 10,
             max_time: 5000,
             st_num: init_st,
@@ -844,5 +873,68 @@ mod tests {
         assert_eq!(plugin.health().error_count, 1);
         // 回跳帧不污染基线（codec Duplicate 不更新状态）。
         assert_eq!(plugin.last_st_num(), 2);
+    }
+
+    // 46（WP-46.4）confRev 变更告警：RX 帧 confRev ≠ 期望值 → 计数 + 降级。
+    #[test]
+    fn conf_rev_mismatch_counts_and_degrades() {
+        let mut plugin = GoosePlugin::new();
+        let mut factory = ScriptedFactory::new();
+        let mut cfg = base_cfg();
+        cfg.insert("conf_rev", "1");
+        // 订阅过滤 MAC 与行下帧 dst 匹配（010ccd01002a）。
+        cfg.insert("dst_mac", "010ccd01002a");
+        plugin
+            .start(&cfg, &mut factory, &mut EmptyPointRegistry)
+            .expect("start");
+        let mut content = Vec::new();
+        content.push(TAG_TIMESTAMP);
+        content.push(8);
+        content.extend_from_slice(&0u64.to_be_bytes());
+        content.push(TAG_ST_NUM);
+        content.push(0x01);
+        content.push(2);
+        content.push(TAG_SQ_NUM);
+        content.push(0x01);
+        content.push(1);
+        content.push(TAG_CONF_REF);
+        content.push(0x01);
+        content.push(7);
+        content.push(TAG_ALL_DATA);
+        content.push(0x00);
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&[0x01, 0x0c, 0xcd, 0x01, 0x00, 0x2a]);
+        frame.extend_from_slice(&[0x01, 0x0c, 0xcd, 0x01, 0x00, 0x00]);
+        frame.extend_from_slice(&ETHERTYPE_GOOSE.to_be_bytes());
+        frame.extend_from_slice(&4097u16.to_be_bytes());
+        let mut apdu = Vec::new();
+        apdu.push(TAG_GOOSE_PDU);
+        if content.len() < 0x80 {
+            apdu.push(content.len() as u8);
+        } else {
+            apdu.push(0x82);
+            apdu.extend_from_slice(&(content.len() as u16).to_be_bytes());
+        }
+        apdu.extend_from_slice(&content);
+        frame.extend_from_slice(&(6u16 + apdu.len() as u16).to_be_bytes());
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&apdu);
+        factory.shared.borrow_mut().push_back(frame);
+        plugin
+            .poll(
+                500,
+                WorkBudget {
+                    max_work_ms: 20,
+                    max_polls: 8,
+                },
+            )
+            .expect("poll");
+        assert_eq!(
+            plugin.conf_rev_mismatches(),
+            1,
+            "confRev=7 != 期望 1 → 告警"
+        );
+        assert_eq!(plugin.health().last_progress, Progress::Degraded);
     }
 }

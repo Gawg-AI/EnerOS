@@ -82,6 +82,9 @@ pub struct GooseControlBlock {
     pub app_id: u16,
     /// 目标组播 MAC。
     pub dst_addr: [u8; 6],
+    /// 46（WP-46.4）：802.1Q VLAN 标签（TCI；None = 不标记）——TX 帧插
+    /// TPID(0x8100)+TCI 于 src 之后（随 46.1 eth_frame 语义）。
+    pub vlan_id: Option<u16>,
     /// 最小重发间隔 ms。
     pub min_time: u16,
     /// 最大重发间隔 ms（心跳周期，同时作为 timeAllowedToLive）。
@@ -210,6 +213,12 @@ impl<T: L2Transport> GoosePublisher<T> {
         let mut frame = Vec::with_capacity(content.len() + 24);
         frame.extend_from_slice(&self.cb.dst_addr);
         frame.extend_from_slice(&SRC_MULTICAST);
+        // 46（WP-46.4）：配置 vlan_id → 插 802.1Q 标签（TPID+TCI；与 rx 侧
+        // ether_type_offset 的 0x8100 判定对称，VLAN 帧 EtherType 偏移 16）。
+        if let Some(tci) = self.cb.vlan_id {
+            frame.extend_from_slice(&0x8100u16.to_be_bytes());
+            frame.extend_from_slice(&tci.to_be_bytes());
+        }
         frame.extend_from_slice(&ETHERTYPE_GOOSE.to_be_bytes());
         frame.extend_from_slice(&self.cb.app_id.to_be_bytes());
         // 31 PR-03：IEC 61850-8-1 §12 四字节头——Length（含自身 2B +
@@ -300,6 +309,7 @@ mod tests {
             go_cb_ref: String::from("IED1LD/LLN0$GO$gocb1"),
             app_id: 0x0001,
             dst_addr: DST,
+            vlan_id: None,
             min_time: 10,
             max_time: 5000,
             st_num: 0,
@@ -569,5 +579,56 @@ mod tests {
             }
         }
         assert_eq!(pos, pdu_end);
+    }
+}
+
+#[cfg(test)]
+mod vlan_tx_tests {
+    use super::*;
+
+    /// 测试用控制块（默认无 VLAN 标签）。
+    fn cb_no_vlan() -> GooseControlBlock {
+        GooseControlBlock {
+            go_cb_ref: String::from("gcb1"),
+            app_id: 0x4001,
+            dst_addr: [0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01],
+            vlan_id: None,
+            min_time: 10,
+            max_time: 1000,
+            st_num: 0,
+            sq_num: 0,
+            dataset_ref: String::from("ds1"),
+            needs_retransmit: false,
+        }
+    }
+
+    /// 46（WP-46.4）：配置 vlan_id 后发布帧插入 802.1Q 标签（TPID 0x8100）。
+    #[test]
+    fn publish_inserts_8021q_tag_when_vlan_id_configured() {
+        let mut cb = cb_no_vlan();
+        cb.vlan_id = Some(42);
+        let mut p = GoosePublisher::new(cb, crate::MockL2::new()).unwrap();
+        p.update_value("A", DaValue::Bool(true));
+        p.publish(0).unwrap();
+        let frame = &p.transport().tx_frames()[0];
+        // TPID 0x8100 在 src（6..12）之后；EtherType 移位至 16。
+        assert_eq!(&frame[12..14], &0x8100u16.to_be_bytes(), "VLAN TPID");
+        assert_eq!(&frame[14..16], &42u16.to_be_bytes(), "VLAN TCI");
+        assert_eq!(
+            &frame[16..18],
+            &ETHERTYPE_GOOSE.to_be_bytes(),
+            "EtherType 随标签移位"
+        );
+    }
+
+    #[test]
+    fn publish_no_tag_when_vlan_id_absent() {
+        let cb = cb_no_vlan(); // 默认 vlan_id: None
+        let mut p = GoosePublisher::new(cb, crate::MockL2::new()).unwrap();
+        p.update_value("A", DaValue::Bool(true));
+        p.publish(0).unwrap();
+        let frame = &p.transport().tx_frames()[0];
+        // 无标签：EtherType 就在 12。
+        assert_eq!(&frame[12..14], &ETHERTYPE_GOOSE.to_be_bytes());
     }
 }
