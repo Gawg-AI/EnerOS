@@ -9,6 +9,8 @@ description = "EnerOS Agent SDK v1.0 (v0.164.0) — 稳定 Agent API + 生命周
 [dependencies]
 heapless = { version = "0.8", default-features = false }
 eneros-ipc-wire = { path = "../../abi/ipc-wire" }
+# 蓝图 45 WP-45.5：58B 遥测样本 wire（TelemetrySample/SampleQuality）。
+eneros-safety-validator = { path = "../../ai/safety-validator" }
 # v0.224.0（B3-01）：seL4 IPC（仅目标构建启用）。
 eneros-sel4-sys = { path = "../../runtime/sel4-sys", optional = true }
 

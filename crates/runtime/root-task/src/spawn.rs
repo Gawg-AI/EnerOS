@@ -1426,6 +1426,10 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     ("svc-energy-agent", "svc-telemetry"),
     ("svc-energy-agent", "svc-ai-worker"),
     ("svc-energy-agent", "svc-control-dispatch"),
+    // 45.5（遥测通路接线，先行者）：svc-modbus-tcp 采集链向 svc-telemetry
+    // 上报真实点样本（EIPC 端点 cap mint 入服务 CSpace 槽 EIPC_EP_BASE_SLOT；
+    // 其余 6 协议服务随 46 卷句柄移交同批）。
+    ("svc-modbus-tcp", "svc-telemetry"),
     // 41（WP-41.3 落盘）：业务服务 durable 状态经 EIPC 调 svc-storage
     // 真落盘（块命令面 OP_EXECUTE + BLK_CMD_*）。
     ("svc-ledger", "svc-storage"),

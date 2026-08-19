@@ -1867,7 +1867,7 @@ fn build_init_bundle(
                 entry.name
             )));
         }
-        build_user_elf(root, &entry.package, &entry.bin)?;
+        build_user_elf(root, &entry.package, &entry.bin, &profile.id)?;
         let target_dir = if entry.target.is_empty() {
             "aarch64-unknown-none".to_owned()
         } else {
@@ -1921,7 +1921,7 @@ fn build_init_bundle(
 }
 
 /// 构建用户 ELF（aarch64-unknown-none release）。
-fn build_user_elf(root: &Path, package: &str, bin: &str) -> DynResult<()> {
+fn build_user_elf(root: &Path, package: &str, bin: &str, profile_id: &str) -> DynResult<()> {
     let mut command = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()));
     command.current_dir(root).args([
         "build",
@@ -1973,7 +1973,15 @@ fn build_user_elf(root: &Path, package: &str, bin: &str) -> DynResult<()> {
         command.args(["--features", "sel4"]);
     }
     if package == "eneros-root-task" {
-        command.args(["--features", "sel4-eipc"]);
+        // 45.5（合成源降级）：qemu-test 介质启 `qemu-test-synth`（合成遥测
+        // 仅测试面）；qemu-prod/board-prod 等 release 装配零合成路径——
+        // closure gate 的 `DENY_FEATURE_PATTERNS + qemu-test-synth` 强制该
+        // feature 不出现在 release 闭包。
+        if profile_id == "qemu-test" {
+            command.args(["--features", "sel4-eipc,qemu-test-synth"]);
+        } else {
+            command.args(["--features", "sel4-eipc"]);
+        }
     }
     run(&mut command)
 }

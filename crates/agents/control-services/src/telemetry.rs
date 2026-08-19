@@ -23,9 +23,11 @@ pub const TEL_INGEST: u8 = 1;
 pub const TEL_SNAPSHOT: u8 = 2;
 pub const TEL_ADVANCE_EPOCH: u8 = 3;
 
-/// 单个样本 wire 长度（定长：point 4 + value 8 + source 4 + source_epoch 8 +
-/// measured 8 + received 8 + quality 1 + sequence 8 + integrity 1 + mapping 8）。
-pub const SAMPLE_WIRE_LEN: usize = 58;
+/// 45.5：58B 定长样本 wire 收归 agent-sdk `sample_wire`（单一事实；
+/// root/svc-telemetry/协议服务共同消费）。此处 re-export 保持既有调用面。
+pub use eneros_agent_sdk::sample_wire::{
+    decode_sample, encode_sample, integrity_code, quality_code, SAMPLE_WIRE_LEN,
+};
 /// 样本缓冲上限（有界）。
 pub const MAX_BUFFERED_SAMPLES: usize = 256;
 /// 评估器配置（服务装配期注入；覆盖点由部署配置决定）。
@@ -111,70 +113,6 @@ impl TelemetryService {
     pub fn snapshot(&mut self, now_ms: u64) -> Result<TrustedTelemetry, TrustRejection> {
         let samples: Vec<TelemetrySample> = self.buffer.iter().copied().collect();
         self.evaluator.evaluate(&samples, now_ms)
-    }
-}
-
-/// 样本 → wire（定长）。
-pub fn encode_sample(s: &TelemetrySample) -> [u8; SAMPLE_WIRE_LEN] {
-    let mut out = [0u8; SAMPLE_WIRE_LEN];
-    out[0..4].copy_from_slice(&s.point.to_le_bytes());
-    out[4..12].copy_from_slice(&s.value.to_le_bytes());
-    out[12..16].copy_from_slice(&s.source.to_le_bytes());
-    out[16..24].copy_from_slice(&s.source_epoch.to_le_bytes());
-    out[24..32].copy_from_slice(&s.measured_at_ms.to_le_bytes());
-    out[32..40].copy_from_slice(&s.received_at_ms.to_le_bytes());
-    out[40] = quality_code(s.quality);
-    out[41..49].copy_from_slice(&s.sequence.to_le_bytes());
-    out[49] = integrity_code(s.integrity);
-    out[50..58].copy_from_slice(&s.mapping_version.to_le_bytes());
-    out
-}
-
-/// wire → 样本（未知质量/完整性码 → None，fail-closed）。
-pub fn decode_sample(buf: &[u8]) -> Option<TelemetrySample> {
-    if buf.len() != SAMPLE_WIRE_LEN {
-        return None;
-    }
-    use eneros_safety_validator::{IntegrityStatus, SampleQuality};
-    let quality = match buf[40] {
-        0 => SampleQuality::Good,
-        1 => SampleQuality::Suspect(eneros_safety_validator::QualityReason::Stale),
-        2 => SampleQuality::Bad(eneros_safety_validator::QualityReason::Stale),
-        _ => SampleQuality::Unknown,
-    };
-    let integrity = match buf[49] {
-        0 => IntegrityStatus::Verified,
-        1 => IntegrityStatus::Unverified,
-        _ => IntegrityStatus::Unverifiable,
-    };
-    Some(TelemetrySample {
-        point: u32::from_le_bytes(buf[0..4].try_into().ok()?),
-        value: f64::from_le_bytes(buf[4..12].try_into().ok()?),
-        source: u32::from_le_bytes(buf[12..16].try_into().ok()?),
-        source_epoch: u64::from_le_bytes(buf[16..24].try_into().ok()?),
-        measured_at_ms: u64::from_le_bytes(buf[24..32].try_into().ok()?),
-        received_at_ms: u64::from_le_bytes(buf[32..40].try_into().ok()?),
-        quality,
-        sequence: u64::from_le_bytes(buf[41..49].try_into().ok()?),
-        integrity,
-        mapping_version: u64::from_le_bytes(buf[50..58].try_into().ok()?),
-    })
-}
-
-fn quality_code(q: eneros_safety_validator::SampleQuality) -> u8 {
-    match q {
-        eneros_safety_validator::SampleQuality::Good => 0,
-        eneros_safety_validator::SampleQuality::Suspect(_) => 1,
-        eneros_safety_validator::SampleQuality::Bad(_) => 2,
-        eneros_safety_validator::SampleQuality::Unknown => 3,
-    }
-}
-
-fn integrity_code(i: eneros_safety_validator::IntegrityStatus) -> u8 {
-    match i {
-        eneros_safety_validator::IntegrityStatus::Verified => 0,
-        eneros_safety_validator::IntegrityStatus::Unverified => 1,
-        eneros_safety_validator::IntegrityStatus::Unverifiable => 2,
     }
 }
 

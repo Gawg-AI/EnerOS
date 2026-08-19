@@ -50,3 +50,8 @@ default = []
 # 蓝图 40 收尾：target 构建启用 agent-sdk sel4 客户端（ipc_sel4 模块）。
 # host 构建（lib 测试）不需要——xtask build_user_elf 特判传参。
 sel4-eipc = ["eneros-agent-sdk/sel4"]
+# 蓝图 45 WP-45.5（合成源降级）：仅 qemu-test 介质启用——root `control_chain_`
+# 合成遥测 INGEST 注入（服务端/产线零合成路径）。qemu-prod/board-prod 等
+# release 装配不传本 feature；closure gate `DENY_FEATURE_PATTERNS` 强制
+# `qemu-test-synth` 不出现在 release 闭包（RELEASE_FEATURE_DENIED）。
+qemu-test-synth = []

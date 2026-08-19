@@ -47,6 +47,8 @@ pub const DENY_FEATURE_PATTERNS: &[&str] = &[
     "host_os",
     "insecure-test",
     "test-rng",
+    // 蓝图 45 WP-45.5：合成遥测源仅 qemu-test 介质；release 闭包出现即拒绝。
+    "qemu-test-synth",
 ];
 
 /// 精确 allowlist（36 的合法豁免必须：到期时间、owner、理由、非 release class）。

@@ -956,23 +956,23 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
     Ok(())
 }
 
-#[cfg(all(target_os = "none", feature = "sel4-eipc"))]
-fn control_chain_tick(
+/// 45.5 合成遥测注入——**仅 qemu-test 介质**（feature `qemu-test-synth`）：
+/// 6 点合成样本（与 svc-telemetry 覆盖声明/绑定一致：电压/电流/频率/SOC/
+/// 并网/告警——source=1 为其 allowed_sources）INGEST → accepted。
+///
+/// TEL_INGEST = 1（TEL_SNAPSHOT = 2——QEMU 实弹曾误用 2 收到
+/// SNAPSHOT_REJECTED，协议码以 control_services::telemetry 为准）。
+#[cfg(all(target_os = "none", feature = "sel4-eipc", feature = "qemu-test-synth"))]
+fn control_chain_synth_ingest(
     telemetry_ep: u64,
-    energy_ep: u64,
-    seq: &mut u64,
+    seq: u64,
     epoch: &mut u64,
-) -> Result<(u8, u8, Option<u8>), alloc::string::String> {
+    now: u64,
+) -> Result<u8, alloc::string::String> {
     use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
     use eneros_agent_sdk::ChunkedClient;
     use eneros_safety_validator::{IntegrityStatus, SampleQuality, TelemetrySample};
 
-    let now = abs_now_ms();
-    *seq = seq.saturating_add(1);
-    // 6 点样本（与 svc-telemetry 覆盖声明/绑定一致：电压/电流/频率/SOC/
-    // 并网/告警——source=1 为其 allowed_sources）。
-    // TEL_INGEST = 1（TEL_SNAPSHOT = 2——QEMU 实弹曾误用 2 收到
-    // SNAPSHOT_REJECTED，协议码以 control_services::telemetry 为准）。
     let mut req: alloc::vec::Vec<u8> = alloc::vec![1u8];
     for (point, value) in [
         (1u32, 380.0f64),
@@ -990,15 +990,14 @@ fn control_chain_tick(
             measured_at_ms: now.saturating_sub(50),
             received_at_ms: now,
             quality: SampleQuality::Good,
-            sequence: *seq,
+            sequence: seq,
             integrity: IntegrityStatus::Verified,
             mapping_version: 1,
         };
-        // 编码布局与 control_services::telemetry::encode_sample 对齐
-        //（58B 定长小端；root 不依赖 control-services——体积预算）。
-        req.extend_from_slice(&encode_sample_wire(&sample));
+        // 45.5：58B 编码收归 agent-sdk sample_wire（单一事实）。
+        req.extend_from_slice(&eneros_agent_sdk::sample_wire::encode_sample(&sample));
     }
-    // 1. INGEST（分块：349B → 4 块）。
+    // INGEST（分块：349B → 4 块）。
     let mut ipc = Sel4IpcClient::new("root-collect", telemetry_ep, eneros_time::get_monotonic_ns)
         .map_err(|e| alloc::format!("telemetry client init: {:?}", e))?;
     let mut transfer = ChunkedClient::new(&mut ipc, *epoch, 5_000);
@@ -1020,7 +1019,39 @@ fn control_chain_tick(
             &resp[..resp.len().min(8)]
         ));
     }
-    let accepted = resp[1];
+    Ok(resp[1])
+}
+
+/// 45.5 合成源降级：release/qemu-prod 装配**零合成遥测路径**——closure gate
+/// 强制 `qemu-test-synth` 不在 release 闭包；本占位无注入（accepted=0）。
+#[cfg(all(
+    target_os = "none",
+    feature = "sel4-eipc",
+    not(feature = "qemu-test-synth")
+))]
+fn control_chain_synth_ingest(
+    _telemetry_ep: u64,
+    _seq: u64,
+    _epoch: &mut u64,
+    _now: u64,
+) -> Result<u8, alloc::string::String> {
+    Ok(0)
+}
+
+#[cfg(all(target_os = "none", feature = "sel4-eipc"))]
+fn control_chain_tick(
+    telemetry_ep: u64,
+    energy_ep: u64,
+    seq: &mut u64,
+    epoch: &mut u64,
+) -> Result<(u8, u8, Option<u8>), alloc::string::String> {
+    let now = abs_now_ms();
+    *seq = seq.saturating_add(1);
+    // 45.5（合成源降级）：遥测注入经 `qemu-test-synth` 门控——feature 默认
+    // 关；qemu-prod/board-prod 等 release 装配走 `control_chain_synth_ingest`
+    // 的零合成路径（accepted=0，无注入）。真实采集由协议服务
+    // （先行者 svc-modbus-tcp）经 EIPC 上报。TICK 触发段保留（编排触发器）。
+    let accepted = control_chain_synth_ingest(telemetry_ep, *seq, epoch, now)?;
     // 2. TICK（1B 请求；响应 = EA 状态 + receipt wire 83B）。
     let mut ipc2 = Sel4IpcClient::new(
         "root-orchestrator",
@@ -1061,41 +1092,12 @@ fn control_chain_tick(
 
 /// host/无 sel4-eipc 构建的占位（存储探针不可用——如实报错，不伪造）。
 #[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]
+/// storage persist probe 占位（同 control_chain_tick 门控）。
+#[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]
 fn storage_persist_probe(_ota_ep: u64, _epoch: &mut u64) -> Result<(), alloc::string::String> {
     Err(alloc::string::String::from(
         "storage persist probe requires sel4-eipc feature",
     ))
-}
-
-/// `TelemetrySample` → 58B wire。布局与 control_services::telemetry::
-/// encode_sample 逐字节一致（单一事实源在该函数——修改须双侧同步）：
-/// point u32 + value f64 + source **u32** + epoch u64 + measured u64 +
-/// received u64 + quality u8 + seq u64 + integrity u8（Verified=0）+
-/// mapping **u64**。
-#[cfg(all(target_os = "none", feature = "sel4-eipc"))]
-fn encode_sample_wire(s: &eneros_safety_validator::TelemetrySample) -> [u8; 58] {
-    use eneros_safety_validator::{IntegrityStatus, SampleQuality};
-    let mut buf = [0u8; 58];
-    buf[0..4].copy_from_slice(&s.point.to_le_bytes());
-    buf[4..12].copy_from_slice(&s.value.to_le_bytes());
-    buf[12..16].copy_from_slice(&(s.source as u32).to_le_bytes());
-    buf[16..24].copy_from_slice(&s.source_epoch.to_le_bytes());
-    buf[24..32].copy_from_slice(&s.measured_at_ms.to_le_bytes());
-    buf[32..40].copy_from_slice(&s.received_at_ms.to_le_bytes());
-    buf[40] = match s.quality {
-        SampleQuality::Good => 0,
-        SampleQuality::Suspect(_) => 1,
-        SampleQuality::Bad(_) => 2,
-        SampleQuality::Unknown => 3,
-    };
-    buf[41..49].copy_from_slice(&s.sequence.to_le_bytes());
-    buf[49] = match s.integrity {
-        IntegrityStatus::Verified => 0,
-        IntegrityStatus::Unverified => 1,
-        IntegrityStatus::Unverifiable => 2,
-    };
-    buf[50..58].copy_from_slice(&s.mapping_version.to_le_bytes());
-    buf
 }
 
 /// hello 请求→响应往返（K2.2 契约）。返回完整响应帧字节。
