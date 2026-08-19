@@ -1026,8 +1026,9 @@ fn audit_profile(
                 .values()
                 .map(|record| record.name.clone())
                 .collect();
-            violations
-                .extend(policy::gate_frozen_release_closure(&frozen, &exempt, &reached));
+            violations.extend(policy::gate_frozen_release_closure(
+                &frozen, &exempt, &reached,
+            ));
             let mut edges: Vec<(String, String)> = Vec::new();
             for node in &metadata.resolve.nodes {
                 let Some(from_pkg) = package_by_id.get(node.id.as_str()) else {

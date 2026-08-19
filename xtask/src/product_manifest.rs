@@ -1315,7 +1315,16 @@ mod tests {
             );
         }
         // 探针服务必须无映射（机器校验拒绝它们进 release 的依据）。
-        for probe in ["svc-hello", "svc-pi", "svc-hog", "svc-fault", "svc-hang", "svc-drv-fault", "svc-pie-a", "svc-pie-b"] {
+        for probe in [
+            "svc-hello",
+            "svc-pi",
+            "svc-hog",
+            "svc-fault",
+            "svc-hang",
+            "svc-drv-fault",
+            "svc-pie-a",
+            "svc-pie-b",
+        ] {
             assert!(
                 !mapped.contains(probe),
                 "probe service {probe} must not be in the product kind mapping"

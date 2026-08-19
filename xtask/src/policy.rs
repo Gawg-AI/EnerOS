@@ -450,8 +450,8 @@ pub fn load_frozen_policy(root: &Path) -> DynResult<FrozenPolicy> {
     let path = root.join("product/policy/frozen-crates.json");
     let text = fs::read_to_string(&path)
         .map_err(|e| invalid(format!("cannot read {}: {e}", path.display())))?;
-    let policy: FrozenPolicy =
-        serde_json::from_str(&text).map_err(|e| invalid(format!("frozen-crates.json parse: {e}")))?;
+    let policy: FrozenPolicy = serde_json::from_str(&text)
+        .map_err(|e| invalid(format!("frozen-crates.json parse: {e}")))?;
     if policy.schema != FROZEN_POLICY_SCHEMA {
         return Err(invalid(format!(
             "frozen-crates-schema:{} (expected {FROZEN_POLICY_SCHEMA})",
@@ -520,7 +520,6 @@ pub fn gate_frozen_dependencies(
     }
     violations
 }
-
 
 /// crypto 算法提供者关键字（归一化后子串匹配）。只列算法实现词，
 /// 不含 RustCrypto trait/基础设施（crypto-common、digest、cipher、
@@ -733,13 +732,17 @@ mod tests {
     #[test]
     fn frozen_release_closure_gate_flags_non_exempt_frozen() {
         // WP-44.4 R1：冻结 crate 进 release 闭包 → FAIL；豁免、非冻结 → 放行。
-        let frozen: BTreeSet<String> =
-            ["eneros-tsdb", "eneros-federation", "eneros-energy-market-agent"]
-                .into_iter()
-                .map(String::from)
-                .collect();
-        let exempt: BTreeSet<String> =
-            ["eneros-energy-market-agent".to_owned()].into_iter().collect();
+        let frozen: BTreeSet<String> = [
+            "eneros-tsdb",
+            "eneros-federation",
+            "eneros-energy-market-agent",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let exempt: BTreeSet<String> = ["eneros-energy-market-agent".to_owned()]
+            .into_iter()
+            .collect();
         let reached: BTreeSet<String> = [
             "eneros-tsdb",
             "eneros-energy-market-agent",
@@ -752,33 +755,48 @@ mod tests {
         let violations = gate_frozen_release_closure(&frozen, &exempt, &reached);
         assert!(violations.contains(&"frozen-crate-in-release-closure:eneros-tsdb".to_owned()));
         // 豁免的 energy-market-agent 与未冻结的 root-task/storage 不报。
-        assert!(!violations
-            .iter()
-            .any(|v| v.contains("energy-market-agent")), "{violations:?}");
-        assert!(!violations.iter().any(|v| v.contains("root-task")), "{violations:?}");
-        assert!(!violations.iter().any(|v| v.contains("storage")), "{violations:?}");
+        assert!(
+            !violations.iter().any(|v| v.contains("energy-market-agent")),
+            "{violations:?}"
+        );
+        assert!(
+            !violations.iter().any(|v| v.contains("root-task")),
+            "{violations:?}"
+        );
+        assert!(
+            !violations.iter().any(|v| v.contains("storage")),
+            "{violations:?}"
+        );
     }
 
     #[test]
     fn frozen_dependency_gate_requires_allowlist() {
         // WP-44.4 R2：非冻结→冻结边未 allowlist → FAIL；allowlist 内放行。
-        let frozen: BTreeSet<String> =
-            ["eneros-solver-model".to_owned()].into_iter().collect();
-        let allow: BTreeSet<(String, String)> =
-            [("eneros-energy-lp-model".to_owned(), "eneros-solver-model".to_owned())]
-                .into_iter()
-                .collect();
+        let frozen: BTreeSet<String> = ["eneros-solver-model".to_owned()].into_iter().collect();
+        let allow: BTreeSet<(String, String)> = [(
+            "eneros-energy-lp-model".to_owned(),
+            "eneros-solver-model".to_owned(),
+        )]
+        .into_iter()
+        .collect();
         let edges = vec![
-            ("eneros-energy-lp-model".to_owned(), "eneros-solver-model".to_owned()),
-            ("eneros-intent-parser".to_owned(), "eneros-solver-model".to_owned()),
+            (
+                "eneros-energy-lp-model".to_owned(),
+                "eneros-solver-model".to_owned(),
+            ),
+            (
+                "eneros-intent-parser".to_owned(),
+                "eneros-solver-model".to_owned(),
+            ),
         ];
         let violations = gate_frozen_dependencies(&frozen, &allow, &edges);
-        assert!(violations
-            .iter()
-            .any(|v| v == "frozen-dependency-by-nonfrozen:eneros-intent-parser:eneros-solver-model"));
-        assert!(!violations
-            .iter()
-            .any(|v| v.contains("energy-lp-model")), "{violations:?}");
+        assert!(violations.iter().any(
+            |v| v == "frozen-dependency-by-nonfrozen:eneros-intent-parser:eneros-solver-model"
+        ));
+        assert!(
+            !violations.iter().any(|v| v.contains("energy-lp-model")),
+            "{violations:?}"
+        );
     }
 
     #[test]
