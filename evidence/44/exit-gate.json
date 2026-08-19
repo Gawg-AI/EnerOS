@@ -3,7 +3,7 @@
   "volume": 44,
   "volume_title": "基线抹平与工作树收口",
   "established": "2026-08-19",
-  "exit_commit": "7e926e2（44 Exit 验收定稿——含 fmt 回归修复 7e926e2）",
+  "exit_commit": "0c7f6e2（Exit Gate 验收证据提交；被验代码态 HEAD=7e926e2——含 fmt 回归修复 7e926e2）",
   "acceptance": {
     "date": "2026-08-19",
     "head": "7e926e2",
