@@ -31,6 +31,9 @@ seL4/
 
 # ===== 设备树二进制（源文件 .dts/.dtsi 入仓） =====
 *.dtb
+# WP-44 Exit：root-task driver_probe 测试 include_bytes! 此夹具（克隆构建
+# 必需）；违例 .gitignore 强制跟踪（小型确定性测试输入）。
+!crates/hal/board/tests/fixtures/qemu-virt.dtb
 
 # ===== QEMU 产物 =====
 qemu-output/
