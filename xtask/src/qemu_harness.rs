@@ -289,10 +289,11 @@ pub(super) fn command_run(root: &Path, args: &[String]) -> DynResult<()> {
     };
     match profile.as_str() {
         "qemu-prod" => run_qemu(root, parse_options(tail)?),
+        "qemu-test" => run_qemu(root, parse_options(tail)?),
         "qemu-g3" => command_g3(root, tail),
         "qemu-install" => run_installer(root, parse_install_options(tail)?),
         _ => Err(invalid(
-            "the accepted media harness profiles are qemu-prod, qemu-g3, and qemu-install",
+            "the accepted media harness profiles are qemu-prod, qemu-test, qemu-g3, and qemu-install",
         )),
     }
 }

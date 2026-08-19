@@ -282,7 +282,14 @@ impl ProductManifest {
         if self.schema != MANIFEST_SCHEMA {
             violations.push(format!("manifest-schema:{}", self.schema));
         }
-        if self.class != "release" && self.class != "recovery" && self.class != "factory" {
+        // 44.3：test/development 类与 profile schema 对齐（qemu-test 等
+        // 测试装配需走同一 normalize 管线；release 语义由 audit 层把关）。
+        if self.class != "release"
+            && self.class != "recovery"
+            && self.class != "factory"
+            && self.class != "test"
+            && self.class != "development"
+        {
             violations.push(format!("manifest-class:{}", self.class));
         }
         if self.architecture != "aarch64" {
@@ -753,6 +760,8 @@ pub const SERVICE_KIND_REGISTRY: &[(&str, &str)] = &[
     ("business.market", "energy market"),
     ("business.settlement", "settlement"),
     ("business.account", "account"),
+    ("business.ledger", "accounting ledger"),
+    ("business.agent-bus", "AgentBus 数据总线"),
     ("business.ota", "system OTA"),
     ("business.model-ota", "model OTA"),
     ("business.federation", "federation"),
@@ -761,9 +770,50 @@ pub const SERVICE_KIND_REGISTRY: &[(&str, &str)] = &[
     ("ops.mgmt", "management API"),
     ("ops.metrics", "metrics"),
     ("ops.logging", "logging"),
+    ("ops.observability", "metrics/logging 可观测聚合"),
     ("ops.tracing", "tracing"),
     ("ops.dashboard", "dashboard"),
     ("ops.alert", "alerting"),
+];
+
+/// WP-44.3：release profile 服务 id → service-kind-registry kind id 映射
+/// （唯一权威映射，与 product/service-kind-registry.json 的 kinds 一一对应）。
+/// 机器校验（audit release profile）：profile 每个服务 id 必须在此表中，
+/// 且映射目标必须在 registry 中——测试探针（svc-hello/svc-pi/svc-hog/
+/// svc-fault/svc-hang/svc-drv-fault/svc-pie-*）无映射，进 release 即 FAIL。
+pub const SERVICE_KIND_BY_SERVICE_ID: &[(&str, &str)] = &[
+    // runtime
+    ("root-task", "runtime.root"),
+    ("svc-config", "runtime.config"),
+    // driver
+    ("svc-drv-console", "driver.console"),
+    ("svc-drv-rng", "driver.entropy"),
+    ("svc-storage", "driver.block"),
+    ("svc-drv-blk", "driver.block"),
+    ("svc-drv-net", "driver.network"),
+    // protocol（7 协议服务）
+    ("svc-modbus-rtu", "protocol.modbus-rtu"),
+    ("svc-modbus-tcp", "protocol.modbus-tcp"),
+    ("svc-iec104", "protocol.iec104"),
+    ("svc-mqtt", "protocol.mqtt"),
+    ("svc-mms", "protocol.mms"),
+    ("svc-goose", "protocol.goose"),
+    ("svc-sv", "protocol.sv"),
+    // control（5 控制服务 + dispatch）
+    ("svc-telemetry", "control.telemetry"),
+    ("svc-energy-agent", "control.energy-agent"),
+    ("svc-ai-worker", "control.ai-worker"),
+    ("svc-device-agent", "control.device-agent"),
+    ("svc-control-dispatch", "control.dispatch"),
+    // business
+    ("svc-market", "business.market"),
+    ("svc-ledger", "business.ledger"),
+    ("svc-ota", "business.ota"),
+    ("svc-cloud-sync", "business.cloud-sync"),
+    ("svc-agent-bus", "business.agent-bus"),
+    // ops
+    ("svc-observability", "ops.observability"),
+    ("svc-mgmt", "ops.mgmt"),
 ];
 
 pub fn write_service_kind_registry(root: &Path) -> DynResult<PathBuf> {
@@ -778,20 +828,29 @@ pub fn write_service_kind_registry(root: &Path) -> DynResult<PathBuf> {
     Ok(path)
 }
 
-/// 校验 profile 声明的 service kind 全部来自 registry（未实现服务不得入 release）。
-/// 生效点：37+ 新服务接入门禁（届时由新 owner 接线）。36 不强制——当前正式
-/// profile 的服务集（root/svc-*）早于 registry 建立，立即强制会阻断现有装配；
-/// registry 的约束方向是“未登记的新 kind 不得进入 release profile”。
-#[allow(dead_code)] // 44.2：服务种类校验，当前调用面未接线（44.4 冻结登记）
-pub fn validate_service_kinds(manifest: &ProductManifest) -> Vec<String> {
+/// WP-44.3 机器校验：profile 声明的每个服务（服务角色）必须映射到
+/// service-kind-registry 的已登记 kind（`SERVICE_KIND_BY_SERVICE_ID`）。
+/// 未映射 = 未登记服务（测试探针/孤立服务）进 release 即拒绝。
+/// 生效点：44.3 起 audit release profile（main.rs audit_profile）强制。
+pub fn validate_service_kinds(services: &[ServiceSpec]) -> Vec<String> {
     let mut violations = Vec::new();
     let known: BTreeSet<&str> = SERVICE_KIND_REGISTRY.iter().map(|(id, _)| *id).collect();
-    for service in &manifest.services {
-        if !known.contains(service.id.as_str()) {
-            // 允许 boot-manager/installer/recovery/factory 等装配角色（非 service kind）。
-            if service.role.is_service() {
-                violations.push(format!("unregistered-service-kind:{}", service.id));
-            }
+    for service in services {
+        if !service.role.is_service() {
+            continue; // boot-manager/installer/recovery/factory 等装配角色
+        }
+        let Some(kind) = SERVICE_KIND_BY_SERVICE_ID
+            .iter()
+            .find_map(|(id, kind)| (*id == service.id).then_some(*kind))
+        else {
+            violations.push(format!("unregistered-service-kind:{}", service.id));
+            continue;
+        };
+        if !known.contains(kind) {
+            violations.push(format!(
+                "unregistered-service-kind-target:{}:{}",
+                service.id, kind
+            ));
         }
     }
     violations
@@ -1177,6 +1236,90 @@ mod tests {
         for (id, _) in SERVICE_KIND_REGISTRY {
             let parts: Vec<&str> = id.split('.').collect();
             assert_eq!(parts.len(), 2, "kind id {id} must be domain.name");
+        }
+    }
+
+    #[test]
+    fn service_kinds_accept_product_services_and_reject_probes() {
+        // WP-44.3 机器校验：release profile 服务清单 ⊆ service-kind-registry
+        // 产品 kinds。产品服务（有 kind 映射）必须放行，测试探针必须拒绝。
+        let manifest = sample_manifest();
+        let violations = validate_service_kinds(&manifest.services);
+        for id in [
+            "root-task",
+            "svc-telemetry",
+            "svc-energy-agent",
+            "svc-ai-worker",
+            "svc-control-dispatch",
+            "svc-device-agent",
+        ] {
+            assert!(
+                !violations
+                    .iter()
+                    .any(|v| v == &format!("unregistered-service-kind:{id}")),
+                "product service {id} must map to a registered kind: {violations:?}"
+            );
+        }
+        // svc-hello 是测试探针（无 kind 映射）——必须被机器校验拒绝。
+        assert!(violations
+            .iter()
+            .any(|v| v == "unregistered-service-kind:svc-hello"));
+    }
+
+    #[test]
+    fn service_kind_mapping_targets_are_registered() {
+        // 映射表的每个 kind 目标必须在 registry 中存在（防映射漂移）。
+        let known: BTreeSet<&str> = SERVICE_KIND_REGISTRY.iter().map(|(id, _)| *id).collect();
+        for (service_id, kind) in SERVICE_KIND_BY_SERVICE_ID {
+            assert!(
+                known.contains(kind),
+                "service {service_id} maps to unregistered kind {kind}"
+            );
+        }
+        // 映射必须覆盖全部产品服务 id（防新增产品服务漏登记）。
+        let mapped: BTreeSet<&str> = SERVICE_KIND_BY_SERVICE_ID
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        for expected in [
+            "root-task",
+            "svc-config",
+            "svc-drv-console",
+            "svc-drv-rng",
+            "svc-drv-blk",
+            "svc-storage",
+            "svc-drv-net",
+            "svc-modbus-rtu",
+            "svc-modbus-tcp",
+            "svc-iec104",
+            "svc-mqtt",
+            "svc-mms",
+            "svc-goose",
+            "svc-sv",
+            "svc-telemetry",
+            "svc-energy-agent",
+            "svc-ai-worker",
+            "svc-device-agent",
+            "svc-control-dispatch",
+            "svc-market",
+            "svc-ledger",
+            "svc-ota",
+            "svc-observability",
+            "svc-cloud-sync",
+            "svc-agent-bus",
+            "svc-mgmt",
+        ] {
+            assert!(
+                mapped.contains(expected),
+                "product service {expected} missing from SERVICE_KIND_BY_SERVICE_ID"
+            );
+        }
+        // 探针服务必须无映射（机器校验拒绝它们进 release 的依据）。
+        for probe in ["svc-hello", "svc-pi", "svc-hog", "svc-fault", "svc-hang", "svc-drv-fault", "svc-pie-a", "svc-pie-b"] {
+            assert!(
+                !mapped.contains(probe),
+                "probe service {probe} must not be in the product kind mapping"
+            );
         }
     }
 

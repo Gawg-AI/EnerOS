@@ -76,82 +76,6 @@
    }
   },
   {
-   "id": "svc-hello",
-   "binary": "eneros-services::svc-hello",
-   "role": "required-service",
-   "target": "aarch64-unknown-none",
-   "default_features": false,
-   "requirement": "required",
-   "criticality": "support",
-   "restart": "always",
-   "dependencies": [
-    "root-task"
-   ],
-   "capabilities": [],
-   "resources": {
-    "stack_pages": 16,
-    "ipc_buffers": 8,
-    "priority": 2
-   }
-  },
-  {
-   "id": "svc-pi",
-   "binary": "eneros-services::svc-pi",
-   "role": "required-service",
-   "target": "aarch64-unknown-none",
-   "default_features": false,
-   "requirement": "required",
-   "criticality": "support",
-   "restart": "always",
-   "dependencies": [
-    "root-task"
-   ],
-   "capabilities": [],
-   "resources": {
-    "stack_pages": 16,
-    "ipc_buffers": 8,
-    "priority": 2
-   }
-  },
-  {
-   "id": "svc-hog",
-   "binary": "eneros-services::svc-hog",
-   "role": "required-service",
-   "target": "aarch64-unknown-none",
-   "default_features": false,
-   "requirement": "required",
-   "criticality": "support",
-   "restart": "always",
-   "dependencies": [
-    "root-task"
-   ],
-   "capabilities": [],
-   "resources": {
-    "stack_pages": 16,
-    "ipc_buffers": 8,
-    "priority": 2
-   }
-  },
-  {
-   "id": "svc-fault",
-   "binary": "eneros-services::svc-fault",
-   "role": "optional-service",
-   "target": "aarch64-unknown-none",
-   "default_features": false,
-   "requirement": "optional",
-   "criticality": "support",
-   "restart": "never",
-   "dependencies": [
-    "root-task"
-   ],
-   "capabilities": [],
-   "resources": {
-    "stack_pages": 16,
-    "ipc_buffers": 8,
-    "priority": 3
-   }
-  },
-  {
    "id": "svc-drv-rng",
    "binary": "eneros-drv-svc::svc-drv-rng",
    "role": "required-service",
@@ -244,25 +168,6 @@
     "stack_pages": 16,
     "ipc_buffers": 8,
     "priority": 2
-   }
-  },
-  {
-   "id": "svc-drv-fault",
-   "binary": "eneros-drv-svc::svc-drv-fault",
-   "role": "optional-service",
-   "target": "aarch64-unknown-none",
-   "default_features": false,
-   "requirement": "optional",
-   "criticality": "support",
-   "restart": "never",
-   "dependencies": [
-    "root-task"
-   ],
-   "capabilities": [],
-   "resources": {
-    "stack_pages": 16,
-    "ipc_buffers": 8,
-    "priority": 3
    }
   },
   {
