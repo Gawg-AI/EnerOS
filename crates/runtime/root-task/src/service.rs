@@ -1053,6 +1053,8 @@ fn control_chain_tick(
     // （先行者 svc-modbus-tcp）经 EIPC 上报。TICK 触发段保留（编排触发器）。
     let accepted = control_chain_synth_ingest(telemetry_ep, *seq, epoch, now)?;
     // 2. TICK（1B 请求；响应 = EA 状态 + receipt wire 83B）。
+    use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
+    use eneros_agent_sdk::ChunkedClient;
     let mut ipc2 = Sel4IpcClient::new(
         "root-orchestrator",
         energy_ep,

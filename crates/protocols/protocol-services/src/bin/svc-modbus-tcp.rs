@@ -20,8 +20,7 @@ use alloc::boxed::Box;
 #[cfg(target_os = "none")]
 use eneros_protocol_abstract::plugin::ProtocolPlugin;
 #[cfg(target_os = "none")]
-use eneros_protocol_abstract::TransportFactory;
-
+use eneros_protocol_abstract::PointRegistry;
 #[cfg(target_os = "none")]
 #[global_allocator]
 static ALLOC: eneros_protocol_services::HeapAllocator =
@@ -55,30 +54,6 @@ struct ModbusTcpIoService {
     transactions: u32,
 }
 
-/// 一次性传输工厂：把已建好的 net transport handle 移交给插件。
-#[cfg(target_os = "none")]
-struct OneShotFactory {
-    handle: Option<Box<dyn eneros_protocol_abstract::TransportHandle>>,
-}
-
-#[cfg(target_os = "none")]
-impl TransportFactory for OneShotFactory {
-    fn open(
-        &mut self,
-        _spec: &eneros_protocol_abstract::TransportSpec,
-    ) -> Result<
-        Box<dyn eneros_protocol_abstract::TransportHandle>,
-        eneros_protocol_abstract::TransportError,
-    > {
-        self.handle
-            .take()
-            .ok_or(eneros_protocol_abstract::TransportError::Unsupported)
-    }
-    fn supports(&self, kind: eneros_protocol_abstract::TransportKind) -> bool {
-        kind == eneros_protocol_abstract::TransportKind::Tcp
-    }
-}
-
 #[cfg(target_os = "none")]
 impl ModbusTcpIoService {
     /// 构造：经 svc-config 取点表 + 建 net transport + 启动插件（点表驱动）。
@@ -89,12 +64,13 @@ impl ModbusTcpIoService {
         telemetry: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
         mut registry: eneros_protocol_abstract::VecPointRegistry,
     ) -> Result<Self, &'static str> {
+        // 43 既有 seam：NetTransportFactory 把 smoltcp 传输经 HandleAdapter
+        // 暴露为 `TransportHandle`（共享 Rc<RefCell> 实例；open 完成三次握手）。
         let transport = eneros_protocol_services::net_transport::build_net_transport(
             mmio_vaddr, dma_vaddr, dma_phys,
         )?;
-        let mut factory = OneShotFactory {
-            handle: Some(transport),
-        };
+        let mut factory =
+            eneros_protocol_services::net_transport::NetTransportFactory::new(transport);
         // L2 互操作测试 peer：QEMU user-mode（slirp）10.0.2.2 = host
         // loopback 别名；5502 = 独立 raw Modbus-TCP 从站（非 EnerOS 代码）。
         // 生产 peer 来源：config-bundle（41/43 接线，未接通前以此测试面）。
@@ -170,16 +146,20 @@ impl ModbusTcpIoService {
                                     self.accepted_total
                                 );
                             }
-                            Ok(resp) => eneros_runtime::println!(
-                                "[svc-modbus-tcp] INGEST point={} rejected {:02x?}",
-                                mapping.point_id,
-                                &resp[..resp.len().min(8)]
-                            ),
-                            Err(e) => eneros_runtime::println!(
-                                "[svc-modbus-tcp] INGEST point={} eipc={:?}",
-                                mapping.point_id,
-                                e
-                            ),
+                            Ok(resp) => {
+                                eneros_runtime::println!(
+                                    "[svc-modbus-tcp] INGEST point={} rejected {:02x?}",
+                                    mapping.point_id,
+                                    &resp[..resp.len().min(8)]
+                                );
+                            }
+                            Err(e) => {
+                                eneros_runtime::println!(
+                                    "[svc-modbus-tcp] INGEST point={} eipc={:?}",
+                                    mapping.point_id,
+                                    e
+                                );
+                            }
                         }
                     } else {
                         eneros_runtime::println!(
@@ -187,15 +167,19 @@ impl ModbusTcpIoService {
                         );
                     }
                 }
-                Ok(_) => eneros_runtime::println!(
-                    "[svc-modbus-tcp] ACQ point={} q=bad (read ok=false)",
-                    mapping.point_id
-                ),
-                Err(e) => eneros_runtime::println!(
-                    "[svc-modbus-tcp] ACQ point={} q=bad {:?}",
-                    mapping.point_id,
-                    e
-                ),
+                Ok(_) => {
+                    eneros_runtime::println!(
+                        "[svc-modbus-tcp] ACQ point={} q=bad (read ok=false)",
+                        mapping.point_id
+                    );
+                }
+                Err(e) => {
+                    eneros_runtime::println!(
+                        "[svc-modbus-tcp] ACQ point={} q=bad {:?}",
+                        mapping.point_id,
+                        e
+                    );
+                }
             }
         }
         any_good
