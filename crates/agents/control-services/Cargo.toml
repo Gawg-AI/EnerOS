@@ -32,6 +32,8 @@ eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
 eneros-solver-core = { path = "../../ai/solver-core", default-features = false }
 eneros-dual-brain = { path = "../../ai/dual-brain" }
+# 45.3 采集调度器复用 WorkBudget（plugin.rs 单一预算类型，禁重造）。
+eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
 heapless = { version = "0.8", default-features = false }
 
 [features]
