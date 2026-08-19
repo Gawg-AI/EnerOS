@@ -1,0 +1,204 @@
+# =====================================================================
+# configs/points.toml — 点表（蓝图 45 WP-45.1 数据模型与配置源）
+# =====================================================================
+# 点表是「协议 ↔ 遥测」的唯一映射事实源：7 个协议插件按点表驱动，
+# root 合成遥测降级为测试设施（45.5）。schema 字段封闭——多一个键 =
+# 装配失败（config-bundle `compile_points` 未知键拒绝）。
+#
+# 每点字段约定（不变量，编译期强制）：
+#   point_id    全表唯一（u32；重复 = 装配失败）
+#   device_id   所属设备（u16）
+#   protocol    modbus-rtu|modbus-tcp|iec104|mms|goose|sv|mqtt
+#   addr.*      地址按 protocol 直映 ProtocolAddress：
+#                 modbus → addr.modbus  { slave_addr, reg_addr, func_code }
+#                 iec104 → addr.iec104  { common_addr, ioa, type_id }
+#                 mqtt   → addr.mqtt    { topic }
+#                 mms    → addr.mms     { object_ref }
+#                 goose/sv → 订阅绑定，不写 addr
+#   data_type   upa-model PointType 名（analog|digital|control|setpoint|counter，
+#               禁同义词——"float"/"int"/"bool" 是值类型，非四遥分类）
+#   scale       缩放（raw → engineering，禁 0）
+#   offset      零点偏移
+#   period_ms   采集周期（毫秒，1..=3600_000；缺省 1000）
+#   deadband    工程量死区（缺省 0；45.2 deadband 内不刷新缓存）
+#   min/max     值域限幅（成对；45.2 超限 → uncertain）
+
+# --- 光伏逆变器 PCS-1（modbus-rtu 从站 1） ---
+[[point]]
+point_id = 1001
+device_id = 1
+protocol = "modbus-rtu"
+addr.modbus = { slave_addr = 1, reg_addr = 4097, func_code = 3 }
+data_type = "analog"
+scale = 0.1
+offset = 0.0
+period_ms = 5000
+deadband = 0.05
+min = -50.0
+max = 50.0
+
+[[point]]
+point_id = 1002
+device_id = 1
+protocol = "modbus-rtu"
+addr.modbus = { slave_addr = 1, reg_addr = 4098, func_code = 3 }
+data_type = "analog"
+scale = 0.01
+offset = 0.0
+period_ms = 5000
+deadband = 0.01
+
+[[point]]
+point_id = 1003
+device_id = 1
+protocol = "modbus-rtu"
+addr.modbus = { slave_addr = 1, reg_addr = 4099, func_code = 3 }
+data_type = "analog"
+scale = 0.1
+offset = 0.0
+period_ms = 5000
+deadband = 0.1
+
+[[point]]
+point_id = 1004
+device_id = 1
+protocol = "modbus-rtu"
+addr.modbus = { slave_addr = 1, reg_addr = 4100, func_code = 1 }
+data_type = "digital"
+scale = 1.0
+offset = 0.0
+period_ms = 2000
+
+# --- 电池储能 BESS-2（modbus-tcp 从站 2，eth0） ---
+[[point]]
+point_id = 2001
+device_id = 2
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 4097, func_code = 3 }
+data_type = "analog"
+scale = 0.1
+offset = -40.0
+period_ms = 3000
+deadband = 0.2
+min = -40.0
+max = 40.0
+
+[[point]]
+point_id = 2002
+device_id = 2
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 4098, func_code = 3 }
+data_type = "analog"
+scale = 0.01
+offset = 0.0
+period_ms = 3000
+deadband = 0.01
+
+[[point]]
+point_id = 2003
+device_id = 2
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 4099, func_code = 3 }
+data_type = "counter"
+scale = 1.0
+offset = 0.0
+period_ms = 3000
+deadband = 0.0
+
+# --- 变电站 RTU-3（iec104） ---
+[[point]]
+point_id = 3001
+device_id = 3
+protocol = "iec104"
+addr.iec104 = { common_addr = 1, ioa = 1001, type_id = 13 }
+data_type = "analog"
+scale = 0.1
+offset = 0.0
+period_ms = 5000
+deadband = 0.05
+
+[[point]]
+point_id = 3002
+device_id = 3
+protocol = "iec104"
+addr.iec104 = { common_addr = 1, ioa = 2001, type_id = 1 }
+data_type = "digital"
+scale = 1.0
+offset = 0.0
+period_ms = 2000
+
+[[point]]
+point_id = 3003
+device_id = 3
+protocol = "iec104"
+addr.iec104 = { common_addr = 1, ioa = 3001, type_id = 12 }
+data_type = "analog"
+scale = 0.001
+offset = 0.0
+period_ms = 5000
+deadband = 0.0005
+
+# --- 主变保护 T1（MMS / IEC61850） ---
+[[point]]
+point_id = 4001
+device_id = 4
+protocol = "mms"
+addr.mms = { object_ref = "LD0/LRPW.Analogue.MX.w" }
+data_type = "analog"
+scale = 0.001
+offset = 0.0
+period_ms = 5000
+deadband = 0.0001
+
+[[point]]
+point_id = 4002
+device_id = 4
+protocol = "mms"
+addr.mms = { object_ref = "LD0/LLN0.ST.Health.stVal" }
+data_type = "digital"
+scale = 1.0
+offset = 0.0
+period_ms = 5000
+
+# --- 断路器 CB-5（GOOSE 订阅） ---
+[[point]]
+point_id = 5001
+device_id = 5
+protocol = "goose"
+data_type = "digital"
+scale = 1.0
+offset = 0.0
+period_ms = 1000
+
+# --- 线路保护采样（SV 订阅） ---
+[[point]]
+point_id = 6001
+device_id = 6
+protocol = "sv"
+data_type = "digital"
+scale = 1.0
+offset = 0.0
+period_ms = 1000
+
+# --- 云边网关 GW-7（MQTT） ---
+[[point]]
+point_id = 7001
+device_id = 7
+protocol = "mqtt"
+addr.mqtt = { topic = "plant/pv/power" }
+data_type = "analog"
+scale = 1.0
+offset = 0.0
+period_ms = 5000
+deadband = 0.5
+
+[[point]]
+point_id = 7002
+device_id = 7
+protocol = "mqtt"
+addr.mqtt = { topic = "plant/pv/alarm" }
+data_type = "analog"
+scale = 1.0
+offset = 0.0
+period_ms = 5000
+deadband = 0.0

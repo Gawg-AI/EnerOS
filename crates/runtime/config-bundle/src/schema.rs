@@ -96,3 +96,55 @@ pub mod logging {
     pub const ROTATION_DROP_OLDEST: u8 = 1;
     pub const ROTATION_REJECT_NEW: u8 = 2;
 }
+
+/// `points`（consumer: svc-telemetry + 7 协议服务；schema v1）——蓝图 45
+/// 点表：协议↔遥测唯一映射事实源。
+///
+/// canonical payload 单一字段 `FIELD_POINTS`，值为自描述子格式：
+///
+/// ```text
+/// u32 LE: point count（≤ MAX_POINTS）
+/// 每条点记录：
+///   u32 LE  point_id           （全表唯一，fail-closed）
+///   u16 LE  device_id
+///   u8      protocol 判别码    （PROTO_*；插件路由，非点模型）
+///   u8      data_type 序号     （upa-model PointType：0..=4）
+///   f64 LE  scale              （禁 0）
+///   f64 LE  offset
+///   u32 LE  period_ms          （1..=MAX_PERIOD_MS）
+///   f64 LE  deadband
+///   u8      range 标志（0/1）
+///   f64 LE  min（标志=1）
+///   f64 LE  max（标志=1）      （min ≤ max）
+///   u16 LE  addr_len（≤ MAX_ADDR_LEN）
+///   addr 字节（按协议编码见下）
+/// ```
+///
+/// 地址编码（与 `ProtocolAddress` 直映；goose/sv 为订阅绑定，addr_len=0）：
+/// - modbus-rtu/tcp：`[slave u8][reg u16 LE][func u8]`（4B）
+/// - iec104：`[common u16 LE][ioa u16 LE][type u8]`（5B）
+/// - mms：object_ref UTF-8 字节
+/// - mqtt：topic UTF-8 字节
+pub mod points {
+    pub const CONFIG_ID: &str = "points";
+    pub const SCHEMA: u16 = 1;
+    pub const MAX_FIELD: u8 = 1;
+    /// 1：整个点表（自描述子格式，见模块注释）。
+    pub const FIELD_POINTS: u8 = 1;
+    /// 点表最大点数（防御性上界）。
+    pub const MAX_POINTS: u32 = 1024;
+    /// 采集周期上限（毫秒；默认 1 小时）。
+    pub const MAX_PERIOD_MS: u32 = 3_600_000;
+    /// 采集周期默认值（毫秒）。
+    pub const DEFAULT_PERIOD_MS: u32 = 1_000;
+    /// 地址最大长度（MQTT topic / MMS object_ref 上限）。
+    pub const MAX_ADDR_LEN: usize = 256;
+    // 协议路由判别码（对应 points.toml `protocol` 枚举；插件路由，非点模型）。
+    pub const PROTO_MODBUS_RTU: u8 = 1;
+    pub const PROTO_MODBUS_TCP: u8 = 2;
+    pub const PROTO_IEC104: u8 = 3;
+    pub const PROTO_MMS: u8 = 4;
+    pub const PROTO_GOOSE: u8 = 5;
+    pub const PROTO_SV: u8 = 6;
+    pub const PROTO_MQTT: u8 = 7;
+}

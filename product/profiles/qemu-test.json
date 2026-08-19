@@ -410,7 +410,10 @@
     "stack_pages": 16,
     "ipc_buffers": 8,
     "priority": 2
-   }
+   },
+   "configs": [
+    "points"
+   ]
   },
   {
    "id": "svc-modbus-tcp",
@@ -438,7 +441,10 @@
     "stack_pages": 16,
     "ipc_buffers": 8,
     "priority": 2
-   }
+   },
+   "configs": [
+    "points"
+   ]
   },
   {
    "id": "svc-iec104",
@@ -466,7 +472,10 @@
     "stack_pages": 16,
     "ipc_buffers": 8,
     "priority": 2
-   }
+   },
+   "configs": [
+    "points"
+   ]
   },
   {
    "id": "svc-mqtt",
@@ -494,7 +503,10 @@
     "stack_pages": 16,
     "ipc_buffers": 8,
     "priority": 2
-   }
+   },
+   "configs": [
+    "points"
+   ]
   },
   {
    "id": "svc-mms",
@@ -522,7 +534,10 @@
     "stack_pages": 16,
     "ipc_buffers": 8,
     "priority": 2
-   }
+   },
+   "configs": [
+    "points"
+   ]
   },
   {
    "id": "svc-goose",
@@ -550,7 +565,10 @@
     "stack_pages": 16,
     "ipc_buffers": 8,
     "priority": 2
-   }
+   },
+   "configs": [
+    "points"
+   ]
   },
   {
    "id": "svc-sv",
@@ -578,7 +596,10 @@
     "stack_pages": 16,
     "ipc_buffers": 8,
     "priority": 2
-   }
+   },
+   "configs": [
+    "points"
+   ]
   },
   {
    "id": "svc-telemetry",
@@ -609,7 +630,10 @@
     "probe": "ready-ntfn",
     "timeout_ms": 2000,
     "required_ack": true
-   }
+   },
+   "configs": [
+    "points"
+   ]
   },
   {
    "id": "svc-energy-agent",
@@ -946,6 +970,20 @@
    "path": "configs/logging.toml",
    "consumer": [
     "svc-observability"
+   ]
+  },
+  {
+   "id": "points",
+   "path": "configs/points.toml",
+   "consumer": [
+    "svc-telemetry",
+    "svc-modbus-rtu",
+    "svc-modbus-tcp",
+    "svc-iec104",
+    "svc-mqtt",
+    "svc-mms",
+    "svc-goose",
+    "svc-sv"
    ]
   }
  ],

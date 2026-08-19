@@ -28,6 +28,8 @@ use alloc::vec::Vec;
 use core::fmt;
 
 pub mod payload;
+/// 蓝图 45 点表（target 解码面 + PointsConsumer）。no_std + alloc。
+pub mod points;
 pub mod schema;
 #[cfg(feature = "compile")]
 pub mod toml_compile;

@@ -705,6 +705,8 @@ name = "eneros-config-bundle"
 version = "0.313.5"
 dependencies = [
  "eneros-crypto",
+ "eneros-protocol-abstract",
+ "eneros-upa-model",
  "toml",
 ]
 

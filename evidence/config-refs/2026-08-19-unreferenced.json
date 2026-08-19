@@ -7,6 +7,7 @@
     "logging",
     "metrics",
     "ota",
+    "points",
     "registry"
   ],
   "schema": "eneros.config-refs.v1",

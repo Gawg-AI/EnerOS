@@ -13,13 +13,15 @@
 //! 输出 canonical payload（`payload::encode_payload`），随后经
 //! `RuntimeConfigBundle` 签名进介质；target 侧 `PayloadCursor` 解码。
 
+use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use toml::Value;
 
 use crate::payload::encode_payload;
-use crate::schema::{cloud_sync, control_write, logging, metrics, ota};
+use crate::points::{point_type_from_name, point_type_ordinal, PointProtocol};
+use crate::schema::{cloud_sync, control_write, logging, metrics, ota, points};
 use crate::{ConfigError, ConfigId};
 
 /// 编译结果：config_id + canonical payload。
@@ -131,6 +133,90 @@ fn get_bool(
             config: config.clone(),
             field: name,
             reason: "expected-boolean".into(),
+        }),
+    }
+}
+
+/// 必填 f64（TOML 整数自动升浮点——配置里 `scale = 1` 合法）。
+fn get_f64_req(
+    t: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+    name: &'static str,
+) -> Result<f64, ConfigError> {
+    match t.get(name) {
+        None => Err(ConfigError::MissingField {
+            config: config.clone(),
+            field: name,
+        }),
+        Some(Value::Float(f)) if f.is_finite() => Ok(*f),
+        Some(Value::Integer(i)) => Ok(*i as f64),
+        Some(_) => Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: name,
+            reason: "expected-number".into(),
+        }),
+    }
+}
+
+/// 可选 f64（缺省 → `default`）。
+fn get_f64_opt(
+    t: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+    name: &'static str,
+    default: f64,
+) -> Result<f64, ConfigError> {
+    match t.get(name) {
+        None => Ok(default),
+        Some(Value::Float(f)) if f.is_finite() => Ok(*f),
+        Some(Value::Integer(i)) => Ok(*i as f64),
+        Some(_) => Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: name,
+            reason: "expected-number".into(),
+        }),
+    }
+}
+
+/// 可选 u32（缺省 → `default`）。
+fn get_u32_opt(
+    t: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+    name: &'static str,
+    default: u32,
+) -> Result<u32, ConfigError> {
+    match t.get(name) {
+        None => Ok(default),
+        Some(Value::Integer(i)) if *i >= 0 => {
+            u32::try_from(*i).map_err(|_| ConfigError::InvalidValue {
+                config: config.clone(),
+                field: name,
+                reason: "u32-overflow".into(),
+            })
+        }
+        Some(_) => Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: name,
+            reason: "expected-non-negative-integer".into(),
+        }),
+    }
+}
+
+/// 必填字符串。
+fn get_str_req<'a>(
+    t: &'a toml::map::Map<String, Value>,
+    config: &ConfigId,
+    name: &'static str,
+) -> Result<&'a str, ConfigError> {
+    match t.get(name) {
+        None => Err(ConfigError::MissingField {
+            config: config.clone(),
+            field: name,
+        }),
+        Some(Value::String(s)) => Ok(s),
+        Some(_) => Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: name,
+            reason: "expected-string".into(),
         }),
     }
 }
@@ -586,6 +672,267 @@ pub fn compile_logging(toml: &str) -> Result<CompiledConfig, ConfigError> {
     })
 }
 
+/// 编译 `configs/points.toml`（蓝图 45 WP-45.1）。
+///
+/// schema 字段封闭：每点只允许 `point_id/device_id/protocol/addr/data_type/
+/// scale/offset/period_ms/deadband/min/max`——未知键 → 编译错误。不变量：
+/// - point_id 全表唯一（重复 → `DuplicateField`）；
+/// - scale 禁 0；offset 必填；period_ms ∈ 1..=MAX_PERIOD_MS（缺省
+///   DEFAULT_PERIOD_MS）；deadband 缺省 0；min/max 成对且 min ≤ max；
+/// - data_type 名精确匹配 upa-model `PointType`（analog/digital/control/
+///   setpoint/counter），禁同义词；
+/// - 地址按 protocol 直映 `ProtocolAddress`：modbus-rtu/tcp→`addr.modbus`、
+///   iec104→`addr.iec104`、mqtt→`addr.mqtt`、mms→`addr.mms`；goose/sv 为
+///   订阅绑定不写 addr（写了 → 错误）；`addr` 表只允许协议对应单一子键。
+///
+/// 输出 `FIELD_POINTS` 自描述子格式（布局见 `schema::points` 模块注释）。
+pub fn compile_points(toml: &str) -> Result<CompiledConfig, ConfigError> {
+    let config = ConfigId::from_static(points::CONFIG_ID);
+    let root: Value = toml::from_str(toml).map_err(|e| ConfigError::InvalidValue {
+        config: config.clone(),
+        field: "toml",
+        reason: format!("parse:{e}"),
+    })?;
+    let t = table(&root, &config, "root")?;
+    reject_unknown_keys(t, &config, &["point"])?;
+    let arr =
+        root.get("point")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ConfigError::MissingField {
+                config: config.clone(),
+                field: "point",
+            })?;
+    if arr.len() as u32 > points::MAX_POINTS {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "point",
+            reason: "too-many-points".into(),
+        });
+    }
+    let mut seen: BTreeSet<u32> = BTreeSet::new();
+    let mut payload: Vec<u8> = Vec::new();
+    payload.extend_from_slice(&(arr.len() as u32).to_le_bytes());
+    for (idx, ptv) in arr.iter().enumerate() {
+        let ctx = alloc::format!("point[{idx}]");
+        let pt = ptv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "point",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(
+            pt,
+            &config,
+            &[
+                "point_id",
+                "device_id",
+                "protocol",
+                "addr",
+                "data_type",
+                "scale",
+                "offset",
+                "period_ms",
+                "deadband",
+                "min",
+                "max",
+            ],
+        )?;
+        let point_id = get_u32(pt, &config, "point_id")?;
+        if !seen.insert(point_id) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: points::FIELD_POINTS,
+            });
+        }
+        let device_id = u16::try_from(get_u64(pt, &config, "device_id")?).map_err(|_| {
+            ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "device_id",
+                reason: "u16-overflow".into(),
+            }
+        })?;
+        let proto_name = get_str_req(pt, &config, "protocol")?;
+        let protocol =
+            PointProtocol::from_name(proto_name).ok_or_else(|| ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "protocol",
+                reason: alloc::format!("unknown-enum:{proto_name}"),
+            })?;
+        let dt_name = get_str_req(pt, &config, "data_type")?;
+        let data_type = point_type_from_name(dt_name).ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "data_type",
+            reason: alloc::format!("unknown-enum:{dt_name}"),
+        })?;
+        let scale = get_f64_req(pt, &config, "scale")?;
+        if !(scale.is_finite() && scale != 0.0) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "scale",
+                reason: "must-be-nonzero".into(),
+            });
+        }
+        let offset = get_f64_req(pt, &config, "offset")?;
+        let period_ms = get_u32_opt(pt, &config, "period_ms", points::DEFAULT_PERIOD_MS)?;
+        if period_ms == 0 || period_ms > points::MAX_PERIOD_MS {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "period_ms",
+                reason: "out-of-range".into(),
+            });
+        }
+        let deadband = get_f64_opt(pt, &config, "deadband", 0.0)?;
+        let range = compile_range(pt, &config)?;
+        let addr = compile_addr(pt, &config, protocol, &ctx)?;
+        payload.extend_from_slice(&point_id.to_le_bytes());
+        payload.extend_from_slice(&device_id.to_le_bytes());
+        payload.push(protocol.tag());
+        payload.push(point_type_ordinal(data_type));
+        payload.extend_from_slice(&scale.to_le_bytes());
+        payload.extend_from_slice(&offset.to_le_bytes());
+        payload.extend_from_slice(&period_ms.to_le_bytes());
+        payload.extend_from_slice(&deadband.to_le_bytes());
+        payload.push(if range.is_some() { 1 } else { 0 });
+        if let Some((mn, mx)) = range {
+            payload.extend_from_slice(&mn.to_le_bytes());
+            payload.extend_from_slice(&mx.to_le_bytes());
+        }
+        payload.extend_from_slice(&(addr.len() as u16).to_le_bytes());
+        payload.extend_from_slice(&addr);
+    }
+    Ok(CompiledConfig {
+        payload: encode_payload(&[(points::FIELD_POINTS, payload.as_slice())]),
+        config_id: config,
+    })
+}
+
+/// min/max 成对校验（必须同时出现；min ≤ max）。
+fn compile_range(
+    pt: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+) -> Result<Option<(f64, f64)>, ConfigError> {
+    let has_min = pt.contains_key("min");
+    let has_max = pt.contains_key("max");
+    if has_min != has_max {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "min/max",
+            reason: "must-be-paired".into(),
+        });
+    }
+    if !has_min {
+        return Ok(None);
+    }
+    let min = get_f64_req(pt, config, "min")?;
+    let max = get_f64_req(pt, config, "max")?;
+    if min > max {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "min/max",
+            reason: "min-gt-max".into(),
+        });
+    }
+    Ok(Some((min, max)))
+}
+
+/// 按协议解析地址 → wire 字节（与 `schema::points` 地址编码一致）。
+fn compile_addr(
+    pt: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+    protocol: PointProtocol,
+    ctx: &str,
+) -> Result<alloc::vec::Vec<u8>, ConfigError> {
+    let addr_scope_expected: &[&str] = match protocol {
+        PointProtocol::ModbusRtu | PointProtocol::ModbusTcp => &["modbus"],
+        PointProtocol::Iec104 => &["iec104"],
+        PointProtocol::Mqtt => &["mqtt"],
+        PointProtocol::Mms => &["mms"],
+        PointProtocol::Goose | PointProtocol::Sv => &[],
+    };
+    let addr = match pt.get("addr") {
+        None if addr_scope_expected.is_empty() => return Ok(alloc::vec::Vec::new()),
+        None => {
+            return Err(ConfigError::MissingField {
+                config: config.clone(),
+                field: "addr",
+            })
+        }
+        Some(Value::Table(inner)) => {
+            if addr_scope_expected.is_empty() {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "addr",
+                    reason: alloc::format!("{ctx}:goose-sv-subscription-no-addr"),
+                });
+            }
+            reject_unknown_keys(inner, config, addr_scope_expected)?;
+            let key = addr_scope_expected[0];
+            let cell = inner.get(key).and_then(Value::as_table).ok_or_else(|| {
+                ConfigError::MissingField {
+                    config: config.clone(),
+                    field: key,
+                }
+            })?;
+            cell
+        }
+        Some(_) => {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "addr",
+                reason: "expected-table".into(),
+            })
+        }
+    };
+    match protocol {
+        PointProtocol::ModbusRtu | PointProtocol::ModbusTcp => {
+            reject_unknown_keys(addr, config, &["slave_addr", "reg_addr", "func_code"])?;
+            let slave = get_u64(addr, config, "slave_addr")? as u8;
+            let reg = get_u64(addr, config, "reg_addr")? as u16;
+            let func = get_u64(addr, config, "func_code")? as u8;
+            let mut out = alloc::vec::Vec::with_capacity(4);
+            out.push(slave);
+            out.extend_from_slice(&reg.to_le_bytes());
+            out.push(func);
+            Ok(out)
+        }
+        PointProtocol::Iec104 => {
+            reject_unknown_keys(addr, config, &["common_addr", "ioa", "type_id"])?;
+            let common = get_u64(addr, config, "common_addr")? as u16;
+            let ioa = get_u64(addr, config, "ioa")? as u16;
+            let type_id = get_u64(addr, config, "type_id")? as u8;
+            let mut out = alloc::vec::Vec::with_capacity(5);
+            out.extend_from_slice(&common.to_le_bytes());
+            out.extend_from_slice(&ioa.to_le_bytes());
+            out.push(type_id);
+            Ok(out)
+        }
+        PointProtocol::Mms => {
+            reject_unknown_keys(addr, config, &["object_ref"])?;
+            let object_ref = get_str_req(addr, config, "object_ref")?;
+            if object_ref.is_empty() || object_ref.len() > points::MAX_ADDR_LEN {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "object_ref",
+                    reason: "len".into(),
+                });
+            }
+            Ok(object_ref.as_bytes().to_vec())
+        }
+        PointProtocol::Mqtt => {
+            reject_unknown_keys(addr, config, &["topic"])?;
+            let topic = get_str_req(addr, config, "topic")?;
+            if topic.is_empty() || topic.len() > points::MAX_ADDR_LEN {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "topic",
+                    reason: "len".into(),
+                });
+            }
+            Ok(topic.as_bytes().to_vec())
+        }
+        PointProtocol::Goose | PointProtocol::Sv => Ok(alloc::vec::Vec::new()),
+    }
+}
+
 /// 编译分派（按 config_id 字符串；未登记 → None）。
 pub fn compile_by_id(
     config_id: &str,
@@ -598,6 +945,250 @@ pub fn compile_by_id(
         cloud_sync::CONFIG_ID => compile_cloud_sync(toml).map(Some),
         metrics::CONFIG_ID => compile_metrics(toml).map(Some),
         logging::CONFIG_ID => compile_logging(toml).map(Some),
+        points::CONFIG_ID => compile_points(toml).map(Some),
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use eneros_protocol_abstract::ProtocolAddress;
+
+    use super::*;
+    use crate::points::decode_points;
+
+    fn cfg() -> ConfigId {
+        ConfigId::from_static(points::CONFIG_ID)
+    }
+
+    /// 好点表（覆盖 7 协议的典型点）。
+    const GOOD: &str = r#"
+[[point]]
+point_id = 1001
+device_id = 1
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 1, reg_addr = 4097, func_code = 3 }
+data_type = "analog"
+scale = 0.1
+offset = -40.0
+period_ms = 5000
+deadband = 0.5
+min = -40.0
+max = 40.0
+
+[[point]]
+point_id = 1002
+device_id = 2
+protocol = "iec104"
+addr.iec104 = { common_addr = 1, ioa = 1001, type_id = 13 }
+data_type = "counter"
+scale = 1.0
+offset = 0.0
+
+[[point]]
+point_id = 2001
+device_id = 3
+protocol = "mqtt"
+addr.mqtt = { topic = "plant/pv/power" }
+data_type = "analog"
+scale = 1.0
+offset = 0.0
+
+[[point]]
+point_id = 2002
+device_id = 4
+protocol = "mms"
+addr.mms = { object_ref = "LD0/LRPW.Analogue.MX.w" }
+data_type = "analog"
+scale = 0.001
+offset = 0.0
+
+[[point]]
+point_id = 3001
+device_id = 5
+protocol = "goose"
+data_type = "digital"
+scale = 1.0
+offset = 0.0
+
+[[point]]
+point_id = 3002
+device_id = 6
+protocol = "sv"
+data_type = "digital"
+scale = 1.0
+offset = 0.0
+"#;
+
+    #[test]
+    fn points_positive_compile_decode_roundtrip() {
+        let compiled = compile_points(GOOD).unwrap();
+        assert_eq!(compiled.config_id, ConfigId::from_static(points::CONFIG_ID));
+        let table = decode_points(&compiled.payload, &cfg()).unwrap();
+        assert_eq!(table.len(), 6);
+        // modbus-tcp 点：地址 + 变换 + 区间都进表。
+        let p = table.find(1001).unwrap();
+        assert_eq!(p.protocol, PointProtocol::ModbusTcp);
+        assert_eq!(p.period_ms, 5000);
+        assert_eq!(p.deadband, 0.5);
+        assert_eq!(p.range, Some((-40.0, 40.0)));
+        let m = p.to_mapping().unwrap();
+        assert_eq!(m.to_engineering(0), -40.0); // 复用既有变换原语
+                                                // goose/sv 订阅点无地址。
+        assert!(table.find(3001).unwrap().addr.is_none());
+        assert!(table.find(3002).unwrap().addr.is_none());
+        // mms/mqtt 地址字符串往返。
+        let mms = table.find(2002).unwrap();
+        assert_eq!(
+            mms.addr,
+            Some(ProtocolAddress::Mms {
+                object_ref: "LD0/LRPW.Analogue.MX.w".into()
+            })
+        );
+        let mqtt = table.find(2001).unwrap();
+        assert_eq!(
+            mqtt.addr,
+            Some(ProtocolAddress::Mqtt {
+                topic: "plant/pv/power".into()
+            })
+        );
+        // 全表 point_id 唯一。
+        let mut ids: alloc::collections::BTreeSet<u32> = BTreeSet::new();
+        for r in &table.points {
+            assert!(ids.insert(r.point_id));
+        }
+    }
+
+    /// 坏点表负例（DoD）：重复 point_id → 装配失败。
+    #[test]
+    fn points_negative_duplicate_point_id() {
+        let toml = r#"
+[[point]]
+point_id = 1001
+device_id = 1
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 1, reg_addr = 1, func_code = 3 }
+data_type = "analog"
+scale = 1.0
+offset = 0.0
+
+[[point]]
+point_id = 1001
+device_id = 2
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 2, func_code = 3 }
+data_type = "analog"
+scale = 1.0
+offset = 0.0
+"#;
+        let err = compile_points(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::DuplicateField { .. }), "{err}");
+    }
+
+    /// 坏点表负例（DoD）：未知字段 → 装配失败。
+    #[test]
+    fn points_negative_unknown_field() {
+        let toml = r#"
+[[point]]
+point_id = 1001
+device_id = 1
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 1, reg_addr = 1, func_code = 3 }
+data_type = "analog"
+scale = 1.0
+offset = 0.0
+sneaky = true
+"#;
+        let err = compile_points(toml).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::UnknownKey { ref key, .. } if key == "sneaky"),
+            "{err}"
+        );
+    }
+
+    /// 坏点表负例（DoD）：scale=0 → 装配失败。
+    #[test]
+    fn points_negative_zero_scale() {
+        let toml = r#"
+[[point]]
+point_id = 1001
+device_id = 1
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 1, reg_addr = 1, func_code = 3 }
+data_type = "analog"
+scale = 0.0
+offset = 0.0
+"#;
+        let err = compile_points(toml).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::InvalidValue { field, .. } if field == "scale"),
+            "{err}"
+        );
+    }
+
+    /// 坏点表负例（DoD）：坏数字（period 超界 / offset 非数字 / 枚举非法）。
+    #[test]
+    fn points_negative_bad_numbers_and_enums() {
+        // period_ms 越界。
+        let toml = r#"
+[[point]]
+point_id = 1001
+device_id = 1
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 1, reg_addr = 1, func_code = 3 }
+data_type = "analog"
+scale = 1.0
+offset = 0.0
+period_ms = 5000000
+"#;
+        assert!(compile_points(toml).is_err());
+        // 未知 data_type 同义词（禁造——"float" 非四遥分类）。
+        let toml2 = r#"
+[[point]]
+point_id = 1001
+device_id = 1
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 1, reg_addr = 1, func_code = 3 }
+data_type = "float"
+scale = 1.0
+offset = 0.0
+"#;
+        assert!(compile_points(toml2).is_err());
+        // min 无 max（不成对）。
+        let toml3 = r#"
+[[point]]
+point_id = 1001
+device_id = 1
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 1, reg_addr = 1, func_code = 3 }
+data_type = "analog"
+scale = 1.0
+offset = 0.0
+min = 0.0
+"#;
+        assert!(compile_points(toml3).is_err());
+        // 未知协议。
+        let toml4 = r#"
+[[point]]
+point_id = 1001
+device_id = 1
+protocol = "canbus"
+data_type = "analog"
+scale = 1.0
+offset = 0.0
+"#;
+        assert!(compile_points(toml4).is_err());
+        // goose 写了 addr（订阅型无地址）。
+        let toml5 = r#"
+[[point]]
+point_id = 1001
+device_id = 1
+protocol = "goose"
+addr.modbus = { slave_addr = 1, reg_addr = 1, func_code = 3 }
+data_type = "digital"
+scale = 1.0
+offset = 0.0
+"#;
+        assert!(compile_points(toml5).is_err());
     }
 }

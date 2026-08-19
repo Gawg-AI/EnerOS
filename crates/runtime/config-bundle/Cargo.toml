@@ -13,6 +13,10 @@ path = "src/lib.rs"
 [dependencies]
 # ADR-022：no_std target 唯一可链接国密实现（sm2_sign/sm2_verify/sm3_hash）。
 eneros-crypto = { path = "../../security/crypto" }
+# 蓝图 45 点表：地址直映 ProtocolAddress / ProtocolPointMapping（no_std；
+# 复用既有工程量变换原语，禁重造——点模型仍仅 upa-model 唯一）。
+eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
+eneros-upa-model = { path = "../../protocols/upa-model" }
 # host 侧 TOML 编译面（feature `compile`；target 闭包不启用）。
 toml = { version = "0.8", optional = true }
 

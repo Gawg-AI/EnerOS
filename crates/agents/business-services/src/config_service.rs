@@ -18,6 +18,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use eneros_config_bundle::payload::{decode_fields, field_u32, field_u64, field_u8};
+use eneros_config_bundle::points::PointsConsumer;
 use eneros_config_bundle::schema::{cloud_sync, control_write, logging, metrics, ota};
 use eneros_config_bundle::{
     ApplyOutcome, ConfigConsumer, ConfigError, ConfigId, ConfigRegistry, Digest,
@@ -422,6 +423,8 @@ impl ConfigService {
         registry.register(alloc::boxed::Box::new(LoggingConsumer::default()));
         registry.register(alloc::boxed::Box::new(MetricsConsumer::default()));
         registry.register(alloc::boxed::Box::new(OtaConsumer::default()));
+        // 蓝图 45：点表（bundle 含 points 条目即须有消费；否则 UnconsumedConfig）。
+        registry.register(alloc::boxed::Box::new(PointsConsumer::default()));
         ConfigService {
             registry,
             shared,
@@ -577,9 +580,9 @@ mod tests {
         }
     }
 
-    /// 全量 ACTIVE 条目（registry 5 consumer 双向完备）。
+    /// 全量 ACTIVE 条目（registry 双向完备：含 45 点表）。
     fn make_all_entries(control_write_payload: Vec<u8>) -> Vec<SignedConfigEntry> {
-        use eneros_config_bundle::schema::{cloud_sync, logging, metrics, ota};
+        use eneros_config_bundle::schema::{cloud_sync, logging, metrics, ota, points};
         let mut entries = vec![make_entry(control_write_payload, 3)];
         let root_key = [0x5Au8; 64];
         let configs = [
@@ -587,6 +590,7 @@ mod tests {
             (logging::CONFIG_ID, "logging.toml", 0),
             (metrics::CONFIG_ID, "metrics.toml", 0),
             (ota::CONFIG_ID, "ota.toml", 1),
+            (points::CONFIG_ID, "points.toml", 0),
         ];
         for (id, file, need_key) in configs {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
