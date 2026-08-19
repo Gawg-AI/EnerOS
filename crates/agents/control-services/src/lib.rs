@@ -24,6 +24,7 @@
 
 extern crate alloc;
 
+pub mod acquisition;
 pub mod ai_worker;
 pub mod dispatch_service;
 pub mod energy_agent_service;
