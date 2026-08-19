@@ -1,0 +1,43 @@
+{
+ "schema": "eneros.volume-exit-gate.v1",
+ "volume": 45,
+ "volume_title": "点表模型与采集数据面闭环",
+ "established": "2026-08-20",
+ "exit_commit": "8b1468d5dc1b088f1549f1e14885da6b2ee889b5（45 卷 Exit Gate 验收；被验代码态 HEAD=8b1468d5dc1b088f1549f1e14885da6b2ee889b5）",
+ "acceptance": {
+  "date": "2026-08-20",
+  "head": "8b1468d5dc1b088f1549f1e14885da6b2ee889b5",
+  "verdict": "Accepted（全部 Exit 项自证 PASS；QEMU 实弹正负例证据在库）",
+  "items": {
+   "a_points_grep_zero": {
+    "result": "PASS",
+    "cmd": "grep -rn \"_points\" crates/protocols/*/src/plugin.rs | wc -l",
+    "finding": "0 行（7 处插件点表接线全部消灭，45.4 起保持）"
+   },
+   "b_release_no_synth_symbols": {
+    "result": "PASS",
+    "cmd": "cargo xtask closure gate --profile qemu-prod",
+    "finding": "CLOSURE-GATE denied=0 crypto_violations=0 PASS（DENY_FEATURE_PATTERNS 含 qemu-test-synth → release 闭包零合成遥测符号）"
+   },
+   "c_qemu_live_evidence": {
+    "result": "PASS（正向+负例）",
+    "log": "evidence/45/qemu-prod-acq/qemu-serial.log（正） + evidence/45/qemu-prod-neg/qemu-serial.log（负）",
+    "positive": "ACQ point=1..6 value=400/50/50/0.6/1/0 q=good + INGEST round=6 samples=6 accepted=6 + CONTROL-CHAIN agent=OK dispatch=Committed（telemetry-ingest=0=零合成）",
+    "negative": "拔 peer（--serve-after）→ ACQ q=bad ×6 + SNAPSHOT NoSamples + CONTROL-CHAIN agent=NOACTION 全程禁行（fail-closed）"
+   },
+   "d_full_workspace_green": {
+    "result": "PASS",
+    "cmd": "cargo test --workspace (67 二进制全 ok)；cargo clippy --workspace --all-targets -- -D warnings (0 错误)；cargo fmt --all --check (rc=0)"
+   },
+   "e_44_samples_rerun": {
+    "result": "PASS",
+    "cmd": "cargo xtask evidence verify（integrity_result=PASS, violations=[]）+ cargo xtask qa gate config-refs（CF01 OK active 6）",
+    "finding": "44 卷 Exit 抽样 ≥2 项复跑通过（45.5 变更影响链无回归）"
+   },
+   "f_version": {
+    "result": "PASS",
+    "cmd": "cargo xtask bump-version patch（0.313.9 → 0.313.10）"
+   }
+  }
+ }
+}
