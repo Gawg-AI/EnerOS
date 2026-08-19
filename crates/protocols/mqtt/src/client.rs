@@ -10,7 +10,7 @@ use crate::error::MqttError;
 use crate::packet::{self, MqttPacket, PublishPacket, SubscribePacket, UnsubscribePacket};
 use crate::qos::QoS;
 #[cfg(not(any(feature = "fs-persist", test)))]
-use crate::qos_store::{InMemoryQosStore as _, PendingMessage, QosStore};
+use crate::qos_store::{PendingMessage, QosStore};
 #[cfg(any(feature = "fs-persist", test))]
 use crate::qos_store::{PendingMessage, QosStore};
 use crate::transport::MqttTransport;

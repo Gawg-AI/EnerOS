@@ -1,8 +1,12 @@
 //! GOOSE 订阅者：MAC/APPID 过滤 + BER PDU 解码 + st_num 跳变检测（D12）.
 //!
-//! poll 流程：recv → 空帧 Ok(None) → 帧长 < 16 BerDecodeError →
-//! EtherType != 0x88B8 → Ok(None) → dst MAC 不匹配 → Ok(None) →
-//! APPID 不匹配 → Ok(None) → 解码 GOOSE PDU → RxStatus 判定 → 回调 → 返回。
+//! poll 流程：recv → 空帧 Ok(None) → 帧长不足 BerDecodeError → 802.1Q
+//! VLAN 感知解头（46 WP-46.1：`ether_type_offset`/`length_offset` 支持
+//! TPID 0x8100 后偏移 +4；goose 侧为独立 crate 无 net 依赖，遂本地镜像
+//! `drivers/net/src/eth_frame.rs::header_info` 语义，两侧以同一判定为准）
+//! → EtherType != 0x88B8 → Ok(None) → dst MAC 不匹配 → Ok(None) →
+//! APPID 不匹配 → Ok(None) → Length 声称不符 → BerDecodeError → 解码
+//! GOOSE PDU → RxStatus 判定 → 回调 → 返回。
 //!
 //! RxStatus 判定（蓝图 §4.4，D12）：
 //! - 首帧（last_st_num == 0）→ `New`
@@ -29,6 +33,25 @@ use crate::{GooseError, L2Transport};
 
 /// 接收缓冲区大小（GOOSE 帧远小于以太网 MTU）。
 const RECV_BUF_LEN: usize = 2048;
+
+/// 802.1Q TPID（VLAN 标签标识，EtherType 位置出现）。
+const TPID_8021Q: u16 = 0x8100;
+
+/// EtherType 字节偏移（无 VLAN 12 / 802.1Q 标记 16；帧不足/标签残缺 → None）。
+fn ether_type_offset(frame: &[u8]) -> Option<usize> {
+    if frame.len() < 14 {
+        return None;
+    }
+    let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+    if ethertype == TPID_8021Q {
+        if frame.len() < 18 {
+            return None;
+        }
+        Some(16)
+    } else {
+        Some(12)
+    }
+}
 
 /// 解码后的 GOOSE PDU。
 #[derive(Debug, Clone, PartialEq)]
@@ -96,27 +119,31 @@ impl<T: L2Transport> GooseSubscriber<T> {
             return Ok(None);
         }
         let frame = &buf[..n];
-        if frame.len() < 16 {
+        // 46 WP-46.1：802.1Q VLAN 感知解头（偏移 12/16；帧不足 → 拒绝）。
+        let Some(eth_off) = ether_type_offset(frame) else {
+            return Err(GooseError::BerDecodeError);
+        };
+        if frame.len() < eth_off + 10 {
             return Err(GooseError::BerDecodeError);
         }
-        if u16::from_be_bytes([frame[12], frame[13]]) != ETHERTYPE_GOOSE {
+        if u16::from_be_bytes([frame[eth_off], frame[eth_off + 1]]) != ETHERTYPE_GOOSE {
             return Ok(None);
         }
         if frame[0..6] != self.filter_mac {
             return Ok(None);
         }
-        if u16::from_be_bytes([frame[14], frame[15]]) != self.app_id {
+        if u16::from_be_bytes([frame[eth_off + 2], frame[eth_off + 3]]) != self.app_id {
             return Ok(None);
         }
         // 31 PR-03/PR-16：剥 IEC 61850-8-1 §12 四字节头（Length +
         // Reserved1 + Reserved2）——旧实现直接读 PDU（无头），标准帧无法
         // 互操作。Length 字段必须覆盖到帧尾（malformed 声称长度与实际
-        // 不符 → 拒绝）。
-        let declared = u16::from_be_bytes([frame[16], frame[17]]) as usize;
-        if declared != frame.len() - 16 {
+        // 不符 → 拒绝）。VLAN 标记帧该偏移自动 +4。
+        let declared = u16::from_be_bytes([frame[eth_off + 4], frame[eth_off + 5]]) as usize;
+        if declared != frame.len() - (eth_off + 4) {
             return Err(GooseError::BerDecodeError);
         }
-        let pdu = decode_pdu(&frame[22..])?;
+        let pdu = decode_pdu(&frame[eth_off + 10..])?;
         let status = self.classify(pdu.st_num, pdu.sq_num);
         if status != RxStatus::Duplicate {
             self.last_st_num = pdu.st_num;
@@ -400,6 +427,67 @@ mod tests {
         frame.extend_from_slice(&[0, 0]);
         frame.extend_from_slice(&apdu);
         frame
+    }
+
+    /// 构造 802.1Q VLAN 标记 GOOSE 帧（TPID 0x8100 + TCI 插于 src 后）。
+    fn build_raw_frame_vlan(st: u8, sq: u8, entries: &[&[u8]], tci: u16) -> Vec<u8> {
+        let plain = build_raw_frame(st, sq, entries);
+        let mut out = Vec::new();
+        out.extend_from_slice(&plain[..12]);
+        out.extend_from_slice(&TPID_8021Q.to_be_bytes());
+        out.extend_from_slice(&tci.to_be_bytes());
+        out.extend_from_slice(&plain[12..]);
+        out
+    }
+
+    /// 46 WP-46.1：EtherType 偏移判定（普通/VLAN/标签残缺）。
+    #[test]
+    fn test_ether_type_offset_plain_vlan_short() {
+        let plain = build_raw_frame(1, 0, &[]);
+        assert_eq!(ether_type_offset(&plain), Some(12));
+        let tagged = build_raw_frame_vlan(1, 0, &[], 0x2A);
+        assert_eq!(ether_type_offset(&tagged), Some(16));
+        // 标记残缺（14 字节含 TPID 但缺 TCI）→ None（不猜）。
+        let mut short = vec![0u8; 14];
+        short[12..14].copy_from_slice(&TPID_8021Q.to_be_bytes());
+        assert_eq!(ether_type_offset(&short), None);
+        assert_eq!(ether_type_offset(&[0u8; 13]), None);
+    }
+
+    /// 46 WP-46.1：VLAN 标记 GOOSE 帧与普通帧解码一致。
+    #[test]
+    fn test_vlan_tagged_frame_decode_equivalent_to_plain() {
+        let mut sub_plain = make_sub();
+        let mut sub_vlan = make_sub();
+        let plain = build_raw_frame(3, 2, &[&[DATA_INTEGER, 0x01, 0x07]]);
+        let tagged = build_raw_frame_vlan(3, 2, &[&[DATA_INTEGER, 0x01, 0x07]], 0x2A);
+        assert_eq!(ether_type_offset(&tagged), Some(16));
+        sub_plain.transport_mut().push_rx_frame(&plain);
+        let got_plain = sub_plain.poll().expect("poll").expect("pdu");
+        sub_vlan.transport_mut().push_rx_frame(&tagged);
+        let got_vlan = sub_vlan.poll().expect("poll").expect("pdu");
+        assert_eq!(got_plain.0, got_vlan.0); // st/sq/ts/dataset 全等
+        assert_eq!(got_vlan.0.st_num, 3);
+        assert_eq!(got_vlan.0.sq_num, 2);
+        assert_eq!(got_vlan.0.dataset.entries.len(), 1);
+    }
+
+    /// 46 WP-46.1：VLAN 帧上的 Length/过滤语义不变。
+    #[test]
+    fn test_vlan_bad_length_or_ethertype_rejected() {
+        // Length 声称与实际不符 → BerDecodeError（VLAN 偏移下同样成立）。
+        let mut tagged = build_raw_frame_vlan(1, 0, &[], 3);
+        let bad_len = (tagged.len() - (16 + 4) + 5) as u16; // 故意声称 +5
+        tagged[20..22].copy_from_slice(&bad_len.to_be_bytes());
+        let mut sub = make_sub();
+        sub.transport_mut().push_rx_frame(&tagged);
+        assert!(matches!(sub.poll(), Err(GooseError::BerDecodeError)));
+        // EtherType 错 → Ok(None)（静默丢弃）。
+        let mut tagged2 = build_raw_frame_vlan(1, 0, &[], 3);
+        tagged2[16..18].copy_from_slice(&0x88BAu16.to_be_bytes());
+        let mut sub2 = make_sub();
+        sub2.transport_mut().push_rx_frame(&tagged2);
+        assert_eq!(sub2.poll(), Ok(None));
     }
 
     /// 31 PR-16 判据：第三方参考报文 fixture（goose_peer.py 标准帧）——

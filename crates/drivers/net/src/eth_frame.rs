@@ -1,14 +1,78 @@
 //! Ethernet frame structure and encoding/decoding.
 //!
 //! Provides [`EthFrame`] for constructing and parsing standard Ethernet
-//! frames (dst MAC + src MAC + EtherType + payload). VLAN tags and FCS/CRC
-//! are intentionally omitted: the hardware MAC strips FCS, and VLAN support
-//! is deferred to the TCP/IP stack (v0.28.0+).
+//! frames (dst MAC + src MAC + EtherType + payload). FCS/CRC is
+//! intentionally omitted: the hardware MAC strips FCS. VLAN 802.1Q support
+//! (46 WP-46.1：GOOSE/SV 固定偏移解头缺口) lives in [`header_info`] /
+//! [`encode_vlan`]——解析侧跳过 TPID+TCI 后 EtherType/载荷偏移自动 +4，
+//! 编码侧在 src 与 EtherType 之间插入 TPID(0x8100)+TCI。
 
 use alloc::vec::Vec;
 use core::fmt;
 
 use crate::error::NetError;
+
+/// 802.1Q TPID（VLAN 标签标识，EtherType 位置出现）。
+pub const TPID_8021Q: u16 = 0x8100;
+/// 无 VLAN 以太网头长（dst 6 + src 6 + EtherType 2）。
+pub const ETH_HDR_LEN: usize = 14;
+/// 802.1Q 标签插入后的以太网头长（+TPID 2 + TCI 2）。
+pub const VLAN_HDR_LEN: usize = 18;
+
+/// 802.1Q VLAN 标签（TPID 固定 0x8100；TCI = PCP 3bit + DEI 1bit + VID 12bit）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VlanTag {
+    /// TCI（Tag Control Information）原始值。
+    pub tci: u16,
+}
+
+/// 解析帧头：返回 `(EtherType 字节偏移, VLAN 标签)`。
+///
+/// 无 VLAN → `(12, None)`；802.1Q 标记 → `(16, Some(tag))`；帧过短或
+/// 标记残缺 → `None`（fail-closed：不猜）。
+pub fn header_info(frame: &[u8]) -> Option<(usize, Option<VlanTag>)> {
+    if frame.len() < ETH_HDR_LEN {
+        return None;
+    }
+    let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+    if ethertype == TPID_8021Q {
+        if frame.len() < VLAN_HDR_LEN {
+            return None;
+        }
+        let tci = u16::from_be_bytes([frame[14], frame[15]]);
+        Some((16, Some(VlanTag { tci })))
+    } else {
+        Some((12, None))
+    }
+}
+
+/// 帧的有效 EtherType（跳过 VLAN 标签；SV 0x88BA / GOOSE 0x88B8 等）。
+pub fn net_ether_type(frame: &[u8]) -> Option<u16> {
+    let (off, _) = header_info(frame)?;
+    Some(u16::from_be_bytes([frame[off], frame[off + 1]]))
+}
+
+/// 载荷起始偏移（无 VLAN 14 / 802.1Q 标记 18）。
+pub fn payload_offset(frame: &[u8]) -> Option<usize> {
+    let (off, _) = header_info(frame)?;
+    Some(off + 2)
+}
+
+/// 把无 VLAN 帧编码为 802.1Q 标记帧（TPID+TCI 插于 src 与 EtherType 之间）。
+///
+/// 输入本身已含 VLAN 标签或帧过短 → `None`（不二次嵌套、不猜）。
+pub fn encode_vlan(frame: &[u8], tci: u16) -> Option<Vec<u8>> {
+    let (_, vlan) = header_info(frame)?;
+    if vlan.is_some() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(frame.len() + 4);
+    out.extend_from_slice(&frame[..12]);
+    out.extend_from_slice(&TPID_8021Q.to_be_bytes());
+    out.extend_from_slice(&tci.to_be_bytes());
+    out.extend_from_slice(&frame[12..]);
+    Some(out)
+}
 
 /// EtherType field values.
 ///
@@ -370,5 +434,84 @@ mod tests {
         let frame = EthFrame::decode(&data).expect("decode failed");
         assert_eq!(frame.dst_mac[0] & 0x01, 0x01); // multicast bit
         assert!(!frame.is_broadcast());
+    }
+
+    // ========================================================================
+    // 46 WP-46.1：802.1Q VLAN 解析（SV/GOOSE 固定偏移解头的缺口补齐）
+    // ========================================================================
+
+    fn plain_frame(ethertype: u16) -> Vec<u8> {
+        let mut f = vec![0x01, 0x0c, 0xcd, 0x04, 0x00, 0x01]; // dst
+        f.extend_from_slice(&[0x02, 0, 0, 0, 0, 0x02]); // src
+        f.extend_from_slice(&ethertype.to_be_bytes());
+        f.extend_from_slice(&[0x40, 0x01, 0x00, 0x00]); // APPID + 保留
+        f
+    }
+
+    #[test]
+    fn test_header_info_plain() {
+        let f = plain_frame(0x88BA);
+        let (off, vlan) = header_info(&f).expect("header");
+        assert_eq!(off, 12);
+        assert!(vlan.is_none());
+        assert_eq!(net_ether_type(&f), Some(0x88BA));
+        assert_eq!(payload_offset(&f), Some(14));
+    }
+
+    #[test]
+    fn test_header_info_vlan() {
+        let f = plain_frame(0x88BA);
+        let tagged = encode_vlan(&f, 0x002A).expect("encode_vlan"); // VID 42
+        assert_eq!(tagged.len(), f.len() + 4);
+        let (off, vlan) = header_info(&tagged).expect("header");
+        assert_eq!(off, 16);
+        let tag = vlan.expect("vlan tag");
+        assert_eq!(tag.tci, 0x002A);
+        assert_eq!(net_ether_type(&tagged), Some(0x88BA));
+        assert_eq!(payload_offset(&tagged), Some(18));
+        // 标签插入位置：TPID 在 src 后，EtherType 移位到 16。
+        assert_eq!(&tagged[12..14], &TPID_8021Q.to_be_bytes());
+        assert_eq!(&tagged[14..16], &0x002Au16.to_be_bytes());
+        assert_eq!(&tagged[16..18], &0x88BAu16.to_be_bytes());
+    }
+
+    #[test]
+    fn test_header_info_vlan_detect_only_0x8100() {
+        // 非 0x8100 的 12 位偏移值按普通 EtherType 处理（不做嵌套判断）。
+        let f = plain_frame(0x88B8);
+        assert_eq!(header_info(&f).unwrap().0, 12);
+        let (_, vlan) = header_info(&f).unwrap();
+        assert!(vlan.is_none());
+    }
+
+    #[test]
+    fn test_header_info_too_short() {
+        assert_eq!(header_info(&[0u8; 13]), None);
+        // 只有 14 字节的"看似 VLAN"帧（缺 TCI）→ None（fail-closed）。
+        let mut f = vec![0u8; 14];
+        f[12..14].copy_from_slice(&TPID_8021Q.to_be_bytes());
+        assert_eq!(header_info(&f), None);
+    }
+
+    #[test]
+    fn test_encode_vlan_no_double_tag() {
+        let f = plain_frame(0x88BA);
+        let tagged = encode_vlan(&f, 7).expect("encode_vlan");
+        // 已标记帧不允许二次嵌套（不猜）。
+        assert_eq!(encode_vlan(&tagged, 9), None);
+        // 过短帧（<14B）→ None。
+        assert_eq!(encode_vlan(&[0u8; 10], 9), None);
+    }
+
+    #[test]
+    fn test_encode_vlan_roundtrip_preserves_payload() {
+        let mut f = plain_frame(0x88BA);
+        f.extend_from_slice(&[0x80, 0x02, 0x00, 0x01]); // SV PDU 头
+        let tagged = encode_vlan(&f, 100).expect("encode_vlan");
+        // 载荷区（VLAN 后偏移 18 起）与原始（14 起）逐字节一致。
+        assert_eq!(&tagged[18..], &f[14..]);
+        let (off, vlan) = header_info(&tagged).expect("header");
+        assert_eq!(off, 16);
+        assert!(vlan.is_some());
     }
 }

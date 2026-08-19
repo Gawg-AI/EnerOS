@@ -1,9 +1,11 @@
 //! SV 采样值接收器（EtherType 0x88BA 过滤 / APPID/MAC 过滤 / smpCnt 连续性检测）。
 //!
-//! receive 流程：帧长 < 16 → Ok(false)（不足以过滤，静默忽略）→
-//! EtherType != 0x88BA → Ok(false) → dst MAC 不匹配 → Ok(false) →
-//! APPID 不匹配 → Ok(false) → BER 解码 SV PDU（smpCnt 0x80 / timestamp 0x81 /
-//! channels 0x82，未知 tag 跳过）→ SampleStatus 判定 → 写环形缓冲 → 回调 → Ok(true)。
+//! receive 流程：帧长不足以过滤 → Ok(false)（静默忽略）→ 802.1Q VLAN
+//! 感知解头（46 WP-46.1：`eth_frame::header_info` 跳过 TPID/TCI 后
+//! EtherType 偏移 12→16）→ EtherType != 0x88BA → Ok(false) → dst MAC
+//! 不匹配 → Ok(false) → APPID 不匹配 → Ok(false) → BER 解码 SV PDU
+//! （smpCnt 0x80 / timestamp 0x81 / channels 0x82，未知 tag 跳过）→
+//! SampleStatus 判定 → 写环形缓冲 → 回调 → Ok(true)。
 //!
 //! SampleStatus 判定（蓝图 §4.4，D12）：
 //! - 首个采样（尚未建立基线）→ `New`
@@ -17,6 +19,8 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+use eneros_net::eth_frame::{header_info, net_ether_type};
+
 use crate::{L2Transport, RingBuffer, SvError};
 
 /// SV 以太网类型（IEC 61850-9-2）。
@@ -27,8 +31,6 @@ const TAG_SMP_CNT: u8 = 0x80;
 const TAG_TIMESTAMP: u8 = 0x81;
 /// channels 字段 tag（N × f32 通道采样值）。
 const TAG_CHANNELS: u8 = 0x82;
-/// 以太网头 + APPID 最小帧长（dst 6 + src 6 + EtherType 2 + APPID 2）。
-const MIN_FRAME_LEN: usize = 16;
 
 /// 采样状态（D12：随样本返回，区分新采样/重复/丢样）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,21 +93,28 @@ impl<T: L2Transport> SvSubscriber<T> {
     /// 过滤不匹配（非 0x88BA / MAC / APPID / 帧过短）返回 `Ok(false)` 静默丢弃；
     /// 通过过滤后 PDU 截断或畸形返回 `Err(BerDecodeError)`。
     pub fn receive(&mut self, frame: &[u8]) -> Result<bool, SvError> {
-        if frame.len() < MIN_FRAME_LEN {
+        // 46 WP-46.1：802.1Q VLAN 感知解头（EtherType 偏移 12 或 16；
+        // 帧过短/标签残缺 → header_info None → 静默忽略，不猜）。
+        let Some((eth_off, _vlan)) = header_info(frame) else {
+            return Ok(false);
+        };
+        // 需覆盖：EtherType(2) + APPID(2) + 四字节头(6) + 最小 PDU（约 4）。
+        if frame.len() < eth_off + 10 {
             return Ok(false);
         }
-        if u16::from_be_bytes([frame[12], frame[13]]) != ETHERTYPE_SV {
+        if net_ether_type(frame) != Some(ETHERTYPE_SV) {
             return Ok(false);
         }
         if frame[0..6] != self.filter_mac {
             return Ok(false);
         }
-        if u16::from_be_bytes([frame[14], frame[15]]) != self.app_id {
+        if u16::from_be_bytes([frame[eth_off + 2], frame[eth_off + 3]]) != self.app_id {
             return Ok(false);
         }
         // 31 PR-03：剥 IEC 61850-9-2 四字节头（Length + Reserved1 +
         // Reserved2）——SV 与 GOOSE 同构（旧实现无头，标准帧无法解析）。
-        let (smp_cnt, timestamp, channels) = decode_pdu(&frame[22..])?;
+        // VLAN 标记帧该偏移自动 +4（eth_off 16 → PDU 于 26）。
+        let (smp_cnt, timestamp, channels) = decode_pdu(&frame[eth_off + 10..])?;
         let status = self.classify(smp_cnt);
         self.last_smp_cnt = smp_cnt;
         self.has_last = true;
@@ -293,6 +302,55 @@ mod tests {
             f.extend_from_slice(&c.to_be_bytes());
         }
         f
+    }
+
+    /// 构造 802.1Q VLAN 标记 SV 帧（TPID 0x8100 + TCI 插于 src 与 EtherType 之间）。
+    fn sv_frame_vlan(
+        dst_mac: [u8; 6],
+        src_mac: [u8; 6],
+        app_id: u16,
+        smp_cnt: u16,
+        timestamp: u64,
+        channels: &[f32],
+        tci: u16,
+    ) -> Vec<u8> {
+        use eneros_net::eth_frame::encode_vlan;
+        let plain = sv_frame(dst_mac, src_mac, app_id, smp_cnt, timestamp, channels);
+        encode_vlan(&plain, tci).expect("encode_vlan")
+    }
+
+    // ===== 46 WP-46.1：VLAN 标记 SV 帧 =====
+    #[test]
+    fn test_vlan_tagged_frame_decode_equivalent_to_plain() {
+        // 同一采样载荷：无 VLAN 与 VLAN 标记帧必须解码出相同样本
+        //（VLAN 只移动头偏移，不改变 PDU）。
+        let mut sub_plain = make_sub();
+        let mut sub_vlan = make_sub();
+        let plain = sv_frame(DST, SRC, APP_ID, 7, 99, &[3.0, -1.0]);
+        let tagged = sv_frame_vlan(DST, SRC, APP_ID, 7, 99, &[3.0, -1.0], 0x2A);
+        // 结构：VLAN 帧 EtherType 偏移 16（TPID 0x8100 在 12）。
+        assert_eq!(net_ether_type(&tagged), Some(ETHERTYPE_SV));
+        assert_eq!(sub_plain.receive(&plain), Ok(true));
+        assert_eq!(sub_vlan.receive(&tagged), Ok(true));
+        let s_plain = sub_plain.take_samples();
+        let s_vlan = sub_vlan.take_samples();
+        assert_eq!(s_vlan.len(), 1);
+        assert_eq!(s_plain[0], s_vlan[0]); // smpCnt/timestamp/channels/status 全等
+        assert_eq!(s_vlan[0].smp_cnt, 7);
+        assert_eq!(s_vlan[0].channels, vec![3.0, -1.0]);
+        assert_eq!(s_vlan[0].status, SampleStatus::New);
+    }
+
+    #[test]
+    fn test_vlan_bad_ethertype_or_appid_still_dropped() {
+        // VLAN 帧上的过滤语义不变：EtherType/APPID 错 → Ok(false) 静默丢弃。
+        let mut sub = make_sub();
+        let mut tagged = sv_frame_vlan(DST, SRC, APP_ID, 1, 1, &[], 0x2A);
+        tagged[16..18].copy_from_slice(&0x88B8u16.to_be_bytes()); // 改成 GOOSE
+        assert_eq!(sub.receive(&tagged), Ok(false));
+        let mut tagged2 = sv_frame_vlan(DST, SRC, APP_ID, 1, 1, &[], 0x2A);
+        tagged2[18..20].copy_from_slice(&0x9999u16.to_be_bytes()); // APPID 错
+        assert_eq!(sub.receive(&tagged2), Ok(false));
     }
 
     // ===== RX7：有效帧解码 → Ok(true)，样本字段正确，status == New =====

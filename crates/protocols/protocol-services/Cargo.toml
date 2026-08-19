@@ -32,6 +32,10 @@ eneros-time = { path = "../../drivers/time" }
 eneros-net = { path = "../../drivers/net" }
 eneros-virtio-core = { path = "../../drivers/virtio-core" }
 eneros-storage = { path = "../../drivers/storage", default-features = false }
+# 46（WP-46.1）：Serial 传输工厂——UartHw trait/配置枚举（eneros-rs485）
+# + modbus-rtu 的 RTU 成帧传输（Rs485RtuTransport）；DriverError 映射。
+eneros-driver-framework = { path = "../../drivers/framework" }
+eneros-rs485 = { path = "../../drivers/rs485" }
 # 39：协议服务为能力壳（设备移交 40 接通）——不启用 transport 依赖的
 # 默认 feature（net/fs-persist），保持 target 闭包最小。
 eneros-modbus-rtu = { path = "../modbus-rtu", default-features = false }
@@ -81,3 +85,7 @@ default = []
 # 45.5（遥测通路）：EL0 target 构建启用 agent-sdk sel4 客户端（ipc_sel4）
 # ——xtask build_user_elf 对 eneros-protocol-services 特判传参（host 测试不启用）。
 sel4 = ["eneros-agent-sdk/sel4"]
+
+[dev-dependencies]
+# 46（WP-46.1）工厂测试：MockUartHw（host 仿真串口，mock feature 仅测试构建）。
+eneros-rs485 = { path = "../../drivers/rs485", features = ["mock"] }
