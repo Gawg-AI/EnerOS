@@ -16,14 +16,22 @@
 
 extern crate alloc;
 
+#[cfg(target_os = "none")]
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 #[cfg(test)]
 use alloc::vec::Vec;
 
+// 44.3 目标构建修复：下列符号仅 target 侧（`#[cfg(target_os = "none")]`
+// 函数）使用，host check/clippy 不编译该路径——import 需同 cfg 门控。
+#[cfg(target_os = "none")]
+use eneros_boot_protocol::{dtb_window_for, ENEROS_DTB_MAX_LEN};
 use eneros_can::{CanConfig, CanControllerType, CanDriver, Sja1000Controller, VolatileMmio};
 use eneros_driver_framework::{
     BindingTable, CapabilityKind, DeviceDriver, DriverBinding, DriverError, DriverId, PlatformCtx,
 };
+#[cfg(target_os = "none")]
+use eneros_driver_framework::{CapabilityQuality, CapabilityRegistry, DriverSupervisor};
 // 33 WP-33.5：数据盘掉电持久化自检（30 WP-30.7 机制接线；recover/append
 // 为 DurableLog trait 方法，需在作用域内）。
 use eneros_durable_log::DurableLog;

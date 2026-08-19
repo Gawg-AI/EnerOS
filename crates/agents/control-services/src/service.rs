@@ -8,6 +8,9 @@
 //! host 构建：`main` no-op（与 svc-drv-* 同模式——target-only 代码由
 //! 协议层 host 测试覆盖，见 agent-sdk `chunked` 与各服务逻辑模块测试）。
 
+#[cfg(target_os = "none")]
+use alloc::format;
+
 /// 服务处理器（收到完整载荷后调用；返回响应字节）。
 pub trait ControlServiceHandler {
     /// 处理完整请求载荷并写入响应。

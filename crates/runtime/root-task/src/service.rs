@@ -109,25 +109,42 @@ pub fn run_ipc_loop(
             .find(|h| h.name == name)
             .ok_or_else(|| alloc::format!("{name} not spawned"))
     };
+    // 44.3（探针可选）：svc-hello/svc-fault 是探针锚点——纯产品装配
+    // （qemu-prod/board-prod）不 spawn 它们。主循环探针缺失时自定步幅
+    // （busy_wait+yield），故障注入跳过；fail-closed 仅针对已 spawn 服务。
     let hello = match by_name("svc-hello") {
-        Ok(h) => h.clone(),
-        Err(e) => ipc_fail_closed("lookup svc-hello", e),
+        Ok(h) => Some(h.clone()),
+        Err(_) => {
+            eneros_runtime::println!(
+                "[eneros-root-task] DBG no svc-hello (probe absent) — self-paced supervisor"
+            );
+            None
+        }
     };
-    eneros_runtime::println!(
-        "[eneros-root-task] DBG hello.ep={} hello.tcb={} ep_type={}",
-        hello.ep,
-        hello.tcb,
-        eneros_sel4_sys::safe::debug_cap_identify(hello.ep)
-    );
+    if let Some(h) = &hello {
+        eneros_runtime::println!(
+            "[eneros-root-task] DBG hello.ep={} hello.tcb={} ep_type={}",
+            h.ep,
+            h.tcb,
+            eneros_sel4_sys::safe::debug_cap_identify(h.ep)
+        );
+    }
     let fault = match by_name("svc-fault") {
-        Ok(h) => h.clone(),
-        Err(e) => ipc_fail_closed("lookup svc-fault", e),
+        Ok(h) => Some(h.clone()),
+        Err(_) => {
+            eneros_runtime::println!(
+                "[eneros-root-task] DBG no svc-fault (probe absent) — fault injection disabled"
+            );
+            None
+        }
     };
-    eneros_runtime::println!(
-        "[eneros-root-task] DBG fault.ep={} fault.ntfn={}",
-        fault.ep,
-        fault.ntfn
-    );
+    if let Some(f) = &fault {
+        eneros_runtime::println!(
+            "[eneros-root-task] DBG fault.ep={} fault.ntfn={}",
+            f.ep,
+            f.ntfn
+        );
+    }
 
     // 22 §2.W1.3：supervisor——每服务故障状态机（按 handles 顺序）+ fault
     // sender(TCB cap) → 服务索引 映射。故障注入周期性执行（注入前检查
@@ -177,10 +194,8 @@ pub fn run_ipc_loop(
     let mut tick = 0u64;
     // 33 WP-33.5：驱动 IRQ 计数（每驱动一槽；UART RX 注入时递增）。
     let mut drv_irq_counts: alloc::vec::Vec<u64> = alloc::vec![0; irq_drivers.len()];
-    let fault_idx = match handles.iter().position(|h| h.name == "svc-fault") {
-        Some(i) => i,
-        None => ipc_fail_closed("svc-fault not in supervisor table", "no name"),
-    };
+    // 44.3：svc-fault 探针可选——缺失时 fault_idx=None，注入块跳过。
+    let fault_idx = handles.iter().position(|h| h.name == "svc-fault");
 
     // WP-37.1 #8：readiness **异步收集**——readiness 必须来自 IPC
     // handshake/health probe，非"spawn 返回成功"（蓝图 WP-37.1 #8）。
@@ -311,19 +326,29 @@ pub fn run_ipc_loop(
         // TX；非阻塞，无网卡/无帧立即返回）。
         crate::driver_probe::net_echo_poll();
 
-        // 1. hello 往返。
-        let resp = match hello_roundtrip(hello.ep) {
-            Ok(f) => f,
-            Err(e) => ipc_fail_closed("hello roundtrip", e),
-        };
-        let payload = match eneros_ipc_wire::el0::decode_frame(&resp) {
-            Ok(f) => f.payload,
-            Err(e) => ipc_fail_closed("decode hello resp", e),
-        };
-        eneros_runtime::println!(
-            "[eneros-root-task] IPC: recv {}",
-            core::str::from_utf8(payload).unwrap_or("<non-utf8>")
-        );
+        // 1. 心跳/liveness 锚点往返（svc-hello 探针可选）。
+        match &hello {
+            Some(hello) => {
+                let resp = match hello_roundtrip(hello.ep) {
+                    Ok(f) => f,
+                    Err(e) => ipc_fail_closed("hello roundtrip", e),
+                };
+                let payload = match eneros_ipc_wire::el0::decode_frame(&resp) {
+                    Ok(f) => f.payload,
+                    Err(e) => ipc_fail_closed("decode hello resp", e),
+                };
+                eneros_runtime::println!(
+                    "[eneros-root-task] IPC: recv {}",
+                    core::str::from_utf8(payload).unwrap_or("<non-utf8>")
+                );
+            }
+            None => {
+                // 探针缺失：自定步幅（root 优先级低于服务优先级，不饿死
+                // EL0；yield 让出调度）。纯产品装配下的 supervisor 节拍。
+                busy_wait_ms(1);
+                eneros_sel4_sys::safe::yield_cpu();
+            }
+        }
 
         tick += 1;
 
@@ -571,25 +596,27 @@ pub fn run_ipc_loop(
         // `unknown fault sender=0`）。fault IPC 必有 badge（= 服务索引+1），
         // 以 `sender != 0` 为有消息判据。
         let mut sender = 0u64;
-        if let Ok(_mi) = ipc_poll(fault.ntfn, Some(&mut sender)) {
-            let has_msg = sender != 0;
-            if has_msg {
-                let name = |i: usize| handles[i].name.as_str();
-                // WP-37.3：fault 详情（seL4 VMFault IPC 消息布局，
-                // aarch64 constants.h：MR0=fault IP, MR1=addr,
-                // MR2=PrefetchFault(1=取指故障), MR3=FSR）——NX 证据：
-                // ExecStack 注入后 MR2=1 且 addr 落在栈区 → 可归因取指
-                // 故障（NX 生效）。读取失败仅影响证据行，不阻断决策。
-                let fault_ip = get_mr(0).unwrap_or(u64::MAX);
-                let fault_addr = get_mr(1).unwrap_or(u64::MAX);
-                let prefetch = get_mr(2).unwrap_or(u64::MAX);
-                let fsr = get_mr(3).unwrap_or(u64::MAX);
-                if let Some(idx) = sender
-                    .checked_sub(1)
-                    .filter(|&b| (b as usize) < handles.len())
-                    .map(|b| b as usize)
-                {
-                    eneros_runtime::println!(
+        // 44.3：svc-fault 探针可选——缺失时不 poll fault ntfn（产品装配）。
+        if let Some(fault) = &fault {
+            if let Ok(_mi) = ipc_poll(fault.ntfn, Some(&mut sender)) {
+                let has_msg = sender != 0;
+                if has_msg {
+                    let name = |i: usize| handles[i].name.as_str();
+                    // WP-37.3：fault 详情（seL4 VMFault IPC 消息布局，
+                    // aarch64 constants.h：MR0=fault IP, MR1=addr,
+                    // MR2=PrefetchFault(1=取指故障), MR3=FSR）——NX 证据：
+                    // ExecStack 注入后 MR2=1 且 addr 落在栈区 → 可归因取指
+                    // 故障（NX 生效）。读取失败仅影响证据行，不阻断决策。
+                    let fault_ip = get_mr(0).unwrap_or(u64::MAX);
+                    let fault_addr = get_mr(1).unwrap_or(u64::MAX);
+                    let prefetch = get_mr(2).unwrap_or(u64::MAX);
+                    let fsr = get_mr(3).unwrap_or(u64::MAX);
+                    if let Some(idx) = sender
+                        .checked_sub(1)
+                        .filter(|&b| (b as usize) < handles.len())
+                        .map(|b| b as usize)
+                    {
+                        eneros_runtime::println!(
                         "[eneros-root-task] FAULT-INFO: {} ip=0x{:x} addr=0x{:x} prefetch={} fsr=0x{:x}",
                         name(idx),
                         fault_ip,
@@ -597,10 +624,10 @@ pub fn run_ipc_loop(
                         prefetch,
                         fsr
                     );
-                    supervisor.advance(now_ms());
-                    match supervisor.on_service_fault(idx) {
-                        Some(crate::supervisor::Action::Restart { delay_ms }) => {
-                            eneros_runtime::println!(
+                        supervisor.advance(now_ms());
+                        match supervisor.on_service_fault(idx) {
+                            Some(crate::supervisor::Action::Restart { delay_ms }) => {
+                                eneros_runtime::println!(
                                 "[eneros-root-task] SUPERVISOR: {} fault → restart in {}ms (fault_count={})",
                                 name(idx),
                                 delay_ms,
@@ -610,48 +637,52 @@ pub fn run_ipc_loop(
                                     .map(|s| s.fault_count)
                                     .unwrap_or(0)
                             );
-                            busy_wait_ms(delay_ms);
-                            if let Err(e) = restart_service(&handles[idx]) {
-                                ipc_fail_closed("restart service", e);
-                            }
-                            supervisor.on_restart_done(idx);
-                            eneros_runtime::println!(
-                                "[eneros-root-task] SUPERVISOR: {} restarted (total={})",
-                                name(idx),
-                                supervisor
-                                    .services
-                                    .get(idx)
-                                    .map(|s| s.restart_count)
-                                    .unwrap_or(0)
-                            );
-                            // 复验 svc-hello 仍响应（隔离成立）。
-                            match hello_roundtrip(hello.ep) {
-                                Ok(f) => {
-                                    if let Ok(fr) = eneros_ipc_wire::el0::decode_frame(&f) {
-                                        eneros_runtime::println!(
-                                            "[eneros-root-task] SUPERVISOR: svc-hello still responsive ({})",
-                                            core::str::from_utf8(&fr.payload)
-                                                .unwrap_or("<non-utf8>")
-                                        );
+                                busy_wait_ms(delay_ms);
+                                if let Err(e) = restart_service(&handles[idx]) {
+                                    ipc_fail_closed("restart service", e);
+                                }
+                                supervisor.on_restart_done(idx);
+                                eneros_runtime::println!(
+                                    "[eneros-root-task] SUPERVISOR: {} restarted (total={})",
+                                    name(idx),
+                                    supervisor
+                                        .services
+                                        .get(idx)
+                                        .map(|s| s.restart_count)
+                                        .unwrap_or(0)
+                                );
+                                // 复验 svc-hello 仍响应（隔离成立；探针缺失
+                                // 时跳过——纯产品装配无 hello 锚点）。
+                                if let Some(hello) = &hello {
+                                    match hello_roundtrip(hello.ep) {
+                                        Ok(f) => {
+                                            if let Ok(fr) = eneros_ipc_wire::el0::decode_frame(&f) {
+                                                eneros_runtime::println!(
+                                                "[eneros-root-task] SUPERVISOR: svc-hello still responsive ({})",
+                                                core::str::from_utf8(&fr.payload)
+                                                    .unwrap_or("<non-utf8>")
+                                            );
+                                            }
+                                        }
+                                        Err(e) => ipc_fail_closed("hello recheck", e),
                                     }
                                 }
-                                Err(e) => ipc_fail_closed("hello recheck", e),
                             }
-                        }
-                        Some(crate::supervisor::Action::MarkFaulted) => {
-                            eneros_runtime::println!(
+                            Some(crate::supervisor::Action::MarkFaulted) => {
+                                eneros_runtime::println!(
                                 "[eneros-root-task] SUPERVISOR: {} FAULTED (≥{} faults/hour) — no auto restart, alert",
                                 name(idx),
                                 crate::supervisor::FAULT_THRESHOLD_PER_HOUR
                             );
+                            }
+                            None => {}
                         }
-                        None => {}
-                    }
-                } else {
-                    eneros_runtime::println!(
+                    } else {
+                        eneros_runtime::println!(
                         "[eneros-root-task] SUPERVISOR: unknown fault sender={} — ignore (fail-closed)",
                         sender
                     );
+                    }
                 }
             }
         }
@@ -674,21 +705,23 @@ pub fn run_ipc_loop(
             }
         }
 
-        // 3. 周期故障注入（每 50 轮 hello）：svc-fault Running 时才注入
-        //    （Suspended/Faulted 不注入，防 seL4_Send 阻塞 root-task）。
+        // 3. 周期故障注入（每 50 轮）：svc-fault 探针存在且 Running 时才
+        //    注入（Suspended/Faulted 不注入，防 seL4_Send 阻塞 root-task）。
         //    WP-37.3：注入 ExecStack（栈页取指）——NX 生效时产生
         //    instruction-fetch vm fault（可归因：栈地址），supervisor
         //    restart 证明隔离；旧 IllegalAccess（null 写）不证明 NX。
         fault_tick += 1;
-        if fault_tick % 50 == 0
-            && supervisor.state_of(fault_idx) == Some(crate::supervisor::ServiceState::Running)
-        {
-            eneros_runtime::println!(
-                "[eneros-root-task] IPC: send fault=ExecStack to svc-fault (cycle)"
-            );
-            let req = encode_frame(El0FrameType::Report, b"fault=ExecStack");
-            if let Err(e) = send_frame(fault.ep, &req) {
-                ipc_fail_closed("send fault", e);
+        if let (Some(fault), Some(fault_idx)) = (&fault, fault_idx) {
+            if fault_tick % 50 == 0
+                && supervisor.state_of(fault_idx) == Some(crate::supervisor::ServiceState::Running)
+            {
+                eneros_runtime::println!(
+                    "[eneros-root-task] IPC: send fault=ExecStack to svc-fault (cycle)"
+                );
+                let req = encode_frame(El0FrameType::Report, b"fault=ExecStack");
+                if let Err(e) = send_frame(fault.ep, &req) {
+                    ipc_fail_closed("send fault", e);
+                }
             }
         }
 

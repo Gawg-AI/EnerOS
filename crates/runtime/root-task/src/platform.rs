@@ -17,7 +17,16 @@
 //!   以 0（未知）跳过，机制（[`cross_check_cpu_count`]）host 已测；
 //!   真机交叉验证登记 42/43。
 
+// 38（WP-38.4 fix-44.3）：装配层依赖 hal/board 的 PlatformAdapter seam
+// 类型与 trait 必须显式导入（真实 aarch64 目标构建才编译 `assemble`，
+// host check 经 `#[cfg(target_os = "none")]` 跳过——44.3 目标构建暴露）。
+// HalRuntime/ValidatedInventory 同时被 host 编译的 RootPlatform 使用，
+// 保持无 cfg；仅目标侧装配符号随 assemble 门控。
 use eneros_hal::platform_adapter::HalRuntime;
+#[cfg(target_os = "none")]
+use eneros_hal::platform_adapter::{
+    cpu_topology_from, cross_check_cpu_count, PlatformAdapter, PlatformError, PlatformInput,
+};
 use eneros_hal::ValidatedInventory;
 
 /// 装配失败类型（打印 + fail-closed 挂起由调用方执行）。
