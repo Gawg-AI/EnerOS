@@ -6,6 +6,7 @@
 //! `ST_UNAVAILABLE`；readiness 打印携带插件 descriptor（证据行）。
 
 use eneros_drv_svc::runtime::{DriverRequest, DriverResponse, DriverService};
+use eneros_protocol_abstract::plugin::{ProtocolPlugin, WorkBudget};
 
 /// 未分配协议服务（capability None → EXECUTE 显式 ST_UNAVAILABLE——
 /// 不伪造协议 I/O；设备句柄移交属蓝图 40）。
@@ -16,6 +17,57 @@ impl DriverService for UnassignedProtocolService {
         None
     }
     fn handle(&mut self, _req: &DriverRequest, _resp: &mut DriverResponse) {}
+}
+
+/// 46（WP-46.2）：通用协议 I/O 服务包装——把装配成功的 [`ProtocolPlugin`]
+/// 暴露为 [`DriverService`]：`EXECUTE` → `plugin.poll(now, WorkBudget)` 驱动
+/// 真实协议 I/O（传输轮询/收发）；poll 失败 → `ST_UNAVAILABLE`（fail-closed，
+/// 不伪造协议数据）。capability 形如 `net-<protocol>`（与 svc-modbus-tcp 的
+/// `net-modbus-tcp` 同约定）。
+pub struct PluginIoService<P: ProtocolPlugin> {
+    plugin: P,
+    capability: &'static str,
+    /// 连续 poll 失败计数（观测）。
+    pub err_count: u64,
+}
+
+impl<P: ProtocolPlugin> PluginIoService<P> {
+    pub fn new(plugin: P, capability: &'static str) -> Self {
+        Self {
+            plugin,
+            capability,
+            err_count: 0,
+        }
+    }
+
+    /// 暴露插件（诊断/测试）。
+    pub fn plugin(&self) -> &P {
+        &self.plugin
+    }
+}
+
+impl<P: ProtocolPlugin> DriverService for PluginIoService<P> {
+    fn capability(&self) -> Option<&'static str> {
+        Some(self.capability)
+    }
+    fn handle(&mut self, req: &DriverRequest, resp: &mut DriverResponse) {
+        use eneros_drv_svc::runtime::{OP_EXECUTE, ST_INVALID, ST_OK, ST_UNAVAILABLE};
+        if req.opcode == OP_EXECUTE {
+            let budget = WorkBudget {
+                max_work_ms: 50,
+                max_polls: 8,
+            };
+            match self.plugin.poll(crate::now_ms(), budget) {
+                Ok(_) => resp.status = ST_OK,
+                Err(_) => {
+                    self.err_count = self.err_count.saturating_add(1);
+                    resp.status = ST_UNAVAILABLE;
+                }
+            }
+        } else {
+            resp.status = ST_INVALID;
+        }
+    }
 }
 
 #[cfg(test)]

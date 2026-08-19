@@ -52,6 +52,9 @@ struct RunOptions {
     net_present: bool,
     /// 43（L2 协议互操作）：额外挂 user-mode（slirp）net 于槽 8。
     net_user: bool,
+    /// 46（WP-46.2）：协议服务 NIC 阵列——每协议独占一个 socket（L2）后端
+    /// virtio-net 槽（9..=13，端口 5578..=5582，见 root `proto_net_slot`）。
+    net_protocols: bool,
     data_disk: Option<PathBuf>,
     expected_slot: Option<String>,
     expected_reason: Option<String>,
@@ -373,6 +376,7 @@ fn parse_options(args: &[String]) -> DynResult<RunOptions> {
     let mut rng_present = true;
     let mut net_present = true;
     let mut net_user = false;
+    let mut net_protocols = false;
     let mut data_disk = None;
     let mut expected_slot = None;
     let mut expected_reason = None;
@@ -459,6 +463,11 @@ fn parse_options(args: &[String]) -> DynResult<RunOptions> {
                 "absent" => net_present = false,
                 _ => return Err(invalid("--net-mode must be present or absent")),
             },
+            "--net-protocols" => match value.as_str() {
+                "present" => net_protocols = true,
+                "absent" => net_protocols = false,
+                _ => return Err(invalid("--net-protocols must be present or absent")),
+            },
             "--data-disk" => data_disk = Some(PathBuf::from(value)),
             "--expect-slot" => match value.as_str() {
                 "A" | "B" | "RECOVERY" => expected_slot = Some(value.clone()),
@@ -497,6 +506,7 @@ fn parse_options(args: &[String]) -> DynResult<RunOptions> {
         rng_present,
         net_present,
         net_user,
+        net_protocols,
         data_disk,
         expected_slot,
         expected_reason,
@@ -675,6 +685,7 @@ fn run_installer(root: &Path, options: InstallRunOptions) -> DynResult<()> {
                     rng_present: true,
                     net_present: true,
                     net_user: false,
+                    net_protocols: false,
                     data_disk: None,
                     expected_slot: None,
                     expected_reason: None,
@@ -1016,6 +1027,28 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
             "-device".to_owned(),
             "virtio-net-device,bus=virtio-mmio-bus.8,netdev=enerosnet8".to_owned(),
         ]);
+    }
+    // 46（WP-46.2）：协议服务 NIC 阵列——每协议独占一个 socket（L2）后端
+    // virtio-net 槽（9..=13）；外部独立对端进程连入对应端口后形成 L2 桥
+    // （46.5 对端矩阵）。槽位与 root `spawn::proto_net_slot` 单一事实源配套：
+    //   slot 9 = svc-iec104 → 5578；slot 10 = svc-mqtt → 5579；
+    //   slot 11 = svc-mms → 5580；slot 12 = svc-goose → 5581；
+    //   slot 13 = svc-sv → 5582。
+    if options.net_protocols {
+        for (slot, port) in [
+            (9u64, 5578u16),
+            (10, 5579),
+            (11, 5580),
+            (12, 5581),
+            (13, 5582),
+        ] {
+            qemu_args.extend([
+                "-netdev".to_owned(),
+                format!("socket,id=enerosnet{slot},listen=127.0.0.1:{port}"),
+                "-device".to_owned(),
+                format!("virtio-net-device,bus=virtio-mmio-bus.{slot},netdev=enerosnet{slot}"),
+            ]);
+        }
     }
     validate_argv(&qemu_args)?;
     let archived_argv = qemu_args.join(" ");
