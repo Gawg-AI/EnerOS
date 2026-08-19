@@ -37,7 +37,9 @@ export PYTHONUSERBASE="$CACHE/pyuser"
 # - QEMU dumpdtb 生成 DTB → dtc → devices_gen.h（需 pyfdt/lxml/ply/pyelftools/libarchive）
 # - libcpio 手工构建（elfloader 依赖）
 BUILD="$ROOT/third_party/sel4-build/top"
-mkdir -p "$BUILD"
+# 44 Exit clean-clone 修复：cpio.o/libcpio.a 落在 $BUILD/elfloader/，先前
+# 依赖历史构建目录已存在（fresh clone 失败：can't create cpio.o）；显式建目录。
+mkdir -p "$BUILD/elfloader"
 
 # 1) 构建 libcpio（util_libs）
 (cd "$CACHE/util_libs-master/libcpio" && \
