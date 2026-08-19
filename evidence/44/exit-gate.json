@@ -3,7 +3,51 @@
   "volume": 44,
   "volume_title": "基线抹平与工作树收口",
   "established": "2026-08-19",
-  "exit_commit": "4f6534d (catalog envelope) / FILL-clean-clone-commit",
+  "exit_commit": "7e926e2（44 Exit 验收定稿——含 fmt 回归修复 7e926e2）",
+  "acceptance": {
+    "date": "2026-08-19",
+    "head": "7e926e2",
+    "verdict": "Accepted（[a][b][d][e][f] PASS；[c] 本地等价全绿 + catalog check-current 提交绑定怪癖如实登记 PARTIAL@新HEAD；GitHub 远端 CI 实跑为 host/owner 可观测动作）",
+    "items": {
+      "a_git_clean_tag": { "result": "PASS", "cmd": "git status --porcelain | wc -l = 0；git tag = v0.313.0-base（HEAD 7e926e2）" },
+      "b_clean_clone_tag_buildall": {
+        "result": "PASS（含外部工具链登记）",
+        "cmd": "git clone（v0.313.0-base 于 cdaae05/0.313.0，/tmp/eneros-exit44-tag）+ vendored highs/llama（外部 fetch 等价）+ 外部 seL4 elfloader（CI 缓存等价）+ ENEROS_RELEASE_* env + SOURCE_DATE_EPOCH → `cargo xtask build all` BUILD all result=PASS profiles=7、exit 0",
+        "finding": "tag 的 third_party/sel4-build.sh 复现 fresh-clone 缺陷（cpio.o 目录缺失，'Fatal error: can't create …/top/elfloader/cpio.o'）——44 Exit 修复 35824ab 在其之后；应用该一行 mkdir 后 sel4-build.sh 后续亦静默断（tag 时代工具 fresh-clone 不复现），故 elfloader 按外部产物供给（docs/delivery 明示 seL4 为外部锁定项）。"
+      },
+      "c_ci_equivalent": {
+        "result": "PASS（本地等价）+ PARTIAL 登记",
+        "fmt": "PASS（验收抓出 3 文件 fmt 回归 → 修复提交 7e926e2 后 FMT-PASS）",
+        "clippy": "PASS：cargo clippy --workspace --all-targets --locked -- -D warnings exit 0",
+        "test": "PASS：cargo test --workspace --locked exit 0，373 suite 全 ok / 0 FAILED",
+        "audit": "PASS 9/9（cargo xtask audit all）",
+        "closure": "PASS（qemu-prod：binaries=28 reached=121 denied=0 crypto=0）",
+        "config_refs": "PASS（unreferenced 73 / missing 0 / CF01 active 5）",
+        "catalog": "PARTIAL@新HEAD：内容层全绿；evidence42 check-current 因信封 commit 绑定（d392e94→HEAD 前进）报 NOT-ALL-PASS（fail-closed 正确行为）——PASS 于绑定态记录在案，复跑需按 clean-baseline-sop §3 重造当前候选信封（跨卷工具债 45 登记）",
+        "ci_remote_run": "BLOCKED（host 动作）：本机无法执行 GitHub Actions；本地等价全绿，push 后远端实跑（含 qemu 日志断言 job）待 owner 确认"
+      },
+      "d_release_zero_probes": {
+        "result": "PASS",
+        "machine_check": "audit all 9/9；qemu-prod/board-prod JSON 探针 id grep 0；service_kind 单测 2/2",
+        "qemu_test": "PASS：READINESS svc-pie-a/b=Ready + FAULT-INFO svc-fault prefetch=1 fsr=0x8200000f + PRODUCT-READY（qemu-result PASS exit 0）",
+        "qemu_prod": "PASS：PRODUCT-READY required degraded 空 + 探针接触 0（含 'probe absent' 提示 2 行），qemu-result PASS slot A sec 2"
+      },
+      "e_frozen_fake_deps": {
+        "result": "PASS",
+        "frozen": "audit all 含 frozen 门禁 9/9（豁免/allowlist 生效）；frozen 单测 6/6",
+        "fake_deps": "cargo tree -p eneros-business-services 不含 settlement/account/p2p（grep 0）"
+      },
+      "f_hygiene": { "result": "PASS", "rar": 0, "root_bin_html": 0, "crash_txt": 0, "target_star": 0 },
+      "wp_dod_rerun": {
+        "44.1": "rc 字面仅 evidence/42/interop-server（卷外登记）；145 成员 unique-ver=[0.313.5]；bump dry-run BUMP-SUMMARY workspace_field=1 literal_fields=11 inherited_members=134",
+        "44.2": "b73f63a..HEAD 26 commits（11 批+）全入库；工作树 0",
+        "44.3": "service_kind 单测 2/2；audit all 9/9；profiles 探针零命中",
+        "44.4": "frozen 单测 6/6；cargo tree 假依赖 0",
+        "44.5": "rar 0 / target-* 0 / archive/scratch-2026-08 7 项",
+        "44.6": "ADR-0044.md 存在 + protocol-sdk ARCHIVED 标记 + registry 登记"
+      }
+    }
+  },
   "workspace_version": "0.313.5",
   "baseline_tag": "v0.313.0-base (存在，标记 44.1 基线)",
   "entry_gate": {
