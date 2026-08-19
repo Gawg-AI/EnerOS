@@ -1,0 +1,61 @@
+{
+  "schema": "eneros.volume-exit-gate.v1",
+  "volume": 44,
+  "volume_title": "基线抹平与工作树收口",
+  "established": "2026-08-19",
+  "exit_commit": "4f6534d (catalog envelope) / FILL-clean-clone-commit",
+  "workspace_version": "0.313.5",
+  "baseline_tag": "v0.313.0-base (存在，标记 44.1 基线)",
+  "entry_gate": {
+    "git_status_zero": true,
+    "cargo_metadata_ok": true,
+    "cargo_check_workspace_ok": true,
+    "disk_target_gb": 394,
+    "disk_budget_gb": 400
+  },
+  "wps": {
+    "WP-44.1": { "status": "Accepted", "evidence": "evidence/44/WP-44.1.md", "bump": "1.0.0-rc.0 → 0.313.0" },
+    "WP-44.2": { "status": "Accepted", "evidence": "evidence/44/WP-44.2.md", "bump": "→ 0.313.1（会话复核退出）" },
+    "WP-44.3": { "status": "Accepted", "evidence": "evidence/44/WP-44.3.md", "bump": "→ 0.313.2" },
+    "WP-44.4": { "status": "Accepted", "evidence": "evidence/44/WP-44.4.md", "bump": "→ 0.313.3" },
+    "WP-44.5": { "status": "Accepted", "evidence": "evidence/44/WP-44.5.md", "bump": "→ 0.313.4" },
+    "WP-44.6": { "status": "Accepted", "evidence": "evidence/44/WP-44.6.md", "bump": "→ 0.313.5" }
+  },
+  "gates": {
+    "audit_all": { "result": "PASS", "profiles_pass": 8, "note": "含 machine 校验：release 服务 ⊆ service-kind（探针零命中）+ frozen-crates 门禁（豁免/allowlist）" },
+    "closure_gate": { "result": "PASS", "profile": "qemu-prod", "binaries": 28, "reached": 121, "denied": 0, "crypto_violations": 0 },
+    "policy_kernel": { "result": "PASS" },
+    "policy_adr": { "result": "PASS", "entries": 40 },
+    "qa_gate_config_refs": { "result": "PASS", "unreferenced": 73, "missing": 0, "active": 5, "templates": 74 },
+    "qa_gate_mock_leak": { "result": "PASS", "violations": 0 },
+    "qa_gate_orphan": { "result": "PASS", "orphans": 0 },
+    "gng_version": { "result": "PASS", "version": "0.313.5", "scheme": "0x-44-00-s3" },
+    "catalog_gate": { "result": "PASS", "skus": 3, "qualified": 0, "enumerated": 7, "binding_state": "evidence/42/ci-catalog-current.json @ d392e94（两阶段信封）；见 honest_notes" },
+    "evidence42_check_current": { "result": "PASS", "note": "于信封绑定态采集；提交信封后新 HEAD 复跑需重绑定（clean-baseline-sop §3）" }
+  },
+  "qemu_evidence": {
+    "qemu_test": { "result": "PASS", "image": "2bbd3970…34bcf", "key": "PIE 双 bias 0x212940/0x252940 + FAULT-INFO prefetch=1 + SUPERVISOR restart×2 + PRODUCT-READY（8 探针在场）", "dir": "target/evidence44/qemu-test-boot" },
+    "qemu_prod": { "result": "PASS", "image": "cb0b7866…184dc", "key": "PRODUCT-READY required degraded 空 + 探针服务接触零（仅『probe absent』提示 2 行）", "dir": "target/evidence44/qemu-prod-boot" }
+  },
+  "clean_clone_build": {
+    "status": "PASS（cargo 侧）+ 外部 seL4 工具链登记",
+    "clone_dir": "/tmp/eneros-clean44",
+    "clone_commit": "d9b37a8（含 .dtb 夹具修复；后附 sel4-build.sh mkdir 修复）",
+    "workspace_check": "PASS：cargo check --workspace --all-targets（Fresh 克隆 + 外部 vendored highs/llama fetch——CI 'Fetch locked materials' 等价）",
+    "clone_audit_all": "PASS 9/9（8 profile + 1 layout——机器校验/冻结门禁在克隆内同样生效）",
+    "build_all_main": "PASS：cargo xtask build all profiles=8（主仓交付态 + CI env keys ENEROS_RELEASE_* + SOURCE_DATE_EPOCH）",
+    "clean_clone_limitation": "cargo xtask build all 的 seL4 elfloader 产物需外部工具链（third_party/sel4-build.sh→top + sel4-build-rust.sh→top-rust）；fresh clone 首次供给有脚本鸡生蛋缺陷（sel4-build-rust.sh step1 需 top-rust/libsel4.a，由上次运行产出；拷贝 CMakeCache 受路径绑定）——登记为 third_party 工具链缺陷（非跟踪源码依赖），主仓 top-rust 已存在故 build all 全过"
+  },
+  "repo_hygiene": {
+    "rar_tracked": 0,
+    "target_star_dirs": 0,
+    "root_scatter": 0
+  },
+  "honest_notes": [
+    "catalog gate 的 evidence42 check-current 前置要求信封与被验提交态精确绑定（commit+dirty 双等）；44 Exit 于绑定态 d392e94 采集 PASS 后提交信封（4f6534d）。新 HEAD 复跑 catalog gate 需按 clean-baseline-sop §3 重造当前候选信封。跨卷建议：CI catalog-gate 步骤的简单造信封流程脏 digest 会因信封文件本身改变而失配——45 卷开工登记此工具怪癖（evidence42-tooling-lessons 已记）。",
+    "HEARTBEAT-KILL（svc-hang→supervisor kill）在 qemu-test 的复跑依赖 root tick≥200 的一次性注入时序（≈10min，超出 product-ready 终止窗口）——未于 qemu-test 复跑；机制证据保留 evidence/40（同 supervisor 注入路径）。",
+    "root-task 主循环探针可选改动（svc-hello/svc-fault 缺失自定步幅）属 WP-44.3 受害面排查授权；不改探针 spawn 支持（qemu-test 仍用）。",
+    "energy-market-agent 冻结豁免：device-agent 默认 agent-runtime 桥接（44 现状）；47 卷收口后重估。",
+    "clean clone 的 target/sel4/elfloader 为外部工具链（~/.cache）+ 跟踪源码产出，非本地未跟踪源；克隆内重跑 sel4-build-rust.sh 再 build all 证明不依赖本地工作树文件。"
+  ]
+}
