@@ -1,0 +1,4 @@
+# 46（WP-46.3）：svc-modbus-rtu 协议配置（RS485 链路；串口移交待真机 51 卷）。
+slave_id = 1
+timeout_ms = 1000
+retries = 2

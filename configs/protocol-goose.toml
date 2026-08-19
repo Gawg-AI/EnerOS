@@ -1,0 +1,5 @@
+# 46（WP-46.3）：svc-goose 协议配置（raw 组播帧；dst_mac 为组播 MAC）。
+app_id = 16385          # 0x4001
+go_cb_ref = "GGIO1.gcb1"
+dataset_ref = "GGIO1.dsGOOSE"
+dst_mac = "010ccd010000"

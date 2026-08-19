@@ -40,6 +40,28 @@ note = "日志级别/容量/轮转/自定义字段"
 consumer = ["svc-telemetry", "svc-modbus-rtu", "svc-modbus-tcp", "svc-iec104", "svc-mqtt", "svc-mms", "svc-goose", "svc-sv"]
 note = "点表（蓝图 45）——协议↔遥测唯一映射事实源；7 协议插件 + 遥测消费"
 
+[active."protocol-modbus-tcp"]
+consumer = ["svc-modbus-tcp"]
+note = "46（WP-46.3）协议配置：peer/unit_id/timeout/retries——消灭源码硬编码"
+
+[active."protocol-modbus-rtu"]
+consumer = ["svc-modbus-rtu"]
+
+[active."protocol-iec104"]
+consumer = ["svc-iec104"]
+
+[active."protocol-mqtt"]
+consumer = ["svc-mqtt"]
+
+[active."protocol-mms"]
+consumer = ["svc-mms"]
+
+[active."protocol-goose"]
+consumer = ["svc-goose"]
+
+[active."protocol-sv"]
+consumer = ["svc-sv"]
+
 # --- TEMPLATE：已移入 configs/templates/，不进 release 闭包 ---
 # （完整清单由 gate 对照目录自动校验；这里登记已知子集 + 豁免说明）
 [template]

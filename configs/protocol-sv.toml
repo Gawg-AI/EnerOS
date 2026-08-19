@@ -1,0 +1,4 @@
+# 46（WP-46.3）：svc-sv 协议配置（采样值订阅；app_id 0x4001）。
+app_id = 16385          # 0x4001
+dst_mac = "010ccd040001"
+buffer_size = 8

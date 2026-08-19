@@ -30,6 +30,8 @@ use core::fmt;
 pub mod payload;
 /// 蓝图 45 点表（target 解码面 + PointsConsumer）。no_std + alloc。
 pub mod points;
+/// 46（WP-46.3）协议配置（target 解码面 + canonical KV；7 份 ACTIVE）。
+pub mod protocol;
 pub mod schema;
 #[cfg(feature = "compile")]
 pub mod toml_compile;

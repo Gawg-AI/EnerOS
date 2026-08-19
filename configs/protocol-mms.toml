@@ -1,0 +1,3 @@
+# 46（WP-46.3）：svc-mms 协议配置（MMS peer，46.5 独立对端）。
+peer = "10.0.2.2:102"
+timeout_ms = 1000

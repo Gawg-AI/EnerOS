@@ -1,0 +1,4 @@
+# 46（WP-46.3）：svc-mqtt 协议配置（broker = 外部独立 mosquitto，46.5）。
+broker = "10.0.2.2:1883"
+client_id = "eneros-agent"
+keep_alive_ms = 60000

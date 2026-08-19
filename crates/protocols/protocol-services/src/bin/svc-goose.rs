@@ -1,6 +1,6 @@
-//! svc-goose — IEC 61850 GOOSE 协议 EL0 服务（蓝图 39 WP-39.11/12；46 WP-46.2
-//! 句柄移交：virtio-net 槽 12 移交 → NetTransportFactory（raw） → GoosePlugin）。
-
+//! svc-goose — 协议 EL0 服务（46 WP-46.2 句柄移交 + 46.3 配置驱动装配：
+//! virtio-net 槽移交 → NetTransportFactory → 插件 start（配置经 svc-config，
+//! 源码零 peer 常量——46.3 DoD）。
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
 #![allow(clippy::empty_loop)]
@@ -20,7 +20,7 @@ use alloc::boxed::Box;
 #[cfg(target_os = "none")]
 use eneros_protocol_abstract::plugin::ProtocolPlugin;
 #[cfg(target_os = "none")]
-use eneros_protocol_abstract::{EmptyPointRegistry, ProtocolConfig};
+use eneros_protocol_abstract::EmptyPointRegistry;
 
 #[cfg(target_os = "none")]
 #[global_allocator]
@@ -50,8 +50,8 @@ pub extern "C" fn _start(
         plugin.descriptor().role,
         plugin.descriptor().interop_level
     );
-    // 46.2：手柄移交（virtio-net 槽 12，raw）→ 统一传输工厂 → 插件装配；
-    // 未移交/装配失败 → 能力壳（EXECUTE ST_UNAVAILABLE，fail-closed）。
+    // 46.2/46.3：手柄移交（virtio-net 槽，proto_net_slot）→ 统一传输工厂 →
+    // 配置装配插件；未移交/配置不可得/装配失败 → 能力壳（fail-closed）。
     let mut service: Box<dyn eneros_drv_svc::runtime::DriverService> =
         match eneros_protocol_services::net_transport::build_net_transport(
             mmio_vaddr, dma_vaddr, dma_phys,
@@ -60,24 +60,34 @@ pub extern "C" fn _start(
                 let mut factory =
                     eneros_protocol_services::net_transport::NetTransportFactory::new(stack);
                 let mut plugin = eneros_iec61850_goose::plugin::GoosePlugin::new();
-                let mut cfg = ProtocolConfig::default();
-                // 46.2 测试默认（qemu-test 面）；46.3 改 config-bundle 注入。
-                cfg.insert("go_cb_ref", "GGIO1.gcb1");
-                cfg.insert("dataset_ref", "GGIO1.dsGOOSE");
-                match plugin.start(&cfg, &mut factory, &mut EmptyPointRegistry) {
-                    Ok(()) => {
+                // 46.3：配置即 peer/app_id 唯一来源（protocol-protocol-goose）；不可得
+                // → 能力壳（fail-closed，不猜默认）。
+                match eneros_protocol_services::service_cfg::fetch_protocol_config(
+                    "goose-config",
+                    eneros_agent_sdk::EIPC_EP_BASE_SLOT,
+                    "protocol-goose",
+                ) {
+                    Some(cfg) => match plugin.start(&cfg, &mut factory, &mut EmptyPointRegistry) {
+                        Ok(()) => {
+                            eneros_runtime::println!(
+                                "[svc-goose] NET-TRANSPORT READY capability=eneros_iec61850_goose::plugin::GoosePlugin"
+                            );
+                            Box::new(eneros_protocol_services::service::PluginIoService::new(
+                                plugin,
+                                "eneros_iec61850_goose::plugin::GoosePlugin",
+                            ))
+                        }
+                        Err(e) => {
+                            eneros_runtime::println!(
+                                "[svc-goose] plugin start FAILED {:?} —— capability 壳（EXECUTE ST_UNAVAILABLE）",
+                                e
+                            );
+                            Box::new(eneros_protocol_services::service::UnassignedProtocolService)
+                        }
+                    },
+                    None => {
                         eneros_runtime::println!(
-                            "[svc-goose] NET-TRANSPORT READY capability=net-goose"
-                        );
-                        Box::new(eneros_protocol_services::service::PluginIoService::new(
-                            plugin,
-                            "net-goose",
-                        ))
-                    }
-                    Err(e) => {
-                        eneros_runtime::println!(
-                            "[svc-goose] plugin start FAILED {:?} —— capability 壳（EXECUTE ST_UNAVAILABLE）",
-                            e
+                            "[svc-goose] protocol config unavailable —— capability 壳（EXECUTE ST_UNAVAILABLE）"
                         );
                         Box::new(eneros_protocol_services::service::UnassignedProtocolService)
                     }

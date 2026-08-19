@@ -15,6 +15,11 @@ extern crate alloc;
 /// 协议服务共享入口（`_start` 模板：IPC buffer + allocator + loop）。
 pub mod service;
 
+/// 46（WP-46.3）：协议配置拉取（svc-config GET_ENTRY → decode_protocol）。
+/// EL0 target 构建启用 `sel4` feature（agent-sdk ipc_sel4）；host 不启用。
+#[cfg(feature = "sel4")]
+pub mod service_cfg;
+
 /// 43（L2 协议互操作面）：协议服务网络传输（virtio-net + smoltcp +
 /// TransportFactory seam——modbus-tcp 真实 TCP 传输接入点）。
 pub mod net_transport;

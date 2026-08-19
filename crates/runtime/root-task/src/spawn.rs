@@ -1499,6 +1499,14 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     ("svc-agent-bus", "svc-storage"),
     // 41（WP-41.11）：管理 RPC 的 ConfigGet 经 EIPC 查 svc-config。
     ("svc-mgmt", "svc-config"),
+    // 46（WP-46.3 配置驱动装配）：协议服务经 svc-config 取协议配置
+    // （GET_ENTRY "protocol-<proto>"）——消灭源码 peer 硬编码。
+    ("svc-iec104", "svc-config"),
+    ("svc-mqtt", "svc-config"),
+    ("svc-mms", "svc-config"),
+    ("svc-goose", "svc-config"),
+    ("svc-sv", "svc-config"),
+    ("svc-modbus-rtu", "svc-config"),
 ];
 
 /// 心跳监控服务表（WP-40.4 隔离面）：授予心跳 notification（服务

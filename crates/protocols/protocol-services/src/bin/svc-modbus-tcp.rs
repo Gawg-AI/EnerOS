@@ -71,14 +71,19 @@ impl ModbusTcpIoService {
         )?;
         let mut factory =
             eneros_protocol_services::net_transport::NetTransportFactory::new(transport);
-        // L2 互操作测试 peer：QEMU user-mode（slirp）10.0.2.2 = host
-        // loopback 别名；5502 = 独立 raw Modbus-TCP 从站（非 EnerOS 代码）。
-        // 生产 peer 来源：config-bundle（41/43 接线，未接通前以此测试面）。
-        const PEER: &str = "10.0.2.2:5502";
+        // 46.3：peer/unit_id 来源 = config-bundle（protocol-modbus-tcp.toml），
+        // 消灭源码 peer 常量；配置不可得 → 装配失败 → 能力壳（fail-closed）。
+        let Some(cfg) = eneros_protocol_services::service_cfg::fetch_protocol_config(
+            "modbus-config",
+            eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1,
+            "protocol-modbus-tcp",
+        ) else {
+            eneros_runtime::println!(
+                "[svc-modbus-tcp] protocol config unavailable —— capability 壳（EXECUTE ST_UNAVAILABLE）"
+            );
+            return Err("protocol-config-missing");
+        };
         let mut plugin = eneros_modbus_tcp::plugin::TcpPlugin::new();
-        let mut cfg = eneros_protocol_abstract::ProtocolConfig::default();
-        cfg.insert("peer", PEER);
-        cfg.insert("unit_id", "2");
         // 插件 start 消费点表（45.4 路由注入；borrow 于本调用内结束）。
         plugin
             .start(&cfg, &mut factory, &mut registry)

@@ -197,7 +197,8 @@
     "priority": 2
    },
    "configs": [
-    "points"
+    "points",
+    "protocol-modbus-rtu"
    ]
   },
   {
@@ -228,7 +229,8 @@
     "priority": 2
    },
    "configs": [
-    "points"
+    "points",
+    "protocol-modbus-tcp"
    ]
   },
   {
@@ -259,7 +261,8 @@
     "priority": 2
    },
    "configs": [
-    "points"
+    "points",
+    "protocol-iec104"
    ]
   },
   {
@@ -290,7 +293,8 @@
     "priority": 2
    },
    "configs": [
-    "points"
+    "points",
+    "protocol-mqtt"
    ]
   },
   {
@@ -321,7 +325,8 @@
     "priority": 2
    },
    "configs": [
-    "points"
+    "points",
+    "protocol-mms"
    ]
   },
   {
@@ -352,7 +357,8 @@
     "priority": 2
    },
    "configs": [
-    "points"
+    "points",
+    "protocol-goose"
    ]
   },
   {
@@ -383,7 +389,8 @@
     "priority": 2
    },
    "configs": [
-    "points"
+    "points",
+    "protocol-sv"
    ]
   },
   {
@@ -768,6 +775,55 @@
     "svc-mqtt",
     "svc-mms",
     "svc-goose",
+    "svc-sv"
+   ]
+  },
+  {
+   "id": "protocol-modbus-tcp",
+   "path": "configs/protocol-modbus-tcp.toml",
+   "consumer": [
+    "svc-modbus-tcp"
+   ]
+  },
+  {
+   "id": "protocol-modbus-rtu",
+   "path": "configs/protocol-modbus-rtu.toml",
+   "consumer": [
+    "svc-modbus-rtu"
+   ]
+  },
+  {
+   "id": "protocol-iec104",
+   "path": "configs/protocol-iec104.toml",
+   "consumer": [
+    "svc-iec104"
+   ]
+  },
+  {
+   "id": "protocol-mqtt",
+   "path": "configs/protocol-mqtt.toml",
+   "consumer": [
+    "svc-mqtt"
+   ]
+  },
+  {
+   "id": "protocol-mms",
+   "path": "configs/protocol-mms.toml",
+   "consumer": [
+    "svc-mms"
+   ]
+  },
+  {
+   "id": "protocol-goose",
+   "path": "configs/protocol-goose.toml",
+   "consumer": [
+    "svc-goose"
+   ]
+  },
+  {
+   "id": "protocol-sv",
+   "path": "configs/protocol-sv.toml",
+   "consumer": [
     "svc-sv"
    ]
   }

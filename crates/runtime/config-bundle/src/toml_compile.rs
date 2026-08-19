@@ -934,6 +934,56 @@ fn compile_addr(
 }
 
 /// 编译分派（按 config_id 字符串；未登记 → None）。
+/// 编译扁键值协议配置（46 WP-46.3）：已知键封闭 + 必填键齐全。
+pub fn compile_protocol(config_id: &str, toml: &str) -> Result<CompiledConfig, ConfigError> {
+    use eneros_protocol_abstract::ProtocolConfig;
+    let config = ConfigId::from(config_id);
+    let known = crate::protocol::known_keys(config_id).ok_or(ConfigError::InvalidValue {
+        config: config.clone(),
+        field: "config_id",
+        reason: format!("unknown protocol config {config_id}"),
+    })?;
+    let root: Value = toml::from_str(toml).map_err(|e| ConfigError::InvalidValue {
+        config: config.clone(),
+        field: "toml",
+        reason: format!("parse:{e}"),
+    })?;
+    let t = table(&root, &config, "root")?;
+    reject_unknown_keys(t, &config, known)?;
+    // 值统一按字符串承载（插件消费端再数值化；键序保持）。
+    let mut cfg = ProtocolConfig::default();
+    for (key, val) in t {
+        let vstr = match val {
+            Value::String(s) => s.clone(),
+            Value::Integer(i) => i.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Boolean(b) => b.to_string(),
+            _ => {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "entry",
+                    reason: format!("{key}: 协议配置仅支持标量键值"),
+                })
+            }
+        };
+        cfg.insert(key, &vstr);
+    }
+    for req in crate::protocol::required_keys(config_id) {
+        if cfg.get(req).is_none() {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: req,
+                reason: format!("missing required key {req}"),
+            });
+        }
+    }
+    let payload = crate::protocol::encode_protocol(&cfg)?;
+    Ok(CompiledConfig {
+        config_id: config,
+        payload,
+    })
+}
+
 pub fn compile_by_id(
     config_id: &str,
     toml: &str,
@@ -946,6 +996,7 @@ pub fn compile_by_id(
         metrics::CONFIG_ID => compile_metrics(toml).map(Some),
         logging::CONFIG_ID => compile_logging(toml).map(Some),
         points::CONFIG_ID => compile_points(toml).map(Some),
+        id if crate::protocol::known_keys(id).is_some() => compile_protocol(id, toml).map(Some),
         _ => Ok(None),
     }
 }
@@ -1190,5 +1241,42 @@ scale = 1.0
 offset = 0.0
 "#;
         assert!(compile_points(toml5).is_err());
+    }
+}
+
+#[cfg(test)]
+mod protocol_config_v46_tests {
+    use super::*;
+
+    const GOOD: &str =
+        "peer = \"10.0.2.2:2404\"\nt3_timeout_ms = 20000\npoll_interval_ms = 30000\n";
+
+    #[test]
+    fn protocol_compile_accepts_known_keys() {
+        let cfg = compile_protocol("protocol-iec104", GOOD).expect("compile");
+        assert_eq!(cfg.config_id.as_str(), "protocol-iec104");
+        let decoded = crate::protocol::decode_protocol(&cfg.payload).expect("decode");
+        assert_eq!(decoded.get("peer"), Some("10.0.2.2:2404"));
+        assert_eq!(decoded.get("poll_interval_ms"), Some("30000"));
+    }
+
+    #[test]
+    fn protocol_compile_rejects_unknown_key() {
+        let bad = "peer = \"10.0.2.2:2404\"\nnot_a_real_key = 1\n";
+        assert!(compile_protocol("protocol-iec104", bad).is_err());
+    }
+
+    #[test]
+    fn protocol_compile_rejects_missing_required() {
+        // protocol-goose 必填 go_cb_ref/dataset_ref。
+        let bad = "app_id = 16385\n";
+        assert!(compile_protocol("protocol-goose", bad).is_err());
+        // protocol-iec104 必填 peer。
+        assert!(compile_protocol("protocol-iec104", "t3_timeout_ms = 20000").is_err());
+    }
+
+    #[test]
+    fn unknown_protocol_id_rejected() {
+        assert!(compile_protocol("protocol-nope", GOOD).is_err());
     }
 }

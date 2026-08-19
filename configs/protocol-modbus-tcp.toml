@@ -1,0 +1,5 @@
+# 46（WP-46.3）：svc-modbus-tcp 协议配置（键集 = plugin validate_config KNOWN_KEYS）。
+peer = "10.0.2.2:5502"   # qemu-test 外部 raw Modbus-TCP 从站（L2 对端，46.5）
+unit_id = 1
+timeout_ms = 1000
+retries = 2
