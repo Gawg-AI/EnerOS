@@ -10,6 +10,8 @@ use std::process::{Command, ExitCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::product_manifest::ServiceSpec;
+
 mod artifact_inspector;
 mod catalog;
 mod closure;
@@ -897,6 +899,15 @@ fn audit_profile(
     }
 
     let mut violations = Vec::new();
+    // WP-44.3：release profile 服务清单 ⊆ service-kind-registry 产品 kinds
+    // （测试探针等未登记服务进 release 即 FAIL；test/development 类豁免）。
+    if profile.class.is_release() {
+        if let Some(services_value) = &profile.services {
+            let services: Vec<ServiceSpec> = serde_json::from_value(services_value.clone())
+                .map_err(|e| invalid(format!("profile services parse: {e}")))?;
+            violations.extend(product_manifest::validate_service_kinds(&services));
+        }
+    }
     let mut closure_records: BTreeMap<String, ClosureRecord> = BTreeMap::new();
     let canonical_root = root.canonicalize()?;
     for binary in &profile.binaries {
@@ -989,6 +1000,58 @@ fn audit_profile(
                     ));
                 }
             }
+        }
+    }
+    // WP-44.4：冻结 crate 门禁（release 类）——R1 冻结 crate 不得进入
+    // release 依赖闭包（豁免除外）；R2 非冻结 crate 不得声明依赖冻结 crate
+    // （preexisting 边在 allowlist 内豁免）。
+    if profile.class.is_release() {
+        if let Ok(frozen_policy) = policy::load_frozen_policy(root) {
+            let frozen: BTreeSet<String> = frozen_policy
+                .crates
+                .iter()
+                .map(|c| c.package.clone())
+                .collect();
+            let exempt: BTreeSet<String> = frozen_policy
+                .release_closure_exemptions
+                .iter()
+                .map(|e| e.package.clone())
+                .collect();
+            let allow_edges: BTreeSet<(String, String)> = frozen_policy
+                .dependency_allowlist
+                .iter()
+                .map(|e| (e.from.clone(), e.to.clone()))
+                .collect();
+            let reached: BTreeSet<String> = closure_records
+                .values()
+                .map(|record| record.name.clone())
+                .collect();
+            violations
+                .extend(policy::gate_frozen_release_closure(&frozen, &exempt, &reached));
+            let mut edges: Vec<(String, String)> = Vec::new();
+            for node in &metadata.resolve.nodes {
+                let Some(from_pkg) = package_by_id.get(node.id.as_str()) else {
+                    continue;
+                };
+                if !workspace.contains(from_pkg.id.as_str()) || frozen.contains(&from_pkg.name) {
+                    continue;
+                }
+                for dep in &node.deps {
+                    let Some(to_pkg) = package_by_id.get(dep.pkg.as_str()) else {
+                        continue;
+                    };
+                    if frozen.contains(&to_pkg.name) {
+                        edges.push((from_pkg.name.clone(), to_pkg.name.clone()));
+                    }
+                }
+            }
+            violations.extend(policy::gate_frozen_dependencies(
+                &frozen,
+                &allow_edges,
+                &edges,
+            ));
+        } else {
+            violations.push("frozen-policy-unreadable".to_owned());
         }
     }
     violations.sort();

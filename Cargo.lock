@@ -629,7 +629,6 @@ version = "0.313.0"
 name = "eneros-business-services"
 version = "0.313.0"
 dependencies = [
- "eneros-account",
  "eneros-agent-sdk",
  "eneros-boot-protocol",
  "eneros-config-bundle",
@@ -643,10 +642,8 @@ dependencies = [
  "eneros-mgmt-api",
  "eneros-mqtt",
  "eneros-ota-ab",
- "eneros-p2p-match",
  "eneros-runtime",
  "eneros-sel4-sys",
- "eneros-settlement",
  "eneros-storage",
  "eneros-telemetry-queue",
  "heapless 0.8.0",

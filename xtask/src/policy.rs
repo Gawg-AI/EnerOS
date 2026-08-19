@@ -399,6 +399,129 @@ pub fn gate_crypto_closure(
     Ok(violations)
 }
 
+// ---------------------------------------------------------------------------
+// frozen-crates（WP-44.4）：死代码冻结 = 闭包隔离 + 依赖禁令。
+// ---------------------------------------------------------------------------
+
+pub const FROZEN_POLICY_SCHEMA: &str = "eneros.frozen-crates.v1";
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenCrateEntry {
+    pub package: String,
+    pub reason: String,
+    pub unfreeze: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenExemptionEntry {
+    pub package: String,
+    pub reason: String,
+    pub owner: String,
+    pub unfreeze: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenDepAllowEntry {
+    pub from: String,
+    pub to: String,
+    pub reason: String,
+    pub established: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenPolicy {
+    pub schema: String,
+    pub established: String,
+    pub policy_ref: String,
+    #[serde(default)]
+    pub note: String,
+    pub crates: Vec<FrozenCrateEntry>,
+    #[serde(default)]
+    pub release_closure_exemptions: Vec<FrozenExemptionEntry>,
+    #[serde(default)]
+    pub dependency_allowlist: Vec<FrozenDepAllowEntry>,
+}
+
+pub fn load_frozen_policy(root: &Path) -> DynResult<FrozenPolicy> {
+    let path = root.join("product/policy/frozen-crates.json");
+    let text = fs::read_to_string(&path)
+        .map_err(|e| invalid(format!("cannot read {}: {e}", path.display())))?;
+    let policy: FrozenPolicy =
+        serde_json::from_str(&text).map_err(|e| invalid(format!("frozen-crates.json parse: {e}")))?;
+    if policy.schema != FROZEN_POLICY_SCHEMA {
+        return Err(invalid(format!(
+            "frozen-crates-schema:{} (expected {FROZEN_POLICY_SCHEMA})",
+            policy.schema
+        )));
+    }
+    if policy.crates.is_empty() {
+        return Err(invalid("frozen-crates policy declares no crates"));
+    }
+    // 豁免与 allowlist 必须引用已冻结 crate（防未冻结 crate 借豁免钻空）。
+    let frozen: BTreeSet<&str> = policy.crates.iter().map(|c| c.package.as_str()).collect();
+    for entry in &policy.release_closure_exemptions {
+        if !frozen.contains(entry.package.as_str()) {
+            return Err(invalid(format!(
+                "frozen-exemption-for-unfrozen-crate:{}",
+                entry.package
+            )));
+        }
+    }
+    for entry in &policy.dependency_allowlist {
+        if !frozen.contains(entry.to.as_str()) {
+            return Err(invalid(format!(
+                "frozen-allowlist-target-unfrozen:{}",
+                entry.to
+            )));
+        }
+    }
+    Ok(policy)
+}
+
+/// WP-44.4 R1：冻结 crate（豁免除外）进入 release 依赖闭包 → FAIL。
+/// 纯函数（reached 集由调用方从 closure 计算），便于测试与复用。
+pub fn gate_frozen_release_closure(
+    frozen: &BTreeSet<String>,
+    exempt: &BTreeSet<String>,
+    reached: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for package in frozen {
+        if exempt.contains(package) {
+            continue;
+        }
+        if reached.contains(package) {
+            violations.push(format!("frozen-crate-in-release-closure:{package}"));
+        }
+    }
+    violations
+}
+
+/// WP-44.4 R2：非冻结 crate 声明依赖冻结 crate，且该边不在 allowlist → FAIL。
+/// `edges` = (依赖方 crate, 被依赖方 crate) 直接声明边（workspace 内）。
+pub fn gate_frozen_dependencies(
+    frozen: &BTreeSet<String>,
+    allow_edges: &BTreeSet<(String, String)>,
+    edges: &[(String, String)],
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (from, to) in edges {
+        if !frozen.contains(to) {
+            continue;
+        }
+        if allow_edges.contains(&(from.clone(), to.clone())) {
+            continue;
+        }
+        violations.push(format!("frozen-dependency-by-nonfrozen:{from}:{to}"));
+    }
+    violations
+}
+
+
 /// crypto 算法提供者关键字（归一化后子串匹配）。只列算法实现词，
 /// 不含 RustCrypto trait/基础设施（crypto-common、digest、cipher、
 /// subtle 等——它们由依赖的算法实现包一并触发登记）。
@@ -606,6 +729,79 @@ pub fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frozen_release_closure_gate_flags_non_exempt_frozen() {
+        // WP-44.4 R1：冻结 crate 进 release 闭包 → FAIL；豁免、非冻结 → 放行。
+        let frozen: BTreeSet<String> =
+            ["eneros-tsdb", "eneros-federation", "eneros-energy-market-agent"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        let exempt: BTreeSet<String> =
+            ["eneros-energy-market-agent".to_owned()].into_iter().collect();
+        let reached: BTreeSet<String> = [
+            "eneros-tsdb",
+            "eneros-energy-market-agent",
+            "eneros-root-task",
+            "eneros-storage",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let violations = gate_frozen_release_closure(&frozen, &exempt, &reached);
+        assert!(violations.contains(&"frozen-crate-in-release-closure:eneros-tsdb".to_owned()));
+        // 豁免的 energy-market-agent 与未冻结的 root-task/storage 不报。
+        assert!(!violations
+            .iter()
+            .any(|v| v.contains("energy-market-agent")), "{violations:?}");
+        assert!(!violations.iter().any(|v| v.contains("root-task")), "{violations:?}");
+        assert!(!violations.iter().any(|v| v.contains("storage")), "{violations:?}");
+    }
+
+    #[test]
+    fn frozen_dependency_gate_requires_allowlist() {
+        // WP-44.4 R2：非冻结→冻结边未 allowlist → FAIL；allowlist 内放行。
+        let frozen: BTreeSet<String> =
+            ["eneros-solver-model".to_owned()].into_iter().collect();
+        let allow: BTreeSet<(String, String)> =
+            [("eneros-energy-lp-model".to_owned(), "eneros-solver-model".to_owned())]
+                .into_iter()
+                .collect();
+        let edges = vec![
+            ("eneros-energy-lp-model".to_owned(), "eneros-solver-model".to_owned()),
+            ("eneros-intent-parser".to_owned(), "eneros-solver-model".to_owned()),
+        ];
+        let violations = gate_frozen_dependencies(&frozen, &allow, &edges);
+        assert!(violations
+            .iter()
+            .any(|v| v == "frozen-dependency-by-nonfrozen:eneros-intent-parser:eneros-solver-model"));
+        assert!(!violations
+            .iter()
+            .any(|v| v.contains("energy-lp-model")), "{violations:?}");
+    }
+
+    #[test]
+    fn frozen_policy_load_rejects_bad_schema_and_dangling_refs() {
+        let root = std::env::temp_dir().join(format!("eneros-frozen-pl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("product/policy")).unwrap();
+        std::fs::write(
+            root.join("product/policy/frozen-crates.json"),
+            r#"{"schema":"wat","crates":[{"package":"eneros-x","reason":"r","unfreeze":"u"}]}"#,
+        )
+        .unwrap();
+        assert!(load_frozen_policy(&root).is_err());
+        // 豁免引用未冻结 crate → 拒绝。
+        std::fs::write(
+            root.join("product/policy/frozen-crates.json"),
+            r#"{"schema":"eneros.frozen-crates.v1","established":"2026-08-19","policy_ref":"t","crates":[{"package":"eneros-x","reason":"r","unfreeze":"u"}],"release_closure_exemptions":[{"package":"eneros-ghost","reason":"r","owner":"o","unfreeze":"u"}]}"#,
+        )
+        .unwrap();
+        let err = load_frozen_policy(&root).unwrap_err();
+        assert!(format!("{err}").contains("frozen-exemption-for-unfrozen-crate"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn kernel_policy_validation() {

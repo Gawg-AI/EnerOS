@@ -21,11 +21,8 @@ eneros-runtime = { path = "../../runtime/runtime" }
 eneros-config-bundle = { path = "../../runtime/config-bundle", default-features = false }
 eneros-crypto = { path = "../../security/crypto" }
 eneros-durable-state = { path = "../../runtime/durable-state" }
-# 市场/账本领域类型。
+# 市场/账本领域类型（44.4：settlement/account/p2p-match 为 0 引用假依赖已删）。
 eneros-market-types = { path = "../../agents/market-types" }
-eneros-p2p-match = { path = "../../agents/p2p-match" }
-eneros-settlement = { path = "../../agents/settlement" }
-eneros-account = { path = "../../agents/account" }
 # 系统 OTA 组件（真实 SM3/SM2 验签 + A/B 状态机）。
 eneros-ota-ab = { path = "../../security/ota-ab" }
 eneros-boot-protocol = { path = "../../boot/boot-protocol" }
