@@ -1016,35 +1016,91 @@ pub fn storage_mmio_phys() -> u64 {
     STORAGE_VIRTIO_REGION_BASE + STORAGE_MMIO_SLOT * STORAGE_MMIO_SLOT_STRIDE
 }
 
-// ============================================================================
-// 43（L2 协议互操作面）：svc-modbus-tcp 的 virtio-net 设备移交。与
-// svc-storage 同机制（X3=MMIO vaddr, X4=DMA vaddr, X5=DMA phys）。
-// 槽位选择：QEMU virt 的 virtio-mmio 槽 8（phys 0x0a001000）——该 4K 帧
-// 未被 svc-storage 的槽 0-7 帧占用（数据盘在 0x0a000000 帧内），首次
-// retype 不触碰已用 device untyped（CVR-39-02 freeIndex 冲突面）。
-// ============================================================================
-
-/// 协议服务（svc-modbus-tcp）的 virtio-net 槽位（QEMU `virtio-mmio-bus.8`）。
-pub const NET_MMIO_SLOT: u64 = 8;
-/// 协议服务 VSpace 中 virtio-net MMIO 页的固定虚拟地址。
+/// 协议服务 VSpace 中 virtio-net MMIO 页的固定虚拟地址（每服务 VSpace
+/// 独立——各服务可复用同一 vaddr 映射各自槽位物理页）。
 pub const NET_MMIO_VADDR: u64 = 0x4002_0000;
 /// 协议服务 DMA 池页数（virtio-net 队列下限，= VIRTIO_NET_POOL_SIZE/4K）。
 pub const NET_DMA_PAGES: usize = 9;
 
-/// svc-modbus-tcp 设备移交句柄（spawn 时构造，服务 `_start` X3/X4/X5 接收）。
+/// 46（WP-46.2 资源占用单一事实源）：协议服务 → virtio-net 槽位表。
+///
+/// 每协议独占一个 QEMU virtio-mmio 槽（`0x0a000000 + slot*0x200`）；
+/// **两个协议服务不得同槽**——槽冲突即装配失败（见 `proto_net_slot` 单测）。
+/// - 8  = svc-modbus-tcp（43 既有，slirp 后端）
+/// - 9  = svc-iec104（socket 后端 5578，L2 独立对端）
+/// - 10 = svc-mqtt   （socket 后端 5579）
+/// - 11 = svc-mms    （socket 后端 5580）
+/// - 12 = svc-goose  （socket 后端 5581，raw）
+/// - 13 = svc-sv     （socket 后端 5582，raw）
+/// - svc-modbus-rtu → None（46.1 决策 b：QEMU 无第二串口；Serial 移交待
+///   真机/板卡 bring-up 由 root 传 PL011 MMIO——QEMU 下 X3/X4/X5=0 → 壳）。
+pub fn proto_net_slot(name: &str) -> Option<u64> {
+    match name {
+        "svc-modbus-tcp" => Some(8),
+        "svc-iec104" => Some(9),
+        "svc-mqtt" => Some(10),
+        "svc-mms" => Some(11),
+        "svc-goose" => Some(12),
+        "svc-sv" => Some(13),
+        _ => None,
+    }
+}
+
+/// 46.2 资源占用装配校验（冲突即失败，见 `proto_net_slot`）。
+#[cfg(test)]
+mod proto_net_slot_tests {
+    use super::*;
+
+    #[test]
+    fn all_protocol_services_map_to_distinct_slots() {
+        // 7 个协议服务：modbus-rtu 无 NIC 槽（serial），其余 6 槽互异。
+        let services = [
+            "svc-modbus-rtu",
+            "svc-modbus-tcp",
+            "svc-iec104",
+            "svc-mqtt",
+            "svc-mms",
+            "svc-goose",
+            "svc-sv",
+        ];
+        let mut seen = alloc::collections::BTreeSet::new();
+        let mut nets = 0;
+        for name in services {
+            match proto_net_slot(name) {
+                None => assert_eq!(name, "svc-modbus-rtu", "仅 modbus-rtu 无槽"),
+                Some(slot) => {
+                    nets += 1;
+                    assert!(
+                        (8..=13).contains(&slot),
+                        "槽 {slot} 越出 QEMU 配置范围（8..=13）"
+                    );
+                    assert!(
+                        seen.insert(slot),
+                        "槽位冲突：{name} 与已登记服务同槽 {slot} —— 装配失败"
+                    );
+                }
+            }
+        }
+        assert_eq!(nets, 6, "6 个网络协议服务各占一槽（modbus-tcp 含）");
+    }
+
+    #[test]
+    fn unknown_or_serial_service_gets_no_nic_slot() {
+        assert_eq!(proto_net_slot("svc-telemetry"), None);
+        assert_eq!(proto_net_slot("svc-modbus-rtu"), None);
+    }
+}
+
+/// 协议服务 virtio-net 设备移交句柄（46 WP-46.2 各协议共用；spawn 时
+/// 构造，服务 `_start` X3/X4/X5 接收）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetHandover {
-    /// virtio-net MMIO 页在服务 VSpace 的虚拟地址（X3；含槽偏移）。
+    /// virtio-net MMIO 页在服务 VSpace 的虚拟地址（X3）。
     pub mmio_vaddr: u64,
     /// DMA 池在服务 VSpace 的虚拟地址（X4；1:1 = 物理基址）。
     pub dma_vaddr: u64,
     /// DMA 池物理基址（X5）。
     pub dma_phys: u64,
-}
-
-/// 计算协议服务 virtio-net 的 MMIO 物理地址（QEMU virt 槽 8）。
-pub fn net_mmio_phys() -> u64 {
-    STORAGE_VIRTIO_REGION_BASE + NET_MMIO_SLOT * STORAGE_MMIO_SLOT_STRIDE
 }
 
 /// svc-storage DMA 帧的平台 RAM 上限（QEMU 1GB：物理 [0x40000000,
@@ -2113,15 +2169,16 @@ fn configure_service(
         }
     }
 
-    // 43（L2 协议互操作面）：svc-modbus-tcp 设备移交——virtio-net 槽 8
-    // （QEMU `virtio-mmio-bus.8`，phys 0x0a001000——与 svc-storage 的
-    // 0x0a000000 帧不重叠）+ 9 页连续 DMA 帧。失败 → 打印 + 降级
+    // 43（L2 协议互操作面）+ 46（WP-46.2 句柄移交 ×6）：协议服务设备
+    // 移交——virtio-net 槽 `proto_net_slot`（QEMU `virtio-mmio-bus.<slot>`，
+    // phys 0x0a000000 + slot*0x200）+ 9 页连续 DMA 帧。每协议独占一槽
+    // （资源占用表 `proto_net_slot` 单测强制互异）。失败 → 打印 + 降级
     // （协议服务无传输 → capability None → EXECUTE ST_UNAVAILABLE，
     // fail-closed 不伪造协议 I/O）。
     let mut net_handover: Option<NetHandover> = None;
-    if svc.name == "svc-modbus-tcp" {
-        let mmio_phys = net_mmio_phys();
-        // a) MMIO 设备帧（槽 8 所在 4K 帧 = 0x0a001000，首次 retype）。
+    if let Some(net_slot) = proto_net_slot(&svc.name) {
+        let mmio_phys = STORAGE_VIRTIO_REGION_BASE + net_slot * STORAGE_MMIO_SLOT_STRIDE;
+        // a) MMIO 设备帧（槽位所在 4K 帧，首次 retype）。
         let mmio_frame = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
         let mmio_ok = (|| -> Result<(), SpawnError> {
             retype_device_one(
@@ -2145,15 +2202,17 @@ fn configure_service(
         match mmio_ok {
             Ok(()) => {
                 crate::println!(
-                    "[eneros-root-task] NET-HANDOVER: mmio phys=0x{:x} -> vaddr=0x{:x}",
+                    "[eneros-root-task] NET-HANDOVER {}: mmio phys=0x{:x} -> vaddr=0x{:x} (slot {})",
+                    svc.name,
                     mmio_phys,
-                    NET_MMIO_VADDR
+                    NET_MMIO_VADDR,
+                    net_slot
                 );
             }
             Err(e) => {
                 crate::println!(
-                    "[eneros-root-task] NET-HANDOVER: mmio map FAILED {:?} —— modbus-tcp 无传输（显式 Unavailable）",
-                    e
+                    "[eneros-root-task] NET-HANDOVER {}: mmio map FAILED {:?} —— 无传输（显式 Unavailable）",
+                    svc.name, e
                 );
             }
         }
@@ -2208,7 +2267,8 @@ fn configure_service(
             }
             if dma_ok {
                 crate::println!(
-                    "[eneros-root-task] NET-HANDOVER: dma vaddr=0x{:x} phys=0x{:x} pages={} (1:1)",
+                    "[eneros-root-task] NET-HANDOVER {}: dma vaddr=0x{:x} phys=0x{:x} pages={} (1:1)",
+                    svc.name,
                     phys_base,
                     phys_base,
                     NET_DMA_PAGES
@@ -2220,12 +2280,14 @@ fn configure_service(
                 });
             } else {
                 crate::println!(
-                    "[eneros-root-task] NET-HANDOVER: dma map FAILED —— modbus-tcp 无传输（显式 Unavailable）"
+                    "[eneros-root-task] NET-HANDOVER {}: dma map FAILED —— 无传输（显式 Unavailable）",
+                    svc.name
                 );
             }
         } else {
             crate::println!(
-                "[eneros-root-task] NET-HANDOVER: dma pool alloc FAILED —— modbus-tcp 无传输（显式 Unavailable）"
+                "[eneros-root-task] NET-HANDOVER {}: dma pool alloc FAILED —— 无传输（显式 Unavailable）",
+                svc.name
             );
         }
     }
