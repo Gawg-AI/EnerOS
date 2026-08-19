@@ -1,5 +1,8 @@
 //! # EnerOS Protocol SDK v1.0
 //!
+//! **ARCHIVED, host-only（ADR-0044）**：不接受产品侧依赖；唯一协议 seam =
+//! protocol-abstract。本 crate 仅作 host 互操作/编解码测试资产保留编译。
+//!
 //! 协议插件 IPC wire codec 客户端开发框架（ADR-0025 / ARCH-S01）。
 //!
 //! ## 快速开始

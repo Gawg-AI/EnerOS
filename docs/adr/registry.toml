@@ -366,3 +366,12 @@ status = "Accepted"
 supersedes = []
 superseded_by = ""
 decision_digest = ""
+
+[[adrs]]
+id = "ADR-0044"
+path = "docs/adr/ADR-0044-protocol-sdk-archive.md"
+title = "protocol-sdk 归档为 host 互操作资产（唯一协议 seam = protocol-abstract）"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
