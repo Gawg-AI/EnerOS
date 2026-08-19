@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-21291ce93fac",
+  "run_id": "run-18cd1cb80202804f",
+  "nonce": "18cd1cb802028570",
+  "test_id": "ci-catalog-current",
+  "scope": "L2",
+  "started_at": "2026-08-19T05:10:03Z",
+  "ended_at": "2026-08-19T05:10:03Z",
+  "source_commit": "d392e94e3553b1f0939241252bbc79d72082129a",
+  "dirty_tree_digest": "35e0932d9ee9c54ebecd8af5dc31284408b47ad52370ba850931931a2b399522",
+  "product_manifest_digest": "81406503b47ccff0d3701ea0a801bc55e6309f2e051380645e02dc39c6db491f",
+  "profile_digest": "d63bed26e2dcc30de5a4ca25d7fa4e81ae12ae460faae22d06e7ca2508a4d1ae",
+  "artifact_sha256": "7c23e97e453c487e2d171882ce9a7e4510bda7941585e08ecf9b9a5ba73ccd5a",
+  "toolchain_digest": "405af4cc0427373ba447a20706323f0d19dc3340c8de9ea017d13b9f7c044665",
+  "platform_inventory_digest": "5a6a0e9acde2085cb3e3d6d4a2c62351bbf93294c918f8033a26a5b72502eba6",
+  "command": "cargo xtask catalog gate",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "7c23e97e453c487e2d171882ce9a7e4510bda7941585e08ecf9b9a5ba73ccd5a"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "81406503b47ccff0d3701ea0a801bc55e6309f2e051380645e02dc39c6db491f"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "d63bed26e2dcc30de5a4ca25d7fa4e81ae12ae460faae22d06e7ca2508a4d1ae"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "catalog-gate current-candidate evidence pass"
+  },
+  "positive_results": [
+    {
+      "id": "catalog",
+      "status": "PASS",
+      "detail": "catalog_consistent_skus_enumerated"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "stale",
+      "status": "FAIL",
+      "detail": "old-candidate-envelope-rejected"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "7c23e97e453c487e2d171882ce9a7e4510bda7941585e08ecf9b9a5ba73ccd5a"
+    }
+  ],
+  "signer": "dev",
+  "signature": "b94706106100aaec0942f8c00bdba5419fe8ebc00e5062469e2828a64a195949e214f0d7427aefb2d944e529a77816ef819110233b6f70140e2406cb1bca2e0f"
+}
