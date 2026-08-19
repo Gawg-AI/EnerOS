@@ -1430,6 +1430,9 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // 上报真实点样本（EIPC 端点 cap mint 入服务 CSpace 槽 EIPC_EP_BASE_SLOT；
     // 其余 6 协议服务随 46 卷句柄移交同批）。
     ("svc-modbus-tcp", "svc-telemetry"),
+    // 45.5：svc-modbus-tcp 经 svc-config 取点表（ConfigGet "points" →
+    // decode_points）——点表来源（46 卷句柄移交同批，先行者先拿到）。
+    ("svc-modbus-tcp", "svc-config"),
     // 41（WP-41.3 落盘）：业务服务 durable 状态经 EIPC 调 svc-storage
     // 真落盘（块命令面 OP_EXECUTE + BLK_CMD_*）。
     ("svc-ledger", "svc-storage"),

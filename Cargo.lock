@@ -1372,6 +1372,8 @@ dependencies = [
 name = "eneros-protocol-services"
 version = "0.313.9"
 dependencies = [
+ "eneros-agent-sdk",
+ "eneros-config-bundle",
  "eneros-drv-svc",
  "eneros-hal",
  "eneros-iec104-master",
@@ -1384,6 +1386,7 @@ dependencies = [
  "eneros-net",
  "eneros-protocol-abstract",
  "eneros-runtime",
+ "eneros-safety-validator",
  "eneros-sel4-sys",
  "eneros-storage",
  "eneros-time",

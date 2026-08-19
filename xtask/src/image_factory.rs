@@ -1967,6 +1967,11 @@ fn build_user_elf(root: &Path, package: &str, bin: &str, profile_id: &str) -> Dy
     if package == "eneros-control-services" {
         command.args(["--features", "sel4"]);
     }
+    // 45.5（遥测通路）：协议服务侧发送端（Sel4IpcClient + sample_wire）——
+    // EL0 target 构建启用 protocol-services sel4 feature（host 不启用）。
+    if package == "eneros-protocol-services" {
+        command.args(["--features", "sel4"]);
+    }
     // 41（WP-41.3 落盘）：业务服务（svc-ota 等）经 EIPC 调 svc-storage
     // 真落盘——Sel4IpcClient（agent-sdk ipc_sel4）需 sel4 feature。
     if package == "eneros-business-services" {

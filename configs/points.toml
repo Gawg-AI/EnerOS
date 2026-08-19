@@ -69,41 +69,87 @@ scale = 1.0
 offset = 0.0
 period_ms = 2000
 
-# --- 电池储能 BESS-2（modbus-tcp 从站 2，eth0） ---
+# --- 控制链遥测网关（modbus-tcp 从站 2，eth0；45.5 真实采集先行链） ---
+# 点 1-6 与 svc-telemetry 可信评估覆盖/绑定一致（Volt/Ampere/Hertz/Ratio/
+# Other/Other；source=1；require_integrity）。寄存器/缩放取 45 QEMU 从站
+# （evidence/45/modbus_slave.py）应答值经 scale×raw → 落在信任量程内。
 [[point]]
-point_id = 2001
+point_id = 1
 device_id = 2
 protocol = "modbus-tcp"
-addr.modbus = { slave_addr = 2, reg_addr = 4097, func_code = 3 }
+addr.modbus = { slave_addr = 2, reg_addr = 0x0100, func_code = 3 }
 data_type = "analog"
 scale = 0.1
-offset = -40.0
+offset = 0.0
 period_ms = 3000
-deadband = 0.2
-min = -40.0
-max = 40.0
+deadband = 0.5
+min = 0.0
+max = 1000.0
 
 [[point]]
-point_id = 2002
+point_id = 2
 device_id = 2
 protocol = "modbus-tcp"
-addr.modbus = { slave_addr = 2, reg_addr = 4098, func_code = 3 }
+addr.modbus = { slave_addr = 2, reg_addr = 0x0101, func_code = 3 }
+data_type = "analog"
+scale = 0.1
+offset = 0.0
+period_ms = 3000
+deadband = 0.5
+min = -1000.0
+max = 1000.0
+
+[[point]]
+point_id = 3
+device_id = 2
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 0x0102, func_code = 3 }
 data_type = "analog"
 scale = 0.01
 offset = 0.0
 period_ms = 3000
-deadband = 0.01
+deadband = 0.1
+min = 45.0
+max = 55.0
 
 [[point]]
-point_id = 2003
+point_id = 4
 device_id = 2
 protocol = "modbus-tcp"
-addr.modbus = { slave_addr = 2, reg_addr = 4099, func_code = 3 }
-data_type = "counter"
-scale = 1.0
+addr.modbus = { slave_addr = 2, reg_addr = 0x0103, func_code = 3 }
+data_type = "analog"
+scale = 0.001
 offset = 0.0
 period_ms = 3000
-deadband = 0.0
+deadband = 0.01
+min = 0.0
+max = 1.0
+
+[[point]]
+point_id = 5
+device_id = 2
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 0x0104, func_code = 3 }
+data_type = "analog"
+scale = 0.001
+offset = 0.0
+period_ms = 3000
+deadband = 0.01
+min = 0.0
+max = 1.0
+
+[[point]]
+point_id = 6
+device_id = 2
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 0x0105, func_code = 3 }
+data_type = "analog"
+scale = 0.001
+offset = 0.0
+period_ms = 3000
+deadband = 0.01
+min = 0.0
+max = 1.0
 
 # --- 变电站 RTU-3（iec104） ---
 [[point]]

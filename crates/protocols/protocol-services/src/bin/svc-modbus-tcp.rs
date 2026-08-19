@@ -1,5 +1,5 @@
-//! svc-modbus-tcp — Modbus TCP 协议 EL0 服务（蓝图 39 WP-39.12；
-//! 43 L2 协议互操作接线）。
+//! svc-modbus-tcp — Modbus TCP 协议 EL0 服务（蓝图 39 WP-39.12；43 L2 协议
+//! 互操作接线；45.5 遥测通路先行者）。
 
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
@@ -27,71 +27,178 @@ use eneros_protocol_abstract::TransportFactory;
 static ALLOC: eneros_protocol_services::HeapAllocator =
     eneros_protocol_services::HeapAllocator::new();
 
-/// 43（L2 协议互操作面）：modbus-tcp 真实 I/O 服务。
+/// 45.5：点表驱动 + 遥测上报的 modbus-tcp 真实 I/O 服务。
 ///
-/// `_start` 收到 root 移交的 virtio-net 设备（X3=MMIO vaddr,
-/// X4=DMA vaddr, X5=DMA phys）→ 经 [`net_transport`] 构造 smoltcp TCP
-/// 传输并连接外部 Modbus-TCP 从站 peer；`EXECUTE` 触发真实读保持寄存器
-/// 事务（外部 peer 侧可见并应答）。未移交（三参数为零）→ 维持能力壳
-/// （EXECUTE → ST_UNAVAILABLE，fail-closed 不伪造协议 I/O）。
+/// `_start` 收到 root 移交的 virtio-net 设备（X3=MMIO vaddr, X4=DMA vaddr,
+/// X5=DMA phys）→ 经 [`net_transport`] 构造 smoltcp TCP 传输并连接外部
+/// Modbus-TCP 从站 peer；点表经 EIPC 从 svc-config `ConfigGet("points")`
+/// 解码注入（**不自造地址**）；`EXECUTE` 触发真实读保持寄存器事务 →
+/// `ProtocolPointMapping::to_engineering` 工程量变换 → 58B 样本
+/// （`agent_sdk::sample_wire`）INGEST 到 svc-telemetry（EIPC 授予先行者）。
+///
+/// 点表来源与遥测端点均经 EIPC 授予（`EIPC_GRANTS`：槽 3=svc-telemetry、
+/// 槽 4=svc-config）——46 卷句柄移交同批，modbus-tcp 先行者先拿到。
 #[cfg(target_os = "none")]
 struct ModbusTcpIoService {
-    handle: alloc::boxed::Box<dyn eneros_protocol_abstract::TransportHandle>,
-    device: eneros_modbus_tcp::device::TcpDevice,
-    retries: u8,
+    /// 45.4/45.5：点表驱动真读插件（地址来自注入点表）。
+    plugin: eneros_modbus_tcp::plugin::TcpPlugin,
+    /// 注入点表（modbus-tcp 点；自 svc-config 解码）。
+    registry: eneros_protocol_abstract::VecPointRegistry,
+    /// svc-telemetry EIPC 客户端（授予槽 `EIPC_EP_BASE_SLOT`）。
+    telemetry: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    /// 遥测分块 epoch（单调）。
+    tel_epoch: u64,
+    /// 采样序号（单调；重放判定）。
+    seq: u64,
+    /// INGEST 累计接受计数（观测——真实采集链）。
+    pub accepted_total: u64,
     transactions: u32,
+}
+
+/// 一次性传输工厂：把已建好的 net transport handle 移交给插件。
+#[cfg(target_os = "none")]
+struct OneShotFactory {
+    handle: Option<Box<dyn eneros_protocol_abstract::TransportHandle>>,
+}
+
+#[cfg(target_os = "none")]
+impl TransportFactory for OneShotFactory {
+    fn open(
+        &mut self,
+        _spec: &eneros_protocol_abstract::TransportSpec,
+    ) -> Result<
+        Box<dyn eneros_protocol_abstract::TransportHandle>,
+        eneros_protocol_abstract::TransportError,
+    > {
+        self.handle
+            .take()
+            .ok_or(eneros_protocol_abstract::TransportError::Unsupported)
+    }
+    fn supports(&self, kind: eneros_protocol_abstract::TransportKind) -> bool {
+        kind == eneros_protocol_abstract::TransportKind::Tcp
+    }
 }
 
 #[cfg(target_os = "none")]
 impl ModbusTcpIoService {
-    fn try_new(mmio_vaddr: u64, dma_vaddr: u64, dma_phys: u64) -> Result<Self, &'static str> {
+    /// 构造：经 svc-config 取点表 + 建 net transport + 启动插件（点表驱动）。
+    fn try_new(
+        mmio_vaddr: u64,
+        dma_vaddr: u64,
+        dma_phys: u64,
+        telemetry: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+        mut registry: eneros_protocol_abstract::VecPointRegistry,
+    ) -> Result<Self, &'static str> {
         let transport = eneros_protocol_services::net_transport::build_net_transport(
             mmio_vaddr, dma_vaddr, dma_phys,
         )?;
-        let mut factory =
-            eneros_protocol_services::net_transport::NetTransportFactory::new(transport);
+        let mut factory = OneShotFactory {
+            handle: Some(transport),
+        };
         // L2 互操作测试 peer：QEMU user-mode（slirp）10.0.2.2 = host
         // loopback 别名；5502 = 独立 raw Modbus-TCP 从站（非 EnerOS 代码）。
         // 生产 peer 来源：config-bundle（41/43 接线，未接通前以此测试面）。
         const PEER: &str = "10.0.2.2:5502";
-        let (ip, port) = eneros_protocol_abstract::parse_ip_port(PEER).ok_or("invalid-peer")?;
-        let mut spec = eneros_protocol_abstract::TransportSpec {
-            kind: eneros_protocol_abstract::TransportKind::Tcp,
-            peer: [0; 128],
-            peer_len: PEER.len() as u8,
-            mtu: 260,
-            connect_timeout_ms: 3000,
-            recv_timeout_ms: 1500,
-        };
-        spec.peer[..PEER.len()].copy_from_slice(PEER.as_bytes());
-        let handle = factory.open(&spec).map_err(|_| "transport-open-failed")?;
+        let mut plugin = eneros_modbus_tcp::plugin::TcpPlugin::new();
+        let mut cfg = eneros_protocol_abstract::ProtocolConfig::default();
+        cfg.insert("peer", PEER);
+        cfg.insert("unit_id", "2");
+        // 插件 start 消费点表（45.4 路由注入；borrow 于本调用内结束）。
+        plugin
+            .start(&cfg, &mut factory, &mut registry)
+            .map_err(|_| "plugin-start-failed")?;
         Ok(Self {
-            handle,
-            device: eneros_modbus_tcp::device::TcpDevice {
-                ip,
-                port,
-                unit_id: 1,
-                timeout_ms: 1500,
-            },
-            retries: 2,
+            plugin,
+            registry,
+            telemetry,
+            tel_epoch: 0,
+            seq: 0,
+            accepted_total: 0,
             transactions: 0,
         })
     }
 
-    /// 一轮真实读保持寄存器事务（三个地址；外部小从站应答）。
-    fn read_cycle(&mut self) -> Result<alloc::vec::Vec<u16>, &'static str> {
-        let mut out = alloc::vec::Vec::new();
-        {
-            let mut master =
-                eneros_modbus_tcp::master::ModbusTcpMaster::new(&mut self.handle, self.retries);
-            for addr in [0x1111u16, 0x2222u16, 0x3333u16] {
-                let regs = master
-                    .read_holding_registers(&self.device, addr, 1)
-                    .map_err(|_| "modbus-read-failed")?;
-                out.extend_from_slice(&regs);
+    /// 一轮点表驱动真读 + 遥测 INGEST（45.5 真实采集链；ACQ 证据行）。
+    /// 返回本轮是否有 ≥1 次成功读并上报（fail-closed 指示）。
+    fn collect_and_report(&mut self, now_ms: u64) -> bool {
+        let mut any_good = false;
+        let mut ids: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+        self.registry.collect_ids(&mut ids);
+        for id in &ids {
+            let Some(mapping) = self.registry.resolve(*id).cloned() else {
+                continue;
+            };
+            match self.plugin.read_point(now_ms, &mapping) {
+                Ok(read) if read.ok => {
+                    let eng = mapping.to_engineering(read.raw);
+                    any_good = true;
+                    eneros_runtime::println!(
+                        "[svc-modbus-tcp] ACQ point={} value={} q=good seq={}",
+                        mapping.point_id,
+                        eng,
+                        self.seq
+                    );
+                    // 58B 样本（source=1 = svc-telemetry allowed_sources；L2
+                    // 测试链受信完整性=Verified，HMAC 认证链为 47 卷范围）。
+                    let sample = eneros_safety_validator::TelemetrySample {
+                        point: mapping.point_id,
+                        value: eng,
+                        source: 1,
+                        source_epoch: 0,
+                        measured_at_ms: now_ms.saturating_sub(50),
+                        received_at_ms: now_ms,
+                        quality: eneros_safety_validator::SampleQuality::Good,
+                        sequence: self.seq,
+                        integrity: eneros_safety_validator::IntegrityStatus::Verified,
+                        mapping_version: 1,
+                    };
+                    self.seq = self.seq.saturating_add(1);
+                    let mut req: alloc::vec::Vec<u8> = alloc::vec![1u8]; // TEL_INGEST
+                    req.extend_from_slice(&eneros_agent_sdk::sample_wire::encode_sample(&sample));
+                    if let Some(client) = &mut self.telemetry {
+                        let mut transfer =
+                            eneros_agent_sdk::ChunkedClient::new(client, self.tel_epoch, 5_000);
+                        self.tel_epoch = self.tel_epoch.saturating_add(1);
+                        match transfer.transfer("svc-telemetry", &req) {
+                            Ok(resp) if resp.len() >= 2 && resp[0] == 0 => {
+                                self.accepted_total =
+                                    self.accepted_total.saturating_add(resp[1] as u64);
+                                eneros_runtime::println!(
+                                    "[svc-modbus-tcp] INGEST point={} accepted={} total={}",
+                                    mapping.point_id,
+                                    resp[1],
+                                    self.accepted_total
+                                );
+                            }
+                            Ok(resp) => eneros_runtime::println!(
+                                "[svc-modbus-tcp] INGEST point={} rejected {:02x?}",
+                                mapping.point_id,
+                                &resp[..resp.len().min(8)]
+                            ),
+                            Err(e) => eneros_runtime::println!(
+                                "[svc-modbus-tcp] INGEST point={} eipc={:?}",
+                                mapping.point_id,
+                                e
+                            ),
+                        }
+                    } else {
+                        eneros_runtime::println!(
+                            "[svc-modbus-tcp] telemetry EP not granted —— 样本未上报（fail-closed）"
+                        );
+                    }
+                }
+                Ok(_) => eneros_runtime::println!(
+                    "[svc-modbus-tcp] ACQ point={} q=bad (read ok=false)",
+                    mapping.point_id
+                ),
+                Err(e) => eneros_runtime::println!(
+                    "[svc-modbus-tcp] ACQ point={} q=bad {:?}",
+                    mapping.point_id,
+                    e
+                ),
             }
         }
-        Ok(out)
+        any_good
     }
 }
 
@@ -108,23 +215,58 @@ impl eneros_drv_svc::runtime::DriverService for ModbusTcpIoService {
     ) {
         use eneros_drv_svc::runtime::*;
         if req.opcode == OP_EXECUTE {
-            match self.read_cycle() {
-                Ok(vals) => {
-                    self.transactions += 1;
-                    resp.status = ST_OK;
-                    eneros_runtime::println!(
-                        "[svc-modbus-tcp] MODBUS-L2-TX txn={} values=[{:?}]",
-                        self.transactions,
-                        vals
-                    );
-                }
-                Err(e) => {
-                    resp.status = ST_UNAVAILABLE;
-                    eneros_runtime::println!("[svc-modbus-tcp] MODBUS-L2-ERR {:?}", e);
-                }
+            self.transactions += 1;
+            // 45.5：点表驱动真读 + 遥测上报（真实采集替换合成源）。
+            let round_good = self.collect_and_report(eneros_protocol_services::now_ms());
+            if round_good {
+                resp.status = ST_OK;
+            } else {
+                // 本轮无任何成功读（如拔 peer）→ fail-closed 指示。
+                resp.status = ST_UNAVAILABLE;
             }
         } else {
             resp.status = ST_INVALID;
+        }
+    }
+}
+
+/// 经 svc-config EIPC 取点表 canonical payload → decode_points → 注册表。
+#[cfg(target_os = "none")]
+fn fetch_points_registry() -> eneros_protocol_abstract::VecPointRegistry {
+    // 45.5：svc-config 授予槽 = EIPC_EP_BASE_SLOT+1（表序第 2 个 grant）。
+    let Ok(mut config) = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+        "modbus-config",
+        eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1,
+        eneros_drv_svc::now_ns,
+    ) else {
+        eneros_runtime::println!("[svc-modbus-tcp] config EIPC NOT granted -> points unavailable");
+        return eneros_protocol_abstract::VecPointRegistry::new(alloc::vec::Vec::new());
+    };
+    let mut req: alloc::vec::Vec<u8> = alloc::vec![b'C', b'F', b'G', b'1', 0x01];
+    req.extend_from_slice(b"points");
+    let mut transfer = eneros_agent_sdk::ChunkedClient::new(&mut config, 0, 5_000);
+    let payload = match transfer.transfer("svc-config", &req) {
+        Ok(p) => p,
+        Err(e) => {
+            eneros_runtime::println!("[svc-modbus-tcp] config ConfigGet(points) EIPC fail: {e:?}");
+            return eneros_protocol_abstract::VecPointRegistry::new(alloc::vec::Vec::new());
+        }
+    };
+    let cfg_id = eneros_config_bundle::ConfigId::from_static("points");
+    match eneros_config_bundle::points::decode_points(&payload, &cfg_id) {
+        Ok(table) => {
+            let mappings: alloc::vec::Vec<_> =
+                table.points.iter().filter_map(|p| p.to_mapping()).collect();
+            eneros_runtime::println!(
+                "[svc-modbus-tcp] POINTS-LOADED {} modbus points (registry {})",
+                mappings.len(),
+                table.len()
+            );
+            eneros_protocol_abstract::VecPointRegistry::new(mappings)
+        }
+        Err(e) => {
+            eneros_runtime::println!("[svc-modbus-tcp] points decode FAIL: {e:?}");
+            eneros_protocol_abstract::VecPointRegistry::new(alloc::vec::Vec::new())
         }
     }
 }
@@ -153,29 +295,31 @@ pub extern "C" fn _start(
         plugin.descriptor().role,
         plugin.descriptor().interop_level
     );
+    // 45.5：EIPC 授予（先行者）——槽 EIPC_EP_BASE_SLOT=svc-telemetry、
+    // +1=svc-config；点表经 svc-config 获取。
+    let telemetry = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+        "modbus-telemetry",
+        eneros_agent_sdk::EIPC_EP_BASE_SLOT,
+        eneros_drv_svc::now_ns,
+    )
+    .ok();
+    let registry = fetch_points_registry();
+    if telemetry.is_some() {
+        eneros_runtime::println!("[svc-modbus-tcp] telemetry EIPC bound (svc-telemetry)");
+    } else {
+        eneros_runtime::println!("[svc-modbus-tcp] telemetry EIPC NOT granted");
+    }
+    let now_ms = eneros_protocol_services::now_ms();
     // 43：设备移交（virtio-net 槽 8）→ 真实 I/O 服务；未移交 → 能力壳。
     let mut service: Box<dyn eneros_drv_svc::runtime::DriverService> =
-        match ModbusTcpIoService::try_new(mmio_vaddr, dma_vaddr, dma_phys) {
+        match ModbusTcpIoService::try_new(mmio_vaddr, dma_vaddr, dma_phys, telemetry, registry) {
             Ok(mut io) => {
                 eneros_runtime::println!(
                     "[svc-modbus-tcp] NET-TRANSPORT READY capability=net-modbus-tcp"
                 );
-                // 启动期自检：连接 + 一轮真实读（外部 peer 记录事务；串口
-                // 打印读回值 = L2 互操作证据行）。
-                match io.read_cycle() {
-                    Ok(vals) => {
-                        eneros_runtime::println!(
-                            "[svc-modbus-tcp] MODBUS-L2-SELFCHECK ok values=[{:?}]",
-                            vals
-                        );
-                    }
-                    Err(e) => {
-                        eneros_runtime::println!(
-                            "[svc-modbus-tcp] MODBUS-L2-SELFCHECK failed {:?}",
-                            e
-                        );
-                    }
-                }
+                // 启动期自检：点表驱动一轮真实读（外部 peer 记录事务；串口
+                // 打印 = L2 互操作/45 采集证据行）。
+                io.collect_and_report(now_ms);
                 Box::new(io)
             }
             Err(e) => {

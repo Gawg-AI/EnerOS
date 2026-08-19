@@ -17,6 +17,13 @@ eneros-drv-svc = { path = "../../drivers/drv-svc" }
 eneros-runtime = { path = "../../runtime/runtime" }
 eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
+# 45.5（遥测通路）：协议服务侧发送端——EIPC 客户端（Sel4IpcClient/
+# ChunkedClient）与 58B 样本 wire（agent-sdk sample_wire）；点表经
+# svc-config 取 canonical payload 后 decode_points 解码（config-bundle）。
+eneros-agent-sdk = { path = "../../agents/agent-sdk" }
+eneros-config-bundle = { path = "../../runtime/config-bundle", default-features = false }
+# 45.5：样本类型/质量枚举（TelemetrySample/SampleQuality——sample_wire 共享）。
+eneros-safety-validator = { path = "../../ai/safety-validator" }
 # 43（L2 协议互操作面）：协议服务网络栈——virtio-net 驱动 + smoltcp+
 # （经 eneros-net）+ root 移交的 DMA 池；modbus-tcp 启用默认 net feature
 # 使 SmoltcpTcpTransport 进入 EL0 二进制。
@@ -71,3 +78,6 @@ path = "src/bin/svc-sv.rs"
 
 [features]
 default = []
+# 45.5（遥测通路）：EL0 target 构建启用 agent-sdk sel4 客户端（ipc_sel4）
+# ——xtask build_user_elf 对 eneros-protocol-services 特判传参（host 测试不启用）。
+sel4 = ["eneros-agent-sdk/sel4"]
