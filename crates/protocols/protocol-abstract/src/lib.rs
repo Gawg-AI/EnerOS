@@ -84,8 +84,9 @@ pub use error::ProtocolError;
 pub use manager::ProtocolManager;
 pub use mapping::ProtocolPointMapping;
 pub use plugin::{
-    EmptyPointRegistry, InteropLevel, PointRegistry, Progress, ProtocolConfig, ProtocolDescriptor,
-    ProtocolHealth, ProtocolPlugin, ProtocolRole, ResourceBudget, SecurityProfile, WorkBudget,
+    EmptyPointRegistry, InteropLevel, PointRead, PointRegistry, Progress, ProtocolConfig,
+    ProtocolDescriptor, ProtocolHealth, ProtocolPlugin, ProtocolRole, ResourceBudget,
+    SecurityProfile, VecPointRegistry, WorkBudget,
 };
 pub use transport::{
     parse_ip_port, tcp_spec, TransportError, TransportFactory, TransportHandle, TransportKind,

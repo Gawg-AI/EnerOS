@@ -60,6 +60,27 @@ impl<T: TcpTransport> ModbusTcpAdapter<T> {
         self
     }
 
+    /// 45.4 点表驱动真读：按功能码路由（3 → 保持寄存器；4 → 输入寄存器；
+    /// 1/2 线圈与多字（U32/F32）读取为 46 卷深度项——本处明确 `Unsupported`，
+    /// 诚实不伪造读数）。
+    pub fn read_raw(
+        &mut self,
+        reg_addr: u16,
+        func_code: u8,
+        words: u16,
+    ) -> Result<alloc::vec::Vec<u16>, ProtocolError> {
+        if self.state != AdapterState::Running && self.state != AdapterState::Initialized {
+            return Err(ProtocolError::ProtocolNotStarted);
+        }
+        let mut master = ModbusTcpMaster::new(&mut self.transport, self.retry_count);
+        let regs = match func_code {
+            3 => master.read_holding_registers(&self.device, reg_addr, words),
+            4 => master.read_input_registers(&self.device, reg_addr, words),
+            _ => return Err(ProtocolError::Unsupported),
+        };
+        regs.map_err(modbus_tcp_to_protocol)
+    }
+
     /// 查找点映射。
     fn find_mapping(&self, point_id: PointId) -> Option<&eneros_modbus_rtu::point::RegToPoint> {
         self.mappings.iter().find(|m| m.point_id == point_id)

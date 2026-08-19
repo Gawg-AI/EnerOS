@@ -67,6 +67,8 @@ pub struct MqttPlugin {
     error_count: u64,
     last_error: Option<ProtocolError>,
     last_progress: Progress,
+    /// 45.4：注入点表路由点数（观测；服务层按协议过滤注入）。
+    routed_count: usize,
 }
 
 impl MqttPlugin {
@@ -79,7 +81,13 @@ impl MqttPlugin {
             error_count: 0,
             last_error: None,
             last_progress: Progress::Idle,
+            routed_count: 0,
         }
+    }
+
+    /// 45.4：注入点表路由点数（观测）。
+    pub fn routed_count(&self) -> usize {
+        self.routed_count
     }
 }
 
@@ -122,8 +130,17 @@ impl ProtocolPlugin for MqttPlugin {
         &mut self,
         cfg: &ProtocolConfig,
         transports: &mut dyn TransportFactory,
-        _points: &mut dyn PointRegistry,
+        points: &mut dyn PointRegistry,
     ) -> Result<(), ProtocolError> {
+        // 45.4 点表驱动路由：消费注入点表（插件不自造地址）。服务层按协议
+        // 过滤注入；此处登记路由点数（非本协议地址点跳过，不阻断装配）。
+        self.routed_count =
+            eneros_protocol_abstract::plugin::count_matching_mappings(points, |m| {
+                matches!(
+                    m.protocol_addr,
+                    eneros_protocol_abstract::ProtocolAddress::Mqtt { .. }
+                )
+            });
         if self.client.is_some() {
             return Err(ProtocolError::ProtocolInit);
         }
