@@ -30,6 +30,14 @@ fn main() {
     let pubkey = root.join("product/config-bundle-pubkey.hex");
     let out = Path::new(&env::var("OUT_DIR").unwrap()).join("config_bundle.rs");
 
+    // 真实语义：cargo 只在 build 脚本输出变化/其输入变化时重跑脚本——包外
+    // 的 bundle/pubkey 若不声明依赖（rerun-if-changed 支持绝对路径，cargo 会
+    // 跟踪），改 bundle 后镜像仍嵌旧配置（QEMU 采集实弹实测：旧 points 表
+    // 导致点表驱动读 7 个旧点而非 6 个新点 1-6）。显式声明后：
+    // bundle/pubkey 变化 → build 脚本重跑 → svc-config 重新内嵌。
+    println!("cargo:rerun-if-changed={}", bundle.display());
+    println!("cargo:rerun-if-changed={}", pubkey.display());
+
     let mut body = String::new();
     if bundle.is_file() {
         let bytes = fs::read(&bundle).unwrap_or_default();

@@ -88,18 +88,25 @@ impl ModbusTcpIoService {
             registry,
             telemetry,
             tel_epoch: 0,
-            seq: 0,
+            // 评估器 last_seq 默认 0：首轮序列从 1 起（root 合成写法同源）。
+            seq: 1,
             accepted_total: 0,
             transactions: 0,
         })
     }
 
     /// 一轮点表驱动真读 + 遥测 INGEST（45.5 真实采集链；ACQ 证据行）。
-    /// 返回本轮是否有 ≥1 次成功读并上报（fail-closed 指示）。
+    ///
+    /// INGEST 协议语义 = 新采集周期全量替换（TEL_INGEST 每请求先 clear 再入样）
+    /// ——**同一轮的全部点合成单个批请求上报**（逐点单发会导致每请求清空、
+    /// 只剩末点）。cycle 序号整批共享（对齐 root 合成写法的评估器语义，
+    /// 每点按 cycle 单调，跨周期不重放）。
     fn collect_and_report(&mut self, now_ms: u64) -> bool {
         let mut any_good = false;
         let mut ids: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
         self.registry.collect_ids(&mut ids);
+        let mut batch: alloc::vec::Vec<eneros_safety_validator::TelemetrySample> =
+            alloc::vec::Vec::new();
         for id in &ids {
             let Some(mapping) = self.registry.resolve(*id).cloned() else {
                 continue;
@@ -116,7 +123,7 @@ impl ModbusTcpIoService {
                     );
                     // 58B 样本（source=1 = svc-telemetry allowed_sources；L2
                     // 测试链受信完整性=Verified，HMAC 认证链为 47 卷范围）。
-                    let sample = eneros_safety_validator::TelemetrySample {
+                    batch.push(eneros_safety_validator::TelemetrySample {
                         point: mapping.point_id,
                         value: eng,
                         source: 1,
@@ -127,45 +134,7 @@ impl ModbusTcpIoService {
                         sequence: self.seq,
                         integrity: eneros_safety_validator::IntegrityStatus::Verified,
                         mapping_version: 1,
-                    };
-                    self.seq = self.seq.saturating_add(1);
-                    let mut req: alloc::vec::Vec<u8> = alloc::vec![1u8]; // TEL_INGEST
-                    req.extend_from_slice(&eneros_agent_sdk::sample_wire::encode_sample(&sample));
-                    if let Some(client) = &mut self.telemetry {
-                        let mut transfer =
-                            eneros_agent_sdk::ChunkedClient::new(client, self.tel_epoch, 5_000);
-                        self.tel_epoch = self.tel_epoch.saturating_add(1);
-                        match transfer.transfer("svc-telemetry", &req) {
-                            Ok(resp) if resp.len() >= 2 && resp[0] == 0 => {
-                                self.accepted_total =
-                                    self.accepted_total.saturating_add(resp[1] as u64);
-                                eneros_runtime::println!(
-                                    "[svc-modbus-tcp] INGEST point={} accepted={} total={}",
-                                    mapping.point_id,
-                                    resp[1],
-                                    self.accepted_total
-                                );
-                            }
-                            Ok(resp) => {
-                                eneros_runtime::println!(
-                                    "[svc-modbus-tcp] INGEST point={} rejected {:02x?}",
-                                    mapping.point_id,
-                                    &resp[..resp.len().min(8)]
-                                );
-                            }
-                            Err(e) => {
-                                eneros_runtime::println!(
-                                    "[svc-modbus-tcp] INGEST point={} eipc={:?}",
-                                    mapping.point_id,
-                                    e
-                                );
-                            }
-                        }
-                    } else {
-                        eneros_runtime::println!(
-                            "[svc-modbus-tcp] telemetry EP not granted —— 样本未上报（fail-closed）"
-                        );
-                    }
+                    });
                 }
                 Ok(_) => {
                     eneros_runtime::println!(
@@ -181,6 +150,44 @@ impl ModbusTcpIoService {
                     );
                 }
             }
+        }
+        if batch.is_empty() {
+            return false;
+        }
+        // 整轮单次 INGEST（全量替换语义）。
+        let mut req: alloc::vec::Vec<u8> = alloc::vec![1u8]; // TEL_INGEST
+        for sample in &batch {
+            req.extend_from_slice(&eneros_agent_sdk::sample_wire::encode_sample(sample));
+        }
+        self.seq = self.seq.saturating_add(1);
+        if let Some(client) = &mut self.telemetry {
+            let mut transfer = eneros_agent_sdk::ChunkedClient::new(client, self.tel_epoch, 5_000);
+            self.tel_epoch = self.tel_epoch.saturating_add(1);
+            match transfer.transfer("svc-telemetry", &req) {
+                Ok(resp) if resp.len() >= 2 && resp[0] == 0 => {
+                    self.accepted_total = self.accepted_total.saturating_add(resp[1] as u64);
+                    eneros_runtime::println!(
+                        "[svc-modbus-tcp] INGEST round={} samples={} accepted={} total={}",
+                        batch.len(),
+                        batch.len(),
+                        resp[1],
+                        self.accepted_total
+                    );
+                }
+                Ok(resp) => {
+                    eneros_runtime::println!(
+                        "[svc-modbus-tcp] INGEST rejected {:02x?}",
+                        &resp[..resp.len().min(8)]
+                    );
+                }
+                Err(e) => {
+                    eneros_runtime::println!("[svc-modbus-tcp] INGEST eipc={:?}", e);
+                }
+            }
+        } else {
+            eneros_runtime::println!(
+                "[svc-modbus-tcp] telemetry EP not granted —— 样本未上报（fail-closed）"
+            );
         }
         any_good
     }
@@ -236,11 +243,34 @@ fn fetch_points_registry() -> eneros_protocol_abstract::VecPointRegistry {
             return eneros_protocol_abstract::VecPointRegistry::new(alloc::vec::Vec::new());
         }
     };
+    // svc-config GET_ENTRY 响应 = 4B LE 长度 + canonical payload（与
+    // svc-mgmt 先例一致）；剥前缀后再解码（长度$不对即拒绝）。
     let cfg_id = eneros_config_bundle::ConfigId::from_static("points");
-    match eneros_config_bundle::points::decode_points(&payload, &cfg_id) {
+    let body = if payload.len() >= 4 {
+        let plen = u32::from_le_bytes(payload[..4].try_into().unwrap_or([0; 4])) as usize;
+        if 4 + plen <= payload.len() {
+            &payload[4..4 + plen]
+        } else {
+            eneros_runtime::println!("[svc-modbus-tcp] config length prefix malformed");
+            return eneros_protocol_abstract::VecPointRegistry::new(alloc::vec::Vec::new());
+        }
+    } else {
+        eneros_runtime::println!("[svc-modbus-tcp] config response too short");
+        return eneros_protocol_abstract::VecPointRegistry::new(alloc::vec::Vec::new());
+    };
+    match eneros_config_bundle::points::decode_points(body, &cfg_id) {
         Ok(table) => {
-            let mappings: alloc::vec::Vec<_> =
-                table.points.iter().filter_map(|p| p.to_mapping()).collect();
+            // 服务层按协议过滤注入（45.4）：只保留 modbus-tcp 点（其余协议
+            // 点的地址不属于本插件，注入只会产生 AddrTypeMismatch 噪音）。
+            let mappings: alloc::vec::Vec<_> = table
+                .points
+                .iter()
+                .filter(|p| {
+                    p.protocol == eneros_config_bundle::points::PointProtocol::ModbusTcp
+                        || p.protocol == eneros_config_bundle::points::PointProtocol::ModbusRtu
+                })
+                .filter_map(|p| p.to_mapping())
+                .collect();
             eneros_runtime::println!(
                 "[svc-modbus-tcp] POINTS-LOADED {} modbus points (registry {})",
                 mappings.len(),

@@ -1,0 +1,83 @@
+{"event": "CONNECT", "conn": 1, "peer": "('127.0.0.1', 56884)"}
+{"event": "REQUEST", "conn": 1, "tid": 0, "unit": 2, "func": 3, "addr": 4097, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 1, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 1, "tid": 0, "unit": 2, "func": 3, "addr": 4098, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 1, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 1, "tid": 0, "unit": 2, "func": 3, "addr": 4099, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 1, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 1, "tid": 0, "unit": 2, "func": 3, "addr": 4097, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 1, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 1, "tid": 0, "unit": 2, "func": 3, "addr": 4098, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 1, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 1, "tid": 0, "unit": 2, "func": 3, "addr": 4099, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 1, "tid": 0, "bytes": 9, "serve": true}
+{"event": "CONNECT", "conn": 2, "peer": "('127.0.0.1', 42174)"}
+{"event": "REQUEST", "conn": 2, "tid": 0, "unit": 2, "func": 3, "addr": 4097, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 2, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 2, "tid": 0, "unit": 2, "func": 3, "addr": 4098, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 2, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 2, "tid": 0, "unit": 2, "func": 3, "addr": 4099, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 2, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 2, "tid": 0, "unit": 2, "func": 3, "addr": 4097, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 2, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 2, "tid": 0, "unit": 2, "func": 3, "addr": 4098, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 2, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 2, "tid": 0, "unit": 2, "func": 3, "addr": 4099, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 2, "tid": 0, "bytes": 9, "serve": true}
+{"event": "CONNECT", "conn": 3, "peer": "('127.0.0.1', 54376)"}
+{"event": "REQUEST", "conn": 3, "tid": 0, "unit": 2, "func": 3, "addr": 4097, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 3, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 3, "tid": 0, "unit": 2, "func": 3, "addr": 4098, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 3, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 3, "tid": 0, "unit": 2, "func": 3, "addr": 4099, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 3, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 3, "tid": 0, "unit": 2, "func": 3, "addr": 256, "count": 1, "handled": "ok", "values": [4000]}
+{"event": "RESPONSE", "conn": 3, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 3, "tid": 0, "unit": 2, "func": 3, "addr": 257, "count": 1, "handled": "ok", "values": [500]}
+{"event": "RESPONSE", "conn": 3, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 3, "tid": 0, "unit": 2, "func": 3, "addr": 258, "count": 1, "handled": "ok", "values": [5000]}
+{"event": "RESPONSE", "conn": 3, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 3, "tid": 0, "unit": 2, "func": 3, "addr": 259, "count": 1, "handled": "ok", "values": [600]}
+{"event": "RESPONSE", "conn": 3, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 3, "tid": 0, "unit": 2, "func": 3, "addr": 260, "count": 1, "handled": "ok", "values": [1000]}
+{"event": "RESPONSE", "conn": 3, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 3, "tid": 0, "unit": 2, "func": 3, "addr": 261, "count": 1, "handled": "ok", "values": [0]}
+{"event": "RESPONSE", "conn": 3, "tid": 0, "bytes": 11, "serve": true}
+{"event": "CONNECT", "conn": 4, "peer": "('127.0.0.1', 46228)"}
+{"event": "REQUEST", "conn": 4, "tid": 0, "unit": 2, "func": 3, "addr": 4097, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 4, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 4, "tid": 0, "unit": 2, "func": 3, "addr": 4098, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 4, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 4, "tid": 0, "unit": 2, "func": 3, "addr": 4099, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 4, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 4, "tid": 0, "unit": 2, "func": 3, "addr": 256, "count": 1, "handled": "ok", "values": [4000]}
+{"event": "RESPONSE", "conn": 4, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 4, "tid": 0, "unit": 2, "func": 3, "addr": 257, "count": 1, "handled": "ok", "values": [500]}
+{"event": "RESPONSE", "conn": 4, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 4, "tid": 0, "unit": 2, "func": 3, "addr": 258, "count": 1, "handled": "ok", "values": [5000]}
+{"event": "RESPONSE", "conn": 4, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 4, "tid": 0, "unit": 2, "func": 3, "addr": 259, "count": 1, "handled": "ok", "values": [600]}
+{"event": "RESPONSE", "conn": 4, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 4, "tid": 0, "unit": 2, "func": 3, "addr": 260, "count": 1, "handled": "ok", "values": [1000]}
+{"event": "RESPONSE", "conn": 4, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 4, "tid": 0, "unit": 2, "func": 3, "addr": 261, "count": 1, "handled": "ok", "values": [0]}
+{"event": "RESPONSE", "conn": 4, "tid": 0, "bytes": 11, "serve": true}
+{"event": "CONNECT", "conn": 5, "peer": "('127.0.0.1', 37236)"}
+{"event": "REQUEST", "conn": 5, "tid": 0, "unit": 2, "func": 3, "addr": 4097, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 5, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 5, "tid": 0, "unit": 2, "func": 3, "addr": 4098, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 5, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 5, "tid": 0, "unit": 2, "func": 3, "addr": 4099, "count": 1, "handled": "error-illegal-data-address"}
+{"event": "RESPONSE", "conn": 5, "tid": 0, "bytes": 9, "serve": true}
+{"event": "REQUEST", "conn": 5, "tid": 0, "unit": 2, "func": 3, "addr": 256, "count": 1, "handled": "ok", "values": [4000]}
+{"event": "RESPONSE", "conn": 5, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 5, "tid": 0, "unit": 2, "func": 3, "addr": 257, "count": 1, "handled": "ok", "values": [500]}
+{"event": "RESPONSE", "conn": 5, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 5, "tid": 0, "unit": 2, "func": 3, "addr": 258, "count": 1, "handled": "ok", "values": [5000]}
+{"event": "RESPONSE", "conn": 5, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 5, "tid": 0, "unit": 2, "func": 3, "addr": 259, "count": 1, "handled": "ok", "values": [600]}
+{"event": "RESPONSE", "conn": 5, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 5, "tid": 0, "unit": 2, "func": 3, "addr": 260, "count": 1, "handled": "ok", "values": [1000]}
+{"event": "RESPONSE", "conn": 5, "tid": 0, "bytes": 11, "serve": true}
+{"event": "REQUEST", "conn": 5, "tid": 0, "unit": 2, "func": 3, "addr": 261, "count": 1, "handled": "ok", "values": [0]}
+{"event": "RESPONSE", "conn": 5, "tid": 0, "bytes": 11, "serve": true}
