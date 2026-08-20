@@ -64,6 +64,7 @@ const KNOWN_KEYS: &[&str] = &[
     "peer",
     "clock_sync_interval_ms",
     "t3_timeout_ms",
+    "t1_timeout_ms",
     "poll_interval_ms",
 ];
 
@@ -163,6 +164,10 @@ impl ProtocolPlugin for Iec104Plugin {
         let t3_timeout_ms = eneros_protocol_abstract::plugin::config_u64(cfg, "t3_timeout_ms")?
             .unwrap_or(20_000)
             .min(u32::MAX as u64) as u32;
+        // 46（WP-46.4）：t1 连接确认超时（STARTDT_CON 等待上限）。
+        let t1_timeout_ms = eneros_protocol_abstract::plugin::config_u64(cfg, "t1_timeout_ms")?
+            .unwrap_or(15_000)
+            .min(u32::MAX as u64) as u32;
         let poll_interval_ms =
             eneros_protocol_abstract::plugin::config_u64(cfg, "poll_interval_ms")?
                 .unwrap_or(30_000)
@@ -191,6 +196,7 @@ impl ProtocolPlugin for Iec104Plugin {
         let master_config = MasterConfig {
             clock_sync_interval_ms,
             t3_timeout_ms,
+            t1_timeout_ms,
             poll_interval_ms,
             default_port: port,
             peer_ip: ip,

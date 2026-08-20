@@ -57,6 +57,8 @@ pub struct MasterStats {
     pub clock_sync_count: u64,
     /// 接收点值总数（数据面，ARCH-P04）
     pub rx_point_count: u64,
+    /// 46（WP-46.4）：t1 超时断链次数（STARTDT_CON 等待上限未达）。
+    pub t1_timeout_count: u64,
 }
 
 #[cfg(test)]

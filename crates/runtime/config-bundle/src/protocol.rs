@@ -40,6 +40,7 @@ pub fn known_keys(id: &str) -> Option<&'static [&'static str]> {
         "protocol-iec104" => &[
             "peer",
             "t3_timeout_ms",
+            "t1_timeout_ms",
             "poll_interval_ms",
             "clock_sync_interval_ms",
         ],

@@ -24,6 +24,14 @@ pub enum TypeId {
     MeasuredValueFloat = 13,
     /// 计数量（TI=15）
     Counter = 15,
+    /// 46（WP-46.4）：步位置（TI=5，M_ST_NA，VTI 字节）。
+    StepPosition = 5,
+    /// 46（WP-46.4）：比特串 32（TI=7，M_BO_NA，4B + 品质）。
+    Bitstring = 7,
+    /// 46（WP-46.4）：归一化设点命令（TI=48，C_SE_NA，发送/确认）。
+    SetpointNormalized = 48,
+    /// 46（WP-46.4）：短浮点设点命令（TI=50，C_SE_NC，发送/确认）。
+    SetpointFloat = 50,
     /// 单点遥控（TI=45）
     SingleCommand = 45,
     /// 双点遥控（TI=46）
@@ -50,6 +58,10 @@ impl TypeId {
             11 => Some(Self::MeasuredValueScaled),
             13 => Some(Self::MeasuredValueFloat),
             15 => Some(Self::Counter),
+            5 => Some(Self::StepPosition),
+            7 => Some(Self::Bitstring),
+            48 => Some(Self::SetpointNormalized),
+            50 => Some(Self::SetpointFloat),
             45 => Some(Self::SingleCommand),
             46 => Some(Self::DoubleCommand),
             100 => Some(Self::InterrogationCommand),
@@ -89,6 +101,7 @@ impl TypeId {
                 | Self::SinglePointTimeTagged
                 | Self::MeasuredValueNormalizedTimeTagged
                 | Self::MeasuredValueFloatTimeTagged
+                | Self::Bitstring
         )
     }
 }
@@ -428,6 +441,14 @@ pub enum IoValue {
     DoubleCommand(Dco),
     /// 计数量
     Counter(u32),
+    /// 46（WP-46.4）：步位置（M_ST；VTI 字节 = 低 3 位步值 + 高 5 位品质）。
+    StepPosition(u8),
+    /// 46（WP-46.4）：比特串 32（M_BO）。
+    Bitstring(u32),
+    /// 46（WP-46.4）：归一化设点（C_SE_NA；发送/确认）。
+    SetpointNormalized(i16),
+    /// 46（WP-46.4）：短浮点设点（C_SE_NC；发送/确认）。
+    SetpointFloat(f32),
 }
 
 impl IoValue {
@@ -442,6 +463,10 @@ impl IoValue {
             Self::Counter(_) => TypeId::Counter,
             Self::SingleCommand(_) => TypeId::SingleCommand,
             Self::DoubleCommand(_) => TypeId::DoubleCommand,
+            Self::StepPosition(_) => TypeId::StepPosition,
+            Self::Bitstring(_) => TypeId::Bitstring,
+            Self::SetpointNormalized(_) => TypeId::SetpointNormalized,
+            Self::SetpointFloat(_) => TypeId::SetpointFloat,
         }
     }
 }
@@ -515,6 +540,24 @@ impl InformationObject {
                 let v = self.value.as_u32();
                 buf.extend_from_slice(&v.to_le_bytes());
                 buf.push(self.quality.encode());
+            }
+            TypeId::StepPosition => {
+                buf.push(self.value.as_step_position() & 0x07); // VTI 低 3 位步值
+            }
+            TypeId::Bitstring => {
+                buf.extend_from_slice(&self.value.as_u32().to_le_bytes());
+                buf.push(self.quality.encode());
+            }
+            TypeId::SetpointNormalized | TypeId::SetpointFloat => {
+                // C_SE_NA/NC：值 + QDS（bit0 = S/E，命令侧默认 0 = 执行）。
+                let q = self.quality.encode() & !0x01;
+                match type_id {
+                    TypeId::SetpointNormalized => {
+                        buf.extend_from_slice(&self.value.as_i16().to_le_bytes())
+                    }
+                    _ => buf.extend_from_slice(&self.value.as_f32().to_le_bytes()),
+                }
+                buf.push(q);
             }
             TypeId::SingleCommand => {
                 buf.push(self.value.as_sco().encode());
@@ -636,6 +679,56 @@ impl InformationObject {
                 off += 5;
                 (IoValue::Counter(v), q, None)
             }
+            TypeId::StepPosition => {
+                if bytes.len() < off + 1 {
+                    return Err(Iec104Error::Decode);
+                }
+                let b = bytes[off];
+                off += 1;
+                // VTI：低 3 位步值 + 高 5 位品质。
+                (
+                    IoValue::StepPosition(b & 0x07),
+                    QualityDescriptor::decode((b >> 3) & 0x1F),
+                    None,
+                )
+            }
+            TypeId::Bitstring => {
+                if bytes.len() < off + 5 {
+                    return Err(Iec104Error::Decode);
+                }
+                let v = u32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ]);
+                let q = QualityDescriptor::decode(bytes[off + 4]);
+                off += 5;
+                (IoValue::Bitstring(v), q, None)
+            }
+            TypeId::SetpointNormalized => {
+                if bytes.len() < off + 3 {
+                    return Err(Iec104Error::Decode);
+                }
+                let v = i16::from_le_bytes([bytes[off], bytes[off + 1]]);
+                let q = QualityDescriptor::decode(bytes[off + 2]);
+                off += 3;
+                (IoValue::SetpointNormalized(v), q, None)
+            }
+            TypeId::SetpointFloat => {
+                if bytes.len() < off + 5 {
+                    return Err(Iec104Error::Decode);
+                }
+                let v = f32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ]);
+                let q = QualityDescriptor::decode(bytes[off + 4]);
+                off += 5;
+                (IoValue::SetpointFloat(v), q, None)
+            }
             TypeId::SingleCommand => {
                 if bytes.len() < off + 1 {
                     return Err(Iec104Error::Decode);
@@ -717,19 +810,26 @@ impl IoValue {
     }
     fn as_i16(&self) -> i16 {
         match self {
-            Self::Normalized(v) | Self::Scaled(v) => *v,
+            Self::Normalized(v) | Self::Scaled(v) | Self::SetpointNormalized(v) => *v,
             _ => 0,
         }
     }
     fn as_f32(&self) -> f32 {
         match self {
-            Self::Float(v) => *v,
+            Self::Float(v) | Self::SetpointFloat(v) => *v,
             _ => 0.0,
         }
     }
     fn as_u32(&self) -> u32 {
         match self {
-            Self::Counter(v) => *v,
+            Self::Counter(v) | Self::Bitstring(v) => *v,
+            _ => 0,
+        }
+    }
+    /// 46.4：步位置 VTI 字节。
+    fn as_step_position(&self) -> u8 {
+        match self {
+            Self::StepPosition(v) => *v,
             _ => 0,
         }
     }
@@ -869,6 +969,10 @@ mod tests {
             TypeId::MeasuredValueScaled,
             TypeId::MeasuredValueFloat,
             TypeId::Counter,
+            TypeId::StepPosition,
+            TypeId::Bitstring,
+            TypeId::SetpointNormalized,
+            TypeId::SetpointFloat,
             TypeId::SingleCommand,
             TypeId::DoubleCommand,
             TypeId::InterrogationCommand,
@@ -1360,6 +1464,71 @@ mod tests {
         let asdu = make_asdu(TypeId::Counter, IoValue::Counter(0xDEADBEEF));
         let bytes = asdu.encode();
         assert_eq!(bytes[0], 15);
+        let decoded = Asdu::decode(&bytes).expect("decode ok");
+        assert_eq!(decoded, asdu);
+    }
+
+    /// 46（WP-46.4）M_ST（TI=5，步位置）：向量自造（IEC 60870-5-101
+    /// 表 M_ST_NA_1：VTI 1B = 低 3 位步值 + 高 5 位品质）。推导依据=标准
+    /// 对象结构——非权威来源，测试注释登记。手测字节：[05 01 01 00 00 64 12]。
+    #[test]
+    fn test_asdu_step_position_roundtrip_and_vector() {
+        let asdu = make_asdu(TypeId::StepPosition, IoValue::StepPosition(0x05));
+        let bytes = asdu.encode();
+        assert_eq!(bytes[0], 5, "type id");
+        // [type 05][VSQ 01][COT 01 00][CA 01 00][IOA 64 0000][VTI 12]
+        let n = bytes.len();
+        assert_eq!(&bytes[n - 1..], &[0x05], "VTI = 步值低 3 位 + 品质高 5 位");
+        assert_eq!(bytes[n - 1] & 0x07, 0x05, "低 3 位步值");
+        let decoded = Asdu::decode(&bytes).expect("decode ok");
+        assert_eq!(decoded, asdu);
+        assert_eq!(decoded.ioas[0].value, IoValue::StepPosition(0x05));
+    }
+
+    /// 46（WP-46.4）M_BO（TI=7，比特串 32）：向量自造（M_BO_NA_1：
+    /// BS32 4B + QDS 1B）。非权威来源，手写向量按标准对象结构推导。
+    #[test]
+    fn test_asdu_bitstring_roundtrip() {
+        let asdu = make_asdu(TypeId::Bitstring, IoValue::Bitstring(0x01020304));
+        let bytes = asdu.encode();
+        assert_eq!(bytes[0], 7, "type id");
+        // BS32 小端 04 03 02 01 + QDS 00（good）——体尾部 5 字节。
+        let n = bytes.len();
+        assert_eq!(&bytes[n - 5..n - 1], &[0x04, 0x03, 0x02, 0x01]);
+        assert_eq!(bytes[n - 1], 0x00);
+        let decoded = Asdu::decode(&bytes).expect("decode ok");
+        assert_eq!(decoded, asdu);
+    }
+
+    /// 46（WP-46.4）C_SE_NA（TI=48，归一化设点）：向量自造（C_SE_NA_1：
+    /// NVA 2B 小端 + QDS 1B（bit0=S/E=执行 0））。手写向量推导依据=标准对象结构。
+    #[test]
+    fn test_asdu_setpoint_normalized_roundtrip() {
+        let asdu = make_asdu(
+            TypeId::SetpointNormalized,
+            IoValue::SetpointNormalized(-1234),
+        );
+        let bytes = asdu.encode();
+        assert_eq!(bytes[0], 48, "type id");
+        // NVA = -1234 = 0xFB2E 小端 → 2E FB；QDS=00（S/E=0 执行）。
+        let n = bytes.len();
+        assert_eq!(&bytes[n - 3..n - 1], &[0x2E, 0xFB]);
+        assert_eq!(bytes[n - 1], 0x00);
+        let decoded = Asdu::decode(&bytes).expect("decode ok");
+        assert_eq!(decoded, asdu);
+    }
+
+    /// 46（WP-46.4）C_SE_NC（TI=50，短浮点设点）：向量自造（C_SE_NC_1：
+    /// 4B 小端 IEEE 754 + QDS（S/E=执行））。推导依据=标准对象结构。
+    #[test]
+    fn test_asdu_setpoint_float_roundtrip() {
+        let asdu = make_asdu(TypeId::SetpointFloat, IoValue::SetpointFloat(3.5f32));
+        let bytes = asdu.encode();
+        assert_eq!(bytes[0], 50, "type id");
+        // 3.5f32 LE = 00 00 60 40；QDS=00（执行）。
+        let n = bytes.len();
+        assert_eq!(&bytes[n - 5..n - 1], &[0x00, 0x00, 0x60, 0x40]);
+        assert_eq!(bytes[n - 1], 0x00);
         let decoded = Asdu::decode(&bytes).expect("decode ok");
         assert_eq!(decoded, asdu);
     }

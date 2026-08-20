@@ -1,5 +1,6 @@
-# 46（WP-46.3）：svc-iec104 协议配置（144 master；t1 超时 46.4 补齐后消费）。
+# 46（WP-46.3/46.4）：svc-iec104 协议配置（144 master；t1/t3 超时 46.4 消费）。
 peer = "10.0.2.2:2404"
+t1_timeout_ms = 15000
 t3_timeout_ms = 20000
 poll_interval_ms = 30000
 clock_sync_interval_ms = 600000

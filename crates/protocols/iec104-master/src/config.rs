@@ -11,6 +11,10 @@ pub struct MasterConfig {
     pub clock_sync_interval_ms: u32,
     /// t3 保活超时（毫秒，默认 20000）
     pub t3_timeout_ms: u32,
+    /// 46（WP-46.4）：t1 连接确认超时（毫秒，默认 15000 = IEC 60870-5-104
+    /// §5.3）——STARTDT_CON 等待上限：StartDtPending 空闲超 t1 → 断链，
+    /// 适配器下一次 poll 重连。
+    pub t1_timeout_ms: u32,
     /// 默认轮询周期（毫秒，默认 30000）
     pub poll_interval_ms: u32,
     /// 默认端口（IEC 104 标准端口 2404）
@@ -28,6 +32,7 @@ impl Default for MasterConfig {
         Self {
             clock_sync_interval_ms: 600_000,
             t3_timeout_ms: 20_000,
+            t1_timeout_ms: 15_000,
             poll_interval_ms: 30_000,
             default_port: 2404,
             peer_ip: [0, 0, 0, 0], // 未注入哨兵——生产必须经装配注入（PR-14）
@@ -45,6 +50,7 @@ mod tests {
         let cfg = MasterConfig::default();
         assert_eq!(cfg.clock_sync_interval_ms, 600_000);
         assert_eq!(cfg.t3_timeout_ms, 20_000);
+        assert_eq!(cfg.t1_timeout_ms, 15_000);
         assert_eq!(cfg.poll_interval_ms, 30_000);
         assert_eq!(cfg.default_port, 2404);
         // PR-14：缺省对端地址为未注入哨兵（禁止字面量兜底 IP）。
@@ -68,6 +74,7 @@ mod tests {
         };
         assert_eq!(cfg.clock_sync_interval_ms, 300_000);
         assert_eq!(cfg.t3_timeout_ms, 15_000);
+        assert_eq!(cfg.t1_timeout_ms, 15_000);
         assert_eq!(cfg.poll_interval_ms, 30_000);
     }
 }

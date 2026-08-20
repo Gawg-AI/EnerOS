@@ -303,6 +303,19 @@ impl Iec104Master {
                 let _ = self.send_testfr(conn_key);
             }
 
+            // 46（WP-46.4）：t1 连接确认超时——StartDtPending（已发
+            // STARTDT_ACT 等待 STARTDT_CON）空闲超 t1 → 断链，适配器下一次
+            // poll 自动重连（poll_device 对非在册设备重新 connect）。
+            if let Some(c) = self.devices.get(&conn_key) {
+                if c.state == ConnState::StartDtPending
+                    && now_ms.saturating_sub(c.last_activity_ms) > self.config.t1_timeout_ms as u64
+                {
+                    self.stats.t1_timeout_count += 1;
+                    self.drop_device(conn_key);
+                    continue;
+                }
+            }
+
             // 接收处理
             let _ = self.process_rx(conn_key);
         }
@@ -440,8 +453,13 @@ impl Iec104Master {
                     }
                 }
             }
-            TypeId::SingleCommand | TypeId::DoubleCommand => {
-                // 遥控确认 — 无需额外处理
+            TypeId::SingleCommand
+            | TypeId::DoubleCommand
+            // 46（WP-46.4）：设点命令确认（C_SE_NA/C_SE_NC，COT=ActivationConfirm）——
+            // 无需额外处理（命令计数/状态由调用方跟踪）。
+            | TypeId::SetpointNormalized
+            | TypeId::SetpointFloat => {
+                // 遥控/设点确认 — 无需额外处理
             }
             TypeId::ClockSyncCommand => {
                 // 时钟同步确认 — 无需额外处理
@@ -452,6 +470,9 @@ impl Iec104Master {
             | TypeId::MeasuredValueScaled
             | TypeId::MeasuredValueFloat
             | TypeId::Counter
+            // 46（WP-46.4）：步位置 / 比特串遥信接入数据面。
+            | TypeId::StepPosition
+            | TypeId::Bitstring
             // v0.220.0：带时标类型数据路径相同（时标保留在 io.time_tag）。
             | TypeId::SinglePointTimeTagged
             | TypeId::MeasuredValueNormalizedTimeTagged
@@ -472,6 +493,68 @@ impl Iec104Master {
                 self.stats.rx_point_count += asdu.ioas.len() as u64;
             }
         }
+        Ok(())
+    }
+
+    /// 46（WP-46.4）：发送归一化设点命令（C_SE_NA，TI=48；COT=Activation）。
+    pub fn send_setpoint_normalized(
+        &mut self,
+        common_addr: u16,
+        ioa: u32,
+        value: i16,
+    ) -> Result<(), MasterError> {
+        let state = self
+            .devices
+            .get(&common_addr)
+            .map(|c| c.state)
+            .ok_or(MasterError::NotConnected)?;
+        if state != ConnState::Connected {
+            return Err(MasterError::StateError);
+        }
+        let asdu = Asdu {
+            type_id: TypeId::SetpointNormalized,
+            cause_of_tx: Cot::Activation,
+            common_addr,
+            ioas: vec![InformationObject {
+                ioa,
+                value: IoValue::SetpointNormalized(value),
+                quality: QualityDescriptor::good(),
+                time_tag: None,
+            }],
+        };
+        self.send_i_format(common_addr, &asdu)?;
+        self.stats.command_count += 1;
+        Ok(())
+    }
+
+    /// 46（WP-46.4）：发送短浮点设点命令（C_SE_NC，TI=50；COT=Activation）。
+    pub fn send_setpoint_float(
+        &mut self,
+        common_addr: u16,
+        ioa: u32,
+        value: f32,
+    ) -> Result<(), MasterError> {
+        let state = self
+            .devices
+            .get(&common_addr)
+            .map(|c| c.state)
+            .ok_or(MasterError::NotConnected)?;
+        if state != ConnState::Connected {
+            return Err(MasterError::StateError);
+        }
+        let asdu = Asdu {
+            type_id: TypeId::SetpointFloat,
+            cause_of_tx: Cot::Activation,
+            common_addr,
+            ioas: vec![InformationObject {
+                ioa,
+                value: IoValue::SetpointFloat(value),
+                quality: QualityDescriptor::good(),
+                time_tag: None,
+            }],
+        };
+        self.send_i_format(common_addr, &asdu)?;
+        self.stats.command_count += 1;
         Ok(())
     }
 
@@ -507,6 +590,16 @@ impl Iec104Master {
             conn.touch(now);
         }
         Ok(())
+    }
+
+    /// 46（WP-46.4）：移除设备连接（t1 超时/断链）——关闭传输、清除
+    /// 设备与调度任务；适配器下一次 poll 会自动重连（自愈语义）。
+    fn drop_device(&mut self, common_addr: u16) {
+        if let Some(conn) = self.devices.remove(&common_addr) {
+            let _ = self.transport.close(conn.conn_id);
+            self.stats.disconnect_count += 1;
+        }
+        self.scheduler.remove_task(common_addr);
     }
 
     /// 31 PR-01：发送 S 帧确认（R(S) = 下一期望接收序号；空 ASDU）。
@@ -966,5 +1059,130 @@ mod tests {
         assert_eq!(tag.minute, 4);
         assert_eq!(tag.second, 5);
         assert_eq!(tag.millis, 6);
+    }
+
+    // ===== 46（WP-46.4）t1 超时 / 设点 / M_ST·M_BO =====
+
+    /// t1 超时：StartDtPending（STARTDT_CON 未达）空闲超 t1 → 断链 + 计数，
+    /// 且可重连（适配器 poll_device 对非在册设备自动重连 = 自愈）。
+    #[test]
+    fn test_t1_timeout_drops_startdt_pending_and_reconnect() {
+        use crate::mock::MockMasterTransport;
+        let transport = MockMasterTransport::new(); // 对端不回 STARTDT_CON
+        let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
+        let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
+        master.connect(&dev).unwrap();
+        assert!(master.conn_keys().contains(&1));
+        assert_eq!(master.devices[&1].state, ConnState::StartDtPending);
+        // 未超 t1：连接保留。
+        master.poll(10_000);
+        assert!(master.conn_keys().contains(&1), "10s < t1(15s) 不得断链");
+        // 超 t1（20s > 15s）：断链。
+        master.poll(20_000);
+        assert!(!master.conn_keys().contains(&1), "t1 超时必须断链");
+        assert_eq!(master.stats().t1_timeout_count, 1);
+        assert_eq!(master.stats().disconnect_count, 1);
+        // 自愈：非在册设备可立即重连。
+        master.connect(&dev).unwrap();
+        assert!(master.conn_keys().contains(&1));
+    }
+
+    /// 设点命令发送（C_SE_NA=48 / C_SE_NC=50）：Connected 后下发 → 线上
+    /// 出现对应 TI 的 I 帧（字节级校验）。
+    #[test]
+    fn test_send_setpoint_normalized_and_float() {
+        use crate::mock::MockMasterTransport;
+        let transport = MockMasterTransport::new();
+        let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
+        let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
+        master.connect(&dev).unwrap();
+        // 对端回 STARTDT_CON → Connected。
+        master
+            .transport_mut()
+            .as_any_mut()
+            .downcast_mut::<MockMasterTransport>()
+            .unwrap()
+            .push_rx(
+                1,
+                Apdu::u_format(UFormatFunction::StartDtCon)
+                    .encode()
+                    .unwrap(),
+            );
+        master.process_rx(1).unwrap();
+        assert_eq!(
+            master.devices[&1].state,
+            ConnState::Connected,
+            "STARTDT_CON 后必须 Connected"
+        );
+        master.send_setpoint_normalized(1, 2001, -1234).unwrap();
+        master.send_setpoint_float(1, 2002, 3.5f32).unwrap();
+        // 校验线上帧含设点 TI。
+        let frames = master
+            .transport_mut()
+            .as_any_mut()
+            .downcast_mut::<MockMasterTransport>()
+            .unwrap()
+            .tx_frames()
+            .to_vec();
+        let mut has_48 = false;
+        let mut has_50 = false;
+        for (_, b) in &frames {
+            // APDU：0x68(1) + len(1) + 控制 4B → ASDU TI 在偏移 6。
+            if b.len() >= 7 {
+                if b[6] == 48 {
+                    has_48 = true;
+                }
+                if b[6] == 50 {
+                    has_50 = true;
+                }
+            }
+        }
+        assert!(has_48, "必须下发 C_SE_NA(48)；帧: {frames:?}");
+        assert!(has_50, "必须下发 C_SE_NC(50)；帧: {frames:?}");
+        assert_eq!(master.stats().command_count, 2);
+    }
+
+    /// M_ST(5) / M_BO(7) 遥信收帧 → 数据面缓存（latest_values）。
+    #[test]
+    fn test_m_st_m_bo_latest_value() {
+        use crate::mock::MockMasterTransport;
+        let transport = MockMasterTransport::new();
+        let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
+        let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
+        master.connect(&dev).unwrap();
+        for (seq, type_id, ioa, value) in [
+            (
+                0u16,
+                TypeId::StepPosition,
+                3001,
+                IoValue::StepPosition(0x05),
+            ),
+            (1u16, TypeId::Bitstring, 3002, IoValue::Bitstring(0x0F0F)),
+        ] {
+            let asdu = Asdu {
+                type_id,
+                cause_of_tx: Cot::Periodic,
+                common_addr: 1,
+                ioas: vec![InformationObject {
+                    ioa,
+                    value,
+                    quality: QualityDescriptor::good(),
+                    time_tag: None,
+                }],
+            };
+            let apdu = Apdu::i_format(seq, 0, asdu);
+            master
+                .transport_mut()
+                .as_any_mut()
+                .downcast_mut::<MockMasterTransport>()
+                .unwrap()
+                .push_rx(1, apdu.encode().unwrap());
+            master.process_rx(1).unwrap();
+        }
+        let v1 = master.latest_value(1, 3001).expect("M_ST 未入数据面");
+        assert_eq!(v1.value, IoValue::StepPosition(0x05));
+        let v2 = master.latest_value(1, 3002).expect("M_BO 未入数据面");
+        assert_eq!(v2.value, IoValue::Bitstring(0x0F0F));
+        assert!(master.stats().rx_point_count >= 2);
     }
 }
