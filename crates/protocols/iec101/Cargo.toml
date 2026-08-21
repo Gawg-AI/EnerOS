@@ -1,0 +1,12 @@
+[package]
+name = "eneros-iec101"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS IEC 60870-5-101 master plugin — shared ASDU reuse + config seam; FT1.2 link layer BLOCKED pending spec text (blueprint 48 WP-48.2)"
+
+[dependencies]
+eneros-protocol-abstract = { path = "../protocol-abstract" }
+eneros-upa-model = { path = "../upa-model" }
+eneros-iec60870-asdu = { path = "../iec60870-asdu" }
