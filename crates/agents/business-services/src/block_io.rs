@@ -3,7 +3,9 @@
 //! （control-services 与 business-services 共享同一实现），本模块
 //! re-export 保持既有调用面；`EipcBlockDevice` 与 OTA 测试留在本 crate。
 
-use eneros_agent_sdk::block_io::{BlockIo, EipcSend};
+#[cfg(all(target_os = "none", feature = "sel4"))]
+pub use eneros_agent_sdk::block_io::eipc_block_io;
+pub use eneros_agent_sdk::block_io::{BlockIo, EipcSend};
 use eneros_durable_state::PersistIo;
 use eneros_storage::driver::{BlockDevice, DeviceHealth};
 use eneros_storage::StorageError;

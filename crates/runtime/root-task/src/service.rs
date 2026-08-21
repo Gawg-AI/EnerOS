@@ -19,6 +19,51 @@ extern crate alloc;
 
 /// IPC 循环 fail-closed 挂起（红线 4：任何 IPC 错误 = 挂起，禁止降级运行）。
 #[cfg(target_os = "none")]
+
+/// 47（WP-47.1 编排驱动）：向协议服务发送 drv-svc `OP_EXECUTE` 信封
+///（83B ≤ MR 预算，4B/word 打包——与 drv_call 语义一致），等待应答并
+/// 读取状态字节（观测：成功/失败均登记串口）。驱动失败不阻断主循环
+///（服务侧 fail-closed 语义由服务自己保证）。
+fn protocol_execute(ep: u64, corr: u32, name: &str) -> bool {
+    use eneros_drv_svc::runtime::{wire, DriverRequest, OP_EXECUTE};
+    use eneros_sel4_sys::safe::{get_mr, ipc_call, message_info_new, set_mr};
+    let req = DriverRequest::new(corr, OP_EXECUTE);
+    let enc = wire::encode_request(&req);
+    let words = enc.len().div_ceil(4);
+    for (i, chunk) in enc.chunks(4).enumerate() {
+        let mut word = [0u8; 4];
+        word[..chunk.len()].copy_from_slice(chunk);
+        match set_mr(i as u64, u32::from_le_bytes(word) as u64) {
+            Ok(()) => {}
+            Err(e) => {
+                eneros_runtime::println!("[eneros-root-task] PROTO-EXEC {name} set_mr FAIL {e:?}");
+                return false;
+            }
+        }
+    }
+    let mi = match message_info_new(0, 0, 0, words as u64) {
+        Ok(m) => m,
+        Err(e) => {
+            eneros_runtime::println!("[eneros-root-task] PROTO-EXEC {name} mi FAIL {e:?}");
+            return false;
+        }
+    };
+    match ipc_call(ep, mi) {
+        Ok(reply) => {
+            // 应答：status 在第 3 个 word 低字节（wire 布局 corr(4) status(1)...）。
+            let status = get_mr(1).unwrap_or(0xFF) & 0xFF;
+            eneros_runtime::println!("[eneros-root-task] PROTO-EXEC {name} status=0x{status:02x}");
+            let _ = reply;
+            status <= 4 // ST_OK..ST_INVALID 均为已处理；应答异常仍归真
+        }
+        Err(e) => {
+            eneros_runtime::println!("[eneros-root-task] PROTO-EXEC {name} call FAIL {e:?}");
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "none")]
 fn ipc_fail_closed(step: &str, e: impl core::fmt::Debug) -> ! {
     eneros_runtime::println!(
         "[eneros-root-task] IPC loop FAILED at {}: {:?} — 挂起（fail-closed）",
@@ -254,8 +299,9 @@ pub fn run_ipc_loop(
     let mut chain_rounds: u64 = 0;
     let mut hang_injected = false;
     /// 控制链驱动周期（轮）。QEMU 实弹验证（round 21）：100 轮 ≈ 0.13s
-    /// 虚拟/次，hello 760 轮/s；dispatch rate gate 已按 demo profile 放宽
-    /// （svc-control-dispatch 装配 DecisionGate 100000/h），不撞限。
+    /// 虚拟/次，hello 760 轮/s。dispatch rate gate = 产品值 60/h
+    /// （47 WP-47.1）——AI 链每 ACQ 刷新周期约 1 次 confirm，SCADA 写
+    /// 共 <60 次确认不撞限（QEMU 写链演示窗口）。
     const CONTROL_CHAIN_PERIOD: u64 = 100;
     /// hang 注入轮次（链稳定后一次性）。
     const HANG_INJECT_ROUND: u64 = 200;
@@ -465,6 +511,17 @@ pub fn run_ipc_loop(
                             "[eneros-root-task] CONTROL-CHAIN: transport error ({e}) — fail-closed"
                         );
                     }
+                }
+            }
+        }
+        // 47（WP-47.1 Exit 编排驱动）：协议服务 EXECUTE（独立分支——先
+        // svc-modbus-tcp ACQ 保鲜 {意图授权前遥测新鲜}，后 svc-mqtt 下行
+        // 写命令轮询 → 意图转发 dispatch；同轮顺序使 intent 的 SNAPSHOT
+        // 与 ACQ 相隔毫秒）。
+        if tick % CONTROL_CHAIN_PERIOD == 30 {
+            for name in ["svc-modbus-tcp", "svc-mqtt"] {
+                if let Some(h) = handles.iter().find(|h| h.name == name) {
+                    let _ = protocol_execute(h.ep, (tick % 0xFFFF) as u32, name);
                 }
             }
         }

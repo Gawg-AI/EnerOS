@@ -235,7 +235,12 @@ pub fn compile_control_write(toml: &str) -> Result<CompiledConfig, ConfigError> 
     reject_unknown_keys(
         cw,
         &config,
-        &["lease_id", "legacy_input", "handshake_retries"],
+        &[
+            "lease_id",
+            "legacy_input",
+            "handshake_retries",
+            "rate_per_hour",
+        ],
     )?;
 
     // 1: lease_id——16B hex；全零拒绝；长度错拒绝。
@@ -287,12 +292,28 @@ pub fn compile_control_write(toml: &str) -> Result<CompiledConfig, ConfigError> 
             reason: format!("max-{}", control_write::HANDSHAKE_RETRIES_MAX),
         });
     }
+    // 4（47 WP-47.1，可选）：rate_per_hour——每小时 dispatch 确认配额。
+    // 缺省 = 产品默认 60/h（装配侧）；qemu-test 演示放宽值经本配置注入。
+    let mut fields = vec![
+        (control_write::FIELD_LEASE_ID, lease),
+        (control_write::FIELD_LEGACY_INPUT, vec![legacy_enc]),
+        (control_write::FIELD_HANDSHAKE_RETRIES, vec![retries]),
+    ];
+    if let Some(rate) = cw.get("rate_per_hour").and_then(Value::as_integer) {
+        if rate <= 0 || rate > 1_000_000 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "rate_per_hour",
+                reason: "range-1..=1000000".into(),
+            });
+        }
+        fields.push((
+            control_write::FIELD_RATE_PER_HOUR,
+            (rate as u32).to_le_bytes().to_vec(),
+        ));
+    }
     Ok(CompiledConfig {
-        payload: encode_payload(&[
-            (control_write::FIELD_LEASE_ID, lease),
-            (control_write::FIELD_LEGACY_INPUT, vec![legacy_enc]),
-            (control_write::FIELD_HANDSHAKE_RETRIES, vec![retries]),
-        ]),
+        payload: encode_payload(&fields),
         config_id: config,
     })
 }

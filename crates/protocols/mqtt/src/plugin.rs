@@ -82,6 +82,11 @@ pub struct MqttPlugin {
     routed_count: usize,
     /// 47（WP-47.1）：下行写命令主题（可选；未配置 = 不收写）。
     control_topic: Option<alloc::string::String>,
+    /// 47：control_topic 待订阅标志（connect 后惰性订阅——start 期传输
+    /// 未连接，直接 subscribe 会在客户端未握手时失败）。
+    pending_subscribe: bool,
+    /// 47：control_topic 已订阅。
+    subscribed: bool,
     /// 47（WP-47.1）：已解析待导出写意图（poll → drain）。
     pending_intents: alloc::vec::Vec<PointWriteIntent>,
     /// 47（WP-47.1）：意图序号（每协议单调；重放判定由 ControlDispatch）。
@@ -102,6 +107,8 @@ impl MqttPlugin {
             last_progress: Progress::Idle,
             routed_count: 0,
             control_topic: None,
+            pending_subscribe: false,
+            subscribed: false,
             pending_intents: alloc::vec::Vec::new(),
             intent_seq: 0,
             bad_downlink_count: 0,
@@ -259,17 +266,15 @@ impl ProtocolPlugin for MqttPlugin {
         let transport: Box<dyn MqttTransport> = Box::new(handle);
         let mut client = MqttClient::new(&broker, &client_id, keep_alive_ms);
         client.set_transport(transport);
-        // 47（WP-47.1）：下行写命令主题（可选）——配置了才订阅。
-        if let Some(topic) = cfg.get("control_topic").filter(|t| !t.is_empty()) {
-            match client.subscribe(topic, crate::qos::QoS::AtMostOnce) {
-                Ok(()) => {
-                    self.control_topic = Some(topic.to_owned());
-                }
-                Err(_) => {
-                    // 订阅失败 → 不装配写通道（fail-closed：不假装能收写）。
-                    return Err(ProtocolError::ProtocolInit);
-                }
-            }
+        // 47（WP-47.1）：下行写命令主题（可选）——配置了才订阅；订阅
+        // 延后到首次 poll connect 之后（start 期传输未握手，直调
+        // subscribe 必失败）。
+        self.control_topic = cfg
+            .get("control_topic")
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_owned());
+        if self.control_topic.is_some() {
+            self.pending_subscribe = true;
         }
         self.client = Some(client);
         self.state = AdapterState::Running;
@@ -290,6 +295,18 @@ impl ProtocolPlugin for MqttPlugin {
                     self.last_error = Some(ProtocolError::ReadFailed);
                     self.last_progress = Progress::Degraded;
                     return Err(ProtocolError::ReadFailed);
+                }
+            }
+        }
+        // 47：connect 后惰性订阅 control_topic（若上轮失败本轮重试）。
+        if self.connected && self.pending_subscribe && !self.subscribed {
+            if let Some(topic) = self.control_topic.clone() {
+                if client
+                    .subscribe(&topic, crate::qos::QoS::AtMostOnce)
+                    .is_ok()
+                {
+                    self.pending_subscribe = false;
+                    self.subscribed = true;
                 }
             }
         }

@@ -50,11 +50,10 @@ pub trait EipcSend {
     fn drv_call(&mut self, req: &[u8], timeout_ns: u64) -> Result<alloc::vec::Vec<u8>, ()>;
 }
 
-#[cfg(target_os = "none")]
-impl EipcSend for eneros_agent_sdk::ipc_sel4::Sel4IpcClient {
+#[cfg(all(target_os = "none", feature = "sel4"))]
+impl EipcSend for crate::ipc_sel4::Sel4IpcClient {
     fn drv_call(&mut self, req: &[u8], timeout_ns: u64) -> Result<alloc::vec::Vec<u8>, ()> {
-        use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
-        Sel4IpcClient::drv_call(self, req, timeout_ns).map_err(|_| ())
+        crate::ipc_sel4::Sel4IpcClient::drv_call(self, req, timeout_ns).map_err(|_| ())
     }
 }
 
@@ -156,15 +155,13 @@ impl<C: EipcSend> PersistIo for BlockIo<C> {
     }
 }
 
-/// 构造 EIPC block 客户端（target 侧；`slot` = X3 授予表槽位）。
-#[cfg(target_os = "none")]
+/// 构造 EIPC block 客户端（target 侧 sel4；`slot` = X3 授予表槽位）。
+#[cfg(all(target_os = "none", feature = "sel4"))]
 pub fn eipc_block_io(
     slot: u64,
     epoch: u64,
     timeout_ms: u64,
-) -> Option<BlockIo<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>> {
-    let ipc =
-        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new("block-io", slot, eneros_drv_svc::now_ns)
-            .ok()?;
+) -> Option<BlockIo<crate::ipc_sel4::Sel4IpcClient>> {
+    let ipc = crate::ipc_sel4::Sel4IpcClient::new("block-io", slot, eneros_drv_svc::now_ns).ok()?;
     Some(BlockIo::new(ipc, "svc-storage", epoch, timeout_ms))
 }

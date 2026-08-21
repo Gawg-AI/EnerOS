@@ -27,6 +27,7 @@ use alloc::borrow::ToOwned;
 use alloc::vec::Vec;
 use core::fmt;
 
+pub mod control_write;
 pub mod payload;
 /// 蓝图 45 点表（target 解码面 + PointsConsumer）。no_std + alloc。
 pub mod points;

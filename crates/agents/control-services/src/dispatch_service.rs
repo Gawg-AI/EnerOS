@@ -135,8 +135,20 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
     };
     let deadline_ms = 5000;
     match engine.submit(&plan, &telemetry, &actor, deadline_ms) {
-        Ok(receipt) => encode_receipt(&receipt),
-        Err(e) => err_receipt(&format!("{e:?}")),
+        Ok(receipt) => {
+            if !receipt.final_state.is_committed() {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] SUBMIT state={:?} note={:?}",
+                    receipt.final_state,
+                    receipt.note
+                );
+            }
+            encode_receipt(&receipt)
+        }
+        Err(e) => {
+            eneros_runtime::println!("[svc-control-dispatch] SUBMIT-ERR {e:?}");
+            err_receipt(&format!("{e:?}"))
+        }
     }
 }
 
@@ -192,8 +204,18 @@ pub fn handle_submit_intent(
     };
     let deadline_ms = 5000;
     match engine.submit_intent(&intent, tel, &actor, deadline_ms) {
-        Ok(receipt) => encode_receipt(&receipt),
-        Err(e) => err_receipt(&format!("{e:?}")),
+        Ok(receipt) => {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] INTENT state={:?} note={:?}",
+                receipt.final_state,
+                receipt.note
+            );
+            encode_receipt(&receipt)
+        }
+        Err(e) => {
+            eneros_runtime::println!("[svc-control-dispatch] INTENT-ERR {e:?}");
+            err_receipt(&format!("{e:?}"))
+        }
     }
 }
 

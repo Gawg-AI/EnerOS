@@ -12,7 +12,16 @@
 extern crate alloc;
 
 #[cfg(target_os = "none")]
+use alloc::format;
+#[cfg(target_os = "none")]
+use alloc::string::String;
+#[cfg(target_os = "none")]
 use core::panic::PanicInfo;
+
+#[cfg(target_os = "none")]
+use eneros_audit::{AuditLoggerImpl, MemStore};
+#[cfg(target_os = "none")]
+use eneros_control_dispatch::{DispatchConfig, FeedbackPointMapping, InMemoryIntentStore};
 
 #[cfg(target_os = "none")]
 extern crate eneros_control_services;
@@ -46,6 +55,25 @@ pub extern "C" fn _start(
     )
 }
 
+/// 47（WP-47.1 速率可调）：取 control-write 配置（svc-config ConfigGet）。
+#[cfg(target_os = "none")]
+fn fetch_control_write(
+    config: &mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+) -> Option<eneros_config_bundle::control_write::ControlWriteConfig> {
+    let mut req: alloc::vec::Vec<u8> = alloc::vec![b'C', b'F', b'G', b'1', 0x01];
+    req.extend_from_slice(b"control-write");
+    let mut transfer = eneros_agent_sdk::ChunkedClient::new(config, 0, 5_000);
+    let payload = transfer.transfer("svc-config", &req).ok()?;
+    if payload.len() < 4 {
+        return None;
+    }
+    let plen = u32::from_le_bytes(payload[..4].try_into().unwrap_or([0; 4])) as usize;
+    if 4 + plen > payload.len() {
+        return None;
+    }
+    eneros_config_bundle::control_write::ControlWriteConfig::decode(&payload[4..4 + plen]).ok()
+}
+
 /// 47（WP-47.4）：意图持久存储装配——svc-storage EIPC（X3 bit4）→
 /// `DurableIntentStore`（open 失败 → InMemory 兜底 + 登记）；未授予 →
 /// InMemory 兜底（fail-closed 登记）。
@@ -58,7 +86,7 @@ fn build_intent_store(
     if eipc_mask & 16 != 0 {
         if let Some(io) = eipc_block_io(
             eneros_agent_sdk::EIPC_EP_BASE_SLOT + 4,
-            eneros_drv_svc::instance_epoch(),
+            0, // 首个响应吸收 svc-storage 实例 epoch（业务服务先例）
             5_000,
         ) {
             // 区域：偏移 0，槽 512B × 256（意图日志区；svc-storage 独立
@@ -145,16 +173,18 @@ impl eneros_control_dispatch::DeliveryChannel for EipcMasterChannel {
         }
         let env = eneros_control_gateway::envelope::CommandEnvelope::decode(&ce.envelope)
             .map_err(|e| ChannelError::Protocol(format!("inner:{e:?}")))?;
-        // 装配 drv-svc 写请求（payload 16B：device u32 ‖ point u32 ‖ power f64）。
-        use eneros_drv_svc::runtime::wire;
-        use eneros_drv_svc::runtime::DriverRequest;
+        // 装配 drv-svc 写请求：**OP_EXECUTE + 载荷子码**（drv-svc runtime
+        // 只把 OP_EXECUTE 路由到服务 handle；自定义 opcode 一律 ST_INVALID）。
+        // payload = [sub=OP_MASTER_WRITE][device u32][point u32][power f64] = 17B。
+        use eneros_drv_svc::runtime::{wire, DriverRequest, OP_EXECUTE};
         use eneros_protocol_abstract::write::OP_MASTER_WRITE;
         self.correlation = self.correlation.wrapping_add(1);
-        let mut req = DriverRequest::new(self.correlation, OP_MASTER_WRITE);
-        req.payload[0..4].copy_from_slice(&env.device_id.to_le_bytes());
-        req.payload[4..8].copy_from_slice(&env.point_id.to_le_bytes());
-        req.payload[8..16].copy_from_slice(&ce.power_kw.to_le_bytes());
-        req.payload_len = 16;
+        let mut req = DriverRequest::new(self.correlation, OP_EXECUTE);
+        req.payload[0] = OP_MASTER_WRITE;
+        req.payload[1..5].copy_from_slice(&env.device_id.to_le_bytes());
+        req.payload[5..9].copy_from_slice(&env.point_id.to_le_bytes());
+        req.payload[9..17].copy_from_slice(&ce.power_kw.to_le_bytes());
+        req.payload_len = 17;
         let raw = wire::encode_request(&req);
         let timeout_ns = if timeout_ms == 0 {
             5_000_000_000u64
@@ -168,7 +198,15 @@ impl eneros_control_dispatch::DeliveryChannel for EipcMasterChannel {
                 eneros_agent_sdk::AgentError::Timeout => ChannelError::Timeout,
                 _ => ChannelError::Protocol(format!("drv:{e:?}")),
             })?;
-        let resp = wire::decode_response(&resp_bytes).ok_or(ChannelError::BadResponse)?;
+        // drv-svc 服务端按 4B/word 回 MR：RESPONSE_LEN=79 会以 20 words
+        //（80B）返回；decode_response 要求精确 79B，直接解码会误判
+        // bad-envelope（block_io.rs 同款 QEMU 实测坑）——接受尾部 padding。
+        let decode_len = core::cmp::min(
+            resp_bytes.len(),
+            eneros_drv_svc::runtime::wire::RESPONSE_LEN,
+        );
+        let resp =
+            wire::decode_response(&resp_bytes[..decode_len]).ok_or(ChannelError::BadResponse)?;
         if resp.status != eneros_drv_svc::runtime::ST_OK {
             return Err(ChannelError::Rejected);
         }
@@ -183,7 +221,6 @@ impl eneros_control_dispatch::DeliveryChannel for EipcMasterChannel {
 impl DispatchHandler {
     fn new(eipc_mask: u64) -> Self {
         // 装配（40 收尾 + 47 WP-47.1）：产品链 + 投递通道（协议出站优先）。
-        use eneros_control_dispatch::{DispatchConfig, FeedbackPointMapping, InMemoryIntentStore};
         use eneros_control_services::dispatch_service::{
             prod_chain, ASSEMBLY_TEST_KEY, PROD_EPOCH_SEED, PROD_LEASE_ID, PROD_POLICY_VERSION,
         };
@@ -212,6 +249,19 @@ impl DispatchHandler {
         };
         let (device_id, point_id) = binding.unwrap_or((0, 0));
         let chain = prod_chain(ASSEMBLY_TEST_KEY, device_id, point_id, now);
+        // 47（WP-47.1 速率可调）：rate gate 每小时配额 = control-write
+        // 配置注入（bundle；缺省 = 产品默认 60/h——qemu-test 演示放宽值
+        // 经 configs/control-write.toml 编译进 bundle）。配置不可得 →
+        // 60/h 产品默认（fail-closed 面：配额不可放宽）。
+        let mut rate_per_hour: u32 = 60;
+        if let Some(c) = &mut config_client {
+            if let Some(cfg) = fetch_control_write(c) {
+                rate_per_hour = cfg.rate_per_hour.unwrap_or(60);
+            }
+        }
+        eneros_runtime::println!(
+            "[svc-control-dispatch] RATE-GATE quota={rate_per_hour}/h（产品默认 60/h）"
+        );
         // 47（WP-47.1）：投递通道选择——X3 bit1（svc-modbus-tcp 主站）→
         // 协议出站通道（release 设备写走协议）；bit0（svc-device-agent）→
         // 虚拟设备通道（qemu-test 保留）；均未授予 → Unbound（fail-closed）。
@@ -293,10 +343,9 @@ impl DispatchHandler {
             point_id,
             target_endpoint: alloc::string::String::from("svc-device-agent"),
             max_power_kw: 500.0,
-            // 47（WP-47.1）：rate gate = 产品值 60/h（最高优先级产品默认；
-            // qemu-test 演示放宽值由 47.3 RuntimeConfigBundle 注入，源码
-            // 不写测试值）。
-            gate: eneros_dual_brain::gate::DecisionGate::new(60, 1000.0, 3_600_000),
+            // 47（WP-47.1）：rate gate 默认产品值 60/h；bundle control-write
+            // 可调（qemu-test 注入放宽值；源码不写测试值）。
+            gate: eneros_dual_brain::gate::DecisionGate::new(rate_per_hour, 1000.0, 3_600_000),
             // 47（WP-47.4 意图持久化）：DurableIntentStore（AppendOutbox
             // over BlockIo → svc-storage，槽 base+4）；未授予/打开失败 →
             // InMemory 兜底 + 串口登记（重启对账不可用面）。

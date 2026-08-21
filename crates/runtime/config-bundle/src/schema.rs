@@ -8,13 +8,16 @@
 pub mod control_write {
     pub const CONFIG_ID: &str = "control-write";
     pub const SCHEMA: u16 = 1;
-    pub const MAX_FIELD: u8 = 3;
+    pub const MAX_FIELD: u8 = 4;
     /// 1：租约 ID，16B 二进制（两侧同源，产线烧录）。
     pub const FIELD_LEASE_ID: u8 = 1;
     /// 2：legacy_input 策略，u8（1=DenyAndLog；其余拒绝）。
     pub const FIELD_LEGACY_INPUT: u8 = 2;
     /// 3：handshake_retries，u8（≤5）。
     pub const FIELD_HANDSHAKE_RETRIES: u8 = 3;
+    /// 4（47 WP-47.1 速率可调）：dispatch rate gate 每小时配额 u32
+    ///（缺省 = 产品默认 60/h；qemu-test 装配经 bundle 注入放宽值）。
+    pub const FIELD_RATE_PER_HOUR: u8 = 4;
     pub const LEGACY_INPUT_DENY_AND_LOG: u8 = 1;
     pub const LEASE_ID_LEN: usize = 16;
     pub const HANDSHAKE_RETRIES_MAX: u8 = 5;

@@ -85,8 +85,8 @@ impl MqttWriteIoService {
                 Ok(resp) => {
                     self.rejected_total = self.rejected_total.saturating_add(1);
                     eneros_runtime::println!(
-                        "[svc-mqtt] INTENT-FWD rejected {:02x?}",
-                        &resp[..resp.len().min(16)]
+                        "[svc-mqtt] INTENT-FWD rejected full-receipt {:02x?}",
+                        &resp[..resp.len().min(82)]
                     );
                 }
                 Err(e) => {

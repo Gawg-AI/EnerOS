@@ -1,0 +1,62 @@
+{
+ "schema": "eneros.volume-exit-gate.v1",
+ "volume": 47,
+ "volume_title": "控制写闭环与安全收口",
+ "established": "2026-08-22",
+ "commit": "c0cc32d",
+ "version": "0.313.23",
+ "image_sha256": "eabda8d99018ca0a2dce98c573b83cd08c3e6ad56e580a49d764e3deb73a0783",
+ "verdict": "ACCEPTED",
+ "gates": [
+  {
+   "id": "exit-1-qemu-write-chain",
+   "result": "PASS",
+   "detail": "QEMU 实弹：外部 SCADA（MQTT）SET 1 10 50.0 → svc-mqtt 意图(Float 50.0) → 12 态链 → 协议出站 MASTER-WRITE power=50 → 外部 modbus 从站 fc06 0x200=50 → 独立 readback fc03=50 VERIFIED → INTENT state=Committed；串口+对端 transcript 双证据（evidence/47/qemu-write/）"
+  },
+  {
+   "id": "exit-2-negative-matrix",
+   "result": "PASS",
+   "detail": "deny/读回不符 Failed/超时 Indeterminate/断电恢复/重放拒绝/rate 预算——host 测试 7+4+2 项（intent_ingress_chain/durable_intent/audit_chain）；QEMU 观察负例（BadResponse/BudgetExceeded 早期拒绝）实弹修复后全通"
+  },
+  {
+   "id": "exit-3-key-grep-zero",
+   "result": "PASS",
+   "detail": "grep w40-prod-key|dev-signing.key crates/xtask/product = 0（生成脚本/keys-local 说明豁免）；qa gate keys tracked=0 default-refs=0；release 无键构建 fail-closed（单测+实弹观察）"
+  },
+  {
+   "id": "exit-4-ci-green",
+   "result": "PASS",
+   "detail": "cargo test --workspace EXIT=0（375 ok 块）；clippy 0；fmt 0；closure gate PASS；版本 0.313.23"
+  },
+  {
+   "id": "exit-5-prev-volumes-spotcheck",
+   "result": "PASS",
+   "detail": "45：_points=0（Exit a）+ config-refs CF01 OK（Exit e）；46：l2-verified ×6 结构/绑定（Exit 1）+ peer 硬编码业务零命中（Exit 3）+ workspace 套件（Exit 4）"
+  }
+ ],
+ "fixes_applied_in_acceptance": [
+  "drv-svc 自定义 opcode 不路由 → OP_EXECUTE + 载荷子码",
+  "drv-svc 响应 80B padding → 通道 ≥79B 容错解码（block_io 已知坑）",
+  "mqtt control_topic 订阅延后到 connect 后（惰性订阅）",
+  "root 协议服务 EXECUTE 编排 tick（ACQ 保鲜 + 下行轮询）",
+  "rate gate bundle 注入（control-write rate_per_hour；缺省=产品 60/h）",
+  "storage eipc_block_io epoch 吸收（传 0）",
+  "config compile 重建（point 10 + control_topic 生效）"
+ ],
+ "honest_limitations": [
+  "QEMU A/B 断电重放（三态法）为扩展项——存储断电恢复语义由 durable_intent host 撕裂测试覆盖；QEMU 侧 DURABLE-INTENT-STORE open OK 已证",
+  "modbus-rtu 出站写 BLOCKED（46 卷无第二 PL011）；645 类写 48 卷",
+  "EL0 审计链 MemStore（易失）；持久 AuditStore over BlockIo 登记后续"
+ ],
+ "evidence_refs": [
+  "evidence/47/WP-47.1.md",
+  "evidence/47/WP-47.2.md",
+  "evidence/47/WP-47.3.md",
+  "evidence/47/WP-47.4.md",
+  "evidence/47/WP-47.5.md",
+  "evidence/47/WP-47.6.md",
+  "evidence/47/qemu-write/qemu-serial.log",
+  "evidence/47/qemu-write/modbus.transcript.jsonl",
+  "evidence/47/qemu-write/mqtt.transcript.jsonl"
+ ]
+}

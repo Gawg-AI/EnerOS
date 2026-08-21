@@ -17,6 +17,8 @@ eneros-drv-svc = { path = "../../drivers/drv-svc" }
 eneros-runtime = { path = "../../runtime/runtime" }
 eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
+# 47（WP-47.2 遥测过滤 / WP-47.1 出站写）：PointType/PointValue 值类型。
+eneros-upa-model = { path = "../upa-model" }
 # 47（WP-47.1 协议出站写）：OutcomeFrame/OutcomeCode（2B 回执帧——与
 # dispatch/device-agent 同源线上语义）。
 eneros-control-gateway = { path = "../control-gateway" }

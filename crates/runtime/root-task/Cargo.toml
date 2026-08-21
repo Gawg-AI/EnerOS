@@ -7,6 +7,8 @@ license.workspace = true
 description = "EnerOS seL4 root task — G2 closure + init bundle handoff (no_std, aarch64-unknown-none)"
 
 [dependencies]
+# 47（WP-47.1 编排驱动）：协议服务 EXECUTE 信封（drv-svc wire）。
+eneros-drv-svc = { path = "../../drivers/drv-svc" }
 eneros-tenant = { path = "../../agents/tenant" }
 eneros-runtime = { path = "../runtime" }
 eneros-boot-protocol = { path = "../../boot/boot-protocol" }

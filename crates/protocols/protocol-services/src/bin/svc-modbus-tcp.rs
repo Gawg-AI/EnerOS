@@ -286,6 +286,22 @@ impl eneros_drv_svc::runtime::DriverService for ModbusTcpIoService {
         match req.opcode {
             OP_EXECUTE => {
                 self.transactions += 1;
+                // 47（WP-47.1 出站写）：EXECUTE + 载荷子码
+                // {OP_MASTER_WRITE‖device u32‖point u32‖power f64}=17B
+                // （drv-svc runtime 只把 OP_EXECUTE 路由到 handle）。
+                if req.payload_len == 17
+                    && req.payload[0] == eneros_protocol_abstract::write::OP_MASTER_WRITE
+                {
+                    let device = u32::from_le_bytes(req.payload[1..5].try_into().unwrap_or([0; 4]));
+                    let point = u32::from_le_bytes(req.payload[5..9].try_into().unwrap_or([0; 4]));
+                    let power =
+                        f64::from_le_bytes(req.payload[9..17].try_into().unwrap_or([0u8; 8]));
+                    let frame = self.master_write(device, point, power);
+                    resp.status = ST_OK;
+                    resp.payload[..2].copy_from_slice(&frame);
+                    resp.payload_len = 2;
+                    return;
+                }
                 // 45.5：点表驱动真读 + 遥测上报（真实采集替换合成源）。
                 let round_good = self.collect_and_report(eneros_protocol_services::now_ms());
                 if round_good {
@@ -294,21 +310,6 @@ impl eneros_drv_svc::runtime::DriverService for ModbusTcpIoService {
                     // 本轮无任何成功读（如拔 peer）→ fail-closed 指示。
                     resp.status = ST_UNAVAILABLE;
                 }
-            }
-            eneros_protocol_abstract::write::OP_MASTER_WRITE => {
-                // 47（WP-47.1 协议出站写）：16B 载荷 {device u32, point u32,
-                // power f64}。长度不符 → ST_INVALID（坏信封，不执行）。
-                if req.payload_len != 16 {
-                    resp.status = ST_INVALID;
-                    return;
-                }
-                let device = u32::from_le_bytes(req.payload[0..4].try_into().unwrap_or([0; 4]));
-                let point = u32::from_le_bytes(req.payload[4..8].try_into().unwrap_or([0; 4]));
-                let power = f64::from_le_bytes(req.payload[8..16].try_into().unwrap_or([0.0; 8]));
-                let frame = self.master_write(device, point, power);
-                resp.status = ST_OK;
-                resp.payload[..2].copy_from_slice(&frame);
-                resp.payload_len = 2;
             }
             _ => {
                 resp.status = ST_INVALID;

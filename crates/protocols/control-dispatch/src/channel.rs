@@ -9,7 +9,7 @@
 //!   `ControlEnvelope` 270B 超出 seL4 MR 120B 预算，必须分块）；
 //! - 测试 impl 仅 `#[cfg(test)]`（绝不进入 release resolved graph）。
 
-#[cfg(target_os = "none")]
+#[cfg(feature = "sel4")]
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;

@@ -1,6 +1,6 @@
 [package]
 name = "eneros-time"
-version = "0.313.22"
+version = "0.313.23"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

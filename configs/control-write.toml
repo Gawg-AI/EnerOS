@@ -13,3 +13,9 @@ legacy_input = "deny-and-log"
 
 # 启动握手客户端有界重试次数（≤5；失败 fail-closed 报 Offline，§6.3）。
 handshake_retries = 5
+
+# 47（WP-47.1 速率可调）：dispatch rate gate 每小时确认配额。
+# 缺省（移除本键）= 产品默认 60/h；此处为 QEMU 演示放宽值
+#（demo 驱动频率下 AI 链每秒多轮，60/h 数十秒即撞限）——release 部署
+# 必须移除本键或设为产品值。
+rate_per_hour = 100000
