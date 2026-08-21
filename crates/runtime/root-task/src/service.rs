@@ -875,14 +875,22 @@ fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::stri
     Ok(())
 }
 
+/// 47（WP-47.3）：OTA 探针签章测试键种子（qemu-test 专用；release 由
+/// KMS 注入面提供，见 xtask keys 门禁）。
+#[cfg(all(target_os = "none", feature = "sel4-eipc"))]
+const OTA_PROBE_TEST_SEED: [u8; 32] = [0x41; 32];
+
 #[cfg(all(target_os = "none", feature = "sel4-eipc"))]
 fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string::String> {
     use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
     use eneros_agent_sdk::ChunkedClient;
     use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair, Sm2PrivateKey};
 
-    // 与 config-bundle 测试键一致：私钥种子 0x41（release 必须 KMS 注入）。
-    let sk = Sm2PrivateKey::from_bytes(&[0x41u8; 32])
+    // 47（WP-47.3 密钥注入链）：OTA 探针签章**测试键**（种子 0x41——与
+    // config-bundle 测试键一致；仅 qemu-test 装配使用）。release 装配的
+    // 探针签章键由 KMS_DIR 注入面提供（xtask keys 门禁 fail-closed：
+    // 生产无显式键不构建/不装配——见 keys::resolve_signing_key）。
+    let sk = Sm2PrivateKey::from_bytes(&OTA_PROBE_TEST_SEED)
         .map_err(|e| alloc::format!("ota test key invalid: {e:?}"))?;
     let kp = Sm2KeyPair::from_private_key(&sk)
         .map_err(|e| alloc::format!("ota test pubkey derive: {e:?}"))?;

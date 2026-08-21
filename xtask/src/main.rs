@@ -24,6 +24,7 @@ mod fuzz_driver;
 mod gate;
 mod harness;
 mod image_factory;
+mod keys;
 mod policy;
 mod product_deriver;
 mod product_manifest;

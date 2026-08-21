@@ -542,15 +542,10 @@ fn command_derive(root: &Path, _args: &[String]) -> DynResult<()> {
 // 签名
 // ============================================================
 
-fn load_signing_key(root: &Path) -> DynResult<[u8; 32]> {
-    let key_path = root.join("product/security/dev-signing.key");
-    let bytes = fs::read(&key_path)?;
-    let key: [u8; 32] = bytes
-        .get(..32)
-        .ok_or_else(|| invalid("dev-signing.key too short"))?
-        .try_into()
-        .map_err(|_| invalid("dev-signing.key invalid length"))?;
-    Ok(key)
+/// 47（WP-47.3 私钥出仓）：签章键经 keys 模块显式解析（--sign-key /
+/// ENEROS_SIGN_KEY / keys-local 测试键；生产无键 fail-closed）。
+fn load_signing_key(root: &Path, explicit: Option<&Path>) -> DynResult<[u8; 32]> {
+    super::keys::load_signing_key_bytes(root, explicit, super::keys::ProfileKind::Test)
 }
 
 /// 内容 = 去掉 `signature` 字段后的 JSON 字节（与 EvidenceEnvelope 同一模型）。
@@ -566,8 +561,23 @@ fn sign_json(_root: &Path, mut v: serde_json::Value, key: &[u8; 32]) -> DynResul
     Ok(hex(&sig.to_bytes()))
 }
 
-fn command_sign(root: &Path, _args: &[String]) -> DynResult<()> {
-    let key = load_signing_key(root)?;
+fn command_sign(root: &Path, args: &[String]) -> DynResult<()> {
+    // 47（WP-47.3）：`catalog sign [--sign-key <path>]`——显式键优先；
+    // 生产装配无键时 fail-closed（Test profile 允许 keys-local 测试键）。
+    let mut explicit: Option<std::path::PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--sign-key" {
+            explicit = Some(std::path::PathBuf::from(
+                args.get(i + 1)
+                    .ok_or_else(|| invalid("--sign-key 缺路径"))?,
+            ));
+            i += 2;
+        } else {
+            return Err(invalid(format!("catalog sign 未知参数 '{}'", args[i])));
+        }
+    }
+    let key = load_signing_key(root, explicit.as_deref())?;
     let mut signed = 0usize;
     for rel in [
         "product/compatibility-catalog.json",
@@ -611,11 +621,14 @@ fn verify_asset_signature(root: &Path, rel: &str) -> bool {
     if sig_str.is_empty() {
         return false;
     }
-    let Ok(key) = load_signing_key(root) else {
+    // 47（WP-47.3）：验签钥独立注入（ENEROS_VERIFY_PUBLIC_KEY 或
+    // keys-local 测试键派生）——验签与签章可分离。
+    let Some(public) = super::keys::verify_public_key(root) else {
         return false;
     };
-    let keypair = ed25519_dalek::SigningKey::from_bytes(&key);
-    let public = keypair.verifying_key();
+    let Ok(public) = ed25519_dalek::VerifyingKey::from_bytes(&public) else {
+        return false;
+    };
     let mut obj = v.clone();
     obj.as_object_mut().map(|o| o.remove("signature"));
     let Ok(json) = serde_json::to_vec(&obj) else {

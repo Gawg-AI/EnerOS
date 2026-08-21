@@ -168,3 +168,6 @@ third_party/llama.cpp/
 # WP-44.5：临时产物与归档
 archive/scratch-*/
 *.rar
+
+# 47（WP-47.3 私钥出仓）：本地密钥目录（永不入库；生成见 tools/gen-local-keys.sh）
+product/security/keys-local/

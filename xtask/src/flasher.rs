@@ -19,7 +19,8 @@ const JOURNAL_SCHEMA: &str = "eneros.flash-resume-journal.v1";
 const BIRTH_SCHEMA: &str = "eneros.device-birth-record.v1";
 const KEY_DOMAINS_SCHEMA: &str = "eneros.factory-key-domains.v1";
 
-const DEV_SIGNING_KEY_REL: &str = "product/security/dev-signing.key";
+/// 47（WP-47.3 私钥出仓）：与 keys 模块同源（keys-local）。
+const DEV_SIGNING_KEY_REL: &str = super::keys::DEV_SIGNING_KEY_REL;
 
 /// 稀疏写入把相邻非零区之间的零间隙最多合并到这么宽；更宽的零间隙会保留
 /// 为两次独立 extent（物理介质上可不写、断点续写时按 extent 记账）。
@@ -1725,7 +1726,7 @@ mod tests {
                     "factory".to_owned(),
                     KeyDomain {
                         allowed_uses: vec!["provisioning".to_owned(), "birth-record".to_owned()],
-                        key_ref: "product/security/dev-signing.key".to_owned(),
+                        key_ref: crate::keys::DEV_SIGNING_KEY_REL.to_owned(),
                     },
                 ),
                 (

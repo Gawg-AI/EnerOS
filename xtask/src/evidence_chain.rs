@@ -474,11 +474,9 @@ fn verify_envelope_signature(root: &Path, envelope: &EvidenceEnvelope) -> Option
     if envelope.signature.is_empty() {
         return Some(false);
     }
-    let key_path = root.join("product/security/dev-signing.key");
-    let key_bytes = fs::read(&key_path).ok()?;
-    let key_bytes: [u8; 32] = key_bytes.get(..32)?.try_into().ok()?;
-    let keypair = ed25519_dalek::SigningKey::from_bytes(&key_bytes);
-    let public_key = keypair.verifying_key();
+    // 47（WP-47.3）：验签钥独立注入（验签钥 ≠ 签章钥可分离）。
+    let key_bytes = super::keys::verify_public_key(root)?;
+    let public_key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).ok()?;
 
     let mut unsigned = envelope.clone();
     unsigned.signature.clear();
@@ -493,7 +491,7 @@ fn verify_envelope_signature(root: &Path, envelope: &EvidenceEnvelope) -> Option
     )
 }
 
-fn hex_decode(input: &str) -> Vec<u8> {
+pub(crate) fn hex_decode(input: &str) -> Vec<u8> {
     let s: String = input.chars().filter(|c| !c.is_whitespace()).collect();
     if s.len() % 2 != 0 {
         return Vec::new();
@@ -610,15 +608,17 @@ fn command_envelope(root: &Path, args: &[String]) -> DynResult<()> {
     // 若未显式提供 signature，且开发签名密钥存在，则自动对 envelope 内容
     // 签名（42 证据要求 signature 非空；release 使用受控 KMS 密钥）。
     if envelope.signature.is_empty() {
-        let dev_key = root.join("product/security/dev-signing.key");
-        if let Ok(key_bytes) = fs::read(&dev_key) {
-            if let Ok(key_bytes) = <[u8; 32]>::try_from(&key_bytes[..32]) {
-                let keypair = ed25519_dalek::SigningKey::from_bytes(&key_bytes);
-                let json = serde_json::to_vec(&envelope)?;
-                use ed25519_dalek::Signer;
-                let sig = keypair.sign(&json);
-                envelope.signature = hex(&sig.to_bytes());
-            }
+        // 47（WP-47.3 私钥出仓）：自动签章仅当显式/测试键可解析
+        //（--sign-key / ENEROS_SIGN_KEY / keys-local 测试键）；生产无键
+        // 时保持 signature 空（登记「无法验签」，不武断）。
+        if let Ok(key_bytes) =
+            super::keys::load_signing_key_bytes(root, None, super::keys::ProfileKind::Test)
+        {
+            let keypair = ed25519_dalek::SigningKey::from_bytes(&key_bytes);
+            let json = serde_json::to_vec(&envelope)?;
+            use ed25519_dalek::Signer;
+            let sig = keypair.sign(&json);
+            envelope.signature = hex(&sig.to_bytes());
         }
     }
     fs::create_dir_all(out.parent().unwrap_or(root))?;

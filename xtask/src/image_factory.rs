@@ -217,13 +217,13 @@ fn build_qemu_prod(root: &Path, args: &[String]) -> DynResult<()> {
             }
         }
     }
-    let signing_key = env_key_file(
-        root,
-        "ENEROS_IMAGE_SIGNING_KEY",
-        Path::new("product/security/dev-signing.key"),
-    )?;
-    let uefi_key = env_value_or("ENEROS_IMAGE_UEFI_KEY", "product/security/uefi-test.key")?;
-    let uefi_cert = env_value_or("ENEROS_IMAGE_UEFI_CERT", "product/security/uefi-test.pem")?;
+    // 47（WP-47.3 私钥出仓）：默认键统一指向 keys-local（gitignore）；
+    // **qemu-prod 属生产装配面**（key-policy test_trust_forbidden_profiles
+    // 含 qemu-prod）——必须显式注入（ENEROS_IMAGE_SIGNING_KEY /
+    // KMS_DIR），无键 fail-closed（keys::resolve_signing_key(Production)）。
+    let signing_key = env_key_file(root, "ENEROS_IMAGE_SIGNING_KEY")?;
+    let uefi_key = env_value_or("ENEROS_IMAGE_UEFI_KEY", super::keys::UEFI_TEST_KEY_REL)?;
+    let uefi_cert = env_value_or("ENEROS_IMAGE_UEFI_CERT", super::keys::UEFI_TEST_PEM_REL)?;
     build_raw(
         root,
         RawOptions {
@@ -237,19 +237,13 @@ fn build_qemu_prod(root: &Path, args: &[String]) -> DynResult<()> {
     )
 }
 
-/// 从环境变量或仓库默认路径解析 32 字节 Ed25519 seed 文件。
-fn env_key_file(root: &Path, env_name: &str, default: &Path) -> DynResult<PathBuf> {
+/// 47（WP-47.3）：qemu-prod 装配面的签章键解析——显式环境变量优先；
+/// 未注入 → keys 模块 Production fail-closed（不再有仓库默认路径兜底）。
+fn env_key_file(root: &Path, env_name: &str) -> DynResult<PathBuf> {
     match std::env::var(env_name) {
         Ok(value) => Ok(root.join(value)),
         Err(_) => {
-            let path = root.join(default);
-            if !path.is_file() {
-                return Err(invalid(format!(
-                    "signing key missing: set {env_name} or provide {}",
-                    default.display()
-                )));
-            }
-            Ok(path)
+            super::keys::resolve_signing_key(root, None, super::keys::ProfileKind::Production)
         }
     }
 }

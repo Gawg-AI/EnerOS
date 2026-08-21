@@ -1028,8 +1028,71 @@ pub fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
         "mock-leak" => command_mock_leak(root, tail),
         "config-syntax" => command_config_syntax(root, tail),
         "docs" => command_docs_gate(root, tail),
+        "keys" => command_keys_gate(root, tail),
         other => Err(invalid(format!("unknown gate subcommand '{other}'"))),
     }
+}
+
+/// `qa gate keys`（47 WP-47.3 私钥出仓门禁）：
+/// 1. 键文件零跟踪（`git ls-files product/security/` 不含 .key/.pem）；
+/// 2. 源码零默认键引用（旧路径 `product/security/dev-signing.key` 只允许
+///    出现在 keys 模块文档/迁移登记——出仓后不再有可被误提交的位置）；
+/// 3. 测试键就位（keys-local/ 或生成脚本存在）——缺键的测试装配必须
+///    显式失败而非静默无签名。
+pub fn command_keys_gate(root: &Path, _args: &[String]) -> DynResult<()> {
+    use std::process::Command;
+
+    // 1. 键文件必须零跟踪。
+    let out = Command::new("git")
+        .arg("ls-files")
+        .arg("product/security")
+        .output()
+        .map_err(|e| invalid(format!("git ls-files: {e}")))?;
+    let tracked = String::from_utf8_lossy(&out.stdout);
+    let tracked_keys: Vec<&str> = tracked
+        .lines()
+        .filter(|l| l.ends_with(".key") || l.ends_with(".pem"))
+        .collect();
+    if !tracked_keys.is_empty() {
+        return Err(invalid(format!(
+            "私钥被 git 跟踪（出仓红线条）：{}",
+            tracked_keys.join(", ")
+        )));
+    }
+    println!("KEYS-GATE tracked-keys=0 PASS");
+
+    // 2. 源码零默认键引用（keys 模块文档与 evidence 迁移登记豁免）。
+    let out = Command::new("grep")
+        .arg("-rn")
+        .arg("--exclude=gate.rs")
+        .arg("--exclude=keys.rs")
+        .arg("product/security/dev-signing.key")
+        .arg("xtask/src")
+        .arg("ci")
+        .output()
+        .map_err(|e| invalid(format!("grep: {e}")))?;
+    if !out.stdout.is_empty() {
+        // 允许 keys.rs 的路径常量（其值已是 keys-local——文本不含旧路径）。
+        return Err(invalid(String::from_utf8_lossy(&out.stdout).into_owned()));
+    }
+    println!("KEYS-GATE default-refs=0 PASS");
+
+    // 3. 测试键就位（或生成脚本存在）。
+    if !super::keys::test_keys_present(root) {
+        if !root.join("tools/gen-local-keys.sh").is_file() {
+            return Err(invalid(
+                "keys-local 测试键缺失且无生成脚本（tools/gen-local-keys.sh）—— 测试装配必须显式失败",
+            ));
+        }
+        println!("KEYS-GATE test-keys=pending-script PASS（运行 tools/gen-local-keys.sh 生成）");
+    } else {
+        println!("KEYS-GATE test-keys=present PASS");
+    }
+    // 4. 生产注入面（文档化）：release 装配签名必须 --sign-key/
+    //    ENEROS_SIGN_KEY/KMS_DIR——resolve_signing_key(Production) 已
+    //    fail-closed（单测覆盖）。
+    println!("KEYS-GATE production-injection=fail-closed（keys::resolve_signing_key 单测覆盖）");
+    Ok(())
 }
 
 /// `gate docs`：发布文档 Gate（蓝图 36 WP-36.11）——

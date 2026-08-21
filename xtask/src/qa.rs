@@ -978,7 +978,7 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
     // 34 GV-07：签名强制——无 --sign-key 即 Err（旧实现仅 WARN，
     // 证据可无签名产出 = 防篡改未达成）。
     let key_path = sign_key.ok_or_else(|| {
-        invalid("compliance-report requires --sign-key（34 GV-07：证据签名强制，dev key 入仓先例 product/security/dev-signing.key）")
+        invalid("compliance-report requires --sign-key（34 GV-07：证据签名强制；47.3 出仓后键在 product/security/keys-local/ 或显式注入）")
     })?;
     let key_bytes = fs::read(&key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
     let keypair = ed25519_dalek::SigningKey::from_bytes(
@@ -1157,7 +1157,7 @@ pub fn verify_evidence_sig(
 /// `qa sign-evidence <path> --sign-key <key>`
 ///
 /// 34 GV-07：为证据文件生成侧车签名 `<path>.sig`（既有证据一次性
-/// 补签迁移用；dev key 入仓先例 product/security/dev-signing.key）。
+/// 补签迁移用；dev key 出仓后位于 product/security/keys-local/（47.3）。
 /// 输出同时打印公钥 hex（供 verify-evidence-sig 使用）。
 fn command_sign_evidence(root: &Path, args: &[String]) -> DynResult<()> {
     let mut path: Option<std::path::PathBuf> = None;
