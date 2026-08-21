@@ -749,8 +749,14 @@ pub const SERVICE_KIND_REGISTRY: &[(&str, &str)] = &[
     // 48：新四协议 kind（与 service-kind-registry.json 同步）。
     ("protocol.dlt645", "DL/T 645-2007 meter protocol"),
     ("protocol.iec101", "IEC 60870-5-101 serial telecontrol"),
-    ("protocol.iec103", "IEC 60870-5-103 protection device interface"),
-    ("protocol.gbt27930", "GB/T 27930-2015 EV charging (charger-side)"),
+    (
+        "protocol.iec103",
+        "IEC 60870-5-103 protection device interface",
+    ),
+    (
+        "protocol.gbt27930",
+        "GB/T 27930-2015 EV charging (charger-side)",
+    ),
     ("protocol.mms", "MMS"),
     ("protocol.goose", "GOOSE"),
     ("protocol.sv", "Sampled Values"),

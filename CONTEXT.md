@@ -54,6 +54,7 @@
 | 插件 | 签名静态 ELF PIE → 受限 EL0 进程 → 版本化 IPC wire ABI（Agent/驱动/协议统一） |
 | IPC wire | 二进制消息格式：固定头 + 有界长度 + CRC32（对齐 agent-sdk `wire.rs` EIPC） |
 | cross-binary ABI | 禁止：`*mut dyn`、Rust trait object vtable、String/Vec/enum 直传 |
+| `InteropLevel::SpecBlocked` | 互操作诚实分级最低档：规约文本缺失——codec 字节层未实现（蓝图 48；owner 提供规约并落地权威 KAT 后方可升 CodecReady） | `protocol-abstract::plugin::InteropLevel` |
 
 ## 5. 已删除/已废弃词汇（不再使用）
 

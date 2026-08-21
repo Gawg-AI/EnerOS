@@ -26,6 +26,14 @@ pub fn validate(cfg: &ProtocolConfig) -> Result<(), ProtocolError> {
             return Err(ProtocolError::InvalidConfig);
         }
     }
+    for key in ["charger_addr", "bms_addr", "retransmit_max"] {
+        // 值域先于 from_validated 截断检查（≤u8::MAX）。
+        if let Some(v) = eneros_protocol_abstract::plugin::config_u64(cfg, key)? {
+            if v > u8::MAX as u64 {
+                return Err(ProtocolError::InvalidConfig);
+            }
+        }
+    }
     for key in [
         "handshake_timeout_ms",
         "param_timeout_ms",
@@ -67,14 +75,17 @@ impl Gbt27930Config {
             eneros_protocol_abstract::plugin::config_u64(cfg, key)?
                 .ok_or(ProtocolError::InvalidConfig)
         };
+        let conv_u8 = |key: &str| -> Result<u8, ProtocolError> {
+            u8::try_from(req(key)?).map_err(|_| ProtocolError::InvalidConfig)
+        };
         Ok(Self {
-            charger_addr: req("charger_addr")? as u8,
-            bms_addr: req("bms_addr")? as u8,
+            charger_addr: conv_u8("charger_addr")?,
+            bms_addr: conv_u8("bms_addr")?,
             handshake_timeout_ms: req("handshake_timeout_ms")?,
             param_timeout_ms: req("param_timeout_ms")?,
             charging_timeout_ms: req("charging_timeout_ms")?,
             end_timeout_ms: req("end_timeout_ms")?,
-            retransmit_max: req("retransmit_max")? as u8,
+            retransmit_max: conv_u8("retransmit_max")?,
         })
     }
 }
@@ -108,6 +119,16 @@ mod tests {
                 "missing {key} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn addr_and_retransmit_range_checked_before_truncation() {
+        let mut cfg = full_cfg();
+        cfg.insert("charger_addr", "300");
+        assert_eq!(validate(&cfg), Err(ProtocolError::InvalidConfig));
+        let mut cfg = full_cfg();
+        cfg.insert("retransmit_max", "999");
+        assert_eq!(validate(&cfg), Err(ProtocolError::InvalidConfig));
     }
 
     #[test]

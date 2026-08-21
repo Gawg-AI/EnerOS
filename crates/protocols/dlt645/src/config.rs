@@ -21,11 +21,16 @@ pub const BAUD_MAX: u64 = 9600;
 /// 缺省波特率（蓝图 WP-48.1：默认 2400）。
 pub const DEFAULT_BAUD: u64 = 2400;
 
-/// 校验配置：只允许已知键 + 值域检查（baud 越界 → `InvalidConfig`）。
+/// 校验配置：只允许已知键 + 值域检查（baud/retries 越界 → `InvalidConfig`）。
 pub fn validate(cfg: &ProtocolConfig) -> Result<(), ProtocolError> {
     eneros_protocol_abstract::plugin::reject_unknown_keys(cfg, KNOWN_KEYS)?;
     if let Some(baud) = eneros_protocol_abstract::plugin::config_u64(cfg, "baud")? {
         if !(BAUD_MIN..=BAUD_MAX).contains(&baud) {
+            return Err(ProtocolError::InvalidConfig);
+        }
+    }
+    if let Some(r) = eneros_protocol_abstract::plugin::config_u64(cfg, "retries")? {
+        if r > u8::MAX as u64 {
             return Err(ProtocolError::InvalidConfig);
         }
     }
@@ -61,8 +66,11 @@ impl Dlt645Config {
                 .unwrap_or(DEFAULT_BAUD),
             timeout_ms: eneros_protocol_abstract::plugin::config_u64(cfg, "timeout_ms")?
                 .unwrap_or(DEFAULT_TIMEOUT_MS),
-            retries: eneros_protocol_abstract::plugin::config_u64(cfg, "retries")?
-                .unwrap_or(DEFAULT_RETRIES as u64) as u8,
+            retries: u8::try_from(
+                eneros_protocol_abstract::plugin::config_u64(cfg, "retries")?
+                    .unwrap_or(DEFAULT_RETRIES as u64),
+            )
+            .map_err(|_| ProtocolError::InvalidConfig)?,
         })
     }
 }

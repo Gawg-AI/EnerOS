@@ -32,9 +32,12 @@ pub fn validate(cfg: &ProtocolConfig) -> Result<(), ProtocolError> {
             }
         }
     }
-    for key in ["k", "w"] {
+    for key in ["k", "w", "link_addr", "common_addr"] {
+        // 值域先于 from_validated 截断检查：k/w ∈ 1..=u16::MAX，地址 ≤u16::MAX
+        // （PROJECT.md 数值纪律——禁 as 截断绕过校验）。
         if let Some(v) = eneros_protocol_abstract::plugin::config_u64(cfg, key)? {
-            if v == 0 {
+            let nonzero_ok = !matches!(key, "k" | "w") || v > 0;
+            if !nonzero_ok || v > u16::MAX as u64 {
                 return Err(ProtocolError::InvalidConfig);
             }
         }
@@ -76,22 +79,30 @@ impl Iec101Config {
             eneros_protocol_abstract::plugin::config_u64(cfg, key)?
                 .ok_or(ProtocolError::InvalidConfig)
         };
+        let conv_u16 = |key: &str, default: u64| -> Result<u16, ProtocolError> {
+            u16::try_from(
+                eneros_protocol_abstract::plugin::config_u64(cfg, key)?.unwrap_or(default),
+            )
+            .map_err(|_| ProtocolError::InvalidConfig)
+        };
         Ok(Self {
-            link_addr: eneros_protocol_abstract::plugin::config_u64(cfg, "link_addr")?.unwrap_or(1)
-                as u16,
-            common_addr: eneros_protocol_abstract::plugin::config_u64(cfg, "common_addr")?
-                .unwrap_or(1) as u16,
-            link_addr_size: eneros_protocol_abstract::plugin::config_u64(cfg, "link_addr_size")?
-                .unwrap_or(1) as u8,
-            common_addr_size: eneros_protocol_abstract::plugin::config_u64(cfg, "common_addr_size")?
-                .unwrap_or(1) as u8,
+            link_addr: conv_u16("link_addr", 1)?,
+            common_addr: conv_u16("common_addr", 1)?,
+            link_addr_size: u8::try_from(
+                eneros_protocol_abstract::plugin::config_u64(cfg, "link_addr_size")?.unwrap_or(1),
+            )
+            .map_err(|_| ProtocolError::InvalidConfig)?,
+            common_addr_size: u8::try_from(
+                eneros_protocol_abstract::plugin::config_u64(cfg, "common_addr_size")?.unwrap_or(1),
+            )
+            .map_err(|_| ProtocolError::InvalidConfig)?,
             balanced: matches!(cfg.get("balanced"), Some("true") | Some("1")),
             t0_ms: req("t0_ms")?,
             t1_ms: req("t1_ms")?,
             t2_ms: req("t2_ms")?,
             t3_ms: req("t3_ms")?,
-            k: req("k")? as u16,
-            w: req("w")? as u16,
+            k: conv_u16("k", 12)?,
+            w: conv_u16("w", 8)?,
             timeout_ms: eneros_protocol_abstract::plugin::config_u64(cfg, "timeout_ms")?
                 .unwrap_or(1000),
         })
@@ -130,6 +141,20 @@ mod tests {
         cfg.insert("link_addr_size", "2");
         assert_eq!(validate(&cfg), Ok(()));
         cfg.insert("link_addr_size", "4");
+        assert_eq!(validate(&cfg), Err(ProtocolError::InvalidConfig));
+    }
+
+    #[test]
+    fn out_of_range_values_rejected_before_truncation() {
+        // k=65536 截断成 0 可绕过非零校验——validate 必须先拒（审查修复）。
+        let mut cfg = full_cfg();
+        cfg.insert("k", "65536");
+        assert_eq!(validate(&cfg), Err(ProtocolError::InvalidConfig));
+        let mut cfg = full_cfg();
+        cfg.insert("w", "70000");
+        assert_eq!(validate(&cfg), Err(ProtocolError::InvalidConfig));
+        let mut cfg = full_cfg();
+        cfg.insert("link_addr", "70000");
         assert_eq!(validate(&cfg), Err(ProtocolError::InvalidConfig));
     }
 

@@ -19,7 +19,7 @@
 | 1b | registry 配置 ACTIVE 且逐字段消费证据 | **PASS（消费判据=host 单测）** | configs/protocol-{dlt645,iec101,iec103,gbt27930}.toml ×4；registry.toml [active] 13→17；CF-01 双向链接（qemu-prod+board-prod services[].configs ↔ manifest configs[].consumer，points.consumer 扩 4）`CONFIG-REFS-CF01 OK（active 17）`；逐字段消费=dlt645 11/iec101 12/iec103 6/gbt27930 20 测试内 validate_config/from_validated 断言（未知键拒绝+值域+必配 fail-closed） |
 | 2 | host-peer/L2 证据（645/101 按 46.1 结论、103、27930） | **BLOCKED 如实登记** | 规约文本缺失→帧/KAT/负例/host peer 全部无法按「引用规约章节号」纪律开发；27930 L1 USB-CAN=owner 硬件。sku-matrix peer=none |
 | 3a | sku-matrix 增 4 行诚实分级 | **PASS** | derive 管线扩展（catalog.rs 硬编码行+BLOCKED 分支+peer=none）；`DL/T 645-2007/IEC 60870-5-101/IEC 60870-5-103/GB/T 27930-2015 = BLOCKED/L0/none/evidence/48/WP-48.N.md`；CATALOG-DERIVE(3 SKU×11 协议)+SIGN+VALIDATE PASS |
-| 3b | 104 回归逐字节一致 | **PASS** | 见 WP-48.0.md：host 229→231 对账零失败 + 46 卷 L2 重跑帧序列逐字段一致（镜像 9e84571a…） |
+| 3b | 104 回归逐字节一致 | **PASS（判据=host 字节级 KAT；措辞按审查订正）** | 字节级一致性由**原样移动的 asdu.rs 测试族**承载（49 个编码/解码断言随抽取迁入 iec60870-asdu，全绿——同一实现同一期望字节）；46 卷 L2 重跑为**行为级**证据：transcript 帧字段逐项一致（type/cot/len/points），重跑窗口 2 次召唤 vs 基线 5 次系窗口时长差异（非帧内容差异）。WP-48.0.md 原表述「帧字节结构同源」即此意，exit-gate 首版「逐字节」措辞过强，已按 code-review 订正 |
 | 3c | 全量 CI 绿 | **PASS** | `cargo test --workspace --no-fail-fast` EXIT=0（389 ok 块，空载复跑；首轮与 QEMU 并行时 cry001 timing/modbus loopback 两例负载抖动失败，单独重跑即过——47 卷同类先例）；clippy --workspace --all-targets 0；fmt --check 干净 |
 | 3d | 46/47 证据抽查各 2 项 | **PASS** | 46①6×l2-*-verified.json VERIFIED 绑 4f7344c；46②protocol-services 业务路径 peer 字面量 5 处全在测试/注释；47①w40-prod-key grep=0；47②CONFIG-REFS-CF01 OK（active 17 含本卷新增） |
 | 3e | 版本 bump | **PASS** | 0.313.24→0.313.30（WP 每 commit 一 bump；48.0=.25 48.1=.26 48.2=.27 48.3=.28 48.4=.29 exit=.30） |

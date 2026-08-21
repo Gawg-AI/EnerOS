@@ -1,4 +1,4 @@
-//! svc-modbus-rtu — gbt27930 协议 EL0 服务（蓝图 48 WP-48 能力壳——codec SpecBlocked，传输移交/真机路径后续卷；本 bin=descriptor 随 readiness 报告 + EXECUTE 显式 ST_UNAVAILABLE，诚实降级）。
+//! svc-gbt27930 — GB/T 27930-2015 EL0 服务（蓝图 48 WP-48 能力壳——codec SpecBlocked，传输移交/真机路径后续卷；本 bin=descriptor 随 readiness 报告 + EXECUTE 显式 ST_UNAVAILABLE，诚实降级）。
 
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]

@@ -27,7 +27,7 @@
   {
    "id": "exit-4-ci-green-and-regression",
    "result": "PASS",
-   "detail": "cargo test --workspace --no-fail-fast 空载复跑 EXIT=0（389 ok 块 0 失败；首轮与 QEMU 并行时 cry001 timing/modbus-rtu loopback 两例负载抖动失败，单独重跑即过——47 卷同类先例）；clippy --workspace --all-targets 0；fmt --all --check 干净；closure gate PASS（binaries=28 reached_packages=126 denied=0 crypto_violations=0）；keys gate 4 项 PASS；46/47 抽查各 2 项 PASS（l2 json×6 VERIFIED 绑 4f7344c / peer 硬编码 5 处皆测试注释 / w40-prod-key=0 / CF01 active=17）；WP-48.0 抽取回归=104 host 231 对账零失败+46 L2 重跑帧序列逐字段一致"
+   "detail": "cargo test --workspace --no-fail-fast 空载复跑 EXIT=0（389 ok 块 0 失败；首轮与 QEMU 并行时 cry001 timing/modbus-rtu loopback 两例负载抖动失败，单独重跑即过——47 卷同类先例）；clippy --workspace --all-targets 0；fmt --all --check 干净；closure gate PASS（binaries=28 reached_packages=126 denied=0 crypto_violations=0）；keys gate 4 项 PASS；46/47 抽查各 2 项 PASS（l2 json×6 VERIFIED 绑 4f7344c / peer 硬编码 5 处皆测试注释 / w40-prod-key=0 / CF01 active=17）；WP-48.0 抽取回归=104 host 231 对账零失败（字节级判据=原样移动的 asdu 测试族全绿）+46 L2 重跑行为级帧字段逐项一致（窗口时长差异致召唤次数 2 vs 5——非帧内容差异，code-review 措辞订正）"
   },
   {
    "id": "exit-5-qemu-boot-with-new-services",
@@ -39,7 +39,8 @@
   "service-kind 映射两处补齐（SERVICE_KIND_REGISTRY kinds ×4 + SERVICE_KIND_BY_SERVICE_ID ×4）——镜像装配校验实弹拦截后修复",
   "catalog derive 硬编码行扩展 + BLOCKED/L0/peer=none 诚实分支",
   "4 个能力壳 bin 日志标签修正（复制模板遗留 modbus-rtu 字面量）",
-  "iec103 validate 补 retries 数值校验（测试暴露缺口，修实现不改断言）"
+  "iec103 validate 补 retries 数值校验（测试暴露缺口，修实现不改断言）",
+  "code-review 两轴修复（收尾提交）：①evidence/48/boot/qemu-serial.log 被 .gitignore *.log 拦截实际未入仓——git add -f 补入（声称与事实对齐）；②Exit 3b「逐字节一致」措辞过强→判据订正为 host KAT 字节级+L2 行为级双层表述；③4 个 config 解析器 as 截断改值域先检+try_from（PROJECT.md 数值纪律硬违规，含 k=65536 绕过非零校验负例锁定）；④4 个能力壳 bin 文档头 svc-modbus-rtu 名称残留修正；⑤CONTEXT.md 登记 InteropLevel::SpecBlocked 术语"
  ],
  "honest_limitations": [
   "codec 全域 BLOCKED 是本卷主状态（规约文本 owner 输入未达）；configs TOML 中 t0-t3/k/w、节点地址、超时表为占位显式值，产线部署前必须按规约原文核订（双处注释登记）",
