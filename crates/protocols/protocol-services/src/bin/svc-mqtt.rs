@@ -72,10 +72,16 @@ pub extern "C" fn _start(
                             eneros_runtime::println!(
                                 "[svc-mqtt] NET-TRANSPORT READY capability=eneros_mqtt::plugin::MqttPlugin"
                             );
-                            Box::new(eneros_protocol_services::service::PluginIoService::new(
+                            let mut io = eneros_protocol_services::service::PluginIoService::new(
                                 plugin,
                                 "eneros_mqtt::plugin::MqttPlugin",
-                            ))
+                            );
+                            // 46.5：启动期自检轮询——post-connect 协议交换
+                            // 在进入 request 循环前完成（104 STARTDT/总召唤、
+                            // mqtt CONNECT/SUB、raw RX；L2 对端 transcript ≥3
+                            // 判据；有界不阻塞对端）。
+                            io.self_check_poll(150);
+                            Box::new(io)
                         }
                         Err(e) => {
                             eneros_runtime::println!(

@@ -1,0 +1,10 @@
+{
+  "schema": "eneros.l2-verified.v1",
+  "protocol": "modbus-rtu",
+  "level": "L0",
+  "verdict": "BLOCKED",
+  "generated_at": "2026-08-21T05:32:06Z",
+  "commit": "df8e5f3",
+  "reason": "46.1 决策 b：QEMU virt 无第二 PL011（-device help 实测）；Serial 句柄移交须真机/板卡 bring-up（51 卷），QEMU 下 X3/X4/X5=0 → 能力壳 fail-closed",
+  "interop_level": "CodecReady"
+}

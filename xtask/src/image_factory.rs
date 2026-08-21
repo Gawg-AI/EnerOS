@@ -1880,11 +1880,21 @@ fn build_init_bundle(
             .join(&entry.bin);
         let elf = fs::read(&elf_path)
             .map_err(|e| invalid(format!("bundle elf missing {}: {e}", elf_path.display())))?;
+        // 46.5（平台演进 WINDOW-4MiB）：用户 EL0 载荷 `--strip-unneeded`——
+        // 移除 symtab/debug 类段缩小 init bundle（46 卷真实协议服务使 bundle
+        // 3.46MiB，+ 运行时 DTB ~1.05MiB 超 4MiB BOOT-007 窗口容纳上限，
+        // 见 evidence/46/WP-46.5.md §平台演进）。target ELF 保持未 strip
+        // （crash symbolize 在其上解析符号）；strip 失败 = 构建失败（fail-closed）。
+        let blob = if entry.target == "aarch64-unknown-none" {
+            strip_user_blob(&elf)?
+        } else {
+            elf
+        };
         service_digests.insert(
             entry.name.clone(),
-            crate::product_deriver::hex(&Sha256::digest(&elf)),
+            crate::product_deriver::hex(&Sha256::digest(&blob)),
         );
-        modules.push((entry.kind, entry.flags, entry.name.clone(), elf));
+        modules.push((entry.kind, entry.flags, entry.name.clone(), blob));
     }
     if modules.is_empty() {
         return Err(invalid(
@@ -1992,6 +2002,29 @@ fn build_user_elf(root: &Path, package: &str, bin: &str, profile_id: &str) -> Dy
 }
 
 /// 组装 init bundle v2（SVC-002 schema）。
+/// 46.5（平台演进 WINDOW-4MiB）：`aarch64-none-elf-strip --strip-unneeded`
+/// 用户 EL0 载荷（temp 文件 → tool → 重读）。工具为构建链既有依赖（cc-rs 同
+/// 工具链）；失败 → Err（不静默回退未 strip——窗口容量契约必须满足）。
+fn strip_user_blob(blob: &[u8]) -> DynResult<Vec<u8>> {
+    let tmp = std::env::temp_dir().join(format!(
+        "eneros-elf-strip-{:016x}.elf",
+        Sha256::digest(blob)
+    ));
+    fs::write(&tmp, blob)?;
+    let status = Command::new("aarch64-none-elf-strip")
+        .arg("--strip-unneeded")
+        .arg(&tmp)
+        .status()
+        .map_err(|e| invalid(format!("aarch64-none-elf-strip 不可用（构建链必需）: {e}")))?;
+    if !status.success() {
+        let _ = fs::remove_file(&tmp);
+        return Err(invalid("aarch64-none-elf-strip --strip-unneeded 失败"));
+    }
+    let out = fs::read(&tmp)?;
+    let _ = fs::remove_file(&tmp);
+    Ok(out)
+}
+
 fn compose_init_bundle(
     source_date_epoch: u64,
     modules: &[(u32, u32, &str, &[u8])],

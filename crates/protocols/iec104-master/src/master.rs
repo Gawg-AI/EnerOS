@@ -89,6 +89,11 @@ impl Iec104Master {
         self.devices.keys().copied().collect()
     }
 
+    /// 46.5 观测：调度任务表快照（诊断/可见性，非协议语义）。
+    pub fn scheduler_tasks(&self) -> alloc::collections::BTreeMap<u16, crate::poll::PollTask> {
+        self.scheduler.tasks.clone()
+    }
+
     /// 测试专用：可变访问传输层（预置接收数据/检查发送帧）。
     #[cfg(test)]
     pub fn transport_mut(&mut self) -> &mut dyn MasterTransport {

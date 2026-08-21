@@ -1028,27 +1028,36 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
             "virtio-net-device,bus=virtio-mmio-bus.8,netdev=enerosnet8".to_owned(),
         ]);
     }
-    // 46（WP-46.2）：协议服务 NIC 阵列——每协议独占一个 socket（L2）后端
-    // virtio-net 槽（9..=13）；外部独立对端进程连入对应端口后形成 L2 桥
-    // （46.5 对端矩阵）。槽位与 root `spawn::proto_net_slot` 单一事实源配套：
-    //   slot 9 = svc-iec104 → 5578；slot 10 = svc-mqtt → 5579；
-    //   slot 11 = svc-mms → 5580；slot 12 = svc-goose → 5581；
-    //   slot 13 = svc-sv → 5582。
+    // 46（WP-46.2/46.5）：协议服务 NIC 阵列——每协议独占一个 virtio-net 槽；
+    // 槽位与 root `spawn::proto_net_slot` 单一事实源配套：
+    //   slot 1  = svc-goose   （raw → socket(L2) 5577，--net-mode present 43 G3 通道）
+    //   slot 8  = svc-modbus-tcp（TCP → user/slirp，--net-user；host 从站 10.0.2.2:5502）
+    //   slot 9  = svc-iec104  （TCP → user/slirp；host 独立 104 从站，10.0.2.2:2404）
+    //   slot 10 = svc-mqtt    （TCP → user/slirp；host 独立 broker，10.0.2.2:1883）
+    //   slot 11 = svc-mms     （TCP → user/slirp；host 独立 MMS server，10.0.2.2:5102）
+    //   slot 13 = svc-sv      （raw → socket(L2)；host raw peer，listen 5582）
+    // 46.5.0 决策（2026-08-20）：TCP 协议对端是 host 级 TCP 进程（python/mosquitto），
+    // 复用 43/45 已验证的 slirp `10.0.2.2→host loopback` 通道；goose/sv 为纯二层
+    // 帧交换，用 socket(L2) 后端 + host raw peer（对端全部为独立非 EnerOS 进程）。
+    // 注：mms 对端端口 5102（非特权 L2 测试端口——host 无 root 绑 102；产品部署
+    // 经配置指向标准 102）。
     if options.net_protocols {
-        for (slot, port) in [
-            (9u64, 5578u16),
-            (10, 5579),
-            (11, 5580),
-            (12, 5581),
-            (13, 5582),
-        ] {
+        for slot in [9u64, 10, 11] {
             qemu_args.extend([
                 "-netdev".to_owned(),
-                format!("socket,id=enerosnet{slot},listen=127.0.0.1:{port}"),
+                format!("user,id=enerosnet{slot}"),
                 "-device".to_owned(),
                 format!("virtio-net-device,bus=virtio-mmio-bus.{slot},netdev=enerosnet{slot}"),
             ]);
         }
+        // goose=槽1 走 --net-mode present 的 socket(bus.1, 5577)；sv=槽13。
+        let (slot, port) = (13u64, 5582u16);
+        qemu_args.extend([
+            "-netdev".to_owned(),
+            format!("socket,id=enerosnet{slot},listen=127.0.0.1:{port}"),
+            "-device".to_owned(),
+            format!("virtio-net-device,bus=virtio-mmio-bus.{slot},netdev=enerosnet{slot}"),
+        ]);
     }
     validate_argv(&qemu_args)?;
     let archived_argv = qemu_args.join(" ");

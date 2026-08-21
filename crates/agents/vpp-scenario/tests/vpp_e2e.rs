@@ -394,6 +394,7 @@ fn collect_evidence_goose() -> ExitEvidence {
         sq_num: 0,
         dataset_ref: String::from("IED1LD/LLN0$dsGOOSE1"),
         needs_retransmit: false,
+        vlan_id: None,
     };
     let mut publisher = GoosePublisher::new(cb, MockL2::new()).expect("发布者构造");
     publisher.update_value("IED1LD/LLN0.Ind.stVal", DaValue::Bool(true));

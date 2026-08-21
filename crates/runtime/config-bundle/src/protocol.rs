@@ -209,6 +209,7 @@ pub fn iter_key_values(id: &str, cfg: &ProtocolConfig) -> alloc::vec::Vec<(Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TypedConfigConsumer;
 
     #[test]
     fn encode_decode_roundtrip_all_fields() {
@@ -254,5 +255,96 @@ mod tests {
         let mut cfg = ProtocolConfig::default();
         cfg.insert("big", "a".repeat(300).as_str());
         assert!(encode_protocol(&cfg).is_err());
+    }
+
+    #[test]
+    fn protocol_kv_consumer_apply_roundtrip_and_noop() {
+        // 46.3：每协议 one consumer（registry 双向完备性）；decode_validate →
+        // apply → 同 generation+同内容 = NoOp；内容变 → Applied。
+        let mut c = ProtocolKvConsumer::new("protocol-iec104");
+        assert_eq!(
+            c.config_id(),
+            crate::ConfigId::from_static("protocol-iec104")
+        );
+        assert_eq!(c.schema_version(), crate::SchemaVersion(1));
+
+        let mut cfg = ProtocolConfig::default();
+        cfg.insert("peer", "10.0.2.2:2404");
+        cfg.insert("t1_timeout_ms", "15000");
+        let raw = encode_protocol(&cfg).expect("encode");
+        let decoded = c.decode_validate(&raw).expect("decode/validate");
+        assert_eq!(decoded.get("peer"), Some("10.0.2.2:2404"));
+
+        let out = c.apply(decoded, 7).expect("apply");
+        assert_eq!(out, crate::ApplyOutcome::Applied { generation: 7 });
+        assert_eq!(c.last.get("peer"), Some("10.0.2.2:2404"));
+        assert_eq!(c.generation, 7);
+
+        // 同 generation 同内容重放 → NoOp（不重复计数）。
+        let out = c.apply(c.last.clone(), 7).expect("reapply");
+        assert_eq!(out, crate::ApplyOutcome::NoOp);
+
+        // 内容变化 → 新 generation Applied。
+        let mut cfg2 = ProtocolConfig::default();
+        cfg2.insert("peer", "10.0.2.2:2405");
+        let raw2 = encode_protocol(&cfg2).expect("encode");
+        let out = c
+            .apply(c.decode_validate(&raw2).expect("decode2"), 8)
+            .expect("apply2");
+        assert_eq!(out, crate::ApplyOutcome::Applied { generation: 8 });
+        assert_eq!(c.last.get("peer"), Some("10.0.2.2:2405"));
+    }
+
+    #[test]
+    fn protocol_kv_consumer_rejects_garbage_payload() {
+        let mut c = ProtocolKvConsumer::new("protocol-modbus-tcp");
+        assert!(c.decode_validate(b"\xff\xff\xff").is_err());
+        assert!(c.decode_validate(b"").is_err());
+    }
+}
+
+/// 46（WP-46.3）：协议配置 typed consumer（每协议一份实例；注册进
+/// svc-config ConfigRegistry——registry 双向完备性要求 bundle 内每个
+/// 配置都有 consumer，否则 fail-closed `unconsumed-config`）。
+pub struct ProtocolKvConsumer {
+    id: &'static str,
+    /// 最近应用的协议配置（诊断/校验保持）。
+    pub last: ProtocolConfig,
+    /// 生效 generation。
+    pub generation: u64,
+}
+
+impl ProtocolKvConsumer {
+    pub fn new(id: &'static str) -> Self {
+        Self {
+            id,
+            last: ProtocolConfig::default(),
+            generation: 0,
+        }
+    }
+}
+
+impl crate::TypedConfigConsumer for ProtocolKvConsumer {
+    type Config = ProtocolConfig;
+    fn config_id(&self) -> crate::ConfigId {
+        crate::ConfigId::from_static(self.id)
+    }
+    fn schema_version(&self) -> crate::SchemaVersion {
+        crate::SchemaVersion(1)
+    }
+    fn decode_validate(&self, raw: &[u8]) -> Result<Self::Config, crate::ConfigError> {
+        decode_protocol(raw)
+    }
+    fn apply(
+        &mut self,
+        cfg: Self::Config,
+        generation: u64,
+    ) -> Result<crate::ApplyOutcome, crate::ConfigError> {
+        if self.last.entries == cfg.entries && self.generation == generation {
+            return Ok(crate::ApplyOutcome::NoOp);
+        }
+        self.last = cfg;
+        self.generation = generation;
+        Ok(crate::ApplyOutcome::Applied { generation })
     }
 }

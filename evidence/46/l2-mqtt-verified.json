@@ -1,0 +1,12 @@
+{
+  "schema": "eneros.l2-verified.v1",
+  "protocol": "mqtt",
+  "level": "L2",
+  "verdict": "VERIFIED",
+  "generated_at": "2026-08-21T05:32:06Z",
+  "commit": "df8e5f3",
+  "oracle": "独立非 EnerOS 进程（python/system tool）+ QEMU/EL0；transcript ≥3 事务 + 串口 NET-TRANSPORT READY",
+  "transcript": "evidence/46/qemu-l2/mqtt.transcript.jsonl",
+  "transactions": 13,
+  "serial_ready_marker": 1
+}

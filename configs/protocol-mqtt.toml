@@ -1,4 +1,6 @@
 # 46（WP-46.3）：svc-mqtt 协议配置（broker = 外部独立 mosquitto，46.5）。
 broker = "10.0.2.2:1883"
 client_id = "eneros-agent"
-keep_alive_ms = 60000
+# 46.5（L2 keepalive 观测窗口）：60s → 3s——自检轮询窗口内
+# 触发 PINGREQ（对端 transcript 判据；生产部署按现场≥60s 配置）。
+keep_alive_ms = 3000

@@ -45,7 +45,7 @@ use eneros_protocol_abstract::{
     parse_ip_port, TransportError, TransportFactory, TransportHandle, TransportKind, TransportSpec,
 };
 use eneros_storage::driver::virtio_blk::VolatileMmio;
-use eneros_virtio_core::DmaPool;
+use eneros_virtio_core::{DmaPool, VirtioMmio};
 
 /// DMA 池页数（virtio-net 队列下限 = VIRTIO_NET_POOL_SIZE/4K；与 root
 /// spawn.rs `NET_DMA_PAGES` 一致——单一事实源）。
@@ -115,8 +115,11 @@ const SOCK_TX_BUF: usize = 4096;
 /// 连接/发送轮询上限（与 SmoltcpTcpTransport 同语义：2000 次协议栈
 /// tick 内推进握手/发完，超限 fail-closed 不无限自旋）。
 const POLL_ITERS: u32 = 2000;
-/// raw Ethernet 最大帧（virtio-net TX 缓冲 2048 - 10B 头；留余量）。
-const MAX_RAW_FRAME: usize = 1500;
+/// raw Ethernet 最大帧（virtio-net TX 缓冲 2048 - 10B legacy 头，留余量）。
+/// 46.5 修正：1500 → 1526——插件 `MAX_FRAME=1518`（标准以太网最大帧）本就
+/// 超 1500，且 46.4 GOOSE VLAN 802.1Q TX 帧达 1522；旧值导致 sv/goose
+/// open_raw 恒 ConnectFailed → plugin start ProtocolInit（QEMU 实弹登记）。
+const MAX_RAW_FRAME: usize = 1526;
 
 /// 统一网络栈（单一 NIC 上的 smoltcp 栈 + 有界 socket 集）。
 pub struct NetStack<D: NetDevice> {
@@ -136,8 +139,23 @@ impl NetStack<NetDriver> {
         // SAFETY: root 已把 DMA 帧映射到 dma_vaddr（长度 = NET_DMA_PAGES×4K）。
         let pool = unsafe { NetSvcDmaPool::new(dma_vaddr, dma_phys, NET_DMA_PAGES) };
         let mmio = VolatileMmio::new(mmio_vaddr as usize);
-        let driver =
-            VirtioNetDriver::new(mmio, pool, NoopCache).map_err(|_| "virtio-net-init-failed")?;
+        let driver = VirtioNetDriver::new(mmio, pool, NoopCache).map_err(|e| {
+            // 46.5 诊断：virtio 发现失败检查点（QEMU 侧该槽设备的寄存器真值
+            // dump，区分：设备缺失/版本/status 写不回流/FEATURES_OK 被拒）。
+            let r = VolatileMmio::new(mmio_vaddr as usize);
+            eneros_runtime::println!(
+                "[net] virtio-net-init-failed mmio=0x{:x} err={:?} magic=0x{:08x} ver=0x{:08x} dev=0x{:08x} status=0x{:08x} feats0=0x{:08x}",
+                mmio_vaddr,
+                e,
+                r.read_reg(0x000),
+                r.read_reg(0x004),
+                r.read_reg(0x008),
+                r.read_reg(0x070),
+                r.read_reg(0x010)
+            );
+            "virtio-net-init-failed"
+        })?;
+        eneros_runtime::println!("[net] netstack-built mmio=0x{:x}", mmio_vaddr);
         // mac 来自设备能力（未协商 MAC 时驱动拒绝构造——不猜）。
         let mac = driver.mac_address();
         let config = InterfaceConfig {

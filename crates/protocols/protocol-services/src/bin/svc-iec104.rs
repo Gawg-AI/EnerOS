@@ -19,8 +19,6 @@ use alloc::boxed::Box;
 
 #[cfg(target_os = "none")]
 use eneros_protocol_abstract::plugin::ProtocolPlugin;
-#[cfg(target_os = "none")]
-use eneros_protocol_abstract::EmptyPointRegistry;
 
 #[cfg(target_os = "none")]
 #[global_allocator]
@@ -67,24 +65,48 @@ pub extern "C" fn _start(
                     eneros_agent_sdk::EIPC_EP_BASE_SLOT,
                     "protocol-iec104",
                 ) {
-                    Some(cfg) => match plugin.start(&cfg, &mut factory, &mut EmptyPointRegistry) {
-                        Ok(()) => {
-                            eneros_runtime::println!(
+                    Some(cfg) => {
+                        // 46.5 诊断：落盘实际配置值（poll_interval 是否 5000）。
+                        for (k, v) in cfg.entries.iter() {
+                            eneros_runtime::println!("[iec104-config] {k} = {v}");
+                        }
+                        // 46.5：点表经 svc-config 注入——104 设备映射 →
+                        // STARTDT/总召唤驱动（EmptyPointRegistry 空映射 =
+                        // 永不发起 104 握手，QEMU 实弹登记）。不可得 → 空
+                        // 注册表 → 插件如实降级。
+                        let mut registry =
+                            eneros_protocol_services::service_cfg::fetch_points_registry(
+                                "iec104-config",
+                                eneros_agent_sdk::EIPC_EP_BASE_SLOT,
+                            );
+                        match plugin.start(&cfg, &mut factory, &mut registry) {
+                            Ok(()) => {
+                                eneros_runtime::println!(
                                 "[svc-iec104] NET-TRANSPORT READY capability=eneros_iec104_master::plugin::Iec104Plugin"
                             );
-                            Box::new(eneros_protocol_services::service::PluginIoService::new(
-                                plugin,
-                                "eneros_iec104_master::plugin::Iec104Plugin",
-                            ))
-                        }
-                        Err(e) => {
-                            eneros_runtime::println!(
+                                let mut io =
+                                    eneros_protocol_services::service::PluginIoService::new(
+                                        plugin,
+                                        "eneros_iec104_master::plugin::Iec104Plugin",
+                                    );
+                                // 46.5：自检轮询窗口须覆盖 STARTDT→总召唤启动交换——
+                                // 总召唤由调度器在 connect + poll_interval_ms(5s) 触发
+                                // （QEMU 实弹：150 轮≈3s 只到 Connected，INTERROGATION
+                                // 未落地）；300 轮≈6s 使首个召唤落在窗口内。
+                                io.self_check_poll(300);
+                                Box::new(io)
+                            }
+                            Err(e) => {
+                                eneros_runtime::println!(
                                 "[svc-iec104] plugin start FAILED {:?} —— capability 壳（EXECUTE ST_UNAVAILABLE）",
                                 e
                             );
-                            Box::new(eneros_protocol_services::service::UnassignedProtocolService)
+                                Box::new(
+                                    eneros_protocol_services::service::UnassignedProtocolService,
+                                )
+                            }
                         }
-                    },
+                    }
                     None => {
                         eneros_runtime::println!(
                             "[svc-iec104] protocol config unavailable —— capability 壳（EXECUTE ST_UNAVAILABLE）"

@@ -899,6 +899,16 @@ impl SpawnCtx {
                         d.size_bits,
                         d.is_device
                     );
+                } else if d.is_device {
+                    // 46.5 诊断（release）：仅打印 device untyped（通常 ≤10 行），
+                    // 定位 virtio-mmio 区域粒度 → Retype freeIndex 语义下设备帧
+                    // 实际落点。
+                    crate::println!(
+                        "[eneros-root-task] DEV-UNTYPED[{}] paddr=0x{:x} size_bits={}",
+                        i,
+                        d.paddr,
+                        d.size_bits
+                    );
                 }
                 descs.push(d);
             }
@@ -1027,11 +1037,12 @@ pub const NET_DMA_PAGES: usize = 9;
 /// 每协议独占一个 QEMU virtio-mmio 槽（`0x0a000000 + slot*0x200`）；
 /// **两个协议服务不得同槽**——槽冲突即装配失败（见 `proto_net_slot` 单测）。
 /// - 8  = svc-modbus-tcp（43 既有，slirp 后端）
-/// - 9  = svc-iec104（socket 后端 5578，L2 独立对端）
-/// - 10 = svc-mqtt   （socket 后端 5579）
-/// - 11 = svc-mms    （socket 后端 5580）
-/// - 12 = svc-goose  （socket 后端 5581，raw）
-/// - 13 = svc-sv     （socket 后端 5582，raw）
+/// - 9  = svc-iec104（slirp user 后端；host 独立 104 从站，10.0.2.2:2404）
+/// - 10 = svc-mqtt   （slirp user 后端；host 独立 broker，10.0.2.2:1883）
+/// - 11 = svc-mms    （slirp user 后端；host 独立 MMS server，10.0.2.2:5102）
+/// - 1  = svc-goose  （socket(L2) 后端 bus.1 5577——46.5 平台实测收归 43 G3
+///   通道；QEMU virt 对多 socket 后端附着不可靠）
+/// - 13 = svc-sv     （socket(L2) 后端 5582）
 /// - svc-modbus-rtu → None（46.1 决策 b：QEMU 无第二串口；Serial 移交待
 ///   真机/板卡 bring-up 由 root 传 PL011 MMIO——QEMU 下 X3/X4/X5=0 → 壳）。
 pub fn proto_net_slot(name: &str) -> Option<u64> {
@@ -1040,7 +1051,9 @@ pub fn proto_net_slot(name: &str) -> Option<u64> {
         "svc-iec104" => Some(9),
         "svc-mqtt" => Some(10),
         "svc-mms" => Some(11),
-        "svc-goose" => Some(12),
+        // 46.5（平台限制登记）：QEMU virt 对多 socket 后端附着不可靠，goose
+        // 收归既有 G3 通道（bus.1 socket 5577，43 卷 L2 通道）。
+        "svc-goose" => Some(1),
         "svc-sv" => Some(13),
         _ => None,
     }
@@ -1071,8 +1084,8 @@ mod proto_net_slot_tests {
                 Some(slot) => {
                     nets += 1;
                     assert!(
-                        (8..=13).contains(&slot),
-                        "槽 {slot} 越出 QEMU 配置范围（8..=13）"
+                        (1..=13).contains(&slot),
+                        "槽 {slot} 越出 QEMU 配置范围（1..=13；goose=1 首 socket）"
                     );
                     assert!(
                         seen.insert(slot),
@@ -1081,13 +1094,51 @@ mod proto_net_slot_tests {
                 }
             }
         }
-        assert_eq!(nets, 6, "6 个网络协议服务各占一槽（modbus-tcp 含）");
+        assert_eq!(
+            nets, 6,
+            "6 个网络协议服务各占一槽（goose=1，含 modbus-tcp=8）"
+        );
     }
 
     #[test]
     fn unknown_or_serial_service_gets_no_nic_slot() {
         assert_eq!(proto_net_slot("svc-telemetry"), None);
         assert_eq!(proto_net_slot("svc-modbus-rtu"), None);
+    }
+
+    #[test]
+    fn net_mmio_vaddr_unique_across_all_slots() {
+        // 46.5 二修（QEMU 实弹根因）：页 0 与页 1 是不同物理帧——若映射基址
+        // 平置 NET_MMIO_VADDR + 页内偏移（slot*0x200&0xfff），slot1(goose) 与
+        // slot9(iec104) 均得 vaddr=0x40020200，后映射遮蔽先者 → virtio RX 挂。
+        // 本测试锁定：全部协议槽的 mmio_vaddr（= 区域基 + 全量槽偏移）互异。
+        let services = [
+            "svc-modbus-tcp",
+            "svc-iec104",
+            "svc-mqtt",
+            "svc-mms",
+            "svc-goose",
+            "svc-sv",
+        ];
+        let page_mask = (1u64 << OBJ_BITS_SMALL_PAGE) - 1;
+        let mut seen = alloc::collections::BTreeSet::new();
+        for name in services {
+            let slot = proto_net_slot(name).expect("net service slot");
+            let mmio_phys = STORAGE_VIRTIO_REGION_BASE + slot * STORAGE_MMIO_SLOT_STRIDE;
+            let mmio_off = mmio_phys - STORAGE_VIRTIO_REGION_BASE;
+            let map_vaddr = NET_MMIO_VADDR + (mmio_off & !page_mask);
+            let mmio_vaddr = NET_MMIO_VADDR + mmio_off;
+            assert!(
+                seen.insert(mmio_vaddr),
+                "mmio_vaddr 冲突 0x{:x}（{name} 槽 {slot}）—— 跨页帧遮蔽，装配失败",
+                mmio_vaddr
+            );
+            assert!(
+                map_vaddr % (1u64 << OBJ_BITS_SMALL_PAGE) == 0,
+                "映射基须 4K 对齐: 0x{:x}",
+                map_vaddr
+            );
+        }
     }
 }
 
@@ -1640,6 +1691,14 @@ pub fn sel4_spawn_services(
     crate::println!("[eneros-root-task] DBG fault_ep={}", fault_ep);
     let mut handles = Vec::with_capacity(plan.services.len());
     let mut tcb_slots = Vec::with_capacity(plan.services.len());
+    // 46.5：virtio-mmio 共享页框 cap（跨服务复用）。QEMU virt 该区域是单一
+    // device untyped（0x0a000000，size_bits=25），Retype 无 untyped 内偏移，
+    // freeIndex 逐页推进——每服务独立 retype 只会拿到"第 k 页"（页基槽号
+    // =8k），与目标槽无关。页 0（slot0-7 含 storage/goose）与页 1（slot8-15
+    // 含其余 5 协议）各只真实 retype 一次，同页服务经 CNode_Mint 派生帧 cap
+    // 复用（见 configure_service 的共享帧逻辑）。
+    let mut net_page0_frame: Option<u64> = None;
+    let mut net_page1_frame: Option<u64> = None;
     for (svc_idx, svc) in plan.services.iter().enumerate() {
         let module = bundle
             .modules
@@ -1673,6 +1732,8 @@ pub fn sel4_spawn_services(
                 svc_idx as u64 + 1, // fault_ep badge（0 保留；supervisor 识别服务用）
                 eipc_mask,
                 heartbeat_slot,
+                &mut net_page0_frame,
+                &mut net_page1_frame,
             )?;
         tcb_slots.push(tcb);
         handles.push(SpawnedHandle {
@@ -1873,6 +1934,8 @@ fn configure_service(
     ntfn_badge: u64,
     eipc_mask: u64,
     heartbeat_slot: u64,
+    net_page0_frame: &mut Option<u64>,
+    net_page1_frame: &mut Option<u64>,
 ) -> Result<
     (
         u64,
@@ -2074,6 +2137,11 @@ fn configure_service(
                     mmio_phys,
                     STORAGE_MMIO_VADDR
                 );
+                // 46.5：storage 的 MMIO 页 = virtio 区域页 0（含 slot0-7，
+                // storage 槽 2 在页内偏移 0x400）。登记该页框 cap 供同页
+                // 服务（svc-goose 槽 1）mint 复用——Retype freeIndex 语义下
+                // 页 0 只能真实 retype 一次。
+                *net_page0_frame = Some(mmio_frame);
             }
             Err(e) => {
                 crate::println!(
@@ -2186,34 +2254,92 @@ fn configure_service(
     let mut net_handover: Option<NetHandover> = None;
     if let Some(net_slot) = proto_net_slot(&svc.name) {
         let mmio_phys = STORAGE_VIRTIO_REGION_BASE + net_slot * STORAGE_MMIO_SLOT_STRIDE;
-        // a) MMIO 设备帧（槽位所在 4K 帧，首次 retype）。
+        // a) MMIO 设备帧：页 0（slot0-7）与页 1（slot8-15）各只真实 retype
+        // 一次，同页服务经 CNode_Mint 派生帧 cap 复用到各自 VSpace（46.5
+        // 根因修复：QEMU virt 该区域是单一 device untyped，Retype 无 untyped
+        // 内偏移、freeIndex 逐页推进——每服务独立 retype 必落在"第 k 页"而非
+        // 目标槽页；旧实现下只有恰好 k==槽页 的 modbus/storage 侥幸工作。
+        // 46.5 二修（QEMU 实弹）：寄存器基址必须**跨页唯一**——页 0 与页 1
+        // 是不同物理帧，若都在 NET_MMIO_VADDR 平基址映射 + 页内槽偏移
+        // （slot*0x200 & 0xfff），slot1(goose,页0) 与 slot9(iec104,页1) 均得
+        // vaddr=0x40020200，后映射者遮蔽先者 → iec104 virtio RX 挂（QEMU
+        // 实测两服务 mmio=0x40020200 重合）。修正：页 0 服务映射基
+        // NET_MMIO_VADDR，页 1 服务映射基 NET_MMIO_VADDR+0x1000（两页 VA
+        // 区 0x40020000..0x40022000）；mmio_vaddr = 基 + 页内槽偏移（全量
+        // 区域偏移，唯一）。
+        let page_mask = (1u64 << OBJ_BITS_SMALL_PAGE) - 1;
+        let page_base = mmio_phys & !page_mask;
+        let mmio_off = mmio_phys - STORAGE_VIRTIO_REGION_BASE; // 0..0x1e00，跨两页
+        // 该服务独享 VA 映射页基（页 0 → 0x40020000，页 1 → 0x40021000）。
+        let map_vaddr = NET_MMIO_VADDR + (mmio_off & !page_mask);
         let mmio_frame = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
-        let mmio_ok = (|| -> Result<(), SpawnError> {
-            retype_device_one(
-                ctx,
-                types.arm_frame,
-                OBJ_BITS_SMALL_PAGE,
-                mmio_phys,
-                mmio_frame,
-            )?;
-            let perm = VmPermissions::DEVICE_RW_NX;
-            map_frame_with_pagetables(
-                ctx,
-                vspace,
-                mmio_frame,
-                NET_MMIO_VADDR,
-                perm.cap_rights(rights),
-                perm.vm_attributes(),
-            )?;
-            Ok(())
-        })();
+        let shared = if page_base == STORAGE_VIRTIO_REGION_BASE {
+            net_page0_frame
+        } else {
+            net_page1_frame
+        };
+        let mmio_ok = match *shared {
+            Some(src) => {
+                // 同页后续服务：Mint 派生同页框 cap 再映射进本服务 VSpace
+                //（root cnode depth=64，与 fault_mint 同约定；rights 用全权限）。
+                cnode_mint(
+                    ctx.root_cnode,
+                    mmio_frame,
+                    64,
+                    ctx.root_cnode,
+                    src,
+                    64,
+                    rights.all,
+                    0,
+                )
+                .map_err(SpawnError::Sel4)
+                .and_then(|()| {
+                    let perm = VmPermissions::DEVICE_RW_NX;
+                    map_frame_with_pagetables(
+                        ctx,
+                        vspace,
+                        mmio_frame,
+                        map_vaddr,
+                        perm.cap_rights(rights),
+                        perm.vm_attributes(),
+                    )
+                })
+            }
+            None => {
+                // 该页首个服务：真实 retype（freeIndex 恰落在本页——storage
+                // 页0→slot2、modbus 页1→slot8 为各自该页首个消费）并登记共享 cap。
+                let r = (|| -> Result<(), SpawnError> {
+                    retype_device_one(
+                        ctx,
+                        types.arm_frame,
+                        OBJ_BITS_SMALL_PAGE,
+                        mmio_phys,
+                        mmio_frame,
+                    )?;
+                    let perm = VmPermissions::DEVICE_RW_NX;
+                    map_frame_with_pagetables(
+                        ctx,
+                        vspace,
+                        mmio_frame,
+                        map_vaddr,
+                        perm.cap_rights(rights),
+                        perm.vm_attributes(),
+                    )?;
+                    Ok(())
+                })();
+                if r.is_ok() {
+                    *shared = Some(mmio_frame);
+                }
+                r
+            }
+        };
         match mmio_ok {
             Ok(()) => {
                 crate::println!(
                     "[eneros-root-task] NET-HANDOVER {}: mmio phys=0x{:x} -> vaddr=0x{:x} (slot {})",
                     svc.name,
                     mmio_phys,
-                    NET_MMIO_VADDR,
+                    map_vaddr,
                     net_slot
                 );
             }
@@ -2282,7 +2408,11 @@ fn configure_service(
                     NET_DMA_PAGES
                 );
                 net_handover = Some(NetHandover {
-                    mmio_vaddr: NET_MMIO_VADDR,
+                    // 46.5：寄存器基址 = 映射页基（NET_MMIO_VADDR / +0x1000）
+                    // + **页内槽偏移**（全量区域偏移唯一；slot1 与 slot9 不再
+                    // 同址）。同 storage 侧"帧基+槽偏移"约定。旧实现平基址 →
+                    // 同页多槽服务读到的都是页内第一个设备（slot8）的寄存器。
+                    mmio_vaddr: NET_MMIO_VADDR + mmio_off,
                     dma_vaddr: phys_base,
                     dma_phys: phys_base,
                 });
@@ -2585,15 +2715,19 @@ fn retype_device_one(
     paddr: u64,
     slot: u64,
 ) -> Result<(), SpawnError> {
-    // FIX-BUGS-0810 B2：物理地址定位（alloc_device_at），丢弃返回偏移。
+    // FIX-BUGS-0810 B2：按物理地址定位 device untyped（alloc_device_at）。
+    // 注意：seL4 Retype **没有 untyped 内 offset 参数**——node_offset 是
+    // 目标 CNode 槽位，untyped 内位置由内核 freeIndex 自动推进
+    // （libsel4 sel4.xml UntypedRetype 参数序实锤）。设备帧实际落在
+    // untyped 的 freeIndex 处；alloc_device_at 只保证"untyped 覆盖 paddr"。
+    // 46.5 曾把 slot 误当 untyped 偏移改坏（InvalidArgument/InvalidCapability），
+    // 已回退——node_offset = slot（cap 放置槽）。
     let (untyped, _byte_off) = ctx
         .untyped
         .alloc_device_at(paddr, size_bits)
         .ok_or(SpawnError::NoUntyped)?;
     // SAFETY: untyped 为覆盖 paddr 的 device untyped cap；slot 为 root CSpace
-    // 空闲槽；node_offset = slot（BOOT-010：seL4 的 node_offset 是 dest cnode
-    // 槽，不是 untyped 偏移——旧实现传 alloc_device 的 offset 导致 cap 写入
-    // cnode[offset] 而非目标槽；FIX-BUGS-0810 B2 两件套之一）。
+    // 空闲槽；node_index/node_offset = slot（cap 写入目标槽）。
     eneros_sel4_sys::safe::retype(
         untyped,
         object_type,

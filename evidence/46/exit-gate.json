@@ -1,0 +1,61 @@
+{
+  "schema": "eneros.exit-gate.v1",
+  "volume": 46,
+  "verdict": "ACCEPTED",
+  "generated_at": "2026-08-21T06:05:00Z",
+  "commit": "PENDING-COMMIT",
+  "version": "0.313.16",
+  "image_sha256": "7d13b4d270112a1f4d52fa3bad597536fee7066b2dc148a51dff346c1247ca06",
+  "gates": [
+    {
+      "id": "46-exit-1-l2-evidence",
+      "requirement": "7 协议 L2/host-peer 证据齐（或如实 BLOCKED 登记）",
+      "result": "PASS",
+      "detail": "6/6 VERIFIED L2（modbus-tcp/iec104/mqtt/mms/goose/sv，evidence/46/l2-<proto>-verified.json，四判据 oracle=独立非 EnerOS 进程 + QEMU/EL0）；modbus-rtu BLOCKED 如实登记（l2-modbus-rtu-blocked.json，46.1 决策 b：QEMU virt 无第二 PL011，真机 51 卷解锁）"
+    },
+    {
+      "id": "46-exit-2-sku-matrix",
+      "requirement": "sku-matrix 与代码一致",
+      "result": "PASS",
+      "detail": "cargo xtask catalog derive + sign → product/sku-matrix.json 7 协议重算（6 VERIFIED L2 + Modbus RTU PENDING L0）；catalog gate 的 sku-matrix/一致性检查通过"
+    },
+    {
+      "id": "46-exit-3-no-peer-hardcode",
+      "requirement": "业务路径零 peer/地址硬编码",
+      "result": "PASS",
+      "detail": "grep '10\\.0\\.2\\.|127\\.0\\.0\\.1' crates/protocols/protocol-services/src/ 非测试/非注释命中=0；plugin.rs/svc bin 残留全在 #[cfg(test)]；peer 值仅存 configs/protocol-*.toml（配置源，46.3 DoD）"
+    },
+    {
+      "id": "46-exit-4-ci-green",
+      "requirement": "全量测试/CI 绿",
+      "result": "PASS",
+      "detail": "cargo test --workspace EXIT=0（373 测试二进制 0 失败）；clippy -p 变更 crate --all-targets -- -D warnings 0 错误；cargo fmt --check 干净；evidence42 check-current 为 42/43 时代遗留本地 BLOCKED（CI 先造信封，46 范围不动 evidence/42 跨卷——如实登记，非 46.5 回归）"
+    },
+    {
+      "id": "46-exit-5-prev-volume-spotcheck",
+      "requirement": "45 卷 Exit 证据 ≥2 项 PASS",
+      "result": "PASS",
+      "detail": "_points grep=0（45 Exit a）；cargo xtask evidence verify violations=[]（45 Exit e）"
+    },
+    {
+      "id": "46-exit-6-version-board",
+      "requirement": "版本 bump + 状态板置 Accepted",
+      "result": "PASS",
+      "detail": "版本 0.313.15→0.313.16；蓝图/44-00 §6 状态板 46=Accepted（2026-08-21 收口）"
+    }
+  ],
+  "pre_existing_limitations": [
+    "catalog gate 的 evidence42-check-current 需 CI 先创建当前候选 EvidenceEnvelope（42/43 时代机制，memory evidence42-tooling-lessons 已登记）；本地 BLOCKED，CI 装配信封后全绿。46 范围不触碰 evidence/42（跨卷红线）"
+  ],
+  "evidence_refs": [
+    "evidence/46/WP-46.5.md",
+    "evidence/46/l2-modbus-tcp-verified.json",
+    "evidence/46/l2-iec104-verified.json",
+    "evidence/46/l2-mqtt-verified.json",
+    "evidence/46/l2-mms-verified.json",
+    "evidence/46/l2-goose-verified.json",
+    "evidence/46/l2-sv-verified.json",
+    "evidence/46/l2-modbus-rtu-blocked.json",
+    "evidence/46/qemu-l2/*.transcript.jsonl"
+  ]
+}

@@ -44,6 +44,53 @@ impl<P: ProtocolPlugin> PluginIoService<P> {
     pub fn plugin(&self) -> &P {
         &self.plugin
     }
+
+    /// 46.5（L2 证据/「配置驱动运行」收口）：启动期自检轮询——对齐 45
+    /// svc-modbus-tcp 的 `collect_and_report` 先例，进入 request 循环前
+    /// **有界**驱动真实协议 I/O 多轮，使 post-connect 交换（104
+    /// STARTDT_ACT/总召唤、mqtt CONNECT/SUB、raw 订阅 RX）在最早期完成。
+    /// 异步状态机：本地短超时（max_work_ms 50），不阻塞等待对端；轮次
+    /// 由调用方（svc bin）按插件语义自定。
+    pub fn self_check_poll(&mut self, rounds: u32) {
+        let budget = WorkBudget {
+            max_work_ms: 50,
+            max_polls: 8,
+        };
+        for i in 0..rounds {
+            match self.plugin.poll(crate::now_ms(), budget) {
+                Ok(_) => {}
+                Err(_) => self.err_count = self.err_count.saturating_add(1),
+            }
+            // 46.5 诊断（QEMU 实弹排查，svc-iec104 自检窗口观测）：周期打印
+            // 插件健康（状态机/错误），区分 Connected vs StartDtPending。
+            if (i % 25) == 0 {
+                let h = self.plugin.health();
+                let dbg = self
+                    .plugin
+                    .debug_line()
+                    .map(|s| alloc::format!(" dbg={s}"))
+                    .unwrap_or_default();
+                eneros_runtime::println!(
+                    "[self-check] {} i={} now={} mono={} state={:?} progress={:?} errs={} last_err={:?}{}",
+                    self.capability,
+                    i,
+                    crate::now_ms(),
+                    eneros_time::get_monotonic_ns() / 1_000_000,
+                    h.state,
+                    h.last_progress,
+                    h.error_count,
+                    h.last_error,
+                    dbg
+                );
+            }
+            // 轮间有界自旋：QEMU TCG 下让异步栈时钟/对端 RTT 推进
+            //（smoltcp TCP 重传计时、slirp 响应），~20ms×24 ≈ 0.5s。
+            let t = eneros_time::get_monotonic_ns();
+            while eneros_time::get_monotonic_ns().wrapping_sub(t) < 20_000_000 {
+                core::hint::spin_loop();
+            }
+        }
+    }
 }
 
 impl<P: ProtocolPlugin> DriverService for PluginIoService<P> {

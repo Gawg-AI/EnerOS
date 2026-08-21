@@ -1,6 +1,10 @@
 # 46（WP-46.3/46.4）：svc-iec104 协议配置（144 master；t1/t3 超时 46.4 消费）。
+# 46.5：总召唤调度周期 5s——独立 104 从站 L2 对端读取窗口 20s（iec104_slave.py
+# recv timeout），30s 周期会错过召唤（QEMU 实弹：STARTDT_CON 已达成但无
+# INTERROGATION）。配置真消费：adapter 经 `MasterConfig.poll_interval_ms` 排入
+# RemoteDevice 轮询任务（46.3 消费链收口）。
 peer = "10.0.2.2:2404"
 t1_timeout_ms = 15000
 t3_timeout_ms = 20000
-poll_interval_ms = 30000
+poll_interval_ms = 5000
 clock_sync_interval_ms = 600000

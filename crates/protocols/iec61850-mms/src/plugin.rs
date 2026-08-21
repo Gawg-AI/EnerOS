@@ -159,7 +159,8 @@ impl ProtocolPlugin for MmsPlugin {
                 max_poll_ms: 50,
                 max_frame: MAX_FRAME,
             },
-            interop_level: InteropLevel::CodecReady,
+            // 46.5：QEMU/EL0 + 独立对端 L2 闭环（evidence/46/WP-46.5.md）。
+            interop_level: InteropLevel::TargetPeerVerified,
         };
         &D
     }

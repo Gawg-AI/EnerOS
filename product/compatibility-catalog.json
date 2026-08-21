@@ -1,11 +1,11 @@
 {
-  "catalog_id": "5b2c98b6cf7da003ebe9ce7ecbfb0ac473c71970a4afdeb11d35d971421f10da",
+  "catalog_id": "bcff02dc37f0435bfcb4bb233b5261a3076d2c6945cc85ebd814c84da4136835",
   "core_arch": "aarch64",
-  "generated_at": "2026-08-18T03:59:05Z",
+  "generated_at": "2026-08-21T05:35:28Z",
   "platform_contract_version": 1,
-  "product_manifest_digest": "6905b759e94c7a574644c91f7732119caaa6969293c7675a97ae313406ae44ee",
+  "product_manifest_digest": "712c29963e459518cb38fe3f1e38cf80ebc3592c1dee8a4509b07308c1264ac4",
   "schema": "eneros.compatibility-catalog.v1",
-  "signature": "1f85272c86ef204e788bca59cd296a977a1a86920224318b073fceca34aeabee5c226090be673c2dbb43baf643ef6822250946b86b8122b77a327627bb250009",
+  "signature": "67d8c73ebd79df4e76d864584198f344f4c61b493b6b1ec3a32b204bda71dae62caee0bffbcc928f882fb1ac58b328b6be9b2d5e1ac8cba4bc9f7d65ff901f0e",
   "signer": "dev",
   "skus": [
     {

@@ -47,14 +47,37 @@ pub fn control_service_main(
     let _ = epoch;
     // readiness 信号（root 侧收集 PRODUCT-READY）。
     let _ = ipc_signal(ready_ntfn);
-    // 分块接收状态机。
-    let mut rx = eneros_agent_sdk::ChunkedReceiver::new();
-    // 分页响应缓存（Final 后客户端逐页拉取；新传输 Final 覆盖）。
-    let mut paged_resp: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-    // 完整载荷缓存（Complete 后等待 Final 触发处理——QEMU 实弹修正：
-    // 状态机在最后一块 data 时即 Complete 并复位，Final 若直接进状态机
-    // 报 NoTransfer；Final 语义 = "处理 + 取回执"信号）。
-    let mut pending_full: Option<alloc::vec::Vec<u8>> = None;
+    // 46.5（QEMU 实弹暴露的并发缺陷修复）：分块状态机**按发送方 badge**
+    // 独立维护——单接收器在多客户端交错时（modbus INGEST × energy-agent
+    // SNAPSHOT 同窗口）Header 互相 reset → ERR → ServerRejected（45 卷
+    // 靠启动时序侥幸规避）。badge → 槽线性探测。
+    //
+    // 46.5 二修：槽数 4 → 24——svc-config 启动期客户端 >4（6 协议服务各自
+    // ConfigGet + 点表 + 业务服务）实测仍有共享槽交错 → ERR（serverrejected/
+    // protocol config unavailable，QEMU 实弹登记）。每槽仅持分块重组缓冲
+    //（少量 KB），24 槽对 EL0 栈/堆预算可忽略；服务运行期客户数 ≤24 硬上限，
+    // 超出退化为共享槽 0（背压面）。
+    const MAX_CLIENTS: usize = 24;
+    struct ClientState {
+        badge: u64,
+        rx: eneros_agent_sdk::ChunkedReceiver,
+        paged_resp: alloc::vec::Vec<u8>,
+        pending_full: Option<alloc::vec::Vec<u8>>,
+    }
+    let mut clients: [Option<ClientState>; MAX_CLIENTS] = core::array::from_fn(|_| None);
+    fn slot_of(clients: &[Option<ClientState>; 24], badge: u64) -> usize {
+        for (i, c) in clients.iter().enumerate() {
+            if c.as_ref().map(|c| c.badge) == Some(badge) {
+                return i;
+            }
+        }
+        for (i, c) in clients.iter().enumerate() {
+            if c.is_none() {
+                return i;
+            }
+        }
+        0 // 满 24 槽：退化为共享槽 0（背压面——运行期客户端数超预算）。
+    }
     let mut sender = 0u64;
     let mut reply_info = 0u64;
     loop {
@@ -105,11 +128,21 @@ pub fn control_service_main(
             let _ = ipc_signal(heartbeat_slot);
         }
         // 分页拉取请求（分块状态机前拦截——ENVN 不是 chunked magic）。
+        let si = slot_of(&clients, sender);
+        if clients[si].is_none() {
+            clients[si] = Some(ClientState {
+                badge: sender,
+                rx: eneros_agent_sdk::ChunkedReceiver::new(),
+                paged_resp: alloc::vec::Vec::new(),
+                pending_full: None,
+            });
+        }
+        let cs = clients[si].as_mut().expect("slot");
         let response: alloc::vec::Vec<u8> = if eneros_agent_sdk::is_pull_request(&payload[..len]) {
-            eneros_agent_sdk::page_slice(&paged_resp, payload[4]).to_vec()
+            eneros_agent_sdk::page_slice(&cs.paged_resp, payload[4]).to_vec()
         } else if len >= 4 && &payload[..4] == eneros_agent_sdk::CHUNK_MAGIC_FINAL {
             // Final（request）：触发完整载荷处理 + 分页头回执。
-            match pending_full.take() {
+            match cs.pending_full.take() {
                 Some(full) => {
                     let mut resp = alloc::vec::Vec::new();
                     let ok = handler.handle(&full, &mut resp, now_ms());
@@ -117,30 +150,30 @@ pub fn control_service_main(
                         resp.extend_from_slice(b"ERR");
                     }
                     // 缓存完整响应 → Final 回执 = 分页头（客户端逐页拉取）。
-                    paged_resp = resp;
-                    eneros_agent_sdk::encode_paged_header(paged_resp.len()).to_vec()
+                    cs.paged_resp = resp;
+                    eneros_agent_sdk::encode_paged_header(cs.paged_resp.len()).to_vec()
                 }
                 None => {
                     let resp = b"ERR:NoTransfer".to_vec();
-                    paged_resp = resp.clone();
+                    cs.paged_resp = resp.clone();
                     resp
                 }
             }
         } else {
-            match rx.on_message(&payload[..len], true) {
+            match cs.rx.on_message(&payload[..len], true) {
                 eneros_agent_sdk::ChunkedEvent::Header { .. } => {
                     eneros_agent_sdk::ack_bytes().to_vec()
                 }
                 eneros_agent_sdk::ChunkedEvent::Data { .. } => alloc::vec::Vec::new(),
                 eneros_agent_sdk::ChunkedEvent::Complete(full) => {
                     // 缓存完整载荷，等待 Final 触发处理（QEMU 实弹修正）。
-                    pending_full = Some(full);
+                    cs.pending_full = Some(full);
                     alloc::vec::Vec::new()
                 }
                 eneros_agent_sdk::ChunkedEvent::Malformed(e) => {
                     let mut resp = alloc::vec::Vec::new();
                     resp.extend_from_slice(format!("ERR:{e:?}").as_bytes());
-                    paged_resp = resp.clone();
+                    cs.paged_resp = resp.clone();
                     resp
                 }
             }

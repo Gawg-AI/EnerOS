@@ -1,3 +1,7 @@
 # 46（WP-46.3）：svc-mms 协议配置（MMS peer，46.5 独立对端）。
-peer = "10.0.2.2:102"
-timeout_ms = 1000
+# peer 端口 5102 = 46.5 L2 测试端口（host 无 root 绑标准 102 的独立对端；
+# 产品部署按现场配置指向标准 102，本配置只约束 QEMU/L2 环境）。
+peer = "10.0.2.2:5102"
+# 46.5：启动期 COTP CR→CC + ACSE AARQ→AARE 握手（TCG 下 slirp RTT 较大；
+# 1000ms 实测首握手偶超时 → ProtocolInit 壳；5000ms 给足余量）。
+timeout_ms = 5000

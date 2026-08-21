@@ -445,38 +445,60 @@ fn command_derive(root: &Path, _args: &[String]) -> DynResult<()> {
             _ => Vec::new(),
         };
         for (interface, protocol, role, sec) in matrix_rows {
-            // Modbus TCP 互操作证据：
-            // - L2：正式介质产品端点（svc-modbus-tcp + virtio-net + smoltcp）
-            //   与独立 raw 从站在 QEMU 对通（43 L2，evidence/43）。
-            // - L1：host raw peer（evidence/42/modbus-result.json）。
-            let (result, level, evidence) = if protocol == "Modbus TCP" {
-                let l2_ok = root
-                    .join("evidence/43/l2-modbus-tcp-verified.json")
-                    .is_file();
-                if l2_ok {
-                    (
-                        "VERIFIED".to_owned(),
-                        "L2".to_owned(),
-                        "evidence/43/l2-modbus-tcp-verified.json".to_owned(),
-                    )
-                } else {
-                    let l1_ok = root.join("evidence/42/modbus-result.json").is_file();
-                    (
-                        if l1_ok {
-                            "VERIFIED".to_owned()
-                        } else {
-                            "PENDING".to_owned()
-                        },
-                        "L1".to_owned(),
-                        if l1_ok {
-                            "evidence/42/modbus-result.json".to_owned()
-                        } else {
-                            String::new()
-                        },
-                    )
+            // 互操作证据（46.5 起 7 协议矩阵）：每协议独立取证（禁止跨组合推导）。
+            // - Modbus TCP：46 重跑优先（evidence/46/l2-modbus-tcp-verified.json），
+            //   回退 43 既有 L2。
+            // - IEC104/MQTT/MMS/GOOSE/SV：46.5 QEMU/EL0 + host 独立对端 L2
+            //   （evidence/46/l2-<proto>-verified.json）。
+            // - Modbus RTU：QEMU 无第二串口（46.1 决策 b）→ 保持 PENDING/L0，
+            //   真机/板卡 51 卷 bring-up 后升级（BLOCKED 如实登记）。
+            let l2_46 = |proto: &str| -> Option<String> {
+                let rel = format!("evidence/46/l2-{proto}-verified.json");
+                root.join(&rel).is_file().then_some(rel)
+            };
+            let l2_row = |e: Option<String>| -> (String, String, String) {
+                match e {
+                    Some(p) => ("VERIFIED".to_owned(), "L2".to_owned(), p),
+                    None => ("PENDING".to_owned(), "L0".to_owned(), String::new()),
                 }
-            } else {
-                ("PENDING".to_owned(), "L0".to_owned(), String::new())
+            };
+            let (result, level, evidence) = match protocol.as_str() {
+                "Modbus TCP" => match l2_46("modbus-tcp") {
+                    Some(p) => ("VERIFIED".to_owned(), "L2".to_owned(), p),
+                    None if root
+                        .join("evidence/43/l2-modbus-tcp-verified.json")
+                        .is_file() =>
+                    {
+                        (
+                            "VERIFIED".to_owned(),
+                            "L2".to_owned(),
+                            "evidence/43/l2-modbus-tcp-verified.json".to_owned(),
+                        )
+                    }
+                    None => {
+                        let l1_ok = root.join("evidence/42/modbus-result.json").is_file();
+                        (
+                            if l1_ok {
+                                "VERIFIED".to_owned()
+                            } else {
+                                "PENDING".to_owned()
+                            },
+                            "L1".to_owned(),
+                            if l1_ok {
+                                "evidence/42/modbus-result.json".to_owned()
+                            } else {
+                                String::new()
+                            },
+                        )
+                    }
+                },
+                "IEC104" => l2_row(l2_46("iec104")),
+                "MMS" => l2_row(l2_46("mms")),
+                "GOOSE" => l2_row(l2_46("goose")),
+                "SV" => l2_row(l2_46("sv")),
+                "MQTT" => l2_row(l2_46("mqtt")),
+                "Modbus RTU" => ("PENDING".to_owned(), "L0".to_owned(), String::new()),
+                _ => ("PENDING".to_owned(), "L0".to_owned(), String::new()),
             };
             entries.push(MatrixEntry {
                 interface,

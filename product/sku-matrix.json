@@ -11,7 +11,7 @@
       "security_profile": "physical/local"
     },
     {
-      "evidence": "evidence/43/l2-modbus-tcp-verified.json",
+      "evidence": "evidence/46/l2-modbus-tcp-verified.json",
       "interface": "Ethernet",
       "level": "L2",
       "peer": "independent-raw-peer",
@@ -21,59 +21,59 @@
       "security_profile": "physical/local"
     },
     {
-      "evidence": "",
+      "evidence": "evidence/46/l2-iec104-verified.json",
       "interface": "Ethernet",
-      "level": "L0",
+      "level": "L2",
       "peer": "independent-raw-peer",
       "protocol": "IEC104",
-      "result": "PENDING",
+      "result": "VERIFIED",
       "role": "master/slave",
       "security_profile": "TLS/IEC62351 policy"
     },
     {
-      "evidence": "",
+      "evidence": "evidence/46/l2-mms-verified.json",
       "interface": "Ethernet",
-      "level": "L0",
+      "level": "L2",
       "peer": "independent-raw-peer",
       "protocol": "MMS",
-      "result": "PENDING",
+      "result": "VERIFIED",
       "role": "client",
       "security_profile": "product policy"
     },
     {
-      "evidence": "",
+      "evidence": "evidence/46/l2-goose-verified.json",
       "interface": "Ethernet",
-      "level": "L0",
+      "level": "L2",
       "peer": "independent-raw-peer",
       "protocol": "GOOSE",
-      "result": "PENDING",
+      "result": "VERIFIED",
       "role": "pub/sub",
       "security_profile": "product policy"
     },
     {
-      "evidence": "",
+      "evidence": "evidence/46/l2-sv-verified.json",
       "interface": "Ethernet",
-      "level": "L0",
+      "level": "L2",
       "peer": "independent-raw-peer",
       "protocol": "SV",
-      "result": "PENDING",
+      "result": "VERIFIED",
       "role": "pub/sub",
       "security_profile": "product policy"
     },
     {
-      "evidence": "",
+      "evidence": "evidence/46/l2-mqtt-verified.json",
       "interface": "Ethernet/Cellular",
-      "level": "L0",
+      "level": "L2",
       "peer": "independent-raw-peer",
       "protocol": "MQTT",
-      "result": "PENDING",
+      "result": "VERIFIED",
       "role": "client",
       "security_profile": "mTLS"
     }
   ],
-  "generated_at": "2026-08-18T03:59:05Z",
+  "generated_at": "2026-08-21T05:35:28Z",
   "schema": "eneros.sku-protocol-matrix.v1",
-  "signature": "d375fe0171c6c12e60d452a669f6e64c0b102ed3ab7d5406f90bf430a914d649f24be7ac069936e621e1833ed943891b8a71340f01781ef0c1ab299a38e57607",
+  "signature": "55ebc27e7b07c216a1547dcc02abcf2fad861114d2c6450f04184a6b9a549b3679f7707fce7f59a34e77a60cc855d47afc921878f403813166638c25dae37701",
   "signer": "dev",
   "sku_id": "qemu-virt-aarch64"
 }

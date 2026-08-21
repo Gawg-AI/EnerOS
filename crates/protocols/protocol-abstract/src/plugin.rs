@@ -266,6 +266,11 @@ pub trait ProtocolPlugin {
     }
     /// 健康。
     fn health(&self) -> ProtocolHealth;
+    /// 可选调试摘要（默认 `None`；插件覆盖返回连接/状态行）。观测用，
+    /// 非语义——不改变协议行为。
+    fn debug_line(&self) -> Option<alloc::string::String> {
+        None
+    }
     /// 停止（断开连接、释放资源）。
     fn stop(&mut self) -> Result<(), ProtocolError>;
 }

@@ -1,6 +1,6 @@
 [package]
 name = "eneros-cellular"
-version = "0.313.15"
+version = "0.313.16"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

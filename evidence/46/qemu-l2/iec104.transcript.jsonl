@@ -1,0 +1,16 @@
+{"t": 1787289747.725008, "kind": "LISTEN", "port": 2404}
+{"t": 1787289765.6284735, "kind": "CONNECT", "peer": "('127.0.0.1', 48174)"}
+{"t": 1787289765.6379902, "kind": "STARTDT_CON"}
+{"t": 1787289770.9241467, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1787289770.9245183, "kind": "INTERROGATION+DATA", "points": 3}
+{"t": 1787289781.1345897, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1787289781.1348581, "kind": "INTERROGATION+DATA", "points": 3}
+{"t": 1787289791.525577, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1787289791.525836, "kind": "INTERROGATION+DATA", "points": 3}
+{"t": 1787289801.6464353, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1787289801.6466372, "kind": "INTERROGATION+DATA", "points": 3}
+{"t": 1787289811.7428167, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1787289811.7430086, "kind": "INTERROGATION+DATA", "points": 3}
+{"t": 1787289821.930601, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1787289821.93086, "kind": "INTERROGATION+DATA", "points": 3}
+{"t": 1787289847.0000906, "kind": "READ_TIMEOUT", "err": "timed out"}

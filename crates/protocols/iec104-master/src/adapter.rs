@@ -58,17 +58,23 @@ pub struct Iec104Adapter {
     state: AdapterState,
     /// 轮询时钟（ms，注入）。
     now_ms: u64,
+    /// 46.5：总召唤调度周期（ms）——来自 MasterConfig（配置键
+    /// `poll_interval_ms`），真消费：`RemoteDevice` 轮询任务用此值排队
+    /// （旧实现 adapter 硬编码 30_000，配置字段未落到运行行为）。
+    poll_interval_ms: u32,
 }
 
 impl Iec104Adapter {
     /// 创建适配器（初始状态 `Uninitialized`）。
     pub fn new(config: MasterConfig, transport: Box<dyn MasterTransport>) -> Self {
+        let poll_interval_ms = config.poll_interval_ms;
         Self {
             master: Iec104Master::new(config, transport),
             mappings: Vec::new(),
             device_id: 0,
             state: AdapterState::Uninitialized,
             now_ms: 0,
+            poll_interval_ms,
         }
     }
 
@@ -88,7 +94,12 @@ impl Iec104Adapter {
         if !self.master.conn_keys().contains(&common_addr) {
             // 31 PR-14：对端地址经 MasterConfig 注入（生产路径禁字面量 IP）。
             let (peer_ip, peer_port) = self.master.peer();
-            let dev = RemoteDevice::new(peer_ip, peer_port, common_addr, 30_000);
+            let dev = RemoteDevice::new(
+                peer_ip,
+                peer_port,
+                common_addr,
+                self.poll_interval_ms,
+            );
             let _ = self.master.connect(&dev);
         }
         // 只消费一帧：STARTDT_CON 握手确认（此时 confirm/数据帧仍在队列，
@@ -185,6 +196,30 @@ impl Iec104Adapter {
             .as_any_mut()
             .downcast_mut::<crate::mock::MockMasterTransport>()
     }
+
+    /// 46.5 观测：主站连接/调度调试摘要（进程内可见性，非协议语义）。
+    pub fn debug_conn(&self) -> alloc::string::String {
+        let keys = self.master.conn_keys();
+        let mut s = alloc::string::String::from("conns=[");
+        for (i, k) in keys.iter().enumerate() {
+            if i > 0 {
+                s.push(' ');
+            }
+            s.push_str(&alloc::format!(
+                "{:?}",
+                self.master.device_state(*k)
+            ));
+        }
+        s.push_str("] sched=");
+        for (addr, task) in &self.master.scheduler_tasks() {
+            s.push_str(&alloc::format!(
+                "{addr}:next={} int={} ",
+                task.next_poll_ms,
+                task.interval_ms
+            ));
+        }
+        s
+    }
 }
 
 impl AuthorizedWriter for Iec104Adapter {
@@ -266,7 +301,12 @@ impl ProtocolAdapter for Iec104Adapter {
         if let Some(m) = self.mappings.first() {
             // 31 PR-14：对端地址经 MasterConfig 注入。
             let (peer_ip, peer_port) = self.master.peer();
-            let dev = RemoteDevice::new(peer_ip, peer_port, m.common_addr, 30_000);
+            let dev = RemoteDevice::new(
+                peer_ip,
+                peer_port,
+                m.common_addr,
+                self.poll_interval_ms,
+            );
             let _ = self.master.connect(&dev);
         }
         self.state = AdapterState::Running;

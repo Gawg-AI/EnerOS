@@ -16,16 +16,71 @@ extern crate alloc;
 
 #[cfg(target_os = "none")]
 use alloc::boxed::Box;
+#[cfg(target_os = "none")]
+use alloc::string::String;
 
 #[cfg(target_os = "none")]
 use eneros_protocol_abstract::plugin::ProtocolPlugin;
 #[cfg(target_os = "none")]
-use eneros_protocol_abstract::EmptyPointRegistry;
+use eneros_protocol_abstract::PointRegistry;
+#[cfg(target_os = "none")]
+use eneros_iec61850_mms::plugin::MmsPlugin;
 
 #[cfg(target_os = "none")]
 #[global_allocator]
 static ALLOC: eneros_protocol_services::HeapAllocator =
     eneros_protocol_services::HeapAllocator::new();
+
+/// 46.5：MMS 数据面对端事务——对注入点表的 MMS 对象引用发起一次 Read。
+///
+/// MMS 插件保持请求驱动契约（`client_mut` 由集成层发起 Read/Write）；本服务
+/// 即集成层：关联（COTP+ACSE）建立后读一次映射点，独立对端回 Read-Response
+/// 形成闭环（L2 transcript 事务 ≥3 判据）。失败不阻断装配（如实降级）。
+#[cfg(target_os = "none")]
+fn drive_mms_read(plugin: &mut MmsPlugin, registry: &mut dyn PointRegistry) {
+    use eneros_iec61850_mms::VarAccessSpec;
+    use eneros_protocol_abstract::ProtocolAddress;
+    let mut ids = alloc::vec::Vec::new();
+    registry.collect_ids(&mut ids);
+    let mut specs = alloc::vec::Vec::new();
+    for id in ids {
+        if let Some(m) = registry.resolve(id) {
+            if let ProtocolAddress::Mms { object_ref } = &m.protocol_addr {
+                // 对象引用 "LD/xxx" → domain=LD, item=xxx（VarAccessSpec 布局）。
+                if let Some((domain, item)) = object_ref.split_once('/') {
+                    specs.push(VarAccessSpec {
+                        domain: String::from(domain),
+                        item: String::from(item),
+                    });
+                }
+            }
+        }
+    }
+    if specs.is_empty() {
+        eneros_runtime::println!("[svc-mms] no MMS points in registry -> skip read");
+        return;
+    }
+    match plugin.client_mut() {
+        Some(client) => match client.read(&specs) {
+            Ok(eneros_iec61850_mms::MmsResponse::ReadResult { results }) => {
+                eneros_runtime::println!(
+                    "[svc-mms] READ-RESP ok {} values ({} pts)",
+                    results.len(),
+                    specs.len()
+                );
+            }
+            Ok(_) => {
+                eneros_runtime::println!("[svc-mms] READ-RESP non-ReadResult");
+            }
+            Err(e) => {
+                eneros_runtime::println!("[svc-mms] READ fail {:?}", e);
+            }
+        },
+        None => {
+            eneros_runtime::println!("[svc-mms] no MMS client (request-driven seam)");
+        }
+    };
+}
 
 #[cfg(target_os = "none")]
 #[no_mangle]
@@ -67,22 +122,43 @@ pub extern "C" fn _start(
                     eneros_agent_sdk::EIPC_EP_BASE_SLOT,
                     "protocol-mms",
                 ) {
-                    Some(cfg) => match plugin.start(&cfg, &mut factory, &mut EmptyPointRegistry) {
-                        Ok(()) => {
-                            eneros_runtime::println!(
-                                "[svc-mms] NET-TRANSPORT READY capability=eneros_iec61850_mms::plugin::MmsPlugin"
+                    Some(cfg) => {
+                        // 46.5：点表经 svc-config 注入——插件按 MMS 地址登记
+                        // 路由点数；本服务另以同一注册表驱动一次 MMS Read
+                        //（数据面对端事务见 `drive_mms_read`）。
+                        let mut registry =
+                            eneros_protocol_services::service_cfg::fetch_points_registry(
+                                "mms-config",
+                                eneros_agent_sdk::EIPC_EP_BASE_SLOT,
                             );
-                            Box::new(eneros_protocol_services::service::PluginIoService::new(
-                                plugin,
-                                "eneros_iec61850_mms::plugin::MmsPlugin",
-                            ))
-                        }
-                        Err(e) => {
-                            eneros_runtime::println!(
-                                "[svc-mms] plugin start FAILED {:?} —— capability 壳（EXECUTE ST_UNAVAILABLE）",
-                                e
-                            );
-                            Box::new(eneros_protocol_services::service::UnassignedProtocolService)
+                        match plugin.start(&cfg, &mut factory, &mut registry) {
+                            Ok(()) => {
+                                eneros_runtime::println!(
+                                    "[svc-mms] NET-TRANSPORT READY capability=eneros_iec61850_mms::plugin::MmsPlugin"
+                                );
+                                // 46.5：关联建立后发起一次 MMS Read——独立对端
+                                // 回 Read-Response（L2 transcript CONNECT/CC/AARE/
+                                // READ_RESP ≥3）；插件保持请求驱动契约（Read 由
+                                // 集成层发起），失败不阻断装配（如实健康观测）。
+                                drive_mms_read(&mut plugin, &mut registry);
+                                let mut io = eneros_protocol_services::service::PluginIoService::new(
+                                    plugin,
+                                    "eneros_iec61850_mms::plugin::MmsPlugin",
+                                );
+                                // 46.5：启动期自检轮询——post-connect 协议交换
+                                // 在进入 request 循环前完成（104 STARTDT/总召唤、
+                                // mqtt CONNECT/SUB、raw RX；L2 对端 transcript ≥3
+                                // 判据；有界不阻塞对端）。
+                                io.self_check_poll(150);
+                                Box::new(io)
+                            }
+                            Err(e) => {
+                                eneros_runtime::println!(
+                                    "[svc-mms] plugin start FAILED {:?} —— capability 壳（EXECUTE ST_UNAVAILABLE）",
+                                    e
+                                );
+                                Box::new(eneros_protocol_services::service::UnassignedProtocolService)
+                            }
                         }
                     },
                     None => {

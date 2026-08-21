@@ -3,3 +3,7 @@ app_id = 16385          # 0x4001
 go_cb_ref = "GGIO1.gcb1"
 dataset_ref = "GGIO1.dsGOOSE"
 dst_mac = "010ccd010000"
+# 46.5：插件 start 必填（46.4 timeAllowedToLive 语义）；缺失 → InvalidConfig
+# （QEMU 实弹登记：goose plugin start FAILED InvalidConfig）。
+time_allowed_to_live_ms = 1000
+min_time_ms = 10

@@ -425,6 +425,13 @@ impl ConfigService {
         registry.register(alloc::boxed::Box::new(OtaConsumer::default()));
         // 蓝图 45：点表（bundle 含 points 条目即须有消费；否则 UnconsumedConfig）。
         registry.register(alloc::boxed::Box::new(PointsConsumer::default()));
+        // 46（WP-46.3）：7 份协议配置 consumer——registry 双向完备性（否则
+        // bundle 含 protocol-* 即 fail-closed unconsumed-config）。
+        for id in eneros_config_bundle::protocol::PROTOCOL_CONFIG_IDS {
+            registry.register(alloc::boxed::Box::new(
+                eneros_config_bundle::protocol::ProtocolKvConsumer::new(id),
+            ));
+        }
         ConfigService {
             registry,
             shared,
@@ -599,6 +606,27 @@ mod tests {
             let text = std::fs::read_to_string(&path).unwrap();
             let injected = if need_key == 1 { Some(&root_key) } else { None };
             let compiled = eneros_config_bundle::toml_compile::compile_by_id(id, &text, injected)
+                .unwrap()
+                .unwrap();
+            let digest = CbDigest::of(&compiled.payload);
+            entries.push(SignedConfigEntry {
+                config_id: compiled.config_id,
+                schema: SchemaVersion(1),
+                generation: 3,
+                payload: compiled.payload,
+                payload_digest: digest,
+                signature: Vec::new(),
+            });
+        }
+        // 46（WP-46.3）：7 份协议配置（registry 双向完备——ProtocolKvConsumer
+        // 注册后 bundle 缺 protocol-* 即 MissingConfigEntry fail-closed）。
+        for id in eneros_config_bundle::protocol::PROTOCOL_CONFIG_IDS {
+            let file = format!("{id}.toml");
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../configs")
+                .join(&file);
+            let text = std::fs::read_to_string(&path).unwrap();
+            let compiled = eneros_config_bundle::toml_compile::compile_by_id(id, &text, None)
                 .unwrap()
                 .unwrap();
             let digest = CbDigest::of(&compiled.payload);
