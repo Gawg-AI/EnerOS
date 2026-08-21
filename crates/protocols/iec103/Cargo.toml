@@ -1,0 +1,11 @@
+[package]
+name = "eneros-iec103"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS IEC 60870-5-103 master plugin — seam/config skeleton; FT1.2 + proprietary ASDU codec BLOCKED pending spec text (blueprint 48 WP-48.3)"
+
+[dependencies]
+eneros-protocol-abstract = { path = "../protocol-abstract" }
+eneros-upa-model = { path = "../upa-model" }
