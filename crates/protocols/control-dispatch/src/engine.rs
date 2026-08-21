@@ -131,6 +131,9 @@ pub struct DispatchEngine {
     pub committed_count: u64,
     /// 审计丢弃计数。
     pub audit_drop_count: u64,
+    /// 47（Exit 补证）：成功入链条数（append 计数——QEMU 串口
+    /// AUDIT-CHAIN 行依据；零计数不打印，杜绝恒 ok 式假证据）。
+    pub audit_append_count: u64,
     /// 47（WP-47.1）：每来源协议已见最大意图序号（重放门——重复
     /// sequence 零写；跨重启由链幂等（意图 correlation 派生）兜底）。
     last_seq: BTreeMap<String, u64>,
@@ -161,6 +164,7 @@ impl DispatchEngine {
             seq: 0,
             committed_count: 0,
             audit_drop_count: 0,
+            audit_append_count: 0,
             last_seq: BTreeMap::new(),
         }
     }
@@ -187,7 +191,9 @@ impl DispatchEngine {
             let mut ev =
                 eneros_audit::AuditEvent::new(event_type, "control-dispatch", &target, detail);
             ev.severity = severity;
-            if chain.log(ev).is_err() {
+            if chain.log(ev).is_ok() {
+                self.audit_append_count += 1;
+            } else {
                 self.audit_drop_count += 1;
             }
         }

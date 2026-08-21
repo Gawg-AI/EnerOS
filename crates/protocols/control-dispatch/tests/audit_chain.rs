@@ -308,6 +308,30 @@ fn committed_control_events_verify_log_pass() {
     assert!(has_executed, "Committed 链必须含 WriteExecuted 控制事件");
 }
 
+/// Exit Gate 项 1（收尾验收补证）：入链成功可观测——append 计数随控制
+/// 事件递增、drop 恒零。QEMU 串口 AUDIT-CHAIN 行以此计数为据（无计数
+/// 不打印，杜绝恒 ok 式假证据）。
+#[test]
+fn audit_append_count_observable() {
+    let records: Rc<RefCell<Vec<DurableAuditRecord>>> = Rc::new(RefCell::new(Vec::new()));
+    let mut engine = build_engine(
+        Box::new(CaptureLogger::new(Rc::clone(&records))),
+        OutcomeCode::Applied.code(),
+    );
+    assert_eq!(engine.audit_append_count, 0, "初始零入链");
+    assert_eq!(engine.audit_drop_count, 0);
+    let tel = trusted_telemetry();
+    let receipt = engine
+        .submit_intent(&intent(1), &tel, &actor(), 5000)
+        .expect("submit");
+    assert_eq!(receipt.final_state, DispatchState::Committed, "{receipt:?}");
+    assert!(
+        engine.audit_append_count >= 1,
+        "Committed 必须 ≥1 条成功入链（append 计数递增）"
+    );
+    assert_eq!(engine.audit_drop_count, 0, "成功入链零丢弃");
+}
+
 /// DoD：Committed + Failed 双事件入链；尾部截断 → verify_log 拒绝且
 /// last_valid_prefix 精确定位（不掩盖损坏）。
 #[test]

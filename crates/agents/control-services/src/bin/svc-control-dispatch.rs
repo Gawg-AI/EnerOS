@@ -430,6 +430,14 @@ impl eneros_control_services::ControlServiceHandler for DispatchHandler {
                     req,
                     tel.as_ref(),
                 );
+                // 47（Exit 补证）：审计入链可观测——append/drop 计数随
+                // 每个控制事件刷新（appended>0 才有入链证据，dropped>0
+                // 即证据缺口）。
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] AUDIT-CHAIN appended={} dropped={}",
+                    self.engine.audit_append_count,
+                    self.engine.audit_drop_count
+                );
             }
             _ => {
                 *resp =

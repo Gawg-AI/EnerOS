@@ -61,7 +61,4 @@
 {"event": "PINGRESP", "conn": 1}
 {"event": "PINGRESP", "conn": 1}
 {"event": "PINGRESP", "conn": 1}
-{"event": "PINGRESP", "conn": 1}
-{"event": "PINGRESP", "conn": 1}
-{"event": "PINGRESP", "conn": 1}
 {"event": "CLOSE", "conn": 1}
