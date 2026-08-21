@@ -20,6 +20,8 @@ embedded-tls = { version = "0.19", default-features = false, optional = true }
 eneros-crypto = { path = "../crypto", optional = true }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8"], optional = true }
 embedded-io = { version = "0.7", default-features = false, optional = true }
+# 47（WP-47.5）：SecureChannelFactory 接缝（protocol-abstract 唯一通道 seam）。
+eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
 rand_core = { version = "0.6", default-features = false }
 digest = { version = "0.10", default-features = false }
 

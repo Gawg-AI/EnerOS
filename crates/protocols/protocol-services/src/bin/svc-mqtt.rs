@@ -144,6 +144,39 @@ pub extern "C" fn _start(
         plugin.descriptor().role,
         plugin.descriptor().interop_level
     );
+    // 47（WP-47.5）：policy/实现一致机器校验——注册表（本装配无目标侧
+    // TLS 工厂；嵌定 first 实现 host 已验证）。qemu-test 装配允许显式明文
+    //（InsecureStream，永不冒充）；ReleaseTls 下声明 SecureProfile 而无
+    // 工厂 → assembly_allows=false → 能力壳（fail-closed）。
+    {
+        let registry = eneros_protocol_abstract::channel::SecureChannelRegistry::new();
+        let mode = eneros_protocol_abstract::channel::AssemblyMode::QemuTest;
+        let profile = plugin.descriptor().security_profile;
+        let has = registry.has(plugin.descriptor().id);
+        let policy = eneros_protocol_abstract::channel::ChannelPolicy::default_dev();
+        let ok = eneros_protocol_abstract::channel::assembly_allows(mode, profile, has, &policy);
+        eneros_runtime::println!(
+            "[svc-mqtt] SECURITY-CHECK mode=QemuTest profile={profile:?} factory={has} assembly={}",
+            if ok {
+                "allowed（显式明文）"
+            } else {
+                "REJECTED"
+            }
+        );
+        if !ok {
+            eneros_runtime::println!(
+                "[svc-mqtt] policy/实现不一致 —— capability 壳（fail-closed）"
+            );
+            eneros_drv_svc::runtime::driver_service_main(
+                ep,
+                "mqtt",
+                ready_ntfn,
+                eneros_protocol_services::now_ms,
+                eneros_protocol_services::instance_epoch(),
+                &mut eneros_protocol_services::service::UnassignedProtocolService,
+            );
+        }
+    }
     // 46.2/46.3 + 47：手柄移交 → 配置装配插件 → 意图转发服务。
     let mut service: Box<dyn eneros_drv_svc::runtime::DriverService> =
         match eneros_protocol_services::net_transport::build_net_transport(

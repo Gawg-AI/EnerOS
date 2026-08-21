@@ -370,3 +370,6 @@ pub fn write_all_flush<W: Write>(w: &mut W, data: &[u8]) -> std::io::Result<()> 
 // ============================================================================
 #[cfg(feature = "embedded")]
 pub mod embedded;
+/// 47（WP-47.5）：SecureChannelFactory 第一实现（embedded-tls P-256/AES-GCM）。
+#[cfg(feature = "embedded")]
+pub mod factory;

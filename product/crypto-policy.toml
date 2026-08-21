@@ -69,7 +69,11 @@ evidence_digest = "binding:eneros-audit-chain-sha256+root-task-panic-genesis"
 provider = "eneros-crypto (SM2)"
 crate_name = "eneros-crypto"
 product_allowed = true
-evaluation_status = "approved"
+
+# 47（WP-47.5，D4）：手卷国密降级实验性——不进商密宣称；in-product
+# 过渡（config/OTA 验签仍经 SM2）保留 review_required 机器评审门，
+# 迁移（→Ed25519/SM3-HMAC）登记为 48-52 卷 owner 项。
+evaluation_status = "experimental"
 review_required = true
 allowed_targets = ["aarch64-unknown-none"]
 allowed_features = ["*"]
@@ -77,20 +81,38 @@ evidence_digest = "binding:tests/vectors/sm2-interop/vectors.json+crates/securit
 # ecdsa（SEC1 ECDSA，SM2 签名实现依赖）随主实现同一评估单元登记。
 impl_dependencies = ["ecdsa"]
 
+# 47（WP-47.5）：通道线（D4 产品用途表）——P-256 ECDSA + AES-128-GCM
+#（TLS 1.3）。目标侧 = embedded-tls（crates/security/tls embedded 特性，
+# 本卷 SecureChannelFactory 第一实现）；host = rustls。
 [usages.channel_tls]
-provider = "eneros-crypto-gmssl / openssl"
-crate_name = "eneros-crypto-gmssl"
-product_allowed = false
-evaluation_status = "experimental"
-allowed_targets = []
-allowed_features = []
-evidence_digest = ""
+provider = "embedded-tls (p256 ecdsa + aes-128-gcm) / rustls (host)"
+crate_name = "embedded-tls"
+product_allowed = true
+evaluation_status = "approved"
+allowed_targets = ["aarch64-unknown-none", "host"]
+allowed_features = ["*"]
+evidence_digest = "binding:crates/security/tls/src/factory.rs+crates/security/tls/src/embedded.rs+crates/security/tls/tests/tls_handshake.rs"
+
+# 47（WP-47.5，D4）：OTA 分区表防篡改——SM3-HMAC（哈希用途，**非商密
+# 宣称**；D4 产品用途表收敛项，沿用既有 SM3 线）。
+[usages.ota_partition_tamper]
+provider = "eneros-crypto (SM3-HMAC)"
+crate_name = "eneros-crypto"
+product_allowed = true
+evaluation_status = "approved"
+allowed_targets = ["aarch64-unknown-none"]
+allowed_features = ["*"]
+evidence_digest = "binding:crates/security/crypto/tests/sm3_kat.rs"
 
 [usages.ota_signature]
 provider = "eneros-crypto (SM2)"
 crate_name = "eneros-crypto"
 product_allowed = true
-evaluation_status = "approved"
+
+# 47（WP-47.5，D4）：手卷国密降级实验性——不进商密宣称；in-product
+# 过渡（config/OTA 验签仍经 SM2）保留 review_required 机器评审门，
+# 迁移（→Ed25519/SM3-HMAC）登记为 48-52 卷 owner 项。
+evaluation_status = "experimental"
 review_required = true
 allowed_targets = ["aarch64-unknown-none"]
 allowed_features = ["*"]
@@ -101,7 +123,11 @@ impl_dependencies = ["ecdsa"]
 provider = "eneros-crypto (SM2/SM3)"
 crate_name = "eneros-crypto"
 product_allowed = true
-evaluation_status = "approved"
+
+# 47（WP-47.5，D4）：手卷国密降级实验性——不进商密宣称；in-product
+# 过渡（config/OTA 验签仍经 SM2）保留 review_required 机器评审门，
+# 迁移（→Ed25519/SM3-HMAC）登记为 48-52 卷 owner 项。
+evaluation_status = "experimental"
 review_required = true
 allowed_targets = ["aarch64-unknown-none"]
 allowed_features = ["*"]

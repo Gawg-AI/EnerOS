@@ -293,6 +293,7 @@ pub fn load_crypto_policy(root: &Path) -> DynResult<CryptoPolicy> {
         "ota_signature",
         "attestation",
         "kernel_integrity",
+        "ota_partition_tamper",
     ];
     for (usage, impl_) in &policy.usages {
         if !allowed_usages.contains(&usage.as_str()) {

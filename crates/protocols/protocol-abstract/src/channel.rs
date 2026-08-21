@@ -148,6 +148,75 @@ pub trait SecureChannelFactory {
     ) -> Result<Box<dyn SecureChannel>, ChannelError>;
 }
 
+/// 装配模式（profile 分级；47 WP-47.5 policy/实现一致机器校验输入）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssemblyMode {
+    /// qemu-test：允许显式明文（`InsecureStream`，永不冒充）。
+    QemuTest,
+    /// release-tls：声明 SecureProfile 的协议必须已有注册工厂，否则
+    /// 装配拒绝（fail-closed）。
+    ReleaseTls,
+}
+
+/// 47（WP-47.5）：安全通道工厂注册表（装配期按协议 id 注册第一实现；
+/// `assembly_allows` 的机器校验输入）。
+#[derive(Default)]
+pub struct SecureChannelRegistry {
+    factories: alloc::collections::BTreeMap<&'static str, Box<dyn SecureChannelFactory>>,
+}
+
+impl SecureChannelRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// 注册协议 id → 工厂（同一 id 重复注册 → 后者覆盖，装配期单次）。
+    pub fn register(&mut self, id: &'static str, factory: Box<dyn SecureChannelFactory>) {
+        self.factories.insert(id, factory);
+    }
+    /// 是否已注册（机器校验）。
+    pub fn has(&self, id: &str) -> bool {
+        self.factories.contains_key(id)
+    }
+    /// 经已注册工厂建立安全通道（未注册 → `Unsupported`，fail-closed）。
+    pub fn connect(
+        &mut self,
+        id: &str,
+        endpoint: &Endpoint<'_>,
+        identity: Option<&IdentityRef<'_>>,
+        policy: &ChannelPolicy,
+        deadline_ms: u64,
+    ) -> Result<Box<dyn SecureChannel>, ChannelError> {
+        let factory = self
+            .factories
+            .get_mut(id)
+            .ok_or(ChannelError::Unsupported)?;
+        factory.connect(endpoint, identity, policy, deadline_ms)
+    }
+}
+
+/// 47（WP-47.5）：policy 与实现一致机器校验——**不一致 = 装配失败**。
+///
+/// - `ReleaseTls`：声明 SecureProfile（Tls12/Tls13/Iec62351）的协议必须
+///   已有注册工厂且策略允许安全等级；无安全声明协议（GOOSE/SV——62351
+///   现状）按宣称边界允许（明文 + 网络隔离补偿，见
+///   `docs/security/channel-claims.md`）；
+/// - `QemuTest`：显式明文允许（`InsecureStream`），SecureProfile 协议
+///   有工厂时优先安全通道。
+pub fn assembly_allows(
+    mode: AssemblyMode,
+    profile: crate::plugin::SecurityProfile,
+    has_factory: bool,
+    policy: &ChannelPolicy,
+) -> bool {
+    match mode {
+        AssemblyMode::QemuTest => policy.allows(ChannelSecurity::Plain) || has_factory,
+        AssemblyMode::ReleaseTls => match profile {
+            crate::plugin::SecurityProfile::None => true,
+            _ => has_factory && policy.allows(ChannelSecurity::Tls12),
+        },
+    }
+}
+
 /// 明文直通流（**不冒充安全通道**）。
 ///
 /// 只实现 [`SecureChannel`] 以便统一组合，但：
@@ -222,5 +291,90 @@ mod tests {
         let mut buf = [0u8; 16];
         let n = stream.recv(&mut buf).expect("recv");
         assert_eq!(&buf[..n], b"abc");
+    }
+
+    // ============ 47（WP-47.5）工厂注册表 + policy/实现一致机器校验 ============
+
+    /// 测试工厂（记录 connect 调用）。
+    struct FakeFactory {
+        pub calls: usize,
+    }
+    impl SecureChannelFactory for FakeFactory {
+        fn connect(
+            &mut self,
+            _endpoint: &Endpoint<'_>,
+            _identity: Option<&IdentityRef<'_>>,
+            _policy: &ChannelPolicy,
+            _deadline_ms: u64,
+        ) -> Result<Box<dyn SecureChannel>, ChannelError> {
+            self.calls += 1;
+            Ok(Box::new(InsecureStream::new(Box::new(
+                EchoTransport::default(),
+            ))))
+        }
+    }
+
+    #[test]
+    fn registry_connect_routes_to_registered_factory() {
+        let mut reg = SecureChannelRegistry::new();
+        assert!(!reg.has("mqtt"), "未注册 → has=false（机器校验输入）");
+        let f = Box::new(FakeFactory { calls: 0 });
+        reg.register("mqtt", f);
+        assert!(reg.has("mqtt"));
+        let ep = Endpoint {
+            host: b"10.0.2.2",
+            port: 8883,
+        };
+        let ch = reg
+            .connect("mqtt", &ep, None, &ChannelPolicy::default_dev(), 5000)
+            .expect("connect");
+        assert_eq!(ch.negotiated_security(), ChannelSecurity::Plain);
+        // 未注册协议 → Unsupported（fail-closed）。
+        assert!(matches!(
+            reg.connect("iec104", &ep, None, &ChannelPolicy::default_dev(), 5000),
+            Err(ChannelError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn assembly_allows_machine_check_matrix() {
+        use crate::plugin::SecurityProfile;
+        let release = ChannelPolicy::default_release();
+        let dev = ChannelPolicy::default_dev();
+        // ReleaseTls：SecureProfile 无工厂 → 拒绝装配（fail-closed）。
+        assert!(!assembly_allows(
+            AssemblyMode::ReleaseTls,
+            SecurityProfile::Tls12,
+            false,
+            &release
+        ));
+        // ReleaseTls：SecureProfile + 工厂 → 允许。
+        assert!(assembly_allows(
+            AssemblyMode::ReleaseTls,
+            SecurityProfile::Tls12,
+            true,
+            &release
+        ));
+        // ReleaseTls：无安全声明协议（GOOSE/SV——62351 现状）→ 宣称边界允许。
+        assert!(assembly_allows(
+            AssemblyMode::ReleaseTls,
+            SecurityProfile::None,
+            false,
+            &release
+        ));
+        // QemuTest：显式明文允许。
+        assert!(assembly_allows(
+            AssemblyMode::QemuTest,
+            SecurityProfile::Tls12,
+            false,
+            &dev
+        ));
+        // QemuTest + release 策略（禁明文）且无工厂 → 拒绝。
+        assert!(!assembly_allows(
+            AssemblyMode::QemuTest,
+            SecurityProfile::Tls12,
+            false,
+            &release
+        ));
     }
 }

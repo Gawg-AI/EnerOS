@@ -27,6 +27,85 @@ use eneros_crypto::pki::parser::parse_der;
 use eneros_crypto::pki::verify::CertVerifier;
 use eneros_crypto::pki::x509::{SubjectPublicKey, X509Certificate};
 
+/// 47（WP-47.5）：叶子证书 SAN（SubjectAltName，OID 2.5.29.17）dNSName
+/// 集合。扩展缺失/解析失败 → None（调用方按兼容路径回退 CN——诚实登记）。
+///
+/// DER 布局：extensions[].value = OCTET STRING( GeneralNames )；
+/// GeneralNames = SEQUENCE OF GeneralName；dNSName = [2] IA5String（0x82）。
+fn leaf_san_dns_names(cert: &X509Certificate) -> Option<Vec<String>> {
+    const SAN_OID: [u8; 5] = [0x06, 0x03, 0x55, 0x1D, 0x11];
+    let ext = cert.extensions.iter().find(|e| e.oid == SAN_OID)?;
+    // 本仓解析器已剥 OCTET STRING——ext.value = GeneralNames 内容。
+    // GeneralNames SEQUENCE（0x30）。
+    let (body, _) = read_tlv(&ext.value, 0x30)?;
+    let mut names = Vec::new();
+    let mut pos = 0usize;
+    while pos < body.len() {
+        // GeneralName：tag[0]=0x82（dNSName，上下文 [2] 原语）。
+        if body[pos] != 0x82 {
+            // 非 dNSName 条目（IP/URI 等）：跳过本条目（TLV 前进）。
+            let (_, consumed) = read_tlv(&body[pos..], body[pos])?;
+            pos += consumed;
+            continue;
+        }
+        let (dns, consumed) = read_tlv(&body[pos..], 0x82)?;
+        pos += consumed;
+        if let Ok(n) = core::str::from_utf8(dns) {
+            names.push(String::from(n));
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    Some(names)
+}
+
+/// 剥 OCTET STRING（0x04 len …）；长度不符 → None（fail-closed 解析）。
+fn unwrap_octet_string(der: &[u8]) -> Option<&[u8]> {
+    if der.first() != Some(&0x04) {
+        return None;
+    }
+    let (body, consumed) = read_tlv(der, 0x04)?;
+    if consumed != der.len() {
+        return None; // 尾部多余字节 → 格式不符
+    }
+    Some(body)
+}
+
+/// 读取 TLV：返回 (value 切片, 总消耗字节)。`data_start = 1 tag + 长度
+/// 字段总长`（短式 1B / 0x81 2B / 0x82 3B）；越界/格式不符 → None。
+fn read_tlv(der: &[u8], expected_tag: u8) -> Option<(&[u8], usize)> {
+    if der.first() != Some(&expected_tag) {
+        return None;
+    }
+    let len_byte = *der.get(1)?;
+    let (vlen, len_field_total) = match len_byte {
+        0x81 => (*der.get(2)? as usize, 2usize),
+        0x82 => {
+            let hi = *der.get(2)? as usize;
+            let lo = *der.get(3)? as usize;
+            ((hi << 8) | lo, 3usize)
+        }
+        n if n < 0x80 => (n as usize, 1usize),
+        _ => return None,
+    };
+    let data_start = 1 + len_field_total;
+    let end = data_start.checked_add(vlen)?;
+    let body = der.get(data_start..end)?;
+    Some((body, end))
+}
+
+/// 读取 body[pos..] 的 TLV 长度字段字节数（跳过非 dNSName 条目用）。
+fn tlv_len_bytes(der: &[u8]) -> Option<usize> {
+    let len_byte = *der.get(1)?;
+    match len_byte {
+        0x81 => Some(2),
+        0x82 => Some(3),
+        n if n < 0x80 => Some(1),
+        _ => None,
+    }
+}
+
 /// 本 crate 使用的 TLS 1.3 密码套件（AES-128-GCM + SHA-256，RFC 8446 默认）。
 pub type DefaultCipherSuite = embedded_tls::blocking::Aes128GcmSha256;
 
@@ -53,6 +132,10 @@ pub struct PkiVerifier<CS: TlsCipherSuite> {
     now: u64,
     server_public_key: Option<Vec<u8>>,
     transcript: Option<CS::Hash>,
+    /// 已验叶子证书 CN（hostname 校验通过后；工厂对端身份来源）。
+    verified_cn: Option<String>,
+    /// 47：已验 CN 共享槽（provider 透传；None = 未启用）。
+    verified_cell: Option<std::rc::Rc<core::cell::RefCell<Option<String>>>>,
     _cs: PhantomData<CS>,
 }
 
@@ -71,8 +154,22 @@ impl<CS: TlsCipherSuite> PkiVerifier<CS> {
             now,
             server_public_key: None,
             transcript: None,
+            verified_cn: None,
+            verified_cell: None,
             _cs: PhantomData,
         }
+    }
+
+    /// 已验叶子证书 CN（校验通过后）；未校验/失败 → None。
+    pub fn verified_leaf_cn(&self) -> Option<&str> {
+        self.verified_cn.as_deref()
+    }
+}
+
+impl<CS: TlsCipherSuite> PkiVerifier<CS> {
+    /// 47：启用已验 CN 共享槽（工厂场景）。
+    pub fn share_verified_cn(&mut self, cell: std::rc::Rc<core::cell::RefCell<Option<String>>>) {
+        self.verified_cell = Some(cell);
     }
 }
 
@@ -110,11 +207,23 @@ impl<CS: TlsCipherSuite> TlsVerifier<CS> for PkiVerifier<CS> {
             .verify_chain(&chain, self.now)
             .map_err(|_| TlsError::InvalidCertificate)?;
 
-        // 3. hostname 校验（客户端角色：服务器证书 CN 必须匹配）
+        // 3. hostname 校验（客户端角色；47 WP-47.5：SAN 优先，CN 兼容回退）。
+        //    RFC 6125：SAN 存在时必须命中 dNSName（不区分大小写）；无 SAN
+        //    扩展才回退 CN（兼容既有证书）。SAN 解析失败视为无 SAN（兼容
+        //    路径——诚实登记于验证器文档）。
         if self.role == VerifyRole::Client {
             if let Some(expected) = &self.expected_hostname {
-                if &chain[0].subject.cn != expected {
+                let leaf = &chain[0];
+                let matched = match leaf_san_dns_names(leaf) {
+                    Some(names) => names.iter().any(|n| n.eq_ignore_ascii_case(expected)),
+                    None => leaf.subject.cn.eq_ignore_ascii_case(expected),
+                };
+                if !matched {
                     return Err(TlsError::InvalidCertificate);
+                }
+                self.verified_cn = Some(leaf.subject.cn.clone());
+                if let Some(cell) = &self.verified_cell {
+                    *cell.borrow_mut() = Some(leaf.subject.cn.clone());
                 }
             }
         }
@@ -201,19 +310,28 @@ impl rand_core::RngCore for CsRngAdapter {
 
     fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), rand_core::Error> {
         // FIX-BUGS-0810 B5：Result 路径直接承接（重播种+重试一次，
-        // 熵不可用 → Err，不 panic）。
-        eneros_crypto::rng::fill_bytes_or_reseed(&mut self.0, dst)
-            .map_err(|_| rand_core::Error::from(rand_core::ErrorKind::Unavailable))
+        // 熵不可用 → Err，不 panic）。no_std 无 std feature：
+        // 用自定义错误码（CUSTOM_START 起）构造，不用 Error::new。
+        eneros_crypto::rng::fill_bytes_or_reseed(&mut self.0, dst).map_err(|_| entropy_error())
     }
 }
 
 impl rand_core::CryptoRng for CsRngAdapter {}
+
+/// 熵源不可用错误（no_std 自定义码；rand_core::Error::CUSTOM_START 起）。
+fn entropy_error() -> rand_core::Error {
+    rand_core::Error::from(
+        core::num::NonZeroU32::new(rand_core::Error::CUSTOM_START).expect("custom 码非零"),
+    )
+}
 
 /// embedded-tls `CryptoProvider`：本仓 PKI 验证 + ECDSA P-256 签名 + mTLS 客户端证书。
 pub struct PkiProvider<'a, CS: TlsCipherSuite> {
     verifier: PkiVerifier<CS>,
     identity: Option<Identity<'a>>,
     rng: CsRngAdapter,
+    /// 47（WP-47.5）：已验叶子 CN 共享槽（工厂读取对端身份用）。
+    verified_cn: std::rc::Rc<core::cell::RefCell<Option<String>>>,
 }
 
 impl<'a, CS: TlsCipherSuite> PkiProvider<'a, CS> {
@@ -232,11 +350,38 @@ impl<'a, CS: TlsCipherSuite> PkiProvider<'a, CS> {
         rng: eneros_crypto::rng::CsRng,
         identity: Option<Identity<'a>>,
     ) -> Self {
+        Self::with_verified_cell(
+            roots,
+            role,
+            now,
+            rng,
+            identity,
+            std::rc::Rc::new(core::cell::RefCell::new(None)),
+        )
+    }
+
+    /// 47（WP-47.5）：构造并共享已验叶子 CN 槽（工厂/对端身份观测）。
+    pub fn with_verified_cell(
+        roots: Vec<X509Certificate>,
+        role: VerifyRole,
+        now: u64,
+        rng: eneros_crypto::rng::CsRng,
+        identity: Option<Identity<'a>>,
+        verified_cn: std::rc::Rc<core::cell::RefCell<Option<String>>>,
+    ) -> Self {
+        let mut verifier = PkiVerifier::new(roots, role, now);
+        verifier.share_verified_cn(std::rc::Rc::clone(&verified_cn));
         Self {
-            verifier: PkiVerifier::new(roots, role, now),
+            verifier,
             identity,
             rng: CsRngAdapter(rng),
+            verified_cn,
         }
+    }
+
+    /// 已验叶子 CN（握手后；工厂对端身份来源）。
+    pub fn verified_leaf_cn(&self) -> Option<String> {
+        self.verified_cn.borrow().clone()
     }
 }
 
@@ -628,4 +773,145 @@ mod tests {
         bad[0] = 0x31;
         assert!(parse_sec1_der_private_key(&bad).is_err());
     }
+}
+
+#[cfg(all(test, feature = "embedded"))]
+mod san_tests {
+    use eneros_crypto::pki::parser::to_der;
+    use eneros_crypto::pki::x509::{
+        DistinguishedName, Extension, SignatureAlgorithm, SubjectPublicKey,
+    };
+
+    use super::*;
+
+    const NOW2: u64 = 1_700_000_000;
+
+    fn san_identity(cn: &str, dns: &str) -> X509Certificate {
+        let sk: p256::ecdsa::SigningKey =
+            p256::ecdsa::SigningKey::from_bytes(&[0x51; 32].into()).unwrap();
+        let pk = SubjectPublicKey::EcdsaP256(
+            sk.verifying_key()
+                .to_encoded_point(false)
+                .as_bytes()
+                .to_vec(),
+        );
+        let dn = DistinguishedName::new(cn);
+        let name = dns.as_bytes();
+        let mut gn = vec![0x82, name.len() as u8];
+        gn.extend_from_slice(name);
+        let mut seq = vec![0x30, gn.len() as u8];
+        seq.extend_from_slice(&gn);
+        let extensions = vec![Extension {
+            oid: vec![0x06, 0x03, 0x55, 0x1D, 0x11],
+            critical: false,
+            value: seq,
+        }];
+        let unsigned = X509Certificate::new(
+            2,
+            vec![1],
+            SignatureAlgorithm::EcdsaWithSha256,
+            dn.clone(),
+            dn.clone(),
+            NOW2,
+            NOW2 + 86400 * 365,
+            pk,
+            extensions,
+            Vec::new(),
+        );
+        let tbs = unsigned.encode_tbs().unwrap();
+        use p256::ecdsa::signature::Signer;
+        let sig: p256::ecdsa::Signature = sk.sign(&tbs);
+        X509Certificate::new(
+            2,
+            vec![1],
+            SignatureAlgorithm::EcdsaWithSha256,
+            dn.clone(),
+            dn.clone(),
+            NOW2,
+            NOW2 + 86400 * 365,
+            SubjectPublicKey::EcdsaP256(
+                sk.verifying_key()
+                    .to_encoded_point(false)
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            unsigned.extensions.clone(),
+            sig.to_der().as_bytes().to_vec(),
+        )
+    }
+
+    #[test]
+    fn san_dns_extraction_roundtrip() {
+        let cert = san_identity("wrong-cn", "eneros-server");
+        let der = to_der(&cert).unwrap();
+        let parsed = parse_der(&der).unwrap();
+        let names = leaf_san_dns_names(&parsed).expect("SAN 必须可提取");
+        assert_eq!(names, vec![String::from("eneros-server")]);
+        // 无 SAN 证书 → None（CN 回退路径）。
+        let sk2: p256::ecdsa::SigningKey =
+            p256::ecdsa::SigningKey::from_bytes(&[0x52; 32].into()).unwrap();
+        let pk2 = SubjectPublicKey::EcdsaP256(
+            sk2.verifying_key()
+                .to_encoded_point(false)
+                .as_bytes()
+                .to_vec(),
+        );
+        let dn2 = DistinguishedName::new("x");
+        let u2 = X509Certificate::new(
+            2,
+            vec![1],
+            SignatureAlgorithm::EcdsaWithSha256,
+            dn2.clone(),
+            dn2.clone(),
+            NOW2,
+            NOW2 + 3600,
+            pk2,
+            Vec::new(),
+            Vec::new(),
+        );
+        let tbs2 = u2.encode_tbs().unwrap();
+        use p256::ecdsa::signature::Signer;
+        let sig2: p256::ecdsa::Signature = sk2.sign(&tbs2);
+        let p2 = X509Certificate::new(
+            2,
+            vec![1],
+            SignatureAlgorithm::EcdsaWithSha256,
+            dn2.clone(),
+            dn2.clone(),
+            NOW2,
+            NOW2 + 3600,
+            SubjectPublicKey::EcdsaP256(
+                sk2.verifying_key()
+                    .to_encoded_point(false)
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            Vec::new(),
+            sig2.to_der().as_bytes().to_vec(),
+        );
+        let der2 = to_der(&p2).unwrap();
+        let parsed2 = parse_der(&der2).unwrap();
+        assert!(leaf_san_dns_names(&parsed2).is_none());
+    }
+}
+#[cfg(all(test, feature = "embedded"))]
+#[cfg(test)]
+#[test]
+fn san_tlv_debug_probe() {
+    let value: Vec<u8> = vec![
+        0x30, 0x0f, 0x82, 0x0d, 0x65, 0x6e, 0x65, 0x72, 0x6f, 0x73, 0x2d, 0x73, 0x65, 0x72, 0x76,
+        0x65, 0x72,
+    ];
+    eprintln!(
+        "probe value len={} first={:02x} second={:02x}",
+        value.len(),
+        value[0],
+        value[1]
+    );
+    let (body, _) = read_tlv(&value, 0x30).expect("seq");
+    assert_eq!(body.len(), 15);
+    assert_eq!(body[0], 0x82);
+    let (dns, consumed) = read_tlv(&body[..], 0x82).expect("dns");
+    assert_eq!(consumed, 15);
+    assert_eq!(core::str::from_utf8(dns).expect("utf8"), "eneros-server");
 }
