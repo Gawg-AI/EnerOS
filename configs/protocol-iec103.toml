@@ -1,0 +1,5 @@
+# 48（WP-48.3）：svc-iec103 协议配置（ASDU 自有格式 codec BLOCKED——
+# owner 输入规约文本；配置消费经插件 validate_config host 测试）。
+common_addr = 1
+timeout_ms = 1000
+retries = 2

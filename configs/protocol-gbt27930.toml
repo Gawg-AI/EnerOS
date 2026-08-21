@@ -1,0 +1,10 @@
+# 48（WP-48.4）：svc-gbt27930 协议配置。节点地址与超时表为规约附录数值
+# ——文本缺失期间以占位值显式登记（全键必配 fail-closed；**产线部署前
+# 必须按规约附录地址表/超时表核订**，evidence/48/WP-48.4.md）。
+charger_addr = 86
+bms_addr = 1
+handshake_timeout_ms = 5000
+param_timeout_ms = 1000
+charging_timeout_ms = 1000
+end_timeout_ms = 500
+retransmit_max = 3

@@ -62,6 +62,22 @@ consumer = ["svc-goose"]
 [active."protocol-sv"]
 consumer = ["svc-sv"]
 
+[active."protocol-dlt645"]
+consumer = ["svc-dlt645"]
+note = "48（WP-48.1）DL/T 645-2007 配置；codec BLOCKED（owner 输入规约文本），消费=插件 validate_config host 测试"
+
+[active."protocol-iec101"]
+consumer = ["svc-iec101"]
+note = "48（WP-48.2）IEC 101 配置；t0-t3/k/w 占位值须按规约表核订（BLOCKED 登记）"
+
+[active."protocol-iec103"]
+consumer = ["svc-iec103"]
+note = "48（WP-48.3）IEC 103 配置；自有 ASDU codec BLOCKED"
+
+[active."protocol-gbt27930"]
+consumer = ["svc-gbt27930"]
+note = "48（WP-48.4）GB/T 27930 配置；地址表/超时表占位值须按规约附录核订（BLOCKED）"
+
 # --- TEMPLATE：已移入 configs/templates/，不进 release 闭包 ---
 # （完整清单由 gate 对照目录自动校验；这里登记已知子集 + 豁免说明）
 [template]

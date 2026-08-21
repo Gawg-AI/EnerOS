@@ -441,6 +441,32 @@ fn command_derive(root: &Path, _args: &[String]) -> DynResult<()> {
                     "client".into(),
                     "mTLS".into(),
                 ),
+                // 48 卷新增 4 协议（codec SpecBlocked——result=BLOCKED/L0，
+                // evidence 指向 evidence/48/WP-48.N.md；规约文本到位后升级）。
+                (
+                    "RS485".into(),
+                    "DL/T 645-2007".into(),
+                    "master".into(),
+                    "physical/local".into(),
+                ),
+                (
+                    "RS485".into(),
+                    "IEC 60870-5-101".into(),
+                    "master".into(),
+                    "physical/local".into(),
+                ),
+                (
+                    "RS485".into(),
+                    "IEC 60870-5-103".into(),
+                    "master".into(),
+                    "physical/local".into(),
+                ),
+                (
+                    "CAN".into(),
+                    "GB/T 27930-2015".into(),
+                    "charger-side".into(),
+                    "physical/local".into(),
+                ),
             ],
             _ => Vec::new(),
         };
@@ -498,14 +524,45 @@ fn command_derive(root: &Path, _args: &[String]) -> DynResult<()> {
                 "SV" => l2_row(l2_46("sv")),
                 "MQTT" => l2_row(l2_46("mqtt")),
                 "Modbus RTU" => ("PENDING".to_owned(), "L0".to_owned(), String::new()),
+                // 48 卷：codec BLOCKED 如实分级（evidence=各 WP 交付边界登记）。
+                "DL/T 645-2007" => (
+                    "BLOCKED".to_owned(),
+                    "L0".to_owned(),
+                    "evidence/48/WP-48.1.md".to_owned(),
+                ),
+                "IEC 60870-5-101" => (
+                    "BLOCKED".to_owned(),
+                    "L0".to_owned(),
+                    "evidence/48/WP-48.2.md".to_owned(),
+                ),
+                "IEC 60870-5-103" => (
+                    "BLOCKED".to_owned(),
+                    "L0".to_owned(),
+                    "evidence/48/WP-48.3.md".to_owned(),
+                ),
+                "GB/T 27930-2015" => (
+                    "BLOCKED".to_owned(),
+                    "L0".to_owned(),
+                    "evidence/48/WP-48.4.md".to_owned(),
+                ),
                 _ => ("PENDING".to_owned(), "L0".to_owned(), String::new()),
             };
+            // 48 卷：SpecBlocked 协议尚无对端——peer 如实 none
+            // （不继承已验证组合的 independent-raw-peer 声称）。
+            let spec_blocked = matches!(
+                protocol.as_str(),
+                "DL/T 645-2007" | "IEC 60870-5-101" | "IEC 60870-5-103" | "GB/T 27930-2015"
+            );
             entries.push(MatrixEntry {
                 interface,
                 protocol,
                 role,
                 security_profile: sec,
-                peer: "independent-raw-peer".to_owned(),
+                peer: if spec_blocked {
+                    "none".to_owned()
+                } else {
+                    "independent-raw-peer".to_owned()
+                },
                 result,
                 level,
                 evidence,

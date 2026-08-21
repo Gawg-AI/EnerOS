@@ -69,11 +69,51 @@
       "result": "VERIFIED",
       "role": "client",
       "security_profile": "mTLS"
+    },
+    {
+      "evidence": "evidence/48/WP-48.1.md",
+      "interface": "RS485",
+      "level": "L0",
+      "peer": "none",
+      "protocol": "DL/T 645-2007",
+      "result": "BLOCKED",
+      "role": "master",
+      "security_profile": "physical/local"
+    },
+    {
+      "evidence": "evidence/48/WP-48.2.md",
+      "interface": "RS485",
+      "level": "L0",
+      "peer": "none",
+      "protocol": "IEC 60870-5-101",
+      "result": "BLOCKED",
+      "role": "master",
+      "security_profile": "physical/local"
+    },
+    {
+      "evidence": "evidence/48/WP-48.3.md",
+      "interface": "RS485",
+      "level": "L0",
+      "peer": "none",
+      "protocol": "IEC 60870-5-103",
+      "result": "BLOCKED",
+      "role": "master",
+      "security_profile": "physical/local"
+    },
+    {
+      "evidence": "evidence/48/WP-48.4.md",
+      "interface": "CAN",
+      "level": "L0",
+      "peer": "none",
+      "protocol": "GB/T 27930-2015",
+      "result": "BLOCKED",
+      "role": "charger-side",
+      "security_profile": "physical/local"
     }
   ],
-  "generated_at": "2026-08-21T08:35:01Z",
+  "generated_at": "2026-08-21T19:29:14Z",
   "schema": "eneros.sku-protocol-matrix.v1",
-  "signature": "d3ebbb7814f9303641896de998e226f34041c7adcad8758f6952ae8fd94b0a73933b1684e830d750c7dcb1fadc4b8cfd9acc0ae8d3a61e4c298df8a87b352a0f",
+  "signature": "0253a8181ab830948dff88c8a3a9497ef9ff91e26135236454222c81f4f9b98653f28a6248cabbd0918b1594debc8777bdfaad50b458dc44510762702cc53e06",
   "signer": "dev",
   "sku_id": "qemu-virt-aarch64"
 }

@@ -189,6 +189,26 @@
       "capability": "alerting",
       "id": "ops.alert",
       "status": "declared"
+    },
+    {
+      "capability": "DL/T 645-2007 master (meter reading)",
+      "id": "protocol.dlt645",
+      "status": "declared"
+    },
+    {
+      "capability": "IEC 60870-5-101 master/slave (serial telecontrol)",
+      "id": "protocol.iec101",
+      "status": "declared"
+    },
+    {
+      "capability": "IEC 60870-5-103 master (protection device interface)",
+      "id": "protocol.iec103",
+      "status": "declared"
+    },
+    {
+      "capability": "GB/T 27930-2015 charger-side (EV charging BMS link)",
+      "id": "protocol.gbt27930",
+      "status": "declared"
     }
   ],
   "schema": "eneros.service-kind-registry.v1"

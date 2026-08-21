@@ -1,0 +1,8 @@
+# 48（WP-48.1）：svc-dlt645 协议配置（RS485 主从问答；表地址 12 位 BCD，
+# 广播=999999999999；波特率 1200–9600 缺省 2400——蓝图 WP-48.1 登记）。
+# codec 字节层 BLOCKED（owner 输入：DL/T 645-2007 规约文本）——配置消费
+# 经插件 validate_config/from_validated（host 测试 evidence/48/WP-48.1.md）。
+addr_bcd = 1
+baud = 2400
+timeout_ms = 1000
+retries = 2

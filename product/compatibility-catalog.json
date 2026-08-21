@@ -1,11 +1,11 @@
 {
-  "catalog_id": "f903abebc57350c129dd5835b21c60dd27fc9e10771c59cd59145843bfcb7ce7",
+  "catalog_id": "d057373ff93f48a898d6e90229155bd3dc6d79802ab7fc290f2250109ca94394",
   "core_arch": "aarch64",
-  "generated_at": "2026-08-21T08:35:01Z",
+  "generated_at": "2026-08-21T19:29:14Z",
   "platform_contract_version": 1,
-  "product_manifest_digest": "0efb30cdfb745f9ba0d81ea62c08a776a0821d645f22855a009830e6c12727bb",
+  "product_manifest_digest": "b3571ae07cc1e03ab7468cb23d25786c3d4043077f0873e339cab435cf83045e",
   "schema": "eneros.compatibility-catalog.v1",
-  "signature": "8375d779a2c196ddb99fec2ec52cc00486698f525273bf5bc70ef065e6063f343095998ca637c4e410d05d8831e1b41712bce3e4b79c0e0fb19a1fe76d22dd02",
+  "signature": "1edc01ec7bf2b668fda2451995b2518745ff702d2c8329f4c364e220816df12ca4e224d4956d325aa8f0f4dba8557189fb5c0706f69df601630e2d107b579d0f",
   "signer": "dev",
   "skus": [
     {
@@ -58,7 +58,11 @@
       },
       "kind": "development",
       "protocols": [
+        "dlt645",
+        "gbt27930",
         "goose",
+        "iec101",
+        "iec103",
         "iec104",
         "mms",
         "modbus-rtu",

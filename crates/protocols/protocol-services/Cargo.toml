@@ -46,6 +46,11 @@ eneros-rs485 = { path = "../../drivers/rs485" }
 eneros-modbus-rtu = { path = "../modbus-rtu", default-features = false }
 eneros-modbus-tcp = { path = "../modbus-tcp" }
 eneros-iec104-master = { path = "../iec104-master", default-features = false }
+# 48：新四协议插件（能力壳 bin 引用 descriptor；codec SpecBlocked）
+eneros-dlt645 = { path = "../dlt645", default-features = false }
+eneros-iec101 = { path = "../iec101", default-features = false }
+eneros-iec103 = { path = "../iec103", default-features = false }
+eneros-gbt27930 = { path = "../gbt27930", default-features = false }
 eneros-mqtt = { path = "../mqtt", default-features = false }
 # 39 收尾复验（WP-39.11）：MMS/GOOSE/SV plugin+service 补齐。
 # 43 修复（39/40 遗留构建断裂）：这三个 crate 的 `plugin` 模块被其

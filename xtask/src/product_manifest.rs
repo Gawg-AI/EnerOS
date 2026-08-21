@@ -746,6 +746,11 @@ pub const SERVICE_KIND_REGISTRY: &[(&str, &str)] = &[
     ("protocol.modbus-rtu", "Modbus RTU master/slave"),
     ("protocol.modbus-tcp", "Modbus TCP"),
     ("protocol.iec104", "IEC 60870-5-104"),
+    // 48：新四协议 kind（与 service-kind-registry.json 同步）。
+    ("protocol.dlt645", "DL/T 645-2007 meter protocol"),
+    ("protocol.iec101", "IEC 60870-5-101 serial telecontrol"),
+    ("protocol.iec103", "IEC 60870-5-103 protection device interface"),
+    ("protocol.gbt27930", "GB/T 27930-2015 EV charging (charger-side)"),
     ("protocol.mms", "MMS"),
     ("protocol.goose", "GOOSE"),
     ("protocol.sv", "Sampled Values"),
@@ -795,6 +800,11 @@ pub const SERVICE_KIND_BY_SERVICE_ID: &[(&str, &str)] = &[
     ("svc-modbus-rtu", "protocol.modbus-rtu"),
     ("svc-modbus-tcp", "protocol.modbus-tcp"),
     ("svc-iec104", "protocol.iec104"),
+    // 48：新四协议（kind 已入 service-kind-registry.json）。
+    ("svc-dlt645", "protocol.dlt645"),
+    ("svc-iec101", "protocol.iec101"),
+    ("svc-iec103", "protocol.iec103"),
+    ("svc-gbt27930", "protocol.gbt27930"),
     ("svc-mqtt", "protocol.mqtt"),
     ("svc-mms", "protocol.mms"),
     ("svc-goose", "protocol.goose"),

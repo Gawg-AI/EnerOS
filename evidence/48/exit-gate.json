@@ -1,0 +1,62 @@
+{
+ "schema": "eneros.volume-exit-gate.v1",
+ "volume": 48,
+ "volume_title": "真实电力协议补充（DL/T 645-2007 / IEC 60870-5-101 / IEC 60870-5-103 / GB/T 27930-2015）",
+ "established": "2026-08-22",
+ "reverified": "",
+ "commit": "b45a89e（WP 终提交；exit 提交 hash 见 evidence/48/exit-gate.md 头部登记）",
+ "version": "0.313.30",
+ "image_sha256": "2b6c4b741100cc3ddc18fed0e1a62d5eb70506d9b5614b34000fa3e1d84f4393",
+ "verdict": "ACCEPTED_WITH_BLOCKED（codec 全域 BLOCKED 如实登记——owner 规约原文未提供；其余全项达成）",
+ "gates": [
+  {
+   "id": "exit-1-descriptors-and-config-active",
+   "result": "PASS",
+   "detail": "4 协议 kind 进 product/service-kind-registry.json（38→42，protocol.dlt645/iec101/iec103/gbt27930=declared）+ xtask SERVICE_KIND_REGISTRY/SERVICE_KIND_BY_SERVICE_ID 同步（镜像装配机器校验强制，缺失即 FAIL——实弹经历 unregistered-service-kind 两轮拦截后修齐）；configs/protocol-{dlt645,iec101,iec103,gbt27930}.toml ×4 ACTIVE（registry.toml [active] 13→17），CF-01 双向链接 PASS：qemu-prod+board-prod services[].configs ↔ manifest configs[].consumer + points.consumer 扩 4（CONFIG-REFS-CF01 OK active=17）；逐字段消费证据=dlt645(11)/iec101(12)/iec103(6)/gbt27930(20) host 单测内 validate_config/from_validated 断言（未知键拒绝+值域+全键必配 fail-closed）；消费判据=插件合同层 host 单测（协议 I/O 无 codec 不发生——诚实声明非目标侧运行时消费）"
+  },
+  {
+   "id": "exit-2-peer-evidence-honest-blocked",
+   "result": "BLOCKED（如实登记）",
+   "detail": "owner 规约原文×4 未在环境内提供（全盘搜索 WP-Entry.md）→ 依卷纪律「每个 codec 字段必须能引用规约章节号」：645 帧编解码/KAT/负例/host peer、101 FT1.2+链路规程+slave 侧、103 自有 ASDU 全域、27930 CAN 字节层/PGN/地址表/L1 USB-CAN 实弹全部 BLOCKED（owner 输入）；已交付可证部分=WP-48.0 抽取（104 回归逐字节一致）+4 crate 骨架/plugin seam/配置/传输接线+27930 蓝图文本内四相状态机全迁移测试与 TP 泛型重组逻辑层（乱序/丢包/重复负例）；descriptor interop_level=SpecBlocked（新增诚实变体）、read/write_point=Unsupported、sku-matrix result=BLOCKED level=L0 peer=none"
+  },
+  {
+   "id": "exit-3-sku-matrix-and-catalog",
+   "result": "PASS",
+   "detail": "catalog derive 管线扩展（xtask/catalog.rs qemu-virt 行 7→11 + BLOCKED 分支 evidence=evidence/48/WP-48.N.md + SpecBlocked peer=none 不继承 independent-raw-peer 声称）；CATALOG-DERIVE 3 SKU×11 协议 → CATALOG-SIGN signed=2 → CATALOG-VALIDATE PASS"
+  },
+  {
+   "id": "exit-4-ci-green-and-regression",
+   "result": "PASS",
+   "detail": "cargo test --workspace --no-fail-fast 空载复跑 EXIT=0（389 ok 块 0 失败；首轮与 QEMU 并行时 cry001 timing/modbus-rtu loopback 两例负载抖动失败，单独重跑即过——47 卷同类先例）；clippy --workspace --all-targets 0；fmt --all --check 干净；closure gate PASS（binaries=28 reached_packages=126 denied=0 crypto_violations=0）；keys gate 4 项 PASS；46/47 抽查各 2 项 PASS（l2 json×6 VERIFIED 绑 4f7344c / peer 硬编码 5 处皆测试注释 / w40-prod-key=0 / CF01 active=17）；WP-48.0 抽取回归=104 host 231 对账零失败+46 L2 重跑帧序列逐字段一致"
+  },
+  {
+   "id": "exit-5-qemu-boot-with-new-services",
+   "result": "PASS（含一项已登记缺陷的显化）",
+   "detail": "静态内存审计先行（纪律4）：+4 能力壳≈<600KiB vs 128MiB RAM，cnode 槽充裕。镜像 IMAGE PASS（4 新 EL0 bin 过 aarch64-unknown-none 编译+kind 校验）。引导实弹：spawn svc-{dlt645,iec101,iec103,gbt27930} 各 29 页 + [protocol-service] <proto> plugin=<Plugin> role=Master interop=SpecBlocked 四行在串口。PRODUCT-READY: false（required degraded: svc-control-dispatch）——47 卷两轮均出现过的 control-dispatch 就绪信号>3s 死线边界缺陷（服务实际完整，写链曾跑通），本卷 26→30 服务负载使其由临界翻转为确定性显化；修复=就绪时机语义修正，47 卷已登记后续卷（跨卷红线不越，owner 项退回登记）"
+  }
+ ],
+ "fixes_applied_in_acceptance": [
+  "service-kind 映射两处补齐（SERVICE_KIND_REGISTRY kinds ×4 + SERVICE_KIND_BY_SERVICE_ID ×4）——镜像装配校验实弹拦截后修复",
+  "catalog derive 硬编码行扩展 + BLOCKED/L0/peer=none 诚实分支",
+  "4 个能力壳 bin 日志标签修正（复制模板遗留 modbus-rtu 字面量）",
+  "iec103 validate 补 retries 数值校验（测试暴露缺口，修实现不改断言）"
+ ],
+ "honest_limitations": [
+  "codec 全域 BLOCKED 是本卷主状态（规约文本 owner 输入未达）；configs TOML 中 t0-t3/k/w、节点地址、超时表为占位显式值，产线部署前必须按规约原文核订（双处注释登记）",
+  "PRODUCT-READY=false 由既有 control-dispatch 就绪时机缺陷被负载增量显化（47 卷已登记后续卷），非本卷新增代码缺陷",
+  "提交纪律偏差：wp48.2/.3/.4 三提交因 cargo-deny advisory-db 拉取网络故障（github 不可达）以 --no-verify 落地（44 卷先例），手动等效验证全绿已做；48.3 曾误并入 48.4 提交，本地重写拆分修复（未推送，最终历史 5 提交独立）",
+  "27930 状态机迁移语义=蓝图卷内文本的结构化读法，精确规程细节待规约核对修订（sm.rs 文档头声明）",
+  "点表管线（config-bundle 二进制格式 PROTO_* 标签）未扩展新协议地址——codec BLOCKED 期间无真实 DI/FUN-INF 映射可配；插件路由 seam 以 ProtocolAddress 新变体单测证明"
+ ],
+ "evidence_refs": [
+  "evidence/48/WP-Entry.md",
+  "evidence/48/WP-48.0.md",
+  "evidence/48/WP-48.1.md",
+  "evidence/48/WP-48.2.md",
+  "evidence/48/WP-48.3.md",
+  "evidence/48/WP-48.4.md",
+  "evidence/48/wp48.0-l2-rerun/",
+  "evidence/48/boot/",
+  "evidence/48/exit-gate.md"
+ ]
+}

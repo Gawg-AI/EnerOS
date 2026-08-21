@@ -1,0 +1,15 @@
+# 48（WP-48.2）：svc-iec101 协议配置。t0-t3/k/w 为规约表数值——文本缺失
+# 期间以占位值显式登记（fail-closed 纪律：缺键即拒；**产线部署前必须按
+# 规约原文核订**，见 evidence/48/WP-48.2.md BLOCKED 登记）。
+link_addr = 1
+common_addr = 1
+link_addr_size = 1
+common_addr_size = 1
+balanced = false
+t0_ms = 30
+t1_ms = 300
+t2_ms = 200
+t3_ms = 20000
+k = 12
+w = 8
+timeout_ms = 1000
