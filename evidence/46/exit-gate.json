@@ -2,49 +2,74 @@
   "schema": "eneros.exit-gate.v1",
   "volume": 46,
   "verdict": "ACCEPTED",
-  "generated_at": "2026-08-21T06:05:00Z",
-  "commit": "02aa670",
+  "generated_at": "2026-08-21T11:10:00Z",
+  "commit": "4f7344c",
   "version": "0.313.16",
-  "image_sha256": "7d13b4d270112a1f4d52fa3bad597536fee7066b2dc148a51dff346c1247ca06",
+  "image_sha256": "f96f17b5c1d4ebc267cebcc6148f6ef122141de27ce9bf3864692da57c088723",
+  "acceptance_kind": "收尾验收（44-00 §4.5 SOP 7 重跑）",
   "gates": [
     {
       "id": "46-exit-1-l2-evidence",
       "requirement": "7 协议 L2/host-peer 证据齐（或如实 BLOCKED 登记）",
       "result": "PASS",
-      "detail": "6/6 VERIFIED L2（modbus-tcp/iec104/mqtt/mms/goose/sv，evidence/46/l2-<proto>-verified.json，四判据 oracle=独立非 EnerOS 进程 + QEMU/EL0）；modbus-rtu BLOCKED 如实登记（l2-modbus-rtu-blocked.json，46.1 决策 b：QEMU virt 无第二 PL011，真机 51 卷解锁）"
+      "detail": "6/6 VERIFIED L2（modbus-tcp 19 事务 / iec104 12 / mqtt 10 / mms 4 / goose 136 / sv 104，evidence/46/l2-<proto>-verified.json 绑 4f7344c，四判据 oracle=独立非 EnerOS 进程 + QEMU/EL0 + 串口 NET-TRANSPORT READY 6/6 + boot-evidence/product-ready）；modbus-rtu BLOCKED 如实登记（l2-modbus-rtu-blocked.json，46.1 决策 b：QEMU virt 无第二 PL011，owner 动作=真机 51 卷 unlock）。本轮重跑 QEMU L2 正向全捕获"
     },
     {
       "id": "46-exit-2-sku-matrix",
       "requirement": "sku-matrix 与代码一致",
       "result": "PASS",
-      "detail": "cargo xtask catalog derive + sign → product/sku-matrix.json 7 协议重算（6 VERIFIED L2 + Modbus RTU PENDING L0）；catalog gate 的 sku-matrix/一致性检查通过"
+      "detail": "cargo xtask catalog derive + sign + validate 全部 PASS → product/sku-matrix.json 7 协议（6 VERIFIED L2 + Modbus RTU PENDING L0，evidence 路径与 l2-*.json 一一对应）；catalog gate 其余检查（matrix-verified-evidence 存在/go-no-go）全过，唯一 FAIL=evidence42-check-current 为 42/43 时代跨卷机制（见 pre_existing_limitations）"
     },
     {
       "id": "46-exit-3-no-peer-hardcode",
       "requirement": "业务路径零 peer/地址硬编码",
       "result": "PASS",
-      "detail": "grep '10\\.0\\.2\\.|127\\.0\\.0\\.1' crates/protocols/protocol-services/src/ 非测试/非注释命中=0；plugin.rs/svc bin 残留全在 #[cfg(test)]；peer 值仅存 configs/protocol-*.toml（配置源，46.3 DoD）"
+      "detail": "grep '10\\.0\\.2\\.|127\\.0\\.0\\.1' crates/protocols/protocol-services/src/ 非测试/非注释命中=0（5 处全在 #[test] 夹具/模块文档）；mqtt/plugin.rs 命中全在 #[cfg(test)]；svc bins 零命中；peer 值仅存 configs/protocol-*.toml（配置源，46.3 DoD）"
     },
     {
       "id": "46-exit-4-ci-green",
       "requirement": "全量测试/CI 绿",
       "result": "PASS",
-      "detail": "cargo test --workspace EXIT=0（373 测试二进制 0 失败）；clippy -p 变更 crate --all-targets -- -D warnings 0 错误；cargo fmt --check 干净；evidence42 check-current 为 42/43 时代遗留本地 BLOCKED（CI 先造信封，46 范围不动 evidence/42 跨卷——如实登记，非 46.5 回归）"
+      "detail": "cargo test --workspace EXIT=0（373 test-result ok 块 0 失败）；cargo clippy --workspace --all-targets -- -D warnings EXIT=0（0 错误 0 警告）；cargo fmt --all --check 0 diff；evidence42 check-current 为 42/43 时代遗留本地 BLOCKED（CI 先造信封，46 范围不动 evidence/42 跨卷——如实登记，非 46 回归）"
     },
     {
       "id": "46-exit-5-prev-volume-spotcheck",
       "requirement": "45 卷 Exit 证据 ≥2 项 PASS",
       "result": "PASS",
-      "detail": "_points grep=0（45 Exit a）；cargo xtask evidence verify violations=[]（45 Exit e）"
+      "detail": "_points grep=0（45 Exit a）；cargo xtask evidence verify violations:[]（45 Exit e）；config-refs CF01 OK（45 Exit 关联项，active 13）"
     },
     {
       "id": "46-exit-6-version-board",
       "requirement": "版本 bump + 状态板置 Accepted",
       "result": "PASS",
-      "detail": "版本 0.313.15→0.313.16；蓝图/44-00 §6 状态板 46=Accepted（2026-08-21 收口）"
+      "detail": "版本 0.313.16（46.5 已 bump，本轮无版本变更）；蓝图/44-00 §6 状态板 46=Accepted（2026-08-21 收尾验收复核）"
     }
   ],
-  "pre_existing_limitations": [
+  "rerun_evidence": {
+    "wp_dod": {
+      "46.1": "三工厂正负例+VLAN：protocol-services 15 / net 466 / sv 35 / goose 54 全绿",
+      "46.2": "spawn 槽位移交资源校验：root-task 100 passed（含 proto_net_slot 3 测试）",
+      "46.3": "config compile 22+18 + config-syntax checked 88 errors 0 + config-refs CF01 OK（active 13）",
+      "46.4": "codec：iec104-master 72 / iec104-slave 154 / mqtt 55 / goose 54 全绿",
+      "46.5": "QEMU L2 正向 6/6 READY + transcript≥3 + boot-evidence/product-ready；derive46-l2 绑 4f7344c"
+    },
+    "negative_cases": {
+      "modbus-tcp": "L2 拔 peer 确定性负例（serve_after=1 → ACQ point=1..6 全 q=bad ReadFailed + 9 handled:fail 事务，evidence/46/qemu-l2-negative/modbus-neg-deterministic.*）；单测 mbap 拒超长 PDU/protocol-id/超量寄存器/不支持传输（69 passed）",
+      "iec104": "乱序重放拒收 + t1 超时断链重连 + t2 超时 late-ack（iec104-master 72 passed 含 3 负例）",
+      "mqtt": "垃圾字节突发拒收不 panic + 坏配置拒（validate_config_rejects_unknown_and_empty/oversized_broker；55 passed）",
+      "mms": "AARE 拒 + 关联拒绝 + 全试超时（acse test_ac23_aare_rejected / mc31_all_attempts_timeout；38 passed）",
+      "goose": "VLAN 坏 Length/EtherType 拒收 + 坏配置拒（44 passed）",
+      "sv": "VLAN 坏 EtherType/APPID 丢弃 + APPID 错 + 非SV EtherType + 不支持传输拒绝（35 passed）",
+      "modbus-rtu": "Serial 静默超时 + 异类 kind 拒绝（net_transport serial_recv_timeout/serial_open_rejects_other_kinds；15 passed）"
+    }
+  },
+  "fixes_applied_in_acceptance": [
+    "cargo fmt --all 修复 9 处格式违规（46 卷文件：iec104-master adapter.rs/plugin.rs、svc-mms.rs、root-task spawn.rs）——46.5 曾声明 fmt 干净但不实",
+    "clippy 修复 4 处：storage virtio_blk.rs `for spin`→`for _spin`（44 卷遗留 cfg 依赖 lint，diag feature 关闭时未用变量）；config-bundle protocol.rs `mod tests` 移文件末尾 + 去多余 mut（46.3 items_after_test_module）；mqtt client.rs 去 unused import MqttTransport（46.4）——46.5 曾声明 clippy 0 错误但不实",
+    "以上均为机械 lint/格式修复，无语义变化；修复后全量 clippy/fmt/测试全绿"
+  ],
+  "honest_limitations": [
+    "run46-l2.sh --neg 的 serve_after=15 负例在本轮 fast-boot 下未触发（服务仅启动自检一轮真读，15s 拒答窗口未覆盖）——已用 serve_after=1 确定性负例补证 fail-closed，登记 evidence/46/qemu-l2-negative/",
     "catalog gate 的 evidence42-check-current 需 CI 先创建当前候选 EvidenceEnvelope（42/43 时代机制，memory evidence42-tooling-lessons 已登记）；本地 BLOCKED，CI 装配信封后全绿。46 范围不触碰 evidence/42（跨卷红线）"
   ],
   "evidence_refs": [
@@ -56,6 +81,7 @@
     "evidence/46/l2-goose-verified.json",
     "evidence/46/l2-sv-verified.json",
     "evidence/46/l2-modbus-rtu-blocked.json",
-    "evidence/46/qemu-l2/*.transcript.jsonl"
+    "evidence/46/qemu-l2/*.transcript.jsonl",
+    "evidence/46/qemu-l2-negative/modbus-neg-deterministic.transcript.jsonl"
   ]
 }

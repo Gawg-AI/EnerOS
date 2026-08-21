@@ -20,11 +20,11 @@ use alloc::boxed::Box;
 use alloc::string::String;
 
 #[cfg(target_os = "none")]
+use eneros_iec61850_mms::plugin::MmsPlugin;
+#[cfg(target_os = "none")]
 use eneros_protocol_abstract::plugin::ProtocolPlugin;
 #[cfg(target_os = "none")]
 use eneros_protocol_abstract::PointRegistry;
-#[cfg(target_os = "none")]
-use eneros_iec61850_mms::plugin::MmsPlugin;
 
 #[cfg(target_os = "none")]
 #[global_allocator]
@@ -141,10 +141,11 @@ pub extern "C" fn _start(
                                 // READ_RESP ≥3）；插件保持请求驱动契约（Read 由
                                 // 集成层发起），失败不阻断装配（如实健康观测）。
                                 drive_mms_read(&mut plugin, &mut registry);
-                                let mut io = eneros_protocol_services::service::PluginIoService::new(
-                                    plugin,
-                                    "eneros_iec61850_mms::plugin::MmsPlugin",
-                                );
+                                let mut io =
+                                    eneros_protocol_services::service::PluginIoService::new(
+                                        plugin,
+                                        "eneros_iec61850_mms::plugin::MmsPlugin",
+                                    );
                                 // 46.5：启动期自检轮询——post-connect 协议交换
                                 // 在进入 request 循环前完成（104 STARTDT/总召唤、
                                 // mqtt CONNECT/SUB、raw RX；L2 对端 transcript ≥3
@@ -157,10 +158,12 @@ pub extern "C" fn _start(
                                     "[svc-mms] plugin start FAILED {:?} —— capability 壳（EXECUTE ST_UNAVAILABLE）",
                                     e
                                 );
-                                Box::new(eneros_protocol_services::service::UnassignedProtocolService)
+                                Box::new(
+                                    eneros_protocol_services::service::UnassignedProtocolService,
+                                )
                             }
                         }
-                    },
+                    }
                     None => {
                         eneros_runtime::println!(
                             "[svc-mms] protocol config unavailable —— capability 壳（EXECUTE ST_UNAVAILABLE）"

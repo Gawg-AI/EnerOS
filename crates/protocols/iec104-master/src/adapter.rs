@@ -94,12 +94,7 @@ impl Iec104Adapter {
         if !self.master.conn_keys().contains(&common_addr) {
             // 31 PR-14：对端地址经 MasterConfig 注入（生产路径禁字面量 IP）。
             let (peer_ip, peer_port) = self.master.peer();
-            let dev = RemoteDevice::new(
-                peer_ip,
-                peer_port,
-                common_addr,
-                self.poll_interval_ms,
-            );
+            let dev = RemoteDevice::new(peer_ip, peer_port, common_addr, self.poll_interval_ms);
             let _ = self.master.connect(&dev);
         }
         // 只消费一帧：STARTDT_CON 握手确认（此时 confirm/数据帧仍在队列，
@@ -205,10 +200,7 @@ impl Iec104Adapter {
             if i > 0 {
                 s.push(' ');
             }
-            s.push_str(&alloc::format!(
-                "{:?}",
-                self.master.device_state(*k)
-            ));
+            s.push_str(&alloc::format!("{:?}", self.master.device_state(*k)));
         }
         s.push_str("] sched=");
         for (addr, task) in &self.master.scheduler_tasks() {
@@ -301,12 +293,7 @@ impl ProtocolAdapter for Iec104Adapter {
         if let Some(m) = self.mappings.first() {
             // 31 PR-14：对端地址经 MasterConfig 注入。
             let (peer_ip, peer_port) = self.master.peer();
-            let dev = RemoteDevice::new(
-                peer_ip,
-                peer_port,
-                m.common_addr,
-                self.poll_interval_ms,
-            );
+            let dev = RemoteDevice::new(peer_ip, peer_port, m.common_addr, self.poll_interval_ms);
             let _ = self.master.connect(&dev);
         }
         self.state = AdapterState::Running;

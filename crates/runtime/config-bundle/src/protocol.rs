@@ -206,6 +206,52 @@ pub fn iter_key_values(id: &str, cfg: &ProtocolConfig) -> alloc::vec::Vec<(Strin
     cfg.entries.clone()
 }
 
+/// 46（WP-46.3）：协议配置 typed consumer（每协议一份实例；注册进
+/// svc-config ConfigRegistry——registry 双向完备性要求 bundle 内每个
+/// 配置都有 consumer，否则 fail-closed `unconsumed-config`）。
+pub struct ProtocolKvConsumer {
+    id: &'static str,
+    /// 最近应用的协议配置（诊断/校验保持）。
+    pub last: ProtocolConfig,
+    /// 生效 generation。
+    pub generation: u64,
+}
+
+impl ProtocolKvConsumer {
+    pub fn new(id: &'static str) -> Self {
+        Self {
+            id,
+            last: ProtocolConfig::default(),
+            generation: 0,
+        }
+    }
+}
+
+impl crate::TypedConfigConsumer for ProtocolKvConsumer {
+    type Config = ProtocolConfig;
+    fn config_id(&self) -> crate::ConfigId {
+        crate::ConfigId::from_static(self.id)
+    }
+    fn schema_version(&self) -> crate::SchemaVersion {
+        crate::SchemaVersion(1)
+    }
+    fn decode_validate(&self, raw: &[u8]) -> Result<Self::Config, crate::ConfigError> {
+        decode_protocol(raw)
+    }
+    fn apply(
+        &mut self,
+        cfg: Self::Config,
+        generation: u64,
+    ) -> Result<crate::ApplyOutcome, crate::ConfigError> {
+        if self.last.entries == cfg.entries && self.generation == generation {
+            return Ok(crate::ApplyOutcome::NoOp);
+        }
+        self.last = cfg;
+        self.generation = generation;
+        Ok(crate::ApplyOutcome::Applied { generation })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,54 +343,8 @@ mod tests {
 
     #[test]
     fn protocol_kv_consumer_rejects_garbage_payload() {
-        let mut c = ProtocolKvConsumer::new("protocol-modbus-tcp");
+        let c = ProtocolKvConsumer::new("protocol-modbus-tcp");
         assert!(c.decode_validate(b"\xff\xff\xff").is_err());
         assert!(c.decode_validate(b"").is_err());
-    }
-}
-
-/// 46（WP-46.3）：协议配置 typed consumer（每协议一份实例；注册进
-/// svc-config ConfigRegistry——registry 双向完备性要求 bundle 内每个
-/// 配置都有 consumer，否则 fail-closed `unconsumed-config`）。
-pub struct ProtocolKvConsumer {
-    id: &'static str,
-    /// 最近应用的协议配置（诊断/校验保持）。
-    pub last: ProtocolConfig,
-    /// 生效 generation。
-    pub generation: u64,
-}
-
-impl ProtocolKvConsumer {
-    pub fn new(id: &'static str) -> Self {
-        Self {
-            id,
-            last: ProtocolConfig::default(),
-            generation: 0,
-        }
-    }
-}
-
-impl crate::TypedConfigConsumer for ProtocolKvConsumer {
-    type Config = ProtocolConfig;
-    fn config_id(&self) -> crate::ConfigId {
-        crate::ConfigId::from_static(self.id)
-    }
-    fn schema_version(&self) -> crate::SchemaVersion {
-        crate::SchemaVersion(1)
-    }
-    fn decode_validate(&self, raw: &[u8]) -> Result<Self::Config, crate::ConfigError> {
-        decode_protocol(raw)
-    }
-    fn apply(
-        &mut self,
-        cfg: Self::Config,
-        generation: u64,
-    ) -> Result<crate::ApplyOutcome, crate::ConfigError> {
-        if self.last.entries == cfg.entries && self.generation == generation {
-            return Ok(crate::ApplyOutcome::NoOp);
-        }
-        self.last = cfg;
-        self.generation = generation;
-        Ok(crate::ApplyOutcome::Applied { generation })
     }
 }

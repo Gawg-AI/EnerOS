@@ -71,9 +71,9 @@
       "security_profile": "mTLS"
     }
   ],
-  "generated_at": "2026-08-21T05:35:28Z",
+  "generated_at": "2026-08-21T08:35:01Z",
   "schema": "eneros.sku-protocol-matrix.v1",
-  "signature": "55ebc27e7b07c216a1547dcc02abcf2fad861114d2c6450f04184a6b9a549b3679f7707fce7f59a34e77a60cc855d47afc921878f403813166638c25dae37701",
+  "signature": "d3ebbb7814f9303641896de998e226f34041c7adcad8758f6952ae8fd94b0a73933b1684e830d750c7dcb1fadc4b8cfd9acc0ae8d3a61e4c298df8a87b352a0f",
   "signer": "dev",
   "sku_id": "qemu-virt-aarch64"
 }

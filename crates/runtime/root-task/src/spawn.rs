@@ -2270,7 +2270,7 @@ fn configure_service(
         let page_mask = (1u64 << OBJ_BITS_SMALL_PAGE) - 1;
         let page_base = mmio_phys & !page_mask;
         let mmio_off = mmio_phys - STORAGE_VIRTIO_REGION_BASE; // 0..0x1e00，跨两页
-        // 该服务独享 VA 映射页基（页 0 → 0x40020000，页 1 → 0x40021000）。
+                                                               // 该服务独享 VA 映射页基（页 0 → 0x40020000，页 1 → 0x40021000）。
         let map_vaddr = NET_MMIO_VADDR + (mmio_off & !page_mask);
         let mmio_frame = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
         let shared = if page_base == STORAGE_VIRTIO_REGION_BASE {

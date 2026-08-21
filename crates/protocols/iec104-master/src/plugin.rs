@@ -257,8 +257,7 @@ impl ProtocolPlugin for Iec104Plugin {
             peer_port: port,
         };
         // 46.5：流式粘包重组传输（TCP 字节流切帧，见 `StreamMasterTransport`）。
-        let transport: Box<dyn MasterTransport> =
-            Box::new(StreamMasterTransport::new(handle));
+        let transport: Box<dyn MasterTransport> = Box::new(StreamMasterTransport::new(handle));
         // 46.5（点表→104 映射接线）：从注入点表构建设备映射（45.4 接口；
         // 服务层经 svc-config 取点表后注入本插件）。映射 → adapter 设备表
         // → STARTDT/总召唤驱动（空映射 = 不连设备 = 无 104 握手；点表缺失

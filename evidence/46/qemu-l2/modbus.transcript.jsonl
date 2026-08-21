@@ -1,4 +1,4 @@
-{"event": "CONNECT", "conn": 1, "peer": "('127.0.0.1', 41504)"}
+{"event": "CONNECT", "conn": 1, "peer": "('127.0.0.1', 37300)"}
 {"event": "REQUEST", "conn": 1, "tid": 0, "unit": 1, "func": 3, "addr": 4097, "count": 1, "handled": "error-illegal-data-address"}
 {"event": "RESPONSE", "conn": 1, "tid": 0, "bytes": 9, "serve": true}
 {"event": "REQUEST", "conn": 1, "tid": 0, "unit": 1, "func": 3, "addr": 4098, "count": 1, "handled": "error-illegal-data-address"}

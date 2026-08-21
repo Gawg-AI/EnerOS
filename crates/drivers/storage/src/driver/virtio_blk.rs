@@ -541,7 +541,7 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
     /// 元素（此前缺失，真机 cache 一致性缺口）。
     fn wait_used(&self) -> Result<u32, StorageError> {
         let used_va = self.va_of(0x1000);
-        for spin in 0..200_000_000u32 {
+        for _spin in 0..200_000_000u32 {
             compiler_fence(Ordering::SeqCst);
             // 设备写 used ring（DMA）：轮询前使缓存失效。
             self.cache
@@ -553,13 +553,13 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             let used = unsafe { &*(bytes[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
             let used_idx = used.idx;
             #[cfg(feature = "diag")]
-            if spin % 20_000_000 == 0 {
+            if _spin % 20_000_000 == 0 {
                 let b2 = self.pool.borrow();
                 let by = b2.as_bytes();
                 let av = unsafe { &*(by[0x0100..0x1100].as_ptr() as *const VirtqAvail) };
                 eneros_runtime::println!(
                     "[diag] poll spin={} used.idx={} avail.idx={} used.ring0=({:#x},{:#x})",
-                    spin,
+                    _spin,
                     used_idx,
                     av.idx,
                     used.ring[0].id,

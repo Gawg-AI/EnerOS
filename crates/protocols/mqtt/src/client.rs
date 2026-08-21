@@ -781,7 +781,7 @@ mod keepalive_tests {
     use super::ConnectionState;
     use crate::client::MqttClient;
     use crate::packet::{self, MqttPacket};
-    use crate::transport::{MockTransport, MqttTransport};
+    use crate::transport::MockTransport;
 
     /// 46（WP-46.4）keepalive：poll 周期按 keep_alive_ms 自动 PINGREQ。
     #[test]
