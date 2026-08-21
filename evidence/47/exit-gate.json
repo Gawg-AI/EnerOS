@@ -3,50 +3,58 @@
  "volume": 47,
  "volume_title": "控制写闭环与安全收口",
  "established": "2026-08-22",
- "commit": "c0cc32d",
- "version": "0.313.23",
- "image_sha256": "eabda8d99018ca0a2dce98c573b83cd08c3e6ad56e580a49d764e3deb73a0783",
+ "reverified": "2026-08-22（收尾验收复验：全项重跑 + 审计入链目标侧补证）",
+ "commit": "71a74a3",
+ "version": "0.313.24",
+ "image_sha256": "854a20c2c65b60272385e58e282ef68a97b4f633e8d10f3dce8c11edbaf1c67e",
  "verdict": "ACCEPTED",
  "gates": [
   {
    "id": "exit-1-qemu-write-chain",
    "result": "PASS",
-   "detail": "QEMU 实弹：外部 SCADA（MQTT）SET 1 10 50.0 → svc-mqtt 意图(Float 50.0) → 12 态链 → 协议出站 MASTER-WRITE power=50 → 外部 modbus 从站 fc06 0x200=50 → 独立 readback fc03=50 VERIFIED → INTENT state=Committed；串口+对端 transcript 双证据（evidence/47/qemu-write/）"
+   "detail": "QEMU 实弹（复验重跑，镜像 854a20c2…，0.313.24）：外部 SCADA（MQTT）SET 1 10 50.0 → svc-mqtt 意图(Float 50.0) → 12 态链 → 协议出站 MASTER-WRITE power=50 → 外部 modbus 从站 fc06 0x200=50 → 独立 readback fc03=50 VERIFIED → INTENT state=Committed → AUDIT-CHAIN appended=44 dropped=0；串口+对端 transcript 双证据在库（evidence/47/qemu-write/，本轮起串口日志 force-add 入仓——上轮被 *.log ignore 规则遗漏，已修正）"
   },
   {
    "id": "exit-2-negative-matrix",
-   "result": "PASS",
-   "detail": "deny/读回不符 Failed/超时 Indeterminate/断电恢复/重放拒绝/rate 预算——host 测试 7+4+2 项（intent_ingress_chain/durable_intent/audit_chain）；QEMU 观察负例（BadResponse/BudgetExceeded 早期拒绝）实弹修复后全通"
+   "result": "PASS（host 层）",
+   "detail": "deny（绑定不符/策略 deny→NotAuthorized 零投递）/读回不符（→Failed+readback-mismatch）/超时（→Indeterminate 不记账）/断电恢复（durable_intent：power_loss_tear_recovers_intact_pending + pending_intent_recovers_after_restart + committed_after_restart_not_pending）/重放拒绝（重复 seq→Rejected 零写）/rate 预算（BudgetExceeded 零投递）——intent_ingress_chain 9 + durable_intent 5 + audit_chain 3 实跑全绿（0.313.24 套件内复跑）；audit_chain 含 verify_log PASS + last_valid_prefix 截断/篡改定位"
   },
   {
    "id": "exit-3-key-grep-zero",
-   "result": "PASS",
-   "detail": "grep w40-prod-key|dev-signing.key crates/xtask/product = 0（生成脚本/keys-local 说明豁免）；qa gate keys tracked=0 default-refs=0；release 无键构建 fail-closed（单测+实弹观察）"
+   "result": "PASS（精确分类后）",
+   "detail": "w40-prod-key：crates/xtask/product 全零（全仓仅文档命中）；dev-signing.key 宽匹配 4 处全分类豁免——xtask/gate.rs×2（门禁自身检测探针/注释，grep --exclude 自引用）、xtask/keys.rs（唯一解析入口常量，值已指向 keys-local gitignore 白名单）、product/factory/key-domains.json（owner 维护域登记，note 明示执行 AI 不得改动）；qa gate keys tracked=0/default-refs=0/test-keys=present PASS；release 无键构建 fail-closed 实弹：env -u ENEROS_IMAGE_SIGNING_KEY cargo xtask image qemu-prod → FAIL exit=2（生产装配签名键必须显式传入…fail-closed）"
   },
   {
    "id": "exit-4-ci-green",
    "result": "PASS",
-   "detail": "cargo test --workspace EXIT=0（375 ok 块）；clippy 0；fmt 0；closure gate PASS；版本 0.313.23"
+   "detail": "cargo test --workspace --no-fail-fast EXIT=0（375 test result: ok 块，0 失败；0.313.24 含本轮变更）；clippy --workspace --all-targets 0；fmt --all --check 0（本轮新测试格式已修）；closure gate --profile qemu-prod PASS（denied=0 crypto_violations=0，121 包）；版本 0.313.23→0.313.24"
   },
   {
    "id": "exit-5-prev-volumes-spotcheck",
    "result": "PASS",
-   "detail": "45：_points=0（Exit a）+ config-refs CF01 OK（Exit e）；46：l2-verified ×6 结构/绑定（Exit 1）+ peer 硬编码业务零命中（Exit 3）+ workspace 套件（Exit 4）"
+   "detail": "45：_points grep crates/protocols/*/src/plugin.rs=0（Exit a）+ qa gate config-refs CF01 OK（active 13，Exit e）；46：l2-*-verified.json ×6 全 VERIFIED 绑 4f7344c（Exit 1）+ protocol-services peer 硬编码 5 处全在 #[cfg(test)]/文档注释（Exit 3）"
   }
  ],
  "fixes_applied_in_acceptance": [
-  "drv-svc 自定义 opcode 不路由 → OP_EXECUTE + 载荷子码",
-  "drv-svc 响应 80B padding → 通道 ≥79B 容错解码（block_io 已知坑）",
-  "mqtt control_topic 订阅延后到 connect 后（惰性订阅）",
-  "root 协议服务 EXECUTE 编排 tick（ACQ 保鲜 + 下行轮询）",
-  "rate gate bundle 注入（control-write rate_per_hour；缺省=产品 60/h）",
-  "storage eipc_block_io epoch 吸收（传 0）",
-  "config compile 重建（point 10 + control_topic 生效）"
+  "【上轮】drv-svc 自定义 opcode 不路由 → OP_EXECUTE + 载荷子码",
+  "【上轮】drv-svc 响应 80B padding → 通道 ≥79B 容错解码（block_io 已知坑）",
+  "【上轮】mqtt control_topic 订阅延后到 connect 后（惰性订阅）",
+  "【上轮】root 协议服务 EXECUTE 编排 tick（ACQ 保鲜 + 下行轮询）",
+  "【上轮】rate gate bundle 注入（control-write rate_per_hour；缺省=产品 60/h）",
+  "【上轮】storage eipc_block_io epoch 吸收（传 0）",
+  "【上轮】config compile 重建（point 10 + control_topic 生效）",
+  "【本轮复验】审计入链目标侧可观测：engine audit_append_count（成功入链计数，红→绿测试先行）+ svc-control-dispatch 串口 AUDIT-CHAIN appended/dropped 行——上轮 QEMU 侧审计入链零证据（chain.log 静默），本轮实弹 appended=44 dropped=0",
+  "【本轮复验】串口日志 force-add 入仓（上轮被 .gitignore *.log 规则遗漏——exit-gate 引用的双证据之一实际不在库）",
+  "【本轮复验】新测试 fmt 格式修正"
  ],
  "honest_limitations": [
-  "QEMU A/B 断电重放（三态法）为扩展项——存储断电恢复语义由 durable_intent host 撕裂测试覆盖；QEMU 侧 DURABLE-INTENT-STORE open OK 已证",
+  "QEMU A/B 断电重放（三态法）为扩展项——存储断电恢复语义由 durable_intent host 撕裂测试覆盖；QEMU 侧 DURABLE-INTENT-STORE open OK 已证（本轮串口 11856 行复现）",
   "modbus-rtu 出站写 BLOCKED（46 卷无第二 PL011）；645 类写 48 卷",
-  "EL0 审计链 MemStore（易失）；持久 AuditStore over BlockIo 登记后续"
+  "EL0 审计链 MemStore（易失）——AUDIT-CHAIN 行证明入链事实，持久 AuditStore over BlockIo 登记后续卷",
+  "PRODUCT-READY: false（degraded: svc-control-dispatch）在上轮与本轮串口均出现：svc-control-dispatch 于 _start 内先做重初始化（config/durable-store/delivery EIPC）后才经 control_service_main 发就绪信号，超过 root 3s 就绪死线 → Degraded；服务实际完整启动并跑通写链（DURABLE-INTENT-STORE OK + Committed 在 PRODUCT-READY 行之后）——就绪语义修正（信号时机）登记后续卷，非本卷 Exit 判据",
+  "上轮 exit-gate 所引「QEMU 观察负例（BadResponse/BudgetExceeded 早期拒绝）」无持久化证据文件（早期运行串口被覆盖）——负例矩阵判据以 host 测试为准（本轮如实改登记）",
+  "QEMU 演示 rate_per_hour=100000 经 ACTIVE config（control-write.toml）进签名 bundle（含 release profile）——代码缺省 60/h 为 fail-closed 面；产品部署须移除该键（config 注释已声明），登记为部署纪律项",
+  "run47 脚本 rc 处理与 harness 现行为（超时=failure 收窗）不一致：本轮 RUN_EXIT=2 但 300s 证据窗口完整（串口 3.4MB + transcript 全程），不影响证据效力"
  ],
  "evidence_refs": [
   "evidence/47/WP-47.1.md",
