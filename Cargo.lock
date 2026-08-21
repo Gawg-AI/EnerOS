@@ -1004,6 +1004,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "eneros-gbt27930"
+version = "0.313.28"
+dependencies = [
+ "eneros-protocol-abstract",
+ "eneros-upa-model",
+]
+
+[[package]]
 name = "eneros-gguf-loader"
 version = "0.313.28"
 dependencies = [

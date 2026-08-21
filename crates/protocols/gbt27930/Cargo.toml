@@ -1,0 +1,11 @@
+[package]
+name = "eneros-gbt27930"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS GB/T 27930-2015 charger-side plugin — state machine + generic TP reassembly; CAN byte codec BLOCKED pending spec text (blueprint 48 WP-48.4)"
+
+[dependencies]
+eneros-protocol-abstract = { path = "../protocol-abstract" }
+eneros-upa-model = { path = "../upa-model" }
