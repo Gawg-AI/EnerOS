@@ -50,6 +50,9 @@ pub enum SecurityProfile {
 /// 互操作等级（诚实命名，10.3 纪律）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InteropLevel {
+    /// 规约文本缺失/待核对——codec 字节层未实现（蓝图 48 卷 BLOCKED 登记；
+    /// owner 提供规约原文并落地权威 KAT 后方可升 CodecReady）。
+    SpecBlocked,
     /// 仅 codec/状态机完成。
     CodecReady,
     /// host 独立 peer 验证。

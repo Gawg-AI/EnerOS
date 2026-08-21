@@ -48,6 +48,32 @@ pub enum ProtocolAddress {
         /// 对象引用路径（如 `LD0/LRPW.Analogue.MX.w`）。
         object_ref: alloc::string::String,
     },
+    /// DL/T 645-2007 表地址（48 卷新增）：12 位十进制 BCD 地址。
+    ///
+    /// 线上字节序（低位在前）属 codec 层——codec BLOCKED 待规约文本
+    /// （48 卷执行模式 §2）；点表路由只消费数值形地址。
+    Dlt645 {
+        /// 表地址（12 位十进制数值，999999999999=广播）。
+        addr_bcd: u64,
+    },
+    /// IEC 60870-5-101 地址（48 卷新增）：链路地址 + ASDU 公共地址 + IOA。
+    Iec101 {
+        /// 链路地址（1/2 字节可配——尺寸属配置，值域 u16）。
+        link_addr: u16,
+        /// ASDU 公共地址（1/2 字节可配）。
+        common_addr: u16,
+        /// 信息对象地址（IOA；语义与 104 同源——48 WP-48.0 共用 ASDU 层）。
+        ioa: u16,
+    },
+    /// IEC 60870-5-103 地址（48 卷新增）：公共地址 + 功能类型 FUN + 信息序号 INF。
+    Iec103 {
+        /// 公共地址。
+        common_addr: u16,
+        /// 功能类型（FUN，1B）。
+        fun: u8,
+        /// 信息序号（INF，1B）。
+        inf: u8,
+    },
 }
 
 #[cfg(test)]

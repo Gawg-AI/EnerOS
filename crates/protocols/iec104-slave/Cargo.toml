@@ -7,6 +7,8 @@ license.workspace = true
 description = "EnerOS IEC 60870-5-104 slave protocol stack — APDU/ASDU codec, interrogation, command, clock sync"
 
 [dependencies]
+# 48 WP-48.0：ASDU 公共层（101/103/104 共用；本 crate 经 asdu shim 重导出）
+eneros-iec60870-asdu = { path = "../iec60870-asdu" }
 eneros-control-gateway = { path = "../control-gateway" }
 eneros-telemetry-model = { path = "../telemetry-model" }
 eneros-time = { path = "../../drivers/time" }

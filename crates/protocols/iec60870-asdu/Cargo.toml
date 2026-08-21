@@ -1,0 +1,10 @@
+[package]
+name = "eneros-iec60870-asdu"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS IEC 60870-5 ASDU application layer — shared codec for IEC 101/103/104 (blueprint 48 WP-48.0)"
+
+[lib]
+name = "eneros_iec60870_asdu"

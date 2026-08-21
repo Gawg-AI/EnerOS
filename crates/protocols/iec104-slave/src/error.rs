@@ -58,6 +58,18 @@ impl fmt::Display for Iec104Error {
     }
 }
 
+/// 蓝图 48 WP-48.0：ASDU 抽取至 eneros-iec60870-asdu 后，`Asdu::decode`
+/// 返回 `AsduError`——经此 `From` 在 `?` 处无损映射回 `Iec104Error`
+/// （变体一一对应，行为零变更）。
+impl From<eneros_iec60870_asdu::AsduError> for Iec104Error {
+    fn from(e: eneros_iec60870_asdu::AsduError) -> Self {
+        match e {
+            eneros_iec60870_asdu::AsduError::Decode => Self::Decode,
+            eneros_iec60870_asdu::AsduError::InvalidTypeId => Self::InvalidTypeId,
+        }
+    }
+}
+
 impl core::error::Error for Iec104Error {}
 
 #[cfg(test)]

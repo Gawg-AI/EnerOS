@@ -79,9 +79,13 @@ pub use config::MasterConfig;
 pub use connection::MasterConnection;
 pub use device::{ConnState, RemoteDevice};
 // 重导出 v0.48.0 slave 类型，便于上游统一从本 crate 引用（D5）
-pub use eneros_iec104_slave::{
-    Apdu, Asdu, ControlField, Cot, Dco, DoublePointValue, InformationObject, IoValue,
-    QualityDescriptor, Sco, SinglePointValue, TimeTag, TypeId, UFormatFunction,
+// 48 WP-48.0：ASDU 类型改自公共库 eneros-iec60870-asdu 重导出
+// （101/103/104 共用）；链路层类型（Apdu/ControlField/UFormatFunction）
+// 仍来自 slave crate。
+pub use eneros_iec104_slave::{Apdu, ControlField, UFormatFunction};
+pub use eneros_iec60870_asdu::{
+    Asdu, Cot, Dco, DoublePointValue, InformationObject, IoValue, QualityDescriptor, Sco,
+    SinglePointValue, TimeTag, TypeId,
 };
 pub use error::{Iec104Error, MasterError};
 pub use master::{time_tag_from_ms, Iec104Master, LatestValue};

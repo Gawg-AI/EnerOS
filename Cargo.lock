@@ -845,6 +845,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "eneros-dlt645"
+version = "0.313.24"
+dependencies = [
+ "eneros-protocol-abstract",
+ "eneros-upa-model",
+]
+
+[[package]]
 name = "eneros-dr"
 version = "0.313.24"
 
@@ -1037,6 +1045,7 @@ name = "eneros-iec104-master"
 version = "0.313.24"
 dependencies = [
  "eneros-iec104-slave",
+ "eneros-iec60870-asdu",
  "eneros-net",
  "eneros-protocol-abstract",
  "eneros-time",
@@ -1049,10 +1058,15 @@ version = "0.313.24"
 dependencies = [
  "eneros-control-gateway",
  "eneros-hal",
+ "eneros-iec60870-asdu",
  "eneros-net",
  "eneros-telemetry-model",
  "eneros-time",
 ]
+
+[[package]]
+name = "eneros-iec60870-asdu"
+version = "0.313.24"
 
 [[package]]
 name = "eneros-iec61850-goose"

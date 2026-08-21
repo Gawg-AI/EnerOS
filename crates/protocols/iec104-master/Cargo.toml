@@ -14,6 +14,8 @@ net = ["dep:eneros-net"]
 
 [dependencies]
 eneros-iec104-slave = { path = "../iec104-slave" }
+# 48 WP-48.0：ASDU 公共层（101/103/104 共用）
+eneros-iec60870-asdu = { path = "../iec60870-asdu" }
 eneros-net = { path = "../../drivers/net", optional = true }
 eneros-time = { path = "../../drivers/time" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
