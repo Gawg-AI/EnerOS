@@ -34,6 +34,8 @@ eneros-solver-core = { path = "../../ai/solver-core", default-features = false }
 eneros-dual-brain = { path = "../../ai/dual-brain" }
 # 45.3 采集调度器复用 WorkBudget（plugin.rs 单一预算类型，禁重造）。
 eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
+# 47（WP-47.2 点表绑定）：控制写目标经 svc-config 点表 canonical 解码。
+eneros-config-bundle = { path = "../../runtime/config-bundle", default-features = false }
 heapless = { version = "0.8", default-features = false }
 
 [features]

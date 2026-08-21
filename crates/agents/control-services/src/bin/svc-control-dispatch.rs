@@ -141,10 +141,33 @@ impl DispatchHandler {
         // 装配（40 收尾 + 47 WP-47.1）：产品链 + 投递通道（协议出站优先）。
         use eneros_control_dispatch::{DispatchConfig, FeedbackPointMapping, InMemoryIntentStore};
         use eneros_control_services::dispatch_service::{
-            prod_chain, PROD_EPOCH_SEED, PROD_KEY, PROD_LEASE_ID, PROD_POLICY_VERSION,
+            prod_chain, ASSEMBLY_TEST_KEY, PROD_EPOCH_SEED, PROD_LEASE_ID, PROD_POLICY_VERSION,
         };
         let now = eneros_drv_svc::now_ms();
-        let chain = prod_chain(now);
+        // 47（WP-47.2）：写目标（设备/点）由 45 卷点表 Control 点绑定
+        // （svc-config config "points"）；不可得 → 0/0 fail-closed（全部
+        // 提交/意图 NotAuthorized 拒绝，串口登记）。
+        let mut config_client = if eipc_mask & 8 != 0 {
+            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                "control-dispatch",
+                eneros_agent_sdk::EIPC_EP_BASE_SLOT + 3,
+                eneros_drv_svc::now_ns,
+            )
+            .ok()
+        } else {
+            None
+        };
+        let binding = match &mut config_client {
+            Some(c) => eneros_control_services::cfg_bindings::fetch_control_binding(c),
+            None => {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] config EP NOT granted —— 控制绑定缺失（fail-closed）"
+                );
+                None
+            }
+        };
+        let (device_id, point_id) = binding.unwrap_or((0, 0));
+        let chain = prod_chain(ASSEMBLY_TEST_KEY, device_id, point_id, now);
         // 47（WP-47.1）：投递通道选择——X3 bit1（svc-modbus-tcp 主站）→
         // 协议出站通道（release 设备写走协议）；bit0（svc-device-agent）→
         // 虚拟设备通道（qemu-test 保留）；均未授予 → Unbound（fail-closed）。
@@ -216,14 +239,14 @@ impl DispatchHandler {
         }
         let config = DispatchConfig {
             chain,
-            key: PROD_KEY.to_vec(),
+            key: ASSEMBLY_TEST_KEY.to_vec(),
             lease_id: PROD_LEASE_ID,
             fencing_token: PROD_EPOCH_SEED + 1,
             issuer_service: [0x41; 16],
             issuer_epoch: 0,
             policy_version: PROD_POLICY_VERSION,
-            device_id: eneros_control_services::dispatch_service::PROD_DEVICE_ID,
-            point_id: eneros_control_services::dispatch_service::PROD_POINT_ID,
+            device_id,
+            point_id,
             target_endpoint: alloc::string::String::from("svc-device-agent"),
             max_power_kw: 500.0,
             // 47（WP-47.1）：rate gate = 产品值 60/h（最高优先级产品默认；

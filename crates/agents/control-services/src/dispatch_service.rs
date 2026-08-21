@@ -203,40 +203,46 @@ pub fn plan_id_of(plan: &eneros_dual_brain::ProposedControlPlan) -> String {
 }
 
 // ============================================================================
-// 产品装配（40 收尾）：svc-control-dispatch 与 svc-device-agent 的同源配置。
-// 生产配置注入（安全 key handle/RuntimeConfigBundle）属 41；本装配为
-// qemu-prod profile 的确定配置——两端 key/lease/policy/safety 必须同源
+// 产品装配（40 收尾 + 47 WP-47.2 点表绑定）：svc-control-dispatch 与
+// svc-device-agent 的同源配置。key/lease/policy/safety 两端必须同源
 // （不同源互相拒绝，QEMU 实弹验证）。
+//
+// 47（WP-47.2）：写目标（设备/点）不再硬编码——由 45 卷点表
+// （config "points" canonical 的 Control 点）绑定，装配方经 svc-config
+// 解码后传入；键值脱落源码（旧 PROD 常量已退休，grep 零命中）——本装配只承载
+// **qemu-test 测试键**（47.3 起 KMS_DIR 注入，release 无键构建
+// fail-closed）。
 // ============================================================================
 
-/// 产品装配 HMAC key（32B；两端同源）。
-pub const PROD_KEY: &[u8; 32] = b"w40-prod-key-0000000000000000000";
+/// qemu-test 装配 HMAC 测试键（32B；两端同源）。
+///
+/// 47（WP-47.2 退休 PROD_KEY）：本常量仅为 qemu-test/qemu-prod 演示装配
+/// 的**测试键**——47.3 起由 KMS_DIR/测试键注入链替换（release 无键构建
+/// fail-closed）；任何测试不得依赖其值语义。
+pub const ASSEMBLY_TEST_KEY: &[u8; 32] = b"w40-test-key-0000000000000000000";
 /// 产品租约 ID（两侧同源预置，§6.7）。
 pub const PROD_LEASE_ID: [u8; 16] = [0x40; 16];
 /// fencing epoch 种子（两侧同源；首签 token = seed + 1）。
 pub const PROD_EPOCH_SEED: u64 = 7;
-/// 目标设备/点（虚拟 PCS 有功功率点）。
-pub const PROD_DEVICE_ID: u32 = 1;
-pub const PROD_POINT_ID: u32 = 10;
 /// 租约 TTL（秒）。
 pub const PROD_LEASE_TTL_SECS: u64 = 3_600;
 /// 策略版本。
 pub const PROD_POLICY_VERSION: u64 = 3;
 
-/// 产品策略：Ai 角色 → 设备 1 点 10 Switch。
+/// 产品策略：Ai 角色 → 绑定设备/点 Switch（47.2 点表绑定）。
 ///
 /// 注意：`replace_rules` 会把 generation +1（policy.rs 语义）——
 /// 初始代必须为 `PROD_POLICY_VERSION - 1`，使生效代恰为
 /// `PROD_POLICY_VERSION`（信封 `policy_version` 与链 generation 同值，
 /// QEMU 实弹 StalePolicyVersion 暴露）。
-pub fn prod_policy() -> eneros_control_gateway::policy::Policy {
+pub fn prod_policy(device_id: u32, point_id: u32) -> eneros_control_gateway::policy::Policy {
     use eneros_control_gateway::envelope::ActorKind;
     use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
     let mut policy = Policy::new(PROD_POLICY_VERSION - 1);
     let _ = policy.replace_rules(vec![PolicyRule {
         actor_kind: Some(ActorKind::Ai),
-        devices: vec![PROD_DEVICE_ID],
-        points: vec![PROD_POINT_ID],
+        devices: vec![device_id],
+        points: vec![point_id],
         kinds: vec![CommandClass::Switch],
         time_window: (0, 0),
         obligations: vec![],
@@ -245,18 +251,21 @@ pub fn prod_policy() -> eneros_control_gateway::policy::Policy {
 }
 
 /// 产品安全点（±500kW 离散遥控）。
-pub fn prod_safety_points() -> Vec<(u32, u32, eneros_control_gateway::safety::SafetyPoint)> {
+pub fn prod_safety_points(
+    device_id: u32,
+    point_id: u32,
+) -> Vec<(u32, u32, eneros_control_gateway::safety::SafetyPoint)> {
     use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
     use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
     use eneros_telemetry_model::unit::PhysicalUnit;
     vec![(
-        PROD_DEVICE_ID,
-        PROD_POINT_ID,
+        device_id,
+        point_id,
         SafetyPoint {
             role: SafetyRole::PccBreaker,
             spec: PointSpec {
-                point_id: PROD_POINT_ID,
-                device_id: PROD_DEVICE_ID as u16,
+                point_id,
+                device_id: device_id as u16,
                 unit: PhysicalUnit::Kilowatts,
                 safe_min: -500.0,
                 safe_max: 500.0,
@@ -269,22 +278,38 @@ pub fn prod_safety_points() -> Vec<(u32, u32, eneros_control_gateway::safety::Sa
 }
 
 /// dispatch 侧产品链（完整装配：policy 规则 + lease 签发 + safety 注册）。
-pub fn prod_chain(now_ms: u64) -> eneros_control_gateway::chain::ControlChain {
+/// `key`/`device_id`/`point_id` 由装配方（svc bin）自注入源解析
+/// （47.2 点表绑定；47.3 密钥注入）。
+pub fn prod_chain(
+    key: &[u8; 32],
+    device_id: u32,
+    point_id: u32,
+    now_ms: u64,
+) -> eneros_control_gateway::chain::ControlChain {
     use eneros_control_gateway::chain::ControlChain;
     use eneros_control_gateway::lease::LeaseScope;
-    let mut chain = ControlChain::new(PROD_KEY, 5, 64, prod_policy(), 60, 300, 64, 30);
+    let mut chain = ControlChain::new(
+        key,
+        5,
+        64,
+        prod_policy(device_id, point_id),
+        60,
+        300,
+        64,
+        30,
+    );
     chain.lease_service_mut().seed_epoch(PROD_EPOCH_SEED);
     let _ = chain.lease_service_mut().issue(
         PROD_LEASE_ID,
         LeaseScope {
-            devices: vec![PROD_DEVICE_ID],
-            points: vec![PROD_POINT_ID],
+            devices: vec![device_id],
+            points: vec![point_id],
             max_class: 1,
         },
         PROD_LEASE_TTL_SECS,
         now_ms / 1000,
     );
-    for (device, point, spec) in prod_safety_points() {
+    for (device, point, spec) in prod_safety_points(device_id, point_id) {
         chain.safety_mut().register(device, point, spec);
     }
     chain
@@ -295,6 +320,11 @@ mod tests {
     use eneros_control_dispatch::{DispatchConfig, DispatchEngine, InMemoryIntentStore};
 
     use super::*;
+
+    // 47（WP-47.2）：测试装配绑定（点表绑定语义由 cfg_bindings 承载；
+    // 单测固定夹具值）。
+    const TEST_DEVICE_ID: u32 = 1;
+    const TEST_POINT_ID: u32 = 10;
     use crate::ai_worker::{AiWorkerService, AI_PROPOSE};
 
     // 复用 ai_worker 测试的 mock 后端不可见——此处定义本地后端。
@@ -527,8 +557,8 @@ mod tests {
         let tel = crate::ai_worker::tests_helpers::minimal_trusted_at(1_700_000_000_000);
         let intent = eneros_protocol_abstract::write::PointWriteIntent::new(
             "mqtt",
-            PROD_DEVICE_ID as u16,
-            PROD_POINT_ID,
+            TEST_DEVICE_ID as u16,
+            TEST_POINT_ID,
             eneros_upa_model::PointValue::Float(5.0),
             1,
             1_700_000_000_000,
@@ -544,8 +574,8 @@ mod tests {
         let mut engine = engine();
         let intent = eneros_protocol_abstract::write::PointWriteIntent::new(
             "mqtt",
-            PROD_DEVICE_ID as u16,
-            PROD_POINT_ID,
+            TEST_DEVICE_ID as u16,
+            TEST_POINT_ID,
             eneros_upa_model::PointValue::Float(5.0),
             1,
             1_700_000_000_000,
@@ -571,8 +601,8 @@ mod tests {
         // actor 非 Ai。
         let intent = eneros_protocol_abstract::write::PointWriteIntent::new(
             "mqtt",
-            PROD_DEVICE_ID as u16,
-            PROD_POINT_ID,
+            TEST_DEVICE_ID as u16,
+            TEST_POINT_ID,
             eneros_upa_model::PointValue::Float(5.0),
             1,
             1_700_000_000_000,

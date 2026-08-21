@@ -120,6 +120,12 @@ impl ModbusTcpIoService {
             let Some(mapping) = self.registry.resolve(*id).cloned() else {
                 continue;
             };
+            // 47（WP-47.2）：点表新增 Control 点（写目标）——控制/设点/
+            // 计数点不进入遥测采集（遥测 = analog/digital）。
+            match mapping.data_type {
+                eneros_upa_model::PointType::Analog | eneros_upa_model::PointType::Digital => {}
+                _ => continue,
+            }
             match self.plugin.read_point(now_ms, &mapping) {
                 Ok(read) if read.ok => {
                     let eng = mapping.to_engineering(read.raw);

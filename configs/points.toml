@@ -248,3 +248,19 @@ scale = 1.0
 offset = 0.0
 period_ms = 5000
 deadband = 0.0
+
+# --- PCS-1 有功功率控制点（47 WP-47.2：写目标由点表绑定，不再硬编码） ---
+# 写执行路径 = modbus-tcp 主站（svc-modbus-tcp OP_MASTER_WRITE）；从站
+# 保持寄存器 0x0200（scale=1 → 工程量 kW）。data_type=control ⇒ 不进入
+# 遥测采集（svc-modbus-tcp collect_and_report 仅 analog/digital）。
+[[point]]
+point_id = 10
+device_id = 1
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 0x0200, func_code = 3 }
+data_type = "control"
+scale = 1.0
+offset = 0.0
+period_ms = 3000
+min = -500.0
+max = 500.0

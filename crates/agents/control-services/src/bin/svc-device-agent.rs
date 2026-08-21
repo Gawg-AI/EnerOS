@@ -31,7 +31,7 @@ pub extern "C" fn _start(
     ep: u64,
     ipc_buffer: u64,
     ready_ntfn: u64,
-    _eipc_mask: u64,
+    eipc_mask: u64,
     heartbeat_slot: u64,
 ) -> ! {
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
@@ -40,7 +40,7 @@ pub extern "C" fn _start(
     unsafe { ALLOC.init() };
     eneros_runtime::println!("[svc-device-agent] allocator initialized");
     eneros_runtime::println!("[svc-device-agent] constructing handler");
-    let mut handler = DeviceAgentHandler::new();
+    let mut handler = DeviceAgentHandler::new(eipc_mask);
     eneros_runtime::println!("[svc-device-agent] handler constructed");
     eneros_control_services::control_service_main(
         ep,
@@ -61,34 +61,51 @@ struct DeviceAgentHandler {
 
 #[cfg(target_os = "none")]
 impl DeviceAgentHandler {
-    fn new() -> Self {
-        // 装配（40 收尾）：产品配置与 svc-control-dispatch 同源
-        // （dispatch_service::PROD_*）——key/lease/scope/policy/safety 两端
-        // 一致，否则互相拒绝（QEMU 实弹验证）。虚拟 PCS 设备（Exit #10
-        // "external virtual device"）注册为真实寄存器语义设备。
+    fn new(eipc_mask: u64) -> Self {
+        // 装配（40 收尾 + 47 WP-47.2）：产品配置与 svc-control-dispatch
+        // 同源（key/lease/scope/policy/safety 两端一致，否则互相拒绝）。
+        // 写目标（设备/点）由 45 卷点表 Control 点绑定（svc-config）；
+        // 不可得 → 0/0 fail-closed（default-deny）。
         use alloc::collections::BTreeMap;
 
         use eneros_control_gateway::lease::LeaseScope;
         use eneros_control_services::dispatch_service::{
-            prod_policy, prod_safety_points, PROD_EPOCH_SEED, PROD_KEY, PROD_LEASE_ID,
+            prod_policy, prod_safety_points, ASSEMBLY_TEST_KEY, PROD_EPOCH_SEED, PROD_LEASE_ID,
             PROD_LEASE_TTL_SECS,
         };
         let now = eneros_drv_svc::now_ms();
-        eneros_runtime::println!(
-            "[svc-device-agent] ingress: policy ok, calling EnvelopeIngress::new"
-        );
-        let safety = prod_safety_points();
+        let mut config_client = if eipc_mask & 1 != 0 {
+            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                "device-agent",
+                eneros_agent_sdk::EIPC_EP_BASE_SLOT,
+                eneros_drv_svc::now_ns,
+            )
+            .ok()
+        } else {
+            None
+        };
+        let binding = match &mut config_client {
+            Some(c) => eneros_control_services::cfg_bindings::fetch_control_binding(c),
+            None => {
+                eneros_runtime::println!(
+                    "[svc-device-agent] config EP NOT granted —— 控制绑定缺失（fail-closed）"
+                );
+                None
+            }
+        };
+        let (device_id, point_id) = binding.unwrap_or((0, 0));
+        let safety = prod_safety_points(device_id, point_id);
         let ingress = eneros_device_agent::EnvelopeIngress::new(
-            PROD_KEY,
+            ASSEMBLY_TEST_KEY,
             PROD_LEASE_ID,
             LeaseScope {
-                devices: alloc::vec![eneros_control_services::dispatch_service::PROD_DEVICE_ID],
-                points: alloc::vec![eneros_control_services::dispatch_service::PROD_POINT_ID],
+                devices: alloc::vec![device_id],
+                points: alloc::vec![point_id],
                 max_class: 1,
             },
             PROD_LEASE_TTL_SECS,
             PROD_EPOCH_SEED,
-            prod_policy(),
+            prod_policy(device_id, point_id),
             60,
             &safety,
             now,

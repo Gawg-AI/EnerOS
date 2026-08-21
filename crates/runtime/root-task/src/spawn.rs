@@ -1566,6 +1566,10 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // 47（WP-47.1 协议入站写）：svc-mqtt 下行写意图上报 svc-control-dispatch
     //（DISP_SUBMIT_INTENT，12 态链授权）。
     ("svc-mqtt", "svc-control-dispatch"),
+    // 47（WP-47.2 点表绑定）：控制写目标（设备/点）经 svc-config 点表
+    // Control 点解析——dispatch 与 device-agent 两端同源（0/0 fail-closed）。
+    ("svc-control-dispatch", "svc-config"),
+    ("svc-device-agent", "svc-config"),
 ];
 
 /// 心跳监控服务表（WP-40.4 隔离面）：授予心跳 notification（服务
