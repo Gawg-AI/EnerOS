@@ -1558,6 +1558,14 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     ("svc-goose", "svc-config"),
     ("svc-sv", "svc-config"),
     ("svc-modbus-rtu", "svc-config"),
+    // 47（WP-47.1 协议写链）：svc-control-dispatch 出站经协议主站写设备
+    //（协议出站通道 OP_MASTER_WRITE → svc-modbus-tcp；release 设备写路径）
+    // + 入站意图授权前经 svc-telemetry 取受信任遥测快照（TEL_SNAPSHOT）。
+    ("svc-control-dispatch", "svc-modbus-tcp"),
+    ("svc-control-dispatch", "svc-telemetry"),
+    // 47（WP-47.1 协议入站写）：svc-mqtt 下行写意图上报 svc-control-dispatch
+    //（DISP_SUBMIT_INTENT，12 态链授权）。
+    ("svc-mqtt", "svc-control-dispatch"),
 ];
 
 /// 心跳监控服务表（WP-40.4 隔离面）：授予心跳 notification（服务

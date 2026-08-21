@@ -81,6 +81,33 @@ impl<T: TcpTransport> ModbusTcpAdapter<T> {
         regs.map_err(modbus_tcp_to_protocol)
     }
 
+    /// 47（WP-47.1 协议出站写）：点表驱动单寄存器写（FC06）。`raw` 为
+    /// 工程量的逆变换值（映射 scale/offset 由上层完成——插件侧
+    /// `from_engineering`）。**本方法只执行**——授权由 ControlDispatch
+    /// 九步链完成（不双头授权）。
+    pub fn write_raw(
+        &mut self,
+        reg_addr: u16,
+        func_code: u8,
+        raw: u16,
+    ) -> Result<(), ProtocolError> {
+        if self.state != AdapterState::Running && self.state != AdapterState::Initialized {
+            return Err(ProtocolError::ProtocolNotStarted);
+        }
+        // 写功能码：点表读映射（3/4）同一寄存器按 FC06 单寄存器写；
+        // 显式写映射（6/16）按原名。其余 → 不支持（诚实）。
+        let mut master = ModbusTcpMaster::new(&mut self.transport, self.retry_count);
+        match func_code {
+            3 | 4 | 6 => master
+                .write_single_register(&self.device, reg_addr, raw)
+                .map_err(modbus_tcp_to_protocol),
+            16 => master
+                .write_multiple_registers(&self.device, reg_addr, &[raw])
+                .map_err(modbus_tcp_to_protocol),
+            _ => Err(ProtocolError::Unsupported),
+        }
+    }
+
     /// 查找点映射。
     fn find_mapping(&self, point_id: PointId) -> Option<&eneros_modbus_rtu::point::RegToPoint> {
         self.mappings.iter().find(|m| m.point_id == point_id)
@@ -392,5 +419,71 @@ mod tests {
             "same device must reuse connection"
         );
         assert_eq!(mock.connect_calls().len(), 1);
+    }
+
+    /// 47（WP-47.1 协议出站写）：write_raw FC06 单寄存器写——帧级验证
+    ///（MBAP 功能码 06 + 地址 + 逆变换 raw；响应确认后 Ok）。
+    #[test]
+    fn write_raw_sends_fc06_with_inverse_raw() {
+        let mut adapter = contract_adapter();
+        adapter
+            .init(&simple_adapter_config(ProtocolType::ModbusTcp, 7))
+            .expect("init");
+        adapter.start().expect("start");
+        adapter.transport.push_response(write_resp(0, 100, 2));
+        adapter.write_raw(100, 3, 2).expect("write");
+        let frames = adapter.transport.sent_frames();
+        let last = frames.last().expect("frame sent");
+        // MBAP: txn(2) proto(2) len(2) unit(1) func(1) addr(2) val(2)。
+        assert_eq!(last[6], 1, "unit_id");
+        assert_eq!(last[7], 6, "FC06 写单寄存器");
+        assert_eq!(u16::from_be_bytes([last[8], last[9]]), 100, "reg addr");
+        assert_eq!(u16::from_be_bytes([last[10], last[11]]), 2, "raw 值");
+    }
+
+    /// 47（WP-47.1）：write_raw 显式 FC16 多寄存器写（单字）。
+    #[test]
+    fn write_raw_supports_fc16_single_word() {
+        let mut adapter = contract_adapter();
+        adapter
+            .init(&simple_adapter_config(ProtocolType::ModbusTcp, 7))
+            .expect("init");
+        adapter.start().expect("start");
+        // FC16 响应形状：unit(1) func(16) addr(2) count(2)。
+        let mut r = Vec::new();
+        r.extend_from_slice(&0u16.to_be_bytes()); // txn
+        r.extend_from_slice(&0x0000u16.to_be_bytes()); // proto
+        r.extend_from_slice(&6u16.to_be_bytes()); // len
+        r.push(1u8);
+        r.push(16u8);
+        r.extend_from_slice(&200u16.to_be_bytes());
+        r.extend_from_slice(&1u16.to_be_bytes());
+        adapter.transport.push_response(r);
+        adapter.write_raw(200, 16, 7).expect("write");
+        let last = adapter.transport.sent_frames().last().expect("frame");
+        assert_eq!(last[7], 16); // MBAP func 16
+        assert_eq!(u16::from_be_bytes([last[8], last[9]]), 200);
+    }
+
+    /// 47（WP-47.1）负例：未启动 → ProtocolNotStarted；线圈/未知功能码 →
+    /// Unsupported（诚实不伪造）。
+    #[test]
+    fn write_raw_not_started_and_unsupported_func_fail_closed() {
+        let mut adapter = contract_adapter(); // state = Uninitialized
+        assert_eq!(
+            adapter.write_raw(100, 3, 1),
+            Err(ProtocolError::ProtocolNotStarted)
+        );
+        // 启动后：未知功能码拒绝。
+        adapter.state = AdapterState::Running;
+        assert_eq!(
+            adapter.write_raw(100, 1, 1),
+            Err(ProtocolError::Unsupported)
+        );
+        assert_eq!(
+            adapter.write_raw(100, 2, 1),
+            Err(ProtocolError::Unsupported)
+        );
+        assert!(adapter.transport.sent_frames().is_empty(), "零帧");
     }
 }

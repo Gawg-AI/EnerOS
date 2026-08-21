@@ -264,6 +264,24 @@ pub trait ProtocolPlugin {
         let _ = (now_ms, mapping);
         Err(ProtocolError::Unsupported)
     }
+    /// 47（WP-47.1 协议出站写）：点表驱动单点写入（经适配器真实协议
+    /// 事务）。默认 = 不支持（诚实；未接入写路径的协议明确
+    /// `Unsupported`）。**本方法只执行**——授权已由 ControlDispatch
+    /// 九步链完成，插件禁止自作授权（不双头授权）。
+    fn write_point(
+        &mut self,
+        now_ms: u64,
+        mapping: &ProtocolPointMapping,
+        value: eneros_upa_model::PointValue,
+    ) -> Result<(), ProtocolError> {
+        let _ = (now_ms, mapping, value);
+        Err(ProtocolError::Unsupported)
+    }
+    /// 47（WP-47.1 协议入站写）：导出本插件最近 poll 中解析到的
+    /// **写意图**（全部取走，缓冲清空）。默认 = 无（不产生意图的插件
+    /// 无需覆写）。**插件禁止直接写设备**——写请求只能以 [`PointWriteIntent`]
+    /// 形式交给 ControlDispatch 授权链。
+    fn drain_write_intents(&mut self, _out: &mut Vec<PointWriteIntent>) {}
     /// 健康。
     fn health(&self) -> ProtocolHealth;
     /// 可选调试摘要（默认 `None`；插件覆盖返回连接/状态行）。观测用，
@@ -315,11 +333,11 @@ pub fn reject_unknown_keys(cfg: &ProtocolConfig, known: &[&str]) -> Result<(), P
 
 /// 写意图导出（协议层写请求的标准化输出）。
 ///
-/// 蓝图 39 WP-39.10：协议 poll 中解析出的写请求**只输出**意图；
-/// 真正设备写仍必须经蓝图 40 的 ControlDispatch（validate → authorize →
+/// 蓝图 39 WP-39.10 + 47 WP-47.1：协议 poll 中解析出的写请求**只输出**
+/// 意图；真正设备写仍必须经蓝图 40 的 ControlDispatch（validate → authorize →
 /// dispatch → ACK → readback）。本类型禁止直接写设备。
 pub fn export_write_intent(
-    protocol_id: &'static str,
+    protocol_id: &str,
     device_id: eneros_upa_model::DeviceId,
     point_id: PointId,
     value: eneros_upa_model::PointValue,
@@ -327,7 +345,7 @@ pub fn export_write_intent(
     issued_ms: u64,
 ) -> PointWriteIntent {
     PointWriteIntent {
-        protocol_id,
+        protocol_id: alloc::string::String::from(protocol_id),
         device_id,
         point_id,
         value,

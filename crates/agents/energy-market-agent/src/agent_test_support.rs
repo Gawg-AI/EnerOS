@@ -193,4 +193,52 @@ impl ControlDispatch for RecordingDispatch {
             ))),
         }
     }
+
+    /// 47（WP-47.1）：协议写意图提交。测试 double 记录轨迹并返回
+    /// 配置结果（与 [`submit`](Self::submit) 同语义——市场链路不消费
+    /// 意图路径）。
+    fn submit_intent(
+        &mut self,
+        intent: &eneros_protocol_abstract::write::PointWriteIntent,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError> {
+        let _ = (intent, telemetry, actor, deadline_ms);
+        self.submitted.push((
+            // 意图路径无 proposal——以最小占位记录（测试 double 不消费）。
+            eneros_dual_brain::ProposedControlPlan {
+                plan_id: alloc::string::String::from("intent"),
+                path: eneros_dual_brain::DecisionPath::Fast,
+                schedule: eneros_energy_lp_model::result::ScheduleResult {
+                    schedule: alloc::vec![],
+                    total_revenue_yuan: 0.0,
+                    objective_value: 0.0,
+                    solve_status: eneros_solver_core::result::SolveStatus::Optimal,
+                },
+                power_kw: 0.0,
+                target_device: alloc::string::String::from("intent"),
+                ttl_secs: 60,
+                issued_at_ms: 0,
+                input_digest: None,
+                model_digest: None,
+                latency: Default::default(),
+                safety_violations: 0,
+                safety_clamped: false,
+                feedback: None,
+            },
+            telemetry.clone(),
+            *actor,
+            deadline_ms,
+        ));
+        if let Some(f) = self.result_fn.as_mut() {
+            return f();
+        }
+        match &self.result {
+            Some(r) => r.clone(),
+            None => Err(DispatchError::Internal(String::from(
+                "unconfigured test dispatch",
+            ))),
+        }
+    }
 }

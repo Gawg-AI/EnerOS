@@ -21,6 +21,7 @@
 //! 对账，不盲重试非幂等命令（WP-40.12）。
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -31,10 +32,12 @@ use eneros_control_gateway::wire::{ControlEnvelope, OutcomeCode, OutcomeFrame};
 use eneros_control_gateway::ChainDenyReason;
 use eneros_dual_brain::audit::{DecisionAudit, ExecOutcome, SafetyOutcome};
 use eneros_dual_brain::chain_sink::deny_reason_str;
-use eneros_dual_brain::gate::DecisionGate;
+use eneros_dual_brain::gate::{DecisionGate, GateDecision};
 use eneros_dual_brain::ProposedControlPlan;
+use eneros_protocol_abstract::write::PointWriteIntent;
 use eneros_safety_validator::TrustedTelemetry;
 use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
+use eneros_upa_model::PointValue;
 
 use crate::channel::DeliveryChannel;
 use crate::dispatch::{
@@ -42,6 +45,9 @@ use crate::dispatch::{
 };
 use crate::feedback::TrustedFeedbackBuilder;
 use crate::intent::{IntentRecord, IntentStore, IntentStoreError};
+
+/// 47（WP-47.1）：协议写意图 TTL（秒；信封过期窗，无意图自带 TTL）。
+pub const INTENT_TTL_SECS: u64 = 60;
 
 /// 调度窗口（小时）——能量预算估算（与 dual-brain 同系数）。
 pub const SCHEDULE_WINDOW_HOURS: f64 = eneros_dual_brain::coordinator::SCHEDULE_WINDOW_HOURS;
@@ -119,6 +125,9 @@ pub struct DispatchEngine {
     pub committed_count: u64,
     /// 审计丢弃计数。
     pub audit_drop_count: u64,
+    /// 47（WP-47.1）：每来源协议已见最大意图序号（重放门——重复
+    /// sequence 零写；跨重启由链幂等（意图 correlation 派生）兜底）。
+    last_seq: BTreeMap<String, u64>,
 }
 
 impl DispatchEngine {
@@ -145,6 +154,7 @@ impl DispatchEngine {
             seq: 0,
             committed_count: 0,
             audit_drop_count: 0,
+            last_seq: BTreeMap::new(),
         }
     }
 
@@ -201,6 +211,219 @@ impl DispatchEngine {
             return Err(DispatchError::ProposalInvalid("空调度不可投递".into()));
         }
         Ok(())
+    }
+
+    /// 47（WP-47.1 协议入站写）：协议写意图 12 态链（与 [`run`] 同链，
+    /// 入口换为 [`PointWriteIntent`]）。重放门 + 链幂等双防重复 sequence。
+    fn run_intent(
+        &mut self,
+        intent: &PointWriteIntent,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError> {
+        let started = (self.now_fn)();
+        let mut states: Vec<DispatchState> = Vec::with_capacity(12);
+        states.push(DispatchState::Proposed);
+
+        // 步骤 1：意图校验——目标设备/点必须等于装配绑定（WP-47.2 点表
+        // 绑定；防协议层越点写）+ 值域有限。
+        if intent.device_id as u32 != self.device_id || intent.point_id != self.point_id {
+            return Err(DispatchError::NotAuthorized(format!(
+                "intent target device={} point={} 与装配绑定 device={} point={} 不符",
+                intent.device_id, intent.point_id, self.device_id, self.point_id
+            )));
+        }
+        let power_kw = match intent.value {
+            PointValue::Float(f) if f.is_finite() => f,
+            PointValue::Int(i) => i as f64,
+            PointValue::Bool(b) => {
+                if b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            _ => {
+                return Err(DispatchError::ProposalInvalid(format!(
+                    "intent 值域不可写（protocol={} seq={}）",
+                    intent.protocol_id, intent.sequence
+                )))
+            }
+        };
+        states.push(DispatchState::Validated);
+
+        // 步骤 2：telemetry 执行时刻新鲜度（同 run——控制时域外零投递）。
+        if !telemetry.is_valid_at(started) {
+            return Err(DispatchError::TelemetryExpired);
+        }
+
+        // 步骤 2.5：序号重放门（每来源协议单调；重复 sequence 零写。
+        // 跨重启（序号复位）由链 idempotency_key（意图 correlation 派生）
+        // 兜底——同 (protocol, seq) 不重复写）。
+        let proto_key = intent.protocol_id.clone();
+        if let Some(&last) = self.last_seq.get(&proto_key) {
+            if intent.sequence <= last {
+                let note = alloc::format!(
+                    "protocol-replay dup sequence protocol={} seq={} <= last={}（零写）",
+                    intent.protocol_id,
+                    intent.sequence,
+                    last
+                );
+                self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+                return Ok(DispatchReceipt {
+                    command_id: [0u8; 16],
+                    correlation_id: Self::intent_correlation(&intent.protocol_id, intent.sequence),
+                    final_state: DispatchState::Rejected,
+                    state_path: states,
+                    committed_at_ms: None,
+                    note: Some(note),
+                    latency_ms: (self.now_fn)().saturating_sub(started),
+                });
+            }
+        }
+        self.last_seq.insert(proto_key, intent.sequence);
+
+        // 步骤 3：actor/capability/lease/fencing（+ 步骤 4：safety catalog）。
+        // 与 run 同约束：只允许 AI 角色（信封 actor_kind 唯一签发面）。
+        if actor.kind != ActorKind::Ai {
+            return Err(DispatchError::NotAuthorized(format!(
+                "actor kind {:?} 不是 Ai",
+                actor.kind
+            )));
+        }
+        let now_secs = started / 1000;
+        let correlation = Self::intent_correlation(&intent.protocol_id, intent.sequence);
+        let command_id = correlation;
+        let single = if power_kw > 0.0 {
+            SingleCommand::On
+        } else {
+            SingleCommand::Off
+        };
+        let buf = EnvelopeBuilder::new(
+            command_id,
+            self.device_id,
+            self.point_id,
+            ControlCommand::Single(single),
+            now_secs,
+            now_secs.saturating_add(INTENT_TTL_SECS),
+            self.issuer_service,
+        )
+        .lease(self.lease_id, self.fencing_token)
+        .policy_version(self.policy_version)
+        .sequence(intent.sequence)
+        .actor_kind(ActorKind::Ai)
+        // 幂等键 = (protocol, seq) 派生——同序号重放（跨重启）返回原结果。
+        .idempotency_key(correlation)
+        .build(&self.key)
+        .encode();
+        // SBO：协议写语义 = 选择+执行原子（ControlGateway 九步链，不双头授权）。
+        self.chain.sbo_select(self.point_id, now_secs);
+        let fb: FeedbackBundle = self.feedback_builder.build(telemetry, now_secs);
+        let chain_result = self.chain.execute(&buf, now_secs, &fb);
+        match chain_result {
+            ChainOutcome::Executed { .. } => {}
+            ChainOutcome::IdempotentHit(_) => {
+                // 幂等重放（同 idempotency key）：返回原结果，不重复写。
+                states.push(DispatchState::Committed);
+                return Ok(DispatchReceipt {
+                    command_id,
+                    correlation_id: correlation,
+                    final_state: DispatchState::Committed,
+                    state_path: states,
+                    committed_at_ms: Some(started),
+                    note: Some(String::from(
+                        "idempotent-hit（同 (protocol,seq) 重放——不重复写）",
+                    )),
+                    latency_ms: (self.now_fn)().saturating_sub(started),
+                });
+            }
+            ChainOutcome::DryRun { .. } => {
+                let note = String::from("dry-run-obligation（策略要求不写设备）");
+                self.audit(
+                    ExecOutcome::Failed,
+                    SafetyOutcome::Passed,
+                    &format!("states={:?};note={}", states, note),
+                    started,
+                );
+                return Err(DispatchError::NotAuthorized(note));
+            }
+            ChainOutcome::Denied(reason) => {
+                let s = deny_reason_str(&reason);
+                let (exec, safety) = if matches!(reason, ChainDenyReason::Unsafe(_)) {
+                    (ExecOutcome::Failed, SafetyOutcome::Blocked)
+                } else {
+                    (ExecOutcome::Failed, SafetyOutcome::Passed)
+                };
+                self.audit(
+                    exec,
+                    safety,
+                    &format!("states={:?};deny={}", states, s),
+                    started,
+                );
+                let err = match reason {
+                    ChainDenyReason::Unsafe(d) => DispatchError::SafetyRejected(d),
+                    ChainDenyReason::FeedbackUntrusted(d) => DispatchError::FeedbackUntrusted(d),
+                    _ => DispatchError::NotAuthorized(s),
+                };
+                return Err(err);
+            }
+        }
+        states.push(DispatchState::Authorized);
+
+        // 步骤 5：rate 预算 reserve（意图写无能量语义——energy=0，只计速率）。
+        if self.gate.check_rate(started) != GateDecision::Allow {
+            return Err(DispatchError::BudgetExceeded("rate".into()));
+        }
+        states.push(DispatchState::Reserved);
+
+        // 步骤 6：durable intent 写入。
+        let expires_ms = started.saturating_add(INTENT_TTL_SECS * 1000);
+        let rec = IntentRecord {
+            command_id,
+            correlation_id: correlation,
+            issued_at_ms: started,
+            expires_at_ms: expires_ms,
+            target_device: alloc::format!("{}:{}", intent.protocol_id, intent.device_id),
+            power_kw,
+            input_digest: None,
+            state: DispatchState::Persisted,
+        };
+        self.intent_log
+            .append(&rec)
+            .map_err(|e: IntentStoreError| DispatchError::IntentPersistFailed(format!("{e:?}")))?;
+        states.push(DispatchState::Persisted);
+
+        // 步骤 7-12：投递 + 回执（与 run 共享 deliver_and_settle）。
+        let envelope = ControlEnvelope::new(
+            correlation,
+            self.issuer_service,
+            self.issuer_epoch,
+            started,
+            expires_ms,
+            buf,
+            power_kw,
+        );
+        let timeout = if deadline_ms == 0 {
+            u64::MAX
+        } else {
+            deadline_ms
+        };
+        let response = self
+            .delivery
+            .deliver(&self.target_endpoint, &envelope.encode(), timeout);
+        self.deliver_and_settle(response, states, started, command_id, correlation, 0.0)
+    }
+
+    /// 意图 correlation（16B 定长）= 协议 id 前 8B ‖ seq u64 LE。
+    /// 幂等键与 command_id 同源——(protocol, seq) 唯一决定一条命令。
+    fn intent_correlation(protocol_id: &str, sequence: u64) -> [u8; 16] {
+        let mut id = [0u8; 16];
+        let pb = protocol_id.as_bytes();
+        let n = core::cmp::min(8, pb.len());
+        id[..n].copy_from_slice(&pb[..n]);
+        id[8..16].copy_from_slice(&sequence.to_le_bytes());
+        id
     }
 
     /// 执行完整 12 步链。
@@ -340,7 +563,8 @@ impl DispatchEngine {
             .map_err(|e: IntentStoreError| DispatchError::IntentPersistFailed(format!("{e:?}")))?;
         states.push(DispatchState::Persisted);
 
-        // 步骤 7：DeliveryChannel 投递（ControlEnvelope）。
+        // 步骤 7：DeliveryChannel 投递（ControlEnvelope）+ 回执分类（核心，
+        // 与 47 run_intent 共享同一 deliver_and_settle——结果语义单一事实）。
         let envelope = ControlEnvelope::new(
             correlation,
             self.issuer_service,
@@ -350,16 +574,31 @@ impl DispatchEngine {
             buf,
             proposal.power_kw,
         );
-        let payload = envelope.encode();
         let timeout = if deadline_ms == 0 {
             u64::MAX
         } else {
             deadline_ms
         };
-        let response = match self
+        let response = self
             .delivery
-            .deliver(&self.target_endpoint, &payload, timeout)
-        {
+            .deliver(&self.target_endpoint, &envelope.encode(), timeout);
+        self.deliver_and_settle(response, states, started, command_id, correlation, energy)
+    }
+
+    /// 步骤 7-12 收尾（run/run_intent 共享）：投递 ControlEnvelope 并分类回执。
+    /// 前置失败零投递；投递后超时/结果不明 → `Indeterminate`，不猜成功。
+    #[allow(clippy::too_many_arguments)]
+    fn deliver_and_settle(
+        &mut self,
+        response: Result<Vec<u8>, crate::ChannelError>,
+        mut states: Vec<DispatchState>,
+        started: u64,
+        command_id: [u8; 16],
+        correlation: [u8; 16],
+        energy: f64,
+    ) -> Result<DispatchReceipt, DispatchError> {
+        // 步骤 7：投递已由调用方完成（envelope 参数）；此处直接分类回执。
+        let response = match response {
             Ok(r) => r,
             Err(crate::ChannelError::Timeout) => {
                 // 投递后超时：写可能已发生——Indeterminate 对账，不猜成功。
@@ -570,6 +809,16 @@ impl ControlDispatch for DispatchEngine {
         deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError> {
         self.run(proposal, telemetry, actor, deadline_ms)
+    }
+
+    fn submit_intent(
+        &mut self,
+        intent: &PointWriteIntent,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError> {
+        self.run_intent(intent, telemetry, actor, deadline_ms)
     }
 }
 

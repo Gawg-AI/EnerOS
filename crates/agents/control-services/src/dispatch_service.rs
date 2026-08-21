@@ -23,6 +23,8 @@ use crate::telemetry::decode_trusted;
 
 /// 请求码。
 pub const DISP_SUBMIT: u8 = 1;
+/// 47（WP-47.1 协议入站写）：协议写意图提交（intent wire + actor）。
+pub const DISP_SUBMIT_INTENT: u8 = 2;
 
 /// 回执状态。
 pub const DISP_OK: u8 = 0;
@@ -149,6 +151,50 @@ fn err_receipt(reason: &str) -> Vec<u8> {
     out.extend_from_slice(&bytes[..n]);
     out.resize(RECEIPT_WIRE_LEN, 0);
     out
+}
+
+/// 47（WP-47.1）：协议写意图请求处理（`DISP_SUBMIT_INTENT` + 意图线码
+/// 49B + actor 1B）。遥测由调用方（svc-control-dispatch 经 svc-telemetry
+/// 快照）提供——不可得 → fail-closed 拒绝（不猜成功）。
+///
+/// 请求布局：`[opcode=2][intent wire 49B][actor kind 1B]`。
+pub fn handle_submit_intent(
+    engine: &mut dyn ControlDispatch,
+    req: &[u8],
+    telemetry: Option<&eneros_safety_validator::TrustedTelemetry>,
+) -> Vec<u8> {
+    let Some(&code) = req.first() else {
+        return err_receipt("empty request");
+    };
+    if code != DISP_SUBMIT_INTENT {
+        return err_receipt("unknown opcode");
+    }
+    let body = &req[1..];
+    let intent_len = eneros_protocol_abstract::write::WRITE_INTENT_WIRE_LEN;
+    if body.len() != intent_len + 1 {
+        return err_receipt("intent request length");
+    }
+    let Some(intent) = eneros_protocol_abstract::write::decode_intent(&body[..intent_len]) else {
+        return err_receipt("bad intent wire");
+    };
+    let actor_kind = body[intent_len];
+    if actor_kind != 2 {
+        // 2 = ActorKind::Ai（信封字节码；协议写沿用 AI 决策链唯一签发面）。
+        return err_receipt("actor must be Ai");
+    }
+    let Some(tel) = telemetry else {
+        return err_receipt("no trusted telemetry (fail-closed)");
+    };
+    let actor = AuthenticatedActor {
+        kind: eneros_control_gateway::envelope::ActorKind::Ai,
+        service: [0u8; 16],
+        session_epoch: 0,
+    };
+    let deadline_ms = 5000;
+    match engine.submit_intent(&intent, tel, &actor, deadline_ms) {
+        Ok(receipt) => encode_receipt(&receipt),
+        Err(e) => err_receipt(&format!("{e:?}")),
+    }
 }
 
 /// proposal 重建后补充 plan_id（wire 定长去零）。
@@ -461,6 +507,79 @@ mod tests {
         let resp = handle_submit(&mut engine, &[]);
         assert_eq!(resp[0], DISP_ERR);
         let resp = handle_submit(&mut engine, &[99]);
+        assert_eq!(resp[0], DISP_ERR);
+    }
+
+    // ============ 47（WP-47.1）协议写意图 ingress ============
+
+    /// 意图请求（opcode 2 + intent wire + actor）。
+    fn intent_request(intent: &eneros_protocol_abstract::write::PointWriteIntent) -> Vec<u8> {
+        let mut out = Vec::with_capacity(1 + 49 + 1);
+        out.push(DISP_SUBMIT_INTENT);
+        out.extend_from_slice(&eneros_protocol_abstract::write::encode_intent(intent));
+        out.push(2); // ActorKind::Ai
+        out
+    }
+
+    #[test]
+    fn submit_intent_routes_to_engine_committed() {
+        let mut engine = engine();
+        let tel = crate::ai_worker::tests_helpers::minimal_trusted_at(1_700_000_000_000);
+        let intent = eneros_protocol_abstract::write::PointWriteIntent::new(
+            "mqtt",
+            PROD_DEVICE_ID as u16,
+            PROD_POINT_ID,
+            eneros_upa_model::PointValue::Float(5.0),
+            1,
+            1_700_000_000_000,
+        );
+        let resp = handle_submit_intent(&mut engine, &intent_request(&intent), Some(&tel));
+        let (status, state, _c, _l, note) = decode_receipt(&resp).expect("receipt");
+        assert_eq!(status, DISP_OK, "note={note}");
+        assert_eq!(state, DispatchState::Committed, "note={note}");
+    }
+
+    #[test]
+    fn submit_intent_fails_closed_without_telemetry() {
+        let mut engine = engine();
+        let intent = eneros_protocol_abstract::write::PointWriteIntent::new(
+            "mqtt",
+            PROD_DEVICE_ID as u16,
+            PROD_POINT_ID,
+            eneros_upa_model::PointValue::Float(5.0),
+            1,
+            1_700_000_000_000,
+        );
+        let resp = handle_submit_intent(&mut engine, &intent_request(&intent), None);
+        assert_eq!(resp[0], DISP_ERR);
+        assert!(decode_receipt(&resp)
+            .expect("receipt")
+            .4
+            .contains("no trusted telemetry"));
+    }
+
+    #[test]
+    fn submit_intent_rejects_bad_wire_and_actor() {
+        let mut engine = engine();
+        let tel = crate::ai_worker::tests_helpers::minimal_trusted_at(1_700_000_000_000);
+        // 长度不符。
+        let resp = handle_submit_intent(&mut engine, &[DISP_SUBMIT_INTENT, 1, 2, 3], Some(&tel));
+        assert_eq!(resp[0], DISP_ERR);
+        // 未知 opcode。
+        let resp = handle_submit_intent(&mut engine, &[99], Some(&tel));
+        assert_eq!(resp[0], DISP_ERR);
+        // actor 非 Ai。
+        let intent = eneros_protocol_abstract::write::PointWriteIntent::new(
+            "mqtt",
+            PROD_DEVICE_ID as u16,
+            PROD_POINT_ID,
+            eneros_upa_model::PointValue::Float(5.0),
+            1,
+            1_700_000_000_000,
+        );
+        let mut req = intent_request(&intent);
+        *req.last_mut().expect("actor byte") = 1; // Agent
+        let resp = handle_submit_intent(&mut engine, &req, Some(&tel));
         assert_eq!(resp[0], DISP_ERR);
     }
 }

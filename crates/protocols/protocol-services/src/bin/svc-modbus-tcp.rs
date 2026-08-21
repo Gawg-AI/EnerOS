@@ -37,6 +37,10 @@ static ALLOC: eneros_protocol_services::HeapAllocator =
 ///
 /// 点表来源与遥测端点均经 EIPC 授予（`EIPC_GRANTS`：槽 3=svc-telemetry、
 /// 槽 4=svc-config）——46 卷句柄移交同批，modbus-tcp 先行者先拿到。
+/// 47（WP-47.1）：读回容差（kW；与 device-agent ReadbackPolicy::tolerance
+/// 同量级——ACK 成功但物理状态未达目标 → Mismatch）。
+pub const MASTER_READBACK_TOL_KW: f64 = 0.1;
+
 #[cfg(target_os = "none")]
 struct ModbusTcpIoService {
     /// 45.4/45.5：点表驱动真读插件（地址来自注入点表）。
@@ -196,6 +200,69 @@ impl ModbusTcpIoService {
         }
         any_good
     }
+    /// 47（WP-47.1 协议出站写）：执行主站写 + 独立 readback，返回 2B
+    /// `OutcomeFrame`（与 dispatch/device-agent 同源回执语义）。
+    ///
+    /// **本方法只执行**——授权已由 ControlDispatch 九步链完成（不双头授权）。
+    /// 点表解析失败 → `Denied(class=7 Mismatch)`；协议写失败 → `Denied(8
+    /// Protocol)`；写后重读不可得 → `AppliedReadbackUnavailable`；重读值
+    /// 与目标不符（超过容差）→ `AppliedReadbackMismatch`；相符 →
+    /// `Applied`。
+    fn master_write(&mut self, device: u32, point: u32, power: f64) -> [u8; 2] {
+        use eneros_control_gateway::wire::{OutcomeCode, OutcomeFrame};
+        let Some(mapping) = self.registry.resolve(point) else {
+            eneros_runtime::println!(
+                "[svc-modbus-tcp] MASTER-WRITE point={point} 无点表映射 —— Denied(7)"
+            );
+            return OutcomeFrame::new(OutcomeCode::Denied, 7).encode();
+        };
+        if mapping.device_id != device as u16 {
+            eneros_runtime::println!(
+                "[svc-modbus-tcp] MASTER-WRITE device={device} != 点表 device={} —— Denied(7)",
+                mapping.device_id
+            );
+            return OutcomeFrame::new(OutcomeCode::Denied, 7).encode();
+        }
+        let now = eneros_protocol_services::now_ms();
+        match self
+            .plugin
+            .write_point(now, mapping, eneros_upa_model::PointValue::Float(power))
+        {
+            Ok(()) => {
+                eneros_runtime::println!(
+                    "[svc-modbus-tcp] MASTER-WRITE device={device} point={point} power={power} ACK"
+                );
+            }
+            Err(e) => {
+                eneros_runtime::println!(
+                    "[svc-modbus-tcp] MASTER-WRITE device={device} point={point} 写失败 {e:?} —— Denied(8)"
+                );
+                return OutcomeFrame::new(OutcomeCode::Denied, 8).encode();
+            }
+        }
+        // 独立 readback（重读该点；值比对——不得回显刚写载荷）。
+        match self.plugin.read_point(now, mapping) {
+            Ok(read) if read.ok => {
+                let eng = mapping.to_engineering(read.raw);
+                let ok = (eng - power).abs() <= MASTER_READBACK_TOL_KW.max(f64::EPSILON);
+                eneros_runtime::println!(
+                    "[svc-modbus-tcp] MASTER-READBACK point={point} eng={eng} target={power} {}",
+                    if ok { "VERIFIED" } else { "MISMATCH" }
+                );
+                if ok {
+                    OutcomeFrame::new(OutcomeCode::Applied, 0).encode()
+                } else {
+                    OutcomeFrame::new(OutcomeCode::AppliedReadbackMismatch, 0).encode()
+                }
+            }
+            _ => {
+                eneros_runtime::println!(
+                    "[svc-modbus-tcp] MASTER-READBACK point={point} 不可得 —— AppliedReadbackUnavailable"
+                );
+                OutcomeFrame::new(OutcomeCode::AppliedReadbackUnavailable, 0).encode()
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "none")]
@@ -210,18 +277,36 @@ impl eneros_drv_svc::runtime::DriverService for ModbusTcpIoService {
         resp: &mut eneros_drv_svc::runtime::DriverResponse,
     ) {
         use eneros_drv_svc::runtime::*;
-        if req.opcode == OP_EXECUTE {
-            self.transactions += 1;
-            // 45.5：点表驱动真读 + 遥测上报（真实采集替换合成源）。
-            let round_good = self.collect_and_report(eneros_protocol_services::now_ms());
-            if round_good {
-                resp.status = ST_OK;
-            } else {
-                // 本轮无任何成功读（如拔 peer）→ fail-closed 指示。
-                resp.status = ST_UNAVAILABLE;
+        match req.opcode {
+            OP_EXECUTE => {
+                self.transactions += 1;
+                // 45.5：点表驱动真读 + 遥测上报（真实采集替换合成源）。
+                let round_good = self.collect_and_report(eneros_protocol_services::now_ms());
+                if round_good {
+                    resp.status = ST_OK;
+                } else {
+                    // 本轮无任何成功读（如拔 peer）→ fail-closed 指示。
+                    resp.status = ST_UNAVAILABLE;
+                }
             }
-        } else {
-            resp.status = ST_INVALID;
+            eneros_protocol_abstract::write::OP_MASTER_WRITE => {
+                // 47（WP-47.1 协议出站写）：16B 载荷 {device u32, point u32,
+                // power f64}。长度不符 → ST_INVALID（坏信封，不执行）。
+                if req.payload_len != 16 {
+                    resp.status = ST_INVALID;
+                    return;
+                }
+                let device = u32::from_le_bytes(req.payload[0..4].try_into().unwrap_or([0; 4]));
+                let point = u32::from_le_bytes(req.payload[4..8].try_into().unwrap_or([0; 4]));
+                let power = f64::from_le_bytes(req.payload[8..16].try_into().unwrap_or([0.0; 8]));
+                let frame = self.master_write(device, point, power);
+                resp.status = ST_OK;
+                resp.payload[..2].copy_from_slice(&frame);
+                resp.payload_len = 2;
+            }
+            _ => {
+                resp.status = ST_INVALID;
+            }
         }
     }
 }

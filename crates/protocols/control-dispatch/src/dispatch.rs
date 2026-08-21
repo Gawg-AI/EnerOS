@@ -140,6 +140,20 @@ pub trait ControlDispatch {
         actor: &AuthenticatedActor,
         deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError>;
+
+    /// 47（WP-47.1 协议入站写）：提交协议写意图（唯一协议→授权链入口）。
+    ///
+    /// 与 [`submit`](Self::submit) 同一 12 态链：意图校验（设备/点/值域）→
+    /// 序号重放门 → actor/租约/策略/安全授权（ControlChain 九步链，含
+    /// SBO）→ rate 预算 → durable intent → 投递 → ACK/独立 readback →
+    /// Committed/Failed/Indeterminate。任何前置失败 → `Err`（零投递）。
+    fn submit_intent(
+        &mut self,
+        intent: &eneros_protocol_abstract::write::PointWriteIntent,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError>;
 }
 
 #[cfg(test)]

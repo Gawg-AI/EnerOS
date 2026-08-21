@@ -8,6 +8,7 @@
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 
+use eneros_protocol_abstract::write::PointWriteIntent;
 use eneros_protocol_abstract::{
     AdapterState, InteropLevel, PointRegistry, Progress, ProtocolConfig, ProtocolDescriptor,
     ProtocolError, ProtocolHealth, ProtocolPlugin, ProtocolRole, ResourceBudget, SecurityProfile,
@@ -16,6 +17,7 @@ use eneros_protocol_abstract::{
 
 use crate::client::MqttClient;
 use crate::error::MqttError;
+use crate::packet::MqttPacket;
 use crate::transport::MqttTransport;
 
 /// 插件 id。
@@ -55,7 +57,16 @@ impl MqttTransport for Box<dyn TransportHandle> {
 }
 
 /// 已知配置键。
-const KNOWN_KEYS: &[&str] = &["broker", "client_id", "keep_alive_ms", "qos", "will_topic"];
+const KNOWN_KEYS: &[&str] = &[
+    "broker",
+    "client_id",
+    "keep_alive_ms",
+    "qos",
+    "will_topic",
+    // 47（WP-47.1 协议入站写）：下行写命令订阅主题。缺省 = 不订阅
+    //（方向一禁用——诚实：未配置不假装能收写命令）。
+    "control_topic",
+];
 
 /// MQTT 插件。
 pub struct MqttPlugin {
@@ -69,6 +80,14 @@ pub struct MqttPlugin {
     last_progress: Progress,
     /// 45.4：注入点表路由点数（观测；服务层按协议过滤注入）。
     routed_count: usize,
+    /// 47（WP-47.1）：下行写命令主题（可选；未配置 = 不收写）。
+    control_topic: Option<alloc::string::String>,
+    /// 47（WP-47.1）：已解析待导出写意图（poll → drain）。
+    pending_intents: alloc::vec::Vec<PointWriteIntent>,
+    /// 47（WP-47.1）：意图序号（每协议单调；重放判定由 ControlDispatch）。
+    intent_seq: u64,
+    /// 47（WP-47.1）：已收到但无法解析的下行负载计数（观测；不 panic）。
+    bad_downlink_count: u64,
 }
 
 impl MqttPlugin {
@@ -82,12 +101,76 @@ impl MqttPlugin {
             last_error: None,
             last_progress: Progress::Idle,
             routed_count: 0,
+            control_topic: None,
+            pending_intents: alloc::vec::Vec::new(),
+            intent_seq: 0,
+            bad_downlink_count: 0,
         }
     }
 
     /// 45.4：注入点表路由点数（观测）。
     pub fn routed_count(&self) -> usize {
         self.routed_count
+    }
+
+    /// 47（WP-47.1）：不可解析下行负载计数（观测）。
+    pub fn bad_downlink_count(&self) -> u64 {
+        self.bad_downlink_count
+    }
+
+    /// 47（WP-47.1）：解析一条下行写命令负载为写意图。
+    ///
+    /// 负载文本格式（外部 SCADA 约定）：`SET <device_id> <point_id> <value>`
+    /// ——ASCII 空白分隔；value = 十进制浮点（kW 语义）。格式不符 →
+    /// 计数 + 丢弃（不 panic、不伪造）；主题不符 → 忽略。
+    /// **只导出意图，禁止直接写设备**（WP-47.1 红线）。
+    fn on_downlink(&mut self, topic: &str, payload: &[u8], now_ms: u64) {
+        let Some(ctl) = self.control_topic.as_ref() else {
+            return;
+        };
+        if topic != ctl {
+            return;
+        }
+        let text = match core::str::from_utf8(payload) {
+            Ok(t) => t.trim(),
+            Err(_) => {
+                self.bad_downlink_count += 1;
+                return;
+            }
+        };
+        let mut parts = text.split_whitespace();
+        let cmd = parts.next().unwrap_or("");
+        let (Some(dev), Some(point), Some(val)) = (parts.next(), parts.next(), parts.next()) else {
+            self.bad_downlink_count += 1;
+            return;
+        };
+        if parts.next().is_some() {
+            // 多余字段 → 格式不符（防错发）。
+            self.bad_downlink_count += 1;
+            return;
+        }
+        if cmd != "SET" {
+            return; // 其他命令字：非本插件写协议（忽略，不计数为坏负载）。
+        }
+        let (Ok(device_id), Ok(point_id), Ok(value)) =
+            (dev.parse::<u32>(), point.parse::<u32>(), val.parse::<f64>())
+        else {
+            self.bad_downlink_count += 1;
+            return;
+        };
+        if !value.is_finite() || device_id == 0 {
+            self.bad_downlink_count += 1;
+            return;
+        }
+        self.intent_seq = self.intent_seq.saturating_add(1);
+        self.pending_intents.push(PointWriteIntent {
+            protocol_id: alloc::string::String::from(MQTT_PLUGIN_ID),
+            device_id: device_id as u16,
+            point_id,
+            value: eneros_upa_model::PointValue::Float(value),
+            sequence: self.intent_seq,
+            issued_ms: now_ms,
+        });
     }
 }
 
@@ -176,6 +259,18 @@ impl ProtocolPlugin for MqttPlugin {
         let transport: Box<dyn MqttTransport> = Box::new(handle);
         let mut client = MqttClient::new(&broker, &client_id, keep_alive_ms);
         client.set_transport(transport);
+        // 47（WP-47.1）：下行写命令主题（可选）——配置了才订阅。
+        if let Some(topic) = cfg.get("control_topic").filter(|t| !t.is_empty()) {
+            match client.subscribe(topic, crate::qos::QoS::AtMostOnce) {
+                Ok(()) => {
+                    self.control_topic = Some(topic.to_owned());
+                }
+                Err(_) => {
+                    // 订阅失败 → 不装配写通道（fail-closed：不假装能收写）。
+                    return Err(ProtocolError::ProtocolInit);
+                }
+            }
+        }
         self.client = Some(client);
         self.state = AdapterState::Running;
         Ok(())
@@ -199,7 +294,14 @@ impl ProtocolPlugin for MqttPlugin {
             }
         }
         match client.poll(now_ms) {
-            Ok(_) => {
+            Ok(pkts) => {
+                // 47（WP-47.1）：下行 PUBLISH（control_topic）→ 解析为写意图
+                //（只导出；设备写由 ControlDispatch 授权后执行）。
+                for pkt in pkts {
+                    if let MqttPacket::Publish(pub_) = pkt {
+                        self.on_downlink(&pub_.topic, &pub_.payload, now_ms);
+                    }
+                }
                 self.last_progress = Progress::Completed;
                 Ok(Progress::Completed)
             }
@@ -229,6 +331,10 @@ impl ProtocolPlugin for MqttPlugin {
         self.client = None;
         self.state = AdapterState::Stopped;
         Ok(())
+    }
+
+    fn drain_write_intents(&mut self, out: &mut alloc::vec::Vec<PointWriteIntent>) {
+        out.append(&mut self.pending_intents);
     }
 }
 
@@ -385,5 +491,67 @@ mod tests {
             plugin.validate_config(&cfg),
             Err(ProtocolError::InvalidConfig)
         );
+    }
+
+    // ================= 47（WP-47.1）协议入站写 =================
+
+    /// 47（WP-47.1）：control_topic 下行 SET 负载 → 写意图导出
+    ///（只导出；序列单调；drain 清空缓冲）。
+    #[test]
+    fn downlink_set_parses_to_write_intent() {
+        let mut plugin = MqttPlugin::new();
+        plugin.control_topic = Some(alloc::string::String::from("eneros/ctl"));
+        plugin.on_downlink("eneros/ctl", b"SET 1 10 50.0", 1_700_000_000_010);
+        plugin.on_downlink("eneros/ctl", b"SET 1 10 -20.5", 1_700_000_000_020);
+        let mut out = alloc::vec::Vec::new();
+        plugin.drain_write_intents(&mut out);
+        assert_eq!(out.len(), 2, "两条下行都必须导出");
+        assert_eq!(out[0].protocol_id, MQTT_PLUGIN_ID);
+        assert_eq!(out[0].device_id, 1);
+        assert_eq!(out[0].point_id, 10);
+        assert_eq!(out[0].value, eneros_upa_model::PointValue::Float(50.0));
+        assert_eq!(out[0].sequence, 1, "序号单调");
+        assert_eq!(out[1].sequence, 2);
+        assert_eq!(out[1].issued_ms, 1_700_000_000_020);
+        // drain 后缓冲清空（第二只读为空）。
+        let mut again = alloc::vec::Vec::new();
+        plugin.drain_write_intents(&mut again);
+        assert!(again.is_empty());
+    }
+
+    /// 47（WP-47.1）：主题不符 / 坏格式 / 非 SET 命令 → 不导出意图；
+    /// 坏下行计数（不 panic、不伪造）。
+    #[test]
+    fn downlink_bad_payloads_counted_and_ignored() {
+        let mut plugin = MqttPlugin::new();
+        plugin.control_topic = Some(alloc::string::String::from("eneros/ctl"));
+        plugin.on_downlink("other/topic", b"SET 1 10 50", 1); // 主题不符
+        plugin.on_downlink("eneros/ctl", b"SET 1 10", 2); // 字段不足
+        plugin.on_downlink("eneros/ctl", b"SET 1 x 50", 3); // 点非数字
+        plugin.on_downlink("eneros/ctl", b"SET 0 10 50", 4); // device 0
+        plugin.on_downlink("eneros/ctl", b"SET 1 10 NaN", 5); // 非有限值
+        plugin.on_downlink("eneros/ctl", b"SET 1 10 50 extra", 6); // 多余字段
+        plugin.on_downlink("eneros/ctl", b"GET 1 10 50", 7); // 非 SET 命令
+        let mut out = alloc::vec::Vec::new();
+        plugin.drain_write_intents(&mut out);
+        assert!(out.is_empty(), "全部坏负载不得导出意图: {out:?}");
+        assert_eq!(
+            plugin.bad_downlink_count, 5,
+            "5 条格式不符计数（主题不符与非 SET 命令不计数）"
+        );
+    }
+
+    /// 47（WP-47.1）：意图线码往返（svc 间 EIPC 传输同源）。
+    #[test]
+    fn downlink_intent_survives_wire_roundtrip() {
+        let mut plugin = MqttPlugin::new();
+        plugin.control_topic = Some(alloc::string::String::from("eneros/ctl"));
+        plugin.on_downlink("eneros/ctl", b"SET 1 10 72.25", 99);
+        let mut out = alloc::vec::Vec::new();
+        plugin.drain_write_intents(&mut out);
+        assert_eq!(out.len(), 1);
+        let wire = eneros_protocol_abstract::write::encode_intent(&out[0]);
+        let back = eneros_protocol_abstract::write::decode_intent(&wire).expect("decode");
+        assert_eq!(back, out[0]);
     }
 }

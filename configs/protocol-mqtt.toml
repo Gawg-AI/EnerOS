@@ -4,3 +4,7 @@ client_id = "eneros-agent"
 # 46.5（L2 keepalive 观测窗口）：60s → 3s——自检轮询窗口内
 # 触发 PINGREQ（对端 transcript 判据；生产部署按现场≥60s 配置）。
 keep_alive_ms = 3000
+# 47（WP-47.1 协议入站写）：下行写命令订阅主题（外部 SCADA 发布
+# "SET <device> <point> <value>" 负载 → 插件导出 PointWriteIntent →
+# svc-control-dispatch 授权链）。缺省 = 不收写命令。
+control_topic = "eneros/control"

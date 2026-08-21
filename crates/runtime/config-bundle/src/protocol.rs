@@ -44,7 +44,7 @@ pub fn known_keys(id: &str) -> Option<&'static [&'static str]> {
             "poll_interval_ms",
             "clock_sync_interval_ms",
         ],
-        "protocol-mqtt" => &["broker", "client_id", "keep_alive_ms"],
+        "protocol-mqtt" => &["broker", "client_id", "keep_alive_ms", "control_topic"],
         "protocol-mms" => &["peer", "timeout_ms", "ap_title"],
         "protocol-goose" => &[
             "app_id",

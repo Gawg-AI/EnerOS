@@ -19,6 +19,9 @@ eneros-telemetry-model = { path = "../telemetry-model" }
 eneros-agent-sdk = { path = "../../agents/agent-sdk" }
 # 目标设备/点 ID 与点值类型。
 eneros-upa-model = { path = "../upa-model" }
+# 47（WP-47.1 协议入站写）：PointWriteIntent 唯一意图载体（协议 →
+# ControlDispatch 授权链的线码与类型同源）。
+eneros-protocol-abstract = { path = "../protocol-abstract" }
 # 调度结果（能量预算估算）。
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
 heapless = { version = "0.8", default-features = false }

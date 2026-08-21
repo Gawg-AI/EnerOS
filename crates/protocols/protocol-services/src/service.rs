@@ -45,6 +45,15 @@ impl<P: ProtocolPlugin> PluginIoService<P> {
         &self.plugin
     }
 
+    /// 47（WP-47.1 协议入站写）：导出插件已解析的写意图（服务层
+    /// 转发给 svc-control-dispatch 前调用；缓冲清空）。
+    pub fn drain_write_intents(
+        &mut self,
+        out: &mut alloc::vec::Vec<eneros_protocol_abstract::write::PointWriteIntent>,
+    ) {
+        self.plugin.drain_write_intents(out);
+    }
+
     /// 46.5（L2 证据/「配置驱动运行」收口）：启动期自检轮询——对齐 45
     /// svc-modbus-tcp 的 `collect_and_report` 先例，进入 request 循环前
     /// **有界**驱动真实协议 I/O 多轮，使 post-connect 交换（104

@@ -17,6 +17,9 @@ eneros-drv-svc = { path = "../../drivers/drv-svc" }
 eneros-runtime = { path = "../../runtime/runtime" }
 eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
+# 47（WP-47.1 协议出站写）：OutcomeFrame/OutcomeCode（2B 回执帧——与
+# dispatch/device-agent 同源线上语义）。
+eneros-control-gateway = { path = "../control-gateway" }
 # 45.5（遥测通路）：协议服务侧发送端——EIPC 客户端（Sel4IpcClient/
 # ChunkedClient）与 58B 样本 wire（agent-sdk sample_wire）；点表经
 # svc-config 取 canonical payload 后 decode_points 解码（config-bundle）。

@@ -243,6 +243,52 @@ impl ProtocolPlugin for TcpPlugin {
         })
     }
 
+    /// 47（WP-47.1 协议出站写）：点表驱动单点写入（FC06 单寄存器；读
+    /// 功能码 3/4 映射同寄存器写）。工程值经映射逆变换（scale/offset；
+    /// 越界/非数值 → 明确错误，不截断静默）。**只执行**——授权由
+    /// ControlDispatch 九步链完成。
+    fn write_point(
+        &mut self,
+        _now_ms: u64,
+        mapping: &eneros_protocol_abstract::ProtocolPointMapping,
+        value: eneros_upa_model::PointValue,
+    ) -> Result<(), ProtocolError> {
+        let Some(adapter) = self.adapter.as_mut() else {
+            return Err(ProtocolError::ProtocolNotStarted);
+        };
+        let (reg_addr, func_code) = match mapping.protocol_addr {
+            eneros_protocol_abstract::ProtocolAddress::Modbus {
+                slave_addr: _slave,
+                reg_addr,
+                func_code,
+            } => (reg_addr, func_code),
+            _ => return Err(ProtocolError::AddrTypeMismatch),
+        };
+        if matches!(func_code, 1 | 2 | 4) {
+            // 输入寄存器/线圈映射：不可写（诚实；本地写路径仅保持寄存器）。
+            return Err(ProtocolError::Unsupported);
+        }
+        if mapping.scale == 0.0 {
+            return Err(ProtocolError::InvalidConfig);
+        }
+        let raw_f = match value {
+            eneros_upa_model::PointValue::Float(f) if f.is_finite() => f,
+            eneros_upa_model::PointValue::Int(i) => i as f64,
+            eneros_upa_model::PointValue::Bool(b) => {
+                if b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            eneros_upa_model::PointValue::Enum(e) => e as f64,
+            _ => return Err(ProtocolError::Unsupported),
+        };
+        let raw_i = mapping.from_engineering(raw_f);
+        let raw: u16 = u16::try_from(raw_i).map_err(|_| ProtocolError::WriteFailed)?;
+        adapter.write_raw(reg_addr, func_code, raw)
+    }
+
     fn poll(&mut self, now_ms: u64, _budget: WorkBudget) -> Result<Progress, ProtocolError> {
         let Some(adapter) = self.adapter.as_mut() else {
             return Err(ProtocolError::ProtocolNotStarted);
