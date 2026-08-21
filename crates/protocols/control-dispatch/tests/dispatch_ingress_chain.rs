@@ -348,6 +348,7 @@ fn engine_with(channel: Box<dyn DeliveryChannel>, gate: DecisionGate) -> Dispatc
         target_endpoint: String::from("svc-device-agent"),
         max_power_kw: 500.0,
         gate,
+        control_audit: None,
         audit: Some(DecisionAudit::new([0x40; 32])),
         intent_log: Box::new(InMemoryIntentStore::new(64)),
         delivery: channel,

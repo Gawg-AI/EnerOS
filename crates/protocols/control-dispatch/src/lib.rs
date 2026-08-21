@@ -30,6 +30,7 @@ extern crate alloc;
 
 pub mod channel;
 pub mod dispatch;
+pub mod durable_intent;
 pub mod engine;
 pub mod feedback;
 pub mod intent;

@@ -1570,6 +1570,9 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // Control 点解析——dispatch 与 device-agent 两端同源（0/0 fail-closed）。
     ("svc-control-dispatch", "svc-config"),
     ("svc-device-agent", "svc-config"),
+    // 47（WP-47.4 意图持久化）：DurableIntentStore 经 svc-storage 真落盘
+    //（AppendOutbox over BlockIo）。
+    ("svc-control-dispatch", "svc-storage"),
 ];
 
 /// 心跳监控服务表（WP-40.4 隔离面）：授予心跳 notification（服务

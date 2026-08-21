@@ -88,6 +88,10 @@ pub struct DispatchConfig {
     pub gate: DecisionGate,
     /// 决策审计（可选）。
     pub audit: Option<DecisionAudit>,
+    /// 47（WP-47.4 审计持久化）：SHA-256 审计链（security/audit D4 线）——
+    /// 每个 Committed/Failed 控制事件入链；`verify_log`/`last_valid_prefix`
+    /// 校验（见 tests）。
+    pub control_audit: Option<Box<dyn eneros_audit::AuditLogger>>,
     /// durable intent 存储（WP-40.12 对账）。
     pub intent_log: Box<dyn IntentStore>,
     /// 投递通道（生产：Sel4EipcChannel；测试：内存通道）。
@@ -115,6 +119,8 @@ pub struct DispatchEngine {
     pub gate: DecisionGate,
     /// 决策审计（观测：链校验/条目）。
     pub audit: Option<DecisionAudit>,
+    /// 47：SHA-256 控制事件审计链。
+    control_audit: Option<Box<dyn eneros_audit::AuditLogger>>,
     /// durable intent 存储（观测：find/pending 对账）。
     pub intent_log: Box<dyn IntentStore>,
     delivery: Box<dyn DeliveryChannel>,
@@ -147,6 +153,7 @@ impl DispatchEngine {
             max_power_kw: config.max_power_kw,
             gate: config.gate,
             audit: config.audit,
+            control_audit: config.control_audit,
             intent_log: config.intent_log,
             delivery: config.delivery,
             feedback_builder: TrustedFeedbackBuilder::new(config.feedback_mapping),
@@ -164,6 +171,26 @@ impl DispatchEngine {
     }
 
     fn audit(&mut self, exec: ExecOutcome, safety: SafetyOutcome, detail: &str, now_ms: u64) {
+        // 47（WP-47.4）：每个控制事件（含 Committed/Failed）入 SHA-256
+        // 审计链；失败 → audit_drop_count（不阻断控制面）。
+        if let Some(chain) = self.control_audit.as_mut() {
+            let event_type = match exec {
+                ExecOutcome::Succeeded => eneros_audit::AuditEventType::WriteExecuted,
+                _ => eneros_audit::AuditEventType::WriteDenied,
+            };
+            let severity = if matches!(safety, SafetyOutcome::Blocked) {
+                2
+            } else {
+                1
+            };
+            let target = alloc::format!("control-dispatch/{}", self.target_endpoint);
+            let mut ev =
+                eneros_audit::AuditEvent::new(event_type, "control-dispatch", &target, detail);
+            ev.severity = severity;
+            if chain.log(ev).is_err() {
+                self.audit_drop_count += 1;
+            }
+        }
         let Some(audit) = self.audit.as_mut() else {
             return;
         };

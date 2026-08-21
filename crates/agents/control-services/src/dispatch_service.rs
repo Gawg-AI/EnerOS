@@ -403,6 +403,7 @@ mod tests {
             target_endpoint: String::from("svc-device-agent"),
             max_power_kw: 500.0,
             gate: eneros_dual_brain::gate::DecisionGate::new(100, 1000.0, 3_600_000),
+            control_audit: None,
             audit: None,
             intent_log: Box::new(InMemoryIntentStore::new(64)),
             delivery: Box::new(MemoryChannel { outcome }),

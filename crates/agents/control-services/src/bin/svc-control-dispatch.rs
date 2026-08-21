@@ -46,6 +46,50 @@ pub extern "C" fn _start(
     )
 }
 
+/// 47（WP-47.4）：意图持久存储装配——svc-storage EIPC（X3 bit4）→
+/// `DurableIntentStore`（open 失败 → InMemory 兜底 + 登记）；未授予 →
+/// InMemory 兜底（fail-closed 登记）。
+#[cfg(target_os = "none")]
+fn build_intent_store(
+    eipc_mask: u64,
+) -> alloc::boxed::Box<dyn eneros_control_dispatch::IntentStore> {
+    use eneros_agent_sdk::block_io::eipc_block_io;
+    use eneros_control_dispatch::durable_intent::DurableIntentStore;
+    if eipc_mask & 16 != 0 {
+        if let Some(io) = eipc_block_io(
+            eneros_agent_sdk::EIPC_EP_BASE_SLOT + 4,
+            eneros_drv_svc::instance_epoch(),
+            5_000,
+        ) {
+            // 区域：偏移 0，槽 512B × 256（意图日志区；svc-storage 独立
+            // 区域，host QEMU 盘 16MB 起）。
+            let mut store = DurableIntentStore::new(io, 0, 512, 256);
+            match store.open() {
+                Ok(()) => {
+                    eneros_runtime::println!(
+                        "[svc-control-dispatch] DURABLE-INTENT-STORE open OK（AppendOutbox over svc-storage）"
+                    );
+                    return alloc::boxed::Box::new(store);
+                }
+                Err(e) => {
+                    eneros_runtime::println!(
+                        "[svc-control-dispatch] durable intent store open FAILED {e:?} —— InMemory 兜底（重启对账不可用）"
+                    );
+                }
+            }
+        } else {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] storage EIPC bind FAILED —— InMemory 兜底（重启对账不可用）"
+            );
+        }
+    } else {
+        eneros_runtime::println!(
+            "[svc-control-dispatch] storage EP NOT granted（X3 bit4=0）—— InMemory 兜底（重启对账不可用）"
+        );
+    }
+    alloc::boxed::Box::new(InMemoryIntentStore::new(1024))
+}
+
 #[cfg(target_os = "none")]
 struct DispatchHandler {
     engine: eneros_control_dispatch::DispatchEngine,
@@ -253,8 +297,16 @@ impl DispatchHandler {
             // qemu-test 演示放宽值由 47.3 RuntimeConfigBundle 注入，源码
             // 不写测试值）。
             gate: eneros_dual_brain::gate::DecisionGate::new(60, 1000.0, 3_600_000),
+            // 47（WP-47.4 意图持久化）：DurableIntentStore（AppendOutbox
+            // over BlockIo → svc-storage，槽 base+4）；未授予/打开失败 →
+            // InMemory 兜底 + 串口登记（重启对账不可用面）。
+            intent_log: build_intent_store(eipc_mask),
+            // 47（WP-47.4 审计持久化）：SHA-256 控制事件链（D4 线）。
+            control_audit: Some(alloc::boxed::Box::new(eneros_audit::AuditLoggerImpl::new(
+                eneros_audit::MemStore::new(),
+                [0x47; 32],
+            ))),
             audit: Some(eneros_dual_brain::audit::DecisionAudit::new([0x47; 32])),
-            intent_log: alloc::boxed::Box::new(InMemoryIntentStore::new(1024)),
             delivery,
             feedback_mapping: FeedbackPointMapping {
                 grid_up: 5,

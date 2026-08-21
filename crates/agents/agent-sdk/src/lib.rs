@@ -97,10 +97,11 @@ pub mod ipc_sel4;
 compile_error!(
     "feature `sel4` requires the seL4 target (aarch64-unknown-none);      host builds must not enable it (use the default SPSC queue)"
 );
-pub mod lifecycle;
-pub mod logger;
 /// 24 (45.5)：遥测样本 58B 定长 wire（单一直实；root/svc-telemetry/
 /// 协议服务共同消费——取代 root 平行实现 encode_sample_wire）。
+pub mod block_io;
+pub mod lifecycle;
+pub mod logger;
 pub mod sample_wire;
 pub mod storage;
 pub mod wire;

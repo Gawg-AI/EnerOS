@@ -11,6 +11,10 @@ heapless = { version = "0.8", default-features = false }
 eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 # 蓝图 45 WP-45.5：58B 遥测样本 wire（TelemetrySample/SampleQuality）。
 eneros-safety-validator = { path = "../../ai/safety-validator" }
+# 47（WP-47.4）：BlockIo（PersistIo 的 EIPC 块客户端）——control-services
+# 与 business-services 共享同一适配（drv-svc 信封 + durable-state 契约）。
+eneros-drv-svc = { path = "../../drivers/drv-svc" }
+eneros-durable-state = { path = "../../runtime/durable-state" }
 # v0.224.0（B3-01）：seL4 IPC（仅目标构建启用）。
 eneros-sel4-sys = { path = "../../runtime/sel4-sys", optional = true }
 

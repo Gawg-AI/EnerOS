@@ -22,6 +22,10 @@ eneros-upa-model = { path = "../upa-model" }
 # 47（WP-47.1 协议入站写）：PointWriteIntent 唯一意图载体（协议 →
 # ControlDispatch 授权链的线码与类型同源）。
 eneros-protocol-abstract = { path = "../protocol-abstract" }
+# 47（WP-47.4 意图持久化）：AppendOutbox（追加式日志）——DurableIntentStore。
+eneros-durable-state = { path = "../../runtime/durable-state" }
+# 47（WP-47.4 审计持久化）：SHA-256 审计链（D4 线）——控制事件入链。
+eneros-audit = { path = "../../security/audit" }
 # 调度结果（能量预算估算）。
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
 heapless = { version = "0.8", default-features = false }
