@@ -12,10 +12,12 @@
 +     * root-task 直接读物理地址即可访问 bundle。页表内存已在
 +     * arch_get_n_paging（arm64 vspace.c）中预留 3 个。 */
 +    {
-+        /* 4 MiB 窗口：覆盖 init bundle + 运行时 DTB（xtask INIT_LOAD_ADDRESS；
-+         * 39 收尾复验由 2 MiB 扩容——bundle 随 EL0 服务增长）*/
++        /* 8 MiB 窗口：覆盖 init bundle + 运行时 DTB（xtask INIT_LOAD_ADDRESS；
++         * 39 收尾复验由 2 MiB 扩容；49 收口由 4 MiB 扩容——远程 dual-brain
++         * 契约层/传输面使 bundle 增至 3.24 MiB，4 MiB 窗内 DTB 容纳上限
++         * 被击穿（DT_LAYOUT fail-closed 拦截，49 卷实弹根因）*/
 +        const paddr_t ENEROS_INIT_BUNDLE_PHYS = 0x42000000UL;
-+        const paddr_t ENEROS_INIT_BUNDLE_SIZE = 0x400000UL;
++        const paddr_t ENEROS_INIT_BUNDLE_SIZE = 0x800000UL;
 +        vptr_t bv = (vptr_t)ENEROS_INIT_BUNDLE_PHYS; /* 1:1（物理==虚拟）*/
 +        /* PUD 槽（512 GiB 粒度）已由 create_it_address_space 为 it_v_reg
 +         * 创建（0x42000000 落在 PGD 槽 0 / PUD 槽 0）。此处只需创建
@@ -24,10 +26,12 @@
 +         * 页表链被破坏 → prefetch abort，C2 迭代修复）。 */
 +        cap_t b_pd  = create_it_pd_cap(it_pd_cap, it_alloc_paging(), bv, IT_ASID);
 +        cap_t b_pt  = create_it_pt_cap(it_pd_cap, it_alloc_paging(), bv, IT_ASID);
-+        /* 39 收尾复验：窗口 2 MiB→4 MiB（bundle 尺寸随服务增长超出
-+         * 2 MiB 窗口的 DTB 容纳上限）——第二个 2 MiB 段需独立 PT。 */
++        /* 39 收尾复验：窗口 2 MiB→4 MiB——第二个 2 MiB 段需独立 PT。
++         * 49 收口：窗口 4 MiB→8 MiB——第三、四个 2 MiB 段各需独立 PT。 */
 +        cap_t b_pt1 = create_it_pt_cap(it_pd_cap, it_alloc_paging(), bv + BIT(21), IT_ASID);
-+        (void)b_pd; (void)b_pt; (void)b_pt1;
++        cap_t b_pt2 = create_it_pt_cap(it_pd_cap, it_alloc_paging(), bv + 2 * BIT(21), IT_ASID);
++        cap_t b_pt3 = create_it_pt_cap(it_pd_cap, it_alloc_paging(), bv + 3 * BIT(21), IT_ASID);
++        (void)b_pd; (void)b_pt; (void)b_pt1; (void)b_pt2; (void)b_pt3;
 +        word_t f;
 +        for (f = (word_t)paddr_to_pptr(ENEROS_INIT_BUNDLE_PHYS);
 +             f < (word_t)paddr_to_pptr(ENEROS_INIT_BUNDLE_PHYS + ENEROS_INIT_BUNDLE_SIZE);
@@ -60,11 +64,11 @@
  #endif
          get_n_paging(it_v_reg, GET_ULVL_PGSIZE_BITS(ULVL_FRM_ARM_PT_LVL(1))) +
          get_n_paging(it_v_reg, GET_ULVL_PGSIZE_BITS(ULVL_FRM_ARM_PT_LVL(2)));
-+    /* EnerOS C2 (BOOT-007): init bundle 区域（0x42000000，4 MiB——39
-+     * 收尾复验由 2 MiB 扩容）由 kernel/boot.c 显式映射进初始线程
-+     * VSpace，需额外 PD+PT×2 三个页表（PUD 槽已由 it_v_reg 页表链
-+     * 覆盖，勿重复创建）。 */
-+    n += 3;
++    /* EnerOS C2 (BOOT-007): init bundle 区域（0x42000000，8 MiB——39
++     * 收尾复验由 2 MiB 扩至 4 MiB；49 收口扩至 8 MiB）由 kernel/boot.c
++     * 显式映射进初始线程 VSpace，需额外 PD+PT×3 四个页表（PUD 槽已由
++     * it_v_reg 页表链覆盖，勿重复创建）。 */
++    n += 4;
 +    return n;
  }
  

@@ -45,6 +45,11 @@ impl<P: ProtocolPlugin> PluginIoService<P> {
         &self.plugin
     }
 
+    /// 49（WP-49.2）：可变暴露插件（AI 应答 drain / app 发布入队）。
+    pub fn plugin_mut(&mut self) -> &mut P {
+        &mut self.plugin
+    }
+
     /// 47（WP-47.1 协议入站写）：导出插件已解析的写意图（服务层
     /// 转发给 svc-control-dispatch 前调用；缓冲清空）。
     pub fn drain_write_intents(

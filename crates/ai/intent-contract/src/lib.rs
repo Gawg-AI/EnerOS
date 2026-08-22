@@ -29,11 +29,17 @@ extern crate alloc;
 pub mod contract;
 pub mod converter;
 pub mod error;
+pub mod peer;
 pub mod validator;
 
 pub use contract::{DeviceStatus, FeedbackContract, IntentContract, LlmMeta, SystemContext};
 pub use converter::ContractConverter;
 pub use error::ContractError;
+pub use peer::{
+    budget as peer_budget, parse_and_validate, truncate_for_audit, validate_response, PeerBudget,
+    PeerContractError, PeerPlan, PeerRequest, PeerResponse, PeerTelemetry, ResponseChecks,
+    PEER_CONTRACT_VERSION, PEER_REQUEST_MAX_LEN,
+};
 pub use validator::ContractValidator;
 
 #[cfg(test)]

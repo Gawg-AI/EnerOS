@@ -1566,6 +1566,13 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // 47（WP-47.1 协议入站写）：svc-mqtt 下行写意图上报 svc-control-dispatch
     //（DISP_SUBMIT_INTENT，12 态链授权）。
     ("svc-mqtt", "svc-control-dispatch"),
+    // 49（WP-49.2 远程 dual-brain）：svc-mqtt 把 peer 应答（ai_response_topic
+    // 原始字节）分块推送 svc-ai-worker（AI_PEER_MSG）；svc-ai-worker 经
+    // svc-config 取 ai-peer 状态机参数 + 经 svc-mqtt EXECUTE 分片子码发布
+    // AI 请求（AI_REQ_BEGIN/CONT/END）。
+    ("svc-mqtt", "svc-ai-worker"),
+    ("svc-ai-worker", "svc-config"),
+    ("svc-ai-worker", "svc-mqtt"),
     // 47（WP-47.2 点表绑定）：控制写目标（设备/点）经 svc-config 点表
     // Control 点解析——dispatch 与 device-agent 两端同源（0/0 fail-closed）。
     ("svc-control-dispatch", "svc-config"),

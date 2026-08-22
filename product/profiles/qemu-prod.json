@@ -491,7 +491,10 @@
         "probe": "ready-ntfn",
         "timeout_ms": 2000,
         "required_ack": true
-      }
+      },
+      "configs": [
+        "ai-peer"
+      ]
     },
     {
       "id": "svc-control-dispatch",
@@ -985,6 +988,13 @@
       "path": "configs/protocol-gbt27930.toml",
       "consumer": [
         "svc-gbt27930"
+      ]
+    },
+    {
+      "id": "ai-peer",
+      "path": "configs/ai-peer.toml",
+      "consumer": [
+        "svc-ai-worker"
       ]
     }
   ],

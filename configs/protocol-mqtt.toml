@@ -8,3 +8,8 @@ keep_alive_ms = 3000
 # "SET <device> <point> <value>" 负载 → 插件导出 PointWriteIntent →
 # svc-control-dispatch 授权链）。缺省 = 不收写命令。
 control_topic = "eneros/control"
+# 49（WP-49.2 远程 dual-brain 传输面）：AI 请求发布 / 应答订阅主题
+# （QoS1；缺省 = AI 链路关闭）。peer = 站端 LLM 服务（不受信输入，
+# ADR-0045 方案 B——「AI 辅助决策（需配套站端服务）」）。
+ai_request_topic = "eneros/brain/request"
+ai_response_topic = "eneros/brain/response"

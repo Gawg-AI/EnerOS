@@ -1,0 +1,16 @@
+# 49（WP-49.2 远程 dual-brain，ADR-0045 方案 B）：svc-ai-worker RemoteBrain
+# 状态机参数。**五键全必配**（fail-closed 禁凭记忆缺省——48 卷数值纪律同款，
+# 编译/解码两侧同值域校验）。
+#
+# 宣称纪律（ADR-0045 #4）：本链路 = 「AI 辅助决策（需配套站端服务）」；
+# peer 应答为不受信输入，越权提案在契约层拒绝。
+[ai_peer]
+# timeout_ms：产品缺省语义 5s（蓝图默认）；本装配为 QEMU 演示节拍
+# （root 控制链/协议 EXECUTE 周期 ≈13s/tick，应答投递延迟 ≤1 周期）
+# 配 30s——「可配」判据的正当使用（46 卷 keep_alive_ms=3000 同款先例，
+# 产线按现场决策周期重订）。unhealthy_after=3 ⇒ 断链 ~90s 内降级。
+timeout_ms = 30000
+unhealthy_after = 3
+probe_every = 5
+max_power_kw = 5.0
+ttl_secs = 60

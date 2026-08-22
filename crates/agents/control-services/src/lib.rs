@@ -30,6 +30,7 @@ pub mod cfg_bindings;
 pub mod collector;
 pub mod dispatch_service;
 pub mod energy_agent_service;
+pub mod remote_brain;
 pub mod service;
 pub mod telemetry;
 

@@ -18,6 +18,8 @@ eneros-drv-svc = { path = "../../drivers/drv-svc", features = ["heap-large"] }
 eneros-runtime = { path = "../../runtime/runtime" }
 # 可信遥测评估器。
 eneros-safety-validator = { path = "../../ai/safety-validator" }
+# 49（WP-49.2 契约层）：target↔peer 消息契约 + 不受信应答全量校验。
+eneros-intent-contract = { path = "../../ai/intent-contract" }
 # 设备侧收口点 + 注册表（agent-runtime 桥接关闭——target 闭包无 llama/highs）。
 eneros-device-agent = { path = "../../agents/device-agent", default-features = false }
 # 唯一 ControlDispatch 引擎。

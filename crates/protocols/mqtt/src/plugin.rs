@@ -66,7 +66,19 @@ const KNOWN_KEYS: &[&str] = &[
     // 47（WP-47.1 协议入站写）：下行写命令订阅主题。缺省 = 不订阅
     //（方向一禁用——诚实：未配置不假装能收写命令）。
     "control_topic",
+    // 49（WP-49.2 远程 dual-brain 传输面）：AI 请求发布主题 + 应答订阅
+    // 主题。缺省 = AI 链路关闭（诚实：未配置不假装能收发 peer 消息）。
+    "ai_request_topic",
+    "ai_response_topic",
 ];
+
+/// 49：peer 应答收件箱上限（有界缓冲；满则丢弃新消息并计数）。
+pub const AI_INBOX_CAP: usize = 8;
+/// 49：app 发布 outbox 上限。
+pub const APP_OUTBOX_CAP: usize = 4;
+/// 49：单条 app 消息负载上限（契约层 PEER_REQUEST_MAX_LEN 同量级；
+/// 插件不依赖契约 crate——传输面只认字节）。
+pub const APP_MSG_MAX_LEN: usize = 1024;
 
 /// MQTT 插件。
 pub struct MqttPlugin {
@@ -93,6 +105,21 @@ pub struct MqttPlugin {
     intent_seq: u64,
     /// 47（WP-47.1）：已收到但无法解析的下行负载计数（观测；不 panic）。
     bad_downlink_count: u64,
+    /// 49（WP-49.2）：AI 请求发布主题（可选；未配置 = AI 链路关闭）。
+    ai_request_topic: Option<alloc::string::String>,
+    /// 49：AI 应答订阅主题（可选）。
+    ai_response_topic: Option<alloc::string::String>,
+    /// 49：ai_response_topic 待订阅标志（connect 后惰性订阅）。
+    ai_pending_subscribe: bool,
+    /// 49：ai_response_topic 已订阅。
+    ai_subscribed: bool,
+    /// 49：待发布 app 消息（topic, payload）——服务层入队，poll 时 QoS1 发布。
+    app_outbox: alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>,
+    /// 49：已收到待转发的 peer 应答（原始字节；服务层 drain 后经 EIPC 推送
+    /// svc-ai-worker——插件不解释内容）。
+    peer_inbox: alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    /// 49：inbox 满 / 超限丢弃计数（观测）。
+    pub ai_dropped_count: u64,
 }
 
 impl MqttPlugin {
@@ -112,6 +139,13 @@ impl MqttPlugin {
             pending_intents: alloc::vec::Vec::new(),
             intent_seq: 0,
             bad_downlink_count: 0,
+            ai_request_topic: None,
+            ai_response_topic: None,
+            ai_pending_subscribe: false,
+            ai_subscribed: false,
+            app_outbox: alloc::vec::Vec::new(),
+            peer_inbox: alloc::vec::Vec::new(),
+            ai_dropped_count: 0,
         }
     }
 
@@ -123,6 +157,68 @@ impl MqttPlugin {
     /// 47（WP-47.1）：不可解析下行负载计数（观测）。
     pub fn bad_downlink_count(&self) -> u64 {
         self.bad_downlink_count
+    }
+
+    // ================= 49（WP-49.2）远程 dual-brain 传输面 =================
+
+    /// 主题是否为 AI 应答订阅主题。
+    fn is_ai_response_topic(&self, topic: &str) -> bool {
+        match self.ai_response_topic.as_ref() {
+            Some(t) => topic == t,
+            None => false,
+        }
+    }
+
+    /// peer 应答原始字节入收件箱（有界；满则丢新计数——不阻塞不伪造）。
+    fn on_peer_message_inbox(&mut self, payload: alloc::vec::Vec<u8>) {
+        if self.peer_inbox.len() >= AI_INBOX_CAP {
+            self.ai_dropped_count = self.ai_dropped_count.saturating_add(1);
+            return;
+        }
+        self.peer_inbox.push(payload);
+    }
+
+    /// 服务层入队一条 AI 请求（poll 时经 QoS1 发布到 ai_request_topic）。
+    ///
+    /// 未配置 ai_request_topic / 超限（条数或字节数）→ 显式拒绝（fail-closed，
+    /// 调用方计数）——不假装接受。
+    pub fn enqueue_app_publish(
+        &mut self,
+        topic: &str,
+        payload: &[u8],
+    ) -> Result<(), ProtocolError> {
+        if self.ai_request_topic.as_deref() != Some(topic) {
+            return Err(ProtocolError::InvalidConfig);
+        }
+        if payload.len() > APP_MSG_MAX_LEN || self.app_outbox.len() >= APP_OUTBOX_CAP {
+            self.ai_dropped_count = self.ai_dropped_count.saturating_add(1);
+            return Err(ProtocolError::InvalidConfig);
+        }
+        self.app_outbox.push((
+            alloc::string::String::from(topic),
+            alloc::vec::Vec::from(payload),
+        ));
+        Ok(())
+    }
+
+    /// 服务层取走全部已收 peer 应答（原始字节；顺序保持）。
+    pub fn drain_peer_messages(&mut self, out: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>) {
+        out.append(&mut self.peer_inbox);
+    }
+
+    /// 49：AI 消息丢弃计数（观测）。
+    pub fn ai_dropped(&self) -> u64 {
+        self.ai_dropped_count
+    }
+
+    /// 49：AI 请求发布主题（bin 入队校验用；None = AI 链路关闭）。
+    pub fn ai_request_topic(&self) -> Option<&str> {
+        self.ai_request_topic.as_deref()
+    }
+
+    /// 49：outbox 积压数（观测/测试）。
+    pub fn app_outbox_len(&self) -> usize {
+        self.app_outbox.len()
     }
 
     /// 47（WP-47.1）：解析一条下行写命令负载为写意图。
@@ -276,6 +372,19 @@ impl ProtocolPlugin for MqttPlugin {
         if self.control_topic.is_some() {
             self.pending_subscribe = true;
         }
+        // 49（WP-49.2）：AI 请求/应答主题（可选）——应答主题 connect 后
+        // 惰性订阅；请求主题仅作发布目标（不订阅）。
+        self.ai_response_topic = cfg
+            .get("ai_response_topic")
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_owned());
+        if self.ai_response_topic.is_some() {
+            self.ai_pending_subscribe = true;
+        }
+        self.ai_request_topic = cfg
+            .get("ai_request_topic")
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_owned());
         self.client = Some(client);
         self.state = AdapterState::Running;
         Ok(())
@@ -310,13 +419,52 @@ impl ProtocolPlugin for MqttPlugin {
                 }
             }
         }
+        // 49（WP-49.2）：connect 后惰性订阅 ai_response_topic（QoS1——
+        // 蓝图传输判据；失败下轮重试）。
+        if self.connected && self.ai_pending_subscribe && !self.ai_subscribed {
+            if let Some(topic) = self.ai_response_topic.clone() {
+                if client
+                    .subscribe(&topic, crate::qos::QoS::AtLeastOnce)
+                    .is_ok()
+                {
+                    self.ai_pending_subscribe = false;
+                    self.ai_subscribed = true;
+                }
+            }
+        }
+        // 49：outbox 冲刷（每轮排空至多 APP_OUTBOX_CAP 条——积压会使
+        // 应答相对请求错相，49 第六轮实弹根因；单条失败保留待下轮）。
+        if self.connected && !self.app_outbox.is_empty() {
+            while !self.app_outbox.is_empty() {
+                let Some((topic, payload)) = self.app_outbox.first() else {
+                    break;
+                };
+                let topic = topic.clone();
+                let payload = payload.clone();
+                if client
+                    .publish(&topic, &payload, crate::qos::QoS::AtLeastOnce, now_ms)
+                    .is_ok()
+                {
+                    self.app_outbox.remove(0);
+                } else {
+                    self.error_count += 1;
+                    break;
+                }
+            }
+        }
         match client.poll(now_ms) {
             Ok(pkts) => {
                 // 47（WP-47.1）：下行 PUBLISH（control_topic）→ 解析为写意图
                 //（只导出；设备写由 ControlDispatch 授权后执行）。
+                // 49（WP-49.2）：ai_response_topic PUBLISH → 原始字节入
+                // peer_inbox（不解释内容——契约解释权在 svc-ai-worker）。
                 for pkt in pkts {
                     if let MqttPacket::Publish(pub_) = pkt {
-                        self.on_downlink(&pub_.topic, &pub_.payload, now_ms);
+                        if self.is_ai_response_topic(&pub_.topic) {
+                            self.on_peer_message_inbox(pub_.payload);
+                        } else {
+                            self.on_downlink(&pub_.topic, &pub_.payload, now_ms);
+                        }
                     }
                 }
                 self.last_progress = Progress::Completed;
@@ -570,5 +718,92 @@ mod tests {
         let wire = eneros_protocol_abstract::write::encode_intent(&out[0]);
         let back = eneros_protocol_abstract::write::decode_intent(&wire).expect("decode");
         assert_eq!(back, out[0]);
+    }
+
+    // ================= 49（WP-49.2）远程 dual-brain 传输面 =================
+
+    /// 49：应答主题 PUBLISH → 原始字节入 inbox（不解释）；drain 清空；
+    /// control_topic 解析不受影响（双主题并存路由正确）。
+    #[test]
+    fn ai_response_routed_to_inbox_and_control_still_parsed() {
+        let mut plugin = MqttPlugin::new();
+        plugin.control_topic = Some(alloc::string::String::from("eneros/ctl"));
+        plugin.ai_response_topic = Some(alloc::string::String::from("eneros/brain/response"));
+        // AI 应答（任意字节——含非 UTF-8，插件不解释）。
+        let raw = alloc::vec![0x7b, 0x22, 0xff, 0x7d];
+        plugin.on_peer_message_inbox(raw.clone());
+        // control_topic 写命令照常解析。
+        plugin.on_downlink("eneros/ctl", b"SET 1 10 50.0", 1);
+        let mut msgs = alloc::vec::Vec::new();
+        plugin.drain_peer_messages(&mut msgs);
+        assert_eq!(msgs, alloc::vec![raw], "AI 应答原样入箱");
+        let mut intents = alloc::vec::Vec::new();
+        plugin.drain_write_intents(&mut intents);
+        assert_eq!(intents.len(), 1, "control 链不受影响");
+    }
+
+    /// 49：inbox 有界——满后丢新消息并计数。
+    #[test]
+    fn ai_inbox_bounded_drops_new_and_counts() {
+        let mut plugin = MqttPlugin::new();
+        plugin.ai_response_topic = Some(alloc::string::String::from("r"));
+        for i in 0..AI_INBOX_CAP {
+            plugin.on_peer_message_inbox(alloc::vec![i as u8]);
+        }
+        plugin.on_peer_message_inbox(alloc::vec![0xEE]);
+        assert_eq!(plugin.peer_inbox.len(), AI_INBOX_CAP);
+        assert_eq!(plugin.ai_dropped(), 1);
+        let mut msgs = alloc::vec::Vec::new();
+        plugin.drain_peer_messages(&mut msgs);
+        assert!(msgs.iter().all(|m| m[0] != 0xEE), "新消息须被丢弃");
+    }
+
+    /// 49：enqueue 校验 ai_request_topic 配置 + 超限拒绝（fail-closed）。
+    #[test]
+    fn enqueue_app_publish_validates_topic_and_limits() {
+        let mut plugin = MqttPlugin::new();
+        // 未配置请求主题 → 拒绝。
+        assert!(plugin.enqueue_app_publish("t", b"x").is_err());
+        plugin.ai_request_topic = Some(alloc::string::String::from("eneros/brain/request"));
+        // 主题不匹配 → 拒绝。
+        assert!(plugin.enqueue_app_publish("other", b"x").is_err());
+        // 正常入队。
+        assert!(plugin
+            .enqueue_app_publish("eneros/brain/request", b"{\"req_id\":1}")
+            .is_ok());
+        assert_eq!(plugin.app_outbox_len(), 1);
+        // 超长 → 拒绝 + 计数。
+        let big = alloc::vec![0u8; APP_MSG_MAX_LEN + 1];
+        assert!(plugin
+            .enqueue_app_publish("eneros/brain/request", &big)
+            .is_err());
+        assert_eq!(plugin.ai_dropped(), 1);
+        // 积压上限 → 拒绝 + 计数。
+        for i in 0..APP_OUTBOX_CAP - 1 {
+            assert!(plugin
+                .enqueue_app_publish("eneros/brain/request", alloc::format!("{{{i}}}").as_bytes())
+                .is_ok());
+        }
+        assert!(plugin
+            .enqueue_app_publish("eneros/brain/request", b"{}")
+            .is_err());
+        assert_eq!(plugin.ai_dropped(), 2);
+    }
+
+    /// 49：validate_config 接受 AI 主题键（KNOWN_KEYS 扩展回归——未知键
+    /// 拒绝语义保持）。
+    #[test]
+    fn validate_config_accepts_ai_topics_rejects_unknown() {
+        let plugin = MqttPlugin::new();
+        let mut cfg = ProtocolConfig::default();
+        cfg.insert("broker", "10.0.2.2:1883");
+        cfg.insert("ai_request_topic", "eneros/brain/request");
+        cfg.insert("ai_response_topic", "eneros/brain/response");
+        assert_eq!(plugin.validate_config(&cfg), Ok(()));
+        cfg.insert("ai_evil_key", "x");
+        assert_eq!(
+            plugin.validate_config(&cfg),
+            Err(ProtocolError::InvalidConfig)
+        );
     }
 }

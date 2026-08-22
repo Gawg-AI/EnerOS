@@ -41,6 +41,20 @@ struct MqttWriteIoService {
     pub forwarded_total: u64,
     /// 转发被拒计数（服务侧拒绝/回执 DISP_ERR）。
     pub rejected_total: u64,
+    /// 49（WP-49.2）：AI 请求分片组装器。
+    ai_assembler: eneros_protocol_services::ai_relay::RequestAssembler,
+    /// 49：svc-ai-worker EIPC 客户端（授予槽 `EIPC_EP_BASE_SLOT + 2`；
+    /// 槽序 = 表序 config(0)/dispatch(1)/ai-worker(2)）。未授予 → 应答
+    /// 丢弃计数（fail-closed）。
+    ai_worker: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    /// 49：分块传输 epoch（单调）。
+    ai_epoch: u64,
+    /// 49：AI 请求发布主题（protocol-mqtt 配置；未配置 = AI 链路关闭）。
+    ai_request_topic: Option<alloc::string::String>,
+    // 49 观测计数。
+    pub ai_req_published: u64,
+    pub ai_resp_forwarded: u64,
+    pub ai_errors: u64,
 }
 
 #[cfg(target_os = "none")]
@@ -97,6 +111,105 @@ impl MqttWriteIoService {
         }
         let _ = now;
     }
+
+    /// 49（WP-49.2）：把插件收到的 peer 应答原始字节推送 svc-ai-worker
+    ///（ChunkedClient，载荷 = [AI_PEER_MSG][json]）。未授予/失败 → 计数
+    /// 丢弃（fail-closed；ai-worker 侧超时降级接管）。
+    fn forward_ai_responses(&mut self) {
+        let mut msgs: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+        self.io.plugin_mut().drain_peer_messages(&mut msgs);
+        for payload in msgs {
+            let mut req: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(1 + payload.len());
+            req.push(eneros_agent_sdk::ai_relay::AI_PEER_MSG);
+            req.extend_from_slice(&payload);
+            let Some(client) = &mut self.ai_worker else {
+                self.ai_errors = self.ai_errors.saturating_add(1);
+                eneros_runtime::println!(
+                    "[svc-mqtt] AI-RESP-DROP ai-worker EP NOT granted（fail-closed）"
+                );
+                continue;
+            };
+            let mut transfer = eneros_agent_sdk::ChunkedClient::new(client, self.ai_epoch, 5_000);
+            self.ai_epoch = self.ai_epoch.saturating_add(1);
+            match transfer.transfer("svc-ai-worker", &req) {
+                Ok(_) => {
+                    self.ai_resp_forwarded = self.ai_resp_forwarded.saturating_add(1);
+                    eneros_runtime::println!(
+                        "[svc-mqtt] AI-RESP-FWD len={} total={}",
+                        payload.len(),
+                        self.ai_resp_forwarded
+                    );
+                }
+                Err(e) => {
+                    self.ai_errors = self.ai_errors.saturating_add(1);
+                    eneros_runtime::println!("[svc-mqtt] AI-RESP-DROP eipc={e:?}");
+                }
+            }
+        }
+    }
+
+    /// 49：EXECUTE 载荷 AI 请求分片子码处理（BEGIN/CONT/END）。
+    /// 返回 Some(1B 状态) = 已消费该载荷（回 ST_OK）；None = 非 AI 子码。
+    fn handle_ai_fragment(&mut self, payload: &[u8]) -> Option<u8> {
+        use eneros_agent_sdk::ai_relay::{AI_REQ_BEGIN, AI_REQ_CONT, AI_REQ_END};
+        let code = *payload.first()?;
+        match code {
+            AI_REQ_BEGIN if payload.len() >= 3 => {
+                let total = u16::from_le_bytes([payload[1], payload[2]]);
+                match self.ai_assembler.begin(total, &payload[3..]) {
+                    Ok(()) => Some(0),
+                    Err(e) => {
+                        self.ai_errors = self.ai_errors.saturating_add(1);
+                        eneros_runtime::println!("[svc-mqtt] AI-FRAG-REJECT begin {e:?}");
+                        Some(1)
+                    }
+                }
+            }
+            AI_REQ_CONT => match self.ai_assembler.cont(&payload[1..]) {
+                Ok(()) => Some(0),
+                Err(e) => {
+                    self.ai_errors = self.ai_errors.saturating_add(1);
+                    eneros_runtime::println!("[svc-mqtt] AI-FRAG-REJECT cont {e:?}");
+                    Some(1)
+                }
+            },
+            AI_REQ_END => match self.ai_assembler.end() {
+                Ok(json) => {
+                    let topic = self.ai_request_topic.clone();
+                    let enq = match topic {
+                        Some(t) => self.io.plugin_mut().enqueue_app_publish(&t, &json),
+                        None => {
+                            eneros_runtime::println!(
+                                "[svc-mqtt] AI-REQ-DROP ai_request_topic 未配置（fail-closed）"
+                            );
+                            Err(eneros_protocol_abstract::ProtocolError::InvalidConfig)
+                        }
+                    };
+                    match enq {
+                        Ok(()) => {
+                            self.ai_req_published = self.ai_req_published.saturating_add(1);
+                            eneros_runtime::println!(
+                                "[svc-mqtt] AI-REQ-ENQUEUE len={} total={}",
+                                json.len(),
+                                self.ai_req_published
+                            );
+                            Some(0)
+                        }
+                        Err(_) => {
+                            self.ai_errors = self.ai_errors.saturating_add(1);
+                            Some(1)
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.ai_errors = self.ai_errors.saturating_add(1);
+                    eneros_runtime::println!("[svc-mqtt] AI-FRAG-REJECT end {e:?}");
+                    Some(1)
+                }
+            },
+            _ => None,
+        }
+    }
 }
 
 #[cfg(target_os = "none")]
@@ -112,9 +225,20 @@ impl eneros_drv_svc::runtime::DriverService for MqttWriteIoService {
     ) {
         use eneros_drv_svc::runtime::*;
         if req.opcode == OP_EXECUTE {
+            // 49（WP-49.2）：AI 请求分片子码优先（载荷首字节判定）。
+            if let Some(status) = self.handle_ai_fragment(&req.payload[..req.payload_len as usize])
+            {
+                self.io.handle(req, resp);
+                resp.status = ST_OK;
+                resp.payload[0] = status;
+                resp.payload_len = 1;
+                return;
+            }
             self.io.handle(req, resp);
             // 47（WP-47.1）：本轮 poll 解析到的下行写意图 → dispatch 授权链。
             self.forward_intents();
+            // 49（WP-49.2）：本轮收到的 peer 应答 → ai-worker 推送。
+            self.forward_ai_responses();
         } else {
             resp.status = ST_INVALID;
         }
@@ -210,6 +334,34 @@ pub extern "C" fn _start(
                                     "[svc-mqtt] dispatch EIPC NOT granted —— 写意图路径 fail-closed"
                                 );
                             }
+                            // 49（WP-49.2）：ai-worker 端点在槽 base+2（表序
+                            // 第 3 条授予）；AI 请求主题取自配置（插件已消费）。
+                            let ai_worker = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                                "mqtt-ai-worker",
+                                eneros_agent_sdk::EIPC_EP_BASE_SLOT + 2,
+                                eneros_drv_svc::now_ns,
+                            )
+                            .ok();
+                            let ai_request_topic =
+                                plugin.ai_request_topic().map(alloc::string::String::from);
+                            match (&ai_worker, &ai_request_topic) {
+                                (None, _) => {
+                                    eneros_runtime::println!(
+                                        "[svc-mqtt] ai-worker EIPC NOT granted —— 应答转发 fail-closed"
+                                    );
+                                }
+                                (_, None) => {
+                                    eneros_runtime::println!(
+                                        "[svc-mqtt] ai_request_topic 未配置 —— AI 链路关闭（诚实）"
+                                    );
+                                }
+                                _ => {
+                                    eneros_runtime::println!(
+                                        "[svc-mqtt] AI-RELAY armed topic={}",
+                                        ai_request_topic.as_deref().unwrap_or_default()
+                                    );
+                                }
+                            }
                             let mut io = MqttWriteIoService {
                                 io: eneros_protocol_services::service::PluginIoService::new(
                                     plugin,
@@ -219,6 +371,14 @@ pub extern "C" fn _start(
                                 dispatch_epoch: 0,
                                 forwarded_total: 0,
                                 rejected_total: 0,
+                                ai_assembler:
+                                    eneros_protocol_services::ai_relay::RequestAssembler::new(),
+                                ai_worker,
+                                ai_epoch: 0,
+                                ai_request_topic,
+                                ai_req_published: 0,
+                                ai_resp_forwarded: 0,
+                                ai_errors: 0,
                             };
                             // 46.5：启动期自检轮询（post-connect 交换尽早完成）。
                             io.io.self_check_poll(150);

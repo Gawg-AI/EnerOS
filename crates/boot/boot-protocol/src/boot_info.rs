@@ -200,7 +200,10 @@ pub const ENEROS_INIT_BUNDLE_PHYS: u64 = 0x4200_0000;
 /// BOOT-007 内核映射窗口长度（4 MiB，kernel boot.c 常量；39 收尾复验
 /// 由 2 MiB 扩容——bundle 随 EL0 服务数量/尺寸增长，2 MiB 窗口的 DTB
 /// 容纳上限被超出（DT_LAYOUT 拒绝））。
-pub const ENEROS_MAPPED_WINDOW_LEN: u64 = 0x400_000;
+/// 49 收口：4 MiB→8 MiB（远程 dual-brain 契约/传输面使 bundle 增至
+/// 3.24 MiB，4 MiB 窗内 DTB 容纳上限被击穿——DT_LAYOUT fail-closed 实弹
+/// 拦截；39 卷 2→4 MiB 同款先例。保留区 32 MiB（overlay dts）内扩窗）。
+pub const ENEROS_MAPPED_WINDOW_LEN: u64 = 0x800_000;
 /// 单 DTB 硬上限（2 MiB = BOOT-007 窗口全尺寸；QEMU virt 运行时 DTB ≈
 /// 0x101000，真机平台 dts 一般更小）。实际边界由 [`dtb_window_for`] 的
 /// 窗口剩余空间决定（bundle 已占部分之外）；本常量是独立于 bundle 的

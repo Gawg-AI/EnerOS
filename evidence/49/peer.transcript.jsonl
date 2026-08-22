@@ -1,0 +1,72 @@
+{"ts": 1787383034.9666426, "event": "CONNACK"}
+{"ts": 1787383034.966987, "event": "SUBACK", "topic": "eneros/brain/request"}
+{"ts": 1787383034.9670582, "event": "PEER-READY", "policy": "soc", "request": "eneros/brain/request", "response": "eneros/brain/response"}
+{"ts": 1787383055.4878674, "event": "REQUEST", "req": {"v": 1, "req_id": 1, "ts_ms": 16504, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 16481, "digest_hex": "cabc14f6712096c6bc30bc91de5f929e49d81b4b1c391cd88073663713018fce"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383055.688401, "event": "PUBACK", "pid": 2}
+{"ts": 1787383055.6884987, "event": "RESPONDED", "seq": 1, "req_id": 1, "served": 1}
+{"ts": 1787383085.8899403, "event": "REQUEST", "req": {"v": 1, "req_id": 2, "ts_ms": 46943, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 46943, "digest_hex": "e748fec6dbe3a891c88c3349db439ff98d9354d6ee4fcea931eb60b21c988356"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383086.0909114, "event": "PUBACK", "pid": 3}
+{"ts": 1787383086.0909991, "event": "RESPONDED", "seq": 2, "req_id": 2, "served": 2}
+{"ts": 1787383087.350834, "event": "REQUEST", "req": {"v": 1, "req_id": 3, "ts_ms": 48410, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 48409, "digest_hex": "2403220062d4534c0fbb7822529d70a6be72c2d0622a35212f232c567ba0cd76"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383087.5514917, "event": "PUBACK", "pid": 4}
+{"ts": 1787383087.551608, "event": "RESPONDED", "seq": 3, "req_id": 3, "served": 3}
+{"ts": 1787383089.325006, "event": "REQUEST", "req": {"v": 1, "req_id": 4, "ts_ms": 50388, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 50387, "digest_hex": "d4078e89fb46f23d083e57552dc497ef0a90b68d71a64bbc21866f96eade418d"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383089.525767, "event": "PUBACK", "pid": 5}
+{"ts": 1787383089.5258806, "event": "RESPONDED", "seq": 4, "req_id": 4, "served": 4}
+{"ts": 1787383091.5297723, "event": "REQUEST", "req": {"v": 1, "req_id": 5, "ts_ms": 52587, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 52586, "digest_hex": "05e8ecb6a57135de01561926cc110ae413057c94ffb60128e3c5718bd4aab48a"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383091.7304714, "event": "PUBACK", "pid": 6}
+{"ts": 1787383091.73059, "event": "RESPONDED", "seq": 5, "req_id": 5, "served": 5}
+{"ts": 1787383093.1315658, "event": "REQUEST", "req": {"v": 1, "req_id": 6, "ts_ms": 54194, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 54194, "digest_hex": "6830c5200701d1e6e1fe6f3b95d09a400e418957a153773615be532f9263f300"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383093.3321712, "event": "PUBACK", "pid": 7}
+{"ts": 1787383093.3322704, "event": "RESPONDED", "seq": 6, "req_id": 6, "served": 6}
+{"ts": 1787383095.123547, "event": "REQUEST", "req": {"v": 1, "req_id": 7, "ts_ms": 56187, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 56186, "digest_hex": "79ce96cb8be7edd864c141e29cd2be3eb47ee2853d1878ed48a1c71e3e721bc6"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383095.324359, "event": "PUBACK", "pid": 8}
+{"ts": 1787383095.3244877, "event": "RESPONDED", "seq": 7, "req_id": 7, "served": 7}
+{"ts": 1787383097.3395312, "event": "REQUEST", "req": {"v": 1, "req_id": 8, "ts_ms": 58402, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 58402, "digest_hex": "5ad5822696b37b97a207510417514a0bf4c9f9667c61903de8cba33ef57945f0"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383097.5402243, "event": "PUBACK", "pid": 9}
+{"ts": 1787383097.540342, "event": "RESPONDED", "seq": 8, "req_id": 8, "served": 8}
+{"ts": 1787383099.6322994, "event": "REQUEST", "req": {"v": 1, "req_id": 9, "ts_ms": 60690, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 60690, "digest_hex": "a85303c887053cf0b1b8ba510f6af0a248c163fdd92ffc7ef8d32c5a8fd99123"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383099.832916, "event": "PUBACK", "pid": 10}
+{"ts": 1787383099.8330238, "event": "RESPONDED", "seq": 9, "req_id": 9, "served": 9}
+{"ts": 1787383127.5061262, "event": "CONNACK"}
+{"ts": 1787383127.5063658, "event": "SUBACK", "topic": "eneros/brain/request"}
+{"ts": 1787383127.5064447, "event": "PEER-READY", "policy": "overbudget", "request": "eneros/brain/request", "response": "eneros/brain/response"}
+{"ts": 1787383130.2252297, "event": "REQUEST", "req": {"v": 1, "req_id": 10, "ts_ms": 91287, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 91287, "digest_hex": "19f7b04769f5d2fd30de4c2f56c369cf78ec9272af6264f325ede3bef79e9465"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383130.2252, "event": "REQUEST", "req": {"v": 1, "req_id": 10, "ts_ms": 91287, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 91287, "digest_hex": "19f7b04769f5d2fd30de4c2f56c369cf78ec9272af6264f325ede3bef79e9465"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383130.4259315, "event": "PUBACK", "pid": 2}
+{"ts": 1787383130.4260309, "event": "RESPONDED", "seq": 1, "req_id": 10, "served": 1}
+{"ts": 1787383130.4259906, "event": "PUBACK", "pid": 11}
+{"ts": 1787383130.426089, "event": "RESPONDED", "seq": 10, "req_id": 10, "served": 10}
+{"ts": 1787383160.6627471, "event": "REQUEST", "req": {"v": 1, "req_id": 11, "ts_ms": 121715, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 121715, "digest_hex": "d3a158b0718e43d12bc52560c7ee3e430bdd3e16437c20ae18e6f842b3b2223e"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383160.6627507, "event": "REQUEST", "req": {"v": 1, "req_id": 11, "ts_ms": 121715, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 121715, "digest_hex": "d3a158b0718e43d12bc52560c7ee3e430bdd3e16437c20ae18e6f842b3b2223e"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383160.8635013, "event": "PUBACK", "pid": 3}
+{"ts": 1787383160.8635616, "event": "PUBACK", "pid": 12}
+{"ts": 1787383160.8636124, "event": "RESPONDED", "seq": 2, "req_id": 11, "served": 2}
+{"ts": 1787383160.8636613, "event": "RESPONDED", "seq": 11, "req_id": 11, "served": 11}
+{"ts": 1787383195.5490754, "event": "REQUEST", "req": {"v": 1, "req_id": 12, "ts_ms": 156587, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 156586, "digest_hex": "598923fa57d4898915e34b62aa6a31591f33a106a4bd9e40f4635bcac73b9884"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383195.5490997, "event": "REQUEST", "req": {"v": 1, "req_id": 12, "ts_ms": 156587, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 156586, "digest_hex": "598923fa57d4898915e34b62aa6a31591f33a106a4bd9e40f4635bcac73b9884"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383195.7497954, "event": "PUBACK", "pid": 13}
+{"ts": 1787383195.7498364, "event": "PUBACK", "pid": 4}
+{"ts": 1787383195.7498844, "event": "RESPONDED", "seq": 12, "req_id": 12, "served": 12}
+{"ts": 1787383195.749918, "event": "RESPONDED", "seq": 3, "req_id": 12, "served": 3}
+{"ts": 1787383197.6634645, "event": "REQUEST", "req": {"v": 1, "req_id": 13, "ts_ms": 158718, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 158718, "digest_hex": "f4ce4ed71f41ee575294f11e7771a550a57fbb8bf22a70ba94cf4f138364d238"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383197.6634817, "event": "REQUEST", "req": {"v": 1, "req_id": 13, "ts_ms": 158718, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 158718, "digest_hex": "f4ce4ed71f41ee575294f11e7771a550a57fbb8bf22a70ba94cf4f138364d238"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383197.864203, "event": "PUBACK", "pid": 5}
+{"ts": 1787383197.8643138, "event": "RESPONDED", "seq": 4, "req_id": 13, "served": 4}
+{"ts": 1787383197.8642685, "event": "PUBACK", "pid": 14}
+{"ts": 1787383197.8643832, "event": "RESPONDED", "seq": 13, "req_id": 13, "served": 13}
+{"ts": 1787383228.2323985, "event": "REQUEST", "req": {"v": 1, "req_id": 14, "ts_ms": 189286, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 189286, "digest_hex": "f2f517a656230a8b28c94793a937912c289034519b37bee084b31667c2dd1524"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383228.4329948, "event": "PUBACK", "pid": 15}
+{"ts": 1787383228.4330962, "event": "RESPONDED", "seq": 14, "req_id": 14, "served": 14}
+{"ts": 1787383229.6687462, "event": "REQUEST", "req": {"v": 1, "req_id": 15, "ts_ms": 190723, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 190723, "digest_hex": "e0f812824bb71be1c6818937630d30115c068a436d19d9de40e030a2d0701a29"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383229.869348, "event": "PUBACK", "pid": 16}
+{"ts": 1787383229.8694727, "event": "RESPONDED", "seq": 15, "req_id": 15, "served": 15}
+{"ts": 1787383231.5477908, "event": "REQUEST", "req": {"v": 1, "req_id": 16, "ts_ms": 192587, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 192586, "digest_hex": "4d8716b9457a0e15d40113e330307c96872a053874b0eeed8186467b241eea6b"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383231.748462, "event": "PUBACK", "pid": 17}
+{"ts": 1787383231.7486742, "event": "RESPONDED", "seq": 16, "req_id": 16, "served": 16}
+{"ts": 1787383233.5353162, "event": "REQUEST", "req": {"v": 1, "req_id": 17, "ts_ms": 194585, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 194585, "digest_hex": "e730c0f9f710ca2ae2040aad61022532183bfef8b75ddb765c6eda3d66758c87"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383233.7359965, "event": "PUBACK", "pid": 18}
+{"ts": 1787383233.7361007, "event": "RESPONDED", "seq": 17, "req_id": 17, "served": 17}
+{"ts": 1787383235.3462605, "event": "REQUEST", "req": {"v": 1, "req_id": 18, "ts_ms": 196386, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 196386, "digest_hex": "3b4f6d674c52bf4268820dd4561e4745de12b93b4095b667bf505ad44424466d"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383235.5469387, "event": "PUBACK", "pid": 19}
+{"ts": 1787383235.5470474, "event": "RESPONDED", "seq": 18, "req_id": 18, "served": 18}

@@ -609,8 +609,12 @@ mod tests {
     fn bundle_len_within_window_rejects_oversized() {
         assert!(!bundle_len_within_window(63), "小于 64B 头拒绝");
         assert!(
-            !bundle_len_within_window(5 * 1024 * 1024),
-            "5MiB 超出内核 4MiB 窗口必须拒绝（30 RT-003 判据，39 窗口同步）"
+            bundle_len_within_window(5 * 1024 * 1024),
+            "5MiB 在 8MiB 窗内放行（49 收口扩窗；39 卷曾以 5MiB>4MiB 拒绝）"
+        );
+        assert!(
+            !bundle_len_within_window(9 * 1024 * 1024),
+            "9MiB 超出内核 8MiB 窗口必须拒绝（30 RT-003 判据，49 窗口同步）"
         );
         assert!(
             !bundle_len_within_window(64 * 1024 * 1024),

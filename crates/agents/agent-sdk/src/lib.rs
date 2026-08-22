@@ -72,6 +72,7 @@
 extern crate alloc;
 
 pub mod agent;
+pub mod ai_relay;
 pub mod chunked;
 
 /// 服务 CSpace 的 EIPC 目标端点基槽（蓝图 40 收尾：root spawn 期 mint

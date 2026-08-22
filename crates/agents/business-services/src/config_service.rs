@@ -406,6 +406,34 @@ impl TypedConfigConsumer for OtaConsumer {
     }
 }
 
+/// 49（WP-49.2）：ai-peer 配置 consumer——svc-config registry 双向完备性
+/// （bundle 含 ai-peer 条目即须注册，否则 fail-closed unconsumed-config）。
+#[derive(Default)]
+pub struct AiPeerConsumer {
+    /// 最近应用的远程 dual-brain 状态机参数（诊断/校验保持）。
+    pub last: Option<eneros_config_bundle::ai_peer::AiPeerConfig>,
+    /// 生效 generation。
+    pub generation: u64,
+}
+
+impl TypedConfigConsumer for AiPeerConsumer {
+    type Config = eneros_config_bundle::ai_peer::AiPeerConfig;
+    fn config_id(&self) -> ConfigId {
+        ConfigId::from_static(eneros_config_bundle::schema::ai_peer::CONFIG_ID)
+    }
+    fn schema_version(&self) -> SchemaVersion {
+        SchemaVersion(eneros_config_bundle::schema::ai_peer::SCHEMA)
+    }
+    fn decode_validate(&self, raw: &[u8]) -> Result<Self::Config, ConfigError> {
+        eneros_config_bundle::ai_peer::AiPeerConfig::decode(raw)
+    }
+    fn apply(&mut self, cfg: Self::Config, generation: u64) -> Result<ApplyOutcome, ConfigError> {
+        self.last = Some(cfg);
+        self.generation = generation;
+        Ok(ApplyOutcome::Applied { generation })
+    }
+}
+
 impl Default for ConfigService {
     fn default() -> Self {
         Self::new()
@@ -425,6 +453,8 @@ impl ConfigService {
         registry.register(alloc::boxed::Box::new(OtaConsumer::default()));
         // 蓝图 45：点表（bundle 含 points 条目即须有消费；否则 UnconsumedConfig）。
         registry.register(alloc::boxed::Box::new(PointsConsumer::default()));
+        // 49（WP-49.2）：ai-peer consumer（registry 双向完备性）。
+        registry.register(alloc::boxed::Box::new(AiPeerConsumer::default()));
         // 46（WP-46.3）：7 份协议配置 consumer——registry 双向完备性（否则
         // bundle 含 protocol-* 即 fail-closed unconsumed-config）。
         for id in eneros_config_bundle::protocol::PROTOCOL_CONFIG_IDS {
@@ -608,6 +638,29 @@ mod tests {
             let compiled = eneros_config_bundle::toml_compile::compile_by_id(id, &text, injected)
                 .unwrap()
                 .unwrap();
+            let digest = CbDigest::of(&compiled.payload);
+            entries.push(SignedConfigEntry {
+                config_id: compiled.config_id,
+                schema: SchemaVersion(1),
+                generation: 3,
+                payload: compiled.payload,
+                payload_digest: digest,
+                signature: Vec::new(),
+            });
+        }
+        // 49（WP-49.2）：ai-peer（registry 双向完备——AiPeerConsumer 注册后
+        // bundle 缺 ai-peer 即 MissingConfigEntry fail-closed）。
+        {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../configs/ai-peer.toml");
+            let text = std::fs::read_to_string(&path).unwrap();
+            let compiled = eneros_config_bundle::toml_compile::compile_by_id(
+                eneros_config_bundle::schema::ai_peer::CONFIG_ID,
+                &text,
+                None,
+            )
+            .unwrap()
+            .unwrap();
             let digest = CbDigest::of(&compiled.payload);
             entries.push(SignedConfigEntry {
                 config_id: compiled.config_id,

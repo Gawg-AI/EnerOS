@@ -30,6 +30,12 @@ pub const PROTOCOL_CONFIG_IDS: &[&str] = &[
     "protocol-mms",
     "protocol-goose",
     "protocol-sv",
+    // 48 卷 ACTIVE 协议（能力壳；49 卷修齐 typed compiler 键表登记——
+    // config compile 对全部 ACTIVE 配置要求可编译，缺登记即构建链阻断）。
+    "protocol-dlt645",
+    "protocol-iec101",
+    "protocol-iec103",
+    "protocol-gbt27930",
 ];
 
 /// 每协议已知键（= 插件 validate_config 的 KNOWN_KEYS；未知键拒绝）。
@@ -44,7 +50,42 @@ pub fn known_keys(id: &str) -> Option<&'static [&'static str]> {
             "poll_interval_ms",
             "clock_sync_interval_ms",
         ],
-        "protocol-mqtt" => &["broker", "client_id", "keep_alive_ms", "control_topic"],
+        "protocol-mqtt" => &[
+            "broker",
+            "client_id",
+            "keep_alive_ms",
+            "control_topic",
+            // 49（WP-49.2）：远程 dual-brain 传输面主题（可选）。
+            "ai_request_topic",
+            "ai_response_topic",
+        ],
+        // 48（WP-48.1..48.4）四协议键表（= 各 crate validate_config 已知键；
+        // 49 修齐——与 configs/protocol-*.toml 一致，未知键拒绝语义不变）。
+        "protocol-dlt645" => &["addr_bcd", "baud", "timeout_ms", "retries"],
+        "protocol-iec101" => &[
+            "link_addr",
+            "common_addr",
+            "link_addr_size",
+            "common_addr_size",
+            "balanced",
+            "t0_ms",
+            "t1_ms",
+            "t2_ms",
+            "t3_ms",
+            "k",
+            "w",
+            "timeout_ms",
+        ],
+        "protocol-iec103" => &["common_addr", "timeout_ms", "retries"],
+        "protocol-gbt27930" => &[
+            "charger_addr",
+            "bms_addr",
+            "handshake_timeout_ms",
+            "param_timeout_ms",
+            "charging_timeout_ms",
+            "end_timeout_ms",
+            "retransmit_max",
+        ],
         "protocol-mms" => &["peer", "timeout_ms", "ap_title"],
         "protocol-goose" => &[
             "app_id",

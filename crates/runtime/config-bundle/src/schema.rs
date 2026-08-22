@@ -151,3 +151,30 @@ pub mod points {
     pub const PROTO_SV: u8 = 6;
     pub const PROTO_MQTT: u8 = 7;
 }
+
+/// `ai-peer`（consumer: svc-ai-worker；schema v1；49 WP-49.2 远程 dual-brain
+/// 状态机参数——全部必配 fail-closed，禁凭记忆缺省）
+pub mod ai_peer {
+    pub const CONFIG_ID: &str = "ai-peer";
+    pub const SCHEMA: u16 = 1;
+    pub const MAX_FIELD: u8 = 5;
+    /// 1：在途请求超时毫秒 u64（值域 [100, 60000]）。
+    pub const FIELD_TIMEOUT_MS: u8 = 1;
+    /// 2：连续超时→Unhealthy 阈值 u32（[1, 10]）。
+    pub const FIELD_UNHEALTHY_AFTER: u8 = 2;
+    /// 3：Unhealthy 探测周期 tick 数 u32（[1, 100]）。
+    pub const FIELD_PROBE_EVERY: u8 = 3;
+    /// 4：功率幅值预算 kW f64 LE bits（(0, 1000]）。
+    pub const FIELD_MAX_POWER_KW: u8 = 4;
+    /// 5：提案 TTL 上限秒 u32（[1, 3600]）。
+    pub const FIELD_TTL_SECS: u8 = 5;
+
+    pub const TIMEOUT_MS_MIN: u64 = 100;
+    pub const TIMEOUT_MS_MAX: u64 = 60_000;
+    pub const UNHEALTHY_AFTER_MIN: u32 = 1;
+    pub const UNHEALTHY_AFTER_MAX: u32 = 10;
+    pub const PROBE_EVERY_MIN: u32 = 1;
+    pub const PROBE_EVERY_MAX: u32 = 100;
+    pub const MAX_POWER_KW_MAX: f64 = 1000.0;
+    pub const TTL_SECS_MAX: u32 = 3600;
+}

@@ -27,6 +27,8 @@ use alloc::borrow::ToOwned;
 use alloc::vec::Vec;
 use core::fmt;
 
+/// 49（WP-49.2 远程 dual-brain）ai-peer 配置（target 解码面）。
+pub mod ai_peer;
 pub mod control_write;
 pub mod payload;
 /// 蓝图 45 点表（target 解码面 + PointsConsumer）。no_std + alloc。

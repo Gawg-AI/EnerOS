@@ -21,7 +21,7 @@ use toml::Value;
 
 use crate::payload::encode_payload;
 use crate::points::{point_type_from_name, point_type_ordinal, PointProtocol};
-use crate::schema::{cloud_sync, control_write, logging, metrics, ota, points};
+use crate::schema::{ai_peer, cloud_sync, control_write, logging, metrics, ota, points};
 use crate::{ConfigError, ConfigId};
 
 /// 编译结果：config_id + canonical payload。
@@ -1005,6 +1005,94 @@ pub fn compile_protocol(config_id: &str, toml: &str) -> Result<CompiledConfig, C
     })
 }
 
+/// 49（WP-49.2）：`ai-peer` 编译——RemoteBrain 状态机参数，**五键全必配**
+/// （fail-closed 禁凭记忆缺省；48 卷 config 解析器数值纪律同款：先值域后
+/// 类型，杜绝 as 截断）。
+pub fn compile_ai_peer(toml: &str) -> Result<CompiledConfig, ConfigError> {
+    let config = ConfigId::from_static(ai_peer::CONFIG_ID);
+    let root: Value = toml::from_str(toml).map_err(|e| ConfigError::InvalidValue {
+        config: config.clone(),
+        field: "toml",
+        reason: format!("parse:{e}"),
+    })?;
+    let t = section(&root, &config, "ai_peer")?;
+    reject_unknown_keys(
+        t,
+        &config,
+        &[
+            "timeout_ms",
+            "unhealthy_after",
+            "probe_every",
+            "max_power_kw",
+            "ttl_secs",
+        ],
+    )?;
+    let timeout_ms = get_u64(t, &config, "timeout_ms")?;
+    if !(ai_peer::TIMEOUT_MS_MIN..=ai_peer::TIMEOUT_MS_MAX).contains(&timeout_ms) {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "timeout_ms",
+            reason: alloc::format!(
+                "range-{}..={}",
+                ai_peer::TIMEOUT_MS_MIN,
+                ai_peer::TIMEOUT_MS_MAX
+            ),
+        });
+    }
+    let unhealthy_after = get_u32(t, &config, "unhealthy_after")?;
+    if !(ai_peer::UNHEALTHY_AFTER_MIN..=ai_peer::UNHEALTHY_AFTER_MAX).contains(&unhealthy_after) {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "unhealthy_after",
+            reason: "range-1..=10".into(),
+        });
+    }
+    let probe_every = get_u32(t, &config, "probe_every")?;
+    if !(ai_peer::PROBE_EVERY_MIN..=ai_peer::PROBE_EVERY_MAX).contains(&probe_every) {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "probe_every",
+            reason: "range-1..=100".into(),
+        });
+    }
+    let max_power_kw = get_f64_req(t, &config, "max_power_kw")?;
+    if !max_power_kw.is_finite() || max_power_kw <= 0.0 || max_power_kw > ai_peer::MAX_POWER_KW_MAX
+    {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "max_power_kw",
+            reason: alloc::format!("range-(0..={}]", ai_peer::MAX_POWER_KW_MAX),
+        });
+    }
+    let ttl_secs = get_u32(t, &config, "ttl_secs")?;
+    if ttl_secs == 0 || ttl_secs > ai_peer::TTL_SECS_MAX {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "ttl_secs",
+            reason: "range-1..=3600".into(),
+        });
+    }
+    Ok(CompiledConfig {
+        payload: encode_payload(&[
+            (ai_peer::FIELD_TIMEOUT_MS, timeout_ms.to_le_bytes().to_vec()),
+            (
+                ai_peer::FIELD_UNHEALTHY_AFTER,
+                unhealthy_after.to_le_bytes().to_vec(),
+            ),
+            (
+                ai_peer::FIELD_PROBE_EVERY,
+                probe_every.to_le_bytes().to_vec(),
+            ),
+            (
+                ai_peer::FIELD_MAX_POWER_KW,
+                max_power_kw.to_le_bytes().to_vec(),
+            ),
+            (ai_peer::FIELD_TTL_SECS, ttl_secs.to_le_bytes().to_vec()),
+        ]),
+        config_id: config,
+    })
+}
+
 pub fn compile_by_id(
     config_id: &str,
     toml: &str,
@@ -1012,6 +1100,7 @@ pub fn compile_by_id(
 ) -> Result<Option<CompiledConfig>, ConfigError> {
     match config_id {
         control_write::CONFIG_ID => compile_control_write(toml).map(Some),
+        ai_peer::CONFIG_ID => compile_ai_peer(toml).map(Some),
         ota::CONFIG_ID => compile_ota(toml, injected_root_key).map(Some),
         cloud_sync::CONFIG_ID => compile_cloud_sync(toml).map(Some),
         metrics::CONFIG_ID => compile_metrics(toml).map(Some),

@@ -256,6 +256,11 @@ impl<B: DecisionBackend> AiWorkerService<B> {
         }
     }
 
+    /// 49（WP-49.2）：后端可变访问（装配层读决策元数据/切换事件做审计）。
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
     /// 处理一次推理请求（可信遥测 wire → proposal wire/结构化拒绝）。
     pub fn propose(&mut self, req: &[u8], now_ms: u64) -> Vec<u8> {
         let Some(&code) = req.first() else {

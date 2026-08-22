@@ -20,6 +20,10 @@ owner = "blueprint-41"
 consumer = ["svc-control-dispatch"]
 note = "控制写租约/握手配置；HMAC 密钥不落文件，经装配层注入"
 
+[active."ai-peer"]
+consumer = ["svc-ai-worker"]
+note = "49（WP-49.2）远程 dual-brain 状态机参数（超时/Unhealthy 阈值/探测周期/功率预算/TTL）；全必配 fail-closed"
+
 [active."ota"]
 consumer = ["svc-ota"]
 note = "系统 OTA 分区/升级/安全参数；root_key 构建期注入（KMS），仓内不落明文"
