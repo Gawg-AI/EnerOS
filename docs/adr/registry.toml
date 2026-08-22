@@ -375,3 +375,12 @@ status = "Accepted"
 supersedes = []
 superseded_by = ""
 decision_digest = ""
+
+[[adrs]]
+id = "ADR-0045"
+path = "docs/adr/ADR-0045-system2-supply-architecture.md"
+title = "System2 供给架构——远程 peer 主线（方案 B）+ 本地推理 spike 带杀死判据"
+status = "Draft"
+supersedes = []
+superseded_by = ""
+decision_digest = ""
