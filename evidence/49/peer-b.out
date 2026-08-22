@@ -1,0 +1,30 @@
+{"ts": 1787383127.5061262, "event": "CONNACK"}
+{"ts": 1787383127.5063658, "event": "SUBACK", "topic": "eneros/brain/request"}
+{"ts": 1787383127.5064447, "event": "PEER-READY", "policy": "overbudget", "request": "eneros/brain/request", "response": "eneros/brain/response"}
+{"ts": 1787383130.2252297, "event": "REQUEST", "req": {"v": 1, "req_id": 10, "ts_ms": 91287, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 91287, "digest_hex": "19f7b04769f5d2fd30de4c2f56c369cf78ec9272af6264f325ede3bef79e9465"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383130.4259315, "event": "PUBACK", "pid": 2}
+{"ts": 1787383130.4260309, "event": "RESPONDED", "seq": 1, "req_id": 10, "served": 1}
+{"ts": 1787383160.6627507, "event": "REQUEST", "req": {"v": 1, "req_id": 11, "ts_ms": 121715, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 121715, "digest_hex": "d3a158b0718e43d12bc52560c7ee3e430bdd3e16437c20ae18e6f842b3b2223e"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383160.8635013, "event": "PUBACK", "pid": 3}
+{"ts": 1787383160.8636124, "event": "RESPONDED", "seq": 2, "req_id": 11, "served": 2}
+{"ts": 1787383195.5490997, "event": "REQUEST", "req": {"v": 1, "req_id": 12, "ts_ms": 156587, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 156586, "digest_hex": "598923fa57d4898915e34b62aa6a31591f33a106a4bd9e40f4635bcac73b9884"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383195.7498364, "event": "PUBACK", "pid": 4}
+{"ts": 1787383195.749918, "event": "RESPONDED", "seq": 3, "req_id": 12, "served": 3}
+{"ts": 1787383197.6634817, "event": "REQUEST", "req": {"v": 1, "req_id": 13, "ts_ms": 158718, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 158718, "digest_hex": "f4ce4ed71f41ee575294f11e7771a550a57fbb8bf22a70ba94cf4f138364d238"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787383197.864203, "event": "PUBACK", "pid": 5}
+{"ts": 1787383197.8643138, "event": "RESPONDED", "seq": 4, "req_id": 13, "served": 4}
+{"ts": 1787385082.149281, "event": "CONNACK"}
+{"ts": 1787385082.1500056, "event": "SUBACK", "topic": "eneros/brain/request"}
+{"ts": 1787385082.150061, "event": "PEER-READY", "policy": "overbudget", "request": "eneros/brain/request", "response": "eneros/brain/response"}
+{"ts": 1787385083.310369, "event": "REQUEST", "req": {"v": 1, "req_id": 10, "ts_ms": 88714, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 88714, "digest_hex": "1b44b625d7dce58e78ccd910f0cb115bc9837a525b09d12ac5a534fb2fe3b186"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787385083.5112035, "event": "PUBACK", "pid": 2}
+{"ts": 1787385083.511311, "event": "RESPONDED", "seq": 1, "req_id": 10, "served": 1}
+{"ts": 1787385085.4014397, "event": "REQUEST", "req": {"v": 1, "req_id": 11, "ts_ms": 90822, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 90822, "digest_hex": "e76d9bec77b531c5b6abe45cbc4a03e7e73f75f97b86e10d010ce42b433ff1be"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787385085.6023183, "event": "PUBACK", "pid": 3}
+{"ts": 1787385085.60241, "event": "RESPONDED", "seq": 2, "req_id": 11, "served": 2}
+{"ts": 1787385115.9948502, "event": "REQUEST", "req": {"v": 1, "req_id": 12, "ts_ms": 121417, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 121417, "digest_hex": "51895b483621b07952f6c010dae54617caae216e5c357c670cfc94c817364156"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787385116.195681, "event": "PUBACK", "pid": 4}
+{"ts": 1787385116.1957924, "event": "RESPONDED", "seq": 3, "req_id": 12, "served": 3}
+{"ts": 1787385146.3000793, "event": "REQUEST", "req": {"v": 1, "req_id": 13, "ts_ms": 151722, "telemetry": {"soc_pct": 0.6, "voltage_v": 400.0, "current_a": 50.0, "frequency_hz": 50.0, "generated_at_ms": 151722, "digest_hex": "bf303cac24e0e40834b93ff892e4a54027afcb3a5167703942f8644705afadeb"}, "budget": {"max_power_kw": 5.0, "ttl_secs": 60}}}
+{"ts": 1787385146.5008197, "event": "PUBACK", "pid": 5}
+{"ts": 1787385146.500927, "event": "RESPONDED", "seq": 4, "req_id": 13, "served": 4}

@@ -1,110 +1,105 @@
-{"ts": 1787383034.4654648, "event": "BROKER-LISTEN", "port": 1883}
-{"ts": 1787383034.9666197, "event": "CONNACK", "conn": "52148"}
-{"ts": 1787383034.9669652, "event": "SUBSCRIBE", "conn": "52148", "topics": [["eneros/brain/request", 1]]}
-{"ts": 1787383047.9286628, "event": "CONNACK", "conn": "51292"}
-{"ts": 1787383047.9297674, "event": "SUBSCRIBE", "conn": "51292", "topics": [["eneros/control", 0]]}
-{"ts": 1787383047.9301448, "event": "SUBSCRIBE", "conn": "51292", "topics": [["eneros/brain/response", 1]]}
-{"ts": 1787383055.487537, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":1,\"ts_ms\":16504,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":16481,\"digest_hex\":\"cabc14f6712096c6bc30bc91de5f929e49d81b4b1c391cd88073663713018fce\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383055.4877763, "event": "PUBACK->publisher", "conn": "51292", "pid": 3}
-{"ts": 1787383055.487853, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 1}
-{"ts": 1787383055.6882076, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 1, \"seq\": 1, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383055.6883862, "event": "PUBACK->publisher", "conn": "52148", "pid": 2}
-{"ts": 1787383085.8891416, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":2,\"ts_ms\":46943,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":46943,\"digest_hex\":\"e748fec6dbe3a891c88c3349db439ff98d9354d6ee4fcea931eb60b21c988356\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383085.8898554, "event": "PUBACK->publisher", "conn": "51292", "pid": 4}
-{"ts": 1787383085.889943, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 3}
-{"ts": 1787383086.090604, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 2, \"seq\": 2, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383086.0908935, "event": "PUBACK->publisher", "conn": "52148", "pid": 3}
-{"ts": 1787383087.3505177, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":3,\"ts_ms\":48410,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":48409,\"digest_hex\":\"2403220062d4534c0fbb7822529d70a6be72c2d0622a35212f232c567ba0cd76\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383087.3507676, "event": "PUBACK->publisher", "conn": "51292", "pid": 5}
-{"ts": 1787383087.3508441, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 5}
-{"ts": 1787383087.5512319, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 3, \"seq\": 3, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383087.5514688, "event": "PUBACK->publisher", "conn": "52148", "pid": 4}
-{"ts": 1787383089.3246713, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":4,\"ts_ms\":50388,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":50387,\"digest_hex\":\"d4078e89fb46f23d083e57552dc497ef0a90b68d71a64bbc21866f96eade418d\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383089.3249223, "event": "PUBACK->publisher", "conn": "51292", "pid": 6}
-{"ts": 1787383089.3250315, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 7}
-{"ts": 1787383089.525437, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 4, \"seq\": 4, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383089.5257459, "event": "PUBACK->publisher", "conn": "52148", "pid": 5}
-{"ts": 1787383091.529402, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":5,\"ts_ms\":52587,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":52586,\"digest_hex\":\"05e8ecb6a57135de01561926cc110ae413057c94ffb60128e3c5718bd4aab48a\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383091.5296752, "event": "PUBACK->publisher", "conn": "51292", "pid": 7}
-{"ts": 1787383091.529761, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 9}
-{"ts": 1787383091.7301989, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 5, \"seq\": 5, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383091.7304296, "event": "PUBACK->publisher", "conn": "52148", "pid": 6}
-{"ts": 1787383093.1312037, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":6,\"ts_ms\":54194,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":54194,\"digest_hex\":\"6830c5200701d1e6e1fe6f3b95d09a400e418957a153773615be532f9263f300\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383093.1314795, "event": "PUBACK->publisher", "conn": "51292", "pid": 8}
-{"ts": 1787383093.131544, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 11}
-{"ts": 1787383093.331944, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 6, \"seq\": 6, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383093.33215, "event": "PUBACK->publisher", "conn": "52148", "pid": 7}
-{"ts": 1787383095.1231954, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":7,\"ts_ms\":56187,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":56186,\"digest_hex\":\"79ce96cb8be7edd864c141e29cd2be3eb47ee2853d1878ed48a1c71e3e721bc6\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383095.1234524, "event": "PUBACK->publisher", "conn": "51292", "pid": 9}
-{"ts": 1787383095.1235392, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 13}
-{"ts": 1787383095.3240857, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 7, \"seq\": 7, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383095.3243122, "event": "PUBACK->publisher", "conn": "52148", "pid": 8}
-{"ts": 1787383097.3392074, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":8,\"ts_ms\":58402,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":58402,\"digest_hex\":\"5ad5822696b37b97a207510417514a0bf4c9f9667c61903de8cba33ef57945f0\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383097.3394039, "event": "PUBACK->publisher", "conn": "51292", "pid": 10}
-{"ts": 1787383097.3395221, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 15}
-{"ts": 1787383097.539947, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 8, \"seq\": 8, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383097.5401764, "event": "PUBACK->publisher", "conn": "52148", "pid": 9}
-{"ts": 1787383099.631945, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":9,\"ts_ms\":60690,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":60690,\"digest_hex\":\"a85303c887053cf0b1b8ba510f6af0a248c163fdd92ffc7ef8d32c5a8fd99123\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383099.6322145, "event": "PUBACK->publisher", "conn": "51292", "pid": 11}
-{"ts": 1787383099.6322958, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 17}
-{"ts": 1787383099.8326817, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 9, \"seq\": 9, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383099.83289, "event": "PUBACK->publisher", "conn": "52148", "pid": 10}
-{"ts": 1787383127.5061102, "event": "CONNACK", "conn": "38204"}
-{"ts": 1787383127.5063465, "event": "SUBSCRIBE", "conn": "38204", "topics": [["eneros/brain/request", 1]]}
-{"ts": 1787383130.224842, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":10,\"ts_ms\":91287,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":91287,\"digest_hex\":\"19f7b04769f5d2fd30de4c2f56c369cf78ec9272af6264f325ede3bef79e9465\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383130.225146, "event": "PUBACK->publisher", "conn": "51292", "pid": 12}
-{"ts": 1787383130.2252576, "event": "PUBACK<-subscriber", "conn": "38204", "pid": 20}
-{"ts": 1787383130.225193, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 19}
-{"ts": 1787383130.425617, "event": "PUBLISH", "conn": "38204", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 10, \"seq\": 1, \"plan\": {\"power_kw\": 10.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"OVERBUDGET x2.0 limit=5.0\"}", "qos": 1}
-{"ts": 1787383130.4256866, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 10, \"seq\": 10, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383130.4259703, "event": "PUBACK->publisher", "conn": "52148", "pid": 11}
-{"ts": 1787383130.4259303, "event": "PUBACK->publisher", "conn": "38204", "pid": 2}
-{"ts": 1787383160.662346, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":11,\"ts_ms\":121715,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":121715,\"digest_hex\":\"d3a158b0718e43d12bc52560c7ee3e430bdd3e16437c20ae18e6f842b3b2223e\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383160.6626523, "event": "PUBACK->publisher", "conn": "51292", "pid": 13}
-{"ts": 1787383160.6627173, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 23}
-{"ts": 1787383160.6628036, "event": "PUBACK<-subscriber", "conn": "38204", "pid": 24}
-{"ts": 1787383160.8631353, "event": "PUBLISH", "conn": "38204", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 11, \"seq\": 2, \"plan\": {\"power_kw\": 10.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"OVERBUDGET x2.0 limit=5.0\"}", "qos": 1}
-{"ts": 1787383160.8632076, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 11, \"seq\": 11, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383160.8635397, "event": "PUBACK->publisher", "conn": "52148", "pid": 12}
-{"ts": 1787383160.8634903, "event": "PUBACK->publisher", "conn": "38204", "pid": 3}
-{"ts": 1787383195.5487418, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":12,\"ts_ms\":156587,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":156586,\"digest_hex\":\"598923fa57d4898915e34b62aa6a31591f33a106a4bd9e40f4635bcac73b9884\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383195.5490181, "event": "PUBACK->publisher", "conn": "51292", "pid": 14}
-{"ts": 1787383195.549071, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 27}
-{"ts": 1787383195.5491512, "event": "PUBACK<-subscriber", "conn": "38204", "pid": 28}
-{"ts": 1787383195.7494526, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 12, \"seq\": 12, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383195.7495322, "event": "PUBLISH", "conn": "38204", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 12, \"seq\": 3, \"plan\": {\"power_kw\": 10.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"OVERBUDGET x2.0 limit=5.0\"}", "qos": 1}
-{"ts": 1787383195.7497797, "event": "PUBACK->publisher", "conn": "52148", "pid": 13}
-{"ts": 1787383195.749821, "event": "PUBACK->publisher", "conn": "38204", "pid": 4}
-{"ts": 1787383197.6631358, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":13,\"ts_ms\":158718,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":158718,\"digest_hex\":\"f4ce4ed71f41ee575294f11e7771a550a57fbb8bf22a70ba94cf4f138364d238\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383197.663389, "event": "PUBACK->publisher", "conn": "51292", "pid": 15}
-{"ts": 1787383197.663472, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 31}
-{"ts": 1787383197.6635277, "event": "PUBACK<-subscriber", "conn": "38204", "pid": 32}
-{"ts": 1787383197.8638544, "event": "PUBLISH", "conn": "38204", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 13, \"seq\": 4, \"plan\": {\"power_kw\": 10.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"OVERBUDGET x2.0 limit=5.0\"}", "qos": 1}
-{"ts": 1787383197.8639302, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 13, \"seq\": 13, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383197.8641932, "event": "PUBACK->publisher", "conn": "38204", "pid": 5}
-{"ts": 1787383197.8642304, "event": "PUBACK->publisher", "conn": "52148", "pid": 14}
-{"ts": 1787383228.232083, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":14,\"ts_ms\":189286,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":189286,\"digest_hex\":\"f2f517a656230a8b28c94793a937912c289034519b37bee084b31667c2dd1524\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383228.2323358, "event": "PUBACK->publisher", "conn": "51292", "pid": 16}
-{"ts": 1787383228.2324014, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 35}
-{"ts": 1787383228.4327545, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 14, \"seq\": 14, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383228.4329703, "event": "PUBACK->publisher", "conn": "52148", "pid": 15}
-{"ts": 1787383229.668335, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":15,\"ts_ms\":190723,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":190723,\"digest_hex\":\"e0f812824bb71be1c6818937630d30115c068a436d19d9de40e030a2d0701a29\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383229.6686425, "event": "PUBACK->publisher", "conn": "51292", "pid": 17}
-{"ts": 1787383229.6687324, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 37}
-{"ts": 1787383229.8691337, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 15, \"seq\": 15, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383229.8693273, "event": "PUBACK->publisher", "conn": "52148", "pid": 16}
-{"ts": 1787383231.5475132, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":16,\"ts_ms\":192587,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":192586,\"digest_hex\":\"4d8716b9457a0e15d40113e330307c96872a053874b0eeed8186467b241eea6b\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383231.5477226, "event": "PUBACK->publisher", "conn": "51292", "pid": 18}
-{"ts": 1787383231.5477912, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 39}
-{"ts": 1787383231.7481737, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 16, \"seq\": 16, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383231.748395, "event": "PUBACK->publisher", "conn": "52148", "pid": 17}
-{"ts": 1787383233.534967, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":17,\"ts_ms\":194585,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":194585,\"digest_hex\":\"e730c0f9f710ca2ae2040aad61022532183bfef8b75ddb765c6eda3d66758c87\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383233.5352259, "event": "PUBACK->publisher", "conn": "51292", "pid": 19}
-{"ts": 1787383233.5352976, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 41}
-{"ts": 1787383233.7357404, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 17, \"seq\": 17, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383233.735969, "event": "PUBACK->publisher", "conn": "52148", "pid": 18}
-{"ts": 1787383235.345901, "event": "PUBLISH", "conn": "51292", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":18,\"ts_ms\":196386,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":196386,\"digest_hex\":\"3b4f6d674c52bf4268820dd4561e4745de12b93b4095b667bf505ad44424466d\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
-{"ts": 1787383235.3461905, "event": "PUBACK->publisher", "conn": "51292", "pid": 20}
-{"ts": 1787383235.3462627, "event": "PUBACK<-subscriber", "conn": "52148", "pid": 43}
-{"ts": 1787383235.5466716, "event": "PUBLISH", "conn": "52148", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 18, \"seq\": 18, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
-{"ts": 1787383235.5469162, "event": "PUBACK->publisher", "conn": "52148", "pid": 19}
+{"ts": 1787384989.6403875, "event": "BROKER-LISTEN", "port": 1883}
+{"ts": 1787384989.6427712, "event": "CONNACK", "conn": "56356"}
+{"ts": 1787384989.64293, "event": "SUBSCRIBE", "conn": "56356", "topics": [["eneros/brain/request", 1]]}
+{"ts": 1787385003.523566, "event": "CONNACK", "conn": "37228"}
+{"ts": 1787385003.5247548, "event": "SUBSCRIBE", "conn": "37228", "topics": [["eneros/control", 0]]}
+{"ts": 1787385003.5251067, "event": "SUBSCRIBE", "conn": "37228", "topics": [["eneros/brain/response", 1]]}
+{"ts": 1787385010.8198788, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":1,\"ts_ms\":16178,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":16153,\"digest_hex\":\"8158e11ebe7bd13e7aa093ac74f9f82ecff6eafa0a73e87f91370226421f2031\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385010.8201582, "event": "PUBACK->publisher", "conn": "37228", "pid": 3}
+{"ts": 1787385010.820232, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 1}
+{"ts": 1787385011.0206513, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 1, \"seq\": 1, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385011.02087, "event": "PUBACK->publisher", "conn": "56356", "pid": 2}
+{"ts": 1787385013.0898798, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":2,\"ts_ms\":18516,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":18516,\"digest_hex\":\"5de068316d7e9adbf0542d089cad9614ee68d7ce8137a124c7fe15e71993afb5\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385013.0901577, "event": "PUBACK->publisher", "conn": "37228", "pid": 4}
+{"ts": 1787385013.0902882, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 3}
+{"ts": 1787385013.2907412, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 2, \"seq\": 2, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385013.290921, "event": "PUBACK->publisher", "conn": "56356", "pid": 3}
+{"ts": 1787385014.4926867, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":3,\"ts_ms\":19917,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":19917,\"digest_hex\":\"bf68b5e6463b174ec891d17c517e0ecc5b706803e8af86aa7847b43f075b1f19\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385014.492935, "event": "PUBACK->publisher", "conn": "37228", "pid": 5}
+{"ts": 1787385014.4930522, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 5}
+{"ts": 1787385014.6934848, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 3, \"seq\": 3, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385014.6937547, "event": "PUBACK->publisher", "conn": "56356", "pid": 4}
+{"ts": 1787385015.995483, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":4,\"ts_ms\":21416,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":21416,\"digest_hex\":\"928e34aca29a4f62b41f0de12efa97cc3204f3dcc667a816622c4aee3f997fd1\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385015.995721, "event": "PUBACK->publisher", "conn": "37228", "pid": 6}
+{"ts": 1787385015.9958503, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 7}
+{"ts": 1787385016.1963096, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 4, \"seq\": 4, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385016.1966581, "event": "PUBACK->publisher", "conn": "56356", "pid": 5}
+{"ts": 1787385017.894604, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":5,\"ts_ms\":23317,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":23317,\"digest_hex\":\"688cd1885b58ba817b2c841e38fe0f4c1a6001225d88f13141503962701e7801\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385017.8947847, "event": "PUBACK->publisher", "conn": "37228", "pid": 7}
+{"ts": 1787385017.8948448, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 9}
+{"ts": 1787385018.0952249, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 5, \"seq\": 5, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385018.0954597, "event": "PUBACK->publisher", "conn": "56356", "pid": 6}
+{"ts": 1787385018.6648345, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":6,\"ts_ms\":24089,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":24089,\"digest_hex\":\"7f43f664e27a40767e8d518328cdc91ce490ed7e25cf6cb0a6c5548945ade50a\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385018.6651, "event": "PUBACK->publisher", "conn": "37228", "pid": 8}
+{"ts": 1787385018.6651776, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 11}
+{"ts": 1787385018.8656194, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 6, \"seq\": 6, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385018.865846, "event": "PUBACK->publisher", "conn": "56356", "pid": 7}
+{"ts": 1787385049.299624, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":7,\"ts_ms\":54715,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":54715,\"digest_hex\":\"5ed7adcd2b4f850100f9872820c407fc2e79d1e5de44ae66c1261499b9f2c435\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385049.2998593, "event": "PUBACK->publisher", "conn": "37228", "pid": 9}
+{"ts": 1787385049.2999218, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 13}
+{"ts": 1787385049.5003302, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 7, \"seq\": 7, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385049.5005653, "event": "PUBACK->publisher", "conn": "56356", "pid": 8}
+{"ts": 1787385050.898373, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":8,\"ts_ms\":56317,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":56317,\"digest_hex\":\"e34e51b830f9d937851025d5c8a38f7f6407c20b8d99a224ee2e82eb9b021da3\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385050.8986332, "event": "PUBACK->publisher", "conn": "37228", "pid": 10}
+{"ts": 1787385050.8987074, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 15}
+{"ts": 1787385051.0992012, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 8, \"seq\": 8, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385051.0994148, "event": "PUBACK->publisher", "conn": "56356", "pid": 9}
+{"ts": 1787385052.8996954, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":9,\"ts_ms\":58314,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":58314,\"digest_hex\":\"ef5665fb0c5c425d1a8ce83b49332018741744ca01fd3e4a5958e8ce7bedc8c0\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385052.899948, "event": "PUBACK->publisher", "conn": "37228", "pid": 11}
+{"ts": 1787385052.9000363, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 17}
+{"ts": 1787385053.1003819, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 9, \"seq\": 9, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385053.1005504, "event": "PUBACK->publisher", "conn": "56356", "pid": 10}
+{"ts": 1787385082.1492572, "event": "CONNACK", "conn": "36664"}
+{"ts": 1787385082.1499758, "event": "SUBSCRIBE", "conn": "36664", "topics": [["eneros/brain/request", 1]]}
+{"ts": 1787385083.3099678, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":10,\"ts_ms\":88714,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":88714,\"digest_hex\":\"1b44b625d7dce58e78ccd910f0cb115bc9837a525b09d12ac5a534fb2fe3b186\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385083.3102586, "event": "PUBACK->publisher", "conn": "37228", "pid": 12}
+{"ts": 1787385083.3103588, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 19}
+{"ts": 1787385083.3104022, "event": "PUBACK<-subscriber", "conn": "36664", "pid": 20}
+{"ts": 1787385083.510793, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 10, \"seq\": 10, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385083.5108852, "event": "PUBLISH", "conn": "36664", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 10, \"seq\": 1, \"plan\": {\"power_kw\": 10.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"OVERBUDGET x2.0 limit=5.0\"}", "qos": 1}
+{"ts": 1787385083.5111895, "event": "PUBACK->publisher", "conn": "36664", "pid": 2}
+{"ts": 1787385083.511148, "event": "PUBACK->publisher", "conn": "56356", "pid": 11}
+{"ts": 1787385085.4010627, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":11,\"ts_ms\":90822,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":90822,\"digest_hex\":\"e76d9bec77b531c5b6abe45cbc4a03e7e73f75f97b86e10d010ce42b433ff1be\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385085.4013317, "event": "PUBACK->publisher", "conn": "37228", "pid": 13}
+{"ts": 1787385085.401413, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 23}
+{"ts": 1787385085.4015238, "event": "PUBACK<-subscriber", "conn": "36664", "pid": 24}
+{"ts": 1787385085.6019497, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 11, \"seq\": 11, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385085.6018543, "event": "PUBLISH", "conn": "36664", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 11, \"seq\": 2, \"plan\": {\"power_kw\": 10.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"OVERBUDGET x2.0 limit=5.0\"}", "qos": 1}
+{"ts": 1787385085.6022522, "event": "PUBACK->publisher", "conn": "56356", "pid": 12}
+{"ts": 1787385085.602301, "event": "PUBACK->publisher", "conn": "36664", "pid": 3}
+{"ts": 1787385115.9944012, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":12,\"ts_ms\":121417,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":121417,\"digest_hex\":\"51895b483621b07952f6c010dae54617caae216e5c357c670cfc94c817364156\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385115.9948018, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 27}
+{"ts": 1787385115.994746, "event": "PUBACK->publisher", "conn": "37228", "pid": 14}
+{"ts": 1787385115.9948428, "event": "PUBACK<-subscriber", "conn": "36664", "pid": 28}
+{"ts": 1787385116.1952548, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 12, \"seq\": 12, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385116.195321, "event": "PUBLISH", "conn": "36664", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 12, \"seq\": 3, \"plan\": {\"power_kw\": 10.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"OVERBUDGET x2.0 limit=5.0\"}", "qos": 1}
+{"ts": 1787385116.195537, "event": "PUBACK->publisher", "conn": "56356", "pid": 13}
+{"ts": 1787385116.195632, "event": "PUBACK->publisher", "conn": "36664", "pid": 4}
+{"ts": 1787385146.299728, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":13,\"ts_ms\":151722,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":151722,\"digest_hex\":\"bf303cac24e0e40834b93ff892e4a54027afcb3a5167703942f8644705afadeb\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385146.3000271, "event": "PUBACK->publisher", "conn": "37228", "pid": 15}
+{"ts": 1787385146.3001285, "event": "PUBACK<-subscriber", "conn": "36664", "pid": 32}
+{"ts": 1787385146.300169, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 31}
+{"ts": 1787385146.5004137, "event": "PUBLISH", "conn": "36664", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 13, \"seq\": 4, \"plan\": {\"power_kw\": 10.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"OVERBUDGET x2.0 limit=5.0\"}", "qos": 1}
+{"ts": 1787385146.500605, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 13, \"seq\": 13, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385146.500818, "event": "PUBACK->publisher", "conn": "56356", "pid": 14}
+{"ts": 1787385146.5007846, "event": "PUBACK->publisher", "conn": "36664", "pid": 5}
+{"ts": 1787385179.9976716, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":14,\"ts_ms\":185416,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":185415,\"digest_hex\":\"15fc71ec1db33ae1f8b9aef29935ad42529026ed61ddcfe0eccf7aa95f5426cd\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385179.9979582, "event": "PUBACK->publisher", "conn": "37228", "pid": 16}
+{"ts": 1787385179.9980323, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 35}
+{"ts": 1787385180.1984806, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 14, \"seq\": 14, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385180.1988778, "event": "PUBACK->publisher", "conn": "56356", "pid": 15}
+{"ts": 1787385181.9900484, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":15,\"ts_ms\":187413,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":187413,\"digest_hex\":\"9b1638677243ebc5749341d9458c0016ffbccd565dce087d0cb0b02ad393eff8\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385181.9903016, "event": "PUBACK->publisher", "conn": "37228", "pid": 17}
+{"ts": 1787385181.9904337, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 37}
+{"ts": 1787385182.1908, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 15, \"seq\": 15, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385182.19104, "event": "PUBACK->publisher", "conn": "56356", "pid": 16}
+{"ts": 1787385183.4609137, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":16,\"ts_ms\":188884,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":188884,\"digest_hex\":\"aef4d3e71bf9abda78e59ff46ba2a69f701736f4759df78dc4672e34b743073d\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385183.4611087, "event": "PUBACK->publisher", "conn": "37228", "pid": 18}
+{"ts": 1787385183.4612472, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 39}
+{"ts": 1787385183.661634, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 16, \"seq\": 16, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385183.6618338, "event": "PUBACK->publisher", "conn": "56356", "pid": 17}
+{"ts": 1787385185.4583805, "event": "PUBLISH", "conn": "37228", "topic": "eneros/brain/request", "payload": "{\"v\":1,\"req_id\":17,\"ts_ms\":190881,\"telemetry\":{\"soc_pct\":0.6,\"voltage_v\":400.0,\"current_a\":50.0,\"frequency_hz\":50.0,\"generated_at_ms\":190881,\"digest_hex\":\"b8bfd4703f9358ebc5431057c55cad5a1b37848b31ab2063ec40f4d95bdd5def\"},\"budget\":{\"max_power_kw\":5.0,\"ttl_secs\":60}}", "qos": 1}
+{"ts": 1787385185.4585843, "event": "PUBACK->publisher", "conn": "37228", "pid": 19}
+{"ts": 1787385185.458671, "event": "PUBACK<-subscriber", "conn": "56356", "pid": 41}
+{"ts": 1787385185.6590946, "event": "PUBLISH", "conn": "56356", "topic": "eneros/brain/response", "payload": "{\"v\": 1, \"req_id\": 17, \"seq\": 17, \"plan\": {\"power_kw\": 4.0, \"target_device\": \"pcs\", \"ttl_secs\": 60}, \"reason\": \"soc-high-discharge limit=5.0\"}", "qos": 1}
+{"ts": 1787385185.6593094, "event": "PUBACK->publisher", "conn": "56356", "pid": 18}

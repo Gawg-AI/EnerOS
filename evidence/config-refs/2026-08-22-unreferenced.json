@@ -1,6 +1,7 @@
 {
   "missing": [],
   "referenced": [
+    "ai-peer",
     "cloud-sync",
     "control-write",
     "dengbao",
@@ -14,7 +15,6 @@
   "unreferenced": [
     "ab_partition",
     "agent_hot_update",
-    "ai-peer",
     "ancillary",
     "anomaly_rules",
     "attestation",
