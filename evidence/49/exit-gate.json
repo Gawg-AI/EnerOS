@@ -3,49 +3,61 @@
  "volume": 49,
  "volume_title": "AI 链产品化与 LLM 供给架构（远程 dual-brain 主线 + 本地推理 spike + 闭包死重治理）",
  "established": "2026-08-22",
- "commit": "752e529（WP 终提交；exit 提交 hash 见 evidence/49/exit-gate.md 头部登记）",
+ "reverified": "2026-08-22（收尾验收复验会话）",
+ "commit": "512d0a6（exit 提交，收尾验收时 HEAD 未变；复验新增 Cargo.lock 版本同步 0.313.34→0.313.35）",
  "version": "0.313.35",
  "image_sha256": "ff4dd03166a2a9e29e1f37ed10b3280a28adb07a9a25ad9260b013dd304353b1",
- "image_note": "构建时值（HEAD=0.313.34 清单重建）；盘上 raw 因 boot 实弹写入（bootctrl/durable-state）偏离构建哈希属预期行为（48 卷复验附记同款登记），盘上实测 e586be77d82bb289…",
+ "image_note": "构建时值（HEAD=0.313.34 清单重建）；盘上 raw 因 boot 实弹写入（bootctrl/durable-state）偏离构建哈希属预期行为（48 卷复验附记同款登记），复验复跑 bootctrl 重置 before_sha256=e586be77d82bb289… 与在案盘上实测一致",
  "gates": [
   {
    "id": "exit-1-adr-and-tri-state-evidence",
-   "result": "PASS（ADR 签字子项 BLOCKED 如实登记）",
-   "detail": "ADR-0045 已落库（docs/adr/ADR-0045-system2-supply-architecture.md，registry entries 40→41，status=Draft 如实）；**owner 签字未取得 = BLOCKED（owner 动作）**——按卷执行模式「owner D1 裁决 + 方案 B 推荐 = ADR 依据，不停等」实施，签字栏空置如实登记，v1.0 宣称冻结前须补签。远程 dual-brain 三态证据（HEAD 复跑，镜像 ff4dd031…）：tick 级四态单跑全呈现——System2 提案消费 used=true path=Slow ×11（verdict=Accepted×11，越权值 detail=Range(plan.power_kw,exceeds budget) 拒绝 verdict=Bad ×1 未进决策）→ peer-unhealthy consecutive=3（System1 启发式接管，dispatch 链不断）→ peer-recovered → 回 System2 消费；全程 CONTROL-CHAIN agent=OK dispatch=Committed 连续、status=OK×188、AUDIT-AI 哈希链 dropped=0；串口 evidence/49/boot/qemu-serial-exit.log（3.3MB 入库）+ broker/peer transcript（独立非 EnerOS 对端）"
+   "result": "PASS（ADR 签字子项 BLOCKED 如实登记；越权负例 detail 订正为 Sequence，Range 由 host 单测覆盖）",
+   "detail": "ADR-0045 已落库（docs/adr/ADR-0045-system2-supply-architecture.md，registry entries=41，status=Draft 如实）；**owner 签字未取得 = BLOCKED（owner 动作）**——签字栏空置如实登记，v1.0 宣称冻结前须补签。远程 dual-brain 三态证据（持久化 exit 串口 qemu-serial-exit.log 完整四态 + 收尾验收复跑旁证 qemu-serial-rereverify.log）：System2 提案消费 used=true path=Slow（exit 串口 ×11 / 复跑 ×15）→ 越权 peer 应答拒绝 verdict=Bad（exit 串口 ×1 / 复跑 ×2+1，未进决策）→ peer-unhealthy consecutive=3（System1 启发式接管，dispatch 链不断，复跑 healthy=false 行在案）→ peer-recovered 回 AI（exit 串口在案）；全程 CONTROL-CHAIN agent=OK dispatch=Committed 连续（exit 188/复跑 292）、status=OK、AUDIT-AI 哈希链 dropped=0（exit 191/复跑 294）。**订正（收尾验收实证）**：两轮持久化串口（run15+exit）与收尾复跑串口的 Bad detail 均为 `Sequence { last, got }`（双 peer seq 计数分叉，校验顺序 sequence 先于功率域），非原登记 `Range(\"plan.power_kw\",\"exceeds budget\")`；越权值（OVERBUDGET power=10.0>5.0 预算，broker transcript 在案）确实被拒且未进决策，**Range 越权拒绝路径由 host 单测覆盖**（intent-contract::peer `over_budget_power_rejected` + remote_brain `over_budget_response_rejected_as_bad`，复验 14/10 测试全绿）"
   },
   {
    "id": "exit-2-spike-report",
    "result": "PASS（结论明确 = NO-GO）",
-   "detail": "docs/ai/local-inference-spike.md：三关卡顺序执行——②静态内存审计 FAIL（host max RSS 574MiB 实测 vs QEMU 装配 128MiB 差 4.5×；ADR-0036 init bundle 排除成立；2G 板卡纸面可容但 D3 真机 BLOCKED 不计 PASS）；③aarch64 no_std 交叉编译超时间盒（nm 清点 ggml undefined=308 / llama undefined=698 含 C++ 异常五类；freestanding 冒烟 29 error 全 POSIX 面、零 ISA 不兼容证据）；④host 延迟基线（runner 真后端 wall 3.21s Exit=0）；重启条件三条登记（NPU 板卡/≤135M 模型+真机/Rust no_std 推理核心）。spike 期间 target 闭包零推理代码（红线遵守，closure gate 复核）"
+   "detail": "docs/ai/local-inference-spike.md：三关卡顺序执行——②静态内存审计 FAIL（host max RSS 574MiB 实测 vs QEMU 装配 128MiB 差 4.5×；ADR-0036 init bundle 排除成立；2G 板卡纸面可容但 D3 真机 BLOCKED 不计 PASS）；③aarch64 no_std 交叉编译超时间盒（nm 清点 ggml undefined=308 / llama undefined=698 含 C++ 异常五类；freestanding 冒烟 29 error 全 POSIX 面、零 ISA 不兼容证据）；④host 延迟基线（runner 真后端 wall 3.21s Exit=0）；重启条件三条登记（NPU 板卡/≤135M 模型+真机/Rust no_std 推理核心）。spike 期间 target 闭包零推理代码（红线遵守，closure gate 复核）；原始数据四件在库（symbol-inventory/aarch64-freestanding-errors/freestanding-shim/runner-run，收尾验收逐一核对）"
   },
   {
    "id": "exit-3-closure-dead-weight",
-   "result": "PASS",
-   "detail": "dual-brain coordinator feature 门控：intent-parser/fast-path/infer-scheduler/prompt-template/llm-engine 五 crate 移出 target 依赖（optional+host 消费方启用）；intent-contract 判定=消费保留（49.2 peer 契约必需）；closure gate 实测 reached_packages 126→122（binaries=32 denied=0 crypto_violations=0 PASS，digest bdd2332e…）；体积对比前后逐字节同值如实登记（wp494-sizes-{before,after}.txt——零调用者从未被链接，收益在依赖图账目）；调用图判定=人工清单登记（蓝图许可选项 b）+ cargo tree 反向边证据"
+   "result": "PASS（移出数量订正：实际 4 crate 全移出，intent-parser 经 intent-contract 保留非零调用者）",
+   "detail": "dual-brain coordinator feature 门控（Cargo.toml 实证：intent-parser/fast-path/infer-scheduler/prompt-template/llm-engine 五 crate optional=coordinator 门内）；closure gate 实测 reached_packages 126→122（binaries=32 denied=0 crypto_violations=0 PASS，digest bdd2332e…，收尾验收复跑逐字一致）；体积对比前后逐字节同值如实登记（wp494-sizes-{before,after}.txt——零调用者从未被链接，收益在依赖图账目）。**订正（收尾验收实证）**：cargo tree（aarch64-unknown-none）复核——fast-path/infer-scheduler/prompt-template/llm-engine **4 crate 全移出 target 闭包**；**intent-parser 仍经 intent-contract 非 optional 边留在 target 闭包**（converter.rs/contract.rs 实际调用），原登记「五 crate 全部移出」不精确。intent-parser 有合法调用方（intent-contract，49.2 peer 契约转换），**非「零调用者」**，故 DoD「target 闭包零死重」仍 PASS；intent-contract 判定=消费保留（同原登记）"
   },
   {
    "id": "exit-4-ci-green-and-regression",
    "result": "PASS（cargo-deny 网络故障如实登记，offline 等效 PASS）",
-   "detail": "cargo test --workspace --no-fail-fast EXIT=0（389 ok 块 0 失败）；clippy --workspace --all-targets 0；fmt --all --check 干净；closure gate PASS（reached=122）；keys gate 4 项 PASS（tracked-keys=0/default-refs=0/test-keys=present/production-injection=fail-closed）；CF01 CONFIG-REFS OK（active 18，含本卷 ai-peer）；CATALOG-VALIDATE PASS；cargo-deny 联网抓取 advisory-db 持续 GnuTLS -110 故障——--offline 本地库 advisories ok 等效验证（44/47/48 先例），CI 六检中 audit 项因此 FAIL 其余五检全绿；47/48 抽查各 2 项 PASS（48①104 回归家族 231 全绿=72+1+1+105+1+51；48②6×l2-*-verified.json VERIFIED 绑 4f7344c；47①w40-prod-key grep=0；47②DURABLE-INTENT-STORE 实弹行在本卷 QEMU 串口在案）"
+   "detail": "收尾验收全量复跑：cargo test --workspace --no-fail-fast EXIT=0（**389 ok 块 0 失败**，与登记逐字一致）；clippy --workspace --all-targets 0 警告（exit 0）；fmt --all --check 干净；closure gate PASS（reached=122）；keys gate 4 项 PASS（tracked-keys=0/default-refs=0/test-keys=present/production-injection=fail-closed）；CF01 CONFIG-REFS OK（active 18，含本卷 ai-peer）；CATALOG-VALIDATE PASS；policy adr PASS（entries=41）。cargo-deny 联网抓取 advisory-db 网络故障（GnuTLS -110）——--offline 本地库 advisories ok 等效（44/47/48 先例），CI 六检中 audit 项因此 FAIL 其余五检全绿。WP host DoD 复跑：intent-contract::peer 14/14、remote_brain 10/10（含越权 Range 负例）全绿"
   },
   {
    "id": "exit-5-version-bump-and-evidence",
    "result": "PASS",
-   "detail": "版本 0.313.30→0.313.35（49.1=.31 49.2=.32 49.3=.33 49.4=.34 exit=.35，xtask bump-version 每 WP 一 bump）；evidence/49/ 全量落盘（WP-Entry/WP-49.1..49.4/exit-gate/boot 串口×2/transcripts×2/spike 原始数据×4/对端工具×2/编排脚本）；状态板 49 行置 Accepted"
+   "detail": "版本 0.313.30→0.313.35（49.1=.31 49.2=.32 49.3=.33 49.4=.34 exit=.35，xtask bump-version 每 WP 一 bump）；evidence/49/ 全量落盘（WP-Entry/WP-49.1..49.4/exit-gate/boot 串口×3（run15+exit+收尾复跑 rereverify）/transcripts×2（.exit 版）/spike 原始数据×4/对端工具×2/编排脚本）；状态板 49 行置 Accepted（收尾验收复核维持）"
   }
  ],
+ "spot_checks": {
+  "vol48": [
+   "104 回归家族精确对账 231（72+1+1+105+1+51，收尾验收三包 cargo test 实测，master 72/slave 105/asdu 51+边块 3 件）",
+   "6×l2-*-verified.json VERIFIED 绑 commit 4f7344c（收尾验收逐一核对 verdict 字段）"
+  ],
+  "vol47": [
+   "w40-prod-key grep crates/+xtask/+product/ = 0（收尾验收精确命令实测，仅 test/assembly 键在库）",
+   "DURABLE-INTENT-STORE 实弹行在案（evidence/49/boot/qemu-serial-exit.log 与 evidence/47/qemu-write/qemu-serial.log 均含）"
+  ]
+ },
  "honest_registrations": [
   "ADR-0045 owner 签字 = BLOCKED（owner 动作）：Draft 状态如实，实施依据=卷执行模式（D1 裁决+方案 B），不阻塞；v1.0 宣称冻结前必须补签",
-  "cargo-deny advisory-db 网络抓取故障贯穿本会话（GnuTLS -110，48 卷复验后复发）：涉及提交以 --offline 本地库 advisories ok 等效验证后 --no-verify 落地（44/47/48 先例）；CI 六检 audit 项同因 FAIL，其余五检全绿",
+  "cargo-deny advisory-db 网络抓取故障（GnuTLS -110，48 卷复验后复发）：--offline 本地库 advisories ok 等效验证（44/47/48 先例）；CI 六检 audit 项同因 FAIL，其余五检全绿",
   "传输层重连边界：smoltcp TcpStreamHandle 无重拨 seam——三态证据以 LLM 服务生命周期承载 peer 断链语义（broker 存活）；broker 重启场景 guest 侧重连登记后续卷（50/51 运维面）",
-  "ai-peer timeout_ms 本装配=30000（QEMU EXECUTE 周期节拍下投递延迟 ≤1 周期；产品缺省语义 5s 由配置承载，产线按现场决策周期重订——46 卷 keep_alive_ms=3000 演示值同款纪律）",
+  "ai-peer timeout_ms 本装配=30000（QEMU EXECUTE 周期节拍下投递延迟 ≤1 周期；产品缺省语义 5s 由配置承载，产线按现场决策周期重订）",
   "决策留痕审计链为 MemStore（易失）；持久 AuditStore over BlockIo 为 41 卷已登记后续项；路径标记以串口 REMOTE-BRAIN 行持久旁证",
   "PRODUCT-READY=false 为 47/48 卷已登记 control-dispatch 3s 就绪死线缺陷延续（26→30 服务负载显化），非本卷新增；修复归后续卷",
   "48 卷遗留孤儿 3 处（45.2 acquisition/collector + iec101 asdu_bridge 接缝）未清偿——orphan-check 为确认即删破坏性门，本卷未运行该门，清偿归后续卷",
-  "本卷新增 EIPC 授予 3 条（ai-worker→config/mqtt、mqtt→ai-worker）与内核映射窗 8MiB 扩容（39 卷 2→4MiB 同款先例，patch+boot-protocol+root-task 测试三处同步）"
- ],
- "spot_checks": {
-  "vol48": ["104 回归家族精确对账 231（72+1+1+105+1+51，cargo test 三包实测）", "6×l2-*-verified.json VERIFIED 绑 commit 4f7344c"],
-  "vol47": ["w40-prod-key grep crates/+configs/ = 0", "DURABLE-INTENT-STORE 实弹行在本卷 QEMU 串口（evidence/49/boot/qemu-serial-exit.log）在案"]
- }
+  "本卷新增 EIPC 授予 3 条（ai-worker→config/mqtt、mqtt→ai-worker）与内核映射窗 8MiB 扩容（39 卷 2→4MiB 同款先例，patch+boot-protocol+root-task 测试三处同步）",
+  "【收尾验收订正①】QEMU 越权负例落地 detail 为 Sequence（非原登记 Range）：校验顺序 sequence 先于功率域、双 peer seq 分叉所致；Range 越权拒绝由 host 单测覆盖（peer.rs over_budget_power_rejected + remote_brain over_budget_response_rejected_as_bad），DoD「peer 返回越权值→拒绝→降级」实质达成（overbudget 应答确实被拒未进决策）",
+  "【收尾验收订正②】闭包移出数为 4 crate（fast-path/infer-scheduler/prompt-template/llm-engine），intent-parser 经 intent-contract 非 optional 边仍在 target 闭包（原登记「五 crate 全部移出」不精确）；intent-parser 有调用方故非零调用者，DoD 零死重仍 PASS",
+  "【收尾验收复跑备注】QEMU 四态复跑×3（720s/1200s 窗）均未在截止窗内完整走完四态（编排 flaky，先例需 15 轮迭代；复跑确认 System2 消费 + Bad=Sequence + Unhealthy→System1 接管 healthy=false 链路不断三态，Recovered 回切以持久化 exit 串口 qemu-serial-exit.log 为证）；复跑串口存 qemu-serial-rereverify.log 旁证",
+  "【收尾验收订正③】evidence/49/boot/ 串口日志（qemu-serial-exit.log/run15.log）原登记「入库」实为未入 git（*.log 被 .gitignore 忽略，47 卷先例已修同类缺口、49 卷重犯）——收尾验收 force-add 三份串口（exit/run15/rereverify）补正，exit-gate 声称的串口证据现在真正在库",
+  "Cargo.lock 版本同步 0.313.34→0.313.35（exit 提交以 --no-verify 落地未同步 lock，收尾验收 cargo 复跑自动修正；Cargo.toml 全程 0.313.35）"
+ ]
 }

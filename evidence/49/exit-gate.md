@@ -62,3 +62,67 @@ peer_brain49 四策略（soc/overbudget/silent/openai 可选透传），transcri
 5. PRODUCT-READY=false 为 47/48 已登记 control-dispatch 3s 死线缺陷延续
   （非本卷引入）；48 卷孤儿 3 处未清偿（orphan-check 破坏性门未运行）。
 6. 决策留痕审计链 MemStore 易失；持久化归 41 卷已登记后续项。
+
+---
+
+## 收尾验收复验（同日第二会话，HEAD=512d0a6 / 0.313.35）
+
+本会话对 49 卷 Exit Gate 全项**独立实跑复核**（不信任在案声称），结论：
+**Accepted 维持**；两处登记订正 + 一处 Cargo.lock 同步，其余全项 PASS。
+
+### 复跑清单（全部实跑）
+
+| 项 | 复跑结果 |
+|---|---|
+| 全量测试 `cargo test --workspace --no-fail-fast` | **389 ok 块 0 失败 EXIT=0**（与登记逐字一致） |
+| clippy / fmt | 0 警告 / 干净 |
+| closure gate（qemu-prod） | PASS reached=122（digest bdd2332e… 与治理后登记逐字一致） |
+| keys / CF01 / catalog / policy adr | 4 项 PASS / active 18 / PASS / entries=41 |
+| intent-contract::peer / remote_brain | 14/14、10/10（含越权 Range 负例单测） |
+| 47/48 抽查各 2 项 | 104×231 / l2×6 VERIFIED@4f7344c / w40-prod-key grep=0 / DURABLE-INTENT-STORE 在案 |
+| ADR-0045 / spike 报告 | 落库（Draft，签字栏空置）/ NO-GO 结论+重启条件×3，原始数据 4 件在库 |
+| QEMU 四态复跑×3 | System2 消费 + Bad=Sequence + Unhealthy→System1 接管复现（串口 rereverify.log）；Recovered 以持久化 exit 串口为证 |
+
+### 订正①：越权负例落地机制 = Sequence（非 Range）
+
+exit-gate.json/md 原登记 QEMU 越权负例 detail=`Range("plan.power_kw","exceeds
+budget")`。**收尾验收实证**：两轮持久化串口（run15+exit）与收尾复跑串口的
+Bad detail 均为 `Sequence { last, got }`——因校验顺序（sequence 先于功率域）
+且双 peer（soc/overbudget）seq 计数分叉，overbudget 应答（power=10.0>5.0
+预算，broker transcript 在案）在序列检查即被拒。**DoD 实质达成**：越权应答
+确实被拒且未进决策；Range 越权拒绝路径由 host 单测覆盖（peer.rs
+`over_budget_power_rejected` + remote_brain.rs
+`over_budget_response_rejected_as_bad`，复验全绿）。
+
+### 订正②：闭包移出 4 crate（intent-parser 保留）
+
+原登记「五 crate（intent-parser/fast-path/infer-scheduler/prompt-template/
+llm-engine）全部移出 target 依赖」。**收尾验收实证**（cargo tree
+aarch64-unknown-none）：fast-path/infer-scheduler/prompt-template/llm-engine
+**4 crate 全移出**；**intent-parser 仍经 intent-contract 非 optional 边在
+target 闭包**（converter.rs/contract.rs 实际调用）。intent-parser 有合法
+调用方（intent-contract，49.2 peer 契约转换）→ **非零调用者**，DoD「零死重」
+仍 PASS；closure reached 126→122 不变。
+
+### 订正③：boot 串口日志未入库 → force-add 补正
+
+原 exit-gate 声称 `evidence/49/boot/qemu-serial-exit.log（3.3MB 入库）`。
+**收尾验收实证**：`git ls-files evidence/49/boot/` 为空——整目录被
+`.gitignore` `*.log` 忽略，**从未提交**（47 卷先例已在 47 收尾修复同款
+缺口「串口日志 force-add 入仓」，49 卷重犯）。收尾验收 force-add 三份串口：
+`qemu-serial-exit.log`（完整四态主证）、`qemu-serial-run15.log`（WP-49.2
+判据轮）、`qemu-serial-rereverify.log`（本会话复跑旁证）——exit-gate 声称
+的串口证据现在真正在库。
+
+### Cargo.lock 同步
+
+exit 提交（--no-verify）bump 0.313.34→0.313.35 未同步 Cargo.lock；收尾验收
+cargo 复跑自动修正为 0.313.35（Cargo.toml 全程 0.313.35，无功能差异）。
+
+### 复跑串口旁证
+
+`evidence/49/boot/qemu-serial-rereverify.log`（4.6MB）：收尾验收 QEMU 复跑
+串口，含 System2 消费（used=true path=Slow ×15）、越权 Bad（Sequence detail）、
+peer-unhealthy consecutive=3（healthy=false System1 接管、dispatch 链不断）、
+AUDIT-AI appended=294 dropped=0。完整 Recovered 回切以持久化
+`qemu-serial-exit.log` 为证（三态→四态证据并置）。
