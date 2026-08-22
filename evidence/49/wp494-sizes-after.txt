@@ -1,0 +1,3 @@
+185208 target/aarch64-unknown-none/release/svc-ai-worker
+246648 target/aarch64-unknown-none/release/svc-control-dispatch
+359512 target/aarch64-unknown-none/release/svc-mqtt

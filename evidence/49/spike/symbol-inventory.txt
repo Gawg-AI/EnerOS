@@ -1,0 +1,19 @@
+# 49 WP-49.3 spike：ggml/llama 库 OS 依赖符号清点（nm 实测，2026-08-22）
+# 对象：third_party/llama.cpp/build/{ggml/src/libggml.a, src/libllama.a}（x86-64 host 构建）
+== libggml.a（undefined 308）OS 面依赖 ==
+malloc×4 free×4 realloc×3 calloc×1 posix_memalign×1   # 动态分配（→ 分配器 shim 可替）
+fopen×2 fclose×1                                       # 文件 IO（模型加载→ 数据盘读入替代）
+memcpy×2                                               # 纯计算
+sched_yield×1 pthread_setaffinity_np×1 pthread_self×1 pthread_getaffinity_np×1  # 线程/亲和性
+fork×1 exit×1 abort×1 clock_gettime×1 getenv×1         # 进程/环境/时钟
+== libllama.a（undefined 698）==
+C++ 运行时重度依赖：__cxa_throw/begin/end_catch/rethrow/allocate_exception×5 类、
+_ZSt*__throw_*（length/out_of_range/logic_error/bad_alloc）、_Rb_tree_*（std::map）、
+__cxa_guard_*、pthread_once/mutex_lock/unlock、mmap/munmap、sysconf、fwrite
+== 结论 ==
+1) ISA 层：aarch64-none-elf-gcc -c ggml.c（freestanding+桩）可推进至类型系统冲突，
+   无 ISA 不兼容证据（NEON 内核为可选路径）；
+2) OS 面：ggml 线程层（mutex/cond/thread/affinity/yield）+ 分配 + 文件 IO +
+   fork —— 全量替换面 ≈ 数十个调用点；
+3) llama.cpp 上层：C++ 异常/STL/RTTI 深度耦合——no_std 移植需完整 C++
+   unwind 运行时或重写，非 spike 时间盒工作量。

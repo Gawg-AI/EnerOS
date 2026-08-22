@@ -48,6 +48,9 @@ extern crate alloc;
 
 pub mod audit;
 pub mod chain_sink;
+// 49（WP-49.4）：coordinator 为 host 消费面模块（feature 门控）——
+// target 闭包只装 decision/gate/audit 子集，五重依赖不入闭包。
+#[cfg(feature = "coordinator")]
 pub mod coordinator;
 pub mod decision;
 pub mod error;
@@ -59,6 +62,7 @@ pub mod sink;
 
 #[cfg(any(test, feature = "mock"))]
 pub use coordinator::DualBrainMockEngine;
+#[cfg(feature = "coordinator")]
 pub use coordinator::{DualBrainCoordinator, DualBrainResult};
 pub use decision::{
     DecisionOutcome, DecisionPath, DecisionRejection, NoActionReason, ProposedControlPlan,

@@ -11,7 +11,7 @@ eneros-market-types = { path = "../market-types" }
 eneros-agent = { path = "../agent" }
 eneros-agent-sdk = { path = "../agent-sdk" }
 eneros-dr = { path = "../dr" }
-eneros-dual-brain = { path = "../../ai/dual-brain" }
+eneros-dual-brain = { path = "../../ai/dual-brain", features = ["coordinator"] }
 eneros-fast-path = { path = "../../ai/fast-path" }
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
 eneros-solver-core = { path = "../../ai/solver-core", features = ["highs-ffi"] }

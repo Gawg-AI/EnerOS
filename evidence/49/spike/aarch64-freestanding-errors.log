@@ -1,0 +1,308 @@
+In file included from <command-line>:
+/tmp/spike49/shim.h:20:19: error: conflicting types for 'shim_thread_t'; have '__uint32_t' {aka 'unsigned int'}
+   20 | #define pthread_t shim_thread_t
+      |                   ^~~~~~~~~~~~~
+/tmp/spike49/shim.h:17:28: note: previous declaration of 'shim_thread_t' with type 'shim_thread_t'
+   17 | typedef struct { int _x; } shim_thread_t;
+      |                            ^~~~~~~~~~~~~
+/tmp/spike49/shim.h:18:25: error: conflicting types for 'shim_mutex_t'; have '__uint32_t' {aka 'unsigned int'}
+   18 | #define pthread_mutex_t shim_mutex_t
+      |                         ^~~~~~~~~~~~
+/tmp/spike49/shim.h:15:28: note: previous declaration of 'shim_mutex_t' with type 'shim_mutex_t'
+   15 | typedef struct { int _x; } shim_mutex_t;
+      |                            ^~~~~~~~~~~~
+/tmp/spike49/shim.h:19:24: error: conflicting types for 'shim_cond_t'; have '__uint32_t' {aka 'unsigned int'}
+   19 | #define pthread_cond_t shim_cond_t
+      |                        ^~~~~~~~~~~
+/tmp/spike49/shim.h:16:28: note: previous declaration of 'shim_cond_t' with type 'shim_cond_t'
+   16 | typedef struct { int _x; } shim_cond_t;
+      |                            ^~~~~~~~~~~
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c: In function 'ggml_threadpool_free':
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19647:21: error: passing argument 1 of 'pthread_mutex_lock' from incompatible pointer type [-Wincompatible-pointer-types]
+19647 |     ggml_mutex_lock(&threadpool->mutex);
+      |                     ^~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2070:56: note: in definition of macro 'ggml_mutex_lock'
+ 2070 | #define ggml_mutex_lock(m)          pthread_mutex_lock(m)
+      |                                                        ^
+/tmp/spike49/shim.h:23:52: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   23 | static inline int pthread_mutex_lock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                      ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19652:25: error: passing argument 1 of 'pthread_cond_broadcast' from incompatible pointer type [-Wincompatible-pointer-types]
+19652 |     ggml_cond_broadcast(&threadpool->cond);
+      |                         ^~~~~~~~~~~~~~~~~
+      |                         |
+      |                         ggml_cond_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2088:55: note: in definition of macro 'ggml_cond_broadcast'
+ 2088 | #define ggml_cond_broadcast(c) pthread_cond_broadcast(c)
+      |                                                       ^
+/tmp/spike49/shim.h:28:55: note: expected 'shim_cond_t *' but argument is of type 'ggml_cond_t *' {aka 'int *'}
+   28 | static inline int pthread_cond_broadcast(shim_cond_t *c) { (void)c; return 0; }
+      |                                          ~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19653:23: error: passing argument 1 of 'pthread_mutex_unlock' from incompatible pointer type [-Wincompatible-pointer-types]
+19653 |     ggml_mutex_unlock(&threadpool->mutex);
+      |                       ^~~~~~~~~~~~~~~~~~
+      |                       |
+      |                       ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2071:58: note: in definition of macro 'ggml_mutex_unlock'
+ 2071 | #define ggml_mutex_unlock(m)        pthread_mutex_unlock(m)
+      |                                                          ^
+/tmp/spike49/shim.h:24:54: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   24 | static inline int pthread_mutex_unlock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                        ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19656:49: error: incompatible type for argument 1 of 'pthread_join'
+19656 |         int32_t rc = ggml_thread_join(workers[j].thrd, NULL);
+      |                                       ~~~~~~~~~~^~~~~
+      |                                                 |
+      |                                                 ggml_thread_t {aka int}
+/tmp/spike49/shim.h:31:46: note: expected 'shim_thread_t' but argument is of type 'ggml_thread_t' {aka 'int'}
+   31 | static inline int pthread_join(shim_thread_t t, void **r) { (void)t; (void)r; return 0; }
+      |                                ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19661:24: error: passing argument 1 of 'pthread_mutex_destroy' from incompatible pointer type [-Wincompatible-pointer-types]
+19661 |     ggml_mutex_destroy(&threadpool->mutex);
+      |                        ^~~~~~~~~~~~~~~~~~
+      |                        |
+      |                        ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2069:59: note: in definition of macro 'ggml_mutex_destroy'
+ 2069 | #define ggml_mutex_destroy(m)       pthread_mutex_destroy(m)
+      |                                                           ^
+/tmp/spike49/shim.h:25:55: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   25 | static inline int pthread_mutex_destroy(shim_mutex_t *m) { (void)m; return 0; }
+      |                                         ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19662:23: error: passing argument 1 of 'pthread_cond_destroy' from incompatible pointer type [-Wincompatible-pointer-types]
+19662 |     ggml_cond_destroy(&threadpool->cond);
+      |                       ^~~~~~~~~~~~~~~~~
+      |                       |
+      |                       ggml_cond_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2086:53: note: in definition of macro 'ggml_cond_destroy'
+ 2086 | #define ggml_cond_destroy(c)   pthread_cond_destroy(c)
+      |                                                     ^
+/tmp/spike49/shim.h:29:53: note: expected 'shim_cond_t *' but argument is of type 'ggml_cond_t *' {aka 'int *'}
+   29 | static inline int pthread_cond_destroy(shim_cond_t *c) { (void)c; return 0; }
+      |                                        ~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c: In function 'ggml_threadpool_pause_locked':
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19675:25: error: passing argument 1 of 'pthread_cond_broadcast' from incompatible pointer type [-Wincompatible-pointer-types]
+19675 |     ggml_cond_broadcast(&threadpool->cond);
+      |                         ^~~~~~~~~~~~~~~~~
+      |                         |
+      |                         ggml_cond_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2088:55: note: in definition of macro 'ggml_cond_broadcast'
+ 2088 | #define ggml_cond_broadcast(c) pthread_cond_broadcast(c)
+      |                                                       ^
+/tmp/spike49/shim.h:28:55: note: expected 'shim_cond_t *' but argument is of type 'ggml_cond_t *' {aka 'int *'}
+   28 | static inline int pthread_cond_broadcast(shim_cond_t *c) { (void)c; return 0; }
+      |                                          ~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c: In function 'ggml_threadpool_resume_locked':
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19681:25: error: passing argument 1 of 'pthread_cond_broadcast' from incompatible pointer type [-Wincompatible-pointer-types]
+19681 |     ggml_cond_broadcast(&threadpool->cond);
+      |                         ^~~~~~~~~~~~~~~~~
+      |                         |
+      |                         ggml_cond_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2088:55: note: in definition of macro 'ggml_cond_broadcast'
+ 2088 | #define ggml_cond_broadcast(c) pthread_cond_broadcast(c)
+      |                                                       ^
+/tmp/spike49/shim.h:28:55: note: expected 'shim_cond_t *' but argument is of type 'ggml_cond_t *' {aka 'int *'}
+   28 | static inline int pthread_cond_broadcast(shim_cond_t *c) { (void)c; return 0; }
+      |                                          ~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c: In function 'ggml_threadpool_pause':
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19687:21: error: passing argument 1 of 'pthread_mutex_lock' from incompatible pointer type [-Wincompatible-pointer-types]
+19687 |     ggml_mutex_lock(&threadpool->mutex);
+      |                     ^~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2070:56: note: in definition of macro 'ggml_mutex_lock'
+ 2070 | #define ggml_mutex_lock(m)          pthread_mutex_lock(m)
+      |                                                        ^
+/tmp/spike49/shim.h:23:52: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   23 | static inline int pthread_mutex_lock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                      ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19691:23: error: passing argument 1 of 'pthread_mutex_unlock' from incompatible pointer type [-Wincompatible-pointer-types]
+19691 |     ggml_mutex_unlock(&threadpool->mutex);
+      |                       ^~~~~~~~~~~~~~~~~~
+      |                       |
+      |                       ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2071:58: note: in definition of macro 'ggml_mutex_unlock'
+ 2071 | #define ggml_mutex_unlock(m)        pthread_mutex_unlock(m)
+      |                                                          ^
+/tmp/spike49/shim.h:24:54: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   24 | static inline int pthread_mutex_unlock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                        ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c: In function 'ggml_threadpool_resume':
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19699:21: error: passing argument 1 of 'pthread_mutex_lock' from incompatible pointer type [-Wincompatible-pointer-types]
+19699 |     ggml_mutex_lock(&threadpool->mutex);
+      |                     ^~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2070:56: note: in definition of macro 'ggml_mutex_lock'
+ 2070 | #define ggml_mutex_lock(m)          pthread_mutex_lock(m)
+      |                                                        ^
+/tmp/spike49/shim.h:23:52: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   23 | static inline int pthread_mutex_lock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                      ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19703:23: error: passing argument 1 of 'pthread_mutex_unlock' from incompatible pointer type [-Wincompatible-pointer-types]
+19703 |     ggml_mutex_unlock(&threadpool->mutex);
+      |                       ^~~~~~~~~~~~~~~~~~
+      |                       |
+      |                       ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2071:58: note: in definition of macro 'ggml_mutex_unlock'
+ 2071 | #define ggml_mutex_unlock(m)        pthread_mutex_unlock(m)
+      |                                                          ^
+/tmp/spike49/shim.h:24:54: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   24 | static inline int pthread_mutex_unlock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                        ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c: In function 'ggml_graph_compute_check_for_work':
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19987:28: error: passing argument 1 of 'pthread_mutex_lock' from incompatible pointer type [-Wincompatible-pointer-types]
+19987 |     ggml_mutex_lock_shared(&threadpool->mutex);
+      |                            ^~~~~~~~~~~~~~~~~~
+      |                            |
+      |                            ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2072:56: note: in definition of macro 'ggml_mutex_lock_shared'
+ 2072 | #define ggml_mutex_lock_shared(m)   pthread_mutex_lock(m)
+      |                                                        ^
+/tmp/spike49/shim.h:23:52: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   23 | static inline int pthread_mutex_lock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                      ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19991:24: error: passing argument 1 of 'pthread_cond_wait' from incompatible pointer type [-Wincompatible-pointer-types]
+19991 |         ggml_cond_wait(&threadpool->cond, &threadpool->mutex);
+      |                        ^~~~~~~~~~~~~~~~~
+      |                        |
+      |                        ggml_cond_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2087:50: note: in definition of macro 'ggml_cond_wait'
+ 2087 | #define ggml_cond_wait(c, m)   pthread_cond_wait(c, m)
+      |                                                  ^
+/tmp/spike49/shim.h:27:50: note: expected 'shim_cond_t *' but argument is of type 'ggml_cond_t *' {aka 'int *'}
+   27 | static inline int pthread_cond_wait(shim_cond_t *c, shim_mutex_t *m) { (void)c; (void)m; return 0; }
+      |                                     ~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19991:43: error: passing argument 2 of 'pthread_cond_wait' from incompatible pointer type [-Wincompatible-pointer-types]
+19991 |         ggml_cond_wait(&threadpool->cond, &threadpool->mutex);
+      |                                           ^~~~~~~~~~~~~~~~~~
+      |                                           |
+      |                                           ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2087:53: note: in definition of macro 'ggml_cond_wait'
+ 2087 | #define ggml_cond_wait(c, m)   pthread_cond_wait(c, m)
+      |                                                     ^
+/tmp/spike49/shim.h:27:67: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   27 | static inline int pthread_cond_wait(shim_cond_t *c, shim_mutex_t *m) { (void)c; (void)m; return 0; }
+      |                                                     ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:19993:30: error: passing argument 1 of 'pthread_mutex_unlock' from incompatible pointer type [-Wincompatible-pointer-types]
+19993 |     ggml_mutex_unlock_shared(&threadpool->mutex);
+      |                              ^~~~~~~~~~~~~~~~~~
+      |                              |
+      |                              ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2073:58: note: in definition of macro 'ggml_mutex_unlock_shared'
+ 2073 | #define ggml_mutex_unlock_shared(m) pthread_mutex_unlock(m)
+      |                                                          ^
+/tmp/spike49/shim.h:24:54: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   24 | static inline int pthread_mutex_unlock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                        ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c: In function 'ggml_graph_compute_secondary_thread':
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:20011:36: error: passing argument 1 of 'pthread_mutex_lock' from incompatible pointer type [-Wincompatible-pointer-types]
+20011 |             ggml_mutex_lock_shared(&threadpool->mutex);
+      |                                    ^~~~~~~~~~~~~~~~~~
+      |                                    |
+      |                                    ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2072:56: note: in definition of macro 'ggml_mutex_lock_shared'
+ 2072 | #define ggml_mutex_lock_shared(m)   pthread_mutex_lock(m)
+      |                                                        ^
+/tmp/spike49/shim.h:23:52: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   23 | static inline int pthread_mutex_lock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                      ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:20013:32: error: passing argument 1 of 'pthread_cond_wait' from incompatible pointer type [-Wincompatible-pointer-types]
+20013 |                 ggml_cond_wait(&threadpool->cond, &threadpool->mutex);
+      |                                ^~~~~~~~~~~~~~~~~
+      |                                |
+      |                                ggml_cond_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2087:50: note: in definition of macro 'ggml_cond_wait'
+ 2087 | #define ggml_cond_wait(c, m)   pthread_cond_wait(c, m)
+      |                                                  ^
+/tmp/spike49/shim.h:27:50: note: expected 'shim_cond_t *' but argument is of type 'ggml_cond_t *' {aka 'int *'}
+   27 | static inline int pthread_cond_wait(shim_cond_t *c, shim_mutex_t *m) { (void)c; (void)m; return 0; }
+      |                                     ~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:20013:51: error: passing argument 2 of 'pthread_cond_wait' from incompatible pointer type [-Wincompatible-pointer-types]
+20013 |                 ggml_cond_wait(&threadpool->cond, &threadpool->mutex);
+      |                                                   ^~~~~~~~~~~~~~~~~~
+      |                                                   |
+      |                                                   ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2087:53: note: in definition of macro 'ggml_cond_wait'
+ 2087 | #define ggml_cond_wait(c, m)   pthread_cond_wait(c, m)
+      |                                                     ^
+/tmp/spike49/shim.h:27:67: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   27 | static inline int pthread_cond_wait(shim_cond_t *c, shim_mutex_t *m) { (void)c; (void)m; return 0; }
+      |                                                     ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:20016:38: error: passing argument 1 of 'pthread_mutex_unlock' from incompatible pointer type [-Wincompatible-pointer-types]
+20016 |             ggml_mutex_unlock_shared(&threadpool->mutex);
+      |                                      ^~~~~~~~~~~~~~~~~~
+      |                                      |
+      |                                      ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2073:58: note: in definition of macro 'ggml_mutex_unlock_shared'
+ 2073 | #define ggml_mutex_unlock_shared(m) pthread_mutex_unlock(m)
+      |                                                          ^
+/tmp/spike49/shim.h:24:54: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   24 | static inline int pthread_mutex_unlock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                        ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c: In function 'ggml_graph_compute_kickoff':
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:20041:21: error: passing argument 1 of 'pthread_mutex_lock' from incompatible pointer type [-Wincompatible-pointer-types]
+20041 |     ggml_mutex_lock(&threadpool->mutex);
+      |                     ^~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2070:56: note: in definition of macro 'ggml_mutex_lock'
+ 2070 | #define ggml_mutex_lock(m)          pthread_mutex_lock(m)
+      |                                                        ^
+/tmp/spike49/shim.h:23:52: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   23 | static inline int pthread_mutex_lock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                      ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:20062:28: error: passing argument 1 of 'pthread_cond_broadcast' from incompatible pointer type [-Wincompatible-pointer-types]
+20062 |        ggml_cond_broadcast(&threadpool->cond);
+      |                            ^~~~~~~~~~~~~~~~~
+      |                            |
+      |                            ggml_cond_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2088:55: note: in definition of macro 'ggml_cond_broadcast'
+ 2088 | #define ggml_cond_broadcast(c) pthread_cond_broadcast(c)
+      |                                                       ^
+/tmp/spike49/shim.h:28:55: note: expected 'shim_cond_t *' but argument is of type 'ggml_cond_t *' {aka 'int *'}
+   28 | static inline int pthread_cond_broadcast(shim_cond_t *c) { (void)c; return 0; }
+      |                                          ~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:20065:23: error: passing argument 1 of 'pthread_mutex_unlock' from incompatible pointer type [-Wincompatible-pointer-types]
+20065 |     ggml_mutex_unlock(&threadpool->mutex);
+      |                       ^~~~~~~~~~~~~~~~~~
+      |                       |
+      |                       ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2071:58: note: in definition of macro 'ggml_mutex_unlock'
+ 2071 | #define ggml_mutex_unlock(m)        pthread_mutex_unlock(m)
+      |                                                          ^
+/tmp/spike49/shim.h:24:54: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   24 | static inline int pthread_mutex_unlock(shim_mutex_t *m) { (void)m; return 0; }
+      |                                        ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c: In function 'ggml_threadpool_new_impl':
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:20131:21: error: passing argument 1 of 'pthread_mutex_init' from incompatible pointer type [-Wincompatible-pointer-types]
+20131 |     ggml_mutex_init(&threadpool->mutex);
+      |                     ^~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     ggml_mutex_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2068:56: note: in definition of macro 'ggml_mutex_init'
+ 2068 | #define ggml_mutex_init(m)          pthread_mutex_init(m, NULL)
+      |                                                        ^
+/tmp/spike49/shim.h:22:52: note: expected 'shim_mutex_t *' but argument is of type 'ggml_mutex_t *' {aka 'int *'}
+   22 | static inline int pthread_mutex_init(shim_mutex_t *m, void *a) { (void)m; (void)a; return 0; }
+      |                                      ~~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:20132:20: error: passing argument 1 of 'pthread_cond_init' from incompatible pointer type [-Wincompatible-pointer-types]
+20132 |     ggml_cond_init(&threadpool->cond);
+      |                    ^~~~~~~~~~~~~~~~~
+      |                    |
+      |                    ggml_cond_t * {aka int *}
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:2085:50: note: in definition of macro 'ggml_cond_init'
+ 2085 | #define ggml_cond_init(c)      pthread_cond_init(c, NULL)
+      |                                                  ^
+/tmp/spike49/shim.h:26:50: note: expected 'shim_cond_t *' but argument is of type 'ggml_cond_t *' {aka 'int *'}
+   26 | static inline int pthread_cond_init(shim_cond_t *c, void *a) { (void)c; (void)a; return 0; }
+      |                                     ~~~~~~~~~~~~~^
+/home/ahx/文档/EnerOS/third_party/llama.cpp/ggml/src/ggml.c:20142:41: error: passing argument 1 of 'pthread_create' from incompatible pointer type [-Wincompatible-pointer-types]
+20142 |         int32_t rc = ggml_thread_create(&workers[j].thrd, NULL, ggml_graph_compute_secondary_thread, &workers[j]);
+      |                                         ^~~~~~~~~~~~~~~~
+      |                                         |
+      |                                         ggml_thread_t * {aka int *}
+/tmp/spike49/shim.h:30:49: note: expected 'shim_thread_t *' but argument is of type 'ggml_thread_t *' {aka 'int *'}
+   30 | static inline int pthread_create(shim_thread_t *t, void *a, void *(*f)(void*), void *arg) { (void)t;(void)a; f(arg); return 0; }
+      |                                  ~~~~~~~~~~~~~~~^

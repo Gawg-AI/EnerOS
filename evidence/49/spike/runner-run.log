@@ -1,0 +1,184 @@
+llama_model_loader: loaded meta data with 26 key-value pairs and 291 tensors from third_party/test-model.gguf (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = qwen2
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                               general.name str              = qwen2.5-0.5b-instruct
+llama_model_loader: - kv   3:                            general.version str              = v0.1
+llama_model_loader: - kv   4:                           general.finetune str              = qwen2.5-0.5b-instruct
+llama_model_loader: - kv   5:                         general.size_label str              = 630M
+llama_model_loader: - kv   6:                          qwen2.block_count u32              = 24
+llama_model_loader: - kv   7:                       qwen2.context_length u32              = 32768
+llama_model_loader: - kv   8:                     qwen2.embedding_length u32              = 896
+llama_model_loader: - kv   9:                  qwen2.feed_forward_length u32              = 4864
+llama_model_loader: - kv  10:                 qwen2.attention.head_count u32              = 14
+llama_model_loader: - kv  11:              qwen2.attention.head_count_kv u32              = 2
+llama_model_loader: - kv  12:                       qwen2.rope.freq_base f32              = 1000000.000000
+llama_model_loader: - kv  13:     qwen2.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  14:                          general.file_type u32              = 15
+llama_model_loader: - kv  15:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - kv  16:                         tokenizer.ggml.pre str              = qwen2
+llama_model_loader: - kv  17:                      tokenizer.ggml.tokens arr[str,151936]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+llama_model_loader: - kv  18:                  tokenizer.ggml.token_type arr[i32,151936]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  19:                      tokenizer.ggml.merges arr[str,151387]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+llama_model_loader: - kv  20:                tokenizer.ggml.eos_token_id u32              = 151645
+llama_model_loader: - kv  21:            tokenizer.ggml.padding_token_id u32              = 151643
+llama_model_loader: - kv  22:                tokenizer.ggml.bos_token_id u32              = 151643
+llama_model_loader: - kv  23:               tokenizer.ggml.add_bos_token bool             = false
+llama_model_loader: - kv  24:                    tokenizer.chat_template str              = {%- if tools %}\n    {{- '<|im_start|>...
+llama_model_loader: - kv  25:               general.quantization_version u32              = 2
+llama_model_loader: - type  f32:  121 tensors
+llama_model_loader: - type q5_0:  133 tensors
+llama_model_loader: - type q8_0:   13 tensors
+llama_model_loader: - type q4_K:   12 tensors
+llama_model_loader: - type q6_K:   12 tensors
+llm_load_vocab: control token: 151660 '<|fim_middle|>' is not marked as EOG
+llm_load_vocab: control token: 151659 '<|fim_prefix|>' is not marked as EOG
+llm_load_vocab: control token: 151653 '<|vision_end|>' is not marked as EOG
+llm_load_vocab: control token: 151648 '<|box_start|>' is not marked as EOG
+llm_load_vocab: control token: 151646 '<|object_ref_start|>' is not marked as EOG
+llm_load_vocab: control token: 151649 '<|box_end|>' is not marked as EOG
+llm_load_vocab: control token: 151655 '<|image_pad|>' is not marked as EOG
+llm_load_vocab: control token: 151651 '<|quad_end|>' is not marked as EOG
+llm_load_vocab: control token: 151647 '<|object_ref_end|>' is not marked as EOG
+llm_load_vocab: control token: 151652 '<|vision_start|>' is not marked as EOG
+llm_load_vocab: control token: 151654 '<|vision_pad|>' is not marked as EOG
+llm_load_vocab: control token: 151656 '<|video_pad|>' is not marked as EOG
+llm_load_vocab: control token: 151644 '<|im_start|>' is not marked as EOG
+llm_load_vocab: control token: 151661 '<|fim_suffix|>' is not marked as EOG
+llm_load_vocab: control token: 151650 '<|quad_start|>' is not marked as EOG
+llm_load_vocab: special tokens cache size = 22
+llm_load_vocab: token to piece cache size = 0.9310 MB
+llm_load_print_meta: format           = GGUF V3 (latest)
+llm_load_print_meta: arch             = qwen2
+llm_load_print_meta: vocab type       = BPE
+llm_load_print_meta: n_vocab          = 151936
+llm_load_print_meta: n_merges         = 151387
+llm_load_print_meta: vocab_only       = 0
+llm_load_print_meta: n_ctx_train      = 32768
+llm_load_print_meta: n_embd           = 896
+llm_load_print_meta: n_layer          = 24
+llm_load_print_meta: n_head           = 14
+llm_load_print_meta: n_head_kv        = 2
+llm_load_print_meta: n_rot            = 64
+llm_load_print_meta: n_swa            = 0
+llm_load_print_meta: n_embd_head_k    = 64
+llm_load_print_meta: n_embd_head_v    = 64
+llm_load_print_meta: n_gqa            = 7
+llm_load_print_meta: n_embd_k_gqa     = 128
+llm_load_print_meta: n_embd_v_gqa     = 128
+llm_load_print_meta: f_norm_eps       = 0.0e+00
+llm_load_print_meta: f_norm_rms_eps   = 1.0e-06
+llm_load_print_meta: f_clamp_kqv      = 0.0e+00
+llm_load_print_meta: f_max_alibi_bias = 0.0e+00
+llm_load_print_meta: f_logit_scale    = 0.0e+00
+llm_load_print_meta: n_ff             = 4864
+llm_load_print_meta: n_expert         = 0
+llm_load_print_meta: n_expert_used    = 0
+llm_load_print_meta: causal attn      = 1
+llm_load_print_meta: pooling type     = 0
+llm_load_print_meta: rope type        = 2
+llm_load_print_meta: rope scaling     = linear
+llm_load_print_meta: freq_base_train  = 1000000.0
+llm_load_print_meta: freq_scale_train = 1
+llm_load_print_meta: n_ctx_orig_yarn  = 32768
+llm_load_print_meta: rope_finetuned   = unknown
+llm_load_print_meta: ssm_d_conv       = 0
+llm_load_print_meta: ssm_d_inner      = 0
+llm_load_print_meta: ssm_d_state      = 0
+llm_load_print_meta: ssm_dt_rank      = 0
+llm_load_print_meta: ssm_dt_b_c_rms   = 0
+llm_load_print_meta: model type       = 1B
+llm_load_print_meta: model ftype      = Q4_K - Medium
+llm_load_print_meta: model params     = 630.17 M
+llm_load_print_meta: model size       = 462.96 MiB (6.16 BPW) 
+llm_load_print_meta: general.name     = qwen2.5-0.5b-instruct
+llm_load_print_meta: BOS token        = 151643 '<|endoftext|>'
+llm_load_print_meta: EOS token        = 151645 '<|im_end|>'
+llm_load_print_meta: EOT token        = 151645 '<|im_end|>'
+llm_load_print_meta: PAD token        = 151643 '<|endoftext|>'
+llm_load_print_meta: LF token         = 148848 'ÄĬ'
+llm_load_print_meta: FIM PRE token    = 151659 '<|fim_prefix|>'
+llm_load_print_meta: FIM SUF token    = 151661 '<|fim_suffix|>'
+llm_load_print_meta: FIM MID token    = 151660 '<|fim_middle|>'
+llm_load_print_meta: FIM PAD token    = 151662 '<|fim_pad|>'
+llm_load_print_meta: FIM REP token    = 151663 '<|repo_name|>'
+llm_load_print_meta: FIM SEP token    = 151664 '<|file_sep|>'
+llm_load_print_meta: EOG token        = 151643 '<|endoftext|>'
+llm_load_print_meta: EOG token        = 151645 '<|im_end|>'
+llm_load_print_meta: EOG token        = 151662 '<|fim_pad|>'
+llm_load_print_meta: EOG token        = 151663 '<|repo_name|>'
+llm_load_print_meta: EOG token        = 151664 '<|file_sep|>'
+llm_load_print_meta: max token length = 256
+llm_load_tensors: CPU_Mapped model buffer size =   462.96 MiB
+.....................................................
+llama_new_context_with_model: n_ctx      = 2048
+llama_new_context_with_model: n_batch    = 512
+llama_new_context_with_model: n_ubatch   = 512
+llama_new_context_with_model: flash_attn = 0
+llama_new_context_with_model: freq_base  = 1000000.0
+llama_new_context_with_model: freq_scale = 1
+llama_kv_cache_init:        CPU KV buffer size =    24.00 MiB
+llama_new_context_with_model: KV self size  =   24.00 MiB, K (f16):   12.00 MiB, V (f16):   12.00 MiB
+llama_new_context_with_model:        CPU  output buffer size =     0.58 MiB
+llama_new_context_with_model:        CPU compute buffer size =   298.50 MiB
+llama_new_context_with_model: graph nodes  = 846
+llama_new_context_with_model: graph splits = 1
+{
+  "evidence_category": "DEMO_ONLY",
+  "latency_ms": {
+    "command_dispatch": 0,
+    "intent_parse": 0,
+    "llm_inference": 0,
+    "lp_build": 0,
+    "lp_solve": 0,
+    "perception": 0,
+    "safety_validate": 0,
+    "total": 0
+  },
+  "llm_output": " 示例（电价 0.4 元/kWh）：{\"intent_type\": \"Discharge\", \"time_range\": {\"start_period\": 0, \"end_period\": 47}, \"power\": {\"power_kw\": 50.0}, \"reason\": \"高峰放电\", \"confidence\": 0.9}\n\n示例（电价 0.5 元/kWh）：{\"intent_type\": \"Hold\", \"time_range\": {\"start_period\": 0, \"end_period\": 47}, \"power\": {\"power_kw\": 0}, \"reason\": \"保持\", \"confidence\":",
+  "model": "third_party/test-model.gguf",
+  "now_ms": 1787376851151,
+  "outcome": "proposal",
+  "path_type": "Slow",
+  "prompt": "你是一个储能系统调度助手。根据以下信息输出充放电策略。\n\n当前电价: 0.3 元/kWh\n电池 SOC: 50%\n当前功率: 0 kW\n温度: N/A℃\n时段: N/A\n\n业务决策规则（必须遵守）：\n1. 电价低（≤0.4 元/kWh）时输出 Charge（充电），power_kw 为负；\n2. 电价高（≥0.7 元/kWh）时输出 Discharge（放电），power_kw 为正；\n3. 其余情况输出 Hold（保持），power_kw 为 0。\n\n请输出 JSON 格式的充放电策略（意图契约 v0.203.0），包含以下字段：\n{ \"intent_type\": \"Charge\" | \"Discharge\" | \"Hold\", \"time_range\": {\"start_period\": <起始时段>, \"end_period\": <结束时段>}, \"power\": {\"power_kw\": <浮点数，充电为负>}, \"reason\": \"<简短理由>\", \"confidence\": <0.0~1.0> }\n\n示例（电价 0.3 元/kWh）：{\"intent_type\": \"Charge\", \"time_range\": {\"start_period\": 0, \"end_period\": 47}, \"power\": {\"power_kw\": -50.0}, \"reason\": \"谷电充电\", \"confidence\": 0.9}\n\n只输出 JSON，不要其他文字。",
+  "scenario": "Normal",
+  "scenario_description": "谷电时段充电至 80%（期望：安全校验通过，sink 写入充电命令）",
+  "schedule": {
+    "entries": 96,
+    "first_entry": {
+      "charge_kw": 0.0,
+      "discharge_kw": 0.0,
+      "net_kw": 0.0,
+      "period": 0,
+      "soc_pct": 0.5
+    },
+    "solve_status": "Optimal",
+    "total_revenue_yuan": 37867.368421052626
+  },
+  "schema": "eneros.ai-runner-demo.evidence.v1",
+  "sink": "/tmp/spike49/sink.jsonl",
+  "sink_written": 1
+}
+	Command being timed: "target/release/eneros-ai-runner-demo --model third_party/test-model.gguf --sink /tmp/spike49/sink.jsonl --scenario normal --chain-key-file /tmp/spike49/chain.key --demo-trusted-feedback"
+	User time (seconds): 11.64
+	System time (seconds): 0.16
+	Percent of CPU this job got: 367%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:03.21
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 587512
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 44435
+	Voluntary context switches: 31
+	Involuntary context switches: 92
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

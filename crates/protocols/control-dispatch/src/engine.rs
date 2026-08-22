@@ -50,7 +50,7 @@ use crate::intent::{IntentRecord, IntentStore, IntentStoreError};
 pub const INTENT_TTL_SECS: u64 = 60;
 
 /// 调度窗口（小时）——能量预算估算（与 dual-brain 同系数）。
-pub const SCHEDULE_WINDOW_HOURS: f64 = eneros_dual_brain::coordinator::SCHEDULE_WINDOW_HOURS;
+pub const SCHEDULE_WINDOW_HOURS: f64 = eneros_dual_brain::decision::SCHEDULE_WINDOW_HOURS;
 
 /// 单次调度能量估算（首时段功率 × 窗口；空调度 = 0）。
 pub fn schedule_energy_kwh(s: &eneros_energy_lp_model::result::ScheduleResult) -> f64 {

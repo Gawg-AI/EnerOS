@@ -1,0 +1,2 @@
+CLOSURE-GATE profile=qemu-prod binaries=32 reached_packages=126 denied=0 crypto_violations=0 digest=41d4b7273803e78cf0a9271c21bc025530b28746067808becacb103b1370834a
+CLOSURE-GATE PASS

@@ -21,6 +21,10 @@ use alloc::format;
 use alloc::string::String;
 
 use eneros_energy_lp_model::result::ScheduleResult;
+/// 调度窗口小时数（原 coordinator 常量；49 WP-49.4 迁入 decision——
+/// target 子集消费（dispatch 引擎），不依赖 host 门控模块）。
+pub const SCHEDULE_WINDOW_HOURS: f64 = 0.25;
+
 use eneros_intent_contract::contract::FeedbackContract;
 
 use crate::latency::LatencyBreakdown;

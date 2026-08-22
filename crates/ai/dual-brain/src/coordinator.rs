@@ -125,7 +125,7 @@ pub struct DualBrainCoordinator<S: Solver> {
 
 /// 调度窗口（小时）——能量预算估算系数（蓝图 40：由 control-dispatch 的
 /// DispatchGate 消费：单次调度能量 ≈ `|net_power_kw| × 0.25h`）。
-pub const SCHEDULE_WINDOW_HOURS: f64 = 0.25;
+pub use crate::decision::SCHEDULE_WINDOW_HOURS;
 
 impl<S: Solver> DualBrainCoordinator<S> {
     /// 构造协调器.

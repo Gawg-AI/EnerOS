@@ -11,7 +11,7 @@ name = "eneros-ai-runner-demo"
 path = "src/main.rs"
 
 [dependencies]
-eneros-dual-brain = { path = "../dual-brain" }
+eneros-dual-brain = { path = "../dual-brain", features = ["coordinator"] }
 # 蓝图/24 §6.4：信封投递帧/握手响应/结果帧编解码（投递器与 device-agent 同源消费）。
 eneros-device-agent = { path = "../../agents/device-agent" }
 eneros-control-gateway = { path = "../../protocols/control-gateway" }
