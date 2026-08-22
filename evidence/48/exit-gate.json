@@ -3,7 +3,7 @@
  "volume": 48,
  "volume_title": "真实电力协议补充（DL/T 645-2007 / IEC 60870-5-101 / IEC 60870-5-103 / GB/T 27930-2015）",
  "established": "2026-08-22",
- "reverified": "",
+ "reverified": "2026-08-22 复验（HEAD=ba36fec，工作树 clean）全项实弹重跑 PASS：①CI 六检（eneros-ci 二进制 fmt/clippy/audit/test/version-gate/mock-gate）Overall=PASS，cargo test --workspace --no-fail-fast EXIT=0（389 ok 块 0 失败）、clippy --workspace --all-targets 0、fmt --check 干净、cargo deny EXIT=0（advisory-db 网络已恢复——wp48.2/.3/.4 的 --no-verify 前置条件已消失，等效验证由补丁外实跑闭合）；②closure gate PASS（binaries=32 reached_packages=126 denied=0 crypto_violations=0——首版记录 28 系 47 卷口径（26 服务+kernel+root）带过的陈旧数，本卷 30 服务应为 32，已订正）；③catalog validate PASS；④104 回归家族精确对账 master 74+slave 106+iec60870-asdu 51=231 与 WP-48.0 登记一致、protocol-abstract 34；⑤WP DoD 定向重跑 dlt645 11/iec101 13（登记 12+ba36fec 审查补 k=65536 截断负例）/iec103 6/gbt27930 21（登记 20+审查补值域负例）全绿，负例抽查点名通过：out_of_range_values_rejected_before_truncation/rejects_unknown_keys（101）、all_keys_required_no_memory_defaults/zero_timeout_rejected/sm 四相超时+param_mismatch_aborts+reconnect_after_abort/tp 乱序·丢包·重复·总数冲突四负例（27930）、baud_range_enforced/validate_rejects_unknown_and_out_of_range/descriptor_is_honestly_spec_blocked（645）；⑥46/47 抽查复跑 4/4（l2 json×6 VERIFIED@4f7344c / 10.0.2.* 恰 5 处=1 文档注释 L9+4 处 cfg(test) 内 L759/843/872/983 / w40-prod-key grep=0 / CF01 active=17）；⑦QEMU 引导实弹复跑（同 qemu.argv）逐行一致：spawn×4 同 entry/ipc_ep(126-129)/29 页、interop=SpecBlocked×4、PRODUCT-READY: false (required degraded: svc-control-dispatch) 确定性重现。新登记：xtask qa gate orphan-check 为「确认即删」自动修复门（本次复验误触发，已 git checkout 全量恢复，零净变更）——HEAD 报 3 孤儿=control-services acquisition.rs/collector.rs（WP-45.2 遗留未接线）+iec101 asdu_bridge.rs（BLOCKED 接缝，ba36fec 审查裁决保留）；该门不在 CI 六检环内、48 Exit 未声称其 PASS，孤儿清偿归后续卷",
  "commit": "b45a89e（WP 终提交；exit 提交 hash 见 evidence/48/exit-gate.md 头部登记）",
  "version": "0.313.30",
  "image_sha256": "2b6c4b741100cc3ddc18fed0e1a62d5eb70506d9b5614b34000fa3e1d84f4393",
@@ -27,7 +27,7 @@
   {
    "id": "exit-4-ci-green-and-regression",
    "result": "PASS",
-   "detail": "cargo test --workspace --no-fail-fast 空载复跑 EXIT=0（389 ok 块 0 失败；首轮与 QEMU 并行时 cry001 timing/modbus-rtu loopback 两例负载抖动失败，单独重跑即过——47 卷同类先例）；clippy --workspace --all-targets 0；fmt --all --check 干净；closure gate PASS（binaries=28 reached_packages=126 denied=0 crypto_violations=0）；keys gate 4 项 PASS；46/47 抽查各 2 项 PASS（l2 json×6 VERIFIED 绑 4f7344c / peer 硬编码 5 处皆测试注释 / w40-prod-key=0 / CF01 active=17）；WP-48.0 抽取回归=104 host 231 对账零失败（字节级判据=原样移动的 asdu 测试族全绿）+46 L2 重跑行为级帧字段逐项一致（窗口时长差异致召唤次数 2 vs 5——非帧内容差异，code-review 措辞订正）"
+   "detail": "cargo test --workspace --no-fail-fast 空载复跑 EXIT=0（389 ok 块 0 失败；首轮与 QEMU 并行时 cry001 timing/modbus-rtu loopback 两例负载抖动失败，单独重跑即过——47 卷同类先例）；clippy --workspace --all-targets 0；fmt --all --check 干净；closure gate PASS（binaries=32 reached_packages=126 denied=0 crypto_violations=0；首版误记 28=47 卷口径陈旧数，2026-08-22 复验实测订正）；keys gate 4 项 PASS；46/47 抽查各 2 项 PASS（l2 json×6 VERIFIED 绑 4f7344c / peer 硬编码 5 处皆测试注释 / w40-prod-key=0 / CF01 active=17）；WP-48.0 抽取回归=104 host 231 对账零失败（字节级判据=原样移动的 asdu 测试族全绿）+46 L2 重跑行为级帧字段逐项一致（窗口时长差异致召唤次数 2 vs 5——非帧内容差异，code-review 措辞订正）"
   },
   {
    "id": "exit-5-qemu-boot-with-new-services",

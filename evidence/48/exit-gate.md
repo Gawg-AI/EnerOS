@@ -67,3 +67,34 @@ PRODUCT-READY=false 登记：47 卷两轮串口均出现过的 control-dispatch 
    规程细节（哪报文触发哪应答的完整表）待规约核对后修订——sm.rs 文档头声明。
 5. 首轮全量套件两例负载抖动失败（cry001 timing/modbus loopback）单独重跑
    即过并已在空载复跑中通过——非回归。
+
+## 复验附记（2026-08-22，HEAD=ba36fec，工作树 clean）
+
+Exit Gate 落盘后同日全项实弹复验，**结论：Accepted 维持，5 Gate 全部复核通过**。
+
+| 项 | 复验结果 |
+|---|---|
+| CI 六检 | `cargo run -p eneros-ci` Overall=PASS（fmt/clippy/audit/test/version-gate/mock-gate）；`cargo test --workspace --no-fail-fast` EXIT=0（389 ok 块 0 失败）；clippy --workspace --all-targets 0；fmt --check 干净；**cargo deny EXIT=0——advisory-db 网络已恢复，wp48.2/.3/.4 的 --no-verify 前置条件消失，等效验证由本轮补丁外实跑闭合** |
+| closure / catalog | CLOSURE-GATE PASS binaries=32 reached=126 denied=0 crypto_violations=0；CATALOG-VALIDATE PASS |
+| 104 回归 | 家族精确对账 master 74 + slave 106 + iec60870-asdu 51 = **231**（与 WP-48.0 登记一致）；protocol-abstract 34 |
+| WP DoD 定向 | dlt645 11 / iec101 13（登记 12 + ba36fec 审查补 k=65536 截断负例）/ iec103 6 / gbt27930 21（登记 20 + 审查补值域负例）——计数差即审查提交新增负例，口径吻合 |
+| 负例点名抽查 | 101: out_of_range_values_rejected_before_truncation / rejects_unknown_keys ✅；27930: all_keys_required_no_memory_defaults、zero_timeout_rejected、sm 四相超时+param_mismatch_aborts+reconnect_after_abort、tp 乱序/丢包/重复/总数冲突 ✅；645: baud_range_enforced、validate_rejects_unknown_and_out_of_range、descriptor_is_honestly_spec_blocked ✅ |
+| 46/47 抽查复跑 | 4/4：l2 json×6 VERIFIED@4f7344c；`10.0.2.*` 恰 5 处=L9 文档注释+L759/843/872/983 cfg(test) 内（业务路径零硬编码）；w40-prod-key grep=0；CF01 active=17 |
+| QEMU 引导复跑 | 同 qemu.argv 实弹重启：spawn×4 同 entry/ipc_ep(126-129)/29 页、interop=SpecBlocked×4、PRODUCT-READY: false (required degraded: svc-control-dispatch) 确定性重现 |
+
+### 复验订正与新登记
+
+1. **closure binaries 28→32 订正**：exit-gate.json 首版 gate-4 记录的
+   `binaries=28` 系 47 卷口径（26 服务+kernel+root）带过的陈旧数
+   （该记录自身 reached_packages 已更新为 126 而 binaries 未更）；
+   本卷 30 服务实测应为 32（30 服务+kernel+root），JSON 已订正并注记。
+2. **orphan-check 门为「确认即删」自动修复门（新登记，操作教训）**：
+   `cargo xtask qa gate orphan-check` 对 confirmed orphan 直接
+   `fs::remove_file` 并改写 lib.rs 后才 FAIL 返回。本次复验误触发，
+   已 `git checkout` 全量恢复（零净变更）。HEAD 状态报 3 孤儿：
+   control-services acquisition.rs/collector.rs（WP-45.2 遗留未接线）+
+   iec101 asdu_bridge.rs（BLOCKED 接缝，ba36fec 审查裁决保留）。
+   该门不在 CI 六检环内、本卷 Exit 未声称其 PASS；孤儿清偿归后续卷。
+3. 镜像哈希说明：`artifact-sha256.json` 内 eneros-qemu-prod.raw
+   sha256=2b6c4b74… 为构建时值，与登记一致；盘上 raw 因 boot 实弹写入
+   （bootctrl/durable-state）偏离构建哈希属预期行为。
