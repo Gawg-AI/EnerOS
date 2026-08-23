@@ -1,0 +1,8 @@
+{"ts": 1787456345.634993, "event": "BROKER-LISTEN", "port": 1883, "telemetry_topic": "eneros/eneros-agent/telemetry"}
+{"ts": 1787456371.1409314, "event": "CONNACK", "conn": "46104"}
+{"ts": 1787456371.1411428, "event": "SUBSCRIBE", "conn": "46104", "topics": [["eneros/mgmt/response", 1]]}
+{"ts": 1787456371.1412563, "event": "PUBLISH", "conn": "46104", "topic": "eneros/mgmt/request", "payload_len": 68, "qos": 1}
+{"ts": 1787456371.1413355, "event": "PUBACK->publisher", "conn": "46104", "pid": 101}
+{"ts": 1787456401.1689904, "event": "PUBLISH", "conn": "46104", "topic": "eneros/mgmt/request", "payload_len": 68, "qos": 1}
+{"ts": 1787456401.169144, "event": "PUBACK->publisher", "conn": "46104", "pid": 102}
+{"ts": 1787456458.1415384, "event": "BROKER-LISTEN", "port": 1883, "telemetry_topic": "eneros/eneros-agent/telemetry"}

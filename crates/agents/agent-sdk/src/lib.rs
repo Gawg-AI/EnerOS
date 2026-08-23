@@ -105,6 +105,7 @@ pub mod lifecycle;
 pub mod logger;
 pub mod sample_wire;
 pub mod storage;
+pub mod telemetry_relay;
 pub mod wire;
 
 // 重导出核心类型

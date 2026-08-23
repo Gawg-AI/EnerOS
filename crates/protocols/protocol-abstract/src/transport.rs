@@ -79,6 +79,11 @@ pub trait TransportHandle {
     fn close(&mut self) -> Result<(), TransportError>;
     /// 是否已连接。
     fn is_connected(&self) -> bool;
+    /// 50（WP-50.1）：断线重连到原 peer（broker 重启 seam）。默认 =
+    /// 不支持（诚实：未接入重连的传输明确 Unsupported）。
+    fn reconnect(&mut self, _peer: &str) -> Result<(), TransportError> {
+        Err(TransportError::Unsupported)
+    }
     /// 向下转型（具体工厂恢复具体类型——mqtt `as_any_mut` 先例）。
     fn as_any_mut(&mut self) -> &mut dyn core::any::Any;
 }

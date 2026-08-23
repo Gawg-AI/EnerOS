@@ -1,0 +1,8 @@
+{"ts": 1787456371.140935, "event": "OPS-CONNECTED"}
+{"ts": 1787456371.1411545, "event": "OPS-SUBSCRIBED", "topic": "eneros/mgmt/response"}
+{"ts": 1787456371.141232, "event": "MGMT-CMD", "name": "status-viewer", "action": "status", "role": "viewer", "request_id": 1001, "frame_len": 68, "attempt": 0}
+{"ts": 1787456401.1686683, "event": "MGMT-TIMEOUT", "name": "status-viewer", "action": "status"}
+{"ts": 1787456401.168933, "event": "MGMT-CMD", "name": "status-viewer", "action": "status", "role": "viewer", "request_id": 1002, "frame_len": 68, "attempt": 1}
+{"ts": 1787456406.102294, "event": "MGMT-TIMEOUT", "name": "status-viewer", "action": "status"}
+{"ts": 1787456406.1025546, "event": "MGMT-CMD", "name": "config-get-operator", "action": "config-get", "role": "operator", "request_id": 1003, "frame_len": 78, "attempt": 0}
+{"ts": 1787456406.1027045, "event": "MGMT-TIMEOUT", "name": "config-get-operator", "action": "config-get"}

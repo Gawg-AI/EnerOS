@@ -1546,6 +1546,10 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     ("svc-market", "svc-storage"),
     ("svc-ota", "svc-storage"),
     ("svc-observability", "svc-storage"),
+    // 50（WP-50.1 exporter 真通道）：svc-observability 遥测批量帧经 EIPC
+    // 分片 EXECUTE 送达 svc-mqtt → MQTT broker（46 卷链 + 47 卷 TLS profile）。
+    // 槽序：svc-observability 表内第 2 条授予 = 槽 base+1（bit 1）。
+    ("svc-observability", "svc-mqtt"),
     ("svc-cloud-sync", "svc-storage"),
     ("svc-agent-bus", "svc-storage"),
     // 41（WP-41.11）：管理 RPC 的 ConfigGet 经 EIPC 查 svc-config。
@@ -1571,6 +1575,9 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // svc-config 取 ai-peer 状态机参数 + 经 svc-mqtt EXECUTE 分片子码发布
     // AI 请求（AI_REQ_BEGIN/CONT/END）。
     ("svc-mqtt", "svc-ai-worker"),
+    // 50（WP-50.2 mgmt 通道）：svc-mqtt 把管理请求（mgmt_request_topic
+    // 原始 MGT1 帧）分块推送 svc-mgmt，应答发布回 mgmt_response_topic。
+    ("svc-mqtt", "svc-mgmt"),
     ("svc-ai-worker", "svc-config"),
     ("svc-ai-worker", "svc-mqtt"),
     // 47（WP-47.2 点表绑定）：控制写目标（设备/点）经 svc-config 点表

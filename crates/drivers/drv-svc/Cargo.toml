@@ -19,6 +19,8 @@ eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
 eneros-hal = { path = "../../hal/hal" }
 # 41（WP-41.1 存储句柄移交）：svc-storage 真块服务——VirtioBlkDriver
 # 作为 BlockBackend（no_std，host 测试用 mock）。
+# 50 二分实验：恢复 diag（启动冻结定位——依赖图变化即 ELF 布局变化，
+# 疑暴露 virtio 时序敏感路径）。定位后另行处置。
 eneros-storage = { path = "../../drivers/storage", features = ["diag"] }
 linked_list_allocator = "0.10"
 

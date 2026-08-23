@@ -15,7 +15,23 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use eneros_durable_state::{DurableOutbox, IdempotencyKey, OutboxId, PeerReceipt, StoreError};
+use eneros_agent_sdk::telemetry_relay::{
+    check_frame_header, encode_frame_header, FrameError, TEL_FRAME_MAX,
+};
+use eneros_durable_state::{
+    Decode, DurableOutbox, Encode, IdempotencyKey, OutboxId, PeerReceipt, StoreError,
+};
+
+/// 批量帧解码错误（svc-mqtt 边界与 host 订阅侧共用；坏帧 → 拒绝解析）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchFrameError {
+    /// 帧头非法（magic/schema 版本/截断/超限——委托 agent-sdk 线码）。
+    BadHeader(FrameError),
+    /// 条目计数与帧内实际条目不匹配（截断条目）。
+    ItemTruncated,
+    /// 条目编码损坏。
+    CorruptItem,
+}
 
 /// 遥测类别（criticality：安全审计最高，永不被普通流量挤掉）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -145,6 +161,55 @@ impl eneros_durable_state::Decode for TelemetryItem {
             },
         ))
     }
+}
+
+/// 编码一批遥测条目为 MQTT 出口批量帧（固定二进制 + schema 版本；
+/// 50 WP-50.1——禁自由 JSON 进 target）。
+///
+/// 帧布局：`OBSF(4) ‖ version(1) ‖ batch_seq(8 LE) ‖ count(2 LE)` 后接
+/// `count` 条 `TelemetryItem::encode()`（每条自描述长度前缀）。
+/// 超限（> TEL_FRAME_MAX）→ Err（fail-closed：不产出越界帧）。
+pub fn encode_batch_frame(
+    items: &[TelemetryItem],
+    batch_seq: u64,
+) -> Result<Vec<u8>, &'static str> {
+    let mut out = Vec::with_capacity(
+        eneros_agent_sdk::telemetry_relay::TEL_FRAME_HEADER_LEN + items.len() * 48,
+    );
+    out.extend_from_slice(&encode_frame_header(batch_seq, items.len() as u16));
+    for item in items {
+        let enc = item.encode().map_err(|_| "item-encode-failed")?;
+        out.extend_from_slice(&enc);
+    }
+    if out.len() > TEL_FRAME_MAX {
+        return Err("frame-oversize");
+    }
+    Ok(out)
+}
+
+/// 解码批量帧（host 订阅侧/负例 DoD 共用）。
+///
+/// 先经 agent-sdk 帧头校验（**schema 版本不匹配 → BadHeader(UnsupportedVersion)
+/// 拒绝解析**），再按 count 逐条 `TelemetryItem::decode`。任何截断/损坏
+/// → Err（不静默跳过）。
+pub fn decode_batch_frame(bytes: &[u8]) -> Result<(u64, Vec<TelemetryItem>), BatchFrameError> {
+    let (batch_seq, count) = check_frame_header(bytes).map_err(BatchFrameError::BadHeader)?;
+    let mut pos = eneros_agent_sdk::telemetry_relay::TEL_FRAME_HEADER_LEN;
+    let mut items = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        if pos >= bytes.len() {
+            return Err(BatchFrameError::ItemTruncated);
+        }
+        let (_, item) = TelemetryItem::decode(&bytes[pos..]).map_err(|e| match e {
+            StoreError::Corrupt => BatchFrameError::CorruptItem,
+            _ => BatchFrameError::ItemTruncated,
+        })?;
+        // TelemetryItem::decode 不暴露消耗长度——按确定性编码重新计算推进量。
+        let enc = item.encode().map_err(|_| BatchFrameError::CorruptItem)?;
+        pos += enc.len();
+        items.push(item);
+    }
+    Ok((batch_seq, items))
 }
 
 /// 队列快照统计（drop 计数必须显式）。
@@ -301,10 +366,11 @@ impl<E: TelemetryExporter> ObservabilityService<E> {
         let mut outbox_ids: Vec<OutboxId> = Vec::new();
         if let Some(durable) = &mut self.durable {
             for item in &batch {
-                let mut key = [0u8; 16];
-                key[..8].copy_from_slice(&self.export_cursor.to_le_bytes());
-                self.export_cursor += 1;
-                match durable.enqueue(item, IdempotencyKey(key)) {
+                // 50（WP-50.1）：稳定幂等键（条目内容派生）——断网期失败
+                // 重入队命中原键（不累积重复），成功时每项恰好一次。
+                let key = item_idempotency_key(item);
+                self.export_cursor = self.export_cursor.saturating_add(1);
+                match durable.enqueue(item, key) {
                     Ok(id) => outbox_ids.push(id),
                     Err(_) => {
                         // 入 durable 失败：回队并报错，不伪装已持久化。
@@ -341,6 +407,29 @@ impl<E: TelemetryExporter> ObservabilityService<E> {
             }
         }
     }
+}
+
+/// 稳定幂等键（50 WP-50.1 补传不丢）：由条目内容派生——重入队命中原键，
+/// durable outbox 不累积重复。旧实现用 export_cursor 派生键，断网期每次
+/// 失败重入队产生新键 → 成功时重复导出（outbox 序号不连续）。
+///
+/// 键 = `created_ms(8 LE) ‖ FNV-1a(service+schema+payload)(8 LE)`。
+pub fn item_idempotency_key(item: &TelemetryItem) -> IdempotencyKey {
+    let mut key = [0u8; 16];
+    key[..8].copy_from_slice(&item.created_ms.to_le_bytes());
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in item
+        .service
+        .as_bytes()
+        .iter()
+        .chain(item.schema.as_bytes())
+        .chain(item.payload.iter())
+    {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    key[8..16].copy_from_slice(&hash.to_le_bytes());
+    IdempotencyKey(key)
 }
 
 #[cfg(test)]
@@ -468,5 +557,115 @@ mod tests {
         assert_eq!(svc.queue[0].created_ms, 1);
         assert_eq!(svc.queue[1].created_ms, 2);
         assert_eq!(svc.stats.export_failed, 2);
+    }
+
+    // ================= 50（WP-50.1）批量帧编解码 =================
+
+    /// 50（DoD 补传不丢）：连续失败 flush（断网期）后成功 flush——每项
+    /// **恰好导出一次**，不重复；durable outbox 不累积重复条目（幂等键
+    /// 稳定——重入队命中原 id）。旧实现以 export_cursor 派生键 → 每次
+    /// 失败重入队产生新键 → 成功时重复导出（outbox 序号不连续）。
+    #[test]
+    fn 补传_exports_each_item_exactly_once_after_repeated_failures() {
+        struct FlakyExporter {
+            fails: u32,
+            calls: u32,
+        }
+        impl TelemetryExporter for FlakyExporter {
+            fn export_batch(
+                &mut self,
+                _items: &[TelemetryItem],
+            ) -> Result<PeerReceipt, &'static str> {
+                self.calls += 1;
+                if self.calls <= self.fails {
+                    return Err("export-link-down");
+                }
+                Ok(PeerReceipt {
+                    peer: "mqtt-exporter".into(),
+                    receipt_id: self.calls as u64,
+                    at_ms: 1,
+                })
+            }
+        }
+        let mut svc = ObservabilityService::new(
+            FlakyExporter { fails: 3, calls: 0 },
+            OverflowPolicy::DropLowPriority,
+            16,
+        );
+        svc.durable = Some(Box::new(eneros_durable_state::MemOutbox::default()));
+        svc.enqueue(item(TelemetryClass::Telemetry, 1)).unwrap();
+        svc.enqueue(item(TelemetryClass::Alarm, 2)).unwrap();
+        // 断网期多次失败 flush（每次 recover → 重入队 → 重试）。
+        for _ in 0..3 {
+            let _ = svc.flush_batch(16);
+        }
+        // 网络恢复：成功 flush。
+        let exported = svc.flush_batch(16).unwrap();
+        // 每项恰好导出一次（不重复）。
+        assert_eq!(exported, 2);
+        assert_eq!(svc.stats.exported, 2);
+        // durable pending 清空（无残留重复条目）。
+        let pending = svc.durable.as_mut().unwrap().recover_pending().unwrap();
+        assert!(pending
+            .iter()
+            .all(|p| p.state == eneros_durable_state::MessageState::PeerAcked));
+        assert!(svc.queue.is_empty());
+    }
+
+    #[test]
+    fn positive_batch_frame_roundtrip() {
+        let items = vec![
+            item(TelemetryClass::Telemetry, 100),
+            item(TelemetryClass::SecurityAudit, 200),
+            item(TelemetryClass::Log, 300),
+        ];
+        let frame = encode_batch_frame(&items, 42).expect("encode");
+        assert!(frame.starts_with(b"OBSF"));
+        assert_eq!(frame[4], 1, "schema version=1");
+        let (batch_seq, decoded) = decode_batch_frame(&frame).expect("decode");
+        assert_eq!(batch_seq, 42);
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(decoded[0].created_ms, 100);
+        assert_eq!(decoded[1].class, TelemetryClass::SecurityAudit);
+        assert_eq!(decoded[2].created_ms, 300);
+    }
+
+    /// 50（DoD 负例）：schema 版本不匹配 → 拒绝解析。
+    #[test]
+    fn negative_schema_version_mismatch_rejected() {
+        let items = vec![item(TelemetryClass::Telemetry, 1)];
+        let frame = encode_batch_frame(&items, 1).expect("encode");
+        // 篡改 version 字节 → 解码必须拒绝（不能按不兼容 schema 解析）。
+        let mut bad = frame.clone();
+        bad[4] = 2;
+        assert_eq!(
+            decode_batch_frame(&bad),
+            Err(BatchFrameError::BadHeader(
+                eneros_agent_sdk::telemetry_relay::FrameError::UnsupportedVersion
+            ))
+        );
+        let mut bad0 = frame.clone();
+        bad0[4] = 0;
+        assert_eq!(
+            decode_batch_frame(&bad0),
+            Err(BatchFrameError::BadHeader(
+                eneros_agent_sdk::telemetry_relay::FrameError::UnsupportedVersion
+            ))
+        );
+    }
+
+    #[test]
+    fn negative_batch_frame_corruption_rejected() {
+        let items = vec![
+            item(TelemetryClass::Telemetry, 1),
+            item(TelemetryClass::Alarm, 2),
+        ];
+        let frame = encode_batch_frame(&items, 1).expect("encode");
+        // count 虚报 → 截断条目拒绝。
+        let mut bad = frame.clone();
+        bad[13] = 99;
+        assert!(decode_batch_frame(&bad).is_err());
+        // 帧体截断 → 拒绝。
+        assert!(decode_batch_frame(&frame[..frame.len() - 3]).is_err());
     }
 }

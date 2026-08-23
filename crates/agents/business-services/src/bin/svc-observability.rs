@@ -35,8 +35,34 @@ pub extern "C" fn _start(
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
+    // 50（WP-50.1）：真 MQTT 导出器——svc-mqtt 端点在授予槽 base+1
+    // （槽 0 = svc-storage，bit 1 置位 = svc-mqtt 已授予）。未授予 → 导出
+    // 显式失败（fail-closed，durable outbox 兜底）。
+    let mqtt = if eipc_mask & 2 != 0 {
+        match eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+            "obs-mqtt",
+            eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1,
+            eneros_business_services::now_ms,
+        ) {
+            Ok(c) => {
+                eneros_runtime::println!("[svc-observability] MQTT-EXPORTER EIPC bound (svc-mqtt)");
+                Some(c)
+            }
+            Err(_) => {
+                eneros_runtime::println!(
+                    "[svc-observability] MQTT-EXPORTER EIPC bind FAILED —— 导出 Unavailable（fail-closed）"
+                );
+                None
+            }
+        }
+    } else {
+        eneros_runtime::println!(
+            "[svc-observability] svc-mqtt NOT granted -> MQTT exporter Unavailable"
+        );
+        None
+    };
     let mut svc = eneros_business_services::observability::ObservabilityService::new(
-        UnavailableExporter,
+        MqttTelemetryExporter::new(mqtt),
         eneros_business_services::observability::OverflowPolicy::DropLowPriority,
         64,
     );
@@ -96,8 +122,12 @@ pub extern "C" fn _start(
 const OBS_OUTBOX_OFFSET: u64 = 57344;
 #[cfg(target_os = "none")]
 const OBS_OUTBOX_SLOT_LEN: usize = 1024;
+// 50（WP-50.1 实弹修复）：4 → 16——flush batch=8 单批即超 4 槽
+// （OutOfSpace → durable-enqueue-failed → 队列永不排空 → queue-full）。
+// 16 槽 = 2 批余量（断网期累积）；区域 57344+64+16KiB ≈ 73.8KB，
+// 共享存储区最高注册偏移之上（无冲突）。
 #[cfg(target_os = "none")]
-const OBS_OUTBOX_MAX_SLOTS: usize = 4;
+const OBS_OUTBOX_MAX_SLOTS: usize = 16;
 
 #[cfg(target_os = "none")]
 struct UnavailableExporter;
@@ -112,9 +142,121 @@ impl eneros_business_services::observability::TelemetryExporter for UnavailableE
     }
 }
 
+/// 50（WP-50.1 exporter 真通道）：svc-mqtt EIPC 真导出器（v1.0 单选 MQTT）。
+///
+/// flush 出口：遥测/指标/日志批量帧（固定二进制 OBSF + schema 版本）经
+/// svc-mqtt 分片 EXECUTE 送达 broker topic（46 卷链 + 47 卷 TLS profile）。
+/// svc-mqtt 侧 broker 断连/未配置主题/坏帧 → 回非 0 状态 → 本导出器返回
+/// Err（durable outbox 兜底补传，不丢数据）。成功 → 全帧 ST_OK+status 0
+/// → PeerReceipt。
+#[cfg(target_os = "none")]
+struct MqttTelemetryExporter {
+    /// svc-mqtt EIPC 客户端（授予槽 `EIPC_EP_BASE_SLOT + 1`；槽 0 = svc-storage）。
+    mqtt: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    /// 帧序号（补传窗口连续序号证据；单调递增）。
+    frame_seq: u64,
+    /// drv 请求 correlation（单调）。
+    correlation: u32,
+    /// 已成功导出帧数（观测）。
+    pub exported_frames: u64,
+}
+
+#[cfg(target_os = "none")]
+impl MqttTelemetryExporter {
+    fn new(mqtt: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>) -> Self {
+        Self {
+            mqtt,
+            frame_seq: 0,
+            correlation: 0,
+            exported_frames: 0,
+        }
+    }
+
+    /// 发送一帧：encode → 分片（BEGIN/CONT/END）→ drv_call 逐片 → 全片
+    /// `ST_OK` 且 END 状态字节 0 才算成功（否则 Err——durable 兜底）。
+    fn send_frame(&mut self, frame: &[u8]) -> Result<(), &'static str> {
+        use eneros_agent_sdk::telemetry_relay::fragment_telemetry_frame;
+        let Some(client) = &mut self.mqtt else {
+            eneros_runtime::println!(
+                "[svc-observability] EXPORT-DROP svc-mqtt EP NOT granted（fail-closed → 补传）"
+            );
+            return Err("mqtt-ep-not-granted");
+        };
+        let (_total, frames) =
+            fragment_telemetry_frame(frame).map_err(|_| "frame-fragment-failed")?;
+        let timeout_ns = 2_000_000_000u64;
+        for (i, f) in frames.iter().enumerate() {
+            self.correlation = self.correlation.wrapping_add(1);
+            let mut req = eneros_drv_svc::runtime::DriverRequest::new(
+                self.correlation,
+                eneros_drv_svc::runtime::OP_EXECUTE,
+            );
+            req.payload[..f.len()].copy_from_slice(f);
+            req.payload_len = f.len() as u16;
+            let raw = eneros_drv_svc::runtime::wire::encode_request(&req);
+            match client.drv_call(&raw, timeout_ns) {
+                Ok(resp) => {
+                    let decode_len =
+                        core::cmp::min(resp.len(), eneros_drv_svc::runtime::wire::RESPONSE_LEN);
+                    let resp = eneros_drv_svc::runtime::wire::decode_response(&resp[..decode_len])
+                        .ok_or("bad-resp")?;
+                    let is_end = i + 1 == frames.len();
+                    // END 帧的状态字节 = svc-mqtt 边界裁决（0 接受 / 1 拒绝）。
+                    let status_byte = resp.payload.first().copied().unwrap_or(1);
+                    if resp.status != eneros_drv_svc::runtime::ST_OK || (is_end && status_byte != 0)
+                    {
+                        eneros_runtime::println!(
+                            "[svc-observability] EXPORT-REJECT frame_seq={} status={} byte={}（补传）",
+                            self.frame_seq,
+                            resp.status,
+                            status_byte
+                        );
+                        return Err("mqtt-reject");
+                    }
+                }
+                Err(e) => {
+                    eneros_runtime::println!(
+                        "[svc-observability] EXPORT-REJECT drv={:?} frame_seq={}（补传）",
+                        e,
+                        self.frame_seq
+                    );
+                    return Err("mqtt-eipc-down");
+                }
+            }
+        }
+        self.frame_seq = self.frame_seq.saturating_add(1);
+        self.exported_frames = self.exported_frames.saturating_add(1);
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "none")]
+impl eneros_business_services::observability::TelemetryExporter for MqttTelemetryExporter {
+    fn export_batch(
+        &mut self,
+        items: &[eneros_business_services::observability::TelemetryItem],
+    ) -> Result<eneros_durable_state::PeerReceipt, &'static str> {
+        let frame =
+            eneros_business_services::observability::encode_batch_frame(items, self.frame_seq)?;
+        self.send_frame(&frame)?;
+        eneros_runtime::println!(
+            "[svc-observability] EXPORT-FRAME frame_seq={} items={} bytes={} total_frames={}",
+            self.frame_seq - 1,
+            items.len(),
+            frame.len(),
+            self.exported_frames
+        );
+        Ok(eneros_durable_state::PeerReceipt {
+            peer: "mqtt-exporter".into(),
+            receipt_id: self.frame_seq,
+            at_ms: eneros_business_services::now_ms(),
+        })
+    }
+}
+
 #[cfg(target_os = "none")]
 struct ObsHandler {
-    svc: eneros_business_services::observability::ObservabilityService<UnavailableExporter>,
+    svc: eneros_business_services::observability::ObservabilityService<MqttTelemetryExporter>,
 }
 
 #[cfg(target_os = "none")]

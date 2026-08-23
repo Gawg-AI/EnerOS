@@ -102,12 +102,37 @@ impl MgmtAction {
         )
     }
 
-    pub fn required_role(&self) -> &'static str {
-        if self.is_destructive() {
-            "admin"
-        } else {
-            "operator"
+    /// 50（WP-50.2）：**每动作独立 RBAC 角色**（复用 mgmt-api 角色模型：
+    /// viewer/operator/admin/superuser 层级）。只读查询 viewer；运维操作
+    /// operator；受控重启/破坏性 admin。
+    pub fn role_for(&self) -> &'static str {
+        match self {
+            // 只读查询（服务状态/日志查询）→ viewer。
+            MgmtAction::StatusQuery | MgmtAction::SloQuery | MgmtAction::LogQuery => "viewer",
+            // 只读诊断包/配置只读查询/崩溃符号化 → operator。
+            MgmtAction::ConfigGet
+            | MgmtAction::SupportBundleExport
+            | MgmtAction::CrashDumpSymbolize => "operator",
+            // 受控重启（经 root supervisor API）→ admin。
+            MgmtAction::AgentRestart => "admin",
+            // 其余破坏性 → admin。
+            _ if self.is_destructive() => "admin",
+            // 其余非破坏性（写类）→ operator。
+            _ => "operator",
         }
+    }
+
+    /// 50（WP-50.2）：50 卷白名单动作（真实 executor 接线面）。白名单外
+    /// 动作 → executor 返回 Failed "action-not-wired"（fail-closed，不空成功）。
+    pub fn in_whitelist(&self) -> bool {
+        matches!(
+            self,
+            MgmtAction::StatusQuery
+                | MgmtAction::AgentRestart
+                | MgmtAction::ConfigGet
+                | MgmtAction::LogQuery
+                | MgmtAction::SupportBundleExport
+        )
     }
 }
 
@@ -205,11 +230,12 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                 return r;
             }
         };
-        // payload 不再自报 role——授权只看 session roles。
-        if !session.has_role(action.required_role()) && !session.has_role("superuser") {
+        // payload 不再自报 role——授权只看 session roles（每动作独立角色，
+        // 50 WP-50.2）。
+        if !session.has_role(action.role_for()) && !session.has_role("superuser") {
             let r = ActionResult {
                 status: RpcStatus::Failed,
-                detail: format!("insufficient-role:{}", action.required_role()),
+                detail: format!("insufficient-role:{}", action.role_for()),
             };
             self.audit.push(AuditRecord {
                 principal: session.principal.clone(),
@@ -266,7 +292,9 @@ mod tests {
     fn admin(now: u64) -> AuthenticatedSession {
         AuthenticatedSession {
             principal: "ops-1".into(),
-            roles: vec!["operator".into(), "admin".into()],
+            // 50（WP-50.2）：admin = viewer+operator+admin（mgmt-api 角色层级
+            // 继承：Admin 拥有 SystemRead+SystemWrite+SecurityAdmin）。
+            roles: vec!["viewer".into(), "operator".into(), "admin".into()],
             tenant_scope: 1,
             channel_binding: "mtls:cn=ops-1".into(),
             expires_at_ms: now + 60_000,
@@ -346,5 +374,110 @@ mod tests {
         let r = rpc.handle(&expired, 8, "status", b"", 1000);
         assert_eq!(r.status, RpcStatus::Failed);
         assert_eq!(r.detail, "session-expired");
+    }
+
+    // ================= 50（WP-50.2）每动作独立 RBAC =================
+
+    fn operator(now: u64) -> AuthenticatedSession {
+        AuthenticatedSession {
+            principal: "ops-op".into(),
+            roles: vec!["operator".into()],
+            tenant_scope: 1,
+            channel_binding: "mtls:cn=ops-op".into(),
+            expires_at_ms: now + 60_000,
+        }
+    }
+
+    #[test]
+    fn role_for_per_action_mapping() {
+        use MgmtAction::*;
+        assert_eq!(StatusQuery.role_for(), "viewer");
+        assert_eq!(LogQuery.role_for(), "viewer");
+        assert_eq!(ConfigGet.role_for(), "operator");
+        assert_eq!(SupportBundleExport.role_for(), "operator");
+        assert_eq!(AgentRestart.role_for(), "admin");
+        // 白名单面。
+        for a in [
+            StatusQuery,
+            AgentRestart,
+            ConfigGet,
+            LogQuery,
+            SupportBundleExport,
+        ] {
+            assert!(a.in_whitelist());
+        }
+        assert!(!UpdateApply.in_whitelist(), "更新链非 50.2 白名单");
+    }
+
+    /// 50：正例——viewer 可查询服务状态（只读）。
+    #[test]
+    fn positive_status_query_viewer_allowed() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            fail: false,
+            executed: vec![],
+        });
+        let r = rpc.handle(&viewer(), 1, "status", b"", 1000);
+        assert_eq!(r.status, RpcStatus::Completed);
+        assert_eq!(rpc.executor.executed.len(), 1);
+        // 审计入链。
+        assert_eq!(rpc.audit.len(), 1);
+        assert_eq!(rpc.audit[0].principal, "viewer-1");
+        assert_eq!(rpc.audit[0].action, "status");
+    }
+
+    /// 50：越权负例——viewer 不能 ConfigGet（需 operator）。
+    #[test]
+    fn negative_config_get_viewer_denied() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            fail: false,
+            executed: vec![],
+        });
+        let r = rpc.handle(&viewer(), 1, "config-get", b"", 1000);
+        assert_eq!(r.status, RpcStatus::Failed);
+        assert!(r.detail.contains("insufficient-role:operator"));
+        assert!(rpc.executor.executed.is_empty());
+        // 越权亦审计。
+        assert_eq!(rpc.audit.len(), 1);
+        assert_eq!(rpc.audit[0].result, "denied");
+    }
+
+    /// 50：越权负例——viewer 不能 SupportBundleExport（需 operator）。
+    #[test]
+    fn negative_support_bundle_viewer_denied() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            fail: false,
+            executed: vec![],
+        });
+        let r = rpc.handle(&viewer(), 1, "support-bundle", b"", 1000);
+        assert_eq!(r.status, RpcStatus::Failed);
+        assert!(r.detail.contains("insufficient-role:operator"));
+        assert!(rpc.executor.executed.is_empty());
+    }
+
+    /// 50：越权负例——operator 不能 AgentRestart（需 admin）。
+    #[test]
+    fn negative_agent_restart_operator_denied() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            fail: false,
+            executed: vec![],
+        });
+        let r = rpc.handle(&operator(1000), 1, "agent-restart", b"svc-ota", 1000);
+        assert_eq!(r.status, RpcStatus::Failed);
+        assert!(r.detail.contains("insufficient-role:admin"));
+        assert!(rpc.executor.executed.is_empty());
+    }
+
+    /// 50：正例——admin 可受控重启（审计入链）。
+    #[test]
+    fn positive_agent_restart_admin_allowed() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            fail: false,
+            executed: vec![],
+        });
+        let r = rpc.handle(&admin(1000), 1, "agent-restart", b"svc-ota", 1000);
+        assert_eq!(r.status, RpcStatus::Completed);
+        assert_eq!(rpc.executor.executed.len(), 1);
+        assert_eq!(rpc.audit.len(), 1);
+        assert_eq!(rpc.audit[0].result, "Completed");
     }
 }

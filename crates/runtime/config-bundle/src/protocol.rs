@@ -58,6 +58,11 @@ pub fn known_keys(id: &str) -> Option<&'static [&'static str]> {
             // 49（WP-49.2）：远程 dual-brain 传输面主题（可选）。
             "ai_request_topic",
             "ai_response_topic",
+            // 50（WP-50.1 exporter 真通道）：遥测批量帧发布主题（可选）。
+            "telemetry_topic",
+            // 50（WP-50.2 mgmt 通道）：管理请求订阅 / 应答发布主题（可选）。
+            "mgmt_request_topic",
+            "mgmt_response_topic",
         ],
         // 48（WP-48.1..48.4）四协议键表（= 各 crate validate_config 已知键；
         // 49 修齐——与 configs/protocol-*.toml 一致，未知键拒绝语义不变）。

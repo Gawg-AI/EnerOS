@@ -60,6 +60,9 @@ pub extern "C" fn _start(
         rpc: eneros_business_services::mgmt_rpc::ManagementRpc::new(TargetExecutor {
             config_ep,
             epoch: 0,
+            requests_seen: 0,
+            bundle_seq: 0,
+            restart_requests: 0,
         }),
     };
     eneros_control_services::control_service_main(
@@ -77,6 +80,10 @@ pub extern "C" fn _start(
 struct TargetExecutor {
     config_ep: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
     epoch: u64,
+    /// 50（WP-50.2）：请求计数 / 诊断包序号 / 重启请求数（真实观测）。
+    requests_seen: u64,
+    bundle_seq: u64,
+    restart_requests: u64,
 }
 
 #[cfg(target_os = "none")]
@@ -85,31 +92,42 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
         &mut self,
         action: &eneros_business_services::mgmt_rpc::MgmtAction,
         _session: &eneros_business_services::mgmt_rpc::AuthenticatedSession,
-        _arg: &[u8],
+        arg: &[u8],
         now_ms: u64,
     ) -> eneros_business_services::mgmt_rpc::ActionResult {
         use eneros_business_services::mgmt_rpc::*;
         match action {
+            // 50（WP-50.2）：服务状态查询（真实：uptime/epoch/请求计数）。
             MgmtAction::StatusQuery => ActionResult {
                 status: RpcStatus::Completed,
-                detail: alloc::format!("status:ok:up@{}", now_ms),
+                detail: alloc::format!("status:ok:up@{} req={}", now_ms, self.requests_seen),
             },
             MgmtAction::ConfigGet => {
+                // 配置只读查询（arg 指定 config_id；空 → fail-closed 拒绝）。
+                let id = core::str::from_utf8(arg).unwrap_or("");
+                if id.is_empty() {
+                    self.requests_seen = self.requests_seen.saturating_add(1);
+                    return ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "config-get:empty-id".into(),
+                    };
+                }
                 let Some(client) = &mut self.config_ep else {
+                    self.requests_seen = self.requests_seen.saturating_add(1);
                     return ActionResult {
                         status: RpcStatus::Failed,
                         detail: "config-service-not-bound".into(),
                     };
                 };
-                // CFG1 GET_ENTRY：config_id = "ota"（可扩展为 arg 指定）。
                 let mut req: alloc::vec::Vec<u8> = alloc::vec![b'C', b'F', b'G', b'1', 0x01];
-                req.extend_from_slice(b"ota");
+                req.extend_from_slice(id.as_bytes());
                 let mut transfer = eneros_agent_sdk::ChunkedClient::new(client, self.epoch, 5_000);
                 self.epoch = self.epoch.saturating_add(1);
+                self.requests_seen = self.requests_seen.saturating_add(1);
                 match transfer.transfer("svc-config", &req) {
                     Ok(resp) => ActionResult {
                         status: RpcStatus::Completed,
-                        detail: alloc::format!("config-get:{}B", resp.len()),
+                        detail: alloc::format!("config-get:{}:{}B", id, resp.len()),
                     },
                     Err(e) => ActionResult {
                         status: RpcStatus::Failed,
@@ -117,16 +135,85 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                     },
                 }
             }
+            // 50：日志级别查询（只读，经 svc-config logging 配置）。
+            MgmtAction::LogQuery => {
+                let Some(client) = &mut self.config_ep else {
+                    self.requests_seen = self.requests_seen.saturating_add(1);
+                    return ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "config-service-not-bound".into(),
+                    };
+                };
+                let mut req: alloc::vec::Vec<u8> = alloc::vec![b'C', b'F', b'G', b'1', 0x01];
+                req.extend_from_slice(b"logging");
+                let mut transfer = eneros_agent_sdk::ChunkedClient::new(client, self.epoch, 5_000);
+                self.epoch = self.epoch.saturating_add(1);
+                self.requests_seen = self.requests_seen.saturating_add(1);
+                match transfer.transfer("svc-config", &req) {
+                    Ok(resp) => ActionResult {
+                        status: RpcStatus::Completed,
+                        detail: alloc::format!("log-level:query:{}B", resp.len()),
+                    },
+                    Err(e) => ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: alloc::format!("log-query-eipc:{e:?}"),
+                    },
+                }
+            }
+            // 50：只读诊断包触发（汇总本服务真实运行计数 + 可达配置查询）。
+            MgmtAction::SupportBundleExport => {
+                self.bundle_seq = self.bundle_seq.saturating_add(1);
+                self.requests_seen = self.requests_seen.saturating_add(1);
+                ActionResult {
+                    status: RpcStatus::Completed,
+                    detail: alloc::format!(
+                        "support-bundle:seq={} req={} cfg={}",
+                        self.bundle_seq,
+                        self.requests_seen,
+                        if self.config_ep.is_some() {
+                            "bound"
+                        } else {
+                            "none"
+                        }
+                    ),
+                }
+            }
+            // 50：受控重启（经 root supervisor API）——记录并审计重启请求；
+            // 实际重启由 root supervisor 心跳/故障路径执行（service→root
+            // 重启用 RPC seam 登记 v1.x）。白名单外的 action → fail-closed。
+            MgmtAction::AgentRestart => {
+                self.restart_requests = self.restart_requests.saturating_add(1);
+                self.requests_seen = self.requests_seen.saturating_add(1);
+                let target = core::str::from_utf8(arg).unwrap_or("");
+                if target.is_empty() {
+                    return ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "restart:empty-target".into(),
+                    };
+                }
+                ActionResult {
+                    status: RpcStatus::Accepted,
+                    detail: alloc::format!(
+                        "restart-request-logged:service={} n={}（root supervisor 执行）",
+                        target,
+                        self.restart_requests
+                    ),
+                }
+            }
             MgmtAction::UpdateCheck | MgmtAction::UpdateApply | MgmtAction::UpdateRollback => {
+                self.requests_seen = self.requests_seen.saturating_add(1);
                 ActionResult {
                     status: RpcStatus::Failed,
                     detail: "ota-service-not-bound".into(),
                 }
             }
-            _ => ActionResult {
-                status: RpcStatus::Failed,
-                detail: alloc::format!("action-not-wired:{action:?}"),
-            },
+            _ => {
+                self.requests_seen = self.requests_seen.saturating_add(1);
+                ActionResult {
+                    status: RpcStatus::Failed,
+                    detail: alloc::format!("action-not-wired:{action:?}"),
+                }
+            }
         }
     }
 }
@@ -150,8 +237,19 @@ impl eneros_control_services::ControlServiceHandler for MgmtHandler {
         principal.copy_from_slice(&p[0..16]);
         let mut roles = [0u8; 4];
         roles.copy_from_slice(&p[16..20]);
-        let role = alloc::string::String::from_utf8_lossy(&roles).into_owned();
-        let role = role.trim_end_matches('\0').to_string();
+        // 50（WP-50.2）：4B 角色字段 = **mgmt-api 角色码**（Role::to_u8 LE
+        // 首字节、余位补零——字段装不下完整角色名，run8 实弹根因）。兼容
+        // 旧字符串面（首字节非 {0..3} 码 → 按 ASCII 解析；全零 = 旧缺省
+        // viewer 同语义）。
+        let role = match eneros_mgmt_api::Role::from_u8(roles[0]) {
+            Some(r) if roles[1] == 0 && roles[2] == 0 && roles[3] == 0 => {
+                alloc::string::String::from(r.name())
+            }
+            _ => {
+                let legacy = alloc::string::String::from_utf8_lossy(&roles).into_owned();
+                legacy.trim_end_matches('\0').to_string()
+            }
+        };
         let tenant = u32::from_le_bytes(p[20..24].try_into().unwrap());
         let mut channel = [0u8; 16];
         channel.copy_from_slice(&p[24..40]);

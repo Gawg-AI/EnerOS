@@ -1,9 +1,9 @@
 # 46（WP-46.3）：svc-mqtt 协议配置（broker = 外部独立 mosquitto，46.5）。
 broker = "10.0.2.2:1883"
 client_id = "eneros-agent"
-# 46.5（L2 keepalive 观测窗口）：60s → 3s——自检轮询窗口内
-# 触发 PINGREQ（对端 transcript 判据；生产部署按现场≥60s 配置）。
-keep_alive_ms = 3000
+# 46.5 L2 观测曾用 3s；50 卷 exporter 断网演示调 15s——降低断连后
+# keepalive 轮询阻塞（guest 时钟爬慢根因）；生产部署按现场 ≥60s 配置。
+keep_alive_ms = 15000
 # 47（WP-47.1 协议入站写）：下行写命令订阅主题（外部 SCADA 发布
 # "SET <device> <point> <value>" 负载 → 插件导出 PointWriteIntent →
 # svc-control-dispatch 授权链）。缺省 = 不收写命令。
@@ -13,3 +13,12 @@ control_topic = "eneros/control"
 # ADR-0045 方案 B——「AI 辅助决策（需配套站端服务）」）。
 ai_request_topic = "eneros/brain/request"
 ai_response_topic = "eneros/brain/response"
+# 50（WP-50.1 exporter 真通道）：遥测/指标/日志批量帧发布主题（QoS1）。
+# 缺省 = 遥测出口关闭（诚实：未配置不假装能导出遥测）。帧格式 =
+# 固定二进制 OBSF（schema 版本化，见 agent-sdk telemetry_relay）。
+telemetry_topic = "eneros/eneros-agent/telemetry"
+# 50（WP-50.2 mgmt 通道）：管理请求订阅 / 应答发布主题（QoS1；缺省 =
+# 管理通道关闭）。载荷 = MGT1 帧原样（固定二进制，schema 见
+# business-services::mgmt_rpc——外部运维客户端按文档构造）。
+mgmt_request_topic = "eneros/mgmt/request"
+mgmt_response_topic = "eneros/mgmt/response"

@@ -18,6 +18,7 @@ mod closure;
 mod config_compile;
 mod evidence;
 mod evidence_chain;
+mod factory;
 mod fault_factory;
 mod flasher;
 mod fuzz_driver;
@@ -313,6 +314,7 @@ fn real_main() -> DynResult<()> {
         "evidence" => evidence::command_evidence(&root, &rest),
         "evidence42" => evidence_chain::command_evidence_chain(&root, &rest),
         "flash" => flasher::command_flash(&root, &rest),
+        "factory" => factory::command_factory(&root, &rest),
         "qa" => qa::command_qa(&root, &rest),
         "release" => sbom::command_release(&root, &rest),
         "symbolize" => symbolize::command_symbolize(&root, &rest),

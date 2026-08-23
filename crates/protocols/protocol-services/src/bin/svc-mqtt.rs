@@ -55,6 +55,20 @@ struct MqttWriteIoService {
     pub ai_req_published: u64,
     pub ai_resp_forwarded: u64,
     pub ai_errors: u64,
+    /// 50（WP-50.1）：遥测帧分片组装器（与 AI 请求组装同语义；不解释内容）。
+    tel_assembler: eneros_protocol_services::ai_relay::RequestAssembler,
+    /// 50：遥测帧发布/拒绝计数（观测；拒绝 = 未配置主题/断连/坏帧）。
+    pub tel_published: u64,
+    pub tel_rejected: u64,
+    /// 50（WP-50.2）：svc-mgmt EIPC 客户端（授予槽 `EIPC_EP_BASE_SLOT + 3`；
+    /// 槽序 = 表序 config(0)/dispatch(1)/ai-worker(2)/mgmt(3)）。未授予 →
+    /// 管理请求丢弃计数（fail-closed）。
+    mgmt: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    /// 50：分块传输 epoch（单调）。
+    mgmt_epoch: u64,
+    /// 50：管理请求转发/失败计数（观测）。
+    pub mgmt_forwarded: u64,
+    pub mgmt_errors: u64,
 }
 
 #[cfg(target_os = "none")]
@@ -148,6 +162,46 @@ impl MqttWriteIoService {
         }
     }
 
+    /// 50（WP-50.2）：把插件收到的管理请求（mgmt_request_topic 原始
+    /// MGT1 帧）经 EIPC 推送 svc-mgmt；应答原样发布回 mgmt_response_topic。
+    /// 未授予/失败 → 计数丢弃（fail-closed——管理通道降级，不伪造成功）。
+    fn forward_mgmt_requests(&mut self) {
+        let mut reqs: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+        self.io.plugin_mut().drain_mgmt_requests(&mut reqs);
+        for payload in reqs {
+            let Some(client) = &mut self.mgmt else {
+                self.mgmt_errors = self.mgmt_errors.saturating_add(1);
+                eneros_runtime::println!(
+                    "[svc-mqtt] MGMT-FWD-DROP svc-mgmt EP NOT granted（fail-closed）"
+                );
+                continue;
+            };
+            let mut transfer = eneros_agent_sdk::ChunkedClient::new(client, self.mgmt_epoch, 5_000);
+            self.mgmt_epoch = self.mgmt_epoch.saturating_add(1);
+            match transfer.transfer("svc-mgmt", &payload) {
+                Ok(resp) => {
+                    self.mgmt_forwarded = self.mgmt_forwarded.saturating_add(1);
+                    // 应答原样发布（MGT1 响应帧：status 1B + detail）。
+                    let published = self.io.plugin_mut().enqueue_mgmt_response(&resp);
+                    eneros_runtime::println!(
+                        "[svc-mqtt] MGMT-FWD len={} total={} resp-publish={}",
+                        payload.len(),
+                        self.mgmt_forwarded,
+                        if published.is_ok() {
+                            "ok"
+                        } else {
+                            "drop（未配置应答主题/outbox 满）"
+                        }
+                    );
+                }
+                Err(e) => {
+                    self.mgmt_errors = self.mgmt_errors.saturating_add(1);
+                    eneros_runtime::println!("[svc-mqtt] MGMT-FWD eipc={e:?}");
+                }
+            }
+        }
+    }
+
     /// 49：EXECUTE 载荷 AI 请求分片子码处理（BEGIN/CONT/END）。
     /// 返回 Some(1B 状态) = 已消费该载荷（回 ST_OK）；None = 非 AI 子码。
     fn handle_ai_fragment(&mut self, payload: &[u8]) -> Option<u8> {
@@ -210,6 +264,88 @@ impl MqttWriteIoService {
             _ => None,
         }
     }
+
+    /// 50（WP-50.1）：EXECUTE 载荷遥测帧分片子码处理（BEGIN/CONT/END）。
+    /// 返回 Some(1B 状态) = 已消费该载荷（回 ST_OK）；None = 非遥测子码。
+    ///
+    /// END 定稿后边界校验（fail-closed）：
+    /// 1. 帧头（magic `OBSF` + schema 版本）不匹配 → 拒绝解析 + 计数；
+    /// 2. telemetry_topic 未配置 → 拒绝（遥测出口关闭）；
+    /// 3. 插件未连接（broker 断）→ 拒绝 → 调用方 durable outbox 兜底补传。
+    /// 任一拒绝 → 返回非 0 状态（svc-observability exporter 视为失败）。
+    fn handle_telemetry_fragment(&mut self, payload: &[u8]) -> Option<u8> {
+        use eneros_agent_sdk::telemetry_relay::{
+            check_frame_header, TEL_PUB_BEGIN, TEL_PUB_CONT, TEL_PUB_END,
+        };
+        let code = *payload.first()?;
+        match code {
+            TEL_PUB_BEGIN if payload.len() >= 3 => {
+                let total = u16::from_le_bytes([payload[1], payload[2]]);
+                match self.tel_assembler.begin(total, &payload[3..]) {
+                    Ok(()) => Some(0),
+                    Err(e) => {
+                        self.tel_rejected = self.tel_rejected.saturating_add(1);
+                        eneros_runtime::println!("[svc-mqtt] TEL-FRAG-REJECT begin {e:?}");
+                        Some(1)
+                    }
+                }
+            }
+            TEL_PUB_CONT => match self.tel_assembler.cont(&payload[1..]) {
+                Ok(()) => Some(0),
+                Err(e) => {
+                    self.tel_rejected = self.tel_rejected.saturating_add(1);
+                    eneros_runtime::println!("[svc-mqtt] TEL-FRAG-REJECT cont {e:?}");
+                    Some(1)
+                }
+            },
+            TEL_PUB_END => match self.tel_assembler.end() {
+                Ok(frame) => {
+                    // 1. 帧头校验（schema 版本不匹配 → 拒绝解析）。
+                    if let Err(e) = check_frame_header(&frame) {
+                        self.tel_rejected = self.tel_rejected.saturating_add(1);
+                        eneros_runtime::println!(
+                            "[svc-mqtt] TEL-FRAME-REJECT header={e:?} len={}（fail-closed）",
+                            frame.len()
+                        );
+                        return Some(1);
+                    }
+                    // 2. 插件已连接（broker 在线——断连时拒绝 → durable 兜底）。
+                    if !self.io.plugin_mut().is_connected() {
+                        self.tel_rejected = self.tel_rejected.saturating_add(1);
+                        eneros_runtime::println!(
+                            "[svc-mqtt] TEL-FRAME-REJECT broker 断连（fail-closed → 补传）"
+                        );
+                        return Some(1);
+                    }
+                    // 3. 入插件 app outbox（QoS1 发布；未配置主题插件拒绝）。
+                    match self.io.plugin_mut().enqueue_telemetry_publish(&frame) {
+                        Ok(()) => {
+                            self.tel_published = self.tel_published.saturating_add(1);
+                            eneros_runtime::println!(
+                                "[svc-mqtt] TEL-FRAME-ACCEPT len={} total={}",
+                                frame.len(),
+                                self.tel_published
+                            );
+                            Some(0)
+                        }
+                        Err(_) => {
+                            self.tel_rejected = self.tel_rejected.saturating_add(1);
+                            eneros_runtime::println!(
+                                "[svc-mqtt] TEL-FRAME-REJECT 未配置主题/outbox 满（fail-closed）"
+                            );
+                            Some(1)
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.tel_rejected = self.tel_rejected.saturating_add(1);
+                    eneros_runtime::println!("[svc-mqtt] TEL-FRAG-REJECT end {e:?}");
+                    Some(1)
+                }
+            },
+            _ => None,
+        }
+    }
 }
 
 #[cfg(target_os = "none")]
@@ -225,20 +361,52 @@ impl eneros_drv_svc::runtime::DriverService for MqttWriteIoService {
     ) {
         use eneros_drv_svc::runtime::*;
         if req.opcode == OP_EXECUTE {
-            // 49（WP-49.2）：AI 请求分片子码优先（载荷首字节判定）。
-            if let Some(status) = self.handle_ai_fragment(&req.payload[..req.payload_len as usize])
-            {
-                self.io.handle(req, resp);
+            let p = &req.payload[..req.payload_len as usize];
+            // 50（WP-50.1）/49（WP-49.2）：按载荷首字节判定分片子码面。
+            let is_tel = matches!(
+                p.first(),
+                Some(&eneros_agent_sdk::telemetry_relay::TEL_PUB_BEGIN)
+                    | Some(&eneros_agent_sdk::telemetry_relay::TEL_PUB_CONT)
+                    | Some(&eneros_agent_sdk::telemetry_relay::TEL_PUB_END)
+            );
+            let is_ai = matches!(
+                p.first(),
+                Some(&eneros_agent_sdk::ai_relay::AI_REQ_BEGIN)
+                    | Some(&eneros_agent_sdk::ai_relay::AI_REQ_CONT)
+                    | Some(&eneros_agent_sdk::ai_relay::AI_REQ_END)
+            );
+            // 先 io.handle（本轮 poll 驱动插件 connect 状态刷新），再处理
+            // 分片——telemetry 的 broker 断连拒绝依赖新鲜 connected。
+            self.io.handle(req, resp);
+            if is_tel {
+                let status = self.handle_telemetry_fragment(p).unwrap_or(1);
                 resp.status = ST_OK;
                 resp.payload[0] = status;
                 resp.payload_len = 1;
                 return;
             }
-            self.io.handle(req, resp);
+            if is_ai {
+                let status = self.handle_ai_fragment(p).unwrap_or(1);
+                resp.status = ST_OK;
+                resp.payload[0] = status;
+                resp.payload_len = 1;
+                return;
+            }
+            // 50 二分诊断：未识别 EXECUTE 载荷首字节打印（定位后移除）。
+            if req.payload_len > 0 {
+                eneros_runtime::println!(
+                    "[svc-mqtt] DBG-EXEC p0={:#04x} len={} tel={ai}",
+                    p[0],
+                    req.payload_len,
+                    ai = is_tel
+                );
+            }
             // 47（WP-47.1）：本轮 poll 解析到的下行写意图 → dispatch 授权链。
             self.forward_intents();
             // 49（WP-49.2）：本轮收到的 peer 应答 → ai-worker 推送。
             self.forward_ai_responses();
+            // 50（WP-50.2）：本轮收到的管理请求 → svc-mgmt（应答回发布）。
+            self.forward_mgmt_requests();
         } else {
             resp.status = ST_INVALID;
         }
@@ -379,6 +547,21 @@ pub extern "C" fn _start(
                                 ai_req_published: 0,
                                 ai_resp_forwarded: 0,
                                 ai_errors: 0,
+                                tel_assembler:
+                                    eneros_protocol_services::ai_relay::RequestAssembler::new(),
+                                tel_published: 0,
+                                tel_rejected: 0,
+                                // 50（WP-50.2）：svc-mgmt 端点在槽 base+3
+                                //（表序第 4 条授予）；未授予 → 管理请求丢弃。
+                                mgmt: eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                                    "mqtt-mgmt",
+                                    eneros_agent_sdk::EIPC_EP_BASE_SLOT + 3,
+                                    eneros_drv_svc::now_ns,
+                                )
+                                .ok(),
+                                mgmt_epoch: 0,
+                                mgmt_forwarded: 0,
+                                mgmt_errors: 0,
                             };
                             // 46.5：启动期自检轮询（post-connect 交换尽早完成）。
                             io.io.self_check_poll(150);

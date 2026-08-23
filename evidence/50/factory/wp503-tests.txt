@@ -1,0 +1,23 @@
+=== TEST A: 缺密钥 → fail-closed（DoD 负例）===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.10s
+     Running `target/debug/eneros-xtask factory provision --image target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw --target target/factory-test/device.raw --serial ENP-2026-000001 --record target/factory-test/record.json`
+xtask: FAIL: 产线签章键未提供：--sign-key <path> 或 ENEROS_SIGN_KEY 或 ENEROS_KMS_DIR/factory.key —— 缺密钥拒绝（fail-closed）
+exit=2
+
+=== TEST B: 正例 provision ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.10s
+     Running `target/debug/eneros-xtask factory provision --image target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw --target target/factory-test/device.raw --serial ENP-2026-000001 --sign-key product/security/keys-local/dev-signing.key --record target/factory-test/record.json`
+FACTORY-PROVISION serial=ENP-2026-000001 image=6d9aaa89ca3d72b4 points=0de5414c304c03ce key_domain=712b01b0402a500d genesis=true readback=verified result=PASS
+exit=0
+
+=== TEST C: 制造记录校验+对账 ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.09s
+     Running `target/debug/eneros-xtask factory verify-record --record target/factory-test/record.json --sign-key product/security/keys-local/dev-signing.key --image target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw`
+xtask: FAIL: image digest mismatch: record 6d9aaa89ca3d72b4 actual 6ba847d4a557e2ab
+exit=2
+
+=== TEST D: 篡改检测（负例）===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.09s
+     Running `target/debug/eneros-xtask factory verify-record --record target/factory-test/record-tampered.json --sign-key product/security/keys-local/dev-signing.key`
+xtask: FAIL: record signature INVALID
+exit=2

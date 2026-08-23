@@ -358,6 +358,18 @@ impl<D: NetDevice + 'static> TransportHandle for TcpStreamHandle<D> {
         TcpSocket::new(self.id).state(&stack.iface).is_connected()
     }
 
+    /// 50（WP-50.1）：断线重连到原 peer（broker 重启 seam）——移除旧 socket
+    /// 并新建连接（tcp_connect 内 poll 到 connected）。失败 → ConnectFailed。
+    fn reconnect(&mut self, peer: &str) -> Result<(), TransportError> {
+        let (ip, port) = parse_ip_port(peer).ok_or(TransportError::ConnectFailed)?;
+        let mut stack = self.stack.borrow_mut();
+        // 移除旧 socket（若仍被内核持有）。
+        stack.iface.sockets.remove(self.id);
+        let id = stack.tcp_connect(ip, port)?;
+        self.id = id;
+        Ok(())
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
         self
     }

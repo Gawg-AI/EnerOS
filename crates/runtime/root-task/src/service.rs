@@ -274,6 +274,11 @@ pub fn run_ipc_loop(
     // root 作为编排方触发一次 PERSIST+LOAD 往返验证（trial 状态写盘
     // 再读回；证据行 STORAGE-PERSIST）。
     let ota_handle = handles.iter().find(|h| h.name == "svc-ota").cloned();
+    // 50（WP-50.1）：svc-observability 句柄（可观测遥测上报目标）。
+    let obs_handle = handles
+        .iter()
+        .find(|h| h.name == "svc-observability")
+        .cloned();
     if let (Some(t), Some(e)) = (&telemetry_handle, &energy_handle) {
         eneros_runtime::println!(
             "[eneros-root-task] CONTROL-CHAIN: drivers bound telemetry.ep={} energy.ep={}",
@@ -297,6 +302,8 @@ pub fn run_ipc_loop(
     let mut collect_seq: u64 = 0;
     let mut chain_epoch: u64 = 0;
     let mut chain_rounds: u64 = 0;
+    /// 50（WP-50.1）：可观测遥测上报驱动（svc-observability EIPC epoch）。
+    let mut obs_epoch: u64 = 0;
     let mut hang_injected = false;
     /// 控制链驱动周期（轮）。QEMU 实弹验证（round 21）：100 轮 ≈ 0.13s
     /// 虚拟/次，hello 760 轮/s。dispatch rate gate = 产品值 60/h
@@ -523,6 +530,16 @@ pub fn run_ipc_loop(
                 if let Some(h) = handles.iter().find(|h| h.name == name) {
                     let _ = protocol_execute(h.ep, (tick % 0xFFFF) as u32, name);
                 }
+            }
+        }
+
+        // 50（WP-50.1 exporter 真通道）：可观测遥测上报驱动——root 作为
+        // 编排方，周期性向 svc-observability 入队一帧**真实服务健康摘要**
+        //（各服务 readiness 实况，非合成 ACQ 读数）并触发 FLUSH → 导出器
+        // 经 svc-mqtt 批量帧送达 MQTT broker。驱动失败不阻断主循环。
+        if tick % CONTROL_CHAIN_PERIOD == 40 {
+            if let Some(h) = &obs_handle {
+                let _ = telemetry_report_tick(h.ep, handles, &mut obs_epoch);
             }
         }
 
@@ -1101,6 +1118,123 @@ fn control_chain_synth_ingest(
     _now: u64,
 ) -> Result<u8, alloc::string::String> {
     Ok(0)
+}
+
+/// 50（WP-50.1 exporter 真通道）：可观测遥测上报驱动——root 周期性向
+/// svc-observability 入队一帧**真实服务健康摘要**（spawned 服务清单，非
+/// 合成 ACQ 读数）并触发 FLUSH。返回 exported 计数（-1 = 失败；失败不
+/// 阻断主循环——观测行）。
+#[cfg(all(target_os = "none", feature = "sel4-eipc"))]
+fn telemetry_report_tick(
+    obs_ep: u64,
+    handles: &[crate::spawn::SpawnedHandle],
+    epoch: &mut u64,
+) -> i64 {
+    use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
+    use eneros_agent_sdk::ChunkedClient;
+    // 1. 服务健康摘要 payload（真实：spawned 服务计数按必需性；
+    // 50 实弹修复——逐服务名清单单条 ≈450B × batch8 超帧限 1024B
+    // （frame-oversize），改紧凑计数）。
+    let required = handles
+        .iter()
+        .filter(|h| h.requirement == crate::bundle::Requirement::Required)
+        .count();
+    let optional = handles.len().saturating_sub(required);
+    let mut payload: alloc::vec::Vec<u8> = alloc::format!(
+        "health:req={} opt={} total={}",
+        required,
+        optional,
+        handles.len()
+    )
+    .into_bytes();
+    // ENQUEUE 帧头已带 created（8B）时间戳——payload 只含健康摘要。
+    if payload.len() > 255 {
+        payload.truncate(255);
+    }
+    // 2. ENQUEUE 帧：OBS1 ‖ 0x01 ‖ class(3=Telemetry) ‖ service 16B ‖
+    //    schema 8B ‖ created 8B LE ‖ plen 1B ‖ payload。
+    let mut req: alloc::vec::Vec<u8> = alloc::vec![b'O', b'B', b'S', b'1', 0x01, 3];
+    let mut service = [0u8; 16];
+    let svc = b"root-task";
+    service[..svc.len()].copy_from_slice(svc);
+    req.extend_from_slice(&service);
+    let mut schema = [0u8; 8];
+    schema[..6].copy_from_slice(b"health");
+    req.extend_from_slice(&schema);
+    req.extend_from_slice(&abs_now_ms().to_le_bytes());
+    req.push(payload.len() as u8);
+    req.extend_from_slice(&payload);
+    let mut ipc = match Sel4IpcClient::new("root-obs-enq", obs_ep, eneros_time::get_monotonic_ns) {
+        Ok(c) => c,
+        Err(_) => {
+            eneros_runtime::println!("[eneros-root-task] OBS-REPORT enqueue client init FAIL");
+            return -1;
+        }
+    };
+    let mut transfer = ChunkedClient::new(&mut ipc, *epoch, 5_000);
+    *epoch = epoch.saturating_add(1);
+    let enq_resp = match transfer.transfer("svc-observability", &req) {
+        Ok(r) => r,
+        Err(e) => {
+            eneros_runtime::println!("[eneros-root-task] OBS-REPORT enqueue FAIL {e:?}");
+            return -1;
+        }
+    };
+    if enq_resp.first() != Some(&1) {
+        eneros_runtime::println!(
+            "[eneros-root-task] OBS-REPORT enqueue rejected {:02x?}",
+            &enq_resp[..enq_resp.len().min(8)]
+        );
+        return -1;
+    }
+    // 3. FLUSH：OBS1 ‖ 0x02 ‖ batch u32 LE。
+    let mut flush_req: alloc::vec::Vec<u8> = alloc::vec![b'O', b'B', b'S', b'1', 0x02];
+    flush_req.extend_from_slice(&8u32.to_le_bytes());
+    let mut ipc2 = match Sel4IpcClient::new("root-obs-flush", obs_ep, eneros_time::get_monotonic_ns)
+    {
+        Ok(c) => c,
+        Err(_) => {
+            eneros_runtime::println!("[eneros-root-task] OBS-REPORT flush client init FAIL");
+            return -1;
+        }
+    };
+    let mut transfer2 = ChunkedClient::new(&mut ipc2, *epoch, 5_000);
+    *epoch = epoch.saturating_add(1);
+    let flush_resp = match transfer2.transfer("svc-observability", &flush_req) {
+        Ok(r) => r,
+        Err(e) => {
+            eneros_runtime::println!("[eneros-root-task] OBS-REPORT flush FAIL {e:?}");
+            return -1;
+        }
+    };
+    // FLUSH 成功响应 = exported u64 LE（8B）；失败 = "ERR:..."（不误读为数字）。
+    let exported = if flush_resp.len() >= 3 && &flush_resp[..3] == b"ERR" {
+        eneros_runtime::println!(
+            "[eneros-root-task] OBS-REPORT flush rejected {:02x?}",
+            &flush_resp[..flush_resp.len().min(16)]
+        );
+        -1
+    } else if flush_resp.len() >= 8 {
+        u64::from_le_bytes(flush_resp[..8].try_into().unwrap()) as i64
+    } else {
+        0
+    };
+    eneros_runtime::println!(
+        "[eneros-root-task] OBS-REPORT svc={} exported={}",
+        handles.len(),
+        exported
+    );
+    exported
+}
+
+/// host/无 sel4-eipc 构建的占位（可观测上报不可用——如实报错，不伪造）。
+#[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]
+fn telemetry_report_tick(
+    _obs_ep: u64,
+    _handles: &[crate::spawn::SpawnedHandle],
+    _epoch: &mut u64,
+) -> i64 {
+    -1
 }
 
 #[cfg(all(target_os = "none", feature = "sel4-eipc"))]
