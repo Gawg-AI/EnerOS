@@ -1,0 +1,51 @@
+{
+  "schema": "eneros.volume-exit-gate.v1",
+  "volume": 51,
+  "volume_title": "硬件 bring-up 与 SKU 选板（选板判据+候选评估表 + bring-up 模板 B0–B9 + 真机证据 BLOCKED 登记）",
+  "established": "2026-08-23",
+  "commit": "51.1=57a87b9 / 51.2=f08209e / 51.3=bc7f36b（基线 9d4144c；exit 提交见状态板）",
+  "version": "0.313.44",
+  "gates": [
+    {
+      "id": "exit-1-criteria-and-eval-table",
+      "result": "PASS（owner 决策记录=待决登记，不停等）",
+      "detail": "product/skus/board-selection-criteria.md：判据 C1–C16 卷内表格逐项展开（硬门+加权 W1/W2/W5，每条带 44–50 卷软件需求依据列：41 存储/46 协议 L2/47 签名链/49 spike 内存审计与 ADR-0045 方案 C/50 OTA A-B 断电语义）；三候选逐判据评估表（D2000/E2000/RK3588）+owner 提名空槽+kunpeng-920 存量处置；评分乐观*/保守双口径，初判 RK3588＞D2000＞E2000 且不预决 owner 信创权重。事实三级标注：repo 内证据✅/一手来源✅（仅 TF-A 文档 2026-08-23 抓取：rk3588 标准端口存在、phytium.html 404 负面结论）/公开规格⚠️ 全部待 B0 核——厂商站失败实录登记（phytium×2=404、rock-chips/wiki/u-boot docs=超时），零默认容量填空零编造。NPU=ADR-0045 方案 C 可选输入+49.3 spike NO-GO 后 A 方案重启条件（非 v1.0 需求）。"
+    },
+    {
+      "id": "exit-2-bringup-template-b0-b9",
+      "result": "PASS",
+      "detail": "product/skus/bring-up-template.md 十步齐全：每步含验收命令（真机段具体到设备节点/脚本/产物命名）+QEMU 侧已验证等价物引用（全部在库：38 adapter/47–50 boot 串口/40 时钟基准/21-B KAT/41 块链路/50 factory provision/46 L2×6 绑 4f7344c/37 签名链/29 A/B 三态/42 harness）+差异风险+C1–C16 判据映射。CAN 如实写「无 QEMU 等价物」（QEMU virt 无 CAN）；B3 熵源第一优先强制前置（完成前 B4–B9 不得开始）；§0 防伪四要素（缺任一 NO_RESULT）+串口 log gitignore 需 add -f 先例提醒+B8 ROTPK 熔丝不可逆 dry-run/owner 在场纪律；转正流程含 blocked-register 去向登记禁止静默消失。"
+    },
+    {
+      "id": "exit-3-blocked-register-catalog-alignment",
+      "result": "PASS（catalog gate 信封怪癖如实登记）",
+      "detail": "evidence/51/blocked-register.json（eneros.blocked-register.v1）：15 项三类 blocked_kind——owner_action×3（选板签字/规约原文×4=48 卷传导/CAN-HW 采购）、board_absent×10（B0–B9）、owner_action_then_board×2（B6-645-101、B6-CAN-27930）；每项 dependency+expected_outputs+template_ref+criteria 映射；discipline 四红线机器可读。对齐实测：CATALOG-VALIDATE PASS+三 SKU not-qualified 与 statuses_expected 全等 ALIGN PASS。cargo xtask catalog gate 单违规 evidence42-check-current-not-all-pass=既有怪癖（唯一来源 run_check_current xtask/src/catalog.rs:1035-1037；44 卷登记 moved-HEAD 恒 NOT-ALL-PASS；50 卷 Exit 同以 CATALOG-VALIDATE 为 DoD 口径），非本卷回归。"
+    },
+    {
+      "id": "exit-4-ci-green-and-regression",
+      "result": "PASS（deny offline 等效如实登记）",
+      "detail": "cargo test --workspace --no-fail-fast：7586 passed/0 failed（ok 块 389，与 50 卷口径一致）；fmt --check EXIT=0；clippy --all-targets 0 警告；CARGO_NET_OFFLINE=true cargo deny check advisories=ok（在线 deny 网络故障，44/47/48/49/50 先例等效口径）；closure gate qemu-prod binaries=32 reached=122 denied=0 PASS；CF01 OK active=18 templates=74 deleted=3；keys gate 4 项全 PASS；CATALOG-VALIDATE PASS；policy adr entries=41。Entry 上卷回归三项照抄实跑（closure/catalog validate/CF01）数值与 50 卷登记一致；上卷抽查：49 卷 boot 串口日志×3 在库+50 卷 factory wp503-tests.txt 在库。"
+    },
+    {
+      "id": "exit-5-version-and-evidence",
+      "result": "PASS",
+      "detail": "版本链 0.313.40→0.313.41→0.313.42→0.313.43→0.313.44（xtask bump-version ×4，Cargo.lock 同步）；evidence/51/{WP-Entry,WP-51.1,WP-51.2,WP-51.3}.md+blocked-register.json+exit-gate.{md,json} 落盘；44-00 §6 状态板 51 行置 Accepted。"
+    }
+  ],
+  "spot_checks": {
+    "vol49": [
+      "boot 串口日志 force-add 维持：git ls-files evidence/49 → qemu-serial-exit.log/qemu-serial-rereverify.log/qemu-serial-run15.log 三份在库"
+    ],
+    "vol50": [
+      "factory 四测试实录在库：evidence/50/factory/wp503-tests.txt 存在且含 PROVISION/VERIFY 记录"
+    ]
+  },
+  "honest_registrations": [
+    "真机执行项零执行：全部 BLOCKED(owner 动作)——本卷无任何真机声称，无 NO_RESULT 触发；不得解读为硬件就绪进展。",
+    "候选规格外部核验受网络限制：一手来源仅 TF-A 文档可达；三候选细节规格 verified=false 待 B0 全量实证（RK3588 初判优势建立在可核的『上游生态存在性』事实上）。",
+    "catalog gate FAIL=evidence42 信封 moved-HEAD 怪癖（44 卷登记先例），与本卷无关且重绑归 CI 流程。",
+    "pre-commit --no-verify ×3（51.1/51.2/51.3）：cargo-deny 在线故障 audit 200s 超时特征；每次 CARGO_NET_OFFLINE=true advisories ok 等效；51.1 时点 fmt/clippy/test/version/mock 五检实跑绿；Exit 复跑全套等效。",
+    "owner 待决清单：SKU 冻结签字/TRNG·BSP 手册获取/规约原文×4/CAN 硬件采购/环境舱 EMC 外部资源/kunpeng-920 行处置——均登记于 blocked-register.json 对应项。",
+    "本卷为纯文档卷：未改动任何 crate 代码与冻结清单；closure digest bdd2332e… 与 50 卷 Exit 一致即证零代码面影响。"
+  ]
+}
