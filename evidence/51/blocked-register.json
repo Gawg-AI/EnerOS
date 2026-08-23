@@ -1,0 +1,180 @@
+{
+  "schema": "eneros.blocked-register.v1",
+  "volume": 51,
+  "volume_title": "硬件 bring-up 与 SKU 选板",
+  "established": "2026-08-23",
+  "baseline_commit": "f08209e（WP-51.2 提交；本登记随 WP-51.3 提交入库）",
+  "discipline": {
+    "anti_forgery": "任何真机声称必须有：串口原始 log（含 board 身份行）+ 时间戳 + 对端 transcript + 执行人登记；缺任一按 NO_RESULT 处理。",
+    "no_generalization": "QEMU/合成平台证据不得泛化为真机资格。",
+    "sku_freeze": "SKU 冻结=owner 签字（product/skus/board-selection-criteria.md §5）。",
+    "no_silent_unblock": "BLOCKED 转 ACTIVE 时必须在本表登记去向卷号，禁止静默消失。"
+  },
+  "items": [
+    {
+      "id": "OWNER-SKU",
+      "title": "选板裁决与 SKU 冻结签字",
+      "status": "BLOCKED",
+      "blocked_kind": "owner_action",
+      "dependency": "owner 在 board-selection-criteria.md §5 决策记录签字（可附条件）；飞腾系候选须先取得 TRNG/BSP 寄存器手册（C10/C14 高风险清偿）",
+      "expected_outputs": ["已签决策记录", "选定 SKU 的 product/skus/<board>.json 按 eneros.board-fact-freeze.v1 回填"],
+      "template_ref": "product/skus/board-selection-criteria.md#5-owner-决策记录",
+      "criteria": []
+    },
+    {
+      "id": "B0",
+      "title": "板级事实采集→SKU json 冻结",
+      "status": "BLOCKED",
+      "blocked_kind": "board_absent",
+      "dependency": ["OWNER-SKU", "板卡到货"],
+      "expected_outputs": ["b0-boot.log（board 身份行）", "b0-fdt.txt", "SKU json facts 全 verified+source"],
+      "template_ref": "product/skus/bring-up-template.md#b0-板级事实采集判据-c1c6c8c14c16",
+      "criteria": ["C1", "C2", "C3", "C4", "C6", "C8", "C14", "C15", "C16"]
+    },
+    {
+      "id": "B1",
+      "title": "hal/board adapter + 平台契约 JSON",
+      "status": "BLOCKED",
+      "blocked_kind": "board_absent",
+      "dependency": ["B0"],
+      "expected_outputs": ["<Board>Adapter 实现+host 单测", "configs/platform-contracts/<board>.json 实证回填", "目标侧 inventory 串口行"],
+      "template_ref": "product/skus/bring-up-template.md#b1-halboard-adapter判据-c2c14",
+      "criteria": ["C2", "C14"]
+    },
+    {
+      "id": "B2",
+      "title": "控制台 UART 真 MMIO + time_init 跨进程基准",
+      "status": "BLOCKED",
+      "blocked_kind": "board_absent",
+      "dependency": ["B1"],
+      "expected_outputs": ["b2-console.log", "b2-clock.log 双服务时间戳对账行"],
+      "template_ref": "product/skus/bring-up-template.md#b2-控制台时钟判据-c8-部分",
+      "criteria": ["C8"]
+    },
+    {
+      "id": "B3",
+      "title": "TRNG 熵源驱动+health test+csrng【bring-up 第一优先】",
+      "status": "BLOCKED",
+      "blocked_kind": "board_absent",
+      "dependency": ["B1", "owner: TRNG 寄存器手册可得（=选板 C10 硬门）"],
+      "expected_outputs": ["b3-entropy.log 自检行", "kat-report target 转储", "fail-closed 屏蔽负例实录"],
+      "template_ref": "product/skus/bring-up-template.md#b3-熵源bring-up-第一优先判据-c10",
+      "criteria": ["C10"]
+    },
+    {
+      "id": "B4",
+      "title": "eMMC/NVMe 真驱动+svc-storage 块链路+断电安全实测",
+      "status": "BLOCKED",
+      "blocked_kind": "board_absent",
+      "dependency": ["B3"],
+      "expected_outputs": ["factory provision 真盘 verify-record VALID", "b4-powerloss.log 断电×10 循环", "OTA A/B trial 真机首跑"],
+      "template_ref": "product/skus/bring-up-template.md#b4-存储判据-c4c5-部分",
+      "criteria": ["C4", "C5"]
+    },
+    {
+      "id": "B5",
+      "title": "PHY/MAC 真驱动+smoltcp+Modbus L2 真机复测",
+      "status": "BLOCKED",
+      "blocked_kind": "board_absent",
+      "dependency": ["B3"],
+      "expected_outputs": ["b5-link.log", "l2-modbus-tcp 真机 verdict VERIFIED（oracle=独立非 EnerOS 进程）"],
+      "template_ref": "product/skus/bring-up-template.md#b5-网络判据-c6c7",
+      "criteria": ["C6", "C7"]
+    },
+    {
+      "id": "B6-RS485",
+      "title": "RS485 DE-RE 方向实测 + modbus-rtu L2 清偿",
+      "status": "BLOCKED",
+      "blocked_kind": "board_absent",
+      "dependency": ["B3", "485 收发器/隔离布线（板级 BOM）"],
+      "expected_outputs": ["DE-RE 波形入证", "modbus-rtu L2 verdict VERIFIED（清偿 evidence/46/l2-modbus-rtu-blocked.json）"],
+      "template_ref": "product/skus/bring-up-template.md#b6-总线判据-c8c9",
+      "criteria": ["C8"]
+    },
+    {
+      "id": "B6-645-101",
+      "title": "DL/T 645-2007 / IEC60870-5-101 真机对端",
+      "status": "BLOCKED",
+      "blocked_kind": "owner_action_then_board",
+      "dependency": ["SPEC-TEXT（前置）", "B3", "真机对端设备（电能表/RTU owner 资源）"],
+      "expected_outputs": ["两协议真机互操作 transcript"],
+      "template_ref": "product/skus/bring-up-template.md#b6-总线判据-c8c9",
+      "criteria": ["C8"]
+    },
+    {
+      "id": "B6-CAN-27930",
+      "title": "CAN 收发器回环 → GB/T 27930 L1 → 真车/BMS 若可得",
+      "status": "BLOCKED",
+      "blocked_kind": "owner_action_then_board",
+      "dependency": ["CAN-HW（前置）", "B3"],
+      "expected_outputs": ["b6-can-loopback.log", "27930 plugin transport_kinds 填充+L1 对 BMS 模拟器 transcript"],
+      "template_ref": "product/skus/bring-up-template.md#b6-总线判据-c8c9",
+      "criteria": ["C9"]
+    },
+    {
+      "id": "B7",
+      "title": "看门狗真喂狗/复位实测 + 掉电检测优雅停机",
+      "status": "BLOCKED",
+      "blocked_kind": "board_absent",
+      "dependency": ["B3", "PSU 掉电通知硬件（板级设计=C5 选板必查项）"],
+      "expected_outputs": ["b7-wdt-reset.log 停喂复位+复位原因行", "b7-powerloss.log 优雅停机 durable 校验"],
+      "template_ref": "product/skus/bring-up-template.md#b7-看门狗电源判据-c5-部分",
+      "criteria": ["C5"]
+    },
+    {
+      "id": "B8",
+      "title": "ROTPK 熔丝烧录 + 安全启动三态矩阵 + 防回滚 security_version 接入",
+      "status": "BLOCKED",
+      "blocked_kind": "board_absent",
+      "blocked_note": "熔丝烧录不可逆：dry-run 脚本+二次确认+owner 在场后方可执行",
+      "dependency": ["B0 固件事实", "owner 在场（不可逆动作）"],
+      "expected_outputs": ["b8-boot-matrix.log 三态", "b8-rollback.log 降级拒绝实弹"],
+      "template_ref": "product/skus/bring-up-template.md#b8-安全启动判据-c11c12",
+      "criteria": ["C11", "C12"]
+    },
+    {
+      "id": "B9",
+      "title": "72h soak 真机模式 + HIL 故障注入 + 掉电循环 + 互操作全复测 → qualified 升格",
+      "status": "BLOCKED",
+      "blocked_kind": "board_absent",
+      "blocked_note": "qualified 升格另需 L4 清单其余项（EMC/产线/认证/试点=43 卷 NO-GO 清单），非 bring-up 单方面可达",
+      "dependency": ["B4–B8 全闭环", "owner: 环境舱/EMC 实验室外部资源"],
+      "expected_outputs": ["b9-soak/{serial,metrics,report}", "b9-fault-matrix.json", "qualification_evidence 填充后 catalog 三连 PASS"],
+      "template_ref": "product/skus/bring-up-template.md#b9-soakhil判据-c13c15-及全表",
+      "criteria": ["C13", "C15"]
+    },
+    {
+      "id": "SPEC-TEXT",
+      "title": "电力规约原文×4 提供（48 卷遗留依赖传导）",
+      "status": "BLOCKED",
+      "blocked_kind": "owner_action",
+      "dependency": "owner 提供 DL/T 645-2007 / IEC 60870-5-101 / IEC 60870-5-103 / GB/T 27930-2015 规约原文（48 卷全盘搜索已登记不在环境）",
+      "expected_outputs": ["codec 字节层/KAT 解封 → 645/101/103/27930 可进入真机对端阶段"],
+      "template_ref": "蓝图/48-真实电力协议补充蓝图-645-101-103-27930.md（主状态段）",
+      "criteria": []
+    },
+    {
+      "id": "CAN-HW",
+      "title": "USB-CAN/SJA1000 模块与 CAN 收发器采购",
+      "status": "BLOCKED",
+      "blocked_kind": "owner_action",
+      "dependency": "owner 采购（gbt27930 plugin 登记：L1 USB-CAN = owner hardware）",
+      "expected_outputs": ["B6-CAN-27930 硬件前置就绪"],
+      "template_ref": "crates/protocols/gbt27930/src/plugin.rs descriptor 行",
+      "criteria": ["C9"]
+    }
+  ],
+  "catalog_alignment": {
+    "catalog_file": "product/compatibility-catalog.json",
+    "rule": "本表全部真机项 BLOCKED ⇔ catalog 无任何 SKU 具 L4 资格；三 SKU 维持 not-qualified；qualified 升格唯一路径=B9 证据齐全+qualification_evidence 填充+catalog derive/sign/validate 三连 PASS+owner 签字。",
+    "statuses_expected": {
+      "kunpeng-920": "not-qualified",
+      "phytium-d2000": "not-qualified",
+      "qemu-virt-aarch64": "not-qualified"
+    },
+    "check_commands": [
+      "cargo xtask catalog validate",
+      "cargo xtask catalog gate"
+    ]
+  }
+}
