@@ -1,0 +1,55 @@
+{
+  "schema": "eneros.blocked-register.v1",
+  "candidate_id": "e477c3c2e885aee3182b13ee6fb47b66e759ced6ac4671d687b52624b10ed7c6",
+  "created": "2026-08-23",
+  "volume": "52",
+  "purpose": "WP-52.3 外部项 BLOCKED 清单（不伪装）。任一项未完成 → v1.0.0 维持 NO-GO（43 卷 §43.17 唯一结论规则沿用）。",
+  "items": [
+    {
+      "id": "EXT-01",
+      "item": "独立密码使用评审（Ed25519/rustls/embedded-tls 使用面评审；非商密认证——D4 边界）",
+      "blocked_kind": "owner_action",
+      "dependency": "评审人由 owner 指定；输入=product/crypto-policy.toml 八 usage 绑定证据摘要+37 卷签名链+47.3 键出仓机制",
+      "expected_outputs": "评审报告+发现分级；P0/P1 清零为 GO 前置",
+      "status": "BLOCKED"
+    },
+    {
+      "id": "EXT-02",
+      "item": "第三方渗透测试（范围=正式介质+服务面；出口判据=零 P0/P1）",
+      "blocked_kind": "owner_action",
+      "dependency": "外部团队+测试环境；候选镜像 digest e6debf8d… 为被测对象基线",
+      "expected_outputs": "渗透测试报告+修复闭环记录",
+      "status": "BLOCKED"
+    },
+    {
+      "id": "EXT-03",
+      "item": "真机 72h/HIL/EMC/安规/入网（51 卷 bring-up B0–B9 全链）",
+      "blocked_kind": "board_absent_then_external_lab",
+      "dependency": "SKU 冻结签字（51 卷 blocked-register EXT 链）→板卡采购→B0–B9 转正→外部实验室排期",
+      "expected_outputs": "真机 soak 报告/HIL 记录/EMC·安规·入网证书",
+      "status": "BLOCKED"
+    },
+    {
+      "id": "EXT-04",
+      "item": "负责人五方签署（产品/架构/安全/质量/交付制造）",
+      "blocked_kind": "owner_action",
+      "dependency": "上述 EXT-01..03 完成后签署方有完整输入；签署模板见 docs/v1.0.0-go-no-go.md 更新版",
+      "expected_outputs": "五方签字记录归档 go-no-go 附录",
+      "status": "BLOCKED"
+    }
+  ],
+  "internal_gaps_feeding_no_go": [
+    { "id": "DEF-52-03", "summary": "镜像逐字节复现失败（四随机源）", "owner_return": "44 image_factory / 37 签名链 / 29 bootctrl" },
+    { "id": "DEF-52-05", "summary": "svc-mqtt 出站连接建立即断（环境漂移 vs 回归待定责）；受阻面=控制链/AI 链 QEMU 实弹重跑+MQTT L2 复证", "owner_return": "svc-mqtt owner 卷+基建" },
+    { "id": "DEF-52-04", "summary": "断电切点 harness 标记词汇过时", "owner_return": "33 卷 soak/fault 基建" },
+    { "id": "GAP-FUZZ", "summary": "点表 parser/协议配置 parser/MQTT 帧 fuzz 目标缺失", "owner_return": "后续卷 fuzz CI 化" },
+    { "id": "GAP-SOAK72", "summary": "72h 完整墙钟 soak 未达成（本卷真跑轮数与时長如实登记于 exit-gate）", "owner_return": "CI/lab 长跑资源" },
+    { "id": "GAP-L2NEG", "summary": "L2 负例 ≥2/协议全量重跑未完成（既有负例证据维持+新增负例在案）", "owner_return": "后续终验窗口" },
+    { "id": "GAP-PIN", "summary": "pinned-tools.json qemu pin 与现役二进制不符（8.2.2 vs 9.2.4/10.2.1）", "owner_return": "基建 toolchain pin 维护" }
+  ],
+  "discipline": [
+    "BLOCKED 不伪装、不停等：登记后继续其余不依赖项（本卷已按此执行）",
+    "GO 仅当 52.2 全 PASS 且 52.3 全完成；当前两者均不满足 → 维持 NO-GO",
+    "缺陷退回对应 owner 卷修复 → 新 candidate → 重跑本卷矩阵（stale 传播纪律）"
+  ]
+}
