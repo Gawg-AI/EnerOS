@@ -1,0 +1,33 @@
+{
+  "schema": "eneros.candidate-lineage.v1",
+  "candidate_id": "e477c3c2e885aee3182b13ee6fb47b66e759ced6ac4671d687b52624b10ed7c6",
+  "source_commit": "4521e8365cca39db28dd9f04a354cc3a533a96e4",
+  "dirty_tree_digest": "0eb662b1e8669d117410950e44e20c18434985e30edf8a0bdb4de3469df86064",
+  "product_manifest_digest": "03dc0f0b7580051992d5c5aa59f520b3b00e7917c4a657531c7c4f963a78ff37",
+  "profile_digest": "59d202e2387c957ed4858d8eeb71f948486616a2f57b5a2d3a68de382e8ae69f",
+  "toolchain_digest": "1b88e3296593aba71a44a038fb52bdfb62a637e1de75ac1796cef577448ad343",
+  "artifact_sha256": "e6debf8dc6a12cc97d9b4bbae76dd3e25496343c8e76ebe1044b3d54ff89455e",
+  "platform_inventory_digest": "2cf1af0518d72ea660f9d84c5c9ddb6bcdf7000c8fb82a69cbae5575b650400a",
+  "build_inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "42fcfdecc02bb7b8a81808bdaca627d9b0fdcea7ee4a9fa8ac3d29db8ecc8773"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "03dc0f0b7580051992d5c5aa59f520b3b00e7917c4a657531c7c4f963a78ff37"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "59d202e2387c957ed4858d8eeb71f948486616a2f57b5a2d3a68de382e8ae69f"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ]
+}
