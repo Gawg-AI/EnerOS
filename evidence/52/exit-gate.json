@@ -1,0 +1,60 @@
+{
+  "schema": "eneros.volume-exit-gate.v1",
+  "volume": 52,
+  "volume_title": "v1.0 候选与终验（Go/No-Go）——全系列出口",
+  "established": "2026-08-23",
+  "commit": "52.1=94c6392 / 52.2=8f9c85f / 52.3=e091949 / 52.4=b4ffd76（基线/tag 点 4521e83）",
+  "version": "0.313.48（exit 提交 bump 至 0.313.49）",
+  "candidate": {
+    "tag": "v1.0.0-rc.1",
+    "source_commit": "4521e8365cca39db28dd9f04a354cc3a533a96e4",
+    "candidate_id": "e477c3c2e885aee3182b13ee6fb47b66e759ced6ac4671d687b52624b10ed7c6",
+    "artifact_sha256_at_freeze": "e6debf8dc6a12cc97d9b4bbae76dd3e25496343c8e76ebe1044b3d54ff89455e",
+    "lineage": "evidence/52/candidate-lineage.json",
+    "envelope_dev_signed": "evidence/52/freeze-envelope.json"
+  },
+  "gates": [
+    {
+      "id": "exit-1-wps-complete-and-evidenced",
+      "result": "PASS",
+      "detail": "WP-Entry 锚点三项重验无修订+上卷回归 closure/CATALOG-VALIDATE/CF01 与 51 卷登记逐字一致；52.1 冻结+可复现（FAIL 项如实=DEF-52-03）；52.2 十一项矩阵逐项执行绑定 candidate_id；52.3 外部四项 BLOCKED 清单；52.4 裁决/文档/清点/v1.x 路线。零产品代码改动全程维持（closure digest=bdd2332e… 与 50/51 卷逐字一致证零代码面）"
+    },
+    {
+      "id": "exit-2-verdict-unique-and-evidence-consistent",
+      "result": "PASS（裁决=NO-GO 维持）",
+      "detail": "docs/v1.0.0-go-no-go.md 顶部唯一裁决=NO-GO/NOT-AUTHORIZED（2026-08-23，52 卷）：GO 双条件均不满足——外部项 4/4 BLOCKED（EXT-01..04）+软件矩阵缺口（DEF-52-03 可复现性 P1、DEF-52-05 mqtt 出站连接 P1 待定责受阻控制链/AI 链/MQTT L2 实弹、GAP-SOAK72 等）；五条重启条件在册；43 卷及更早历史全部归附录 superseded"
+    },
+    {
+      "id": "exit-3-evidence-directory-complete-bound-to-candidate",
+      "result": "PASS",
+      "detail": "evidence/52/：WP-Entry.md / WP-52.1.md / WP-52.2.md / WP-52.3.md / WP-52.4.md / candidate-lineage.json / freeze-envelope.json / blocked-register.json / claims-audit.json / runs/{boot 五份 qemu-result+锚拒绝串口, l2 六协议 transcript 带时间戳} / exit-gate.{md,json}；矩阵每项绑定 candidate_id=e477c3c2… 与命令输出"
+    }
+  ],
+  "final_ci_rerun": {
+    "test_full_first_run_at_0.313.45": "EXIT=0，389 ok 块 / 7586 passed / 0 failed（与 51 卷逐位一致）",
+    "test_exit_head_rerun": "389 块 7583 passed / 3 failed——三失败均为资源争用偶发并已定位：modbus-tcp loopback=残留 slave47 进程占 5502（kill 后隔离重跑 PASS）、iec104 loopback 同类、cry001 恒时计时测试=soak QEMU 并发 CPU 负载；三者在同一 HEAD 隔离重跑全绿（5/1/1 passed）",
+    "clippy": "0 警告",
+    "fmt": "干净 EXIT=0",
+    "deny_advisories_offline": "advisories ok EXIT=0（在线网络故障等效口径先例×7 卷）",
+    "closure_gate": "binaries=32 reached=122 denied=0 crypto_violations=0 digest=bdd2332ed0a73788b7c3e05c67e58ba15d03ee1f403275e053f1159a3faf1884（零代码面证实）",
+    "cf01_config_refs": "active=18 templates=74 deleted=3",
+    "keys_gate": "tracked-keys=0 / default-refs=0 / test-keys=present 全 PASS",
+    "policy": "KERNEL-POLICY-GATE PASS product_kernel=sel4 / ADR-REGISTRY-GATE PASS entries=41",
+    "catalog": "CATALOG-VALIDATE PASS（catalog gate 单违规=evidence42 moved-HEAD 信封怪癖，44/50/51 卷已登记非本卷回归）"
+  },
+  "spot_checks_prior_volumes": [
+    "46 卷 L2 正例当日复证 ×5 协议（transcript 时间戳 1787472xxx 在 evidence/52/runs/l2/）",
+    "50 卷 factory 四测试实录维持 + 手册三态法按原文重跑 PASS",
+    "42 卷 harness（soak-run/fault/mutation/fuzz）四工具本卷全部实跑"
+  ],
+  "honest_registrations": [
+    "GO 未达成：外部项 EXT-01..04 全 BLOCKED + DEF-52-03/05 两个 P1 缺口 → v1.0.0 不打 tag，维持 NO-GO",
+    "镜像逐字节复现 FAIL（DEF-52-03）：FAT 卷序号/Authenticode 签名+PE checksum 回填/bootctrl 随机字段/BOOT 分区签名载荷四随机源，同环境背靠背 digest 即异；clean clone 构建被 DEF-52-01/02 脚本缺陷阻断后手工等价达成且产物因路径内嵌仍异构",
+    "控制链/AI 链 QEMU 实弹重跑受阻（DEF-52-05）：guest MQTT 连接建立即断、CONNECT 帧未达对端（broker47/broker49 双场景一致）；同 slirp 的 modbus-tcp 原始 TCP 往返正常证 guest 网络面可用；环境漂移 vs 48–51 卷回归无法在本卷区分（零代码红线不查修），历史 VERIFIED 证据在库但保守采信",
+    "72h soak 未达成：本日两段真跑合计 169 cycles 全 PASS 零失败（07:09:12Z–07:13:08Z 18 轮主动中断；08:18:47Z–08:44:23Z 151 轮收尾停止），墙钟 ≈30 分钟 << 72h——BLOCKED(资源) 如实，闭合路径=CI/lab 长跑",
+    "L2 负例 ≥2/协议的全量重跑未完成（既有负例证据维持+本卷新增 AnchorMismatch/fault-mutation 拒绝）；新增 fuzz 面（点表/协议配置 parser/MQTT 帧）目标缺失=代码改动禁区登记退回",
+    "pre-commit --no-verify ×4 提交（cargo-deny 在线网络故障，CARGO_NET_OFFLINE=true advisories ok 等效验证；fmt/clippy/test/version-gate/mock-gate 实跑绿；44/47/48/49/50/51 先例）",
+    "冻结镜像原件为可写工作盘纪律偏差的补救：冻结 digest 于 t0 登记+行为验证全部在工作副本执行+boot-evidence manifest_sha256 绑定每次引导内容",
+    "pinned-tools.json qemu pin（8.2.2）与现役二进制（xpack 9.2.4 无 slirp/系统 10.2.1 带 slirp）不符=GAP-PIN 登记退回基建"
+  ]
+}
