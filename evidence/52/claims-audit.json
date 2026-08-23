@@ -1,0 +1,79 @@
+{
+  "schema": "eneros.claims-audit.v1",
+  "candidate_id": "e477c3c2e885aee3182b13ee6fb47b66e759ced6ac4671d687b52624b10ed7c6",
+  "source_commit": "4521e8365cca39db28dd9f04a354cc3a533a96e4",
+  "audit_date": "2026-08-23",
+  "auditor": "52 卷终验（AI 执行，owner 复核签字栏见 blocked-register）",
+  "method": "宣称清单↔代码/证据逐项对照；D1–D4 边界逐条核；冲突以当前代码为准",
+  "claims": [
+    {
+      "id": "C-01",
+      "claim": "workspace 版本 v0.192.0（README.md:20）",
+      "code_fact": "Cargo.toml workspace.version=0.313.45（44-00 §3 版本纪律链 0.313.0→0.313.45 可追溯）",
+      "verdict": "STALE",
+      "action": "README 版本行刷新——归入 WP-52.4 文档对齐（非代码）"
+    },
+    {
+      "id": "C-02",
+      "claim": "「国密 SM2/SM3/SM4 硬件加速」作为架构能力宣称（README.md:40/244 架构图与技术栈表）",
+      "code_fact": "product/crypto-policy.toml 八个 product usage 全部为 Ed25519/SHA-256/rustls(P-256) 线且 product_allowed=true 绑定证据摘要；SM2/3/4 手卷=实验性（KAT+10 组 OpenSSL 互操作在库），无任何 product usage 引用；D4 裁决：v1.0 不宣称商密，商密认证 v1.x 另立项",
+      "verdict": "MISALIGNED_WITH_D4",
+      "action": "README 措辞对齐 D4：国密降级表述为实验性能力、删除「硬件加速」无据宣称——归入 WP-52.4"
+    },
+    {
+      "id": "C-03",
+      "claim": "双脑 AI：L2 增强路径 LLM(llama.cpp 7B) 标注生产可用=❌（README 双脑表）",
+      "code_fact": "ADR-0045 方案 B=远程 peer 主线（configs/ai-peer.toml ACTIVE）；本地推理 spike NO-GO 在案（evidence/49/WP-49.3.md + docs/ai/local-inference-spike.md：内存审计 FAIL 574MiB vs 128MiB、no_std 移植面 308+698 undefined）；target 闭包零推理代码（closure gate reached=122 denied=0 本日实跑）；HeuristicBackend=System1 降级路径在码",
+      "verdict": "CONSISTENT_NEEDS_REMOTE_FRAMING",
+      "action": "README 补 ADR-0045 远程供给主句——归入 WP-52.4"
+    },
+    {
+      "id": "C-04",
+      "claim": "协议矩阵如实（sku-matrix.json 签名文件）",
+      "code_fact": "entries: Modbus TCP/IEC104/MMS/MQTT/GOOSE/SV=L2 VERIFIED 绑 evidence/46/l2-*-verified.json；Modbus RTU=PENDING/L0 如实；48 卷 4 协议（645/101/103/27930）codec BLOCKED(规约原文) 如实登记于 evidence/48；本日候选镜像重跑 5 协议 L2 正例复证（evidence/46/qemu-l2/*.transcript.jsonl 2026-08-23 时间戳）",
+      "verdict": "CONSISTENT"
+    },
+    {
+      "id": "C-05",
+      "claim": "SKU 支持面",
+      "code_fact": "compatibility-catalog skus=3 qualified=0（qemu-virt=development；phytium/kunpeng not-qualified 无 L4 证据）；51 卷选板 owner 待裁决；catalog gate 唯一违规=evidence42 moved-HEAD 怪癖（44 卷已登记）",
+      "verdict": "CONSISTENT"
+    },
+    {
+      "id": "C-06",
+      "claim": "RTOS 实时指标（10ms 周期/抖动<1ms，README:34）",
+      "code_fact": "perf-baseline.json+sig 冻结 SLO 在库（42 卷 Gate9 PASS 口径）；目标侧实时性能无 QEMU 等价物可证（QEMU 时钟爬慢已知，50 卷登记）——设计目标+host 基线证据，非产品实测",
+      "verdict": "NEEDS_QUALIFICATION",
+      "action": "README 该行加「设计目标（真机待 B9）」限定——归入 WP-52.4"
+    },
+    {
+      "id": "C-07",
+      "claim": "72h soak / 真机能力",
+      "code_fact": "无任何文档宣称已完成 72h 或真机验证；go-no-go 维持 NO-GO；本卷 soak 真跑<72h 如实登记不伪称",
+      "verdict": "CONSISTENT"
+    },
+    {
+      "id": "C-08",
+      "claim": "安全架构（7 层纵深安全）",
+      "code_fact": "设计描述与 ADR 链一致；签名链（37）/fail-closed 键注入（47.3）/审计链（47/50）证据在库；渗透测试未做=外部项 BLOCKED 不宣称「已验证安全」",
+      "verdict": "CONSISTENT"
+    },
+    {
+      "id": "C-09",
+      "claim": "v1.0.0 授权状态",
+      "code_fact": "docs/v1.0.0-go-no-go.md 顶部唯一裁决 NO-GO（本卷 WP-52.4 更新后仍 NO-GO，缺口清单扩充）",
+      "verdict": "CONSISTENT"
+    },
+    {
+      "id": "C-10",
+      "claim": "手册四件套可执行性（docs/manuals/*）",
+      "code_fact": "50 卷 ≥12 条命令实弹演练记录在案（evidence/50/exit-gate.md §3）；本卷 A/B 三态法按 upgrade-rollback-manual §5 命令模板重跑 PASS",
+      "verdict": "CONSISTENT"
+    }
+  ],
+  "summary": {
+    "consistent": 7,
+    "stale_or_misaligned": 3,
+    "note": "三处不一致全部为 README 文档面对齐项（版本号/国密措辞/AI 框架语），零产品代码缺陷；对齐动作在 WP-52.4 执行并留 diff 登记"
+  }
+}
