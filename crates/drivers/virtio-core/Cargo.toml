@@ -1,6 +1,6 @@
 [package]
 name = "eneros-virtio-core"
-version = "0.313.39"
+version = "0.313.40"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
