@@ -504,7 +504,14 @@ mod tests {
         let agent = MarketAgent::new_default(1000);
         assert_eq!(agent.descriptor.agent_type, AgentType::Market);
         assert_eq!(agent.state, AgentState::Created);
-        assert_eq!(agent.price_cache.len(), 96);
+        // WP-53.3：缓存初始为空——从未收到报价即无有效电价，禁止常量兜底
+        assert_eq!(agent.price_cache.len(), 0);
+        assert_eq!(agent.last_quote_ms, None);
+        assert_eq!(
+            agent.effective_price(1000),
+            None,
+            "无报价时不得返回任何常量电价（WP-53.3 必达②）"
+        );
         assert_eq!(agent.tick_count, 0);
         assert!(agent.market_channel.is_empty());
     }
@@ -520,6 +527,10 @@ mod tests {
         // price_cache 更新为市场数据
         assert_eq!(agent.price_cache.len(), 96);
         assert!((agent.price_cache[0] - 0.5).abs() < 1e-9);
+        // 报价时刻被记录，窗口内 effective_price 可用
+        assert_eq!(agent.last_quote_ms, Some(2000));
+        assert!(!agent.stale);
+        assert!((agent.effective_price(2000 + 1000).unwrap() - 0.5).abs() < 1e-9);
         // market_channel 含 1 条数据
         assert_eq!(agent.market_channel.len(), 1);
         assert_eq!(agent.tick_count, 1);
@@ -532,10 +543,42 @@ mod tests {
         agent.on_start(1000).unwrap();
         let result = agent.on_tick(2000);
         assert!(result.is_ok());
-        // 无数据时 price_cache 不变（仍为初始 0.5）
-        assert!((agent.price_cache[0] - 0.5).abs() < 1e-9);
+        // 从未收到报价：缓存保持为空，effective_price 为 None
+        assert_eq!(agent.price_cache.len(), 0);
+        assert_eq!(agent.effective_price(2000), None);
         assert!(agent.market_channel.is_empty());
         assert_eq!(agent.tick_count, 1);
+    }
+
+    // ===== T22b（WP-53.3 必达②）：报价断供 → 显式过期降级并告警一次 =====
+    #[test]
+    fn t22b_market_agent_quote_staleness_degrades_explicitly() {
+        let source: Box<dyn MarketDataSource> =
+            Box::new(MockMarketSource::with_data(vec![make_market_data(0.77)]));
+        let mut agent = MarketAgent::new("market", source, 0);
+        agent.price_stale_ms = 10_000;
+        agent.on_start(0).unwrap();
+
+        // 收到一次报价
+        agent.on_tick(1_000).unwrap();
+        assert!(!agent.stale);
+        assert_eq!(agent.stale_notices, 0);
+
+        // 窗口内：仍新鲜
+        agent.on_tick(5_000).unwrap();
+        assert!(!agent.stale);
+        assert!(agent.effective_price(5_000).is_some());
+
+        // 超窗：显式进入过期态，告警恰好一次，effective_price 拒绝返回缓存价
+        agent.on_tick(60_000).unwrap();
+        assert!(agent.stale, "超窗后必须置 stale（禁止静默沿用缓存）");
+        assert_eq!(agent.stale_notices, 1, "过期转换只告警一次");
+        assert_eq!(agent.effective_price(60_000), None);
+
+        // 继续无数据：保持过期态，不重复告警
+        agent.on_tick(120_000).unwrap();
+        assert!(agent.stale);
+        assert_eq!(agent.stale_notices, 1);
     }
 
     // ===== T23: 双 Agent 协作：MarketAgent send → EnergyAgent 接收 =====

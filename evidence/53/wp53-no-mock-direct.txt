@@ -1,0 +1,13 @@
+# WP-53.3 必达① 回归证明（2026-08-25）
+## 生产装配路径 Mock 直连检索（应仅命中 cfg(test)/mock 门内）
+(no hits)
+
+## svc-energy-agent 运行时绑定证据
+44:        match EipcClient::new(base, "svc-telemetry") {
+46:            None => alloc::boxed::Box::new(UnboundTelemetryClient),
+49:        alloc::boxed::Box::new(UnboundTelemetryClient)
+53:            match EipcClient::new(base + 1, "svc-ai-worker") {
+55:                None => alloc::boxed::Box::new(UnboundWorkerClient),
+58:            alloc::boxed::Box::new(UnboundWorkerClient)
+63:        match EipcClient::new(base + 2, "svc-control-dispatch") {
+65:            None => alloc::boxed::Box::new(UnboundDispatchClient),

@@ -13,6 +13,31 @@ use crate::error::MvpError;
 use crate::revenue::RevenueComparator;
 use crate::traditional_ems::TraditionalEms;
 
+/// 判据数据质量（WP-53.3 必达③：报告必须携带数据来源指纹，
+/// 使「假数据闭环 PASS」在结构上不可能）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataQuality {
+    /// 从未收到市场报价.
+    Never,
+    /// 收到过报价但已超出新鲜度窗口.
+    Stale,
+    /// 报价新鲜.
+    Fresh,
+}
+
+/// 判据数据来源指纹.
+#[derive(Debug, Clone, Copy)]
+pub struct ReportProvenance {
+    /// 电价缓存样本数（96 时段预测；0 = 无数据）.
+    pub price_samples: usize,
+    /// 最近一次报价时刻（ms）；`None` = 从未收到.
+    pub price_last_quote_ms: Option<u64>,
+    /// 传统 EMS 基线 SOC（本次判据实际使用的值）.
+    pub baseline_soc: f64,
+    /// 本 tick 的电价数据质量.
+    pub quality: DataQuality,
+}
+
 /// 单 tick 报告.
 #[derive(Debug, Clone, Copy)]
 pub struct MvpTickReport {
@@ -24,6 +49,11 @@ pub struct MvpTickReport {
     pub traditional_revenue: crate::revenue::MilliYuan,
     /// 收益提升百分比.
     pub improvement_pct: f64,
+    /// 数据来源指纹（WP-53.3 必达③）。
+    ///
+    /// `quality != Fresh` 时收益对比未记录新样本——消费方不得据
+    /// `improvement_pct` 下结论。
+    pub provenance: ReportProvenance,
 }
 
 /// MVP 编排器.
@@ -46,7 +76,17 @@ pub struct MvpOrchestrator<S: Solver> {
     pub tick_count: u64,
     /// 是否在运行（`start` 后置 true，`stop` 后置 false）.
     pub running: bool,
+    /// 传统 EMS 基线 SOC（0.0..=1.0）。默认 0.5 为**历史遗留值**
+    /// （WP-53.3 必达③：生产判据必须传入实测 SOC）。
+    pub baseline_soc: f64,
 }
+
+/// 传统 EMS 基线 SOC 的历史遗留默认值.
+///
+/// 蓝图 53 WP-53.3：仅作为向后兼容的构造默认保留；报告的
+/// `ReportProvenance::baseline_soc` 会如实携带本值，生产必须
+/// 经 [`MvpOrchestrator::set_baseline_soc`] 传入实测值。
+pub const LEGACY_BASELINE_SOC: f64 = 0.5;
 
 impl<S: Solver> MvpOrchestrator<S> {
     /// 默认构造（3 个 Agent 用 `new_default`）——仅测试/仿真（蓝图/20 R2-1：
@@ -88,6 +128,7 @@ impl<S: Solver> MvpOrchestrator<S> {
             revenue_comparator: RevenueComparator::new(),
             traditional_ems: TraditionalEms::new(ScheduleConfig::default()),
             tick_count: 0,
+            baseline_soc: LEGACY_BASELINE_SOC,
             running: false,
         }
     }
@@ -109,6 +150,7 @@ impl<S: Solver> MvpOrchestrator<S> {
             revenue_comparator: RevenueComparator::new(),
             traditional_ems: TraditionalEms::new(config),
             tick_count: 0,
+            baseline_soc: LEGACY_BASELINE_SOC,
             running: false,
         }
     }
@@ -120,6 +162,13 @@ impl<S: Solver> MvpOrchestrator<S> {
         self.device_agent.on_start(now_ms).map_err(MvpError::from)?;
         self.running = true;
         Ok(())
+    }
+
+    /// 设置传统 EMS 基线 SOC（生产判据必须传实测值；WP-53.3 必达③）。
+    ///
+    /// 越界值钳位到 `0.0..=1.0`。
+    pub fn set_baseline_soc(&mut self, soc: f64) {
+        self.baseline_soc = soc.clamp(0.0, 1.0);
     }
 
     /// 执行一个 tick 周期.
@@ -149,17 +198,33 @@ impl<S: Solver> MvpOrchestrator<S> {
         // Step 3: energy on_tick（双脑决策）.
         self.energy_agent.on_tick(now_ms).map_err(MvpError::from)?;
 
-        // Step 4: 记录收益对比.
-        if let Some(schedule) = &self.energy_agent.current_schedule {
-            self.revenue_comparator
-                .record_dual_brain(schedule.total_revenue_yuan);
-            // D10：Energy Agent 内部自建状态，Orchestrator 不重复构建 SystemState.
-            // D13：传统 EMS 接收基本类型，不依赖 SystemState.
-            let trad = self
-                .traditional_ems
-                .schedule(self.energy_agent.current_price, 0.5);
-            self.revenue_comparator
-                .record_traditional(trad.total_revenue_yuan);
+        // Step 3.5: 判据数据质量（WP-53.3 必达③）。
+        let quality = match (
+            self.market_agent.last_quote_ms,
+            self.market_agent.effective_price(now_ms),
+        ) {
+            (_, Some(_)) => DataQuality::Fresh,
+            (Some(_), None) => DataQuality::Stale,
+            (None, None) => DataQuality::Never,
+        };
+
+        // Step 4: 记录收益对比——仅当报价新鲜。
+        //
+        // WP-53.3 必达②③：Stale/Never 电价不得进入判据累计（两侧都不记），
+        // 否则即「用缓存/常量电价静默计算收益」的假数据闭环；
+        // 数据质量与来源指纹随报告输出，由消费方裁决结论有效性。
+        if quality == DataQuality::Fresh {
+            if let Some(schedule) = &self.energy_agent.current_schedule {
+                self.revenue_comparator
+                    .record_dual_brain(schedule.total_revenue_yuan);
+                // D10：Energy Agent 内部自建状态，Orchestrator 不重复构建 SystemState.
+                // D13：传统 EMS 接收基本类型，不依赖 SystemState.
+                let trad = self
+                    .traditional_ems
+                    .schedule(self.energy_agent.current_price, self.baseline_soc);
+                self.revenue_comparator
+                    .record_traditional(trad.total_revenue_yuan);
+            }
         }
 
         // Step 5: device on_tick（设备采集 + 命令执行）.
@@ -173,6 +238,12 @@ impl<S: Solver> MvpOrchestrator<S> {
             dual_brain_revenue: self.revenue_comparator.dual_brain_total(),
             traditional_revenue: self.revenue_comparator.traditional_total(),
             improvement_pct: self.revenue_comparator.improvement_pct(),
+            provenance: ReportProvenance {
+                price_samples: self.market_agent.price_cache.len(),
+                price_last_quote_ms: self.market_agent.last_quote_ms,
+                baseline_soc: self.baseline_soc,
+                quality,
+            },
         })
     }
 

@@ -12,7 +12,7 @@ use eneros_energy_market_agent::{
 use eneros_solver_core::mock::MockSolver;
 
 use crate::error::MvpError;
-use crate::orchestrator::{MvpOrchestrator, MvpTickReport};
+use crate::orchestrator::{DataQuality, MvpOrchestrator, MvpTickReport};
 use crate::revenue::RevenueComparator;
 use crate::traditional_ems::TraditionalEms;
 
@@ -32,6 +32,53 @@ fn make_market_data(price: f64) -> MarketData {
         load_forecast: None,
         signal_type: MarketSignal::RealtimePrice,
     }
+}
+
+/// 构造带首日报价的编排器（WP-53.3：判据记录要求 Fresh 报价）。
+///
+/// 装配与 `new_default` 等价（RecordingDispatch + StubTelemetry），
+/// 但市场源预置一条报价，使 tick 判据走 Fresh 路径。
+#[allow(clippy::field_reassign_with_default)] // 44.2：测试夹具 default+覆写模式（同 new_default 先例）
+fn fed_orchestrator(now_ms: u64) -> MvpOrchestrator<MockSolver> {
+    use eneros_control_dispatch::DispatchReceipt;
+    use eneros_control_dispatch::DispatchState;
+    use eneros_dual_brain::DualBrainMockEngine;
+    use eneros_energy_market_agent::agent_test_support::{
+        RecordingDispatch, StubTelemetryProvider,
+    };
+
+    let mut dispatch = RecordingDispatch::default();
+    dispatch.result = Some(Ok(DispatchReceipt {
+        command_id: [1; 16],
+        correlation_id: [2; 16],
+        final_state: DispatchState::Committed,
+        state_path: alloc::vec![DispatchState::Committed],
+        committed_at_ms: Some(now_ms),
+        note: None,
+        latency_ms: 1,
+    }));
+
+    let energy = EnergyAgent::<MockSolver>::new(
+        "energy-agent",
+        ScheduleConfig::default(),
+        now_ms,
+        Box::new(DualBrainMockEngine::new()),
+        MockSolver::new(),
+        Box::new(dispatch),
+        Box::new(StubTelemetryProvider::new(Some(
+            StubTelemetryProvider::full_base(),
+        ))),
+    );
+    let market = MarketAgent::new(
+        "market",
+        Box::new(MockMarketSource::with_data(vec![make_market_data(0.5)])),
+        now_ms,
+    );
+    let device = eneros_device_agent::DeviceAgent::new_default(now_ms);
+    let mut orch =
+        MvpOrchestrator::<MockSolver>::new(energy, market, device, ScheduleConfig::default(), 0);
+    orch.set_baseline_soc(0.5);
+    orch
 }
 
 // ===== T1: MvpError 变体构造（AgentError + NotRunning）=====
@@ -329,12 +376,18 @@ fn t19_orchestrator_market_data_flow() {
     assert!(orch.market_agent.market_channel.is_empty());
 }
 
-// ===== T20: MvpOrchestrator::tick 记录双脑收益 + 传统收益 =====
+// ===== T20: MvpOrchestrator::tick 记录双脑收益 + 传统收益（Fresh 报价下）=====
 #[test]
 fn t20_orchestrator_tick_records_revenue() {
-    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
+    let mut orch: MvpOrchestrator<MockSolver> = fed_orchestrator(0);
     orch.start(1000).unwrap();
     let report = orch.tick(2000).unwrap();
+
+    // WP-53.3 必达③：报告必须携带数据来源指纹
+    assert_eq!(report.provenance.quality, DataQuality::Fresh);
+    assert_eq!(report.provenance.price_samples, 96);
+    assert_eq!(report.provenance.price_last_quote_ms, Some(2000));
+    assert!((report.provenance.baseline_soc - 0.5).abs() < 1e-9);
 
     // 双脑收益 + 传统收益各记录 1 条
     assert_eq!(orch.revenue_comparator.dual_brain_revenue.len(), 1);
@@ -364,10 +417,10 @@ fn t20_orchestrator_tick_records_revenue() {
     );
 }
 
-// ===== T21: MvpOrchestrator 多 tick 累积收益 =====
+// ===== T21: MvpOrchestrator 多 tick 累积收益（窗口内报价保持 Fresh）=====
 #[test]
 fn t21_orchestrator_multi_tick_accumulate() {
-    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
+    let mut orch: MvpOrchestrator<MockSolver> = fed_orchestrator(0);
     orch.start(1000).unwrap();
 
     for i in 1..=3 {
@@ -395,6 +448,66 @@ fn t21_orchestrator_multi_tick_accumulate() {
         "双脑累计收益（毫元定点）"
     );
     assert_eq!(orch.revenue_comparator.traditional_total(), expected_trad);
+}
+
+// ===== T21b（WP-53.3 必达②③）：Never 电价不得进入判据累计 =====
+#[test]
+fn t21b_never_quality_records_nothing() {
+    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
+    orch.start(1000).unwrap();
+    let report = orch.tick(2000).unwrap();
+
+    // 从未收到报价：指纹必须如实暴露
+    assert_eq!(report.provenance.quality, DataQuality::Never);
+    assert_eq!(report.provenance.price_samples, 0);
+    assert_eq!(report.provenance.price_last_quote_ms, None);
+
+    // 即使双脑产出了调度，两侧收益都不得累计——
+    // improvement_pct 无样本即无从「假数据闭环 PASS」
+    assert_eq!(
+        orch.revenue_comparator.dual_brain_revenue.len(),
+        0,
+        "Never 电价不得记录双脑收益"
+    );
+    assert_eq!(
+        orch.revenue_comparator.traditional_revenue.len(),
+        0,
+        "Never 电价不得记录传统 EMS 收益"
+    );
+}
+
+// ===== T21c（WP-53.3 必达③）：基线 SOC 参数化生效 =====
+#[test]
+fn t21c_baseline_soc_parameterized() {
+    // ① 编排器携带的基线值可注入并进入报告指纹。
+    let mut orch = fed_orchestrator(0);
+    orch.set_baseline_soc(0.8);
+    orch.start(1000).unwrap();
+    let report = orch.tick(2000).unwrap();
+    assert!((report.provenance.baseline_soc - 0.8).abs() < 1e-9);
+
+    // ② 基线必须真实传入传统 EMS（ScheduleEntry.soc_pct 如实标注），
+    //    不再有硬编码 0.5。注：现行规则 EMS 的谷充峰放规则本身与 SOC
+    //    无关（SOC 感知放电下限=遗留项，见处置台账），因此不断言收益差异。
+    let trad = orch
+        .traditional_ems
+        .schedule(orch.energy_agent.current_price, orch.baseline_soc);
+    assert!(
+        trad.schedule
+            .iter()
+            .all(|e| (e.soc_pct - orch.baseline_soc).abs() < 1e-9),
+        "传统 EMS 条目 soc_pct 必须等于注入的基线 SOC"
+    );
+}
+
+// ===== T21d（WP-53.3 必达②）：set_baseline_soc 越界钳位 =====
+#[test]
+fn t21d_baseline_soc_clamped() {
+    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
+    orch.set_baseline_soc(1.5);
+    assert!((orch.baseline_soc - 1.0).abs() < 1e-9);
+    orch.set_baseline_soc(-0.2);
+    assert!((orch.baseline_soc - 0.0).abs() < 1e-9);
 }
 
 // ===== T22: MvpOrchestrator::stop 全部 Agent 转 Dead + running=false =====
