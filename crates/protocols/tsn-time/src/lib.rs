@@ -354,6 +354,24 @@ mod tests {
         assert_eq!(clk.last_jump_ns, Some(5_000_000));
     }
 
+    // ===== WP-53.4（gPTP）：跳变修正必须消费待应用偏移——current_time()
+    // 不得对同一偏移二次施加（修复前大偏移跳变后偏差翻倍）=====
+    #[test]
+    fn test_wp534_adjust_clock_consumes_offset_no_double_apply() {
+        let identity = ClockIdentity::new([1; 8]);
+        let mut clk = GptpClock::new(identity, PtpTime::new(100, 0), &GptpConfig::default());
+        // EMA 已估计出 5ms 待应用偏移。
+        clk.offset = 5_000_000;
+        let before = clk.current_time(); // base + 5ms
+        clk.adjust_clock(clk.compute_offset()); // 应用全部偏移
+        assert_eq!(
+            clk.current_time(),
+            before,
+            "修正后 current_time() 不得再次叠加同一偏移"
+        );
+        assert_eq!(clk.offset, 0, "待应用偏移必须被消费清零");
+    }
+
     // ===== T17：to_announce() 字段映射正确 =====
     #[test]
     fn test_t17_to_announce_fields() {

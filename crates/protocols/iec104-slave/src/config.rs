@@ -23,6 +23,10 @@ pub struct Iec104Config {
     /// 31 PR-07：允许对端时钟同步（C_CS_NA 写 RTC）——默认拒绝
     /// （控制授权矩阵纪律，S3 同族；装配层按策略放行）。
     pub allow_clock_sync: bool,
+    /// WP-53.4 切片 B：连接建立后未收到任何入站字节的空闲超时（ms，
+    /// 默认 30000）。唯一连接槽位可被「连上但永不发 STARTDT」的故障
+    /// 主站/攻击者无限期霸占（整站对外失联 DoS）——超时即关闭释放。
+    pub connect_idle_timeout_ms: u32,
 }
 
 impl Default for Iec104Config {
@@ -36,6 +40,7 @@ impl Default for Iec104Config {
             k: 12,
             w: 8,
             allow_clock_sync: false,
+            connect_idle_timeout_ms: 30_000,
         }
     }
 }

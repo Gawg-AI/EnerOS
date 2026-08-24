@@ -332,7 +332,9 @@ fn decode_publish(
 ) -> Result<PublishPacket, MqttError> {
     let (topic, consumed) = decode_string(bytes)?;
     let mut offset = consumed;
-    let qos = QoS::from_u8(qos_bits).unwrap_or(QoS::AtMostOnce);
+    // WP-53.4 切片 D：qos_bits==3 为协议违规（MQTT 3.1.1 MQTT-3.3.1-4 MUST
+    // 断连）——旧实现 unwrap_or 降级为 QoS0 静默吞掉，此处改为显式解码失败。
+    let qos = QoS::from_u8(qos_bits).ok_or(MqttError::PacketDecodeError)?;
     let packet_id = if qos != QoS::AtMostOnce {
         let (id, c) = decode_u16(&bytes[offset..])?;
         offset += c;

@@ -215,6 +215,23 @@ impl Iec104Slave {
             }
         }
 
+        // 1.5 WP-53.4 切片 B：未启动数据传输的连接槽位防霸占——
+        // 连接建立后 connect_idle_timeout_ms 内无任何入站字节（连上但
+        // 永不发 STARTDT）→ 关闭释放唯一槽位（防占座 DoS：整站对外失联）。
+        if let Some(conn) = &self.connection {
+            if conn.state == SlaveState::Connected
+                && now_ms.saturating_sub(conn.last_rx_time_ms)
+                    > u64::from(self.config.connect_idle_timeout_ms)
+            {
+                let stale_id = conn.conn_id;
+                self.transport.close(stale_id);
+                self.stats.connections_closed += 1;
+                self.connection = None;
+                self.rx_reasm = RxReassembler::new();
+                return Ok(());
+            }
+        }
+
         // 2. 接收数据
         let conn_id = match &self.connection {
             Some(conn) => conn.conn_id,
@@ -755,6 +772,47 @@ mod tests {
         slave.poll(100).expect("poll ok");
         assert_eq!(slave.state(), SlaveState::Connected);
         assert_eq!(slave.stats().connections_accepted, 1);
+    }
+
+    // ===== 2b（WP-53.4 切片 B）：静默连接超时 → 关闭释放槽位，可再接受新连接 =====
+    #[test]
+    fn test_wp534_silent_connection_slot_reclaimed_after_idle_timeout() {
+        let mut mock = MockSlaveTransport::new();
+        let _conn1 = mock.accept_conn();
+        // 占座者被关后，新对端连入（预排队，必须在 move 前注册）。
+        let _conn2 = mock.accept_conn();
+        let db = InMemoryPointDatabase::new();
+        let cfg = Iec104Config {
+            connect_idle_timeout_ms: 1_000,
+            ..Iec104Config::default()
+        };
+        let mut slave = Iec104Slave::new(cfg, Box::new(db), Box::new(mock));
+
+        // t=100：接受连接（无任何入站字节）。
+        slave.poll(100).expect("poll ok");
+        assert_eq!(slave.state(), SlaveState::Connected);
+
+        // t=500：窗口内——连接保留。
+        slave.poll(500).expect("poll ok");
+        assert_eq!(slave.state(), SlaveState::Connected);
+
+        // t=2000：超过 connect_idle_timeout_ms——占座连接被关闭，
+        // 唯一槽位释放。
+        slave.poll(2_000).expect("poll ok after reclaim");
+        assert_eq!(
+            slave.state(),
+            SlaveState::Idle,
+            "占座连接必须已关闭释放槽位"
+        );
+        assert!(slave.stats().connections_closed >= 1, "旧连接必须已关闭");
+
+        // 下一次 poll：接受新对端（防霸占后整站恢复对外服务）。
+        slave.poll(2_050).expect("poll ok reaccept");
+        assert_eq!(slave.state(), SlaveState::Connected, "新连接应被接受");
+
+        // 新连接有自己的空闲窗口：t=2500 仍保留。
+        slave.poll(2_500).expect("poll ok");
+        assert_eq!(slave.state(), SlaveState::Connected);
     }
 
     // ===== 3. STARTDT_ACT → STARTDT_CON + state=Active =====

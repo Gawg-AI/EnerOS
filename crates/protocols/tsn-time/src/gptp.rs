@@ -187,6 +187,15 @@ impl GptpClock {
             self.current_time.add_ns(offset);
             self.last_jump_ns = Some(offset);
         }
+        // WP-53.4：本次已应用的修正量必须从待应用偏移中扣减——
+        // 否则 current_time() 会对同一偏移再次叠加（大偏移跳变后
+        // 时钟偏差翻倍；小偏移修正永不生效）。向零饱和扣减，
+        // 兼容调用方分次部分修正。
+        if self.offset.abs() > offset.abs() {
+            self.offset -= offset;
+        } else {
+            self.offset = 0;
+        }
     }
 
     /// 返回当前估算偏移（ns）.

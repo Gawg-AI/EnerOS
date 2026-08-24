@@ -111,14 +111,22 @@ pub struct MqttClient {
     pub pending_publish_packet_id: u16,
     /// 在途 QoS 1/2 消息（packet_id → 状态）.
     pub pending_acks: BTreeMap<u16, PendingAck>,
+    /// WP-53.4 切片 D：入站 QoS2 握手中途状态（已发 PUBREC、等 PUBREL）.
+    inbound_qos2: BTreeMap<u16, ()>,
     /// 31 PR-12：in-flight 报文缓存（QoS1/2 超时重传用；ack 后移除）。
     inflight: BTreeMap<u16, PublishPacket>,
     /// QoS 1/2 在途消息持久化（v0.221.0；None = 不持久化）。
     pub qos_store: Option<Box<dyn QosStore>>,
+    /// WP-53.4 切片 D：CONNECT clean_session 标志（默认 true = 旧行为；
+    /// false = 持久会话——断线保留在途状态，CONNACK session_present 回读）。
+    pub clean_session: bool,
+    /// WP-53.4 切片 D：最近一次 CONNACK 的 session_present 位
+    /// （clean_session=false 时 broker 据此恢复会话）。
+    pub session_present: bool,
 }
 
 impl MqttClient {
-    /// 构造客户端（初始状态 Disconnected，无传输层）.
+    /// 构造客户端（初始状态 Disconnected，无传输层；clean_session 默认 true）.
     pub fn new(broker: &str, client_id: &str, keep_alive_ms: u64) -> Self {
         Self {
             broker: String::from(broker),
@@ -132,9 +140,20 @@ impl MqttClient {
             reconnect_state: ReconnectState::new(),
             pending_publish_packet_id: 1,
             pending_acks: BTreeMap::new(),
+            inbound_qos2: BTreeMap::new(),
             inflight: BTreeMap::new(),
             qos_store: None,
+            clean_session: true,
+            session_present: false,
         }
+    }
+
+    /// 设置 CONNECT clean_session 标志（WP-53.4 切片 D；connect 前调用）.
+    ///
+    /// `false` = 持久会话：断线时保留 pending/inflight 状态以便重连续传，
+    /// 且 CONNACK 的 `session_present` 会写入 [`Self::session_present`]。
+    pub fn set_clean_session(&mut self, clean: bool) {
+        self.clean_session = clean;
     }
 
     /// 设置 QoS 持久化存储（v0.221.0）。
@@ -190,7 +209,7 @@ impl MqttClient {
             password: None,
             will: self.last_will.clone(),
             keep_alive_secs,
-            clean_session: true,
+            clean_session: self.clean_session,
         };
         let bytes = packet::encode(&MqttPacket::Connect(connect));
         // 31 PR-10：will payload 超限（编码失败）→ 拒绝连接（fail-closed，
@@ -208,6 +227,8 @@ impl MqttClient {
             MqttPacket::Connack(c) => {
                 if c.return_code == 0 {
                     self.state = ConnectionState::Connected;
+                    // WP-53.4 切片 D：消费 session_present 位（此前解析后丢弃）。
+                    self.session_present = c.session_present;
                     self.last_activity_ms = now_ms;
                     Ok(())
                 } else {
@@ -397,8 +418,12 @@ impl MqttClient {
         if self.state != ConnectionState::Connected {
             return Err(MqttError::NotConnected);
         }
-        // 加入订阅列表（重连恢复用）
-        self.subscriptions.push((String::from(topic), qos));
+        // 加入订阅列表（重连恢复用）——同 topic 去重（WP-53.4 切片 D：
+        // 旧实现 push 累积，重连恢复订阅时列表翻倍且重复发送订阅报文）。
+        match self.subscriptions.iter_mut().find(|(t, _)| t == topic) {
+            Some(entry) => entry.1 = qos,
+            None => self.subscriptions.push((String::from(topic), qos)),
+        }
         // 先分配 packet_id（避免与 transport 借用冲突）
         let packet_id = self.allocate_packet_id();
         let sub = SubscribePacket {
@@ -486,8 +511,13 @@ impl MqttClient {
             let _ = transport.close();
         }
         self.state = ConnectionState::Disconnected;
-        self.pending_acks.clear();
-        self.inflight.clear(); // 31-review：断开清在途表（防重连后 id 复用错发）。
+        // WP-53.4 切片 D：clean_session=false（持久会话）时保留在途状态，
+        // 重连后可续传；true 维持旧行为（清空防 id 复用错发）。
+        if self.clean_session {
+            self.pending_acks.clear();
+            self.inflight.clear();
+            self.inbound_qos2.clear();
+        }
         Ok(())
     }
 
@@ -531,8 +561,41 @@ impl MqttClient {
                 self.pending_acks.remove(&id);
                 Ok(Vec::new())
             }
-            MqttPacket::Publish(_) => {
-                let v = vec![pkt];
+            // WP-53.4 切片 D：入站 PUBREL（broker→client 的 QoS2 第 3 步）
+            // 必须回 PUBCOMP——旧实现落入 `_` 分支被静默吞掉，握手悬挂。
+            MqttPacket::Pubrel(id) => {
+                let comp = packet::encode(&MqttPacket::Pubcomp(id));
+                transport
+                    .send(&comp)
+                    .map_err(|_| MqttError::TransportError)?;
+                self.inbound_qos2.remove(&id);
+                Ok(Vec::new())
+            }
+            MqttPacket::Publish(p) => {
+                // WP-53.4 切片 D：入站 PUBLISH 必须按 QoS 确认
+                // （MQTT 3.1.1 §4.3；旧实现原样透传不回 ACK，
+                // QoS1 下 broker 无限重发同一消息）。
+                match p.qos {
+                    QoS::AtMostOnce => {}
+                    QoS::AtLeastOnce => {
+                        if let Some(id) = p.packet_id {
+                            let ack = packet::encode(&MqttPacket::Puback(id));
+                            transport
+                                .send(&ack)
+                                .map_err(|_| MqttError::TransportError)?;
+                        }
+                    }
+                    QoS::ExactlyOnce => {
+                        if let Some(id) = p.packet_id {
+                            let rec = packet::encode(&MqttPacket::Pubrec(id));
+                            transport
+                                .send(&rec)
+                                .map_err(|_| MqttError::TransportError)?;
+                            self.inbound_qos2.insert(id, ());
+                        }
+                    }
+                }
+                let v = vec![MqttPacket::Publish(p)];
                 Ok(v)
             }
             _ => Ok(Vec::new()),
@@ -577,8 +640,12 @@ impl MqttClient {
     /// 标记断线（外部检测到传输断开时调用）.
     pub fn mark_disconnected(&mut self) {
         self.state = ConnectionState::Reconnecting;
-        self.pending_acks.clear();
-        self.inflight.clear(); // 31-review：同 disconnect。
+        // WP-53.4 切片 D：持久会话保留在途状态（同 disconnect 语义）。
+        if self.clean_session {
+            self.pending_acks.clear();
+            self.inflight.clear();
+            self.inbound_qos2.clear();
+        }
     }
 
     /// 返回当前在途 QoS 1/2 消息数.
@@ -773,6 +840,220 @@ mod tests {
         let r3 = client.poll(0);
         assert!(r3.is_ok());
         assert!(r3.unwrap().is_empty());
+    }
+
+    // ===== WP-53.4 切片 D：入站 PUBLISH 确认 / 持久会话 / 订阅去重 =====
+
+    use crate::qos::QoS;
+
+    /// 构造入站 PUBLISH 报文字节.
+    fn inbound_publish(qos: QoS, pid: u16) -> Vec<u8> {
+        packet::encode(&MqttPacket::Publish(PublishPacket {
+            topic: String::from("inbound"),
+            packet_id: if qos == QoS::AtMostOnce {
+                None
+            } else {
+                Some(pid)
+            },
+            qos,
+            retain: false,
+            dup: false,
+            payload: vec![b'x'],
+        }))
+    }
+
+    /// WP-53.4：QoS0 入站不回任何 ACK。
+    #[test]
+    fn inbound_qos0_publish_needs_no_ack() {
+        let mut transport = MockTransport::new();
+        transport.set_connected(true);
+        transport.enqueue_recv(inbound_publish(QoS::AtMostOnce, 0));
+        let mut client = connected_client(transport);
+        let got = client.poll(0).expect("poll");
+        assert_eq!(got.len(), 1);
+        assert_eq!(sent_count(&mut client), 0, "QoS0 入站不得回 ACK");
+    }
+
+    /// WP-53.4：QoS1 入站必须回 PUBACK（旧实现透传不确认，
+    /// broker 会按重传语义无限重发同一消息）。
+    #[test]
+    fn inbound_qos1_publish_gets_puback() {
+        let mut transport = MockTransport::new();
+        transport.set_connected(true);
+        transport.enqueue_recv(inbound_publish(QoS::AtLeastOnce, 7));
+        let mut client = connected_client(transport);
+        let got = client.poll(0).expect("poll");
+        assert_eq!(got.len(), 1);
+        let sent = {
+            let t = client
+                .transport_mut()
+                .as_any_mut()
+                .downcast_ref::<MockTransport>()
+                .expect("downcast");
+            t.sent_packets().to_vec()
+        };
+        assert_eq!(
+            sent,
+            vec![vec![0x40, 0x02, 0x00, 0x07]],
+            "必须回 PUBACK(packet_id=7)：固定头 0x40"
+        );
+    }
+
+    /// WP-53.4：QoS2 入站完整握手 PUBLISH→PUBREC，PUBREL→PUBCOMP。
+    #[test]
+    fn inbound_qos2_full_handshake() {
+        let mut transport = MockTransport::new();
+        transport.set_connected(true);
+        transport.enqueue_recv(inbound_publish(QoS::ExactlyOnce, 9));
+        let mut client = connected_client(transport);
+
+        // 第一步：PUBLISH → 回 PUBREC
+        let got = client.poll(0).expect("poll step1");
+        assert_eq!(got.len(), 1);
+        {
+            let t = client
+                .transport_mut()
+                .as_any_mut()
+                .downcast_ref::<MockTransport>()
+                .expect("downcast");
+            let sent = t.sent_packets();
+            assert_eq!(
+                sent.last().map(|b| b.as_slice()),
+                Some(&[0x50, 0x02, 0x00, 0x09][..]),
+                "必须回 PUBREC(packet_id=9)：固定头 0x50"
+            );
+        }
+
+        // 第二步：broker 发 PUBREL → 必须回 PUBCOMP（旧实现静默吞掉）
+        {
+            let t = client
+                .transport_mut()
+                .as_any_mut()
+                .downcast_mut::<MockTransport>()
+                .expect("downcast");
+            t.enqueue_recv(vec![0x62, 0x02, 0x00, 0x09]); // PUBREL 固定头 0x62
+        }
+        let _ = client.poll(0).expect("poll step2");
+        let t = client
+            .transport_mut()
+            .as_any_mut()
+            .downcast_ref::<MockTransport>()
+            .expect("downcast");
+        let sent = t.sent_packets();
+        assert_eq!(
+            sent.last().map(|b| b.as_slice()),
+            Some(&[0x70, 0x02, 0x00, 0x09][..]),
+            "收到 PUBREL 必须回 PUBCOMP(packet_id=9)：固定头 0x70"
+        );
+    }
+
+    /// WP-53.4：clean_session=false 持久会话——断线保留在途状态；
+    /// 默认 true 维持旧行为（清空）。
+    #[test]
+    fn clean_session_flag_controls_state_retention() {
+        // 默认 true：断线清空（旧行为不变）。
+        let mut c = MqttClient::new("b", "id", 60_000);
+        c.pending_acks.insert(1, PendingAck::WaitingPuback);
+        c.mark_disconnected();
+        assert_eq!(c.pending_count(), 0, "clean_session=true 断线清空");
+
+        // false：断线保留 pending_acks/inflight。
+        let mut p = MqttClient::new("b", "id", 60_000);
+        p.clean_session = false;
+        p.pending_acks.insert(1, PendingAck::WaitingPuback);
+        p.mark_disconnected();
+        assert_eq!(p.pending_count(), 1, "持久会话断线必须保留在途状态");
+    }
+
+    /// WP-53.4：session_present 位从 CONNACK 消费（旧实现解析后丢弃）。
+    #[test]
+    fn session_present_captured_from_connack() {
+        let mut transport = MockTransport::new();
+        transport.set_connected(true);
+        let connack = packet::encode(&MqttPacket::Connack(crate::packet::ConnackPacket {
+            session_present: true,
+            return_code: 0,
+        }));
+        transport.enqueue_recv(connack);
+        let mut client = MqttClient::new("eneros-test", "sess-1", 60_000);
+        client.clean_session = false;
+        client.set_transport(Box::new(transport));
+        client.connect(0).expect("connect");
+        assert!(client.session_present, "CONNACK session_present 必须回读");
+    }
+
+    /// WP-53.4：同 topic 重复订阅去重——订阅列表长度恒定，
+    /// 重连恢复后不再翻倍。
+    #[test]
+    fn subscribe_dedup_keeps_list_constant_across_reconnects() {
+        let mut client = MqttClient::new("eneros-test", "dedup-1", 60_000);
+        let mut transport = MockTransport::new();
+        transport.set_connected(true);
+
+        // 辅助：向客户端内嵌 mock 入队一段应答。
+        fn feed(client: &mut MqttClient, bytes: Vec<u8>) {
+            client
+                .transport_mut()
+                .as_any_mut()
+                .downcast_mut::<MockTransport>()
+                .expect("downcast")
+                .enqueue_recv(bytes);
+        }
+
+        // 初始连接（消费 1 条 CONNACK）。
+        client.set_transport(Box::new(transport));
+        feed(
+            &mut client,
+            packet::encode(&MqttPacket::Connack(crate::packet::ConnackPacket {
+                session_present: false,
+                return_code: 0,
+            })),
+        );
+        client.connect(0).expect("initial connect");
+
+        // 两次同 topic 订阅（SUBACK pid 1、2 依次入队）。
+        for pid in 1u16..=2 {
+            feed(
+                &mut client,
+                packet::encode(&MqttPacket::Suback(crate::packet::SubackPacket {
+                    packet_id: pid,
+                    return_codes: vec![0],
+                })),
+            );
+        }
+        client.subscribe("a/b", QoS::AtLeastOnce).expect("sub#1");
+        client
+            .subscribe("a/b", QoS::AtMostOnce)
+            .expect("sub#2 同 topic 去重");
+        assert_eq!(client.subscriptions.len(), 1, "同 topic 不得累积两条订阅");
+
+        // 断线→重连两轮：恢复订阅不改列表长度。
+        // 每轮预置该轮的 CONNACK + SUBACK（packet_id 随全局计数器递增）。
+        for (round, pid) in [(0u32, 3u16), (1, 4)] {
+            client.mark_disconnected();
+            feed(
+                &mut client,
+                packet::encode(&MqttPacket::Connack(crate::packet::ConnackPacket {
+                    session_present: false,
+                    return_code: 0,
+                })),
+            );
+            feed(
+                &mut client,
+                packet::encode(&MqttPacket::Suback(crate::packet::SubackPacket {
+                    packet_id: pid,
+                    return_codes: vec![0],
+                })),
+            );
+            client
+                .try_reconnect(10_000 + u64::from(round) * 60_000)
+                .expect("reconnect");
+            assert_eq!(
+                client.subscriptions.len(),
+                1,
+                "重连恢复订阅后列表长度必须恒定"
+            );
+        }
     }
 }
 
