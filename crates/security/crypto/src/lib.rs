@@ -79,8 +79,10 @@
 //!     sm2::Sm2KeyPair,
 //! };
 //!
-//! // 1. 生成 SM2 密钥对（生产环境应接入硬件 TRNG）
-//! let mut rng = CsRng::new();
+//! // 1. 生成 SM2 密钥对（生产环境必须用 `csrng_from_platform()` 接入
+//! //    硬件 TRNG；`CsRng::new()` 在 release 下被门禁移除，示例用
+//! //    from_seed 固定种子仅作演示）。
+//! let mut rng = CsRng::from_seed(&[0x31; 32]);
 //! let kp = Sm2KeyPair::generate(&mut rng).expect("keypair gen");
 //!
 //! // 2. 构造 CSR（subject + 公钥）

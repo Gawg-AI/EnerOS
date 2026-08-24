@@ -29,9 +29,16 @@ use eneros_crypto::{
 // 测试辅助函数
 // ============================================================================
 
+/// 确定性测试种子（与 `CsRng::new` 内部种子逐字节一致——WP-53.2：release
+/// 构建下 `new()` 被门禁移除，集成测试改走 `from_seed` 保持序列不变）。
+const TEST_FIXED_SEED: [u8; 32] = [
+    0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36,
+    0x37, 0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x31, 0x32,
+];
+
 /// 生成测试用 SM2 密钥对.
 fn gen_keypair() -> Sm2KeyPair {
-    let mut rng = CsRng::new();
+    let mut rng = CsRng::from_seed(&TEST_FIXED_SEED);
     Sm2KeyPair::generate(&mut rng).expect("密钥对生成失败")
 }
 
@@ -437,7 +444,12 @@ fn test_ca_serial_increment() {
     )
     .unwrap();
 
-    let mut ca = CaIssuer::new(root_cert, ca_kp.private_key.clone(), CsRng::new()).unwrap();
+    let mut ca = CaIssuer::new(
+        root_cert,
+        ca_kp.private_key.clone(),
+        CsRng::from_seed(&TEST_FIXED_SEED),
+    )
+    .unwrap();
 
     let leaf_req = CertRequest::new(
         DistinguishedName::new("Leaf1"),
