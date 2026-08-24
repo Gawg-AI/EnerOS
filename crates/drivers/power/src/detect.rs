@@ -122,6 +122,12 @@ pub fn register_power_rail(rail: &'static dyn PowerRail) {
     *POWER_RAIL.lock() = Some(rail);
 }
 
+/// 测试辅助：清除注入的电源域（共享静态，测试须自行串行化）。
+#[cfg(test)]
+pub(crate) fn reset_rail_for_test() {
+    *POWER_RAIL.lock() = None;
+}
+
 /// 读取当前电压（毫伏）；未注入电源域时返回 0。
 pub fn read_voltage_mv() -> u32 {
     match *POWER_RAIL.lock() {
@@ -232,7 +238,7 @@ mod tests {
     fn reset_state() {
         *crate::POWER_STATE.lock() = crate::PowerState {
             main_power_ok: true,
-            ups_soc: 100,
+            ups_soc: None,
             last_checkpoint: core::time::Duration::from_millis(0),
             in_shutdown: false,
         };

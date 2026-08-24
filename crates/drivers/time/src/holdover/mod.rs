@@ -183,6 +183,9 @@ pub(crate) static NOW_NS: Mutex<u64> = Mutex::new(0);
 // ============================================================================
 
 /// Read the internal monotonic nanosecond counter.
+///
+/// WP-53.5 INV-DRV：生产入口必须经 [`crate::api::holdover_sync_tick`]
+/// 从 HalClock 单调钟喂时——未喂时本读数为冻结零值，不得冒充实测。
 pub(crate) fn now_ns() -> u64 {
     *NOW_NS.lock()
 }

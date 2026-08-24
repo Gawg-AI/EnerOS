@@ -85,8 +85,11 @@ pub struct PowerDownSequence {
 pub struct PowerState {
     /// Whether main power is currently OK.
     pub main_power_ok: bool,
-    /// UPS/supercapacitor state of charge (0–100 %).
-    pub ups_soc: u8,
+    /// UPS/supercapacitor state of charge (0–100 %)。
+    ///
+    /// WP-53.5 INV-DRV：`None` = 未测量（无 PowerRail 注入或 rail 无读数）——
+    /// 禁止以常量 100 冒充实测满格。消费方拿到 `None` 必须按最坏情况降级。
+    pub ups_soc: Option<u8>,
     /// Timestamp of the last successful checkpoint.
     pub last_checkpoint: Duration,
     /// Whether the system is currently in a shutdown sequence.
@@ -120,7 +123,7 @@ pub enum SequenceError {
 /// Global power state shared across detect and sequence modules.
 pub(crate) static POWER_STATE: Mutex<PowerState> = Mutex::new(PowerState {
     main_power_ok: true,
-    ups_soc: 100,
+    ups_soc: None,
     last_checkpoint: Duration::from_millis(0),
     in_shutdown: false,
 });
@@ -132,6 +135,14 @@ pub(crate) static POWER_STATE: Mutex<PowerState> = Mutex::new(PowerState {
 /// Returns a snapshot of the current power subsystem state.
 pub fn current_state() -> PowerState {
     *POWER_STATE.lock()
+}
+
+/// WP-53.5 INV-DRV：从已注入的 PowerRail 刷新实测 UPS SOC。
+///
+/// 未注入 rail 或 rail 无读数 → `None`（未测量），绝不回落常量。
+pub fn refresh_ups_soc() {
+    let soc = detect::read_battery_soc();
+    POWER_STATE.lock().ups_soc = soc;
 }
 
 // ============================================================================
@@ -151,7 +162,7 @@ mod tests {
     fn reset_state() {
         *POWER_STATE.lock() = PowerState {
             main_power_ok: true,
-            ups_soc: 100,
+            ups_soc: None,
             last_checkpoint: Duration::from_millis(0),
             in_shutdown: false,
         };
@@ -179,7 +190,33 @@ mod tests {
         let state = current_state();
         assert!(state.main_power_ok);
         assert!(!state.in_shutdown);
-        assert_eq!(state.ups_soc, 100);
+        assert_eq!(
+            state.ups_soc, None,
+            "WP-53.5 INV-DRV：默认未测量，禁止常量满格冒充实测"
+        );
+    }
+
+    /// WP-53.5 INV-DRV：refresh_ups_soc 从 PowerRail 实测值刷新；
+    /// 无 rail 时回落 None 而非常量。
+    #[test]
+    fn test_wp535_refresh_ups_soc_from_rail() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_state();
+        crate::detect::reset_rail_for_test();
+
+        // 未注入 rail：刷新后仍为 None（不冒充）。
+        refresh_ups_soc();
+        assert_eq!(current_state().ups_soc, None);
+
+        // 注入 rail（实测 SOC=77）：刷新后如实反映。
+        let rail: &'static dyn PowerRail = Box::leak(Box::new(RamPowerRail::new(5000, Some(77))));
+        register_power_rail(rail);
+        refresh_ups_soc();
+        assert_eq!(current_state().ups_soc, Some(77));
+
+        // 清理，避免泄漏到其他测试。
+        crate::detect::reset_rail_for_test();
+        reset_state();
     }
 
     #[test]

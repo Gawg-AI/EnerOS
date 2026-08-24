@@ -70,6 +70,15 @@ pub fn get_monotonic_ns() -> u64 {
     }
 }
 
+/// WP-53.5 INV-DRV：把 HalClock 单调钟读数喂进 holdover 计数器。
+///
+/// 装配层（root-task）在时钟子系统就绪后调用一次，此后由周期 tick
+/// 持续调用——保证 holdover 读数可溯源到硬件路径，
+/// 禁止冻结零值以正常类型流入上层决策。
+pub fn holdover_sync_tick() {
+    crate::holdover::sync_time(get_monotonic_ns());
+}
+
 /// Returns the wall-clock timestamp as `RTC_OFFSET_NS + monotonic_ns`.
 pub fn get_time() -> TimeStamp {
     TimeStamp(*RTC_OFFSET_NS.lock() + get_monotonic_ns())
@@ -187,6 +196,50 @@ mod tests {
         // TestClock.now_ns() always returns 0, so the monotonic delta is 0
         // regardless of the exact MonotonicClock arithmetic.
         assert_eq!(get_monotonic_ns(), 0);
+    }
+
+    /// WP-53.5 INV-DRV：`holdover_sync_tick` 必须把 HalClock 单调钟读数
+    /// 喂进 holdover——生产读数可溯源到硬件路径，而非冻结零值冒充实测。
+    #[test]
+    fn test_wp535_holdover_sync_tick_feeds_from_hal_clock() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        struct FixedClock;
+        /// 差分单调钟要求硬件时钟前进才产生非零读数——每次调用步进。
+        static NOW: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        const STEP: u64 = 10_000_000;
+        impl HalClock for FixedClock {
+            fn now_ns(&self) -> u64 {
+                NOW.fetch_add(STEP, core::sync::atomic::Ordering::Relaxed) + STEP
+            }
+            fn frequency_hz(&self) -> u64 {
+                1_000_000_000
+            }
+            fn set_deadline(&self, _ns: u64) -> Result<(), HalError> {
+                Ok(())
+            }
+        }
+        static FIXED_CLOCK: FixedClock = FixedClock;
+
+        // 清 holdover 计数并置哨兵，隔离其他测试的残留。
+        super::CLOCK.lock().0 = None;
+        crate::holdover::NOW_NS.lock().clone_from(&999_999);
+
+        time_init(&FIXED_CLOCK, 0);
+
+        // 喂时：哨兵值必须被 HalClock 单调钟读数覆写
+        //（单调钟为差分设计：init 消耗首次步进，读数 = n×STEP）。
+        holdover_sync_tick();
+        let fed = crate::holdover::now_ns();
+        assert!(
+            fed != 999_999 && fed % STEP == 0,
+            "喂时后 holdover 读数必须来自 HalClock 单调钟（而非残留哨兵 {fed}）"
+        );
+
+        // 还原，避免污染其他测试。
+        super::CLOCK.lock().0 = None;
+        *super::MONO.lock() = None;
+        crate::holdover::NOW_NS.lock().clone_from(&0);
     }
 
     #[test]

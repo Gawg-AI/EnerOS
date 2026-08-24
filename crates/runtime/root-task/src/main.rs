@@ -490,6 +490,10 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
                 eneros_time::set_rtc_base(
                     crate::panic::RTC_BASE.load(core::sync::atomic::Ordering::Relaxed),
                 );
+                // WP-53.5 INV-DRV：holdover 计数从 HalClock 单调钟起算——
+                // 读数自 boot 即可溯源，禁止冻结零值冒充实测
+                // （周期 re-feed 由 arch-timer tick 持续驱动，见台账遗留）。
+                eneros_time::holdover_sync_tick();
                 println!(
                     "{{\"schema\":\"eneros.g2.v1\",\"test\":\"system-ready\",\"result\":\"PASS\"}}"
                 );

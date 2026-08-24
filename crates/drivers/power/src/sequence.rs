@@ -170,7 +170,7 @@ mod tests {
     fn reset_state() {
         *crate::POWER_STATE.lock() = crate::PowerState {
             main_power_ok: true,
-            ups_soc: 100,
+            ups_soc: None,
             last_checkpoint: Duration::from_millis(0),
             in_shutdown: false,
         };
