@@ -10,6 +10,13 @@ use eneros_crypto::hw::{
 use eneros_crypto::rng::CsRng;
 use eneros_crypto::sm2::Sm2KeyPair;
 
+/// 确定性测试种子（与 `CsRng::new` 内部种子逐字节一致——WP-53.2：release
+/// 构建下 `new()` 被门禁移除，集成测试改走 `from_seed` 保持序列不变）。
+const TEST_FIXED_SEED: [u8; 32] = [
+    0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36,
+    0x37, 0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x31, 0x32,
+];
+
 // ============================================================
 // SM3 国标测试向量 (GB/T 32905-2016)
 // ============================================================
@@ -161,7 +168,7 @@ fn test_sm4_cbc_roundtrip_all_engines() {
 
 #[test]
 fn test_sm2_sign_verify_all_engines() {
-    let mut rng = CsRng::new();
+    let mut rng = CsRng::from_seed(&TEST_FIXED_SEED);
     let kp = Sm2KeyPair::generate(&mut rng).unwrap();
     let sk_bytes = kp.private_key.to_bytes();
     let pk_bytes = kp.public_key.to_bytes_uncompressed();
@@ -240,7 +247,7 @@ fn test_selector_full_crypto_workflow() {
     assert_eq!(pt, data);
 
     // 3. SM2 签名/验签
-    let mut rng = CsRng::new();
+    let mut rng = CsRng::from_seed(&TEST_FIXED_SEED);
     let kp = Sm2KeyPair::generate(&mut rng).unwrap();
     let sk = kp.private_key.to_bytes();
     let pk = kp.public_key.to_bytes_uncompressed();

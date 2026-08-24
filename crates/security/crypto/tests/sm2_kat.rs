@@ -20,13 +20,20 @@ use eneros_crypto::sm2::{
     sm2_decrypt, sm2_encrypt, EcPoint, Sm2KeyPair, Sm2PrivateKey, Sm2Signature, Sm2Signer, SM2_N,
 };
 
+/// 确定性测试种子（与 `CsRng::new` 内部种子逐字节一致——WP-53.2：release
+/// 构建下 `new()` 被门禁移除，集成测试改走 `from_seed` 保持序列不变）。
+const TEST_FIXED_SEED: [u8; 32] = [
+    0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36,
+    0x37, 0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x31, 0x32,
+];
+
 // ============================================================
 // 辅助函数
 // ============================================================
 
 /// 生成测试用密钥对与 RNG.
 fn setup_keypair() -> (Sm2KeyPair, CsRng) {
-    let mut rng = CsRng::new();
+    let mut rng = CsRng::from_seed(&TEST_FIXED_SEED);
     let kp = Sm2KeyPair::generate(&mut rng).expect("keypair generation should succeed");
     (kp, rng)
 }

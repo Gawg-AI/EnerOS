@@ -14,6 +14,13 @@
 use eneros_crypto::rng::CsRng;
 use eneros_crypto::sm2::{sm2_verify, Sm2PrivateKey, Sm2PublicKey, Sm2Signature, Sm2Signer};
 
+/// 确定性测试种子（与 `CsRng::new` 内部种子逐字节一致——WP-53.2：release
+/// 构建下 `new()` 被门禁移除，集成测试改走 `from_seed` 保持序列不变）。
+const TEST_FIXED_SEED: [u8; 32] = [
+    0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36,
+    0x37, 0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x31, 0x32,
+];
+
 fn vectors_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../tests/vectors/sm2-interop/vectors.json")
@@ -92,7 +99,7 @@ fn openssl_cli_verifies_hand_rolled_signatures() {
             .expect("point 65 bytes");
         let sk = Sm2PrivateKey::from_bytes(&d).expect("私钥解析");
         let pk = Sm2PublicKey::from_bytes(&point).expect("公钥解析");
-        let mut rng = CsRng::new();
+        let mut rng = CsRng::from_seed(&TEST_FIXED_SEED);
         // 手卷签名（Sm2Signer 默认 user_id = "1234567812345678"，与
         // openssl 侧 distid 一致——互操作前提）
         let sig = Sm2Signer::new()
