@@ -223,9 +223,11 @@ fn run_remote(
     cfg: RemoteBrainConfig,
     mqtt: eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
 ) -> ! {
-    // 决策审计（ADR-0042 边界：dual-brain/audit 为决策语义门面；genesis 与
-    // dispatch 装配常量同源 [0x47;32]）。
-    let mut audit = eneros_dual_brain::audit::DecisionAudit::new([0x47; 32]);
+    // 决策审计（ADR-0042 边界：dual-brain/audit 为决策语义门面）。
+    // 蓝图 54 WP-54.1：同源魔数 [0x47;32] → 唯一入口按本服务域派生。
+    let mut audit = eneros_dual_brain::audit::DecisionAudit::new(eneros_audit::genesis(
+        b"svc-ai-worker-decision",
+    ));
     let link = PeerLinkEipc {
         mqtt,
         correlation: 0,
@@ -253,7 +255,9 @@ fn run_remote(
 
 #[cfg(target_os = "none")]
 fn run_heuristic_only(ep: u64, ready_ntfn: u64, heartbeat_slot: u64) -> ! {
-    let mut audit = eneros_dual_brain::audit::DecisionAudit::new([0x47; 32]);
+    let mut audit = eneros_dual_brain::audit::DecisionAudit::new(eneros_audit::genesis(
+        b"svc-ai-worker-decision",
+    ));
     let mut worker = AiWorkerService::new(
         eneros_control_services::ai_worker::HeuristicBackend::new(),
         [0x41; 16],

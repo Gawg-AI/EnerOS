@@ -45,3 +45,5 @@ eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 eneros-telemetry-queue = { path = "../../observability/telemetry-queue" }
 # 持久化测试（MockFileSystem）。
 eneros-fs = { path = "../../drivers/fs" }
+# WP-54.1：审计创世根单测独立复算（不与 eneros_audit::genesis 循环自证）。
+sha2 = "0.10.9"

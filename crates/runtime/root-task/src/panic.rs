@@ -194,20 +194,15 @@ impl eneros_audit::AuditStore for CrashStore {
     }
 }
 
-/// 30 RT-028①：创世根 = 真实摘要（运行时计算）。
-/// 旧实现为 ASCII "eneros-root-task-panic" 补零占位（注释却声称哈希，
-/// 审计链"创世"可被离线伪造）。链恢复语义要求创世跨重启不变：真实创世根
-/// 由本函数确定并经 DurableLog 持久化（WP-30.7 机制）。
-/// 36 WP-36.2/SC-03：SM3 → SHA-256（eneros-crypto 无商业批准，
-/// product_allowed=false，不得进入产品闭包；sha2 与正式链同算法族）。
-pub fn genesis() -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(b"eneros-root-task-panic").into()
-}
-
 /// 初始化 panic 审计链（启动早期调用一次；重复调用重置链）。
+/// 蓝图 54 WP-54.1：种子经 `eneros_audit::audit_logger` 唯一入口按域派生
+/// （30 RT-028① 原本地 genesis()=SHA-256("eneros-root-task-panic")，域串与
+/// 种子值不变；CrashStore 选型仍归本处，WP-37.9 零堆设计不动）。
 pub fn init_panic_audit() {
-    *PANIC_LOGGER.lock() = Some(AuditLoggerImpl::new(CrashStore::new(), genesis()));
+    *PANIC_LOGGER.lock() = Some(eneros_audit::audit_logger(
+        CrashStore::new(),
+        b"eneros-root-task-panic",
+    ));
 }
 
 /// 追加一条 panic 审计事件（WP-37.9：无堆——CrashStore 定容 + 定长编码；

@@ -35,7 +35,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use eneros_audit::{AuditEvent, AuditEventType, AuditLogger, AuditLoggerImpl, MemStore};
+use eneros_audit::{AuditEvent, AuditEventType, AuditLogger, MemStore};
 use eneros_control_gateway::chain::{ChainDenyReason, ChainOutcome, ControlChain, FeedbackBundle};
 use eneros_control_gateway::envelope::CommandEnvelope;
 use eneros_control_gateway::gateway::GatewayError;
@@ -479,8 +479,11 @@ impl EnvelopeIngress {
         #[cfg(target_os = "none")]
         eneros_runtime::println!("[device-agent-ingress] metrics+audit");
         // 租约签发入审计（§6.6：租约本地签发）。
-        let audit: Box<dyn AuditLogger> =
-            Box::new(AuditLoggerImpl::new(MemStore::new(), [0u8; 32]));
+        // 蓝图 54 WP-54.1：全零种子（可离线伪造链头）→ 唯一入口按服务域派生。
+        let audit: Box<dyn AuditLogger> = Box::new(eneros_audit::audit_logger(
+            MemStore::new(),
+            b"eneros-device-agent-ingress",
+        ));
         let mut ingress = Self {
             chain,
             key: key.to_vec(),
@@ -954,6 +957,11 @@ impl EnvelopeIngress {
     pub fn audit_entry_count(&self) -> u64 {
         self.audit.chain_state().entry_count
     }
+
+    /// 审计链创世根（WP-54.1 可观测：证明种子经唯一入口按服务域派生）。
+    pub fn audit_chain_genesis(&self) -> [u8; 32] {
+        self.audit.chain_state().genesis_hash
+    }
 }
 
 /// 处理结果 → 响应帧（§6.4：device-agent 侧 EIPC handler 编码返回）。
@@ -1299,6 +1307,20 @@ mod tests {
             }
         );
         assert_eq!(ingress.write_count(), 0, "篡改路径零写");
+    }
+
+    // ===== 蓝图 54 WP-54.1：审计种子唯一派生入口 =====
+    #[test]
+    fn wp541_ingress_audit_genesis_derived_from_domain() {
+        // 构造即写入租约签发事件；创世根必须是 SHA-256(服务域串)——
+        // 独立复算断言（不与 eneros_audit::genesis 循环自证），
+        // 旧实现的全零种子（可离线伪造链头）在此必然失配。
+        let ingress = ingress_with(1, 1);
+        use sha2::{Digest, Sha256};
+        let expected: [u8; 32] = Sha256::digest(b"eneros-device-agent-ingress").into();
+        assert_eq!(ingress.audit_chain_genesis(), expected);
+        assert_eq!(ingress.audit_entry_count(), 1); // LeaseGranted
+        assert_ne!(ingress.audit_chain_genesis(), [0u8; 32]);
     }
 
     // ===== 用例 1：有效信封落写（含回读） =====

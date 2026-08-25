@@ -21,17 +21,14 @@ static PANIC_LOGGER: Mutex<Option<AuditLoggerImpl<MemStore>>> = Mutex::new(None)
 /// 服务 panic 总次数（指标）。
 pub static SVC_PANIC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// 30 RT-028①：创世根 = 真实摘要（运行时计算）。
-/// 旧实现为 ASCII "svc-panic-genesis" 补零占位（可被离线伪造）。
-/// 36 WP-36.2/SC-03：SM3 → SHA-256（eneros-crypto 无商业批准，不入产品闭包）。
-fn genesis() -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(b"svc-panic-genesis").into()
-}
-
 /// 初始化服务 panic 审计链（svc_entry 启动时调用一次）。
+/// 蓝图 54 WP-54.1：种子经 `eneros_audit::audit_logger` 唯一入口按域派生
+/// （30 RT-028① 域串与种子值不变；store 选型仍归本处）。
 pub fn init_svc_panic_audit() {
-    *PANIC_LOGGER.lock() = Some(AuditLoggerImpl::new(MemStore::new(), genesis()));
+    *PANIC_LOGGER.lock() = Some(eneros_audit::audit_logger(
+        MemStore::new(),
+        b"svc-panic-genesis",
+    ));
 }
 
 /// 服务 panic 钩子：审计 → 打印 → 挂起（不返回）。

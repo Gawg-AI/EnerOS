@@ -185,14 +185,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-board"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-hal",
 ]
 
 [[package]]
 name = "eneros-boot-protocol"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-ipc-wire",
  "sha2",
@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-control-gateway"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-crypto",
  "eneros-telemetry-model",
@@ -208,14 +208,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-crypto"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "p256",
 ]
 
 [[package]]
 name = "eneros-driver-framework"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-board",
  "eneros-hal",
@@ -223,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-elf-loader"
-version = "0.314.0"
+version = "0.314.1"
 
 [[package]]
 name = "eneros-fuzz"
@@ -240,21 +240,21 @@ dependencies = [
 
 [[package]]
 name = "eneros-gguf-loader"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-llm-engine",
 ]
 
 [[package]]
 name = "eneros-hal"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "spin",
 ]
 
 [[package]]
 name = "eneros-iec104-slave"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-control-gateway",
  "eneros-iec60870-asdu",
@@ -265,19 +265,19 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec60870-asdu"
-version = "0.314.0"
+version = "0.314.1"
 
 [[package]]
 name = "eneros-ipc-wire"
-version = "0.314.0"
+version = "0.314.1"
 
 [[package]]
 name = "eneros-llm-engine"
-version = "0.314.0"
+version = "0.314.1"
 
 [[package]]
 name = "eneros-modbus-rtu"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-driver-framework",
  "eneros-protocol-abstract",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-net"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-virtio-core",
  "smoltcp",
@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-protocol-abstract"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-telemetry-model",
  "eneros-upa-model",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-rs485"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-driver-framework",
  "eneros-hal",
@@ -311,14 +311,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-telemetry-model"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-upa-model",
 ]
 
 [[package]]
 name = "eneros-time"
-version = "0.314.0"
+version = "0.314.1"
 dependencies = [
  "eneros-hal",
  "spin",
@@ -326,11 +326,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-upa-model"
-version = "0.314.0"
+version = "0.314.1"
 
 [[package]]
 name = "eneros-virtio-core"
-version = "0.314.0"
+version = "0.314.1"
 
 [[package]]
 name = "ff"

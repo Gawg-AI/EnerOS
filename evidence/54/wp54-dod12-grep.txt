@@ -1,0 +1,46 @@
+=== DoD#1：生产面审计种子装配位零魔数 ===
+-- AuditLoggerImpl::new / audit_logger 种子实参位（应全部为 audit_logger+域串或白名单）--
+crates/security/pentest/src/pentest.rs:598:    let mut logger = AuditLoggerImpl::new(MemStore::new(), [0x42u8; 32]);
+crates/security/pentest/src/pentest.rs:1077:    let mut logger = AuditLoggerImpl::new(MemStore::new(), [0x42u8; 32]);
+crates/security/pentest/src/pentest.rs:1120:    let mut logger = AuditLoggerImpl::new(MemStore::new(), [0x42u8; 32]);
+crates/security/audit/src/lib.rs:108:/// 调用方不再直接触碰 `AuditLoggerImpl::new` 的种子实参位
+crates/security/audit/src/lib.rs:111:    AuditLoggerImpl::new(store, genesis(domain))
+crates/security/audit/src/chain.rs:113:    /// 存储为空等价 [`AuditLoggerImpl::new`]；否则读取末条恢复
+crates/security/audit/src/chain.rs:264:        let mut logger = AuditLoggerImpl::new(MemStore::new(), GENESIS);
+crates/security/audit/src/chain.rs:321:        let mut logger = AuditLoggerImpl::new(MemStore::new(), GENESIS);
+crates/runtime/root-task/src/panic.rs:202:    *PANIC_LOGGER.lock() = Some(eneros_audit::audit_logger(
+crates/runtime/services/src/panic.rs:29:        Some(eneros_audit::audit_logger(MemStore::new(), b"svc-panic-genesis"));
+crates/security/audit/tests/audit_chain.rs:61:    let mut logger = AuditLoggerImpl::new(MemStore::new(), GENESIS);
+crates/security/audit/tests/audit_chain.rs:234:    let mut logger = AuditLoggerImpl::new(MemStore::new(), GENESIS);
+crates/agents/control-services/src/bin/svc-control-dispatch.rs:355:            control_audit: Some(alloc::boxed::Box::new(eneros_audit::audit_logger(
+crates/agents/device-agent/src/ingress.rs:484:            Box::new(eneros_audit::audit_logger(MemStore::new(), b"eneros-device-agent-ingress"));
+crates/ai/dual-brain/src/audit.rs:107:            logger: AuditLoggerImpl::new(MemStore::new(), genesis),
+
+-- DecisionAudit::new 实参位 --
+crates/protocols/control-dispatch/tests/dispatch_ingress_chain.rs:352:        audit: Some(DecisionAudit::new([0x40; 32])),
+crates/protocols/control-dispatch/tests/intent_ingress_chain.rs:219:        audit: Some(DecisionAudit::new([0x47; 32])),
+crates/agents/control-services/src/bin/svc-control-dispatch.rs:359:            audit: Some(eneros_dual_brain::audit::DecisionAudit::new(eneros_audit::genesis(
+crates/agents/control-services/src/bin/svc-ai-worker.rs:228:    let mut audit = eneros_dual_brain::audit::DecisionAudit::new(eneros_audit::genesis(
+crates/agents/control-services/src/bin/svc-ai-worker.rs:258:    let mut audit = eneros_dual_brain::audit::DecisionAudit::new(eneros_audit::genesis(
+crates/ai/dual-brain/src/audit.rs:127:    DecisionAudit::new(eneros_crypto::sm3_hash(&buf))
+crates/ai/dual-brain/src/audit.rs:203:        let mut audit = DecisionAudit::new([0xAB; 32]);
+crates/ai/dual-brain/src/audit.rs:224:        let mut audit = DecisionAudit::new([0xAB; 32]);
+crates/ai/dual-brain/src/audit.rs:241:        let mut audit = DecisionAudit::new([0x11; 32]);
+crates/ai/dual-brain/src/audit.rs:263:        let mut audit = DecisionAudit::new([0x22; 32]);
+crates/ai/dual-brain/src/audit.rs:301:        let mut a1 = DecisionAudit::new([0x42; 32]);
+crates/ai/dual-brain/src/audit.rs:307:        let mut a2 = DecisionAudit::new([0x42; 32]);
+crates/ai/dual-brain/src/audit.rs:323:        let mut audit = DecisionAudit::new([0x11; 32]);
+crates/ai/dual-brain/src/lib.rs:296:            .with_audit(crate::audit::DecisionAudit::new([0x32; 32]));
+crates/ai/dual-brain/src/lib.rs:339:            .with_audit(crate::audit::DecisionAudit::new([0x33; 32]));
+crates/ai/dual-brain/src/lib.rs:357:                .with_audit(crate::audit::DecisionAudit::new([0x33; 32]));
+crates/ai/dual-brain/tests/gr5_decision_discipline.rs:25:    let mut audit = DecisionAudit::new([0x42; 32]);
+
+-- 残留魔数种子检查（genesis/seed 语境，排除 crypto/rng/tpm/attestation 合法零缓冲与测试）--
+crates/hal/hal/src/dma.rs:184:        // 39 CVR-39-01 排障：`Box::new([0u8; N])` 先构造**栈上** N 字节
+crates/protocols/tsn-time/src/degraded.rs:98:            ClockIdentity::new([0u8; 8]),
+crates/protocols/tsn-time/src/degraded.rs:109:            ClockIdentity::new([0u8; 8]),
+crates/runtime/services/src/allocator.rs:143:            heap: UnsafeCell::new([0u8; HEAP_SIZE]),
+crates/drivers/drv-svc/src/allocator.rs:63:static HEAP_SPACE: HeapSpace = HeapSpace(UnsafeCell::new([0u8; HEAP_SIZE]));
+crates/runtime/root-task/src/allocator.rs:152:            heap: UnsafeCell::new([0u8; HEAP_SIZE]),
+crates/runtime/oom-probe/src/main.rs:80:                heap: UnsafeCell::new([0u8; HEAP_SIZE]),
+crates/runtime/services/src/loom_allocator.rs:33:            heap: core::cell::UnsafeCell::new([0u8; HEAP_SIZE]),

@@ -351,11 +351,14 @@ impl DispatchHandler {
             // InMemory 兜底 + 串口登记（重启对账不可用面）。
             intent_log: build_intent_store(eipc_mask),
             // 47（WP-47.4 审计持久化）：SHA-256 控制事件链（D4 线）。
-            control_audit: Some(alloc::boxed::Box::new(eneros_audit::AuditLoggerImpl::new(
+            // 蓝图 54 WP-54.1：魔数种子 → 唯一入口按服务域派生。
+            control_audit: Some(alloc::boxed::Box::new(eneros_audit::audit_logger(
                 eneros_audit::MemStore::new(),
-                [0x47; 32],
+                b"svc-control-dispatch-audit",
             ))),
-            audit: Some(eneros_dual_brain::audit::DecisionAudit::new([0x47; 32])),
+            audit: Some(eneros_dual_brain::audit::DecisionAudit::new(
+                eneros_audit::genesis(b"svc-control-dispatch-audit"),
+            )),
             delivery,
             feedback_mapping: FeedbackPointMapping {
                 grid_up: 5,

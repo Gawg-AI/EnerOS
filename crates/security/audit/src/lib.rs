@@ -88,6 +88,29 @@ pub use chain::{AuditLogger, AuditLoggerImpl, ChainVerifier, ChainVerifierImpl};
 pub use events::{AuditEvent, AuditEventType, ChainEntry, HashChain};
 pub use store::{AuditStore, MemStore};
 
+// ============================================================
+// WP-54.1 装配接缝：创世根派生与生产装配唯一入口
+// ============================================================
+
+/// 创世根唯一派生入口：`genesis = SHA-256(domain)`（蓝图 54 WP-54.1）。
+///
+/// 装配约定：审计链种子一律经本函数派生，禁止调用方自备魔数
+/// （如 `[0x47; 32]`）或全零种子（可离线伪造链头，对应 [`AuditError::InvalidGenesis`]）。
+/// domain 串每服务一个——跨服务域分离是**有意设计**（链不可合并），抄写才是病灶。
+/// store 选型归调用方：`CrashStore` = 零堆 panic 路径（WP-37.9），`MemStore` = 常规 EL0 服务。
+pub fn genesis(domain: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(domain).into()
+}
+
+/// 生产装配唯一入口：store 由调用方选定，种子强制经 [`genesis`] 派生。
+///
+/// 调用方不再直接触碰 `AuditLoggerImpl::new` 的种子实参位
+/// （后者保留为 audit 内部/测试/`dual-brain::DecisionAudit` 透传面）。
+pub fn audit_logger<S: AuditStore>(store: S, domain: &[u8]) -> AuditLoggerImpl<S> {
+    AuditLoggerImpl::new(store, genesis(domain))
+}
+
 /// 审计错误模型（哈希链全流程错误；`SeqOutOfOrder`/`ChainBroken` 携带序号定位）.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditError {
