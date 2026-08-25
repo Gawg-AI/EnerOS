@@ -1,0 +1,54 @@
+=== F1b: ActorKind::from_byte 正确路径 ===
+108:    pub fn from_byte(b: u8) -> Option<Self> {
+=== F3b: svc-observability 定位与 outbox ===
+crates/observability
+crates/agents/business-services/src/bin/svc-observability.rs
+crates/protocols/control-dispatch/src/durable_intent.rs:157:            outbox: AppendOutbox::new(io, base, slot_len, max_slots),
+crates/runtime/durable-state/tests/durable.rs:261:    let mut ob = AppendOutbox::new(mem, 0, SLOT_LEN, MAX_SLOTS);
+crates/runtime/durable-state/tests/durable.rs:343:            AppendOutbox::new(mem.clone(), 0, SLOT_LEN, MAX_SLOTS);
+crates/runtime/durable-state/tests/durable.rs:367:        let mut ob: AppendOutbox<Msg, SharedMem> = AppendOutbox::new(mem, 0, SLOT_LEN, MAX_SLOTS);
+crates/runtime/durable-state/tests/durable.rs:387:            AppendOutbox::new(mem.clone(), 0, SLOT_LEN, MAX_SLOTS);
+crates/runtime/durable-state/tests/durable.rs:417:            AppendOutbox::new(mem.clone(), 0, SLOT_LEN, MAX_SLOTS);
+crates/runtime/durable-state/tests/durable.rs:445:        let mut ob: AppendOutbox<Msg, SharedMem> = AppendOutbox::new(mem, 0, SLOT_LEN, MAX_SLOTS);
+crates/runtime/durable-state/tests/durable.rs:465:        AppendOutbox::new(mem.clone(), 0, SLOT_LEN, MAX_SLOTS);
+=== A8b: 死岛依赖图（Cargo 消费者循环脚本）===
+solver-pareto <- [NONE]
+solver-warm <- [NONE]
+solver-milp <- [crates/ai/solver-warm/Cargo.toml ]
+marl <- [NONE]
+rl <- [NONE]
+online-learning <- [crates/ai/online/Cargo.toml ]
+dialog <- [NONE]
+trust <- [NONE]
+simulator <- [NONE]
+twin-global <- [NONE]
+spot-market <- [NONE]
+realtime-market <- [NONE]
+ancillary <- [NONE]
+model-deploy <- [NONE]
+p2p <- [crates/agents/p2p-match/Cargo.toml ]
+p2p-match <- [NONE]
+gguf-loader <- [crates/ai/model-deploy/Cargo.toml fuzz/Cargo.toml xtask/Cargo.toml ]
+tracing <- [crates/agents/vpp-scenario/Cargo.toml ]
+intent-parser <- [crates/ai/intent-contract/Cargo.toml crates/ai/dual-brain/Cargo.toml ]
+energy-market-agent <- [crates/agents/mvp-scenario/Cargo.toml crates/agents/device-agent/Cargo.toml crates/agents/grid_agent/Cargo.toml crates/agents/coordinator/Cargo.toml crates/agents/cloud-coordinator/Cargo.toml ]
+=== F6: svc-observability 附接段实况 ===
+                OBS_OUTBOX_MAX_SLOTS,
+            );
+            match ob.open() {
+                Ok(()) => {
+                    eneros_runtime::println!(
+                        "[svc-observability] durable telemetry outbox attached (svc-storage)"
+                    );
+                    svc.durable = Some(alloc::boxed::Box::new(
+                        eneros_business_services::target_durable::MaybeOutbox::Real(ob),
+                    ));
+                }
+                Err(e) => {
+                    eneros_runtime::println!(
+                        "[svc-observability] durable outbox open FAILED {:?} —— 显式 Unavailable",
+                        e
+                    );
+                }
+=== F7: ActorKind::from_byte 复用情况 ===
+crates/protocols/control-gateway/src/envelope.rs:283:            ActorKind::from_byte(buf[51]).ok_or(EnvelopeError::BadActor { got: buf[51] })?;

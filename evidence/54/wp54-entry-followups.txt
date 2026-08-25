@@ -1,0 +1,44 @@
+=== F1: ActorKind 定义与 from_byte 定位 ===
+crates/protocols/telemetry-model/src/command.rs:93:pub enum ActorKind {
+ugrep: warning: crates/observability/telemetry-model/src/*.rs: No such file or directory
+=== F2: ai-worker 槽位/bit ===
+    heartbeat_slot: u64,
+) -> ! {
+    eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
+    // SAFETY: `_start` 单线程首调（首次 alloc 前）。
+    unsafe { ALLOC.init() };
+    let base = eneros_agent_sdk::EIPC_EP_BASE_SLOT;
+    // X3 表序（spawn.rs EIPC_GRANTS）：bit0=svc-config、bit1=svc-mqtt。
+    // 任一未授予 → 对应能力 fail-closed（config 缺 → 启发式兜底；
+    // mqtt 缺 → 无远程路径，纯启发式——诚实降级不伪造）。
+    let config_client = if eipc_mask & 1 != 0 {
+        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+            "aiworker-config",
+            base,
+=== F3: svc-observability 第三份 outbox? ===
+=== F4: manager.rs:130 固定种子上下文 ===
+    /// **绝不回落固定种子**（旧实现默认全零种子，已移除）。
+    pub fn new_with_platform_entropy(
+        keypair: Sm2KeyPair,
+        issuer_id: AgentId,
+    ) -> Result<Self, eneros_crypto::rng::EntropyError> {
+        let rng = eneros_crypto::rng::csrng_from_platform()?;
+        Ok(Self::with_rng(keypair, issuer_id, rng))
+    }
+
+    /// 测试构造：全零种子（仅测试/仿真编译可见）。
+    ///
+    /// WP-53.6：原 `new()` 的全零种子默认对生产可见，属 INV 违规面；
+    /// 现收编为显式命名并 cfg 门控。
+    #[cfg(any(test, feature = "mock"))]
+    pub fn new_test_only_zero_seed(keypair: Sm2KeyPair, issuer_id: AgentId) -> Self {
+        Self::with_rng(keypair, issuer_id, CsRng::from_seed(&[0u8; 32]))
+    }
+
+    /// 注入式构造：rng 必须来自平台熵（`csrng_from_platform`）。
+    pub fn with_rng(keypair: Sm2KeyPair, issuer_id: AgentId, rng: CsRng) -> Self {
+        CapabilityManager {
+=== F5: root-task 依赖 agent-sdk（A3）===
+39:eneros-agent-sdk = { path = "../../agents/agent-sdk" }
+52:# 蓝图 40 收尾：target 构建启用 agent-sdk sel4 客户端（ipc_sel4 模块）。
+54:sel4-eipc = ["eneros-agent-sdk/sel4"]

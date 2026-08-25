@@ -1,0 +1,49 @@
+=== A7b: durable_intent 线码（真实路径）===
+106:        let state = state_from_code(*bytes.get(off).ok_or(StoreError::Corrupt)?)
+124:fn state_from_code(c: u8) -> Option<DispatchState> {
+=== A7c: actor_kind 裸字节 ===
+127:    if actor_kind != 2 {
+193:    if actor_kind != 2 {
+=== A7d: 权威 from_byte ===
+=== A8: crc32 抄本份数 ===
+crates/abi/ipc-wire/src/lib.rs
+crates/agents/agent-sdk/src/wire.rs
+crates/agents/cloud-sync/src/event_store.rs
+crates/boot/boot-protocol/src/boot_control.rs
+crates/boot/boot-protocol/src/boot_info.rs
+crates/boot/boot-protocol/src/measurement.rs
+crates/boot/image-format/src/gpt.rs
+crates/drivers/storage/src/crc32.rs
+crates/observability/crash-dump/src/format.rs
+crates/protocols/protocol-sdk/src/wire.rs
+crates/runtime/durable-state/src/lib.rs
+crates/security/audit/src/durable.rs
+=== A9: 双契约主线 ===
+22:    budget as peer_budget, parse_and_validate, truncate_for_audit, PeerBudget, PeerRequest,
+187:        match parse_and_validate(json, &checks) {
+=== A10: audit recover 语义 ===
+    }
+
+    /// 从既有存储恢复链头（断电重启后续链）：
+    /// 存储为空等价 [`AuditLoggerImpl::new`]；否则读取末条恢复
+    /// `last_hash = combined_hash`、`last_seq = seq`、`entry_count = count`.
+    pub fn recover(store: S, genesis: [u8; 32]) -> Result<Self, AuditError> {
+        let count = store.count()?;
+        if count == 0 {
+            return Ok(Self::new(store, genesis));
+=== A11: trust 第三刻度 ===
+    /// 银（400-699）.
+    Silver,
+    /// 金（700-899）.
+    Gold,
+    /// 白金（900-1000）.
+    Platinum,
+}
+
+impl TrustGrade {
+    /// 从分数计算信誉等级.
+    pub fn from_score(score: TrustScore) -> Self {
+        match score {
+            900..=1000 => TrustGrade::Platinum,
+            700..=899 => TrustGrade::Gold,
+            400..=699 => TrustGrade::Silver,

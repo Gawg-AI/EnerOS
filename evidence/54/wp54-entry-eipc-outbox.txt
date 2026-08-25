@@ -1,0 +1,40 @@
+=== A5: EIPC 授予两侧 ===
+1531:pub const EIPC_GRANTS: &[(&str, &str)] = &[
+1606:pub fn eipc_grants_for(name: &str) -> (u64, Vec<(u64, &str)>) {
+1609:    for (client, target) in EIPC_GRANTS {
+1649:    /// 阶段 1.5，见 [`EIPC_GRANTS`]）。0 = 未授予任何端点。
+=== A5b: 消费侧硬编码 ===
+crates/agents/control-services/src/bin/svc-control-dispatch.rs:88:            eneros_agent_sdk::EIPC_EP_BASE_SLOT + 4,
+crates/agents/control-services/src/bin/svc-control-dispatch.rs:125:    /// `EIPC_EP_BASE_SLOT + 2`）——意图授权前取受信任遥测（新鲜度/安全
+crates/agents/control-services/src/bin/svc-control-dispatch.rs:234:                eneros_agent_sdk::EIPC_EP_BASE_SLOT + 3,
+crates/agents/control-services/src/bin/svc-control-dispatch.rs:274:                eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1,
+crates/agents/control-services/src/bin/svc-control-dispatch.rs:279:                            eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1
+crates/agents/control-services/src/bin/svc-control-dispatch.rs:322:                eneros_agent_sdk::EIPC_EP_BASE_SLOT + 2,
+=== A6: outbox 样板对照 ===
+    let outbox = if eipc_mask & 1 != 0 {
+        match eneros_business_services::block_io::eipc_block_io(
+            eneros_agent_sdk::EIPC_EP_BASE_SLOT,
+            0,
+            5_000,
+        ) {
+            Some(io) => {
+                let mut ob = eneros_durable_state::AppendOutbox::new(
+                    io,
+---cloud-sync---
+    let outbox = if eipc_mask & 1 != 0 {
+        match eneros_business_services::block_io::eipc_block_io(
+            eneros_agent_sdk::EIPC_EP_BASE_SLOT,
+            0,
+            5_000,
+        ) {
+            Some(io) => {
+                let mut ob = eneros_durable_state::AppendOutbox::new(
+                    io,
+=== A7: 线码三处 ===
+40:    out.push(state_code(r.final_state));
+57:    let state = state_from_code(buf[1])?;
+69:fn state_code(s: DispatchState) -> u8 {
+86:fn state_from_code(c: u8) -> Option<DispatchState> {
+158:    out.push(state_code(DispatchState::Rejected));
+crates/agents/control-services/src/dispatch_service.rs
+crates/protocols/control-dispatch/src/durable_intent.rs

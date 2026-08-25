@@ -1,0 +1,250 @@
+=== A1: AuditLoggerImpl::new 全仓 ===
+crates/security/pentest/src/pentest.rs:598:    let mut logger = AuditLoggerImpl::new(MemStore::new(), [0x42u8; 32]);
+crates/security/pentest/src/pentest.rs:1077:    let mut logger = AuditLoggerImpl::new(MemStore::new(), [0x42u8; 32]);
+crates/security/pentest/src/pentest.rs:1120:    let mut logger = AuditLoggerImpl::new(MemStore::new(), [0x42u8; 32]);
+crates/security/audit/src/chain.rs:113:    /// 存储为空等价 [`AuditLoggerImpl::new`]；否则读取末条恢复
+crates/security/audit/src/chain.rs:264:        let mut logger = AuditLoggerImpl::new(MemStore::new(), GENESIS);
+crates/security/audit/src/chain.rs:321:        let mut logger = AuditLoggerImpl::new(MemStore::new(), GENESIS);
+crates/security/audit/tests/audit_chain.rs:61:    let mut logger = AuditLoggerImpl::new(MemStore::new(), GENESIS);
+crates/security/audit/tests/audit_chain.rs:234:    let mut logger = AuditLoggerImpl::new(MemStore::new(), GENESIS);
+crates/runtime/root-task/src/panic.rs:210:    *PANIC_LOGGER.lock() = Some(AuditLoggerImpl::new(CrashStore::new(), genesis()));
+crates/runtime/services/src/panic.rs:34:    *PANIC_LOGGER.lock() = Some(AuditLoggerImpl::new(MemStore::new(), genesis()));
+crates/agents/device-agent/src/ingress.rs:483:            Box::new(AuditLoggerImpl::new(MemStore::new(), [0u8; 32]));
+crates/ai/dual-brain/src/audit.rs:107:            logger: AuditLoggerImpl::new(MemStore::new(), genesis),
+crates/agents/control-services/src/bin/svc-control-dispatch.rs:354:            control_audit: Some(alloc::boxed::Box::new(eneros_audit::AuditLoggerImpl::new(
+=== A1b: 生产种子四式定位 ===
+crates/security/secure-boot/src/header.rs:96:    let mut image_hash = [0u8; 32];
+crates/security/secure-boot/src/header.rs:118:        let mut image_hash = [0u8; 32];
+crates/security/did/src/verifier.rs:216:            verifier.verify_signature(&doc, b"msg", &[0u8; 32]),
+crates/security/crypto/src/hw/kunpeng.rs:379:        let mut hash = [0u8; 32];
+crates/security/crypto/src/hw/kunpeng.rs:521:        let mut key_bytes = [0u8; 32];
+crates/security/crypto/src/sm2/rfc6979.rs:127:            let mut b = [0u8; 32];
+crates/security/tls/src/embedded.rs:464:    let mut key = [0u8; 32];
+crates/security/attestation/src/attest.rs:278:            assert_eq!(*value, [0u8; 32]);
+crates/security/crypto/src/hw/software.rs:71:        let mut key_bytes = [0u8; 32];
+crates/security/ota-ab/src/rollback.rs:205:            let mut hash = [0u8; 32];
+crates/security/secure-boot/src/manifest.rs:236:            image_hash: [0u8; 32],
+crates/security/crypto/src/rng/entropy.rs:142:    let mut seed = [0u8; 32];
+crates/security/crypto/src/rng/entropy.rs:174:        let mut seed = [0u8; 32];
+crates/security/crypto/src/rng/entropy.rs:177:        assert_ne!(seed, [0u8; 32], "夹具熵非全零");
+crates/security/crypto/src/rng/entropy.rs:179:        let mut out = [0u8; 32];
+crates/security/crypto/src/rng/entropy.rs:181:        assert_ne!(out, [0u8; 32]);
+crates/security/crypto/src/rng/entropy.rs:184:        let mut seed2 = [0u8; 32];
+crates/security/crypto/src/rng/entropy.rs:187:        let mut out2 = [0u8; 32];
+crates/security/crypto/src/rng/entropy.rs:195:            PhytiumTrng.fill_entropy(&mut [0u8; 32]),
+crates/security/crypto/src/rng/entropy.rs:200:            KunpengTrng.fill_entropy(&mut [0u8; 32]),
+crates/security/crypto/src/rng/entropy.rs:216:        let mut out_a = [0u8; 32];
+crates/security/crypto/src/rng/entropy.rs:217:        let mut out_b = [0u8; 32];
+crates/security/crypto/src/rng/entropy.rs:224:        let mut out_a2 = [0u8; 32];
+crates/security/crypto/src/rng/entropy.rs:236:        assert_eq!(seed, [0u8; 32]);
+crates/security/tpm/src/driver.rs:120:            pcrs: [[0u8; 32]; PCR_COUNT],
+crates/security/tpm/src/driver.rs:480:            return Ok([0u8; 32]);
+crates/security/tpm/src/driver.rs:489:        let mut pcr = [0u8; 32];
+crates/security/tpm/src/driver.rs:639:        assert_eq!(pcr0, [0u8; 32]);
+crates/security/tpm/src/driver.rs:652:        assert_ne!(pcr0, [0u8; 32]);
+crates/security/tpm/src/driver.rs:656:        hasher.update(&[0u8; 32]);
+crates/security/tpm/src/driver.rs:667:        assert!(tpm.pcr_extend(99, &[0u8; 32]).is_err());
+crates/security/tpm/src/driver.rs:728:        assert_eq!(pcr, [0u8; 32]);
+crates/security/tpm/src/measurement.rs:229:        assert_ne!(digest, [0u8; 32]);
+crates/security/tpm/src/measurement.rs:246:        assert_ne!(pcr0, [0u8; 32]);
+crates/security/tpm/src/measurement.rs:277:        assert_ne!(quote.quote_digest, [0u8; 32]);
+crates/security/crypto/src/hw/phytium.rs:369:            return [0u8; 32];
+crates/security/crypto/src/hw/phytium.rs:371:        let mut hash = [0u8; 32];
+crates/security/crypto/src/hw/phytium.rs:713:        let mut key_bytes = [0u8; 32];
+crates/security/crypto/src/rng/virtio_rng.rs:273:            let mut entropy = [0u8; 32];
+crates/security/crypto/src/rng/virtio_rng.rs:340:        let mut out = [0u8; 32];
+crates/security/crypto/src/rng/virtio_rng.rs:350:        let mut out2 = [0u8; 32];
+crates/security/crypto/src/rng/virtio_rng.rs:366:        let mut out1 = [0u8; 32];
+crates/security/crypto/src/rng/virtio_rng.rs:372:        let mut out2 = [0u8; 32];
+crates/security/crypto/src/rng/virtio_rng.rs:381:        let mut out1 = [0u8; 32];
+crates/security/crypto/src/rng/virtio_rng.rs:382:        let mut out2 = [0u8; 32];
+crates/security/crypto/src/rng/virtio_rng.rs:414:            let mut seed = [0u8; 32];
+crates/security/crypto/src/sm2/sign.rs:67:        let mut r = [0u8; 32];
+crates/security/crypto/src/sm2/sign.rs:68:        let mut s = [0u8; 32];
+crates/security/crypto/src/sm2/sign.rs:157:                let mut buf = [0u8; 32];
+crates/security/crypto/src/sm2/sign.rs:554:        let zero_bytes = [0u8; 32];
+crates/security/attestation/src/lib.rs:40://! | **D10** | ① 蓝图 `nonce.try_into().unwrap_or([0u8; 20])` 静默回退 → nonce 固定 `[u8; 20]` 参数，嵌入 PcrQuote 随 quote_digest 签名绑定；② 蓝图 `pcr_read(idx).unwrap_or([0u8; 32])` 吞错 → 显式错误传播；③ 蓝图 quote mask 位移未校验 idx → pcr_idx ≥ 24 返回 InvalidPcrIndex | 安全关键路径禁止静默默认值与吞错（v0.111.0 D11 同原则）；nonce 嵌入 quote 使签名显式覆盖防重放 |
+crates/security/attestation/src/lib.rs:214:                pcr_values: alloc::vec![[0u8; 32], [0u8; 32]],
+crates/security/attestation/src/lib.rs:240:                pcr_values: alloc::vec![[0u8; 32]],
+crates/security/attestation/src/event_log.rs:79:        let mut pcrs = [[0u8; 32]; PCR_COUNT];
+crates/security/attestation/src/event_log.rs:147:            Ok(pcr_extend_value(&[0u8; 32], &sm3_hash(data)))
+crates/security/attestation/src/event_log.rs:161:    /// LOG8 空日志 replay == [[0u8;32];24]；len/is_empty 语义正确.
+crates/security/attestation/src/event_log.rs:167:        assert_eq!(log.replay(), [[0u8; 32]; PCR_COUNT]);
+crates/security/crypto/src/sm3/mod.rs:273:        let mut out = [0u8; 32];
+crates/security/secure-boot/src/secure_boot.rs:251:        let rot = RootOfTrust::new(root.public_key, [0u8; 32]);
+crates/security/secure-boot/src/secure_boot.rs:302:        let rot = RootOfTrust::new(root.public_key, [0u8; 32]);
+crates/security/secure-boot/src/secure_boot.rs:348:        let rot = RootOfTrust::new(root.public_key, [0u8; 32]);
+crates/security/secure-boot/src/secure_boot.rs:395:        let rot = RootOfTrust::new(root.public_key, [0u8; 32]);
+crates/security/crypto/src/rng/csrng.rs:106:            v: [0u8; 32],
+crates/security/crypto/src/rng/csrng.rs:107:            c: [0u8; 32],
+crates/security/crypto/src/rng/csrng.rs:213:            let mut seed = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:235:            let mut seed = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:295:        let mut buf = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:317:        let mut buf = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:332:        let mut buf = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:356:        let mut buf = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:392:        let mut buf1 = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:393:        let mut buf2 = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:424:        let mut buf = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:432:        let mut next = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:502:        let mut buf1 = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:508:        let mut buf2 = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:517:        let mut out_a = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:518:        let mut out_b = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:533:            let mut blk = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:553:            let mut blk = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:564:        let mut buf = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:573:        let mut buf2 = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:589:        let mut a = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:590:        let mut b = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:591:        let mut c = [0u8; 32];
+crates/security/crypto/src/rng/csrng.rs:592:        let mut d = [0u8; 32];
+crates/security/attestation/src/tpm.rs:38:            pcr_values: [[0u8; 32]; PCR_COUNT],
+crates/security/attestation/src/tpm.rs:96:    ///   `unwrap_or([0u8; 32])` 吞错，D10②）
+crates/security/attestation/src/tpm.rs:324:            assert_eq!(tpm.pcr_read(idx), Ok([0u8; 32]), "PCR{} 应为零值", idx);
+crates/security/attestation/src/tpm.rs:332:    /// TPM2 对 PCR0 extend digest D 后 == sm3([0u8;32] ‖ D).
+crates/security/attestation/src/tpm.rs:338:        let expected = pcr_extend_value(&[0u8; 32], &digest);
+crates/security/attestation/src/tpm.rs:341:        assert_eq!(tpm.pcr_read(1), Ok([0u8; 32]));
+crates/security/attestation/src/tpm.rs:355:        let once = pcr_extend_value(&[0u8; 32], &digest);
+crates/security/attestation/src/tpm.rs:441:            pcr_extend_value(&[0u8; 32], &d0),
+crates/security/attestation/src/tpm.rs:444:        assert_eq!(quote.pcr_values[1], pcr_extend_value(&[0u8; 32], &d1));
+crates/security/attestation/src/tpm.rs:445:        assert_eq!(quote.pcr_values[2], [0u8; 32], "PCR2 未度量应为零值");
+crates/security/crypto-gmssl/src/ffi.rs:91:    let mut out = [0u8; 32];
+crates/security/crypto-gmssl/src/der.rs:124:    let mut out = [0u8; 32];
+crates/security/crypto-gmssl/src/der.rs:148:        let mut r = [0u8; 32];
+crates/security/crypto-gmssl/src/der.rs:150:        let s = [0u8; 32];
+crates/security/crypto-gmssl/src/der.rs:160:        let mut r = [0u8; 32];
+crates/security/crypto-gmssl/src/der.rs:162:        let s = [0u8; 32];
+crates/observability/metrics/src/registry.rs:92:        let mut buf = [0u8; 32];
+crates/protocols/control-gateway/src/wire.rs:143:        let mut payload_digest = [0u8; 32];
+crates/runtime/root-task/src/runtime_spec.rs:260:            digest: [0u8; 32],
+crates/runtime/config-bundle/src/payload.rs:233:            let mut out = [0u8; 32];
+crates/agents/chain/src/block.rs:10:/// 若交易列表为空，则对 `[0u8; 32]` 做哈希。
+crates/agents/chain/src/block.rs:13:        return Sm3Digest(eneros_crypto::sm3::hash(&[0u8; 32]));
+crates/agents/chain/src/block.rs:114:        let expected = Sm3Digest(eneros_crypto::sm3::hash(&[0u8; 32]));
+crates/protocols/control-gateway/src/envelope.rs:221:            hmac: [0u8; 32],
+crates/protocols/control-gateway/src/envelope.rs:300:        let mut hmac = [0u8; 32];
+crates/agents/device-agent/src/registry.rs:419:            capability_digest: [0u8; 32],
+crates/protocols/control-dispatch/src/durable_intent.rs:99:                let mut d = [0u8; 32];
+crates/observability/mgmt-api/src/auth.rs:53:        let mut digest = [0u8; 32];
+crates/protocols/protocol-services/src/net_transport.rs:1012:        let mut buf = [0u8; 32];
+crates/protocols/protocol-services/src/net_transport.rs:1021:        let mut buf = [0u8; 32];
+crates/boot/boot-manager-uefi/src/lib.rs:179:    let mut key_id_32 = [0u8; 32];
+crates/boot/boot-manager-uefi/src/lib.rs:476:            payload_digest: [0u8; 32],
+crates/boot/boot-protocol/src/signature.rs:286:        d.payload_digest = [0u8; 32];
+crates/boot/boot-manager-uefi/build.rs:76:        let placeholder = "pub const TRUSTED_PUBLIC_KEY: [u8; 32] = [0u8; 32];\n\
+crates/security/crypto/src/bigint.rs:68:        let mut bytes = [0u8; 32];
+crates/security/crypto/src/bigint.rs:88:        let mut bytes = [0u8; 32];
+crates/security/crypto/src/bigint.rs:672:        let bytes = [0u8; 32];
+crates/security/crypto/src/bigint.rs:687:        let mut bytes = [0u8; 32];
+crates/security/crypto/src/sm2/encrypt.rs:112:            let mut buf = [0u8; 32];
+crates/runtime/root-task/src/service.rs:978:    let mut target = [0u8; 32];
+crates/runtime/root-task/src/service.rs:1014:    let mut ver = [0u8; 32];
+crates/runtime/root-task/src/spawn.rs:3377:            payload_sha256: [0u8; 32],
+crates/runtime/root-task/src/spawn.rs:3385:                    sha256: [0u8; 32],
+crates/runtime/root-task/src/spawn.rs:3393:                    sha256: [0u8; 32],
+crates/security/audit/src/durable.rs:247:    let mut previous_hash = [0u8; 32];
+crates/security/audit/src/durable.rs:251:    let mut record_hash = [0u8; 32];
+crates/observability/crash-dump/src/format.rs:157:    let mut bid_buf = [0u8; 32];
+crates/agents/chain/src/types.rs:11:    pub const ZERO: Self = Self([0u8; 32]);
+crates/agents/chain/src/types.rs:86:        assert_eq!(d.0, [0u8; 32]);
+crates/agents/device-agent/src/persist.rs:41:pub const CAPABILITY_DIGEST_PLACEHOLDER: [u8; 32] = [0u8; 32];
+crates/agents/device-agent/src/persist.rs:558:    let mut out = [0u8; 32];
+crates/boot/boot-protocol/src/manifest.rs:555:    let mut value = [0u8; 32];
+crates/runtime/durable-log/src/lib.rs:448:        let mut prev = [0u8; 32];
+crates/runtime/durable-log/src/lib.rs:449:        let mut ev = [0u8; 32];
+crates/runtime/durable-log/src/lib.rs:450:        let mut comb = [0u8; 32];
+crates/agents/business-services/src/ota_service.rs:340:            let mut image_hash = [0u8; 32];
+crates/runtime/root-task/src/bundle.rs:224:        let mut payload_sha256 = [0u8; 32];
+crates/runtime/root-task/src/bundle.rs:279:            let mut sha256 = [0u8; 32];
+crates/agents/model-ota/src/real.rs:72:            checksum: [0u8; 32],
+crates/agents/business-services/src/bin/svc-cloud-sync.rs:149:                let mut hash = [0u8; 32];
+crates/agents/business-services/src/ledger.rs:311:        let mut d = [0u8; 32];
+crates/agents/device-agent/src/ingress.rs:483:            Box::new(AuditLoggerImpl::new(MemStore::new(), [0u8; 32]));
+crates/agents/control-services/src/bin/svc-ai-worker.rs:227:    // dispatch 装配常量同源 [0x47;32]）。
+crates/agents/control-services/src/bin/svc-ai-worker.rs:228:    let mut audit = eneros_dual_brain::audit::DecisionAudit::new([0x47; 32]);
+crates/agents/control-services/src/bin/svc-ai-worker.rs:256:    let mut audit = eneros_dual_brain::audit::DecisionAudit::new([0x47; 32]);
+crates/agents/model-ota/src/ota_client.rs:174:    let mut arr = [0u8; 32];
+crates/agents/federation/src/tunnel.rs:815:        assert_ne!(pms, [0u8; 32]); // PMS 为随机非零
+crates/runtime/root-task/src/panic.rs:100:    let mut out = [0u8; 32];
+crates/runtime/root-task/src/panic.rs:362:        let d = format_panic_detail(0x1a2b, [0u8; 32], 0, "src/main.rs:42");
+crates/runtime/root-task/src/panic.rs:367:        let mut digest = [0u8; 32];
+crates/runtime/root-task/src/panic.rs:383:        let mut digest = [0u8; 32];
+crates/runtime/root-task/src/panic.rs:428:                    prev_hash: [0u8; 32],
+crates/runtime/root-task/src/panic.rs:429:                    event_hash: [0u8; 32],
+crates/runtime/root-task/src/panic.rs:430:                    combined_hash: [0u8; 32],
+crates/agents/federation/src/consensus.rs:435:            let mut seed = [0u8; 32];
+crates/agents/federation/src/consensus.rs:453:                let mut s = [0u8; 32];
+crates/agents/federation/src/consensus.rs:592:            digest: [0u8; 32],
+crates/agents/federation/src/channel.rs:477:        let mut n1 = [0u8; 32];
+crates/agents/federation/src/channel.rs:479:        let mut n2 = [0u8; 32];
+crates/agents/federation/src/channel.rs:796:        bad_magic.extend_from_slice(&[0u8; 32]);
+crates/agents/federation/src/channel.rs:815:        wrong_len.extend_from_slice(&[0u8; 32]);
+crates/agents/business-services/src/cloud_sync.rs:61:        let mut hash = [0u8; 32];
+crates/agents/business-services/src/cloud_sync.rs:230:        let mut hash = [0u8; 32];
+crates/agents/federation/src/view_change.rs:55:        let digest = [0u8; 32]; // VC 无请求语义，digest 占位
+crates/agents/federation/src/view_change.rs:231:        let body = message_body(MsgType::ViewChange, 1, 0, &[0u8; 32], 1, &[]);
+crates/agents/federation/src/view_change.rs:282:            [0u8; 32],
+crates/agents/federation/src/view_change.rs:306:                [0u8; 32],
+crates/agents/federation/src/view_change.rs:338:                [0u8; 32],
+crates/agents/federation/src/view_change.rs:367:                [0u8; 32],
+crates/agents/control-services/src/telemetry.rs:165:    let mut digest = [0u8; 32];
+crates/agents/app-cert/src/types.rs:183:            binary_hash: [0u8; 32],
+crates/agents/control-services/src/bin/svc-control-dispatch.rs:356:                [0x47; 32],
+crates/agents/control-services/src/bin/svc-control-dispatch.rs:358:            audit: Some(eneros_dual_brain::audit::DecisionAudit::new([0x47; 32])),
+crates/agents/model-ota/src/lib.rs:424:            hash: [0u8; 32],
+crates/ai/dual-brain/src/audit.rs:218:        assert_ne!(entry.event_hash, [0u8; 32], "SM3 哈希非零");
+crates/agents/hot-update/src/agent_hot.rs:372:            module_hash: [0u8; 32],
+crates/agents/agent/src/capability/manager.rs:130:        Self::with_rng(keypair, issuer_id, CsRng::from_seed(&[0u8; 32]))
+crates/security/tpm/src/pcr.rs:58:            pcr0_boot: [0u8; 32],
+crates/security/tpm/src/pcr.rs:59:            pcr1_kernel_config: [0u8; 32],
+crates/security/tpm/src/pcr.rs:60:            pcr2_userland: [0u8; 32],
+crates/security/tpm/src/pcr.rs:61:            pcr7_secure_boot: [0u8; 32],
+crates/security/tpm/src/pcr.rs:133:        let mut pcrs = [[0u8; 32]; PCR_COUNT];
+crates/security/tpm/src/pcr.rs:148:                if *expected == [0u8; 32] {
+crates/security/tpm/src/pcr.rs:196:        assert_eq!(strategy.pcr0_boot, [0u8; 32]);
+crates/security/tpm/src/pcr.rs:209:        assert_eq!(pcr0, [0u8; 32]);
+crates/security/tpm/src/pcr.rs:214:        assert_ne!(pcr0_after, [0u8; 32]);
+crates/security/tpm/src/pcr.rs:295:            assert_eq!(*pcr, [0u8; 32]);
+crates/security/crypto/src/constant_time.rs:82:        assert!(ct_eq(&[0u8; 32], &[0u8; 32]));
+crates/security/crypto/src/constant_time.rs:89:        assert!(!ct_eq(&[0u8; 32], &[1u8; 32]));
+crates/security/crypto/src/constant_time.rs:90:        assert!(!ct_eq(&[0u8; 32], &[0u8; 33])); // 长度不同
+crates/security/crypto/src/constant_time.rs:95:        let a = [0u8; 32];
+crates/security/crypto/src/constant_time.rs:96:        let mut b = [0u8; 32];
+crates/agents/business-services/src/block_io.rs:350:        let mut target = [0u8; 32];
+crates/agents/business-services/src/block_io.rs:371:        let mut ver = [0u8; 32];
+crates/agents/business-services/src/block_io.rs:418:        let mut target = [0u8; 32];
+crates/agents/business-services/src/block_io.rs:447:        let mut target2 = [0u8; 32];
+crates/agents/business-services/src/block_io.rs:520:        let mut target = [0u8; 32];
+crates/agents/business-services/src/block_io.rs:541:        let mut ver = [0u8; 32];
+crates/security/crypto/src/sm2/keypair.rs:281:                let mut x_bytes = [0u8; 32];
+crates/security/crypto/src/sm2/keypair.rs:282:                let mut y_bytes = [0u8; 32];
+crates/security/crypto/src/sm2/keypair.rs:412:            let mut buf = [0u8; 32];
+crates/security/crypto/src/sm2/keypair.rs:665:        let mut bytes = [0u8; 32];
+crates/security/crypto/src/sm2/keypair.rs:678:        let bytes = [0u8; 32];
+crates/security/crypto/src/sm2/keypair.rs:693:        let mut bytes = [0u8; 32];
+crates/security/crypto/src/sm2/keypair.rs:706:        let mut bytes = [0u8; 32];
+crates/agents/agent/src/spawner.rs:396:        let mut d = [0u8; 32];
+crates/agents/control-services/src/ai_worker.rs:170:    let digest = p.input_digest.unwrap_or([0u8; 32]);
+crates/agents/control-services/src/ai_worker.rs:199:    let mut digest = [0u8; 32];
+crates/agents/control-services/src/ai_worker.rs:201:    let input_digest = if digest == [0u8; 32] {
+crates/agents/agent/src/system_agent/manager.rs:170:        let mut d = [0u8; 32];
+crates/security/secure-boot/src/root_of_trust.rs:81:        let rot = RootOfTrust::new(kp.public_key, [0u8; 32]);
+crates/drivers/storage/src/partition.rs:1062:        if *manifest_digest == [0u8; 32] {
+crates/drivers/storage/src/partition.rs:1513:            gate.authorize(&req_zd, &[0u8; 32], &identity, &identity, true),
+crates/agents/federation/src/real.rs:183:            digest: [0u8; 32],
+=== A2: engine 三入口行号 ===
+251:    fn run_intent(
+463:    fn run(
+624:    fn deliver_and_settle(
+=== A3: 护栏测试三件 ===
+audit_chain.rs
+dispatch_ingress_chain.rs
+intent_ingress_chain.rs
+=== A4: AgentRuntime 消费者 ===
+crates/agents/device-agent/Cargo.toml
+crates/agents/energy-market-agent/Cargo.toml
+crates/agents/grid_agent/Cargo.toml
+crates/agents/mvp-scenario/Cargo.toml
+crates/agents/coordinator/Cargo.toml
+crates/agents/cloud-coordinator/Cargo.toml
