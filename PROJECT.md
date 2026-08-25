@@ -35,11 +35,11 @@
 
 ## 4. 当前状态（诚实基线）
 
-- workspace 版本字段为 `0.313.0`（44-00 §3 纪律：未过终验不挂 rc/1.0 标记；每 WP Exit 递增 patch）；版本号不代表验收；当前商业裁决是 **NO-GO / NOT-READY**。
-- 当前审查基线为 `HEAD=473b1e26681be33acc654f32e88251d8c19ad3cf` 加全部未提交/未跟踪开发代码。
-- 正式介质当前主要是 boot/kernel/root/demo/占位驱动服务；Agent、AI、协议、OTA、联邦、管理和可观测尚未形成完整产品装配。
-- 当前共 16 个 P0、30 个 P1、5 个 P2（审查快照）；详见 `蓝图/35-00`，代码事实与旧规划抹平见 `35-01`。
-- 唯一路线：36 事实源 → 37 runtime/trust → 38 ARM/HAL/driver → 39 storage/net/protocol → 40 Agent/AI/control → 41 business/ops → 42 L0–L3 evidence → 43 L4/Go-No-Go。
+- workspace 版本字段为 `0.314.5`（44-00 §3 纪律：每 WP Exit 递增 patch）；版本号不代表验收；当前商业裁决维持 **NO-GO / NOT-READY**（52 终验登记，GO 前置=DEF-52-03/05 owner 定责与外部四项）。
+- 当前基线：蓝图 54「架构深化与深模块清偿」卷出口（HEAD 见 git；v1.0.0-rc.2 已因本卷 lineage 重开作废，GO 判定须对新 lineage 重跑 52 终验矩阵）。
+- 产品装配现状以 53 卷 QEMU 冷启动证据为准（29 服务 ready、EIPC 授予、控制链面在库）；遗留缺口见蓝图 54 附录 C 与 43 卷 blocked-register。
+- 审计台账：95 项审计修复收官见 `docs/audit/`；交付差距与 triage 结论见 `docs/delivery/53-*`。
+- 路线：44–52 交付冲刺系列（已完成基线）→ 53 基底恢复（Accepted，X5 fuzz/L2 场景 PARTIAL 排队）→ **54 架构深化与深模块清偿（当前执行入口）**；后续按状态板滚动。
 
 ## 5. 架构分层（crate 数以 `cargo metadata` 当前结果为准）
 
