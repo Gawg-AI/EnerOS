@@ -15,7 +15,9 @@
 use alloc::boxed::Box;
 use alloc::format;
 
+use eneros_agent::AgentRuntimeError;
 use eneros_agent::{AgentDescriptor, AgentState, AgentType};
+use eneros_agent::{AgentRuntime, HeartbeatStatus};
 use eneros_control_dispatch::{
     AuthenticatedActor, ControlDispatch, DispatchError, DispatchReceipt,
 };
@@ -32,9 +34,7 @@ use eneros_safety_validator::{TrustRejection, TrustedTelemetry};
 use eneros_solver_core::mock::MockSolver;
 use eneros_solver_core::solver::Solver;
 
-use crate::error::AgentRuntimeError;
 use crate::market::MarketChannel;
-use crate::runtime::{AgentRuntime, HeartbeatStatus};
 
 /// 受信任遥测提供者（蓝图 40 WP-40.2 的消费者 seam——svc-telemetry 实现；
 /// 输出只能是 `TrustedTelemetry` 或结构化拒绝）。

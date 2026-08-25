@@ -11,7 +11,8 @@ default = ["agent-runtime"]
 # 蓝图/20 R2-1：Mock 类型仅测试/仿真；release 启用即熔断
 mock = []
 # AgentRuntime 桥接（DeviceAgent: AgentRuntime）——svc 闭包可关闭。
-agent-runtime = ["dep:eneros-energy-market-agent"]
+# WP-54.3：trait 直依 agent，拆除 ema optional 补丁。
+agent-runtime = ["eneros-agent/runtime"]
 # 注册表持久化（FileSystem 实现绑定）。
 persist-fs = ["dep:eneros-fs"]
 
@@ -21,7 +22,6 @@ eneros-runtime = { path = "../../runtime/runtime" }
 eneros-agent = { path = "../agent" }
 # 蓝图 40 WP-40.4：AgentRuntime 桥接可选（svc-device-agent target 闭包
 # 不需要 EnergyAgent 链——避免 llama/highs native 污染 target）。
-eneros-energy-market-agent = { path = "../energy-market-agent", optional = true }
 eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
 # v0.227.0（B3-04）：注册表持久化经 fs（蓝图 40：target 闭包可选——
 # EL0 存储句柄移交后启用；svc 闭包不拉 littlefs C 构建）。

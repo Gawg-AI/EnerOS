@@ -186,7 +186,6 @@ pub mod parser;
 // 整模块降级 cfg(any(test, feature="mock"))——待真机报价胶水需求时接线。
 #[cfg(any(test, feature = "mock"))]
 pub mod real_adapters;
-mod runtime;
 #[cfg(any(test, feature = "mock"))]
 pub mod sdk_bridge;
 pub mod subscriber;
@@ -203,6 +202,8 @@ pub use bid_generator::{
 pub use bid_generator::{BidStrategy, ResourceBid};
 pub use device_pool::{DeviceCapability, DeviceMode, DevicePool};
 pub use energy_agent::EnergyAgent;
+// WP-54.3：trait 下移至 eneros-agent（feature runtime）；re-export 保兼容。
+pub use eneros_agent::{AgentRuntime, HeartbeatStatus};
 pub use error::AgentRuntimeError;
 pub use market::MarketData;
 #[cfg(any(test, feature = "mock"))]
@@ -225,7 +226,6 @@ pub use multi_objective::{
 };
 #[cfg(any(test, feature = "mock"))]
 pub use parser::{parse_dr_signal, parse_feed, parse_price_point};
-pub use runtime::{AgentRuntime, HeartbeatStatus};
 #[cfg(any(test, feature = "mock"))]
 pub use subscriber::{
     MarketFeedCache, MarketFeedPublisher, MarketFeedSource, MarketSubscriber,
@@ -700,7 +700,7 @@ mod tests {
         assert_eq!(agent.consecutive_errors, 0, "成功后连续错误计数归零");
         assert_eq!(
             agent.on_heartbeat(0),
-            crate::runtime::HeartbeatStatus::Alive,
+            eneros_agent::HeartbeatStatus::Alive,
             "恢复后心跳必须 Alive"
         );
     }

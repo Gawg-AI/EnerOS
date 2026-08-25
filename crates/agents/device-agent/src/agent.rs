@@ -9,7 +9,7 @@ use alloc::string::String;
 
 use eneros_agent::{AgentDescriptor, AgentState, AgentType};
 #[cfg(feature = "agent-runtime")]
-use eneros_energy_market_agent::{AgentRuntime, AgentRuntimeError, HeartbeatStatus};
+use eneros_agent::{AgentRuntime, AgentRuntimeError, HeartbeatStatus};
 use eneros_protocol_abstract::access::PointAccess;
 use eneros_upa_model::{DataPoint, PointId, PointValue};
 

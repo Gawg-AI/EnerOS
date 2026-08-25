@@ -1,0 +1,8 @@
+=== DoD#1: pub trait AgentRuntime 唯一归属 ===
+crates/agents/agent/src/runtime.rs:59:pub trait AgentRuntime {
+=== DoD#2: device-agent 无 ema optional 依赖 ===
+0
+0（已清零）
+=== 三符号 re-export 兼容面 ===
+206:pub use eneros_agent::{AgentRuntime, HeartbeatStatus};
+crates/agents/energy-market-agent/src/error.rs:7:pub use eneros_agent::AgentRuntimeError;

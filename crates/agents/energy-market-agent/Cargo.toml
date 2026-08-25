@@ -8,7 +8,8 @@ description = "EnerOS v0.72.0 Energy Agent + Market Agent (双 Agent 协作 MVP,
 
 [dependencies]
 eneros-market-types = { path = "../market-types" }
-eneros-agent = { path = "../agent" }
+# WP-54.3：运行时 trait 已下移至 agent（runtime feature）。
+eneros-agent = { path = "../agent", features = ["runtime"] }
 eneros-agent-sdk = { path = "../agent-sdk" }
 eneros-dr = { path = "../dr" }
 eneros-dual-brain = { path = "../../ai/dual-brain", features = ["coordinator"] }

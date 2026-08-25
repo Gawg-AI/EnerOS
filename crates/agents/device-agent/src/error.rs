@@ -5,7 +5,7 @@ use core::fmt;
 
 #[cfg(feature = "agent-runtime")]
 #[cfg(feature = "agent-runtime")]
-use eneros_energy_market_agent::AgentRuntimeError;
+use eneros_agent::AgentRuntimeError;
 
 /// 设备错误.
 #[derive(Debug)]

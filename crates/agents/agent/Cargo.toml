@@ -10,12 +10,15 @@ description = "EnerOS Agent Runtime — descriptor/registry/lifecycle/spawner/he
 eneros-elf-loader = { path = "../../abi/elf-loader" }
 eneros-crypto = { path = "../../security/crypto" }
 eneros-agent-sdk = { path = "../agent-sdk" }
+# WP-54.3：AgentRuntime 错误族需 DualBrainError；feature 门控避免默认闭包膨胀。
+eneros-dual-brain = { path = "../../ai/dual-brain", optional = true }
 
 [features]
 # WP-53.6：mock 门控测试专用构造（全零种子 CapabilityManager 等）——
 # 集成测试经 self-dev-dependency 启用；产品构建不含该 feature。
 mock = []
-
+# WP-54.3：Agent 运行时生命周期 trait（runtime.rs）。
+runtime = ["dep:eneros-dual-brain"]
 [dev-dependencies]
 eneros-crypto = { path = "../../security/crypto" }
 # 自引用 dev-dependency：为集成测试启用 mock feature。

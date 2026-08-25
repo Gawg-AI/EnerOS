@@ -54,9 +54,12 @@ pub mod heartbeat;
 pub mod id;
 pub mod init;
 pub mod lifecycle;
+// WP-54.3：运行时生命周期 trait 自 energy-market-agent 下移（feature 门控）。
 pub mod process;
 pub mod recovery;
 pub mod registry;
+#[cfg(feature = "runtime")]
+pub mod runtime;
 pub mod spawner;
 pub mod system_agent;
 pub mod types;
@@ -80,6 +83,8 @@ pub use process::{
 };
 pub use recovery::CrashRecovery;
 pub use registry::{AgentRegistry, RegistryStats};
+#[cfg(feature = "runtime")]
+pub use runtime::{AgentRuntime, AgentRuntimeError, HeartbeatStatus};
 pub use spawner::{AgentBinary, AgentSpawner, StaticAgentRegistry};
 pub use system_agent::{
     priority_of, AgentResourceUsage, DependencyGraph, RecoveryOrchestrator, RecoveryPriority,

@@ -1,14 +1,14 @@
 //! ARC-001：Agent 收敛链的市场运行时适配——`AgentRuntimeAdapter<T: Agent>`
-//! 把任意 `agent_sdk::Agent`（唯一规范根）适配为 [`crate::runtime::AgentRuntime`]。
+//! 把任意 `agent_sdk::Agent`（唯一规范根）适配为 [`eneros_agent::AgentRuntime`]。
 //!
 //! 收敛链：`agent_sdk::Agent`（根）→ `AgentEntryAdapter`（宿主生命周期，
 //! eneros-agent）→ `AgentRuntimeAdapter`（市场/设备运行时，本 crate）。
 
 use eneros_agent::AgentDescriptor;
+use eneros_agent::{AgentRuntime, HeartbeatStatus};
 use eneros_agent_sdk::Agent;
 
 use crate::error::AgentRuntimeError;
-use crate::runtime::{AgentRuntime, HeartbeatStatus};
 
 /// 市场运行时适配器：把 SDK Agent 适配为 [`AgentRuntime`]。
 ///

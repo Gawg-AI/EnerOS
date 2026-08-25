@@ -5,8 +5,8 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
 
+use eneros_agent::{AgentRuntime, AgentRuntimeError, HeartbeatStatus};
 use eneros_agent::{AgentState, AgentType};
-use eneros_energy_market_agent::{AgentRuntime, AgentRuntimeError, HeartbeatStatus};
 use eneros_protocol_abstract::access::PointAccess;
 use eneros_upa_model::PointValue;
 
