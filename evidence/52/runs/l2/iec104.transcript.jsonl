@@ -1,0 +1,8 @@
+{"t": 1787472174.3292847, "kind": "LISTEN", "port": 2404}
+{"t": 1787472186.6625257, "kind": "CONNECT", "peer": "('127.0.0.1', 59892)"}
+{"t": 1787472186.6660342, "kind": "STARTDT_CON"}
+{"t": 1787472191.6725066, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1787472191.672748, "kind": "INTERROGATION+DATA", "points": 3}
+{"t": 1787472201.7121446, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1787472201.712358, "kind": "INTERROGATION+DATA", "points": 3}
+{"t": 1787472221.7730954, "kind": "READ_TIMEOUT", "err": "timed out"}

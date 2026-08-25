@@ -17,7 +17,7 @@
 
 EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power Native + Agent Native + AI Native** 专用操作系统。基于 seL4 微内核形式化验证基座与 Rust `no_std` 运行时构建，采用混合关键性架构（Mixed Criticality），将**实时控制（RTOS 分区）**与**AI Agent（用户态分区）**隔离运行在同一 ARM64 硬件上。
 
-**当前版本**：workspace v0.192.0 — 单机 MVP 至平台化收敛中：单元测试全量通过（cargo test --workspace 0 fail），真实性与正确性清偿（08 蓝图 S1）完成、内核路线裁决与运行时闭环（S2）推进中；生产发布（v1.0.0）未授权。
+**当前版本**：workspace v0.313.47 — 交付冲刺 44–52 卷完成（候选冻结 tag `v1.0.0-rc.1`；终验矩阵与缺口清单见 `evidence/52/`）；全量测试 7586 通过/0 失败；生产发布（v1.0.0）未授权——当前裁决 NO-GO（`docs/v1.0.0-go-no-go.md`）。
 
 > **唯一内核路线 = seL4**（ADR-0023 用户决策，ADR-0030 执行确认，KRN-001）：自研 microkernel 已淘汰（G2 验证缺陷），产品镜像内核/引导为 seL4（`third_party/sel4-build.sh`）；EnerOS root-task 消费 BootInfo 并 spawn EL0 服务（KRN-002~004）。
 
@@ -31,13 +31,13 @@ EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power
 │   (Lock-free Ring Buffer + TTL + 约束包)                 │
 ├─────────────────────────────────────────────────────────┤
 │              快平面（生产控制大区）                        │
-│   RTOS 控制引擎（10ms 周期/抖动 <1ms）│ 设备协议栈        │
+│   RTOS 控制引擎（10ms 周期/抖动 <1ms，设计目标——真机实测待 bring-up B9）│ 设备协议栈        │
 ├─────────────────────────────────────────────────────────┤
 │              seL4 微内核 + HAL                            │
 │   分区调度器(ARINC 653) │ Capability │ 虚拟内存隔离       │
 │   IPC │ SMP 多核 │ 时钟/看门狗/Panic                      │
 └─────────────────────────────────────────────────────────┘
-        7 层纵深安全 │ 国密 SM2/SM3/SM4 │ 横向隔离合规
+        7 层纵深安全 │ Ed25519/SHA-256/TLS1.3（国密 SM2/3/4=实验性，D4）│ 横向隔离
 ```
 
 #### 版本路线图
@@ -71,7 +71,7 @@ EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power
 | 路径 | 内容 | MVP 可验收 | 实时性 |
 |------|------|-----------|--------|
 | **L1 主路径** | Solver-only（LP/MILP via HiGHS） | ✅ 是 | < 500ms，不依赖 LLM |
-| **L2 增强路径** | LLM（llama.cpp 7B INT4）+ Solver | ❌ 否 | < 2s，离线复杂规划 |
+| **L2 增强路径** | 站端 LLM peer 经 MQTT 远程供给（ADR-0045 方案 B 主线）；本地 llama.cpp 推理 spike=NO-GO（内存/移植面证据见 `docs/ai/local-inference-spike.md`，重启条件三条） | ⚠️ 需配套站端服务 | < 2s（受网络 RTT 支配） |
 
 ---
 
@@ -241,7 +241,7 @@ use std::net::TcpStream;
 | DDS 总线 | Cyclone DDS | Rust 封装层 |
 | MILP/LP Solver | HiGHS | Rust FFI 封装 + 能源建模层 |
 | LLM 推理 | llama.cpp（C API） | Rust 封装层 |
-| 密码学 | 国密 SM2/SM3/SM4 硬件加速 | 协议层适配 |
+| 密码学 | Ed25519/SHA-256/rustls(P-256)（产品线）；SM2/SM3/SM4 手卷为实验性（无硬件加速宣称，D4） | 协议层适配 |
 
 ---
 
@@ -311,7 +311,7 @@ EnerOS (Power Native Agent OS) is an energy-internet-native Agent OS built on th
 | Path | Content | MVP Verifiable | Latency |
 |------|---------|---------------|---------|
 | **L1 Main** | Solver-only (LP/MILP via HiGHS) | ✅ Yes | < 500ms, no LLM dependency |
-| **L2 Enhanced** | LLM (llama.cpp 7B INT4) + Solver | ❌ No | < 2s, offline complex planning |
+| **L2 Enhanced** | Station-side LLM peer via MQTT (ADR-0045 plan B mainline); local llama.cpp inference spike = NO-GO (`docs/ai/local-inference-spike.md`) | ⚠️ requires station service | < 2s (network RTT bound) |
 
 ---
 
