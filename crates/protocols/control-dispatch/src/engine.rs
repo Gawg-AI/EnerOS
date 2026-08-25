@@ -49,6 +49,44 @@ use crate::intent::{IntentRecord, IntentStore, IntentStoreError};
 /// 47（WP-47.1）：协议写意图 TTL（秒；信封过期窗，无意图自带 TTL）。
 pub const INTENT_TTL_SECS: u64 = 60;
 
+/// WP-54.2 合核：两入口的身份派生差异（枚举而非闭包——派生必须发生在
+/// actor 门之后，见 [`DispatchEngine::execute_core`]）。
+enum CoreIdentity {
+    /// 协议写意图：command_id = correlation = (protocol, seq) 派生；
+    /// 不占引擎自增序列（跨重启由链幂等键兜底）。
+    Intent {
+        /// 来源协议 id。
+        protocol_id: String,
+        /// 协议侧单调序号。
+        sequence: u64,
+    },
+    /// AI 计划：command_id = 引擎自增 seq 前 8B LE；
+    /// correlation = plan_id 派生（WP-40.12 幂等键同源）。
+    Plan {
+        /// 计划 ID。
+        plan_id: String,
+    },
+}
+
+/// WP-54.2 合核入参：入口完成纯计算（校验/值域/target/digest），副作用序
+/// 由 [`DispatchEngine::execute_core`] 独占。
+struct CoreCommand {
+    /// 身份派生方式。
+    identity: CoreIdentity,
+    /// 信封 TTL（秒）：意图=INTENT_TTL_SECS；计划=proposal.ttl_secs.max(1)。
+    ttl_secs: u64,
+    /// 功率载荷（kW，正=放电/合）。
+    power_kw: f64,
+    /// durable 记录目标设备串。
+    target_device: String,
+    /// durable 记录输入摘要（意图写恒 None）。
+    input_digest: Option<[u8; 32]>,
+    /// None=意图写（无能量语义，仅速率）；Some(kWh)=AI 计划能量预算。
+    energy_kwh: Option<f64>,
+    /// IdempotentHit 回执文案（两入口注记不同）。
+    idem_note: String,
+}
+
 /// 调度窗口（小时）——能量预算估算（与 dual-brain 同系数）。
 pub const SCHEDULE_WINDOW_HOURS: f64 = eneros_dual_brain::decision::SCHEDULE_WINDOW_HOURS;
 
@@ -317,135 +355,28 @@ impl DispatchEngine {
         }
         self.last_seq.insert(proto_key, intent.sequence);
 
-        // 步骤 3：actor/capability/lease/fencing（+ 步骤 4：safety catalog）。
-        // 与 run 同约束：只允许 AI 角色（信封 actor_kind 唯一签发面）。
-        if actor.kind != ActorKind::Ai {
-            return Err(DispatchError::NotAuthorized(format!(
-                "actor kind {:?} 不是 Ai",
-                actor.kind
-            )));
-        }
-        let now_secs = started / 1000;
-        let correlation = Self::intent_correlation(&intent.protocol_id, intent.sequence);
-        let command_id = correlation;
-        let single = if power_kw > 0.0 {
-            SingleCommand::On
-        } else {
-            SingleCommand::Off
-        };
-        let buf = EnvelopeBuilder::new(
-            command_id,
-            self.device_id,
-            self.point_id,
-            ControlCommand::Single(single),
-            now_secs,
-            now_secs.saturating_add(INTENT_TTL_SECS),
-            self.issuer_service,
-        )
-        .lease(self.lease_id, self.fencing_token)
-        .policy_version(self.policy_version)
-        .sequence(intent.sequence)
-        .actor_kind(ActorKind::Ai)
-        // 幂等键 = (protocol, seq) 派生——同序号重放（跨重启）返回原结果。
-        .idempotency_key(correlation)
-        .build(&self.key)
-        .encode();
-        // SBO：协议写语义 = 选择+执行原子（ControlGateway 九步链，不双头授权）。
-        self.chain.sbo_select(self.point_id, now_secs);
-        let fb: FeedbackBundle = self.feedback_builder.build(telemetry, now_secs);
-        let chain_result = self.chain.execute(&buf, now_secs, &fb);
-        match chain_result {
-            ChainOutcome::Executed { .. } => {}
-            ChainOutcome::IdempotentHit(_) => {
-                // 幂等重放（同 idempotency key）：返回原结果，不重复写。
-                states.push(DispatchState::Committed);
-                return Ok(DispatchReceipt {
-                    command_id,
-                    correlation_id: correlation,
-                    final_state: DispatchState::Committed,
-                    state_path: states,
-                    committed_at_ms: Some(started),
-                    note: Some(String::from(
-                        "idempotent-hit（同 (protocol,seq) 重放——不重复写）",
-                    )),
-                    latency_ms: (self.now_fn)().saturating_sub(started),
-                });
-            }
-            ChainOutcome::DryRun { .. } => {
-                let note = String::from("dry-run-obligation（策略要求不写设备）");
-                self.audit(
-                    ExecOutcome::Failed,
-                    SafetyOutcome::Passed,
-                    &format!("states={:?};note={}", states, note),
-                    started,
-                );
-                return Err(DispatchError::NotAuthorized(note));
-            }
-            ChainOutcome::Denied(reason) => {
-                let s = deny_reason_str(&reason);
-                let (exec, safety) = if matches!(reason, ChainDenyReason::Unsafe(_)) {
-                    (ExecOutcome::Failed, SafetyOutcome::Blocked)
-                } else {
-                    (ExecOutcome::Failed, SafetyOutcome::Passed)
-                };
-                self.audit(
-                    exec,
-                    safety,
-                    &format!("states={:?};deny={}", states, s),
-                    started,
-                );
-                let err = match reason {
-                    ChainDenyReason::Unsafe(d) => DispatchError::SafetyRejected(d),
-                    ChainDenyReason::FeedbackUntrusted(d) => DispatchError::FeedbackUntrusted(d),
-                    _ => DispatchError::NotAuthorized(s),
-                };
-                return Err(err);
-            }
-        }
-        states.push(DispatchState::Authorized);
-
-        // 步骤 5：rate 预算 reserve（意图写无能量语义——energy=0，只计速率）。
-        if self.gate.check_rate(started) != GateDecision::Allow {
-            return Err(DispatchError::BudgetExceeded("rate".into()));
-        }
-        states.push(DispatchState::Reserved);
-
-        // 步骤 6：durable intent 写入。
-        let expires_ms = started.saturating_add(INTENT_TTL_SECS * 1000);
-        let rec = IntentRecord {
-            command_id,
-            correlation_id: correlation,
-            issued_at_ms: started,
-            expires_at_ms: expires_ms,
-            target_device: alloc::format!("{}:{}", intent.protocol_id, intent.device_id),
-            power_kw,
-            input_digest: None,
-            state: DispatchState::Persisted,
-        };
-        self.intent_log
-            .append(&rec)
-            .map_err(|e: IntentStoreError| DispatchError::IntentPersistFailed(format!("{e:?}")))?;
-        states.push(DispatchState::Persisted);
-
-        // 步骤 7-12：投递 + 回执（与 run 共享 deliver_and_settle）。
-        let envelope = ControlEnvelope::new(
-            correlation,
-            self.issuer_service,
-            self.issuer_epoch,
+        // 步骤 3 起进入合核（WP-54.2）：actor 门、Envelope 装配+签名+幂等键、
+        // chain.execute 四臂、rate reserve、IntentRecord 持久化与投递收尾，
+        // 与 [`Self::run`] 共享同一实现；差异点经 [`CoreCommand`] 参数化。
+        self.execute_core(
+            CoreCommand {
+                identity: CoreIdentity::Intent {
+                    protocol_id: intent.protocol_id.clone(),
+                    sequence: intent.sequence,
+                },
+                ttl_secs: INTENT_TTL_SECS,
+                power_kw,
+                target_device: alloc::format!("{}:{}", intent.protocol_id, intent.device_id),
+                input_digest: None,
+                energy_kwh: None,
+                idem_note: String::from("idempotent-hit（同 (protocol,seq) 重放——不重复写）"),
+            },
+            telemetry,
+            actor,
             started,
-            expires_ms,
-            buf,
-            power_kw,
-        );
-        let timeout = if deadline_ms == 0 {
-            u64::MAX
-        } else {
-            deadline_ms
-        };
-        let response = self
-            .delivery
-            .deliver(&self.target_endpoint, &envelope.encode(), timeout);
-        self.deliver_and_settle(response, states, started, command_id, correlation, 0.0)
+            states,
+            deadline_ms,
+        )
     }
 
     /// 意图 correlation（16B 定长）= 协议 id 前 8B ‖ seq u64 LE。
@@ -480,51 +411,107 @@ impl DispatchEngine {
             return Err(DispatchError::TelemetryExpired);
         }
 
+        // 步骤 3 起进入合核（WP-54.2，同 run_intent）。
+        let energy = schedule_energy_kwh(&proposal.schedule);
+        self.execute_core(
+            CoreCommand {
+                identity: CoreIdentity::Plan {
+                    plan_id: proposal.plan_id.clone(),
+                },
+                ttl_secs: u64::from(proposal.ttl_secs.max(1)),
+                power_kw: proposal.power_kw,
+                target_device: proposal.target_device.clone(),
+                input_digest: proposal.input_digest,
+                energy_kwh: Some(energy),
+                idem_note: String::from("idempotent-hit（原结果，不重复写）"),
+            },
+            telemetry,
+            actor,
+            started,
+            states,
+            deadline_ms,
+        )
+    }
+
+    /// WP-54.2 合核：run/run_intent 的 12 步授权链单一实现。
+    ///
+    /// 合并前两份手抄副本的五段逐字同构段（actor 门 / Envelope 装配+签名+
+    /// 幂等键 / chain.execute 四臂 / rate reserve / IntentRecord 持久化）
+    /// 收编于此；差异点全部显式参数化：
+    /// - 身份派生：意图=(protocol,seq) 双派生且不占引擎自增序列；
+    ///   计划=引擎自增 seq 前 8B LE 为 command_id、plan_id 派生 correlation
+    ///   （**自增保持在 actor 门之后**——未授权请求不消耗序号空间，顺序即语义）;
+    /// - 能量语义：意图写无能量语义（只计速率），AI 计划另过 energy 预算;
+    /// - IdempotentHit 回执文案两入口注记不同，经 `idem_note` 透传。
+    ///
+    /// 关键不变量（附录 B 卡 2）：两入口都只允许 `ActorKind::Ai`——合并后
+    /// 此门唯一存在，语义一字不改。
+    fn execute_core(
+        &mut self,
+        cmd: CoreCommand,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        started: u64,
+        mut states: Vec<DispatchState>,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError> {
         // 步骤 3：actor/capability/lease/fencing（+ 步骤 4：safety catalog）。
-        // 只允许 AI 决策链角色（产品闭环唯一决策方）。
+        // 只允许 AI 决策链角色（产品闭环唯一决策方；协议入站写沿用 AI
+        // 决策链唯一签发面，dispatch_service.rs 同约束）。
         if actor.kind != ActorKind::Ai {
             return Err(DispatchError::NotAuthorized(format!(
                 "actor kind {:?} 不是 Ai",
                 actor.kind
             )));
         }
-        self.seq += 1;
+        let (command_id, correlation, sequence) = match cmd.identity {
+            CoreIdentity::Intent {
+                protocol_id,
+                sequence,
+            } => {
+                let c = Self::intent_correlation(&protocol_id, sequence);
+                (c, c, sequence)
+            }
+            CoreIdentity::Plan { plan_id } => {
+                self.seq += 1;
+                let mut cid = [0u8; 16];
+                cid[..8].copy_from_slice(&self.seq.to_le_bytes());
+                let corr = Self::correlation_of(&plan_id);
+                (cid, corr, self.seq)
+            }
+        };
         let now_secs = started / 1000;
-        let mut command_id = [0u8; 16];
-        command_id[..8].copy_from_slice(&self.seq.to_le_bytes());
-        let correlation = Self::correlation_of(&proposal.plan_id);
-        let ttl_secs = proposal.ttl_secs.max(1);
-        let single = if proposal.power_kw > 0.0 {
-            SingleCommand::On // 放电/合
+        let single = if cmd.power_kw > 0.0 {
+            SingleCommand::On // 放电/合（协议意图写同规则）
         } else {
             SingleCommand::Off // 充电/分
         };
+
+        // Envelope 装配+签名+幂等键（唯一实现）：幂等键=correlation——
+        // 同计划重放 / 同 (protocol,seq) 跨重启重放均返回原结果，不重复写。
         let buf = EnvelopeBuilder::new(
             command_id,
             self.device_id,
             self.point_id,
             ControlCommand::Single(single),
             now_secs,
-            now_secs.saturating_add(ttl_secs as u64),
+            now_secs.saturating_add(cmd.ttl_secs),
             self.issuer_service,
         )
         .lease(self.lease_id, self.fencing_token)
         .policy_version(self.policy_version)
-        .sequence(self.seq)
+        .sequence(sequence)
         .actor_kind(ActorKind::Ai)
-        // WP-40.12：幂等键 = correlation（plan_id 派生）——同计划重放
-        // 返回原结果，不重复写。
         .idempotency_key(correlation)
         .build(&self.key)
         .encode();
-        // SBO：AI 写命令语义 = 选择+执行原子。
+        // SBO：选择+执行原子（ControlGateway 九步链，不双头授权）。
         self.chain.sbo_select(self.point_id, now_secs);
         let fb: FeedbackBundle = self.feedback_builder.build(telemetry, now_secs);
-        let chain_result = self.chain.execute(&buf, now_secs, &fb);
-        match chain_result {
+        match self.chain.execute(&buf, now_secs, &fb) {
             ChainOutcome::Executed { .. } => {}
             ChainOutcome::IdempotentHit(_) => {
-                // 幂等重放：返回原结果，不重复写（WP-40.12 duplicate）。
+                // 幂等重放（同 idempotency key）：返回原结果，不重复写。
                 states.push(DispatchState::Committed);
                 return Ok(DispatchReceipt {
                     command_id,
@@ -532,7 +519,7 @@ impl DispatchEngine {
                     final_state: DispatchState::Committed,
                     state_path: states,
                     committed_at_ms: Some(started),
-                    note: Some(String::from("idempotent-hit（原结果，不重复写）")),
+                    note: Some(cmd.idem_note),
                     latency_ms: (self.now_fn)().saturating_sub(started),
                 });
             }
@@ -569,35 +556,35 @@ impl DispatchEngine {
         }
         states.push(DispatchState::Authorized);
 
-        // 步骤 5：rate/energy 预算 reserve（不 record）。
-        let energy = schedule_energy_kwh(&proposal.schedule);
-        if self.gate.check_rate(started) != eneros_dual_brain::gate::GateDecision::Allow {
+        // 步骤 5：rate 预算 reserve（不 record）；energy 仅 AI 计划路径有语义。
+        if self.gate.check_rate(started) != GateDecision::Allow {
             return Err(DispatchError::BudgetExceeded("rate".into()));
         }
-        if self.gate.check_energy(started, energy) != eneros_dual_brain::gate::GateDecision::Allow {
-            return Err(DispatchError::BudgetExceeded("energy".into()));
+        if let Some(energy) = cmd.energy_kwh {
+            if self.gate.check_energy(started, energy) != GateDecision::Allow {
+                return Err(DispatchError::BudgetExceeded("energy".into()));
+            }
         }
         states.push(DispatchState::Reserved);
 
-        // 步骤 6：durable intent 写入。
-        let expires_ms = started.saturating_add(ttl_secs as u64 * 1000);
-        let intent = IntentRecord {
+        // 步骤 6：durable intent 写入（唯一实现）。
+        let expires_ms = started.saturating_add(cmd.ttl_secs * 1000);
+        let rec = IntentRecord {
             command_id,
             correlation_id: correlation,
             issued_at_ms: started,
             expires_at_ms: expires_ms,
-            target_device: proposal.target_device.clone(),
-            power_kw: proposal.power_kw,
-            input_digest: proposal.input_digest,
+            target_device: cmd.target_device,
+            power_kw: cmd.power_kw,
+            input_digest: cmd.input_digest,
             state: DispatchState::Persisted,
         };
         self.intent_log
-            .append(&intent)
+            .append(&rec)
             .map_err(|e: IntentStoreError| DispatchError::IntentPersistFailed(format!("{e:?}")))?;
         states.push(DispatchState::Persisted);
 
-        // 步骤 7：DeliveryChannel 投递（ControlEnvelope）+ 回执分类（核心，
-        // 与 47 run_intent 共享同一 deliver_and_settle——结果语义单一事实）。
+        // 步骤 7-12：投递 + 回执（deliver_and_settle 共享不变）。
         let envelope = ControlEnvelope::new(
             correlation,
             self.issuer_service,
@@ -605,7 +592,7 @@ impl DispatchEngine {
             started,
             expires_ms,
             buf,
-            proposal.power_kw,
+            cmd.power_kw,
         );
         let timeout = if deadline_ms == 0 {
             u64::MAX
@@ -615,7 +602,14 @@ impl DispatchEngine {
         let response = self
             .delivery
             .deliver(&self.target_endpoint, &envelope.encode(), timeout);
-        self.deliver_and_settle(response, states, started, command_id, correlation, energy)
+        self.deliver_and_settle(
+            response,
+            states,
+            started,
+            command_id,
+            correlation,
+            cmd.energy_kwh.unwrap_or(0.0),
+        )
     }
 
     /// 步骤 7-12 收尾（run/run_intent 共享）：投递 ControlEnvelope 并分类回执。

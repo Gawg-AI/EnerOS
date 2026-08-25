@@ -1,0 +1,10 @@
+=== DoD#1: actor 门唯一 ===
+1
+=== DoD#2: 各段单实现（非测试）===
+-- EnvelopeBuilder 装配段 --
+1
+-- rate reserve 段 --
+2
+-- IntentRecord 持久化段 --
+1
+=== 护栏测试零修改 ===

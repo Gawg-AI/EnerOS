@@ -1,6 +1,6 @@
 [package]
 name = "eneros-fs"
-version = "0.314.1"
+version = "0.314.2"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
