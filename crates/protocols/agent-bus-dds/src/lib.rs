@@ -61,7 +61,7 @@
 //! 不再有 feature 门控引入 eneros-crypto。
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)]
+// WP-53.7：crate 级 blanket allow 已移除（R53-4）——确需豁免的项一律下沉到具体条目并注明理由。
 
 extern crate alloc;
 
