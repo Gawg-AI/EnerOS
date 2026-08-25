@@ -1,0 +1,29 @@
+=== 行数盘点 ===
+solver-milp: 1402
+solver-warm: 1130
+solver-pareto: 1126
+marl: 865
+rl: 1612
+online: 776
+dialog: 743
+model-deploy: 895
+spot-market: 1229
+realtime-market: 1037
+ancillary: 600
+p2p: 525
+p2p-match: 822
+simulator: 2005
+twin-global: 1181
+trust: 1169
+gguf-loader: 1581
+  212 crates/observability/tracing/src/span.rs
+ 2014 total
+=== deadband 核实（字段名 vs 类型引用）===
+crates/protocols/telemetry-model/src/telemetry.rs:14:/// 死区过滤逻辑：仅当 `|value - last_reported| > deadband` 时触发上报，
+crates/protocols/telemetry-model/src/telemetry.rs:33:    pub deadband: f64,
+crates/protocols/telemetry-model/src/telemetry.rs:62:            deadband: 0.0,
+crates/protocols/telemetry-model/src/telemetry.rs:81:                if (self.value - last).abs() > self.deadband {
+crates/protocols/telemetry-model/src/deadband.rs:14:    deadband: f64,
+crates/protocols/telemetry-model/src/deadband.rs:24:    fn new(deadband: f64) -> Self {
+crates/protocols/telemetry-model/src/deadband.rs:26:            deadband,
+crates/protocols/telemetry-model/src/deadband.rs:51:    pub fn configure(&mut self, point_id: PointId, deadband: f64) {

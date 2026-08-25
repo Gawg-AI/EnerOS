@@ -1,0 +1,104 @@
+{
+  "schema": "eneros.disposition-register.v1",
+  "volume": 54,
+  "volume_title": "架构深化与深模块清偿",
+  "established": "2026-08-25",
+  "baseline_commit": "3a6168e（WP-54.5 提交；本登记随 WP-54.6 提交入库）",
+  "discipline": {
+    "d1_no_silent_kill": "crate 级删除/归档逐项凭 owner 明示批准执行；未批准项保持登记态，禁止静默消失或顺手实施。",
+    "verify_before_dispose": "每项绑定复验命令与输出摘要（原始输出 evidence/54/wp54-disposition-facts.txt + wp54-entry-deadisland.txt）；复验日期 2026-08-25 @ HEAD 3a6168e。",
+    "closure_impact": "任何物理处置执行后必须 closure 重算并与 51 卷基线 bdd2332e 差异逐项解释。",
+    "lineage_note": "本卷已重开 candidate lineage；归档类处置不改变产品闭包（零消费者前提），删除类处置须重跑 catalog gate。"
+  },
+  "summary": {
+    "total": 10,
+    "approved": 0,
+    "pending": 10,
+    "physical_actions_executed": 0
+  },
+  "items": [
+    {
+      "id": "D1-SOLVER",
+      "objects": ["solver-milp", "solver-warm", "solver-pareto"],
+      "lines": {"solver-milp": 1402, "solver-warm": 1130, "solver-pareto": 1126},
+      "verified_facts": "milp 仅被 solver-warm 消费（Cargo 循环脚本）；warm/pareto 零 Cargo 消费者；ema/multi_objective.rs 另有平行 Pareto 实现",
+      "recommendation": "归档 archive/ 或移出 workspace；平行 Pareto 收敛到单一归属",
+      "owner_status": "pending"
+    },
+    {
+      "id": "D2-MARL-FAMILY",
+      "objects": ["marl", "rl", "online-learning", "dialog"],
+      "lines": {"marl": 865, "rl": 1612, "online-learning": 776, "dialog": 743},
+      "verified_facts": "全仓零外部 Cargo 消费者（online-learning 唯一命中为其自身 manifest）；ADR-031 已收窄 online-learning",
+      "recommendation": "同批归档",
+      "owner_status": "pending"
+    },
+    {
+      "id": "D3-MODEL-DEPLOY",
+      "objects": ["model-deploy", "gguf-loader(身份标注)"],
+      "lines": {"model-deploy": 895, "gguf-loader": 1581},
+      "verified_facts": "model-deploy 零消费；gguf-loader=model-deploy+xtask+fuzz 三工具面消费者（非产品面）",
+      "recommendation": "不删码：双 crate 文档标注 host-only/fuzz-asset 身份，排除出产品闭包清单（与 ADR-0045 WP-49.3 口径一致）",
+      "owner_status": "pending"
+    },
+    {
+      "id": "D4-MARKET-SHELLS",
+      "objects": ["spot-market", "realtime-market", "ancillary"],
+      "lines": {"spot-market": 1229, "realtime-market": 1037, "ancillary": 600},
+      "verified_facts": "三者零 Cargo 消费者但含真实业务逻辑（契约测试价值）；ADR-0029 记录 49 卷自认零消费",
+      "recommendation": "「待接线」标注或迁契约测试进消费者侧后归档——二选一须 owner 裁决",
+      "owner_status": "pending"
+    },
+    {
+      "id": "D5-P2P-CHAIN",
+      "objects": ["p2p", "p2p-match"],
+      "lines": {"p2p": 525, "p2p-match": 822},
+      "verified_facts": "p2p 仅被 p2p-match 消费；p2p-match 零消费——传递死链",
+      "recommendation": "显式裁决，建议同批归档",
+      "owner_status": "pending"
+    },
+    {
+      "id": "D6-SIM-TWIN",
+      "objects": ["simulator", "twin-global"],
+      "lines": {"simulator": 2005, "twin-global": 1181},
+      "verified_facts": "两者零 Cargo 消费者（twin-global 另有自身 manifest 自引用怪癖待清理）",
+      "recommendation": "同批归档",
+      "owner_status": "pending"
+    },
+    {
+      "id": "D7-TRACING",
+      "objects": ["observability/tracing"],
+      "lines": {"tracing": 2014},
+      "verified_facts": "非零消费——vpp-scenario 在用（Entry 复验订正项）；传递死链定性不成立",
+      "recommendation": "与 vpp-scenario 一并定性（场景面保留或一并归档）；不得单独判死",
+      "owner_status": "pending"
+    },
+    {
+      "id": "D8-CORPSE-VOCAB",
+      "objects": ["telemetry-model/{telecontrol,teleadjust,telesignaling} 模块", "deadband::DeadbandFilter 类型"],
+      "verified_facts": "telecontrol/teleadjust/telesignaling 各仅 lib.rs 声明+文档命中=零外部消费；digital 为活词汇（fault-recorder 等 51 命中）→ 从清单剔除；deadband 双面性：模块 DeadbandFilter 零消费可删，但同名字段在 telemetry.rs 死区过滤(:81)与 config-bundle points.rs:113(:275 解析,45.2 缓存刷新)为活字段——仅删模块不删词汇",
+      "recommendation": "删三模块+DeadbandFilter 类型并同步 CONTEXT.md §5 与 lib.rs 文档行；deadband/digital 字段词汇保留",
+      "owner_status": "pending"
+    },
+    {
+      "id": "D9-TRUST",
+      "objects": ["trust"],
+      "lines": {"trust": 1169},
+      "verified_facts": "第三信誉刻度 Silver/Gold/Platinum(400/700/900–1000)，全仓零 Cargo 消费者；ADR-0032 映射外",
+      "recommendation": "二选一：补 trust→reputation 映射入册，或归档 + CONTEXT.md §5 登记",
+      "owner_status": "pending"
+    },
+    {
+      "id": "D10-DUAL-CONTRACT",
+      "objects": ["intent-parser→IntentContract legacy converter 链"],
+      "verified_facts": "主线=peer.rs parse_and_validate(remote_brain.rs:187)；legacy 唯一消费者=dual-brain coordinator(host-only feature，target 零调用)",
+      "recommendation": "按 ADR-0045 WP-49.4 标注 host-only/research 或收敛进 peer 面；不删 LLM crate（D1）",
+      "owner_status": "pending"
+    }
+  ],
+  "context_sync_pending": [
+    "CONTEXT.md §5（随 D8/D9 执行时同步）",
+    "ADR-0032 trust 映射增记（随 D9 路线裁决）",
+    "ADR-0036 构造器四参→三参漂移增记（coordinator.rs:138，随 D10 执行时核实）"
+  ]
+}
