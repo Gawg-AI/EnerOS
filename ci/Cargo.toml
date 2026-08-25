@@ -1,6 +1,6 @@
 [package]
 name = "eneros-ci"
-version = "0.314.6"
+version = "0.314.7"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

@@ -10,7 +10,6 @@
 
 use alloc::format;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use eneros_control_dispatch::dispatch::{AuthenticatedActor, DispatchReceipt, DispatchState};
@@ -229,6 +228,10 @@ pub fn plan_id_of(plan: &eneros_dual_brain::ProposedControlPlan) -> String {
 // svc-device-agent 的同源配置。key/lease/policy/safety 两端必须同源
 // （不同源互相拒绝，QEMU 实弹验证）。
 //
+// 蓝图 55（WP-55.2）：同源事实收拢为 [`ControlProfile`]——装配值常量
+// 仅在此声明，两侧经 [`prod_profile`] 单出口派生策略/租约/安全点；
+// `prod_policy`/`prod_safety_points` 手抄块已删（body 即 profile 方法）。
+//
 // 47（WP-47.2）：写目标（设备/点）不再硬编码——由 45 卷点表
 // （config "points" canonical 的 Control 点）绑定，装配方经 svc-config
 // 解码后传入；键值脱落源码（旧 PROD 常量已退休，grep 零命中）——本装配只承载
@@ -248,55 +251,22 @@ pub const PROD_LEASE_ID: [u8; 16] = [0x40; 16];
 pub const PROD_EPOCH_SEED: u64 = 7;
 /// 租约 TTL（秒）。
 pub const PROD_LEASE_TTL_SECS: u64 = 3_600;
-/// 策略版本。
+/// 策略版本（生效 generation 恰等于此值，profile 规范习语保证）。
 pub const PROD_POLICY_VERSION: u64 = 3;
 
-/// 产品策略：Ai 角色 → 绑定设备/点 Switch（47.2 点表绑定）。
-///
-/// 注意：`replace_rules` 会把 generation +1（policy.rs 语义）——
-/// 初始代必须为 `PROD_POLICY_VERSION - 1`，使生效代恰为
-/// `PROD_POLICY_VERSION`（信封 `policy_version` 与链 generation 同值，
-/// QEMU 实弹 StalePolicyVersion 暴露）。
-pub fn prod_policy(device_id: u32, point_id: u32) -> eneros_control_gateway::policy::Policy {
-    use eneros_control_gateway::envelope::ActorKind;
-    use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
-    let mut policy = Policy::new(PROD_POLICY_VERSION - 1);
-    let _ = policy.replace_rules(vec![PolicyRule {
-        actor_kind: Some(ActorKind::Ai),
-        devices: vec![device_id],
-        points: vec![point_id],
-        kinds: vec![CommandClass::Switch],
-        time_window: (0, 0),
-        obligations: vec![],
-    }]);
-    policy
-}
-
-/// 产品安全点（±500kW 离散遥控）。
-pub fn prod_safety_points(
-    device_id: u32,
-    point_id: u32,
-) -> Vec<(u32, u32, eneros_control_gateway::safety::SafetyPoint)> {
-    use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
-    use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
-    use eneros_telemetry_model::unit::PhysicalUnit;
-    vec![(
+/// 产品同源档案单出口：AI → 绑定设备/点的 PccBreaker ±500 kW Switch 链。
+/// 写目标（设备/点）由 45 卷点表 Control 点绑定（svc-config 注入）；
+/// 不可得时调用方传 0/0 fail-closed（default-deny）。
+pub fn prod_profile(device_id: u32, point_id: u32) -> eneros_control_gateway::ControlProfile {
+    let mut profile = eneros_control_gateway::ControlProfile::ai_pcc_single(
         device_id,
         point_id,
-        SafetyPoint {
-            role: SafetyRole::PccBreaker,
-            spec: PointSpec {
-                point_id,
-                device_id: device_id as u16,
-                unit: PhysicalUnit::Kilowatts,
-                safe_min: -500.0,
-                safe_max: 500.0,
-                max_ramp_per_sec: None,
-                direction: ControlDirection::Discrete,
-                remote_controllable: true,
-            },
-        },
-    )]
+        PROD_POLICY_VERSION,
+        PROD_LEASE_ID,
+        PROD_EPOCH_SEED,
+    );
+    profile.lease_ttl_secs = PROD_LEASE_TTL_SECS;
+    profile
 }
 
 /// dispatch 侧产品链（完整装配：policy 规则 + lease 签发 + safety 注册）。
@@ -309,31 +279,11 @@ pub fn prod_chain(
     now_ms: u64,
 ) -> eneros_control_gateway::chain::ControlChain {
     use eneros_control_gateway::chain::ControlChain;
-    use eneros_control_gateway::lease::LeaseScope;
-    let mut chain = ControlChain::new(
-        key,
-        5,
-        64,
-        prod_policy(device_id, point_id),
-        60,
-        300,
-        64,
-        30,
-    );
-    chain.lease_service_mut().seed_epoch(PROD_EPOCH_SEED);
-    let _ = chain.lease_service_mut().issue(
-        PROD_LEASE_ID,
-        LeaseScope {
-            devices: vec![device_id],
-            points: vec![point_id],
-            max_class: 1,
-        },
-        PROD_LEASE_TTL_SECS,
-        now_ms / 1000,
-    );
-    for (device, point, spec) in prod_safety_points(device_id, point_id) {
-        chain.safety_mut().register(device, point, spec);
-    }
+    let profile = prod_profile(device_id, point_id);
+    let mut chain = ControlChain::from_profile(key, &profile);
+    // 与旧实现一致：签发失败不阻断装配（复验侧由 lease_ok/租约未知面兜底
+    // default-deny）；蓝图 55 行为保持 D1。
+    let _ = profile.issue_lease(&mut chain, now_ms / 1000);
     chain
 }
 
@@ -405,23 +355,34 @@ mod tests {
 
     fn engine() -> DispatchEngine {
         // 简化装配：budget 宽松；delivery 回 Applied（code 0）。
+        // 蓝图 55：档案单源（TTL 600/代次 4 为本测试变体，值语义与旧
+        // 手抄 build_chain 一致）。
         let outcome = eneros_device_agent::OutcomeFrame {
             code: eneros_device_agent::CODE_APPLIED,
             class: 0,
         }
         .encode()
         .to_vec();
-        let chain = build_chain();
+        let key: &[u8] = b"w40-svc-key-000000000000000000000000";
+        let profile = eneros_control_gateway::ControlProfile {
+            lease_ttl_secs: 600,
+            ..eneros_control_gateway::ControlProfile::ai_pcc_single(
+                TEST_DEVICE_ID,
+                TEST_POINT_ID,
+                4,
+                [0x40; 16],
+                7,
+            )
+        };
+        let mut chain = eneros_control_gateway::chain::ControlChain::from_profile(key, &profile);
+        let _ = profile.issue_lease(&mut chain, 1_700_000_000);
         DispatchEngine::new(DispatchConfig {
             chain,
-            key: b"w40-svc-key-000000000000000000000000".to_vec(),
-            lease_id: [0x40; 16],
+            key: key.to_vec(),
+            profile,
             fencing_token: 8,
             issuer_service: [0x41; 16],
             issuer_epoch: 0,
-            policy_version: 4,
-            device_id: 1,
-            point_id: 10,
             target_endpoint: String::from("svc-device-agent"),
             max_power_kw: 500.0,
             gate: eneros_dual_brain::gate::DecisionGate::new(100, 1000.0, 3_600_000),
@@ -438,64 +399,6 @@ mod tests {
             },
             now_fn: || 1_700_000_000_000,
         })
-    }
-
-    fn build_chain() -> eneros_control_gateway::chain::ControlChain {
-        use eneros_control_gateway::chain::ControlChain;
-        use eneros_control_gateway::envelope::ActorKind;
-        use eneros_control_gateway::lease::LeaseScope;
-        use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
-        use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
-        use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
-        use eneros_telemetry_model::unit::PhysicalUnit;
-        let mut policy = Policy::new(3);
-        let _ = policy.replace_rules(vec![PolicyRule {
-            actor_kind: Some(ActorKind::Ai),
-            devices: vec![1],
-            points: vec![10],
-            kinds: vec![CommandClass::Switch],
-            time_window: (0, 0),
-            obligations: vec![],
-        }]);
-        let mut chain = ControlChain::new(
-            b"w40-svc-key-000000000000000000000000",
-            5,
-            64,
-            policy,
-            60,
-            300,
-            64,
-            30,
-        );
-        chain.lease_service_mut().seed_epoch(7);
-        let _ = chain.lease_service_mut().issue(
-            [0x40; 16],
-            LeaseScope {
-                devices: vec![1],
-                points: vec![10],
-                max_class: 1,
-            },
-            600,
-            1_700_000_000,
-        );
-        chain.safety_mut().register(
-            1,
-            10,
-            SafetyPoint {
-                role: SafetyRole::PccBreaker,
-                spec: PointSpec {
-                    point_id: 10,
-                    device_id: 1,
-                    unit: PhysicalUnit::Kilowatts,
-                    safe_min: -500.0,
-                    safe_max: 500.0,
-                    max_ramp_per_sec: None,
-                    direction: ControlDirection::Discrete,
-                    remote_controllable: true,
-                },
-            },
-        );
-        chain
     }
 
     fn request_from_worker() -> Vec<u8> {

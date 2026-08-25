@@ -62,17 +62,14 @@ struct DeviceAgentHandler {
 #[cfg(target_os = "none")]
 impl DeviceAgentHandler {
     fn new(eipc_mask: u64) -> Self {
-        // 装配（40 收尾 + 47 WP-47.2）：产品配置与 svc-control-dispatch
-        // 同源（key/lease/scope/policy/safety 两端一致，否则互相拒绝）。
+        // 装配（40 收尾 + 47 WP-47.2 + 蓝图 55）：产品配置与 svc-control-dispatch
+        // 同源——两侧经同一 ControlProfile（dispatch_service::prod_profile）
+        // 派生 key 之外的档案事实，不同源互相拒绝。
         // 写目标（设备/点）由 45 卷点表 Control 点绑定（svc-config）；
         // 不可得 → 0/0 fail-closed（default-deny）。
         use alloc::collections::BTreeMap;
 
-        use eneros_control_gateway::lease::LeaseScope;
-        use eneros_control_services::dispatch_service::{
-            prod_policy, prod_safety_points, ASSEMBLY_TEST_KEY, PROD_EPOCH_SEED, PROD_LEASE_ID,
-            PROD_LEASE_TTL_SECS,
-        };
+        use eneros_control_services::dispatch_service::{prod_profile, ASSEMBLY_TEST_KEY};
         let now = eneros_drv_svc::now_ms();
         let mut config_client = if eipc_mask & 1 != 0 {
             eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
@@ -94,22 +91,9 @@ impl DeviceAgentHandler {
             }
         };
         let (device_id, point_id) = binding.unwrap_or((0, 0));
-        let safety = prod_safety_points(device_id, point_id);
-        let ingress = eneros_device_agent::EnvelopeIngress::new(
-            ASSEMBLY_TEST_KEY,
-            PROD_LEASE_ID,
-            LeaseScope {
-                devices: alloc::vec![device_id],
-                points: alloc::vec![point_id],
-                max_class: 1,
-            },
-            PROD_LEASE_TTL_SECS,
-            PROD_EPOCH_SEED,
-            prod_policy(device_id, point_id),
-            60,
-            &safety,
-            now,
-        );
+        let profile = prod_profile(device_id, point_id);
+        let ingress =
+            eneros_device_agent::EnvelopeIngress::from_profile(ASSEMBLY_TEST_KEY, &profile, now);
         eneros_runtime::println!(
             "[svc-device-agent] ingress: constructed (lease_ok={})",
             ingress.lease_ok()

@@ -41,46 +41,21 @@ fn now_ms() -> u64 {
     1_700_000_000_000
 }
 
+/// 测试同源档案（蓝图 55：TTL 600/代次 4 为测试变体，值语义与旧手抄块一致）。
+fn test_profile() -> eneros_control_gateway::ControlProfile {
+    eneros_control_gateway::ControlProfile {
+        lease_ttl_secs: 600,
+        ..eneros_control_gateway::ControlProfile::ai_pcc_single(
+            DEVICE_ID, POINT_ID, 4, LEASE_ID, EPOCH_SEED,
+        )
+    }
+}
+
 /// 装配放行链（Ai → dev1/pt10）+ 租约（与 device-agent 侧同 seed/scope）。
 fn build_chain() -> ControlChain {
-    let mut policy = Policy::new(3);
-    let _ = policy.replace_rules(vec![PolicyRule {
-        actor_kind: Some(ActorKind::Ai),
-        devices: vec![1],
-        points: vec![10],
-        kinds: vec![CommandClass::Switch],
-        time_window: (0, 0),
-        obligations: vec![],
-    }]);
-    let mut chain = ControlChain::new(KEY, 5, 64, policy, 60, 300, 64, 30);
-    chain.lease_service_mut().seed_epoch(EPOCH_SEED);
-    let scope = LeaseScope {
-        devices: vec![1],
-        points: vec![10],
-        max_class: 1,
-    };
-    let token = chain
-        .lease_service_mut()
-        .issue(LEASE_ID, scope, 600, now_ms() / 1000)
-        .expect("lease");
-    chain.safety_mut().register(
-        1,
-        10,
-        SafetyPoint {
-            role: SafetyRole::PccBreaker,
-            spec: PointSpec {
-                point_id: 10,
-                device_id: 1,
-                unit: PhysicalUnit::Kilowatts,
-                safe_min: -500.0,
-                safe_max: 500.0,
-                max_ramp_per_sec: None,
-                direction: eneros_telemetry_model::point_spec::ControlDirection::Discrete,
-                remote_controllable: true,
-            },
-        },
-    );
-    let _ = token;
+    let profile = test_profile();
+    let mut chain = ControlChain::from_profile(KEY, &profile);
+    let _ = profile.issue_lease(&mut chain, now_ms() / 1000);
     chain
 }
 
@@ -338,13 +313,10 @@ fn engine_with(channel: Box<dyn DeliveryChannel>, gate: DecisionGate) -> Dispatc
     let config = DispatchConfig {
         chain: build_chain(),
         key: KEY.to_vec(),
-        lease_id: LEASE_ID,
+        profile: test_profile(),
         fencing_token: 1 + EPOCH_SEED,
         issuer_service: ISSUER,
         issuer_epoch: 0,
-        policy_version: 4,
-        device_id: DEVICE_ID,
-        point_id: POINT_ID,
         target_endpoint: String::from("svc-device-agent"),
         max_power_kw: 500.0,
         gate,

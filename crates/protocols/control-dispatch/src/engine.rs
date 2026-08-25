@@ -29,7 +29,7 @@ use alloc::vec::Vec;
 use eneros_control_gateway::chain::{ChainOutcome, ControlChain, FeedbackBundle};
 use eneros_control_gateway::envelope::{ActorKind, EnvelopeBuilder};
 use eneros_control_gateway::wire::{ControlEnvelope, OutcomeCode, OutcomeFrame};
-use eneros_control_gateway::ChainDenyReason;
+use eneros_control_gateway::{ChainDenyReason, ControlProfile};
 use eneros_dual_brain::audit::{DecisionAudit, ExecOutcome, SafetyOutcome};
 use eneros_dual_brain::chain_sink::deny_reason_str;
 use eneros_dual_brain::gate::{DecisionGate, GateDecision};
@@ -104,20 +104,15 @@ pub struct DispatchConfig {
     pub chain: ControlChain,
     /// 信封签名密钥（与 chain gateway 同源）。
     pub key: Vec<u8>,
-    /// AI 租约 ID（装配期由 chain.lease_service 签发）。
-    pub lease_id: [u8; 16],
+    /// 同源档案（蓝图 55）：租约 ID/策略代次/绑定设备与点——签发侧信封
+    /// 字段与链装配共用一份事实，禁再散抄。
+    pub profile: ControlProfile,
     /// 当前 fencing token。
     pub fencing_token: u64,
     /// 签发服务标识。
     pub issuer_service: [u8; 16],
     /// 签发服务 epoch（重启计数）。
     pub issuer_epoch: u64,
-    /// 策略代次。
-    pub policy_version: u64,
-    /// 目标设备 ID（信封 device_id；registry 映射见 WP-40.10，本卷装配配置）。
-    pub device_id: u32,
-    /// 目标点 ID（信封 point_id）。
-    pub point_id: u32,
     /// 投递目标端点（EIPC 服务名）。
     pub target_endpoint: String,
     /// 功率上限（kW）——proposal 校验。
@@ -144,13 +139,12 @@ pub struct DispatchConfig {
 pub struct DispatchEngine {
     chain: ControlChain,
     key: Vec<u8>,
-    lease_id: [u8; 16],
+    /// 同源档案（蓝图 55）：lease_id/policy_version/device_id/point_id 的
+    /// 单一来源。
+    profile: ControlProfile,
     fencing_token: u64,
     issuer_service: [u8; 16],
     issuer_epoch: u64,
-    policy_version: u64,
-    device_id: u32,
-    point_id: u32,
     target_endpoint: String,
     max_power_kw: f64,
     /// 速率/能量预算闸（观测：used_kwh/rejected 计数）。
@@ -183,13 +177,10 @@ impl DispatchEngine {
         Self {
             chain: config.chain,
             key: config.key,
-            lease_id: config.lease_id,
+            profile: config.profile,
             fencing_token: config.fencing_token,
             issuer_service: config.issuer_service,
             issuer_epoch: config.issuer_epoch,
-            policy_version: config.policy_version,
-            device_id: config.device_id,
-            point_id: config.point_id,
             target_endpoint: config.target_endpoint,
             max_power_kw: config.max_power_kw,
             gate: config.gate,
@@ -299,10 +290,12 @@ impl DispatchEngine {
 
         // 步骤 1：意图校验——目标设备/点必须等于装配绑定（WP-47.2 点表
         // 绑定；防协议层越点写）+ 值域有限。
-        if intent.device_id as u32 != self.device_id || intent.point_id != self.point_id {
+        if intent.device_id as u32 != self.profile.device_id
+            || intent.point_id != self.profile.point_id
+        {
             return Err(DispatchError::NotAuthorized(format!(
                 "intent target device={} point={} 与装配绑定 device={} point={} 不符",
-                intent.device_id, intent.point_id, self.device_id, self.point_id
+                intent.device_id, intent.point_id, self.profile.device_id, self.profile.point_id
             )));
         }
         let power_kw = match intent.value {
@@ -491,22 +484,22 @@ impl DispatchEngine {
         // 同计划重放 / 同 (protocol,seq) 跨重启重放均返回原结果，不重复写。
         let buf = EnvelopeBuilder::new(
             command_id,
-            self.device_id,
-            self.point_id,
+            self.profile.device_id,
+            self.profile.point_id,
             ControlCommand::Single(single),
             now_secs,
             now_secs.saturating_add(cmd.ttl_secs),
             self.issuer_service,
         )
-        .lease(self.lease_id, self.fencing_token)
-        .policy_version(self.policy_version)
+        .lease(self.profile.lease_id, self.fencing_token)
+        .policy_version(self.profile.policy_version)
         .sequence(sequence)
         .actor_kind(ActorKind::Ai)
         .idempotency_key(correlation)
         .build(&self.key)
         .encode();
         // SBO：选择+执行原子（ControlGateway 九步链，不双头授权）。
-        self.chain.sbo_select(self.point_id, now_secs);
+        self.chain.sbo_select(self.profile.point_id, now_secs);
         let fb: FeedbackBundle = self.feedback_builder.build(telemetry, now_secs);
         match self.chain.execute(&buf, now_secs, &fb) {
             ChainOutcome::Executed { .. } => {}

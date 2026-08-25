@@ -18,8 +18,7 @@ use eneros_control_dispatch::{
 use eneros_control_gateway::chain::ControlChain;
 use eneros_control_gateway::envelope::ActorKind;
 use eneros_control_gateway::lease::LeaseScope;
-use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
-use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
+use eneros_control_gateway::policy::Policy;
 use eneros_control_gateway::wire::{OutcomeCode, OutcomeFrame};
 use eneros_dual_brain::audit::DecisionAudit;
 use eneros_dual_brain::gate::DecisionGate;
@@ -28,8 +27,6 @@ use eneros_safety_validator::{
     EvaluatorConfig, IntegrityStatus, RequiredPoint, RequiredPointCoverage, SampleQuality,
     StateBindings, TelemetrySample, TelemetryTrustEvaluator,
 };
-use eneros_telemetry_model::point_spec::PointSpec;
-use eneros_telemetry_model::unit::PhysicalUnit;
 
 const KEY: &[u8] = b"w47-intent-it-key-000000000000000000";
 const LEASE_ID: [u8; 16] = [0x47; 16];
@@ -42,44 +39,21 @@ fn now_ms() -> u64 {
     1_700_000_000_000
 }
 
+/// 测试同源档案（蓝图 55：TTL 600/代次 4 为测试变体，值语义与旧手抄块一致）。
+fn test_profile() -> eneros_control_gateway::ControlProfile {
+    eneros_control_gateway::ControlProfile {
+        lease_ttl_secs: 600,
+        ..eneros_control_gateway::ControlProfile::ai_pcc_single(
+            DEVICE_ID, POINT_ID, 4, LEASE_ID, EPOCH_SEED,
+        )
+    }
+}
+
 /// 放行链（Ai → dev1/pt10，与 run 路径同构装配）。
 fn build_chain() -> ControlChain {
-    let mut policy = Policy::new(3);
-    let _ = policy.replace_rules(vec![PolicyRule {
-        actor_kind: Some(ActorKind::Ai),
-        devices: vec![1],
-        points: vec![10],
-        kinds: vec![CommandClass::Switch],
-        time_window: (0, 0),
-        obligations: vec![],
-    }]);
-    let mut chain = ControlChain::new(KEY, 5, 64, policy, 60, 300, 64, 30);
-    chain.lease_service_mut().seed_epoch(EPOCH_SEED);
-    let scope = LeaseScope {
-        devices: vec![1],
-        points: vec![10],
-        max_class: 1,
-    };
-    let _ = chain
-        .lease_service_mut()
-        .issue(LEASE_ID, scope, 600, now_ms() / 1000);
-    chain.safety_mut().register(
-        1,
-        10,
-        SafetyPoint {
-            role: SafetyRole::PccBreaker,
-            spec: PointSpec {
-                point_id: 10,
-                device_id: 1,
-                unit: PhysicalUnit::Kilowatts,
-                safe_min: -500.0,
-                safe_max: 500.0,
-                max_ramp_per_sec: None,
-                direction: eneros_telemetry_model::point_spec::ControlDirection::Discrete,
-                remote_controllable: true,
-            },
-        },
-    );
+    let profile = test_profile();
+    let mut chain = ControlChain::from_profile(KEY, &profile);
+    let _ = profile.issue_lease(&mut chain, now_ms() / 1000);
     chain
 }
 
@@ -205,13 +179,10 @@ fn engine_with_chain(
     let config = DispatchConfig {
         chain,
         key: KEY.to_vec(),
-        lease_id: LEASE_ID,
+        profile: test_profile(),
         fencing_token: 1 + EPOCH_SEED,
         issuer_service: ISSUER,
         issuer_epoch: 0,
-        policy_version: 4,
-        device_id: DEVICE_ID,
-        point_id: POINT_ID,
         target_endpoint: String::from("svc-device-agent"),
         max_power_kw: 500.0,
         gate,

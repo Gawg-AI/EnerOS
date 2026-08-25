@@ -232,9 +232,10 @@ impl eneros_control_dispatch::DeliveryChannel for EipcMasterChannel {
 #[cfg(target_os = "none")]
 impl DispatchHandler {
     fn new(eipc_mask: u64) -> Self {
-        // 装配（40 收尾 + 47 WP-47.1）：产品链 + 投递通道（协议出站优先）。
+        // 装配（40 收尾 + 47 WP-47.1 + 蓝图 55）：产品链 + 投递通道（协议出站优先）。
+        // 档案事实经 prod_profile 单出口派生，与 svc-device-agent 复验侧同源。
         use eneros_control_services::dispatch_service::{
-            prod_chain, ASSEMBLY_TEST_KEY, PROD_EPOCH_SEED, PROD_LEASE_ID, PROD_POLICY_VERSION,
+            prod_chain, prod_profile, ASSEMBLY_TEST_KEY,
         };
         let now = eneros_drv_svc::now_ms();
         // 47（WP-47.2）：写目标（设备/点）由 45 卷点表 Control 点绑定
@@ -258,6 +259,7 @@ impl DispatchHandler {
             }
         };
         let (device_id, point_id) = binding.unwrap_or((0, 0));
+        let profile = prod_profile(device_id, point_id);
         let chain = prod_chain(ASSEMBLY_TEST_KEY, device_id, point_id, now);
         // 47（WP-47.1 速率可调）：rate gate 每小时配额 = control-write
         // 配置注入（bundle；缺省 = 产品默认 60/h——qemu-test 演示放宽值
@@ -337,13 +339,12 @@ impl DispatchHandler {
         let config = DispatchConfig {
             chain,
             key: ASSEMBLY_TEST_KEY.to_vec(),
-            lease_id: PROD_LEASE_ID,
-            fencing_token: PROD_EPOCH_SEED + 1,
+            // 蓝图 55：档案事实（lease/代次/绑定设备点）单源；首签 fencing
+            // token = seed + 1（与 device-agent 复验侧铸造值同源）。
+            profile,
+            fencing_token: eneros_control_services::dispatch_service::PROD_EPOCH_SEED + 1,
             issuer_service: [0x41; 16],
             issuer_epoch: 0,
-            policy_version: PROD_POLICY_VERSION,
-            device_id,
-            point_id,
             target_endpoint: alloc::string::String::from("svc-device-agent"),
             max_power_kw: 500.0,
             // 47（WP-47.1）：rate gate 默认产品值 60/h；bundle control-write

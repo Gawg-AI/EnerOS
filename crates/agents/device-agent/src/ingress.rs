@@ -428,6 +428,28 @@ impl EnvelopeIngress {
         )
     }
 
+    /// 从同源档案构造收口点（蓝图 55）：租约 ID/代次/绑定目标/安全点表/
+    /// 反馈新鲜度全部派生自同一 [`ControlProfile`]——与签发侧
+    /// （ChainCommandSink / DispatchEngine）共用一份事实，禁再散抄。
+    pub fn from_profile(
+        key: &[u8],
+        profile: &eneros_control_gateway::ControlProfile,
+        now_ms: u64,
+    ) -> Self {
+        Self::with_readback(
+            key,
+            profile.lease_id,
+            profile.lease_scope(),
+            profile.lease_ttl_secs,
+            profile.epoch_seed,
+            profile.policy(),
+            profile.tuning.feedback_max_age_secs,
+            &profile.safety_points(),
+            now_ms,
+            ReadbackPolicy::tolerance(0.1),
+        )
+    }
+
     /// 构造收口点（可指定读回策略，WP-40.11）。
     #[allow(clippy::too_many_arguments)]
     pub fn with_readback(
