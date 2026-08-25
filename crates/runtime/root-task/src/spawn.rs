@@ -1525,69 +1525,9 @@ pub fn entry_mapped(plan_pages: &[PageEntry], elf: &LoadedElf) -> Result<u64, Sp
 // EL0 服务授予跨服务端点 capability）。
 // ============================================================================
 
-/// EIPC 端点授予表：(客户端服务, 目标服务)。客户端按表内出现序获得
-/// 服务 CSpace 槽 `EIPC_EP_BASE_SLOT + i` 的目标 endpoint mint（最小
-/// 权限：只授予控制闭环所需定向通道，不授予全互联）。
-pub const EIPC_GRANTS: &[(&str, &str)] = &[
-    ("svc-control-dispatch", "svc-device-agent"),
-    ("svc-energy-agent", "svc-telemetry"),
-    ("svc-energy-agent", "svc-ai-worker"),
-    ("svc-energy-agent", "svc-control-dispatch"),
-    // 45.5（遥测通路接线，先行者）：svc-modbus-tcp 采集链向 svc-telemetry
-    // 上报真实点样本（EIPC 端点 cap mint 入服务 CSpace 槽 EIPC_EP_BASE_SLOT；
-    // 其余 6 协议服务随 46 卷句柄移交同批）。
-    ("svc-modbus-tcp", "svc-telemetry"),
-    // 45.5：svc-modbus-tcp 经 svc-config 取点表（ConfigGet "points" →
-    // decode_points）——点表来源（46 卷句柄移交同批，先行者先拿到）。
-    ("svc-modbus-tcp", "svc-config"),
-    // 41（WP-41.3 落盘）：业务服务 durable 状态经 EIPC 调 svc-storage
-    // 真落盘（块命令面 OP_EXECUTE + BLK_CMD_*）。
-    ("svc-ledger", "svc-storage"),
-    ("svc-market", "svc-storage"),
-    ("svc-ota", "svc-storage"),
-    ("svc-observability", "svc-storage"),
-    // 50（WP-50.1 exporter 真通道）：svc-observability 遥测批量帧经 EIPC
-    // 分片 EXECUTE 送达 svc-mqtt → MQTT broker（46 卷链 + 47 卷 TLS profile）。
-    // 槽序：svc-observability 表内第 2 条授予 = 槽 base+1（bit 1）。
-    ("svc-observability", "svc-mqtt"),
-    ("svc-cloud-sync", "svc-storage"),
-    ("svc-agent-bus", "svc-storage"),
-    // 41（WP-41.11）：管理 RPC 的 ConfigGet 经 EIPC 查 svc-config。
-    ("svc-mgmt", "svc-config"),
-    // 46（WP-46.3 配置驱动装配）：协议服务经 svc-config 取协议配置
-    // （GET_ENTRY "protocol-<proto>"）——消灭源码 peer 硬编码。
-    ("svc-iec104", "svc-config"),
-    ("svc-mqtt", "svc-config"),
-    ("svc-mms", "svc-config"),
-    ("svc-goose", "svc-config"),
-    ("svc-sv", "svc-config"),
-    ("svc-modbus-rtu", "svc-config"),
-    // 47（WP-47.1 协议写链）：svc-control-dispatch 出站经协议主站写设备
-    //（协议出站通道 OP_MASTER_WRITE → svc-modbus-tcp；release 设备写路径）
-    // + 入站意图授权前经 svc-telemetry 取受信任遥测快照（TEL_SNAPSHOT）。
-    ("svc-control-dispatch", "svc-modbus-tcp"),
-    ("svc-control-dispatch", "svc-telemetry"),
-    // 47（WP-47.1 协议入站写）：svc-mqtt 下行写意图上报 svc-control-dispatch
-    //（DISP_SUBMIT_INTENT，12 态链授权）。
-    ("svc-mqtt", "svc-control-dispatch"),
-    // 49（WP-49.2 远程 dual-brain）：svc-mqtt 把 peer 应答（ai_response_topic
-    // 原始字节）分块推送 svc-ai-worker（AI_PEER_MSG）；svc-ai-worker 经
-    // svc-config 取 ai-peer 状态机参数 + 经 svc-mqtt EXECUTE 分片子码发布
-    // AI 请求（AI_REQ_BEGIN/CONT/END）。
-    ("svc-mqtt", "svc-ai-worker"),
-    // 50（WP-50.2 mgmt 通道）：svc-mqtt 把管理请求（mgmt_request_topic
-    // 原始 MGT1 帧）分块推送 svc-mgmt，应答发布回 mgmt_response_topic。
-    ("svc-mqtt", "svc-mgmt"),
-    ("svc-ai-worker", "svc-config"),
-    ("svc-ai-worker", "svc-mqtt"),
-    // 47（WP-47.2 点表绑定）：控制写目标（设备/点）经 svc-config 点表
-    // Control 点解析——dispatch 与 device-agent 两端同源（0/0 fail-closed）。
-    ("svc-control-dispatch", "svc-config"),
-    ("svc-device-agent", "svc-config"),
-    // 47（WP-47.4 意图持久化）：DurableIntentStore 经 svc-storage 真落盘
-    //（AppendOutbox over BlockIo）。
-    ("svc-control-dispatch", "svc-storage"),
-];
+/// EIPC 端点授予表——WP-54.4 起本体下沉 agent-sdk（单一事实源），
+/// 此处 re-export 保路径稳定。
+pub use eneros_agent_sdk::EIPC_GRANTS;
 
 /// 心跳监控服务表（WP-40.4 隔离面）：授予心跳 notification（服务
 /// CSpace 槽 `HEARTBEAT_NTFN_SLOT`）+ root 侧 poll cap。
@@ -1601,19 +1541,9 @@ pub const HEARTBEAT_SERVICES: &[&str] = &[
 ];
 
 /// 计算服务的 EIPC 授予（表序）：返回 (X3 掩码, [(槽位, 目标名)])。
-/// bit i ↔ 槽 `EIPC_EP_BASE_SLOT + i` ↔ 该客户端第 i 个授予（表序）——
-/// spawn 期 mint 与服务侧 X3 解读共享同一推导（单一事实源）。
+/// WP-54.4：委托 agent-sdk 单一事实源——mint 侧与服务侧共享同一推导。
 pub fn eipc_grants_for(name: &str) -> (u64, Vec<(u64, &str)>) {
-    let mut mask = 0u64;
-    let mut grants = Vec::new();
-    for (client, target) in EIPC_GRANTS {
-        if *client == name {
-            let slot = eneros_agent_sdk::EIPC_EP_BASE_SLOT + grants.len() as u64;
-            mask |= 1 << grants.len();
-            grants.push((slot, *target));
-        }
-    }
-    (mask, grants)
+    eneros_agent_sdk::eipc_grants(name)
 }
 
 /// 已 spawn 服务句柄（K2.2：root-task IPC 主循环的服务表）。

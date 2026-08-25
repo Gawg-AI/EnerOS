@@ -83,8 +83,12 @@ pub const EIPC_EP_BASE_SLOT: u64 = 3;
 /// 服务每处理一条消息 signal 一次——supervisor 以"有请求在途却无心跳"
 /// 判定卡死（WP-40.4 隔离：无 fault 的 hang 也能被终止）。
 pub const HEARTBEAT_NTFN_SLOT: u64 = 63;
+
+pub use eipc_grants::{eipc_grants, eipc_resolve, EIPC_GRANTS};
 pub mod config;
+// WP-54.4：EIPC 授予拓扑单一事实源（表+按名解析，自 root-task 下沉）。
 pub mod context;
+pub mod eipc_grants;
 pub mod ipc;
 #[cfg(any(test, feature = "sel4"))]
 pub mod ipc_sel4;

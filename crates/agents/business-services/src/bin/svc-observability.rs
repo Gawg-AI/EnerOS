@@ -38,10 +38,15 @@ pub extern "C" fn _start(
     // 50（WP-50.1）：真 MQTT 导出器——svc-mqtt 端点在授予槽 base+1
     // （槽 0 = svc-storage，bit 1 置位 = svc-mqtt 已授予）。未授予 → 导出
     // 显式失败（fail-closed，durable outbox 兜底）。
-    let mqtt = if eipc_mask & 2 != 0 {
+    // WP-54.4：按目标名解析授予槽（agent-sdk 单一事实源）。
+    let slot_of = |target: &'static str| -> Option<u64> {
+        let (bit, slot) = eneros_agent_sdk::eipc_resolve("svc-observability", target)?;
+        (eipc_mask & (1 << bit) != 0).then_some(slot)
+    };
+    let mqtt = if let Some(mqtt_slot) = slot_of("svc-mqtt") {
         match eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
             "obs-mqtt",
-            eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1,
+            mqtt_slot,
             eneros_business_services::now_ms,
         ) {
             Ok(c) => {
@@ -67,12 +72,9 @@ pub extern "C" fn _start(
         64,
     );
     // 存储授予时挂接真 durable outbox（AppendOutbox over BlockIo）。
-    if eipc_mask & 1 != 0 {
-        if let Some(io) = eneros_business_services::block_io::eipc_block_io(
-            eneros_agent_sdk::EIPC_EP_BASE_SLOT,
-            0,
-            5_000,
-        ) {
+    if let Some(storage_slot) = slot_of("svc-storage") {
+        if let Some(io) = eneros_business_services::block_io::eipc_block_io(storage_slot, 0, 5_000)
+        {
             let mut ob = eneros_durable_state::AppendOutbox::new(
                 io,
                 OBS_OUTBOX_OFFSET,
@@ -151,7 +153,7 @@ impl eneros_business_services::observability::TelemetryExporter for UnavailableE
 /// → PeerReceipt。
 #[cfg(target_os = "none")]
 struct MqttTelemetryExporter {
-    /// svc-mqtt EIPC 客户端（授予槽 `EIPC_EP_BASE_SLOT + 1`；槽 0 = svc-storage）。
+    /// svc-mqtt EIPC 客户端（授予槽 WP-54.4 按名解析；槽序首位 = svc-storage）。
     mqtt: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
     /// 帧序号（补传窗口连续序号证据；单调递增）。
     frame_seq: u64,

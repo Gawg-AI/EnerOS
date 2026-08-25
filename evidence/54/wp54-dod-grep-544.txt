@@ -1,0 +1,10 @@
+=== DoD#1: 生产 bin 槽位算术零命中（agent-sdk 白名单）===
+crates/agents/agent-sdk/src/lib.rs:79:/// 授予表——`X3` bit i 置位 = 槽 `EIPC_EP_BASE_SLOT + i` 持有效端点 cap）。
+crates/agents/agent-sdk/src/eipc_grants.rs:4://! （`EIPC_EP_BASE_SLOT + n`）靠注释对齐——表中间插一条边，后续槽位静默
+crates/agents/agent-sdk/src/eipc_grants.rs:79:                return Some((idx as u32, EIPC_EP_BASE_SLOT + idx));
+crates/agents/agent-sdk/src/eipc_grants.rs:107:            let slot = EIPC_EP_BASE_SLOT + grants.len() as u64;
+crates/agents/agent-sdk/src/eipc_grants.rs:150:        assert_eq!(fake_slot, EIPC_EP_BASE_SLOT + 1);
+
+=== root-task 委托确认 ===
+1530:pub use eneros_agent_sdk::EIPC_GRANTS;
+1546:    eneros_agent_sdk::eipc_grants(name)

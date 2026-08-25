@@ -150,20 +150,20 @@ pub extern "C" fn _start(
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
-    let base = eneros_agent_sdk::EIPC_EP_BASE_SLOT;
-    // X3 表序（spawn.rs EIPC_GRANTS）：bit0=svc-config、bit1=svc-mqtt。
-    // 任一未授予 → 对应能力 fail-closed（config 缺 → 启发式兜底；
-    // mqtt 缺 → 无远程路径，纯启发式——诚实降级不伪造）。
-    let config_client = if eipc_mask & 1 != 0 {
+    // WP-54.4：按名解析授予槽；任一未授予 → 对应能力 fail-closed
+    // （config 缺 → 启发式兜底；mqtt 缺 → 无远程路径，纯启发式——诚实降级）。
+    let slot_of = |target: &'static str| -> Option<u64> {
+        let (bit, slot) = eneros_agent_sdk::eipc_resolve("svc-ai-worker", target)?;
+        (eipc_mask & (1 << bit) != 0).then_some(slot)
+    };
+    let config_client = slot_of("svc-config").and_then(|slot| {
         eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
             "aiworker-config",
-            base,
+            slot,
             eneros_drv_svc::now_ns,
         )
         .ok()
-    } else {
-        None
-    };
+    });
     let cfg = config_client.and_then(|mut c| match fetch_ai_peer_config(&mut c) {
         Ok(c) => Some(c),
         Err(reason) => {
@@ -171,16 +171,14 @@ pub extern "C" fn _start(
             None
         }
     });
-    let mqtt_client = if eipc_mask & 2 != 0 {
+    let mqtt_client = slot_of("svc-mqtt").and_then(|slot| {
         eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
             "aiworker-mqtt",
-            base + 1,
+            slot,
             eneros_drv_svc::now_ns,
         )
         .ok()
-    } else {
-        None
-    };
+    });
 
     match (cfg, mqtt_client) {
         (Some(c), Some(mqtt)) => {

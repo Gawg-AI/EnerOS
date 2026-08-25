@@ -77,15 +77,27 @@ fn fetch_control_write(
 /// 47（WP-47.4）：意图持久存储装配——svc-storage EIPC（X3 bit4）→
 /// `DurableIntentStore`（open 失败 → InMemory 兜底 + 登记）；未授予 →
 /// InMemory 兜底（fail-closed 登记）。
+/// WP-54.4：按目标名解析本服务的授予槽（agent-sdk 单一事实源）；
+/// 未授予（X3 位缺失）或无此边 → None（fail-closed）。替代手数 `BASE+n`。
+#[cfg(target_os = "none")]
+fn granted_slot(eipc_mask: u64, target: &'static str) -> Option<u64> {
+    let (bit, slot) = eneros_agent_sdk::eipc_resolve("svc-control-dispatch", target)?;
+    if eipc_mask & (1 << bit) != 0 {
+        Some(slot)
+    } else {
+        None
+    }
+}
+
 #[cfg(target_os = "none")]
 fn build_intent_store(
     eipc_mask: u64,
 ) -> alloc::boxed::Box<dyn eneros_control_dispatch::IntentStore> {
     use eneros_agent_sdk::block_io::eipc_block_io;
     use eneros_control_dispatch::durable_intent::DurableIntentStore;
-    if eipc_mask & 16 != 0 {
+    if let Some(storage_slot) = granted_slot(eipc_mask, "svc-storage") {
         if let Some(io) = eipc_block_io(
-            eneros_agent_sdk::EIPC_EP_BASE_SLOT + 4,
+            storage_slot,
             0, // 首个响应吸收 svc-storage 实例 epoch（业务服务先例）
             5_000,
         ) {
@@ -121,8 +133,8 @@ fn build_intent_store(
 #[cfg(target_os = "none")]
 struct DispatchHandler {
     engine: eneros_control_dispatch::DispatchEngine,
-    /// 47（WP-47.1 协议入站写）：svc-telemetry 快照客户端（授予槽
-    /// `EIPC_EP_BASE_SLOT + 2`）——意图授权前取受信任遥测（新鲜度/安全
+    /// 47（WP-47.1 协议入站写）：svc-telemetry 快照客户端（授予槽经
+    /// WP-54.4 按名解析）——意图授权前取受信任遥测（新鲜度/安全
     /// 目录由 12 态链裁决）；未授予 → 意图路径 fail-closed。
     telemetry: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
     /// 47（WP-47.1）：意图线码请求处理计数（观测）。
@@ -228,16 +240,14 @@ impl DispatchHandler {
         // 47（WP-47.2）：写目标（设备/点）由 45 卷点表 Control 点绑定
         // （svc-config config "points"）；不可得 → 0/0 fail-closed（全部
         // 提交/意图 NotAuthorized 拒绝，串口登记）。
-        let mut config_client = if eipc_mask & 8 != 0 {
+        let mut config_client = granted_slot(eipc_mask, "svc-config").and_then(|slot| {
             eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
                 "control-dispatch",
-                eneros_agent_sdk::EIPC_EP_BASE_SLOT + 3,
+                slot,
                 eneros_drv_svc::now_ns,
             )
             .ok()
-        } else {
-            None
-        };
+        });
         let binding = match &mut config_client {
             Some(c) => eneros_control_services::cfg_bindings::fetch_control_binding(c),
             None => {
@@ -265,67 +275,60 @@ impl DispatchHandler {
         // 47（WP-47.1）：投递通道选择——X3 bit1（svc-modbus-tcp 主站）→
         // 协议出站通道（release 设备写走协议）；bit0（svc-device-agent）→
         // 虚拟设备通道（qemu-test 保留）；均未授予 → Unbound（fail-closed）。
-        let delivery: alloc::boxed::Box<dyn eneros_control_dispatch::DeliveryChannel> = if eipc_mask
-            & 2
-            != 0
-        {
-            match EipcMasterChannel::new(
-                "control-dispatch",
-                eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1,
-            ) {
-                Ok(ch) => {
-                    eneros_runtime::println!(
-                            "[svc-control-dispatch] protocol-outbound channel bound: slot={} target=svc-modbus-tcp (OP_MASTER_WRITE)",
-                            eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1
+        // WP-54.4：协议出站（svc-modbus-tcp）优先，其次虚拟设备
+        // （svc-device-agent），均按名解析；均未授予 → Unbound（fail-closed）。
+        let delivery: alloc::boxed::Box<dyn eneros_control_dispatch::DeliveryChannel> =
+            if let Some(modbus_slot) = granted_slot(eipc_mask, "svc-modbus-tcp") {
+                match EipcMasterChannel::new("control-dispatch", modbus_slot) {
+                    Ok(ch) => {
+                        eneros_runtime::println!(
+                            "[svc-control-dispatch] protocol-outbound channel bound: slot={modbus_slot} target=svc-modbus-tcp (OP_MASTER_WRITE)"
                         );
-                    alloc::boxed::Box::new(ch)
-                }
-                Err(e) => {
-                    eneros_runtime::println!(
+                        alloc::boxed::Box::new(ch)
+                    }
+                    Err(e) => {
+                        eneros_runtime::println!(
                             "[svc-control-dispatch] master channel bind FAILED: {e:?} — Unbound (fail-closed)"
                         );
-                    alloc::boxed::Box::new(UnboundChannel)
+                        alloc::boxed::Box::new(UnboundChannel)
+                    }
                 }
-            }
-        } else if eipc_mask & 1 != 0 {
-            match eneros_control_dispatch::Sel4EipcChannel::new(
-                "control-dispatch",
-                eneros_agent_sdk::EIPC_EP_BASE_SLOT,
-                eneros_drv_svc::instance_epoch(),
-                5_000,
-                eneros_drv_svc::now_ns,
-            ) {
-                Ok(ch) => {
-                    eneros_runtime::println!(
-                            "[svc-control-dispatch] EIPC delivery bound: slot={} target=svc-device-agent (qemu-test 虚拟设备)",
-                            eneros_agent_sdk::EIPC_EP_BASE_SLOT
+            } else if let Some(device_slot) = granted_slot(eipc_mask, "svc-device-agent") {
+                match eneros_control_dispatch::Sel4EipcChannel::new(
+                    "control-dispatch",
+                    device_slot,
+                    eneros_drv_svc::instance_epoch(),
+                    5_000,
+                    eneros_drv_svc::now_ns,
+                ) {
+                    Ok(ch) => {
+                        eneros_runtime::println!(
+                            "[svc-control-dispatch] EIPC delivery bound: slot={device_slot} target=svc-device-agent (qemu-test 虚拟设备)"
                         );
-                    alloc::boxed::Box::new(ch)
+                        alloc::boxed::Box::new(ch)
+                    }
+                    Err(e) => {
+                        eneros_runtime::println!(
+                            "[svc-control-dispatch] EIPC bind FAILED: {e:?} — Unbound (fail-closed)"
+                        );
+                        alloc::boxed::Box::new(UnboundChannel)
+                    }
                 }
-                Err(e) => {
-                    eneros_runtime::println!(
-                        "[svc-control-dispatch] EIPC bind FAILED: {e:?} — Unbound (fail-closed)"
-                    );
-                    alloc::boxed::Box::new(UnboundChannel)
-                }
-            }
-        } else {
-            eneros_runtime::println!(
+            } else {
+                eneros_runtime::println!(
                     "[svc-control-dispatch] EIPC cap not granted (X3=0x{eipc_mask:x}) — Unbound (fail-closed)"
                 );
-            alloc::boxed::Box::new(UnboundChannel)
-        };
+                alloc::boxed::Box::new(UnboundChannel)
+            };
         // 47（WP-47.1）：svc-telemetry 快照客户端（X3 bit2）。
-        let telemetry = if eipc_mask & 4 != 0 {
+        let telemetry = granted_slot(eipc_mask, "svc-telemetry").and_then(|slot| {
             eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
                 "control-dispatch",
-                eneros_agent_sdk::EIPC_EP_BASE_SLOT + 2,
+                slot,
                 eneros_drv_svc::now_ns,
             )
             .ok()
-        } else {
-            None
-        };
+        });
         if telemetry.is_none() {
             eneros_runtime::println!(
                 "[svc-control-dispatch] telemetry EP NOT granted —— 意图路径 fail-closed"

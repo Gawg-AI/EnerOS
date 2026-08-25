@@ -37,11 +37,15 @@ pub extern "C" fn _start(
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
-    let base = eneros_agent_sdk::EIPC_EP_BASE_SLOT;
+    // WP-54.4：按目标名解析授予槽（agent-sdk 单一事实源），不再手数偏移。
+    let slot_of = |target: &'static str| -> Option<u64> {
+        let (bit, slot) = eneros_agent_sdk::eipc_resolve("svc-energy-agent", target)?;
+        (eipc_mask & (1 << bit) != 0).then_some(slot)
+    };
     let telemetry: alloc::boxed::Box<
         dyn eneros_control_services::energy_agent_service::TelemetryClient,
-    > = if eipc_mask & 1 != 0 {
-        match EipcClient::new(base, "svc-telemetry") {
+    > = if let Some(slot) = slot_of("svc-telemetry") {
+        match EipcClient::new(slot, "svc-telemetry") {
             Some(c) => alloc::boxed::Box::new(TelemetryEipc(c)),
             None => alloc::boxed::Box::new(UnboundTelemetryClient),
         }
@@ -49,8 +53,8 @@ pub extern "C" fn _start(
         alloc::boxed::Box::new(UnboundTelemetryClient)
     };
     let worker: alloc::boxed::Box<dyn eneros_control_services::energy_agent_service::WorkerClient> =
-        if eipc_mask & 2 != 0 {
-            match EipcClient::new(base + 1, "svc-ai-worker") {
+        if let Some(slot) = slot_of("svc-ai-worker") {
+            match EipcClient::new(slot, "svc-ai-worker") {
                 Some(c) => alloc::boxed::Box::new(WorkerEipc(c)),
                 None => alloc::boxed::Box::new(UnboundWorkerClient),
             }
@@ -59,8 +63,8 @@ pub extern "C" fn _start(
         };
     let dispatch: alloc::boxed::Box<
         dyn eneros_control_services::energy_agent_service::DispatchClient,
-    > = if eipc_mask & 4 != 0 {
-        match EipcClient::new(base + 2, "svc-control-dispatch") {
+    > = if let Some(slot) = slot_of("svc-control-dispatch") {
+        match EipcClient::new(slot, "svc-control-dispatch") {
             Some(c) => alloc::boxed::Box::new(DispatchEipc(c)),
             None => alloc::boxed::Box::new(UnboundDispatchClient),
         }

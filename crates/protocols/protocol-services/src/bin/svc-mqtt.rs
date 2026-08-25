@@ -480,23 +480,32 @@ pub extern "C" fn _start(
                 let mut plugin = eneros_mqtt::plugin::MqttPlugin::new();
                 // 46.3：配置即 peer/app_id 唯一来源（protocol-mqtt）；不可得
                 // → 能力壳（fail-closed，不猜默认）。
-                match eneros_protocol_services::service_cfg::fetch_protocol_config(
-                    "mqtt-config",
-                    eneros_agent_sdk::EIPC_EP_BASE_SLOT,
-                    "protocol-mqtt",
+                match eneros_agent_sdk::eipc_resolve("svc-mqtt", "svc-config").and_then(
+                    |(_, cfg_slot)| {
+                        eneros_protocol_services::service_cfg::fetch_protocol_config(
+                            "mqtt-config",
+                            cfg_slot,
+                            "protocol-mqtt",
+                        )
+                    },
                 ) {
                     Some(cfg) => match plugin.start(&cfg, &mut factory, &mut EmptyPointRegistry) {
                         Ok(()) => {
                             eneros_runtime::println!(
                                 "[svc-mqtt] NET-TRANSPORT READY capability=eneros_mqtt::plugin::MqttPlugin"
                             );
-                            // 47：dispatch 端点在槽 base+1（表序第 2 条授予）。
-                            let dispatch = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                                "mqtt-dispatch",
-                                eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1,
-                                eneros_drv_svc::now_ns,
-                            )
-                            .ok();
+                            // 47：dispatch 端点（WP-54.4 按名解析；未授予
+                            // → 写意图路径 fail-closed）。
+                            let dispatch =
+                                eneros_agent_sdk::eipc_resolve("svc-mqtt", "svc-control-dispatch")
+                                    .and_then(|(_, slot)| {
+                                        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                                            "mqtt-dispatch",
+                                            slot,
+                                            eneros_drv_svc::now_ns,
+                                        )
+                                        .ok()
+                                    });
                             if dispatch.is_none() {
                                 eneros_runtime::println!(
                                     "[svc-mqtt] dispatch EIPC NOT granted —— 写意图路径 fail-closed"
@@ -504,12 +513,16 @@ pub extern "C" fn _start(
                             }
                             // 49（WP-49.2）：ai-worker 端点在槽 base+2（表序
                             // 第 3 条授予）；AI 请求主题取自配置（插件已消费）。
-                            let ai_worker = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                                "mqtt-ai-worker",
-                                eneros_agent_sdk::EIPC_EP_BASE_SLOT + 2,
-                                eneros_drv_svc::now_ns,
-                            )
-                            .ok();
+                            let ai_worker =
+                                eneros_agent_sdk::eipc_resolve("svc-mqtt", "svc-ai-worker")
+                                    .and_then(|(_, slot)| {
+                                        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                                            "mqtt-ai-worker",
+                                            slot,
+                                            eneros_drv_svc::now_ns,
+                                        )
+                                        .ok()
+                                    });
                             let ai_request_topic =
                                 plugin.ai_request_topic().map(alloc::string::String::from);
                             match (&ai_worker, &ai_request_topic) {
@@ -551,14 +564,17 @@ pub extern "C" fn _start(
                                     eneros_protocol_services::ai_relay::RequestAssembler::new(),
                                 tel_published: 0,
                                 tel_rejected: 0,
-                                // 50（WP-50.2）：svc-mgmt 端点在槽 base+3
-                                //（表序第 4 条授予）；未授予 → 管理请求丢弃。
-                                mgmt: eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                                    "mqtt-mgmt",
-                                    eneros_agent_sdk::EIPC_EP_BASE_SLOT + 3,
-                                    eneros_drv_svc::now_ns,
-                                )
-                                .ok(),
+                                // 50（WP-50.2）：svc-mgmt 端点（按名解析；
+                                // 未授予 → 管理请求丢弃）。
+                                mgmt: eneros_agent_sdk::eipc_resolve("svc-mqtt", "svc-mgmt")
+                                    .and_then(|(_, slot)| {
+                                        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                                            "mqtt-mgmt",
+                                            slot,
+                                            eneros_drv_svc::now_ns,
+                                        )
+                                        .ok()
+                                    }),
                                 mgmt_epoch: 0,
                                 mgmt_forwarded: 0,
                                 mgmt_errors: 0,
