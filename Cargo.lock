@@ -494,6 +494,7 @@ dependencies = [
 name = "eneros-agent"
 version = "0.314.0"
 dependencies = [
+ "eneros-agent",
  "eneros-agent-sdk",
  "eneros-crypto",
  "eneros-elf-loader",
