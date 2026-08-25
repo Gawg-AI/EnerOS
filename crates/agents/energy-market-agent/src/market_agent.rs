@@ -32,13 +32,13 @@ pub struct MarketAgent {
     pub source: Box<dyn MarketDataSource>,
     /// 市场数据通道（转发给 Energy Agent）.
     pub market_channel: MarketChannel,
-    /// 电价缓存（96 时段；初始为空——无报价即无有效电价）.
+    /// 电价缓存（96 时段预测；初始为空——无报价即无有效电价）.
     pub price_cache: Vec<f64>,
     /// 最近一次收到报价的时刻（ms）；`None` = 从未收到.
     pub last_quote_ms: Option<u64>,
     /// 报价是否已过期（进入过期态时 `stale_notices` 自增一次告警）.
     pub stale: bool,
-    /// 过期告警计数（每次从新鲜→过期转换 +1）.
+    /// 报价过期告警计数（每次从新鲜→过期转换 +1）.
     pub stale_notices: u64,
     /// 电价新鲜度窗口（ms）.
     pub price_stale_ms: u64,
@@ -46,6 +46,12 @@ pub struct MarketAgent {
     pub state: AgentState,
     /// tick 计数.
     pub tick_count: u64,
+    /// WP-53.6 复核修正：最近一次报价的 **current_price**（实时价）。
+    ///
+    /// 下游 EnergyAgent 消费的字段是 `MarketData.current_price`
+    /// （energy_agent.rs:256），而非 forecast 首元素——effective_price
+    /// 必须与之同源，否则语义错位。
+    pub last_current_price: Option<f64>,
 }
 
 impl MarketAgent {
@@ -63,6 +69,7 @@ impl MarketAgent {
             stale: false,
             stale_notices: 0,
             price_stale_ms: DEFAULT_PRICE_STALE_MS,
+            last_current_price: None,
             state: AgentState::Created,
             tick_count: 0,
         }
@@ -78,15 +85,16 @@ impl MarketAgent {
 
     /// 当前有效电价（元/kWh）：无报价、缓存为空或报价已过期 → `None`.
     ///
-    /// 返回 `Some` 时取最新报价的当前时段价（`price_cache[0]`）。
+    /// WP-53.6 复核修正：返回最新报价的 **`current_price`**（与下游
+    /// EnergyAgent 的消费字段同源），而非 forecast 首元素。
     /// 蓝图 53 WP-53.3 必达②：调用方拿到 `None` 必须显式降级，
     /// 禁止回退到任何常量价格继续调度/计收益。
     pub fn effective_price(&self, now_ms: u64) -> Option<f64> {
-        if self.price_cache.is_empty() {
+        if self.last_current_price.is_none() || self.price_cache.is_empty() {
             return None;
         }
         match self.last_quote_ms {
-            Some(t) if now_ms.saturating_sub(t) <= self.price_stale_ms => Some(self.price_cache[0]),
+            Some(t) if now_ms.saturating_sub(t) <= self.price_stale_ms => self.last_current_price,
             _ => None,
         }
     }
@@ -111,6 +119,7 @@ impl AgentRuntime for MarketAgent {
         match self.source.recv_nonblocking()? {
             Some(data) => {
                 self.price_cache = data.price_forecast.clone();
+                self.last_current_price = Some(data.current_price);
                 self.last_quote_ms = Some(now_ms);
                 // 新报价无条件恢复新鲜态（过期→新鲜的转换不产生告警）。
                 self.stale = false;

@@ -527,10 +527,11 @@ mod tests {
         // price_cache 更新为市场数据
         assert_eq!(agent.price_cache.len(), 96);
         assert!((agent.price_cache[0] - 0.5).abs() < 1e-9);
-        // 报价时刻被记录，窗口内 effective_price 可用
+        // 报价时刻被记录，窗口内 effective_price 可用（=current_price 同源）
         assert_eq!(agent.last_quote_ms, Some(2000));
         assert!(!agent.stale);
-        assert!((agent.effective_price(2000 + 1000).unwrap() - 0.5).abs() < 1e-9);
+        assert_eq!(agent.last_current_price, Some(0.77));
+        assert!((agent.effective_price(2000 + 1000).unwrap() - 0.77).abs() < 1e-9);
         // market_channel 含 1 条数据
         assert_eq!(agent.market_channel.len(), 1);
         assert_eq!(agent.tick_count, 1);

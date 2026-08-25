@@ -195,10 +195,8 @@ impl<S: Solver> MvpOrchestrator<S> {
             let _ = self.energy_agent.market_channel_mut().send(data);
         }
 
-        // Step 3: energy on_tick（双脑决策）.
-        self.energy_agent.on_tick(now_ms).map_err(MvpError::from)?;
-
-        // Step 3.5: 判据数据质量（WP-53.3 必达③）。
+        // Step 2.5: 判据数据质量（WP-53.6 复核修正：判定前移——
+        // 电价非新鲜时必须**拒绝调度**，而不只是不记收益）。
         let quality = match (
             self.market_agent.last_quote_ms,
             self.market_agent.effective_price(now_ms),
@@ -208,12 +206,16 @@ impl<S: Solver> MvpOrchestrator<S> {
             (None, None) => DataQuality::Never,
         };
 
-        // Step 4: 记录收益对比——仅当报价新鲜。
+        // Step 3: energy on_tick（双脑决策）——仅当报价新鲜。
         //
-        // WP-53.3 必达②③：Stale/Never 电价不得进入判据累计（两侧都不记），
-        // 否则即「用缓存/常量电价静默计算收益」的假数据闭环；
-        // 数据质量与来源指纹随报告输出，由消费方裁决结论有效性。
+        // WP-53.3 必达②（复核收紧）：Stale/Never 时跳过整个决策 tick——
+        // EnergyAgent 内部 current_price 会停留在默认值，若照常执行
+        // coordinator 则用假电价产出调度并下发 dispatch（假数据闭环的
+        // 决策侧）。拒绝调度 = 不进 on_tick，设备采集（Step 5）照常。
         if quality == DataQuality::Fresh {
+            self.energy_agent.on_tick(now_ms).map_err(MvpError::from)?;
+
+            // Step 4: 记录收益对比（双侧对称累计；必达③指纹随报告输出）。
             if let Some(schedule) = &self.energy_agent.current_schedule {
                 self.revenue_comparator
                     .record_dual_brain(schedule.total_revenue_yuan);

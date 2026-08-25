@@ -339,7 +339,8 @@ fn t17_orchestrator_tick_not_running_error() {
 // ===== T18: MvpOrchestrator::tick 单周期执行 + tick_count += 1 =====
 #[test]
 fn t18_orchestrator_tick_single_period() {
-    let mut orch: MvpOrchestrator<MockSolver> = MvpOrchestrator::<MockSolver>::new_default(0);
+    // WP-53.6 复核：调度仅在 Fresh 报价下发生——用带报价的编排器。
+    let mut orch: MvpOrchestrator<MockSolver> = fed_orchestrator(0);
     orch.start(1000).unwrap();
     let result = orch.tick(2000);
     assert!(result.is_ok());
@@ -473,6 +474,12 @@ fn t21b_never_quality_records_nothing() {
         orch.revenue_comparator.traditional_revenue.len(),
         0,
         "Never 电价不得记录传统 EMS 收益"
+    );
+    // WP-53.6 复核收紧：决策侧同样降级——不进 on_tick，
+    // current_schedule 保持 None（无基于假电价的调度产出）。
+    assert!(
+        orch.energy_agent.current_schedule.is_none(),
+        "Never 电价必须拒绝调度（决策链显式降级）"
     );
 }
 
