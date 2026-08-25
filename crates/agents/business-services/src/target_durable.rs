@@ -51,6 +51,43 @@ impl<M: Encode + Decode + Clone> DurableOutbox<M> for MaybeOutbox<M> {
     }
 }
 
+/// 54（WP-54.5）：durable outbox 附接唯一入口——grant 探测 → 设备打开 →
+/// `AppendOutbox::open` 成败分流 → 显式 `Unavailable` 兜底与串口日志，
+/// 四件事单实现（核心在 [`crate::outbox_attach::attach_in`]，host 三态可测）。
+///
+/// `storage_slot` 为该客户端对 svc-storage 的授予槽（多授予服务经
+/// `eipc_resolve` 按名取，单授予服务即 [`eneros_agent_sdk::EIPC_EP_BASE_SLOT`]；
+/// `granted=false` 时该值不被触达）。日志文案与收编前 bin 原文逐字一致。
+#[allow(clippy::too_many_arguments)]
+pub fn attach<M>(
+    granted: bool,
+    label: &str,
+    storage_slot: u64,
+    offset: u64,
+    slot_len: usize,
+    max_slots: usize,
+) -> MaybeOutbox<M>
+where
+    M: Encode + Decode + Clone,
+{
+    let mut log = |line: &str| {
+        eneros_runtime::println!("{}", line);
+    };
+    let opened = crate::outbox_attach::attach_in(
+        granted,
+        label,
+        move || crate::block_io::eipc_block_io(storage_slot, 0, 5_000),
+        offset,
+        slot_len,
+        max_slots,
+        &mut log,
+    );
+    match opened {
+        crate::outbox_attach::MaybeOutbox::Real(o) => MaybeOutbox::Real(o),
+        crate::outbox_attach::MaybeOutbox::Unavailable(u) => MaybeOutbox::Unavailable(u),
+    }
+}
+
 /// AgentBus/账本等 state store 的二态封装。
 pub enum MaybeState<S> {
     Real(RegionStateStore<S, BlockIo<Sel4IpcClient>>),

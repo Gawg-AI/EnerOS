@@ -35,52 +35,15 @@ pub extern "C" fn _start(
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
-    let outbox = if eipc_mask & 1 != 0 {
-        match eneros_business_services::block_io::eipc_block_io(
-            eneros_agent_sdk::EIPC_EP_BASE_SLOT,
-            0,
-            5_000,
-        ) {
-            Some(io) => {
-                let mut ob = eneros_durable_state::AppendOutbox::new(
-                    io,
-                    CLOUD_OUTBOX_OFFSET,
-                    CLOUD_OUTBOX_SLOT_LEN,
-                    CLOUD_OUTBOX_MAX_SLOTS,
-                );
-                match ob.open() {
-                    Ok(()) => {
-                        eneros_runtime::println!(
-                            "[svc-cloud-sync] durable outbox attached (svc-storage)"
-                        );
-                        eneros_business_services::target_durable::MaybeOutbox::Real(ob)
-                    }
-                    Err(e) => {
-                        eneros_runtime::println!(
-                            "[svc-cloud-sync] durable outbox open FAILED {:?} —— 显式 Unavailable",
-                            e
-                        );
-                        eneros_business_services::target_durable::MaybeOutbox::Unavailable(
-                            eneros_durable_state::UnavailableOutbox::new(),
-                        )
-                    }
-                }
-            }
-            None => {
-                eneros_runtime::println!(
-                    "[svc-cloud-sync] storage NOT granted -> outbox Unavailable"
-                );
-                eneros_business_services::target_durable::MaybeOutbox::Unavailable(
-                    eneros_durable_state::UnavailableOutbox::new(),
-                )
-            }
-        }
-    } else {
-        eneros_runtime::println!("[svc-cloud-sync] storage NOT granted -> outbox Unavailable");
-        eneros_business_services::target_durable::MaybeOutbox::Unavailable(
-            eneros_durable_state::UnavailableOutbox::new(),
-        )
-    };
+    // WP-54.5：附接四件事收编 target_durable::attach 单实现；文案逐字一致。
+    let outbox = eneros_business_services::target_durable::attach(
+        eipc_mask & 1 != 0,
+        "[svc-cloud-sync]",
+        eneros_agent_sdk::EIPC_EP_BASE_SLOT,
+        CLOUD_OUTBOX_OFFSET,
+        CLOUD_OUTBOX_SLOT_LEN,
+        CLOUD_OUTBOX_MAX_SLOTS,
+    );
     eneros_runtime::println!(
         "[svc-cloud-sync] durable outbox up (cloud peer unavailable -> flush fails closed)"
     );

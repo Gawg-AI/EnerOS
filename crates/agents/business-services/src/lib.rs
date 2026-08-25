@@ -26,6 +26,8 @@ pub mod market;
 pub mod mgmt_rpc;
 pub mod observability;
 pub mod ota_service;
+// WP-54.5：附接核心 host 可测（无 cfg 门）；target_durable 保持 target 门。
+pub mod outbox_attach;
 #[cfg(target_os = "none")]
 pub mod target_durable;
 

@@ -39,50 +39,16 @@ pub extern "C" fn _start(
     // 真实 transport 依赖外部 market peer（QEMU 未提供）→ Unavailable
     // transport：任何发送显式失败（不伪造 peer 副作用）；outbox 在存储
     // 授予时使用 AppendOutbox 真落盘，未授予时显式 Unavailable。
-    let outbox = if eipc_mask & 1 != 0 {
-        match eneros_business_services::block_io::eipc_block_io(
-            eneros_agent_sdk::EIPC_EP_BASE_SLOT,
-            0,
-            5_000,
-        ) {
-            Some(io) => {
-                let mut ob = eneros_durable_state::AppendOutbox::new(
-                    io,
-                    MARKET_OUTBOX_OFFSET,
-                    MARKET_OUTBOX_SLOT_LEN,
-                    MARKET_OUTBOX_MAX_SLOTS,
-                );
-                match ob.open() {
-                    Ok(()) => {
-                        eneros_runtime::println!(
-                            "[svc-market] durable outbox attached (svc-storage)"
-                        );
-                        eneros_business_services::target_durable::MaybeOutbox::Real(ob)
-                    }
-                    Err(e) => {
-                        eneros_runtime::println!(
-                            "[svc-market] durable outbox open FAILED {:?} —— 显式 Unavailable",
-                            e
-                        );
-                        eneros_business_services::target_durable::MaybeOutbox::Unavailable(
-                            eneros_durable_state::UnavailableOutbox::new(),
-                        )
-                    }
-                }
-            }
-            None => {
-                eneros_runtime::println!("[svc-market] storage NOT granted -> outbox Unavailable");
-                eneros_business_services::target_durable::MaybeOutbox::Unavailable(
-                    eneros_durable_state::UnavailableOutbox::new(),
-                )
-            }
-        }
-    } else {
-        eneros_runtime::println!("[svc-market] storage NOT granted -> outbox Unavailable");
-        eneros_business_services::target_durable::MaybeOutbox::Unavailable(
-            eneros_durable_state::UnavailableOutbox::new(),
-        )
-    };
+    // WP-54.5：附接四件事（grant 探测/设备打开/open 分流/Unavailable 兜底+日志）
+    // 收编 target_durable::attach 单实现；文案与收编前逐字一致。
+    let outbox = eneros_business_services::target_durable::attach(
+        eipc_mask & 1 != 0,
+        "[svc-market]",
+        eneros_agent_sdk::EIPC_EP_BASE_SLOT,
+        MARKET_OUTBOX_OFFSET,
+        MARKET_OUTBOX_SLOT_LEN,
+        MARKET_OUTBOX_MAX_SLOTS,
+    );
     eneros_runtime::println!("[svc-market] market adapter up");
     let mut handler = MarketHandler {
         adapter: eneros_business_services::market::MarketAdapter::new(outbox, UnavailableTransport),

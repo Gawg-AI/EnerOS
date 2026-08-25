@@ -71,42 +71,24 @@ pub extern "C" fn _start(
         eneros_business_services::observability::OverflowPolicy::DropLowPriority,
         64,
     );
-    // 存储授予时挂接真 durable outbox（AppendOutbox over BlockIo）。
-    if let Some(storage_slot) = slot_of("svc-storage") {
-        if let Some(io) = eneros_business_services::block_io::eipc_block_io(storage_slot, 0, 5_000)
-        {
-            let mut ob = eneros_durable_state::AppendOutbox::new(
-                io,
-                OBS_OUTBOX_OFFSET,
-                OBS_OUTBOX_SLOT_LEN,
-                OBS_OUTBOX_MAX_SLOTS,
-            );
-            match ob.open() {
-                Ok(()) => {
-                    eneros_runtime::println!(
-                        "[svc-observability] durable telemetry outbox attached (svc-storage)"
-                    );
-                    svc.durable = Some(alloc::boxed::Box::new(
-                        eneros_business_services::target_durable::MaybeOutbox::Real(ob),
-                    ));
-                }
-                Err(e) => {
-                    eneros_runtime::println!(
-                        "[svc-observability] durable outbox open FAILED {:?} —— 显式 Unavailable",
-                        e
-                    );
-                }
-            }
-        } else {
-            eneros_runtime::println!(
-                "[svc-observability] storage NOT granted -> durable outbox Unavailable"
-            );
+    // 存储授予时挂接真 durable outbox（WP-54.5 附接唯一入口）。
+    // 本服务失败语义与 market/cloud-sync 不同：未授予/打开失败 → None（无
+    // durable），导出显式失败——不可换 Unavailable 包装：flush_batch 的
+    // recover 门会对 Unavailable 恒 Err，致无存储环境下导出整体不可用。
+    let storage_slot = slot_of("svc-storage");
+    svc.durable = match eneros_business_services::target_durable::attach(
+        storage_slot.is_some(),
+        "[svc-observability]",
+        storage_slot.unwrap_or(eneros_agent_sdk::EIPC_EP_BASE_SLOT),
+        OBS_OUTBOX_OFFSET,
+        OBS_OUTBOX_SLOT_LEN,
+        OBS_OUTBOX_MAX_SLOTS,
+    ) {
+        eneros_business_services::target_durable::MaybeOutbox::Real(ob) => {
+            Some(alloc::boxed::Box::new(ob))
         }
-    } else {
-        eneros_runtime::println!(
-            "[svc-observability] storage NOT granted -> durable outbox Unavailable"
-        );
-    }
+        eneros_business_services::target_durable::MaybeOutbox::Unavailable(_) => None,
+    };
     eneros_runtime::println!("[svc-observability] target telemetry queue up");
     let mut handler = ObsHandler { svc };
     eneros_control_services::control_service_main(
