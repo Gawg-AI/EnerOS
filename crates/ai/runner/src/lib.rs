@@ -226,20 +226,18 @@ pub fn run_once(
     // 签名 → 两把不同 key → 每次 write 被 GatewayError::Unauthorized 拒绝，
     // run_once 无论密钥文件内容如何必然失败。
     let chain = build_chain(chain_key)?;
-    let mut sink: Box<dyn CommandSink> =
-        Box::new(eneros_dual_brain::chain_sink::ChainCommandSink::new(
+    let mut sink: Box<dyn CommandSink> = Box::new(
+        eneros_dual_brain::chain_sink::ChainCommandSink::from_profile(
             chain,
             Box::new(FileExecutor::new(sink_path)?),
             chain_key,
-            CHAIN_LEASE_ID,
-            1,
+            &demo_profile(),
             CHAIN_ISSUER,
             1,
-            10,
-            CHAIN_POLICY_VERSION,
             now_fn,
             feedback_fn,
-        ));
+        ),
+    );
     let mut coord = DualBrainCoordinator::new(config, llm, solver)
         // 32 AG-04：决策审计装配——创世锚从 chain_key SM3 派生（与封焊链
         // 同源；chain_key 已经 AI-07 fail-closed 校验 ≥16B）。
@@ -366,27 +364,38 @@ pub fn build_production_sink(
     now_fn: fn() -> u64,
     feedback_fn: fn(u64) -> eneros_control_gateway::chain::FeedbackBundle,
 ) -> Result<Box<dyn CommandSink>, RunnerError> {
-    // 链装配：租约 grant 保留（自证链校验）；信封 token 的**唯一权威来源**
-    // 为复验侧握手（FIX-24.R3，D7 语义归位——不再以本地 grant 铸造值进
-    // 生产信封）。两侧同源（同一 epoch 种子）时握手值 == 本地 grant 值，
-    // 不破坏 LeaseService 双侧校验（侦察结论，见 fix-r3 证据文档）。
-    let (chain, _local_token) = build_chain_with(key, lease_id, epoch_seed, policy_version)?;
+    // 链与信封共用一份同源档案（蓝图 55）：租约/绑定/代次单源。旧实现
+    // build_chain_with 内部硬编码 dev1/pt10 而信封用调用方 device/point，
+    // 不一致时复验必拒（潜在缺陷，随档案化消除）。
+    // D7：fencing epoch 以平台重启计数为种子（与 device-agent 同源）。
+    let profile = eneros_control_gateway::ControlProfile::ai_pcc_single(
+        device_id,
+        point_id,
+        policy_version,
+        lease_id,
+        epoch_seed,
+    );
+    let mut chain = eneros_control_gateway::chain::ControlChain::from_profile(key, &profile);
+    // 本地 grant 保留自证校验面；信封 token 的**唯一权威来源**为复验侧
+    // 握手（FIX-24.R3，D7 语义归位——不以本地 grant 铸造值进生产信封）。
+    // 两侧同源（同一 epoch 种子）时握手值 == 本地 grant 值，不破坏
+    // LeaseService 双侧校验（侦察结论，见 fix-r3 证据文档）。
+    let _local_token = profile
+        .issue_lease(&mut chain, now_fn())
+        .ok_or_else(|| RunnerError::Chain("lease issue failed".into()))?;
     let mut dispatcher = EnvelopeDispatcher::new(channel, key, lease_id, handshake_retries);
     // 装配期握手（fail-closed：握手失败 → 装配失败；首个信封必然在握手
     // 完成后发出；有界重试 ≤5 与零降级语义在 dispatcher 内部不变）。
     let token = dispatcher
         .handshake()
         .map_err(|e| RunnerError::Chain(format!("startup handshake failed: {e:?}")))?;
-    let mut sink = eneros_dual_brain::chain_sink::ChainCommandSink::new(
+    let mut sink = eneros_dual_brain::chain_sink::ChainCommandSink::from_profile(
         chain,
         Box::new(dispatcher),
         key,
-        lease_id,
-        token,
+        &profile,
         issuer,
-        device_id,
-        point_id,
-        policy_version,
+        token,
         now_fn,
         feedback_fn,
     );
@@ -394,62 +403,6 @@ pub fn build_production_sink(
     // 轮换时同步机制就位；FIX-24.R3 前该 API 全仓零调用）。
     sink.update_fencing_token(token);
     Ok(Box::new(sink))
-}
-
-/// 链装配（key/lease/epoch/策略版本参数化；`build_chain` 保持默认参数演示）。
-/// 返回 `(chain, fencing_token)`——token 与 device-agent 侧同源铸造。
-fn build_chain_with(
-    key: &[u8],
-    lease_id: [u8; 16],
-    epoch_seed: u64,
-    policy_version: u64,
-) -> Result<(eneros_control_gateway::chain::ControlChain, u64), RunnerError> {
-    use eneros_control_gateway::chain::ControlChain;
-    use eneros_control_gateway::envelope::ActorKind;
-    use eneros_control_gateway::lease::LeaseScope;
-    use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
-    use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
-    use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
-    use eneros_telemetry_model::unit::PhysicalUnit;
-
-    let policy = Policy::new(policy_version).with_rule(PolicyRule {
-        actor_kind: Some(ActorKind::Ai),
-        devices: vec![1],
-        points: vec![10],
-        kinds: vec![CommandClass::Switch],
-        time_window: (0, 0),
-        obligations: vec![],
-    });
-    let mut chain = ControlChain::new(key, 5, 64, policy, 60, 300, 64, 30);
-    // D7：fencing epoch 以平台重启计数为种子（与 device-agent 同源）。
-    chain.lease_service_mut().seed_epoch(epoch_seed);
-    let scope = LeaseScope {
-        devices: vec![1],
-        points: vec![10],
-        max_class: 1,
-    };
-    let (token, _expiry) = chain
-        .lease_service_mut()
-        .issue(lease_id, scope, 3_600, now_fn())
-        .ok_or_else(|| RunnerError::Chain("lease issue failed".into()))?;
-    chain.safety_mut().register(
-        1,
-        10,
-        SafetyPoint {
-            role: SafetyRole::PccBreaker,
-            spec: PointSpec {
-                point_id: 10,
-                device_id: 1,
-                unit: PhysicalUnit::Kilowatts,
-                safe_min: -500.0,
-                safe_max: 500.0,
-                max_ramp_per_sec: None,
-                direction: ControlDirection::Discrete,
-                remote_controllable: true,
-            },
-        },
-    );
-    Ok((chain, token))
 }
 
 // ============================================================================
@@ -460,8 +413,20 @@ fn build_chain_with(
 const CHAIN_LEASE_ID: [u8; 16] = [0xE1; 16];
 /// 信封签发者标识。
 const CHAIN_ISSUER: [u8; 16] = [0xE2; 16];
-/// 策略代次（Policy::new(1) + with_rule 不 bump generation）。
+/// 策略代次（profile 规范习语：生效 generation == 此值）。
 const CHAIN_POLICY_VERSION: u64 = 1;
+
+/// 演示自洽链同源档案（蓝图 55）：dev1/pt10、租约 [`CHAIN_LEASE_ID`]、
+/// 代次 [`CHAIN_POLICY_VERSION`]；epoch 缺省 0 ⇒ 首签 token = 1。
+fn demo_profile() -> eneros_control_gateway::ControlProfile {
+    eneros_control_gateway::ControlProfile::ai_pcc_single(
+        1,
+        10,
+        CHAIN_POLICY_VERSION,
+        CHAIN_LEASE_ID,
+        0,
+    )
+}
 
 /// 时间源（epoch **秒**；信封 timestamp/expiry 规格为 epoch-secs（envelope.rs），
 /// device-agent 复验链按秒判时——签发与复验必须同基准。原实现误用毫秒
@@ -473,57 +438,16 @@ fn now_fn() -> u64 {
         .unwrap_or(0)
 }
 
-/// ControlChain 装配：策略放行 Ai→dev1/pt10，租约签发，安全点注册。
-/// default-deny：未配置规则的点一律拒绝（fail-closed）。
-/// 31-review（P1 chain-key）：密钥由调用方注入（AI-07 fail-closed ≥16B 校验），
-/// 编译期常量已删除。
+/// ControlChain 装配：策略放行 Ai→dev1/pt10，租约签发，安全点注册
+/// （蓝图 55：档案单源派生）。default-deny：未配置规则的点一律拒绝
+/// （fail-closed）。31-review（P1 chain-key）：密钥由调用方注入
+/// （AI-07 fail-closed ≥16B 校验），编译期常量已删除。
 pub fn build_chain(key: &[u8]) -> Result<eneros_control_gateway::chain::ControlChain, RunnerError> {
-    use eneros_control_gateway::chain::ControlChain;
-    use eneros_control_gateway::envelope::ActorKind;
-    use eneros_control_gateway::lease::LeaseScope;
-    use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
-    use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
-    use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
-    use eneros_telemetry_model::unit::PhysicalUnit;
-
-    let policy = Policy::new(1).with_rule(PolicyRule {
-        actor_kind: Some(ActorKind::Ai),
-        devices: vec![1],
-        points: vec![10],
-        kinds: vec![CommandClass::Switch],
-        time_window: (0, 0),
-        obligations: vec![],
-    });
-    let mut chain = ControlChain::new(key, 5, 64, policy, 60, 300, 64, 30);
-    let scope = LeaseScope {
-        devices: vec![1],
-        points: vec![10],
-        max_class: 1,
-    };
-    if chain
-        .lease_service_mut()
-        .issue(CHAIN_LEASE_ID, scope, 3_600, now_fn())
-        .is_none()
-    {
+    let profile = demo_profile();
+    let mut chain = eneros_control_gateway::chain::ControlChain::from_profile(key, &profile);
+    if profile.issue_lease(&mut chain, now_fn()).is_none() {
         return Err(RunnerError::Chain("lease issue failed".into()));
     }
-    chain.safety_mut().register(
-        1,
-        10,
-        SafetyPoint {
-            role: SafetyRole::PccBreaker,
-            spec: PointSpec {
-                point_id: 10,
-                device_id: 1,
-                unit: PhysicalUnit::Kilowatts,
-                safe_min: -500.0,
-                safe_max: 500.0,
-                max_ramp_per_sec: None,
-                direction: ControlDirection::Discrete,
-                remote_controllable: true,
-            },
-        },
-    );
     Ok(chain)
 }
 

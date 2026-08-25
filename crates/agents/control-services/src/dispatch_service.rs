@@ -307,33 +307,17 @@ mod tests {
             _t: &eneros_safety_validator::TrustedTelemetry,
             now_ms: u64,
         ) -> Result<Vec<u8>, crate::ai_worker::DecisionReject> {
-            let plan = eneros_dual_brain::ProposedControlPlan {
-                plan_id: String::from("req-svc-1"),
-                path: eneros_dual_brain::DecisionPath::Fast,
-                schedule: eneros_energy_lp_model::result::ScheduleResult {
-                    schedule: vec![eneros_energy_lp_model::result::ScheduleEntry {
-                        period: 0,
-                        charge_power_kw: 0.0,
-                        discharge_power_kw: 5.0,
-                        net_power_kw: 5.0,
-                        soc_pct: 0.5,
-                        revenue_yuan: 0.0,
-                    }],
-                    total_revenue_yuan: 0.0,
-                    objective_value: 0.0,
-                    solve_status: eneros_solver_core::result::SolveStatus::Optimal,
-                },
-                power_kw: 5.0,
-                target_device: String::from("pcs"),
-                ttl_secs: 60,
-                issued_at_ms: now_ms,
-                input_digest: None,
-                model_digest: None,
-                latency: Default::default(),
-                safety_violations: 0,
-                safety_clamped: false,
-                feedback: None,
-            };
+            // 蓝图 55：单时段计划构造器单源。
+            let plan = eneros_dual_brain::ProposedControlPlan::single_entry(
+                String::from("req-svc-1"),
+                eneros_dual_brain::DecisionPath::Fast,
+                5.0,
+                0.5,
+                eneros_solver_core::result::SolveStatus::Optimal,
+                60,
+                now_ms,
+                None,
+            );
             Ok(crate::ai_worker::encode_proposal(&plan).to_vec())
         }
     }

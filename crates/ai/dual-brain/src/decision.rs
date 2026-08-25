@@ -19,8 +19,10 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec;
 
-use eneros_energy_lp_model::result::ScheduleResult;
+use eneros_energy_lp_model::result::{ScheduleEntry, ScheduleResult};
+use eneros_solver_core::result::SolveStatus;
 /// 调度窗口小时数（原 coordinator 常量；49 WP-49.4 迁入 decision——
 /// target 子集消费（dispatch 引擎），不依赖 host 门控模块）。
 pub const SCHEDULE_WINDOW_HOURS: f64 = 0.25;
@@ -88,6 +90,60 @@ pub struct ProposedControlPlan {
     /// 慢路径预测反馈（仅供学习参考——学习门控在 dispatch 的 Committed
     /// 结果，见蓝图 40 WP-40.12）。
     pub feedback: Option<FeedbackContract>,
+}
+
+impl ProposedControlPlan {
+    /// 单时段计划构造器（蓝图 55）：heuristic/mock backend 与 wire 解码的
+    /// 十五字段字面量单源。目标设备固定 `"pcs"`（dispatch 层经 registry
+    /// 映射 DeviceId/PointId）；TTL 为显式参数——fast/slow 路径语义差异
+    /// 不在本卷收敛（蓝图 55 D4）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn single_entry(
+        plan_id: String,
+        path: DecisionPath,
+        net_power_kw: f64,
+        soc_pct: f64,
+        solve_status: SolveStatus,
+        ttl_secs: u32,
+        issued_at_ms: u64,
+        input_digest: Option<[u8; 32]>,
+    ) -> Self {
+        Self {
+            plan_id,
+            path,
+            schedule: ScheduleResult {
+                schedule: vec![ScheduleEntry {
+                    period: 0,
+                    charge_power_kw: if net_power_kw < 0.0 {
+                        -net_power_kw
+                    } else {
+                        0.0
+                    },
+                    discharge_power_kw: if net_power_kw > 0.0 {
+                        net_power_kw
+                    } else {
+                        0.0
+                    },
+                    net_power_kw,
+                    soc_pct,
+                    revenue_yuan: 0.0,
+                }],
+                total_revenue_yuan: 0.0,
+                objective_value: 0.0,
+                solve_status,
+            },
+            power_kw: net_power_kw,
+            target_device: String::from("pcs"),
+            ttl_secs,
+            issued_at_ms,
+            input_digest,
+            model_digest: None,
+            latency: LatencyBreakdown::default(),
+            safety_violations: 0,
+            safety_clamped: false,
+            feedback: None,
+        }
+    }
 }
 
 /// 不动作原因（`NoAction` 不是成功下发）。

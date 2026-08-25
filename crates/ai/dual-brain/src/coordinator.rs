@@ -242,6 +242,25 @@ impl<S: Solver> DualBrainCoordinator<S> {
     /// 所有路径（Fast/Slow/Fallback/Degraded）都入审计链；`gate.record`
     /// 不再在协调器内调用——成功预算记账移到 dispatch 的 confirmed
     /// dispatch 阶段（拒绝/失败不消耗成功预算）。
+    /// 拒绝出口（蓝图 55）：结构化拒绝 + 入审计链的统一封装——execute
+    /// 各步九处内联 DecisionRejection 样板的单源（「每个结果都进链」纪律
+    /// 不再依赖每分支记得三字段拼装）。
+    fn reject(
+        &mut self,
+        now_ms: u64,
+        path: DecisionPath,
+        reason: RejectionReason,
+    ) -> DecisionOutcome {
+        self.audit_outcome(
+            now_ms,
+            DecisionOutcome::Rejected(DecisionRejection {
+                reason,
+                path,
+                issued_at_ms: now_ms,
+            }),
+        )
+    }
+
     pub fn execute(&mut self, state: &RealtimeState, now_ms: u64) -> DecisionOutcome {
         // v0.248.0：真实计时时钟（单调毫秒；默认 eneros-time 全局时钟，
         // 测试经 with_clock 注入可控时钟）。
@@ -258,25 +277,19 @@ impl<S: Solver> DualBrainCoordinator<S> {
             let fast_result = match self.fast_path.execute(state, now_ms) {
                 Ok(r) => r,
                 Err(eneros_fast_path::error::FastPathError::SafetyFatal(n)) => {
-                    return self.audit_outcome(
+                    return self.reject(
                         now_ms,
-                        DecisionOutcome::Rejected(DecisionRejection {
-                            reason: RejectionReason::SafetyFatal(format!(
-                                "fast-path safety validation FATAL: {n} violation(s)"
-                            )),
-                            path: DecisionPath::Fast,
-                            issued_at_ms: now_ms,
-                        }),
+                        DecisionPath::Fast,
+                        RejectionReason::SafetyFatal(format!(
+                            "fast-path safety validation FATAL: {n} violation(s)"
+                        )),
                     );
                 }
                 Err(other) => {
-                    return self.audit_outcome(
+                    return self.reject(
                         now_ms,
-                        DecisionOutcome::Rejected(DecisionRejection {
-                            reason: RejectionReason::Internal(format!("fast-path: {other:?}")),
-                            path: DecisionPath::Fast,
-                            issued_at_ms: now_ms,
-                        }),
+                        DecisionPath::Fast,
+                        RejectionReason::Internal(format!("fast-path: {other:?}")),
                     );
                 }
             };
@@ -360,27 +373,19 @@ impl<S: Solver> DualBrainCoordinator<S> {
                 let fast = match self.fast_path.execute(state, now_ms) {
                     Ok(f) => f,
                     Err(eneros_fast_path::error::FastPathError::SafetyFatal(n)) => {
-                        return self.audit_outcome(
+                        return self.reject(
                             now_ms,
-                            DecisionOutcome::Rejected(DecisionRejection {
-                                reason: RejectionReason::SafetyFatal(format!(
-                                    "fast fallback safety FATAL: {n} violation(s)"
-                                )),
-                                path: DecisionPath::Fallback,
-                                issued_at_ms: now_ms,
-                            }),
+                            DecisionPath::Fallback,
+                            RejectionReason::SafetyFatal(format!(
+                                "fast fallback safety FATAL: {n} violation(s)"
+                            )),
                         );
                     }
                     Err(other) => {
-                        return self.audit_outcome(
+                        return self.reject(
                             now_ms,
-                            DecisionOutcome::Rejected(DecisionRejection {
-                                reason: RejectionReason::Internal(format!(
-                                    "fast fallback: {other:?}"
-                                )),
-                                path: DecisionPath::Fallback,
-                                issued_at_ms: now_ms,
-                            }),
+                            DecisionPath::Fallback,
+                            RejectionReason::Internal(format!("fast fallback: {other:?}")),
                         );
                     }
                 };
@@ -403,13 +408,10 @@ impl<S: Solver> DualBrainCoordinator<S> {
         let intent = match self.intent_parser.parse_json(&llm_output) {
             Ok(i) => i,
             Err(e) => {
-                return self.audit_outcome(
+                return self.reject(
                     now_ms,
-                    DecisionOutcome::Rejected(DecisionRejection {
-                        reason: RejectionReason::Validation(format!("parse: {e:?}")),
-                        path: DecisionPath::Slow,
-                        issued_at_ms: now_ms,
-                    }),
+                    DecisionPath::Slow,
+                    RejectionReason::Validation(format!("parse: {e:?}")),
                 );
             }
         };
@@ -436,25 +438,19 @@ impl<S: Solver> DualBrainCoordinator<S> {
             },
         };
         if let Err(e) = self.contract_validator.validate(&contract) {
-            return self.audit_outcome(
+            return self.reject(
                 now_ms,
-                DecisionOutcome::Rejected(DecisionRejection {
-                    reason: RejectionReason::Validation(format!("contract: {e:?}")),
-                    path: DecisionPath::Slow,
-                    issued_at_ms: now_ms,
-                }),
+                DecisionPath::Slow,
+                RejectionReason::Validation(format!("contract: {e:?}")),
             );
         }
         let (config, problem) = match self.converter.to_solver_params(&contract, &state.system) {
             Ok(v) => v,
             Err(e) => {
-                return self.audit_outcome(
+                return self.reject(
                     now_ms,
-                    DecisionOutcome::Rejected(DecisionRejection {
-                        reason: RejectionReason::Validation(format!("convert: {e:?}")),
-                        path: DecisionPath::Slow,
-                        issued_at_ms: now_ms,
-                    }),
+                    DecisionPath::Slow,
+                    RejectionReason::Validation(format!("convert: {e:?}")),
                 );
             }
         };
@@ -467,13 +463,10 @@ impl<S: Solver> DualBrainCoordinator<S> {
         let solve_result = match self.fast_path.solver.solve(&problem, now_ms) {
             Ok(r) => r,
             Err(e) => {
-                return self.audit_outcome(
+                return self.reject(
                     now_ms,
-                    DecisionOutcome::Rejected(DecisionRejection {
-                        reason: RejectionReason::Validation(format!("solve: {e:?}")),
-                        path: DecisionPath::Slow,
-                        issued_at_ms: now_ms,
-                    }),
+                    DecisionPath::Slow,
+                    RejectionReason::Validation(format!("solve: {e:?}")),
                 );
             }
         };
@@ -491,16 +484,13 @@ impl<S: Solver> DualBrainCoordinator<S> {
         // v0.206.0（P0-17）：安全屏障闭环——Fatal 违规拒绝（passed==false），
         // 不取 clamped_schedule 继续。分类保留：SafetyFatal → 立即上报人工。
         if !validation.passed {
-            return self.audit_outcome(
+            return self.reject(
                 now_ms,
-                DecisionOutcome::Rejected(DecisionRejection {
-                    reason: RejectionReason::SafetyFatal(format!(
-                        "safety validation FATAL: {} violation(s)",
-                        validation.violations.len()
-                    )),
-                    path: DecisionPath::Slow,
-                    issued_at_ms: now_ms,
-                }),
+                DecisionPath::Slow,
+                RejectionReason::SafetyFatal(format!(
+                    "safety validation FATAL: {} violation(s)",
+                    validation.violations.len()
+                )),
             );
         }
         let final_schedule = validation.clamped_schedule.clone().unwrap_or(schedule);

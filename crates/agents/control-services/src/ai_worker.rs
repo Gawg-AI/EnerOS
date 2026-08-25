@@ -121,33 +121,17 @@ impl DecisionBackend for HeuristicBackend {
         };
         self.seq = self.seq.saturating_add(1);
         // plan_id 唯一（seq 递增）——dispatch 幂等键派生源，每次真实投递。
-        let plan = ProposedControlPlan {
-            plan_id: alloc::format!("heur-{}", self.seq),
-            path: self.path,
-            schedule: eneros_energy_lp_model::result::ScheduleResult {
-                schedule: vec![eneros_energy_lp_model::result::ScheduleEntry {
-                    period: 0,
-                    charge_power_kw: if power < 0.0 { -power } else { 0.0 },
-                    discharge_power_kw: if power > 0.0 { power } else { 0.0 },
-                    net_power_kw: power,
-                    soc_pct: soc,
-                    revenue_yuan: 0.0,
-                }],
-                total_revenue_yuan: 0.0,
-                objective_value: 0.0,
-                solve_status: eneros_solver_core::result::SolveStatus::Suboptimal, // 启发式解（无最优性声明）
-            },
-            power_kw: power,
-            target_device: String::from("pcs"),
-            ttl_secs: 60,
-            issued_at_ms: now_ms,
-            input_digest: Some(telemetry.provenance_digest),
-            model_digest: None,
-            latency: Default::default(),
-            safety_violations: 0,
-            safety_clamped: false,
-            feedback: None,
-        };
+        // 蓝图 55：单时段计划构造器单源（TTL 60 = heuristic 快路径语义）。
+        let plan = ProposedControlPlan::single_entry(
+            alloc::format!("heur-{}", self.seq),
+            self.path,
+            power,
+            soc,
+            eneros_solver_core::result::SolveStatus::Suboptimal, // 启发式解（无最优性声明）
+            60,
+            now_ms,
+            Some(telemetry.provenance_digest),
+        );
         Ok(encode_proposal(&plan).to_vec())
     }
 }
@@ -203,33 +187,18 @@ pub fn decode_proposal(buf: &[u8]) -> Option<ProposedControlPlan> {
     } else {
         Some(digest)
     };
-    Some(ProposedControlPlan {
+    // 蓝图 55：wire 重建走单时段计划构造器（soc 固定 0.5/Optimal 为
+    // wire 契约既有语义）。
+    Some(ProposedControlPlan::single_entry(
         plan_id,
         path,
-        schedule: eneros_energy_lp_model::result::ScheduleResult {
-            schedule: vec![eneros_energy_lp_model::result::ScheduleEntry {
-                period: 0,
-                charge_power_kw: if power_kw < 0.0 { -power_kw } else { 0.0 },
-                discharge_power_kw: if power_kw > 0.0 { power_kw } else { 0.0 },
-                net_power_kw: power_kw,
-                soc_pct: 0.5,
-                revenue_yuan: 0.0,
-            }],
-            total_revenue_yuan: 0.0,
-            objective_value: 0.0,
-            solve_status: eneros_solver_core::result::SolveStatus::Optimal,
-        },
         power_kw,
-        target_device: String::from("pcs"),
+        0.5,
+        eneros_solver_core::result::SolveStatus::Optimal,
         ttl_secs,
         issued_at_ms,
         input_digest,
-        model_digest: None,
-        latency: Default::default(),
-        safety_violations: 0,
-        safety_clamped: false,
-        feedback: None,
-    })
+    ))
 }
 
 /// AI worker 服务逻辑。
@@ -417,33 +386,17 @@ mod tests {
             if self.fail {
                 return Err(DecisionReject::Unavailable(String::from("backend-broken")));
             }
-            let plan = ProposedControlPlan {
-                plan_id: String::from("req-1"),
-                path: eneros_dual_brain::DecisionPath::Slow,
-                schedule: eneros_energy_lp_model::result::ScheduleResult {
-                    schedule: vec![eneros_energy_lp_model::result::ScheduleEntry {
-                        period: 0,
-                        charge_power_kw: 0.0,
-                        discharge_power_kw: 5.0,
-                        net_power_kw: 5.0,
-                        soc_pct: telemetry.state.soc_pct,
-                        revenue_yuan: 0.0,
-                    }],
-                    total_revenue_yuan: 0.0,
-                    objective_value: 0.0,
-                    solve_status: eneros_solver_core::result::SolveStatus::Optimal,
-                },
-                power_kw: 5.0,
-                target_device: String::from("pcs"),
-                ttl_secs: 60,
-                issued_at_ms: now_ms,
-                input_digest: Some(telemetry.provenance_digest),
-                model_digest: None,
-                latency: Default::default(),
-                safety_violations: 0,
-                safety_clamped: false,
-                feedback: None,
-            };
+            // 蓝图 55：单时段计划构造器单源。
+            let plan = ProposedControlPlan::single_entry(
+                String::from("req-1"),
+                eneros_dual_brain::DecisionPath::Slow,
+                5.0,
+                telemetry.state.soc_pct,
+                eneros_solver_core::result::SolveStatus::Optimal,
+                60,
+                now_ms,
+                Some(telemetry.provenance_digest),
+            );
             Ok(encode_proposal(&plan).to_vec())
         }
     }

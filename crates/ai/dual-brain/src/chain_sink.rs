@@ -133,18 +133,18 @@ pub struct ChainCommandSink {
 }
 
 impl ChainCommandSink {
-    /// 构造（`chain` 必须已装配租约/策略/安全点；`key` 与 gateway 同源）。
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    /// 从同源档案构造（蓝图 55）：租约 ID/绑定设备点/策略代次全部派生自
+    /// 同一 [`ControlProfile`]——与复验侧（EnvelopeIngress / DispatchEngine）
+    /// 共用一份事实；`issuer` 为签发方身份（署名/审计语义，不入档案）；
+    /// `fencing_token` 来自装配期握手或本地签发（[`ControlProfile::issue_lease`]）。
+    #[allow(clippy::too_many_arguments)] // 档案化后仍为装配显式面（旧 new 十一参同先例）
+    pub fn from_profile(
         chain: ControlChain,
         executor: Box<dyn DeviceExecutor>,
         key: &[u8],
-        lease_id: [u8; 16],
-        fencing_token: u64,
+        profile: &eneros_control_gateway::ControlProfile,
         issuer: [u8; 16],
-        device_id: u32,
-        point_id: u32,
-        policy_version: u64,
+        fencing_token: u64,
         now_fn: fn() -> u64,
         feedback_fn: fn(u64) -> FeedbackBundle,
     ) -> Self {
@@ -152,12 +152,12 @@ impl ChainCommandSink {
             chain,
             executor,
             key: key.to_vec(),
-            lease_id,
+            lease_id: profile.lease_id,
             fencing_token,
             issuer,
-            device_id,
-            point_id,
-            policy_version,
+            device_id: profile.device_id,
+            point_id: profile.point_id,
+            policy_version: profile.policy_version,
             now_fn,
             feedback_fn,
             seq: 0,
@@ -266,9 +266,6 @@ pub fn deny_reason_str(reason: &ChainDenyReason) -> String {
 #[cfg(test)]
 mod tests {
     use eneros_control_gateway::chain::ControlChain;
-    use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
-    use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
-    use eneros_control_gateway::LeaseScope;
 
     use super::*;
     use crate::sink::MockCommandSink;
@@ -282,44 +279,19 @@ mod tests {
     }
 
     /// 装配一个放行 AI 命令的链（策略允许 ActorKind::Ai 对 device1/point10）。
+    /// 蓝图 55：档案单源（TTL 600 为测试变体；epoch 缺省 0 ⇒ 首签 token=1）。
+    fn test_profile(point_id: u32) -> eneros_control_gateway::ControlProfile {
+        let mut profile =
+            eneros_control_gateway::ControlProfile::ai_pcc_single(1, point_id, 4, LEASE_ID, 0);
+        profile.lease_ttl_secs = 600;
+        profile
+    }
+
     fn chain_allow_ai() -> ControlChain {
-        let mut policy = Policy::new(3);
-        let _ = policy.replace_rules(vec![PolicyRule {
-            actor_kind: Some(ActorKind::Ai),
-            devices: vec![1],
-            points: vec![10],
-            kinds: vec![CommandClass::Switch],
-            time_window: (0, 0),
-            obligations: vec![],
-        }]);
-        let mut chain = ControlChain::new(KEY, 5, 64, policy, 60, 300, 64, 30);
-        let scope = LeaseScope {
-            devices: vec![1],
-            points: vec![10],
-            max_class: 1,
-        };
-        let (token, _) = chain
-            .lease_service_mut()
-            .issue(LEASE_ID, scope, 600, now())
-            .expect("lease");
+        let profile = test_profile(10);
+        let mut chain = ControlChain::from_profile(KEY, &profile);
+        let token = profile.issue_lease(&mut chain, now()).expect("lease");
         assert_eq!(token, 1);
-        chain.safety_mut().register(
-            1,
-            10,
-            SafetyPoint {
-                role: SafetyRole::PccBreaker,
-                spec: eneros_telemetry_model::point_spec::PointSpec {
-                    point_id: 10,
-                    device_id: 1,
-                    unit: eneros_telemetry_model::unit::PhysicalUnit::Kilowatts,
-                    safe_min: -500.0,
-                    safe_max: 500.0,
-                    max_ramp_per_sec: None,
-                    direction: eneros_telemetry_model::point_spec::ControlDirection::Discrete,
-                    remote_controllable: true,
-                },
-            },
-        );
         chain
     }
 
@@ -367,16 +339,13 @@ mod tests {
     }
 
     fn sink_with(executor: RecordingExecutor) -> ChainCommandSink {
-        ChainCommandSink::new(
+        ChainCommandSink::from_profile(
             chain_allow_ai(),
             Box::new(executor),
             KEY,
-            LEASE_ID,
-            1,
+            &test_profile(10),
             ISSUER,
             1,
-            10,
-            4,
             now,
             feedback_fresh,
         )
@@ -410,16 +379,13 @@ mod tests {
     #[test]
     fn test_chain_sink_envelope_expiry_in_seconds() {
         let shared = std::rc::Rc::new(std::cell::RefCell::new(RecordingExecutor::default()));
-        let mut sink = ChainCommandSink::new(
+        let mut sink = ChainCommandSink::from_profile(
             chain_allow_ai(),
             Box::new(RcExecutor(shared.clone())),
             KEY,
-            LEASE_ID,
-            1,
+            &test_profile(10),
             ISSUER,
             1,
-            10,
-            4,
             now,
             feedback_fresh,
         );
@@ -450,18 +416,17 @@ mod tests {
     }
 
     /// 验收：default-deny——策略不允许的点（99 不在规则表）→ 拒绝（非 Ok）。
+    /// 蓝图 55：签发侧档案绑定 pt99、复验侧链绑定 pt10（双档案表达跨点
+    /// 拒绝，语义与旧十一参构造的 point_id=99 覆写一致）。
     #[test]
     fn test_default_deny_policy_rejects() {
-        let mut sink = ChainCommandSink::new(
+        let mut sink = ChainCommandSink::from_profile(
             chain_allow_ai(),
             Box::new(RecordingExecutor::default()),
             KEY,
-            LEASE_ID,
-            1,
+            &test_profile(99), // 点 99 无策略规则 → NoPolicy 拒绝
             ISSUER,
             1,
-            99, // 点 99 无策略规则 → NoPolicy 拒绝
-            4,
             now,
             feedback_fresh,
         );
