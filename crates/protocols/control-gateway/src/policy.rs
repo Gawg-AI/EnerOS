@@ -120,6 +120,11 @@ impl Policy {
         self.generation = self.generation.wrapping_add(1).max(1);
         self.generation
     }
+
+    /// 只读规则视图（蓝图 55：profile 派生校验与诊断面）。
+    pub fn rules(&self) -> &[PolicyRule] {
+        &self.rules
+    }
 }
 
 /// The Policy Decision Point.

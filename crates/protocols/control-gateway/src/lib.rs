@@ -31,6 +31,7 @@ pub mod incident_replay;
 pub mod lease;
 pub mod override_ctrl;
 pub mod policy;
+pub mod profile;
 pub mod reconcile;
 pub mod safety;
 pub mod slo;
@@ -57,6 +58,7 @@ pub use incident_replay::{
 pub use lease::{LeaseScope, LeaseService};
 pub use override_ctrl::{OverrideAuthority, OverrideDecision, OverrideSession};
 pub use policy::{CommandClass, Decision, DenyReason, Obligation, Pdp, Policy, PolicyRule};
+pub use profile::{ChainTuning, ControlProfile};
 pub use reconcile::FeedbackSample;
 pub use reconcile::{reconcile, Reconciled};
 pub use safety::{PlantContext, SafetyPoint, SafetyRole, SafetyValidator, SafetyVerdict};
