@@ -55,7 +55,13 @@ use crate::id::AgentId;
 ///
 /// let mut rng = CsRng::new();
 /// let keypair = Sm2KeyPair::generate(&mut rng).unwrap();
-/// let mut manager = CapabilityManager::new(keypair, AgentId(1));
+/// // 生产：CapabilityManager::new_with_platform_entropy(keypair, AgentId(1))?。
+/// // 此处用注入式构造演示（host doctest 无平台熵源）：
+/// let mut manager = CapabilityManager::with_rng(
+///     keypair,
+///     AgentId(1),
+///     CsRng::from_seed(&[0x5A; 32]),
+/// );
 ///
 /// let builder = CapabilityTokenBuilder::new()
 ///     .owner(AgentId(2))
@@ -102,16 +108,25 @@ impl fmt::Debug for CapabilityManager {
 }
 
 impl CapabilityManager {
-    /// 构造能力管理器.
+    /// 构造能力管理器（WP-53.6 熵最后一公里：**生产入口**）.
     ///
-    /// # 参数
-    /// - `keypair`: 签发者 SM2 密钥对（用于令牌签名）
-    /// - `issuer_id`: 签发者 Agent ID（D7 偏差：可配置）
+    /// RNG 来自平台熵适配层 [`eneros_crypto::csrng_from_platform`]——
+    /// TRNG/virtio-rng 硬件路径；熵不可用时 fail-closed 返回 Err，
+    /// **绝不回落固定种子**（旧实现默认全零种子，已移除）。
+    pub fn new_with_platform_entropy(
+        keypair: Sm2KeyPair,
+        issuer_id: AgentId,
+    ) -> Result<Self, eneros_crypto::rng::EntropyError> {
+        let rng = eneros_crypto::rng::csrng_from_platform()?;
+        Ok(Self::with_rng(keypair, issuer_id, rng))
+    }
+
+    /// 测试构造：全零种子（仅测试/仿真编译可见）。
     ///
-    /// # 返回
-    /// 空的 `CapabilityManager`（无令牌、无冻结、无撤销）。
-    pub fn new(keypair: Sm2KeyPair, issuer_id: AgentId) -> Self {
-        // 蓝图/20 R2-1 熵纪律：生产必须注入平台熵源；默认路径仅测试/仿真。
+    /// WP-53.6：原 `new()` 的全零种子默认对生产可见，属 INV 违规面；
+    /// 现收编为显式命名并 cfg 门控。
+    #[cfg(any(test, feature = "mock"))]
+    pub fn new_test_only_zero_seed(keypair: Sm2KeyPair, issuer_id: AgentId) -> Self {
         Self::with_rng(keypair, issuer_id, CsRng::from_seed(&[0u8; 32]))
     }
 
@@ -350,7 +365,7 @@ mod tests {
     #[test]
     fn test_manager_new() {
         let (kp, _) = make_keypair();
-        let manager = CapabilityManager::new(kp, AgentId(1));
+        let manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
         assert!(manager.store().is_empty());
         assert!(!manager.is_frozen(0));
         assert!(!manager.is_revoked(0));
@@ -360,7 +375,7 @@ mod tests {
     #[test]
     fn test_manager_issue_success() {
         let (kp, _) = make_keypair();
-        let mut manager = CapabilityManager::new(kp, AgentId(1));
+        let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
         let builder = make_builder(
             AgentId(2),
             ResourceTarget::Agent(AgentId(3)),
@@ -378,7 +393,7 @@ mod tests {
     #[test]
     fn test_manager_issue_and_verify() {
         let (kp, _) = make_keypair();
-        let mut manager = CapabilityManager::new(kp, AgentId(1));
+        let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
         let builder = make_builder(
             AgentId(2),
             ResourceTarget::Agent(AgentId(3)),
@@ -392,7 +407,7 @@ mod tests {
     #[test]
     fn test_manager_check_access_allowed() {
         let (kp, _) = make_keypair();
-        let mut manager = CapabilityManager::new(kp, AgentId(1));
+        let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
         let builder = make_builder(
             AgentId(2),
             ResourceTarget::Agent(AgentId(3)),
@@ -418,7 +433,7 @@ mod tests {
     #[test]
     fn test_manager_check_access_denied_no_token() {
         let (kp, _) = make_keypair();
-        let manager = CapabilityManager::new(kp, AgentId(1));
+        let manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
         // Agent 99 无任何令牌
         let result = manager.check_access(
@@ -433,7 +448,7 @@ mod tests {
     #[test]
     fn test_manager_check_access_denied_wrong_target() {
         let (kp, _) = make_keypair();
-        let mut manager = CapabilityManager::new(kp, AgentId(1));
+        let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
         let builder = make_builder(
             AgentId(2),
             ResourceTarget::Agent(AgentId(3)),
@@ -455,7 +470,7 @@ mod tests {
     #[test]
     fn test_manager_check_access_denied_wrong_permission() {
         let (kp, _) = make_keypair();
-        let mut manager = CapabilityManager::new(kp, AgentId(1));
+        let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
         let builder = make_builder(
             AgentId(2),
             ResourceTarget::Agent(AgentId(3)),
@@ -477,7 +492,7 @@ mod tests {
     #[test]
     fn test_manager_check_access_denied_expired() {
         let (kp, _) = make_keypair();
-        let mut manager = CapabilityManager::new(kp, AgentId(1));
+        let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
         // ttl=1000, issued_at=1000, expires_at=2000
         let builder = make_builder(
             AgentId(2),
@@ -500,7 +515,7 @@ mod tests {
     #[test]
     fn test_manager_check_access_denied_frozen() {
         let (kp, _) = make_keypair();
-        let mut manager = CapabilityManager::new(kp, AgentId(1));
+        let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
         let builder = make_builder(
             AgentId(2),
             ResourceTarget::Agent(AgentId(3)),
@@ -527,7 +542,7 @@ mod tests {
     #[test]
     fn test_manager_freeze_agent() {
         let (kp, _) = make_keypair();
-        let mut manager = CapabilityManager::new(kp, AgentId(1));
+        let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
         // Agent 2 持有 2 个令牌
         manager
@@ -565,7 +580,7 @@ mod tests {
     #[test]
     fn test_manager_revoke_token() {
         let (kp, _) = make_keypair();
-        let mut manager = CapabilityManager::new(kp, AgentId(1));
+        let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
         let token = manager
             .issue(
                 make_builder(
@@ -590,7 +605,7 @@ mod tests {
     #[test]
     fn test_manager_cleanup_expired() {
         let (kp, _) = make_keypair();
-        let mut manager = CapabilityManager::new(kp, AgentId(1));
+        let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
         // token 1: ttl=1000, issued_at=1000, expires_at=2000（now=3000 时过期）
         manager
@@ -626,7 +641,7 @@ mod tests {
     #[test]
     fn test_manager_unfreeze() {
         let (kp, _) = make_keypair();
-        let mut manager = CapabilityManager::new(kp, AgentId(1));
+        let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
         let token = manager
             .issue(
                 make_builder(

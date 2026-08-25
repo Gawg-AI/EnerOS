@@ -32,7 +32,7 @@ fn make_builder(
 #[test]
 fn test_manager_issue_and_check_access_end_to_end() {
     let (kp, _) = make_keypair();
-    let mut manager = CapabilityManager::new(kp, AgentId(1));
+    let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
     // Agent 2 请求对 Agent 3 的 READ|WRITE 权限
     let builder = make_builder(
@@ -66,7 +66,7 @@ fn test_manager_issue_and_check_access_end_to_end() {
 #[test]
 fn test_manager_check_access_wrong_target_rejected() {
     let (kp, _) = make_keypair();
-    let mut manager = CapabilityManager::new(kp, AgentId(1));
+    let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
     // Agent 2 有 target=Agent(3) 的令牌
     let builder = make_builder(
@@ -98,7 +98,7 @@ fn test_manager_check_access_wrong_target_rejected() {
 #[test]
 fn test_manager_freeze_blocks_check_access() {
     let (kp, _) = make_keypair();
-    let mut manager = CapabilityManager::new(kp, AgentId(1));
+    let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
     let builder = make_builder(
         AgentId(2),
@@ -136,7 +136,7 @@ fn test_manager_freeze_blocks_check_access() {
 #[test]
 fn test_manager_unfreeze_restores_access() {
     let (kp, _) = make_keypair();
-    let mut manager = CapabilityManager::new(kp, AgentId(1));
+    let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
     let builder = make_builder(
         AgentId(2),
@@ -181,7 +181,7 @@ fn test_manager_unfreeze_restores_access() {
 #[test]
 fn test_manager_revoke_removes_token() {
     let (kp, _) = make_keypair();
-    let mut manager = CapabilityManager::new(kp, AgentId(1));
+    let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
     let builder = make_builder(
         AgentId(2),
@@ -213,7 +213,7 @@ fn test_manager_revoke_removes_token() {
 #[test]
 fn test_manager_cleanup_expired_removes_expired() {
     let (kp, _) = make_keypair();
-    let mut manager = CapabilityManager::new(kp, AgentId(1));
+    let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
     // token 1: ttl=1000, issued_at=1000, expires_at=2000（now=3000 过期）
     manager
@@ -260,7 +260,7 @@ fn test_manager_cleanup_expired_removes_expired() {
 #[test]
 fn test_manager_multiple_agents_isolation() {
     let (kp, _) = make_keypair();
-    let mut manager = CapabilityManager::new(kp, AgentId(1));
+    let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
     // Agent 2 有对 Agent 3 的 READ 权限
     manager
@@ -343,7 +343,7 @@ fn test_manager_multiple_agents_isolation() {
 #[test]
 fn test_manager_multiple_tokens_same_agent() {
     let (kp, _) = make_keypair();
-    let mut manager = CapabilityManager::new(kp, AgentId(1));
+    let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
     // Agent 2 持有 2 个令牌：不同 target + 不同权限
     manager
@@ -427,7 +427,7 @@ fn test_manager_multiple_tokens_same_agent() {
 #[test]
 fn test_manager_verify_token_signature() {
     let (kp, _) = make_keypair();
-    let mut manager = CapabilityManager::new(kp, AgentId(1));
+    let mut manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
     let builder = make_builder(
         AgentId(2),
@@ -449,7 +449,7 @@ fn test_manager_verify_token_signature() {
 #[test]
 fn test_manager_no_capability_error() {
     let (kp, _) = make_keypair();
-    let manager = CapabilityManager::new(kp, AgentId(1));
+    let manager = CapabilityManager::new_test_only_zero_seed(kp, AgentId(1));
 
     // Agent 99 无任何令牌
     let result = manager.check_access(

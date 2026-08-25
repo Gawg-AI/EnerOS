@@ -101,9 +101,11 @@ impl BootVerifier {
             // 经步骤 1/2 过滤后，stage 仅剩 Bootloader（Rom/Complete 已直通）
             _ => *self.chain.root_key(),
         };
-        // 9. SM2 验签（签名消息为镜像 SM3 哈希，D9）
+        // 9. SM2 验签（WP-53.6 INV-SB：签名域 = size||timestamp||hash，
+        //    覆盖防回滚决策依赖的全部字段；旧实现仅签 image_hash，
+        //    攻击者可重放旧签名对并改写 timestamp 绕过防降级）
         let sm2_sig = Sm2Signature::from_bytes(&sig.signature);
-        match sm2_verify(&sig.image_hash, &sm2_sig, &key) {
+        match sm2_verify(&sig.signed_message(), &sm2_sig, &key) {
             Ok(true) => {}
             Ok(false) | Err(_) => return Err(self.reject(BootError::SignatureInvalid)),
         }
@@ -174,7 +176,8 @@ mod tests {
 
     use super::*;
 
-    /// 用真实 SM2 私钥对镜像签名，组装合法签名头（签名消息为镜像 SM3 哈希）.
+    /// 用真实 SM2 私钥对镜像签名，组装合法签名头
+    /// （WP-53.6 INV-SB：签名消息 = size||timestamp||hash）.
     fn sign_image(
         image: &[u8],
         kp: &Sm2KeyPair,
@@ -182,15 +185,23 @@ mod tests {
         timestamp: u64,
     ) -> ImageSignature {
         let hash = sm3_hash(image);
-        let sig = sm2_sign(&hash, &kp.private_key, &kp.public_key, rng).unwrap();
-        ImageSignature {
+        let mut header = ImageSignature {
             magic: *b"ESIG",
             version: 1,
             image_size: image.len() as u64,
             image_hash: hash,
-            signature: sig.to_bytes(),
+            signature: [0u8; 64],
             timestamp,
-        }
+        };
+        let sig = sm2_sign(
+            &header.signed_message(),
+            &kp.private_key,
+            &kp.public_key,
+            rng,
+        )
+        .unwrap();
+        header.signature = sig.to_bytes();
+        header
     }
 
     // ============================================================
@@ -321,6 +332,38 @@ mod tests {
         assert_eq!(
             v.verify_stage(BootStage::Bootloader, image, &sig),
             Err(BootError::StaleImage)
+        );
+    }
+
+    // ===== WP-53.6 INV-SB：签名域完备 =====
+
+    /// WP-53.6 INV-SB：旧版合法签名对 + 篡改 timestamp → SignatureInvalid。
+    ///
+    /// 旧实现仅签 image_hash：持 ts=100 的合法 (hash,sig) 对、把头部
+    /// timestamp 改成 150 即可通过 min_timestamp=100 防降级检查（降级攻击）。
+    /// 签名域纳入 size||timestamp||hash 后，同一攻击在验签步失败。
+    #[test]
+    fn wp536_timestamp_tamper_breaks_signature() {
+        let mut rng = CsRng::new();
+        let root = Sm2KeyPair::generate(&mut rng).unwrap();
+        // min_timestamp=100：伪造的 ts=150 能通过 StaleImage 检查。
+        let mut v = BootVerifier::new(root.public_key, 100);
+        assert_eq!(v.advance_stage(None), Ok(BootStage::Bootloader));
+        let image = b"wp536-bootloader-image";
+        let sig = sign_image(image, &root, &mut rng, 100);
+        assert_eq!(
+            v.verify_stage(BootStage::Bootloader, image, &sig),
+            Ok(()),
+            "原始签名必须有效"
+        );
+
+        // 攻击：重放签名对 + 抬高 timestamp。
+        let mut forged = sig;
+        forged.timestamp = 150;
+        assert_eq!(
+            v.verify_stage(BootStage::Bootloader, image, &forged),
+            Err(BootError::SignatureInvalid),
+            "timestamp 已入签名域——改写必须在验签步失败"
         );
     }
 

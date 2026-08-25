@@ -42,6 +42,25 @@ pub struct ImageSignature {
     pub timestamp: u64,
 }
 
+impl ImageSignature {
+    /// WP-53.6 INV-SB：本签名头的**签名域**——签名消息必须覆盖
+    /// 防回滚决策依赖的全部字段。
+    ///
+    /// 布局（48 字节，小端）：`image_size(8) || timestamp(8) || image_hash(32)`。
+    ///
+    /// 旧实现仅对 `image_hash` 单独签名：攻击者持任一旧版合法
+    /// `(image_hash, signature)` 对即可改写头部 `timestamp` 通过防降级检查
+    /// （降级攻击完整成立）。将 size/timestamp 一并入签后，
+    /// 「重放旧哈希签名 + 改头部」在验签步直接失败。
+    pub fn signed_message(&self) -> [u8; 48] {
+        let mut msg = [0u8; 48];
+        msg[0..8].copy_from_slice(&self.image_size.to_le_bytes());
+        msg[8..16].copy_from_slice(&self.timestamp.to_le_bytes());
+        msg[16..48].copy_from_slice(&self.image_hash);
+        msg
+    }
+}
+
 /// 将镜像签名头编码为 118 字节帧（全小端）.
 pub fn encode_header(sig: &ImageSignature) -> [u8; HEADER_LEN] {
     let mut out = [0u8; HEADER_LEN];

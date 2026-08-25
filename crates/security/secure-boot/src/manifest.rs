@@ -100,9 +100,10 @@ impl BootManifest {
         if sig.timestamp < min_timestamp {
             return Err(BootError::StaleImage);
         }
-        // 4. 信任根 SM2 验签（签名消息 = 镜像 SM3 哈希，与 verifier 同路径）。
+        // 4. 信任根 SM2 验签（WP-53.6 INV-SB：签名域 = size||timestamp||hash，
+        //    与 verifier 同路径）。
         let sm2_sig = Sm2Signature::from_bytes(&sig.signature);
-        match sm2_verify(&sig.image_hash, &sm2_sig, root_key) {
+        match sm2_verify(&sig.signed_message(), &sm2_sig, root_key) {
             Ok(true) => {}
             Ok(false) | Err(_) => return Err(BootError::SignatureInvalid),
         }
@@ -253,16 +254,23 @@ mod tests {
         let mut image = alloc::vec![0x44u8; 64];
         image.extend_from_slice(&manifest[..manifest_len]);
         let hash = eneros_crypto::sm3_hash(&image);
-        let sig =
-            eneros_crypto::sm2_sign(&hash, &root.private_key, &root.public_key, rng).expect("sign");
-        let header = ImageSignature {
+        // WP-53.6 INV-SB：签名域 = size||timestamp||hash。
+        let mut header = ImageSignature {
             magic: *b"ESIG",
             version: 1,
             image_size: image.len() as u64,
             image_hash: hash,
-            signature: sig.to_bytes(),
+            signature: [0u8; 64],
             timestamp,
         };
+        let sig = eneros_crypto::sm2_sign(
+            &header.signed_message(),
+            &root.private_key,
+            &root.public_key,
+            rng,
+        )
+        .expect("sign");
+        header.signature = sig.to_bytes();
         (image, header)
     }
 

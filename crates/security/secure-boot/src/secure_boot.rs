@@ -223,15 +223,24 @@ mod tests {
         timestamp: u64,
     ) -> ImageSignature {
         let hash = sm3_hash(image);
-        let sig = sm2_sign(&hash, &kp.private_key, &kp.public_key, rng).unwrap();
-        ImageSignature {
+        // WP-53.6 INV-SB：签名域 = size||timestamp||hash。
+        let mut header = ImageSignature {
             magic: *b"ESIG",
             version: 1,
             image_size: image.len() as u64,
             image_hash: hash,
-            signature: sig.to_bytes(),
+            signature: [0u8; 64],
             timestamp,
-        }
+        };
+        let sig = sm2_sign(
+            &header.signed_message(),
+            &kp.private_key,
+            &kp.public_key,
+            rng,
+        )
+        .unwrap();
+        header.signature = sig.to_bytes();
+        header
     }
 
     #[test]

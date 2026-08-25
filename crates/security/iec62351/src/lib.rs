@@ -45,6 +45,7 @@
 extern crate alloc;
 
 pub mod key_mgmt;
+pub mod replay;
 pub mod secure_104;
 pub mod secure_goose;
 pub mod secure_sv;
@@ -75,4 +76,8 @@ pub enum SecError {
     NotReady,
     /// 对端安全告警（TLS Alert，v0.237.0）。
     PeerAlert,
+    /// WP-53.6 INV-GOOSE：重放帧（序号已在接收滑动窗口内出现）。
+    Replayed,
+    /// WP-53.6 INV-GOOSE：序号过旧（已滑出 64 帧窗口左沿）。
+    SequenceTooOld,
 }

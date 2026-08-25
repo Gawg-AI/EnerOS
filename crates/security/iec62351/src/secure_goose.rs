@@ -12,6 +12,7 @@ use eneros_crypto::sm4::gcm::Sm4Gcm;
 use eneros_crypto::CsRng;
 
 use crate::key_mgmt::SessionKey;
+use crate::replay::{ReplayVerdict, ReplayWindow};
 use crate::SecError;
 
 /// 安全帧封装（SM4-GCM 密文 + SM3-HMAC 认证）。
@@ -47,6 +48,8 @@ pub(crate) struct SecureChannel {
     /// GCM nonce 复用可导出认证密钥）。IV = random(4B) ‖ counter(4B) ‖
     /// key_id(4B)。
     iv_random: [u8; 4],
+    /// WP-53.6 INV-GOOSE：接收侧防重放滑动窗口（序号 = IV 计数器字段）。
+    replay: ReplayWindow,
 }
 
 impl SecureChannel {
@@ -62,6 +65,7 @@ impl SecureChannel {
             key_id: session.key_id,
             iv_counter: 0,
             iv_random,
+            replay: ReplayWindow::new(),
         }
     }
 
@@ -99,6 +103,9 @@ impl SecureChannel {
     /// 解密 SecureFrame → 明文。
     ///
     /// 先以常量时间比较校验 HMAC（防时序攻击），再执行 SM4-GCM 解密。
+    ///
+    /// ⚠ WP-53.6：本方法**无重放防护**，仅保留给无序单帧场景与既有测试；
+    /// 生产路径必须使用 [`Self::decrypt_checked`]。
     pub(crate) fn decrypt(&self, frame: &SecureFrame) -> Result<Vec<u8>, SecError> {
         let mut auth_data = Vec::with_capacity(12 + frame.ciphertext.len() + 16);
         auth_data.extend_from_slice(&frame.iv);
@@ -108,6 +115,36 @@ impl SecureChannel {
         if !ct_eq(&expected, &frame.hmac) {
             return Err(SecError::HmacMismatch);
         }
+        self.cipher
+            .decrypt(&frame.iv, &frame.ciphertext, &[], &frame.tag)
+            .map_err(|_| SecError::DecryptFailed)
+    }
+
+    /// 解密 + 防重放（WP-53.6 INV-GOOSE）。
+    ///
+    /// 顺序：HMAC 认证 → 滑动窗口查重（序号 = IV 计数器字段 iv[4..8]）→
+    /// GCM 解密。认证先于窗口检查：未认证报文不得探测接收窗口状态。
+    /// 跳闸/合闸类保护信号的原样重放在此被 [`SecError::Replayed`] 拒绝。
+    pub(crate) fn decrypt_checked(&mut self, frame: &SecureFrame) -> Result<Vec<u8>, SecError> {
+        // 1. HMAC 认证（同 decrypt）。
+        let mut auth_data = Vec::with_capacity(12 + frame.ciphertext.len() + 16);
+        auth_data.extend_from_slice(&frame.iv);
+        auth_data.extend_from_slice(&frame.ciphertext);
+        auth_data.extend_from_slice(&frame.tag);
+        let expected = hmac_sm3(&self.mac_key, &auth_data);
+        if !ct_eq(&expected, &frame.hmac) {
+            return Err(SecError::HmacMismatch);
+        }
+        // 2. 滑动窗口查重。
+        let seq = u64::from(u32::from_be_bytes(
+            frame.iv[4..8].try_into().expect("4 bytes"),
+        ));
+        match self.replay.accept(seq) {
+            ReplayVerdict::Accept => {}
+            ReplayVerdict::Duplicate => return Err(SecError::Replayed),
+            ReplayVerdict::TooOld => return Err(SecError::SequenceTooOld),
+        }
+        // 3. GCM 解密。
         self.cipher
             .decrypt(&frame.iv, &frame.ciphertext, &[], &frame.tag)
             .map_err(|_| SecError::DecryptFailed)
@@ -134,8 +171,19 @@ impl SecureGoose {
     }
 
     /// 解密 SecureFrame → 明文（先校验 HMAC，再 GCM 解密）。
+    ///
+    /// ⚠ WP-53.6：无重放防护。生产路径（跳闸/合闸类保护信号）必须使用
+    /// [`Self::decrypt_checked`]。
     pub fn decrypt(&self, frame: &SecureFrame) -> Result<Vec<u8>, SecError> {
         self.channel.decrypt(frame)
+    }
+
+    /// 解密 + 防重放（WP-53.6 INV-GOOSE：HMAC → 64 帧滑动窗口 → GCM）。
+    ///
+    /// 序号取自帧 IV 的计数器字段；同密钥重协商时接收实例随会话重建、
+    /// 窗口随之重置。
+    pub fn decrypt_checked(&mut self, frame: &SecureFrame) -> Result<Vec<u8>, SecError> {
+        self.channel.decrypt_checked(frame)
     }
 }
 
@@ -324,5 +372,61 @@ mod tests {
 
         let decrypted = sg.decrypt(&parsed).unwrap();
         assert_eq!(decrypted, pdu);
+    }
+
+    // ===== WP-53.6 INV-GOOSE：防重放 =====
+
+    /// INV-GOOSE 判据 1：跳闸帧原样重发 → Replayed（HMAC/GCM 均合法也拒收）。
+    #[test]
+    fn wp536_replayed_trip_frame_rejected() {
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
+        let frame = sg.encrypt(b"TRIP cmd").unwrap();
+
+        // 首收：decrypt_checked 通过。
+        assert_eq!(sg.decrypt_checked(&frame).unwrap(), b"TRIP cmd".to_vec());
+        // 原样重发（攻击者抓帧重放）：拒绝。
+        assert_eq!(
+            sg.decrypt_checked(&frame),
+            Err(SecError::Replayed),
+            "保护信号重放必须被滑动窗口拒绝"
+        );
+    }
+
+    /// INV-GOOSE 判据 2：合法乱序迟到帧在窗口内仍接受。
+    #[test]
+    fn wp536_in_window_late_frames_accepted() {
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
+        let f1 = sg.encrypt(b"one").unwrap();
+        let f2 = sg.encrypt(b"two").unwrap();
+        let f3 = sg.encrypt(b"three").unwrap();
+
+        // 按 3→2→1 到达（2、1 为窗口内乱序迟到帧——均未收过，接受）。
+        assert!(sg.decrypt_checked(&f3).is_ok());
+        assert_eq!(sg.decrypt_checked(&f2).unwrap(), b"two".to_vec());
+        assert_eq!(sg.decrypt_checked(&f1).unwrap(), b"one".to_vec());
+        // 全部收过后再投 f2 → 重放拒绝。
+        assert_eq!(sg.decrypt_checked(&f2), Err(SecError::Replayed));
+    }
+
+    /// INV-GOOSE 判据 3：滑出窗口左沿的过旧帧 → SequenceTooOld。
+    ///
+    /// 发送侧 IV 计数器连续推进 >64 帧，最早未确认帧滑出左沿。
+    #[test]
+    fn wp536_too_old_beyond_window_rejected() {
+        let mut sg = SecureGoose::new(&test_session(), &mut CsRng::from_seed(&[0x61; 32]));
+        let first = sg.encrypt(b"first").unwrap();
+
+        // 推进 70 帧。
+        for _ in 0..70 {
+            let f = sg.encrypt(b"filler").unwrap();
+            sg.decrypt_checked(&f).expect("filler");
+        }
+
+        // 首帧已滑出左沿。
+        assert_eq!(
+            sg.decrypt_checked(&first),
+            Err(SecError::SequenceTooOld),
+            "滑出 64 帧窗口的过旧帧必须显式拒绝"
+        );
     }
 }
