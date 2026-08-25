@@ -19,8 +19,6 @@ use alloc::string::String;
 use core::panic::PanicInfo;
 
 #[cfg(target_os = "none")]
-use eneros_audit::{AuditLoggerImpl, MemStore};
-#[cfg(target_os = "none")]
 use eneros_control_dispatch::{DispatchConfig, FeedbackPointMapping, InMemoryIntentStore};
 
 #[cfg(target_os = "none")]

@@ -13,8 +13,6 @@
 extern crate alloc;
 
 #[cfg(target_os = "none")]
-use alloc::vec;
-#[cfg(target_os = "none")]
 use core::panic::PanicInfo;
 
 #[cfg(target_os = "none")]
