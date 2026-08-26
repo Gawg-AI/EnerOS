@@ -13,6 +13,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use eneros_crypto::sm3_hash;
 use eneros_crypto::sm4::gcm::Sm4Gcm;
 
 /// 备份条目。
@@ -24,13 +25,16 @@ pub struct BackupItem {
     pub content_type: String,
     /// 数据。
     pub data: Vec<u8>,
-    /// SHA-256 校验和（hex）。
+    /// SM3 摘要校验和（64 个十六进制字符）。
+    ///
+    /// F-1 登记 Breaking：历史条目为 16 位 FNV-1a 十六进制串，切换后
+    /// 旧备份的 `verify()` 一律不通过（属预期的不可验，非误报）。
     pub checksum: String,
 }
 
 impl BackupItem {
     pub fn new(name: &str, content_type: &str, data: Vec<u8>) -> Self {
-        let checksum = sha256_hex(&data);
+        let checksum = integrity_hex(&data);
         Self {
             name: String::from(name),
             content_type: String::from(content_type),
@@ -41,7 +45,7 @@ impl BackupItem {
 
     /// 验证数据完整性（重新计算 checksum 并比对）。
     pub fn verify(&self) -> bool {
-        self.checksum == sha256_hex(&self.data)
+        self.checksum == integrity_hex(&self.data)
     }
 }
 
@@ -337,16 +341,13 @@ impl RestoreDrill {
     }
 }
 
-/// 简单 SHA-256 hex（占位实现，实际由 eneros-crypto 提供）。
-fn sha256_hex(data: &[u8]) -> String {
-    // 使用简单的 FNV-1a 作为占位校验和（测试环境）。
-    // 生产环境应使用 eneros-crypto 的 SM3 或 SHA-256。
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for &byte in data {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{:016x}", hash)
+/// 条目完整性校验和：SM3 摘要的十六进制串（64 字符）。
+///
+/// SPEC-GAP-CLOSURE-2026-08-26 / F-1：原实现是 FNV-1a 64 位
+/// （注释自认"测试环境占位"，非密码学强度），换用 eneros-crypto 的 SM3。
+fn integrity_hex(data: &[u8]) -> String {
+    let digest = sm3_hash(data);
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 #[cfg(test)]

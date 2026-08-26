@@ -30,8 +30,13 @@ pub trait HealthProbe {
 
 /// 默认探针：三方法恒 ok（temperature 返回 25.0 占位）。
 ///
-/// 恢复模式默认场景下无平台特定驱动接入时使用；真实硬件探针由集成方实现
-/// [`HealthProbe`] 注入。
+/// # WARNING（SPEC-GAP-CLOSURE-2026-08-26 / F-4）
+///
+/// **本探针不是健康监测**——三个方法无条件返回恒定值。把它接到生产诊断
+/// 路径上等于对诊断输出谎报健康（存储/网络永远 ok、温度永远 25.0）。
+/// 当前树内 [`HealthProbe`] 仅此一个实现、且无任何生产消费方；
+/// 集成方启用诊断前 **MUST** 注入真实传感器探针替换之，
+/// 或显式保留「恢复菜单占位语义」并在诊断输出中标注 UNVERIFIED。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DefaultProbe;
 

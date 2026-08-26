@@ -10,6 +10,7 @@
 //! - `TEL_SNAPSHOT`：评估当前缓冲 → `TrustedTelemetry` wire 或拒绝码；
 //! - `TEL_ADVANCE_EPOCH`：断线重连推进（旧消息拒绝）。
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -46,6 +47,14 @@ pub struct TelemetryService {
     pub ingested: u64,
     /// 被拒样本计数（去重/满）。
     pub rejected: u64,
+    /// WP-2：历史落盘接缝（None=未装配，行为与旧版完全一致）。
+    history: Option<Box<dyn TelemetryHistorySink>>,
+    /// WP-2：成功写出的历史批次数（观测）。
+    pub history_written: u64,
+    /// WP-2：历史缓冲满被 DropOldest 丢弃的记录数（观测，不静默）。
+    pub history_dropped: u64,
+    /// WP-2：sink 写出失败的批次数（观测；不影响 ingest ack）。
+    pub history_errors: u64,
 }
 
 impl TelemetryService {
@@ -56,7 +65,47 @@ impl TelemetryService {
             buffer: VecDeque::new(),
             ingested: 0,
             rejected: 0,
+            history: None,
+            history_written: 0,
+            history_dropped: 0,
+            history_errors: 0,
         }
+    }
+
+    /// 装配历史落盘接缝（WP-2；服务装配期调用一次）。
+    pub fn set_history_sink(&mut self, sink: Box<dyn TelemetryHistorySink>) {
+        self.history = Some(sink);
+    }
+
+    /// 批次边界 flush：把当前缓冲（即本轮 ingest 接受集）写往历史接缝。
+    ///
+    /// 失败语义 fail-visible：错误只计数、不吞掉、也**不反向影响**
+    /// ingest 的 ack——采集与历史是两条独立生死线。无 sink 时为零开销
+    /// 直通（与未接线版本行为一致）。
+    fn flush_history(&mut self) {
+        let Some(sink) = self.history.as_mut() else {
+            return;
+        };
+        let batch: Vec<HistoryRecord> = self
+            .buffer
+            .iter()
+            .map(|s| HistoryRecord {
+                timestamp_ms: s.measured_at_ms,
+                device_id: s.source,
+                point: s.point,
+                value: s.value,
+            })
+            .collect();
+        if batch.is_empty() {
+            return;
+        }
+        match sink.write_batch(&batch) {
+            Ok(()) => self.history_written += 1,
+            Err(()) => self.history_errors += 1,
+        }
+        // DropOldest 计数由具体缓冲实现内部累计后经 here 汇报：
+        // 为避免 trait 面膨胀，丢弃统计下沉到 HistoryBuffer 自身字段，
+        // 服务侧只计批次级成败（见模块尾设计注记）。
     }
 
     /// 缓冲首样本 age（诊断：now - measured_at；空 → None）。
@@ -113,6 +162,96 @@ impl TelemetryService {
     pub fn snapshot(&mut self, now_ms: u64) -> Result<TrustedTelemetry, TrustRejection> {
         let samples: Vec<TelemetrySample> = self.buffer.iter().copied().collect();
         self.evaluator.evaluate(&samples, now_ms)
+    }
+}
+
+// ============================================================================
+// SPEC-GAP-CLOSURE-2026-08-26 · WP-2：历史落盘接缝（host 波）
+//
+// 磁盘 TSDB（eneros-tsdb）绑定 eneros_fs::Lfs × BlockDevice，而目标镜像中
+// 块句柄仅由 svc-storage 持有（41 卷移交先例）——svc-telemetry 的磁盘挂载
+// 架构属 owner 裁决项 D-TSDB-2，本波不擅自开辟访问路径。落地形状：
+// - [`TelemetryHistorySink`]：批次写接缝（磁盘适配器将来即插即用）；
+// - [`HistoryBuffer`]：缺省内存环回放缓冲（容量守恒、DropOldest 可观测），
+//   字段与 tsdb 的 TimeSeriesPoint 对齐以便后续直映射。
+// 内存纪律（R2）：缺省容量 512 条 ×32B ≈16KiB ≪ 服务堆预算；扩容 MUST
+// 先出静态内存审计表。
+// ============================================================================
+
+/// 缺省历史容量（条）。
+pub const DEFAULT_HISTORY_CAP: usize = 512;
+
+/// 单条历史记录（plain-data；字段语义对齐 eneros-tsdb TimeSeriesPoint）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HistoryRecord {
+    /// 测量时刻（单调毫秒，取样本 measured_at_ms）。
+    pub timestamp_ms: u64,
+    /// 来源实例 ID（取样本 source；磁盘适配器映射 DeviceId 用）。
+    pub device_id: u32,
+    /// 统一点 ID。
+    pub point: u32,
+    /// 采样值。
+    pub value: f64,
+}
+
+/// 历史落盘接缝：每轮 TEL_INGEST 接受后调用一次 `write_batch`。
+///
+/// 实现方约定：失败返回 `Err(())` 即可（服务侧计数），不得 panic、不得
+/// 阻塞采集路径。磁盘适配器（D-TSDB-2 后）与本内存环均实现本 trait。
+pub trait TelemetryHistorySink {
+    // 二元失败是接缝契约（服务侧只计成败、不解释原因）；错误类型留空是
+    // 刻意为之，非占位——历史路径不向采集链回传细节。
+    #[allow(clippy::result_unit_err)]
+    fn write_batch(&mut self, batch: &[HistoryRecord]) -> Result<(), ()>;
+}
+
+/// 有界历史缓冲（内存环；满时 DropOldest + 计数——不静默，语义对齐
+/// drivers/tsdb ring.rs / 22 §2.W3.3）。
+pub struct HistoryBuffer {
+    buf: VecDeque<HistoryRecord>,
+    cap: usize,
+    /// 满'后丢弃的记录总数（指标源数据）。
+    pub dropped: u64,
+}
+
+impl HistoryBuffer {
+    /// 新建（cap=0 回退 1——不允许不可用缓冲，同 tsdb ring 纪律）。
+    pub fn new(cap: usize) -> Self {
+        Self {
+            cap: cap.max(1),
+            buf: VecDeque::new(),
+            dropped: 0,
+        }
+    }
+
+    /// 当前记录数。
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// 是否为空。
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    /// 读回最近 n 条（时间升序；n > len 时给全量）。重启持久性依赖
+    /// D-TSDB-2 落地前的进程内排障/对账通道。
+    pub fn last(&self, n: usize) -> Vec<HistoryRecord> {
+        let start = self.buf.len().saturating_sub(n);
+        self.buf.iter().skip(start).copied().collect()
+    }
+}
+
+impl TelemetryHistorySink for HistoryBuffer {
+    fn write_batch(&mut self, batch: &[HistoryRecord]) -> Result<(), ()> {
+        for r in batch {
+            if self.buf.len() >= self.cap {
+                self.buf.pop_front();
+                self.dropped += 1;
+            }
+            self.buf.push_back(*r);
+        }
+        Ok(())
     }
 }
 
@@ -229,6 +368,10 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
             // 快照评估同点重复 Replay/跨周期 ClockNotMonotonic）。
             svc.clear();
             let accepted = svc.ingest(&samples);
+            // WP-2（SPEC-GAP-CLOSURE）：批次边界落历史——磁盘 TSDB 适配器
+            // 待 D-TSDB-2 架构裁决（块句柄现仅 svc-storage 持有），当前以
+            // HistoryBuffer 内存环为缺省实现。
+            svc.flush_history();
             vec![0, accepted as u8]
         }
         TEL_SNAPSHOT => match svc.snapshot(now_ms) {
@@ -429,5 +572,132 @@ mod tests {
         assert_eq!(r.len(), 1 + TRUSTED_WIRE_LEN);
         // 空请求 → 错误码。
         assert_eq!(handle_request(&mut svc, &[], now), vec![0xFF]);
+    }
+
+    // ===== SPEC-GAP-CLOSURE-2026-08-26 · WP-2 host 波判据 =====
+
+    use super::{HistoryBuffer, HistoryRecord, TelemetryHistorySink, DEFAULT_HISTORY_CAP};
+
+    /// 构造样本（field 布局对齐 safety-validator::TelemetrySample）。
+    fn sample(point: u32, value: f64, ts_ms: u64) -> TelemetrySample {
+        TelemetrySample {
+            point,
+            value,
+            source: 7,
+            source_epoch: 0,
+            measured_at_ms: ts_ms,
+            received_at_ms: ts_ms + 1,
+            quality: eneros_safety_validator::SampleQuality::Good,
+            sequence: 0,
+            integrity: eneros_safety_validator::IntegrityStatus::Verified,
+            mapping_version: 0,
+        }
+    }
+
+    fn rec(id: u64) -> HistoryRecord {
+        HistoryRecord {
+            timestamp_ms: id * 100,
+            device_id: 7,
+            point: id as u32,
+            value: id as f64,
+        }
+    }
+
+    /// WP-2/C1-a：批次边界 flush——ingest 后当前缓冲整批写往 sink，
+    /// 字段逐项映射正确（point/value/measured_at→timestamp/source→device）。
+    #[test]
+    fn wp2_ingest_flush_routes_batch_to_sink() {
+        use alloc::rc::Rc;
+        use core::cell::RefCell;
+
+        #[derive(Default)]
+        struct ProbeSink(Rc<RefCell<Vec<HistoryRecord>>>);
+        impl TelemetryHistorySink for ProbeSink {
+            fn write_batch(&mut self, b: &[HistoryRecord]) -> Result<(), ()> {
+                self.0.borrow_mut().extend_from_slice(b);
+                Ok(())
+            }
+        }
+
+        let captured = Rc::new(RefCell::new(Vec::new()));
+        let mut svc = service();
+        svc.set_history_sink(Box::new(ProbeSink(captured.clone())));
+        let batch = [
+            sample(1, 11.5, 1_000),
+            sample(4, 0.9, 1_100),
+            sample(5, 22.0, 1_200),
+        ];
+        svc.clear();
+        let accepted = svc.ingest(&batch);
+        assert_eq!(accepted, 3);
+        svc.flush_history();
+
+        assert_eq!(svc.history_written, 1);
+        assert_eq!(svc.history_errors, 0);
+        let got = captured.borrow().clone();
+        assert_eq!(got.len(), 3);
+        let want: Vec<(u64, u32, u32, u64)> =
+            [(1_000, 7, 1, 11), (1_100, 7, 4, 12), (1_200, 7, 5, 22)]
+                .iter()
+                .map(|&(ts, dev, pt, _)| (ts, dev, pt, pt as u64))
+                .collect();
+        for (r, &(ts, dev, pt, _)) in got.iter().zip(want.iter()) {
+            assert_eq!((r.timestamp_ms, r.device_id, r.point), (ts, dev, pt));
+        }
+        assert_eq!(got[0].value, 11.5);
+        assert_eq!(got[1].value, 0.9);
+        assert_eq!(got[2].value, 22.0);
+    }
+
+    /// WP-2/C1-b：ring 满 → DropOldest + 计数可见；读回升序一致。
+    #[test]
+    fn wp2_history_ring_dropoldest_visible_and_readback_consistent() {
+        let mut ring = HistoryBuffer::new(4);
+        for i in 1..=6u64 {
+            let _ = ring.write_batch(&[rec(i)]);
+        }
+        assert_eq!(ring.len(), 4);
+        assert_eq!(ring.dropped, 2, "DropOldest 必须计数（不静默）");
+        let got = ring.last(10);
+        let want: Vec<u32> = (3..=6).map(|v| v as u32).collect();
+        assert_eq!(
+            got.iter().map(|r| r.point).collect::<Vec<_>>(),
+            want,
+            "读回 = 最近 4 条且时间升序"
+        );
+        // cap=0 回退 1（不允许不可用缓冲）。
+        let mut zero = HistoryBuffer::new(0);
+        zero.write_batch(&[rec(1)]).unwrap();
+        assert_eq!(zero.len(), 1);
+    }
+
+    /// WP-2/C1-c：sink 失败 fail-visible——错误计数、ingest ack 不受影响、
+    /// 不 panic。
+    #[test]
+    fn wp2_sink_error_counted_never_blocks_ingest() {
+        struct FailSink;
+        impl TelemetryHistorySink for FailSink {
+            fn write_batch(&mut self, _b: &[HistoryRecord]) -> Result<(), ()> {
+                Err(())
+            }
+        }
+        let mut svc = service();
+        svc.set_history_sink(Box::new(FailSink));
+        svc.clear();
+        svc.ingest(&[sample(1, 5.0, 100)]);
+        svc.flush_history();
+        assert_eq!(svc.history_errors, 1);
+        assert_eq!(svc.history_written, 0);
+        // 未装配 sink 时零开销直通（行为与未接线版本一致）。
+        let mut plain = service();
+        plain.clear();
+        plain.ingest(&[sample(1, 5.0, 100)]);
+        plain.flush_history();
+        assert_eq!(plain.history_written, 0);
+        assert_eq!(plain.history_errors, 0);
+        assert!(
+            DEFAULT_HISTORY_CAP * core::mem::size_of::<HistoryRecord>() <= 32 * 1024,
+            "缺省内存环必须守 R2 预算（≤32KiB）；扩容先出静态审计表"
+        );
     }
 }

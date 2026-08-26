@@ -256,6 +256,11 @@ fn encode_connect(p: &ConnectPacket) -> Option<Vec<u8>> {
     // Keep Alive
     encode_u16(p.keep_alive_secs, &mut vh);
     // Payload: ClientID
+    // SPEC-GAP-CLOSURE WP-3：与下方 31 PR-10 同型防线——u16 前缀放不下的
+    // 字段整帧 fail-closed，不落入 encode_string 的静默截断分支。
+    if p.client_id.len() > u16::MAX as usize {
+        return None;
+    }
     encode_string(&p.client_id, &mut vh);
     // Will Topic + Will Payload
     if let Some(will) = &p.will {
@@ -272,10 +277,19 @@ fn encode_connect(p: &ConnectPacket) -> Option<Vec<u8>> {
     }
     // Username
     if let Some(user) = &p.username {
+        // SPEC-GAP-CLOSURE WP-3：同上，超长拒绝优于静默截断。
+        if user.len() > u16::MAX as usize {
+            return None;
+        }
         encode_string(user, &mut vh);
     }
     // Password
     if let Some(pass) = &p.password {
+        // SPEC-GAP-CLOSURE WP-3：原实现 `plen as u16` 对 >65535B 会回绕
+        // 出损坏帧，改为整帧拒绝。
+        if pass.len() > u16::MAX as usize {
+            return None;
+        }
         let plen = pass.len();
         encode_u16(plen as u16, &mut vh);
         vh.extend_from_slice(pass);

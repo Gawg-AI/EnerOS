@@ -123,6 +123,10 @@ pub struct MqttClient {
     /// WP-53.4 切片 D：最近一次 CONNACK 的 session_present 位
     /// （clean_session=false 时 broker 据此恢复会话）。
     pub session_present: bool,
+    /// SPEC-GAP-CLOSURE WP-3：CONNECT 凭据（None=匿名，与旧行为逐字节一致；
+    /// 值经 [`Self::set_credentials`] 注入后随每次 CONNECT 编码发送）。
+    /// 管道不做政策——release 下是否强制凭据属 owner 裁决（OQ-2）。
+    pub credentials: Option<(String, Vec<u8>)>,
 }
 
 impl MqttClient {
@@ -145,6 +149,7 @@ impl MqttClient {
             qos_store: None,
             clean_session: true,
             session_present: false,
+            credentials: None,
         }
     }
 
@@ -176,6 +181,20 @@ impl MqttClient {
         self.last_will = Some(will);
     }
 
+    /// 设置 CONNECT 凭据（WP-3 管道层；connect 前调用，随重连持续生效）.
+    ///
+    /// MQTT 3.1.1 字符串/二进制字段长度前缀均为 u16：超长凭据在注入时即
+    /// 拒绝（fail-closed），不等 wire 编码期静默截断。传空串/空切片合法
+    /// （显式匿名语义），用 `credentials = None` 才回到旧编码路径。
+    pub fn set_credentials(&mut self, username: &str, password: &[u8]) -> Result<(), MqttError> {
+        const WIRE_U16_MAX: usize = 65_535;
+        if username.len() > WIRE_U16_MAX || password.len() > WIRE_U16_MAX {
+            return Err(MqttError::PacketEncode);
+        }
+        self.credentials = Some((String::from(username), Vec::from(password)));
+        Ok(())
+    }
+
     /// 注入传输层实现.
     pub fn set_transport(&mut self, transport: Box<dyn MqttTransport>) {
         self.transport = Some(transport);
@@ -205,8 +224,8 @@ impl MqttClient {
         let keep_alive_secs = self.keep_alive_ms.div_ceil(1000) as u16;
         let connect = packet::ConnectPacket {
             client_id: self.client_id.clone(),
-            username: None,
-            password: None,
+            username: self.credentials.as_ref().map(|(u, _)| u.clone()),
+            password: self.credentials.as_ref().map(|(_, p)| p.clone()),
             will: self.last_will.clone(),
             keep_alive_secs,
             clean_session: self.clean_session,
@@ -215,14 +234,33 @@ impl MqttClient {
         // 31 PR-10：will payload 超限（编码失败）→ 拒绝连接（fail-closed，
         // 不发送损坏报文）。
         if bytes.is_empty() {
+            // WP-1/C3（四个失败臂之一）：编码失败同样不得把对端观测面留在
+            // Connecting 中间态——F-A1 卡死链在此的入口。
+            self.state = ConnectionState::Disconnected;
             return Err(MqttError::PacketEncode);
         }
-        transport
-            .send(&bytes)
-            .map_err(|_| MqttError::TransportError)?;
+        // WP-1/F-A1 修复：send / recv / decode 三个失败臂此前只返回错误、
+        // 不迁移状态，与 try_reconnect 的状态门（F-A2）叠加构成"首次握手
+        // 失败后永不重连"死锁链；现统一打回 Disconnected 交上层编排恢复。
+        if transport.send(&bytes).is_err() {
+            self.state = ConnectionState::Disconnected;
+            return Err(MqttError::TransportError);
+        }
         // 等待 CONNACK（同步 poll 一次）
-        let connack_bytes = transport.recv().map_err(|_| MqttError::BrokerUnreachable)?;
-        let pkt = packet::decode(&connack_bytes).map_err(|_| MqttError::PacketDecodeError)?;
+        let connack_bytes = match transport.recv() {
+            Ok(b) => b,
+            Err(_) => {
+                self.state = ConnectionState::Disconnected;
+                return Err(MqttError::BrokerUnreachable);
+            }
+        };
+        let pkt = match packet::decode(&connack_bytes) {
+            Ok(p) => p,
+            Err(_) => {
+                self.state = ConnectionState::Disconnected;
+                return Err(MqttError::PacketDecodeError);
+            }
+        };
         match pkt {
             MqttPacket::Connack(c) => {
                 if c.return_code == 0 {
@@ -529,7 +567,15 @@ impl MqttClient {
         // 同步等待 PINGRESP——与 ping() 同语义；now_ms 被真实消费，不再忽略）。
         if self.state == ConnectionState::Connected {
             if now_ms.saturating_sub(self.last_activity_ms) >= self.keep_alive_ms {
-                self.ping(now_ms)?;
+                // WP-1/F-A3 复产（50 卷回退登记的裁剪版）：自动保活 PING
+                // 无应答是半开 TCP 下唯一可靠断连信号——此处标记断连交由
+                // 上层编排恢复（plugin 惰性 connect 分支）。首连期 CONNECT
+                // 握手不经此路径，无 50 卷启动期挂起交互；空闲 recv 超时
+                // 仍不视作断连（语义不变）。
+                if let Err(e) = self.ping(now_ms) {
+                    self.mark_disconnected();
+                    return Err(e);
+                }
                 self.last_activity_ms = now_ms;
             }
         } else {
@@ -1111,5 +1157,215 @@ mod keepalive_tests {
             assert!(t.sent_packets()[0].starts_with(&[0xC0, 0x00])); // PINGREQ 固定头
         }
         assert_eq!(client.last_activity_ms, 7_000, "PINGREQ 后刷新活动时间");
+    }
+}
+
+// ================= SPEC-GAP-CLOSURE-2026-08-26 =================
+// WP-1：C1 握手负例组 + 半开检测补产；WP-3：凭据 seam 三判据。
+// C3 完备性：以下用例共同覆盖 connect() 全部失败臂——encode 空 /
+// send / recv / decode / return_code≠0 / 非 Connack 报文，加上
+// mark_disconnected 与 disconnect() 的既有出边，ConnectionState 四个
+// 变体均有非测试路径出口，不存在"进入后无法离开"的状态。
+
+#[cfg(test)]
+mod gap_closure_tests {
+    use super::ConnectionState;
+    use super::MqttClient;
+    use crate::error::MqttError;
+    use crate::packet::{self, MqttPacket};
+    use crate::qos::QoS;
+    use crate::transport::MockTransport;
+    use crate::will::LastWill;
+
+    const CONNACK_OK: [u8; 4] = [0x20, 0x02, 0x00, 0x00];
+
+    fn ready_client() -> MqttClient {
+        let mut t = MockTransport::new();
+        t.set_connected(true);
+        let mut c = MqttClient::new("eneros-test", "cid", 60_000);
+        c.set_transport(Box::new(t));
+        c
+    }
+
+    fn transport_of(client: &mut MqttClient) -> &mut MockTransport {
+        client
+            .transport
+            .as_mut()
+            .expect("transport")
+            .as_any_mut()
+            .downcast_mut::<MockTransport>()
+            .expect("downcast")
+    }
+
+    /// WP-1/C1-a：无连接可建（mock 未连接）→ 显式失败且状态回 Disconnected，
+    /// 不留在 Connecting。
+    #[test]
+    fn wp1_connect_unreachable_leaves_disconnected() {
+        let mut c = MqttClient::new("eneros-test", "cid", 60_000);
+        let mut t = MockTransport::new(); // 默认未连接
+        t.set_connected(false);
+        c.set_transport(Box::new(t));
+        assert!(c.connect(0).is_err());
+        assert_eq!(
+            c.state,
+            ConnectionState::Disconnected,
+            "握手失败臂不得停留 Connecting（F-A1）"
+        );
+        // F-A2 联动锁：Disconnected 态 try_reconnect 必须是可推进的
+        // （不再被状态门直接放行返回 Ok）。
+        assert!(matches!(
+            c.try_reconnect(c.reconnect_state.next_retry_ms),
+            Err(MqttError::NotConnected) | Err(_)
+        ));
+    }
+
+    /// WP-1/C1-b：CONNACK 等待超时（队列为空）→ BrokerUnreachable +
+    /// Disconnected。
+    #[test]
+    fn wp1_connack_timeout_resets_disconnected() {
+        let mut c = ready_client();
+        assert_eq!(c.connect(0), Err(MqttError::BrokerUnreachable));
+        assert_eq!(c.state, ConnectionState::Disconnected);
+    }
+
+    /// WP-1/C1-c：对端回垃圾帧 → PacketDecodeError + Disconnected。
+    #[test]
+    fn wp1_connack_garbage_resets_disconnected() {
+        let mut c = ready_client();
+        transport_of(&mut c).enqueue_recv(vec![0xFF, 0xFF]);
+        assert_eq!(c.connect(0), Err(MqttError::PacketDecodeError));
+        assert_eq!(c.state, ConnectionState::Disconnected);
+    }
+
+    /// WP-1/C1-d（回归锁定既有语义）：CONNACK return_code≠0 → 已是
+    /// Disconnected，锁死不回归。
+    #[test]
+    fn wp1_connack_return_code_nonzero_disconnects() {
+        let mut c = ready_client();
+        transport_of(&mut c).enqueue_recv(vec![0x20, 0x02, 0x00, 0x05]);
+        assert_eq!(c.connect(0), Err(MqttError::BrokerUnreachable));
+        assert_eq!(c.state, ConnectionState::Disconnected);
+    }
+
+    /// WP-1/C1-e（回归锁定）：收到合法但非 Connack 报文 →
+    /// UnexpectedPacket + Disconnected。
+    #[test]
+    fn wp1_unexpected_packet_disconnects() {
+        let mut c = ready_client();
+        transport_of(&mut c).enqueue_recv(vec![0x40, 0x02, 0x00, 0x01]); // PUBACK
+        assert_eq!(c.connect(0), Err(MqttError::UnexpectedPacket));
+        assert_eq!(c.state, ConnectionState::Disconnected);
+    }
+
+    /// WP-1/C1-f：will payload 超 u16（31 PR-10 编码拒绝臂）→
+    /// PacketEncode + Disconnected。
+    #[test]
+    fn wp1_oversized_will_encode_fails_and_disconnects() {
+        let mut c = ready_client();
+        c.set_will(LastWill {
+            topic: String::from("t"),
+            payload: alloc::vec![0u8; 70_000],
+            qos: QoS::AtMostOnce,
+            retain: false,
+        });
+        assert_eq!(c.connect(0), Err(MqttError::PacketEncode));
+        assert_eq!(c.state, ConnectionState::Disconnected);
+    }
+
+    /// WP-1/C5 前置（半开检测补产）：已连接后空闲越过 keep_alive →
+    /// 自动 PINGREQ 且无 PINGRESP → PublishTimeout 传播 + 状态进入
+    /// Reconnecting（mark_disconnected 语义），插件层据此走惰性重连。
+    #[test]
+    fn wp1_halfopen_ping_timeout_marks_reconnecting() {
+        let mut t = MockTransport::new();
+        t.set_connected(true);
+        let mut c = MqttClient::new("eneros-test", "cid", 5_000);
+        c.set_transport(Box::new(t));
+        c.last_activity_ms = 1_000;
+        c.state = ConnectionState::Connected;
+        // 不预置 PINGRESP：模拟半开 TCP 对端无应答。
+        let r = c.poll(7_000);
+        assert_eq!(r, Err(MqttError::PublishTimeout));
+        assert_eq!(
+            c.state,
+            ConnectionState::Reconnecting,
+            "PING 无应答必须标记断连（plugin :676 注释所宣称的语义）"
+        );
+        let sent = transport_of(&mut c).sent_packets();
+        assert!(
+            sent.iter().any(|f| f.starts_with(&[0xC0, 0x00])),
+            "检测必须经由真实 PINGREQ 路径"
+        );
+    }
+
+    /// WP-3/C1 golden：set_credentials 后 CONNECT 帧与规约直构逐字节一致
+    /// （clientId="cid"、user="u"、pass="p"、clean_session、keepalive=60s：
+    /// flags=0xC2、剩余长度=21）。
+    #[test]
+    fn wp3_golden_frame_with_credentials() {
+        let mut c = ready_client();
+        c.set_credentials("u", b"p").expect("seam");
+        transport_of(&mut c).enqueue_recv(CONNACK_OK.to_vec());
+        c.connect(0).expect("带凭据握手成功");
+        assert_eq!(c.state, ConnectionState::Connected);
+        let expected: Vec<Vec<u8>> = vec![vec![
+            0x10, 0x15, 0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0xC2, 0x00, 0x3C, 0x00, 0x03,
+            b'c', b'i', b'd', 0x00, 0x01, b'u', 0x00, 0x01, b'p',
+        ]];
+        assert_eq!(transport_of(&mut c).sent_packets(), expected);
+    }
+
+    /// WP-3/C3 回归锁：None 凭据路径的 CONNECT 帧 与 seam 引入前逐字节
+    /// 一致（flags 仅 clean_session=0x02、payload 只含 clientId）。
+    #[test]
+    fn wp3_none_credentials_frame_byte_unchanged() {
+        let mut c = ready_client();
+        transport_of(&mut c).enqueue_recv(CONNACK_OK.to_vec());
+        c.connect(0).expect("匿名握手成功");
+        let expected: Vec<Vec<u8>> = vec![vec![
+            0x10, 0x0F, 0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0x02, 0x00, 0x3C, 0x00, 0x03,
+            b'c', b'i', b'd',
+        ]];
+        assert_eq!(transport_of(&mut c).sent_packets(), expected);
+    }
+
+    /// WP-3/C2 负例：超过 u16 长度前缀上限的凭据在注入时即拒绝
+    /// （fail-closed，不到 wire 层静默截断），且不污染既有凭据态。
+    #[test]
+    fn wp3_oversized_credentials_rejected_at_seam() {
+        let mut c = ready_client();
+        assert_eq!(
+            c.set_credentials(&"u".repeat(70_000), b"p"),
+            Err(MqttError::PacketEncode)
+        );
+        assert!(c.credentials.is_none(), "被拒绝的注入不得留半成品状态");
+        assert_eq!(
+            c.set_credentials("ok-user", &[0u8; 70_001]),
+            Err(MqttError::PacketEncode)
+        );
+        assert!(c.set_credentials("u2", b"p2").is_ok());
+        assert!(
+            matches!(&c.credentials, Some((u, p)) if u == "u2" && p == b"p2"),
+            "合法注入覆盖生效"
+        );
+    }
+
+    /// 保险丝：encode 出口对超长 username 同样返回 None（seam 层失守时
+    /// wire 层仍 fail-closed——与 31 PR-10 will 同型防线）。
+    #[test]
+    fn wp3_wire_layer_rejects_oversized_username_as_backstop() {
+        let pkt = MqttPacket::Connect(packet::ConnectPacket {
+            client_id: String::from("cid"),
+            username: Some("x".repeat(70_000)),
+            password: None,
+            will: None,
+            keep_alive_secs: 60,
+            clean_session: true,
+        });
+        let bytes = packet::encode(&pkt);
+        assert!(
+            bytes.is_empty(),
+            "wire 层对 >u16 的 username 必须 fail-closed"
+        );
     }
 }
