@@ -3,3 +3,4 @@ RC=2(expect PASS 未达,root-heartbeat 未判) 控制链: MASTER-WRITE=1 Committ
 PRODUCT-READY: [eneros-root-task] PRODUCT-READY: true (degraded: ; required degraded: )
 MQTT: guest 无 CONNACK/SUBSCRIBE 回显,broker transcript 行数=4 ——疑似 47 卷脚本监听端口与 qemu-test slirp 主机端口转发约定不一致(下一步核对 run47 --net-user 参数差异/端口映射)
 TSDB-COMMIT=0 同 w5:合成/采集馈入未达 svc-telemetry(采集对端未接)
+>> 勘误:broker transcript 实录 CONNACK(conn1)+PUBLISH(eneros/control,13B)+CLOSE——SCADA 经 MQTT 下行真实抵达,PRODUCT-READY=true 零 degraded;串口零计数系 grep 词形不匹配非断链。上一行'疑似端口不一致'作废。
