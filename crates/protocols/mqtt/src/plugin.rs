@@ -1061,14 +1061,15 @@ mod tests {
     }
 
     /// 50（WP-50.1 DoD② 组件级证明）：断连→重连→恢复全周期——
-    /// 半开 TCP（is_connected 恒真）下连续 3 次 poll 失败触发断连标记，
+    /// 半开 TCP（is_connected 恒真）下 keepalive PING 无应答触发断连标记，
     /// 下一次 poll 走 connect 一律重建 seam（reconnect 计数 +1），
     /// 存量遥测帧恢复发布。
-    // 50 实测登记：本用例依赖 client 侧 PING 无应答断连 + connect 一律
-    // 重建（QEMU 复跑发现与既有 recv 节拍交互导致启动期挂起——已回退，
-    // 断连检测/重连 seam 回归登记后续卷；host 组件级语义以本用例留存）。
+    ///
+    /// SPEC-GAP-CLOSURE w1 转正登记：检测钩子已于 client.poll 复产
+    /// （auto-PING 无应答 → mark_disconnected；裁剪版，CONNECT 握手期
+    /// 不经此路径，规避 50 卷回退时登记的启动期挂起交互）。组件级全周期
+    /// 通过；QEMU 窗口下的节拍复验仍属本 spec WP-1 C4/C5 卷判据。
     #[test]
-    #[ignore = "依赖已回退的 ping-detect/always-rebuild（50 卷登记后续卷回归）"]
     fn disconnect_reconnect_cycle_recovers_publishing() {
         use std::rc::Rc;
 
