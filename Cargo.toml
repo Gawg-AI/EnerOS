@@ -62,6 +62,7 @@ members = [
     "crates/protocols/iec104-slave",
     "crates/protocols/iec104-master",
     "crates/protocols/dlt645",
+    "crates/protocols/cj188",
     "crates/protocols/iec101",
     "crates/protocols/iec103",
     "crates/protocols/gbt27930",

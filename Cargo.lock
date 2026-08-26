@@ -685,6 +685,14 @@ name = "eneros-ci"
 version = "0.314.14"
 
 [[package]]
+name = "eneros-cj188"
+version = "0.314.14"
+dependencies = [
+ "eneros-protocol-abstract",
+ "eneros-upa-model",
+]
+
+[[package]]
 name = "eneros-cloud-coordinator"
 version = "0.314.14"
 dependencies = [

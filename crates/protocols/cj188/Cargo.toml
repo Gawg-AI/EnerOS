@@ -1,0 +1,11 @@
+[package]
+name = "eneros-cj188"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS DL/T 645-2007 master plugin — seam/transport/config wiring; codec BLOCKED pending spec text (blueprint 48 WP-48.1)"
+
+[dependencies]
+eneros-protocol-abstract = { path = "../protocol-abstract" }
+eneros-upa-model = { path = "../upa-model" }
