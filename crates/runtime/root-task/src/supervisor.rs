@@ -391,6 +391,115 @@ impl Supervisor {
     }
 }
 
+/// 挂起判定结果（蓝图 57 WP-57.3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HangVerdict {
+    /// 请求在途且距最近一次心跳超过容忍轮次——kill+restart 裁决交由
+    /// [`Supervisor::on_service_fault`]（复用既有退避/熔断）。
+    TimedOut {
+        /// 探针在途轮次数（tick − probe_sent）。
+        pending_rounds: i64,
+    },
+}
+
+/// 「请求在途却无进展」挂起判定（蓝图 57 WP-57.3，体检 C6）。
+///
+/// 原实现为 run_ipc_loop 内两组平行数组 + 四处突变块；本模块把判定规则
+/// 收拢为可 host 单测的纯状态机。**防误杀不变量**：空闲服务无请求在途
+/// （probe 未置位）不判超限；probe 置位后任一心跳 ≥ probe 轮即解除
+/// pending——驱动周期 > 判限时无此清除必误杀空闲服务（QEMU 实弹教训，
+/// 原 service.rs :620-628 注释随迁）。
+#[derive(Debug)]
+pub struct HangMonitor {
+    /// 心跳缺失容忍轮次（原 HEARTBEAT_MISS_LIMIT，150 ≈ 0.2s 真实）。
+    miss_limit: i64,
+    /// 各服务最近一次心跳轮次（-1 = 从未心跳）。
+    last_beat: alloc::vec::Vec<i64>,
+    /// 各服务在途探针轮次（-1 = 无请求在途）。
+    probe_sent: alloc::vec::Vec<i64>,
+}
+
+impl HangMonitor {
+    /// 按服务数新建（全部服务初始为「从未心跳、无在途请求」）。
+    pub fn new(count: usize, miss_limit: i64) -> Self {
+        Self {
+            miss_limit,
+            last_beat: alloc::vec![-1; count],
+            probe_sent: alloc::vec![-1; count],
+        }
+    }
+
+    /// root 向服务发起请求（探测/驱动）——登记请求在途。
+    pub fn note_request(&mut self, index: usize, tick: i64) {
+        if let Some(p) = self.probe_sent.get_mut(index) {
+            *p = tick;
+        }
+    }
+
+    /// 观察到服务心跳——更新最近心跳；若该心跳不早于在途探针，解除
+    /// pending（本轮请求已完成，服务回到空闲不被误杀）。
+    pub fn observe_beat(&mut self, index: usize, tick: i64) {
+        if let Some(b) = self.last_beat.get_mut(index) {
+            *b = tick;
+        }
+        if self.probe_sent.get(index) == Some(&-1) {
+            return;
+        }
+        let cleared = match (self.probe_sent.get(index), self.last_beat.get(index)) {
+            (Some(&p), Some(&b)) => p >= 0 && b >= p,
+            _ => false,
+        };
+        if cleared {
+            if let Some(p) = self.probe_sent.get_mut(index) {
+                *p = -1;
+            }
+        }
+    }
+
+    /// 挂起裁决：仅在途探针存在且 `tick - last_beat > miss_limit` 时判
+    /// TimedOut。调用方 kill/restart 后必须调 [`Self::clear_after_kill`]
+    /// （重启翻篇：重启后空闲不心跳不误杀）。
+    pub fn hang_verdict(&self, index: usize, tick: i64) -> Option<HangVerdict> {
+        let sent = *self.probe_sent.get(index)?;
+        if sent < 0 {
+            return None;
+        }
+        let beat = self.last_beat.get(index).copied().unwrap_or(-1);
+        if tick - beat > self.miss_limit {
+            return Some(HangVerdict::TimedOut {
+                pending_rounds: tick - sent,
+            });
+        }
+        None
+    }
+
+    /// kill/restart 后翻篇：清除在途探针并把心跳基线拉到当前轮。
+    pub fn clear_after_kill(&mut self, index: usize, tick: i64) {
+        if let Some(p) = self.probe_sent.get_mut(index) {
+            *p = -1;
+        }
+        if let Some(b) = self.last_beat.get_mut(index) {
+            *b = tick;
+        }
+    }
+
+    /// 心跳缺失容忍轮次（证据行打印用）。
+    pub fn miss_limit(&self) -> i64 {
+        self.miss_limit
+    }
+
+    /// 在途探针轮次（证据行打印用；None = 无在途）。
+    pub fn pending_since(&self, index: usize) -> Option<i64> {
+        let p = *self.probe_sent.get(index)?;
+        (p >= 0).then_some(p)
+    }
+
+    /// 最近心跳轮次（证据行打印用）。
+    pub fn last_beat(&self, index: usize) -> i64 {
+        self.last_beat.get(index).copied().unwrap_or(-1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -637,5 +746,86 @@ mod tests {
         // 重启完成：恢复态回 Running，生命周期不受影响。
         svc.restart_done();
         assert_eq!(svc.state, ServiceState::Running);
+    }
+    /// 蓝图 57 WP-57.3：挂起判定状态机（原 run_ipc_loop 手写簿记语义逐位迁移）。
+
+    #[test]
+    fn hang_probe_without_recent_beat_times_out() {
+        // 判限基准 = 最近一次心跳（非探针时刻；原 run_ipc_loop 规则逐位迁移：
+        // `tick - hb_last_beat > MISS_LIMIT` 且 probe 在途）。
+        let mut hm = crate::supervisor::HangMonitor::new(2, 150);
+        hm.observe_beat(0, 50);
+        hm.note_request(0, 100);
+        // tick−beat=150：恰在判限上不杀。
+        assert_eq!(hm.hang_verdict(0, 200), None, "未超判限不杀");
+        assert_eq!(
+            hm.hang_verdict(0, 201),
+            Some(crate::supervisor::HangVerdict::TimedOut {
+                pending_rounds: 101
+            })
+        );
+    }
+
+    #[test]
+    fn never_beating_service_times_out_after_first_request() {
+        // 从未心跳（last_beat = -1）：首个请求后 ~limit 轮内无任何心跳即杀
+        // ——与原实现 `tick - (-1) > LIMIT` 完全一致。
+        let mut hm = crate::supervisor::HangMonitor::new(1, 150);
+        hm.note_request(0, 100);
+        // tick−(−1)=101 ≤ 150：未超限。
+        assert_eq!(hm.hang_verdict(0, 100), None);
+        // tick−(−1)=151 > 150：判超（探针在途 50 轮）。
+        assert_eq!(
+            hm.hang_verdict(0, 150),
+            Some(crate::supervisor::HangVerdict::TimedOut { pending_rounds: 50 })
+        );
+    }
+
+    #[test]
+    fn idle_service_never_flagged() {
+        let mut hm = crate::supervisor::HangMonitor::new(2, 150);
+        // 无任何请求/心跳：任意轮次都不判超限（防误杀不变量）。
+        assert_eq!(hm.hang_verdict(1, 100_000), None);
+        // 有过心跳但无在途请求同样安全。
+        hm.observe_beat(1, 10);
+        assert_eq!(hm.hang_verdict(1, 100_000), None);
+    }
+
+    #[test]
+    fn late_beat_clears_pending_probe() {
+        let mut hm = crate::supervisor::HangMonitor::new(2, 150);
+        hm.note_request(0, 100);
+        // 心跳晚于 probe 但仍在判限内 → 解除 pending（QEMU 防误杀场景：
+        // 驱动周期 > 判限时无此清除必误杀空闲服务）。
+        hm.observe_beat(0, 240);
+        assert_eq!(hm.pending_since(0), None);
+        assert_eq!(hm.hang_verdict(0, 1_000_000), None);
+    }
+
+    #[test]
+    fn stale_beat_does_not_clear_pending_probe() {
+        // 心跳早于 probe（旧心跳）不算完成——pending 保持。
+        let mut hm = crate::supervisor::HangMonitor::new(1, 150);
+        hm.observe_beat(0, 50);
+        hm.note_request(0, 100);
+        assert_eq!(hm.pending_since(0), Some(100));
+        assert_eq!(
+            hm.hang_verdict(0, 300),
+            Some(crate::supervisor::HangVerdict::TimedOut {
+                pending_rounds: 200
+            })
+        );
+    }
+
+    #[test]
+    fn clear_after_kill_resets_bookkeeping() {
+        let mut hm = crate::supervisor::HangMonitor::new(1, 150);
+        hm.note_request(0, 100);
+        assert!(hm.hang_verdict(0, 400).is_some());
+        hm.clear_after_kill(0, 400);
+        // 重启翻篇：重启后空闲不心跳不误杀。
+        assert_eq!(hm.pending_since(0), None);
+        assert_eq!(hm.last_beat(0), 400);
+        assert_eq!(hm.hang_verdict(0, 100_000), None);
     }
 }

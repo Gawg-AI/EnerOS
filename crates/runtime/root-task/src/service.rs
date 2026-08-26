@@ -293,8 +293,9 @@ pub fn run_ipc_loop(
     // 心跳监控状态：最近心跳轮次 / root 最近发请求轮次（-1 = 未发生）。
     // 判定 = "发过请求却无进展"（probe_sent ≥ 0 且 tick - last_beat 超限）
     // ——空闲服务无请求在途，不误判。
-    let mut hb_last_beat: alloc::vec::Vec<i64> = alloc::vec![-1; handles.len()];
-    let mut hb_probe_sent: alloc::vec::Vec<i64> = alloc::vec![-1; handles.len()];
+    // 蓝图 57 WP-57.3：挂起判定状态机收拢进 supervisor::HangMonitor
+    // （原两组平行数组 + 四处突变块删除；防误杀不变量随状态机内藏）。
+    let mut hang_monitor = crate::supervisor::HangMonitor::new(handles.len(), HEARTBEAT_MISS_LIMIT);
     /// 心跳缺失容忍轮次。必须 **> 驱动周期**（正常服务在两驱动轮间无
     /// 请求无心跳——probe 已清除不误杀；svc-hang probe 未清除 → 超限
     /// kill）。150 轮 ≈ 0.2s 真实（hello ~760 轮/s）。
@@ -478,14 +479,12 @@ pub fn run_ipc_loop(
         // （coverage/freshness/quality/integrity），不绕过信任评估。
         if tick % CONTROL_CHAIN_PERIOD == 5 {
             if let (Some(t), Some(e)) = (&telemetry_handle, &energy_handle) {
-                hb_probe_sent[handles
-                    .iter()
-                    .position(|h| h.name == "svc-telemetry")
-                    .unwrap()] = tick as i64;
-                hb_probe_sent[handles
-                    .iter()
-                    .position(|h| h.name == "svc-energy-agent")
-                    .unwrap()] = tick as i64;
+                if let Some(i) = handles.iter().position(|h| h.name == "svc-telemetry") {
+                    hang_monitor.note_request(i, tick as i64);
+                }
+                if let Some(i) = handles.iter().position(|h| h.name == "svc-energy-agent") {
+                    hang_monitor.note_request(i, tick as i64);
+                }
                 match control_chain_tick(t.ep, e.ep, &mut collect_seq, &mut chain_epoch) {
                     Ok((accepted, ea_status, disp_state)) => {
                         chain_rounds += 1;
@@ -550,7 +549,7 @@ pub fn run_ipc_loop(
             if let Some(h) = &hang_handle {
                 hang_injected = true;
                 if let Some(idx) = handles.iter().position(|x| x.name == "svc-hang") {
-                    hb_probe_sent[idx] = tick as i64;
+                    hang_monitor.note_request(idx, tick as i64);
                 }
                 eneros_runtime::println!(
                     "[eneros-root-task] HEARTBEAT-TEST: inject hang to svc-hang (one-shot)"
@@ -617,24 +616,22 @@ pub fn run_ipc_loop(
             let mut sender = 0u64;
             if let Ok(_mi) = ipc_poll(handle.heartbeat_ntfn, Some(&mut sender)) {
                 if sender != 0 {
-                    hb_last_beat[idx] = tick as i64;
-                    // probe 后已响应（心跳 ≥ probe 轮）：本轮请求完成，
-                    // 解除 pending——服务回到空闲不被误杀（QEMU 实弹：
-                    // 驱动周期 > 判限时无此清除必误杀空闲服务）。svc-hang
-                    // 注入轮无心跳（hang 判定先于 signal），probe 保留 →
-                    // 超限 kill。
-                    if hb_probe_sent[idx] >= 0 && hb_last_beat[idx] >= hb_probe_sent[idx] {
-                        hb_probe_sent[idx] = -1;
-                    }
+                    // 蓝图 57：心跳簿记入 HangMonitor（probe 后已响应即解除
+                    // pending 的防误杀不变量随状态机内藏——QEMU 实弹教训，
+                    // 原 :620-628 注释语义不变）。
+                    hang_monitor.observe_beat(idx, tick as i64);
                 }
             }
-            let sent = hb_probe_sent[idx];
-            if sent >= 0 && (tick as i64) - hb_last_beat[idx] > HEARTBEAT_MISS_LIMIT {
+            if let Some(crate::supervisor::HangVerdict::TimedOut { .. }) =
+                hang_monitor.hang_verdict(idx, tick as i64)
+            {
+                let sent = hang_monitor.pending_since(idx).unwrap_or_default();
+                let last_beat = hang_monitor.last_beat(idx);
                 eneros_runtime::println!(
                     "[eneros-root-task] HEARTBEAT-TIMEOUT: {} no progress {} rounds since probe (last_beat={}, probe={}) — kill+restart",
                     handle.name,
                     HEARTBEAT_MISS_LIMIT,
-                    hb_last_beat[idx],
+                    last_beat,
                     sent
                 );
                 supervisor.advance(now_ms());
@@ -659,8 +656,7 @@ pub fn run_ipc_loop(
                     None => {}
                 }
                 // 重启翻篇：清除 pending（重启后空闲不心跳不误杀）。
-                hb_probe_sent[idx] = -1;
-                hb_last_beat[idx] = tick as i64;
+                hang_monitor.clear_after_kill(idx, tick as i64);
             }
         }
 
