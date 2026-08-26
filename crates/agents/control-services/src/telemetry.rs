@@ -100,8 +100,18 @@ impl TelemetryService {
             return;
         }
         match sink.write_batch(&batch) {
-            Ok(()) => self.history_written += 1,
-            Err(()) => self.history_errors += 1,
+            Ok(()) => {
+                self.history_written += 1;
+                // SPEC-GAP-CLOSURE WP-2/C2：QEMU 串口证据行（grep 连续性纪律）。
+                eneros_runtime::println!("[svc-telemetry] TSDB-COMMIT batch items={}", batch.len());
+            }
+            Err(()) => {
+                self.history_errors += 1;
+                eneros_runtime::println!(
+                    "[svc-telemetry] TSDB-COMMIT-FAIL errors={}",
+                    self.history_errors
+                );
+            }
         }
         // DropOldest 计数由具体缓冲实现内部累计后经 here 汇报：
         // 为避免 trait 面膨胀，丢弃统计下沉到 HistoryBuffer 自身字段，
