@@ -189,15 +189,15 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
             // 41：trial 状态真落盘（RegionStateStore CAS；首次写入
             // expected=None → gen 1；重启后 LOAD 从介质读回）。
             0x06 => {
-                if req.len() != 5 + 20 {
-                    resp.extend_from_slice(b"ERR:len");
-                    return false;
-                }
-                let p = &req[5..];
-                let remaining = u32::from_le_bytes(p[0..4].try_into().unwrap());
-                let version = alloc::string::String::from_utf8_lossy(&p[4..20])
-                    .trim_end_matches('\0')
-                    .to_string();
+                // 蓝图 58：请求解析走 ota_wire 单源（与 root 探针同型）。
+                let (remaining, version) =
+                    match eneros_agent_sdk::ota_wire::parse_persist_trial_req(req) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            resp.extend_from_slice(b"ERR:len");
+                            return false;
+                        }
+                    };
                 let state = TrialState::new(remaining, &version);
                 let mut store = match self.trial_store() {
                     Some(s) => s,

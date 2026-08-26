@@ -879,11 +879,8 @@ fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::stri
         .map_err(|e| alloc::format!("ota client init: {:?}", e))?;
     // OTA1 0x06 PERSIST-TRIAL：remaining(4)‖version(16) → gen(8)。
     // 服务循环为分块 EIPC（ChunkedReceiver）——须用 ChunkedClient 发送。
-    let mut req: alloc::vec::Vec<u8> = alloc::vec![b'O', b'T', b'A', b'1', 0x06];
-    req.extend_from_slice(&2u32.to_le_bytes()); // remaining
-    let mut ver = [0u8; 16];
-    ver[..5].copy_from_slice(b"1.2.0");
-    req.extend_from_slice(&ver);
+    // 蓝图 58：请求构造/响应解析走 ota_wire 单源（原手拼字节删除）。
+    let req = eneros_agent_sdk::ota_wire::encode_persist_trial(2, "1.2.0");
     let mut transfer = ChunkedClient::new(&mut ipc, *epoch, 5_000);
     *epoch = epoch.saturating_add(1);
     let resp = transfer
@@ -893,43 +890,40 @@ fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::stri
     // "ERR:store-unavailable"）。不检查前缀就把错误串前 8 字节解成 gen
     // 会打印假成功行（"trial persisted gen=<'ERR:stor' 的 u64>"）——
     // 41 第二轮 QEMU 日志实锤，fail-closed 必须前置拦截。
-    if resp.starts_with(b"ERR:") {
-        return Err(alloc::format!(
-            "persist rejected: {}",
-            core::str::from_utf8(&resp).unwrap_or("<bad-utf8>")
-        ));
-    }
-    if resp.len() < 8 {
-        return Err(alloc::format!("persist resp short: {}", resp.len()));
-    }
-    let gen = u64::from_le_bytes(resp[..8].try_into().unwrap());
+    let gen = match eneros_agent_sdk::ota_wire::parse_persist_resp(&resp) {
+        Ok(g) => g,
+        Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) => {
+            return Err(alloc::format!("persist rejected: {msg}"));
+        }
+        Err(eneros_agent_sdk::ota_wire::OtaWireError::Short(len)) => {
+            return Err(alloc::format!("persist resp short: {len}"));
+        }
+        Err(e) => return Err(alloc::format!("persist resp: {e:?}")),
+    };
     eneros_runtime::println!(
         "[eneros-root-task] STORAGE-PERSIST: trial persisted gen={} (svc-ota -> svc-storage -> data disk)",
         gen
     );
     // OTA1 0x07 LOAD-TRIAL：→ found(1)‖remaining(4)‖version(16)。
-    let mut req2: alloc::vec::Vec<u8> = alloc::vec![b'O', b'T', b'A', b'1', 0x07];
+    let req2 = eneros_agent_sdk::ota_wire::encode_load_trial();
     let mut transfer2 = ChunkedClient::new(&mut ipc, *epoch, 5_000);
     *epoch = epoch.saturating_add(1);
     let resp2 = transfer2
         .transfer("svc-ota", &req2)
         .map_err(|e| alloc::format!("load transport: {e:?}"))?;
-    if resp2.starts_with(b"ERR:") {
-        return Err(alloc::format!(
-            "load rejected: {}",
-            core::str::from_utf8(&resp2).unwrap_or("<bad-utf8>")
-        ));
-    }
-    if resp2.len() < 5 || resp2[0] != 1 {
-        return Err(alloc::format!(
-            "trial not found after persist (len={})",
-            resp2.len()
-        ));
-    }
-    let remaining = u32::from_le_bytes(resp2[1..5].try_into().unwrap());
-    let version = core::str::from_utf8(&resp2[5..])
-        .unwrap_or("<bad-utf8>")
-        .trim_end_matches('\0');
+    let (remaining, version) = match eneros_agent_sdk::ota_wire::parse_load_resp(&resp2) {
+        Ok(v) => v,
+        Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) => {
+            return Err(alloc::format!("load rejected: {msg}"));
+        }
+        Err(_) => {
+            return Err(alloc::format!(
+                "trial not found after persist (len={})",
+                resp2.len()
+            ));
+        }
+    };
+    let version = version.as_str();
     eneros_runtime::println!(
         "[eneros-root-task] STORAGE-PERSIST: trial reloaded remaining={} version={}",
         remaining,
@@ -970,20 +964,16 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
     let sig = sm2_sign(&hash, &kp.private_key, &kp.public_key, &mut rng)
         .map_err(|e| alloc::format!("ota sign: {e:?}"))?;
 
-    let mut req: alloc::vec::Vec<u8> = alloc::vec![b'O', b'T', b'A', b'1', 0x02];
-    let mut target = [0u8; 32];
-    target[..7].copy_from_slice(b"0.123.0");
-    req.extend_from_slice(&target);
-    let mut sku = [0u8; 16];
-    sku[..4].copy_from_slice(b"qemu");
-    req.extend_from_slice(&sku);
-    req.extend_from_slice(&1u32.to_le_bytes()); // secver
-    req.extend_from_slice(&(image.len() as u64).to_le_bytes());
-    req.extend_from_slice(&hash);
-    req.extend_from_slice(&sig.to_bytes());
-    req.extend_from_slice(&512u32.to_le_bytes()); // chunk_size
-    req.extend_from_slice(&(image.len() as u32).to_le_bytes());
-    req.extend_from_slice(&image);
+    // 蓝图 58：download 请求走 ota_wire 单源（布局字节不变）。
+    let req = eneros_agent_sdk::ota_wire::encode_download(
+        b"0.123.0",
+        b"qemu",
+        1,
+        &image,
+        &hash,
+        sig.to_bytes().as_slice(),
+        512,
+    );
 
     let mut ipc = Sel4IpcClient::new("root-ota-download", ota_ep, eneros_time::get_monotonic_ns)
         .map_err(|e| alloc::format!("ota client init: {:?}", e))?;
@@ -992,44 +982,43 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
     let resp = transfer
         .transfer("svc-ota", &req)
         .map_err(|e| alloc::format!("ota download transport: {e:?}"))?;
-    if resp.starts_with(b"ERR:") {
-        return Err(alloc::format!(
-            "ota download rejected: {}",
-            core::str::from_utf8(&resp).unwrap_or("<bad-utf8>")
-        ));
+    if let Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) =
+        eneros_agent_sdk::ota_wire::expect_subcode_resp(
+            &resp,
+            eneros_agent_sdk::ota_wire::SUB_DOWNLOAD,
+        )
+    {
+        return Err(alloc::format!("ota download rejected: {msg}"));
     }
-    if resp.len() < 1 || resp[0] != 2 {
-        return Err(alloc::format!("ota verify unexpected resp: {resp:?}"));
-    }
+    eneros_agent_sdk::ota_wire::expect_subcode_resp(
+        &resp,
+        eneros_agent_sdk::ota_wire::SUB_DOWNLOAD,
+    )
+    .map_err(|e| alloc::format!("ota verify unexpected resp: {e:?}"))?;
     eneros_runtime::println!(
         "[eneros-root-task] OTA-DOWNLOAD: verified via svc-ota (real A/B write+readback)"
     );
 
     // 0x03 TRIAL
-    let mut req3: alloc::vec::Vec<u8> = alloc::vec![b'O', b'T', b'A', b'1', 0x03, 1u8];
-    let mut ver = [0u8; 32];
-    ver[..7].copy_from_slice(b"0.123.0");
-    req3.extend_from_slice(&ver);
+    let req3 = eneros_agent_sdk::ota_wire::encode_trial(1, b"0.123.0");
     let mut transfer3 = ChunkedClient::new(&mut ipc, *epoch, 5_000);
     *epoch = epoch.saturating_add(1);
     let resp3 = transfer3
         .transfer("svc-ota", &req3)
         .map_err(|e| alloc::format!("ota trial transport: {e:?}"))?;
-    if resp3.starts_with(b"ERR:") || resp3.len() < 1 || resp3[0] != 3 {
-        return Err(alloc::format!("ota trial unexpected resp: {resp3:?}"));
-    }
+    eneros_agent_sdk::ota_wire::expect_subcode_resp(&resp3, eneros_agent_sdk::ota_wire::SUB_TRIAL)
+        .map_err(|e| alloc::format!("ota trial unexpected resp: {e:?}"))?;
     eneros_runtime::println!("[eneros-root-task] OTA-DOWNLOAD: trial started");
 
     // 0x04 COMMIT
-    let req4: alloc::vec::Vec<u8> = alloc::vec![b'O', b'T', b'A', b'1', 0x04];
+    let req4 = eneros_agent_sdk::ota_wire::encode_commit();
     let mut transfer4 = ChunkedClient::new(&mut ipc, *epoch, 5_000);
     *epoch = epoch.saturating_add(1);
     let resp4 = transfer4
         .transfer("svc-ota", &req4)
         .map_err(|e| alloc::format!("ota commit transport: {e:?}"))?;
-    if resp4.starts_with(b"ERR:") || resp4.len() < 1 || resp4[0] != 4 {
-        return Err(alloc::format!("ota commit unexpected resp: {resp4:?}"));
-    }
+    eneros_agent_sdk::ota_wire::expect_subcode_resp(&resp4, eneros_agent_sdk::ota_wire::SUB_COMMIT)
+        .map_err(|e| alloc::format!("ota commit unexpected resp: {e:?}"))?;
     eneros_runtime::println!("[eneros-root-task] OTA-DOWNLOAD: committed");
     Ok(())
 }
@@ -1147,19 +1136,21 @@ fn telemetry_report_tick(
     if payload.len() > 255 {
         payload.truncate(255);
     }
-    // 2. ENQUEUE 帧：OBS1 ‖ 0x01 ‖ class(3=Telemetry) ‖ service 16B ‖
-    //    schema 8B ‖ created 8B LE ‖ plen 1B ‖ payload。
-    let mut req: alloc::vec::Vec<u8> = alloc::vec![b'O', b'B', b'S', b'1', 0x01, 3];
-    let mut service = [0u8; 16];
-    let svc = b"root-task";
-    service[..svc.len()].copy_from_slice(svc);
-    req.extend_from_slice(&service);
-    let mut schema = [0u8; 8];
-    schema[..6].copy_from_slice(b"health");
-    req.extend_from_slice(&schema);
-    req.extend_from_slice(&abs_now_ms().to_le_bytes());
-    req.push(payload.len() as u8);
-    req.extend_from_slice(&payload);
+    // 2. ENQUEUE 帧：蓝图 58 走 obs_wire 单源（布局字节不变）。
+    let req = match eneros_agent_sdk::obs_wire::encode_enqueue(
+        3, // class=Telemetry
+        b"root-task",
+        b"health",
+        abs_now_ms(),
+        &payload,
+    ) {
+        Ok(r) => r,
+        Err(_) => {
+            // 已截断仍失败 = 不可达；fail-closed 不伪造。
+            eneros_runtime::println!("[eneros-root-task] OBS-REPORT enqueue encode FAIL");
+            return -1;
+        }
+    };
     let mut ipc = match Sel4IpcClient::new("root-obs-enq", obs_ep, eneros_time::get_monotonic_ns) {
         Ok(c) => c,
         Err(_) => {
@@ -1183,9 +1174,8 @@ fn telemetry_report_tick(
         );
         return -1;
     }
-    // 3. FLUSH：OBS1 ‖ 0x02 ‖ batch u32 LE。
-    let mut flush_req: alloc::vec::Vec<u8> = alloc::vec![b'O', b'B', b'S', b'1', 0x02];
-    flush_req.extend_from_slice(&8u32.to_le_bytes());
+    // 3. FLUSH：蓝图 58 走 obs_wire 单源。
+    let flush_req = eneros_agent_sdk::obs_wire::encode_flush(8);
     let mut ipc2 = match Sel4IpcClient::new("root-obs-flush", obs_ep, eneros_time::get_monotonic_ns)
     {
         Ok(c) => c,
@@ -1204,16 +1194,17 @@ fn telemetry_report_tick(
         }
     };
     // FLUSH 成功响应 = exported u64 LE（8B）；失败 = "ERR:..."（不误读为数字）。
-    let exported = if flush_resp.len() >= 3 && &flush_resp[..3] == b"ERR" {
+    let exported = if flush_resp.starts_with(b"ERR") {
         eneros_runtime::println!(
             "[eneros-root-task] OBS-REPORT flush rejected {:02x?}",
             &flush_resp[..flush_resp.len().min(16)]
         );
         -1
-    } else if flush_resp.len() >= 8 {
-        u64::from_le_bytes(flush_resp[..8].try_into().unwrap()) as i64
     } else {
-        0
+        match eneros_agent_sdk::obs_wire::parse_flush_resp(&flush_resp) {
+            Ok(n) => n as i64,
+            Err(_) => 0,
+        }
     };
     eneros_runtime::println!(
         "[eneros-root-task] OBS-REPORT svc={} exported={}",

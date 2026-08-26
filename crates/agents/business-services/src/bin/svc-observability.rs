@@ -246,6 +246,8 @@ struct ObsHandler {
 #[cfg(target_os = "none")]
 impl eneros_control_services::ControlServiceHandler for ObsHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, now_ms: u64) -> bool {
+        use alloc::string::ToString;
+
         use eneros_business_services::observability::*;
         const MAGIC: &[u8; 4] = b"OBS1";
         if req.len() < 5 || &req[..4] != MAGIC {
@@ -254,12 +256,16 @@ impl eneros_control_services::ControlServiceHandler for ObsHandler {
         }
         match req[4] {
             0x01 => {
-                if req.len() < 5 + 34 {
-                    resp.extend_from_slice(b"ERR:len");
-                    return false;
-                }
-                let p = &req[5..];
-                let class = match p[0] {
+                // 蓝图 58：帧解析走 obs_wire 单源（与 root 上报同型）。
+                // 蓝图 58：帧解析走 obs_wire 单源（与 root 上报同型）。
+                let frame = match eneros_agent_sdk::obs_wire::parse_enqueue_req(req) {
+                    Ok(f) => f,
+                    Err(_) => {
+                        resp.extend_from_slice(b"ERR:len");
+                        return false;
+                    }
+                };
+                let class = match frame.class {
                     0 => TelemetryClass::SecurityAudit,
                     1 => TelemetryClass::Control,
                     2 => TelemetryClass::Alarm,
@@ -271,24 +277,16 @@ impl eneros_control_services::ControlServiceHandler for ObsHandler {
                         return false;
                     }
                 };
-                let mut service = [0u8; 16];
-                service.copy_from_slice(&p[1..17]);
-                let service = alloc::string::String::from_utf8_lossy(&service).into_owned();
-                let mut schema = [0u8; 8];
-                schema.copy_from_slice(&p[17..25]);
-                let schema = alloc::string::String::from_utf8_lossy(&schema).into_owned();
-                let created = u64::from_le_bytes(p[25..33].try_into().unwrap());
-                let plen = p[33] as usize;
-                if 5 + 34 + plen > req.len() {
-                    resp.extend_from_slice(b"ERR:len");
-                    return false;
-                }
                 let item = TelemetryItem {
                     class,
-                    service,
-                    schema,
-                    payload: req[5 + 34..5 + 34 + plen].to_vec(),
-                    created_ms: created,
+                    service: alloc::string::String::from_utf8_lossy(&frame.service)
+                        .trim_end_matches('\0')
+                        .to_string(),
+                    schema: alloc::string::String::from_utf8_lossy(&frame.schema)
+                        .trim_end_matches('\0')
+                        .to_string(),
+                    payload: frame.payload.to_vec(),
+                    created_ms: frame.created_ms,
                     boot_id: 1,
                     config_generation: 0,
                 };
