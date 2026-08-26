@@ -24,9 +24,6 @@ pub mod service_cfg;
 /// TransportFactory seam——modbus-tcp 真实 TCP 传输接入点）。
 pub mod net_transport;
 
-/// 49（WP-49.2 远程 dual-brain 传输面）：AI 请求分片组装（svc-mqtt 消费）。
-pub mod ai_relay;
-
 /// 服务进程全局分配器（复用 drv-svc 的实现）。
 pub use eneros_drv_svc::allocator::HeapAllocator;
 /// 服务实例 epoch（重启后变化；客户端旧句柄失效）。

@@ -53,9 +53,8 @@ pub enum FrameError {
     Oversize,
 }
 
-/// 分片失败。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FragmentError;
+/// 分片失败（蓝图 59 起单源在 relay_face，re-export 保持导入路径稳定）。
+pub use crate::relay_face::FragmentError;
 
 /// 校验帧头（magic + schema 版本 + 长度）。返回 (batch_seq, count)。
 ///
@@ -89,34 +88,21 @@ pub fn encode_frame_header(batch_seq: u64, count: u16) -> [u8; TEL_FRAME_HEADER_
     out
 }
 
+/// 遥测中继面声明（蓝图 59：分片算法单源在 relay_face）。
+pub const FACE: crate::relay_face::RelayFaceSpec = crate::relay_face::RelayFaceSpec {
+    begin: TEL_PUB_BEGIN,
+    cont: TEL_PUB_CONT,
+    end: TEL_PUB_END,
+    max_total: TEL_FRAME_MAX,
+};
+
 /// 批量帧 → 分片帧序列（BEGIN/CONT/END 子码；不含 EXECUTE opcode——
 /// 发送方 drv_call 侧再拼）。帧超限/空 → 失败。
+/// 蓝图 59：委托 [`FACE::fragment`]（原手写算法已收敛至 relay_face 单源）。
 pub fn fragment_telemetry_frame(
     frame: &[u8],
 ) -> Result<(u16, alloc::vec::Vec<alloc::vec::Vec<u8>>), FragmentError> {
-    use alloc::vec::Vec;
-    if frame.is_empty() || frame.len() > TEL_FRAME_MAX {
-        return Err(FragmentError);
-    }
-    let total = frame.len() as u16;
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut first = Vec::with_capacity(3 + TEL_REQ_DATA_BEGIN_MAX);
-    first.push(TEL_PUB_BEGIN);
-    first.extend_from_slice(&total.to_le_bytes());
-    let head = core::cmp::min(frame.len(), TEL_REQ_DATA_BEGIN_MAX);
-    first.extend_from_slice(&frame[..head]);
-    frames.push(first);
-    let mut off = head;
-    while off < frame.len() {
-        let end = core::cmp::min(off + TEL_REQ_DATA_MAX, frame.len());
-        let mut f = Vec::with_capacity(1 + (end - off));
-        f.push(TEL_PUB_CONT);
-        f.extend_from_slice(&frame[off..end]);
-        frames.push(f);
-        off = end;
-    }
-    frames.push(alloc::vec![TEL_PUB_END]);
-    Ok((total, frames))
+    FACE.fragment(frame)
 }
 
 #[cfg(test)]

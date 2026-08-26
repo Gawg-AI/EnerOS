@@ -42,7 +42,7 @@ struct MqttWriteIoService {
     /// 转发被拒计数（服务侧拒绝/回执 DISP_ERR）。
     pub rejected_total: u64,
     /// 49（WP-49.2）：AI 请求分片组装器。
-    ai_assembler: eneros_protocol_services::ai_relay::RequestAssembler,
+    ai_assembler: eneros_agent_sdk::relay_face::RelayAssembler,
     /// 49：svc-ai-worker EIPC 客户端（授予槽 `EIPC_EP_BASE_SLOT + 2`；
     /// 槽序 = 表序 config(0)/dispatch(1)/ai-worker(2)）。未授予 → 应答
     /// 丢弃计数（fail-closed）。
@@ -56,7 +56,7 @@ struct MqttWriteIoService {
     pub ai_resp_forwarded: u64,
     pub ai_errors: u64,
     /// 50（WP-50.1）：遥测帧分片组装器（与 AI 请求组装同语义；不解释内容）。
-    tel_assembler: eneros_protocol_services::ai_relay::RequestAssembler,
+    tel_assembler: eneros_agent_sdk::relay_face::RelayAssembler,
     /// 50：遥测帧发布/拒绝计数（观测；拒绝 = 未配置主题/断连/坏帧）。
     pub tel_published: u64,
     pub tel_rejected: u64,
@@ -202,148 +202,162 @@ impl MqttWriteIoService {
         }
     }
 
-    /// 49：EXECUTE 载荷 AI 请求分片子码处理（BEGIN/CONT/END）。
-    /// 返回 Some(1B 状态) = 已消费该载荷（回 ST_OK）；None = 非 AI 子码。
-    fn handle_ai_fragment(&mut self, payload: &[u8]) -> Option<u8> {
-        use eneros_agent_sdk::ai_relay::{AI_REQ_BEGIN, AI_REQ_CONT, AI_REQ_END};
-        let code = *payload.first()?;
-        match code {
-            AI_REQ_BEGIN if payload.len() >= 3 => {
-                let total = u16::from_le_bytes([payload[1], payload[2]]);
-                match self.ai_assembler.begin(total, &payload[3..]) {
-                    Ok(()) => Some(0),
-                    Err(e) => {
-                        self.ai_errors = self.ai_errors.saturating_add(1);
-                        eneros_runtime::println!("[svc-mqtt] AI-FRAG-REJECT begin {e:?}");
-                        Some(1)
-                    }
-                }
-            }
-            AI_REQ_CONT => match self.ai_assembler.cont(&payload[1..]) {
-                Ok(()) => Some(0),
-                Err(e) => {
-                    self.ai_errors = self.ai_errors.saturating_add(1);
-                    eneros_runtime::println!("[svc-mqtt] AI-FRAG-REJECT cont {e:?}");
-                    Some(1)
-                }
-            },
-            AI_REQ_END => match self.ai_assembler.end() {
-                Ok(json) => {
-                    let topic = self.ai_request_topic.clone();
-                    let enq = match topic {
-                        Some(t) => self.io.plugin_mut().enqueue_app_publish(&t, &json),
-                        None => {
-                            eneros_runtime::println!(
-                                "[svc-mqtt] AI-REQ-DROP ai_request_topic 未配置（fail-closed）"
-                            );
-                            Err(eneros_protocol_abstract::ProtocolError::InvalidConfig)
-                        }
-                    };
-                    match enq {
-                        Ok(()) => {
-                            self.ai_req_published = self.ai_req_published.saturating_add(1);
-                            eneros_runtime::println!(
-                                "[svc-mqtt] AI-REQ-ENQUEUE len={} total={}",
-                                json.len(),
-                                self.ai_req_published
-                            );
-                            Some(0)
-                        }
-                        Err(_) => {
-                            self.ai_errors = self.ai_errors.saturating_add(1);
+    /// 蓝图 59：EXECUTE 载荷分片子码统一处理（AI 请求面 + 遥测帧面）。
+    /// BEGIN/CONT 两面同构走 relay_face 单源；END 按面定稿（域语义不同：
+    /// AI 发布应答主题 vs 遥测帧头三重校验）。返回 Some(1B 状态) = 已消费；
+    /// None = 非本两面子码（调用方继续既有 EXECUTE 处理）。
+    fn handle_relay_fragment(&mut self, payload: &[u8]) -> Option<u8> {
+        use eneros_agent_sdk::ai_relay::FACE as AI_FACE;
+        use eneros_agent_sdk::relay_face::FragmentStep;
+        use eneros_agent_sdk::telemetry_relay::FACE as TEL_FACE;
+
+        for (face, is_ai) in [(AI_FACE, true), (TEL_FACE, false)] {
+            match face.classify(payload) {
+                Some(FragmentStep::Begin { total, data }) => {
+                    let asm = self.assembler_mut(is_ai);
+                    return match asm.begin(total, data, face.max_total) {
+                        Ok(()) => Some(0),
+                        Err(e) => {
+                            self.relay_reject(is_ai, "begin", &e);
                             Some(1)
                         }
-                    }
+                    };
                 }
-                Err(e) => {
-                    self.ai_errors = self.ai_errors.saturating_add(1);
-                    eneros_runtime::println!("[svc-mqtt] AI-FRAG-REJECT end {e:?}");
-                    Some(1)
+                Some(FragmentStep::Cont { data }) => {
+                    let asm = self.assembler_mut(is_ai);
+                    return match asm.cont(data) {
+                        Ok(()) => Some(0),
+                        Err(e) => {
+                            self.relay_reject(is_ai, "cont", &e);
+                            Some(1)
+                        }
+                    };
                 }
-            },
-            _ => None,
+                Some(FragmentStep::End) => {
+                    return Some(if is_ai {
+                        self.ai_finalize()
+                    } else {
+                        self.tel_finalize()
+                    });
+                }
+                None => continue,
+            }
+        }
+        None
+    }
+
+    /// 面选择器（AI/遥测组装器）。
+    fn assembler_mut(&mut self, is_ai: bool) -> &mut eneros_agent_sdk::relay_face::RelayAssembler {
+        if is_ai {
+            &mut self.ai_assembler
+        } else {
+            &mut self.tel_assembler
         }
     }
 
-    /// 50（WP-50.1）：EXECUTE 载荷遥测帧分片子码处理（BEGIN/CONT/END）。
-    /// 返回 Some(1B 状态) = 已消费该载荷（回 ST_OK）；None = 非遥测子码。
-    ///
-    /// END 定稿后边界校验（fail-closed）：
-    /// 1. 帧头（magic `OBSF` + schema 版本）不匹配 → 拒绝解析 + 计数；
-    /// 2. telemetry_topic 未配置 → 拒绝（遥测出口关闭）；
-    /// 3. 插件未连接（broker 断）→ 拒绝 → 调用方 durable outbox 兜底补传。
-    /// 任一拒绝 → 返回非 0 状态（svc-observability exporter 视为失败）。
-    fn handle_telemetry_fragment(&mut self, payload: &[u8]) -> Option<u8> {
-        use eneros_agent_sdk::telemetry_relay::{
-            check_frame_header, TEL_PUB_BEGIN, TEL_PUB_CONT, TEL_PUB_END,
-        };
-        let code = *payload.first()?;
-        match code {
-            TEL_PUB_BEGIN if payload.len() >= 3 => {
-                let total = u16::from_le_bytes([payload[1], payload[2]]);
-                match self.tel_assembler.begin(total, &payload[3..]) {
-                    Ok(()) => Some(0),
-                    Err(e) => {
-                        self.tel_rejected = self.tel_rejected.saturating_add(1);
-                        eneros_runtime::println!("[svc-mqtt] TEL-FRAG-REJECT begin {e:?}");
-                        Some(1)
+    /// 分片错误公共出口：计数 + 前缀化打印（文本与原双 handler 逐字一致）。
+    fn relay_reject(
+        &mut self,
+        is_ai: bool,
+        step: &str,
+        e: &eneros_agent_sdk::relay_face::AssembleError,
+    ) {
+        if is_ai {
+            self.ai_errors = self.ai_errors.saturating_add(1);
+            eneros_runtime::println!("[svc-mqtt] AI-FRAG-REJECT {step} {e:?}");
+        } else {
+            self.tel_rejected = self.tel_rejected.saturating_add(1);
+            eneros_runtime::println!("[svc-mqtt] TEL-FRAG-REJECT {step} {e:?}");
+        }
+    }
+
+    /// AI 面 END 定稿（原 handle_ai_fragment END 分支原样迁移）。
+    fn ai_finalize(&mut self) -> u8 {
+        match self.ai_assembler.end() {
+            Ok(json) => {
+                let topic = self.ai_request_topic.clone();
+                let enq = match topic {
+                    Some(t) => self.io.plugin_mut().enqueue_app_publish(&t, &json),
+                    None => {
+                        eneros_runtime::println!(
+                            "[svc-mqtt] AI-REQ-DROP ai_request_topic 未配置（fail-closed）"
+                        );
+                        Err(eneros_protocol_abstract::ProtocolError::InvalidConfig)
+                    }
+                };
+                match enq {
+                    Ok(()) => {
+                        self.ai_req_published = self.ai_req_published.saturating_add(1);
+                        eneros_runtime::println!(
+                            "[svc-mqtt] AI-REQ-ENQUEUE len={} total={}",
+                            json.len(),
+                            self.ai_req_published
+                        );
+                        0
+                    }
+                    Err(_) => {
+                        self.ai_errors = self.ai_errors.saturating_add(1);
+                        1
                     }
                 }
             }
-            TEL_PUB_CONT => match self.tel_assembler.cont(&payload[1..]) {
-                Ok(()) => Some(0),
-                Err(e) => {
+            Err(e) => {
+                self.ai_errors = self.ai_errors.saturating_add(1);
+                eneros_runtime::println!("[svc-mqtt] AI-FRAG-REJECT end {e:?}");
+                1
+            }
+        }
+    }
+
+    /// 遥测面 END 定稿（原 handle_telemetry_fragment END 分支原样迁移）：
+    /// 1. 帧头（magic `OBSF` + schema 版本）不匹配 → 拒绝解析 + 计数；
+    /// 2. telemetry_topic 未配置 → 拒绝（遥测出口关闭）；
+    /// 3. 插件未连接（broker 断）→ 拒绝 → 调用方 durable outbox 兜底补传。
+    fn tel_finalize(&mut self) -> u8 {
+        match self.tel_assembler.end() {
+            Ok(frame) => {
+                // 1. 帧头校验（schema 版本不匹配 → 拒绝解析）。
+                if let Err(e) = eneros_agent_sdk::telemetry_relay::check_frame_header(&frame) {
                     self.tel_rejected = self.tel_rejected.saturating_add(1);
-                    eneros_runtime::println!("[svc-mqtt] TEL-FRAG-REJECT cont {e:?}");
-                    Some(1)
+                    eneros_runtime::println!(
+                        "[svc-mqtt] TEL-FRAME-REJECT header={e:?} len={}（fail-closed）",
+                        frame.len()
+                    );
+                    return 1;
                 }
-            },
-            TEL_PUB_END => match self.tel_assembler.end() {
-                Ok(frame) => {
-                    // 1. 帧头校验（schema 版本不匹配 → 拒绝解析）。
-                    if let Err(e) = check_frame_header(&frame) {
+                // 2. 插件已连接（broker 在线——断连时拒绝 → durable 兜底）。
+                if !self.io.plugin_mut().is_connected() {
+                    self.tel_rejected = self.tel_rejected.saturating_add(1);
+                    eneros_runtime::println!(
+                        "[svc-mqtt] TEL-FRAME-REJECT broker 断连（fail-closed → 补传）"
+                    );
+                    return 1;
+                }
+                // 3. 入插件 app outbox（QoS1 发布；未配置主题插件拒绝）。
+                match self.io.plugin_mut().enqueue_telemetry_publish(&frame) {
+                    Ok(()) => {
+                        self.tel_published = self.tel_published.saturating_add(1);
+                        eneros_runtime::println!(
+                            "[svc-mqtt] TEL-FRAME-ACCEPT len={} total={}",
+                            frame.len(),
+                            self.tel_published
+                        );
+                        0
+                    }
+                    Err(_) => {
                         self.tel_rejected = self.tel_rejected.saturating_add(1);
                         eneros_runtime::println!(
-                            "[svc-mqtt] TEL-FRAME-REJECT header={e:?} len={}（fail-closed）",
-                            frame.len()
+                            "[svc-mqtt] TEL-FRAME-REJECT 未配置主题/outbox 满（fail-closed）"
                         );
-                        return Some(1);
-                    }
-                    // 2. 插件已连接（broker 在线——断连时拒绝 → durable 兜底）。
-                    if !self.io.plugin_mut().is_connected() {
-                        self.tel_rejected = self.tel_rejected.saturating_add(1);
-                        eneros_runtime::println!(
-                            "[svc-mqtt] TEL-FRAME-REJECT broker 断连（fail-closed → 补传）"
-                        );
-                        return Some(1);
-                    }
-                    // 3. 入插件 app outbox（QoS1 发布；未配置主题插件拒绝）。
-                    match self.io.plugin_mut().enqueue_telemetry_publish(&frame) {
-                        Ok(()) => {
-                            self.tel_published = self.tel_published.saturating_add(1);
-                            eneros_runtime::println!(
-                                "[svc-mqtt] TEL-FRAME-ACCEPT len={} total={}",
-                                frame.len(),
-                                self.tel_published
-                            );
-                            Some(0)
-                        }
-                        Err(_) => {
-                            self.tel_rejected = self.tel_rejected.saturating_add(1);
-                            eneros_runtime::println!(
-                                "[svc-mqtt] TEL-FRAME-REJECT 未配置主题/outbox 满（fail-closed）"
-                            );
-                            Some(1)
-                        }
+                        1
                     }
                 }
-                Err(e) => {
-                    self.tel_rejected = self.tel_rejected.saturating_add(1);
-                    eneros_runtime::println!("[svc-mqtt] TEL-FRAG-REJECT end {e:?}");
-                    Some(1)
-                }
-            },
-            _ => None,
+            }
+            Err(e) => {
+                self.tel_rejected = self.tel_rejected.saturating_add(1);
+                eneros_runtime::println!("[svc-mqtt] TEL-FRAG-REJECT end {e:?}");
+                1
+            }
         }
     }
 }
@@ -362,31 +376,11 @@ impl eneros_drv_svc::runtime::DriverService for MqttWriteIoService {
         use eneros_drv_svc::runtime::*;
         if req.opcode == OP_EXECUTE {
             let p = &req.payload[..req.payload_len as usize];
-            // 50（WP-50.1）/49（WP-49.2）：按载荷首字节判定分片子码面。
-            let is_tel = matches!(
-                p.first(),
-                Some(&eneros_agent_sdk::telemetry_relay::TEL_PUB_BEGIN)
-                    | Some(&eneros_agent_sdk::telemetry_relay::TEL_PUB_CONT)
-                    | Some(&eneros_agent_sdk::telemetry_relay::TEL_PUB_END)
-            );
-            let is_ai = matches!(
-                p.first(),
-                Some(&eneros_agent_sdk::ai_relay::AI_REQ_BEGIN)
-                    | Some(&eneros_agent_sdk::ai_relay::AI_REQ_CONT)
-                    | Some(&eneros_agent_sdk::ai_relay::AI_REQ_END)
-            );
             // 先 io.handle（本轮 poll 驱动插件 connect 状态刷新），再处理
             // 分片——telemetry 的 broker 断连拒绝依赖新鲜 connected。
             self.io.handle(req, resp);
-            if is_tel {
-                let status = self.handle_telemetry_fragment(p).unwrap_or(1);
-                resp.status = ST_OK;
-                resp.payload[0] = status;
-                resp.payload_len = 1;
-                return;
-            }
-            if is_ai {
-                let status = self.handle_ai_fragment(p).unwrap_or(1);
+            // 蓝图 59：两面分片统一处理（原双 handler 收敛）。
+            if let Some(status) = self.handle_relay_fragment(p) {
                 resp.status = ST_OK;
                 resp.payload[0] = status;
                 resp.payload_len = 1;
@@ -395,10 +389,9 @@ impl eneros_drv_svc::runtime::DriverService for MqttWriteIoService {
             // 50 二分诊断：未识别 EXECUTE 载荷首字节打印（定位后移除）。
             if req.payload_len > 0 {
                 eneros_runtime::println!(
-                    "[svc-mqtt] DBG-EXEC p0={:#04x} len={} tel={ai}",
+                    "[svc-mqtt] DBG-EXEC p0={:#04x} len={}",
                     p[0],
-                    req.payload_len,
-                    ai = is_tel
+                    req.payload_len
                 );
             }
             // 47（WP-47.1）：本轮 poll 解析到的下行写意图 → dispatch 授权链。
@@ -552,16 +545,14 @@ pub extern "C" fn _start(
                                 dispatch_epoch: 0,
                                 forwarded_total: 0,
                                 rejected_total: 0,
-                                ai_assembler:
-                                    eneros_protocol_services::ai_relay::RequestAssembler::new(),
+                                ai_assembler: eneros_agent_sdk::relay_face::RelayAssembler::new(),
                                 ai_worker,
                                 ai_epoch: 0,
                                 ai_request_topic,
                                 ai_req_published: 0,
                                 ai_resp_forwarded: 0,
                                 ai_errors: 0,
-                                tel_assembler:
-                                    eneros_protocol_services::ai_relay::RequestAssembler::new(),
+                                tel_assembler: eneros_agent_sdk::relay_face::RelayAssembler::new(),
                                 tel_published: 0,
                                 tel_rejected: 0,
                                 // 50（WP-50.2）：svc-mgmt 端点（按名解析；

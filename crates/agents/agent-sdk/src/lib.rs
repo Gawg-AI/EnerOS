@@ -94,6 +94,7 @@ pub mod ipc;
 pub mod ipc_sel4;
 pub mod obs_wire;
 pub mod ota_wire;
+pub mod relay_face;
 
 // sel4 feature 仅限目标构建（seL4 userland）：host 上显式拒绝。
 // 判定与 sel4-sys build.rs 同源（target_os="none" = aarch64-unknown-none；

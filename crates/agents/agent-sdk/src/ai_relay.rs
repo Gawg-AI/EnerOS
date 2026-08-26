@@ -30,39 +30,26 @@ pub const AI_REQ_DATA_BEGIN_MAX: usize = 64 - 3;
 /// CONT/END 数据容量。
 pub const AI_REQ_DATA_MAX: usize = 64 - 1;
 
-/// 分片失败（空载荷/超限）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FragmentError;
+/// 分片失败（空载荷/超限；蓝图 59 起单源在 relay_face，此处 re-export
+/// 保持既有导入路径稳定）。
+pub use crate::relay_face::FragmentError;
+
+/// AI 请求中继面声明（蓝图 59：分片算法单源在 relay_face）。
+pub const FACE: crate::relay_face::RelayFaceSpec = crate::relay_face::RelayFaceSpec {
+    begin: AI_REQ_BEGIN,
+    cont: AI_REQ_CONT,
+    end: AI_REQ_END,
+    max_total: AI_REQUEST_MAX,
+};
 
 /// 请求 JSON → (total_len, frames)：frames[0] = BEGIN 载荷（不含 EXECUTE
 /// opcode——drv_call 侧再拼），其余为 CONT 载荷；末尾追加 END 帧。
 /// 发送方按序 drv_call；中途失败直接放弃（接收方 BEGIN 隐式中止残片）。
+/// 蓝图 59：委托 [`FACE::fragment`]（原手写算法已收敛至 relay_face 单源）。
 pub fn fragment_request(
     json: &[u8],
 ) -> Result<(u16, alloc::vec::Vec<alloc::vec::Vec<u8>>), FragmentError> {
-    use alloc::vec::Vec;
-    if json.is_empty() || json.len() > AI_REQUEST_MAX {
-        return Err(FragmentError);
-    }
-    let total = json.len() as u16;
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut first = Vec::with_capacity(3 + AI_REQ_DATA_BEGIN_MAX);
-    first.push(AI_REQ_BEGIN);
-    first.extend_from_slice(&total.to_le_bytes());
-    let head = core::cmp::min(json.len(), AI_REQ_DATA_BEGIN_MAX);
-    first.extend_from_slice(&json[..head]);
-    frames.push(first);
-    let mut off = head;
-    while off < json.len() {
-        let end = core::cmp::min(off + AI_REQ_DATA_MAX, json.len());
-        let mut f = Vec::with_capacity(1 + (end - off));
-        f.push(AI_REQ_CONT);
-        f.extend_from_slice(&json[off..end]);
-        frames.push(f);
-        off = end;
-    }
-    frames.push(alloc::vec![AI_REQ_END]);
-    Ok((total, frames))
+    FACE.fragment(json)
 }
 
 #[cfg(test)]
