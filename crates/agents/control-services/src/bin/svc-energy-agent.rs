@@ -197,12 +197,13 @@ struct EnergyAgentHandler<'a> {
 
 #[cfg(target_os = "none")]
 impl eneros_control_services::ControlServiceHandler for EnergyAgentHandler<'_> {
-    fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, _now_ms: u64) -> bool {
+    fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, now_ms: u64) -> bool {
         if req.first() != Some(&1) {
             *resp = vec![0xFF];
             return true;
         }
-        *resp = self.svc.tick();
+        // 蓝图 57：now_ms 注入 tick——错误预算熔断冷却的时钟基准。
+        *resp = self.svc.tick(now_ms);
         // 编排结果证据行（外部可观察：串口 = QEMU 外部观察面）。
         let status = match resp.first() {
             Some(&eneros_control_services::energy_agent_service::EA_OK) => "OK",

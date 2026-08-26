@@ -10,7 +10,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::ai_worker::{AI_PROPOSE, AI_UNAVAILABLE};
-#[cfg(test)]
 use crate::dispatch_service::decode_receipt;
 use crate::dispatch_service::DISP_SUBMIT;
 #[cfg(test)]
@@ -25,6 +24,10 @@ pub const EA_OK: u8 = 0;
 pub const EA_NOACTION: u8 = 1;
 pub const EA_UNAVAILABLE: u8 = 2;
 pub const EA_INVALID: u8 = 0xFF;
+
+/// 熔断默认冷却时长（毫秒；蓝图 57 D2：预算耗尽后跳过推理的止损窗口，
+/// 到期放行单次探针，Committed/NoAction 复位）。
+pub const DEFAULT_COOLDOWN_MS: u64 = 30_000;
 
 /// 遥测客户端（svc-telemetry 消费 seam）。
 pub trait TelemetryClient {
@@ -52,6 +55,13 @@ pub struct EnergyAgentService {
     pub worker: crate::energy_agent_service::WorkerClientBox,
     /// 投递客户端。
     pub dispatch: crate::energy_agent_service::DispatchClientBox,
+    /// 蓝图 57：tick 记账单源（错误预算/分类/升级——与进程内 EnergyAgent
+    /// 同一实现；学习钩子不入目标侧，wire 无诚实学习输入，蓝图 57 D3）。
+    pub policy: eneros_dual_brain::TickPolicy,
+    /// 熔断冷却时长（毫秒）。
+    pub cooldown_ms: u64,
+    /// 冷却截止时刻（0 = 无熔断；预算耗尽时 = now + cooldown_ms）。
+    cooldown_until_ms: u64,
     /// tick 计数。
     pub tick_count: u64,
     /// 最近一次编排结果（诊断）。
@@ -64,30 +74,56 @@ pub struct WorkerClientBox(pub alloc::boxed::Box<dyn WorkerClient>);
 pub struct DispatchClientBox(pub alloc::boxed::Box<dyn DispatchClient>);
 
 impl EnergyAgentService {
-    /// 构造。
+    /// 构造（冷却时长取 [`DEFAULT_COOLDOWN_MS`]）。
     pub fn new(
         telemetry: alloc::boxed::Box<dyn TelemetryClient>,
         worker: alloc::boxed::Box<dyn WorkerClient>,
         dispatch: alloc::boxed::Box<dyn DispatchClient>,
     ) -> Self {
+        Self::with_cooldown(telemetry, worker, dispatch, DEFAULT_COOLDOWN_MS)
+    }
+
+    /// 构造（指定熔断冷却时长；测试注入小窗口用）。
+    pub fn with_cooldown(
+        telemetry: alloc::boxed::Box<dyn TelemetryClient>,
+        worker: alloc::boxed::Box<dyn WorkerClient>,
+        dispatch: alloc::boxed::Box<dyn DispatchClient>,
+        cooldown_ms: u64,
+    ) -> Self {
         Self {
             telemetry: TelemetryClientBox(telemetry),
             worker: WorkerClientBox(worker),
             dispatch: DispatchClientBox(dispatch),
+            policy: eneros_dual_brain::TickPolicy::new(),
+            cooldown_ms,
+            cooldown_until_ms: 0,
             tick_count: 0,
             last_result: None,
         }
     }
 
     /// 处理一次 tick：telemetry → worker → dispatch。
-    pub fn tick(&mut self) -> Vec<u8> {
+    ///
+    /// 蓝图 57 D2：错误预算耗尽 → 冷却期内跳过推理直接
+    /// `EA_NOACTION("error-budget-exhausted")`（止损：不烧推理、不再撞
+    /// dispatch）；冷却到期放行单次探针，Committed/NoAction 复位恢复。
+    /// 响应码词汇与原实现不变。
+    pub fn tick(&mut self, now_ms: u64) -> Vec<u8> {
+        use eneros_dual_brain::TickOutcome;
+        if self.policy.in_error() && now_ms < self.cooldown_until_ms {
+            return self.noaction("error-budget-exhausted");
+        }
         // 1. 可信遥测（缺失 → 零推理零新写）。
         let tel_wire = match self.telemetry.0.fetch_telemetry() {
             Ok(w) => w,
-            Err(e) => return self.noaction(&e),
+            Err(e) => {
+                let resp = self.noaction(&e);
+                return self.settle(TickOutcome::NoTrustedInput, resp, now_ms);
+            }
         };
         if tel_wire.first() != Some(&SNAPSHOT_OK) {
-            return self.noaction("telemetry rejected");
+            let resp = self.noaction("telemetry rejected");
+            return self.settle(TickOutcome::NoTrustedInput, resp, now_ms);
         }
         let tel = &tel_wire[1..];
         // 2. 决策（worker 不可用 → 结构化降级）。
@@ -96,15 +132,24 @@ impl EnergyAgentService {
         worker_req.extend_from_slice(tel);
         let worker_resp = match self.worker.0.propose(&worker_req) {
             Ok(r) => r,
-            Err(e) => return self.noaction(&e),
+            Err(e) => {
+                let resp = self.noaction(&e);
+                return self.settle(
+                    TickOutcome::PreDispatchError { detail: e.clone() },
+                    resp,
+                    now_ms,
+                );
+            }
         };
         if worker_resp.first() == Some(&AI_UNAVAILABLE) {
-            return self.unavailable();
+            let resp = self.unavailable();
+            return self.settle(TickOutcome::Unavailable, resp, now_ms);
         }
         if worker_resp.first() == Some(&crate::ai_worker::AI_NOACTION) {
             // 死区无动作（有能力不动作）——零投递，结构化返回。
             let reason = core::str::from_utf8(&worker_resp[1..]).unwrap_or("no-action");
-            return self.noaction(reason);
+            let resp = self.noaction(reason);
+            return self.settle(TickOutcome::NoAction, resp, now_ms);
         }
         let proposal_wire = &worker_resp[1..];
         // 3. 投递（唯一 ControlDispatch）。
@@ -116,14 +161,47 @@ impl EnergyAgentService {
         match self.dispatch.0.submit(&disp_req) {
             Ok(receipt_wire) => {
                 self.tick_count += 1;
-                let out = vec![EA_OK];
-                let mut full = out;
+                // 回执终态入账（蓝图 57 D2 增益：Failed 不再零记账）。
+                let decoded = decode_receipt(&receipt_wire);
+                let committed = matches!(
+                    decoded.as_ref().map(|(_, s, ..)| s),
+                    Some(eneros_control_dispatch::DispatchState::Committed)
+                );
+                let outcome = if committed {
+                    TickOutcome::Committed
+                } else {
+                    let note = decoded
+                        .map(|(_, _, _, _, n)| n)
+                        .unwrap_or_else(|| alloc::string::String::from("receipt-uncommitted"));
+                    TickOutcome::DispatchRejected { note }
+                };
+                let mut full = vec![EA_OK];
                 full.extend_from_slice(&receipt_wire);
-                self.last_result = Some(full.clone());
-                full
+                self.settle(outcome, full, now_ms)
             }
-            Err(e) => self.noaction(&e),
+            Err(e) => {
+                let resp = self.noaction(&e);
+                self.settle(
+                    TickOutcome::PreDispatchError { detail: e.clone() },
+                    resp,
+                    now_ms,
+                )
+            }
         }
+    }
+
+    /// 结算单点：结果入 TickPolicy；升级时重设熔断冷却截止。
+    fn settle(
+        &mut self,
+        outcome: eneros_dual_brain::TickOutcome,
+        resp: Vec<u8>,
+        now_ms: u64,
+    ) -> Vec<u8> {
+        if self.policy.record(&outcome) == eneros_dual_brain::TickVerdict::Escalated {
+            self.cooldown_until_ms = now_ms.saturating_add(self.cooldown_ms);
+        }
+        self.last_result = Some(resp.clone());
+        resp
     }
 
     fn noaction(&mut self, reason: &str) -> Vec<u8> {
@@ -238,7 +316,7 @@ mod tests {
             alloc::boxed::Box::new(StubWorker { fail: false }),
             alloc::boxed::Box::new(StubDispatch { committed: true }),
         );
-        let resp = svc.tick();
+        let resp = svc.tick(0);
         assert_eq!(resp[0], EA_OK);
         assert_eq!(svc.tick_count, 1);
         let (status, state, ..) = decode_receipt(&resp[1..]).expect("receipt");
@@ -253,7 +331,7 @@ mod tests {
             alloc::boxed::Box::new(StubWorker { fail: false }),
             alloc::boxed::Box::new(StubDispatch { committed: true }),
         );
-        let resp = svc.tick();
+        let resp = svc.tick(0);
         assert_eq!(resp[0], EA_NOACTION);
         assert_eq!(svc.tick_count, 0, "无遥测不得推进决策");
     }
@@ -265,7 +343,7 @@ mod tests {
             alloc::boxed::Box::new(StubWorker { fail: true }),
             alloc::boxed::Box::new(StubDispatch { committed: true }),
         );
-        let resp = svc.tick();
+        let resp = svc.tick(0);
         assert_eq!(resp[0], EA_UNAVAILABLE);
         assert_eq!(svc.tick_count, 0);
     }
@@ -277,10 +355,64 @@ mod tests {
             alloc::boxed::Box::new(StubWorker { fail: false }),
             alloc::boxed::Box::new(StubDispatch { committed: false }),
         );
-        let resp = svc.tick();
+        let resp = svc.tick(0);
         assert_eq!(resp[0], EA_OK, "投递回执透传（Failed 由回执表达）");
         let (_, state, ..) = decode_receipt(&resp[1..]).expect("receipt");
         assert_eq!(state, eneros_control_dispatch::DispatchState::Failed);
         assert_eq!(svc.tick_count, 1);
+    }
+    /// 蓝图 57 D2 验收：连续失败达预算 → 熔断（冷却期内跳过推理）。
+    #[test]
+    fn error_budget_exhaustion_trips_breaker() {
+        let mut svc = EnergyAgentService::with_cooldown(
+            alloc::boxed::Box::new(StubTelemetry { ok: true }),
+            alloc::boxed::Box::new(StubWorker { fail: true }),
+            alloc::boxed::Box::new(StubDispatch { committed: true }),
+            1_000,
+        );
+        // 连续 3 次 Unavailable → Escalated + 冷却设定。
+        for t in 0..3u64 {
+            let resp = svc.tick(t * 100);
+            assert_eq!(resp[0], EA_UNAVAILABLE);
+        }
+        assert!(svc.policy.in_error());
+        // 冷却期内：零推理直接 NOACTION（worker 不再被调用——fail=true 时
+        // 若被调用会再次返回 UNAVAILABLE 而非 NOACTION，可作判据）。
+        let resp = svc.tick(500);
+        assert_eq!(resp[0], EA_NOACTION);
+        assert_eq!(&resp[1..], b"error-budget-exhausted");
+    }
+
+    /// 蓝图 57 D2 验收：冷却到期探针失败 → 重设冷却；成功 → 复位恢复。
+    #[test]
+    fn breaker_probe_and_recovery() {
+        let mut svc = EnergyAgentService::with_cooldown(
+            alloc::boxed::Box::new(StubTelemetry { ok: true }),
+            alloc::boxed::Box::new(StubWorker { fail: false }),
+            alloc::boxed::Box::new(StubDispatch { committed: false }),
+            1_000,
+        );
+        // Failed 回执连续 3 次 → 熔断（EA_OK 透传回执但预算记账）。
+        for t in 0..3u64 {
+            svc.tick(t * 100);
+        }
+        assert!(svc.policy.in_error());
+        // 冷却内跳过。
+        assert_eq!(svc.tick(500)[0], EA_NOACTION);
+        // 冷却到期（now=1500 ≥ 200+1000）：探针放行——Failed 再次升级，
+        // 冷却重设为 1500+1000。
+        let resp = svc.tick(1_500);
+        assert_eq!(resp[0], EA_OK, "探针 tick 正常编排并透传回执");
+        assert!(svc.policy.in_error(), "探针仍 Failed → 保持错误态");
+        assert_eq!(svc.policy.consecutive_errors(), 4);
+        // 再冷却内跳过；换 Committed dispatch 后到期探针成功 → 复位。
+        assert_eq!(svc.tick(2_000)[0], EA_NOACTION);
+        svc.dispatch.0 = alloc::boxed::Box::new(StubDispatch { committed: true });
+        let resp = svc.tick(2_600);
+        assert_eq!(resp[0], EA_OK);
+        assert!(!svc.policy.in_error(), "Committed 复位错误态");
+        assert_eq!(svc.policy.consecutive_errors(), 0);
+        // 恢复后正常编排（不再受冷却拦截）。
+        assert_eq!(svc.tick(2_700)[0], EA_OK);
     }
 }
