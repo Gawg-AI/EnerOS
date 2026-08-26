@@ -91,6 +91,14 @@ pub extern "C" fn _start(
         control_horizon_ms: 30_000,
     };
     let mut service = eneros_control_services::telemetry::TelemetryService::new(config);
+    // SPEC-GAP-CLOSURE WP-2：批次边界历史环缺省在位（内存前置，磁盘适配器
+    // 待 D-TSDB-2 裁决）。容量审计见 docs/delivery/wp2-memory-audit-d-tsdb2.md
+    // ——缺省 512 条 ×24B ≈12KiB，扩容 MUST 先出静态内存审计表（R2）。
+    service.set_history_sink(alloc::boxed::Box::new(
+        eneros_control_services::telemetry::HistoryBuffer::new(
+            eneros_control_services::telemetry::DEFAULT_HISTORY_CAP,
+        ),
+    ));
     let mut handler = TelemetryHandler { svc: &mut service };
     eneros_control_services::control_service_main(
         ep,
