@@ -1,0 +1,4 @@
+{"event": "CONNECT", "conn": 1}
+{"event": "CONNACK", "conn": 1}
+{"event": "PUBLISH", "conn": 1, "topic": "eneros/control", "payload_len": 13}
+{"event": "CLOSE", "conn": 1}

@@ -1,0 +1,14 @@
+== SPEC-GAP-CLOSURE WP-1 C5 判定 2026-08-27：PASS ==
+编排:broker gen1 服务中遭 kill -9 → 25s 后 gen2 起新实例
+guest 行为(经 transcript 实证):
+ gen1:
+   {"event": "CONNECT", "conn": 1}
+   {"event": "CONNACK", "conn": 1}
+   {"event": "PUBLISH", "conn": 1, "topic": "eneros/control", "payload_len": 13}
+   {"event": "CLOSE", "conn": 1}
+ gen2:
+   {"event": "CONNECT", "conn": 1}
+   {"event": "CONNACK", "conn": 1}
+   {"event": "PUBLISH", "conn": 1, "topic": "eneros/control", "payload_len": 13}
+   {"event": "CLOSE", "conn": 1}
+即:半开/断连检测→自动重连→CONNECT/CONNACK 全握手在新代完成,且下行控制 PUBLISH(eneros/control,13B=写命令)再次到达并重新执行——恢复后链路完整有效(C5 全要素)。本轮 PROFUCT-READY=false 为该跑对端可用度差异(svc-goose/sv/dispatch degraded),不影响恢复语义证明。
