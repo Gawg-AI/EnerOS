@@ -15,6 +15,8 @@ eneros-modbus-rtu = { path = "../crates/protocols/modbus-rtu" }
 eneros-iec104-slave = { path = "../crates/protocols/iec104-slave" }
 eneros-elf-loader = { path = "../crates/abi/elf-loader" }
 eneros-gguf-loader = { path = "../crates/ai/gguf-loader" }
+eneros-config-bundle = { path = "../crates/runtime/config-bundle" }
+eneros-mqtt = { path = "../crates/protocols/mqtt" }
 
 [[bin]]
 name = "fuzz_boot_protocol"
@@ -54,6 +56,28 @@ bench = false
 [[bin]]
 name = "fuzz_gguf_loader"
 path = "fuzz_targets/gguf_loader.rs"
+test = false
+doc = false
+bench = false
+
+# SPEC-GAP-CLOSURE-2026-08-26 / F-2（GAP-FUZZ 三件套）
+[[bin]]
+name = "fuzz_points"
+path = "fuzz_targets/points.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_toml_compile"
+path = "fuzz_targets/toml_compile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mqtt_packet"
+path = "fuzz_targets/mqtt_packet.rs"
 test = false
 doc = false
 bench = false
