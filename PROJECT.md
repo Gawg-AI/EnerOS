@@ -35,11 +35,11 @@
 
 ## 4. 当前状态（诚实基线）
 
-- workspace 版本字段为 `0.314.8`（44-00 §3 纪律：每 WP Exit 递增 patch）；版本号不代表验收；当前商业裁决维持 **NO-GO / NOT-READY**（52 终验登记，GO 前置=DEF-52-03/05 owner 定责与外部四项）。
-- 当前基线：蓝图 55「控制链同源档案深模块收敛」卷出口（HEAD 见 git；v1.0.0-rc.2 已因 54 卷 lineage 重开作废，GO 判定须对新 lineage 重跑 52 终验矩阵）。
+- workspace 版本字段为 `0.314.9`（44-00 §3 纪律：每 WP Exit 递增 patch）；版本号不代表验收；当前商业裁决维持 **NO-GO / NOT-READY**（52 终验登记，GO 前置=DEF-52-03/05 owner 定责与外部四项）。
+- 当前基线：蓝图 56「点品质投影单点化」卷出口（HEAD 见 git；v1.0.0-rc.2 已因 54 卷 lineage 重开作废，GO 判定须对新 lineage 重跑 52 终验矩阵）。
 - 产品装配现状以 53 卷 QEMU 冷启动证据为准（29 服务 ready、EIPC 授予、控制链面在库）；遗留缺口见蓝图 54 附录 C 与 43 卷 blocked-register。svc-control-dispatch 启动期 readiness=Degraded 为蓝图 50 时代即存在的环境性现象（evidence50-head 实证），非 55 卷回归。
 - 审计台账：95 项审计修复收官见 `docs/audit/`；交付差距与 triage 结论见 `docs/delivery/53-*`。
-- 路线：44–52 交付冲刺系列（已完成基线）→ 53 基底恢复（Accepted，X5 fuzz/L2 场景 PARTIAL 排队）→ 54 架构深化（Accepted）→ **55 控制链同源档案收敛（当前执行入口）**；后续按状态板滚动。
+- 路线：44–52 交付冲刺系列（已完成基线）→ 53 基底恢复（Accepted，X5 fuzz/L2 场景 PARTIAL 排队）→ 54 架构深化（Accepted）→ 55 控制链同源档案收敛（Accepted）→ **56 点品质投影单点化（当前执行入口）**；后续按状态板滚动。
 
 ## 5. 架构分层（crate 数以 `cargo metadata` 当前结果为准）
 
