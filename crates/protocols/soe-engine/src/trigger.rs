@@ -4,7 +4,7 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 
 use eneros_telemetry_model::QualityFlag;
-use eneros_upa_model::{DataPoint, PointId, PointQuality, PointType, PointValue};
+use eneros_upa_model::{DataPoint, PointId, PointType, PointValue};
 
 use crate::event::{EventPriority, SoeEvent, SoeEventType};
 
@@ -41,7 +41,7 @@ impl EventTrigger for DigitalChangeTrigger {
             SoeEventType::DigitalChange,
             old.value.clone(),
             new.value.clone(),
-            point_quality_to_flag(new.quality),
+            QualityFlag::from_point_quality(&new.quality),
             EventPriority::Medium,
             &format!("{}: {:?} -> {:?}", new.name, old.value, new.value),
             now_ms,
@@ -91,7 +91,7 @@ impl EventTrigger for OverLimitTrigger {
                 SoeEventType::AnalogOverLimit,
                 old.value.clone(),
                 new.value.clone(),
-                point_quality_to_flag(new.quality),
+                QualityFlag::from_point_quality(&new.quality),
                 EventPriority::High,
                 &format!("{} over limit: {:.2}", new.name, value),
                 now_ms,
@@ -104,7 +104,7 @@ impl EventTrigger for OverLimitTrigger {
                 SoeEventType::AnalogRecovery,
                 old.value.clone(),
                 new.value.clone(),
-                point_quality_to_flag(new.quality),
+                QualityFlag::from_point_quality(&new.quality),
                 EventPriority::Medium,
                 &format!("{} recovery: {:.2}", new.name, value),
                 now_ms,
@@ -114,21 +114,29 @@ impl EventTrigger for OverLimitTrigger {
     }
 }
 
-/// 将 `PointQuality`（标志位组合）映射为主导 `QualityFlag`.
-fn point_quality_to_flag(q: PointQuality) -> QualityFlag {
-    if q.invalid {
-        QualityFlag::Invalid
-    } else if q.questionable {
-        QualityFlag::Questionable
-    } else if q.substituted {
-        QualityFlag::Substituted
-    } else if q.blocked {
-        QualityFlag::Blocked
-    } else if q.overflow {
-        QualityFlag::Overflow
-    } else if q.outdated {
-        QualityFlag::Outdated
-    } else {
-        QualityFlag::Good
+#[cfg(test)]
+mod tests {
+    use eneros_upa_model::PointQuality;
+
+    use super::*;
+
+    /// 蓝图 56：投影单源对齐验收——原 point_quality_to_flag 的矛盾行为
+    /// （全空 → Good、valid 被无视）必须随单源化消除。
+    #[test]
+    fn quality_projection_follows_canonical_ruling() {
+        assert_eq!(
+            QualityFlag::from_point_quality(&PointQuality::default()),
+            QualityFlag::Invalid,
+            "全空标志 → Invalid（ADR-0027 fail-closed）"
+        );
+        let mut q = PointQuality::good();
+        q.invalid = true;
+        assert_eq!(
+            QualityFlag::from_point_quality(&q),
+            QualityFlag::Good,
+            "valid+invalid 组合：valid 先判 → Good"
+        );
+        let q = PointQuality::invalid();
+        assert_eq!(QualityFlag::from_point_quality(&q), QualityFlag::Invalid);
     }
 }

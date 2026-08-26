@@ -49,7 +49,7 @@ use eneros_metrics::{
 };
 use eneros_protocol_abstract::access::WriteError;
 use eneros_telemetry_model::quality::QualityFlag;
-use eneros_upa_model::{DeviceId, PointId, PointQuality, PointValue};
+use eneros_upa_model::{DeviceId, PointId, PointValue};
 
 use crate::delivery::{DeliveryFrame, OutcomeFrame};
 use crate::registry::DeviceRegistry;
@@ -1044,7 +1044,8 @@ fn read_telemetry_sample(
     let dp = info.adapter.read_point(*id).ok()?;
     Some(FeedbackSample {
         value: sample_to_f64(&dp.value)?,
-        quality: quality_flag(&dp.quality),
+        // 蓝图 56：ADR-0027 规范投影单源（原私有 quality_flag 已删）。
+        quality: QualityFlag::from_point_quality(&dp.quality),
         timestamp_epoch: dp.timestamp_ms / 1000,
     })
 }
@@ -1056,28 +1057,6 @@ fn sample_to_f64(v: &PointValue) -> Option<f64> {
         PointValue::Int(i) => Some(*i as f64),
         PointValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         _ => None,
-    }
-}
-
-/// PointQuality（upa-model）→ QualityFlag（telemetry-model，CTL-010 输入）。
-/// ADR-0027 语义映射；全空标志 → Invalid（不可信）。
-fn quality_flag(q: &PointQuality) -> QualityFlag {
-    if q.valid {
-        QualityFlag::Good
-    } else if q.invalid {
-        QualityFlag::Invalid
-    } else if q.questionable {
-        QualityFlag::Questionable
-    } else if q.substituted {
-        QualityFlag::Substituted
-    } else if q.blocked {
-        QualityFlag::Blocked
-    } else if q.overflow {
-        QualityFlag::Overflow
-    } else if q.outdated {
-        QualityFlag::Outdated
-    } else {
-        QualityFlag::Invalid
     }
 }
 
