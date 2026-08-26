@@ -1,0 +1,5 @@
+== w5 QEMU qemu-test 双跑证据摘要 2026-08-27 ==
+[build] IMAGE PASS sha256=603c3d61dd89225e0b6f191972b0498b8d120a08ab4b1c0a012b668979655f39 SOURCE_DATE_EPOCH=1755523200
+[run1] deadline=240s rc=124(窗口杀,预期外早停) PANIC=0 HEARTBEAT=9 PRODUCT-READY行='false(degraded: svc-goose,svc-control-dispatch; required degraded: svc-control-dispatch)'——后者为蓝图55在册预存环境现象(裸跑无对端)
+[run2] ready-marker=root-heartbeat deadline=750s rc=124 PANIC=0 svc-telemetry 提及140 产品判定行仍在;TSDB-COMMIT=0 => 判定:qemu-test-synth 合成馈入疑似直调 TelemetryService::ingest 绕过 EIPC wire 分支,wire层flush未触发——待核查馈入路径(下一步)
+[产物] 全量串口=qemu-serial.log(本目录,不入库);本摘要随提交留证
