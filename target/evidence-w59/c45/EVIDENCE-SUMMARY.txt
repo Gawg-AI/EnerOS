@@ -1,3 +1,2 @@
-== w7 C4/C5 编排跑 2026-08-27 结果=PARTIAL-DIVERGED ==
-现象:两代 broker 生命周期内 gen1/gen2 transcript 均零事件,guest 未发起 TCP(与 w6 同镜像同参数成功相 diverge)
-行动项:C4/C5 重试须先 pkill 1883 端口占户并复用 w6 已证可达脚本骨架
+== w8 2026-08-27 CONNECTIVITY-ROOT-CAUSE-LOCKED ==
+5577 栈缺席=无网根因(详见上一行组);重试保栈常驻,禁杀 5577
