@@ -59,6 +59,7 @@ pub mod latency;
 pub mod learning;
 pub mod rejection;
 pub mod sink;
+pub mod tick_policy;
 
 #[cfg(any(test, feature = "mock"))]
 pub use coordinator::DualBrainMockEngine;
@@ -73,6 +74,7 @@ pub use latency::LatencyBreakdown;
 #[cfg(any(test, feature = "mock"))]
 pub use sink::MockCommandSink;
 pub use sink::{CommandSink, DispatchCommand};
+pub use tick_policy::{TickOutcome, TickPolicy, TickVerdict};
 
 #[cfg(test)]
 mod tests {

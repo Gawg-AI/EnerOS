@@ -685,7 +685,7 @@ mod tests {
             let _ = agent.on_tick(2000 + u64::from(i) * 600_000);
         }
         assert_eq!(agent.state, AgentState::Error, "连续 N 次失败必须 Error");
-        assert_eq!(agent.consecutive_errors, n);
+        assert_eq!(agent.policy.consecutive_errors(), n);
 
         // 32 AG-01 判据：随后成功 tick → 恢复 Running + 计数归零 +
         // 心跳 Alive（不得永久离线）。
@@ -697,7 +697,11 @@ mod tests {
             AgentState::Running,
             "成功 tick 必须恢复 Running"
         );
-        assert_eq!(agent.consecutive_errors, 0, "成功后连续错误计数归零");
+        assert_eq!(
+            agent.policy.consecutive_errors(),
+            0,
+            "成功后连续错误计数归零"
+        );
         assert_eq!(
             agent.on_heartbeat(0),
             eneros_agent::HeartbeatStatus::Alive,

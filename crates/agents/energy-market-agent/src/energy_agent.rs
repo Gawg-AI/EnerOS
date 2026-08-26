@@ -13,7 +13,6 @@
 //!   Indeterminate 进入失败数据但不更新成功奖励；被拒/失败不消耗成功预算。
 
 use alloc::boxed::Box;
-use alloc::format;
 
 use eneros_agent::AgentRuntimeError;
 use eneros_agent::{AgentDescriptor, AgentState, AgentType};
@@ -58,11 +57,12 @@ pub struct EnergyAgent<S: Solver> {
     pub current_schedule: Option<ScheduleResult>,
     /// 当前电价缓存（从市场数据更新）.
     pub current_price: f64,
-    /// 生命周期状态.
+    /// 生命周期状态（由 [`Self::account`] 依 TickPolicy 裁决同步）.
     pub state: AgentState,
-    /// 32 AG-01：连续错误计数（Transient 错误 N 次连续才 Error——
-    /// 旧实现任何 Err 即永久 Error，限流常态导致一次拒绝即离线）。
-    pub consecutive_errors: u32,
+    /// 蓝图 57：tick 记账单源——连续错误预算/未知观测/升级裁决收拢于
+    /// TickPolicy（原手写 consecutive_errors/outcome_unknown_count/
+    /// rejections 记账删除，行为逐位保持）。
+    pub policy: eneros_dual_brain::TickPolicy,
     /// tick 计数.
     pub tick_count: u64,
     // --- 蓝图 40 WP-40.1/40.2：可信采集边界 ---
@@ -72,8 +72,6 @@ pub struct EnergyAgent<S: Solver> {
     pub last_trust_rejection: Option<TrustRejection>,
     /// 最近一次执行的反馈契约（仅 Committed 后更新；不再丢弃）。
     pub last_feedback: Option<FeedbackContract>,
-    /// 观测缺失计数（NoTrustedInput 路径指标）。
-    pub outcome_unknown_count: u64,
     /// 预测−观测偏差累计（指标 `decision.forecast_error` 的源数据；
     /// 仅 Committed 后累计——失败动作不进成功样本）。
     pub forecast_error_sum: f64,
@@ -89,14 +87,6 @@ pub struct EnergyAgent<S: Solver> {
     pub last_dispatch: Option<DispatchReceipt>,
     /// 最近一次投递错误。
     pub last_dispatch_error: Option<DispatchError>,
-    // --- 22 §2.W2.4：设备拒绝/异常处理 ---
-    /// 拒绝处理器（分类计数 + 重试预算，防无限重试）。
-    pub rejections: eneros_dual_brain::rejection::RejectionHandler,
-    /// 最近一次拒绝（分类 + 策略；None = 无拒绝）。
-    pub last_rejection: Option<(
-        eneros_dual_brain::rejection::RejectionKind,
-        eneros_dual_brain::rejection::RejectionAction,
-    )>,
     // --- 22 §2.W2.5：轻量在线学习（锁定 8，安全闸后生效；WP-40.12 只消费 Committed）---
     /// deadband 自适应学习器（学习输出过 safety-validator）。
     pub deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive,
@@ -135,20 +125,17 @@ impl<S: Solver> EnergyAgent<S> {
             current_schedule: None,
             current_price: 0.5,
             state: AgentState::Created,
-            consecutive_errors: 0,
+            policy: eneros_dual_brain::TickPolicy::new(),
             tick_count: 0,
             telemetry,
             last_trust_rejection: None,
             last_feedback: None,
-            outcome_unknown_count: 0,
             forecast_error_sum: 0.0,
             forecast_error_count: 0,
             last_observed_at_ms: now_ms,
             dispatch,
             last_dispatch: None,
             last_dispatch_error: None,
-            rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
-            last_rejection: None,
             deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(
                 1.0,
                 eneros_safety_validator::SafetyCatalog::default_eps(),
@@ -212,20 +199,17 @@ impl EnergyAgent<MockSolver> {
             current_schedule: None,
             current_price: 0.5,
             state: AgentState::Created,
-            consecutive_errors: 0,
+            policy: eneros_dual_brain::TickPolicy::new(),
             tick_count: 0,
             telemetry: Box::new(crate::agent_test_support::RejectingTelemetryProvider),
             last_trust_rejection: None,
             last_feedback: None,
-            outcome_unknown_count: 0,
             forecast_error_sum: 0.0,
             forecast_error_count: 0,
             last_observed_at_ms: now_ms,
             dispatch: Box::new(crate::agent_test_support::RecordingDispatch::default()),
             last_dispatch: None,
             last_dispatch_error: None,
-            rejections: eneros_dual_brain::rejection::RejectionHandler::new(3),
-            last_rejection: None,
             deadband_learner: eneros_dual_brain::learning::DeadbandAdaptive::with_catalog(
                 1.0,
                 eneros_safety_validator::SafetyCatalog::default_eps(),
@@ -261,7 +245,8 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
         let telemetry = match self.telemetry.trusted_telemetry(now_ms) {
             Ok(t) => t,
             Err(rej) => {
-                self.outcome_unknown_count += 1;
+                // 蓝图 57：记账走 TickPolicy 单源（未知观测计数）。
+                self.policy.note_unknown();
                 self.last_trust_rejection = Some(rej);
                 self.last_feedback = None;
                 return Ok(());
@@ -321,10 +306,8 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                             }
                             self.last_feedback = Some(fb);
                         }
-                        self.consecutive_errors = 0;
-                        if self.state == AgentState::Error {
-                            self.state = AgentState::Running;
-                        }
+                        // 蓝图 57：记账走 TickPolicy 单源（复位 + 错误态解除）。
+                        self.account(&eneros_dual_brain::TickOutcome::Committed);
                         Ok(())
                     }
                     Ok(receipt) => {
@@ -332,13 +315,15 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                         // 不记账（WP-40.12：零成功奖励更新）。
                         self.last_dispatch = Some(receipt.clone());
                         let note = receipt.note.clone().unwrap_or_default();
-                        self.record_dispatch_failure(now_ms, &note);
+                        self.account(&eneros_dual_brain::TickOutcome::DispatchRejected { note });
                         Ok(())
                     }
                     Err(e) => {
                         // 前置失败（校验/授权/预算/持久化/不可达）：零投递。
                         self.last_dispatch_error = Some(e.clone());
-                        self.record_dispatch_failure(now_ms, &format!("{e:?}"));
+                        self.account(&eneros_dual_brain::TickOutcome::PreDispatchError {
+                            detail: alloc::format!("{e:?}"),
+                        });
                         Ok(())
                     }
                 }
@@ -348,17 +333,18 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                 self.tick_count += 1;
                 self.current_schedule = None;
                 if reason == NoActionReason::NoTrustedInput {
-                    self.outcome_unknown_count += 1;
+                    self.policy.note_unknown();
                 }
-                self.consecutive_errors = 0;
-                if self.state == AgentState::Error {
-                    self.state = AgentState::Running;
-                }
+                // 蓝图 57：记账走 TickPolicy 单源。
+                self.account(&eneros_dual_brain::TickOutcome::NoAction);
                 Ok(())
             }
             DecisionOutcome::Rejected(rej) => {
                 // 结构化拒绝：分类 + 预算（防无限重试，不静默丢弃）。
-                self.record_dispatch_failure(now_ms, rej.reason.as_str());
+                let reason = rej.reason.as_str();
+                self.account(&eneros_dual_brain::TickOutcome::Rejected {
+                    reason: alloc::string::String::from(reason),
+                });
                 Ok(())
             }
         }
@@ -379,39 +365,20 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
 }
 
 impl<S: Solver> EnergyAgent<S> {
-    /// 记录一次失败/拒绝（分类 + 预算；SafetyBlocked 立即 Error）。
-    fn record_dispatch_failure(&mut self, _now_ms: u64, note: &str) {
-        // 复用 RejectionHandler（分类 + 重试预算，防无限重试，不静默）。
-        let err = eneros_dual_brain::error::DualBrainError::DispatchError(note.into());
-        let kind = eneros_dual_brain::rejection::RejectionHandler::classify(&err);
-        let action = self.rejections.handle(&err, "pcs");
-        self.last_rejection = Some((kind, action));
-        self.consecutive_errors += 1;
-        if action == eneros_dual_brain::rejection::RejectionAction::EscalateToHuman
-            || self.consecutive_errors >= Self::MAX_CONSECUTIVE_ERRORS
-        {
-            self.state = AgentState::Error;
-        }
-    }
-
-    /// 失败/拒绝分类（安全 → SafetyBlocked；离线 → Offline；越限 →
-    /// OutOfRange；其余 → CommFailed 兜底，fail-closed）。
-    #[allow(dead_code)] // 44.2：失败分类工具，当前调用面未接线（44.4 冻结登记）
-    fn classify_failure(&self, note: &str) -> eneros_dual_brain::rejection::RejectionKind {
-        use eneros_dual_brain::rejection::RejectionKind;
-        let n = note.to_ascii_lowercase();
-        if n.contains("safety") || n.contains("fatal") || n.contains("unsafe") {
-            RejectionKind::SafetyBlocked
-        } else if n.contains("offline") || n.contains("unreachable") || n.contains("timeout") {
-            RejectionKind::Offline
-        } else if n.contains("limit")
-            || n.contains("range")
-            || n.contains("越限")
-            || n.contains("proposalinvalid")
-        {
-            RejectionKind::OutOfRange
-        } else {
-            RejectionKind::CommFailed
+    /// 记账入口（蓝图 57）：结果入 TickPolicy 单源，裁决同步生命周期状态。
+    /// 语义与原 record_dispatch_failure 手写块逐位一致（D1）：
+    /// EscalateToHuman 或连续错误达上限 → Error；复位仅在 Committed/NoAction。
+    fn account(&mut self, outcome: &eneros_dual_brain::TickOutcome) {
+        let verdict = self.policy.record(outcome);
+        match verdict {
+            eneros_dual_brain::TickVerdict::Escalated => self.state = AgentState::Error,
+            eneros_dual_brain::TickVerdict::Proceed => {
+                if self.policy.in_error() {
+                    self.state = AgentState::Error;
+                } else if self.state == AgentState::Error {
+                    self.state = AgentState::Running;
+                }
+            }
         }
     }
 }
@@ -478,7 +445,7 @@ mod w40_trusted_dispatch_tests {
         );
         // 降级基线登记（mark_committed）。
         assert!(agent.coordinator.last_committed_schedule.is_some());
-        assert_eq!(agent.consecutive_errors, 0);
+        assert_eq!(agent.policy.consecutive_errors(), 0);
     }
 
     /// 验收 2：无可信遥测（评估器拒绝）→ 零推理、零新写（不制造默认状态）。
@@ -490,7 +457,7 @@ mod w40_trusted_dispatch_tests {
             Box::new(RecordingDispatch::default()),
         );
         agent.on_tick(10_000).expect("tick");
-        assert_eq!(agent.outcome_unknown_count, 1, "观测缺失必须计数");
+        assert_eq!(agent.policy.unknown_outcomes(), 1, "观测缺失必须计数");
         assert_eq!(agent.tick_count, 0, "无观测不得推进决策（零推理）");
         assert!(
             agent.last_dispatch.is_none(),
@@ -605,7 +572,7 @@ mod w40_trusted_dispatch_tests {
             "过期遥测必须结构化拒绝：{:?}",
             agent.last_trust_rejection
         );
-        assert_eq!(agent.outcome_unknown_count, 1);
+        assert_eq!(agent.policy.unknown_outcomes(), 1);
         assert!(agent.last_dispatch.is_none(), "坏遥测不得投递");
     }
 
@@ -644,7 +611,11 @@ mod w40_trusted_dispatch_tests {
             agent.coordinator.last_committed_schedule.is_none(),
             "失败不得登记降级基线"
         );
-        assert_eq!(agent.consecutive_errors, 1, "失败必须计数（不静默）");
+        assert_eq!(
+            agent.policy.consecutive_errors(),
+            1,
+            "失败必须计数（不静默）"
+        );
     }
 
     /// 验收 5：dispatch 前置错误（零投递）→ 拒绝分类 + 不学习。
@@ -664,9 +635,9 @@ mod w40_trusted_dispatch_tests {
         );
         agent.on_tick(10_000).expect("tick");
         assert!(agent.last_dispatch_error.is_some());
-        let (kind, _action) = agent.last_rejection.expect("rejection");
+        let lr = agent.policy.last_rejection().expect("rejection");
         assert_eq!(
-            kind,
+            lr.kind,
             eneros_dual_brain::rejection::RejectionKind::SafetyBlocked,
             "安全拒绝必须分类为 SafetyBlocked"
         );
@@ -729,15 +700,19 @@ mod w24_rejection_tests {
         ));
         let kind = RejectionHandler::classify(&err);
         assert_eq!(kind, RejectionKind::Offline);
-        let action = agent.rejections.handle(&err, "pcs");
+        let action = agent.policy.rejections_mut().handle(&err, "pcs");
         assert_eq!(action, RejectionAction::Retry { attempt: 1 });
-        assert_eq!(agent.rejections.total_rejections(), 1, "拒绝必须计数");
+        assert_eq!(
+            agent.policy.rejections().total_rejections(),
+            1,
+            "拒绝必须计数"
+        );
         // 预算耗尽 → 上报人工（绝不无限重试）。
         for _ in 0..4 {
-            let _ = agent.rejections.handle(&err, "pcs");
+            let _ = agent.policy.rejections_mut().handle(&err, "pcs");
         }
         assert_eq!(
-            agent.rejections.handle(&err, "pcs"),
+            agent.policy.rejections_mut().handle(&err, "pcs"),
             RejectionAction::EscalateToHuman,
             "超预算必须上报人工"
         );
@@ -746,9 +721,15 @@ mod w24_rejection_tests {
     /// 验收：安全阻断分类独立（不重试，立即上报）。
     #[test]
     fn test_safety_blocked_escalates() {
-        let agent = EnergyAgent::new_default(1_000);
+        // 蓝图 57：classify_failure 手写副本已删——分类单源在
+        // RejectionHandler::classify（TickPolicy 内嵌复用同一实现）。
         let note = "unsafe: soc below floor";
-        assert_eq!(agent.classify_failure(note), RejectionKind::SafetyBlocked);
+        assert_eq!(
+            eneros_dual_brain::rejection::RejectionHandler::classify(
+                &eneros_dual_brain::error::DualBrainError::DispatchError(String::from(note))
+            ),
+            RejectionKind::SafetyBlocked
+        );
         let mut h = RejectionHandler::new(3);
         let err = eneros_dual_brain::error::DualBrainError::SafetyFatal(String::from(
             "soc below minimum",
