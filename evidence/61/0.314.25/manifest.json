@@ -1,0 +1,54 @@
+{
+  "schema": "eneros.blueprint61.evidence.v1",
+  "version": "0.314.25",
+  "commit": "a083439",
+  "dirty": false,
+  "profile": "qemu-prod",
+  "profile_sha256": "071ff15fb9fa04f6bca0d186f172eab9012e4fa19bea0e9afa080d0beac911af",
+  "config_digests": {
+    "image_raw_built_sha256": "6401d2b2b465d58f2cead0bd39da96684606d91524afe38ce640a05c2de10e64",
+    "image_raw_note": "含 V3 信封/V2 drv 载荷全链；bootctrl 区随引导改写（raw 不入库）；同命令可复现",
+    "data_disk": "E4 运行前清空（target/evidence61/eneros-data.raw 重建）"
+  },
+  "toolchain_digest": "rustc 2972b5e59f1c5529b6ba770437812fd83ab4ebd4 (nightly-2026-04-04) + xpack-aarch64-none-elf-gcc-15.2.1-1.1 + qemu-system-aarch64 10.2.1 (Debian)",
+  "commands": [
+    { "id": "CMD-TEST-WS", "cmd": "cargo test --workspace", "exit": 0, "summary": "7858 passed / 0 failed（比 0.314.24 基线 +7）" },
+    { "id": "CMD-CLIPPY", "cmd": "cargo clippy --workspace --all-targets", "exit": 0, "summary": "0 告警" },
+    { "id": "CMD-FMT", "cmd": "cargo fmt --all", "exit": 0 },
+    { "id": "CMD-BUILD", "cmd": "cargo xtask build qemu-prod", "exit": 0, "summary": "PASS（含 svc-modbus-tcp aarch64 no_std 重编译——暴露并修复缺失依赖）" },
+    { "id": "CMD-IMAGE", "cmd": "cargo xtask image raw qemu-prod --signing-key … --uefi-key … --uefi-cert …", "exit": 0, "summary": "PASS sha256=6401d2b2…" },
+    { "id": "CMD-E4", "cmd": "tools/run61-e4.sh（qemu-prod 900s 窗口 + modbus 从站对端）", "exit": 0, "summary": "E4-RESULT: PASS（rounds=2061）" }
+  ],
+  "tests": [
+    { "id": "T-TYPED-V3", "class": "E3 集成/红测", "cmd": "cargo test -p eneros-control-gateway --test typed_command_v3", "count": 6, "cases": ["typed-roundtrip", "digest-deterministic-binding", "switch-profile-rejects-active-power", "legacy-v2-switch-only", "unknown-tag-fail-closed", "v3-length-gate+无外层power"] },
+    { "id": "T-REGRESSION", "class": "E1-E3 全库", "cmd": "cargo test --workspace", "count": 7858 }
+  ],
+  "faults": [
+    { "id": "F-50-60", "fault": "授权 50 写 60", "expected": "writer 重算语义摘要不匹配 → 拒绝", "observed": "master_write_v2 digest-mismatch → Denied(2)（E3 契约+单测覆盖；E4 正例摘要一致）" },
+    { "id": "F-NONFINITE", "fault": "NaN/Inf 命令值", "expected": "from_tag_bits 拒绝", "observed": "解码层 fail-closed（单测）" },
+    { "id": "F-STATUS", "fault": "Infeasible/Unbounded/Timeout/Error 提案", "expected": "解码即拒", "observed": "decode_proposal 线码 2..=5 → None（单测）" },
+    { "id": "F-CLAMP", "fault": "clamp 未重认证", "expected": "拒绝", "observed": "协调器 clamp 重验闭环：截断调度重跑全部规则，不干净即 SafetyFatal（dual-brain 测试）" }
+  ],
+  "capacity_tier": "C0",
+  "artifacts": [
+    "evidence/61/0.314.25/qemu-serial.log",
+    "evidence/61/0.314.25/modbus.transcript.jsonl",
+    "evidence/61/0.314.25/qemu.argv",
+    "evidence/61/0.314.25/e4-run-summary.log"
+  ],
+  "e4_serial_evidence": {
+    "rounds": 2061,
+    "digest_chain": "MASTER-WRITE cd=b063fa043ce46200 ACK → MASTER-READBACK VERIFIED td=b063fa043ce46200（命令摘要=回读摘要，授权/执行/回读三方同源）→ EXEC-JOURNAL applied-confirmed → dispatch=Committed",
+    "ordering": "first MASTER-READBACK line=13822 < first EXEC-JOURNAL applied-confirmed line=13951；readback 前唯一 Committed 字样=bootctrl-anchor（无关域）",
+    "panic_lines": 0,
+    "known_absent": "AUDIT-CHAIN appended= 行未打印（同 0.314.24 登记）"
+  },
+  "review": { "spec": "pass", "standards": "pass", "adversarial": "pass", "assembly": "pass", "open_p0": 0, "open_p1": 0 },
+  "notes": [
+    "ControlContract 结构体未单列（readback_point/tolerance 等仍内联于点表与 MASTER_READBACK_TOL_KW）——26 卷配置化收口时合并，登记为残余。",
+    "overtemp 独立点提前到本卷落地（点 7 判据在 24 卷 feedback mapping 已改 6/7 别名至 peer 实际点表），26 卷 peer 端到端复验。",
+    "target 编译暴露 svc-modbus-tcp 缺 eneros-telemetry-model 依赖，已修复（host cargo test 无法覆盖的盲区，印证 image raw 必跑纪律）。"
+  ],
+  "signed_at": "2026-08-30T03:20:00+08:00",
+  "signature_ref": "evidence/61/0.314.25/manifest.sig"
+}
