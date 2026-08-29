@@ -1,0 +1,26 @@
+[eneros-root-task] TIME-EPOCH=1787988555 stage=spawn
+[goose] TIME-EPOCH=1787988555
+[iec104] TIME-EPOCH=1787988555
+[mms] TIME-EPOCH=1787988555
+[modbus-rtu] TIME-EPOCH=1787988555
+[modbus-tcp] TIME-EPOCH=1787988555
+[mqtt] TIME-EPOCH=1787988555
+[protocol-service] dlt645 plugin=dlt645 role=Master interop=SpecBlocked
+[protocol-service] gbt27930 plugin=gbt27930 role=Master interop=SpecBlocked
+[protocol-service] goose plugin=iec61850-goose role=PubSub interop=TargetPeerVerified
+[protocol-service] iec101 plugin=iec101 role=Master interop=SpecBlocked
+[protocol-service] iec103 plugin=iec103 role=Master interop=SpecBlocked
+[protocol-service] iec104 plugin=iec104-master role=Master interop=TargetPeerVerified
+[protocol-service] mms plugin=iec61850-mms role=Client interop=TargetPeerVerified
+[protocol-service] modbus-rtu plugin=modbus-rtu role=Master interop=CodecReady
+[protocol-service] modbus-tcp plugin=modbus-tcp role=Master interop=TargetPeerVerified
+[protocol-service] mqtt plugin=mqtt role=Client interop=TargetPeerVerified
+[protocol-service] sv plugin=iec61850-sv role=Sub interop=TargetPeerVerified
+[svc-goose] NET-TRANSPORT READY capability=eneros_iec61850_goose::plugin::GoosePlugin
+[svc-iec104] handover missing ("virtio-net-init-failed") —— capability 壳（EXECUTE ST_UNAVAILABLE）
+[svc-mms] handover missing ("virtio-net-init-failed") —— capability 壳（EXECUTE ST_UNAVAILABLE）
+[svc-modbus-rtu] RTU-UNAVAILABLE reason=no-handle —— capability 壳（EXECUTE ST_UNAVAILABLE）
+[svc-modbus-tcp] handover missing ("virtio-net-init-failed") —— capability 壳（EXECUTE ST_UNAVAILABLE）
+[svc-mqtt] handover missing ("virtio-net-init-failed") —— capability 壳（EXECUTE ST_UNAVAILABLE）
+[svc-sv] handover missing ("virtio-net-init-failed") —— capability 壳（EXECUTE ST_UNAVAILABLE）
+[sv] TIME-EPOCH=1787988555
