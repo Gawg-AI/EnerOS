@@ -30,13 +30,20 @@ use crate::dispatch::DispatchState;
 use crate::intent::{IntentRecord, IntentStore, IntentStoreError};
 
 /// 意图终态线码（PeerReceipt.receipt_id 承载；对账终态持久化）。
-const TERMINAL_COMMITTED: u64 = 1;
+/// v2（61 v0.314.24）：`Committed` 只能由执行 journal 的
+/// `AppliedConfirmed`（独立回读匹配）写入，且以线码 4 落盘；旧版线码 1
+/// （TERMINAL_COMMITTED_V1，已删除）可能含 IdempotentHit 误升级语义，
+/// 恢复侧永不信任为已确认（见 v1_legacy_record_decodes_with_unknown_digest）。
+const TERMINAL_COMMITTED_V2: u64 = 4;
 const TERMINAL_FAILED: u64 = 2;
 const TERMINAL_REJECTED: u64 = 3;
 
+/// v2 追加段魔数（"V2"；旧版记录无此段）。
+const V2_MAGIC: [u8; 2] = [0x56, 0x32];
+
 impl Encode for IntentRecord {
     fn encode(&self) -> Result<Vec<u8>, StoreError> {
-        let mut out = Vec::with_capacity(16 + 16 + 8 + 8 + 32 + 8 + 8);
+        let mut out = Vec::with_capacity(16 + 16 + 8 + 8 + 32 + 8 + 8 + 2 + 1 + 32 + 4 + 1 + 32);
         out.extend_from_slice(&self.command_id);
         out.extend_from_slice(&self.correlation_id);
         out.extend_from_slice(&self.issued_at_ms.to_le_bytes());
@@ -54,6 +61,24 @@ impl Encode for IntentRecord {
             None => out.push(0),
         }
         out.push(self.state as u8);
+        // ---- v2 追加段（61 v0.314.24）：超集布局——旧解码器可读 v1 前缀，
+        // 新解码器对无追加段的记录按 v1（digest=None）处理。----
+        out.extend_from_slice(&V2_MAGIC);
+        match self.command_digest {
+            Some(d) => {
+                out.push(1);
+                out.extend_from_slice(&d);
+            }
+            None => out.push(0),
+        }
+        out.extend_from_slice(&self.attempt.to_le_bytes());
+        match self.receipt_digest {
+            Some(d) => {
+                out.push(1);
+                out.extend_from_slice(&d);
+            }
+            None => out.push(0),
+        }
         Ok(out)
     }
 }
@@ -105,6 +130,48 @@ impl Decode for IntentRecord {
         };
         let state = state_from_code(*bytes.get(off).ok_or(StoreError::Corrupt)?)
             .ok_or(StoreError::Corrupt)?;
+        off += 1;
+        // ---- v2 追加段（可选）：61 v0.314.24。无追加段 = 旧版 v1 记录
+        //（digest 未知）；有追加段必须完整合法，尾部多余字节 = 损坏。----
+        let mut command_digest = None;
+        let mut attempt = 0u32;
+        let mut receipt_digest = None;
+        if off < bytes.len() {
+            if bytes.len() < off + 2 || bytes[off..off + 2] != V2_MAGIC {
+                return Err(StoreError::Corrupt);
+            }
+            off += 2;
+            let flag = *bytes.get(off).ok_or(StoreError::Corrupt)?;
+            off += 1;
+            if flag == 1 {
+                if off + 32 > bytes.len() {
+                    return Err(StoreError::Corrupt);
+                }
+                let mut d = [0u8; 32];
+                d.copy_from_slice(&bytes[off..off + 32]);
+                off += 32;
+                command_digest = Some(d);
+            }
+            if off + 4 > bytes.len() {
+                return Err(StoreError::Corrupt);
+            }
+            attempt = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+            off += 4;
+            let rflag = *bytes.get(off).ok_or(StoreError::Corrupt)?;
+            off += 1;
+            if rflag == 1 {
+                if off + 32 > bytes.len() {
+                    return Err(StoreError::Corrupt);
+                }
+                let mut d = [0u8; 32];
+                d.copy_from_slice(&bytes[off..off + 32]);
+                off += 32;
+                receipt_digest = Some(d);
+            }
+        }
+        if off != bytes.len() {
+            return Err(StoreError::Corrupt);
+        }
         Ok((
             eneros_durable_state::Generation(0),
             IntentRecord {
@@ -116,6 +183,9 @@ impl Decode for IntentRecord {
                 power_kw,
                 input_digest,
                 state,
+                command_digest,
+                attempt,
+                receipt_digest,
             },
         ))
     }
@@ -195,8 +265,10 @@ impl<Io: PersistIo> DurableIntentStore<Io> {
             .ok_or(IntentStoreError::Unknown)?;
         let receipt = PeerReceipt {
             peer: String::from("control-dispatch"),
+            // v2（61 v0.314.24）：Committed 线码 4 只能由 AppliedConfirmed
+            // （独立回读匹配）路径写入；线码 1 为旧版遗留语义。
             receipt_id: match state {
-                DispatchState::Committed => TERMINAL_COMMITTED,
+                DispatchState::Committed => TERMINAL_COMMITTED_V2,
                 DispatchState::Failed => TERMINAL_FAILED,
                 DispatchState::Rejected => TERMINAL_REJECTED,
                 _ => 0,
@@ -232,8 +304,13 @@ impl<Io: PersistIo> IntentStore for DurableIntentStore<Io> {
         state: DispatchState,
     ) -> Result<(), IntentStoreError> {
         match state {
-            DispatchState::Indeterminate => {
-                // 写可能已发生——durable 标记已发送（仍属未决）。
+            // 61 v0.314.24：投递已发生（Delivered/TransportAcked/ReadbackVerified）
+            // 与写可能已发生（Indeterminate）都必须 durable 落「已发送」——
+            // 崩溃后恢复为未决对账，不得按未投递处理。
+            DispatchState::Indeterminate
+            | DispatchState::Delivered
+            | DispatchState::TransportAcked
+            | DispatchState::ReadbackVerified => {
                 let id = self
                     .index
                     .get(command_id)
@@ -248,7 +325,7 @@ impl<Io: PersistIo> IntentStore for DurableIntentStore<Io> {
             DispatchState::Committed | DispatchState::Failed | DispatchState::Rejected => {
                 self.ack(command_id, state)
             }
-            // 非终态且非 Indeterminate 的状态更新不改变持久语义（仅内存）。
+            // 非终态且未投递的状态更新不改变持久语义（仅内存）。
             _ => {
                 self.states.insert(*command_id, state);
                 Ok(())
@@ -281,10 +358,10 @@ impl<Io: PersistIo> IntentStore for DurableIntentStore<Io> {
     }
 }
 
-/// 终态持久映射（观测/测试：断言 ack 记录承载的终态）。
+/// 终态持久映射（观测/测试：断言 ack 记录承载的终态；v2 线码）。
 pub fn terminal_receipt_id(state: DispatchState) -> Option<u64> {
     match state {
-        DispatchState::Committed => Some(TERMINAL_COMMITTED),
+        DispatchState::Committed => Some(TERMINAL_COMMITTED_V2),
         DispatchState::Failed => Some(TERMINAL_FAILED),
         DispatchState::Rejected => Some(TERMINAL_REJECTED),
         _ => None,
@@ -368,6 +445,9 @@ mod tests {
             power_kw: 5.0,
             input_digest: None,
             state,
+            command_digest: Some([0x61; 32]),
+            attempt: 1,
+            receipt_digest: None,
         }
     }
 
@@ -456,15 +536,59 @@ mod tests {
     /// 终态/未决状态持久线码往返。
     #[test]
     fn record_wire_roundtrip() {
-        let r = rec(7, DispatchState::Indeterminate);
+        let mut r = rec(7, DispatchState::Indeterminate);
+        r.receipt_digest = Some([0x9D; 32]);
+        r.attempt = 3;
         let bytes = r.encode().unwrap();
         let (_, back) = IntentRecord::decode(&bytes).unwrap();
         assert_eq!(back.command_id, r.command_id);
         assert_eq!(back.target_device, r.target_device);
         assert_eq!(back.power_kw, r.power_kw);
         assert_eq!(back.state, r.state);
-        assert_eq!(terminal_receipt_id(DispatchState::Committed), Some(1));
+        assert_eq!(back.command_digest, Some([0x61; 32]));
+        assert_eq!(back.attempt, 3);
+        assert_eq!(back.receipt_digest, Some([0x9D; 32]));
+        assert_eq!(terminal_receipt_id(DispatchState::Committed), Some(4));
         assert_eq!(terminal_receipt_id(DispatchState::Indeterminate), None);
+    }
+
+    /// 61 v0.314.24：旧版 v1 记录（无 v2 追加段）可解码——digest/attempt/
+    /// receipt 为 None/0，恢复侧按未知摘要处理（对账，不盲发）。
+    #[test]
+    fn v1_legacy_record_decodes_with_unknown_digest() {
+        // 手工构造 v1 布局：cmd(16)+corr(16)+issued(8)+expires(8)+tlen(1)
+        // +target+power(8)+digestflag(1)+state(1)。
+        let mut b = alloc::vec::Vec::new();
+        b.extend_from_slice(&[1u8; 16]); // command_id
+        b.extend_from_slice(&[2u8; 16]); // correlation_id
+        b.extend_from_slice(&1_000u64.to_le_bytes());
+        b.extend_from_slice(&1_300u64.to_le_bytes());
+        b.push(3);
+        b.extend_from_slice(b"pcs");
+        b.extend_from_slice(&5.0f64.to_le_bytes());
+        b.push(0); // input_digest = None
+        b.push(8); // state = Committed（旧线码）
+        let (_, back) = IntentRecord::decode(&b).unwrap();
+        assert_eq!(back.command_id, [1; 16]);
+        assert_eq!(back.state, DispatchState::Committed);
+        assert_eq!(back.command_digest, None, "v1 无摘要");
+        assert_eq!(back.attempt, 0);
+        assert_eq!(back.receipt_digest, None);
+        // 旧版 Committed 线码 1 仅为遗留语义——v2 写入恒为 4。
+        assert_ne!(1u64, TERMINAL_COMMITTED_V2);
+    }
+
+    /// 负例：v2 魔数损坏 → Corrupt（fail-closed）。
+    #[test]
+    fn corrupt_v2_trailer_rejected() {
+        let r = rec(9, DispatchState::Persisted);
+        let mut bytes = r.encode().unwrap();
+        let n = bytes.len();
+        bytes[n - 40] ^= 0xFF; // 破坏 v2 魔数首字节（追加段起点）
+        assert!(matches!(
+            IntentRecord::decode(&bytes),
+            Err(StoreError::Corrupt)
+        ));
     }
 
     /// 未知 command_id 更新 → Unknown（fail-closed）。

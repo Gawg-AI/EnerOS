@@ -16,10 +16,16 @@
 use alloc::collections::BTreeMap;
 
 /// Outcome of an idempotent operation, cached for retransmits.
+///
+/// 蓝图 61 v0.314.24：gateway 是纯裁决面——这里登记的是**授权事实**，
+/// 不是执行事实。`Applied`（执行确认）只能由 dispatch 侧执行 journal 在
+/// 独立回读匹配后写入；本缓存永不记录执行成功。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpOutcome {
-    /// The operation was applied (or already had been).
-    Applied,
+    /// 授权通过、尚未交付执行（gateway 裁决终点；执行状态归执行 journal）。
+    Authorized,
+    /// 策略要求 dry-run（未写设备，无设备副作用）。
+    DryRun,
     /// The operation was rejected downstream (safety/policy).
     Rejected,
 }
@@ -178,23 +184,23 @@ mod tests {
         let mut cache = IdempotencyCache::new(60, 16);
         let key = [1u8; 16];
         assert!(cache.check(&key, 1_000).is_none()); // first time
-        cache.record(key, OpOutcome::Applied, 1_000);
+        cache.record(key, OpOutcome::Authorized, 1_000);
         // Retransmit within TTL → cached outcome, no re-execution.
-        assert_eq!(cache.check(&key, 1_010), Some(OpOutcome::Applied));
+        assert_eq!(cache.check(&key, 1_010), Some(OpOutcome::Authorized));
     }
 
     #[test]
     fn test_idempotency_expires() {
         let mut cache = IdempotencyCache::new(60, 16);
         let key = [2u8; 16];
-        cache.record(key, OpOutcome::Applied, 1_000);
+        cache.record(key, OpOutcome::Authorized, 1_000);
         assert!(cache.check(&key, 1_061).is_none());
     }
 
     #[test]
     fn test_idempotency_zero_key_never_cached() {
         let mut cache = IdempotencyCache::new(60, 16);
-        cache.record([0u8; 16], OpOutcome::Applied, 1_000);
+        cache.record([0u8; 16], OpOutcome::Authorized, 1_000);
         assert!(cache.check(&[0u8; 16], 1_000).is_none());
         assert_eq!(cache.len(), 0);
     }
@@ -202,9 +208,9 @@ mod tests {
     #[test]
     fn test_idempotency_bounded() {
         let mut cache = IdempotencyCache::new(60, 2);
-        cache.record([1u8; 16], OpOutcome::Applied, 1_000);
-        cache.record([2u8; 16], OpOutcome::Applied, 1_000);
-        cache.record([3u8; 16], OpOutcome::Applied, 1_000); // evicts smallest key
+        cache.record([1u8; 16], OpOutcome::Authorized, 1_000);
+        cache.record([2u8; 16], OpOutcome::Authorized, 1_000);
+        cache.record([3u8; 16], OpOutcome::Authorized, 1_000); // evicts smallest key
         assert_eq!(cache.len(), 2);
         assert!(cache.check(&[1u8; 16], 1_000).is_none());
     }

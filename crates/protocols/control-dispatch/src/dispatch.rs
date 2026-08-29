@@ -116,6 +116,9 @@ pub enum DispatchError {
     BudgetExceeded(String),
     /// durable intent 写入失败。
     IntentPersistFailed(String),
+    /// 幂等键相同但命令内容不同（61 v0.314.24：journal digest 冲突）——
+    /// 拒绝且零投递，不得覆盖原记录。
+    IdempotencyConflict(String),
     /// 投递通道不可达。
     DeliveryUnreachable,
     /// 投递超时（写可能已发生——调用方按 Indeterminate 处理）。

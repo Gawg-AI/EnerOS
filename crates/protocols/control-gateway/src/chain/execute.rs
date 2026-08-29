@@ -124,15 +124,20 @@ impl ControlChain {
         }
 
         // 9. PEP: DryRun obligation — intercept before execution.
+        //    蓝图 61 v0.314.24：DryRun 无设备副作用，登记 DryRun（永不写
+        //    Applied/Authorized——防重放把干跑升级成执行事实）。
         if obligations.iter().any(|o| matches!(o, Obligation::DryRun)) {
             self.idempotency
-                .record(cmd.idempotency_key(), OpOutcome::Applied, now);
+                .record(cmd.idempotency_key(), OpOutcome::DryRun, now);
             return ChainOutcome::DryRun { cmd, obligations };
         }
 
-        // 10. All checks passed — record as applied for idempotency.
+        // 10. All checks passed — 登记「已授权」（gateway 裁决终点）。
+        //     蓝图 61 v0.314.24：gateway 是纯裁决面；AppliedConfirmed 等
+        //     执行状态由 dispatch 执行 journal 在独立回读匹配后唯一持有，
+        //     投递前不产生任何执行成功事实。
         self.idempotency
-            .record(cmd.idempotency_key(), OpOutcome::Applied, now);
+            .record(cmd.idempotency_key(), OpOutcome::Authorized, now);
         ChainOutcome::Executed { cmd, obligations }
     }
 

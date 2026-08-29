@@ -733,6 +733,7 @@ dependencies = [
  "eneros-agent-sdk",
  "eneros-audit",
  "eneros-control-gateway",
+ "eneros-crypto",
  "eneros-device-agent",
  "eneros-dual-brain",
  "eneros-durable-state",

@@ -151,8 +151,8 @@ fn test_chain_idempotent_retransmit_returns_prior_outcome() {
     // doesn't fire first; same idempotency_key).
     let buf2 = pcc_close_buf([4u8; 16], idem);
     match chain.execute(&buf2, now(), &fb) {
-        ChainOutcome::IdempotentHit(OpOutcome::Applied) => {}
-        other => panic!("expected IdempotentHit(Applied), got {:?}", other),
+        ChainOutcome::IdempotentHit(OpOutcome::Authorized) => {}
+        other => panic!("expected IdempotentHit(Authorized), got {:?}", other),
     }
 }
 

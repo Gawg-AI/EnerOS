@@ -41,6 +41,13 @@ pub struct IntentRecord {
     pub input_digest: Option<[u8; 32]>,
     /// 当前终态（投递前 Persisted；对账/回执后更新）。
     pub state: DispatchState,
+    /// 61 v0.314.24：命令内容摘要（SM3(device‖point‖命令类‖power)）。
+    /// `None` = 旧版记录（v1）——无法做同 key 内容冲突比对。
+    pub command_digest: Option<[u8; 32]>,
+    /// 61 v0.314.24：投递尝试次数。
+    pub attempt: u32,
+    /// 61 v0.314.24：原 receipt 摘要（AppliedConfirmed 回执帧摘要）。
+    pub receipt_digest: Option<[u8; 32]>,
 }
 
 /// durable intent 存储 trait（唯一持久化 seam——调用方提供实现）。
@@ -144,6 +151,9 @@ mod tests {
             power_kw: 5.0,
             input_digest: None,
             state: DispatchState::Persisted,
+            command_digest: Some([0x11; 32]),
+            attempt: 1,
+            receipt_digest: None,
         }
     }
 

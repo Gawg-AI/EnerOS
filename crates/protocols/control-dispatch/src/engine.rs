@@ -19,6 +19,13 @@
 //!
 //! 任何前置失败零投递（`Err`）；投递后超时/结果不明 → `Indeterminate`
 //! 对账，不盲重试非幂等命令（WP-40.12）。
+//!
+//! 61 v0.314.24：执行状态与幂等真值由 [`crate::journal::ExecutionJournal`]
+//! 唯一持有（`Authorized→Persisted→Sent→TransportAcked→AppliedConfirmed`
+//! 严格写序，expected-previous 强制）；`Committed` 只能从
+//! `AppliedConfirmed`（独立回读匹配）映射；同 key 不同内容摘要 =
+//! `IdempotencyConflict` 拒绝。gateway 只登记 `Authorized`/`DryRun`/
+//! `Rejected`（纯裁决面，投递前无执行事实）。
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -28,6 +35,7 @@ use alloc::vec::Vec;
 
 use eneros_control_gateway::chain::{ChainOutcome, ControlChain, FeedbackBundle};
 use eneros_control_gateway::envelope::{ActorKind, EnvelopeBuilder};
+use eneros_control_gateway::idempotency::OpOutcome;
 use eneros_control_gateway::wire::{ControlEnvelope, OutcomeCode, OutcomeFrame};
 use eneros_control_gateway::{ChainDenyReason, ControlProfile};
 use eneros_dual_brain::audit::{DecisionAudit, ExecOutcome, SafetyOutcome};
@@ -45,7 +53,8 @@ use crate::dispatch::{
     AuthenticatedActor, ControlDispatch, DispatchError, DispatchReceipt, DispatchState,
 };
 use crate::feedback::TrustedFeedbackBuilder;
-use crate::intent::{IntentRecord, IntentStore, IntentStoreError};
+use crate::intent::{IntentRecord, IntentStore};
+use crate::journal::{ExecutionJournal, ExecutionStatus, IdempotencyRecord, JournalHit};
 
 /// 47（WP-47.1）：协议写意图 TTL（秒；信封过期窗，无意图自带 TTL）。
 pub const INTENT_TTL_SECS: u64 = 60;
@@ -182,6 +191,10 @@ pub struct DispatchEngine {
     /// durable intent 存储（观测：find/pending 对账）。
     pub intent_log: Box<dyn IntentStore>,
     delivery: Box<dyn DeliveryChannel>,
+    /// 61 v0.314.24：执行 journal（执行状态与幂等真值唯一持有者）。
+    /// 启动时从 intent store 未决记录播种 Reconciling——旧版/崩溃遗留的
+    /// 非终态记录永不以 Committed 复活。
+    journal: ExecutionJournal,
     feedback_builder: TrustedFeedbackBuilder,
     now_fn: fn() -> u64,
     seq: u64,
@@ -207,7 +220,8 @@ impl DispatchEngine {
 
     /// 构造。
     pub fn new(config: DispatchConfig) -> Self {
-        Self {
+        let pending = config.intent_log.pending();
+        let mut engine = Self {
             chain: config.chain,
             key: config.key,
             profile: config.profile,
@@ -224,6 +238,8 @@ impl DispatchEngine {
             control_audit: config.control_audit,
             intent_log: config.intent_log,
             delivery: config.delivery,
+            // 与 durable 槽位同阶的有界执行 journal（61 v0.314.24）。
+            journal: ExecutionJournal::new(256),
             feedback_builder: TrustedFeedbackBuilder::new(config.feedback_mapping),
             now_fn: config.now_fn,
             seq: 0,
@@ -231,7 +247,32 @@ impl DispatchEngine {
             audit_drop_count: 0,
             audit_append_count: 0,
             last_seq: BTreeMap::new(),
+        };
+        // 启动恢复播种：durable 未决记录（v1 遗留 Applied/Persisted 或
+        // 崩溃窗口遗留）→ Reconciling。投递与否不可证明——重放零投递、
+        // 永不直接 Committed（蓝图 05 §2.3 兼容规则）。
+        let now0 = (engine.now_fn)();
+        let mut recovered = 0usize;
+        for rec in pending {
+            if engine.journal.seed_reconciling(
+                rec.correlation_id,
+                rec.command_id,
+                rec.command_digest.unwrap_or([0u8; 32]),
+                now0,
+            ) {
+                recovered += 1;
+            }
         }
+        // 61 v0.314.24：启动恢复可见性——遗留/崩溃遗留未决记录一律进对账，
+        // 永不以 Committed 复活。
+        #[cfg(target_os = "none")]
+        if recovered > 0 {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] EXEC-JOURNAL recovered pending={recovered} → reconciling"
+            );
+        }
+        let _ = recovered;
+        engine
     }
 
     /// 更新 fencing token（租约续期后）。
@@ -624,6 +665,8 @@ impl DispatchEngine {
 
         // Envelope 装配+签名+幂等键（唯一实现）：幂等键=correlation——
         // 同计划重放 / 同 (protocol,seq) 跨重启重放均返回原结果，不重复写。
+        // 61 v0.314.24：ControlEnvelope 提前构建（纯装配，无副作用）——
+        // journal 预检需要命令摘要；投递复用同一实例。
         let buf = EnvelopeBuilder::new(
             command_id,
             self.profile.device_id,
@@ -640,23 +683,108 @@ impl DispatchEngine {
         .idempotency_key(correlation)
         .build(&self.key)
         .encode();
+        let expires_ms = started.saturating_add(cmd.ttl_secs * 1000);
+        let envelope = ControlEnvelope::new(
+            correlation,
+            self.issuer_service,
+            self.issuer_epoch,
+            started,
+            expires_ms,
+            buf,
+            cmd.power_kw,
+        );
+        // 命令内容摘要（61 v0.314.24）：SM3(device_id ‖ point_id ‖ 命令类 ‖
+        // power_kw LE)——只覆盖同 key 重传中必须不变的语义内容。
+        // 不含 sequence/时间戳/HMAC（每次尝试本就不同，混入会把合法重传
+        // 误判为冲突）。0.314.25 将由 canonical AuthorizedCommand digest
+        // 接替（蓝图 05 §3.3）。
+        let mut dbuf = [0u8; 4 + 4 + 1 + 8];
+        dbuf[0..4].copy_from_slice(&self.profile.device_id.to_le_bytes());
+        dbuf[4..8].copy_from_slice(&self.profile.point_id.to_le_bytes());
+        dbuf[8] = match single {
+            SingleCommand::On => 1,
+            SingleCommand::Off => 0,
+        };
+        dbuf[9..17].copy_from_slice(&cmd.power_kw.to_le_bytes());
+        let command_digest = eneros_crypto::sm3_hash(&dbuf);
+
+        // 61 v0.314.24 步骤 2.7：执行 journal 同 key 预检（durable 幂等真值，
+        // 先于链裁决——冲突命令不得消耗 SBO/链状态）：
+        // - digest 不同 → IdempotencyConflict，拒绝（零投递）；
+        // - Authorized/Persisted/Sent/TransportAcked → 返回当前状态，不新投递；
+        // - AppliedConfirmed → 返回原 receipt；
+        // - Rejected/Failed → 返回原终态；
+        // - Indeterminate/Reconciling → 对账，禁止盲发。
+        match self.journal.lookup(&correlation, &command_digest) {
+            Some(JournalHit::Conflict) => {
+                let note = String::from(
+                    "idempotency-conflict：同幂等键不同命令内容（digest 不匹配）——拒绝",
+                );
+                self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+                return Err(DispatchError::IdempotencyConflict(note));
+            }
+            Some(JournalHit::Current(rec)) => {
+                return Ok(Self::receipt_from_journal(
+                    &rec,
+                    command_id,
+                    correlation,
+                    started,
+                    (self.now_fn)(),
+                    &cmd.idem_note,
+                ));
+            }
+            None => {}
+        }
+
         // SBO：选择+执行原子（ControlGateway 九步链，不双头授权）。
         self.chain.sbo_select(self.profile.point_id, now_secs);
         let fb: FeedbackBundle = self.feedback_builder.build(telemetry, now_secs);
         match self.chain.execute(&buf, now_secs, &fb) {
-            ChainOutcome::Executed { .. } => {}
-            ChainOutcome::IdempotentHit(_) => {
-                // 幂等重放（同 idempotency key）：返回原结果，不重复写。
-                states.push(DispatchState::Committed);
-                return Ok(DispatchReceipt {
-                    command_id,
-                    correlation_id: correlation,
-                    final_state: DispatchState::Committed,
-                    state_path: states,
-                    committed_at_ms: Some(started),
-                    note: Some(cmd.idem_note),
-                    latency_ms: (self.now_fn)().saturating_sub(started),
-                });
+            ChainOutcome::Executed { .. } => {
+                // 61 v0.314.24：journal 登记 Authorized（执行事实起点）。
+                // journal 满 → Err 零投递（fail-closed，不伪造可投递）。
+                if let Err(e) =
+                    self.journal
+                        .authorize(correlation, command_id, command_digest, started)
+                {
+                    let note = alloc::format!("execution-journal authorize failed: {e:?}");
+                    self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+                    return Err(DispatchError::IntentPersistFailed(note));
+                }
+            }
+            ChainOutcome::IdempotentHit(prior) => {
+                // 链缓存命中但 journal 无记录：仅发生在重放被拒/干跑（无执行
+                // 事实可登记）或 journal 丢失。按真实 prior 返回——绝不
+                // Committed（61 v0.314.24：幂等状态不提前终结）。
+                if prior == OpOutcome::Authorized {
+                    // 执行事实缺失：投递是否已发生不可证明 → 对账，不盲发。
+                    let _ = self.journal.seed_reconciling(
+                        correlation,
+                        command_id,
+                        command_digest,
+                        started,
+                    );
+                    let note = String::from(
+                        "idempotent-replay：journal 无记录（中间态不可证明）——对账，不盲发",
+                    );
+                    self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+                    return Ok(DispatchReceipt {
+                        command_id,
+                        correlation_id: correlation,
+                        final_state: DispatchState::Indeterminate,
+                        state_path: alloc::vec![DispatchState::Indeterminate],
+                        committed_at_ms: None,
+                        note: Some(note),
+                        latency_ms: (self.now_fn)().saturating_sub(started),
+                    });
+                }
+                let note = if prior == OpOutcome::Rejected {
+                    String::from("idempotent-replay：prior rejected（不重投）")
+                } else {
+                    String::from("idempotent-replay：prior dry-run（不重投）")
+                };
+                self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+                return Err(DispatchError::NotAuthorized(note));
             }
             ChainOutcome::DryRun { .. } => {
                 let note = String::from("dry-run-obligation（策略要求不写设备）");
@@ -709,6 +837,14 @@ impl DispatchEngine {
             };
             let series = [cmd.power_kw];
             if let Err(reason) = Self::safety_guard(params, &series, &guard_state) {
+                // 61 v0.314.24：授权后未投递即终局 → journal Failed。
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::Authorized,
+                    ExecutionStatus::Failed,
+                    started,
+                    None,
+                );
                 self.audit(
                     ExecOutcome::Failed,
                     SafetyOutcome::Blocked,
@@ -723,17 +859,31 @@ impl DispatchEngine {
 
         // 步骤 5：rate 预算 reserve（不 record）；energy 仅 AI 计划路径有语义。
         if self.gate.check_rate(started) != GateDecision::Allow {
+            let _ = self.journal.transition(
+                &correlation,
+                ExecutionStatus::Authorized,
+                ExecutionStatus::Failed,
+                started,
+                None,
+            );
             return Err(DispatchError::BudgetExceeded("rate".into()));
         }
         if let Some(energy) = cmd.energy_kwh {
             if self.gate.check_energy(started, energy) != GateDecision::Allow {
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::Authorized,
+                    ExecutionStatus::Failed,
+                    started,
+                    None,
+                );
                 return Err(DispatchError::BudgetExceeded("energy".into()));
             }
         }
         states.push(DispatchState::Reserved);
 
-        // 步骤 6：durable intent 写入（唯一实现）。
-        let expires_ms = started.saturating_add(cmd.ttl_secs * 1000);
+        // 步骤 6：durable intent 写入（唯一实现；61 v0.314.24 v2 记录携带
+        // 命令摘要/尝试数——同 key 内容冲突与重启对账的持久依据）。
         let rec = IntentRecord {
             command_id,
             correlation_id: correlation,
@@ -743,22 +893,31 @@ impl DispatchEngine {
             power_kw: cmd.power_kw,
             input_digest: cmd.input_digest,
             state: DispatchState::Persisted,
+            command_digest: Some(command_digest),
+            attempt: 1,
+            receipt_digest: None,
         };
-        self.intent_log
-            .append(&rec)
-            .map_err(|e: IntentStoreError| DispatchError::IntentPersistFailed(format!("{e:?}")))?;
+        // 61 v0.314.24：journal append 失败时不投递（记录保持 Authorized
+        // 未决——重启后对账，不会误判为已投递）。
+        if let Err(e) = self.intent_log.append(&rec) {
+            let note = alloc::format!("intent persist failed: {e:?}（零投递，记录未决对账）");
+            self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+            return Err(DispatchError::IntentPersistFailed(format!("{e:?}")));
+        }
+        if let Err(e) = self.journal.transition(
+            &correlation,
+            ExecutionStatus::Authorized,
+            ExecutionStatus::Persisted,
+            started,
+            None,
+        ) {
+            let note = alloc::format!("execution-journal Authorized→Persisted failed: {e:?}");
+            self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+            return Err(DispatchError::IntentPersistFailed(note));
+        }
         states.push(DispatchState::Persisted);
 
         // 步骤 7-12：投递 + 回执（deliver_and_settle 共享不变）。
-        let envelope = ControlEnvelope::new(
-            correlation,
-            self.issuer_service,
-            self.issuer_epoch,
-            started,
-            expires_ms,
-            buf,
-            cmd.power_kw,
-        );
         let timeout = if deadline_ms == 0 {
             u64::MAX
         } else {
@@ -779,6 +938,11 @@ impl DispatchEngine {
 
     /// 步骤 7-12 收尾（run/run_intent 共享）：投递 ControlEnvelope 并分类回执。
     /// 前置失败零投递；投递后超时/结果不明 → `Indeterminate`，不猜成功。
+    ///
+    /// 61 v0.314.24：journal 写序 `Sent → TransportAcked → AppliedConfirmed`
+    /// 全程 expected-previous；投递后任何 journal/持久化失败 →
+    /// `Indeterminate`（对账），不伪造成功或失败。`Committed` 只能从
+    /// `AppliedConfirmed`（对端独立回读匹配）映射。
     #[allow(clippy::too_many_arguments)]
     fn deliver_and_settle(
         &mut self,
@@ -791,9 +955,55 @@ impl DispatchEngine {
     ) -> Result<DispatchReceipt, DispatchError> {
         // 步骤 7：投递已由调用方完成（envelope 参数）；此处直接分类回执。
         let response = match response {
-            Ok(r) => r,
+            Ok(r) => {
+                // 61 v0.314.24：投递返回 Ok → journal Sent + durable
+                // 「已发送」落盘。任一失败 → Indeterminate（写可能已发生）。
+                if let Err(e) = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::Persisted,
+                    ExecutionStatus::Sent,
+                    started,
+                    None,
+                ) {
+                    let _ = self
+                        .intent_log
+                        .update_state(&command_id, DispatchState::Indeterminate);
+                    let note = alloc::format!("delivery-ok 但 journal Sent 推进失败 {e:?}——对账");
+                    self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+                    return Ok(self.indeterminate_receipt(
+                        command_id,
+                        correlation,
+                        states,
+                        started,
+                        note,
+                    ));
+                }
+                if self
+                    .intent_log
+                    .update_state(&command_id, DispatchState::Delivered)
+                    .is_err()
+                {
+                    let note = String::from("delivery-ok 但 durable mark-sent 失败——对账");
+                    self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+                    return Ok(self.indeterminate_receipt(
+                        command_id,
+                        correlation,
+                        states,
+                        started,
+                        note,
+                    ));
+                }
+                r
+            }
             Err(crate::ChannelError::Timeout) => {
                 // 投递后超时：写可能已发生——Indeterminate 对账，不猜成功。
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::Persisted,
+                    ExecutionStatus::Indeterminate,
+                    started,
+                    None,
+                );
                 let _ = self
                     .intent_log
                     .update_state(&command_id, DispatchState::Indeterminate);
@@ -803,17 +1013,26 @@ impl DispatchEngine {
                     "delivery-timeout → Indeterminate（先读回/查询状态，不盲重试）",
                     started,
                 );
-                return Ok(DispatchReceipt {
+                return Ok(self.indeterminate_receipt(
                     command_id,
-                    correlation_id: correlation,
-                    final_state: DispatchState::Indeterminate,
-                    state_path: states,
-                    committed_at_ms: None,
-                    note: Some(String::from("delivery-timeout：写可能已发生，需对账")),
-                    latency_ms: (self.now_fn)().saturating_sub(started),
-                });
+                    correlation,
+                    states,
+                    started,
+                    String::from("delivery-timeout：写可能已发生，需对账"),
+                ));
             }
             Err(crate::ChannelError::Unreachable) => {
+                // 通道不可达 = 未投递（可证明）→ 终局 Failed。
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::Persisted,
+                    ExecutionStatus::Failed,
+                    started,
+                    None,
+                );
+                let _ = self
+                    .intent_log
+                    .update_state(&command_id, DispatchState::Failed);
                 self.audit(
                     ExecOutcome::Failed,
                     SafetyOutcome::Passed,
@@ -823,21 +1042,103 @@ impl DispatchEngine {
                 return Err(DispatchError::DeliveryUnreachable);
             }
             Err(e) => {
+                // 61 v0.314.24（对抗审查 R7）：deliver 已被调用、信封可能已
+                // 到达对端（生产 EIPC 通道的发送失败与回执丢失同报 Protocol）
+                // ——除 Unreachable（endpoint 不可达=可证明未投递）外，一律
+                // Indeterminate 对账，不假失败、不假成功。
+                if matches!(e, crate::ChannelError::Unreachable) {
+                    let _ = self.journal.transition(
+                        &correlation,
+                        ExecutionStatus::Persisted,
+                        ExecutionStatus::Failed,
+                        started,
+                        None,
+                    );
+                    let _ = self
+                        .intent_log
+                        .update_state(&command_id, DispatchState::Failed);
+                    self.audit(
+                        ExecOutcome::Failed,
+                        SafetyOutcome::Passed,
+                        "delivery-unreachable",
+                        started,
+                    );
+                    return Err(DispatchError::DeliveryUnreachable);
+                }
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::Persisted,
+                    ExecutionStatus::Indeterminate,
+                    started,
+                    None,
+                );
+                let _ = self
+                    .intent_log
+                    .update_state(&command_id, DispatchState::Indeterminate);
                 self.audit(
                     ExecOutcome::Failed,
                     SafetyOutcome::Passed,
-                    &format!("delivery: {e:?}"),
+                    &format!("delivery: {e:?} → Indeterminate（写可能已发生，对账）"),
                     started,
                 );
-                return Err(DispatchError::BadResponse(format!("{e:?}")));
+                return Ok(self.indeterminate_receipt(
+                    command_id,
+                    correlation,
+                    states,
+                    started,
+                    alloc::format!("delivery-error {e:?}：物理结果未知，需对账"),
+                ));
             }
         };
         states.push(DispatchState::Delivered);
 
         // 步骤 8-10：device-agent 回执（AuthorizedWriter 二次验证 + transport
         // ACK + 独立 readback 已在对端完成；结果码分层见 WP-40.11）。
-        let frame = OutcomeFrame::decode(&response)
-            .map_err(|e| DispatchError::BadResponse(format!("{e:?}")))?;
+        let frame = match OutcomeFrame::decode(&response) {
+            Ok(f) => f,
+            Err(e) => {
+                // 61 v0.314.24：投递已发生、回执不可解 → 结果未知 →
+                // Indeterminate 对账（原 Err(BadResponse) 会误导为未发生）。
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::Sent,
+                    ExecutionStatus::Indeterminate,
+                    started,
+                    None,
+                );
+                let _ = self
+                    .intent_log
+                    .update_state(&command_id, DispatchState::Indeterminate);
+                self.audit(
+                    ExecOutcome::Failed,
+                    SafetyOutcome::Passed,
+                    &format!("response-decode: {e:?} → Indeterminate（对账）"),
+                    started,
+                );
+                return Ok(self.indeterminate_receipt(
+                    command_id,
+                    correlation,
+                    states,
+                    started,
+                    String::from("response-decode-failed：物理结果未知，需对账"),
+                ));
+            }
+        };
+        // 61 v0.314.24：ACK 帧已解码 → journal TransportAcked；失败 → 对账。
+        if let Err(e) = self.journal.transition(
+            &correlation,
+            ExecutionStatus::Sent,
+            ExecutionStatus::TransportAcked,
+            started,
+            None,
+        ) {
+            let _ = self
+                .intent_log
+                .update_state(&command_id, DispatchState::Indeterminate);
+            let note = alloc::format!("ack-decoded 但 journal TransportAcked 推进失败 {e:?}——对账");
+            self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+            return Ok(self.indeterminate_receipt(command_id, correlation, states, started, note));
+        }
         states.push(DispatchState::TransportAcked);
         let outcome = frame
             .outcome()
@@ -846,12 +1147,60 @@ impl DispatchEngine {
             OutcomeCode::Applied => {
                 // 对端已独立 readback 验证（读回不得回显刚写 payload——
                 // device-agent 侧执行点，见 WP-40.11）。
+                // 61 v0.314.24 写序：durable 终态 ack 先行（持久确认成功），
+                // 成功后才 journal AppliedConfirmed → 外部 Committed。
+                // durable ack 失败 → Indeterminate（确认无法持久 = 未确认）。
+                if self
+                    .intent_log
+                    .update_state(&command_id, DispatchState::Committed)
+                    .is_err()
+                {
+                    let _ = self.journal.transition(
+                        &correlation,
+                        ExecutionStatus::TransportAcked,
+                        ExecutionStatus::Indeterminate,
+                        started,
+                        None,
+                    );
+                    let note = String::from(
+                        "applied-confirmed 但 durable 终态落盘失败——对账（不伪造成功）",
+                    );
+                    self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+                    return Ok(self.indeterminate_receipt(
+                        command_id,
+                        correlation,
+                        states,
+                        started,
+                        note,
+                    ));
+                }
+                let receipt_digest = eneros_crypto::sm3_hash(&response);
+                if let Err(e) = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::TransportAcked,
+                    ExecutionStatus::AppliedConfirmed,
+                    started,
+                    Some(receipt_digest),
+                ) {
+                    let note = alloc::format!("applied-confirmed 但 journal 推进失败 {e:?}——对账");
+                    self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+                    return Ok(self.indeterminate_receipt(
+                        command_id,
+                        correlation,
+                        states,
+                        started,
+                        note,
+                    ));
+                }
                 states.push(DispatchState::ReadbackVerified);
+                // 61 v0.314.24：E4 证据 token——串口必须出现 applied-confirmed
+                //（唯一 Committed 前置事实；readback 前禁止出现该行）。
+                #[cfg(target_os = "none")]
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] EXEC-JOURNAL applied-confirmed（独立回读匹配→Committed）"
+                );
                 // 步骤 11：confirmed dispatch 才记账 + 审计。
                 self.gate.record(started, energy);
-                let _ = self
-                    .intent_log
-                    .update_state(&command_id, DispatchState::Committed);
                 states.push(DispatchState::Committed);
                 self.committed_count += 1;
                 self.audit(
@@ -871,22 +1220,34 @@ impl DispatchEngine {
                 })
             }
             OutcomeCode::IdempotentHit => {
+                // 61 v0.314.24：对端幂等命中——本进程不持有原结果（对端
+                // 可能复位/重放），物理状态未确认 → 对账，绝不升级 Committed。
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::TransportAcked,
+                    ExecutionStatus::Reconciling,
+                    started,
+                    None,
+                );
                 let _ = self
                     .intent_log
-                    .update_state(&command_id, DispatchState::Committed);
-                states.push(DispatchState::Committed);
-                Ok(DispatchReceipt {
-                    command_id,
-                    correlation_id: correlation,
-                    final_state: DispatchState::Committed,
-                    state_path: states,
-                    committed_at_ms: Some((self.now_fn)()),
-                    note: Some(String::from("idempotent-hit（对端）")),
-                    latency_ms: (self.now_fn)().saturating_sub(started),
-                })
+                    .update_state(&command_id, DispatchState::Indeterminate);
+                let note = String::from("对端幂等命中：原结果未知——对账，不升级 Committed");
+                self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+                Ok(self.indeterminate_receipt(command_id, correlation, states, started, note))
             }
             OutcomeCode::DryRun => {
                 let note = String::from("对端 dry-run（未写设备）");
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::TransportAcked,
+                    ExecutionStatus::Rejected,
+                    started,
+                    None,
+                );
+                let _ = self
+                    .intent_log
+                    .update_state(&command_id, DispatchState::Rejected);
                 self.audit(
                     ExecOutcome::Failed,
                     SafetyOutcome::Passed,
@@ -905,6 +1266,13 @@ impl DispatchEngine {
             }
             OutcomeCode::Denied => {
                 let note = format!("device-denied class={}", frame.class);
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::TransportAcked,
+                    ExecutionStatus::Failed,
+                    started,
+                    None,
+                );
                 let _ = self
                     .intent_log
                     .update_state(&command_id, DispatchState::Failed);
@@ -927,6 +1295,13 @@ impl DispatchEngine {
             OutcomeCode::AppliedReadbackUnavailable => {
                 // 写可能已发生但物理状态无法确认 → Indeterminate。
                 let note = String::from("readback-unavailable：物理状态未确认，需对账");
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::TransportAcked,
+                    ExecutionStatus::Indeterminate,
+                    started,
+                    None,
+                );
                 let _ = self
                     .intent_log
                     .update_state(&command_id, DispatchState::Indeterminate);
@@ -936,18 +1311,17 @@ impl DispatchEngine {
                     &format!("states={:?};note={}", states, note),
                     started,
                 );
-                Ok(DispatchReceipt {
-                    command_id,
-                    correlation_id: correlation,
-                    final_state: DispatchState::Indeterminate,
-                    state_path: states,
-                    committed_at_ms: None,
-                    note: Some(note),
-                    latency_ms: (self.now_fn)().saturating_sub(started),
-                })
+                Ok(self.indeterminate_receipt(command_id, correlation, states, started, note))
             }
             OutcomeCode::AppliedReadbackMismatch => {
                 let note = String::from("readback-mismatch：ACK 成功但物理状态未达目标");
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::TransportAcked,
+                    ExecutionStatus::Failed,
+                    started,
+                    None,
+                );
                 let _ = self
                     .intent_log
                     .update_state(&command_id, DispatchState::Failed);
@@ -969,6 +1343,13 @@ impl DispatchEngine {
             }
             OutcomeCode::Failed => {
                 let note = String::from("device-exec-failed");
+                let _ = self.journal.transition(
+                    &correlation,
+                    ExecutionStatus::TransportAcked,
+                    ExecutionStatus::Failed,
+                    started,
+                    None,
+                );
                 let _ = self
                     .intent_log
                     .update_state(&command_id, DispatchState::Failed);
@@ -988,6 +1369,80 @@ impl DispatchEngine {
                     latency_ms: (self.now_fn)().saturating_sub(started),
                 })
             }
+        }
+    }
+
+    /// Indeterminate 回执（61 v0.314.24 统一形态：committed_at 恒 None）。
+    fn indeterminate_receipt(
+        &self,
+        command_id: [u8; 16],
+        correlation_id: [u8; 16],
+        state_path: Vec<DispatchState>,
+        started: u64,
+        note: String,
+    ) -> DispatchReceipt {
+        let latency_ms = (self.now_fn)().saturating_sub(started);
+        DispatchReceipt {
+            command_id,
+            correlation_id,
+            final_state: DispatchState::Indeterminate,
+            state_path,
+            committed_at_ms: None,
+            note: Some(note),
+            latency_ms,
+        }
+    }
+
+    /// journal 记录 → 原 receipt（同 key 重放；61 v0.314.24 §2.3 同 key 行为）。
+    fn receipt_from_journal(
+        rec: &IdempotencyRecord,
+        command_id: [u8; 16],
+        correlation: [u8; 16],
+        started: u64,
+        now: u64,
+        idem_note: &str,
+    ) -> DispatchReceipt {
+        let (final_state, committed_at, detail): (DispatchState, Option<u64>, &str) =
+            match rec.status {
+                ExecutionStatus::AppliedConfirmed => (
+                    DispatchState::Committed,
+                    Some(rec.updated_at_ms),
+                    "journal applied-confirmed（独立回读匹配）",
+                ),
+                ExecutionStatus::Authorized => (
+                    DispatchState::Authorized,
+                    None,
+                    "当前状态 authorized——不重复投递",
+                ),
+                ExecutionStatus::Persisted => (
+                    DispatchState::Persisted,
+                    None,
+                    "当前状态 persisted——不重复投递",
+                ),
+                ExecutionStatus::Sent => (
+                    DispatchState::Delivered,
+                    None,
+                    "当前状态 sent——对账，不盲发",
+                ),
+                ExecutionStatus::TransportAcked => (
+                    DispatchState::TransportAcked,
+                    None,
+                    "当前状态 transport-acked——对账",
+                ),
+                ExecutionStatus::Rejected => (DispatchState::Rejected, None, "原终态 rejected"),
+                ExecutionStatus::Failed => (DispatchState::Failed, None, "原终态 failed"),
+                ExecutionStatus::Indeterminate | ExecutionStatus::Reconciling => {
+                    (DispatchState::Indeterminate, None, "不确定——对账，不盲发")
+                }
+            };
+        DispatchReceipt {
+            command_id,
+            correlation_id: correlation,
+            final_state,
+            state_path: alloc::vec![final_state],
+            committed_at_ms: committed_at,
+            note: Some(alloc::format!("{idem_note}（{detail}）")),
+            latency_ms: now.saturating_sub(started),
         }
     }
 }

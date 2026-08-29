@@ -34,6 +34,7 @@ pub mod durable_intent;
 pub mod engine;
 pub mod feedback;
 pub mod intent;
+pub mod journal;
 
 #[cfg(feature = "sel4")]
 pub use channel::Sel4EipcChannel;
@@ -44,3 +45,4 @@ pub use dispatch::{
 pub use engine::{DispatchConfig, DispatchEngine};
 pub use feedback::{FeedbackPointMapping, TrustedFeedbackBuilder, PROD_FEEDBACK_MAPPING};
 pub use intent::{InMemoryIntentStore, IntentRecord, IntentStore, IntentStoreError};
+pub use journal::{ExecutionJournal, ExecutionStatus, IdempotencyRecord, JournalError, JournalHit};

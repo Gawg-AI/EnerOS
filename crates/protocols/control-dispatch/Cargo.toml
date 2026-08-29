@@ -28,6 +28,8 @@ eneros-protocol-abstract = { path = "../protocol-abstract" }
 eneros-durable-state = { path = "../../runtime/durable-state" }
 # 47（WP-47.4 审计持久化）：SHA-256 审计链（D4 线）——控制事件入链。
 eneros-audit = { path = "../../security/audit" }
+# 61 v0.314.24：receipt_digest = SM3(对端回执帧)（journal 原 receipt 证据绑定）。
+eneros-crypto = { path = "../../security/crypto" }
 # 调度结果（能量预算估算）。
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
 heapless = { version = "0.8", default-features = false }
