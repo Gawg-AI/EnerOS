@@ -7,8 +7,8 @@
 //! 单一内核：bin 退化为 [`ProtocolParts`] 声明 + [`print_descriptor`] +
 //! [`run`] + 协议专属后处理；失败裁决与判定行词形在 host 逐态可达可测。
 //!
-//! 纯代码移动 + 槽位取法变更（按名 [`eneros_agent_sdk::eipc_resolve`]，
-//! bin 不再手数 `EIPC_EP_BASE_SLOT`）。生产字节不变（R2）：六句判定行/
+//! 纯代码移动 + 槽位取法变更（按名解析取槽——agent-sdk `eipc_grants`
+//! 单一事实源，bin 不再手数 `EIPC_EP_BASE_SLOT`）。生产字节不变（R2）：六句判定行/
 //! 诊断行（`line_*`）与执行前逐字一致（冻结字面量对照测试锁定）；
 //! seL4 叶子（ConfigGet 取数、传输构建）以 [`ServiceIo`] 单接缝注入。
 //!
@@ -34,9 +34,8 @@ use eneros_protocol_abstract::{
 /// [`Sel4ServiceIo`] / host 测试假件）。
 pub trait ServiceIo {
     /// ConfigGet：节 id → 原始响应字节（含 4B 长度前缀，F-29）。
-    /// `None` = 未授予 / 传输失败。target 实现内部经
-    /// [`eneros_agent_sdk::eipc_resolve`] 取 svc-config 槽——bin 侧不接触
-    /// 槽位常量。
+    /// `None` = 未授予 / 传输失败。target 实现内部按名取 svc-config 槽
+    /// （agent-sdk `eipc_grants` 表 = 单一事实源）——bin 侧不接触槽位常量。
     fn config_entry(&mut self, id: &str) -> Option<Vec<u8>>;
     /// 传输构建。**用 `Result` 而非 `Option`（F-33）**：今日
     /// `handover missing ({:?})` 行要打印失败原因，`build_net_transport`
@@ -306,8 +305,8 @@ pub fn run<P: ProtocolPlugin>(
 // target 侧接缝实现（seL4 叶子单点）
 // ============================================================================
 
-/// target 侧 [`ServiceIo`]：ConfigGet 经 [`eneros_agent_sdk::eipc_resolve`]
-/// 按名取 svc-config 槽（F-8 七处手抄收编；F-9 逐条对表槽值不变）；
+/// target 侧 [`ServiceIo`]：ConfigGet 按名解析取 svc-config 槽
+/// （agent-sdk 授予表单源；F-8 七处手抄收编；F-9 逐条对表槽值不变）；
 /// 传输经 net_transport virtio-net 移交构建（X3/X4/X5 原样透传）。
 #[cfg(all(target_os = "none", feature = "sel4"))]
 pub struct Sel4ServiceIo {

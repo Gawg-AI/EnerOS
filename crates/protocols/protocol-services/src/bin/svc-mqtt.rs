@@ -464,13 +464,14 @@ pub extern "C" fn _start(
             eneros_runtime::println!(
                 "[svc-mqtt] policy/实现不一致 —— capability 壳（fail-closed）"
             );
+            let mut shell = protocol_ladder::capability_shell();
             eneros_drv_svc::runtime::driver_service_main(
                 ep,
                 "mqtt",
                 ready_ntfn,
                 eneros_protocol_services::now_ms,
                 eneros_protocol_services::instance_epoch(),
-                &mut eneros_protocol_services::service::UnassignedProtocolService,
+                shell.as_mut(),
             );
         }
     }
