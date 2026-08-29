@@ -1,0 +1,10 @@
+[package]
+name = "eneros-handover-abi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 句柄移交 ABI 单源（SPEC-B/C 2026-08-28）— 服务 VSpace 移交 vaddr 常量 + 寄存器序文档, no_std 零依赖"
+
+[dependencies]
+# Zero external dependencies — pure Rust no_std（对齐 ipc-wire 形态）。

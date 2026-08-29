@@ -160,6 +160,12 @@ impl<L: DecisionBackend, P: PeerLink> RemoteBrain<L, P> {
         self.healthy
     }
 
+    /// SPEC-E WP-E.3：System1（本地后端）可变访问——学习闭环在 decide
+    /// 前经此注入自适应死区阈值（下游消费点；不影响切换状态机语义）。
+    pub fn local_mut(&mut self) -> &mut L {
+        &mut self.local
+    }
+
     /// 取上次 decide 的元数据（审计留痕）。
     pub fn last_meta(&self) -> Option<&DecisionMeta> {
         self.last_meta.as_ref()
@@ -392,6 +398,58 @@ pub fn hex_encode(bytes: &[u8]) -> String {
         s.push(HEX[(b & 0xF) as usize] as char);
     }
     s
+}
+
+/// SPEC-SERIES-2026-08-28/B WP-B.3：peer 链路 EIPC 适配（自 svc-ai-worker
+/// bin 下沉——请求 JSON → svc-mqtt 分片 EXECUTE；drv wire 单帧 ≤64B）。
+/// host 不可达（seL4 IPC）；wire 语义与词形逐字节保留自旧 bin 实现。
+#[cfg(all(target_os = "none", feature = "sel4"))]
+pub struct PeerLinkEipc {
+    /// svc-mqtt 客户端（授予槽经 WP-54.4 按名解析）。
+    pub mqtt: eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+    /// drv_call 关联号（逐帧递增）。
+    pub correlation: u32,
+}
+
+#[cfg(all(target_os = "none", feature = "sel4"))]
+impl PeerLink for PeerLinkEipc {
+    fn send_request(&mut self, req_json: &str) -> Result<(), LinkError> {
+        use eneros_agent_sdk::ai_relay::fragment_request;
+        let (_total, frames) = fragment_request(req_json.as_bytes())
+            .map_err(|e| LinkError(alloc::format!("{e:?}")))?;
+        // 本地 IPC 正常亚毫秒；2s 上限防 mqtt 未就绪时长阻塞（心跳面安全边际）。
+        let timeout_ns = 2_000_000_000u64;
+        for frame in frames {
+            self.correlation = self.correlation.wrapping_add(1);
+            let mut req = eneros_drv_svc::runtime::DriverRequest::new(
+                self.correlation,
+                eneros_drv_svc::runtime::OP_EXECUTE,
+            );
+            req.payload[..frame.len()].copy_from_slice(&frame);
+            req.payload_len = frame.len() as u16;
+            let raw = eneros_drv_svc::runtime::wire::encode_request(&req);
+            // drv-svc 服务端按 4B/word 回 MR（47 卷 padding 坑同款）——
+            // 接受尾部补零后按精确长度解码。
+            match self.mqtt.drv_call(&raw, timeout_ns) {
+                Ok(resp) => {
+                    let decode_len =
+                        core::cmp::min(resp.len(), eneros_drv_svc::runtime::wire::RESPONSE_LEN);
+                    let resp = eneros_drv_svc::runtime::wire::decode_response(&resp[..decode_len])
+                        .ok_or_else(|| LinkError(String::from("bad-resp")))?;
+                    if resp.status != eneros_drv_svc::runtime::ST_OK
+                        || resp.payload.first() != Some(&0)
+                    {
+                        return Err(LinkError(alloc::format!(
+                            "mqtt-reject status={}",
+                            resp.status
+                        )));
+                    }
+                }
+                Err(e) => return Err(LinkError(alloc::format!("drv:{e:?}"))),
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

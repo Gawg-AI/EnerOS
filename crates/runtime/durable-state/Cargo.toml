@@ -11,8 +11,9 @@ name = "eneros_durable_state"
 path = "src/lib.rs"
 
 [dependencies]
-# CRC32（记录完整性；与 agent-sdk wire 同源实现避免重复依赖）。
-# 直接内联实现，零第三方。
+# CRC32（HYG-001 单一事实源 = abi/ipc-wire，SPEC-B/C 2026-08-28 收口；
+# 原本地内联实现已删——no_std 零依赖 abi crate，不引入第三方）。
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 
 [features]
 default = []

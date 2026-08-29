@@ -24,8 +24,8 @@ mock = []
 net = ["dep:eneros-net"]
 # QoS 落盘持久化（FsQosStore；依赖 eneros-fs）。
 fs-persist = ["dep:eneros-fs"]
-# TLS 层（std 侧 rustls；与 eneros-tls 一致，默认关闭）。
-tls = []
+# tls 空壳 feature 已删（SPEC-SERIES-2026-08-27/F WP-F.4）：零实现零 cfg 引用，
+# 防误导「开 feature 即有 TLS」；真实传输层选型走 OQ-1（EXT-01 密码评审）。
 
 [dev-dependencies]
 # 39：插件测试用 test_support（EchoTransport）。

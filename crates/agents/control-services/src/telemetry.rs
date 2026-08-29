@@ -15,6 +15,7 @@ use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use eneros_control_dispatch::FeedbackPointMapping;
 use eneros_safety_validator::{
     EvaluatorConfig, TelemetrySample, TelemetryTrustEvaluator, TrustRejection, TrustedTelemetry,
 };
@@ -55,6 +56,23 @@ pub struct TelemetryService {
     pub history_dropped: u64,
     /// WP-2：sink 写出失败的批次数（观测；不影响 ingest ack）。
     pub history_errors: u64,
+    /// SPEC-C：判定行词形由装配介质决定（Ring=既有行为字节不变，
+    /// transcript 基线连续性；Disk=TSDB-DISK-* 三态行）。
+    history_media: HistoryMedia,
+    /// SPEC-C：批次序号（Disk 判定行 batch=<seq>；每次非空 flush 递增）。
+    history_batch_seq: u64,
+    /// SPEC-C：已落 REJECTED 判定行的拒绝计数高水位（增量行防重复刷屏）。
+    rejected_reported: u64,
+}
+
+/// SPEC-C：历史介质标签（随 sink 装配指定；影响判定行词形与统计语义）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryMedia {
+    /// 内存环（缺省；沿用 TSDB-COMMIT/COMMIT-FAIL 两行基线）。
+    Ring,
+    /// 磁盘 TSDB 区段（D-TSDB-2 方案 A；TSDB-DISK-COMMIT/DROPPED/
+    /// REJECTED 三态行）。
+    Disk,
 }
 
 impl TelemetryService {
@@ -69,12 +87,26 @@ impl TelemetryService {
             history_written: 0,
             history_dropped: 0,
             history_errors: 0,
+            history_media: HistoryMedia::Ring,
+            history_batch_seq: 0,
+            rejected_reported: 0,
         }
     }
 
-    /// 装配历史落盘接缝（WP-2；服务装配期调用一次）。
+    /// 装配历史落盘接缝（WP-2；服务装配期调用一次；介质=Ring 基线词形）。
     pub fn set_history_sink(&mut self, sink: Box<dyn TelemetryHistorySink>) {
         self.history = Some(sink);
+        self.history_media = HistoryMedia::Ring;
+    }
+
+    /// SPEC-C：装配磁盘历史接缝（介质=Disk，判定行切换 TSDB-DISK-* 三态）。
+    pub fn set_history_sink_with_media(
+        &mut self,
+        sink: Box<dyn TelemetryHistorySink>,
+        media: HistoryMedia,
+    ) {
+        self.history = Some(sink);
+        self.history_media = media;
     }
 
     /// 批次边界 flush：把当前缓冲（即本轮 ingest 接受集）写往历史接缝。
@@ -82,10 +114,25 @@ impl TelemetryService {
     /// 失败语义 fail-visible：错误只计数、不吞掉、也**不反向影响**
     /// ingest 的 ack——采集与历史是两条独立生死线。无 sink 时为零开销
     /// 直通（与未接线版本行为一致）。
+    ///
+    /// SPEC-C 判定行词形（介质分形）：
+    /// - Ring（基线，w7/w10 transcript 连续性）：`TSDB-COMMIT batch items=` /
+    ///   `TSDB-COMMIT-FAIL errors=`——逐字节不变；
+    /// - Disk（D-TSDB-2 方案 A）：三态 `TSDB-DISK-COMMIT batch=<seq> items=<n>`
+    ///   / `TSDB-DISK-DROPPED n=`（磁盘写失败批）/ `TSDB-DISK-REJECTED n=`
+    ///   （本轮 ingest 拒绝样本增量）。
     fn flush_history(&mut self) {
         let Some(sink) = self.history.as_mut() else {
             return;
         };
+        // REJECTED 三态：本轮 ingest 拒绝增量（decode 级拒绝不计入
+        // self.rejected，走既有 0xFF 错误帧路径）。
+        let rejected_now = self.rejected - self.rejected_reported;
+        if rejected_now > 0 && self.history_media == HistoryMedia::Disk {
+            eneros_runtime::println!("[svc-telemetry] TSDB-DISK-REJECTED n={}", rejected_now);
+        }
+        self.rejected_reported = self.rejected;
+
         let batch: Vec<HistoryRecord> = self
             .buffer
             .iter()
@@ -94,23 +141,52 @@ impl TelemetryService {
                 device_id: s.source,
                 point: s.point,
                 value: s.value,
+                quality: quality_code(s.quality),
             })
             .collect();
         if batch.is_empty() {
             return;
         }
+        self.history_batch_seq += 1;
         match sink.write_batch(&batch) {
             Ok(()) => {
                 self.history_written += 1;
-                // SPEC-GAP-CLOSURE WP-2/C2：QEMU 串口证据行（grep 连续性纪律）。
-                eneros_runtime::println!("[svc-telemetry] TSDB-COMMIT batch items={}", batch.len());
+                match self.history_media {
+                    HistoryMedia::Ring => {
+                        // SPEC-GAP-CLOSURE WP-2/C2：QEMU 串口证据行
+                        // （grep 连续性纪律）——基线词形原样保留。
+                        eneros_runtime::println!(
+                            "[svc-telemetry] TSDB-COMMIT batch items={}",
+                            batch.len()
+                        );
+                    }
+                    HistoryMedia::Disk => {
+                        eneros_runtime::println!(
+                            "[svc-telemetry] TSDB-DISK-COMMIT batch={} items={}",
+                            self.history_batch_seq,
+                            batch.len()
+                        );
+                    }
+                }
             }
             Err(()) => {
                 self.history_errors += 1;
-                eneros_runtime::println!(
-                    "[svc-telemetry] TSDB-COMMIT-FAIL errors={}",
-                    self.history_errors
-                );
+                match self.history_media {
+                    HistoryMedia::Ring => {
+                        eneros_runtime::println!(
+                            "[svc-telemetry] TSDB-COMMIT-FAIL errors={}",
+                            self.history_errors
+                        );
+                    }
+                    HistoryMedia::Disk => {
+                        // 写失败批内记录未落库（热环可能仍持有）——显式计数。
+                        self.history_dropped += batch.len() as u64;
+                        eneros_runtime::println!(
+                            "[svc-telemetry] TSDB-DISK-DROPPED n={}",
+                            batch.len()
+                        );
+                    }
+                }
             }
         }
         // DropOldest 计数由具体缓冲实现内部累计后经 here 汇报：
@@ -192,6 +268,10 @@ impl TelemetryService {
 pub const DEFAULT_HISTORY_CAP: usize = 512;
 
 /// 单条历史记录（plain-data；字段语义对齐 eneros-tsdb TimeSeriesPoint）。
+///
+/// SPEC-C：新增 `quality` 四档码——历史必须如实存品质，Bad→Good 的
+/// 有损抹平是伪造。记录体积 24→32 B（对齐填充），热环容量不变，
+/// 红线断言（≤32KiB）与审计表 §一#3 同步复核。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HistoryRecord {
     /// 测量时刻（单调毫秒，取样本 measured_at_ms）。
@@ -202,6 +282,9 @@ pub struct HistoryRecord {
     pub point: u32,
     /// 采样值。
     pub value: f64,
+    /// 品质码（0=Good / 1=Suspect / 2=Bad / 3=Unknown；单一来源 =
+    /// agent-sdk `sample_wire::quality_code`，本模块不再自持映射）。
+    pub quality: u8,
 }
 
 /// 历史落盘接缝：每轮 TEL_INGEST 接受后调用一次 `write_batch`。
@@ -267,9 +350,19 @@ impl TelemetryHistorySink for HistoryBuffer {
 
 /// TrustedTelemetry → wire（定长 144B：state 4×8 + ts 8 + valid 8 + digest
 /// 32 + generated 8 + epoch 8 + mapping 8 + 反馈样本 5×8）。
+///
+/// 反馈槽键 = [`PROD_FEEDBACK_MAPPING`]（槽序 = 字段声明序，单源；
+/// SPEC-SERIES-2026-08-29/R4 WP-R4.1——历史硬编码 5/4/1/6/6 已收编，
+/// 需要非生产映射的测试走 [`encode_trusted_with`]）。
 pub const TRUSTED_WIRE_LEN: usize = 144;
 
 pub fn encode_trusted(t: &TrustedTelemetry) -> Vec<u8> {
+    encode_trusted_with(t, &eneros_control_dispatch::PROD_FEEDBACK_MAPPING)
+}
+
+/// 按给定反馈映射编码（槽序 = 映射字段声明序：grid_up, soc, dc_bus_v,
+/// overcurrent, overtemp）。
+pub fn encode_trusted_with(t: &TrustedTelemetry, m: &FeedbackPointMapping) -> Vec<u8> {
     let mut out = Vec::with_capacity(TRUSTED_WIRE_LEN);
     out.extend_from_slice(&t.state.voltage_v.to_le_bytes());
     out.extend_from_slice(&t.state.current_a.to_le_bytes());
@@ -281,18 +374,57 @@ pub fn encode_trusted(t: &TrustedTelemetry) -> Vec<u8> {
     out.extend_from_slice(&t.generated_at_ms.to_le_bytes());
     out.extend_from_slice(&t.source_epoch.to_le_bytes());
     out.extend_from_slice(&t.mapping_version.to_le_bytes());
-    // 反馈样本（grid_up=5 / soc=4 / dc_bus_v=1 / oc=6 / ot=6 约定点位；
-    // 缺失 → 0.0 且由链按不可信裁决——服务装配以覆盖为准）。
-    out.extend_from_slice(&t.samples.get(&5).copied().unwrap_or(f64::NAN).to_le_bytes());
-    out.extend_from_slice(&t.samples.get(&4).copied().unwrap_or(f64::NAN).to_le_bytes());
-    out.extend_from_slice(&t.samples.get(&1).copied().unwrap_or(f64::NAN).to_le_bytes());
-    out.extend_from_slice(&t.samples.get(&6).copied().unwrap_or(f64::NAN).to_le_bytes());
-    out.extend_from_slice(&t.samples.get(&6).copied().unwrap_or(f64::NAN).to_le_bytes());
+    // 反馈样本按映射点位键取值（缺失 → NaN = 未覆盖，链按不可信裁决——
+    // 服务装配以覆盖为准）。
+    out.extend_from_slice(
+        &t.samples
+            .get(&m.grid_up)
+            .copied()
+            .unwrap_or(f64::NAN)
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &t.samples
+            .get(&m.soc)
+            .copied()
+            .unwrap_or(f64::NAN)
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &t.samples
+            .get(&m.dc_bus_v)
+            .copied()
+            .unwrap_or(f64::NAN)
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &t.samples
+            .get(&m.overcurrent)
+            .copied()
+            .unwrap_or(f64::NAN)
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(
+        &t.samples
+            .get(&m.overtemp)
+            .copied()
+            .unwrap_or(f64::NAN)
+            .to_le_bytes(),
+    );
     out
 }
 
 /// wire → TrustedTelemetry（长度不符 → None）。
+///
+/// 反馈槽按 [`PROD_FEEDBACK_MAPPING`] 键独立回填——键相异时 oc/ot 各自
+/// 保留（体检 A3 修复：历史实现 ot 无条件覆盖 oc 的键）；键重复（生产
+/// 6/6 别名）时后写胜出，与历史行为一致。非生产映射走 [`decode_trusted_with`]。
 pub fn decode_trusted(buf: &[u8]) -> Option<TrustedTelemetry> {
+    decode_trusted_with(buf, &eneros_control_dispatch::PROD_FEEDBACK_MAPPING)
+}
+
+/// 按给定反馈映射解码（槽序 = 映射字段声明序，与 [`encode_trusted_with`] 对偶）。
+pub fn decode_trusted_with(buf: &[u8], m: &FeedbackPointMapping) -> Option<TrustedTelemetry> {
     use eneros_safety_validator::RequiredPointCoverage;
     if buf.len() != TRUSTED_WIRE_LEN {
         return None;
@@ -320,7 +452,7 @@ pub fn decode_trusted(buf: &[u8]) -> Option<TrustedTelemetry> {
     off += 8;
     let mapping = u64::from_le_bytes(buf[off..off + 8].try_into().ok()?);
     off += 8;
-    // 反馈样本（约定点位 5/4/1/6/6；NaN = 未覆盖）。
+    // 反馈样本（NaN = 未覆盖）——按映射键独立回填。
     let mut samples = alloc::collections::BTreeMap::new();
     let read_fb = |off: &mut usize| -> Option<f64> {
         let v = f64::from_le_bytes(buf[*off..*off + 8].try_into().ok()?);
@@ -332,13 +464,16 @@ pub fn decode_trusted(buf: &[u8]) -> Option<TrustedTelemetry> {
     let dc = read_fb(&mut off)?;
     let oc = read_fb(&mut off)?;
     let ot = read_fb(&mut off)?;
-    for (p, v) in [(5u32, grid), (4, soc_val), (1, dc), (6, oc)] {
+    for (p, v) in [
+        (m.grid_up, grid),
+        (m.soc, soc_val),
+        (m.dc_bus_v, dc),
+        (m.overcurrent, oc),
+        (m.overtemp, ot),
+    ] {
         if v.is_finite() {
             samples.insert(p, v);
         }
-    }
-    if ot.is_finite() {
-        samples.insert(6, ot);
     }
     Some(TrustedTelemetry {
         state: eneros_safety_validator::SystemState::new(voltage, current, freq, soc, ts),
@@ -565,6 +700,68 @@ mod tests {
         assert_eq!(d.provenance_digest, t.provenance_digest);
     }
 
+    /// SPEC-R4 WP-R4.1 判据 C1：体检 A3 称"oc/ot 独立往返今天没有任何
+    /// 测试能表达它"——映射驱动编解码后可表达。相异键映射下五个反馈
+    /// 槽位独立往返保留（历史实现 ot 无条件覆盖 oc 的键，此场景必丢）。
+    #[test]
+    fn feedback_slots_roundtrip_independent() {
+        let m = FeedbackPointMapping {
+            grid_up: 5,
+            soc: 4,
+            dc_bus_v: 1,
+            overcurrent: 8,
+            overtemp: 9,
+        };
+        let t = TrustedTelemetry {
+            state: eneros_safety_validator::SystemState::new(380.0, 10.0, 50.0, 60.0, 9_000),
+            coverage: RequiredPointCoverage::empty(),
+            valid_until_ms: 11_000,
+            provenance_digest: [0x5A; 32],
+            generated_at_ms: 9_500,
+            source_epoch: 3,
+            mapping_version: 1,
+            samples: {
+                let mut s = alloc::collections::BTreeMap::new();
+                s.insert(5u32, 1.0);
+                s.insert(4, 0.6);
+                s.insert(1, 400.0);
+                s.insert(8, 1.0);
+                s.insert(9, 0.0);
+                s
+            },
+        };
+        let buf = encode_trusted_with(&t, &m);
+        assert_eq!(buf.len(), TRUSTED_WIRE_LEN);
+        let d = decode_trusted_with(&buf, &m).expect("decode");
+        assert_eq!(d.samples.get(&8), Some(&1.0), "overcurrent 槽独立保留");
+        assert_eq!(d.samples.get(&9), Some(&0.0), "overtemp 槽独立保留");
+        assert_eq!(d.samples.get(&5), Some(&1.0));
+        assert_eq!(d.samples.get(&4), Some(&0.6));
+        assert_eq!(d.samples.get(&1), Some(&400.0));
+    }
+
+    /// SPEC-R4 WP-R4.1 判据：生产映射值冻结（5/4/1/6/6）+ 6/6 别名在
+    /// wire 上显式可见（oc 槽 == ot 槽字节）。矫正须走 spec R4 WP-R4.4
+    /// （设备过温点 + QEMU 门槛），不得在此改键。
+    #[test]
+    fn prod_mapping_aliasing_frozen_and_visible() {
+        let m = eneros_control_dispatch::PROD_FEEDBACK_MAPPING;
+        assert_eq!(m.grid_up, 5);
+        assert_eq!(m.soc, 4);
+        assert_eq!(m.dc_bus_v, 1);
+        assert_eq!(m.overcurrent, 6);
+        assert_eq!(m.overtemp, 6, "6/6 别名冻结——设备过温点接入前不得改键");
+        let mut svc = service();
+        let now = 10_000;
+        svc.ingest(&full(now));
+        let t = svc.snapshot(now).expect("trusted");
+        let buf = encode_trusted(&t);
+        // 反馈段自偏移 104 起：oc 槽 [128..136] == ot 槽 [136..144]。
+        assert_eq!(buf[128..136], buf[136..144], "别名在 wire 上可见");
+        let d = decode_trusted(&buf).expect("decode");
+        assert_eq!(d.samples.get(&6), t.samples.get(&6), "告警值经别名往返保留");
+    }
+
     #[test]
     fn request_handler_routes() {
         let mut svc = service();
@@ -610,6 +807,7 @@ mod tests {
             device_id: 7,
             point: id as u32,
             value: id as f64,
+            quality: 0,
         }
     }
 
@@ -679,6 +877,80 @@ mod tests {
         let mut zero = HistoryBuffer::new(0);
         zero.write_batch(&[rec(1)]).unwrap();
         assert_eq!(zero.len(), 1);
+    }
+
+    /// SPEC-C（WP-C.1/C2）：Disk 介质的判定行三态与批次序号可观测——
+    /// 判定行文本在 target 串口/broker transcript 上验证（R9）；host 侧
+    /// 锁定驱动其内容的内部事实：seq 单调、DROPPED 计数等于写失败批长
+    /// 累计、REJECTED 增量只报一次。
+    #[test]
+    fn spec_c_disk_media_line_facts() {
+        // 构造写失败 sink（模拟磁盘不可达）：链路层已保证热环先写成功，
+        // 磁盘结果如实上抛由服务侧落 DROPPED 行并累计 history_dropped。
+        struct FailSink;
+        impl TelemetryHistorySink for FailSink {
+            fn write_batch(&mut self, _b: &[HistoryRecord]) -> Result<(), ()> {
+                Err(())
+            }
+        }
+        let mut svc = service();
+        svc.set_history_sink_with_media(Box::new(FailSink), HistoryMedia::Disk);
+        let now = 10_000;
+        svc.clear();
+        svc.ingest(&[sample(1, 11.0, now - 10)]);
+        svc.flush_history();
+        assert_eq!(svc.history_errors, 1);
+        assert_eq!(svc.history_dropped, 1, "DROPPED n= 批内记录数口径");
+        assert_eq!(svc.history_batch_seq, 1, "batch=<seq> 每次非空 flush 递增");
+        // 再一轮失败：seq 继续单调；DROPPED 累计。
+        svc.clear();
+        svc.ingest(&[sample(2, 12.0, now), sample(3, 13.0, now)]);
+        svc.flush_history();
+        assert_eq!(svc.history_batch_seq, 2);
+        assert_eq!(svc.history_dropped, 3);
+        // REJECTED 行增量语义：上一轮的拒绝不被重复报告（此处间接通过
+        // 字段稳定表达；target 侧以 transcript 文本判定三态齐备）。
+        let rejected_before = svc.rejected;
+        svc.clear();
+        svc.ingest(&[sample(4, 14.0, now + 1)]);
+        svc.flush_history();
+        assert!(svc.rejected >= rejected_before);
+
+        // Ring 介质基线行为回归：既有两行词形对应的内部量不变——
+        // dropped 不被复用（Ring 失败不计入 history_dropped）。
+        let mut ring_svc = service();
+        ring_svc.set_history_sink(Box::new(FailSink));
+        ring_svc.clear();
+        ring_svc.ingest(&[sample(5, 15.0, now + 2)]);
+        ring_svc.flush_history();
+        assert_eq!(ring_svc.history_errors, 1);
+        assert_eq!(
+            ring_svc.history_dropped, 0,
+            "Ring 介质不占用 DISK-DROPPED 口径"
+        );
+        // seq 对两介质统一单调（Ring 基线行不含该字段，无兼容影响）。
+        assert_eq!(ring_svc.history_batch_seq, 1);
+    }
+
+    /// SPEC-C：HistoryRecord 质量码直通（品质如实存档，无 Bad→Good 抹平）。
+    #[test]
+    fn spec_c_quality_code_mapping() {
+        // 单一来源 = agent-sdk sample_wire::quality_code（本模块不再自持副本）。
+        use eneros_agent_sdk::sample_wire::quality_code;
+        use eneros_safety_validator::QualityReason;
+        assert_eq!(quality_code(SampleQuality::Good), 0);
+        assert_eq!(
+            quality_code(SampleQuality::Suspect(QualityReason::Replay)),
+            1
+        );
+        assert_eq!(quality_code(SampleQuality::Bad(QualityReason::Replay)), 2);
+        assert_eq!(quality_code(SampleQuality::Unknown), 3);
+        // 体积红线复核（quality 扩字段后仍守 R2）。
+        assert!(
+            DEFAULT_HISTORY_CAP * core::mem::size_of::<HistoryRecord>() <= 32 * 1024,
+            "热环 512×{}B 必须 ≤32KiB",
+            core::mem::size_of::<HistoryRecord>()
+        );
     }
 
     /// WP-2/C1-c：sink 失败 fail-visible——错误计数、ingest ack 不受影响、

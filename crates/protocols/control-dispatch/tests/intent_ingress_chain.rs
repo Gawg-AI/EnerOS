@@ -185,6 +185,10 @@ fn engine_with_chain(
         issuer_epoch: 0,
         target_endpoint: String::from("svc-device-agent"),
         max_power_kw: 500.0,
+        // SPEC WP-A.2：护栏窗口/爬坡（缺省 = 蓝图默认，行为连续）。
+        safety_voltage_window: (340.0, 420.0),
+        safety_freq_window: (49.5, 50.5),
+        safety_ramp_kw_per_min: 200.0,
         gate,
         control_audit: None,
         audit: Some(DecisionAudit::new([0x47; 32])),

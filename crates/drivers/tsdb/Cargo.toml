@@ -1,12 +1,13 @@
 [package]
 name = "eneros-tsdb"
-version = "0.314.14"
+version = "0.314.20"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 eneros-fs = { path = "../fs" }
+eneros-runtime = { path = "../../runtime/runtime" }
 # Compression backend decision (v0.25.0):
 # snap v1.1.1 was tested and is NOT no_std compatible — it requires `std`
 # (uses std::convert::TryInto, vec! macro, write! macro, and does not declare

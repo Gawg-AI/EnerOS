@@ -30,7 +30,8 @@ impl AuthenticatedSession {
     }
 }
 
-/// 管理动作（24 个 action 的严格枚举——未知字符串不再映射默认）。
+/// 管理动作（22 个 action 的严格枚举——未知字符串不再映射默认；
+/// 计数随 SPEC-C HistoryQuery 增至 22，历史注释曾误记 24/21）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MgmtAction {
     StatusQuery,
@@ -54,6 +55,8 @@ pub enum MgmtAction {
     Revoke,
     FactoryReset,
     SecureErase,
+    // SPEC-C（WP-C.2）：北向历史取回（参数在 arg：point u32 ‖ last_n u32）。
+    HistoryQuery,
 }
 
 impl MgmtAction {
@@ -81,6 +84,7 @@ impl MgmtAction {
             "revoke" => Ok(MgmtAction::Revoke),
             "factory-reset" => Ok(MgmtAction::FactoryReset),
             "secure-erase" => Ok(MgmtAction::SecureErase),
+            "history-query" => Ok(MgmtAction::HistoryQuery),
             _ => Err(()),
         }
     }
@@ -108,7 +112,10 @@ impl MgmtAction {
     pub fn role_for(&self) -> &'static str {
         match self {
             // 只读查询（服务状态/日志查询）→ viewer。
-            MgmtAction::StatusQuery | MgmtAction::SloQuery | MgmtAction::LogQuery => "viewer",
+            MgmtAction::StatusQuery
+            | MgmtAction::SloQuery
+            | MgmtAction::LogQuery
+            | MgmtAction::HistoryQuery => "viewer",
             // 只读诊断包/配置只读查询/崩溃符号化 → operator。
             MgmtAction::ConfigGet
             | MgmtAction::SupportBundleExport
@@ -132,6 +139,7 @@ impl MgmtAction {
                 | MgmtAction::ConfigGet
                 | MgmtAction::LogQuery
                 | MgmtAction::SupportBundleExport
+                | MgmtAction::HistoryQuery
         )
     }
 }
@@ -149,6 +157,9 @@ pub enum RpcStatus {
 pub struct ActionResult {
     pub status: RpcStatus,
     pub detail: String,
+    /// SPEC-C：二进制扩展载荷（history-query 的 25B 行区等）。handler 于
+    /// detail 之后追加 `[len u32 LE][bytes]`；旧文本消费方不受影响。
+    pub payload: Option<Vec<u8>>,
 }
 
 /// 审计记录（principal/channel/request/result）。
@@ -204,12 +215,14 @@ impl<E: ActionExecutor> ManagementRpc<E> {
             return ActionResult {
                 status: RpcStatus::Failed,
                 detail: "session-expired".into(),
+                payload: None,
             };
         }
         if self.replay_seen.contains(&request_id) {
             return ActionResult {
                 status: RpcStatus::Failed,
                 detail: "replay-request".into(),
+                payload: None,
             };
         }
         self.replay_seen.push(request_id);
@@ -219,6 +232,7 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                 let r = ActionResult {
                     status: RpcStatus::Failed,
                     detail: format!("unknown-action:{action_raw}"),
+                    payload: None,
                 };
                 self.audit.push(AuditRecord {
                     principal: session.principal.clone(),
@@ -236,6 +250,7 @@ impl<E: ActionExecutor> ManagementRpc<E> {
             let r = ActionResult {
                 status: RpcStatus::Failed,
                 detail: format!("insufficient-role:{}", action.role_for()),
+                payload: None,
             };
             self.audit.push(AuditRecord {
                 principal: session.principal.clone(),
@@ -279,12 +294,14 @@ mod tests {
                 return ActionResult {
                     status: RpcStatus::Failed,
                     detail: "executor-down".into(),
+                    payload: None,
                 };
             }
             self.executed.push(format!("{action:?}"));
             ActionResult {
                 status: RpcStatus::Completed,
                 detail: "ok".into(),
+                payload: None,
             }
         }
     }
@@ -479,5 +496,62 @@ mod tests {
         assert_eq!(rpc.executor.executed.len(), 1);
         assert_eq!(rpc.audit.len(), 1);
         assert_eq!(rpc.audit[0].result, "Completed");
+    }
+}
+
+#[cfg(test)]
+mod spec_c_history_query_tests {
+    use super::*;
+
+    /// SPEC-C：history-query 解析/RBAC/白名单直证。
+    #[test]
+    fn spec_c_history_query_parse_role_whitelist() {
+        assert_eq!(
+            MgmtAction::parse("history-query"),
+            Ok(MgmtAction::HistoryQuery)
+        );
+        assert_eq!(MgmtAction::HistoryQuery.role_for(), "viewer");
+        assert!(MgmtAction::HistoryQuery.in_whitelist());
+        assert!(!MgmtAction::HistoryQuery.is_destructive());
+        // 负例：kebab 变体拼写不宽容。
+        assert!(MgmtAction::parse("history_query").is_err());
+        assert!(MgmtAction::parse("historyQuery").is_err());
+    }
+
+    /// SPEC-C：viewer 可执行 history-query 且审计入链；
+    /// 二进制 payload 经 handle 原样回传。
+    #[test]
+    fn spec_c_history_query_viewer_allowed_and_payload_passes_through() {
+        struct PayloadExec;
+        impl ActionExecutor for PayloadExec {
+            fn execute(
+                &mut self,
+                _a: &MgmtAction,
+                _s: &AuthenticatedSession,
+                _arg: &[u8],
+                _now: u64,
+            ) -> ActionResult {
+                ActionResult {
+                    status: RpcStatus::Completed,
+                    detail: alloc::string::String::from("history-query:point=1 total=3"),
+                    payload: Some(alloc::vec![0xAA, 0xBB, 0xCC]),
+                }
+            }
+        }
+        let mut rpc = ManagementRpc::new(PayloadExec);
+        let viewer = AuthenticatedSession {
+            principal: alloc::string::String::from("scada"),
+            roles: vec![alloc::string::String::from("viewer")],
+            tenant_scope: 1,
+            channel_binding: alloc::string::String::from("tls"),
+            expires_at_ms: 2_000,
+        };
+        // arg = point u32 ‖ last_n u32。
+        let arg: Vec<u8> = [1u32.to_le_bytes(), 16u32.to_le_bytes()].concat();
+        let r = rpc.handle(&viewer, 9, "history-query", &arg, 1_000);
+        assert_eq!(r.status, RpcStatus::Completed);
+        assert_eq!(r.payload.as_deref(), Some(&[0xAAu8, 0xBB, 0xCC][..]));
+        assert_eq!(rpc.audit.len(), 1);
+        assert_eq!(rpc.audit[0].action, "history-query");
     }
 }

@@ -124,6 +124,11 @@ pub unsafe fn create_selector_with_hw(try_phytium: bool, try_kunpeng: bool) -> C
 /// 创建模拟模式选择器（用于测试）.
 ///
 /// 注册模拟硬件引擎 + 软件引擎，验证 fallback 逻辑。
+///
+/// **仅测试/显式 `simulated` feature**：release 构建不含本构造器
+/// （`#[cfg(any(test, feature = "simulated"))]`，防止模拟硬件静默进入
+/// 生产路径；SPEC-SERIES-2026-08-27/A · WP-A.3）。
+#[cfg(any(test, feature = "simulated"))]
 pub fn create_simulated_selector() -> CryptoSelector {
     let mut selector = CryptoSelector::new();
     selector.register(Box::new(PhytiumCryptoEngine::new_simulated()));
@@ -134,6 +139,11 @@ pub fn create_simulated_selector() -> CryptoSelector {
 // ============================================================
 // Tests
 // ============================================================
+
+/// 模拟硬件引擎行为测试（WP-A.3 收编：自 `tests/hw_engine_test.rs` 迁入——
+/// `new_simulated`/`create_simulated_selector` 已门控，集成测试默认构建不再可见）。
+#[cfg(test)]
+mod tests_sim;
 
 #[cfg(test)]
 mod tests {

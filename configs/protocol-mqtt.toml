@@ -22,3 +22,10 @@ telemetry_topic = "eneros/eneros-agent/telemetry"
 # business-services::mgmt_rpc——外部运维客户端按文档构造）。
 mgmt_request_topic = "eneros/mgmt/request"
 mgmt_response_topic = "eneros/mgmt/response"
+# SPEC-B WP-B.2：CONNECT 凭据管道（可选；缺省注释态 = 匿名建联，行为与
+# 引入前完全一致）。只做管道不做政策——「release 无凭据是否拒载」待
+# owner 裁决（OQ-2）；凭据明文进签名 bundle canonical 载荷，密级口径挂
+# OAQ/B-AQ-1。空字符串 = 未提供；只给 password 不给 username 拒载
+# （MQTT 3.1.1 [MQTT-3.1.2-22]）。broker 侧需对应用户口令表。
+# username = "eneros-agent"
+# password = "change-me"

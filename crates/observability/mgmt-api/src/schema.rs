@@ -25,6 +25,11 @@ impl ApiVersion {
 /// 管理 API 动作枚举。
 ///
 /// 每个动作映射到一个 [`Permission`]，由 RBAC 策略检查。
+///
+/// SPEC-C（2026-08-27）注记：svc 层新增 `history-query`（kebab，viewer，
+/// 只读北向历史取回——最近 N 条、非全量导出；回程含二进制分页行区，
+/// 线格式见 agent-sdk `history_wire`）。本枚举是否新增变体随 CAQ-3
+/// 扩权追认由 owner 裁决；svc-mgmt 白名单已先行接实。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ApiAction {
     // === 系统状态 ===

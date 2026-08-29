@@ -48,6 +48,7 @@ FACTORY-PROVISION serial=ENP-2026-000137 image=… points=… key_domain=… gen
 | 项 | 规则 |
 |---|---|
 | 键的来源 | 显式 `--sign-key` > `ENEROS_SIGN_KEY` > `ENEROS_KMS_DIR/factory.key` |
+| 控制链信封密钥（WP-A.1） | 显式 `--control-chain-key-hex` > `ENEROS_CONTROL_CHAIN_KEY` > `$ENEROS_KMS_DIR/control-chain.key`；三者全缺 ⇒ bundle 编译 fail-closed（开发档模板 configs/kms-dev/） |
 | 缺键行为 | **拒绝 provision**（非零退出），绝不降级为无签 |
 | 记录内容 | 制造记录仅存 `key_domain`（站端公钥 SHA-256 前 16 hex）——可追溯不泄密；私钥永不出 KMS/工位机 |
 | 设备身份密钥 | v1.0 经签名 config bundle 承载信任锚；每设备独立身份密钥注入面为 owner/KMS 后续项（50 卷如实登记） |

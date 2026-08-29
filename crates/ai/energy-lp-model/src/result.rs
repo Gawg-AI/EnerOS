@@ -2,7 +2,8 @@
 
 use alloc::vec::Vec;
 
-use eneros_solver_core::result::SolveStatus;
+/// SPEC WP-A.2：咽喉护栏构造 ScheduleResult 需公开枚举本身（此前仅私有使用）。
+pub use eneros_solver_core::result::SolveStatus;
 
 /// 调度结果条目.
 #[derive(Debug, Clone)]

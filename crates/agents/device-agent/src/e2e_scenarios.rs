@@ -116,7 +116,8 @@ fn assembled_agent() -> (DeviceAgent, [u8; 16], u64) {
         DeviceAgent::new_with_ingress("e2e", Box::new(MockCommandSource::new()), 0, ingress);
     agent
         .registry_mut()
-        .register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm);
+        .register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm)
+        .expect("静态合法登记");
     let (_, token) = verify_handshake_response(
         KEY,
         &agent.ingress.handshake_response().expect("本地租约握手"),

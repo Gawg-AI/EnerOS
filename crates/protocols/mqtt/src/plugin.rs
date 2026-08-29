@@ -82,6 +82,11 @@ const KNOWN_KEYS: &[&str] = &[
     // 管理通道关闭（诚实：未配置不假装能收发管理命令）。
     "mgmt_request_topic",
     "mgmt_response_topic",
+    // SPEC-B WP-B.2：CONNECT 凭据管道（只做管道不做政策——release 无凭据
+    // 是否拒载仍是 OQ-2 待 owner 裁决；明文入签名 bundle 密级挂 OAQ/B-AQ-1）。
+    // 缺省 = 匿名建联，行为与未引入前 byte-for-byte 一致。
+    "username",
+    "password",
 ];
 
 /// 49：peer 应答收件箱上限（有界缓冲；满则丢弃新消息并计数）。
@@ -444,7 +449,16 @@ impl ProtocolPlugin for MqttPlugin {
         match cfg.get("broker") {
             Some(broker) if !broker.is_empty() && broker.len() <= 128 => Ok(()),
             _ => Err(ProtocolError::InvalidConfig),
+        }?;
+        // SPEC-B WP-B.2 凭据配对规则（MQTT 3.1.1 [MQTT-3.1.2-22]：用户名
+        // 标志为 0 时密码标志必须为 0——只给 password 不给 username 非法，
+        // fail-closed 拒载，不留到建联期半开）。空字符串视为未提供。
+        let username = cfg.get("username").filter(|u| !u.is_empty());
+        let password = cfg.get("password").filter(|p| !p.is_empty());
+        if username.is_none() && password.is_some() {
+            return Err(ProtocolError::InvalidConfig);
         }
+        Ok(())
     }
 
     fn start(
@@ -500,6 +514,19 @@ impl ProtocolPlugin for MqttPlugin {
         let transport: Box<dyn MqttTransport> = Box::new(handle);
         let mut client = MqttClient::new(&broker, &client_id, keep_alive_ms);
         client.set_transport(transport);
+        // SPEC-B WP-B.2：凭据管道注入——cfg 成对取出（validate 已保证
+        // password 不落单），空串=未提供；两项皆缺省 → 走旧编码路径，
+        // CONNECT 帧 byte-for-byte 与今日一致（C4 回归判据）。长度校验
+        // 对齐 wire 层既有 >u16 整帧拒绝口径（set_credentials 内实现）。
+        {
+            let username = cfg.get("username").filter(|u| !u.is_empty());
+            let password = cfg.get("password").filter(|p| !p.is_empty());
+            if username.is_some() || password.is_some() {
+                client
+                    .set_credentials(username.unwrap_or(""), password.unwrap_or("").as_bytes())
+                    .map_err(|_| ProtocolError::InvalidConfig)?;
+            }
+        }
         // 47（WP-47.1）：下行写命令主题（可选）——配置了才订阅；订阅
         // 延后到首次 poll connect 之后（start 期传输未握手，直调
         // subscribe 必失败）。
@@ -878,6 +905,113 @@ mod tests {
         assert_eq!(
             plugin.validate_config(&cfg),
             Err(ProtocolError::InvalidConfig)
+        );
+    }
+
+    // ================= SPEC-B（WP-B.2）凭据管道 =================
+
+    /// 键表锁定测试：KNOWN_KEYS 全清单对照字面量——新增/删除任一键都必须
+    /// 显式改本测试并同步 config-bundle protocol.rs known_keys("protocol-mqtt")
+    /// （双源键表，漏同步 = 编译链未知键拒绝整包拒载）。
+    #[test]
+    fn b2_known_keys_literal_lock_includes_credentials() {
+        const EXPECTED: &[&str] = &[
+            "broker",
+            "client_id",
+            "keep_alive_ms",
+            "qos",
+            "will_topic",
+            "control_topic",
+            "ai_request_topic",
+            "ai_response_topic",
+            "telemetry_topic",
+            "mgmt_request_topic",
+            "mgmt_response_topic",
+            "username",
+            "password",
+        ];
+        assert_eq!(KNOWN_KEYS, EXPECTED, "MQTT 键表漂移——双源须同波次同步");
+    }
+
+    /// C2 正例：username+password 成对提供 → 校验通过，start 注入到
+    /// client.credentials（建联期进 CONNECT 帧）。
+    #[test]
+    fn b2_pair_accepted_and_injected_at_start() {
+        let plugin = MqttPlugin::new();
+        let mut cfg = ProtocolConfig::default();
+        cfg.insert("broker", "127.0.0.1:1883");
+        cfg.insert("username", "grid-user");
+        cfg.insert("password", "pw");
+        plugin.validate_config(&cfg).expect("成对凭据必须过门");
+        let mut plugin = MqttPlugin::new();
+        let mut factory = TestTcpFactory;
+        plugin
+            .start(&cfg, &mut factory, &mut EmptyPointRegistry)
+            .expect("start");
+        assert!(
+            matches!(
+                &plugin.client,
+                Some(c) if matches!(&c.credentials, Some((u, p)) if u == "grid-user" && p == b"pw")
+            ),
+            "凭据必须在 start 内注入 client"
+        );
+    }
+
+    /// 负例：只给 password 不给 username ——违反 MQTT 3.1.1 [MQTT-3.1.2-22]
+    /// （User Name Flag=0 时 Password Flag 必为 0），validate fail-closed。
+    #[test]
+    fn b2_password_without_username_rejected() {
+        let plugin = MqttPlugin::new();
+        let mut cfg = ProtocolConfig::default();
+        cfg.insert("broker", "127.0.0.1:1883");
+        cfg.insert("password", "orphan");
+        assert_eq!(
+            plugin.validate_config(&cfg),
+            Err(ProtocolError::InvalidConfig)
+        );
+    }
+
+    /// 空字符串视为未提供：全空串配置与无凭据配置同语义——client 不带
+    /// 凭据，CONNECT 帧走旧编码路径（byte-equal 由 wp3_none 测试锁定）。
+    #[test]
+    fn b2_empty_strings_treated_as_absent() {
+        let mut cfg = ProtocolConfig::default();
+        cfg.insert("broker", "127.0.0.1:1883");
+        cfg.insert("username", "");
+        cfg.insert("password", "");
+        let plugin = MqttPlugin::new();
+        plugin.validate_config(&cfg).expect("空串=未提供，过门");
+        let mut plugin = MqttPlugin::new();
+        let mut factory = TestTcpFactory;
+        plugin
+            .start(&cfg, &mut factory, &mut EmptyPointRegistry)
+            .expect("start");
+        assert!(
+            matches!(&plugin.client, Some(c) if c.credentials.is_none()),
+            "空串凭据不得进入 CONNECT 帧"
+        );
+    }
+
+    /// 仅 username 无 password 合法（[MQTT-3.1.2-22] 只约束反方向），
+    /// 注入后 connect 帧只带用户名位。
+    #[test]
+    fn b2_username_only_accepted() {
+        let mut cfg = ProtocolConfig::default();
+        cfg.insert("broker", "127.0.0.1:1883");
+        cfg.insert("username", "solo");
+        let plugin = MqttPlugin::new();
+        plugin.validate_config(&cfg).expect("仅用户名合法");
+        let mut plugin = MqttPlugin::new();
+        let mut factory = TestTcpFactory;
+        plugin
+            .start(&cfg, &mut factory, &mut EmptyPointRegistry)
+            .expect("start");
+        assert!(
+            matches!(
+                &plugin.client,
+                Some(c) if matches!(&c.credentials, Some((u, p)) if u == "solo" && p.is_empty())
+            ),
+            "仅用户名注入（密码空切片）"
         );
     }
 

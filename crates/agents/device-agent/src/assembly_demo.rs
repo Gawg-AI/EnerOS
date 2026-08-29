@@ -149,7 +149,8 @@ fn assembly_injection_path_and_metric_samples() {
     );
     agent
         .registry_mut()
-        .register("pcs", DeviceType::Pcs, device_id, Box::new(dev), pm);
+        .register("pcs", DeviceType::Pcs, device_id, Box::new(dev), pm)
+        .expect("静态合法登记");
 
     // ---- 有效信封 → 落写 ----
     let now_secs = 1_700_000_000u64;

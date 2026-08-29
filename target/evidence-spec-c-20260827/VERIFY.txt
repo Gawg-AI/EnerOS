@@ -1,0 +1,9 @@
+tsdb_disk_open       1
+storage_granted      1
+mgmt_history_bound   1
+product_ready        1
+panic                1
+no_grant_line        1
+hist_neg_frame       0
+C-SMOKE-VERDICT: PASS
+C-HISTNEG-VERDICT: BLOCKED-BY-DEF-5205(出站链)

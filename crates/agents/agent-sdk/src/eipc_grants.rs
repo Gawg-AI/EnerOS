@@ -38,6 +38,9 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     ("svc-agent-bus", "svc-storage"),
     // 41（WP-41.11）：管理 RPC 的 ConfigGet 经 EIPC 查 svc-config。
     ("svc-mgmt", "svc-config"),
+    // SPEC-C（WP-C.2）：history-query 执行器经 EIPC 向 svc-telemetry 取
+    // 历史页（TELR 帧；分块通道承载）。
+    ("svc-mgmt", "svc-telemetry"),
     // 46（WP-46.3 配置驱动装配）：协议服务经 svc-config 取协议配置
     // （GET_ENTRY "protocol-<proto>"）——消灭源码 peer 硬编码。
     ("svc-iec104", "svc-config"),
@@ -61,11 +64,19 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     ("svc-mqtt", "svc-mgmt"),
     ("svc-ai-worker", "svc-config"),
     ("svc-ai-worker", "svc-mqtt"),
+    // SPEC-E（WP-E.3 有界学习闭环）：学习参数快照经 svc-storage 真落盘
+    // （LEARN_STATE 区段，ota-ab LEARN_STATE_* 常量；存储不可得 ⇒ 学习
+    // fail-closed 不可用，行为出厂值）。
+    ("svc-ai-worker", "svc-storage"),
     // 47（WP-47.2 点表绑定）：控制写目标经 svc-config 点表解析——两端同源。
     ("svc-control-dispatch", "svc-config"),
     ("svc-device-agent", "svc-config"),
     // 47（WP-47.4 意图持久化）：DurableIntentStore 经 svc-storage 真落盘。
     ("svc-control-dispatch", "svc-storage"),
+    // SPEC-C（D-TSDB-2 方案 A 句柄让渡）：svc-telemetry 经块命令面持有
+    // 数据盘 TSDB 区段（ota-ab DATA_TSDB_* 常量；审计表 wp-c-memory-audit
+    // §三）。svc-telemetry 首条客户端授予 → 槽 EIPC_EP_BASE_SLOT+0、bit 0。
+    ("svc-telemetry", "svc-storage"),
 ];
 
 /// 在给定表上按名解析：返回 `(X3 掩码位, CSpace 槽位)`；无此授予边 →
@@ -89,6 +100,20 @@ fn resolve_in(table: &[(&str, &str)], client: &str, target: &str) -> Option<(u32
 /// 未授予/无此边一律 `None` → fail-closed（诚实降级，不伪造可达）。
 pub fn eipc_resolve(client: &str, target: &str) -> Option<(u32, u64)> {
     resolve_in(EIPC_GRANTS, client, target)
+}
+
+/// 服务侧"按目标名判定授予在位并取槽"的便捷单源（SPEC-SERIES-2026-08-28/B
+/// WP-B.1）：解析 + X3 掩码位判定一步完成；未授予/无此边 → `None`
+/// （fail-closed）。收编历史病灶——各 bin 手写
+/// `resolve + (mask & (1 << bit) != 0)` 闭包（2026-08-28 体检实测 6 bin
+/// 7 处 inline，含 svc-mgmt 硬编码掩码位 `& 2` 的魔数内联）。
+pub fn eipc_granted_slot(client: &str, eipc_mask: u64, target: &'static str) -> Option<u64> {
+    let (bit, slot) = eipc_resolve(client, target)?;
+    if eipc_mask & (1 << bit) != 0 {
+        Some(slot)
+    } else {
+        None
+    }
 }
 
 /// 客户端全部授予（root-task mint 侧推导）：`(X3 掩码, [(槽位, 目标名)])`
@@ -187,6 +212,45 @@ mod tests {
         );
     }
 
+    /// SPEC-B：eipc_granted_slot 掩码判定单源——授予在位取槽、缺位 None、
+    /// 无此边 None；与手工 `resolve + mask` 逐位等价（收编对象是六 bin
+    /// 手写闭包，此处锁定其语义）。
+    #[test]
+    fn wp_b1_granted_slot_mask_judgment() {
+        // 授予在位：掩码含该位 → 槽。
+        let (bit, slot) = eipc_resolve("svc-control-dispatch", "svc-storage").unwrap();
+        assert_eq!(
+            eipc_granted_slot("svc-control-dispatch", 1 << bit, "svc-storage"),
+            Some(slot)
+        );
+        // 掩码缺位 → None（未授予）。
+        assert_eq!(
+            eipc_granted_slot("svc-control-dispatch", 0, "svc-storage"),
+            None
+        );
+        assert_eq!(
+            eipc_granted_slot("svc-control-dispatch", 1 << bit, "svc-storage").expect("在位"),
+            slot
+        );
+        // 无此边 → None。
+        assert_eq!(
+            eipc_granted_slot("svc-control-dispatch", u64::MAX, "svc-nosuch"),
+            None
+        );
+        // 收编等价性：对冻结抽样边，闭包语义与单源逐位一致。
+        for &(client, target) in EIPC_GRANTS {
+            for mask in [0u64, 1 << 0, 1 << 5, u64::MAX] {
+                let manual = eipc_resolve(client, target)
+                    .and_then(|(b, s)| (mask & (1 << b) != 0).then_some(s));
+                assert_eq!(
+                    eipc_granted_slot(client, mask, target),
+                    manual,
+                    "{client}→{target} mask={mask:#x} 闭包等价"
+                );
+            }
+        }
+    }
+
     /// D2 冻结抽样：关键边槽位数值一个都不变（53 卷 QEMU 基线的装配事实）。
     #[test]
     fn wp544_slot_values_frozen() {
@@ -221,5 +285,10 @@ mod tests {
             eipc_resolve("svc-mqtt", "svc-control-dispatch"),
             Some((1, 4))
         );
+        // SPEC-C 新增两边的槽位冻结（其余客户端编号不受影响——每客户端
+        // 独立计数）：mgmt 第 2 边、telemetry 首边。
+        assert_eq!(eipc_resolve("svc-mgmt", "svc-config"), Some((0, 3)));
+        assert_eq!(eipc_resolve("svc-mgmt", "svc-telemetry"), Some((1, 4)));
+        assert_eq!(eipc_resolve("svc-telemetry", "svc-storage"), Some((0, 3)));
     }
 }

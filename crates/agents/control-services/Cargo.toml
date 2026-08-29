@@ -40,6 +40,15 @@ eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
 eneros-config-bundle = { path = "../../runtime/config-bundle", default-features = false }
 # 47（WP-47.4 审计持久化）：SHA-256 控制事件链（D4 线）。
 eneros-audit = { path = "../../security/audit" }
+# SPEC-C（WP-C.1 / D-TSDB-2 方案 A）：svc-telemetry 磁盘历史——TSDB 库、
+# LFS 文件系统与区段作用域原语（移交链：EIPC 块命令面 → RegionScope →
+# Lfs mount-or-format → TimeSeriesDB by-value 单一所有权）。
+eneros-durable-state = { path = "../../runtime/durable-state" }
+# SPEC-C：TSDB 区段常量单一事实源（DATA_TSDB_BASE_BLOCK/_BLOCKS）。
+eneros-ota-ab = { path = "../../security/ota-ab" }
+eneros-tsdb = { path = "../../drivers/tsdb" }
+eneros-fs = { path = "../../drivers/fs" }
+eneros-storage = { path = "../../drivers/storage" }
 heapless = { version = "0.8", default-features = false }
 
 [features]

@@ -34,12 +34,15 @@ pub extern "C" fn _start(
     mmio_vaddr: u64,
     dma_vaddr: u64,
     dma_phys: u64,
+    wall_epoch: u64,
 ) -> ! {
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
     // smoltcp 传输用 eneros_time 单调时钟推进；EL0 服务进程内初始化。
     eneros_time::time_init(eneros_hal::arm64::timer::clock(), 0);
+    // SPEC-B WP-B.1：X6 墙钟 epoch 秒（0=缺失显式降级）。
+    eneros_protocol_services::apply_wall_epoch("iec104", wall_epoch);
     // 39：协议插件在服务侧构造（descriptor 随 readiness 报告）。
     let plugin = eneros_iec104_master::plugin::Iec104Plugin::new();
     eneros_runtime::println!(
@@ -73,11 +76,12 @@ pub extern "C" fn _start(
                         // 46.5：点表经 svc-config 注入——104 设备映射 →
                         // STARTDT/总召唤驱动（EmptyPointRegistry 空映射 =
                         // 永不发起 104 握手，QEMU 实弹登记）。不可得 → 空
-                        // 注册表 → 插件如实降级。
+                        // 注册表 → 插件如实降级。SPEC-B：全量过滤（|_| true）。
                         let mut registry =
                             eneros_protocol_services::service_cfg::fetch_points_registry(
                                 "iec104-config",
                                 eneros_agent_sdk::EIPC_EP_BASE_SLOT,
+                                |_| true,
                             );
                         match plugin.start(&cfg, &mut factory, &mut registry) {
                             Ok(()) => {

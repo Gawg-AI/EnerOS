@@ -26,6 +26,26 @@ pub struct FeedbackPointMapping {
     pub overtemp: PointId,
 }
 
+/// 生产反馈点映射——**单源**（SPEC-SERIES-2026-08-29/R4 WP-R4.1）。
+///
+/// wire 槽序 = 本结构字段声明序：`grid_up → soc → dc_bus_v → overcurrent
+/// → overtemp`（144B 受信 wire 的反馈段，control-services::telemetry
+/// `encode_trusted_with/decode_trusted_with` 与本装配三方消费此常量；
+/// 反馈点位改动只改这里，不再各处手抄）。
+///
+/// ⚠ 已知别名（体检 A3 登记）：`overtemp` 与 `overcurrent` 暂指向同一点位
+/// 6——QEMU 从站仅发布 6 个点位（0x0100–0x0105，点 6 = 告警标志），过温
+/// 未接入，两信号在链上取值恒同。矫正前置 = 设备新增过温点 + 覆盖表 +
+/// QEMU 全链复验（overtemp 不可信 → HZ-THERM-001 拒充，见 spec R4 §3
+/// WP-R4.4），**不得在本常量之外私自改键**。
+pub const PROD_FEEDBACK_MAPPING: FeedbackPointMapping = FeedbackPointMapping {
+    grid_up: 5,
+    soc: 4,
+    dc_bus_v: 1,
+    overcurrent: 6,
+    overtemp: 6,
+};
+
 /// 受信任遥测 → 反馈包构造器。
 pub struct TrustedFeedbackBuilder {
     mapping: FeedbackPointMapping,
@@ -233,5 +253,17 @@ mod tests {
         assert_eq!(b.soc_pct.quality, QualityFlag::Good);
         assert_eq!(b.overcurrent.quality, QualityFlag::Invalid);
         assert_eq!(b.overtemp.quality, QualityFlag::Invalid);
+    }
+
+    /// SPEC-R4 WP-R4.1：生产反馈映射单源值冻结（5/4/1/6/6）。6/6 别名
+    /// 现状见常量文档；矫正走 spec R4 WP-R4.4（QEMU 门槛），不得私自改键。
+    #[test]
+    fn prod_feedback_mapping_frozen() {
+        let m = PROD_FEEDBACK_MAPPING;
+        assert_eq!(m.grid_up, 5);
+        assert_eq!(m.soc, 4);
+        assert_eq!(m.dc_bus_v, 1);
+        assert_eq!(m.overcurrent, 6);
+        assert_eq!(m.overtemp, 6);
     }
 }

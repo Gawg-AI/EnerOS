@@ -74,6 +74,11 @@ pub mod lfs;
 pub mod types;
 pub mod wear;
 
+// SPEC-C：littlefs2 C 侧缺失符号最小补齐（仅 target/裸金属面；host 用
+// 系统 libc，no_mangle 会与 glibc 冲突故门控）。
+#[cfg(target_os = "none")]
+pub mod shim_libc_str;
+
 mod file;
 
 // Re-export the most commonly used types at the crate root.

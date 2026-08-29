@@ -12,3 +12,6 @@ description = "EnerOS 审计日志与哈希链 (v0.117.0) — 审计事件编码
 # SHA-256（sha2，与正式 UEFI/SBOM/init bundle 同算法族）。
 sha2 = { version = "0.10.9", default-features = false }
 heapless = "0.8"
+# SPEC-B/C（2026-08-28）：CRC32 HYG-001 收口——abi/ipc-wire 为 no_std
+# 零外部依赖 workspace crate，引入不违背"无外部依赖"初衷。
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }

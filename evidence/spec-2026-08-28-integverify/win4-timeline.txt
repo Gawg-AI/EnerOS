@@ -1,0 +1,18 @@
+=== WINDOW4 RC=(0,0) ===
+--- Run1 (fresh) ---
+TSDB-DISK DISABLED line:  [svc-telemetry] TSDB-DISK DISABLED (E-DEF-01) —— 内存环接替，TELH Unavailable
+TSDB-COMMIT count:        1647
+ingest Transport(must 0): 0
+CONTROL-CHAIN rounds:     1645
+last round line:          [eneros-root-task] CONTROL-CHAIN: round=1645 telemetry-ingest=6 agent=NOACTION dispatch=-
+PANIC lines (must 0):     0
+AUDIT-CHAIN-DURABLE:      [svc-control-dispatch] AUDIT-CHAIN-DURABLE fresh base_block=24576 slots=64 槽满丢新+计数（容量策略显式）
+LEARN-APPLY count:        7
+LEARN-APPLY first/last:   [svc-ai-worker] LEARN-APPLY p=0.110000 | [svc-ai-worker] LEARN-APPLY p=0.139514
+LEARN-REJECT-CAP count:   1638
+LEARN-STATE (factory):    [svc-ai-worker] LEARN-STATE restored=1 current=0.100000 min=0.060000 max=0.140000 samples=0 rejected=0
+--- Run2 (reuse disk) ---
+LEARN-STATE (restored):   [diag] issue kind=0 sector=143 head=8 slot=0 avail.idx=649 used.[svc-ai-worker] LEARN-STATE restored=1 current=0.139514 min=0.060000 max=0.140000 samples=1645 rejected=1638
+LEARN-APPLY count:        0
+CONTROL-CHAIN rounds:     1644
+PANIC lines (must 0):     0

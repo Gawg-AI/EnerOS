@@ -9,4 +9,9 @@ schema = "eneros.closure-allowlist.v1"
 # 当前 36 目标状态：产品闭包零 mock/test-support 泄漏 → 无豁免条目。
 # 若未来版本因真实原因需要豁免，必须在此登记并写明到期/owner/理由；
 # 到期后未续期自动失效（Gate 红）。
-# entries = []
+[[entries]]
+package = "littlefs2"
+feature = "c-stubs"
+expires = "2026-12-31"
+owner = "SPEC-C/E volume owner"
+reason = "deny 子串 'stub' 误伤：c-stubs 是 littlefs2 的 C 绑定 shim（no_std target 构建必需），非 mock/测试设施。SPEC-C D-TSDB-2 方案 A 将 eneros-fs→littlefs2 首次接入 svc-telemetry 闭包时引入（2026-08-28 E 续作 closure gate 复跑时显式登记）。根治（精确匹配 deny 或 feature 改名）归后续卷。"

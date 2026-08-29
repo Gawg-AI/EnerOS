@@ -38,10 +38,10 @@ pub extern "C" fn _start(
     // 50（WP-50.1）：真 MQTT 导出器——svc-mqtt 端点在授予槽 base+1
     // （槽 0 = svc-storage，bit 1 置位 = svc-mqtt 已授予）。未授予 → 导出
     // 显式失败（fail-closed，durable outbox 兜底）。
-    // WP-54.4：按目标名解析授予槽（agent-sdk 单一事实源）。
+    // WP-54.4：按目标名解析授予槽（agent-sdk 单一事实源）；SPEC-B：
+    // 掩码位判定收编 eipc_granted_slot。
     let slot_of = |target: &'static str| -> Option<u64> {
-        let (bit, slot) = eneros_agent_sdk::eipc_resolve("svc-observability", target)?;
-        (eipc_mask & (1 << bit) != 0).then_some(slot)
+        eneros_agent_sdk::eipc_granted_slot("svc-observability", eipc_mask, target)
     };
     let mqtt = if let Some(mqtt_slot) = slot_of("svc-mqtt") {
         match eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(

@@ -28,13 +28,17 @@ pub struct MetricId(pub u32);
 /// Data quality flag (IEC 61850 style).
 ///
 /// Encoded as `u8` for compact columnar storage:
-/// `Good = 0`, `Uncertain = 1`, `Bad = 2`.
+/// `Good = 0`, `Uncertain = 1`, `Bad = 2`, `Unknown = 3`.
+///
+/// `Unknown`（第 4 档）与历史 wire 品质码同语义——SPEC-A 卷起写读往返
+/// 不得静默折叠（旧行为 `3 → Bad` 曾让 SCADA 对账读到错误品质）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DataQuality {
     Good = 0,
     Uncertain = 1,
     Bad = 2,
+    Unknown = 3,
 }
 
 impl DataQuality {
@@ -49,6 +53,9 @@ impl From<u8> for DataQuality {
         match value {
             0 => DataQuality::Good,
             1 => DataQuality::Uncertain,
+            2 => DataQuality::Bad,
+            3 => DataQuality::Unknown,
+            // 越界兜底（历史语义保留：未知字节归 Bad，不伪造更高档）。
             _ => DataQuality::Bad,
         }
     }
@@ -353,11 +360,14 @@ mod tests {
         assert_eq!(DataQuality::Good.as_u8(), 0);
         assert_eq!(DataQuality::Uncertain.as_u8(), 1);
         assert_eq!(DataQuality::Bad.as_u8(), 2);
+        assert_eq!(DataQuality::Unknown.as_u8(), 3);
 
         assert_eq!(DataQuality::from(0u8), DataQuality::Good);
         assert_eq!(DataQuality::from(1u8), DataQuality::Uncertain);
         assert_eq!(DataQuality::from(2u8), DataQuality::Bad);
-        // Unknown values map to Bad.
+        // Unknown(3) 如实往返（SPEC-A：不再折叠为 Bad）。
+        assert_eq!(DataQuality::from(3u8), DataQuality::Unknown);
+        // 越界兜底仍归 Bad（>3）。
         assert_eq!(DataQuality::from(255u8), DataQuality::Bad);
     }
 

@@ -246,7 +246,7 @@ pub fn aggregate(
 // ============================================================================
 
 /// Reads and decodes a chunk file, returning all contained points.
-fn read_chunk_file(
+pub(crate) fn read_chunk_file(
     fs: &mut Lfs,
     compressor: &dyn Compressor,
     path: &str,

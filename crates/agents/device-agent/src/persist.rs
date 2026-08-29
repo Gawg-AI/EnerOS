@@ -37,8 +37,9 @@ pub const SNAPSHOT_SCHEMA: u16 = 1;
 pub const SNAPSHOT_MAGIC: &str = "EREGSNAP";
 /// WAL 文件头。
 pub const WAL_MAGIC: &str = "EREGWAL1";
-/// 能力摘要占位（未注入时的全零——装配层注入真实摘要）。
-pub const CAPABILITY_DIGEST_PLACEHOLDER: [u8; 32] = [0u8; 32];
+// WP-A.3：能力摘要全零占位常量（CAPABILITY_DIGEST_PLACEHOLDER）已随收编删除——
+// 登记摘要由 registry 内部按四元组重算（crate::capability_digest），回放自愈，
+// 全零占位不再是合法状态。
 
 /// 持久化错误（结构化；损坏/重复/未知一律拒绝，不静默）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,23 +438,32 @@ pub fn load_registry<F: FileSystem>(
         let point_map = points.into_iter().collect();
         match factory(&name, &reg) {
             Some(adapter) => {
-                registry.register_with_registration(
-                    &name,
-                    device_type_of(&reg.adapter_kind),
-                    reg,
-                    adapter,
-                    point_map,
-                );
+                registry
+                    .register_with_registration(
+                        &name,
+                        device_type_of(&reg.adapter_kind),
+                        reg,
+                        adapter,
+                        point_map,
+                    )
+                    // WP-A.3：登记守卫拒绝 = 存量数据退化，如实入 Corrupt 链路。
+                    .map_err(|e| {
+                        PersistError::Corrupt(format!("snapshot '{name}' 登记守卫拒绝: {e}"))
+                    })?;
             }
             None => {
                 // factory 缺失 → 标记不可用（不静默丢设备）。
-                registry.register_with_registration(
-                    &name,
-                    device_type_of(&reg.adapter_kind),
-                    reg.clone(),
-                    unavailable_adapter(),
-                    point_map,
-                );
+                registry
+                    .register_with_registration(
+                        &name,
+                        device_type_of(&reg.adapter_kind),
+                        reg.clone(),
+                        unavailable_adapter(),
+                        point_map,
+                    )
+                    .map_err(|e| {
+                        PersistError::Corrupt(format!("snapshot '{name}' 登记守卫拒绝: {e}"))
+                    })?;
                 let _ = registry.set_available(&name, false);
             }
         }
@@ -495,22 +505,34 @@ pub fn load_registry<F: FileSystem>(
                         }
                         match factory(&name, &reg) {
                             Some(adapter) => {
-                                registry.register_with_registration(
-                                    &name,
-                                    device_type_of(&kind),
-                                    reg,
-                                    adapter,
-                                    points.into_iter().collect(),
-                                );
+                                registry
+                                    .register_with_registration(
+                                        &name,
+                                        device_type_of(&kind),
+                                        reg,
+                                        adapter,
+                                        points.into_iter().collect(),
+                                    )
+                                    .map_err(|e| {
+                                        PersistError::Corrupt(format!(
+                                            "wal '{name}' 登记守卫拒绝: {e}"
+                                        ))
+                                    })?;
                             }
                             None => {
-                                registry.register_with_registration(
-                                    &name,
-                                    device_type_of(&kind),
-                                    reg.clone(),
-                                    unavailable_adapter(),
-                                    points.into_iter().collect(),
-                                );
+                                registry
+                                    .register_with_registration(
+                                        &name,
+                                        device_type_of(&kind),
+                                        reg.clone(),
+                                        unavailable_adapter(),
+                                        points.into_iter().collect(),
+                                    )
+                                    .map_err(|e| {
+                                        PersistError::Corrupt(format!(
+                                            "wal '{name}' 登记守卫拒绝: {e}"
+                                        ))
+                                    })?;
                                 let _ = registry.set_available(&name, false);
                             }
                         }
@@ -574,11 +596,13 @@ mod tests {
         let pcs = MockPointDevice::new(1).with_point("voltage", 230.0);
         let mut points = alloc::collections::BTreeMap::new();
         points.insert(String::from("voltage"), 1u32);
-        reg.register("pcs-1", DeviceType::Pcs, 1, Box::new(pcs), points);
+        reg.register("pcs-1", DeviceType::Pcs, 1, Box::new(pcs), points)
+            .expect("静态合法登记");
         let meter = MockPointDevice::new(2).with_point("kwh", 100.0);
         let mut points2 = alloc::collections::BTreeMap::new();
         points2.insert(String::from("kwh"), 1u32);
-        reg.register("meter-1", DeviceType::Meter, 2, Box::new(meter), points2);
+        reg.register("meter-1", DeviceType::Meter, 2, Box::new(meter), points2)
+            .expect("静态合法登记");
         reg
     }
 

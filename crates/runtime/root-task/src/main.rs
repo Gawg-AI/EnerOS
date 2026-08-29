@@ -288,14 +288,23 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
     // 默认），服务映射到同一虚拟地址区域——ET_EXEC 固定地址代码的绝对
     // 引用才能解析（用 0x40000000 导致服务执行即 VMFAULT，QEMU 实测
     // type=1 pc=0x203554）。每个服务独立 VSpace，虚拟地址可相同。
-    const VSPACE_BASE: u64 = 0x200000;
+    // SPEC-R4 WP-R4.3：本地副本删除，单源 = spawn::SVC_VSPACE_BASE。
+    const VSPACE_BASE: u64 = crate::spawn::SVC_VSPACE_BASE;
     const PAGE_SIZE: u64 = 0x1000;
     // 蓝图 40：默认 EL0 服务栈 16 KiB；控制闭环服务经
-    // `service_stack_pages` 按名覆盖（svc-device-agent 的 EnvelopeIngress
+    // `SERVICE_STACK_OVERRIDES` 按名覆盖（svc-device-agent 的 EnvelopeIngress
     // 使 rustc 为 `_start` 生成 ~274 KiB 栈清零帧——16 KiB 栈写入 guard
     // 页触发 VM fault（QEMU 实测 FAULT-INFO addr=0x263fd0 fsr=0x92000047）；
     // 全局放大超 ROOT_CNODE 4096 槽预算（25 服务 × 80 页 = 2000 栈页 +
     // ELF 页 ≈ 3600 仍 NoCapSlot，QEMU 实测），故按需覆盖。
+    //
+    // SPEC-E 续作（win1-t2 实弹）：svc-telemetry 的 TSDB 磁盘写链
+    //（LFS mount_and_then + checkpoint 深帧）栈峰值 ~30 KiB（host 守门
+    // 测 telemetry_history::diag_stack_write_path_survives：28 KiB 溢出 /
+    // 32 KiB 存活，含服务循环 ~5 KiB 槽位帧垫片）——16 KiB 默认栈在首个
+    // TEL_INGEST 落盘即溢出；溢出线程阻塞在 fault 上行（root 当时阻塞于
+    // EXECUTE Call）⇒ 全系统静默冻结。供 16 页 = 64 KiB（≥2× 余量）。
+    const SERVICE_STACK_OVERRIDES: &[(&str, u64)] = &[("svc-telemetry", 16)];
     const STACK_SIZE: u64 = 0x4000;
     const EP_BASE: u64 = 100;
     // BOOT-007 诊断：打印 bundle 与 root 模块头部（定位 BadElf 根因）。
@@ -317,13 +326,14 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
             m.blob.get(3).copied().unwrap_or(0)
         );
     }
-    let plan = match crate::spawn::plan_spawn_dyn_aware(
+    let plan = match crate::spawn::plan_spawn_dyn_aware_with_stack(
         &bundle,
         VSPACE_BASE,
         PAGE_SIZE,
         STACK_SIZE,
         EP_BASE,
         VSPACE_BASE, // WP-37.4：ET_DYN 装载基址（独立 VSpace，可复用区域）
+        SERVICE_STACK_OVERRIDES,
     ) {
         Ok(plan) => plan,
         Err(e) => {
@@ -427,6 +437,12 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
     // R1-2：真实 spawn（21-A K1.2：sel4-sys FFI 完整序列，ADR-0034）
     #[cfg(target_os = "none")]
     {
+        // SPEC-B WP-B.1：spawn **前**确保 RTC 基址就绪——X6 墙钟在
+        // sel4_spawn_services 内读取。DTB 探测链后置且运行时 DTB 可能剪除
+        // pl031 节点（QEMU virt 实测）——此处按板级事实从设备区基址起
+        // 4K 逐页恒等映射到 PL031 页（dev_maps 去重使 pl011 等后续请求
+        // 复用同帧，零二次 Retype）。
+        crate::driver_probe::ensure_rtc_bootstrapped(&mut ctx);
         // ctx/types/rights 已在上面（bundle 映射）创建，复用同一个。
         match crate::spawn::sel4_spawn_services(&plan, &bundle, &mut ctx) {
             Ok(handles) => {

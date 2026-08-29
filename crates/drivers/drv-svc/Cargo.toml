@@ -14,6 +14,8 @@ path = "src/lib.rs"
 # 38（WP-38.9）：驱动服务通用 IPC runtime——真实 IPC loop（envelope/
 # bounded queue/deadline/epoch），不再 spin_loop 占位。
 eneros-ipc-wire = { path = "../../abi/ipc-wire" }
+# SPEC-B/C（2026-08-28）：移交 vaddr 常量单源（blk_backend re-use）。
+eneros-handover-abi = { path = "../../abi/handover-abi" }
 eneros-runtime = { path = "../../runtime/runtime" }
 eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
 eneros-hal = { path = "../../hal/hal" }
@@ -21,6 +23,11 @@ eneros-hal = { path = "../../hal/hal" }
 # 作为 BlockBackend（no_std，host 测试用 mock）。
 # 50 二分实验：恢复 diag（启动冻结定位——依赖图变化即 ELF 布局变化，
 # 疑暴露 virtio 时序敏感路径）。定位后另行处置。
+# E 续作复验（2026-08-28 窗口实测）：曾试探摘除本 feature 以减免 31×
+# UART 税——摘除态与保留态**各复现一次** fleet init 中途串口冻结
+# （BP-50"环境性启动冻结"=间歇性 virtio 时序竞态，与 diag 无必然因果）。
+# diag 维持保留（摘除无收益、徒增变量）；31× 税 + 间歇冻结的根治
+# （virtio 等待语义/驱动时序）归调度·驱动层卷。
 eneros-storage = { path = "../../drivers/storage", features = ["diag"] }
 linked_list_allocator = "0.10"
 

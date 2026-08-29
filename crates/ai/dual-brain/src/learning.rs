@@ -57,6 +57,27 @@ impl DeadbandAdaptive {
         s
     }
 
+    /// SPEC-SERIES-2026-08-27/E WP-E.3：从持久快照恢复（EMA/样本/拒绝计数
+    /// 原样回载——重启后学习状态连续，而非 EMA 冷启动）。输入须已过
+    /// catalog 界校验（快照写入口负责）；越界输入按界钳制（防御性）。
+    pub fn restore_with_catalog(
+        current: f64,
+        noise_ema: f64,
+        samples: u64,
+        rejected_updates: u64,
+        catalog: SafetyCatalog,
+    ) -> Self {
+        let mut s = Self::with_catalog(current, catalog);
+        s.noise_ema = if noise_ema.is_finite() {
+            noise_ema
+        } else {
+            current / 3.0
+        };
+        s.samples = samples;
+        s.rejected_updates = rejected_updates;
+        s
+    }
+
     /// safety-validator：值域 + catalog 硬界检查。
     pub fn validate(v: f64, min: f64, max: f64) -> bool {
         v.is_finite() && v >= min && v <= max

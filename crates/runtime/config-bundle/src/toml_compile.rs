@@ -21,7 +21,7 @@ use toml::Value;
 
 use crate::payload::encode_payload;
 use crate::points::{point_type_from_name, point_type_ordinal, PointProtocol};
-use crate::schema::{ai_peer, cloud_sync, control_write, logging, metrics, ota, points};
+use crate::schema::{ai_peer, cloud_sync, control_write, logging, metrics, ota, points, security};
 use crate::{ConfigError, ConfigId};
 
 /// 编译结果：config_id + canonical payload。
@@ -1005,9 +1005,9 @@ pub fn compile_protocol(config_id: &str, toml: &str) -> Result<CompiledConfig, C
     })
 }
 
-/// 49（WP-49.2）：`ai-peer` 编译——RemoteBrain 状态机参数，**五键全必配**
+/// 49（WP-49.2）：`ai-peer` 编译——RemoteBrain 状态机参数，**六键全必配**
 /// （fail-closed 禁凭记忆缺省；48 卷 config 解析器数值纪律同款：先值域后
-/// 类型，杜绝 as 截断）。
+/// 类型，杜绝 as 截断。SPEC-E WP-E.3 增 learn_enabled 闸键）。
 pub fn compile_ai_peer(toml: &str) -> Result<CompiledConfig, ConfigError> {
     let config = ConfigId::from_static(ai_peer::CONFIG_ID);
     let root: Value = toml::from_str(toml).map_err(|e| ConfigError::InvalidValue {
@@ -1025,6 +1025,7 @@ pub fn compile_ai_peer(toml: &str) -> Result<CompiledConfig, ConfigError> {
             "probe_every",
             "max_power_kw",
             "ttl_secs",
+            "learn_enabled",
         ],
     )?;
     let timeout_ms = get_u64(t, &config, "timeout_ms")?;
@@ -1072,6 +1073,10 @@ pub fn compile_ai_peer(toml: &str) -> Result<CompiledConfig, ConfigError> {
             reason: "range-1..=3600".into(),
         });
     }
+    // SPEC-E WP-E.3：学习闸（bool → u8 0/1；EAQ-2 dev/qemu=true、release
+    // 归 owner 配置裁决——键必配无缺省）。
+    let learn_enabled_raw = get_bool(t, &config, "learn_enabled")?;
+    let learn_enabled = if learn_enabled_raw { 1u8 } else { 0u8 };
     Ok(CompiledConfig {
         payload: encode_payload(&[
             (ai_peer::FIELD_TIMEOUT_MS, timeout_ms.to_le_bytes().to_vec()),
@@ -1088,8 +1093,52 @@ pub fn compile_ai_peer(toml: &str) -> Result<CompiledConfig, ConfigError> {
                 max_power_kw.to_le_bytes().to_vec(),
             ),
             (ai_peer::FIELD_TTL_SECS, ttl_secs.to_le_bytes().to_vec()),
+            (ai_peer::FIELD_LEARN_ENABLED, alloc::vec![learn_enabled]),
         ]),
         config_id: config,
+    })
+}
+
+/// SPEC-SERIES-2026-08-27/A WP-A.1：`security` 编译——控制链信封 HMAC-SM3
+/// 密钥（32B）构建期注入。
+///
+/// 纪律：键值**不落任何文件**——TOML 内任何键（含明文 hex 尝试）一律
+/// UnknownKey 拒绝；仅经注入链取得：`--control-chain-key-hex` >
+/// `ENEROS_CONTROL_CHAIN_KEY` > `ENEROS_KMS_DIR/control-chain.key`；
+/// 全缺 ⇒ Err（release 无键构建 fail-closed，WP-47.3 先例）；
+/// 全零 ⇒ ZeroSecret。
+pub fn compile_security(
+    toml_text: &str,
+    injected: Option<&[u8; 32]>,
+) -> Result<CompiledConfig, ConfigError> {
+    let config = ConfigId::from_static(security::CONFIG_ID);
+    let root: Value = toml::from_str(toml_text).map_err(|e| ConfigError::InvalidValue {
+        config: config.clone(),
+        field: "toml",
+        reason: format!("parse:{e}"),
+    })?;
+    let t = table(&root, &config, "root")?;
+    reject_unknown_keys(t, &config, &["security"])?;
+    let sec = section(&root, &config, "security")?;
+    // 零允许键：security.toml 只承载注释与空 [security] 表头，防明文入仓。
+    reject_unknown_keys(sec, &config, &[])?;
+
+    let key = injected.ok_or_else(|| ConfigError::InvalidValue {
+        config: config.clone(),
+        field: "control_chain_key",
+        reason: "未注入：--control-chain-key-hex / ENEROS_CONTROL_CHAIN_KEY / \
+                 ENEROS_KMS_DIR/control-chain.key 全缺（fail-closed）"
+            .into(),
+    })?;
+    if crate::is_zero_bytes(&key[..]) {
+        return Err(ConfigError::ZeroSecret {
+            config,
+            field: "control_chain_key",
+        });
+    }
+    Ok(CompiledConfig {
+        config_id: config,
+        payload: encode_payload([&(security::FIELD_CONTROL_CHAIN_KEY, key)]),
     })
 }
 
@@ -1097,11 +1146,13 @@ pub fn compile_by_id(
     config_id: &str,
     toml: &str,
     injected_root_key: Option<&[u8; 64]>,
+    injected_control_chain_key: Option<&[u8; 32]>,
 ) -> Result<Option<CompiledConfig>, ConfigError> {
     match config_id {
         control_write::CONFIG_ID => compile_control_write(toml).map(Some),
         ai_peer::CONFIG_ID => compile_ai_peer(toml).map(Some),
         ota::CONFIG_ID => compile_ota(toml, injected_root_key).map(Some),
+        security::CONFIG_ID => compile_security(toml, injected_control_chain_key).map(Some),
         cloud_sync::CONFIG_ID => compile_cloud_sync(toml).map(Some),
         metrics::CONFIG_ID => compile_metrics(toml).map(Some),
         logging::CONFIG_ID => compile_logging(toml).map(Some),
@@ -1388,5 +1439,61 @@ mod protocol_config_v46_tests {
     #[test]
     fn unknown_protocol_id_rejected() {
         assert!(compile_protocol("protocol-nope", GOOD).is_err());
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    fn cfg() -> ConfigId {
+        ConfigId::from_static(security::CONFIG_ID)
+    }
+
+    const KEY: [u8; 32] = [
+        0x77, 0x34, 0x30, 0x2D, 0x74, 0x65, 0x73, 0x74, 0x2D, 0x6B, 0x65, 0x79, 0x11, 0x11, 0x11,
+        0x11, 0x22, 0x22, 0x22, 0x22, 0x33, 0x33, 0x33, 0x33, 0x44, 0x44, 0x44, 0x44, 0x55, 0x55,
+        0x55, 0x55,
+    ];
+
+    /// WP-A.1 C2：正常路径编译成功，canonical payload 可解码还原键值。
+    #[test]
+    fn security_compile_decode_roundtrip() {
+        let compiled = compile_security("[security]\n", Some(&KEY)).unwrap();
+        assert_eq!(compiled.config_id, cfg());
+        let decoded =
+            crate::control_chain_key::ControlChainKeyConfig::decode(&compiled.payload).unwrap();
+        assert_eq!(decoded.control_chain_key, KEY);
+    }
+
+    /// WP-A.1 C2①：注入链全缺 ⇒ 编译 Err（fail-closed），文案含指引。
+    #[test]
+    fn security_missing_injection_fails_closed() {
+        let err = compile_security("[security]\n", None).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("InvalidValue")
+                && msg.contains("control_chain_key")
+                && msg.contains("未注入"),
+            "错误须指向 control_chain_key 且含注入链指引：{msg}"
+        );
+    }
+
+    /// WP-A.1 C2②：全零密钥拒绝（ZeroSecret）。
+    #[test]
+    fn security_zero_key_rejected() {
+        let err = compile_security("[security]\n", Some(&[0u8; 32])).unwrap_err();
+        assert!(matches!(err, ConfigError::ZeroSecret { .. }), "{err:?}");
+    }
+
+    /// WP-A.1 纪律：TOML 内任何键（含明文 hex 尝试）一律拒绝。
+    #[test]
+    fn security_toml_plaintext_attempt_rejected() {
+        let text = "[security]\ncontrol_chain_key_hex = \"7734\"\n";
+        let err = compile_security(text, Some(&KEY)).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::UnknownKey { ref key, .. } if key == "control_chain_key_hex"),
+            "{err:?}"
+        );
     }
 }

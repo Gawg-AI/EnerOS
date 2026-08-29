@@ -56,6 +56,34 @@ pub fn set_rtc_base(rtc_base: u64) {
     *RTC_OFFSET_NS.lock() = offset;
 }
 
+/// SPEC-B WP-B.1：直接注入 Unix epoch 秒作为墙钟偏移——EL0 服务侧公共初始化面。
+///
+/// root 进程持有 PL031 MMIO 映射，EL0 服务进程没有；故 root 把经合理性闸门
+/// 的 epoch 秒经启动寄存器（X6）下发给服务，服务在此以偏移形式生效。与
+/// [`set_rtc_base`] 同思路：**不**重置 CLOCK/MONO/WHEEL、可重复调用
+/// （restart_service 重灌寄存器路径每次新读新注入），`get_time()` =
+/// 该偏移 + 单调增量。
+///
+/// 注意注入的是"可信时间值"而非硬件基址：服务侧无 MMIO 访问权，RTC 硬件
+/// 真值仍由 root 侧 [`rtc_now_secs`] 唯一读取。
+pub fn set_wall_epoch_secs(epoch_secs: u64) {
+    *RTC_OFFSET_NS.lock() = epoch_secs.saturating_mul(1_000_000_000);
+}
+
+/// SPEC-B WP-B.1：实时读已配置 PL031 的当前 Unix epoch 秒（RTCDR 新读，
+/// 非缓存偏移）。无 RTC 基址 → `None`——调用方按缺失降级，绝不猜测。
+///
+/// restart_service 重灌寄存器前调用本函数取新鲜墙钟，保证受控重启后
+/// 服务侧墙钟继续前进不回退到 spawn 时刻的旧值。
+pub fn rtc_now_secs() -> Option<u64> {
+    let base = *RTC_BASE.lock();
+    if base == 0 {
+        None
+    } else {
+        Some(Pl031Rtc::new(base).read_secs())
+    }
+}
+
 /// Returns monotonic nanoseconds since boot, or `0` before `time_init`.
 pub fn get_monotonic_ns() -> u64 {
     let clock = CLOCK.lock().0;
@@ -258,5 +286,40 @@ mod tests {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         time_init(&TEST_CLOCK, 0);
         assert_eq!(timer_expired_count(), 0);
+    }
+
+    /// SPEC-B WP-B.1：`set_wall_epoch_secs` 注入墙钟偏移；`get_time` =
+    /// 偏移 + 单调增量（TestClock 单调恒 0 → 读数恰为偏移）。
+    /// 极大值走 saturating 不得 panic（垃圾时间在 root 闸门拦截，
+    /// 本层只需数值健壮性兜底）。
+    #[test]
+    fn wpb1_set_wall_epoch_feeds_get_time_and_saturates() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        super::CLOCK.lock().0 = None;
+        *super::MONO.lock() = None;
+        time_init(&TEST_CLOCK, 0);
+
+        const EPOCH: u64 = 1_800_000_000; // 2027-01-15 附近，闸门窗内
+        set_wall_epoch_secs(EPOCH);
+        assert_eq!(get_time(), TimeStamp(EPOCH * 1_000_000_000));
+
+        // 饱和兜底：u64::MAX 秒 × 1e9 必须 clamp 到 u64::MAX 而非溢出回卷。
+        set_wall_epoch_secs(u64::MAX);
+        assert_eq!(get_time(), TimeStamp(u64::MAX));
+
+        // 还原，避免污染其他测试。
+        set_wall_epoch_secs(0);
+        super::CLOCK.lock().0 = None;
+        *super::MONO.lock() = None;
+    }
+
+    /// SPEC-B WP-B.1：无 RTC 基址时 `rtc_now_secs` 返回 None（显式缺失语义，
+    /// 绝不猜测）。host 测试不触碰真实 MMIO——非零基址的读取路径由 target
+    /// （QEMU 实弹 transcript）覆盖。
+    #[test]
+    fn wpb1_rtc_now_secs_none_without_base() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        *super::RTC_BASE.lock() = 0;
+        assert_eq!(rtc_now_secs(), None);
     }
 }

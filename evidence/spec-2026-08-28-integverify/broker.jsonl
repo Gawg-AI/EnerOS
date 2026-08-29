@@ -1,0 +1,3 @@
+{"ts": 1787913425.7970123, "event": "BROKER-LISTEN", "port": 1883, "telemetry_topic": "eneros/eneros-agent/telemetry", "mode": "legacy-accept-all"}
+{"ts": 1787913455.9304566, "event": "CONNECT", "conn": "54774", "username_present": false, "password_present": false}
+{"ts": 1787913455.9306278, "event": "CONNACK", "conn": "54774"}

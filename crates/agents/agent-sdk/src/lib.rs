@@ -84,11 +84,15 @@ pub const EIPC_EP_BASE_SLOT: u64 = 3;
 /// 判定卡死（WP-40.4 隔离：无 fault 的 hang 也能被终止）。
 pub const HEARTBEAT_NTFN_SLOT: u64 = 63;
 
-pub use eipc_grants::{eipc_grants, eipc_resolve, EIPC_GRANTS};
+pub use eipc_grants::{eipc_granted_slot, eipc_grants, eipc_resolve, EIPC_GRANTS};
 pub mod config;
 // WP-54.4：EIPC 授予拓扑单一事实源（表+按名解析，自 root-task 下沉）。
+pub mod config_client;
+// SPEC-B（2026-08-28）：svc-config GET_ENTRY 客户端单源（请求构造+前缀解析）。
 pub mod context;
 pub mod eipc_grants;
+// SPEC-C（WP-C.2）：北向历史取回 TELR 线格式单一事实源。
+pub mod history_wire;
 pub mod ipc;
 #[cfg(any(test, feature = "sel4"))]
 pub mod ipc_sel4;

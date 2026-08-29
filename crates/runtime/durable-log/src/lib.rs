@@ -4,6 +4,10 @@
 //! CRC/原子写逻辑——代码复用非类型复用）。基于已活体的 virtio-blk 后端
 //! （27.3 D4）与 `BlockDevice` trait（host 用 MockBlockDevice 测试）。
 //!
+//! 本 crate 只提供**附加日志原语**（`BlockDurableLog`）；审计哈希链的
+//! 持久化语义唯一出处 = `security/audit`（SPEC-R4 WP-R4.2：112B 摘要
+//! 模型的审计存储死副本已删除——掉电后不可查询/恢复，被权威实现取代）。
+//!
 //! # 布局（块设备，块 0 = 头块）
 //! - 块 0：`magic "EDLOG1" ‖ version(2) ‖ head_seq(8) ‖ tail_seq(8) ‖
 //!   crc32(4)`（头块 CRC 覆盖前 28 字节；提交 = 原子写头块）；
@@ -405,116 +409,6 @@ impl<D: BlockDevice> DurableLog for BlockDurableLog<D> {
     }
 }
 
-/// 30 WP-30.7：`AuditStore` 的 DurableLog 后端（审计哈希链持久化）。
-///
-/// `ChainEntry` 定长编码（112B：seq8+prev32+event32+combined32+ts8）落盘；
-/// 恢复时由 `AuditLoggerImpl::recover` 重建链。
-pub struct PersistentAuditStore<D: BlockDevice> {
-    log: BlockDurableLog<D>,
-}
-
-impl<D: BlockDevice> PersistentAuditStore<D> {
-    /// 以持久化日志构造审计存储。
-    ///
-    /// 39 WP-39.6：**不再自动格式化**——未初始化/外来格式返回错误，
-    /// 绝不隐式写盘；显式 provisioning 由 `provision_new` 完成。
-    ///
-    /// 39 收尾复验（Exit Gate #2）：审计存储只接受角色分区作用域。
-    pub fn open_existing(dev: D, block_size: usize) -> Result<Self, OpenError>
-    where
-        D: eneros_storage::ScopedBlockDevice,
-    {
-        Ok(Self {
-            log: BlockDurableLog::open_existing(dev, block_size)?,
-        })
-    }
-
-    /// 编码 ChainEntry（定长 112B）。
-    fn encode(entry: &eneros_audit::ChainEntry) -> [u8; 112] {
-        let mut out = [0u8; 112];
-        out[0..8].copy_from_slice(&entry.seq.to_le_bytes());
-        out[8..40].copy_from_slice(&entry.prev_hash);
-        out[40..72].copy_from_slice(&entry.event_hash);
-        out[72..104].copy_from_slice(&entry.combined_hash);
-        out[104..112].copy_from_slice(&entry.timestamp_ms.to_le_bytes());
-        out
-    }
-
-    /// 解码 ChainEntry。
-    fn decode(bytes: &[u8]) -> Option<eneros_audit::ChainEntry> {
-        if bytes.len() != 112 {
-            return None;
-        }
-        let mut prev = [0u8; 32];
-        let mut ev = [0u8; 32];
-        let mut comb = [0u8; 32];
-        prev.copy_from_slice(&bytes[8..40]);
-        ev.copy_from_slice(&bytes[40..72]);
-        comb.copy_from_slice(&bytes[72..104]);
-        Some(eneros_audit::ChainEntry {
-            seq: u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
-            prev_hash: prev,
-            event_hash: ev,
-            combined_hash: comb,
-            timestamp_ms: u64::from_le_bytes(bytes[104..112].try_into().unwrap()),
-        })
-    }
-}
-
-impl<D: BlockDevice> eneros_audit::AuditStore for PersistentAuditStore<D> {
-    fn append(&mut self, entry: &eneros_audit::ChainEntry) -> Result<(), eneros_audit::AuditError> {
-        let rec = Self::encode(entry);
-        self.log
-            .append(&rec)
-            .map_err(|_| eneros_audit::AuditError::StorageWriteFailed)?;
-        Ok(())
-    }
-
-    fn read_range(
-        &self,
-        start_seq: u64,
-        end_seq: u64,
-    ) -> Result<alloc::vec::Vec<eneros_audit::ChainEntry>, eneros_audit::AuditError> {
-        let mut out = alloc::vec::Vec::new();
-        // 审查修复（30 版后）：解码失败（记录长度 ≠ ChainEntry 定长 112B）
-        // 不得静默跳过——旧实现 `if let Some` 丢条目不报错（数据静默丢失，
-        // 违反 fail-closed）。置标志后整体报错。
-        let mut malformed = false;
-        self.log
-            .read_from(start_seq, &mut |seq, rec| {
-                if seq <= end_seq {
-                    match Self::decode(rec) {
-                        Some(e) => out.push(e),
-                        None => malformed = true,
-                    }
-                }
-            })
-            .map_err(|_| eneros_audit::AuditError::StorageReadFailed)?;
-        if malformed {
-            return Err(eneros_audit::AuditError::StorageReadFailed);
-        }
-        Ok(out)
-    }
-
-    fn read_last_n(
-        &self,
-        n: usize,
-    ) -> Result<alloc::vec::Vec<eneros_audit::ChainEntry>, eneros_audit::AuditError> {
-        let count = self.count()?;
-        let start = count.saturating_sub(n as u64).max(1);
-        self.read_range(start, count)
-    }
-
-    fn count(&self) -> Result<u64, eneros_audit::AuditError> {
-        // 头块 tail_seq（下一条序号）- 1 = 已确认条数。
-        let (_, tail) = self
-            .log
-            .read_header()
-            .map_err(|_| eneros_audit::AuditError::StorageReadFailed)?;
-        Ok(tail.saturating_sub(1))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use eneros_storage::partition::BlockRole;
@@ -522,7 +416,7 @@ mod tests {
 
     use super::*;
 
-    /// 测试作用域：审计角色（PersistentAuditStore/启动计数日志语义）。
+    /// 测试作用域：审计角色分区（启动计数日志等附加日志语义）。
     type AuditScope = MockPartitionScope<MockBlockDevice>;
 
     fn audit_scope(blocks: u64, block_size: usize) -> AuditScope {
@@ -606,32 +500,6 @@ mod tests {
         let mut log = BlockDurableLog::format(dev, 4096).expect("format");
         assert_eq!(log.append(&[0x5A; 4080]).expect("4080B 恰好容量"), 1);
         assert_eq!(log.append(&[0x5A; 4081]), Err(StoreError::Full));
-    }
-
-    /// 30 WP-30.7：PersistentAuditStore 经 AuditStore trait 落盘/读回。
-    #[test]
-    fn persistent_audit_store_roundtrip() {
-        let dev = audit_scope(64, 4096);
-        // 39 WP-39.6：测试先显式 format（等价 provision_new 授权路径），
-        // 再经 open_existing 打开——不隐式格式化。
-        let dev = BlockDurableLog::format(dev, 4096).unwrap().into_inner();
-        let mut store = PersistentAuditStore::open_existing(dev, 4096).expect("open");
-        let entry = eneros_audit::ChainEntry {
-            seq: 1,
-            prev_hash: [0xAA; 32],
-            event_hash: [0xBB; 32],
-            combined_hash: [0xCC; 32],
-            timestamp_ms: 1700000000,
-        };
-        eneros_audit::AuditStore::append(&mut store, &entry).expect("append");
-        let got = eneros_audit::AuditStore::read_last_n(&store, 1).expect("read");
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].seq, entry.seq);
-        assert_eq!(got[0].prev_hash, entry.prev_hash);
-        assert_eq!(got[0].event_hash, entry.event_hash);
-        assert_eq!(got[0].combined_hash, entry.combined_hash);
-        assert_eq!(got[0].timestamp_ms, entry.timestamp_ms);
-        assert_eq!(eneros_audit::AuditStore::count(&store).unwrap(), 1);
     }
 
     /// 33 WP-33.5 判据：掉电 ≥20 次恢复（host 模拟）——每次"断电"后

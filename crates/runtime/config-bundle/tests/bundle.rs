@@ -470,7 +470,7 @@ fn xtask_flow_sign_then_verify_repo_configs() {
     for (name, file) in configs {
         let text = repo_config(file);
         let compiled =
-            eneros_config_bundle::toml_compile::compile_by_id(name, &text, Some(&root_key))
+            eneros_config_bundle::toml_compile::compile_by_id(name, &text, Some(&root_key), None)
                 .unwrap()
                 .expect("typed compiler");
         let digest = Digest::of(&compiled.payload);

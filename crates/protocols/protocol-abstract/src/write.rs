@@ -50,6 +50,36 @@ impl PointWriteIntent {
 /// svc 间共享常量（客户端 = svc-control-dispatch，服务端 = svc-modbus-tcp）。
 pub const OP_MASTER_WRITE: u8 = 0x11;
 
+/// 主站写请求载荷定长：`[子码 OP_MASTER_WRITE]‖device u32 LE‖point u32 LE‖
+/// power f64 LE` = 17B（SPEC-B WP-B.2：编/解码单源收编——历史双端各自
+/// 手抄，见体检候选 6）。
+pub const MASTER_WRITE_PAYLOAD_LEN: usize = 1 + 4 + 4 + 8;
+
+/// 编码主站写请求载荷（17B；子码 + 三字段 LE）。
+pub fn encode_master_write_payload(
+    device_id: u32,
+    point_id: u32,
+    power_kw: f64,
+) -> [u8; MASTER_WRITE_PAYLOAD_LEN] {
+    let mut out = [0u8; MASTER_WRITE_PAYLOAD_LEN];
+    out[0] = OP_MASTER_WRITE;
+    out[1..5].copy_from_slice(&device_id.to_le_bytes());
+    out[5..9].copy_from_slice(&point_id.to_le_bytes());
+    out[9..17].copy_from_slice(&power_kw.to_le_bytes());
+    out
+}
+
+/// 解码主站写请求载荷（长度/子码不符 → None，fail-closed 不猜）。
+pub fn decode_master_write_payload(buf: &[u8]) -> Option<(u32, u32, f64)> {
+    if buf.len() != MASTER_WRITE_PAYLOAD_LEN || buf[0] != OP_MASTER_WRITE {
+        return None;
+    }
+    let device_id = u32::from_le_bytes(buf[1..5].try_into().ok()?);
+    let point_id = u32::from_le_bytes(buf[5..9].try_into().ok()?);
+    let power_kw = f64::from_le_bytes(buf[9..17].try_into().ok()?);
+    Some((device_id, point_id, power_kw))
+}
+
 /// 意图线码（47 WP-47.1：svc 间 EIPC 传输的定长载荷）。
 ///
 /// 布局：protocol_id 16B 填充 ‖ device_id u32 LE ‖ point_id u32 LE ‖
@@ -168,5 +198,36 @@ mod tests {
         ));
         buf[24] = 9; // 无效值 tag
         assert!(decode_intent(&buf).is_none());
+    }
+
+    /// SPEC-B（WP-B.2）：主站写 17B 载荷 codec 单源——双端（dispatch 编 /
+    /// modbus-tcp 解）共用，长度与字段布局逐字节锁定（golden）。
+    #[test]
+    fn master_write_payload_roundtrip_golden() {
+        let buf = encode_master_write_payload(0x1122_3344, 42, 12.5);
+        assert_eq!(buf.len(), MASTER_WRITE_PAYLOAD_LEN);
+        assert_eq!(buf[0], OP_MASTER_WRITE);
+        assert_eq!(
+            decode_master_write_payload(&buf),
+            Some((0x1122_3344, 42, 12.5))
+        );
+        // golden 字段布局：子码+4B+4B+8B 逐字节。
+        assert_eq!(buf[1..5], 0x1122_3344u32.to_le_bytes());
+        assert_eq!(buf[5..9], 42u32.to_le_bytes());
+        assert_eq!(buf[9..17], 12.5f64.to_le_bytes());
+        // 负值/NaN 保真（wire 不做浮点裁决）。
+        let neg = encode_master_write_payload(1, 2, -3.25);
+        assert_eq!(decode_master_write_payload(&neg), Some((1, 2, -3.25)));
+        let nan = encode_master_write_payload(1, 2, f64::NAN);
+        assert!(decode_master_write_payload(&nan).unwrap().2.is_nan());
+    }
+
+    #[test]
+    fn master_write_payload_rejects_bad_length_and_subcode() {
+        assert!(decode_master_write_payload(&[0u8; MASTER_WRITE_PAYLOAD_LEN - 1]).is_none());
+        assert!(decode_master_write_payload(&[0u8; MASTER_WRITE_PAYLOAD_LEN + 1]).is_none());
+        let mut buf = encode_master_write_payload(1, 2, 3.0);
+        buf[0] = 0x99; // 子码不符
+        assert!(decode_master_write_payload(&buf).is_none());
     }
 }

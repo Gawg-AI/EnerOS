@@ -12,6 +12,9 @@ libfuzzer-sys = "0.4"
 eneros-boot-protocol = { path = "../crates/boot/boot-protocol" }
 eneros-ipc-wire = { path = "../crates/abi/ipc-wire" }
 eneros-modbus-rtu = { path = "../crates/protocols/modbus-rtu" }
+# SPEC-D C2：成帧层半帧垃圾输入靶（MockUartHw，host-only；release 闭包无此边）。
+eneros-rs485 = { path = "../crates/drivers/rs485", features = ["mock"] }
+eneros-driver-framework = { path = "../crates/drivers/framework" }
 eneros-iec104-slave = { path = "../crates/protocols/iec104-slave" }
 eneros-elf-loader = { path = "../crates/abi/elf-loader" }
 eneros-gguf-loader = { path = "../crates/ai/gguf-loader" }

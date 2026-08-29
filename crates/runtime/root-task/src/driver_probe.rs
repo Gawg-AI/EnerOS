@@ -94,10 +94,11 @@ pub fn binding_table() -> BindingTable {
 }
 
 /// QEMU virt virtio-mmio 区域（32 个槽 × 0x200；blk/net 在低槽，其余空槽）。
-const VIRTIO_REGION_BASE: u64 = 0x0a00_0000;
+// SPEC-R4 WP-R4.3：板级事实单源 = handover-abi（历史与 spawn/entropy 三抄）。
+const VIRTIO_REGION_BASE: u64 = eneros_handover_abi::VIRTIO_MMIO_REGION_BASE;
 const VIRTIO_REGION_SIZE: u64 = 0x20_0000;
 #[allow(dead_code)] // 44.2：qemu-virt 板级槽位常数，当前路径未用（44.4 冻结登记）
-const VIRTIO_MMIO_SLOT_STRIDE: u64 = 0x200;
+const VIRTIO_MMIO_SLOT_STRIDE: u64 = eneros_handover_abi::VIRTIO_MMIO_SLOT_STRIDE;
 /// QEMU virt 的 virtio-mmio 槽数（32；探测上限，防越界读）。
 #[allow(dead_code)] // 44.2：同上（44.4 冻结登记）
 const VIRTIO_MMIO_SLOT_COUNT: u64 = 32;
@@ -659,6 +660,15 @@ pub fn net_echo_poll() {
     }
 }
 
+/// SPEC-D WP-D.1：pl011 实例可寻址标识——按 FDT 节点单元地址派生
+/// （多 uart 板卡每实例唯一、跨 boot 稳定），替换硬编码 `"pl011-uart0"`
+/// （单实例时代遗留）。QEMU virt 唯一节点 `uart@9000000` →
+/// `pl011-uart@9000000`。spawn 侧移交允许清单与证据词表按本标识对齐；
+/// 该名是 root 内注册/诊断用途，不跨 VSpace 进入 EL0 服务。
+fn pl011_instance_name(node: &eneros_board::device_tree::DeviceNode) -> alloc::string::String {
+    alloc::format!("pl011-{}", node.name)
+}
+
 /// UART 波特率（D1：115200 8N1 默认；真机按协议层配置）。
 const UART_BAUD: u32 = 115_200;
 /// UART 驱动 factory（D1）：`reg[0]` → MMIO 映射 → Pl011Mmio → UartDriver，
@@ -682,9 +692,10 @@ fn uart_factory(
         .find_map(|c| c.frequency_hz)
         .or(node.clock_frequency)
         .ok_or(DriverError::NotFound)?;
+    let name = pl011_instance_name(node);
     let mut driver = UartDriver::new(
         DriverId(0x0A11_0001),
-        "pl011-uart0",
+        &name,
         Box::new(mmio),
         clock_hz as u32,
         UART_BAUD,
@@ -932,6 +943,59 @@ impl PlatformCtx for RootPlatformCtx<'_> {
     }
 }
 
+/// SPEC-B WP-B.1：spawn 前 RTC 兜底装配。DTB 探测链后置且可能剪除 pl031
+/// （QEMU virt 实测运行时 DTB nodes=60 无该节点）——X6 墙钟取数又必须在
+/// spawn 期完成，故以 QEMU virt 板级事实把 PL031 所在 2MiB 设备区帧一次
+/// 恒等映射并注册；pl011 等子设备后续经 [`crate::spawn::map_device_mmio`]
+/// 的 SpawnCtx.dev_maps 去重复用同帧，零二次 Retype。RTC_BASE 已非零 →
+/// no-op（DTB 路径先行成功时零副作用）。失败显式打 MISSING 行（fail-closed，
+/// 绝不猜测基址继续）。
+#[cfg(target_os = "none")]
+pub fn ensure_rtc_bootstrapped(ctx: &mut crate::spawn::SpawnCtx) {
+    if crate::panic::RTC_BASE.load(core::sync::atomic::Ordering::Relaxed) != 0 {
+        return;
+    }
+    // QEMU virt 板级事实：PL031 @ 0x09010000，落在 DEV-UNTYPED
+    // paddr=0x9000000/size_bits=24 的 16MiB 设备区。seL4 Retype 无 untyped
+    // 内偏移、2MiB 大页在 root VSpace 落地不生效（QEMU 实测 .07 L3 翻译
+    // 故障）——按 4K 帧从区基址起**逐页恒等映射**（pre-spawn cursor@0，
+    // 帧落点精确），PL031 在第 16 页。页 0..15 的映射同时登记进
+    // SpawnCtx.dev_maps：后续 pl011 工厂的同页请求命中去重 → 零二次
+    // Retype、零 freeIndex 撞位（此前顺序帧+pl011 重取导致 UART 翻错页
+    // 故障 0x9000024 的根因闭环）。
+    const QEMU_VIRT_REGION_BASE: u64 = 0x0900_0000;
+    const PL031_OFFSET_IN_REGION: u64 = 0x0001_0000;
+    const FRAME: u64 = 0x1000;
+    let rtc_va = QEMU_VIRT_REGION_BASE + PL031_OFFSET_IN_REGION;
+    let pages = (PL031_OFFSET_IN_REGION / FRAME) as usize; // 0..=16 → 17 页
+    let mut ok = true;
+    for k in 0..=pages {
+        let va = QEMU_VIRT_REGION_BASE + (k as u64) * FRAME;
+        if let Err(e) = crate::spawn::map_device_mmio(ctx, va, 12) {
+            ok = false;
+            crate::println!(
+                "[eneros-root-task] TIME-EPOCH-MISSING source=no-rtc page-map-failed va={va:#x} err={e:?}"
+            );
+            break;
+        }
+    }
+    match ok {
+        true => {
+            crate::panic::register_rtc_base(rtc_va);
+            // 关键：X6 取数走 eneros_time 的 RTC_BASE——必须同步写时钟子系统
+            //（set_rtc_base 立即读 RTCDR 建立偏移；探测期后置路径同基址幂等）。
+            eneros_time::set_rtc_base(rtc_va);
+            crate::println!(
+                "[eneros-root-task] TIME-SOURCE bootstrapped: PL031 vaddr={rtc_va:#x} (4K 逐页·QEMU virt 板级兜底，spawn 前)"
+            );
+        }
+        false => {
+            crate::println!(
+                "[eneros-root-task] TIME-EPOCH-MISSING source=no-rtc region-map-failed"
+            );
+        }
+    }
+}
 /// 从 BOOT-007 窗口取运行时 DTB 切片（**不拷贝**——root-task 堆仅 1 MiB，
 /// QEMU virt 运行时 DTB ≈ 1 MiB + 4 KiB 且内容仅 ~7.5 KB（其余为对齐
 /// 填充），整拷贝会 OOM（WP-27.2 QEMU 实测 layout=size:1052672））。
@@ -1045,6 +1109,14 @@ pub fn probe_and_report(
         blob.len(),
         inventory.len(),
         binding_table().compatibles()
+    );
+    // SPEC-B WP-B.1 诊断行：pl031/sp805 是否真的进入设备清单（AAVMF 链
+    // 剪枝嫌疑的实证口径；一行常驻成本可忽略）。
+    crate::println!(
+        "[eneros-root-task] DBG dtb-inventory pl031={} sp805={} nodes={}",
+        inventory.find_by_compatible("arm,pl031").is_some(),
+        inventory.find_by_compatible("arm,sp805").is_some(),
+        inventory.nodes.len()
     );
     let mut ctx = RootPlatformCtx::new(spawn, irq_table, platform_dma, platform_coherency);
     let report = binding_table().probe_all(&inventory, &mut ctx);
@@ -1553,7 +1625,11 @@ mod tests {
         assert_eq!(report.bound_count(), 1, "pl011 绑定为 UART");
         assert_eq!(report.failed_count(), 0);
         assert_eq!(report.bound()[0].compatible, "arm,pl011");
-        assert_eq!(report.bound()[0].driver.name(), "pl011-uart0");
+        assert_eq!(
+            report.bound()[0].driver.name(),
+            "pl011-uart@9000000",
+            "SPEC-D WP-D.1：实例标识按 FDT 单元地址派生（去硬编码）"
+        );
         // qemu-virt.dts 的其余设备节点都应在 unbound 清单中（节点一致）
         let unbound: Vec<&str> = report.unbound().iter().map(|u| u.node.as_str()).collect();
         assert!(
@@ -1573,6 +1649,33 @@ mod tests {
                 .iter()
                 .any(|u| u.compatible == "arm,gic-v3"),
             "gic 节点必须在报告中"
+        );
+    }
+
+    /// SPEC-D WP-D.1 C1：两枚 PL011 节点（真机板形）probe 产生两个**可区分**
+    /// 实例标识——派生自各自 FDT 单元地址，顺序=dtb walk 序跨 boot 稳定；
+    /// 不再共享单实例硬编码名。
+    #[test]
+    fn pl011_two_instances_probe_distinct_identities() {
+        let table = binding_table();
+        let inventory = eneros_board::device_tree::DeviceInventory {
+            nodes: alloc::vec![
+                node("uart@9000000", "arm,pl011", 0x0900_0000, 0x1000),
+                node("uart@9100000", "arm,pl011", 0x0910_0000, 0x1000),
+            ],
+            disabled: alloc::vec![],
+        };
+        let mut ctx = MockCtx::default();
+        let report = table.probe_all(&inventory, &mut ctx);
+        assert_eq!(report.bound_count(), 2, "两枚 pl011 都绑定");
+        let names: alloc::vec::Vec<&str> = report.bound().iter().map(|b| b.driver.name()).collect();
+        assert_eq!(names[0], "pl011-uart@9000000");
+        assert_eq!(names[1], "pl011-uart@9100000");
+        assert_ne!(names[0], names[1], "两实例标识必须可区分");
+        // 两实例 MMIO 都经 ctx 真实装配（1:1）。
+        assert_eq!(
+            ctx.mapped,
+            alloc::vec![(0x0900_0000, 0x1000), (0x0910_0000, 0x1000)]
         );
     }
 }

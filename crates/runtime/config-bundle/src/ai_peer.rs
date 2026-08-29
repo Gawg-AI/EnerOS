@@ -18,6 +18,9 @@ pub struct AiPeerConfig {
     pub max_power_kw: f64,
     /// 提案 TTL 上限秒。
     pub ttl_secs: u32,
+    /// SPEC-E WP-E.3：有界学习闸（dev/qemu=true、release 归 owner 裁决；
+    /// false ⇒ 零学习零持久，System1 阈值恒出厂——行为等价旧链路）。
+    pub learn_enabled: bool,
 }
 
 impl AiPeerConfig {
@@ -31,8 +34,9 @@ impl AiPeerConfig {
             probe_every: 0,
             max_power_kw: 0.0,
             ttl_secs: 0,
+            learn_enabled: false,
         };
-        let mut seen = [false; 6];
+        let mut seen = [false; 7];
         for (id, value) in fields {
             match id {
                 crate::schema::ai_peer::FIELD_TIMEOUT_MS => {
@@ -89,6 +93,17 @@ impl AiPeerConfig {
                         });
                     }
                     out.ttl_secs = u32::from_le_bytes(value.try_into().expect("checked len"));
+                    seen[id as usize] = true;
+                }
+                crate::schema::ai_peer::FIELD_LEARN_ENABLED => {
+                    if value.len() != 1 || value[0] > 1 {
+                        return Err(ConfigError::InvalidValue {
+                            config: config.clone(),
+                            field: "learn_enabled",
+                            reason: "bool".into(),
+                        });
+                    }
+                    out.learn_enabled = value[0] == 1;
                     seen[id as usize] = true;
                 }
                 other => {
@@ -189,6 +204,10 @@ mod tests {
                 crate::schema::ai_peer::FIELD_TTL_SECS,
                 ttl_secs.to_le_bytes().to_vec(),
             ),
+            (
+                crate::schema::ai_peer::FIELD_LEARN_ENABLED,
+                alloc::vec![1u8],
+            ),
         ])
     }
 
@@ -203,9 +222,33 @@ mod tests {
                 unhealthy_after: 3,
                 probe_every: 5,
                 max_power_kw: 5.0,
-                ttl_secs: 60
+                ttl_secs: 60,
+                learn_enabled: true
             }
         );
+    }
+
+    /// SPEC-E WP-E.3：learn_enabled 0/1 语义 + 非 0/1 拒绝 + 缺键拒绝。
+    #[test]
+    fn learn_enabled_gate_semantics() {
+        let mk = |v: u8| {
+            encode_payload(&[(crate::schema::ai_peer::FIELD_LEARN_ENABLED, alloc::vec![v])])
+        };
+        // 单独字段必然缺其余五键 → MissingField（全必配纪律不受新键稀释）。
+        assert!(AiPeerConfig::decode(&mk(0)).is_err());
+        // 完整载荷 learn_enabled=false。
+        let raw_off = compile_payload(5_000, 3, 5, 5.0, 60);
+        let mut patched = raw_off.clone();
+        // 末字段即 learn_enabled（encode_payload 按序拼接）——改末字节 0。
+        let n = patched.len();
+        patched[n - 1] = 0;
+        let cfg = AiPeerConfig::decode(&patched).expect("decode off");
+        assert!(!cfg.learn_enabled);
+        // 非 0/1 拒绝。
+        let mut bad = compile_payload(5_000, 3, 5, 5.0, 60);
+        let n = bad.len();
+        bad[n - 1] = 2;
+        assert!(AiPeerConfig::decode(&bad).is_err());
     }
 
     #[test]

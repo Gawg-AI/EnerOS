@@ -595,7 +595,6 @@ impl<S: Solver> DualBrainCoordinator<S> {
             lp_solution: &label,
             safety,
             exec,
-            deviation: 0.0,
             now_ms,
         };
         if let Some(audit) = self.audit.as_mut() {

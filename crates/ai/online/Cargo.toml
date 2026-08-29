@@ -9,6 +9,7 @@ description = "EnerOS 模型在线学习 (v0.186.0) — 边缘增量微调 + 联
 [dependencies]
 
 [features]
+# SPEC-SERIES-2026-08-27/F 复核：零激活零 cfg 引用——A11 研究线预留位，解冻须 owner 裁决。
 experimental = []
 default = []
 

@@ -21,4 +21,7 @@ default = []
 # Internal: set by build.rs when the target is a seL4 userland target
 # (target_os = "none"). Host builds (cargo test) get the host stub module
 # instead. Do NOT enable manually.
+# SPEC-SERIES-2026-08-27/F 复核：此 feature 行是零激活的 vestigial 复影——
+# 真开关是 build.rs 自动设置的 cfg(sel4_target)（下划线），本行从未被
+# 任何 profile/依赖激活；保留仅为文档，删除须随 build.rs 注释一并重写。
 sel4-target = []

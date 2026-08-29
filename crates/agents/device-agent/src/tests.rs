@@ -29,7 +29,8 @@ fn register_mock(
             pm.insert(String::from(*n), id);
         }
     }
-    reg.register(name, device_type, 1, Box::new(dev), pm);
+    reg.register(name, device_type, 1, Box::new(dev), pm)
+        .expect("静态合法登记");
 }
 
 // ===== T1: DeviceType 变体构造 =====
@@ -290,7 +291,8 @@ fn t20_device_agent_on_tick_denies_legacy_command() {
     }
     agent
         .registry_mut()
-        .register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm);
+        .register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm)
+        .expect("静态合法登记");
     agent.on_start(1000).unwrap();
     agent.on_tick(2000).unwrap();
     // 旧行为（匿名命令直接落写）已判定为错误：必须收到不执行。
@@ -335,7 +337,8 @@ fn t21_device_agent_on_tick_offline_device() {
     }
     agent
         .registry_mut()
-        .register("battery", DeviceType::Battery, 1, Box::new(dev), pm);
+        .register("battery", DeviceType::Battery, 1, Box::new(dev), pm)
+        .expect("静态合法登记");
     agent.on_start(1000).unwrap();
     agent.on_tick(2000).unwrap();
     let snap = agent.last_snapshot();
@@ -380,4 +383,68 @@ fn t24_device_agent_heartbeat() {
     // Dead → Dead
     agent.on_stop(3000).unwrap();
     assert_eq!(agent.on_heartbeat(4000), HeartbeatStatus::Dead);
+}
+
+// ===== WP-A.3（SPEC-SERIES-2026-08-27/A）：能力摘要收编 =====
+
+#[test]
+fn wp_a3_register_digest_is_real_and_deterministic() {
+    let mut reg = DeviceRegistry::new();
+    register_mock(&mut reg, "pcs", DeviceType::Pcs, &[("soc", 0.5)]);
+    let d1 = reg
+        .get_mut("pcs")
+        .expect("已注册")
+        .registration
+        .capability_digest;
+    assert_ne!(d1, [0u8; 32], "登记摘要不得为全零占位（WP-A.3 C2）");
+
+    // 确定性：同输入重建 → 同摘要。
+    let mut reg2 = DeviceRegistry::new();
+    register_mock(&mut reg2, "pcs", DeviceType::Pcs, &[("soc", 0.5)]);
+    let d2 = reg2.get_mut("pcs").unwrap().registration.capability_digest;
+    assert_eq!(d1, d2, "同输入同输出");
+}
+
+#[test]
+fn wp_a3_replay_heals_zero_placeholder_and_guards_empty_schema() {
+    // 回放自愈：旧快照/WAL 时代持久化的全零占位 → register_with_registration
+    // 按四元组重算，自动换真值（行格式不变）。
+    let mut reg = DeviceRegistry::new();
+    let legacy = DeviceRegistration {
+        device_id: 7,
+        adapter_kind: AdapterKind::Meter,
+        endpoint: EndpointRef(String::from("meter-legacy")),
+        point_schema: PointSchemaVersion(1),
+        allowed_ops: OperationSet::read_write_readback(),
+        capability_digest: [0u8; 32],
+        config_generation: 0,
+    };
+    let dev = MockPointDevice::new(1).with_point("voltage", 220.0);
+    let mut pm = BTreeMap::new();
+    if let Some(id) = dev.point_id_of("voltage") {
+        pm.insert(String::from("voltage"), id);
+    }
+    reg.register_with_registration("meter-legacy", DeviceType::Meter, legacy, Box::new(dev), pm)
+        .expect("全零占位经重算自愈");
+    let healed = reg
+        .get_mut("meter-legacy")
+        .unwrap()
+        .registration
+        .capability_digest;
+    assert_ne!(healed, [0u8; 32], "回放后摘要必须为真值");
+
+    // 非法空 schema（空点映射）→ 拒注册留证（WP-A.3 C2）。
+    let mut reg2 = DeviceRegistry::new();
+    let res = reg2.register(
+        "empty-device",
+        DeviceType::Battery,
+        9,
+        Box::new(MockPointDevice::new(9)),
+        BTreeMap::new(),
+    );
+    assert!(
+        matches!(res, Err(RegistryError::EmptyPointMap)),
+        "空点映射必须被守卫拒绝"
+    );
+    assert!(!reg2.contains("empty-device"), "被拒登记不得入库");
 }

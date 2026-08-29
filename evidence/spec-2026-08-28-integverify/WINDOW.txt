@@ -1,0 +1,1 @@
+WINDOW dir=/tmp/abc-window-q1 media=eneros-qemu-prod.raw qemu_rc=124 dur=420s

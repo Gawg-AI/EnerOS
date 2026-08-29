@@ -81,8 +81,6 @@ pub struct DecisionRecord<'a> {
     pub safety: SafetyOutcome,
     /// 执行结果。
     pub exec: ExecOutcome,
-    /// W2.1 偏差指标（观测相对预测，可负）。
-    pub deviation: f64,
     /// 事件时间戳（毫秒）。
     pub now_ms: u64,
 }
@@ -128,10 +126,11 @@ pub fn decision_audit_from_key(key_material: &[u8]) -> DecisionAudit {
 }
 
 impl DecisionAudit {
-    /// 记录一条完整 AI 决策（意图 → LP 解 → 安全 → 执行 → 偏差）。
+    /// 记录一条完整 AI 决策（意图 → LP 解 → 安全 → 执行）。
     ///
-    /// `deviation` 为 W2.1 偏差指标（观测值相对预测的偏差，可负）；
-    /// 返回链上条目（含 event_hash/combined_hash，供追溯）。
+    /// 返回链上条目（含 event_hash/combined_hash，供追溯）。偏差指标
+    /// （`deviation`）曾为 W2.1 字段但恒为 0.0（SPEC-B BQ-4 裁定删除——
+    /// 接口不承诺永远为零的数据；真实偏差流走学习通路观测面）。
     pub fn log_decision(
         &mut self,
         r: &DecisionRecord,
@@ -143,12 +142,11 @@ impl DecisionAudit {
             return Err(AuditError::BufferFull);
         }
         let detail = format!(
-            "i={};p={};s={};x={};d={:.3}",
+            "i={};p={};s={};x={}",
             r.intent,
             r.lp_solution,
             r.safety.as_str(),
-            r.exec.as_str(),
-            r.deviation
+            r.exec.as_str()
         );
         let mut event = AuditEvent::new(AuditEventType::AiDecision, r.actor, r.target, &detail);
         event.timestamp_ms = r.now_ms;
@@ -192,7 +190,6 @@ mod tests {
             lp_solution: "plan-x",
             safety: SafetyOutcome::Passed,
             exec: ExecOutcome::Succeeded,
-            deviation: i as f64,
             now_ms: 1000 + i,
         }
     }
@@ -204,11 +201,10 @@ mod tests {
         let mut r = rec(0);
         r.intent = "discharge 5kW";
         r.lp_solution = "p1=5.0;p2=0.0";
-        r.deviation = 0.42;
         let entry = audit.log_decision(&r).expect("入链");
         assert_eq!(entry.seq, 1);
         assert_eq!(audit.chain_state().entry_count, 1);
-        // 读回条目，detail 含五要素。
+        // 读回条目，detail 含决策要素。
         let entries = audit.read_range(1, 1).expect("读回");
         assert_eq!(entries.len(), 1);
         // 事件 detail 通过 event_hash 固化；从存储读回的是 ChainEntry——
@@ -250,7 +246,6 @@ mod tests {
         r2.intent = "i2";
         r2.safety = SafetyOutcome::Blocked;
         r2.exec = ExecOutcome::Failed;
-        r2.deviation = -0.2;
         let second = audit.log_decision(&r2).expect("e2");
         assert_eq!(second.prev_hash, first.combined_hash, "链式衔接");
         // 未篡改链 verify 全绿。

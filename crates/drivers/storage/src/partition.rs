@@ -763,6 +763,109 @@ pub fn boxed_mock_scope<D: BlockDevice + 'static>(
 }
 
 // ============================================================================
+// SPEC-C（D-TSDB-2 方案 A）：数据盘区段作用域（正式装配件）
+// ============================================================================
+
+/// 区段作用域：把"已合法持有整盘块面"的服务所划出的连续 LBA 区间包装为
+/// 角色认领的 [`ScopedBlockDevice`]（卷几何收敛于区段，不涉整盘）。
+///
+/// 与 [`MockPartitionScope`] 不可互替：
+/// - mock 版仅测试透传、`mock` feature 熔断、无地址平移；
+/// - 本类型是生产移交原语——LBA 平移 `base_block + idx`，区间外一律
+///   OutOfRange（绝不越出让渡区段）；erase 遵循块命令面零写语义。
+///
+/// 授权语义：本类型不发放新权限——调用方必须已经经句柄移交链
+/// （root spawn → svc-storage 块命令面 → EIPC 授予边）合法持有底层块面；
+/// 区段常量本身是内存审计产物（ota-ab `DATA_TSDB_BASE_BLOCK/_BLOCKS`，
+/// 审计表 docs/delivery/wp-c-memory-audit-spec-c-20260827.md §三）。
+pub struct RegionScope<D: BlockDevice> {
+    inner: D,
+    base_block: u64,
+    blocks: u64,
+}
+
+impl<D: BlockDevice> RegionScope<D> {
+    /// 构造区段作用域；区间未落入底层设备时拒绝（fail-closed）。
+    pub fn new(inner: D, base_block: u64, blocks: u64) -> Result<Self, StorageError> {
+        let total = inner.block_count();
+        if blocks == 0 || base_block >= total || blocks > total - base_block {
+            return Err(StorageError::OutOfRange {
+                block_idx: base_block + blocks.saturating_sub(1),
+                max: total,
+            });
+        }
+        Ok(Self {
+            inner,
+            base_block,
+            blocks,
+        })
+    }
+
+    /// 区段在底层设备上的 [起, 止) 块区间（诊断/审计）。
+    pub fn underlying_range(&self) -> (u64, u64) {
+        (self.base_block, self.base_block + self.blocks)
+    }
+
+    /// LBA 平移（checked）；越界 → OutOfRange。
+    fn translate(&self, index: u64) -> Result<u64, StorageError> {
+        if index >= self.blocks {
+            return Err(StorageError::OutOfRange {
+                block_idx: index,
+                max: self.blocks,
+            });
+        }
+        // 不可能溢出：base+blocks 已在建构时对底层容量校验有界。
+        Ok(self.base_block + index)
+    }
+}
+
+impl<D: BlockDevice> BlockDevice for RegionScope<D> {
+    fn read_block(&self, block_idx: u64, buf: &mut [u8]) -> Result<(), StorageError> {
+        let phys = self.translate(block_idx)?;
+        self.inner.read_block(phys, buf)
+    }
+
+    fn write_block(&mut self, block_idx: u64, buf: &[u8]) -> Result<(), StorageError> {
+        let phys = self.translate(block_idx)?;
+        self.inner.write_block(phys, buf)
+    }
+
+    fn erase_block(&mut self, block_idx: u64) -> Result<(), StorageError> {
+        // 块命令面无独立擦除——零写语义（EipcBlockDevice 先例一致）。
+        let zero = vec![0u8; self.block_size()];
+        self.write_block(block_idx, &zero)
+    }
+
+    fn block_count(&self) -> u64 {
+        self.blocks
+    }
+
+    fn block_size(&self) -> usize {
+        self.inner.block_size()
+    }
+
+    fn flush(&mut self) -> Result<(), StorageError> {
+        self.inner.flush()
+    }
+
+    fn health_status(&self) -> crate::driver::DeviceHealth {
+        crate::driver::DeviceHealth {
+            total_blocks: self.blocks,
+            ..self.inner.health_status()
+        }
+    }
+}
+
+impl<D: BlockDevice> scope_sealed::Sealed for RegionScope<D> {}
+
+impl<D: BlockDevice> ScopedBlockDevice for RegionScope<D> {
+    fn scope_role(&self) -> BlockRole {
+        // 数据区段固定认领 Data 角色（TSDB/业务数据面语义）。
+        BlockRole::Data
+    }
+}
+
+// ============================================================================
 // BlockTrace（零写发现快照）
 // ============================================================================
 
@@ -1102,6 +1205,71 @@ impl ProvisioningGate {
 mod tests {
     use super::*;
     use crate::driver::MockBlockDevice;
+
+    // ===== SPEC-C：RegionScope 区段作用域（D-TSDB-2 方案 A 移交原语）=====
+
+    /// 正例：LBA 平移正确、区间外拒绝、卷几何收敛于区段。
+    #[test]
+    fn region_scope_translates_and_bounds() {
+        let mut dev = mk_dev(32768, 512);
+        let buf = [0xABu8; 512];
+        // 底层直写参照点（区段 idx 808 ↔ 物理块 8192+808=9000）。
+        dev.write_block(9000, &buf).expect("底层直写参照点");
+        let mut scope = RegionScope::new(dev, 8192, 16384).expect("scope");
+        assert_eq!(scope.underlying_range(), (8192, 24576));
+        assert_eq!(scope.block_count(), 16384);
+        assert_eq!(scope.block_size(), 512);
+        scope.write_block(0, &buf).expect("write idx0 → phys 8192");
+        scope.write_block(16383, &buf).expect("write last idx");
+        // 越界拒绝（不越出区段）。
+        assert!(matches!(
+            scope.write_block(16384, &buf),
+            Err(StorageError::OutOfRange {
+                block_idx: 16384,
+                max: 16384
+            })
+        ));
+        // 回读验证平移（区段 idx 808 读到底层块 9000 的内容）。
+        let mut rd = [0u8; 512];
+        scope
+            .read_block(808, &mut rd)
+            .expect("read idx 808 → phys 9000");
+        assert_eq!(rd, buf);
+    }
+
+    /// 建构防线：空区间 / 越出底层容量 → 拒绝。
+    #[test]
+    fn region_scope_rejects_invalid_ranges() {
+        let dev = mk_dev(1024, 512);
+        assert!(matches!(
+            RegionScope::new(dev, 0, 0),
+            Err(StorageError::OutOfRange { .. })
+        ));
+        let dev = mk_dev(1024, 512);
+        assert!(matches!(
+            RegionScope::new(dev, 1000, 100),
+            Err(StorageError::OutOfRange { .. })
+        ));
+        let dev = mk_dev(1024, 512);
+        assert!(matches!(
+            RegionScope::new(dev, 2000, 10),
+            Err(StorageError::OutOfRange { .. })
+        ));
+    }
+
+    /// 角色认领与 erase 零写语义。
+    #[test]
+    fn region_scope_role_and_zero_erase() {
+        let dev = mk_dev(64, 4096);
+        let mut scope = RegionScope::new(dev, 16, 32).expect("scope");
+        assert_eq!(scope.scope_role(), BlockRole::Data);
+        let payload = [0x5Au8; 4096];
+        scope.write_block(3, &payload).expect("write");
+        scope.erase_block(3).expect("erase = zero write");
+        let mut rd = [0u8; 4096];
+        scope.read_block(3, &mut rd).expect("read");
+        assert!(rd.iter().all(|&b| b == 0), "erase 后必须全零");
+    }
 
     fn mk_dev(blocks: u64, block_size: usize) -> MockBlockDevice {
         MockBlockDevice::new(blocks, block_size)

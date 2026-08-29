@@ -232,6 +232,53 @@ fn state_corruption_rejected() {
 }
 
 #[test]
+fn state_torn_latest_write_recovers_previous_generation() {
+    // E 续作（win4 实测）：双槽代次切换——硬杀撕裂**最新**写入时，重启
+    // 必须恢复到上一完整 generation（单槽实现在此场景 Corrupt ⇒ 消费方
+    // fail-closed；盘上实证 payload 完好而 CRC 撕裂）。
+    let mem = SharedMem::new(4096);
+    {
+        let mut store: RegionStateStore<St, SharedMem> =
+            RegionStateStore::new(mem.clone(), 0, 1024);
+        store
+            .compare_and_swap(
+                None,
+                &St {
+                    value: 1,
+                    label: [1; 8],
+                },
+            )
+            .unwrap();
+        store
+            .compare_and_swap(
+                Some(Generation(1)),
+                &St {
+                    value: 2,
+                    label: [2; 8],
+                },
+            )
+            .unwrap();
+        // 模拟硬杀撕裂 gen2（slot1，slot_len=512 起）写窗口。
+        mem.0.borrow_mut()[512 + 20] ^= 0xFF;
+    }
+    let mut store: RegionStateStore<St, SharedMem> = RegionStateStore::new(mem, 0, 1024);
+    let v = store.load().unwrap().unwrap();
+    assert_eq!(v.generation, Generation(1));
+    assert_eq!(v.state.value, 1);
+    // 恢复后仍可推进（写入落回撕过的槽）。
+    let g = store
+        .compare_and_swap(
+            Some(Generation(1)),
+            &St {
+                value: 3,
+                label: [3; 8],
+            },
+        )
+        .unwrap();
+    assert_eq!(g, Generation(2));
+}
+
+#[test]
 fn state_write_failure_no_fake_success() {
     let mut mem = MemIo::new(4096);
     mem.fail_writes = true;

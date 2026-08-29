@@ -31,5 +31,31 @@ pub use eneros_drv_svc::instance_epoch;
 /// 单调毫秒。
 pub use eneros_drv_svc::now_ms;
 
+/// SPEC-B WP-B.1：服务启动期墙钟注入（root 经 X6 下发 time_gate 闸门后的
+/// Unix epoch 秒）。0 = 无可信时间——显式打印 `TIME-EPOCH-MISSING` 降级行
+/// （绝不静默冒充可信时间）；非 0 → 写入 eneros_time 偏移面，此后服务内
+/// `eneros_time::get_time()` 为真墙钟。
+///
+/// 必须在 `time_init(clock(), 0)` **之后**调用（time_init 会把偏移清零）；
+/// 单调时钟面（`now_ms`/`now_ns`，退避与保活语义）不受影响——墙钟只经
+/// `set_wall_epoch_secs` 显式注入，两条时间轴不混流。
+#[cfg_attr(not(target_os = "none"), allow(unused_variables))]
+pub fn apply_wall_epoch(service: &str, wall_epoch: u64) {
+    #[cfg(target_os = "none")]
+    match wall_epoch {
+        0 => {
+            eneros_runtime::println!("[{service}] TIME-EPOCH-MISSING");
+        }
+        secs => {
+            eneros_time::set_wall_epoch_secs(secs);
+            eneros_runtime::println!("[{service}] TIME-EPOCH={secs}");
+        }
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = (service, wall_epoch);
+    }
+}
+
 #[cfg(test)]
 extern crate std;

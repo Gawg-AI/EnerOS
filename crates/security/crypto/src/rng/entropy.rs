@@ -72,11 +72,12 @@ pub struct QemuVirtioRng {
 impl QemuVirtioRng {
     /// 创建 virtio-rng 熵源。
     ///
-    /// `base_addr` 为 virtio-mmio 设备基址；0 时使用 QEMU virt 默认。
+    /// `base_addr` 为 virtio-mmio 设备基址；0 时使用 QEMU virt 默认
+    /// （单源 = handover-abi，SPEC-R4 WP-R4.3——历史硬编码三抄之一）。
     pub fn new(base_addr: u64) -> Self {
         Self {
             base_addr: if base_addr == 0 {
-                0x0a00_0000
+                eneros_handover_abi::VIRTIO_MMIO_REGION_BASE
             } else {
                 base_addr
             },

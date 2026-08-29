@@ -1368,4 +1368,24 @@ mod gap_closure_tests {
             "wire 层对 >u16 的 username 必须 fail-closed"
         );
     }
+
+    /// SPEC-B WP-B.2/C1 golden：多字节 UTF-8 用户名——u16 长度前缀必须按
+    /// **字节数**计（"电网" = 2 字符 / 6 字节，[MQTT-3.1.3-5] UTF-8 编码）。
+    /// 手算帧：剩余长度 = 协议头10 + clientId5 + username(2+6) + password(2+2)
+    /// = 27 = 0x1B；flags = Username|Password|CleanSession = 0xC2；
+    /// "电"=E7 94 B5、"网"=E7 BD 91（UTF-8）。
+    #[test]
+    fn b2_golden_frame_utf8_multibyte_username() {
+        let mut c = ready_client();
+        c.set_credentials("电网", b"ok").expect("seam");
+        transport_of(&mut c).enqueue_recv(CONNACK_OK.to_vec());
+        c.connect(0).expect("带中文用户名握手成功");
+        assert_eq!(c.state, ConnectionState::Connected);
+        let expected: Vec<Vec<u8>> = vec![vec![
+            0x10, 0x1B, 0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0xC2, 0x00, 0x3C, 0x00, 0x03,
+            b'c', b'i', b'd', 0x00, 0x06, 0xE7, 0x94, 0xB5, 0xE7, 0xBD, 0x91, 0x00, 0x02, b'o',
+            b'k',
+        ]];
+        assert_eq!(transport_of(&mut c).sent_packets(), expected);
+    }
 }

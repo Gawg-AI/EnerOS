@@ -1,0 +1,8 @@
+=== MW-WINDOW dir=/tmp/abc-mw2 media=eneros-qemu-prod.raw qemu_rc=124 dur=720s ===
+MASTER-WRITE ACK:   NONE
+MASTER-READBACK:    NONE
+INTENT Committed:   NONE
+AUDIT-CHAIN:        NONE
+PANIC count (0):    0
+PRODUCT-READY:      NONE
+MW-CHAIN-VERDICT: REVIEW

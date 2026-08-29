@@ -20,18 +20,16 @@
 
 use core::cell::RefCell;
 
+// SPEC-B/C（2026-08-28）：移交 vaddr 常量单一事实源 = abi/handover-abi
+//（历史与 spawn.rs 同值不同名双源已收编；此处仅别名 re-use，无值定义）。
+pub use eneros_handover_abi::{
+    STORAGE_DMA_PAGES as SVC_STORAGE_DMA_PAGES, STORAGE_DMA_VADDR as SVC_STORAGE_DMA_VADDR,
+    STORAGE_MMIO_VADDR as SVC_STORAGE_MMIO_VADDR,
+};
 use eneros_storage::driver::virtio_blk::{DmaPool, VirtioBlkDriver, VolatileMmio};
 use eneros_storage::driver::BlockDevice;
 
 use crate::block_cmd::BlockBackend;
-
-/// 服务 VSpace 中 virtio-blk MMIO 页的固定虚拟地址（root 映射，与
-/// spawn.rs 共享——单一事实源见 `crates/runtime/root-task/src/spawn.rs`）。
-pub const SVC_STORAGE_MMIO_VADDR: u64 = 0x4000_0000;
-/// 服务 VSpace 中 DMA 池（9 页连续物理帧）的固定虚拟地址。
-pub const SVC_STORAGE_DMA_VADDR: u64 = 0x4001_0000;
-/// DMA 池页数（virtio-blk 队列下限：desc/avail/used + req + data/status）。
-pub const SVC_STORAGE_DMA_PAGES: usize = 9;
 
 /// 服务侧 DMA 池（root 移交的连续物理帧；cpu 视图 = 服务 VSpace 映射
 /// 虚拟地址，设备视图 = 物理基址）。

@@ -137,6 +137,29 @@ pub struct DeviceRegistration {
     pub config_generation: u64,
 }
 
+/// 登记守卫错误（fail-closed：退化登记拒绝，不静默降级；WP-A.3 收编）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistryError {
+    /// 点映射为空——无可访问点位的设备不得装配（"非法空 schema"）。
+    EmptyPointMap,
+    /// 能力摘要退化为全零占位（`SecretHandle::is_zero_placeholder` 同款
+    /// 全零守卫措辞；SM3 真值实际不可达此态，保留作 fail-closed 不变量）。
+    ZeroCapabilityDigest,
+}
+
+impl core::fmt::Display for RegistryError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RegistryError::EmptyPointMap => {
+                write!(f, "empty point map（无点设备不得注册）")
+            }
+            RegistryError::ZeroCapabilityDigest => {
+                write!(f, "capability digest 全零占位被拒（SecretHandle 守卫同款）")
+            }
+        }
+    }
+}
+
 /// 设备元信息（ARCH-P02：adapter 为 `PointAccess` + `AuthorizedWriter`，
 /// 字符串点名经 point_map 桥接；蓝图/24 D3：写路由经 AuthorizedWriter）。
 pub struct DeviceInfo {
@@ -400,8 +423,12 @@ impl DeviceRegistry {
     /// point_map 为字符串点名 → PointId；device_id 供信封路由）。
     ///
     /// 蓝图 40 WP-40.10：登记元数据取默认（endpoint = 设备名、ops =
-    /// 读+写+读回、schema v1、generation 0、能力摘要全零占位——完整
-    /// 元数据经 [`Self::register_with_registration`]）。
+    /// 读+写+读回、schema v1、generation 0）；SPEC-SERIES-2026-08-27/A
+    /// WP-A.3 起**能力摘要由本方法内部兜底计算**（登记四元组的 SM3 规范
+    /// 编码，见 [`crate::capability_digest`]），全零占位退休。完整元数据
+    /// 经 [`Self::register_with_registration`]。
+    ///
+    /// Err = 退化登记被守卫拒绝（空点映射等），不静默。
     pub fn register(
         &mut self,
         name: &str,
@@ -409,28 +436,51 @@ impl DeviceRegistry {
         device_id: DeviceId,
         adapter: Box<dyn PointAccessWriter>,
         point_map: BTreeMap<String, PointId>,
-    ) {
+    ) -> Result<(), RegistryError> {
+        if point_map.is_empty() {
+            return Err(RegistryError::EmptyPointMap);
+        }
+        let adapter_kind = AdapterKind::from_device_type(&device_type);
+        let capability_digest = crate::capability_digest::capability_digest(
+            name,
+            adapter_kind,
+            PointSchemaVersion(1),
+            &OperationSet::read_write_readback(),
+        );
         let registration = DeviceRegistration {
             device_id,
-            adapter_kind: AdapterKind::from_device_type(&device_type),
+            adapter_kind,
             endpoint: EndpointRef(String::from(name)),
             point_schema: PointSchemaVersion(1),
             allowed_ops: OperationSet::read_write_readback(),
-            capability_digest: [0u8; 32],
+            capability_digest,
             config_generation: 0,
         };
-        self.register_with_registration(name, device_type, registration, adapter, point_map);
+        self.register_with_registration(name, device_type, registration, adapter, point_map)
     }
 
     /// 注册设备（完整登记元数据——持久化加载/服务装配路径）。
+    ///
+    /// WP-A.3 单源裁决：传入的 `registration.capability_digest` **不信任**，
+    /// 一律按登记四元组重算——持久化回放（旧快照/WAL 携带全零占位）自动
+    /// 获得真值自愈，行格式不变。重算结果仍为全零 ⇒ Err（fail-closed）。
     pub fn register_with_registration(
         &mut self,
         name: &str,
         device_type: DeviceType,
-        registration: DeviceRegistration,
+        mut registration: DeviceRegistration,
         adapter: Box<dyn PointAccessWriter>,
         point_map: BTreeMap<String, PointId>,
-    ) {
+    ) -> Result<(), RegistryError> {
+        registration.capability_digest = crate::capability_digest::capability_digest(
+            &registration.endpoint.0,
+            registration.adapter_kind,
+            registration.point_schema,
+            &registration.allowed_ops,
+        );
+        if registration.capability_digest == [0u8; 32] {
+            return Err(RegistryError::ZeroCapabilityDigest);
+        }
         let available = true;
         self.devices.insert(
             String::from(name),
@@ -443,6 +493,7 @@ impl DeviceRegistry {
                 available,
             },
         );
+        Ok(())
     }
 
     /// 标记设备可用性（adapter factory 重建失败 → false；不静默丢设备）。
@@ -472,6 +523,13 @@ impl DeviceRegistry {
         info.point_map = point_map;
         info.registration.device_id = device_id;
         info.registration.adapter_kind = AdapterKind::from_device_type(&device_type);
+        // WP-A.3：kind 变更属于登记四元组——摘要随字段重算保持单源真值。
+        info.registration.capability_digest = crate::capability_digest::capability_digest(
+            &info.registration.endpoint.0,
+            info.registration.adapter_kind,
+            info.registration.point_schema,
+            &info.registration.allowed_ops,
+        );
         info.registration.config_generation = info.registration.config_generation.saturating_add(1);
         Ok(())
     }

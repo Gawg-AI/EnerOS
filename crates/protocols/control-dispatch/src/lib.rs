@@ -42,5 +42,5 @@ pub use dispatch::{
     AuthenticatedActor, ControlDispatch, DispatchError, DispatchReceipt, DispatchState,
 };
 pub use engine::{DispatchConfig, DispatchEngine};
-pub use feedback::{FeedbackPointMapping, TrustedFeedbackBuilder};
+pub use feedback::{FeedbackPointMapping, TrustedFeedbackBuilder, PROD_FEEDBACK_MAPPING};
 pub use intent::{InMemoryIntentStore, IntentRecord, IntentStore, IntentStoreError};

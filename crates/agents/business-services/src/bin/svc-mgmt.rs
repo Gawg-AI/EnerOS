@@ -37,17 +37,17 @@ pub extern "C" fn _start(
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
     // 41（WP-41.11）：ConfigGet 经 EIPC 查 svc-config（授予表按客户端
-    // 独立计数：svc-mgmt 首个 grant = 槽 EIPC_EP_BASE_SLOT+0、mask bit 0）。
-    let config_ep = if eipc_mask & 1 != 0 {
-        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-            "mgmt-config",
-            eneros_agent_sdk::EIPC_EP_BASE_SLOT,
-            eneros_drv_svc::now_ns,
-        )
-        .ok()
-    } else {
-        None
-    };
+    // 独立计数：svc-mgmt 首个 grant = 槽 EIPC_EP_BASE_SLOT+0、mask bit 0。
+    // SPEC-B：硬编码掩码位（`& 1`）收编 eipc_granted_slot（按名解析）。
+    let config_ep = eneros_agent_sdk::eipc_granted_slot("svc-mgmt", eipc_mask, "svc-config")
+        .and_then(|slot| {
+            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                "mgmt-config",
+                slot,
+                eneros_drv_svc::now_ns,
+            )
+            .ok()
+        });
     if config_ep.is_some() {
         eneros_runtime::println!("[svc-mgmt] config EIPC bound (svc-config)");
     } else {
@@ -56,10 +56,24 @@ pub extern "C" fn _start(
     eneros_runtime::println!(
         "[svc-mgmt] management RPC up (session-authenticated; real actions only)"
     );
+    // SPEC-C（WP-C.2）：history-query 取数通道——svc-mgmt 第 2 授予边
+    // （SPEC-B：硬编码掩码位 `& 2` 收编 eipc_granted_slot 按名解析）；
+    // 未授予 → 执行器回 "telemetry-not-bound"（fail-closed）。
+    let telemetry_slot =
+        eneros_agent_sdk::eipc_granted_slot("svc-mgmt", eipc_mask, "svc-telemetry");
+    if telemetry_slot.is_some() {
+        eneros_runtime::println!("[svc-mgmt] history EIPC bound (svc-telemetry)");
+    } else {
+        eneros_runtime::println!(
+            "[svc-mgmt] history EIPC NOT granted -> history-query unavailable"
+        );
+    }
     let mut handler = MgmtHandler {
         rpc: eneros_business_services::mgmt_rpc::ManagementRpc::new(TargetExecutor {
             config_ep,
+            telemetry_slot,
             epoch: 0,
+            history_binds: 0,
             requests_seen: 0,
             bundle_seq: 0,
             restart_requests: 0,
@@ -79,6 +93,11 @@ pub extern "C" fn _start(
 #[cfg(target_os = "none")]
 struct TargetExecutor {
     config_ep: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    /// SPEC-C：svc-telemetry 授予槽（按值重建客户端的先例模式——
+    /// 避免跨请求可变借用纠缠）。
+    telemetry_slot: Option<u64>,
+    /// SPEC-C：TELR 通道构建计数（观测）。
+    history_binds: u64,
     epoch: u64,
     /// 50（WP-50.2）：请求计数 / 诊断包序号 / 重启请求数（真实观测）。
     requests_seen: u64,
@@ -101,6 +120,7 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
             MgmtAction::StatusQuery => ActionResult {
                 status: RpcStatus::Completed,
                 detail: alloc::format!("status:ok:up@{} req={}", now_ms, self.requests_seen),
+                payload: None,
             },
             MgmtAction::ConfigGet => {
                 // 配置只读查询（arg 指定 config_id；空 → fail-closed 拒绝）。
@@ -110,6 +130,7 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                     return ActionResult {
                         status: RpcStatus::Failed,
                         detail: "config-get:empty-id".into(),
+                        payload: None,
                     };
                 }
                 let Some(client) = &mut self.config_ep else {
@@ -117,21 +138,25 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                     return ActionResult {
                         status: RpcStatus::Failed,
                         detail: "config-service-not-bound".into(),
+                        payload: None,
                     };
                 };
-                let mut req: alloc::vec::Vec<u8> = alloc::vec![b'C', b'F', b'G', b'1', 0x01];
-                req.extend_from_slice(id.as_bytes());
-                let mut transfer = eneros_agent_sdk::ChunkedClient::new(client, self.epoch, 5_000);
+                // SPEC-B：CFG1 wire 单源 = agent-sdk config_client；epoch
+                // 透传保持页序单调（多管理请求不撞帧）。
+                let resp =
+                    eneros_agent_sdk::config_client::get_entry(client, id, self.epoch, 5_000);
                 self.epoch = self.epoch.saturating_add(1);
                 self.requests_seen = self.requests_seen.saturating_add(1);
-                match transfer.transfer("svc-config", &req) {
-                    Ok(resp) => ActionResult {
+                match resp {
+                    Ok(raw) => ActionResult {
                         status: RpcStatus::Completed,
-                        detail: alloc::format!("config-get:{}:{}B", id, resp.len()),
+                        detail: alloc::format!("config-get:{}:{}B", id, raw.len()),
+                        payload: None,
                     },
                     Err(e) => ActionResult {
                         status: RpcStatus::Failed,
                         detail: alloc::format!("config-get-eipc:{e:?}"),
+                        payload: None,
                     },
                 }
             }
@@ -142,21 +167,24 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                     return ActionResult {
                         status: RpcStatus::Failed,
                         detail: "config-service-not-bound".into(),
+                        payload: None,
                     };
                 };
-                let mut req: alloc::vec::Vec<u8> = alloc::vec![b'C', b'F', b'G', b'1', 0x01];
-                req.extend_from_slice(b"logging");
-                let mut transfer = eneros_agent_sdk::ChunkedClient::new(client, self.epoch, 5_000);
+                let resp = eneros_agent_sdk::config_client::get_entry(
+                    client, "logging", self.epoch, 5_000,
+                );
                 self.epoch = self.epoch.saturating_add(1);
                 self.requests_seen = self.requests_seen.saturating_add(1);
-                match transfer.transfer("svc-config", &req) {
-                    Ok(resp) => ActionResult {
+                match resp {
+                    Ok(raw) => ActionResult {
                         status: RpcStatus::Completed,
-                        detail: alloc::format!("log-level:query:{}B", resp.len()),
+                        detail: alloc::format!("log-level:query:{}B", raw.len()),
+                        payload: None,
                     },
                     Err(e) => ActionResult {
                         status: RpcStatus::Failed,
                         detail: alloc::format!("log-query-eipc:{e:?}"),
+                        payload: None,
                     },
                 }
             }
@@ -176,6 +204,7 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                             "none"
                         }
                     ),
+                    payload: None,
                 }
             }
             // 50：受控重启（经 root supervisor API）——记录并审计重启请求；
@@ -189,6 +218,7 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                     return ActionResult {
                         status: RpcStatus::Failed,
                         detail: "restart:empty-target".into(),
+                        payload: None,
                     };
                 }
                 ActionResult {
@@ -198,6 +228,80 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                         target,
                         self.restart_requests
                     ),
+                    payload: None,
+                }
+            }
+            // SPEC-C（WP-C.2）：北向历史取回——分页拉取 + 二进制 payload。
+            // arg 布局：point u32 ‖ last_n u32（LE）。能力边界写明：
+            // 仅最后 N 条、非全量导出。
+            MgmtAction::HistoryQuery => {
+                self.requests_seen = self.requests_seen.saturating_add(1);
+                if arg.len() < 8 {
+                    return ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "history:bad-arg(point‖last_n 需 8B)".into(),
+                        payload: None,
+                    };
+                }
+                let point = u32::from_le_bytes(arg[0..4].try_into().unwrap_or([0; 4]));
+                let last_n = u32::from_le_bytes(arg[4..8].try_into().unwrap_or([0; 4]));
+                let Some(slot) = self.telemetry_slot else {
+                    return ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "telemetry-not-bound".into(),
+                        payload: None,
+                    };
+                };
+                // 每请求按槽重建客户端（先例：eipc_block_io/协议服务重建）；
+                // 失败 → 显式不可达。
+                let Ok(client) = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                    "mgmt-history",
+                    slot,
+                    eneros_drv_svc::now_ns,
+                ) else {
+                    return ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "history:eipc-bind-failed".into(),
+                        payload: None,
+                    };
+                };
+                self.history_binds = self.history_binds.saturating_add(1);
+                match eneros_business_services::mgmt_history::fetch_history(
+                    client,
+                    "svc-telemetry",
+                    point,
+                    last_n,
+                    5_000,
+                ) {
+                    Ok(f) => {
+                        let mut detail = f.summary.clone();
+                        if f.clamped {
+                            detail.push_str(" clamp-hint:last_n>512-capped");
+                        }
+                        ActionResult {
+                            status: RpcStatus::Completed,
+                            detail,
+                            payload: Some(f.rows_bin),
+                        }
+                    }
+                    Err(e) => {
+                        let reason = match e {
+                            eneros_business_services::mgmt_history::HistoryError::NoSuchPoint => {
+                                alloc::format!("history:no-such-point:{}", point)
+                            }
+                            eneros_business_services::mgmt_history::HistoryError::Transport => {
+                                "history:eipc-transport".into()
+                            }
+                            eneros_business_services::mgmt_history::HistoryError::BadFrame => {
+                                "history:bad-frame".into()
+                            }
+                        };
+                        ActionResult {
+                            status: RpcStatus::Failed,
+                            detail: reason,
+                            payload: None,
+                        }
+                    }
                 }
             }
             MgmtAction::UpdateCheck | MgmtAction::UpdateApply | MgmtAction::UpdateRollback => {
@@ -205,6 +309,7 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                 ActionResult {
                     status: RpcStatus::Failed,
                     detail: "ota-service-not-bound".into(),
+                    payload: None,
                 }
             }
             _ => {
@@ -212,6 +317,7 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                 ActionResult {
                     status: RpcStatus::Failed,
                     detail: alloc::format!("action-not-wired:{action:?}"),
+                    payload: None,
                 }
             }
         }
@@ -288,6 +394,14 @@ impl eneros_control_services::ControlServiceHandler for MgmtHandler {
             RpcStatus::Failed => 0,
         });
         resp.extend_from_slice(result.detail.as_bytes());
+        // SPEC-C：二进制载荷扩展段（history-query 行区等）。旧消费方按
+        // detail 文本前缀解析不受影响；新消费方读尾部 [len][bytes]。
+        if let Some(p) = &result.payload {
+            if !p.is_empty() {
+                resp.extend_from_slice(&(p.len() as u32).to_le_bytes());
+                resp.extend_from_slice(p);
+            }
+        }
         true
     }
 }

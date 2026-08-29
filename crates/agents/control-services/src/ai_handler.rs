@@ -1,0 +1,790 @@
+//! SPEC-SERIES-2026-08-28/B WP-B.3：AI tick 编排单源（svc-ai-worker 双 handler 收编）。
+//!
+//! 旧 bin 内 `RemoteAiHandler` / `HeuristicOnlyHandler` 互相复制：tick 编排
+//! （SOC 提取→阈值注入→propose→审计→observe）两份、LEARN_STATUS 50B 组装
+//! 两份、LearnOutcome 串口匹配两份、LEARN_RESET 两份（且词形已漂移）。本模块
+//! 把编排收敛为 [`AiTickHandler`] 单源；两 handler 的**真实差异**收窄为
+//! [`TickAudit`] 钩子（remote 留痕/peer 推送 vs 固定启发式留痕）。
+//!
+//! # 注入路径等价性分析（WP-B.3 红线 3，统一前必证）
+//!
+//! 旧 bin 两条阈值注入路径：
+//! 1. remote：`AiWorkerService<RemoteBrain<HeuristicBackend, P>>::
+//!    backend_mut().local_mut().set_deadband(...)` —— [`RemoteBrain::
+//!    local_mut`](crate::remote_brain::RemoteBrain::local_mut) 返回其
+//!    System1 本地后端（`self.local`，即 decide 启发式回退所用实例）；
+//! 2. heuristic-only：`AiWorkerService<HeuristicBackend>::backend_mut()
+//!    .set_deadband(...)`。
+//!
+//! 两条路径终止于**同一对象**（本 tick `propose→decide` 所用的那个
+//! [`HeuristicBackend`]）的同一方法 `set_deadband`；差异纯为访问器链
+//! （`RemoteBrain` 是包装而非另一个后端）。何时等价：注入发生在
+//! `propose` 之前——本模块 tick 编排恒满足。何时不等价：若
+//! `RemoteBrain::decide` 远程路径不咨询 `self.local`，注入在该 tick 无
+//! 观察效果——但这是 RemoteBrain 的决策语义（两路径共有），不构成注入
+//! 路径差异。**结论：等价，统一为 [`DeadbandTarget`] 单点**；该结论有
+//! [`tests::deadband_target_wrapped_and_direct_are_equivalent`] 锁定。
+
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use eneros_agent_sdk::ai_relay::AI_PEER_MSG;
+use eneros_dual_brain::audit::{DecisionAudit, DecisionRecord, ExecOutcome, SafetyOutcome};
+use eneros_durable_state::PersistIo;
+
+use crate::ai_worker::{
+    learn_wire, AiWorkerService, DecisionBackend, HeuristicBackend, AI_OK, AI_PROPOSE,
+};
+use crate::learn::{DeadbandLearner, LearnOutcome};
+use crate::remote_brain::{PeerLink, PeerMsgVerdict, RemoteBrain, SwitchEvent};
+use crate::service::ControlServiceHandler;
+
+/// System1 死区注入面（WP-B.3 单点——两条历史注入路径的收编目标）。
+///
+/// 语义等价性分析见模块头；实现必须注入到 decide 实际使用的
+/// `HeuristicBackend` 实例上。
+pub trait DeadbandTarget {
+    /// 注入当前自适应死区阈值（界内不变式由学习侧 catalog 保证，
+    /// `HeuristicBackend::set_deadband` 防御性钳制兜底）。
+    fn apply_deadband(&mut self, charge_soc: f64, discharge_soc: f64);
+}
+
+impl DeadbandTarget for HeuristicBackend {
+    fn apply_deadband(&mut self, charge_soc: f64, discharge_soc: f64) {
+        self.set_deadband(charge_soc, discharge_soc);
+    }
+}
+
+impl<P: PeerLink> DeadbandTarget for RemoteBrain<HeuristicBackend, P> {
+    fn apply_deadband(&mut self, charge_soc: f64, discharge_soc: f64) {
+        self.local_mut().set_deadband(charge_soc, discharge_soc);
+    }
+}
+
+/// tick 留痕钩子（remote 与 heuristic-only 的行为差异收窄点）。
+pub trait TickAudit<B: DecisionBackend> {
+    /// propose 成功（AI_OK）后的决策留痕：切换事件/路径标记入审计链
+    /// 与串口（词形逐字节保留自旧 bin，R9）。
+    fn on_proposal_ok(&mut self, backend: &mut B, now_ms: u64);
+
+    /// 未识别请求码扩展面（默认不消费 → 调用方 0xFF 兜底）；remote
+    /// 路径用于 AI_PEER_MSG 推送（不受信 JSON 全量校验 + 配对）。
+    fn on_other(
+        &mut self,
+        _backend: &mut B,
+        _req: &[u8],
+        _resp: &mut Vec<u8>,
+        _now_ms: u64,
+    ) -> bool {
+        false
+    }
+}
+
+/// 决策审计入链 + 串口证据行（词形逐字节保留自旧 bin `log_decision`）。
+pub(crate) fn log_ai_decision(audit: &mut DecisionAudit, intent: &str, lp: &str, now_ms: u64) {
+    let _ = audit.log_decision(&DecisionRecord {
+        actor: "ai-worker",
+        target: "pcs",
+        intent,
+        lp_solution: lp,
+        safety: SafetyOutcome::Passed,
+        exec: ExecOutcome::Proposed,
+        now_ms,
+    });
+    eneros_runtime::println!(
+        "[svc-ai-worker] AUDIT-AI appended={} dropped={}",
+        audit.chain_state().entry_count,
+        audit.dropped_count()
+    );
+}
+
+/// 纯启发式路径留痕（固定 sys1 标记——词形保留自旧 bin）。
+pub struct HeuristicAudit<'a> {
+    /// 决策审计链（ADR-0042 门面）。
+    pub audit: &'a mut DecisionAudit,
+}
+
+impl TickAudit<HeuristicBackend> for HeuristicAudit<'_> {
+    fn on_proposal_ok(&mut self, _backend: &mut HeuristicBackend, now_ms: u64) {
+        log_ai_decision(self.audit, "sys1-heuristic", "deadband ±5kW", now_ms);
+    }
+}
+
+/// remote dual-brain 路径留痕（切换事件 + REMOTE-BRAIN 元数据 +
+/// AI_PEER_MSG 推送——词形逐字节保留自旧 bin `log_proposal`/peer 臂）。
+pub struct RemoteAudit<'a> {
+    /// 决策审计链（ADR-0042 门面）。
+    pub audit: &'a mut DecisionAudit,
+}
+
+impl<P: PeerLink> TickAudit<RemoteBrain<HeuristicBackend, P>> for RemoteAudit<'_> {
+    fn on_proposal_ok(&mut self, backend: &mut RemoteBrain<HeuristicBackend, P>, now_ms: u64) {
+        let events: Vec<SwitchEvent> = backend.drain_events();
+        for ev in &events {
+            match ev {
+                SwitchEvent::PeerUnhealthy {
+                    consecutive_timeouts,
+                } => {
+                    eneros_runtime::println!(
+                        "[svc-ai-worker] REMOTE-BRAIN event=peer-unhealthy consecutive={consecutive_timeouts}"
+                    );
+                    log_ai_decision(self.audit, "event:peer-unhealthy", "", now_ms);
+                }
+                SwitchEvent::PeerRecovered => {
+                    eneros_runtime::println!("[svc-ai-worker] REMOTE-BRAIN event=peer-recovered");
+                    log_ai_decision(self.audit, "event:peer-recovered", "", now_ms);
+                }
+            }
+        }
+        let healthy = backend.is_healthy();
+        let timeouts = backend.timeouts_total;
+        let bad = backend.bad_responses_total;
+        let late = backend.late_total;
+        let link_err = backend.link_errors;
+        if let Some(meta) = backend.last_meta() {
+            eneros_runtime::println!(
+                "[svc-ai-worker] REMOTE-BRAIN used={} path={:?} req={:?} prompt=\"{}\" resp=\"{}\" healthy={} timeouts={} bad={} late={} link_err={}",
+                meta.used_remote,
+                meta.path,
+                meta.req_id,
+                meta.prompt_summary,
+                meta.resp_summary,
+                healthy,
+                timeouts,
+                bad,
+                late,
+                link_err,
+            );
+            let intent = if meta.used_remote {
+                format!("sys2-remote {}", meta.prompt_summary)
+            } else {
+                String::from("sys1-heuristic")
+            };
+            let sol = if meta.used_remote {
+                meta.resp_summary.clone()
+            } else {
+                String::from("deadband ±5kW")
+            };
+            log_ai_decision(self.audit, &intent, &sol, now_ms);
+        }
+    }
+
+    fn on_other(
+        &mut self,
+        backend: &mut RemoteBrain<HeuristicBackend, P>,
+        req: &[u8],
+        resp: &mut Vec<u8>,
+        now_ms: u64,
+    ) -> bool {
+        if req.first() != Some(&AI_PEER_MSG) {
+            return false;
+        }
+        // peer 应答推送（不受信 JSON）→ 全量校验 + 配对。
+        let detail;
+        let verdict = match core::str::from_utf8(&req[1..]) {
+            Ok(j) => {
+                let v = backend.on_peer_message(j, now_ms);
+                detail = backend.last_reject_detail.clone().unwrap_or_default();
+                v
+            }
+            Err(e) => {
+                backend.bad_responses_total = backend.bad_responses_total.saturating_add(1);
+                detail = format!("utf8:{e}");
+                PeerMsgVerdict::Bad
+            }
+        };
+        eneros_runtime::println!(
+            "[svc-ai-worker] PEER-MSG verdict={verdict:?} bad={} late={} healthy={} detail={}",
+            backend.bad_responses_total,
+            backend.late_total,
+            backend.is_healthy(),
+            detail
+        );
+        *resp = alloc::vec![AI_PEER_MSG, 0];
+        true
+    }
+}
+
+/// AI tick 编排单源 handler（WP-B.3：SOC 提取→阈值注入→propose→留痕→observe）。
+///
+/// 时序不变式（红线 2，[`tests::tick_n_observe_tick_n_plus_1_uses_learned_thresholds`]
+/// 锁定）：decide **前**注入当前阈值、decide **后**观测学习——tick N 的观测
+/// 在 tick N 的 decide 不可见，tick N+1 的 decide 必须可见。
+pub struct AiTickHandler<'a, B: DecisionBackend, Io: PersistIo, A: TickAudit<B>> {
+    worker: &'a mut AiWorkerService<B>,
+    audit: A,
+    /// SPEC-E WP-E.3：学习器（闸/授予任一不满足 ⇒ None=出厂行为）。
+    learn: Option<DeadbandLearner<Io>>,
+}
+
+impl<'a, B, Io, A> AiTickHandler<'a, B, Io, A>
+where
+    B: DecisionBackend + DeadbandTarget,
+    Io: PersistIo,
+    A: TickAudit<B>,
+{
+    /// 构造（worker/audit/learn 三件——与旧 bin handler 字段一致）。
+    pub fn new(
+        worker: &'a mut AiWorkerService<B>,
+        audit: A,
+        learn: Option<DeadbandLearner<Io>>,
+    ) -> Self {
+        Self {
+            worker,
+            audit,
+            learn,
+        }
+    }
+
+    /// SPEC-E WP-E.3（decide 前）：阈值注入单点（[`DeadbandTarget`]）。
+    fn apply_learn_thresholds(&mut self) {
+        let Some(l) = self.learn.as_mut() else {
+            return;
+        };
+        let (charge, discharge) = l.thresholds();
+        self.worker.backend_mut().apply_deadband(charge, discharge);
+    }
+
+    /// SPEC-E WP-E.3（decide 后）：以本帧受信 SOC 观测学习（阈值下一
+    /// tick 生效——节拍确定，前后对照可证）；串口证据行单源（旧 bin
+    /// 两 handler 词形漂移归一到 remote 全形，登记 BC-B3）。
+    fn learn_observe(&mut self, telemetry_soc: Option<f64>) {
+        let Some(l) = self.learn.as_mut() else {
+            return;
+        };
+        let Some(soc) = telemetry_soc else {
+            return;
+        };
+        match l.observe(soc) {
+            LearnOutcome::Applied { current } => {
+                eneros_runtime::println!("[svc-ai-worker] LEARN-APPLY p={current:.6}");
+            }
+            LearnOutcome::RejectCap { proposed } => {
+                eneros_runtime::println!("[svc-ai-worker] LEARN-REJECT-CAP p={proposed:.6}");
+            }
+            LearnOutcome::PersistFailed => {
+                eneros_runtime::println!(
+                    "[svc-ai-worker] LEARN-PERSIST-FAIL n={} —— 本步回滚（行为退回上一稳定值）",
+                    l.persist_failures
+                );
+            }
+            LearnOutcome::Anchored | LearnOutcome::Disabled => {}
+        }
+    }
+
+    /// LEARN_STATUS wire（StatusQuery 等价面）：50B 定长回显单源
+    /// （旧 bin 两份副本收编；字节布局由 `LEARN_STATUS_WIRE_LEN` 守）。
+    fn learn_status_wire(&mut self, out: &mut Vec<u8>) {
+        out.clear();
+        out.push(learn_wire::AI_LEARN_STATUS);
+        match self.learn.as_ref() {
+            Some(l) => {
+                out.push(1);
+                let (min, max) = l.bounds();
+                let snap = l.snapshot_view();
+                out.extend_from_slice(&snap.current.to_le_bytes());
+                out.extend_from_slice(&min.to_le_bytes());
+                out.extend_from_slice(&max.to_le_bytes());
+                out.extend_from_slice(&snap.samples.to_le_bytes());
+                out.extend_from_slice(&snap.rejected_updates.to_le_bytes());
+                out.extend_from_slice(&l.applies.to_le_bytes());
+            }
+            None => {
+                // 未装配：enabled=0 + 全零字段（长度不变，便于逐字节对照）。
+                out.push(0);
+                out.resize(learn_wire::LEARN_STATUS_WIRE_LEN, 0);
+            }
+        }
+    }
+
+    /// LEARN_RESET 处理单源：回出厂 + **立即回注**（旧 heuristic 路径
+    /// 缺回注——下一 tick 注入同值，决策等价；登记 BC-B3）+ 串口词形。
+    fn learn_reset(&mut self, resp: &mut Vec<u8>) {
+        match self.learn.as_mut() {
+            Some(l) => match l.reset() {
+                Ok(()) => {
+                    let (charge, discharge) = l.thresholds();
+                    self.worker.backend_mut().apply_deadband(charge, discharge);
+                    let snap = l.snapshot_view();
+                    eneros_runtime::println!(
+                        "[svc-ai-worker] LEARN-RESET ok current={:.6} samples={} rejected={} —— 参数回出厂并已持久化",
+                        snap.current,
+                        snap.samples,
+                        snap.rejected_updates
+                    );
+                    *resp = alloc::vec![learn_wire::AI_LEARN_RESET, 0];
+                }
+                Err(e) => {
+                    eneros_runtime::println!(
+                        "[svc-ai-worker] LEARN-RESET FAILED {e:?} —— 保持旧态（fail-closed）"
+                    );
+                    *resp = alloc::vec![learn_wire::AI_LEARN_RESET, 1];
+                }
+            },
+            None => {
+                eneros_runtime::println!(
+                    "[svc-ai-worker] LEARN-RESET unavailable —— 学习未装配（闸/授予）"
+                );
+                *resp = alloc::vec![learn_wire::AI_LEARN_RESET, 1];
+            }
+        }
+    }
+}
+
+impl<B, Io, A> ControlServiceHandler for AiTickHandler<'_, B, Io, A>
+where
+    B: DecisionBackend + DeadbandTarget,
+    Io: PersistIo,
+    A: TickAudit<B>,
+{
+    fn handle(&mut self, req: &[u8], resp: &mut Vec<u8>, now_ms: u64) -> bool {
+        match req.first() {
+            Some(&AI_PROPOSE) => {
+                // 受信 SOC 提取（trust 链解码失败 ⇒ None=不观测）。
+                let soc = req
+                    .get(1..)
+                    .and_then(crate::telemetry::decode_trusted)
+                    .map(|t| t.state.soc_pct);
+                self.apply_learn_thresholds();
+                *resp = self.worker.propose(req, now_ms);
+                if resp.first() == Some(&AI_OK) {
+                    self.audit.on_proposal_ok(self.worker.backend_mut(), now_ms);
+                }
+                self.learn_observe(soc);
+                true
+            }
+            Some(&learn_wire::AI_LEARN_STATUS) => {
+                self.learn_status_wire(resp);
+                true
+            }
+            Some(&learn_wire::AI_LEARN_RESET) => {
+                self.learn_reset(resp);
+                true
+            }
+            _ => {
+                // AI_PEER_MSG（remote）等扩展码由留痕钩子消费；未消费 → 0xFF。
+                let handled = !req.is_empty()
+                    && self
+                        .audit
+                        .on_other(self.worker.backend_mut(), req, resp, now_ms);
+                if !handled {
+                    *resp = alloc::vec![0xFF];
+                }
+                true
+            }
+        }
+    }
+}
+
+// ============================================================================
+// target 装配（svc-ai-worker bin 下沉——bin 只剩能力探测与判定行）
+// ============================================================================
+
+#[cfg(all(target_os = "none", feature = "sel4"))]
+pub mod target {
+    use eneros_agent_sdk::block_io::{eipc_block_io, BlockIo};
+    use eneros_agent_sdk::config_client;
+    use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
+    use eneros_config_bundle::ai_peer::AiPeerConfig;
+    use eneros_runtime::println;
+
+    use super::*;
+    use crate::remote_brain::RemoteBrainConfig;
+
+    /// 学习器装配（target）：storage 授予 + 配置闸双条件；任一不满足 ⇒
+    /// None（行为出厂值，串口如实登记——fail-closed 诚实降级）。
+    pub type TargetLearner = DeadbandLearner<BlockIo<Sel4IpcClient>>;
+
+    /// remote 路径 worker 型别（PeerLink 实现在 remote_brain 单元）。
+    pub type RemoteWorker =
+        AiWorkerService<RemoteBrain<HeuristicBackend, crate::remote_brain::PeerLinkEipc>>;
+
+    /// 学习器装配（词形逐字节保留自旧 bin `build_learner`）。
+    pub fn build_learner(eipc_mask: u64, learn_enabled: bool) -> Option<TargetLearner> {
+        // SPEC-B：掩码位判定收编 eipc_granted_slot（WP-54.4 按名解析之上）。
+        let slot_of = |target: &'static str| -> Option<u64> {
+            eneros_agent_sdk::eipc_granted_slot("svc-ai-worker", eipc_mask, target)
+        };
+        if !learn_enabled {
+            println!("[svc-ai-worker] LEARN disabled（ai-peer learn_enabled=false）—— 阈值恒出厂");
+            return None;
+        }
+        let Some(slot) = slot_of("svc-storage") else {
+            println!("[svc-ai-worker] LEARN-SNAPSHOT-UNAVAILABLE storage NOT granted —— 学习不可用（出厂行为）");
+            return None;
+        };
+        let Some(io) = eipc_block_io(slot, 0, 5_000) else {
+            println!("[svc-ai-worker] LEARN-SNAPSHOT-UNAVAILABLE storage bind FAILED —— 学习不可用（出厂行为）");
+            return None;
+        };
+        match TargetLearner::open(true, io) {
+            Ok(l) => {
+                let (charge, discharge) = l.thresholds();
+                let (min, max) = l.bounds();
+                let snap = l.snapshot_view();
+                println!(
+                    "[svc-ai-worker] LEARN-STATE restored=1 current={:.6} min={min:.6} max={max:.6} samples={} rejected={}",
+                    snap.current, snap.samples, snap.rejected_updates
+                );
+                println!(
+                    "[svc-ai-worker] LEARN-THRESHOLDS charge={charge:.6} discharge={discharge:.6}"
+                );
+                Some(l)
+            }
+            Err(e) => {
+                println!(
+                    "[svc-ai-worker] LEARN-SNAPSHOT-CORRUPT {e:?} —— 学习不可用（出厂行为，fail-closed 不静默重建）"
+                );
+                None
+            }
+        }
+    }
+
+    /// ai-peer 配置拉取（svc-config CFG1；全必配 fail-closed；词形保留）。
+    pub fn fetch_ai_peer_config(client: &mut Sel4IpcClient) -> Result<AiPeerConfig, &'static str> {
+        let payload = config_client::get_entry(client, "ai-peer", 0, 5_000)
+            .map_err(|_| "config-eipc-transfer-failed")?;
+        if payload.starts_with(b"ERR:") {
+            // svc-config 结构化拒绝——透传原因串（诊断面）。
+            let reason = core::str::from_utf8(&payload[..payload.len().min(40)]).unwrap_or("ERR:");
+            println!("[svc-ai-worker] AI-PEER-CFG server {reason}");
+            return Err("config-server-error");
+        }
+        let body = config_client::decode_response_body(&payload)
+            .map_err(|_| "config-response-too-short")?;
+        AiPeerConfig::decode(body).map_err(|_| "config-decode-failed")
+    }
+
+    /// remote dual-brain 主路径装配进服务循环（词形保留自旧 bin）。
+    pub fn run_remote(
+        ep: u64,
+        ready_ntfn: u64,
+        heartbeat_slot: u64,
+        cfg: RemoteBrainConfig,
+        mqtt: Sel4IpcClient,
+        learn: Option<TargetLearner>,
+    ) -> ! {
+        // 决策审计（ADR-0042 边界：dual-brain/audit 为决策语义门面）。
+        // 蓝图 54 WP-54.1：同源魔数 [0x47;32] → 唯一入口按本服务域派生。
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"svc-ai-worker-decision"));
+        let link = crate::remote_brain::PeerLinkEipc {
+            mqtt,
+            correlation: 0,
+        };
+        let brain = RemoteBrain::new(HeuristicBackend::new(), link, cfg);
+        let mut worker = AiWorkerService::new(brain, [0x41; 16]);
+        let mut handler = AiTickHandler::new(&mut worker, RemoteAudit { audit: &mut audit }, learn);
+        crate::control_service_main(
+            ep,
+            "ai-worker",
+            ready_ntfn,
+            eneros_drv_svc::now_ms,
+            eneros_drv_svc::instance_epoch(),
+            heartbeat_slot,
+            &mut handler,
+        )
+    }
+
+    /// 纯启发式兜底装配（config/mqtt 未授予；词形保留自旧 bin）。
+    pub fn run_heuristic_only(
+        ep: u64,
+        ready_ntfn: u64,
+        heartbeat_slot: u64,
+        learn: Option<TargetLearner>,
+    ) -> ! {
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"svc-ai-worker-decision"));
+        let mut worker = AiWorkerService::new(HeuristicBackend::new(), [0x41; 16]);
+        let mut handler =
+            AiTickHandler::new(&mut worker, HeuristicAudit { audit: &mut audit }, learn);
+        crate::control_service_main(
+            ep,
+            "ai-worker",
+            ready_ntfn,
+            eneros_drv_svc::now_ms,
+            eneros_drv_svc::instance_epoch(),
+            heartbeat_slot,
+            &mut handler,
+        )
+    }
+}
+
+// ============================================================================
+// host 测试（tick 时序不变式 + wire 单源 + 注入路径等价性锁定）
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use core::cell::RefCell;
+
+    use eneros_durable_state::StoreError;
+
+    use super::*;
+    use crate::ai_worker::tests_helpers::minimal_trusted;
+    use crate::ai_worker::{AI_NOACTION, PROPOSAL_WIRE_LEN};
+    use crate::remote_brain::{LinkError, RemoteBrainConfig};
+    use crate::telemetry::encode_trusted;
+
+    /// 共享内存持久介质（测试版 PersistIo；偏移 = svc-storage 整盘视图，
+    /// 以 ota-ab `DataRegion::LearnState.base_byte()` 平移）。
+    struct MemIo {
+        media: RefCell<Vec<u8>>,
+    }
+
+    const MEDIA_TAIL: u64 = 4096;
+
+    impl MemIo {
+        fn new() -> Self {
+            let base = learn_base();
+            Self {
+                media: RefCell::new(vec![0u8; (base + MEDIA_TAIL) as usize]),
+            }
+        }
+
+        fn window(&self, offset: u64, len: usize) -> Result<usize, StoreError> {
+            offset
+                .checked_sub(learn_base())
+                .filter(|off| off + len as u64 <= self.media.borrow().len() as u64)
+                .map(|off| off as usize)
+                .ok_or(StoreError::Unavailable)
+        }
+    }
+
+    fn learn_base() -> u64 {
+        eneros_ota_ab::ab_partition::DataRegion::LearnState.base_byte()
+    }
+
+    impl PersistIo for MemIo {
+        fn read(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), StoreError> {
+            let start = self.window(offset, buf.len())?;
+            let m = self.media.borrow();
+            buf.copy_from_slice(&m[start..start + buf.len()]);
+            Ok(())
+        }
+        fn write(&mut self, offset: u64, data: &[u8]) -> Result<(), StoreError> {
+            let start = self.window(offset, data.len())?;
+            let mut m = self.media.borrow_mut();
+            m[start..start + data.len()].copy_from_slice(data);
+            Ok(())
+        }
+        fn flush(&mut self) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn capacity(&self) -> u64 {
+            self.media.borrow().len() as u64
+        }
+    }
+
+    /// AI_PROPOSE 请求构造（指定 SOC）。
+    fn propose_req(soc: f64) -> Vec<u8> {
+        let mut t = minimal_trusted();
+        t.state.soc_pct = soc;
+        let mut req = alloc::vec![AI_PROPOSE];
+        req.extend_from_slice(&encode_trusted(&t));
+        req
+    }
+
+    /// 时序不变式（WP-B.3 红线 2 的化身）：tick N 观测 → tick N decide
+    /// 不可见 → tick N+1 decide 必须可见。
+    ///
+    /// 序列（出厂带 [0.3, 0.5]；锚定 0.425 后 0.52 帧 dev=0.095 ⇒
+    /// EMA=0.0457 ⇒ 3σ=0.137 界内生效 ⇒ 带 [0.263, 0.537]）：
+    /// - tick1 soc=0.425：出厂死区 NoAction；observe 锚定（阈值不变）；
+    /// - tick2 soc=0.52：decide 用**出厂**带 → 放电（若 observe 先于
+    ///   decide 则此刻即死区——顺序反证）；observe 后带变 [0.263, 0.537]；
+    /// - tick3 soc=0.52：decide 用**学习后**带 → NoAction。
+    #[test]
+    fn tick_n_observe_tick_n_plus_1_uses_learned_thresholds() {
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let mut worker = AiWorkerService::new(HeuristicBackend::new(), [0x41; 16]);
+        let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            HeuristicAudit { audit: &mut audit },
+            Some(learner),
+        );
+        let mut resp = Vec::new();
+
+        // tick1：出厂死区拒绝；首帧锚定。
+        resp.clear();
+        assert!(handler.handle(&propose_req(0.425), &mut resp, 1_000));
+        assert_eq!(resp.first(), Some(&AI_NOACTION), "0.425 ∈ 出厂死区");
+        // LEARN-STATUS：锚定不学习，current 仍出厂 0.1。
+        resp.clear();
+        assert!(handler.handle(&alloc::vec![learn_wire::AI_LEARN_STATUS], &mut resp, 1_001));
+        assert_eq!(resp.len(), learn_wire::LEARN_STATUS_WIRE_LEN);
+        let current = f64::from_le_bytes(resp[2..10].try_into().expect("50B"));
+        assert!((current - 0.1).abs() < 1e-9, "锚定不改阈值: {current}");
+
+        // tick2：decide 用出厂带（0.52 ≥ 0.5 放电）——observe 未提前生效。
+        resp.clear();
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 2_000));
+        assert_eq!(resp.first(), Some(&AI_OK), "出厂带外放电");
+        assert_eq!(resp.len(), 1 + PROPOSAL_WIRE_LEN);
+        // observe(0.52)：dev=0.095 → current=0.137 Applied（下一 tick 生效）。
+        resp.clear();
+        assert!(handler.handle(&alloc::vec![learn_wire::AI_LEARN_STATUS], &mut resp, 2_001));
+        let current = f64::from_le_bytes(resp[2..10].try_into().expect("50B"));
+        assert!((current - 0.137).abs() < 1e-9, "学习后 current: {current}");
+
+        // tick3：decide 必须用 tick2 学到的带 [0.263, 0.537] → 0.52 死区。
+        resp.clear();
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 3_000));
+        assert_eq!(resp.first(), Some(&AI_NOACTION), "学习后 0.52 必须落入死区");
+    }
+
+    /// LEARN_STATUS wire：未装配（None）= enabled 0 + 全零，50B 定长
+    /// （与旧 bin 两副本逐字节同布局）。
+    #[test]
+    fn learn_status_wire_unavailable_is_zero_padded_50b() {
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let mut worker = AiWorkerService::new(HeuristicBackend::new(), [0x41; 16]);
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            HeuristicAudit { audit: &mut audit },
+            None::<DeadbandLearner<MemIo>>,
+        );
+        let mut resp = Vec::new();
+        assert!(handler.handle(&alloc::vec![learn_wire::AI_LEARN_STATUS], &mut resp, 1));
+        assert_eq!(resp.len(), 50);
+        assert_eq!(resp[0], learn_wire::AI_LEARN_STATUS);
+        assert_eq!(resp[1], 0);
+        assert!(resp[2..].iter().all(|&b| b == 0));
+    }
+
+    /// LEARN_RESET：回出厂 + wire [0x20, 0] + 阈值还原（0.52 重新放电影
+    /// 响应边界复位）+ applies 归零。
+    #[test]
+    fn learn_reset_restores_factory_boundary() {
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let mut worker = AiWorkerService::new(HeuristicBackend::new(), [0x41; 16]);
+        let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            HeuristicAudit { audit: &mut audit },
+            Some(learner),
+        );
+        let mut resp = Vec::new();
+        // 先把带学宽（复用时序测试序列）。
+        assert!(handler.handle(&propose_req(0.425), &mut resp, 1_000));
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 2_000));
+        resp.clear();
+        assert!(handler.handle(&alloc::vec![learn_wire::AI_LEARN_STATUS], &mut resp, 2_001));
+        let current = f64::from_le_bytes(resp[2..10].try_into().expect("50B"));
+        assert!((current - 0.137).abs() < 1e-9);
+
+        // reset：wire 两字节 ok；current 回出厂；applies 归零。
+        resp.clear();
+        assert!(handler.handle(&alloc::vec![learn_wire::AI_LEARN_RESET], &mut resp, 3_000));
+        assert_eq!(resp, alloc::vec![learn_wire::AI_LEARN_RESET, 0]);
+        resp.clear();
+        assert!(handler.handle(&alloc::vec![learn_wire::AI_LEARN_STATUS], &mut resp, 3_001));
+        let current = f64::from_le_bytes(resp[2..10].try_into().expect("50B"));
+        assert!((current - 0.1).abs() < 1e-9, "reset 回出厂: {current}");
+        let applies = u64::from_le_bytes(resp[42..50].try_into().expect("50B"));
+        assert_eq!(applies, 0);
+        // 边界复位：0.52 重新放电影响响应（出厂带外）。
+        resp.clear();
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 4_000));
+        assert_eq!(resp.first(), Some(&AI_OK));
+    }
+
+    /// 注入路径等价性锁定（红线 3 结论的可执行化）：直连 HeuristicBackend
+    /// 与包装于 RemoteBrain 的 local 后端，同一 apply_deadband 后决策
+    /// 行为逐判定一致。
+    #[test]
+    fn deadband_target_wrapped_and_direct_are_equivalent() {
+        struct NullLink;
+        impl PeerLink for NullLink {
+            fn send_request(&mut self, _req_json: &str) -> Result<(), LinkError> {
+                Ok(())
+            }
+        }
+        let cfg = RemoteBrainConfig {
+            timeout_ms: 2_000,
+            unhealthy_after: 3,
+            probe_every: 1,
+            max_power_kw: 10.0,
+            ttl_secs: 60,
+        };
+        let mut direct = HeuristicBackend::new();
+        let brain = RemoteBrain::new(HeuristicBackend::new(), NullLink, cfg);
+        let mut worker = AiWorkerService::new(brain, [0x41; 16]);
+
+        direct.apply_deadband(0.26, 0.54);
+        worker.backend_mut().apply_deadband(0.26, 0.54);
+
+        // 同 SOC 判定逐条一致：0.52 ∈ 加宽带 → 双双死区；0.6 ≥ 0.54 → 双双放电。
+        let mut t = minimal_trusted();
+        t.state.soc_pct = 0.52;
+        assert!(direct.decide(&t, 1_000).is_err());
+        assert!(worker.backend_mut().local_mut().decide(&t, 1_000).is_err());
+        t.state.soc_pct = 0.6;
+        assert!(direct.decide(&t, 1_001).is_ok());
+        assert!(worker.backend_mut().local_mut().decide(&t, 1_001).is_ok());
+    }
+
+    /// heuristic 全 tick：AI_OK 提案入决策审计链（actor/target/intent 词形
+    /// 与旧 bin 一致）。
+    #[test]
+    fn heuristic_full_tick_appends_audit_record() {
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let entries_before = audit.chain_state().entry_count;
+        let mut worker = AiWorkerService::new(HeuristicBackend::new(), [0x41; 16]);
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            HeuristicAudit { audit: &mut audit },
+            None::<DeadbandLearner<MemIo>>,
+        );
+        let mut resp = Vec::new();
+        assert!(handler.handle(&propose_req(0.6), &mut resp, 7_000));
+        assert_eq!(resp.first(), Some(&AI_OK));
+        assert_eq!(
+            audit.chain_state().entry_count,
+            entries_before + 1,
+            "成功提案必须留痕"
+        );
+    }
+
+    /// remote 扩展码钩子：AI_PEER_MSG 经 RemoteAudit 消费（Bad/Late 判定 +
+    /// 计数 + wire 回执）；未识别码仍 0xFF 兜底。
+    #[test]
+    fn remote_peer_msg_hook_and_unknown_fallback() {
+        struct NullLink;
+        impl PeerLink for NullLink {
+            fn send_request(&mut self, _req_json: &str) -> Result<(), LinkError> {
+                Ok(())
+            }
+        }
+        let cfg = RemoteBrainConfig {
+            timeout_ms: 2_000,
+            unhealthy_after: 3,
+            probe_every: 1,
+            max_power_kw: 10.0,
+            ttl_secs: 60,
+        };
+        let brain = RemoteBrain::new(HeuristicBackend::new(), NullLink, cfg);
+        let mut worker = AiWorkerService::new(brain, [0x41; 16]);
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            RemoteAudit { audit: &mut audit },
+            None::<DeadbandLearner<MemIo>>,
+        );
+        let mut resp = Vec::new();
+        // 坏 UTF-8 推送 → Bad 判定 + 计数上行 + 回执 [0x10, 0]。
+        let bad = [AI_PEER_MSG, 0xFF, 0xFE];
+        assert!(handler.handle(&bad, &mut resp, 1_000));
+        assert_eq!(resp, alloc::vec![AI_PEER_MSG, 0]);
+        assert_eq!(handler.worker.backend_mut().bad_responses_total, 1);
+        // 无在途请求的合法文本推送 → Late + late_total 上行。
+        resp.clear();
+        assert!(handler.handle(&[AI_PEER_MSG, b'{', b'}'], &mut resp, 1_001));
+        assert_eq!(resp, alloc::vec![AI_PEER_MSG, 0]);
+        assert_eq!(handler.worker.backend_mut().late_total, 1);
+        // 未识别码 → 0xFF 兜底（on_other 默认不消费）。
+        resp.clear();
+        assert!(handler.handle(&[0x77], &mut resp, 1_002));
+        assert_eq!(resp, alloc::vec![0xFF]);
+    }
+}

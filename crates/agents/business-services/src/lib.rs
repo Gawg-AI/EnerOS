@@ -23,6 +23,8 @@ pub mod cloud_sync;
 pub mod config_service;
 pub mod ledger;
 pub mod market;
+// SPEC-C（WP-C.2）：history-query 分页执行器内核（RawIpc 泛型，host 可测）。
+pub mod mgmt_history;
 pub mod mgmt_rpc;
 pub mod observability;
 pub mod ota_service;

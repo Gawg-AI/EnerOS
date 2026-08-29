@@ -36,12 +36,15 @@ pub extern "C" fn _start(
     mmio_vaddr: u64,
     dma_vaddr: u64,
     dma_phys: u64,
+    wall_epoch: u64,
 ) -> ! {
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
     // smoltcp 传输用 eneros_time 单调时钟推进；EL0 服务进程内初始化。
     eneros_time::time_init(eneros_hal::arm64::timer::clock(), 0);
+    // SPEC-B WP-B.1：X6 墙钟 epoch 秒（0=缺失显式降级）。
+    eneros_protocol_services::apply_wall_epoch("sv", wall_epoch);
     // 39：协议插件在服务侧构造（descriptor 随 readiness 报告）。
     let plugin = eneros_iec61850_sv::plugin::SvPlugin::new();
     eneros_runtime::println!(

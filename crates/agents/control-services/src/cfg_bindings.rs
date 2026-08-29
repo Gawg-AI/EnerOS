@@ -2,12 +2,9 @@
 //! `points`）→ 选择 Control 点（设备/点）。**配置绑定**：写目标不再
 //! 硬编码于产品装配（`PROD_DEVICE_ID`/`PROD_POINT_ID` 已退休）。
 //!
-//! 请求/响应与 svc-modbus-tcp 先例同wire：`CFG1` ConfigGet("points") →
-//! 4B LE 长度前缀 + canonical payload → `decode_points` →
-//! [`PointsTable::control_binding`]。任一步失败 → None（fail-closed：
-//! 装配方不得自造写目标）。
-
-use alloc::string::String;
+//! 请求/响应 wire（`CFG1` ConfigGet + 4B LE 前缀）单一来源 = agent-sdk
+//! `config_client`（SPEC-B WP-B.1 收编）；本模块只保留 fail-closed 判定与
+//! 诊断措辞。任一步失败 → None（装配方不得自造写目标）。
 
 /// 获取控制点绑定（设备/点）。
 ///
@@ -17,28 +14,23 @@ use alloc::string::String;
 pub fn fetch_control_binding(
     config: &mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
 ) -> Option<(u32, u32)> {
-    let mut req: alloc::vec::Vec<u8> = alloc::vec![b'C', b'F', b'G', b'1', 0x01];
-    req.extend_from_slice(b"points");
-    let mut transfer = eneros_agent_sdk::ChunkedClient::new(config, 0, 5_000);
-    let payload = match transfer.transfer("svc-config", &req) {
+    use eneros_agent_sdk::config_client;
+    let payload = match config_client::get_entry(config, "points", 0, 5_000) {
         Ok(p) => p,
         Err(e) => {
             eneros_runtime::println!("[control-bindings] ConfigGet(points) EIPC fail: {e:?}");
             return None;
         }
     };
-    // svc-config GET_ENTRY 响应 = 4B LE 长度 + canonical payload。
-    if payload.len() < 4 {
-        eneros_runtime::println!("[control-bindings] config response too short");
-        return None;
-    }
-    let plen = u32::from_le_bytes(payload[..4].try_into().unwrap_or([0; 4])) as usize;
-    if 4 + plen > payload.len() {
-        eneros_runtime::println!("[control-bindings] config length prefix malformed");
-        return None;
-    }
+    let body = match config_client::decode_response_body(&payload) {
+        Ok(b) => b,
+        Err(e) => {
+            eneros_runtime::println!("[control-bindings] config response malformed: {e:?}");
+            return None;
+        }
+    };
     let cfg_id = eneros_config_bundle::ConfigId::from_static("points");
-    match eneros_config_bundle::points::decode_points(&payload[4..4 + plen], &cfg_id) {
+    match eneros_config_bundle::points::decode_points(body, &cfg_id) {
         Ok(table) => {
             let binding = table.control_binding();
             match binding {
@@ -63,7 +55,36 @@ pub fn fetch_control_binding(
     }
 }
 
-/// 目标端点名（观测/日志）。
-pub fn config_endpoint_name() -> String {
-    String::from("svc-config")
+/// SPEC-SERIES-2026-08-27/A WP-A.1：获取控制链信封 HMAC-SM3 密钥
+/// （ConfigGet("security") → canonical payload → 严格解码）。
+///
+/// 缺节/长度≠32/全零 ⇒ None（fail-closed：调用方打 `CHAIN-KEY-MISSING`
+/// 判定行并拒载）。请求/响应 wire 与 [`fetch_control_binding`] 同源
+/// （agent-sdk `config_client`）。
+#[cfg(feature = "sel4")]
+pub fn fetch_control_chain_key(
+    config: &mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+) -> Option<[u8; 32]> {
+    use eneros_agent_sdk::config_client;
+    let payload = match config_client::get_entry(config, "security", 0, 5_000) {
+        Ok(p) => p,
+        Err(e) => {
+            eneros_runtime::println!("[control-bindings] ConfigGet(security) EIPC fail: {e:?}");
+            return None;
+        }
+    };
+    let body = match config_client::decode_response_body(&payload) {
+        Ok(b) => b,
+        Err(e) => {
+            eneros_runtime::println!("[control-bindings] security response malformed: {e:?}");
+            return None;
+        }
+    };
+    match eneros_config_bundle::control_chain_key::ControlChainKeyConfig::decode(body) {
+        Ok(k) => Some(k.control_chain_key),
+        Err(e) => {
+            eneros_runtime::println!("[control-bindings] security decode FAIL: {e:?}");
+            None
+        }
+    }
 }

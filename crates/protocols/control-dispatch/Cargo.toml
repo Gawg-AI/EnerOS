@@ -11,6 +11,8 @@ description = "EnerOS v1.0.0-rc 蓝图 40 WP-40.6/40.7/40.8 唯一 ControlDispat
 eneros-dual-brain = { path = "../../ai/dual-brain" }
 # 蓝图 40 WP-40.1：TrustedTelemetry（控制输入可信边界）。
 eneros-safety-validator = { path = "../../ai/safety-validator" }
+# SPEC WP-A.2：SAFETY-REJECTED target 判定行（no_std println 门面）。
+eneros-runtime = { path = "../../runtime/runtime" }
 # 蓝图 24/40 WP-40.7：AuthorizedCommand 唯一构造（ControlGateway::authorize）、
 # ControlChain、签名信封、ControlEnvelope wire。
 eneros-control-gateway = { path = "../control-gateway" }

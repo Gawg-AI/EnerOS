@@ -82,6 +82,11 @@ note = "48（WP-48.3）IEC 103 配置；自有 ASDU codec BLOCKED"
 consumer = ["svc-gbt27930"]
 note = "48（WP-48.4）GB/T 27930 配置；地址表/超时表占位值须按规约附录核订（BLOCKED）"
 
+
+[active."security"]
+consumer = ["svc-control-dispatch", "svc-device-agent"]
+note = "SPEC WP-A.1 控制链信封 HMAC 密钥节——键值不落文件，构建期 KMS 链注入（configs/kms-dev 为开发档模板）；TOML 内禁止任何键"
+
 # --- TEMPLATE：已移入 configs/templates/，不进 release 闭包 ---
 # （完整清单由 gate 对照目录自动校验；这里登记已知子集 + 豁免说明）
 [template]

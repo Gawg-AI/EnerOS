@@ -871,6 +871,11 @@ pub struct SpawnCtx {
     pub root_vspace: u64,
     /// root-task 继承的 ASID pool cap。
     pub asid_pool: u64,
+    /// SPEC-B WP-B.1：已映射设备帧登记 `(paddr, size_bits, vaddr)`——同物理
+    /// 页（如 2MiB 大区帧内子设备）二次请求直接去重复用，避免对同一 device
+    /// untyped 重复 Retype 撞 freeIndex 落错页（QEMU virt 大区根因，实测
+    /// pl011 取帧错位 → UART 翻译故障）。固定 8 槽（当前 ≤3 处使用）。
+    pub dev_maps: [Option<(u64, u64, u64)>; 8],
 }
 
 /// 从 bootinfo 解析的 untyped 描述列表构造 spawn 上下文。
@@ -929,6 +934,7 @@ impl SpawnCtx {
             root_cnode: caps.cnode,
             root_vspace: caps.vspace,
             asid_pool: caps.asid_pool,
+            dev_maps: [None; 8],
         }
     }
 }
@@ -979,7 +985,8 @@ pub const READY_NTFN_CSPACE_SLOT: u64 = 2;
 /// 0x4000_0000 区域不冲突；L0/L1 页表由 elfloader 提供，spawn 补 L2/L3）。
 pub const WINDOW_BASE: u64 = 0x8000_0000;
 
-/// 服务地址空间基址（与 main.rs VSPACE_BASE 一致）。
+/// 服务地址空间基址（main.rs 引用本常量——SPEC-R4 WP-R4.3 单源，
+/// 历史"与 main.rs VSPACE_BASE 一致"注释互认双写已收编）。
 ///
 /// 0x200000 = 服务 ELF 链接基址（aarch64-unknown-none 默认）：ET_EXEC
 /// 固定地址代码的绝对引用（跳转/数据）指向链接地址，映射必须与链接一致，
@@ -995,20 +1002,23 @@ pub const SVC_PRIORITY: u64 = 10;
 // ============================================================================
 
 /// virtio-blk 数据盘 MMIO 槽（QEMU virt 槽 2：enerosdata 数据盘；41 QEMU
-/// 实测 slot=2 blk bound）。物理地址 = VIRTIO_REGION_BASE + slot*0x200。
+/// 实测 slot=2 blk bound）。物理地址 = VIRTIO_MMIO_REGION_BASE + slot*0x200。
 pub const STORAGE_MMIO_SLOT: u64 = 2;
-/// virtio-mmio 区域基址（QEMU virt 板级事实；与 driver_probe 常量一致）。
-pub const STORAGE_VIRTIO_REGION_BASE: u64 = 0x0a00_0000;
-/// virtio-mmio 槽步长（legacy 传输）。
-pub const STORAGE_MMIO_SLOT_STRIDE: u64 = 0x200;
-/// 服务 VSpace 中 virtio-blk MMIO 页的固定虚拟地址（与 drv-svc
-/// blk_backend.rs 的 `SVC_STORAGE_MMIO_VADDR` 一致——单一事实源）。
-pub const STORAGE_MMIO_VADDR: u64 = 0x4000_0000;
-/// 服务 VSpace 中 DMA 池（9 页连续物理帧）的固定虚拟地址（与 drv-svc
-/// blk_backend.rs 的 `SVC_STORAGE_DMA_VADDR` 一致）。
-pub const STORAGE_DMA_VADDR: u64 = 0x4001_0000;
-/// DMA 池页数（virtio-blk 队列下限；与 drv-svc `SVC_STORAGE_DMA_PAGES` 一致）。
-pub const STORAGE_DMA_PAGES: usize = 9;
+/// virtio-mmio 区域基址（QEMU virt 板级事实；单源 = handover-abi——
+/// SPEC-R4 WP-R4.3，历史 spawn/driver_probe/entropy 三抄已收编）。
+pub const STORAGE_VIRTIO_REGION_BASE: u64 = eneros_handover_abi::VIRTIO_MMIO_REGION_BASE;
+/// virtio-mmio 槽步长（legacy 传输；单源 = handover-abi）。
+pub const STORAGE_MMIO_SLOT_STRIDE: u64 = eneros_handover_abi::VIRTIO_MMIO_SLOT_STRIDE;
+// SPEC-B/C（2026-08-28）：移交 vaddr 常量单一事实源 = abi/handover-abi
+//（历史与 drv-svc blk_backend 同值不同名双源，注释互称"单一事实源"——
+// eipc_grants 孪生病收尾，本卷治常量双源；Handover 结构/表驱动为 C.3 续作）。
+// SPEC-R4 WP-R4.3：NET/UART 面同病同治——本文件不再本地定义任何移交
+// vaddr/页数常量，NET_MMIO_VADDR/NET_DMA_PAGES/UART_MMIO_VADDR 一并自
+// handover-abi re-export（区段不交冻结测试见本文件 1295 起）。
+pub use eneros_handover_abi::{
+    NET_DMA_PAGES, NET_MMIO_VADDR, STORAGE_DMA_PAGES, STORAGE_DMA_VADDR, STORAGE_MMIO_VADDR,
+    UART_MMIO_VADDR,
+};
 
 /// svc-storage 设备移交句柄（spawn 时构造，服务 `_start` X3/X4/X5 接收）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1026,12 +1036,10 @@ pub fn storage_mmio_phys() -> u64 {
     STORAGE_VIRTIO_REGION_BASE + STORAGE_MMIO_SLOT * STORAGE_MMIO_SLOT_STRIDE
 }
 
-/// 协议服务 VSpace 中 virtio-net MMIO 页的固定虚拟地址（每服务 VSpace
-/// 独立——各服务可复用同一 vaddr 映射各自槽位物理页）。
-pub const NET_MMIO_VADDR: u64 = 0x4002_0000;
-/// 协议服务 DMA 池页数（virtio-net 队列下限，= VIRTIO_NET_POOL_SIZE/4K）。
-pub const NET_DMA_PAGES: usize = 9;
-
+/// 协议服务 VSpace 中 virtio-net MMIO 页的固定虚拟地址 = handover-abi
+/// [`NET_MMIO_VADDR`]（SPEC-R4 WP-R4.3 收编，本文件 re-export；每服务
+/// VSpace 独立——各服务可复用同一 vaddr 映射各自槽位物理页）。
+///
 /// 46（WP-46.2 资源占用单一事实源）：协议服务 → virtio-net 槽位表。
 ///
 /// 每协议独占一个 QEMU virtio-mmio 槽（`0x0a000000 + slot*0x200`）；
@@ -1043,8 +1051,9 @@ pub const NET_DMA_PAGES: usize = 9;
 /// - 1  = svc-goose  （socket(L2) 后端 bus.1 5577——46.5 平台实测收归 43 G3
 ///   通道；QEMU virt 对多 socket 后端附着不可靠）
 /// - 13 = svc-sv     （socket(L2) 后端 5582）
-/// - svc-modbus-rtu → None（46.1 决策 b：QEMU 无第二串口；Serial 移交待
-///   真机/板卡 bring-up 由 root 传 PL011 MMIO——QEMU 下 X3/X4/X5=0 → 壳）。
+/// - svc-modbus-rtu → None（46.1 决策 b：QEMU 无第二串口）。SPEC-D 起
+///   其串口面走 UART 移交槽位（`UART_HANDOVER_TABLE` 登记制 + **X7**
+///   寄存器通道，见 `UartHandover`）——QEMU 空表下仍诚实无柄 → 壳。
 pub fn proto_net_slot(name: &str) -> Option<u64> {
     match name {
         "svc-modbus-tcp" => Some(8),
@@ -1152,6 +1161,260 @@ pub struct NetHandover {
     pub dma_vaddr: u64,
     /// DMA 池物理基址（X5）。
     pub dma_phys: u64,
+}
+
+// ============================================================================
+// SPEC-SERIES-2026-08-27/D（WP-D.1）：svc-modbus-rtu UART 移交槽位
+// ============================================================================
+
+/// 协议服务 VSpace 中 PL011 MMIO 页的固定虚拟地址 = handover-abi
+/// [`UART_MMIO_VADDR`]（SPEC-R4 WP-R4.3 收编，本文件 re-export；svc-modbus-rtu
+/// 消费侧经 X7 参数接收，无本地副本）。区段 0x40030000..0x40031000 与
+/// STORAGE_DMA_VADDR（0x40010000+9页）、NET_MMIO_VADDR 两页区
+/// （0x40020000..0x40022000）互不重叠（单测锁定）。
+///
+/// SPEC-D WP-D.1：UART 设备移交句柄（spawn 时构造，服务 `_start` **X7**
+/// 接收 vaddr；DAQ-1 裁决=寄存器通道——X7 空闲且 MMIO 映射移交与
+/// storage/net 的 X3/X4/X5 寄存器先例同族；EIPC 授予式适合"端点调用授权"，
+/// 不适合设备帧映射面）。⚠ 写入面预算见 [`INITIAL_REG_COUNT`]：count 按
+/// seL4 aarch64 **规范序**计（PC/SP/SPSR + X0..X7 = 11），不等于 X 寄存器号
+/// ——D 卷曾误把 count=10 读作"覆盖到 X9"，实际只到 X6，X7 被内核静默截断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UartHandover {
+    /// PL011 MMIO 页在服务 VSpace 的虚拟地址（X7；恒为 [`UART_MMIO_VADDR`]）。
+    pub mmio_vaddr: u64,
+}
+
+/// 服务 → 可移交非-console PL011 物理基址**允许清单**（board-fact 登记制，
+/// fail-closed：未登记即不移交）。
+///
+/// - 今日全空（F-S1 环境公理：QEMU virt 唯一 pl011 即 kernel console，
+///   重配波特率/复位 CR 会打断内核串口输出；移交 console 是事故不是功能）。
+/// - 真机 bring-up = owner 在此登记一枚**非 console** pl011 的 reg 基址
+///   （C4 注脚：届时 C1 host 全链在板上复跑即为真机验收——程序本体零改码）。
+/// - 扁平序号（行内展开序）= 冲突拒绝位图的 bit 号；同实例二次认领在
+///   spawn 循环被拒（见 `uart_handover_slot` 单测的冲突语义锁定）。
+const UART_HANDOVER_TABLE: &[(&str, &[u64])] = &[
+    // ("svc-modbus-rtu", &[0x______]),  // ← 真机填空项（owner 登记）
+];
+
+/// 服务 → `(可移交 paddr, 表内扁平序号)`。表参数化供 host 单测注入演练
+/// （生产入口恒读 [`UART_HANDOVER_TABLE`]）；每服务取该行首个登记 paddr。
+fn uart_handover_slot_in(table: &[(&str, &[u64])], name: &str) -> Option<(u64, usize)> {
+    let mut flat = 0usize;
+    for (svc, paddrs) in table {
+        for p in *paddrs {
+            if *svc == name {
+                return Some((*p, flat));
+            }
+            flat += 1;
+        }
+    }
+    None
+}
+
+/// 生产入口：读允许清单解析服务的 UART 移交槽。
+pub fn uart_handover_slot(name: &str) -> Option<(u64, usize)> {
+    uart_handover_slot_in(UART_HANDOVER_TABLE, name)
+}
+
+/// SPEC-D WP-D.1 C1 装配校验（host）：UART 移交允许清单 + 占用位图纯逻辑。
+#[cfg(test)]
+mod proto_uart_slot_tests {
+    #![allow(clippy::disallowed_macros)] // 测试断言 panic!（mgmt-cli 先例）
+    use super::*;
+
+    /// F-S1 锁定：QEMU 无第二串口——现行空表下**任何**服务都不得获得
+    /// UART 移交（svc-modbus-rtu 走诚实降级壳，判据 D.2-C3 的装配前提）。
+    #[test]
+    fn empty_allowlist_hands_over_nothing_today() {
+        for name in [
+            "svc-modbus-rtu",
+            "svc-modbus-tcp",
+            "svc-telemetry",
+            "svc-config",
+        ] {
+            assert_eq!(uart_handover_slot(name), None, "{name} 在空表下不得有移交");
+        }
+    }
+
+    /// 2026-08-28 六卷复验回归：写入面 count 必须覆盖 `initial_registers`
+    /// 可能写的全部 X 寄存器（x0..x7）。aarch64 规范序 X 不连续（X7=索引
+    /// 10）——SPEC-D 曾沿用 count=10，X7 被内核静默截断（QEMU 空表下
+    /// X7 恒 0 恰好无症状，真机移交即断链）。本测试锁「X7 落在写入面内」；
+    /// 编译期另有 const 断言双保险（见 [`INITIAL_REG_COUNT`]）。
+    #[test]
+    fn initial_reg_count_covers_every_handover_register() {
+        for x in 0..=7usize {
+            let idx = eneros_sel4_sys::types::reg_x_index(x)
+                .unwrap_or_else(|| panic!("x{x} 必须在规范序表内"));
+            assert!(
+                idx < INITIAL_REG_COUNT,
+                "写入面 count={INITIAL_REG_COUNT} 漏 x{x}（规范索引 {idx}）——寄存器移交静默截断"
+            );
+        }
+        // 锚定病灶本尊：X7 规范索引=10（非 X 寄存器号线性映射）。
+        assert_eq!(eneros_sel4_sys::types::reg_x_index(7), Some(10));
+        assert_eq!(INITIAL_REG_COUNT, 11);
+    }
+
+    /// 登记制语义：行内多实例取首个；未登记服务 None；扁平序号按表展开
+    /// 序分配（供占用位图索引）。
+    #[test]
+    fn registered_service_resolves_first_paddr_and_flat_index() {
+        let table: &[(&str, &[u64])] = &[
+            ("svc-a", &[0x0900_0000]),
+            ("svc-b", &[0x0910_0000, 0x0920_0000]), // 行内多实例：取首个
+        ];
+        assert_eq!(
+            uart_handover_slot_in(table, "svc-a"),
+            Some((0x0900_0000, 0))
+        );
+        assert_eq!(
+            uart_handover_slot_in(table, "svc-b"),
+            Some((0x0910_0000, 1))
+        );
+        assert_eq!(uart_handover_slot_in(table, "svc-none"), None);
+    }
+
+    /// C1 冲突拒绝：同一实例（同一位图序号）第二次认领必须被拒；互异
+    /// 实例各自成功；越界序号一律拒绝。目标构建 [`uart_claim`] 复用本
+    /// 纯函数核，两侧判定等价。
+    #[test]
+    fn slot_claim_conflict_rejected_distinct_accepted() {
+        let mut taken: u32 = 0;
+        // 首次认领 idx=0 成功。
+        let next = uart_claim_once(taken, 0).expect("首次认领必须成功");
+        taken = next;
+        // 同实例（idx=0）二次认领 → 拒绝。
+        assert_eq!(uart_claim_once(taken, 0), None, "重复移交同一实例必须被拒");
+        // 互异实例（idx=1）→ 成功且位图累积。
+        let next = uart_claim_once(taken, 1).expect("第二实例认领必须成功");
+        assert_eq!(next.count_ones(), 2, "两实例各占一");
+        // 越界（≥32）→ 拒绝。
+        assert_eq!(uart_claim_once(0, 32), None);
+        assert_eq!(uart_claim_once(0, usize::MAX), None);
+    }
+
+    /// UART MMIO 页区与其余设备 VA 区两两不交（次生遮蔽防范——46.5
+    /// 同页遮蔽根因的静态防线）。
+    #[test]
+    fn uart_mmio_vaddr_region_disjoint_from_other_device_regions() {
+        let page = PAGE_SIZE;
+        let ranges = [
+            (
+                "storage_dma",
+                STORAGE_DMA_VADDR,
+                STORAGE_DMA_PAGES as u64 * page,
+            ),
+            ("net_mmio", NET_MMIO_VADDR, 2 * page),
+            ("uart_mmio", UART_MMIO_VADDR, page),
+        ];
+        for i in 0..ranges.len() {
+            for j in (i + 1)..ranges.len() {
+                let (ni, si, li) = ranges[i];
+                let (nj, sj, lj) = ranges[j];
+                assert!(
+                    si + li <= sj || sj + lj <= si,
+                    "设备 VA 区重叠: {ni}[{si:#x}+{li:#x}] 与 {nj}[{sj:#x}+{lj:#x}]"
+                );
+            }
+        }
+    }
+}
+
+/// spawn 循环内的实例占用位图（bit i = 表内扁平序号 i 已移交）。seL4
+/// 启动期单线程顺序 spawn——load/store 位图足够；restart 不经此处（映射
+/// 随服务地址空间持久，寄存器由 `initial_registers` 从 SpawnedHandle 重建）。
+#[cfg(target_os = "none")]
+static UART_CLAIMED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// 占位纯函数核：`idx` 空闲则返回置位后的新位图；已占用/越界（≥32）→
+/// None。host 单测直接覆盖冲突语义；目标构建 [`uart_claim`] 以同一函数
+/// 判定，保证两侧判定等价（单一事实源）。host 非 test 构建无运行时消费方
+/// （uart_claim 仅目标构建存在）——dead 允许注记只对这一面生效。
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+fn uart_claim_once(taken: u32, idx: usize) -> Option<u32> {
+    if idx >= 32 {
+        return None;
+    }
+    let bit = 1u32 << idx;
+    (taken & bit == 0).then_some(taken | bit)
+}
+
+/// 尝试占住扁平序号 `idx`（已占用 → None，冲突 fail-closed）。
+#[cfg(target_os = "none")]
+fn uart_claim(idx: usize) -> Option<()> {
+    use core::sync::atomic::Ordering;
+    let cur = UART_CLAIMED.load(Ordering::Acquire);
+    match uart_claim_once(cur, idx) {
+        Some(next) => {
+            UART_CLAIMED.store(next, Ordering::Release);
+            Some(())
+        }
+        None => None,
+    }
+}
+
+/// D 卷目标构建下尝试构造服务的 UART 移交句柄并映射 MMIO 页进其 VSpace。
+/// 返回 None = 表中无登记 / 序号越限 / 同实例已被占用 / 映射失败（各分支
+/// 打印如实原因行，不静默）。host 构建无 seL4 FFI → 恒 None（纯逻辑测试
+/// 经 `uart_handover_slot_in` 覆盖）。
+#[cfg(target_os = "none")]
+fn try_uart_handover(
+    svc_name: &str,
+    ctx: &mut SpawnCtx,
+    vspace: u64,
+    types: &ObjectTypeTable,
+    rights: &RightsTable,
+) -> Option<UartHandover> {
+    let (paddr, idx) = match uart_handover_slot(svc_name) {
+        Some(v) => v,
+        None => return None,
+    };
+    if uart_claim(idx).is_none() {
+        crate::println!(
+            "[eneros-root-task] UART-HANDOVER {svc_name}: CONFLICT idx={idx} 实例已移交 —— 拒绝（fail-closed）"
+        );
+        return None;
+    }
+    let frame = match ctx.caps.alloc(1) {
+        Some(f) => f,
+        None => {
+            crate::println!("[eneros-root-task] UART-HANDOVER {svc_name}: NoCapSlot —— 不移交");
+            return None;
+        }
+    };
+    // SAFETY: frame 为刚分配的槽；retype_device_one 按 paddr 定位覆盖其上的
+    // device untyped（FIX-BUGS-0810 B2），失败即 Err 不产生半成品映射。
+    let mapped = retype_device_one(ctx, types.arm_frame, OBJ_BITS_SMALL_PAGE, paddr, frame)
+        .and_then(|()| {
+            let perm = VmPermissions::DEVICE_RW_NX;
+            map_frame_with_pagetables(
+                ctx,
+                vspace,
+                frame,
+                UART_MMIO_VADDR,
+                perm.cap_rights(rights),
+                perm.vm_attributes(),
+            )
+        });
+    match mapped {
+        Ok(()) => {
+            crate::println!(
+                "[eneros-root-task] UART-HANDOVER {svc_name}: mmio phys=0x{paddr:x} -> vaddr=0x{UART_MMIO_VADDR:x}"
+            );
+            Some(UartHandover {
+                mmio_vaddr: UART_MMIO_VADDR,
+            })
+        }
+        Err(e) => {
+            crate::println!(
+                "[eneros-root-task] UART-HANDOVER {svc_name}: map FAILED {e:?} —— 不移交"
+            );
+            None
+        }
+    }
 }
 
 /// svc-storage DMA 帧的平台 RAM 上限（QEMU 1GB：物理 [0x40000000,
@@ -1592,6 +1855,9 @@ pub struct SpawnedHandle {
     /// 43（L2 协议互操作面）：svc-modbus-tcp 的 virtio-net 移交句柄
     /// （X3/X4/X5；同 storage 机制）。非 modbus-tcp 服务为 None。
     pub net_handover: Option<NetHandover>,
+    /// SPEC-D WP-D.1：svc-modbus-rtu 的 UART MMIO 移交句柄（X7）。非
+    /// 登记服务为 None（今日空表恒 None；restart 同源重建寄存器）。
+    pub uart_handover: Option<UartHandover>,
 }
 
 /// 服务的心跳槽（X4；受监控服务 = `HEARTBEAT_NTFN_SLOT`，否则 0）。
@@ -1658,6 +1924,9 @@ pub fn sel4_spawn_services(
     // 复用（见 configure_service 的共享帧逻辑）。
     let mut net_page0_frame: Option<u64> = None;
     let mut net_page1_frame: Option<u64> = None;
+    // SPEC-B WP-B.1：整批 spawn 共享一次闸门读数（root 单线程；PL031 在
+    // spawn 前已由 rtc_factory 注入）。restart 路径由 service.rs 每次新读。
+    let wall_epoch = gated_wall_epoch("spawn");
     for (svc_idx, svc) in plan.services.iter().enumerate() {
         let module = bundle
             .modules
@@ -1678,22 +1947,31 @@ pub fn sel4_spawn_services(
         // 阶段 1.5 mint 共享同一推导——单一事实源）。
         let (eipc_mask, _) = eipc_grants_for(&svc.name);
         let heartbeat_slot = heartbeat_slot_of(&svc.name);
-        let (tcb, ep, root_fault_ep, ready_ntfn, cnode, storage_handover, net_handover) =
-            configure_service(
-                svc,
-                &elf,
-                module,
-                entry,
-                ctx,
-                &types,
-                &rights,
-                fault_ep,
-                svc_idx as u64 + 1, // fault_ep badge（0 保留；supervisor 识别服务用）
-                eipc_mask,
-                heartbeat_slot,
-                &mut net_page0_frame,
-                &mut net_page1_frame,
-            )?;
+        let (
+            tcb,
+            ep,
+            root_fault_ep,
+            ready_ntfn,
+            cnode,
+            storage_handover,
+            net_handover,
+            uart_handover,
+        ) = configure_service(
+            svc,
+            &elf,
+            module,
+            entry,
+            ctx,
+            &types,
+            &rights,
+            fault_ep,
+            svc_idx as u64 + 1, // fault_ep badge（0 保留；supervisor 识别服务用）
+            eipc_mask,
+            heartbeat_slot,
+            wall_epoch,
+            &mut net_page0_frame,
+            &mut net_page1_frame,
+        )?;
         tcb_slots.push(tcb);
         handles.push(SpawnedHandle {
             name: svc.name.clone(),
@@ -1720,6 +1998,7 @@ pub fn sel4_spawn_services(
             heartbeat_ntfn: 0,
             storage_handover,
             net_handover,
+            uart_handover,
         });
     }
 
@@ -1727,7 +2006,13 @@ pub fn sel4_spawn_services(
     // 心跳 notification。全部服务 ep 在阶段一已知——跨服务 mint 只能在
     // 全集就绪后执行（客户端在 resume 前拿到完整端点集）。
     {
-        // 目标 ep 快照（借用分解：iter_mut 内不可再 iter 查找）。
+        // SPEC-C 可观测性：授予表总边数随镜像落串口——运行时表与代码
+        // 单源一致性直证（新增边缺席排查留给此行）。
+        crate::println!(
+            "[eneros-root-task] EIPC-GRANT-TABLE edges={} base_slot={}",
+            eneros_agent_sdk::EIPC_GRANTS.len(),
+            eneros_agent_sdk::EIPC_EP_BASE_SLOT,
+        );
         let eps: Vec<(alloc::string::String, u64)> =
             handles.iter().map(|h| (h.name.clone(), h.ep)).collect();
         for (idx, handle) in handles.iter_mut().enumerate() {
@@ -1815,8 +2100,9 @@ pub fn sel4_spawn_services(
 
 /// 构造 EL0 服务初始寄存器上下文（W2.1 不变量单一持有）。
 ///
-/// seL4 aarch64 `UserContext` 布局：`pc(0) sp(1) spsr(2) x0(3) x1(4)`，需以
-/// `count=8` 写入 `tcb_write_registers`（覆盖到 X4）。这是 spawn（`configure_service`）与
+/// seL4 aarch64 `UserContext` 布局：`pc(0) sp(1) spsr(2) x0(3) x1(4)…x7(10)`
+/// （**规范序 X 不连续**，权威映射见 sel4-sys `types.rs` 顶注），写入面
+/// count = [`INITIAL_REG_COUNT`]。这是 spawn（`configure_service`）与
 /// restart（`restart_service`）共享的唯一构造点——寄存器布局知识不再分散在两处
 /// 靠注释同步。
 ///
@@ -1828,6 +2114,31 @@ pub fn sel4_spawn_services(
 /// - `eipc_mask`：EIPC 授予位掩码（X3；蓝图 40 收尾）——bit i = 槽
 ///   `EIPC_EP_BASE_SLOT + i` 持目标服务 endpoint cap（0 = 未授予）。
 /// - `heartbeat_slot`：心跳 notification 槽（X4；0 = 未授予不心跳）。
+///
+/// SPEC-B WP-B.1：`wall_epoch` 经 time_gate 闸门的 Unix epoch 秒，统一走
+/// **X6** 下发。X3/X4/X5 在 storage/net 设备移交路径已被占用（41/43/46），
+/// 不可复用；X6 对全部服务空闲（规范索引 9，写入面 count 见
+/// [`INITIAL_REG_COUNT`]）。0 = 无可信
+/// 时间，服务侧显式降级（`TIME-EPOCH-MISSING`），绝不静默冒充 1970 基准。
+///
+/// SPEC-D WP-D.1：`uart` 移交走 **X7**（DAQ-1 裁决=寄存器通道；X7 对全部
+/// 服务空闲——storage/net 与 uart 分属互斥服务集，X3-X5 三路分支不受影响；
+/// UART 移交服务仍保留通用分支的 X3=EIPC 掩码 / X4=心跳槽，因其同时消费
+/// svc-config 授予边拉取协议配置）。0 = 无串口柄 → 服务侧诚实降级壳。
+/// 初寄存器写入面 count（`tcb_write_registers` 第三参）：必须覆盖
+/// [`initial_registers`] 触达的最高**规范索引**。aarch64 规范序 X 不连续
+/// （X7 = `REG_X7` = 10，跟在 PC/SP/SPSR 之后），故 count = 11 而非 X 寄存器
+/// 号。SPEC-D WP-D.1 曾沿用 SPEC-B 的 count=10：恰好漏 X7（内核对越界
+/// count 静默截断，不报错——真机移交值恒 0，服务侧诚实降级掩盖了断链），
+/// 2026-08-28 六卷复验修正。下方编译期断言锁不变式：规范序常量若变或
+/// count 被回缩，构建即炸。
+pub(crate) const INITIAL_REG_COUNT: usize = 11;
+
+const _: () = assert!(
+    INITIAL_REG_COUNT > eneros_sel4_sys::types::REG_X7,
+    "INITIAL_REG_COUNT 必须覆盖 X7（REG_X7）——UART 移交经 X7",
+);
+
 #[cfg(target_os = "none")]
 pub(crate) fn initial_registers(
     entry: u64,
@@ -1836,8 +2147,10 @@ pub(crate) fn initial_registers(
     ready_ntfn_slot: u64,
     eipc_mask: u64,
     heartbeat_slot: u64,
+    wall_epoch: u64,
     storage: Option<StorageHandover>,
     net: Option<NetHandover>,
+    uart: Option<UartHandover>,
 ) -> UserContext {
     let mut regs = UserContext::zeroed();
     regs.set_pc(entry);
@@ -1866,7 +2179,46 @@ pub(crate) fn initial_registers(
             }
         },
     }
+    // SPEC-B WP-B.1：X6=墙钟 epoch 秒（全服务路径统一；不受上面三路分支影响）。
+    regs.set_x(6, wall_epoch);
+    // SPEC-D WP-D.1：X7=UART MMIO vaddr（0=无移交；与三路分支正交）。
+    if let Some(u) = uart {
+        regs.set_x(7, u.mmio_vaddr);
+    }
     regs
+}
+
+/// SPEC-B WP-B.1：读 PL031 当前 Unix epoch 秒并过 [`time_gate::gate`] 合理性
+/// 闸门，产出可下发服务的 X6 值 + 串口判定行。
+///
+/// - `Accept` → 原值，打印 `TIME-EPOCH=<secs>`；
+/// - 无 RTC / Stale / Future / Missing 任一臂 → **0** 并打印
+///   `TIME-EPOCH-MISSING ... verdict=...`——垃圾时间按缺失显式降级，
+///   绝不静默放行。
+///
+/// spawn 主流程调一次、restart_service 每次重灌前新读一次（重启墙钟前进
+/// 判据的数据面）。QEMU 窗口复现缺时臂：`-rtc base=<过去时刻>` 使 PL031
+/// 真实读出过期秒值，经完整闸门路径落 MISSING（evidence/spec-2026-08-27-B/
+/// run_window.sh；宿主时钟污染零触碰生产代码）。
+#[cfg(target_os = "none")]
+pub(crate) fn gated_wall_epoch(stage: &str) -> u64 {
+    use eneros_config_bundle::schema::time_gate::{self, WallEpochVerdict};
+    let raw = eneros_time::rtc_now_secs();
+    let (x6, line) = match raw {
+        None => (
+            0u64,
+            alloc::format!("TIME-EPOCH-MISSING stage={stage} source=no-rtc"),
+        ),
+        Some(secs) => match time_gate::gate(secs) {
+            WallEpochVerdict::Accept => (secs, alloc::format!("TIME-EPOCH={secs} stage={stage}")),
+            v => (
+                0,
+                alloc::format!("TIME-EPOCH-MISSING stage={stage} verdict={v:?} raw={secs}"),
+            ),
+        },
+    };
+    crate::println!("[eneros-root-task] {}", line);
+    x6
 }
 
 /// 配置单个服务（阶段一）：对象 retype / ASID / 页表 / 页映射与拷贝 /
@@ -1893,6 +2245,7 @@ fn configure_service(
     ntfn_badge: u64,
     eipc_mask: u64,
     heartbeat_slot: u64,
+    wall_epoch: u64,
     net_page0_frame: &mut Option<u64>,
     net_page1_frame: &mut Option<u64>,
 ) -> Result<
@@ -1904,6 +2257,7 @@ fn configure_service(
         u64,
         Option<StorageHandover>,
         Option<NetHandover>,
+        Option<UartHandover>,
     ),
     SpawnError,
 > {
@@ -2389,6 +2743,16 @@ fn configure_service(
         }
     }
 
+    // SPEC-D WP-D.1：svc-modbus-rtu UART MMIO 移交——允许清单登记制
+    // （`uart_handover_slot`；今日空表=F-S1 QEMU 无第二串口的诚实路径）。
+    // 寄存器通道 X7 承载 vaddr（DAQ-1 裁决见 UartHandover 文档）；服务侧
+    // 句柄缺席 → 能力壳 ST_UNAVAILABLE/RTU-UNAVAILABLE（fail-closed 两态，
+    // 无中间谎言态）。
+    let mut uart_handover: Option<UartHandover> = None;
+    if uart_handover_slot(&svc.name).is_some() {
+        uart_handover = try_uart_handover(&svc.name, ctx, vspace, types, rights);
+    }
+
     // 6b 收尾：服务 VSpace 的 IPC buffer 绑定（seL4 14.0.0 API：SetSpace
     // 只绑 CSpace/VSpace + fault_ep，buffer 经 SetIPCBuffer 单独绑定）。
     // K2.3：fault_ep = 服务 CSpace 槽 1（root 的 fault handler ep 的 mint
@@ -2496,7 +2860,8 @@ fn configure_service(
     //    X3=EIPC 授予掩码（蓝图 40 收尾）, X4=心跳 ntfn 槽（0=未授予）；
     //    svc-storage 特例：X3=MMIO vaddr, X4=DMA vaddr, X5=DMA phys（41 设备
     //    移交，见 initial_registers 文档）。
-    //    布局知识由 `initial_registers` 单一持有（W2.1）；count=8 由该函数契约保证。
+    //    SPEC-B WP-B.1：X6=闸门后墙钟 epoch 秒。
+    //    布局知识由 `initial_registers` 单一持有（W2.1）；count 由该函数契约保证。
     let regs = initial_registers(
         entry,
         svc.stack_top,
@@ -2504,13 +2869,16 @@ fn configure_service(
         READY_NTFN_CSPACE_SLOT,
         eipc_mask,
         heartbeat_slot,
+        wall_epoch,
         storage_handover,
         net_handover,
+        uart_handover,
     );
-    // SAFETY: regs 指向有效 UserContext（栈上），count=9 写
-    // pc/sp/spsr/x0..x5（索引 0..8；X5 供 svc-storage 设备移交用，
-    // 其他服务 X5=0）。
-    tcb_write_registers(tcb, 0, 9, &regs).map_err(SpawnError::Sel4)?;
+    // SAFETY: regs 指向有效 UserContext（栈上），count=INITIAL_REG_COUNT 写
+    // pc/sp/spsr/x0..x7（规范索引 0..10；X5 供 svc-storage/net 设备移交，
+    // 其他服务 X5=0；X6=SPEC-B 墙钟 epoch 秒，全部服务统一；X7=SPEC-D
+    // UART MMIO vaddr，仅 UART_HANDOVER_TABLE 登记服务非零）。
+    tcb_write_registers(tcb, 0, INITIAL_REG_COUNT as u64, &regs).map_err(SpawnError::Sel4)?;
 
     // 10. 优先级（authority = root TCB cap）。
     // SAFETY: root_tcb 为 root-task 自身 TCB cap（有效且有权）。
@@ -2568,6 +2936,7 @@ fn configure_service(
         cnode,
         storage_handover,
         net_handover,
+        uart_handover,
     ))
 }
 
@@ -2578,6 +2947,19 @@ fn configure_service(
 /// 物理地址 = 虚拟地址的 1:1 语义由调用方保证）。
 #[cfg(target_os = "none")]
 pub fn map_device_mmio(ctx: &mut SpawnCtx, paddr: u64, size_bits: u64) -> Result<(), SpawnError> {
+    // SPEC-B WP-B.1：同物理页去重——paddr 已落在某既有设备帧范围内 → 直接
+    // 复用（vaddr 恒等=物理，不重 Retype）。大区帧先映射、子设备后请求的
+    // 场景由本登记保证零冲突。
+    for entry in &ctx.dev_maps {
+        if let Some((p0, bits0, _)) = entry {
+            let Some(end0) = p0.checked_add(1u64 << *bits0) else {
+                continue;
+            };
+            if paddr >= *p0 && paddr < end0 {
+                return Ok(());
+            }
+        }
+    }
     let types = ObjectTypeTable::resolve();
     let rights = RightsTable::resolve();
     // 分配 frame 槽并 retype（device untyped 承载设备内存）。
@@ -2622,6 +3004,13 @@ pub fn map_device_mmio(ctx: &mut SpawnCtx, paddr: u64, size_bits: u64) -> Result
         return Err(SpawnError::Sel4(
             eneros_sel4_sys::safe::Sel4Error::FailedLookup,
         ));
+    }
+    // SPEC-B WP-B.1：登记设备帧（首个空槽；满则丢弃——去重仅优化）。
+    for slot in &mut ctx.dev_maps {
+        if slot.is_none() {
+            *slot = Some((paddr, size_bits, paddr));
+            break;
+        }
     }
     Ok(())
 }

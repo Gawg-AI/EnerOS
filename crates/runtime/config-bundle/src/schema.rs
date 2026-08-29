@@ -157,7 +157,7 @@ pub mod points {
 pub mod ai_peer {
     pub const CONFIG_ID: &str = "ai-peer";
     pub const SCHEMA: u16 = 1;
-    pub const MAX_FIELD: u8 = 5;
+    pub const MAX_FIELD: u8 = 6;
     /// 1：在途请求超时毫秒 u64（值域 [100, 60000]）。
     pub const FIELD_TIMEOUT_MS: u8 = 1;
     /// 2：连续超时→Unhealthy 阈值 u32（[1, 10]）。
@@ -168,6 +168,9 @@ pub mod ai_peer {
     pub const FIELD_MAX_POWER_KW: u8 = 4;
     /// 5：提案 TTL 上限秒 u32（[1, 3600]）。
     pub const FIELD_TTL_SECS: u8 = 5;
+    /// 6：有界学习闸（SPEC-E WP-E.3）u8 0/1（EAQ-2：dev/qemu=true、
+    /// release 归 owner 配置裁决——值必配，无代码缺省）。
+    pub const FIELD_LEARN_ENABLED: u8 = 6;
 
     pub const TIMEOUT_MS_MIN: u64 = 100;
     pub const TIMEOUT_MS_MAX: u64 = 60_000;
@@ -177,4 +180,77 @@ pub mod ai_peer {
     pub const PROBE_EVERY_MAX: u32 = 100;
     pub const MAX_POWER_KW_MAX: f64 = 1000.0;
     pub const TTL_SECS_MAX: u32 = 3600;
+}
+
+/// `security`（consumer: svc-control-dispatch / svc-device-agent；
+/// SPEC-SERIES-2026-08-27/A WP-A.1；schema v1）
+pub mod security {
+    /// 配置 ID。
+    pub const CONFIG_ID: &str = "security";
+    /// payload schema 版本。
+    pub const SCHEMA: u16 = 1;
+    /// 允许的最大字段 id。
+    pub const MAX_FIELD: u8 = 1;
+    /// 控制链信封 HMAC-SM3 密钥（32B；构建期 KMS 注入链取得，文件不落明文）。
+    pub const FIELD_CONTROL_CHAIN_KEY: u8 = 1;
+    /// 信封密钥长度。
+    pub const CONTROL_CHAIN_KEY_LEN: usize = 32;
+}
+
+/// `time_gate`（SPEC-SERIES-2026-08-27/B WP-B.1，BAQ-2）：墙钟 epoch 合理性
+/// 闸门常量与判定——root spawn/restart 在把 RTC 读数经 X6 下发 EL0 服务前
+/// 必须过此闸门；垃圾时间（电池失效全零、出厂前旧钟、溢出级未来值）不得
+/// 污染审计/SOE 时间戳。阈值常量集中于此（owner 可调面），不散落 root-task。
+pub mod time_gate {
+    /// 下限：2026-01-01T00:00:00Z。低于它 = 出厂失效/严重过期（含 PL031
+    /// 电池失效回退的 epoch(0)），判不可信。
+    pub const WALL_EPOCH_MIN_SEC: u64 = 1_767_225_600;
+    /// 上限：2100-01-01T00:00:00Z。
+    ///
+    /// BAQ-2 原建议"服务构建时刻+30 天"为浮动基准——把构建墙钟嵌进镜像会
+    /// 复活 DEF-52-03（镜像非确定构建）P1，且部署超期产品被误杀；改用
+    /// 固定远期天花板实现同一意图（拦截溢出级/荒谬跳变），确定性可复现。
+    pub const WALL_EPOCH_MAX_SEC: u64 = 4_102_444_800;
+
+    /// 闸门四臂裁决（C1 判据：合法/过旧/超未来/零）。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum WallEpochVerdict {
+        /// 在合理窗内，可注入墙钟偏移。
+        Accept,
+        /// 早于下限（含出厂钟未校时）——按缺失降级。
+        Stale,
+        /// 晚于上限（跳变/溢出）——按缺失降级。
+        Future,
+        /// 零 = RTC 缺失或读数全零——显式降级 `TIME-EPOCH-MISSING`。
+        Missing,
+    }
+
+    /// 对 epoch 秒做四臂裁决。任何非 `Accept` 分支 root 一律以 X6=0 下发，
+    /// 服务侧显式打印降级行——绝不静默用 0 冒充可信时间。
+    pub fn gate(epoch_sec: u64) -> WallEpochVerdict {
+        match epoch_sec {
+            0 => WallEpochVerdict::Missing,
+            s if s < WALL_EPOCH_MIN_SEC => WallEpochVerdict::Stale,
+            s if s > WALL_EPOCH_MAX_SEC => WallEpochVerdict::Future,
+            _ => WallEpochVerdict::Accept,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn time_gate_four_verdicts() {
+            assert_eq!(gate(0), WallEpochVerdict::Missing);
+            assert_eq!(gate(1), WallEpochVerdict::Stale);
+            // 1970..=2025 全区间 stale（抽两端）。
+            assert_eq!(gate(WALL_EPOCH_MIN_SEC - 1), WallEpochVerdict::Stale);
+            assert_eq!(gate(WALL_EPOCH_MIN_SEC), WallEpochVerdict::Accept);
+            assert_eq!(gate(WALL_EPOCH_MAX_SEC), WallEpochVerdict::Accept);
+            assert_eq!(gate(WALL_EPOCH_MAX_SEC + 1), WallEpochVerdict::Future);
+            // u64 溢出级荒谬值落 Future。
+            assert_eq!(gate(u64::MAX), WallEpochVerdict::Future);
+        }
+    }
 }

@@ -9,6 +9,7 @@ description = "EnerOS 多 Agent 强化学习 (v0.188.0) — MAPPO + 信用分配
 [dependencies]
 
 [features]
+# SPEC-SERIES-2026-08-27/F 复核：零激活零 cfg 引用——A11 研究线预留位，解冻须 owner 裁决。
 experimental = []
 default = []
 

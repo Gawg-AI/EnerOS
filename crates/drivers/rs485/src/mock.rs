@@ -37,6 +37,10 @@ pub struct MockUartHw {
     de_re_high: AtomicBool,
     /// `configure_de_re` 是否已调用
     de_re_configured: AtomicBool,
+    /// 最近一次 configure 记录（SPEC-D 工厂贯通断言用）。
+    last_baud: u32,
+    /// 同上——校验位。
+    last_parity: Parity,
 }
 
 impl MockUartHw {
@@ -53,7 +57,14 @@ impl MockUartHw {
             rx_irq: 1,
             de_re_high: AtomicBool::new(false),
             de_re_configured: AtomicBool::new(false),
+            last_baud: 0,
+            last_parity: Parity::None,
         }
+    }
+
+    /// SPEC-D：最近一次 `configure` 的 (baud, parity) 记录。
+    pub fn last_config(&self) -> (u32, Parity) {
+        (self.last_baud, self.last_parity)
     }
 
     /// 预填充接收数据
@@ -133,12 +144,14 @@ impl Default for MockUartHw {
 impl UartHw for MockUartHw {
     fn configure(
         &mut self,
-        _baud_rate: u32,
+        baud_rate: u32,
         _data_bits: u8,
         _stop_bits: StopBits,
-        _parity: Parity,
+        parity: Parity,
     ) -> Result<(), DriverError> {
         self.configured.store(true, Ordering::Relaxed);
+        self.last_baud = baud_rate;
+        self.last_parity = parity;
         Ok(())
     }
 

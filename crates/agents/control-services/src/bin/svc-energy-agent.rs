@@ -37,10 +37,10 @@ pub extern "C" fn _start(
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
-    // WP-54.4：按目标名解析授予槽（agent-sdk 单一事实源），不再手数偏移。
+    // WP-54.4：按目标名解析授予槽（agent-sdk 单一事实源）；SPEC-B：
+    // 掩码位判定收编 eipc_granted_slot，不再手数偏移。
     let slot_of = |target: &'static str| -> Option<u64> {
-        let (bit, slot) = eneros_agent_sdk::eipc_resolve("svc-energy-agent", target)?;
-        (eipc_mask & (1 << bit) != 0).then_some(slot)
+        eneros_agent_sdk::eipc_granted_slot("svc-energy-agent", eipc_mask, target)
     };
     let telemetry: alloc::boxed::Box<
         dyn eneros_control_services::energy_agent_service::TelemetryClient,
@@ -221,7 +221,9 @@ impl eneros_control_services::ControlServiceHandler for EnergyAgentHandler<'_> {
 
 #[cfg(target_os = "none")]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    // 死亡必须可见（svc-device-agent 词形先例；svc-telemetry 同款订正）。
+    eneros_runtime::println!("[svc-energy-agent] PANIC: {info}");
     loop {
         core::hint::spin_loop();
     }

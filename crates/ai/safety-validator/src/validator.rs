@@ -50,6 +50,13 @@ impl SafetyValidator {
         validator
     }
 
+    /// 空校验器（SPEC WP-A.2）：生产决策咽喉接线用——由调用方按装配配置
+    /// 显式注册参数化规则，不隐含蓝图演示默认值。
+    #[must_use]
+    pub fn empty() -> Self {
+        Self { rules: Vec::new() }
+    }
+
     /// 添加规则并按 `priority()` 升序排序（D5）。
     pub fn add_rule(&mut self, rule: Box<dyn SafetyRule>) {
         self.rules.push(rule);

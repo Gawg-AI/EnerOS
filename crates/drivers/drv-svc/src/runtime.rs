@@ -202,6 +202,19 @@ pub mod wire {
             payload_len,
         })
     }
+
+    /// QEMU 实测容差解码（单一事实源，SPEC-B WP-B.2）：drv-svc 服务端按
+    /// 4B/word 回 MR，`RESPONSE_LEN=79` 会以 20 words（80B）返回；
+    /// [`decode_response`] 要求精确 79B，直接解码误判 bad-envelope。
+    /// 本函数接受尾部 padding（≥`RESPONSE_LEN`），只解前 `RESPONSE_LEN`
+    /// 字节——历史病灶：agent-sdk block_io 与 svc-control-dispatch 通道
+    /// 两处各自 inline（2026-08-28 体检），收编至此。
+    pub fn decode_response_padded(bytes: &[u8]) -> Option<DriverResponse> {
+        if bytes.len() < RESPONSE_LEN {
+            return None;
+        }
+        decode_response(&bytes[..RESPONSE_LEN])
+    }
 }
 
 /// 有界请求队列（固定容量；队满 → `ST_BUSY` 背压）。

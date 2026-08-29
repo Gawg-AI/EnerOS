@@ -23,3 +23,8 @@ eneros-hal = { path = "../../../crates/hal/hal" }
 eneros-protocol-abstract = { path = "../protocol-abstract", features = ["mock"] }
 # 集成测试：MockUartHw（tests/loopback.rs）——仅测试构建启用 mock。
 eneros-rs485 = { path = "../../drivers/rs485", features = ["mock"] }
+# SPEC-D WP-D.2 C1 全链：SerialTransportFactory → plugin 装配路径
+# （tests/serial_plugin_chain.rs）。仅 dev 边——release 闭包不进入。
+eneros-protocol-services = { path = "../protocol-services" }
+# C1 回执分类断言（OutcomeFrame/OutcomeCode 与 dispatch 同源语义）。
+eneros-control-gateway = { path = "../control-gateway" }

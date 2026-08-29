@@ -11,14 +11,16 @@
       "claim": "workspace 版本 v0.192.0（README.md:20）",
       "code_fact": "Cargo.toml workspace.version=0.313.45（44-00 §3 版本纪律链 0.313.0→0.313.45 可追溯）",
       "verdict": "STALE",
-      "action": "README 版本行刷新——归入 WP-52.4 文档对齐（非代码）"
+      "action": "README 版本行刷新——归入 WP-52.4 文档对齐（非代码）",
+      "resolution": "2026-08-27 SPEC-SERIES-F WP-F.2：README 现仅保留一处当前版本主张（v0.314.x 动态口径，以根 Cargo.toml 为准）；英文段 v0.22.0 期叙事删除；路线图 v0.192.0 注记刷新"
     },
     {
       "id": "C-02",
       "claim": "「国密 SM2/SM3/SM4 硬件加速」作为架构能力宣称（README.md:40/244 架构图与技术栈表）",
       "code_fact": "product/crypto-policy.toml 八个 product usage 全部为 Ed25519/SHA-256/rustls(P-256) 线且 product_allowed=true 绑定证据摘要；SM2/3/4 手卷=实验性（KAT+10 组 OpenSSL 互操作在库），无任何 product usage 引用；D4 裁决：v1.0 不宣称商密，商密认证 v1.x 另立项",
       "verdict": "MISALIGNED_WITH_D4",
-      "action": "README 措辞对齐 D4：国密降级表述为实验性能力、删除「硬件加速」无据宣称——归入 WP-52.4"
+      "action": "README 措辞对齐 D4：国密降级表述为实验性能力、删除「硬件加速」无据宣称——归入 WP-52.4",
+      "resolution": "2026-08-27 SPEC-SERIES-F WP-F.2：英文表 hardware accel 行改为 D4 口径（product=Ed25519/SHA-256/rustls；SM2/SM3/SM4 手卷实验性、无硬件加速宣称）；英文架构图 SM 行加 experimental 限定"
     },
     {
       "id": "C-03",
@@ -44,7 +46,8 @@
       "claim": "RTOS 实时指标（10ms 周期/抖动<1ms，README:34）",
       "code_fact": "perf-baseline.json+sig 冻结 SLO 在库（42 卷 Gate9 PASS 口径）；目标侧实时性能无 QEMU 等价物可证（QEMU 时钟爬慢已知，50 卷登记）——设计目标+host 基线证据，非产品实测",
       "verdict": "NEEDS_QUALIFICATION",
-      "action": "README 该行加「设计目标（真机待 B9）」限定——归入 WP-52.4"
+      "action": "README 该行加「设计目标（真机待 B9）」限定——归入 WP-52.4",
+      "resolution": "已核实 README 中文架构图该行含「设计目标——真机实测待 bring-up B9」限定语，动作已落地（此条此前即在树内完成，F 卷复查确认并补注）"
     },
     {
       "id": "C-07",

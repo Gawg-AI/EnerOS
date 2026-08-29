@@ -362,6 +362,7 @@ fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
     let mut profile_id = "qemu-prod";
     let mut sign_key_hex: Option<String> = None;
     let mut root_key_hex: Option<String> = None;
+    let mut control_chain_key_hex: Option<String> = None;
     // 子命令形态：`config compile [--profile ...]`。
     let args: Vec<String> = if args.first().map(|s| s.as_str()) == Some("compile") {
         args[1..].to_vec()
@@ -391,6 +392,14 @@ fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
                         .clone(),
                 );
             }
+            "--control-chain-key-hex" => {
+                i += 1;
+                control_chain_key_hex = Some(
+                    args.get(i)
+                        .ok_or_else(|| invalid("--control-chain-key-hex 需要值"))?
+                        .clone(),
+                );
+            }
             other => return Err(invalid(format!("config: 未知参数 {other}"))),
         }
         i += 1;
@@ -400,6 +409,7 @@ fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
         profile_id,
         sign_key_hex.as_deref(),
         root_key_hex.as_deref(),
+        control_chain_key_hex.as_deref(),
     )?;
     Ok(())
 }

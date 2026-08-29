@@ -543,7 +543,10 @@ jobs:
         run: |
           # ACTIVE 配置 → 签名 RuntimeConfigBundle（ota root_key 用测试键注入；
           # release 由 KMS 密钥注入，见 xtask config compile --help）。
-          cargo xtask config compile --profile qemu-prod --root-key-hex "$(printf '5a%.0s' {1..64})"
+          # WP-A.1：控制链信封密钥经 KMS 注入链取得（开发档=仓库 kms-dev
+          # 模板；release 由 owner KMS 提供，三者全缺 ⇒ 编译 Err fail-closed）。
+          ENEROS_KMS_DIR="$GITHUB_WORKSPACE/configs/kms-dev" \
+            cargo xtask config compile --profile qemu-prod --root-key-hex "$(printf '5a%.0s' {1..64})"
 
       - name: Build qemu-prod image (root-task + services ELF + init bundle)
         run: cargo xtask image qemu-prod

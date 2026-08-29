@@ -1,6 +1,6 @@
 # 49（WP-49.2 远程 dual-brain，ADR-0045 方案 B）：svc-ai-worker RemoteBrain
-# 状态机参数。**五键全必配**（fail-closed 禁凭记忆缺省——48 卷数值纪律同款，
-# 编译/解码两侧同值域校验）。
+# 状态机参数。**六键全必配**（fail-closed 禁凭记忆缺省——48 卷数值纪律同款，
+# 编译/解码两侧同值域校验；SPEC-E WP-E.3 增 learn_enabled 闸键）。
 #
 # 宣称纪律（ADR-0045 #4）：本链路 = 「AI 辅助决策（需配套站端服务）」；
 # peer 应答为不受信输入，越权提案在契约层拒绝。
@@ -14,3 +14,7 @@ unhealthy_after = 3
 probe_every = 5
 max_power_kw = 5.0
 ttl_secs = 60
+# SPEC-E WP-E.3：有界学习闸（EAQ-2：dev/qemu 装配 = true；release 产物
+# 的装配配置归 owner 拍板——false ⇒ 零学习零持久，System1 阈值恒出厂，
+# 行为 byte-equal 旧链路）。
+learn_enabled = true

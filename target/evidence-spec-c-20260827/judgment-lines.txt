@@ -1,0 +1,6 @@
+[eneros-root-task] EIPC-GRANT-TABLE edges=32 base_slot=3
+[eneros-root-task] EIPC-GRANT: svc-telemetry -> svc-storage slot=3 badge=13
+[eneros-root-task] EIPC-GRANT: svc-mgmt -> svc-telemetry slot=4 badge=25
+[svc-mgmt] history EIPC bound (svc-telemetry)
+[svc-telemetry] TSDB-DISK-OPEN region=blocks[8192,24576] LFS vol=256KiB —— 批次判定行切换 TSDB-DISK-*
+[eneros-root-task] PRODUCT-READY: true (degraded: svc-mqtt; required degraded: )

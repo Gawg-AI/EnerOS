@@ -12,6 +12,8 @@ eneros-solver-model = { path = "../solver-model" }
 
 [features]
 # AI-004：真实 HiGHS 后端（highs-ffi 链接 third_party libhighs.a）。
+# SPEC-SERIES-2026-08-27/F 复核：deferred 预留位——零激活零 cfg 引用，
+# AI-004 具名落地前保持停用，禁止未经裁决顺手实现。
 highs = ["eneros-solver-core/highs-ffi"]
 default = []
 # v0.205.0（P0-27）：测试需 solver-core mock 后端。

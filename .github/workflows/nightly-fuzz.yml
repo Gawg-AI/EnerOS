@@ -15,7 +15,8 @@ on:
 jobs:
   fuzz-deep:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    # 9 面 × 2100s + 取装开销；GitHub 托管 runner 单作业硬上限 360 分钟。
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
 
@@ -27,16 +28,20 @@ jobs:
       - name: Cargo fetch locked
         run: cargo fetch --locked
 
-      - name: Deep fuzz 6 parse surfaces (libFuzzer, 5400s each, GV-04)
+      # SPEC-SERIES-2026-08-27/F（WP-F.3）：三新靶 points/toml_compile/mqtt_packet
+      # 入列（GAP-FUZZ 三件套，fuzz/Cargo.toml 已入库）；时间预算按 9 靶重排：
+      # 9 × 2100s = 315 分钟 ≤ 本作业 330 分钟上限 ≤ GitHub 托管 runner 单作业
+      # 6 小时硬上限——旧参 5400s×N 在任何 N≥3 时物理上无法收尾，如实换算。
+      - name: Deep fuzz 9 parse surfaces (libFuzzer, 2100s each)
         id: fuzz
         run: |
           cargo install cargo-fuzz --locked
           set +e
           FAILED=""
-          for t in boot_protocol ipc_wire modbus_rtu iec104 elf_loader gguf_loader; do
+          for t in boot_protocol ipc_wire modbus_rtu iec104 elf_loader gguf_loader points toml_compile mqtt_packet; do
             echo "=== deep fuzz: $t ==="
             cd fuzz
-            cargo +nightly-2026-04-04 fuzz run fuzz_$t corpus/$t/ -- -timeout=60 -max_total_time=5400
+            cargo +nightly-2026-04-04 fuzz run fuzz_$t corpus/$t/ -- -timeout=60 -max_total_time=2100
             rc=$?
             cd ..
             if [ $rc -ne 0 ]; then

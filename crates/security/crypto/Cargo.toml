@@ -21,6 +21,9 @@ isolation_reason = "ADR-022: no_std target hand-rolled SM2/SM3/SM4 verified agai
 # ECDSA P-256 验签（蓝图/20 R1-3：设备端 TLS 证书链验证扩展）；
 # no_std 默认，禁用默认 feature（不引入 rand/std）。
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+# SPEC-R4 WP-R4.3：QEMU virt virtio-mmio 板级基址单源（entropy 默认值；
+# workspace 内部 no_std 零传递依赖）。
+eneros-handover-abi = { path = "../../abi/handover-abi" }
 
 [dev-dependencies]
 # 测试专用（ECDSA 测试签名需要 rng）
@@ -38,3 +41,6 @@ std = []
 # Explicit research escape hatch. Product policy rejects this feature and the
 # entire package in every release profile.
 insecure-test-rng = []
+# WP-A.3：显式模拟硬件引擎构造口（new_simulated / create_simulated_selector）。
+# release 默认不含；单测域（cfg(test)）始终可用。显式声明防幽灵 feature。
+simulated = []

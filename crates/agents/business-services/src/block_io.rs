@@ -1,98 +1,13 @@
 //! BlockIo —— durable-state `PersistIo` 的 EIPC 块客户端实现（蓝图 41
 //! WP-41.3 落盘）。**47（WP-47.4）**：适配迁入 `agent-sdk::block_io`
 //! （control-services 与 business-services 共享同一实现），本模块
-//! re-export 保持既有调用面；`EipcBlockDevice` 与 OTA 测试留在本 crate。
+//! re-export 保持既有调用面；**SPEC-B/C（2026-08-28）**：`EipcBlockDevice`
+//! 亦迁入 agent-sdk 单件（同构双件 BlockIoFace/LearnBlockIo 已删），
+//! OTA 侧测试留在本 crate 但改引 agent-sdk 类型。
 
 #[cfg(all(target_os = "none", feature = "sel4"))]
 pub use eneros_agent_sdk::block_io::eipc_block_io;
-pub use eneros_agent_sdk::block_io::{BlockIo, EipcSend};
-use eneros_durable_state::PersistIo;
-use eneros_storage::driver::{BlockDevice, DeviceHealth};
-use eneros_storage::StorageError;
-
-/// 将 [`BlockIo`]（EIPC 块客户端）适配为 storage crate 的 [`BlockDevice`]，
-/// 供 `AbPartitionOta` 等 OTA 组件做真实 A/B 分区读写。
-pub struct EipcBlockDevice<C> {
-    io: core::cell::RefCell<BlockIo<C>>,
-    block_size: usize,
-    block_count: u64,
-}
-
-impl<C: EipcSend> EipcBlockDevice<C> {
-    pub fn new(io: BlockIo<C>, block_size: usize, block_count: u64) -> Self {
-        Self {
-            io: core::cell::RefCell::new(io),
-            block_size,
-            block_count,
-        }
-    }
-}
-
-impl<C: EipcSend> BlockDevice for EipcBlockDevice<C> {
-    fn read_block(&self, block_idx: u64, buf: &mut [u8]) -> Result<(), StorageError> {
-        if block_idx >= self.block_count {
-            return Err(StorageError::OutOfRange {
-                block_idx,
-                max: self.block_count,
-            });
-        }
-        let off = block_idx * self.block_size as u64;
-        self.io
-            .borrow_mut()
-            .read(off, buf)
-            .map_err(|_| StorageError::HardwareFault {
-                detail: "eipc-block-read",
-            })
-    }
-
-    fn write_block(&mut self, block_idx: u64, buf: &[u8]) -> Result<(), StorageError> {
-        if block_idx >= self.block_count {
-            return Err(StorageError::OutOfRange {
-                block_idx,
-                max: self.block_count,
-            });
-        }
-        let off = block_idx * self.block_size as u64;
-        self.io
-            .borrow_mut()
-            .write(off, buf)
-            .map_err(|_| StorageError::HardwareFault {
-                detail: "eipc-block-write",
-            })
-    }
-
-    fn erase_block(&mut self, block_idx: u64) -> Result<(), StorageError> {
-        let zero = alloc::vec![0u8; self.block_size];
-        self.write_block(block_idx, &zero)
-    }
-
-    fn block_count(&self) -> u64 {
-        self.block_count
-    }
-
-    fn block_size(&self) -> usize {
-        self.block_size
-    }
-
-    fn flush(&mut self) -> Result<(), StorageError> {
-        self.io
-            .borrow_mut()
-            .flush()
-            .map_err(|_| StorageError::HardwareFault {
-                detail: "eipc-block-flush",
-            })
-    }
-
-    fn health_status(&self) -> DeviceHealth {
-        DeviceHealth {
-            total_blocks: self.block_count,
-            bad_blocks: 0,
-            wear_level: 0,
-            temperature: 0,
-            remaining_life: 100,
-        }
-    }
-}
+pub use eneros_agent_sdk::block_io::{BlockIo, EipcBlockDevice, EipcSend};
 
 #[cfg(test)]
 mod tests {
@@ -101,8 +16,12 @@ mod tests {
 
     use eneros_drv_svc::block_cmd::{BLK_CMD_FLUSH, BLK_CMD_READ, BLK_CMD_WRITE};
     use eneros_drv_svc::runtime::{wire, DriverResponse, ST_OK};
+    // SPEC-B/C：trait 方法（PersistIo/BlockDevice）需显式导入——原文件顶部
+    // 导入随 EipcBlockDevice 迁出而移除。
+    use eneros_durable_state::PersistIo;
     use eneros_durable_state::StoreError;
     use eneros_ota_ab::upgrade::UpgradeMeta;
+    use eneros_storage::driver::BlockDevice;
     use heapless::String as HString;
 
     use super::*;

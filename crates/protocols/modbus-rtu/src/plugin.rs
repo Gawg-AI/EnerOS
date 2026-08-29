@@ -10,10 +10,10 @@ use alloc::boxed::Box;
 
 use eneros_driver_framework::DriverError;
 use eneros_protocol_abstract::{
-    AdapterState, InteropLevel, PointRegistry, Progress, ProtocolAdapter, ProtocolConfig,
-    ProtocolDescriptor, ProtocolError, ProtocolHealth, ProtocolPlugin, ProtocolRole,
-    ResourceBudget, SecurityProfile, TransportFactory, TransportHandle, TransportKind,
-    TransportSpec, WorkBudget,
+    AdapterState, InteropLevel, PointRead, PointRegistry, Progress, ProtocolAdapter,
+    ProtocolAddress, ProtocolConfig, ProtocolDescriptor, ProtocolError, ProtocolHealth,
+    ProtocolPlugin, ProtocolPointMapping, ProtocolRole, ResourceBudget, SecurityProfile,
+    TransportFactory, TransportHandle, TransportKind, TransportSpec, WorkBudget,
 };
 
 use crate::adapter::ModbusRtuAdapter;
@@ -55,7 +55,24 @@ fn map_transport_recv_error(e: eneros_protocol_abstract::TransportError) -> Driv
 }
 
 /// 已知配置键（未知键 → `InvalidConfig`，WP-39.10 不变量）。
-const KNOWN_KEYS: &[&str] = &["slave_id", "baud", "timeout_ms", "retries"];
+///
+/// SPEC-D WP-D.2 键表扩（与 config-bundle `known_keys("protocol-modbus-rtu")`
+/// **同波次双源同步**——漏一侧会被编译链未知键拒绝整包拒载；两侧各有
+/// 字面量锁定测试互为漂移闸）。消费面（配置零消费禁令）：
+/// - `baud` / `parity`：svc-modbus-rtu 装配 [`eneros_protocol_services::
+///   net_transport::SerialTransportFactory`] 时解析注入（工厂构造参数）；
+///   缺失/非法 → 能力壳 fail-closed，不猜 9600 默认值冒充活路。
+/// - `clock_hz`：真机 PL011 参考时钟（`Pl011UartHw::new`；0 = 适配器内
+///   24 MHz 板级默认）。
+/// - `slave_id`/`timeout_ms`/`retries`：插件 start 消费（39 既有）。
+const KNOWN_KEYS: &[&str] = &[
+    "slave_id",
+    "baud",
+    "parity",
+    "clock_hz",
+    "timeout_ms",
+    "retries",
+];
 
 /// Modbus RTU 插件（服务级合同实现）。
 pub struct RtuPlugin {
@@ -67,6 +84,8 @@ pub struct RtuPlugin {
     last_progress: Progress,
     /// 45.4：注入点表路由点数（观测；服务层按协议过滤注入）。
     routed_count: usize,
+    /// SPEC-D WP-D.2：read_point 序号（单调；重放判定/观测，同 TcpPlugin）。
+    point_seq: u64,
 }
 
 impl RtuPlugin {
@@ -79,6 +98,7 @@ impl RtuPlugin {
             last_error: None,
             last_progress: Progress::Idle,
             routed_count: 0,
+            point_seq: 0,
         }
     }
 
@@ -185,6 +205,84 @@ impl ProtocolPlugin for RtuPlugin {
         self.adapter = Some(adapter);
         self.started = true;
         Ok(())
+    }
+
+    /// SPEC-D WP-D.2（C1 全链）：点表驱动单点真读——RTU 侧 FC03 保持寄存器
+    /// 单字（FC04 输入寄存器未接 master 读面 → `Unsupported` 诚实上抛，
+    /// 不以保持寄存器帧冒充输入寄存器）。**只读**——授权语义与 TcpPlugin
+    /// 相同：地址来自注入点表，本方法不自造地址。
+    fn read_point(
+        &mut self,
+        _now_ms: u64,
+        mapping: &ProtocolPointMapping,
+    ) -> Result<PointRead, ProtocolError> {
+        let Some(adapter) = self.adapter.as_mut() else {
+            return Err(ProtocolError::ProtocolNotStarted);
+        };
+        let (slave_addr, reg_addr, func_code) = match mapping.protocol_addr {
+            ProtocolAddress::Modbus {
+                slave_addr,
+                reg_addr,
+                func_code,
+            } => (slave_addr, reg_addr, func_code),
+            _ => return Err(ProtocolError::AddrTypeMismatch),
+        };
+        if func_code != 3 {
+            return Err(ProtocolError::Unsupported);
+        }
+        let regs = adapter
+            .read_raw_registers(slave_addr, reg_addr, 1)
+            .map_err(crate::adapter::modbus_to_protocol)?;
+        let raw = regs.first().copied().ok_or(ProtocolError::ReadFailed)? as i64;
+        self.point_seq = self.point_seq.saturating_add(1);
+        Ok(PointRead {
+            raw,
+            ok: true,
+            seq: self.point_seq,
+        })
+    }
+
+    /// SPEC-D WP-D.2（C1 全链）：点表驱动 FC06 单寄存器写。工程值经映射
+    /// 逆变换（scale/offset；越界/非数值 → 明确错误，不截断静默）。
+    /// **只执行**——授权已由 ControlDispatch 九步链完成（不双头授权）。
+    fn write_point(
+        &mut self,
+        _now_ms: u64,
+        mapping: &ProtocolPointMapping,
+        value: eneros_upa_model::PointValue,
+    ) -> Result<(), ProtocolError> {
+        let Some(adapter) = self.adapter.as_mut() else {
+            return Err(ProtocolError::ProtocolNotStarted);
+        };
+        let (slave_addr, reg_addr) = match mapping.protocol_addr {
+            ProtocolAddress::Modbus {
+                slave_addr,
+                reg_addr,
+                ..
+            } => (slave_addr, reg_addr),
+            _ => return Err(ProtocolError::AddrTypeMismatch),
+        };
+        if mapping.scale == 0.0 {
+            return Err(ProtocolError::InvalidConfig);
+        }
+        let raw_f = match value {
+            eneros_upa_model::PointValue::Float(f) if f.is_finite() => f,
+            eneros_upa_model::PointValue::Int(i) => i as f64,
+            eneros_upa_model::PointValue::Bool(b) => {
+                if b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            eneros_upa_model::PointValue::Enum(e) => e as f64,
+            _ => return Err(ProtocolError::Unsupported),
+        };
+        let raw_i = mapping.from_engineering(raw_f);
+        let raw = u16::try_from(raw_i).map_err(|_| ProtocolError::WriteFailed)?;
+        adapter
+            .write_register_raw(slave_addr, reg_addr, raw)
+            .map_err(crate::adapter::modbus_to_protocol)
     }
 
     fn poll(&mut self, now_ms: u64, _budget: WorkBudget) -> Result<Progress, ProtocolError> {
@@ -298,6 +396,23 @@ mod tests {
             plugin.validate_config(&cfg),
             Err(ProtocolError::InvalidConfig)
         );
+    }
+
+    /// SPEC-D WP-D.2 键表锁定：KNOWN_KEYS 全清单对照字面量——新增/删除
+    /// 任一键都必须与 config-bundle `known_keys("protocol-modbus-rtu")`
+    /// **同波次**同步（漏一侧 = 编译链未知键拒绝整包拒载；两测试互为漂移闸，
+    /// 教训同 B 卷 F-M2 mqtt 双源）。
+    #[test]
+    fn d_known_keys_literal_lock() {
+        const EXPECTED: &[&str] = &[
+            "slave_id",
+            "baud",
+            "parity",
+            "clock_hz",
+            "timeout_ms",
+            "retries",
+        ];
+        assert_eq!(KNOWN_KEYS, EXPECTED, "RTU 键表漂移——双源须同波次同步");
     }
 
     #[test]

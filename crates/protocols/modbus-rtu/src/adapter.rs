@@ -86,6 +86,32 @@ impl<T: RtuTransport> ModbusRtuAdapter<T> {
         ModbusRtuMaster::new(&mut self.transport, self.timeout_ms, self.retry_count)
     }
 
+    /// SPEC-D WP-D.2（C1 全链）：按注入点表地址直达从站的原始读——插件层
+    /// [`crate::plugin::RtuPlugin`] 的 `read_point` 以 `ProtocolPointMapping`
+    /// 解出的 slave/reg 直呼本方法（不经适配器自有 RegToPoint 表；与
+    /// modbus-tcp `read_raw` 同位的插件驱动面）。
+    pub fn read_raw_registers(
+        &mut self,
+        slave_addr: u8,
+        start_addr: u16,
+        quantity: u16,
+    ) -> Result<Vec<u16>, ModbusError> {
+        self.master()
+            .read_holding_registers(slave_addr, start_addr, quantity)
+    }
+
+    /// SPEC-D WP-D.2（C1 全链）：按注入点表地址直达从站的 FC06 单寄存器
+    /// 写（同上——`write_point` 驱动面）。
+    pub fn write_register_raw(
+        &mut self,
+        slave_addr: u8,
+        reg_addr: u16,
+        value: u16,
+    ) -> Result<(), ModbusError> {
+        self.master()
+            .write_single_register(slave_addr, reg_addr, value)
+    }
+
     /// 测试专用：可变访问底层传输（预置响应/检查发送帧）。
     #[cfg(test)]
     pub fn transport_mut(&mut self) -> &mut T {
@@ -256,7 +282,7 @@ impl<T: RtuTransport> ProtocolAdapter for ModbusRtuAdapter<T> {
 }
 
 /// ModbusError → ProtocolError 映射。
-fn modbus_to_protocol(e: ModbusError) -> ProtocolError {
+pub(crate) fn modbus_to_protocol(e: ModbusError) -> ProtocolError {
     use ModbusError::*;
     match e {
         InvalidSlaveAddr | InvalidQuantity | InvalidRegisterAddr => ProtocolError::InvalidConfig,

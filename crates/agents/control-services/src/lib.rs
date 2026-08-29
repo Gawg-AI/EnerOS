@@ -26,12 +26,23 @@ extern crate alloc;
 
 pub mod acquisition;
 pub mod ai_worker;
+// SPEC-B（WP-B.3）：AI tick 编排单源（svc-ai-worker 双 handler 收编；
+// 注入路径等价性分析与锁定测试见模块头）。
+pub mod ai_handler;
 pub mod cfg_bindings;
 pub mod collector;
+// SPEC-B（WP-B.2）：svc-control-dispatch 装配面下沉（fail-closed 阶梯 +
+// 出站通道；bin 退化为装配接线）。阶梯核心 host 可测（DoD B1：seL4 叶子
+// 以 closure seam 注入）；EIPC 通道/引擎装配限目标构建（cfg(none) 项级门）。
+pub mod dispatch_assembly;
 pub mod dispatch_service;
 pub mod energy_agent_service;
+// SPEC-SERIES-2026-08-27/E（WP-E.3）：有界学习闭环（svc-ai-worker 宿主）。
+pub mod learn;
 pub mod remote_brain;
 pub mod service;
 pub mod telemetry;
+// SPEC-C（WP-C.1）：TSDB 磁盘历史适配（D-TSDB-2 方案 A 句柄让渡）。
+pub mod telemetry_history;
 
 pub use service::{control_service_main, ControlServiceHandler};

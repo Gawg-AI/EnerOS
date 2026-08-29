@@ -354,7 +354,9 @@ impl RawIpc for crate::ipc_sel4::Sel4IpcClient {
 
 /// `&mut T` 转发（`ChunkedClient` 以 `&mut self.client` 持有传输——
 /// 每次 transfer 复用同一客户端实例，不 move 字段）。
-#[cfg(any(test, feature = "sel4"))]
+/// SPEC-B（2026-08-28）：解除 sel4/test 门控——纯引用转发与 seL4 无关，
+/// 泛型 ConfigClient（config_client::get_entry 以 `&mut C` 入参）在
+/// 任意 host 构建下亦须成立。
 impl<T: RawIpc> RawIpc for &mut T {
     fn request(
         &mut self,

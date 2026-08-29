@@ -21,6 +21,10 @@
 
 use alloc::vec::Vec;
 
+// HYG-001（SPEC-B/C 2026-08-28 收口 10/10）：CRC32 唯一实现 = abi/ipc-wire
+//（IEEE 802.3 0xEDB88320；本模块曾经的本地实现已删，调用点解析到单源）。
+use eneros_ipc_wire::crc32;
+
 use crate::chain::{compute_combined_hash, compute_event_hash};
 use crate::events::{AuditEvent, AuditEventType};
 
@@ -29,23 +33,6 @@ pub const DURABLE_AUDIT_SCHEMA: u16 = 1;
 
 /// BootId 长度（启动标识，16B）。
 pub const DURABLE_BOOT_ID_LEN: usize = 16;
-
-/// CRC32（IEEE 802.3，多项式 0xEDB88320）——无依赖逐位实现（记录 ≤ 约
-/// 500B，性能无关；不引入 crc crate 保持 no_std 零依赖）。
-pub fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for &b in data {
-        crc ^= b as u32;
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0xEDB8_8320
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    !crc
-}
 
 /// WP-37.8：持久化审计记录违规（`verify`/`verify_log`/`from_bytes` 输出）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

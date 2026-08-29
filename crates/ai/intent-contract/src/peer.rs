@@ -139,15 +139,23 @@ pub struct ResponseChecks<'a> {
 
 /// 解析 + 全量校验一条不受信应答（蓝图 WP-49.2 #1 判据面）。
 ///
-/// 校验顺序（短路）：schema 解析（含未知键拒绝）→ 版本闭集 → req_id 配对
-/// → sequence 单调 → reason/target 非空 → 功率有限且 ≤ 预算 → TTL ∈
-/// [1, budget.ttl_secs]。
+/// SPEC-SERIES-2026-08-27/E WP-E.1（清洗单源）：入口先经
+/// `normalize_llm_json`（intent-parser 单源，本 crate 已依赖、零新依赖边）
+/// 剥围栏/多余文本并做字符串数字归一，再走 schema 校验——围栏包裹/数字
+/// 加引号的合法应答不再被误拒。清洗只做形态归一：无 JSON 可提取或提取
+/// 后仍非法时原样/提取结果交由 serde 拒绝（Bad 语义不变，**清洗不扩权
+/// 放行**——越权/未知键/域违规照旧拦截）。
+///
+/// 校验顺序（短路）：归一化 → schema 解析（含未知键拒绝）→ 版本闭集 →
+/// req_id 配对 → sequence 单调 → reason/target 非空 → 功率有限且 ≤ 预算
+/// → TTL ∈ [1, budget.ttl_secs]。
 pub fn parse_and_validate(
     json: &str,
     checks: &ResponseChecks<'_>,
 ) -> Result<PeerResponse, PeerContractError> {
+    let normalized = eneros_intent_parser::parser::normalize_llm_json(json);
     let resp: PeerResponse =
-        serde_json::from_str(json).map_err(|e| PeerContractError::Schema(e.to_string()))?;
+        serde_json::from_str(&normalized).map_err(|e| PeerContractError::Schema(e.to_string()))?;
     validate_response(&resp, checks)?;
     Ok(resp)
 }
@@ -461,6 +469,109 @@ mod tests {
                     budget: &BUDGET
                 }
             ),
+            Err(PeerContractError::Schema(_))
+        ));
+    }
+
+    // ===== SPEC-SERIES-2026-08-27/E WP-E.1：清洗单源判据面 =====
+    // 判据 C1：围栏/别名/碎裂/垃圾/超大六例 + 清洗不扩权反例。
+
+    fn checks_first_frame() -> ResponseChecks<'static> {
+        ResponseChecks {
+            expect_req_id: 7,
+            expect_seq_gt: None,
+            budget: &BUDGET,
+        }
+    }
+
+    /// C1-a：```json 围栏包裹的合法应答 ⇒ 过（旧实现 Schema 误拒）。
+    #[test]
+    fn e1_fenced_json_accepted() {
+        let fenced = alloc::format!("```json\n{}\n```", valid_json(3));
+        let r = parse_and_validate(&fenced, &checks_first_frame()).expect("围栏应剥除后过校验");
+        assert_eq!(r.plan.power_kw, -3.0);
+        assert_eq!(r.seq, 3);
+    }
+
+    /// C1-b：xml 围栏 + 前后说明文字 ⇒ 过（首个平衡对象提取）。
+    #[test]
+    fn e1_xml_fence_and_prose_accepted() {
+        let wrapped = alloc::format!(
+            "<answer>模型输出如下</answer>\n{}\n以上供参考",
+            valid_json(1)
+        );
+        parse_and_validate(&wrapped, &checks_first_frame()).expect("围栏+说明文字应过校验");
+    }
+
+    /// C1-c：键别名形态——数字字段加引号（真实小模型常见偏离）⇒ 归一后过。
+    #[test]
+    fn e1_string_number_coercion_accepted() {
+        let aliased = r#"{"v":"1","req_id":"7","seq":"5","plan":{"power_kw":"-3.0","target_device":"pcs","ttl_secs":"60"},"reason":"soc low"}"#;
+        let r = parse_and_validate(aliased, &checks_first_frame()).expect("字符串数字应归一");
+        assert_eq!(r.plan.power_kw, -3.0);
+        assert_eq!(r.seq, 5);
+        assert_eq!(r.plan.ttl_secs, 60);
+    }
+
+    /// C1-d：嵌套碎裂（内层对象截断）⇒ Bad 不变（Schema 拒绝）。
+    #[test]
+    fn e1_nested_broken_still_bad() {
+        let broken = r#"{"v":1,"req_id":7,"seq":9,"plan":{"power_kw":-3.0,"target_device"#;
+        assert!(matches!(
+            parse_and_validate(broken, &checks_first_frame()),
+            Err(PeerContractError::Schema(_))
+        ));
+    }
+
+    /// C1-e：纯垃圾（无平衡对象）⇒ Bad 不变。
+    #[test]
+    fn e1_pure_garbage_still_bad() {
+        assert!(matches!(
+            parse_and_validate("complete nonsense, no json here", &checks_first_frame()),
+            Err(PeerContractError::Schema(_))
+        ));
+    }
+
+    /// C1-f：超大 payload（256KiB 垃圾）⇒ Bad 且不 panic（不扩权放行）。
+    #[test]
+    fn e1_huge_payload_bad_without_panic() {
+        let mut huge = String::from("{\"v\":1,\"req_id\":7,\"seq\":1,\"junk\":\"");
+        huge.push_str(&"x".repeat(256 * 1024));
+        huge.push_str("\"}");
+        let out = parse_and_validate(&huge, &checks_first_frame());
+        assert!(matches!(out, Err(PeerContractError::Schema(_))));
+    }
+
+    /// 清洗不扩权：围栏包裹的**越权**提案照旧被数值域拦截（Range，非放行）。
+    #[test]
+    fn e1_normalization_does_not_grant_authority() {
+        let over = valid_json(1).replace("-3.0", "-5.5");
+        let fenced = alloc::format!("```json\n{over}\n```");
+        assert!(matches!(
+            parse_and_validate(&fenced, &checks_first_frame()),
+            Err(PeerContractError::Range(f, _)) if f == "plan.power_kw"
+        ));
+    }
+
+    /// 清洗不扩权：围栏包裹的未知键照旧被 schema 闭集拒绝。
+    #[test]
+    fn e1_normalization_preserves_closed_schema() {
+        let extra = valid_json(1).replace("\"reason\":\"soc low\"", "\"reason\":\"x\",\"extra\":1");
+        let fenced = alloc::format!("```json\n{extra}\n```");
+        assert!(matches!(
+            parse_and_validate(&fenced, &checks_first_frame()),
+            Err(PeerContractError::Schema(_))
+        ));
+    }
+
+    /// 语义钉子：说明文字含多个对象时取**首个**平衡对象（normalize 既有
+    /// 语义，不择优——避免清洗层引入语义判断）。
+    #[test]
+    fn e1_first_balanced_object_wins() {
+        let decoy = r#"contradiction {"v":9} then real:"#;
+        let with_real = alloc::format!("{decoy}{}", valid_json(1));
+        assert!(matches!(
+            parse_and_validate(&with_real, &checks_first_frame()),
             Err(PeerContractError::Schema(_))
         ));
     }

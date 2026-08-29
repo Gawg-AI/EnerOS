@@ -15,6 +15,15 @@
 //!
 //! # no_std 合规
 //! 仅使用 `core::*` / `alloc::*`，不依赖 `std::*`。
+//!
+//! # ⚠ 模拟态如实自报（SPEC-SERIES-2026-08-27/A · WP-A.3）
+//!
+//! [`KunpengKaeEngine::new_simulated`] 构造的模拟实例**不是硬件**：
+//! `name()` 如实返回 `"Kunpeng 920 KAE (simulated)"`，`is_hardware()` /
+//! `is_available()` 返回 `false`——选择器注册门因此不会把模拟引擎当作
+//! 硬件加速收进生产路径。与 recovery 域 `DefaultProbe` 占位先例同理：
+//! 桩可以存在，但必须如实自报，不得谎称真实现。真实 KAE 驱动路径
+//! （`new()` + MMIO）为硬件预留位，保持不变。
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -158,6 +167,8 @@ impl KunpengKaeEngine {
     }
 
     /// 创建模拟模式实例（无实际硬件）.
+    ///
+    /// 模拟实例如实自报非硬件（模块头 WARNING；WP-A.3 收编）。
     pub fn new_simulated() -> Self {
         Self {
             regs: core::ptr::null_mut(),
@@ -483,16 +494,21 @@ impl CryptoEngine for KunpengKaeEngine {
     }
 
     fn name(&self) -> &'static str {
-        "Kunpeng 920 KAE"
+        if self.simulate {
+            "Kunpeng 920 KAE (simulated)"
+        } else {
+            "Kunpeng 920 KAE"
+        }
     }
 
     fn is_hardware(&self) -> bool {
-        true
+        !self.simulate
     }
 
     fn is_available(&self) -> bool {
         if self.simulate {
-            return true;
+            // 模拟态没有真实 KAE 后端；谎报可用会骗过选择器注册门（WP-A.3）。
+            return false;
         }
         self.initialized
     }
@@ -631,11 +647,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_kunpeng_simulated_sm3() {
+    fn test_kunpeng_simulated_honest_self_report() {
         let mut engine = KunpengKaeEngine::new_simulated();
-        assert!(engine.is_hardware());
-        assert!(engine.is_available());
-        assert_eq!(engine.name(), "Kunpeng 920 KAE");
+        // WP-A.3：模拟态如实自报——非硬件、不可用、名字带 simulated 后缀。
+        assert!(!engine.is_hardware());
+        assert!(!engine.is_available());
+        assert_eq!(engine.name(), "Kunpeng 920 KAE (simulated)");
 
         let hash = engine.sm3_hash(b"abc").unwrap();
         let expected = crate::sm3::hash(b"abc");

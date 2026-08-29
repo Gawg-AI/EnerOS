@@ -140,11 +140,13 @@ pub mod sm4;
 pub use bigint::U256;
 pub use constant_time::{ct_eq, ct_zeroize};
 pub use error::CryptoError;
+// WP-A.3：模拟选择器构造器仅测试/simulated feature 面向 release 收编。
+#[cfg(any(test, feature = "simulated"))]
+pub use hw::create_simulated_selector;
 // HW acceleration (workspace v0.192.0) re-exports
 pub use hw::{
-    create_selector_with_hw, create_simulated_selector, create_software_selector, Algorithm,
-    CryptoEngine, CryptoSelector, DmaBuffer, EngineStats, KunpengKaeEngine, PhytiumCryptoEngine,
-    Sm4Mode, SoftwareCryptoEngine,
+    create_selector_with_hw, create_software_selector, Algorithm, CryptoEngine, CryptoSelector,
+    DmaBuffer, EngineStats, KunpengKaeEngine, PhytiumCryptoEngine, Sm4Mode, SoftwareCryptoEngine,
 };
 // PKI (workspace v0.192.0) re-exports
 pub use pki::asn1::{Asn1Error, DerReader, DerWriter};

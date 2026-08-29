@@ -434,6 +434,36 @@ impl TypedConfigConsumer for AiPeerConsumer {
     }
 }
 
+/// SPEC-SERIES-2026-08-27/A WP-A.1：security 配置 consumer——registry
+/// 双向完备性（bundle 含 security 条目即须注册，否则 fail-closed
+/// unconsumed-config）。解码面 = control_chain_key::ControlChainKeyConfig
+/// （缺字段/长度≠32/全零 fail-closed）。
+#[derive(Default)]
+pub struct SecurityConsumer {
+    /// 最近应用的信封密钥节（诊断/校验保持；不含明文输出通道）。
+    pub last: Option<eneros_config_bundle::control_chain_key::ControlChainKeyConfig>,
+    /// 生效 generation。
+    pub generation: u64,
+}
+
+impl TypedConfigConsumer for SecurityConsumer {
+    type Config = eneros_config_bundle::control_chain_key::ControlChainKeyConfig;
+    fn config_id(&self) -> ConfigId {
+        ConfigId::from_static(eneros_config_bundle::schema::security::CONFIG_ID)
+    }
+    fn schema_version(&self) -> SchemaVersion {
+        SchemaVersion(eneros_config_bundle::schema::security::SCHEMA)
+    }
+    fn decode_validate(&self, raw: &[u8]) -> Result<Self::Config, ConfigError> {
+        eneros_config_bundle::control_chain_key::ControlChainKeyConfig::decode(raw)
+    }
+    fn apply(&mut self, cfg: Self::Config, generation: u64) -> Result<ApplyOutcome, ConfigError> {
+        self.last = Some(cfg);
+        self.generation = generation;
+        Ok(ApplyOutcome::Applied { generation })
+    }
+}
+
 impl Default for ConfigService {
     fn default() -> Self {
         Self::new()
@@ -455,6 +485,8 @@ impl ConfigService {
         registry.register(alloc::boxed::Box::new(PointsConsumer::default()));
         // 49（WP-49.2）：ai-peer consumer（registry 双向完备性）。
         registry.register(alloc::boxed::Box::new(AiPeerConsumer::default()));
+        // SPEC WP-A.1：security consumer（控制链信封密钥节；双向完备性）。
+        registry.register(alloc::boxed::Box::new(SecurityConsumer::default()));
         // 46（WP-46.3）：7 份协议配置 consumer——registry 双向完备性（否则
         // bundle 含 protocol-* 即 fail-closed unconsumed-config）。
         for id in eneros_config_bundle::protocol::PROTOCOL_CONFIG_IDS {
@@ -617,27 +649,41 @@ mod tests {
         }
     }
 
-    /// 全量 ACTIVE 条目（registry 双向完备：含 45 点表）。
+    /// 全量 ACTIVE 条目（registry 双向完备：含 45 点表 + WP-A.1 security）。
     fn make_all_entries(control_write_payload: Vec<u8>) -> Vec<SignedConfigEntry> {
-        use eneros_config_bundle::schema::{cloud_sync, logging, metrics, ota, points};
+        use eneros_config_bundle::schema::{cloud_sync, logging, metrics, ota, points, security};
         let mut entries = vec![make_entry(control_write_payload, 3)];
         let root_key = [0x5Au8; 64];
+        // SPEC WP-A.1：控制链信封密钥（32B 测试值；夹具域）。
+        let control_chain_key: [u8; 32] = [0x77; 32];
         let configs = [
             (cloud_sync::CONFIG_ID, "cloud-sync.toml", 0u8),
             (logging::CONFIG_ID, "logging.toml", 0),
             (metrics::CONFIG_ID, "metrics.toml", 0),
             (ota::CONFIG_ID, "ota.toml", 1),
             (points::CONFIG_ID, "points.toml", 0),
+            (security::CONFIG_ID, "security.toml", 2),
         ];
         for (id, file, need_key) in configs {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../configs")
                 .join(file);
             let text = std::fs::read_to_string(&path).unwrap();
-            let injected = if need_key == 1 { Some(&root_key) } else { None };
-            let compiled = eneros_config_bundle::toml_compile::compile_by_id(id, &text, injected)
-                .unwrap()
-                .unwrap();
+            let cc_opt: Option<[u8; 32]> = if need_key == 2 {
+                Some(control_chain_key)
+            } else {
+                None
+            };
+            let root_injected: Option<&[u8; 64]> =
+                if need_key == 1 { Some(&root_key) } else { None };
+            let compiled = eneros_config_bundle::toml_compile::compile_by_id(
+                id,
+                &text,
+                root_injected,
+                cc_opt.as_ref(),
+            )
+            .unwrap()
+            .unwrap();
             let digest = CbDigest::of(&compiled.payload);
             entries.push(SignedConfigEntry {
                 config_id: compiled.config_id,
@@ -657,6 +703,7 @@ mod tests {
             let compiled = eneros_config_bundle::toml_compile::compile_by_id(
                 eneros_config_bundle::schema::ai_peer::CONFIG_ID,
                 &text,
+                None,
                 None,
             )
             .unwrap()
@@ -679,7 +726,7 @@ mod tests {
                 .join("../../../configs")
                 .join(&file);
             let text = std::fs::read_to_string(&path).unwrap();
-            let compiled = eneros_config_bundle::toml_compile::compile_by_id(id, &text, None)
+            let compiled = eneros_config_bundle::toml_compile::compile_by_id(id, &text, None, None)
                 .unwrap()
                 .unwrap();
             let digest = CbDigest::of(&compiled.payload);

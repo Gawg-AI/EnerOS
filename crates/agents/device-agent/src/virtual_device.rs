@@ -50,6 +50,8 @@ pub struct VirtualPcsDevice {
     write_count: u64,
     /// 单调毫秒时钟（读点时间戳刷新）。
     now_ms: fn() -> u64,
+    /// SOC 读计数（SPEC-E WP-E.3：确定性振荡相位）。
+    soc_reads: u64,
 }
 
 impl VirtualPcsDevice {
@@ -60,6 +62,7 @@ impl VirtualPcsDevice {
             power_kw: 0.0,
             write_count: 0,
             now_ms,
+            soc_reads: 0,
         }
     }
 
@@ -84,10 +87,18 @@ impl VirtualPcsDevice {
         }
     }
 
-    fn read_value(&self, point: PointId) -> Option<PointValue> {
+    fn read_value(&mut self, point: PointId) -> Option<PointValue> {
         match point {
             POINT_DC_BUS_V => Some(PointValue::Float(400.0)),
-            POINT_SOC => Some(PointValue::Float(0.6)),
+            POINT_SOC => {
+                // SPEC-E WP-E.3：确定性双值振荡 0.47↔0.53（逐读翻转）。
+                // 跨界值持续喂死区学习闭环（|Δsoc|=0.06 噪声序列），并使
+                // System1 在学习前后对同域 SOC 给出不同判定（C3 前后对照帧）；
+                // 相位确定性 ⇒ transcript 逐字节可复现。
+                self.soc_reads = self.soc_reads.wrapping_add(1);
+                let v = if self.soc_reads & 1 == 0 { 0.47 } else { 0.53 };
+                Some(PointValue::Float(v))
+            }
             POINT_GRID_UP => Some(PointValue::Bool(true)),
             POINT_ALARM => Some(PointValue::Bool(false)),
             POINT_POWER => Some(PointValue::Float(self.power_kw)),

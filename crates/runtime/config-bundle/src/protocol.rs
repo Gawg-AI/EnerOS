@@ -42,7 +42,18 @@ pub const PROTOCOL_CONFIG_IDS: &[&str] = &[
 pub fn known_keys(id: &str) -> Option<&'static [&'static str]> {
     Some(match id {
         "protocol-modbus-tcp" => &["peer", "unit_id", "timeout_ms", "retries"],
-        "protocol-modbus-rtu" => &["slave_id", "timeout_ms", "retries"],
+        // SPEC-D WP-D.2：+ baud/parity/clock_hz（串口链路参数；与
+        // modbus-rtu 插件 KNOWN_KEYS 同波次双源同步——两侧字面量锁定测试
+        // 互为漂移闸，教训同 B 卷 F-M2）。消费面：svc-modbus-rtu 装配
+        // SerialTransportFactory/Pl011UartHw 时解析注入。
+        "protocol-modbus-rtu" => &[
+            "slave_id",
+            "baud",
+            "parity",
+            "clock_hz",
+            "timeout_ms",
+            "retries",
+        ],
         "protocol-iec104" => &[
             "peer",
             "t3_timeout_ms",
@@ -63,6 +74,10 @@ pub fn known_keys(id: &str) -> Option<&'static [&'static str]> {
             // 50（WP-50.2 mgmt 通道）：管理请求订阅 / 应答发布主题（可选）。
             "mgmt_request_topic",
             "mgmt_response_topic",
+            // SPEC-B WP-B.2：CONNECT 凭据管道（可选；与 mqtt 插件 KNOWN_KEYS
+            // 同波次双源同步——漏一处会被编译链未知键拒绝整包拒载）。
+            "username",
+            "password",
         ],
         // 48（WP-48.1..48.4）四协议键表（= 各 crate validate_config 已知键；
         // 49 修齐——与 configs/protocol-*.toml 一致，未知键拒绝语义不变）。
@@ -339,6 +354,53 @@ mod tests {
         assert_eq!(
             required_keys("protocol-goose"),
             &["go_cb_ref", "dataset_ref"]
+        );
+    }
+
+    /// SPEC-B WP-B.2/C2 键表锁定：protocol-mqtt 已知键全清单对照字面量。
+    /// 与 crates/protocols/mqtt/src/plugin.rs KNOWN_KEYS 双源——任一侧
+    /// 增删键必须两侧同波次同步，本测试与插件侧 b2_known_keys_literal_lock
+    /// 互为漂移闸（漏同步 = 编译链未知键拒绝整包拒载）。
+    #[test]
+    fn b2_mqtt_known_keys_literal_lock_includes_credentials() {
+        const EXPECTED: &[&str] = &[
+            "broker",
+            "client_id",
+            "keep_alive_ms",
+            "control_topic",
+            "ai_request_topic",
+            "ai_response_topic",
+            "telemetry_topic",
+            "mgmt_request_topic",
+            "mgmt_response_topic",
+            "username",
+            "password",
+        ];
+        assert_eq!(
+            known_keys("protocol-mqtt"),
+            Some(EXPECTED),
+            "config-bundle 侧 mqtt 键表漂移——须与 mqtt 插件 KNOWN_KEYS 同步"
+        );
+    }
+
+    /// SPEC-D WP-D.2 键表锁定：protocol-modbus-rtu 已知键全清单对照字面量。
+    /// 与 crates/protocols/modbus-rtu/src/plugin.rs `KNOWN_KEYS` 双源——任一
+    /// 侧增删键必须两侧同波次同步，本测试与插件侧 d_known_keys_literal_lock
+    /// 互为漂移闸（漏同步 = 编译链未知键拒绝整包拒载）。
+    #[test]
+    fn d_rtu_known_keys_literal_lock() {
+        const EXPECTED: &[&str] = &[
+            "slave_id",
+            "baud",
+            "parity",
+            "clock_hz",
+            "timeout_ms",
+            "retries",
+        ];
+        assert_eq!(
+            known_keys("protocol-modbus-rtu"),
+            Some(EXPECTED),
+            "config-bundle 侧 rtu 键表漂移——须与 modbus-rtu 插件 KNOWN_KEYS 同步"
         );
     }
 

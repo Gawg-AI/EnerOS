@@ -286,16 +286,15 @@ impl eneros_drv_svc::runtime::DriverService for ModbusTcpIoService {
         match req.opcode {
             OP_EXECUTE => {
                 self.transactions += 1;
-                // 47（WP-47.1 出站写）：EXECUTE + 载荷子码
-                // {OP_MASTER_WRITE‖device u32‖point u32‖power f64}=17B
-                // （drv-svc runtime 只把 OP_EXECUTE 路由到 handle）。
-                if req.payload_len == 17
-                    && req.payload[0] == eneros_protocol_abstract::write::OP_MASTER_WRITE
+                // 47（WP-47.1 出站写）：EXECUTE + 载荷子码 17B（drv-svc
+                // runtime 只把 OP_EXECUTE 路由到 handle）。17B codec 单源 =
+                // protocol_abstract::write::decode_master_write_payload
+                // （SPEC-B WP-B.2 收编，历史手抄解码面删除）。
+                if let Some((device, point, power)) =
+                    eneros_protocol_abstract::write::decode_master_write_payload(
+                        &req.payload[..req.payload_len as usize],
+                    )
                 {
-                    let device = u32::from_le_bytes(req.payload[1..5].try_into().unwrap_or([0; 4]));
-                    let point = u32::from_le_bytes(req.payload[5..9].try_into().unwrap_or([0; 4]));
-                    let power =
-                        f64::from_le_bytes(req.payload[9..17].try_into().unwrap_or([0u8; 8]));
                     let frame = self.master_write(device, point, power);
                     resp.status = ST_OK;
                     resp.payload[..2].copy_from_slice(&frame);
@@ -318,68 +317,22 @@ impl eneros_drv_svc::runtime::DriverService for ModbusTcpIoService {
     }
 }
 
-/// 经 svc-config EIPC 取点表 canonical payload → decode_points → 注册表。
+/// 点表注入（45.4）：经 lib service_cfg::fetch_points_registry 取全量
+/// 注册表 + 协议过滤（ModbusTcp|ModbusRtu）——SPEC-B WP-B.1 收编私有
+/// 副本（wire 单源 = agent-sdk config_client）。
 #[cfg(target_os = "none")]
 fn fetch_points_registry() -> eneros_protocol_abstract::VecPointRegistry {
-    // 45.5：svc-config 授予槽 = EIPC_EP_BASE_SLOT+1（表序第 2 个 grant）。
-    let Ok(mut config) = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+    use eneros_config_bundle::points::PointProtocol;
+    eneros_protocol_services::service_cfg::fetch_points_registry(
         "modbus-config",
         eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1,
-        eneros_drv_svc::now_ns,
-    ) else {
-        eneros_runtime::println!("[svc-modbus-tcp] config EIPC NOT granted -> points unavailable");
-        return eneros_protocol_abstract::VecPointRegistry::new(alloc::vec::Vec::new());
-    };
-    let mut req: alloc::vec::Vec<u8> = alloc::vec![b'C', b'F', b'G', b'1', 0x01];
-    req.extend_from_slice(b"points");
-    let mut transfer = eneros_agent_sdk::ChunkedClient::new(&mut config, 0, 5_000);
-    let payload = match transfer.transfer("svc-config", &req) {
-        Ok(p) => p,
-        Err(e) => {
-            eneros_runtime::println!("[svc-modbus-tcp] config ConfigGet(points) EIPC fail: {e:?}");
-            return eneros_protocol_abstract::VecPointRegistry::new(alloc::vec::Vec::new());
-        }
-    };
-    // svc-config GET_ENTRY 响应 = 4B LE 长度 + canonical payload（与
-    // svc-mgmt 先例一致）；剥前缀后再解码（长度$不对即拒绝）。
-    let cfg_id = eneros_config_bundle::ConfigId::from_static("points");
-    let body = if payload.len() >= 4 {
-        let plen = u32::from_le_bytes(payload[..4].try_into().unwrap_or([0; 4])) as usize;
-        if 4 + plen <= payload.len() {
-            &payload[4..4 + plen]
-        } else {
-            eneros_runtime::println!("[svc-modbus-tcp] config length prefix malformed");
-            return eneros_protocol_abstract::VecPointRegistry::new(alloc::vec::Vec::new());
-        }
-    } else {
-        eneros_runtime::println!("[svc-modbus-tcp] config response too short");
-        return eneros_protocol_abstract::VecPointRegistry::new(alloc::vec::Vec::new());
-    };
-    match eneros_config_bundle::points::decode_points(body, &cfg_id) {
-        Ok(table) => {
-            // 服务层按协议过滤注入（45.4）：只保留 modbus-tcp 点（其余协议
-            // 点的地址不属于本插件，注入只会产生 AddrTypeMismatch 噪音）。
-            let mappings: alloc::vec::Vec<_> = table
-                .points
-                .iter()
-                .filter(|p| {
-                    p.protocol == eneros_config_bundle::points::PointProtocol::ModbusTcp
-                        || p.protocol == eneros_config_bundle::points::PointProtocol::ModbusRtu
-                })
-                .filter_map(|p| p.to_mapping())
-                .collect();
-            eneros_runtime::println!(
-                "[svc-modbus-tcp] POINTS-LOADED {} modbus points (registry {})",
-                mappings.len(),
-                table.len()
-            );
-            eneros_protocol_abstract::VecPointRegistry::new(mappings)
-        }
-        Err(e) => {
-            eneros_runtime::println!("[svc-modbus-tcp] points decode FAIL: {e:?}");
-            eneros_protocol_abstract::VecPointRegistry::new(alloc::vec::Vec::new())
-        }
-    }
+        |p| {
+            matches!(
+                p.protocol,
+                PointProtocol::ModbusTcp | PointProtocol::ModbusRtu
+            )
+        },
+    )
 }
 
 #[cfg(target_os = "none")]
@@ -391,6 +344,7 @@ pub extern "C" fn _start(
     mmio_vaddr: u64,
     dma_vaddr: u64,
     dma_phys: u64,
+    wall_epoch: u64,
 ) -> ! {
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
@@ -398,6 +352,8 @@ pub extern "C" fn _start(
     // smoltcp 传输用 eneros_time 单调时钟推进；EL0 服务进程内初始化
     // （arm64 通用定时器，EL0 可读；rtc_base 0 = 无板载 RTC 事实）。
     eneros_time::time_init(eneros_hal::arm64::timer::clock(), 0);
+    // SPEC-B WP-B.1：X6 墙钟 epoch 秒（0=缺失显式降级）。
+    eneros_protocol_services::apply_wall_epoch("modbus-tcp", wall_epoch);
     // 39：协议插件在服务侧构造（descriptor 随 readiness 报告）。
     let plugin = eneros_modbus_tcp::plugin::TcpPlugin::new();
     eneros_runtime::println!(

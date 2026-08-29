@@ -40,9 +40,9 @@
   ],
   "internal_gaps_feeding_no_go": [
     { "id": "DEF-52-03", "summary": "镜像逐字节复现失败（四随机源）", "owner_return": "44 image_factory / 37 签名链 / 29 bootctrl" },
-    { "id": "DEF-52-05", "summary": "svc-mqtt 出站连接建立即断（环境漂移 vs 回归待定责）；受阻面=控制链/AI 链 QEMU 实弹重跑+MQTT L2 复证", "owner_return": "svc-mqtt owner 卷+基建" },
+    { "id": "DEF-52-05", "summary": "已打穿（2026-08-27 SPEC-SERIES-F 回写）：根因=w8 锁定的 5577 协议栈缺席致 guest 无网（环境性，非 svc-mqtt 回归）；gap-closure WP-1 C4/C6 PRODUCT-READY=true 零降级双复现（d18e440）、C5 自动恢复+命令重交付 broker 双代 transcript 实证 PASS（eedccbb）；原受阻面（控制链/AI 链实弹+MQTT 出站复证）已清", "owner_return": "无 owner 欠账；残余=L2 复证常态化观测，归 CI 基建观察项" },
     { "id": "DEF-52-04", "summary": "断电切点 harness 标记词汇过时", "owner_return": "33 卷 soak/fault 基建" },
-    { "id": "GAP-FUZZ", "summary": "点表 parser/协议配置 parser/MQTT 帧 fuzz 目标缺失", "owner_return": "后续卷 fuzz CI 化" },
+    { "id": "GAP-FUZZ", "summary": "已关闭（2026-08-27 SPEC-SERIES-F WP-F.3）：三靶 fuzz_points/fuzz_toml_compile/fuzz_mqtt_packet 已入库（fuzz/Cargo.toml）；fuzz_iec104 E0308 烂靶修复（PRT-09 改 encode 返回 Result 时 harness 未适配的遗漏）；九靶本机 cargo fuzz build 全过留证；nightly-fuzz.yml 枚举接线完成，时间预算按 GitHub 单作业 6 小时硬上限如实重排（5400s×N 物理不可收尾 → 2100s×9+timeout 330m）", "owner_return": "无；残余=夜间作业首周真实收敛运行由 CI 观察确认" },
     { "id": "GAP-SOAK72", "summary": "72h 完整墙钟 soak 未达成（本卷真跑轮数与时長如实登记于 exit-gate）", "owner_return": "CI/lab 长跑资源" },
     { "id": "GAP-L2NEG", "summary": "L2 负例 ≥2/协议全量重跑未完成（既有负例证据维持+新增负例在案）", "owner_return": "后续终验窗口" },
     { "id": "GAP-PIN", "summary": "pinned-tools.json qemu pin 与现役二进制不符（8.2.2 vs 9.2.4/10.2.1）", "owner_return": "基建 toolchain pin 维护" }

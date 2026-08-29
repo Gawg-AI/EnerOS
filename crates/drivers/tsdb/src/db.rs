@@ -303,6 +303,81 @@ impl TimeSeriesDB {
         Ok(last)
     }
 
+    /// SPEC-C（WP-C.2 取回面）：尾查询——该 (device, metric) 时间最新的
+    /// `last_n` 条，**升序**返回；不足时给全量。
+    ///
+    /// 内存纪律（R2，审计表 docs/delivery/wp-c-memory-audit-spec-c-20260827
+    /// §一#8）：自索引尾部按 entry.point_count 逆序累计定位所需的最小
+    /// 文件后缀集，只解码凑满 N 所必需的最近几个 chunk 文件——禁止
+    /// 全历史展开（`last_n=0` → 空结果）。
+    pub fn query_last_n(
+        &mut self,
+        device: DeviceId,
+        metric: MetricId,
+        last_n: usize,
+    ) -> Result<Vec<TimeSeriesPoint>, TsdbError> {
+        if last_n == 0 {
+            return Ok(Vec::new());
+        }
+        // 在内存未刷新缓冲里的点必然新于全部已落盘点（flush 清空后再入
+        // 新点），优先占住结果尾部。
+        let key = (device, metric);
+        let mem_pts: Vec<TimeSeriesPoint> = match self.chunks.get(&key) {
+            Some(chunk) => (0..chunk.timestamps.len())
+                .map(|i| TimeSeriesPoint {
+                    timestamp: chunk.timestamps[i],
+                    device_id: chunk.header.device_id,
+                    metric: chunk.header.metric,
+                    value: chunk.values[i],
+                    quality: DataQuality::from(chunk.qualities[i]),
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+
+        let remaining = last_n.saturating_sub(mem_pts.len());
+        let mut out: Vec<TimeSeriesPoint> = Vec::new();
+        if remaining > 0 {
+            // 该对的已落盘 chunk 条目（find_range 升序）。
+            let entries: Vec<crate::index::IndexEntry> = self
+                .index
+                .find_range(0, u64::MAX)
+                .into_iter()
+                .filter(|e| reader::path_matches(&e.file_path, device, metric))
+                .cloned()
+                .collect();
+            if !entries.is_empty() {
+                // 从最新条目逆序按 point_count 累计，定位最小必需文件后缀。
+                let suffix_start = 0; // no-op guard
+                let _ = suffix_start;
+                let mut suffix = 1usize;
+                let mut covered = 0u64;
+                while suffix < entries.len() && covered < remaining as u64 {
+                    covered += entries[entries.len() - suffix].point_count as u64;
+                    if covered >= remaining as u64 {
+                        break;
+                    }
+                    suffix += 1;
+                }
+                // 升序解码后缀文件（时间域互不重叠且整体递增）→ 拼接即升序。
+                for e in &entries[entries.len() - suffix..] {
+                    let pts = reader::read_chunk_file(
+                        &mut self.fs,
+                        self.compressor.as_ref(),
+                        &e.file_path,
+                    )?;
+                    out.extend(pts);
+                }
+                if out.len() > remaining {
+                    out.drain(..out.len() - remaining);
+                }
+            }
+        }
+
+        out.extend(mem_pts);
+        Ok(out)
+    }
+
     /// Flushes all in-memory chunks to disk.
     pub fn compact(&mut self) -> Result<(), TsdbError> {
         writer::flush_all_chunks(
@@ -313,6 +388,21 @@ impl TimeSeriesDB {
             self.compressor.as_ref(),
             &mut self.next_chunk_id,
         )
+    }
+
+    /// SPEC-C（WP-C.1 判据 C3）：崩溃一致检查点。
+    ///
+    /// 强制刷新内存缓冲为 chunk 文件、持久化索引并同步介质。返回 `Ok`
+    /// 后，此前已写入的点在**无预警断电/进程被杀**后必然读回（正常路径
+    /// 的 close 不适用于被 kill 的服务——svc-telemetry 以本方法作为
+    /// 批次边界"后方 ACK"的落盘原语）。写放大代价见审计表 §四。
+    pub fn checkpoint(&mut self) -> Result<(), TsdbError> {
+        if !self.chunks.is_empty() {
+            self.compact()?;
+        }
+        save_index(&mut self.fs, &self.config.data_dir, &self.index)?;
+        self.fs.sync()?;
+        Ok(())
     }
 
     /// 22 §2.W3.6：compaction——合并小 chunk（同一 device/metric 的
@@ -411,6 +501,45 @@ impl TimeSeriesDB {
     /// Returns the number of entries in the persisted index.
     pub fn index_len(&self) -> usize {
         self.index.len()
+    }
+
+    /// SPEC-C：包含该 metric 的全部 (device, metric) 对——**已落盘索引 ∪
+    /// 内存未刷新缓冲**（后者尚无索引条目但属真实历史；多设备同点位聚合
+    /// 查询的来源清单。确定性输出：升序排序去重）。
+    pub fn pairs_for_metric(&self, metric: MetricId) -> Vec<(DeviceId, MetricId)> {
+        let mut out: Vec<(DeviceId, MetricId)> = self
+            .index
+            .unique_pairs()
+            .into_iter()
+            .filter(|(_, m)| *m == metric)
+            .collect();
+        for &(d, m) in self.chunks.keys() {
+            if m == metric && !out.contains(&(d, m)) {
+                out.push((d, m));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// SPEC-C：该 metric 的精确总行数（磁盘索引逐 entry 的 point_count
+    /// 求和 + 内存未刷新缓冲长度）。计数量级 O(对数×索引条目)，不物化行；
+    /// flush 会清空对应内存段，两来源不相重叠。
+    pub fn count_points_for_metric(&self, metric: MetricId) -> usize {
+        let mut total: usize = 0;
+        for &(d, _) in &self.pairs_for_metric(metric) {
+            for e in self.index.find_range(0, u64::MAX) {
+                if crate::reader::path_matches(&e.file_path, d, metric) {
+                    total += e.point_count as usize;
+                }
+            }
+        }
+        for ((_, m), c) in &self.chunks {
+            if *m == metric {
+                total += c.timestamps.len();
+            }
+        }
+        total
     }
 
     /// Returns the number of points currently buffered in memory.
@@ -1277,5 +1406,123 @@ mod gr3_gate_tests {
             assert_eq!(p.value, i as f64 * 0.25);
             assert_eq!(p.quality, DataQuality::Good);
         }
+    }
+}
+
+// ============================================================================
+// SPEC-C WP-C.2：query_last_n 尾查询（有界解码；审计表 §一#8）
+// ============================================================================
+#[cfg(test)]
+mod spec_c_tail_tests {
+    use eneros_storage::MockBlockDevice;
+
+    use super::*;
+    use crate::CompressionType;
+
+    fn make_fs() -> Lfs {
+        let dev = eneros_storage::partition::boxed_mock_scope(
+            MockBlockDevice::new(64, 4096),
+            eneros_storage::partition::BlockRole::Data,
+        );
+        Lfs::format(dev).expect("format")
+    }
+
+    fn make_config() -> TsdbConfig {
+        TsdbConfig {
+            data_dir: String::from("/tsdb"),
+            chunk_duration_ms: 3_600_000,
+            max_points_per_chunk: 100,
+            compression: CompressionType::Snappy,
+            retention_ms: 2_592_000_000,
+            flush_interval_ms: 5_000,
+        }
+    }
+
+    fn pt(ts: u64, v: f64) -> TimeSeriesPoint {
+        TimeSeriesPoint {
+            timestamp: ts,
+            device_id: DeviceId(7),
+            metric: MetricId(3),
+            value: v,
+            quality: DataQuality::Good,
+        }
+    }
+
+    /// 跨 chunk 文件的尾查询：120 点三段落盘 → last_n 覆盖跨文件后缀，
+    /// 升序逐字段一致。
+    #[test]
+    fn tail_n_spans_flushed_files_in_order() {
+        let mut db = TimeSeriesDB::open(make_fs(), make_config()).expect("open");
+        // 30 点 ×4 段，每段后 compact 强制落盘（≥2 文件保证跨文件）。
+        for seg in 0..4u64 {
+            for i in 0..30u64 {
+                db.write(&pt(seg * 1000 + i, (seg * 1000 + i) as f64))
+                    .expect("write");
+            }
+            db.compact().expect("flush seg");
+        }
+        assert!(db.index_len() >= 2);
+        let got = db.query_last_n(DeviceId(7), MetricId(3), 50).expect("tail");
+        assert_eq!(got.len(), 50, "last_n < 总量时精确截尾");
+        // 全局序列：段 seg 内 ts=seg*1000+i（时间轴含跳段）——构造同一
+        // 序列取尾 50 与实现逐字段对账。
+        let mut all: Vec<(u64, f64)> = Vec::new();
+        for seg in 0..4u64 {
+            for i in 0..30u64 {
+                all.push((seg * 1000 + i, (seg * 1000 + i) as f64));
+            }
+        }
+        let want = &all[all.len() - 50..];
+        for ((wts, wv), p) in want.iter().zip(got.iter()) {
+            assert_eq!(&p.timestamp, wts, "升序截尾窗口正确");
+            assert_eq!(&p.value, wv);
+            assert_eq!(p.device_id, DeviceId(7));
+            assert_eq!(p.metric, MetricId(3));
+            assert_eq!(p.quality, DataQuality::Good);
+        }
+    }
+
+    /// 内存未刷新缓冲优先占尾 + 与磁盘后缀拼接无缝（不重复不丢序）。
+    #[test]
+    fn tail_n_merges_unflushed_memory_tail() {
+        let cfg = TsdbConfig {
+            max_points_per_chunk: 40,
+            ..make_config()
+        };
+        let mut db = TimeSeriesDB::open(make_fs(), cfg).expect("open");
+        // 40 点自动切 chunk：写入即落盘第一批；再写 10 点留在内存缓冲。
+        for i in 0..50u64 {
+            db.write(&pt(i * 10, i as f64)).expect("write");
+        }
+        assert_eq!(db.buffered_points(), 10, "10 点应在内存缓冲");
+        let got = db.query_last_n(DeviceId(7), MetricId(3), 45).expect("tail");
+        assert_eq!(got.len(), 45);
+        // 尾部 45 = ts [50,4950)？序列 ts=i*10 i∈[0,50) → 截尾 45 = i∈[5,50)。
+        for (i, p) in got.iter().enumerate() {
+            assert_eq!(p.timestamp, (5 + i) as u64 * 10);
+            assert_eq!(p.value, (5 + i) as f64);
+        }
+        // 最后一条必须是内存缓冲最新点（未被旧磁盘数据顶掉）。
+        assert_eq!(got.last().expect("nonempty").timestamp, 490);
+    }
+
+    /// last_n > 存量 → 全量升序返回；last_n=0 → 空。
+    #[test]
+    fn tail_n_overask_and_zero() {
+        let mut db = TimeSeriesDB::open(make_fs(), make_config()).expect("open");
+        db.write(&pt(1, 1.0)).expect("w");
+        db.write(&pt(2, 2.0)).expect("w");
+        db.compact().expect("flush");
+        let all = db.query_last_n(DeviceId(7), MetricId(3), 100).expect("all");
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].timestamp, 1);
+        assert_eq!(all[1].timestamp, 2);
+        let zero = db.query_last_n(DeviceId(7), MetricId(3), 0).expect("zero");
+        assert!(zero.is_empty());
+        // 其他 device/metric 对不可见（隔离）。
+        let other = db
+            .query_last_n(DeviceId(8), MetricId(3), 10)
+            .expect("other pair");
+        assert!(other.is_empty());
     }
 }

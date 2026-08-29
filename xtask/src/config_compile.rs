@@ -7,6 +7,9 @@
 //! - 未知字段/重复字段/全零密钥/枚举非法 → 编译失败（Gate 转红）；
 //! - ota.toml 的 root_key 由 `--root-key-hex` 注入（KMS/产线），文件不落
 //!   明文；全零拒绝；
+//! - security.toml 的控制链信封密钥由 `--control-chain-key-hex` /
+//!   `ENEROS_CONTROL_CHAIN_KEY` / `ENEROS_KMS_DIR/control-chain.key` 注入
+//!   （SPEC-SERIES-2026-08-27/A WP-A.1；全缺 → 构建 Err fail-closed）；
 //! - 签名密钥 `--sign-key-hex`（SM2 私钥 32B hex；测试用仓库测试密钥，
 //!   release 用 KMS 密钥）；公钥 65B hex（04 前缀）写入 pubkey 文件。
 
@@ -23,6 +26,7 @@ pub fn config_compile(
     profile_id: &str,
     sign_key_hex: Option<&str>,
     root_key_hex: Option<&str>,
+    control_chain_key_hex: Option<&str>,
 ) -> DynResult<std::path::PathBuf> {
     // 1. 读取 registry 与 release profile 的 configs 链接。
     let registry_path = root.join("configs/registry.toml");
@@ -97,13 +101,25 @@ pub fn config_compile(
             }
             None => None,
         };
-        let compiled =
-            eneros_config_bundle::toml_compile::compile_by_id(name, &text, injected.as_ref())?
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "config compile: {name} 无 typed compiler（未登记）"
-                    ))
-                })?;
+        // WP-A.1：控制链信封密钥**惰性解析**（仅当 manifest 含 security
+        // 节时才走注入链）——不消费该节的其他 profile 构建不受强制。
+        let control_chain_key: Option<[u8; 32]> =
+            if name == eneros_config_bundle::schema::security::CONFIG_ID {
+                Some(resolve_control_chain_key(root, control_chain_key_hex)?)
+            } else {
+                None
+            };
+        let compiled = eneros_config_bundle::toml_compile::compile_by_id(
+            name,
+            &text,
+            injected.as_ref(),
+            control_chain_key.as_ref(),
+        )?
+        .ok_or_else(|| {
+            invalid(format!(
+                "config compile: {name} 无 typed compiler（未登记）"
+            ))
+        })?;
         let digest = eneros_config_bundle::Digest::of(&compiled.payload);
         bundle
             .entries
@@ -206,6 +222,79 @@ fn resolve_signing_key(
 }
 
 /// 测试用：sm2 私钥种子合法性（32B 非零即合法标量大概率可用）。
+/// 环境变量：控制链信封密钥（32B hex；WP-A.1 注入链第二级）。
+const ENV_CONTROL_CHAIN_KEY: &str = "ENEROS_CONTROL_CHAIN_KEY";
+/// 环境变量：KMS 目录（WP-A.1 注入链第三级根）。
+const ENV_KMS_DIR: &str = "ENEROS_KMS_DIR";
+/// KMS 目录内的信封密钥文件名。
+const CONTROL_CHAIN_KEY_FILE: &str = "control-chain.key";
+
+/// 解析控制链信封密钥（32B hex → bytes）。
+///
+/// 优先级镜像签章键纪律（keys.rs）：`--control-chain-key-hex` >
+/// `ENEROS_CONTROL_CHAIN_KEY` > `$ENEROS_KMS_DIR/control-chain.key`；
+/// 三者皆无 → Err（文案对齐 fail-closed 先例）。开发档模板见
+/// `configs/kms-dev/`（qemu-test 登记测试键，值不经任何 .rs 源文件）。
+fn resolve_control_chain_key(root: &Path, explicit: Option<&str>) -> DynResult<[u8; 32]> {
+    fn parse(hex_str: &str) -> DynResult<[u8; 32]> {
+        let bytes = hex_decode(hex_str.trim())?;
+        if bytes.len() != 32 {
+            return Err(invalid(format!(
+                "控制链信封密钥必须为 64 hex（32B），得 {}B",
+                bytes.len()
+            )));
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&bytes);
+        Ok(out)
+    }
+    if let Some(hex_str) = explicit {
+        return parse(hex_str);
+    }
+    if let Ok(v) = std::env::var(ENV_CONTROL_CHAIN_KEY) {
+        return parse(&v);
+    }
+    if let Ok(dir) = std::env::var(ENV_KMS_DIR) {
+        let pb = if dir.starts_with('/') {
+            std::path::PathBuf::from(&dir)
+        } else {
+            root.join(&dir)
+        };
+        let file = pb.join(CONTROL_CHAIN_KEY_FILE);
+        if !file.is_file() {
+            return Err(invalid(format!(
+                "{ENV_KMS_DIR} 下缺少 {CONTROL_CHAIN_KEY_FILE}: {}（fail-closed）",
+                file.display()
+            )));
+        }
+        // 模板格式宽容：64-hex（产线惯用）或恰好 32B 原始 ASCII 字节
+        // （configs/kms-dev 开发档模板形态）；其余长度一律拒绝。
+        let raw = fs::read_to_string(&file)?;
+        let trimmed = raw.trim();
+        let looks_hex = trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit());
+        if looks_hex {
+            return parse(trimmed);
+        }
+        if raw.len() == 32 && !raw.contains('\n') && !raw.contains('\r') {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(raw.as_bytes());
+            if out == [0u8; 32] {
+                return Err(invalid(format!(
+                    "{CONTROL_CHAIN_KEY_FILE} 为全零——fail-closed（SPEC WP-A.1）"
+                )));
+            }
+            return Ok(out);
+        }
+        return Err(invalid(format!(
+            "{CONTROL_CHAIN_KEY_FILE} 非法：须为 64-hex 或恰好 32B 原始键（fail-closed）"
+        )));
+    }
+    Err(invalid(
+        "控制链信封密钥未提供：--control-chain-key-hex 或 ENEROS_CONTROL_CHAIN_KEY \
+         或 ENEROS_KMS_DIR/control-chain.key——release 无键构建 fail-closed（SPEC WP-A.1）",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

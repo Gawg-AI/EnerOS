@@ -79,7 +79,7 @@ pub extern "C" fn _start(
             5_000,
         ) {
             Some(io) => {
-                let dev = eneros_business_services::block_io::EipcBlockDevice::new(io, 512, 32768);
+                let dev = eneros_agent_sdk::block_io::EipcBlockDevice::new(io, 512, 32768);
                 let mut key65 = [0u8; 65];
                 key65[0] = 0x04;
                 key65[1..].copy_from_slice(&ENEROS_OTA_ROOT_KEY);
@@ -141,7 +141,7 @@ struct OtaHandler {
     ota: Option<
         eneros_business_services::ota_service::OtaService<
             eneros_ota_ab::ab_partition::AbPartitionOta<
-                eneros_business_services::block_io::EipcBlockDevice<
+                eneros_agent_sdk::block_io::EipcBlockDevice<
                     eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
                 >,
             >,

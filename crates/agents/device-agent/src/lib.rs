@@ -52,6 +52,7 @@ extern crate alloc;
 
 #[cfg(feature = "agent-runtime")]
 mod agent;
+mod capability_digest;
 mod command;
 mod delivery;
 mod device_type;
@@ -89,7 +90,7 @@ pub use persist::{load_registry, log_wal_entry, save_snapshot};
 pub use registry::MockPointDevice;
 pub use registry::{
     AdapterKind, DeviceInfo, DeviceRegistration, DeviceRegistry, EndpointRef, OperationSet,
-    PointSchemaVersion, UnavailableAdapter,
+    PointSchemaVersion, RegistryError, UnavailableAdapter,
 };
 pub use virtual_device::{
     VirtualPcsDevice, POINT_ALARM, POINT_DC_BUS_V, POINT_GRID_UP, POINT_POWER, POINT_SOC,

@@ -151,7 +151,7 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
     }
 }
 
-fn err_receipt(reason: &str) -> Vec<u8> {
+pub fn err_receipt(reason: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(RECEIPT_WIRE_LEN);
     out.push(DISP_ERR);
     out.push(state_code(DispatchState::Rejected));
@@ -218,11 +218,6 @@ pub fn handle_submit_intent(
     }
 }
 
-/// proposal 重建后补充 plan_id（wire 定长去零）。
-pub fn plan_id_of(plan: &eneros_dual_brain::ProposedControlPlan) -> String {
-    plan.plan_id.clone()
-}
-
 // ============================================================================
 // 产品装配（40 收尾 + 47 WP-47.2 点表绑定）：svc-control-dispatch 与
 // svc-device-agent 的同源配置。key/lease/policy/safety 两端必须同源
@@ -239,12 +234,12 @@ pub fn plan_id_of(plan: &eneros_dual_brain::ProposedControlPlan) -> String {
 // fail-closed）。
 // ============================================================================
 
-/// qemu-test 装配 HMAC 测试键（32B；两端同源）。
-///
-/// 47（WP-47.2 退休 PROD_KEY）：本常量仅为 qemu-test/qemu-prod 演示装配
-/// 的**测试键**——47.3 起由 KMS_DIR/测试键注入链替换（release 无键构建
-/// fail-closed）；任何测试不得依赖其值语义。
-pub const ASSEMBLY_TEST_KEY: &[u8; 32] = b"w40-test-key-0000000000000000000";
+// SPEC-SERIES-2026-08-27/A WP-A.1：装配 HMAC 测试键常量（ASSEMBLY_TEST_KEY）
+// 已出仓退休。信封密钥现由构建期注入链接入签名 bundle 的 `security` 节
+// （configs/security.toml；键值不落文件），运行期双 bin 经
+// cfg_bindings::fetch_control_chain_key 取得，全零/短键/缺节 ⇒
+// CHAIN-KEY-MISSING 拒载（fail-closed）。开发档测试键模板：
+// configs/kms-dev/control-chain.key（值不经任何 .rs 源文件）。
 /// 产品租约 ID（两侧同源预置，§6.7）。
 pub const PROD_LEASE_ID: [u8; 16] = [0x40; 16];
 /// fencing epoch 种子（两侧同源；首签 token = seed + 1）。
@@ -369,6 +364,10 @@ mod tests {
             issuer_epoch: 0,
             target_endpoint: String::from("svc-device-agent"),
             max_power_kw: 500.0,
+            // SPEC WP-A.2：护栏窗口/爬坡（缺省 = 蓝图默认，行为连续）。
+            safety_voltage_window: (340.0, 420.0),
+            safety_freq_window: (49.5, 50.5),
+            safety_ramp_kw_per_min: 200.0,
             gate: eneros_dual_brain::gate::DecisionGate::new(100, 1000.0, 3_600_000),
             control_audit: None,
             audit: None,

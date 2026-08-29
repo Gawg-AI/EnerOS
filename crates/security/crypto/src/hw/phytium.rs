@@ -229,6 +229,11 @@ impl PhytiumCryptoEngine {
     ///
     /// 模拟模式下，寄存器操作被模拟，算法使用软件实现。
     /// 用于验证驱动逻辑和接口正确性。
+    ///
+    /// **仅测试/显式 `simulated` feature**：release 构建无法实例化模拟
+    /// 引擎（编译期证明；门控习语照抄 tpm/driver.rs 先例，
+    /// SPEC-SERIES-2026-08-27/A · WP-A.3）。
+    #[cfg(any(test, feature = "simulated"))]
     pub fn new_simulated() -> Self {
         Self {
             regs: core::ptr::null_mut(),

@@ -1,4 +1,15 @@
-# 46（WP-46.3）：svc-modbus-rtu 协议配置（RS485 链路；串口移交待真机 51 卷）。
+# 46（WP-46.3）：svc-modbus-rtu 协议配置（RS485 链路）。
+# SPEC-D WP-D.2：+ baud/parity/clock_hz 串口链路参数——**真消费面** =
+# svc-modbus-rtu 装配 SerialTransportFactory（baud/parity 经工厂构造注入；
+# 缺失/非法 → 能力壳 fail-closed，不猜默认冒充活路）与 Pl011UartHw 参考时钟
+# （clock_hz；0 = 板级默认 24 MHz）。键集 = plugin KNOWN_KEYS 与 config-bundle
+# known_keys 双源同波次（两侧字面量锁定测试互为漂移闸）。
 slave_id = 1
+# RTU 链路波特率（3.5 字符间隔成帧依赖它；真机按从站能力调整）。
+baud = 9600
+# 校验位：none|even|odd（RTU 默认 none=8N1）。
+parity = "none"
+# PL011 参考时钟 Hz（0 = Pl011UartHw 内板级默认 24 MHz；真机按 FDT clocks）。
+clock_hz = 24000000
 timeout_ms = 1000
 retries = 2

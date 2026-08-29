@@ -13,8 +13,13 @@
 use eneros_drv_svc::block_cmd::{BLK_CMD_FLUSH, BLK_CMD_READ, BLK_CMD_WRITE};
 use eneros_drv_svc::runtime::{wire, DriverRequest, DriverResponse, OP_EXECUTE, ST_OK};
 use eneros_durable_state::{PersistIo, StoreError};
+// SPEC-B/C（2026-08-28）：EipcBlockDevice（BlockIo→storage BlockDevice
+// 单件）迁入本模块——storage 依赖方向已验无环。
+use eneros_storage::driver::{BlockDevice, DeviceHealth};
+use eneros_storage::StorageError;
 
 /// 块客户端：经 EIPC 调 svc-storage（X3 授予表槽位）。
+#[derive(Clone)]
 pub struct BlockIo<C> {
     /// EIPC 客户端（Sel4IpcClient；host 测试注入模拟）。
     client: C,
@@ -72,16 +77,11 @@ impl<C: EipcSend> BlockIo<C> {
             .client
             .drv_call(&enc, self.timeout_ms * 1_000_000)
             .map_err(|_| StoreError::Unavailable)?;
-        // drv-svc 服务端按 4B/word 回 MR，`RESPONSE_LEN=79` 会以 20 words
-        // （80B）返回；wire::decode_response 要求精确 79B，直接解码会
-        // 误判 bad-envelope（QEMU 实测 EIPC 块读首包后 store-unavailable）。
-        // 这里接受尾部 padding（≥79B），只解前 79B。
-        let decode_len = core::cmp::min(
-            resp_bytes.len(),
-            eneros_drv_svc::runtime::wire::RESPONSE_LEN,
-        );
-        let resp = wire::decode_response(&resp_bytes[..decode_len])
-            .ok_or(StoreError::Encode("bad-envelope"))?;
+        // drv-svc 服务端按 4B/word 回 MR：`RESPONSE_LEN=79` 会以 20 words
+        //（80B）返回——接受尾部 padding（≥79B），只解前 79B。容差解码
+        // 单一事实源 = wire::decode_response_padded（SPEC-B WP-B.2 收编）。
+        let resp =
+            wire::decode_response_padded(&resp_bytes).ok_or(StoreError::Encode("bad-envelope"))?;
         // 首个响应吸收 epoch（业务服务无法预知 svc-storage 的实例 epoch）；
         // 之后 epoch 变化 → 陈旧句柄（重启后必须重建，不跨重启复用）。
         if self.epoch == 0 {
@@ -164,4 +164,188 @@ pub fn eipc_block_io(
 ) -> Option<BlockIo<crate::ipc_sel4::Sel4IpcClient>> {
     let ipc = crate::ipc_sel4::Sel4IpcClient::new("block-io", slot, eneros_drv_svc::now_ns).ok()?;
     Some(BlockIo::new(ipc, "svc-storage", epoch, timeout_ms))
+}
+
+/// 将 [`BlockIo`]（EIPC 块客户端）适配为 storage crate 的 [`BlockDevice`]，
+/// 供 `AbPartitionOta` / 磁盘 TSDB 等真实持久化组件做块级读写。
+///
+/// SPEC-B/C（2026-08-28）：自 business-services 迁入，全仓单件——历史
+/// 同构双件（telemetry_history `BlockIoFace`、ai-worker `LearnBlockIo`）
+/// 删除；"erase = 零写"语义的唯一契约测试在本模块（擦后读零）。
+#[derive(Clone)]
+pub struct EipcBlockDevice<C> {
+    io: core::cell::RefCell<BlockIo<C>>,
+    block_size: usize,
+    block_count: u64,
+}
+
+impl<C: EipcSend> EipcBlockDevice<C> {
+    pub fn new(io: BlockIo<C>, block_size: usize, block_count: u64) -> Self {
+        Self {
+            io: core::cell::RefCell::new(io),
+            block_size,
+            block_count,
+        }
+    }
+}
+
+impl<C: EipcSend> BlockDevice for EipcBlockDevice<C> {
+    fn read_block(&self, block_idx: u64, buf: &mut [u8]) -> Result<(), StorageError> {
+        if block_idx >= self.block_count {
+            return Err(StorageError::OutOfRange {
+                block_idx,
+                max: self.block_count,
+            });
+        }
+        let off = block_idx * self.block_size as u64;
+        self.io
+            .borrow_mut()
+            .read(off, buf)
+            .map_err(|_| StorageError::HardwareFault {
+                detail: "eipc-block-read",
+            })
+    }
+
+    fn write_block(&mut self, block_idx: u64, buf: &[u8]) -> Result<(), StorageError> {
+        if block_idx >= self.block_count {
+            return Err(StorageError::OutOfRange {
+                block_idx,
+                max: self.block_count,
+            });
+        }
+        let off = block_idx * self.block_size as u64;
+        self.io
+            .borrow_mut()
+            .write(off, buf)
+            .map_err(|_| StorageError::HardwareFault {
+                detail: "eipc-block-write",
+            })
+    }
+
+    fn erase_block(&mut self, block_idx: u64) -> Result<(), StorageError> {
+        // 块命令面无独立擦除——零写语义（唯一契约测试：擦后读零）。
+        let zero = alloc::vec![0u8; self.block_size];
+        self.write_block(block_idx, &zero)
+    }
+
+    fn block_count(&self) -> u64 {
+        self.block_count
+    }
+
+    fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    fn flush(&mut self) -> Result<(), StorageError> {
+        self.io
+            .borrow_mut()
+            .flush()
+            .map_err(|_| StorageError::HardwareFault {
+                detail: "eipc-block-flush",
+            })
+    }
+
+    fn health_status(&self) -> DeviceHealth {
+        DeviceHealth {
+            total_blocks: self.block_count,
+            bad_blocks: 0,
+            wear_level: 0,
+            temperature: 0,
+            remaining_life: 100,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use eneros_drv_svc::block_cmd::{BLK_CMD_FLUSH, BLK_CMD_READ, BLK_CMD_WRITE};
+    use eneros_drv_svc::runtime::{wire, DriverResponse, ST_OK};
+
+    use super::*;
+
+    /// 内存仿真后端（host；模拟 svc-storage 块命令面）。
+    #[derive(Clone)]
+    struct SimStorage {
+        data: std::rc::Rc<core::cell::RefCell<Vec<u8>>>,
+    }
+
+    impl SimStorage {
+        fn handle(&self, req: &[u8]) -> Vec<u8> {
+            let dreq = wire::decode_request(req).unwrap();
+            let mut resp = DriverResponse::new(dreq.correlation, ST_OK, 7);
+            let sub = dreq.payload[0];
+            match sub {
+                BLK_CMD_READ => {
+                    let lba = u64::from_le_bytes(dreq.payload[1..9].try_into().unwrap());
+                    let count =
+                        u32::from_le_bytes(dreq.payload[9..13].try_into().unwrap()) as usize;
+                    let start = lba as usize;
+                    let data = self.data.borrow();
+                    if start + count > data.len() {
+                        resp.status = 4; // ST_UNAVAILABLE
+                    } else {
+                        resp.payload[..count].copy_from_slice(&data[start..start + count]);
+                        resp.payload_len = count as u16;
+                    }
+                }
+                BLK_CMD_WRITE => {
+                    let lba = u64::from_le_bytes(dreq.payload[1..9].try_into().unwrap());
+                    let payload = &dreq.payload[9..dreq.payload_len as usize];
+                    let start = lba as usize;
+                    let mut data = self.data.borrow_mut();
+                    if start + payload.len() > data.len() {
+                        resp.status = 4;
+                    } else {
+                        data[start..start + payload.len()].copy_from_slice(payload);
+                    }
+                }
+                BLK_CMD_FLUSH => {}
+                _ => resp.status = 5, // ST_INVALID
+            }
+            wire::encode_response(&resp).to_vec()
+        }
+    }
+
+    impl EipcSend for SimStorage {
+        fn drv_call(&mut self, req: &[u8], _timeout_ns: u64) -> Result<Vec<u8>, ()> {
+            Ok(self.handle(req))
+        }
+    }
+
+    /// SPEC-B/C：EipcBlockDevice 单件契约（7 方法 + 擦后读零 + 越界拒绝）
+    /// ——原 business-services 测试迁移，erase 零写语义唯一契约处。
+    #[test]
+    fn eipc_block_device_contract() {
+        let media = std::rc::Rc::new(core::cell::RefCell::new(vec![0u8; 4096]));
+        let storage = SimStorage {
+            data: std::rc::Rc::clone(&media),
+        };
+        let io = BlockIo::new(storage, "svc-storage", 7, 1000);
+        let mut dev = EipcBlockDevice::new(io, 512, 8);
+        // 写读往返。
+        let data = [0xAAu8; 512];
+        dev.write_block(2, &data).unwrap();
+        let mut buf = [0u8; 512];
+        dev.read_block(2, &mut buf).unwrap();
+        assert_eq!(buf, data);
+        assert_eq!(dev.block_count(), 8);
+        assert_eq!(dev.block_size(), 512);
+        dev.flush().unwrap();
+        // 擦后读零（零写语义契约）。
+        dev.erase_block(3).unwrap();
+        let mut erased = [0xFFu8; 512];
+        dev.read_block(3, &mut erased).unwrap();
+        assert_eq!(erased, [0u8; 512]);
+        // 越界块拒绝。
+        assert!(dev.read_block(8, &mut buf).is_err());
+        assert!(dev.write_block(8, &data).is_err());
+        // Clone（mount-or-format 双实例路径）。
+        let dev2 = dev.clone();
+        let mut b2 = [0u8; 512];
+        dev2.read_block(2, &mut b2).unwrap();
+        assert_eq!(b2, data);
+    }
 }

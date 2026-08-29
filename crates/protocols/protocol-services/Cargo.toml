@@ -17,6 +17,8 @@ eneros-drv-svc = { path = "../../drivers/drv-svc" }
 eneros-runtime = { path = "../../runtime/runtime" }
 eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
+# SPEC-R4 WP-R4.3：net DMA 池页数单源 = handover-abi（历史双源收编）。
+eneros-handover-abi = { path = "../../abi/handover-abi" }
 # 47（WP-47.2 遥测过滤 / WP-47.1 出站写）：PointType/PointValue 值类型。
 eneros-upa-model = { path = "../upa-model" }
 # 47（WP-47.1 协议出站写）：OutcomeFrame/OutcomeCode（2B 回执帧——与

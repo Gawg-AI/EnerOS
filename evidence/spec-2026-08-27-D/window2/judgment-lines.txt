@@ -1,0 +1,65 @@
+[eneros-root-task]   spawn svc-modbus-rtu entry=0x207b6c stack_top=0x233000 ipc_ep=114 pages=46
+[eneros-root-task] DBG svc 'svc-modbus-rtu' tcb=3259 vspace=3260 cnode=3261 tcb_type=12 vspace_type=9 cnode_type=10
+[eneros-root-task] DBG page_map vspace=3260 frame=3265 vaddr=0x200000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3266 vaddr=0x201000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3267 vaddr=0x202000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3268 vaddr=0x203000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3269 vaddr=0x204000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3270 vaddr=0x205000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3271 vaddr=0x206000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3272 vaddr=0x207000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3273 vaddr=0x208000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3274 vaddr=0x209000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3275 vaddr=0x20a000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3276 vaddr=0x20b000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3277 vaddr=0x20c000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3278 vaddr=0x20d000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3279 vaddr=0x20e000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3280 vaddr=0x20f000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3281 vaddr=0x210000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3282 vaddr=0x211000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3283 vaddr=0x212000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3284 vaddr=0x213000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3285 vaddr=0x214000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3286 vaddr=0x215000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3287 vaddr=0x216000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3288 vaddr=0x217000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3289 vaddr=0x218000 svc='svc-modbus-rtu' frame_type=1 attr=0x3
+[eneros-root-task] DBG page_map vspace=3260 frame=3290 vaddr=0x219000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3291 vaddr=0x21a000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3292 vaddr=0x21b000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3293 vaddr=0x21c000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3294 vaddr=0x21d000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3295 vaddr=0x21e000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3296 vaddr=0x21f000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3297 vaddr=0x220000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3298 vaddr=0x221000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3299 vaddr=0x222000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3300 vaddr=0x223000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3301 vaddr=0x224000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3302 vaddr=0x225000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3303 vaddr=0x226000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3304 vaddr=0x227000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3305 vaddr=0x228000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3306 vaddr=0x229000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3307 vaddr=0x22a000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3308 vaddr=0x22b000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3309 vaddr=0x22c000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG page_map vspace=3260 frame=3310 vaddr=0x22d000 svc='svc-modbus-rtu' frame_type=1 attr=0x7
+[eneros-root-task] DBG stack_map vspace=3260 frame=3311 vaddr=0x232000 svc='svc-modbus-rtu' attr=0x7
+[eneros-root-task] DBG stack_map vspace=3260 frame=3312 vaddr=0x231000 svc='svc-modbus-rtu' attr=0x7
+[eneros-root-task] DBG stack_map vspace=3260 frame=3313 vaddr=0x230000 svc='svc-modbus-rtu' attr=0x7
+[eneros-root-task] DBG stack_map vspace=3260 frame=3314 vaddr=0x22f000 svc='svc-modbus-rtu' attr=0x7
+[eneros-root-task] DBG buffer_map vspace=3260 frame=3315 vaddr=0x233000 svc='svc-modbus-rtu' frame_type=1
+[eneros-root-task] DBG fault_mint svc='svc-modbus-rtu' fault_ep=2566 ep_type=4
+[eneros-root-task] DBG ready_ntfn svc='svc-modbus-rtu' root_slot=3320 badge=14
+[eneros-root-task] EIPC-GRANT-TABLE edges=32 base_slot=3
+[eneros-root-task] EIPC-GRANT: svc-modbus-rtu -> svc-config slot=3 badge=14
+[eneros-root-task] CAPS: svc-modbus-rtu=ep-send,ep-recv
+[modbus-rtu] TIME-EPOCH=1787837249
+[protocol-service] modbus-rtu plugin=modbus-rtu role=Master interop=CodecReady
+[svc-modbus-rtu] RTU-UNAVAILABLE reason=no-handle —— capability 壳（EXECUTE ST_UNAVAILABLE）
+[drv-svc-modbus-rtu] ipc loop entered ep=0 epoch=7914 cap=None
+[drv-svc-modbus-rtu] READY-SIGNALED ntfn_slot=2
+[eneros-root-task] READINESS: svc-modbus-rtu=Ready
+[eneros-root-task] PRODUCT-READY: true (degraded: ; required degraded: )

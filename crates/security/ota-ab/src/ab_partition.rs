@@ -23,6 +23,68 @@ pub const PARTITION_BLOCKS: u64 = 2048;
 /// B 槽位起始块地址。
 pub const SLOT_B_BASE_BLOCK: u64 = SLOT_A_BASE_BLOCK + PARTITION_BLOCKS;
 
+/// SPEC-C（D-TSDB-2 方案 A）：svc-storage 数据盘上让渡给 svc-telemetry 的
+/// TSDB 区段起始块（512B 块计，字节 4 MiB）。避开全部既有占用：META 块 0、
+/// 意图日志信封 [0,128KiB)、各业务状态区 [8KiB..64KiB)、A/B 槽 [块 1,
+/// 4097)，前置 ≈2 MiB 保护间隙。内存审计与区段清单见
+/// docs/delivery/wp-c-memory-audit-spec-c-20260827.md §三。
+pub const DATA_TSDB_BASE_BLOCK: u64 = SLOT_B_BASE_BLOCK + PARTITION_BLOCKS + 4095;
+/// TSDB 区段块数（512B 块计 8 MiB；16 MiB 数据盘上方再留 4 MiB 未分配余量）。
+pub const DATA_TSDB_BLOCKS: u64 = 16384;
+
+/// SPEC-E（WP-E.2，CAQ-2 下方余量划区）：svc-control-dispatch 决策审计链
+/// 持久区段起始块（紧随 TSDB 末 = 字节 12 MiB；64 KiB = 64 槽 × 1 KiB，
+/// 槽 = 单条 DurableAuditRecord）。区段清单同上 §三表；TSDB 实际只用其
+/// 头部 256 KiB 窗口（LFS 卷几何），但物理区段边界按声明全长隔离。
+pub const AUDIT_CHAIN_BASE_BLOCK: u64 = DATA_TSDB_BASE_BLOCK + DATA_TSDB_BLOCKS;
+/// 决策审计链区段块数（512B 块计 64 KiB；容量策略 = 槽满丢新 + 计数）。
+pub const AUDIT_CHAIN_BLOCKS: u64 = 128;
+
+/// SPEC-E（WP-E.3）：svc-ai-worker 有界学习参数快照区段起始块
+/// （紧随审计链区；4 KiB = RegionStateStore 双槽代次切换（E 续作订正，2 KiB/槽），余量充足）。
+pub const LEARN_STATE_BASE_BLOCK: u64 = AUDIT_CHAIN_BASE_BLOCK + AUDIT_CHAIN_BLOCKS;
+/// 学习参数快照区段块数（512B 块计 4 KiB）。
+pub const LEARN_STATE_BLOCKS: u64 = 8;
+
+/// 数据盘区段角色（布局类型化，SPEC-B/C 2026-08-28：`×512` 字节换算收进
+/// 唯一 accessor，消灭消费端散抄魔数；常量数值逐字节不变）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataRegion {
+    /// TSDB 历史区段（[`DATA_TSDB_BASE_BLOCK`]/[`DATA_TSDB_BLOCKS`]）。
+    Tsdb,
+    /// 决策审计链区段（[`AUDIT_CHAIN_BASE_BLOCK`]/[`AUDIT_CHAIN_BLOCKS`]）。
+    AuditChain,
+    /// 学习参数快照区段（[`LEARN_STATE_BASE_BLOCK`]/[`LEARN_STATE_BLOCKS`]）。
+    LearnState,
+}
+
+impl DataRegion {
+    /// 区段基址（512B 块号，ota-ab 常量口径）。
+    pub fn base_block_512(self) -> u64 {
+        match self {
+            DataRegion::Tsdb => DATA_TSDB_BASE_BLOCK,
+            DataRegion::AuditChain => AUDIT_CHAIN_BASE_BLOCK,
+            DataRegion::LearnState => LEARN_STATE_BASE_BLOCK,
+        }
+    }
+    /// 区段长度（512B 块数）。
+    pub fn blocks_512(self) -> u64 {
+        match self {
+            DataRegion::Tsdb => DATA_TSDB_BLOCKS,
+            DataRegion::AuditChain => AUDIT_CHAIN_BLOCKS,
+            DataRegion::LearnState => LEARN_STATE_BLOCKS,
+        }
+    }
+    /// 区段字节基址（`×512` 唯一换算点）。
+    pub fn base_byte(self) -> u64 {
+        self.base_block_512() * 512
+    }
+    /// 区段字节长度（`×512` 唯一换算点）。
+    pub fn len_bytes(self) -> u64 {
+        self.blocks_512() * 512
+    }
+}
+
 /// 分区标识。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartitionSlot {
@@ -551,5 +613,60 @@ mod tests {
         // Empty 态同样拒绝
         let err2 = ota.activate(PartitionSlot::B).expect_err("仍应拒绝");
         assert_eq!(err2, OtaError::VerifyFailed);
+    }
+}
+
+#[cfg(test)]
+mod spec_c_region_tests {
+    /// SPEC-C（D-TSDB-2 方案 A）：TSDB 区段与全部既有数据盘占用非交叠
+    /// （内存审计表 docs/delivery/wp-c-memory-audit-spec-c-20260827.md §三
+    /// 的 const 级防线——改布局常量必须先过审计表）。
+    #[test]
+    fn data_tsdb_region_disjoint_from_existing_claims() {
+        use super::{DATA_TSDB_BASE_BLOCK, DATA_TSDB_BLOCKS, META_BLOCK, PARTITION_BLOCKS};
+        let tsdb = DATA_TSDB_BASE_BLOCK..DATA_TSDB_BASE_BLOCK + DATA_TSDB_BLOCKS;
+        // OTA 元数据块 0。
+        assert!(!tsdb.contains(&META_BLOCK), "不得覆盖 OTA 元数据块");
+        // A/B 镜像槽（块 1 .. 4097）。
+        let slots = super::SLOT_A_BASE_BLOCK..super::SLOT_B_BASE_BLOCK + PARTITION_BLOCKS;
+        assert!(
+            tsdb.start >= slots.end,
+            "TSDB 区段 {tsdb:?} 必须整体位于 A/B 槽之后"
+        );
+        // 意图日志信封（字节 [0, 64+255*512) → 512B 块 [0, 256)）。
+        const INTENT_ENVELOPE_BYTES: u64 = 64 + 255 * 512;
+        const INTENT_ENVELOPE_BLOCKS: u64 = INTENT_ENVELOPE_BYTES.div_ceil(512);
+        assert!(tsdb.start >= INTENT_ENVELOPE_BLOCKS, "不得覆盖意图日志信封");
+        // 各业务状态区（OTA trial/ledger/market/cloud/bus/obs ≤ 64KiB+长度，
+        // 保守以 128 KiB 上界核验，细节见审计表 §三清单）。
+        assert!(
+            tsdb.start * 512 >= 256 * 1024,
+            "字节基址必须 ≥256 KiB 保护带"
+        );
+        // 区段自洽：16 MiB 数据盘内且上留余量。
+        assert_eq!(tsdb.start, 8192, "默认基址=字节 4MiB（审计表 §三）");
+        assert!(tsdb.end <= 32768 - 4096, "上方须保留 ≥2 MiB 未分配余量");
+    }
+
+    /// SPEC-E（WP-E.2/E.3）：审计链区段与学习参数区段紧随 TSDB 且两两
+    /// 非交叠、盘内收敛（CAQ-2 下方 4 MiB 余量内的划区防线）。
+    #[test]
+    fn spec_e_audit_and_learn_regions_disjoint() {
+        use super::{
+            AUDIT_CHAIN_BASE_BLOCK, AUDIT_CHAIN_BLOCKS, DATA_TSDB_BASE_BLOCK, DATA_TSDB_BLOCKS,
+            LEARN_STATE_BASE_BLOCK, LEARN_STATE_BLOCKS,
+        };
+        let tsdb = DATA_TSDB_BASE_BLOCK..DATA_TSDB_BASE_BLOCK + DATA_TSDB_BLOCKS;
+        let audit = AUDIT_CHAIN_BASE_BLOCK..AUDIT_CHAIN_BASE_BLOCK + AUDIT_CHAIN_BLOCKS;
+        let learn = LEARN_STATE_BASE_BLOCK..LEARN_STATE_BASE_BLOCK + LEARN_STATE_BLOCKS;
+        assert_eq!(
+            audit.start, tsdb.end,
+            "审计链区必须紧随 TSDB（无保护间隙=零缝隙划区）"
+        );
+        assert_eq!(learn.start, audit.end, "学习参数区必须紧随审计链区");
+        // 盘内收敛：16 MiB 盘（32768 块）内且不侵 TSDB 上方既有余量声明。
+        assert!(learn.end <= 32768, "学习参数区越出 16 MiB 数据盘");
+        // 相互隔离（顺序声明不等于隔离——双保险）。
+        assert!(!audit.contains(&learn.start) && !learn.contains(&audit.start));
     }
 }

@@ -1207,7 +1207,8 @@ mod tests {
             }
         }
         let mut reg = DeviceRegistry::new();
-        reg.register("pcs", DeviceType::Pcs, device_id, Box::new(dev), pm);
+        reg.register("pcs", DeviceType::Pcs, device_id, Box::new(dev), pm)
+            .expect("静态合法登记");
         reg
     }
 
@@ -1564,7 +1565,9 @@ mod tests {
             }
         }
         let mut devices = DeviceRegistry::new();
-        devices.register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm);
+        devices
+            .register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm)
+            .expect("静态合法登记");
         let token = ingress
             .chain
             .lease_service_mut()
@@ -1614,7 +1617,9 @@ mod tests {
             pm.insert(String::from("power_setpoint"), id);
         }
         let mut devices = DeviceRegistry::new();
-        devices.register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm);
+        devices
+            .register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm)
+            .expect("静态合法登记");
 
         let token = ingress
             .chain

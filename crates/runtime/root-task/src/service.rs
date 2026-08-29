@@ -310,7 +310,15 @@ pub fn run_ipc_loop(
     /// 虚拟/次，hello 760 轮/s。dispatch rate gate = 产品值 60/h
     /// （47 WP-47.1）——AI 链每 ACQ 刷新周期约 1 次 confirm，SCADA 写
     /// 共 <60 次确认不撞限（QEMU 写链演示窗口）。
-    const CONTROL_CHAIN_PERIOD: u64 = 100;
+    // SPEC-E 实测订正：net 轮询面（modbus 主站/slrp poll）把根环 tick
+    // 拉长到 ~24s——100-tick 周期 ⇒ 控制链回合 40 分钟一发，且首发常撞
+    // 服务未就绪的瞬态 Transport 错误（w10 重试铁律场景）。改 5-tick：
+    // 瞬态由下一 tick 自愈；EXECUTE(15)/OBS(25) 分支维持低频错峰。
+    const CONTROL_CHAIN_PERIOD: u64 = 5;
+    /// 协议 EXECUTE 驱动周期（ACQ 保鲜 + mqtt 意图轮询；错峰于链回合）。
+    const PROTO_EXECUTE_PERIOD: u64 = 15;
+    /// 可观测上报驱动周期。
+    const OBS_REPORT_PERIOD: u64 = 25;
     /// hang 注入轮次（链稳定后一次性）。
     const HANG_INJECT_ROUND: u64 = 200;
     // 41（WP-41.3 落盘）：存储持久化验证轮次（服务就绪后一次性；QEMU
@@ -477,7 +485,7 @@ pub fn run_ipc_loop(
         // 完成——root 作为**采集链代理**注入样本（source=1 与 svc-telemetry
         // 覆盖声明一致）；样本经 svc-telemetry evaluator 全量校验
         // （coverage/freshness/quality/integrity），不绕过信任评估。
-        if tick % CONTROL_CHAIN_PERIOD == 5 {
+        if tick % CONTROL_CHAIN_PERIOD == 0 {
             if let (Some(t), Some(e)) = (&telemetry_handle, &energy_handle) {
                 if let Some(i) = handles.iter().position(|h| h.name == "svc-telemetry") {
                     hang_monitor.note_request(i, tick as i64);
@@ -524,7 +532,7 @@ pub fn run_ipc_loop(
         // svc-modbus-tcp ACQ 保鲜 {意图授权前遥测新鲜}，后 svc-mqtt 下行
         // 写命令轮询 → 意图转发 dispatch；同轮顺序使 intent 的 SNAPSHOT
         // 与 ACQ 相隔毫秒）。
-        if tick % CONTROL_CHAIN_PERIOD == 30 {
+        if tick % PROTO_EXECUTE_PERIOD == 10 {
             for name in ["svc-modbus-tcp", "svc-mqtt"] {
                 if let Some(h) = handles.iter().find(|h| h.name == name) {
                     let _ = protocol_execute(h.ep, (tick % 0xFFFF) as u32, name);
@@ -536,7 +544,7 @@ pub fn run_ipc_loop(
         // 编排方，周期性向 svc-observability 入队一帧**真实服务健康摘要**
         //（各服务 readiness 实况，非合成 ACQ 读数）并触发 FLUSH → 导出器
         // 经 svc-mqtt 批量帧送达 MQTT broker。驱动失败不阻断主循环。
-        if tick % CONTROL_CHAIN_PERIOD == 40 {
+        if tick % OBS_REPORT_PERIOD == 20 {
             if let Some(h) = &obs_handle {
                 let _ = telemetry_report_tick(h.ep, handles, &mut obs_epoch);
             }
@@ -825,8 +833,8 @@ fn busy_wait_ms(ms: u64) {
 }
 
 /// 重启服务（22 §2.W1.3）：fault 后 TCB 被内核挂起且对象保留——
-/// `tcb_write_registers` 重置 PC/SP/X0..X4（与 configure_service 相同的
-/// 8 寄存器布局）+ `tcb_resume` 即从 `_start` 重新执行（无需
+/// `tcb_write_registers` 重置 PC/SP/X0..X7（与 configure_service 相同的
+/// 布局）+ `tcb_resume` 即从 `_start` 重新执行（无需
 /// revoke/retype 对象；bss 未清零为已知语义——服务重启保留静态状态，
 /// 生产服务由 supervisor 重启策略保证幂等性）。重启后服务重新执行
 /// init → 重新 Signal 就绪 ntfn（X2=READY_NTFN_CSPACE_SLOT；root 侧
@@ -839,10 +847,13 @@ fn restart_service(
     use eneros_sel4_sys::safe::{tcb_resume, tcb_suspend, tcb_write_registers};
 
     // 寄存器布局由 spawn::initial_registers 单一持有（W2.1）——与 configure_service
-    // 共享同一构造点，count=8 契约由该函数保证。X3/X4 经 handle 记录的
-    // mask/心跳槽推导（与 spawn 同源）；svc-storage 的 X3/X4/X5 经
-    // handle.storage_handover 重建（41 设备移交——MMIO/DMA 映射 restart
-    // 期间保持，物理地址不变）。
+    // 共享同一构造点，count 由该函数契约保证。X3/X4 经 handle 记录的
+    // mask/心跳槽推导（与 spawn 同源）；svc-storage/net 的 X3/X4/X5 经
+    // handle.storage_handover / net_handover 重建（41/43/46 设备移交——
+    // MMIO/DMA 映射 restart 期间保持，物理地址不变）。
+    // SPEC-B WP-B.1：X6 每次重灌前**新读** PL031 并过闸门（stage=restart）
+    // ——受控重启后墙钟继续前进，不回退到 spawn 时刻旧值。
+    // SPEC-D WP-D.1：X7 经 handle.uart_handover 同源重建。
     let regs = crate::spawn::initial_registers(
         handle.entry,
         handle.stack_top,
@@ -850,14 +861,18 @@ fn restart_service(
         crate::spawn::READY_NTFN_CSPACE_SLOT,
         handle.eipc_mask,
         crate::spawn::heartbeat_slot_of(&handle.name),
+        crate::spawn::gated_wall_epoch("restart"),
         handle.storage_handover,
         handle.net_handover,
+        handle.uart_handover,
     );
     // 心跳超时路径：目标可能仍在运行（死循环无 fault）——先 suspend 再
     // 重写寄存器（fault 路径 TCB 已被内核挂起，suspend 幂等）。
     tcb_suspend(handle.tcb)?;
-    // count=9：与 spawn 一致（X5 供 svc-storage 设备移交，其他服务 X5=0）。
-    tcb_write_registers(handle.tcb, 0, 9, &regs)?;
+    // count=spawn::INITIAL_REG_COUNT：与 spawn 一致（X5 供 svc-storage/net
+    // 设备移交，其他服务 X5=0；X6=SPEC-B 墙钟 epoch 秒；X7=SPEC-D UART
+    // MMIO vaddr——count 按 aarch64 规范序计，X7=索引 10 ⇒ count=11）。
+    tcb_write_registers(handle.tcb, 0, crate::spawn::INITIAL_REG_COUNT as u64, &regs)?;
     tcb_resume(handle.tcb)
 }
 
@@ -1045,7 +1060,12 @@ fn control_chain_synth_ingest(
         (1u32, 380.0f64),
         (2, 10.0),
         (3, 50.0),
-        (4, 0.6),
+        // SPEC-E WP-E.3：SOC 确定性双值振荡（按轮次翻转 0.475↔0.525，
+        // 振幅 0.05 跨 System1 出厂死区边界 0.5）——持续喂死区学习闭环
+        // （|Δsoc|=0.05 噪声序列 ⇒ 半宽收敛至 ~0.1396，带扩至 ~[0.26,0.54]，
+        // 触上界 0.14 后转 LEARN-REJECT-CAP），并使学习前后对同域 SOC
+        // 的边界判定可对照（C3 前后对照帧）。相位随 seq 单调，transcript 可复现。
+        (4, if seq % 2 == 0 { 0.475 } else { 0.525 }),
         (5, 1.0),
         (6, 0.0),
     ] {

@@ -529,7 +529,8 @@
         "required_ack": true
       },
       "configs": [
-        "control-write"
+        "control-write",
+        "security"
       ]
     },
     {
@@ -561,7 +562,10 @@
         "probe": "ready-ntfn",
         "timeout_ms": 2000,
         "required_ack": true
-      }
+      },
+      "configs": [
+        "security"
+      ]
     },
     {
       "id": "svc-config",
@@ -995,6 +999,14 @@
       "path": "configs/ai-peer.toml",
       "consumer": [
         "svc-ai-worker"
+      ]
+    },
+    {
+      "id": "security",
+      "path": "configs/security.toml",
+      "consumer": [
+        "svc-control-dispatch",
+        "svc-device-agent"
       ]
     }
   ],

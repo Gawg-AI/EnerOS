@@ -28,13 +28,17 @@ fn main() {
         std::process::exit(2);
     };
     let _ = adapter.read_point(1);
-    registry.register(
+    if let Err(e) = registry.register(
         "battery-01",
         DeviceType::Battery,
         3,
         adapter,
         Default::default(),
-    );
+    ) {
+        // WP-A.3：空点映射登记被守卫拒绝——固件场景 fail-closed（对齐上方 R2-1 处置）。
+        eprintln!("firmware-agent: register rejected: {e}");
+        std::process::exit(2);
+    }
 
     // 2. 市场结算闭包：电量 × 电价 → 毫元定点
     let job = ClearingJob {
@@ -80,14 +84,19 @@ mod tests {
     fn test_firmware_scene_end_to_end() {
         // 1. 设备注册。
         let mut registry = DeviceRegistry::new();
-        registry.register(
+        let res = registry.register(
             "battery-01",
             DeviceType::Battery,
             3,
             Box::new(MockPointDevice::new(3)),
             Default::default(),
         );
-        assert_eq!(registry.len(), 1, "设备注册成功");
+        // WP-A.3：非法空 schema（空点映射）拒注册留证。
+        assert!(
+            matches!(res, Err(eneros_device_agent::RegistryError::EmptyPointMap)),
+            "空点映射登记必须被守卫拒绝"
+        );
+        assert_eq!(registry.len(), 0, "被拒绝的登记不得入库");
 
         // 2. 市场结算：100 kWh × 0.5 元/kWh = 50 元 = 50_000 毫元。
         let job = ClearingJob {

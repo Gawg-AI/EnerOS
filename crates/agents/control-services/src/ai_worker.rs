@@ -29,6 +29,46 @@ pub const AI_INVALID: u8 = 0xFF;
 /// input_digest 32。
 pub const PROPOSAL_WIRE_LEN: usize = 16 + 1 + 8 + 4 + 8 + 32;
 
+/// SPEC-SERIES-2026-08-27/E WP-E.4：System1 SOC 死区带**单源**（中点 ± 半宽）。
+///
+/// 全仓 SOC 死区阈值只许从这里取值（`HeuristicBackend` 出厂值与
+/// `learn` 闭环的出厂半宽同源）；标注词汇 PathType/Degraded 沿用
+/// `dual_brain::DecisionPath`，不再另立词表。
+pub mod soc_band {
+    /// 死区带中点（SOC 比例）。
+    pub const MID: f64 = 0.4;
+    /// 出厂半宽（SOC 比例）——出厂带 = [MID−0.1, MID+0.1] = [0.3, 0.5]。
+    pub const FACTORY_HALF_WIDTH: f64 = 0.1;
+    /// 学习半宽硬下界（SOC 比例；catalog 实例同值——越界拒绝的权威）。
+    pub const LEARN_MIN_HALF_WIDTH: f64 = 0.06;
+    /// 学习半宽硬上界（SOC 比例）。
+    pub const LEARN_MAX_HALF_WIDTH: f64 = 0.14;
+    /// 充电阈值 = 中点 − 半宽。
+    pub fn charge_soc(half_width: f64) -> f64 {
+        MID - half_width
+    }
+    /// 放电阈值 = 中点 + 半宽。
+    pub fn discharge_soc(half_width: f64) -> f64 {
+        MID + half_width
+    }
+}
+
+/// SPEC-SERIES-2026-08-27/E WP-E.3：学习管理动词 wire 码（svc-ai-worker
+/// 消费；AI_PROPOSE=1 / AI_PEER_MSG=0x10 旁新增，EIPC 请求首字节判别）。
+pub mod learn_wire {
+    /// 学习参数回出厂（learn-reset；EAQ-3 裁决 = 新增动词而非 ConfigSet——
+    /// mgmt 总线不达 control-services 域，EIPC 动词是唯一可达面）。
+    pub const AI_LEARN_RESET: u8 = 0x20;
+    /// 学习状态查询（StatusQuery 等价面——current/min/max/samples/
+    /// rejected/applies 原样回显，逐字节可对照）。
+    pub const AI_LEARN_STATUS: u8 = 0x21;
+    /// LEARN_STATUS 响应定长：code(1)+enabled(1)+current(8)+min(8)+max(8)
+    /// +samples(8)+rejected(8)+applies(8) = 50B（LE）。
+    pub const LEARN_STATUS_WIRE_LEN: usize = 1 + 1 + 8 * 6;
+    /// LEARN_RESET 响应定长：code(1)+status(1)（0=ok / 1=不可用）。
+    pub const LEARN_RESET_WIRE_LEN: usize = 2;
+}
+
 /// 决策后端（服务注入 seam——target 无声明后端时为 Unavailable）。
 pub trait DecisionBackend {
     /// 执行决策：返回 Proposal wire 或结构化拒绝。
@@ -80,15 +120,30 @@ pub struct HeuristicBackend {
 }
 
 impl HeuristicBackend {
-    /// 构造（默认死区 [0.3, 0.5]：≥0.5 放电 / ≤0.3 充电 / 死区 NoAction）。
+    /// 构造（出厂死区 = [`soc_band`] 单源：MID±FACTORY_HALF_WIDTH =
+    /// [0.3, 0.5]：≥0.5 放电 / ≤0.3 充电 / 死区 NoAction）。
     pub fn new() -> Self {
         Self {
             seq: 0,
-            discharge_soc: 0.5,
-            charge_soc: 0.3,
+            discharge_soc: soc_band::discharge_soc(soc_band::FACTORY_HALF_WIDTH),
+            charge_soc: soc_band::charge_soc(soc_band::FACTORY_HALF_WIDTH),
             power_kw: 5.0,
             path: eneros_dual_brain::DecisionPath::Fast,
         }
+    }
+
+    /// SPEC-SERIES-2026-08-27/E WP-E.3：运行期死区重设（学习闭环下游
+    /// 消费点——学到的参数在此真实改变拒绝/放行边界）。界内不变式
+    /// （charge < discharge、均落 (0,1)）由学习侧 catalog 保证；此处
+    /// 防御性钳制保证任何调用都不产生倒挂死区。
+    pub fn set_deadband(&mut self, charge_soc: f64, discharge_soc: f64) {
+        let (lo, hi) = if charge_soc <= discharge_soc {
+            (charge_soc, discharge_soc)
+        } else {
+            (discharge_soc, charge_soc)
+        };
+        self.charge_soc = lo.clamp(0.01, 0.98);
+        self.discharge_soc = hi.clamp(self.charge_soc + 0.01, 0.99);
     }
 }
 
@@ -371,6 +426,7 @@ pub mod tests_helpers {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_macros)] // 测试断言 panic!（mgmt-cli 先例）
     use super::*;
 
     /// mock 后端（host 测试）：返回固定 proposal。
@@ -403,91 +459,6 @@ mod tests {
 
     fn trusted() -> TrustedTelemetry {
         tests_helpers::minimal_trusted()
-    }
-
-    fn _trusted_impl() -> TrustedTelemetry {
-        let now = 10_000u64;
-        let mut svc =
-            crate::telemetry::TelemetryService::new(eneros_safety_validator::EvaluatorConfig {
-                coverage: eneros_safety_validator::RequiredPointCoverage {
-                    points: vec![
-                        eneros_safety_validator::RequiredPoint {
-                            point: 1,
-                            min: 0.0,
-                            max: 1000.0,
-                            max_age_ms: 5000,
-                            unit: eneros_safety_validator::PointUnit::Volt,
-                        },
-                        eneros_safety_validator::RequiredPoint {
-                            point: 2,
-                            min: -1000.0,
-                            max: 1000.0,
-                            max_age_ms: 5000,
-                            unit: eneros_safety_validator::PointUnit::Ampere,
-                        },
-                        eneros_safety_validator::RequiredPoint {
-                            point: 3,
-                            min: 45.0,
-                            max: 55.0,
-                            max_age_ms: 5000,
-                            unit: eneros_safety_validator::PointUnit::Hertz,
-                        },
-                        eneros_safety_validator::RequiredPoint {
-                            point: 4,
-                            min: 0.0,
-                            max: 1.0,
-                            max_age_ms: 5000,
-                            unit: eneros_safety_validator::PointUnit::Ratio,
-                        },
-                        eneros_safety_validator::RequiredPoint {
-                            point: 5,
-                            min: 0.0,
-                            max: 1.0,
-                            max_age_ms: 5000,
-                            unit: eneros_safety_validator::PointUnit::Other,
-                        },
-                        eneros_safety_validator::RequiredPoint {
-                            point: 6,
-                            min: 0.0,
-                            max: 1.0,
-                            max_age_ms: 5000,
-                            unit: eneros_safety_validator::PointUnit::Other,
-                        },
-                    ],
-                },
-                bindings: eneros_safety_validator::StateBindings {
-                    voltage: 1,
-                    current: 2,
-                    frequency: 3,
-                    soc: 4,
-                },
-                mapping_version: 1,
-                max_skew_ms: 1000,
-                allowed_sources: vec![1],
-                require_integrity: true,
-                control_horizon_ms: 30_000,
-            });
-        let good = |point: u32, value: f64, seq: u64| eneros_safety_validator::TelemetrySample {
-            point,
-            value,
-            source: 1,
-            source_epoch: 0,
-            measured_at_ms: now.saturating_sub(50),
-            received_at_ms: now,
-            quality: eneros_safety_validator::SampleQuality::Good,
-            sequence: seq,
-            integrity: eneros_safety_validator::IntegrityStatus::Verified,
-            mapping_version: 1,
-        };
-        svc.ingest(&[
-            good(1, 380.0, 1),
-            good(2, 10.0, 1),
-            good(3, 50.0, 1),
-            good(4, 0.6, 1),
-            good(5, 1.0, 1),
-            good(6, 0.0, 1),
-        ]);
-        svc.snapshot(now).expect("trusted")
     }
 
     #[test]
@@ -600,5 +571,55 @@ mod tests {
             backend.decide(&t, 10_000),
             Err(DecisionReject::NoAction(_))
         ));
+    }
+
+    /// SPEC-E WP-E.3 wire KAT：学习管理动词码与定长布局（对端对照基线）。
+    #[test]
+    fn e3_learn_wire_layout_kat() {
+        use super::learn_wire::{
+            AI_LEARN_RESET, AI_LEARN_STATUS, LEARN_RESET_WIRE_LEN, LEARN_STATUS_WIRE_LEN,
+        };
+        assert_eq!(AI_LEARN_RESET, 0x20);
+        assert_eq!(AI_LEARN_STATUS, 0x21);
+        // code(1)+enabled(1)+current(8)+min(8)+max(8)+samples(8)+rejected(8)+applies(8)。
+        assert_eq!(LEARN_STATUS_WIRE_LEN, 50);
+        assert_eq!(LEARN_RESET_WIRE_LEN, 2);
+    }
+
+    /// SPEC-E WP-E.3：自适应阈值真实改变拒绝/放行边界（下游消费判据
+    /// host 侧）——同 SOC=0.52，出厂带外 ⇒ 放电；加宽带内 ⇒ NoAction。
+    #[test]
+    fn e3_set_deadband_changes_boundary() {
+        let mut b = HeuristicBackend::new();
+        let mut t = trusted();
+        t.state.soc_pct = 0.52; // 出厂带 [0.3, 0.5] 之外 ⇒ 放电。
+        assert!(b.decide(&t, 10_000).is_ok());
+        // 半宽加宽到 0.14 ⇒ 带 [0.26, 0.54] ⇒ 0.52 落入死区。
+        b.set_deadband(
+            soc_band::charge_soc(soc_band::LEARN_MAX_HALF_WIDTH),
+            soc_band::discharge_soc(soc_band::LEARN_MAX_HALF_WIDTH),
+        );
+        match b.decide(&t, 10_000) {
+            Err(DecisionReject::NoAction(reason)) => {
+                assert!(reason.contains("soc-deadband"), "{reason}");
+            }
+            other => panic!("加宽后 0.52 必须落入死区，got {other:?}"),
+        }
+    }
+
+    /// SPEC-E WP-E.4：出厂阈值 = soc_band 单源派生（grep 只剩一处定义）。
+    #[test]
+    fn e4_factory_thresholds_from_single_source() {
+        let b = HeuristicBackend::new();
+        assert_eq!(
+            b.charge_soc,
+            soc_band::charge_soc(soc_band::FACTORY_HALF_WIDTH)
+        );
+        assert_eq!(
+            b.discharge_soc,
+            soc_band::discharge_soc(soc_band::FACTORY_HALF_WIDTH)
+        );
+        assert_eq!(soc_band::MID, 0.4);
+        assert_eq!(soc_band::FACTORY_HALF_WIDTH, 0.1);
     }
 }

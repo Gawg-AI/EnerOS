@@ -34,6 +34,9 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::RefCell;
 
+// SPEC-R4 WP-R4.3：DMA 池页数单源 = handover-abi（历史本地定义 +
+// 注释自称"单一事实源"已收编；root spawn 侧同为 re-export）。
+pub use eneros_handover_abi::NET_DMA_PAGES;
 use eneros_net::dma_mem::NoopCache;
 use eneros_net::mac::NetDevice;
 use eneros_net::tcpip::addr::SocketHandle;
@@ -46,10 +49,6 @@ use eneros_protocol_abstract::{
 };
 use eneros_storage::driver::virtio_blk::VolatileMmio;
 use eneros_virtio_core::{DmaPool, VirtioMmio};
-
-/// DMA 池页数（virtio-net 队列下限 = VIRTIO_NET_POOL_SIZE/4K；与 root
-/// spawn.rs `NET_DMA_PAGES` 一致——单一事实源）。
-pub const NET_DMA_PAGES: usize = 9;
 
 /// 服务侧 DMA 池：root 移交的连续物理帧（CPU 视图 = 服务 VSpace 映射
 /// 虚拟地址，设备视图 = 物理基址）。与 drv-svc blk_backend 的
@@ -545,6 +544,9 @@ use eneros_rs485::uart_hw::UartHw;
 pub struct SerialTransportFactory<H: UartHw + 'static> {
     uart: Option<H>,
     baud: u32,
+    /// SPEC-D WP-D.2：校验位（配置键 `parity`；默认 None = 8N1）。数据位
+    /// 8 / 停止位 1 维持 B1 强约束固定（RTU 标准帧形）。
+    parity: Parity,
 }
 
 impl<H: UartHw + 'static> SerialTransportFactory<H> {
@@ -553,7 +555,15 @@ impl<H: UartHw + 'static> SerialTransportFactory<H> {
         Self {
             uart: Some(uart),
             baud,
+            parity: Parity::None,
         }
+    }
+
+    /// SPEC-D WP-D.2：链式注入校验位（svc bin 按配置键 `parity` 解析；
+    /// 非法值在解析层 fail-closed，不落此处）。
+    pub fn with_parity(mut self, parity: Parity) -> Self {
+        self.parity = parity;
+        self
     }
 }
 
@@ -566,9 +576,10 @@ impl<H: UartHw + 'static> TransportFactory for SerialTransportFactory<H> {
         if spec.kind != TransportKind::Serial {
             return Err(TransportError::Unsupported);
         }
-        // B1 强约束：生产实现不隐藏硬件配置——open 即配置 8N1 + DE/RE 归收。
+        // B1 强约束：生产实现不隐藏硬件配置——open 即配置（SPEC-D 起校验位
+        // 可配置，默认仍 8N1）+ DE/RE 归收。
         let mut uart = self.uart.take().ok_or(TransportError::Io)?;
-        uart.configure(self.baud, 8, StopBits::One, Parity::None)
+        uart.configure(self.baud, 8, StopBits::One, self.parity)
             .map_err(|_| TransportError::Io)?;
         uart.configure_de_re(None).map_err(|_| TransportError::Io)?;
         uart.set_de_re(false).map_err(|_| TransportError::Io)?;

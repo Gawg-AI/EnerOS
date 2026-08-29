@@ -50,9 +50,13 @@ echo "[1/3] Building Rust root task (eneros-root-task, release)..."
 cd "$ROOT"
 # 蓝图 40 收尾：sel4-eipc feature——root 驱动控制链（INGEST/TICK）的
 # Sel4IpcClient/ChunkedClient（EIPC 端点 cap 已由 spawn 授予）。
+# SPEC-E：ROOT_TASK_FEATURES 可参（缺省 sel4-eipc）——qemu-test 介质
+# 经 ROOT_TASK_FEATURES="sel4-eipc,qemu-test-synth" 启用合成遥测注入
+# （45.5 门控设计意图；release 装配不得设置——closure gate 强制 synth
+# 不进 release 闭包）。
 cargo build -p eneros-root-task --target aarch64-unknown-none --release \
   -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem --locked \
-  --features sel4-eipc
+  --features "${ROOT_TASK_FEATURES:-sel4-eipc}"
 
 RUST_ELF="$ROOT/target/aarch64-unknown-none/release/eneros-root-task"
 if [[ ! -f "$RUST_ELF" ]]; then

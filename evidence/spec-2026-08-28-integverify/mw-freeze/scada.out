@@ -1,0 +1,1 @@
+SCADA-WRITE published topic=eneros/control payload=SET 1 10 50.0

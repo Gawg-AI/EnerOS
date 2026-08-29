@@ -296,13 +296,15 @@ fn device_side() -> (
     point_map.insert(String::from("overcurrent"), 4u32);
     point_map.insert(String::from("overtemp"), 5u32);
     let mut devices = eneros_device_agent::DeviceRegistry::new();
-    devices.register(
-        "pcs",
-        eneros_device_agent::DeviceType::Pcs,
-        1,
-        Box::new(device),
-        point_map,
-    );
+    devices
+        .register(
+            "pcs",
+            eneros_device_agent::DeviceType::Pcs,
+            1,
+            Box::new(device),
+            point_map,
+        )
+        .expect("静态合法登记");
     (
         Rc::new(RefCell::new(ingress)),
         Rc::new(RefCell::new(devices)),
@@ -319,6 +321,10 @@ fn engine_with(channel: Box<dyn DeliveryChannel>, gate: DecisionGate) -> Dispatc
         issuer_epoch: 0,
         target_endpoint: String::from("svc-device-agent"),
         max_power_kw: 500.0,
+        // SPEC WP-A.2：护栏窗口/爬坡（缺省 = 蓝图默认，行为连续）。
+        safety_voltage_window: (340.0, 420.0),
+        safety_freq_window: (49.5, 50.5),
+        safety_ramp_kw_per_min: 200.0,
         gate,
         control_audit: None,
         audit: Some(DecisionAudit::new([0x40; 32])),

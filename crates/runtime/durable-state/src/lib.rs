@@ -288,17 +288,8 @@ pub const MAGIC_ACK: [u8; 4] = *b"DOBA";
 pub const MAGIC_TAIL: [u8; 4] = *b"DOBT";
 pub const RECORD_SCHEMA: u8 = 1;
 
-pub(crate) fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for b in data {
-        crc ^= *b as u32;
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    !crc
-}
+// HYG-001（SPEC-B/C 2026-08-28 收口 10/10）：CRC32 唯一实现 = abi/ipc-wire
+//（IEEE 802.3 0xEDB88320；本模块曾经的本地实现已删，调用点直引单源）。
 
 /// 组装带长度 + CRC 的记录（magic‖schema‖len(4)‖payload‖crc32(4)）。
 pub fn encode_record(magic: &[u8; 4], schema: u8, payload: &[u8]) -> Vec<u8> {
@@ -307,7 +298,7 @@ pub fn encode_record(magic: &[u8; 4], schema: u8, payload: &[u8]) -> Vec<u8> {
     out.push(schema);
     out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     out.extend_from_slice(payload);
-    let crc = crc32(&out);
+    let crc = eneros_ipc_wire::crc32(&out);
     out.extend_from_slice(&crc.to_le_bytes());
     out
 }
@@ -333,7 +324,7 @@ pub fn decode_record(bytes: &[u8]) -> Result<([u8; 4], &[u8]), StoreError> {
         bytes[11 + len],
         bytes[12 + len],
     ]);
-    if crc32(&bytes[..9 + len]) != expected {
+    if eneros_ipc_wire::crc32(&bytes[..9 + len]) != expected {
         return Err(StoreError::Corrupt);
     }
     Ok((magic, payload))
@@ -357,11 +348,21 @@ pub trait DurableStateStore<S> {
 }
 
 /// 固定区域状态快照（RegionIo 语义：读/写/冲刷）。
+///
+/// E 续作订正（win4 实弹，2026-08-28）：单槽原地覆写在硬杀落进写窗口时
+/// 撕裂唯一记录 ⇒ `Corrupt` ⇒ 消费方（svc-ai-worker 学习器）fail-closed
+/// 关闭——违背本模块头"掉电恢复到上一个**完整** generation"承诺（盘上
+/// 实证：payload 逐字段完好、CRC 撕裂）。改**双槽代次切换**：region 对半
+/// 分槽，写入恒落非最新槽；`open` 双槽扫描取 CRC 合法且代次最大的记录，
+/// 撕裂槽天然被忽略（另一槽保持上一完整代次）；双槽皆坏且区域非空 ⇒
+/// `Corrupt`（fail-closed，不伪造恢复）。
 pub struct RegionStateStore<S, Io: PersistIo> {
     io: Io,
     region_offset: u64,
     region_len: u64,
     current: Option<Versioned<S>>,
+    /// 当前生效记录所在槽（0/1；None = 区域从未写入）。
+    latest_slot: Option<usize>,
     _marker: core::marker::PhantomData<S>,
 }
 
@@ -372,38 +373,58 @@ impl<S, Io: PersistIo> RegionStateStore<S, Io> {
             region_offset,
             region_len,
             current: None,
+            latest_slot: None,
             _marker: core::marker::PhantomData,
         }
     }
 
-    /// 首次打开：从区域读取快照（损坏 → Corrupt；代次 0 = 空）。
+    /// 首次打开：双槽扫描取合法且代次最大的快照（撕裂槽忽略；双槽皆坏
+    /// 且区域非空 → Corrupt；区域从未写入 → Ok(()) 且 current=None）。
     pub fn open(&mut self) -> Result<(), StoreError>
     where
         S: Encode + Decode,
     {
-        if self.region_len < 64 {
+        if self.region_len < 128 {
             return Err(StoreError::Other("region-too-small"));
         }
+        let slot_len = (self.region_len / 2) as usize;
         let mut buf = vec![0u8; self.region_len as usize];
         self.io
             .read(self.region_offset, &mut buf)
             .map_err(|_| StoreError::Unavailable)?;
-        // 从未写入 = 全 0 或全 0xFF（首次 CAS 前）→ Ok(None)。
-        if buf.iter().all(|b| *b == 0) || buf.iter().all(|b| *b == 0xFF) {
-            self.current = None;
-            return Ok(());
-        }
-        let record = match decode_record(&buf) {
-            Ok((magic, payload)) => {
-                if magic != MAGIC_STATE {
-                    return Err(StoreError::Corrupt);
-                }
-                payload.to_vec()
+        let mut best: Option<(Generation, S, usize)> = None;
+        let mut any_bytes = false;
+        for slot in 0..2usize {
+            let s = &buf[slot * slot_len..(slot + 1) * slot_len];
+            if s.iter().all(|&b| b == 0) || s.iter().all(|&b| b == 0xFF) {
+                continue; // 从未写入的槽
             }
-            Err(e) => return Err(e),
-        };
-        let (generation, state) = S::decode(&record)?;
-        self.current = Some(Versioned { generation, state });
+            any_bytes = true;
+            // 撕裂/坏 CRC/坏 payload 的槽 → 忽略（另一槽保有上一完整代次）。
+            let payload = match decode_record(s) {
+                Ok((magic, payload)) if magic == MAGIC_STATE => payload.to_vec(),
+                _ => continue,
+            };
+            let (generation, state) = match S::decode(&payload) {
+                Ok(x) => x,
+                Err(_) => continue,
+            };
+            if best
+                .as_ref()
+                .map(|(g, _, _)| generation.0 > g.0)
+                .unwrap_or(true)
+            {
+                best = Some((generation, state, slot));
+            }
+        }
+        match best {
+            Some((generation, state, slot)) => {
+                self.current = Some(Versioned { generation, state });
+                self.latest_slot = Some(slot);
+            }
+            None if any_bytes => return Err(StoreError::Corrupt),
+            None => self.current = None,
+        }
         Ok(())
     }
 
@@ -411,17 +432,26 @@ impl<S, Io: PersistIo> RegionStateStore<S, Io> {
     where
         S: Encode,
     {
+        let slot_len = (self.region_len / 2) as usize;
+        // 写入恒落**非最新槽**——硬杀撕裂本槽时，另一槽保有上一完整代次。
+        let slot = match self.latest_slot {
+            Some(l) => 1 - l,
+            None => 0,
+        };
         let mut payload = Vec::new();
         payload.extend_from_slice(&generation.0.to_le_bytes());
         payload.extend_from_slice(&state.encode()?);
-        if payload.len() + 13 > self.region_len as usize {
+        let record = encode_record(&MAGIC_STATE, RECORD_SCHEMA, &payload);
+        if record.len() > slot_len {
             return Err(StoreError::OutOfSpace);
         }
-        let record = encode_record(&MAGIC_STATE, RECORD_SCHEMA, &payload);
+        let off = self.region_offset + (slot as u64) * slot_len as u64;
         self.io
-            .write(self.region_offset, &record)
+            .write(off, &record)
             .map_err(|_| StoreError::WriteFailed)?;
-        self.io.flush().map_err(|_| StoreError::WriteFailed)
+        self.io.flush().map_err(|_| StoreError::WriteFailed)?;
+        self.latest_slot = Some(slot);
+        Ok(())
     }
 }
 

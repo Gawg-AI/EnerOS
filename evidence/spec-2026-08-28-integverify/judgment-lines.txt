@@ -1,0 +1,4 @@
+[eneros-root-task] EIPC-GRANT-TABLE edges=33 base_slot=3
+[eneros-root-task] EIPC-GRANT: svc-telemetry -> svc-storage slot=3 badge=13
+[eneros-root-task] EIPC-GRANT: svc-mgmt -> svc-telemetry slot=4 badge=25
+[svc-mgmt] history EIPC bound (svc-telemetry)

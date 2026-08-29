@@ -53,7 +53,8 @@ pub extern "C" fn _start(
 
 #[cfg(target_os = "none")]
 struct DeviceAgentHandler {
-    ingress: eneros_device_agent::EnvelopeIngress,
+    /// WP-A.1：密钥不可得 ⇒ None（拒载态：一切控制写 Denied，串口留判定行）。
+    ingress: Option<eneros_device_agent::EnvelopeIngress>,
     devices: eneros_device_agent::DeviceRegistry,
 }
 
@@ -67,7 +68,7 @@ impl DeviceAgentHandler {
         // 不可得 → 0/0 fail-closed（default-deny）。
         use alloc::collections::BTreeMap;
 
-        use eneros_control_services::dispatch_service::{prod_profile, ASSEMBLY_TEST_KEY};
+        use eneros_control_services::dispatch_service::prod_profile;
         let now = eneros_drv_svc::now_ms();
         let mut config_client = if eipc_mask & 1 != 0 {
             eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
@@ -90,12 +91,28 @@ impl DeviceAgentHandler {
         };
         let (device_id, point_id) = binding.unwrap_or((0, 0));
         let profile = prod_profile(device_id, point_id);
-        let ingress =
-            eneros_device_agent::EnvelopeIngress::from_profile(ASSEMBLY_TEST_KEY, &profile, now);
-        eneros_runtime::println!(
-            "[svc-device-agent] ingress: constructed (lease_ok={})",
-            ingress.lease_ok()
-        );
+        // SPEC WP-A.1：信封密钥经 svc-config `security` 节注入取得；
+        // 全零/短键/缺节 ⇒ CHAIN-KEY-MISSING 拒载（None 态 default-deny）。
+        let chain_key: Option<[u8; 32]> = match &mut config_client {
+            Some(c) => eneros_control_services::cfg_bindings::fetch_control_chain_key(c),
+            None => None,
+        };
+        let ingress = match chain_key {
+            Some(key) => {
+                let i = eneros_device_agent::EnvelopeIngress::from_profile(&key, &profile, now);
+                eneros_runtime::println!(
+                    "[svc-device-agent] ingress: constructed (lease_ok={})",
+                    i.lease_ok()
+                );
+                Some(i)
+            }
+            None => {
+                eneros_runtime::println!(
+                    "[svc-device-agent] CHAIN-KEY-MISSING reason=unavailable —— 信封密钥不可得（缺节/解码失败/全零或短键），拒载（fail-closed）"
+                );
+                None
+            }
+        };
         // 虚拟 PCS 设备（profile 声明 virtual-pcs 时装配；写/读回为真实
         // 寄存器语义——串口 VIRTUAL-PCS 行为外部观察证据）。
         let mut devices = eneros_device_agent::DeviceRegistry::new();
@@ -107,14 +124,26 @@ impl DeviceAgentHandler {
         for (name, point) in eneros_device_agent::VIRTUAL_PCS_POINTS {
             pm.insert(alloc::string::String::from(*name), *point);
         }
-        devices.register(
+        // WP-A.3：登记守卫（空点映射等退化输入）拒绝时 fail-closed——注册表
+        // 无设备可写，后续控制写由路由层明确失败；串口判定行留证。
+        match devices.register(
             "pcs",
             eneros_device_agent::DeviceType::Pcs,
             eneros_device_agent::VIRTUAL_PCS_DEVICE_ID,
             alloc::boxed::Box::new(dev),
             pm,
-        );
-        eneros_runtime::println!("[svc-device-agent] virtual-pcs registered (device=1 point=10)");
+        ) {
+            Ok(()) => {
+                eneros_runtime::println!(
+                    "[svc-device-agent] virtual-pcs registered (device=1 point=10)"
+                );
+            }
+            Err(e) => {
+                eneros_runtime::println!(
+                    "[svc-device-agent] REGISTER-REJECTED pcs: {e}（fail-closed，注册表无设备）"
+                );
+            }
+        }
         Self { ingress, devices }
     }
 }
@@ -122,8 +151,15 @@ impl DeviceAgentHandler {
 #[cfg(target_os = "none")]
 impl eneros_control_services::ControlServiceHandler for DeviceAgentHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, now_ms: u64) -> bool {
-        // 请求 = ControlEnvelope 字节 → ingress 处理 → OutcomeFrame。
-        let out = self.ingress.process(&mut self.devices, req, now_ms);
+        // 请求 = ControlEnvelope 字节 → ingress 处理 → OutcomeFrame；
+        // WP-A.1 拒载态（密钥不可得）⇒ 一律 Policy 拒绝帧。
+        let out = match &mut self.ingress {
+            Some(i) => i.process(&mut self.devices, req, now_ms),
+            None => eneros_device_agent::IngressOutcome::Denied {
+                class: eneros_device_agent::DenyClass::Policy,
+                reason: alloc::string::String::from("chain-key-missing (service refused)"),
+            },
+        };
         eneros_runtime::println!("[svc-device-agent] INGRESS: {:?}", out);
         *resp = eneros_device_agent::outcome_to_frame(&out)
             .encode()

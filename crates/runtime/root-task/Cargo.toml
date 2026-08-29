@@ -13,6 +13,8 @@ eneros-tenant = { path = "../../agents/tenant" }
 eneros-runtime = { path = "../runtime" }
 eneros-boot-protocol = { path = "../../boot/boot-protocol" }
 eneros-ipc-wire = { path = "../../abi/ipc-wire" }
+# SPEC-B/C（2026-08-28）：移交 vaddr 常量单源（spawn re-use）。
+eneros-handover-abi = { path = "../../abi/handover-abi" }
 eneros-elf-loader = { path = "../../abi/elf-loader" }
 eneros-sel4-sys = { path = "../sel4-sys" }
 # 22 §2.W1.2：panic 审计（SHA-256 哈希链，36 WP-36.2 SM3→SHA-256 迁移）+ 看门狗复位（SP805）。
@@ -37,6 +39,9 @@ eneros-net = { path = "../../drivers/net" }
 # 蓝图 40 收尾：EIPC 客户端（分块传输 + 服务端点 cap——root 驱动控制链
 # INGEST/TICK 用）+ 槽位常量（spawn 授予表）。
 eneros-agent-sdk = { path = "../../agents/agent-sdk" }
+# SPEC-B WP-B.1：墙钟 epoch 合理性闸门（time_gate 常量单一事实源——
+# root 在 X6 下发前过闸；default-features 关闭 std/compile 面）。
+eneros-config-bundle = { path = "../config-bundle", default-features = false }
 # 蓝图 40 收尾：遥测样本构造（控制链采集代理 INGEST——39 设备句柄移交
 # 前的 QEMU 装配路径；样本经 svc-telemetry evaluator 全量校验）。
 eneros-safety-validator = { path = "../../ai/safety-validator" }

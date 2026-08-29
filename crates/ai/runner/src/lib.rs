@@ -241,6 +241,10 @@ pub fn run_once(
     let mut coord = DualBrainCoordinator::new(config, llm, solver)
         // 32 AG-04：决策审计装配——创世锚从 chain_key SM3 派生（与封焊链
         // 同源；chain_key 已经 AI-07 fail-closed 校验 ≥16B）。
+        // SPEC WP-A.1 注：本 runner 的 chain_key 是 runner 独立键（OQ-3 登
+        // 记域），≠ 控制链信封密钥——后者已迁 bundle security 节 + KMS 注入
+        // 链（configs/security.toml / cfg_bindings::fetch_control_chain_key），
+        // 换键时仅声明层面与本处同步。
         .with_audit(eneros_dual_brain::audit::decision_audit_from_key(chain_key));
 
     // 蓝图 40 WP-40.3：协调器只产 DecisionOutcome——demo 把 Proposal 投给
@@ -763,7 +767,7 @@ mod tests {
                 now_ms,
             );
             let mut devices = eneros_device_agent::DeviceRegistry::new();
-            devices.register(
+            let _ = devices.register(
                 "pcs",
                 eneros_device_agent::DeviceType::Pcs,
                 1,

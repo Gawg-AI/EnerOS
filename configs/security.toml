@@ -1,0 +1,11 @@
+# consumer: svc-control-dispatch / svc-device-agent（SPEC-SERIES-2026-08-27/A WP-A.1）
+# =====================================================================
+# 控制链信封密钥配置节——**键值不落文件**。
+#
+# 32B HMAC-SM3 信封密钥由构建期注入链取得（编译器拒绝任何 TOML 键）：
+#   --control-chain-key-hex > ENEROS_CONTROL_CHAIN_KEY
+#   > $ENEROS_KMS_DIR/control-chain.key（开发档模板：configs/kms-dev/）
+# 三者皆无 ⇒ `cargo xtask config compile` Err（release 无键构建 fail-closed）；
+# 运行期两端解码全零/短键 ⇒ 拒载 + 串口 CHAIN-KEY-MISSING 判定行。
+
+[security]

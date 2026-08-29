@@ -213,6 +213,10 @@ fn build_engine(control_audit: Box<dyn AuditLogger>, outcome_code: u8) -> Dispat
         issuer_epoch: 0,
         target_endpoint: String::from("svc-device-agent"),
         max_power_kw: 500.0,
+        // SPEC WP-A.2：护栏窗口/爬坡（缺省 = 蓝图默认，行为连续）。
+        safety_voltage_window: (340.0, 420.0),
+        safety_freq_window: (49.5, 50.5),
+        safety_ramp_kw_per_min: 200.0,
         gate: DecisionGate::new(100, 1000.0, 3_600_000),
         audit: None,
         control_audit: Some(control_audit),

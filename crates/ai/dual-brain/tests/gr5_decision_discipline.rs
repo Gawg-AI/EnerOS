@@ -21,7 +21,8 @@ use eneros_safety_validator::SafetyCatalog;
 fn gr5_decision_discipline_session() {
     let catalog = SafetyCatalog::default_eps();
 
-    // ── 1. 决策入审计链（W5.1）：五要素可追溯，verify 全绿 ────────
+    // ── 1. 决策入审计链（W5.1）：四要素可追溯，verify 全绿 ────────
+    //（SPEC-B BQ-4：deviation 字段恒零已删除——接口不承诺永远为零的数据）
     let mut audit = DecisionAudit::new([0x42; 32]);
     let rec = DecisionRecord {
         actor: "energy-agent",
@@ -30,7 +31,6 @@ fn gr5_decision_discipline_session() {
         lp_solution: "p1=5.0;p2=0.0",
         safety: SafetyOutcome::Passed,
         exec: ExecOutcome::Succeeded,
-        deviation: 0.12,
         now_ms: 1000,
     };
     audit.log_decision(&rec).expect("入链");

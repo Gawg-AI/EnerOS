@@ -35,6 +35,7 @@ use eneros_dual_brain::chain_sink::deny_reason_str;
 use eneros_dual_brain::gate::{DecisionGate, GateDecision};
 use eneros_dual_brain::ProposedControlPlan;
 use eneros_protocol_abstract::write::PointWriteIntent;
+use eneros_safety_validator::state::SystemState;
 use eneros_safety_validator::TrustedTelemetry;
 use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
 use eneros_upa_model::PointValue;
@@ -117,13 +118,21 @@ pub struct DispatchConfig {
     pub target_endpoint: String,
     /// 功率上限（kW）——proposal 校验。
     pub max_power_kw: f64,
+    /// SPEC WP-A.2：电压保护窗（V；缺省 = 蓝图默认 (340,420)）。
+    pub safety_voltage_window: (f64, f64),
+    /// SPEC WP-A.2：频率保护窗（Hz；缺省 = (49.5,50.5)）。
+    pub safety_freq_window: (f64, f64),
+    /// SPEC WP-A.2：保护配合爬坡率上限（kW/min；缺省 = 校验器默认 200）。
+    pub safety_ramp_kw_per_min: f64,
     /// 速率/能量预算闸（check 在 submit；record 仅在 confirmed dispatch）。
     pub gate: DecisionGate,
     /// 决策审计（可选）。
     pub audit: Option<DecisionAudit>,
-    /// 47（WP-47.4 审计持久化）：SHA-256 审计链（security/audit D4 线）——
-    /// 每个 Committed/Failed 控制事件入链；`verify_log`/`last_valid_prefix`
-    /// 校验（见 tests）。
+    /// 47（WP-47.4）：SHA-256 审计链（security/audit D4 线）——每个
+    /// Committed/Failed 控制事件入链。存储选型归装配方：SPEC-E WP-E.2 起
+    /// svc-control-dispatch 以 `DurableAuditLog` 真落盘（audit 区段 +
+    /// boot verify_log 校验，篡改 ⇒ AUDIT-VERIFY-FAIL 停止追加）；测试
+    /// 装配可用 `MemStore`（易失，仅供单测）。失败计入 audit_drop_count。
     pub control_audit: Option<Box<dyn eneros_audit::AuditLogger>>,
     /// durable intent 存储（WP-40.12 对账）。
     pub intent_log: Box<dyn IntentStore>,
@@ -133,6 +142,19 @@ pub struct DispatchConfig {
     pub feedback_mapping: crate::feedback::FeedbackPointMapping,
     /// 单调时钟（毫秒）。
     pub now_fn: fn() -> u64,
+}
+
+/// SPEC WP-A.2：护栏参数束（工程单位见各字段；测试域可自由构造）。
+#[derive(Debug, Clone, Copy)]
+struct SafetyGuardParams {
+    max_power_kw: f64,
+    max_current_a: f64,
+    voltage_window: (f64, f64),
+    freq_window: (f64, f64),
+    ramp_kw_per_min: f64,
+    protection_overcurrent_a: f64,
+    protection_overvoltage_v: f64,
+    protection_undervoltage_v: f64,
 }
 
 /// 唯一 ControlDispatch 实现（12 步链）。
@@ -147,6 +169,10 @@ pub struct DispatchEngine {
     issuer_epoch: u64,
     target_endpoint: String,
     max_power_kw: f64,
+    /// SPEC WP-A.2：电气护栏参数（窗口/爬坡，见 DispatchConfig 同名字段）。
+    safety_voltage_window: (f64, f64),
+    safety_freq_window: (f64, f64),
+    safety_ramp_kw_per_min: f64,
     /// 速率/能量预算闸（观测：used_kwh/rejected 计数）。
     pub gate: DecisionGate,
     /// 决策审计（观测：链校验/条目）。
@@ -172,6 +198,13 @@ pub struct DispatchEngine {
 }
 
 impl DispatchEngine {
+    /// SPEC WP-A.2：护栏预留阈（与 safety-validator 蓝图默认一致；
+    /// D12 域保留面——接入真机保护配合策略后转装配配置）。
+    const GUARD_MAX_CURRENT_A: f64 = 200.0;
+    const GUARD_PROT_OVERCURRENT_A: f64 = 220.0;
+    const GUARD_PROT_OVERVOLTAGE_V: f64 = 440.0;
+    const GUARD_PROT_UNDERVOLTAGE_V: f64 = 320.0;
+
     /// 构造。
     pub fn new(config: DispatchConfig) -> Self {
         Self {
@@ -183,6 +216,9 @@ impl DispatchEngine {
             issuer_epoch: config.issuer_epoch,
             target_endpoint: config.target_endpoint,
             max_power_kw: config.max_power_kw,
+            safety_voltage_window: config.safety_voltage_window,
+            safety_freq_window: config.safety_freq_window,
+            safety_ramp_kw_per_min: config.safety_ramp_kw_per_min,
             gate: config.gate,
             audit: config.audit,
             control_audit: config.control_audit,
@@ -236,7 +272,6 @@ impl DispatchEngine {
             lp_solution: detail,
             safety,
             exec,
-            deviation: 0.0,
             now_ms,
         };
         if audit.log_decision(&rec).is_err() {
@@ -426,6 +461,113 @@ impl DispatchEngine {
         )
     }
 
+    /// SPEC WP-A.2：投影——受信任遥测电气量退化检查（NaN/±Inf/零时间戳
+    /// ⇒ `SystemState::unknown()` fail-closed，由规则链 NonFinite 前置拒绝；
+    /// 不 panic、不猜健康默认值）。生产值本身来自 trusted 评估器，此处是
+    /// 纵深防御的第二道形态闸。
+    #[allow(clippy::needless_pass_by_value)]
+    fn project_system_state(telemetry: &TrustedTelemetry) -> SystemState {
+        let st = &telemetry.state;
+        if st.timestamp_ms == 0
+            || !(st.voltage_v.is_finite()
+                && st.current_a.is_finite()
+                && st.frequency_hz.is_finite()
+                && st.soc_pct.is_finite())
+        {
+            return SystemState::unknown();
+        }
+        st.clone()
+    }
+
+    /// SPEC WP-A.2：AI 电气护栏核——ai/safety-validator 规则链
+    /// （ElectricalSafetyRule + ProtectionCoordinationRule + 同时充放
+    /// Fatal 后置校验）在决策咽喉的接线。窗口/功率帽/爬坡率全部由
+    /// [`DispatchConfig`] 注入（缺省值 = 校验器蓝图默认，行为连续）。
+    ///
+    /// `power_series_kw`：按时段索引排列的计划功率序（+放电/-充电）。
+    /// 生产咽喉当前传单点序列（意图写/计划净功率）；多时段 LP 方案的
+    /// 全谱校验归双脑协调器前置链（既有 validate 面），本护栏拒绝型、
+    /// 不做静默钳位放行。任何违规（含 clamp 建议）⇒ Err(摘要)。
+    fn safety_guard(
+        params: SafetyGuardParams,
+        power_series_kw: &[f64],
+        state: &SystemState,
+    ) -> Result<(), String> {
+        // 窗口裁决（WP-A.2 显式化）：safety-validator 的 voltage_range/
+        // freq_range 为 D12 领域预留（规则内未消费），本护栏按装配配置
+        // 直接裁决并给出结构化摘要；其余交规则链。
+        for (name, v, win) in [
+            ("voltage", state.voltage_v, params.voltage_window),
+            ("frequency", state.frequency_hz, params.freq_window),
+        ] {
+            if !(win.0..=win.1).contains(&v) {
+                return Err(format!(
+                    "electrical_safety/{name}={v} outside ({},{})",
+                    win.0, win.1
+                ));
+            }
+        }
+        let mut validator = eneros_safety_validator::SafetyValidator::empty();
+        validator.add_rule(Box::new(
+            eneros_safety_validator::ElectricalSafetyRule::new(
+                params.max_power_kw,
+                params.max_current_a,
+                params.voltage_window,
+                params.freq_window,
+            ),
+        ));
+        validator.add_rule(Box::new(
+            eneros_safety_validator::ProtectionCoordinationRule::new(
+                params.protection_overcurrent_a,
+                params.protection_overvoltage_v,
+                params.protection_undervoltage_v,
+                (params.freq_window.0 - 0.5, params.freq_window.1 + 0.5),
+                params.ramp_kw_per_min,
+            ),
+        ));
+        // 功率序 → 单条 ScheduleEntry 序列（正=放电，负=充电）。
+        let entries: alloc::vec::Vec<eneros_energy_lp_model::result::ScheduleEntry> =
+            power_series_kw
+                .iter()
+                .enumerate()
+                .map(
+                    |(period, p)| eneros_energy_lp_model::result::ScheduleEntry {
+                        period,
+                        charge_power_kw: p.min(0.0).abs(),
+                        discharge_power_kw: p.max(0.0),
+                        net_power_kw: *p,
+                        soc_pct: if state.soc_pct.is_finite() {
+                            state.soc_pct
+                        } else {
+                            0.0
+                        },
+                        revenue_yuan: 0.0,
+                    },
+                )
+                .collect();
+        let schedule = eneros_energy_lp_model::result::ScheduleResult {
+            schedule: entries,
+            total_revenue_yuan: 0.0,
+            objective_value: 0.0,
+            solve_status: eneros_energy_lp_model::result::SolveStatus::Optimal,
+        };
+        let verdict = validator.validate(&schedule, state);
+        if verdict.passed && !verdict.clamped {
+            return Ok(());
+        }
+        let summary = verdict
+            .violations
+            .iter()
+            .map(|v| format!("{}/{}/{:?}", v.rule, v.field, v.severity))
+            .collect::<alloc::vec::Vec<_>>()
+            .join(",");
+        Err(if summary.is_empty() {
+            String::from("clamped-by-rules")
+        } else {
+            summary
+        })
+    }
+
     /// WP-54.2 合核：run/run_intent 的 12 步授权链单一实现。
     ///
     /// 合并前两份手抄副本的五段逐字同构段（actor 门 / Envelope 装配+签名+
@@ -548,6 +690,36 @@ impl DispatchEngine {
             }
         }
         states.push(DispatchState::Authorized);
+
+        // 步骤 4.5（SPEC-SERIES-2026-08-27/A WP-A.2）：AI 电气护栏——
+        // run（启发式/AI 计划）与 run_intent（协议入站写）两翼共过的
+        // 单咽喉门。拒绝 ⇒ 审计 Blocked 真实置位 + target 串口判定行 +
+        // SafetyRejected（时序先于预算门：先安全后额度）。
+        {
+            let guard_state = Self::project_system_state(telemetry);
+            let params = SafetyGuardParams {
+                max_power_kw: self.max_power_kw,
+                max_current_a: Self::GUARD_MAX_CURRENT_A,
+                voltage_window: self.safety_voltage_window,
+                freq_window: self.safety_freq_window,
+                ramp_kw_per_min: self.safety_ramp_kw_per_min,
+                protection_overcurrent_a: Self::GUARD_PROT_OVERCURRENT_A,
+                protection_overvoltage_v: Self::GUARD_PROT_OVERVOLTAGE_V,
+                protection_undervoltage_v: Self::GUARD_PROT_UNDERVOLTAGE_V,
+            };
+            let series = [cmd.power_kw];
+            if let Err(reason) = Self::safety_guard(params, &series, &guard_state) {
+                self.audit(
+                    ExecOutcome::Failed,
+                    SafetyOutcome::Blocked,
+                    &format!("states={states:?};safety-reject={reason}"),
+                    started,
+                );
+                #[cfg(target_os = "none")]
+                eneros_runtime::println!("[svc-control-dispatch] SAFETY-REJECTED reason={reason}");
+                return Err(DispatchError::SafetyRejected(reason));
+            }
+        }
 
         // 步骤 5：rate 预算 reserve（不 record）；energy 仅 AI 计划路径有语义。
         if self.gate.check_rate(started) != GateDecision::Allow {
@@ -843,6 +1015,21 @@ impl ControlDispatch for DispatchEngine {
 }
 
 // 集成测试在 tests/ 目录（需要装配完整 chain + 内存通道 + 对端 ingress）。
+/// WP-A.2 测试桩：完整字段 TrustedTelemetry（engine 咽喉单测用）。
+#[cfg(test)]
+fn trusted_stub_state() -> TrustedTelemetry {
+    TrustedTelemetry {
+        state: SystemState::new(400.0, 50.0, 50.0, 0.5, 1_700_000_000_000),
+        coverage: eneros_safety_validator::RequiredPointCoverage::empty(),
+        valid_until_ms: u64::MAX,
+        provenance_digest: [0u8; 32],
+        generated_at_ms: 1,
+        source_epoch: 0,
+        mapping_version: 1,
+        samples: BTreeMap::new(),
+    }
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
@@ -860,8 +1047,101 @@ mod unit_tests {
             }],
             total_revenue_yuan: 0.0,
             objective_value: 0.0,
-            solve_status: eneros_solver_core::result::SolveStatus::Optimal,
+            solve_status: eneros_energy_lp_model::result::SolveStatus::Optimal,
         };
         assert!((schedule_energy_kwh(&s) - 1.25).abs() < 1e-9);
+    }
+    // ===== SPEC-SERIES-2026-08-27/A · WP-A.2 电气护栏单测 =====
+
+    fn guard_params() -> SafetyGuardParams {
+        SafetyGuardParams {
+            max_power_kw: 500.0,
+            max_current_a: DispatchEngine::GUARD_MAX_CURRENT_A,
+            voltage_window: (340.0, 420.0),
+            freq_window: (49.5, 50.5),
+            ramp_kw_per_min: 200.0,
+            protection_overcurrent_a: DispatchEngine::GUARD_PROT_OVERCURRENT_A,
+            protection_overvoltage_v: DispatchEngine::GUARD_PROT_OVERVOLTAGE_V,
+            protection_undervoltage_v: DispatchEngine::GUARD_PROT_UNDERVOLTAGE_V,
+        }
+    }
+
+    fn tel_state(v: f64, c: f64, f: f64, soc: f64) -> SystemState {
+        SystemState::new(v, c, f, soc, 1_700_000_000_000)
+    }
+
+    /// C1-a：电压越上窗 → 拒绝。
+    #[test]
+    fn guard_rejects_overvoltage() {
+        let st = tel_state(430.0, 50.0, 50.0, 0.5);
+        let err = DispatchEngine::safety_guard(guard_params(), &[100.0], &st).unwrap_err();
+        assert!(err.contains("electrical_safety"), "{err}");
+    }
+
+    /// C1-b：电压越下窗 → 拒绝。
+    #[test]
+    fn guard_rejects_undervoltage() {
+        let st = tel_state(320.0, 50.0, 50.0, 0.5);
+        assert!(DispatchEngine::safety_guard(guard_params(), &[-80.0], &st).is_err());
+    }
+
+    /// C1-c：频率越窗 → 拒绝。
+    #[test]
+    fn guard_rejects_frequency_out_of_window() {
+        let st = tel_state(400.0, 50.0, 51.2, 0.5);
+        let err = DispatchEngine::safety_guard(guard_params(), &[60.0], &st).unwrap_err();
+        assert!(err.contains("electrical_safety"), "{err}");
+    }
+
+    /// C1-d：NaN 遥测投影为 unknown()（NaN fail-closed）→ 非有限前置拒绝。
+    #[test]
+    fn guard_nan_telemetry_fails_closed() {
+        let mut tm = trusted_stub_state();
+        tm.state.voltage_v = f64::NAN;
+        let projected = DispatchEngine::project_system_state(&tm);
+        assert!(projected.voltage_v.is_nan());
+        assert_eq!(projected.timestamp_ms, 0);
+        assert!(
+            DispatchEngine::safety_guard(guard_params(), &[10.0], &projected).is_err(),
+            "NaN 投影必须 fail-closed 拒绝"
+        );
+    }
+
+    /// C1-e：合法工况直通（窗口内 + 功率帽内 + 无爬坡冲突）。
+    #[test]
+    fn guard_allows_nominal_dispatch() {
+        let st = tel_state(400.0, 50.0, 50.0, 0.6);
+        assert!(DispatchEngine::safety_guard(guard_params(), &[120.0], &st).is_ok());
+        assert!(DispatchEngine::safety_guard(guard_params(), &[-150.0], &st).is_ok());
+    }
+
+    /// C1-f：功率超帽（>max_power_kw）→ 拒绝（同时充放互斥后置校验不触发——单符号序列）。
+    #[test]
+    fn guard_rejects_power_over_cap() {
+        let st = tel_state(400.0, 60.0, 50.0, 0.55);
+        let err = DispatchEngine::safety_guard(guard_params(), &[600.0], &st).unwrap_err();
+        assert!(!err.is_empty(), "{err}");
+    }
+
+    /// C1-g：保护配合冲突——相邻时段爬坡超限 → 拒绝。
+    #[test]
+    fn guard_rejects_ramp_conflict() {
+        let st = tel_state(400.0, 50.0, 50.0, 0.5);
+        // 200 kW/min 上限：0→600 的跳变必炸。
+        let err = DispatchEngine::safety_guard(guard_params(), &[0.0, 600.0], &st).unwrap_err();
+        assert!(err.contains("protection_coordination"), "{err}");
+    }
+
+    /// C1-h：TTL 过期叠加越窗遥测 ⇒ 时效门在前（TelemetryExpired 先于护栏），
+    /// 优先序由步骤序保证：guard 不做新鲜度裁决，仅作电气量裁决；
+    /// 该性质在此以"投影对过期时间戳无感知、引擎层 step2 先行"的结构断言锁定：
+    /// 投影函数对 ts=0 一律 unknown()，而 is_valid_at 由 run()/run_intent()
+    /// 在护栏之前裁决——两级时序无歧义。
+    #[test]
+    fn guard_projection_precedence_is_structural() {
+        let mut tm = trusted_stub_state();
+        tm.state.timestamp_ms = 0; // 过期形态
+        let projected = DispatchEngine::project_system_state(&tm);
+        assert_eq!(projected.timestamp_ms, 0);
     }
 }

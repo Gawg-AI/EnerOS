@@ -116,7 +116,9 @@ impl DeviceAgent {
                     pm.insert(String::from(n), id);
                 }
             }
-            devices.register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm);
+            devices
+                .register("pcs", DeviceType::Pcs, 1, Box::new(dev), pm)
+                .expect("静态合法登记");
         }
         // Battery：电池
         {
@@ -132,7 +134,9 @@ impl DeviceAgent {
                     pm.insert(String::from(n), id);
                 }
             }
-            devices.register("battery", DeviceType::Battery, 2, Box::new(dev), pm);
+            devices
+                .register("battery", DeviceType::Battery, 2, Box::new(dev), pm)
+                .expect("静态合法登记");
         }
         // Meter：电表
         {
@@ -146,7 +150,9 @@ impl DeviceAgent {
                     pm.insert(String::from(n), id);
                 }
             }
-            devices.register("meter", DeviceType::Meter, 3, Box::new(dev), pm);
+            devices
+                .register("meter", DeviceType::Meter, 3, Box::new(dev), pm)
+                .expect("静态合法登记");
         }
         Self::new_with_ingress(
             "device-agent",

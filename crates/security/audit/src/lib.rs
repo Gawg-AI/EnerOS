@@ -75,6 +75,7 @@ pub mod anomaly;
 pub mod baseline;
 pub mod chain;
 pub mod durable;
+pub mod durable_log;
 pub mod events;
 pub mod store;
 
