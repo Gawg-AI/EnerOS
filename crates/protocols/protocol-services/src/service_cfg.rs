@@ -1,134 +1,143 @@
-//! 协议服务配置拉取（46 WP-46.3 配置驱动装配）。
+//! 协议服务配置拉取（46 WP-46.3 配置驱动装配；S1 起管道单源）。
 //!
-//! svc-* 经 svc-config `GET_ENTRY("protocol-<proto>")`（EIPC，
-//! `Sel4IpcClient` + `ChunkedClient`）取协议配置 canonical KV → `decode_protocol`
-//! 还原 `ProtocolConfig` 喂插件 `start`——**配置即 peer 唯一来源**（消灭源码
-//! 硬编码，46.3 DoD）。EIPC 未授予 / 解码失败 → `None` → 服务保持能力壳
-//! （fail-closed，不猜默认 peer）。
+//! svc-* 经 svc-config `GET_ENTRY("protocol-<proto>")`（ConfigGet）取协议
+//! 配置 canonical KV → `decode_protocol` 还原 `ProtocolConfig` 喂插件
+//! `start`——**配置即 peer 唯一来源**（46.3 DoD）。
+//!
+//! S1（SPEC-SERIES-2026-08-29）收编：取数 seam（[`ConfigEntrySource`]）
+//! 注入——target 由 `protocol_ladder::Sel4ServiceIo` 按名 `eipc_resolve`
+//! 取槽，调用侧管道（前缀剥离 → 借切片解码 → 失败分类）单源 =
+//! agent-sdk `config_gateway::config_get`（WP-S1.2）。本模块只保留
+//! **呈现**：PROTOCOL-CONFIG / POINTS-LOADED 证据行与 too-short/
+//! bad-prefix 词形（单源 = `protocol_ladder::line_*`，F-35 两抄收编），
+//! 逐字节保持。取数失败 → `Err`/空注册表（fail-closed，不猜默认 peer）。
 
-use eneros_agent_sdk::config_client;
+use eneros_agent_sdk::config_gateway::{config_get, ConfigEntrySource, ConfigStep};
 use eneros_config_bundle::points::PointRecord;
 use eneros_protocol_abstract::ProtocolConfig;
 
 /// 协议配置最大总长（与服务端 bundle 条目上限对齐；防御性截断检查）。
 const MAX_PAYLOAD: usize = 2048;
 
-/// 经 EIPC 从 svc-config 拉取协议配置。
+/// 取协议配置并解码（`decode_protocol`；呈现词形逐字节保持）。
 ///
 /// `config_id`：`protocol-modbus-tcp` 等（`configs/protocol-*.toml`）。
-/// `grant_slot`：该服务在 `EIPC_EP_BASE_SLOT` 基础上的授予槽偏移（首个
-/// svc-config 授予即 +0；svc-modbus-tcp 因遥测先行需观察自身表序）。
 /// wire 知识（请求构造/分块/4B 前缀）单一来源 = agent-sdk
-/// `config_client`（SPEC-B WP-B.1，历史 10 处手抄收编）。
+/// `config_client`；调用侧管道单一来源 = `config_gateway::config_get`
+/// （SPEC-B WP-B.1 + S1 WP-S1.2）。
 pub fn fetch_protocol_config(
+    io: &mut dyn ConfigEntrySource,
     client_name: &str,
-    grant_slot: u64,
     config_id: &str,
-) -> Option<ProtocolConfig> {
-    let mut client = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-        client_name,
-        grant_slot,
-        eneros_drv_svc::now_ns,
-    )
-    .ok()?;
-    let payload = config_client::get_entry(&mut client, config_id, 0, 5_000).ok()?;
-    let body = match config_client::decode_response_body(&payload) {
-        Ok(b) => b,
-        Err(eneros_agent_sdk::config_client::ConfigError::TooShort) => {
-            eneros_runtime::println!("[{client_name}] config response too short");
-            return None;
+) -> Result<ProtocolConfig, ConfigStep> {
+    config_get(io, config_id, |body| {
+        if body.len() > MAX_PAYLOAD {
+            eneros_runtime::println!("[{client_name}] config payload exceeds {MAX_PAYLOAD}");
+            return Err(ConfigStep::DecodeFailed);
         }
-        Err(eneros_agent_sdk::config_client::ConfigError::LengthPrefix) => {
-            eneros_runtime::println!("[{client_name}] config length prefix malformed");
-            return None;
+        match eneros_config_bundle::protocol::decode_protocol(body) {
+            Ok(cfg) => {
+                eneros_runtime::println!(
+                    "[{client_name}] PROTOCOL-CONFIG loaded {} keys (id={})",
+                    cfg.entries.len(),
+                    config_id
+                );
+                Ok(cfg)
+            }
+            Err(e) => {
+                eneros_runtime::println!("[{client_name}] protocol config decode FAIL: {:?}", e);
+                Err(ConfigStep::DecodeFailed)
+            }
         }
-        Err(eneros_agent_sdk::config_client::ConfigError::Transport) => return None,
-    };
-    if body.len() > MAX_PAYLOAD {
-        eneros_runtime::println!("[{client_name}] config payload exceeds {MAX_PAYLOAD}");
-        return None;
-    }
-    match eneros_config_bundle::protocol::decode_protocol(body) {
-        Ok(cfg) => {
-            eneros_runtime::println!(
-                "[{client_name}] PROTOCOL-CONFIG loaded {} keys (id={})",
-                cfg.entries.len(),
-                config_id
-            );
-            Some(cfg)
+    })
+    .map_err(|step| {
+        // wire 失败呈现（词形单源 = protocol_ladder::line_*；今日
+        // service_cfg 两抄收编，R2 逐字节）。Unavailable/DecodeFailed
+        // 今日不打印额外行。
+        match step {
+            ConfigStep::TooShort => {
+                eneros_runtime::println!(
+                    "{}",
+                    crate::protocol_ladder::line_config_too_short(client_name)
+                );
+            }
+            ConfigStep::BadPrefix => {
+                eneros_runtime::println!(
+                    "{}",
+                    crate::protocol_ladder::line_config_bad_prefix(client_name)
+                );
+            }
+            _ => {}
         }
-        Err(e) => {
-            eneros_runtime::println!("[{}] protocol config decode FAIL: {:?}", client_name, e);
-            None
-        }
-    }
+        step
+    })
 }
 
-/// 46.5（点表驱动收口）：经 svc-config EIPC 取点表（ConfigGet "points" →
-/// `decode_points`），按 `keep` 过滤协议后返回注册表；插件按自身协议地址
-/// 过滤（服务层不预过滤——`keep = |_| true` 即全量，iec104 用）。不可得 →
-/// 空注册表（插件如实降级：空映射 = 不连设备，不伪造协议 I/O）。
+/// 46.5（点表驱动收口）：取点表（ConfigGet "points" → `decode_points`），
+/// 按 `keep` 过滤协议后返回注册表；插件按自身协议地址过滤（服务层不预
+/// 过滤——`keep = |_| true` 即全量，iec104 用）。不可得 → 空注册表
+/// （插件如实降级：空映射 = 不连设备，不伪造协议 I/O）。
 ///
-/// `client_name` 仅诊断；`grant_slot` = 该服务 svc-config 授予槽
-/// （`fetch_protocol_config` 同槽——同端点可处理 config 与 points 两类
-/// 请求）。wire 知识单一来源 = agent-sdk `config_client`（SPEC-B WP-B.1）。
+/// `client_name` 仅诊断（与 `fetch_protocol_config` 同前缀——同端点可
+/// 处理 config 与 points 两类请求）。wire/管道单源同上。
 pub fn fetch_points_registry<F>(
+    io: &mut dyn ConfigEntrySource,
     client_name: &str,
-    grant_slot: u64,
     keep: F,
 ) -> eneros_protocol_abstract::VecPointRegistry
 where
     F: Fn(&PointRecord) -> bool,
 {
     use eneros_protocol_abstract::VecPointRegistry;
-    let Ok(mut client) = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-        client_name,
-        grant_slot,
-        eneros_drv_svc::now_ns,
-    ) else {
-        eneros_runtime::println!("[{client_name}] config EIPC NOT granted -> points unavailable");
-        return VecPointRegistry::new(alloc::vec::Vec::new());
-    };
-    let payload = match config_client::get_entry(&mut client, "points", 0, 5_000) {
-        Ok(p) => p,
-        Err(e) => {
-            eneros_runtime::println!("[{client_name}] ConfigGet(points) EIPC fail: {e:?}");
-            return VecPointRegistry::new(alloc::vec::Vec::new());
+    let empty = || VecPointRegistry::new(alloc::vec::Vec::new());
+    match config_get(io, "points", |body| {
+        let cfg_id = eneros_config_bundle::ConfigId::from_static("points");
+        match eneros_config_bundle::points::decode_points(body, &cfg_id) {
+            Ok(table) => {
+                let mappings: alloc::vec::Vec<_> = table
+                    .points
+                    .iter()
+                    .filter(|p| keep(p))
+                    .filter_map(|p| p.to_mapping())
+                    .collect();
+                eneros_runtime::println!(
+                    "[{client_name}] POINTS-LOADED {} points (registry {})",
+                    mappings.len(),
+                    table.len()
+                );
+                Ok(VecPointRegistry::new(mappings))
+            }
+            Err(e) => {
+                eneros_runtime::println!("[{client_name}] points decode FAIL: {e:?}");
+                Err(ConfigStep::DecodeFailed)
+            }
         }
-    };
-    let body = match config_client::decode_response_body(&payload) {
-        Ok(b) => b,
-        Err(eneros_agent_sdk::config_client::ConfigError::TooShort) => {
-            eneros_runtime::println!("[{client_name}] config response too short");
-            return VecPointRegistry::new(alloc::vec::Vec::new());
-        }
-        Err(eneros_agent_sdk::config_client::ConfigError::LengthPrefix) => {
-            eneros_runtime::println!("[{client_name}] config length prefix malformed");
-            return VecPointRegistry::new(alloc::vec::Vec::new());
-        }
-        Err(eneros_agent_sdk::config_client::ConfigError::Transport) => {
-            return VecPointRegistry::new(alloc::vec::Vec::new())
-        }
-    };
-    let cfg_id = eneros_config_bundle::ConfigId::from_static("points");
-    match eneros_config_bundle::points::decode_points(body, &cfg_id) {
-        Ok(table) => {
-            let mappings: alloc::vec::Vec<_> = table
-                .points
-                .iter()
-                .filter(|p| keep(p))
-                .filter_map(|p| p.to_mapping())
-                .collect();
+    }) {
+        Ok(registry) => registry,
+        Err(ConfigStep::TooShort) => {
             eneros_runtime::println!(
-                "[{client_name}] POINTS-LOADED {} points (registry {})",
-                mappings.len(),
-                table.len()
+                "{}",
+                crate::protocol_ladder::line_config_too_short(client_name)
             );
-            VecPointRegistry::new(mappings)
+            empty()
         }
-        Err(e) => {
-            eneros_runtime::println!("[{client_name}] points decode FAIL: {e:?}");
-            VecPointRegistry::new(alloc::vec::Vec::new())
+        Err(ConfigStep::BadPrefix) => {
+            eneros_runtime::println!(
+                "{}",
+                crate::protocol_ladder::line_config_bad_prefix(client_name)
+            );
+            empty()
         }
+        Err(ConfigStep::Unavailable) => {
+            // S1 evidence M-3 登记：今日 client-new-fail 打印本行、
+            // get_entry-fail 打印 `ConfigGet(points) EIPC fail: {e:?}`；
+            // 取数 seam 收敛为 Option 后两态同呈本行（仅 svc-config
+            // 已授予但请求超时的降级路径与旧词形不同）。
+            eneros_runtime::println!(
+                "[{client_name}] config EIPC NOT granted -> points unavailable"
+            );
+            empty()
+        }
+        Err(ConfigStep::DecodeFailed) => empty(),
     }
 }
