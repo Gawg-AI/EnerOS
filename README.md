@@ -70,7 +70,7 @@ EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power
 
 | 路径 | 内容 | MVP 可验收 | 实时性 |
 |------|------|-----------|--------|
-| **L1 主路径** | Solver-only（LP/MILP via HiGHS） | ✅ 是 | < 500ms，不依赖 LLM |
+| **L1 主路径** | Solver-only（LP/MILP，HiGHS 求解器**预留未接线**：feature 零激活，AI-004 具名落地前保持停用；现役 L1 决策=静态启发式后端） | ⚠️ 求解器未接线 | < 500ms，不依赖 LLM |
 | **L2 增强路径** | 站端 LLM peer 经 MQTT 远程供给（ADR-0045 方案 B 主线）；本地 llama.cpp 推理 spike=NO-GO（内存/移植面证据见 `docs/ai/local-inference-spike.md`，重启条件三条） | ⚠️ 需配套站端服务 | < 2s（受网络 RTT 支配） |
 
 ---
@@ -79,10 +79,10 @@ EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power
 
 | 能力 | 说明 |
 |------|------|
-| 遥测历史落盘 | svc-telemetry 每采集批次经 EIPC 块命令面写入数据盘 TSDB 区段（littlefs2 + 列存 chunk + Snappy），**后方 ACK 语义**：批次判定行到达时数据已抗 kill（compact+索引落盘+sync 三步检查点） |
+| 遥测历史落盘 | **target 侧显式停用（E-DEF-01，2026-08-28 win4 实测）**：磁盘 TSDB 接缝（EIPC 块命令面 → littlefs2 + 列存 chunk + Snappy）在 svc-telemetry 装配中置 `None`（littlefs2 小分片往返成本使 TEL_INGEST deadline 物理不可满足，实测登记见 E-DEF-01 / A-history-contract F-A12）；**内存环接替**——采集线走基线词形 `TSDB-COMMIT batch=<seq> items=<n>`，不伪造持久化。修复方向（burst 块协议 / PAYLOAD_CAP 扩容 / eneros-fs 持久 mount）归 C 卷 owner 裁决 |
 | 北向历史取回 | SCADA 经 MQTT 管理 RPC `history-query`（viewer 角色）取任意点位最近 N 条（≤512 钳制+提示），二进制分页行区经 mgmt_response 回传，**不复用 OBSF 遥测帧语义**（broker transcript 对账基线保护） |
-| 判定行三态 | `TSDB-DISK-COMMIT batch=<seq> items=<n>` / `TSDB-DISK-DROPPED n=` / `TSDB-DISK-REJECTED n=`（磁盘介质装配时；内存环降级沿用基线词形） |
-| 能力边界 | 仅最后 N 条快照窗口、非全量导出、无订阅式推送/跨节点聚合/SQL 查询面；retention 策略调参仍 OPEN（OQ-3）。未授予存储边或打开失败时显式降级为进程内环（不伪造持久化） |
+| 判定行三态 | `TSDB-DISK-COMMIT batch=<seq> items=<n>` / `TSDB-DISK-DROPPED n=` / `TSDB-DISK-REJECTED n=`——**TSDB-DISK-\* 为磁盘介质词形，当前 target 装配不可达**（E-DEF-01 停用态，见上）；内存环降级沿用基线词形 `TSDB-COMMIT`（两词形区分 = transcript 连续性资产，A-history-contract F-A13） |
+| 能力边界 | 仅最后 N 条快照窗口、非全量导出、无订阅式推送/跨节点聚合/SQL 查询面；retention 策略调参仍 OPEN（OQ-3）。未授予存储边或打开失败时显式降级为进程内环（不伪造持久化）。**磁盘落盘路径当前整体不可用（E-DEF-01 显式停用，见「遥测历史落盘」行）** |
 
 内存与区段审计：`docs/delivery/wp-c-memory-audit-spec-c-20260827.md`。
 
@@ -100,23 +100,21 @@ eneros/
 ├── deny.toml                  # cargo-deny 许可证/安全配置
 │
 ├── crates/                    # ★ 所有 Rust crate（按子系统分组）
-│   ├── kernel/                #   内核子系统
-│   │   ├── kernel/            #     eneros-kernel（启动/串口/内核入口）
-│   │   ├── mm/                #     eneros-mm（内存管理/页表）
-│   │   ├── heap/              #     eneros-heap（buddy 堆分配器）
-│   │   ├── sched/             #     eneros-sched（调度器/分区调度/线程）
-│   │   ├── smp/               #     eneros-smp（多核启动/IPI）
-│   │   ├── ipc/               #     eneros-ipc（IPC 同步消息/通知/RingBuffer）
-│   │   ├── controlbus/        #     eneros-controlbus（控制总线/TTL/约束包）
-│   │   └── panic/             #     eneros-panic（Panic 框架）
+│   ├── （内核源码不在 crates/ 下：seL4 14.0.0 微内核位于 third_party/
+│   │    sel4-*（sel4-build / sel4-top / sel4-root / sel4-patches 等），
+│   │    经 sel4-build-rust.sh 构建；crates/runtime/root-task 消费
+│   │    BootInfo 拉起 EL0 服务）
 │   ├── hal/                   #   硬件抽象层
 │   │   ├── hal/               #     eneros-hal（HAL trait + arm64 实现）
 │   │   └── board/             #     eneros-board（板级支持）
 │   ├── runtime/               #   用户态运行时
+│   │   ├── root-task/         #     eneros-root-task（EL0 首进程/服务编排）
+│   │   ├── sel4-sys/          #     eneros-sel4-sys（seL4 syscall 安全绑定）
 │   │   ├── runtime/           #     eneros-runtime
-│   │   ├── sel4-sys/          #     eneros-sel4-sys（seL4 syscall 绑定）
-│   │   ├── hello/             #     eneros-hello（首个用户态样例）
-│   │   └── user/heap/         #     eneros-user-heap（用户态堆）
+│   │   ├── config-bundle/     #     eneros-config-bundle（签名配置束）
+│   │   ├── durable-log/       #     eneros-durable-log（掉电一致日志）
+│   │   ├── durable-state/     #     eneros-durable-state（状态持久化）
+│   │   └── hello/             #     eneros-hello（首个用户态样例）
 │   ├── drivers/               #   设备驱动
 │   │   ├── time/              #     eneros-time（RTC/高精度定时器）
 │   │   ├── watchdog/          #     eneros-watchdog（硬件看门狗）
@@ -140,7 +138,7 @@ eneros/
 └── .github/workflows/ci.yml   # CI 流水线
 ```
 
-> 蓝图文档位于 `蓝图/` 目录（已入 git 跟踪，65 个文件；`git ls-files '蓝图*'` 可列）。
+> 蓝图文档位于 `蓝图/` 目录（已入 git 跟踪，66 个文件；`git ls-files '蓝图*'` 可列）。
 
 ---
 
@@ -182,7 +180,7 @@ cargo xtask run qemu-prod
 cargo test --workspace
 ```
 
-预期输出包含 UEFI 交接行 `ENEROS stage=uefi-entry profile=qemu-prod secure=required`，随后是 boot-evidence JSON 行（`"result":"PASS"`，串口同流输出；真值取自 `target/evidence-w59/c45/qemu-serial.log`，HEAD b5d939b 实弹）。按 `Ctrl+A` 然后 `X` 退出 QEMU。
+预期输出包含 UEFI 交接行 `ENEROS stage=uefi-entry profile=qemu-prod secure=required`，随后是 boot-evidence JSON 行（`"result":"PASS"`，串口同流输出；真值取自 `evidence/w59/c45/qemu-serial.log`，HEAD b5d939b 实弹）。按 `Ctrl+A` 然后 `X` 退出 QEMU。
 
 #### 常用入口
 
@@ -251,16 +249,25 @@ use std::net::TcpStream;
 | rust-sel4 | v3.0.0 |
 | 目标三元组 | aarch64-unknown-none |
 
-#### 默认集成清单（防重复造轮子）
+#### 第三方集成状态清单（现役 / 预留 / 已撤线——防重复造轮子）
 
 | 子系统 | 默认集成 | 自研范围 |
 |--------|---------|---------|
 | 文件系统 | littlefs2 | 能源特有点表存储接口封装 |
 | TCP/IP 栈 | smoltcp（no_std） | 无 |
-| DDS 总线 | Cyclone DDS | Rust 封装层 |
-| MILP/LP Solver | HiGHS | Rust FFI 封装 + 能源建模层 |
-| LLM 推理 | llama.cpp（C API） | Rust 封装层 |
+| DDS 总线 | —（已撤线：ADR-021 out-of-v1.0，Agent 总线由 MQTT/IPC 承担） | 无 |
+| MILP/LP Solver | HiGHS **预留未接线**（`highs-ffi` feature 零激活；素材在库——build.rs + third_party/highs-1.7.2；AI-004 具名落地前保持停用；现役=静态启发式后端） | Rust FFI 封装 + 能源建模层（在库未接） |
+| LLM 推理 | 本地 llama.cpp spike=NO-GO（`docs/ai/local-inference-spike.md`，与 L2 路径行同口径）；`llama-cpp` feature 预留（默认关） | Rust 封装层（未接线） |
 | 密码学 | Ed25519/SHA-256/rustls(P-256)（产品线）；SM2/SM3/SM4 手卷为实验性（无硬件加速宣称，D4） | 协议层适配 |
+
+#### 管理面动作接线现状（RBAC/CLI 放行面 > 服务接立面）
+
+管理 RPC 面共 22 个动作（`MgmtAction`）；svc-mgmt 服务侧**接实 6 个**：status / agent-restart / config-get / log-query / support-bundle / history-query。RBAC（mgmt-api `ApiAction::permission()` 逐动作权限映射）与 mgmt CLI 按全量动作面放行，未接实动作由服务侧 fail-closed 拒绝（不空成功）：
+
+- **OTA 三动作**（update-check / update-apply / update-rollback）→ `ota-channel-unbound:mgmt→ota-grant-missing`（mgmt→ota EIPC 授予边未建立；升格接通属独立侦察项，蓝图 60 §5 默认不做）；
+- **其余 13 个**（slo / agent-list / agent-start / agent-stop / config-set / crash-symbolize / maintenance-enter / maintenance-exit / backup-create / restore / revoke / factory-reset / secure-erase）→ 裸词形 `action-not-wired:<action>`。
+
+对未接实动作收到上述 Failed 词形是**预期行为**（明确原因词形），不是 bug；接线面以 svc-mgmt executor 白名单为单一事实源（蓝图 60 WP-60.2 登记，计数有单测钉住）。
 
 ---
 
@@ -329,7 +336,7 @@ EnerOS (Power Native Agent OS) is an energy-internet-native Agent OS built on th
 
 | Path | Content | MVP Verifiable | Latency |
 |------|---------|---------------|---------|
-| **L1 Main** | Solver-only (LP/MILP via HiGHS) | ✅ Yes | < 500ms, no LLM dependency |
+| **L1 Main** | Solver-only (LP/MILP; HiGHS solver **reserved, unwired**: feature never activated, stays disabled until AI-004 lands; live L1 decision = static heuristic backend) | ⚠️ solver unwired | < 500ms, no LLM dependency |
 | **L2 Enhanced** | Station-side LLM peer via MQTT (ADR-0045 plan B mainline); local llama.cpp inference spike = NO-GO (`docs/ai/local-inference-spike.md`) | ⚠️ requires station service | < 2s (network RTT bound) |
 
 ---
@@ -338,10 +345,10 @@ EnerOS (Power Native Agent OS) is an energy-internet-native Agent OS built on th
 
 | Capability | Notes |
 |------------|-------|
-| Telemetry history persistence | svc-telemetry writes each accepted ingest batch to a dedicated data-disk TSDB segment (littlefs2 + columnar chunks + Snappy) via the EIPC block-command face. **Back-ack semantics**: when the per-batch judgment line appears on the console, data already survives kills (compact + index save + sync checkpoint). |
+| Telemetry history persistence | **Explicitly disabled on target (E-DEF-01, live-probed in the 2026-08-28 win4 window)**: the disk-TSDB seam (EIPC block-command face → littlefs2 + columnar chunks + Snappy) is wired to `None` in the svc-telemetry assembly (littlefs2 small-fragment round-trip cost makes the TEL_INGEST deadline physically unsatisfiable; measurements registered under E-DEF-01 / A-history-contract F-A12). **In-memory ring takes over** — the ingest line emits the baseline word form `TSDB-COMMIT batch=<seq> items=<n>`; no fake persistence. Fix directions (burst block protocol / PAYLOAD_CAP headroom / eneros-fs persistent mount) are deferred to the C-volume owner. |
 | Northbound history query | SCADA calls management RPC `history-query` (viewer role) over MQTT for the last N points of any metric (clamped at 512 with a hint flag). Paged binary rows return over the mgmt_response path — **OBSF telemetry-frame semantics are not reused**, protecting the broker-transcript reconciliation baseline. |
-| Judgment lines | `TSDB-DISK-COMMIT batch=<seq> items=<n>` / `TSDB-DISK-DROPPED n=` / `TSDB-DISK-REJECTED n=` (disk medium wired; in-memory ring fallback keeps baseline wording). |
-| Capability boundary | Last-N snapshot window only — no full export, no subscription push, no cross-node aggregation, no SQL face. Retention tuning stays OPEN (OQ-3). Explicit fallback to an in-process ring when the storage grant is absent or the open fails (no fake persistence). |
+| Judgment lines | `TSDB-DISK-COMMIT batch=<seq> items=<n>` / `TSDB-DISK-DROPPED n=` / `TSDB-DISK-REJECTED n=` — **TSDB-DISK-\* are disk-medium word forms, unreachable in the current target assembly** (E-DEF-01 disabled state, see above); the in-memory ring fallback keeps the baseline word form `TSDB-COMMIT` (the two word forms are a transcript-continuity asset, A-history-contract F-A13). |
+| Capability boundary | Last-N snapshot window only — no full export, no subscription push, no cross-node aggregation, no SQL face. Retention tuning stays OPEN (OQ-3). Explicit fallback to an in-process ring when the storage grant is absent or the open fails (no fake persistence). **The disk persistence path is currently unavailable end-to-end (E-DEF-01, see "Telemetry history persistence").** |
 
 Memory & region audit: `docs/delivery/wp-c-memory-audit-spec-c-20260827.md`.
 
@@ -359,23 +366,22 @@ eneros/
 ├── deny.toml                  # cargo-deny license/safety config
 │
 ├── crates/                    # ★ All Rust crates (grouped by subsystem)
-│   ├── kernel/                #   Kernel subsystem
-│   │   ├── kernel/            #     eneros-kernel (boot/serial/entry)
-│   │   ├── mm/                #     eneros-mm (memory management/page tables)
-│   │   ├── heap/              #     eneros-heap (buddy allocator)
-│   │   ├── sched/             #     eneros-sched (scheduler/partition sched/threads)
-│   │   ├── smp/               #     eneros-smp (multi-core boot/IPI)
-│   │   ├── ipc/               #     eneros-ipc (IPC sync messaging/notifications/RingBuffer)
-│   │   ├── controlbus/        #     eneros-controlbus (control bus/TTL/constraints)
-│   │   └── panic/             #     eneros-panic (panic framework)
+│   ├── (kernel sources are not under crates/: the seL4 14.0.0
+│   │    microkernel lives in third_party/sel4-* (sel4-build /
+│   │    sel4-top / sel4-root / sel4-patches …), built via
+│   │    sel4-build-rust.sh; crates/runtime/root-task consumes
+│   │    BootInfo and spawns EL0 services)
 │   ├── hal/                   #   Hardware Abstraction Layer
 │   │   ├── hal/               #     eneros-hal (HAL traits + arm64 impl)
 │   │   └── board/             #     eneros-board (BSP)
 │   ├── runtime/               #   User-space runtime
+│   │   ├── root-task/         #     eneros-root-task (first EL0 process / service orchestration)
+│   │   ├── sel4-sys/          #     eneros-sel4-sys (safe seL4 syscall bindings)
 │   │   ├── runtime/           #     eneros-runtime
-│   │   ├── sel4-sys/          #     eneros-sel4-sys (seL4 syscall bindings)
-│   │   ├── hello/             #     eneros-hello (first user-space sample)
-│   │   └── user/heap/         #     eneros-user-heap (user-space heap)
+│   │   ├── config-bundle/     #     eneros-config-bundle (signed config bundle)
+│   │   ├── durable-log/       #     eneros-durable-log (power-fail-consistent log)
+│   │   ├── durable-state/     #     eneros-durable-state (persistent state)
+│   │   └── hello/             #     eneros-hello (first user-space sample)
 │   ├── drivers/               #   Device drivers
 │   │   ├── time/              #     eneros-time (RTC/high-res timers)
 │   │   ├── watchdog/          #     eneros-watchdog (hardware watchdog)
@@ -436,7 +442,7 @@ cargo xtask run qemu-prod
 cargo test --workspace
 ```
 
-Expected output includes the UEFI handoff line `ENEROS stage=uefi-entry profile=qemu-prod secure=required`, followed by a boot-evidence JSON line with `"result":"PASS"` (ground truth: `target/evidence-w59/c45/qemu-serial.log`, live run at HEAD b5d939b). Press `Ctrl+A` then `X` to exit QEMU.
+Expected output includes the UEFI handoff line `ENEROS stage=uefi-entry profile=qemu-prod secure=required`, followed by a boot-evidence JSON line with `"result":"PASS"` (ground truth: `evidence/w59/c45/qemu-serial.log`, live run at HEAD b5d939b). Press `Ctrl+A` then `X` to exit QEMU.
 
 #### Common Entry Points
 
@@ -505,16 +511,18 @@ use std::net::TcpStream;
 | rust-sel4 | v3.0.0 |
 | Target triple | aarch64-unknown-none |
 
-#### Default Integration (No Reinventing the Wheel)
+#### Third-party Integration Status (wired / reserved / withdrawn — no reinventing the wheel)
 
 | Subsystem | Default | Custom Scope |
 |-----------|---------|-------------|
 | Filesystem | littlefs2 | Energy-specific point table storage API |
 | TCP/IP stack | smoltcp (no_std) | None |
-| DDS bus | Cyclone DDS | Rust wrapper layer |
-| MILP/LP Solver | HiGHS | Rust FFI + energy modeling layer |
-| LLM inference | llama.cpp (C API) | Rust wrapper layer |
+| DDS bus | — (withdrawn: ADR-021 out-of-v1.0; agent bus carried by MQTT/IPC) | None |
+| MILP/LP Solver | HiGHS **reserved, unwired** (`highs-ffi` feature never activated; materials in-tree — build.rs + third_party/highs-1.7.2; stays disabled until AI-004 lands; live decision = static heuristic backend) | Rust FFI + energy modeling layer (in-tree, unwired) |
+| LLM inference | local llama.cpp spike = NO-GO (`docs/ai/local-inference-spike.md`, same verdict as the L2-path row); `llama-cpp` feature reserved (off by default) | Rust wrapper layer (unwired) |
 | Cryptography | Ed25519/SHA-256/rustls(P-256) (product line); SM2/SM3/SM4 hand-rolled, experimental — no hardware-acceleration claims (D4) | Protocol adaptation |
+
+> **Management-plane action wiring**: only 6 of 22 mgmt RPC actions are service-wired; the rest fail closed with the word form `ota-channel-unbound:mgmt→ota-grant-missing` (OTA triple — the mgmt→ota EIPC grant edge is absent) or bare `action-not-wired:<action>`. Receiving those Failed word forms is expected behavior, not a bug — see the Chinese section 「管理面动作接线现状」 for the full register.
 
 ---
 
@@ -540,5 +548,5 @@ MIT OR Apache-2.0
 
 - **Repository**: [https://github.com/Gawg-AI/EnerOS](https://github.com/Gawg-AI/EnerOS)
 - **CI Pipeline**: [GitHub Actions](https://github.com/Gawg-AI/EnerOS/actions)
-- **Blueprint Docs**: `蓝图/` directory (tracked in git, 65 files)
+- **Blueprint Docs**: `蓝图/` directory (tracked in git, 66 files)
 - **Dev Rules**: `.trae/rules/记忆.md`

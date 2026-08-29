@@ -15,7 +15,8 @@ cargo test --workspace --no-fail-fast
 → 完整日志 /tmp/r4-full-test-full.log（grep FAILED|error = 0 行）
 ```
 
-基线对照：52 终验口径 7779 / SPEC-C 复验 7780 → 7815（只升不降，含本卷
+基线对照：52 终验实测 7586（evidence/52/exit-gate.md：389 块/7586 passed/0
+failed）→ SPEC-E 续作 7779 → SPEC-C 复验 7780 → 7815（只升不降，含本卷
 新增 4 测试：feedback_slots_roundtrip_independent /
 prod_mapping_aliasing_frozen_and_visible / prod_feedback_mapping_frozen /
 handover-abi 冻结面扩展）。

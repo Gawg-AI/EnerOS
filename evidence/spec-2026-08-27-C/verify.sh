@@ -5,7 +5,7 @@ set -uo pipefail
 D=${1:?}; S="$D/qemu-serial.log"; T="$D/history.transcript.jsonl"
 declare -A R=(
   [tsdb_disk_open]=0 [storage_granted]=0 [mgmt_history_bound]=0
-  [product_ready]=1 [panic]=0 [no_grant_line]=0 [hist_neg_frame]=0
+  [product_ready]=0 [panic]=0 [no_grant_line]=0 [hist_neg_frame]=0
 )
 grep -q 'TSDB-DISK-OPEN' "$S" && R[tsdb_disk_open]=1
 grep -q 'EIPC-GRANT: svc-telemetry -> svc-storage slot=' "$S" && \
