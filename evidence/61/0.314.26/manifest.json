@@ -1,0 +1,50 @@
+{
+  "schema": "eneros.blueprint61.evidence.v1",
+  "version": "0.314.26",
+  "commit": "PENDING-BUMP-COMMIT",
+  "dirty": false,
+  "profile": "qemu-prod",
+  "profile_sha256": "071ff15fb9fa04f6bca0d186f172eab9012e4fa19bea0e9afa080d0beac911af",
+  "config_digests": {
+    "image_raw_built_sha256": "6401d2b2b465d58f2cead0bd39da96684606d91524afe38ce640a05c2de10e64（0.314.25 镜像；本卷服务改动为 host 侧单源收编，镜像未重建——e4 矩阵跑在该镜像上）",
+    "data_disk": "每场景独立 16MB 数据盘，用例开始前重建（target/evidence61/<case>/eneros-data.raw）"
+  },
+  "toolchain_digest": "rustc 2972b5e59f1c5529b6ba770437812fd83ab4ebd4 (nightly-2026-04-04) + qemu-system-aarch64 10.2.1",
+  "commands": [
+    { "id": "CMD-TEST-WS", "cmd": "cargo test --workspace", "exit": 0, "summary": "7858 passed / 0 failed" },
+    { "id": "CMD-MATRIX", "cmd": "tools/run61-e4-matrix.sh", "exit": 0, "summary": "M1/M2/M3 全 PASS（第三轮；前两轮失败根因=peer 注入参数未传/孤儿 peer 占端口，均已修复并在脚本加存活校验）" }
+  ],
+  "tests": [
+    { "id": "T-MATRIX", "class": "E4 故障矩阵", "rows": {
+      "M1_合法50kW_ACK回读匹配": "PASS——EXEC-JOURNAL applied-confirmed ×3（m1-normal.qemu-serial.log，行 13819/13948）",
+      "M2_错回读_1.5x偏移": "PASS——READ-FI 注入 4143 次，串口 readback-mismatch ×3，applied-confirmed=0（ACK 成功但物理未达 → Failed，绝非 Committed）",
+      "M3_transport拒绝_无对端": "PASS——SUBMIT state=Indeterminate ×3（通道 Rejected → 对账，不假失败）",
+      "M4_投递后崩溃重启对账": "PASS（0.314.24 run-e4c 串口留证：EXEC-JOURNAL recovered pending=3 → reconciling）",
+      "M5_投递超时": "PASS（E3：delivery_timeout_is_indeterminate + r7_channel_protocol_error）",
+      "超500kW_ProposalInvalid": "PASS（E3：proposal_out_of_range_is_err，既有）",
+      "同key不同digest_IdempotencyConflict": "PASS（E3：r5，既有）",
+      "幂等重放_一次副作用": "PASS（E3：property_replay_100x，既有）"
+    }},
+    { "id": "T-REGRESSION", "class": "E1-E3 全库", "cmd": "cargo test --workspace", "count": 7858 }
+  ],
+  "faults": [],
+  "capacity_tier": "C0",
+  "artifacts": [
+    "evidence/61/0.314.26/m1-normal.qemu-serial.log",
+    "evidence/61/0.314.26/m1-normal.modbus.transcript.jsonl",
+    "evidence/61/0.314.26/m2-wrong-readback.qemu-serial.log",
+    "evidence/61/0.314.26/m2-wrong-readback.modbus.transcript.jsonl",
+    "evidence/61/0.314.26/m3-no-peer.qemu-serial.log",
+    "evidence/61/0.314.26/matrix-m2m3-summary.log",
+    "tools/run61-e4-matrix.sh",
+    "evidence/61/modbus_slave61.py（--wrong-readback-scale/--reject-writes 注入能力）"
+  ],
+  "review": { "spec": "pass", "standards": "pass", "adversarial": "pass", "assembly": "pass", "open_p0": 0, "open_p1": 0 },
+  "notes": [
+    "coverage 单源化：SAFETY_COVERAGE_POINTS/safety_coverage() 收编 svc-telemetry 装配（历史三处手抄→一处）；PROD_FEEDBACK_MAPPING 6/6 别名维持现状（peer 无独立过温寄存器），矫正前置登记。",
+    "彻底配置化编译（点表 TOML→coverage/contract 编译器）与完整 reconciler（ACK丢失读回匹配→对账 AppliedConfirmed 行）登记为 Phase 1 前置残余——v0.314.26 出口按 §4.6 判据：E4 矩阵全绿 + digest 链（0.314.25）+ 无第二 writer（25 卷 trait 封焊）+ 无 mock 演示旁路。",
+    "本卷服务改动（feedback 单源）为 host+target 同构常量收编，E4 矩阵跑在 0.314.25 镜像上验证行为语义；单源常量与原手抄逐值相等（对照测试在库）。"
+  ],
+  "signed_at": "2026-08-30T06:10:00+08:00",
+  "signature_ref": "evidence/61/0.314.26/manifest.sig"
+}

@@ -33,53 +33,11 @@ pub extern "C" fn _start(
     // ⚠ 过温未接入——点 6 告警标志暂由反馈映射 overcurrent/overtemp 别名
     // 共享，单源见 control-dispatch PROD_FEEDBACK_MAPPING；矫正前置见
     // spec R4 §3 WP-R4.4）。
+    // 61 v0.314.26 §4.4：覆盖声明单源 = control-dispatch feedback
+    // SAFETY_COVERAGE_POINTS（历史 6 点手抄收编；过温/过流 6/6 别名现状
+    // 与矫正前置见该常量文档）。
     let config = eneros_safety_validator::EvaluatorConfig {
-        coverage: eneros_safety_validator::RequiredPointCoverage {
-            points: alloc::vec![
-                eneros_safety_validator::RequiredPoint {
-                    point: 1,
-                    min: 0.0,
-                    max: 1000.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Volt
-                },
-                eneros_safety_validator::RequiredPoint {
-                    point: 2,
-                    min: -1000.0,
-                    max: 1000.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Ampere
-                },
-                eneros_safety_validator::RequiredPoint {
-                    point: 3,
-                    min: 45.0,
-                    max: 55.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Hertz
-                },
-                eneros_safety_validator::RequiredPoint {
-                    point: 4,
-                    min: 0.0,
-                    max: 1.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Ratio
-                },
-                eneros_safety_validator::RequiredPoint {
-                    point: 5,
-                    min: 0.0,
-                    max: 1.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Other
-                },
-                eneros_safety_validator::RequiredPoint {
-                    point: 6,
-                    min: 0.0,
-                    max: 1.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Other
-                },
-            ],
-        },
+        coverage: eneros_control_dispatch::feedback::safety_coverage(),
         bindings: eneros_safety_validator::StateBindings {
             voltage: 1,
             current: 2,

@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""EnerOS 蓝图 47（WP-47.1/Exit）：独立 Modbus-TCP 从站 peer（零 EnerOS 代码）。
+
+在 45 从站（遥测读）基础上新增：
+- 控制点 reg 0x0200（FC03 读 / FC06 写单寄存器，写后状态保持——从站值变化
+  外部可证）；
+- FC06 协议应答（写单保持寄存器）。
+
+transcript 记录 CONNECT/REQUEST（READ/WRITE）/RESPONSE——对端双证据之一。
+"""
+import argparse, json, socket, struct, sys, time
+
+VALUES = {
+    0x0100: 4000,  # 电压 raw=4000 ×0.1 → 400 V
+    0x0101: 500,   # 电流 raw=500 ×0.1 → 50 A
+    0x0102: 5000,  # 频率 raw=5000 ×0.01 → 50 Hz
+    0x0103: 600,   # SOC raw=600 ×0.001 → 0.6
+    0x0104: 1000,  # 并网 raw=1000 ×0.001 → 1.0
+    0x0105: 0,     # 告警 raw=0
+    0x0200: 0,     # 控制点（有功功率 setpoint，kW raw=值 ×1.0）
+}
+
+WRITEABLE = {0x0200}
+
+
+def log(transcript, entry):
+    if transcript:
+        with open(transcript, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+
+def conn_handler(conn, conn_id, transcript, wrong_scale=1.0, reject_writes=False):
+    buf = b""
+    try:
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                break
+            buf += data
+            while len(buf) >= 7:
+                if len(buf) < 7:
+                    break
+                tid = struct.unpack(">H", buf[0:2])[0]
+                length = struct.unpack(">H", buf[4:6])[0]
+                total = 6 + length
+                if len(buf) < total:
+                    break
+                pkt = buf[:total]
+                buf = buf[total:]
+                unit = pkt[6]
+                pdu = pkt[7:]
+                func = pdu[0]
+                resp_pdu = None
+                if func == 0x03 and len(pdu) == 5:  # 读保持寄存器
+                    addr = struct.unpack(">H", pdu[1:3])[0]
+                    count = struct.unpack(">H", pdu[3:5])[0]
+                    if addr in VALUES and count == 1:
+                        v = VALUES[addr]
+                        if wrong_scale != 1.0:
+                            v = int(v * wrong_scale)
+                            log(transcript, {"event": "READ-FI", "conn": conn_id,
+                                             "tid": tid, "func": "fc03",
+                                             "addr": hex(addr), "value": v,
+                                             "injected": "wrong-readback-scale"})
+                        resp_pdu = bytes([0x03, 0x02]) + struct.pack(">H", v)
+                        log(transcript, {"event": "READ", "conn": conn_id, "tid": tid,
+                                         "unit": unit, "func": "fc03", "addr": hex(addr),
+                                         "value": v})
+                    else:
+                        log(transcript, {"event": "ERROR", "conn": conn_id, "tid": tid,
+                                         "func": "fc03", "addr": hex(addr), "count": count,
+                                         "handled": "illegal-address"})
+                        resp_pdu = bytes([0x83, 0x02])
+                elif func == 0x06 and len(pdu) == 5:  # 写单寄存器
+                    addr = struct.unpack(">H", pdu[1:3])[0]
+                    value = struct.unpack(">H", pdu[3:5])[0]
+                    if reject_writes:
+                        log(transcript, {"event": "WRITE-FI", "conn": conn_id,
+                                         "tid": tid, "func": "fc06",
+                                         "addr": hex(addr),
+                                         "injected": "reject-writes"})
+                        resp_pdu = bytes([0x86, 0x02])
+                    elif addr in WRITEABLE:
+                        VALUES[addr] = value
+                        resp_pdu = bytes([0x06]) + pdu[1:5]
+                        log(transcript, {"event": "WRITE", "conn": conn_id, "tid": tid,
+                                         "unit": unit, "func": "fc06", "addr": hex(addr),
+                                         "value": value})
+                    else:
+                        log(transcript, {"event": "ERROR", "conn": conn_id, "tid": tid,
+                                         "func": "fc06", "addr": hex(addr),
+                                         "handled": "illegal-address"})
+                        resp_pdu = bytes([0x86, 0x02])
+                else:
+                    log(transcript, {"event": "UNSUPPORTED", "conn": conn_id, "tid": tid,
+                                     "func": hex(func)})
+                    resp_pdu = bytes([func | 0x80, 0x01])
+                resp = struct.pack(">HHHB", tid, 0, len(resp_pdu) + 1, unit) + resp_pdu
+                conn.sendall(resp)
+                log(transcript, {"event": "RESPONSE", "conn": conn_id, "tid": tid})
+    except OSError as e:
+        log(transcript, {"event": "OSERROR", "conn": conn_id, "err": str(e)})
+    finally:
+        conn.close()
+        log(transcript, {"event": "CLOSE", "conn": conn_id})
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, default=5502)
+    ap.add_argument("--transcript", type=str, default=None)
+    ap.add_argument("--serve-after", type=int, default=0)
+    ap.add_argument("--wrong-readback-scale", type=float, default=1.0,
+                    help="故障注入：读回值乘该系数（默认 1.0=正常；如 1.5=错回读）")
+    ap.add_argument("--reject-writes", action="store_true",
+                    help="故障注入：写单寄存器一律拒绝（illegal-data-address）")
+    args = ap.parse_args()
+    time.sleep(args.serve_after)
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", args.port))
+    srv.listen(8)
+    sys.stderr.write("MODBUS47-SLAVE-READY listening=%d\n" % args.port)
+    sys.stderr.flush()
+    cid = 0
+    while True:
+        conn, _ = srv.accept()
+        cid += 1
+        log(args.transcript, {"event": "CONNECT", "conn": cid})
+        conn_handler(conn, cid, args.transcript, args.wrong_readback_scale, args.reject_writes)
+
+
+if __name__ == "__main__":
+    main()

@@ -46,6 +46,56 @@ pub const PROD_FEEDBACK_MAPPING: FeedbackPointMapping = FeedbackPointMapping {
     overtemp: 6,
 };
 
+/// 61 v0.314.26 §4.4：安全覆盖声明单一事实源——svc-telemetry 装配与
+/// 本 crate 反馈映射共用一份常量（历史三处手抄收编；完全配置化编译归
+/// 后续卷 SafetyCatalog 工作）。点 1-6 = 电压/电流/频率/SOC/grid/过流
+/// 过温共享告警位（6/6 别名为当前 peer 点表现实，矫正前置 = peer 增加
+/// 独立过温寄存器）。
+pub const SAFETY_COVERAGE_POINTS: [(u32, f64, f64, u64, eneros_safety_validator::PointUnit); 6] = [
+    (
+        1,
+        0.0,
+        1000.0,
+        5000,
+        eneros_safety_validator::PointUnit::Volt,
+    ),
+    (
+        2,
+        -1000.0,
+        1000.0,
+        5000,
+        eneros_safety_validator::PointUnit::Ampere,
+    ),
+    (
+        3,
+        45.0,
+        55.0,
+        5000,
+        eneros_safety_validator::PointUnit::Hertz,
+    ),
+    (4, 0.0, 1.0, 5000, eneros_safety_validator::PointUnit::Ratio),
+    (5, 0.0, 1.0, 5000, eneros_safety_validator::PointUnit::Other),
+    (6, 0.0, 1.0, 5000, eneros_safety_validator::PointUnit::Other),
+];
+
+/// 由单源表构建评估器覆盖声明（svc-telemetry 装配唯一入口）。
+pub fn safety_coverage() -> eneros_safety_validator::RequiredPointCoverage {
+    eneros_safety_validator::RequiredPointCoverage {
+        points: SAFETY_COVERAGE_POINTS
+            .iter()
+            .map(
+                |&(point, min, max, max_age_ms, unit)| eneros_safety_validator::RequiredPoint {
+                    point,
+                    min,
+                    max,
+                    max_age_ms,
+                    unit,
+                },
+            )
+            .collect(),
+    }
+}
+
 /// 受信任遥测 → 反馈包构造器。
 pub struct TrustedFeedbackBuilder {
     mapping: FeedbackPointMapping,

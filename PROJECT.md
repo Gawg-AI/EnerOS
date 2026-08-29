@@ -35,8 +35,8 @@
 
 ## 4. 当前状态（诚实基线）
 
-- workspace 版本字段为 `0.314.25`（44-00 §3 纪律：每 WP Exit 递增 patch）；版本号不代表验收；当前商业裁决维持 **NO-GO / NOT-READY**（52 终验登记，GO 前置=DEF-52-03/05 owner 定责与外部四项）。
-- 当前基线：蓝图 61「海量异构数据—决策—控制全链路」Phase 0 v0.314.25 出口（命令语义/单位与安全目录：typed value 单一数据源——信封 V3 HMAC 域携带 CommandValue、AuthorizedWriter 编译期封死 envelope 外载荷、drv 载荷 V2 + writer 摘要重算、is_hard Critical 拒绝 + clamp 重验、solve status gate；证据 `evidence/61/0.314.25/manifest.json`，E4 digest 链 cd=td 串口判定行）。剩余 = v0.314.26（单 PCS 纵切故障矩阵 + coverage/反馈映射配置单源）；v1.0.0-rc.2 已因 54 卷 lineage 重开作废，GO 判定须对新 lineage 重跑 52 终验矩阵。
+- workspace 版本字段为 `0.314.26`（44-00 §3 纪律：每 WP Exit 递增 patch）；版本号不代表验收；当前商业裁决维持 **NO-GO / NOT-READY**（52 终验登记，GO 前置=DEF-52-03/05 owner 定责与外部四项）。
+- 当前基线：蓝图 61「海量异构数据—决策—控制全链路」Phase 0 v0.314.25 出口（命令语义/单位与安全目录：typed value 单一数据源——信封 V3 HMAC 域携带 CommandValue、AuthorizedWriter 编译期封死 envelope 外载荷、drv 载荷 V2 + writer 摘要重算、is_hard Critical 拒绝 + clamp 重验、solve status gate；证据 `evidence/61/0.314.25/manifest.json`，E4 digest 链 cd=td 串口判定行）。剩余 = Phase 0 全局红门已清（0.314.26 矩阵：M1 正常→Committed / M2 错回读→Failed / M3 拒绝→Indeterminate / M4 重启对账 / M5 超时 E3；coverage 单源 SAFETY_COVERAGE_POINTS；残余=完全配置化编译与完整 reconciler 登记于 manifest）；下一阶段 = Phase 1 统一领域契约（蓝图 61 `06`，v0.314.27 起）；v1.0.0-rc.2 已因 54 卷 lineage 重开作废，GO 判定须对新 lineage 重跑 52 终验矩阵。
 - 产品装配现状以 53 卷 QEMU 冷启动证据为准（29 服务 ready、EIPC 授予、控制链面在库）；遗留缺口见蓝图 54 附录 C 与 43 卷 blocked-register。svc-control-dispatch 启动期 readiness=Degraded 为蓝图 50 时代即存在的环境性现象（evidence50-head 实证），非 55 卷回归。
 - 审计台账：95 项审计修复收官见 `docs/delivery/reduced-line-audit/`（2026-08-23 全账 95=P0×4/P1×23/P2×41/P3×27；两轮终态=完全修复 89＋PARTIAL 2＋BLOCKED 1＋待集成接线 1＋维持登记 2，见 `2026-08-24-fix-round2.md` §二）；交付差距与 triage 结论见 `docs/delivery/53-*`。
 - 路线：44–52 交付冲刺系列（已完成基线）→ 53 基底恢复（Accepted，X5 fuzz/L2 场景 PARTIAL 排队）→ 54 架构深化（Accepted）→ 55 控制链同源档案收敛（Accepted）→ **58 OTA/OBS 探针 wire 下沉（当前执行入口）**；后续按状态板滚动。
