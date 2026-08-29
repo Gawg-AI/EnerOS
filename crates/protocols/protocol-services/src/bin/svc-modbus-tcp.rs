@@ -1,5 +1,6 @@
 //! svc-modbus-tcp — Modbus TCP 协议 EL0 服务（蓝图 39 WP-39.12；43 L2 协议
-//! 互操作接线；45.5 遥测通路先行者）。
+//! 互操作接线；45.5 遥测通路先行者；S1：装配阶梯单源 `protocol_ladder`，
+//! `ModbusTcpIoService` 数据面留 bin）。
 
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
@@ -20,7 +21,8 @@ use alloc::boxed::Box;
 #[cfg(target_os = "none")]
 use eneros_protocol_abstract::plugin::ProtocolPlugin;
 #[cfg(target_os = "none")]
-use eneros_protocol_abstract::PointRegistry;
+use eneros_protocol_services::protocol_ladder;
+
 #[cfg(target_os = "none")]
 #[global_allocator]
 static ALLOC: eneros_protocol_services::HeapAllocator =
@@ -29,16 +31,18 @@ static ALLOC: eneros_protocol_services::HeapAllocator =
 /// 45.5：点表驱动 + 遥测上报的 modbus-tcp 真实 I/O 服务。
 ///
 /// `_start` 收到 root 移交的 virtio-net 设备（X3=MMIO vaddr, X4=DMA vaddr,
-/// X5=DMA phys）→ 经 [`net_transport`] 构造 smoltcp TCP 传输并连接外部
-/// Modbus-TCP 从站 peer；点表经 EIPC 从 svc-config `ConfigGet("points")`
-/// 解码注入（**不自造地址**）；`EXECUTE` 触发真实读保持寄存器事务 →
-/// `ProtocolPointMapping::to_engineering` 工程量变换 → 58B 样本
-/// （`agent_sdk::sample_wire`）INGEST 到 svc-telemetry（EIPC 授予先行者）。
+/// X5=DMA phys）→ 经阶梯（`protocol_ladder::run`，S1）构造 smoltcp TCP 传输
+/// 并连接外部 Modbus-TCP 从站 peer；点表经 EIPC 从 svc-config
+/// `ConfigGet("points")` 解码注入（**不自造地址**）；`EXECUTE` 触发真实读
+/// 保持寄存器事务 → `ProtocolPointMapping::to_engineering` 工程量变换 →
+/// 58B 样本（`agent_sdk::sample_wire`）INGEST 到 svc-telemetry（EIPC 授予
+/// 先行者）。
 ///
-/// 点表来源与遥测端点均经 EIPC 授予（`EIPC_GRANTS`：槽 3=svc-telemetry、
-/// 槽 4=svc-config）——46 卷句柄移交同批，modbus-tcp 先行者先拿到。
-/// 47（WP-47.1）：读回容差（kW；与 device-agent ReadbackPolicy::tolerance
-/// 同量级——ACK 成功但物理状态未达目标 → Mismatch）。
+/// 点表来源与遥测端点均经 EIPC 授予（`EIPC_GRANTS`：svc-modbus-tcp 表序
+/// telemetry=槽 3、config=槽 4）——46 卷句柄移交同批，modbus-tcp 先行者先
+/// 拿到。47（WP-47.1）：读回容差（kW；与 device-agent
+/// ReadbackPolicy::tolerance 同量级——ACK 成功但物理状态未达目标 →
+/// Mismatch）。
 pub const MASTER_READBACK_TOL_KW: f64 = 0.1;
 
 #[cfg(target_os = "none")]
@@ -47,7 +51,7 @@ struct ModbusTcpIoService {
     plugin: eneros_modbus_tcp::plugin::TcpPlugin,
     /// 注入点表（modbus-tcp 点；自 svc-config 解码）。
     registry: eneros_protocol_abstract::VecPointRegistry,
-    /// svc-telemetry EIPC 客户端（授予槽 `EIPC_EP_BASE_SLOT`）。
+    /// svc-telemetry EIPC 客户端（授予槽按名解析——S1 起不手数槽位）。
     telemetry: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
     /// 遥测分块 epoch（单调）。
     tel_epoch: u64,
@@ -60,50 +64,6 @@ struct ModbusTcpIoService {
 
 #[cfg(target_os = "none")]
 impl ModbusTcpIoService {
-    /// 构造：经 svc-config 取点表 + 建 net transport + 启动插件（点表驱动）。
-    fn try_new(
-        mmio_vaddr: u64,
-        dma_vaddr: u64,
-        dma_phys: u64,
-        telemetry: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
-        mut registry: eneros_protocol_abstract::VecPointRegistry,
-    ) -> Result<Self, &'static str> {
-        // 43 既有 seam：NetTransportFactory 把 smoltcp 传输经 HandleAdapter
-        // 暴露为 `TransportHandle`（共享 Rc<RefCell> 实例；open 完成三次握手）。
-        let transport = eneros_protocol_services::net_transport::build_net_transport(
-            mmio_vaddr, dma_vaddr, dma_phys,
-        )?;
-        let mut factory =
-            eneros_protocol_services::net_transport::NetTransportFactory::new(transport);
-        // 46.3：peer/unit_id 来源 = config-bundle（protocol-modbus-tcp.toml），
-        // 消灭源码 peer 常量；配置不可得 → 装配失败 → 能力壳（fail-closed）。
-        let Some(cfg) = eneros_protocol_services::service_cfg::fetch_protocol_config(
-            "modbus-config",
-            eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1,
-            "protocol-modbus-tcp",
-        ) else {
-            eneros_runtime::println!(
-                "[svc-modbus-tcp] protocol config unavailable —— capability 壳（EXECUTE ST_UNAVAILABLE）"
-            );
-            return Err("protocol-config-missing");
-        };
-        let mut plugin = eneros_modbus_tcp::plugin::TcpPlugin::new();
-        // 插件 start 消费点表（45.4 路由注入；borrow 于本调用内结束）。
-        plugin
-            .start(&cfg, &mut factory, &mut registry)
-            .map_err(|_| "plugin-start-failed")?;
-        Ok(Self {
-            plugin,
-            registry,
-            telemetry,
-            tel_epoch: 0,
-            // 评估器 last_seq 默认 0：首轮序列从 1 起（root 合成写法同源）。
-            seq: 1,
-            accepted_total: 0,
-            transactions: 0,
-        })
-    }
-
     /// 一轮点表驱动真读 + 遥测 INGEST（45.5 真实采集链；ACQ 证据行）。
     ///
     /// INGEST 协议语义 = 新采集周期全量替换（TEL_INGEST 每请求先 clear 再入样）
@@ -317,24 +277,8 @@ impl eneros_drv_svc::runtime::DriverService for ModbusTcpIoService {
     }
 }
 
-/// 点表注入（45.4）：经 lib service_cfg::fetch_points_registry 取全量
-/// 注册表 + 协议过滤（ModbusTcp|ModbusRtu）——SPEC-B WP-B.1 收编私有
-/// 副本（wire 单源 = agent-sdk config_client）。
-#[cfg(target_os = "none")]
-fn fetch_points_registry() -> eneros_protocol_abstract::VecPointRegistry {
-    use eneros_config_bundle::points::PointProtocol;
-    eneros_protocol_services::service_cfg::fetch_points_registry(
-        "modbus-config",
-        eneros_agent_sdk::EIPC_EP_BASE_SLOT + 1,
-        |p| {
-            matches!(
-                p.protocol,
-                PointProtocol::ModbusTcp | PointProtocol::ModbusRtu
-            )
-        },
-    )
-}
-
+/// 45.5 + S1：EIPC 授予（先行者）——遥测端点按名解析（svc-modbus-tcp
+/// 表序首边 = svc-telemetry）；点表经阶梯 Eager 策略在传输前注入。
 #[cfg(target_os = "none")]
 #[no_mangle]
 pub extern "C" fn _start(
@@ -346,56 +290,77 @@ pub extern "C" fn _start(
     dma_phys: u64,
     wall_epoch: u64,
 ) -> ! {
+    use eneros_config_bundle::points::PointProtocol;
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
-    // smoltcp 传输用 eneros_time 单调时钟推进；EL0 服务进程内初始化
-    // （arm64 通用定时器，EL0 可读；rtc_base 0 = 无板载 RTC 事实）。
-    eneros_time::time_init(eneros_hal::arm64::timer::clock(), 0);
-    // SPEC-B WP-B.1：X6 墙钟 epoch 秒（0=缺失显式降级）。
-    eneros_protocol_services::apply_wall_epoch("modbus-tcp", wall_epoch);
+    let parts = protocol_ladder::ProtocolParts {
+        service: "svc-modbus-tcp",
+        config_client: "modbus-config",
+        config_id: "protocol-modbus-tcp",
+        // 43：READY 行 capability=net-modbus-tcp（驱动服务 capability 同串）。
+        capability: "net-modbus-tcp",
+        // 45.4：点表注入——全量注册表 + 协议过滤（ModbusTcp|ModbusRtu）；
+        // Eager = 现行串口行序（点表行先于传输阶段，R2 保序）。
+        points: protocol_ladder::PointsPolicy::Eager(|p| {
+            matches!(
+                p.protocol,
+                PointProtocol::ModbusTcp | PointProtocol::ModbusRtu
+            )
+        }),
+        config_dump: false,
+        // 无自检窗口——启动期自检 = Ready 臂的 collect_and_report 一轮真读。
+        self_check_rounds: 0,
+        // try_new→_start 两段打印的降级词形（handover missing 别名，M-6）。
+        degraded: protocol_ladder::DegradedStyle::HandoverAlias,
+    };
+    let mut io = protocol_ladder::Sel4ServiceIo::new(
+        parts.service,
+        parts.config_client,
+        mmio_vaddr,
+        dma_vaddr,
+        dma_phys,
+    );
     // 39：协议插件在服务侧构造（descriptor 随 readiness 报告）。
     let plugin = eneros_modbus_tcp::plugin::TcpPlugin::new();
-    eneros_runtime::println!(
-        "[protocol-service] modbus-tcp plugin={} role={:?} interop={:?}",
-        plugin.descriptor().id,
-        plugin.descriptor().role,
-        plugin.descriptor().interop_level
-    );
-    // 45.5：EIPC 授予（先行者）——槽 EIPC_EP_BASE_SLOT=svc-telemetry、
-    // +1=svc-config；点表经 svc-config 获取。
-    let telemetry = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-        "modbus-telemetry",
-        eneros_agent_sdk::EIPC_EP_BASE_SLOT,
-        eneros_drv_svc::now_ns,
-    )
-    .ok();
-    let registry = fetch_points_registry();
+    protocol_ladder::print_descriptor(parts.service, &plugin);
+    // 45.5：svc-telemetry EIPC 客户端（按名解析；未授予 → 样本不上报）。
+    let telemetry =
+        eneros_agent_sdk::eipc_resolve("svc-modbus-tcp", "svc-telemetry").and_then(|(_, slot)| {
+            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                "modbus-telemetry",
+                slot,
+                eneros_drv_svc::now_ns,
+            )
+            .ok()
+        });
+    // S1 evidence M-1：telemetry 绑定观测行前移至阶梯调用前（原在点表行后、
+    // 传输阶段前——判定行/计数集词形与相对序不受影响）。
     if telemetry.is_some() {
         eneros_runtime::println!("[svc-modbus-tcp] telemetry EIPC bound (svc-telemetry)");
     } else {
         eneros_runtime::println!("[svc-modbus-tcp] telemetry EIPC NOT granted");
     }
-    let now_ms = eneros_protocol_services::now_ms();
     // 43：设备移交（virtio-net 槽 8）→ 真实 I/O 服务；未移交 → 能力壳。
     let mut service: Box<dyn eneros_drv_svc::runtime::DriverService> =
-        match ModbusTcpIoService::try_new(mmio_vaddr, dma_vaddr, dma_phys, telemetry, registry) {
-            Ok(mut io) => {
-                eneros_runtime::println!(
-                    "[svc-modbus-tcp] NET-TRANSPORT READY capability=net-modbus-tcp"
-                );
+        match protocol_ladder::run(wall_epoch, &parts, plugin, &mut io) {
+            protocol_ladder::Ladder::Ready { plugin, registry } => {
+                let mut io = ModbusTcpIoService {
+                    plugin,
+                    registry,
+                    telemetry,
+                    tel_epoch: 0,
+                    // 评估器 last_seq 默认 0：首轮序列从 1 起（root 合成写法同源）。
+                    seq: 1,
+                    accepted_total: 0,
+                    transactions: 0,
+                };
                 // 启动期自检：点表驱动一轮真实读（外部 peer 记录事务；串口
                 // 打印 = L2 互操作/45 采集证据行）。
-                io.collect_and_report(now_ms);
+                io.collect_and_report(eneros_protocol_services::now_ms());
                 Box::new(io)
             }
-            Err(e) => {
-                eneros_runtime::println!(
-                    "[svc-modbus-tcp] handover missing ({:?}) —— capability 壳（EXECUTE ST_UNAVAILABLE）",
-                    e
-                );
-                Box::new(eneros_protocol_services::service::UnassignedProtocolService)
-            }
+            protocol_ladder::Ladder::Degraded(_) => protocol_ladder::capability_shell(),
         };
     eneros_drv_svc::runtime::driver_service_main(
         ep,

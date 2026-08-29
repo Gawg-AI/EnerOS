@@ -64,6 +64,21 @@ pub struct ProtocolParts {
     /// `PluginIoService::self_check_poll`——host 测试不可承受有界自旋，
     /// 裁决 6）。
     pub self_check_rounds: u32,
+    /// 降级呈现族（S1 evidence M-6 登记）：今日两种真实串口形态——
+    /// `Standard`（goose/sv/mms/iec104/mqtt：各失败态各自判定行）与
+    /// `HandoverAlias`（modbus-tcp：try_new 全部失败统一映射
+    /// `handover missing ("<reason>")`；config 失败先打 standard 行再打
+    /// 别名行——try_new→_start 两段打印的逐字保真）。数据参数，零 hook。
+    pub degraded: DegradedStyle,
+}
+
+/// 降级判定行呈现族（见 [`ProtocolParts::degraded`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DegradedStyle {
+    /// 各失败态各自判定行（F-42 词形族）。
+    Standard,
+    /// 失败态统一映射 `handover missing ("<reason>")`（modbus-tcp 族）。
+    HandoverAlias,
 }
 
 /// 点表策略与取回时机（S1 evidence M-2 登记）：今日两族真实串口行序——
@@ -230,6 +245,13 @@ pub fn run<P: ProtocolPlugin>(
         Ok(cfg) => cfg,
         Err(step) => {
             eneros_runtime::println!("{}", line_config_unavailable(parts.service));
+            if parts.degraded == DegradedStyle::HandoverAlias {
+                // modbus-tcp 族：try_new 的 Err 再经 _start 判定行（M-6）。
+                eneros_runtime::println!(
+                    "{}",
+                    line_handover_missing(parts.service, "protocol-config-missing")
+                );
+            }
             return Ladder::Degraded(match step {
                 ConfigStep::Unavailable => LadderReason::ConfigUnavailable,
                 // TooShort/BadPrefix/DecodeFailed：今日同落 "protocol config
@@ -265,7 +287,16 @@ pub fn run<P: ProtocolPlugin>(
             Ladder::Ready { plugin, registry }
         }
         Err(e) => {
-            eneros_runtime::println!("{}", line_plugin_start_failed(parts.service, &e));
+            if parts.degraded == DegradedStyle::Standard {
+                eneros_runtime::println!("{}", line_plugin_start_failed(parts.service, &e));
+            } else {
+                // modbus-tcp 族：无 plugin start FAILED 行，统一 handover
+                // 别名（M-6——try_new map_err 单词原因的逐字保真）。
+                eneros_runtime::println!(
+                    "{}",
+                    line_handover_missing(parts.service, "plugin-start-failed")
+                );
+            }
             Ladder::Degraded(LadderReason::PluginStartFailed)
         }
     }
@@ -440,6 +471,7 @@ mod tests {
                 points,
                 config_dump: false,
                 self_check_rounds: 0,
+                degraded: DegradedStyle::Standard,
             }
         }
     }
@@ -696,6 +728,26 @@ mod tests {
             io.calls,
             alloc::vec!["transport"],
             "config 不得先于 transport 被触达"
+        );
+    }
+
+    /// M-6（modbus-tcp 族）：HandoverAlias 降级呈现——失败 reason 分类
+    /// 不受呈现族影响（判定行词形由冻结对照测试锁定）。
+    #[test]
+    fn handover_alias_style_keeps_reason_classification() {
+        let mut io = FakeIo::ok(valid_protocol_entry());
+        let mut parts = FakeIo::parts(PointsPolicy::Eager(|_| false));
+        parts.degraded = DegradedStyle::HandoverAlias;
+        let r = run(0, &parts, FakePlugin::new(true), &mut io);
+        assert!(matches!(
+            r,
+            Ladder::Degraded(LadderReason::PluginStartFailed)
+        ));
+        // Eager 点表先于传输被取（调用序：config("points") 在 transport 前）。
+        assert_eq!(
+            io.calls,
+            alloc::vec!["config", "transport", "config"],
+            "Eager points → transport → protocol config"
         );
     }
 
