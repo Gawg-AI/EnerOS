@@ -29,3 +29,5 @@ sel4 = ["dep:eneros-sel4-sys"]
 
 [dev-dependencies]
 eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
+# S1 WP-S1.2：config_gateway 真实节 id 解码用例（protocol-* canonical 往返）。
+eneros-config-bundle = { path = "../../runtime/config-bundle", default-features = false }

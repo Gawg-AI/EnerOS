@@ -521,6 +521,7 @@ dependencies = [
 name = "eneros-agent-sdk"
 version = "0.314.22"
 dependencies = [
+ "eneros-config-bundle",
  "eneros-drv-svc",
  "eneros-durable-state",
  "eneros-ipc-wire",

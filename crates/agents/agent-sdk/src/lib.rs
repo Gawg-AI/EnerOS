@@ -89,6 +89,8 @@ pub mod config;
 // WP-54.4：EIPC 授予拓扑单一事实源（表+按名解析，自 root-task 下沉）。
 pub mod config_client;
 // SPEC-B（2026-08-28）：svc-config GET_ENTRY 客户端单源（请求构造+前缀解析）。
+// SPEC-SERIES-2026-08-29/S1 WP-S1.2：ConfigGet 调用侧管道内核（分类+借期解码）。
+pub mod config_gateway;
 pub mod context;
 pub mod eipc_grants;
 // SPEC-C（WP-C.2）：北向历史取回 TELR 线格式单一事实源。
