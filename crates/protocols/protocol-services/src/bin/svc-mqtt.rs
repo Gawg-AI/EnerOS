@@ -1,5 +1,6 @@
-//! svc-mqtt — 协议 EL0 服务（46 WP-46.2 句柄移交 + 46.3 配置驱动装配 +
-//! 47 WP-47.1 协议入站写：下行写命令 → 意图导出 → 转发 svc-control-dispatch）。
+//! svc-mqtt — 协议 EL0 服务（S1：装配阶梯单源 `protocol_ladder`，bin 纯接线，
+//! `MqttWriteIoService` 中继面留 bin；46.3 配置驱动装配 + 47 WP-47.1 协议
+//! 入站写：下行写命令 → 意图导出 → 转发 svc-control-dispatch）。
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
 #![allow(clippy::empty_loop)]
@@ -19,7 +20,7 @@ use alloc::boxed::Box;
 #[cfg(target_os = "none")]
 use eneros_protocol_abstract::plugin::ProtocolPlugin;
 #[cfg(target_os = "none")]
-use eneros_protocol_abstract::EmptyPointRegistry;
+use eneros_protocol_services::protocol_ladder;
 
 #[cfg(target_os = "none")]
 #[global_allocator]
@@ -32,8 +33,8 @@ static ALLOC: eneros_protocol_services::HeapAllocator =
 #[cfg(target_os = "none")]
 struct MqttWriteIoService {
     io: eneros_protocol_services::service::PluginIoService<eneros_mqtt::plugin::MqttPlugin>,
-    /// svc-control-dispatch EIPC 客户端（授予槽 `EIPC_EP_BASE_SLOT + 1`；
-    /// 槽 0 = svc-config 协议配置）。
+    /// svc-control-dispatch EIPC 客户端（授予槽按名解析——S1 起不手数槽位；
+    /// 首边 = svc-config 协议配置）。
     dispatch: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
     /// 分块传输 epoch（单调）。
     dispatch_epoch: u64,
@@ -43,9 +44,8 @@ struct MqttWriteIoService {
     pub rejected_total: u64,
     /// 49（WP-49.2）：AI 请求分片组装器。
     ai_assembler: eneros_agent_sdk::relay_face::RelayAssembler,
-    /// 49：svc-ai-worker EIPC 客户端（授予槽 `EIPC_EP_BASE_SLOT + 2`；
-    /// 槽序 = 表序 config(0)/dispatch(1)/ai-worker(2)）。未授予 → 应答
-    /// 丢弃计数（fail-closed）。
+    /// 49：svc-ai-worker EIPC 客户端（授予槽按名解析；表序第 3 条授予）。
+    /// 未授予 → 应答丢弃计数（fail-closed）。
     ai_worker: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
     /// 49：分块传输 epoch（单调）。
     ai_epoch: u64,
@@ -60,9 +60,8 @@ struct MqttWriteIoService {
     /// 50：遥测帧发布/拒绝计数（观测；拒绝 = 未配置主题/断连/坏帧）。
     pub tel_published: u64,
     pub tel_rejected: u64,
-    /// 50（WP-50.2）：svc-mgmt EIPC 客户端（授予槽 `EIPC_EP_BASE_SLOT + 3`；
-    /// 槽序 = 表序 config(0)/dispatch(1)/ai-worker(2)/mgmt(3)）。未授予 →
-    /// 管理请求丢弃计数（fail-closed）。
+    /// 50（WP-50.2）：svc-mgmt EIPC 客户端（授予槽按名解析；表序第 4 条
+    /// 授予）。未授予 → 管理请求丢弃计数（fail-closed）。
     mgmt: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
     /// 50：分块传输 epoch（单调）。
     mgmt_epoch: u64,
@@ -406,6 +405,7 @@ impl eneros_drv_svc::runtime::DriverService for MqttWriteIoService {
     }
 }
 
+/// 46.2/46.3 + 47 + S1：手柄移交 → 配置装配插件 → 意图转发服务。
 #[cfg(target_os = "none")]
 #[no_mangle]
 pub extern "C" fn _start(
@@ -420,17 +420,27 @@ pub extern "C" fn _start(
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
-    // smoltcp 传输用 eneros_time 单调时钟推进；EL0 服务进程内初始化。
-    eneros_time::time_init(eneros_hal::arm64::timer::clock(), 0);
-    eneros_protocol_services::apply_wall_epoch("mqtt", wall_epoch);
+    let parts = protocol_ladder::ProtocolParts {
+        service: "svc-mqtt",
+        config_client: "mqtt-config",
+        config_id: "protocol-mqtt",
+        capability: "eneros_mqtt::plugin::MqttPlugin",
+        points: protocol_ladder::PointsPolicy::None,
+        config_dump: false,
+        // 46.5：启动期自检轮询（post-connect 交换尽早完成）。
+        self_check_rounds: 150,
+        degraded: protocol_ladder::DegradedStyle::Standard,
+    };
+    let mut io = protocol_ladder::Sel4ServiceIo::new(
+        parts.service,
+        parts.config_client,
+        mmio_vaddr,
+        dma_vaddr,
+        dma_phys,
+    );
     // 39：协议插件在服务侧构造（descriptor 随 readiness 报告）。
     let plugin = eneros_mqtt::plugin::MqttPlugin::new();
-    eneros_runtime::println!(
-        "[protocol-service] mqtt plugin={} role={:?} interop={:?}",
-        plugin.descriptor().id,
-        plugin.descriptor().role,
-        plugin.descriptor().interop_level
-    );
+    protocol_ladder::print_descriptor(parts.service, &plugin);
     // 47（WP-47.5）：policy/实现一致机器校验——注册表（本装配无目标侧
     // TLS 工厂；嵌定 first 实现 host 已验证）。qemu-test 装配允许显式明文
     //（InsecureStream，永不冒充）；ReleaseTls 下声明 SecureProfile 而无
@@ -464,142 +474,96 @@ pub extern "C" fn _start(
             );
         }
     }
-    // 46.2/46.3 + 47：手柄移交 → 配置装配插件 → 意图转发服务。
     let mut service: Box<dyn eneros_drv_svc::runtime::DriverService> =
-        match eneros_protocol_services::net_transport::build_net_transport(
-            mmio_vaddr, dma_vaddr, dma_phys,
-        ) {
-            Ok(stack) => {
-                let mut factory =
-                    eneros_protocol_services::net_transport::NetTransportFactory::new(stack);
-                let mut plugin = eneros_mqtt::plugin::MqttPlugin::new();
-                // 46.3：配置即 peer/app_id 唯一来源（protocol-mqtt）；不可得
-                // → 能力壳（fail-closed，不猜默认）。
-                match eneros_agent_sdk::eipc_resolve("svc-mqtt", "svc-config").and_then(
-                    |(_, cfg_slot)| {
-                        eneros_protocol_services::service_cfg::fetch_protocol_config(
-                            "mqtt-config",
-                            cfg_slot,
-                            "protocol-mqtt",
+        match protocol_ladder::run(wall_epoch, &parts, plugin, &mut io) {
+            protocol_ladder::Ladder::Ready { plugin, .. } => {
+                // 47：dispatch 端点（WP-54.4 按名解析；未授予
+                // → 写意图路径 fail-closed）。
+                let dispatch = eneros_agent_sdk::eipc_resolve("svc-mqtt", "svc-control-dispatch")
+                    .and_then(|(_, slot)| {
+                        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                            "mqtt-dispatch",
+                            slot,
+                            eneros_drv_svc::now_ns,
                         )
-                    },
-                ) {
-                    Some(cfg) => match plugin.start(&cfg, &mut factory, &mut EmptyPointRegistry) {
-                        Ok(()) => {
-                            eneros_runtime::println!(
-                                "[svc-mqtt] NET-TRANSPORT READY capability=eneros_mqtt::plugin::MqttPlugin"
-                            );
-                            // 47：dispatch 端点（WP-54.4 按名解析；未授予
-                            // → 写意图路径 fail-closed）。
-                            let dispatch =
-                                eneros_agent_sdk::eipc_resolve("svc-mqtt", "svc-control-dispatch")
-                                    .and_then(|(_, slot)| {
-                                        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                                            "mqtt-dispatch",
-                                            slot,
-                                            eneros_drv_svc::now_ns,
-                                        )
-                                        .ok()
-                                    });
-                            if dispatch.is_none() {
-                                eneros_runtime::println!(
-                                    "[svc-mqtt] dispatch EIPC NOT granted —— 写意图路径 fail-closed"
-                                );
-                            }
-                            // 49（WP-49.2）：ai-worker 端点在槽 base+2（表序
-                            // 第 3 条授予）；AI 请求主题取自配置（插件已消费）。
-                            let ai_worker =
-                                eneros_agent_sdk::eipc_resolve("svc-mqtt", "svc-ai-worker")
-                                    .and_then(|(_, slot)| {
-                                        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                                            "mqtt-ai-worker",
-                                            slot,
-                                            eneros_drv_svc::now_ns,
-                                        )
-                                        .ok()
-                                    });
-                            let ai_request_topic =
-                                plugin.ai_request_topic().map(alloc::string::String::from);
-                            match (&ai_worker, &ai_request_topic) {
-                                (None, _) => {
-                                    eneros_runtime::println!(
-                                        "[svc-mqtt] ai-worker EIPC NOT granted —— 应答转发 fail-closed"
-                                    );
-                                }
-                                (_, None) => {
-                                    eneros_runtime::println!(
-                                        "[svc-mqtt] ai_request_topic 未配置 —— AI 链路关闭（诚实）"
-                                    );
-                                }
-                                _ => {
-                                    eneros_runtime::println!(
-                                        "[svc-mqtt] AI-RELAY armed topic={}",
-                                        ai_request_topic.as_deref().unwrap_or_default()
-                                    );
-                                }
-                            }
-                            let mut io = MqttWriteIoService {
-                                io: eneros_protocol_services::service::PluginIoService::new(
-                                    plugin,
-                                    "eneros_mqtt::plugin::MqttPlugin",
-                                ),
-                                dispatch,
-                                dispatch_epoch: 0,
-                                forwarded_total: 0,
-                                rejected_total: 0,
-                                ai_assembler: eneros_agent_sdk::relay_face::RelayAssembler::new(),
-                                ai_worker,
-                                ai_epoch: 0,
-                                ai_request_topic,
-                                ai_req_published: 0,
-                                ai_resp_forwarded: 0,
-                                ai_errors: 0,
-                                tel_assembler: eneros_agent_sdk::relay_face::RelayAssembler::new(),
-                                tel_published: 0,
-                                tel_rejected: 0,
-                                // 50（WP-50.2）：svc-mgmt 端点（按名解析；
-                                // 未授予 → 管理请求丢弃）。
-                                mgmt: eneros_agent_sdk::eipc_resolve("svc-mqtt", "svc-mgmt")
-                                    .and_then(|(_, slot)| {
-                                        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                                            "mqtt-mgmt",
-                                            slot,
-                                            eneros_drv_svc::now_ns,
-                                        )
-                                        .ok()
-                                    }),
-                                mgmt_epoch: 0,
-                                mgmt_forwarded: 0,
-                                mgmt_errors: 0,
-                            };
-                            // 46.5：启动期自检轮询（post-connect 交换尽早完成）。
-                            io.io.self_check_poll(150);
-                            io.forward_intents();
-                            Box::new(io)
-                        }
-                        Err(e) => {
-                            eneros_runtime::println!(
-                                "[svc-mqtt] plugin start FAILED {:?} —— capability 壳（EXECUTE ST_UNAVAILABLE）",
-                                e
-                            );
-                            Box::new(eneros_protocol_services::service::UnassignedProtocolService)
-                        }
-                    },
-                    None => {
+                        .ok()
+                    });
+                if dispatch.is_none() {
+                    eneros_runtime::println!(
+                        "[svc-mqtt] dispatch EIPC NOT granted —— 写意图路径 fail-closed"
+                    );
+                }
+                // 49（WP-49.2）：ai-worker 端点（表序第 3 条授予）；AI 请求
+                // 主题取自配置（插件已消费）。
+                let ai_worker = eneros_agent_sdk::eipc_resolve("svc-mqtt", "svc-ai-worker")
+                    .and_then(|(_, slot)| {
+                        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                            "mqtt-ai-worker",
+                            slot,
+                            eneros_drv_svc::now_ns,
+                        )
+                        .ok()
+                    });
+                let ai_request_topic = plugin.ai_request_topic().map(alloc::string::String::from);
+                match (&ai_worker, &ai_request_topic) {
+                    (None, _) => {
                         eneros_runtime::println!(
-                            "[svc-mqtt] protocol config unavailable —— capability 壳（EXECUTE ST_UNAVAILABLE）"
+                            "[svc-mqtt] ai-worker EIPC NOT granted —— 应答转发 fail-closed"
                         );
-                        Box::new(eneros_protocol_services::service::UnassignedProtocolService)
+                    }
+                    (_, None) => {
+                        eneros_runtime::println!(
+                            "[svc-mqtt] ai_request_topic 未配置 —— AI 链路关闭（诚实）"
+                        );
+                    }
+                    _ => {
+                        eneros_runtime::println!(
+                            "[svc-mqtt] AI-RELAY armed topic={}",
+                            ai_request_topic.as_deref().unwrap_or_default()
+                        );
                     }
                 }
+                let mut io = MqttWriteIoService {
+                    io: eneros_protocol_services::service::PluginIoService::new(
+                        plugin,
+                        parts.capability,
+                    ),
+                    dispatch,
+                    dispatch_epoch: 0,
+                    forwarded_total: 0,
+                    rejected_total: 0,
+                    ai_assembler: eneros_agent_sdk::relay_face::RelayAssembler::new(),
+                    ai_worker,
+                    ai_epoch: 0,
+                    ai_request_topic,
+                    ai_req_published: 0,
+                    ai_resp_forwarded: 0,
+                    ai_errors: 0,
+                    tel_assembler: eneros_agent_sdk::relay_face::RelayAssembler::new(),
+                    tel_published: 0,
+                    tel_rejected: 0,
+                    // 50（WP-50.2）：svc-mgmt 端点（按名解析；
+                    // 未授予 → 管理请求丢弃）。
+                    mgmt: eneros_agent_sdk::eipc_resolve("svc-mqtt", "svc-mgmt").and_then(
+                        |(_, slot)| {
+                            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                                "mqtt-mgmt",
+                                slot,
+                                eneros_drv_svc::now_ns,
+                            )
+                            .ok()
+                        },
+                    ),
+                    mgmt_epoch: 0,
+                    mgmt_forwarded: 0,
+                    mgmt_errors: 0,
+                };
+                // 46.5：启动期自检轮询（post-connect 交换尽早完成）。
+                io.io.self_check_poll(parts.self_check_rounds);
+                io.forward_intents();
+                Box::new(io)
             }
-            Err(e) => {
-                eneros_runtime::println!(
-                    "[svc-mqtt] handover missing ({:?}) —— capability 壳（EXECUTE ST_UNAVAILABLE）",
-                    e
-                );
-                Box::new(eneros_protocol_services::service::UnassignedProtocolService)
-            }
+            protocol_ladder::Ladder::Degraded(_) => protocol_ladder::capability_shell(),
         };
     eneros_drv_svc::runtime::driver_service_main(
         ep,
