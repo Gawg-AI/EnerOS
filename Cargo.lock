@@ -745,6 +745,7 @@ dependencies = [
  "eneros-telemetry-model",
  "eneros-upa-model",
  "heapless 0.8.0",
+ "sha2",
 ]
 
 [[package]]
@@ -753,6 +754,7 @@ version = "0.314.24"
 dependencies = [
  "eneros-crypto",
  "eneros-telemetry-model",
+ "sha2",
 ]
 
 [[package]]
@@ -1102,6 +1104,7 @@ dependencies = [
  "eneros-iec60870-asdu",
  "eneros-net",
  "eneros-protocol-abstract",
+ "eneros-telemetry-model",
  "eneros-time",
  "eneros-upa-model",
 ]
@@ -1435,6 +1438,7 @@ version = "0.314.24"
 dependencies = [
  "eneros-telemetry-model",
  "eneros-upa-model",
+ "sha2",
 ]
 
 [[package]]

@@ -117,6 +117,121 @@ impl ActorKind {
     }
 }
 
+/// 类型化命令值（蓝图 61 v0.314.25 §3.3 canonical typed payload）。
+///
+/// 变体即单位：`ActivePowerKw` 恒 kW、`VoltageSetpointV` 恒 V……
+/// 跨 binary wire 用数字 tag + 固定 value bits（f64/u16 LE），不传
+/// Rust enum 布局；`value_tag`/`value_bits` 在信封 V3 头部由 HMAC 覆盖。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CommandValue {
+    /// 开关位置（0=分/off，1=合/on）。
+    SwitchPosition(u8),
+    /// 有功功率设定（kW；连续 setpoint——PCS 点 10 的正确语义）。
+    ActivePowerKw(f64),
+    /// 无功功率设定（kvar）。
+    ReactivePowerKvar(f64),
+    /// 电压设定（V）。
+    VoltageSetpointV(f64),
+    /// 电流限值（A）。
+    CurrentLimitA(f64),
+    /// 模式码（u16；闭集由点表/合同定义）。
+    ModeCode(u16),
+}
+
+impl CommandValue {
+    /// wire tag（封闭数字码；未知 tag 解码 fail-closed）。
+    pub fn value_tag(self) -> u8 {
+        match self {
+            CommandValue::SwitchPosition(_) => 1,
+            CommandValue::ActivePowerKw(_) => 2,
+            CommandValue::ReactivePowerKvar(_) => 3,
+            CommandValue::VoltageSetpointV(_) => 4,
+            CommandValue::CurrentLimitA(_) => 5,
+            CommandValue::ModeCode(_) => 6,
+        }
+    }
+
+    /// 8B value bits（LE；离散量在 bits[0..2]，其余清零）。
+    pub fn value_bits(self) -> [u8; 8] {
+        let mut b = [0u8; 8];
+        match self {
+            CommandValue::SwitchPosition(v) => b[0] = v,
+            CommandValue::ModeCode(v) => b[0..2].copy_from_slice(&v.to_le_bytes()),
+            CommandValue::ActivePowerKw(v) => b.copy_from_slice(&v.to_le_bytes()),
+            CommandValue::ReactivePowerKvar(v) => b.copy_from_slice(&v.to_le_bytes()),
+            CommandValue::VoltageSetpointV(v) => b.copy_from_slice(&v.to_le_bytes()),
+            CommandValue::CurrentLimitA(v) => b.copy_from_slice(&v.to_le_bytes()),
+        }
+        b
+    }
+
+    /// tag + bits → 值（未知 tag / 非有限浮点 → None，default-deny）。
+    pub fn from_tag_bits(tag: u8, bits: [u8; 8]) -> Option<Self> {
+        let f = |b: [u8; 8]| -> Option<f64> {
+            let v = f64::from_le_bytes(b);
+            if v.is_finite() {
+                Some(v)
+            } else {
+                None
+            }
+        };
+        match tag {
+            1 => {
+                let v = bits[0];
+                if v <= 1 {
+                    Some(CommandValue::SwitchPosition(v))
+                } else {
+                    None
+                }
+            }
+            2 => Some(CommandValue::ActivePowerKw(f(bits)?)),
+            3 => Some(CommandValue::ReactivePowerKvar(f(bits)?)),
+            4 => Some(CommandValue::VoltageSetpointV(f(bits)?)),
+            5 => Some(CommandValue::CurrentLimitA(f(bits)?)),
+            6 => Some(CommandValue::ModeCode(u16::from_le_bytes([
+                bits[0], bits[1],
+            ]))),
+            _ => None,
+        }
+    }
+
+    /// 单位代码（UnitCatalog 对应码；0=未知保留）。
+    pub fn unit_code(self) -> u16 {
+        match self {
+            // SwitchPosition/ModeCode 无量纲。
+            CommandValue::SwitchPosition(_) | CommandValue::ModeCode(_) => 0,
+            CommandValue::ActivePowerKw(_) => 1,     // kW
+            CommandValue::ReactivePowerKvar(_) => 2, // kvar
+            CommandValue::VoltageSetpointV(_) => 3,  // V
+            CommandValue::CurrentLimitA(_) => 4,     // A
+        }
+    }
+
+    /// 转换为协议点值形态（writer 编码设备载荷的唯一取值途径；
+    /// 61 v0.314.25：签名上移除独立 value 参数后由各适配器调用）。
+    pub fn to_point_value(self) -> eneros_upa_model::PointValue {
+        use eneros_upa_model::PointValue;
+        match self {
+            CommandValue::SwitchPosition(v) => PointValue::Int(i64::from(v)),
+            CommandValue::ActivePowerKw(v) => PointValue::Float(v),
+            CommandValue::ReactivePowerKvar(v) => PointValue::Float(v),
+            CommandValue::VoltageSetpointV(v) => PointValue::Float(v),
+            CommandValue::CurrentLimitA(v) => PointValue::Float(v),
+            CommandValue::ModeCode(v) => PointValue::Int(i64::from(v)),
+        }
+    }
+
+    /// 值对应的 legacy ControlCommand 视图（SwitchPosition → Single On/Off；
+    /// 其余无 legacy 形态 → None——禁止把连续值降级解释为开关）。
+    pub fn legacy_command(self) -> Option<ControlCommand> {
+        match self {
+            CommandValue::SwitchPosition(0) => Some(ControlCommand::Single(SingleCommand::Off)),
+            CommandValue::SwitchPosition(1) => Some(ControlCommand::Single(SingleCommand::On)),
+            _ => None,
+        }
+    }
+}
+
 /// 已通过控制链全部裁决、可施加于设备的写命令（蓝图/24 D4）。
 ///
 /// **26-B WP-26.4（P1-1）封焊**：字段私有——生产代码中"字面量构造
@@ -130,14 +245,13 @@ impl ActorKind {
 /// `device_id` 为 upa-model `DeviceId(u16)`、`point_id` 为 `PointId(u32)`；
 /// 信封 wire 布局不变（wire 上 device_id 仍占 4 字节，见 control-gateway
 /// envelope 编解码；u32→u16 的收窄在 HMAC 验证之后、default-deny）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Eq 不可用（CommandValue 含 f64；浮点相等语义由值位精确比较承担）。
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AuthorizedCommand {
     /// 目标设备 ID（upa-model `DeviceId`，u16）。
     device_id: eneros_upa_model::DeviceId,
     /// 目标点 ID（upa-model `PointId`，u32）。
     point_id: eneros_upa_model::PointId,
-    /// 开关语义命令（Single/Double）。
-    command: ControlCommand,
     /// 签发者身份类别。
     actor_kind: ActorKind,
     /// 签发者标识（固定 16 字节）。
@@ -154,6 +268,11 @@ pub struct AuthorizedCommand {
     policy_version: u64,
     /// 幂等键（CTL-007 去重）。
     idempotency_key: [u8; 16],
+    /// 类型化命令值（61 v0.314.25：与 writer 执行完全同型的唯一数据源）。
+    value: CommandValue,
+    /// 命令摘要（61 v0.314.25）：SHA-256("eneros.authorized-command.v2" ‖
+    /// 信封 V3 头部无 HMAC 字节)——writer 侧可从收到的信封字节重算验证。
+    command_digest: [u8; 32],
 }
 
 impl AuthorizedCommand {
@@ -164,8 +283,11 @@ impl AuthorizedCommand {
     pub fn point_id(&self) -> eneros_upa_model::PointId {
         self.point_id
     }
-    pub fn command(&self) -> ControlCommand {
-        self.command
+    /// legacy 开关语义视图（61 v0.314.25）：仅 SwitchPosition 有 legacy
+    /// 形态；连续/模拟值返回 None（消费方必须显式处理，禁止把浮点
+    /// 解释成开关）。
+    pub fn command(&self) -> Option<ControlCommand> {
+        self.value.legacy_command()
     }
     pub fn actor_kind(&self) -> ActorKind {
         self.actor_kind
@@ -191,6 +313,14 @@ impl AuthorizedCommand {
     pub fn idempotency_key(&self) -> [u8; 16] {
         self.idempotency_key
     }
+    /// 类型化命令值（唯一执行数据源；61 v0.314.25）。
+    pub fn value(&self) -> CommandValue {
+        self.value
+    }
+    /// 命令摘要（writer 侧重算比对依据；61 v0.314.25）。
+    pub fn command_digest(&self) -> [u8; 32] {
+        self.command_digest
+    }
 
     /// 构造通道（`#[doc(hidden)]`，WP-26.4）。
     ///
@@ -202,7 +332,6 @@ impl AuthorizedCommand {
     pub fn from_parts(
         device_id: eneros_upa_model::DeviceId,
         point_id: eneros_upa_model::PointId,
-        command: ControlCommand,
         actor_kind: ActorKind,
         issuer: [u8; 16],
         correlation_id: [u8; 16],
@@ -211,11 +340,12 @@ impl AuthorizedCommand {
         fencing_token: u64,
         policy_version: u64,
         idempotency_key: [u8; 16],
+        value: CommandValue,
+        command_digest: [u8; 32],
     ) -> Self {
         Self {
             device_id,
             point_id,
-            command,
             actor_kind,
             issuer,
             correlation_id,
@@ -224,6 +354,8 @@ impl AuthorizedCommand {
             fencing_token,
             policy_version,
             idempotency_key,
+            value,
+            command_digest,
         }
     }
 }

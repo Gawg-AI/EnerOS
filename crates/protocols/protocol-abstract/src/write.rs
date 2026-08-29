@@ -5,6 +5,7 @@
 //! ACK → readback）。本类型是协议与安全写链之间的唯一意图载体；没有
 //! 授权命令（`AuthorizedCommand`），意图无法执行（编译期 + 运行期双门）。
 
+use eneros_telemetry_model::command::CommandValue;
 use eneros_upa_model::{DeviceId, PointId, PointValue};
 
 /// 标准化写意图（协议层输出；设备写由 40 ControlDispatch 执行）。
@@ -78,6 +79,64 @@ pub fn decode_master_write_payload(buf: &[u8]) -> Option<(u32, u32, f64)> {
     let point_id = u32::from_le_bytes(buf[5..9].try_into().ok()?);
     let power_kw = f64::from_le_bytes(buf[9..17].try_into().ok()?);
     Some((device_id, point_id, power_kw))
+}
+
+/// 61 v0.314.25 §3.3：命令语义摘要——签发侧（dispatch journal）与
+/// writer 侧（svc-modbus-tcp 重算比对）共用同一实现（单一事实源）。
+/// `SHA-256("eneros.command-semantic.v1" ‖ device u32 LE ‖ point u32 LE ‖
+/// value_tag u8 ‖ value_bits 8B)`——只含同 key 重传不变语义内容。
+pub fn semantic_command_digest(device_id: u32, point_id: u32, value: CommandValue) -> [u8; 32] {
+    use sha2::{Digest as _, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"eneros.command-semantic.v1");
+    h.update(device_id.to_le_bytes());
+    h.update(point_id.to_le_bytes());
+    h.update(value.value_tag().to_le_bytes());
+    h.update(value.value_bits());
+    h.finalize().into()
+}
+
+/// 主站写请求载荷 V2（61 v0.314.25）：`[子码][ver=2][device u32][point u32]
+/// [value_tag][value_bits 8B][command_digest 32B]` = 55B（≤ PAYLOAD_CAP 64）。
+/// writer 侧以同函数重算语义摘要并比对——授权 50 写 60 必然检出。
+pub const MASTER_WRITE_PAYLOAD_LEN_V2: usize = 1 + 1 + 4 + 4 + 1 + 8 + 32;
+
+/// 编码 V2 主站写载荷（55B）。
+pub fn encode_master_write_payload_v2(
+    device_id: u32,
+    point_id: u32,
+    value: CommandValue,
+) -> [u8; MASTER_WRITE_PAYLOAD_LEN_V2] {
+    let mut out = [0u8; MASTER_WRITE_PAYLOAD_LEN_V2];
+    out[0] = OP_MASTER_WRITE;
+    out[1] = 2;
+    out[2..6].copy_from_slice(&device_id.to_le_bytes());
+    out[6..10].copy_from_slice(&point_id.to_le_bytes());
+    out[10] = value.value_tag();
+    out[11..19].copy_from_slice(&value.value_bits());
+    let digest = semantic_command_digest(device_id, point_id, value);
+    out[19..51].copy_from_slice(&digest);
+    out
+}
+
+/// 解码 V2 主站写载荷（长度/版本/子码不符 → None；非有限浮点 → None）。
+pub fn decode_master_write_payload_v2(buf: &[u8]) -> Option<(u32, u32, CommandValue, [u8; 32])> {
+    if buf.len() != MASTER_WRITE_PAYLOAD_LEN_V2 || buf[0] != OP_MASTER_WRITE || buf[1] != 2 {
+        return None;
+    }
+    let device_id = u32::from_le_bytes(buf[2..6].try_into().ok()?);
+    let point_id = u32::from_le_bytes(buf[6..10].try_into().ok()?);
+    let mut bits = [0u8; 8];
+    bits.copy_from_slice(&buf[11..19]);
+    let value = CommandValue::from_tag_bits(buf[10], bits)?;
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&buf[19..51]);
+    Some((device_id, point_id, value, digest))
+}
+
+/// writer 侧工程值投影（V2 载荷 → 设备点值；61 v0.314.25）。
+pub fn command_value_to_point_value(value: CommandValue) -> PointValue {
+    value.to_point_value()
 }
 
 /// 意图线码（47 WP-47.1：svc 间 EIPC 传输的定长载荷）。

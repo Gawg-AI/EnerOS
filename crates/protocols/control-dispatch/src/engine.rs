@@ -45,7 +45,7 @@ use eneros_dual_brain::ProposedControlPlan;
 use eneros_protocol_abstract::write::PointWriteIntent;
 use eneros_safety_validator::state::SystemState;
 use eneros_safety_validator::TrustedTelemetry;
-use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
+use eneros_telemetry_model::command::{CommandValue, ControlCommand, SingleCommand};
 use eneros_upa_model::PointValue;
 
 use crate::channel::DeliveryChannel;
@@ -657,11 +657,9 @@ impl DispatchEngine {
             }
         };
         let now_secs = started / 1000;
-        let single = if cmd.power_kw > 0.0 {
-            SingleCommand::On // 放电/合（协议意图写同规则）
-        } else {
-            SingleCommand::Off // 充电/分
-        };
+        // 61 v0.314.25 §3.5.8：`power_kw → On/Off` 映射删除——连续功率以
+        // ActivePowerKw setpoint 授权与执行（不再伪装成开关）。
+        let value = CommandValue::ActivePowerKw(cmd.power_kw);
 
         // Envelope 装配+签名+幂等键（唯一实现）：幂等键=correlation——
         // 同计划重放 / 同 (protocol,seq) 跨重启重放均返回原结果，不重复写。
@@ -671,7 +669,7 @@ impl DispatchEngine {
             command_id,
             self.profile.device_id,
             self.profile.point_id,
-            ControlCommand::Single(single),
+            ControlCommand::Single(SingleCommand::On), // legacy 占位；value 覆盖
             now_secs,
             now_secs.saturating_add(cmd.ttl_secs),
             self.issuer_service,
@@ -681,32 +679,28 @@ impl DispatchEngine {
         .sequence(sequence)
         .actor_kind(ActorKind::Ai)
         .idempotency_key(correlation)
+        .value(value)
         .build(&self.key)
         .encode();
         let expires_ms = started.saturating_add(cmd.ttl_secs * 1000);
-        let envelope = ControlEnvelope::new(
+        let envelope = ControlEnvelope::new_v3(
             correlation,
             self.issuer_service,
             self.issuer_epoch,
             started,
             expires_ms,
-            buf,
-            cmd.power_kw,
+            &buf,
         );
-        // 命令内容摘要（61 v0.314.24）：SM3(device_id ‖ point_id ‖ 命令类 ‖
-        // power_kw LE)——只覆盖同 key 重传中必须不变的语义内容。
-        // 不含 sequence/时间戳/HMAC（每次尝试本就不同，混入会把合法重传
-        // 误判为冲突）。0.314.25 将由 canonical AuthorizedCommand digest
-        // 接替（蓝图 05 §3.3）。
-        let mut dbuf = [0u8; 4 + 4 + 1 + 8];
-        dbuf[0..4].copy_from_slice(&self.profile.device_id.to_le_bytes());
-        dbuf[4..8].copy_from_slice(&self.profile.point_id.to_le_bytes());
-        dbuf[8] = match single {
-            SingleCommand::On => 1,
-            SingleCommand::Off => 0,
-        };
-        dbuf[9..17].copy_from_slice(&cmd.power_kw.to_le_bytes());
-        let command_digest = eneros_crypto::sm3_hash(&dbuf);
+        // journal 语义摘要（61 v0.314.25）：SHA-256("eneros.command-semantic.v1"
+        // ‖ device ‖ point ‖ value_tag ‖ value_bits)——只含同 key 重传的
+        // 不变语义内容（不含 sequence/时间戳，防合法重放误判冲突）。
+        // AuthorizedCommand.command_digest（canonical V3 头摘要）另由
+        // gateway 签发，供 writer 绑定验证——两者用途不同、并存不冲突。
+        let command_digest = eneros_protocol_abstract::write::semantic_command_digest(
+            self.profile.device_id,
+            self.profile.point_id,
+            value,
+        );
 
         // 61 v0.314.24 步骤 2.7：执行 journal 同 key 预检（durable 幂等真值，
         // 先于链裁决——冲突命令不得消耗 SBO/链状态）：

@@ -77,15 +77,13 @@ pub struct WriteOutcome {
 /// [`AuthorizedCommand`] 只能由控制网关（`ControlGateway::authorize`）产出。
 /// 因此"无授权写调用"在编译期不可构造（§1.2 推论 C / 附录 E DoD 3）。
 pub trait AuthorizedWriter {
-    /// 施加一次授权写。`cmd` 的 device_id/point_id 必须先与本适配器
-    /// 匹配（不匹配 → [`WriteError::CommandMismatch`]，设备状态不变）；
-    /// 值类型与点类型矛盾（篡改防御）→ 拒绝。成功后返回回读确认
-    /// （可空，见 [`WriteOutcome`]）。
-    fn write_authorized(
-        &mut self,
-        cmd: &AuthorizedCommand,
-        value: PointValue,
-    ) -> Result<WriteOutcome, WriteError>;
+    /// 施加一次授权写（61 v0.314.25：**写值唯一来源 = `cmd.value()`**——
+    /// 签名上移除独立 value 参数，envelope 外的载荷无法抵达设备）。
+    /// `cmd` 的 device_id/point_id 必须先与本适配器匹配（不匹配 →
+    /// [`WriteError::CommandMismatch`]，设备状态不变）；值类型与点类型
+    /// 矛盾（篡改防御）→ 拒绝。成功后返回回读确认（可空，见
+    /// [`WriteOutcome`]）。
+    fn write_authorized(&mut self, cmd: &AuthorizedCommand) -> Result<WriteOutcome, WriteError>;
 }
 
 /// 组合接缝：读 + 授权写（设备注册表/管理器持有的适配器形态）。
@@ -114,12 +112,8 @@ impl PointAccess for Box<dyn PointAccess + '_> {
 
 /// `Box<dyn AuthorizedWriter>` 透传实现（写接缝同样可装箱透传）。
 impl AuthorizedWriter for Box<dyn AuthorizedWriter + '_> {
-    fn write_authorized(
-        &mut self,
-        cmd: &AuthorizedCommand,
-        value: PointValue,
-    ) -> Result<WriteOutcome, WriteError> {
-        (**self).write_authorized(cmd, value)
+    fn write_authorized(&mut self, cmd: &AuthorizedCommand) -> Result<WriteOutcome, WriteError> {
+        (**self).write_authorized(cmd)
     }
 }
 
@@ -139,11 +133,7 @@ impl PointAccess for Box<dyn PointAccessWriter + '_> {
 }
 
 impl AuthorizedWriter for Box<dyn PointAccessWriter + '_> {
-    fn write_authorized(
-        &mut self,
-        cmd: &AuthorizedCommand,
-        value: PointValue,
-    ) -> Result<WriteOutcome, WriteError> {
-        (**self).write_authorized(cmd, value)
+    fn write_authorized(&mut self, cmd: &AuthorizedCommand) -> Result<WriteOutcome, WriteError> {
+        (**self).write_authorized(cmd)
     }
 }

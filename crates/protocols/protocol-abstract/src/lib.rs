@@ -110,7 +110,7 @@ mod tests {
     use crate::adapter::{AdapterState, ProtocolAdapter};
     use crate::address::ProtocolAddress;
     use crate::config::{AdapterConfig, DeviceConfig, ProtocolType};
-    use crate::contract::{authorized_command, simple_adapter_config};
+    use crate::contract::{authorized_command, authorized_command_with, simple_adapter_config};
     use crate::error::ProtocolError;
     use crate::manager::ProtocolManager;
     use crate::mapping::ProtocolPointMapping;
@@ -170,7 +170,11 @@ mod tests {
 
         // 授权写（设备/点匹配）→ 更新 + 回读确认。
         let outcome = adapter
-            .write_authorized(&authorized_command(1, 5), PointValue::Float(99.0))
+            .write_authorized(&authorized_command_with(
+                1,
+                5,
+                eneros_telemetry_model::command::CommandValue::ActivePowerKw(99.0),
+            ))
             .expect("授权写必须成功");
         assert_eq!(outcome.echoed, Some(PointValue::Float(99.0)));
         let point = adapter.read_point(5).expect("read ok");
@@ -178,12 +182,12 @@ mod tests {
 
         // 设备不匹配 → CommandMismatch（运行时防线；编译期防线见 access.rs）。
         assert_eq!(
-            adapter.write_authorized(&authorized_command(2, 5), PointValue::Float(1.0)),
+            adapter.write_authorized(&authorized_command(2, 5)),
             Err(WriteError::CommandMismatch)
         );
         // 点不存在 → CommandMismatch。
         assert_eq!(
-            adapter.write_authorized(&authorized_command(1, 888), PointValue::Bool(true)),
+            adapter.write_authorized(&authorized_command(1, 888)),
             Err(WriteError::CommandMismatch)
         );
     }
@@ -496,15 +500,20 @@ mod tests {
         adapter.init(&cfg).expect("init ok");
 
         // 逐点授权写（批量语义在接缝上以逐点组合实现；失败项不阻塞其余）。
-        for (id, v) in [(1u32, PointValue::Float(1.1)), (2, PointValue::Float(2.2))] {
+        // 61 v0.314.25：写值唯一来源 = cmd.value()。
+        for (id, v) in [(1u32, 1.1f64), (2, 2.2f64)] {
             adapter
-                .write_authorized(&authorized_command(1, id), v)
+                .write_authorized(&authorized_command_with(
+                    1,
+                    id,
+                    eneros_telemetry_model::command::CommandValue::ActivePowerKw(v),
+                ))
                 .expect("授权写必须成功");
         }
 
         // 点 3 未注册 → CommandMismatch，不影响已写入点。
         assert_eq!(
-            adapter.write_authorized(&authorized_command(1, 3), PointValue::Float(3.3)),
+            adapter.write_authorized(&authorized_command(1, 3)),
             Err(WriteError::CommandMismatch)
         );
 

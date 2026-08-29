@@ -182,41 +182,41 @@ impl VirtualPlant {
         match (role, &cmd.command()) {
             (
                 Some(crate::safety::SafetyRole::PccBreaker),
-                ControlCommand::Single(SingleCommand::On),
+                Some(ControlCommand::Single(SingleCommand::On)),
             )
             | (
                 Some(crate::safety::SafetyRole::PccBreaker),
-                ControlCommand::Double(DoubleCommand::On),
+                Some(ControlCommand::Double(DoubleCommand::On)),
             ) => {
                 self.state.pcc_closed = true;
             }
             (
                 Some(crate::safety::SafetyRole::PccBreaker),
-                ControlCommand::Single(SingleCommand::Off),
+                Some(ControlCommand::Single(SingleCommand::Off)),
             )
             | (
                 Some(crate::safety::SafetyRole::PccBreaker),
-                ControlCommand::Double(DoubleCommand::Off),
+                Some(ControlCommand::Double(DoubleCommand::Off)),
             ) => {
                 self.state.pcc_closed = false;
             }
             (
                 Some(crate::safety::SafetyRole::InverterBlock),
-                ControlCommand::Single(SingleCommand::On),
+                Some(ControlCommand::Single(SingleCommand::On)),
             )
             | (
                 Some(crate::safety::SafetyRole::InverterBlock),
-                ControlCommand::Double(DoubleCommand::On),
+                Some(ControlCommand::Double(DoubleCommand::On)),
             ) => {
                 self.state.inverter_blocked = true;
             }
             (
                 Some(crate::safety::SafetyRole::InverterBlock),
-                ControlCommand::Single(SingleCommand::Off),
+                Some(ControlCommand::Single(SingleCommand::Off)),
             )
             | (
                 Some(crate::safety::SafetyRole::InverterBlock),
-                ControlCommand::Double(DoubleCommand::Off),
+                Some(ControlCommand::Double(DoubleCommand::Off)),
             ) => {
                 self.state.inverter_blocked = false;
             }
@@ -233,6 +233,7 @@ impl VirtualPlant {
 mod tests {
     #![allow(clippy::disallowed_macros)]
 
+    use eneros_telemetry_model::command::{CommandValue, DoubleCommand};
     use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
     use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
     use eneros_telemetry_model::unit::PhysicalUnit;
@@ -243,8 +244,14 @@ mod tests {
     use crate::safety::{SafetyPoint, SafetyRole};
 
     fn auth(point: u32, cmd: ControlCommand, actor: ActorKind) -> AuthorizedCommand {
+        // 61 v0.314.25：开关位 → SwitchPosition（唯一 legacy 形态）。
+        let value = match cmd {
+            ControlCommand::Single(SingleCommand::On)
+            | ControlCommand::Double(DoubleCommand::On) => CommandValue::SwitchPosition(1),
+            _ => CommandValue::SwitchPosition(0),
+        };
         AuthorizedCommand::from_parts(
-            1, point, cmd, actor, [0; 16], [0; 16], 1, [0; 16], 1, 1, [0; 16],
+            1, point, actor, [0; 16], [0; 16], 1, [0; 16], 1, 1, [0; 16], value, [0x11; 32],
         )
     }
 

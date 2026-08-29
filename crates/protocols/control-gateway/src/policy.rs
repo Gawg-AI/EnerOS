@@ -47,7 +47,12 @@ impl CommandClass {
     pub fn from_command(cmd: &AuthorizedCommand) -> Self {
         match cmd.actor_kind() {
             ActorKind::Emergency => Emergency,
-            _ => Switch, // ControlCommand is discrete in v1; setpoint class added with analog cmds
+            // 61 v0.314.25：类别由 typed value 驱动——开关位 → Switch，
+            // 其余（ActivePowerKw/Reactive/Voltage/Current/ModeCode）→ Setpoint。
+            _ => match cmd.value() {
+                eneros_telemetry_model::command::CommandValue::SwitchPosition(_) => Switch,
+                _ => Setpoint,
+            },
         }
     }
 }
@@ -196,8 +201,6 @@ impl<'a> Pdp<'a> {
 mod tests {
     #![allow(clippy::disallowed_macros)]
 
-    use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
-
     use super::*;
     use crate::envelope::ActorKind;
     use crate::gateway::AuthorizedCommand;
@@ -212,7 +215,6 @@ mod tests {
         AuthorizedCommand::from_parts(
             device,
             point,
-            ControlCommand::Single(SingleCommand::On),
             actor,
             [0; 16],
             [0; 16],
@@ -221,6 +223,8 @@ mod tests {
             1,
             policy_version,
             [0; 16],
+            eneros_telemetry_model::command::CommandValue::SwitchPosition(1),
+            [0x11; 32],
         )
     }
 

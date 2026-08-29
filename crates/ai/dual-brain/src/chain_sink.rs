@@ -92,13 +92,9 @@ pub enum DeviceExecError {
 /// `envelope` 为签发侧构造的**签名信封字节**（蓝图/24 §6.4：投递器将同一
 /// 信封经 EIPC 投递，device-agent 对同一信封复验——§1.3 推论 D）。
 pub trait DeviceExecutor {
-    /// 执行授权命令（含签名信封与功率载荷）。`Err` = 复验拒绝/超时/离线。
-    fn write(
-        &mut self,
-        cmd: &AuthorizedCommand,
-        envelope: &[u8],
-        power_kw: f64,
-    ) -> Result<(), DeviceExecError>;
+    /// 执行授权命令（61 v0.314.25：信封 V3=181B，typed value 在 HMAC 域——
+    /// 独立 power 参数退役）。`Err` = 复验拒绝/超时/离线。
+    fn write(&mut self, cmd: &AuthorizedCommand, envelope: &[u8]) -> Result<(), DeviceExecError>;
 }
 
 /// AI 命令经 ControlChain 下发的生产 sink（22 §2.W2.2）。
@@ -176,15 +172,10 @@ impl CommandSink for ChainCommandSink {
     fn write(&mut self, cmd: DispatchCommand) -> Result<(), DualBrainError> {
         self.seq += 1;
         let now = (self.now_fn)();
-        let cmd_power = cmd.power_kw;
         // 0. SBO 选择（AI 写命令语义 = 选择+执行 原子；链要求先选后执）。
         self.chain.sbo_select(self.point_id, now);
-        // 1. DispatchCommand → 开关语义 + 功率载荷（ADR-029）。
-        let single = if cmd.power_kw > 0.0 {
-            SingleCommand::On // 放电/合
-        } else {
-            SingleCommand::Off // 充电/分
-        };
+        // 1. DispatchCommand → typed value（61 v0.314.25：连续功率以
+        // ActivePowerKw setpoint 授权执行，ADR-029 的开关+载荷双轨退役）。
         // 2. 构造签名信封。
         let mut id_bytes = [0u8; 16];
         id_bytes[..8].copy_from_slice(&self.seq.to_le_bytes());
@@ -197,7 +188,7 @@ impl CommandSink for ChainCommandSink {
             id_bytes,
             self.device_id,
             self.point_id,
-            ControlCommand::Single(single),
+            ControlCommand::Single(SingleCommand::On), // legacy 占位；value 覆盖
             now,
             now.saturating_add(ttl_secs as u64),
             self.issuer,
@@ -206,6 +197,7 @@ impl CommandSink for ChainCommandSink {
         .policy_version(self.policy_version)
         .sequence(self.seq)
         .actor_kind(ActorKind::Ai)
+        .value(eneros_telemetry_model::command::CommandValue::ActivePowerKw(cmd.power_kw))
         .build(&self.key)
         .encode();
         // 3. ControlChain：授权 → 租约 → 策略 → SBO → 安全（default-deny）。
@@ -217,8 +209,7 @@ impl CommandSink for ChainCommandSink {
                 // 4. 真实设备写入（obligations 已由链 discharge；功率载荷
                 // 直接来自 DispatchCommand——AuthorizedCommand 无功率字段）。
                 //    投递签名信封原字节（§6.4：device-agent 复验同一信封）。
-                let power = cmd_power;
-                self.executor.write(&cmd, &buf, power).map_err(|e| {
+                self.executor.write(&cmd, &buf).map_err(|e| {
                     self.last_deny = Some(format!("device-exec: {e:?}"));
                     DualBrainError::DispatchError(format!("device rejected: {e:?}"))
                 })?;
@@ -282,7 +273,7 @@ mod tests {
     /// 蓝图 55：档案单源（TTL 600 为测试变体；epoch 缺省 0 ⇒ 首签 token=1）。
     fn test_profile(point_id: u32) -> eneros_control_gateway::ControlProfile {
         let mut profile =
-            eneros_control_gateway::ControlProfile::ai_pcc_single(1, point_id, 4, LEASE_ID, 0);
+            eneros_control_gateway::ControlProfile::ai_pcs_setpoint(1, point_id, 4, LEASE_ID, 0);
         profile.lease_ttl_secs = 600;
         profile
     }
@@ -310,9 +301,8 @@ mod tests {
             &mut self,
             cmd: &AuthorizedCommand,
             envelope: &[u8],
-            power_kw: f64,
         ) -> Result<(), DeviceExecError> {
-            self.0.borrow_mut().write(cmd, envelope, power_kw)
+            self.0.borrow_mut().write(cmd, envelope)
         }
     }
 
@@ -321,14 +311,13 @@ mod tests {
             &mut self,
             cmd: &AuthorizedCommand,
             envelope: &[u8],
-            power_kw: f64,
         ) -> Result<(), DeviceExecError> {
             if let Some(e) = &self.fail {
                 return Err(e.clone());
             }
             self.envelopes.push(envelope.to_vec());
             self.writes
-                .push((cmd.point_id(), cmd.lease_id()[0] as u32, power_kw));
+                .push((cmd.point_id(), cmd.lease_id()[0] as u32, 0.0_f64));
             Ok(())
         }
     }

@@ -25,6 +25,7 @@ use eneros_protocol_abstract::adapter::{AdapterState, ProtocolAdapter};
 use eneros_protocol_abstract::config::{AdapterConfig, ProtocolType};
 use eneros_protocol_abstract::error::ProtocolError;
 use eneros_protocol_abstract::AuthorizedCommand;
+use eneros_telemetry_model::command::CommandValue;
 use eneros_upa_model::{
     DataPoint, DataSource, DeviceId, PointId, PointQuality, PointType, PointValue,
 };
@@ -215,11 +216,7 @@ impl Iec104Adapter {
 }
 
 impl AuthorizedWriter for Iec104Adapter {
-    fn write_authorized(
-        &mut self,
-        cmd: &AuthorizedCommand,
-        value: PointValue,
-    ) -> Result<WriteOutcome, WriteError> {
+    fn write_authorized(&mut self, cmd: &AuthorizedCommand) -> Result<WriteOutcome, WriteError> {
         // 蓝图/24 §6.1：命令点/设备匹配校验通过后才落写；不匹配 →
         // CommandMismatch，设备状态不变。
         if cmd.device_id() != self.device_id {
@@ -231,16 +228,15 @@ impl AuthorizedWriter for Iec104Adapter {
         if self.state != AdapterState::Running && self.state != AdapterState::Initialized {
             return Err(WriteError::Protocol(ProtocolError::ProtocolNotStarted));
         }
-        // 篡改防御：载荷类型与点类型矛盾（C_SC/C_DC 遥控只接受数值语义载荷；
-        // 开关语义来自 cmd.command()，value 为工程载荷，ADR-029）。
-        if !matches!(
-            value,
-            PointValue::Float(_) | PointValue::Int(_) | PointValue::Enum(_)
-        ) {
-            return Err(WriteError::Unauthorized);
-        }
+        // 61 v0.314.25：开关位置唯一来源 = cmd.value()；legacy 浮点载荷
+        // 语义（ADR-029）退役——模拟量命令对 C_SC 遥控 = 类型矛盾拒绝。
+        let position = match cmd.value() {
+            CommandValue::SwitchPosition(0) => SinglePointValue::Off,
+            CommandValue::SwitchPosition(_) => SinglePointValue::On,
+            _ => return Err(WriteError::Unauthorized),
+        };
         self.master
-            .send_single_command(mapping.common_addr, mapping.ioa, SinglePointValue::On)
+            .send_single_command(mapping.common_addr, mapping.ioa, position)
             .map_err(iec104_to_protocol)
             .map_err(WriteError::Protocol)?;
         // 回读确认可空：以 IEC 104 链路确认（命令传输确认）为确认。
@@ -334,7 +330,7 @@ mod tests {
     use eneros_iec104_slave::{
         Apdu, Asdu, Cot, InformationObject, IoValue, QualityDescriptor, TypeId,
     };
-    use eneros_protocol_abstract::contract::{run_adapter_contract, simple_adapter_config};
+    use eneros_protocol_abstract::contract::{run_adapter_contract_typed, simple_adapter_config};
 
     use super::*;
     use crate::mock::MockMasterTransport;
@@ -422,6 +418,14 @@ mod tests {
         }
 
         let cfg = simple_adapter_config(ProtocolType::Iec104, 7);
-        run_adapter_contract(&mut adapter, &cfg, ProtocolType::Iec104, 7, &[1, 2]);
+        run_adapter_contract_typed(
+            &mut adapter,
+            &cfg,
+            ProtocolType::Iec104,
+            7,
+            &[1, 2],
+            eneros_telemetry_model::command::CommandValue::SwitchPosition(1),
+            true,
+        );
     }
 }

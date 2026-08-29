@@ -53,7 +53,7 @@ fn now_ms() -> u64 {
 fn test_profile() -> eneros_control_gateway::ControlProfile {
     eneros_control_gateway::ControlProfile {
         lease_ttl_secs: 600,
-        ..eneros_control_gateway::ControlProfile::ai_pcc_single(
+        ..eneros_control_gateway::ControlProfile::ai_pcs_setpoint(
             DEVICE_ID, POINT_ID, 4, LEASE_ID, EPOCH_SEED,
         )
     }
@@ -76,7 +76,7 @@ fn build_chain_dryrun() -> ControlChain {
         actor_kind: Some(ActorKind::Ai),
         devices: vec![1],
         points: vec![10],
-        kinds: vec![CommandClass::Switch],
+        kinds: vec![CommandClass::Setpoint],
         time_window: (0, 0),
         obligations: vec![eneros_control_gateway::policy::Obligation::DryRun],
     }]);
@@ -232,15 +232,11 @@ impl DeliveryChannel for IngressChannel {
             .encode()
             .to_vec());
         }
-        let frame = eneros_device_agent::DeliveryFrame {
-            envelope: env.envelope,
-            power_kw: env.power_kw,
-        };
-        let out = self.ingress.borrow_mut().process(
-            &mut self.devices.borrow_mut(),
-            &frame.encode(),
-            self.now_ms,
-        );
+        // 直接转发 V2 ControlEnvelope 字节（61 v0.314.25 主路径）。
+        let out =
+            self.ingress
+                .borrow_mut()
+                .process(&mut self.devices.borrow_mut(), payload, self.now_ms);
         Ok(eneros_device_agent::outcome_to_frame(&out)
             .encode()
             .to_vec())
@@ -256,7 +252,7 @@ fn device_side() -> (
         actor_kind: Some(ActorKind::Ai),
         devices: vec![1],
         points: vec![10],
-        kinds: vec![CommandClass::Switch],
+        kinds: vec![CommandClass::Setpoint],
         time_window: (0, 0),
         obligations: vec![],
     }]);

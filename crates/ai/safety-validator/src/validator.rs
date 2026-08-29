@@ -98,6 +98,20 @@ impl SafetyValidator {
             }
         }
 
+        // 61 v0.314.25 §3.4：`is_hard()==true` 规则的任何 Critical/Fatal
+        // 都拒绝（旧语义「只有 Fatal 才 passed=false」退役——状态过流等
+        // Critical 不能带着 passed=true 放行）。
+        let hard_rules: alloc::vec::Vec<&str> = self
+            .rules
+            .iter()
+            .filter(|r| r.is_hard())
+            .map(|r| r.name())
+            .collect();
+        let has_hard_reject = all_violations.iter().any(|v| {
+            v.severity == Severity::Fatal
+                || (v.severity == Severity::Critical && hard_rules.contains(&v.rule.as_str()))
+        });
+
         // 31-review（P1 AI-05）：后置校验（规则链之后、最终调度上）——同一时段
         // 不得同时充电与放电。LP 线性互斥允许部分同时（60+40≤100），蓝图要求
         // 二元变量（MIP，已入模型）或 safety-validator 后置拒绝；此处为纵深
@@ -117,8 +131,7 @@ impl SafetyValidator {
         }
 
         ValidationResult {
-            passed: all_violations.is_empty()
-                || all_violations.iter().all(|v| v.severity != Severity::Fatal),
+            passed: all_violations.is_empty() || !has_hard_reject,
             clamped: any_clamped,
             clamped_schedule: if any_clamped {
                 Some(current_schedule)

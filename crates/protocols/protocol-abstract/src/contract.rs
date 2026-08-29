@@ -18,7 +18,7 @@ use alloc::vec;
 #[cfg(any(test, feature = "mock"))]
 use eneros_telemetry_model::command::AuthorizedCommand;
 #[cfg(any(test, feature = "mock"))]
-use eneros_upa_model::{DeviceId, PointId, PointValue};
+use eneros_upa_model::{DeviceId, PointId};
 
 #[cfg(any(test, feature = "mock"))]
 use crate::access::{AuthorizedWriter, PointAccessExt, WriteError};
@@ -49,17 +49,44 @@ use crate::error::ProtocolError;
 ///
 /// # Panics
 /// 任一契约断言失败即 panic，测试直接失败。
-#[allow(clippy::disallowed_macros)] // 测试辅助代码允许 panic 断言
 /// 29 GV-02：契约套件全部消费方在 `#[cfg(test)]` 模块内（grep 核实 modbus-tcp/
 /// rtu/iec104-master adapter.rs + 本 crate lib.rs tests），生产构建无需编译
 /// ——随 authorized_command 一并 mock/test 门控（S2 范式）。
 #[cfg(any(test, feature = "mock"))]
+#[allow(clippy::disallowed_macros)] // 测试辅助 panic 断言（函数头统一豁免）
 pub fn run_adapter_contract<A: ProtocolAdapter + PointAccessExt + AuthorizedWriter>(
     adapter: &mut A,
     cfg: &AdapterConfig,
     expected_type: ProtocolType,
     device_id: DeviceId,
     point_ids: &[PointId],
+) {
+    run_adapter_contract_typed(
+        adapter,
+        cfg,
+        expected_type,
+        device_id,
+        point_ids,
+        // 默认模拟量语义（modbus 系寄存器写）；开关型适配器（iec104 C_SC）
+        // 传 `SwitchPosition(1)`。
+        eneros_telemetry_model::command::CommandValue::ActivePowerKw(1.5),
+        // modbus 寄存器接受一切数值命令——反向语义负例仅对开关型适配器成立。
+        false,
+    )
+}
+
+/// 61 v0.314.25：写语义参数化的契约套件——写值唯一来源 = cmd.value()，
+/// 正例/期望/类型矛盾负例均由 `write_value` 派生。
+#[cfg(any(test, feature = "mock"))]
+#[allow(clippy::too_many_arguments, clippy::disallowed_macros)]
+pub fn run_adapter_contract_typed<A: ProtocolAdapter + PointAccessExt + AuthorizedWriter>(
+    adapter: &mut A,
+    cfg: &AdapterConfig,
+    expected_type: ProtocolType,
+    device_id: DeviceId,
+    point_ids: &[PointId],
+    write_value: eneros_telemetry_model::command::CommandValue,
+    rejects_opposite_semantics: bool,
 ) {
     assert!(
         point_ids.len() >= 2,
@@ -110,10 +137,11 @@ pub fn run_adapter_contract<A: ProtocolAdapter + PointAccessExt + AuthorizedWrit
     // 6. 授权落写：匹配的 AuthorizedCommand + 匹配点 → 成功；回读确认
     //    （echoed 若存在必须与写入值一致——§6.1 "可空"语义，echoed 即 seam
     //    层回读通道；真实适配器以协议应答确认时返回 None）。
-    let written_value = PointValue::Float(1.5);
-    let auth = authorized_command(device_id, point_ids[0]);
+    // 61 v0.314.25：写入值唯一来源 = cmd.value()（fixture 与期望值同源）。
+    let written_value = write_value.to_point_value();
+    let auth = authorized_command_with(device_id, point_ids[0], write_value);
     let outcome = adapter
-        .write_authorized(&auth, written_value.clone())
+        .write_authorized(&auth)
         .unwrap_or_else(|e| panic!("契约：write_authorized(授权命令+匹配点) 必须成功，got {e:?}"));
     if let Some(echo) = &outcome.echoed {
         assert_eq!(
@@ -130,8 +158,9 @@ pub fn run_adapter_contract<A: ProtocolAdapter + PointAccessExt + AuthorizedWrit
 
     // 7. 不匹配拒绝：设备不匹配 → CommandMismatch，且设备状态不变
     //    （回读值仍为基线）。
-    let wrong_device = authorized_command(device_id.wrapping_add(1), point_ids[0]);
-    let r = adapter.write_authorized(&wrong_device, written_value.clone());
+    let wrong_device =
+        authorized_command_with(device_id.wrapping_add(1), point_ids[0], write_value);
+    let r = adapter.write_authorized(&wrong_device);
     assert_eq!(
         r,
         Err(WriteError::CommandMismatch),
@@ -145,17 +174,33 @@ pub fn run_adapter_contract<A: ProtocolAdapter + PointAccessExt + AuthorizedWrit
         "契约：不匹配拒绝不得改变设备状态（回读必须仍为基线）"
     );
 
-    // 8. 篡改值拒绝：授权命令 + 与点类型矛盾的载荷（Analog 点写 Bool）→
-    //    拒绝（类型级篡改防御），设备状态不变。
-    let r = adapter.write_authorized(&auth, PointValue::Bool(true));
-    assert!(
-        r.is_err(),
-        "契约：篡改值（与点类型矛盾）必须拒绝，got {r:?}"
+    // 8. 篡改值拒绝（61 v0.314.25 语义）：命令值与正例语义相反（模拟量点
+    //    收开关命令 / 开关点收模拟量命令）→ 拒绝（类型级篡改防御），设备
+    //    状态不变。
+    let mismatched = authorized_command_with(
+        device_id,
+        point_ids[0],
+        if matches!(
+            write_value,
+            eneros_telemetry_model::command::CommandValue::SwitchPosition(_)
+        ) {
+            eneros_telemetry_model::command::CommandValue::ActivePowerKw(1.5)
+        } else {
+            eneros_telemetry_model::command::CommandValue::SwitchPosition(1)
+        },
     );
-    let dp = adapter
-        .read_point(point_ids[0])
-        .expect("契约：篡改值拒绝后 read_point 必须成功");
-    assert_eq!(dp.value, baseline, "契约：篡改值拒绝不得改变设备状态");
+    if rejects_opposite_semantics {
+        let r = adapter.write_authorized(&mismatched);
+        assert!(r.is_err(), "契约：类型矛盾命令必须拒绝，got {r:?}");
+        let dp = adapter
+            .read_point(point_ids[0])
+            .expect("契约：篡改值拒绝后 read_point 必须成功");
+        assert_eq!(dp.value, baseline, "契约：篡改值拒绝不得改变设备状态");
+    } else {
+        // modbus 系：数值寄存器接受任意数值命令（含开关位 0/1）——语义级
+        // 矛盾归 ControlChain 类别门（Switch/Setpoint），seam 层不重复裁决。
+        let _ = adapter.write_authorized(&mismatched);
+    }
 
     // 9. 按设备读取：返回结果非空且包含注册点。
     let dev_points = adapter
@@ -212,12 +257,27 @@ pub fn run_adapter_contract<A: ProtocolAdapter + PointAccessExt + AuthorizedWrit
 /// 生产文件且无 cfg 保护会被拦——补 mock/test 门控（S2 mock 门控范式）。
 #[cfg(any(test, feature = "mock"))]
 pub fn authorized_command(device_id: DeviceId, point_id: PointId) -> AuthorizedCommand {
-    use eneros_telemetry_model::command::{ActorKind, ControlCommand, SingleCommand};
+    // 泛型套件默认开关位（SwitchPosition 是所有 writer 的最小公共语义；
+    // 模拟量契约用 authorized_command_with 显式参数化）。
+    authorized_command_with(
+        device_id,
+        point_id,
+        eneros_telemetry_model::command::CommandValue::SwitchPosition(1),
+    )
+}
+
+/// 61 v0.314.25：typed value 参数化的契约 fixture（写值唯一来源 = value）。
+#[cfg(any(test, feature = "mock"))]
+pub fn authorized_command_with(
+    device_id: DeviceId,
+    point_id: PointId,
+    value: eneros_telemetry_model::command::CommandValue,
+) -> AuthorizedCommand {
+    use eneros_telemetry_model::command::ActorKind;
     // WP-26.4：字段私有后经 from_parts 构造（契约套件唯一 fixture 入口）。
     AuthorizedCommand::from_parts(
         device_id,
         point_id,
-        ControlCommand::Single(SingleCommand::On),
         ActorKind::Operator,
         [0xAB; 16],
         [0xCD; 16],
@@ -226,6 +286,8 @@ pub fn authorized_command(device_id: DeviceId, point_id: PointId) -> AuthorizedC
         7,
         3,
         [0x01; 16],
+        value,
+        [0x22; 32],
     )
 }
 

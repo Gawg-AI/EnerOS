@@ -30,6 +30,7 @@ eneros-durable-state = { path = "../../runtime/durable-state" }
 eneros-audit = { path = "../../security/audit" }
 # 61 v0.314.24：receipt_digest = SM3(对端回执帧)（journal 原 receipt 证据绑定）。
 eneros-crypto = { path = "../../security/crypto" }
+sha2 = { version = "0.10.9", default-features = false }
 # 调度结果（能量预算估算）。
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }
 heapless = { version = "0.8", default-features = false }

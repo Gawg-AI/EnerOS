@@ -229,7 +229,6 @@ impl ControlGateway {
         Ok(AuthorizedCommand::from_parts(
             device_id,
             env.point_id,
-            env.command,
             env.actor_kind,
             env.issuer,
             env.correlation_id,
@@ -238,6 +237,8 @@ impl ControlGateway {
             env.fencing_token,
             env.policy_version,
             env.idempotency_key,
+            env.value,
+            env.command_digest(),
         ))
     }
 
@@ -273,7 +274,7 @@ mod tests {
         cmd: ControlCommand,
         ts: u64,
         expiry: u64,
-    ) -> [u8; 172] {
+    ) -> [u8; 181] {
         EnvelopeBuilder::new(id, device, point, cmd, ts, expiry, [0xCD; 16])
             .lease([3u8; 16], 7)
             .policy_version(3)

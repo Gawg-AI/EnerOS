@@ -87,7 +87,7 @@ impl AuditLogger for CaptureLogger {
 fn test_profile() -> eneros_control_gateway::ControlProfile {
     eneros_control_gateway::ControlProfile {
         lease_ttl_secs: 600,
-        ..eneros_control_gateway::ControlProfile::ai_pcc_single(1, 1, 4, [0x47; 16], 7)
+        ..eneros_control_gateway::ControlProfile::ai_pcs_setpoint(1, 1, 4, [0x47; 16], 7)
     }
 }
 

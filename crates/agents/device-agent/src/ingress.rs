@@ -48,6 +48,7 @@ use eneros_metrics::{
     MemoryMetricsStore, MetricDef, MetricType, MetricsCollector, MetricsCollectorImpl, MetricsStore,
 };
 use eneros_protocol_abstract::access::WriteError;
+use eneros_telemetry_model::command::CommandValue;
 use eneros_telemetry_model::quality::QualityFlag;
 use eneros_upa_model::{DeviceId, PointId, PointValue};
 
@@ -225,7 +226,8 @@ pub enum IngressOutcome {
     Applied {
         device_id: DeviceId,
         point_id: PointId,
-        power_kw: f64,
+        /// 实际施加值（61 v0.314.25：来自授权 typed value，非外层载荷）。
+        applied_value: f64,
         /// 独立读回值（WP-40.11：非 WriteOutcome.echoed）。
         echoed: Option<PointValue>,
     },
@@ -234,13 +236,13 @@ pub enum IngressOutcome {
     AppliedReadbackUnavailable {
         device_id: DeviceId,
         point_id: PointId,
-        power_kw: f64,
+        applied_value: f64,
     },
     /// 已落写但读回不符（ACK 成功 ≠ 物理成功 → dispatch `Failed`）。
     AppliedReadbackMismatch {
         device_id: DeviceId,
         point_id: PointId,
-        power_kw: f64,
+        applied_value: f64,
         expected: f64,
         actual: f64,
     },
@@ -579,18 +581,18 @@ impl EnvelopeIngress {
     ) -> IngressOutcome {
         let now_secs = now_ms / 1000;
 
-        // 1. 帧解码（双长度）：蓝图 40 WP-40.8 主路径 = 270B
-        //    `ControlEnvelope`（payload_digest 覆盖域外功率——engine 投递
-        //    的真实线上格式）；24 兼容路径 = 180B `DeliveryFrame`。
-        //    其他长度 → 丢弃 + 计数。
-        let (envelope_bytes, power_kw) =
-            if payload.len() == eneros_control_gateway::wire::CONTROL_ENVELOPE_LEN {
+        // 1. 帧解码（双长度）：蓝图 61 v0.314.25 主路径 = 271B
+        //    `ControlEnvelope` V2（无外层 power——typed value 在内层 HMAC
+        //    域）；24 兼容路径 = 180B `DeliveryFrame`（legacy：外层 power
+        //    不再可信——写值只能来自授权后的 typed value）。
+        let envelope_bytes: alloc::vec::Vec<u8> =
+            if payload.len() == eneros_control_gateway::wire::CONTROL_ENVELOPE_LEN_V2 {
                 match eneros_control_gateway::wire::ControlEnvelope::decode(payload) {
-                    Ok(ce) if ce.verify_payload_digest() => (ce.envelope, ce.power_kw),
+                    Ok(ce) if ce.verify_payload_digest() => ce.envelope.to_vec(),
                     Ok(_) => {
                         return self.deny(
                             DenyClass::Decode,
-                            "control-envelope:payload-digest-mismatch（功率被篡改）",
+                            "control-envelope:payload-digest-mismatch（信封被篡改）",
                             None,
                             now_ms,
                         )
@@ -606,7 +608,11 @@ impl EnvelopeIngress {
                 }
             } else {
                 match DeliveryFrame::decode(payload) {
-                    Ok(f) => (f.envelope, f.power_kw),
+                    Ok(f) => {
+                        // legacy：外层 power 不参与执行（61 红门——写值唯一
+                        // 来源 = 授权 typed value）；信封本体交链复验。
+                        f.envelope.to_vec()
+                    }
                     Err(e) => {
                         return self.deny(DenyClass::Decode, &format!("frame:{e:?}"), None, now_ms)
                     }
@@ -683,16 +689,24 @@ impl EnvelopeIngress {
                         now_ms,
                     );
                 };
-                match info
-                    .adapter
-                    .write_authorized(&cmd, PointValue::Float(power_kw))
-                {
+                // 61 v0.314.25：写值唯一来源 = 授权 typed value（信封
+                // HMAC 域内）；外层载荷/legacy power 不再参与执行。
+                // 工程量视图（审计/读回目标）：数值型取其值，离散取位。
+                let applied_value = match cmd.value() {
+                    CommandValue::ActivePowerKw(v)
+                    | CommandValue::ReactivePowerKvar(v)
+                    | CommandValue::VoltageSetpointV(v)
+                    | CommandValue::CurrentLimitA(v) => v,
+                    CommandValue::SwitchPosition(v) => f64::from(v),
+                    CommandValue::ModeCode(v) => f64::from(v),
+                };
+                match info.adapter.write_authorized(&cmd) {
                     Ok(outcome) => {
                         // 蓝图 40 WP-40.11：独立读回——**不得**回显刚写 payload
                         //（WriteOutcome.echoed 只作诊断记录，不参与验证）。
                         // 读回必须来自独立 read operation（PointAccess）。
                         let _diag_echo = outcome.echoed;
-                        let target = power_kw;
+                        let target = applied_value;
                         let readback = info
                             .adapter
                             .read_point(cmd.point_id())
@@ -747,7 +761,7 @@ impl EnvelopeIngress {
                                 IngressOutcome::Applied {
                                     device_id: cmd.device_id(),
                                     point_id: cmd.point_id(),
-                                    power_kw,
+                                    applied_value,
                                     echoed: readback,
                                 }
                             }
@@ -766,7 +780,7 @@ impl EnvelopeIngress {
                                 IngressOutcome::AppliedReadbackMismatch {
                                     device_id: cmd.device_id(),
                                     point_id: cmd.point_id(),
-                                    power_kw,
+                                    applied_value,
                                     expected: *expected,
                                     actual: *actual,
                                 }
@@ -788,7 +802,7 @@ impl EnvelopeIngress {
                                 IngressOutcome::AppliedReadbackUnavailable {
                                     device_id: cmd.device_id(),
                                     point_id: cmd.point_id(),
-                                    power_kw,
+                                    applied_value,
                                 }
                             }
                         }
@@ -1114,7 +1128,8 @@ mod tests {
     use eneros_control_gateway::lease::LeaseScope;
     use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
     use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
-    use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
+    use eneros_control_gateway::wire::ControlEnvelope;
+    use eneros_telemetry_model::command::{CommandValue, ControlCommand, SingleCommand};
     use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
     use eneros_telemetry_model::unit::PhysicalUnit;
 
@@ -1138,7 +1153,7 @@ mod tests {
             actor_kind: Some(ActorKind::Ai),
             devices: vec![device as u32],
             points: vec![point],
-            kinds: vec![CommandClass::Switch],
+            kinds: vec![CommandClass::Setpoint],
             time_window: (0, 0),
             obligations: vec![],
         })
@@ -1222,7 +1237,31 @@ mod tests {
         idem_key: [u8; 16],
         expiry_offset_secs: u64,
         seq: u64,
-    ) -> [u8; 172] {
+    ) -> [u8; 181] {
+        signed_envelope_kw(
+            key,
+            device,
+            point,
+            token,
+            idem_key,
+            expiry_offset_secs,
+            seq,
+            50.0,
+        )
+    }
+
+    /// 同上，typed value 功率可定制（61 v0.314.25：值在信封 HMAC 域内）。
+    #[allow(clippy::too_many_arguments)]
+    fn signed_envelope_kw(
+        key: &[u8],
+        device: u32,
+        point: u32,
+        token: u64,
+        idem_key: [u8; 16],
+        expiry_offset_secs: u64,
+        seq: u64,
+        power: f64,
+    ) -> [u8; 181] {
         let mut id_bytes = [0u8; 16];
         id_bytes[..8].copy_from_slice(&seq.to_le_bytes());
         EnvelopeBuilder::new(
@@ -1239,28 +1278,23 @@ mod tests {
         .sequence(seq)
         .actor_kind(ActorKind::Ai)
         .idempotency_key(idem_key)
+        .value(CommandValue::ActivePowerKw(power))
         .build(key)
         .encode()
     }
 
-    fn delivery(envelope: [u8; 172], power_kw: f64) -> Vec<u8> {
-        DeliveryFrame { envelope, power_kw }.encode().to_vec()
+    /// V2 ControlEnvelope 字节（无外层 power）。
+    fn delivery(envelope: [u8; 181], _power_kw: f64) -> Vec<u8> {
+        ControlEnvelope::new_v3([0x44; 16], ISSUER, 0, NOW_MS, NOW_MS + 60_000, &envelope)
+            .encode()
+            .to_vec()
     }
 
     /// 270B `ControlEnvelope`（蓝图 40 WP-40.8 主路径——engine 真实投递格式）。
-    fn control_delivery(envelope: [u8; 172], power_kw: f64) -> Vec<u8> {
-        use eneros_control_gateway::wire::ControlEnvelope;
-        ControlEnvelope::new(
-            [0x44; 16],
-            ISSUER,
-            0,
-            NOW_MS,
-            NOW_MS + 60_000,
-            envelope,
-            power_kw,
-        )
-        .encode()
-        .to_vec()
+    fn control_delivery(envelope: [u8; 181], _power_kw: f64) -> Vec<u8> {
+        ControlEnvelope::new_v3([0x44; 16], ISSUER, 0, NOW_MS, NOW_MS + 60_000, &envelope)
+            .encode()
+            .to_vec()
     }
 
     // ===== 用例 1b：270B ControlEnvelope 主路径（engine 投递格式）落写 =====
@@ -1276,7 +1310,7 @@ mod tests {
         let env = signed_envelope(KEY, 1, 1, token, [0x2A; 16], 30, 1);
         let out = ingress.process(&mut devices, &control_delivery(env, 50.0), NOW_MS);
         assert!(
-            matches!(out, IngressOutcome::Applied { power_kw, .. } if power_kw == 50.0),
+            matches!(out, IngressOutcome::Applied { applied_value, .. } if applied_value == 50.0),
             "270B 主路径必须与 180B 同语义落写：{out:?}"
         );
         assert_eq!(ingress.write_count(), 1);
@@ -1285,7 +1319,6 @@ mod tests {
     // ===== 用例 1c：270B 功率被篡改 → payload_digest 拒绝（零写） =====
     #[test]
     fn control_envelope_tampered_power_denied() {
-        use eneros_control_gateway::wire::ControlEnvelope;
         let mut ingress = ingress_with(1, 1);
         let mut devices = registry_with(1, false);
         let token = ingress
@@ -1294,10 +1327,8 @@ mod tests {
             .token_of(&LEASE_ID)
             .unwrap();
         let env = signed_envelope(KEY, 1, 1, token, [0x2B; 16], 30, 1);
-        let mut buf =
-            ControlEnvelope::new([0x44; 16], ISSUER, 0, NOW_MS, NOW_MS + 60_000, env, 50.0)
-                .encode();
-        // 篡改域外功率字节（digest 不重算）。
+        let mut buf = control_delivery(env, 50.0);
+        // 篡改信封尾部字节（V2：尾部在内层信封域，digest 可检出）。
         let last = buf.len() - 1;
         buf[last] ^= 0xFF;
         let out = ingress.process(&mut devices, &buf, NOW_MS);
@@ -1305,7 +1336,7 @@ mod tests {
             out,
             IngressOutcome::Denied {
                 class: DenyClass::Decode,
-                reason: String::from("control-envelope:payload-digest-mismatch（功率被篡改）"),
+                reason: String::from("control-envelope:payload-digest-mismatch（信封被篡改）"),
             }
         );
         assert_eq!(ingress.write_count(), 0, "篡改路径零写");
@@ -1344,7 +1375,7 @@ mod tests {
             IngressOutcome::Applied {
                 device_id: 1,
                 point_id: 1,
-                power_kw: 50.0,
+                applied_value: 50.0,
                 // FIX-24.R3：MockPointDevice write_authorized 回显 echoed。
                 echoed: Some(PointValue::Float(50.0)),
             }
@@ -1429,8 +1460,8 @@ mod tests {
             .token_of(&LEASE_ID)
             .unwrap();
 
-        // 先放行一条（基线）。
-        let env1 = signed_envelope(KEY, 1, 1, token, [0x14; 16], 30, 1);
+        // 先放行一条（基线，10kW）。
+        let env1 = signed_envelope_kw(KEY, 1, 1, token, [0x14; 16], 30, 1, 10.0);
         assert!(matches!(
             ingress.process(&mut devices, &delivery(env1, 10.0), NOW_MS),
             IngressOutcome::Applied { .. }
@@ -1438,7 +1469,7 @@ mod tests {
 
         // 吊销 → 立即生效；同一 token 重发被拒。
         assert!(ingress.lease_service_mut().revoke(&LEASE_ID));
-        let env2 = signed_envelope(KEY, 1, 1, token, [0x15; 16], 30, 2);
+        let env2 = signed_envelope_kw(KEY, 1, 1, token, [0x15; 16], 30, 2, 20.0);
         let out = ingress.process(&mut devices, &delivery(env2, 20.0), NOW_MS);
         assert_eq!(
             out,

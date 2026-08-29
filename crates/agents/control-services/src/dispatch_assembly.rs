@@ -361,7 +361,7 @@ impl eneros_control_dispatch::DeliveryChannel for EipcMasterChannel {
         use alloc::{format, string::String};
 
         use eneros_control_dispatch::ChannelError;
-        // 解码 ControlEnvelope（270B）→ 信封 + 功率域。
+        // 解码 ControlEnvelope V2（271B；61 v0.314.25——无外层 power）。
         let ce = eneros_control_gateway::wire::ControlEnvelope::decode(payload)
             .map_err(|e| ChannelError::Protocol(format!("env:{e:?}")))?;
         if !ce.verify_payload_digest() {
@@ -369,15 +369,15 @@ impl eneros_control_dispatch::DeliveryChannel for EipcMasterChannel {
         }
         let env = eneros_control_gateway::envelope::CommandEnvelope::decode(&ce.envelope)
             .map_err(|e| ChannelError::Protocol(format!("inner:{e:?}")))?;
-        // 装配 drv-svc 写请求：OP_EXECUTE + 载荷子码；17B 载荷 codec 单源
-        // = protocol_abstract::write::*（SPEC-B WP-B.2）。
+        // 装配 drv-svc 写请求：OP_EXECUTE + V2 载荷（55B——typed value +
+        // 语义摘要，writer 侧重算比对；codec 单源 = protocol_abstract::write）。
         use eneros_drv_svc::runtime::{wire, DriverRequest, OP_EXECUTE};
         self.correlation = self.correlation.wrapping_add(1);
         let mut req = DriverRequest::new(self.correlation, OP_EXECUTE);
-        let pld = eneros_protocol_abstract::write::encode_master_write_payload(
+        let pld = eneros_protocol_abstract::write::encode_master_write_payload_v2(
             env.device_id,
             env.point_id,
-            ce.power_kw,
+            env.value,
         );
         req.payload[..pld.len()].copy_from_slice(&pld);
         req.payload_len = pld.len() as u16;

@@ -27,7 +27,22 @@ pub const AI_INVALID: u8 = 0xFF;
 
 /// proposal wire（定长）：plan_id 16 + path 1 + power 8 + ttl 4 + issued 8 +
 /// input_digest 32。
-pub const PROPOSAL_WIRE_LEN: usize = 16 + 1 + 8 + 4 + 8 + 32;
+/// 61 v0.314.25 §3.4：+solve_status 1B（线码：0=Optimal/1=Suboptimal/
+/// 2=Infeasible/3=Unbounded/4=Timeout/5=Error）——状态不再由解码侧
+/// 捏造/升级；非成功状态拒绝成提案。
+pub const PROPOSAL_WIRE_LEN: usize = 16 + 1 + 8 + 4 + 8 + 32 + 1;
+
+/// solve_status → 线码。
+fn solve_status_code(s: &eneros_solver_core::result::SolveStatus) -> u8 {
+    match s {
+        eneros_solver_core::result::SolveStatus::Optimal => 0,
+        eneros_solver_core::result::SolveStatus::Suboptimal => 1,
+        eneros_solver_core::result::SolveStatus::Infeasible => 2,
+        eneros_solver_core::result::SolveStatus::Unbounded => 3,
+        eneros_solver_core::result::SolveStatus::Timeout => 4,
+        eneros_solver_core::result::SolveStatus::Error(_) => 5,
+    }
+}
 
 /// SPEC-SERIES-2026-08-27/E WP-E.4：System1 SOC 死区带**单源**（中点 ± 半宽）。
 ///
@@ -208,6 +223,7 @@ pub fn encode_proposal(p: &ProposedControlPlan) -> [u8; PROPOSAL_WIRE_LEN] {
     out[29..37].copy_from_slice(&p.issued_at_ms.to_le_bytes());
     let digest = p.input_digest.unwrap_or([0u8; 32]);
     out[37..69].copy_from_slice(&digest);
+    out[69] = solve_status_code(&p.schedule.solve_status);
     out
 }
 
@@ -242,14 +258,22 @@ pub fn decode_proposal(buf: &[u8]) -> Option<ProposedControlPlan> {
     } else {
         Some(digest)
     };
-    // 蓝图 55：wire 重建走单时段计划构造器（soc 固定 0.5/Optimal 为
-    // wire 契约既有语义）。
+    // 61 v0.314.25：solve_status 由 wire 承载——非成功状态（Infeasible/
+    // Unbounded/Timeout/Error）拒绝成提案（fail-closed），Suboptimal 如实
+    // 保留（不再升级为 Optimal）。
+    let solve_status = match buf[69] {
+        0 => eneros_solver_core::result::SolveStatus::Optimal,
+        1 => eneros_solver_core::result::SolveStatus::Suboptimal,
+        2..=5 => return None,
+        _ => return None,
+    };
+    // 蓝图 55：wire 重建走单时段计划构造器（soc 固定 0.5 为 wire 契约既有语义）。
     Some(ProposedControlPlan::single_entry(
         plan_id,
         path,
         power_kw,
         0.5,
-        eneros_solver_core::result::SolveStatus::Optimal,
+        solve_status,
         ttl_secs,
         issued_at_ms,
         input_digest,

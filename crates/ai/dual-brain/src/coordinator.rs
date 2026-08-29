@@ -142,8 +142,35 @@ impl<S: Solver> DualBrainCoordinator<S> {
             llm_engine,
             prompt_template: ChargeDischargeTemplate,
             intent_parser: IntentParser::new(config.clone(), SystemState::unknown()),
-            converter: ContractConverter::new(config),
-            validator: SafetyValidator::new(),
+            converter: ContractConverter::new(config.clone()),
+            // 61 v0.314.25 §3.4：保护阈值从类型化配置读取（不再用
+            // SafetyValidator::new() 的演示默认 100kW/200A）——功率帽=
+            // PCS 额定，SOC 窗=配置窗。
+            validator: {
+                let mut v = SafetyValidator::empty();
+                v.add_rule(Box::new(
+                    eneros_safety_validator::ElectricalSafetyRule::new(
+                        config.pcs_power_kw,
+                        // 电流保护限值（A）——独立保护参数，非功率换算；
+                        // 类型化阈值目录（SafetyCatalog）归 v0.314.26 配置化。
+                        200.0,
+                        (340.0, 420.0),
+                        (49.5, 50.5),
+                    ),
+                ));
+                v.add_rule(Box::new(
+                    eneros_safety_validator::ProtectionCoordinationRule::new(
+                        220.0,
+                        440.0,
+                        320.0,
+                        (49.0, 51.0),
+                        // 规则内部按 15min 时段换算（delta/period_hours）——与旧默认 50/0.25=200 同量纲。
+                        config.charge_ramp_kw.max(config.discharge_ramp_kw)
+                            / config.period_hours.max(1e-6),
+                    ),
+                ));
+                v
+            },
             contract_validator: ContractValidator::new(),
             audit: None,
             audit_drop_count: 0,
@@ -475,6 +502,22 @@ impl<S: Solver> DualBrainCoordinator<S> {
 
         let model = EnergyScheduleModel::new(config);
         let schedule = model.parse_result(&solve_result);
+        // 61 v0.314.25 §3.4：solve status gate（慢路径对称）——非成功状态
+        // 拒绝，不进入安全校验/候选产物。
+        if !matches!(
+            solve_result.status,
+            eneros_solver_core::result::SolveStatus::Optimal
+                | eneros_solver_core::result::SolveStatus::Suboptimal
+        ) {
+            return self.reject(
+                now_ms,
+                DecisionPath::Slow,
+                RejectionReason::Validation(alloc::format!(
+                    "solve status {:?} 不接受（非成功状态拒绝）",
+                    solve_result.status
+                )),
+            );
+        }
 
         // Step 6: 安全校验（v0.248.0：真实计时）。
         let t_safety = tic();
@@ -483,17 +526,66 @@ impl<S: Solver> DualBrainCoordinator<S> {
 
         // v0.206.0（P0-17）：安全屏障闭环——Fatal 违规拒绝（passed==false），
         // 不取 clamped_schedule 继续。分类保留：SafetyFatal → 立即上报人工。
+        // 61 v0.314.25 §3.4：clamp 重验闭环——hard 规则的 Critical（含 clamp
+        // 建议）不得直接放行；截断结果作为**新候选计划**重跑全部规则，
+        // 干净才可进入产物（「clamp 未重认证全部拒绝」）。
+        let mut validation = validation;
+        let mut final_schedule = schedule;
         if !validation.passed {
-            return self.reject(
-                now_ms,
-                DecisionPath::Slow,
-                RejectionReason::SafetyFatal(format!(
-                    "safety validation FATAL: {} violation(s)",
-                    validation.violations.len()
-                )),
-            );
+            let has_fatal = validation
+                .violations
+                .iter()
+                .any(|v| v.severity == eneros_safety_validator::Severity::Fatal);
+            if has_fatal || !validation.clamped {
+                return self.reject(
+                    now_ms,
+                    DecisionPath::Slow,
+                    RejectionReason::SafetyFatal(format!(
+                        "safety validation FATAL: {} violation(s)",
+                        validation.violations.len()
+                    )),
+                );
+            }
+            // clamp-only：截断调度重验（有界迭代 ≤4——相邻对 clamp 传播
+            // 需要多轮收敛；仍不干净即拒，不循环放宽阈值）。
+            let mut current = validation.clamped_schedule.clone();
+            let mut re = None;
+            for _ in 0..4 {
+                let Some(clamped) = current.clone() else {
+                    break;
+                };
+                let r = self.validator.validate(&clamped, &state.system);
+                if r.passed && !r.clamped {
+                    re = Some(r);
+                    current = Some(clamped);
+                    break;
+                }
+                if !r.clamped {
+                    current = Some(clamped);
+                    re = Some(r);
+                    break;
+                }
+                current = r.clamped_schedule.clone().or(Some(clamped));
+            }
+            match (re, current) {
+                (Some(re), Some(final_sched)) if re.passed => {
+                    final_schedule = final_sched;
+                    validation = re;
+                }
+                _ => {
+                    return self.reject(
+                        now_ms,
+                        DecisionPath::Slow,
+                        RejectionReason::SafetyFatal(alloc::format!(
+                            "clamped re-validation failed: {} violation(s)",
+                            validation.violations.len()
+                        )),
+                    );
+                }
+            }
+        } else if let Some(clamped) = validation.clamped_schedule.clone() {
+            final_schedule = clamped;
         }
-        let final_schedule = validation.clamped_schedule.clone().unwrap_or(schedule);
 
         // 蓝图 40 WP-40.3：速率/能量/并发预算在唯一 ControlDispatch 的
         // reserve 阶段（步骤 5）执行——协调器只产 Proposal。

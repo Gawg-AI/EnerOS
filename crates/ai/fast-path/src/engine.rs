@@ -89,6 +89,17 @@ impl<S: Solver> RealtimePathEngine<S> {
 
         // 5. 解析结果
         let schedule = model.parse_result(&solve_result);
+        // 61 v0.314.25 §3.4：solve status gate——非成功状态不得解析成计划
+        //（Infeasible/Unbounded/Timeout/Error 与变量缺失 default-fill 全拒）。
+        match solve_result.status {
+            eneros_solver_core::result::SolveStatus::Optimal
+            | eneros_solver_core::result::SolveStatus::Suboptimal => {}
+            ref other => {
+                return Err(FastPathError::SolveError(alloc::format!(
+                    "solve status {other:?} 不接受（非成功状态拒绝）"
+                )))
+            }
+        }
 
         // 6. 安全校验（D12: 传 state.system 给 v0.67.0 SafetyValidator）
         let validation = self.validator.validate(&schedule, &state.system);

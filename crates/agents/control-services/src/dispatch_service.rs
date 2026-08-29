@@ -253,7 +253,7 @@ pub const PROD_POLICY_VERSION: u64 = 3;
 /// 写目标（设备/点）由 45 卷点表 Control 点绑定（svc-config 注入）；
 /// 不可得时调用方传 0/0 fail-closed（default-deny）。
 pub fn prod_profile(device_id: u32, point_id: u32) -> eneros_control_gateway::ControlProfile {
-    let mut profile = eneros_control_gateway::ControlProfile::ai_pcc_single(
+    let mut profile = eneros_control_gateway::ControlProfile::ai_pcs_setpoint(
         device_id,
         point_id,
         PROD_POLICY_VERSION,
@@ -345,7 +345,7 @@ mod tests {
         let key: &[u8] = b"w40-svc-key-000000000000000000000000";
         let profile = eneros_control_gateway::ControlProfile {
             lease_ttl_secs: 600,
-            ..eneros_control_gateway::ControlProfile::ai_pcc_single(
+            ..eneros_control_gateway::ControlProfile::ai_pcs_setpoint(
                 TEST_DEVICE_ID,
                 TEST_POINT_ID,
                 4,

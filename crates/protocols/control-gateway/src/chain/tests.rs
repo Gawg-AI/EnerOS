@@ -87,7 +87,7 @@ fn policy_gen() -> u64 {
 
 /// Build a signed envelope for a PCC close (SingleCommand::On) by an
 /// Operator, riding the active lease.
-fn pcc_close_buf(id: [u8; 16], idem: [u8; 16]) -> [u8; 172] {
+fn pcc_close_buf(id: [u8; 16], idem: [u8; 16]) -> [u8; 181] {
     EnvelopeBuilder::new(
         id,
         1,

@@ -141,9 +141,11 @@ impl SafetyValidator {
 
     fn validate_pcc(&self, cmd: &AuthorizedCommand, ctx: &PlantContext) -> SafetyVerdict {
         // Closing PCC (Single On / Double On) requires grid up + no maintenance lockout.
+        // 61 v0.314.25：模拟量命令无开关形态（None）→ 不构成合闸/使能。
         let is_close = matches!(
             cmd.command(),
-            ControlCommand::Single(SingleCommand::On) | ControlCommand::Double(DoubleCommand::On)
+            Some(ControlCommand::Single(SingleCommand::On))
+                | Some(ControlCommand::Double(DoubleCommand::On))
         );
         if is_close {
             if ctx.maintenance_lockout {
@@ -169,7 +171,8 @@ impl SafetyValidator {
         // Enabling charge (On) when SOC already at/above ceiling → overcharge.
         let enable = matches!(
             cmd.command(),
-            ControlCommand::Single(SingleCommand::On) | ControlCommand::Double(DoubleCommand::On)
+            Some(ControlCommand::Single(SingleCommand::On))
+                | Some(ControlCommand::Double(DoubleCommand::On))
         );
         if enable && ctx.soc_pct >= point.spec.safe_max {
             return SafetyVerdict::Unsafe(String::from("UCA-CHG-001: charge past SOC ceiling"));
@@ -188,7 +191,8 @@ impl SafetyValidator {
     ) -> SafetyVerdict {
         let enable = matches!(
             cmd.command(),
-            ControlCommand::Single(SingleCommand::On) | ControlCommand::Double(DoubleCommand::On)
+            Some(ControlCommand::Single(SingleCommand::On))
+                | Some(ControlCommand::Double(DoubleCommand::On))
         );
         if enable && ctx.soc_pct <= point.spec.safe_min {
             return SafetyVerdict::Unsafe(String::from("UCA-DIS-001: discharge below SOC floor"));
@@ -204,7 +208,8 @@ impl SafetyValidator {
         // UNblocking (turning block Off) while overcurrent → UCA-PCS-001.
         let unblock = matches!(
             cmd.command(),
-            ControlCommand::Single(SingleCommand::Off) | ControlCommand::Double(DoubleCommand::Off)
+            Some(ControlCommand::Single(SingleCommand::Off))
+                | Some(ControlCommand::Double(DoubleCommand::Off))
         );
         if unblock && ctx.overcurrent {
             return SafetyVerdict::Unsafe(String::from(
@@ -223,6 +228,7 @@ impl SafetyValidator {
 mod tests {
     #![allow(clippy::disallowed_macros)]
 
+    use eneros_telemetry_model::command::CommandValue;
     use eneros_telemetry_model::command::{ControlCommand, DoubleCommand, SingleCommand};
     use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
     use eneros_telemetry_model::unit::PhysicalUnit;
@@ -231,10 +237,15 @@ mod tests {
     use crate::envelope::ActorKind;
 
     fn auth(device: u16, point: u32, cmd: ControlCommand) -> AuthorizedCommand {
+        // 61 v0.314.25：命令类别由 typed value 驱动；开关位 → SwitchPosition。
+        let value = match cmd {
+            ControlCommand::Single(SingleCommand::On)
+            | ControlCommand::Double(DoubleCommand::On) => CommandValue::SwitchPosition(1),
+            _ => CommandValue::SwitchPosition(0),
+        };
         AuthorizedCommand::from_parts(
             device,
             point,
-            cmd,
             ActorKind::Agent,
             [0; 16],
             [0; 16],
@@ -243,6 +254,8 @@ mod tests {
             1,
             1,
             [0; 16],
+            value,
+            [0x11; 32],
         )
     }
 

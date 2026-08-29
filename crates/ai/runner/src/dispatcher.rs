@@ -15,9 +15,7 @@
 //! `Offline`，绝不无 token 直投。
 
 use eneros_control_gateway::gateway::AuthorizedCommand;
-use eneros_device_agent::{
-    verify_handshake_response, DeliveryFrame, OutcomeFrame, HANDSHAKE_MARKER,
-};
+use eneros_device_agent::{verify_handshake_response, OutcomeFrame, HANDSHAKE_MARKER};
 use eneros_dual_brain::chain_sink::{DeviceExecError, DeviceExecutor, DeviceReject};
 
 /// EIPC 投递通道抽象（候选 3 落地时迁移点单一——R1：投递器封装为 adapter）。
@@ -122,26 +120,28 @@ impl EnvelopeDispatcher {
 }
 
 impl DeviceExecutor for EnvelopeDispatcher {
-    fn write(
-        &mut self,
-        _cmd: &AuthorizedCommand,
-        envelope: &[u8],
-        power_kw: f64,
-    ) -> Result<(), DeviceExecError> {
+    fn write(&mut self, _cmd: &AuthorizedCommand, envelope: &[u8]) -> Result<(), DeviceExecError> {
         // 1. 首次写前完成握手（有界重试 ≤5；失败 fail-closed → Offline）。
         if self.token.is_none() {
             self.handshake()?;
         }
-        // 2. 构造投递帧（签名信封 + 功率载荷，180B 定长）并投递。
-        let mut env_bytes = [0u8; 172];
+        // 2. 构造 V2 ControlEnvelope（271B；61 v0.314.25——typed value 在
+        //    内层 HMAC 域，外层 power 退役）并投递。
+        let mut env_bytes = [0u8; 181];
         if envelope.len() != env_bytes.len() {
             return Err(DeviceExecError::Comm(String::from("bad envelope length")));
         }
         env_bytes.copy_from_slice(envelope);
-        let payload = DeliveryFrame {
-            envelope: env_bytes,
-            power_kw,
-        }
+        // 服务级时间窗（单调毫秒基准；issuer/epoch 为 runner 站内标识）。
+        let now_ms = 0u64; // dispatcher 无时钟注入——沿用既有 delivery 语义
+        let payload = eneros_control_gateway::wire::ControlEnvelope::new_v3(
+            _cmd.correlation_id(),
+            [0x41; 16],
+            0,
+            now_ms,
+            now_ms.saturating_add(60_000),
+            &env_bytes,
+        )
         .encode();
         let resp = self
             .channel
@@ -213,18 +213,18 @@ mod tests {
         };
         let mut d = EnvelopeDispatcher::new(Box::new(ch), b"k", [0u8; 16], 5).with_backoff(|_| 0);
         let cmd = test_cmd();
-        let r = d.write(&cmd, &[0u8; 172], 50.0);
+        let r = d.write(&cmd, &[0u8; 181]);
         // 握手不可用 = 写不可用：禁止无 token 直投（§6.3）。
         assert_eq!(r, Err(DeviceExecError::Offline));
         assert_eq!(calls.get(), 5, "全部重试都花在握手，未发生直投");
     }
 
     fn test_cmd() -> AuthorizedCommand {
-        use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
+        use eneros_telemetry_model::command::{CommandValue, ControlCommand, SingleCommand};
+        let _ = (ControlCommand::Single(SingleCommand::On), 0u8);
         AuthorizedCommand::from_parts(
             1,
             10,
-            ControlCommand::Single(SingleCommand::On),
             eneros_telemetry_model::command::ActorKind::Ai,
             [0u8; 16],
             [0u8; 16],
@@ -233,6 +233,8 @@ mod tests {
             1,
             1,
             [0u8; 16],
+            CommandValue::ActivePowerKw(50.0),
+            [0x66; 32],
         )
     }
 }

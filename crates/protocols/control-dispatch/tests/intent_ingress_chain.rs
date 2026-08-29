@@ -43,7 +43,7 @@ fn now_ms() -> u64 {
 fn test_profile() -> eneros_control_gateway::ControlProfile {
     eneros_control_gateway::ControlProfile {
         lease_ttl_secs: 600,
-        ..eneros_control_gateway::ControlProfile::ai_pcc_single(
+        ..eneros_control_gateway::ControlProfile::ai_pcs_setpoint(
             DEVICE_ID, POINT_ID, 4, LEASE_ID, EPOCH_SEED,
         )
     }

@@ -178,11 +178,30 @@ impl Iec104Slave {
     /// `common_addr → device_id`、`ioa → point_id`、命令值一致。任一不匹配或未安装
     /// 授权 → 拒绝（默认 deny）。
     fn write_authorized(&self, common_addr: u16, ioa: u32, cmd: &ControlCommand) -> bool {
+        use eneros_telemetry_model::command::{DoubleCommand, SingleCommand};
+        // 授权开关位与来令开关语义匹配：Single/Double 同位等效（1=合 On，
+        // 0=分 Off）；模拟量命令无开关形态 → 与任何 ControlCommand 不匹配。
+        let matches = |pos: u8, cmd: &ControlCommand| {
+            matches!(
+                (pos, cmd),
+                (1, ControlCommand::Single(SingleCommand::On))
+                    | (1, ControlCommand::Double(DoubleCommand::On))
+                    | (0, ControlCommand::Single(SingleCommand::Off))
+                    | (0, ControlCommand::Double(DoubleCommand::Off))
+            )
+        };
         match &self.authorized_write {
             None => false,
             Some(auth) => {
                 // （蓝图/24 D4：auth.device_id() 已类型化为 u16，与 common_addr 同宽直比）
-                auth.device_id() == common_addr && auth.point_id() == ioa && &auth.command() == cmd
+                auth.device_id() == common_addr
+                    && auth.point_id() == ioa
+                    && match auth.value() {
+                        eneros_telemetry_model::command::CommandValue::SwitchPosition(pos) => {
+                            matches(pos, cmd)
+                        }
+                        _ => false,
+                    }
             }
         }
     }
@@ -1095,10 +1114,16 @@ mod tests {
     /// 构造一条与 (common_addr, ioa, cmd) 匹配的 AuthorizedCommand (CTL-004)。
     fn auth_for(common_addr: u16, ioa: u32, cmd: ControlCommand) -> AuthorizedCommand {
         // （蓝图/24 D4：device_id 已类型化为 u16，与 common_addr 同宽）
+        // 61 v0.314.25：开关位 → SwitchPosition（值驱动类别）。
+        use eneros_telemetry_model::command::{CommandValue, DoubleCommand, SingleCommand};
+        let value = match cmd {
+            ControlCommand::Single(SingleCommand::On)
+            | ControlCommand::Double(DoubleCommand::On) => CommandValue::SwitchPosition(1),
+            _ => CommandValue::SwitchPosition(0),
+        };
         AuthorizedCommand::from_parts(
             common_addr,
             ioa,
-            cmd,
             eneros_control_gateway::ActorKind::Operator,
             [0xCD; 16],
             [1; 16],
@@ -1107,6 +1132,8 @@ mod tests {
             7,
             3,
             [4; 16],
+            value,
+            [0x44; 32],
         )
     }
 

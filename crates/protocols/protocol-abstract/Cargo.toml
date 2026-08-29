@@ -14,3 +14,5 @@ eneros-upa-model = { path = "../upa-model" }
 # 蓝图/24 D1：AuthorizedWriter 引用 AuthorizedCommand（下移至共享模型层，
 # 方向向下，不构成对 control-gateway 的反向依赖——§7.3 门禁）。
 eneros-telemetry-model = { path = "../telemetry-model" }
+
+sha2 = { version = "0.10.9", default-features = false }

@@ -131,8 +131,6 @@ impl OverrideAuthority {
 mod tests {
     #![allow(clippy::disallowed_macros)]
 
-    use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
-
     use super::*;
     use crate::envelope::ActorKind;
     use crate::gateway::AuthorizedCommand;
@@ -141,7 +139,6 @@ mod tests {
         AuthorizedCommand::from_parts(
             1,
             point,
-            ControlCommand::Single(SingleCommand::On),
             actor,
             [0; 16],
             [0; 16],
@@ -150,6 +147,8 @@ mod tests {
             1,
             1,
             [0; 16],
+            eneros_telemetry_model::command::CommandValue::SwitchPosition(1),
+            [0x11; 32],
         )
     }
 

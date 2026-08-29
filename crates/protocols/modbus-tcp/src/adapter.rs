@@ -204,11 +204,7 @@ impl<T: TcpTransport> PointAccess for ModbusTcpAdapter<T> {
 }
 
 impl<T: TcpTransport> AuthorizedWriter for ModbusTcpAdapter<T> {
-    fn write_authorized(
-        &mut self,
-        cmd: &AuthorizedCommand,
-        value: PointValue,
-    ) -> Result<WriteOutcome, WriteError> {
+    fn write_authorized(&mut self, cmd: &AuthorizedCommand) -> Result<WriteOutcome, WriteError> {
         // 蓝图/24 §6.1：命令点/设备匹配校验通过后才落写；不匹配 →
         // CommandMismatch，设备状态不变。
         if cmd.device_id() != self.device_id {
@@ -217,6 +213,8 @@ impl<T: TcpTransport> AuthorizedWriter for ModbusTcpAdapter<T> {
         if self.find_mapping(cmd.point_id()).is_none() {
             return Err(WriteError::CommandMismatch);
         }
+        // 61 v0.314.25：写值唯一来源 = cmd.value()。
+        let value = cmd.value().to_point_value();
         // 篡改防御：载荷类型与点类型矛盾（Analog 寄存器只接受数值载荷）。
         if !matches!(
             value,

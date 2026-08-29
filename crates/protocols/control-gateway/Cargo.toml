@@ -8,4 +8,6 @@ description = "EnerOS 控制网关 — 写命令授权信封 codec (CTL-003) + �
 
 [dependencies]
 eneros-crypto = { path = "../../security/crypto" }
+# 61 v0.314.25：command_digest = SHA-256（与审计链/UEFI SBOM 同算法族）。
+sha2 = { version = "0.10.9", default-features = false }
 eneros-telemetry-model = { path = "../telemetry-model" }

@@ -137,16 +137,14 @@ impl PointAccess for VirtualPcsDevice {
 }
 
 impl AuthorizedWriter for VirtualPcsDevice {
-    fn write_authorized(
-        &mut self,
-        cmd: &AuthorizedCommand,
-        value: PointValue,
-    ) -> Result<WriteOutcome, WriteError> {
+    fn write_authorized(&mut self, cmd: &AuthorizedCommand) -> Result<WriteOutcome, WriteError> {
         // 设备/点匹配二次校验（与协议 adapter 同契约：不匹配零副作用）。
         if cmd.device_id() != self.device_id || cmd.point_id() != POINT_POWER {
             return Err(WriteError::CommandMismatch);
         }
-        let v = match value {
+        // 61 v0.314.25：写值唯一来源 = cmd.value()（ActivePowerKw→Float；
+        // SwitchPosition→Int 后视作 1.0/0.0 工程量）。
+        let v = match cmd.value().to_point_value() {
             PointValue::Float(f) => f,
             PointValue::Int(i) => i as f64,
             _ => return Err(WriteError::Unauthorized),
@@ -200,8 +198,7 @@ mod tests {
         // AuthorizedCommand 私有构造——经 from_parts（#[doc(hidden)]
         // 测试构造口，生产唯一构造点是 ControlGateway::authorize）。
         let cmd = test_command(VIRTUAL_PCS_DEVICE_ID, POINT_POWER);
-        dev.write_authorized(&cmd, PointValue::Float(5.0))
-            .expect("write");
+        dev.write_authorized(&cmd).expect("write");
         assert_eq!(dev.write_count(), 1);
         // 独立读回：read_point 是独立操作，值来自寄存器（非回显参数）。
         let dp = dev.read_point(POINT_POWER).expect("readback");
@@ -214,16 +211,14 @@ mod tests {
         let mut dev = VirtualPcsDevice::new(VIRTUAL_PCS_DEVICE_ID, now);
         let wrong_point = test_command(VIRTUAL_PCS_DEVICE_ID, POINT_SOC);
         assert!(matches!(
-            dev.write_authorized(&wrong_point, PointValue::Float(1.0)),
+            dev.write_authorized(&wrong_point),
             Err(WriteError::CommandMismatch)
         ));
-        let cmd = test_command(VIRTUAL_PCS_DEVICE_ID, POINT_POWER);
+        // 61 v0.314.25：NaN 值在信封解码层 fail-closed（from_tag_bits 拒绝
+        // 非有限浮点）——设备层对非法编码值拒绝保留为纵深防御。
+        let nan_cmd = test_command_kw(VIRTUAL_PCS_DEVICE_ID, POINT_POWER, f64::NAN);
         assert!(matches!(
-            dev.write_authorized(&cmd, PointValue::Bool(true)),
-            Err(WriteError::Unauthorized)
-        ));
-        assert!(matches!(
-            dev.write_authorized(&cmd, PointValue::Float(f64::NAN)),
+            dev.write_authorized(&nan_cmd),
             Err(WriteError::Unauthorized)
         ));
         assert_eq!(dev.write_count(), 0, "拒绝路径零副作用");
@@ -231,11 +226,15 @@ mod tests {
     }
 
     fn test_command(device: DeviceId, point: PointId) -> AuthorizedCommand {
-        use eneros_telemetry_model::command::{ActorKind, ControlCommand, SingleCommand};
+        test_command_kw(device, point, 5.0)
+    }
+
+    /// 61 v0.314.25：typed value 参数化（写值唯一来源 = cmd.value()）。
+    fn test_command_kw(device: DeviceId, point: PointId, power: f64) -> AuthorizedCommand {
+        use eneros_telemetry_model::command::{ActorKind, CommandValue};
         AuthorizedCommand::from_parts(
             device,
             point,
-            ControlCommand::Single(SingleCommand::On),
             ActorKind::Ai,
             [0u8; 16],
             [9u8; 16],
@@ -244,6 +243,8 @@ mod tests {
             0,
             1,
             [0u8; 16],
+            CommandValue::ActivePowerKw(power),
+            [0x33; 32],
         )
     }
 }

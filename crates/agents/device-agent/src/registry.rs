@@ -333,11 +333,7 @@ impl PointAccessExt for MockPointDevice {
 
 #[cfg(any(test, feature = "mock"))]
 impl AuthorizedWriter for MockPointDevice {
-    fn write_authorized(
-        &mut self,
-        cmd: &AuthorizedCommand,
-        value: PointValue,
-    ) -> Result<WriteOutcome, WriteError> {
+    fn write_authorized(&mut self, cmd: &AuthorizedCommand) -> Result<WriteOutcome, WriteError> {
         // 蓝图/24 §6.1：命令点/设备匹配校验通过后才落写；不匹配 → 拒绝。
         if cmd.device_id() != self.device_id {
             return Err(WriteError::CommandMismatch);
@@ -348,6 +344,8 @@ impl AuthorizedWriter for MockPointDevice {
         if self.offline || self.write_fail {
             return Err(WriteError::Protocol(ProtocolError::WriteFailed));
         }
+        // 61 v0.314.25：写值唯一来源 = cmd.value()。
+        let value = cmd.value().to_point_value();
         // 篡改防御：载荷类型与点类型矛盾 → 拒绝。
         let point_type_ok = self.points.get(&cmd.point_id()).is_some_and(|p| {
             matches!(
@@ -394,7 +392,6 @@ impl eneros_protocol_abstract::access::AuthorizedWriter for UnavailableAdapter {
     fn write_authorized(
         &mut self,
         _cmd: &eneros_protocol_abstract::AuthorizedCommand,
-        _value: eneros_upa_model::PointValue,
     ) -> Result<
         eneros_protocol_abstract::access::WriteOutcome,
         eneros_protocol_abstract::access::WriteError,

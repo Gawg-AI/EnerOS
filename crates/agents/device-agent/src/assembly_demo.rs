@@ -26,7 +26,7 @@ use crate::ingress::{
     METRIC_DENIED_LEGACY, METRIC_IDEMPOTENT_HIT, METRIC_WRITE_ALLOWED,
 };
 use crate::registry::MockPointDevice;
-use crate::{DeliveryFrame, DeviceAgent, MockCommandSource};
+use crate::{DeviceAgent, MockCommandSource};
 
 /// 从 configs/control-write.toml 读取预置 lease_id（16 字节 hex）。
 fn read_lease_id_from_config() -> [u8; 16] {
@@ -73,7 +73,7 @@ fn assembly_injection_path_and_metric_samples() {
         actor_kind: Some(ActorKind::Ai),
         devices: vec![device_id as u32],
         points: vec![point_id],
-        kinds: vec![CommandClass::Switch],
+        kinds: vec![CommandClass::Setpoint],
         time_window: (0, 0),
         obligations: vec![],
     });
@@ -168,13 +168,20 @@ fn assembly_injection_path_and_metric_samples() {
     .sequence(1)
     .actor_kind(ActorKind::Ai)
     .idempotency_key([0x55; 16])
+    // 61 v0.314.25：typed value 进 HMAC 域。
+    .value(eneros_telemetry_model::command::CommandValue::ActivePowerKw(25.0))
     .build(&key)
     .encode();
-    let payload = DeliveryFrame {
-        envelope: env,
-        power_kw: 25.0,
-    }
-    .encode();
+    let payload = eneros_control_gateway::wire::ControlEnvelope::new_v3(
+        [0x44; 16],
+        [0xCD; 16],
+        0,
+        now_secs * 1000,
+        (now_secs + 30) * 1000,
+        &env,
+    )
+    .encode()
+    .to_vec();
     let out = agent.process_envelope(&payload, 1_700_000_000_000);
     assert!(
         matches!(out, IngressOutcome::Applied { .. }),
@@ -184,11 +191,16 @@ fn assembly_injection_path_and_metric_samples() {
     // ---- 篡改信封 → 拒绝（HMAC）+ 拒绝指标样例输出 ----
     let mut tampered = env;
     tampered[45] ^= 0xFF;
-    let payload2 = DeliveryFrame {
-        envelope: tampered,
-        power_kw: 25.0,
-    }
-    .encode();
+    let payload2 = eneros_control_gateway::wire::ControlEnvelope::new_v3(
+        [0x44; 16],
+        [0xCD; 16],
+        0,
+        now_secs * 1000,
+        (now_secs + 30) * 1000,
+        &tampered,
+    )
+    .encode()
+    .to_vec();
     let out2 = agent.process_envelope(&payload2, 1_700_000_000_000);
     assert!(
         matches!(

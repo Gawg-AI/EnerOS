@@ -372,7 +372,7 @@ pub fn build_production_sink(
     // build_chain_with 内部硬编码 dev1/pt10 而信封用调用方 device/point，
     // 不一致时复验必拒（潜在缺陷，随档案化消除）。
     // D7：fencing epoch 以平台重启计数为种子（与 device-agent 同源）。
-    let profile = eneros_control_gateway::ControlProfile::ai_pcc_single(
+    let profile = eneros_control_gateway::ControlProfile::ai_pcs_setpoint(
         device_id,
         point_id,
         policy_version,
@@ -423,7 +423,7 @@ const CHAIN_POLICY_VERSION: u64 = 1;
 /// 演示自洽链同源档案（蓝图 55）：dev1/pt10、租约 [`CHAIN_LEASE_ID`]、
 /// 代次 [`CHAIN_POLICY_VERSION`]；epoch 缺省 0 ⇒ 首签 token = 1。
 fn demo_profile() -> eneros_control_gateway::ControlProfile {
-    eneros_control_gateway::ControlProfile::ai_pcc_single(
+    eneros_control_gateway::ControlProfile::ai_pcs_setpoint(
         1,
         10,
         CHAIN_POLICY_VERSION,
@@ -533,6 +533,9 @@ mod tests {
 
         let outcome = coord.execute(&state, 1000);
         let DecisionOutcome::Proposal(plan) = outcome else {
+            if let DecisionOutcome::Rejected(r) = &outcome {
+                panic!("normal 场景必须产出 Proposal: {r:?}");
+            }
             panic!("normal 场景必须产出 Proposal: {outcome:?}");
         };
         assert!(!plan.schedule.schedule.is_empty());
@@ -699,7 +702,6 @@ mod tests {
         fn write_authorized(
             &mut self,
             cmd: &eneros_protocol_abstract::AuthorizedCommand,
-            value: PointValue,
         ) -> Result<WriteOutcome, WriteError> {
             if cmd.device_id() != self.device_id {
                 return Err(WriteError::CommandMismatch);
@@ -707,6 +709,8 @@ mod tests {
             if !self.points.contains_key(&cmd.point_id()) {
                 return Err(WriteError::CommandMismatch);
             }
+            // 61 v0.314.25：写值唯一来源 = cmd.value()。
+            let value = cmd.value().to_point_value();
             let echoed = value.clone();
             if let PointValue::Float(v) = value {
                 self.points.insert(cmd.point_id(), v);
@@ -731,7 +735,7 @@ mod tests {
                 actor_kind: Some(ActorKind::Ai),
                 devices: vec![1],
                 points: vec![10],
-                kinds: vec![CommandClass::Switch],
+                kinds: vec![CommandClass::Setpoint],
                 time_window: (0, 0),
                 obligations: vec![],
             });
@@ -808,22 +812,23 @@ mod tests {
             let out = self
                 .ingress
                 .process(&mut self.devices, payload, NOW_SECS * 1000);
-            if let eneros_device_agent::IngressOutcome::Applied { power_kw, .. } = &out {
-                self.applied.borrow_mut().push(*power_kw);
+            if let eneros_device_agent::IngressOutcome::Applied { applied_value, .. } = &out {
+                self.applied.borrow_mut().push(*applied_value);
             }
             Ok(outcome_to_frame(&out).encode().to_vec())
         }
     }
 
-    /// 篡改注入通道：转发前翻转信封 device_id 字节（HMAC 覆盖区）。
+    /// 篡改注入通道：转发前翻转内层信封字节（payload digest + HMAC 双覆盖区）。
     struct TamperChannel {
         inner: InMemoryChannel,
     }
     impl DeliveryChannel for TamperChannel {
         fn request(&mut self, target: &str, payload: &[u8]) -> Result<Vec<u8>, ChannelError> {
             let mut p = payload.to_vec();
-            if p != HANDSHAKE_MARKER && p.len() > 45 {
-                p[45] ^= 0xFF;
+            // V2 ControlEnvelope：内层信封从偏移 90 开始（135 落在信封头）。
+            if p != HANDSHAKE_MARKER && p.len() > 135 {
+                p[135] ^= 0xFF;
             }
             self.inner.request(target, &p)
         }
@@ -930,11 +935,13 @@ mod tests {
                 timestamp: NOW_SECS * 1000,
             })
             .expect_err("篡改信封必须被拒");
-        // 结构化拒绝原因经 DispatchError 文本可断言（候选 5 将直接消费载荷）。
+        // 结构化拒绝原因经 DispatchError 文本可断言。61 v0.314.25：篡改在
+        // 最早的防线（外层 payload digest）被检出 → Rejected(Decode)；
+        // HMAC 复验为后续纵深防线（未到达即已拒）。
         let msg = format!("{err:?}");
         assert!(
-            msg.contains("Rejected(Hmac)"),
-            "拒绝原因必须结构化传递（Hmac），got: {msg}"
+            msg.contains("Rejected(Decode)"),
+            "拒绝原因必须结构化传递（Decode），got: {msg}"
         );
         assert_eq!(sink.write_count(), 0, "被拒命令不得计入成功");
     }
@@ -984,7 +991,7 @@ mod tests {
         struct CaptureChannel {
             inner: InMemoryChannel,
             handshake_token: std::rc::Rc<std::cell::RefCell<Option<u64>>>,
-            envelopes: std::rc::Rc<std::cell::RefCell<Vec<[u8; 172]>>>,
+            envelopes: std::rc::Rc<std::cell::RefCell<Vec<[u8; 181]>>>,
         }
         impl DeliveryChannel for CaptureChannel {
             fn request(&mut self, t: &str, payload: &[u8]) -> Result<Vec<u8>, ChannelError> {
@@ -995,10 +1002,12 @@ mod tests {
                     }
                     return Ok(resp);
                 }
-                if payload.len() >= 172 {
-                    let mut env = [0u8; 172];
-                    env.copy_from_slice(&payload[..172]);
-                    self.envelopes.borrow_mut().push(env);
+                // 61 v0.314.25：捕获内层 V3 信封（181B）——ControlEnvelope
+                // 前缀不再是信封本体。
+                if payload.len() == 271 {
+                    if let Ok(ce) = eneros_control_gateway::wire::ControlEnvelope::decode(payload) {
+                        self.envelopes.borrow_mut().push(ce.envelope);
+                    }
                 }
                 self.inner.request(t, payload)
             }
@@ -1113,9 +1122,6 @@ mod tests {
         let cmd = eneros_control_gateway::gateway::AuthorizedCommand::from_parts(
             1,
             10,
-            eneros_telemetry_model::command::ControlCommand::Single(
-                eneros_telemetry_model::command::SingleCommand::On,
-            ),
             ActorKind::Ai,
             [0u8; 16],
             [0u8; 16],
@@ -1124,8 +1130,10 @@ mod tests {
             1,
             1,
             [0u8; 16],
+            eneros_telemetry_model::command::CommandValue::ActivePowerKw(50.0),
+            [0x55; 32],
         );
-        let r = d.write(&cmd, &[0u8; 172], 50.0);
+        let r = d.write(&cmd, &[0u8; 181]);
         assert_eq!(
             r,
             Err(DeviceExecError::Rejected(DeviceReject::Hmac)),

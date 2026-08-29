@@ -26,10 +26,9 @@ use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
 use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
 use eneros_telemetry_model::unit::PhysicalUnit;
 
-use crate::delivery::DeliveryFrame;
 use crate::device_type::DeviceType;
 use crate::ingress::{
-    verify_handshake_response, EnvelopeIngress, IngressOutcome, METRIC_DENIED_HMAC,
+    verify_handshake_response, EnvelopeIngress, IngressOutcome, METRIC_DENIED_DECODE,
     METRIC_WRITE_ALLOWED,
 };
 use crate::registry::MockPointDevice;
@@ -52,7 +51,7 @@ fn assembled_agent() -> (DeviceAgent, [u8; 16], u64) {
         actor_kind: Some(ActorKind::Ai),
         devices: vec![1],
         points: vec![10],
-        kinds: vec![CommandClass::Switch],
+        kinds: vec![CommandClass::Setpoint],
         time_window: (0, 0),
         obligations: vec![],
     });
@@ -128,9 +127,26 @@ fn assembled_agent() -> (DeviceAgent, [u8; 16], u64) {
 
 /// 构造签名信封（签发侧语义：与 runner ChainCommandSink 同构）。
 fn signed_envelope(token: u64, seq: u64, idem: [u8; 16], power: f64) -> Vec<u8> {
+    let inner = signed_envelope_inner(token, seq, idem, power);
+    eneros_control_gateway::wire::ControlEnvelope::new_v3(
+        [0x44; 16],
+        ISSUER,
+        0,
+        now_secs() * 1000,
+        (now_secs() + 30) * 1000,
+        &inner,
+    )
+    .encode()
+    .to_vec()
+}
+
+/// 内层 V3 信封（181B；场景级篡改负例直接操作信封字节）。
+fn signed_envelope_inner(token: u64, seq: u64, idem: [u8; 16], power: f64) -> [u8; 181] {
     let mut id_bytes = [0u8; 16];
     id_bytes[..8].copy_from_slice(&seq.to_le_bytes());
-    let env = EnvelopeBuilder::new(
+    // 61 v0.314.25：typed value = ActivePowerKw(power)（负值=充电），值在
+    // 信封 HMAC 域；投递帧 = V2 ControlEnvelope（无外层 power）。
+    EnvelopeBuilder::new(
         id_bytes,
         1,
         10,
@@ -144,14 +160,9 @@ fn signed_envelope(token: u64, seq: u64, idem: [u8; 16], power: f64) -> Vec<u8> 
     .sequence(seq)
     .actor_kind(ActorKind::Ai)
     .idempotency_key(idem)
+    .value(eneros_telemetry_model::command::CommandValue::ActivePowerKw(power))
     .build(KEY)
-    .encode();
-    DeliveryFrame {
-        envelope: env,
-        power_kw: power,
-    }
     .encode()
-    .to_vec()
 }
 
 /// 场景 ①：AI 决策 → 链 → 设备写成功（含回读）。
@@ -161,7 +172,13 @@ fn scenario1_ai_decision_to_device_write_with_readback() {
     let payload = signed_envelope(token, 1, [0x01; 16], 50.0);
     let out = agent.process_envelope(&payload, NOW_MS);
     assert!(
-        matches!(out, IngressOutcome::Applied { power_kw: 50.0, .. }),
+        matches!(
+            out,
+            IngressOutcome::Applied {
+                applied_value: 50.0,
+                ..
+            }
+        ),
         "场景①：AI 信封必须落写成功: {out:?}"
     );
     // 回读：设备 power_setpoint 值 == 50.0（经 PointAccess 读回）。
@@ -182,19 +199,20 @@ fn scenario1_ai_decision_to_device_write_with_readback() {
 fn scenario2_tampered_envelope_denied_with_audit_trail() {
     let (mut agent, _lease, token) = assembled_agent();
     let mut payload = signed_envelope(token, 1, [0x02; 16], 50.0);
-    payload[45] ^= 0xFF; // 篡改信封 device_id 字节（HMAC 覆盖区）
+    payload[95] ^= 0xFF; // 篡改内层信封头部字节（外层 digest 覆盖区，271B 布局）
     let out = agent.process_envelope(&payload, NOW_MS);
     assert!(
         matches!(
             out,
             IngressOutcome::Denied {
-                class: crate::ingress::DenyClass::Hmac,
+                class: crate::ingress::DenyClass::Decode,
                 ..
             }
         ),
         "场景②：篡改信封必须被拒: {out:?}"
     );
-    assert_eq!(agent.ingress.metric_total(METRIC_DENIED_HMAC, NOW_MS), 1);
+    // 61 v0.314.25：外层 digest 先于内层 HMAC 检出 → Decode 指标。
+    assert_eq!(agent.ingress.metric_total(METRIC_DENIED_DECODE, NOW_MS), 1);
     // 审计留痕：WriteDenied 事件已入链（LeaseGranted + HandshakeCompleted
     // + WriteDenied）。
     assert_eq!(agent.ingress.audit_entry_count(), 3, "篡改拒绝必须审计留痕");
@@ -226,7 +244,7 @@ fn scenario3_local_lease_write_success_without_cloud() {
         matches!(
             out,
             IngressOutcome::Applied {
-                power_kw: -25.0,
+                applied_value: -25.0,
                 ..
             }
         ),
@@ -245,8 +263,20 @@ fn scenario4_all_metrics_visible_in_telemetry_export() {
     // 驱动一次允许 + 一次拒绝，让各指标出现。
     let ok_payload = signed_envelope(token, 1, [0x04; 16], 10.0);
     let _ = agent.process_envelope(&ok_payload, NOW_MS);
-    let mut bad_payload = signed_envelope(token, 2, [0x05; 16], 10.0);
-    bad_payload[45] ^= 0xFF;
+    // HMAC 负例：篡改内层信封后**重算外层 digest**（模拟有摘要能力无密钥
+    // 的攻击者）——decode 通过，HMAC 复验拒绝。
+    let mut inner = signed_envelope_inner(token, 2, [0x05; 16], 10.0);
+    inner[45] ^= 0xFF;
+    let bad_payload = eneros_control_gateway::wire::ControlEnvelope::new_v3(
+        [0x44; 16],
+        ISSUER,
+        0,
+        now_secs() * 1000,
+        (now_secs() + 30) * 1000,
+        &inner,
+    )
+    .encode()
+    .to_vec();
     let _ = agent.process_envelope(&bad_payload, NOW_MS);
     agent.ingress.record_legacy_denied(NOW_MS);
 

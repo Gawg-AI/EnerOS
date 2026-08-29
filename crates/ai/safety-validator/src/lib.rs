@@ -620,15 +620,16 @@ mod tests {
             !electrical_violations.is_empty(),
             "expected electrical violations"
         );
-        // 无 Fatal（passed=true）
+        // 无 Fatal；但 61 v0.314.25：hard 规则（electrical_safety）的
+        // Critical 也拒绝——clamped 截断是建议，不是放行。
         let has_fatal = result
             .violations
             .iter()
             .any(|v| v.severity == Severity::Fatal);
         assert!(!has_fatal);
         assert!(
-            result.passed,
-            "passed should be true (no Fatal); violations={}",
+            !result.passed,
+            "hard Critical 必须 passed=false；violations={}",
             result.violations.len()
         );
         // 验证截断后值。31-review（AI-05）：protection 爬坡调整在 electrical 截断后

@@ -19,15 +19,19 @@
 //! 读回已验证（物理达到目标）→ `Committed`；读回不可得 → `Indeterminate`
 //! （写可能已发生，不得猜成功）；读回不符 → `Failed`。
 
-use crate::envelope::{CommandEnvelope, ENVELOPE_LEN};
+use crate::envelope::{CommandEnvelope, ENVELOPE_LEN, ENVELOPE_LEN_V3};
 
-/// 线上信封 schema 版本。
+/// 线上信封 schema 版本（V1 legacy：外层带 power_kw——61 v0.314.25 起退役）。
 pub const CONTROL_SCHEMA: u16 = 1;
+/// 线上信封 schema V2（61 v0.314.25）：typed value 已在内层信封 HMAC 域，
+/// **删除外层 power_kw**——第二执行真相不复存在；digest = SM3(envelope)。
+pub const CONTROL_SCHEMA_V2: u16 = 2;
 
-/// ControlEnvelope 定长（schema 2 + correlation 16 + issuer_service 16 +
-/// issuer_epoch 8 + issued_at 8 + expires_at 8 + digest 32 + envelope 172 +
-/// power 8）。
+/// V1 legacy 定长（270B；仅解码迁移）。
 pub const CONTROL_ENVELOPE_LEN: usize = 270;
+/// V2 定长（schema 2 + correlation 16 + issuer_service 16 + issuer_epoch 8 +
+/// issued_at 8 + expires_at 8 + digest 32 + envelope 181）。
+pub const CONTROL_ENVELOPE_LEN_V2: usize = 271;
 
 /// 线上信封错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,42 +80,70 @@ pub struct ControlEnvelope {
     pub issued_at_ms: u64,
     /// 过期时刻（单调毫秒；与内层信封 expiry 一致）。
     pub expires_at_ms: u64,
-    /// `SM3(inner_envelope ‖ power_kw LE)`——功率载荷完整性。
+    /// `SM3(envelope)`（V2）；V1 legacy 为 SM3(envelope ‖ power)。
     pub payload_digest: [u8; 32],
-    /// 已签名 CommandEnvelope（172B，HMAC 签名域）。
-    pub envelope: [u8; ENVELOPE_LEN],
-    /// 功率载荷（kW，正=放电/合，负=充电/分）。
-    pub power_kw: f64,
+    /// 已签名 CommandEnvelope（V2=181B；V1 legacy=172B 左对齐零填充）。
+    pub envelope: [u8; ENVELOPE_LEN_V3],
+    /// 内层信封线上长度（V2=181；V1 legacy=172）。
+    pub envelope_wire_len: u16,
 }
 
 impl ControlEnvelope {
-    /// 构造并计算 payload 摘要（`SM3(envelope ‖ power_kw LE)`）。
-    pub fn new(
+    /// V1 legacy 构造已删除（61 v0.314.25：V1 仅解码迁移；生产与测试
+    /// 一律 [`Self::new_v3`]——测试字节可用 [`Self::encode_v1_legacy_bytes`]）。
+    /// V1 legacy 字节构造（`#[cfg(test)]`：迁移解码测试用）。
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_v1_legacy_bytes(
         correlation_id: [u8; 16],
         issuer_service: [u8; 16],
         issuer_epoch: u64,
         issued_at_ms: u64,
         expires_at_ms: u64,
-        envelope: [u8; ENVELOPE_LEN],
+        envelope: &[u8; ENVELOPE_LEN],
         power_kw: f64,
+    ) -> alloc::vec::Vec<u8> {
+        let mut buf = alloc::vec![0u8; CONTROL_ENVELOPE_LEN];
+        buf[0..2].copy_from_slice(&CONTROL_SCHEMA.to_le_bytes());
+        buf[2..18].copy_from_slice(&correlation_id);
+        buf[18..34].copy_from_slice(&issuer_service);
+        buf[34..42].copy_from_slice(&issuer_epoch.to_le_bytes());
+        buf[42..50].copy_from_slice(&issued_at_ms.to_le_bytes());
+        buf[50..58].copy_from_slice(&expires_at_ms.to_le_bytes());
+        buf[58..90].copy_from_slice(&payload_digest_of(envelope, power_kw));
+        buf[90..90 + ENVELOPE_LEN].copy_from_slice(envelope);
+        buf[90 + ENVELOPE_LEN..].copy_from_slice(&power_kw.to_le_bytes());
+        buf
+    }
+
+    /// V2 构造（61 v0.314.25）：无外层 power——typed value 在内层 HMAC 域。
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_v3(
+        correlation_id: [u8; 16],
+        issuer_service: [u8; 16],
+        issuer_epoch: u64,
+        issued_at_ms: u64,
+        expires_at_ms: u64,
+        envelope: &[u8; ENVELOPE_LEN_V3],
     ) -> Self {
-        let payload_digest = payload_digest_of(&envelope, power_kw);
+        let payload_digest = eneros_crypto::sm3_hash(envelope);
         Self {
-            schema: CONTROL_SCHEMA,
+            schema: CONTROL_SCHEMA_V2,
             correlation_id,
             issuer_service,
             issuer_epoch,
             issued_at_ms,
             expires_at_ms,
             payload_digest,
-            envelope,
-            power_kw,
+            envelope: *envelope,
+            envelope_wire_len: ENVELOPE_LEN_V3 as u16,
         }
     }
 
-    /// 定长编码（270B，全小端）。
-    pub fn encode(&self) -> [u8; CONTROL_ENVELOPE_LEN] {
-        let mut buf = [0u8; CONTROL_ENVELOPE_LEN];
+    /// 定长编码（V2=271B；V1 无编码路径——仅解码迁移）。
+    pub fn encode(&self) -> [u8; CONTROL_ENVELOPE_LEN_V2] {
+        debug_assert_eq!(self.schema, CONTROL_SCHEMA_V2);
+        let mut buf = [0u8; CONTROL_ENVELOPE_LEN_V2];
         buf[0..2].copy_from_slice(&self.schema.to_le_bytes());
         buf[2..18].copy_from_slice(&self.correlation_id);
         buf[18..34].copy_from_slice(&self.issuer_service);
@@ -119,16 +151,49 @@ impl ControlEnvelope {
         buf[42..50].copy_from_slice(&self.issued_at_ms.to_le_bytes());
         buf[50..58].copy_from_slice(&self.expires_at_ms.to_le_bytes());
         buf[58..90].copy_from_slice(&self.payload_digest);
-        buf[90..90 + ENVELOPE_LEN].copy_from_slice(&self.envelope);
-        buf[90 + ENVELOPE_LEN..].copy_from_slice(&self.power_kw.to_le_bytes());
+        buf[90..].copy_from_slice(&self.envelope);
         buf
     }
 
-    /// 解码（长度/schema 校验；payload 摘要由调用方按需验证）。
+    /// 解码：V2（271B）或 V1 legacy（270B，迁移读）。
     pub fn decode(buf: &[u8]) -> Result<Self, WireError> {
-        if buf.len() != CONTROL_ENVELOPE_LEN {
-            return Err(WireError::BadLength(buf.len()));
+        match buf.len() {
+            CONTROL_ENVELOPE_LEN_V2 => Self::decode_v2(buf),
+            CONTROL_ENVELOPE_LEN => Self::decode_v1_legacy(buf),
+            got => Err(WireError::BadLength(got)),
         }
+    }
+
+    fn decode_v2(buf: &[u8]) -> Result<Self, WireError> {
+        let schema = u16::from_le_bytes([buf[0], buf[1]]);
+        if schema != CONTROL_SCHEMA_V2 {
+            return Err(WireError::UnsupportedSchema(schema));
+        }
+        let mut correlation_id = [0u8; 16];
+        correlation_id.copy_from_slice(&buf[2..18]);
+        let mut issuer_service = [0u8; 16];
+        issuer_service.copy_from_slice(&buf[18..34]);
+        let issuer_epoch = u64::from_le_bytes(buf[34..42].try_into().expect("8B 定长切片"));
+        let issued_at_ms = u64::from_le_bytes(buf[42..50].try_into().expect("8B 定长切片"));
+        let expires_at_ms = u64::from_le_bytes(buf[50..58].try_into().expect("8B 定长切片"));
+        let mut payload_digest = [0u8; 32];
+        payload_digest.copy_from_slice(&buf[58..90]);
+        let mut envelope = [0u8; ENVELOPE_LEN_V3];
+        envelope.copy_from_slice(&buf[90..90 + ENVELOPE_LEN_V3]);
+        Ok(Self {
+            schema,
+            correlation_id,
+            issuer_service,
+            issuer_epoch,
+            issued_at_ms,
+            expires_at_ms,
+            payload_digest,
+            envelope,
+            envelope_wire_len: ENVELOPE_LEN_V3 as u16,
+        })
+    }
+
+    fn decode_v1_legacy(buf: &[u8]) -> Result<Self, WireError> {
         let schema = u16::from_le_bytes([buf[0], buf[1]]);
         if schema != CONTROL_SCHEMA {
             return Err(WireError::UnsupportedSchema(schema));
@@ -142,10 +207,9 @@ impl ControlEnvelope {
         let expires_at_ms = u64::from_le_bytes(buf[50..58].try_into().expect("8B 定长切片"));
         let mut payload_digest = [0u8; 32];
         payload_digest.copy_from_slice(&buf[58..90]);
-        let mut envelope = [0u8; ENVELOPE_LEN];
-        envelope.copy_from_slice(&buf[90..90 + ENVELOPE_LEN]);
-        let power_kw =
-            f64::from_le_bytes(buf[90 + ENVELOPE_LEN..].try_into().expect("8B 定长切片"));
+        let legacy: [u8; ENVELOPE_LEN] = buf[90..90 + ENVELOPE_LEN].try_into().expect("定长切片");
+        let mut envelope = [0u8; ENVELOPE_LEN_V3];
+        envelope[..ENVELOPE_LEN].copy_from_slice(&legacy);
         Ok(Self {
             schema,
             correlation_id,
@@ -155,22 +219,37 @@ impl ControlEnvelope {
             expires_at_ms,
             payload_digest,
             envelope,
-            power_kw,
+            envelope_wire_len: ENVELOPE_LEN as u16,
         })
     }
 
-    /// 校验 payload 摘要（功率载荷完整性）。
-    pub fn verify_payload_digest(&self) -> bool {
-        payload_digest_of(&self.envelope, self.power_kw) == self.payload_digest
+    /// 是否携带 V1 遗留 power 字段（调用方对 legacy 必须按迁移规则处置）。
+    pub fn has_power_field(&self) -> bool {
+        self.schema == CONTROL_SCHEMA
     }
 
-    /// 解码内层已签名信封。
+    /// 校验 payload 摘要：V2 = SM3(envelope[0..181])；V1 = SM3(envelope‖power)
+    ///（legacy power 已不可从本结构读出，V1 摘要校验在解码侧由调用方
+    /// 以原始字节执行——生产路径统一 V2）。
+    pub fn verify_payload_digest(&self) -> bool {
+        if self.schema == CONTROL_SCHEMA_V2 {
+            eneros_crypto::sm3_hash(&self.envelope) == self.payload_digest
+        } else {
+            // V1 legacy：外层摘要覆盖 172B 信封 + power；power 已删除，
+            // 无法重算——返回 false 迫使调用方走迁移判定。
+            false
+        }
+    }
+
+    /// 解码内层已签名信封（按线上长度切片——V1 legacy 172B 亦可解）。
     pub fn decode_inner(&self) -> Result<CommandEnvelope, WireError> {
-        CommandEnvelope::decode(&self.envelope).map_err(|_| WireError::Envelope)
+        let n = self.envelope_wire_len as usize;
+        CommandEnvelope::decode(&self.envelope[..n]).map_err(|_| WireError::Envelope)
     }
 }
 
-/// `SM3(envelope ‖ power_kw LE)`。
+/// `SM3(envelope ‖ power_kw LE)`（V1 legacy 字节构造专用）。
+#[cfg(test)]
 fn payload_digest_of(envelope: &[u8; ENVELOPE_LEN], power_kw: f64) -> [u8; 32] {
     let mut buf = [0u8; ENVELOPE_LEN + 8];
     buf[..ENVELOPE_LEN].copy_from_slice(envelope);
@@ -273,7 +352,7 @@ impl OutcomeFrame {
 mod tests {
     use super::*;
 
-    fn env_bytes() -> [u8; ENVELOPE_LEN] {
+    fn env_bytes() -> [u8; ENVELOPE_LEN_V3] {
         // 真实签名信封（EnvelopeBuilder + HMAC 密钥）——内层解码路径可验证。
         let key = b"wire-test-key-xxxxxxxxxxxxxxxxxxxxxxxxx";
         crate::envelope::EnvelopeBuilder::new(
@@ -287,42 +366,72 @@ mod tests {
             1_300,
             [0x22; 16],
         )
+        .value(eneros_telemetry_model::command::CommandValue::ActivePowerKw(50.0))
         .build(key)
         .encode()
     }
 
     #[test]
     fn control_envelope_roundtrip() {
-        let e = ControlEnvelope::new([0x11; 16], [0x22; 16], 3, 1_000, 1_300, env_bytes(), 50.0);
+        let e = ControlEnvelope::new_v3([0x11; 16], [0x22; 16], 3, 1_000, 1_300, &env_bytes());
         let buf = e.encode();
-        assert_eq!(buf.len(), CONTROL_ENVELOPE_LEN);
+        assert_eq!(buf.len(), CONTROL_ENVELOPE_LEN_V2);
         let d = ControlEnvelope::decode(&buf).expect("decode");
-        assert_eq!(d.schema, CONTROL_SCHEMA);
+        assert_eq!(d.schema, CONTROL_SCHEMA_V2);
         assert_eq!(d.correlation_id, [0x11; 16]);
         assert_eq!(d.issuer_service, [0x22; 16]);
         assert_eq!(d.issuer_epoch, 3);
         assert_eq!(d.issued_at_ms, 1_000);
         assert_eq!(d.expires_at_ms, 1_300);
-        assert_eq!(d.power_kw, 50.0);
+        assert!(!d.has_power_field(), "V2 无外层 power");
         assert!(d.verify_payload_digest());
-        let _inner = d.decode_inner().expect("inner");
+        let inner = d.decode_inner().expect("inner");
+        assert_eq!(
+            inner.value,
+            eneros_telemetry_model::command::CommandValue::ActivePowerKw(50.0)
+        );
+    }
+
+    #[test]
+    fn control_envelope_v1_legacy_decode_only() {
+        // V1（270B）仅解码迁移：has_power_field=true，摘要校验显式不承诺。
+        let legacy = ControlEnvelope::encode_v1_legacy_bytes(
+            [0x11; 16],
+            [0x22; 16],
+            3,
+            1_000,
+            1_300,
+            &{
+                // 172B 任意字节（legacy 解码走结构校验，此处仅长度/domain）。
+                let mut b = [0u8; ENVELOPE_LEN];
+                b[0] = crate::envelope::VERSION;
+                b
+            },
+            50.0,
+        );
+        assert_eq!(legacy.len(), CONTROL_ENVELOPE_LEN);
+        let d = ControlEnvelope::decode(&legacy).expect("V1 解码");
+        assert!(d.has_power_field());
+        assert_eq!(d.envelope_wire_len as usize, ENVELOPE_LEN);
+        assert!(!d.verify_payload_digest(), "V1 摘要不可重算（power 已删）");
     }
 
     #[test]
     fn control_envelope_rejects_tamper_and_bad_length() {
-        let e = ControlEnvelope::new([0x11; 16], [0x22; 16], 3, 1_000, 1_300, env_bytes(), 50.0);
+        let e = ControlEnvelope::new_v3([0x11; 16], [0x22; 16], 3, 1_000, 1_300, &env_bytes());
         let mut buf = e.encode();
         // 长度不符。
         assert!(matches!(
             ControlEnvelope::decode(&buf[..100]),
             Err(WireError::BadLength(100))
         ));
-        // 功率篡改 → payload 摘要校验失败（HMAC 域外的功率有完整性保护）。
+        // 内层信封值位篡改 → payload 摘要校验失败（61 v0.314.25：值在
+        // digest+HMAC 双域）。
         let mut tampered = e;
-        tampered.power_kw = 999.0;
+        tampered.envelope[52] ^= 0xFF;
         let buf2 = tampered.encode();
         let d2 = ControlEnvelope::decode(&buf2).expect("decode");
-        assert!(!d2.verify_payload_digest(), "功率篡改必须被摘要检出");
+        assert!(!d2.verify_payload_digest(), "值篡改必须被摘要检出");
         // schema 篡改。
         buf[0] = 99;
         assert!(matches!(

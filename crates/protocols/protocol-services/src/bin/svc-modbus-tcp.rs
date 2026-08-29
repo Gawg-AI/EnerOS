@@ -176,8 +176,24 @@ impl ModbusTcpIoService {
     /// Protocol)`；写后重读不可得 → `AppliedReadbackUnavailable`；重读值
     /// 与目标不符（超过容差）→ `AppliedReadbackMismatch`；相符 →
     /// `Applied`。
-    fn master_write(&mut self, device: u32, point: u32, power: f64) -> [u8; 2] {
+    fn master_write_v2(
+        &mut self,
+        device: u32,
+        point: u32,
+        value: eneros_telemetry_model::command::CommandValue,
+        command_digest: [u8; 32],
+    ) -> [u8; 2] {
         use eneros_control_gateway::wire::{OutcomeCode, OutcomeFrame};
+        use eneros_protocol_abstract::write::semantic_command_digest;
+        // 61 v0.314.25 §3.5.6：writer 校验语义摘要——重算与收到的 digest
+        // 比对（授权 50 写 60 必然可检出），绑定 device/point/value。
+        let computed = semantic_command_digest(device, point, value);
+        if computed != command_digest {
+            eneros_runtime::println!(
+                "[svc-modbus-tcp] MASTER-WRITE device={device} point={point} digest-mismatch —— Denied(2)"
+            );
+            return OutcomeFrame::new(OutcomeCode::Denied, 2).encode();
+        }
         let Some(mapping) = self.registry.resolve(point) else {
             eneros_runtime::println!(
                 "[svc-modbus-tcp] MASTER-WRITE point={point} 无点表映射 —— Denied(7)"
@@ -192,13 +208,25 @@ impl ModbusTcpIoService {
             return OutcomeFrame::new(OutcomeCode::Denied, 7).encode();
         }
         let now = eneros_protocol_services::now_ms();
+        let mut cd_hex = [0u8; 16];
+        hex16_into(&command_digest, &mut cd_hex);
+        let cd = core::str::from_utf8(&cd_hex).unwrap_or("?");
+        let power = match value {
+            eneros_telemetry_model::command::CommandValue::ActivePowerKw(v) => v,
+            _ => {
+                eneros_runtime::println!(
+                    "[svc-modbus-tcp] MASTER-WRITE point={point} 命令类别与模拟量寄存器不符 —— Denied(7)"
+                );
+                return OutcomeFrame::new(OutcomeCode::Denied, 7).encode();
+            }
+        };
         match self
             .plugin
             .write_point(now, mapping, eneros_upa_model::PointValue::Float(power))
         {
             Ok(()) => {
                 eneros_runtime::println!(
-                    "[svc-modbus-tcp] MASTER-WRITE device={device} point={point} power={power} ACK"
+                    "[svc-modbus-tcp] MASTER-WRITE device={device} point={point} power={power} cd={cd} ACK"
                 );
             }
             Err(e) => {
@@ -213,8 +241,18 @@ impl ModbusTcpIoService {
             Ok(read) if read.ok => {
                 let eng = mapping.to_engineering(read.raw);
                 let ok = (eng - power).abs() <= MASTER_READBACK_TOL_KW.max(f64::EPSILON);
+                // 61 v0.314.25：transport digest 绑定（协议帧语义级摘要——
+                // 独立回读值 + 目标值 + 点；映射世代入证据归 26 配置化）。
+                let td = eneros_protocol_abstract::write::semantic_command_digest(
+                    device,
+                    point,
+                    eneros_telemetry_model::command::CommandValue::ActivePowerKw(eng),
+                );
+                let mut td_hex = [0u8; 16];
+                hex16_into(&td, &mut td_hex);
+                let tds = core::str::from_utf8(&td_hex).unwrap_or("?");
                 eneros_runtime::println!(
-                    "[svc-modbus-tcp] MASTER-READBACK point={point} eng={eng} target={power} {}",
+                    "[svc-modbus-tcp] MASTER-READBACK point={point} eng={eng} target={power} {} td={tds}",
                     if ok { "VERIFIED" } else { "MISMATCH" }
                 );
                 if ok {
@@ -252,12 +290,12 @@ impl eneros_drv_svc::runtime::DriverService for ModbusTcpIoService {
                 // runtime 只把 OP_EXECUTE 路由到 handle）。17B codec 单源 =
                 // protocol_abstract::write::decode_master_write_payload
                 // （SPEC-B WP-B.2 收编，历史手抄解码面删除）。
-                if let Some((device, point, power)) =
-                    eneros_protocol_abstract::write::decode_master_write_payload(
+                if let Some((device, point, value, digest)) =
+                    eneros_protocol_abstract::write::decode_master_write_payload_v2(
                         &req.payload[..req.payload_len as usize],
                     )
                 {
-                    let frame = self.master_write(device, point, power);
+                    let frame = self.master_write_v2(device, point, value, digest);
                     resp.status = ST_OK;
                     resp.payload[..2].copy_from_slice(&frame);
                     resp.payload_len = 2;
@@ -385,3 +423,13 @@ fn panic(_info: &PanicInfo) -> ! {
 /// host 构建 no-op 入口（与 svc-drv-* 同模式）。
 #[cfg(all(not(test), not(target_os = "none")))]
 fn main() {}
+
+/// 摘要前 8 字节 hex 写入 16B ASCII 缓冲（串口证据用；61 v0.314.25）。
+#[cfg(target_os = "none")]
+fn hex16_into(d: &[u8; 32], out: &mut [u8; 16]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (i, b) in d[..8].iter().enumerate() {
+        out[i * 2] = HEX[(b >> 4) as usize];
+        out[i * 2 + 1] = HEX[(b & 0xF) as usize];
+    }
+}

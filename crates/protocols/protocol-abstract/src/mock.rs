@@ -81,15 +81,13 @@ impl PointAccessExt for MockAdapter {
 }
 
 impl AuthorizedWriter for MockAdapter {
-    fn write_authorized(
-        &mut self,
-        cmd: &AuthorizedCommand,
-        value: PointValue,
-    ) -> Result<WriteOutcome, WriteError> {
+    fn write_authorized(&mut self, cmd: &AuthorizedCommand) -> Result<WriteOutcome, WriteError> {
         // 1. 设备匹配（蓝图/24 §6.1：不匹配 → CommandMismatch，状态不变）。
         if cmd.device_id() != self.device_id {
             return Err(WriteError::CommandMismatch);
         }
+        // 61 v0.314.25：写值唯一来源 = cmd.value()。
+        let value = cmd.value().to_point_value();
         // 2. 点匹配。
         let point = self
             .points

@@ -23,11 +23,11 @@ eneros-safety-validator = { path = "../safety-validator" }
 eneros-intent-parser = { path = "../intent-parser", optional = true }
 eneros-intent-contract = { path = "../intent-contract" }
 eneros-fast-path = { path = "../fast-path", optional = true }
+eneros-infer-scheduler = { path = "../infer-scheduler", optional = true }
+eneros-prompt-template = { path = "../prompt-template", optional = true }
 # 蓝图 40 WP-40.4：llama-cpp 为 host native 后端——target 闭包经
 # `llm-native` feature 选择；默认不启用（profile 不声明 → 服务 Unavailable）。
 eneros-llm-engine = { path = "../llm-engine", optional = true }
-eneros-infer-scheduler = { path = "../infer-scheduler", optional = true }
-eneros-prompt-template = { path = "../prompt-template", optional = true }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 

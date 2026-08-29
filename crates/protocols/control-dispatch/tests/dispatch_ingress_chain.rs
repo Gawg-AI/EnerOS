@@ -45,7 +45,7 @@ fn now_ms() -> u64 {
 fn test_profile() -> eneros_control_gateway::ControlProfile {
     eneros_control_gateway::ControlProfile {
         lease_ttl_secs: 600,
-        ..eneros_control_gateway::ControlProfile::ai_pcc_single(
+        ..eneros_control_gateway::ControlProfile::ai_pcs_setpoint(
             DEVICE_ID, POINT_ID, 4, LEASE_ID, EPOCH_SEED,
         )
     }
@@ -200,7 +200,7 @@ impl DeliveryChannel for IngressChannel {
         *self.delivered.borrow_mut() += 1;
         let mut payload = payload.to_vec();
         if self.tamper {
-            // 篡改功率字节（payload 尾部 8B 的最后一字节）。
+            // 篡改信封尾部字节（V2：尾部在内层信封域——摘要可检出）。
             let n = payload.len();
             payload[n - 1] ^= 0xFF;
         }
@@ -216,14 +216,11 @@ impl DeliveryChannel for IngressChannel {
             .encode()
             .to_vec());
         }
-        // 构建旧格式 DeliveryFrame（ingress.process 兼容路径）。
-        let frame = eneros_device_agent::DeliveryFrame {
-            envelope: env.envelope,
-            power_kw: env.power_kw,
-        };
+        // 直接转发 V2 ControlEnvelope 字节（61 v0.314.25：无旧格式回包——
+        // ingress 主路径就是 ControlEnvelope 解码）。
         let out = self.ingress.borrow_mut().process(
             &mut self.devices.borrow_mut(),
-            &frame.encode(),
+            &payload,
             self.now_ms,
         );
         Ok(eneros_device_agent::outcome_to_frame(&out)
@@ -242,7 +239,7 @@ fn device_side() -> (
         actor_kind: Some(ActorKind::Ai),
         devices: vec![1],
         points: vec![10],
-        kinds: vec![CommandClass::Switch],
+        kinds: vec![CommandClass::Setpoint],
         time_window: (0, 0),
         obligations: vec![],
     }]);

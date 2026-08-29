@@ -199,7 +199,7 @@ fn handle_write_single(
         WritePolicy::Authorized(auth) => {
             auth.device_id() == header.unit_id as u16
                 && auth.point_id() as u16 == addr
-                && single_command_matches_on(&auth.command(), value)
+                && single_command_matches_on(auth.command(), value)
         }
     };
     if !allowed {
@@ -254,7 +254,7 @@ fn handle_write_multiple(
             quantity == 1
                 && auth.device_id() == header.unit_id as u16
                 && auth.point_id() as u16 == start
-                && single_command_matches_on(&auth.command(), values[0])
+                && single_command_matches_on(auth.command(), values[0])
         }
     };
     if !allowed {
@@ -278,13 +278,13 @@ fn handle_write_multiple(
 /// Maps a SingleCommand::On to value 0xFF00 and Off to 0x0000 (Modbus coil
 /// convention, also used for register writes that represent a single bit).
 fn single_command_matches_on(
-    cmd: &eneros_telemetry_model::command::ControlCommand,
+    cmd: Option<eneros_telemetry_model::command::ControlCommand>,
     value: u16,
 ) -> bool {
     use eneros_telemetry_model::command::{ControlCommand, SingleCommand};
     match cmd {
-        ControlCommand::Single(SingleCommand::On) => value == 0xFF00,
-        ControlCommand::Single(SingleCommand::Off) => value == 0x0000,
+        Some(ControlCommand::Single(SingleCommand::On)) => value == 0xFF00,
+        Some(ControlCommand::Single(SingleCommand::Off)) => value == 0x0000,
         _ => false,
     }
 }

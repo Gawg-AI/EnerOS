@@ -133,6 +133,38 @@ impl ControlProfile {
         }
     }
 
+    /// 规范 AI 连续设定点档案（61 v0.314.25 §3.7：替代 `ai_pcc_single`
+    /// 的语义错配）——PCS 点 10 = `ActivePowerKw/Continuous`，Setpoint 类，
+    /// Kilowatts ±500 可远程。PCC 开关另用真实开关点 + `ai_pcc_single`；
+    /// 没有真实开关点就不开放该控制。
+    pub fn ai_pcs_setpoint(
+        device_id: u32,
+        point_id: u32,
+        policy_version: u64,
+        lease_id: [u8; 16],
+        epoch_seed: u64,
+    ) -> Self {
+        Self {
+            lease_id,
+            epoch_seed,
+            policy_version,
+            lease_ttl_secs: 3_600,
+            actor_kind: ActorKind::Ai,
+            device_id,
+            point_id,
+            command_class: CommandClass::Setpoint,
+            lease_max_class: 1,
+            safety_role: SafetyRole::PccBreaker,
+            unit: PhysicalUnit::Kilowatts,
+            safe_min: -500.0,
+            safe_max: 500.0,
+            max_ramp_per_sec: None,
+            direction: ControlDirection::Increase,
+            remote_controllable: true,
+            tuning: ChainTuning::default(),
+        }
+    }
+
     /// 规范策略习语：`Policy::new(v-1)` + `replace_rules` ⇒ 生效
     /// `generation == policy_version`（信封 `policy_version` 与链 generation
     /// 同值，QEMU 实弹 StalePolicyVersion 教训的制度化）。
