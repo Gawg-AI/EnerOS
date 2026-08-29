@@ -1479,6 +1479,7 @@ dependencies = [
  "eneros-safety-validator",
  "eneros-sel4-sys",
  "eneros-storage",
+ "eneros-telemetry-model",
  "eneros-time",
  "eneros-upa-model",
  "eneros-virtio-core",
