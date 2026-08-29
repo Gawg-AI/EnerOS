@@ -291,4 +291,47 @@ mod tests {
         assert_eq!(eipc_resolve("svc-mgmt", "svc-telemetry"), Some((1, 4)));
         assert_eq!(eipc_resolve("svc-telemetry", "svc-storage"), Some((0, 3)));
     }
+
+    /// S1 WP-S1.1 C6（F-9/F-11）：七个协议客户端今日 `svc-config` 槽位冻结
+    /// ——S1 起 bin 改按名取槽，本测试锁「表序迁移前后等价」：goose/sv/
+    /// mms/iec104/modbus-rtu 首边 → 槽 base+0（原手数 +0）；modbus-tcp
+    /// 第 2 边 → 槽 base+1（原手数 +1）；mqtt 首边 → base+0。`EIPC_GRANTS`
+    /// 任何插边在测试侧先红（C6 反证：手插 ("svc-mqtt","svc-fake") 于
+    /// mqtt config 边前即红，见 evidence）。
+    #[test]
+    fn s1_protocol_clients_config_slots_frozen() {
+        assert_eq!(
+            eipc_resolve("svc-goose", "svc-config"),
+            Some((0, EIPC_EP_BASE_SLOT))
+        );
+        assert_eq!(
+            eipc_resolve("svc-sv", "svc-config"),
+            Some((0, EIPC_EP_BASE_SLOT))
+        );
+        assert_eq!(
+            eipc_resolve("svc-mms", "svc-config"),
+            Some((0, EIPC_EP_BASE_SLOT))
+        );
+        assert_eq!(
+            eipc_resolve("svc-iec104", "svc-config"),
+            Some((0, EIPC_EP_BASE_SLOT))
+        );
+        assert_eq!(
+            eipc_resolve("svc-modbus-rtu", "svc-config"),
+            Some((0, EIPC_EP_BASE_SLOT))
+        );
+        // modbus-tcp：telemetry 先行（45.5），config 是第 2 条边。
+        assert_eq!(
+            eipc_resolve("svc-modbus-tcp", "svc-telemetry"),
+            Some((0, EIPC_EP_BASE_SLOT))
+        );
+        assert_eq!(
+            eipc_resolve("svc-modbus-tcp", "svc-config"),
+            Some((1, EIPC_EP_BASE_SLOT + 1))
+        );
+        assert_eq!(
+            eipc_resolve("svc-mqtt", "svc-config"),
+            Some((0, EIPC_EP_BASE_SLOT))
+        );
+    }
 }

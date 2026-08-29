@@ -70,11 +70,25 @@ fn assemble(
     if uart_mmio_vaddr == 0 {
         return Err("no-handle");
     }
-    // 46.3：配置经 svc-config 授予边拉取（EIPC 表内 svc-modbus-rtu 首条
-    // 边 = svc-config → 槽 EIPC_EP_BASE_SLOT+0）；不可得 → 能力壳。
-    let Some(cfg) = eneros_protocol_services::service_cfg::fetch_protocol_config(
+    // 46.3：配置经 svc-config 授予边拉取（S1 起按名 eipc_resolve——本服务
+    // 首条边 = svc-config；管道单源 = service_cfg/config_gateway）；不可得
+    // → 能力壳。wire 失败呈现（too short / length prefix）在管道内，
+    // 词形单源 = protocol_ladder::line_*。
+    let Some(mut client) =
+        eneros_agent_sdk::eipc_resolve("svc-modbus-rtu", "svc-config").and_then(|(_, slot)| {
+            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+                "modbus-rtu-config",
+                slot,
+                eneros_drv_svc::now_ns,
+            )
+            .ok()
+        })
+    else {
+        return Err("config-missing");
+    };
+    let Ok(cfg) = eneros_protocol_services::service_cfg::fetch_protocol_config(
+        &mut client,
         "modbus-rtu-config",
-        eneros_agent_sdk::EIPC_EP_BASE_SLOT,
         "protocol-modbus-rtu",
     ) else {
         return Err("config-missing");
@@ -120,16 +134,28 @@ fn assemble(
 }
 
 /// 点表注入（45.4 路由）：经 lib service_cfg::fetch_points_registry 取
-/// 全量注册表 + 协议过滤（仅 ModbusRtu）——SPEC-B WP-B.1 收编私有副本
-/// （wire 单源 = agent-sdk config_client；槽取本服务首条授予边）。
+/// 全量注册表 + 协议过滤（仅 ModbusRtu）——SPEC-B WP-B.1 收编私有副本；
+/// S1 起槽位按名解析、管道单源 = agent-sdk config_gateway。
 #[cfg(target_os = "none")]
 fn fetch_points_registry() -> VecPointRegistry {
     use eneros_config_bundle::points::PointProtocol;
-    eneros_protocol_services::service_cfg::fetch_points_registry(
-        "modbus-rtu-config",
-        eneros_agent_sdk::EIPC_EP_BASE_SLOT,
-        |p| p.protocol == PointProtocol::ModbusRtu,
-    )
+    match eneros_agent_sdk::eipc_resolve("svc-modbus-rtu", "svc-config").and_then(|(_, slot)| {
+        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+            "modbus-rtu-config",
+            slot,
+            eneros_drv_svc::now_ns,
+        )
+        .ok()
+    }) {
+        Some(mut client) => eneros_protocol_services::service_cfg::fetch_points_registry(
+            &mut client,
+            "modbus-rtu-config",
+            |p| p.protocol == PointProtocol::ModbusRtu,
+        ),
+        // S1 evidence M-3w：本 wrapper 的解析/建端失败为静默空表（原为
+        // NOT-granted 行；结构上不可达——边在表内由 C6 冻结测试锁定）。
+        None => VecPointRegistry::new(alloc::vec::Vec::new()),
+    }
 }
 
 /// 寄存器布局由 root `initial_registers` 单一持有（W2.1/SPEC-B；SPEC-D 起
