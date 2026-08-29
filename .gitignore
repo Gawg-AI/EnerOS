@@ -171,3 +171,7 @@ archive/scratch-*/
 
 # 47（WP-47.3 私钥出仓）：本地密钥目录（永不入库；生成见 tools/gen-local-keys.sh）
 product/security/keys-local/
+
+# 介质不入库纪律：evidence 下 QEMU 磁盘镜像等 raw 介质留在本地不入仓
+# （GitHub 单文件 100MiB 硬限；128MiB evidence/37 镜像已从未推送历史剥离，2026-08-29）
+evidence/**/*.raw
