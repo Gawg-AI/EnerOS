@@ -1,0 +1,75 @@
+{
+  "schema": "eneros.blueprint61.evidence.v1",
+  "version": "0.314.24",
+  "commit": "c5248a6f593149bb52e467d3947e1b305ee084ba",
+  "dirty": false,
+  "dirty_scope_note": "证据运行时产品代码与 c5248a6 一致；tools/run61-e4.sh 与本 evidence 目录为证据侧文件，非产品代码。",
+  "profile": "qemu-prod",
+  "profile_sha256": "071ff15fb9fa04f6bca0d186f172eab9012e4fa19bea0e9afa080d0beac911af",
+  "config_digests": {
+    "image_raw_built_sha256": "5615d0cc0d448cb2a6f657c371d8294fd016a743e8edc209f342a50d21fd1aca",
+    "image_raw_note": "bootctrl 区随每次 reset-bootctrl/引导改写（raw 介质不入库，gitignore evidence/**/*.raw）；可在 SRC 工作树以同命令复现构建。",
+    "data_disk": "每次 E4 运行前清空（target/evidence61/eneros-data.raw 重建，g1-repro 同款纪律）"
+  },
+  "toolchain_digest": "rustc 2972b5e59f1c5529b6ba770437812fd83ab4ebd4 (nightly-2026-04-04) + xpack-aarch64-none-elf-gcc-15.2.1-1.1 + qemu-system-aarch64 10.2.1 (Debian)",
+  "commands": [
+    { "id": "CMD-TEST-WS", "cmd": "cargo test --workspace --no-fail-fast", "exit": 0, "summary": "7851 passed / 0 failed", "log": "/tmp/w61-workspace-test2.log（会话内）" },
+    { "id": "CMD-FMT", "cmd": "cargo fmt --all -- --check 等价（cargo fmt --all 后无 diff）", "exit": 0 },
+    { "id": "CMD-CLIPPY", "cmd": "cargo clippy -p eneros-control-dispatch -p eneros-control-gateway -p eneros-control-services --all-targets -- -D warnings 等价（0 告警）", "exit": 0 },
+    { "id": "CMD-BUILD", "cmd": "cargo xtask build qemu-prod", "exit": 0, "summary": "BUILD profile=qemu-prod result=PASS（含 aarch64-unknown-none no_std 目标编译）" },
+    { "id": "CMD-IMAGE", "cmd": "cargo xtask image raw qemu-prod --signing-key … --uefi-key … --uefi-cert …（环境：SOURCE_DATE_EPOCH=1755523200 + RELEASE_KEY/PLATFORM_ID + BINDGEN_EXTRA_CLANG_ARGS_<target>=newlib sysroot）", "exit": 0, "summary": "IMAGE result=PASS sha256=5615d0cc…" },
+    { "id": "CMD-E4", "cmd": "tools/run61-e4.sh（cargo xtask run qemu-prod --reset-bootctrl --net-user --net-protocols present --qmp-deadline-secs 900 + evidence/47/modbus_slave47.py 对端）", "exit": 0, "summary": "E4-RESULT: PASS（run-e4e；干净数据盘第 2 次尝试——首试遇预存间歇 UEFI 启动冻结，重试通过）" }
+  ],
+  "tests": [
+    { "id": "T-CRASH-MATRIX", "class": "E3 集成/故障", "cmd": "cargo test -p eneros-control-dispatch --test journal_crash_matrix", "exit": 0, "count": 8, "cases": ["w1-crash-after-persist", "w2-post-delivery-journal-failure", "w3-crash-after-ack-before-readback", "r4-indeterminate-replay", "r5-same-key-different-digest", "r6-dryrun-never-commits", "r7-channel-protocol-error", "property-replay-100x-single-side-effect"] },
+    { "id": "T-DISPATCH-INGRESS", "class": "E3 集成", "cmd": "cargo test -p eneros-control-dispatch --test dispatch_ingress_chain", "exit": 0, "count": 9 },
+    { "id": "T-INTENT-INGRESS", "class": "E3 集成", "cmd": "cargo test -p eneros-control-dispatch --test intent_ingress_chain", "exit": 0, "count": 7 },
+    { "id": "T-GATEWAY", "class": "E1 单元", "cmd": "cargo test -p eneros-control-gateway", "exit": 0, "count": 34 },
+    { "id": "T-DURABLE-INTENT", "class": "E1/E3（含 v1 迁移与断电撕裂）", "cmd": "cargo test -p eneros-control-dispatch durable_intent", "exit": 0, "count": 9 }
+  ],
+  "faults": [
+    { "id": "F-W1", "fault": "投递前崩溃（durable 留 Persisted）", "injection": "durable 记录播种 + 引擎重启重放", "expected": "零投递、非 Committed", "observed": "Indeterminate/Reconciling，投递计数 0" },
+    { "id": "F-W2", "fault": "投递后 journal 持久化失败", "injection": "FailingUpdateStore 注入 update_state 失败", "expected": "Indeterminate（不伪造成功）", "observed": "Indeterminate + 重启重放零投递" },
+    { "id": "F-W3", "fault": "ACK 后读回前崩溃（durable 留 Sent）", "injection": "durable Sent 记录播种 + 重启重放", "expected": "非 Committed、零投递", "observed": "Indeterminate，投递计数 0" },
+    { "id": "F-R4", "fault": "投递超时后同 key 重放", "injection": "ChannelError::Timeout", "expected": "保持 Indeterminate 不升级", "observed": "Indeterminate" },
+    { "id": "F-R5", "fault": "同幂等键不同命令内容", "injection": "同 plan_id 不同 power_kw", "expected": "IdempotencyConflict 零投递", "observed": "Err(IdempotencyConflict)" },
+    { "id": "F-R6", "fault": "DryRun 义务 + 重放", "injection": "Obligation::DryRun 策略", "expected": "永不 Committed/投递", "observed": "Err + 零投递" },
+    { "id": "F-R7", "fault": "投递后通道协议错误（结果不明）", "injection": "ChannelError::Protocol", "expected": "Indeterminate 对账（不假失败）", "observed": "Indeterminate + 重启重放零投递" },
+    { "id": "F-E4-RECON", "fault": "E4 实弹（run-e4c）：driver 无对端 status≠ST_OK=Rejected", "injection": "外部 modbus 从站缺席", "expected": "61 起映射 Indeterminate 对账（不假失败不假成功）", "observed": "串口 SUBMIT state=Indeterminate note=delivery-error Rejected；下一跑以 EXEC-JOURNAL recovered pending=3 → reconciling 恢复" }
+  ],
+  "capacity_tier": "C0",
+  "artifacts": [
+    "evidence/61/0.314.24/qemu-serial.log",
+    "evidence/61/0.314.24/modbus.transcript.jsonl",
+    "evidence/61/0.314.24/qemu.argv",
+    "evidence/61/0.314.24/e4-run-summary.log"
+  ],
+  "e4_serial_evidence": {
+    "rounds": 2139,
+    "master_write_ack": 3,
+    "master_readback_verified": 3,
+    "exec_journal_applied_confirmed": 3,
+    "dispatch_committed_rounds": 2,
+    "panic_lines": 0,
+    "ordering": "first MASTER-READBACK line=13815 < first EXEC-JOURNAL applied-confirmed line=13944；readback 前零 Committed/applied-confirmed 字样（严格 grep 复核）",
+    "startup_recovery": "run-e4c 串口出现 EXEC-JOURNAL recovered pending=3 → reconciling（durable v2 重启对账生效）",
+    "known_absent": "AUDIT-CHAIN appended= 串口行本轮未打印（审计链持久性以 AUDIT-CHAIN-DURABLE recovered entries=3 与 durable 区域为证）"
+  },
+  "review": {
+    "spec": "pass",
+    "standards": "pass",
+    "adversarial": "pass",
+    "assembly": "pass",
+    "open_p0": 0,
+    "open_p1": 0
+  },
+  "notes": [
+    "v0.314.24 唯一不变量：Committed == AppliedConfirmed == 独立设备回读在容差内匹配已授权命令——E4 串口时序与 E3 七红测共同闭合。",
+    "Exit Gate：rg 'OpOutcome::Applied' control-gateway = 0 hits；IdempotentHit 两分支（链 prior / 对端 OutcomeCode）均不含无条件 Committed。",
+    "dispatch durable audit genesis（littlefs 经 BlockIo，分钟级）使 300s 窗口不足——E4 采用 900s 窗口（SPEC-E 起预存时序，非本卷回归）。",
+    "间歇 UEFI 启动冻结为预存已知问题（SPEC-E 登记），E4 以重试通过。",
+    "终态 receipt 跨重启不可查（durable outbox PeerAcked 槽位不恢复，既有设计）：重启后同 key 重放 → 对端 dedup → Indeterminate 对账，绝不假 Committed；receipt 持久日志归 v0.314.26 trace 工作。"
+  ],
+  "signed_at": "2026-08-30T01:50:00+08:00",
+  "signature_ref": "evidence/61/0.314.24/manifest.sig（HMAC-SHA256，dev-signing.key；完整性 tag 非 G-SW 级签名）"
+}

@@ -35,8 +35,8 @@
 
 ## 4. 当前状态（诚实基线）
 
-- workspace 版本字段为 `0.314.22`（44-00 §3 纪律：每 WP Exit 递增 patch）；版本号不代表验收；当前商业裁决维持 **NO-GO / NOT-READY**（52 终验登记，GO 前置=DEF-52-03/05 owner 定责与外部四项）。
-- 当前基线：蓝图 59「EXECUTE 中继面统一」WP-59.1 出口（HEAD 见 git；v1.0.0-rc.2 已因 54 卷 lineage 重开作废，GO 判定须对新 lineage 重跑 52 终验矩阵）。
+- workspace 版本字段为 `0.314.24`（44-00 §3 纪律：每 WP Exit 递增 patch）；版本号不代表验收；当前商业裁决维持 **NO-GO / NOT-READY**（52 终验登记，GO 前置=DEF-52-03/05 owner 定责与外部四项）。
+- 当前基线：蓝图 61「海量异构数据—决策—控制全链路」Phase 0 v0.314.24 出口（执行状态与幂等真值：`Committed == AppliedConfirmed == 独立回读匹配`，ExecutionJournal 严格写序 + gateway 裁决化 + intent v2 编码；证据 `evidence/61/0.314.24/manifest.json`，E4 qemu-prod 串口 `EXEC-JOURNAL applied-confirmed` 判定行）。下一原子包 = v0.314.25（命令语义/单位与安全目录，蓝图 61 `05` §3）；v1.0.0-rc.2 已因 54 卷 lineage 重开作废，GO 判定须对新 lineage 重跑 52 终验矩阵。
 - 产品装配现状以 53 卷 QEMU 冷启动证据为准（29 服务 ready、EIPC 授予、控制链面在库）；遗留缺口见蓝图 54 附录 C 与 43 卷 blocked-register。svc-control-dispatch 启动期 readiness=Degraded 为蓝图 50 时代即存在的环境性现象（evidence50-head 实证），非 55 卷回归。
 - 审计台账：95 项审计修复收官见 `docs/delivery/reduced-line-audit/`（2026-08-23 全账 95=P0×4/P1×23/P2×41/P3×27；两轮终态=完全修复 89＋PARTIAL 2＋BLOCKED 1＋待集成接线 1＋维持登记 2，见 `2026-08-24-fix-round2.md` §二）；交付差距与 triage 结论见 `docs/delivery/53-*`。
 - 路线：44–52 交付冲刺系列（已完成基线）→ 53 基底恢复（Accepted，X5 fuzz/L2 场景 PARTIAL 排队）→ 54 架构深化（Accepted）→ 55 控制链同源档案收敛（Accepted）→ **58 OTA/OBS 探针 wire 下沉（当前执行入口）**；后续按状态板滚动。
