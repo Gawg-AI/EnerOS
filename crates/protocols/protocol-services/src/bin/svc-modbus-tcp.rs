@@ -21,6 +21,8 @@ use alloc::boxed::Box;
 #[cfg(target_os = "none")]
 use eneros_protocol_abstract::plugin::ProtocolPlugin;
 #[cfg(target_os = "none")]
+use eneros_protocol_abstract::PointRegistry;
+#[cfg(target_os = "none")]
 use eneros_protocol_services::protocol_ladder;
 
 #[cfg(target_os = "none")]

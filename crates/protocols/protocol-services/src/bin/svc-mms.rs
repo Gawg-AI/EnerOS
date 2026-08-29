@@ -105,6 +105,7 @@ pub extern "C" fn _start(
         points: protocol_ladder::PointsPolicy::All,
         config_dump: false,
         self_check_rounds: 150,
+        degraded: protocol_ladder::DegradedStyle::Standard,
     };
     let mut io = protocol_ladder::Sel4ServiceIo::new(
         parts.service,

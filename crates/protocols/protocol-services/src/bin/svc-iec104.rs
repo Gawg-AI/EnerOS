@@ -55,6 +55,7 @@ pub extern "C" fn _start(
         // 在 connect + poll_interval_ms(5s) 触发（QEMU 实弹：150 轮≈3s 只到
         // Connected，INTERROGATION 未落地）；300 轮≈6s 使首个召唤落在窗口内。
         self_check_rounds: 300,
+        degraded: protocol_ladder::DegradedStyle::Standard,
     };
     let mut io = protocol_ladder::Sel4ServiceIo::new(
         parts.service,
