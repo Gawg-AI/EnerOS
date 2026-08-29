@@ -225,14 +225,18 @@ impl crate::ControlServiceHandler for DispatchHandler {
 // ============================================================================
 
 /// 47（WP-47.1 速率可调）：取 control-write 配置（svc-config ConfigGet）。
+/// S1 WP-S1.2：管道单源 = config_gateway（借切片解码；全失败静默 None，
+/// 词形保持今日「全吞 .ok()?」）。
 #[cfg(all(target_os = "none", feature = "sel4"))]
 fn fetch_control_write(
     config: &mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
 ) -> Option<eneros_config_bundle::control_write::ControlWriteConfig> {
-    use eneros_agent_sdk::config_client;
-    let payload = config_client::get_entry(config, "control-write", 0, 5_000).ok()?;
-    let body = config_client::decode_response_body(&payload).ok()?;
-    eneros_config_bundle::control_write::ControlWriteConfig::decode(body).ok()
+    use eneros_agent_sdk::config_gateway::{config_get, ConfigStep};
+    config_get(config, "control-write", |body| {
+        eneros_config_bundle::control_write::ControlWriteConfig::decode(body)
+            .map_err(|_| ConfigStep::DecodeFailed)
+    })
+    .ok()
 }
 
 // ============================================================================

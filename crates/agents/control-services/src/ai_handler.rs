@@ -451,7 +451,9 @@ pub mod target {
             println!("[svc-ai-worker] AI-PEER-CFG server {reason}");
             return Err("config-server-error");
         }
-        let body = config_client::decode_response_body(&payload)
+        // S1 WP-S1.2：前缀剥离单点 = config_gateway::response_body（ERR:
+        // 结构化拒绝需先检视原始载荷，故不走 config_get 管道）。
+        let body = eneros_agent_sdk::config_gateway::response_body(&payload)
             .map_err(|_| "config-response-too-short")?;
         AiPeerConfig::decode(body).map_err(|_| "config-decode-failed")
     }
