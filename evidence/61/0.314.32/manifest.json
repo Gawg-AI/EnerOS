@@ -1,7 +1,7 @@
 {
  "schema": "eneros.blueprint61.evidence.v1",
  "version": "0.314.32",
- "commit": "PENDING-BUMP-COMMIT",
+ "commit": "7234107",
  "dirty": false,
  "profile": "host (event-store no_std crate + BlockDevice 块后端)",
  "summary": "分区事件日志（Segment 物理格式/掉电恢复/消费位点/容量水位/保留删除）+ IngestionModule 接入桥（ACK 即 durable，RPO=0）",

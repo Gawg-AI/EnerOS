@@ -59,8 +59,8 @@ fn plan_groups(work: &[PointPlan]) -> Vec<GroupRead> {
                 if g.slave_addr == p.slave_addr
                     && g.func_code == p.func_code
                     && p.reg_addr.saturating_sub(g.end) <= MAX_MERGE_GAP
-                    && g.words().max(u16::from(p.reg_addr >= g.start)) <= MAX_GROUP_WORDS
                     && p.reg_addr.saturating_sub(g.start) < MAX_GROUP_WORDS =>
+            // span 上限 = 组内最大跨度 < MAX_GROUP_WORDS（与 words() 同界）
             {
                 g.end = g.end.max(p.reg_addr);
                 g.points.push(*p);
@@ -121,6 +121,7 @@ impl IngestionAdapter for ModbusIngestAdapter {
     ) -> PollOutcome {
         let groups = plan_groups(work);
         let mut transactions = 0u32;
+        let mut pushed = 0u32;
         for g in &groups {
             if transactions >= budget.max_transactions {
                 return PollOutcome::Busy { transactions };
@@ -140,10 +141,12 @@ impl IngestionAdapter for ModbusIngestAdapter {
                         let idx = (p.reg_addr - g.start) as usize;
                         let Some(&word) = regs.get(idx) else {
                             // 组响应短缺：该点按坏质量展开（不假装成功）。
-                            self.push_bad(out, p, now_ns);
+                            if self.push_bad(out, p, now_ns) {
+                                pushed += 1;
+                            }
                             continue;
                         };
-                        let pushed = out.push(RawObservation {
+                        let outcome = out.push(RawObservation {
                             point_id: p.point_id,
                             value: ObservationValue::I64(i64::from(word)),
                             event_time_ns: Some(now_ns.max(1)),
@@ -157,25 +160,30 @@ impl IngestionAdapter for ModbusIngestAdapter {
                             mapping_version: 0,
                             device_id: p.device_id,
                         });
-                        match pushed {
+                        match outcome {
                             PushOutcome::Backpressured | PushOutcome::Rejected => {
                                 self.acq_bad += 1;
                             }
-                            _ => self.acq_good += 1,
+                            _ => {
+                                self.acq_good += 1;
+                                pushed += 1;
+                            }
                         }
                     }
                 }
                 Err(_e) => {
                     self.last_read_ok = false;
                     for p in &g.points {
-                        self.push_bad(out, p, now_ns);
+                        if self.push_bad(out, p, now_ns) {
+                            pushed += 1;
+                        }
                     }
                 }
             }
         }
         PollOutcome::Completed {
             transactions,
-            events: transactions,
+            events: pushed,
         }
     }
 
@@ -186,8 +194,10 @@ impl IngestionAdapter for ModbusIngestAdapter {
 
 impl ModbusIngestAdapter {
     /// 组异常/短缺 → 该点坏质量事件（INVALID；死区永不抑制品质变化）。
-    fn push_bad(&mut self, out: &mut dyn RawObservationSink, p: &PointPlan, now_ns: u64) {
-        let _ = out.push(RawObservation {
+    /// 组异常/短缺 → 该点坏质量事件（INVALID；死区永不抑制品质变化）。
+    /// 返回是否被接受（背压/拒绝 → 计数 acq_bad；接受 → acq_good）。
+    fn push_bad(&mut self, out: &mut dyn RawObservationSink, p: &PointPlan, now_ns: u64) -> bool {
+        let outcome = out.push(RawObservation {
             point_id: p.point_id,
             value: ObservationValue::I64(0),
             event_time_ns: Some(now_ns.max(1)),
@@ -201,7 +211,16 @@ impl ModbusIngestAdapter {
             mapping_version: 0,
             device_id: p.device_id,
         });
-        self.acq_bad += 1;
+        match outcome {
+            PushOutcome::Backpressured | PushOutcome::Rejected => {
+                self.acq_bad += 1;
+                false
+            }
+            _ => {
+                self.acq_bad += 1;
+                true
+            }
+        }
     }
 }
 
@@ -309,9 +328,9 @@ mod tests {
             out,
             PollOutcome::Completed {
                 transactions: 1,
-                events: 1
+                events: 2
             },
-            "单组 1 事务"
+            "单组 1 事务；events = 实际推送（2 点坏质量展开）"
         );
         assert_eq!(sink.pushes.len(), 2, "组内全部点展开");
         assert!(sink.pushes.iter().all(|&(_, _, bad)| bad), "全部坏质量");

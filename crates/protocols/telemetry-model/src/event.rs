@@ -150,6 +150,9 @@ pub mod event_flags {
     pub const SIMULATED: u16 = 1 << 4;
     /// 测试设施（不参与生产控制）。
     pub const TEST: u16 = 1 << 5;
+    /// 时钟缺失（v0.314.31：无时标数据以接收时刻为 event_time——消费侧
+    /// 据此区分时标来源；clock_id 信任面仍由 ClockDomain 裁决）。
+    pub const CLOCK_MISSING: u16 = 1 << 6;
 }
 
 /// 观测值（内存形态；wire 上是 `value_tag` + 16B `value_bits`）。

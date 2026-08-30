@@ -1,7 +1,7 @@
 {
  "schema": "eneros.blueprint61.evidence.v1",
  "version": "0.314.30",
- "commit": "PENDING-BUMP-COMMIT",
+ "commit": "7234107",
  "dirty": false,
  "profile": "qemu-prod",
  "profile_sha256": "00078d8682a246e4（image raw sha256，v0.314.30 树重建）",

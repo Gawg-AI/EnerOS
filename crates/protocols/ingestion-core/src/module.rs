@@ -37,6 +37,20 @@
 //!   崩溃换 epoch，不要求同 epoch 续号；
 //! - 对端重连不换本地 epoch——[`Self::note_reconnect`] 递增
 //!   connection_epoch（观测计数）。
+//!
+//! # 规格签名偏离登记（契约化，非静默）
+//!
+//! 蓝图 [07] §2.2 的 trait 签名是契约骨架，本实现做三处显式扩展（全部
+//! 经合同套件锁定，无协议特例混入）：
+//! - [`IngestionAdapter::poll`] 增加 `work: &[PointPlan]` 参数——调度
+//!   权威在 module，adapter 只消费到期点切片（协议组计划输入）；
+//! - [`IngestionModule::ingest`] 增 `source_id`/`now_ns` 参数——
+//!   RawObservation 无来源字段（伪造入口不存在），准入需要身份与时钟；
+//! - [`IngestionModule::register`] 保持幂等覆盖（返回 `()`；装配面错误
+//!   经 install/attach/open 的 Result 面显式化）。
+//! 另：PointPlan 内嵌 modbus 组坐标（func_code/reg_addr/slave_addr）
+//! 为轮询型协议通用的「调度组输入」约定——非 modbus 协议填 0，协议专属
+//! 逻辑全部留在 adapter 侧。
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -733,7 +747,7 @@ impl IngestionModule {
         {
             return Ok(());
         }
-        for source_id in self.registered_sources() {
+        for source_id in self.attached_sources() {
             if let Some((epoch, watermark)) = self.sink.watermark(source_id) {
                 self.epoch.save(source_id, epoch, watermark)?;
             }
@@ -788,11 +802,6 @@ impl IngestionModule {
         v.sort_unstable();
         v.dedup();
         v
-    }
-
-    /// 已注册来源列表（升序；checkpoint 用）。
-    fn registered_sources(&self) -> Vec<u32> {
-        self.attached_sources()
     }
 
     // ----- 内部 -----

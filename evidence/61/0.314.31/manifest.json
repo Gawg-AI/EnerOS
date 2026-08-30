@@ -1,7 +1,7 @@
 {
  "schema": "eneros.blueprint61.evidence.v1",
  "version": "0.314.31",
- "commit": "PENDING-BUMP-COMMIT",
+ "commit": "7234107",
  "dirty": false,
  "profile": "host (target bin check aarch64-unknown-none)",
  "summary": "第二工业协议（IEC104）与业务事实（市场）适配器——同一 IngestionModule 合同套件证明 seam 泛化性",
@@ -25,7 +25,7 @@
    "rows": {
     "receive-path": "PASS——Iec104IngestAdapter 经 plugin.poll 驱动 STARTDT/总召/收帧（en日报 time 单调钟）+ drain 数据面 latest_values；IOA/CA → 点映射；重复 ASDU（同内容新 N(S)）按事件身份去重",
     "quality": "PASS——QualityDescriptor → quality_bits 逐位映射（invalid→INVALID 等）+ 时标：CP56Time2a → event_time（iv=true 追加 UNCERTAIN）；无时标 → 接收时刻（时钟域信任面由 clock_id 承担）",
-    "e5": "PASS——E5 host 标准 peer 互操作（iec104_e5_host.rs，真实 TCP 字节流）：STARTDT/总召/自发数据/时标帧/品质帧/重复帧/对端断开重连，2 例全过；fixture = evidence/61/iec104_slave61.py（零 EnerOS 代码从站）",
+    "e5": "PASS——E5 host 标准 peer 互操作（iec104_e5_host.rs，真实 TCP 字节流）：STARTDT/总召/自发数据/时标帧/品质帧/重复帧/对端断开重连，2 例全过；对端 = 测试内嵌手写 APDU 假从站（与 crate 编解码零共享，46 L2 fixture 同纪律）；evidence/61/iec104_slave61.py（Python 从站）= QEMU 实弹 fixture，待 root 授予边接线后主会话实弹（BLOCKED 登记）",
     "link-state": "PARTIAL——STARTDT/STOPDT 状态行由 adapter 观测；DomainEvent 正式落事件平面留 .32 event-store 分区消费（登记）"
    }
   },

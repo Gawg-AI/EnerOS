@@ -16,6 +16,14 @@
 //! - 语义去重/序号纪律由 [`IngestionModule`]（SourceRegistry + 同源
 //!   watermark）承担；store 只做幂等位点（[07] §4.4：重放保留原
 //!   event_id——消费侧以 event_id 幂等关联）。
+//!
+//! # 偏离登记（规格轴复查 2026-08-31）
+//!
+//! - [07] §4.4「重放增加 replay flag」与「保留原 event_id」冲突（flags
+//!   参与 event_id 计算——置位即改 id、破坏幂等键）：本桥保 event_id
+//!   稳定优先；replay flag 留给有意重投语义（Phase 3 消费侧位点回退）。
+//! - QoS 分级位在分区键中恒 0（事件 QoS 来自 PointPlan，装配面分级后
+//!   扩展）。
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -34,9 +42,16 @@ pub const DELIVERY_GROUP: ConsumerGroupId = 1;
 /// 分区键取模范围（FNV-1a 低 24 位 ≈ 16M 分区）。
 const PARTITION_MOD: u32 = 1 << 24;
 
-/// 分区键（[07] §4.3：hash(source_id)；同源顺序保序）。
+/// 分区键（[07] §4.3：tenant/site/QoS/hash(source_id)——QoS 位本桥恒 0
+/// （事件 QoS 来自 PointPlan，装配面分级后置位）；同源同域顺序保序）。
 pub fn partition_of(event: &ObservationEvent) -> PartitionId {
-    fnv1a(event.source_id.to_le_bytes()).wrapping_rem(PARTITION_MOD)
+    let mix = event
+        .tenant_id
+        .wrapping_mul(31)
+        .wrapping_add(event.site_id)
+        .wrapping_mul(31)
+        .wrapping_add(event.source_id);
+    fnv1a(mix.to_le_bytes()).wrapping_rem(PARTITION_MOD)
 }
 
 /// FNV-1a 32（非密码学——只作分区散列）。
@@ -183,11 +198,12 @@ impl<S: EventStore> ObservationSink for StoreSink<S> {
     }
 }
 
-/// StoreError → IngestReject 映射（[07] §2.5：背压显式化——Full/高水位 →
-/// Overflow）。
+/// StoreError → IngestReject 映射（[07] §2.5：容量类背压显式化——
+/// Full/高水位/介质故障一律 Overflow（调用方按 QoS 策略降级；Io/Corrupt
+/// 归 Over 而非伪造语义——统一原因面）。
 fn store_err_to_reject(e: StoreError) -> IngestReject {
-    match e {
-        StoreError::Full | StoreError::HighWatermark => IngestReject::Overflow,
-        _ => IngestReject::Overflow,
-    }
+    // 容量类（含介质故障）在接入面统一为背压拒绝——详细原因经
+    // append_failures + store 诊断面可观测。
+    let _ = e;
+    IngestReject::Overflow
 }

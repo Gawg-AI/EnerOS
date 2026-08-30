@@ -29,8 +29,8 @@ use alloc::vec::Vec;
 use eneros_crypto::sm2::keypair::Sm2PublicKey;
 use eneros_crypto::sm2::sign::sm2_verify;
 use eneros_crypto::sm2::sign::Sm2Signature;
-use eneros_crypto::sm3::{hash as sm3_hash, Sm3Hasher};
-use eneros_ingestion_core::{AppendAck, IngestOutcome, IngestionModule, RawObservation};
+use eneros_crypto::sm3::hash as sm3_hash;
+use eneros_ingestion_core::{IngestOutcome, IngestionModule, RawObservation};
 use eneros_telemetry_model::event::{quality_bits, IntegrityTag, ObservationValue};
 
 // ===========================================================================
@@ -61,6 +61,11 @@ pub struct MarketEnvelope {
     /// 价格/电量（必须 finite；单位在语义层——YuanPerMwh/MWh）。
     pub price: f64,
     pub volume: f64,
+    /// 价格单位码（UnitCatalog；0 = 语义层单位——见 crate 文档偏离登记；
+    /// canonical 参与签名，杜绝单位中途被换）。
+    pub unit_code: u16,
+    /// 电量单位码（同上语义）。
+    pub volume_unit_code: u16,
     /// 签名者密钥 id + SM2 签名（r||s 64B）。
     pub key_id: [u8; 8],
     pub signature: [u8; 64],
@@ -90,6 +95,8 @@ impl MarketEnvelope {
         b.extend_from_slice(&self.sequence.to_le_bytes());
         b.extend_from_slice(&self.price.to_le_bytes());
         b.extend_from_slice(&self.volume.to_le_bytes());
+        b.extend_from_slice(&self.unit_code.to_le_bytes());
+        b.extend_from_slice(&self.volume_unit_code.to_le_bytes());
         b.extend_from_slice(&self.key_id);
         b
     }
@@ -124,6 +131,9 @@ pub enum MarketReject {
     Expired { expires_at_ms: u64 },
     /// 未登记的产品绑定（product/region → 点映射缺失）。
     UnboundProduct { product: u32, region: u32 },
+    /// 事件平面结构化拒绝**原样透传**（RateExceeded/Overflow/序列等——
+    /// 不伪造原因；统一 reject reason，[07] §3.7）。
+    ModuleReject(eneros_ingestion_core::IngestReject),
 }
 
 /// 存档原因（迟到/过期/旧修订——不进当前目标的可见性面）。
@@ -194,9 +204,6 @@ impl MarketEventAdapter {
     ) -> Result<IngestOutcome, MarketReject> {
         // 1. 摘要比对（canonical → SM3；防 payload/签名错配）。
         let digest = env.compute_digest();
-        let mut hasher = Sm3Hasher::new();
-        hasher.update(&env.payload_digest);
-        let _ = hasher.finalize(); // 借用检查直读即可
         if digest != env.payload_digest {
             self.rejected_total += 1;
             return Err(MarketReject::DigestMismatch);
@@ -250,7 +257,8 @@ impl MarketEventAdapter {
                 region: env.region,
             });
         };
-        // 7. 事件平面准入（身份由 module PointPlan 富化——raw 最小化）。
+        // 7. 事件平面准入（身份由 module PointPlan 富化——raw 最小化；
+        // 单位透传信封——canonical 已锁，杜绝中途调包）。
         let raw = RawObservation {
             point_id,
             value: ObservationValue::F64(env.price),
@@ -261,14 +269,14 @@ impl MarketEventAdapter {
             flags: 0,
             schema_id: 0,
             schema_version: 0,
-            unit_code: 0,
+            unit_code: env.unit_code,
             asset_id: 0,
             mapping_version: 0,
             device_id: 0,
         };
         let outcome = module
             .ingest(self.source_id, raw, now_ms.saturating_mul(1_000_000))
-            .map_err(|_| MarketReject::DigestMismatch)?;
+            .map_err(MarketReject::ModuleReject)?;
         // 提交水位（ingest 成功才推进修订水位）。
         self.revisions.insert(
             env.external_id,
@@ -279,10 +287,6 @@ impl MarketEventAdapter {
                 .max(env.revision),
         );
         self.accepted_total += 1;
-        let _ = AppendAck {
-            event_id: [0; 16],
-            offset: 0,
-        }; // 类型引用保留
         Ok(outcome)
     }
 
@@ -354,6 +358,8 @@ mod tests {
             sequence: 1,
             price: 412.5,
             volume: 10.0,
+            unit_code: 0,
+            volume_unit_code: 0,
             key_id: *b"testkey1",
             signature: [0; 64],
             payload_digest: [0; 32],

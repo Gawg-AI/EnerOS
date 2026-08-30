@@ -56,7 +56,7 @@ use eneros_ingestion_core::{
 use eneros_protocol_abstract::plugin::WorkBudget;
 // ProtocolPlugin trait 方法（plugin.poll——收包状态机驱动入口）。
 use eneros_protocol_abstract::ProtocolPlugin as _;
-use eneros_telemetry_model::event::{quality_bits, IntegrityTag, ObservationValue};
+use eneros_telemetry_model::event::{event_flags, quality_bits, IntegrityTag, ObservationValue};
 
 /// 共享插件句柄（收包=adapter drain；自检=bin 启动期轮——单线程 EL0，RefCell）。
 pub type SharedIec104Plugin = Rc<RefCell<Iec104Plugin>>;
@@ -200,14 +200,15 @@ where
         }
         // 时标路径（[07] §3.3：CP56 → event_time，保留时钟质量）。
         let fallback_ns = lv.timestamp_ms.saturating_mul(1_000_000).max(1);
-        let (event_time_ns, quality) = match (lv.time_tag_ns, lv.time_tag_iv) {
+        let (event_time_ns, quality, flags) = match (lv.time_tag_ns, lv.time_tag_iv) {
             // 可信对端时标：直接采用。
-            (Some(ns), false) => (ns.max(1), qbits),
+            (Some(ns), false) => (ns.max(1), qbits, 0),
             // IV 位（时钟未同步）：回退接收时刻 + UNCERTAIN（不冒充可信）。
-            (Some(_), true) => (fallback_ns, qbits | quality_bits::UNCERTAIN),
-            // 无时标：接收时刻；时钟域信任面由 descriptor clock_id 承担
-            // （无时标≠时钟坏，不追加品质位）。
-            (None, _) => (fallback_ns, qbits),
+            (Some(_), true) => (fallback_ns, qbits | quality_bits::UNCERTAIN, 0),
+            // 无时标：接收时刻 + CLOCK_MISSING flag（[07] §3.3 打 clock
+            // flag——消费侧据此区分时标来源；时钟域信任面由 descriptor
+            // clock_id 承担）。
+            (None, _) => (fallback_ns, qbits, event_flags::CLOCK_MISSING),
         };
         let pushed = out.push(RawObservation {
             point_id,
@@ -215,7 +216,7 @@ where
             event_time_ns: Some(event_time_ns),
             quality_bits: quality,
             integrity: IntegrityTag::LocalTrustedEdge,
-            flags: 0,
+            flags,
             // [07] §2.2 分界：身份（schema/unit/asset/世代）由 module 从
             // PointPlan 富化——raw 留零（与 modbus adapter 一致）。
             schema_id: 0,
