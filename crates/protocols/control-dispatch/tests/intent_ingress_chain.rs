@@ -401,8 +401,10 @@ fn intent_rate_gate_exceeds_budget() {
         .expect("first");
     assert_eq!(r1.final_state, DispatchState::Committed);
     // 同一预算窗口内第 2 条（更高 sequence）→ BudgetExceeded 零投递。
+    // 夹具用同值 setpoint：61 复查后单点爬坡检查先于预算闸（入口裁决），
+    // 异值会以 ramp-limit 先拒——本测试只验预算闸语义。
     let err = engine
-        .submit_intent(&intent(2, 60.0), &tel, &actor(), 5000)
+        .submit_intent(&intent(2, 50.0), &tel, &actor(), 5000)
         .expect_err("rate");
     assert!(matches!(err, DispatchError::BudgetExceeded(_)), "{err:?}");
 }

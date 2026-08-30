@@ -141,10 +141,161 @@ impl SafetyValidator {
             violations: all_violations,
         }
     }
+
+    /// 复查 FIX（61 v0.314.25 §3.4）：clamp 建议不得直接采信——把截断结果
+    /// 作为**新候选**重跑全部规则（有界 ≤4 轮：相邻对 clamp 传播需多轮收敛；
+    /// 仍不干净即放弃，绝不循环放宽阈值）。
+    ///
+    /// 返回 `Some((schedule, validation))` = 收敛干净的截断候选；
+    /// `None` = 未收敛（调用方必须回落到已通过全部规则的原始解，
+    /// 不得采信半程截断）。
+    pub fn revalidate_clamped(
+        &self,
+        first_clamped: ScheduleResult,
+        state: &SystemState,
+    ) -> Option<(ScheduleResult, ValidationResult)> {
+        let mut current = Some(first_clamped);
+        for _ in 0..4 {
+            let clamped = current.clone()?;
+            let r = self.validate(&clamped, state);
+            if r.passed && !r.clamped {
+                return Some((clamped, r));
+            }
+            if !r.clamped {
+                return None;
+            }
+            current = r.clamped_schedule.clone().or(Some(clamped));
+        }
+        None
+    }
 }
 
 impl Default for SafetyValidator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod revalidate_tests {
+    #![allow(clippy::disallowed_macros)]
+
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
+
+    use eneros_energy_lp_model::result::{ScheduleEntry, ScheduleResult};
+    use eneros_solver_core::result::SolveStatus;
+
+    use super::*;
+    use crate::result::Violation;
+
+    fn entry(period: usize, discharge: f64) -> ScheduleEntry {
+        ScheduleEntry {
+            period,
+            charge_power_kw: 0.0,
+            discharge_power_kw: discharge,
+            net_power_kw: discharge,
+            soc_pct: 0.5,
+            revenue_yuan: 0.0,
+        }
+    }
+
+    fn schedule(first_discharge: f64) -> ScheduleResult {
+        ScheduleResult {
+            schedule: alloc::vec![entry(0, first_discharge)],
+            total_revenue_yuan: 0.0,
+            objective_value: 0.0,
+            solve_status: SolveStatus::Optimal,
+        }
+    }
+
+    fn state() -> SystemState {
+        SystemState::new(380.0, 0.0, 50.0, 0.5, 0)
+    }
+
+    /// 软 clamp 规则（is_hard=false + Warning）：首时段放电超限 → 截断并报
+    /// Warning。`converge=false` 时截断为渐近逼近（永不达限）——模拟
+    /// 永不收敛的 clamp 相邻传播。
+    struct SoftClamp {
+        limit: f64,
+        converge: bool,
+    }
+
+    impl SafetyRule for SoftClamp {
+        fn name(&self) -> &str {
+            "soft_clamp"
+        }
+        fn priority(&self) -> u32 {
+            5
+        }
+        fn is_hard(&self) -> bool {
+            false
+        }
+        fn validate(&self, schedule: &ScheduleResult, _state: &SystemState) -> ValidationResult {
+            let mut out = schedule.clone();
+            let mut violations = Vec::new();
+            let mut clamped = false;
+            let e = &mut out.schedule[0];
+            if e.discharge_power_kw > self.limit {
+                violations.push(Violation::normal(
+                    "soft_clamp",
+                    e.period,
+                    "discharge_power_kw",
+                    e.discharge_power_kw,
+                    self.limit,
+                    Severity::Warning,
+                ));
+                e.discharge_power_kw = if self.converge {
+                    self.limit
+                } else {
+                    (e.discharge_power_kw + self.limit) / 2.0
+                };
+                e.net_power_kw = e.discharge_power_kw - e.charge_power_kw;
+                clamped = true;
+            }
+            ValidationResult {
+                passed: true,
+                clamped,
+                clamped_schedule: if clamped { Some(out) } else { None },
+                violations,
+            }
+        }
+    }
+
+    fn soft_only(converge: bool) -> SafetyValidator {
+        let mut v = SafetyValidator { rules: Vec::new() };
+        v.add_rule(Box::new(SoftClamp {
+            limit: 10.0,
+            converge,
+        }));
+        v
+    }
+
+    #[test]
+    fn converged_clamp_accepted_with_full_revalidation() {
+        let v = soft_only(true);
+        let (sched, re) = v
+            .revalidate_clamped(schedule(30.0), &state())
+            .expect("截断候选两轮内收敛干净");
+        assert!((sched.schedule[0].discharge_power_kw - 10.0).abs() < 1e-9);
+        assert!(re.passed && !re.clamped, "采信前提 = 重跑全部规则后干净");
+    }
+
+    #[test]
+    fn non_converging_clamp_never_accepted() {
+        let v = soft_only(false);
+        // 渐近逼近永不达限：≤4 轮有界迭代后必须放弃（None）——调用方
+        // 回落原解，绝不采信半程截断，也绝不循环放宽阈值。
+        assert!(v.revalidate_clamped(schedule(30.0), &state()).is_none());
+    }
+
+    #[test]
+    fn already_clean_first_clamp_passes_through() {
+        let v = soft_only(true);
+        let (sched, re) = v
+            .revalidate_clamped(schedule(5.0), &state())
+            .expect("首轮即干净");
+        assert!((sched.schedule[0].discharge_power_kw - 5.0).abs() < 1e-9);
+        assert!(re.passed && !re.clamped);
     }
 }

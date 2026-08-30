@@ -359,3 +359,45 @@ impl AuthorizedCommand {
         }
     }
 }
+
+/// 类型化控制合同（蓝图 61 v0.314.25 §3.3；2026-08-30 Phase 0 复查落地）。
+///
+/// 一个可远程控制点的**完整执行约束**：签发侧（`ControlProfile`）与
+/// writer 侧（协议适配）各自从同一份点表/档案事实构造，字段即双方必须
+/// 一致的全集——单位、值域、爬坡、回读点、容差、结算时限、反馈集。
+/// 完全配置化编译（点表 TOML → contract）归 Phase 1；本类型先统一词汇。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlContract {
+    /// 合同 ID（点表编译后的稳定序号；装配期构造暂用 point_id）。
+    pub contract_id: u32,
+    /// 资产 ID（装配期暂绑定 device_id——资产级绑定随 Phase 1 点表收编）。
+    pub asset_id: u64,
+    /// 目标设备。
+    pub device_id: u16,
+    /// 控制目标点。
+    pub point_id: u32,
+    /// [`CommandValue::value_tag`]——合同绑定的命令类别。
+    pub command_tag: u8,
+    /// [`CommandValue::unit_code`]——合同量纲。
+    pub unit_code: u16,
+    /// 授权值域下限。
+    pub min: f64,
+    /// 授权值域上限。
+    pub max: f64,
+    /// 连续 setpoint 爬坡上限（单位/秒；离散命令不适用 = [`f64::INFINITY`]）。
+    pub max_ramp_per_sec: f64,
+    /// 独立回读点（不得复用写请求返回值）。
+    pub readback_point_id: u32,
+    /// 回读绝对容差（工程量）。
+    pub tolerance_abs: f64,
+    /// 回读相对容差（|读回-目标| ≤ max(abs, rel×|目标|)）。
+    pub tolerance_rel: f64,
+    /// 结算时限（毫秒）。
+    pub settle_timeout_ms: u32,
+    /// 必备反馈集 ID（1 = `SAFETY_COVERAGE_POINTS` 生产覆盖集）。
+    pub required_feedback_set_id: u32,
+}
+
+/// 必备反馈集（`required_feedback_set_id`）的现行唯一取值——
+/// control-dispatch `SAFETY_COVERAGE_POINTS` 生产覆盖集。
+pub const REQUIRED_FEEDBACK_SET_PROD: u32 = 1;

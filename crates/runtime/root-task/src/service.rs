@@ -1068,6 +1068,9 @@ fn control_chain_synth_ingest(
         (4, if seq % 2 == 0 { 0.475 } else { 0.525 }),
         (5, 1.0),
         (6, 0.0),
+        // 61 复查矫正：点 7 = 独立过温告警（0x0106）——与 points.toml/
+        // PROD_FEEDBACK_MAPPING/SAFETY_COVERAGE_POINTS 同步解 6/6 别名。
+        (7, 0.0),
     ] {
         let sample = TelemetrySample {
             point,

@@ -44,8 +44,10 @@ static ALLOC: eneros_protocol_services::HeapAllocator =
 /// telemetry=槽 3、config=槽 4）——46 卷句柄移交同批，modbus-tcp 先行者先
 /// 拿到。47（WP-47.1）：读回容差（kW；与 device-agent
 /// ReadbackPolicy::tolerance 同量级——ACK 成功但物理状态未达目标 →
-/// Mismatch）。
-pub const MASTER_READBACK_TOL_KW: f64 = 0.1;
+/// Mismatch）。复查 FIX：值单源 = control-gateway
+/// `PCS_SETPOINT_READBACK_TOL_KW`（与签发侧 ControlContract.tolerance_abs
+/// 同一事实；本 bin 历史手抄常量退役）。
+pub use eneros_control_gateway::PCS_SETPOINT_READBACK_TOL_KW as MASTER_READBACK_TOL_KW;
 
 #[cfg(target_os = "none")]
 struct ModbusTcpIoService {

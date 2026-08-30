@@ -151,6 +151,22 @@ deadband = 0.01
 min = 0.0
 max = 1.0
 
+# 61 复查矫正（2026-08-30）：独立过温告警点——解 overcurrent/overtemp
+# 6/6 别名（peer 0x0106 独立寄存器；PROD_FEEDBACK_MAPPING.overtemp 改绑
+# 本点；点 6 保持过流告警语义）。
+[[point]]
+point_id = 7
+device_id = 2
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 0x0106, func_code = 3 }
+data_type = "analog"
+scale = 0.001
+offset = 0.0
+period_ms = 3000
+deadband = 0.01
+min = 0.0
+max = 1.0
+
 # --- 变电站 RTU-3（iec104） ---
 [[point]]
 point_id = 3001

@@ -18,6 +18,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use eneros_telemetry_model::command::{CommandValue, ControlContract, REQUIRED_FEEDBACK_SET_PROD};
 use eneros_telemetry_model::point_spec::{ControlDirection, PointSpec};
 use eneros_telemetry_model::unit::PhysicalUnit;
 
@@ -26,6 +27,16 @@ use crate::envelope::ActorKind;
 use crate::lease::LeaseScope;
 use crate::policy::{CommandClass, Policy, PolicyRule};
 use crate::safety::{SafetyPoint, SafetyRole};
+
+/// PCS 连续 setpoint 的独立回读绝对容差（kW；工程量）。
+/// 单源：writer 侧（svc-modbus-tcp 回读比对）与签发侧合同
+/// （[`ControlProfile::control_contract`]）都从这里取值。
+pub const PCS_SETPOINT_READBACK_TOL_KW: f64 = 0.1;
+
+/// PCS 连续 setpoint 的逐点爬坡合同上限（kW/s）。
+/// = 200 kW/min（与 `DispatchConfig.safety_ramp_kw_per_min` 保护缺省同源
+/// 的保护意图）；调度相邻时段路径继续用后者，单点命令路径用本值。
+pub const PCS_SETPOINT_MAX_RAMP_PER_SEC: f64 = 200.0 / 60.0;
 
 /// 链调优参数束——原八参 `ControlChain::new` 调用点的六个逐字魔数
 /// （key 与 policy 之外的全部数值），产品默认值收拢于此。
@@ -158,11 +169,52 @@ impl ControlProfile {
             unit: PhysicalUnit::Kilowatts,
             safe_min: -500.0,
             safe_max: 500.0,
-            max_ramp_per_sec: None,
+            // 复查 FIX（61 §3.4）：单点 setpoint 爬坡合同化——与保护配合
+            // 同一保护意图（DispatchConfig.safety_ramp_kw_per_min 缺省
+            // 200 kW/min），换算为逐点合同值（单位/秒）；执行侧由
+            // dispatch 引擎对「最近 AppliedConfirmed setpoint」强制。
+            max_ramp_per_sec: Some(PCS_SETPOINT_MAX_RAMP_PER_SEC),
             direction: ControlDirection::Increase,
             remote_controllable: true,
             tuning: ChainTuning::default(),
         }
+    }
+
+    /// 类型化控制合同（61 v0.314.25 §3.3；复查 2026-08-30 落地）——
+    /// 全部字段由本档案单源派生（值域=安全窗、爬坡=逐点合同、tag/unit=
+    /// 命令类别），签发侧与 writer 侧据此对齐。仅对可执行命令类开放：
+    /// `Read`/`Emergency` 无设备执行合同 → `None`。
+    /// asset_id 暂绑定 device_id（资产级绑定随 Phase 1 点表编译收编）。
+    pub fn control_contract(&self) -> Option<ControlContract> {
+        let (command_tag, unit_code, max_ramp_per_sec) = match (self.command_class, self.unit) {
+            (CommandClass::Switch, _) => (
+                CommandValue::SwitchPosition(0).value_tag(),
+                CommandValue::SwitchPosition(0).unit_code(),
+                f64::INFINITY,
+            ),
+            (CommandClass::Setpoint, PhysicalUnit::Kilowatts) => (
+                CommandValue::ActivePowerKw(0.0).value_tag(),
+                CommandValue::ActivePowerKw(0.0).unit_code(),
+                self.max_ramp_per_sec.unwrap_or(f64::INFINITY),
+            ),
+            _ => return None,
+        };
+        Some(ControlContract {
+            contract_id: self.point_id,
+            asset_id: u64::from(self.device_id),
+            device_id: u16::try_from(self.device_id).ok()?,
+            point_id: self.point_id,
+            command_tag,
+            unit_code,
+            min: self.safe_min,
+            max: self.safe_max,
+            max_ramp_per_sec,
+            readback_point_id: self.point_id,
+            tolerance_abs: PCS_SETPOINT_READBACK_TOL_KW,
+            tolerance_rel: 0.0,
+            settle_timeout_ms: 3_000,
+            required_feedback_set_id: REQUIRED_FEEDBACK_SET_PROD,
+        })
     }
 
     /// 规范策略习语：`Policy::new(v-1)` + `replace_rules` ⇒ 生效

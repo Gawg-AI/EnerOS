@@ -58,7 +58,9 @@ pub use incident_replay::{
 pub use lease::{LeaseScope, LeaseService};
 pub use override_ctrl::{OverrideAuthority, OverrideDecision, OverrideSession};
 pub use policy::{CommandClass, Decision, DenyReason, Obligation, Pdp, Policy, PolicyRule};
-pub use profile::{ChainTuning, ControlProfile};
+pub use profile::{
+    ChainTuning, ControlProfile, PCS_SETPOINT_MAX_RAMP_PER_SEC, PCS_SETPOINT_READBACK_TOL_KW,
+};
 pub use reconcile::FeedbackSample;
 pub use reconcile::{reconcile, Reconciled};
 pub use safety::{PlantContext, SafetyPoint, SafetyRole, SafetyValidator, SafetyVerdict};

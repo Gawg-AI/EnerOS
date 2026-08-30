@@ -110,9 +110,21 @@ impl<S: Solver> RealtimePathEngine<S> {
             return Err(FastPathError::SafetyFatal(validation.violations.len()));
         }
 
-        // 7. 返回结果（elapsed_ms 暂用 0，D6）
+        // 7. clamp 建议处理（复查 FIX 61 §3.4）：passed 且有 clamp 建议——
+        // 截断结果作为新候选重跑全部规则（revalidate_clamped，≤4 轮）；
+        // 收敛干净才采信，否则回落原解（原解已通过全部规则——clamp 只是
+        // 建议，不是可以跳过认证的豁免）。
+        let (schedule, validation) = match validation.clamped_schedule.clone() {
+            None => (schedule, validation),
+            Some(clamped) => self
+                .validator
+                .revalidate_clamped(clamped, &state.system)
+                .unwrap_or((schedule, validation)),
+        };
+
+        // 8. 返回结果（elapsed_ms 暂用 0，D6）
         Ok(FastPathResult {
-            schedule: validation.clamped_schedule.clone().unwrap_or(schedule),
+            schedule,
             solve_result,
             validation,
             elapsed_ms: 0, // D6: 简化，用 solve_result.elapsed_ms 代替

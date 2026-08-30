@@ -33,25 +33,24 @@ pub struct FeedbackPointMapping {
 /// `encode_trusted_with/decode_trusted_with` 与本装配三方消费此常量；
 /// 反馈点位改动只改这里，不再各处手抄）。
 ///
-/// ⚠ 已知别名（体检 A3 登记）：`overtemp` 与 `overcurrent` 暂指向同一点位
-/// 6——QEMU 从站仅发布 6 个点位（0x0100–0x0105，点 6 = 告警标志），过温
-/// 未接入，两信号在链上取值恒同。矫正前置 = 设备新增过温点 + 覆盖表 +
-/// QEMU 全链复验（overtemp 不可信 → HZ-THERM-001 拒充，见 spec R4 §3
-/// WP-R4.4），**不得在本常量之外私自改键**。
+/// 61 复查矫正（2026-08-30）：`overtemp` 改绑独立过温点 7（peer 0x0106），
+/// 体检 A3 的 6/6 别名解除——点 6 保持过流告警语义，两信号独立采样。
+/// 前置已满足：peer 新增过温寄存器 + 覆盖表加列 + QEMU 全链复验
+///（fixverify 卷 E4；overtemp 缺失/不可信 → HZ-THERM-001 拒充不变，
+/// 见 spec R4 §3 WP-R4.4）。**不得在本常量之外私自改键**。
 pub const PROD_FEEDBACK_MAPPING: FeedbackPointMapping = FeedbackPointMapping {
     grid_up: 5,
     soc: 4,
     dc_bus_v: 1,
     overcurrent: 6,
-    overtemp: 6,
+    overtemp: 7,
 };
 
 /// 61 v0.314.26 §4.4：安全覆盖声明单一事实源——svc-telemetry 装配与
 /// 本 crate 反馈映射共用一份常量（历史三处手抄收编；完全配置化编译归
-/// 后续卷 SafetyCatalog 工作）。点 1-6 = 电压/电流/频率/SOC/grid/过流
-/// 过温共享告警位（6/6 别名为当前 peer 点表现实，矫正前置 = peer 增加
-/// 独立过温寄存器）。
-pub const SAFETY_COVERAGE_POINTS: [(u32, f64, f64, u64, eneros_safety_validator::PointUnit); 6] = [
+/// 后续卷 SafetyCatalog 工作）。点 1-7 = 电压/电流/频率/SOC/grid/过流
+/// 告警/过温告警（复查矫正：过温独立点 7 = peer 0x0106，6/6 别名解除）。
+pub const SAFETY_COVERAGE_POINTS: [(u32, f64, f64, u64, eneros_safety_validator::PointUnit); 7] = [
     (
         1,
         0.0,
@@ -76,6 +75,7 @@ pub const SAFETY_COVERAGE_POINTS: [(u32, f64, f64, u64, eneros_safety_validator:
     (4, 0.0, 1.0, 5000, eneros_safety_validator::PointUnit::Ratio),
     (5, 0.0, 1.0, 5000, eneros_safety_validator::PointUnit::Other),
     (6, 0.0, 1.0, 5000, eneros_safety_validator::PointUnit::Other),
+    (7, 0.0, 1.0, 5000, eneros_safety_validator::PointUnit::Other),
 ];
 
 /// 由单源表构建评估器覆盖声明（svc-telemetry 装配唯一入口）。
@@ -305,8 +305,9 @@ mod tests {
         assert_eq!(b.overtemp.quality, QualityFlag::Invalid);
     }
 
-    /// SPEC-R4 WP-R4.1：生产反馈映射单源值冻结（5/4/1/6/6）。6/6 别名
-    /// 现状见常量文档；矫正走 spec R4 WP-R4.4（QEMU 门槛），不得私自改键。
+    /// SPEC-R4 WP-R4.1：生产反馈映射单源值冻结（5/4/1/6/7）。61 复查
+    /// 矫正：overtemp 改绑独立过温点 7（peer 0x0106），A3 的 6/6 别名
+    /// 解除；改键必须同步 points.toml/peer/覆盖表并过 QEMU 门槛。
     #[test]
     fn prod_feedback_mapping_frozen() {
         let m = PROD_FEEDBACK_MAPPING;
@@ -314,6 +315,10 @@ mod tests {
         assert_eq!(m.soc, 4);
         assert_eq!(m.dc_bus_v, 1);
         assert_eq!(m.overcurrent, 6);
-        assert_eq!(m.overtemp, 6);
+        assert_eq!(m.overtemp, 7);
+        assert_ne!(
+            m.overcurrent, m.overtemp,
+            "过流/过温独立点位（A3 别名不得回潮）"
+        );
     }
 }

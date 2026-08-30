@@ -30,12 +30,9 @@ pub extern "C" fn _start(
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
     // 覆盖声明（与部署配置一致：电压/电流/频率/SOC/电网/过流 6 点。
-    // ⚠ 过温未接入——点 6 告警标志暂由反馈映射 overcurrent/overtemp 别名
-    // 共享，单源见 control-dispatch PROD_FEEDBACK_MAPPING；矫正前置见
-    // spec R4 §3 WP-R4.4）。
     // 61 v0.314.26 §4.4：覆盖声明单源 = control-dispatch feedback
-    // SAFETY_COVERAGE_POINTS（历史 6 点手抄收编；过温/过流 6/6 别名现状
-    // 与矫正前置见该常量文档）。
+    // SAFETY_COVERAGE_POINTS（历史 6 点手抄收编）。61 复查矫正：点 7 =
+    // 独立过温告警（peer 0x0106）入覆盖表，6/6 别名解除（见该常量文档）。
     let config = eneros_safety_validator::EvaluatorConfig {
         coverage: eneros_control_dispatch::feedback::safety_coverage(),
         bindings: eneros_safety_validator::StateBindings {

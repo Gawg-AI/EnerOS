@@ -208,6 +208,10 @@ pub struct DispatchEngine {
     /// 47（WP-47.1）：每来源协议已见最大意图序号（重放门——重复
     /// sequence 零写；跨重启由链幂等（意图 correlation 派生）兜底）。
     last_seq: BTreeMap<String, u64>,
+    /// 复查 FIX（61 §3.4）：每 (device,point) 最近 AppliedConfirmed
+    /// setpoint（值, 确认时刻 ms）——单点爬坡检查的参照基线。仅内存
+    /// （重启后无参照 = 首命令放行；跨重启的爬坡基线归对账/点表）。
+    last_confirmed: BTreeMap<(u32, u32), (f64, u64)>,
 }
 
 impl DispatchEngine {
@@ -247,6 +251,7 @@ impl DispatchEngine {
             audit_drop_count: 0,
             audit_append_count: 0,
             last_seq: BTreeMap::new(),
+            last_confirmed: BTreeMap::new(),
         };
         // 启动恢复播种：durable 未决记录（v1 遗留 Applied/Persisted 或
         // 崩溃窗口遗留）→ Reconciling。投递与否不可证明——重放零投递、
@@ -730,6 +735,34 @@ impl DispatchEngine {
             None => {}
         }
 
+        // 复查 FIX（61 §3.4）：单点连续 setpoint 爬坡——与最近
+        // AppliedConfirmed setpoint 比较，真实 elapsed 换算（合同
+        // max_ramp_per_sec）；超限拒绝（零投递）。首命令无参照放行
+        // （跨重启基线不持久——归对账/点表，Phase 1 收编）。
+        if let CommandValue::ActivePowerKw(v) = value {
+            if let Some(&(last_v, last_ms)) = self
+                .last_confirmed
+                .get(&(self.profile.device_id, self.profile.point_id))
+            {
+                let dt_secs = ((self.now_fn)().saturating_sub(last_ms)) as f64 / 1_000.0;
+                // dt 下限 1s：同拍/倒挂重发不放大许可，也不除零。
+                let rate = (v - last_v).abs() / dt_secs.max(1.0);
+                let limit = self
+                    .profile
+                    .control_contract()
+                    .map(|c| c.max_ramp_per_sec)
+                    .unwrap_or(f64::INFINITY);
+                if rate > limit {
+                    let note = alloc::format!(
+                        "ramp-limit：|{v}-{last_v}|kW/{:.3}s = {rate:.3} kW/s 超合同限 {limit:.3} kW/s——拒绝（零投递）",
+                        dt_secs
+                    );
+                    self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
+                    return Err(DispatchError::SafetyRejected(note));
+                }
+            }
+        }
+
         // SBO：选择+执行原子（ControlGateway 九步链，不双头授权）。
         self.chain.sbo_select(self.profile.point_id, now_secs);
         let fb: FeedbackBundle = self.feedback_builder.build(telemetry, now_secs);
@@ -920,6 +953,10 @@ impl DispatchEngine {
         let response = self
             .delivery
             .deliver(&self.target_endpoint, &envelope.encode(), timeout);
+        let setpoint_kw = match value {
+            CommandValue::ActivePowerKw(v) => Some(v),
+            _ => None,
+        };
         self.deliver_and_settle(
             response,
             states,
@@ -927,6 +964,7 @@ impl DispatchEngine {
             command_id,
             correlation,
             cmd.energy_kwh.unwrap_or(0.0),
+            setpoint_kw,
         )
     }
 
@@ -946,6 +984,9 @@ impl DispatchEngine {
         command_id: [u8; 16],
         correlation: [u8; 16],
         energy: f64,
+        // 复查 FIX（61 §3.4）：连续 setpoint 值（AppliedConfirmed 时更新
+        // 单点爬坡基线；离散命令 None）。
+        setpoint_kw: Option<f64>,
     ) -> Result<DispatchReceipt, DispatchError> {
         // 步骤 7：投递已由调用方完成（envelope 参数）；此处直接分类回执。
         let response = match response {
@@ -1193,6 +1234,14 @@ impl DispatchEngine {
                 eneros_runtime::println!(
                     "[svc-control-dispatch] EXEC-JOURNAL applied-confirmed（独立回读匹配→Committed）"
                 );
+                // 复查 FIX（61 §3.4）：记录最近 AppliedConfirmed setpoint
+                //（单点爬坡基线；仅 ActivePowerKw 有连续量语义）。
+                if let Some(v) = setpoint_kw {
+                    self.last_confirmed.insert(
+                        (self.profile.device_id, self.profile.point_id),
+                        (v, (self.now_fn)()),
+                    );
+                }
                 // 步骤 11：confirmed dispatch 才记账 + 审计。
                 self.gate.record(started, energy);
                 states.push(DispatchState::Committed);

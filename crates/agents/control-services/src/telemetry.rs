@@ -417,8 +417,9 @@ pub fn encode_trusted_with(t: &TrustedTelemetry, m: &FeedbackPointMapping) -> Ve
 /// wire → TrustedTelemetry（长度不符 → None）。
 ///
 /// 反馈槽按 [`PROD_FEEDBACK_MAPPING`] 键独立回填——键相异时 oc/ot 各自
-/// 保留（体检 A3 修复：历史实现 ot 无条件覆盖 oc 的键）；键重复（生产
-/// 6/6 别名）时后写胜出，与历史行为一致。非生产映射走 [`decode_trusted_with`]。
+/// 保留（体检 A3 修复：历史实现 ot 无条件覆盖 oc 的键）。61 复查矫正后
+/// 生产键 = 6/7（独立过温点），别名不复存在。非生产映射走
+/// [`decode_trusted_with`]。
 pub fn decode_trusted(buf: &[u8]) -> Option<TrustedTelemetry> {
     decode_trusted_with(buf, &eneros_control_dispatch::PROD_FEEDBACK_MAPPING)
 }
@@ -606,6 +607,51 @@ mod tests {
         })
     }
 
+    /// 复查矫正测试装配：coverage = 6 点 + 独立过温点 7（镜像生产
+    /// `safety_coverage()` 7 点新现实；评估器只放行必需点）。
+    fn service_with_point7() -> TelemetryService {
+        // coverage 重建（evaluator 私有）——以完整 config 新建服务。
+        TelemetryService::new(EvaluatorConfig {
+            coverage: RequiredPointCoverage {
+                points: vec![
+                    rp(1, eneros_safety_validator::PointUnit::Volt),
+                    rp(2, eneros_safety_validator::PointUnit::Ampere),
+                    rp(3, eneros_safety_validator::PointUnit::Hertz),
+                    rp(4, eneros_safety_validator::PointUnit::Ratio),
+                    rp(5, eneros_safety_validator::PointUnit::Other),
+                    rp(6, eneros_safety_validator::PointUnit::Other),
+                    rp(7, eneros_safety_validator::PointUnit::Other),
+                ],
+            },
+            bindings: StateBindings {
+                voltage: 1,
+                current: 2,
+                frequency: 3,
+                soc: 4,
+            },
+            mapping_version: 1,
+            max_skew_ms: 1000,
+            allowed_sources: vec![1],
+            require_integrity: true,
+            control_horizon_ms: 30_000,
+        })
+    }
+
+    fn rp(point: u32, unit: eneros_safety_validator::PointUnit) -> RequiredPoint {
+        let max = match point {
+            1 | 2 => 1000.0,
+            3 => 55.0,
+            _ => 1.0,
+        };
+        RequiredPoint {
+            point,
+            min: 0.0,
+            max,
+            max_age_ms: 5000,
+            unit,
+        }
+    }
+
     fn good(point: u32, value: f64, seq: u64, now: u64) -> TelemetrySample {
         TelemetrySample {
             point,
@@ -740,26 +786,42 @@ mod tests {
         assert_eq!(d.samples.get(&1), Some(&400.0));
     }
 
-    /// SPEC-R4 WP-R4.1 判据：生产映射值冻结（5/4/1/6/6）+ 6/6 别名在
-    /// wire 上显式可见（oc 槽 == ot 槽字节）。矫正须走 spec R4 WP-R4.4
-    /// （设备过温点 + QEMU 门槛），不得在此改键。
+    /// SPEC-R4 WP-R4.1 判据：生产映射值冻结（5/4/1/6/7）。61 复查矫正：
+    /// oc/ot 独立点位（点 6 过流 / 点 7 过温 = peer 0x0105/0x0106），
+    /// wire 上两槽各自承载、独立往返；缺失/不可信仍走 HZ-THERM-001
+    /// 拒充（fail-closed 不变）。
     #[test]
-    fn prod_mapping_aliasing_frozen_and_visible() {
+    fn prod_mapping_slots_independent_on_wire() {
         let m = eneros_control_dispatch::PROD_FEEDBACK_MAPPING;
         assert_eq!(m.grid_up, 5);
         assert_eq!(m.soc, 4);
         assert_eq!(m.dc_bus_v, 1);
         assert_eq!(m.overcurrent, 6);
-        assert_eq!(m.overtemp, 6, "6/6 别名冻结——设备过温点接入前不得改键");
-        let mut svc = service();
+        assert_eq!(m.overtemp, 7, "overtemp 必须绑定独立过温点 7（0x0106）");
+        assert_ne!(
+            m.overcurrent, m.overtemp,
+            "过流/过温不得再共享点位（A3 别名已解除）"
+        );
+        // 本测试专用装配：coverage 镜像生产 safety_coverage()（7 点，含
+        // 独立过温点 7）——评估器忽略非必需点，点 7 必须在覆盖表内才能
+        // 进入受信快照（生产由 svc-telemetry safety_coverage() 保证）。
+        let mut svc = service_with_point7();
         let now = 10_000;
-        svc.ingest(&full(now));
+        let mut samples = full(now);
+        samples.push(good(7, 1.0, 1, now)); // 独立过温告警置位
+        svc.ingest(&samples);
         let t = svc.snapshot(now).expect("trusted");
         let buf = encode_trusted(&t);
-        // 反馈段自偏移 104 起：oc 槽 [128..136] == ot 槽 [136..144]。
-        assert_eq!(buf[128..136], buf[136..144], "别名在 wire 上可见");
+        // 反馈段自偏移 104 起：oc 槽 [128..136] 与 ot 槽 [136..144] 独立——
+        // 分别承载点 6（0.0）与点 7（1.0）。
+        assert_ne!(
+            buf[128..136],
+            buf[136..144],
+            "oc/ot 槽独立承载（A3 别名已解除）"
+        );
         let d = decode_trusted(&buf).expect("decode");
-        assert_eq!(d.samples.get(&6), t.samples.get(&6), "告警值经别名往返保留");
+        assert_eq!(d.samples.get(&6), Some(&0.0), "过流值经 oc 槽往返保留");
+        assert_eq!(d.samples.get(&7), Some(&1.0), "过温值经 ot 槽独立往返");
     }
 
     #[test]

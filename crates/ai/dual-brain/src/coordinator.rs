@@ -546,33 +546,19 @@ impl<S: Solver> DualBrainCoordinator<S> {
                     )),
                 );
             }
-            // clamp-only：截断调度重验（有界迭代 ≤4——相邻对 clamp 传播
-            // 需要多轮收敛；仍不干净即拒，不循环放宽阈值）。
-            let mut current = validation.clamped_schedule.clone();
-            let mut re = None;
-            for _ in 0..4 {
-                let Some(clamped) = current.clone() else {
-                    break;
-                };
-                let r = self.validator.validate(&clamped, &state.system);
-                if r.passed && !r.clamped {
-                    re = Some(r);
-                    current = Some(clamped);
-                    break;
-                }
-                if !r.clamped {
-                    current = Some(clamped);
-                    re = Some(r);
-                    break;
-                }
-                current = r.clamped_schedule.clone().or(Some(clamped));
-            }
-            match (re, current) {
-                (Some(re), Some(final_sched)) if re.passed => {
-                    final_schedule = final_sched;
+            // clamp-only：截断调度重验——复查 FIX 收编原内联循环到
+            // `revalidate_clamped` 单源（≤4 轮有界；不干净即拒，
+            // 不循环放宽阈值）。
+            match validation
+                .clamped_schedule
+                .clone()
+                .and_then(|first| self.validator.revalidate_clamped(first, &state.system))
+            {
+                Some((sched, re)) => {
+                    final_schedule = sched;
                     validation = re;
                 }
-                _ => {
+                None => {
                     return self.reject(
                         now_ms,
                         DecisionPath::Slow,
@@ -584,7 +570,14 @@ impl<S: Solver> DualBrainCoordinator<S> {
                 }
             }
         } else if let Some(clamped) = validation.clamped_schedule.clone() {
-            final_schedule = clamped;
+            // 复查 FIX（61 §3.4）：passed 且有 clamp 建议——截断结果重跑
+            // 全部规则（revalidate_clamped，≤4 轮）；收敛干净才采信，
+            // 否则回落原解（原解已通过全部规则）。
+            // 不收敛（None）→ 保留原 schedule + 原 validation（已 passed）。
+            if let Some((sched, re)) = self.validator.revalidate_clamped(clamped, &state.system) {
+                final_schedule = sched;
+                validation = re;
+            }
         }
 
         // 蓝图 40 WP-40.3：速率/能量/并发预算在唯一 ControlDispatch 的
