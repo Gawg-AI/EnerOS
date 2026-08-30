@@ -1,0 +1,27 @@
+error[E0599]: no associated function or constant named `new` found for struct `CertifiedPlan` in the current scope
+ --> tests/compilefail/external_cannot_construct_certified_plan.rs:9:29
+  |
+9 |     let _c = CertifiedPlan::new(
+  |                             ^^^ associated function or constant not found in `CertifiedPlan`
+  |
+note: if you're trying to build a new `CertifiedPlan` consider using one of the following associated functions:
+      CertifiedPlan::new_transition
+      CertifiedPlan::decode_v1
+ --> src/certificate.rs
+  |
+  | /     pub fn new_transition(
+  | |         seal: CertifierSeal,
+  | |         certificate_id: CertificateId,
+  | |         plan_id: PlanId,
+... |
+  | |         proof_digest: [u8; 32],
+  | |     ) -> Result<Self, ContractError> {
+  | |____________________________________^
+...
+  |       pub fn decode_v1(buf: &[u8]) -> Result<Self, ContractError> {
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is a method `ne` with a similar name, but with different arguments
+ --> $RUST/core/src/cmp.rs
+  |
+  |     fn ne(&self, other: &Rhs) -> bool {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -30,6 +30,12 @@ eneros-durable-state = { path = "../../runtime/durable-state" }
 eneros-audit = { path = "../../security/audit" }
 # 61 v0.314.24：receipt_digest = SM3(对端回执帧)（journal 原 receipt 证据绑定）。
 eneros-crypto = { path = "../../security/crypto" }
+# 蓝图 61 v0.314.28：决策有类型产物链（CandidatePlan/CertifiedPlan/
+# CommandIntent/CommandBatch）。transition-certifier = 迁移窗口认证权印
+# （ControlChain 复核路径发放；.38 真 certifier 落地后删除）。
+eneros-decision-contract = { path = "../../ai/decision-contract", features = [
+    "transition-certifier",
+] }
 sha2 = { version = "0.10.9", default-features = false }
 # 调度结果（能量预算估算）。
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }

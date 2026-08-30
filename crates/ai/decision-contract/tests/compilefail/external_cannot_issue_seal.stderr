@@ -1,0 +1,5 @@
+error[E0451]: field `_priv` of struct `CertifierSeal` is private
+ --> tests/compilefail/external_cannot_issue_seal.rs:6:32
+  |
+6 |     let seal = CertifierSeal { _priv: () };
+  |                                ^^^^^ private field

@@ -155,7 +155,7 @@ pub trait EpochStore {
     fn save(&mut self, source_id: u32, epoch: u64, watermark: u64) -> Result<(), IngestReject>;
 }
 
-/// 内存 epoch 存储（target 默认；跨重启不持久——见 ADR-038 缺口登记）。
+/// 内存 epoch 存储（target 默认；跨重启不持久——见 ADR-0047 缺口登记）。
 #[derive(Debug, Default)]
 pub struct MemEpochStore {
     state: BTreeMap<u32, (u64, u64)>,

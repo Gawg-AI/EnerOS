@@ -76,7 +76,7 @@
  "capacity_tier": "C0",
  "notes": [
   "E4（QEMU epoch/sequence/golden 实弹）排程：Phase 1 收尾窗口统一执行（0.314.29 出口 + 镜像重建，root-task 授予边 svc-telemetry→svc-config 需新镜像）；本卷 host E0-E3 全绿为前置。",
-  "target epoch 跨重启持久递增缺口：svc-telemetry/svc-modbus-tcp 无持久存储 capability（E-DEF-01 停用；boot_id=随机熵）——ADR-0046 缺口登记，owner 行动项=.32 卷 durable 槽授予。host 持久 store 语义已 E3 实证。",
+  "target epoch 跨重启持久递增缺口：svc-telemetry/svc-modbus-tcp 无持久存储 capability（E-DEF-01 停用；boot_id=随机熵）——ADR-0047 缺口登记，owner 行动项=.32 卷 durable 槽授予。host 持久 store 语义已 E3 实证。",
   "fuzz target 归 .29 wire 卷工作序（[06] §4.5.2）；本卷 wire 已含 12 项变异/负例单测。",
   "生产身份去硬编码自查：svc-modbus-tcp source/epoch/mapping 全部取配置事实（[[source]] 表/registry 分配/GET_GENERATION）；root 合成源（source=1）保持 qemu-test-synth feature 门控（qemu-prod 闭包不含）= 测试设施非生产事件。"
  ],

@@ -1,0 +1,23 @@
+[package]
+name = "eneros-decision-contract"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图61 决策有类型产物链 — IntentCandidate/ObjectiveSpec/DecisionRequest/CandidatePlan/CertifiedPlan/CommandIntent/CommandBatch（no_std）"
+
+[dependencies]
+# 蓝图 61 [16] §3.6：值对象/crypto 依赖；不依赖 LLM、solver、protocol
+# plugin、dispatch 实现；不定义或重导出 AuthorizedCommand（[06] §3.2）。
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
+sha2 = { version = "0.10.9", default-features = false }
+
+[features]
+default = []
+# 迁移窗口认证权印（.28-.37）：ControlChain 复核作为过渡认证器发放
+# CertifierSeal。真 certifier crate（.38）落地后删除本 feature——
+# compile-fail 测试锁定：未启用 feature 的 crate 无法构造 CertifiedPlan。
+transition-certifier = []
+
+[dev-dependencies]
+trybuild = "1"

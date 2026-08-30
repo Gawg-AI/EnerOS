@@ -48,6 +48,7 @@ use eneros_safety_validator::TrustedTelemetry;
 use eneros_telemetry_model::command::{CommandValue, ControlCommand, SingleCommand};
 use eneros_upa_model::PointValue;
 
+use crate::adapter::ProfileResourceView;
 use crate::channel::DeliveryChannel;
 use crate::dispatch::{
     AuthenticatedActor, ControlDispatch, DispatchError, DispatchReceipt, DispatchState,
@@ -70,11 +71,13 @@ enum CoreIdentity {
         /// 协议侧单调序号。
         sequence: u64,
     },
-    /// AI 计划：command_id = 引擎自增 seq 前 8B LE；
-    /// correlation = plan_id 派生（WP-40.12 幂等键同源）。
-    Plan {
-        /// 计划 ID。
-        plan_id: String,
+    /// AI 计划：command_id = 引擎自增 seq 前 8B LE；correlation =
+    /// PlanId 字节（蓝图 61 v0.314.28：与旧 facade `correlation_of`
+    /// 同派生——迁移 adapter 保证 PlanId = UTF-8 前 16B 零填充，幂等键
+    /// 跨 Phase 0 记录兼容）。
+    PlanTyped {
+        /// 类型化计划 ID。
+        plan_id: eneros_decision_contract::PlanId,
     },
 }
 
@@ -326,6 +329,9 @@ impl DispatchEngine {
     }
 
     /// 从 proposal 派生 correlation（plan_id 前 16 字节，定长）。
+    /// 迁移期保留：PlanTyped correlation 派生的历史参照（adapter 测试
+    /// 以同规则锁定字节兼容）。.32 facade reader 删除时一并清偿。
+    #[allow(dead_code)]
     fn correlation_of(plan_id: &str) -> [u8; 16] {
         let mut id = [0u8; 16];
         let bytes = plan_id.as_bytes();
@@ -485,20 +491,179 @@ impl DispatchEngine {
             return Err(DispatchError::TelemetryExpired);
         }
 
-        // 步骤 3 起进入合核（WP-54.2，同 run_intent）。
+        // 蓝图 61 v0.314.28：**typed 链收口**——proposal 在 dispatch 边界
+        // 经严格 adapter 进入 CandidatePlan（[17] .28"经严格 adapter 进入
+        // CandidatePlan"），合核只消费 typed 产物（含 PlanTyped 身份）。
+        // facade reader 保留至 .32（[17] .32 删除期限）。
+        let plan = crate::adapter::proposal_to_candidate(
+            proposal,
+            (
+                u64::from(self.profile.device_id),
+                u16::try_from(self.profile.device_id).unwrap_or(0),
+                self.profile.point_id,
+                0,
+            ),
+            eneros_telemetry_model::unit_catalog::code_of(self.profile.unit),
+            1, // catalog_version（.35 registry 落地前的 profile 单源常量）
+        )?;
         let energy = schedule_energy_kwh(&proposal.schedule);
+        self.run_typed(
+            &plan,
+            proposal.target_device.clone(),
+            Some(energy),
+            telemetry,
+            actor,
+            started,
+            states,
+            deadline_ms,
+        )
+    }
+
+    /// 蓝图 61 v0.314.28：typed 入口——CandidatePlan → 过渡认证证书 →
+    /// CommandIntent → CommandBatch（profile 资源视图校验）→ 12 步合核。
+    ///
+    /// 执行入口语义不变：投递仍只经 `AuthorizedCommand`（唯一 Gateway
+    /// 构造）——本函数是决策侧的 typed 前置链，不是第二执行真相。
+    #[allow(clippy::too_many_arguments)]
+    fn run_typed(
+        &mut self,
+        plan: &eneros_decision_contract::CandidatePlan,
+        target_device: String,
+        energy_kwh: Option<f64>,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        started: u64,
+        states: Vec<DispatchState>,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError> {
+        use eneros_decision_contract::{
+            CertificateId, CertifiedPlan, CertifierSeal, CommandBatch, CommandIntent,
+            CompensationHint, IntentId, Precondition,
+        };
+        use sha2::Digest as _;
+
+        // typed 校验（等价 validate_proposal：有限值/上限/ttl/非空分配——
+        // CandidatePlan 构造器已保证部分，此处补 dispatch 域上限）。
+        let assignment = plan
+            .assignments()
+            .first()
+            .copied()
+            .ok_or_else(|| DispatchError::ProposalInvalid(String::from("空调度不可投递")))?;
+        if assignment.power_kw.abs() > self.max_power_kw {
+            return Err(DispatchError::ProposalInvalid(alloc::format!(
+                "power_kw {} 超上限 {}",
+                assignment.power_kw,
+                self.max_power_kw
+            )));
+        }
+        if !plan.is_valid_at(started) {
+            return Err(DispatchError::ProposalInvalid(String::from("计划已过期")));
+        }
+
+        // —— 过渡认证（[06] §3.5.4：dispatch 入口 CertifiedPlan 路由）——
+        // plan_sha256 = SHA-256(CandidatePlan V1 wire)；proof 绑定 profile
+        // 摘要与计划（迁移窗口语义，ADR-0048；.38 真 certifier 替换）。
+        let plan_sha: [u8; 32] = sha2::Sha256::digest(plan.encode_v1().as_slice()).into();
+        let mut proof_input = alloc::vec::Vec::with_capacity(64);
+        proof_input.extend_from_slice(b"eneros.transition-proof.v1");
+        proof_input.extend_from_slice(&plan_sha);
+        let proof_digest: [u8; 32] = sha2::Sha256::digest(&proof_input).into();
+        let certificate = CertifiedPlan::new_transition(
+            CertifierSeal::issue_transition(),
+            CertificateId::new(plan_sha[..16].try_into().unwrap())
+                .map_err(|_| DispatchError::ProposalInvalid(String::from("证书 ID 派生失败")))?,
+            *plan.id(),
+            plan_sha,
+            plan.snapshot_id(),
+            1, // certifier_version = control-chain-transition v1
+            plan.resource_catalog_version(),
+            1, // tolerance profile
+            started,
+            started.saturating_add(plan.ttl_ms()),
+            0, // hard_constraint_count：迁移期由链内安全目录承载（.38 独立计数）
+            proof_digest,
+        )
+        .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("certificate: {e:?}")))?;
+
+        // CommandIntent + CommandBatch（profile 资源视图 scope 校验）。
+        let unit_code = eneros_telemetry_model::unit_catalog::code_of(self.profile.unit);
+        let intent = CommandIntent::new(
+            IntentId::new(plan_sha[16..32].try_into().unwrap())
+                .map_err(|_| DispatchError::ProposalInvalid(String::from("意图 ID 派生失败")))?,
+            *plan.id(),
+            plan_sha,
+            u64::from(self.profile.device_id),
+            u16::try_from(self.profile.device_id).unwrap_or(0),
+            self.profile.point_id,
+            assignment.power_kw,
+            unit_code,
+            started,
+            started.saturating_add(plan.ttl_ms()),
+            Precondition::None,
+            CompensationHint::None,
+        )
+        .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("intent: {e:?}")))?;
+        let batch = CommandBatch::new(
+            proof_digest[..16].try_into().unwrap(),
+            &certificate,
+            &ProfileResourceView {
+                profile: &self.profile,
+                catalog_version: plan.resource_catalog_version(),
+            },
+            alloc::vec![intent],
+            started,
+        )
+        .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("batch: {e:?}")))?;
+        eneros_runtime::println!(
+            "[svc-control-dispatch] PLAN-TYPED cert={:02x?} batch_intents={}",
+            &certificate.certificate_id().0[..4],
+            batch.intents().len()
+        );
+
+        // 合核（WP-54.2 不变；身份走 PlanTyped——correlation 与 facade
+        // 同派生，幂等键跨路径一致）。
         self.execute_core(
             CoreCommand {
-                identity: CoreIdentity::Plan {
-                    plan_id: proposal.plan_id.clone(),
+                identity: CoreIdentity::PlanTyped {
+                    plan_id: *plan.id(),
                 },
-                ttl_secs: u64::from(proposal.ttl_secs.max(1)),
-                power_kw: proposal.power_kw,
-                target_device: proposal.target_device.clone(),
-                input_digest: proposal.input_digest,
-                energy_kwh: Some(energy),
+                ttl_secs: plan.ttl_ms() / 1000,
+                power_kw: assignment.power_kw,
+                target_device,
+                input_digest: Some(*plan.input_digest()),
+                energy_kwh,
                 idem_note: String::from("idempotent-hit（原结果，不重复写）"),
             },
+            telemetry,
+            actor,
+            started,
+            states,
+            deadline_ms,
+        )
+    }
+
+    /// 蓝图 61 v0.314.28：公开 typed 入口（post-.28 生产者直接提交
+    /// CandidatePlan；跳过 proposal facade）。执行链同 `submit`。
+    pub fn submit_typed(
+        &mut self,
+        plan: &eneros_decision_contract::CandidatePlan,
+        target_device: &str,
+        energy_kwh: Option<f64>,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError> {
+        let started = (self.now_fn)();
+        let mut states: Vec<DispatchState> = Vec::with_capacity(12);
+        states.push(DispatchState::Proposed);
+        states.push(DispatchState::Validated);
+        if !telemetry.is_valid_at(started) {
+            return Err(DispatchError::TelemetryExpired);
+        }
+        self.run_typed(
+            plan,
+            alloc::string::String::from(target_device),
+            energy_kwh,
             telemetry,
             actor,
             started,
@@ -653,12 +818,11 @@ impl DispatchEngine {
                 let c = Self::intent_correlation(&protocol_id, sequence);
                 (c, c, sequence)
             }
-            CoreIdentity::Plan { plan_id } => {
+            CoreIdentity::PlanTyped { plan_id } => {
                 self.seq += 1;
                 let mut cid = [0u8; 16];
                 cid[..8].copy_from_slice(&self.seq.to_le_bytes());
-                let corr = Self::correlation_of(&plan_id);
-                (cid, corr, self.seq)
+                (cid, plan_id.0, self.seq)
             }
         };
         let now_secs = started / 1000;

@@ -1,0 +1,75 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.28",
+ "commit": "PENDING-BUMP-COMMIT",
+ "dirty": false,
+ "profile": "host (E0-E3)",
+ "toolchain_digest": "rustc nightly-2026-04-04 (host)",
+ "commands": [
+  {
+   "id": "CMD-TEST-WS",
+   "cmd": "cargo test --workspace",
+   "exit": 0,
+   "summary": "7930 passed / 0 failed（+22：decision-contract 17 + trybuild 2 + typed_chain 3，含 feature 门控）"
+  },
+  {
+   "id": "CMD-CLIPPY",
+   "cmd": "cargo clippy --workspace --all-targets",
+   "exit": 0,
+   "summary": "0 warning / 0 error"
+  },
+  {
+   "id": "CMD-FMT",
+   "cmd": "cargo fmt --all --check",
+   "exit": 0,
+   "summary": "clean"
+  }
+ ],
+ "tests": [
+  {
+   "id": "T-COMPILE-FAIL",
+   "class": "E0 编译期封阶段（[06] §3.5.1，trybuild）",
+   "rows": {
+    "外部构造CertifiedPlan→编译失败": "PASS——compilefail/external_cannot_construct_certified_plan.rs（字段私有+无公开构造器）",
+    "外部构造CertifierSeal→编译失败": "PASS——compilefail/external_cannot_issue_seal.rs（_priv 私有；生成器不能给自己签证书）",
+    "CandidatePlan直达执行→编译失败": "PASS——compilefail/candidate_not_executable.rs（执行入口只接受 AuthorizedCommand——类型不可互换）",
+    "合法面decode+verify可用": "PASS——compilepass/decode_and_verify_is_public.rs"
+   },
+   "note": "stderr 快照按 workspace feature 合一态（transition-certifier 恒开，control-dispatch 依赖）生成并 cfg 门控——feature 加法性限制与执行面 = ADR-0048 如实登记"
+  },
+  {
+   "id": "T-TYPED-CHAIN",
+   "class": "E3 typed 产物链（[06] §3.5.3/3.6）",
+   "rows": {
+    "facade与typed身份一致": "PASS——typed_chain::facade_and_typed_share_identity（同 proposal 两路径命中同一幂等记录，零重复投递——correlation 派生逐字节相同）",
+    "typed入口独立闭环": "PASS——typed_entry_commits（CandidatePlan→过渡证书→Intent→Batch→12步链→Committed，一次投递+读回）",
+    "过期计划拒绝": "PASS——typed_entry_rejects_expired_plan",
+    "adapter保留status/digest": "PASS——control-dispatch::adapter 3 测试（PlanId=correlation 同派生/SnapshotId=provenance/非成功状态拒绝）",
+    "batch scope校验": "PASS——decision-contract::batch 3 测试（证书过期/绑定不符/scope 不符/空批/重复 intent 全拒绝）",
+    "reason code稳定+未知fail-closed": "PASS——lib::reason_codes_stable_and_unknown_fail_closed",
+    "AuthorizedCommand零泄漏": "PASS——lib::authorized_command_not_reexported（7 文件逐代码行审计，注释除外）"
+   }
+  },
+  {
+   "id": "T-GATE-RG",
+   "class": "退出 gate 手工核查（[06] §3.7）",
+   "rows": {
+    "rg write_authorized/deliver：AI/solver/rule/market/federation 无生产直调": "PASS——ai/runner 唯一命中为 tests 模块内 mock impl；生产调用面 = device-agent ingress（AuthorizedWriter 唯一执行端）",
+    "AuthorizedCommand 唯一构造 = ControlGateway": "PASS——字段私有（P1-1 先例），gateway.rs authorize 为唯一签发路径；其余命中均为测试辅助"
+   }
+  }
+ ],
+ "faults": [],
+ "capacity_tier": "C0",
+ "notes": [
+  "后端原生产 CandidatePlan 与 69B proposal wire → CandidatePlan wire 的传输切换在 .29 一次协调完成（ADR-0048 序列裁决——避免同一生产者两次迁移；69B writer 删除期限 .29 不受影响）。",
+  "Phase 0 参考闭环经 typed 链：dispatch 边界 adapter → run_typed（证书/意图/批）→ 12 步合核；E4 实弹归 .29 收尾窗口（QEMU 镜像含 .27-.29 全部装配改动后统一复验）。",
+  "E4/E5 升级矩阵（.29 §4.6）在本卷未启动——.29 卷工作序。"
+ ],
+ "artifacts": [
+  "evidence/61/0.314.28/manifest.json",
+  "docs/adr/ADR-0048-decision-typed-chain.md",
+  "docs/adr/ADR-0047-observation-event-source-identity.md（编号订正：规范 4 位序列，registry 同步）",
+  "CONTEXT.md（CandidatePlan/CertifiedPlan/CommandIntent/CommandBatch 术语登记）"
+ ]
+}

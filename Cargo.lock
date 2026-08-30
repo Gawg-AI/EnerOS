@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-account"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-market-types",
  "loom",
@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-agent"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent",
  "eneros-agent-sdk",
@@ -503,14 +503,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-agent-bus-dds"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "slotmap",
 ]
 
 [[package]]
 name = "eneros-agent-hot-update"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-agent-sdk"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-config-bundle",
  "eneros-drv-svc",
@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-ai-runner"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-control-gateway",
  "eneros-device-agent",
@@ -551,35 +551,35 @@ dependencies = [
 
 [[package]]
 name = "eneros-aiops"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-time",
 ]
 
 [[package]]
 name = "eneros-alarm"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-upa-model",
 ]
 
 [[package]]
 name = "eneros-ancillary"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-market-types",
 ]
 
 [[package]]
 name = "eneros-app-cert"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-attestation"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "eneros-crypto-gmssl",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-audit"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-ipc-wire",
  "heapless 0.8.0",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-autonomous"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-account",
  "eneros-market-types",
@@ -605,14 +605,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-board"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-hal",
 ]
 
 [[package]]
 name = "eneros-boot-manager-uefi"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "ed25519-dalek",
  "eneros-boot-protocol",
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-boot-protocol"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-ipc-wire",
  "sha2",
@@ -631,11 +631,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-bsp-cert"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-business-services"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent-sdk",
  "eneros-boot-protocol",
@@ -659,18 +659,18 @@ dependencies = [
 
 [[package]]
 name = "eneros-calibration"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-can"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-driver-framework",
 ]
 
 [[package]]
 name = "eneros-cellular"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-hal",
  "smoltcp",
@@ -678,18 +678,18 @@ dependencies = [
 
 [[package]]
 name = "eneros-chain"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-ci"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-cj188"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-protocol-abstract",
  "eneros-upa-model",
@@ -697,7 +697,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-cloud-coordinator"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-coordinator",
  "eneros-dr",
@@ -707,34 +707,35 @@ dependencies = [
 
 [[package]]
 name = "eneros-cloud-sync"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-ipc-wire",
 ]
 
 [[package]]
 name = "eneros-compliance"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-config-bundle"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "eneros-protocol-abstract",
  "eneros-telemetry-model",
  "eneros-upa-model",
- "toml",
+ "toml 0.8.23",
 ]
 
 [[package]]
 name = "eneros-control-dispatch"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent-sdk",
  "eneros-audit",
  "eneros-control-gateway",
  "eneros-crypto",
+ "eneros-decision-contract",
  "eneros-device-agent",
  "eneros-dual-brain",
  "eneros-durable-state",
@@ -751,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-control-gateway"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "eneros-telemetry-model",
@@ -760,7 +761,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-control-services"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent-sdk",
  "eneros-audit",
@@ -790,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-coordinator"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent",
  "eneros-energy-market-agent",
@@ -800,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-crash-dump"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-ipc-wire",
  "heapless 0.8.0",
@@ -808,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-crypto"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto-gmssl",
  "eneros-handover-abi",
@@ -820,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-crypto-gmssl"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "cc",
  "hex",
@@ -830,19 +831,28 @@ dependencies = [
 
 [[package]]
 name = "eneros-dashboard"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-data-governance"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
 ]
 
 [[package]]
+name = "eneros-decision-contract"
+version = "0.314.28"
+dependencies = [
+ "eneros-telemetry-model",
+ "sha2",
+ "trybuild",
+]
+
+[[package]]
 name = "eneros-device-agent"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent",
  "eneros-audit",
@@ -861,18 +871,18 @@ dependencies = [
 
 [[package]]
 name = "eneros-dialog"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-did"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-dlt645"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-protocol-abstract",
  "eneros-upa-model",
@@ -880,11 +890,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-dr"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-driver-framework"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-board",
  "eneros-driver-framework",
@@ -893,7 +903,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-drv-svc"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-hal",
  "eneros-handover-abi",
@@ -906,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-dual-brain"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-audit",
  "eneros-control-gateway",
@@ -928,7 +938,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-durable-log"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-ipc-wire",
  "eneros-storage",
@@ -936,18 +946,18 @@ dependencies = [
 
 [[package]]
 name = "eneros-durable-state"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-ipc-wire",
 ]
 
 [[package]]
 name = "eneros-elf-loader"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-energy-lp-model"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-solver-core",
  "eneros-solver-model",
@@ -955,7 +965,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-energy-market-agent"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent",
  "eneros-agent-sdk",
@@ -978,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-fast-path"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-safety-validator",
@@ -987,11 +997,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-fault-recorder"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-federation"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "eneros-tls",
@@ -1001,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-firmware-agent"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-account",
  "eneros-agent",
@@ -1015,14 +1025,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-fleet-ops"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "heapless 0.8.0",
 ]
 
 [[package]]
 name = "eneros-fs"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "bitflags 2.13.1",
  "eneros-storage",
@@ -1034,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-gbt27930"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-protocol-abstract",
  "eneros-upa-model",
@@ -1042,14 +1052,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-gguf-loader"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-llm-engine",
 ]
 
 [[package]]
 name = "eneros-grid-agent"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent",
  "eneros-agent-bus-dds",
@@ -1058,32 +1068,32 @@ dependencies = [
 
 [[package]]
 name = "eneros-hal"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "spin",
 ]
 
 [[package]]
 name = "eneros-handover-abi"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-hello"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-runtime",
 ]
 
 [[package]]
 name = "eneros-hmi"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent",
 ]
 
 [[package]]
 name = "eneros-iec101"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-iec60870-asdu",
  "eneros-protocol-abstract",
@@ -1092,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec103"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-protocol-abstract",
  "eneros-upa-model",
@@ -1100,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec104-master"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-iec104-slave",
  "eneros-iec60870-asdu",
@@ -1113,7 +1123,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec104-slave"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-control-gateway",
  "eneros-hal",
@@ -1125,11 +1135,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec60870-asdu"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-iec61850-goose"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-iec61850-model",
  "eneros-net",
@@ -1138,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec61850-mms"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-iec61850-model",
  "eneros-net",
@@ -1148,11 +1158,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec61850-model"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-iec61850-sv"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-iec61850-model",
  "eneros-net",
@@ -1161,28 +1171,28 @@ dependencies = [
 
 [[package]]
 name = "eneros-iec62351"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-image-format"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-ipc-wire",
 ]
 
 [[package]]
 name = "eneros-infer-scheduler"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-llm-engine",
 ]
 
 [[package]]
 name = "eneros-ingestion-core"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-protocol-abstract",
  "eneros-telemetry-model",
@@ -1191,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-installer-uefi"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "ed25519-dalek",
  "eneros-boot-protocol",
@@ -1202,7 +1212,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-intent-contract"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-intent-parser",
@@ -1214,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-intent-parser"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-energy-lp-model",
  "eneros-safety-validator",
@@ -1226,15 +1236,15 @@ dependencies = [
 
 [[package]]
 name = "eneros-ipc-wire"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-llm-engine"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-logging"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-metrics",
  "heapless 0.8.0",
@@ -1242,15 +1252,15 @@ dependencies = [
 
 [[package]]
 name = "eneros-market-types"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-marl"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-metrics"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "heapless 0.8.0",
  "loom",
@@ -1258,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-mgmt-api"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
@@ -1266,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-mgmt-cli"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-mgmt-api",
  "heapless 0.8.0",
@@ -1274,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-modbus-rtu"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-control-gateway",
  "eneros-driver-framework",
@@ -1287,7 +1297,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-modbus-tcp"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-hal",
  "eneros-modbus-rtu",
@@ -1299,7 +1309,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-modbus-tcp-server"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-control-gateway",
  "eneros-modbus-rtu",
@@ -1310,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-model-deploy"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-gguf-loader",
  "eneros-llm-engine",
@@ -1318,21 +1328,21 @@ dependencies = [
 
 [[package]]
 name = "eneros-model-ota"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-model-security"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-mqtt"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-fs",
  "eneros-net",
@@ -1343,7 +1353,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-mvp-scenario"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent",
  "eneros-control-dispatch",
@@ -1357,7 +1367,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-net"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-virtio-core",
  "smoltcp",
@@ -1365,15 +1375,15 @@ dependencies = [
 
 [[package]]
 name = "eneros-online-learning"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-oom-probe"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-ops-gate"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-dashboard",
  "eneros-mgmt-api",
@@ -1384,7 +1394,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-ops-lifecycle"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
@@ -1392,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-ota-ab"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "eneros-storage",
@@ -1401,14 +1411,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-p2p"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-market-types",
 ]
 
 [[package]]
 name = "eneros-p2p-match"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-p2p",
  "loom",
@@ -1416,7 +1426,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-pentest"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-attestation",
  "eneros-audit",
@@ -1429,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-power"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "heapless 0.8.0",
  "spin",
@@ -1437,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-prompt-template"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-llm-engine",
  "serde_json",
@@ -1445,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-protocol-abstract"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-telemetry-model",
  "eneros-upa-model",
@@ -1454,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-protocol-sdk"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-ipc-wire",
  "eneros-upa-model",
@@ -1463,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-protocol-services"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent-sdk",
  "eneros-config-bundle",
@@ -1500,14 +1510,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-realtime-market"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-market-types",
 ]
 
 [[package]]
 name = "eneros-recovery"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "eneros-ota-ab",
@@ -1517,18 +1527,18 @@ dependencies = [
 
 [[package]]
 name = "eneros-reputation"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent",
 ]
 
 [[package]]
 name = "eneros-rl"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-root-task"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent-sdk",
  "eneros-audit",
@@ -1562,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-rs485"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-driver-framework",
  "eneros-hal",
@@ -1570,18 +1580,18 @@ dependencies = [
 
 [[package]]
 name = "eneros-runtime"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-sel4-sys",
 ]
 
 [[package]]
 name = "eneros-safety-catalog"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-safety-validator"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "eneros-energy-lp-model",
@@ -1591,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-secure-boot"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "eneros-tpm",
@@ -1599,14 +1609,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-sel4-sys"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "eneros-services"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-audit",
  "eneros-ipc-wire",
@@ -1620,28 +1630,28 @@ dependencies = [
 
 [[package]]
 name = "eneros-settlement"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-market-types",
 ]
 
 [[package]]
 name = "eneros-simulator"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent-sdk",
 ]
 
 [[package]]
 name = "eneros-slo-alert"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "heapless 0.8.0",
 ]
 
 [[package]]
 name = "eneros-soe-engine"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-telemetry-model",
  "eneros-upa-model",
@@ -1649,11 +1659,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-solver-core"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-solver-milp"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-solver-core",
  "eneros-solver-model",
@@ -1661,21 +1671,21 @@ dependencies = [
 
 [[package]]
 name = "eneros-solver-model"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-solver-core",
 ]
 
 [[package]]
 name = "eneros-solver-pareto"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-solver-core",
 ]
 
 [[package]]
 name = "eneros-solver-warm"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-solver-core",
  "eneros-solver-milp",
@@ -1683,18 +1693,18 @@ dependencies = [
 
 [[package]]
 name = "eneros-spot-market"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-market-types",
 ]
 
 [[package]]
 name = "eneros-standards"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-storage"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-image-format",
  "eneros-ipc-wire",
@@ -1704,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-support-bundle"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "heapless 0.8.0",
@@ -1712,7 +1722,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-svc-pie"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-ipc-wire",
  "eneros-runtime",
@@ -1722,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-telemetry-model"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-upa-model",
  "sha2",
@@ -1730,7 +1740,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-telemetry-queue"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "heapless 0.8.0",
  "loom",
@@ -1738,11 +1748,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-tenant"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-time"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-hal",
  "spin",
@@ -1750,7 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-tls"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "digest",
  "embedded-io",
@@ -1768,14 +1778,14 @@ dependencies = [
 
 [[package]]
 name = "eneros-tpm"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
 ]
 
 [[package]]
 name = "eneros-tracing"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-logging",
  "heapless 0.8.0",
@@ -1783,11 +1793,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-trust"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-tsdb"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-fs",
  "eneros-ipc-wire",
@@ -1798,11 +1808,11 @@ dependencies = [
 
 [[package]]
 name = "eneros-tsn-time"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-twin-agent"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-agent-bus-dds",
  "eneros-device-agent",
@@ -1813,7 +1823,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-twin-global"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-solver-core",
  "eneros-twin-global",
@@ -1821,7 +1831,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-uart"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-driver-framework",
  "spin",
@@ -1829,15 +1839,15 @@ dependencies = [
 
 [[package]]
 name = "eneros-upa-model"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-virtio-core"
-version = "0.314.27"
+version = "0.314.28"
 
 [[package]]
 name = "eneros-vpp-scenario"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-crypto",
  "eneros-federation",
@@ -1856,7 +1866,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-watchdog"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "eneros-time",
  "spin",
@@ -1864,7 +1874,7 @@ dependencies = [
 
 [[package]]
 name = "eneros-xtask"
-version = "0.314.27"
+version = "0.314.28"
 dependencies = [
  "ed25519-dalek",
  "eneros-boot-manager-uefi",
@@ -1883,7 +1893,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "toml",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -2760,6 +2770,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2893,6 +2912,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "target-triple"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3a6bfce3d99adfa72d24750a61f782f3036a81e7f86d8841ee1326deaebd171"
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2903,6 +2928,15 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "termcolor"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
+dependencies = [
+ "winapi-util",
 ]
 
 [[package]]
@@ -2960,9 +2994,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
 dependencies = [
  "serde",
- "serde_spanned",
- "toml_datetime",
+ "serde_spanned 0.6.9",
+ "toml_datetime 0.6.11",
  "toml_edit",
+]
+
+[[package]]
+name = "toml"
+version = "1.1.4+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3aace63f4bbcdfc2c965b059de67119c89c4017a70d633be6c104910f67056f5"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned 1.1.1",
+ "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -2975,6 +3024,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_datetime"
+version = "1.1.1+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "toml_edit"
 version = "0.22.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2982,10 +3040,19 @@ checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
 dependencies = [
  "indexmap",
  "serde",
- "serde_spanned",
- "toml_datetime",
+ "serde_spanned 0.6.9",
+ "toml_datetime 0.6.11",
  "toml_write",
- "winnow",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml_parser"
+version = "1.1.3+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
+dependencies = [
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -2993,6 +3060,12 @@ name = "toml_write"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
+
+[[package]]
+name = "toml_writer"
+version = "1.1.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tracing"
@@ -3041,6 +3114,21 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "trybuild"
+version = "1.0.120"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e605bf6b39357663d8ba4e984f8be8da8df6bb32e81031d6889024ea8fd68e4"
+dependencies = [
+ "glob",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "target-triple",
+ "termcolor",
+ "toml 1.1.4+spec-1.1.0",
 ]
 
 [[package]]
@@ -3166,6 +3254,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "winapi-util"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3270,6 +3367,12 @@ checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "winnow"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "wit-bindgen"
