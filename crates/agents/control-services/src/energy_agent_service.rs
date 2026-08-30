@@ -277,7 +277,9 @@ mod tests {
                 feedback: None,
             };
             let mut out = vec![crate::ai_worker::AI_OK];
-            out.extend_from_slice(&crate::ai_worker::encode_proposal(&plan));
+            out.extend_from_slice(&crate::ai_worker::encode_candidate_payload(
+                &crate::ai_worker::proposal_to_candidate_unbound(&plan).expect("stub cand"),
+            ));
             Ok(out)
         }
     }

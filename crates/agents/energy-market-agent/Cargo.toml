@@ -21,6 +21,8 @@ eneros-safety-validator = { path = "../../ai/safety-validator" }
 eneros-intent-contract = { path = "../../ai/intent-contract" }
 # 蓝图 40 WP-40.6：唯一 ControlDispatch（唯一控制写出口）。
 eneros-control-dispatch = { path = "../../protocols/control-dispatch" }
+# 蓝图 61 v0.314.29：typed 提交面（ControlDispatch trait 签名）。
+eneros-decision-contract = { path = "../../ai/decision-contract", default-features = false }
 # 47（WP-47.1）：PointWriteIntent 类型（ControlDispatch::submit_intent 签名）。
 eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
 # 蓝图 40：调用方角色（ActorKind）。

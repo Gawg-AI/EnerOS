@@ -498,6 +498,7 @@ fn w1_crash_after_persist_replay_never_delivers_nor_commits() {
                 command_digest: None,
                 attempt: 1,
                 receipt_digest: None,
+                plan_sha256: None,
             })
             .expect("seed persisted intent");
     }
@@ -590,6 +591,7 @@ fn w3_crash_after_ack_before_readback_never_commits() {
                 command_digest: None,
                 attempt: 1,
                 receipt_digest: None,
+                plan_sha256: None,
             })
             .expect("seed");
         store

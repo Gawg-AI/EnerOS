@@ -87,6 +87,13 @@ pub fn proposal_to_candidate(
     .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("candidate: {e:?}")))
 }
 
+/// 后端侧转换（资源绑定未定形态——assignment 全零，绑定由 dispatch
+/// 编译期经 ResourceRegistry 完成；[06] §3.3 命令意图绑定语义）。
+pub fn proposal_to_candidate_unbound(
+    p: &ProposedControlPlan,
+) -> Result<CandidatePlan, DispatchError> {
+    proposal_to_candidate(p, (0, 0, 0, 0), 0, 0)
+}
 /// dispatch profile 背书的资源注册表只读视图（[06] §3.3 CommandBatch
 /// 构造第二参数；.35 卷 resource-registry 落地前由 profile 单源充当）。
 pub(crate) struct ProfileResourceView<'a> {

@@ -37,6 +37,11 @@ pub trait ServiceIo {
     /// `None` = 未授予 / 传输失败。target 实现内部按名取 svc-config 槽
     /// （agent-sdk `eipc_grants` 表 = 单一事实源）——bin 侧不接触槽位常量。
     fn config_entry(&mut self, id: &str) -> Option<Vec<u8>>;
+    /// 蓝图 61：GET_GENERATION（观测映射世代；None = 不可得——fail-closed
+    /// 降级为世代未定，观测不满足控制资格）。
+    fn config_generation(&mut self) -> Option<u64> {
+        None
+    }
     /// 传输构建。**用 `Result` 而非 `Option`（F-33）**：今日
     /// `handover missing ({:?})` 行要打印失败原因，`build_net_transport`
     /// 的 `Err` 正是 `&'static str`；`Option` 会丢原因 → 串口行变样。
@@ -201,6 +206,11 @@ struct ServiceIoAsSource<'a>(&'a mut dyn ServiceIo);
 impl ConfigEntrySource for ServiceIoAsSource<'_> {
     fn config_entry(&mut self, id: &str) -> Option<Vec<u8>> {
         self.0.config_entry(id)
+    }
+
+    /// 蓝图 61：GET_GENERATION 转发（观测映射世代单源）。
+    fn config_generation(&mut self) -> Option<u64> {
+        self.0.config_generation()
     }
 }
 
@@ -367,6 +377,22 @@ impl ServiceIo for Sel4ServiceIo {
         )
         .ok()?;
         client.config_entry(id)
+    }
+
+    /// 蓝图 61：GET_GENERATION（观测映射世代；经同一 config 槽）。
+    fn config_generation(&mut self) -> Option<u64> {
+        use eneros_agent_sdk::config_gateway::ConfigEntrySource as _;
+        let (_, slot) = eneros_agent_sdk::eipc_resolve(
+            self.service,
+            eneros_agent_sdk::config_client::CONFIG_ENDPOINT,
+        )?;
+        let mut client = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+            self.config_client,
+            slot,
+            eneros_drv_svc::now_ns,
+        )
+        .ok()?;
+        client.config_generation()
     }
 
     fn transport(

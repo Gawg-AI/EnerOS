@@ -523,7 +523,7 @@ mod tests {
 
     use super::*;
     use crate::ai_worker::tests_helpers::minimal_trusted;
-    use crate::ai_worker::{AI_NOACTION, PROPOSAL_WIRE_LEN};
+    use crate::ai_worker::AI_NOACTION;
     use crate::remote_brain::{LinkError, RemoteBrainConfig};
     use crate::telemetry::encode_trusted;
 
@@ -622,7 +622,8 @@ mod tests {
         resp.clear();
         assert!(handler.handle(&propose_req(0.52), &mut resp, 2_000));
         assert_eq!(resp.first(), Some(&AI_OK), "出厂带外放电");
-        assert_eq!(resp.len(), 1 + PROPOSAL_WIRE_LEN);
+        // 蓝图 61：CAND wire（变长）——魔数自证。
+        assert_eq!(&resp[1..5], b"CAND");
         // observe(0.52)：dev=0.095 → current=0.137 Applied（下一 tick 生效）。
         resp.clear();
         assert!(handler.handle(&alloc::vec![learn_wire::AI_LEARN_STATUS], &mut resp, 2_001));

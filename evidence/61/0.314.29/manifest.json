@@ -1,0 +1,101 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.29",
+ "commit": "PENDING-BUMP-COMMIT",
+ "dirty": false,
+ "profile": "qemu-prod",
+ "profile_sha256": "e2dc92e5c4bdc90df3d3cf2febf9904fefda974549e7b548b48762cfd81d3c34（image raw sha256 同值，Phase 1 全树重建）",
+ "toolchain_digest": "rustc nightly-2026-04-04 (host) + aarch64-none-elf 15.2.1 + qemu-system-aarch64 10.2.1",
+ "commands": [
+  {
+   "id": "CMD-TEST-WS",
+   "cmd": "cargo test --workspace",
+   "exit": 0,
+   "summary": "7948 passed / 0 failed（.28 基线 7930 + domain 5 + golden 6 + mutation fuzz 6 + version_gate 2 + 迁移订正）"
+  },
+  {
+   "id": "CMD-CLIPPY",
+   "cmd": "cargo clippy --workspace --all-targets",
+   "exit": 0,
+   "summary": "0 warning / 0 error"
+  },
+  {
+   "id": "CMD-FMT",
+   "cmd": "cargo fmt --all --check",
+   "exit": 0,
+   "summary": "clean"
+  },
+  {
+   "id": "CMD-E4",
+   "cmd": "tools/run61-phase1-e4.sh",
+   "exit": 0,
+   "summary": "E4-M1 + E4-RESTART 双用例 rc=0；判据行扫描全 ✓（见 tests.T-E4）"
+  }
+ ],
+ "tests": [
+  {
+   "id": "T-GOLDEN",
+   "class": "E1 golden vectors（[06] §4.5.1）",
+   "rows": {
+    "observation-v1": "PASS——tests/vectors/blueprint61/observation-v1.golden（双向锁定+event_id 向量+reserved 变异拒绝）",
+    "domain-event-v1": "PASS——domain-event-v1.golden（含 payload 摘要绑定）",
+    "blob-ref-v1": "PASS——blob-ref-v1.golden（76B 定长）",
+    "candidate-plan-v1": "PASS——candidate-plan-v1.golden（CAND wire）",
+    "certified-plan-v1": "PASS——certified-plan-v1.golden（CERT decode+verify_binding）",
+    "command-intent-v1": "PASS——command-intent-v1.golden（CINT 146B）"
+   }
+  },
+  {
+   "id": "T-FUZZ",
+   "class": "E1 确定性 mutation fuzz（[06] §4.5.2 等价面）",
+   "rows": {
+    "observation_decode_50k_无panic": "PASS",
+    "domain_event_decode_50k_无panic": "PASS",
+    "blob_ref_decode_20k_无panic": "PASS",
+    "candidate_decode_50k_无panic": "PASS",
+    "intent_decode_50k_无panic": "PASS",
+    "cert_decode_50k_无panic": "PASS"
+   },
+   "note": "cargo-fuzz 目标（fuzz/ 目录）归工具链卷；本卷以确定性变异（xorshift 种子、1..=8B 覆写/截断/8KB 超长扩展）覆盖 decoder 无 panic/无越界/无界分配判据"
+  },
+  {
+   "id": "T-COMPAT",
+   "class": "E1 兼容矩阵（[06] §4.3）",
+   "rows": {
+    "N写N读": "PASS——各产物 roundtrip/golden",
+    "N写N-1读（显式拒）": "PASS——config v2 旧读者 UnknownField；points v1 尾随字节拒绝",
+    "N-1写N读（读窗口）": "PASS——decode_points FIELD_POINTS 回退；dispatch_service legacy reader（.32 期限）",
+    "N写N-2读（VersionUnsupported）": "PASS——CAND/CERT/CINT decode 版本门",
+    "durable record 版本门": "PASS——durable-state version_gate 2 测试（CRC 完整但 schema 未知=UnsupportedVersion；0xFF 撕裂槽=Corrupt）"
+   }
+  },
+  {
+   "id": "T-E4",
+   "class": "E4 QEMU 实弹（.27/.28/.29 出口合并窗口）",
+   "rows": {
+    "M1_正常50kW纵切": "PASS——EXEC-JOURNAL applied-confirmed ×161；PLAN-TYPED ×162（过渡认证证书+CommandIntent/CommandBatch 每轮通过）；12 步链完整",
+    "影子轨_新旧对照": "PASS——OBS-SHADOW MATCH ×145 / MISMATCH ×0（观察期一次 eval reject 为首钉时序窗口，自愈）；OBS-CFG loaded sources=1 generation=1（GET_GENERATION 惰性装载）",
+    "身份配置分配": "PASS——OBS-SOURCE id=2 epoch=10074 (config-allocated)；mapping_version=bundle generation",
+    "RESTART_epoch递增": "PASS——双 boot epoch 9895→10074（boot 相对分配；跨重启持久化缺口 = ADR-0047 登记，owner 行动项 .32）",
+    "红门回归": "PASS——MASTER-READBACK 先于 Committed（Phase 0 红门不回归）",
+    "writer_switch": "PASS——决策 wire 唯一形态=CAND（旧 70B writer 已删；dispatch 双读含 legacy 兜底至 .32）"
+   }
+  }
+ ],
+ "faults": [],
+ "capacity_tier": "C0",
+ "notes": [
+  "round 1/2 教训入册：root-task/agent-sdk 授予表改动后 image raw 使用陈旧 root ELF——先 third_party/sel4-build-rust.sh（SEL4_BUILD_DIR=top-rust）ninja 重链接再 image raw（既有记忆条目再验证）；ServiceIo trait 需显式提升 config_generation（dyn 派发）。",
+  "§4.5.5 滚动升级矩阵（reader 新/旧组合+断电+回滚）以 host 版本门 + 双读窗口 + target 双 boot 覆盖；完整断电矩阵（100 次）归 .32 event-store 卷（[17] .32 行同域）。",
+  "svc-control-dispatch readiness=Degraded 为蓝图 50 预存环境现象（记忆在册），本卷无回归——DURABLE-INTENT-STORE open OK + 161 次 applied-confirmed 实弹。"
+ ],
+ "artifacts": [
+  "evidence/61/phase1-e4/m1-typed.qemu-serial.log",
+  "evidence/61/phase1-e4/restart.qemu-serial.log",
+  "evidence/61/phase1-e4/m1-typed.modbus.transcript.jsonl",
+  "evidence/61/phase1-e4/restart.modbus.transcript.jsonl",
+  "evidence/61/phase1-e4/build/image.sha256",
+  "tests/vectors/blueprint61/*.golden",
+  "evidence/61/0.314.29/manifest.json"
+ ]
+}

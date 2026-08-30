@@ -38,6 +38,7 @@ extern crate alloc;
 pub mod command;
 pub mod deadband;
 pub mod digital;
+pub mod domain;
 pub mod event;
 pub mod point_spec;
 pub mod quality;

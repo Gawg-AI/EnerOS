@@ -122,6 +122,7 @@ pub extern "C" fn _start(
             protocol_ladder::Ladder::Ready {
                 mut plugin,
                 mut registry,
+                ..
             } => {
                 // 46.5：关联建立后发起一次 MMS Read——独立对端回
                 // Read-Response（L2 transcript CONNECT/CC/AARE/READ_RESP ≥3）；

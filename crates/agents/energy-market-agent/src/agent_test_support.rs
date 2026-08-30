@@ -194,6 +194,28 @@ impl ControlDispatch for RecordingDispatch {
         }
     }
 
+    /// 蓝图 61 v0.314.29：typed 提交（测试 double 记录轨迹——市场链路
+    /// 不消费 typed 路径）。
+    fn submit_typed(
+        &mut self,
+        plan: &eneros_decision_contract::CandidatePlan,
+        target_device: &str,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError> {
+        let _ = (plan, target_device, telemetry, actor, deadline_ms);
+        if let Some(f) = self.result_fn.as_mut() {
+            return f();
+        }
+        match &self.result {
+            Some(r) => r.clone(),
+            None => Err(DispatchError::Internal(String::from(
+                "unconfigured test dispatch",
+            ))),
+        }
+    }
+
     /// 47（WP-47.1）：协议写意图提交。测试 double 记录轨迹并返回
     /// 配置结果（与 [`submit`](Self::submit) 同语义——市场链路不消费
     /// 意图路径）。

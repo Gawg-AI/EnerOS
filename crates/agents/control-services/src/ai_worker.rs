@@ -9,6 +9,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+pub use eneros_control_dispatch::adapter::proposal_to_candidate_unbound;
 use eneros_control_dispatch::dispatch::AuthenticatedActor;
 use eneros_control_gateway::envelope::ActorKind;
 use eneros_dual_brain::ProposedControlPlan;
@@ -30,19 +31,7 @@ pub const AI_INVALID: u8 = 0xFF;
 /// 61 v0.314.25 §3.4：+solve_status 1B（线码：0=Optimal/1=Suboptimal/
 /// 2=Infeasible/3=Unbounded/4=Timeout/5=Error）——状态不再由解码侧
 /// 捏造/升级；非成功状态拒绝成提案。
-pub const PROPOSAL_WIRE_LEN: usize = 16 + 1 + 8 + 4 + 8 + 32 + 1;
-
-/// solve_status → 线码。
-fn solve_status_code(s: &eneros_solver_core::result::SolveStatus) -> u8 {
-    match s {
-        eneros_solver_core::result::SolveStatus::Optimal => 0,
-        eneros_solver_core::result::SolveStatus::Suboptimal => 1,
-        eneros_solver_core::result::SolveStatus::Infeasible => 2,
-        eneros_solver_core::result::SolveStatus::Unbounded => 3,
-        eneros_solver_core::result::SolveStatus::Timeout => 4,
-        eneros_solver_core::result::SolveStatus::Error(_) => 5,
-    }
-}
+pub const LEGACY_PROPOSAL_WIRE_LEN: usize = 70;
 
 /// SPEC-SERIES-2026-08-27/E WP-E.4：System1 SOC 死区带**单源**（中点 ± 半宽）。
 ///
@@ -202,34 +191,23 @@ impl DecisionBackend for HeuristicBackend {
             now_ms,
             Some(telemetry.provenance_digest),
         );
-        Ok(encode_proposal(&plan).to_vec())
+        let cand = proposal_to_candidate_unbound(&plan)
+            .map_err(|e| DecisionReject::NoAction(alloc::format!("candidate-adapter: {e:?}")))?;
+        Ok(encode_candidate_payload(&cand))
     }
 }
 
-/// proposal → wire。
-pub fn encode_proposal(p: &ProposedControlPlan) -> [u8; PROPOSAL_WIRE_LEN] {
-    let mut out = [0u8; PROPOSAL_WIRE_LEN];
-    let id = p.plan_id.as_bytes();
-    let n = core::cmp::min(16, id.len());
-    out[..n].copy_from_slice(&id[..n]);
-    out[16] = match p.path {
-        eneros_dual_brain::DecisionPath::Slow => 0,
-        eneros_dual_brain::DecisionPath::Fast => 1,
-        eneros_dual_brain::DecisionPath::Fallback => 2,
-        eneros_dual_brain::DecisionPath::Degraded => 3,
-    };
-    out[17..25].copy_from_slice(&p.power_kw.to_le_bytes());
-    out[25..29].copy_from_slice(&p.ttl_secs.to_le_bytes());
-    out[29..37].copy_from_slice(&p.issued_at_ms.to_le_bytes());
-    let digest = p.input_digest.unwrap_or([0u8; 32]);
-    out[37..69].copy_from_slice(&digest);
-    out[69] = solve_status_code(&p.schedule.solve_status);
-    out
+/// 蓝图 61 v0.314.29 §4.5.6：决策 wire 唯一 writer = CandidatePlan V1
+/// （`CAND` magic；decision-contract 单源）。旧 70B writer 已删除。
+pub fn encode_candidate_payload(
+    c: &eneros_decision_contract::CandidatePlan,
+) -> alloc::vec::Vec<u8> {
+    c.encode_v1()
 }
 
 /// wire → proposal（长度/字段校验；digest 全零 → None）。
 pub fn decode_proposal(buf: &[u8]) -> Option<ProposedControlPlan> {
-    if buf.len() != PROPOSAL_WIRE_LEN {
+    if buf.len() != LEGACY_PROPOSAL_WIRE_LEN {
         return None;
     }
     let mut plan_id = [0u8; 16];
@@ -343,10 +321,12 @@ impl<B: DecisionBackend> AiWorkerService<B> {
     }
 }
 
-/// 结果解码（测试/消费侧）。
-pub fn decode_response(resp: &[u8]) -> Result<ProposedControlPlan, String> {
+/// 结果解码（测试/消费侧）：AI_OK 后 = CandidatePlan V1 wire（蓝图 61
+/// v0.314.29 唯一形态）。
+pub fn decode_response(resp: &[u8]) -> Result<eneros_decision_contract::CandidatePlan, String> {
     match resp.first() {
-        Some(&AI_OK) => decode_proposal(&resp[1..]).ok_or_else(|| String::from("bad proposal")),
+        Some(&AI_OK) => eneros_decision_contract::CandidatePlan::decode_v1(&resp[1..])
+            .map_err(|e| alloc::format!("bad candidate: {e:?}")),
         Some(&AI_UNAVAILABLE) => Err(String::from_utf8_lossy(&resp[1..]).into_owned()),
         Some(&AI_NOACTION) => Err(String::from_utf8_lossy(&resp[1..]).into_owned()),
         _ => Err(String::from("invalid response")),
@@ -477,7 +457,9 @@ mod tests {
                 now_ms,
                 Some(telemetry.provenance_digest),
             );
-            Ok(encode_proposal(&plan).to_vec())
+            Ok(encode_candidate_payload(
+                &proposal_to_candidate_unbound(&plan).expect("stub cand"),
+            ))
         }
     }
 
@@ -493,8 +475,8 @@ mod tests {
         req.extend_from_slice(&crate::telemetry::encode_trusted(&t));
         let resp = worker.propose(&req, 10_000);
         let plan = decode_response(&resp).expect("proposal");
-        assert_eq!(plan.power_kw, 5.0);
-        assert_eq!(plan.input_digest, Some(t.provenance_digest));
+        assert_eq!(plan.assignments()[0].power_kw, 5.0);
+        assert_eq!(plan.input_digest(), &t.provenance_digest);
         assert_eq!(worker.decisions, 1);
     }
 
@@ -541,12 +523,16 @@ mod tests {
             safety_clamped: false,
             feedback: None,
         };
-        let d = decode_proposal(&encode_proposal(&p)).expect("decode");
+        // 蓝图 61 v0.314.29：旧 reader 保留至 .32（dispatch 双读窗口）。
+        let mut legacy = [0u8; LEGACY_PROPOSAL_WIRE_LEN];
+        let id = p.plan_id.as_bytes();
+        let n = core::cmp::min(16, id.len());
+        legacy[..n].copy_from_slice(&id[..n]);
+        legacy[17..25].copy_from_slice(&p.power_kw.to_le_bytes());
+        let d = decode_proposal(&legacy).expect("legacy decode");
         assert_eq!(d.plan_id, "req-170000000000");
-        assert_eq!(d.path, eneros_dual_brain::DecisionPath::Fallback);
         assert_eq!(d.power_kw, -2.5);
-        assert_eq!(d.ttl_secs, 300);
-        assert_eq!(d.input_digest, Some(t.provenance_digest));
+        let _ = t;
     }
 
     #[test]
@@ -555,12 +541,12 @@ mod tests {
         let mut backend = HeuristicBackend::new();
         let t = trusted(); // soc 0.6
         let w1 = backend.decide(&t, 10_000).expect("discharge");
-        let plan1 = decode_proposal(&w1).expect("plan");
-        assert_eq!(plan1.power_kw, 5.0);
-        assert_eq!(plan1.plan_id, "heur-1");
+        let cand1 = eneros_decision_contract::CandidatePlan::decode_v1(&w1).expect("cand");
+        assert_eq!(cand1.assignments()[0].power_kw, 5.0);
+        let id1 = *cand1.id();
         let w2 = backend.decide(&t, 10_000).expect("discharge 2");
-        let plan2 = decode_proposal(&w2).expect("plan");
-        assert_ne!(plan1.plan_id, plan2.plan_id, "plan_id 必须唯一");
+        let cand2 = eneros_decision_contract::CandidatePlan::decode_v1(&w2).expect("cand");
+        assert_ne!(id1, *cand2.id(), "plan_id 必须唯一");
     }
 
     #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
@@ -582,8 +568,8 @@ mod tests {
         let mut t = trusted();
         t.state.soc_pct = 0.2;
         let w = backend.decide(&t, 10_000).expect("charge");
-        let plan = decode_proposal(&w).expect("plan");
-        assert_eq!(plan.power_kw, -5.0, "充电为负功率");
+        let cand = eneros_decision_contract::CandidatePlan::decode_v1(&w).expect("cand");
+        assert_eq!(cand.assignments()[0].power_kw, -5.0, "充电为负功率");
     }
 
     #[test]

@@ -124,13 +124,11 @@ impl ObsShadow {
                 continue;
             }
             // epoch 钉扎（首见为准；回退 = 重放/回滚 → quarantine）。
+            let first_pin = !self.pinned_epochs.contains_key(&event.source_id);
             let expected = *self
                 .pinned_epochs
                 .entry(event.source_id)
-                .or_insert_with(|| {
-                    self.last_pinned = Some((event.source_id, event.source_epoch));
-                    event.source_epoch
-                });
+                .or_insert(event.source_epoch);
             if event.source_epoch < expected {
                 let reason = IngestReject::EpochRegression {
                     epoch: event.source_epoch,
@@ -140,10 +138,9 @@ impl ObsShadow {
                 rejected += 1;
                 continue;
             }
-            if event.source_epoch > expected {
-                // 新 epoch（adapter 重启）：重钉 + 影子评估器 epoch 对齐。
-                self.pinned_epochs
-                    .insert(event.source_id, event.source_epoch);
+            if first_pin || event.source_epoch > expected {
+                // 首钉 / 新 epoch（adapter 重启）：影子评估器 epoch 对齐
+                // （restore = 生产评估器同步语义，epoch 变更即新序号空间）。
                 self.last_pinned = Some((event.source_id, event.source_epoch));
                 self.shadow_evaluator
                     .restore(event.source_epoch, 0, BTreeMap::new());

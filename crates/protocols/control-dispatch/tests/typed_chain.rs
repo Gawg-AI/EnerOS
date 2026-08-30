@@ -344,7 +344,7 @@ fn facade_and_typed_share_identity() {
     // 派生）→ 命中同一幂等记录，不重复投递。
     let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
     let r2 = engine
-        .submit_typed(&c, "pcs", None, &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
         .expect("typed submit");
     assert_eq!(r1.final_state, r2.final_state);
     assert_eq!(*delivered.borrow(), 1, "跨路径幂等：一次投递");
@@ -365,7 +365,7 @@ fn typed_entry_commits() {
     let p = proposal(-40.0);
     let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
     let r = engine
-        .submit_typed(&c, "pcs", None, &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
         .expect("typed submit");
     assert!(r.final_state.is_committed());
     assert_eq!(*delivered.borrow(), 1);
@@ -407,7 +407,7 @@ fn typed_entry_rejects_expired_plan() {
     )
     .expect("expired plan constructible");
     let err = engine
-        .submit_typed(&expired, "pcs", None, &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(&expired, "pcs", &trusted_telemetry(), &actor(), 5_000)
         .unwrap_err();
     assert!(matches!(err, DispatchError::ProposalInvalid(_)));
     let _ = &mut c; // 保持变量使用

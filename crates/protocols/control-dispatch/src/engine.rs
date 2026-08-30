@@ -98,6 +98,9 @@ struct CoreCommand {
     energy_kwh: Option<f64>,
     /// IdempotentHit 回执文案（两入口注记不同）。
     idem_note: String,
+    /// 蓝图 61 v0.314.29：CandidatePlan wire SHA-256（typed 链 durable
+    /// 绑定；意图写 None）。
+    plan_sha: Option<[u8; 32]>,
 }
 
 /// 调度窗口（小时）——能量预算估算（与 dual-brain 同系数）。
@@ -449,6 +452,7 @@ impl DispatchEngine {
                 target_device: alloc::format!("{}:{}", intent.protocol_id, intent.device_id),
                 input_digest: None,
                 energy_kwh: None,
+                plan_sha: None,
                 idem_note: String::from("idempotent-hit（同 (protocol,seq) 重放——不重复写）"),
             },
             telemetry,
@@ -631,39 +635,14 @@ impl DispatchEngine {
                 power_kw: assignment.power_kw,
                 target_device,
                 input_digest: Some(*plan.input_digest()),
-                energy_kwh,
+                // typed 路径能量预算估算：|power| × ttl（上限形态；.37 真
+                // planner 携带全时域 schedule 后精确化）。
+                energy_kwh: energy_kwh.or(Some(
+                    assignment.power_kw.abs() * (plan.ttl_ms() as f64 / 3_600_000.0),
+                )),
+                plan_sha: Some(plan_sha),
                 idem_note: String::from("idempotent-hit（原结果，不重复写）"),
             },
-            telemetry,
-            actor,
-            started,
-            states,
-            deadline_ms,
-        )
-    }
-
-    /// 蓝图 61 v0.314.28：公开 typed 入口（post-.28 生产者直接提交
-    /// CandidatePlan；跳过 proposal facade）。执行链同 `submit`。
-    pub fn submit_typed(
-        &mut self,
-        plan: &eneros_decision_contract::CandidatePlan,
-        target_device: &str,
-        energy_kwh: Option<f64>,
-        telemetry: &TrustedTelemetry,
-        actor: &AuthenticatedActor,
-        deadline_ms: u64,
-    ) -> Result<DispatchReceipt, DispatchError> {
-        let started = (self.now_fn)();
-        let mut states: Vec<DispatchState> = Vec::with_capacity(12);
-        states.push(DispatchState::Proposed);
-        states.push(DispatchState::Validated);
-        if !telemetry.is_valid_at(started) {
-            return Err(DispatchError::TelemetryExpired);
-        }
-        self.run_typed(
-            plan,
-            alloc::string::String::from(target_device),
-            energy_kwh,
             telemetry,
             actor,
             started,
@@ -1087,6 +1066,7 @@ impl DispatchEngine {
             command_digest: Some(command_digest),
             attempt: 1,
             receipt_digest: None,
+            plan_sha256: cmd.plan_sha,
         };
         // 61 v0.314.24：journal append 失败时不投递（记录保持 Authorized
         // 未决——重启后对账，不会误判为已投递）。
@@ -1673,6 +1653,33 @@ impl ControlDispatch for DispatchEngine {
         deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError> {
         self.run_intent(intent, telemetry, actor, deadline_ms)
+    }
+
+    fn submit_typed(
+        &mut self,
+        plan: &eneros_decision_contract::CandidatePlan,
+        target_device: &str,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError> {
+        let started = (self.now_fn)();
+        let mut states: Vec<DispatchState> = Vec::with_capacity(12);
+        states.push(DispatchState::Proposed);
+        states.push(DispatchState::Validated);
+        if !telemetry.is_valid_at(started) {
+            return Err(DispatchError::TelemetryExpired);
+        }
+        self.run_typed(
+            plan,
+            alloc::string::String::from(target_device),
+            None,
+            telemetry,
+            actor,
+            started,
+            states,
+            deadline_ms,
+        )
     }
 }
 

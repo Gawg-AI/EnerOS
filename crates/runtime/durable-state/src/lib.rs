@@ -149,8 +149,12 @@ pub enum StoreError {
     Unavailable,
     /// 写入失败。
     WriteFailed,
-    /// 记录损坏（CRC/长度/schema 不符——撕裂检测）。
+    /// 记录损坏（CRC/长度不符——撕裂检测）。
     Corrupt,
+    /// 蓝图 61 §4.4：记录 schema 版本高于本 binary 支持（回滚旧 binary
+    /// 遇新记录 / 前瞻扫描）——**明确拒绝，不把字节误解为旧状态**，
+    /// 不格式化介质；启动面语义 = 只读失败并拒绝服务 ready。
+    UnsupportedVersion { schema: u8, supported: u8 },
     /// 代次倒挂（旧 generation 覆盖新值被拒）。
     StaleGeneration {
         current: Generation,
@@ -170,6 +174,10 @@ impl fmt::Display for StoreError {
             StoreError::Unavailable => f.write_str("store-unavailable"),
             StoreError::WriteFailed => f.write_str("write-failed"),
             StoreError::Corrupt => f.write_str("record-corrupt"),
+            StoreError::UnsupportedVersion { schema, supported } => write!(
+                f,
+                "unsupported-record-version:schema={schema} supported={supported}（§4.4 拒绝服务，不误解字节）"
+            ),
             StoreError::StaleGeneration { current, attempted } => write!(
                 f,
                 "stale-generation:current={} attempted={}",
@@ -310,9 +318,6 @@ pub fn decode_record(bytes: &[u8]) -> Result<([u8; 4], &[u8]), StoreError> {
     }
     let magic = [bytes[0], bytes[1], bytes[2], bytes[3]];
     let schema = bytes[4];
-    if schema != RECORD_SCHEMA {
-        return Err(StoreError::Corrupt);
-    }
     let len = u32::from_le_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]) as usize;
     if len + 13 > bytes.len() {
         return Err(StoreError::Corrupt);
@@ -325,7 +330,16 @@ pub fn decode_record(bytes: &[u8]) -> Result<([u8; 4], &[u8]), StoreError> {
         bytes[12 + len],
     ]);
     if eneros_ipc_wire::crc32(&bytes[..9 + len]) != expected {
+        // CRC 先于版本判定：撕裂/垃圾槽（0xFF、半写）= Corrupt。
         return Err(StoreError::Corrupt);
+    }
+    if schema != RECORD_SCHEMA {
+        // §4.4：CRC 完整但版本未知 = 新版本记录——旧 binary 明确拒绝，
+        // 不把字节误解为旧状态，不格式化介质。
+        return Err(StoreError::UnsupportedVersion {
+            schema,
+            supported: RECORD_SCHEMA,
+        });
     }
     Ok((magic, payload))
 }

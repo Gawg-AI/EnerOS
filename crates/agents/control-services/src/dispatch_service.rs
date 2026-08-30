@@ -109,20 +109,17 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
         return err_receipt("unknown opcode");
     }
     let body = &req[1..];
-    // 布局：proposal wire（69B）+ telemetry wire（TRUSTED_WIRE_LEN）+ actor 1B。
-    let prop_len = crate::ai_worker::PROPOSAL_WIRE_LEN;
-    if body.len() < prop_len + crate::telemetry::TRUSTED_WIRE_LEN + 1 {
-        return err_receipt("short request");
-    }
-    let Some(plan) = decode_proposal(&body[..prop_len]) else {
-        return err_receipt("bad proposal");
-    };
-    let Some(telemetry) =
-        decode_trusted(&body[prop_len..prop_len + crate::telemetry::TRUSTED_WIRE_LEN])
-    else {
+    // 蓝图 61 v0.314.29 双读（§4.3 reader-first 窗口）：
+    // - 新形态：CandidatePlan V1（body[0..4] == b"CAND"；writer switch 完成）
+    //   → `submit_typed`；
+    // - 旧形态：70B proposal wire（固定长度识别；**旧 reader 至 v0.314.32
+    //   删除**——回滚窗口与混合编队兼容读）→ facade `submit`。
+    let tel_len = crate::telemetry::TRUSTED_WIRE_LEN;
+    let plan_len = body.len().saturating_sub(tel_len + 1);
+    let Some(telemetry) = decode_trusted(&body[plan_len..plan_len + tel_len]) else {
         return err_receipt("bad telemetry");
     };
-    let actor_kind = body[prop_len + crate::telemetry::TRUSTED_WIRE_LEN];
+    let actor_kind = body[plan_len + tel_len];
     if actor_kind != 2 {
         // 2 = ActorKind::Ai（信封字节码）。
         return err_receipt("actor must be Ai");
@@ -133,6 +130,35 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
         session_epoch: 0,
     };
     let deadline_ms = 5000;
+    // 双读判别：候选 wire 以 `CAND` magic 开头。
+    if plan_len >= 4 && &body[0..4] == b"CAND" {
+        let Ok(cand) = eneros_decision_contract::CandidatePlan::decode_v1(&body[..plan_len]) else {
+            return err_receipt("bad candidate");
+        };
+        return match engine.submit_typed(&cand, "pcs", &telemetry, &actor, deadline_ms) {
+            Ok(receipt) => {
+                if !receipt.final_state.is_committed() {
+                    eneros_runtime::println!(
+                        "[svc-control-dispatch] TYPED state={:?} note={:?}",
+                        receipt.final_state,
+                        receipt.note
+                    );
+                }
+                encode_receipt(&receipt)
+            }
+            Err(e) => {
+                eneros_runtime::println!("[svc-control-dispatch] TYPED-ERR {e:?}");
+                err_receipt(&format!("{e:?}"))
+            }
+        };
+    }
+    // 旧 reader（v0.314.32 删除）：70B proposal → facade（内部同 typed 链）。
+    if plan_len != crate::ai_worker::LEGACY_PROPOSAL_WIRE_LEN {
+        return err_receipt("bad proposal length");
+    }
+    let Some(plan) = decode_proposal(&body[..plan_len]) else {
+        return err_receipt("bad proposal");
+    };
     match engine.submit(&plan, &telemetry, &actor, deadline_ms) {
         Ok(receipt) => {
             if !receipt.final_state.is_committed() {
@@ -313,7 +339,9 @@ mod tests {
                 now_ms,
                 None,
             );
-            Ok(crate::ai_worker::encode_proposal(&plan).to_vec())
+            Ok(crate::ai_worker::encode_candidate_payload(
+                &crate::ai_worker::proposal_to_candidate_unbound(&plan).expect("stub cand"),
+            ))
         }
     }
 
@@ -428,11 +456,11 @@ mod tests {
         let req = request_from_worker();
         let mut engine2 = engine();
         // 诊断：直接解码请求中的遥测。
-        let prop_len = crate::ai_worker::PROPOSAL_WIRE_LEN;
-        let t = crate::telemetry::decode_trusted(
-            &req[1 + prop_len..1 + prop_len + crate::telemetry::TRUSTED_WIRE_LEN],
-        )
-        .expect("tel");
+        // 蓝图 61：候选 wire 变长——tail 定位（tel+actor 固定尾段）。
+        let tel_len = crate::telemetry::TRUSTED_WIRE_LEN;
+        let cand_len = req.len() - 1 - tel_len - 1;
+        let t = crate::telemetry::decode_trusted(&req[1 + cand_len..1 + cand_len + tel_len])
+            .expect("tel");
         assert!(t.is_valid_at(1_700_000_000_000), "telemetry 必须新鲜");
         let resp = handle_submit(&mut engine2, &req);
         let (status, state, _c, _l, note) = decode_receipt(&resp).expect("receipt");

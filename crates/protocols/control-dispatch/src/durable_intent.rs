@@ -40,6 +40,8 @@ const TERMINAL_REJECTED: u64 = 3;
 
 /// v2 追加段魔数（"V2"；旧版记录无此段）。
 const V2_MAGIC: [u8; 2] = [0x56, 0x32];
+/// v3 追加段魔数（蓝图 61：typed 链绑定 plan_sha256）。
+const V3_MAGIC: [u8; 2] = [0x56, 0x33];
 
 impl Encode for IntentRecord {
     fn encode(&self) -> Result<Vec<u8>, StoreError> {
@@ -136,6 +138,8 @@ impl Decode for IntentRecord {
         let mut command_digest = None;
         let mut attempt = 0u32;
         let mut receipt_digest = None;
+        // v3 追加段（蓝图 61）：typed 链绑定；缺席 = 旧版记录。
+        let mut plan_sha256: Option<[u8; 32]> = None;
         if off < bytes.len() {
             if bytes.len() < off + 2 || bytes[off..off + 2] != V2_MAGIC {
                 return Err(StoreError::Corrupt);
@@ -168,9 +172,24 @@ impl Decode for IntentRecord {
                 off += 32;
                 receipt_digest = Some(d);
             }
-        }
-        if off != bytes.len() {
-            return Err(StoreError::Corrupt);
+            // ---- v3 追加段（可选；蓝图 61 v0.314.29）：plan_sha256。----
+            if off < bytes.len() {
+                if bytes.len() < off + 2 || bytes[off..off + 2] != V3_MAGIC {
+                    return Err(StoreError::Corrupt);
+                }
+                off += 2;
+                let pflag = *bytes.get(off).ok_or(StoreError::Corrupt)?;
+                off += 1;
+                if pflag == 1 {
+                    if off + 32 > bytes.len() {
+                        return Err(StoreError::Corrupt);
+                    }
+                    let mut d = [0u8; 32];
+                    d.copy_from_slice(&bytes[off..off + 32]);
+                    let _ = off;
+                    plan_sha256 = Some(d);
+                }
+            }
         }
         Ok((
             eneros_durable_state::Generation(0),
@@ -186,6 +205,7 @@ impl Decode for IntentRecord {
                 command_digest,
                 attempt,
                 receipt_digest,
+                plan_sha256,
             },
         ))
     }
@@ -448,6 +468,7 @@ mod tests {
             command_digest: Some([0x61; 32]),
             attempt: 1,
             receipt_digest: None,
+            plan_sha256: None,
         }
     }
 

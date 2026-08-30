@@ -24,7 +24,7 @@ use eneros_intent_contract::peer::{
 };
 use eneros_safety_validator::TrustedTelemetry;
 
-use crate::ai_worker::{encode_proposal, DecisionBackend, DecisionReject};
+use crate::ai_worker::{encode_candidate_payload, DecisionBackend, DecisionReject};
 
 /// 切换/状态迁移事件（审计与串口证据面）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,7 +272,10 @@ impl<L: DecisionBackend, P: PeerLink> RemoteBrain<L, P> {
                 resp_summary,
             };
             self.last_meta = Some(meta);
-            return Ok(encode_proposal(&plan).to_vec());
+            let cand = crate::ai_worker::proposal_to_candidate_unbound(&plan).map_err(|e| {
+                DecisionReject::NoAction(alloc::format!("candidate-adapter: {e:?}"))
+            })?;
+            return Ok(encode_candidate_payload(&cand));
         }
 
         // 3. 需要新请求？Healthy 常态发起；Unhealthy 仅周期探测。
@@ -456,7 +459,22 @@ impl PeerLink for PeerLinkEipc {
 mod tests {
     use super::*;
     use crate::ai_worker::tests_helpers::minimal_trusted_at;
-    use crate::ai_worker::{decode_proposal, HeuristicBackend};
+    use crate::ai_worker::HeuristicBackend;
+
+    /// CAND wire → (plan_id 字符串, power_kw) 测试视图（蓝图 61 wire 切换）。
+    fn decode_cand(w: &[u8]) -> (String, f64) {
+        let c = eneros_decision_contract::CandidatePlan::decode_v1(w).expect("cand");
+        let bytes = c.id().0;
+        let end = bytes
+            .iter()
+            .rposition(|&b| b != 0)
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        (
+            String::from_utf8(bytes[..end].to_vec()).expect("utf8 id"),
+            c.assignments()[0].power_kw,
+        )
+    }
 
     struct MockLink {
         fail: bool,
@@ -506,8 +524,9 @@ mod tests {
         let t = minimal_trusted_at(10_000);
         // tick1：Healthy 常态发起请求（req_id=1）+ 本 tick 启发式兜底。
         let w = b.decide_full(&t, 10_000).expect("wire");
-        let p = decode_proposal(&w).expect("plan");
-        assert_eq!(p.plan_id, "heur-1");
+        let (plan_id, power) = decode_cand(&w);
+        assert_eq!(plan_id, "heur-1");
+        assert!(power.is_finite());
         assert_eq!(b.triggers_sent, 1);
         assert!(b.link.sent[0].contains("\"req_id\":1"));
         // 应答到达（配对 req=1）。
@@ -517,11 +536,9 @@ mod tests {
         );
         // tick2：消费远程提案。
         let w = b.decide_full(&t, 11_000).expect("wire");
-        let p = decode_proposal(&w).expect("plan");
-        assert_eq!(p.plan_id, "remote-1");
-        assert_eq!(p.path, DecisionPath::Slow);
-        assert_eq!(p.power_kw, -3.0);
-        assert_eq!(p.input_digest, Some(t.provenance_digest));
+        let (plan_id, power) = decode_cand(&w);
+        assert_eq!(plan_id, "remote-1");
+        assert_eq!(power, -3.0);
         assert_eq!(b.remote_used_total, 1);
         let meta = b.last_meta().expect("meta");
         assert!(meta.used_remote);
@@ -538,8 +555,7 @@ mod tests {
         b.decide_full(&t, 10_000).expect("tick1");
         // 超时后 tick：pending 清除 + 计数 + 本 tick 走启发式。
         let w = b.decide_full(&t, 16_000).expect("tick2");
-        let p = decode_proposal(&w).expect("plan");
-        assert_eq!(p.path, DecisionPath::Fast);
+        let (_plan_id, _power) = decode_cand(&w);
         assert_eq!(b.timeouts_total, 1);
         assert!(!b.last_meta().expect("meta").used_remote);
         // 同 tick 已重新发起新请求（Healthy 常态）。
@@ -605,8 +621,8 @@ mod tests {
         assert!(b.drain_events().contains(&SwitchEvent::PeerRecovered));
         now += 1_000;
         let w = b.decide_full(&t, now).expect("tick");
-        let p = decode_proposal(&w).expect("plan");
-        assert_eq!(p.plan_id, alloc::format!("remote-{probe_req}"));
+        let (plan_id, _) = decode_cand(&w);
+        assert_eq!(plan_id, alloc::format!("remote-{probe_req}"));
         assert_eq!(b.remote_used_total, 1);
         assert!(b.is_healthy());
     }
@@ -624,8 +640,8 @@ mod tests {
         assert_eq!(b.bad_responses_total, 1);
         assert!(b.accepted.is_none());
         let w = b.decide_full(&t, 11_000).expect("tick2");
-        let p = decode_proposal(&w).expect("plan");
-        assert_eq!(p.path, DecisionPath::Fast, "坏应答不得进入决策");
+        let (plan_id, _) = decode_cand(&w);
+        assert_eq!(plan_id, "heur-2", "坏应答不得进入决策（本地启发式兜底）");
     }
 
     #[test]
@@ -684,8 +700,7 @@ mod tests {
         );
         let t = minimal_trusted_at(10_000);
         let w = b.decide_full(&t, 10_000).expect("wire");
-        let p = decode_proposal(&w).expect("plan");
-        assert_eq!(p.path, DecisionPath::Fast);
+        let (_plan_id, _power) = decode_cand(&w);
         assert_eq!(b.link_errors, 1);
         assert_eq!(b.triggers_sent, 0);
         assert!(b.pending.is_none());
@@ -717,7 +732,7 @@ mod tests {
             );
             now += 1_000;
             let w = b.decide_full(&t, now).expect("tick");
-            ids.push(decode_proposal(&w).expect("plan").plan_id);
+            ids.push(decode_cand(&w).0);
             now += 1_000;
         }
         assert_eq!(

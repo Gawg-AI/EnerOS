@@ -48,6 +48,9 @@ pub struct IntentRecord {
     pub attempt: u32,
     /// 61 v0.314.24：原 receipt 摘要（AppliedConfirmed 回执帧摘要）。
     pub receipt_digest: Option<[u8; 32]>,
+    /// 蓝图 61 v0.314.29（v3 追加段）：CandidatePlan wire SHA-256——
+    /// durable 记录与 typed 产物链绑定（`None` = 旧版记录）。
+    pub plan_sha256: Option<[u8; 32]>,
 }
 
 /// durable intent 存储 trait（唯一持久化 seam——调用方提供实现）。
@@ -154,6 +157,7 @@ mod tests {
             command_digest: Some([0x11; 32]),
             attempt: 1,
             receipt_digest: None,
+            plan_sha256: None,
         }
     }
 

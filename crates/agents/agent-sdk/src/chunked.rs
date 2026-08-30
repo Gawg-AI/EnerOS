@@ -49,6 +49,11 @@ pub const CHUNK_DATA_MAX: usize = 104;
 /// 块数上限（270B 信封最多 3 块；留裕量防畸形声明）。
 pub const CHUNK_COUNT_MAX: u8 = 16;
 
+// 蓝图 61 [06] §4.2/§4.7：chunk 逻辑上限冻结 = 16 × 104 = 1664B——与
+// telemetry-model::domain 的 `CHUNK_LOGICAL_CAP`（DomainEvent 最大帧
+// 1158B ≤ 1664B 断言）互锁；任一侧容量漂移即编译失败。
+const _: () = assert!((CHUNK_COUNT_MAX as usize) * CHUNK_DATA_MAX == 1664);
+
 /// 分块协议错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkError {

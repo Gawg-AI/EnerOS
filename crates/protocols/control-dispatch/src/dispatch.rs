@@ -157,6 +157,18 @@ pub trait ControlDispatch {
         actor: &AuthenticatedActor,
         deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError>;
+
+    /// 蓝图 61 v0.314.29：typed 提交（CandidatePlan V1——决策 wire 唯一
+    /// 形态）。内部经过渡认证证书 + CommandIntent/CommandBatch 进入同一
+    /// 12 步链；执行仍只经 Gateway AuthorizedCommand。
+    fn submit_typed(
+        &mut self,
+        plan: &eneros_decision_contract::CandidatePlan,
+        target_device: &str,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError>;
 }
 
 #[cfg(test)]
