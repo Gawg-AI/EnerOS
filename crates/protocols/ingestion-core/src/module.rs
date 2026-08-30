@@ -48,8 +48,9 @@
 //!   RawObservation 无来源字段（伪造入口不存在），准入需要身份与时钟；
 //! - [`IngestionModule::register`] 保持幂等覆盖（返回 `()`；装配面错误
 //!   经 install/attach/open 的 Result 面显式化）。
-//! 另：PointPlan 内嵌 modbus 组坐标（func_code/reg_addr/slave_addr）
-//! 为轮询型协议通用的「调度组输入」约定——非 modbus 协议填 0，协议专属
+//!
+//! 另注：PointPlan 内嵌 modbus 组坐标（func_code/reg_addr/slave_addr）为
+//! 轮询型协议通用的「调度组输入」约定——非 modbus 协议填 0，协议专属
 //! 逻辑全部留在 adapter 侧。
 
 use alloc::boxed::Box;
