@@ -488,6 +488,7 @@ mod tests {
             data_type: eneros_upa_model::PointType::Analog,
             scale: 0.1,
             offset: 0.0,
+            identity: eneros_protocol_abstract::PointIdentityBinding::UNKNOWN,
         }
     }
 
@@ -564,6 +565,7 @@ mod tests {
                 data_type: eneros_upa_model::PointType::Analog,
                 scale: 1.0,
                 offset: 0.0,
+                identity: eneros_protocol_abstract::PointIdentityBinding::UNKNOWN,
             },
         ]);
         plugin
@@ -603,6 +605,7 @@ mod tests {
             data_type: eneros_upa_model::PointType::Analog,
             scale: 1.0,
             offset: 0.0,
+            identity: eneros_protocol_abstract::PointIdentityBinding::UNKNOWN,
         };
         assert_eq!(
             plugin.read_point(0, &mqtt_map),

@@ -15,6 +15,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use eneros_protocol_abstract::PointIdentityBinding;
 use eneros_protocol_abstract::ProtocolAddress;
 use eneros_protocol_abstract::ProtocolPointMapping;
 use eneros_upa_model::{DeviceId, PointId, PointType};
@@ -113,6 +114,8 @@ pub struct PointRecord {
     pub deadband: f64,
     /// 值域限幅（45.2：超限 → uncertain）。
     pub range: Option<(f64, f64)>,
+    /// 身份绑定（蓝图 61：unit/schema/asset/世代；v1 旧 bundle 全 UNKNOWN）。
+    pub identity: PointIdentityBinding,
 }
 
 impl PointRecord {
@@ -126,8 +129,35 @@ impl PointRecord {
             data_type: self.data_type,
             scale: self.scale,
             offset: self.offset,
+            identity: self.identity,
         })
     }
+}
+
+/// 来源注册记录（蓝图 61 [02] §4.2 SourceDescriptor 配置编译最小集）。
+///
+/// 完整 descriptor（证书、QoS、保留策略等）由 `ingestion-core` 在装配期
+/// 扩展；此处是签名配置可表达的最小封闭集。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceRecord {
+    /// 来源 ID（≠0，全表唯一；签名配置分配，不由 binary 硬编码）。
+    pub source_id: u32,
+    /// 租户域。
+    pub tenant_id: u32,
+    /// 站点域。
+    pub site_id: u32,
+    /// 协议路由。
+    pub protocol: PointProtocol,
+    /// 允许进入控制快照。
+    pub allow_control: bool,
+    /// 要求完整性认证（Unverified 事件只进 quarantine）。
+    pub require_integrity: bool,
+    /// 允许点位下界（0 = 不设下界）。
+    pub point_min: u32,
+    /// 允许点位上界（0 = 不设上界）。
+    pub point_max: u32,
+    /// 最大事件率（事件/秒；[1, MAX_EVENTS_PER_S]）。
+    pub max_events_per_s: u32,
 }
 
 /// 解码后的点表。
@@ -135,6 +165,8 @@ impl PointRecord {
 pub struct PointsTable {
     /// 全部点（保持 wire 顺序）。
     pub points: Vec<PointRecord>,
+    /// 来源注册表（蓝图 61；v1 旧 bundle = 空 → 一切来源未注册）。
+    pub sources: Vec<SourceRecord>,
 }
 
 impl PointsTable {
@@ -212,7 +244,7 @@ pub(crate) fn decode_points_table(
     }
     let mut out = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let record = decode_record(raw, &mut pos, config)?;
+        let record = decode_record(raw, &mut pos, config, false)?;
         // point_id 全表唯一（fail-closed，双保险：编译面已查，解码面再查）。
         if out
             .iter()
@@ -232,26 +264,195 @@ pub(crate) fn decode_points_table(
             reason: "trailing-bytes".into(),
         });
     }
-    Ok(PointsTable { points: out })
+    Ok(PointsTable {
+        points: out,
+        sources: Vec::new(),
+    })
 }
 
-/// 解码完整 `points` canonical payload（`FIELD_POINTS` 帧 → 子格式）。
+/// 解码 v2 点表（每条记录尾随 24B 身份块；布局见 `schema::points` 注释）。
+pub(crate) fn decode_points_table_v2(
+    raw: &[u8],
+    config: &ConfigId,
+) -> Result<PointsTable, ConfigError> {
+    let mut pos = 0usize;
+    let count_buf = subfield(raw, &mut pos, 4, config, "count")?;
+    let count = u32::from_le_bytes(count_buf.try_into().unwrap());
+    if count > points::MAX_POINTS {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "points",
+            reason: "too-many-points".into(),
+        });
+    }
+    let mut out = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let record = decode_record(raw, &mut pos, config, true)?;
+        if out
+            .iter()
+            .any(|p: &PointRecord| p.point_id == record.point_id)
+        {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: points::FIELD_POINTS,
+            });
+        }
+        out.push(record);
+    }
+    if pos != raw.len() {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "points",
+            reason: "trailing-bytes".into(),
+        });
+    }
+    Ok(PointsTable {
+        points: out,
+        sources: Vec::new(),
+    })
+}
+
+/// 解码完整 `points` canonical payload（`FIELD_POINTS[_V2]` + `FIELD_SOURCES`
+/// 帧 → 子格式）。
+///
+/// 蓝图 61 兼容矩阵：新读方遇 v1 旧 bundle（只有 `FIELD_POINTS`）→ 回退
+/// 解码、identity 全 `UNKNOWN`、来源表为空（一切来源未注册）；旧读方遇
+/// 新 bundle → `UnknownField` 显式拒绝（不误解字节）。
 pub fn decode_points(raw: &[u8], config: &ConfigId) -> Result<PointsTable, ConfigError> {
     let fields = crate::payload::decode_fields(raw, config, points::MAX_FIELD)?;
-    let value =
-        crate::payload::field(fields.as_slice(), points::FIELD_POINTS).ok_or_else(|| {
-            ConfigError::MissingField {
-                config: config.clone(),
-                field: "points",
-            }
+    let points_value = crate::payload::field(&fields, points::FIELD_POINTS_V2)
+        .or_else(|| crate::payload::field(&fields, points::FIELD_POINTS))
+        .ok_or_else(|| ConfigError::MissingField {
+            config: config.clone(),
+            field: "points",
         })?;
-    decode_points_table(value, config)
+    let identity = crate::payload::field(&fields, points::FIELD_POINTS_V2).is_some();
+    let mut table = if identity {
+        decode_points_table_v2(points_value, config)?
+    } else {
+        decode_points_table(points_value, config)?
+    };
+    table.sources = match crate::payload::field(&fields, points::FIELD_SOURCES) {
+        Some(v) => decode_sources_table(v, config)?,
+        None => Vec::new(),
+    };
+    Ok(table)
+}
+
+/// 来源注册表子格式解码（布局见 `schema::points` 注释；严格 fail-closed）。
+fn decode_sources_table(raw: &[u8], config: &ConfigId) -> Result<Vec<SourceRecord>, ConfigError> {
+    let mut pos = 0usize;
+    let count_buf = subfield(raw, &mut pos, 4, config, "sources.count")?;
+    let count = u32::from_le_bytes(count_buf.try_into().unwrap());
+    if count > points::MAX_SOURCES {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "sources",
+            reason: "too-many-sources".into(),
+        });
+    }
+    let mut out = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let source_id = u32::from_le_bytes(
+            subfield(raw, &mut pos, 4, config, "source_id")?
+                .try_into()
+                .unwrap(),
+        );
+        if source_id == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "sources",
+                reason: "source-id-zero".into(),
+            });
+        }
+        if out.iter().any(|s: &SourceRecord| s.source_id == source_id) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: points::FIELD_SOURCES,
+            });
+        }
+        let tenant_id = u32::from_le_bytes(
+            subfield(raw, &mut pos, 4, config, "tenant_id")?
+                .try_into()
+                .unwrap(),
+        );
+        let site_id = u32::from_le_bytes(
+            subfield(raw, &mut pos, 4, config, "site_id")?
+                .try_into()
+                .unwrap(),
+        );
+        let proto_tag = subfield(raw, &mut pos, 1, config, "source.protocol")?[0];
+        let flags = subfield(raw, &mut pos, 1, config, "source.flags")?[0];
+        if flags & !(points::SOURCE_FLAG_ALLOW_CONTROL | points::SOURCE_FLAG_REQUIRE_INTEGRITY) != 0
+        {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "sources",
+                reason: alloc::format!("unknown-source-flags:{flags}"),
+            });
+        }
+        let point_min = u32::from_le_bytes(
+            subfield(raw, &mut pos, 4, config, "point_min")?
+                .try_into()
+                .unwrap(),
+        );
+        let point_max = u32::from_le_bytes(
+            subfield(raw, &mut pos, 4, config, "point_max")?
+                .try_into()
+                .unwrap(),
+        );
+        if point_max != 0 && point_max < point_min {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "sources",
+                reason: "point-range-inverted".into(),
+            });
+        }
+        let rate = u32::from_le_bytes(
+            subfield(raw, &mut pos, 4, config, "max_events_per_s")?
+                .try_into()
+                .unwrap(),
+        );
+        if rate == 0 || rate > points::MAX_EVENTS_PER_S {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "sources",
+                reason: "rate-out-of-range".into(),
+            });
+        }
+        let protocol =
+            PointProtocol::from_tag(proto_tag).ok_or_else(|| ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "sources",
+                reason: alloc::format!("unknown-protocol:{proto_tag}"),
+            })?;
+        out.push(SourceRecord {
+            source_id,
+            tenant_id,
+            site_id,
+            protocol,
+            allow_control: flags & points::SOURCE_FLAG_ALLOW_CONTROL != 0,
+            require_integrity: flags & points::SOURCE_FLAG_REQUIRE_INTEGRITY != 0,
+            point_min,
+            point_max,
+            max_events_per_s: rate,
+        });
+    }
+    if pos != raw.len() {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "sources",
+            reason: "trailing-bytes".into(),
+        });
+    }
+    Ok(out)
 }
 
 fn decode_record(
     raw: &[u8],
     pos: &mut usize,
     config: &ConfigId,
+    with_identity: bool,
 ) -> Result<PointRecord, ConfigError> {
     let point_id = u32::from_le_bytes(
         subfield(raw, pos, 4, config, "point_id")?
@@ -339,6 +540,43 @@ fn decode_record(
         });
     }
     let addr = decode_addr(protocol, addr_bytes, config)?;
+    // 蓝图 61 v2：记录尾随 24B 身份块（unit/schema/asset/generation）。
+    let identity = if with_identity {
+        let unit_code = u16::from_le_bytes(
+            subfield(raw, pos, 2, config, "identity.unit_code")?
+                .try_into()
+                .unwrap(),
+        );
+        let schema_id = u32::from_le_bytes(
+            subfield(raw, pos, 4, config, "identity.schema_id")?
+                .try_into()
+                .unwrap(),
+        );
+        let schema_version = u16::from_le_bytes(
+            subfield(raw, pos, 2, config, "identity.schema_version")?
+                .try_into()
+                .unwrap(),
+        );
+        let asset_id = u64::from_le_bytes(
+            subfield(raw, pos, 8, config, "identity.asset_id")?
+                .try_into()
+                .unwrap(),
+        );
+        let mapping_generation = u64::from_le_bytes(
+            subfield(raw, pos, 8, config, "identity.mapping_generation")?
+                .try_into()
+                .unwrap(),
+        );
+        PointIdentityBinding {
+            unit_code,
+            schema_id,
+            schema_version,
+            asset_id,
+            mapping_generation,
+        }
+    } else {
+        PointIdentityBinding::UNKNOWN
+    };
     Ok(PointRecord {
         point_id,
         device_id,
@@ -350,6 +588,7 @@ fn decode_record(
         period_ms,
         deadband,
         range,
+        identity,
     })
 }
 
@@ -476,6 +715,12 @@ impl TypedConfigConsumer for PointsConsumer {
         decode_points(raw, &ConfigId::from_static(points::CONFIG_ID))
     }
     fn apply(&mut self, cfg: Self::Config, generation: u64) -> Result<ApplyOutcome, ConfigError> {
+        let mut cfg = cfg;
+        // 蓝图 61：映射世代单源 = bundle generation（编译面置 0 占位，
+        // apply 期覆盖注入——点表每次生效即换代，观测身份可追溯）。
+        for rec in cfg.points.iter_mut() {
+            rec.identity.mapping_generation = generation;
+        }
         if self.table == cfg {
             return Ok(ApplyOutcome::NoOp);
         }
@@ -630,7 +875,14 @@ mod tests {
         assert_eq!(outcome, ApplyOutcome::Applied { generation: 7 });
         assert_eq!(c.generation, 7);
         assert_eq!(c.table.len(), 1);
-        // 幂等：同表再 apply → NoOp。
+        // 蓝图 61：映射世代 = bundle generation（apply 期注入）。同内容
+        // 新 generation = 换代生效（非 NoOp）——观测身份可追溯。
+        assert_eq!(
+            c.apply(table.clone(), 8).unwrap(),
+            ApplyOutcome::Applied { generation: 8 }
+        );
+        assert_eq!(c.table.points[0].identity.mapping_generation, 8);
+        // 幂等：同表同 generation 再 apply → NoOp。
         assert_eq!(c.apply(table, 8).unwrap(), ApplyOutcome::NoOp);
     }
 
@@ -670,5 +922,92 @@ mod tests {
         let payload2 = crate::payload::encode_payload(&[(points::FIELD_POINTS, raw2.as_slice())]);
         let table2 = decode_points(&payload2, &config()).unwrap();
         assert_eq!(table2.control_binding(), None);
+    }
+
+    /// 蓝图 61 v0.314.27：V2 点表 + 来源注册表编译→解码往返（host 编译面
+    /// 经 `compile` feature；identity/source 全链路可对照）。
+    #[cfg(feature = "compile")]
+    #[test]
+    fn v2_identity_and_sources_roundtrip() {
+        use eneros_protocol_abstract::PointIdentityBinding;
+        let toml = r#"
+[[point]]
+point_id = 10
+device_id = 1
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 1, reg_addr = 512, func_code = 3 }
+data_type = "setpoint"
+scale = 1.0
+offset = 0.0
+unit = "kW"
+asset_id = 42
+schema_id = 1
+
+[[source]]
+source_id = 2
+protocol = "modbus-tcp"
+tenant_id = 1
+site_id = 1
+allow_control = true
+require_integrity = true
+max_events_per_s = 100
+"#;
+        let compiled = crate::toml_compile::compile_points(toml).unwrap();
+        let table = decode_points(&compiled.payload, &config()).unwrap();
+        // 点身份块落位。
+        let rec = table.find(10).unwrap();
+        assert_eq!(rec.identity.unit_code, 6); // kW
+        assert_eq!(rec.identity.asset_id, 42);
+        assert_eq!(rec.identity.schema_id, 1);
+        assert_eq!(rec.identity.schema_version, 1);
+        // 来源注册表落位。
+        assert_eq!(table.sources.len(), 1);
+        let src = &table.sources[0];
+        assert_eq!(src.source_id, 2);
+        assert!(src.allow_control);
+        assert!(src.require_integrity);
+        assert_eq!(src.max_events_per_s, 100);
+        assert_eq!(src.protocol, PointProtocol::ModbusTcp);
+        // to_mapping 透传 identity。
+        let m = rec.to_mapping().unwrap();
+        assert_eq!(m.identity, rec.identity);
+        // apply 注入 generation。
+        let mut c = PointsConsumer::default();
+        let decoded = c.decode_validate(&compiled.payload).unwrap();
+        c.apply(decoded, 9).unwrap();
+        assert_eq!(c.table.points[0].identity.mapping_generation, 9);
+        let _ = PointIdentityBinding::UNKNOWN;
+    }
+
+    /// 蓝图 61：v1 旧 bundle（仅 FIELD_POINTS）→ 新读方回退解码，identity
+    /// 全 UNKNOWN（不满足控制资格）、来源表为空。
+    #[test]
+    fn v1_bundle_falls_back_to_unknown_identity() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&1u32.to_le_bytes());
+        raw.extend_from_slice(&record_field_bytes(10, 1, 0x0200, 3));
+        let payload = crate::payload::encode_payload(&[(points::FIELD_POINTS, raw.as_slice())]);
+        let table = decode_points(&payload, &config()).unwrap();
+        assert_eq!(table.len(), 1);
+        assert_eq!(table.sources.len(), 0);
+        assert!(!table.points[0].identity.is_control_eligible());
+    }
+
+    /// 蓝图 61：未知 unit 名 → 编译错误（封闭码表 fail-closed）。
+    #[cfg(feature = "compile")]
+    #[test]
+    fn unknown_unit_name_rejected() {
+        let toml = r#"
+[[point]]
+point_id = 1
+device_id = 1
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 1, reg_addr = 1, func_code = 3 }
+data_type = "analog"
+scale = 1.0
+offset = 0.0
+unit = "furlongs"
+"#;
+        assert!(crate::toml_compile::compile_points(toml).is_err());
     }
 }

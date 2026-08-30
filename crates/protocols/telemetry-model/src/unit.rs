@@ -135,6 +135,68 @@ impl PhysicalUnit {
     }
 }
 
+/// `UnitCatalog` — 蓝图 61 [02] §4.4 封闭数字单位码表（wire 层唯一事实）。
+///
+/// `ObservationEvent.unit_code` 只允许本表登记的代码；`0 = 未知`（可存档，
+/// 不得进控制快照）。码位冻结：新增单位只能追加新码，禁止改义旧码。
+pub mod unit_catalog {
+    use super::PhysicalUnit;
+
+    /// 未知单位（wire 0 值）。
+    pub const UNKNOWN: u16 = 0;
+    /// 码表登记项数（含 0=UNKNOWN）。
+    pub const CATALOG_LEN: u16 = 19;
+
+    /// `PhysicalUnit` → 封闭码（永不返回 0）。
+    pub const fn code_of(unit: PhysicalUnit) -> u16 {
+        match unit {
+            PhysicalUnit::Volts => 1,
+            PhysicalUnit::Kilovolts => 2,
+            PhysicalUnit::Amperes => 3,
+            PhysicalUnit::Kiloamperes => 4,
+            PhysicalUnit::Watts => 5,
+            PhysicalUnit::Kilowatts => 6,
+            PhysicalUnit::Megawatts => 7,
+            PhysicalUnit::VoltAmpereReactive => 8,
+            PhysicalUnit::Kilovar => 9,
+            PhysicalUnit::Megavar => 10,
+            PhysicalUnit::Hertz => 11,
+            PhysicalUnit::Celsius => 12,
+            PhysicalUnit::Percent => 13,
+            PhysicalUnit::KilowattHour => 14,
+            PhysicalUnit::AmpereHour => 15,
+            PhysicalUnit::Seconds => 16,
+            PhysicalUnit::Rpm => 17,
+            PhysicalUnit::Dimensionless => 18,
+        }
+    }
+
+    /// 封闭码 → `PhysicalUnit`；`0` 与未登记码 → `None`（fail-closed）。
+    pub const fn from_code(code: u16) -> Option<PhysicalUnit> {
+        match code {
+            1 => Some(PhysicalUnit::Volts),
+            2 => Some(PhysicalUnit::Kilovolts),
+            3 => Some(PhysicalUnit::Amperes),
+            4 => Some(PhysicalUnit::Kiloamperes),
+            5 => Some(PhysicalUnit::Watts),
+            6 => Some(PhysicalUnit::Kilowatts),
+            7 => Some(PhysicalUnit::Megawatts),
+            8 => Some(PhysicalUnit::VoltAmpereReactive),
+            9 => Some(PhysicalUnit::Kilovar),
+            10 => Some(PhysicalUnit::Megavar),
+            11 => Some(PhysicalUnit::Hertz),
+            12 => Some(PhysicalUnit::Celsius),
+            13 => Some(PhysicalUnit::Percent),
+            14 => Some(PhysicalUnit::KilowattHour),
+            15 => Some(PhysicalUnit::AmpereHour),
+            16 => Some(PhysicalUnit::Seconds),
+            17 => Some(PhysicalUnit::Rpm),
+            18 => Some(PhysicalUnit::Dimensionless),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::disallowed_macros)]
@@ -155,5 +217,32 @@ mod tests {
             PhysicalUnit::Megawatts.si_scale_factor() > PhysicalUnit::Kilowatts.si_scale_factor()
         );
         assert_eq!(PhysicalUnit::Percent.si_scale_factor(), 0.01);
+    }
+
+    // ===== 蓝图 61 [02] §4.4：UnitCatalog 封闭码表 =====
+
+    #[test]
+    fn unit_catalog_roundtrip_all_units() {
+        use unit_catalog;
+        for code in 1..unit_catalog::CATALOG_LEN {
+            let u = unit_catalog::from_code(code).expect("registered code");
+            assert_eq!(unit_catalog::code_of(u), code);
+        }
+    }
+
+    #[test]
+    fn unit_catalog_unknown_and_zero_fail_closed() {
+        use unit_catalog;
+        assert_eq!(unit_catalog::from_code(0), None);
+        assert_eq!(unit_catalog::from_code(unit_catalog::CATALOG_LEN), None);
+        assert_eq!(unit_catalog::from_code(u16::MAX), None);
+        // 任何登记单位都不得映射到 0（0 = 未知保留）。
+        for u in [
+            PhysicalUnit::Volts,
+            PhysicalUnit::Kilowatts,
+            PhysicalUnit::Dimensionless,
+        ] {
+            assert_ne!(unit_catalog::code_of(u), 0);
+        }
     }
 }

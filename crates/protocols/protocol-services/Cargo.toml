@@ -30,6 +30,8 @@ eneros-control-gateway = { path = "../control-gateway" }
 # svc-config 取 canonical payload 后 decode_points 解码（config-bundle）。
 eneros-agent-sdk = { path = "../../agents/agent-sdk" }
 eneros-config-bundle = { path = "../../runtime/config-bundle", default-features = false }
+# 蓝图 61 v0.314.27：观测事件准入窄腰（SourceRegistry/sink/quarantine）。
+eneros-ingestion-core = { path = "../ingestion-core" }
 # 45.5：样本类型/质量枚举（TelemetrySample/SampleQuality——sample_wire 共享）。
 eneros-safety-validator = { path = "../../ai/safety-validator" }
 # 43（L2 协议互操作面）：协议服务网络栈——virtio-net 驱动 + smoltcp+

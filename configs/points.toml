@@ -22,6 +22,21 @@
 #   period_ms   采集周期（毫秒，1..=3600_000；缺省 1000）
 #   deadband    工程量死区（缺省 0；45.2 deadband 内不刷新缓存）
 #   min/max     值域限幅（成对；45.2 超限 → uncertain）
+#   unit        UnitCatalog 单位短名（V/kV/A/kA/W/kW/MW/var/kvar/Mvar/Hz/
+#               degC/%/kWh/Ah/s/rpm；"ratio"=无量纲；缺省=未知 0，不满足
+#               控制快照资格——蓝图 61 [02] §4.4）
+#   asset_id    全局资产 ID（缺省 0=未绑定，不得进控制快照）
+#   schema_id   注册 schema（缺省 0=未注册；配了则要求 asset_id 同配）
+#
+# [[source]] 来源注册表（蓝图 61 v0.314.27：source_id 由签名配置分配，
+# 不由 binary 硬编码；未注册来源只能进 quarantine）：
+#   source_id   来源 ID（≠0，全表唯一）
+#   protocol    协议路由
+#   tenant_id / site_id   租户/站点域（≠0）
+#   allow_control         允许进入控制快照（缺省 false）
+#   require_integrity     要求完整性认证（缺省 true）
+#   point_min/point_max   允许点位范围（0=不设界）
+#   max_events_per_s      事件率上限（[1,100000]）
 
 # --- 光伏逆变器 PCS-1（modbus-rtu 从站 1） ---
 [[point]]
@@ -78,6 +93,9 @@ point_id = 1
 device_id = 2
 protocol = "modbus-tcp"
 addr.modbus = { slave_addr = 2, reg_addr = 0x0100, func_code = 3 }
+unit = "V"
+asset_id = 1
+schema_id = 1
 data_type = "analog"
 scale = 0.1
 offset = 0.0
@@ -91,6 +109,9 @@ point_id = 2
 device_id = 2
 protocol = "modbus-tcp"
 addr.modbus = { slave_addr = 2, reg_addr = 0x0101, func_code = 3 }
+unit = "A"
+asset_id = 1
+schema_id = 1
 data_type = "analog"
 scale = 0.1
 offset = 0.0
@@ -104,6 +125,9 @@ point_id = 3
 device_id = 2
 protocol = "modbus-tcp"
 addr.modbus = { slave_addr = 2, reg_addr = 0x0102, func_code = 3 }
+unit = "Hz"
+asset_id = 1
+schema_id = 1
 data_type = "analog"
 scale = 0.01
 offset = 0.0
@@ -117,6 +141,9 @@ point_id = 4
 device_id = 2
 protocol = "modbus-tcp"
 addr.modbus = { slave_addr = 2, reg_addr = 0x0103, func_code = 3 }
+unit = "ratio"
+asset_id = 1
+schema_id = 1
 data_type = "analog"
 scale = 0.001
 offset = 0.0
@@ -130,6 +157,9 @@ point_id = 5
 device_id = 2
 protocol = "modbus-tcp"
 addr.modbus = { slave_addr = 2, reg_addr = 0x0104, func_code = 3 }
+unit = "ratio"
+asset_id = 1
+schema_id = 1
 data_type = "analog"
 scale = 0.001
 offset = 0.0
@@ -143,6 +173,9 @@ point_id = 6
 device_id = 2
 protocol = "modbus-tcp"
 addr.modbus = { slave_addr = 2, reg_addr = 0x0105, func_code = 3 }
+unit = "ratio"
+asset_id = 1
+schema_id = 1
 data_type = "analog"
 scale = 0.001
 offset = 0.0
@@ -159,6 +192,9 @@ point_id = 7
 device_id = 2
 protocol = "modbus-tcp"
 addr.modbus = { slave_addr = 2, reg_addr = 0x0106, func_code = 3 }
+unit = "ratio"
+asset_id = 1
+schema_id = 1
 data_type = "analog"
 scale = 0.001
 offset = 0.0
@@ -274,9 +310,28 @@ point_id = 10
 device_id = 1
 protocol = "modbus-tcp"
 addr.modbus = { slave_addr = 2, reg_addr = 0x0200, func_code = 3 }
+unit = "kW"
+asset_id = 1
+schema_id = 1
 data_type = "control"
 scale = 1.0
 offset = 0.0
 period_ms = 3000
 min = -500.0
 max = 500.0
+
+# --- 来源注册表（蓝图 61 v0.314.27：身份由签名配置分配，binary 零硬编码） ---
+# source 1 = root 合成遥测（测试设施，flags=TEST，不注册——合成样本只走
+# 旧 TelemetrySample 兼容轨，永不产生 ObservationEvent）。
+# source 2 = svc-modbus-tcp 真实采集适配器（45.5 生产先行链；绑定 PCS-1
+# asset_id=1 的 modbus-tcp 点域 1..=10；L2 测试链完整性=LocalTrustedEdge）。
+[[source]]
+source_id = 2
+protocol = "modbus-tcp"
+tenant_id = 1
+site_id = 1
+allow_control = true
+require_integrity = true
+point_min = 1
+point_max = 10
+max_events_per_s = 100

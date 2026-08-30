@@ -97,6 +97,7 @@ fn chain_mapping() -> ProtocolPointMapping {
         data_type: PointType::Analog,
         scale: 0.1,
         offset: 0.0,
+        identity: eneros_protocol_abstract::PointIdentityBinding::UNKNOWN,
     }
 }
 

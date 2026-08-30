@@ -13,6 +13,10 @@ use crate::chunked::{ChunkedClient, RawIpc};
 pub const CFG_MAGIC: &[u8; 4] = b"CFG1";
 /// GET_ENTRY 子命令。
 pub const CMD_GET_ENTRY: u8 = 0x01;
+/// GET_DIGEST 子命令（服务端 config_service.rs 同值）。
+pub const CMD_GET_DIGEST: u8 = 0x02;
+/// GET_GENERATION 子命令（蓝图 61 v0.314.27：观测映射世代单源）。
+pub const CMD_GET_GENERATION: u8 = 0x03;
 /// svc-config 端点名（所有配置客户端共用）。
 pub const CONFIG_ENDPOINT: &str = "svc-config";
 
@@ -60,7 +64,39 @@ pub fn get_entry<C: RawIpc>(
     epoch: u64,
     timeout_ms: u64,
 ) -> Result<Vec<u8>, ConfigError> {
-    let req = encode_get_entry(entry);
+    raw_command(client, CMD_GET_ENTRY, entry.as_bytes(), epoch, timeout_ms)
+}
+
+/// GET_GENERATION 一次往返（蓝图 61）：返回 active bundle generation。
+///
+/// 协议服务用其作观测事件 `mapping_version`（点表生效世代——签名配置
+/// 分配，binary 零硬编码）。服务端响应 = generation 8B LE。
+pub fn get_generation<C: RawIpc>(
+    client: &mut C,
+    epoch: u64,
+    timeout_ms: u64,
+) -> Result<u64, ConfigError> {
+    let resp = raw_command(client, CMD_GET_GENERATION, &[], epoch, timeout_ms)?;
+    let body = decode_response_body(&resp)?;
+    if body.len() != 8 {
+        return Err(ConfigError::LengthPrefix);
+    }
+    Ok(u64::from_le_bytes(body.try_into().unwrap()))
+}
+
+/// 子命令一次往返（请求构造 + 分块传输单一实现；GET_ENTRY/GET_GENERATION
+/// 共用——服务端同 magic 同前缀词形）。
+fn raw_command<C: RawIpc>(
+    client: &mut C,
+    cmd: u8,
+    body: &[u8],
+    epoch: u64,
+    timeout_ms: u64,
+) -> Result<Vec<u8>, ConfigError> {
+    let mut req = Vec::with_capacity(5 + body.len());
+    req.extend_from_slice(CFG_MAGIC);
+    req.push(cmd);
+    req.extend_from_slice(body);
     let mut transfer = ChunkedClient::new(client, epoch, timeout_ms);
     transfer
         .transfer(CONFIG_ENDPOINT, &req)
@@ -99,11 +135,18 @@ mod tests {
                 match self.pending.take() {
                     Some(full) => {
                         assert_eq!(&full[..4], b"CFG1", "请求帧 magic");
-                        assert_eq!(full[4], CMD_GET_ENTRY);
-                        let entry = &full[5..];
+                        // 响应体（4B 前缀在下方统一加——单前缀词形）。
+                        let body: Vec<u8> = if full[4] == CMD_GET_GENERATION {
+                            let mut b = Vec::new();
+                            b.extend_from_slice(&42u64.to_le_bytes());
+                            b
+                        } else {
+                            assert_eq!(full[4], CMD_GET_ENTRY);
+                            full[5..].to_vec()
+                        };
                         let mut resp = Vec::new();
-                        resp.extend_from_slice(&(entry.len() as u32).to_le_bytes());
-                        resp.extend_from_slice(entry);
+                        resp.extend_from_slice(&(body.len() as u32).to_le_bytes());
+                        resp.extend_from_slice(&body);
                         self.paged = resp;
                         Ok(encode_paged_header(self.paged.len()).to_vec())
                     }
@@ -165,5 +208,17 @@ mod tests {
         let resp = get_entry(&mut peer, "points", 0, 5_000).expect("transfer");
         let body = decode_response_body(&resp).unwrap();
         assert_eq!(body, b"points");
+    }
+
+    /// 蓝图 61：GET_GENERATION 往返（8B LE 响应体）。
+    #[test]
+    fn get_generation_roundtrip_via_chunked() {
+        let mut peer = FakeConfigServer {
+            rx: Default::default(),
+            pending: None,
+            paged: Vec::new(),
+        };
+        let gen = get_generation(&mut peer, 0, 5_000).expect("transfer");
+        assert_eq!(gen, 42);
     }
 }

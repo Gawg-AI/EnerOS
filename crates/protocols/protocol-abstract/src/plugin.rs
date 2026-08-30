@@ -426,6 +426,7 @@ mod tests {
             data_type: eneros_upa_model::PointType::Analog,
             scale: 0.1,
             offset: 0.0,
+            identity: crate::mapping::PointIdentityBinding::UNKNOWN,
         }
     }
 

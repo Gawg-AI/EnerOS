@@ -24,6 +24,12 @@ use eneros_safety_validator::{
 pub const TEL_INGEST: u8 = 1;
 pub const TEL_SNAPSHOT: u8 = 2;
 pub const TEL_ADVANCE_EPOCH: u8 = 3;
+/// 蓝图 61 v0.314.27：观测事件影子批次（V1 128B 帧 × n；影子轨零控制消费）。
+pub const TEL_INGEST_OBS: u8 = 4;
+/// TEL_INGEST_OBS 请求帧布局：[opcode][source_id u32][count u16][n × 128B]。
+pub const OBS_REQ_HEADER_LEN: usize = 1 + 4 + 2;
+/// OBS ingest 响应：[OK][accepted u16][rejected u16]（LE）。
+pub const OBS_RESP_LEN: usize = 1 + 2 + 2;
 
 /// 45.5：58B 定长样本 wire 收归 agent-sdk `sample_wire`（单一事实；
 /// root/svc-telemetry/协议服务共同消费）。此处 re-export 保持既有调用面。
@@ -63,6 +69,9 @@ pub struct TelemetryService {
     history_batch_seq: u64,
     /// SPEC-C：已落 REJECTED 判定行的拒绝计数高水位（增量行防重复刷屏）。
     rejected_reported: u64,
+    /// 蓝图 61：观测事件影子（None = 未装配——旧 bundle 无来源表时如实
+    /// 降级；影子轨零控制消费，见 obs_shadow 模块文档）。
+    pub obs: Option<crate::obs_shadow::ObsShadow>,
 }
 
 /// SPEC-C：历史介质标签（随 sink 装配指定；影响判定行词形与统计语义）。
@@ -90,7 +99,61 @@ impl TelemetryService {
             history_media: HistoryMedia::Ring,
             history_batch_seq: 0,
             rejected_reported: 0,
+            obs: None,
         }
+    }
+
+    /// 蓝图 61：装配观测影子路径（bin 启动期一次；descriptor 集来自
+    /// config `[[source]]` 编译，评估器配置与生产同源注入）。
+    pub fn enable_obs_shadow(
+        &mut self,
+        descriptors: alloc::vec::Vec<eneros_ingestion_core::SourceDescriptor>,
+        eval_config: EvaluatorConfig,
+    ) {
+        self.obs = Some(crate::obs_shadow::ObsShadow::new(descriptors, eval_config));
+    }
+
+    /// 蓝图 61 v0.314.27：配置驱动的来源身份生效（惰性——首个 OBS 批次
+    /// 到达时由 handler 调用一次）。
+    ///
+    /// 生产评估器以**同一 EvaluatorConfig** 重建（allowed_sources/mapping_
+    /// version 换为配置事实：注册来源 id 集合 + bundle generation），并
+    /// 同时装配影子路径。启动早期（配置未装载）评估器仍以装配参数运行
+    /// ——qemu-test 合成设施（source=1）与旧 bundle 兼容轨不受影响。
+    pub fn apply_source_identity(
+        &mut self,
+        descriptors: alloc::vec::Vec<eneros_ingestion_core::SourceDescriptor>,
+        mut eval_config: EvaluatorConfig,
+    ) {
+        eval_config.allowed_sources = descriptors
+            .iter()
+            .map(|d| d.source_id)
+            .collect::<alloc::vec::Vec<_>>();
+        // 重建生产评估器（启动窗口调用：评估器无积累状态——restore 空）。
+        self.evaluator = TelemetryTrustEvaluator::new(eval_config.clone());
+        self.enable_obs_shadow(descriptors, eval_config);
+    }
+
+    /// 蓝图 61：OBS 影子批次准入（TEL_INGEST_OBS 服务端；响应
+    /// [OK][accepted u16][rejected u16]）。
+    pub fn obs_ingest(&mut self, source_id: u32, frames: &[u8], now_ms: u64) -> Vec<u8> {
+        let Some(obs) = self.obs.as_mut() else {
+            // 影子未装配 = 配置无来源表 → 显式拒绝（不静默吞帧）。
+            return alloc::vec![0xFF];
+        };
+        let (accepted, rejected) = obs.ingest_frames(source_id, frames, now_ms);
+        // 生产评估器 epoch 与 registry 分配的观测身份同源同步（首次钉扎 /
+        // adapter 重启新 epoch）：新 epoch = 新序号空间（restore 清态）。
+        if let Some((_, epoch)) = obs.last_pinned() {
+            if self.evaluator.epoch() != epoch {
+                self.evaluator
+                    .restore(epoch, 0, alloc::collections::BTreeMap::new());
+            }
+        }
+        let mut out = alloc::vec![0u8];
+        out.extend_from_slice(&(accepted as u16).to_le_bytes());
+        out.extend_from_slice(&(rejected as u16).to_le_bytes());
+        out
     }
 
     /// 装配历史落盘接缝（WP-2；服务装配期调用一次；介质=Ring 基线词形）。
@@ -247,7 +310,13 @@ impl TelemetryService {
     /// 变化——单线程服务循环内天然原子；provenance 覆盖全部样本）。
     pub fn snapshot(&mut self, now_ms: u64) -> Result<TrustedTelemetry, TrustRejection> {
         let samples: Vec<TelemetrySample> = self.buffer.iter().copied().collect();
-        self.evaluator.evaluate(&samples, now_ms)
+        let t = self.evaluator.evaluate(&samples, now_ms)?;
+        // 蓝图 61：生产 verdict 成立后做影子对照（零控制消费——影子
+        // 结果只进计数/串口行，不改变本返回值与任何下游）。
+        if let Some(obs) = self.obs.as_mut() {
+            obs.compare_production(&t);
+        }
+        Ok(t)
     }
 }
 
@@ -531,6 +600,20 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
         TEL_ADVANCE_EPOCH => {
             svc.advance_epoch();
             vec![0]
+        }
+        TEL_INGEST_OBS => {
+            // 蓝图 61 v0.314.27：[opcode][source_id u32][count u16][n × 128B]。
+            let body = &req[1..];
+            if body.len() < 6 {
+                return vec![0xFF];
+            }
+            let source_id = u32::from_le_bytes(body[0..4].try_into().unwrap());
+            let count = u16::from_le_bytes(body[4..6].try_into().unwrap()) as usize;
+            let frames = &body[6..];
+            if frames.len() != count * eneros_telemetry_model::OBSERVATION_WIRE_LEN {
+                return vec![0xFF];
+            }
+            svc.obs_ingest(source_id, frames, now_ms)
         }
         _ => vec![0xFF],
     }

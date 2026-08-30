@@ -79,6 +79,19 @@ pub fn fetch_protocol_config(
 /// （插件如实降级：空映射 = 不连设备，不伪造协议 I/O）。
 ///
 /// `client_name` 仅诊断（与 `fetch_protocol_config` 同前缀——同端点可
+/// 点表取数结果（蓝图 61 v0.314.27：注册表 + 来源注册表 + 映射世代）。
+pub struct PointsFetch {
+    /// 协议点注册表（`keep` 过滤后；identity 已注入 generation）。
+    pub registry: eneros_protocol_abstract::VecPointRegistry,
+    /// 来源注册表（`[[source]]` 编译产物；旧 bundle = 空）。
+    pub sources: alloc::vec::Vec<eneros_config_bundle::points::SourceRecord>,
+    /// 映射世代（active bundle generation；不可得 → 0 = 未定代，观测
+    /// 不满足控制资格——fail-closed）。
+    pub generation: u64,
+    /// 解码点数（诊断）。
+    pub total_points: usize,
+}
+
 /// 处理 config 与 points 两类请求）。wire/管道单源同上。
 pub fn fetch_points_registry<F>(
     io: &mut dyn ConfigEntrySource,
@@ -88,12 +101,37 @@ pub fn fetch_points_registry<F>(
 where
     F: Fn(&PointRecord) -> bool,
 {
+    fetch_points(io, client_name, keep).registry
+}
+
+/// 蓝图 61 v0.314.27：点表 + 来源注册表 + 映射世代一次取数。
+///
+/// generation 经 `GET_GENERATION`（服务端既有动词）；不可得 → 0（fail-
+/// closed：世代未知的映射不满足控制资格，事件只可存档）。失败呈现词形
+/// 与 [`fetch_points_registry`] 逐字节一致（历史 caller 行为不变）。
+pub fn fetch_points<F>(io: &mut dyn ConfigEntrySource, client_name: &str, keep: F) -> PointsFetch
+where
+    F: Fn(&PointRecord) -> bool,
+{
     use eneros_protocol_abstract::VecPointRegistry;
-    let empty = || VecPointRegistry::new(alloc::vec::Vec::new());
+    let empty = |generation: u64| PointsFetch {
+        registry: VecPointRegistry::new(alloc::vec::Vec::new()),
+        sources: alloc::vec::Vec::new(),
+        generation,
+        total_points: 0,
+    };
+    let generation = io.config_generation().unwrap_or(0);
+    if generation == 0 {
+        eneros_runtime::println!("[{client_name}] OBS-GEN unknown (generation unavailable)");
+    }
     match config_get(io, "points", |body| {
         let cfg_id = eneros_config_bundle::ConfigId::from_static("points");
         match eneros_config_bundle::points::decode_points(body, &cfg_id) {
-            Ok(table) => {
+            Ok(mut table) => {
+                // 映射世代注入（apply 期同语义：generation = bundle 生效代）。
+                for rec in table.points.iter_mut() {
+                    rec.identity.mapping_generation = generation;
+                }
                 let mappings: alloc::vec::Vec<_> = table
                     .points
                     .iter()
@@ -103,9 +141,14 @@ where
                 eneros_runtime::println!(
                     "[{client_name}] POINTS-LOADED {} points (registry {})",
                     mappings.len(),
-                    table.len()
+                    table.points.len()
                 );
-                Ok(VecPointRegistry::new(mappings))
+                Ok(PointsFetch {
+                    registry: VecPointRegistry::new(mappings),
+                    sources: table.sources,
+                    generation,
+                    total_points: table.points.len(),
+                })
             }
             Err(e) => {
                 eneros_runtime::println!("[{client_name}] points decode FAIL: {e:?}");
@@ -113,20 +156,20 @@ where
             }
         }
     }) {
-        Ok(registry) => registry,
+        Ok(fetch) => fetch,
         Err(ConfigStep::TooShort) => {
             eneros_runtime::println!(
                 "{}",
                 crate::protocol_ladder::line_config_too_short(client_name)
             );
-            empty()
+            empty(generation)
         }
         Err(ConfigStep::BadPrefix) => {
             eneros_runtime::println!(
                 "{}",
                 crate::protocol_ladder::line_config_bad_prefix(client_name)
             );
-            empty()
+            empty(generation)
         }
         Err(ConfigStep::Unavailable) => {
             // S1 evidence M-3 登记：今日 client-new-fail 打印本行、
@@ -136,8 +179,8 @@ where
             eneros_runtime::println!(
                 "[{client_name}] config EIPC NOT granted -> points unavailable"
             );
-            empty()
+            empty(generation)
         }
-        Err(ConfigStep::DecodeFailed) => empty(),
+        Err(ConfigStep::DecodeFailed) => empty(generation),
     }
 }

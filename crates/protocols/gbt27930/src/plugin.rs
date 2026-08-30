@@ -357,6 +357,7 @@ mod tests {
             data_type: eneros_upa_model::PointType::Analog,
             scale: 0.1,
             offset: 0.0,
+            identity: eneros_protocol_abstract::PointIdentityBinding::UNKNOWN,
         }];
         let mut reg = eneros_protocol_abstract::VecPointRegistry::new(mappings);
         let mut p = Gbt27930Plugin::new();
@@ -388,6 +389,7 @@ mod tests {
             data_type: eneros_upa_model::PointType::Analog,
             scale: 1.0,
             offset: 0.0,
+            identity: eneros_protocol_abstract::PointIdentityBinding::UNKNOWN,
         };
         assert_eq!(p.read_point(0, &m), Err(ProtocolError::Unsupported));
         p.stop().expect("stop");

@@ -8,3 +8,6 @@ description = "EnerOS 四遥数据模型 — Telemetry/Telesignaling/Telecontrol
 
 [dependencies]
 eneros-upa-model = { path = "../upa-model" }
+# 蓝图 61 [02] §3.1：ObservationEvent event_id = SHA-256 前 16B（no_std 兼容；
+# 与 boot-protocol/root-task bundle 摘要同算法同版本）。
+sha2 = { version = "0.10.9", default-features = false }

@@ -103,7 +103,17 @@ pub mod logging {
 /// `points`（consumer: svc-telemetry + 7 协议服务；schema v1）——蓝图 45
 /// 点表：协议↔遥测唯一映射事实源。
 ///
-/// canonical payload 单一字段 `FIELD_POINTS`，值为自描述子格式：
+/// 蓝图 61 v0.314.27 起字段帧扩展（`MAX_FIELD=3`）：
+/// - `FIELD_POINTS`（id=1）：v1 点表（无身份绑定；N-1 读窗口保留——
+///   新解码面遇旧 bundle 回退本字段，identity 全 UNKNOWN）；
+/// - `FIELD_SOURCES`（id=2）：来源注册表（[[source]] 编译产物）；
+/// - `FIELD_POINTS_V2`（id=3）：v2 点表（每条记录尾部追加 24B 身份块）。
+///
+/// 编码面（新 bundle）只写 id=2+3；旧读方面对未知 id → `UnknownField`
+/// 显式拒绝（§4.4：不把新字节误解为旧状态）。新读方面对旧 bundle →
+/// 回退 id=1（identity 全 UNKNOWN，不满足控制快照资格）。
+///
+/// v1/v2 点表子格式（v2 = 每条记录追加身份块）：
 ///
 /// ```text
 /// u32 LE: point count（≤ MAX_POINTS）
@@ -121,6 +131,13 @@ pub mod logging {
 ///   f64 LE  max（标志=1）      （min ≤ max）
 ///   u16 LE  addr_len（≤ MAX_ADDR_LEN）
 ///   addr 字节（按协议编码见下）
+///   [v2 only] 身份块 24B：
+///     u16 LE unit_code（UnitCatalog；0=未知）
+///     u32 LE schema_id（0=未注册）
+///     u16 LE schema_version
+///     u64 LE asset_id（0=未绑定）
+///     u64 LE mapping_generation（0=未定代；consumer apply 期以 bundle
+///            generation 覆盖注入）
 /// ```
 ///
 /// 地址编码（与 `ProtocolAddress` 直映；goose/sv 为订阅绑定，addr_len=0）：
@@ -128,20 +145,48 @@ pub mod logging {
 /// - iec104：`[common u16 LE][ioa u16 LE][type u8]`（5B）
 /// - mms：object_ref UTF-8 字节
 /// - mqtt：topic UTF-8 字节
+///
+/// 来源注册表子格式（`FIELD_SOURCES`；蓝图 61 [02] §4.2）：
+///
+/// ```text
+/// u32 LE: source count（≤ MAX_SOURCES）
+/// 每条来源记录：
+///   u32 LE  source_id（≠0，全表唯一）
+///   u32 LE  tenant_id
+///   u32 LE  site_id
+///   u8      protocol 判别码（PROTO_*）
+///   u8      flags（bit0 allow_control，bit1 require_integrity）
+///   u32 LE  point_min（0=不设下界）
+///   u32 LE  point_max（0=不设上界）
+///   u32 LE  max_events_per_s（[1, 100000]）
+/// ```
 pub mod points {
     pub const CONFIG_ID: &str = "points";
     pub const SCHEMA: u16 = 1;
-    pub const MAX_FIELD: u8 = 1;
-    /// 1：整个点表（自描述子格式，见模块注释）。
+    /// 蓝图 61：3 个字段帧（v1 点表/来源注册表/v2 点表）。
+    pub const MAX_FIELD: u8 = 3;
+    /// 1：点表 v1（自描述子格式，见模块注释；N-1 读窗口）。
     pub const FIELD_POINTS: u8 = 1;
+    /// 2：来源注册表（蓝图 61 v0.314.27）。
+    pub const FIELD_SOURCES: u8 = 2;
+    /// 3：点表 v2（记录尾随 24B 身份块；生产编码面唯一输出）。
+    pub const FIELD_POINTS_V2: u8 = 3;
     /// 点表最大点数（防御性上界）。
     pub const MAX_POINTS: u32 = 1024;
+    /// 来源注册表最大条数（防御性上界）。
+    pub const MAX_SOURCES: u32 = 64;
     /// 采集周期上限（毫秒；默认 1 小时）。
     pub const MAX_PERIOD_MS: u32 = 3_600_000;
     /// 采集周期默认值（毫秒）。
     pub const DEFAULT_PERIOD_MS: u32 = 1_000;
     /// 地址最大长度（MQTT topic / MMS object_ref 上限）。
     pub const MAX_ADDR_LEN: usize = 256;
+    /// 事件率上限（事件/秒）。
+    pub const MAX_EVENTS_PER_S: u32 = 100_000;
+    /// 来源 flags：允许进入控制快照。
+    pub const SOURCE_FLAG_ALLOW_CONTROL: u8 = 1 << 0;
+    /// 来源 flags：要求完整性认证。
+    pub const SOURCE_FLAG_REQUIRE_INTEGRITY: u8 = 1 << 1;
     // 协议路由判别码（对应 points.toml `protocol` 枚举；插件路由，非点模型）。
     pub const PROTO_MODBUS_RTU: u8 = 1;
     pub const PROTO_MODBUS_TCP: u8 = 2;

@@ -17,6 +17,9 @@ eneros-crypto = { path = "../../security/crypto" }
 # 复用既有工程量变换原语，禁重造——点模型仍仅 upa-model 唯一）。
 eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
 eneros-upa-model = { path = "../../protocols/upa-model" }
+# 蓝图 61：点身份绑定 unit_code 用 UnitCatalog 封闭码表（无环：telemetry-model
+# 仅依赖 upa-model）。
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 # host 侧 TOML 编译面（feature `compile`；target 闭包不启用）。
 toml = { version = "0.8", optional = true }
 

@@ -38,6 +38,8 @@ eneros-dual-brain = { path = "../../ai/dual-brain" }
 eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
 # 47（WP-47.2 点表绑定）：控制写目标经 svc-config 点表 canonical 解码。
 eneros-config-bundle = { path = "../../runtime/config-bundle", default-features = false }
+# 蓝图 61 v0.314.27：观测事件准入窄腰（SourceRegistry/sink/quarantine）。
+eneros-ingestion-core = { path = "../../protocols/ingestion-core" }
 # 47（WP-47.4 审计持久化）：SHA-256 控制事件链（D4 线）。
 eneros-audit = { path = "../../security/audit" }
 # SPEC-C（WP-C.1 / D-TSDB-2 方案 A）：svc-telemetry 磁盘历史——TSDB 库、

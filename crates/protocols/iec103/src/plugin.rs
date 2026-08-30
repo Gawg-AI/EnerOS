@@ -271,6 +271,7 @@ mod tests {
             data_type: eneros_upa_model::PointType::Analog,
             scale: 1.0,
             offset: 0.0,
+            identity: eneros_protocol_abstract::PointIdentityBinding::UNKNOWN,
         }];
         let mut reg = eneros_protocol_abstract::VecPointRegistry::new(mappings);
         let mut p = Iec103Plugin::new();

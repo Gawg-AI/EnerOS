@@ -25,6 +25,12 @@ use crate::config_client::{self, ConfigError};
 /// 先例，[`crate::config_client`] 同法）。
 pub trait ConfigEntrySource {
     fn config_entry(&mut self, id: &str) -> Option<Vec<u8>>;
+
+    /// active bundle generation（蓝图 61 观测映射世代；不可得 → None——
+    /// 调用方按 fail-closed 降级：世代未知的事件不满足控制资格）。
+    fn config_generation(&mut self) -> Option<u64> {
+        None
+    }
 }
 
 /// 调用侧管道失败分类（单点）。[`ConfigError`] 映射：
@@ -84,6 +90,11 @@ impl ConfigEntrySource for crate::ipc_sel4::Sel4IpcClient {
     /// 同参；svc-mgmt 的逐请求 epoch 面不在本卷范围）。
     fn config_entry(&mut self, id: &str) -> Option<Vec<u8>> {
         config_client::get_entry(self, id, 0, 5_000).ok()
+    }
+
+    /// GET_GENERATION 一次往返（蓝图 61 v0.314.27）。
+    fn config_generation(&mut self) -> Option<u64> {
+        config_client::get_generation(self, 0, 5_000).ok()
     }
 }
 

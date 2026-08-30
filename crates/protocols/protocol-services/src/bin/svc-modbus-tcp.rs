@@ -64,7 +64,169 @@ struct ModbusTcpIoService {
     /// INGEST 累计接受计数（观测——真实采集链）。
     pub accepted_total: u64,
     transactions: u32,
+    /// 蓝图 61：观测事件桥（None = 无来源 descriptor——影子如实停用）。
+    obs: Option<AdapterObs>,
 }
+
+/// 蓝图 61 v0.314.27：adapter 侧观测桥（装配胶水——身份/准入深模块 =
+/// `eneros_ingestion_core::SourceRegistry`；本结构只做取数/组帧/上报）。
+///
+/// 身份三事实全部来自签名配置（[06] §2.4）：source_id = `[[source]]` 表
+/// modbus-tcp 行；source_epoch = registry `open_source`（持久 store 下界 =
+/// 启动时刻）；mapping_version = bundle generation（GET_GENERATION）。
+#[cfg(target_os = "none")]
+struct AdapterObs {
+    registry: eneros_ingestion_core::SourceRegistry,
+    source_id: u32,
+    epoch_store: eneros_ingestion_core::MemEpochStore,
+    /// 本轮事件帧缓冲（round 边界整批上报后清空）。
+    frame_buf: alloc::vec::Vec<u8>,
+    event_count: u16,
+    /// 本轮被拒计数（ACQ/OBS-REJECT 证据行）。
+    round_rejected: u32,
+    rejected_total: u64,
+    accepted_total: u64,
+}
+
+#[cfg(target_os = "none")]
+impl AdapterObs {
+    /// 构造 + 开源（epoch = max(持久, floor) + 1；floor = 启动时刻 ms）。
+    fn new(
+        sources: &[(u32, eneros_ingestion_core::SourceDescriptor)],
+        own_source_id: u32,
+        epoch_floor_ms: u64,
+    ) -> Option<Self> {
+        let mut registry = eneros_ingestion_core::SourceRegistry::new();
+        for (_, d) in sources {
+            registry.register(d.clone(), 0);
+        }
+        if !sources.iter().any(|(id, _)| *id == own_source_id) {
+            return None;
+        }
+        let mut obs = Self {
+            registry,
+            source_id: own_source_id,
+            epoch_store: eneros_ingestion_core::MemEpochStore::default(),
+            frame_buf: alloc::vec::Vec::new(),
+            event_count: 0,
+            round_rejected: 0,
+            rejected_total: 0,
+            accepted_total: 0,
+        };
+        match obs
+            .registry
+            .open_source(own_source_id, epoch_floor_ms, &mut obs.epoch_store)
+        {
+            Ok(epoch) => {
+                eneros_runtime::println!(
+                    "[svc-modbus-tcp] OBS-SOURCE id={} epoch={} (config-allocated)",
+                    own_source_id,
+                    epoch
+                );
+                Some(obs)
+            }
+            Err(e) => {
+                eneros_runtime::println!("[svc-modbus-tcp] OBS-SOURCE open FAIL: {e:?}");
+                None
+            }
+        }
+    }
+
+    /// 一次真读 → RawObservation → registry.verify → 128B 帧入本轮缓冲。
+    fn observe(
+        &mut self,
+        mapping: &eneros_protocol_abstract::ProtocolPointMapping,
+        eng: f64,
+        now_ns: u64,
+    ) {
+        use eneros_ingestion_core::RawObservation;
+        use eneros_telemetry_model::event::{IntegrityTag, ObservationValue};
+        let raw = RawObservation {
+            point_id: mapping.point_id,
+            value: ObservationValue::F64(eng),
+            event_time_ns: Some(now_ns),
+            // L2 测试链完整性：工程量变换在 adapter 本地完成（可信边）。
+            quality_bits: eneros_telemetry_model::event::quality_bits::VALID,
+            integrity: IntegrityTag::LocalTrustedEdge,
+            flags: 0,
+            schema_id: mapping.identity.schema_id,
+            schema_version: mapping.identity.schema_version,
+            unit_code: mapping.identity.unit_code,
+            asset_id: mapping.identity.asset_id,
+            mapping_version: mapping.identity.mapping_generation,
+            device_id: mapping.device_id,
+        };
+        match self.registry.verify(self.source_id, &raw, now_ns) {
+            Ok(event) => {
+                self.frame_buf.extend_from_slice(&event.encode_v1());
+                self.event_count = self.event_count.saturating_add(1);
+                self.accepted_total = self.accepted_total.saturating_add(1);
+            }
+            Err(reason) => {
+                self.round_rejected = self.round_rejected.saturating_add(1);
+                self.rejected_total = self.rejected_total.saturating_add(1);
+                eneros_runtime::println!(
+                    "[svc-modbus-tcp] OBS-REJECT point={} reason={:?}",
+                    mapping.point_id,
+                    reason
+                );
+            }
+        }
+    }
+
+    /// 轮边界：OBS 批次上报（[4][source u32][count u16][n × 128B]）+ 清轮。
+    fn report_round(
+        &mut self,
+        telemetry: &mut Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+        tel_epoch: &mut u64,
+    ) {
+        if self.frame_buf.is_empty() {
+            if self.round_rejected > 0 {
+                eneros_runtime::println!(
+                    "[svc-modbus-tcp] OBS-ROUND accepted=0 rejected={}",
+                    self.round_rejected
+                );
+            }
+            self.round_rejected = 0;
+            return;
+        }
+        let mut req: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(7 + self.frame_buf.len());
+        req.push(4u8); // TEL_INGEST_OBS
+        req.extend_from_slice(&self.source_id.to_le_bytes());
+        req.extend_from_slice(&self.event_count.to_le_bytes());
+        req.extend_from_slice(&self.frame_buf);
+        if let Some(client) = telemetry {
+            let mut transfer = eneros_agent_sdk::ChunkedClient::new(client, *tel_epoch, 5_000);
+            *tel_epoch = tel_epoch.saturating_add(1);
+            match transfer.transfer("svc-telemetry", &req) {
+                Ok(resp) if resp.len() >= OBS_RESP_OK_LEN && resp[0] == 0 => {
+                    let accepted = u16::from_le_bytes([resp[1], resp[2]]);
+                    eneros_runtime::println!(
+                        "[svc-modbus-tcp] OBS-ROUND sent={} shadow-accepted={}",
+                        self.event_count,
+                        accepted
+                    );
+                }
+                Ok(resp) => {
+                    eneros_runtime::println!(
+                        "[svc-modbus-tcp] OBS-ROUND rejected {:02x?}",
+                        &resp[..resp.len().min(8)]
+                    );
+                }
+                Err(e) => {
+                    eneros_runtime::println!("[svc-modbus-tcp] OBS-ROUND eipc={:?}", e);
+                }
+            }
+        }
+        self.frame_buf.clear();
+        self.event_count = 0;
+        self.round_rejected = 0;
+    }
+}
+
+/// OBS ingest OK 响应长度（[OK][accepted u16][rejected u16]）。
+#[cfg(target_os = "none")]
+const OBS_RESP_OK_LEN: usize = 5;
 
 #[cfg(target_os = "none")]
 impl ModbusTcpIoService {
@@ -100,20 +262,30 @@ impl ModbusTcpIoService {
                         eng,
                         self.seq
                     );
-                    // 58B 样本（source=1 = svc-telemetry allowed_sources；L2
-                    // 测试链受信完整性=Verified，HMAC 认证链为 47 卷范围）。
+                    // 蓝图 61 v0.314.27：身份三事实由签名配置分配（零硬编码）
+                    // ——source/epoch=OBS 注册表（配置分配）；mapping=generation。
+                    // 58B legacy 兼容轨样本同步取配置身份（.30 切换前双轨）。
+                    let (legacy_source, legacy_epoch) = self
+                        .obs
+                        .as_ref()
+                        .map(|o| (o.source_id, o.registry.epoch(o.source_id)))
+                        .unwrap_or((1, 0));
                     batch.push(eneros_safety_validator::TelemetrySample {
                         point: mapping.point_id,
                         value: eng,
-                        source: 1,
-                        source_epoch: 0,
+                        source: legacy_source,
+                        source_epoch: legacy_epoch,
                         measured_at_ms: now_ms.saturating_sub(50),
                         received_at_ms: now_ms,
                         quality: eneros_safety_validator::SampleQuality::Good,
                         sequence: self.seq,
                         integrity: eneros_safety_validator::IntegrityStatus::Verified,
-                        mapping_version: 1,
+                        mapping_version: mapping.identity.mapping_generation,
                     });
+                    // V1 观测事件（影子轨；准入=SourceRegistry 深模块）。
+                    if let Some(obs) = self.obs.as_mut() {
+                        obs.observe(&mapping, eng, eneros_drv_svc::now_ns());
+                    }
                 }
                 Ok(_) => {
                     eneros_runtime::println!(
@@ -132,6 +304,12 @@ impl ModbusTcpIoService {
         }
         if batch.is_empty() {
             return false;
+        }
+        // 蓝图 61：影子轨（OBS）**先于** legacy 轨发送——svc-telemetry 在
+        // 首个 OBS 批次惰性装载来源身份（allowed_sources/mapping_version
+        // 换配置事实），紧随的 legacy INGEST 即以配置身份被接受。
+        if let Some(obs) = self.obs.as_mut() {
+            obs.report_round(&mut self.telemetry, &mut self.tel_epoch);
         }
         // 整轮单次 INGEST（全量替换语义）。
         let mut req: alloc::vec::Vec<u8> = alloc::vec![1u8]; // TEL_INGEST
@@ -386,7 +564,64 @@ pub extern "C" fn _start(
     // 43：设备移交（virtio-net 槽 8）→ 真实 I/O 服务；未移交 → 能力壳。
     let mut service: Box<dyn eneros_drv_svc::runtime::DriverService> =
         match protocol_ladder::run(wall_epoch, &parts, plugin, &mut io) {
-            protocol_ladder::Ladder::Ready { plugin, registry } => {
+            protocol_ladder::Ladder::Ready {
+                plugin,
+                registry,
+                sources,
+                generation,
+            } => {
+                // 蓝图 61：来源 descriptor（modbus-tcp 行 = 本适配器身份）。
+                let mut descriptors: alloc::vec::Vec<(
+                    u32,
+                    eneros_ingestion_core::SourceDescriptor,
+                )> = alloc::vec::Vec::new();
+                let mut own_source_id: Option<u32> = None;
+                for src in &sources {
+                    if src.protocol == PointProtocol::ModbusTcp {
+                        descriptors.push((
+                            src.source_id,
+                            eneros_ingestion_core::SourceDescriptor {
+                                source_id: src.source_id,
+                                tenant_id: src.tenant_id,
+                                site_id: src.site_id,
+                                allow_control: src.allow_control,
+                                require_integrity: src.require_integrity,
+                                point_range: (src.point_min, src.point_max),
+                                max_events_per_s: src.max_events_per_s,
+                                // 点域内已注册 schema 集合（来自点表 identity）。
+                                allowed_schemas: {
+                                    let mut ids = alloc::vec::Vec::new();
+                                    registry.collect_ids(&mut ids);
+                                    let mut v = alloc::vec::Vec::new();
+                                    for id in ids {
+                                        if let Some(m) = registry.resolve(id) {
+                                            if m.identity.schema_id != 0
+                                                && !v.contains(&m.identity.schema_id)
+                                            {
+                                                v.push(m.identity.schema_id);
+                                            }
+                                        }
+                                    }
+                                    v
+                                },
+                                clock_id: 1,
+                                enabled: true,
+                            },
+                        ));
+                        if own_source_id.is_none() {
+                            own_source_id = Some(src.source_id);
+                        }
+                    }
+                }
+                let obs = own_source_id.and_then(|id| {
+                    AdapterObs::new(&descriptors, id, eneros_protocol_services::now_ms())
+                });
+                if obs.is_none() {
+                    eneros_runtime::println!(
+                        "[svc-modbus-tcp] OBS-SHADOW disabled (no modbus-tcp [[source]] row)"
+                    );
+                }
+                let _ = generation; // generation 已注入 mapping.identity
                 let mut io = ModbusTcpIoService {
                     plugin,
                     registry,
@@ -396,6 +631,7 @@ pub extern "C" fn _start(
                     seq: 1,
                     accepted_total: 0,
                     transactions: 0,
+                    obs,
                 };
                 // 启动期自检：点表驱动一轮真实读（外部 peer 记录事务；串口
                 // 打印 = L2 互操作/45 采集证据行）。

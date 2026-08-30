@@ -201,6 +201,42 @@ fn get_u32_opt(
     }
 }
 
+/// 可选 u64（缺省 → `default`）。
+fn get_u64_opt(
+    t: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+    name: &'static str,
+    default: u64,
+) -> Result<u64, ConfigError> {
+    match t.get(name) {
+        None => Ok(default),
+        Some(Value::Integer(i)) if *i >= 0 => Ok(*i as u64),
+        Some(_) => Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: name,
+            reason: "expected-non-negative-integer".into(),
+        }),
+    }
+}
+
+/// 可选 bool（缺省 → `default`）。
+fn get_bool_opt(
+    t: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+    name: &'static str,
+    default: bool,
+) -> Result<bool, ConfigError> {
+    match t.get(name) {
+        None => Ok(default),
+        Some(Value::Boolean(b)) => Ok(*b),
+        Some(_) => Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: name,
+            reason: "expected-boolean".into(),
+        }),
+    }
+}
+
 /// 必填字符串。
 fn get_str_req<'a>(
     t: &'a toml::map::Map<String, Value>,
@@ -706,7 +742,8 @@ pub fn compile_logging(toml: &str) -> Result<CompiledConfig, ConfigError> {
 ///   iec104→`addr.iec104`、mqtt→`addr.mqtt`、mms→`addr.mms`；goose/sv 为
 ///   订阅绑定不写 addr（写了 → 错误）；`addr` 表只允许协议对应单一子键。
 ///
-/// 输出 `FIELD_POINTS` 自描述子格式（布局见 `schema::points` 模块注释）。
+/// 输出 `FIELD_POINTS_V2` + `FIELD_SOURCES`（布局见 `schema::points` 模块
+/// 注释；蓝图 61 v0.314.27：点记录尾随身份块 + 来源注册表）。
 pub fn compile_points(toml: &str) -> Result<CompiledConfig, ConfigError> {
     let config = ConfigId::from_static(points::CONFIG_ID);
     let root: Value = toml::from_str(toml).map_err(|e| ConfigError::InvalidValue {
@@ -715,7 +752,7 @@ pub fn compile_points(toml: &str) -> Result<CompiledConfig, ConfigError> {
         reason: format!("parse:{e}"),
     })?;
     let t = table(&root, &config, "root")?;
-    reject_unknown_keys(t, &config, &["point"])?;
+    reject_unknown_keys(t, &config, &["point", "source"])?;
     let arr =
         root.get("point")
             .and_then(Value::as_array)
@@ -755,6 +792,9 @@ pub fn compile_points(toml: &str) -> Result<CompiledConfig, ConfigError> {
                 "deadband",
                 "min",
                 "max",
+                "unit",
+                "asset_id",
+                "schema_id",
             ],
         )?;
         let point_id = get_u32(pt, &config, "point_id")?;
@@ -804,6 +844,22 @@ pub fn compile_points(toml: &str) -> Result<CompiledConfig, ConfigError> {
         let deadband = get_f64_opt(pt, &config, "deadband", 0.0)?;
         let range = compile_range(pt, &config)?;
         let addr = compile_addr(pt, &config, protocol, &ctx)?;
+        // 蓝图 61 身份绑定（可选键；未配 = 0 = UNKNOWN，不满足控制资格）。
+        let unit_code = compile_unit_code(pt, &config)?;
+        let asset_id = get_u64_opt(pt, &config, "asset_id", 0)?;
+        let schema_id = get_u64_opt(pt, &config, "schema_id", 0)?;
+        let schema_id = u32::try_from(schema_id).map_err(|_| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "schema_id",
+            reason: "u32-overflow".into(),
+        })?;
+        if schema_id != 0 && asset_id == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "asset_id",
+                reason: "schema-without-asset".into(),
+            });
+        }
         payload.extend_from_slice(&point_id.to_le_bytes());
         payload.extend_from_slice(&device_id.to_le_bytes());
         payload.push(protocol.tag());
@@ -819,11 +875,201 @@ pub fn compile_points(toml: &str) -> Result<CompiledConfig, ConfigError> {
         }
         payload.extend_from_slice(&(addr.len() as u16).to_le_bytes());
         payload.extend_from_slice(&addr);
+        // v2 身份块（24B；mapping_generation 编译期置 0，consumer apply 期
+        // 以 bundle generation 覆盖注入）。
+        payload.extend_from_slice(&unit_code.to_le_bytes());
+        payload.extend_from_slice(&schema_id.to_le_bytes());
+        payload.extend_from_slice(&1u16.to_le_bytes()); // schema_version
+        payload.extend_from_slice(&asset_id.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+    }
+    // 来源注册表（[[source]]；可缺省 = 一切来源未注册，fail-closed）。
+    let sources_payload = compile_sources(&root, &config)?;
+    let mut fields: Vec<(u8, Vec<u8>)> = Vec::with_capacity(2);
+    fields.push((points::FIELD_POINTS_V2, payload));
+    if !sources_payload.is_empty() {
+        fields.push((points::FIELD_SOURCES, sources_payload));
     }
     Ok(CompiledConfig {
-        payload: encode_payload(&[(points::FIELD_POINTS, payload.as_slice())]),
+        payload: encode_payload(fields),
         config_id: config,
     })
+}
+
+/// `unit` 键 → `UnitCatalog` 封闭码（缺省/"" = 0 未知；未知名拒绝）。
+fn compile_unit_code(
+    pt: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+) -> Result<u16, ConfigError> {
+    let name = match pt.get("unit") {
+        None => return Ok(0),
+        Some(Value::String(s)) => s.as_str(),
+        Some(_) => {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "unit",
+                reason: "expected-string".into(),
+            })
+        }
+    };
+    if name.is_empty() {
+        return Ok(0);
+    }
+    use eneros_telemetry_model::PhysicalUnit;
+    // "ratio"/"dimensionless" 别名 → Dimensionless（无量纲比例如 SOC 0..1、
+    // 告警 0/1——PhysicalUnit::Dimensionless 短名为空串，TOML 需显式名）。
+    if matches!(name, "ratio" | "dimensionless") {
+        return Ok(eneros_telemetry_model::unit_catalog::code_of(
+            PhysicalUnit::Dimensionless,
+        ));
+    }
+    const ALL: [PhysicalUnit; 18] = [
+        PhysicalUnit::Volts,
+        PhysicalUnit::Kilovolts,
+        PhysicalUnit::Amperes,
+        PhysicalUnit::Kiloamperes,
+        PhysicalUnit::Watts,
+        PhysicalUnit::Kilowatts,
+        PhysicalUnit::Megawatts,
+        PhysicalUnit::VoltAmpereReactive,
+        PhysicalUnit::Kilovar,
+        PhysicalUnit::Megavar,
+        PhysicalUnit::Hertz,
+        PhysicalUnit::Celsius,
+        PhysicalUnit::Percent,
+        PhysicalUnit::KilowattHour,
+        PhysicalUnit::AmpereHour,
+        PhysicalUnit::Seconds,
+        PhysicalUnit::Rpm,
+        PhysicalUnit::Dimensionless,
+    ];
+    ALL.iter()
+        .find(|u| u.short_name() == name)
+        .map(|&u| eneros_telemetry_model::unit_catalog::code_of(u))
+        .ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "unit",
+            reason: alloc::format!("unknown-unit:{name}"),
+        })
+}
+
+/// `[[source]]` 来源注册表编译（布局见 `schema::points` 注释；严格封闭）。
+fn compile_sources(root: &Value, config: &ConfigId) -> Result<Vec<u8>, ConfigError> {
+    let Some(arr) = root.get("source").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    if arr.is_empty() {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "source",
+            reason: "empty-source-table".into(),
+        });
+    }
+    if arr.len() as u32 > points::MAX_SOURCES {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "source",
+            reason: "too-many-sources".into(),
+        });
+    }
+    let mut seen: BTreeSet<u32> = BTreeSet::new();
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(&(arr.len() as u32).to_le_bytes());
+    for (idx, sv) in arr.iter().enumerate() {
+        let ctx = alloc::format!("source[{idx}]");
+        let st = sv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "source",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(
+            st,
+            config,
+            &[
+                "source_id",
+                "protocol",
+                "tenant_id",
+                "site_id",
+                "allow_control",
+                "require_integrity",
+                "point_min",
+                "point_max",
+                "max_events_per_s",
+            ],
+        )?;
+        let source_id = get_u32(st, config, "source_id")?;
+        if source_id == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "source_id",
+                reason: "must-be-nonzero".into(),
+            });
+        }
+        if !seen.insert(source_id) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: points::FIELD_SOURCES,
+            });
+        }
+        let tenant_id = get_u32(st, config, "tenant_id")?;
+        if tenant_id == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "tenant_id",
+                reason: "must-be-nonzero".into(),
+            });
+        }
+        let site_id = get_u32(st, config, "site_id")?;
+        if site_id == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "site_id",
+                reason: "must-be-nonzero".into(),
+            });
+        }
+        let proto_name = get_str_req(st, config, "protocol")?;
+        let protocol =
+            PointProtocol::from_name(proto_name).ok_or_else(|| ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "protocol",
+                reason: alloc::format!("unknown-enum:{proto_name}"),
+            })?;
+        let allow_control = get_bool_opt(st, config, "allow_control", false)?;
+        let require_integrity = get_bool_opt(st, config, "require_integrity", true)?;
+        let point_min = get_u32_opt(st, config, "point_min", 0)?;
+        let point_max = get_u32_opt(st, config, "point_max", 0)?;
+        if point_max != 0 && point_max < point_min {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "point_max",
+                reason: "range-inverted".into(),
+            });
+        }
+        let rate = get_u32(st, config, "max_events_per_s")?;
+        if rate == 0 || rate > points::MAX_EVENTS_PER_S {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "max_events_per_s",
+                reason: "out-of-range".into(),
+            });
+        }
+        let mut flags = 0u8;
+        if allow_control {
+            flags |= points::SOURCE_FLAG_ALLOW_CONTROL;
+        }
+        if require_integrity {
+            flags |= points::SOURCE_FLAG_REQUIRE_INTEGRITY;
+        }
+        out.extend_from_slice(&source_id.to_le_bytes());
+        out.extend_from_slice(&tenant_id.to_le_bytes());
+        out.extend_from_slice(&site_id.to_le_bytes());
+        out.push(protocol.tag());
+        out.push(flags);
+        out.extend_from_slice(&point_min.to_le_bytes());
+        out.extend_from_slice(&point_max.to_le_bytes());
+        out.extend_from_slice(&rate.to_le_bytes());
+    }
+    Ok(out)
 }
 
 /// min/max 成对校验（必须同时出现；min ≤ max）。

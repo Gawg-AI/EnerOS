@@ -21,6 +21,10 @@
 | `ProtocolPointMapping` | 点 ID ↔ 协议地址映射 + 工程量变换（scale/offset） | `protocol-abstract` | — |
 | `DeviceDriver` | 用户态设备驱动 trait（生命周期/状态/健康），唯一驱动 seam | `drivers/framework`（ADR-0028） | `DriverPlugin`（driver-sdk，已删除） |
 | `MockAdapter`/`MockDriver` | 契约测试用 mock（seam 层共享套件成员） | `protocol-abstract`/`framework` | — |
+| `ObservationEvent` | 不可变观测事实（V1 wire 128B）：tenant/site/source/epoch/sequence/时间/资产/单位/schema/品质/完整性/映射世代 + event_id（SHA-256 前 16B，去重键） | `telemetry-model::event`（蓝图 61，ADR-0046） | `TelemetrySample`（旧 58B 兼容轨，.30 切换）、`DataPoint`（配置/状态模型，不替换） |
+| `RawObservation` | adapter 内部原始观测（无 epoch 字段——身份由注册表分配；跨出 adapter 必须成为 ObservationEvent） | `ingestion-core`（蓝图 61，ADR-0046） | 裸 TelemetrySample 跨 binary（禁止） |
+| `SourceRegistry` | 来源注册深模块：SourceDescriptor/register/verify/open_source；未注册事件只进 quarantine（控制 evaluator 零消费） | `ingestion-core`（蓝图 61，ADR-0046） | 评估器白名单数字（allowed_sources 硬编码，已废） |
+| `UnitCatalog` | 封闭数字单位码表（0=未知；wire 层 unit_code 唯一事实） | `telemetry-model::unit`（蓝图 61） | 裸 f64 跨域传递（禁止） |
 
 ## 2. 市场域词汇
 

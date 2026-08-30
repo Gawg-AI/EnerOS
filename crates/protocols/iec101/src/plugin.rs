@@ -316,6 +316,7 @@ mod tests {
                 data_type: eneros_upa_model::PointType::Analog,
                 scale: 1.0,
                 offset: 0.0,
+                identity: eneros_protocol_abstract::PointIdentityBinding::UNKNOWN,
             },
             ProtocolPointMapping {
                 point_id: 5002,
@@ -328,6 +329,7 @@ mod tests {
                 data_type: eneros_upa_model::PointType::Analog,
                 scale: 1.0,
                 offset: 0.0,
+                identity: eneros_protocol_abstract::PointIdentityBinding::UNKNOWN,
             },
         ];
         let mut reg = eneros_protocol_abstract::VecPointRegistry::new(mappings);
@@ -353,6 +355,7 @@ mod tests {
             data_type: eneros_upa_model::PointType::Analog,
             scale: 1.0,
             offset: 0.0,
+            identity: eneros_protocol_abstract::PointIdentityBinding::UNKNOWN,
         };
         assert_eq!(p.read_point(0, &m), Err(ProtocolError::Unsupported));
         let line = p.debug_line().unwrap_or_default();

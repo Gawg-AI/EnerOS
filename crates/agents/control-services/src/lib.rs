@@ -39,6 +39,7 @@ pub mod dispatch_service;
 pub mod energy_agent_service;
 // SPEC-SERIES-2026-08-27/E（WP-E.3）：有界学习闭环（svc-ai-worker 宿主）。
 pub mod learn;
+pub mod obs_shadow;
 pub mod remote_brain;
 pub mod service;
 pub mod telemetry;

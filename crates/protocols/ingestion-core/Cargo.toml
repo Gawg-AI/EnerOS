@@ -1,0 +1,19 @@
+[package]
+name = "eneros-ingestion-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图61 IngestionModule 窄腰 — SourceRegistry/观测事件准入/quarantine（深模块）"
+
+[dependencies]
+# 允许依赖（蓝图 61 [16] §3.1）：upa-model、telemetry-model、protocol-abstract。
+# 禁止依赖：AI、solver、control-dispatch、business-services。
+eneros-upa-model = { path = "../upa-model" }
+eneros-telemetry-model = { path = "../telemetry-model" }
+eneros-protocol-abstract = { path = "../protocol-abstract" }
+
+[features]
+default = []
+# host 侧持久 epoch/watermark 文件存储（target 闭包不启用）。
+std = []

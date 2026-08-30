@@ -102,6 +102,10 @@ pub enum Ladder<P> {
     Ready {
         plugin: P,
         registry: VecPointRegistry,
+        /// 蓝图 61：来源注册表（`[[source]]`；旧 bundle = 空）。
+        sources: alloc::vec::Vec<eneros_config_bundle::points::SourceRecord>,
+        /// 映射世代（active bundle generation；不可得 → 0）。
+        generation: u64,
     },
     /// fail-closed：判定行已打印，bin 落 [`capability_shell`]。
     Degraded(LadderReason),
@@ -219,13 +223,17 @@ pub fn run<P: ProtocolPlugin>(
 
     // Eager 点表（modbus-tcp 现行串口行序：点表行先于传输阶段——R2 保序；
     // S1 evidence M-2 登记）。
-    let mut registry = match parts.points {
-        PointsPolicy::Eager(keep) => crate::service_cfg::fetch_points_registry(
-            &mut ServiceIoAsSource(&mut *io),
-            parts.config_client,
-            keep,
-        ),
-        _ => VecPointRegistry::new(Vec::new()),
+    // 蓝图 61：取数单源 = fetch_points（注册表 + 来源表 + 映射世代）。
+    let (mut registry, mut obs_sources, mut obs_generation) = match parts.points {
+        PointsPolicy::Eager(keep) => {
+            let f = crate::service_cfg::fetch_points(
+                &mut ServiceIoAsSource(&mut *io),
+                parts.config_client,
+                keep,
+            );
+            (f.registry, f.sources, f.generation)
+        }
+        _ => (VecPointRegistry::new(Vec::new()), Vec::new(), 0),
     };
 
     // 判定顺序硬约束（F-36）：transport 先于 config。
@@ -273,17 +281,25 @@ pub fn run<P: ProtocolPlugin>(
         PointsPolicy::Eager(_) => None,
     };
     if let Some(keep) = keep {
-        registry = crate::service_cfg::fetch_points_registry(
+        let fetched = crate::service_cfg::fetch_points(
             &mut ServiceIoAsSource(&mut *io),
             parts.config_client,
             keep,
         );
+        registry = fetched.registry;
+        obs_sources = fetched.sources;
+        obs_generation = fetched.generation;
     }
     // 39：插件 start 消费配置/传输/点表（签名不动，F-12——插件一行不改）。
     match plugin.start(&cfg, factory.as_mut(), &mut registry) {
         Ok(()) => {
             eneros_runtime::println!("{}", line_ready(parts.service, parts.capability));
-            Ladder::Ready { plugin, registry }
+            Ladder::Ready {
+                plugin,
+                registry,
+                sources: obs_sources,
+                generation: obs_generation,
+            }
         }
         Err(e) => {
             if parts.degraded == DegradedStyle::Standard {
@@ -585,7 +601,9 @@ mod tests {
             &mut io,
         );
         match r {
-            Ladder::Ready { plugin, registry } => {
+            Ladder::Ready {
+                plugin, registry, ..
+            } => {
                 assert!(plugin.started);
                 assert_eq!(plugin.started_point_ids, 1);
                 assert_eq!(registry.len(), 1);
@@ -671,7 +689,9 @@ mod tests {
             &mut io,
         );
         match r {
-            Ladder::Ready { plugin, registry } => {
+            Ladder::Ready {
+                plugin, registry, ..
+            } => {
                 assert!(plugin.started);
                 assert_eq!(plugin.started_point_ids, 0);
                 assert_eq!(registry.len(), 0);

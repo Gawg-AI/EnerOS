@@ -82,7 +82,7 @@ pub use config::{AdapterConfig, DeviceConfig, ProtocolType};
 pub use eneros_telemetry_model::command::AuthorizedCommand;
 pub use error::ProtocolError;
 pub use manager::ProtocolManager;
-pub use mapping::ProtocolPointMapping;
+pub use mapping::{PointIdentityBinding, ProtocolPointMapping};
 pub use plugin::{
     EmptyPointRegistry, InteropLevel, PointRead, PointRegistry, Progress, ProtocolConfig,
     ProtocolDescriptor, ProtocolHealth, ProtocolPlugin, ProtocolRole, ResourceBudget,
@@ -416,6 +416,7 @@ mod tests {
             data_type: PointType::Analog,
             scale: 0.1,
             offset: 10.0,
+            identity: crate::mapping::PointIdentityBinding::UNKNOWN,
         };
 
         // raw=100 → engineering = 100 * 0.1 + 10.0 = 20.0
@@ -442,6 +443,7 @@ mod tests {
             data_type: PointType::Analog,
             scale: 1.0,
             offset: -50.0,
+            identity: crate::mapping::PointIdentityBinding::UNKNOWN,
         };
         // raw=100 → engineering = 100 * 1.0 + (-50.0) = 50.0
         assert!(approx_eq(mapping2.to_engineering(100), 50.0));

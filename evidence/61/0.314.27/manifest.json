@@ -1,0 +1,88 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.27",
+ "commit": "PENDING-BUMP-COMMIT",
+ "dirty": false,
+ "profile": "host (E0-E3) + qemu-prod 镜像重建排程见 notes",
+ "toolchain_digest": "rustc nightly-2026-04-04 (host)",
+ "commands": [
+  {
+   "id": "CMD-TEST-WS",
+   "cmd": "cargo test --workspace",
+   "exit": 0,
+   "summary": "7905 passed / 0 failed（Phase 0 基线 7858 + 47 新增：telemetry-model event/UnitCatalog 12 + ingestion-core 16 + config-bundle 3 + agent-sdk config_client 1 + obs_shadow 一致性 4 + eipc/slot/ consumer 校准等）"
+  },
+  {
+   "id": "CMD-CLIPPY",
+   "cmd": "cargo clippy --workspace --all-targets",
+   "exit": 0,
+   "summary": "0 warning / 0 error"
+  },
+  {
+   "id": "CMD-FMT",
+   "cmd": "cargo fmt --all --check",
+   "exit": 0,
+   "summary": "clean"
+  }
+ ],
+ "tests": [
+  {
+   "id": "T-EVENT-WIRE",
+   "class": "E1 wire 往返+变异",
+   "rows": {
+    "V1_128B_往返": "PASS——telemetry-model::event 12 测试（wire_roundtrip/event_id 确定性+ingest_time 不参与/reserved 非零拒绝/未知 tag 拒绝/截断拒绝）",
+    "NaN_Inf_接入门拒绝": "PASS——nan_inf_rejected_at_door",
+    "epoch0_须TEST标志": "PASS——epoch_zero_requires_test_flag",
+    "未知单位码拒绝": "PASS——unknown_unit_code_rejected",
+    "UnitCatalog_封闭往返": "PASS——unit.rs 4 测试（18 单位码往返 + 0/越界 fail-closed）"
+   }
+  },
+  {
+   "id": "T-REGISTRY",
+   "class": "E1 来源身份红线（[06] §2.5.1 红测）",
+   "rows": {
+    "未注册来源拒绝+quarantine": "PASS——unregistered_source_rejected_and_quarantined",
+    "epoch由registry分配_伪造入口类型不存在": "PASS——epoch_assigned_by_registry_not_adapter（RawObservation 无 epoch 字段）",
+    "重启epoch递增(持久store)": "PASS——epoch_increments_across_restart_with_persisted_store + epoch_floor_prevents_regression",
+    "sequence单调_篡改冲突拒绝": "PASS——sink_watermark_blocks_cross_instance_replay（同 ID=Duplicate/异 payload=SequenceReplay 双拒绝）",
+    "时钟回拨拒绝": "PASS——clock_rollback_rejected",
+    "越权点/超速/弱完整性/未知schema拒绝": "PASS——unauthorized_point/rate_limit/weak_integrity/unknown_schema/disabled/before_open",
+    "quarantine有界可观测": "PASS——quarantine_bounded_and_observable",
+    "sink背压显式": "PASS——sink_overflow_is_explicit_backpressure"
+   }
+  },
+  {
+   "id": "T-CONFIG",
+   "class": "E1 配置编译/解码封闭面",
+   "rows": {
+    "V2身份块+来源表往返": "PASS——v2_identity_and_sources_roundtrip（unit=kW→码6/asset/schema/generation 注入）",
+    "v1旧bundle回退_UNKNOWN身份": "PASS——v1_bundle_falls_back_to_unknown_identity",
+    "未知unit名编译拒绝": "PASS——unknown_unit_name_rejected",
+    "consumer_generation换代生效": "PASS——consumer_apply_propagates_generation（语义订正：同内容新 generation=Applied 非 NoOp）"
+   }
+  },
+  {
+   "id": "T-CONSISTENCY",
+   "class": "E3 新旧 evaluator 20 点参考批一致性（[06] §2.6）",
+   "rows": {
+    "20点_新旧轨_provenance逐字节一致": "PASS——twenty_point_reference_batch_old_and_new_agree（obs_shadow_consistency.rs）",
+    "伪造epoch0_新轨拒绝": "PASS——redline_forged_epoch_zero_rejected_new_track",
+    "未注册来源_控制零消费": "PASS——redline_unregistered_source_never_reaches_control",
+    "descriptor越权点拒绝": "PASS——config_descriptors_cover_reference_source"
+   }
+  }
+ ],
+ "faults": [],
+ "capacity_tier": "C0",
+ "notes": [
+  "E4（QEMU epoch/sequence/golden 实弹）排程：Phase 1 收尾窗口统一执行（0.314.29 出口 + 镜像重建，root-task 授予边 svc-telemetry→svc-config 需新镜像）；本卷 host E0-E3 全绿为前置。",
+  "target epoch 跨重启持久递增缺口：svc-telemetry/svc-modbus-tcp 无持久存储 capability（E-DEF-01 停用；boot_id=随机熵）——ADR-0046 缺口登记，owner 行动项=.32 卷 durable 槽授予。host 持久 store 语义已 E3 实证。",
+  "fuzz target 归 .29 wire 卷工作序（[06] §4.5.2）；本卷 wire 已含 12 项变异/负例单测。",
+  "生产身份去硬编码自查：svc-modbus-tcp source/epoch/mapping 全部取配置事实（[[source]] 表/registry 分配/GET_GENERATION）；root 合成源（source=1）保持 qemu-test-synth feature 门控（qemu-prod 闭包不含）= 测试设施非生产事件。"
+ ],
+ "artifacts": [
+  "evidence/61/0.314.27/manifest.json",
+  "docs/adr/ADR-038-observation-event-source-identity.md",
+  "CONTEXT.md（ObservationEvent/RawObservation/SourceRegistry/UnitCatalog 术语登记）"
+ ]
+}

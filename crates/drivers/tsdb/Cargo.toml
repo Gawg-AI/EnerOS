@@ -1,6 +1,6 @@
 [package]
 name = "eneros-tsdb"
-version = "0.314.26"
+version = "0.314.27"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

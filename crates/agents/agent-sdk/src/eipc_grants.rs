@@ -77,6 +77,10 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // 数据盘 TSDB 区段（ota-ab DATA_TSDB_* 常量；审计表 wp-c-memory-audit
     // §三）。svc-telemetry 首条客户端授予 → 槽 EIPC_EP_BASE_SLOT+0、bit 0。
     ("svc-telemetry", "svc-storage"),
+    // 61 v0.314.27（观测事件影子路径）：svc-telemetry 经 svc-config 取
+    // points 配置（来源注册表/映射世代——影子评估器与授权来源单源）。
+    // 追加于本客户端既有边之后（WP-54.4 槽位冻结：既有边序不受影响）。
+    ("svc-telemetry", "svc-config"),
 ];
 
 /// 在给定表上按名解析：返回 `(X3 掩码位, CSpace 槽位)`；无此授予边 →
@@ -290,6 +294,9 @@ mod tests {
         assert_eq!(eipc_resolve("svc-mgmt", "svc-config"), Some((0, 3)));
         assert_eq!(eipc_resolve("svc-mgmt", "svc-telemetry"), Some((1, 4)));
         assert_eq!(eipc_resolve("svc-telemetry", "svc-storage"), Some((0, 3)));
+        // 61 v0.314.27：telemetry 第 2 边 = svc-config（影子路径配置取数；
+        // 追加序——既有边槽位不变）。
+        assert_eq!(eipc_resolve("svc-telemetry", "svc-config"), Some((1, 4)));
     }
 
     /// S1 WP-S1.1 C6（F-9/F-11）：七个协议客户端今日 `svc-config` 槽位冻结
