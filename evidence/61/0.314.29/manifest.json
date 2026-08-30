@@ -87,7 +87,11 @@
  "notes": [
   "round 1/2 教训入册：root-task/agent-sdk 授予表改动后 image raw 使用陈旧 root ELF——先 third_party/sel4-build-rust.sh（SEL4_BUILD_DIR=top-rust）ninja 重链接再 image raw（既有记忆条目再验证）；ServiceIo trait 需显式提升 config_generation（dyn 派发）。",
   "§4.5.5 滚动升级矩阵（reader 新/旧组合+断电+回滚）以 host 版本门 + 双读窗口 + target 双 boot 覆盖；完整断电矩阵（100 次）归 .32 event-store 卷（[17] .32 行同域）。",
-  "svc-control-dispatch readiness=Degraded 为蓝图 50 预存环境现象（记忆在册），本卷无回归——DURABLE-INTENT-STORE open OK + 161 次 applied-confirmed 实弹。"
+  "svc-control-dispatch readiness=Degraded 为蓝图 50 预存环境现象（记忆在册），本卷无回归——DURABLE-INTENT-STORE open OK + 161 次 applied-confirmed 实弹。",
+  "复查订正（双轴 code-review 2026-08-30）：dispatch_service handle_submit 恢复短请求守卫（越界 panic 回归，P1）；durable_intent v3 解码补回尾部 fail-closed 校验；service_cfg 悬空文档修复；ingestion-core 伪守卫/死断言清理 + 补 ClockRegistry（§2.5.3 缺项）；E4 脚本判据门可失败化。",
+  "规格文本『69B proposal writer』实为 70B（PROPOSAL_WIRE_LEN=16+1+8+4+8+32+1=70，蓝图笔误）；删除范围=writer 全量，已验证仓内零 encode_proposal 残留。",
+  "『transport chunk 有 epoch/index/CRC』分层实现：chunk 帧承载 epoch/index，CRC32 在 EIPC envelope 层单源（HYG-001 先例）——非 chunk 级重复实现。",
+  "『migration checkpoint』语义由 AppendOutbox open() 扫描重建承载（append-only 槽位= checkpoint 链；位图+代次在段头），无独立 checkpoint 记录——如实登记。"
  ],
  "artifacts": [
   "evidence/61/phase1-e4/m1-typed.qemu-serial.log",

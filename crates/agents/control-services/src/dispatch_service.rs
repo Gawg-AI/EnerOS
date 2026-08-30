@@ -115,7 +115,10 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
     // - 旧形态：70B proposal wire（固定长度识别；**旧 reader 至 v0.314.32
     //   删除**——回滚窗口与混合编队兼容读）→ facade `submit`。
     let tel_len = crate::telemetry::TRUSTED_WIRE_LEN;
-    let plan_len = body.len().saturating_sub(tel_len + 1);
+    if body.len() < tel_len + 1 {
+        return err_receipt("short request");
+    }
+    let plan_len = body.len() - tel_len - 1;
     let Some(telemetry) = decode_trusted(&body[plan_len..plan_len + tel_len]) else {
         return err_receipt("bad telemetry");
     };

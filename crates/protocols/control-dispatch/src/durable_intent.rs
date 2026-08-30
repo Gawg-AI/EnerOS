@@ -186,10 +186,14 @@ impl Decode for IntentRecord {
                     }
                     let mut d = [0u8; 32];
                     d.copy_from_slice(&bytes[off..off + 32]);
-                    let _ = off;
+                    off += 32;
                     plan_sha256 = Some(d);
                 }
             }
+        }
+        // 尾部校验（fail-closed：v1/v2/v3 之外的任何尾随字节 = 损坏）。
+        if off != bytes.len() {
+            return Err(StoreError::Corrupt);
         }
         Ok((
             eneros_durable_state::Generation(0),

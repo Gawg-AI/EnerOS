@@ -266,6 +266,52 @@ struct SourceState {
     opened: bool,
 }
 
+/// 时钟域（[02] §4.3 最小登记形态；PTP/GPS/设备时钟等的注册号与
+/// 信任面标注——快照切面用它裁决事件时间可信度）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockDomain {
+    /// 注册号（ObservationEvent.clock_id）。
+    pub clock_id: u16,
+    /// 域类别（0=单调本机/1=PTP/2=NTP/3=GPS/4=设备时钟；封闭登记）。
+    pub kind: u8,
+    /// 事件时间是否可参与控制快照切面（不可信时钟域的观测只可存档）。
+    pub time_trusted: bool,
+}
+
+/// ClockRegistry——时钟域最小只读接口（[06] §2.5.3）。
+///
+/// 登记面由签名配置装配（单源）；查询只读。rollback 检测本体在
+/// `SourceRegistry::verify`（同源 event_time 回退拒绝），本表只承载
+/// 域身份与信任面。
+#[derive(Debug, Default)]
+pub struct ClockRegistry {
+    domains: BTreeMap<u16, ClockDomain>,
+}
+
+impl ClockRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 登记时钟域（clock_id 唯一；覆盖 = 更新信任面）。
+    pub fn register(&mut self, domain: ClockDomain) {
+        self.domains.insert(domain.clock_id, domain);
+    }
+
+    /// 只读查询；未登记 clock_id → None（消费方 fail-closed）。
+    pub fn domain(&self, clock_id: u16) -> Option<&ClockDomain> {
+        self.domains.get(&clock_id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.domains.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.domains.is_empty()
+    }
+}
+
 /// 来源注册表（深模块唯一入口）。
 ///
 /// 外部只见 [`register`](Self::register)/[`descriptor`](Self::descriptor)/
@@ -424,14 +470,9 @@ impl SourceRegistry {
                 last_ns: state.last_event_time_ns,
             });
         }
-        // sequence 单调（registry 预检；sink watermark 复核防跨实例回退）。
+        // sequence 单调：由 registry 单点分配（last+1）——回退在类型上
+        // 不可达；跨实例回退由 sink watermark 复核拦截（SequenceReplay）。
         let sequence = state.last_sequence.saturating_add(1);
-        if sequence <= state.last_sequence.saturating_sub(1) {
-            return Err(IngestReject::SequenceReplay {
-                sequence,
-                last: state.last_sequence,
-            });
-        }
         let mut event = event;
         event.sequence = sequence;
         event.validate().map_err(|_| IngestReject::InvalidEvent)?;
@@ -704,18 +745,18 @@ mod tests {
         let mut reg = SourceRegistry::new();
         let mut store = MemEpochStore::default();
         let mut d = descriptor(2);
-        d.max_events_per_s = 5; // 5/s → 令牌桶初值 1 token，回填 5 token/s
+        d.max_events_per_s = 5; // 5/s → 满桶容量 5（1s 配额）
         reg.register(d, 0);
         reg.open_source(2, 0, &mut store).unwrap();
-        // 第 1 个事件通过；100ms 内连发超过配额 → RateExceeded。
-        assert!(reg.verify(2, &raw(1, 1.0), 1_000_000_000).is_ok());
-        for i in 1..6 {
-            let r = reg.verify(2, &raw(1, 1.0 + f64::from(i)), 1_020_000_000);
-            if i < 1 {
-                assert!(r.is_ok());
-            }
+        // 同刻连发 5 个 = 排空满桶（容量=1s 配额）。
+        for i in 0..5 {
+            assert!(
+                reg.verify(2, &raw(1, 1.0 + f64::from(i)), 1_000_000_000)
+                    .is_ok(),
+                "第 {i} 个应过"
+            );
         }
-        // 20ms 后只回填 0.1 token → 拒绝。
+        // 第 6 个超桶容量 → 拒绝（20ms 只回填 0.1 token）。
         assert!(matches!(
             reg.verify(2, &raw(1, 9.0), 1_020_000_000).unwrap_err(),
             IngestReject::RateExceeded { .. }
@@ -795,6 +836,28 @@ mod tests {
             q.iter().next().unwrap().0,
             IngestReject::UnregisteredSource { source_id: 8 }
         );
+    }
+
+    #[test]
+    fn clock_registry_readonly_lookup() {
+        use super::ClockDomain;
+        let mut reg = ClockRegistry::new();
+        assert!(reg.is_empty());
+        reg.register(ClockDomain {
+            clock_id: 1,
+            kind: 0,
+            time_trusted: true,
+        });
+        reg.register(ClockDomain {
+            clock_id: 4,
+            kind: 4,
+            time_trusted: false,
+        });
+        assert_eq!(reg.len(), 2);
+        // 只读查询；未登记 id → None（fail-closed）。
+        assert!(reg.domain(1).expect("d1").time_trusted);
+        assert!(!reg.domain(4).expect("d4").time_trusted);
+        assert!(reg.domain(9).is_none());
     }
 
     #[test]

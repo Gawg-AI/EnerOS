@@ -86,14 +86,23 @@ echo "=== E4-RESTART：二次启动（新数据盘 + 新 boot epoch → OBS-SOUR
 run_case restart
 
 echo "=== 判据行扫描（m1-typed）==="
+FAIL=0
 S="$ROOT/target/evidence61-p1/m1-typed/qemu-serial.log"
-for pat in "OBS-SOURCE" "OBS-ROUND" "OBS-SHADOW" "OBS-CFG" "PLAN-TYPED" \
+for pat in "OBS-SOURCE" "OBS-ROUND" "OBS-SHADOW MATCH" "OBS-CFG loaded" "PLAN-TYPED" \
            "EXEC-JOURNAL applied-confirmed" "INGEST"; do
-  if grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; fi
+  if grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; FAIL=1; fi
 done
+if grep -q "OBS-SHADOW MISMATCH" "$S"; then echo "[✗] OBS-SHADOW MISMATCH"; FAIL=1; fi
 echo "=== 判据行扫描（restart epoch 对照）==="
 grep -h "OBS-SOURCE" "$ROOT/target/evidence61-p1/m1-typed/qemu-serial.log" \
   "$ROOT/target/evidence61-p1/restart/qemu-serial.log" 2>/dev/null | sort -u
+R2="$ROOT/target/evidence61-p1/restart/qemu-serial.log"
+if grep -q "OBS-SHADOW MATCH" "$R2" && ! grep -q "OBS-ROUND rejected" "$R2"; then
+  echo "[✓] restart 影子轨健康"
+else
+  echo "[✗] restart 影子轨异常"; FAIL=1
+fi
+[ $FAIL -eq 0 ] && echo "E4-GATE: PASS" || { echo "E4-GATE: FAIL"; exit 5; }
 
 # 红门回归：读回前 Committed = FAIL（Phase 0 判据沿用）。
 python3 - "$S" <<'EOF'

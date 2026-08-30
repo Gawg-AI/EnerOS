@@ -79,6 +79,8 @@ pub fn fetch_protocol_config(
 /// （插件如实降级：空映射 = 不连设备，不伪造协议 I/O）。
 ///
 /// `client_name` 仅诊断（与 `fetch_protocol_config` 同前缀——同端点可
+/// 处理 config 与 points 两类请求）。wire/管道单源同上。
+///
 /// 点表取数结果（蓝图 61 v0.314.27：注册表 + 来源注册表 + 映射世代）。
 pub struct PointsFetch {
     /// 协议点注册表（`keep` 过滤后；identity 已注入 generation）。

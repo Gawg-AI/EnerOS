@@ -42,8 +42,6 @@ pub struct ObsShadow {
     quarantine: QuarantineStore,
     /// 影子评估器（与生产同配置的独立实例；epoch 经 restore 对齐钉扎值）。
     shadow_evaluator: TelemetryTrustEvaluator,
-    /// 影子评估配置（重 restore 时复用）。
-    eval_config: EvaluatorConfig,
     // —— 计数（可观测；不静默）——
     /// 影子接受事件数。
     pub accepted: u64,
@@ -76,7 +74,6 @@ impl ObsShadow {
             sink: InMemorySink::new(SHADOW_BATCH_CAP * 4),
             quarantine: QuarantineStore::new(SHADOW_BATCH_CAP),
             shadow_evaluator: TelemetryTrustEvaluator::new(eval_config.clone()),
-            eval_config,
             accepted: 0,
             rejected: 0,
             quarantined: 0,
@@ -248,18 +245,6 @@ impl ObsShadow {
     /// 与 registry 分配同源；None = 尚无 OBS 帧）。
     pub fn last_pinned(&self) -> Option<(u32, u64)> {
         self.last_pinned
-    }
-
-    /// 影子评估配置引用（装配核对）。
-    pub fn eval_config_digest_check(&self) -> bool {
-        // 影子与生产配置同源装配（bin 单点传入）；此处恒真占位——
-        // 配置漂移检测归 .30 consumer switch 卷。
-        true
-    }
-
-    #[allow(dead_code)]
-    fn eval_config(&self) -> &EvaluatorConfig {
-        &self.eval_config
     }
 }
 
