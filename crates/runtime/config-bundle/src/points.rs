@@ -190,15 +190,10 @@ impl PointsTable {
         self.points.is_empty()
     }
 
-    /// 47（WP-47.2 点表绑定）：控制写目标（设备/点）——首个
-    /// `data_type == Control` 且设备非 0 的点；无控制点 → None
-    /// （fail-closed：装配方不得自造写目标）。
-    pub fn control_binding(&self) -> Option<(u16, u32)> {
-        self.points
-            .iter()
-            .find(|p| p.data_type == PointType::Control && p.device_id != 0)
-            .map(|p| (p.device_id, p.point_id))
-    }
+    // 蓝图 61 v0.314.33（[08] §2.5/§2.7 迁移）：`control_binding()`（首个
+    // Control 点）已删除——控制绑定点由 SemanticCatalog 显式给出
+    // （`catalog_gateway::control_contract_point`），设备短 ID 由本表
+    // 按点解析。本模块不再承担「写目标选择」。
 }
 
 // ---------------------------------------------------------------------------
@@ -884,44 +879,6 @@ mod tests {
         assert_eq!(c.table.points[0].identity.mapping_generation, 8);
         // 幂等：同表同 generation 再 apply → NoOp。
         assert_eq!(c.apply(table, 8).unwrap(), ApplyOutcome::NoOp);
-    }
-
-    /// 47（WP-47.2）：控制点绑定选择（首个 Control 且设备非 0；无 → None）。
-    #[test]
-    fn control_binding_selects_first_control_point() {
-        // 表载荷 = count u32 LE ‖ 记录…（consumer 先例）；第一条：Analog
-        // 遥测点（device 1）；第二条：Control 控制点（device 1）。
-        let mut raw = alloc::vec::Vec::new();
-        raw.extend_from_slice(&2u32.to_le_bytes());
-        raw.extend_from_slice(&record_field_bytes(1, 2, 0x0100, 3));
-        // 手造第二条（control 类型——record_field_bytes 固定 Analog）。
-        raw.extend_from_slice(&10u32.to_le_bytes());
-        raw.extend_from_slice(&1u16.to_le_bytes());
-        raw.push(points::PROTO_MODBUS_TCP);
-        raw.push(point_type_ordinal(PointType::Control));
-        raw.extend_from_slice(&1.0f64.to_le_bytes());
-        raw.extend_from_slice(&0.0f64.to_le_bytes());
-        raw.extend_from_slice(&3000u32.to_le_bytes());
-        raw.extend_from_slice(&0.0f64.to_le_bytes());
-        raw.push(0); // no range
-        raw.extend_from_slice(&4u16.to_le_bytes());
-        raw.push(2);
-        raw.extend_from_slice(&0x0200u16.to_le_bytes());
-        raw.push(3);
-        let payload = crate::payload::encode_payload(&[(points::FIELD_POINTS, raw.as_slice())]);
-        let table = decode_points(&payload, &config()).unwrap();
-        assert_eq!(
-            table.control_binding(),
-            Some((1, 10)),
-            "控制点绑定=首个 Control 点"
-        );
-        // 无 Control 点 → None（fail-closed）。
-        let mut raw2 = alloc::vec::Vec::new();
-        raw2.extend_from_slice(&1u32.to_le_bytes());
-        raw2.extend_from_slice(&record_field_bytes(1, 2, 0x0100, 3));
-        let payload2 = crate::payload::encode_payload(&[(points::FIELD_POINTS, raw2.as_slice())]);
-        let table2 = decode_points(&payload2, &config()).unwrap();
-        assert_eq!(table2.control_binding(), None);
     }
 
     /// 蓝图 61 v0.314.27：V2 点表 + 来源注册表编译→解码往返（host 编译面

@@ -299,3 +299,173 @@ pub mod time_gate {
         }
     }
 }
+
+/// `catalog`（蓝图 61 v0.314.33 SemanticCatalog 编译源；consumer:
+/// svc-telemetry / svc-control-dispatch / svc-device-agent；schema v1）
+///
+/// 人类维护的工程 TOML 在 host 编译为封闭二进制 payload（单一事实）；
+/// target 只读编译产物，不解析任意企业文档。字段语义与 `points` 同纪律：
+/// field id 从 1 连续分配、0 保留；各表为 `count u32 LE ‖ 定长记录 × n`
+/// 子格式，记录内子字段固定顺序小端（见 `toml_compile::compile_catalog`
+/// 编码序——禁止依赖 Rust 内存布局）。
+pub mod catalog {
+    /// 配置 ID。
+    pub const CONFIG_ID: &str = "catalog";
+    /// payload schema 版本。
+    pub const SCHEMA: u16 = 1;
+    /// 允许的最大字段 id。
+    pub const MAX_FIELD: u8 = 13;
+
+    /// 1：目录头（64B 定长：generation u64 ‖ valid_from_ns u64 ‖
+    /// valid_until_ns u64 ‖ mapping_version u64 ‖ topology_version u64 ‖
+    /// asset_version u64 ‖ contract_version u64 ‖ safety_version u64）。
+    pub const FIELD_HEADER: u8 = 1;
+    /// 2：schema 注册表；记录 = schema_id u32 ‖ version u16 ‖ flags u16（8B）。
+    pub const FIELD_SCHEMAS: u8 = 2;
+    /// 3：单位受控换算图；记录 = from u16 ‖ to u16 ‖ factor f64（12B；
+    /// 量纲一致性由 decoder 经 UnitCatalog 强制）。
+    pub const FIELD_UNIT_CONVERSIONS: u8 = 3;
+    /// 4：资产目录；记录 = asset_id u64 ‖ site_id u32 ‖ tenant_id u32 ‖
+    /// kind u16 ‖ device_id u16 ‖ topology_node u64 ‖ flags u16 ‖ pad u16
+    /// （32B；flags 位 0 = tombstone 不可用）。
+    pub const FIELD_ASSETS: u8 = 4;
+    /// 5：拓扑节点；记录 = id u64 ‖ kind u16 ‖ flags u16（12B）。
+    pub const FIELD_TOPO_NODES: u8 = 5;
+    /// 6：拓扑边；记录 = from u64 ‖ to u64 ‖ kind u16 ‖ switch_point u32 ‖
+    /// capacity_kw f64 ‖ loss f64 ‖ valid_from_ns u64 ‖ valid_until_ns u64
+    /// ‖ flags u16（56B；kind=switch 必须带 switch_point 观测点）。
+    pub const FIELD_TOPO_EDGES: u8 = 6;
+    /// 7：点语义目录；记录 = point_id u32 ‖ asset_id u64 ‖ schema_id u32 ‖
+    /// schema_version u16 ‖ unit_code u16 ‖ role u8 ‖ readback_point u32 ‖
+    /// flags u8（26B；role=control 必须带 readback_point≠0）。
+    pub const FIELD_POINT_SEMANTICS: u8 = 7;
+    /// 8：反馈槽位（与生产 TrustedFeedbackBuilder 槽序对齐）；记录 =
+    /// slot u8 ‖ point_id u32 ‖ pad u8（6B；slot 码见 [`FEEDBACK_SLOT_*`]）。
+    pub const FIELD_FEEDBACK_SLOTS: u8 = 8;
+    /// 9：安全覆盖；记录 = point_id u32 ‖ min f64 ‖ max f64 ‖
+    /// period_ms u32 ‖ unit u16 ‖ flags u16（28B）。
+    pub const FIELD_COVERAGE: u8 = 9;
+    /// 10：控制合同；记录 = contract_id u32 ‖ asset_id u64 ‖ point_id u32 ‖
+    /// unit u16 ‖ class u16 ‖ min f64 ‖ max f64 ‖ ramp_kw_per_s f64 ‖
+    /// settle_ms u32 ‖ min_on_ms u64 ‖ min_off_ms u64 ‖ max_starts u16 ‖
+    /// readback_point u32 ‖ tolerance_kw f64 ‖ reversible u8 ‖
+    /// compensation u8 ‖ priority u8 ‖ safe_state u8 ‖ lost_link u8 ‖
+    /// flags u8 ‖ pad×3（87B）。
+    pub const FIELD_CONTROL_CONTRACTS: u8 = 10;
+    /// 11：安全约束目录；记录 = constraint_id u32 ‖ asset_id u64 ‖
+    /// kind u16 ‖ point_id u32 ‖ limit f64 ‖ flags u16 ‖ pad u32（32B）。
+    pub const FIELD_SAFETY_CONSTRAINTS: u8 = 11;
+    /// 12：旧 ID 别名（迁移：market DevicePool u64 / VPP resource_id →
+    /// asset_id）；记录 = kind u8 ‖ legacy_id u64 ‖ asset_id u64 ‖ pad u8
+    /// （18B；kind=1 market-device、2 vpp-resource）。
+    pub const FIELD_ALIASES: u8 = 12;
+    /// 13：tombstone 登记（删除走墓碑；ID 永不复用）；记录 =
+    /// asset_id u64 ‖ kind u16 ‖ flags u16（12B）。
+    pub const FIELD_TOMBSTONES: u8 = 13;
+
+    /// 头部定长（字段 1）。
+    pub const HEADER_LEN: usize = 64;
+    /// 单条 schema 记录长（字段 2）。
+    pub const SCHEMA_REC_LEN: usize = 8;
+    /// 单条单位换算记录长（字段 3）。
+    pub const UNIT_CONV_REC_LEN: usize = 12;
+    /// 单条资产记录长（字段 4）。
+    pub const ASSET_REC_LEN: usize = 32;
+    /// 单条拓扑节点记录长（字段 5）。
+    pub const TOPO_NODE_REC_LEN: usize = 12;
+    /// 单条拓扑边记录长（字段 6）。
+    pub const TOPO_EDGE_REC_LEN: usize = 56;
+    /// 单条点语义记录长（字段 7）。
+    pub const POINT_SEM_REC_LEN: usize = 26;
+    /// 单条反馈槽记录长（字段 8）。
+    pub const FEEDBACK_SLOT_REC_LEN: usize = 6;
+    /// 单条安全覆盖记录长（字段 9）。
+    pub const COVERAGE_REC_LEN: usize = 28;
+    /// 单条控制合同记录长（字段 10）。
+    pub const CONTROL_CONTRACT_REC_LEN: usize = 87;
+    /// 单条安全约束记录长（字段 11）。
+    pub const SAFETY_CONSTRAINT_REC_LEN: usize = 32;
+    /// 单条别名记录长（字段 12）。
+    pub const ALIAS_REC_LEN: usize = 18;
+    /// 单条 tombstone 记录长（字段 13）。
+    pub const TOMBSTONE_REC_LEN: usize = 12;
+
+    /// 表项防御性上界（封闭 payload 无界拒绝）。
+    pub const MAX_SCHEMAS: u32 = 64;
+    pub const MAX_UNIT_CONVERSIONS: u32 = 64;
+    pub const MAX_ASSETS: u32 = 1024;
+    pub const MAX_TOPO_NODES: u32 = 1024;
+    pub const MAX_TOPO_EDGES: u32 = 4096;
+    pub const MAX_POINT_SEMANTICS: u32 = 4096;
+    pub const MAX_FEEDBACK_SLOTS: u32 = 16;
+    pub const MAX_COVERAGE: u32 = 512;
+    pub const MAX_CONTROL_CONTRACTS: u32 = 512;
+    pub const MAX_SAFETY_CONSTRAINTS: u32 = 1024;
+    pub const MAX_ALIASES: u32 = 1024;
+    pub const MAX_TOMBSTONES: u32 = 1024;
+
+    /// 资产 flags：位 0 = tombstone（已删除，ID 不复用）。
+    pub const ASSET_FLAG_TOMBSTONE: u16 = 1 << 0;
+
+    /// 点语义 role 码。
+    pub const ROLE_MEASUREMENT: u8 = 1;
+    pub const ROLE_CONTROL: u8 = 2;
+    pub const ROLE_SWITCH_STATE: u8 = 3;
+
+    /// 反馈槽码（与 TrustedFeedbackBuilder 槽序对齐）。
+    pub const FEEDBACK_SLOT_GRID_UP: u8 = 1;
+    pub const FEEDBACK_SLOT_SOC: u8 = 2;
+    pub const FEEDBACK_SLOT_DC_BUS_V: u8 = 3;
+    pub const FEEDBACK_SLOT_OVERCURRENT: u8 = 4;
+    pub const FEEDBACK_SLOT_OVERTEMP: u8 = 5;
+    /// 必选反馈槽数（编译期强制 5 槽齐全）。
+    pub const FEEDBACK_SLOT_COUNT: u8 = 5;
+
+    /// 拓扑边 kind 码。
+    pub const EDGE_KIND_SWITCH: u16 = 1;
+    /// 拓扑切换边必须带开关状态观测点（不可观测的开关 = 未知态）。
+    pub const EDGE_SWITCH_POINT_REQUIRED: bool = true;
+    /// 拓扑节点 kind 码。
+    pub const NODE_KIND_GRID: u16 = 10;
+
+    /// 控制合同 class 码。
+    pub const CONTRACT_CLASS_SWITCH: u16 = 1;
+    pub const CONTRACT_CLASS_SETPOINT: u16 = 2;
+
+    /// 安全约束 kind 码。
+    pub const SAFETY_KIND_OVERCURRENT: u16 = 1;
+    pub const SAFETY_KIND_OVERTEMP: u16 = 2;
+
+    /// 别名 kind 码。
+    pub const ALIAS_KIND_MARKET_DEVICE: u8 = 1;
+    pub const ALIAS_KIND_VPP_RESOURCE: u8 = 2;
+}
+
+/// `catalog` 资产/点语义 kind 码（[`catalog`] 模块常量族的语义旁注——
+/// 资产 kind 闭枚举：1=Battery 2=PV 3=Wind 4=Generator 5=FlexibleLoad
+/// 6=FixedLoad 7=EVSE 8=HVAC 9=ProcessUnit 10=GridConnection 11=Aggregate）。
+pub mod catalog_kinds {
+    pub const ASSET_BATTERY: u16 = 1;
+    pub const ASSET_PV: u16 = 2;
+    pub const ASSET_WIND: u16 = 3;
+    pub const ASSET_GENERATOR: u16 = 4;
+    pub const ASSET_FLEXIBLE_LOAD: u16 = 5;
+    pub const ASSET_FIXED_LOAD: u16 = 6;
+    pub const ASSET_EVSE: u16 = 7;
+    pub const ASSET_HVAC: u16 = 8;
+    pub const ASSET_PROCESS_UNIT: u16 = 9;
+    pub const ASSET_GRID_CONNECTION: u16 = 10;
+    pub const ASSET_AGGREGATE: u16 = 11;
+
+    /// 拓扑节点 kind 闭枚举（[`catalog::FIELD_TOPO_NODES`]）。
+    pub const NODE_BUSBAR: u16 = 1;
+    pub const NODE_FEEDER: u16 = 2;
+    pub const NODE_TRANSFORMER: u16 = 3;
+    pub const NODE_SWITCH: u16 = 4;
+    pub const NODE_DER: u16 = 5;
+    pub const NODE_LOAD: u16 = 6;
+    pub const NODE_STORAGE: u16 = 7;
+    pub const NODE_METER: u16 = 8;
+    pub const NODE_PROCESS_UNIT: u16 = 9;
+    pub const NODE_GRID: u16 = 10;
+}

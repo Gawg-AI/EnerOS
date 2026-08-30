@@ -572,7 +572,13 @@ impl DispatchHandler {
                 );
                 alloc::boxed::Box::new(UnboundChannel)
             };
+        // 蓝图 61 v0.314.35：资源注册表视图（命令批编译绑定权威——
+        // planner 输入只能查询 Registry，[08] §4.8 门）。目录不可得/
+        // 歧义 → EmptyResourceRegistry fail-closed（批编译拒绝）。
+        let resources: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static> =
+            Self::build_resource_view(config_client.as_mut(), device_id);
         let config = DispatchConfig {
+            resources,
             chain,
             key: key.to_vec(),
             // 蓝图 55：档案事实（lease/代次/绑定设备点）单源；首签 fencing
@@ -599,10 +605,103 @@ impl DispatchHandler {
             // SPEC-R4 WP-R4.1：反馈映射单源 = control-dispatch
             // PROD_FEEDBACK_MAPPING（历史手抄 6/6 字面量已收编；⚠ 6/6 别名
             // 现状与矫正前置见该常量文档）。
-            feedback_mapping: PROD_FEEDBACK_MAPPING,
+            //
+            // 蓝图 61 v0.314.33：反馈槽**生产单一事实源 = SemanticCatalog**
+            // （configs/catalog.toml [[feedback_slot]] 编译条目）；catalog
+            // 缺失/槽不齐 → 回退装配常量 PROD_FEEDBACK_MAPPING（legacy
+            // 兼容轨，值必须与目录一致——parity 测试锁定）。退出 gate：
+            // 生产无手写 feedback point（[08] §2.7）。
+            feedback_mapping: Self::dispatch_feedback_mapping(config_client.as_mut()),
             now_fn: eneros_drv_svc::now_ms,
         };
         eneros_control_dispatch::DispatchEngine::new(config)
+    }
+
+    /// 蓝图 61 v0.314.35：资源注册表视图装载（PlannerView；失败 →
+    /// EmptyResourceRegistry fail-closed）。
+    fn build_resource_view(
+        config_client: Option<&mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+        device_id: u32,
+    ) -> alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static> {
+        use eneros_decision_contract::EmptyResourceRegistry;
+        let Some(client) = config_client else {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] REGISTRY-MISSING —— planner 输入 fail-closed（EmptyResourceRegistry）"
+            );
+            return alloc::boxed::Box::new(EmptyResourceRegistry);
+        };
+        let Some(cat) = crate::catalog_gateway::fetch_catalog(client) else {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] REGISTRY-MISSING —— planner 输入 fail-closed（EmptyResourceRegistry）"
+            );
+            return alloc::boxed::Box::new(EmptyResourceRegistry);
+        };
+        let device = u16::try_from(device_id).unwrap_or(0);
+        match eneros_resource_registry::registry::PlannerView::new(cat.repo, device) {
+            Ok(view) => {
+                let d = view.repo_digest();
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] REGISTRY-ACTIVE binding=({device},{}) unit={} digest={:02x}{:02x}{:02x}{:02x}",
+                    view.point_id,
+                    view.unit_code,
+                    d[0],
+                    d[1],
+                    d[2],
+                    d[3]
+                );
+                alloc::boxed::Box::new(view)
+            }
+            Err(e) => {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] REGISTRY-REJECT {e} —— fail-closed（EmptyResourceRegistry）"
+                );
+                alloc::boxed::Box::new(EmptyResourceRegistry)
+            }
+        }
+    }
+
+    /// 蓝图 61 v0.314.33：反馈映射装载（目录优先，常量回退）。
+    fn dispatch_feedback_mapping(
+        config_client: Option<&mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    ) -> eneros_control_dispatch::FeedbackPointMapping {
+        use eneros_control_dispatch::PROD_FEEDBACK_MAPPING;
+        let Some(client) = config_client else {
+            return PROD_FEEDBACK_MAPPING;
+        };
+        let Some(cat) = crate::catalog_gateway::fetch_catalog(client) else {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] CATALOG-MISSING —— feedback 回退装配常量（legacy 轨）"
+            );
+            return PROD_FEEDBACK_MAPPING;
+        };
+        let d = cat.repo.digest();
+        eneros_runtime::println!(
+            "[svc-control-dispatch] CATALOG-ACTIVE gen={} digest={:02x}{:02x}{:02x}{:02x}",
+            cat.generation,
+            d[0],
+            d[1],
+            d[2],
+            d[3]
+        );
+        match crate::catalog_gateway::feedback_mapping(&cat.repo) {
+            Some(m) => {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] CATALOG-FEEDBACK grid={} soc={} v={} oc={} ot={}",
+                    m.grid_up,
+                    m.soc,
+                    m.dc_bus_v,
+                    m.overcurrent,
+                    m.overtemp
+                );
+                m
+            }
+            None => {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] CATALOG-FEEDBACK 槽不齐 —— 回退装配常量（fail-closed 面）"
+                );
+                PROD_FEEDBACK_MAPPING
+            }
+        }
     }
 
     /// 47（WP-47.1）：取受信任遥测快照（svc-telemetry TEL_SNAPSHOT →

@@ -19,6 +19,8 @@ eneros-storage = { path = "../../drivers/storage" }
 eneros-runtime = { path = "../../runtime/runtime" }
 # 41 基座：签名配置 bundle + 跨重启持久化。
 eneros-config-bundle = { path = "../../runtime/config-bundle", default-features = false }
+# 蓝图 61 v0.314.33：catalog 条目解码门禁（svc-config consumer）。
+eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }
 eneros-crypto = { path = "../../security/crypto" }
 eneros-durable-state = { path = "../../runtime/durable-state" }
 # 市场/账本领域类型（44.4：settlement/account/p2p-match 为 0 引用假依赖已删）。

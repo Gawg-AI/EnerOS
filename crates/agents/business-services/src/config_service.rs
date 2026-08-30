@@ -464,6 +464,44 @@ impl TypedConfigConsumer for SecurityConsumer {
     }
 }
 
+/// 蓝图 61 v0.314.33：catalog consumer——svc-config registry 双向完备性
+/// （bundle 含 catalog 条目即须注册，否则 fail-closed unconsumed-config）。
+/// 解码门禁 = semantic-catalog 严格解码+建库（未知字段/交叉引用失败 →
+/// DecodeFailed 拒载整个 bundle）；ConfigGet 仍返回原始字节。
+#[derive(Default)]
+pub struct CatalogConsumer {
+    /// 最近一次成功解码的 payload（诊断/幂等对照）。
+    pub last: Option<alloc::vec::Vec<u8>>,
+    /// 生效 generation。
+    pub generation: u64,
+}
+
+impl TypedConfigConsumer for CatalogConsumer {
+    type Config = alloc::vec::Vec<u8>;
+    fn config_id(&self) -> ConfigId {
+        ConfigId::from_static(eneros_config_bundle::schema::catalog::CONFIG_ID)
+    }
+    fn schema_version(&self) -> SchemaVersion {
+        SchemaVersion(eneros_config_bundle::schema::catalog::SCHEMA)
+    }
+    fn decode_validate(&self, raw: &[u8]) -> Result<Self::Config, ConfigError> {
+        eneros_semantic_catalog::open(raw).map_err(|e| ConfigError::InvalidValue {
+            config: ConfigId::from_static(eneros_config_bundle::schema::catalog::CONFIG_ID),
+            field: "catalog",
+            reason: alloc::format!("decode:{e}"),
+        })?;
+        Ok(raw.to_vec())
+    }
+    fn apply(&mut self, cfg: Self::Config, generation: u64) -> Result<ApplyOutcome, ConfigError> {
+        if self.last.as_deref() == Some(&cfg) && self.generation == generation {
+            return Ok(ApplyOutcome::NoOp);
+        }
+        self.last = Some(cfg);
+        self.generation = generation;
+        Ok(ApplyOutcome::Applied { generation })
+    }
+}
+
 impl Default for ConfigService {
     fn default() -> Self {
         Self::new()
@@ -487,6 +525,9 @@ impl ConfigService {
         registry.register(alloc::boxed::Box::new(AiPeerConsumer::default()));
         // SPEC WP-A.1：security consumer（控制链信封密钥节；双向完备性）。
         registry.register(alloc::boxed::Box::new(SecurityConsumer::default()));
+        // 蓝图 61 v0.314.33：catalog consumer（双向完备性；bundle 含
+        // catalog 条目即须注册，否则 fail-closed unconsumed-config）。
+        registry.register(alloc::boxed::Box::new(CatalogConsumer::default()));
         // 46（WP-46.3）：7 份协议配置 consumer——registry 双向完备性（否则
         // bundle 含 protocol-* 即 fail-closed unconsumed-config）。
         for id in eneros_config_bundle::protocol::PROTOCOL_CONFIG_IDS {
@@ -707,6 +748,23 @@ mod tests {
                 None,
             )
             .unwrap()
+            .unwrap();
+            let digest = CbDigest::of(&compiled.payload);
+            entries.push(SignedConfigEntry {
+                config_id: compiled.config_id,
+                schema: SchemaVersion(1),
+                generation: 3,
+                payload: compiled.payload,
+                payload_digest: digest,
+                signature: Vec::new(),
+            });
+        }
+        // 蓝图 61 v0.314.33：catalog（registry 双向完备——CatalogConsumer
+        // 注册后 bundle 缺 catalog 即 MissingConfigEntry fail-closed）。
+        {
+            let compiled = eneros_config_bundle::toml_compile::compile_catalog(include_str!(
+                "../../../../configs/catalog.toml"
+            ))
             .unwrap();
             let digest = CbDigest::of(&compiled.payload);
             entries.push(SignedConfigEntry {

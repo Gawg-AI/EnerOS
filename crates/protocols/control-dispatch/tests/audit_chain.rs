@@ -5,6 +5,7 @@
 //! 捕获日志器实现 [`AuditLogger`]（真实链头推进：seq 严格递增 + 组合
 //! 哈希），同时产出 [`DurableAuditRecord`] 序列（Rc 共享）供
 //! `verify_log`/`last_valid_prefix` 校验。
+mod support;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -204,10 +205,11 @@ impl eneros_control_dispatch::DeliveryChannel for StubChannel {
 
 fn build_engine(control_audit: Box<dyn AuditLogger>, outcome_code: u8) -> DispatchEngine {
     let outcome = [outcome_code, 0];
+    let profile = test_profile();
     DispatchEngine::new(DispatchConfig {
         chain: build_chain(),
         key: KEY.to_vec(),
-        profile: test_profile(),
+        profile,
         fencing_token: 8,
         issuer_service: [0x41; 16],
         issuer_epoch: 0,
@@ -224,6 +226,13 @@ fn build_engine(control_audit: Box<dyn AuditLogger>, outcome_code: u8) -> Dispat
         delivery: Box::new(StubChannel {
             outcome,
             delivered: 0,
+        }),
+        resources: Box::new(support::TestResourceView {
+            asset_id: u64::from(profile.device_id),
+            device_id: profile.device_id as u16,
+            point_id: profile.point_id,
+            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+            catalog_version: 1,
         }),
         feedback_mapping: FeedbackPointMapping {
             grid_up: 5,

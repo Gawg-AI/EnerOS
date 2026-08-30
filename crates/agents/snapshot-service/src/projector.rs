@@ -1,0 +1,186 @@
+//! 状态投影（[08] §3.2）：按全局点键维护最近合格事件与版本。
+
+use alloc::collections::BTreeMap;
+
+use eneros_telemetry_model::event::ObservationEvent;
+
+/// 点键（与目录 [`ObservationKey`] 同构；投影内嵌事件自持身份——无需
+/// 外部键表）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PointKey {
+    pub point_id: u32,
+    pub mapping_version: u64,
+}
+
+impl From<&ObservationEvent> for PointKey {
+    fn from(ev: &ObservationEvent) -> Self {
+        Self {
+            point_id: ev.point_id,
+            mapping_version: ev.mapping_version,
+        }
+    }
+}
+
+/// 投影容量（C1：10k 观测 / 100 源；BTreeMap 有界，超限拒绝新点——
+/// 不静默丢）。
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectorCapacity {
+    pub max_points: usize,
+    pub max_events_per_point: usize,
+}
+
+impl Default for ProjectorCapacity {
+    fn default() -> Self {
+        Self {
+            max_points: 10_000,
+            max_events_per_point: 4,
+        }
+    }
+}
+
+/// 状态投影器：每点保留**最近合格事件序列**（有界窗口；建快照时挑
+/// `event_time <= cut` 的最新一档）。多源同点 → 冲突留给 resolver——
+/// 投影保留多源各自最近事件（主备裁决需要主备两份证据）。
+pub struct StateProjector {
+    cap: ProjectorCapacity,
+    /// point → (source → 最近事件)。
+    states: BTreeMap<u32, BTreeMap<u32, ObservationEvent>>,
+    /// 已见事件总数（观测）。
+    pub seen: u64,
+    /// 超容量被拒点数（不静默丢）。
+    pub overflow_rejected: u64,
+}
+
+impl StateProjector {
+    pub fn new(cap: ProjectorCapacity) -> Self {
+        Self {
+            cap,
+            states: BTreeMap::new(),
+            seen: 0,
+            overflow_rejected: 0,
+        }
+    }
+
+    /// 观察事件（同点同源：更新最近；新源：追加；点容量满 → 拒绝计数）。
+    pub fn observe(&mut self, ev: ObservationEvent) {
+        self.seen += 1;
+        let entry = self.states.entry(ev.point_id).or_default();
+        if entry.len() >= self.cap.max_events_per_point {
+            self.overflow_rejected += 1;
+            return;
+        }
+        // 同源乱序：只保留最大 event_time（同 event_time 取高序列）。
+        let prev = entry.get(&ev.source_id);
+        match prev {
+            Some(p)
+                if p.event_time_ns > ev.event_time_ns
+                    || (p.event_time_ns == ev.event_time_ns && p.sequence >= ev.sequence) =>
+            {
+                return;
+            }
+            _ => {}
+        }
+        entry.insert(ev.source_id, ev);
+        // 修剪：同点事件数超上限时按 event_time 保留最近 N。
+        let cap = self.cap.max_events_per_point;
+        while entry.len() > cap {
+            let oldest = entry
+                .iter()
+                .min_by_key(|(_, e)| (e.event_time_ns, e.sequence))
+                .map(|(k, _)| *k);
+            if let Some(k) = oldest {
+                entry.remove(&k);
+            }
+        }
+        if self.states.len() > self.cap.max_points {
+            // 超点容量：淘汰最近更新的点（最不活跃者）——FIFO 式容量
+            // 守恒，淘汰计数可见。
+            let oldest_point = self
+                .states
+                .iter()
+                .min_by_key(|(_, v)| v.values().map(|e| e.ingest_time_ns).max())
+                .map(|(k, _)| *k);
+            if let Some(k) = oldest_point {
+                self.states.remove(&k);
+                self.overflow_rejected += 1;
+            }
+        }
+    }
+
+    /// 每点每源最近事件（建快照输入）。
+    pub fn latest_by_source(&self, point_id: u32) -> impl Iterator<Item = &ObservationEvent> {
+        self.states
+            .get(&point_id)
+            .map(|m| m.values())
+            .into_iter()
+            .flatten()
+    }
+
+    /// 所有点键（枚举）。
+    pub fn point_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.states.keys().copied()
+    }
+
+    /// 当前投影点数（观测）。
+    pub fn len(&self) -> usize {
+        self.states.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.states.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::*;
+    use crate::tests::obs7;
+
+    fn event(point: u32, source: u32, time_ns: u64, seq: u64) -> ObservationEvent {
+        let mut evs = obs7(
+            1_000_000_000,
+            0,
+            source,
+            &[400.0, 50.0, 50.0, 0.6, 1.0, 0.0, 0.0],
+        );
+        let mut ev = evs.remove(((point - 1) % 7) as usize);
+        ev.point_id = point;
+        ev.source_id = source;
+        ev.event_time_ns = time_ns;
+        ev.sequence = seq;
+        ev
+    }
+
+    #[test]
+    fn latest_event_kept_per_source() {
+        let mut p = StateProjector::new(ProjectorCapacity::default());
+        p.observe(event(1, 2, 100, 1));
+        p.observe(event(1, 2, 200, 2));
+        // 乱序旧事件不得回退最新。
+        p.observe(event(1, 2, 150, 3));
+        let latest: Vec<_> = p.latest_by_source(1).collect();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].event_time_ns, 200);
+        // 第二源介入（冲突素材）。
+        p.observe(event(1, 3, 180, 1));
+        let latest: Vec<_> = p.latest_by_source(1).collect();
+        assert_eq!(latest.len(), 2);
+    }
+
+    #[test]
+    fn capacity_bounded_not_silent() {
+        let mut p = StateProjector::new(ProjectorCapacity {
+            max_points: 10,
+            max_events_per_point: 2,
+        });
+        for point in 1..=20u32 {
+            p.observe(event(point, 2, 100, 1));
+        }
+        assert!(p.len() <= 10);
+        assert!(p.overflow_rejected > 0);
+        // 不静默：拒绝被计数且仍可查询存量。
+        assert!(p.seen >= 20);
+    }
+}

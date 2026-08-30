@@ -1,0 +1,264 @@
+# =====================================================================
+# configs/catalog.toml — SemanticCatalog 编译源（蓝图 61 v0.314.33）
+# =====================================================================
+# 「schema、单位、资产、拓扑、点映射与控制合同」单一事实源：人类维护本
+# 文件 → host 编译为签名 bundle "catalog" 条目（config-bundle
+# `compile_catalog`）→ target 只读编译产物（semantic-catalog 解码面）。
+#
+# 与生产常量的对齐（parity 测试强制，禁止私自改键）：
+#   grid_up=5 / soc=4 / dc_bus_v=1 / overcurrent=6 / overtemp=7
+#     == control-dispatch `PROD_FEEDBACK_MAPPING`
+#   coverage 1-7（min/max/period）== `SAFETY_COVERAGE_POINTS`
+#   control_contract 1（−500..500 kW / ramp 200 kW/min / settle 30s /
+#     readback=1001）== ControlProfile::ai_pcs_setpoint + PCS_SETPOINT_*
+# 编译期交叉引用：重复 ID、悬空引用、控制点无回读、反馈槽不齐、
+# 拓扑孤岛/自环、单位量纲不兼容 —— 全部编译错误。
+
+generation = 1
+valid_from_ns = 0
+valid_until_ns = 0
+mapping_version = 1
+topology_version = 1
+asset_version = 1
+contract_version = 1
+safety_version = 1
+
+# --- schema 注册表（观察消息 schema_id/version 必须命中） ---
+[[schema]]
+id = 1
+version = 1
+
+# --- 受控换算图（量纲一致性由 UnitCatalog 强制；kW↔MW 可换，kW↔kWh 拒绝） ---
+[[unit_conversion]]
+from = "MW"
+to = "kW"
+factor = 1000.0
+
+[[unit_conversion]]
+from = "kW"
+to = "MW"
+factor = 0.001
+
+# --- 资产目录（ID 永不复用；删除走 [[tombstone]]） ---
+[[asset]]
+asset_id = 1
+site_id = 1
+tenant_id = 1
+kind = "battery"          # PCS-1 电池储能
+device_id = 2             # 站内遥测网关（点 1-7）
+topology_node_id = 2
+
+[[asset]]
+asset_id = 10
+site_id = 1
+tenant_id = 1
+kind = "grid"
+topology_node_id = 1
+
+# --- 拓扑（静态；开关观测生成 energized view） ---
+[[topology_node]]
+id = 1
+kind = "grid"
+
+[[topology_node]]
+id = 2
+kind = "der"
+
+[[topology_edge]]
+from = 1
+to = 2
+kind = "switch"           # 并网点开关：状态观测点 = grid_up（点 5）
+switch_point_id = 5
+capacity_kw = 500.0
+loss = 0.0
+
+# --- 点语义目录（control-eligible 点必须 asset+unit+schema 齐全） ---
+[[point_semantics]]
+point_id = 1
+asset_id = 1
+schema_id = 1
+unit = "V"
+role = "measurement"
+
+[[point_semantics]]
+point_id = 2
+asset_id = 1
+schema_id = 1
+unit = "A"
+role = "measurement"
+
+[[point_semantics]]
+point_id = 3
+asset_id = 1
+schema_id = 1
+unit = "Hz"
+role = "measurement"
+
+[[point_semantics]]
+point_id = 4
+asset_id = 1
+schema_id = 1
+unit = "ratio"
+role = "measurement"
+
+[[point_semantics]]
+point_id = 5
+asset_id = 1
+schema_id = 1
+unit = "ratio"
+role = "switch-state"
+
+[[point_semantics]]
+point_id = 6
+asset_id = 1
+schema_id = 1
+unit = "ratio"
+role = "measurement"
+
+[[point_semantics]]
+point_id = 7
+asset_id = 1
+schema_id = 1
+unit = "ratio"
+role = "measurement"
+
+# 控制设定点（kW；PCS-1 出线 0x0200；回读=功率遥测点 1001）
+[[point_semantics]]
+point_id = 10
+asset_id = 1
+schema_id = 1
+unit = "kW"
+role = "control"
+readback_point_id = 1001
+
+# PCS-1 功率遥测（控制回读源）
+[[point_semantics]]
+point_id = 1001
+asset_id = 1
+schema_id = 1
+unit = "kW"
+role = "measurement"
+
+# --- 反馈槽（槽序 = TrustedFeedbackBuilder 字段声明序；单源） ---
+[[feedback_slot]]
+slot = "grid_up"
+point_id = 5
+
+[[feedback_slot]]
+slot = "soc"
+point_id = 4
+
+[[feedback_slot]]
+slot = "dc_bus_v"
+point_id = 1
+
+[[feedback_slot]]
+slot = "overcurrent"
+point_id = 6
+
+[[feedback_slot]]
+slot = "overtemp"
+point_id = 7
+
+# --- 安全覆盖（= SAFETY_COVERAGE_POINTS；点 4-7 无量纲 0..1） ---
+[[coverage]]
+point_id = 1
+min = 0.0
+max = 1000.0
+period_ms = 5000
+unit = "V"
+
+[[coverage]]
+point_id = 2
+min = -1000.0
+max = 1000.0
+period_ms = 5000
+unit = "A"
+
+[[coverage]]
+point_id = 3
+min = 45.0
+max = 55.0
+period_ms = 5000
+unit = "Hz"
+
+[[coverage]]
+point_id = 4
+min = 0.0
+max = 1.0
+period_ms = 5000
+unit = "ratio"
+
+[[coverage]]
+point_id = 5
+min = 0.0
+max = 1.0
+period_ms = 5000
+unit = "ratio"
+
+[[coverage]]
+point_id = 6
+min = 0.0
+max = 1.0
+period_ms = 5000
+unit = "ratio"
+
+[[coverage]]
+point_id = 7
+min = 0.0
+max = 1.0
+period_ms = 5000
+unit = "ratio"
+
+# --- 控制合同（无完整合同 → 可观测可预测，不可进入可控池） ---
+[[control_contract]]
+contract_id = 1
+asset_id = 1
+point_id = 10
+unit = "kW"
+class = "setpoint"
+min = -500.0
+max = 500.0
+ramp_kw_per_s = 3.3333     # 200 kW/min ÷ 60（ControlProfile PCS_SETPOINT_MAX_RAMP）
+settle_ms = 30000
+min_on_ms = 0
+min_off_ms = 0
+max_starts = 1
+readback_point_id = 1001
+tolerance_kw = 0.1         # PCS_SETPOINT_READBACK_TOL_KW
+reversible = true
+compensation = false
+priority = "remote"
+safe_state = "hold"
+lost_link = "hold"
+
+# --- 安全约束目录（状态告警阈值；与 safety-validator 语义对齐） ---
+[[safety_constraint]]
+constraint_id = 1
+asset_id = 1
+kind = "overcurrent"
+point_id = 6
+limit = 1.0
+
+[[safety_constraint]]
+constraint_id = 2
+asset_id = 1
+kind = "overtemp"
+point_id = 7
+limit = 1.0
+
+# --- 迁移别名（market DevicePool u64 / VPP resource_id → asset_id） ---
+[[alias]]
+kind = "market-device"
+legacy_id = 1
+asset_id = 1
+
+[[alias]]
+kind = "vpp-resource"
+legacy_id = 1
+asset_id = 1
+
+# --- tombstone（删除登记；ID 永不复用） ---
+[[tombstone]]
+asset_id = 99
+kind = 1

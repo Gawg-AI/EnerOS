@@ -1,0 +1,22 @@
+[package]
+name = "eneros-resource-registry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图61 [08] §4 (v0.314.35) — ResourceRegistry：统一资源描述/能力包络求交/控制合同/聚合与迁移导入（no_std）"
+
+[dependencies]
+# 快照窄口（TrustedSnapshot → 资源实时状态投影）。
+eneros-snapshot-service = { path = "../snapshot-service" }
+# 目录窄口（资产描述/合同/拓扑/单位换算）。
+eneros-semantic-catalog = { path = "../semantic-catalog" }
+# 单位码（UnitCatalog 封闭码表）。
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
+# 决策 wire 的 ResourceRegistry 只读视图（planner 输入侧；无 Writer）。
+eneros-decision-contract = { path = "../../ai/decision-contract", default-features = false }
+# Registry digest（generation/digest 证据；no_std）。
+sha2 = { version = "0.10.9", default-features = false }
+[dev-dependencies]
+# catalog.toml 编译面（registry 测试装载真实目录）。
+eneros-config-bundle = { path = "../../runtime/config-bundle", features = ["compile"] }

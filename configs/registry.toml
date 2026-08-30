@@ -44,6 +44,10 @@ note = "日志级别/容量/轮转/自定义字段"
 consumer = ["svc-telemetry", "svc-modbus-rtu", "svc-modbus-tcp", "svc-iec104", "svc-mqtt", "svc-mms", "svc-goose", "svc-sv"]
 note = "点表（蓝图 45）——协议↔遥测唯一映射事实源；7 协议插件 + 遥测消费"
 
+[active."catalog"]
+consumer = ["svc-telemetry", "svc-control-dispatch", "svc-device-agent"]
+note = "蓝图 61 v0.314.33 SemanticCatalog 编译源——schema/单位/资产/拓扑/点语义/反馈槽/覆盖/控制合同/安全约束/别名/tombstone 单一事实；target 只读编译产物"
+
 [active."protocol-modbus-tcp"]
 consumer = ["svc-modbus-tcp"]
 note = "46（WP-46.3）协议配置：peer/unit_id/timeout/retries——消灭源码硬编码"

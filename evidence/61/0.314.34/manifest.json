@@ -1,0 +1,66 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.34",
+ "commit": "cfda926",
+ "dirty": false,
+ "profile": "host（snapshot-service no_std crate + EventStore 消费 + 差分测试）；target 接线登记 BLOCKED",
+ "summary": "SnapshotModule：多源水位/一致性切面/政策/冲突裁决/provenance 根/重放确定性/decision 投影；TrustedTelemetry evaluator ↔ TrustedSnapshot 差分 7 例；C1（10k 观测/100 源/16 并发 purpose）",
+ "commands": [
+  { "id": "CMD-TESTS", "cmd": "cargo test -p eneros-snapshot-service", "exit": 0, "summary": "18 例全绿（模块/水位/政策/冲突/构建/存储/CM/投影/编码/C1）" },
+  { "id": "CMD-DIFF", "cmd": "cargo test -p eneros-control-services --lib snapshot_diff", "exit": 0, "summary": "差分 7 例全绿（健康/缺失/坏品质/未注册源/重放/版本混搭/决策投影）" },
+  { "id": "CMD-CLIPPY", "cmd": "cargo clippy -p eneros-snapshot-service --all-targets", "exit": 0, "summary": "零警告" }
+ ],
+ "tests": [
+  {
+   "id": "T-CORE",
+   "class": "快照内核（[08] §3.2/§3.3）",
+   "rows": {
+    "projector": "PASS——每源最近事件、乱序不回退、容量有界（超限拒绝计数不静默）",
+    "watermark": "PASS——epoch/sequence 严格单调（回拨/重放/旧 epoch 拒绝计数）；迟到缺口 deficit 判定",
+    "policy": "PASS——purpose 政策注册（required/optional/lateness/新鲜度/质量/完整性/substitution/降级）；无政策→NoPolicy 拒绝",
+    "conflict": "PASS——主备/优先列表/多数确定性裁决 + 证据记录；平票→Unresolved（不猜值）",
+    "builder": "PASS——8 步算法：冻结版本组/cut、watermark、最新合格事件选择、freshness/quality/integrity/unit/mapping/asset/topology 校验、冲突裁决、派生公式（id/version）、完整度报告、provenance 根（[02] §5 冻结算法）+ snapshot_id",
+    "replay-determinism": "PASS——同输入同 root（同批重建逐字节相等）；store 重放一致性（同 id 同元数据；漂移拒绝）",
+    "substitution": "PASS——来源优先级+最大持续时长+用途白名单（[08] §3.4；禁止 0/默认/无限续期）",
+    "wire": "PASS——SNAP V1 规范编码往返 + SHA-256 篡改检出；拒绝未知版本/长度/保留"
+   }
+  },
+  {
+   "id": "T-DIFF",
+   "class": "evaluator ↔ snapshot 差分（[08] §3.6 步骤 4）",
+   "rows": {
+    "healthy": "PASS——双方接受且电气状态逐位相等（E4 基线值）",
+    "missing": "PASS——评估器 MissingPoints ↔ 快照 MissingKeys（含具体键）",
+    "bad-quality": "PASS——INVALID 品质双方拒绝",
+    "unknown-source": "PASS——白名单外来源双方拒绝（UnknownSource ↔ UnknownSource）",
+    "replay": "PASS——重复帧评估器 Replay 拒绝；快照水位拒绝计数且投影不受污染（root 不变）",
+    "version-mix": "PASS——mapping_version 混搭 → 快照拒绝（版本组纪律）",
+    "projection": "PASS——Phase 0 决策输入 = DecisionProjection（snapshot_id/provenance 携带，不读 current map）"
+   }
+  },
+  {
+   "id": "T-C1",
+   "class": "C1 负载（[08] §3.6 步骤 6）",
+   "rows": {
+    "scale": "PASS——10k 观测 / 100 来源 / 16 并发 purpose 全构建成功且 provenance 确定性（重复构建同 root）",
+    "bounded": "PASS——投影/水位容量守恒（10k 点上限/每点事件窗/拒绝计数）"
+   }
+  },
+  {
+   "id": "T-EVENTSTORE",
+   "class": "EventStore 消费（[08] §3.6 步骤 3）",
+   "rows": {
+    "drain": "PASS——消费组位点续读（首跑 0 起）、解码失败计数、成功后提交位点；重复 drain 零重复交付（幂等）",
+    "replay": "PASS——重放路径事件注入后快照可构建"
+   }
+  }
+ ],
+ "gates": {
+  "v0.314.34-exit": {
+   "决策代码不直接读取 telemetry current map": "PASS——宿主侧 Phase 0 决策输入 = TrustedSnapshot 投影（DecisionProjection）；target 生产轨接线（svc-snapshot 独立服务 + 新 EIPC 边 + 存储句柄移交）登记 BLOCKED（Phase 2 同族前置项）",
+   "snapshot 重放确定性 100%": "PASS——同输入同 root（多用例）+ store 一致性校验 + wire 往返",
+   "所有 reject/degraded reason 有具体 key/source": "PASS——SnapshotRejected{reason, keys, watermark_deficit} 结构化；完整度报告逐键",
+   "Phase 0 成功与失败矩阵继续成立": "PASS——差分 7 例 + E4（.33 卷）PLAN-TYPED→EXEC-JOURNAL 不回归"
+  }
+ }
+}

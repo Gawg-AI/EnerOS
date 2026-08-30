@@ -1,0 +1,22 @@
+[package]
+name = "eneros-snapshot-service"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图61 [08] §3 (v0.314.34) — SnapshotModule：多源水位/一致性切面/政策/冲突裁决/provenance 根/重放确定性（no_std）"
+
+[dependencies]
+# 观测事件身份与 UnitCatalog（同一数据面类型）。
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
+# 目录窄口（resolve_observation/version set/energized view）。
+eneros-semantic-catalog = { path = "../semantic-catalog" }
+# 分区事件日志消费（offset checkpoint/replay；E3 集成证据）。
+eneros-event-store = { path = "../../runtime/event-store" }
+# 来源身份（SourceDescriptor 装配用）。
+eneros-ingestion-core = { path = "../../protocols/ingestion-core" }
+# provenance/SHA（no_std）。
+sha2 = { version = "0.10.9", default-features = false }
+[dev-dependencies]
+# 编译面（生产 catalog.toml/points.toml 装载测试）。
+eneros-config-bundle = { path = "../../runtime/config-bundle", features = ["compile"] }

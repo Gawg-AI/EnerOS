@@ -8,9 +8,7 @@
 
 use alloc::vec;
 
-use eneros_decision_contract::{
-    Assignment, CandidatePlan, PlanId, ResourceRegistry, SnapshotId, SolveStatusKind,
-};
+use eneros_decision_contract::{Assignment, CandidatePlan, PlanId, SnapshotId, SolveStatusKind};
 use eneros_dual_brain::decision::ProposedControlPlan;
 
 use crate::DispatchError;
@@ -95,13 +93,16 @@ pub fn proposal_to_candidate_unbound(
     proposal_to_candidate(p, (0, 0, 0, 0), 0, 0)
 }
 /// dispatch profile 背书的资源注册表只读视图（[06] §3.3 CommandBatch
-/// 构造第二参数；.35 卷 resource-registry 落地前由 profile 单源充当）。
+/// 构造参数；.35 卷 resource-registry 落地后生产装配注入 PlannerView，
+/// 本视图降为内部测试 DTO——不再有任何生产构造点）。
+#[cfg(test)]
 pub(crate) struct ProfileResourceView<'a> {
     pub(crate) profile: &'a eneros_control_gateway::profile::ControlProfile,
     pub(crate) catalog_version: u64,
 }
 
-impl ResourceRegistry for ProfileResourceView<'_> {
+#[cfg(test)]
+impl eneros_decision_contract::ResourceRegistry for ProfileResourceView<'_> {
     fn asset_exists(&self, asset_id: u64) -> bool {
         asset_id == u64::from(self.profile.device_id)
     }
@@ -126,6 +127,8 @@ impl ResourceRegistry for ProfileResourceView<'_> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::disallowed_macros)]
+
+    use eneros_decision_contract::ResourceRegistry;
 
     use super::*;
 

@@ -466,6 +466,7 @@ pub mod target {
         cfg: RemoteBrainConfig,
         mqtt: Sel4IpcClient,
         learn: Option<TargetLearner>,
+        catalog_version: u64,
     ) -> ! {
         // 决策审计（ADR-0042 边界：dual-brain/audit 为决策语义门面）。
         // 蓝图 54 WP-54.1：同源魔数 [0x47;32] → 唯一入口按本服务域派生。
@@ -474,7 +475,12 @@ pub mod target {
             mqtt,
             correlation: 0,
         };
-        let brain = RemoteBrain::new(HeuristicBackend::new(), link, cfg);
+        let brain = RemoteBrain::with_catalog_ver(
+            HeuristicBackend::new().with_catalog_version(catalog_version),
+            link,
+            cfg,
+            catalog_version,
+        );
         let mut worker = AiWorkerService::new(brain, [0x41; 16]);
         let mut handler = AiTickHandler::new(&mut worker, RemoteAudit { audit: &mut audit }, learn);
         crate::control_service_main(
@@ -494,9 +500,13 @@ pub mod target {
         ready_ntfn: u64,
         heartbeat_slot: u64,
         learn: Option<TargetLearner>,
+        catalog_version: u64,
     ) -> ! {
         let mut audit = DecisionAudit::new(eneros_audit::genesis(b"svc-ai-worker-decision"));
-        let mut worker = AiWorkerService::new(HeuristicBackend::new(), [0x41; 16]);
+        let mut worker = AiWorkerService::new(
+            HeuristicBackend::new().with_catalog_version(catalog_version),
+            [0x41; 16],
+        );
         let mut handler =
             AiTickHandler::new(&mut worker, HeuristicAudit { audit: &mut audit }, learn);
         crate::control_service_main(

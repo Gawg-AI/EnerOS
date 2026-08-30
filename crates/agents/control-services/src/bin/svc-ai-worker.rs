@@ -60,7 +60,7 @@ pub extern "C" fn _start(
     let slot_of = |target: &'static str| -> Option<u64> {
         eneros_agent_sdk::eipc_granted_slot("svc-ai-worker", eipc_mask, target)
     };
-    let config_client = slot_of("svc-config").and_then(|slot| {
+    let mut config_client = slot_of("svc-config").and_then(|slot| {
         eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
             "aiworker-config",
             slot,
@@ -68,6 +68,32 @@ pub extern "C" fn _start(
         )
         .ok()
     });
+    // 蓝图 61 v0.314.35：目录版本装载（候选计划 resource_catalog_version
+    // 与 dispatch PlannerView 同代——[08] §4.8 planner 输入只查 Registry）。
+    let catalog_version = config_client
+        .as_mut()
+        .and_then(eneros_control_services::catalog_gateway::fetch_catalog)
+        .map(|c| {
+            use eneros_semantic_catalog::SemanticCatalog;
+            let v = c.repo.version_set().contract_version;
+            let d = c.repo.digest();
+            eneros_runtime::println!(
+                "[svc-ai-worker] CATALOG-ACTIVE gen={} contract={} digest={:02x}{:02x}{:02x}{:02x}",
+                c.generation,
+                v,
+                d[0],
+                d[1],
+                d[2],
+                d[3]
+            );
+            v
+        })
+        .unwrap_or_else(|| {
+            eneros_runtime::println!(
+                "[svc-ai-worker] CATALOG-MISSING —— catalog_version=0（fail-closed：Registry 对照不了即拒批）"
+            );
+            0
+        });
     let cfg = config_client.and_then(|mut c| match fetch_ai_peer_config(&mut c) {
         Ok(c) => Some(c),
         Err(reason) => {
@@ -107,7 +133,15 @@ pub extern "C" fn _start(
             };
             // SPEC-E WP-E.3：学习器装配（闸+授予双条件；None ⇒ 出厂行为）。
             let learn = build_learner(eipc_mask, c.learn_enabled);
-            run_remote(ep, ready_ntfn, heartbeat_slot, brain_cfg, mqtt, learn)
+            run_remote(
+                ep,
+                ready_ntfn,
+                heartbeat_slot,
+                brain_cfg,
+                mqtt,
+                learn,
+                catalog_version,
+            )
         }
         (cfg, mqtt_client) => {
             eneros_runtime::println!(
@@ -117,7 +151,7 @@ pub extern "C" fn _start(
             );
             // config 不可得 ⇒ learn_enabled 键不可得 ⇒ 学习闸关（fail-closed）。
             let learn = cfg.and_then(|c| build_learner(eipc_mask, c.learn_enabled));
-            run_heuristic_only(ep, ready_ntfn, heartbeat_slot, learn)
+            run_heuristic_only(ep, ready_ntfn, heartbeat_slot, learn, catalog_version)
         }
     }
 }

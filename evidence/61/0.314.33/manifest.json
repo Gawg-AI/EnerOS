@@ -1,0 +1,55 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.33",
+ "commit": "cfda926",
+ "dirty": false,
+ "profile": "qemu-prod（SemanticCatalog 生产接线：svc-telemetry/control-dispatch/device-agent 目录消费）",
+ "summary": "SemanticCatalog 深模块：schema/单位/资产/拓扑/点语义/反馈槽/覆盖/控制合同/安全约束/别名/tombstone 编译为签名 bundle 条目；target 只读编译产物；「首个 Control 点」生产绑定删除（显式目录绑定替代）；反馈/覆盖/绑定生产单源化",
+ "commands": [
+  { "id": "CMD-COMPILE", "cmd": "ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-prod --root-key-hex 5a…", "exit": 0, "summary": "catalog → 986B 条目入签名 bundle（points/security 等 20 配置全编译）" },
+  { "id": "CMD-TESTS", "cmd": "cargo test -p eneros-config-bundle --features compile -p eneros-semantic-catalog -p eneros-control-services -p eneros-business-services", "exit": 0, "summary": "67+10+103+82=262 测试全绿" },
+  { "id": "CMD-CLIPPY", "cmd": "cargo clippy -p eneros-semantic-catalog -p eneros-config-bundle -p eneros-control-services -p eneros-business-services --all-targets", "exit": 0, "summary": "零警告" },
+  { "id": "CMD-E4", "cmd": "tools/run61-phase3-e4.sh", "exit": 0, "summary": "E4-P3-GATE: PASS（gen1 激活/gen2 换代/回滚三引导 + 全判据行）" }
+ ],
+ "tests": [
+  {
+   "id": "T-CATALOG",
+   "class": "目录编译/解码/交叉引用（蓝图 §2.6）",
+   "rows": {
+    "compile": "PASS——configs/catalog.toml → canonical（986B；1664B 分页上限内）；未知键/重复 ID/悬空引用/控制点无回读/反馈槽不齐/拓扑孤岛与自环/单位量纲不兼容/零 generation/活资产 tombstone 全部编译错误（10 负面测试）",
+    "decode": "PASS——strict 解码（count/长度/尾随字节/未知字段/重复字段拒绝）；双读确定性（同 payload 同 digest）；有效窗口（0=不限）",
+    "cross-ref": "PASS——点→资产/schema、控制点→回读点、反馈槽→点、拓扑边→节点、静态可达性（grid 源）全部装载期复验",
+    "tombstone": "PASS——活资产与墓碑互斥；CatalogSet 跨代记忆 ID 永不复用（复活→ActivationRejected）；回滚恢复上一代",
+    "activation": "PASS——generation 严格递增；同代重放拒绝；旧 VersionSet 失效（catalog 切换使旧版本组解析失败——主机测试）"
+   }
+  },
+  {
+   "id": "T-PARITY",
+   "class": "生产一致性（§2.6/§2.7 门）",
+   "rows": {
+    "feedback": "PASS——目录反馈槽 == PROD_FEEDBACK_MAPPING（grid=5 soc=4 v=1 oc=6 ot=7，parity 测试锁死）",
+    "coverage": "PASS——目录覆盖 7 点 == SAFETY_COVERAGE_POINTS（min/max/period 逐项；unit 量纲等价映射）",
+    "control": "PASS——目录控制合同（asset1 point10 kW setpoint ±500/ramp 200kW/min/settle 30s/回读 1001）== ControlProfile::ai_pcs_setpoint + PCS_SETPOINT_* 常量",
+    "binding-retire": "PASS——PointsTable::control_binding()（首 Control 点）已删除，生产只走目录显式绑定；E4 串口无旧 CONTROL-BINDING device= 词形"
+   }
+  },
+  {
+   "id": "T-E4",
+   "class": "E4 QEMU 实弹（[08] §2.7 门）",
+   "rows": {
+    "GEN1": "PASS——CATALOG-ACTIVE gen=1 digest=9bc279fc + CATALOG-COVERAGE points=7 + CATALOG-BINDING point=10 device=1 + CATALOG-FEEDBACK grid=5 soc=4 v=1 oc=6 ot=7 + REGISTRY-ACTIVE binding=(1,10)（evidence/61/phase3-e4/cat-gen1.qemu-serial.log）",
+    "GEN2": "PASS——catalog 换代（generation=2）→ CATALOG-ACTIVE gen=2（原子切换）",
+    "ROLLBACK": "PASS——重建 gen=1 镜像再引导 → CATALOG-ACTIVE gen=1 + 控制链完整（EXEC-JOURNAL applied-confirmed）",
+    "baseline": "PASS——20 点基线一致（modbus-tcp 7 点值 400/50/50/0.6/1/0/0 对照 Phase 0）",
+    "chain": "PASS——PLAN-TYPED → EXEC-JOURNAL applied-confirmed（catalog 接线不回归 Phase 0 链）"
+   }
+  }
+ ],
+ "gates": {
+  "v0.314.33-exit": {
+   "生产无手写 feedback point/coverage/first control binding": "PASS——反馈/覆盖/绑定全部目录派生（常量仅作 legacy 兼容轨回退，parity 锁同值；E4 词形验证）",
+   "单位和资产缺失事件不能进入控制": "PASS——semantic-catalog resolve_observation 对未绑定/未知单位点拒绝；快照侧复验（.34 差分测试）",
+   "catalog bundle E4 激活/回滚通过": "PASS——gen1→gen2→回滚 gen1 三引导判据行全 ✓"
+  }
+ }
+}

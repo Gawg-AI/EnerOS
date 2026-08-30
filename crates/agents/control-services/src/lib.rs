@@ -30,6 +30,9 @@ pub mod ai_worker;
 // 注入路径等价性分析与锁定测试见模块头）。
 pub mod ai_handler;
 pub mod cfg_bindings;
+// 蓝图 61 v0.314.33：SemanticCatalog 生产装载窄口（反馈槽/覆盖/控制
+// 绑定自目录派生；三服务共用）。
+pub mod catalog_gateway;
 pub mod collector;
 // SPEC-B（WP-B.2）：svc-control-dispatch 装配面下沉（fail-closed 阶梯 +
 // 出站通道；bin 退化为装配接线）。阶梯核心 host 可测（DoD B1：seL4 叶子
@@ -40,8 +43,11 @@ pub mod energy_agent_service;
 // SPEC-SERIES-2026-08-27/E（WP-E.3）：有界学习闭环（svc-ai-worker 宿主）。
 pub mod learn;
 pub mod obs_shadow;
+// 蓝图 61 v0.314.34：evaluator ↔ snapshot 差分测试（全模块 test-only）。
 pub mod remote_brain;
 pub mod service;
+#[cfg(test)]
+pub mod snapshot_diff;
 pub mod telemetry;
 // SPEC-C（WP-C.1）：TSDB 磁盘历史适配（D-TSDB-2 方案 A 句柄让渡）。
 pub mod telemetry_history;

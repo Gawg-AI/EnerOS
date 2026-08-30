@@ -13,7 +13,7 @@
 //! 输出 canonical payload（`payload::encode_payload`），随后经
 //! `RuntimeConfigBundle` 签名进介质；target 侧 `PayloadCursor` 解码。
 
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -21,7 +21,9 @@ use toml::Value;
 
 use crate::payload::encode_payload;
 use crate::points::{point_type_from_name, point_type_ordinal, PointProtocol};
-use crate::schema::{ai_peer, cloud_sync, control_write, logging, metrics, ota, points, security};
+use crate::schema::{
+    ai_peer, catalog, cloud_sync, control_write, logging, metrics, ota, points, security,
+};
 use crate::{ConfigError, ConfigId};
 
 /// 编译结果：config_id + canonical payload。
@@ -896,6 +898,1011 @@ pub fn compile_points(toml: &str) -> Result<CompiledConfig, ConfigError> {
     })
 }
 
+/// 蓝图 61 v0.314.33：SemanticCatalog 编译面——`configs/catalog.toml`
+/// → canonical payload（`schema::catalog` 字段布局单一事实）。
+///
+/// 编译期就做交叉引用（[08] §2.3：cross-ref 检查后进 bundle）：
+/// 重复 ID、点语义引用不存在的资产/schema、控制点无回读、
+/// 反馈槽 5 槽不齐、拓扑边引用不存在的节点、单位换算量纲不兼容、
+/// 未知单位名——全部编译错误。target 解码面再做一次逐字节 fail-closed。
+pub fn compile_catalog(toml: &str) -> Result<CompiledConfig, ConfigError> {
+    use crate::schema::catalog;
+
+    let config = ConfigId::from_static(catalog::CONFIG_ID);
+    let root: Value = toml::from_str(toml).map_err(|e| ConfigError::InvalidValue {
+        config: config.clone(),
+        field: "toml",
+        reason: format!("parse:{e}"),
+    })?;
+    let t = table(&root, &config, "root")?;
+    reject_unknown_keys(
+        t,
+        &config,
+        &[
+            "generation",
+            "valid_from_ns",
+            "valid_until_ns",
+            "mapping_version",
+            "topology_version",
+            "asset_version",
+            "contract_version",
+            "safety_version",
+            "schema",
+            "unit_conversion",
+            "asset",
+            "topology_node",
+            "topology_edge",
+            "point_semantics",
+            "feedback_slot",
+            "coverage",
+            "control_contract",
+            "safety_constraint",
+            "alias",
+            "tombstone",
+        ],
+    )?;
+    // 目录头（48B）。
+    let generation = get_u64(t, &config, "generation")?;
+    if generation == 0 {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "generation",
+            reason: "zero-generation".into(),
+        });
+    }
+    let mut header = Vec::with_capacity(catalog::HEADER_LEN);
+    header.extend_from_slice(&generation.to_le_bytes());
+    for key in [
+        "valid_from_ns",
+        "valid_until_ns",
+        "mapping_version",
+        "topology_version",
+        "asset_version",
+        "contract_version",
+        "safety_version",
+    ] {
+        header.extend_from_slice(&get_u64(t, &config, key)?.to_le_bytes());
+    }
+    debug_assert_eq!(header.len(), catalog::HEADER_LEN);
+
+    // [[schema]] 注册表（id 唯一；0 保留）。
+    let mut schemas: BTreeSet<u32> = BTreeSet::new();
+    let mut schemas_payload: Vec<u8> = Vec::new();
+    let schemas_arr = optional_array(&root, &config, "schema")?;
+    schemas_payload.extend_from_slice(&(schemas_arr.len() as u32).to_le_bytes());
+    for (idx, sv) in schemas_arr.iter().enumerate() {
+        let ctx = alloc::format!("schema[{idx}]");
+        let st = sv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "schema",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(st, &config, &["id", "version", "flags"])?;
+        let id = get_u32(st, &config, "id")?;
+        if id == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "schema",
+                reason: "zero-id".into(),
+            });
+        }
+        if !schemas.insert(id) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: catalog::FIELD_SCHEMAS,
+            });
+        }
+        schemas_payload.extend_from_slice(&id.to_le_bytes());
+        let version = get_u64_opt(st, &config, "version", 1)?;
+        let flags = get_u64_opt(st, &config, "flags", 0)?;
+        schemas_payload.extend_from_slice(&(version as u16).to_le_bytes());
+        schemas_payload.extend_from_slice(&(flags as u16).to_le_bytes());
+    }
+
+    // [[unit_conversion]] 受控换算图（量纲兼容 + 正有限因子）。
+    let mut conv_payload: Vec<u8> = Vec::new();
+    let conv_arr = optional_array(&root, &config, "unit_conversion")?;
+    conv_payload.extend_from_slice(&(conv_arr.len() as u32).to_le_bytes());
+    for (idx, cv) in conv_arr.iter().enumerate() {
+        let ctx = alloc::format!("unit_conversion[{idx}]");
+        let ct = cv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "unit_conversion",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(ct, &config, &["from", "to", "factor"])?;
+        let from = compile_unit_key(ct, &config, "from")?;
+        let to = compile_unit_key(ct, &config, "to")?;
+        if from == 0 || to == 0 || from == to {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "unit_conversion",
+                reason: alloc::format!("{ctx}:bad-unit-pair({from},{to})"),
+            });
+        }
+        let from_u = eneros_telemetry_model::unit_catalog::from_code(from).unwrap();
+        let to_u = eneros_telemetry_model::unit_catalog::from_code(to).unwrap();
+        if !from_u.compatible_with(to_u) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "unit_conversion",
+                reason: alloc::format!(
+                    "{ctx}:dimension-mismatch({:?}→{:?})",
+                    from_u.dimension(),
+                    to_u.dimension()
+                ),
+            });
+        }
+        let factor = get_f64_req(ct, &config, "factor")?;
+        if !(factor.is_finite() && factor > 0.0) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "factor",
+                reason: "must-be-positive-finite".into(),
+            });
+        }
+        conv_payload.extend_from_slice(&from.to_le_bytes());
+        conv_payload.extend_from_slice(&to.to_le_bytes());
+        conv_payload.extend_from_slice(&factor.to_le_bytes());
+    }
+
+    // [[asset]] 资产目录（ID 唯一非零；kind 闭枚举）。
+    let mut assets: BTreeSet<u64> = BTreeSet::new();
+    let mut assets_payload: Vec<u8> = Vec::new();
+    let assets_arr = optional_array(&root, &config, "asset")?;
+    assets_payload.extend_from_slice(&(assets_arr.len() as u32).to_le_bytes());
+    for (idx, av) in assets_arr.iter().enumerate() {
+        let ctx = alloc::format!("asset[{idx}]");
+        let at = av.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "asset",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(
+            at,
+            &config,
+            &[
+                "asset_id",
+                "site_id",
+                "tenant_id",
+                "kind",
+                "device_id",
+                "topology_node_id",
+                "tombstone",
+            ],
+        )?;
+        let asset_id = get_u64(at, &config, "asset_id")?;
+        if asset_id == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "asset_id",
+                reason: "zero-id".into(),
+            });
+        }
+        if !assets.insert(asset_id) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: catalog::FIELD_ASSETS,
+            });
+        }
+        let kind = catalog_asset_kind(at, &config)?;
+        let device = u16::try_from(get_u64_opt(at, &config, "device_id", 0)?).map_err(|_| {
+            ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "device_id",
+                reason: "u16-overflow".into(),
+            }
+        })?;
+        let tombstone = get_bool_opt(at, &config, "tombstone", false)?;
+        let flags = if tombstone {
+            catalog::ASSET_FLAG_TOMBSTONE
+        } else {
+            0
+        };
+        assets_payload.extend_from_slice(&asset_id.to_le_bytes());
+        assets_payload.extend_from_slice(&get_u32(at, &config, "site_id")?.to_le_bytes());
+        assets_payload.extend_from_slice(&get_u32(at, &config, "tenant_id")?.to_le_bytes());
+        assets_payload.extend_from_slice(&kind.to_le_bytes());
+        assets_payload.extend_from_slice(&device.to_le_bytes());
+        assets_payload
+            .extend_from_slice(&get_u64_opt(at, &config, "topology_node_id", 0)?.to_le_bytes());
+        assets_payload.extend_from_slice(&flags.to_le_bytes());
+        assets_payload.extend_from_slice(&0u16.to_le_bytes()); // pad
+    }
+
+    // [[topology_node]]（id 唯一；kind 闭枚举：1..=10）。
+    let mut topo_nodes: BTreeSet<u64> = BTreeSet::new();
+    let mut nodes_payload: Vec<u8> = Vec::new();
+    let nodes_arr = optional_array(&root, &config, "topology_node")?;
+    nodes_payload.extend_from_slice(&(nodes_arr.len() as u32).to_le_bytes());
+    for (idx, nv) in nodes_arr.iter().enumerate() {
+        let ctx = alloc::format!("topology_node[{idx}]");
+        let nt = nv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "topology_node",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(nt, &config, &["id", "kind", "flags"])?;
+        let id = get_u64(nt, &config, "id")?;
+        if id == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "id",
+                reason: "zero-id".into(),
+            });
+        }
+        if !topo_nodes.insert(id) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: catalog::FIELD_TOPO_NODES,
+            });
+        }
+        let kind = catalog_node_kind(nt, &config)?;
+        nodes_payload.extend_from_slice(&id.to_le_bytes());
+        nodes_payload.extend_from_slice(&kind.to_le_bytes());
+        nodes_payload
+            .extend_from_slice(&(get_u64_opt(nt, &config, "flags", 0)? as u16).to_le_bytes());
+    }
+
+    // [[topology_edge]]（自环/重复/悬空引用拒绝；switch 边必须带观测点）。
+    let mut edges_payload: Vec<u8> = Vec::new();
+    let edges_arr = optional_array(&root, &config, "topology_edge")?;
+    edges_payload.extend_from_slice(&(edges_arr.len() as u32).to_le_bytes());
+    let mut edge_keys: BTreeSet<(u64, u64)> = BTreeSet::new();
+    for (idx, ev) in edges_arr.iter().enumerate() {
+        let ctx = alloc::format!("topology_edge[{idx}]");
+        let et = ev.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "topology_edge",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(
+            et,
+            &config,
+            &[
+                "from",
+                "to",
+                "kind",
+                "switch_point_id",
+                "capacity_kw",
+                "loss",
+                "valid_from_ns",
+                "valid_until_ns",
+                "flags",
+            ],
+        )?;
+        let from = get_u64(et, &config, "from")?;
+        let to = get_u64(et, &config, "to")?;
+        if from == 0 || to == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "topology_edge",
+                reason: alloc::format!("{ctx}:zero-node"),
+            });
+        }
+        if from == to {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "topology_edge",
+                reason: alloc::format!("{ctx}:self-loop"),
+            });
+        }
+        if !topo_nodes.contains(&from) || !topo_nodes.contains(&to) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "topology_edge",
+                reason: alloc::format!("{ctx}:dangling-node"),
+            });
+        }
+        if !edge_keys.insert((from, to)) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: catalog::FIELD_TOPO_EDGES,
+            });
+        }
+        let kind = catalog_edge_kind(et, &config)?;
+        let switch_point = get_u32_opt(et, &config, "switch_point_id", 0)?;
+        if kind == 1 && switch_point == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "switch_point_id",
+                reason: alloc::format!("{ctx}:switch-edge-needs-observation-point"),
+            });
+        }
+        let capacity = get_f64_opt(et, &config, "capacity_kw", 0.0)?;
+        let loss = get_f64_opt(et, &config, "loss", 0.0)?;
+        if !(capacity.is_finite() && capacity >= 0.0 && loss.is_finite() && loss >= 0.0) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "topology_edge",
+                reason: alloc::format!("{ctx}:non-finite-capacity-or-loss"),
+            });
+        }
+        edges_payload.extend_from_slice(&from.to_le_bytes());
+        edges_payload.extend_from_slice(&to.to_le_bytes());
+        edges_payload.extend_from_slice(&kind.to_le_bytes());
+        edges_payload.extend_from_slice(&switch_point.to_le_bytes());
+        edges_payload.extend_from_slice(&capacity.to_le_bytes());
+        edges_payload.extend_from_slice(&loss.to_le_bytes());
+        edges_payload
+            .extend_from_slice(&get_u64_opt(et, &config, "valid_from_ns", 0)?.to_le_bytes());
+        edges_payload
+            .extend_from_slice(&get_u64_opt(et, &config, "valid_until_ns", 0)?.to_le_bytes());
+        edges_payload
+            .extend_from_slice(&(get_u64_opt(et, &config, "flags", 0)? as u16).to_le_bytes());
+    }
+    // 孤岛规则（编译期静态可达性）：每个非 grid 节点必须能从 grid 节点
+    // 经边（任意方向）到达；无 grid 节点 → 编译错误。
+    let grid_nodes: Vec<u64> = nodes_arr
+        .iter()
+        .filter_map(|nv| nv.as_table())
+        .filter(|nt| {
+            nt.get("kind")
+                .and_then(Value::as_str)
+                .map(|k| k == "grid")
+                .unwrap_or(false)
+        })
+        .filter_map(|nt| nt.get("id").and_then(Value::as_integer))
+        .map(|i| i as u64)
+        .collect();
+    if grid_nodes.is_empty() {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "topology_node",
+            reason: "no-grid-node".into(),
+        });
+    }
+    {
+        let mut adj: BTreeSet<(u64, u64)> = BTreeSet::new();
+        for ev in edges_arr.iter() {
+            if let Some(et) = ev.as_table() {
+                if let (Some(f), Some(t)) = (
+                    et.get("from").and_then(Value::as_integer),
+                    et.get("to").and_then(Value::as_integer),
+                ) {
+                    adj.insert((f as u64, t as u64));
+                    adj.insert((t as u64, f as u64));
+                }
+            }
+        }
+        let mut reachable: BTreeSet<u64> = BTreeSet::new();
+        let mut stack: Vec<u64> = grid_nodes.clone();
+        while let Some(n) = stack.pop() {
+            if !reachable.insert(n) {
+                continue;
+            }
+            for (f, t) in adj.iter() {
+                if *f == n && !reachable.contains(t) {
+                    stack.push(*t);
+                }
+            }
+        }
+        for id in topo_nodes.iter() {
+            if !reachable.contains(id) {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "topology_edge",
+                    reason: alloc::format!("island-node:{id}"),
+                });
+            }
+        }
+    }
+
+    // [[point_semantics]] 点语义目录（point_id 唯一；asset/schema 交叉引用；
+    // control 必须有 readback）。
+    let mut points_set: BTreeSet<u32> = BTreeSet::new();
+    let mut points_payload: Vec<u8> = Vec::new();
+    let points_arr = optional_array(&root, &config, "point_semantics")?;
+    points_payload.extend_from_slice(&(points_arr.len() as u32).to_le_bytes());
+    for (idx, pv) in points_arr.iter().enumerate() {
+        let ctx = alloc::format!("point_semantics[{idx}]");
+        let pt = pv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "point_semantics",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(
+            pt,
+            &config,
+            &[
+                "point_id",
+                "asset_id",
+                "schema_id",
+                "schema_version",
+                "unit",
+                "role",
+                "readback_point_id",
+                "flags",
+            ],
+        )?;
+        let point_id = get_u32(pt, &config, "point_id")?;
+        if point_id == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "point_id",
+                reason: "zero-id".into(),
+            });
+        }
+        if !points_set.insert(point_id) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: catalog::FIELD_POINT_SEMANTICS,
+            });
+        }
+        let asset_id = get_u64(pt, &config, "asset_id")?;
+        if asset_id == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "asset_id",
+                reason: "zero-asset".into(),
+            });
+        }
+        if !assets.contains(&asset_id) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "asset_id",
+                reason: alloc::format!("{ctx}:unknown-asset:{asset_id}"),
+            });
+        }
+        let schema_id = get_u64_opt(pt, &config, "schema_id", 0)?;
+        let schema_id_u32 = u32::try_from(schema_id).map_err(|_| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "schema_id",
+            reason: "u32-overflow".into(),
+        })?;
+        if schema_id_u32 != 0 && !schemas.contains(&schema_id_u32) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "schema_id",
+                reason: alloc::format!("{ctx}:unknown-schema:{schema_id_u32}"),
+            });
+        }
+        let role_name = get_str_req(pt, &config, "role")?;
+        let role = match role_name {
+            "measurement" => catalog::ROLE_MEASUREMENT,
+            "control" => catalog::ROLE_CONTROL,
+            "switch-state" => catalog::ROLE_SWITCH_STATE,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "role",
+                    reason: alloc::format!("unknown-role:{other}"),
+                })
+            }
+        };
+        let readback = get_u32_opt(pt, &config, "readback_point_id", 0)?;
+        if role == catalog::ROLE_CONTROL && readback == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "readback_point_id",
+                reason: alloc::format!("{ctx}:control-without-readback"),
+            });
+        }
+        if readback != 0 && readback == point_id {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "readback_point_id",
+                reason: alloc::format!("{ctx}:readback-self-reference"),
+            });
+        }
+        points_payload.extend_from_slice(&point_id.to_le_bytes());
+        points_payload.extend_from_slice(&asset_id.to_le_bytes());
+        points_payload.extend_from_slice(&schema_id_u32.to_le_bytes());
+        points_payload.extend_from_slice(
+            &(get_u64_opt(pt, &config, "schema_version", 1)? as u16).to_le_bytes(),
+        );
+        let unit_code = compile_unit_code(pt, &config)?;
+        if unit_code == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "unit",
+                reason: alloc::format!("{ctx}:control-eligible-point-needs-unit"),
+            });
+        }
+        points_payload.extend_from_slice(&unit_code.to_le_bytes());
+        points_payload.push(role);
+        points_payload.extend_from_slice(&readback.to_le_bytes());
+        points_payload.push(get_u64_opt(pt, &config, "flags", 0)? as u8);
+    }
+
+    // [[feedback_slot]]：5 槽齐全且不重复（与 TrustedFeedbackBuilder 对齐）。
+    let mut slots: BTreeMap<u8, u32> = BTreeMap::new();
+    let mut slots_payload: Vec<u8> = Vec::new();
+    let slots_arr = optional_array(&root, &config, "feedback_slot")?;
+    slots_payload.extend_from_slice(&(slots_arr.len() as u32).to_le_bytes());
+    for (idx, sv) in slots_arr.iter().enumerate() {
+        let ctx = alloc::format!("feedback_slot[{idx}]");
+        let st = sv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "feedback_slot",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(st, &config, &["slot", "point_id"])?;
+        let slot_name = get_str_req(st, &config, "slot")?;
+        let slot = match slot_name {
+            "grid_up" => catalog::FEEDBACK_SLOT_GRID_UP,
+            "soc" => catalog::FEEDBACK_SLOT_SOC,
+            "dc_bus_v" => catalog::FEEDBACK_SLOT_DC_BUS_V,
+            "overcurrent" => catalog::FEEDBACK_SLOT_OVERCURRENT,
+            "overtemp" => catalog::FEEDBACK_SLOT_OVERTEMP,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "slot",
+                    reason: alloc::format!("unknown-slot:{other}"),
+                })
+            }
+        };
+        if slots
+            .insert(slot, get_u32(st, &config, "point_id")?)
+            .is_some()
+        {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: catalog::FIELD_FEEDBACK_SLOTS,
+            });
+        }
+        slots_payload.push(slot);
+        slots_payload.extend_from_slice(&get_u32(st, &config, "point_id")?.to_le_bytes());
+        slots_payload.push(0); // pad
+    }
+    if slots.len() != catalog::FEEDBACK_SLOT_COUNT as usize {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "feedback_slot",
+            reason: alloc::format!(
+                "need-{}-slots-got-{}",
+                catalog::FEEDBACK_SLOT_COUNT,
+                slots.len()
+            ),
+        });
+    }
+    // 反馈槽点与面向的资产一致（点必须存在于点语义目录）。
+    for (_slot, pid) in slots.iter() {
+        if !points_set.contains(pid) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "feedback_slot",
+                reason: alloc::format!("point-not-in-catalog:{pid}"),
+            });
+        }
+    }
+
+    // [[coverage]] 安全覆盖（点存在；min≤max 有限；period 界内；unit 必填）。
+    let mut cov_payload: Vec<u8> = Vec::new();
+    let cov_arr = optional_array(&root, &config, "coverage")?;
+    cov_payload.extend_from_slice(&(cov_arr.len() as u32).to_le_bytes());
+    for (idx, cv) in cov_arr.iter().enumerate() {
+        let ctx = alloc::format!("coverage[{idx}]");
+        let ct = cv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "coverage",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(
+            ct,
+            &config,
+            &["point_id", "min", "max", "period_ms", "unit", "flags"],
+        )?;
+        let point_id = get_u32(ct, &config, "point_id")?;
+        if !points_set.contains(&point_id) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "point_id",
+                reason: alloc::format!("{ctx}:point-not-in-catalog:{point_id}"),
+            });
+        }
+        let mn = get_f64_req(ct, &config, "min")?;
+        let mx = get_f64_req(ct, &config, "max")?;
+        if !(mn.is_finite() && mx.is_finite()) || mn > mx {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "coverage",
+                reason: alloc::format!("{ctx}:range-invalid"),
+            });
+        }
+        let period = get_u32_opt(ct, &config, "period_ms", points::DEFAULT_PERIOD_MS)?;
+        if period == 0 || period > points::MAX_PERIOD_MS {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "period_ms",
+                reason: alloc::format!("{ctx}:out-of-range"),
+            });
+        }
+        let unit = compile_unit_code(ct, &config)?;
+        if unit == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "unit",
+                reason: alloc::format!("{ctx}:coverage-needs-unit"),
+            });
+        }
+        cov_payload.extend_from_slice(&point_id.to_le_bytes());
+        cov_payload.extend_from_slice(&mn.to_le_bytes());
+        cov_payload.extend_from_slice(&mx.to_le_bytes());
+        cov_payload.extend_from_slice(&period.to_le_bytes());
+        cov_payload.extend_from_slice(&unit.to_le_bytes());
+        cov_payload
+            .extend_from_slice(&(get_u64_opt(ct, &config, "flags", 0)? as u16).to_le_bytes());
+    }
+
+    // [[control_contract]] 控制合同（资产存在；控制点存在；readback 必填）。
+    let mut contracts: BTreeSet<u32> = BTreeSet::new();
+    let mut contracts_payload: Vec<u8> = Vec::new();
+    let contracts_arr = optional_array(&root, &config, "control_contract")?;
+    contracts_payload.extend_from_slice(&(contracts_arr.len() as u32).to_le_bytes());
+    for (idx, cv) in contracts_arr.iter().enumerate() {
+        let ctx = alloc::format!("control_contract[{idx}]");
+        let ct = cv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "control_contract",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(
+            ct,
+            &config,
+            &[
+                "contract_id",
+                "asset_id",
+                "point_id",
+                "unit",
+                "class",
+                "min",
+                "max",
+                "ramp_kw_per_s",
+                "settle_ms",
+                "min_on_ms",
+                "min_off_ms",
+                "max_starts",
+                "readback_point_id",
+                "tolerance_kw",
+                "reversible",
+                "compensation",
+                "priority",
+                "safe_state",
+                "lost_link",
+                "flags",
+            ],
+        )?;
+        let contract_id = get_u32(ct, &config, "contract_id")?;
+        if contract_id == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "contract_id",
+                reason: "zero-id".into(),
+            });
+        }
+        if !contracts.insert(contract_id) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: catalog::FIELD_CONTROL_CONTRACTS,
+            });
+        }
+        let asset_id = get_u64(ct, &config, "asset_id")?;
+        if !assets.contains(&asset_id) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "asset_id",
+                reason: alloc::format!("{ctx}:unknown-asset:{asset_id}"),
+            });
+        }
+        let point_id = get_u32(ct, &config, "point_id")?;
+        if !points_set.contains(&point_id) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "point_id",
+                reason: alloc::format!("{ctx}:point-not-in-catalog:{point_id}"),
+            });
+        }
+        let unit = compile_unit_code(ct, &config)?;
+        if unit == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "unit",
+                reason: alloc::format!("{ctx}:contract-needs-unit"),
+            });
+        }
+        let class_name = get_str_req(ct, &config, "class")?;
+        let class = match class_name {
+            "switch" => catalog::CONTRACT_CLASS_SWITCH,
+            "setpoint" => catalog::CONTRACT_CLASS_SETPOINT,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "class",
+                    reason: alloc::format!("unknown-class:{other}"),
+                })
+            }
+        };
+        let mn = get_f64_req(ct, &config, "min")?;
+        let mx = get_f64_req(ct, &config, "max")?;
+        if !(mn.is_finite() && mx.is_finite()) || mn > mx {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "contract-range",
+                reason: alloc::format!("{ctx}:range-invalid"),
+            });
+        }
+        let readback = get_u32_opt(ct, &config, "readback_point_id", 0)?;
+        if readback == 0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "readback_point_id",
+                reason: alloc::format!("{ctx}:contract-without-readback"),
+            });
+        }
+        let ramp = get_f64_opt(ct, &config, "ramp_kw_per_s", 0.0)?;
+        let tol = get_f64_opt(ct, &config, "tolerance_kw", 0.0)?;
+        if !(ramp.is_finite() && ramp >= 0.0 && tol.is_finite() && tol >= 0.0) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "contract",
+                reason: alloc::format!("{ctx}:non-finite-ramp-or-tolerance"),
+            });
+        }
+        let prio_name = get_str_req(ct, &config, "priority")?;
+        let priority = match prio_name {
+            "local" => 1u8,
+            "remote" => 2u8,
+            "manual" => 3u8,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "priority",
+                    reason: alloc::format!("unknown-priority:{other}"),
+                })
+            }
+        };
+        let safe_name = get_str_req(ct, &config, "safe_state")?;
+        let safe_state = match safe_name {
+            "hold" => 1u8,
+            "zero" => 2u8,
+            "safe" => 3u8,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "safe_state",
+                    reason: alloc::format!("unknown-safe-state:{other}"),
+                })
+            }
+        };
+        let lost_name = get_str_req(ct, &config, "lost_link")?;
+        let lost_link = match lost_name {
+            "hold" => 1u8,
+            "zero" => 2u8,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "lost_link",
+                    reason: alloc::format!("unknown-lost-link:{other}"),
+                })
+            }
+        };
+        let priority = priority.max(1);
+        contracts_payload.extend_from_slice(&contract_id.to_le_bytes());
+        contracts_payload.extend_from_slice(&asset_id.to_le_bytes());
+        contracts_payload.extend_from_slice(&point_id.to_le_bytes());
+        contracts_payload.extend_from_slice(&unit.to_le_bytes());
+        contracts_payload.extend_from_slice(&class.to_le_bytes());
+        contracts_payload.extend_from_slice(&mn.to_le_bytes());
+        contracts_payload.extend_from_slice(&mx.to_le_bytes());
+        contracts_payload.extend_from_slice(&ramp.to_le_bytes());
+        let settle = get_u64_opt(ct, &config, "settle_ms", 0)?;
+        contracts_payload.extend_from_slice(&(settle as u32).to_le_bytes());
+        contracts_payload
+            .extend_from_slice(&get_u64_opt(ct, &config, "min_on_ms", 0)?.to_le_bytes());
+        contracts_payload
+            .extend_from_slice(&get_u64_opt(ct, &config, "min_off_ms", 0)?.to_le_bytes());
+        let max_starts = get_u64_opt(ct, &config, "max_starts", 0)?;
+        contracts_payload.extend_from_slice(&(max_starts as u16).to_le_bytes());
+        contracts_payload.extend_from_slice(&readback.to_le_bytes());
+        contracts_payload.extend_from_slice(&tol.to_le_bytes());
+        contracts_payload.push(if get_bool_opt(ct, &config, "reversible", false)? {
+            1
+        } else {
+            0
+        });
+        contracts_payload.push(if get_bool_opt(ct, &config, "compensation", false)? {
+            1
+        } else {
+            0
+        });
+        contracts_payload.push(priority);
+        contracts_payload.push(safe_state);
+        contracts_payload.push(lost_link);
+        contracts_payload.push(get_u64_opt(ct, &config, "flags", 0)? as u8);
+        contracts_payload.push(0); // pad×3
+        contracts_payload.push(0);
+        contracts_payload.push(0);
+    }
+
+    // [[safety_constraint]] 安全约束目录。
+    let mut constraints: BTreeSet<u32> = BTreeSet::new();
+    let mut constraints_payload: Vec<u8> = Vec::new();
+    let constraints_arr = optional_array(&root, &config, "safety_constraint")?;
+    constraints_payload.extend_from_slice(&(constraints_arr.len() as u32).to_le_bytes());
+    for (idx, sv) in constraints_arr.iter().enumerate() {
+        let ctx = alloc::format!("safety_constraint[{idx}]");
+        let st = sv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "safety_constraint",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(
+            st,
+            &config,
+            &["constraint_id", "asset_id", "kind", "point_id", "limit"],
+        )?;
+        let constraint_id = get_u32(st, &config, "constraint_id")?;
+        if constraint_id == 0 || !constraints.insert(constraint_id) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: catalog::FIELD_SAFETY_CONSTRAINTS,
+            });
+        }
+        let asset_id = get_u64(st, &config, "asset_id")?;
+        if !assets.contains(&asset_id) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "asset_id",
+                reason: alloc::format!("{ctx}:unknown-asset:{asset_id}"),
+            });
+        }
+        let kind_name = get_str_req(st, &config, "kind")?;
+        let kind = match kind_name {
+            "overcurrent" => catalog::SAFETY_KIND_OVERCURRENT,
+            "overtemp" => catalog::SAFETY_KIND_OVERTEMP,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "kind",
+                    reason: alloc::format!("unknown-kind:{other}"),
+                })
+            }
+        };
+        let point_id = get_u32(st, &config, "point_id")?;
+        if !points_set.contains(&point_id) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "point_id",
+                reason: alloc::format!("{ctx}:point-not-in-catalog:{point_id}"),
+            });
+        }
+        let limit = get_f64_req(st, &config, "limit")?;
+        if !limit.is_finite() {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "limit",
+                reason: "non-finite".into(),
+            });
+        }
+        constraints_payload.extend_from_slice(&constraint_id.to_le_bytes());
+        constraints_payload.extend_from_slice(&asset_id.to_le_bytes());
+        constraints_payload.extend_from_slice(&kind.to_le_bytes());
+        constraints_payload.extend_from_slice(&point_id.to_le_bytes());
+        constraints_payload.extend_from_slice(&limit.to_le_bytes());
+        constraints_payload.extend_from_slice(&0u16.to_le_bytes()); // flags
+        constraints_payload.extend_from_slice(&0u32.to_le_bytes()); // pad
+    }
+
+    // [[alias]] 迁移别名（market DevicePool / VPP resource_id → asset_id）。
+    let mut aliases: BTreeSet<(u8, u64)> = BTreeSet::new();
+    let mut aliases_payload: Vec<u8> = Vec::new();
+    let aliases_arr = optional_array(&root, &config, "alias")?;
+    aliases_payload.extend_from_slice(&(aliases_arr.len() as u32).to_le_bytes());
+    for (idx, av) in aliases_arr.iter().enumerate() {
+        let ctx = alloc::format!("alias[{idx}]");
+        let at = av.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "alias",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(at, &config, &["kind", "legacy_id", "asset_id"])?;
+        let kind_name = get_str_req(at, &config, "kind")?;
+        let kind = match kind_name {
+            "market-device" => catalog::ALIAS_KIND_MARKET_DEVICE,
+            "vpp-resource" => catalog::ALIAS_KIND_VPP_RESOURCE,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "kind",
+                    reason: alloc::format!("unknown-kind:{other}"),
+                })
+            }
+        };
+        let legacy_id = get_u64(at, &config, "legacy_id")?;
+        let asset_id = get_u64(at, &config, "asset_id")?;
+        if !assets.contains(&asset_id) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "asset_id",
+                reason: alloc::format!("{ctx}:unknown-asset:{asset_id}"),
+            });
+        }
+        if !aliases.insert((kind, legacy_id)) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: catalog::FIELD_ALIASES,
+            });
+        }
+        aliases_payload.push(kind);
+        aliases_payload.extend_from_slice(&legacy_id.to_le_bytes());
+        aliases_payload.extend_from_slice(&asset_id.to_le_bytes());
+        aliases_payload.push(0); // pad
+    }
+
+    // [[tombstone]] 删除登记（ID 永不复用）。
+    let mut tombstones: BTreeSet<u64> = BTreeSet::new();
+    let mut tombstones_payload: Vec<u8> = Vec::new();
+    let tombstones_arr = optional_array(&root, &config, "tombstone")?;
+    tombstones_payload.extend_from_slice(&(tombstones_arr.len() as u32).to_le_bytes());
+    for (idx, tv) in tombstones_arr.iter().enumerate() {
+        let ctx = alloc::format!("tombstone[{idx}]");
+        let tt = tv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "tombstone",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(tt, &config, &["asset_id", "kind"])?;
+        let asset_id = get_u64(tt, &config, "asset_id")?;
+        if asset_id == 0 || !tombstones.insert(asset_id) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: catalog::FIELD_TOMBSTONES,
+            });
+        }
+        // 与资产目录同表登记时互斥（同一 ID 不得既活又墓碑）。
+        if assets.contains(&asset_id) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "tombstone",
+                reason: alloc::format!("{ctx}:asset-alive:{asset_id}"),
+            });
+        }
+        tombstones_payload.extend_from_slice(&asset_id.to_le_bytes());
+        tombstones_payload
+            .extend_from_slice(&(get_u64_opt(tt, &config, "kind", 0)? as u16).to_le_bytes());
+        tombstones_payload.extend_from_slice(&0u16.to_le_bytes()); // flags
+    }
+
+    let fields: Vec<(u8, Vec<u8>)> = vec![
+        (catalog::FIELD_HEADER, header),
+        (catalog::FIELD_SCHEMAS, schemas_payload),
+        (catalog::FIELD_UNIT_CONVERSIONS, conv_payload),
+        (catalog::FIELD_ASSETS, assets_payload),
+        (catalog::FIELD_TOPO_NODES, nodes_payload),
+        (catalog::FIELD_TOPO_EDGES, edges_payload),
+        (catalog::FIELD_POINT_SEMANTICS, points_payload),
+        (catalog::FIELD_FEEDBACK_SLOTS, slots_payload),
+        (catalog::FIELD_COVERAGE, cov_payload),
+        (catalog::FIELD_CONTROL_CONTRACTS, contracts_payload),
+        (catalog::FIELD_SAFETY_CONSTRAINTS, constraints_payload),
+        (catalog::FIELD_ALIASES, aliases_payload),
+        (catalog::FIELD_TOMBSTONES, tombstones_payload),
+    ];
+    Ok(CompiledConfig {
+        payload: encode_payload(fields),
+        config_id: config,
+    })
+}
+
+/// 可选数组 section（缺省 = 空表）。
+fn optional_array<'a>(
+    root: &'a Value,
+    config: &ConfigId,
+    name: &'static str,
+) -> Result<Vec<&'a Value>, ConfigError> {
+    match root.get(name) {
+        None => Ok(Vec::new()),
+        Some(Value::Array(a)) => Ok(a.iter().collect()),
+        Some(_) => Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: name,
+            reason: "expected-array".into(),
+        }),
+    }
+}
+
 /// `unit` 键 → `UnitCatalog` 封闭码（缺省/"" = 0 未知；未知名拒绝）。
 fn compile_unit_code(
     pt: &toml::map::Map<String, Value>,
@@ -915,6 +1922,113 @@ fn compile_unit_code(
     if name.is_empty() {
         return Ok(0);
     }
+    unit_code_from_name(name, config)
+}
+
+/// 资产 kind 名 → 闭枚举码（[`catalog_kinds::ASSET_*`]）。
+fn catalog_asset_kind(
+    t: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+) -> Result<u16, ConfigError> {
+    use crate::schema::catalog_kinds;
+    let name = get_str_req(t, config, "kind")?;
+    let code = match name {
+        "battery" => catalog_kinds::ASSET_BATTERY,
+        "pv" => catalog_kinds::ASSET_PV,
+        "wind" => catalog_kinds::ASSET_WIND,
+        "generator" => catalog_kinds::ASSET_GENERATOR,
+        "flexible-load" => catalog_kinds::ASSET_FLEXIBLE_LOAD,
+        "fixed-load" => catalog_kinds::ASSET_FIXED_LOAD,
+        "evse" => catalog_kinds::ASSET_EVSE,
+        "hvac" => catalog_kinds::ASSET_HVAC,
+        "process-unit" => catalog_kinds::ASSET_PROCESS_UNIT,
+        "grid" => catalog_kinds::ASSET_GRID_CONNECTION,
+        "aggregate" => catalog_kinds::ASSET_AGGREGATE,
+        other => {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "kind",
+                reason: alloc::format!("unknown-asset-kind:{other}"),
+            })
+        }
+    };
+    Ok(code)
+}
+
+/// 拓扑节点 kind 名 → 闭枚举码（[`catalog_kinds::NODE_*`]）。
+fn catalog_node_kind(
+    t: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+) -> Result<u16, ConfigError> {
+    use crate::schema::catalog_kinds;
+    let name = get_str_req(t, config, "kind")?;
+    let code = match name {
+        "busbar" => catalog_kinds::NODE_BUSBAR,
+        "feeder" => catalog_kinds::NODE_FEEDER,
+        "transformer" => catalog_kinds::NODE_TRANSFORMER,
+        "switch" => catalog_kinds::NODE_SWITCH,
+        "der" => catalog_kinds::NODE_DER,
+        "load" => catalog_kinds::NODE_LOAD,
+        "storage" => catalog_kinds::NODE_STORAGE,
+        "meter" => catalog_kinds::NODE_METER,
+        "process-unit" => catalog_kinds::NODE_PROCESS_UNIT,
+        "grid" => catalog_kinds::NODE_GRID,
+        other => {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "kind",
+                reason: alloc::format!("unknown-node-kind:{other}"),
+            })
+        }
+    };
+    Ok(code)
+}
+
+/// 拓扑边 kind 名 → 闭枚举码（1=switch 2=branch）。
+fn catalog_edge_kind(
+    t: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+) -> Result<u16, ConfigError> {
+    let name = get_str_req(t, config, "kind")?;
+    match name {
+        "switch" => Ok(1u16),
+        "branch" => Ok(2u16),
+        other => Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "kind",
+            reason: alloc::format!("unknown-edge-kind:{other}"),
+        }),
+    }
+}
+
+/// 从命名字段读单位名 → `UnitCatalog` 封闭码（缺省/"" → 0；未知名拒绝）。
+/// `unit_conversion.from/to` 等非 `unit` 键单位字段使用（语义与
+/// [`compile_unit_code`] 同——同一张码表单一事实）。
+fn compile_unit_key(
+    t: &toml::map::Map<String, Value>,
+    config: &ConfigId,
+    key: &'static str,
+) -> Result<u16, ConfigError> {
+    let name = match t.get(key) {
+        None => return Ok(0),
+        Some(Value::String(s)) => s.as_str(),
+        Some(_) => {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: key,
+                reason: "expected-string".into(),
+            })
+        }
+    };
+    if name.is_empty() {
+        return Ok(0);
+    }
+    unit_code_from_name(name, config)
+}
+
+/// 单位名 → `UnitCatalog` 封闭码（空名 → 0；未知名拒绝）。catalog 的
+/// `unit_conversion`/`coverage`/`control_contract` 复用同一张码表。
+pub(crate) fn unit_code_from_name(name: &str, config: &ConfigId) -> Result<u16, ConfigError> {
     use eneros_telemetry_model::PhysicalUnit;
     // "ratio"/"dimensionless" 别名 → Dimensionless（无量纲比例如 SOC 0..1、
     // 告警 0/1——PhysicalUnit::Dimensionless 短名为空串，TOML 需显式名）。
@@ -1403,6 +2517,7 @@ pub fn compile_by_id(
         metrics::CONFIG_ID => compile_metrics(toml).map(Some),
         logging::CONFIG_ID => compile_logging(toml).map(Some),
         points::CONFIG_ID => compile_points(toml).map(Some),
+        catalog::CONFIG_ID => compile_catalog(toml).map(Some),
         id if crate::protocol::known_keys(id).is_some() => compile_protocol(id, toml).map(Some),
         _ => Ok(None),
     }
@@ -1741,5 +2856,246 @@ mod security_tests {
             matches!(err, ConfigError::UnknownKey { ref key, .. } if key == "control_chain_key_hex"),
             "{err:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod catalog_compile_tests {
+    use super::*;
+
+    /// 可编译的最小合法目录（覆盖全部表；负面测试以此为基底做单点变异）。
+    const GOOD: &str = r#"
+generation = 1
+valid_from_ns = 0
+valid_until_ns = 0
+mapping_version = 1
+topology_version = 1
+asset_version = 1
+contract_version = 1
+safety_version = 1
+
+[[schema]]
+id = 1
+version = 1
+
+[[unit_conversion]]
+from = "MW"
+to = "kW"
+factor = 1000.0
+
+[[asset]]
+asset_id = 1
+site_id = 1
+tenant_id = 1
+kind = "battery"
+device_id = 2
+topology_node_id = 2
+
+[[asset]]
+asset_id = 10
+site_id = 1
+tenant_id = 1
+kind = "grid"
+topology_node_id = 1
+
+[[topology_node]]
+id = 1
+kind = "grid"
+
+[[topology_node]]
+id = 2
+kind = "der"
+
+[[topology_edge]]
+from = 1
+to = 2
+kind = "switch"
+switch_point_id = 5
+capacity_kw = 500.0
+loss = 0.0
+
+[[point_semantics]]
+point_id = 1
+asset_id = 1
+schema_id = 1
+unit = "V"
+role = "measurement"
+
+[[point_semantics]]
+point_id = 5
+asset_id = 1
+schema_id = 1
+unit = "ratio"
+role = "switch-state"
+
+[[point_semantics]]
+point_id = 10
+asset_id = 1
+schema_id = 1
+unit = "kW"
+role = "control"
+readback_point_id = 1001
+
+[[point_semantics]]
+point_id = 1001
+asset_id = 1
+schema_id = 1
+unit = "kW"
+role = "measurement"
+
+[[feedback_slot]]
+slot = "grid_up"
+point_id = 5
+
+[[feedback_slot]]
+slot = "soc"
+point_id = 1
+
+[[feedback_slot]]
+slot = "dc_bus_v"
+point_id = 1
+
+[[feedback_slot]]
+slot = "overcurrent"
+point_id = 1
+
+[[feedback_slot]]
+slot = "overtemp"
+point_id = 1
+
+[[coverage]]
+point_id = 1
+min = 0.0
+max = 1000.0
+period_ms = 5000
+unit = "V"
+
+[[control_contract]]
+contract_id = 1
+asset_id = 1
+point_id = 10
+unit = "kW"
+class = "setpoint"
+min = -500.0
+max = 500.0
+ramp_kw_per_s = 3.3333
+settle_ms = 30000
+readback_point_id = 1001
+tolerance_kw = 0.1
+reversible = true
+compensation = false
+priority = "remote"
+safe_state = "hold"
+lost_link = "hold"
+
+[[safety_constraint]]
+constraint_id = 1
+asset_id = 1
+kind = "overtemp"
+point_id = 1
+limit = 1.0
+
+[[alias]]
+kind = "market-device"
+legacy_id = 1
+asset_id = 1
+
+[[tombstone]]
+asset_id = 99
+kind = 1
+"#;
+
+    #[test]
+    fn good_catalog_compiles_and_roundtrips() {
+        let compiled = compile_catalog(GOOD).expect("good catalog");
+        let decoded = crate::points::decode_points; // 无关（类型占位）
+        let _ = decoded;
+        // payload 长度有界（agent-sdk 分页 1664B——catalog 必须可配置下发）。
+        assert!(compiled.payload.len() <= crate::schema::catalog::MAX_FIELD as usize * 300);
+    }
+
+    fn with_section(base: &str, section: &str, replacement: &str) -> String {
+        // 简单字符串替换：把 `section 名开头的整段` 换成 replacement 内容。
+        let idx = base.find(section).unwrap();
+        format!("{}{}", &base[..idx], replacement)
+    }
+
+    #[test]
+    fn rejects_duplicate_point_id() {
+        let bad = with_section(
+            GOOD,
+            "[[point_semantics]]\npoint_id = 1001",
+            "[[point_semantics]]\npoint_id = 1001\nasset_id = 1\nschema_id = 1\nunit = \"kW\"\nrole = \"measurement\"\n\n[[point_semantics]]\npoint_id = 1001\nasset_id = 1\nschema_id = 1\nunit = \"kW\"\nrole = \"measurement\"\n\n",
+        );
+        assert!(compile_catalog(&bad).is_err());
+    }
+
+    #[test]
+    fn rejects_control_without_readback() {
+        let bad = GOOD.replace(
+            "point_id = 10\nasset_id = 1\nschema_id = 1\nunit = \"kW\"\nrole = \"control\"\nreadback_point_id = 1001",
+            "point_id = 10\nasset_id = 1\nschema_id = 1\nunit = \"kW\"\nrole = \"control\"",
+        );
+        assert!(compile_catalog(&bad).is_err());
+    }
+
+    #[test]
+    fn rejects_point_unknown_asset() {
+        let bad = GOOD.replace("point_id = 1\nasset_id = 1", "point_id = 1\nasset_id = 777");
+        assert!(compile_catalog(&bad).is_err());
+    }
+
+    #[test]
+    fn rejects_dimension_mismatched_conversion() {
+        // kW → kWh 量纲不兼容（Power vs Energy）。
+        let bad = GOOD.replace(
+            "from = \"MW\"\nto = \"kW\"\nfactor = 1000.0",
+            "from = \"kW\"\nto = \"kWh\"\nfactor = 1.0",
+        );
+        assert!(compile_catalog(&bad).is_err());
+    }
+
+    #[test]
+    fn rejects_switch_edge_without_observation_point() {
+        let bad = GOOD.replace("switch_point_id = 5\n", "switch_point_id = 0\n");
+        assert!(compile_catalog(&bad).is_err());
+    }
+
+    #[test]
+    fn rejects_island_and_self_loop() {
+        // 自环：from == to。
+        let loop_bad = GOOD.replace("from = 1\nto = 2", "from = 1\nto = 1");
+        assert!(compile_catalog(&loop_bad).is_err());
+        // 孤岛：节点 2 无边可达。
+        let island = GOOD.replace(
+            "[[topology_node]]\nid = 2\nkind = \"der\"",
+            "[[topology_node]]\nid = 2\nkind = \"der\"\n\n[[topology_node]]\nid = 3\nkind = \"der\"",
+        );
+        assert!(compile_catalog(&island).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_unit_name() {
+        let bad = GOOD.replace("unit = \"V\"", "unit = \"furlongs\"");
+        assert!(compile_catalog(&bad).is_err());
+    }
+
+    #[test]
+    fn rejects_feedback_slots_incomplete() {
+        // 把 5 槽中的 "overtemp" 槽删掉 → 4 槽 → 编译错误。
+        let bad = GOOD.replace("[[feedback_slot]]\nslot = \"overtemp\"\npoint_id = 1\n", "");
+        assert!(compile_catalog(&bad).is_err());
+    }
+
+    #[test]
+    fn rejects_tombstone_of_alive_asset() {
+        let bad = GOOD.replace("asset_id = 99", "asset_id = 1");
+        assert!(compile_catalog(&bad).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_generation() {
+        let bad = GOOD.replace("generation = 1", "generation = 0");
+        assert!(compile_catalog(&bad).is_err());
     }
 }

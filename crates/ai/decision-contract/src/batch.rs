@@ -26,6 +26,26 @@ pub trait ResourceRegistry {
 /// 批大小上界（迁移期单 PCS=1；.40 Saga 卷放宽并加 Saga journal）。
 pub const MAX_BATCH_SIZE: usize = 64;
 
+/// fail-closed 空注册表（装配方未注入真实 Registry 时命令批编译拒绝：
+/// `asset_exists` 恒 false、绑定恒 None——[08] §4.8「planner 输入只能
+/// 查询 Registry」，无注册表 = 无计划编译）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EmptyResourceRegistry;
+
+impl ResourceRegistry for EmptyResourceRegistry {
+    fn asset_exists(&self, _asset_id: u64) -> bool {
+        false
+    }
+
+    fn asset_control_binding(&self, _asset_id: u64) -> Option<(u16, u32, u16)> {
+        None
+    }
+
+    fn catalog_version(&self) -> u64 {
+        0
+    }
+}
+
 /// 有序命令批（意图序 = 编译器裁决序；逐意图经 Gateway 授权）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandBatch {

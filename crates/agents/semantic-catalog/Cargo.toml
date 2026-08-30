@@ -1,0 +1,20 @@
+[package]
+name = "eneros-semantic-catalog"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图61 [08] §2 (v0.314.33) — SemanticCatalog 深模块：schema/单位/资产/拓扑/点语义/控制合同/安全约束目录与版本激活（no_std）"
+
+[dependencies]
+# canonical payload 帧解码 + catalog 字段布局单一事实（config-bundle；
+# 无环：config-bundle 不依赖本 crate）。
+eneros-config-bundle = { path = "../../runtime/config-bundle" }
+# 目录摘要（generation/digest 证据；no_std 兼容 sha2，event-store 先例）。
+sha2 = { version = "0.10.9", default-features = false }
+# UnitCatalog 封闭码表 + PhysicalUnit 量纲（单位换算图唯一事实）+
+# ObservationEvent 身份（ObservationKey 从事件派生）。
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
+[dev-dependencies]
+# host 编译面（catalog.toml 编译→解码往返测试；target 闭包不启用）。
+eneros-config-bundle = { path = "../../runtime/config-bundle", features = ["compile"] }

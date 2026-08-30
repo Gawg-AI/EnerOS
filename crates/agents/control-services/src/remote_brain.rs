@@ -105,6 +105,8 @@ pub enum PeerMsgVerdict {
 /// 远程 dual-brain 目标侧子集。实现 [`DecisionBackend`] 可直接装入
 /// [`crate::ai_worker::AiWorkerService`]。
 pub struct RemoteBrain<L: DecisionBackend, P: PeerLink> {
+    /// 蓝图 61 v0.314.35：目录合同版本（候选 stamped；0 = 未装配）。
+    pub catalog_version: u64,
     local: L,
     link: P,
     cfg: RemoteBrainConfig,
@@ -132,7 +134,18 @@ pub struct RemoteBrain<L: DecisionBackend, P: PeerLink> {
 
 impl<L: DecisionBackend, P: PeerLink> RemoteBrain<L, P> {
     pub fn new(local: L, link: P, cfg: RemoteBrainConfig) -> Self {
+        Self::with_catalog_ver(local, link, cfg, 0)
+    }
+
+    /// 目录版本注入（[08] §4.8：远程候选与 Registry 同代）。
+    pub fn with_catalog_ver(
+        local: L,
+        link: P,
+        cfg: RemoteBrainConfig,
+        catalog_version: u64,
+    ) -> Self {
         Self {
+            catalog_version,
             local,
             link,
             cfg,
@@ -272,9 +285,11 @@ impl<L: DecisionBackend, P: PeerLink> RemoteBrain<L, P> {
                 resp_summary,
             };
             self.last_meta = Some(meta);
-            let cand = crate::ai_worker::proposal_to_candidate_unbound(&plan).map_err(|e| {
-                DecisionReject::NoAction(alloc::format!("candidate-adapter: {e:?}"))
-            })?;
+            let cand =
+                crate::dispatch_service::candidate_from_proposal(&plan, self.catalog_version)
+                    .map_err(|e| {
+                        DecisionReject::NoAction(alloc::format!("candidate-adapter: {e:?}"))
+                    })?;
             return Ok(encode_candidate_payload(&cand));
         }
 

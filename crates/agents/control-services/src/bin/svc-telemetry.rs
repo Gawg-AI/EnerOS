@@ -174,7 +174,33 @@ impl TelemetryHandler<'_> {
             require_integrity: true,
             control_horizon_ms: 30_000,
         };
-        self.svc.apply_source_identity(descriptors, eval_config);
+        // 蓝图 61 v0.314.33：目录装载（安全覆盖/反馈槽单一事实源；替代
+        // 手写 SAFETY_COVERAGE_POINTS 装配——退出 gate：生产无手写
+        // coverage/feedback point）。目录不可得（legacy bundle）→ 以
+        // 装配参数覆盖运行（兼容轨；生产 bundle 必含 catalog 条目）。
+        let mut applied_config = eval_config;
+        if let Some(cat) = eneros_control_services::catalog_gateway::fetch_catalog(client) {
+            applied_config.coverage =
+                eneros_control_services::catalog_gateway::coverage_config(&cat.repo);
+            let d = cat.repo.digest();
+            eneros_runtime::println!(
+                "[svc-telemetry] CATALOG-ACTIVE gen={} digest={:02x}{:02x}{:02x}{:02x}",
+                cat.generation,
+                d[0],
+                d[1],
+                d[2],
+                d[3]
+            );
+            eneros_runtime::println!(
+                "[svc-telemetry] CATALOG-COVERAGE points={}",
+                applied_config.coverage.points.len()
+            );
+        } else {
+            eneros_runtime::println!(
+                "[svc-telemetry] CATALOG-MISSING —— coverage 走装配参数（legacy 轨，fail-closed 输入不变）"
+            );
+        }
+        self.svc.apply_source_identity(descriptors, applied_config);
         eneros_runtime::println!(
             "[svc-telemetry] OBS-CFG loaded sources={} generation={}",
             table.sources.len(),

@@ -121,6 +121,9 @@ pub struct HeuristicBackend {
     power_kw: f64,
     /// 决策路径标注（审计用）。
     path: eneros_dual_brain::DecisionPath,
+    /// 蓝图 61 v0.314.35：目录合同版本（候选计划 resource_catalog_version
+    /// 与 dispatch PlannerView 对照；bin 启动从目录装载，缺省 0）。
+    catalog_version: u64,
 }
 
 impl HeuristicBackend {
@@ -133,7 +136,14 @@ impl HeuristicBackend {
             charge_soc: soc_band::charge_soc(soc_band::FACTORY_HALF_WIDTH),
             power_kw: 5.0,
             path: eneros_dual_brain::DecisionPath::Fast,
+            catalog_version: 0,
         }
+    }
+
+    /// 目录版本注入（bin 启动装载；[08] §4.8 planner 输入与 Registry 同代）。
+    pub fn with_catalog_version(mut self, version: u64) -> Self {
+        self.catalog_version = version;
+        self
     }
 
     /// SPEC-SERIES-2026-08-27/E WP-E.3：运行期死区重设（学习闭环下游
@@ -191,7 +201,7 @@ impl DecisionBackend for HeuristicBackend {
             now_ms,
             Some(telemetry.provenance_digest),
         );
-        let cand = proposal_to_candidate_unbound(&plan)
+        let cand = crate::dispatch_service::candidate_from_proposal(&plan, self.catalog_version)
             .map_err(|e| DecisionReject::NoAction(alloc::format!("candidate-adapter: {e:?}")))?;
         Ok(encode_candidate_payload(&cand))
     }

@@ -10,6 +10,7 @@
 //! - 重复 sequence 重放（第 2 次零写 Rejected——幂等）；
 //! - rate 预算（超产品速率 → BudgetExceeded 零投递）；
 //! - 遥测过期（控制时域外 → TelemetryExpired）。
+mod support;
 
 use eneros_control_dispatch::{
     AuthenticatedActor, ControlDispatch, DeliveryChannel, DispatchConfig, DispatchEngine,
@@ -176,6 +177,7 @@ fn engine_with_chain(
     gate: DecisionGate,
     chain: ControlChain,
 ) -> DispatchEngine {
+    let profile = test_profile();
     let config = DispatchConfig {
         chain,
         key: KEY.to_vec(),
@@ -194,6 +196,13 @@ fn engine_with_chain(
         audit: Some(DecisionAudit::new([0x47; 32])),
         intent_log: Box::new(InMemoryIntentStore::new(64)),
         delivery: Box::new(channel),
+        resources: Box::new(support::TestResourceView {
+            asset_id: u64::from(profile.device_id),
+            device_id: profile.device_id as u16,
+            point_id: profile.point_id,
+            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+            catalog_version: 1,
+        }),
         feedback_mapping: FeedbackPointMapping {
             grid_up: 5,
             soc: 4,

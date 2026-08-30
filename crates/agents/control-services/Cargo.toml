@@ -42,6 +42,12 @@ eneros-config-bundle = { path = "../../runtime/config-bundle", default-features 
 eneros-ingestion-core = { path = "../../protocols/ingestion-core" }
 # 蓝图 61 v0.314.29：决策 wire 单源（CandidatePlan V1——旧 70B writer 已删）。
 eneros-decision-contract = { path = "../../ai/decision-contract", default-features = false }
+# 蓝图 61 v0.314.33：SemanticCatalog 目录仓库（反馈槽/覆盖/控制绑定生产单源）。
+eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }
+# 蓝图 61 v0.314.34：SnapshotModule（决策投影/差分测试；target 闭包按需）。
+eneros-snapshot-service = { path = "../../agents/snapshot-service" }
+# 蓝图 61 v0.314.35：ResourceRegistry（PlannerView——命令批编译绑定权威）。
+eneros-resource-registry = { path = "../../agents/resource-registry" }
 # 47（WP-47.4 审计持久化）：SHA-256 控制事件链（D4 线）。
 eneros-audit = { path = "../../security/audit" }
 # SPEC-C（WP-C.1 / D-TSDB-2 方案 A）：svc-telemetry 磁盘历史——TSDB 库、
@@ -63,3 +69,5 @@ sel4 = ["eneros-control-dispatch/sel4", "eneros-agent-sdk/sel4"]
 [dev-dependencies]
 # 服务逻辑 host 测试：内存通道 + mock 设备。
 eneros-device-agent = { path = "../../agents/device-agent", default-features = false, features = ["mock"] }
+# 蓝图 61 v0.314.33：catalog/points 编译面（parity 测试）。
+eneros-config-bundle = { path = "../../runtime/config-bundle", features = ["compile"] }

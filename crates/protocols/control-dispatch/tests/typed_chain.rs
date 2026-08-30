@@ -6,6 +6,7 @@
 //! - typed 入口拒绝过期计划；
 //! - `submit_typed` 走过渡认证证书 + CommandIntent/CommandBatch
 //!   （profile 资源视图 scope 校验在批构造内）。
+mod support;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -284,10 +285,11 @@ fn device_side() -> (
 }
 
 fn engine_with(channel: Box<dyn DeliveryChannel>) -> DispatchEngine {
+    let profile = test_profile();
     let config = DispatchConfig {
         chain: build_chain(),
         key: KEY.to_vec(),
-        profile: test_profile(),
+        profile,
         fencing_token: 1 + EPOCH_SEED,
         issuer_service: ISSUER,
         issuer_epoch: 0,
@@ -301,6 +303,13 @@ fn engine_with(channel: Box<dyn DeliveryChannel>) -> DispatchEngine {
         audit: Some(DecisionAudit::new([0x40; 32])),
         intent_log: Box::new(eneros_control_dispatch::InMemoryIntentStore::new(64)),
         delivery: channel,
+        resources: Box::new(support::TestResourceView {
+            asset_id: 1,
+            device_id: 1,
+            point_id: profile.point_id,
+            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+            catalog_version: 1,
+        }),
         feedback_mapping: eneros_control_dispatch::FeedbackPointMapping {
             grid_up: 5,
             soc: 4,

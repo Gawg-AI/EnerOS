@@ -5,6 +5,7 @@
 //! - 单点 setpoint 与最近 AppliedConfirmed 比较，真实 elapsed 换算
 //!   （合同 max_ramp_per_sec）；超限拒绝零投递；
 //! - 首命令无参照放行；同值重确认 Δ=0 放行；时间流逝后斜率达标放行。
+mod support;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -295,6 +296,7 @@ fn engine_with() -> (DispatchEngine, Rc<RefCell<u64>>) {
         devices: Rc::clone(&devices),
         delivered: Rc::clone(&delivered),
     };
+    let profile = test_profile();
     let config = DispatchConfig {
         chain: build_chain(),
         key: KEY.to_vec(),
@@ -312,6 +314,13 @@ fn engine_with() -> (DispatchEngine, Rc<RefCell<u64>>) {
         audit: None,
         intent_log: Box::new(InMemoryIntentStore::new(64)),
         delivery: Box::new(ch),
+        resources: Box::new(support::TestResourceView {
+            asset_id: u64::from(profile.device_id),
+            device_id: profile.device_id as u16,
+            point_id: profile.point_id,
+            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+            catalog_version: 1,
+        }),
         feedback_mapping: FeedbackPointMapping {
             grid_up: 5,
             soc: 4,

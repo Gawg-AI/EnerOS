@@ -1,0 +1,39 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "phase3-e4",
+ "commit": "cfda926",
+ "dirty": false,
+ "profile": "qemu-prod",
+ "profile_sha256": "见 build/image.sha256-gen1/gen2/rollback",
+ "commands": [
+  { "id": "CMD-CONFIG", "cmd": "ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-prod --root-key-hex …（gen1→gen2→回滚三次编译）", "exit": 0, "summary": "catalog → 986B ×3（catalog.toml.gen1.bak 存档于 build/）" },
+  { "id": "CMD-IMAGE", "cmd": "cargo xtask image raw qemu-prod（×3；内核 BOOT-007 窗口 8MiB 修复后同一 elfloader 链）", "exit": 0, "summary": "gen1 sha256=46ca8fc9… / gen2 / rollback（同 gen1，见 build/image.sha256-*）" },
+  { "id": "CMD-E4", "cmd": "tools/run61-phase3-e4.sh", "exit": 0, "summary": "E4-P3-GATE: PASS——全部判据行 ✓" }
+ ],
+ "tests": [
+  {
+   "id": "T-GEN1",
+   "class": "catalog gen=1 激活 + 控制链（[08] §2.7）",
+   "rows": {
+    "CATALOG-ACTIVE": "PASS——gen=1 digest=9bc279fc（svc-telemetry + svc-control-dispatch + svc-ai-worker 三处消费）",
+    "CATALOG-COVERAGE": "PASS——points=7（svc-telemetry 覆盖自目录）",
+    "CATALOG-BINDING": "PASS——point=10 device=1（显式目录绑定；旧 CONTROL-BINDING device= 词形零出现）",
+    "CATALOG-FEEDBACK": "PASS——grid=5 soc=4 v=1 oc=6 ot=7（dispatch 反馈映射自目录）",
+    "REGISTRY-ACTIVE": "PASS——binding=(1,10) unit=6 digest（dispatch PlannerView 注入）",
+    "chain": "PASS——OBS-SOURCE/ACQ/OBS-ROUND + PLAN-TYPED ×62 + EXEC-JOURNAL applied-confirmed ×62（决策链完整不回归）",
+    "baseline": "PASS——20 点基线一致（400/50/50/0.6/1/0/0）"
+   }
+  },
+  {
+   "id": "T-GEN2-ROLLBACK",
+   "class": "换代激活与回滚（[08] §2.3/§2.7）",
+   "rows": {
+    "GEN2": "PASS——catalog generation=2 重建镜像 → CATALOG-ACTIVE gen=2（原子切换生效）",
+    "ROLLBACK": "PASS——恢复 gen=1 重建再引导 → CATALOG-ACTIVE gen=1 + EXEC-JOURNAL applied-confirmed（回滚镜像控制链完整）"
+   }
+  }
+ ],
+ "gates": {
+  "E4-P3-GATE": "PASS（脚本输出；判据行全 ✓；证据 = cat-gen1/cat-gen2/cat-rollback.qemu-serial.log + modbus.transcript.jsonl + build/）"
+ }
+}

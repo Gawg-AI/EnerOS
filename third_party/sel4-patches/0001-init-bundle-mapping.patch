@@ -66,9 +66,10 @@
          get_n_paging(it_v_reg, GET_ULVL_PGSIZE_BITS(ULVL_FRM_ARM_PT_LVL(2)));
 +    /* EnerOS C2 (BOOT-007): init bundle 区域（0x42000000，8 MiB——39
 +     * 收尾复验由 2 MiB 扩至 4 MiB；49 收口扩至 8 MiB）由 kernel/boot.c
-+     * 显式映射进初始线程 VSpace，需额外 PD+PT×3 四个页表（PUD 槽已由
-+     * it_v_reg 页表链覆盖，勿重复创建）。 */
-+    n += 4;
++     * 显式映射进初始线程 VSpace，需额外 PD + PT×4 共 5 个页表（8 MiB =
++     * 2048 个 4 KiB 页 = 4 个 PT 表 + 1 个 PD 项；PUD 槽已由 it_v_reg
++     * 页表链覆盖，勿重复创建）。 */
++    n += 5;
 +    return n;
  }
  

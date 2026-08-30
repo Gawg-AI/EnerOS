@@ -20,6 +20,16 @@ use eneros_control_dispatch::DeliveryChannel;
 use crate::ai_worker::decode_proposal;
 use crate::telemetry::decode_trusted;
 
+/// 蓝图 61 v0.314.35：proposal → CandidatePlan（resource_catalog_version
+/// 由调用方注入——planner 输入与 Registry 同代；[08] §4.8 门）。
+pub fn candidate_from_proposal(
+    plan: &eneros_dual_brain::decision::ProposedControlPlan,
+    catalog_version: u64,
+) -> Result<eneros_decision_contract::CandidatePlan, alloc::string::String> {
+    eneros_control_dispatch::adapter::proposal_to_candidate(plan, (0, 0, 0, 0), 0, catalog_version)
+        .map_err(|e| alloc::format!("{e:?}"))
+}
+
 /// 请求码。
 pub const DISP_SUBMIT: u8 = 1;
 /// 47（WP-47.1 协议入站写）：协议写意图提交（intent wire + actor）。
@@ -363,6 +373,33 @@ mod tests {
         }
     }
 
+    /// host 参考装配 DTO（迁移期：生产装配在 dispatch_assembly 注入
+    /// resource-registry PlannerView；[08] §4.6 旧结构降内部 import DTO）。
+    #[derive(Clone, Copy)]
+    struct HostResourceView {
+        device_id: u16,
+        point_id: u32,
+        unit_code: u16,
+    }
+
+    impl eneros_decision_contract::ResourceRegistry for HostResourceView {
+        fn asset_exists(&self, asset_id: u64) -> bool {
+            asset_id == u64::from(self.device_id)
+        }
+
+        fn asset_control_binding(&self, asset_id: u64) -> Option<(u16, u32, u16)> {
+            if asset_id == u64::from(self.device_id) {
+                Some((self.device_id, self.point_id, self.unit_code))
+            } else {
+                None
+            }
+        }
+
+        fn catalog_version(&self) -> u64 {
+            0
+        }
+    }
+
     fn engine() -> DispatchEngine {
         // 简化装配：budget 宽松；delivery 回 Applied（code 0）。
         // 蓝图 55：档案单源（TTL 600/代次 4 为本测试变体，值语义与旧
@@ -386,7 +423,14 @@ mod tests {
         };
         let mut chain = eneros_control_gateway::chain::ControlChain::from_profile(key, &profile);
         let _ = profile.issue_lease(&mut chain, 1_700_000_000);
+        // 蓝图 61 v0.314.35：host 参考装配视图 = 内部 DTO（生产装配在
+        // dispatch_assembly 注入 PlannerView——[08] §4.8 门）。
         DispatchEngine::new(DispatchConfig {
+            resources: alloc::boxed::Box::new(HostResourceView {
+                device_id: TEST_DEVICE_ID as u16,
+                point_id: TEST_POINT_ID,
+                unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+            }),
             chain,
             key: key.to_vec(),
             profile,

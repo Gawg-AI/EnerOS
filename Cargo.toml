@@ -46,6 +46,12 @@ members = [
     "crates/runtime/durable-state",
     # 蓝图 61 [07] §4（v0.314.32）：分区事件日志、恢复与重放。
     "crates/runtime/event-store",
+    # 蓝图 61 [08]（v0.314.33）：SemanticCatalog 深模块（schema/单位/资产/拓扑/点映射/合同目录）。
+    "crates/agents/semantic-catalog",
+    # 蓝图 61 [08]（v0.314.34）：SnapshotModule（一致性切面/水位/冲突/provenance）。
+    "crates/agents/snapshot-service",
+    # 蓝图 61 [08]（v0.314.35）：ResourceRegistry（能力包络/合同/聚合/迁移导入）。
+    "crates/agents/resource-registry",
     "crates/agents/business-services",
     "crates/runtime/oom-probe",
     "crates/drivers/time",
@@ -165,7 +171,7 @@ members = [
 # rc/1.0 标记；冲刺期一律 0.x.y（0.313 延续历史 120 版本计划顶格 v0.312）；
 # 每 WP Exit 自证后递增 patch（cargo xtask bump-version patch；
 # xtask qa gng-version / eneros-ci version-gate-consistency 双检查强制）。
-version = "0.314.32"
+version = "0.314.35"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

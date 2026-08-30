@@ -48,7 +48,6 @@ use eneros_safety_validator::TrustedTelemetry;
 use eneros_telemetry_model::command::{CommandValue, ControlCommand, SingleCommand};
 use eneros_upa_model::PointValue;
 
-use crate::adapter::ProfileResourceView;
 use crate::channel::DeliveryChannel;
 use crate::dispatch::{
     AuthenticatedActor, ControlDispatch, DispatchError, DispatchReceipt, DispatchState,
@@ -155,6 +154,11 @@ pub struct DispatchConfig {
     pub delivery: Box<dyn DeliveryChannel>,
     /// 反馈点映射（受信任遥测 → FeedbackBundle）。
     pub feedback_mapping: crate::feedback::FeedbackPointMapping,
+    /// 蓝图 61 v0.314.35：资源注册表只读视图（命令批编译的绑定权威；
+    /// 生产装配注入 resource-registry `PlannerView`——planner 输入只能
+    /// 查询 Registry，[08] §4.8 门；缺装配 = `EmptyResourceRegistry`
+    /// fail-closed，批编译拒绝）。
+    pub resources: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static>,
     /// 单调时钟（毫秒）。
     pub now_fn: fn() -> u64,
 }
@@ -174,6 +178,9 @@ struct SafetyGuardParams {
 
 /// 唯一 ControlDispatch 实现（12 步链）。
 pub struct DispatchEngine {
+    /// 蓝图 61 v0.314.35：资源注册表视图（装配注入；命令批编译的绑定
+    /// 权威——planner 输入只查询 Registry）。
+    resources: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static>,
     chain: ControlChain,
     key: Vec<u8>,
     /// 同源档案（蓝图 55）：lease_id/policy_version/device_id/point_id 的
@@ -232,6 +239,7 @@ impl DispatchEngine {
     pub fn new(config: DispatchConfig) -> Self {
         let pending = config.intent_log.pending();
         let mut engine = Self {
+            resources: config.resources,
             chain: config.chain,
             key: config.key,
             profile: config.profile,
@@ -610,10 +618,7 @@ impl DispatchEngine {
         let batch = CommandBatch::new(
             proof_digest[..16].try_into().unwrap(),
             &certificate,
-            &ProfileResourceView {
-                profile: &self.profile,
-                catalog_version: plan.resource_catalog_version(),
-            },
+            self.resources.as_ref(),
             alloc::vec![intent],
             started,
         )

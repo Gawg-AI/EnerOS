@@ -1,0 +1,64 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.35",
+ "commit": "cfda926",
+ "dirty": false,
+ "profile": "qemu-prod（dispatch PlannerView 生产注入）+ host（resource-registry 库）",
+ "summary": "ResourceRegistry：11 资源种类 CapabilityProvider/包络求交（铭牌∩合同∩电气∩SOC∩健康∩拓扑∩维护∩工艺∩市场∩越权——只收紧绝不放大）/聚合参考/迁移导入（DevicePool/VPP DTO，f32 MW→f64 kW 带 UnitCatalog 证据）；dispatch 命令批绑定权威 = PlannerView（旧 ProfileResourceView 降测试 DTO）",
+ "commands": [
+  { "id": "CMD-TESTS", "cmd": "cargo test -p eneros-resource-registry -p eneros-control-dispatch -p eneros-control-services", "exit": 0, "summary": "20+75+103 测试全绿（含能力/合同/导入/C2/批编译）" },
+  { "id": "CMD-CLIPPY", "cmd": "cargo clippy -p eneros-resource-registry -p eneros-control-dispatch -p eneros-control-services --all-targets", "exit": 0, "summary": "零警告" },
+  { "id": "CMD-E4", "cmd": "tools/run61-phase3-e4.sh", "exit": 0, "summary": "E4-P3-GATE: PASS（REGISTRY-ACTIVE binding=(1,10) + 控制链完整）" }
+ ],
+ "tests": [
+  {
+   "id": "T-CAPABILITY",
+   "class": "能力包络求交（[08] §4.3/§4.7）",
+   "rows": {
+    "intersect": "PASS——逐收紧项证据（source/constraint id/原范围/收紧范围/有效期）；交集为空 → Unavailable + 原因",
+    "soc": "PASS——SOC 边界（能量上限随 SOC 收紧；深度放空/满充方向性收紧）；soc 缺失 → MissingSnapshotInput fail-closed",
+    "health": "PASS——过流/过温告警 → Unavailable(Health)",
+    "topology": "PASS——开关断开/未知 ÷ 冲突 → Unavailable(Topology)（energized 视图语义）",
+    "resilience": "PASS——维护窗口/工艺/市场承诺/人工越权全部只收紧（非法参数 → Unavailable，拒绝默认值）",
+    "nan": "PASS——NaN/Inf 窗口绝不放大（直接不可用）；envelope 数值稳定性 sanitize",
+    "contract": "PASS——无完整合同（缺回读/缺界）→ 可观测不可控（NoControlContract）",
+    "validity": "PASS——snapshot 有效期窗跨命令执行时刻 → contains_power 拒绝"
+   }
+  },
+  {
+   "id": "T-AGG",
+   "class": "聚合参考（[08] §4.5）",
+   "rows": {
+    "no-plain-sum": "PASS——同时性/效率系数生效；不可控基线单列不进入可控和；成员 root/version 保留；非法参数 → Unavailable"
+   }
+  },
+  {
+   "id": "T-IMPORT",
+   "class": "迁移导入（[08] §4.6）",
+   "rows": {
+    "market": "PASS——DevicePool DTO（f32 MW）→ 描述+基座（f64 kW ×1000 带 UnitCatalog 证据；ramp MW/min→kW/s）",
+    "vpp": "PASS——VppResource DTO 可用容量收紧 at import；离线资源状态保留（id 在册、基座归零）；NaN 拒绝",
+    "alias": "PASS——market-device/vpp-resource 旧 ID → asset_id 显式别名（catalog）"
+   }
+  },
+  {
+   "id": "T-DISPATCH",
+   "class": "planner 输入绑定权威（[08] §4.8 门）",
+   "rows": {
+    "registry-view": "PASS——PlannerView 实现 decision-contract::ResourceRegistry（asset 存在=目录资产+合同；binding=(device,point,unit) 目录权威；catalog_version=合同版本）",
+    "assembly": "PASS——svc-control-dispatch 生产装配注入 PlannerView（REGISTRY-ACTIVE 判定行 + digest）；目录缺失/歧义 → EmptyResourceRegistry fail-closed（批编译拒绝）",
+    "version-align": "PASS——svc-ai-worker 启动装载目录合同版本并打戳候选计划（catalog_version=0 → 拒批）；E4 串口 CATALOG-ACTIVE contract=1",
+    "retire": "PASS——ProfileResourceView 降为 cfg(test) 内部 DTO；生产无 profile 派生身份",
+    "c2": "PASS——1000 资源构建 + 增量更新 + generation/digest 证据（[08] §4.8 门）"
+   }
+  }
+ ],
+ "gates": {
+  "v0.314.35-exit": {
+   "planner 输入只能查询 Registry": "PASS——CommandBatch 编译绑定与版本对照全部经注入 Registry 视图（Empty 拒批）",
+   "无合同/无 readback/未知拓扑资源不可控": "PASS——NoControlContract/MissingReadback/拓扑失电 三路结构化拒绝",
+   "VPP/market/current dispatch 的身份和单位有唯一映射": "PASS——DTO 导入 + alias + UnitCatalog 换算证据；dispatch 绑定 (asset→device,point,unit) 目录单源",
+   "Phase 4 开始前完成 Registry generation/digest 证据": "PASS——digest()（sha256 generation+成员）入 Registry 判定行与测试；能力求交 evaluate 的 target 实时消费 = Phase 4 planner 前置（登记）"
+  }
+ }
+}

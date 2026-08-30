@@ -12,6 +12,7 @@
 //! - R5 同 key 不同 digest → 冲突拒绝，零投递；
 //! - R6 DryRun → 永不写 Applied、重放不 Committed；
 //! - 属性：同 key 100 次重放 = 一次设备副作用 + 原结果。
+mod support;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -414,10 +415,11 @@ fn engine_with(
     channel: Box<dyn DeliveryChannel>,
     intent_log: Box<dyn IntentStore>,
 ) -> DispatchEngine {
+    let profile = test_profile();
     let config = DispatchConfig {
         chain,
         key: KEY.to_vec(),
-        profile: test_profile(),
+        profile,
         fencing_token: 1 + EPOCH_SEED,
         issuer_service: ISSUER,
         issuer_epoch: 0,
@@ -431,6 +433,13 @@ fn engine_with(
         audit: Some(DecisionAudit::new([0x61; 32])),
         intent_log,
         delivery: channel,
+        resources: Box::new(support::TestResourceView {
+            asset_id: u64::from(profile.device_id),
+            device_id: profile.device_id as u16,
+            point_id: profile.point_id,
+            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+            catalog_version: 1,
+        }),
         feedback_mapping: FeedbackPointMapping {
             grid_up: 5,
             soc: 4,

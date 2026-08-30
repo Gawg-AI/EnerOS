@@ -6,6 +6,7 @@
 //! 读回不符（Failed）、读回不可得（Indeterminate）、投递超时（Indeterminate）、
 //! 不可达（Err 零投递）、预算超限（Err 零投递）、遥测过期（Err）、
 //! 篡改拒绝（Failed）、幂等重放（Committed 不重复写）。
+mod support;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -309,6 +310,7 @@ fn device_side() -> (
 }
 
 fn engine_with(channel: Box<dyn DeliveryChannel>, gate: DecisionGate) -> DispatchEngine {
+    let profile = test_profile();
     let config = DispatchConfig {
         chain: build_chain(),
         key: KEY.to_vec(),
@@ -327,6 +329,13 @@ fn engine_with(channel: Box<dyn DeliveryChannel>, gate: DecisionGate) -> Dispatc
         audit: Some(DecisionAudit::new([0x40; 32])),
         intent_log: Box::new(InMemoryIntentStore::new(64)),
         delivery: channel,
+        resources: Box::new(support::TestResourceView {
+            asset_id: u64::from(profile.device_id),
+            device_id: profile.device_id as u16,
+            point_id: profile.point_id,
+            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+            catalog_version: 1,
+        }),
         feedback_mapping: FeedbackPointMapping {
             grid_up: 5,
             soc: 4,
