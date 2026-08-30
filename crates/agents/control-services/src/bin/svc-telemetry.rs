@@ -156,9 +156,11 @@ impl TelemetryHandler<'_> {
             &table.sources,
             &table.points,
         );
-        // 生产评估器重建：allowed = 注册来源 ∪ 合成设施兼容轨；
-        // mapping_version = bundle generation（配置事实，零硬编码）。
-        let mut eval_config = eneros_safety_validator::EvaluatorConfig {
+        // 生产评估器重建：allowed_sources / mapping_version 换为配置事实
+        // （apply_source_identity 以注册来源集合**覆盖**——configs/points.toml
+        // 的 source 1 = root 合成设施，刻意不注册，合成样本只走旧兼容轨；
+        // mapping_version = bundle generation，零硬编码）。
+        let eval_config = eneros_safety_validator::EvaluatorConfig {
             coverage: eneros_control_dispatch::feedback::safety_coverage(),
             bindings: eneros_safety_validator::StateBindings {
                 voltage: 1,
@@ -168,13 +170,10 @@ impl TelemetryHandler<'_> {
             },
             mapping_version: generation,
             max_skew_ms: 1000,
-            allowed_sources: alloc::vec![1],
+            allowed_sources: alloc::vec![],
             require_integrity: true,
             control_horizon_ms: 30_000,
         };
-        for d in &descriptors {
-            eval_config.allowed_sources.push(d.source_id);
-        }
         self.svc.apply_source_identity(descriptors, eval_config);
         eneros_runtime::println!(
             "[svc-telemetry] OBS-CFG loaded sources={} generation={}",

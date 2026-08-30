@@ -94,7 +94,10 @@ pub struct PointsFetch {
     pub total_points: usize,
 }
 
+/// `client_name` 仅诊断（与 `fetch_protocol_config` 同前缀——同端点可
 /// 处理 config 与 points 两类请求）。wire/管道单源同上。
+///
+/// 返回 [`PointsFetch`]（蓝图 61：注册表 + 来源表 + 映射世代一次取数）。
 pub fn fetch_points_registry<F>(
     io: &mut dyn ConfigEntrySource,
     client_name: &str,

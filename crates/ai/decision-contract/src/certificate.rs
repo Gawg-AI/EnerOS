@@ -129,6 +129,10 @@ impl CertifiedPlan {
         hard_constraint_count: u32,
         proof_digest: [u8; 32],
     ) -> Result<Self, ContractError> {
+        // 零 ID = 缺字段（与 CandidatePlan 同纪律；decode 路径同门复验）。
+        if plan_id.0 == [0u8; 16] || certificate_id.0 == [0u8; 16] {
+            return Err(ContractError::ZeroId);
+        }
         if plan_sha256 == [0u8; 32] || proof_digest == [0u8; 32] {
             return Err(ContractError::MissingField("digest"));
         }
@@ -377,6 +381,26 @@ mod tests {
             [0xCD; 32],
         );
         assert_eq!(r, Err(ContractError::InvalidWindow));
+        // 零 plan/certificate ID = 缺字段（与 CandidatePlan 同纪律）。
+        let r = CertifiedPlan::new_sealed(
+            CertifierSeal::issue_transition(),
+            CertificateId([9u8; 16]),
+            PlanId([0u8; 16]),
+            [0xAB; 32],
+            crate::ids::SnapshotId([2u8; 16]),
+            1,
+            1,
+            1,
+            1_000,
+            2_000,
+            1,
+            [0xCD; 32],
+        );
+        assert_eq!(r, Err(ContractError::ZeroId));
+        // decode 路径同门复验：合法 wire 的 plan_id 清零 → 拒绝。
+        let mut wire = sealed_cert().encode_v1();
+        wire[8 + 16..8 + 32].fill(0); // plan_id 域（cert_id 之后 16B）
+        assert_eq!(CertifiedPlan::decode_v1(&wire), Err(ContractError::ZeroId));
     }
 
     /// 无 feature 时：CertifierSeal 与 CertifiedPlan::new_sealed 均

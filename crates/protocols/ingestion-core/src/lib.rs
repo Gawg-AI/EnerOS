@@ -537,11 +537,19 @@ impl ObservationSink for InMemorySink {
             return Err(IngestReject::Duplicate { event_id: id });
         }
         // 2. 同源 watermark 复核（跨 registry 实例的回退/篡改冲突）。
-        if let Some((we, ws)) = self.watermarks.get(&event.source_id) {
-            if *we == event.source_epoch && event.sequence <= *ws {
+        if let Some(&(we, ws)) = self.watermarks.get(&event.source_id) {
+            if event.source_epoch < we {
+                // epoch 回退（重放/回滚）：拒绝且 watermark 不降级——
+                // 否则旧 epoch 重放会把水位拉低，后续重放序列全部放行。
+                return Err(IngestReject::EpochRegression {
+                    epoch: event.source_epoch,
+                    expected: we,
+                });
+            }
+            if we == event.source_epoch && event.sequence <= ws {
                 return Err(IngestReject::SequenceReplay {
                     sequence: event.sequence,
-                    last: *ws,
+                    last: ws,
                 });
             }
         }
@@ -858,6 +866,39 @@ mod tests {
         assert!(reg.domain(1).expect("d1").time_trusted);
         assert!(!reg.domain(4).expect("d4").time_trusted);
         assert!(reg.domain(9).is_none());
+    }
+
+    #[test]
+    fn sink_rejects_epoch_regression_and_preserves_watermark() {
+        // adapter 重启模拟：同 registry/store 再开源 → epoch 2；旧 epoch
+        // 事件重放到 sink → EpochRegression，且 watermark 不被降级。
+        let mut store = MemEpochStore::default();
+        let mut reg = SourceRegistry::new();
+        reg.register(descriptor(2), 0);
+        let e1 = reg.open_source(2, 0, &mut store).unwrap();
+        assert_eq!(e1, 1);
+        let ev_old = reg.verify(2, &raw(1, 50.0), 1_000_000).unwrap();
+        let e2 = reg.open_source(2, 0, &mut store).unwrap();
+        assert_eq!(e2, 2, "重启后 epoch 严格递增");
+        let ev_new = reg.verify(2, &raw(1, 51.0), 1_100_000).unwrap();
+        assert_eq!(ev_new.source_epoch, 2);
+        let mut sink = InMemorySink::new(64);
+        sink.append(&ev_new).unwrap();
+        assert_eq!(
+            sink.append(&ev_old).unwrap_err(),
+            IngestReject::EpochRegression {
+                epoch: 1,
+                expected: 2
+            }
+        );
+        assert_eq!(sink.watermark(2), Some((2, ev_new.sequence)));
+        // 同 epoch 内旧 sequence 仍被 SequenceReplay 拦截。
+        let mut replay = ev_new;
+        replay.sequence = 1;
+        assert!(matches!(
+            sink.append(&replay).unwrap_err(),
+            IngestReject::SequenceReplay { .. } | IngestReject::Duplicate { .. }
+        ));
     }
 
     #[test]

@@ -175,6 +175,11 @@ impl AdapterObs {
     }
 
     /// 轮边界：OBS 批次上报（[4][source u32][count u16][n × 128B]）+ 清轮。
+    ///
+    /// 蓝图 61 [06] §4.2：大集合不得塞进单次 IPC——单次 chunk 传输逻辑
+    /// 上限 1664B（16×104），单帧 128B → 每传输最多 [`OBS_FRAMES_PER_TRANSFER`]
+    /// 帧，超限轮次自动分批（每批独立计数/独立回执；任一批失败即停，
+    /// 汇总行词形与单批路径一致）。
     fn report_round(
         &mut self,
         telemetry: &mut Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
@@ -190,32 +195,47 @@ impl AdapterObs {
             self.round_rejected = 0;
             return;
         }
-        let mut req: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(7 + self.frame_buf.len());
-        req.push(4u8); // TEL_INGEST_OBS
-        req.extend_from_slice(&self.source_id.to_le_bytes());
-        req.extend_from_slice(&self.event_count.to_le_bytes());
-        req.extend_from_slice(&self.frame_buf);
         if let Some(client) = telemetry {
-            let mut transfer = eneros_agent_sdk::ChunkedClient::new(client, *tel_epoch, 5_000);
-            *tel_epoch = tel_epoch.saturating_add(1);
-            match transfer.transfer("svc-telemetry", &req) {
-                Ok(resp) if resp.len() >= OBS_RESP_OK_LEN && resp[0] == 0 => {
-                    let accepted = u16::from_le_bytes([resp[1], resp[2]]);
-                    eneros_runtime::println!(
-                        "[svc-modbus-tcp] OBS-ROUND sent={} shadow-accepted={}",
-                        self.event_count,
-                        accepted
-                    );
+            const FRAME: usize = eneros_telemetry_model::OBSERVATION_WIRE_LEN;
+            let mut accepted_total: u32 = 0;
+            let mut all_batches_ok = true;
+            let frames = self.frame_buf.as_slice();
+            for batch in frames.chunks(FRAME * OBS_FRAMES_PER_TRANSFER) {
+                let count = (batch.len() / FRAME) as u16;
+                let mut req: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(7 + batch.len());
+                req.push(4u8); // TEL_INGEST_OBS
+                req.extend_from_slice(&self.source_id.to_le_bytes());
+                req.extend_from_slice(&count.to_le_bytes());
+                req.extend_from_slice(batch);
+                // 分批循环内每轮重借用（&mut 不被 move——多批传输复用同一客户端）。
+                let mut transfer =
+                    eneros_agent_sdk::ChunkedClient::new(&mut *client, *tel_epoch, 5_000);
+                *tel_epoch = tel_epoch.saturating_add(1);
+                match transfer.transfer("svc-telemetry", &req) {
+                    Ok(resp) if resp.len() >= OBS_RESP_OK_LEN && resp[0] == 0 => {
+                        accepted_total += u32::from(u16::from_le_bytes([resp[1], resp[2]]));
+                    }
+                    Ok(resp) => {
+                        all_batches_ok = false;
+                        eneros_runtime::println!(
+                            "[svc-modbus-tcp] OBS-ROUND rejected {:02x?}",
+                            &resp[..resp.len().min(8)]
+                        );
+                        break;
+                    }
+                    Err(e) => {
+                        all_batches_ok = false;
+                        eneros_runtime::println!("[svc-modbus-tcp] OBS-ROUND eipc={:?}", e);
+                        break;
+                    }
                 }
-                Ok(resp) => {
-                    eneros_runtime::println!(
-                        "[svc-modbus-tcp] OBS-ROUND rejected {:02x?}",
-                        &resp[..resp.len().min(8)]
-                    );
-                }
-                Err(e) => {
-                    eneros_runtime::println!("[svc-modbus-tcp] OBS-ROUND eipc={:?}", e);
-                }
+            }
+            if all_batches_ok {
+                eneros_runtime::println!(
+                    "[svc-modbus-tcp] OBS-ROUND sent={} shadow-accepted={}",
+                    self.event_count,
+                    accepted_total as u16
+                );
             }
         }
         self.frame_buf.clear();
@@ -227,6 +247,16 @@ impl AdapterObs {
 /// OBS ingest OK 响应长度（[OK][accepted u16][rejected u16]）。
 #[cfg(target_os = "none")]
 const OBS_RESP_OK_LEN: usize = 5;
+
+/// 单次 chunk 传输的 OBS 帧上限 = (1664B 逻辑上限 − 7B 头) / 128B 帧，
+/// 下取整。点表一轮事件数超过该值时分批上报（编译期保证 ≥1）。
+#[cfg(target_os = "none")]
+const OBS_FRAMES_PER_TRANSFER: usize =
+    (eneros_agent_sdk::chunked::CHUNK_COUNT_MAX as usize * eneros_agent_sdk::CHUNK_DATA_MAX - 7)
+        / eneros_telemetry_model::OBSERVATION_WIRE_LEN;
+
+#[cfg(target_os = "none")]
+const _: () = assert!(OBS_FRAMES_PER_TRANSFER >= 1);
 
 #[cfg(target_os = "none")]
 impl ModbusTcpIoService {

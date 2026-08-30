@@ -64,6 +64,9 @@ impl CommandIntent {
         precondition: Precondition,
         compensation: CompensationHint,
     ) -> Result<Self, ContractError> {
+        if intent_id.0 == [0u8; 16] || plan_id.0 == [0u8; 16] {
+            return Err(ContractError::ZeroId);
+        }
         if asset_id == 0 {
             return Err(ContractError::ScopeMismatch("asset_id=0"));
         }
@@ -228,11 +231,16 @@ impl CommandIntent {
         plan_sha256.copy_from_slice(take(&mut pos, 32)?);
         let asset_id = u64::from_le_bytes(take(&mut pos, 8)?.try_into().unwrap());
         let device_id = u16::from_le_bytes(take(&mut pos, 2)?.try_into().unwrap());
-        let _reserved = take(&mut pos, 2)?;
+        // reserved 必须全零（encode 写 0；非零 = 布局漂移，fail-closed）。
+        if take(&mut pos, 2)?.iter().any(|&b| b != 0) {
+            return Err(ContractError::Malformed("reserved"));
+        }
         let point_id = u32::from_le_bytes(take(&mut pos, 4)?.try_into().unwrap());
         let power_kw = f64::from_le_bytes(take(&mut pos, 8)?.try_into().unwrap());
         let unit_code = u16::from_le_bytes(take(&mut pos, 2)?.try_into().unwrap());
-        let _reserved2 = take(&mut pos, 2)?;
+        if take(&mut pos, 2)?.iter().any(|&b| b != 0) {
+            return Err(ContractError::Malformed("reserved"));
+        }
         let valid_from_ms = u64::from_le_bytes(take(&mut pos, 8)?.try_into().unwrap());
         let valid_until_ms = u64::from_le_bytes(take(&mut pos, 8)?.try_into().unwrap());
         let pre_tag = take(&mut pos, 1)?[0];
@@ -313,6 +321,41 @@ mod tests {
 
     #[test]
     fn negatives() {
+        // 全零 intent/plan ID。
+        assert_eq!(
+            CommandIntent::new(
+                IntentId([0u8; 16]),
+                crate::ids::PlanId([1u8; 16]),
+                [1; 32],
+                1,
+                1,
+                10,
+                1.0,
+                6,
+                0,
+                1,
+                Precondition::None,
+                CompensationHint::None,
+            ),
+            Err(ContractError::ZeroId)
+        );
+        assert_eq!(
+            CommandIntent::new(
+                IntentId([3u8; 16]),
+                crate::ids::PlanId([0u8; 16]),
+                [1; 32],
+                1,
+                1,
+                10,
+                1.0,
+                6,
+                0,
+                1,
+                Precondition::None,
+                CompensationHint::None,
+            ),
+            Err(ContractError::ZeroId)
+        );
         // asset 0。
         assert_eq!(
             CommandIntent::new(
@@ -374,5 +417,18 @@ mod tests {
             CommandIntent::decode_v1(&wire),
             Err(ContractError::VersionUnsupported { .. })
         ));
+        // wire: reserved 非零拒绝（device 后 2B / unit 后 2B 两位）。
+        let wire = intent().encode_v1();
+        for off in [82usize, 98] {
+            let mut w = wire.clone();
+            w[off] = 1;
+            assert!(
+                matches!(
+                    CommandIntent::decode_v1(&w),
+                    Err(ContractError::Malformed("reserved"))
+                ),
+                "offset {off} reserved 必须拒绝"
+            );
+        }
     }
 }
