@@ -179,6 +179,7 @@ where
     I: Iterator<Item = (u16, u32, &'a LatestValue)>,
 {
     let mut stats = DrainStats::default();
+    let mut sink_full = false;
     for (ca, ioa, lv) in latest {
         let Some(&(point_id, device_id)) = index.get(&(ca, ioa)) else {
             stats.unmapped += 1;
@@ -190,6 +191,12 @@ where
         // 去重（[07] §3.3：重复 ASDU 去重；同戳同值+同品质 = 事实未变）。
         if seen.get(&key) == Some(&(lv.timestamp_ms, fp)) {
             stats.skipped += 1;
+            continue;
+        }
+        // sink 满：停推（[07] §2.5 adapter 合同）——余点 deferred，
+        // seen 未更新下轮重排（不静默丢）。
+        if sink_full {
+            stats.deferred += 1;
             continue;
         }
         // 预算封顶（[07] §2.3：一次 poll 最多 budget 事件；超出停排，
@@ -227,8 +234,14 @@ where
             device_id,
         });
         match pushed {
-            PushOutcome::Backpressured | PushOutcome::Rejected => {
-                // 未入流：seen 不更新——下轮重发（背压不吞事件）。
+            PushOutcome::Backpressured => {
+                // 未入流：seen 不更新——下轮重发（背压不吞事件）；
+                // 本轮停止后续推送（[07] §2.5 adapter 合同）。
+                stats.bad += 1;
+                sink_full = true;
+            }
+            PushOutcome::Rejected => {
+                // 结构化拒绝按点计数继续（seen 未更新——下轮重试）。
                 stats.bad += 1;
             }
             _ => {
@@ -639,6 +652,51 @@ mod tests {
         let s = drain_latest(16, &index, &mut seen, fixtures(&f), &mut sink2);
         assert_eq!(s.good, 1);
         assert_eq!(seen.len(), 1);
+    }
+
+    /// 背压停推（[07] §2.5 adapter 合同）：sink 满后余点全部 deferred
+    /// ——不再向满 sink 推（限流计数与有界拒绝日志不被噪音冲刷）；
+    /// seen 未更新下轮重排（不静默丢）。
+    #[test]
+    fn backpressure_stops_drain_and_defers_rest() {
+        let mappings = alloc::vec![
+            IecMapping {
+                common_addr: 1,
+                ioa: 10,
+                point_id: 1,
+                device_id: 2
+            },
+            IecMapping {
+                common_addr: 1,
+                ioa: 11,
+                point_id: 2,
+                device_id: 2
+            },
+            IecMapping {
+                common_addr: 1,
+                ioa: 12,
+                point_id: 3,
+                device_id: 2
+            },
+        ];
+        let index = idx(&mappings);
+        let mut seen = BTreeMap::new();
+        // pop 自栈顶：第 1 次接受、第 2 次背压（第 3 次推不存在）。
+        let mut sink = CaptureSink {
+            verdict: alloc::vec![PushOutcome::Backpressured, PushOutcome::Accepted],
+            pushes: alloc::vec![],
+        };
+        let f = alloc::vec![
+            (1u16, 10u32, lv(IoValue::Float(1.0), good(), 1_000)),
+            (1u16, 11u32, lv(IoValue::Float(2.0), good(), 1_000)),
+            (1u16, 12u32, lv(IoValue::Float(3.0), good(), 1_000)),
+        ];
+        let s = drain_latest(16, &index, &mut seen, fixtures(&f), &mut sink);
+        assert_eq!(s.good, 1);
+        assert_eq!(s.bad, 1);
+        assert_eq!(s.deferred, 1, "sink 满后余点 deferred");
+        assert_eq!(sink.pushes.len(), 2, "停推后无第 3 次推送");
+        assert_eq!(seen.len(), 1, "仅已入流点入 seen");
     }
 
     // ===== 无映射点：跳过（不进事件面）=====

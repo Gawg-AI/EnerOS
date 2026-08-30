@@ -429,8 +429,10 @@ impl TimeTag {
     ///   算法——无 chrono 依赖的 no_std 纯整数实现）；
     /// - 秒内毫秒（`millis`）折进纳秒。
     ///
-    /// 非法日期（`decode` 位掩码可产出 month=0/13..15、day=0 等越界形态）
-    /// → `None`——调用方回退传输接收时刻，时钟质量另行标注（不伪造时标）。
+    /// 非法日期（`decode` 位掩码可产出 month=0/13..15、day=0、2月30日、
+    /// hour=24..31、minute=60..63、second=60..65 等越界形态）→
+    /// `None`——调用方回退传输接收时刻，时钟质量另行标注（不伪造时标；
+    /// 放行会把源级回拨水印抬高数小时，后续真实时标全被拒）。
     pub fn to_unix_nanos(&self) -> Option<u64> {
         if self.month < 1 || self.month > 12 || self.day < 1 || self.day > 31 {
             return None;
@@ -438,6 +440,14 @@ impl TimeTag {
         let year = 2000i64 + i64::from(self.year);
         let m = i64::from(self.month);
         let d = i64::from(self.day);
+        if d > days_in_month(year, m)
+            || self.hour > 23
+            || self.minute > 59
+            || self.second > 59
+            || self.millis > 999
+        {
+            return None;
+        }
         // days_from_civil（公有域算法）：March-based 年/月变换 → era 展开。
         let y = if m <= 2 { year - 1 } else { year };
         let era = y / 400; // y ≥ 0 → 截断除即 era
@@ -457,6 +467,23 @@ impl TimeTag {
             return None;
         }
         Some(nanos as u64)
+    }
+}
+
+/// 当月天数（格里历闰年规则：÷4 且非÷100，或 ÷400）。
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
     }
 }
 
@@ -1487,6 +1514,58 @@ mod tests {
             tag.day = day;
             assert_eq!(tag.to_unix_nanos(), None, "day={day}");
         }
+    }
+
+    /// decode 位掩码可产出的「伪合法」越界组合 → None：2月30日、
+    /// hour=24..31、minute=60..63、second=60..65、millis=1000——放行会把
+    /// 源级回拨水印抬高（后续真实时标全被 ClockRollback 拒）。
+    #[test]
+    fn test_to_unix_nanos_rejects_pseudo_valid_out_of_range() {
+        let mut tag = TimeTag {
+            year: 26,
+            month: 2,
+            day: 30,
+            hour: 12,
+            minute: 0,
+            second: 0,
+            iv: false,
+            su: false,
+            millis: 0,
+        };
+        assert_eq!(tag.to_unix_nanos(), None, "2月30日");
+        tag.day = 31;
+        assert_eq!(tag.to_unix_nanos(), None, "2月31日");
+        tag.month = 4;
+        assert_eq!(tag.to_unix_nanos(), None, "4月31日");
+        // 闰年 2月29 合法；平年拒绝。
+        tag.month = 2;
+        tag.day = 29;
+        tag.year = 24;
+        assert!(tag.to_unix_nanos().is_some(), "2024 闰年 2月29");
+        tag.year = 25;
+        assert_eq!(tag.to_unix_nanos(), None, "2025 平年 2月29");
+        // 时/分/秒/毫秒域（decode 掩码上界越界形态）。
+        let mut t = TimeTag {
+            year: 26,
+            month: 8,
+            day: 30,
+            hour: 24,
+            minute: 0,
+            second: 0,
+            iv: false,
+            su: false,
+            millis: 0,
+        };
+        assert_eq!(t.to_unix_nanos(), None, "hour=24");
+        t.hour = 23;
+        t.minute = 60;
+        assert_eq!(t.to_unix_nanos(), None, "minute=60");
+        t.minute = 59;
+        t.second = 61;
+        assert_eq!(t.to_unix_nanos(), None, "second=61（total_ms>59999 形态）");
+        t.second = 59;
+        t.millis = 1000;
+        assert_eq!(t.to_unix_nanos(), None, "millis=1000");
     }
 
     // ===== IoValue type_id 测试 =====

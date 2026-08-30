@@ -8,7 +8,7 @@
 use eneros_event_store::block::BlockEventStore;
 use eneros_event_store::format::BLOCK_SIZE;
 use eneros_event_store::ingest_bridge::{partition_of, StoreSink};
-use eneros_event_store::memdev::{FaultyBlockDevice, MemBlockDevice};
+use eneros_event_store::memdev::{Fault, FaultyBlockDevice, MemBlockDevice};
 use eneros_event_store::StoreConfig;
 use eneros_ingestion_core::{
     EventQos, IngestOutcome, IngestionModule, MemEpochStore, ObservationSink, OperationalProfile,
@@ -197,4 +197,31 @@ fn store_full_backpressures_via_overflow() {
     }
     assert!(accepted > 0);
     assert!(overflowed > 0, "容量耗尽必须显式背压");
+}
+
+/// 交付失败可观测（[07] §4.7 一切丢弃可见）：delivery 位点 commit 写槽
+/// 故障 → drain_frames（trait 无错误通道）计 delivery_failures 且零交付；
+/// 位点未推进——故障消除后重试全量重发，不丢不重。
+#[test]
+fn drain_frames_counts_delivery_failures_and_retries() {
+    let dev = MemBlockDevice::new(3 + 64 * 2, BLOCK_SIZE);
+    let store = BlockEventStore::format(FaultyBlockDevice::new(dev), config()).unwrap();
+    let mut sink = StoreSink::new(store);
+    for i in 1..=3u64 {
+        sink.append(&make_event(2, i, 1, 100.0 + i as f64, 1_000 + i))
+            .unwrap();
+    }
+    // 零写 open 重开 + 预埋一次性丢写（打在 delivery 位点槽写上）。
+    let raw_dev = sink.into_inner().into_inner();
+    let mut faulty = FaultyBlockDevice::new(raw_dev);
+    faulty.arm(Fault::DropWrite);
+    let store = BlockEventStore::open(faulty, config()).unwrap();
+    let mut deliveries = StoreSink::new(store);
+    assert!(deliveries.drain_frames().is_empty(), "commit 失败零交付");
+    assert_eq!(deliveries.delivery_failures, 1, "吞错形态必须可观测");
+    // 故障一次性已耗 → 重试成功：位点未推进，全量重发。
+    let frames = deliveries.drain_frames();
+    assert_eq!(frames.len(), 3, "位点未推进——重试不丢");
+    assert_eq!(deliveries.delivery_failures, 1);
+    assert!(deliveries.drain_frames().is_empty(), "交付后位点推进幂等");
 }

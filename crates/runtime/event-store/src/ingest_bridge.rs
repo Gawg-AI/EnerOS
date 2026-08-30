@@ -74,6 +74,9 @@ pub struct StoreSink<S: EventStore> {
     partitions: BTreeSet<PartitionId>,
     /// 追加失败计数（可观测）。
     pub append_failures: u64,
+    /// 交付失败计数（drain_frames 吞错形态的可观测对偶——位点未推进，
+    /// 调用方重试幂等；显式 Err 走 [`Self::collect_delivery`]）。
+    pub delivery_failures: u64,
 }
 
 impl<S: EventStore> StoreSink<S> {
@@ -83,6 +86,7 @@ impl<S: EventStore> StoreSink<S> {
             watermarks: BTreeMap::new(),
             partitions: BTreeSet::new(),
             append_failures: 0,
+            delivery_failures: 0,
         }
     }
 
@@ -194,7 +198,15 @@ impl<S: EventStore> ObservationSink for StoreSink<S> {
     }
 
     fn drain_frames(&mut self) -> Vec<[u8; 128]> {
-        self.collect_delivery().unwrap_or_default()
+        // trait 返回面无错误通道——失败计数可观测（一切丢弃可见），
+        // 位点未推进，重试幂等。
+        match self.collect_delivery() {
+            Ok(frames) => frames,
+            Err(_) => {
+                self.delivery_failures += 1;
+                Vec::new()
+            }
+        }
     }
 }
 

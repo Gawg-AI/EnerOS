@@ -141,8 +141,12 @@ impl IngestionAdapter for ModbusIngestAdapter {
                         let idx = (p.reg_addr - g.start) as usize;
                         let Some(&word) = regs.get(idx) else {
                             // 组响应短缺：该点按坏质量展开（不假装成功）。
-                            if self.push_bad(out, p, now_ns) {
+                            let outcome = self.push_bad(out, p, now_ns);
+                            if matches!(outcome, PushOutcome::Accepted | PushOutcome::Coalesced) {
                                 pushed += 1;
+                            }
+                            if outcome == PushOutcome::Backpressured {
+                                return PollOutcome::Busy { transactions };
                             }
                             continue;
                         };
@@ -161,7 +165,14 @@ impl IngestionAdapter for ModbusIngestAdapter {
                             device_id: p.device_id,
                         });
                         match outcome {
-                            PushOutcome::Backpressured | PushOutcome::Rejected => {
+                            PushOutcome::Backpressured => {
+                                // sink 满：停推（[07] §2.5 adapter 合同——
+                                // 继续推只刷限流计数与有界拒绝日志）。
+                                self.acq_bad += 1;
+                                return PollOutcome::Busy { transactions };
+                            }
+                            PushOutcome::Rejected => {
+                                // 结构化拒绝按点计数，不吞组内其余点。
                                 self.acq_bad += 1;
                             }
                             _ => {
@@ -174,8 +185,13 @@ impl IngestionAdapter for ModbusIngestAdapter {
                 Err(_e) => {
                     self.last_read_ok = false;
                     for p in &g.points {
-                        if self.push_bad(out, p, now_ns) {
+                        let outcome = self.push_bad(out, p, now_ns);
+                        if matches!(outcome, PushOutcome::Accepted | PushOutcome::Coalesced) {
                             pushed += 1;
+                        }
+                        if outcome == PushOutcome::Backpressured {
+                            // sink 满：停推（合同同上；余点下轮重排）。
+                            return PollOutcome::Busy { transactions };
                         }
                     }
                 }
@@ -194,9 +210,15 @@ impl IngestionAdapter for ModbusIngestAdapter {
 
 impl ModbusIngestAdapter {
     /// 组异常/短缺 → 该点坏质量事件（INVALID；死区永不抑制品质变化）。
-    /// 组异常/短缺 → 该点坏质量事件（INVALID；死区永不抑制品质变化）。
-    /// 返回是否被接受（背压/拒绝 → 计数 acq_bad；接受 → acq_good）。
-    fn push_bad(&mut self, out: &mut dyn RawObservationSink, p: &PointPlan, now_ns: u64) -> bool {
+    /// 统一计 acq_bad（坏采集——含已入流的坏质量展开）；返回原始回执
+    /// （Backpressured = sink 满，调用方必须停推——[07] §2.5 adapter
+    /// 合同）。
+    fn push_bad(
+        &mut self,
+        out: &mut dyn RawObservationSink,
+        p: &PointPlan,
+        now_ns: u64,
+    ) -> PushOutcome {
         let outcome = out.push(RawObservation {
             point_id: p.point_id,
             value: ObservationValue::I64(0),
@@ -211,16 +233,8 @@ impl ModbusIngestAdapter {
             mapping_version: 0,
             device_id: p.device_id,
         });
-        match outcome {
-            PushOutcome::Backpressured | PushOutcome::Rejected => {
-                self.acq_bad += 1;
-                false
-            }
-            _ => {
-                self.acq_bad += 1;
-                true
-            }
-        }
+        self.acq_bad += 1;
+        outcome
     }
 }
 
@@ -268,13 +282,16 @@ mod tests {
     #[derive(Default)]
     struct CaptureSink {
         pushes: Vec<(u32, u16, bool)>, // (point,INVALID?) — bool=坏质量
+        /// push 回执策略（默认 Accepted；栈序注入背压/拒绝形态）。
+        verdict: Vec<PushOutcome>,
     }
 
     impl RawObservationSink for CaptureSink {
         fn push(&mut self, raw: RawObservation) -> PushOutcome {
+            let v = self.verdict.pop().unwrap_or(PushOutcome::Accepted);
             let bad = raw.quality_bits & quality_bits::INVALID != 0;
             self.pushes.push((raw.point_id, value_int(&raw.value), bad));
-            PushOutcome::Accepted
+            v
         }
     }
 
@@ -354,5 +371,36 @@ mod tests {
         );
         assert_eq!(out, PollOutcome::Busy { transactions: 2 });
         assert_eq!(sink.pushes.len(), 2);
+    }
+
+    /// 背压停推（[07] §2.5 adapter 合同）：sink 满后立即停推返回 Busy
+    /// ——不把组内其余点继续推向已满 sink（限流计数与有界拒绝日志不被
+    /// 噪音冲刷）；余点已挂 pending，下轮重排/期限超限可见。
+    #[test]
+    fn backpressure_stops_push_mid_group() {
+        let mut a = dead_adapter(2);
+        let work = alloc::vec![wp(1, 4000, 3, 1), wp(2, 4001, 3, 1), wp(3, 4002, 3, 1)];
+        // pop 自栈顶：第 1/2 次接受、第 3 次背压。
+        let mut sink = CaptureSink {
+            pushes: alloc::vec![],
+            verdict: alloc::vec![
+                PushOutcome::Backpressured,
+                PushOutcome::Accepted,
+                PushOutcome::Accepted
+            ],
+        };
+        let out = a.poll(
+            1_000,
+            PollBudget {
+                max_events: 64,
+                max_transactions: 16,
+            },
+            &work,
+            &mut sink,
+        );
+        assert_eq!(out, PollOutcome::Busy { transactions: 1 });
+        assert_eq!(sink.pushes.len(), 3, "第 3 点背压即停——第 4 次推不存在");
+        assert_eq!(a.acq_bad, 3, "坏采集统一计 acq_bad");
+        assert_eq!(a.acq_good, 0);
     }
 }
