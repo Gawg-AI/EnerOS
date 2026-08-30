@@ -16,7 +16,8 @@ VALUES = {
     0x0102: 5000,  # 频率 raw=5000 ×0.01 → 50 Hz
     0x0103: 600,   # SOC raw=600 ×0.001 → 0.6
     0x0104: 1000,  # 并网 raw=1000 ×0.001 → 1.0
-    0x0105: 0,     # 告警 raw=0
+    0x0105: 0,     # 过流告警 raw=0
+    0x0106: 0,     # 过温告警 raw=0（61 复查矫正：独立过温点，解 6/6 别名）
     0x0200: 0,     # 控制点（有功功率 setpoint，kW raw=值 ×1.0）
 }
 
@@ -29,7 +30,7 @@ def log(transcript, entry):
             f.write(json.dumps(entry) + "\n")
 
 
-def conn_handler(conn, conn_id, transcript, wrong_scale=1.0, reject_writes=False):
+def conn_handler(conn, conn_id, transcript, wrong_scale=1.0, reject_writes=False, fail_readback=False):
     buf = b""
     try:
         while True:
@@ -54,9 +55,24 @@ def conn_handler(conn, conn_id, transcript, wrong_scale=1.0, reject_writes=False
                 if func == 0x03 and len(pdu) == 5:  # 读保持寄存器
                     addr = struct.unpack(">H", pdu[1:3])[0]
                     count = struct.unpack(">H", pdu[3:5])[0]
-                    if addr in VALUES and count == 1:
+                    # 61 复查 M4 补证：写后读回不可得——FC03 读控制点回异常
+                    #（写照常 ACK），writer 判 AppliedReadbackUnavailable →
+                    # dispatch Indeterminate（蓝图 05 §4.5「读回不可得」行）。
+                    if fail_readback and addr == 0x0200:
+                        log(transcript, {"event": "READBACK-FI", "conn": conn_id,
+                                         "tid": tid, "func": "fc03",
+                                         "addr": hex(addr),
+                                         "injected": "fail-readback"})
+                        resp_pdu = bytes([0x83, 0x02])
+                    elif addr in VALUES and count == 1:
                         v = VALUES[addr]
-                        if wrong_scale != 1.0:
+                        # 61 复查矫正：错回读注入只作用于**控制点 0x0200**
+                        # （蓝图 05 §4.5 M2 行语义 = 写点读回 5→7.5 超容差）。
+                        # 历史实现对全部 FC03 读生效——把 ACQ 遥测一并污染
+                        # （freq→75Hz 触发 OutOfRange，反馈链饿死）；旧轮
+                        # M2 之所以能跑通，是陈旧 root 合成源（好值）与被
+                        # 污染 ACQ 交替喂养的偶然，非注入语义正确。
+                        if wrong_scale != 1.0 and addr == 0x0200:
                             v = int(v * wrong_scale)
                             log(transcript, {"event": "READ-FI", "conn": conn_id,
                                              "tid": tid, "func": "fc03",
@@ -112,6 +128,8 @@ def main():
     ap.add_argument("--serve-after", type=int, default=0)
     ap.add_argument("--wrong-readback-scale", type=float, default=1.0,
                     help="故障注入：读回值乘该系数（默认 1.0=正常；如 1.5=错回读）")
+    ap.add_argument("--fail-readback", action="store_true",
+                    help="故障注入：FC03 读控制点 0x0200 回异常（读回不可得）")
     ap.add_argument("--reject-writes", action="store_true",
                     help="故障注入：写单寄存器一律拒绝（illegal-data-address）")
     args = ap.parse_args()
@@ -127,7 +145,8 @@ def main():
         conn, _ = srv.accept()
         cid += 1
         log(args.transcript, {"event": "CONNECT", "conn": cid})
-        conn_handler(conn, cid, args.transcript, args.wrong_readback_scale, args.reject_writes)
+        conn_handler(conn, cid, args.transcript, args.wrong_readback_scale,
+                     args.reject_writes, args.fail_readback)
 
 
 if __name__ == "__main__":

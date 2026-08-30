@@ -1,0 +1,105 @@
+{
+  "schema": "eneros.blueprint61.evidence.v1",
+  "version": "0.314.26-fixverify",
+  "commit": "WORKTREE（Phase 0 复查修复树，未提交）",
+  "dirty": true,
+  "profile": "qemu-prod",
+  "profile_sha256": "071ff15fb9fa04f6bca0d186f172eab9012e4fa19bea0e9afa080d0beac911af",
+  "config_digests": {
+    "image_raw_sha256": "见 build/image.sha256（修复树重建：bundle 5377B 含点 7 + 重链接 rootserver）",
+    "build_chain": "config compile → image raw →（rootserver 重链接 ninja top-rust 4 步 + 回拷 target/sel4）→ image raw 重打包",
+    "root_relink_note": "首轮构建暴露 root-task 重链接盲区（target/sel4/rootserver 陈旧 8/9）——svc-telemetry 7 点 vs 旧 root 6 点合成源饿死反馈链；已按 [[sel4-rebuild-procedure]] 补链"
+  },
+  "commands": [
+    {
+      "id": "CMD-TEST-WS",
+      "cmd": "cargo test --workspace --no-fail-fast",
+      "exit": 0,
+      "summary": "7868 passed / 0 failed（397 套件；较 0.314.26 +10 新测试）"
+    },
+    {
+      "id": "CMD-FIXVERIFY",
+      "cmd": "tools/run61-phase0-fixverify.sh + 逐用例实弹（evidence61-fv6）",
+      "exit": 0,
+      "summary": "M1/M2/M3/M4 全 PASS（同镜像 build/image.sha256）"
+    }
+  ],
+  "tests": [
+    {
+      "id": "T-FIX-4",
+      "class": "单点爬坡合同（host）",
+      "rows": {
+        "contract_from_pcs_profile_is_complete": "PASS——tag=2/unit=1/±500/爬坡 3.33kW·s⁻¹/回读容差单源",
+        "switch_profile_contract_has_no_ramp": "PASS——离散命令爬坡=∞",
+        "read_class_has_no_executable_contract": "PASS——Read 无执行合同",
+        "first_command_has_no_baseline_and_commits": "PASS——首命令无参照放行",
+        "ramp_violation_rejected_zero_delivery": "PASS——同拍 5→200 拒（ramp-limit 文案）零投递",
+        "same_setpoint_delta_zero_recommits": "PASS——同值 Δ=0 放行（E4 周期场景）",
+        "ramp_ok_after_real_time_passes": "PASS——真实时钟 59s 后 0.254kW/s 放行"
+      }
+    },
+    {
+      "id": "T-FIX-6",
+      "class": "clamp 重验单源（host）",
+      "rows": {
+        "converged_clamp_accepted_with_full_revalidation": "PASS——收敛干净才采信",
+        "non_converging_clamp_never_accepted": "PASS——永不收敛 → None 放弃",
+        "already_clean_first_clamp_passes_through": "PASS",
+        "slow-path 收编": "coordinator 慢路径原内联循环 → revalidate_clamped 单源；fast-path passed&&clamped 分支接入"
+      }
+    },
+    {
+      "id": "T-FIX-ALIAS",
+      "class": "过温独立点（host）",
+      "rows": {
+        "prod_feedback_mapping_frozen": "PASS——5/4/1/6/7 冻结 + assert_ne 别名不回潮",
+        "prod_mapping_slots_independent_on_wire": "PASS——oc/ot 槽 wire 独立往返（点 7 过温置位 1.0）"
+      }
+    },
+    {
+      "id": "T-E4-FV",
+      "class": "E4 实弹矩阵（修复镜像）",
+      "rows": {
+        "M1_合法写": "PASS——applied-confirmed ×170（m1-normal.qemu-serial.log）",
+        "M2_错回读_1.5x_仅写点": "PASS——READ-FI 注入收窄到控制点 0x0200（历史实现污染全遥测面：freq→75Hz OutOfRange 饿死反馈链——旧轮 M2 的 PASS 是陈旧 root 合成源好值掩盖的偶然）；mismatch ×9 → state=Failed ×9，零 Committed",
+        "M3_对端拒写": "PASS——场景矫正：peer 在位供遥测 + --reject-writes → writer Denied(8) → SUBMIT state=Failed ×9 终态（「无对端」在零合成源正确装配下=无遥测=链不提交，历史偶然场景废弃）",
+        "M4_读回不可得+重启对账": "PASS——--fail-readback（写 ACK、FC03 读控制点异常）→ Indeterminate ×9 持久化；同数据盘二次启动 → EXEC-JOURNAL recovered pending=9 → reconciling（**0.314.26 缺失的 QEMU 级重启对账证据由此补齐**）"
+      }
+    }
+  ],
+  "faults": [],
+  "capacity_tier": "C0",
+  "artifacts": [
+    "evidence/61/phase0-fixverify/m1-normal.qemu-serial.log",
+    "evidence/61/phase0-fixverify/m1-normal.modbus.transcript.jsonl",
+    "evidence/61/phase0-fixverify/m2-wrong-readback.qemu-serial.log",
+    "evidence/61/phase0-fixverify/m2-wrong-readback.modbus.transcript.jsonl",
+    "evidence/61/phase0-fixverify/m3-reject-writes.qemu-serial.log",
+    "evidence/61/phase0-fixverify/m3-reject-writes.modbus.transcript.jsonl",
+    "evidence/61/phase0-fixverify/m4-round1-indeterminate.qemu-serial.log",
+    "evidence/61/phase0-fixverify/m4-restart-reconcile.qemu-serial.log",
+    "evidence/61/phase0-fixverify/m4-restart-reconcile.modbus.transcript.jsonl",
+    "evidence/61/phase0-fixverify/build/compile.log",
+    "evidence/61/phase0-fixverify/build/image.log",
+    "evidence/61/phase0-fixverify/build/image.sha256",
+    "tools/run61-phase0-fixverify.sh",
+    "evidence/61/modbus_slave61.py（--wrong-readback-scale 收窄写点 + --fail-readback 新增）"
+  ],
+  "review": {
+    "spec": "pass",
+    "standards": "pass",
+    "adversarial": "pass",
+    "assembly": "pass",
+    "open_p0": 0,
+    "open_p1": 0
+  },
+  "notes": [
+    "场景矫正（M2/M3）：复查发现的证据语义问题——旧注入/场景依赖陈旧 root 合成源掩盖；正确化装配（零合成源）下重定义注入语义并全 PASS。",
+    "M4 为 0.314.26 manifest 引用但未归档的 run-e4c 补证：本次以读回不可得路径确定性构造 Indeterminate durable + 同数据盘重启 recovered pending=9。",
+    "0.314.26 目录 matrix-m2m3-summary.log 陈旧 FAIL 块已订正（留注记）；其 manifest 增订正条目。",
+    "遗留登记（Phase 1）：ControlContract 完全配置化编译（点表 TOML→contract）；asset_id 暂绑 device_id；ramp 基线跨重启不持久（本次 last_confirmed 仅内存）。",
+    "次生修复：intent_rate_gate_exceeds_budget 夹具改同值（61 复查后单点爬坡先于预算闸）；budget 闸语义不变。"
+  ],
+  "signed_at": "2026-08-30T15:30:00+08:00",
+  "signature_ref": null
+}

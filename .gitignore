@@ -175,6 +175,9 @@ product/security/keys-local/
 # 介质不入库纪律：evidence 下 QEMU 磁盘镜像等 raw 介质留在本地不入仓
 # （GitHub 单文件 100MiB 硬限；128MiB evidence/37 镜像已从未推送历史剥离，2026-08-29）
 evidence/**/*.raw
+# 61 复查 fixverify：注入逐请求 transcript 达介质级体量（四份共 ~130MB）——
+# manifest + CHECKSUMS.sha256 入库可校验，transcript 本地保留（2026-08-30）
+evidence/61/phase0-fixverify/*.modbus.transcript.jsonl
 
 # 过程产物与本地工具数据：本地保留，不上传（2026-08-29 GitHub 收口，677 文件已从历史剥离）
 .reasonix/

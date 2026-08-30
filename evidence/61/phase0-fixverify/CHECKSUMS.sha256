@@ -1,0 +1,6 @@
+aa6151481d300640de40b9ceb15536efc13b631cfb536c670938a7e28f8c2b59  manifest.json
+866cd5a54e09d63454d20ff4d06b2d0fe7ddb5a35608ffa0e4f8b3d88bcddb18  m1-normal.modbus.transcript.jsonl
+1d9a42892ef5d5365e5b0df4339888895d2bfa5aebc2edb648a2e5e9450a21a4  m2-wrong-readback.modbus.transcript.jsonl
+25f987a60c38a42857ea96e2ba710adc476ddfa4d8fb4fddd024f48f930a21d0  m3-reject-writes.modbus.transcript.jsonl
+7f160270ea0b1ec6c080fe7211633f1cc86dcca327807b4cdae4196cf33ff1c4  m4-restart-reconcile.modbus.transcript.jsonl
+fda77f698f1d500eebf67f57d5067e94af58b800bfa8b3fc1db947653e7bc8c3  qemu-prod.image.raw (build/image.sha256 本地)
