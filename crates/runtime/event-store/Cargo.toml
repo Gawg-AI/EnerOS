@@ -1,0 +1,22 @@
+[package]
+name = "eneros-event-store"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图61 [07] §4 (v0.314.32) — 分区事件日志：Segment 物理格式/掉电恢复/消费位点/容量水位/保留删除（no_std）"
+
+[dependencies]
+# BlockDevice 依赖选择（见 crate 文档 §依赖选择）：eneros-storage 的
+# BlockDevice 是唯一带 write/erase/flush 的统一块接口（boot/image-format
+# 的同名 trait 是固件侧只读契约，无法承载写路径）。
+eneros-storage = { path = "../../drivers/storage" }
+# 蓝图 61 [02] §3.1 同源：sha2（no_std 兼容）用于 segment trailer SHA-256。
+sha2 = { version = "0.10.9", default-features = false }
+# [07] §4.6.3 接入桥：ObservationSink 与事件 wire（本 crate 消费
+# ingestion-core 的 sink 接缝；方向 = runtime → protocols 装配面）。
+eneros-ingestion-core = { path = "../../protocols/ingestion-core" }
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
+
+[features]
+default = []

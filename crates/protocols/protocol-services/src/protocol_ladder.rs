@@ -201,7 +201,7 @@ fn short_name(service: &str) -> &str {
 
 /// `&mut dyn ServiceIo` → `&mut dyn ConfigEntrySource` 适配（同一方法
 /// 签名；避免 trait upcast 的 no_std 工具链依赖）。
-struct ServiceIoAsSource<'a>(&'a mut dyn ServiceIo);
+pub struct ServiceIoAsSource<'a>(pub &'a mut dyn ServiceIo);
 
 impl ConfigEntrySource for ServiceIoAsSource<'_> {
     fn config_entry(&mut self, id: &str) -> Option<Vec<u8>> {

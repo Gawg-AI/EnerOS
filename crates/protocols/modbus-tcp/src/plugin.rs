@@ -79,6 +79,22 @@ impl TcpPlugin {
         }
     }
 
+    /// 蓝图 61 v0.314.30（[07] §2.3）：寄存器组读——相邻寄存器合并读取
+    /// 的传输原语（`start..start+words`；words ∈ [1,125] Modbus 上限）。
+    ///
+    /// 组内任何异常按点质量展开（调用方处理），不把整组假装成功。
+    pub fn read_group(
+        &mut self,
+        reg_addr: u16,
+        func_code: u8,
+        words: u16,
+    ) -> Result<alloc::vec::Vec<u16>, ProtocolError> {
+        let Some(adapter) = self.adapter.as_mut() else {
+            return Err(ProtocolError::ProtocolNotStarted);
+        };
+        adapter.read_raw(reg_addr, func_code, words)
+    }
+
     /// 45.4：注入点表路由点数（观测）。
     pub fn routed_count(&self) -> usize {
         self.routed_count

@@ -137,14 +137,28 @@ impl TelemetryService {
     /// 蓝图 61：OBS 影子批次准入（TEL_INGEST_OBS 服务端；响应
     /// [OK][accepted u16][rejected u16]）。
     pub fn obs_ingest(&mut self, source_id: u32, frames: &[u8], now_ms: u64) -> Vec<u8> {
-        let Some(obs) = self.obs.as_mut() else {
-            // 影子未装配 = 配置无来源表 → 显式拒绝（不静默吞帧）。
-            return alloc::vec![0xFF];
+        // 首段借用（obs 准入 + 钉扎读出）作用域化——生产 upsert 需要
+        // 独占 self（[07] §2.6.5 生产轨切换）。
+        let (accepted, rejected, converted, pinned) = {
+            let Some(obs) = self.obs.as_mut() else {
+                // 影子未装配 = 配置无来源表 → 显式拒绝（不静默吞帧）。
+                return alloc::vec![0xFF];
+            };
+            let mut converted: Vec<TelemetrySample> = Vec::new();
+            let (accepted, rejected) = obs.ingest_frames(source_id, frames, now_ms, &mut converted);
+            let pinned = obs.last_pinned();
+            (accepted, rejected, converted, pinned)
         };
-        let (accepted, rejected) = obs.ingest_frames(source_id, frames, now_ms);
+        // 蓝图 61 v0.314.30（[07] §2.6.5）：telemetry 侧改为 ObservationEvent
+        // consumer——OBS 是生产轨。转换样本逐点 upsert 进生产缓冲（同点
+        // 新样本替换旧样本；**多源不互相 clear**——旧 INGEST 全量替换语义
+        // 只保留在 legacy 迁移 reader 路径）。
+        for sample in converted {
+            self.upsert_sample(&sample);
+        }
         // 生产评估器 epoch 与 registry 分配的观测身份同源同步（首次钉扎 /
         // adapter 重启新 epoch）：新 epoch = 新序号空间（restore 清态）。
-        if let Some((_, epoch)) = obs.last_pinned() {
+        if let Some((_, epoch)) = pinned {
             if self.evaluator.epoch() != epoch {
                 self.evaluator
                     .restore(epoch, 0, alloc::collections::BTreeMap::new());
@@ -304,6 +318,26 @@ impl TelemetryService {
     /// ClockNotMonotonic，快照必须原子冻结单周期样本）。
     pub fn clear(&mut self) {
         self.buffer.clear();
+    }
+
+    /// 蓝图 61 v0.314.30：OBS 生产轨逐点 upsert。
+    ///
+    /// 同点 → 新样本替换旧样本（最新事实单点有效）；新点 → 追加；
+    /// 缓冲满且为新点 → 淘汰最旧并计数（DropOldest 可观测，不静默）。
+    /// 每点保留一份最新样本 = 「单周期单点原子」与「多源不互相 clear」
+    /// 的交集语义。
+    fn upsert_sample(&mut self, sample: &TelemetrySample) {
+        if let Some(slot) = self.buffer.iter_mut().find(|b| b.point == sample.point) {
+            *slot = *sample;
+            self.ingested += 1;
+            return;
+        }
+        if self.buffer.len() >= MAX_BUFFERED_SAMPLES {
+            self.buffer.pop_front();
+            self.rejected += 1;
+        }
+        self.buffer.push_back(*sample);
+        self.ingested += 1;
     }
 
     /// 评估当前缓冲（快照原子冻结：评估器在拷贝上执行，不因并发 ingest

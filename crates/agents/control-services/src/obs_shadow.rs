@@ -93,7 +93,15 @@ impl ObsShadow {
     /// OBS 批次准入（wire = count × 128B 帧）。
     ///
     /// 返回 (accepted, rejected)；一切拒绝进 quarantine（有界）且计数。
-    pub fn ingest_frames(&mut self, _source_id: u32, frames: &[u8], now_ms: u64) -> (usize, usize) {
+    /// `converted`（v0.314.30 生产消费面出参）= 接受事件的旧样本视图
+    /// （OBS = 生产轨；调用方 upsert 进生产缓冲）。
+    pub fn ingest_frames(
+        &mut self,
+        _source_id: u32,
+        frames: &[u8],
+        now_ms: u64,
+        converted: &mut Vec<TelemetrySample>,
+    ) -> (usize, usize) {
         let mut accepted = 0usize;
         let mut rejected = 0usize;
         let mut batch: Vec<TelemetrySample> = Vec::new();
@@ -169,6 +177,7 @@ impl ObsShadow {
                 }
             }
         }
+        converted.extend(batch);
         (accepted, rejected)
     }
 

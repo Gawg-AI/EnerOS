@@ -90,6 +90,13 @@ impl Iec104Adapter {
         self.mappings.iter().find(|m| m.point_id == point_id)
     }
 
+    /// 蓝图 61 [07] §3.3（v0.314.31）：主站只读视图（ingest adapter 经
+    /// plugin 转发 drain 数据面；只读——adapter 直写 Snapshot/设备在类型
+    /// 上不可达，[07] §3.5 分界）。
+    pub fn master(&self) -> &Iec104Master {
+        &self.master
+    }
+
     /// 对单个设备执行一轮召唤（连接 + 总召唤 + 消费帧），填充该设备缓存。
     fn poll_device(&mut self, common_addr: u16, now_ms: u64) {
         if !self.master.conn_keys().contains(&common_addr) {

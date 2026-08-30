@@ -50,6 +50,14 @@ impl<P: ProtocolPlugin> PluginIoService<P> {
         &mut self.plugin
     }
 
+    /// 蓝图 61 v0.314.31（[07] §3.3）：取回插件所有权（svc-iec104 装配序
+    /// ——先自检（own plugin，传输建立/STARTDT 窗口）→ 包 Rc<RefCell> 共享
+    /// 句柄 → 挂 ingest adapter 挂 module；最小侵入：自检轮复用既有
+    /// `PluginIoService`，装配序列在 bin 注释登记）。
+    pub fn into_plugin(self) -> P {
+        self.plugin
+    }
+
     /// 47（WP-47.1 协议入站写）：导出插件已解析的写意图（服务层
     /// 转发给 svc-control-dispatch 前调用；缓冲清空）。
     pub fn drain_write_intents(

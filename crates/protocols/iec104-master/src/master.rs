@@ -56,6 +56,14 @@ pub struct LatestValue {
     pub quality: QualityDescriptor,
     /// 接收时间戳（ms，来自传输层单调时钟）。
     pub timestamp_ms: u64,
+    /// 蓝图 61 [07] §3.3（v0.314.31）：CP56Time2a → Unix 纳秒（带时标类型
+    /// TI 30/34/36；此前 LatestValue 丢弃 io.time_tag）。`None` = 无时标——
+    /// 消费方以传输接收时刻为 event_time，时钟域信任面由 descriptor
+    /// `clock_id` 承担（不打事件 flag——无时标≠时钟坏）。
+    pub time_tag_ns: Option<u64>,
+    /// CP56Time2a IV 位（时钟未同步——时标存在但不可信；[07] §3.3 保留
+    /// 时钟质量：消费方回退接收时刻并在品质上追加 UNCERTAIN）。
+    pub time_tag_iv: bool,
 }
 
 impl Iec104Master {
@@ -82,6 +90,16 @@ impl Iec104Master {
         self.latest_values
             .get(&common_addr)
             .and_then(|m| m.get(&ioa))
+    }
+
+    /// 蓝图 61 [07] §3.3（v0.314.31）：数据面只读迭代——
+    /// `(common_addr, ioa, &LatestValue)`，(ca, ioa) 升序（BTreeMap 序，
+    /// drain 顺序稳定）。ingest adapter 每轮全量扫此视图，去重由 adapter
+    /// 侧 seen 表承担（同戳同值跳过，变化/新见发射）。
+    pub fn latest_values(&self) -> impl Iterator<Item = (u16, u32, &LatestValue)> {
+        self.latest_values
+            .iter()
+            .flat_map(|(&ca, per_ioa)| per_ioa.iter().map(move |(&ioa, lv)| (ca, ioa, lv)))
     }
 
     /// 返回所有已建立连接的公共地址列表（数据面轮询用，ARCH-P04）。
@@ -486,12 +504,22 @@ impl Iec104Master {
                 let ts = self.transport.now_ms();
                 let entry = self.latest_values.entry(asdu.common_addr).or_default();
                 for io in &asdu.ioas {
+                    // 蓝图 61 [07] §3.3（v0.314.31）：带时标类型（TI 30/34/36）
+                    // 保留 CP56Time2a → Unix 纳秒与 IV 时钟质量位（此前
+                    // LatestValue 丢弃 io.time_tag）；非法日期 → None（回退
+                    // 接收时刻，不伪造时标）。
+                    let (time_tag_ns, time_tag_iv) = match io.time_tag {
+                        Some(t) => (t.to_unix_nanos(), t.iv),
+                        None => (None, false),
+                    };
                     entry.insert(
                         io.ioa,
                         LatestValue {
                             value: io.value,
                             quality: io.quality,
                             timestamp_ms: ts,
+                            time_tag_ns,
+                            time_tag_iv,
                         },
                     );
                 }
@@ -1064,6 +1092,92 @@ mod tests {
         assert_eq!(tag.minute, 4);
         assert_eq!(tag.second, 5);
         assert_eq!(tag.millis, 6);
+    }
+
+    /// 蓝图 61 [07] §3.3（v0.314.31）：time_tag_from_ms 基准（2026-01-01
+    /// 00:00:00.000）与 `TimeTag::to_unix_nanos` 交叉验证——两条独立实现
+    /// 的同一日期常量必须一致（Unix 1_767_225_600 s）。
+    #[test]
+    fn test_time_tag_roundtrip_to_unix_nanos() {
+        let tag = time_tag_from_ms(1_500);
+        // 2026-01-01 00:00:01.500（本地基准 ms=1500）。
+        assert_eq!(tag.second, 1);
+        assert_eq!(tag.millis, 500);
+        assert_eq!(
+            tag.to_unix_nanos(),
+            Some(1_767_225_601_500_000_000),
+            "2026-01-01T00:00:01.500Z = 1767225601.5s"
+        );
+    }
+
+    /// 蓝图 61 [07] §3.3（v0.314.31）：带时标帧（TI=36）入数据面时保留
+    /// CP56 纳秒时标与 IV 位；无时标帧（TI=13）→ time_tag_ns=None。
+    #[test]
+    fn test_latest_value_keeps_time_tag_and_iv() {
+        use crate::mock::MockMasterTransport;
+        let transport = MockMasterTransport::new();
+        let mut master = Iec104Master::new(MasterConfig::default(), Box::new(transport));
+        let dev = RemoteDevice::new([192, 168, 1, 10], 2404, 1, 30_000);
+        master.connect(&dev).unwrap();
+        // TI=36 带 CP56Time2a（2026-08-30 12:00:00.500，iv=false）。
+        let tagged = Asdu {
+            type_id: TypeId::MeasuredValueFloatTimeTagged,
+            cause_of_tx: Cot::Spontaneous,
+            common_addr: 1,
+            ioas: vec![InformationObject {
+                ioa: 10,
+                value: IoValue::Float(61.5),
+                quality: QualityDescriptor::good(),
+                time_tag: Some(TimeTag {
+                    year: 26,
+                    month: 8,
+                    day: 30,
+                    hour: 12,
+                    minute: 0,
+                    second: 0,
+                    iv: false,
+                    su: false,
+                    millis: 500,
+                }),
+            }],
+        };
+        // TI=13 无时标。
+        let plain = Asdu {
+            type_id: TypeId::MeasuredValueFloat,
+            cause_of_tx: Cot::Spontaneous,
+            common_addr: 1,
+            ioas: vec![InformationObject {
+                ioa: 11,
+                value: IoValue::Float(2.5),
+                quality: QualityDescriptor::good(),
+                time_tag: None,
+            }],
+        };
+        let mock = master
+            .transport_mut()
+            .as_any_mut()
+            .downcast_mut::<MockMasterTransport>()
+            .unwrap();
+        mock.push_rx(1, Apdu::i_format(0, 0, tagged).encode().unwrap());
+        mock.push_rx(1, Apdu::i_format(1, 0, plain).encode().unwrap());
+        master.process_rx(1).unwrap();
+        master.process_rx(1).unwrap();
+        let tagged_lv = master.latest_value(1, 10).expect("TI=36 未入数据面");
+        assert_eq!(
+            tagged_lv.time_tag_ns,
+            Some(1_788_091_200_500_000_000),
+            "CP56 时标须保留为 Unix 纳秒"
+        );
+        assert!(!tagged_lv.time_tag_iv);
+        let plain_lv = master.latest_value(1, 11).expect("TI=13 未入数据面");
+        assert_eq!(plain_lv.time_tag_ns, None, "无时标帧 → None");
+        assert!(!plain_lv.time_tag_iv);
+        // 只读迭代器：两个点都可达，序 = (ca, ioa) 升序。
+        let drained: alloc::vec::Vec<(u16, u32)> = master
+            .latest_values()
+            .map(|(ca, ioa, _)| (ca, ioa))
+            .collect();
+        assert_eq!(drained, alloc::vec![(1, 10), (1, 11)]);
     }
 
     // ===== 46（WP-46.4）t1 超时 / 设点 / M_ST·M_BO =====

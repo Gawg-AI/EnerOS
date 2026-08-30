@@ -150,6 +150,19 @@ impl Iec104Plugin {
     pub fn routed_count(&self) -> usize {
         self.routed_count
     }
+
+    /// 蓝图 61 [07] §3.3（v0.314.31）：数据面只读迭代——转发内部
+    /// `adapter.master().latest_values()`（(common_addr, ioa, 值) 升序），
+    /// 供 ingest adapter drain。adapter 未启动（未 start/已 stop）→ 空迭代
+    /// 器（如实降级，不伪造数据）。
+    pub fn latest_values(
+        &self,
+    ) -> alloc::boxed::Box<dyn Iterator<Item = (u16, u32, &crate::master::LatestValue)> + '_> {
+        match &self.adapter {
+            Some(a) => Box::new(a.master().latest_values()),
+            None => Box::new(core::iter::empty()),
+        }
+    }
 }
 
 impl Default for Iec104Plugin {

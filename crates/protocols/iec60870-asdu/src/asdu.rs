@@ -421,6 +421,43 @@ impl TimeTag {
             millis: total_ms % 1000,
         }
     }
+
+    /// 蓝图 61 [07] §3.3（v0.314.31）：CP56Time2a → Unix 纳秒（UTC）。
+    ///
+    /// - 年 = 2000 + year（CP56Time2a 百年域 2000-2099）；
+    /// - 日期 civil → days 自 1970-01-01（Howard Hinnant `days_from_civil`
+    ///   算法——无 chrono 依赖的 no_std 纯整数实现）；
+    /// - 秒内毫秒（`millis`）折进纳秒。
+    ///
+    /// 非法日期（`decode` 位掩码可产出 month=0/13..15、day=0 等越界形态）
+    /// → `None`——调用方回退传输接收时刻，时钟质量另行标注（不伪造时标）。
+    pub fn to_unix_nanos(&self) -> Option<u64> {
+        if self.month < 1 || self.month > 12 || self.day < 1 || self.day > 31 {
+            return None;
+        }
+        let year = 2000i64 + i64::from(self.year);
+        let m = i64::from(self.month);
+        let d = i64::from(self.day);
+        // days_from_civil（公有域算法）：March-based 年/月变换 → era 展开。
+        let y = if m <= 2 { year - 1 } else { year };
+        let era = y / 400; // y ≥ 0 → 截断除即 era
+        let yoe = y - era * 400; // [0, 399]
+        let mp = (m + 9) % 12; // Mar=0 .. Feb=11
+        let doy = (153 * mp + 2) / 5 + d - 1; // [0, 365]
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+        let days = era * 146_097 + doe - 719_468; // 自 1970-01-01 的天数
+        let secs = days * 86_400
+            + i64::from(self.hour) * 3_600
+            + i64::from(self.minute) * 60
+            + i64::from(self.second);
+        let nanos = secs
+            .checked_mul(1_000_000_000)?
+            .checked_add(i64::from(self.millis) * 1_000_000)?;
+        if nanos < 0 {
+            return None;
+        }
+        Some(nanos as u64)
+    }
 }
 
 // ===== IoValue =====
@@ -1352,6 +1389,104 @@ mod tests {
         let bytes = tag.encode();
         let total_ms = (bytes[0] as u16) | ((bytes[1] as u16) << 8);
         assert_eq!(total_ms, 45500);
+    }
+
+    // ===== 蓝图 61 [07] §3.3（v0.314.31）：CP56Time2a → Unix 纳秒 =====
+
+    /// 已知日期向量（手算）：2026-08-30 12:00:00.500 UTC
+    /// = Unix 1_788_091_200 s + 0.5 s = 1_788_091_200_500_000_000 ns。
+    #[test]
+    fn test_to_unix_nanos_known_vector_2026() {
+        let tag = TimeTag {
+            year: 26,
+            month: 8,
+            day: 30,
+            hour: 12,
+            minute: 0,
+            second: 0,
+            iv: false,
+            su: false,
+            millis: 500,
+        };
+        assert_eq!(tag.to_unix_nanos(), Some(1_788_091_200_500_000_000));
+    }
+
+    /// Unix 纪元锚点：2000-01-01 00:00:00.000 = 946_684_800 s（手算：
+    /// 1970→2000 三十年 + 7 个闰日 = 10957 天）。
+    #[test]
+    fn test_to_unix_nanos_y2000_anchor() {
+        let tag = TimeTag {
+            year: 0,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            iv: false,
+            su: false,
+            millis: 0,
+        };
+        assert_eq!(tag.to_unix_nanos(), Some(946_684_800_000_000_000));
+    }
+
+    /// 闰日向量：2024-02-29 00:00:00 = 1_709_164_800 s（含世纪闰年
+    /// 2000 全覆盖的 days_from_civil 展开正确性）。
+    #[test]
+    fn test_to_unix_nanos_leap_day() {
+        let tag = TimeTag {
+            year: 24,
+            month: 2,
+            day: 29,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            iv: false,
+            su: false,
+            millis: 0,
+        };
+        assert_eq!(tag.to_unix_nanos(), Some(1_709_164_800_000_000_000));
+    }
+
+    /// 世纪闰年：2000-02-29 = 951_782_400 s（÷400 规则分支）。
+    #[test]
+    fn test_to_unix_nanos_century_leap() {
+        let tag = TimeTag {
+            year: 0,
+            month: 2,
+            day: 29,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            iv: false,
+            su: false,
+            millis: 0,
+        };
+        assert_eq!(tag.to_unix_nanos(), Some(951_782_400_000_000_000));
+    }
+
+    /// 非法日期（decode 位掩码越界形态）→ None：不伪造时标。
+    #[test]
+    fn test_to_unix_nanos_rejects_invalid_civil_date() {
+        let mut tag = TimeTag {
+            year: 26,
+            month: 8,
+            day: 30,
+            hour: 12,
+            minute: 0,
+            second: 0,
+            iv: false,
+            su: false,
+            millis: 0,
+        };
+        for month in [0u8, 13, 15] {
+            tag.month = month;
+            assert_eq!(tag.to_unix_nanos(), None, "month={month}");
+        }
+        for day in [0u8, 32] {
+            tag.month = 8;
+            tag.day = day;
+            assert_eq!(tag.to_unix_nanos(), None, "day={day}");
+        }
     }
 
     // ===== IoValue type_id 测试 =====

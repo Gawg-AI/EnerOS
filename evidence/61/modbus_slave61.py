@@ -82,6 +82,23 @@ def conn_handler(conn, conn_id, transcript, wrong_scale=1.0, reject_writes=False
                         log(transcript, {"event": "READ", "conn": conn_id, "tid": tid,
                                          "unit": unit, "func": "fc03", "addr": hex(addr),
                                          "value": v})
+                    elif addr in VALUES and count > 1:
+                        # 蓝图 61 v0.314.30（[07] §2.3 组读）：多寄存器读——
+                        # 逐地址查表（缺表地址=0），标准 0x03 响应
+                        # （byte-count + 2N 大端寄存器）。
+                        regs = [VALUES.get(addr + k, 0) for k in range(count)]
+                        if wrong_scale != 1.0 and addr <= 0x0200 < addr + count:
+                            regs[0x0200 - addr] = int(regs[0x0200 - addr] * wrong_scale)
+                            log(transcript, {"event": "READ-FI", "conn": conn_id,
+                                             "tid": tid, "func": "fc03-group",
+                                             "addr": hex(0x0200),
+                                             "injected": "wrong-readback-scale"})
+                        resp_pdu = bytes([0x03, 2 * count]) + b"".join(
+                            struct.pack(">H", r) for r in regs)
+                        log(transcript, {"event": "READ-GROUP", "conn": conn_id,
+                                         "tid": tid, "func": "fc03",
+                                         "addr": hex(addr), "count": count,
+                                         "values": regs})
                     else:
                         log(transcript, {"event": "ERROR", "conn": conn_id, "tid": tid,
                                          "func": "fc03", "addr": hex(addr), "count": count,

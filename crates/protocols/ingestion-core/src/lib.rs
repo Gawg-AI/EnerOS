@@ -28,11 +28,23 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
+mod module;
+
+/// 蓝图 61 [07] §3.5：adapter 无关合同套件（feature `contract`；
+/// 各协议集成测试经同一套合同证明准入/背压/重启/event_id 纪律）。
+#[cfg(feature = "contract")]
+pub mod contract;
+
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 
 use eneros_telemetry_model::event::{
     event_flags, IntegrityTag, ObservationEvent, ObservationValue,
+};
+pub use module::{
+    ConfigReject, EventQos, IngestOutcome, IngestionAdapter, IngestionModule, OperationalProfile,
+    PointDirectory, PointPlan, PointShard, PollBudget, PollOutcome, PushOutcome,
+    RawObservationSink, TickBudget, TickReport, SHARD_MAX_POINTS,
 };
 
 /// 来源描述符（[02] §4.2 最小封闭集；由签名配置编译）。
@@ -145,6 +157,11 @@ pub trait ObservationSink {
     fn append(&mut self, event: &ObservationEvent) -> Result<AppendAck, IngestReject>;
     /// 该来源已持久 watermark（同 epoch 内最后接受 sequence）。
     fn watermark(&self, source_id: u32) -> Option<(u64, u64)>; // (epoch, sequence)
+    /// 排空待交付 wire 帧（事件日志 → 传输批次接缝；[07] §2.2 交付面）。
+    /// 默认零交付（纯存档 sink）。
+    fn drain_frames(&mut self) -> Vec<[u8; 128]> {
+        Vec::new()
+    }
 }
 
 /// epoch/watermark 持久化接缝（重启防重放；[06] §2.4）。
@@ -494,10 +511,11 @@ impl Default for SourceRegistry {
 
 /// 内存观测事件汇（E3 参考实现；dedup + 同源 watermark 复核）。
 ///
-/// 有界：event_id 环上限 `cap`，满后拒绝（`IngestReject::Overflow`）——
-/// 背压显式化，不静默丢。
+/// 有界（v0.314.30）：事件环 + event_id 去重环同为 `cap`——满后拒绝
+/// （`IngestReject::Overflow`，背压显式化）或滑动淘汰最旧（drain 交付
+/// 后腾位）。长跑内存有界（C1 判据），去重窗口 = 最近 `cap` 事件。
 pub struct InMemorySink {
-    events: Vec<([u8; 16], [u8; 128])>,
+    events: VecDeque<([u8; 16], [u8; 128])>,
     ids: BTreeMap<[u8; 16], ()>,
     watermarks: BTreeMap<u32, (u64, u64)>,
     offset: u64,
@@ -507,7 +525,7 @@ pub struct InMemorySink {
 impl InMemorySink {
     pub fn new(cap: usize) -> Self {
         Self {
-            events: Vec::new(),
+            events: VecDeque::new(),
             ids: BTreeMap::new(),
             watermarks: BTreeMap::new(),
             offset: 0,
@@ -532,7 +550,7 @@ impl InMemorySink {
 impl ObservationSink for InMemorySink {
     fn append(&mut self, event: &ObservationEvent) -> Result<AppendAck, IngestReject> {
         let id = event.event_id();
-        // 1. event_id 去重（重放同 payload → 幂等接受同回执）。
+        // 1. event_id 去重（窗口内重放同 payload → 幂等回执）。
         if self.ids.contains_key(&id) {
             return Err(IngestReject::Duplicate { event_id: id });
         }
@@ -559,7 +577,7 @@ impl ObservationSink for InMemorySink {
         let wire = event.encode_v1();
         self.offset = self.offset.saturating_add(1);
         self.ids.insert(id, ());
-        self.events.push((id, wire));
+        self.events.push_back((id, wire));
         self.watermarks
             .insert(event.source_id, (event.source_epoch, event.sequence));
         Ok(AppendAck {
@@ -570,6 +588,16 @@ impl ObservationSink for InMemorySink {
 
     fn watermark(&self, source_id: u32) -> Option<(u64, u64)> {
         self.watermarks.get(&source_id).copied()
+    }
+
+    /// 排空事件环（wire 帧交付）；id 去重环随环淘汰（窗口有界）。
+    fn drain_frames(&mut self) -> Vec<[u8; 128]> {
+        let mut out = Vec::with_capacity(self.events.len());
+        while let Some((id, wire)) = self.events.pop_front() {
+            self.ids.remove(&id);
+            out.push(wire);
+        }
+        out
     }
 }
 

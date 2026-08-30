@@ -1,0 +1,82 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.30",
+ "commit": "PENDING-BUMP-COMMIT",
+ "dirty": false,
+ "profile": "qemu-prod",
+ "profile_sha256": "00078d8682a246e4（image raw sha256，v0.314.30 树重建）",
+ "toolchain_digest": "rustc nightly-2026-04-04 (host) + aarch64-none-elf 15.2.1 + qemu-system-aarch64 10.2.1",
+ "commands": [
+  {
+   "id": "CMD-CONFIG",
+   "cmd": "ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-prod --root-key-hex ...",
+   "exit": 0,
+   "summary": "points.toml [[source]] 表 + 身份块入 bundle（build/compile.log）"
+  },
+  {
+   "id": "CMD-IMAGE",
+   "cmd": "cargo xtask image raw qemu-prod --signing-key ... --uefi-key ... --uefi-cert ...",
+   "exit": 0,
+   "summary": "v0.314.30 全树重建（build/image.log + image.sha256）"
+  },
+  {
+   "id": "CMD-E4",
+   "cmd": "tools/run61-phase2-e4.sh",
+   "exit": 0,
+   "summary": "E4-P2-M1 + E4-P2-RESTART 双用例 rc=0；判据行扫描全 ✓（见 tests.T-E4）"
+  }
+ ],
+ "tests": [
+  {
+   "id": "T-E4-M1",
+   "class": "E4 QEMU 实弹（[07] §2.7/§2.8）",
+   "rows": {
+    "OBS-SOURCE": "PASS——[svc-modbus-tcp] OBS-SOURCE id=2 epoch=<boot-ms> (config-allocated)：source/epoch 由签名配置分配（零硬编码）",
+    "ACQ": "PASS——[svc-modbus-tcp] ACQ point=N value=V q=good seq=S：ACQ 行从接受事件 wire 解码打印（与上行同源单一事实）；组读（相邻寄存器按设备/功能码/连续地址合并，0x0100-0x0106 一组单事务）",
+    "OBS-ROUND": "PASS——[svc-modbus-tcp] OBS-ROUND sent=7 accepted=7（分批上报，词形自 Phase 1 的 shadow-accepted 收敛为 accepted——OBS 即生产轨）",
+    "OBS-CFG": "PASS——[svc-telemetry] OBS-CFG loaded sources=2 generation=<gen>：svc-telemetry 侧惰性来源装载",
+    "OBS-SHADOW": "PASS——OBS-SHADOW MATCH points=7：影子对照保留（转换确定性复核），零 MISMATCH",
+    "SNAPSHOT": "PASS——20 点基线一致：modbus-tcp 7 点值（400/50/50/0.6/1/0/0）与 Phase 0 基线逐点相同（对照组脚本内嵌 run61-phase2-e4.sh）",
+    "TYPED-CHAIN": "PASS——PLAN-TYPED → EXEC-JOURNAL applied-confirmed：Phase 1 typed 决策链不回归",
+    "LEGACY-RETIRE": "PASS——全串口无 [svc-modbus-tcp] INGEST round= 行：生产协议代码不再引用 telemetry 私有 58B INGEST wire（[07] §2.8 门 1）"
+   }
+  },
+  {
+   "id": "T-E4-RESTART",
+   "class": "E4 QEMU 实弹（[07] §2.4 重启语义）",
+   "rows": {
+    "EPOCH": "PASS——两次启动 OBS-SOURCE epoch=10181 → 10469（boot 单调时刻下界，严格递增；持久 boot counter 缺口 = ADR-0047 延续登记）",
+    "WATERMARK": "PASS——restart 影子轨健康（OBS-SHADOW MATCH 且无 OBS-ROUND rejected）：watermark/幂等恢复不重复写"
+   }
+  },
+  {
+   "id": "T-HOST-C1",
+   "class": "C1 host 负载（[07] §2.7）",
+   "rows": {
+    "shard": "PASS——10,000 点 → 10 shard（每 shard ≤1024）+ 索引完备（tests::directory_shards_cap_1024、c1_directory_10k_points_sharded）",
+    "sustained": "PASS——5,000 点 × 10 周期 = 50,000 事件全接受零静默丢（c1_sustained_5k_events_per_s）",
+    "burst": "PASS——20,000 事件单 tick：预算内 16k 接受、余量下 tick 轮转续采、总量守恒（c1_burst_20k_events）",
+    "backpressure": "PASS——慢 sink（容量 2）洪灌 1000：背压显式 ≥998、状态表有界、Q1 背压→degraded、重连→connection_epoch 递增（slow_sink_backpressure_bounded）",
+    "counts": "PASS——1024 事件单 tick 计数不截断（accepted_over_255_not_truncated，[07] §2.8 门：计数不用 u8）"
+   }
+  },
+  {
+   "id": "T-HOST-MODULE",
+   "class": "深模块单元（ingestion-core 39 例）",
+   "rows": {
+    "schedule": "PASS——period/相位/首采（scheduler_respects_period_and_phase）、事务预算跨 tick + 轮转公平（tick_transaction_budget_bounds_adapter）",
+    "deadband": "PASS——Q3 带内并/带外发、品质变化永发、Q0/Q2 永不抑制、Q1 需注册抑制策略（4 例）",
+    "identity": "PASS——epoch 重启递增+watermark 续号、多源不互相 clear、越权/完整性/超速门、工程量富化、世代原子切换",
+    "gate": "PASS——epoch_floor（boot counter 下界）、adapter 来源权威（attach 未注册即拒）、tick 报告计数面 u32"
+   }
+  }
+ ],
+ "gates": {
+  "v0.314.30-exit": {
+   "生产协议代码不引用 telemetry 私有 INGEST wire": "PASS（grep svc-modbus-tcp/modbus_ingest 零 sample_wire/TelemetrySample/TEL_INGEST；E4 串口零 INGEST round= 行）",
+   "点数和计数不使用 u8": "PASS（TickReport/PointPlan/计数面全 u32/u64；max_retries=u16）",
+   "C1 无无界增长、无静默丢": "PASS（host 负载套件；sink/去重/存档/状态表全部有界）",
+   "当前 20 点结果与 Phase 0 基线一致": "PASS（E4 值对照脚本 400/50/50/0.6/1/0/0）"
+  }
+ }
+}

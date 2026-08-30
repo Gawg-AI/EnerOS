@@ -34,6 +34,10 @@ eneros-logging = { path = "../../observability/logging" }
 eneros-mqtt = { path = "../../protocols/mqtt", default-features = false }
 # 管理 RPC 认证（TokenVerifier/RBAC 复用）。
 eneros-mgmt-api = { path = "../../observability/mgmt-api" }
+# 蓝图 61 v0.314.31（[07] §3.4）：市场事实经同一接入合同（SourceRegistry/
+# RawObservation）进入事件平面。
+eneros-ingestion-core = { path = "../../protocols/ingestion-core" }
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 # 40 服务循环模式（分块 EIPC + 心跳）。
 eneros-control-services = { path = "../control-services" }
 heapless = { version = "0.8", default-features = false }
@@ -77,5 +81,7 @@ name = "svc-mgmt"
 path = "src/bin/svc-mgmt.rs"
 
 [dev-dependencies]
+# [07] §3.5 合同套件（市场事实 adapter 合规测试）。
+eneros-ingestion-core = { path = "../../protocols/ingestion-core", features = ["contract"] }
 eneros-config-bundle = { path = "../../runtime/config-bundle", features = ["compile"] }
 eneros-durable-state = { path = "../../runtime/durable-state" }

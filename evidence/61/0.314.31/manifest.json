@@ -1,0 +1,52 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.31",
+ "commit": "PENDING-BUMP-COMMIT",
+ "dirty": false,
+ "profile": "host (target bin check aarch64-unknown-none)",
+ "summary": "第二工业协议（IEC104）与业务事实（市场）适配器——同一 IngestionModule 合同套件证明 seam 泛化性",
+ "commands": [
+  { "id": "CMD-HOST-TESTS", "cmd": "cargo test -p eneros-iec104-master -p eneros-iec60870-asdu -p eneros-protocol-services -p eneros-business-services --features eneros-ingestion-core/contract", "exit": 0, "summary": "见 tests.*（iec104 e5 host 2 例 + 合同三形态 3 例 + iec104_ingest 单元 + market E3 7 例）" },
+  { "id": "CMD-TARGET-CHECK", "cmd": "cargo check -p eneros-protocol-services --target aarch64-unknown-none --features sel4 --bins", "exit": 0, "summary": "svc-iec104 目标闭包零错误（no_std 门）" },
+  { "id": "CMD-CLIPPY", "cmd": "cargo clippy -p eneros-iec104-master -p eneros-iec60870-asdu -p eneros-protocol-services -p eneros-ingestion-core -p eneros-business-services --features eneros-ingestion-core/contract --all-targets", "exit": 0, "summary": "零警告" }
+ ],
+ "tests": [
+  {
+   "id": "T-CONTRACT",
+   "class": "adapter 无关合同套件（[07] §3.5/§3.7）",
+   "rows": {
+    "suite": "PASS——run_full_suite 单实现三形态装配：modbus（轮询+注册 schema+有界点域）、iec104（事件驱动形态）、market（事件驱动+未注册 schema+无界点域）；场景按形态裁剪适用面（越权=adapter 绑定门豁免项文档化）",
+    "api": "PASS——IngestionModule public API 未为任何协议新增特例（modbus/iec104/market 三个 contract 测试共用同一 suite 函数）"
+   }
+  },
+  {
+   "id": "T-IEC104",
+   "class": "IEC104 接入（[07] §3.3）",
+   "rows": {
+    "receive-path": "PASS——Iec104IngestAdapter 经 plugin.poll 驱动 STARTDT/总召/收帧（en日报 time 单调钟）+ drain 数据面 latest_values；IOA/CA → 点映射；重复 ASDU（同内容新 N(S)）按事件身份去重",
+    "quality": "PASS——QualityDescriptor → quality_bits 逐位映射（invalid→INVALID 等）+ 时标：CP56Time2a → event_time（iv=true 追加 UNCERTAIN）；无时标 → 接收时刻（时钟域信任面由 clock_id 承担）",
+    "e5": "PASS——E5 host 标准 peer 互操作（iec104_e5_host.rs，真实 TCP 字节流）：STARTDT/总召/自发数据/时标帧/品质帧/重复帧/对端断开重连，2 例全过；fixture = evidence/61/iec104_slave61.py（零 EnerOS 代码从站）",
+    "link-state": "PARTIAL——STARTDT/STOPDT 状态行由 adapter 观测；DomainEvent 正式落事件平面留 .32 event-store 分区消费（登记）"
+   }
+  },
+  {
+   "id": "T-MARKET",
+   "class": "市场事实 adapter（[07] §3.4，E3）",
+   "rows": {
+    "signature": "PASS——SM3 摘要比对 + SM2 验签（key_id 注册表；未知 key/坏签/摘要篡改三态拒绝），7 例",
+    "revision": "PASS——同 external_id revision 严格递增 = 新事件；回退 → StaleRevision 存档（不进事件平面）",
+    "expiry": "PASS——过期/早到 → 存档（零事件平面写入）；窗口内接受",
+    "finite": "PASS——NaN/Inf price 拒绝；unit_code=0（市场事实不进控制快照，[02] §4.4）",
+    "contract": "PASS——market_contract.rs 合同合规（事件驱动形态裁剪面）"
+   }
+  }
+ ],
+ "gates": {
+  "v0.314.31-exit": {
+   "IEC104 至少 E5 标准 peer 互操作": "PASS（host 真实 TCP 互操作；QEMU 目标级 E5 待 root 授予边接线——BLOCKED 登记）",
+   "市场 adapter E3 签名/修订/过期测试": "PASS（7 例）",
+   "IngestionModule public API 未为某协议新增特例": "PASS（合同套件三形态共用）",
+   "Modbus、IEC104、market 三者统一指标/reject reason": "PASS（TickReport/IngestReject/MarketReject 分层：adapter 事前门 + module 事后门 + 统一计数面）"
+  }
+ }
+}

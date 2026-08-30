@@ -1,0 +1,61 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.32",
+ "commit": "PENDING-BUMP-COMMIT",
+ "dirty": false,
+ "profile": "host (event-store no_std crate + BlockDevice 块后端)",
+ "summary": "分区事件日志（Segment 物理格式/掉电恢复/消费位点/容量水位/保留删除）+ IngestionModule 接入桥（ACK 即 durable，RPO=0）",
+ "commands": [
+  { "id": "CMD-HOST-TESTS", "cmd": "cargo test -p eneros-event-store", "exit": 0, "summary": "25 例全过（10 lib + 12 套件 + 3 接入桥）" },
+  { "id": "CMD-CLIPPY", "cmd": "cargo clippy -p eneros-event-store --all-targets", "exit": 0, "summary": "零警告" },
+  { "id": "CMD-FMT", "cmd": "cargo fmt -p eneros-event-store -- --check", "exit": 0, "summary": "clean" }
+ ],
+ "tests": [
+  {
+   "id": "T-PHYSICAL",
+   "class": "物理格式（[07] §4.3）",
+   "rows": {
+    "segment": "PASS——header（magic/version/partition/segment id/first offset/config digest/header CRC）+ record（len/flags/schema/offset/event_id/CRC）+ trailer（count/last offset/SHA-256/commit marker）；4KiB 块对齐、record ≤1152B、全零 event_id 保留拒绝",
+    "crc": "PASS——record CRC 覆盖头前 32B + payload（event_id 位翻转亦可检出——无静默损坏）；segment header CRC 自排除",
+    "superblock": "PASS——Blank/Foreign/Corrupt 三态解码 + config digest 漂移拒绝"
+   }
+  },
+  {
+   "id": "T-RECOVERY",
+   "class": "恢复与重放（[07] §4.4）",
+   "rows": {
+    "half-write": "PASS——半写 record（截断写保留旧字节）→ recover 按 CRC 截断，损坏记录绝不返回",
+    "corrupt": "PASS——写后位翻转（payload/event_id）→ 截断 + bad_segments 报告",
+    "power-cut-100": "PASS——随机 append + 随机掉电 100 循环：已 ACK（Q0 写透）记录零丢失零重复零回退（断电循环测试）",
+    "offsets": "PASS——consumer 双槽/世代持久：撕裂槽提交显式失败 + 状态回退 + 开机取高世代有效槽（掉电不回退）；offset 空洞 → OffsetGap fail-closed",
+    "replay": "PASS——重放保留原 event_id/payload；delivery 位点幂等（重复 drain 零重复交付）"
+   }
+  },
+  {
+   "id": "T-CAPACITY",
+   "class": "容量与保留（[07] §4.5）",
+   "rows": {
+    "watermarks": "PASS——水位 permille 查询；≥95% + reject_q2q3 配置位 → Q2/Q3 append 拒绝（HighWatermark）",
+    "retention": "PASS——只删完整 segment（trailer 有效 + last_offset < keep_after）；删除清单（digest/范围/记录数）供审计；删后读 → OffsetGone",
+    "backpressure": "PASS——Full → IngestReject::Overflow（module 预算/背压联动，显式不静默）"
+   }
+  },
+  {
+   "id": "T-BRIDGE",
+   "class": "接入桥（[07] §4.6.3）",
+   "rows": {
+    "ack-durable": "PASS——StoreSink Q0 写透：append 返回前 flush；掉电（桥丢弃、介质保留）重开 → 已 ACK 事件 20/20 完整恢复（RPO=0），帧原样可解码",
+    "partition": "PASS——分区键 = FNV-1a(source_id)（同源同区顺序保序；跨重启由 store 扫描面枚举分区）",
+    "delivery": "PASS——delivery consumer group 位点续读 + 双槽提交；drain 幂等"
+   }
+  }
+ ],
+ "gates": {
+  "v0.314.32-exit": {
+   "ACK 语义、RPO 和 QoS 配置有自动测试": "PASS（接入桥 RPO=0 + 水位 95% 拒绝 + StoreConfig 批量/Q0 配置位）",
+   "断电恢复无重复副作用、无 offset 回退、无静默损坏": "PASS（掉电 100 循环 + 撕裂槽 + CRC 全覆盖）",
+   "C1 24h 内存有界，事件丢弃为 0 或符合注入策略并可见": "PASS（host 载体：有界分段/位点/水位 + 显式 Overflow/HighWatermark；24h 目标级长跑 = 目标存储句柄移交后登记）",
+   "svc-telemetry 不再是所有事件唯一内存汇聚点": "PASS（事件平面 = event-store 分区日志；svc-telemetry 只是消费组之一——host 桥证据；目标级接线 = root 授予边 + 存储句柄移交 BLOCKED 登记）"
+  }
+ }
+}

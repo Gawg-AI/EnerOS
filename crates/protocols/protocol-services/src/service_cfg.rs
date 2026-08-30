@@ -87,6 +87,9 @@ pub struct PointsFetch {
     pub registry: eneros_protocol_abstract::VecPointRegistry,
     /// 来源注册表（`[[source]]` 编译产物；旧 bundle = 空）。
     pub sources: alloc::vec::Vec<eneros_config_bundle::points::SourceRecord>,
+    /// 原始点记录（`keep` 过滤后；蓝图 61 v0.314.30：调度面需要
+    /// period_ms/deadband——映射不含调度字段）。
+    pub records: alloc::vec::Vec<eneros_config_bundle::points::PointRecord>,
     /// 映射世代（active bundle generation；不可得 → 0 = 未定代，观测
     /// 不满足控制资格——fail-closed）。
     pub generation: u64,
@@ -122,6 +125,7 @@ where
     let empty = |generation: u64| PointsFetch {
         registry: VecPointRegistry::new(alloc::vec::Vec::new()),
         sources: alloc::vec::Vec::new(),
+        records: alloc::vec::Vec::new(),
         generation,
         total_points: 0,
     };
@@ -137,12 +141,10 @@ where
                 for rec in table.points.iter_mut() {
                     rec.identity.mapping_generation = generation;
                 }
-                let mappings: alloc::vec::Vec<_> = table
-                    .points
-                    .iter()
-                    .filter(|p| keep(p))
-                    .filter_map(|p| p.to_mapping())
-                    .collect();
+                let kept: alloc::vec::Vec<eneros_config_bundle::points::PointRecord> =
+                    table.points.iter().filter(|p| keep(p)).cloned().collect();
+                let mappings: alloc::vec::Vec<_> =
+                    kept.iter().filter_map(|p| p.to_mapping()).collect();
                 eneros_runtime::println!(
                     "[{client_name}] POINTS-LOADED {} points (registry {})",
                     mappings.len(),
@@ -151,6 +153,7 @@ where
                 Ok(PointsFetch {
                     registry: VecPointRegistry::new(mappings),
                     sources: table.sources,
+                    records: kept,
                     generation,
                     total_points: table.points.len(),
                 })

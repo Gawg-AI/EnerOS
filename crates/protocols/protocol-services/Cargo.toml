@@ -107,3 +107,6 @@ eneros-rs485 = { path = "../../drivers/rs485", features = ["mock"] }
 # S1 WP-S1.1（裁决 8）：阶梯 host 测试假传输工厂复用 EchoFactory（不新写
 # 第二份假件）；resolver=2 下 dev-dep feature 不渗入正常构建图（F-30）。
 eneros-protocol-abstract = { path = "../protocol-abstract", features = ["mock"] }
+# 蓝图 61 v0.314.31（[07] §3.5）：IEC104 合同套件——adapter 无关合同
+# （feature `contract` 仅测试构建启用；target 闭包不含）。
+eneros-ingestion-core = { path = "../ingestion-core", features = ["contract"] }

@@ -30,6 +30,15 @@ pub mod service_cfg;
 /// TransportFactory seam——modbus-tcp 真实 TCP 传输接入点）。
 pub mod net_transport;
 
+/// 蓝图 61 v0.314.30（[07] §2.2/§2.3）：Modbus TCP 接入 adapter——
+/// 协议状态机+原始值；身份/映射/工程量/去重/日志在 IngestionModule。
+pub mod modbus_ingest;
+
+/// 蓝图 61 v0.314.31（[07] §3.3）：IEC 104 接入 adapter——总召/自发收包
+/// drain + CP56 时标/品质映射/重复 ASDU 去重；身份/去重日志/背压在
+/// IngestionModule（与 modbus_ingest 同构，不修改 module 内核——[07] §3.1）。
+pub mod iec104_ingest;
+
 /// 服务进程全局分配器（复用 drv-svc 的实现）。
 pub use eneros_drv_svc::allocator::HeapAllocator;
 /// 服务实例 epoch（重启后变化；客户端旧句柄失效）。

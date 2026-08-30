@@ -17,3 +17,5 @@ eneros-protocol-abstract = { path = "../protocol-abstract" }
 default = []
 # host 侧持久 epoch/watermark 文件存储（target 闭包不启用）。
 std = []
+# [07] §3.5 合同套件（仅测试构建启用；target 闭包不含）。
+contract = []
