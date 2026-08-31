@@ -1,0 +1,8 @@
+[package]
+name = "eneros-scale"
+description = "EnerOS 规模资格基础设施（蓝图 61 Phase 7 WP-7.2）：rendezvous 分片/3-voter quorum+fencing/DR 恢复顺序/容量 oracle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

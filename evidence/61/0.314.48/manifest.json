@@ -1,0 +1,47 @@
+{
+  "schema": "eneros.blueprint61.evidence.v1",
+  "version": "0.314.48",
+  "commit": "<filled-at-commit>",
+  "dirty": false,
+  "profile": "host",
+  "profile_sha256": "<filled>",
+  "config_digests": {},
+  "toolchain_digest": "<filled>",
+  "commands": [
+    "cargo test -p eneros-scale",
+    "cargo clippy --workspace --exclude eneros-kernel --exclude eneros-hello --all-targets -- -D warnings",
+    "cargo run -p eneros-ci (六门全 PASS)"
+  ],
+  "tests": [
+    {"id": "SCALE-SHARD-5", "category": "sharding", "exit": 0, "note": "路由确定性/10万键分布/五步计划/等价环空计划/非法环拒绝"},
+    {"id": "SCALE-QUORUM-4", "category": "ha", "exit": 0, "note": "quorum 票集/未知节点/旧 term 拒写/readiness 全组件"},
+    {"id": "SCALE-RESHARD-4", "category": "reshard", "exit": 0, "note": "键集合守恒/零设备副作用/单点原子切换/收缩与 vnode 变化方向"},
+    {"id": "SCALE-CAPACITY-3", "category": "capacity", "exit": 0, "note": "分片消费 vs 参考 oracle 等价/慢消费者可观测/100k 事件计数闭合"},
+    {"id": "SCALE-FENCE-2", "category": "fencing", "exit": 0, "note": "双主旧 fencing 零设备写（账本实证）/重启 token 单调"}
+  ],
+  "faults": [
+    {"fault": "dual-leader", "injection": "旧 term/旧 token/过期租约三路写入", "expected": "零设备写", "observed": "DeviceWriteLedger 只记录新 term 接管后写", "recovery": "单调 term 接管"},
+    {"fault": "reshard-wrong-destination", "injection": "Copy/CatchUp 按 from%shards 而非新环路由", "expected": "双读不一致 → 测试红", "observed": "测试先红后修（新环路由）", "recovery": "无"},
+    {"fault": "slow-consumer", "injection": "消费速率 1/5", "expected": "丢弃/拒绝计数且闭合", "observed": "dropped>0 且 enqueued+rejected=全量生产", "recovery": "背压/降采样"}
+  ],
+  "capacity_tier": "C1(host 模拟); C2/C3 目标硬件 BLOCKED 登记",
+  "artifacts": [
+    "crates/runtime/scale/src/shard.rs",
+    "crates/runtime/scale/src/quorum.rs",
+    "crates/runtime/scale/src/dr.rs",
+    "crates/runtime/scale/src/capacity.rs",
+    "crates/runtime/scale/tests/scale_fence.rs",
+    "crates/runtime/scale/tests/scale_reshard.rs",
+    "crates/runtime/scale/tests/scale_capacity.rs"
+  ],
+  "review": {
+    "spec": "pass",
+    "standards": "pass",
+    "adversarial": "pass",
+    "assembly": "pass",
+    "open_p0": 0,
+    "open_p1": 0
+  },
+  "signed_at": "<filled>",
+  "signature_ref": "<filled>"
+}
