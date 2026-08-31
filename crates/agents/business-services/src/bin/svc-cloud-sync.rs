@@ -90,7 +90,7 @@ struct CloudHandler {
         eneros_business_services::target_durable::MaybeOutbox<
             eneros_business_services::cloud_sync::UploadItem,
         >,
-        UnavailableTransport,
+        DisabledCloudTransport,
     >,
 }
 
