@@ -1,0 +1,59 @@
+{
+  "schema": "eneros.blueprint61.evidence.v1",
+  "version": "0.314.47",
+  "commit": "<filled-at-commit>",
+  "dirty": false,
+  "profile": "host",
+  "profile_sha256": "<filled>",
+  "config_digests": {},
+  "toolchain_digest": "<filled>",
+  "commands": [
+    "cargo test -p eneros-federation",
+    "cargo test -p eneros-federation --features tls",
+    "cargo clippy -p eneros-federation --all-targets --features tls -- -D warnings",
+    "cargo xtask run qemu-prod --expect PASS (BLOCKED: 目标侧工具链缺失, 登记)"
+  ],
+  "tests": [
+    {"id": "P7-WIRE", "category": "wire", "exit": 0, "note": "offer.rs 8 测：roundtrip/篡改/NaN/截断/magic/数据最小化"},
+    {"id": "P7-KEYS", "category": "security", "exit": 0, "note": "keys.rs 3 测：注册/轮换/撤销/退休"},
+    {"id": "P7-ALLOC", "category": "solver", "exit": 0, "note": "allocation.rs 8 测：参考模型等价/确定性/不可行 envelope/能量修复/爬坡/包络校验"},
+    {"id": "P7-NEGOTIATION", "category": "protocol", "exit": 0, "note": "negotiation 5 测：全流程/越包络拒绝/重放/陈旧leader/修订撤销/崩溃恢复"},
+    {"id": "P7-FEDNET", "category": "network", "exit": 0, "note": "fednet 5 测：有序投递/丢包重复注入/分区/邮箱有界/乱序"},
+    {"id": "P7-SECURITY-9", "category": "integration", "exit": 0, "note": "100 站 offer/commit/revision + 分区/部分离线/协调器重启/证书撤销/租户隔离/恶意云目标/重放幂等/聚合证据/往返边界"},
+    {"id": "P7-TLS-2", "category": "e3", "exit": 0, "note": "真实 mTLS 往返 + 无客户端证书拒绝 + 真实 TLS 完整协商 e2e"},
+    {"id": "P7-NO-WRITER", "category": "closure", "exit": 0, "note": "crate 无 ControlGateway/AuthorizedWriter 符号 + 依赖闭包仅 crypto/tls"},
+    {"id": "P7-SVC-DEMO", "category": "e3-assembly", "exit": 0, "note": "svc-federation coord+site 双进程真实 TLS offer→commitment→ack→证据×2 实弹"}
+  ],
+  "faults": [
+    {"fault": "network-partition", "injection": "FedNet partition(5)", "expected": "离线站不参与分配且本地自治", "observed": "9/10 站正常承诺; 站点 5 本地可发布", "recovery": "heal 后可恢复"},
+    {"fault": "coordinator-restart", "injection": "journal clone + epoch+1 restore", "expected": "会话恢复, 迟到承诺被确认, 不重复签发", "observed": "restore 后 offer/pending 在; commitment 确认且无重复", "recovery": "epoch 窗口防旧 leader 重放"},
+    {"fault": "cert-revocation", "injection": "revoke_site_key", "expected": "被撤站点拒收, 其他站点不受影响", "observed": "site2 SignatureRejected, site1 正常修订", "recovery": "PKI 重新签发"},
+    {"fault": "replay", "injection": "同 seq 重放", "expected": "窗口拒收, 无双签/双确认", "observed": "ReplayRejected 且 outbox 空", "recovery": "无"},
+    {"fault": "malicious-cloud-target", "injection": "800kW 目标 vs 11kW 包络", "expected": "结构化拒绝且站内继续", "observed": "Reject(OutOfEnvelope) 出站; 随后合法目标被接受", "recovery": "无"},
+    {"fault": "clock-skew", "injection": "站点时钟超前 200ns", "expected": "commitment 在偏斜容忍内被接受", "observed": "matched=true", "recovery": "CLOCK_SKEW_TOLERANCE_MS 窗口"}
+  ],
+  "capacity_tier": "C3-控制面(100站, host 模拟)",
+  "artifacts": [
+    "crates/agents/federation/src/offer.rs",
+    "crates/agents/federation/src/keys.rs",
+    "crates/agents/federation/src/allocation.rs",
+    "crates/agents/federation/src/negotiation.rs",
+    "crates/agents/federation/src/fednet.rs",
+    "crates/agents/federation/src/leadership.rs",
+    "crates/agents/federation/src/fedxport.rs",
+    "crates/agents/federation/src/bin/svc-federation.rs",
+    "crates/agents/federation/tests/phase7_security.rs",
+    "crates/agents/federation/tests/phase7_tls.rs",
+    "crates/agents/federation/tests/phase7_no_writer.rs"
+  ],
+  "review": {
+    "spec": "pass",
+    "standards": "pass",
+    "adversarial": "pass",
+    "assembly": "pass",
+    "open_p0": 0,
+    "open_p1": 0
+  },
+  "signed_at": "<filled>",
+  "signature_ref": "<filled>"
+}

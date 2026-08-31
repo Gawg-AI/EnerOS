@@ -1,4 +1,4 @@
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(all(not(test), not(feature = "tls")), no_std)]
 
 //! # EnerOS 联邦组件（v0.97.0 联邦发现 + v0.98.0 跨域通信通道 + v0.98.1 纵向加密认证 + v0.99.0 联邦共识 PBFT 变体 + v0.100.0 资源争抢竞价 + v0.101.0 断网处理与孤岛模式）
 //!
@@ -198,14 +198,34 @@ pub mod detector;
 pub mod discovery;
 pub mod matching;
 pub mod membership;
+// Phase 7（蓝图 61 §12）：联邦 offer/commit/evidence 协议产物 + 密钥注册表 + 分层分配 + 网络模拟
+pub mod allocation;
+pub mod fednet;
+// 真实 mTLS 运输（std-only；svc-federation 生产装配 + E3 证据）。
+#[cfg(feature = "tls")]
+pub mod fedxport;
+pub mod keys;
+pub mod leadership;
+pub mod negotiation;
+pub mod offer;
 pub mod partition;
 pub mod pbft;
+// 蓝图 61 §12 退出 gate + 16 §7 删除计划（.45）：SeedPresenceBus 只记录
+// broadcast、TwoNodeConsensusBus 闭包注入——均为 test-only 仿真物，不进入
+// 生产闭包；生产联邦网络路径由 Phase 7 fednet/fedxport(svc-federation)
+// 承担。
+#[cfg(any(test, feature = "mock"))]
 pub mod real;
 pub mod recovery;
 pub mod tunnel;
 pub mod view_change;
 
 // v0.100.0 资源争抢竞价
+// Phase 7（蓝图 61 §12）：联邦协议产物/密钥/分层分配/协商/网络
+pub use allocation::{
+    AllocationInput, AllocationResult, AllocationSolver, InfeasibleEnvelope, SiteAllocation,
+    SiteOfferView, TargetProfile,
+};
 pub use auction::AuctionEngine;
 pub use bid_book::{
     match_digest, AgentId, AskOrder, AuctionError, BidOrder, Match, MatchResult, OrderBook, Price,
@@ -228,9 +248,21 @@ pub use detector::{PartitionDetector, PartitionState};
 pub use discovery::{CertVerifier, FedError, FederationDiscovery, PresenceBus};
 #[cfg(any(test, feature = "mock"))]
 pub use discovery::{MockCertVerifier, MockPresenceBus};
+pub use fednet::{FedNet, NetError};
+pub use keys::{KeyEvent, KeyRecord, KeyRegistry, KeyStatus};
+pub use leadership::{EpochRegulator, LeadError, LeadPolicy};
 // v0.100.0 统一价格撮合纯函数
 pub use matching::match_book;
 pub use membership::{CertRef, JoinRequest, MemberInfo, MemberRegistry, NodeRole};
+pub use negotiation::{
+    CoordinatorNegotiator, CoordinatorSession, SiteCommitment, SiteNegotiator, SiteSigner,
+    StepOutcome,
+};
+pub use offer::{
+    decode_body, sign_envelope, AllocationCommitment, AllocationProposal, BlobRefV1,
+    CapabilityOffer, CommitmentAck, EnvelopeHdr, FedBody, FedEnvelope, FedFrame, FedKind,
+    OfferReject, OfferRevocation, ProgressEvidence, RejectReason, SettlementEvidence, WireError,
+};
 // v0.101.0 孤岛自治模式
 pub use partition::IslandMode;
 // v0.99.0 PBFT 三阶段数学与签名辅助

@@ -9,11 +9,19 @@ license.workspace = true
 default = []
 # 蓝图/20 R2-1：Mock 类型仅测试/仿真；release 启用即熔断
 mock = []
+# Phase 7：真实 mTLS transport（svc-federation 与 E3 证据；std-only）
+tls = ["dep:eneros-tls"]
 
 [dependencies]
 eneros-crypto = { path = "../../security/crypto" }
+eneros-tls = { path = "../../security/tls", optional = true }
 
 [dev-dependencies]
 eneros-tls = { path = "../../security/tls" }
 rcgen = "0.13"
 rustls = { version = "0.23", features = ["ring", "std", "tls12"] }
+
+[[bin]]
+name = "svc-federation"
+path = "src/bin/svc-federation.rs"
+required-features = ["tls"]
