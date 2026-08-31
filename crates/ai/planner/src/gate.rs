@@ -4,7 +4,6 @@
 use eneros_solver_core::result::{SolveResult, SolveStatus};
 
 use crate::builder::BuiltModel;
-use crate::catalog::VariableKind;
 use crate::tolerance::ToleranceProfile;
 use crate::PlanError;
 
@@ -83,13 +82,10 @@ impl SolveGate {
                 limit,
             });
         }
-        // 4. 整数性残差（binary/integer 列）。
+        // 4. 整数性残差（binary/integer 列；目录种类为闭枚举，直接判定）。
         let mut max_int = 0.0f64;
         for col in built.catalog.columns() {
-            if VariableKind::from_code(col.kind.code())
-                .map(|k| k.is_discrete())
-                .unwrap_or(false)
-            {
+            if col.kind.is_discrete() {
                 let v = result.solution[col.index];
                 max_int = max_int.max((v - v.round()).abs());
             }
@@ -100,17 +96,21 @@ impl SolveGate {
                 limit: self.profile.integrality_residual,
             });
         }
-        // 5. gap gate。
-        let gap = result.mip_gap.max(0.0);
+        // 5. gap gate（Suboptimal 需 backend 报告 gap；**未报告 = 无限大**
+        // ——fail-closed，不当作 0 精确语义。Optimal 的最优性由 solver
+        // 状态自证，gap 恒 0）。
+        let gap = result.mip_gap.unwrap_or(f64::INFINITY);
         if status == eneros_decision_contract::SolveStatusKind::Suboptimal
             && gap > self.profile.max_relative_gap
         {
             return Err(PlanError::GapExceeded {
-                gap,
+                gap: gap.min(f64::MAX / 4.0),
                 limit: self.profile.max_relative_gap,
             });
         }
-        // 6. deadline gate（elapsed + 下游 margin 由调用方预留）。
+        // 6. deadline gate：budget 已由调用方扣除下游 margin
+        // （budget = req.budget_ms() − margin），故 elapsed ≤ budget 即
+        // elapsed + margin ≤ 总预算（[09] §3.5）。
         if elapsed_ms > budget_ms as u64 {
             return Err(PlanError::DeadlineExceeded {
                 elapsed_ms,

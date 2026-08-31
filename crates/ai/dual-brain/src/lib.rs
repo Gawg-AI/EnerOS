@@ -353,7 +353,7 @@ mod tests {
             solution,
             elapsed_ms: 0,
             dual_solution: None,
-            mip_gap: 0.0,
+            mip_gap: Some(0.0),
         });
         let mut coord3 =
             DualBrainCoordinator::new(config, Box::new(DualBrainMockEngine::new()), solver)
@@ -541,7 +541,7 @@ mod tests {
             solution,
             elapsed_ms: 0,
             dual_solution: None,
-            mip_gap: 0.0,
+            mip_gap: Some(0.0),
         });
         let llm_engine: Box<dyn LlmEngine> = Box::new(DualBrainMockEngine::new());
         let mut coord = DualBrainCoordinator::new(config, llm_engine, solver);

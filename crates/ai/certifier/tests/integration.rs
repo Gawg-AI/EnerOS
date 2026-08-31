@@ -142,6 +142,7 @@ fn ctx<'a>(
         horizon_start_ms: 1_000,
         grid_asset_id: 10,
         tolerance_profile_id: 1,
+        constraint_catalog_version: 1,
     }
 }
 
@@ -194,13 +195,20 @@ fn valid_assignments() -> Vec<Assignment> {
 fn certify(
     assignments: Vec<Assignment>,
 ) -> Result<eneros_certifier::CertifiedOutcome, CertifierError> {
+    certify_with(assignments, &CertifierKeyRing::new(1, b"station-cert-key"))
+}
+
+fn certify_with(
+    assignments: Vec<Assignment>,
+    ring: &CertifierKeyRing,
+) -> Result<eneros_certifier::CertifiedOutcome, CertifierError> {
     let snap = snapshot();
     let sp = base_spec();
     let envelopes = vec![(1, env_battery()), (10, env_grid())];
     let batteries = vec![battery()];
     let context = ctx(&snap, &sp, &envelopes, &batteries);
     let p = plan(assignments);
-    CertifierModule::certify(&context, &p, 2_000)
+    CertifierModule::certify(&context, &p, 2_000, ring)
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +268,8 @@ fn hand_computed_soc_progression() {
     let envelopes = vec![(1, env_battery()), (10, env_grid())];
     let context = ctx(&snap, &sp, &envelopes, &batteries);
     let p = plan(valid_assignments());
-    match CertifierModule::certify(&context, &p, 2_000) {
+    let ring = CertifierKeyRing::new(1, b"station-cert-key");
+    match CertifierModule::certify(&context, &p, 2_000, &ring) {
         Err(CertifierError::Violated {
             constraint_kind,
             asset_id,
@@ -429,7 +438,8 @@ fn malicious_commitment_shortfall_rejected() {
         asg(10, 2, -3.0),
     ];
     let p = plan(a);
-    match CertifierModule::certify(&context, &p, 2_000) {
+    let ring = CertifierKeyRing::new(1, b"station-cert-key");
+    match CertifierModule::certify(&context, &p, 2_000, &ring) {
         Err(CertifierError::Violated {
             constraint_kind, ..
         }) => {
@@ -445,7 +455,8 @@ fn malicious_commitment_shortfall_rejected() {
         asg(10, 2, -4.0),
     ];
     let p = plan(a);
-    assert!(CertifierModule::certify(&context, &p, 2_000).is_ok());
+    let ring = CertifierKeyRing::new(1, b"station-cert-key");
+    assert!(CertifierModule::certify(&context, &p, 2_000, &ring).is_ok());
 }
 
 #[test]
@@ -460,7 +471,8 @@ fn binding_and_window_rejections() {
     let context = ctx(&snap, &sp, &envelopes, &batteries);
     let p = plan(valid_assignments());
     // now 远超 ttl（issued 1000 + ttl 60000）。
-    match CertifierModule::certify(&context, &p, 2_000_000) {
+    let ring = CertifierKeyRing::new(1, b"k");
+    match CertifierModule::certify(&context, &p, 2_000_000, &ring) {
         Err(CertifierError::PlanExpired) => {}
         other => panic!("{other:?}"),
     }
@@ -468,14 +480,14 @@ fn binding_and_window_rejections() {
     let mut other_snap = snapshot();
     other_snap.snapshot_id = [9; 16];
     let context_bad = ctx(&other_snap, &sp, &envelopes, &batteries);
-    match CertifierModule::certify(&context_bad, &p, 2_000) {
+    match CertifierModule::certify(&context_bad, &p, 2_000, &ring) {
         Err(CertifierError::PlanMismatch("snapshot_id")) => {}
         other => panic!("{other:?}"),
     }
     // horizon 不匹配。
     let mut c2 = ctx(&snap, &sp, &envelopes, &batteries);
     c2.horizon_step_count = 3;
-    match CertifierModule::certify(&c2, &p, 2_000) {
+    match CertifierModule::certify(&c2, &p, 2_000, &ring) {
         Err(CertifierError::PlanMismatch("horizon")) => {}
         other => panic!("{other:?}"),
     }
@@ -551,7 +563,8 @@ fn mutation_each_hard_constraint_class_intercepted() {
     let batteries = vec![battery()];
     let context = ctx(&snap, &sp, &envelopes, &batteries);
     let p = plan(valid_assignments()); // 末态 1 ≠ 8
-    match CertifierModule::certify(&context, &p, 2_000) {
+    let ring = CertifierKeyRing::new(1, b"station-cert-key");
+    match CertifierModule::certify(&context, &p, 2_000, &ring) {
         Err(CertifierError::Violated {
             constraint_kind, ..
         }) => {
@@ -582,7 +595,8 @@ fn mutation_each_hard_constraint_class_intercepted() {
         asg(10, 1, 10.0),
         asg(10, 2, -5.0),
     ];
-    match CertifierModule::certify(&context, &plan(a), 2_000) {
+    let ring = CertifierKeyRing::new(1, b"k");
+    match CertifierModule::certify(&context, &plan(a), 2_000, &ring) {
         Err(CertifierError::Violated {
             constraint_kind, ..
         }) => {
@@ -598,9 +612,8 @@ fn mutation_each_hard_constraint_class_intercepted() {
 
 #[test]
 fn gateway_verify_and_key_lifecycle() {
-    let mut out = certify(valid_assignments()).expect("certify");
     let mut ring = CertifierKeyRing::new(1, b"station-cert-key");
-    CertifierModule::seal_key_envelope(&mut out, &ring).expect("seal");
+    let out = certify(valid_assignments()).expect("certify");
     let wire = plan(valid_assignments()).encode_v1();
     // 正常验证。
     assert!(
@@ -619,8 +632,7 @@ fn gateway_verify_and_key_lifecycle() {
     assert!(CertifierModule::verify(&out.certificate, &wire, &bad_env, &ring, 2_000).is_err());
     // 轮换：新 key 签发可验；旧 key（前代）签发仍可验（N-1 窗口）。
     ring.rotate(2, b"station-cert-key-v2");
-    let mut out2 = certify(valid_assignments()).unwrap();
-    CertifierModule::seal_key_envelope(&mut out2, &ring).unwrap();
+    let out2 = certify_with(valid_assignments(), &ring).unwrap();
     assert_eq!(out2.key_envelope.key_id, 2);
     assert!(
         CertifierModule::verify(&out2.certificate, &wire, &out2.key_envelope, &ring, 2_000).is_ok()
@@ -763,8 +775,10 @@ fn shadow_certify_highs_golden_plan() {
         horizon_start_ms: 1_000,
         grid_asset_id: 10,
         tolerance_profile_id: 1,
+        constraint_catalog_version: 1,
     };
-    let out = CertifierModule::certify(&context, &plan, 2_000)
+    let ring = CertifierKeyRing::new(1, b"station-cert-key");
+    let out = CertifierModule::certify(&context, &plan, 2_000, &ring)
         .expect("独立评估器必须放行 HiGHS 最优计划");
     assert!(out.records.iter().all(|r| r.pass));
     // 独立残差（证据中的最坏违约量，按判定方向）≤ 各记录容差。

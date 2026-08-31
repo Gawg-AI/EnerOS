@@ -674,7 +674,7 @@ fn t36_infeasible_and_len_mismatch_fallback() {
         solution: vec![],
         elapsed_ms: 0,
         dual_solution: None,
-        mip_gap: 0.0,
+        mip_gap: Some(0.0),
     };
     let mut o1 = DomainOptimizer::new(Box::new(RecordingSolver::with_result(infeasible)));
     o1.add_box(1, box_with_devs(1, 6.0, &[(1, 10.0, 0.9)]));

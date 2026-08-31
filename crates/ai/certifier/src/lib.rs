@@ -32,6 +32,10 @@
 //!   见 ADR-051；本 crate 是 CertifiedPlan 的**规范生产者**。
 //! - min on/off 与工艺状态机类约束：净功率面可校验包络与能量，启停
 //!   状态机依赖合同拓扑外的历史状态（登记待 Phase 5/6 输入源）。
+//! - 控制合同与可读回条件（[09] §4.2）：回读合格性由 registry 合同
+//!   面在包络求交时承载（[08] §4.4 readback_ok），命令级读回确认在
+//!   dispatch 执行链——评估器输入合同中无逐命令读回语义，登记待
+//!   Phase 5 CommandIntent 前置条件接入。
 //!
 //! # 依赖纪律（[16] §3.9）
 //!
@@ -84,6 +88,8 @@ pub struct EvalContext<'a> {
     pub grid_asset_id: u64,
     /// 容差档 id（1=L2，2=L3；表见 [`eval::tolerance_for`]）。
     pub tolerance_profile_id: u32,
+    /// 约束/资源目录版本（计划 resource_catalog_version 同源；证据引用）。
+    pub constraint_catalog_version: u64,
 }
 
 /// 认证结果（证书 + 证据）。
@@ -132,10 +138,14 @@ pub struct CertifierModule;
 
 impl CertifierModule {
     /// 唯一认证入口（[16] §3.9 公开面）。
+    ///
+    /// `ring` 必须提供——key 绑定信封在认证内**就地签发**（fail-closed：
+    /// 不存在未绑定 MAC 的"裸证书"流出，[09] §4.3）。
     pub fn certify(
         ctx: &EvalContext<'_>,
         plan: &CandidatePlan,
         now_ms: u64,
+        ring: &proof::CertifierKeyRing,
     ) -> Result<CertifiedOutcome, CertifierError> {
         // 0. 绑定校验（计划 ↔ 输入 ↔ horizon）。
         if plan.snapshot_id().0 != ctx.snapshot.snapshot_id {
@@ -177,11 +187,16 @@ impl CertifierModule {
         )
         .map_err(|_| CertifierError::PlanMismatch("certificate"))?;
 
-        // 3. key 绑定（默认 key_id=1；装配面 keyring 提供真 key）。
+        // 3. key 绑定（fail-closed：无活跃 key → 认证失败，零证书流出；
+        // 不存在未绑定 MAC 的"裸证书"，[09] §4.3）。
+        let (key_id, key_version, key) = ring
+            .active()
+            .ok_or(CertifierError::InvalidInput("no active key"))?;
+        let input = proof::mac_input(&plan_sha, &proof_digest);
         let key_envelope = proof::CertificateEnvelope {
-            key_id: 1,
-            key_version: 1,
-            mac: [0u8; 32], // seal_by 调用方以 keyring 签发填充
+            key_id,
+            key_version,
+            mac: eneros_decision_contract::keyed::hmac_sha256(key, &input),
         };
         Ok(CertifiedOutcome {
             certificate: cert,
@@ -190,23 +205,6 @@ impl CertifierModule {
             key_envelope,
             plan_sha256: plan_sha,
         })
-    }
-
-    /// 以 keyring 活跃 key 签发绑定信封（[09] §4.3）。
-    pub fn seal_key_envelope(
-        outcome: &mut CertifiedOutcome,
-        ring: &proof::CertifierKeyRing,
-    ) -> Result<(), CertifierError> {
-        let (key_id, key_version, key) = ring
-            .active()
-            .ok_or(CertifierError::InvalidInput("no active key"))?;
-        let input = proof::mac_input(&outcome.plan_sha256, &outcome.proof_digest);
-        outcome.key_envelope = proof::CertificateEnvelope {
-            key_id,
-            key_version,
-            mac: eneros_decision_contract::keyed::hmac_sha256(key, &input),
-        };
-        Ok(())
     }
 
     /// Gateway 侧验证（[09] §4.3：key id、版本、有效期、plan digest）。

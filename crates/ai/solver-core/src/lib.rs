@@ -234,7 +234,7 @@ mod tests {
             solution: vec![3.0, 4.0],
             elapsed_ms: 0,
             dual_solution: Some(vec![0.5, 0.6]),
-            mip_gap: 0.0,
+            mip_gap: Some(0.0),
         };
         let mut m = MockSolver::with_result(custom.clone());
         let p = sample_problem();

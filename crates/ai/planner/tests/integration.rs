@@ -530,7 +530,7 @@ fn l2_rejects_suboptimal_l3_accepts_within_gap() {
     let real = hb.solve(&built.problem, 0).unwrap();
     let mut sub = real.clone();
     sub.status = SolveStatus::Suboptimal;
-    sub.mip_gap = 0.001;
+    sub.mip_gap = Some(0.001);
 
     let mut p2 = Planner::new(ToleranceProfile::l2(), 100);
     let req = request(&obj.spec);
@@ -545,7 +545,7 @@ fn l2_rejects_suboptimal_l3_accepts_within_gap() {
     assert_eq!(plan.solver_status(), SolveStatusKind::Suboptimal);
     let mut bad = real;
     bad.status = SolveStatus::Suboptimal;
-    bad.mip_gap = 0.01;
+    bad.mip_gap = Some(0.01);
     match p3.plan(&mut ScriptedSolver::replay(bad), &req, &input) {
         Err(PlanError::GapExceeded { gap, limit }) => {
             assert!((gap - 0.01).abs() < 1e-12);
@@ -731,4 +731,39 @@ fn scale_solve_200x24_real_highs() {
         "obj={}",
         out.objective_value
     );
+}
+
+// ---------------------------------------------------------------------------
+// 复查修复：无界 / 数值病态（[09] §3.8 负例补全）
+// ---------------------------------------------------------------------------
+
+/// Unbounded：无并网点 + MaxRevenue 无价格锚 → 目标随放电无界增长。
+/// 注意：储能放电受 SOC 守恒界——真正无界需要无守恒变量；此处用
+/// ScriptedSolver 直接上报 Unbounded 状态，验证 gate 拒绝路径。
+#[test]
+fn gate_rejects_unbounded_status() {
+    let (obj, input) = scenario(vec![1.0, 10.0], soc_bounds(), ObjectiveKind::MaxRevenue);
+    let mut p = Planner::new(ToleranceProfile::l2(), 100);
+    let req = request(&obj.spec);
+    let mut s = ScriptedSolver::replay(SolveResult::optimal(0.0, vec![]));
+    s.result.as_mut().unwrap().status = SolveStatus::Unbounded;
+    match p.plan(&mut s, &req, &input) {
+        Err(PlanError::Rejected(m)) => assert!(m.contains("unbounded")),
+        other => panic!("unbounded: {other:?}"),
+    }
+}
+
+/// 数值病态：价格系数超 1e12 → 建模期阻断（[09] §3.6 condition 检查）。
+#[test]
+fn ill_conditioned_prices_rejected() {
+    let obj = compiled(
+        spec(soc_bounds(), ObjectiveKind::MaxRevenue),
+        vec![1e13, 1e13],
+        2,
+    );
+    let input = base_input(&obj);
+    match ModelBuilder::build(&input) {
+        Err(eneros_planner::builder::ModelError::IllConditioned(_)) => {}
+        other => panic!("ill-conditioned: {other:?}"),
+    }
 }

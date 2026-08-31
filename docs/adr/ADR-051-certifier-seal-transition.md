@@ -39,6 +39,14 @@ ADR-0048 将 `transition-certifier` feature（control-dispatch 十二步链内
    独立评估器覆盖能量守恒/包络/承诺/备用等可观测硬约束（[09] §4.2
    全清单中无物理危害的不可观测项如实登记）。
 
+4. **certifier 自身 fault/timeout（[09] §4.6）**：评估器为同步纯函数
+   ——任何输入不合法即返回 Err（**零证书流出**，含 key envelope）；
+   超时看护属宿主调度面（svc-certifier 进程级 watchdog，Phase 5 装配），
+   评估器本身无内部并发/时钟，登记为架构性质而非缺陷。
+5. **控制合同与可读回条件**（[09] §4.2）：回读合格性由 registry 合同
+   面承载（[08] §4.4），命令级读回确认在 dispatch 执行链；certifier
+   逐命令读回语义待 Phase 5 CommandIntent 前置条件接入（登记）。
+
 ## 后果
 
 - Phase 5 前置：目标侧快照/包络输入接线 + dispatch 切换 certifier +

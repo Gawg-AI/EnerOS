@@ -247,7 +247,7 @@ mod tests {
                 solution,
                 elapsed_ms: 0,
                 dual_solution: None,
-                mip_gap: 0.0,
+                mip_gap: Some(0.0),
             })
         }
         fn name(&self) -> &'static str {

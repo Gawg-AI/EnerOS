@@ -48,6 +48,10 @@ pub struct ProofRecord {
     pub rhs: f64,
     /// 判定方向。
     pub cmp: Cmp,
+    /// 输入快照 id（[09] §4.3：证据引用输入面）。
+    pub snapshot_id: [u8; 16],
+    /// 约束/资源目录版本（plan.resource_catalog_version 同源）。
+    pub catalog_version: u64,
     /// 单位码（UnitCatalog）。
     pub unit_code: u16,
     /// 判定容差。
@@ -173,6 +177,8 @@ mod tests {
             lhs,
             rhs: 100.0,
             cmp: Cmp::Le,
+            snapshot_id: [1; 16],
+            catalog_version: 1,
             unit_code: 6,
             tolerance: 1e-3,
             pass: true,

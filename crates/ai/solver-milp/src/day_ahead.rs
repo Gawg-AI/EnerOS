@@ -344,7 +344,7 @@ mod tests {
             solution: solution_5x24(1.0),
             elapsed_ms: 0,
             dual_solution: None,
-            mip_gap: 0.0,
+            mip_gap: Some(0.0),
         }
     }
 

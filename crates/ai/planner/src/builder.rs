@@ -204,6 +204,7 @@ pub struct ModelContext {
 }
 
 /// 解投影声明（BuiltModel 据此从解向量重建每资源净功率）。
+#[derive(Debug)]
 enum ProjectionSpec {
     BatteryNet(u64),
     GridNet(u64),
@@ -672,6 +673,7 @@ impl ModelContributor for DispatchContributor {
 // ---------------------------------------------------------------------------
 // build：装配 + 规格约束 + 目标 + 编译
 // ---------------------------------------------------------------------------
+#[derive(Debug)]
 pub struct BuiltModel {
     pub problem: LpProblem,
     pub catalog: VariableCatalog,

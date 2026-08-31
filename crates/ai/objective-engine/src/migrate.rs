@@ -5,7 +5,7 @@
 use eneros_energy_lp_model::config::ScheduleConfig;
 
 use crate::bundle::RuleBundle;
-use crate::compiler::SignatureVerifier;
+use crate::compiler::{CompileError, SignatureVerifier};
 use crate::spec::{ConstraintSpec, FactSet, HorizonPlan, MarketFacts, ObjectiveTerm, ScopeRef};
 
 /// 规则 id 段（迁移规则固定段位；golden 测试锁定）。
@@ -29,7 +29,11 @@ pub const LEGACY_KEY_ID: u16 = 1;
 ///   RampDownKwS（kW/步 ÷ 步长秒 → kW/s，层 2）
 /// - `period_hours/num_periods` → HorizonPlan（步长 ns + 步数）
 /// - `price` → FactSet.prices_per_kwh（经济输入随编译输出携带）
-pub fn legacy_rule_bundle(cfg: &ScheduleConfig, issuer: [u8; 16], version: u64) -> RuleBundle {
+pub fn legacy_rule_bundle(
+    cfg: &ScheduleConfig,
+    issuer: [u8; 16],
+    version: u64,
+) -> Result<RuleBundle, CompileError> {
     use eneros_decision_contract::objective::ConstraintKind as K;
     let step_ns = (cfg.period_hours * 3.600_000_000e12) as u64;
     let step_s = step_ns / 1_000_000_000;
@@ -39,7 +43,7 @@ pub fn legacy_rule_bundle(cfg: &ScheduleConfig, issuer: [u8; 16], version: u64) 
     let unit_kw = eneros_telemetry_model::unit_catalog::code_of(
         eneros_telemetry_model::PhysicalUnit::Kilowatts,
     );
-    let rule = |id: u64, k: u16, layer: u16, unit: u16, lo: f64, hi: f64| {
+    let r = |id: u64, k: u16, layer: u16, unit: u16, lo: f64, hi: f64| {
         ConstraintSpec::new(
             id,
             k,
@@ -53,74 +57,70 @@ pub fn legacy_rule_bundle(cfg: &ScheduleConfig, issuer: [u8; 16], version: u64) 
             u64::MAX,
             [1; 16],
         )
-        .expect("legacy rule valid")
     };
     let mut bundle = RuleBundle::builder(issuer, version)
         .validity_window(0, u64::MAX)
-        .horizon(HorizonPlan::new(step_ns, cfg.num_periods.min(384) as u32).expect("horizon"))
+        .horizon(HorizonPlan::new(step_ns, cfg.num_periods.min(384) as u32)?)
         .site_rating_kw(cfg.pcs_power_kw)
-        .add_constraint(rule(
+        .add_constraint(r(
             ids::SOC_MIN,
             K::MinSoc.code(),
             crate::layer::DEVICE_SAFETY,
             unit_dim,
             cfg.soc_min,
             cfg.soc_min,
-        ))
-        .add_constraint(rule(
+        )?)
+        .add_constraint(r(
             ids::SOC_MAX,
             K::MaxSoc.code(),
             crate::layer::DEVICE_SAFETY,
             unit_dim,
             cfg.soc_max,
             cfg.soc_max,
-        ))
-        .add_constraint(rule(
+        )?)
+        .add_constraint(r(
             ids::PCS_MAX_POWER,
             K::MaxPowerKw.code(),
             crate::layer::GRID_CODE,
             unit_kw,
             -cfg.pcs_power_kw,
             cfg.pcs_power_kw,
-        ))
-        .add_constraint(rule(
+        )?)
+        .add_constraint(r(
             ids::CHARGE_RAMP,
             K::RampUpKwS.code(),
             crate::layer::GRID_CODE,
             unit_kw,
             0.0,
             cfg.charge_ramp_kw / step_s as f64,
-        ))
-        .add_constraint(rule(
+        )?)
+        .add_constraint(r(
             ids::DISCHARGE_RAMP,
             K::RampDownKwS.code(),
             crate::layer::GRID_CODE,
             unit_kw,
             0.0,
             cfg.discharge_ramp_kw / step_s as f64,
-        ))
+        )?)
         .required(&[ids::SOC_MIN, ids::SOC_MAX]);
     // 经济目标项（价格驱动收益最大化——legacy 模型唯一目标）。
     if !cfg.price.is_empty() {
         let unit_dim = eneros_telemetry_model::unit_catalog::code_of(
             eneros_telemetry_model::PhysicalUnit::Dimensionless,
         );
-        bundle = bundle.add_term(
-            ObjectiveTerm::new(
-                201,
-                crate::term_kind::ECONOMIC,
-                1.0,
-                unit_dim,
-                crate::normalization::PRICE_SCALED,
-                crate::layer::ECONOMIC,
-                [1; 16],
-            )
-            .expect("legacy term valid"),
-        );
+        bundle = bundle.add_term(ObjectiveTerm::new(
+            201,
+            crate::term_kind::ECONOMIC,
+            1.0,
+            unit_dim,
+            crate::normalization::PRICE_SCALED,
+            crate::layer::ECONOMIC,
+            [1; 16],
+        )?);
     }
-    let mut b = bundle.build().expect("legacy bundle valid");
+    let mut b = bundle.build()?;
     b.seal(LEGACY_KEY_ID, legacy_signing_key());
-    b
+    Ok(b)
 }
 
 /// legacy 事实集（价格透传；[09] §2.6 步骤 5 输入侧）。
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn legacy_migration_shadow_equivalent() {
         let cfg = ScheduleConfig::default();
-        let bundle = legacy_rule_bundle(&cfg, [9; 16], 1);
+        let bundle = legacy_rule_bundle(&cfg, [9; 16], 1).unwrap();
         let compiler = ObjectiveCompiler::new(60_000_000_000, 1, true);
         let cut = 1_000_000_000_000u64;
         let out = compiler

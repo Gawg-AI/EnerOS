@@ -47,3 +47,10 @@ protocol writer、Gateway key 或 seL4 device capability。
   登记），本卷单平衡节点。
 - assignments BlobRef 待存储句柄移交（Phase 2/3 已登记 BLOCKED），
   inline 上限 64，超限显式拒绝。
+- [09] §3.6 "保存非敏感 MPS/变量目录 BlobRef 用于复验"：模型 digest +
+  变量目录已随 BuiltModel/求解出证；**MPS 文件落盘与 BlobRef 寻址依赖
+  存储句柄移交**（同上 BLOCKED）——复验面当前为 digest 对账，文件级
+  复验登记待存储面就绪。
+- Timeout-with-incumbent：SolveResult 无 incumbent 字段，超时一律拒绝
+  （fail-closed）；"有 incumbent 接受"路径待 solver-core FFI 扩展
+  （Highs_getMipIterationCount/incumbent 接口）后开放。

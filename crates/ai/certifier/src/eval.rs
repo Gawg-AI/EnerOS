@@ -37,6 +37,8 @@ pub const fn tolerance_for(kind: ConstraintKind, _profile_id: u32) -> f64 {
 /// 证据记录序号分配器内部使用；记录 = 一次约束族的评估结论。
 struct Recorder {
     records: Vec<ProofRecord>,
+    snapshot_id: [u8; 16],
+    catalog_version: u64,
 }
 
 impl Recorder {
@@ -65,6 +67,8 @@ impl Recorder {
             lhs,
             rhs,
             cmp,
+            snapshot_id: self.snapshot_id,
+            catalog_version: self.catalog_version,
             unit_code,
             tolerance: tol,
             pass,
@@ -154,6 +158,8 @@ pub fn evaluate_trajectories(
 
     let mut rec = Recorder {
         records: Vec::new(),
+        snapshot_id: ctx.snapshot.snapshot_id,
+        catalog_version: ctx.constraint_catalog_version,
     };
     let unit_kw = eneros_telemetry_model::unit_catalog::code_of(
         eneros_telemetry_model::PhysicalUnit::Kilowatts,

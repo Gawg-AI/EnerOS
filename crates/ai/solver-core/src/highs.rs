@@ -79,16 +79,17 @@ pub struct HighsSolver {
 // SAFETY: HiGHS 句柄非线程安全，但 EnerOS 单线程运行。不实现 Send/Sync。
 // （与 MockSolver 一致：Solver trait 不要求 Send+Sync）
 
-/// 读取 HiGHS info 的 mip_gap（失败/非有限/负 → 0.0；未报告 = 精确语义）。
-fn read_mip_gap(handle: *mut c_void) -> f64 {
+/// 读取 HiGHS info 的 mip_gap（失败/非有限/负 → None——**未报告**，
+/// 不伪装成 0 精确语义；gap gate 侧 fail-closed）。
+fn read_mip_gap(handle: *mut c_void) -> Option<f64> {
     let field = b"mip_gap\0";
     let mut value = 0.0f64;
     // SAFETY: handle 非 null；field 以 NUL 结尾；value 有效指针。
     let status = unsafe { highs_ffi::Highs_getDoubleInfoValue(handle, field.as_ptr(), &mut value) };
     if status == 0 && value.is_finite() && value >= 0.0 {
-        value
+        Some(value)
     } else {
-        0.0
+        None
     }
 }
 
