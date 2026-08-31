@@ -513,6 +513,12 @@ impl AllocationSolver {
         if offer.interval_start_ns != interval_start_ns || points_kw.is_empty() {
             return EnvelopeCheck::GridMismatch;
         }
+        // P2-1：曲线覆盖必须包含 offer 有效时段（恶意协调器不得用 1h
+        // offer 塞 288h 曲线——覆盖外承诺）。
+        let cover_end_ns = interval_start_ns.saturating_add(interval_ns * points_kw.len() as u64);
+        if cover_end_ns > offer.interval_end_ns || interval_ns == 0 {
+            return EnvelopeCheck::GridMismatch;
+        }
         let dt_s = interval_ns as f64 / 1e9;
         let hour_h = dt_s / 3600.0;
         let mut e = 0.0f64;

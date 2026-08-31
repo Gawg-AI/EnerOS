@@ -36,7 +36,7 @@ use eneros_federation::allocation::{
     AllocationInput, AllocationResult, AllocationSolver, SiteOfferView, TargetProfile,
 };
 use eneros_federation::fedxport::{recv_frame, send_frame};
-use eneros_federation::keys::KeyRegistry;
+use eneros_federation::keys::{KeyRegistry, KeyStatus};
 use eneros_federation::leadership::{EpochRegulator, LeadPolicy};
 use eneros_federation::negotiation::{
     CoordinatorNegotiator, Dir, JournalRecord, NegotiationJournal, SiteNegotiator, SiteSigner,
@@ -153,7 +153,7 @@ fn parse_args() -> Args {
             })
         };
         match k.as_str() {
-            "coord" | "site" | "dump-pubkey" => a.mode = k,
+            "coord" | "site" | "dump-pubkey" | "revoke" => a.mode = k,
             "--listen" => a.listen = Some(next().parse().expect("listen addr")),
             "--coord" => a.coord = Some(next().parse().expect("coord addr")),
             "--ca" => a.ca = PathBuf::from(next()),
@@ -197,6 +197,39 @@ fn parse_args() -> Args {
 
 const J_MAGIC: [u8; 4] = *b"FJ01";
 const J_VER: u8 = 1;
+
+/// key 生命周期事件行格式：`R kid owner at` 注册 / `T old new at` 轮换 /
+/// `V kid at` 撤销 / `D kid at` 退休。restore 时按序重放。
+const KEY_EVENT_PREFIX: &str = "FJE1";
+
+fn append_key_event(path: &Path, line: &str) {
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{KEY_EVENT_PREFIX} {line}");
+    }
+}
+
+/// 重放 key 事件（协调器启动时调用；撤销/轮换在重启后保持）。
+fn apply_key_events(coord: &mut CoordinatorNegotiator, path: &Path) {
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    let now = now_ns();
+    for line in text.lines() {
+        let t = line.trim();
+        if !t.starts_with(KEY_EVENT_PREFIX) {
+            continue;
+        }
+        let parts: Vec<&str> = t.split_whitespace().collect();
+        if parts.get(1).copied() == Some("V") && parts.len() == 3 {
+            let kid: u32 = parts[2].parse().expect("key id");
+            // 重启后重放撤销：注册表里该 key 若存在则立即撤销（不复活）。
+            if coord.keys().status(kid) == Some(KeyStatus::Active) {
+                let _ = coord.revoke_site_key(kid, now);
+                eprintln!("[coord] key {kid} 撤销重放生效");
+            }
+        }
+    }
+}
 
 fn journal_append(path: &Path, r: &JournalRecord) -> std::io::Result<()> {
     let body = r
@@ -330,7 +363,7 @@ fn run_coord(a: &Args) -> ! {
     fs::create_dir_all(&a.journal_dir).expect("journal dir");
     let jpath = a.journal_dir.join("coord.journal");
     let (journal, max_seq) = journal_load(&jpath);
-    let epoch = EpochRegulator::new(journal_max_epoch(&journal).max(1)).current();
+    let epoch = EpochRegulator::sanitized(journal_max_epoch(&journal).max(1)).current();
     let mut coord = CoordinatorNegotiator::new(a.node_id, a.tenant, epoch, max_seq.max(1));
     if !journal.is_empty() {
         coord.restore(&journal, read_site_key_registry(&a.site_keys));
@@ -339,12 +372,15 @@ fn run_coord(a: &Args) -> ! {
             journal.len()
         );
     } else {
-        for (kid, pk) in read_site_keys(&a.site_keys) {
+        for (kid, owner, pk) in read_site_keys(&a.site_keys) {
             coord
-                .register_site_key(kid, &pk, now_ns())
+                .register_site_key(kid, owner, &pk, now_ns())
                 .expect("register site key");
         }
     }
+    // P1-1：撤销/轮换状态持久化——key 生命周期事件与协商 journal 分开
+    // 落盘（keys.journal，append-only），重启 restore 时重放（撤销不复活）。
+    apply_key_events(&mut coord, &a.journal_dir.join("keys.journal"));
     let targets = read_targets(a.targets.as_ref().expect("--targets"));
     if targets.is_empty() || targets.len() > 288 {
         eprintln!("[coord] targets 为空或超 288 区间");
@@ -390,8 +426,16 @@ fn acceptor_local(_a: &Args, acc: &TlsAcceptor) -> String {
     "tls".to_string()
 }
 
+/// P1-2 修复：本站纪元只从**本站出向**记录的 epoch 恢复——入向记录里
+/// 的 epoch 是 peer 自报值，若用它做重启基线，恶意站点可把协调器纪元
+/// 推到 u64::MAX-1 使重启后 `+1` 溢出/回绕（投毒）。
 fn journal_max_epoch(j: &NegotiationJournal) -> u64 {
-    j.records.iter().map(|r| r.epoch).max().unwrap_or(1)
+    j.records
+        .iter()
+        .filter(|r| r.dir == Dir::Out)
+        .map(|r| r.epoch)
+        .max()
+        .unwrap_or(1)
 }
 
 fn run_coord_peer(
@@ -419,7 +463,9 @@ fn run_coord_peer(
         };
         let now = now_ns();
         let (out, outbox) = coord.on_message(&env, now, signer);
-        journal_append(jpath, &in_record(&env, now, &out)).ok();
+        if let Some(r) = in_record(&env, now, &out) {
+            journal_append(jpath, &r).ok();
+        }
         match out {
             StepOutcome::OfferRegistered { .. } => {
                 eprintln!("[coord] offer 来自 site {}", env.site_id);
@@ -443,7 +489,9 @@ fn run_coord_peer(
             _ => {}
         }
         for e in outbox {
-            journal_append(jpath, &out_record(&e, now)).ok();
+            if let Some(r) = out_record(&e, now) {
+                journal_append(jpath, &r).ok();
+            }
             if let Err(err) = send_frame(stream, &e) {
                 eprintln!("[coord] send: {err}");
             }
@@ -524,7 +572,9 @@ fn solve_and_propose(
                 };
                 match coord.propose(t.site_id, &proposal, now, signer) {
                     Ok((_, env)) => {
-                        journal_append(jpath, &out_record(&env, now)).ok();
+                        if let Some(r) = out_record(&env, now) {
+                            journal_append(jpath, &r).ok();
+                        }
                         if let Err(err) = send_frame(stream, &env) {
                             eprintln!("[coord] propose send: {err}");
                         }
@@ -540,7 +590,7 @@ fn solve_and_propose(
     }
 }
 
-fn read_site_keys(p: &Option<PathBuf>) -> Vec<(u32, Sm2PublicKey)> {
+fn read_site_keys(p: &Option<PathBuf>) -> Vec<(u32, u32, Sm2PublicKey)> {
     let Some(p) = p else { return Vec::new() };
     let text = fs::read_to_string(p).expect("site-keys file");
     let mut out = Vec::new();
@@ -549,20 +599,27 @@ fn read_site_keys(p: &Option<PathBuf>) -> Vec<(u32, Sm2PublicKey)> {
         if t.is_empty() || t.starts_with('#') {
             continue;
         }
-        // 行格式：`key_id=<u32> pub=<130hex>`
+        // 行格式：`key_id=<u32> owner=<site_id> pub=<130hex>`
         let mut kid: Option<u32> = None;
+        let mut owner: Option<u32> = None;
         let mut pubhex: Option<&str> = None;
         for tok in t.split_whitespace() {
             if let Some(v) = tok.strip_prefix("key_id=") {
                 kid = Some(v.parse().expect("key id"));
+            } else if let Some(v) = tok.strip_prefix("owner=") {
+                owner = Some(v.parse().expect("owner site id"));
             } else if let Some(v) = tok.strip_prefix("pub=") {
                 pubhex = Some(v);
             }
         }
-        let (kid, pubhex) = (kid.expect("key_id="), pubhex.expect("pub="));
+        let (kid, owner, pubhex) = (
+            kid.expect("key_id="),
+            owner.expect("owner="),
+            pubhex.expect("pub="),
+        );
         let bytes = hex_decode(pubhex);
         let pk = Sm2PublicKey::from_bytes(&bytes).expect("sm2 pubkey");
-        out.push((kid, pk));
+        out.push((kid, owner, pk));
     }
     out
 }
@@ -570,8 +627,8 @@ fn read_site_keys(p: &Option<PathBuf>) -> Vec<(u32, Sm2PublicKey)> {
 fn read_site_key_registry(p: &Option<PathBuf>) -> KeyRegistry {
     let mut reg = KeyRegistry::new();
     let now = now_ns();
-    for (kid, pk) in read_site_keys(p) {
-        reg.register_with_id(kid, &pk, now).expect("reg");
+    for (kid, owner, pk) in read_site_keys(p) {
+        reg.register_with_owner(kid, owner, &pk, now).expect("reg");
     }
     reg
 }
@@ -602,7 +659,7 @@ fn run_site(a: &Args) -> ! {
     fs::create_dir_all(&a.journal_dir).expect("journal dir");
     let jpath = a.journal_dir.join("site.journal");
     let (journal, max_seq) = journal_load(&jpath);
-    let epoch = EpochRegulator::new(journal_max_epoch(&journal).max(1)).current();
+    let epoch = EpochRegulator::sanitized(journal_max_epoch(&journal).max(1)).current();
     let mut site = SiteNegotiator::new(a.node_id, a.tenant, epoch, max_seq.max(1).max(100));
     let mut key_reg = KeyRegistry::new();
     let pkb = hex_decode(&a.peer_key_hex);
@@ -646,7 +703,9 @@ fn run_site(a: &Args) -> ! {
             .publish_offer(&offer, now, &mut signer)
             .expect("publish offer");
         eprintln!("[site] {out:?}");
-        journal_append(&jpath, &out_record(&env, now)).ok();
+        if let Some(r) = out_record(&env, now) {
+            journal_append(&jpath, &r).ok();
+        }
         if let Err(e) = send_frame(&mut stream, &env) {
             eprintln!("[site] send offer: {e}");
             exit(1);
@@ -671,7 +730,9 @@ fn run_site(a: &Args) -> ! {
         };
         let now = now_ns();
         let (out, outbox) = site.on_message(&env, now, &mut signer);
-        journal_append(&jpath, &in_record(&env, now, &out)).ok();
+        if let Some(r) = in_record(&env, now, &out) {
+            journal_append(&jpath, &r).ok();
+        }
         if matches!(
             out,
             StepOutcome::ReplayRejected { .. }
@@ -683,7 +744,9 @@ fn run_site(a: &Args) -> ! {
             continue;
         }
         for e in &outbox {
-            journal_append(&jpath, &out_record(e, now)).ok();
+            if let Some(r) = out_record(e, now) {
+                journal_append(&jpath, &r).ok();
+            }
             if let Err(err) = send_frame(&mut stream, e) {
                 eprintln!("[site] send: {err}");
             }
@@ -733,7 +796,9 @@ fn submit_demo_evidence(
         seq: 1,
     };
     if let Ok((_, env)) = site.submit_progress(&prog, now, signer) {
-        journal_append(jpath, &out_record(&env, now)).ok();
+        if let Some(r) = out_record(&env, now) {
+            journal_append(jpath, &r).ok();
+        }
         let _ = send_frame(stream, &env);
     }
     let set = SettlementEvidence {
@@ -746,7 +811,9 @@ fn submit_demo_evidence(
         note: b"settled".to_vec(),
     };
     if let Ok((_, env)) = site.submit_settlement(&set, now, signer) {
-        journal_append(jpath, &out_record(&env, now)).ok();
+        if let Some(r) = out_record(&env, now) {
+            journal_append(jpath, &r).ok();
+        }
         let _ = send_frame(stream, &env);
     }
 }
@@ -778,30 +845,39 @@ fn now_ns() -> u64 {
         .as_nanos() as u64
 }
 
-fn out_record(env: &FedEnvelope, now: u64) -> JournalRecord {
-    JournalRecord {
+fn out_record(env: &FedEnvelope, now: u64) -> Option<JournalRecord> {
+    let body = decode_body(env.kind, &env.body).ok()?;
+    Some(JournalRecord {
         at_ns: now,
         dir: Dir::Out,
         peer: 0,
         kind: env.kind,
         epoch: env.epoch,
         sequence: env.sequence,
-        body: decode_body(env.kind, &env.body).expect("body"),
+        body,
         verdict: "out",
-    }
+    })
 }
 
-fn in_record(env: &FedEnvelope, now: u64, out: &StepOutcome) -> JournalRecord {
-    JournalRecord {
+fn in_record(env: &FedEnvelope, now: u64, out: &StepOutcome) -> Option<JournalRecord> {
+    // P0-2 修复：不可信 body（签名合法但语义非法）不得经 expect 崩溃——
+    // 记录为 undecodable 并继续服务（重连 DoS 面关闭）。
+    let body = match decode_body(env.kind, &env.body) {
+        Ok(b) => b,
+        Err(_) => {
+            return None;
+        }
+    };
+    Some(JournalRecord {
         at_ns: now,
         dir: Dir::In,
         peer: env.site_id,
         kind: env.kind,
         epoch: env.epoch,
         sequence: env.sequence,
-        body: decode_body(env.kind, &env.body).expect("body"),
+        body,
         verdict: step_verdict(out),
-    }
+    })
 }
 
 fn step_verdict(o: &StepOutcome) -> &'static str {
@@ -877,13 +953,21 @@ fn main() {
     match a.mode.as_str() {
         "coord" => run_coord(&a),
         "site" => run_site(&a),
+        "revoke" => {
+            // 撤销站点 key（运维动作）：追加事件行到 keys.journal，
+            // 重启后由 apply_key_events 重放（撤销持久有效）。
+            let path = a.journal_dir.join("keys.journal");
+            append_key_event(&path, &format!("V {} {}", a.sm2_key_id, now_ns()));
+            eprintln!("[revoke] key {} 撤销已持久化到 {:?}", a.sm2_key_id, path);
+        }
         "dump-pubkey" => {
             // 站点公钥登记辅助（模拟 PKI onboarding）：输出
-            // `key_id=<id> pub=<65B 未压缩 hex>` 供协调器 --site-keys 使用。
+            // `key_id=<id> owner=<node-id> pub=<65B 未压缩 hex>`
+            // 供协调器 --site-keys 使用（owner 是身份绑定面）。
             let signer = make_signer(&a);
             let pk = signer.public_key().to_bytes_uncompressed();
             let hex: String = pk.iter().map(|b| format!("{b:02x}")).collect();
-            println!("key_id={} pub={}", a.sm2_key_id, hex);
+            println!("key_id={} owner={} pub={}", a.sm2_key_id, a.node_id, hex);
         }
         _ => {
             eprintln!("{USAGE}");

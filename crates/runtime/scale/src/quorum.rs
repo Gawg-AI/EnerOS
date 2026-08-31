@@ -122,6 +122,22 @@ impl FenceGuard {
         }
     }
 
+    /// 从持久化基线恢复（设备侧重启后）：首写必须满足
+    /// term ≥ 基线 term 且同 term 时 token > 基线 token——旧 leader
+    /// 即使先恢复连接也无法先写（P1-4 修复）。
+    pub fn from_baseline(baseline: LeaderLease) -> Self {
+        Self {
+            accepted: Some(baseline),
+            rejected_writes: 0,
+            accepted_writes: 0,
+        }
+    }
+
+    /// 持久化基线（供上层 durable 落盘；重启后经 from_baseline 恢复）。
+    pub fn baseline(&self) -> Option<&LeaderLease> {
+        self.accepted.as_ref()
+    }
+
     /// 校验一次写请求；旧 term / 旧 token → 拒（零设备写）。
     pub fn check_write(
         &mut self,

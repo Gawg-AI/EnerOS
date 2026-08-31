@@ -220,14 +220,15 @@ impl SiteNegotiator {
         &self.keys
     }
 
-    /// 以证书派生 key_id 登记对端（协调器）公钥（全局 id 空间）。
+    /// 以证书派生 key_id 登记对端（协调器）公钥（全局 id 空间；
+    /// owner=0=协调器，绑定协调器身份）。
     pub fn register_peer_key_with_id(
         &mut self,
         key_id: u32,
         pk: &Sm2PublicKeyAlias,
         at_ns: u64,
     ) -> Result<(), KeyError> {
-        self.keys.register_with_id(key_id, pk, at_ns)
+        self.keys.register_with_owner(key_id, 0, pk, at_ns)
     }
 
     pub fn current_offer(&self) -> Option<&CapabilityOffer> {
@@ -357,6 +358,13 @@ impl SiteNegotiator {
             self.signature_rejected += 1;
             return (StepOutcome::SignatureRejected, Vec::new());
         }
+        // 2.5) 身份绑定（P0-1 修复）：签名 key 的 owner 必须等于声称的
+        //   site_id（对端=协调器 ⇒ owner=0 且 env.site_id=0），否则
+        //   视为冒充（任意已登记 key 不能伪装他人身份）。
+        if self.keys.owner_of(env.signer_key_id) != Some(env.site_id) {
+            self.signature_rejected += 1;
+            return (StepOutcome::SignatureRejected, Vec::new());
+        }
         // 3) 纪元/重放窗口 + 时钟容忍。
         match self.window_check(env, now_ns) {
             WindowVerdict::Ok => {}
@@ -436,6 +444,33 @@ impl SiteNegotiator {
                     let offer = self.offer.clone().expect("checked");
                     // 站内接受闸：最新快照包络（站内重解/认证是 svc 在签名
                     // 前完成的步骤——本模块保持纯包络裁决）。
+                    // P1-3 修复：先把过期报价挡在承诺之外（站点是最终权威，
+                    // 已失效能力不得产生新义务）。
+                    if now_ns > offer.valid_until_ns {
+                        let reject = OfferReject {
+                            offer_id: p.offer_id,
+                            reason: RejectReason::Expired,
+                            detail: b"offer expired before commitment".to_vec(),
+                        };
+                        let hdr = EnvelopeHdr {
+                            epoch: self.epoch,
+                            sequence: self.next_seq(),
+                            tenant_id: self.tenant_id,
+                            site_id: self.site_id,
+                            created_ns: now_ns,
+                            deadline_ns: now_ns + 3_600_000_000_000,
+                            signer_key_id: signer.key_id,
+                        };
+                        let env = signer.sign(&FedBody::Reject(reject.clone()), &hdr);
+                        out.push(env);
+                        return (
+                            StepOutcome::ProposalRejected {
+                                reason: RejectReason::Expired,
+                                detail: b"offer expired before commitment".to_vec(),
+                            },
+                            out,
+                        );
+                    }
                     match AllocationSolver::check_envelope(
                         &offer,
                         p.interval_start_ns,
@@ -840,14 +875,16 @@ impl CoordinatorNegotiator {
         }
     }
 
-    /// 登记站点公钥（key_id 来自站点证书，全局唯一）。
+    /// 登记站点公钥（key_id 来自站点证书，全局唯一）+ 站点身份绑定。
     pub fn register_site_key(
         &mut self,
         key_id: u32,
+        owner_site_id: u32,
         pk: &Sm2PublicKeyAlias,
         at_ns: u64,
     ) -> Result<(), KeyError> {
-        self.keys.register_with_id(key_id, pk, at_ns)
+        self.keys
+            .register_with_owner(key_id, owner_site_id, pk, at_ns)
     }
 
     pub fn keys(&self) -> &KeyRegistry {
@@ -888,6 +925,12 @@ impl CoordinatorNegotiator {
             return (StepOutcome::TenantMismatch, Vec::new());
         }
         if let Err(_e) = self.keys.verify_envelope(env, now_ns) {
+            self.signature_rejected += 1;
+            return (StepOutcome::SignatureRejected, Vec::new());
+        }
+        // 身份绑定（P0-1 修复）：签名 key 的 owner 必须与声称的 site_id
+        // 一致——站点 A 不能以 B 的身份发 offer/commitment/evidence。
+        if self.keys.owner_of(env.signer_key_id) != Some(env.site_id) {
             self.signature_rejected += 1;
             return (StepOutcome::SignatureRejected, Vec::new());
         }
@@ -989,7 +1032,8 @@ impl CoordinatorNegotiator {
             FedBody::Commitment(c) => {
                 let matched = match (&session.offer, &session.pending) {
                     (Some(o), Some(p)) => {
-                        c.offer_id == o.offer_id
+                        c.site_id == session.site_id
+                            && c.offer_id == o.offer_id
                             && c.tolerance_profile_id == p.tolerance_profile_id
                             && c.target_curve_ref == p.target_curve_ref
                             && c.expires_at_ns > c.accepted_at_ns
@@ -1077,8 +1121,12 @@ impl CoordinatorNegotiator {
                 .insert(site_id, CoordinatorSession::new(site_id));
         }
         let session = self.sessions.get_mut(&site_id).expect("inserted");
-        if session.offer.is_none() {
-            return Err(NegotiationError::NoCurrentOffer);
+        match &session.offer {
+            None => return Err(NegotiationError::NoCurrentOffer),
+            Some(o) if now_ns > o.valid_until_ns => {
+                return Err(NegotiationError::OfferAlreadyExpired);
+            }
+            Some(_) => {}
         }
         session.pending = Some(proposal.clone());
         let hdr = EnvelopeHdr {
@@ -1230,7 +1278,7 @@ mod tests {
         let (kp_coord, rng_coord) = kp();
         let mut coord = CoordinatorNegotiator::new(0, 1, 1, 1);
         coord
-            .register_site_key(SITE_KEY_ID, &kp_site.public_key, NOW)
+            .register_site_key(SITE_KEY_ID, 9, &kp_site.public_key, NOW)
             .expect("coord regist site key");
         let mut site = SiteNegotiator::new(9, 1, 1, 100);
         site.register_peer_key_with_id(COORD_KEY_ID, &kp_coord.public_key, NOW)

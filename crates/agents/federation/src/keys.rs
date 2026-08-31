@@ -79,6 +79,9 @@ pub enum KeyError {
 #[derive(Clone, Debug)]
 pub struct KeyRegistry {
     keys: BTreeMap<u32, KeyRecord>,
+    /// key_id → owner（站点 id，协调器=0）。P0 身份绑定：验签只证明
+    /// 「key 真实」，身份归属必须由注册表强制（防站点冒充）。
+    owners: BTreeMap<u32, u32>,
     log: Vec<KeyEvent>,
     next_key_id: u32,
 }
@@ -96,6 +99,7 @@ impl KeyRegistry {
     pub fn new() -> Self {
         Self {
             keys: BTreeMap::new(),
+            owners: BTreeMap::new(),
             log: Vec::new(),
             next_key_id: 1,
         }
@@ -109,11 +113,23 @@ impl KeyRegistry {
         Ok(key_id)
     }
 
-    /// 以显式 key_id 注册（生产路径：key_id 来自站点证书/pki，全局唯一，
-    /// 收发双方注册同一 id；重复注册冲突拒绝）。
+    /// 以显式 key_id 注册（owner=0，即协调器自己的 key；站点 key 请用
+    /// [`Self::register_with_owner`]）。
     pub fn register_with_id(
         &mut self,
         key_id: u32,
+        pk: &Sm2PublicKey,
+        at_ns: u64,
+    ) -> Result<(), KeyError> {
+        self.register_with_owner(key_id, 0, pk, at_ns)
+    }
+
+    /// 以显式 key_id + owner（站点 id）注册。验签通过后上层必须比对
+    /// `owner_of(signer_key_id) == env.site_id`，否则视为冒充。
+    pub fn register_with_owner(
+        &mut self,
+        key_id: u32,
+        owner: u32,
         pk: &Sm2PublicKey,
         at_ns: u64,
     ) -> Result<(), KeyError> {
@@ -136,12 +152,18 @@ impl KeyRegistry {
                 public_key: *pk,
             },
         );
+        self.owners.insert(key_id, owner);
         self.log.push(KeyEvent::Registered {
             key_id,
             digest,
             at_ns,
         });
         Ok(())
+    }
+
+    /// key 的持有者（站点 id；协调器 key = 0）。
+    pub fn owner_of(&self, key_id: u32) -> Option<u32> {
+        self.owners.get(&key_id).copied()
     }
 
     /// 轮换：新 key 就位为 Active，旧 key → Retiring（宽限期由调用方
@@ -156,7 +178,9 @@ impl KeyRegistry {
         if old.status == KeyStatus::Revoked {
             return Err(KeyError::RevokedKey);
         }
+        let owner = self.owners.get(&old_key_id).copied().unwrap_or(0);
         let new_id = self.register(new_pk, at_ns)?;
+        self.owners.insert(new_id, owner);
         if let Some(r) = self.keys.get_mut(&old_key_id) {
             r.status = KeyStatus::Retiring;
             r.changed_at_ns = at_ns;
@@ -212,6 +236,7 @@ impl KeyRegistry {
         let n = dead.len();
         for id in dead {
             self.keys.remove(&id);
+            self.owners.remove(&id);
         }
         n
     }

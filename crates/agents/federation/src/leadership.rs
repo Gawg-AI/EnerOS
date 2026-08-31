@@ -83,6 +83,13 @@ impl EpochRegulator {
         }
     }
 
+    /// 防投毒构造：last_epoch 被推到 u64::MAX-1 时钳制（P1-2 修复——
+    /// 重启 `current()=last+1` 不得溢出回绕归零）。
+    pub fn sanitized(last_persisted_epoch: u64) -> Self {
+        let e = last_persisted_epoch.min(u64::MAX - 1);
+        Self { last_epoch: e }
+    }
+
     /// 本实例当前应使用的纪元（启动 = 持久化纪元 + 1）。
     pub fn current(&self) -> u64 {
         self.last_epoch + 1

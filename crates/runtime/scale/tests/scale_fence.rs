@@ -83,3 +83,41 @@ fn fence_guard_is_monotonic_across_restarts() {
         "重启后旧 token 不得重放"
     );
 }
+
+/// P1-4 修复测试：真正的「设备侧重启」场景——旧 leader 即使先恢复连接，
+/// 因持久化基线（term/token）拒绝其写入（零设备写）。
+#[test]
+fn fence_survives_restart_with_persisted_baseline() {
+    // 第一次运行：leader A (term 2, token 105) 持有租约并写设备。
+    let mut token = FenceToken(100);
+    let mut guard = FenceGuard::new();
+    assert_eq!(guard.check_write(7, 2, token.bump(), 0), Ok(()));
+    assert_eq!(guard.check_write(7, 2, token.bump(), 0), Ok(()));
+    assert_eq!(guard.check_write(7, 2, token.bump(), 0), Ok(()));
+    assert_eq!(guard.check_write(7, 2, token.bump(), 0), Ok(()));
+    assert_eq!(guard.check_write(7, 2, token.bump(), 0), Ok(())); // token=105
+    let baseline = *guard.baseline().expect("baseline");
+
+    // 设备侧 daemon 重启：从持久化基线恢复。
+    let mut restarted = FenceGuard::from_baseline(baseline);
+    // 旧 leader A 重连（term 2, 旧 token 102）→ 拒（重启后旧 token 不得重放）。
+    assert_eq!(
+        restarted.check_write(7, 2, FenceToken(102), 0),
+        Err(QuorumError::FenceRejected),
+        "重启后旧 token 重放必须拒"
+    );
+    // 旧 leader B（更小 term 1, 任意 token）→ 拒。
+    assert_eq!(
+        restarted.check_write(8, 1, FenceToken(9999), 0),
+        Err(QuorumError::StaleTerm)
+    );
+    assert_eq!(restarted.rejected_writes, 2);
+    // 新 leader C（term 3）→ 接管。
+    assert_eq!(restarted.check_write(9, 3, FenceToken(1), 0), Ok(()));
+    // 重启后 A 以 term 2 再攻 → 拒（term 沉降不可逆）。
+    assert_eq!(
+        restarted.check_write(7, 2, FenceToken(200), 0),
+        Err(QuorumError::StaleTerm)
+    );
+    assert_eq!(restarted.rejected_writes, 3, "双主重启场景零旧写");
+}

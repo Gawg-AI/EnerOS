@@ -117,7 +117,7 @@ fn real_tls_full_negotiation() {
     let coord = thread::spawn(move || {
         let mut coord = CoordinatorNegotiator::new(0, 1, 1, 1);
         coord
-            .register_site_key(101, &kp_site.public_key, NOW)
+            .register_site_key(101, 9, &kp_site.public_key, NOW)
             .expect("reg site key");
         let mut signer = SiteSigner::new(202, kp_coord, rng_coord);
         let mut stream = acceptor.accept().expect("accept");

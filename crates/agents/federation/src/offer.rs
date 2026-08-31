@@ -434,7 +434,8 @@ impl FedFrame {
         let created_ns = p.u64()?;
         let deadline_ns = p.u64()?;
         let body_len = p.u32()? as usize;
-        if body_len > MAX_FRAME - 80 {
+        // 帧 = 86 头 + body + 64 签名；与 encode 侧 MAX_FRAME 对齐（P2-7）。
+        if body_len > MAX_FRAME - 150 {
             return Err(WireError::Oversized);
         }
         let digest = p.bytes_32()?;
@@ -694,6 +695,9 @@ impl AllocationProposal {
         if self.interval_ns == 0 {
             return Err(WireError::InvalidField);
         }
+        if self.reserve_up_kw < 0.0 || self.reserve_down_kw < 0.0 {
+            return Err(WireError::InvalidField); // 负备用拒绝（P2-2）
+        }
         let curve = self.curve_canonical()?;
         if !self.target_curve_ref.matches(&curve) {
             return Err(WireError::DigestMismatch);
@@ -719,6 +723,9 @@ impl AllocationProposal {
         let target_curve_ref = BlobRefV1::decode(&mut p)?;
         let reserve_up_kw = p.f64()?;
         let reserve_down_kw = p.f64()?;
+        if reserve_up_kw < 0.0 || reserve_down_kw < 0.0 {
+            return Err(WireError::InvalidField);
+        }
         let interval_start_ns = p.u64()?;
         let interval_ns = p.u64()?;
         if interval_ns == 0 {

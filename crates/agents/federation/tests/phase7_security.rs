@@ -77,7 +77,7 @@ fn build_federation(n: u32) -> (CoordinatorNegotiator, Vec<SiteNode>, Vec<Sm2Pub
         let key_id = 1000 + i;
         let (site_kp, rng) = gen_kp();
         coord
-            .register_site_key(key_id, &site_kp.public_key, NOW)
+            .register_site_key(key_id, i, &site_kp.public_key, NOW)
             .expect("reg site key");
         pubkeys.push(site_kp.public_key);
         let mut neg = SiteNegotiator::new(i, 1, 1, 100 * i as u64);
@@ -526,7 +526,7 @@ fn coordinator_restart_stale_leader_rejected() {
     let mut stale_signer = SiteSigner::new(42, kp_c3, rng_c3);
     // 重启后的协调器需要恢复该新站点的密钥登记（PKI 静态配置）。
     coord2
-        .register_site_key(1009, &fresh_signer.public_key().clone(), NOW)
+        .register_site_key(1009, 9, &fresh_signer.public_key().clone(), NOW)
         .expect("reg 1009");
     let (_, env) = fresh_site
         .publish_offer(&site_offer(9, 1, 50.0), NOW, &mut fresh_signer)
@@ -646,7 +646,7 @@ fn cross_tenant_isolation() {
     let (kp_c, rng_c) = gen_kp();
     let mut coord = CoordinatorNegotiator::new(0, 1, 1, 1);
     coord
-        .register_site_key(111, &kp_site.public_key, NOW)
+        .register_site_key(111, 9, &kp_site.public_key, NOW)
         .expect("reg");
     let mut site = SiteNegotiator::new(9, 2, 1, 100); // 租户 2
     site.register_peer_key_with_id(42, &kp_c.public_key, NOW)
@@ -995,4 +995,140 @@ fn hundred_site_roundtrip_bounded() {
         "100 站全流程必须在 60s 内（实测 {}ms）",
         elapsed.as_millis()
     );
+}
+
+// ---------------------------------------------------------------
+// 10) 冒充防护（P0-1 复查修复）：站点 A 不能以站点 B 身份活动
+// ---------------------------------------------------------------
+
+#[test]
+fn impostor_site_rejected() {
+    let (mut coord, mut sites, _) = build_federation(3);
+    let (kp_c, rng_c) = gen_kp();
+    let mut coord_signer = SiteSigner::new(42, kp_c, rng_c);
+    // 站点 1、2 正常发布 offer。
+    for (i, s) in sites.iter_mut().enumerate() {
+        let sid = (i + 1) as u32;
+        let (_, env) = s
+            .neg
+            .publish_offer(&s.offer, NOW, &mut s.signer)
+            .expect("pub");
+        let (out, _) = coord.on_message(&env, NOW + 1, &mut coord_signer);
+        assert!(
+            matches!(out, StepOutcome::OfferRegistered { .. }),
+            "site {sid}: {out:?}"
+        );
+    }
+    // 站点 1 的 signer（key owner=1）以 env.site_id=2 伪造 offer（revision 2）
+    // → 协调器必须拒（SignatureRejected）。
+    let (s1, s_rest) = sites.split_at_mut(1);
+    let fake = site_offer(2, 2, 999.0);
+    let fake_env = s1[0].signer.sign(
+        &FedBody::Offer(fake),
+        &EnvelopeHdr {
+            epoch: 1,
+            sequence: 999,
+            tenant_id: 1,
+            site_id: 2, // 冒充站点 2
+            created_ns: NOW,
+            deadline_ns: NOW + 3_600_000_000_000,
+            signer_key_id: 1001, // 站点 1 的 key
+        },
+    );
+    let (out, _) = coord.on_message(&fake_env, NOW + 2, &mut coord_signer);
+    assert!(
+        matches!(out, StepOutcome::SignatureRejected),
+        "冒充 offer 必须拒: {out:?}"
+    );
+    // 站点 2 的真实 offer 不受影响（容量未被放大）。
+    let views: Vec<SiteOfferView> = coord
+        .sessions()
+        .iter()
+        .map(|(sid, s)| {
+            let o = s.offer().expect("offer");
+            SiteOfferView {
+                site_id: *sid,
+                offer_id: o.offer_id,
+                revision: o.revision,
+                p_min_kw: o.p_min_kw,
+                p_max_kw: o.p_max_kw,
+                energy_min_kwh: o.energy_min_kwh,
+                energy_max_kwh: o.energy_max_kwh,
+                ramp_kw_s: o.ramp_kw_s,
+                reserve_up_kw: o.reserve_up_kw,
+                reserve_down_kw: o.reserve_down_kw,
+                price_rank: *sid,
+            }
+        })
+        .collect();
+    let s2_view = views.iter().find(|v| v.site_id == 2).expect("s2");
+    assert_eq!(s2_view.p_max_kw, site_pmax(2), "站点 2 包络未被冒充污染");
+    // 冒充 commitment/证据：站点 1 以 site_id=2 签 commitment → 拒；即便
+    // site_id 与 commitment_id 都伪造，验签后的 owner 绑定也必拒。
+    let alloc = eneros_federation::allocation::SiteAllocation {
+        site_id: 2,
+        points_kw: vec![10.0],
+        energy_kwh: 10.0,
+        reserve_up_kw: 0.0,
+        reserve_down_kw: 0.0,
+        within_envelope: true,
+    };
+    let proposal = AllocationSolver::to_proposal(
+        &alloc,
+        &site_offer(2, 1, 11.0),
+        [9; 16],
+        1,
+        0,
+        3_600_000_000_000,
+    )
+    .expect("p");
+    let (_, penv) = coord
+        .propose(2, &proposal, NOW + 3, &mut coord_signer)
+        .expect("propose");
+    // 站点 2 正常接受（对照）。
+    let s2 = &mut s_rest[0];
+    let (out, cbox) = s2.neg.on_message(&penv, NOW + 4, &mut s2.signer);
+    assert!(
+        matches!(out, StepOutcome::ProposalAccepted { .. }),
+        "{out:?}"
+    );
+    // 站点 1 拿着站点 2 的 commitment 帧重签自己的（以 site_id=2 伪造）：
+    let fake_cmt = s1[0].signer.sign(
+        &FedBody::Commitment(
+            match eneros_federation::offer::decode_body(
+                eneros_federation::offer::FedKind::Commitment,
+                &cbox[0].body,
+            )
+            .expect("cmt body")
+            {
+                FedBody::Commitment(c) => {
+                    let mut c2 = c.clone();
+                    c2.site_id = 2; // 本来就是 2——但签名者是站点 1 的 key
+                    c2
+                }
+                _ => unreachable!(),
+            },
+        ),
+        &EnvelopeHdr {
+            epoch: 1,
+            sequence: 1000,
+            tenant_id: 1,
+            site_id: 2,
+            created_ns: NOW,
+            deadline_ns: NOW + 3_600_000_000_000,
+            signer_key_id: 1001, // 站点 1 的 key 冒充
+        },
+    );
+    let (out, _) = coord.on_message(&fake_cmt, NOW + 5, &mut coord_signer);
+    assert!(
+        matches!(out, StepOutcome::SignatureRejected),
+        "冒充 commitment 必须拒: {out:?}"
+    );
+    // 真实 commitment 仍被接受。
+    let (out, ackbox) = coord.on_message(&cbox[0], NOW + 6, &mut coord_signer);
+    assert!(
+        matches!(out, StepOutcome::CommitmentConfirmed { .. }),
+        "{out:?}"
+    );
+    assert_eq!(ackbox.len(), 1, "真实 commitment 收到 Ack");
 }

@@ -100,10 +100,10 @@ pub enum ShardError {
 /// 步（旧路由仍有效，无双重写设备副作用）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReshardStep {
-    /// Copy：新分片全量复制旧分片数据（幂等）。
+    /// Copy：旧分片全量复制，目标由执行器按新环逐键路由（计划不预设
+    /// 目标分片——预设单目标会在分片扩张方向漏拷）。
     Copy {
         from_shard: u32,
-        to_shard: u32,
         version_from: u64,
         version_to: u64,
     },
@@ -138,11 +138,12 @@ impl ReshardPlan {
         // vnode 数变化也视为完整重分片（全部键重新路由）；计划按分片
         // 序确定性展开，执行器逐阶段推进。
         let mut steps = Vec::new();
+        // P1-5 修复：Copy 不预设目标分片——旧分片键在新环的目标分片是
+        // 键函数（`from % new.shards` 会在扩张方向漏拷），由执行器按新环
+        // 路由逐键落位。
         for from in 0..old.shards {
-            let to = from % new.shards;
             steps.push(ReshardStep::Copy {
                 from_shard: from,
-                to_shard: to,
                 version_from: old.version,
                 version_to: new.version,
             });

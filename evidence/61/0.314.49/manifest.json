@@ -1,0 +1,37 @@
+{
+  "schema": "eneros.blueprint61.evidence.v1",
+  "version": "0.314.49",
+  "commit": "<filled-at-commit>",
+  "dirty": false,
+  "profile": "host",
+  "profile_sha256": "<filled>",
+  "config_digests": {},
+  "toolchain_digest": "<filled>",
+  "commands": [
+    "cargo test -p eneros-federation --test phase7_wire_frozen",
+    "cargo run -p eneros-ci (六门全 PASS)",
+    "cargo xtask release sbom (BLOCKED: 缺外部 SBOM 生成器)"
+  ],
+  "tests": [
+    {"id": "P7-FROZEN-4", "category": "freeze", "exit": 0, "note": "wire 版本/帧上限/kind 域/canonical 头/offer 定长体冻结"},
+    {"id": "REQ-TRACE", "category": "traceability", "exit": 0, "note": "R1-R16 需求→威胁→owner→test→profile→artifact→verdict 表（evidence/61/phase7-wp73-*) + §4.3 12 项 campaign 状态"},
+    {"id": "REVIEW-ROUND", "category": "review", "exit": 0, "note": "独立复查：WP-7.1/7.2 代码四向复查 P0/P1=0"}
+  ],
+  "faults": [],
+  "capacity_tier": "C0(host); C2/C3/E7 BLOCKED 登记",
+  "artifacts": [
+    "crates/agents/federation/tests/phase7_wire_frozen.rs",
+    "evidence/61/phase7-wp73-registration-2026-09-01.md",
+    "evidence/61/0.314.49/manifest.json"
+  ],
+  "review": {
+    "spec": "pass",
+    "standards": "pass",
+    "adversarial": "pass",
+    "assembly": "pass",
+    "open_p0": 0,
+    "open_p1": 0
+  },
+  "signed_at": "<filled>",
+  "signature_ref": "<filled>"
+}
