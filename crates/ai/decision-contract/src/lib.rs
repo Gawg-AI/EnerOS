@@ -31,6 +31,7 @@ pub mod certificate;
 pub mod error;
 pub mod ids;
 pub mod intent;
+pub mod keyed;
 pub mod objective;
 pub mod wire;
 
@@ -66,6 +67,7 @@ mod tests {
             ("wire.rs", include_str!("wire.rs")),
             ("ids.rs", include_str!("ids.rs")),
             ("error.rs", include_str!("error.rs")),
+            ("keyed.rs", include_str!("keyed.rs")),
         ] {
             for line in src.lines() {
                 let t = line.trim_start();

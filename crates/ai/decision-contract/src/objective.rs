@@ -9,6 +9,10 @@ use crate::ids::{ReasonCode, SnapshotId};
 use crate::wire::MAX_CONSTRAINTS;
 
 /// 约束种类（封闭枚举；.36 RuleBundle 编译源）。
+///
+/// 码位冻结（[06] §3.6）：`code()` 只能追加，禁止改义；`from_code`
+/// 对未登记码 fail-closed（None）。1-6 为 Phase 1 原始六类；7-11 为
+/// .36/.37 多资源规划扩充（承诺/终值/能量窗）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConstraintKind {
     MinSoc,
@@ -17,6 +21,78 @@ pub enum ConstraintKind {
     MinPowerKw,
     RampUpKwS,
     RampDownKwS,
+    /// 终值 SOC（horizon 末端；0.0~1.0 比率）。
+    SocFinal,
+    /// 能量窗上限（kWh）。
+    MaxEnergyKwh,
+    /// 能量窗下限（kWh）。
+    MinEnergyKwh,
+    /// 市场时段能量承诺（kWh；硬约束）。
+    EnergyCommitmentKwh,
+    /// 备用容量（kW；硬约束）。
+    ReserveCapacityKw,
+}
+
+impl ConstraintKind {
+    /// 稳定数字码（wire/目录层使用；0 保留）。
+    pub const fn code(self) -> u16 {
+        match self {
+            Self::MinSoc => 1,
+            Self::MaxSoc => 2,
+            Self::MaxPowerKw => 3,
+            Self::MinPowerKw => 4,
+            Self::RampUpKwS => 5,
+            Self::RampDownKwS => 6,
+            Self::SocFinal => 7,
+            Self::MaxEnergyKwh => 8,
+            Self::MinEnergyKwh => 9,
+            Self::EnergyCommitmentKwh => 10,
+            Self::ReserveCapacityKw => 11,
+        }
+    }
+
+    /// 数字码 → 枚举；0 与未登记码 → None（fail-closed）。
+    pub const fn from_code(code: u16) -> Option<Self> {
+        match code {
+            1 => Some(Self::MinSoc),
+            2 => Some(Self::MaxSoc),
+            3 => Some(Self::MaxPowerKw),
+            4 => Some(Self::MinPowerKw),
+            5 => Some(Self::RampUpKwS),
+            6 => Some(Self::RampDownKwS),
+            7 => Some(Self::SocFinal),
+            8 => Some(Self::MaxEnergyKwh),
+            9 => Some(Self::MinEnergyKwh),
+            10 => Some(Self::EnergyCommitmentKwh),
+            11 => Some(Self::ReserveCapacityKw),
+            _ => None,
+        }
+    }
+
+    /// 该种类的主量纲（文档/测试基准）。
+    pub const fn required_dimension(self) -> eneros_telemetry_model::Dimension {
+        use eneros_telemetry_model::Dimension;
+        match self {
+            Self::MinSoc | Self::MaxSoc | Self::SocFinal => Dimension::Ratio,
+            Self::MaxPowerKw | Self::MinPowerKw | Self::ReserveCapacityKw => Dimension::Power,
+            Self::RampUpKwS | Self::RampDownKwS => Dimension::Power,
+            Self::MaxEnergyKwh | Self::MinEnergyKwh | Self::EnergyCommitmentKwh => {
+                Dimension::Energy
+            }
+        }
+    }
+
+    /// 单位-kind 匹配裁决（[09] §2.3）：SOC 比率类同时接受 Ratio
+    /// （%）与 None（0..1 无量纲分数）；其余按主量纲。
+    pub fn accepts_dimension(self, d: eneros_telemetry_model::Dimension) -> bool {
+        use eneros_telemetry_model::Dimension;
+        match self {
+            Self::MinSoc | Self::MaxSoc | Self::SocFinal => {
+                matches!(d, Dimension::Ratio | Dimension::None)
+            }
+            other => d == other.required_dimension(),
+        }
+    }
 }
 
 /// 带界约束（f64 必须有限）。
@@ -121,6 +197,12 @@ impl ObjectiveSpec {
     }
     pub fn reason(&self) -> ReasonCode {
         self.reason
+    }
+    pub fn valid_from_ms(&self) -> u64 {
+        self.valid_from_ms
+    }
+    pub fn valid_until_ms(&self) -> u64 {
+        self.valid_until_ms
     }
     pub fn is_valid_at(&self, now_ms: u64) -> bool {
         now_ms >= self.valid_from_ms && now_ms <= self.valid_until_ms
@@ -251,6 +333,43 @@ impl DecisionRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 码位冻结（[06] §3.6 同纪律）：1-6 Phase 1 原六类，7-11 .36 扩充。
+    #[test]
+    fn constraint_kinds_stable_and_unknown_fail_closed() {
+        for (code, expected) in [
+            (1u16, ConstraintKind::MinSoc),
+            (2, ConstraintKind::MaxSoc),
+            (3, ConstraintKind::MaxPowerKw),
+            (4, ConstraintKind::MinPowerKw),
+            (5, ConstraintKind::RampUpKwS),
+            (6, ConstraintKind::RampDownKwS),
+            (7, ConstraintKind::SocFinal),
+            (8, ConstraintKind::MaxEnergyKwh),
+            (9, ConstraintKind::MinEnergyKwh),
+            (10, ConstraintKind::EnergyCommitmentKwh),
+            (11, ConstraintKind::ReserveCapacityKw),
+        ] {
+            assert_eq!(ConstraintKind::from_code(code), Some(expected));
+            assert_eq!(expected.code(), code);
+        }
+        assert_eq!(ConstraintKind::from_code(0), None, "0 保留");
+        assert_eq!(ConstraintKind::from_code(12), None, "未登记码 fail-closed");
+        assert_eq!(ConstraintKind::from_code(u16::MAX), None);
+        // 量纲匹配面：SOC 系比率、功率系 Power、能量系 Energy。
+        assert_eq!(
+            ConstraintKind::MinSoc.required_dimension(),
+            eneros_telemetry_model::Dimension::Ratio
+        );
+        assert_eq!(
+            ConstraintKind::MaxPowerKw.required_dimension(),
+            eneros_telemetry_model::Dimension::Power
+        );
+        assert_eq!(
+            ConstraintKind::EnergyCommitmentKwh.required_dimension(),
+            eneros_telemetry_model::Dimension::Energy
+        );
+    }
 
     #[test]
     fn intent_candidate_negatives() {

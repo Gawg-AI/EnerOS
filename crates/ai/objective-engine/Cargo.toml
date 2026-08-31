@@ -1,0 +1,22 @@
+[package]
+name = "eneros-objective-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图61 [09] §2 v0.314.36 — ObjectiveModule：签名 RuleBundle → ObjectiveSpec 确定性编译（no_std）"
+
+[dependencies]
+eneros-decision-contract = { path = "../decision-contract" }
+eneros-snapshot-service = { path = "../../agents/snapshot-service" }
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
+sha2 = { version = "0.10.9", default-features = false }
+
+# 迁移/shadow（[09] §2.6 步骤 3/6）：legacy 单储能参数 → RuleBundle。
+eneros-energy-lp-model = { path = "../energy-lp-model" }
+
+[features]
+default = []
+
+[dev-dependencies]
+eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }
