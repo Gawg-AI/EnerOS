@@ -88,7 +88,7 @@ run_case restart
 echo "=== 判据行扫描（m1-typed）==="
 FAIL=0
 S="$ROOT/target/evidence61-p1/m1-typed/qemu-serial.log"
-for pat in "OBS-SOURCE" "OBS-ROUND" "OBS-SHADOW MATCH" "OBS-CFG loaded" "PLAN-TYPED" \
+for pat in "OBS-SOURCE" "OBS-ROUND" "OBS-SHADOW MATCH" "OBS-CFG loaded" "CONTRACT-VIEW-ACTIVE" "PLAN-COMPILED" \
            "EXEC-JOURNAL applied-confirmed" "INGEST"; do
   if grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; FAIL=1; fi
 done

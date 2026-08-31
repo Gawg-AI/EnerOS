@@ -587,6 +587,9 @@ impl DispatchHandler {
             resources,
             contracts,
             compiler_policy: eneros_control_dispatch::compiler::CompilerPolicy::default(),
+            // WP-5.3：生产装配 = 自动模式（人工接管走 gateway override 面，
+            // 切回自动经 resume_auto 持 fresh snapshot）。
+            control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
             chain,
             key: key.to_vec(),
             // 蓝图 55：档案事实（lease/代次/绑定设备点）单源；首签 fencing

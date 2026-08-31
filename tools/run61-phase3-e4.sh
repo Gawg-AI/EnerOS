@@ -6,7 +6,9 @@
 #      反馈映射/资源注册表自目录）
 #   3. E4-P3-GEN1 正常用例：CATALOG-ACTIVE gen=1 → CATALOG-COVERAGE →
 #      CATALOG-FEEDBACK → CATALOG-BINDING → REGISTRY-ACTIVE →
-#      OBS/ACQ/PLAN-TYPED/EXEC-JOURNAL（旧链不回归）。
+#      OBS/ACQ/CONTRACT-VIEW/PLAN-COMPILED/EXEC-JOURNAL（WP-5.1 起
+#      PLAN-TYPED 词形升级为 PLAN-COMPILED——PlanCompiler 命令批证据行）。
+#   （2026-08-31 WP-5.1 随 v0.314.41 更新断言词形。）
 #   4. E4-P3-GEN2：catalog 换代（generation=2）→ CATALOG-ACTIVE gen=2。
 #   5. E4-P3-ROLLBACK：重建 gen=1 镜像再次引导 → CATALOG-ACTIVE gen=1
 #      （回滚通过 [08] §2.7）。
@@ -118,7 +120,7 @@ S="$ROOT/target/evidence61-p3/cat-gen1/qemu-serial.log"
 for pat in "CATALOG-ACTIVE gen=1" "CATALOG-COVERAGE points=7" \
            "CATALOG-BINDING point=10 device=1" "CATALOG-FEEDBACK grid=5 soc=4 v=1 oc=6 ot=7" \
            "REGISTRY-ACTIVE binding=(1,10)" "OBS-SOURCE" "ACQ point=" \
-           "PLAN-TYPED" "EXEC-JOURNAL applied-confirmed"; do
+           "CONTRACT-VIEW-ACTIVE" "PLAN-COMPILED" "EXEC-JOURNAL applied-confirmed"; do
   if grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; FAIL=1; fi
 done
 # 旧「首个 Control 点」绑定词形不得出现（退出 gate：生产无手写 first control binding）。

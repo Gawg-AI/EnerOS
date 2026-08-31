@@ -1,0 +1,58 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.43",
+ "commit": "3117a10",
+ "dirty": false,
+ "profile": "host（arbiter/degrade 模块面 + 引擎/启发式路径生产接线）",
+ "summary": "WP-5.3 CommandArbiter 与 DegradationLease（[10] §4）：九源字典序仲裁/抢占/人工模式/可叠加服务回 solver；签名限时限域 lease + D1-D6 降级状态机（迟滞恢复）；引擎与生产启发式路径接线",
+ "commands": [
+  { "id": "CMD-TESTS", "cmd": "cargo test --workspace", "exit": 0, "summary": "8228 测试全绿（含 arbiter_degrade 9 例 + degrade 单测 5 例）" },
+  { "id": "CMD-CLIPPY", "cmd": "cargo clippy --workspace --all-targets", "exit": 0, "summary": "零警告（pre-commit 门）" }
+ ],
+ "tests": [
+  {
+   "id": "T-ARBITER",
+   "class": "唯一 Arbiter（[10] §4.2/§4.3）",
+   "rows": {
+    "pairwise": "PASS——9×9 来源冲突矩阵：高优先级胜出/同级先到先执行/可叠加服务 MergeInSolver/ModelSuggestion 恒拒",
+    "preempt": "PASS——紧急源抢占在途优化器（ReconcileFirst：未发送取消/已发送先对账）；不可抢占意图拒绝",
+    "manual": "PASS——人工/检修模式拒一切非紧急自动源；紧急不受阻绝；resume_auto 无 fresh snapshot 拒绝",
+    "window-lease": "PASS——不在生效窗/租约无效拒绝",
+    "losers": "PASS——败者记录入有界审计日志（可观测面）",
+    "single": "PASS——源码审计：struct CommandArbiter 全仓唯一定义（arbiter.rs；engine/saga/compiler/degrade/dispatch/journal/lib 无第二仲裁结构）",
+    "wired": "PASS——run_typed/run_intent 投递前 arbitrate（SiteOptimizer/GridOperatorConfirmed）；在途登记由 journal 真值自愈"
+   }
+  },
+  {
+   "id": "T-LEASE",
+   "class": "DegradationLease（[10] §4.4）",
+   "rows": {
+    "signature": "PASS——HMAC-SHA256 域分隔签名覆盖全字段；任意字段篡改验签失败；空 key 拒签/拒验",
+    "bounds": "PASS——超功率/能量/爬坡逐项拒绝",
+    "scope": "PASS——策略摘要不在白名单拒绝（heuristic 摘要 = SM3(死区参数域分隔)——参数漂移即摘要漂移）",
+    "expiry": "PASS——过期拒绝",
+    "revoked": "PASS——撤销纪元递增后旧纪元 lease 全部失效",
+    "uses": "PASS——max_uses 耗尽 fail-closed；LeaseUsage 记账（持久化导出面）",
+    "admits": "PASS——复用四判据（白名单/快照最低条件/包络未收紧/未过期）逐项验证"
+   }
+  },
+  {
+   "id": "T-DEGRADE",
+   "class": "D1-D6 降级状态机与生产接线（[10] §4.5/§4.6/§4.7）",
+   "rows": {
+    "escalate": "PASS——恶化即时可跳级",
+    "recover": "PASS——恢复逐级（禁跳 D6→D0）+ 连续健康窗口迟滞防振荡；不健康清零进度",
+    "d6": "PASS——D6 无自动恢复；manual_release_emergency 唯一交还路径",
+    "restart": "PASS——重启计数单调；健康窗口清零（恢复资格重积累）",
+    "d5-capability": "PASS——D5 resource_capable=false ⇒ 资源移出 planner capability 池（逐级恢复后回归）",
+    "d2-reconnect": "PASS——联网恢复：冻结窗外旧外部目标 lease 过期拒绝",
+    "fallback-gate": "PASS——HeuristicBackend（生产启发式路径）arm_degradation_lease 签名不合法拒武装；武装后每次 decide 逐次授权，失败拒绝决策（无未授权 fallback 动作）",
+    "drill": "登记——降级演练与人工 runbook E5 为 Phase 6 前置（[10] §4.7），随 D2 ExternalOff 外部 adapter（Phase 6 市场接入）联调"
+   }
+  }
+ ],
+ "deviations": [
+  "frozen-crates.json 补登记 eneros-planner→eneros-solver-model allowlist 边（0.314.37 引入、0.314.43 首次目标镜像重建时冻结门暴露；ADR-050 host-only 边）",
+  "E4 门脚本断言词形 PLAN-TYPED→PLAN-COMPILED（WP-5.1 编译器证据行）+ 新增 CONTRACT-VIEW-ACTIVE"
+ ]
+}

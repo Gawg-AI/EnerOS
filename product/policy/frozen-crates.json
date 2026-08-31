@@ -1,319 +1,325 @@
 {
-  "schema": "eneros.frozen-crates.v1",
-  "established": "2026-08-19",
-  "policy_ref": "蓝图44 WP-44.4 / docs/delivery/交付级差距深度审查报告-2026-08-18.md §5.4（死代码冻结，不删除）",
-  "note": "冻结=闭包隔离：冻结 crate 保持编译（防 API 漂移破坏 host 工具），但不得被任何 release profile 依赖闭包引入，也不得被非冻结 crate 新增声明依赖。解冻须按各条目 unfreeze 条件的 owner 裁决并移除本条目。",
-  "crates": [
-    {
-      "package": "eneros-federation",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "49 卷 dual-brain 接线提供真实对端闭环证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-energy-market-agent",
-      "reason": "审查 §5.4 列孤立；实际经 device-agent agent-runtime 功能桥接（44 现状），非产品闭环核心，按现状冻结防扩展",
-      "unfreeze": "47/49 卷控制写/市场链路收口后重估"
-    },
-    {
-      "package": "eneros-fleet-ops",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "有真实 fleet 对端/接线需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-coordinator",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "49 卷 dual-brain 接线后重估"
-    },
-    {
-      "package": "eneros-ops-lifecycle",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "有真实生命周期管理需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-grid-agent",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "有真实电网域对端需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-twin-agent",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "49 卷 AI 链接线后重估"
-    },
-    {
-      "package": "eneros-model-ota",
-      "reason": "agents 孤立 crate（审查 §5.4），模型 OTA 未接线；外部依赖 BLOCKED（41 终验以下）",
-      "unfreeze": "模型 OTA 外部依赖就绪并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-cloud-coordinator",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "有真实云协调需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-simulator",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者（仿真场景独立工程）",
-      "unfreeze": "作为独立工程剥离或接线后由 owner 裁决"
-    },
-    {
-      "package": "eneros-data-governance",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "有真实数据治理需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-hmi",
-      "reason": "agents 孤立 crate（审查 §5.4），HMI 未进装配",
-      "unfreeze": "HMI 进装配并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-vpp-scenario",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者（场景编排独立工程）",
-      "unfreeze": "作为独立工程剥离或接线后由 owner 裁决"
-    },
-    {
-      "package": "eneros-spot-market",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "47 卷市场链路收口后重估"
-    },
-    {
-      "package": "eneros-trust",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "有真实信任/声誉域需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-realtime-market",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "47 卷市场链路收口后重估"
-    },
-    {
-      "package": "eneros-autonomous",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "49 卷 AI 链接线后重估"
-    },
-    {
-      "package": "eneros-reputation",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "有真实声誉域需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-bsp-cert",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "51 卷板卡 bring-up 后由 owner 裁决"
-    },
-    {
-      "package": "eneros-app-cert",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "有真实应用证书需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-alarm",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "有真实告警链路需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-agent-hot-update",
-      "reason": "agents 孤立 crate（审查 §5.4 hot-update），零产品消费者",
-      "unfreeze": "有真实热更新需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-chain",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "有真实链域需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-standards",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
-      "unfreeze": "有真实标准域需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-mvp-scenario",
-      "reason": "agents 孤立 crate（审查 §5.4），零产品消费者（场景编排独立工程）",
-      "unfreeze": "作为独立工程剥离或接线后由 owner 裁决"
-    },
-    {
-      "package": "eneros-rl",
-      "reason": "AI 孤立库（审查 §5.4）；D1 裁决保留 LLM 路线但供给架构未定",
-      "unfreeze": "49 卷 ADR 定 System2 供给架构且本库具名接线后由 owner 裁决"
-    },
-    {
-      "package": "eneros-marl",
-      "reason": "AI 孤立库（审查 §5.4）；D1 裁决保留 LLM 路线但供给架构未定",
-      "unfreeze": "49 卷 ADR 定 System2 供给架构且本库具名接线后由 owner 裁决"
-    },
-    {
-      "package": "eneros-online-learning",
-      "reason": "AI 孤立库（审查 §5.4）；D1 裁决保留 LLM 路线但供给架构未定",
-      "unfreeze": "49 卷 ADR 定 System2 供给架构且本库具名接线后由 owner 裁决"
-    },
-    {
-      "package": "eneros-dialog",
-      "reason": "AI 孤立库（审查 §5.4）；D1 裁决保留 LLM 路线但供给架构未定",
-      "unfreeze": "49 卷 ADR 定 System2 供给架构且本库具名接线后由 owner 裁决"
-    },
-    {
-      "package": "eneros-solver-pareto",
-      "reason": "AI 孤立库（审查 §5.4），零产品消费者",
-      "unfreeze": "有产品侧求解需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-solver-warm",
-      "reason": "AI 孤立库（审查 §5.4），零产品消费者",
-      "unfreeze": "有产品侧求解需求并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-solver-model",
-      "reason": "AI 孤立库（审查 §5.4）；host/solver 工具族（energy-lp-model/intent-parser/solver-milp）仍依赖，见 dependency_allowlist",
-      "unfreeze": "有产品侧求解接线并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-model-deploy",
-      "reason": "AI 孤立库（审查 §5.4），零产品消费者",
-      "unfreeze": "49 卷模型部署链路接线后由 owner 裁决"
-    },
-    {
-      "package": "eneros-tsdb",
-      "reason": "SPEC-C（D-TSDB-2 方案 A）已接线真实消费者：svc-telemetry 磁盘历史 sink/取回面（host 全链判据绿、target 编译零错；v0.314.17）。QEMU 持久性四步法证据入库 + owner 点头后移除本条目完成解冻",
-      "unfreeze": "SPEC-C 判据 C1-C4 证据齐备并由 owner 裁决（预计随本卷出口移除）"
-    },
-    {
-      "package": "eneros-protocol-sdk",
-      "reason": "protocol-sdk 归档为 host 互操作资产（ADR-0044）；唯一协议 seam = protocol-abstract",
-      "unfreeze": "ADR-0044 撤销或 46 卷 seam 重估后由 owner 裁决"
-    },
-    {
-      "package": "eneros-power",
-      "reason": "设备域·电源管理驱动库，零入边零产品消费者（SPEC-F 2026-08-27 只读重算 cargo metadata 实测）",
-      "unfreeze": "板卡 bring-up 电源管理接线并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-cellular",
-      "reason": "设备域·蜂窝通信驱动库，零入边零产品消费者（SPEC-F 重算实测）",
-      "unfreeze": "蜂窝上联进入装配并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-calibration",
-      "reason": "设备域·标定库，零入边零产品消费者（SPEC-F 重算实测）",
-      "unfreeze": "真机标定流程建立并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-cj188",
-      "reason": "协议安全域·CJ/T 188 codec；2026-08-26 四路审计点名未登记孤库，零入边零消费者",
-      "unfreeze": "规约原文入库且对端需求成立并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-iec62351",
-      "reason": "协议安全域·IEC 62351 安全库，零入边零消费者",
-      "unfreeze": "密码/安全协议评审（EXT-01 同源流程）裁决后重估"
-    },
-    {
-      "package": "eneros-did",
-      "reason": "治理叙事·分布式身份库，零入边零消费者",
-      "unfreeze": "身份域真实需求具名并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-compliance",
-      "reason": "合规叙事·合规台账库，零入边零消费者",
-      "unfreeze": "合规认证立项时由 owner 重估"
-    },
-    {
-      "package": "eneros-safety-catalog",
-      "reason": "AI 叙事·安全目录库，零入边零消费者",
-      "unfreeze": "AI 护栏目录具名接线并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-soe-engine",
-      "reason": "数据面·SOE 事件引擎库，与现役遥测路径零静态关联，零入边零消费者",
-      "unfreeze": "时序数据面出现真消费方并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-fault-recorder",
-      "reason": "数据面·故障录波库，零入边零消费者",
-      "unfreeze": "录波真消费方（保护/诊断链路）出现并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-ancillary",
-      "reason": "经济叙事·辅助服务市场库，零入边零消费者",
-      "unfreeze": "市场链路收口后由 owner 重估"
-    },
-    {
-      "package": "eneros-p2p-match",
-      "reason": "经济叙事·P2P 撮合库（ADR-0002 研究线后置同族），零入边零消费者",
-      "unfreeze": "P2P 撮合脱离研究附录立项时由 owner 裁决"
-    },
-    {
-      "package": "eneros-aiops",
-      "reason": "AI 叙事·AIOps 库，零入边零消费者",
-      "unfreeze": "运维 AI 需求具名并出证据后由 owner 裁决"
-    },
-    {
-      "package": "eneros-cloud-sync",
-      "reason": "工具类·云同步库，零入边零消费者",
-      "unfreeze": "云侧对端服务真实接入后由 owner 裁决"
-    },
-    {
-      "package": "eneros-support-bundle",
-      "reason": "工具类·诊断打包库，零入边零消费者",
-      "unfreeze": "诊断交付工具链接线后由 owner 裁决"
-    },
-    {
-      "package": "eneros-mgmt-cli",
-      "reason": "工具类·管理 CLI 库面，零入边零消费者",
-      "unfreeze": "CLI 工具链真实启用后由 owner 裁决"
-    },
-    {
-      "package": "eneros-ai-runner",
-      "reason": "AI 叙事·G-SW1 runner 遗产：真后端能力已由后续执行链取代，lib/demo bin 均零入边",
-      "unfreeze": "Agent 执行管线若需独立 runner 进程由 owner 裁决重估"
-    },
-    {
-      "package": "eneros-twin-global",
-      "reason": "数字孪生叙事·Phase4 出口版，全仓零文本引用＋零入边（自 mock 自引用除外）",
-      "unfreeze": "孪生叙事立项时由 owner 裁决"
-    }
-  ],
-  "release_closure_exemptions": [
-    {
-      "package": "eneros-energy-market-agent",
-      "reason": "设备侧已接线：device-agent 默认 `agent-runtime` 功能把能量市场 agent 桥接进 release 服务闭包（cargo tree 实测）。44 卷不改运行时行为——该路径按 44 现状冻结（不扩展），释放闭包豁免只针对这一既有路径。",
-      "owner": "44-00 D 系列裁决登记 / WP-44.4 锚点修订",
-      "unfreeze": "47 卷控制写/市场链路收口后重估（届时应把 agent-runtime 移出 device-agent 默认功能并解除豁免）"
-    }
-  ],
-  "dependency_allowlist": [
-    {
-      "from": "eneros-device-agent",
-      "to": "eneros-energy-market-agent",
-      "reason": "44 现状冻结基线（device-agent 默认 agent-runtime 功能），与 release_closure_exemptions 对应",
-      "established": "2026-08-19"
-    },
-    {
-      "from": "eneros-energy-lp-model",
-      "to": "eneros-solver-model",
-      "reason": "host/solver 工具族既有依赖（非 release 闭包）",
-      "established": "2026-08-19"
-    },
-    {
-      "from": "eneros-intent-parser",
-      "to": "eneros-solver-model",
-      "reason": "host/solver 工具族既有依赖（非 release 闭包）",
-      "established": "2026-08-19"
-    },
-    {
-      "from": "eneros-pentest",
-      "to": "eneros-federation",
-      "reason": "安全测试工具既有依赖（非 release 闭包）",
-      "established": "2026-08-19"
-    },
-    {
-      "from": "eneros-solver-milp",
-      "to": "eneros-solver-model",
-      "reason": "host/solver 工具族既有依赖（非 release 闭包）",
-      "established": "2026-08-19"
-    },
-    {
-      "from": "eneros-control-services",
-      "to": "eneros-tsdb",
-      "reason": "SPEC-C D-TSDB-2 方案 A：svc-telemetry 磁盘历史真消费依赖（宿主/目标双面）；随 tsdb 解冻同日撤除",
-      "established": "2026-08-27"
-    }
-  ]
+ "schema": "eneros.frozen-crates.v1",
+ "established": "2026-08-19",
+ "policy_ref": "蓝图44 WP-44.4 / docs/delivery/交付级差距深度审查报告-2026-08-18.md §5.4（死代码冻结，不删除）",
+ "note": "冻结=闭包隔离：冻结 crate 保持编译（防 API 漂移破坏 host 工具），但不得被任何 release profile 依赖闭包引入，也不得被非冻结 crate 新增声明依赖。解冻须按各条目 unfreeze 条件的 owner 裁决并移除本条目。",
+ "crates": [
+  {
+   "package": "eneros-federation",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "49 卷 dual-brain 接线提供真实对端闭环证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-energy-market-agent",
+   "reason": "审查 §5.4 列孤立；实际经 device-agent agent-runtime 功能桥接（44 现状），非产品闭环核心，按现状冻结防扩展",
+   "unfreeze": "47/49 卷控制写/市场链路收口后重估"
+  },
+  {
+   "package": "eneros-fleet-ops",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "有真实 fleet 对端/接线需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-coordinator",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "49 卷 dual-brain 接线后重估"
+  },
+  {
+   "package": "eneros-ops-lifecycle",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "有真实生命周期管理需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-grid-agent",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "有真实电网域对端需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-twin-agent",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "49 卷 AI 链接线后重估"
+  },
+  {
+   "package": "eneros-model-ota",
+   "reason": "agents 孤立 crate（审查 §5.4），模型 OTA 未接线；外部依赖 BLOCKED（41 终验以下）",
+   "unfreeze": "模型 OTA 外部依赖就绪并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-cloud-coordinator",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "有真实云协调需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-simulator",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者（仿真场景独立工程）",
+   "unfreeze": "作为独立工程剥离或接线后由 owner 裁决"
+  },
+  {
+   "package": "eneros-data-governance",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "有真实数据治理需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-hmi",
+   "reason": "agents 孤立 crate（审查 §5.4），HMI 未进装配",
+   "unfreeze": "HMI 进装配并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-vpp-scenario",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者（场景编排独立工程）",
+   "unfreeze": "作为独立工程剥离或接线后由 owner 裁决"
+  },
+  {
+   "package": "eneros-spot-market",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "47 卷市场链路收口后重估"
+  },
+  {
+   "package": "eneros-trust",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "有真实信任/声誉域需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-realtime-market",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "47 卷市场链路收口后重估"
+  },
+  {
+   "package": "eneros-autonomous",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "49 卷 AI 链接线后重估"
+  },
+  {
+   "package": "eneros-reputation",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "有真实声誉域需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-bsp-cert",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "51 卷板卡 bring-up 后由 owner 裁决"
+  },
+  {
+   "package": "eneros-app-cert",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "有真实应用证书需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-alarm",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "有真实告警链路需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-agent-hot-update",
+   "reason": "agents 孤立 crate（审查 §5.4 hot-update），零产品消费者",
+   "unfreeze": "有真实热更新需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-chain",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "有真实链域需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-standards",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者",
+   "unfreeze": "有真实标准域需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-mvp-scenario",
+   "reason": "agents 孤立 crate（审查 §5.4），零产品消费者（场景编排独立工程）",
+   "unfreeze": "作为独立工程剥离或接线后由 owner 裁决"
+  },
+  {
+   "package": "eneros-rl",
+   "reason": "AI 孤立库（审查 §5.4）；D1 裁决保留 LLM 路线但供给架构未定",
+   "unfreeze": "49 卷 ADR 定 System2 供给架构且本库具名接线后由 owner 裁决"
+  },
+  {
+   "package": "eneros-marl",
+   "reason": "AI 孤立库（审查 §5.4）；D1 裁决保留 LLM 路线但供给架构未定",
+   "unfreeze": "49 卷 ADR 定 System2 供给架构且本库具名接线后由 owner 裁决"
+  },
+  {
+   "package": "eneros-online-learning",
+   "reason": "AI 孤立库（审查 §5.4）；D1 裁决保留 LLM 路线但供给架构未定",
+   "unfreeze": "49 卷 ADR 定 System2 供给架构且本库具名接线后由 owner 裁决"
+  },
+  {
+   "package": "eneros-dialog",
+   "reason": "AI 孤立库（审查 §5.4）；D1 裁决保留 LLM 路线但供给架构未定",
+   "unfreeze": "49 卷 ADR 定 System2 供给架构且本库具名接线后由 owner 裁决"
+  },
+  {
+   "package": "eneros-solver-pareto",
+   "reason": "AI 孤立库（审查 §5.4），零产品消费者",
+   "unfreeze": "有产品侧求解需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-solver-warm",
+   "reason": "AI 孤立库（审查 §5.4），零产品消费者",
+   "unfreeze": "有产品侧求解需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-solver-model",
+   "reason": "AI 孤立库（审查 §5.4）；host/solver 工具族（energy-lp-model/intent-parser/solver-milp）仍依赖，见 dependency_allowlist",
+   "unfreeze": "有产品侧求解接线并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-model-deploy",
+   "reason": "AI 孤立库（审查 §5.4），零产品消费者",
+   "unfreeze": "49 卷模型部署链路接线后由 owner 裁决"
+  },
+  {
+   "package": "eneros-tsdb",
+   "reason": "SPEC-C（D-TSDB-2 方案 A）已接线真实消费者：svc-telemetry 磁盘历史 sink/取回面（host 全链判据绿、target 编译零错；v0.314.17）。QEMU 持久性四步法证据入库 + owner 点头后移除本条目完成解冻",
+   "unfreeze": "SPEC-C 判据 C1-C4 证据齐备并由 owner 裁决（预计随本卷出口移除）"
+  },
+  {
+   "package": "eneros-protocol-sdk",
+   "reason": "protocol-sdk 归档为 host 互操作资产（ADR-0044）；唯一协议 seam = protocol-abstract",
+   "unfreeze": "ADR-0044 撤销或 46 卷 seam 重估后由 owner 裁决"
+  },
+  {
+   "package": "eneros-power",
+   "reason": "设备域·电源管理驱动库，零入边零产品消费者（SPEC-F 2026-08-27 只读重算 cargo metadata 实测）",
+   "unfreeze": "板卡 bring-up 电源管理接线并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-cellular",
+   "reason": "设备域·蜂窝通信驱动库，零入边零产品消费者（SPEC-F 重算实测）",
+   "unfreeze": "蜂窝上联进入装配并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-calibration",
+   "reason": "设备域·标定库，零入边零产品消费者（SPEC-F 重算实测）",
+   "unfreeze": "真机标定流程建立并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-cj188",
+   "reason": "协议安全域·CJ/T 188 codec；2026-08-26 四路审计点名未登记孤库，零入边零消费者",
+   "unfreeze": "规约原文入库且对端需求成立并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-iec62351",
+   "reason": "协议安全域·IEC 62351 安全库，零入边零消费者",
+   "unfreeze": "密码/安全协议评审（EXT-01 同源流程）裁决后重估"
+  },
+  {
+   "package": "eneros-did",
+   "reason": "治理叙事·分布式身份库，零入边零消费者",
+   "unfreeze": "身份域真实需求具名并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-compliance",
+   "reason": "合规叙事·合规台账库，零入边零消费者",
+   "unfreeze": "合规认证立项时由 owner 重估"
+  },
+  {
+   "package": "eneros-safety-catalog",
+   "reason": "AI 叙事·安全目录库，零入边零消费者",
+   "unfreeze": "AI 护栏目录具名接线并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-soe-engine",
+   "reason": "数据面·SOE 事件引擎库，与现役遥测路径零静态关联，零入边零消费者",
+   "unfreeze": "时序数据面出现真消费方并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-fault-recorder",
+   "reason": "数据面·故障录波库，零入边零消费者",
+   "unfreeze": "录波真消费方（保护/诊断链路）出现并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-ancillary",
+   "reason": "经济叙事·辅助服务市场库，零入边零消费者",
+   "unfreeze": "市场链路收口后由 owner 重估"
+  },
+  {
+   "package": "eneros-p2p-match",
+   "reason": "经济叙事·P2P 撮合库（ADR-0002 研究线后置同族），零入边零消费者",
+   "unfreeze": "P2P 撮合脱离研究附录立项时由 owner 裁决"
+  },
+  {
+   "package": "eneros-aiops",
+   "reason": "AI 叙事·AIOps 库，零入边零消费者",
+   "unfreeze": "运维 AI 需求具名并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-cloud-sync",
+   "reason": "工具类·云同步库，零入边零消费者",
+   "unfreeze": "云侧对端服务真实接入后由 owner 裁决"
+  },
+  {
+   "package": "eneros-support-bundle",
+   "reason": "工具类·诊断打包库，零入边零消费者",
+   "unfreeze": "诊断交付工具链接线后由 owner 裁决"
+  },
+  {
+   "package": "eneros-mgmt-cli",
+   "reason": "工具类·管理 CLI 库面，零入边零消费者",
+   "unfreeze": "CLI 工具链真实启用后由 owner 裁决"
+  },
+  {
+   "package": "eneros-ai-runner",
+   "reason": "AI 叙事·G-SW1 runner 遗产：真后端能力已由后续执行链取代，lib/demo bin 均零入边",
+   "unfreeze": "Agent 执行管线若需独立 runner 进程由 owner 裁决重估"
+  },
+  {
+   "package": "eneros-twin-global",
+   "reason": "数字孪生叙事·Phase4 出口版，全仓零文本引用＋零入边（自 mock 自引用除外）",
+   "unfreeze": "孪生叙事立项时由 owner 裁决"
+  }
+ ],
+ "release_closure_exemptions": [
+  {
+   "package": "eneros-energy-market-agent",
+   "reason": "设备侧已接线：device-agent 默认 `agent-runtime` 功能把能量市场 agent 桥接进 release 服务闭包（cargo tree 实测）。44 卷不改运行时行为——该路径按 44 现状冻结（不扩展），释放闭包豁免只针对这一既有路径。",
+   "owner": "44-00 D 系列裁决登记 / WP-44.4 锚点修订",
+   "unfreeze": "47 卷控制写/市场链路收口后重估（届时应把 agent-runtime 移出 device-agent 默认功能并解除豁免）"
+  }
+ ],
+ "dependency_allowlist": [
+  {
+   "from": "eneros-device-agent",
+   "to": "eneros-energy-market-agent",
+   "reason": "44 现状冻结基线（device-agent 默认 agent-runtime 功能），与 release_closure_exemptions 对应",
+   "established": "2026-08-19"
+  },
+  {
+   "from": "eneros-energy-lp-model",
+   "to": "eneros-solver-model",
+   "reason": "host/solver 工具族既有依赖（非 release 闭包）",
+   "established": "2026-08-19"
+  },
+  {
+   "from": "eneros-intent-parser",
+   "to": "eneros-solver-model",
+   "reason": "host/solver 工具族既有依赖（非 release 闭包）",
+   "established": "2026-08-19"
+  },
+  {
+   "from": "eneros-pentest",
+   "to": "eneros-federation",
+   "reason": "安全测试工具既有依赖（非 release 闭包）",
+   "established": "2026-08-19"
+  },
+  {
+   "from": "eneros-solver-milp",
+   "to": "eneros-solver-model",
+   "reason": "host/solver 工具族既有依赖（非 release 闭包）",
+   "established": "2026-08-19"
+  },
+  {
+   "from": "eneros-control-services",
+   "to": "eneros-tsdb",
+   "reason": "SPEC-C D-TSDB-2 方案 A：svc-telemetry 磁盘历史真消费依赖（宿主/目标双面）；随 tsdb 解冻同日撤除",
+   "established": "2026-08-27"
+  },
+  {
+   "from": "eneros-planner",
+   "to": "eneros-solver-model",
+   "reason": "host/solver 工具族既有依赖（非 release 闭包；ADR-050：planner/HiGHS 仅宿主，目标侧不可装配）。37 卷冻结册时 planner 尚未存在——0.314.37 引入该边，0.314.43 首次重建目标镜像时由冻结门暴露并补登记",
+   "established": "2026-08-31"
+  }
+ ]
 }

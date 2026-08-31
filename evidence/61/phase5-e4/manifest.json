@@ -1,0 +1,29 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.43",
+ "commit": "3117a10",
+ "profile": "qemu-prod（Phase 5 全量变更后的目标实弹回归——复用 phase3-e4 三用例门，断言词形升级）",
+ "summary": "E4-P5 回归：PLAN-COMPILED/CONTRACT-VIEW-ACTIVE（WP-5.1 PlanCompiler 与目录合同视图目标实弹）+ catalog gen1 激活/gen2 换代/gen1 回滚三引导 + 20 点基线一致；执行链 Committed 不回归",
+ "commands": [
+  { "id": "CMD-GATE", "cmd": "bash tools/run61-phase3-e4.sh（SOURCE_DATE_EPOCH=1755523200 + xpack/cmake/pyfdt 工具链）", "exit": 0, "summary": "E4-P3-GATE: PASS——GEN1 12 判据行全绿 + 换代/回滚激活 + 回滚镜像控制链完整 + 20 点基线一致" }
+ ],
+ "tests": [
+  {
+   "id": "T-P5-ON-TARGET",
+   "class": "Phase 5 目标实弹（cat-gen1/cat-gen2/cat-rollback 串口）",
+   "rows": {
+    "contract-view": "PASS——[svc-control-dispatch] CONTRACT-VIEW-ACTIVE contracts=1（目录合同视图装配，单源 SemanticCatalog）",
+    "plan-compiled": "PASS——PLAN-COMPILED batches=1 intents=1 skipped=0 manual=0 compiler=a422cf07… batch=f2c0c3fb…（确定性编译器目标实弹）",
+    "chain": "PASS——EXEC-JOURNAL applied-confirmed（独立回读匹配→Committed）；命令值/基线与 Phase 0 同源",
+    "gen2-rollback": "PASS——CATALOG-ACTIVE gen=2 换代激活；回滚 gen=1 再激活；回滚镜像控制链完整"
+   }
+  },
+  {
+   "id": "T-FLAKY",
+   "class": "已知环境项",
+   "rows": {
+    "cold-boot": "首次全量跑 GEN1 引导冻在 UEFI（串口仅 1 行）——已登记的间歇启动冻结（非 Phase 5 回归：同镜像第二次全量 GEN1 全绿）；处理=整门重跑"
+   }
+  }
+ ]
+}

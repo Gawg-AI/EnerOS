@@ -90,7 +90,7 @@ echo "=== 判据行扫描（m1-module）==="
 FAIL=0
 S="$ROOT/target/evidence61-p2/m1-module/qemu-serial.log"
 for pat in "OBS-SOURCE" "ACQ point=" "OBS-ROUND sent=" "OBS-SHADOW MATCH" "OBS-CFG loaded" \
-           "PLAN-TYPED" "EXEC-JOURNAL applied-confirmed"; do
+           "CONTRACT-VIEW-ACTIVE" "PLAN-COMPILED" "EXEC-JOURNAL applied-confirmed"; do
   if grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; FAIL=1; fi
 done
 if grep -q "OBS-SHADOW MISMATCH" "$S"; then echo "[✗] OBS-SHADOW MISMATCH"; FAIL=1; fi

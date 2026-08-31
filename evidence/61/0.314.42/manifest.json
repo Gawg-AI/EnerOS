@@ -1,0 +1,55 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.42",
+ "commit": "da4c754",
+ "dirty": false,
+ "profile": "host（BatchSaga/Reconciler 模块面 + EngineSagaExecutor 生产 adapter）",
+ "summary": "WP-5.2 Execution Saga 与 Reconciler（[10] §3）：批状态机/事件日志/restore 重放/DAG 调度/补偿/readback-first 对账/双重校验；E4/E5 多设备三资源 + 100 崩溃点 campaign",
+ "commands": [
+  { "id": "CMD-TESTS", "cmd": "cargo test --workspace", "exit": 0, "summary": "8228 测试全绿（含 saga_e4e5 17 例）" },
+  { "id": "CMD-CLIPPY", "cmd": "cargo clippy --workspace --all-targets", "exit": 0, "summary": "零警告（pre-commit 门）" }
+ ],
+ "tests": [
+  {
+   "id": "T-SAGA",
+   "class": "BatchSaga（[10] §3.2–3.4）",
+   "rows": {
+    "states": "PASS——批九态 + 命令九态双侧 expected-previous 强制（非法跳跃拒绝）",
+    "events": "PASS——SagaEvent 全字段（batch/command/attempt/双侧状态/摘要/读回/reason/time）追加式，有界 4096 fail-closed",
+    "dag-sched": "PASS——ready set × max_parallel；失败 Blocked 传递阻断依赖后继（零投递）",
+    "ack-lost": "PASS——写落地+ACK 丢（Unknown）→ 批 Reconciling → readback-first 对账确认 → Applied；单命令物理写恰 1 次（不重复已确认副作用）",
+    "no-effect": "PASS——崩溃未落地 → 对账确认未生效 → Failed（不把未知变成功）",
+    "double-verify": "PASS——RecoveredApplied 首次 single → 第二次独立确认才 Applied；二次不符 → Failed",
+    "manual": "PASS——对账不可解 → ManualIntervention",
+    "compensation": "PASS——逆序补偿 Applied（新意图/新授权/新 journal）；全部成功 → Compensated；不可逆撞上 → Manual；补偿失败/未知 → Manual（不发明效果）",
+    "readback-mismatch": "PASS——ACK 成功但读回不符 → Failed 非 Committed",
+    "fencing": "PASS——双主旧 fencing → Rejected 零写 → Failed",
+    "catalog-upgrade": "PASS——执行中 catalog 变更 → Rejected → Failed",
+    "expired": "PASS——批过期阻断全部剩余命令（零投递）",
+    "policy": "PASS——KeepSucceeded/Compensate/Manual 三策略终态正确"
+   }
+  },
+  {
+   "id": "T-RESTORE",
+   "class": "Reconciler 与恢复（[10] §3.5）",
+   "rows": {
+    "restore": "PASS——事件日志重放（序连续/batch_id/转换合法/意图匹配全验）；断链/篡改/幽灵意图 → None fail-closed",
+    "resume": "PASS——截断前缀恢复后 drive 收敛（在途命令重置 Pending 重提交，executor 幂等键兜底）",
+    "needs-reconcile": "PASS——终态免扫；未启动批过期可安全丢弃；在途批必须收敛",
+    "adapter": "PASS——EngineSagaExecutor：12 步合核唯一执行真相；reconcile=同幂等键零投递再入合核；补偿独立派生键"
+   }
+  },
+  {
+   "id": "T-CAMPAIGN",
+   "class": "100 崩溃点 campaign（[10] §3.7）",
+   "rows": {
+    "campaign": "PASS——三设备+依赖链+可补偿批：事件日志任意 append 边界截断 ×100（循环覆盖全部边界）：终态全部与基线一致；Applied ⇒ 物理值=授权值（无假 Committed）；单 (device,intent) 物理写 ≤2（无重复已确认动作）",
+    "honesty": "登记——崩溃建模=事件边界截断+重启（写落地/未落地两态由 executor 幂等键与读回判别）；非 QEMU 断电实弹（宿主级 E4/E5）"
+   }
+  }
+ ],
+ "deviations": [
+  "run_typed 生产路径保持 Saga 退化形态（单设备串行=KeepSucceeded 等价语义）；批级 Saga 编排随多设备投递面装配（EngineSagaExecutor 已备）",
+  "E4/E5 多设备证据为宿主虚拟设备面（目标侧多设备需硬件面，登记）"
+ ]
+}

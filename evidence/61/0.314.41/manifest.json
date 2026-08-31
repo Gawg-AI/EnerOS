@@ -1,0 +1,48 @@
+{
+ "schema": "eneros.blueprint61.evidence.v1",
+ "version": "0.314.41",
+ "commit": "babbf6f",
+ "dirty": false,
+ "profile": "host（PlanCompiler 纯编译面；目标侧经 phase5-e4 实弹回归覆盖）",
+ "summary": "WP-5.1 PlanCompiler：CertifiedPlan+assignments → 确定性多设备 CommandBatch（[10] §2）；「取计划第一条 power_kw」生产路径删除；decision-contract 批级编译元数据（dependency_edges/max_parallel/deadline/compiler_digest/batch_digest）+ encode_v1",
+ "commands": [
+  { "id": "CMD-TESTS", "cmd": "cargo test --workspace", "exit": 0, "summary": "8228 测试全绿（含 plan_compiler 15 例 + typed_chain 多步逐 tick 用例）" },
+  { "id": "CMD-CLIPPY", "cmd": "cargo clippy --workspace --all-targets", "exit": 0, "summary": "零警告（pre-commit 门）" },
+  { "id": "CMD-TRYBUILD", "cmd": "TRYBUILD=overwrite cargo test -p eneros-decision-contract --all-features", "exit": 0, "summary": "compile-fail stderr 随 new_compiled 构造器重 bless（--all-features 口径=hook workspace feature 合一）" }
+ ],
+ "tests": [
+  {
+   "id": "T-COMPILER",
+   "class": "PlanCompiler（[10] §2.6）",
+   "rows": {
+    "determinism": "PASS——同计划+同目录+同策略 ⇒ 同 compiler/batch digest；golden 锚（01cd04a2…）锁定派生规则",
+    "intent-id": "PASS——intent_id = SHA-256(plan_sha‖asset‖step) 确定性派生，可追溯认证 assignment",
+    "ordering": "PASS——方向类安全优先（|目标|≤|当前| 先执行）→ 资产 → 时段全序",
+    "unit": "PASS——UnitCatalog SI 换算（kW→MW 1.5 正确）；量纲不兼容/未知单位拒绝",
+    "resolution": "PASS——合并留「未动作」证据（SkippedCommand/BelowResolution）；全量合并 = 空批拒绝不伪造动作",
+    "dag": "PASS——同设备串行链边、Kahn 无环校验（环/自环/越界边拒绝）；链超批上限 fail-closed（ChainExceedsBatch）",
+    "batching": "PASS——只在资产链边界切块；批 id/摘要随批序确定性变化",
+    "reject": "PASS——未知合同指名资产、计划-证书绑定（篡改拒绝）、catalog 代次对照、越合同值域不钳位、窗过短拒绝",
+    "irreversible": "PASS——reversible=0 ⇒ 补偿强制 None + manual_approval 登记；可补偿合同回设已确认基线",
+    "unbound": "PASS——adapter 全零 assignment 由 dispatch 按 profile 完成绑定（[06] §3.3）；严格模式 default=0 拒绝",
+    "legacy-key": "PASS——legacy 单命令形态 correlation=PlanId 字节（Phase 0 幂等记录兼容）；多步=intent_id 派生键跨 tick 重编译恒定",
+    "expired-steps": "PASS——跨 tick 重编译历史步 WindowExpired 跳过留证，永不重投"
+   }
+  },
+  {
+   "id": "T-ENGINE",
+   "class": "run_typed 换装（[10] §2.7 出口 gate）",
+   "rows": {
+    "no-first-power": "PASS——生产无「取计划第一条 power_kw」路径（compile() 全 assignments）",
+    "not-before": "PASS——未来步不当拍投递；第二拍同计划重提交：步 1 幂等命中零投递、步 2 到期投递（typed_chain 多步用例）",
+    "precheck": "PASS——未绑定设备意图装配前整体拒绝（不半执行；多设备执行面待 Saga 装配，登记项）",
+    "single-pcs": "PASS——Phase 0 单 PCS 链全兼容（typed_chain/intent_ingress/dispatch_ingress/journal_crash_matrix/setpoint_ramp/audit_chain 全绿）"
+   }
+  }
+ ],
+ "deviations": [
+  "意图/批时间基准沿用迁移期单调毫秒（[10] §2.2 原文 ns——契约 crate 既有 ms 口径，模块文档登记）",
+  "能力包络时效不在 ResourceRegistry 合同面（绑定权威 = catalog_version 对照）；registry 增补窗口为后续卷入口",
+  "目标侧多设备投递面待 WP-5.2+（本卷超界意图整体拒绝不半执行）"
+ ]
+}
