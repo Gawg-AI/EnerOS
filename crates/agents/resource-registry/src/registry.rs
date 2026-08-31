@@ -520,6 +520,32 @@ mod tests {
         assert_eq!(err.kind, RegistryErrorKind::MissingSnapshotInput);
     }
 
+    /// 安全告警点（过流）缺失 → fail-closed（不得按 0 = 无告警默认——
+    /// 安全输入缺失只能收紧，绝不放宽）。
+    #[test]
+    fn alarm_point_missing_fails_closed() {
+        let repo = cat();
+        let now = 450_000_000_000u64;
+        let slots = repo.feedback_slots().unwrap();
+        let mut snap = snapshot(&repo, 0.6, 0.0, 0.0, 1.0, now);
+        snap.observations
+            .retain(|o| o.event.point_id != slots.overcurrent);
+        let r = registry();
+        let err = r
+            .evaluate(1, now, &repo, &snap, &ResilienceInputs::default())
+            .unwrap_err();
+        assert_eq!(err.kind, RegistryErrorKind::MissingSnapshotInput);
+        // 过温同理。
+        let mut snap2 = snapshot(&repo, 0.6, 0.0, 0.0, 1.0, now);
+        snap2
+            .observations
+            .retain(|o| o.event.point_id != slots.overtemp);
+        let err2 = r
+            .evaluate(1, now, &repo, &snap2, &ResilienceInputs::default())
+            .unwrap_err();
+        assert_eq!(err2.kind, RegistryErrorKind::MissingSnapshotInput);
+    }
+
     #[test]
     fn resilience_inputs_only_tighten() {
         let repo = cat();

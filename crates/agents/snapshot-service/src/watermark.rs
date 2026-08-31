@@ -78,10 +78,13 @@ impl WatermarkTracker {
                     return false;
                 }
                 let w = self.by_source.get_mut(&source_id).unwrap();
-                w.max_event_time_ns = w.max_event_time_ns.max(event_time_ns);
+                // 接受路径已保证同代 seq/event_time 单调；epoch 递增 =
+                // 新代基线重置到本事件（不携带旧代 max——否则重启源在
+                // 新代被旧基线永久拒绝）。
+                w.max_event_time_ns = event_time_ns;
+                w.sequence = sequence;
                 w.max_ingest_time_ns = w.max_ingest_time_ns.max(ingest_time_ns);
                 w.epoch = epoch;
-                w.sequence = sequence.max(w.sequence);
                 true
             }
         }
@@ -143,6 +146,28 @@ mod tests {
         assert_eq!(ws.len(), 1);
         assert_eq!(ws[0].epoch, 2);
         assert_eq!(ws[0].max_event_time_ns, 500);
+    }
+
+    #[test]
+    fn epoch_bump_resets_sequence_and_time_baseline() {
+        let mut t = WatermarkTracker::new(0);
+        // epoch 1：序号与事件时间推高。
+        for i in 1..=5u64 {
+            assert!(t.observe(1, 1000 + i, 2000 + i, 1, i));
+        }
+        // 可信重启（epoch 2）：序号空间归 1、事件时间回落——新代基线，
+        // 不得携带旧代 sequence/max_event_time（否则重启源被永久拒绝）。
+        assert!(t.observe(1, 500, 3000, 2, 1));
+        // 新 epoch 正常推进：旧实现经 max() 跨代携带会拒绝本事件。
+        assert!(t.observe(1, 505, 3010, 2, 2));
+        assert_eq!(t.rejected, 0);
+        let w = t.watermark(1).unwrap();
+        assert_eq!(w.epoch, 2);
+        assert_eq!(w.sequence, 2);
+        assert_eq!(w.max_event_time_ns, 505);
+        // 旧 epoch 事件（重放/回代）仍拒绝。
+        assert!(!t.observe(1, 600, 3020, 1, 6));
+        assert_eq!(t.rejected, 1);
     }
 
     #[test]

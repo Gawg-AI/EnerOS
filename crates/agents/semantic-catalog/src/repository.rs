@@ -846,4 +846,104 @@ mod tests {
         assert_eq!(c1.min, c2.min);
         assert_eq!(c1.readback_point_id, c2.readback_point_id);
     }
+
+    /// 首个匹配子串原位等长替换（解码面负例：闭枚举越界注入）。
+    fn patch_first(payload: &mut [u8], from: &[u8], to: &[u8]) -> bool {
+        debug_assert_eq!(from.len(), to.len());
+        if payload.len() < from.len() {
+            return false;
+        }
+        for i in 0..=payload.len() - from.len() {
+            if &payload[i..i + from.len()] == from {
+                payload[i..i + to.len()].copy_from_slice(to);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 解码面闭枚举复核（与模块文档声明一致——编译代际可能不同，解码
+    /// 面必须自查）：节点 kind / 边 kind / 合同 class / 约束 kind 越界
+    /// → 拒绝装载；约束 id 重复/零 → 拒绝。
+    #[test]
+    fn decode_rejects_out_of_enum_and_dup_constraint_id() {
+        // 节点 kind 闭枚举（1..=10）：der 节点（id=2, kind=5）kind → 77。
+        let mut p = minimal_payload_variant(1, false);
+        assert!(patch_first(
+            &mut p,
+            &[2, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0],
+            &[2, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0],
+        ));
+        assert_eq!(crate::open(&p).unwrap_err().kind, CatalogErrorKind::Decode);
+        // 边 kind 闭枚举（1=switch 2=branch）：唯一边 kind 1 → 9。
+        let mut p = minimal_payload_variant(1, false);
+        assert!(patch_first(
+            &mut p,
+            &[
+                1, 0, 0, 0, 0, 0, 0, 0, // from=1
+                2, 0, 0, 0, 0, 0, 0, 0, // to=2
+                1, 0, // kind=switch
+            ],
+            &[
+                1, 0, 0, 0, 0, 0, 0, 0, //
+                2, 0, 0, 0, 0, 0, 0, 0, //
+                9, 0, // kind=9（未知）
+            ],
+        ));
+        assert_eq!(crate::open(&p).unwrap_err().kind, CatalogErrorKind::Decode);
+        // 合同 class 闭枚举（1=switch 2=setpoint）：class 2 → 7。
+        let mut p = minimal_payload_variant(1, false);
+        assert!(patch_first(
+            &mut p,
+            &[
+                1, 0, 0, 0, // contract_id=1
+                1, 0, 0, 0, 0, 0, 0, 0, // asset=1
+                10, 0, 0, 0, // point=10
+                6, 0, // unit=kW
+                2, 0, // class=setpoint
+            ],
+            &[
+                1, 0, 0, 0, //
+                1, 0, 0, 0, 0, 0, 0, 0, //
+                10, 0, 0, 0, //
+                6, 0, //
+                7, 0, // class=7（未知）
+            ],
+        ));
+        assert_eq!(crate::open(&p).unwrap_err().kind, CatalogErrorKind::Decode);
+        // 约束 kind 闭枚举（1=overcurrent 2=overtemp）：kind 1 → 5。
+        let mut p = minimal_payload_variant(1, false);
+        assert!(patch_first(
+            &mut p,
+            &[
+                1, 0, 0, 0, // constraint_id=1
+                1, 0, 0, 0, 0, 0, 0, 0, // asset=1
+                1, 0, // kind=overcurrent
+                6, 0, 0, 0, // point=6
+            ],
+            &[
+                1, 0, 0, 0, //
+                1, 0, 0, 0, 0, 0, 0, 0, //
+                5, 0, // kind=5（未知）
+                6, 0, 0, 0, //
+            ],
+        ));
+        assert_eq!(crate::open(&p).unwrap_err().kind, CatalogErrorKind::Decode);
+        // 约束 id 重复：constraint 2 → 1（与首条撞 id）。
+        let mut p = minimal_payload_variant(1, false);
+        assert!(patch_first(
+            &mut p,
+            &[
+                2, 0, 0, 0, // constraint_id=2
+                1, 0, 0, 0, 0, 0, 0, 0, // asset=1
+                2, 0, // kind=overtemp
+            ],
+            &[
+                1, 0, 0, 0, // constraint_id=1（重复）
+                1, 0, 0, 0, 0, 0, 0, 0, //
+                2, 0, //
+            ],
+        ));
+        assert_eq!(crate::open(&p).unwrap_err().kind, CatalogErrorKind::Decode);
+    }
 }

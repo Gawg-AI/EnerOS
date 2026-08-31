@@ -17,6 +17,7 @@ pub use eneros_config_bundle::schema::catalog::{
     ROLE_CONTROL, ROLE_MEASUREMENT, ROLE_SWITCH_STATE, SAFETY_KIND_OVERCURRENT,
     SAFETY_KIND_OVERTEMP,
 };
+use eneros_config_bundle::schema::catalog_kinds;
 use eneros_telemetry_model::unit_catalog;
 use eneros_telemetry_model::PhysicalUnit;
 
@@ -182,9 +183,14 @@ pub fn decode_catalog(payload: &[u8]) -> Result<CatalogBundle, CatalogError> {
             if id == 0 || out.nodes.iter().any(|n: &TopologyNode| n.id == id) {
                 return Err(r.bad_value("node-duplicate-or-zero"));
             }
+            let kind = u16::from_le_bytes(rec[8..10].try_into().unwrap());
+            // 节点 kind 闭枚举（[`catalog_kinds::NODE_*`] 1..=NODE_GRID）。
+            if kind == 0 || kind > catalog_kinds::NODE_GRID {
+                return Err(r.bad_value("node-kind-out-of-range"));
+            }
             out.nodes.push(TopologyNode {
                 id,
-                kind: u16::from_le_bytes(rec[8..10].try_into().unwrap()),
+                kind,
                 flags: u16::from_le_bytes(rec[10..12].try_into().unwrap()),
             });
         }
@@ -201,6 +207,11 @@ pub fn decode_catalog(payload: &[u8]) -> Result<CatalogBundle, CatalogError> {
             let from = u64::from_le_bytes(rec[0..8].try_into().unwrap());
             let to = u64::from_le_bytes(rec[8..16].try_into().unwrap());
             let kind = u16::from_le_bytes(rec[16..18].try_into().unwrap());
+            // 边 kind 闭枚举（1=switch 2=branch；未知 kind 不得静默按
+            // branch 导通）。
+            if kind != catalog::EDGE_KIND_SWITCH && kind != catalog::EDGE_KIND_BRANCH {
+                return Err(r.bad_value("edge-kind-out-of-range"));
+            }
             let switch_point_id = u32::from_le_bytes(rec[18..22].try_into().unwrap());
             let capacity_kw = f64::from_le_bytes(rec[22..30].try_into().unwrap());
             let loss = f64::from_le_bytes(rec[30..38].try_into().unwrap());
@@ -410,6 +421,10 @@ pub fn decode_catalog(payload: &[u8]) -> Result<CatalogBundle, CatalogError> {
             {
                 return Err(r.bad_value("contract-duplicate-or-zero"));
             }
+            // class 闭枚举（1=switch 2=setpoint）。
+            if !matches!(class, CONTRACT_CLASS_SWITCH | CONTRACT_CLASS_SETPOINT) {
+                return Err(r.bad_value("contract-class-out-of-range"));
+            }
             if !assets.contains_key(&asset_id) {
                 return Err(r.bad_value("contract-unknown-asset"));
             }
@@ -473,6 +488,18 @@ pub fn decode_catalog(payload: &[u8]) -> Result<CatalogBundle, CatalogError> {
             let kind = u16::from_le_bytes(rec[12..14].try_into().unwrap());
             let point_id = u32::from_le_bytes(rec[14..18].try_into().unwrap());
             let limit = f64::from_le_bytes(rec[18..26].try_into().unwrap());
+            // id 唯一非零（与控制合同同纪律）；kind 闭枚举。
+            if constraint_id == 0
+                || out
+                    .safety
+                    .iter()
+                    .any(|s: &SafetyConstraint| s.constraint_id == constraint_id)
+            {
+                return Err(r.bad_value("constraint-duplicate-or-zero"));
+            }
+            if !matches!(kind, SAFETY_KIND_OVERCURRENT | SAFETY_KIND_OVERTEMP) {
+                return Err(r.bad_value("safety-kind-out-of-range"));
+            }
             if !limit.is_finite() {
                 return Err(r.bad_value("constraint-limit-non-finite"));
             }

@@ -61,17 +61,13 @@ impl StateProjector {
         }
     }
 
-    /// 观察事件（同点同源：更新最近；新源：追加；点容量满 → 拒绝计数）。
+    /// 观察事件（同点同源：更新最近；新源：追加；每点源数满 → 拒绝
+    /// 计数——容量界的是「每点源数」，不是同源更新次数）。
     pub fn observe(&mut self, ev: ObservationEvent) {
         self.seen += 1;
         let entry = self.states.entry(ev.point_id).or_default();
-        if entry.len() >= self.cap.max_events_per_point {
-            self.overflow_rejected += 1;
-            return;
-        }
         // 同源乱序：只保留最大 event_time（同 event_time 取高序列）。
-        let prev = entry.get(&ev.source_id);
-        match prev {
+        match entry.get(&ev.source_id) {
             Some(p)
                 if p.event_time_ns > ev.event_time_ns
                     || (p.event_time_ns == ev.event_time_ns && p.sequence >= ev.sequence) =>
@@ -80,18 +76,12 @@ impl StateProjector {
             }
             _ => {}
         }
-        entry.insert(ev.source_id, ev);
-        // 修剪：同点事件数超上限时按 event_time 保留最近 N。
-        let cap = self.cap.max_events_per_point;
-        while entry.len() > cap {
-            let oldest = entry
-                .iter()
-                .min_by_key(|(_, e)| (e.event_time_ns, e.sequence))
-                .map(|(k, _)| *k);
-            if let Some(k) = oldest {
-                entry.remove(&k);
-            }
+        // 新源追加受每点源数上界约束（同源更新在槽位内原位替换）。
+        if !entry.contains_key(&ev.source_id) && entry.len() >= self.cap.max_events_per_point {
+            self.overflow_rejected += 1;
+            return;
         }
+        entry.insert(ev.source_id, ev);
         if self.states.len() > self.cap.max_points {
             // 超点容量：淘汰最近更新的点（最不活跃者）——FIFO 式容量
             // 守恒，淘汰计数可见。
@@ -165,6 +155,29 @@ mod tests {
         assert_eq!(latest[0].event_time_ns, 200);
         // 第二源介入（冲突素材）。
         p.observe(event(1, 3, 180, 1));
+        let latest: Vec<_> = p.latest_by_source(1).collect();
+        assert_eq!(latest.len(), 2);
+    }
+
+    #[test]
+    fn same_source_update_not_blocked_by_capacity() {
+        let mut p = StateProjector::new(ProjectorCapacity {
+            max_points: 10,
+            max_events_per_point: 2,
+        });
+        p.observe(event(1, 2, 100, 1));
+        p.observe(event(1, 3, 200, 1)); // 两源已满
+                                        // 同源更新（source 2 更新事件）——容量界的是
+                                        // 「每点源数」，不是同源更新次数。
+        p.observe(event(1, 2, 300, 2));
+        let latest: Vec<_> = p.latest_by_source(1).collect();
+        assert_eq!(latest.len(), 2);
+        let s2 = latest.iter().find(|e| e.source_id == 2).unwrap();
+        assert_eq!(s2.event_time_ns, 300);
+        assert_eq!(p.overflow_rejected, 0);
+        // 第三源追加 → 容量满拒绝计数。
+        p.observe(event(1, 4, 400, 1));
+        assert_eq!(p.overflow_rejected, 1);
         let latest: Vec<_> = p.latest_by_source(1).collect();
         assert_eq!(latest.len(), 2);
     }

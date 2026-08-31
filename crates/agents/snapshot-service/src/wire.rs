@@ -4,11 +4,12 @@
 //!
 //! 布局：`magic "SNAP" u32 ‖ wire_version u16 ‖ header_len u16 ‖
 //! snapshot_id 16 ‖ version_set 6×u64 ‖ cut u64 ‖ produced u64 ‖
-//! policy u64 ‖ obs_count u16 ‖ wm_count u16 ‖ conflict_count u16 ‖
-//! derived_count u16 ‖ 每观测 128B（ObservationEvent V1 帧）‖ 每水位
-//! 36B ‖ 每冲突 40B ‖ 每派生 32B ‖ completeness 计数块 ‖
-//! provenance_root 32 ‖ payload_sha256 32`。保留位全零；解码拒绝任何
-//! 未知版本/长度/保留位（fail-closed）。
+//! policy u64 ‖ tenant u32 ‖ site u32 ‖ obs_count u16 ‖ wm_count u16 ‖
+//! conflict_count u16 ‖ derived_count u16 ‖ 每观测 128B（ObservationEvent
+//! V1 帧）‖ 每水位 36B ‖ 每冲突 22B+4B×源 ‖ 每派生 20B ‖ completeness
+//! 计数块 ‖ provenance_root 32 ‖ payload_sha256 32`。保留位全零；解码
+//! 拒绝任何未知版本/长度/保留位（fail-closed）。身份（tenant/site）入
+//! 头——解码不得编造默认身份。
 
 use alloc::vec::Vec;
 
@@ -27,8 +28,8 @@ pub fn encode_snapshot_v1(s: &TrustedSnapshot) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&SNAPSHOT_MAGIC);
     out.extend_from_slice(&SNAPSHOT_WIRE_V1.to_le_bytes());
-    // header（定长 133B：4+2+2 头 + 16 + 48 + 8+8+8 + 4×2）。
-    out.extend_from_slice(&(133u16).to_le_bytes());
+    // header（定长 112B：4+2+2 头 + 16 + 48 + 8+8+8 + 4+4 + 2×4）。
+    out.extend_from_slice(&(112u16).to_le_bytes());
     out.extend_from_slice(&s.snapshot_id);
     let vs = s.version_set;
     for v in [
@@ -44,6 +45,9 @@ pub fn encode_snapshot_v1(s: &TrustedSnapshot) -> Vec<u8> {
     out.extend_from_slice(&s.cut_time_ns.to_le_bytes());
     out.extend_from_slice(&s.produced_at_ns.to_le_bytes());
     out.extend_from_slice(&s.policy_version.to_le_bytes());
+    // 身份字段（tenant/site）——解码侧不得编造。
+    out.extend_from_slice(&s.tenant_id.to_le_bytes());
+    out.extend_from_slice(&s.site_id.to_le_bytes());
     out.extend_from_slice(&(s.observations.len() as u16).to_le_bytes());
     out.extend_from_slice(&(s.source_watermarks.len() as u16).to_le_bytes());
     out.extend_from_slice(&(s.conflicts.len() as u16).to_le_bytes());
@@ -161,7 +165,7 @@ pub fn decode_snapshot_v1(buf: &[u8]) -> Result<TrustedSnapshot, alloc::string::
         return Err(alloc::format!("bad-version:{version}"));
     }
     let header_len = u16::from_le_bytes(take!(2, "header_len").try_into().unwrap());
-    if header_len != 133 {
+    if header_len != 112 {
         return Err(alloc::format!("bad-header-len:{header_len}"));
     }
     let mut snapshot_id = [0u8; 16];
@@ -180,6 +184,8 @@ pub fn decode_snapshot_v1(buf: &[u8]) -> Result<TrustedSnapshot, alloc::string::
     let cut_time_ns = u64::from_le_bytes(take!(8, "cut").try_into().unwrap());
     let produced_at_ns = u64::from_le_bytes(take!(8, "produced").try_into().unwrap());
     let policy_version = u64::from_le_bytes(take!(8, "policy").try_into().unwrap());
+    let tenant_id = u32::from_le_bytes(take!(4, "tenant").try_into().unwrap());
+    let site_id = u32::from_le_bytes(take!(4, "site").try_into().unwrap());
     let obs_count = u16::from_le_bytes(take!(2, "obs_count").try_into().unwrap());
     let wm_count = u16::from_le_bytes(take!(2, "wm_count").try_into().unwrap());
     let conflict_count = u16::from_le_bytes(take!(2, "conflict_count").try_into().unwrap());
@@ -267,8 +273,8 @@ pub fn decode_snapshot_v1(buf: &[u8]) -> Result<TrustedSnapshot, alloc::string::
     }
     Ok(TrustedSnapshot {
         snapshot_id,
-        tenant_id: 1,
-        site_id: 1,
+        tenant_id,
+        site_id,
         cut_time_ns,
         produced_at_ns,
         policy_version,
@@ -355,6 +361,13 @@ mod tests {
         assert_eq!(dec.observations.len(), 7);
         assert_eq!(dec.observations[0].event.point_id, 1);
         assert_eq!(dec.completeness, snap.completeness);
+        // 身份字段往返（不得编造默认租户/站点）。
+        let mut tagged = snap.clone();
+        tagged.tenant_id = 7;
+        tagged.site_id = 9;
+        let dec2 = decode_snapshot_v1(&encode_snapshot_v1(&tagged)).unwrap();
+        assert_eq!(dec2.tenant_id, 7);
+        assert_eq!(dec2.site_id, 9);
         // 篡改：翻转 payload 一字节 → 摘要失败。
         let mut evil = bytes.clone();
         let mid = evil.len() / 2;

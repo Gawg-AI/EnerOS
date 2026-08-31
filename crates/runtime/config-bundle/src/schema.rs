@@ -423,6 +423,8 @@ pub mod catalog {
 
     /// 拓扑边 kind 码。
     pub const EDGE_KIND_SWITCH: u16 = 1;
+    /// 拓扑分支边（无开关状态；始终可导通）。
+    pub const EDGE_KIND_BRANCH: u16 = 2;
     /// 拓扑切换边必须带开关状态观测点（不可观测的开关 = 未知态）。
     pub const EDGE_SWITCH_POINT_REQUIRED: bool = true;
     /// 拓扑节点 kind 码。

@@ -125,9 +125,20 @@ impl CapabilityProvider for BatteryProvider {
             kind: RegistryErrorKind::MissingSnapshotInput,
             detail: "catalog-no-feedback-slots".into(),
         })?;
-        // 电气告警：过流/过温置位 → 不可用（安全告警绝不放宽）。
-        let oc = slice.point_value(slots.overcurrent).unwrap_or(0.0);
-        let ot = slice.point_value(slots.overtemp).unwrap_or(0.0);
+        // 电气告警：过流/过温置位 → 不可用（安全告警绝不放宽）；告警点
+        // 缺失 → fail-closed（安全输入缺失 ≠ 无告警，不得按 0 默认）。
+        let oc = slice
+            .point_value(slots.overcurrent)
+            .ok_or_else(|| RegistryError {
+                kind: RegistryErrorKind::MissingSnapshotInput,
+                detail: alloc::format!("overcurrent-point:{}", slots.overcurrent),
+            })?;
+        let ot = slice
+            .point_value(slots.overtemp)
+            .ok_or_else(|| RegistryError {
+                kind: RegistryErrorKind::MissingSnapshotInput,
+                detail: alloc::format!("overtemp-point:{}", slots.overtemp),
+            })?;
         let mut env = base_env(base, resource, snapshot, at_ns);
         if oc > 0.5 || ot > 0.5 {
             env.availability = Availability::Unavailable;

@@ -941,7 +941,7 @@ pub fn compile_catalog(toml: &str) -> Result<CompiledConfig, ConfigError> {
             "tombstone",
         ],
     )?;
-    // 目录头（48B）。
+    // 目录头（64B = 8 × u64）。
     let generation = get_u64(t, &config, "generation")?;
     if generation == 0 {
         return Err(ConfigError::InvalidValue {
