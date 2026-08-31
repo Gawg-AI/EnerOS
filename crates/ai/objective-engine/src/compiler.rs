@@ -207,9 +207,13 @@ impl ObjectiveCompiler {
                 active.push(rule);
             }
         }
-        // 6. 必备清单（安全底线）。
+        // 6. 必备清单（安全底线）：manifest 成员必须以**硬约束**激活
+        // ——id 存在但被翻成软约束同样击穿安全底线（一位翻转不可绕过）。
         for id in bundle.required_constraints() {
-            if !active.iter().any(|r| &r.constraint_id == id) {
+            let ok = active
+                .iter()
+                .any(|r| &r.constraint_id == id && r.hardness == 0);
+            if !ok {
                 return Err(CompileError::MissingRequiredConstraint(*id));
             }
         }
@@ -237,6 +241,56 @@ impl ObjectiveCompiler {
                 return Err(CompileError::InvalidRule("operator_override_soc"));
             }
             tighten_soc(&mut hard, ov_lo, ov_hi);
+            // 收紧后复检窗口非空：override 与既有约束矛盾时拒绝（产出
+            // MinSoc > MaxSoc 的不可行 spec 违背"冲突零产出"不变量）。
+            let mut lo = None;
+            let mut hi = None;
+            for c in hard.iter() {
+                match c.kind {
+                    ConstraintKind::MinSoc => {
+                        lo = Some(lo.map_or(c.bound, |v: f64| v.max(c.bound)))
+                    }
+                    ConstraintKind::MaxSoc => {
+                        hi = Some(hi.map_or(c.bound, |v: f64| v.min(c.bound)))
+                    }
+                    _ => {}
+                }
+            }
+            if let (Some(l), Some(h)) = (lo, hi) {
+                if l > h {
+                    return Err(CompileError::InvalidRule(
+                        "operator_override_soc inverts soc window",
+                    ));
+                }
+            }
+        }
+        // 跨类一致性（类间矛盾同样零产出）：终值 SOC 点必须落在 [MinSoc,
+        // MaxSoc] 窗内——求交只裁决同类，点类(2)与范围类(1)分组不同，
+        // 不可行组合在此拦截而非流给 solver。
+        {
+            let mut w_lo = None;
+            let mut w_hi = None;
+            let mut final_bound = None;
+            for c in hard.iter() {
+                match c.kind {
+                    ConstraintKind::MinSoc => {
+                        w_lo = Some(w_lo.map_or(c.bound, |v: f64| v.max(c.bound)))
+                    }
+                    ConstraintKind::MaxSoc => {
+                        w_hi = Some(w_hi.map_or(c.bound, |v: f64| v.min(c.bound)))
+                    }
+                    ConstraintKind::SocFinal => final_bound = Some(c.bound),
+                    _ => {}
+                }
+            }
+            if let Some(f) = final_bound {
+                if w_lo.is_some_and(|lo| f < lo) {
+                    return Err(CompileError::InvalidRule("soc_final below soc window"));
+                }
+                if w_hi.is_some_and(|hi| f > hi) {
+                    return Err(CompileError::InvalidRule("soc_final above soc window"));
+                }
+            }
         }
         if hard.is_empty() {
             return Err(CompileError::NoHardConstraints);
@@ -289,6 +343,19 @@ impl ObjectiveCompiler {
                 return Err(CompileError::NonFinite("price"));
             }
         }
+        // 无价格 = 经济项不可用（[09] §2.2）：价格驱动的目标在空价格
+        // 下编译会产出"任意调度皆最优"的退化指令（fail-open）。
+        if raw_prices.is_empty()
+            && matches!(
+                objective_kind,
+                eneros_decision_contract::objective::ObjectiveKind::MaxRevenue
+                    | eneros_decision_contract::objective::ObjectiveKind::MinCost
+            )
+        {
+            return Err(CompileError::InvalidRule(
+                "economic objective requires prices",
+            ));
+        }
         let prices: Vec<f64> = match raw_prices.len() {
             0 => vec![],
             1 => vec![raw_prices[0]; horizon.step_count as usize],
@@ -312,9 +379,18 @@ impl ObjectiveCompiler {
         )
         .map_err(|_| CompileError::InvalidRule("spec"))?;
 
-        // 12. 规格摘要（覆盖合同 spec + 经济输入 + 证据链）。
-        let spec_digest =
-            digest_compiled(&spec, &prices, bundle.digest(), input.registry_generation);
+        // 12. 规格摘要（覆盖合同 spec + 经济输入 + 工艺透传 + 地平线 +
+        // 证据链——CompiledObjective 的全部内容字段）。
+        let spec_digest = digest_compiled(
+            &spec,
+            &prices,
+            bundle.digest(),
+            input.registry_generation,
+            facts.process.min_on_steps,
+            facts.process.min_off_steps,
+            horizon.step_ns,
+            horizon.step_count,
+        );
 
         Ok(CompiledObjective {
             spec,
@@ -619,11 +695,20 @@ fn tighten_soc(hard: &mut [Constraint], lo: f64, hi: f64) {
 }
 
 /// 编译产物摘要（CandidatePlan.objective_digest 的单源）。
+///
+/// 覆盖 CompiledObjective 全部内容字段（含 min on/off 透传与地平线——
+/// 价格为空/常数广播时 spec+prices 不绑定地平线，缺地平线域 = 可替换
+/// 地平线而不改摘要）。
+#[allow(clippy::too_many_arguments)]
 pub fn digest_compiled(
     spec: &ObjectiveSpec,
     prices: &[f64],
     bundle_digest: &[u8; 32],
     registry_generation: u64,
+    min_on_steps: u32,
+    min_off_steps: u32,
+    horizon_step_ns: u64,
+    horizon_step_count: u32,
 ) -> [u8; 32] {
     use eneros_decision_contract::objective::ObjectiveKind;
     use sha2::Digest;
@@ -634,7 +719,7 @@ pub fn digest_compiled(
         ObjectiveKind::SelfConsume => 4,
     };
     let mut h = sha2::Sha256::new();
-    h.update(b"eneros.compiled-objective.v1");
+    h.update(b"eneros.compiled-objective.v2");
     h.update(spec.snapshot_id().0);
     h.update([kind_code(spec.objective())]);
     h.update([spec.priority()]);
@@ -655,6 +740,10 @@ pub fn digest_compiled(
     for p in prices {
         h.update(p.to_le_bytes());
     }
+    h.update(min_on_steps.to_le_bytes());
+    h.update(min_off_steps.to_le_bytes());
+    h.update(horizon_step_ns.to_le_bytes());
+    h.update(horizon_step_count.to_le_bytes());
     h.update(bundle_digest);
     h.update(registry_generation.to_le_bytes());
     h.finalize().into()
@@ -1377,6 +1466,136 @@ mod tests {
             Err(CompileError::InvalidRule(
                 "no contract-mappable objective term"
             ))
+        );
+    }
+
+    /// 红测：manifest 成员被翻转成软约束 → 编译期拦截（id 存在不足，
+    /// 硬度必须为硬——安全底线不可一位翻转降级）。
+    #[test]
+    fn manifest_member_softened_rejected() {
+        // 层 1 MinSoc 保持 id=1，但 hardness=1（软）。
+        let rules = vec![
+            rule(
+                1,
+                K::MinSoc,
+                1,
+                layer::DEVICE_SAFETY,
+                dim(eneros_telemetry_model::PhysicalUnit::Dimensionless),
+                0.1,
+                0.1,
+            ),
+            base_rules()[1].clone(),
+            base_rules()[2].clone(),
+        ];
+        let mut bb = RuleBundle::builder([9; 16], 5)
+            .validity_window(0, u64::MAX)
+            .horizon(HorizonPlan::new(900_000_000_000, 96).unwrap())
+            .site_rating_kw(100.0);
+        for c in rules {
+            bb = bb.add_constraint(c);
+        }
+        let mut b = bb
+            .add_term(econ_term(10, layer::ECONOMIC))
+            .required(&[1])
+            .build()
+            .unwrap();
+        b.seal(1, b"test-key");
+        assert_eq!(
+            compile(&b, &factset(CUT)),
+            Err(CompileError::MissingRequiredConstraint(1)),
+            "manifest 成员翻软必须被拦（不是只查 id 存在）"
+        );
+    }
+
+    /// 红测：空价格 + 经济目标 → 拒绝（无价格 = 经济项不可用）。
+    #[test]
+    fn economic_objective_without_prices_rejected() {
+        let b = signed_bundle(base_rules(), vec![econ_term(10, layer::ECONOMIC)]);
+        let mut f = factset(CUT);
+        f.market.prices_per_kwh = vec![];
+        assert_eq!(
+            compile(&b, &f),
+            Err(CompileError::InvalidRule(
+                "economic objective requires prices"
+            )),
+            "空价格编译出 MaxRevenue = 任意调度皆最优（fail-open）"
+        );
+    }
+
+    /// 红测：override 与既有 SOC 窗矛盾 → 拒绝（不可产出 MinSoc > MaxSoc
+    /// 的不可行 spec）。
+    #[test]
+    fn operator_override_inverting_window_rejected() {
+        let b = signed_bundle(base_rules(), vec![econ_term(10, layer::ECONOMIC)]);
+        let mut f = factset(CUT);
+        // 既有窗 [0.1, 0.9]；override (0.95, 1.0) → MinSoc 收紧 0.95 > 0.9。
+        f.enterprise.operator_override_soc = Some((0.95, 1.0));
+        assert_eq!(
+            compile(&b, &f),
+            Err(CompileError::InvalidRule(
+                "operator_override_soc inverts soc window"
+            ))
+        );
+        // 合法收紧（不倒窗）仍通过。
+        let mut f = factset(CUT);
+        f.enterprise.operator_override_soc = Some((0.2, 0.8));
+        assert!(compile(&b, &f).is_ok());
+    }
+
+    /// 跨类一致性：终值 SOC 点落在窗外 → 拒绝（点类(2) vs 范围类(1)
+    /// 分组不同，求交不覆盖——不可行组合零产出而非流给 solver）。
+    #[test]
+    fn soc_final_outside_window_rejected() {
+        let below = {
+            let mut rules = base_rules();
+            rules.push(rule(
+                9,
+                K::SocFinal,
+                0,
+                layer::COMMITMENT,
+                dim(eneros_telemetry_model::PhysicalUnit::Dimensionless),
+                0.05,
+                0.05,
+            ));
+            signed_bundle(rules, vec![econ_term(10, layer::ECONOMIC)])
+        };
+        assert_eq!(
+            compile(&below, &factset(CUT)),
+            Err(CompileError::InvalidRule("soc_final below soc window")),
+            "SocFinal 0.05 < MinSoc 0.1 必须编译期拦截"
+        );
+        // 窗内（0.5 ∈ [0.1, 0.9]）仍通过。
+        let inside = {
+            let mut rules = base_rules();
+            rules.push(rule(
+                9,
+                K::SocFinal,
+                0,
+                layer::COMMITMENT,
+                dim(eneros_telemetry_model::PhysicalUnit::Dimensionless),
+                0.5,
+                0.5,
+            ));
+            signed_bundle(rules, vec![econ_term(10, layer::ECONOMIC)])
+        };
+        assert!(compile(&inside, &factset(CUT)).is_ok());
+        // 窗上方同理。
+        let above = {
+            let mut rules = base_rules();
+            rules.push(rule(
+                9,
+                K::SocFinal,
+                0,
+                layer::COMMITMENT,
+                dim(eneros_telemetry_model::PhysicalUnit::Dimensionless),
+                0.95,
+                0.95,
+            ));
+            signed_bundle(rules, vec![econ_term(10, layer::ECONOMIC)])
+        };
+        assert_eq!(
+            compile(&above, &factset(CUT)),
+            Err(CompileError::InvalidRule("soc_final above soc window"))
         );
     }
 }

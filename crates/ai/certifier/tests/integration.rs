@@ -631,7 +631,7 @@ fn gateway_verify_and_key_lifecycle() {
     bad_env.key_id = 42;
     assert!(CertifierModule::verify(&out.certificate, &wire, &bad_env, &ring, 2_000).is_err());
     // 轮换：新 key 签发可验；旧 key（前代）签发仍可验（N-1 窗口）。
-    ring.rotate(2, b"station-cert-key-v2");
+    ring.rotate(2, b"station-cert-key-v2").unwrap();
     let out2 = certify_with(valid_assignments(), &ring).unwrap();
     assert_eq!(out2.key_envelope.key_id, 2);
     assert!(
@@ -656,6 +656,122 @@ fn gateway_verify_and_key_lifecycle() {
         10_000_000
     )
     .is_err());
+}
+
+// ---------------------------------------------------------------------------
+// 复查修复回归：日内 SOC 最坏值 + 证书字段 MAC 覆盖 + 输入 refs 绑定
+// ---------------------------------------------------------------------------
+
+/// 日内越界但末态回窗：旧实现只查末态 → 漏认证；修复后按轨迹最坏值拒。
+#[test]
+fn intraday_soc_excursion_rejected_even_if_final_in_window() {
+    // t0 放 4.5：5 → 0.5（跌破窗下限 1）；t1 充 4：0.5 → 4.5（末态合规）。
+    let a = vec![
+        asg(1, 1, 4.5),
+        asg(1, 2, -4.0),
+        asg(10, 1, 4.5),
+        asg(10, 2, -4.0),
+    ];
+    match certify(a) {
+        Err(CertifierError::Violated {
+            constraint_kind,
+            asset_id,
+            ..
+        }) => {
+            assert_eq!(constraint_kind, ConstraintKind::MinSoc.code());
+            assert_eq!(asset_id, 1);
+        }
+        other => panic!("日内越界必须被拒，got {other:?}"),
+    }
+    // 反向：t0 充 4.5：5 → 9.5（超上限 9）；t1 放 4：9.5 → 5.5（末态合规）。
+    let a = vec![
+        asg(1, 1, -4.5),
+        asg(1, 2, 4.0),
+        asg(10, 1, -4.5),
+        asg(10, 2, 4.0),
+    ];
+    match certify(a) {
+        Err(CertifierError::Violated {
+            constraint_kind, ..
+        }) => {
+            assert_eq!(constraint_kind, ConstraintKind::MaxSoc.code());
+        }
+        other => panic!("日内越上限必须被拒，got {other:?}"),
+    }
+    // MinSoc 证据 lhs = 轨迹最坏值（0.5），非末态（4.5）。
+    let out = certify(valid_assignments()).unwrap();
+    let soc_min = out
+        .records
+        .iter()
+        .find(|r| r.kind == ConstraintKind::MinSoc.code() && r.asset_id == 1)
+        .unwrap();
+    assert!((soc_min.lhs - 1.0).abs() < 1e-12, "最坏值 {}", soc_min.lhs);
+}
+
+/// 证书自身字段（有效期）篡改：MAC 覆盖证书 wire → 验证必拒。
+#[test]
+fn certificate_field_tampering_rejected_by_mac() {
+    let ring = CertifierKeyRing::new(1, b"station-cert-key");
+    let out = certify(valid_assignments()).expect("certify");
+    let wire = plan(valid_assignments()).encode_v1();
+    assert!(ring.active().is_some());
+    // 合法证书 + 合法 wire：通过。
+    assert!(
+        CertifierModule::verify(&out.certificate, &wire, &out.key_envelope, &ring, 2_000).is_ok()
+    );
+    // 篡改证书有效期字段（wire 内 valid_until_ms 域）后 decode：字段
+    // 合法性校验仍通过，但 MAC 失配 → 拒绝（延长有效期不可绕过）。
+    let mut cert_wire = out.certificate.encode_v1();
+    // 布局：4 magic + 2 ver + 2 flags + 32 ids + 32 plan_sha + 16 snap
+    // + 4 certifier_version + 8 catalog + 4 tolerance + 8 certified_at
+    // → valid_until_ms 起点 = 4+2+2+32+32+16+4+8+4+8 = 112。
+    cert_wire[112..120].copy_from_slice(&u64::MAX.to_le_bytes());
+    let extended = eneros_decision_contract::CertifiedPlan::decode_v1(&cert_wire)
+        .expect("篡改有效期后的 wire 仍通过字段校验（正是 MAC 要防的）");
+    assert_eq!(extended.valid_until_ms(), u64::MAX);
+    assert!(
+        CertifierModule::verify(&extended, &wire, &out.key_envelope, &ring, 2_000).is_err(),
+        "MAC 未覆盖证书字段时此断言失败（永续漏洞）"
+    );
+}
+
+/// 输入目录版本与计划目录版本分叉 → 拒绝（证据引用一致性）。
+#[test]
+fn catalog_version_divergence_rejected() {
+    let snap = snapshot();
+    let sp = base_spec();
+    let envelopes = vec![(1, env_battery()), (10, env_grid())];
+    let batteries = vec![battery()];
+    let mut context = ctx(&snap, &sp, &envelopes, &batteries);
+    context.constraint_catalog_version = 99; // plan 声称 v1
+    let p = plan(valid_assignments());
+    let ring = CertifierKeyRing::new(1, b"station-cert-key");
+    match CertifierModule::certify(&context, &p, 2_000, &ring) {
+        Err(CertifierError::PlanMismatch("catalog_version")) => {}
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Violated 错误携带全部已产生证据（诊断重放面——记录不再随 Err 丢弃）。
+#[test]
+fn violated_error_carries_records() {
+    let mut a = valid_assignments();
+    a[1].power_kw = 6.5; // 电池 pmax 5：step2 MaxPowerKw 违约（非首条记录）
+    match certify(a) {
+        Err(CertifierError::Violated {
+            record_index,
+            records,
+            ..
+        }) => {
+            assert!(record_index < records.len(), "序号越界");
+            assert!(!records[record_index].pass, "指向的记录必为 fail");
+            assert!(
+                records.iter().take(record_index).all(|r| r.pass),
+                "违约前的记录已随错误保留"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -713,6 +829,10 @@ fn shadow_certify_highs_golden_plan() {
             &c.prices_per_kwh,
             &c.bundle_digest,
             c.registry_generation,
+            c.min_on_steps,
+            c.min_off_steps,
+            c.horizon_step_ns,
+            c.horizon_step_count,
         );
         eneros_objective_engine::CompiledObjective {
             spec_digest: d,
@@ -856,18 +976,25 @@ fn seal_issuance_feature_rg_gate() {
         "本 crate 必须显式启用 certifier feature（seal 发放面）"
     );
     // 全仓唯一性：其他 crate 不得启用（transition 面为 dispatch 过渡窗，
-    // ADR-051 登记）。
-    for (path, ok) in [
-        ("crates/ai/planner/Cargo.toml", false),
-        ("crates/ai/objective-engine/Cargo.toml", false),
-        ("crates/protocols/control-dispatch/Cargo.toml", false),
+    // ADR-051 登记）。路径自 CARGO_MANIFEST_DIR 锚定工作区根；读不到
+    // 即失败（unwrap_or_default 会把"读不到"变"恒通过"——假阳性门）。
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("workspace root")
+        .to_path_buf();
+    for rel in [
+        "crates/ai/planner/Cargo.toml",
+        "crates/ai/objective-engine/Cargo.toml",
+        "crates/protocols/control-dispatch/Cargo.toml",
     ] {
-        let src = std::fs::read_to_string(path).unwrap_or_default();
+        let path = workspace.join(rel);
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("rg 门必须读到 {path:?}: {e}"));
         assert!(
             !src.contains("features = [\"certifier\"]"),
-            "{path} 不得启用 certifier feature（发放面唯一性）"
+            "{rel} 不得启用 certifier feature（发放面唯一性）"
         );
-        let _ = ok;
     }
     // seal 构造器不在无 feature 面（编译期事实由 decision-contract
     // compile-fail 锁定；此处锁文档面：issue() 只在 certifier feature）。

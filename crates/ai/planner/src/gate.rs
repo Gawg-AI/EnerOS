@@ -98,8 +98,13 @@ impl SolveGate {
         }
         // 5. gap gate（Suboptimal 需 backend 报告 gap；**未报告 = 无限大**
         // ——fail-closed，不当作 0 精确语义。Optimal 的最优性由 solver
-        // 状态自证，gap 恒 0）。
-        let gap = result.mip_gap.unwrap_or(f64::INFINITY);
+        // 状态自证，gap 恒 0——不透传 backend 原始值：LP 模型的 info
+        // mip_gap = kHighInf(1e30) 哨兵，透传即伪证据）。
+        let gap = match (status, result.mip_gap) {
+            (eneros_decision_contract::SolveStatusKind::Optimal, _) => 0.0,
+            (eneros_decision_contract::SolveStatusKind::Suboptimal, Some(g)) => g,
+            (eneros_decision_contract::SolveStatusKind::Suboptimal, None) => f64::INFINITY,
+        };
         if status == eneros_decision_contract::SolveStatusKind::Suboptimal
             && gap > self.profile.max_relative_gap
         {
@@ -156,10 +161,15 @@ pub fn primal_residual(problem: &eneros_solver_core::problem::LpProblem, x: &[f6
 }
 
 /// 模型规模基准（残差缩放用：max(|rhs|, |bound|, 1)）。
+///
+/// **|v| ≥ 1e30 视为无穷排除**：builder 以 ±f64::MAX/4 之类的巨大有限
+/// 值标记"无约束侧"（HiGHS kHighsInf=1e30 同惯例）——收进 scale 会把
+/// 残差阈值放大到 ~1e300，gate 永不可拒。
 pub fn model_scale(problem: &eneros_solver_core::problem::LpProblem) -> f64 {
+    const INF_SENTINEL: f64 = 1e30;
     let mut scale = 1.0f64;
     for v in problem.rhs_upper.iter().chain(problem.rhs_lower.iter()) {
-        if v.is_finite() {
+        if v.is_finite() && v.abs() < INF_SENTINEL {
             scale = scale.max(v.abs());
         }
     }
@@ -168,7 +178,7 @@ pub fn model_scale(problem: &eneros_solver_core::problem::LpProblem) -> f64 {
         .iter()
         .chain(problem.lower_bounds.iter())
     {
-        if v.is_finite() {
+        if v.is_finite() && v.abs() < INF_SENTINEL {
             scale = scale.max(v.abs());
         }
     }
@@ -202,6 +212,38 @@ mod tests {
         assert!((primal_residual(&problem, &[3.0, 3.0]) - 2.0).abs() < 1e-12);
         // 列违约：x = −1 → 1。
         assert!((primal_residual(&problem, &[-1.0, 0.0]) - 1.0).abs() < 1e-12);
-        assert!(model_scale(&problem) >= 10.0);
+        // 哨兵 rhs 不进 scale（否则阈值 ~1e300，gate 永不可拒）。
+        assert!((model_scale(&problem) - 10.0).abs() < 1e-12);
+    }
+
+    /// 残差 gate 实效性：违约解必须被拒（阈值不被哨兵值击穿）。
+    #[test]
+    fn gate_rejects_violated_solution() {
+        let problem = LpProblem {
+            variables: vec![String::from("x"), String::from("y")],
+            lower_bounds: vec![0.0, 0.0],
+            upper_bounds: vec![10.0, 10.0],
+            var_types: vec![VarType::Continuous, VarType::Continuous],
+            objective: vec![1.0, 1.1],
+            sense: ObjectiveSense::Minimize,
+            constraints: ConstraintMatrix::new(1, 2, vec![0, 2], vec![0, 1], vec![1.0, 1.0]),
+            rhs_lower: vec![f64::MIN / 4.0],
+            rhs_upper: vec![4.0],
+        };
+        let built = crate::builder::built_model_for_test(problem);
+        let result = SolveResult {
+            status: SolveStatus::Optimal,
+            objective_value: 0.0,
+            solution: vec![3.0, 3.0], // 行违约 2 ≫ 阈值
+            elapsed_ms: 0,
+            dual_solution: None,
+            mip_gap: Some(0.0),
+        };
+        let gate = SolveGate::new(crate::tolerance::ToleranceProfile::l3());
+        let r = gate.evaluate(&result, &built, 0, 1_000);
+        assert!(
+            matches!(r, Err(PlanError::ResidualExceeded { primal, .. }) if primal > 1.0),
+            "违约解必须被残差 gate 拒绝，got {r:?}"
+        );
     }
 }

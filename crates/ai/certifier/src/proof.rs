@@ -12,6 +12,8 @@ use alloc::vec::Vec;
 
 use sha2::Digest;
 
+use crate::CertifierError;
+
 /// 判定方向（保守方向：Ge = lhs ≥ rhs − tol；Le = lhs ≤ rhs + tol）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cmp {
@@ -78,6 +80,10 @@ pub fn digest_records(
         h.update(r.lhs.to_le_bytes());
         h.update(r.rhs.to_le_bytes());
         h.update([r.cmp.code()]);
+        // 输入 refs（[09] §4.3）：快照/目录版本随内容绑定——换快照或
+        // 目录重评不产生相同证据摘要。
+        h.update(r.snapshot_id);
+        h.update(r.catalog_version.to_le_bytes());
         h.update(r.unit_code.to_le_bytes());
         h.update(r.tolerance.to_le_bytes());
         h.update([r.pass as u8]);
@@ -92,7 +98,8 @@ pub struct CertificateEnvelope {
     pub key_id: u16,
     /// key 版本（同 id 换key须递增；版本不符拒绝）。
     pub key_version: u32,
-    /// HMAC-SHA256(key, plan_sha ‖ proof_digest)。
+    /// HMAC-SHA256(key, cert_wire ‖ plan_sha ‖ proof_digest)——覆盖证书
+    /// 自身全部字段（有效期/计数/引用不可离 MAC 篡改）。
     pub mac: [u8; 32],
 }
 
@@ -116,12 +123,27 @@ impl CertifierKeyRing {
     }
 
     /// 轮换：新 id 的 key 接管；旧活跃 key 降前代（版本 +1 语义为同 id
-    /// 换代；新 id 从版本 1 起）。
-    pub fn rotate(&mut self, new_key_id: u16, key: &[u8]) {
+    /// 换代；新 id 从版本 1 起）。**同 id 复用（含历史前代）拒绝**——
+    /// 否则 (id, version) 二义，旧代证书不可验且审计无法区分代际。
+    pub fn rotate(&mut self, new_key_id: u16, key: &[u8]) -> Result<(), CertifierError> {
+        if key.is_empty() {
+            return Err(CertifierError::InvalidInput("empty key"));
+        }
+        let dup = self
+            .active
+            .as_ref()
+            .map(|(id, _, _)| *id)
+            .filter(|id| *id == new_key_id)
+            .is_some()
+            || self.predecessors.iter().any(|(id, _, _)| *id == new_key_id);
+        if dup {
+            return Err(CertifierError::InvalidInput("key id already used"));
+        }
         if let Some((old_id, old_ver, old_key)) = self.active.take() {
             self.predecessors.push((old_id, old_ver, old_key));
         }
         self.active = Some((new_key_id, 1, Vec::from(key)));
+        Ok(())
     }
 
     /// 立即撤销（回滚）：验证面即刻失效。
@@ -155,9 +177,12 @@ impl CertifierKeyRing {
     }
 }
 
-/// mac 输入规范（签发/验证单源）。
-pub fn mac_input(plan_sha: &[u8; 32], proof_digest: &[u8; 32]) -> Vec<u8> {
-    let mut input = Vec::with_capacity(64);
+/// mac 输入规范（签发/验证单源）：证书规范 wire（覆盖全部自有字段）
+/// ‖ plan_sha ‖ proof_digest，域分隔前缀防跨上下文重放。
+pub fn mac_input(cert_wire: &[u8], plan_sha: &[u8; 32], proof_digest: &[u8; 32]) -> Vec<u8> {
+    let mut input = Vec::with_capacity(cert_wire.len() + 64 + 16);
+    input.extend_from_slice(b"eneros.cert-mac.v2");
+    input.extend_from_slice(cert_wire);
     input.extend_from_slice(plan_sha);
     input.extend_from_slice(proof_digest);
     input
@@ -191,6 +216,17 @@ mod tests {
         assert_ne!(a, c, "评估值变化 → 证据摘要变化");
         let d = digest_records(&[r(1.0)], &plan_sha, 2);
         assert_ne!(a, d, "版本变化 → 证据摘要变化");
+        // 输入 refs 绑定：snapshot/catalog 变化必变（[09] §4.3）。
+        let mut s = r(1.0);
+        s.snapshot_id = [2; 16];
+        assert_ne!(a, digest_records(&[s], &plan_sha, 1), "快照变化 → 摘要变化");
+        let mut v = r(1.0);
+        v.catalog_version = 99;
+        assert_ne!(
+            a,
+            digest_records(&[v], &plan_sha, 1),
+            "目录版本变化 → 摘要变化"
+        );
     }
 
     #[test]
@@ -198,14 +234,21 @@ mod tests {
         let mut ring = CertifierKeyRing::new(1, b"key-one");
         assert!(ring.key(1).is_some());
         // 轮换：旧 key 仍可验（前代）。
-        ring.rotate(2, b"key-two");
+        ring.rotate(2, b"key-two").unwrap();
         assert!(ring.key(1).is_some());
         assert_eq!(ring.active().map(|(id, _, _)| id), Some(2));
+        // 同 id 复用拒绝（active 或历史前代均已占用 id 1/2）。
+        assert!(ring.rotate(1, b"key-one-again").is_err());
+        assert!(ring.rotate(2, b"key-two-again").is_err());
+        // 空 key 拒绝。
+        assert!(ring.rotate(3, b"").is_err());
         // 撤销旧 key：验证面即刻失效。
         assert!(ring.retire(1));
         assert!(ring.key(1).is_none());
         // 撤销活跃：回滚——无活跃 key。
         assert!(ring.retire(2));
         assert!(ring.active().is_none());
+        // retire 后 id 释放可复用（版本从 1 重起——回滚语义即重置）。
+        assert!(ring.rotate(1, b"key-one-new").is_ok());
     }
 }

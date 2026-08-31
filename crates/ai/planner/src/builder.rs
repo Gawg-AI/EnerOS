@@ -271,23 +271,16 @@ impl ModelContributor for BatteryContributor {
             eff(b.eta_c)?;
             eff(b.eta_d)?;
             let env = input.envelope(b.asset_id)?;
+            // 充电能力受包络**下界**约束（净功率窗 [p_min, p_max]：充
+            // 电 c 使净 = d − c ≥ p_min ⇒ c ≤ −p_min）；放电受上界。
+            // 对称包络下两者相等；不对称时误用 p_max 会穿透 p_min。
+            let dcap = env.p_max_kw.max(0.0);
+            let ccap = (-env.p_min_kw).max(0.0);
             let (emin, emax) = energy_window(env, cap);
             let mut m = ResourceVarMap::default();
             for t in 0..t_count {
-                ctx.declare(
-                    b.asset_id,
-                    VariableKind::Charge,
-                    t as u32,
-                    0.0,
-                    env.p_max_kw.max(0.0),
-                );
-                ctx.declare(
-                    b.asset_id,
-                    VariableKind::Discharge,
-                    t as u32,
-                    0.0,
-                    env.p_max_kw.max(0.0),
-                );
+                ctx.declare(b.asset_id, VariableKind::Charge, t as u32, 0.0, ccap);
+                ctx.declare(b.asset_id, VariableKind::Discharge, t as u32, 0.0, dcap);
                 ctx.declare(b.asset_id, VariableKind::Direction, t as u32, 0.0, 1.0);
                 ctx.declare(b.asset_id, VariableKind::Soc, t as u32, emin, emax);
                 m.insert(VariableKind::Charge, t as u32, b.asset_id);
@@ -324,14 +317,15 @@ impl ModelContributor for BatteryContributor {
             let emin = e0.max(spec.0);
             let emax = e1.min(spec.1);
             let pmax = env.p_max_kw.max(0.0);
+            let ccap = (-env.p_min_kw).max(0.0);
             for t in 0..t_count {
                 let c = m.require(VariableKind::Charge, t as u32)?;
                 let d = m.require(VariableKind::Discharge, t as u32)?;
                 let y = m.require(VariableKind::Direction, t as u32)?;
-                // 互斥：c − P·y ≤ 0；d + P·y ≤ P。
+                // 互斥：c − C·y ≤ 0；d + D·y ≤ D（C/D 各取本方向能力）。
                 ctx.rows.push(row(
                     format!("bat{}_mutex_c_{}", b.asset_id, t),
-                    [(c, 1.0), (y, -pmax)],
+                    [(c, 1.0), (y, -ccap)],
                     RowKind::Le,
                     0.0,
                 ));
@@ -373,7 +367,8 @@ impl ModelContributor for BatteryContributor {
                 kind: RowKind::Eq,
                 rhs: b.initial_kwh,
             });
-            // 包络 ramp → 充/放变化率（净功率双向行）。
+            // 包络 ramp → 充/放变化率（净功率双向行）。ramp=0 语义为
+            // 冻结（与 certifier 判定一致），非"无约束"。
             let ramp_up = env.ramp_up_kw_s * dt_s;
             let ramp_down = env.ramp_down_kw_s * dt_s;
             for t in 1..t_count {
@@ -385,7 +380,7 @@ impl ModelContributor for BatteryContributor {
                     m.require(VariableKind::Charge, t as u32)?,
                     m.require(VariableKind::Discharge, t as u32)?,
                 );
-                if ramp_up.is_finite() && ramp_up > 0.0 {
+                if ramp_up.is_finite() {
                     ctx.rows.push(row(
                         format!("bat{}_ramp_up_{}", b.asset_id, t),
                         [(d1, 1.0), (c1, -1.0), (d0, -1.0), (c0, 1.0)],
@@ -393,7 +388,7 @@ impl ModelContributor for BatteryContributor {
                         ramp_up,
                     ));
                 }
-                if ramp_down.is_finite() && ramp_down > 0.0 {
+                if ramp_down.is_finite() {
                     ctx.rows.push(row(
                         format!("bat{}_ramp_down_{}", b.asset_id, t),
                         [(d0, 1.0), (c0, -1.0), (d1, -1.0), (c1, 1.0)],
@@ -458,6 +453,34 @@ impl ModelContributor for RenewableContributor {
                 ctx.balance[t].add(curt, -1.0);
                 ctx.balance[t].constant += r.available_kw[t];
             }
+            // 包络 ramp → 净出力（avail − curt）步间变化率行。可用出力
+            // 跌落快于 ramp 时由 curtailment 提前压出力满足（净出力与
+            // certifier 第 3 节同语义判定）。
+            let env = input.envelope(r.asset_id)?;
+            let dt_s = input.step_seconds()?;
+            let (up, down) = (env.ramp_up_kw_s * dt_s, env.ramp_down_kw_s * dt_s);
+            for t in 1..t_count {
+                let c1 = m.require(VariableKind::Curtailment, t as u32)?;
+                let c0 = m.require(VariableKind::Curtailment, (t - 1) as u32)?;
+                if up.is_finite() {
+                    // net_t − net_{t−1} ≤ up ⇔ curt_{t−1} − curt_t ≤ up − avail_t + avail_{t−1}。
+                    ctx.rows.push(row(
+                        format!("ren{}_ramp_up_{}", r.asset_id, t),
+                        [(c0, 1.0), (c1, -1.0)],
+                        RowKind::Le,
+                        up - r.available_kw[t] + r.available_kw[t - 1],
+                    ));
+                }
+                if down.is_finite() {
+                    // net_{t−1} − net_t ≤ down ⇔ curt_t − curt_{t−1} ≤ down + avail_t − avail_{t−1}。
+                    ctx.rows.push(row(
+                        format!("ren{}_ramp_down_{}", r.asset_id, t),
+                        [(c1, 1.0), (c0, -1.0)],
+                        RowKind::Le,
+                        down + r.available_kw[t] - r.available_kw[t - 1],
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -509,6 +532,49 @@ impl ModelContributor for LoadContributor {
                 ctx.balance[t].constant -= l.baseline_kw[t];
                 if let Some(shed) = m.get(VariableKind::Shed, t as u32) {
                     ctx.balance[t].add(shed, 1.0);
+                }
+            }
+            // 包络 ramp → 净负荷（shed − baseline）步间变化率行；无
+            // Shed 列（固定负荷）时基线跳变超 ramp = 任何计划都不可
+            // 认证——建模期拒绝而非产出必废 plan。
+            let env = input.envelope(l.asset_id)?;
+            let dt_s = input.step_seconds()?;
+            let (up, down) = (env.ramp_up_kw_s * dt_s, env.ramp_down_kw_s * dt_s);
+            for t in 1..t_count {
+                let d = l.baseline_kw[t] - l.baseline_kw[t - 1];
+                match (
+                    m.get(VariableKind::Shed, t as u32),
+                    m.get(VariableKind::Shed, (t - 1) as u32),
+                ) {
+                    (Some(s1), Some(s0)) => {
+                        if up.is_finite() {
+                            // net_t − net_{t−1} ≤ up ⇔ shed_t − shed_{t−1} ≤ up + base_t − base_{t−1}。
+                            ctx.rows.push(row(
+                                format!("load{}_ramp_up_{}", l.asset_id, t),
+                                [(s1, 1.0), (s0, -1.0)],
+                                RowKind::Le,
+                                up + d,
+                            ));
+                        }
+                        if down.is_finite() {
+                            // net_{t−1} − net_t ≤ down ⇔ shed_{t−1} − shed_t ≤ down − (base_t − base_{t−1})。
+                            ctx.rows.push(row(
+                                format!("load{}_ramp_down_{}", l.asset_id, t),
+                                [(s0, 1.0), (s1, -1.0)],
+                                RowKind::Le,
+                                down - d,
+                            ));
+                        }
+                    }
+                    // 固定负荷：净变化 = −d；上行要求 −d ≤ up，下行要求
+                    // d ≤ down——超限 = 任何计划都不可认证，建模期拒绝
+                    // 而非产出必废 plan。
+                    _ if (up.is_finite() && -d > up) || (down.is_finite() && d > down) => {
+                        return Err(ModelError::InvalidInput(
+                            "load baseline violates envelope ramp",
+                        ));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -564,15 +630,35 @@ impl ModelContributor for GridContributor {
         maps: &[(u64, ResourceVarMap)],
         input: &PlanInput,
     ) -> Result<(), ModelError> {
-        let Some(g) = &input.grid else { return Ok(()) };
+        let Some(g) = &input.grid else {
+            // 站级功率窗/ramp 的落点即 PCC：无并网点无法落地这些规格
+            // 硬约束——拒绝（静默跳过 = 产出未受约束的"合规"计划）。
+            let site_power = input.objective.spec.hard().iter().any(|c| {
+                matches!(
+                    c.kind,
+                    ConstraintKind::MinPowerKw
+                        | ConstraintKind::MaxPowerKw
+                        | ConstraintKind::RampUpKwS
+                        | ConstraintKind::RampDownKwS
+                )
+            });
+            if site_power {
+                return Err(ModelError::InapplicableConstraint {
+                    kind: ConstraintKind::MaxPowerKw.code(),
+                    detail: "site power/ramp constraint without grid",
+                });
+            }
+            return Ok(());
+        };
         let t_count = ctx.step_count;
         let env = input.envelope(g.asset_id)?;
         let m = map_of(maps, g.asset_id)?;
-        // 规格站级功率界 → 收紧 PCC 界。
+        // 规格站级功率界 → 收紧 PCC 界。购/售上限各取"包络 ∩ 规格"的
+        // 更严者（min 方向）：规格 MinPowerKw=lo ⇒ 售 ≤ −max(p_min, lo)。
         let (spec_lo, spec_hi) = spec_power_window(&input.objective.spec);
         let import_cap = spec_hi.map_or(env.p_max_kw.max(0.0), |hi| env.p_max_kw.min(hi).max(0.0));
         let export_cap = spec_lo.map_or((-env.p_min_kw).max(0.0), |lo| {
-            (-env.p_min_kw.min(lo)).max(0.0)
+            (-(env.p_min_kw.max(lo))).max(0.0)
         });
         for t in 0..t_count {
             let buy = m.require(VariableKind::Buy, t as u32)?;
@@ -592,6 +678,36 @@ impl ModelContributor for GridContributor {
             ));
             ctx.balance[t].add(buy, 1.0);
             ctx.balance[t].add(sell, -1.0);
+        }
+        // 规格站级 ramp → PCC 净功率步间变化率行（与 certifier 站级
+        // ramp 评估同语义；ramp=0 = 冻结）。
+        let dt_s = input.step_seconds()?;
+        for c in input.objective.spec.hard() {
+            let (bound, sign) = match c.kind {
+                ConstraintKind::RampUpKwS => (c.bound * dt_s, 1.0),
+                ConstraintKind::RampDownKwS => (c.bound * dt_s, -1.0),
+                _ => continue,
+            };
+            for t in 1..t_count {
+                let (b1, s1) = (
+                    m.require(VariableKind::Buy, t as u32)?,
+                    m.require(VariableKind::Sell, t as u32)?,
+                );
+                let (b0, s0) = (
+                    m.require(VariableKind::Buy, (t - 1) as u32)?,
+                    m.require(VariableKind::Sell, (t - 1) as u32)?,
+                );
+                ctx.rows.push(row(
+                    format!(
+                        "spec_site_ramp_{}_{}",
+                        if sign > 0.0 { "up" } else { "down" },
+                        t
+                    ),
+                    [(b1, sign), (s1, -sign), (b0, -sign), (s0, sign)],
+                    RowKind::Le,
+                    bound,
+                ));
+            }
         }
         Ok(())
     }
@@ -657,7 +773,8 @@ impl ModelContributor for DispatchContributor {
                             env.ramp_down_kw_s * dt,
                         ),
                     ] {
-                        if limit.is_finite() && limit > 0.0 {
+                        // ramp=0 = 冻结（与 certifier 判定一致），非"无约束"。
+                        if limit.is_finite() {
                             ctx.rows
                                 .push(row(name, [(p, sign), (pp, -sign)], RowKind::Le, limit));
                         }
@@ -681,6 +798,18 @@ pub struct BuiltModel {
     /// 行名（与 CSR 行序对齐；不可行诊断用，[09] §3.7 步骤 7）。
     pub row_names: Vec<String>,
     projections: Vec<ProjectionSpec>,
+}
+
+/// gate 测试专用（projections 私有；仅 crate 内测试构造空投影面）。
+#[cfg(test)]
+pub(crate) fn built_model_for_test(problem: LpProblem) -> BuiltModel {
+    BuiltModel {
+        problem,
+        catalog: VariableCatalog::new(vec![]),
+        model_digest: [0; 32],
+        row_names: vec![],
+        projections: Vec::new(),
+    }
 }
 
 /// 解投影（BuiltModel → 每资源净功率；缺列/非有限 → MalformedSolution）。
@@ -1157,7 +1286,15 @@ fn apply_spec_constraints(
                 }
                 let env = input.envelope(g.asset_id)?;
                 let cap = env.p_max_kw.max(0.0);
-                let allowed = (cap - c.bound).max(0.0);
+                // 备用超过包络上限 = 规格不可行：拒绝而非钳零（certifier
+                // 对负 allowed 一律判违约，此处产出必废 plan）。
+                if c.bound > cap {
+                    return Err(ModelError::InapplicableConstraint {
+                        kind: c.kind.code(),
+                        detail: "reserve exceeds envelope cap",
+                    });
+                }
+                let allowed = cap - c.bound;
                 let peak = (g.asset_id, VariableKind::Peak.code(), 0u32);
                 ctx.rows.push(row(
                     String::from("reserve_limit"),
@@ -1166,14 +1303,10 @@ fn apply_spec_constraints(
                     allowed,
                 ));
             }
-            // Min/MaxSoc（电池窗）与 Min/MaxPowerKw（PCC 收紧）、
-            // RampUp/Down（资源 ramp 收紧）已在 contributors 内折入。
-            ConstraintKind::MinSoc
-            | ConstraintKind::MaxSoc
-            | ConstraintKind::MaxPowerKw
-            | ConstraintKind::MinPowerKw
-            | ConstraintKind::RampUpKwS
-            | ConstraintKind::RampDownKwS => {}
+            // MinSoc/MaxSoc（电池窗）经 spec_soc_window 在 BatteryContributor
+            // 折入；Min/MaxPowerKw 与站级 Ramp 经 spec_power_window/站级
+            // ramp 行在 GridContributor 折入——此处不再重复落地。
+            _ => {}
         }
     }
     Ok(())

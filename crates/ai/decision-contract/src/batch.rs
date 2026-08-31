@@ -154,14 +154,22 @@ impl CommandBatch {
 mod tests {
     #![allow(clippy::disallowed_macros)]
 
+    #[cfg(feature = "transition-certifier")]
     use super::*;
     #[cfg(feature = "transition-certifier")]
     use crate::certificate::CertifierSeal;
+    #[cfg(feature = "transition-certifier")]
     use crate::ids::{CertificateId, IntentId, SnapshotId};
+    #[cfg(feature = "transition-certifier")]
     use crate::intent::{CompensationHint, Precondition};
 
+    // 以下夹具仅被 transition-certifier 门控的测试使用（默认 feature
+    // 下不存在，避免 dead-code 警告）。
+
+    #[cfg(feature = "transition-certifier")]
     struct SinglePcs;
 
+    #[cfg(feature = "transition-certifier")]
     impl ResourceRegistry for SinglePcs {
         fn asset_exists(&self, asset_id: u64) -> bool {
             asset_id == 1
@@ -197,6 +205,7 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(feature = "transition-certifier")]
     fn intent() -> CommandIntent {
         CommandIntent::new(
             IntentId([3u8; 16]),

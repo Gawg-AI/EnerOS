@@ -80,6 +80,8 @@ impl Recorder {
                 constraint_kind: kind.code(),
                 asset_id,
                 record_index: seq as usize,
+                // 违约证据随错误上浮（certify 链不再静默丢弃）。
+                records: self.records.clone(),
             })
         }
     }
@@ -149,7 +151,15 @@ pub fn evaluate_trajectories(
                     step: t as u32 + 1,
                 });
             }
-            let at_ns = t0_ns + (t as u64) * ctx.horizon_step_ns;
+            let at_ns = match (t as u64)
+                .checked_mul(ctx.horizon_step_ns)
+                .and_then(|off| t0_ns.checked_add(off))
+            {
+                Some(v) => v,
+                None => return Err(CertifierError::InvalidInput("step window")),
+            };
+            // 步起始时刻覆盖判定（步粒度语义：包络在步中段过期不另拒
+            // ——规划粒度即步；登记 [09] §4.2 覆盖语义为步起始）。
             if at_ns < env.valid_from_ns || at_ns > env.valid_until_ns {
                 return Err(CertifierError::Envelope { asset_id: *asset });
             }
@@ -193,16 +203,15 @@ pub fn evaluate_trajectories(
                 unit_kw,
                 profile,
             )?;
-            // ramp（步间）。
+            // ramp（步间）：值与界同量纲（kW/s）——界不乘 dt_s（历史
+            // 版本乘 dt_s 使判定松 dt_s 倍，量纲错配 fail-open）。
             if let Some(pp) = prev {
-                let up = env.ramp_up_kw_s * dt_s;
-                let down = env.ramp_down_kw_s * dt_s;
                 rec.push(
                     ConstraintKind::RampUpKwS,
                     *asset,
                     Cmp::Le,
                     (p - pp) / dt_s,
-                    up,
+                    env.ramp_up_kw_s,
                     unit_kw,
                     profile,
                 )?;
@@ -211,7 +220,7 @@ pub fn evaluate_trajectories(
                     *asset,
                     Cmp::Le,
                     (pp - p) / dt_s,
-                    down,
+                    env.ramp_down_kw_s,
                     unit_kw,
                     profile,
                 )?;
@@ -229,6 +238,9 @@ pub fn evaluate_trajectories(
         if !eta_ok(b.eta_c) || !eta_ok(b.eta_d) {
             return Err(CertifierError::InvalidInput("efficiency"));
         }
+        if !b.initial_kwh.is_finite() {
+            return Err(CertifierError::InvalidInput("initial_kwh"));
+        }
         let Some(series) = traj.get(&b.asset_id) else {
             return Err(CertifierError::MissingAssignment {
                 asset_id: b.asset_id,
@@ -236,6 +248,10 @@ pub fn evaluate_trajectories(
             });
         };
         let mut e = b.initial_kwh;
+        // 轨迹最坏值（[09] §4.2：SOC 窗对**全程**成立，不只末态——
+        // 日内越界后回窗的轨迹同样违约）。初值计入最坏值。
+        let mut worst_lo = e;
+        let mut worst_hi = e;
         for slot in series.iter() {
             let p = slot.expect("checked above");
             // net ≥ 0 = 放电（损失 ηd）；net < 0 = 充电（存入 ηc）。
@@ -244,10 +260,18 @@ pub fn evaluate_trajectories(
             } else {
                 e += (-p) * dt_h * b.eta_c;
             }
+            worst_lo = worst_lo.min(e);
+            worst_hi = worst_hi.max(e);
         }
-        // 末态能量（确定性逐步求和后的唯一终值）。
+        // 末态能量（确定性逐步求和后的唯一终值；SocFinal 判定用）。
         // 规格 SOC 窗 ∩ 包络能量窗（比率 × 容量 与 kWh 同域比较）。
         let benv = env_of(b.asset_id)?;
+        // 能量界必须有限：NaN 经 max/min 会静默放松到默认界（fail-open）。
+        if !benv.energy_min_kwh.is_finite() || !benv.energy_max_kwh.is_finite() {
+            return Err(CertifierError::Envelope {
+                asset_id: b.asset_id,
+            });
+        }
         let mut soc_lo = benv.energy_min_kwh.max(0.0);
         let mut soc_hi = benv.energy_max_kwh.min(b.capacity_kwh).max(soc_lo);
         for c in ctx.spec.hard() {
@@ -264,7 +288,7 @@ pub fn evaluate_trajectories(
             ConstraintKind::MinSoc,
             b.asset_id,
             Cmp::Ge,
-            e,
+            worst_lo,
             soc_lo,
             unit_kwh,
             profile,
@@ -273,7 +297,7 @@ pub fn evaluate_trajectories(
             ConstraintKind::MaxSoc,
             b.asset_id,
             Cmp::Le,
-            e,
+            worst_hi,
             soc_hi,
             unit_kwh,
             profile,
@@ -393,11 +417,29 @@ pub fn evaluate_trajectories(
                         profile,
                     )?;
                 }
-                ConstraintKind::MinSoc
-                | ConstraintKind::MaxSoc
-                | ConstraintKind::SocFinal
-                | ConstraintKind::RampUpKwS
-                | ConstraintKind::RampDownKwS => {}
+                ConstraintKind::RampUpKwS | ConstraintKind::RampDownKwS => {
+                    // 站级 ramp = PCC 净功率步间变化率（与 planner 站级
+                    // ramp 行同语义；无资产级作用域，包络 ramp 走第 3 节）。
+                    let (mut worst_up, mut worst_down) = (f64::MIN, f64::MIN);
+                    let mut prev: Option<f64> = None;
+                    for slot in series.iter() {
+                        let p = slot.expect("checked above");
+                        if let Some(pp) = prev {
+                            worst_up = worst_up.max((p - pp) / dt_s);
+                            worst_down = worst_down.max((pp - p) / dt_s);
+                        }
+                        prev = Some(p);
+                    }
+                    if prev.is_some() && worst_up > f64::MIN {
+                        let (lhs, bound) = if c.kind == ConstraintKind::RampUpKwS {
+                            (worst_up, c.bound)
+                        } else {
+                            (worst_down, c.bound)
+                        };
+                        rec.push(c.kind, grid_id, Cmp::Le, lhs, bound, unit_kw, profile)?;
+                    }
+                }
+                ConstraintKind::MinSoc | ConstraintKind::MaxSoc | ConstraintKind::SocFinal => {}
             }
         }
     } else if ctx.spec.hard().iter().any(|c| {
@@ -407,6 +449,12 @@ pub fn evaluate_trajectories(
                 | ConstraintKind::MinEnergyKwh
                 | ConstraintKind::MaxEnergyKwh
                 | ConstraintKind::ReserveCapacityKw
+                // 站级功率窗/ramp 落点即 PCC：无并网点无法校验，拒绝
+                // （静默跳过 = 认证了未验证的约束面）。
+                | ConstraintKind::MinPowerKw
+                | ConstraintKind::MaxPowerKw
+                | ConstraintKind::RampUpKwS
+                | ConstraintKind::RampDownKwS
         )
     }) {
         return Err(CertifierError::InvalidInput("site constraint without grid"));

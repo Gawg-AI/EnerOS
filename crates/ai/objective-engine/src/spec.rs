@@ -32,10 +32,19 @@ pub struct HorizonPlan {
     pub step_count: u32,
 }
 
+/// 步长上限（24h——域上界；与 step_count ≤ 384 联合保证 span_ns 乘法
+/// 在 u64 内不溢出：8.64e13 × 384 ≈ 3.3e16 ≪ u64::MAX）。
+const MAX_STEP_NS: u64 = 86_400_000_000_000;
+
 impl HorizonPlan {
     pub fn new(step_ns: u64, step_count: u32) -> Result<Self, CompileError> {
         if step_ns < 1_000_000_000 {
             return Err(CompileError::InvalidRule("step_ns < 1s"));
+        }
+        if step_ns > MAX_STEP_NS {
+            // 饱和 cast 链（如迁移端 period_hours=Inf → u64::MAX）在此
+            // 拒绝，不进 span_ns 乘法。
+            return Err(CompileError::InvalidRule("step_ns > 24h"));
         }
         if step_count == 0 || step_count > 384 {
             return Err(CompileError::InvalidRule("step_count"));
@@ -46,7 +55,7 @@ impl HorizonPlan {
         })
     }
 
-    /// 地平线总时长（ns）。
+    /// 地平线总时长（ns；构造界保证乘法不溢出）。
     pub fn span_ns(&self) -> u64 {
         self.step_ns * self.step_count as u64
     }

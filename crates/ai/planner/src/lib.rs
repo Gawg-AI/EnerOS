@@ -235,10 +235,15 @@ impl Planner {
             }
         }
         // 2. 时间预算：backend 原生 time_limit + 外层 deadline 记账。
+        // set_param 失败必须上浮：time_limit 静默丢失 = 求解器侧失去
+        // deadline（默认无限时）。（"{:.3}" 保证整数值也走 Double 参数
+        // 通道——"1" 会被分类成 Bool，HiGHS 拒绝类型错配。）
         let started = std::time::Instant::now();
         let budget = req.budget_ms().saturating_sub(self.downstream_margin_ms);
         let limit_s = (budget.max(1) as f64 / 1000.0).min(3600.0);
-        let _ = backend.set_param("time_limit", &format!("{}", limit_s));
+        backend
+            .set_param("time_limit", &format!("{:.3}", limit_s))
+            .map_err(|e| PlanError::Backend(format!("set time_limit: {e}")))?;
         let result = backend
             .solve(&built.problem, input.now_ms)
             .map_err(|e| PlanError::Backend(format!("{e}")));

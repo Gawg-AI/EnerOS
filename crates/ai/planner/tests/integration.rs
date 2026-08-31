@@ -95,6 +95,10 @@ fn compiled(spec: ObjectiveSpec, prices: Vec<f64>, t: u32) -> CompiledObjective 
         &c.prices_per_kwh,
         &c.bundle_digest,
         c.registry_generation,
+        c.min_on_steps,
+        c.min_off_steps,
+        c.horizon_step_ns,
+        c.horizon_step_count,
     );
     CompiledObjective {
         spec_digest: d,
@@ -302,6 +306,10 @@ fn load_demand_enters_balance() {
     ];
     let obj = compiled(spec(hard, ObjectiveKind::MinCost), vec![2.0; 2], 2);
     let mut input = base_input(&obj);
+    // 负荷资产同样需要包络（certifier 对轨迹内每个资产都要求）。
+    let mut load_env = env_pcc();
+    load_env.asset_id = 20;
+    input.envelopes.push((20, load_env));
     input.loads = vec![LoadSpec {
         asset_id: 20,
         baseline_kw: vec![10.0, 10.0],
@@ -371,6 +379,9 @@ fn renewable_curtailment_self_consume() {
         unit_code: 6,
     });
     // 负荷 3 + 电池充 5 → 全消纳（curt=0）。
+    let mut load_env = env_pcc();
+    load_env.asset_id = 20;
+    input.envelopes.push((20, load_env));
     input.loads = vec![LoadSpec {
         asset_id: 20,
         baseline_kw: vec![3.0, 3.0],
@@ -700,7 +711,16 @@ fn scale_solve_200x24_real_highs() {
     }
     let input = PlanInput {
         objective: &obj,
-        envelopes: envs,
+        envelopes: {
+            let mut e = envs;
+            let mut load_env = env_pcc();
+            load_env.asset_id = 20;
+            // 净负荷 −100kW 需包络下界覆盖。
+            load_env.p_min_kw = -150.0;
+            load_env.p_max_kw = 150.0;
+            e.push((20, load_env));
+            e
+        },
         dispatchable: disp,
         batteries: vec![],
         loads: vec![LoadSpec {
@@ -766,4 +786,117 @@ fn ill_conditioned_prices_rejected() {
         Err(eneros_planner::builder::ModelError::IllConditioned(_)) => {}
         other => panic!("ill-conditioned: {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 复查收编：新能源/负荷包络 ramp（planner 行与 certifier 第 3 节同语义）
+// ---------------------------------------------------------------------------
+
+/// PV 可用出力断崖（云切）快于包络 ramp：规划须提前 curtail 压出力。
+#[test]
+fn renewable_ramp_forces_preemptive_curtailment() {
+    let obj = compiled(spec(soc_bounds(), ObjectiveKind::SelfConsume), vec![], 2);
+    let mut input = base_input(&obj);
+    let mut pv_env = env_pcc();
+    pv_env.asset_id = 30;
+    pv_env.p_min_kw = 0.0;
+    pv_env.ramp_up_kw_s = 0.001; // 3.6 kW/步（dt=1h）
+    pv_env.ramp_down_kw_s = 0.001;
+    input.envelopes.push((30, pv_env));
+    input.renewables = vec![RenewableSpec {
+        asset_id: 30,
+        available_kw: vec![8.0, 0.0], // t1 断崖到 0
+    }];
+    input.bindings.push(AssetBinding {
+        asset_id: 30,
+        device_id: 5,
+        point_id: 3,
+        unit_code: 6,
+    });
+    let mut p = Planner::new(ToleranceProfile::l2(), 100);
+    let req = request(&obj.spec);
+    let mut hb = highs();
+    let plan = p.plan(&mut hb, &req, &input).expect("plan");
+    // SelfConsume = min Σ curt·dt：ramp 迫使 curt_0 ≥ 8 − 3.6 = 4.4。
+    assert!(
+        (plan.objective_value() - 4.4).abs() < 1e-6,
+        "obj={}",
+        plan.objective_value()
+    );
+    let pv: Vec<(u32, f64)> = plan
+        .assignments()
+        .iter()
+        .filter(|a| a.asset_id == 30)
+        .map(|a| (a.step_index, a.power_kw))
+        .collect();
+    let p1 = pv.iter().find(|(t, _)| *t == 1).unwrap().1;
+    let p2 = pv.iter().find(|(t, _)| *t == 2).unwrap().1;
+    assert!(p2.abs() < 1e-6, "t1 可用 0 → 净 0");
+    assert!(p1 <= 3.6 + 1e-6, "t0 净出力须提前压坡（{p1}）");
+}
+
+/// 固定负荷基线跳变超包络 ramp：建模期拒绝（任何计划都不可认证）。
+#[test]
+fn fixed_load_baseline_ramp_violation_rejected() {
+    let obj = compiled(spec(soc_bounds(), ObjectiveKind::MinCost), vec![1.0; 2], 2);
+    let mut input = base_input(&obj);
+    let mut load_env = env_pcc();
+    load_env.asset_id = 20;
+    load_env.ramp_down_kw_s = 0.001; // 3.6 kW/步
+    input.envelopes.push((20, load_env));
+    input.loads = vec![LoadSpec {
+        asset_id: 20,
+        baseline_kw: vec![3.0, 20.0], // 跳 17 ≫ 3.6
+        shed_max_kw: 0.0,
+    }];
+    input.bindings.push(AssetBinding {
+        asset_id: 20,
+        device_id: 4,
+        point_id: 2,
+        unit_code: 6,
+    });
+    match ModelBuilder::build(&input) {
+        Err(eneros_planner::builder::ModelError::InvalidInput(
+            "load baseline violates envelope ramp",
+        )) => {}
+        other => panic!("{other:?}"),
+    }
+}
+
+/// 可削减负荷：ramp=0 冻结净负荷 → 削减量各步相等。
+#[test]
+fn shed_load_ramp_rows_freeze_net() {
+    let obj = compiled(spec(soc_bounds(), ObjectiveKind::MinCost), vec![10.0; 2], 2);
+    let mut input = base_input(&obj);
+    let mut load_env = env_pcc();
+    load_env.asset_id = 20;
+    load_env.ramp_up_kw_s = 0.0; // 冻结
+    load_env.ramp_down_kw_s = 0.0;
+    input.envelopes.push((20, load_env));
+    input.loads = vec![LoadSpec {
+        asset_id: 20,
+        baseline_kw: vec![10.0, 10.0],
+        shed_max_kw: 5.0,
+    }];
+    input.bindings.push(AssetBinding {
+        asset_id: 20,
+        device_id: 4,
+        point_id: 2,
+        unit_code: 6,
+    });
+    let mut p = Planner::new(ToleranceProfile::l2(), 100);
+    let req = request(&obj.spec);
+    let mut hb = highs();
+    let plan = p.plan(&mut hb, &req, &input).expect("plan");
+    let shed: Vec<f64> = plan
+        .assignments()
+        .iter()
+        .filter(|a| a.asset_id == 20)
+        .map(|a| a.power_kw)
+        .collect();
+    assert_eq!(shed.len(), 2);
+    assert!(
+        (shed[0] - shed[1]).abs() < 1e-6,
+        "ramp=0 冻结净负荷：{shed:?}"
+    );
 }

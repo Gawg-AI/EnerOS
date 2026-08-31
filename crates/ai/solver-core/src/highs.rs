@@ -74,19 +74,24 @@ use crate::solver::{Solver, SolverStatus};
 pub struct HighsSolver {
     handle: *mut c_void,
     status: SolverStatus,
+    /// 待注入热启动解（`set_warm_start` 存储，`solve` 内 passModel
+    /// 之后注入——模型传入前 HiGHS 无列空间，提前注入必被拒绝）。
+    pending_warm_start: Option<alloc::vec::Vec<f64>>,
 }
 
 // SAFETY: HiGHS 句柄非线程安全，但 EnerOS 单线程运行。不实现 Send/Sync。
 // （与 MockSolver 一致：Solver trait 不要求 Send+Sync）
 
-/// 读取 HiGHS info 的 mip_gap（失败/非有限/负 → None——**未报告**，
-/// 不伪装成 0 精确语义；gap gate 侧 fail-closed）。
+/// 读取 HiGHS info 的 mip_gap（失败/非有限/负/≥1e30 → None——**未报告**，
+/// 不伪装成 0 精确语义；gap gate 侧 fail-closed）。≥1e30 = kHighsInf
+/// 哨兵：LP 模型（无整数列）求解后 info.mip_gap 保持默认 kHighsInf，
+/// 不是真实 gap。
 fn read_mip_gap(handle: *mut c_void) -> Option<f64> {
     let field = b"mip_gap\0";
     let mut value = 0.0f64;
     // SAFETY: handle 非 null；field 以 NUL 结尾；value 有效指针。
     let status = unsafe { highs_ffi::Highs_getDoubleInfoValue(handle, field.as_ptr(), &mut value) };
-    if status == 0 && value.is_finite() && value >= 0.0 {
+    if status == 0 && value.is_finite() && (0.0..1e30).contains(&value) {
         Some(value)
     } else {
         None
@@ -114,6 +119,7 @@ impl HighsSolver {
         Ok(Self {
             handle,
             status: SolverStatus::Idle,
+            pending_warm_start: None,
         })
     }
 }
@@ -246,6 +252,23 @@ impl Solver for HighsSolver {
             return Err(SolverError::PassFailed(pass_result));
         }
 
+        // 热启动注入（模型已传入、run 未开始——HiGHS MIP start 的合法
+        // 窗口；维度不符或 HiGHS 拒绝仅视为提示失效，不阻断求解）。
+        if let Some(warm) = self.pending_warm_start.take() {
+            if warm.len() == num_col as usize {
+                // SAFETY: handle 非 null；warm 长度与列数一致。
+                let _ = unsafe {
+                    highs_ffi::Highs_setSolution(
+                        self.handle,
+                        warm.as_ptr(),
+                        core::ptr::null(),
+                        core::ptr::null(),
+                        core::ptr::null(),
+                    )
+                };
+            }
+        }
+
         // 求解
         // SAFETY: handle 非 null，模型已成功传入。
         let run_result = unsafe { highs_ffi::Highs_run(self.handle) };
@@ -280,7 +303,7 @@ impl Solver for HighsSolver {
         let mut row_dual = vec![0.0f64; num_row as usize];
 
         // SAFETY: handle 非 null，数组已分配正确大小。
-        let _ = unsafe {
+        let get_status = unsafe {
             highs_ffi::Highs_getSolution(
                 self.handle,
                 col_value.as_mut_ptr(),
@@ -289,6 +312,15 @@ impl Solver for HighsSolver {
                 row_dual.as_mut_ptr(),
             )
         };
+        // 读取失败不得以全零解冒充最优解（下游残差 gate 检违约，
+        // 检不出"结构性丢解"）；非最优状态本就被 gate 拒绝，不在此
+        // 升格为 FFI 错误。
+        if get_status < 0 && matches!(status, SolveStatus::Optimal) {
+            self.status = SolverStatus::Error;
+            return Err(SolverError::FfiError(alloc::format!(
+                "Highs_getSolution failed (status={get_status}) on optimal model"
+            )));
+        }
 
         self.status = SolverStatus::Idle;
 
@@ -354,31 +386,15 @@ impl Solver for HighsSolver {
     }
 
     fn set_warm_start(&mut self, solution: &[f64]) -> Result<(), SolverError> {
-        // v0.204.0（P0-19）：真实覆写——经 Highs_setSolution 注入初始解。
-        // 失败真实报错（不再静默 Ok）。
+        // v0.204.0（P0-19）：真实覆写——缓存待注入解，solve 内
+        // passModel 之后经 Highs_setSolution 注入（模型传入前注入必被
+        // HiGHS 拒绝：空模型无列空间）。
         if solution.is_empty() {
             return Err(SolverError::ParamError(
                 "set_warm_start: empty solution".to_string(),
             ));
         }
-        // SAFETY: handle 非 null；solution 是连续 f64 切片（C API 期望
-        // 与列数等长的数组）。row_value/col_dual/row_dual 传 NULL
-        // （只注入原始解，HiGHS 接受）。
-        let status = unsafe {
-            highs_ffi::Highs_setSolution(
-                self.handle,
-                solution.as_ptr(),
-                core::ptr::null(),
-                core::ptr::null(),
-                core::ptr::null(),
-            )
-        };
-        if status < 0 {
-            self.status = SolverStatus::Error;
-            return Err(SolverError::FfiError(
-                "Highs_setSolution failed".to_string(),
-            ));
-        }
+        self.pending_warm_start = Some(alloc::vec::Vec::from(solution));
         Ok(())
     }
 }

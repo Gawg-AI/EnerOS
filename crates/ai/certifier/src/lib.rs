@@ -121,11 +121,14 @@ pub enum CertifierError {
     NonFinite(&'static str),
     /// 包络缺失/不可用/不在有效期。
     Envelope { asset_id: u64 },
-    /// 轨迹违约（逐条证据引用 record 序号）。
+    /// 轨迹违约（逐条证据引用 record 序号；**随错误携带全部已产生证据**
+    /// ——诊断重放面，兑现"记录保留供诊断重放"承诺，[09] §4.3）。
     Violated {
         constraint_kind: u16,
         asset_id: u64,
         record_index: usize,
+        /// 违约时已产生的全部证据记录（含本条 fail 记录）。
+        records: Vec<proof::ProofRecord>,
     },
     /// 评估输入不合法（容量/效率/步长）。
     InvalidInput(&'static str),
@@ -160,6 +163,11 @@ impl CertifierModule {
         if plan.horizon_start_ms() != ctx.horizon_start_ms {
             return Err(CertifierError::PlanMismatch("horizon_start"));
         }
+        // 证据引用的目录版本与计划绑定目录必须同源——否则证书声称按
+        // A 目录认证、证据引用 B 目录，且分叉不可检测。
+        if ctx.constraint_catalog_version != plan.resource_catalog_version() {
+            return Err(CertifierError::PlanMismatch("catalog_version"));
+        }
         if !plan.is_valid_at(now_ms) {
             return Err(CertifierError::PlanExpired);
         }
@@ -188,11 +196,17 @@ impl CertifierModule {
         .map_err(|_| CertifierError::PlanMismatch("certificate"))?;
 
         // 3. key 绑定（fail-closed：无活跃 key → 认证失败，零证书流出；
-        // 不存在未绑定 MAC 的"裸证书"，[09] §4.3）。
+        // 不存在未绑定 MAC 的"裸证书"，[09] §4.3；空 key 拒绝——
+        // keyed.rs 生产调用方纪律在本发放面执行）。
         let (key_id, key_version, key) = ring
             .active()
             .ok_or(CertifierError::InvalidInput("no active key"))?;
-        let input = proof::mac_input(&plan_sha, &proof_digest);
+        if key.is_empty() {
+            return Err(CertifierError::InvalidInput("empty key"));
+        }
+        // MAC 覆盖证书自身规范 wire（有效期/计数/引用不可离 MAC 篡改）
+        // ‖ plan_sha ‖ proof_digest。
+        let input = proof::mac_input(&cert.encode_v1(), &plan_sha, &proof_digest);
         let key_envelope = proof::CertificateEnvelope {
             key_id,
             key_version,
@@ -230,8 +244,12 @@ impl CertifierModule {
         if version != key_envelope.key_version {
             return Err(CertifierError::DigestMismatch("key version"));
         }
-        // proof digest 由证书携带（wire 域）；绑定 = HMAC(plan_sha ‖ proof)。
-        let input = proof::mac_input(&plan_sha, cert.proof_digest());
+        if key.is_empty() {
+            return Err(CertifierError::InvalidInput("empty key"));
+        }
+        // 绑定 = HMAC(cert_wire ‖ plan_sha ‖ proof)——证书字段（含有效
+        // 期）参与 MAC，篡改任意字段即失配。
+        let input = proof::mac_input(&cert.encode_v1(), &plan_sha, cert.proof_digest());
         let expect = eneros_decision_contract::keyed::hmac_sha256(key, &input);
         if eneros_decision_contract::keyed::mac_eq(&expect, &key_envelope.mac) {
             Ok(())

@@ -35,8 +35,13 @@ pub fn legacy_rule_bundle(
     version: u64,
 ) -> Result<RuleBundle, CompileError> {
     use eneros_decision_contract::objective::ConstraintKind as K;
+    // Inf/NaN 的饱和 cast 产物（u64::MAX/0）由 HorizonPlan 步长界拒绝；
+    // num_periods 溢出/超上限拒绝而非静默截断（截断地平线 = 静默改变
+    // 规划范围，shadow 等价建立在被改的地平线上）。
     let step_ns = (cfg.period_hours * 3.600_000_000e12) as u64;
     let step_s = step_ns / 1_000_000_000;
+    let num_periods = u32::try_from(cfg.num_periods)
+        .map_err(|_| CompileError::InvalidRule("num_periods overflow"))?;
     let unit_dim = eneros_telemetry_model::unit_catalog::code_of(
         eneros_telemetry_model::PhysicalUnit::Dimensionless,
     );
@@ -60,7 +65,7 @@ pub fn legacy_rule_bundle(
     };
     let mut bundle = RuleBundle::builder(issuer, version)
         .validity_window(0, u64::MAX)
-        .horizon(HorizonPlan::new(step_ns, cfg.num_periods.min(384) as u32)?)
+        .horizon(HorizonPlan::new(step_ns, num_periods)?)
         .site_rating_kw(cfg.pcs_power_kw)
         .add_constraint(r(
             ids::SOC_MIN,

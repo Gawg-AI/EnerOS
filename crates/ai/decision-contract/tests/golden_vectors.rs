@@ -73,6 +73,7 @@ fn canonical_intent() -> eneros_decision_contract::CommandIntent {
     .unwrap()
 }
 
+#[cfg(feature = "transition-certifier")]
 fn canonical_cert() -> eneros_decision_contract::CertifiedPlan {
     eneros_decision_contract::CertifiedPlan::decode_v1(&unhex(&read("certified-plan-v1.golden")))
         .expect("cert golden decode")
