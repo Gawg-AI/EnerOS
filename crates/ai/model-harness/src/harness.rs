@@ -189,6 +189,33 @@ impl<E: LlmEngine + 'static> ModelHarness<E> {
         self.deployed
     }
 
+    /// Skill 装载并验证（[11] §2 固定顺序首步）：签名/有效期/摘要由
+    /// SkillRegistry 保证；此处校验 purpose 与 schema 可解析，并按 skill
+    /// 覆盖请求预算与人工审批标记（skill 预算即请求预算——模型不能
+    /// 要求更多）。
+    pub fn run_with_skill(
+        &mut self,
+        req: &mut HarnessRequest<'_>,
+        skill: &crate::skill::SkillPackage,
+    ) -> Result<HarnessOutcome, HarnessError> {
+        if req.purpose != skill.manifest.purpose_id {
+            return Ok(HarnessOutcome::Rejected {
+                reason: HarnessError::Projection("purpose != skill.purpose"),
+            });
+        }
+        if crate::skills::schema_for(skill.manifest.output_schema_id).is_none() {
+            return Ok(HarnessOutcome::Rejected {
+                reason: HarnessError::Internal("skill output schema unknown"),
+            });
+        }
+        req.budget.max_output_tokens = skill.manifest.max_tokens;
+        req.budget.max_tool_calls = skill.manifest.max_tool_calls as u32;
+        req.budget.max_runtime_ns = skill.manifest.max_runtime_ms as u64 * 1_000_000;
+        req.projection.requested_class = skill.manifest.allowed_data_class;
+        req.requires_human_approval = skill.manifest.requires_human_approval == 1;
+        self.run(req)
+    }
+
     /// 单请求运行（固定顺序；any 失败 → 结构化结果）。
     pub fn run(&mut self, req: &HarnessRequest<'_>) -> Result<HarnessOutcome, HarnessError> {
         if self.config.model_off {
@@ -724,6 +751,63 @@ mod tests {
             HarnessOutcome::Rejected { .. } => {}
             other => panic!("expected gate reject, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn run_with_skill_applies_skill_budget_and_approval() {
+        let mut h = harness(StubEngine::single(
+            r#"{"kind":"MaxRevenue","reason":"PriceArbitrage","priority":6,"rationale":"价差","facts_ref":"06060606060606060606060606060606","valid_until_ms":50000}"#,
+        ));
+        h.deploy([1; 16], 5000).unwrap();
+        let skill = crate::skills::market_objective_draft();
+        // skill 要求人工审批 → 候选冻结。
+        let snap = snapshot();
+        let mut req = request(&snap, "整理市场事实", purpose::MARKET_OBJECTIVE_DRAFT);
+        req.facts_ref = Some([6; 16]);
+        match h.run_with_skill(&mut req, &skill).unwrap() {
+            HarnessOutcome::Candidate {
+                output: CandidateOutput::ObjectiveDraft(d),
+                needs_approval,
+                ..
+            } => {
+                assert!(needs_approval, "market-objective-draft 须人工审批");
+                assert_eq!(d.facts_ref(), &[6; 16]);
+            }
+            other => panic!("expected draft candidate, got {other:?}"),
+        }
+        // purpose 不匹配 → 拒。
+        let mut req2 = request(&snap, "plan", purpose::SCHEDULE_SCENARIO_PROPOSAL);
+        match h.run_with_skill(&mut req2, &skill).unwrap() {
+            HarnessOutcome::Rejected { .. } => {}
+            other => panic!("expected rejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skill_registry_gates() {
+        let mut reg = crate::skill::SkillRegistry::new();
+        let (sk, pk) = mt::test_keypair();
+        reg.add_signer_key(1, pk);
+        let skill = crate::skills::alarm_explanation();
+        reg.register(&skill, 0).unwrap();
+        assert_eq!(reg.len(), 1);
+        assert!(reg.eligible(&skill.manifest.skill_id, 0).is_some());
+        // 过期 → 不可用（人工包改 valid_until 不合法——用签名一致的
+        // 过期包演示：构造 copies with window passed）。
+        let mut expired = skill.clone();
+        expired.manifest.valid_until_ns = 1;
+        expired.manifest.seal(&sk, &pk);
+        let mut reg2 = crate::skill::SkillRegistry::new();
+        reg2.add_signer_key(1, pk);
+        assert_eq!(
+            reg2.register(&expired, 1_000_000),
+            Err(HarnessError::PackageExpired)
+        );
+        // 重复注册 → 拒。
+        assert!(matches!(
+            reg.register(&skill, 0),
+            Err(HarnessError::Manifest("duplicate skill_id"))
+        ));
     }
 
     #[test]

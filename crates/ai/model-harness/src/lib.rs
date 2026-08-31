@@ -32,10 +32,14 @@ pub mod eval;
 pub mod gate;
 pub mod harness;
 pub mod lifecycle;
+pub mod r#loop;
 pub mod manifest;
 pub mod projector;
 pub mod registry;
 pub mod schema;
+pub mod skill;
+pub mod skills;
+pub mod tools;
 
 #[cfg(test)]
 pub(crate) mod stubs;
@@ -50,6 +54,8 @@ pub use manifest::{ModelManifestV1, ModelPackage, PackageContents};
 pub use projector::{InputProjector, ProjectedInput, ProjectionSpec};
 pub use registry::ModelRegistry;
 pub use schema::{SchemaField, SchemaType, StrictSchema};
+pub use skill::{SkillManifestV1, SkillPackage};
+pub use tools::{ToolCall, ToolId, ToolResult, ToolRuntime};
 
 /// 契约 wire 版本（模型包 V1）。
 pub const MODEL_PACKAGE_WIRE_V1: u16 = 1;
@@ -96,10 +102,14 @@ mod tests {
             ("gate.rs", include_str!("gate.rs")),
             ("harness.rs", include_str!("harness.rs")),
             ("lifecycle.rs", include_str!("lifecycle.rs")),
+            ("loop.rs", include_str!("loop.rs")),
             ("manifest.rs", include_str!("manifest.rs")),
             ("projector.rs", include_str!("projector.rs")),
             ("registry.rs", include_str!("registry.rs")),
             ("schema.rs", include_str!("schema.rs")),
+            ("skill.rs", include_str!("skill.rs")),
+            ("skills.rs", include_str!("skills.rs")),
+            ("tools.rs", include_str!("tools.rs")),
         ] {
             for line in src.lines() {
                 let t = line.trim_start();
