@@ -1,0 +1,37 @@
+[package]
+name = "eneros-model-harness"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图61 Phase 6 — ModelHarness/Skill/bounded loop：生产模型唯一入口（身份/投影/输出门/预算/生命周期/白名单工具）"
+
+[dependencies]
+# 蓝图61 Phase 6 §3.2 复用面：引擎、调度（correlation/deadline/budget/
+# model digest）、加载/硬件/性能检查、结构化 prompt 基础。
+eneros-llm-engine = { path = "../llm-engine" }
+eneros-infer-scheduler = { path = "../infer-scheduler" }
+eneros-model-deploy = { path = "../model-deploy" }
+eneros-prompt-template = { path = "../prompt-template" }
+# 决策有类型产物链（IntentCandidate 唯一模型输出形状；本 crate 无
+# AuthorizedCommand/Gateway/writer 依赖——依赖方向红线 [16] §5）。
+eneros-decision-contract = { path = "../decision-contract" }
+# 输入投影源：TrustedSnapshot（一致性切面产物）。
+eneros-snapshot-service = { path = "../../agents/snapshot-service" }
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
+# 清单签名（SM2，与 market envelope 同源）；内容摘要（SHA-256，字段名
+# 即算法）。
+eneros-crypto = { path = "../../security/crypto" }
+sha2 = { version = "0.10.9", default-features = false }
+serde_json = "1"
+
+[features]
+default = []
+# 测试/仿真引擎后端（release 由 llm-engine 熔断 mock）。
+mock = ["eneros-llm-engine/mock"]
+
+[dev-dependencies]
+# 确定性模型替身（默认无后端时测试显式 mock）。
+eneros-llm-engine = { path = "../llm-engine", features = ["mock"] }
+# 测试构造 TrustedSnapshot 的 VersionSet。
+eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }

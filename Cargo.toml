@@ -40,6 +40,9 @@ members = [
     "crates/ai/rl",
     "crates/ai/marl",
     "crates/ai/dialog",
+    # 蓝图 61 [16] §3.10（v0.314.44）：ModelHarness——生产模型唯一入口
+    # （模型包/投影/输出门/预算/生命周期/Skill 与 bounded loop）。
+    "crates/ai/model-harness",
     "crates/ai/runner",
     "crates/hal/hal",
     "crates/hal/board",
@@ -179,7 +182,7 @@ members = [
 # rc/1.0 标记；冲刺期一律 0.x.y（0.313 延续历史 120 版本计划顶格 v0.312）；
 # 每 WP Exit 自证后递增 patch（cargo xtask bump-version patch；
 # xtask qa gng-version / eneros-ci version-gate-consistency 双检查强制）。
-version = "0.314.43"
+version = "0.314.44"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
