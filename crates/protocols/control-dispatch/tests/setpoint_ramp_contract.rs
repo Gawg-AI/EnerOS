@@ -321,6 +321,8 @@ fn engine_with() -> (DispatchEngine, Rc<RefCell<u64>>) {
             unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
             catalog_version: 1,
         }),
+        contracts: Box::new(support::test_contract_view(u64::from(profile.device_id), 1)),
+        compiler_policy: support::test_compiler_policy(),
         feedback_mapping: FeedbackPointMapping {
             grid_up: 5,
             soc: 4,

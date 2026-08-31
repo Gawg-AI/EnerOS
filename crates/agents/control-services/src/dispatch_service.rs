@@ -431,6 +431,24 @@ mod tests {
                 point_id: TEST_POINT_ID,
                 unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
             }),
+            contracts: {
+                use eneros_control_dispatch::compiler::{MapContractView, PlanContract};
+                let mut v = MapContractView::new();
+                v.insert(
+                    u64::from(TEST_DEVICE_ID),
+                    PlanContract {
+                        class: 2,
+                        readback_point_id: 1001,
+                        reversible: 1,
+                        min: -500.0,
+                        max: 500.0,
+                        settle_ms: 0,
+                        compensable: false,
+                    },
+                );
+                alloc::boxed::Box::new(v)
+            },
+            compiler_policy: eneros_control_dispatch::compiler::CompilerPolicy::default(),
             chain,
             key: key.to_vec(),
             profile,

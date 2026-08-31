@@ -177,6 +177,12 @@ impl CatalogRepository {
         self.contracts.get(id)
     }
 
+    /// 全部控制合同（枚举序 = 合同 id 升序；WP-5.1 装配侧编译合同
+    /// 视图消费——`PlanContractView` 装配单源）。
+    pub fn control_contracts(&self) -> impl Iterator<Item = &ControlContract> {
+        self.contracts.values()
+    }
+
     /// 显式控制绑定（替代「首个 Control 点」）：资产 → 控制点。
     /// 设备短 ID 属协议映射（points.toml），由装配方从点表解析。
     pub fn control_binding_point(&self, asset_id: u64) -> Option<u32> {

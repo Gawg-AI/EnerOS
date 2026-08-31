@@ -577,8 +577,16 @@ impl DispatchHandler {
         // 歧义 → EmptyResourceRegistry fail-closed（批编译拒绝）。
         let resources: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static> =
             Self::build_resource_view(config_client.as_mut(), device_id);
+        // 蓝图 61 v0.314.41（WP-5.1）：控制合同编译视图（PlanCompiler
+        // 合同半边——readback/可逆/值域/补偿单源自 SemanticCatalog；
+        // 目录不可得 → 空视图 fail-closed：全部计划编译拒绝「未知合同」）。
+        let contracts: alloc::boxed::Box<
+            dyn eneros_control_dispatch::compiler::PlanContractView + 'static,
+        > = Self::build_contract_view(config_client.as_mut());
         let config = DispatchConfig {
             resources,
+            contracts,
+            compiler_policy: eneros_control_dispatch::compiler::CompilerPolicy::default(),
             chain,
             key: key.to_vec(),
             // 蓝图 55：档案事实（lease/代次/绑定设备点）单源；首签 fencing
@@ -658,6 +666,47 @@ impl DispatchHandler {
                 alloc::boxed::Box::new(EmptyResourceRegistry)
             }
         }
+    }
+
+    /// 蓝图 61 v0.314.41（WP-5.1）：控制合同编译视图装载（目录合同
+    /// 枚举 → [`MapContractView`]；目录不可得 → 空视图 fail-closed）。
+    /// 补偿映射：`compensation=true` 且有已确认基线 ⇒ 回设基线（值由
+    /// 编译器取自 AppliedStateView，不在装配发明数值）。
+    fn build_contract_view(
+        config_client: Option<&mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    ) -> alloc::boxed::Box<dyn eneros_control_dispatch::compiler::PlanContractView + 'static> {
+        use eneros_control_dispatch::compiler::{MapContractView, PlanContract};
+        let Some(client) = config_client else {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] CONTRACT-VIEW-MISSING —— 批编译 fail-closed（空视图）"
+            );
+            return alloc::boxed::Box::new(MapContractView::new());
+        };
+        let Some(cat) = crate::catalog_gateway::fetch_catalog(client) else {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] CONTRACT-VIEW-MISSING —— 批编译 fail-closed（空视图）"
+            );
+            return alloc::boxed::Box::new(MapContractView::new());
+        };
+        let mut view = MapContractView::new();
+        let mut count = 0usize;
+        for c in cat.repo.control_contracts() {
+            view.insert(
+                c.asset_id,
+                PlanContract {
+                    class: c.class,
+                    readback_point_id: c.readback_point_id,
+                    reversible: c.reversible,
+                    min: c.min,
+                    max: c.max,
+                    settle_ms: c.settle_ms,
+                    compensable: c.compensation != 0,
+                },
+            );
+            count += 1;
+        }
+        eneros_runtime::println!("[svc-control-dispatch] CONTRACT-VIEW-ACTIVE contracts={count}");
+        alloc::boxed::Box::new(view)
     }
 
     /// 蓝图 61 v0.314.33：反馈映射装载（目录优先，常量回退）。

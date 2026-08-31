@@ -30,6 +30,7 @@ extern crate alloc;
 
 pub mod adapter;
 pub mod channel;
+pub mod compiler;
 pub mod dispatch;
 pub mod durable_intent;
 pub mod engine;

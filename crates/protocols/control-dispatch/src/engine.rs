@@ -70,13 +70,13 @@ enum CoreIdentity {
         /// 协议侧单调序号。
         sequence: u64,
     },
-    /// AI 计划：command_id = 引擎自增 seq 前 8B LE；correlation =
-    /// PlanId 字节（蓝图 61 v0.314.28：与旧 facade `correlation_of`
-    /// 同派生——迁移 adapter 保证 PlanId = UTF-8 前 16B 零填充，幂等键
-    /// 跨 Phase 0 记录兼容）。
-    PlanTyped {
-        /// 类型化计划 ID。
-        plan_id: eneros_decision_contract::PlanId,
+    /// AI 计划批内命令（WP-5.1，v0.314.41）：command_id = 引擎自增 seq
+    /// 前 8B LE；correlation 由 compiler `plan_command_correlation` 派生
+    /// （adapter 单命令形态 = PlanId 字节，Phase 0 幂等记录兼容；多步 =
+    /// intent_id 派生键——跨 tick 重编译恒稳定）。
+    PlanCommand {
+        /// 预派生幂等键（correlation）。
+        correlation: [u8; 16],
     },
 }
 
@@ -159,6 +159,12 @@ pub struct DispatchConfig {
     /// 查询 Registry，[08] §4.8 门；缺装配 = `EmptyResourceRegistry`
     /// fail-closed，批编译拒绝）。
     pub resources: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static>,
+    /// 蓝图 61 v0.314.41（WP-5.1）：控制合同编译视图（PlanCompiler 的
+    /// 合同半边——readback/可逆/值域/补偿；缺装配 = 空视图 fail-closed，
+    /// 全部计划编译拒绝「未知合同」）。
+    pub contracts: alloc::boxed::Box<dyn crate::compiler::PlanContractView + 'static>,
+    /// WP-5.1 编译器策略（全部参与 compiler_digest——策略漂移可检）。
+    pub compiler_policy: crate::compiler::CompilerPolicy,
     /// 单调时钟（毫秒）。
     pub now_fn: fn() -> u64,
 }
@@ -181,6 +187,10 @@ pub struct DispatchEngine {
     /// 蓝图 61 v0.314.35：资源注册表视图（装配注入；命令批编译的绑定
     /// 权威——planner 输入只查询 Registry）。
     resources: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static>,
+    /// WP-5.1：控制合同编译视图（批编译合同半边；见 DispatchConfig）。
+    contracts: alloc::boxed::Box<dyn crate::compiler::PlanContractView + 'static>,
+    /// WP-5.1：编译器策略。
+    compiler_policy: crate::compiler::CompilerPolicy,
     chain: ControlChain,
     key: Vec<u8>,
     /// 同源档案（蓝图 55）：lease_id/policy_version/device_id/point_id 的
@@ -240,6 +250,8 @@ impl DispatchEngine {
         let pending = config.intent_log.pending();
         let mut engine = Self {
             resources: config.resources,
+            contracts: config.contracts,
+            compiler_policy: config.compiler_policy,
             chain: config.chain,
             key: config.key,
             profile: config.profile,
@@ -532,10 +544,15 @@ impl DispatchEngine {
     }
 
     /// 蓝图 61 v0.314.28：typed 入口——CandidatePlan → 过渡认证证书 →
-    /// CommandIntent → CommandBatch（profile 资源视图校验）→ 12 步合核。
+    /// **PlanCompiler 命令批**（WP-5.1，v0.314.41）→ 逐命令 12 步合核。
     ///
-    /// 执行入口语义不变：投递仍只经 `AuthorizedCommand`（唯一 Gateway
-    /// 构造）——本函数是决策侧的 typed 前置链，不是第二执行真相。
+    /// [10] §2.7 出口 gate：生产无「取计划第一条 power_kw」路径——全部
+    /// assignments 经 `compiler::compile` 确定性编译（计划-证书绑定校验、
+    /// 单位换算走 UnitCatalog、分辨率合并留「未动作」证据、同设备串行
+    /// DAG、compiler/batch 双摘要），再逐意图进入唯一 Gateway 执行面
+    /// （身份 = PlanCommand：sub_index 0 沿用 PlanId 幂等键，Phase 0
+    /// 单 PCS 记录兼容）。批内任一命令失败即阻断后继（Saga 收敛归
+    /// WP-5.2）。本函数不是第二执行真相：投递只经 `AuthorizedCommand`。
     #[allow(clippy::too_many_arguments)]
     fn run_typed(
         &mut self,
@@ -548,26 +565,9 @@ impl DispatchEngine {
         states: Vec<DispatchState>,
         deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError> {
-        use eneros_decision_contract::{
-            CertificateId, CertifiedPlan, CertifierSeal, CommandBatch, CommandIntent,
-            CompensationHint, IntentId, Precondition,
-        };
+        use eneros_decision_contract::{CertificateId, CertifiedPlan, CertifierSeal};
         use sha2::Digest as _;
 
-        // typed 校验（等价 validate_proposal：有限值/上限/ttl/非空分配——
-        // CandidatePlan 构造器已保证部分，此处补 dispatch 域上限）。
-        let assignment = plan
-            .assignments()
-            .first()
-            .copied()
-            .ok_or_else(|| DispatchError::ProposalInvalid(String::from("空调度不可投递")))?;
-        if assignment.power_kw.abs() > self.max_power_kw {
-            return Err(DispatchError::ProposalInvalid(alloc::format!(
-                "power_kw {} 超上限 {}",
-                assignment.power_kw,
-                self.max_power_kw
-            )));
-        }
         if !plan.is_valid_at(started) {
             return Err(DispatchError::ProposalInvalid(String::from("计划已过期")));
         }
@@ -597,63 +597,130 @@ impl DispatchEngine {
         )
         .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("certificate: {e:?}")))?;
 
-        // CommandIntent + CommandBatch（profile 资源视图 scope 校验）。
-        let unit_code = eneros_telemetry_model::unit_catalog::code_of(self.profile.unit);
-        let intent = CommandIntent::new(
-            IntentId::new(plan_sha[16..32].try_into().unwrap())
-                .map_err(|_| DispatchError::ProposalInvalid(String::from("意图 ID 派生失败")))?,
-            *plan.id(),
-            plan_sha,
-            u64::from(self.profile.device_id),
-            u16::try_from(self.profile.device_id).unwrap_or(0),
-            self.profile.point_id,
-            assignment.power_kw,
-            unit_code,
-            started,
-            started.saturating_add(plan.ttl_ms()),
-            Precondition::None,
-            CompensationHint::None,
-        )
-        .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("intent: {e:?}")))?;
-        let batch = CommandBatch::new(
-            proof_digest[..16].try_into().unwrap(),
+        // —— PlanCompiler：全 assignments → 确定性命令批（WP-5.1）——
+        // 已确认基线（分辨率合并参照）：(device,point) → 最近 AppliedConfirmed
+        // 值，经绑定换算到资产。
+        let applied = |asset_id: u64| -> Option<f64> {
+            let binding = self.resources.asset_control_binding(asset_id)?;
+            self.last_confirmed
+                .get(&(u32::from(binding.0), binding.1))
+                .map(|&(v, _)| v)
+        };
+        let outcome = crate::compiler::compile(
             &certificate,
+            plan,
             self.resources.as_ref(),
-            alloc::vec![intent],
+            self.contracts.as_ref(),
+            &applied,
+            &self.compiler_policy,
             started,
+            u64::from(self.profile.device_id),
         )
-        .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("batch: {e:?}")))?;
+        .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("compile: {e}")))?;
+
+        // 批指纹（观测/证据行：compiler/batch 双摘要 + 未动作证据数）。
+        let first_digest = outcome
+            .batches
+            .first()
+            .map(|b| *b.batch_digest())
+            .unwrap_or([0u8; 32]);
         eneros_runtime::println!(
-            "[svc-control-dispatch] PLAN-TYPED cert={:02x?} batch_intents={}",
-            &certificate.certificate_id().0[..4],
-            batch.intents().len()
+            "[svc-control-dispatch] PLAN-COMPILED batches={} intents={} skipped={} manual={} compiler={:02x?} batch={:02x?}",
+            outcome.batches.len(),
+            outcome
+                .batches
+                .iter()
+                .map(|b| b.intents().len())
+                .sum::<usize>(),
+            outcome.skipped.len(),
+            outcome.manual_approval.len(),
+            &outcome.compiler_digest[..4],
+            &first_digest[..4],
         );
 
-        // 合核（WP-54.2 不变；身份走 PlanTyped——correlation 与 facade
-        // 同派生，幂等键跨路径一致）。
-        self.execute_core(
-            CoreCommand {
-                identity: CoreIdentity::PlanTyped {
-                    plan_id: *plan.id(),
-                },
-                ttl_secs: plan.ttl_ms() / 1000,
-                power_kw: assignment.power_kw,
-                target_device,
-                input_digest: Some(*plan.input_digest()),
-                // typed 路径能量预算估算：|power| × ttl（上限形态；.37 真
-                // planner 携带全时域 schedule 后精确化）。
-                energy_kwh: energy_kwh.or(Some(
-                    assignment.power_kw.abs() * (plan.ttl_ms() as f64 / 3_600_000.0),
-                )),
-                plan_sha: Some(plan_sha),
-                idem_note: String::from("idempotent-hit（原结果，不重复写）"),
-            },
-            telemetry,
-            actor,
-            started,
-            states,
-            deadline_ms,
-        )
+        // 装配预检（fail-closed，不半执行）：全部意图必须绑定本 dispatch
+        // 设备——多设备投递面待 WP-5.2 Saga 卷（登记项）。
+        for batch in &outcome.batches {
+            for intent in batch.intents() {
+                if u32::from(intent.device_id()) != self.profile.device_id {
+                    return Err(DispatchError::ProposalInvalid(alloc::format!(
+                        "compile: intent device {} 未绑定本 dispatch（多设备执行面待 Saga 卷）",
+                        intent.device_id()
+                    )));
+                }
+                if intent.power_kw().abs() > self.max_power_kw {
+                    return Err(DispatchError::ProposalInvalid(alloc::format!(
+                        "power_kw {} 超上限 {}",
+                        intent.power_kw(),
+                        self.max_power_kw
+                    )));
+                }
+            }
+        }
+
+        // —— 逐命令合核（批序 = 编译序；失败阻断后继）——
+        // not_before 语义：未来步不当拍投递（留待到期 tick——键已由编译
+        // 确定性分配，重编译 + journal 幂等命中 = 无重复投递）；已过期步
+        // 跳过并留证据行。
+        let legacy_single = crate::compiler::is_legacy_single_command_plan(plan);
+        let mut delivered_any = false;
+        let mut last_receipt = None;
+        for batch in &outcome.batches {
+            for intent in batch.intents() {
+                let now = (self.now_fn)();
+                if now < intent.valid_from_ms() {
+                    continue;
+                }
+                if now > intent.valid_until_ms() {
+                    eneros_runtime::println!(
+                        "[svc-control-dispatch] PLAN-COMMAND-SKIP-EXPIRED intent={:02x?}",
+                        &intent.intent_id().0[..4],
+                    );
+                    continue;
+                }
+                let correlation = crate::compiler::plan_command_correlation(
+                    plan.id(),
+                    intent.intent_id(),
+                    legacy_single,
+                );
+                let window_secs = intent
+                    .valid_until_ms()
+                    .saturating_sub(now)
+                    .min(plan.ttl_ms())
+                    / 1000;
+                // typed 路径能量预算估算：|power| × 意图窗（上限形态）。
+                let window_h = (intent
+                    .valid_until_ms()
+                    .saturating_sub(intent.valid_from_ms()) as f64)
+                    / 3_600_000.0;
+                let energy = energy_kwh.or(Some(intent.power_kw().abs() * window_h));
+                let receipt = self.execute_core(
+                    CoreCommand {
+                        identity: CoreIdentity::PlanCommand { correlation },
+                        ttl_secs: window_secs.max(1),
+                        power_kw: intent.power_kw(),
+                        target_device: target_device.clone(),
+                        input_digest: Some(*plan.input_digest()),
+                        energy_kwh: energy,
+                        plan_sha: Some(plan_sha),
+                        idem_note: String::from("idempotent-hit（原结果，不重复写）"),
+                    },
+                    telemetry,
+                    actor,
+                    started,
+                    states.clone(),
+                    deadline_ms,
+                )?;
+                delivered_any = true;
+                last_receipt = Some(receipt);
+            }
+        }
+        if !delivered_any {
+            return Err(DispatchError::ProposalInvalid(String::from(
+                "计划无到期命令（未来步留待到期 tick）",
+            )));
+        }
+        Ok(last_receipt.expect("delivered_any ⇒ 非 None"))
     }
 
     /// SPEC WP-A.2：投影——受信任遥测电气量退化检查（NaN/±Inf/零时间戳
@@ -802,11 +869,11 @@ impl DispatchEngine {
                 let c = Self::intent_correlation(&protocol_id, sequence);
                 (c, c, sequence)
             }
-            CoreIdentity::PlanTyped { plan_id } => {
+            CoreIdentity::PlanCommand { correlation } => {
                 self.seq += 1;
                 let mut cid = [0u8; 16];
                 cid[..8].copy_from_slice(&self.seq.to_le_bytes());
-                (cid, plan_id.0, self.seq)
+                (cid, correlation, self.seq)
             }
         };
         let now_secs = started / 1000;

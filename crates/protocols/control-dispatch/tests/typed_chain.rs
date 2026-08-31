@@ -310,6 +310,8 @@ fn engine_with(channel: Box<dyn DeliveryChannel>) -> DispatchEngine {
             unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
             catalog_version: 1,
         }),
+        contracts: Box::new(support::test_contract_view(1, 1)),
+        compiler_policy: support::test_compiler_policy(),
         feedback_mapping: eneros_control_dispatch::FeedbackPointMapping {
             grid_up: 5,
             soc: 4,
@@ -420,4 +422,157 @@ fn typed_entry_rejects_expired_plan() {
         .unwrap_err();
     assert!(matches!(err, DispatchError::ProposalInvalid(_)));
     let _ = &mut c; // 保持变量使用
+}
+
+// ---- WP-5.1（v0.314.41）：多步计划确定性编译 + not_before 逐 tick 投递 ----
+
+/// 可推进时钟（fn 指针约束 → 静态原子；仅本组用例推进）。
+static TICK_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_700_000_000_000);
+
+fn tick_now() -> u64 {
+    TICK_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 与 CountingChannel 同构，但设备侧时钟 = 可推进 TICK（与引擎同源——
+/// 信封时间性校验两侧必须同钟）。
+struct TickCountingChannel {
+    ingress: Rc<RefCell<eneros_device_agent::EnvelopeIngress>>,
+    devices: Rc<RefCell<eneros_device_agent::DeviceRegistry>>,
+    delivered: Rc<RefCell<u64>>,
+}
+
+impl DeliveryChannel for TickCountingChannel {
+    fn deliver(
+        &mut self,
+        _target: &str,
+        payload: &[u8],
+        _timeout_ms: u64,
+    ) -> Result<Vec<u8>, eneros_control_dispatch::ChannelError> {
+        *self.delivered.borrow_mut() += 1;
+        let out =
+            self.ingress
+                .borrow_mut()
+                .process(&mut self.devices.borrow_mut(), payload, tick_now());
+        Ok(eneros_device_agent::outcome_to_frame(&out)
+            .encode()
+            .to_vec())
+    }
+}
+
+fn two_step_plan() -> eneros_decision_contract::CandidatePlan {
+    use eneros_decision_contract::{
+        Assignment, CandidatePlan, PlanId, SnapshotId, SolveStatusKind,
+    };
+    let a = |step: u32, kw: f64| Assignment {
+        asset_id: 1,
+        device_id: 1,
+        point_id: 10,
+        power_kw: kw,
+        unit_code: 6,
+        step_index: step,
+    };
+    CandidatePlan::new(
+        PlanId([0x71; 16]),
+        SnapshotId([2u8; 16]),
+        [0xAA; 32],
+        1,
+        TICK_MS.load(std::sync::atomic::Ordering::Relaxed),
+        10_000_000_000, // 10s 步长
+        2,
+        SolveStatusKind::Optimal,
+        1.0,
+        0.0,
+        0.0,
+        10,
+        [0xBB; 32],
+        [0xCC; 32],
+        vec![a(1, 10.0), a(2, 20.0)],
+        TICK_MS.load(std::sync::atomic::Ordering::Relaxed),
+        60_000,
+    )
+    .expect("合法两步计划")
+}
+
+/// 两步计划：首拍只投到期步 1；步 2 未到期不投；推进时钟后重提交同计划
+/// ——步 1 幂等命中（不重投）、步 2 到期投递。总投递恰 2 次（确定性
+/// 重编译 + journal 幂等 = 无重复副作用）。
+#[test]
+fn typed_multi_step_plan_delivers_due_commands_per_tick() {
+    let (ingress, devices) = device_side();
+    let delivered = Rc::new(RefCell::new(0u64));
+    let channel = TickCountingChannel {
+        ingress,
+        devices,
+        delivered: delivered.clone(),
+    };
+    // 与 engine_with 同构，仅时钟可推进。
+    let profile = test_profile();
+    let config = DispatchConfig {
+        chain: build_chain(),
+        key: KEY.to_vec(),
+        profile,
+        fencing_token: 1 + EPOCH_SEED,
+        issuer_service: ISSUER,
+        issuer_epoch: 0,
+        target_endpoint: String::from("svc-device-agent"),
+        max_power_kw: 500.0,
+        safety_voltage_window: (340.0, 420.0),
+        safety_freq_window: (49.5, 50.5),
+        safety_ramp_kw_per_min: 200.0,
+        gate: DecisionGate::new(100, 1000.0, 3_600_000),
+        control_audit: None,
+        audit: Some(DecisionAudit::new([0x40; 32])),
+        intent_log: Box::new(eneros_control_dispatch::InMemoryIntentStore::new(64)),
+        delivery: Box::new(channel),
+        resources: Box::new(support::TestResourceView {
+            asset_id: 1,
+            device_id: 1,
+            point_id: profile.point_id,
+            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+            catalog_version: 1,
+        }),
+        contracts: Box::new(support::test_contract_view(1, 1)),
+        compiler_policy: support::test_compiler_policy(),
+        feedback_mapping: eneros_control_dispatch::FeedbackPointMapping {
+            grid_up: 5,
+            soc: 4,
+            dc_bus_v: 1,
+            overcurrent: 6,
+            overtemp: 6,
+        },
+        now_fn: tick_now,
+    };
+    let mut engine = DispatchEngine::new(config);
+    let plan = two_step_plan();
+
+    // 第 1 拍（t=base）：步 1 到期投递；步 2 未到期跳过。
+    let r1 = engine
+        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect("第 1 拍提交");
+    assert!(r1.final_state.is_committed());
+    assert_eq!(*delivered.borrow(), 1, "步 2 未到期不投递");
+
+    // 第 2 拍（t=base+10s）：步 1 幂等命中（零投递），步 2 到期投递。
+    TICK_MS.fetch_add(10_000, std::sync::atomic::Ordering::Relaxed);
+    let r2 = engine
+        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect("第 2 拍提交");
+    assert!(
+        r2.final_state.is_committed(),
+        "step2 receipt: {:?} note={:?}",
+        r2.final_state,
+        r2.note
+    );
+    assert_eq!(*delivered.borrow(), 2, "步 1 不重投、步 2 投递");
+
+    // 第 3 拍（时钟不动）：两步全部幂等命中——零新投递。
+    let r3 = engine
+        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect("第 3 拍提交");
+    assert!(r3.final_state.is_committed());
+    assert_eq!(
+        *delivered.borrow(),
+        2,
+        "重放零投递（幂等键 sub_index 稳定）"
+    );
 }

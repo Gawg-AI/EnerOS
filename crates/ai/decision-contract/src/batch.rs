@@ -7,6 +7,8 @@
 
 use alloc::vec::Vec;
 
+use sha2::Digest as _;
+
 use crate::certificate::CertifiedPlan;
 use crate::error::ContractError;
 use crate::ids::PlanId;
@@ -23,8 +25,11 @@ pub trait ResourceRegistry {
     fn catalog_version(&self) -> u64;
 }
 
-/// 批大小上界（迁移期单 PCS=1；.40 Saga 卷放宽并加 Saga journal）。
+/// 批大小上界（迁移期单 PCS=1；61 Phase 5 Saga 卷放宽并加 Saga journal）。
 pub const MAX_BATCH_SIZE: usize = 64;
+
+/// 批规范 wire 标识（batch_digest 编码前缀；[10] §2.2 batch 级字段）。
+pub const BATCH_MAGIC: [u8; 4] = *b"CBAT";
 
 /// fail-closed 空注册表（装配方未注入真实 Registry 时命令批编译拒绝：
 /// `asset_exists` 恒 false、绑定恒 None——[08] §4.8「planner 输入只能
@@ -47,6 +52,10 @@ impl ResourceRegistry for EmptyResourceRegistry {
 }
 
 /// 有序命令批（意图序 = 编译器裁决序；逐意图经 Gateway 授权）。
+///
+/// [10] §2.2 批级编译元数据：依赖 DAG（意图索引对）、跨设备并行上限、
+/// 批 deadline 与 compiler/batch 双摘要——同 CertifiedPlan + Catalog +
+/// Compiler 版本必然产出相同 `batch_digest`（唯一不变量）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandBatch {
     batch_id: [u8; 16],
@@ -57,6 +66,16 @@ pub struct CommandBatch {
     intents: Vec<CommandIntent>,
     catalog_version: u64,
     built_at_ms: u64,
+    /// 依赖边（before, after)——均为 intents 索引；无环（构造期校验）。
+    dependency_edges: Vec<(u32, u32)>,
+    /// 跨设备最大并行度（≥1；同设备恒串行——依赖边保证）。
+    max_parallel: u16,
+    /// 批 deadline（毫秒基准；0 = 未指定——由证书窗管辖）。
+    deadline_ms: u64,
+    /// 编译器摘要（SHA-256(compiler version ‖ policy)）。
+    compiler_digest: [u8; 32],
+    /// 批摘要（SHA-256([`CommandBatch::encode_v1`])——构造期计算）。
+    batch_digest: [u8; 32],
 }
 
 impl CommandBatch {
@@ -76,6 +95,36 @@ impl CommandBatch {
         intents: Vec<CommandIntent>,
         built_at_ms: u64,
     ) -> Result<Self, ContractError> {
+        Self::new_compiled(
+            batch_id,
+            cert,
+            registry,
+            intents,
+            built_at_ms,
+            alloc::vec::Vec::new(),
+            1,
+            0,
+            [0u8; 32],
+        )
+    }
+
+    /// 编译器入口（[10] §2.2）：在 [`CommandBatch::new`] 全部校验之上
+    /// 追加批级编译元数据校验（边索引界内、无自环、无环、max_parallel
+    /// ≥1）并计算 `batch_digest`。
+    ///
+    /// `deadline_ms = 0` 表示未指定（批窗由证书有效期管辖）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_compiled(
+        batch_id: [u8; 16],
+        cert: &CertifiedPlan,
+        registry: &dyn ResourceRegistry,
+        intents: Vec<CommandIntent>,
+        built_at_ms: u64,
+        dependency_edges: Vec<(u32, u32)>,
+        max_parallel: u16,
+        deadline_ms: u64,
+        compiler_digest: [u8; 32],
+    ) -> Result<Self, ContractError> {
         if intents.is_empty() {
             return Err(ContractError::MissingField("intents"));
         }
@@ -87,6 +136,19 @@ impl CommandBatch {
         }
         if registry.catalog_version() != cert.constraint_catalog_version() {
             return Err(ContractError::ScopeMismatch("catalog_version"));
+        }
+        if max_parallel == 0 {
+            return Err(ContractError::OutOfRange("max_parallel"));
+        }
+        // 依赖边：索引界内 + 无自环（环检测在绑定校验后统一做——对全
+        // 部意图索引，含编译器显式边）。
+        for &(a, b) in &dependency_edges {
+            if a as usize >= intents.len() || b as usize >= intents.len() {
+                return Err(ContractError::ScopeMismatch("edge.index"));
+            }
+            if a == b {
+                return Err(ContractError::Malformed("edge.self-loop"));
+            }
         }
         let mut seen: Vec<[u8; 16]> = Vec::with_capacity(intents.len());
         for i in &intents {
@@ -116,7 +178,8 @@ impl CommandBatch {
                 return Err(ContractError::InvalidWindow);
             }
         }
-        Ok(Self {
+        Self::assert_acyclic(intents.len(), &dependency_edges)?;
+        let mut batch = Self {
             batch_id,
             plan_id: *cert.plan_id(),
             plan_sha256: *cert.plan_sha256(),
@@ -124,7 +187,44 @@ impl CommandBatch {
             intents,
             catalog_version: registry.catalog_version(),
             built_at_ms,
-        })
+            dependency_edges,
+            max_parallel,
+            deadline_ms,
+            compiler_digest,
+            batch_digest: [0u8; 32],
+        };
+        batch.batch_digest = sha2::Sha256::digest(batch.encode_v1().as_slice()).into();
+        Ok(batch)
+    }
+
+    /// DAG 无环断言（Kahn 拓扑计数；残余即有环）。
+    fn assert_acyclic(n: usize, edges: &[(u32, u32)]) -> Result<(), ContractError> {
+        let mut indegree = alloc::vec![0usize; n];
+        let mut adj: alloc::collections::BTreeMap<u32, alloc::vec::Vec<u32>> =
+            alloc::collections::BTreeMap::new();
+        for &(a, b) in edges {
+            indegree[b as usize] += 1;
+            adj.entry(a).or_default().push(b);
+        }
+        let mut queue: alloc::collections::BTreeSet<u32> = (0..n as u32)
+            .filter(|i| indegree[*i as usize] == 0)
+            .collect();
+        let mut visited = 0usize;
+        while let Some(v) = queue.pop_first() {
+            visited += 1;
+            if let Some(next) = adj.get(&v) {
+                for &w in next {
+                    indegree[w as usize] -= 1;
+                    if indegree[w as usize] == 0 {
+                        queue.insert(w);
+                    }
+                }
+            }
+        }
+        if visited != n {
+            return Err(ContractError::Malformed("dependency-cycle"));
+        }
+        Ok(())
     }
 
     pub fn batch_id(&self) -> &[u8; 16] {
@@ -147,6 +247,53 @@ impl CommandBatch {
     }
     pub fn built_at_ms(&self) -> u64 {
         self.built_at_ms
+    }
+    pub fn dependency_edges(&self) -> &[(u32, u32)] {
+        &self.dependency_edges
+    }
+    pub fn max_parallel(&self) -> u16 {
+        self.max_parallel
+    }
+    pub fn deadline_ms(&self) -> u64 {
+        self.deadline_ms
+    }
+    pub fn compiler_digest(&self) -> &[u8; 32] {
+        &self.compiler_digest
+    }
+    pub fn batch_digest(&self) -> &[u8; 32] {
+        &self.batch_digest
+    }
+
+    /// 批规范编码（batch_digest 输入；字段序固定，reserved 全零）。
+    ///
+    /// 意图段逐条 [`CommandIntent::encode_v1`]（96B 定长，含 plan 绑定
+    /// 三元组）；批级字段（边/并行/deadline/compiler 摘要）全部入码——
+    /// 任何元数据漂移都改变 batch_digest（mutation 可检）。
+    pub fn encode_v1(&self) -> Vec<u8> {
+        use crate::wire::{put_u16, put_u32, put_u64};
+        let mut out = Vec::with_capacity(64 + self.intents.len() * crate::intent::INTENT_WIRE_LEN);
+        out.extend_from_slice(&BATCH_MAGIC);
+        put_u16(&mut out, crate::CONTRACT_WIRE_V1);
+        put_u16(&mut out, 0); // flags/reserved
+        out.extend_from_slice(&self.batch_id);
+        out.extend_from_slice(&self.plan_id.0);
+        out.extend_from_slice(&self.plan_sha256);
+        out.extend_from_slice(&self.certificate_id.0);
+        put_u64(&mut out, self.catalog_version);
+        put_u64(&mut out, self.built_at_ms);
+        put_u32(&mut out, self.intents.len() as u32);
+        for i in &self.intents {
+            out.extend_from_slice(&i.encode_v1());
+        }
+        put_u32(&mut out, self.dependency_edges.len() as u32);
+        for &(a, b) in &self.dependency_edges {
+            put_u32(&mut out, a);
+            put_u32(&mut out, b);
+        }
+        put_u16(&mut out, self.max_parallel);
+        put_u64(&mut out, self.deadline_ms);
+        out.extend_from_slice(&self.compiler_digest);
+        out
     }
 }
 
@@ -287,6 +434,173 @@ mod tests {
         assert_eq!(
             CommandBatch::new([7u8; 16], &c, &SinglePcs, vec![], 2_000),
             Err(ContractError::MissingField("intents"))
+        );
+    }
+
+    // ---- [10] §2.2 批级编译元数据（.41 PlanCompiler 卷）----
+
+    #[cfg(feature = "transition-certifier")]
+    fn two_intents() -> (CommandIntent, CommandIntent) {
+        let a = CommandIntent::new(
+            IntentId([3u8; 16]),
+            PlanId([1u8; 16]),
+            [0xAB; 32],
+            1,
+            1,
+            10,
+            -50.0,
+            6,
+            1_000,
+            60_000,
+            Precondition::None,
+            CompensationHint::None,
+        )
+        .unwrap();
+        let b = CommandIntent::new(
+            IntentId([4u8; 16]),
+            PlanId([1u8; 16]),
+            [0xAB; 32],
+            1,
+            1,
+            10,
+            30.0,
+            6,
+            2_000,
+            60_000,
+            Precondition::None,
+            CompensationHint::None,
+        )
+        .unwrap();
+        (a, b)
+    }
+
+    #[test]
+    #[cfg(feature = "transition-certifier")]
+    fn compiled_batch_digest_deterministic_and_metadata_sensitive() {
+        let c = cert();
+        let (a, b) = two_intents();
+        let edges = alloc::vec![(0u32, 1u32)];
+        let cd: [u8; 32] = [7; 32];
+        let b1 = CommandBatch::new_compiled(
+            [7u8; 16],
+            &c,
+            &SinglePcs,
+            vec![a, b],
+            2_000,
+            edges.clone(),
+            2,
+            60_000,
+            cd,
+        )
+        .unwrap();
+        let b2 = CommandBatch::new_compiled(
+            [7u8; 16],
+            &c,
+            &SinglePcs,
+            vec![a, b],
+            2_000,
+            edges,
+            2,
+            60_000,
+            cd,
+        )
+        .unwrap();
+        // 同输入同 digest（确定性不变量）。
+        assert_eq!(b1.batch_digest(), b2.batch_digest());
+        assert_eq!(b1.encode_v1(), b2.encode_v1());
+        // 任一元数据漂移改变 digest（mutation 可检）。
+        let b3 = CommandBatch::new_compiled(
+            [7u8; 16],
+            &c,
+            &SinglePcs,
+            vec![a, b],
+            2_000,
+            alloc::vec::Vec::new(),
+            2,
+            60_000,
+            cd,
+        )
+        .unwrap();
+        assert_ne!(b1.batch_digest(), b3.batch_digest(), "边集入码");
+        let b4 = CommandBatch::new_compiled(
+            [7u8; 16],
+            &c,
+            &SinglePcs,
+            vec![a, b],
+            2_000,
+            alloc::vec![(0u32, 1u32)],
+            4,
+            60_000,
+            cd,
+        )
+        .unwrap();
+        assert_ne!(b1.batch_digest(), b4.batch_digest(), "max_parallel 入码");
+    }
+
+    #[test]
+    #[cfg(feature = "transition-certifier")]
+    fn compiled_batch_edge_and_cycle_negatives() {
+        let c = cert();
+        let (a, b) = two_intents();
+        // 边索引越界。
+        assert_eq!(
+            CommandBatch::new_compiled(
+                [7u8; 16],
+                &c,
+                &SinglePcs,
+                vec![a, b],
+                2_000,
+                alloc::vec![(0u32, 2u32)],
+                1,
+                0,
+                [0; 32]
+            ),
+            Err(ContractError::ScopeMismatch("edge.index"))
+        );
+        // 自环。
+        assert_eq!(
+            CommandBatch::new_compiled(
+                [7u8; 16],
+                &c,
+                &SinglePcs,
+                vec![a, b],
+                2_000,
+                alloc::vec![(1u32, 1u32)],
+                1,
+                0,
+                [0; 32]
+            ),
+            Err(ContractError::Malformed("edge.self-loop"))
+        );
+        // DAG 有环（0→1→0）。
+        assert_eq!(
+            CommandBatch::new_compiled(
+                [7u8; 16],
+                &c,
+                &SinglePcs,
+                vec![a, b],
+                2_000,
+                alloc::vec![(0u32, 1u32), (1u32, 0u32)],
+                1,
+                0,
+                [0; 32]
+            ),
+            Err(ContractError::Malformed("dependency-cycle"))
+        );
+        // max_parallel=0。
+        assert_eq!(
+            CommandBatch::new_compiled(
+                [7u8; 16],
+                &c,
+                &SinglePcs,
+                vec![a],
+                2_000,
+                alloc::vec::Vec::new(),
+                0,
+                0,
+                [0; 32]
+            ),
+            Err(ContractError::OutOfRange("max_parallel"))
         );
     }
 }

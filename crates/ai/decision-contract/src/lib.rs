@@ -35,7 +35,7 @@ pub mod keyed;
 pub mod objective;
 pub mod wire;
 
-pub use batch::{CommandBatch, EmptyResourceRegistry, ResourceRegistry};
+pub use batch::{CommandBatch, EmptyResourceRegistry, ResourceRegistry, MAX_BATCH_SIZE};
 pub use candidate::{Assignment, CandidatePlan, SolveStatusKind};
 pub use certificate::{CertifiedPlan, CertifierSeal};
 pub use error::ContractError;
