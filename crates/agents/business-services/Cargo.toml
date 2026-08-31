@@ -87,3 +87,8 @@ path = "src/bin/svc-mgmt.rs"
 eneros-ingestion-core = { path = "../../protocols/ingestion-core", features = ["contract"] }
 eneros-config-bundle = { path = "../../runtime/config-bundle", features = ["compile"] }
 eneros-durable-state = { path = "../../runtime/durable-state" }
+# 蓝图 61 Phase 6 §5.7 step 4：外部事实 → ObjectiveModule shadow 核对。
+eneros-objective-engine = { path = "../../ai/objective-engine" }
+eneros-decision-contract = { path = "../../ai/decision-contract" }
+eneros-snapshot-service = { path = "../../agents/snapshot-service" }
+eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }

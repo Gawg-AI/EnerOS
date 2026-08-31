@@ -26,6 +26,7 @@ pub mod market;
 
 /// 蓝图 61 v0.314.31（[07] §3.4）：市场事实接入 adapter——经认证信封
 /// （SM3 摘要 + SM2 验签）走同一 IngestionModule 合同；修订/过期纪律。
+pub mod external_facts;
 pub mod market_ingest;
 // SPEC-C（WP-C.2）：history-query 分页执行器内核（RawIpc 泛型，host 可测）。
 pub mod mgmt_history;

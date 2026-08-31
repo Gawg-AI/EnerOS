@@ -48,7 +48,7 @@ pub extern "C" fn _start(
         "[svc-cloud-sync] durable outbox up (cloud peer unavailable -> flush fails closed)"
     );
     let mut handler = CloudHandler {
-        sync: eneros_business_services::cloud_sync::CloudSync::new(outbox, UnavailableTransport),
+        sync: eneros_business_services::cloud_sync::CloudSync::new(outbox, DisabledCloudTransport),
     };
     eneros_control_services::control_service_main(
         ep,
@@ -68,16 +68,19 @@ const CLOUD_OUTBOX_SLOT_LEN: usize = 256;
 #[cfg(target_os = "none")]
 const CLOUD_OUTBOX_MAX_SLOTS: usize = 8;
 
+/// 云对端未部署 → 显式 disabled（[11] §5.9 退出 gate：若某外部系统未
+/// 部署则服务明确 disabled，不宣称已接入；旧名 UnavailableTransport 的
+/// 行为与文案保持一致，仅状态语义显式化）。
 #[cfg(target_os = "none")]
-struct UnavailableTransport;
+struct DisabledCloudTransport;
 
 #[cfg(target_os = "none")]
-impl eneros_business_services::cloud_sync::UploadTransport for UnavailableTransport {
+impl eneros_business_services::cloud_sync::UploadTransport for DisabledCloudTransport {
     fn upload_batch(
         &mut self,
         _items: &[eneros_business_services::cloud_sync::UploadItem],
     ) -> Result<u64, &'static str> {
-        Err("cloud-peer-unavailable")
+        Err("cloud-peer-unavailable (disabled)")
     }
 }
 

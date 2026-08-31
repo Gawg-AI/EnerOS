@@ -882,6 +882,9 @@ impl<M: Clone> DurableOutbox<M> for MemOutbox<M> {
             .ok_or(StoreError::Other("unknown-outbox-id"))?;
         p.attempts += 1;
         p.last_sent_at_ms = at_ms;
+        // 与 AppendOutbox 一致（Phase 6 WP-6.3：重放须读真实状态——替身
+        // 不更新 state 会让「Sent」重放被如实报成 Queued，掩盖分层语义）。
+        p.state = MessageState::Sent;
         Ok(())
     }
     fn recover_pending(&mut self) -> Result<Vec<Pending<M>>, StoreError> {

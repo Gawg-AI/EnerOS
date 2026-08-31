@@ -49,9 +49,12 @@ pub extern "C" fn _start(
         MARKET_OUTBOX_SLOT_LEN,
         MARKET_OUTBOX_MAX_SLOTS,
     );
-    eneros_runtime::println!("[svc-market] market adapter up");
+    eneros_runtime::println!("[svc-market] market adapter up (peer not deployed -> disabled)");
     let mut handler = MarketHandler {
-        adapter: eneros_business_services::market::MarketAdapter::new(outbox, UnavailableTransport),
+        adapter: eneros_business_services::market::MarketAdapter::new(
+            outbox,
+            DisabledMarketTransport,
+        ),
     };
     eneros_control_services::control_service_main(
         ep,
@@ -71,17 +74,21 @@ const MARKET_OUTBOX_SLOT_LEN: usize = 256;
 #[cfg(target_os = "none")]
 const MARKET_OUTBOX_MAX_SLOTS: usize = 8;
 
+/// 市场对端未部署 → **显式 disabled**（[11] §5.9 退出 gate：若某外部
+/// 系统未部署则服务明确 disabled，不宣称已接入——旧 UnavailableTransport
+/// 语义收编为本状态）。
 #[cfg(target_os = "none")]
-struct UnavailableTransport;
+#[derive(Debug, Clone, Copy)]
+struct DisabledMarketTransport;
 
 #[cfg(target_os = "none")]
-impl eneros_business_services::market::QuoteTransport for UnavailableTransport {
+impl eneros_business_services::market::QuoteTransport for DisabledMarketTransport {
     fn send_quote(
         &mut self,
         _quote: &eneros_business_services::market::QuoteMessage,
     ) -> Result<(), eneros_business_services::market::MarketError> {
         Err(eneros_business_services::market::MarketError::Transport(
-            "market-peer-unavailable",
+            "market-peer-disabled",
         ))
     }
 }
@@ -92,7 +99,7 @@ struct MarketHandler {
         eneros_business_services::target_durable::MaybeOutbox<
             eneros_business_services::market::QuoteMessage,
         >,
-        UnavailableTransport,
+        DisabledMarketTransport,
     >,
 }
 
@@ -100,7 +107,7 @@ struct MarketHandler {
 impl eneros_control_services::ControlServiceHandler for MarketHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, now_ms: u64) -> bool {
         use eneros_business_services::market::*;
-        use eneros_durable_state::{IdempotencyKey, OutboxId, PeerReceipt};
+        use eneros_durable_state::{IdempotencyKey, OutboxId};
         use eneros_market_types::{MilliYuan, TimeSlot, YuanPerMwh};
         const MAGIC: &[u8; 4] = b"MKT1";
         if req.len() < 5 || &req[..4] != MAGIC {
@@ -162,27 +169,16 @@ impl eneros_control_services::ControlServiceHandler for MarketHandler {
                 }
             }
             0x02 => {
-                if req.len() != 5 + 16 {
-                    resp.extend_from_slice(b"ERR:len");
-                    return false;
-                }
-                let p = &req[5..];
-                let id = OutboxId(u64::from_le_bytes(p[0..8].try_into().unwrap()));
-                let receipt = PeerReceipt {
-                    peer: "market-peer".into(),
-                    receipt_id: u64::from_le_bytes(p[8..16].try_into().unwrap()),
-                    at_ms: now_ms,
-                };
-                match self.adapter.handle_peer_ack(id, receipt) {
-                    Ok(()) => {
-                        resp.push(1);
-                        true
-                    }
-                    Err(_) => {
-                        resp.push(0);
-                        false
-                    }
-                }
+                // peer 未部署（transport disabled）→ 无签名回执路径：
+                // **不验签不回执**（[11] §5.2）；显式拒绝，不宣称已接入。
+                resp.extend_from_slice(b"ERR:peer-disabled");
+                false
+            }
+            0x04 => {
+                // 外部系统接入状态（[11] §5.9：未部署 → 明确 disabled）。
+                resp.push(0); // 0 = disabled（peer 未部署）
+                resp.extend_from_slice(b"market-peer-disabled");
+                true
             }
             0x03 => match self.adapter.reconcile_pending(now_ms) {
                 Ok(resent) => {
