@@ -40,3 +40,22 @@
 ## 3. 附：本卷顺手修复
 
 - 测试抓到 `MemOutbox::mark_sent` 不更新 state（与 AppendOutbox 行为不一致）——修复后「Sent 重放如实报 Sent」成立；该差异会掩盖 outbox 分层语义问题。
+
+## 4. 独立复查（2026-09-01，第二轮）：8 缺陷全修
+
+复查方法：全量新代码通读 + 每缺陷先写复现测试（红）→ 修复 → 回归绿；交叉面 grep（UnavailableTransport 残留/MKT1 0x02 库内消费方/FactReject 穷举匹配/BoundedLoop 外部调用方/workspace-lock 版本同步）均零次生影响。修复后 model-harness 84（78+6 复现测试）、business-services 90（89+1）、集成 4 全绿；fmt 收敛（Sink 变体触发 FactReject 枚举 rustfmt 重排）。
+
+| # | 位置 | 缺陷 | 修复 |
+|---|---|---|---|
+| 1 | gate.rs `parse_hex16` | 32 **字节**但含多字节 UTF-8 的引用串按字节下标切片 → **panic**（不可信模型输出直达崩溃面） | 字节级 hex 解码；非 ASCII hex 字节一律拒绝（结构化 Reference 拒） |
+| 2 | registry.rs `restore` | **eval 报告 40B 解析后游标未推进（`p+=40` 缺失）**——快照中带评测条目后还有任一条目 → 恢复必然错位失败（单条目 roundtrip 测试掩盖；现网恢复路径实际不可用） | 补 `p += 40`；新增多包快照恢复测试 |
+| 3 | registry.rs `restore` | 过期条目**整表拒绝毒化**——老包（含 Retired）过期后重启 → 全部模型不可用；且 now_ns=0（时钟未知）极性与 `prepare_inference`（放行）相反 | 签名先验后过期条目跳过（过期是预期状态非篡改；篡改面仍整表拒）；now_ns=0 不做过期裁决，口径统一 |
+| 4 | harness.rs `run` | 非 active 包延迟挂起发生在请求中途时 `health_signal` 返回 None → 继续走门并以 **stale Approved 生命周期返回 Candidate** | 挂起后查状态，Suspended → 结构化拒绝 |
+| 5 | skill.rs `SkillRegistry::register` | 缺**结构门 + package_sha256 摘要门**（签名只覆盖 canonical；instructions 被替换、max_tool_calls>max_steps 均可通过注册；与注释声称的「摘要门」不符） | `validate_structure()` + `package_digest()` 比对（与 ModelRegistry 装配对等） |
+| 6 | loop.rs `BoundedLoop::new` | 构造器 `note_tool_call` **预扣一次预算** → max_tool_calls=1 的 skill 0 次可用（off-by-one） | 显式 `max_tool_calls==0` 校验（不消耗），首次真实调用才计数 |
+| 7 | loop.rs `run` | 工具 remaining = **相对** max_runtime_ns − **绝对** now_ns → 生产 epoch 量级恒饱和为 0，一切工具收 0 预算必炸 | `min(deadline − now, max_runtime)`；新增 epoch 量级预算捕获测试 |
+| 8 | external_facts.rs `FactAdapter::accept` | sink 存储故障 `map_err(\|_\| BadWindow)`——**存储面故障谎报成窗口语义**（审计失真；该路径拒绝计数不一致） | 新增 `FactReject::Sink(&'static str)` 显式上报；认证已过 → 计数/水位不动（可重试） |
+
+另：lifecycle.rs `LifecyclePolicy` 注释声称「构造时校验」实无校验——注释如实化（NaN 阈值=挂起永不触发，属装配方信任配置责任，已在注释言明）。
+
+**观察项（登记不修）**：eval 空集 vacuous pass（无对抗/安全用例的套件按 1.0 通过——评测套件经 manifest 签名锁定，签发方受信，防御性收紧随 Phase 7）；`PackageLifecycle::rollback()`/`LifecycleBook` 本卷无生产调用方（回滚经 active() 兜底语义实现）；scratchpad 1024B < ToolResult PAYLOAD_MAX 8192B（超 1KB 工具结果会终止 loop，装配期需对齐）；`ProjectedField.time_ns/device_id` 未进 canonical/prompt（模型不可见，死数据）。

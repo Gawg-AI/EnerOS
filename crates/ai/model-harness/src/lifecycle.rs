@@ -97,7 +97,8 @@ pub enum HealthSignal {
     DisagreementRate(f64),
 }
 
-/// 生命周期政策（阈值；构造时校验 0..=1 与正延迟）。
+/// 生命周期政策（阈值；字段为信任配置——0..=1 与正延迟由装配方保证，
+/// 运行时无构造期校验）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct LifecyclePolicy {
     pub min_golden_pass_rate: f64,

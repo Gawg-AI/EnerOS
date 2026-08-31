@@ -292,20 +292,25 @@ impl<E: LlmEngine + 'static> ModelHarness<E> {
             .find(|r| r.id == id)
             .and_then(|r| r.result.ok())
             .ok_or(HarnessError::Infer("no result"))?;
-        // 健康信号：推理延迟越阈 → 暂挂（可能回滚）。
+        // 健康信号：推理延迟越阈 → 暂挂（可能回滚）。**挂起发生在本次
+        // 请求中途（含非 active 包——无回滚动作但状态已 Suspended）时
+        // 不再产出候选**，否则挂起包仍以 stale Approved 身份出货。
         let latency = self.engine.stats().last_inference_ns;
-        if latency > self.config.max_latency_ns
-            && self
+        if latency > self.config.max_latency_ns {
+            self.registry.health_signal(
+                &req.package_id,
+                &crate::lifecycle::HealthSignal::LatencyNs(latency),
+            );
+            let suspended = self
                 .registry
-                .health_signal(
-                    &req.package_id,
-                    &crate::lifecycle::HealthSignal::LatencyNs(latency),
-                )
-                .is_some()
-        {
-            return Ok(HarnessOutcome::Rejected {
-                reason: HarnessError::NotApproved(crate::error::LifecycleStage::Suspended),
-            });
+                .entry(&req.package_id)
+                .map(|e| e.lifecycle.state == Lifecycle::Suspended)
+                .unwrap_or(false);
+            if suspended {
+                return Ok(HarnessOutcome::Rejected {
+                    reason: HarnessError::NotApproved(crate::error::LifecycleStage::Suspended),
+                });
+            }
         }
         // 输出门。
         let schema = match req.purpose {
@@ -751,6 +756,64 @@ mod tests {
             HarnessOutcome::Rejected { .. } => {}
             other => panic!("expected gate reject, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn nonactive_latency_suspend_rejects_candidate() {
+        // 部署包 [1]（Approved），另有更新的 Approved 包 [2] 为 active。
+        // [1] 推理延迟越阈 → 被 suspend_on 挂起，但它不是 active——
+        // health_signal 不返回回滚动作。历史实现在此继续走门并**返回
+        // Candidate**（stale lifecycle=Approved）：挂起包的产物不得出候选。
+        let mut eng = StubEngine::single(
+            r#"{"kind":"PeakShave","reason":"PeakShave","confidence_bp":8000,"valid_until_ms":50000}"#,
+        );
+        eng.stats.last_inference_ns = 10_000_000_000; // > config 5s
+        let mut h = harness(eng);
+        // 注册第二个 Approved 包（同窗，package_id 更大 → active）。
+        let (sk2, pk2) = mt::test_keypair();
+        let mut m2 = mt::manifest();
+        m2.package_id = [2; 16];
+        m2.model_sha256 = crate::sha256_bytes(&[0x33; 256]);
+        m2.tokenizer_sha256 = crate::sha256_bytes(&[0x44; 128]);
+        let suite2 = suite();
+        m2.eval_suite_digest = suite2.digest;
+        m2.seal(&sk2, &pk2);
+        let contents2 = PackageContents {
+            model: Some(&[0x33; 256]),
+            tokenizer: Some(&[0x44; 128]),
+            eval_suite: Some(&suite_digest_material(&suite2)),
+        };
+        h.registry
+            .register(&m2, &contents2, Some(&suite2), 5000)
+            .unwrap();
+        let report = crate::lifecycle::OfflineEvalReport {
+            golden_pass_rate: 1.0,
+            adversarial_pass_rate: 1.0,
+            safety_refusal_rate: 1.0,
+            deviation: 0.0,
+            gate_refusal_rate: 0.0,
+        };
+        assert!(h.registry.finish_eval(&[2; 16], &report));
+        assert!(h.registry.enter_shadow(&[2; 16]));
+        assert!(h.registry.enter_canary(&[2; 16]));
+        assert!(h.registry.approve(&[2; 16]));
+        assert_eq!(
+            h.registry.active().map(|e| e.package.manifest.package_id),
+            Some([2; 16]),
+            "前置：active 是 [2]，被部署的 [1] 非 active"
+        );
+        h.deploy([1; 16], 5000).unwrap();
+        let snap = snapshot();
+        let req = request(&snap, "plan", purpose::SCHEDULE_SCENARIO_PROPOSAL);
+        match h.run(&req).unwrap() {
+            HarnessOutcome::Rejected { .. } => {}
+            other => panic!("挂起包的输出不得成为候选，got {other:?}"),
+        }
+        // 状态面：[1] 确已 Suspended。
+        assert_eq!(
+            h.registry.entry(&[1; 16]).unwrap().lifecycle.state,
+            Lifecycle::Suspended
+        );
     }
 
     #[test]

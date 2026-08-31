@@ -276,7 +276,11 @@ impl ModelRegistry {
         b
     }
 
-    /// 恢复（重验签名与模型/tokenizer 摘要；失败 → 整表拒绝，fail-closed）。
+    /// 恢复（重验签名与模型/tokenizer 摘要；wire/结构/签名/内容摘要任一
+    /// 篡改 → 整表拒绝，fail-closed）。**已过期条目跳过**——过期是预期
+    /// 状态而非篡改，不得毒化其余条目（老包过期后整表拒绝会让全部模型
+    /// 不可用）；`now_ns=0`（时钟未知）与 `prepare_inference` 同口径：
+    /// 不做过期裁决。
     pub fn restore(
         &mut self,
         wire: &[u8],
@@ -326,13 +330,17 @@ impl ModelRegistry {
                 let mut it = (0..5).map(|i| {
                     f64::from_le_bytes(wire[p + i * 8..p + i * 8 + 8].try_into().unwrap())
                 });
-                Some(OfflineEvalReport {
+                let report = Some(OfflineEvalReport {
                     golden_pass_rate: it.next().unwrap_or(0.0),
                     adversarial_pass_rate: it.next().unwrap_or(0.0),
                     safety_refusal_rate: it.next().unwrap_or(0.0),
                     deviation: it.next().unwrap_or(0.0),
                     gate_refusal_rate: it.next().unwrap_or(0.0),
-                })
+                });
+                // 40B 评测块必须推进游标——缺此步会让下一-entry 从评测
+                // 数据中段解码，整个恢复必然错位失败。
+                p += 40;
+                report
             } else {
                 p += 1;
                 None
@@ -346,8 +354,10 @@ impl ModelRegistry {
             if !manifest.verify_signature(pk) {
                 return Err(HarnessError::Manifest("signature invalid"));
             }
-            if !manifest.is_valid_at_ns(now_ns) {
-                return Err(HarnessError::PackageExpired);
+            if now_ns > 0 && !manifest.is_valid_at_ns(now_ns) {
+                // 过期条目：跳过（不加载内容、不入表）。签名已验——该跳过
+                // 只对真实签发的过期包发生。
+                continue;
             }
             let (model, tokenizer) =
                 load(&manifest.package_id).ok_or(HarnessError::Manifest("content unavailable"))?;
@@ -586,6 +596,82 @@ mod tests {
         let action = r.health_signal(&[3; 16], &HealthSignal::Drift(0.001));
         assert!(action.is_none());
         assert!(r.active().is_some());
+    }
+
+    /// 注册 Approved 包（自定义有效期窗；其余 digest/内容与
+    /// `register_approved` 同源）。
+    fn register_approved_windowed(r: &mut ModelRegistry, pkg: &[u8; 16], valid_until: u64) {
+        let (sk, pk) = mt::test_keypair();
+        let mut m = mt::manifest();
+        m.package_id = *pkg;
+        m.model_sha256 = crate::sha256_bytes(&[0x11; 256]);
+        m.tokenizer_sha256 = crate::sha256_bytes(&[0x22; 128]);
+        m.valid_until_ns = valid_until;
+        let suite = eval_suite();
+        m.eval_suite_digest = suite.digest;
+        m.seal(&sk, &pk);
+        let contents = PackageContents {
+            model: Some(&[0x11; 256]),
+            tokenizer: Some(&[0x22; 128]),
+            eval_suite: Some(&eval_suite_material(&suite)),
+        };
+        r.register(&m, &contents, Some(&suite), 1000).unwrap();
+        let report = OfflineEvalReport {
+            golden_pass_rate: 1.0,
+            adversarial_pass_rate: 1.0,
+            safety_refusal_rate: 1.0,
+            deviation: 0.0,
+            gate_refusal_rate: 0.0,
+        };
+        assert!(r.finish_eval(pkg, &report));
+        assert!(r.enter_shadow(pkg));
+        assert!(r.enter_canary(pkg));
+        assert!(r.approve(pkg));
+    }
+
+    #[test]
+    fn restore_skips_expired_keeps_valid() {
+        // 两包 Approved：A 窗口到 1e6，B 窗口到 5e3。B 先过期——过期是
+        // 预期状态而非篡改，恢复不得毒化整表（历史实现整表拒绝 → 全部
+        // 模型不可用）。篡改面（wire/结构/签名/内容摘要）仍整表拒绝。
+        let mut r = registry();
+        register_approved_windowed(&mut r, &[1; 16], 1_000_000);
+        register_approved_windowed(&mut r, &[2; 16], 5_000);
+        let snap = r.snapshot();
+        // now=10_000：B 已过期 → 跳过；A 完好可用。
+        let model = [0x11; 256].to_vec();
+        let tok = [0x22; 128].to_vec();
+        let mut r2 = registry();
+        r2.restore(
+            &snap,
+            &mut |id| {
+                if *id == [1; 16] || *id == [2; 16] {
+                    Some((model.clone(), tok.clone()))
+                } else {
+                    None
+                }
+            },
+            10_000,
+        )
+        .unwrap();
+        assert_eq!(r2.len(), 1, "过期条目跳过");
+        assert!(r2.prepare_inference(&[1; 16], 10_000).is_ok());
+        // now=0（时钟未知）：与 prepare_inference 同口径——不做过期裁决，
+        // 全表恢复（历史实现 valid_from>0 时恒拒）。
+        let mut r3 = registry();
+        r3.restore(
+            &snap,
+            &mut |id| {
+                if *id == [1; 16] || *id == [2; 16] {
+                    Some((model.clone(), tok.clone()))
+                } else {
+                    None
+                }
+            },
+            0,
+        )
+        .unwrap();
+        assert_eq!(r3.len(), 2);
     }
 
     #[test]

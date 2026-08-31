@@ -296,7 +296,9 @@ impl FactPayload for EnterpriseFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FactReject {
     DigestMismatch,
-    UnknownKey { key_id: [u8; 8] },
+    UnknownKey {
+        key_id: [u8; 8],
+    },
     BadSignature,
     BadRevision,
     ZeroExternalId,
@@ -309,9 +311,19 @@ pub enum FactReject {
     BadCurrency,
     BadTimezone,
     BadApprovalFlag,
-    StaleRevision { revision: u32, seen: u32 },
-    NotYetEffective { effective_from_ms: u64 },
-    Expired { expires_at_ms: u64 },
+    StaleRevision {
+        revision: u32,
+        seen: u32,
+    },
+    NotYetEffective {
+        effective_from_ms: u64,
+    },
+    Expired {
+        expires_at_ms: u64,
+    },
+    /// 事件面存储故障（sink 满/落库失败）——认证已通过，非纪律拒绝；
+    /// 修订水位不推进，可重试。
+    Sink(&'static str),
 }
 
 /// 签名事实信封（[11] §5.1 认证、版本化、有效期明确）。
@@ -474,6 +486,8 @@ impl FactAdapter {
             });
         }
         // 事件面（canonical 全量保留——外部 revision 与签名可追溯）。
+        // 存储面故障显式上报为 Sink——不得冒充窗口语义（BadWindow）；
+        // 计数与水位均不动（认证已通过，可重试）。
         let canonical = env.canonical_bytes();
         let offset = sink
             .append(
@@ -483,7 +497,7 @@ impl FactAdapter {
                 &canonical,
                 now_ms.saturating_mul(1_000_000),
             )
-            .map_err(|_| FactReject::BadWindow)?;
+            .map_err(FactReject::Sink)?;
         self.revisions
             .insert(env.header.external_id, env.header.revision);
         self.accepted_total += 1;
@@ -661,6 +675,33 @@ mod tests {
             a.accept(&mut sink, &ukey, 5000),
             Err(FactReject::UnknownKey { .. })
         ));
+    }
+
+    #[test]
+    fn sink_full_not_misreported_as_badwindow() {
+        // 存储面故障不是窗口语义：sink 满 → 结构化 Sink 错误（历史实现
+        // map_err(|_| BadWindow) 把「sink full」谎报成 BadWindow，审计
+        // 面失真）。拒绝计数只反映认证/纪律面；水位不推进（可重试）。
+        let mut a = adapter();
+        let mut sink = MemFactEventSink::default();
+        for i in 0..256u32 {
+            a.accept(
+                &mut sink,
+                &sealed(header([7; 16], i + 1), market_fact()),
+                5000,
+            )
+            .unwrap();
+        }
+        assert_eq!(sink.entries.len(), 256, "sink 恰好打满");
+        let rejected_before = a.rejected_total;
+        let res = a.accept(
+            &mut sink,
+            &sealed(header([7; 16], 257), market_fact()),
+            5000,
+        );
+        assert!(matches!(res, Err(FactReject::Sink("sink full"))));
+        assert_eq!(a.rejected_total, rejected_before);
+        assert_eq!(a.revision_of(&[7; 16]), Some(256), "水位未推进");
     }
 
     #[test]

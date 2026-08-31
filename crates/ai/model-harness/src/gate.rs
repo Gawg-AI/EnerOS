@@ -447,12 +447,17 @@ fn check_finite(v: &serde_json::Value) -> Result<(), ()> {
 }
 
 fn parse_hex16(s: &str) -> Option<[u8; 16]> {
-    if s.len() != 32 {
+    // 字节级解码：字符串来自模型输出（不可信），可能含多字节 UTF-8——
+    // 按字符边界切片会 panic；非 ASCII hex 字节一律拒绝。
+    let b = s.as_bytes();
+    if b.len() != 32 {
         return None;
     }
     let mut out = [0u8; 16];
-    for i in 0..16 {
-        out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    for (i, pair) in b.chunks_exact(2).enumerate() {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        out[i] = (hi * 16 + lo) as u8;
     }
     Some(out)
 }
@@ -558,6 +563,21 @@ mod tests {
         assert_eq!(
             gate.evaluate(raw, &SCHEMA_INTENT, &ctx()),
             Err(GateReject::new(GateStage::Value, "valid_until_ms"))
+        );
+    }
+
+    #[test]
+    fn ref_hex_multibyte_rejected_without_panic() {
+        // 模型输出不可信：event_refs 元素可为任意字符串。32 **字节**但含
+        // 多字节 UTF-8 字符（10×3B 中文 + 2B ASCII）——按字节下标切片
+        // 会切进字符内部（历史实现 panic）。必须结构化拒绝。
+        let gate = OutputGate;
+        let s = alloc::format!("{}zz", "中".repeat(10));
+        assert_eq!(s.len(), 32, "恰好 32 字节且非 ASCII 边界对齐");
+        let raw = alloc::format!(r#"{{"severity":2,"event_refs":["{s}"],"text":"x"}}"#);
+        assert_eq!(
+            gate.evaluate(&raw, &SCHEMA_EXPLANATION, &ctx()),
+            Err(GateReject::new(GateStage::Reference, "ref hex"))
         );
     }
 

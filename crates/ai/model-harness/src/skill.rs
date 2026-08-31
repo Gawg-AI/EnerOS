@@ -218,7 +218,7 @@ impl SkillRegistry {
         self.entries.is_empty()
     }
 
-    /// 注册（签名 + 有效期 + 摘要门；重复 skill_id → 拒）。
+    /// 注册（签名 + 有效期 + 结构/摘要门；重复 skill_id → 拒）。
     pub fn register(&mut self, pkg: &SkillPackage, now_ns: u64) -> Result<(), HarnessError> {
         if self.entries.contains_key(&pkg.manifest.skill_id) {
             return Err(HarnessError::Manifest("duplicate skill_id"));
@@ -232,6 +232,14 @@ impl SkillRegistry {
             .ok_or(HarnessError::Manifest("unknown signer key"))?;
         if !pkg.verify_signature(pk) {
             return Err(HarnessError::Manifest("signature invalid"));
+        }
+        // 结构门 + 摘要门：签名只覆盖 manifest canonical——instructions/
+        // 白名单内容经 package_sha256 间接绑定，必须显式核验（字段 pub，
+        // 结构体直构可绕过 `SkillPackage::new` 的构建期校验）。
+        pkg.manifest.validate_structure()?;
+        let digest = pkg.package_digest();
+        if digest != pkg.manifest.package_sha256 {
+            return Err(HarnessError::Manifest("package_sha256 mismatch"));
         }
         self.entries.insert(pkg.manifest.skill_id, pkg.clone());
         Ok(())
@@ -426,6 +434,53 @@ pub(crate) mod tests {
         assert_eq!(
             b.validate_structure(),
             Err(HarnessError::Manifest("allowed_data_class>Restricted"))
+        );
+    }
+
+    #[test]
+    fn register_rejects_tampered_content_and_bad_structure() {
+        // 注册面注释承诺「签名 + 有效期 + 摘要门」：签名只覆盖 manifest
+        // canonical——instructions/白名单内容经 package_sha256 间接绑定，
+        // 必须显式核验；结构门同（历史实现两者皆缺，结构体直构即绕过
+        // SkillPackage::new）。
+        // (a) 指令被替换（manifest/签名/摘要保持原值）→ 注册拒。
+        let (_, pk) = test_keypair();
+        let good = sealed_skill(vec![ToolId::QuerySnapshot]);
+        let forged = SkillPackage {
+            manifest: good.manifest.clone(),
+            instructions: "被替换的指令".into(),
+            tool_allowlist: good.tool_allowlist.clone(),
+        };
+        let mut reg = SkillRegistry::new();
+        reg.add_signer_key(1, pk);
+        assert_eq!(
+            reg.register(&forged, 0),
+            Err(HarnessError::Manifest("package_sha256 mismatch"))
+        );
+        // 正本仍可注册（同一注册表不受拒件影响）。
+        reg.register(&good, 0).unwrap();
+        // (b) 结构非法（max_tool_calls > max_steps）但签名/摘要自洽 → 拒。
+        let (sk, pk2) = test_keypair();
+        let mut m = skill_manifest();
+        m.max_steps = 8;
+        m.max_tool_calls = 9;
+        m.tool_allowlist_digest =
+            crate::sha256_bytes(&allowlist_canonical(&[ToolId::QuerySnapshot]));
+        let mut canon = m.canonical_bytes();
+        canon.extend_from_slice("指令".as_bytes());
+        canon.extend_from_slice(&allowlist_canonical(&[ToolId::QuerySnapshot]));
+        m.package_sha256 = crate::sha256_bytes(&canon);
+        m.seal(&sk, &pk2);
+        let pkg = SkillPackage {
+            manifest: m,
+            instructions: "指令".into(),
+            tool_allowlist: vec![ToolId::QuerySnapshot],
+        };
+        let mut reg2 = SkillRegistry::new();
+        reg2.add_signer_key(1, pk2);
+        assert_eq!(
+            reg2.register(&pkg, 0),
+            Err(HarnessError::Manifest("max_tool_calls>max_steps"))
         );
     }
 

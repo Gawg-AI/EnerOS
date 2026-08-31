@@ -158,7 +158,7 @@ impl<M: LoopModel> BoundedLoop<M> {
             max_runtime_ns: skill.manifest.max_runtime_ms as u64 * 1_000_000,
             concurrency_class: 0,
         };
-        let mut tracker = BudgetTracker::new(budget, ctx.now_ns);
+        let tracker = BudgetTracker::new(budget, ctx.now_ns);
         // 步预算由 max_steps 硬计数（BudgetTracker 只认 tool/deadline/
         // runtime/token）。
         let _ = max_steps;
@@ -169,8 +169,11 @@ impl<M: LoopModel> BoundedLoop<M> {
                 return Err(HarnessError::Internal("unknown capability code"));
             }
         }
-        // 预算一致性：skill 的 max_tool_calls 必须能被 loop 硬计数。
-        if tracker.note_tool_call().is_err() {
+        // 预算一致性：max_tool_calls ≥ 1（0 预算 skill 在注册面
+        // validate_structure 已拒；此处直构兜底）。**构造不预扣预算**——
+        // 首次真实调用才计数（预扣会让 max_tool_calls=1 的 skill 0 次
+        // 可用，off-by-one）。
+        if skill.manifest.max_tool_calls == 0 {
             return Err(HarnessError::BudgetExhausted("tool-call-budget"));
         }
         Ok(Self {
@@ -262,11 +265,15 @@ impl<M: LoopModel> BoundedLoop<M> {
                             steps: self.state.steps,
                         };
                     }
+                    // 工具预算：deadline（绝对）剩余与相对运行时上限取小
+                    // ——不能用相对 max_runtime 减绝对 now（生产 epoch
+                    // 量级下恒饱和为 0）。
                     let remaining = self
                         .tracker
                         .budget
-                        .max_runtime_ns
-                        .saturating_sub(self.ctx.now_ns.saturating_sub(0));
+                        .deadline_at_ns
+                        .saturating_sub(self.ctx.now_ns)
+                        .min(self.tracker.budget.max_runtime_ns);
                     let result = match self.tools.call(&call, remaining, self.ctx.now_ns) {
                         Ok(r) => r,
                         Err(e) => {
@@ -415,6 +422,21 @@ mod tests {
         crate::skill::tests::sealed_skill(allowlist())
     }
 
+    /// 定制 max_tool_calls 的 sealed skill（其余同 `skill()`）。
+    fn skill_with_tool_budget(max_tool_calls: u16) -> SkillPackage {
+        let (sk, pk) = crate::skill::tests::test_keypair();
+        let mut m = crate::skill::tests::skill_manifest();
+        m.max_tool_calls = max_tool_calls;
+        m.tool_allowlist_digest =
+            crate::sha256_bytes(&crate::skill::allowlist_canonical(&allowlist()));
+        let mut canon = m.canonical_bytes();
+        canon.extend_from_slice("指令".as_bytes());
+        canon.extend_from_slice(&crate::skill::allowlist_canonical(&allowlist()));
+        m.package_sha256 = crate::sha256_bytes(&canon);
+        m.seal(&sk, &pk);
+        SkillPackage::new(m, "指令".into(), allowlist()).unwrap()
+    }
+
     fn ctx() -> LoopContext {
         LoopContext {
             skill_id: [1; 16],
@@ -527,6 +549,98 @@ mod tests {
         let out = l.run();
         assert!(
             matches!(out, LoopOutcome::Rejected { ref reason, .. } if reason == "tool-call-budget")
+        );
+    }
+
+    #[test]
+    fn max_tool_calls_budget_not_preconsumed() {
+        // max_tool_calls=1 → 恰好 1 次真实调用可用（历史实现在构造器
+        // 预扣一次 → 1 预算的 skill 0 次可用，off-by-one）。
+        let model = ScriptedModel {
+            plans: vec![
+                PlanStep::CallTool(ToolCall {
+                    tool: ToolId::QuerySnapshot,
+                    args: vec![1],
+                }),
+                PlanStep::NoAction("done"),
+            ],
+        };
+        let ctx = ctx();
+        let capabilities: Vec<u8> = ToolId::ALL.iter().map(|t| t.code()).collect();
+        let mut l = BoundedLoop::new(
+            skill_with_tool_budget(1),
+            model,
+            Box::new(NoopToolRuntime::new()),
+            ctx,
+            1_000_000_000,
+            capabilities,
+        )
+        .unwrap();
+        let out = l.run();
+        assert!(
+            matches!(out, LoopOutcome::NoAction { .. }),
+            "max_tool_calls=1 的 skill 应能完成 1 次调用: {out:?}"
+        );
+        assert_eq!(l.state.tool_calls, 1);
+    }
+
+    #[test]
+    fn tool_budget_ns_is_deadline_based_not_epoch_underflow() {
+        // remaining = min(deadline - now, max_runtime)。历史实现用相对
+        // 运行时预算减**绝对 epoch now** → 生产时间量级下恒饱和为 0，
+        // 一切工具收到 0 预算必炸。
+        struct BudgetCapture {
+            budgets: alloc::rc::Rc<core::cell::RefCell<Vec<u64>>>,
+        }
+        impl ToolRuntime for BudgetCapture {
+            fn call(
+                &mut self,
+                call: &ToolCall,
+                budget_ns: u64,
+                _now_ns: u64,
+            ) -> Result<ToolResult, &'static str> {
+                self.budgets.borrow_mut().push(budget_ns);
+                ToolResult::new(call.tool, true, call.args.clone())
+            }
+        }
+        let budgets = alloc::rc::Rc::new(core::cell::RefCell::new(Vec::new()));
+        let now_ns = 1_700_000_000_000_000_000u64; // epoch 量级
+        let ctx = LoopContext {
+            skill_id: [1; 16],
+            snapshot_digest: [5; 32],
+            model_digest: [7; 32],
+            now_ns,
+        };
+        let model = ScriptedModel {
+            plans: vec![
+                PlanStep::CallTool(ToolCall {
+                    tool: ToolId::QuerySnapshot,
+                    args: vec![1],
+                }),
+                PlanStep::NoAction("done"),
+            ],
+        };
+        let capabilities: Vec<u8> = ToolId::ALL.iter().map(|t| t.code()).collect();
+        let mut l = BoundedLoop::new(
+            skill(), // max_runtime_ms=30_000 → 3e10 ns
+            model,
+            Box::new(BudgetCapture {
+                budgets: budgets.clone(),
+            }),
+            ctx,
+            now_ns + 5_000_000_000, // 绝对 deadline：now + 5s
+            capabilities,
+        )
+        .unwrap();
+        let out = l.run();
+        assert!(
+            matches!(out, LoopOutcome::NoAction { .. }),
+            "工具预算不得因 epoch now 下溢为 0: {out:?}"
+        );
+        assert_eq!(
+            *budgets.borrow(),
+            vec![5_000_000_000],
+            "remaining = min(deadline - now, max_runtime)"
         );
     }
 
