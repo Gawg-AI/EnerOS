@@ -1755,6 +1755,224 @@ impl ControlDispatch for DispatchEngine {
     }
 }
 
+/// 蓝图 61 Phase 5 WP-5.2（[10] §3.3）：12 步合核 → [`SagaExecutor`]
+/// 生产 adapter——命令批经 [`eneros_control_dispatch::saga::BatchSaga`]
+/// 编排时，逐命令的授权/投递/读回/记账仍由唯一合核承载（不产生第二
+/// 执行真相）。
+///
+/// - `execute`：走 [`DispatchEngine::execute_core`]-equivalent 链
+///   （PlanCommand 身份：幂等键 = intent_id 派生 / legacy 单命令 = PlanId
+///   ——journal 同键防重复投递）；
+/// - `reconcile`（[10] §3.4 readback-first）：同幂等键再入合核——journal
+///   命中返回当前真实状态，**零投递**；Committed ⇒ ConfirmedApplied
+///   （driver 再做第二次独立校验），Indeterminate ⇒ 人工，Failed ⇒ 确认
+///   未生效；
+/// - `compensate`：补偿派生键（`"comp"` 域分隔）全新执行——新意图、
+///   新授权、新 journal 条目，不改写历史。
+pub struct EngineSagaExecutor<'a> {
+    engine: &'a mut DispatchEngine,
+    telemetry: &'a TrustedTelemetry,
+    actor: &'a AuthenticatedActor,
+    plan_id: eneros_decision_contract::PlanId,
+    plan_input_digest: [u8; 32],
+    plan_ttl_ms: u64,
+    legacy_single: bool,
+    target_device: String,
+    deadline_ms: u64,
+}
+
+use crate::saga::{CmdOutcome, ReconcileOutcome, SagaExecutor};
+
+/// correlation → 事件摘要证据（32B 证据位；SHA-256 域分隔）。
+fn request_digest_of(correlation: [u8; 16]) -> [u8; 32] {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(b"eneros.saga-request.v1");
+    h.update(correlation);
+    h.finalize().into()
+}
+
+impl<'a> EngineSagaExecutor<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        engine: &'a mut DispatchEngine,
+        telemetry: &'a TrustedTelemetry,
+        actor: &'a AuthenticatedActor,
+        plan_id: eneros_decision_contract::PlanId,
+        plan_input_digest: [u8; 32],
+        plan_ttl_ms: u64,
+        legacy_single: bool,
+        target_device: &str,
+        deadline_ms: u64,
+    ) -> Self {
+        Self {
+            engine,
+            telemetry,
+            actor,
+            plan_id,
+            plan_input_digest,
+            plan_ttl_ms,
+            legacy_single,
+            target_device: alloc::string::String::from(target_device),
+            deadline_ms,
+        }
+    }
+
+    fn execute_intent(
+        &mut self,
+        intent: &eneros_decision_contract::CommandIntent,
+        correlation: [u8; 16],
+        power_override_kw: Option<f64>,
+    ) -> Result<DispatchReceipt, DispatchError> {
+        let started = (self.engine.now_fn)();
+        let window_secs = intent
+            .valid_until_ms()
+            .saturating_sub(started)
+            .min(self.plan_ttl_ms)
+            / 1000;
+        let window_h = (intent
+            .valid_until_ms()
+            .saturating_sub(intent.valid_from_ms()) as f64)
+            / 3_600_000.0;
+        self.engine.execute_core(
+            CoreCommand {
+                identity: CoreIdentity::PlanCommand { correlation },
+                ttl_secs: window_secs.max(1),
+                power_kw: power_override_kw.unwrap_or_else(|| intent.power_kw()),
+                target_device: self.target_device.clone(),
+                input_digest: Some(self.plan_input_digest),
+                energy_kwh: Some(intent.power_kw().abs() * window_h),
+                plan_sha: Some(self.plan_input_digest),
+                idem_note: String::from("saga idempotent-hit（原结果，不重复写）"),
+            },
+            self.telemetry,
+            self.actor,
+            started,
+            alloc::vec![DispatchState::Proposed, DispatchState::Validated],
+            self.deadline_ms,
+        )
+    }
+
+    fn map_receipt(receipt: DispatchReceipt) -> CmdOutcome {
+        let note = receipt.note.clone().unwrap_or_default();
+        let digest: [u8; 32] = {
+            use sha2::Digest as _;
+            let mut h = sha2::Sha256::new();
+            h.update(receipt.correlation_id);
+            h.update([receipt.final_state.as_str().len() as u8]);
+            h.update(receipt.final_state.as_str().as_bytes());
+            h.finalize().into()
+        };
+        match receipt.final_state {
+            DispatchState::Committed => CmdOutcome::Applied {
+                receipt_digest: digest,
+                readback: None,
+            },
+            DispatchState::Rejected => CmdOutcome::Rejected { reason: note },
+            DispatchState::Failed => CmdOutcome::Failed { reason: note },
+            DispatchState::Indeterminate => CmdOutcome::Unknown {
+                request_digest: digest,
+                reason: note,
+            },
+            other => CmdOutcome::Unknown {
+                request_digest: digest,
+                reason: alloc::format!("in-flight journal state: {other:?}"),
+            },
+        }
+    }
+}
+
+impl SagaExecutor for EngineSagaExecutor<'_> {
+    fn execute(
+        &mut self,
+        intent: &eneros_decision_contract::CommandIntent,
+        _attempt: u32,
+    ) -> CmdOutcome {
+        let correlation = crate::compiler::plan_command_correlation(
+            &self.plan_id,
+            intent.intent_id(),
+            self.legacy_single,
+        );
+        match self.execute_intent(intent, correlation, None) {
+            Ok(r) => Self::map_receipt(r),
+            Err(DispatchError::DeliveryTimeout) => CmdOutcome::Unknown {
+                request_digest: request_digest_of(correlation),
+                reason: String::from("delivery timeout"),
+            },
+            Err(e) => CmdOutcome::Rejected {
+                reason: alloc::format!("{e:?}"),
+            },
+        }
+    }
+
+    fn reconcile(&mut self, intent: &eneros_decision_contract::CommandIntent) -> ReconcileOutcome {
+        let correlation = crate::compiler::plan_command_correlation(
+            &self.plan_id,
+            intent.intent_id(),
+            self.legacy_single,
+        );
+        match self.execute_intent(intent, correlation, None) {
+            Ok(r) => match r.final_state {
+                // journal 命中 AppliedConfirmed（历史读回证据）→ 第一重
+                // 确认；driver 发起第二次独立校验（[10] §3.5）。
+                DispatchState::Committed => ReconcileOutcome::ConfirmedApplied {
+                    readback: intent.power_kw(),
+                    double_verified: false,
+                },
+                DispatchState::Indeterminate => ReconcileOutcome::ResolvedManual {
+                    reason: String::from("journal indeterminate——需人工/点表对账"),
+                },
+                DispatchState::Rejected | DispatchState::Failed => {
+                    ReconcileOutcome::FailedConfirmed {
+                        reason: r.note.unwrap_or_default(),
+                    }
+                }
+                other => ReconcileOutcome::ResolvedManual {
+                    reason: alloc::format!("in-flight: {other:?}——不盲发"),
+                },
+            },
+            Err(DispatchError::DeliveryTimeout) => ReconcileOutcome::ResolvedManual {
+                reason: String::from("reconcile timeout"),
+            },
+            Err(e) => ReconcileOutcome::ResolvedManual {
+                reason: alloc::format!("{e:?}"),
+            },
+        }
+    }
+
+    fn compensate(
+        &mut self,
+        intent: &eneros_decision_contract::CommandIntent,
+        restore_kw: f64,
+    ) -> CmdOutcome {
+        // 补偿 = 新意图、新授权、新 journal（[10] §3.3.9）：补偿幂等键
+        // 独立派生（"comp" 域分隔），与原命令互不覆盖。
+        let base = crate::compiler::plan_command_correlation(
+            &self.plan_id,
+            intent.intent_id(),
+            self.legacy_single,
+        );
+        let correlation = {
+            use sha2::Digest as _;
+            let mut h = sha2::Sha256::new();
+            h.update(b"eneros.saga-compensation.v1");
+            h.update(base);
+            let d: [u8; 32] = h.finalize().into();
+            d[..16].try_into().expect("16B")
+        };
+        match self.execute_intent(intent, correlation, Some(restore_kw)) {
+            Ok(r) => Self::map_receipt(r),
+            Err(DispatchError::DeliveryTimeout) => CmdOutcome::Unknown {
+                request_digest: request_digest_of(correlation),
+                reason: String::from("compensation timeout"),
+            },
+            Err(e) => CmdOutcome::Rejected {
+                reason: alloc::format!("{e:?}"),
+            },
+        }
+    }
+}
+
 // 集成测试在 tests/ 目录（需要装配完整 chain + 内存通道 + 对端 ingress）。
 /// WP-A.2 测试桩：完整字段 TrustedTelemetry（engine 咽喉单测用）。
 #[cfg(test)]

@@ -37,6 +37,7 @@ pub mod engine;
 pub mod feedback;
 pub mod intent;
 pub mod journal;
+pub mod saga;
 
 #[cfg(feature = "sel4")]
 pub use channel::Sel4EipcChannel;
