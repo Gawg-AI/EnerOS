@@ -277,6 +277,12 @@ impl DegradationAuthority {
         if !lease.admits(now_ms, strategy_digest, true, false) {
             return Err(String::from("strategy not in lease whitelist"));
         }
+        // 复查登记（Phase 5）：快照最低条件/资源包络未收紧两项判据在本
+        // 授权面取恒真/恒假（true, false）——当前装配无快照条件与包络
+        // 收紧的运行时输入源（目标侧快照/包络供给就绪前保留，ADR-051
+        // 同批登记）；持有方（ai_worker HeuristicBackend）也仅持策略摘要。
+        // fail-closed 方向受限于此：不引入未供给输入，宁可放宽这两项也
+        // 不发明数值；真值接入随快照/registry 面落地（Phase 6 前置）。
         let uses = self.usage.entry(lease.lease_id).or_insert(0);
         if *uses >= lease.max_uses {
             return Err(String::from("lease exhausted"));

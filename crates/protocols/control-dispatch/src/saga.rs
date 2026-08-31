@@ -344,9 +344,6 @@ impl BatchSaga {
         policy: SagaPolicy,
     ) -> Option<Self> {
         let first = events.first()?.clone();
-        if intents.is_empty() || intents.len() > edges.len() + intents.len() {
-            // 结构自检（edges 数 ≤ n² 不做全验证——由编译器保证）。
-        }
         let mut saga = Self::new(first.batch_id, intents, edges, deadline_ms, policy);
         for e in events {
             if e.batch_id != saga.batch_id || e.seq != saga.event_seq + 1 {
@@ -384,6 +381,23 @@ impl BatchSaga {
             }
             saga.event_seq = e.seq;
             saga.events.push(e.clone());
+        }
+        // 补偿执行中途崩溃（至少一条命令已进入 Compensating——补偿结果
+        // 未知）：fail-closed 交人工处置（[10] §3.3.9 补偿未知 →
+        // ManualIntervention，不发明效果）——本模块无自动再补偿通道，
+        // 恢复出 Compensating 命令只会让 drive() 停在不可推进态。
+        if saga
+            .commands
+            .iter()
+            .any(|c| c.state == CmdState::Compensating)
+        {
+            return None;
+        }
+        // 批已转 Compensating 但尚无命令开始补偿（截断点在批转型与首条
+        // 补偿记录之间）：物理状态已知（Applied 集合未变）——恢复安全：
+        // 回 Executing 让 settle 重入补偿（补偿键独立派生、幂等）。
+        if saga.state == BatchState::Compensating {
+            saga.state = BatchState::Executing;
         }
         if saga.state.is_terminal() {
             return Some(saga);
@@ -534,14 +548,16 @@ impl BatchSaga {
 
         loop {
             self.propagate_blocked();
-            // ready set（[10] §3.3.2：DAG ready + max_parallel + 故障域）。
+            // ready set（[10] §3.3.2：DAG ready + max_parallel + 故障域；
+            // not_before [10] §2.3：未到期命令不进 ready——留待到期 tick，
+            // 不让其反复占位导致空转）。
             let ready: Vec<usize> = self
                 .commands
                 .iter()
                 .enumerate()
                 .filter(|(_, c)| c.state == CmdState::Pending)
                 .map(|(i, _)| i)
-                .filter(|&i| self.ready(i))
+                .filter(|&i| self.ready(i) && now_ms >= self.commands[i].intent.valid_from_ms())
                 .collect();
             if ready.is_empty() {
                 break;
@@ -765,6 +781,21 @@ impl BatchSaga {
                 ),
                 _ => Ok(()),
             };
+        }
+        // 未到期等待窗口（not_before，[10] §2.3）：剩余命令全为
+        // Pending 且 valid_from 尚在未来——批保持 Executing 不裁决
+        // （不得按「失败」处置未来步；到期 tick 再驱动）。任何已失败/
+        // 阻断/未知命令存在时仍按策略裁决。
+        if self
+            .commands
+            .iter()
+            .any(|c| c.state == CmdState::Pending && c.intent.valid_from_ms() > now_ms)
+            && self
+                .commands
+                .iter()
+                .all(|c| matches!(c.state, CmdState::Applied | CmdState::Pending))
+        {
+            return Ok(());
         }
         match self.state {
             BatchState::Executing | BatchState::Reconciling => {}

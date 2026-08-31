@@ -236,6 +236,10 @@ impl DecisionBackend for HeuristicBackend {
                 self.power_kw,
             );
             let power = self.power_kw.abs();
+            // 复查登记（Phase 5）：能量/爬坡限额以功率绝对值代理——本
+            // 后端无动作时长/爬坡形态输入，逐次授权仅能作名义包络校验
+            // （超功率拒绝仍是硬门）；真实能量/爬坡语义随 D3 降级运行
+            // 手册与动作描述面落地（Phase 6 前置）。
             auth.authorize(lease, now_ms, &digest, power, power, power)
                 .map_err(|e| {
                     DecisionReject::Unavailable(alloc::format!("degradation-lease: {e}"))

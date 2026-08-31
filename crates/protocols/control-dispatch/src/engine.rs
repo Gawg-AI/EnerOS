@@ -1228,7 +1228,21 @@ impl DispatchEngine {
         // 61 v0.314.24：journal append 失败时不投递（记录保持 Authorized
         // 未决——重启后对账，不会误判为已投递）。
         if let Err(e) = self.intent_log.append(&rec) {
-            let note = alloc::format!("intent persist failed: {e:?}（零投递，记录未决对账）");
+            // 61 v0.314.43（Phase 5 复查）：append 失败 → journal 授权记录
+            // 终局 Failed——「授权后未投递即终局」与安全/预算拒绝同律
+            // （记录从未落持久面，重启后本就不存在，Authorized 未决只是
+            // 进程内垃圾）。原实现遗留悬空 Authorized 非终态：同 key 重放
+            // 恒返回 Authorized 零投递（命令永不可执行）、pending() 恒
+            // 非空 → WP-5.3 Arbiter 在途登记自愈失效，同源续跑被
+            // MergeInSolver 永久锁死（[10] §3.6 磁盘满故障矩阵）。
+            let _ = self.journal.transition(
+                &correlation,
+                ExecutionStatus::Authorized,
+                ExecutionStatus::Failed,
+                started,
+                None,
+            );
+            let note = alloc::format!("intent persist failed: {e:?}（零投递，终局 Failed）");
             self.audit(ExecOutcome::Failed, SafetyOutcome::Passed, &note, started);
             return Err(DispatchError::IntentPersistFailed(format!("{e:?}")));
         }

@@ -26,6 +26,19 @@ use eneros_decision_contract::{CommandIntent, CompensationHint, IntentId, PlanId
 // ---------------------------------------------------------------- 夹具
 
 fn intent(id_byte: u8, device: u16, point: u32, kw: f64, restore: Option<f64>) -> CommandIntent {
+    intent_windowed(id_byte, device, point, kw, 1_000, 2_000_000, restore)
+}
+
+/// 自定义生效窗的命令（not_before 用例：未来窗命令不得提前投递）。
+fn intent_windowed(
+    id_byte: u8,
+    device: u16,
+    point: u32,
+    kw: f64,
+    valid_from_ms: u64,
+    valid_until_ms: u64,
+    restore: Option<f64>,
+) -> CommandIntent {
     CommandIntent::new(
         IntentId([id_byte; 16]),
         PlanId([0x61; 16]),
@@ -35,8 +48,8 @@ fn intent(id_byte: u8, device: u16, point: u32, kw: f64, restore: Option<f64>) -
         point,
         kw,
         6, // kW
-        1_000,
-        2_000_000,
+        valid_from_ms,
+        valid_until_ms,
         Precondition::None,
         match restore {
             Some(v) => CompensationHint::RestorePowerKw(v),
@@ -513,6 +526,108 @@ fn needs_reconcile_classification() {
     // 未启动批过期 = 可安全丢弃，不需收敛。
     assert!(!needs_reconcile(BatchState::Pending, 100, 200));
     assert!(needs_reconcile(BatchState::Pending, 300, 200));
+}
+
+// ---------------------------------------------------------------- WP-5.2 复查回归
+
+/// [10] §3.3.9/§3.5：补偿执行中途崩溃（事件日志截断在补偿落地前）——
+/// 补偿结果未知，不猜重建：restore 必须 fail-closed（None → 人工处置），
+/// 不得恢复出一个 drive() 无法推进的 Compensating 批。
+#[test]
+fn restore_mid_compensation_crash_fails_closed_to_manual() {
+    let intents = vec![
+        intent(1, 1, 10, 100.0, Some(0.0)),
+        intent(2, 2, 20, 30.0, Some(10.0)),
+    ];
+    let mut plant = Plant::default();
+    let mut ex = MockExecutor::new(&mut plant).with_fault(1, Fault::Fail);
+    let mut saga = saga_of(&intents, &[], BatchPolicy::Compensate);
+    let report = saga.drive(&mut ex, 5_000).unwrap();
+    assert_eq!(report.final_state, BatchState::Compensated);
+    let events = saga.events().to_vec();
+
+    // 事件序：… B Failed → 批 Executing→Compensating → A Applied→Compensating
+    // → A Compensating→Compensated → 批 Compensating→Compensated。
+    let batch_compensating = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e.kind,
+                EventKind::Batch {
+                    from: BatchState::Executing,
+                    to: BatchState::Compensating
+                }
+            )
+        })
+        .expect("补偿转型事件存在");
+    // 截断点落在首条命令补偿记录之后 = 崩溃发生在补偿执行中（结果
+    // 未知）→ fail-closed None（人工处置）。
+    assert!(
+        BatchSaga::restore(
+            &events[..=batch_compensating + 1],
+            &intents,
+            &[],
+            u64::MAX,
+            saga_policy()
+        )
+        .is_none(),
+        "补偿中途崩溃必须 fail-closed（人工处置），不得恢复出不可推进的 Compensating 命令"
+    );
+    // 截断点恰在补偿开始前（批已转 Compensating、无命令补偿中）→ 物理
+    // 状态已知，可恢复并重入补偿正常收敛。
+    let mut resumed = BatchSaga::restore(
+        &events[..=batch_compensating],
+        &intents,
+        &[],
+        u64::MAX,
+        saga_policy(),
+    )
+    .expect("补偿开始前截断可恢复");
+    let mut plant2 = Plant::default();
+    let mut ex2 = MockExecutor::new(&mut plant2);
+    let r = resumed.drive(&mut ex2, 5_000).unwrap();
+    assert_eq!(r.final_state, BatchState::Compensated);
+    assert_eq!(plant2.physical[&1], 0.0, "恢复后补偿完成（回设基线）");
+    // 完整日志恢复 = 终态 Compensated。
+    let full =
+        BatchSaga::restore(&events, &intents, &[], u64::MAX, saga_policy()).expect("终态可恢复");
+    assert_eq!(full.state(), BatchState::Compensated);
+}
+
+fn saga_policy() -> SagaPolicy {
+    SagaPolicy {
+        batch: BatchPolicy::Compensate,
+        max_parallel: 2,
+    }
+}
+
+/// [10] §2.3（not_before 语义）：未到期命令不得提前投递；批在等待窗口
+/// 期间保持 Executing（不裁决终态），到期后继续执行至 Completed。
+#[test]
+fn not_before_commands_wait_until_due() {
+    let a = intent_windowed(1, 1, 10, 10.0, 1_000, 2_000_000, None);
+    let b = intent_windowed(2, 2, 20, 20.0, 100_000, 2_000_000, None);
+    let mut plant = Plant::default();
+    let mut ex = MockExecutor::new(&mut plant);
+    let mut saga = saga_of(&[a, b], &[], BatchPolicy::KeepSucceeded);
+    // t=5s：只执行到期命令 a；b（not_before=100s）不得投递，批不裁决。
+    let r1 = saga.drive(&mut ex, 5_000).unwrap();
+    drop(ex); // 结束借用（无故障脚本——第二阶段重开执行器）
+    assert_eq!(r1.commands[0].state, CmdState::Applied);
+    assert_eq!(
+        r1.commands[1].state,
+        CmdState::Pending,
+        "未到期保持 Pending"
+    );
+    assert_eq!(r1.final_state, BatchState::Executing, "未到期批不裁决终态");
+    assert_eq!(plant.physical.get(&2), None, "未到期零投递");
+    // t=200s：b 到期 → 执行 → Completed。
+    let mut ex2 = MockExecutor::new(&mut plant);
+    let r2 = saga.drive(&mut ex2, 200_000).unwrap();
+    drop(ex2);
+    assert_eq!(r2.commands[1].state, CmdState::Applied);
+    assert_eq!(r2.final_state, BatchState::Completed);
+    assert_eq!(plant.physical[&2], 20.0);
 }
 
 // ---------------------------------------------------------------- 100 崩溃点 campaign

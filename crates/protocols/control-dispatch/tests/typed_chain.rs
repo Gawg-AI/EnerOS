@@ -12,6 +12,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use eneros_control_dispatch::adapter::proposal_to_candidate;
+use eneros_control_dispatch::intent::{
+    InMemoryIntentStore, IntentRecord, IntentStore, IntentStoreError,
+};
 use eneros_control_dispatch::{
     AuthenticatedActor, ControlDispatch, DeliveryChannel, DispatchConfig, DispatchEngine,
     DispatchError, DispatchReceipt,
@@ -577,4 +580,115 @@ fn typed_multi_step_plan_delivers_due_commands_per_tick() {
         2,
         "重放零投递（幂等键 sub_index 稳定）"
     );
+}
+
+// ---- WP-5.3 复查回归：[10] §3.6 故障矩阵「intent/audit 磁盘满」----
+
+/// 落盘故障注入存储：`fail_append` 期间 append 返回 Unavailable（磁盘满
+/// 形态），过后恢复。
+struct FlakyStore {
+    inner: InMemoryIntentStore,
+    fail_append: std::cell::Cell<bool>,
+}
+
+impl IntentStore for FlakyStore {
+    fn append(&mut self, rec: &IntentRecord) -> Result<(), IntentStoreError> {
+        if self.fail_append.get() {
+            return Err(IntentStoreError::Unavailable(String::from("disk full")));
+        }
+        self.inner.append(rec)
+    }
+    fn update_state(
+        &mut self,
+        command_id: &[u8; 16],
+        state: eneros_control_dispatch::DispatchState,
+    ) -> Result<(), IntentStoreError> {
+        self.inner.update_state(command_id, state)
+    }
+    fn find(&self, command_id: &[u8; 16]) -> Option<IntentRecord> {
+        self.inner.find(command_id)
+    }
+    fn pending(&self) -> Vec<IntentRecord> {
+        self.inner.pending()
+    }
+}
+
+/// 磁盘满（append 失败）时：journal 授权记录必须终局为 Failed（「授权后
+/// 未投递即终局」——与安全/预算拒绝同律），不得遗留悬空 Authorized 非终态
+/// ——否则同源（SiteOptimizer 生产链）续跑会被 Arbiter 的 MergeInSolver
+/// 永久拒绝（在途登记自愈失效 → 锁死至重启）。
+#[test]
+fn append_failure_terminates_journal_and_resubmission_not_arbiter_locked() {
+    let (ingress, devices) = device_side();
+    let delivered = Rc::new(RefCell::new(0u64));
+    let channel = CountingChannel {
+        ingress,
+        devices,
+        delivered: delivered.clone(),
+    };
+    let profile = test_profile();
+    let store = FlakyStore {
+        inner: InMemoryIntentStore::new(64),
+        fail_append: std::cell::Cell::new(true),
+    };
+    let mut engine = DispatchEngine::new(DispatchConfig {
+        chain: build_chain(),
+        key: KEY.to_vec(),
+        profile,
+        fencing_token: 1 + EPOCH_SEED,
+        issuer_service: ISSUER,
+        issuer_epoch: 0,
+        target_endpoint: String::from("svc-device-agent"),
+        max_power_kw: 500.0,
+        safety_voltage_window: (340.0, 420.0),
+        safety_freq_window: (49.5, 50.5),
+        safety_ramp_kw_per_min: 200.0,
+        gate: DecisionGate::new(100, 1000.0, 3_600_000),
+        control_audit: None,
+        audit: Some(DecisionAudit::new([0x40; 32])),
+        intent_log: Box::new(store),
+        delivery: Box::new(channel),
+        resources: Box::new(support::TestResourceView {
+            asset_id: 1,
+            device_id: 1,
+            point_id: profile.point_id,
+            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+            catalog_version: 1,
+        }),
+        contracts: Box::new(support::test_contract_view(1, 1)),
+        compiler_policy: support::test_compiler_policy(),
+        control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
+        feedback_mapping: eneros_control_dispatch::FeedbackPointMapping {
+            grid_up: 5,
+            soc: 4,
+            dc_bus_v: 1,
+            overcurrent: 6,
+            overtemp: 6,
+        },
+        now_fn: now_ms,
+    });
+
+    let p = proposal(50.0);
+    let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
+    // 第一拍：落盘失败 → 零投递 Err（journal 记录终局 Failed）。
+    let e1 = engine
+        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap_err();
+    assert!(
+        matches!(e1, DispatchError::IntentPersistFailed(_)),
+        "磁盘满必须显式失败：{e1:?}"
+    );
+    assert_eq!(*delivered.borrow(), 0, "落盘失败零投递");
+    // 第二拍（磁盘恢复）：同源续跑不被 Arbiter 拒绝——返回原终态
+    // Failed（零投递；重放不复活失败命令），而不是 ProposalInvalid
+    // 「merge-in-solver」锁死。
+    let r2 = engine
+        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect("同源续跑放行（不得锁死）");
+    assert_eq!(
+        r2.final_state,
+        eneros_control_dispatch::DispatchState::Failed,
+        "重放返回原终态 Failed（不假成功、不重复投递）"
+    );
+    assert_eq!(*delivered.borrow(), 0, "Failed 重放零投递");
 }
