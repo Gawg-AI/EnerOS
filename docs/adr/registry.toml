@@ -402,3 +402,12 @@ status = "Accepted"
 supersedes = []
 superseded_by = ""
 decision_digest = ""
+
+[[adrs]]
+id = "ADR-050"
+path = "docs/adr/ADR-050-planner-deployment-highs.md"
+title = "Planner 部署裁决与求解后端选型（蓝图 61 v0.314.37）"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""

@@ -30,6 +30,7 @@ impl MockSolver {
                 solution: alloc::vec![],
                 elapsed_ms: 0,
                 dual_solution: None,
+                mip_gap: 0.0,
             },
             warm_start: None,
         }

@@ -617,6 +617,7 @@ mod tests {
             solution: Vec::new(),
             elapsed_ms: 0,
             dual_solution: None,
+            mip_gap: 0.0,
         };
         let solver: Box<dyn Solver> = Box::new(RecordingSolver::with_result(result));
         let mut d = MultiDeviceDispatcher::new(pool, solver);

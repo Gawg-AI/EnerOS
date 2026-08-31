@@ -33,6 +33,9 @@ pub struct SolveResult {
     pub elapsed_ms: u64,
     /// 对偶解（影子价格）；MockSolver 返回 None.
     pub dual_solution: Option<Vec<f64>>,
+    /// 相对 MIP gap（backend 报告；0.0 = 精确/未报告。蓝图61 [09] §3.5
+    /// gap gate 数据源，v0.314.37）。
+    pub mip_gap: f64,
 }
 
 impl SolveResult {
@@ -44,6 +47,7 @@ impl SolveResult {
             solution,
             elapsed_ms: 0,
             dual_solution: None,
+            mip_gap: 0.0,
         }
     }
 }

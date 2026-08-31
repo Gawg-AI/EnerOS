@@ -112,6 +112,15 @@ extern "C" {
     /// 获取模型状态（kHighsModelStatus* 常量）。
     pub fn Highs_getModelStatus(highs: *const c_void) -> HighsInt;
 
+    /// 读取 double 型 info 字段（如 "mip_gap"；蓝图61 [09] §3.5）。
+    /// HiGHS 1.7.2 C API 实名 `Highs_getDoubleInfoValue`；返回
+    /// kHighsStatus（0=Ok，1=Warning，<0=Error）。
+    pub fn Highs_getDoubleInfoValue(
+        highs: *const c_void,
+        info: *const u8,
+        value: *mut f64,
+    ) -> HighsInt;
+
     /// 获取列数。
     pub fn Highs_getNumCol(highs: *const c_void) -> HighsInt;
 

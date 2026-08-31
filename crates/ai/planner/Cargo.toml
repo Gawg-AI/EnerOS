@@ -1,0 +1,24 @@
+[package]
+name = "eneros-planner"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图61 [09] §3 v0.314.37 — 多资源 Planner：ObjectiveSpec+包络 → ModelBuilder → 真实 HiGHS → CandidatePlan（host 计算分区）"
+
+[dependencies]
+eneros-decision-contract = { path = "../decision-contract" }
+eneros-objective-engine = { path = "../objective-engine" }
+eneros-resource-registry = { path = "../../agents/resource-registry" }
+eneros-solver-core = { path = "../solver-core", features = ["highs-ffi"] }
+eneros-solver-model = { path = "../solver-model" }
+sha2 = { version = "0.10.9", default-features = false }
+
+[features]
+default = []
+# 仅测试/dev（E1/E2）；release 禁止（G7：mock 不进 release——
+# planner 自身测试用 cfg(test) ScriptedSolver，不依赖本 feature）。
+mock = ["eneros-solver-core/mock"]
+
+[dev-dependencies]
+eneros-energy-lp-model = { path = "../energy-lp-model" }

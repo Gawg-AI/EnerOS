@@ -1095,6 +1095,7 @@ mod tests {
             solution: Vec::new(),
             elapsed_ms: 0,
             dual_solution: None,
+            mip_gap: 0.0,
         };
         let solver: Box<dyn Solver> = Box::new(FixedSolver::with_result(infeasible));
         let mut opt = MultiObjectiveOptimizer::new(pool, solver);
