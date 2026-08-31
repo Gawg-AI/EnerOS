@@ -90,53 +90,142 @@ EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power
 
 ### 目录结构
 
-```
-eneros/
-├── Cargo.toml                 # Workspace 根配置
-├── Cargo.lock                 # 依赖锁定（二进制 crate 入仓）
-├── rust-toolchain.toml        # Rust nightly 版本锁定（nightly-2026-04-04）
-├── .cargo/config.toml         # 交叉编译配置
-├── Makefile                   # 统一构建入口
-├── deny.toml                  # cargo-deny 许可证/安全配置
-│
-├── crates/                    # ★ 所有 Rust crate（按子系统分组）
-│   ├── （内核源码不在 crates/ 下：seL4 14.0.0 微内核位于 third_party/
-│   │    sel4-*（sel4-build / sel4-top / sel4-root / sel4-patches 等），
-│   │    经 sel4-build-rust.sh 构建；crates/runtime/root-task 消费
-│   │    BootInfo 拉起 EL0 服务）
-│   ├── hal/                   #   硬件抽象层
-│   │   ├── hal/               #     eneros-hal（HAL trait + arm64 实现）
-│   │   └── board/             #     eneros-board（板级支持）
-│   ├── runtime/               #   用户态运行时
-│   │   ├── root-task/         #     eneros-root-task（EL0 首进程/服务编排）
-│   │   ├── sel4-sys/          #     eneros-sel4-sys（seL4 syscall 安全绑定）
-│   │   ├── runtime/           #     eneros-runtime
-│   │   ├── config-bundle/     #     eneros-config-bundle（签名配置束）
-│   │   ├── durable-log/       #     eneros-durable-log（掉电一致日志）
-│   │   ├── durable-state/     #     eneros-durable-state（状态持久化）
-│   │   └── hello/             #     eneros-hello（首个用户态样例）
-│   ├── drivers/               #   设备驱动
-│   │   ├── time/              #     eneros-time（RTC/高精度定时器）
-│   │   ├── watchdog/          #     eneros-watchdog（硬件看门狗）
-│   │   ├── storage/           #     eneros-storage（块设备/文件系统）
-│   │   └── power/             #     eneros-power（电源管理）
-│   ├── protocols/             #   协议栈（modbus/iec104/iec61850/mqtt/cj188…）
-│   ├── security/              #   安全域（crypto/tls/secure-boot/ota/attestation/audit…）
-│   ├── agents/                #   智能体域（device-agent/市场·联邦·孪生·运维…）
-│   ├── ai/                    #   AI 组件（solver 族/intent/dual-brain/safety/gguf-loader…）
-│   └── observability/         #   可观测性（metrics/logging/tracing/dashboard/mgmt-api…）
-│
-├── product/                   # 产品策略/profile/冻结册（装配与策略单一事实源）
-├── xtask/                     # 形式化构建入口（cargo xtask …）
-├── fuzz/                      # libFuzzer 模糊测试靶（独立 workspace）
-├── ci/                        # CI 工具 crate（eneros-ci）
-├── configs/                   # 配置文件（设备树 .dts 等）
-├── docs/                      # 工程文档（按方向分类）
+EnerOS/
+├── crates/                          # 200+ 二进制 crate（workspace members）
+│   ├── boot/                        # UEFI 引导链、镜像格式、ELF 装载
+│   │   ├── boot-protocol/           # IPC wire ABI（二进制定序格式）
+│   │   ├── boot-manager-uefi/       # UEFI 启动管理器
+│   │   ├── installer-uefi/          # 量产镜像安装程序
+│   │   └── image-format/            # 统一镜像编码（BOOT-007 2MiB DTB 窗口）
+│   ├── abi/                         # 跨二进制 ABI 定义
+│   │   ├── ipc-wire/                # IPC 消息格式（固定头 + 有界长度 + CRC32）
+│   │   ├── elf-loader/              # PIE 加载器（W^X，有界）
+│   │   └── handover-abi/            # seL4 → root-task 句柄移交（SPEC-B/C）
+│   ├── hal/                         # 硬件抽象层 + 板级支持（HAL trait + arm64 实现）
+│   ├── runtime/                     # EL0 用户态运行时
+│   │   ├── root-task/               # 首进程、服务编排、BootInfo 消费
+│   │   ├── sel4-sys/                # seL4 FFI 安全绑定（safe::set_ipc_buffer）
+│   │   ├── services/                # 协议/驱动/管理服务容器
+│   │   ├── svc-pie/                 # PIE EL0 测试服务（ET_DYN 二进制）
+│   │   ├── config-bundle/           # 签名配置束（密钥注入、KMS）
+│   │   ├── durable-log/             # 掉电一致日志（预写日志）
+│   │   ├── durable-state/           # 状态持久化
+│   │   └── hello/                   # 首个用户态示例
+│   ├── drivers/                     # 设备驱动框架 + 实现
+│   │   ├── framework/               # DeviceDriver trait（生命周期、状态、健康检查）
+│   │   ├── drv-svc/                 # svc-drv-blk / svc-drv-console（IPC loop，38 WP-38.9）
+│   │   ├── time/                    # RTC/高精度定时器（get_monotonic_ns）
+│   │   ├── storage/ fs/ tsdb/       # 块设备、文件系统、时序数据库
+│   │   ├── net/ rs485/ can/         # 网络、RS485、CAN 设备
+│   │   └── calibration/ virtio-core # 校准、VirtIO 核心
+│   ├── protocols/                   # 协议适配器栈（唯一协议 seam）
+│   │   ├── protocol-abstract/       # PointAccess / ProtocolAdapter trait（ADR-0026）
+│   │   ├── upa-model/               # 统一数据点模型（DataPoint, PointValue, PointQuality）
+│   │   ├── telemetry-model/         # 遥测模型（命令、质量标志、来源枚举）
+│   │   ├── control-gateway/         # 控制网关（AuthorizedCommand 信封，default-deny）
+│   │   ├── modbus-rtu/ modbus-tcp/  # Modbus 协议（主/从两极）
+│   │   ├── iec104-slave/ iec104-master/  # IEC 60870-5-104 从/主站
+│   │   ├── iec61850-mms/ -goose/ -sv     # IEC 61850 子协议（MMS、GOOSE、SV）
+│   │   ├── mqtt/ dlt645/ cj188/     # MQTT、DLT645、CJ188 专有协议
+│   │   ├── protocol-services/       # 协议服务容器（IPC loop 消费 ProtocolAdapter）
+│   │   └── soe-engine/              # 事件顺序记录引擎
+│   ├── security/                    # 安全域（密码学、TLS、启动、OTA、审计）
+│   │   ├── crypto/ crypto-gmssl/    # SM2/SM3/SM4 + Ed25519 + P-256
+│   │   ├── tls/ iec62351/           # TLS 1.3 + 国电 IEC 62351 标准
+│   │   ├── secure-boot/ ota-ab/ recovery/  # 安全启动、A/B 更新、恢复分区
+│   │   ├── attestation/ audit/      # 证明、审计链（SM3 哈希链可追溯）
+│   │   ├── tpm/ did/ compliance/    # TPM、去中心化身份、合规性
+│   │   └── pentest/                 # 渗透测试工具集（P0/P1 扫描）
+│   ├── ai/                          # AI 组件（决策引擎）
+│   │   ├── dual-brain/              # ★ Solver + LLM 端到端编排（<2s，no_std，特性门控）
+│   │   ├── solver-core/ solver-milp/ solver-pareto/  # LP/MILP 求解器族（HiGHS 预留，feature零激活）
+│   │   ├── llm-engine/ gguf-loader/ infer-scheduler/  # LLM 推理（llama.cpp host native）
+│   │   ├── intent-parser/ intent-contract/  # 意图解析与契约校验
+│   │   ├── safety-validator/ fast-path/  # 安全验证 + 快路径
+│   │   ├── energy-lp-model/         # 能源 LP 建模库
+│   │   ├── prompt-template/ online/ rl/ marl/  # 提示模板、在线学习、强化学习
+│   │   ├── dialog/ runner/          # 对话管理、AI 运行器
+│   │   └── model-deploy/            # 模型部署管理
+│   ├── agents/                      # 智能体域（市场/设备/联邦/结算/孪生等）
+│   │   ├── agent/                   # ★ 核心 Agent 抽象（v0.43.0，13 字段描述符、12 合法转换、能力令牌）
+│   │   ├── device-agent/            # 设备 Agent（协议点访问、状态管理）
+│   │   ├── energy-market-agent/     # 能源市场 Agent（报价、交易）
+│   │   ├── spot-market/ realtime-market/ ancillary/  # 现货/实时/辅助服务市场
+│   │   ├── coordinator/ cloud-coordinator/  # 本地/云端协调器（7 步编排器）
+│   │   ├── federation/ p2p/ p2p-match/ settlement/  # 联邦、P2P 撮合、结算
+│   │   ├── twin-agent/ twin-global/  # 数字孪生（本地/多域联合仿真）
+│   │   ├── hmi/ alarm/              # 人机界面、告警管理
+│   │   ├── grid_agent/ vpp-scenario/  # 微电网/VPP Agent
+│   │   ├── dr/ fleet-ops/ hot-update/  # 需求响应、舰队运维、热更新
+│   │   ├── tenant/ account/ reputation/ chain/  # 租户、账户、声誉、区块链
+│   │   ├── trust/ autonomous/       # 信任模型、自主权
+│   │   ├── data-governance/ simulator/  # 数据治理、模拟器
+│   │   ├── mvp-scenario/            # MVP 场景包装
+│   │   ├── app-cert/ bsp-cert/ standards/  # 应用认证、BSP 认证、标准库
+│   │   ├── agent-sdk/               # Agent SDK（签名镜像生成）
+│   │   └── business-services/       # 业务服务容器
+│   ├── observability/               # 可观测性（metrics/logging/tracing/dashboard）
+│   │   ├── metrics/ logging/ tracing/  # 可观测三要素
+│   │   ├── dashboard/ mgmt-api/ mgmt-cli/  # 管理面（REST + CLI）
+│   │   ├── crash-dump/ support-bundle/  # 崩溃转储、支持包
+│   │   ├── aiops/ slo-alert/        # AI 运维、SLO 告警
+│   │   ├── telemetry-queue/         # 遥测队列（loom 并发模型）
+│   │   └── ops-gate/                # 运维关卡
+│   └── scenes/                      # 场景 crate
+│       └── firmware-agent/          # 固件 Agent
+├── formal/                          # ★ 形式化验证框架（Isabelle/HOL）
+│   ├── Isabelle/
+│   │   ├── Kernel.thy               # 抽象规范层（内核状态机 + 调度不变式）
+│   │   ├── Scheduler.thy / Scheduler_Proof.thy  # v0.149.0-0.150.0 ★
+│   │   ├── Memory.thy / Memory_Proof.thy        # v0.151.0-0.152.0 ★（隔离安全性，无 sorry）
+│   │   ├── Ipc.thy / Ipc_Proof.thy              # v0.153.0-0.154.0 ★（完整性+不可伪造）
+│   │   ├── Capability.thy / Capability_Proof.thy  # v0.155.0 ★（权限单调+级联+不可绕过）
+│   │   └── Refinement.thy            # 精化映射层（占位）
+│   └── ROOT / Makefile             # Isabelle 配置 + 构建
+├── product/                         # 产品策略/profile/冻结册（单一事实源）
+├── xtask/                           # 形式化构建 CLI（cargo xtask）
+├── ci/                              # CI 工具 crate（eneros-ci v0.2.0）
+│   └── src/
+│       └── main.rs                  # 5 项质量门：fmt/clippy/audit/test/version-gate
+├── fuzz/                            # libFuzzer 模糊测试（独立 workspace）
+├── tools/                           # 构建/测试脚本
+│   ├── gdbrsp.py / gdbrsp2.py       # GDB RSP 客户端（单步/断点跟踪）
+│   ├── verify-platform-contract.py  # DRV-001 契约校验（资源重叠检查）
+│   ├── sel4-net-peer.py             # virtio-net RX 注入工具（CI 所需）
+│   ├── setup-toolchain.sh           # 工具链安装脚本
+│   └── batch_config/                # 批量配置工具
+├── configs/                         # 配置文件库（500+ 模板）
+│   ├── .dts 文件                    # 飞腾/鲲鹏/QEMU 设备树
+│   ├── kms-dev/                     # 开发档 KMS 目录（密钥注入，CI 零激活）
+│   ├── platform-contracts/          # 平台契约 JSON（schema.json + 目标平台）
+│   └── templates/                   # 配置模板（ai-peer/cloud-sync/control-write/…）
+├── docs/                            # 工程文档
 │   ├── hal/ kernel/ runtime/ drivers/ smp/ boot/ conventions/ ci/
-├── tools/                     # 构建/测试脚本
-├── tests/                     # 集成测试
-└── .github/workflows/ci.yml   # CI 流水线
-```
+│   ├── ai/                          # AI 路线文档（local-inference-spike.md 已否决）
+│   ├── formal/                      # 形式化验证框架设计
+│   ├── delivery/                    # 交付文档
+│   │   ├── reduced-line-audit/      # ★ 95 项审计修复（P0×4/P1×23/P2×41/P3×27）
+│   │   └── wp-c-memory-audit-spec-c-20260827.md  # 内存与区段审计
+│   └── adr/                         # ADR（架构决策记录）
+├── evidence/                        # 证据库（各阶段真机/QEMU 测试产物）
+│   ├── 46/ 50/ ...                  # WP 编号对应证据目录
+│   ├── sv_peer.py                   # IEC 61850-9-2 SV 帧注入（16401→0x4001 APID）
+│   ├── mqtt_telemetry_broker.py     # MQTT broker（遥测解码、观测）
+│   └── modbus_slave_e.py            # SPEC-E Modbus 从机（相位翻转馈入）
+├── 蓝图/                            # 规划与需求（66 文件）
+│   ├── 35-00                        # 当前工作树代码审查与 NO-GO 报告
+│   ├── 35-01                        # 已提交vs未提交事实基线
+│   ├── 36–43                        # 唯一串行修复与商业终验路线
+│   └── 44–59                        # 交付冲刺系列（当前在 WP-59.1 出口）
+├── .github/workflows/ci.yml         # ★ 15+ 步质量门流水线
+├── Cargo.toml                       # workspace 配置（160+ members，v0.314.23）
+├── Cargo.lock                       # 依赖锁定（已入仓，保证离线可重建）
+├── rust-toolchain.toml              # Rust nightly-2026-04-04 锁定
+├── .cargo/config.toml               # 交叉编译配置（aarch64-unknown-none PIC）
+├── Makefile                         # 统一构建入口（已废弃→ cargo xtask）
+├── PROJECT.md                       # ★ 第一性原则、项目记忆
+├── CONTEXT.md                       # ★ 领域词汇、术语事实源
+└── deny.toml                        # cargo-deny 许可证/安全配置
 
 > 蓝图文档位于 `蓝图/` 目录（已入 git 跟踪，66 个文件；`git ls-files '蓝图*'` 可列）。
 
