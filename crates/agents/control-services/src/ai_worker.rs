@@ -124,6 +124,13 @@ pub struct HeuristicBackend {
     /// 蓝图 61 v0.314.35：目录合同版本（候选计划 resource_catalog_version
     /// 与 dispatch PlannerView 对照；bin 启动从目录装载，缺省 0）。
     catalog_version: u64,
+    /// 蓝图 61 v0.314.42（WP-5.3）：D3 SolverFallback 降级 lease 门——
+    /// 武装后每次 decide 逐次授权（验签/纪元/时效/白名单/限额/次数）；
+    /// 未武装 = D0 正常主路径。
+    degradation: Option<(
+        eneros_control_dispatch::degrade::DegradationAuthority,
+        eneros_control_dispatch::degrade::DegradationLease,
+    )>,
 }
 
 impl HeuristicBackend {
@@ -137,6 +144,53 @@ impl HeuristicBackend {
             power_kw: 5.0,
             path: eneros_dual_brain::DecisionPath::Fast,
             catalog_version: 0,
+            degradation: None,
+        }
+    }
+
+    /// WP-5.3（[10] §4.7）：本后端的策略摘要（降级 lease 白名单锚——
+    /// 装配侧签发 lease 时引用同一摘要；死区参数漂移 = 摘要漂移）。
+    pub fn strategy_digest(&self) -> [u8; 32] {
+        Self::strategy_digest_of(self.charge_soc, self.discharge_soc, self.power_kw)
+    }
+
+    /// 策略摘要纯函数（SM3/SHA 输入域固定；参数漂移 = 摘要漂移）。
+    fn strategy_digest_of(charge_soc: f64, discharge_soc: f64, power_kw: f64) -> [u8; 32] {
+        let mut buf = alloc::vec::Vec::with_capacity(40);
+        buf.extend_from_slice(b"eneros.heur-soc-band.v1");
+        buf.extend_from_slice(&charge_soc.to_le_bytes());
+        buf.extend_from_slice(&discharge_soc.to_le_bytes());
+        buf.extend_from_slice(&power_kw.to_le_bytes());
+        eneros_crypto::sm3_hash(buf.as_slice())
+    }
+
+    /// 武装 D3 降级 lease（装配在降级态调用；签名不合法即拒绝武装——
+    /// fail-closed）。
+    pub fn arm_degradation_lease(
+        &mut self,
+        key: &[u8],
+        lease: eneros_control_dispatch::degrade::DegradationLease,
+    ) -> Result<(), alloc::string::String> {
+        if !lease.verify(key) {
+            return Err(alloc::string::String::from(
+                "degradation lease signature invalid",
+            ));
+        }
+        self.degradation = Some((
+            eneros_control_dispatch::degrade::DegradationAuthority::new(
+                key,
+                lease.revocation_epoch,
+            ),
+            lease,
+        ));
+        Ok(())
+    }
+
+    /// 撤销降级 lease（恢复 D0 或换发新 lease 前）。
+    pub fn revoke_degradation(&mut self) {
+        if let Some((mut auth, lease)) = self.degradation.take() {
+            auth.revoke_all();
+            let _ = (auth, lease);
         }
     }
 
@@ -173,6 +227,20 @@ impl DecisionBackend for HeuristicBackend {
         telemetry: &TrustedTelemetry,
         now_ms: u64,
     ) -> Result<Vec<u8>, DecisionReject> {
+        // WP-5.3（[10] §4.7）：降级 lease 门——武装后每次 decide 逐次授权，
+        // 任何失败拒绝决策（fail-closed，不产生未授权 fallback 动作）。
+        if let Some((auth, lease)) = &mut self.degradation {
+            let digest = HeuristicBackend::strategy_digest_of(
+                self.charge_soc,
+                self.discharge_soc,
+                self.power_kw,
+            );
+            let power = self.power_kw.abs();
+            auth.authorize(lease, now_ms, &digest, power, power, power)
+                .map_err(|e| {
+                    DecisionReject::Unavailable(alloc::format!("degradation-lease: {e}"))
+                })?;
+        }
         let soc = telemetry.state.soc_pct;
         if !soc.is_finite() {
             return Err(DecisionReject::NoAction(String::from("soc-non-finite")));

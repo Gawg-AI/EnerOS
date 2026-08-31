@@ -165,6 +165,9 @@ pub struct DispatchConfig {
     pub contracts: alloc::boxed::Box<dyn crate::compiler::PlanContractView + 'static>,
     /// WP-5.1 编译器策略（全部参与 compiler_digest——策略漂移可检）。
     pub compiler_policy: crate::compiler::CompilerPolicy,
+    /// WP-5.3：资源控制模式（人工/检修模式下自动命令被 Arbiter 拒绝；
+    /// 切回自动必须经 `resume_auto` 持 fresh snapshot/capability）。
+    pub control_mode: crate::arbiter::ControlMode,
     /// 单调时钟（毫秒）。
     pub now_fn: fn() -> u64,
 }
@@ -191,6 +194,10 @@ pub struct DispatchEngine {
     contracts: alloc::boxed::Box<dyn crate::compiler::PlanContractView + 'static>,
     /// WP-5.1：编译器策略。
     compiler_policy: crate::compiler::CompilerPolicy,
+    /// WP-5.3：唯一生产 CommandArbiter（[10] §4.7：全仓唯一）。
+    arbiter: crate::arbiter::CommandArbiter,
+    /// WP-5.3：资源控制模式。
+    control_mode: crate::arbiter::ControlMode,
     chain: ControlChain,
     key: Vec<u8>,
     /// 同源档案（蓝图 55）：lease_id/policy_version/device_id/point_id 的
@@ -252,6 +259,8 @@ impl DispatchEngine {
             resources: config.resources,
             contracts: config.contracts,
             compiler_policy: config.compiler_policy,
+            arbiter: crate::arbiter::CommandArbiter::new(256),
+            control_mode: config.control_mode,
             chain: config.chain,
             key: config.key,
             profile: config.profile,
@@ -387,6 +396,74 @@ impl DispatchEngine {
 
     /// 47（WP-47.1 协议入站写）：协议写意图 12 态链（与 [`run`] 同链，
     /// 入口换为 [`PointWriteIntent`]）。重放门 + 链幂等双防重复 sequence。
+    /// WP-5.3（[10] §4.1）：投递前唯一 Arbiter 裁决。迁移期映射：
+    /// Reject ⇒ NotAuthorized（零投递）；MergeInSolver ⇒ ProposalInvalid
+    /// （可叠加服务回 solver）；Preempt ⇒ 放行——在途命令由 journal 同键
+    /// 幂等对账兜底（先 reconcile 后执行的等效语义，登记项：显式取消面）。
+    fn arbitrate(
+        &mut self,
+        source: crate::arbiter::CommandSource,
+        valid_now: bool,
+    ) -> Result<(), DispatchError> {
+        let in_flight = !self.journal.pending().is_empty();
+        if !in_flight {
+            // journal 真值自愈：无非终态记录 = 在途已收敛，清登记。
+            self.arbiter.clear_in_flight(self.profile.device_id);
+        }
+        let req = crate::arbiter::ArbitrationRequest {
+            source,
+            device_id: self.profile.device_id,
+            lease_valid: true, // 租约/权限由 12 步链 Gateway 全查（纵深）
+            valid_now,
+            preemptible_target: true,
+            in_flight_sent_or_unknown: in_flight,
+        };
+        let ctx = crate::arbiter::ResourceContext {
+            mode: self.control_mode,
+            saga_in_flight: in_flight,
+            fresh_snapshot_after_manual: true,
+        };
+        match self.arbiter.decide(&req, &ctx) {
+            crate::arbiter::Decision::Proceed => {
+                self.arbiter
+                    .register_in_flight(self.profile.device_id, source);
+                Ok(())
+            }
+            crate::arbiter::Decision::Preempt(_, losers) => {
+                // 迁移期：在途 = journal 非终态，同键重入即对账（零盲发）。
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] ARBITER-PREEMPT loser={:?}",
+                    losers.first().map(|l| l.source)
+                );
+                self.arbiter
+                    .register_in_flight(self.profile.device_id, source);
+                Ok(())
+            }
+            crate::arbiter::Decision::Reject(losers) => {
+                Err(DispatchError::NotAuthorized(alloc::format!(
+                    "arbiter: {}",
+                    losers
+                        .first()
+                        .map(|l| l.reason.as_str())
+                        .unwrap_or("rejected")
+                )))
+            }
+            crate::arbiter::Decision::MergeInSolver(losers) => {
+                Err(DispatchError::ProposalInvalid(alloc::format!(
+                    "arbiter: {}",
+                    losers.first().map(|l| l.reason.as_str()).unwrap_or("merge")
+                )))
+            }
+        }
+    }
+
+    /// 人工 → 自动切换（[10] §4.3：必须重新 Snapshot/Capability）。
+    pub fn resume_auto(&mut self, fresh_snapshot: bool) -> Result<(), String> {
+        self.arbiter.resume_auto(fresh_snapshot)?;
+        self.control_mode = crate::arbiter::ControlMode::Auto;
+        Ok(())
+    }
+
     fn run_intent(
         &mut self,
         intent: &PointWriteIntent,
@@ -408,6 +485,9 @@ impl DispatchEngine {
                 intent.device_id, intent.point_id, self.profile.device_id, self.profile.point_id
             )));
         }
+        // WP-5.3（[10] §4.1）：协议入站写同经唯一 Arbiter（调度机构类）。
+        self.arbitrate(crate::arbiter::CommandSource::GridOperatorConfirmed, true)?;
+
         let power_kw = match intent.value {
             PointValue::Float(f) if f.is_finite() => f,
             PointValue::Int(i) => i as f64,
@@ -658,6 +738,9 @@ impl DispatchEngine {
             }
         }
 
+        // WP-5.3（[10] §4.1）：投递前唯一 Arbiter 裁决。
+        self.arbitrate(crate::arbiter::CommandSource::SiteOptimizer, true)?;
+
         // —— 逐命令合核（批序 = 编译序；失败阻断后继）——
         // not_before 语义：未来步不当拍投递（留待到期 tick——键已由编译
         // 确定性分配，重编译 + journal 幂等命中 = 无重复投递）；已过期步
@@ -716,10 +799,12 @@ impl DispatchEngine {
             }
         }
         if !delivered_any {
+            self.arbiter.clear_in_flight(self.profile.device_id);
             return Err(DispatchError::ProposalInvalid(String::from(
                 "计划无到期命令（未来步留待到期 tick）",
             )));
         }
+        self.arbiter.clear_in_flight(self.profile.device_id);
         Ok(last_receipt.expect("delivered_any ⇒ 非 None"))
     }
 

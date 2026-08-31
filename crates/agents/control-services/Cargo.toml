@@ -24,6 +24,8 @@ eneros-intent-contract = { path = "../../ai/intent-contract" }
 eneros-device-agent = { path = "../../agents/device-agent", default-features = false }
 # 唯一 ControlDispatch 引擎。
 eneros-control-dispatch = { path = "../../protocols/control-dispatch" }
+# 蓝图 61 v0.314.43（WP-5.3）：降级 lease 策略摘要（SM3）。
+eneros-crypto = { path = "../../security/crypto" }
 # 线上信封/结果帧编解码。
 eneros-control-gateway = { path = "../../protocols/control-gateway" }
 # 点/设备 ID 类型。

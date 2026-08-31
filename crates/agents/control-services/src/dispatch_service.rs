@@ -449,6 +449,7 @@ mod tests {
                 alloc::boxed::Box::new(v)
             },
             compiler_policy: eneros_control_dispatch::compiler::CompilerPolicy::default(),
+            control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
             chain,
             key: key.to_vec(),
             profile,

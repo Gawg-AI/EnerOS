@@ -312,6 +312,7 @@ fn engine_with(channel: Box<dyn DeliveryChannel>) -> DispatchEngine {
         }),
         contracts: Box::new(support::test_contract_view(1, 1)),
         compiler_policy: support::test_compiler_policy(),
+        control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
         feedback_mapping: eneros_control_dispatch::FeedbackPointMapping {
             grid_up: 5,
             soc: 4,
@@ -533,6 +534,7 @@ fn typed_multi_step_plan_delivers_due_commands_per_tick() {
         }),
         contracts: Box::new(support::test_contract_view(1, 1)),
         compiler_policy: support::test_compiler_policy(),
+        control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
         feedback_mapping: eneros_control_dispatch::FeedbackPointMapping {
             grid_up: 5,
             soc: 4,

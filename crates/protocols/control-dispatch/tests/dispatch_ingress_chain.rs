@@ -338,6 +338,7 @@ fn engine_with(channel: Box<dyn DeliveryChannel>, gate: DecisionGate) -> Dispatc
         }),
         contracts: Box::new(support::test_contract_view(u64::from(profile.device_id), 1)),
         compiler_policy: support::test_compiler_policy(),
+        control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
         feedback_mapping: FeedbackPointMapping {
             grid_up: 5,
             soc: 4,
