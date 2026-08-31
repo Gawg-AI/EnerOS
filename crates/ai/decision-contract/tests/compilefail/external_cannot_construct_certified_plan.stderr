@@ -6,10 +6,20 @@ error[E0599]: no associated function or constant named `new` found for struct `C
   |
 note: if you're trying to build a new `CertifiedPlan` consider using one of the following associated functions:
       CertifiedPlan::new_transition
+      CertifiedPlan::new_certified
       CertifiedPlan::decode_v1
  --> src/certificate.rs
   |
   | /     pub fn new_transition(
+  | |         seal: CertifierSeal,
+  | |         certificate_id: CertificateId,
+  | |         plan_id: PlanId,
+... |
+  | |         proof_digest: [u8; 32],
+  | |     ) -> Result<Self, ContractError> {
+  | |____________________________________^
+...
+  | /     pub fn new_certified(
   | |         seal: CertifierSeal,
   | |         certificate_id: CertificateId,
   | |         plan_id: PlanId,

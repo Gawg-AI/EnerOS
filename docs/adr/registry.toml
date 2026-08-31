@@ -411,3 +411,12 @@ status = "Accepted"
 supersedes = []
 superseded_by = ""
 decision_digest = ""
+
+[[adrs]]
+id = "ADR-051"
+path = "docs/adr/ADR-051-certifier-seal-transition.md"
+title = "CertifierSeal 发放收口与 control-dispatch 过渡窗延长（蓝图 61 v0.314.38）"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""

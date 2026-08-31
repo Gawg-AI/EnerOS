@@ -1,0 +1,22 @@
+[package]
+name = "eneros-certifier"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图61 [09] §4 v0.314.38 — 独立 CertifierModule：独立重算全部硬约束，唯一 CertifiedPlan 生产者（no_std 可移植）"
+
+[dependencies]
+eneros-decision-contract = { path = "../decision-contract", features = ["certifier"] }
+eneros-resource-registry = { path = "../../agents/resource-registry" }
+eneros-snapshot-service = { path = "../../agents/snapshot-service" }
+eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
+sha2 = { version = "0.10.9", default-features = false }
+
+[dev-dependencies]
+eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }
+# shadow 认证（[09] §4.5 步骤 5）：仅测试面消费 planner 产物——不构成
+# 生产依赖（[16] §3.9 依赖纪律针对生产面）。
+eneros-planner = { path = "../planner" }
+eneros-solver-core = { path = "../solver-core", features = ["highs-ffi"] }
+eneros-objective-engine = { path = "../objective-engine" }

@@ -41,6 +41,22 @@ impl Clone for CertifierSeal {
 }
 impl Copy for CertifierSeal {}
 
+#[cfg(feature = "certifier")]
+impl CertifierSeal {
+    /// 真认证器发放（.38 起；仅 eneros-certifier crate 编译期可达——
+    /// 该 crate 独占启用 `certifier` feature，rg 门 + compile-fail 锁定）。
+    ///
+    /// 语义约定：调用方必须已用**独立评估器**重算全部硬约束并留证
+    /// （proof records）；本函数不接收证据参数——它只是"谁可以造证书"
+    /// 的类型闸，证据由 CertifierModule 的评估链结构与 mutation 测试
+    /// 锁定（[09] §4.2/§4.7）。
+    #[doc(hidden)]
+    #[must_use]
+    pub fn issue() -> Self {
+        Self { _priv: () }
+    }
+}
+
 #[cfg(feature = "transition-certifier")]
 impl CertifierSeal {
     /// 迁移窗口 seal 发放（.28-.37）。
@@ -84,6 +100,40 @@ impl CertifiedPlan {
     #[cfg(feature = "transition-certifier")]
     #[allow(clippy::too_many_arguments)]
     pub fn new_transition(
+        seal: CertifierSeal,
+        certificate_id: CertificateId,
+        plan_id: PlanId,
+        plan_sha256: [u8; 32],
+        snapshot_id: crate::ids::SnapshotId,
+        certifier_version: u32,
+        constraint_catalog_version: u64,
+        tolerance_profile_id: u32,
+        certified_at_ms: u64,
+        valid_until_ms: u64,
+        hard_constraint_count: u32,
+        proof_digest: [u8; 32],
+    ) -> Result<Self, ContractError> {
+        Self::new_sealed(
+            seal,
+            certificate_id,
+            plan_id,
+            plan_sha256,
+            snapshot_id,
+            certifier_version,
+            constraint_catalog_version,
+            tolerance_profile_id,
+            certified_at_ms,
+            valid_until_ms,
+            hard_constraint_count,
+            proof_digest,
+        )
+    }
+
+    /// 真认证器构造（.38 起；`certifier` feature = 仅 eneros-certifier
+    /// 可达）。seal 本身不可跨 crate 构造——构造权仍收口于发放面。
+    #[cfg(feature = "certifier")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_certified(
         seal: CertifierSeal,
         certificate_id: CertificateId,
         plan_id: PlanId,

@@ -27,6 +27,9 @@ members = [
     "crates/ai/objective-engine",
     # 蓝图 61 [09] §3（v0.314.37）：多资源 Planner——真实 HiGHS 求解后端。
     "crates/ai/planner",
+    # 蓝图 61 [09] §4（v0.314.38）：独立 CertifierModule——唯一
+    # CertifiedPlan 生产者（独立重算全部硬约束）。
+    "crates/ai/certifier",
     "crates/ai/safety-validator",
     "crates/ai/intent-parser",
     "crates/ai/intent-contract",
@@ -176,7 +179,7 @@ members = [
 # rc/1.0 标记；冲刺期一律 0.x.y（0.313 延续历史 120 版本计划顶格 v0.312）；
 # 每 WP Exit 自证后递增 patch（cargo xtask bump-version patch；
 # xtask qa gng-version / eneros-ci version-gate-consistency 双检查强制）。
-version = "0.314.37"
+version = "0.314.38"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"
