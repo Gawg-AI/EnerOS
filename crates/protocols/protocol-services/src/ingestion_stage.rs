@@ -105,7 +105,7 @@ impl<C: RawIpc> TelemetryUplink<C> {
                 // 分批已保证 ≤ 上限且 128B 对齐——到达此处即结构破坏，
                 // fail-closed 停批（不静默截断）。
                 all_ok = false;
-                eneros_runtime::println!("[{log_tag}] OBS-ROUND encode-reject —— fail-closed");
+                eneros_runtime::println!("{}", line_obs_round_encode_reject(log_tag));
                 break;
             };
             match endpoint.call("svc-telemetry", &req) {
@@ -228,6 +228,10 @@ fn line_obs_round_ok(tag: &str, sent: usize, accepted: u32) -> String {
     format!("[{tag}] OBS-ROUND sent={sent} accepted={accepted}")
 }
 
+fn line_obs_round_encode_reject(tag: &str) -> String {
+    format!("[{tag}] OBS-ROUND encode-reject —— fail-closed")
+}
+
 fn line_obs_round_rejected(tag: &str, resp: &[u8]) -> String {
     format!(
         "[{tag}] OBS-ROUND rejected {:02x?}",
@@ -290,6 +294,10 @@ mod tests {
         assert_eq!(
             line_obs_round_ok(TAG, 12, 12),
             "[svc-modbus-tcp] OBS-ROUND sent=12 accepted=12"
+        );
+        assert_eq!(
+            line_obs_round_encode_reject(TAG),
+            "[svc-modbus-tcp] OBS-ROUND encode-reject —— fail-closed"
         );
         assert_eq!(
             line_obs_round_rejected(TAG, &[0xFF, 1, 2]),

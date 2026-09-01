@@ -904,10 +904,11 @@ fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::stri
     // epoch() 写回保真）。蓝图 58：请求构造/响应解析走 ota_wire 单源。
     let req = eneros_agent_sdk::ota_wire::encode_persist_trial(2, "1.2.0");
     let mut endpoint = ChunkedEndpoint::wrap_at(ipc, *epoch);
-    let resp = endpoint
-        .call("svc-ota", &req)
-        .map_err(|e| alloc::format!("persist transport: {e:?}"))?;
+    // 写回与成败无关（原语义：建 transfer 即消耗——失败路径同样前进，
+    // 保证共享计数器在传输失败后不复用旧 epoch）。
+    let resp = endpoint.call("svc-ota", &req);
     *epoch = endpoint.epoch();
+    let resp = resp.map_err(|e| alloc::format!("persist transport: {e:?}"))?;
     // 41 修复：svc-ota 失败响应以 "ERR:" 前缀返回（如存储未授予
     // "ERR:store-unavailable"）。不检查前缀就把错误串前 8 字节解成 gen
     // 会打印假成功行（"trial persisted gen=<'ERR:stor' 的 u64>"）——
@@ -928,10 +929,9 @@ fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::stri
     );
     // OTA1 0x07 LOAD-TRIAL：→ found(1)‖remaining(4)‖version(16)。
     let req2 = eneros_agent_sdk::ota_wire::encode_load_trial();
-    let resp2 = endpoint
-        .call("svc-ota", &req2)
-        .map_err(|e| alloc::format!("load transport: {e:?}"))?;
+    let resp2 = endpoint.call("svc-ota", &req2);
     *epoch = endpoint.epoch();
+    let resp2 = resp2.map_err(|e| alloc::format!("load transport: {e:?}"))?;
     let (remaining, version) = match eneros_agent_sdk::ota_wire::parse_load_resp(&resp2) {
         Ok(v) => v,
         Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) => {
@@ -998,10 +998,9 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
     let mut ipc = Sel4IpcClient::new("root-ota-download", ota_ep, eneros_time::get_monotonic_ns)
         .map_err(|e| alloc::format!("ota client init: {:?}", e))?;
     let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc, *epoch);
-    let resp = endpoint
-        .call("svc-ota", &req)
-        .map_err(|e| alloc::format!("ota download transport: {e:?}"))?;
+    let resp = endpoint.call("svc-ota", &req);
     *epoch = endpoint.epoch();
+    let resp = resp.map_err(|e| alloc::format!("ota download transport: {e:?}"))?;
     if let Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) =
         eneros_agent_sdk::ota_wire::expect_subcode_resp(
             &resp,
@@ -1021,20 +1020,18 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
 
     // 0x03 TRIAL
     let req3 = eneros_agent_sdk::ota_wire::encode_trial(1, b"0.123.0");
-    let resp3 = endpoint
-        .call("svc-ota", &req3)
-        .map_err(|e| alloc::format!("ota trial transport: {e:?}"))?;
+    let resp3 = endpoint.call("svc-ota", &req3);
     *epoch = endpoint.epoch();
+    let resp3 = resp3.map_err(|e| alloc::format!("ota trial transport: {e:?}"))?;
     eneros_agent_sdk::ota_wire::expect_subcode_resp(&resp3, eneros_agent_sdk::ota_wire::SUB_TRIAL)
         .map_err(|e| alloc::format!("ota trial unexpected resp: {e:?}"))?;
     eneros_runtime::println!("[eneros-root-task] OTA-DOWNLOAD: trial started");
 
     // 0x04 COMMIT
     let req4 = eneros_agent_sdk::ota_wire::encode_commit();
-    let resp4 = endpoint
-        .call("svc-ota", &req4)
-        .map_err(|e| alloc::format!("ota commit transport: {e:?}"))?;
+    let resp4 = endpoint.call("svc-ota", &req4);
     *epoch = endpoint.epoch();
+    let resp4 = resp4.map_err(|e| alloc::format!("ota commit transport: {e:?}"))?;
     eneros_agent_sdk::ota_wire::expect_subcode_resp(&resp4, eneros_agent_sdk::ota_wire::SUB_COMMIT)
         .map_err(|e| alloc::format!("ota commit unexpected resp: {e:?}"))?;
     eneros_runtime::println!("[eneros-root-task] OTA-DOWNLOAD: committed");
@@ -1093,7 +1090,10 @@ fn control_chain_synth_ingest(
     let mut ipc = Sel4IpcClient::new("root-collect", telemetry_ep, eneros_time::get_monotonic_ns)
         .map_err(|e| alloc::format!("telemetry client init: {:?}", e))?;
     let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc, *epoch);
-    let resp = endpoint.call("svc-telemetry", &req).map_err(|e| {
+    // 写回与成败无关（共享计数器在失败后不复用旧 epoch——62.2 复查修复）。
+    let resp = endpoint.call("svc-telemetry", &req);
+    *epoch = endpoint.epoch();
+    let resp = resp.map_err(|e| {
         let stats = endpoint.client_mut().stats();
         alloc::format!(
             "ingest transport: {:?} (sent={} recvd={} err={})",
@@ -1103,7 +1103,6 @@ fn control_chain_synth_ingest(
             stats.2
         )
     })?;
-    *epoch = endpoint.epoch();
     // INGEST 响应：[0, accepted]。
     if resp.len() < 2 || resp[0] != 0 {
         return Err(alloc::format!(
@@ -1183,14 +1182,16 @@ fn telemetry_report_tick(
         }
     };
     let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc, *epoch);
-    let enq_resp = match endpoint.call("svc-observability", &req) {
+    // 写回与成败无关（共享计数器在失败后不复用旧 epoch——62.2 复查修复）。
+    let enq_resp = endpoint.call("svc-observability", &req);
+    *epoch = endpoint.epoch();
+    let enq_resp = match enq_resp {
         Ok(r) => r,
         Err(e) => {
             eneros_runtime::println!("[eneros-root-task] OBS-REPORT enqueue FAIL {e:?}");
             return -1;
         }
     };
-    *epoch = endpoint.epoch();
     if enq_resp.first() != Some(&1) {
         eneros_runtime::println!(
             "[eneros-root-task] OBS-REPORT enqueue rejected {:02x?}",
@@ -1209,14 +1210,15 @@ fn telemetry_report_tick(
         }
     };
     let mut endpoint2 = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc2, *epoch);
-    let flush_resp = match endpoint2.call("svc-observability", &flush_req) {
+    let flush_resp = endpoint2.call("svc-observability", &flush_req);
+    *epoch = endpoint2.epoch();
+    let flush_resp = match flush_resp {
         Ok(r) => r,
         Err(e) => {
             eneros_runtime::println!("[eneros-root-task] OBS-REPORT flush FAIL {e:?}");
             return -1;
         }
     };
-    *epoch = endpoint2.epoch();
     // FLUSH 成功响应 = exported u64 LE（8B）；失败 = "ERR:..."（不误读为数字）。
     let exported = if flush_resp.starts_with(b"ERR") {
         eneros_runtime::println!(
@@ -1271,10 +1273,9 @@ fn control_chain_tick(
     )
     .map_err(|e| alloc::format!("energy client init: {:?}", e))?;
     let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc2, *epoch);
-    let tick_resp = endpoint
-        .call("svc-energy-agent", &[1u8 /* EA_TICK */])
-        .map_err(|e| alloc::format!("tick transport: {:?}", e))?;
+    let tick_resp = endpoint.call("svc-energy-agent", &[1u8 /* EA_TICK */]);
     *epoch = endpoint.epoch();
+    let tick_resp = tick_resp.map_err(|e| alloc::format!("tick transport: {:?}", e))?;
     if tick_resp.is_empty() {
         return Err("empty tick response".into());
     }
