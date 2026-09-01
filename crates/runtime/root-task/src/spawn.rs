@@ -1040,32 +1040,13 @@ pub fn storage_mmio_phys() -> u64 {
 /// [`NET_MMIO_VADDR`]（SPEC-R4 WP-R4.3 收编，本文件 re-export；每服务
 /// VSpace 独立——各服务可复用同一 vaddr 映射各自槽位物理页）。
 ///
-/// 46（WP-46.2 资源占用单一事实源）：协议服务 → virtio-net 槽位表。
-///
-/// 每协议独占一个 QEMU virtio-mmio 槽（`0x0a000000 + slot*0x200`）；
-/// **两个协议服务不得同槽**——槽冲突即装配失败（见 `proto_net_slot` 单测）。
-/// - 8  = svc-modbus-tcp（43 既有，slirp 后端）
-/// - 9  = svc-iec104（slirp user 后端；host 独立 104 从站，10.0.2.2:2404）
-/// - 10 = svc-mqtt   （slirp user 后端；host 独立 broker，10.0.2.2:1883）
-/// - 11 = svc-mms    （slirp user 后端；host 独立 MMS server，10.0.2.2:5102）
-/// - 1  = svc-goose  （socket(L2) 后端 bus.1 5577——46.5 平台实测收归 43 G3
-///   通道；QEMU virt 对多 socket 后端附着不可靠）
-/// - 13 = svc-sv     （socket(L2) 后端 5582）
-/// - svc-modbus-rtu → None（46.1 决策 b：QEMU 无第二串口）。SPEC-D 起
-///   其串口面走 UART 移交槽位（`UART_HANDOVER_TABLE` 登记制 + **X7**
-///   寄存器通道，见 `UartHandover`）——QEMU 空表下仍诚实无柄 → 壳。
+/// 46（WP-46.2 资源占用单一事实源）→ 蓝图 62 卷 62.2（WP-62.2.1）：
+/// 槽位表收编 [`crate::wiring::SERVICE_WIRING`] 单一事实源（心跳/栈覆盖/
+/// 编排驱动同表），此处仅保留推导面。每协议独占一个 QEMU virtio-mmio 槽
+/// （`0x0a000000 + slot*0x200`）；**两个协议服务不得同槽**——槽冲突即
+/// 装配失败（wiring 表唯一性断言 + 本文件 mmio vaddr 单测双守卫）。
 pub fn proto_net_slot(name: &str) -> Option<u64> {
-    match name {
-        "svc-modbus-tcp" => Some(8),
-        "svc-iec104" => Some(9),
-        "svc-mqtt" => Some(10),
-        "svc-mms" => Some(11),
-        // 46.5（平台限制登记）：QEMU virt 对多 socket 后端附着不可靠，goose
-        // 收归既有 G3 通道（bus.1 socket 5577，43 卷 L2 通道）。
-        "svc-goose" => Some(1),
-        "svc-sv" => Some(13),
-        _ => None,
-    }
+    crate::wiring::proto_net_slot(name)
 }
 
 /// 46.2 资源占用装配校验（冲突即失败，见 `proto_net_slot`）。
@@ -1792,16 +1773,18 @@ pub fn entry_mapped(plan_pages: &[PageEntry], elf: &LoadedElf) -> Result<u64, Sp
 /// 此处 re-export 保路径稳定。
 pub use eneros_agent_sdk::EIPC_GRANTS;
 
-/// 心跳监控服务表（WP-40.4 隔离面）：授予心跳 notification（服务
-/// CSpace 槽 `HEARTBEAT_NTFN_SLOT`）+ root 侧 poll cap。
-pub const HEARTBEAT_SERVICES: &[&str] = &[
-    "svc-telemetry",
-    "svc-energy-agent",
-    "svc-ai-worker",
-    "svc-control-dispatch",
-    "svc-device-agent",
-    "svc-hang",
-];
+/// 心跳监控服务面（WP-40.4 隔离面）：授予心跳 notification（服务
+/// CSpace 槽 `HEARTBEAT_NTFN_SLOT`）+ root 侧 poll cap。蓝图 62 卷 62.2
+/// （WP-62.2.1）：名单收编 [`crate::wiring::SERVICE_WIRING`] 单一事实源
+/// （heartbeat 登记；基线名单由 wiring 表结构断言锁定），此处仅保留
+/// 授予判定推导面。
+pub fn heartbeat_slot_of(name: &str) -> u64 {
+    if crate::wiring::is_heartbeat(name) {
+        eneros_agent_sdk::HEARTBEAT_NTFN_SLOT
+    } else {
+        0
+    }
+}
 
 /// 计算服务的 EIPC 授予（表序）：返回 (X3 掩码, [(槽位, 目标名)])。
 /// WP-54.4：委托 agent-sdk 单一事实源——mint 侧与服务侧共享同一推导。
@@ -1858,16 +1841,6 @@ pub struct SpawnedHandle {
     /// SPEC-D WP-D.1：svc-modbus-rtu 的 UART MMIO 移交句柄（X7）。非
     /// 登记服务为 None（今日空表恒 None；restart 同源重建寄存器）。
     pub uart_handover: Option<UartHandover>,
-}
-
-/// 服务的心跳槽（X4；受监控服务 = `HEARTBEAT_NTFN_SLOT`，否则 0）。
-/// spawn 寄存器与 restart 共享同一推导（W2.1 不变量单一持有同款纪律）。
-pub fn heartbeat_slot_of(name: &str) -> u64 {
-    if HEARTBEAT_SERVICES.contains(&name) {
-        eneros_agent_sdk::HEARTBEAT_NTFN_SLOT
-    } else {
-        0
-    }
 }
 
 /// 目标端真实 spawn：按计划逐服务执行 seL4 FFI（21-A K1.2，ADR-0034）。

@@ -93,11 +93,13 @@ pub mod config_client;
 pub mod config_gateway;
 pub mod context;
 pub mod eipc_grants;
+pub mod endpoint;
 // SPEC-C（WP-C.2）：北向历史取回 TELR 线格式单一事实源。
 pub mod history_wire;
 pub mod ipc;
 #[cfg(any(test, feature = "sel4"))]
 pub mod ipc_sel4;
+pub mod obs_batch_wire;
 pub mod obs_wire;
 pub mod ota_wire;
 pub mod relay_face;

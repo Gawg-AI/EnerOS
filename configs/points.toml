@@ -335,3 +335,18 @@ require_integrity = true
 point_min = 1
 point_max = 10
 max_events_per_s = 100
+
+# 蓝图 62 卷 62.2（D-1 判据前置）：iec104 来源身份登记——61 卷接入时
+# 点表三行已注册而 source 行遗漏，svc-iec104 因 own_source_id=None 诚实
+# 退壳（EXECUTE ST_UNAVAILABLE），采集轮无法产出事件。补行激活身份三事实
+#（source_id/epoch/mapping_version——[07] §2.4）。
+[[source]]
+source_id = 3
+protocol = "iec104"
+tenant_id = 1
+site_id = 1
+allow_control = false
+require_integrity = true
+point_min = 3001
+point_max = 3003
+max_events_per_s = 100

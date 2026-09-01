@@ -1,0 +1,20 @@
+{
+  "schema": "eneros.blueprint62.vol62-2.gate.v1",
+  "date": "2026-09-02",
+  "base_version": "0.315.0",
+  "exit_version": "0.315.1",
+  "image_sha256": "c2ee0773813ed52b46851e919ba36da7d3f0435a7baabf28f4d39dd4d03f6e0e",
+  "image_profile": "qemu-prod",
+  "wps": [
+    "WP-62.2.1",
+    "WP-62.2.2",
+    "WP-62.2.3",
+    "WP-62.2.4"
+  ],
+  "gate": "VOL62.2-GATE: PASS",
+  "workspace_tests": "8469 passed / 0 failed",
+  "clippy": "0 warnings",
+  "fmt": "clean",
+  "d1_evidence": "PROTO-EXEC svc-iec104 x4970 (wiring-driven) + ACQ lines x18 + peer interrogation rounds x6 (transcript)",
+  "serial_log": "local-only（8.4MB 量级，gitignore；61/62.1 卷同口径）"
+}

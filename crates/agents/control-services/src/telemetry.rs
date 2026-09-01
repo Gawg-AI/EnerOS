@@ -25,12 +25,13 @@ pub const TEL_INGEST: u8 = 1;
 pub const TEL_SNAPSHOT: u8 = 2;
 pub const TEL_ADVANCE_EPOCH: u8 = 3;
 /// 蓝图 61 v0.314.27：观测事件影子批次（V1 128B 帧 × n；影子轨零控制消费）。
-pub const TEL_INGEST_OBS: u8 = 4;
-/// TEL_INGEST_OBS 请求帧布局：[opcode][source_id u32][count u16][n × 128B]。
-pub const OBS_REQ_HEADER_LEN: usize = 1 + 4 + 2;
-/// OBS ingest 响应：[OK][accepted u16][rejected u16]（LE）。
-pub const OBS_RESP_LEN: usize = 1 + 2 + 2;
-
+/// 蓝图 62 卷 62.2（WP-62.2.2）：批次 wire（布局/编码/解码/分批预算）收归
+/// agent-sdk `obs_batch_wire` 单一事实源，本 crate 与协议服务共同消费；
+/// 原 `OBS_REQ_HEADER_LEN`/`OBS_RESP_LEN` 本地常量随实现内转正而退役。
+pub use eneros_agent_sdk::obs_batch_wire::{
+    decode_obs_request, encode_obs_response, FRAME_WIRE_LEN as OBS_FRAME_WIRE_LEN,
+    OPCODE_TEL_INGEST_OBS as TEL_INGEST_OBS,
+};
 /// 45.5：58B 定长样本 wire 收归 agent-sdk `sample_wire`（单一事实；
 /// root/svc-telemetry/协议服务共同消费）。此处 re-export 保持既有调用面。
 pub use eneros_agent_sdk::sample_wire::{
@@ -164,10 +165,9 @@ impl TelemetryService {
                     .restore(epoch, 0, alloc::collections::BTreeMap::new());
             }
         }
-        let mut out = alloc::vec![0u8];
-        out.extend_from_slice(&(accepted as u16).to_le_bytes());
-        out.extend_from_slice(&(rejected as u16).to_le_bytes());
-        out
+        // 蓝图 62 卷 62.2（WP-62.2.2）：响应编码单源 obs_batch_wire
+        //（[OK][accepted u16][rejected u16] 布局逐字节不变）。
+        encode_obs_response(accepted as u16, rejected as u16).to_vec()
     }
 
     /// 装配历史落盘接缝（WP-2；服务装配期调用一次；介质=Ring 基线词形）。
@@ -636,18 +636,12 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
             vec![0]
         }
         TEL_INGEST_OBS => {
-            // 蓝图 61 v0.314.27：[opcode][source_id u32][count u16][n × 128B]。
-            let body = &req[1..];
-            if body.len() < 6 {
-                return vec![0xFF];
+            // 蓝图 61 v0.314.27；蓝图 62 卷 62.2（WP-62.2.2）：请求解析
+            // 单源 agent-sdk obs_batch_wire（布局校验失败 → 0xFF 拒绝语义不变）。
+            match decode_obs_request(req) {
+                Ok((source_id, frames)) => svc.obs_ingest(source_id, frames, now_ms),
+                Err(_) => vec![0xFF],
             }
-            let source_id = u32::from_le_bytes(body[0..4].try_into().unwrap());
-            let count = u16::from_le_bytes(body[4..6].try_into().unwrap()) as usize;
-            let frames = &body[6..];
-            if frames.len() != count * eneros_telemetry_model::OBSERVATION_WIRE_LEN {
-                return vec![0xFF];
-            }
-            svc.obs_ingest(source_id, frames, now_ms)
         }
         _ => vec![0xFF],
     }

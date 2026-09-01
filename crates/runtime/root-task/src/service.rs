@@ -316,7 +316,8 @@ pub fn run_ipc_loop(
     // 瞬态由下一 tick 自愈；EXECUTE(15)/OBS(25) 分支维持低频错峰。
     const CONTROL_CHAIN_PERIOD: u64 = 5;
     /// 协议 EXECUTE 驱动周期（ACQ 保鲜 + mqtt 意图轮询；错峰于链回合）。
-    const PROTO_EXECUTE_PERIOD: u64 = 15;
+    /// 蓝图 62 卷 62.2：常量迁入 wiring::SERVICE_WIRING 的 driven 登记
+    /// （period_ticks=15 值不变），驱动循环改由表驱动。
     /// 可观测上报驱动周期。
     const OBS_REPORT_PERIOD: u64 = 25;
     /// hang 注入轮次（链稳定后一次性）。
@@ -528,14 +529,19 @@ pub fn run_ipc_loop(
                 }
             }
         }
-        // 47（WP-47.1 Exit 编排驱动）：协议服务 EXECUTE（独立分支——先
-        // svc-modbus-tcp ACQ 保鲜 {意图授权前遥测新鲜}，后 svc-mqtt 下行
-        // 写命令轮询 → 意图转发 dispatch；同轮顺序使 intent 的 SNAPSHOT
-        // 与 ACQ 相隔毫秒）。
-        if tick % PROTO_EXECUTE_PERIOD == 10 {
-            for name in ["svc-modbus-tcp", "svc-mqtt"] {
-                if let Some(h) = handles.iter().find(|h| h.name == name) {
-                    let _ = protocol_execute(h.ep, (tick % 0xFFFF) as u32, name);
+        // 47（WP-47.1 Exit 编排驱动）→ 蓝图 62 卷 62.2（WP-62.2.1 接线表
+        // 单源 + D-1 修复）：协议服务 EXECUTE 编排驱动——驱动名单/周期/
+        // 错峰相位全部来自 wiring::SERVICE_WIRING 的 driven 登记（svc-iec104
+        // 采集轮自此接入默认编排：offset 5 与 modbus-tcp/mqtt 的 10 错峰；
+        // 同相位服务按表序执行——先 svc-modbus-tcp ACQ 保鲜 {意图授权前
+        // 遥测新鲜}，后 svc-mqtt 下行写命令轮询 → 意图转发 dispatch；同轮
+        // 顺序使 intent 的 SNAPSHOT 与 ACQ 相隔毫秒）。
+        for w in crate::wiring::SERVICE_WIRING {
+            if let Some(d) = &w.driven {
+                if tick % d.period_ticks == d.offset_ticks {
+                    if let Some(h) = handles.iter().find(|h| h.name == w.name) {
+                        let _ = protocol_execute(h.ep, (tick % 0xFFFF) as u32, w.name);
+                    }
                 }
             }
         }
@@ -888,19 +894,20 @@ fn restart_service(
 /// （fail-closed 打印，不猜成功）。
 #[cfg(all(target_os = "none", feature = "sel4-eipc"))]
 fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string::String> {
+    use eneros_agent_sdk::endpoint::ChunkedEndpoint;
     use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
-    use eneros_agent_sdk::ChunkedClient;
     let mut ipc = Sel4IpcClient::new("root-storage-probe", ota_ep, eneros_time::get_monotonic_ns)
         .map_err(|e| alloc::format!("ota client init: {:?}", e))?;
     // OTA1 0x06 PERSIST-TRIAL：remaining(4)‖version(16) → gen(8)。
-    // 服务循环为分块 EIPC（ChunkedReceiver）——须用 ChunkedClient 发送。
-    // 蓝图 58：请求构造/响应解析走 ota_wire 单源（原手拼字节删除）。
+    // 服务循环为分块 EIPC（ChunkedReceiver）——经 chunked 端点发送
+    //（蓝图 62 卷 62.2 WP-62.2.4：epoch 单一递增点；共享计数器 wrap_at/
+    // epoch() 写回保真）。蓝图 58：请求构造/响应解析走 ota_wire 单源。
     let req = eneros_agent_sdk::ota_wire::encode_persist_trial(2, "1.2.0");
-    let mut transfer = ChunkedClient::new(&mut ipc, *epoch, 5_000);
-    *epoch = epoch.saturating_add(1);
-    let resp = transfer
-        .transfer("svc-ota", &req)
+    let mut endpoint = ChunkedEndpoint::wrap_at(ipc, *epoch);
+    let resp = endpoint
+        .call("svc-ota", &req)
         .map_err(|e| alloc::format!("persist transport: {e:?}"))?;
+    *epoch = endpoint.epoch();
     // 41 修复：svc-ota 失败响应以 "ERR:" 前缀返回（如存储未授予
     // "ERR:store-unavailable"）。不检查前缀就把错误串前 8 字节解成 gen
     // 会打印假成功行（"trial persisted gen=<'ERR:stor' 的 u64>"）——
@@ -921,11 +928,10 @@ fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::stri
     );
     // OTA1 0x07 LOAD-TRIAL：→ found(1)‖remaining(4)‖version(16)。
     let req2 = eneros_agent_sdk::ota_wire::encode_load_trial();
-    let mut transfer2 = ChunkedClient::new(&mut ipc, *epoch, 5_000);
-    *epoch = epoch.saturating_add(1);
-    let resp2 = transfer2
-        .transfer("svc-ota", &req2)
+    let resp2 = endpoint
+        .call("svc-ota", &req2)
         .map_err(|e| alloc::format!("load transport: {e:?}"))?;
+    *epoch = endpoint.epoch();
     let (remaining, version) = match eneros_agent_sdk::ota_wire::parse_load_resp(&resp2) {
         Ok(v) => v,
         Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) => {
@@ -962,7 +968,6 @@ const OTA_PROBE_TEST_SEED: [u8; 32] = [0x41; 32];
 #[cfg(all(target_os = "none", feature = "sel4-eipc"))]
 fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string::String> {
     use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
-    use eneros_agent_sdk::ChunkedClient;
     use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair, Sm2PrivateKey};
 
     // 47（WP-47.3 密钥注入链）：OTA 探针签章**测试键**（种子 0x41——与
@@ -992,11 +997,11 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
 
     let mut ipc = Sel4IpcClient::new("root-ota-download", ota_ep, eneros_time::get_monotonic_ns)
         .map_err(|e| alloc::format!("ota client init: {:?}", e))?;
-    let mut transfer = ChunkedClient::new(&mut ipc, *epoch, 5_000);
-    *epoch = epoch.saturating_add(1);
-    let resp = transfer
-        .transfer("svc-ota", &req)
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc, *epoch);
+    let resp = endpoint
+        .call("svc-ota", &req)
         .map_err(|e| alloc::format!("ota download transport: {e:?}"))?;
+    *epoch = endpoint.epoch();
     if let Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) =
         eneros_agent_sdk::ota_wire::expect_subcode_resp(
             &resp,
@@ -1016,22 +1021,20 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
 
     // 0x03 TRIAL
     let req3 = eneros_agent_sdk::ota_wire::encode_trial(1, b"0.123.0");
-    let mut transfer3 = ChunkedClient::new(&mut ipc, *epoch, 5_000);
-    *epoch = epoch.saturating_add(1);
-    let resp3 = transfer3
-        .transfer("svc-ota", &req3)
+    let resp3 = endpoint
+        .call("svc-ota", &req3)
         .map_err(|e| alloc::format!("ota trial transport: {e:?}"))?;
+    *epoch = endpoint.epoch();
     eneros_agent_sdk::ota_wire::expect_subcode_resp(&resp3, eneros_agent_sdk::ota_wire::SUB_TRIAL)
         .map_err(|e| alloc::format!("ota trial unexpected resp: {e:?}"))?;
     eneros_runtime::println!("[eneros-root-task] OTA-DOWNLOAD: trial started");
 
     // 0x04 COMMIT
     let req4 = eneros_agent_sdk::ota_wire::encode_commit();
-    let mut transfer4 = ChunkedClient::new(&mut ipc, *epoch, 5_000);
-    *epoch = epoch.saturating_add(1);
-    let resp4 = transfer4
-        .transfer("svc-ota", &req4)
+    let resp4 = endpoint
+        .call("svc-ota", &req4)
         .map_err(|e| alloc::format!("ota commit transport: {e:?}"))?;
+    *epoch = endpoint.epoch();
     eneros_agent_sdk::ota_wire::expect_subcode_resp(&resp4, eneros_agent_sdk::ota_wire::SUB_COMMIT)
         .map_err(|e| alloc::format!("ota commit unexpected resp: {e:?}"))?;
     eneros_runtime::println!("[eneros-root-task] OTA-DOWNLOAD: committed");
@@ -1052,7 +1055,6 @@ fn control_chain_synth_ingest(
     now: u64,
 ) -> Result<u8, alloc::string::String> {
     use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
-    use eneros_agent_sdk::ChunkedClient;
     use eneros_safety_validator::{IntegrityStatus, SampleQuality, TelemetrySample};
 
     let mut req: alloc::vec::Vec<u8> = alloc::vec![1u8];
@@ -1090,10 +1092,9 @@ fn control_chain_synth_ingest(
     // INGEST（分块：349B → 4 块）。
     let mut ipc = Sel4IpcClient::new("root-collect", telemetry_ep, eneros_time::get_monotonic_ns)
         .map_err(|e| alloc::format!("telemetry client init: {:?}", e))?;
-    let mut transfer = ChunkedClient::new(&mut ipc, *epoch, 5_000);
-    *epoch = epoch.saturating_add(1);
-    let resp = transfer.transfer("svc-telemetry", &req).map_err(|e| {
-        let stats = ipc.stats();
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc, *epoch);
+    let resp = endpoint.call("svc-telemetry", &req).map_err(|e| {
+        let stats = endpoint.client_mut().stats();
         alloc::format!(
             "ingest transport: {:?} (sent={} recvd={} err={})",
             e,
@@ -1102,6 +1103,7 @@ fn control_chain_synth_ingest(
             stats.2
         )
     })?;
+    *epoch = endpoint.epoch();
     // INGEST 响应：[0, accepted]。
     if resp.len() < 2 || resp[0] != 0 {
         return Err(alloc::format!(
@@ -1139,7 +1141,6 @@ fn telemetry_report_tick(
     epoch: &mut u64,
 ) -> i64 {
     use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
-    use eneros_agent_sdk::ChunkedClient;
     // 1. 服务健康摘要 payload（真实：spawned 服务计数按必需性；
     // 50 实弹修复——逐服务名清单单条 ≈450B × batch8 超帧限 1024B
     // （frame-oversize），改紧凑计数）。
@@ -1181,15 +1182,15 @@ fn telemetry_report_tick(
             return -1;
         }
     };
-    let mut transfer = ChunkedClient::new(&mut ipc, *epoch, 5_000);
-    *epoch = epoch.saturating_add(1);
-    let enq_resp = match transfer.transfer("svc-observability", &req) {
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc, *epoch);
+    let enq_resp = match endpoint.call("svc-observability", &req) {
         Ok(r) => r,
         Err(e) => {
             eneros_runtime::println!("[eneros-root-task] OBS-REPORT enqueue FAIL {e:?}");
             return -1;
         }
     };
+    *epoch = endpoint.epoch();
     if enq_resp.first() != Some(&1) {
         eneros_runtime::println!(
             "[eneros-root-task] OBS-REPORT enqueue rejected {:02x?}",
@@ -1207,15 +1208,15 @@ fn telemetry_report_tick(
             return -1;
         }
     };
-    let mut transfer2 = ChunkedClient::new(&mut ipc2, *epoch, 5_000);
-    *epoch = epoch.saturating_add(1);
-    let flush_resp = match transfer2.transfer("svc-observability", &flush_req) {
+    let mut endpoint2 = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc2, *epoch);
+    let flush_resp = match endpoint2.call("svc-observability", &flush_req) {
         Ok(r) => r,
         Err(e) => {
             eneros_runtime::println!("[eneros-root-task] OBS-REPORT flush FAIL {e:?}");
             return -1;
         }
     };
+    *epoch = endpoint2.epoch();
     // FLUSH 成功响应 = exported u64 LE（8B）；失败 = "ERR:..."（不误读为数字）。
     let exported = if flush_resp.starts_with(b"ERR") {
         eneros_runtime::println!(
@@ -1263,18 +1264,17 @@ fn control_chain_tick(
     let accepted = control_chain_synth_ingest(telemetry_ep, *seq, epoch, now)?;
     // 2. TICK（1B 请求；响应 = EA 状态 + receipt wire 83B）。
     use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
-    use eneros_agent_sdk::ChunkedClient;
     let mut ipc2 = Sel4IpcClient::new(
         "root-orchestrator",
         energy_ep,
         eneros_time::get_monotonic_ns,
     )
     .map_err(|e| alloc::format!("energy client init: {:?}", e))?;
-    let mut transfer2 = ChunkedClient::new(&mut ipc2, *epoch, 5_000);
-    *epoch = epoch.saturating_add(1);
-    let tick_resp = transfer2
-        .transfer("svc-energy-agent", &[1u8 /* EA_TICK */])
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc2, *epoch);
+    let tick_resp = endpoint
+        .call("svc-energy-agent", &[1u8 /* EA_TICK */])
         .map_err(|e| alloc::format!("tick transport: {:?}", e))?;
+    *epoch = endpoint.epoch();
     if tick_resp.is_empty() {
         return Err("empty tick response".into());
     }

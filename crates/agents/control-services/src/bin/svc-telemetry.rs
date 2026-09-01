@@ -74,15 +74,9 @@ pub extern "C" fn _start(
     ));
     // 蓝图 61：svc-config 客户端（授予边 eipc_grants 单源；槽解析无 I/O
     // ——真实取数惰性发生在首个 OBS 批次，此时 svc-config 必已服务）。
-    let config_client: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient> =
-        eneros_agent_sdk::eipc_resolve("svc-telemetry", "svc-config").and_then(|(_, slot)| {
-            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                "telemetry-config",
-                slot,
-                eneros_drv_svc::now_ns,
-            )
-            .ok()
-        });
+    let config_client: Option<
+        eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    > = eneros_agent_sdk::endpoint::ChunkedEndpoint::bind("svc-telemetry", "svc-config");
     if config_client.is_some() {
         eneros_runtime::println!("[svc-telemetry] config EIPC bound (lazy load on first OBS)");
     } else {
@@ -110,7 +104,10 @@ struct TelemetryHandler<'a> {
     /// SPEC-C（WP-C.2）：磁盘历史读面（None=降级态 → TELH 回不可用错误帧）。
     history: Option<eneros_control_services::telemetry_history::TsdbHistoryReader>,
     /// 蓝图 61：svc-config 客户端（None = 未授予——影子路径如实停用）。
-    config: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    /// 蓝图 62 卷 62.2（WP-62.2.4）：端点单源 ChunkedEndpoint。
+    config: Option<
+        eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    >,
 }
 
 #[cfg(target_os = "none")]
@@ -128,16 +125,18 @@ impl TelemetryHandler<'_> {
         let cfg_id = eneros_config_bundle::ConfigId::from_static("points");
         // generation（GET_GENERATION；失败 = 0 → 世代未定，观测不满足控制
         // 资格——fail-closed）。
-        let generation = eneros_agent_sdk::config_client::get_generation(client, 0, 5_000)
-            .ok()
-            .unwrap_or(0);
-        let Some(payload) = eneros_agent_sdk::config_client::get_entry(client, "points", 0, 5_000)
-            .ok()
-            .and_then(|resp| {
-                eneros_agent_sdk::config_client::decode_response_body(&resp)
-                    .ok()
-                    .map(|b| b.to_vec())
-            })
+        let generation =
+            eneros_agent_sdk::config_client::get_generation(client.client_mut(), 0, 5_000)
+                .ok()
+                .unwrap_or(0);
+        let Some(payload) =
+            eneros_agent_sdk::config_client::get_entry(client.client_mut(), "points", 0, 5_000)
+                .ok()
+                .and_then(|resp| {
+                    eneros_agent_sdk::config_client::decode_response_body(&resp)
+                        .ok()
+                        .map(|b| b.to_vec())
+                })
         else {
             eneros_runtime::println!(
                 "[svc-telemetry] OBS-CFG points fetch FAIL (retry next round)"
@@ -179,7 +178,9 @@ impl TelemetryHandler<'_> {
         // coverage/feedback point）。目录不可得（legacy bundle）→ 以
         // 装配参数覆盖运行（兼容轨；生产 bundle 必含 catalog 条目）。
         let mut applied_config = eval_config;
-        if let Some(cat) = eneros_control_services::catalog_gateway::fetch_catalog(client) {
+        if let Some(cat) =
+            eneros_control_services::catalog_gateway::fetch_catalog(client.client_mut())
+        {
             applied_config.coverage =
                 eneros_control_services::catalog_gateway::coverage_config(&cat.repo);
             let d = cat.repo.digest();

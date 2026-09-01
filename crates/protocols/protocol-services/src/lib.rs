@@ -34,6 +34,12 @@ pub mod net_transport;
 /// 协议状态机+原始值；身份/映射/工程量/去重/日志在 IngestionModule。
 pub mod modbus_ingest;
 
+/// 蓝图 62 卷 62.2（WP-62.2.3，S2a）：采集交付半环单源——两协议 bin 的
+/// 采集轮编排/上行分批/证据行词形收归此处（host 可测；bin 只保留协议
+/// 差异点）。
+#[cfg(any(target_os = "none", test))]
+pub mod ingestion_stage;
+
 /// 蓝图 61 v0.314.31（[07] §3.3）：IEC 104 接入 adapter——总召/自发收包
 /// drain + CP56 时标/品质映射/重复 ASDU 去重；身份/去重日志/背压在
 /// IngestionModule（与 modbus_ingest 同构，不修改 module 内核——[07] §3.1）。

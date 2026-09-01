@@ -37,19 +37,6 @@ static ALLOC: eneros_protocol_services::HeapAllocator =
 /// 同一事实；历史手抄常量退役）。
 pub use eneros_control_gateway::PCS_SETPOINT_READBACK_TOL_KW as MASTER_READBACK_TOL_KW;
 
-/// OBS ingest OK 响应长度（[OK][accepted u16][rejected u16]）。
-#[cfg(target_os = "none")]
-const OBS_RESP_OK_LEN: usize = 5;
-
-/// 单次 chunk 传输的 OBS 帧上限 = (1664B 逻辑上限 − 7B 头) / 128B 帧。
-#[cfg(target_os = "none")]
-const OBS_FRAMES_PER_TRANSFER: usize =
-    (eneros_agent_sdk::chunked::CHUNK_COUNT_MAX as usize * eneros_agent_sdk::CHUNK_DATA_MAX - 7)
-        / eneros_telemetry_model::OBSERVATION_WIRE_LEN;
-
-#[cfg(target_os = "none")]
-const _: () = assert!(OBS_FRAMES_PER_TRANSFER >= 1);
-
 /// 45.5 + v0.314.30：点表驱动 + 事件平面接入的 modbus-tcp I/O 服务。
 ///
 /// `_start` 收到 root 移交的 virtio-net 设备 → 经阶梯构造 smoltcp TCP 传输
@@ -74,150 +61,16 @@ struct ModbusTcpIoService {
     plugin: eneros_protocol_services::modbus_ingest::SharedPlugin,
     /// 点表（写路径解析 + readback）。
     registry: eneros_protocol_abstract::VecPointRegistry,
-    /// svc-telemetry EIPC 客户端。
-    telemetry: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
-    /// 遥测分块 epoch（单调）。
-    tel_epoch: u64,
-    /// INGEST 累计接受计数（观测——真实采集链）。
-    pub accepted_total: u64,
+    /// 遥测上行端（交付半环单源——分批/chunk/解析/epoch 递增内化；
+    /// WP-62.2.3）。
+    uplink: eneros_protocol_services::ingestion_stage::TelemetryUplink<
+        eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+    >,
     transactions: u32,
 }
 
 #[cfg(target_os = "none")]
 impl ModbusTcpIoService {
-    /// 采集轮（v0.314.30：module.tick 单点驱动——调度/组读/准入/事件）。
-    ///
-    /// 事件 wire 帧经 sink drain 分批上报（ObservationEvent = 唯一上行；
-    /// 事件身份/工程量/品质在 module 已定型）。ACQ 证据行从接受事件解码
-    /// 打印（单一事实——与上行 wire 同源）。
-    fn collect_and_report(&mut self, _now_ms: u64) -> bool {
-        use eneros_ingestion_core::TickBudget;
-        let now_ns = eneros_drv_svc::now_ns();
-        // 1. 采集轮：周期调度 → 组读 → 准入 → 事件日志（背压/拒绝可见）。
-        let report = self.module.tick(
-            now_ns,
-            TickBudget {
-                max_events: 256,
-                max_transactions: 16,
-            },
-        );
-        // 2. 对端重连登记（重连不换本地 source epoch——[07] §2.4）。
-        self.module.take_reconnects(self.source_id);
-        // 3. watermark 检查点（批量间隔持久化；save 失败显式——不静默）。
-        if let Err(e) = self.module.checkpoint() {
-            eneros_runtime::println!("[svc-modbus-tcp] OBS-CHECKPOINT FAIL: {e:?}");
-        }
-        // 4. 事件交付：drain → ACQ 证据行（同源 wire 解码）+ 分批上报。
-        let frames = self.module.drain_frames();
-        let mut any_good = false;
-        let mut frame_buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        for wire in &frames {
-            let Ok(ev) = eneros_telemetry_model::event::ObservationEvent::decode_v1(wire) else {
-                continue;
-            };
-            let eng = match ev.value {
-                eneros_telemetry_model::event::ObservationValue::F64(v) => v,
-                eneros_telemetry_model::event::ObservationValue::I64(v) => v as f64,
-                eneros_telemetry_model::event::ObservationValue::U64(v) => v as f64,
-                _ => 0.0,
-            };
-            let bad = ev.quality_bits & eneros_telemetry_model::event::quality_bits::VALID == 0;
-            if bad {
-                eneros_runtime::println!(
-                    "[svc-modbus-tcp] ACQ point={} q=bad (quality={:#06x})",
-                    ev.point_id,
-                    ev.quality_bits
-                );
-            } else {
-                any_good = true;
-                eneros_runtime::println!(
-                    "[svc-modbus-tcp] ACQ point={} value={} q=good seq={}",
-                    ev.point_id,
-                    eng,
-                    ev.sequence
-                );
-            }
-            frame_buf.extend_from_slice(wire);
-        }
-        if report.rejected > 0 || report.backpressured > 0 {
-            eneros_runtime::println!(
-                "[svc-modbus-tcp] ACQ-ROUND rejected={} backpressured={} (rate-limited={})",
-                report.rejected,
-                report.backpressured,
-                report.rate_limited
-            );
-            // 拒绝原因逐条可观测（[07] §2.5：一切丢弃可观测）。
-            for (point, reason) in self.module.take_reject_log() {
-                eneros_runtime::println!(
-                    "[svc-modbus-tcp] OBS-REJECT point={} reason={:?}",
-                    point,
-                    reason
-                );
-            }
-        }
-        self.report_obs(&mut frame_buf);
-        any_good
-    }
-
-    /// OBS 批次上报（[4][source u32][count u16][n × 128B]；分批同 [06]
-    /// §4.2——单次 chunk 传输上限 1664B，超限轮次自动分批）。
-    fn report_obs(&mut self, frame_buf: &mut alloc::vec::Vec<u8>) {
-        if frame_buf.is_empty() {
-            return;
-        }
-        let Some(client) = &mut self.telemetry else {
-            eneros_runtime::println!(
-                "[svc-modbus-tcp] telemetry EP not granted —— 事件未上报（fail-closed）"
-            );
-            return;
-        };
-        let frames = frame_buf.as_slice();
-        let total = frames.len() / eneros_telemetry_model::OBSERVATION_WIRE_LEN;
-        let mut accepted_total: u32 = 0;
-        let mut all_ok = true;
-        for batch in
-            frames.chunks(eneros_telemetry_model::OBSERVATION_WIRE_LEN * OBS_FRAMES_PER_TRANSFER)
-        {
-            let count = (batch.len() / eneros_telemetry_model::OBSERVATION_WIRE_LEN) as u16;
-            let mut req: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(7 + batch.len());
-            req.push(4u8); // TEL_INGEST_OBS
-            req.extend_from_slice(&self.source_id.to_le_bytes());
-            req.extend_from_slice(&count.to_le_bytes());
-            req.extend_from_slice(batch);
-            let mut transfer =
-                eneros_agent_sdk::ChunkedClient::new(&mut *client, self.tel_epoch, 5_000);
-            self.tel_epoch = self.tel_epoch.saturating_add(1);
-            match transfer.transfer("svc-telemetry", &req) {
-                Ok(resp) if resp.len() >= OBS_RESP_OK_LEN && resp[0] == 0 => {
-                    accepted_total += u32::from(u16::from_le_bytes([resp[1], resp[2]]));
-                }
-                Ok(resp) => {
-                    all_ok = false;
-                    eneros_runtime::println!(
-                        "[svc-modbus-tcp] OBS-ROUND rejected {:02x?}",
-                        &resp[..resp.len().min(8)]
-                    );
-                    break;
-                }
-                Err(e) => {
-                    all_ok = false;
-                    eneros_runtime::println!("[svc-modbus-tcp] OBS-ROUND eipc={:?}", e);
-                    break;
-                }
-            }
-        }
-        if all_ok {
-            self.accepted_total = self
-                .accepted_total
-                .saturating_add(u64::from(accepted_total));
-            eneros_runtime::println!(
-                "[svc-modbus-tcp] OBS-ROUND sent={} accepted={}",
-                total,
-                accepted_total
-            );
-        }
-    }
-
     /// 47（WP-47.1 协议出站写）：执行主站写 + 独立 readback，返回 2B
     /// `OutcomeFrame`。**本方法只执行**——授权已由 ControlDispatch 九步链
     /// 完成（不双头授权）。
@@ -341,8 +194,13 @@ impl eneros_drv_svc::runtime::DriverService for ModbusTcpIoService {
                     resp.payload_len = 2;
                     return;
                 }
-                // 采集轮（module.tick 单点驱动）。
-                let round_good = self.collect_and_report(eneros_protocol_services::now_ms());
+                // 采集轮（交付半环单源——WP-62.2.3 IngestionStage）。
+                let round_good = eneros_protocol_services::ingestion_stage::run_acq_round(
+                    &mut self.module,
+                    &mut self.uplink,
+                    "svc-modbus-tcp",
+                    eneros_drv_svc::now_ns(),
+                );
                 if round_good {
                     resp.status = ST_OK;
                 } else {
@@ -602,19 +460,25 @@ pub extern "C" fn _start(
                         }
                     }
                     let _ = generation; // generation 已注入 mapping.identity
+                    let uplink = eneros_protocol_services::ingestion_stage::TelemetryUplink::new(
+                        telemetry, own,
+                    );
                     let mut io = ModbusTcpIoService {
                         module,
                         source_id: own,
                         plugin,
                         registry,
-                        telemetry,
-                        tel_epoch: 0,
-                        accepted_total: 0,
+                        uplink,
                         transactions: 0,
                     };
                     // 启动期自检：一轮真实采集（外部 peer 记录事务；串口
                     // 打印 = L2 互操作/45 采集证据行）。
-                    io.collect_and_report(eneros_protocol_services::now_ms());
+                    eneros_protocol_services::ingestion_stage::run_acq_round(
+                        &mut io.module,
+                        &mut io.uplink,
+                        "svc-modbus-tcp",
+                        eneros_drv_svc::now_ns(),
+                    );
                     break 'build Some(Box::new(io));
                 };
                 built.unwrap_or_else(protocol_ladder::capability_shell)

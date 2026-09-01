@@ -366,33 +366,22 @@ impl Sel4ServiceIo {
 impl ServiceIo for Sel4ServiceIo {
     fn config_entry(&mut self, id: &str) -> Option<Vec<u8>> {
         use eneros_agent_sdk::config_gateway::ConfigEntrySource as _;
-        let (_, slot) = eneros_agent_sdk::eipc_resolve(
+        // 蓝图 62 卷 62.2（WP-62.2.4）：EIPC 建端单源 ChunkedEndpoint::bind。
+        let mut ep = eneros_agent_sdk::endpoint::ChunkedEndpoint::bind(
             self.service,
             eneros_agent_sdk::config_client::CONFIG_ENDPOINT,
         )?;
-        let mut client = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-            self.config_client,
-            slot,
-            eneros_drv_svc::now_ns,
-        )
-        .ok()?;
-        client.config_entry(id)
+        ep.client_mut().config_entry(id)
     }
 
     /// 蓝图 61：GET_GENERATION（观测映射世代；经同一 config 槽）。
     fn config_generation(&mut self) -> Option<u64> {
         use eneros_agent_sdk::config_gateway::ConfigEntrySource as _;
-        let (_, slot) = eneros_agent_sdk::eipc_resolve(
+        let mut ep = eneros_agent_sdk::endpoint::ChunkedEndpoint::bind(
             self.service,
             eneros_agent_sdk::config_client::CONFIG_ENDPOINT,
         )?;
-        let mut client = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-            self.config_client,
-            slot,
-            eneros_drv_svc::now_ns,
-        )
-        .ok()?;
-        client.config_generation()
+        ep.client_mut().config_generation()
     }
 
     fn transport(

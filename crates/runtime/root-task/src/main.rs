@@ -47,6 +47,7 @@ pub mod runtime_spec;
 pub mod service;
 pub mod spawn;
 pub mod supervisor;
+pub mod wiring;
 
 // 全局分配器（no_std aarch64：spawn/IPC 路径使用 alloc，见 allocator.rs）。
 #[cfg(target_os = "none")]
@@ -304,7 +305,13 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
     // 32 KiB 存活，含服务循环 ~5 KiB 槽位帧垫片）——16 KiB 默认栈在首个
     // TEL_INGEST 落盘即溢出；溢出线程阻塞在 fault 上行（root 当时阻塞于
     // EXECUTE Call）⇒ 全系统静默冻结。供 16 页 = 64 KiB（≥2× 余量）。
-    const SERVICE_STACK_OVERRIDES: &[(&str, u64)] = &[("svc-telemetry", 16)];
+    // 蓝图 62 卷 62.2（WP-62.2.1）：覆盖名单收编 wiring::SERVICE_WIRING
+    // 单一事实源（stack_pages 登记），此处仅推导。
+    let service_stack_overrides: alloc::vec::Vec<(&str, u64)> = crate::wiring::SERVICE_WIRING
+        .iter()
+        .filter_map(|w| w.stack_pages.map(|p| (w.name, p)))
+        .collect();
+    let service_stack_overrides: &[(&str, u64)] = &service_stack_overrides;
     const STACK_SIZE: u64 = 0x4000;
     const EP_BASE: u64 = 100;
     // BOOT-007 诊断：打印 bundle 与 root 模块头部（定位 BadElf 根因）。
@@ -333,7 +340,7 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
         STACK_SIZE,
         EP_BASE,
         VSPACE_BASE, // WP-37.4：ET_DYN 装载基址（独立 VSpace，可复用区域）
-        SERVICE_STACK_OVERRIDES,
+        service_stack_overrides,
     ) {
         Ok(plan) => plan,
         Err(e) => {
