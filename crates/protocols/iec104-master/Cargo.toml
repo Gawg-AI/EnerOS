@@ -20,7 +20,7 @@ eneros-net = { path = "../../drivers/net", optional = true }
 eneros-time = { path = "../../drivers/time" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
 eneros-upa-model = { path = "../upa-model" }
-eneros-telemetry-model = { version = "0.314.24", path = "../telemetry-model" }
+eneros-telemetry-model = { path = "../telemetry-model" }
 
 # 29 GV-02：契约套件经 mock feature 门控（cfg(test) 不跨 crate 传播），
 # 测试构建需显式启用。

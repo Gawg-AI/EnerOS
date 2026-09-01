@@ -19,19 +19,21 @@ use eneros_agent_sdk::config_gateway::{config_get, ConfigStep};
 
 /// 获取控制点绑定（设备/点）。
 ///
-/// `config` = svc-config EIPC 客户端（授予槽由装配方传入）；返回
+/// `catalog` = 装配入口一次拉取的目录（62 v0.315.0 WP-62.1.4 S7：本函数
+/// 不再自取 catalog——一次装配四视图同代）；`config` = svc-config EIPC
+/// 客户端（授予槽由装配方传入，仍用于 `points` 一次往返）；返回
 /// `(device_id, point_id)`。
 ///
 /// v0.314.33 语义：目录显式绑定点（[`crate::catalog_gateway::
 /// control_contract_point`]）+ 点表解析设备短 ID；目录缺失/歧义/点不在
 /// 表 → None（fail-closed）。
 #[cfg(feature = "sel4")]
-pub fn fetch_control_binding(
-    config: &mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+pub fn fetch_control_binding<T: eneros_agent_sdk::config_gateway::ConfigEntrySource>(
+    catalog: &crate::catalog_gateway::LoadedCatalog,
+    config: &mut T,
 ) -> Option<(u32, u32)> {
     use crate::catalog_gateway;
     // 1. 目录 → 显式绑定点（role=control 且带合同，恰好一个；歧义拒绝）。
-    let catalog = catalog_gateway::fetch_catalog(config)?;
     let Some(point) = catalog_gateway::control_contract_point(&catalog.repo) else {
         eneros_runtime::println!(
             "[control-bindings] 目录无唯一控制绑定点 —— fail-closed（绑定缺失）"

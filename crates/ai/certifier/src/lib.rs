@@ -176,7 +176,9 @@ impl CertifierModule {
         let records = eval::evaluate(ctx, plan)?;
 
         // 2. 证据摘要 + 证书（唯一 seal 发放点）。
-        let plan_sha: [u8; 32] = sha2::Sha256::digest(plan.encode_v1().as_slice()).into();
+        // 62 v0.315.0 WP-62.1.2：派生单源 = decision-contract
+        // `plan_wire_sha256`（原手写 SHA-256 删除）。
+        let plan_sha: [u8; 32] = eneros_decision_contract::CandidatePlan::plan_wire_sha256(plan);
         let proof_digest = proof::digest_records(&records, &plan_sha, CERTIFIER_VERSION);
         let cert = CertifiedPlan::new_certified(
             eneros_decision_contract::CertifierSeal::issue(),

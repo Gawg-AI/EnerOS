@@ -423,6 +423,173 @@ impl eneros_control_dispatch::DeliveryChannel for UnboundChannel {
     }
 }
 
+// ===========================================================================
+// 62 v0.315.0 WP-62.1.4（S7）：一次装配一次 catalog 拉取。
+//
+// 装配入口（[`assemble_catalog_views`] / `DispatchHandler::new`）拉一次
+// LoadedCatalog；资源/合同/反馈三视图与控制绑定全部收同一目录（同代由
+// 结构保证）。三视图为模块级自由函数（host 可测——拉取计数与同代断言）；
+// 词形集合（REGISTRY-MISSING / CONTRACT-VIEW-MISSING / CATALOG-MISSING /
+// REGISTRY-REJECT / CONTRACT-VIEW-ACTIVE / CATALOG-ACTIVE / CATALOG-FEEDBACK）
+// 逐字节保留。
+// ===========================================================================
+
+/// 装配目录视图集合（资源/合同/反馈同代派生；host 测试经计数假件驱动）。
+#[cfg(any(test, feature = "sel4"))]
+struct CatalogViews {
+    resource: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static>,
+    contract: alloc::boxed::Box<dyn eneros_control_dispatch::compiler::PlanContractView + 'static>,
+    feedback: eneros_control_dispatch::FeedbackPointMapping,
+}
+
+/// 视图装配核（target `build_engine` 与测试共走此单点）：一次目录 →
+/// 三视图同代派生。资源视图持有仓库本体（PlannerView::new 收 repo 值）
+/// ——最后构建。
+#[cfg(any(test, feature = "sel4"))]
+fn catalog_views_from(
+    catalog: Option<crate::catalog_gateway::LoadedCatalog>,
+    device_id: u32,
+) -> CatalogViews {
+    let contract = build_contract_view(catalog.as_ref());
+    let feedback = dispatch_feedback_mapping(catalog.as_ref());
+    let resource = build_resource_view(catalog, device_id);
+    CatalogViews {
+        resource,
+        contract,
+        feedback,
+    }
+}
+
+/// 装配入口（唯一 catalog 拉取点；host 测试 seam = 计数假件驱动本函数）。
+/// client/catalog 不可得 → 各视图 fail-closed 兜底（词形不变）。
+#[cfg(test)]
+fn assemble_catalog_views<T: eneros_agent_sdk::config_gateway::ConfigEntrySource>(
+    config_client: Option<&mut T>,
+    device_id: u32,
+) -> CatalogViews {
+    // 唯一拉取点。旧实现 = 资源/合同/反馈各拉一次 + 绑定一次，共 4 次
+    // ConfigGet("catalog") 往返 + 4 次全量解码（S7 漂移面）。
+    let catalog = config_client.and_then(crate::catalog_gateway::fetch_catalog);
+    catalog_views_from(catalog, device_id)
+}
+
+/// 蓝图 61 v0.314.35：资源注册表视图装载（PlannerView；失败 →
+/// EmptyResourceRegistry fail-closed）。62 v0.315.0 WP-62.1.4：收装配
+/// 入口的目录（不再自取——消耗 repo，放最后构建）。
+#[cfg(any(test, feature = "sel4"))]
+fn build_resource_view(
+    catalog: Option<crate::catalog_gateway::LoadedCatalog>,
+    device_id: u32,
+) -> alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static> {
+    use eneros_decision_contract::EmptyResourceRegistry;
+    let Some(cat) = catalog else {
+        eneros_runtime::println!(
+            "[svc-control-dispatch] REGISTRY-MISSING —— planner 输入 fail-closed（EmptyResourceRegistry）"
+        );
+        return alloc::boxed::Box::new(EmptyResourceRegistry);
+    };
+    let device = u16::try_from(device_id).unwrap_or(0);
+    match eneros_resource_registry::registry::PlannerView::new(cat.repo, device) {
+        Ok(view) => {
+            let d = view.repo_digest();
+            eneros_runtime::println!(
+                "[svc-control-dispatch] REGISTRY-ACTIVE binding=({device},{}) unit={} digest={:02x}{:02x}{:02x}{:02x}",
+                view.point_id,
+                view.unit_code,
+                d[0],
+                d[1],
+                d[2],
+                d[3]
+            );
+            alloc::boxed::Box::new(view)
+        }
+        Err(e) => {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] REGISTRY-REJECT {e} —— fail-closed（EmptyResourceRegistry）"
+            );
+            alloc::boxed::Box::new(EmptyResourceRegistry)
+        }
+    }
+}
+
+/// 蓝图 61 v0.314.41（WP-5.1）：控制合同编译视图装载（目录合同
+/// 枚举 → MapContractView；目录不可得 → 空视图 fail-closed）。
+/// 补偿映射：`compensation=true` 且有已确认基线 ⇒ 回设基线（值由
+/// 编译器取自 AppliedStateView，不在装配发明数值）。
+#[cfg(any(test, feature = "sel4"))]
+fn build_contract_view(
+    catalog: Option<&crate::catalog_gateway::LoadedCatalog>,
+) -> alloc::boxed::Box<dyn eneros_control_dispatch::compiler::PlanContractView + 'static> {
+    use eneros_control_dispatch::compiler::{MapContractView, PlanContract};
+    let Some(cat) = catalog else {
+        eneros_runtime::println!(
+            "[svc-control-dispatch] CONTRACT-VIEW-MISSING —— 批编译 fail-closed（空视图）"
+        );
+        return alloc::boxed::Box::new(MapContractView::new());
+    };
+    let mut view = MapContractView::new();
+    let mut count = 0usize;
+    for c in cat.repo.control_contracts() {
+        view.insert(
+            c.asset_id,
+            PlanContract {
+                class: c.class,
+                readback_point_id: c.readback_point_id,
+                reversible: c.reversible,
+                min: c.min,
+                max: c.max,
+                settle_ms: c.settle_ms,
+                compensable: c.compensation != 0,
+            },
+        );
+        count += 1;
+    }
+    eneros_runtime::println!("[svc-control-dispatch] CONTRACT-VIEW-ACTIVE contracts={count}");
+    alloc::boxed::Box::new(view)
+}
+
+/// 蓝图 61 v0.314.33：反馈映射装载（目录优先，常量回退）。
+#[cfg(any(test, feature = "sel4"))]
+fn dispatch_feedback_mapping(
+    catalog: Option<&crate::catalog_gateway::LoadedCatalog>,
+) -> eneros_control_dispatch::FeedbackPointMapping {
+    use eneros_control_dispatch::PROD_FEEDBACK_MAPPING;
+    let Some(cat) = catalog else {
+        eneros_runtime::println!(
+            "[svc-control-dispatch] CATALOG-MISSING —— feedback 回退装配常量（legacy 轨）"
+        );
+        return PROD_FEEDBACK_MAPPING;
+    };
+    let d = cat.repo.digest();
+    eneros_runtime::println!(
+        "[svc-control-dispatch] CATALOG-ACTIVE gen={} digest={:02x}{:02x}{:02x}{:02x}",
+        cat.generation,
+        d[0],
+        d[1],
+        d[2],
+        d[3]
+    );
+    match crate::catalog_gateway::feedback_mapping(&cat.repo) {
+        Some(m) => {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] CATALOG-FEEDBACK grid={} soc={} v={} oc={} ot={}",
+                m.grid_up,
+                m.soc,
+                m.dc_bus_v,
+                m.overcurrent,
+                m.overtemp
+            );
+            m
+        }
+        None => {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] CATALOG-FEEDBACK 槽不齐 —— 回退装配常量（fail-closed 面）"
+            );
+            PROD_FEEDBACK_MAPPING
+        }
+    }
+}
+
 #[cfg(all(target_os = "none", feature = "sel4"))]
 impl DispatchHandler {
     pub fn new(eipc_mask: u64) -> Self {
@@ -440,14 +607,21 @@ impl DispatchHandler {
             )
             .ok()
         });
-        let binding = match &mut config_client {
-            Some(c) => crate::cfg_bindings::fetch_control_binding(c),
-            None => {
+        // 62 v0.315.0 WP-62.1.4（S7）：一次装配一次 catalog 拉取——绑定与
+        // build_engine 资源/合同/反馈三视图共享同一 LoadedCatalog（原实现
+        // 4 次独立 ConfigGet("catalog") 往返 + 全量解码）。
+        let catalog = config_client
+            .as_mut()
+            .and_then(crate::catalog_gateway::fetch_catalog);
+        let binding = match (&mut config_client, catalog.as_ref()) {
+            (None, _) => {
                 eneros_runtime::println!(
                     "[svc-control-dispatch] config EP NOT granted —— 控制绑定缺失（fail-closed）"
                 );
                 None
             }
+            (Some(_), None) => None,
+            (Some(c), Some(cat)) => crate::cfg_bindings::fetch_control_binding(cat, c),
         };
         let (device_id, point_id) = binding.unwrap_or((0, 0));
         // SPEC WP-A.1：信封密钥经 svc-config `security` 节注入取得；
@@ -464,6 +638,7 @@ impl DispatchHandler {
                 now,
                 eipc_mask,
                 config_client,
+                catalog.as_ref(),
             )),
             None => {
                 eneros_runtime::println!(
@@ -502,6 +677,7 @@ impl DispatchHandler {
         now: u64,
         eipc_mask: u64,
         mut config_client: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+        catalog: Option<&crate::catalog_gateway::LoadedCatalog>,
     ) -> eneros_control_dispatch::DispatchEngine {
         use alloc::string::String;
 
@@ -575,14 +751,17 @@ impl DispatchHandler {
         // 蓝图 61 v0.314.35：资源注册表视图（命令批编译绑定权威——
         // planner 输入只能查询 Registry，[08] §4.8 门）。目录不可得/
         // 歧义 → EmptyResourceRegistry fail-closed（批编译拒绝）。
+        // 62 v0.315.0 WP-62.1.4：三视图收装配入口的同一 LoadedCatalog
+        //（catalog_views_from 单点装配；资源视图消耗 repo 克隆，最后构建）。
+        let views = catalog_views_from(catalog.cloned(), device_id);
         let resources: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static> =
-            Self::build_resource_view(config_client.as_mut(), device_id);
+            views.resource;
         // 蓝图 61 v0.314.41（WP-5.1）：控制合同编译视图（PlanCompiler
         // 合同半边——readback/可逆/值域/补偿单源自 SemanticCatalog；
         // 目录不可得 → 空视图 fail-closed：全部计划编译拒绝「未知合同」）。
         let contracts: alloc::boxed::Box<
             dyn eneros_control_dispatch::compiler::PlanContractView + 'static,
-        > = Self::build_contract_view(config_client.as_mut());
+        > = views.contract;
         let config = DispatchConfig {
             resources,
             contracts,
@@ -622,138 +801,10 @@ impl DispatchHandler {
             // 缺失/槽不齐 → 回退装配常量 PROD_FEEDBACK_MAPPING（legacy
             // 兼容轨，值必须与目录一致——parity 测试锁定）。退出 gate：
             // 生产无手写 feedback point（[08] §2.7）。
-            feedback_mapping: Self::dispatch_feedback_mapping(config_client.as_mut()),
+            feedback_mapping: views.feedback,
             now_fn: eneros_drv_svc::now_ms,
         };
         eneros_control_dispatch::DispatchEngine::new(config)
-    }
-
-    /// 蓝图 61 v0.314.35：资源注册表视图装载（PlannerView；失败 →
-    /// EmptyResourceRegistry fail-closed）。
-    fn build_resource_view(
-        config_client: Option<&mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
-        device_id: u32,
-    ) -> alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static> {
-        use eneros_decision_contract::EmptyResourceRegistry;
-        let Some(client) = config_client else {
-            eneros_runtime::println!(
-                "[svc-control-dispatch] REGISTRY-MISSING —— planner 输入 fail-closed（EmptyResourceRegistry）"
-            );
-            return alloc::boxed::Box::new(EmptyResourceRegistry);
-        };
-        let Some(cat) = crate::catalog_gateway::fetch_catalog(client) else {
-            eneros_runtime::println!(
-                "[svc-control-dispatch] REGISTRY-MISSING —— planner 输入 fail-closed（EmptyResourceRegistry）"
-            );
-            return alloc::boxed::Box::new(EmptyResourceRegistry);
-        };
-        let device = u16::try_from(device_id).unwrap_or(0);
-        match eneros_resource_registry::registry::PlannerView::new(cat.repo, device) {
-            Ok(view) => {
-                let d = view.repo_digest();
-                eneros_runtime::println!(
-                    "[svc-control-dispatch] REGISTRY-ACTIVE binding=({device},{}) unit={} digest={:02x}{:02x}{:02x}{:02x}",
-                    view.point_id,
-                    view.unit_code,
-                    d[0],
-                    d[1],
-                    d[2],
-                    d[3]
-                );
-                alloc::boxed::Box::new(view)
-            }
-            Err(e) => {
-                eneros_runtime::println!(
-                    "[svc-control-dispatch] REGISTRY-REJECT {e} —— fail-closed（EmptyResourceRegistry）"
-                );
-                alloc::boxed::Box::new(EmptyResourceRegistry)
-            }
-        }
-    }
-
-    /// 蓝图 61 v0.314.41（WP-5.1）：控制合同编译视图装载（目录合同
-    /// 枚举 → [`MapContractView`]；目录不可得 → 空视图 fail-closed）。
-    /// 补偿映射：`compensation=true` 且有已确认基线 ⇒ 回设基线（值由
-    /// 编译器取自 AppliedStateView，不在装配发明数值）。
-    fn build_contract_view(
-        config_client: Option<&mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
-    ) -> alloc::boxed::Box<dyn eneros_control_dispatch::compiler::PlanContractView + 'static> {
-        use eneros_control_dispatch::compiler::{MapContractView, PlanContract};
-        let Some(client) = config_client else {
-            eneros_runtime::println!(
-                "[svc-control-dispatch] CONTRACT-VIEW-MISSING —— 批编译 fail-closed（空视图）"
-            );
-            return alloc::boxed::Box::new(MapContractView::new());
-        };
-        let Some(cat) = crate::catalog_gateway::fetch_catalog(client) else {
-            eneros_runtime::println!(
-                "[svc-control-dispatch] CONTRACT-VIEW-MISSING —— 批编译 fail-closed（空视图）"
-            );
-            return alloc::boxed::Box::new(MapContractView::new());
-        };
-        let mut view = MapContractView::new();
-        let mut count = 0usize;
-        for c in cat.repo.control_contracts() {
-            view.insert(
-                c.asset_id,
-                PlanContract {
-                    class: c.class,
-                    readback_point_id: c.readback_point_id,
-                    reversible: c.reversible,
-                    min: c.min,
-                    max: c.max,
-                    settle_ms: c.settle_ms,
-                    compensable: c.compensation != 0,
-                },
-            );
-            count += 1;
-        }
-        eneros_runtime::println!("[svc-control-dispatch] CONTRACT-VIEW-ACTIVE contracts={count}");
-        alloc::boxed::Box::new(view)
-    }
-
-    /// 蓝图 61 v0.314.33：反馈映射装载（目录优先，常量回退）。
-    fn dispatch_feedback_mapping(
-        config_client: Option<&mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
-    ) -> eneros_control_dispatch::FeedbackPointMapping {
-        use eneros_control_dispatch::PROD_FEEDBACK_MAPPING;
-        let Some(client) = config_client else {
-            return PROD_FEEDBACK_MAPPING;
-        };
-        let Some(cat) = crate::catalog_gateway::fetch_catalog(client) else {
-            eneros_runtime::println!(
-                "[svc-control-dispatch] CATALOG-MISSING —— feedback 回退装配常量（legacy 轨）"
-            );
-            return PROD_FEEDBACK_MAPPING;
-        };
-        let d = cat.repo.digest();
-        eneros_runtime::println!(
-            "[svc-control-dispatch] CATALOG-ACTIVE gen={} digest={:02x}{:02x}{:02x}{:02x}",
-            cat.generation,
-            d[0],
-            d[1],
-            d[2],
-            d[3]
-        );
-        match crate::catalog_gateway::feedback_mapping(&cat.repo) {
-            Some(m) => {
-                eneros_runtime::println!(
-                    "[svc-control-dispatch] CATALOG-FEEDBACK grid={} soc={} v={} oc={} ot={}",
-                    m.grid_up,
-                    m.soc,
-                    m.dc_bus_v,
-                    m.overcurrent,
-                    m.overtemp
-                );
-                m
-            }
-            None => {
-                eneros_runtime::println!(
-                    "[svc-control-dispatch] CATALOG-FEEDBACK 槽不齐 —— 回退装配常量（fail-closed 面）"
-                );
-                PROD_FEEDBACK_MAPPING
-            }
-        }
     }
 
     /// 47（WP-47.1）：取受信任遥测快照（svc-telemetry TEL_SNAPSHOT →
@@ -1187,5 +1238,150 @@ mod tests {
             crate::dispatch_service::err_receipt("chain-key-missing")
         );
         assert_eq!(intent_requests, 1, "未知码不得计入意图请求");
+    }
+
+    // ------------------------------------------------------------------
+    // 62 v0.315.0 WP-62.1.4（S7）：一次装配一次 catalog 拉取 + 同代断言
+    // ------------------------------------------------------------------
+
+    /// 计数假件：ConfigEntrySource 内存实现（按节 id 计数 + 预置响应）。
+    struct CountingConfigSource {
+        response: Option<(&'static str, alloc::vec::Vec<u8>)>,
+        counts: core::cell::RefCell<alloc::vec::Vec<(alloc::string::String, u32)>>,
+    }
+
+    impl CountingConfigSource {
+        fn with(id: &'static str, body: alloc::vec::Vec<u8>) -> Self {
+            Self {
+                response: Some((id, body)),
+                counts: core::cell::RefCell::new(alloc::vec::Vec::new()),
+            }
+        }
+
+        fn count_of(&self, id: &str) -> u32 {
+            self.counts
+                .borrow()
+                .iter()
+                .find(|(k, _)| k.as_str() == id)
+                .map(|(_, c)| *c)
+                .unwrap_or(0)
+        }
+
+        fn bump(&self, id: &str) {
+            let mut c = self.counts.borrow_mut();
+            match c.iter_mut().find(|(k, _)| k.as_str() == id) {
+                Some(e) => e.1 += 1,
+                None => c.push((alloc::string::String::from(id), 1)),
+            }
+        }
+    }
+
+    impl eneros_agent_sdk::config_gateway::ConfigEntrySource for CountingConfigSource {
+        fn config_entry(&mut self, id: &str) -> Option<alloc::vec::Vec<u8>> {
+            self.bump(id);
+            match &self.response {
+                Some((k, body)) if *k == id => Some(body.clone()),
+                _ => None,
+            }
+        }
+    }
+
+    /// wire 帧：4B LE 长度前缀 + body（config_gateway 同形）。
+    fn framed(body: &[u8]) -> alloc::vec::Vec<u8> {
+        let mut out = alloc::vec::Vec::with_capacity(4 + body.len());
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// `version_set()` 等目录查询面（trait 方法，测试内导入）。
+    use eneros_semantic_catalog::SemanticCatalog as _;
+
+    /// 生产目录 payload（configs/catalog.toml 编译面——resource-registry
+    /// 测试夹具同源）。
+    fn prod_catalog_payload() -> alloc::vec::Vec<u8> {
+        let toml = include_str!("../../../../configs/catalog.toml");
+        eneros_config_bundle::toml_compile::compile_catalog(toml)
+            .expect("catalog.toml 合法")
+            .payload
+    }
+
+    /// S7 主判据（红转绿）：一次装配路径 ConfigGet("catalog") 恰 1 次
+    ///（改造前 = 4：绑定/资源/合同/反馈各拉一次）。目录不可得分支的
+    /// fail-closed 面同步锁定（反馈回退装配常量、注册表空）。
+    #[test]
+    fn catalog_assembly_fetches_catalog_exactly_once() {
+        let mut src = CountingConfigSource::with("catalog", framed(b"not-a-catalog"));
+        let views = assemble_catalog_views(Some(&mut src), 1);
+        assert_eq!(
+            src.count_of("catalog"),
+            1,
+            "一次装配只允许 1 次 ConfigGet(catalog)"
+        );
+        // fail-closed 兜底面：目录不可得 → 注册表空 + 反馈回退常量。
+        assert!(!views.resource.asset_exists(1));
+        let prod = eneros_control_dispatch::PROD_FEEDBACK_MAPPING;
+        assert_eq!(views.feedback.grid_up, prod.grid_up);
+        assert_eq!(views.feedback.soc, prod.soc);
+        assert_eq!(views.feedback.dc_bus_v, prod.dc_bus_v);
+        assert_eq!(views.feedback.overcurrent, prod.overcurrent);
+        assert_eq!(views.feedback.overtemp, prod.overtemp);
+        // points 节不得被装配触碰（本装配只拉 catalog）。
+        assert_eq!(src.count_of("points"), 0);
+    }
+
+    /// S7 同代断言：三视图自同一 LoadedCatalog 派生——注册表版本 =
+    /// 目录合同代、反馈 = 目录槽位、合同视图 = 目录合同（结构同代的
+    /// 数值流验证，防回归网）。
+    #[test]
+    fn catalog_views_same_generation_from_single_loaded_catalog() {
+        let repo = eneros_semantic_catalog::open(&prod_catalog_payload()).unwrap();
+        let contract_version = repo.version_set().contract_version;
+        let generation = repo.version_set().generation;
+        let feedback_expected =
+            crate::catalog_gateway::feedback_mapping(&repo).expect("生产目录五反馈槽齐备");
+        let cat = crate::catalog_gateway::LoadedCatalog { repo, generation };
+        // 同一 &LoadedCatalog → 三视图（资源视图消耗 repo，最后构建——
+        // 装配入口同序）。
+        let contract = build_contract_view(Some(&cat));
+        let feedback = dispatch_feedback_mapping(Some(&cat));
+        let resource = build_resource_view(Some(cat), 1);
+
+        // 注册表视图与目录同代（catalog_version = contract_version）。
+        assert_eq!(resource.catalog_version(), contract_version);
+        assert!(
+            resource.asset_exists(1),
+            "目录资产 1 必须入册（REGISTRY-ACTIVE 臂）"
+        );
+        // 合同视图与目录同代（目录合同逐条进入编译视图）。
+        assert!(
+            contract.plan_contract(1).is_some(),
+            "目录资产 1 的控制合同必须进入编译视图（CONTRACT-VIEW-ACTIVE 臂）"
+        );
+        // 反馈映射与目录同代（= 生产常量 parity，61 卷 parity 面延续）。
+        assert_eq!(feedback.grid_up, feedback_expected.grid_up);
+        assert_eq!(feedback.soc, feedback_expected.soc);
+        assert_eq!(feedback.dc_bus_v, feedback_expected.dc_bus_v);
+        assert_eq!(feedback.overcurrent, feedback_expected.overcurrent);
+        assert_eq!(feedback.overtemp, feedback_expected.overtemp);
+    }
+
+    /// S7 正例端到端：真目录 payload 一次拉取 → 三视图全部激活
+    ///（count==1 且注册表/合同非空——单次取数 + 全视图数据流）。
+    #[test]
+    fn catalog_assembly_single_fetch_populates_all_views() {
+        let payload = prod_catalog_payload();
+        let repo = eneros_semantic_catalog::open(&payload).unwrap();
+        let contract_version = repo.version_set().contract_version;
+        let mut src = CountingConfigSource::with("catalog", framed(&payload));
+        let views = assemble_catalog_views(Some(&mut src), 1);
+        assert_eq!(
+            src.count_of("catalog"),
+            1,
+            "一次装配只允许 1 次 ConfigGet(catalog)"
+        );
+        assert!(views.resource.asset_exists(1));
+        assert_eq!(views.resource.catalog_version(), contract_version);
+        assert!(views.contract.plan_contract(1).is_some());
     }
 }

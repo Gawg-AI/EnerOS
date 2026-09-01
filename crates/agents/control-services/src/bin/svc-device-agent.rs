@@ -80,8 +80,12 @@ impl DeviceAgentHandler {
         } else {
             None
         };
+        // 62 v0.315.0 WP-62.1.4（S7）：fetch_control_binding 改收装配入口
+        // 拉取的目录（本装配仍恰好 1 次 catalog 往返，与改造前一致）。
         let binding = match &mut config_client {
-            Some(c) => eneros_control_services::cfg_bindings::fetch_control_binding(c),
+            Some(c) => eneros_control_services::catalog_gateway::fetch_catalog(c).and_then(|cat| {
+                eneros_control_services::cfg_bindings::fetch_control_binding(&cat, c)
+            }),
             None => {
                 eneros_runtime::println!(
                     "[svc-device-agent] config EP NOT granted —— 控制绑定缺失（fail-closed）"

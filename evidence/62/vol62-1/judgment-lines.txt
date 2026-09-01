@@ -1,0 +1,22 @@
+# 卷 62.1 出口 QEMU 实弹判据行摘录（全量串口 8.5MB 留本地未入库，61 卷同口径）
+# image sha256: 3028d9618ef422d8d217a6194995e2510f8077f261bca9cf11c93a8bfc5d2c11  /home/ahx/文档/EnerOS/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw
+# 判据来源: target/evidence62-vol1/normal/qemu-serial.log
+--- PRODUCT-READY: true
+[eneros-root-task] PRODUCT-READY: true (degraded: ; required degraded: )
+--- CATALOG-ACTIVE gen=1
+[svc-control-dispatch] CATALOG-ACTIVE gen=1 digest=9bc279fc
+--- CATALOG-BINDING point=10 device=1
+[control-bindings] CATALOG-BINDING point=10 device=1 (explicit, gen=1)
+--- REGISTRY-ACTIVE binding=(1,10)
+[svc-control-dispatch] REGISTRY-ACTIVE binding=(1,10) unit=6 digest=9bc279fc
+--- CONTRACT-VIEW-ACTIVE contracts=
+[svc-control-dispatch] CONTRACT-VIEW-ACTIVE contracts=1
+--- PLAN-COMPILED
+[svc-control-dispatch] PLAN-COMPILED batches=1 intents=1 skipped=0 manual=0 compiler=[a4, 22, cf, 07] batch=[1b, bb, 21, f1]
+--- EXEC-JOURNAL applied-confirmed
+[svc-control-dispatch] EXEC-JOURNAL applied-confirmed（独立回读匹配→Committed）
+--- 兜底词形计数（应全 0）
+REGISTRY-MISSING = 0
+CONTRACT-VIEW-MISSING = 0
+CATALOG-MISSING = 0
+CHAIN-KEY-MISSING = 0

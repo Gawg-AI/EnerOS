@@ -320,6 +320,12 @@
    "to": "eneros-solver-model",
    "reason": "host/solver 工具族既有依赖（非 release 闭包；ADR-050：planner/HiGHS 仅宿主，目标侧不可装配）。37 卷冻结册时 planner 尚未存在——0.314.37 引入该边，0.314.43 首次重建目标镜像时由冻结门暴露并补登记",
    "established": "2026-08-31"
+  },
+  {
+   "from": "eneros-model-harness",
+   "to": "eneros-model-deploy",
+   "reason": "61 Phase 6 v0.314.44 引入 ModelHarness→model-deploy 既有依赖（模型部署链路前置面）；62 卷 62.1 出口首次重建目标镜像时由冻结门暴露并补登记（0.314.43 planner→solver-model 同型先例）",
+   "established": "2026-09-01"
   }
  ]
 }

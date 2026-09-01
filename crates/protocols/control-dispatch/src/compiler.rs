@@ -259,7 +259,9 @@ pub fn compile(
     default_asset_id: u64,
 ) -> Result<CompileOutcome, CompileReject> {
     // 0. 计划-证书绑定（compiler 不信任调用方配对）。
-    let plan_sha: [u8; 32] = sha2::Sha256::digest(plan.encode_v1().as_slice()).into();
+    // 62 v0.315.0 WP-62.1.2：派生单源 = decision-contract
+    // `plan_wire_sha256`（原手写 SHA-256 删除）。
+    let plan_sha: [u8; 32] = eneros_decision_contract::CandidatePlan::plan_wire_sha256(plan);
     if plan_sha != *cert.plan_sha256() || plan.id() != cert.plan_id() {
         return Err(CompileReject::PlanCertMismatch);
     }

@@ -27,9 +27,14 @@ pub struct LoadedCatalog {
 }
 
 /// svc-config `ConfigGet("catalog")` → 解码（失败 → None；词形由调用方）。
-#[cfg(feature = "sel4")]
-pub fn fetch_catalog(
-    config: &mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+///
+/// 62 v0.315.0 WP-62.1.4：传输面泛型化到 [`eneros_agent_sdk::config_gateway::
+/// ConfigEntrySource`]（target = `Sel4IpcClient`，host 测试 = 内存假件——
+/// 装配拉取计数与同代断言可测）；wire/解码/词形零变更（config_get 单源
+/// 不动）。cfg 放宽到 `any(test, feature = "sel4")` 与 agent-sdk 同口径。
+#[cfg(any(test, feature = "sel4"))]
+pub fn fetch_catalog<T: eneros_agent_sdk::config_gateway::ConfigEntrySource>(
+    config: &mut T,
 ) -> Option<LoadedCatalog> {
     use eneros_agent_sdk::config_gateway::{config_get, ConfigStep};
     let got =

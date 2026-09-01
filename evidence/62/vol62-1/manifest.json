@@ -1,0 +1,14 @@
+{
+  "schema": "eneros.blueprint62.vol62-1.gate.v1",
+  "date": "2026-09-01",
+  "base_version": "0.314.49",
+  "exit_version": "0.315.0",
+  "image_sha256": "3028d9618ef422d8d217a6194995e2510f8077f261bca9cf11c93a8bfc5d2c11",
+  "image_profile": "qemu-prod",
+  "wps": ["WP-62.1.1", "WP-62.1.2", "WP-62.1.3", "WP-62.1.4"],
+  "gate": "VOL62.1-GATE: PASS",
+  "workspace_tests": "8451 passed / 0 failed",
+  "clippy": "0 warnings",
+  "fmt": "clean",
+  "serial_log": "local-only（8.5MB，gitignore；61 卷同口径）"
+}

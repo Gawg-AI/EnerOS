@@ -295,6 +295,17 @@ impl CandidatePlan {
         out
     }
 
+    /// CandidatePlan wire SHA-256（62 v0.315.0 WP-62.1.2 单源派生点）。
+    ///
+    /// `CoreCommand.plan_sha` 的契约值（engine.rs CoreCommand 文档）与
+    /// compiler 计划-证书绑定锚、certifier 证书摘要共用本公式：
+    /// `SHA-256(plan.encode_v1())`。此前三处各自手写、EngineSagaExecutor
+    /// 又以 input_digest 冒充（D-3 漂移）——派生只允许经本函数。
+    pub fn plan_wire_sha256(plan: &CandidatePlan) -> [u8; 32] {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(plan.encode_v1().as_slice()).into()
+    }
+
     /// V1 wire 解码（先校 magic/版本/计数上限，再读字段——[06] §4.2）。
     pub fn decode_v1(buf: &[u8]) -> Result<Self, ContractError> {
         if buf.len() < 8 || buf[0..4] != MAGIC_CAND {
@@ -408,6 +419,17 @@ mod tests {
     #![allow(clippy::disallowed_macros)]
 
     use super::*;
+
+    /// 62 v0.315.0 WP-62.1.2：派生公式锁——`plan_wire_sha256` 恒等于
+    /// `SHA-256(plan.encode_v1())` 本体（唯一允许的派生写法）。
+    #[test]
+    fn plan_wire_sha256_matches_encode_v1_digest() {
+        use sha2::Digest as _;
+        let p = plan();
+        let via_helper = CandidatePlan::plan_wire_sha256(&p);
+        let via_formula: [u8; 32] = sha2::Sha256::digest(p.encode_v1().as_slice()).into();
+        assert_eq!(via_helper, via_formula);
+    }
 
     fn plan() -> CandidatePlan {
         let mut sid = [0u8; 16];
