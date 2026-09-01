@@ -260,6 +260,19 @@ fn journal_append(path: &Path, r: &JournalRecord) -> std::io::Result<()> {
     f.flush()
 }
 
+/// 落盘失败 fail-closed：journal 是 restore 的唯一真相来源，写入失败
+/// 若被 `.ok()` 吞掉，磁盘状态会与内存协议状态静默分叉（承诺/证据丢失、
+/// 重启后恢复不一致）。任何一次写失败都终止进程并给出可观测错误。
+fn journal_append_fatal(path: &Path, r: &JournalRecord) {
+    if let Err(e) = journal_append(path, r) {
+        eprintln!(
+            "[journal] {path:?}: append 失败（fail-closed）：{e}——磁盘满/只读/损坏？\
+             不继续处理以避免协议状态与磁盘分叉",
+        );
+        exit(1);
+    }
+}
+
 /// 读回全部记录；损坏尾段截断并告警（崩溃恢复语义）。
 fn journal_load(path: &Path) -> (NegotiationJournal, u64) {
     let mut j = NegotiationJournal::default();
@@ -464,7 +477,7 @@ fn run_coord_peer(
         let now = now_ns();
         let (out, outbox) = coord.on_message(&env, now, signer);
         if let Some(r) = in_record(&env, now, &out) {
-            journal_append(jpath, &r).ok();
+            journal_append_fatal(jpath, &r);
         }
         match out {
             StepOutcome::OfferRegistered { .. } => {
@@ -490,7 +503,7 @@ fn run_coord_peer(
         }
         for e in outbox {
             if let Some(r) = out_record(&e, now, env.site_id) {
-                journal_append(jpath, &r).ok();
+                journal_append_fatal(jpath, &r);
             }
             if let Err(err) = send_frame(stream, &e) {
                 eprintln!("[coord] send: {err}");
@@ -573,7 +586,7 @@ fn solve_and_propose(
                 match coord.propose(t.site_id, &proposal, now, signer) {
                     Ok((_, env)) => {
                         if let Some(r) = out_record(&env, now, t.site_id) {
-                            journal_append(jpath, &r).ok();
+                            journal_append_fatal(jpath, &r);
                         }
                         if let Err(err) = send_frame(stream, &env) {
                             eprintln!("[coord] propose send: {err}");
@@ -704,7 +717,7 @@ fn run_site(a: &Args) -> ! {
             .expect("publish offer");
         eprintln!("[site] {out:?}");
         if let Some(r) = out_record(&env, now, 0) {
-            journal_append(&jpath, &r).ok();
+            journal_append_fatal(&jpath, &r);
         }
         if let Err(e) = send_frame(&mut stream, &env) {
             eprintln!("[site] send offer: {e}");
@@ -731,7 +744,7 @@ fn run_site(a: &Args) -> ! {
         let now = now_ns();
         let (out, outbox) = site.on_message(&env, now, &mut signer);
         if let Some(r) = in_record(&env, now, &out) {
-            journal_append(&jpath, &r).ok();
+            journal_append_fatal(&jpath, &r);
         }
         if matches!(
             out,
@@ -745,7 +758,7 @@ fn run_site(a: &Args) -> ! {
         }
         for e in &outbox {
             if let Some(r) = out_record(e, now, 0) {
-                journal_append(&jpath, &r).ok();
+                journal_append_fatal(&jpath, &r);
             }
             if let Err(err) = send_frame(&mut stream, e) {
                 eprintln!("[site] send: {err}");
@@ -797,7 +810,7 @@ fn submit_demo_evidence(
     };
     if let Ok((_, env)) = site.submit_progress(&prog, now, signer) {
         if let Some(r) = out_record(&env, now, 0) {
-            journal_append(jpath, &r).ok();
+            journal_append_fatal(jpath, &r);
         }
         let _ = send_frame(stream, &env);
     }
@@ -812,7 +825,7 @@ fn submit_demo_evidence(
     };
     if let Ok((_, env)) = site.submit_settlement(&set, now, signer) {
         if let Some(r) = out_record(&env, now, 0) {
-            journal_append(jpath, &r).ok();
+            journal_append_fatal(jpath, &r);
         }
         let _ = send_frame(stream, &env);
     }

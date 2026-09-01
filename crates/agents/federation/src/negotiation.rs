@@ -33,6 +33,11 @@ use crate::offer::{
 /// 会话可容纳的最大站点数（C3 100 站资格上限的 10 倍余量，防内存耗尽）。
 pub const MAX_SESSIONS: usize = 1_024;
 
+/// 单站点会话可累积的最大证据条数（进度 + 结算）。证据用于结算纠纷，
+/// 但注册站点若无限上送可导致协调器内存无界增长（慢漏 DoS）——超限
+/// 的后续证据不再入账（进度序门已拒重复，此处再加总量闸）。
+pub const MAX_EVIDENCE_PER_SESSION: usize = 4_096;
+
 /// 本节点签名器（密钥永不离开站点/协调器；关键路径禁 Debug）。
 pub struct SiteSigner {
     pub key_id: u32,
@@ -1112,19 +1117,30 @@ impl CoordinatorNegotiator {
                     .get(&p.commitment_id)
                     .copied()
                     .unwrap_or(0);
-                if is_active_commitment(session, p.commitment_id) && p.seq > 0 && p.seq > last {
+                if is_active_commitment(session, p.commitment_id)
+                    && p.seq > 0
+                    && p.seq > last
+                    // 总量闸：证据无界增长 = 注册站点慢漏 DoS（内存耗尽）。
+                    // 进度序门只保证单调，不限制条数；这里按会话封顶。
+                    && session.evidence_progress.len() + session.evidence_settlement.len()
+                        < MAX_EVIDENCE_PER_SESSION
+                {
                     session.progress_last_seq.insert(p.commitment_id, p.seq);
                     session.evidence_progress.push(p.clone());
                     StepOutcome::EvidenceRecorded {
                         kind: EvidenceKind::Progress,
                     }
                 } else {
-                    // 未知 commitment / seq 回退或重复（重发）：不重复记账。
+                    // 未知 commitment / seq 回退或重复（重发）/ 总量超限：
+                    // 不重复记账。
                     StepOutcome::NotInState
                 }
             }
             FedBody::Settlement(s) => {
-                if is_active_commitment(session, s.commitment_id) {
+                if is_active_commitment(session, s.commitment_id)
+                    && session.evidence_progress.len() + session.evidence_settlement.len()
+                        < MAX_EVIDENCE_PER_SESSION
+                {
                     session.evidence_settlement.push(s.clone());
                     StepOutcome::EvidenceRecorded {
                         kind: EvidenceKind::Settlement,
@@ -1256,9 +1272,20 @@ impl CoordinatorNegotiator {
                         if p.seq > *e {
                             *e = p.seq;
                         }
-                        session.evidence_progress.push(p.clone());
+                        // 总量闸与活路径对称：即使日志被篡改/超限，restore
+                        // 也不得重建无界证据（内存耗尽防御）。
+                        if session.evidence_progress.len() + session.evidence_settlement.len()
+                            < MAX_EVIDENCE_PER_SESSION
+                        {
+                            session.evidence_progress.push(p.clone());
+                        }
                     }
-                    FedBody::Settlement(s) => session.evidence_settlement.push(s.clone()),
+                    FedBody::Settlement(s)
+                        if session.evidence_progress.len() + session.evidence_settlement.len()
+                            < MAX_EVIDENCE_PER_SESSION =>
+                    {
+                        session.evidence_settlement.push(s.clone());
+                    }
                     _ => {}
                 }
             }
@@ -1961,5 +1988,99 @@ mod tests {
         let (out, _) = coord.on_message(&dup_env, NOW + 7, &mut coord_signer);
         assert!(matches!(out, StepOutcome::NotInState), "{out:?}");
         assert_eq!(coord.session(9).expect("s").evidence_progress.len(), 1);
+    }
+
+    #[test]
+    fn evidence_capped_per_session() {
+        // 注册站点慢漏 DoS 防御：单会话证据总量封顶。restore 与活路径
+        // 同限——即使日志被篡改/超限，restore 也不得重建无界证据。
+        let (_, mut site_signer, mut coord, mut coord_signer) = pair();
+        let cid = [0x42; 16];
+
+        // 构造一个"已承诺 + 超量证据"的入向 journal（restore 路径）。
+        let mut records = vec![JournalRecord {
+            at_ns: NOW,
+            dir: Dir::In,
+            peer: 9,
+            kind: FedKind::Commitment,
+            epoch: 1,
+            sequence: 1,
+            body: FedBody::Commitment(AllocationCommitment {
+                commitment_id: cid,
+                offer_id: [7; 16],
+                coordinator_id: 0,
+                site_id: 9,
+                tolerance_profile_id: 1,
+                interval_start_ns: 0,
+                interval_ns: 3_600_000_000_000,
+                points_kw: vec![50.0],
+                target_curve_ref: BlobRefV1::new(1, b"t"),
+                accepted_at_ns: NOW,
+                expires_at_ns: u64::MAX,
+                revision: 1,
+            }),
+            verdict: "commitment-confirmed",
+        }];
+        // 超量 progress 记录（restore 重建时必须截到 MAX_EVIDENCE_PER_SESSION）。
+        let excess = MAX_EVIDENCE_PER_SESSION + 3;
+        for i in 0..excess {
+            records.push(JournalRecord {
+                at_ns: NOW,
+                dir: Dir::In,
+                peer: 9,
+                kind: FedKind::Progress,
+                epoch: 1,
+                sequence: 2 + i as u64,
+                body: FedBody::Progress(ProgressEvidence {
+                    commitment_id: cid,
+                    site_id: 9,
+                    interval_start_ns: 0,
+                    interval_end_ns: 3_600_000_000_000,
+                    delivered_kwh: 1.0,
+                    deviation_kw: 0.0,
+                    evidence_ref: BlobRefV1::new(3, b"ev"),
+                    seq: 1 + i as u64,
+                }),
+                verdict: "evidence",
+            });
+        }
+        let journal = NegotiationJournal { records };
+        coord.restore(&journal, coord.keys().clone());
+        assert_eq!(
+            coord.session(9).expect("s9").evidence_progress.len(),
+            MAX_EVIDENCE_PER_SESSION,
+            "restore 必须把超限证据截到会话上限"
+        );
+
+        // 活路径：满额后再来一条新证据 → NotInState，不重复入账。
+        let prog = ProgressEvidence {
+            commitment_id: cid,
+            site_id: 9,
+            interval_start_ns: 0,
+            interval_end_ns: 3_600_000_000_000,
+            delivered_kwh: 1.0,
+            deviation_kw: 0.0,
+            evidence_ref: BlobRefV1::new(3, b"ev"),
+            seq: excess as u64 + 1,
+        };
+        let live_env = site_signer.sign(
+            &FedBody::Progress(prog),
+            &EnvelopeHdr {
+                epoch: 1,
+                sequence: 2 + excess as u64,
+                tenant_id: 1,
+                site_id: 9,
+                created_ns: NOW,
+                deadline_ns: NOW + 3_600_000_000_000,
+                signer_key_id: SITE_KEY_ID,
+            },
+        );
+        let (out, _) = coord.on_message(&live_env, NOW + 10, &mut coord_signer);
+        assert!(matches!(out, StepOutcome::NotInState), "{out:?}");
+        assert_eq!(
+            coord.session(9).expect("s9").evidence_progress.len(),
+            MAX_EVIDENCE_PER_SESSION,
+            "满额后活路径证据不得继续增长"
+        );
     }
 }

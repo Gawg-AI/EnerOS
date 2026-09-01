@@ -84,8 +84,10 @@ impl ShardRing {
     }
 
     /// 判断环是否与目标配置等价（同 vnode/分片数即同路由）。
+    /// version 只是配置世代号，不参与路由（route 只依赖 vnode/shards）——
+    /// 同拓扑仅 bump version 时不得触发全量重分片。
     pub fn equivalent(&self, other: &ShardRing) -> bool {
-        self.vnodes == other.vnodes && self.shards == other.shards && self.version == other.version
+        self.vnodes == other.vnodes && self.shards == other.shards
     }
 }
 
@@ -292,6 +294,19 @@ mod tests {
         let b = ShardRing::new(1000, 4, 1).expect("b");
         let plan = ReshardPlan::plan(&a, &b).expect("plan");
         assert!(plan.steps.is_empty());
+    }
+
+    #[test]
+    fn version_only_bump_yields_empty_plan() {
+        // 同 vnode/分片数仅 bump version：路由不变（route 不读 version），
+        // 不得触发全量重分片（旧实现把 version 计入 equivalent → 空计划被
+        // 误判为需要 copy 全部键）。
+        let a = ShardRing::new(1000, 4, 1).expect("a");
+        let b = ShardRing::new(1000, 4, 2).expect("b");
+        assert!(a.equivalent(&b), "同拓扑不同 version 仍应等价（同路由）");
+        let plan = ReshardPlan::plan(&a, &b).expect("plan");
+        assert!(plan.steps.is_empty(), "version-only 变更不得产生重分片步骤");
+        assert_eq!(plan.new_version, 2, "新版本号仍随计划传递");
     }
 
     #[test]

@@ -528,6 +528,12 @@ impl CapabilityOffer {
         if self.energy_max_kwh < self.energy_min_kwh || self.energy_min_kwh < 0.0 {
             return Err(WireError::InvalidField);
         }
+        // reserve 与 AllocationCommitment::encode 同限（负备用 = 语义非法；
+        // 若不在此处拒，负值可经 wire 进入协调器侧再由 allocation precheck
+        // 兜底——encode/decode 对称原则要求 wire 边界即 fail-closed）。
+        if self.reserve_up_kw < 0.0 || self.reserve_down_kw < 0.0 {
+            return Err(WireError::InvalidField);
+        }
         let mut w = Writer::new();
         w.bytes(&self.offer_id);
         w.u64(self.interval_start_ns);
@@ -1176,6 +1182,21 @@ mod tests {
         let bytes = o.encode().expect("encode");
         let dec = CapabilityOffer::decode(&bytes).expect("decode");
         assert_eq!(o, dec);
+    }
+
+    #[test]
+    fn offer_negative_reserve_rejected() {
+        // 负备用 = 语义非法：与 AllocationCommitment 同限，wire 边界即
+        // fail-closed（decode 复用 encode 校验，两侧同拒）。
+        let mut neg_up = offer();
+        neg_up.reserve_up_kw = -1.0;
+        assert_eq!(neg_up.encode(), Err(WireError::InvalidField));
+        let mut neg_dn = offer();
+        neg_dn.reserve_down_kw = -0.5;
+        assert_eq!(neg_dn.encode(), Err(WireError::InvalidField));
+        // 零备用合法（不承诺备用）。
+        let zero = offer();
+        assert!(zero.encode().is_ok());
     }
 
     #[test]
