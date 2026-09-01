@@ -35,7 +35,11 @@ pub mod observability;
 pub mod ota_service;
 // WP-54.5：附接核心 host 可测（无 cfg 门）；target_durable 保持 target 门。
 pub mod outbox_attach;
-#[cfg(target_os = "none")]
+// target_durable 引用 agent-sdk 的 `ipc_sel4`/`block_io::eipc_block_io`
+// （二者均在 `sel4` feature 下才存在）——门必须与 block_io.rs 的
+// eipc_block_io 同限 `all(target_os="none", feature="sel4")`，否则
+// 无 sel4 feature 的 target 构建会引用被配置掉的符号而编译失败。
+#[cfg(all(target_os = "none", feature = "sel4"))]
 pub mod target_durable;
 
 pub use config_service::ConfigService;

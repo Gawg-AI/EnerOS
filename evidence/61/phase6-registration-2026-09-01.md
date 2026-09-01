@@ -35,7 +35,12 @@
 2. **外部事实 target 装配**：FactEventSink 的 StoreSink/event-store 接线、svc-process/svc-enterprise binary 未建（host adapter + 合同套件已就绪）；svc-market 的 SignedPeerReceipt 走 EIPC 的 wire 扩展未做（0x02 已 fail-closed，扩展随真实 peer 接入）。
 3. **IntentCandidate → ObjectiveCompiler 生产启用**：`CompileInputs.intent` 仍 `IntentDisabled`（Phase 4 生产禁用保持）；harness 输出的候选经人工审批构造 ObjectiveSpec 的接缝已就位（ObjectiveDraft 层 7 语义），编译面启用随 Phase 7。
 4. **qemu-prod 实弹验证**：本卷未跑 QEMU（model/adapters 均为 host 面；svc-market 行为变更需 QEMU 窗口重验——纳入 Phase 7 回归），host 全量测试 + pre-commit 六门 PASS 为当前证据。
-5. **target 侧编译**：aarch64-none-elf-gcc 交叉工具链不在本环境，`cfg(target_os="none")` 代码（svc-market/cloud-sync 修改）未在 target 侧编译验证；改动为纯类型/名称替换 + 控制流简化，下一 QEMU 窗口首查。
+5. **target 侧编译验证**：`aarch64-none-elf-gcc` 工具链实际存在
+   （`~/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin/`，15.2.1；
+   `target/aarch64-unknown-none/release/` 有完整构建产物，Phase 2 E4 曾
+   在本环境跑过 target 编译）——初版登记误判为「缺交叉工具链」；实为
+   「未执行」。svc-market/cloud-sync 的类型/名称替换改动可用现有工具链
+   做 target 编译验证（后续 QEMU 窗口首查）。
 
 ## 3. 附：本卷顺手修复
 

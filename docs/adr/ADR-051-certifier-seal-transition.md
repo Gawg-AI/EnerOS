@@ -25,10 +25,14 @@ ADR-0048 将 `transition-certifier` feature（control-dispatch 十二步链内
    可达；仅 `eneros-certifier` 声明启用（rg 门 + compile-fail 锁定）。
 2. **过渡窗延长（偏离登记）**：`transition-certifier` 保留至 Phase 5
    PlanCompiler 落地、目标侧认证输入齐备后删除。期间 CertifiedPlan 的
-   **规范生产者 = eneros-certifier**（host/planner 路径）；dispatch 的
-   过渡发放面仅服务目标侧单 PCS 迁移链，两个发放面在 ADR-0048 的
-   "生成器不能给自己签证书"约束下各自独立（certifier 与 planner 不同
-   crate、不同代码路径）。
+   **规范生产者 = dispatch 的过渡发放面（transition-certifier）**；本 ADR
+   初稿曾宣称「规范生产者 = eneros-certifier（host/planner 路径）」——
+   该 host/planner 路径在代码中不存在（`eneros-certifier` 生产零消费者，
+   仅 shadow/测试 dev-dependency；独立评估器的输入 TrustedSnapshot/
+   CapabilityEnvelope 依赖目标侧存储句柄移交，未接线），已订正。两个
+   发放面在 ADR-0048 的"生成器不能给自己签证书"约束下各自独立
+   （certifier 与 planner 不同 crate、不同代码路径；真 certifier 的
+   `issue()`/`new_certified` 仅在其自身 feature 下可达，编译门锁定）。
 3. **key 绑定**：证书以站内 certifier key 的 HMAC-SHA256 绑定
    （`CertificateEnvelope`：key_id + key_version + mac）；Gateway 验证
    key id/版本/有效期/plan digest——只证明认证产物来源，不替代
