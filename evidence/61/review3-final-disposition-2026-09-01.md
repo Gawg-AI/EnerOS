@@ -61,16 +61,34 @@ owner = 仓库所有者/架构师（本环境无外部 owner 在线，处置状�
 - 项 7-9：外部依赖（硬件/HIL/现场/外部工具/QEMU 窗口），owner 裁决=环境
   就绪即执行。
 
-## 4a. owner 裁决请求记录（2026-09-01）
+## 4a. owner 裁决请求记录（2026-09-01，两次）
 
 已通过交互向 owner 请求剩余 5 个代码面可开发项（svc-model-harness binary/
 3-voter 集群化/Saga 分片 leader/svc-process/svc-enterprise binary/
 IntentCandidate→ObjectiveCompiler 启用）的处置裁决（保持 BLOCKED / 指定项
-强制开发 / 逐项确认）——**本次未获答复**。依据蓝图硬规则（owner 自己制定的
-[04]§3『不允许只实现库而不接入生产 profile』『目标证据证明新路径被真实调用』）
-的默认处置 = 维持 BLOCKED 登记，环境就绪（目标侧存储句柄移交/硬件/模型
-部署链）后逐项开发。owner 可在后续会话对任一项改判为「强制开发」并书面
-接受偏离，登记文档已留此改判入口。
+强制开发 / 逐项确认）——**两次请求均未获答复**（首次：保持 BLOCKED/指定项
+强制开发/逐项确认；第二次：逐项勾选强制开发 vs 维持 BLOCKED）。
+
+**对 5 项的工程研判（供 owner 后续改判）**：
+- svc-model-harness binary：ModelHarness 库完整；建 host binary 但不接
+  生产 profile 装配点 = 违反 [04]§3『不允许只实现库而不接入生产 profile』，
+  且无法产出目标证据。维持 BLOCKED。
+- 协调器 3-voter 集群化：scale quorum/lease/fencing 库已交付；svc-federation
+  多实例+选举驱动装配未做（WP-7.2 登记项 4）。需 ≥3 实例部署面才能验证
+  真实 quorum/fencing，宿主无此装配点；单机伪造 election = 演示级。
+  维持 BLOCKED。
+- Saga 分片 leader 接线：ShardRing 确定性路由已交付；control-dispatch 侧
+  接线未做（WP-7.2 登记项 3）。依赖目标侧存储句柄移交链。维持 BLOCKED。
+- svc-process/svc-enterprise binary：三类适配器+合同套件已就绪；生产 profile
+  装配依赖目标侧接线与真实外部 endpoint。维持 BLOCKED。
+- IntentCandidate→ObjectiveCompiler 生产启用：compiler 显式 IntentDisabled
+  （Phase 4 生产禁用 LLM）+ 决策链生产零消费者；启用需整链装配（snapshot→
+  objective→planner→certifier→gateway）且依赖目标侧输入。维持 BLOCKED
+  （ADR-051 过渡窗偏离已登记）。
+
+**默认处置（按蓝图硬规则，owner 两次未答复情况下采用）** = 维持 BLOCKED
+登记，环境就绪（目标侧存储句柄移交/硬件/模型部署链）后逐项开发。owner 可
+在后续会话对任一项改判为「强制开发」并书面接受偏离，登记文档已留此改判入口。
 
 ## 5. 提交
 
