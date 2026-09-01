@@ -645,6 +645,7 @@ dependencies = [
  "eneros-decision-contract",
  "eneros-drv-svc",
  "eneros-durable-state",
+ "eneros-event-store",
  "eneros-ingestion-core",
  "eneros-logging",
  "eneros-market-types",

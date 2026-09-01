@@ -40,6 +40,9 @@ eneros-mgmt-api = { path = "../../observability/mgmt-api" }
 # RawObservation）进入事件平面。
 eneros-ingestion-core = { path = "../../protocols/ingestion-core" }
 eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
+# 蓝图 61 v0.314.32（[07] §4.6.3）：外部事实持久化 sink——认证事实经
+# StoreFactEventSink 写分区事件日志（RPO=0、可恢复重放）。
+eneros-event-store = { path = "../../runtime/event-store" }
 # 40 服务循环模式（分块 EIPC + 心跳）。
 eneros-control-services = { path = "../control-services" }
 heapless = { version = "0.8", default-features = false }

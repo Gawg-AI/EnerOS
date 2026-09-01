@@ -28,6 +28,9 @@ pub mod market;
 /// （SM3 摘要 + SM2 验签）走同一 IngestionModule 合同；修订/过期纪律。
 pub mod external_facts;
 pub mod market_ingest;
+/// 蓝图 61 v0.314.32（[07] §4.6.3）：外部事实持久化 sink——认证事实经
+/// `StoreFactEventSink` 写分区事件日志（RPO=0、可恢复重放）。
+pub mod store_fact_sink;
 // SPEC-C（WP-C.2）：history-query 分页执行器内核（RawIpc 泛型，host 可测）。
 pub mod mgmt_history;
 pub mod mgmt_rpc;
