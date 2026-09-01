@@ -489,7 +489,7 @@ fn run_coord_peer(
             _ => {}
         }
         for e in outbox {
-            if let Some(r) = out_record(&e, now) {
+            if let Some(r) = out_record(&e, now, env.site_id) {
                 journal_append(jpath, &r).ok();
             }
             if let Err(err) = send_frame(stream, &e) {
@@ -572,7 +572,7 @@ fn solve_and_propose(
                 };
                 match coord.propose(t.site_id, &proposal, now, signer) {
                     Ok((_, env)) => {
-                        if let Some(r) = out_record(&env, now) {
+                        if let Some(r) = out_record(&env, now, t.site_id) {
                             journal_append(jpath, &r).ok();
                         }
                         if let Err(err) = send_frame(stream, &env) {
@@ -703,7 +703,7 @@ fn run_site(a: &Args) -> ! {
             .publish_offer(&offer, now, &mut signer)
             .expect("publish offer");
         eprintln!("[site] {out:?}");
-        if let Some(r) = out_record(&env, now) {
+        if let Some(r) = out_record(&env, now, 0) {
             journal_append(&jpath, &r).ok();
         }
         if let Err(e) = send_frame(&mut stream, &env) {
@@ -744,7 +744,7 @@ fn run_site(a: &Args) -> ! {
             continue;
         }
         for e in &outbox {
-            if let Some(r) = out_record(e, now) {
+            if let Some(r) = out_record(e, now, 0) {
                 journal_append(&jpath, &r).ok();
             }
             if let Err(err) = send_frame(&mut stream, e) {
@@ -796,7 +796,7 @@ fn submit_demo_evidence(
         seq: 1,
     };
     if let Ok((_, env)) = site.submit_progress(&prog, now, signer) {
-        if let Some(r) = out_record(&env, now) {
+        if let Some(r) = out_record(&env, now, 0) {
             journal_append(jpath, &r).ok();
         }
         let _ = send_frame(stream, &env);
@@ -811,7 +811,7 @@ fn submit_demo_evidence(
         note: b"settled".to_vec(),
     };
     if let Ok((_, env)) = site.submit_settlement(&set, now, signer) {
-        if let Some(r) = out_record(&env, now) {
+        if let Some(r) = out_record(&env, now, 0) {
             journal_append(jpath, &r).ok();
         }
         let _ = send_frame(stream, &env);
@@ -845,12 +845,14 @@ fn now_ns() -> u64 {
         .as_nanos() as u64
 }
 
-fn out_record(env: &FedEnvelope, now: u64) -> Option<JournalRecord> {
+/// 出向 journal 记录。`peer` 必须是真实对端（协调器出向=目标站点 id，
+/// 站点出向=协调器 0）：restore 依赖它把 pending 提议恢复到正确会话。
+fn out_record(env: &FedEnvelope, now: u64, peer: u32) -> Option<JournalRecord> {
     let body = decode_body(env.kind, &env.body).ok()?;
     Some(JournalRecord {
         at_ns: now,
         dir: Dir::Out,
-        peer: 0,
+        peer,
         kind: env.kind,
         epoch: env.epoch,
         sequence: env.sequence,

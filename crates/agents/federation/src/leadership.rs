@@ -91,13 +91,15 @@ impl EpochRegulator {
     }
 
     /// 本实例当前应使用的纪元（启动 = 持久化纪元 + 1）。
+    /// 饱和加法：纪元被钳到 u64::MAX 后不得溢出 panic（debug）/回绕归零
+    /// （release，纪元重置=灾难）。
     pub fn current(&self) -> u64 {
-        self.last_epoch + 1
+        self.last_epoch.saturating_add(1)
     }
 
-    /// 一次接管（人工 failover 或 quorum 选举后）→ 再 +1。
+    /// 一次接管（人工 failover 或 quorum 选举后）→ 再 +1（饱和）。
     pub fn take_over(&mut self) -> u64 {
-        self.last_epoch += 1;
+        self.last_epoch = self.last_epoch.saturating_add(1);
         self.current()
     }
 }
@@ -153,5 +155,16 @@ mod tests {
         assert_eq!(r.current(), 42);
         assert_eq!(r.take_over(), 43);
         assert_eq!(r.take_over(), 44);
+    }
+
+    #[test]
+    fn epoch_regulator_saturates_at_max() {
+        // 饱和纪元（含投毒钳制后）take_over/current 不得溢出 panic
+        // （debug）/回绕归 1（release，纪元重置=灾难）。
+        assert_eq!(EpochRegulator::sanitized(u64::MAX).current(), u64::MAX);
+        let mut r = EpochRegulator::sanitized(u64::MAX - 1);
+        assert_eq!(r.take_over(), u64::MAX);
+        let mut r2 = EpochRegulator::sanitized(u64::MAX);
+        assert_eq!(r2.take_over(), u64::MAX, "二次接管仍饱和");
     }
 }

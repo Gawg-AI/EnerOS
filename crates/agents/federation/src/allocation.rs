@@ -415,19 +415,12 @@ impl AllocationSolver {
                     unmet[i] = r;
                 }
             }
-            unmet_up -= s.reserve_up_kw.min(
-                s.p_max_kw
-                    - alloc[idx]
-                        .iter()
-                        .copied()
-                        .fold(f64::INFINITY, |a, b| a.min(b)),
-            );
-            unmet_dn -= s.reserve_down_kw.min(
-                alloc[idx]
-                    .iter()
-                    .copied()
-                    .fold(f64::INFINITY, |a, b| a.min(b)),
-            );
+            // 备用按最坏区间计（承诺的备用必须任意区间都可交付）：
+            // 上调空间看已分配最高点，下调空间看已分配最低点。
+            let alloc_min = alloc[idx].iter().copied().fold(f64::INFINITY, f64::min);
+            let alloc_max = alloc[idx].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            unmet_up -= s.reserve_up_kw.min(s.p_max_kw - alloc_max);
+            unmet_dn -= s.reserve_down_kw.min(alloc_min - s.p_min_kw);
         }
         let targets = input
             .sites
@@ -435,11 +428,12 @@ impl AllocationSolver {
             .enumerate()
             .map(|(idx, s)| {
                 let min_alloc = alloc[idx].iter().copied().fold(f64::INFINITY, f64::min);
+                let max_alloc = alloc[idx].iter().copied().fold(f64::NEG_INFINITY, f64::max);
                 SiteAllocation {
                     site_id: s.site_id,
                     points_kw: alloc[idx].clone(),
                     energy_kwh: alloc[idx].iter().sum::<f64>() * hour_h,
-                    reserve_up_kw: s.reserve_up_kw.min(s.p_max_kw - min_alloc),
+                    reserve_up_kw: s.reserve_up_kw.min(s.p_max_kw - max_alloc),
                     reserve_down_kw: s.reserve_down_kw.min(min_alloc - s.p_min_kw),
                     within_envelope: true,
                 }
@@ -514,8 +508,11 @@ impl AllocationSolver {
             return EnvelopeCheck::GridMismatch;
         }
         // P2-1：曲线覆盖必须包含 offer 有效时段（恶意协调器不得用 1h
-        // offer 塞 288h 曲线——覆盖外承诺）。
-        let cover_end_ns = interval_start_ns.saturating_add(interval_ns * points_kw.len() as u64);
+        // offer 塞 288h 曲线——覆盖外承诺）。饱和乘加：恶意/故障协调器的
+        // 超大 interval_ns 在 debug 构建 panic、release 构建回绕绕过覆盖
+        // 检查，都必须 fail-closed 判 GridMismatch。
+        let cover_end_ns =
+            interval_start_ns.saturating_add(interval_ns.saturating_mul(points_kw.len() as u64));
         if cover_end_ns > offer.interval_end_ns || interval_ns == 0 {
             return EnvelopeCheck::GridMismatch;
         }
@@ -684,6 +681,73 @@ mod tests {
                 let total: f64 = targets.iter().map(|t| t.points_kw[0]).sum();
                 assert!((total - 60.0).abs() < 1e-6);
                 assert!(residual.unmet_kw.iter().all(|v| *v >= -1e-9));
+            }
+            other => panic!("expected feasible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn envelope_check_saturates_huge_interval_grid() {
+        // 恶意/故障协调器的超大 interval_ns：饱和乘加必须 fail-closed 判
+        // GridMismatch（裸乘法在 debug panic、release 回绕绕过覆盖检查）。
+        let o = CapabilityOffer {
+            offer_id: [1u8; 16],
+            interval_start_ns: 0,
+            interval_end_ns: 3_600_000_000_000,
+            p_min_kw: 0.0,
+            p_max_kw: 50.0,
+            energy_min_kwh: 0.0,
+            energy_max_kwh: 100.0,
+            ramp_kw_s: 100.0,
+            reserve_up_kw: 1.0,
+            reserve_down_kw: 1.0,
+            price_curve_ref: BlobRefV1::new(1, b"p"),
+            capability_root: [0u8; 32],
+            valid_until_ns: u64::MAX,
+            revision: 1,
+        };
+        assert_eq!(
+            AllocationSolver::check_envelope(&o, 0, u64::MAX, &[10.0, 10.0], 1),
+            EnvelopeCheck::GridMismatch
+        );
+        assert_eq!(
+            AllocationSolver::check_envelope(&o, u64::MAX - 1, u64::MAX, &[10.0], 1),
+            EnvelopeCheck::GridMismatch
+        );
+    }
+
+    #[test]
+    fn reserve_reported_at_worst_interval() {
+        // 备用承诺必须任意区间都可交付：上调空间按已分配最高点计。
+        // 平坦计划（min=max）下备用足额；顶格分配后上调备用必须如实
+        // 入残差（不得以最好区间虚报供给）。
+        let mk = |target: &[f64]| {
+            let mut s = site(1, 0.0, 100.0, 0.0, 100_000.0, 100.0, 0);
+            s.reserve_up_kw = 30.0; // 站点承诺 30 kW 上调备用
+            AllocationInput {
+                interval_start_ns: 0,
+                interval_ns: 3_600_000_000_000,
+                sites: vec![s],
+                target: TargetProfile {
+                    p_target_kw: target.to_vec(),
+                    reserve_up_kw: 30.0,
+                    reserve_down_kw: 0.0,
+                },
+            }
+        };
+        // 分配 60 → 上调空间 40 ≥ 30：足额。
+        match AllocationSolver::solve(&mk(&[60.0, 60.0])).expect("solve") {
+            AllocationResult::Feasible { targets, residual } => {
+                assert_eq!(targets[0].reserve_up_kw, 30.0);
+                assert!(residual.unmet_reserve_up_kw.abs() < 1e-9);
+            }
+            other => panic!("expected feasible, got {other:?}"),
+        }
+        // 目标顶格 100 → 上调空间 0 < 30：差额 30 全额入残差。
+        match AllocationSolver::solve(&mk(&[100.0, 100.0])).expect("solve2") {
+            AllocationResult::Feasible { targets, residual } => {
+                assert_eq!(targets[0].reserve_up_kw, 0.0);
+                assert!((residual.unmet_reserve_up_kw - 30.0).abs() < 1e-9);
             }
             other => panic!("expected feasible, got {other:?}"),
         }

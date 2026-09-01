@@ -707,13 +707,24 @@ impl SiteNegotiator {
                         last_progress_seq: 0,
                     });
                 }
+                FedBody::Progress(p) if r.dir == Dir::Out => {
+                    // 进度序恢复：重启后不得重发旧 seq（否则协调器侧同一
+                    // 进度被重复记账）。
+                    if let Some(sc) = &mut self.commitment {
+                        if sc.commitment.commitment_id == p.commitment_id
+                            && p.seq > sc.last_progress_seq
+                        {
+                            sc.last_progress_seq = p.seq;
+                        }
+                    }
+                }
                 FedBody::Revoke(_) if r.dir == Dir::Out => {
                     self.offer = None;
                 }
                 _ => {}
             }
-            // 窗口重建（只计入向消息的对端纪元/seq）。
-            if r.dir == Dir::In {
+            // 窗口重建（只计入向放行记录；被拒记录不得推动窗口基线）。
+            if r.dir == Dir::In && in_verdict_passed_gates(r.verdict) {
                 match self.peer_epoch {
                     None => {
                         self.peer_epoch = Some(r.epoch);
@@ -802,6 +813,27 @@ fn outcome_verdict(o: &StepOutcome) -> &'static str {
     }
 }
 
+/// restore 门：入向 journal 记录仅在活路径通过全部闸（租户/验签/身份/
+/// 窗口）时才参与状态与窗口重建。journal 同时承载被拒消息的观测记录
+/// （含验签失败/租户不符）——restore 若吞掉它们，无密钥攻击者只需篡改
+/// 捕获帧的头部（body 可解码、签名必假）即可在重启后注入伪造会话状态、
+/// 把重放窗口推到任意 seq（后续合法消息全被当重放拒绝）。
+fn in_verdict_passed_gates(v: &str) -> bool {
+    !matches!(
+        v,
+        "signature-rejected" | "tenant-mismatch" | "replay-rejected" | "stale-leader-rejected"
+    )
+}
+
+/// 入向记录是否在活路径变更过会话状态（restore 状态重建只认这些；
+/// superseded/not-in-state/peer-rejected 等只过窗口、不改状态）。
+fn state_mutating_verdict(v: &str) -> bool {
+    matches!(
+        v,
+        "offer-registered" | "offer-revoked" | "commitment-confirmed" | "evidence"
+    )
+}
+
 /// 协调器侧单站点会话。
 pub struct CoordinatorSession {
     pub site_id: u32,
@@ -810,6 +842,9 @@ pub struct CoordinatorSession {
     commitment: Option<AllocationCommitment>,
     pub evidence_progress: Vec<ProgressEvidence>,
     pub evidence_settlement: Vec<SettlementEvidence>,
+    /// commitment_id → 已收最大 progress seq（与站点侧单调合同对称：
+    /// 拒重复/回退证据，防站点重启重发或恶意重复记账）。
+    progress_last_seq: BTreeMap<[u8; 16], u64>,
     peer_epoch: Option<u64>,
     last_seq: u64,
     pub replay_rejected: u64,
@@ -825,6 +860,7 @@ impl CoordinatorSession {
             commitment: None,
             evidence_progress: Vec::new(),
             evidence_settlement: Vec::new(),
+            progress_last_seq: BTreeMap::new(),
             peer_epoch: None,
             last_seq: 0,
             replay_rejected: 0,
@@ -1071,12 +1107,19 @@ impl CoordinatorNegotiator {
                 detail: r.detail.clone(),
             },
             FedBody::Progress(p) => {
-                if is_active_commitment(session, p.commitment_id) {
+                let last = session
+                    .progress_last_seq
+                    .get(&p.commitment_id)
+                    .copied()
+                    .unwrap_or(0);
+                if is_active_commitment(session, p.commitment_id) && p.seq > 0 && p.seq > last {
+                    session.progress_last_seq.insert(p.commitment_id, p.seq);
                     session.evidence_progress.push(p.clone());
                     StepOutcome::EvidenceRecorded {
                         kind: EvidenceKind::Progress,
                     }
                 } else {
+                    // 未知 commitment / seq 回退或重复（重发）：不重复记账。
                     StepOutcome::NotInState
                 }
             }
@@ -1159,7 +1202,7 @@ impl CoordinatorNegotiator {
         self.journal = journal.clone();
         self.keys = keys;
         for r in &journal.records {
-            // 状态只从入向记录重建（出向记录只用于 pending 提议恢复）。
+            // 出向记录本地可信（pending 提议恢复，peer=目标站点）。
             if r.dir == Dir::Out {
                 if let FedBody::Proposal(p) = &r.body {
                     let session = self
@@ -1172,36 +1215,54 @@ impl CoordinatorNegotiator {
                 }
                 continue;
             }
+            // 入向记录只有活路径放行的才参与重建（被拒记录仅观测留存，
+            // 见 `in_verdict_passed_gates`——否则无密钥攻击者可经 journal
+            // 重放注入伪造状态/毒化重放窗口）。
+            if !in_verdict_passed_gates(r.verdict) {
+                continue;
+            }
             let site_id = r.peer;
             let session = self
                 .sessions
                 .entry(site_id)
                 .or_insert_with(|| CoordinatorSession::new(site_id));
-            match &r.body {
-                FedBody::Offer(o) => {
-                    let cur = session.offer.clone();
-                    let next = cur.as_ref().map(|c| c.revision + 1).unwrap_or(1);
-                    if o.revision == next {
-                        session.offer = Some(o.clone());
-                        session.pending = None;
-                    }
-                }
-                FedBody::Revoke(rv) => {
-                    if let Some(o) = &session.offer {
-                        if o.offer_id == rv.offer_id {
-                            session.offer = None;
+            // 状态只从活路径变更过状态的记录重建。
+            if state_mutating_verdict(r.verdict) {
+                match &r.body {
+                    FedBody::Offer(o) => {
+                        let cur = session.offer.clone();
+                        let next = cur.as_ref().map(|c| c.revision + 1).unwrap_or(1);
+                        if o.revision == next {
+                            session.offer = Some(o.clone());
                             session.pending = None;
                         }
                     }
+                    FedBody::Revoke(rv) => {
+                        if let Some(o) = &session.offer {
+                            if o.offer_id == rv.offer_id {
+                                session.offer = None;
+                                session.pending = None;
+                            }
+                        }
+                    }
+                    FedBody::Commitment(c) if session.commitment.is_none() => {
+                        session.commitment = Some(c.clone());
+                    }
+                    FedBody::Progress(p) => {
+                        let e = session
+                            .progress_last_seq
+                            .entry(p.commitment_id)
+                            .or_insert(0);
+                        if p.seq > *e {
+                            *e = p.seq;
+                        }
+                        session.evidence_progress.push(p.clone());
+                    }
+                    FedBody::Settlement(s) => session.evidence_settlement.push(s.clone()),
+                    _ => {}
                 }
-                FedBody::Commitment(c) if session.commitment.is_none() => {
-                    session.commitment = Some(c.clone());
-                }
-                FedBody::Progress(p) => session.evidence_progress.push(p.clone()),
-                FedBody::Settlement(s) => session.evidence_settlement.push(s.clone()),
-                _ => {}
             }
-            // 窗口重建（对端最后 seq/epoch，只计入向）。
+            // 窗口重建（对端最后 seq/epoch，只计入向放行记录）。
             match session.peer_epoch {
                 None => {
                     session.peer_epoch = Some(r.epoch);
@@ -1631,5 +1692,274 @@ mod tests {
         // 站点收到新纪元 Ack（纪元前跳被接受）。
         let (out, _) = site.on_message(&ackbox[0], NOW + 500, &mut site_signer);
         assert!(matches!(out, StepOutcome::Acknowledged { .. }), "{out:?}");
+    }
+
+    #[test]
+    fn overflow_interval_proposal_structurally_rejected() {
+        // 恶意/故障协调器发 interval_ns=u64::MAX 的 proposal：站点必须
+        // 结构化拒绝且存活（裸乘法在 debug panic、release 回绕绕过
+        // 覆盖检查——站点对云输入 fail-closed）。
+        let (mut site, mut site_signer, mut coord, mut coord_signer) = pair();
+        let (_, env1) = site
+            .publish_offer(&offer(7), NOW, &mut site_signer)
+            .expect("publish");
+        let _ = coord.on_message(&env1, NOW + 1, &mut coord_signer);
+        let mut curve = Vec::new();
+        curve.extend_from_slice(&0u64.to_be_bytes());
+        curve.extend_from_slice(&u64::MAX.to_be_bytes());
+        curve.extend_from_slice(&2u16.to_be_bytes());
+        curve.extend_from_slice(&10.0f64.to_be_bytes());
+        curve.extend_from_slice(&10.0f64.to_be_bytes());
+        let p = AllocationProposal {
+            proposal_id: [1; 16],
+            offer_id: [7; 16],
+            site_id: 9,
+            tolerance_profile_id: 1,
+            interval_start_ns: 0,
+            interval_ns: u64::MAX,
+            points_kw: vec![10.0, 10.0],
+            reserve_up_kw: 0.0,
+            reserve_down_kw: 0.0,
+            target_curve_ref: BlobRefV1::new(2, &curve),
+        };
+        let penv = coord_signer.sign(
+            &FedBody::Proposal(p),
+            &EnvelopeHdr {
+                epoch: 1,
+                sequence: 1,
+                tenant_id: 1,
+                site_id: 0,
+                created_ns: NOW,
+                deadline_ns: NOW + 3_600_000_000_000,
+                signer_key_id: COORD_KEY_ID,
+            },
+        );
+        let (out, outbox) = site.on_message(&penv, NOW + 2, &mut site_signer);
+        assert!(
+            matches!(out, StepOutcome::ProposalRejected { .. }),
+            "溢出 proposal 必须结构化拒绝，got {out:?}"
+        );
+        assert_eq!(outbox.len(), 1, "拒绝必须带结构化 Reject 出站");
+    }
+
+    #[test]
+    fn restore_ignores_rejected_journal_records() {
+        // 无密钥攻击者：伪造信封（body 可解码、签名必假）被活路径拒绝后
+        // 以 verdict=signature-rejected 入 journal——restore 不得把它写回
+        // 会话状态、不得让它推动重放窗口。
+        let (mut site, mut site_signer, mut coord, mut coord_signer) = pair();
+        let (_, env1) = site
+            .publish_offer(&offer(7), NOW, &mut site_signer)
+            .expect("publish");
+        let (out, _) = coord.on_message(&env1, NOW + 1, &mut coord_signer);
+        assert!(matches!(out, StepOutcome::OfferRegistered { .. }));
+        let mut journal = coord.journal().clone();
+        let keys = coord.keys().clone();
+
+        let mut forged = site_signer.sign(
+            &FedBody::Offer(offer(8)),
+            &EnvelopeHdr {
+                epoch: 1,
+                sequence: u64::MAX / 2,
+                tenant_id: 1,
+                site_id: 9,
+                created_ns: NOW,
+                deadline_ns: NOW + 3_600_000_000_000,
+                signer_key_id: SITE_KEY_ID,
+            },
+        );
+        forged.signature[63] ^= 0x01;
+        let (out, _) = coord.on_message(&forged, NOW + 2, &mut coord_signer);
+        assert!(matches!(out, StepOutcome::SignatureRejected), "{out:?}");
+        journal.append(JournalRecord {
+            at_ns: NOW + 2,
+            dir: Dir::In,
+            peer: 9,
+            kind: forged.kind,
+            epoch: forged.epoch,
+            sequence: forged.sequence,
+            body: crate::offer::decode_body(forged.kind, &forged.body).expect("dec"),
+            verdict: "signature-rejected",
+        });
+
+        let mut coord2 = CoordinatorNegotiator::new(0, 1, 2, 1_000);
+        coord2.restore(&journal, keys);
+        let restored = coord2
+            .session(9)
+            .expect("s9")
+            .offer()
+            .expect("合法 offer 必须恢复");
+        assert_ne!(
+            restored.offer_id, [8u8; 16],
+            "伪造 offer 不得经 journal 重放进入会话状态"
+        );
+        // 窗口不得被攻击者 seq 毒化：合法 rev2（seq 小于伪造 seq）在
+        // 恢复后必须可接受。
+        let mut o2 = offer(7);
+        o2.revision = 2;
+        let (_, env2) = site
+            .publish_offer(&o2, NOW + 3, &mut site_signer)
+            .expect("rev2");
+        let (out, _) = coord2.on_message(&env2, NOW + 4, &mut coord_signer);
+        assert!(
+            matches!(out, StepOutcome::OfferRegistered { revision: 2, .. }),
+            "窗口被毒化：合法消息被当重放拒绝，got {out:?}"
+        );
+    }
+
+    #[test]
+    fn restore_pending_from_outbound_proposal_peer() {
+        // svc 持久形状：In offer-registered + Out proposal（peer=目标站点）。
+        // pending 必须恢复到目标站点会话，迟到的 commitment 才可确认。
+        let (mut site, mut site_signer, mut coord, mut coord_signer) = pair();
+        let (_, env1) = site
+            .publish_offer(&offer(7), NOW, &mut site_signer)
+            .expect("publish");
+        let _ = coord.on_message(&env1, NOW + 1, &mut coord_signer);
+        let alloc = SiteAllocation {
+            site_id: 9,
+            points_kw: vec![40.0],
+            energy_kwh: 40.0,
+            reserve_up_kw: 1.0,
+            reserve_down_kw: 1.0,
+            within_envelope: true,
+        };
+        let proposal =
+            AllocationSolver::to_proposal(&alloc, &offer(7), [9; 16], 1, 0, 3_600_000_000_000)
+                .expect("p");
+        let (_, penv) = coord
+            .propose(9, &proposal, NOW + 2, &mut coord_signer)
+            .expect("propose");
+        let (out, cbox) = site.on_message(&penv, NOW + 3, &mut site_signer);
+        assert!(matches!(out, StepOutcome::ProposalAccepted { .. }));
+
+        let mut journal = NegotiationJournal::default();
+        journal.append(JournalRecord {
+            at_ns: NOW + 1,
+            dir: Dir::In,
+            peer: 9,
+            kind: env1.kind,
+            epoch: env1.epoch,
+            sequence: env1.sequence,
+            body: crate::offer::decode_body(env1.kind, &env1.body).expect("dec"),
+            verdict: "offer-registered",
+        });
+        journal.append(JournalRecord {
+            at_ns: NOW + 2,
+            dir: Dir::Out,
+            peer: 9,
+            kind: penv.kind,
+            epoch: penv.epoch,
+            sequence: penv.sequence,
+            body: crate::offer::decode_body(penv.kind, &penv.body).expect("dec"),
+            verdict: "out",
+        });
+        let mut coord2 = CoordinatorNegotiator::new(0, 1, 2, 1_000);
+        coord2.restore(&journal, coord.keys().clone());
+        assert!(
+            coord2.session(9).expect("s9").pending_proposal().is_some(),
+            "pending 提议必须恢复到目标站点会话"
+        );
+        let (out, ackbox) = coord2.on_message(&cbox[0], NOW + 4, &mut coord_signer);
+        assert!(
+            matches!(out, StepOutcome::CommitmentConfirmed { .. }),
+            "重启后 commitment 必须可确认，got {out:?}"
+        );
+        assert_eq!(ackbox.len(), 1);
+    }
+
+    #[test]
+    fn progress_seq_survives_restart_and_coord_dedup() {
+        let (mut site, mut site_signer, mut coord, mut coord_signer) = pair();
+        let (_, env1) = site
+            .publish_offer(&offer(7), NOW, &mut site_signer)
+            .expect("publish");
+        let _ = coord.on_message(&env1, NOW + 1, &mut coord_signer);
+        let alloc = SiteAllocation {
+            site_id: 9,
+            points_kw: vec![40.0],
+            energy_kwh: 40.0,
+            reserve_up_kw: 1.0,
+            reserve_down_kw: 1.0,
+            within_envelope: true,
+        };
+        let proposal =
+            AllocationSolver::to_proposal(&alloc, &offer(7), [9; 16], 1, 0, 3_600_000_000_000)
+                .expect("p");
+        let (_, penv) = coord
+            .propose(9, &proposal, NOW + 2, &mut coord_signer)
+            .expect("propose");
+        let (out, cbox) = site.on_message(&penv, NOW + 3, &mut site_signer);
+        assert!(matches!(out, StepOutcome::ProposalAccepted { .. }));
+        let (out, _) = coord.on_message(&cbox[0], NOW + 3, &mut coord_signer);
+        assert!(matches!(out, StepOutcome::CommitmentConfirmed { .. }));
+        let cid = site.commitment().expect("c").commitment.commitment_id;
+        let prog = ProgressEvidence {
+            commitment_id: cid,
+            site_id: 9,
+            interval_start_ns: 0,
+            interval_end_ns: 3_600_000_000_000,
+            delivered_kwh: 10.0,
+            deviation_kw: 0.0,
+            evidence_ref: BlobRefV1::new(3, b"e1"),
+            seq: 1,
+        };
+        let (_, senv) = site
+            .submit_progress(&prog, NOW + 4, &mut site_signer)
+            .expect("submit");
+        let (out, _) = coord.on_message(&senv, NOW + 5, &mut coord_signer);
+        assert!(
+            matches!(out, StepOutcome::EvidenceRecorded { .. }),
+            "{out:?}"
+        );
+
+        // 站点崩溃恢复（svc 形状：Out Commitment 先于 Out Progress 落盘）。
+        let commitment = site.commitment().expect("c").commitment.clone();
+        let mut journal = NegotiationJournal::default();
+        for r in site.journal().records.clone() {
+            if r.dir == Dir::Out {
+                if let FedBody::Progress(_) = r.body {
+                    journal.append(JournalRecord {
+                        at_ns: NOW + 3,
+                        dir: Dir::Out,
+                        peer: 0,
+                        kind: FedKind::Commitment,
+                        epoch: 1,
+                        sequence: 4,
+                        body: FedBody::Commitment(commitment.clone()),
+                        verdict: "out",
+                    });
+                }
+            }
+            journal.append(r);
+        }
+        let mut site2 = SiteNegotiator::new(9, 1, 2, 100);
+        site2.restore(&journal, site.keys().clone());
+        assert_eq!(
+            site2.commitment().expect("c").last_progress_seq,
+            1,
+            "恢复必须重建进度序（否则重发 seq=1 重复记账）"
+        );
+        assert!(matches!(
+            site2.submit_progress(&prog, NOW + 6, &mut site_signer),
+            Err(NegotiationError::ProgressSeqGap)
+        ));
+
+        // 协调器侧对称：同 seq 进度换新信封（窗口内新 seq）不得重复入账。
+        let dup_env = site_signer.sign(
+            &FedBody::Progress(prog),
+            &EnvelopeHdr {
+                epoch: 1,
+                sequence: 999,
+                tenant_id: 1,
+                site_id: 9,
+                created_ns: NOW,
+                deadline_ns: NOW + 3_600_000_000_000,
+                signer_key_id: SITE_KEY_ID,
+            },
+        );
+        let (out, _) = coord.on_message(&dup_env, NOW + 7, &mut coord_signer);
+        assert!(matches!(out, StepOutcome::NotInState), "{out:?}");
+        assert_eq!(coord.session(9).expect("s").evidence_progress.len(), 1);
     }
 }

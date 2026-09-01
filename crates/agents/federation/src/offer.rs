@@ -649,6 +649,10 @@ impl OfferReject {
         let len = p.u16()? as usize;
         let detail = p.bytes(len)?.to_vec();
         p.done()?;
+        // detail 上限与 encode 同限（decode/encode 对称）。
+        if detail.len() > 1024 {
+            return Err(WireError::Oversized);
+        }
         Ok(Self {
             offer_id: id,
             reason,
@@ -937,7 +941,7 @@ impl ProgressEvidence {
         let evidence_ref = BlobRefV1::decode(&mut p)?;
         let seq = p.u64()?;
         p.done()?;
-        Ok(Self {
+        let ev = Self {
             commitment_id: cid,
             site_id,
             interval_start_ns,
@@ -946,7 +950,11 @@ impl ProgressEvidence {
             deviation_kw,
             evidence_ref,
             seq,
-        })
+        };
+        // decode/encode 同限：decode 放行 encode 拒的体会让 journal 重编码
+        // 失败被静默吞（证据丢失），这里复用 encode 的业务校验。
+        ev.encode()?;
+        Ok(ev)
     }
 }
 
@@ -994,6 +1002,10 @@ impl SettlementEvidence {
         let note_len = p.u16()? as usize;
         let note = p.bytes(note_len)?.to_vec();
         p.done()?;
+        // note 上限与 encode 同限（decode/encode 对称，journal 重编码不丢）。
+        if note.len() > 512 {
+            return Err(WireError::Oversized);
+        }
         if settle_end_ns <= settle_start_ns || quality_bp > 10000 {
             return Err(WireError::InvalidField);
         }
@@ -1036,6 +1048,10 @@ impl OfferRevocation {
         let len = p.u16()? as usize;
         let detail = p.bytes(len)?.to_vec();
         p.done()?;
+        // detail 上限与 encode 同限（decode/encode 对称）。
+        if detail.len() > 1024 {
+            return Err(WireError::Oversized);
+        }
         Ok(Self {
             offer_id: id,
             reason,
@@ -1261,6 +1277,63 @@ mod tests {
         let mut o3 = offer();
         o3.p_max_kw = -1.0;
         assert_eq!(o3.encode(), Err(WireError::InvalidField));
+    }
+
+    #[test]
+    fn progress_decode_validates_intervals() {
+        // decode/encode 同限：倒挂区间的 progress 若 decode 放行，journal
+        // 重编码会失败且被静默吞（证据丢失）。
+        let mut w = Vec::new();
+        w.extend_from_slice(&[1u8; 16]);
+        w.extend_from_slice(&9u32.to_be_bytes());
+        w.extend_from_slice(&2_000u64.to_be_bytes());
+        w.extend_from_slice(&1_000u64.to_be_bytes()); // end < start
+        w.extend_from_slice(&1.0f64.to_be_bytes());
+        w.extend_from_slice(&0.0f64.to_be_bytes());
+        w.push(3u8);
+        w.extend_from_slice(&[9u8; 32]);
+        w.extend_from_slice(&7u64.to_be_bytes());
+        w.extend_from_slice(&1u64.to_be_bytes());
+        assert_eq!(
+            ProgressEvidence::decode(&w),
+            Err(WireError::InvalidField),
+            "decode 必须拒绝倒挂区间"
+        );
+        // 合法区间 roundtrip 不受影响。
+        let ok = ProgressEvidence {
+            commitment_id: [1; 16],
+            site_id: 9,
+            interval_start_ns: 1_000,
+            interval_end_ns: 2_000,
+            delivered_kwh: 1.0,
+            deviation_kw: 0.0,
+            evidence_ref: BlobRefV1::new(3, b"ev"),
+            seq: 1,
+        };
+        let bytes = ok.encode().expect("enc");
+        assert_eq!(ProgressEvidence::decode(&bytes), Ok(ok));
+    }
+
+    #[test]
+    fn reject_and_settlement_decode_enforce_caps() {
+        // OfferReject detail 与 Settlement note 的上限 decode/encode 对称。
+        let mut w = Vec::new();
+        w.extend_from_slice(&[1u8; 16]);
+        w.push(RejectReason::Other as u8);
+        w.extend_from_slice(&2000u16.to_be_bytes());
+        w.extend_from_slice(&vec![0u8; 2000]);
+        assert_eq!(OfferReject::decode(&w), Err(WireError::Oversized));
+
+        let mut s = Vec::new();
+        s.extend_from_slice(&[2u8; 16]);
+        s.extend_from_slice(&9u32.to_be_bytes());
+        s.extend_from_slice(&1_000u64.to_be_bytes());
+        s.extend_from_slice(&2_000u64.to_be_bytes());
+        s.extend_from_slice(&1_000u64.to_be_bytes());
+        s.extend_from_slice(&10_000u16.to_be_bytes());
+        s.extend_from_slice(&600u16.to_be_bytes());
+        s.extend_from_slice(&vec![0u8; 600]); // > 512
+        assert_eq!(SettlementEvidence::decode(&s), Err(WireError::Oversized));
     }
 
     #[test]
