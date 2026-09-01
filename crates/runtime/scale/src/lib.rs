@@ -12,6 +12,7 @@ extern crate alloc;
 
 pub mod capacity;
 pub mod dr;
+pub mod election;
 pub mod quorum;
 pub mod shard;
 
@@ -23,6 +24,7 @@ pub use dr::{
     RecoveryMetrics, RestoreComponent, RestorePhase, RestorePlanner, RestoreProgress, RTO_TO_D0_MS,
     RTO_TO_D4_MS,
 };
+pub use election::{CoordinatorElection, ElectionError};
 pub use quorum::{
     FenceGuard, FenceToken, LeaderLease, QuorumError, QuorumSet, Readiness, ReadyComponent,
 };
