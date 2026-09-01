@@ -61,6 +61,17 @@ owner = 仓库所有者/架构师（本环境无外部 owner 在线，处置状�
 - 项 7-9：外部依赖（硬件/HIL/现场/外部工具/QEMU 窗口），owner 裁决=环境
   就绪即执行。
 
+## 4a. owner 裁决请求记录（2026-09-01）
+
+已通过交互向 owner 请求剩余 5 个代码面可开发项（svc-model-harness binary/
+3-voter 集群化/Saga 分片 leader/svc-process/svc-enterprise binary/
+IntentCandidate→ObjectiveCompiler 启用）的处置裁决（保持 BLOCKED / 指定项
+强制开发 / 逐项确认）——**本次未获答复**。依据蓝图硬规则（owner 自己制定的
+[04]§3『不允许只实现库而不接入生产 profile』『目标证据证明新路径被真实调用』）
+的默认处置 = 维持 BLOCKED 登记，环境就绪（目标侧存储句柄移交/硬件/模型
+部署链）后逐项开发。owner 可在后续会话对任一项改判为「强制开发」并书面
+接受偏离，登记文档已留此改判入口。
+
 ## 5. 提交
 
 | commit | 内容 |
