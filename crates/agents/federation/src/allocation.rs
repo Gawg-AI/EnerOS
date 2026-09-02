@@ -188,10 +188,11 @@ impl AllocationSolver {
                 sum_pmax[i] += s.p_max_kw;
             }
         }
-        // 逐区间可行性（Σ p_min ≤ p_target ≤ Σ p_max）。
+        // 逐区间可行性（Σ p_min ≤ p_target ≤ Σ p_max）——判据单源
+        // kernel envelope（蓝图 62 卷 62.3 S6）。
         for i in 0..n_int {
             let t = input.target.p_target_kw[i];
-            if t < sum_pmin[i] - 1e-9 || t > sum_pmax[i] + 1e-9 {
+            if !eneros_allocation::envelope(sum_pmin[i], sum_pmax[i], t) {
                 return Ok(AllocationResult::Infeasible(InfeasibleEnvelope {
                     conflicts: input
                         .sites
@@ -212,14 +213,19 @@ impl AllocationSolver {
                 }));
             }
         }
-        // merit order：price_rank 升序稳定排序（同 rank 按 site_id 定序）。
-        let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by(|a, b| {
-            input.sites[*a]
-                .price_rank
-                .cmp(&input.sites[*b].price_rank)
-                .then(input.sites[*a].site_id.cmp(&input.sites[*b].site_id))
-        });
+        // merit order：确定性 tie-break 单源（kernel merit_order——
+        // (price_rank, site_id) 全序升序，同序输入保持；蓝图 62 卷 62.3 S6）。
+        let order: Vec<usize> = eneros_allocation::merit_order(
+            &(0..n)
+                .map(|i| {
+                    (
+                        i,
+                        input.sites[i].price_rank as u64,
+                        input.sites[i].site_id as u64,
+                    )
+                })
+                .collect::<alloc::vec::Vec<_>>(),
+        );
         // 1) 最小装载 + merit-order 填充（前向爬坡受限）。
         let dt_s = input.interval_ns as f64 / 1e9;
         let mut alloc: Vec<Vec<f64>> = input
@@ -460,13 +466,14 @@ impl AllocationSolver {
             return Err(AllocError::IntervalCountMismatch);
         }
         for s in &input.sites {
-            if !s.p_min_kw.is_finite()
-                || !s.p_max_kw.is_finite()
-                || !s.energy_min_kwh.is_finite()
-                || !s.energy_max_kwh.is_finite()
-                || !s.ramp_kw_s.is_finite()
-                || !s.reserve_up_kw.is_finite()
-                || !s.reserve_down_kw.is_finite()
+            use eneros_allocation::sanitize;
+            if sanitize(s.p_min_kw).is_none()
+                || sanitize(s.p_max_kw).is_none()
+                || sanitize(s.energy_min_kwh).is_none()
+                || sanitize(s.energy_max_kwh).is_none()
+                || sanitize(s.ramp_kw_s).is_none()
+                || sanitize(s.reserve_up_kw).is_none()
+                || sanitize(s.reserve_down_kw).is_none()
                 || s.p_min_kw < 0.0
                 || s.p_max_kw < s.p_min_kw
                 || s.energy_min_kwh < 0.0
@@ -479,12 +486,12 @@ impl AllocationSolver {
             }
         }
         for t in &input.target.p_target_kw {
-            if !t.is_finite() || *t < 0.0 {
+            if eneros_allocation::sanitize(*t).is_none() || *t < 0.0 {
                 return Err(AllocError::InvalidInput);
             }
         }
-        if !input.target.reserve_up_kw.is_finite()
-            || !input.target.reserve_down_kw.is_finite()
+        if eneros_allocation::sanitize(input.target.reserve_up_kw).is_none()
+            || eneros_allocation::sanitize(input.target.reserve_down_kw).is_none()
             || input.target.reserve_up_kw < 0.0
             || input.target.reserve_down_kw < 0.0
         {
@@ -914,5 +921,61 @@ mod tests {
             }
             other => panic!("expected feasible, got {other:?}"),
         }
+    }
+
+    /// 金样位型锁（蓝图 62 卷 62.3 WP-62.3.2：merit-order 换 kernel
+    /// 原语前后逐字节等价——爬坡受限 + 能量修复路径全走过的定例输入）。
+    /// 断言值 = 换核前现状实跑位型（本测试先于换核落库）。
+    #[test]
+    fn golden_bit_exact_before_kernel_swap() {
+        // 爬坡 1 kW/s、dt=60s → 每步限 60 kW（爬坡修复路径激活）；
+        // energy 带 40/90 kWh → 能量修复路径激活。
+        let sites = vec![
+            site(1, 5.0, 120.0, 2.0, 6.0, 1.0, 2),
+            site(2, 0.0, 80.0, 0.0, 3.0, 1.0, 0),
+            site(3, 2.0, 60.0, 0.2, 3.5, 1.0, 2),
+        ];
+        let inp = AllocationInput {
+            interval_start_ns: 0,
+            interval_ns: 60_000_000_000,
+            sites,
+            target: TargetProfile {
+                p_target_kw: vec![150.0, 130.0, 110.0, 90.0],
+                reserve_up_kw: 3.0,
+                reserve_down_kw: 2.0,
+            },
+        };
+        let out = AllocationSolver::solve(&inp).expect("solve");
+        let mut dump = String::new();
+        match &out {
+            AllocationResult::Feasible { targets, residual } => {
+                for t in targets {
+                    for v in &t.points_kw {
+                        dump.push_str(&format!("p:{:016x} ", v.to_bits()));
+                    }
+                    dump.push_str(&format!(
+                        "e:{:016x} up:{:016x} dn:{:016x} ",
+                        t.energy_kwh.to_bits(),
+                        t.reserve_up_kw.to_bits(),
+                        t.reserve_down_kw.to_bits()
+                    ));
+                }
+                for v in &residual.unmet_kw {
+                    dump.push_str(&format!("u:{:016x} ", v.to_bits()));
+                }
+                dump.push_str(&format!(
+                    "ru:{:016x} rd:{:016x}",
+                    residual.unmet_reserve_up_kw.to_bits(),
+                    residual.unmet_reserve_down_kw.to_bits()
+                ));
+            }
+            other => dump.push_str(&format!("{other:?}")),
+        }
+        // 换核前捕获的位型（换核后重跑必须逐字节一致）。
+        assert_eq!(
+            dump,
+            "p:4050400000000000 p:4050400000000000 p:4048000000000000 p:403c000000000000 e:400b777777777777 up:3ff0000000000000 dn:3ff0000000000000 p:0000000000000000 p:404e000000000000 p:404e000000000000 p:404e000000000000 e:4008000000000000 up:3ff0000000000000 dn:0000000000000000 p:4039000000000000 p:4014000000000000 p:4000000000000000 p:4000000000000000 e:3fe2222222222222 up:3ff0000000000000 dn:0000000000000000 u:404e000000000000 u:0000000000000000 u:0000000000000000 u:0000000000000000 ru:0000000000000000 rd:3ff0000000000000",
+            "merit-order 换核位型漂移——逐字节等价判据失败"
+        );
     }
 }

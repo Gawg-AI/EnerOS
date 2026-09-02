@@ -257,3 +257,78 @@ fn config_descriptors_cover_reference_source() {
     assert!(!d.point_authorized(N_POINTS + 1));
     assert!(d.point_authorized(N_POINTS));
 }
+/// W3 行为等价锁（蓝图 62 卷 62.3：跨实例回退/重放拦截——ObsShadow
+/// 钉扎实现面）：首见即钉、更低 epoch quarantine、同 epoch 旧 seq 由
+/// sink 复核 quarantine、新 epoch 接受后旧 epoch 重放仍被拦（钉值不随
+/// 升级更新——旧手写钉扎表现状语义）。
+#[test]
+fn shadow_watermark_blocks_cross_instance_regression() {
+    use eneros_control_services::obs_shadow::ObsShadow;
+
+    let now_ms = 20_000u64;
+    // 真 registry 产帧（epoch = 分配值；identity 三事实与生产同源）。
+    let mut reg = SourceRegistry::new();
+    let mut store = MemEpochStore::default();
+    reg.register(descriptor(), 0);
+    let epoch = reg.open_source(2, 0, &mut store).expect("open");
+
+    let mut mk_frame = |seq: u64, value: f64, epoch_override: Option<u64>| -> Vec<u8> {
+        let raw = RawObservation {
+            point_id: 1,
+            value: ObservationValue::F64(value),
+            event_time_ns: Some(now_ms * 1_000_000),
+            quality_bits: quality_bits::VALID,
+            integrity: IntegrityTag::LocalTrustedEdge,
+            flags: 0,
+            schema_id: 1,
+            schema_version: 1,
+            unit_code: 6,
+            asset_id: 1,
+            mapping_version: 7,
+            device_id: 2,
+        };
+        let mut ev = reg.verify(2, &raw, now_ms * 1_000_000).expect("verify");
+        ev.sequence = seq;
+        if let Some(e) = epoch_override {
+            ev.source_epoch = e;
+        }
+        // 直接 encode（影子路径只 decode 不 validate——伪造 wire 正是
+        // 钉扎守卫的防御对象）。
+        ev.encode_v1().to_vec()
+    };
+
+    let mut shadow = ObsShadow::new(vec![descriptor()], eval_config());
+    let mut converted = Vec::new();
+
+    // ① 首帧 → 接受 + 首见钉扎（last_pinned 报告首见 epoch）。
+    let f1 = mk_frame(1, 100.0, None);
+    let (a, r) = shadow.ingest_frames(2, &f1, now_ms, &mut converted);
+    assert_eq!((a, r), (1, 0));
+    assert_eq!(shadow.last_pinned(), Some((2, epoch)));
+
+    // ② 更低 epoch（伪造重放形态）→ quarantine（EpochRegression）。
+    let f_regress = mk_frame(2, 101.0, Some(epoch.saturating_sub(1)));
+    let quarantined_before = shadow.quarantine_total();
+    let (_a, r) = shadow.ingest_frames(2, &f_regress, now_ms, &mut converted);
+    assert_eq!(r, 1, "更低 epoch 帧被拒");
+    assert_eq!(
+        shadow.quarantine_total(),
+        quarantined_before + 1,
+        "拒绝进隔离区（可观测）"
+    );
+
+    // ③ 同 epoch 旧 seq（seq=1、值不同 → 新 event_id）→ sink
+    // SequenceReplay → quarantine。
+    let f_old_seq = mk_frame(1, 999.0, None);
+    let (_a, r) = shadow.ingest_frames(2, &f_old_seq, now_ms, &mut converted);
+    assert_eq!(r, 1, "同 epoch 旧 seq 被拒");
+
+    // ④ 新 epoch 帧接受（adapter 重启形态），随后旧 epoch 重放仍被拦
+    // （钉扎首见值不随升级更新）。
+    let f_new_epoch = mk_frame(1, 200.0, Some(epoch + 1));
+    let (a, r) = shadow.ingest_frames(2, &f_new_epoch, now_ms, &mut converted);
+    assert_eq!((a, r), (1, 0), "新 epoch 帧接受（影子评估器 restore 同步）");
+    let f_replay = mk_frame(50, 300.0, Some(epoch.saturating_sub(1)));
+    let (_a, r) = shadow.ingest_frames(2, &f_replay, now_ms, &mut converted);
+    assert_eq!(r, 1, "旧 epoch 重放被拦");
+}

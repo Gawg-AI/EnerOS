@@ -5,6 +5,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use eneros_crypto::sm2::keypair::Sm2PublicKey;
+use eneros_signer_keyring::SignerKeyring;
 
 use crate::error::HarnessError;
 use crate::eval::EvalSuite;
@@ -32,7 +33,9 @@ pub struct ModelRegistry {
     pub runtime_version: u32,
     pub hardware_ram_bytes: u64,
     pub policy: LifecyclePolicy,
-    pub signer_keys: BTreeMap<u32, Sm2PublicKey>,
+    /// 签名密钥注册/验签/撤销纪律单源（keyring——蓝图 62 卷 62.3 S5；
+    /// wire 的 u32 signer_key_id 经 alias_key_id 别名层映射）。
+    keys: SignerKeyring,
     entries: BTreeMap<[u8; 16], PackageEntry>,
 }
 
@@ -48,13 +51,14 @@ impl ModelRegistry {
             runtime_version,
             hardware_ram_bytes,
             policy,
-            signer_keys: BTreeMap::new(),
+            keys: SignerKeyring::new(),
             entries: BTreeMap::new(),
         }
     }
 
     pub fn add_signer_key(&mut self, key_id: u32, pk: Sm2PublicKey) {
-        self.signer_keys.insert(key_id, pk);
+        self.keys
+            .register(eneros_signer_keyring::alias_key_id(key_id), &pk);
     }
 
     pub fn len(&self) -> usize {
@@ -81,13 +85,17 @@ impl ModelRegistry {
         now_ns: u64,
     ) -> Result<(), HarnessError> {
         let package = ModelPackage::new(manifest.clone())?;
-        // 签名门：key 必须已知且验签通过。
-        let pk = self
-            .signer_keys
-            .get(&manifest.signer_key_id)
-            .ok_or(HarnessError::Manifest("unknown signer key"))?;
-        if !manifest.verify_signature(pk) {
-            return Err(HarnessError::Manifest("signature invalid"));
+        // 签名门：key 必须已知且验签通过（keyring 类型化纪律）。
+        match self.keys.verify_authenticated(
+            eneros_signer_keyring::alias_key_id(manifest.signer_key_id),
+            &manifest.canonical_bytes(),
+            &manifest.signature,
+        ) {
+            Ok(_) => {}
+            Err(eneros_signer_keyring::VerifyReject::UnknownKey { .. }) => {
+                return Err(HarnessError::Manifest("unknown signer key"));
+            }
+            Err(_) => return Err(HarnessError::Manifest("signature invalid")),
         }
         // 有效期门。
         if !manifest.is_valid_at_ns(now_ns) {
@@ -346,13 +354,17 @@ impl ModelRegistry {
                 None
             };
             let package = ModelPackage::new(manifest.clone())?;
-            // 恢复门：签名（key 必须已注入）+ 内容摘要重验。
-            let pk = self
-                .signer_keys
-                .get(&manifest.signer_key_id)
-                .ok_or(HarnessError::Manifest("unknown signer key"))?;
-            if !manifest.verify_signature(pk) {
-                return Err(HarnessError::Manifest("signature invalid"));
+            // 恢复门：签名（key 必须已注入；keyring 类型化纪律）+ 内容摘要重验。
+            match self.keys.verify_authenticated(
+                eneros_signer_keyring::alias_key_id(manifest.signer_key_id),
+                &manifest.canonical_bytes(),
+                &manifest.signature,
+            ) {
+                Ok(_) => {}
+                Err(eneros_signer_keyring::VerifyReject::UnknownKey { .. }) => {
+                    return Err(HarnessError::Manifest("unknown signer key"));
+                }
+                Err(_) => return Err(HarnessError::Manifest("signature invalid")),
             }
             if now_ns > 0 && !manifest.is_valid_at_ns(now_ns) {
                 // 过期条目：跳过（不加载内容、不入表）。签名已验——该跳过

@@ -360,16 +360,14 @@ mod tests {
         // 目标装配面：FactAdapter.accept → StoreFactEventSink → event-store。
         // 认证 + 修订水位 + 时效门走 adapter；持久化走 durable sink；掉电
         // 重开介质后已接受事实可追溯恢复（[11] §5.9）。
-        use std::collections::BTreeMap;
-
         use crate::external_facts::FactAdapter;
 
         let dev = MemBlockDevice::new(3 + 64 * 2, BLOCK_SIZE);
         let store = BlockEventStore::format(dev, config()).unwrap();
         let mut sink = StoreFactEventSink::new(store);
         let (_sk, pk) = test_keypair();
-        let mut keys = BTreeMap::new();
-        keys.insert(*b"testkey1", pk);
+        let mut keys = eneros_signer_keyring::SignerKeyring::new();
+        keys.register(*b"testkey1", &pk);
         let mut a = FactAdapter::new(keys);
 
         let e1 = sealed([9; 16], 1);
@@ -393,8 +391,8 @@ mod tests {
         );
 
         let (_sk2, pk2) = test_keypair();
-        let mut keys2 = BTreeMap::new();
-        keys2.insert(*b"testkey1", pk2);
+        let mut keys2 = eneros_signer_keyring::SignerKeyring::new();
+        keys2.register(*b"testkey1", &pk2);
         let mut a2 = FactAdapter::new(keys2);
         // 旧修订重放 → adapter 水位重建后拒（水位来自 durable sink 的
         // recover——adapter 自身内存水位在重启后为空，此处验证 durable

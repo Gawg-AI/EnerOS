@@ -10,12 +10,11 @@
 //! 不产生控制快照观测（unit_code=0 纪律——事实不进控制快照），经
 //! [`FactEventSink`] 进入事件平面（target 装配接 StoreSink/event-store）。
 
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use eneros_crypto::sm2::keypair::Sm2PublicKey;
-use eneros_crypto::sm2::sign::{sm2_verify, Sm2Signature};
+use eneros_signer_keyring::{SignerKeyring, VerifyReject, WatermarkReject};
 
 /// 事实分类码（信封 class 域；1=市场 2=工艺 3=企业——与
 /// [`FactPayload::class`] 一一对应）。
@@ -359,22 +358,18 @@ impl<F: FactPayload> FactEnvelope<F> {
         eneros_crypto::sm3::hash(&self.canonical_bytes())
     }
 
-    /// 全门校验（语义 → 摘要 → 签名——顺序固定；[11] §5.8）。
-    pub fn validate(&self, keys: &BTreeMap<[u8; 8], Sm2PublicKey>) -> Result<(), FactReject> {
+    /// 全门校验（语义 → 摘要 → 签名——顺序固定；[11] §5.8）。验签
+    /// 纪律走 keyring 单源（类型化——调用方不触碰底层验签布尔）。
+    pub fn validate(&self, keys: &SignerKeyring) -> Result<(), FactReject> {
         self.header.validate()?;
         self.payload.validate_semantics()?;
         if self.compute_digest() != self.payload_digest {
             return Err(FactReject::DigestMismatch);
         }
-        let Some(pk) = keys.get(&self.key_id) else {
-            return Err(FactReject::UnknownKey {
-                key_id: self.key_id,
-            });
-        };
-        let sig = Sm2Signature::from_bytes(&self.signature);
-        match sm2_verify(&self.canonical_bytes(), &sig, pk) {
-            Ok(true) => Ok(()),
-            _ => Err(FactReject::BadSignature),
+        match keys.verify_authenticated(self.key_id, &self.canonical_bytes(), &self.signature) {
+            Ok(_) => Ok(()),
+            Err(VerifyReject::UnknownKey { key_id }) => Err(FactReject::UnknownKey { key_id }),
+            Err(_) => Err(FactReject::BadSignature),
         }
     }
 }
@@ -427,26 +422,24 @@ impl FactEventSink for MemFactEventSink {
 /// 外部事实接入 adapter（push 模式；认证 + 修订水位 + 时效门 →
 /// 事件面）。
 pub struct FactAdapter {
-    /// 签名密钥注册表。
-    keys: BTreeMap<[u8; 8], Sm2PublicKey>,
-    /// 修订水位（external_id → 已见最高 revision）。
-    revisions: BTreeMap<[u8; 16], u32>,
+    /// 签名密钥注册/验签/撤销/修订水位纪律单源（keyring——蓝图 62 卷
+    /// 62.3 S5 收敛）。
+    keys: SignerKeyring,
     pub accepted_total: u64,
     pub rejected_total: u64,
 }
 
 impl FactAdapter {
-    pub fn new(keys: BTreeMap<[u8; 8], Sm2PublicKey>) -> Self {
+    pub fn new(keys: SignerKeyring) -> Self {
         Self {
             keys,
-            revisions: BTreeMap::new(),
             accepted_total: 0,
             rejected_total: 0,
         }
     }
 
     pub fn revision_of(&self, external_id: &[u8; 16]) -> Option<u32> {
-        self.revisions.get(external_id).copied()
+        self.keys.revision(external_id)
     }
 
     /// 接入一封已认证事实（[11] §5.1 纪律单点）。
@@ -462,8 +455,8 @@ impl FactAdapter {
             return Err(r);
         }
         // 修订水位（严格递增；旧修订拒——不原地改值，[11] §5.5 append
-        // 新 revision）。
-        if let Some(&seen) = self.revisions.get(&env.header.external_id) {
+        // 新 revision；水位表在 keyring 单源）。
+        if let Some(seen) = self.keys.revision(&env.header.external_id) {
             if env.header.revision <= seen {
                 self.rejected_total += 1;
                 return Err(FactReject::StaleRevision {
@@ -498,8 +491,18 @@ impl FactAdapter {
                 now_ms.saturating_mul(1_000_000),
             )
             .map_err(FactReject::Sink)?;
-        self.revisions
-            .insert(env.header.external_id, env.header.revision);
+        // 水位推进（sink 成功才推进；水位检查已保证严格递增——
+        // NotAdvancing 不可达，防御臂如实计拒不静默）。
+        if let Err(WatermarkReject::NotAdvancing { seen }) = self
+            .keys
+            .advance_revision(&env.header.external_id, env.header.revision)
+        {
+            self.rejected_total += 1;
+            return Err(FactReject::StaleRevision {
+                revision: env.header.revision,
+                seen,
+            });
+        }
         self.accepted_total += 1;
         Ok(offset)
     }
@@ -613,8 +616,8 @@ mod tests {
 
     fn adapter() -> FactAdapter {
         let (_sk, pk) = test_keypair();
-        let mut keys = BTreeMap::new();
-        keys.insert(*b"testkey1", pk);
+        let mut keys = SignerKeyring::new();
+        keys.register(*b"testkey1", &pk);
         FactAdapter::new(keys)
     }
 

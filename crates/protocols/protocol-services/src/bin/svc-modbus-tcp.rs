@@ -393,35 +393,15 @@ pub extern "C" fn _start(
                 let mut own_source_id: Option<u32> = None;
                 for src in &sources {
                     if src.protocol == PointProtocol::ModbusTcp {
-                        descriptors.push((
-                            src.source_id,
-                            eneros_ingestion_core::SourceDescriptor {
-                                source_id: src.source_id,
-                                tenant_id: src.tenant_id,
-                                site_id: src.site_id,
-                                allow_control: src.allow_control,
-                                require_integrity: src.require_integrity,
-                                point_range: (src.point_min, src.point_max),
-                                max_events_per_s: src.max_events_per_s,
-                                allowed_schemas: {
-                                    let mut ids = alloc::vec::Vec::new();
-                                    registry.collect_ids(&mut ids);
-                                    let mut v = alloc::vec::Vec::new();
-                                    for id in ids {
-                                        if let Some(m) = registry.resolve(id) {
-                                            if m.identity.schema_id != 0
-                                                && !v.contains(&m.identity.schema_id)
-                                            {
-                                                v.push(m.identity.schema_id);
-                                            }
-                                        }
-                                    }
-                                    v
-                                },
-                                clock_id: 1,
-                                enabled: true,
-                            },
-                        ));
+                        // descriptor 构造单源工厂（W3）；本适配器过滤
+                        // 口径 = 本来源映射点全集（协议路由已在 fetch
+                        // 阶段过滤——谓词恒真，不与 iec104 静默统一）。
+                        let mut ids = alloc::vec::Vec::new();
+                        registry.collect_ids(&mut ids);
+                        let descriptor = eneros_ingestion_core::descriptor_of(src, ids, |id| {
+                            registry.resolve(*id).map(|m| m.identity.schema_id)
+                        });
+                        descriptors.push((src.source_id, descriptor));
                         if own_source_id.is_none() {
                             own_source_id = Some(src.source_id);
                         }

@@ -111,10 +111,12 @@ impl DomainOptimizer {
                 }
             }
         }
-        // D12：净收益 = price × (total_power − total_loss)
+        // D12：净收益 = price × (total_power − total_loss)；电价过滤
+        // （非有限 → 0.0，负电价合法）——有限性门单源 kernel（62.3 S6）。
         let total_power: f32 = box_plans.values().map(|p| p.total_power).sum();
-        let total_revenue =
-            sanitize_price(market.current_price as f32) * (total_power - total_loss);
+        let price = eneros_allocation::sanitize(f64::from(market.current_price as f32))
+            .map_or(0.0, |v| v as f32);
+        let total_revenue = price * (total_power - total_loss);
         Ok(DomainPlan {
             box_plans,
             total_revenue,

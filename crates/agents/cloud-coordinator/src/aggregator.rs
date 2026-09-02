@@ -111,22 +111,9 @@ pub trait DataSink {
     fn store(&mut self, data: &DomainData, now_ms: u64) -> Result<(), AggError>;
 }
 
-/// metric 值 sanitize（D9：非有限 → 0.0）.
-fn sanitize_metric(v: f32) -> f32 {
-    if v.is_finite() {
-        v
-    } else {
-        0.0
-    }
-}
-
-/// 容量 sanitize（D9：非有限或 ≤0 → 0.0，不参与汇总）.
-fn sanitize_capacity(capacity_mw: f32) -> f32 {
-    if capacity_mw.is_finite() && capacity_mw > 0.0 {
-        capacity_mw
-    } else {
-        0.0
-    }
+/// 有限性门（D9：单源 kernel——蓝图 62 卷 62.3 S6；f32 边界适配）.
+fn finite32(v: f32) -> Option<f32> {
+    eneros_allocation::sanitize(f64::from(v)).map(|x| x as f32)
 }
 
 /// 数据汇聚器（字段全 pub 可观测；collect 多源容错 + store 委托 + 3 计数器）.
@@ -177,13 +164,15 @@ impl DataAggregator {
             }
         }
         let mut metrics = BTreeMap::new();
-        metrics.insert(0, sanitize_metric(states.len() as f32));
+        metrics.insert(0, finite32(states.len() as f32).unwrap_or(0.0));
         // D9：f64 累加避免 f32 求和中间溢出；转回 f32 后非有限 → 0.0.
         let total_capacity = states
             .iter()
-            .map(|s| f64::from(sanitize_capacity(s.capacity_mw)))
+            // D9 容量政策：非有限或 ≤0 → 0.0，不参与汇总（吞错政策
+            // 留在聚合器——kernel 只给有限性门）。
+            .map(|s| f64::from(finite32(s.capacity_mw).filter(|v| *v > 0.0).unwrap_or(0.0)))
             .sum::<f64>() as f32;
-        metrics.insert(1, sanitize_metric(total_capacity));
+        metrics.insert(1, finite32(total_capacity).unwrap_or(0.0));
         self.collect_count += 1;
         Ok(DomainData {
             domain_id: 0,

@@ -2,6 +2,8 @@
 
 use alloc::vec::Vec;
 
+use eneros_allocation::{proportional, sanitize};
+
 use crate::types::{AggregatedCapacity, DrAssignment, DrParticipant, DrSignal, DrSignalType};
 use crate::DrError;
 
@@ -49,8 +51,10 @@ impl DrAggregator for DrAggregatorImpl {
         let mut participants = 0usize;
 
         for p in self.participants.iter().filter(|p| p.available) {
-            reducible_kw += p.base_kw - p.min_kw;
-            increasable_kw += p.max_kw - p.base_kw;
+            // D-4 修复（kernel sanitize 单源）：非有限贡献按 0 计——
+            // 聚合恒有限；available 计数语义不动。
+            reducible_kw += sanitize(p.base_kw - p.min_kw).unwrap_or(0.0);
+            increasable_kw += sanitize(p.max_kw - p.base_kw).unwrap_or(0.0);
             participants += 1;
         }
 
@@ -69,37 +73,35 @@ impl DrAggregator for DrAggregatorImpl {
             return Err(DrError::NoParticipants);
         }
 
-        // 根据信号类型确定每个参与者的可用容量
-        let capacities: Vec<f64> = available
+        // 有限性门（kernel sanitize 单源，D-4）：非有限 target 显式拒。
+        let target = match sanitize(sig.target_kw) {
+            Some(t) => t,
+            None => return Err(DrError::InvalidSignal),
+        };
+
+        // 根据信号类型确定每个参与者的可用容量（非有限贡献按 0 计——
+        // 聚合器吞错政策；输出形状不变：每可用参与者一条）。
+        let capacities: Vec<(u64, f64)> = available
             .iter()
-            .map(|p| match sig.signal_type {
-                DrSignalType::LoadReduce | DrSignalType::Curtailment => p.base_kw - p.min_kw,
-                DrSignalType::LoadIncrease => p.max_kw - p.base_kw,
+            .map(|p| {
+                let cap = match sig.signal_type {
+                    DrSignalType::LoadReduce | DrSignalType::Curtailment => p.base_kw - p.min_kw,
+                    DrSignalType::LoadIncrease => p.max_kw - p.base_kw,
+                };
+                (p.agent_id, sanitize(cap).unwrap_or(0.0))
             })
             .collect();
 
-        let total_capacity: f64 = capacities.iter().sum();
-        if total_capacity <= 0.0 {
-            return Err(DrError::CapacityInsufficient);
-        }
+        // 比例分配 + 钳位单源（kernel；Σcap ≤ 0 / target > Σcap →
+        // 容量不足——判拒语义保留在本聚合器）。
+        let shares = proportional(target, &capacities).ok_or(DrError::CapacityInsufficient)?;
 
-        if sig.target_kw > total_capacity {
-            return Err(DrError::CapacityInsufficient);
-        }
-
-        // 按比例分配，并钳位到参与者限制
-        let assignments: Vec<DrAssignment> = available
-            .iter()
-            .zip(capacities.iter())
-            .map(|(p, &cap)| {
-                let raw = (cap / total_capacity) * sig.target_kw;
-                // 钳位：不超过参与者自身容量
-                let assign_kw = raw.min(cap).max(0.0);
-                DrAssignment {
-                    agent_id: p.agent_id,
-                    assign_kw,
-                    acknowledged: false,
-                }
+        let assignments: Vec<DrAssignment> = shares
+            .into_iter()
+            .map(|(agent_id, assign_kw)| DrAssignment {
+                agent_id,
+                assign_kw,
+                acknowledged: false,
             })
             .collect();
 
@@ -238,5 +240,62 @@ mod tests {
         let cap = agg.aggregate_capacity();
         assert_eq!(cap.participants, 1);
         assert!((cap.reducible_kw - 200.0).abs() < 1e-9);
+    }
+
+    // =========================================================================
+    // D-4（蓝图 62 卷 62.3 WP-62.3.2）：非有限容量零防御 → sanitize 纪律。
+    // participant 是全 pub f64 字段直构（types.rs 无校验构造器）——聚合器
+    // 是 NaN 进系统的最后闸门。
+    // =========================================================================
+
+    /// D-4-①：participant 携带 f64::NAN 容量时 aggregate_capacity 必须
+    /// 不产出 NaN（非有限贡献按 0 计——输出恒有限）。
+    #[test]
+    fn nan_capacity_never_produces_nan_aggregate() {
+        let mut agg = DrAggregatorImpl::new();
+        agg.add_participant(make_participant(1, f64::NAN, 50.0, 400.0, true));
+        agg.add_participant(make_participant(2, 300.0, 100.0, 500.0, true));
+
+        let cap = agg.aggregate_capacity();
+        assert!(
+            cap.reducible_kw.is_finite(),
+            "reducible 恒有限: {}",
+            cap.reducible_kw
+        );
+        assert!(
+            cap.increasable_kw.is_finite(),
+            "increasable 恒有限: {}",
+            cap.increasable_kw
+        );
+        // 非有限贡献按 0 计：reducible = 0 + (300-100) = 200。
+        assert!((cap.reducible_kw - 200.0).abs() < 1e-9);
+        assert_eq!(
+            cap.participants, 2,
+            "available 语义不动（计数仍含该参与者）"
+        );
+    }
+
+    /// D-4-②：非有限 target → InvalidSignal；非有限参与者容量 → 分配
+    /// 恒有限且 Σ ≤ target。
+    #[test]
+    fn non_finite_rejected_or_finite_in_dispatch() {
+        let mut agg = DrAggregatorImpl::new();
+        agg.add_participant(make_participant(1, 200.0, 50.0, 400.0, true));
+
+        let sig = make_signal(DrSignalType::LoadReduce, f64::NAN);
+        assert_eq!(agg.dispatch(&sig), Err(DrError::InvalidSignal));
+        let sig = make_signal(DrSignalType::LoadReduce, f64::INFINITY);
+        assert_eq!(agg.dispatch(&sig), Err(DrError::InvalidSignal));
+        let sig = make_signal(DrSignalType::LoadReduce, f64::NEG_INFINITY);
+        assert_eq!(agg.dispatch(&sig), Err(DrError::InvalidSignal));
+
+        // 非有限参与者容量混入：分配恒有限（该贡献按 0 计）。
+        agg.add_participant(make_participant(2, f64::NAN, 0.0, f64::NAN, true));
+        let sig = make_signal(DrSignalType::LoadReduce, 100.0);
+        let assignments = agg.dispatch(&sig).expect("finite target dispatches");
+        assert_eq!(assignments.len(), 2, "输出形状不变（每可用参与者一条）");
+        assert!(assignments.iter().all(|a| a.assign_kw.is_finite()));
+        let total: f64 = assignments.iter().map(|a| a.assign_kw).sum();
+        assert!(total <= 100.0 + 1e-9, "Σ assignment ≤ target: {total}");
     }
 }

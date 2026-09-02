@@ -22,6 +22,8 @@ eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 # 清单签名（SM2，与 market envelope 同源）；内容摘要（SHA-256，字段名
 # 即算法）。
 eneros-crypto = { path = "../../security/crypto" }
+# 蓝图 62 卷 62.3（S5 收敛）：签名密钥注册/验签/撤销单源。
+eneros-signer-keyring = { path = "../../security/signer-keyring" }
 sha2 = { version = "0.10.9", default-features = false }
 serde_json = "1"
 

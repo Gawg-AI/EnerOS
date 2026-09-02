@@ -19,7 +19,7 @@
 //! | **D9** | 3 个 pub 计数器 `aggregate_count`/`dispatch_count`/`reject_count`（拒绝 = InvalidTarget + InsufficientCapacity + NoResource 三路合计；聚合容量经 `VppProfile` 可观测） |
 //! | **D10** | 资源不足落地为**拒绝**（确定性）：`target_mw.abs() > profile.available_mw` → `Err(VppError::InsufficientCapacity)`（含负 target 充电场景，abs 判定） |
 //! | **D11** | `ramp_down = ramp_up` 对称实现（蓝图关键代码一致）；`ramp_rate` 非有限或 <0 → 按 0 计入 profile（ramp 仅上报不参与分配，不阻断调度） |
-//! | **D12** | NaN 防御（v0.88.0 C140 / v0.93.0 D12 教训）：capacity 非有限或 ≤0 → 资源从聚合排除；available 非有限 → 0 且 clamp [0, capacity]；efficiency NaN→0.5 clamp `[0,1]`；price 非有限 → bid price 按 0+margin。复用 domain_optimizer 的 `sanitize_capacity`/`sanitize_efficiency`/`sanitize_price`（可见性放宽为 `pub(crate)`，零逻辑改动） |
+//! | **D12** | NaN 防御（v0.88.0 C140 / v0.93.0 D12 教训）：capacity 非有限或 ≤0 → 资源从聚合排除；available 非有限 → 0 且 clamp [0, capacity]；efficiency NaN→0.5 clamp `[0,1]`；price 非有限 → bid price 按 0+margin。复用 domain_optimizer 的 `sanitize_capacity`/`sanitize_efficiency`（可见性放宽为 `pub(crate)`，零逻辑改动）；62.3 起 price/available/ramp 门单源 kernel sanitize（本地政策函数） |
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -31,7 +31,7 @@ use eneros_energy_market_agent::{
 use eneros_solver_core::solver::Solver;
 
 use crate::domain_optimizer::{
-    sanitize_capacity, sanitize_efficiency, sanitize_price, DomainOptimizer, EdgeBoxState, OptError,
+    sanitize_capacity, sanitize_efficiency, DomainOptimizer, EdgeBoxState, OptError,
 };
 
 /// VPP 资源类型.
@@ -111,24 +111,24 @@ pub enum VppError {
     NoResource,
 }
 
-/// 可用容量过滤（D12）：非有限 → 0.0；否则 clamp [0, cap]（cap 无效 → 0）.
-fn sanitize_available(avail: f32, cap: f32) -> f32 {
-    if !avail.is_finite() {
-        return 0.0;
-    }
-    match sanitize_capacity(cap) {
-        Some(c) => avail.clamp(0.0, c),
-        None => 0.0,
+/// D12 可用容量政策（有限性门单源 kernel——蓝图 62 卷 62.3 S6）：
+/// 非有限 → 0.0；否则 clamp [0, cap]（cap 无效 → 0）.
+fn d12_available(avail: f32, cap: f32) -> f32 {
+    match (
+        eneros_allocation::sanitize(f64::from(avail)).map(|v| v as f32),
+        sanitize_capacity(cap),
+    ) {
+        (Some(a), Some(c)) => a.clamp(0.0, c),
+        _ => 0.0,
     }
 }
 
-/// 爬坡过滤（D11）：非有限或 < 0 → 0.0；否则原样.
-fn sanitize_ramp(r: f32) -> f32 {
-    if !r.is_finite() || r < 0.0 {
-        0.0
-    } else {
-        r
-    }
+/// D11 爬坡政策（有限性门单源 kernel）：非有限或 < 0 → 0.0；否则原样.
+fn d11_ramp(r: f32) -> f32 {
+    eneros_allocation::sanitize(f64::from(r))
+        .map(|v| v as f32)
+        .filter(|v| *v >= 0.0)
+        .unwrap_or(0.0)
 }
 
 /// Edge Coordinator VPP 聚合器（D9：字段全 pub 可观测）.
@@ -202,8 +202,8 @@ impl VppAggregator {
                 None => continue,
             };
             profile.total_capacity_mw += cap;
-            profile.available_mw += sanitize_available(r.available_mw, r.capacity_mw);
-            let ramp = sanitize_ramp(r.ramp_rate);
+            profile.available_mw += d12_available(r.available_mw, r.capacity_mw);
+            let ramp = d11_ramp(r.ramp_rate);
             profile.ramp_up_mw_per_min += ramp;
             profile.ramp_down_mw_per_min += ramp;
         }

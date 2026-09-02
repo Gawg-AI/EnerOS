@@ -2,8 +2,6 @@
 //! shadow——核对冲突。三类事实只能**收紧/提供经济输入**；不能覆盖
 //! 安全/工艺硬约束（[11] §5.5 事实优先级）。
 
-use std::collections::BTreeMap;
-
 use eneros_business_services::external_facts::{
     EnterpriseFact, FactAdapter, FactEnvelope, FactHeader, FactPayload, FactReject, MarketFact,
     MemFactEventSink, ProcessFact,
@@ -173,8 +171,8 @@ fn market_envelopes() -> Vec<FactEnvelope<MarketFact>> {
 
 fn fact_adapter() -> FactAdapter {
     let (_sk, pk) = eneros_business_services::external_facts::test_keypair();
-    let mut keys = BTreeMap::new();
-    keys.insert(*b"testkey1", pk);
+    let mut keys = eneros_signer_keyring::SignerKeyring::new();
+    keys.register(*b"testkey1", &pk);
     FactAdapter::new(keys)
 }
 

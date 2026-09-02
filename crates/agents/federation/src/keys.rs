@@ -14,6 +14,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use eneros_crypto::sm2::Sm2PublicKey;
+use eneros_crypto::sm2::Sm2Signature;
 use eneros_crypto::sm3::hash as sm3_hash;
 
 pub use crate::offer::{FedEnvelope, FedFrame};
@@ -255,7 +256,7 @@ impl KeyRegistry {
     }
 
     /// 校验并验签信封：key 必须存在且非 Revoked/Retired，签名必须通过
-    /// （`sm2_verify` 布尔结果显式检查）。
+    /// （keyring 类型化面——底层验签布尔双通道不在本 crate 出现）。
     pub fn verify_envelope(&self, env: &FedEnvelope, now_ns: u64) -> Result<(), KeyError> {
         let _ = now_ns;
         let rec = self
@@ -271,11 +272,12 @@ impl KeyRegistry {
         if sm3_hash(&rec.public_key.to_bytes_uncompressed()) != rec.key_digest {
             return Err(KeyError::BadSignature);
         }
-        let ok =
-            FedFrame::verify_signature(env, &rec.public_key).map_err(|_| KeyError::BadSignature)?;
-        if !ok {
-            return Err(KeyError::BadSignature);
-        }
+        // 验签管线单源（keyring 类型化——布尔返回的 Ok(false)/Err 双通道
+        // 在 keyring 收口，本 crate 不触碰；蓝图 62 卷 62.3 S5）。
+        let canon = FedFrame::canonical(env).map_err(|_| KeyError::BadSignature)?;
+        let sig = Sm2Signature::from_bytes(&env.signature);
+        eneros_signer_keyring::verify_signature(&canon, &sig, &rec.public_key)
+            .map_err(|_| KeyError::BadSignature)?;
         Ok(())
     }
 }

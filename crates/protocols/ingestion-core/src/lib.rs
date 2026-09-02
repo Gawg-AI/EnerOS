@@ -38,6 +38,7 @@ pub mod contract;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 
+use eneros_config_bundle::points::SourceRecord;
 use eneros_telemetry_model::event::{
     event_flags, IntegrityTag, ObservationEvent, ObservationValue,
 };
@@ -509,6 +510,219 @@ impl Default for SourceRegistry {
     }
 }
 
+// ===========================================================================
+// WatermarkTracker（蓝图 62 卷 62.3 W3 收敛）：观测事件跨实例回退/重放
+// 拦截的水位不变量唯一实现——InMemorySink / StoreSink / ObsShadow 钉扎
+// 共用本结构，守卫判据只此一份。
+// ===========================================================================
+
+/// 同源水位（epoch, sequence）tracker。
+///
+/// 两种既有用法（语义各自保真，见卷执行卡 B3 差异 6）：
+/// - sink（InMemorySink/StoreSink）：准入前 [`Self::check`]，准入成功后
+///   [`Self::advance`]（水位只在成功路径推进）；
+/// - ObsShadow 钉扎：首见即 [`Self::advance`]（epoch 钉死首见值——
+///   adapter 重启换新 epoch 后，旧 epoch 重放仍被拦）。
+#[derive(Debug, Clone, Default)]
+pub struct WatermarkTracker {
+    per_source: BTreeMap<u32, (u64, u64)>,
+}
+
+impl WatermarkTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 水位复核（准入前调用；不 mutate）：同源更低 epoch →
+    /// [`IngestReject::EpochRegression`]（水位不降级——旧 epoch 重放/回滚
+    /// 不得拉低水位放行后续重放序列）；同 epoch 旧/等 sequence →
+    /// [`IngestReject::SequenceReplay`]。首见源 → `Ok(())`。
+    pub fn check(&self, event: &ObservationEvent) -> Result<(), IngestReject> {
+        match self.per_source.get(&event.source_id) {
+            Some(&(we, ws)) => {
+                if event.source_epoch < we {
+                    return Err(IngestReject::EpochRegression {
+                        epoch: event.source_epoch,
+                        expected: we,
+                    });
+                }
+                if we == event.source_epoch && event.sequence <= ws {
+                    return Err(IngestReject::SequenceReplay {
+                        sequence: event.sequence,
+                        last: ws,
+                    });
+                }
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// 推进（同源单调；调用方决定时机——sink 成功路径 / 钉扎首见）。
+    /// advance 只会使后续 `check` 更严（水位只升），不产生其他状态。
+    pub fn advance(&mut self, event: &ObservationEvent) {
+        self.per_source
+            .insert(event.source_id, (event.source_epoch, event.sequence));
+    }
+
+    /// 当前水位读面（(epoch, sequence)；未见过该源 → None）。
+    pub fn pinned(&self, source_id: u32) -> Option<(u64, u64)> {
+        self.per_source.get(&source_id).copied()
+    }
+}
+
+#[cfg(test)]
+mod watermark_tracker_tests {
+    #![allow(clippy::disallowed_macros)]
+
+    use super::*;
+
+    /// 定义锁（W3 红测转定义面）：同源更低 epoch 拒、同 epoch 旧/等 seq
+    /// 拒、首见钉扎、源间隔离、水位不降级。
+    #[test]
+    fn tracker_rejects_epoch_regression_and_sequence_replay() {
+        let mut t = WatermarkTracker::new();
+        let e = |epoch: u64, seq: u64| ObservationEvent {
+            source_id: 2,
+            source_epoch: epoch,
+            sequence: seq,
+            ..make_min_event()
+        };
+
+        // 首见：Ok，但尚未钉扎（advance 由调用方择时）。
+        assert_eq!(t.check(&e(5, 10)), Ok(()));
+        assert_eq!(t.pinned(2), None, "check 不钉扎——推进时机归调用方");
+        t.advance(&e(5, 10));
+        assert_eq!(t.pinned(2), Some((5, 10)));
+
+        // 同源更低 epoch → EpochRegression（重放/回滚）。
+        assert_eq!(
+            t.check(&e(4, 999)),
+            Err(IngestReject::EpochRegression {
+                epoch: 4,
+                expected: 5
+            })
+        );
+        // 水位不因拒绝而降级：旧 epoch 之后的更低重放仍拒。
+        assert_eq!(
+            t.check(&e(3, 1)),
+            Err(IngestReject::EpochRegression {
+                epoch: 3,
+                expected: 5
+            })
+        );
+
+        // 同 epoch 旧/等 seq → SequenceReplay。
+        assert_eq!(
+            t.check(&e(5, 9)),
+            Err(IngestReject::SequenceReplay {
+                sequence: 9,
+                last: 10
+            })
+        );
+        assert_eq!(
+            t.check(&e(5, 10)),
+            Err(IngestReject::SequenceReplay {
+                sequence: 10,
+                last: 10
+            })
+        );
+        // 同 epoch 新 seq → Ok。
+        assert_eq!(t.check(&e(5, 11)), Ok(()));
+
+        // 新 epoch（adapter 重启）→ Ok；推进后旧 epoch 永拒。
+        assert_eq!(t.check(&e(6, 1)), Ok(()));
+        t.advance(&e(6, 1));
+        assert_eq!(t.pinned(2), Some((6, 1)));
+        assert_eq!(
+            t.check(&e(5, 999)),
+            Err(IngestReject::EpochRegression {
+                epoch: 5,
+                expected: 6
+            })
+        );
+    }
+
+    #[test]
+    fn tracker_sources_are_independent() {
+        let mut t = WatermarkTracker::new();
+        let mut ev = make_min_event();
+        ev.source_id = 1;
+        ev.source_epoch = 7;
+        ev.sequence = 3;
+        t.advance(&ev);
+        assert_eq!(t.pinned(2), None, "源间隔离");
+        assert_eq!(t.pinned(1), Some((7, 3)));
+    }
+
+    fn make_min_event() -> ObservationEvent {
+        ObservationEvent {
+            tenant_id: 1,
+            site_id: 1,
+            source_id: 2,
+            source_epoch: 5,
+            sequence: 10,
+            point_id: 1,
+            value: eneros_telemetry_model::event::ObservationValue::F64(1.0),
+            event_time_ns: 1,
+            ingest_time_ns: 1,
+            quality_bits: 0,
+            integrity: eneros_telemetry_model::event::IntegrityTag::Unverified,
+            flags: 0,
+            schema_id: 0,
+            schema_version: 0,
+            unit_code: 0,
+            asset_id: 0,
+            mapping_version: 0,
+            device_id: 0,
+            clock_id: 1,
+        }
+    }
+}
+
+// ===========================================================================
+// SourceDescriptor 派生单源工厂（蓝图 62 卷 62.3 W3）：obs_shadow /
+// svc-modbus-tcp / svc-iec104 三处 descriptor 构造收敛于此——schema
+// 收集（非零 + 去重 + 保序）与 `clock_id: 1` / `enabled: true` 硬编码
+// 只此一份。
+// ===========================================================================
+
+/// 由 config `[[source]]` 行 + 点表迭代派生 descriptor。
+///
+/// `schema_of` = 该来源授权面内的点 → schema id 映射（`None` = 谓词
+/// 外）。**三处过滤口径差异（点表范围 vs 协议地址）以谓词参数化保留
+/// ——不得静默统一**（蓝图 62 卷 62.3 W3 硬边界）。
+pub fn descriptor_of<P, T, F>(
+    record: &SourceRecord,
+    points: P,
+    mut schema_of: F,
+) -> SourceDescriptor
+where
+    P: IntoIterator<Item = T>,
+    F: FnMut(&T) -> Option<u32>,
+{
+    let mut allowed_schemas: Vec<u32> = Vec::new();
+    for point in points {
+        if let Some(schema) = schema_of(&point) {
+            if schema != 0 && !allowed_schemas.contains(&schema) {
+                allowed_schemas.push(schema);
+            }
+        }
+    }
+    SourceDescriptor {
+        source_id: record.source_id,
+        tenant_id: record.tenant_id,
+        site_id: record.site_id,
+        allow_control: record.allow_control,
+        require_integrity: record.require_integrity,
+        point_range: (record.point_min, record.point_max),
+        max_events_per_s: record.max_events_per_s,
+        allowed_schemas,
+        clock_id: 1,
+        enabled: true,
+    }
+}
+
 /// 内存观测事件汇（E3 参考实现；dedup + 同源 watermark 复核）。
 ///
 /// 有界（v0.314.30）：事件环 + event_id 去重环同为 `cap`——满后拒绝
@@ -517,7 +731,8 @@ impl Default for SourceRegistry {
 pub struct InMemorySink {
     events: VecDeque<([u8; 16], [u8; 128])>,
     ids: BTreeMap<[u8; 16], ()>,
-    watermarks: BTreeMap<u32, (u64, u64)>,
+    /// 同源水位（W3：WatermarkTracker 单源——守卫判据不在此地手写）。
+    watermarks: WatermarkTracker,
     offset: u64,
     cap: usize,
 }
@@ -527,7 +742,7 @@ impl InMemorySink {
         Self {
             events: VecDeque::new(),
             ids: BTreeMap::new(),
-            watermarks: BTreeMap::new(),
+            watermarks: WatermarkTracker::new(),
             offset: 0,
             cap: cap.max(1),
         }
@@ -554,23 +769,9 @@ impl ObservationSink for InMemorySink {
         if self.ids.contains_key(&id) {
             return Err(IngestReject::Duplicate { event_id: id });
         }
-        // 2. 同源 watermark 复核（跨 registry 实例的回退/篡改冲突）。
-        if let Some(&(we, ws)) = self.watermarks.get(&event.source_id) {
-            if event.source_epoch < we {
-                // epoch 回退（重放/回滚）：拒绝且 watermark 不降级——
-                // 否则旧 epoch 重放会把水位拉低，后续重放序列全部放行。
-                return Err(IngestReject::EpochRegression {
-                    epoch: event.source_epoch,
-                    expected: we,
-                });
-            }
-            if we == event.source_epoch && event.sequence <= ws {
-                return Err(IngestReject::SequenceReplay {
-                    sequence: event.sequence,
-                    last: ws,
-                });
-            }
-        }
+        // 2. 同源 watermark 复核（跨 registry 实例的回退/篡改冲突）——
+        // W3：WatermarkTracker 单源（判据不在此地手写）。
+        self.watermarks.check(event)?;
         if self.events.len() >= self.cap {
             return Err(IngestReject::Overflow);
         }
@@ -578,8 +779,7 @@ impl ObservationSink for InMemorySink {
         self.offset = self.offset.saturating_add(1);
         self.ids.insert(id, ());
         self.events.push_back((id, wire));
-        self.watermarks
-            .insert(event.source_id, (event.source_epoch, event.sequence));
+        self.watermarks.advance(event);
         Ok(AppendAck {
             event_id: id,
             offset: self.offset,
@@ -587,7 +787,7 @@ impl ObservationSink for InMemorySink {
     }
 
     fn watermark(&self, source_id: u32) -> Option<(u64, u64)> {
-        self.watermarks.get(&source_id).copied()
+        self.watermarks.pinned(source_id)
     }
 
     /// 排空事件环（wire 帧交付）；id 去重环随环淘汰（窗口有界）。

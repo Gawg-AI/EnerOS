@@ -25,10 +25,10 @@
 //! - QoS 分级位在分区键中恒 0（事件 QoS 来自 PointPlan，装配面分级后
 //!   扩展）。
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use eneros_ingestion_core::{AppendAck, IngestReject, ObservationSink};
+use eneros_ingestion_core::{AppendAck, IngestReject, ObservationSink, WatermarkTracker};
 use eneros_telemetry_model::event::{ObservationEvent, OBSERVATION_WIRE_LEN};
 
 use crate::{
@@ -69,7 +69,9 @@ pub struct StoreSink<S: EventStore> {
     store: S,
     /// source → (epoch, sequence)（同 InMemorySink 语义；模块 watermark
     /// 复核接缝）。
-    watermarks: BTreeMap<u32, (u64, u64)>,
+    /// 同源水位（W3：WatermarkTracker 单源——判据与 InMemorySink 共享，
+    /// 不再本地重抄）。
+    watermarks: WatermarkTracker,
     /// 本桥见过的分区（drain 枚举面）。
     partitions: BTreeSet<PartitionId>,
     /// 追加失败计数（可观测）。
@@ -83,7 +85,7 @@ impl<S: EventStore> StoreSink<S> {
     pub fn new(store: S) -> Self {
         Self {
             store,
-            watermarks: BTreeMap::new(),
+            watermarks: WatermarkTracker::new(),
             partitions: BTreeSet::new(),
             append_failures: 0,
             delivery_failures: 0,
@@ -158,21 +160,9 @@ impl RecordVisitor for FrameCollect<'_> {
 
 impl<S: EventStore> ObservationSink for StoreSink<S> {
     fn append(&mut self, event: &ObservationEvent) -> Result<AppendAck, IngestReject> {
-        // 1. 同源 watermark 复核（跨实例回退/重放——InMemorySink 同语义）。
-        if let Some(&(we, ws)) = self.watermarks.get(&event.source_id) {
-            if event.source_epoch < we {
-                return Err(IngestReject::EpochRegression {
-                    epoch: event.source_epoch,
-                    expected: we,
-                });
-            }
-            if we == event.source_epoch && event.sequence <= ws {
-                return Err(IngestReject::SequenceReplay {
-                    sequence: event.sequence,
-                    last: ws,
-                });
-            }
-        }
+        // 1. 同源 watermark 复核（跨实例回退/重放）——W3：tracker 单源
+        // （InMemorySink 同判据，本地无水位表实现）。
+        self.watermarks.check(event)?;
         // 2. 分区日志追加（Q0 写透——ACK 即 durable，[07] §4.6）。
         let part = partition_of(event);
         let wire = event.encode_v1();
@@ -184,9 +174,8 @@ impl<S: EventStore> ObservationSink for StoreSink<S> {
                 store_err_to_reject(e)
             })?;
         self.partitions.insert(part);
-        // 3. watermark 推进（同源单调）。
-        self.watermarks
-            .insert(event.source_id, (event.source_epoch, event.sequence));
+        // 3. watermark 推进（同源单调，成功路径）。
+        self.watermarks.advance(event);
         Ok(AppendAck {
             event_id: event.event_id(),
             offset,
@@ -194,7 +183,7 @@ impl<S: EventStore> ObservationSink for StoreSink<S> {
     }
 
     fn watermark(&self, source_id: u32) -> Option<(u64, u64)> {
-        self.watermarks.get(&source_id).copied()
+        self.watermarks.pinned(source_id)
     }
 
     fn drain_frames(&mut self) -> Vec<[u8; 128]> {

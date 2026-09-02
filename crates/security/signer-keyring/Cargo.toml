@@ -1,0 +1,13 @@
+[package]
+name = "eneros-signer-keyring"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图62 卷62.3 WP-62.3.1 (S5 收敛) — 签名密钥注册/类型化验签/撤销/修订水位纪律单源 (no_std)"
+
+[dependencies]
+eneros-crypto = { path = "../crypto", default-features = false }
+
+[features]
+default = []

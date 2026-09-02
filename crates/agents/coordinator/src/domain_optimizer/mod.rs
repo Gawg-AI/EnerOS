@@ -120,21 +120,13 @@ mod optimize;
 #[cfg(test)]
 mod tests;
 
-fn sanitize_soc(soc: f32) -> Option<f32> {
-    if soc.is_nan() || soc <= 0.0 {
-        None
-    } else {
-        Some(soc)
-    }
-}
-
 /// 容量过滤（D12）：非有限或 ≤ 0.0 → None（排除该 box）；否则原样.
+/// 有限性门单源 kernel sanitize（蓝图 62 卷 62.3 S6——f32 边界适配；
+/// SOC 同语义，经本函数收敛）.
 pub(crate) fn sanitize_capacity(cap: f32) -> Option<f32> {
-    if !cap.is_finite() || cap <= 0.0 {
-        None
-    } else {
-        Some(cap)
-    }
+    eneros_allocation::sanitize(f64::from(cap))
+        .filter(|v| *v > 0.0)
+        .map(|v| v as f32)
 }
 
 /// 效率过滤（D12）：NaN → 0.5 中性；否则 clamp 到 [0.0, 1.0]（±Inf 自然被 clamp）.
@@ -143,15 +135,6 @@ pub(crate) fn sanitize_efficiency(eff: f32) -> f32 {
         0.5
     } else {
         eff.clamp(0.0, 1.0)
-    }
-}
-
-/// 电价过滤（D12）：非有限 → 0.0；否则原样（负电价合法）.
-pub(crate) fn sanitize_price(price: f32) -> f32 {
-    if price.is_finite() {
-        price
-    } else {
-        0.0
     }
 }
 
@@ -180,7 +163,7 @@ fn build_domain_lp(
         for (dev_id, cap) in b.devices.devices.iter() {
             if b.socs
                 .get(dev_id)
-                .is_some_and(|soc| sanitize_soc(*soc).is_none())
+                .is_some_and(|soc| sanitize_capacity(*soc).is_none())
             {
                 continue;
             }

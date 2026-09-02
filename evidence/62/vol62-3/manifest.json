@@ -1,0 +1,20 @@
+{
+  "schema": "eneros.blueprint62.vol62-3.gate.v1",
+  "date": "2026-09-02",
+  "base_version": "0.315.1",
+  "exit_version": "0.315.2",
+  "image_sha256": "6f90330c8b6891474d0c8cd0433de1f8564f1db917d4922fd54cef8629daaff3",
+  "image_profile": "qemu-prod",
+  "wps": [
+    "WP-62.3.1",
+    "WP-62.3.2",
+    "WP-62.3.3"
+  ],
+  "gate": "VOL62.3-GATE: PASS",
+  "workspace_tests": "8495 passed / 0 failed",
+  "clippy": "0 warnings",
+  "fmt": "clean",
+  "w3_evidence": "modbus 7-point value baseline exact (400/50/50/0.6/1/0/0, WatermarkTracker collection regression) + OBS-ROUND sent=7 accepted=7 (uplink via tracker sink) + iec104 OBS-SOURCE id=3 (descriptor_of factory) + ACQ x18 (D-1 held) + peer interrogation rounds x6 (transcript)",
+  "s5_s6_evidence": "host-side: keyring 11 tests + mutation-red proof, dr D-4 red->green, federation golden bit-exact before/after kernel swap, rg criteria packs (see execution card)",
+  "serial_log": "local-only（8MB 量级，gitignore；61/62.1/62.2 卷同口径）"
+}

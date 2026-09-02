@@ -225,3 +225,47 @@ fn drain_frames_counts_delivery_failures_and_retries() {
     assert_eq!(deliveries.delivery_failures, 1);
     assert!(deliveries.drain_frames().is_empty(), "交付后位点推进幂等");
 }
+
+/// W3 行为等价锁（蓝图 62 卷 62.3：跨实例回退/重放拦截——StoreSink
+/// 实现面；判据与 InMemorySink 同源 WatermarkTracker）：同源更低 epoch
+/// 拒、同 epoch 旧 seq 拒、首见即钉扎。
+#[test]
+fn store_sink_blocks_cross_instance_epoch_regression() {
+    let mk = |epoch: u64, seq: u64, v: f64| {
+        let mut e = make_event(2, seq, 1, v, 1_000);
+        e.source_epoch = epoch;
+        e
+    };
+    let dev = MemBlockDevice::new(8 + 64 * 2, BLOCK_SIZE);
+    let store = BlockEventStore::format(dev, config()).unwrap();
+    let mut sink = StoreSink::new(store);
+
+    sink.append(&mk(5, 10, 1.0)).expect("首帧入流");
+    // 同源更低 epoch → EpochRegression（水位不降级）。
+    assert_eq!(
+        sink.append(&mk(4, 99, 2.0)).unwrap_err(),
+        eneros_ingestion_core::IngestReject::EpochRegression {
+            epoch: 4,
+            expected: 5
+        }
+    );
+    // 同 epoch 旧/等 seq → SequenceReplay。
+    assert_eq!(
+        sink.append(&mk(5, 9, 3.0)).unwrap_err(),
+        eneros_ingestion_core::IngestReject::SequenceReplay {
+            sequence: 9,
+            last: 10
+        }
+    );
+    // 首见即钉扎（watermark 读面 = tracker.pinned 单源）。
+    assert_eq!(sink.watermark(2), Some((5, 10)));
+    // 新 epoch 放行；推进后旧 epoch 永拒。
+    sink.append(&mk(6, 1, 4.0)).expect("新 epoch 入流");
+    assert_eq!(
+        sink.append(&mk(5, 999, 5.0)).unwrap_err(),
+        eneros_ingestion_core::IngestReject::EpochRegression {
+            epoch: 5,
+            expected: 6
+        }
+    );
+}

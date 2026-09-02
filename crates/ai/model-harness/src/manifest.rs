@@ -8,7 +8,7 @@
 use alloc::vec::Vec;
 
 use eneros_crypto::sm2::keypair::Sm2PublicKey;
-use eneros_crypto::sm2::sign::{sm2_verify, Sm2Signature};
+use eneros_crypto::sm2::sign::Sm2Signature;
 use sha2::{Digest, Sha256};
 
 use crate::error::HarnessError;
@@ -151,11 +151,12 @@ impl ModelManifestV1 {
         Ok(m)
     }
 
-    /// SM2 验签（canonical 内容 + 签名；测试用固定标量密钥）。
+    /// SM2 验签（canonical 内容 + 签名；测试用固定标量密钥）。验签
+    /// 纪律单源 keyring 类型化面——底层布尔返回的 `Ok(false)`/`Err`
+    /// 双通道在 keyring 收口，调用方只见布尔结论。
     pub fn verify_signature(&self, pk: &Sm2PublicKey) -> bool {
         let sig = Sm2Signature::from_bytes(&self.signature);
-        // sm2_verify 对非法签名返回 `Ok(false)` 而非 Err——必须检查布尔值。
-        sm2_verify(&self.canonical_bytes(), &sig, pk).unwrap_or(false)
+        eneros_signer_keyring::verify_signature(&self.canonical_bytes(), &sig, pk).is_ok()
     }
 
     /// 签名回填（测试/sandbox 用确定性签名；生产私钥在模型节点外）。

@@ -213,21 +213,27 @@ fn t08_optimizer_new_counters_zero() {
 }
 
 // ===== T9~T16：NaN 防御 sanitize（D12）=====
+// 62.3 S6 换核：SOC 门收敛到 kernel 单源容量门。行为差如实登记：
+// 旧 sanitize_soc 仅拒 NaN/≤0（+Inf 放行），capacity 门拒一切非有限
+// ——SOC=+Inf 现被排除（符合 D12 非有限排除意图，冻结死代码零生产
+// 路径）；t10 补 +Inf 锁例。
 #[test]
 fn t09_sanitize_soc_normal() {
-    assert_eq!(sanitize_soc(0.5), Some(0.5));
-    assert_eq!(sanitize_soc(1.0), Some(1.0));
+    assert_eq!(sanitize_capacity(0.5), Some(0.5));
+    assert_eq!(sanitize_capacity(1.0), Some(1.0));
 }
 
 #[test]
 fn t10_sanitize_soc_nan() {
-    assert_eq!(sanitize_soc(f32::NAN), None);
+    assert_eq!(sanitize_capacity(f32::NAN), None);
+    // 62.3 行为差锁：+Inf 由旧 soc 门放行、新 kernel 门拒绝（D12 意图）。
+    assert_eq!(sanitize_capacity(f32::INFINITY), None);
 }
 
 #[test]
 fn t11_sanitize_soc_zero_and_negative() {
-    assert_eq!(sanitize_soc(0.0), None);
-    assert_eq!(sanitize_soc(-0.5), None);
+    assert_eq!(sanitize_capacity(0.0), None);
+    assert_eq!(sanitize_capacity(-0.5), None);
 }
 
 #[test]
@@ -260,11 +266,14 @@ fn t15_sanitize_efficiency_clamp() {
 
 #[test]
 fn t16_sanitize_price() {
-    assert_eq!(sanitize_price(f32::NAN), 0.0);
-    assert_eq!(sanitize_price(f32::INFINITY), 0.0);
-    assert_eq!(sanitize_price(f32::NEG_INFINITY), 0.0);
-    assert_eq!(sanitize_price(0.6), 0.6);
-    assert_eq!(sanitize_price(-1.0), -1.0); // 负电价原样保留
+    // 62.3 S6 换核：电价过滤内联 kernel 有限性门（非有限 → 0.0），
+    // 负电价合法原样——与 optimize.rs 净收益行同一表达式。
+    let price_gate = |p: f32| eneros_allocation::sanitize(f64::from(p)).map_or(0.0, |v| v as f32);
+    assert_eq!(price_gate(f32::NAN), 0.0);
+    assert_eq!(price_gate(f32::INFINITY), 0.0);
+    assert_eq!(price_gate(f32::NEG_INFINITY), 0.0);
+    assert_eq!(price_gate(0.6), 0.6);
+    assert_eq!(price_gate(-1.0), -1.0); // 负电价原样保留
 }
 
 // ===== T17~T20：盒管理 =====

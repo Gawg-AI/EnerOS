@@ -7,6 +7,8 @@ license.workspace = true
 description = "EnerOS v0.92.0+v0.93.0+v0.94.0 Edge Coordinator (域内仲裁 + 域级优化 + VPP 聚合, no_std)"
 
 [dependencies]
+# 蓝图 62 卷 62.3（S6 收敛）：容量聚合+分派数值纪律单源 kernel。
+eneros-allocation = { path = "../allocation" }
 eneros-market-types = { path = "../market-types" }
 eneros-agent = { path = "../agent" }
 eneros-solver-core = { path = "../../ai/solver-core", features = ["highs-ffi"] }

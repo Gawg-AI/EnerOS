@@ -57,23 +57,25 @@ pub enum DispatchError {
     InvalidTarget,
 }
 
-/// 平均分配兜底.
+/// 平均分配兜底（均分+钳位政策单源 kernel——蓝图 62 卷 62.3 S6；
+/// f32 边界换算留在本聚合器，kernel 内 f64）。
+/// 非有限 target/界 → 空分配（fail-closed；dispatch 路径已先门 target）.
 pub fn equal_split(target: f32, caps: &[(u64, DeviceCapability)]) -> Vec<DeviceAssignment> {
-    if caps.is_empty() {
+    let caps64: alloc::vec::Vec<(u64, f64, f64)> = caps
+        .iter()
+        .map(|(id, c)| (*id, f64::from(c.p_min), f64::from(c.p_max)))
+        .collect();
+    let Some(shares) = eneros_allocation::equal_split(f64::from(target), &caps64) else {
         return Vec::new();
-    }
-    let n = caps.len() as f32;
-    let share = target / n;
-    let mut assignments = Vec::with_capacity(caps.len());
-    for (id, cap) in caps.iter() {
-        let setpoint = share.max(cap.p_min).min(cap.p_max);
-        assignments.push(DeviceAssignment {
-            device_id: *id,
-            setpoint,
+    };
+    shares
+        .into_iter()
+        .map(|(device_id, setpoint)| DeviceAssignment {
+            device_id,
+            setpoint: setpoint as f32,
             mode: DeviceMode::Auto,
-        });
-    }
-    assignments
+        })
+        .collect()
 }
 
 /// 多设备调度器.
@@ -103,8 +105,8 @@ impl MultiDeviceDispatcher {
         socs: &BTreeMap<u64, f32>,
         now_ms: u64,
     ) -> Result<DispatchPlan, DispatchError> {
-        // 1. 目标校验
-        if !target.is_finite() {
+        // 1. 目标校验（有限性门单源 kernel——蓝图 62 卷 62.3 S6）。
+        if eneros_allocation::sanitize(f64::from(target)).is_none() {
             return Err(DispatchError::InvalidTarget);
         }
 
@@ -379,6 +381,21 @@ mod tests {
         let caps: Vec<(u64, DeviceCapability)> = vec![];
         let a = equal_split(10.0, &caps);
         assert!(a.is_empty());
+    }
+
+    /// 62.3 S6 行为差锁：非有限界/target → 空分配（fail-closed）。
+    /// 旧 f32 链对 NaN 界跳钳（产出未钳 share）——kernel None 语义替换，
+    /// dispatch 路径不可达（target 已先门），此处锁 pub fn 直呼形态。
+    #[test]
+    fn t101b_equal_split_non_finite_bounds_fail_closed() {
+        let caps = vec![(1u64, cap(f32::NAN, 0.9)), (2u64, cap(5.0, 0.8))];
+        assert!(equal_split(10.0, &caps).is_empty(), "非有限 p_max → 空");
+        let caps = vec![(1u64, cap(f32::NEG_INFINITY, 3.0))];
+        assert!(equal_split(10.0, &caps).is_empty(), "非有限 p_min → 空");
+        assert!(
+            equal_split(f32::NAN, &[(1u64, cap(5.0, 0.9))]).is_empty(),
+            "NaN target → 空"
+        );
     }
 
     // ===== T102~T104：dispatch 校验 =====

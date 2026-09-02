@@ -20,6 +20,7 @@ use eneros_config_bundle::points::PointRecord;
 use eneros_config_bundle::points::SourceRecord;
 use eneros_ingestion_core::{
     InMemorySink, IngestReject, ObservationSink, QuarantineStore, SourceDescriptor, SourceRegistry,
+    WatermarkTracker,
 };
 use eneros_safety_validator::{
     EvaluatorConfig, IntegrityStatus, SampleQuality, TelemetrySample, TelemetryTrustEvaluator,
@@ -34,8 +35,10 @@ const SHADOW_BATCH_CAP: usize = 256;
 pub struct ObsShadow {
     /// 已注册来源（config `[[source]]` 编译 → descriptor）。
     registry: SourceRegistry,
-    /// source → 首见 epoch（更低 epoch = 重放/回滚 → quarantine）。
-    pinned_epochs: BTreeMap<u32, u64>,
+    /// source → 首见 (epoch, seq) 钉扎（更低 epoch = 重放/回滚 →
+    /// quarantine）——W3：WatermarkTracker 单源（首见 advance，钉值
+    /// 不随 epoch 升级更新——adapter 重启后旧 epoch 重放仍被拦）。
+    watermarks: WatermarkTracker,
     /// 事件汇（event_id 去重 + 同源 watermark 复核——ingestion-core 单源）。
     sink: InMemorySink,
     /// 隔离区（未注册/非法事件存档；控制 evaluator 零消费）。
@@ -70,7 +73,7 @@ impl ObsShadow {
         }
         Self {
             registry,
-            pinned_epochs: BTreeMap::new(),
+            watermarks: WatermarkTracker::new(),
             sink: InMemorySink::new(SHADOW_BATCH_CAP * 4),
             quarantine: QuarantineStore::new(SHADOW_BATCH_CAP),
             shadow_evaluator: TelemetryTrustEvaluator::new(eval_config.clone()),
@@ -128,13 +131,13 @@ impl ObsShadow {
                 rejected += 1;
                 continue;
             }
-            // epoch 钉扎（首见为准；回退 = 重放/回滚 → quarantine）。
-            let first_pin = !self.pinned_epochs.contains_key(&event.source_id);
-            let expected = *self
-                .pinned_epochs
-                .entry(event.source_id)
-                .or_insert(event.source_epoch);
-            if event.source_epoch < expected {
+            // epoch 钉扎（首见为准；回退 = 重放/回滚 → quarantine）——
+            // W3：tracker 单源。首见 advance 即钉（先于 sink 复核——
+            // 与旧手写钉扎表现状一致：后续被去重拒绝的帧同样完成
+            // 钉扎）；钉值不随 epoch 升级更新。
+            let pinned = self.watermarks.pinned(event.source_id);
+            let expected = pinned.map_or(event.source_epoch, |(e, _)| e);
+            if pinned.is_some() && event.source_epoch < expected {
                 let reason = IngestReject::EpochRegression {
                     epoch: event.source_epoch,
                     expected,
@@ -142,6 +145,10 @@ impl ObsShadow {
                 self.quarantine(reason, Some(chunk));
                 rejected += 1;
                 continue;
+            }
+            let first_pin = pinned.is_none();
+            if first_pin {
+                self.watermarks.advance(&event);
             }
             if first_pin || event.source_epoch > expected {
                 // 首钉 / 新 epoch（adapter 重启）：影子评估器 epoch 对齐
@@ -260,6 +267,8 @@ impl ObsShadow {
 /// config `[[source]]` + 点表 → 影子 descriptor 集（bin 装配单源）。
 ///
 /// `allowed_schemas` = 该来源点域内点表的已注册 schema 集合（0 除外）。
+/// 收集/硬编码单源 `descriptor_of` 工厂（W3）；本处过滤口径 = **点表
+/// 范围**（point_id ∈ [point_min, point_max]，上界 0 = 不设限）。
 pub fn descriptors_from_config(
     sources: &[SourceRecord],
     points: &[PointRecord],
@@ -267,27 +276,15 @@ pub fn descriptors_from_config(
     sources
         .iter()
         .map(|s| {
-            let mut schemas: Vec<u32> = Vec::new();
-            for p in points {
+            eneros_ingestion_core::descriptor_of(s, points, |p| {
                 let in_range =
                     p.point_id >= s.point_min && (s.point_max == 0 || p.point_id <= s.point_max);
-                if in_range && p.identity.schema_id != 0 && !schemas.contains(&p.identity.schema_id)
-                {
-                    schemas.push(p.identity.schema_id);
+                if in_range {
+                    Some(p.identity.schema_id)
+                } else {
+                    None
                 }
-            }
-            SourceDescriptor {
-                source_id: s.source_id,
-                tenant_id: s.tenant_id,
-                site_id: s.site_id,
-                allow_control: s.allow_control,
-                require_integrity: s.require_integrity,
-                point_range: (s.point_min, s.point_max),
-                max_events_per_s: s.max_events_per_s,
-                allowed_schemas: schemas,
-                clock_id: 1,
-                enabled: true,
-            }
+            })
         })
         .collect()
 }

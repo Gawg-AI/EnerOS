@@ -111,6 +111,8 @@ members = [
     "crates/drivers/calibration",
     "crates/drivers/drv-svc",
     "crates/drivers/virtio-core",
+    # 蓝图 62 卷 62.3 WP-62.3.1（S5 收敛）：签名密钥注册/验签/撤销/水位单源。
+    "crates/security/signer-keyring",
     "crates/security/crypto",
     "crates/security/crypto-gmssl",
     "crates/security/iec62351",
@@ -145,6 +147,8 @@ members = [
     "crates/agents/trust",
     "crates/agents/spot-market",
     "crates/agents/ancillary",
+    # 蓝图 62 卷 62.3 WP-62.3.2（S6+D-4 收敛）：容量聚合+分派数值纪律单源。
+    "crates/agents/allocation",
     "crates/agents/dr",
     "crates/agents/realtime-market",
     "crates/agents/p2p",
@@ -183,7 +187,7 @@ members = [
 # rc/1.0 标记；冲刺期一律 0.x.y（0.313 延续历史 120 版本计划顶格 v0.312）；
 # 每 WP Exit 自证后递增 patch（cargo xtask bump-version patch；
 # xtask qa gng-version / eneros-ci version-gate-consistency 双检查强制）。
-version = "0.315.1"
+version = "0.315.2"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

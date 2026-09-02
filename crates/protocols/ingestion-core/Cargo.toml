@@ -9,6 +9,10 @@ description = "EnerOS 蓝图61 IngestionModule 窄腰 — SourceRegistry/观测�
 [dependencies]
 # 允许依赖（蓝图 61 [16] §3.1）：upa-model、telemetry-model、protocol-abstract。
 # 禁止依赖：AI、solver、control-dispatch、business-services。
+# 蓝图 62 卷 62.3（W3）：descriptor_of 工厂取 config `[[source]]` 行
+# （SourceRecord）——登记层依赖，深模块 interface 零变更（卷执行卡
+# B3 差异 5）。
+eneros-config-bundle = { path = "../../runtime/config-bundle", default-features = false }
 eneros-upa-model = { path = "../upa-model" }
 eneros-telemetry-model = { path = "../telemetry-model" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }

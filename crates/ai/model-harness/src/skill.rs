@@ -7,7 +7,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use eneros_crypto::sm2::keypair::Sm2PublicKey;
-use eneros_crypto::sm2::sign::{sm2_verify, Sm2Signature};
+use eneros_crypto::sm2::sign::Sm2Signature;
+use eneros_signer_keyring::SignerKeyring;
 
 use crate::error::HarnessError;
 use crate::tools::ToolId;
@@ -134,7 +135,8 @@ impl SkillManifestV1 {
 
     pub fn verify_signature(&self, pk: &Sm2PublicKey) -> bool {
         let sig = Sm2Signature::from_bytes(&self.signature);
-        sm2_verify(&self.canonical_bytes(), &sig, pk).unwrap_or(false)
+        // 验签纪律单源 keyring 类型化面（Ok(false)/Err 双通道收口）。
+        eneros_signer_keyring::verify_signature(&self.canonical_bytes(), &sig, pk).is_ok()
     }
 
     pub fn seal(&mut self, sk: &eneros_crypto::sm2::keypair::Sm2PrivateKey, pk: &Sm2PublicKey) {
@@ -198,7 +200,10 @@ pub struct SkillPackage {
 /// Skill 注册表（[11] §2：Harness 装载并验证 Skill）。
 #[derive(Debug, Clone, Default)]
 pub struct SkillRegistry {
-    pub signer_keys: BTreeMap<u32, Sm2PublicKey>,
+    /// 签名密钥注册/验签/撤销纪律单源（keyring——蓝图 62 卷 62.3 S5；
+    /// wire 的 u32 signer_key_id 经 [`eneros_signer_keyring::alias_key_id`]
+    /// 别名层映射，wire 字段不动）。
+    keys: SignerKeyring,
     entries: BTreeMap<[u8; 16], SkillPackage>,
 }
 
@@ -208,7 +213,8 @@ impl SkillRegistry {
     }
 
     pub fn add_signer_key(&mut self, key_id: u32, pk: Sm2PublicKey) {
-        self.signer_keys.insert(key_id, pk);
+        self.keys
+            .register(eneros_signer_keyring::alias_key_id(key_id), &pk);
     }
 
     pub fn len(&self) -> usize {
@@ -226,12 +232,17 @@ impl SkillRegistry {
         if !pkg.manifest.is_valid_at_ns(now_ns) {
             return Err(HarnessError::PackageExpired);
         }
-        let pk = self
-            .signer_keys
-            .get(&pkg.manifest.signer_key_id)
-            .ok_or(HarnessError::Manifest("unknown signer key"))?;
-        if !pkg.verify_signature(pk) {
-            return Err(HarnessError::Manifest("signature invalid"));
+        // 签名门（keyring 类型化纪律：未知 key/撤销/验伪统一结构化拒绝）。
+        match self.keys.verify_authenticated(
+            eneros_signer_keyring::alias_key_id(pkg.manifest.signer_key_id),
+            &pkg.manifest.canonical_bytes(),
+            &pkg.manifest.signature,
+        ) {
+            Ok(_) => {}
+            Err(eneros_signer_keyring::VerifyReject::UnknownKey { .. }) => {
+                return Err(HarnessError::Manifest("unknown signer key"));
+            }
+            Err(_) => return Err(HarnessError::Manifest("signature invalid")),
         }
         // 结构门 + 摘要门：签名只覆盖 manifest canonical——instructions/
         // 白名单内容经 package_sha256 间接绑定，必须显式核验（字段 pub，

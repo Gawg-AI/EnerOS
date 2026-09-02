@@ -12,6 +12,8 @@ default = []
 mock = []
 
 [dependencies]
+# 蓝图 62 卷 62.3（S6 收敛）：容量聚合+分派数值纪律单源 kernel。
+eneros-allocation = { path = "../allocation" }
 eneros-energy-market-agent = { path = "../energy-market-agent" }
 eneros-dr = { path = "../dr" }
 eneros-coordinator = { path = "../coordinator" }

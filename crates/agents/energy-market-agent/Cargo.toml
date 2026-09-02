@@ -7,6 +7,8 @@ license.workspace = true
 description = "EnerOS v0.72.0 Energy Agent + Market Agent (双 Agent 协作 MVP, no_std) + v0.85.0 市场数据订阅 (现货/辅助服务/DR 订阅解析发布, no_std) + v0.86.0 报价生成 (LLM 意图+Solver 优化双脑报价/规则与保守回退, no_std) + v0.87.0 多设备调度 (设备池/LP 功率分配/平均分配兜底, no_std) + v0.88.0 多目标优化 (经济/寿命/安全/碳排加权和 + Pareto 前沿, no_std)"
 
 [dependencies]
+# 蓝图 62 卷 62.3（S6 收敛）：均分/有限性门数值纪律单源 kernel。
+eneros-allocation = { path = "../allocation" }
 eneros-market-types = { path = "../market-types" }
 # WP-54.3：运行时 trait 已下移至 agent（runtime feature）。
 eneros-agent = { path = "../agent", features = ["runtime"] }

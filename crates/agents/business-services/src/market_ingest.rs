@@ -26,11 +26,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use eneros_crypto::sm2::keypair::Sm2PublicKey;
-use eneros_crypto::sm2::sign::sm2_verify;
-use eneros_crypto::sm2::sign::Sm2Signature;
 use eneros_crypto::sm3::hash as sm3_hash;
 use eneros_ingestion_core::{IngestOutcome, IngestionModule, RawObservation};
+use eneros_signer_keyring::{SignerKeyring, VerifyReject, WatermarkReject};
 use eneros_telemetry_model::event::{quality_bits, IntegrityTag, ObservationValue};
 
 // ===========================================================================
@@ -158,12 +156,11 @@ pub struct ArchiveEntry {
 /// 市场事实接入 adapter（push 模式；事件经 module.ingest 进事件平面）。
 pub struct MarketEventAdapter {
     source_id: u32,
-    /// 签名密钥注册表（key_id → SM2 公钥；签名配置编译）。
-    keys: BTreeMap<[u8; 8], Sm2PublicKey>,
+    /// 签名密钥注册/验签/撤销/修订水位纪律单源（keyring——蓝图 62 卷
+    /// 62.3 S5 收敛；key_id → 公钥 + revision 水位表都在 keyring）。
+    keys: SignerKeyring,
     /// 产品/区域 → 站内点位绑定（签名配置编译）。
     bindings: BTreeMap<(u32, u32), u32>,
-    /// 修订水位（external_id → 已见最高 revision）。
-    revisions: BTreeMap<[u8; 16], u32>,
     /// 有界存档（迟到/过期/旧修订；满 64 丢最旧并计数——不静默）。
     archive: Vec<ArchiveEntry>,
     archive_dropped: u64,
@@ -176,17 +173,12 @@ pub struct MarketEventAdapter {
 const ARCHIVE_CAP: usize = 64;
 
 impl MarketEventAdapter {
-    /// 装配（密钥表 + 产品绑定）。
-    pub fn new(
-        source_id: u32,
-        keys: BTreeMap<[u8; 8], Sm2PublicKey>,
-        bindings: BTreeMap<(u32, u32), u32>,
-    ) -> Self {
+    /// 装配（密钥 keyring + 产品绑定）。
+    pub fn new(source_id: u32, keys: SignerKeyring, bindings: BTreeMap<(u32, u32), u32>) -> Self {
         Self {
             source_id,
             keys,
             bindings,
-            revisions: BTreeMap::new(),
             archive: Vec::new(),
             archive_dropped: 0,
             accepted_total: 0,
@@ -208,15 +200,18 @@ impl MarketEventAdapter {
             self.rejected_total += 1;
             return Err(MarketReject::DigestMismatch);
         }
-        // 2. SM2 验签（对 canonical 载荷；未知 key 显式拒绝）。
-        let Some(pk) = self.keys.get(&env.key_id) else {
-            self.rejected_total += 1;
-            return Err(MarketReject::UnknownKey { key_id: env.key_id });
-        };
-        let sig = Sm2Signature::from_bytes(&env.signature);
-        match sm2_verify(&env.canonical_bytes(), &sig, pk) {
-            Ok(true) => {}
-            _ => {
+        // 2. SM2 验签（keyring 类型化纪律单源：未知 key/撤销/验伪统一
+        // 结构化拒绝——调用方不触碰底层验签布尔返回）。
+        match self
+            .keys
+            .verify_authenticated(env.key_id, &env.canonical_bytes(), &env.signature)
+        {
+            Ok(_) => {}
+            Err(VerifyReject::UnknownKey { key_id }) => {
+                self.rejected_total += 1;
+                return Err(MarketReject::UnknownKey { key_id });
+            }
+            Err(_) => {
                 self.rejected_total += 1;
                 return Err(MarketReject::BadSignature);
             }
@@ -226,8 +221,9 @@ impl MarketEventAdapter {
             self.rejected_total += 1;
             return Err(MarketReject::NotFinite);
         }
-        // 4. 修订水位（同 external_id 严格递增；旧修订 = 存档）。
-        if let Some(&seen) = self.revisions.get(&env.external_id) {
+        // 4. 修订水位（同 external_id 严格递增；旧修订 = 存档；水位表
+        // 在 keyring 单源）。
+        if let Some(seen) = self.keys.revision(&env.external_id) {
             if env.revision <= seen {
                 self.archive_entry(env.clone(), ArchiveReason::StaleRevision);
                 return Err(MarketReject::StaleRevision {
@@ -277,15 +273,17 @@ impl MarketEventAdapter {
         let outcome = module
             .ingest(self.source_id, raw, now_ms.saturating_mul(1_000_000))
             .map_err(MarketReject::ModuleReject)?;
-        // 提交水位（ingest 成功才推进修订水位）。
-        self.revisions.insert(
-            env.external_id,
-            self.revisions
-                .get(&env.external_id)
-                .copied()
-                .unwrap_or(0)
-                .max(env.revision),
-        );
+        // 提交水位（ingest 成功才推进修订水位；步骤 4 已保证严格递增，
+        // NotAdvancing 在此不可达——防御臂如实计拒不静默）。
+        if let Err(WatermarkReject::NotAdvancing { seen }) =
+            self.keys.advance_revision(&env.external_id, env.revision)
+        {
+            self.rejected_total += 1;
+            return Err(MarketReject::StaleRevision {
+                revision: env.revision,
+                seen,
+            });
+        }
         self.accepted_total += 1;
         Ok(outcome)
     }
@@ -325,7 +323,7 @@ mod tests {
 
     use alloc::collections::BTreeMap;
 
-    use eneros_crypto::sm2::keypair::{Sm2KeyPair, Sm2PrivateKey};
+    use eneros_crypto::sm2::keypair::{Sm2KeyPair, Sm2PrivateKey, Sm2PublicKey};
     use eneros_crypto::sm2::sign::Sm2Signer;
     use eneros_ingestion_core::{
         EventQos, InMemorySink, MemEpochStore, OperationalProfile, PointPlan, SourceDescriptor,
@@ -424,8 +422,8 @@ mod tests {
     }
 
     fn adapter_with(pk: &Sm2PublicKey) -> MarketEventAdapter {
-        let mut keys = BTreeMap::new();
-        keys.insert(*b"testkey1", *pk);
+        let mut keys = SignerKeyring::new();
+        keys.register(*b"testkey1", pk);
         let mut bindings = BTreeMap::new();
         bindings.insert((100u32, 1u32), 9001u32);
         MarketEventAdapter::new(5, keys, bindings)

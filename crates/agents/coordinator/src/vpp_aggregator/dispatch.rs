@@ -23,14 +23,14 @@ impl VppAggregator {
             if sanitize_capacity(r.capacity_mw).is_none() {
                 continue;
             }
-            let avail = sanitize_available(r.available_mw, r.capacity_mw);
+            let avail = d12_available(r.available_mw, r.capacity_mw);
             let mut devices = DevicePool::new();
             devices.add_device(
                 *rid,
                 DeviceCapability {
                     p_min: 0.0,
                     p_max: avail,
-                    ramp_rate: sanitize_ramp(r.ramp_rate),
+                    ramp_rate: d11_ramp(r.ramp_rate),
                     efficiency: sanitize_efficiency(r.efficiency),
                 },
             );
@@ -108,7 +108,7 @@ impl VppAggregator {
     ///
     /// 按 resource_id 升序遍历在线资源，跳过 sanitize(available) ≤ 0 者；
     /// `quantity = min(available, strategy.max_quantity)`（max_quantity 非有限或 ≤0 →
-    /// 按 available 全额）；`price = sanitize_price(market.current_price) + strategy.margin`；
+    /// 按 available 全额）；`price = kernel sanitize(market.current_price)（非有限→0） + strategy.margin`；
     /// bid_id 从 1 顺序递增；空聚合器/全离线 → 空 Vec。
     pub fn market_bid(
         &self,
@@ -122,7 +122,7 @@ impl VppAggregator {
             if !r.online {
                 continue;
             }
-            let avail = sanitize_available(r.available_mw, r.capacity_mw);
+            let avail = d12_available(r.available_mw, r.capacity_mw);
             if avail <= 0.0 {
                 continue;
             }
@@ -131,7 +131,11 @@ impl VppAggregator {
             } else {
                 avail
             };
-            let price = sanitize_price(market.current_price as f32) + strategy.margin;
+            // D12 电价政策（有限性门单源 kernel——62.3 S6）：非有限 → 0，
+            // 负电价合法；加价 margin 后为 bid 价。
+            let price = eneros_allocation::sanitize(f64::from(market.current_price as f32))
+                .map_or(0.0, |v| v as f32)
+                + strategy.margin;
             // ARCH-M03：共享 Bid（market-types）单段表达；价格 YuanPerKwh（feed 元/kWh 单位）。
             use eneros_market_types::{Bid, BidSegment, TimeSlot, TradeDir, YuanPerKwh};
             bids.push(ResourceBid {

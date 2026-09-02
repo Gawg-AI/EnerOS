@@ -14,6 +14,10 @@ tls = ["dep:eneros-tls"]
 
 [dependencies]
 eneros-crypto = { path = "../../security/crypto" }
+# 蓝图 62 卷 62.3（S5 收敛）：验签管线类型化单源。
+eneros-signer-keyring = { path = "../../security/signer-keyring" }
+# 蓝图 62 卷 62.3（S6 收敛）：包络/merit 序/有限性门数值纪律单源。
+eneros-allocation = { path = "../allocation" }
 eneros-tls = { path = "../../security/tls", optional = true }
 
 [dev-dependencies]

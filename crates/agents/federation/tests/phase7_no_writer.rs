@@ -84,7 +84,9 @@ fn federation_has_no_writer_symbols() {
 #[test]
 fn federation_depends_only_on_crypto() {
     // 依赖闭包：eneros-federation 生产依赖只能是 eneros-crypto
-    // （+ tls feature 下的 eneros-tls，二者均为非写面 crate）。
+    // （+ tls feature 下的 eneros-tls；+ eneros-signer-keyring——蓝图 62
+    // 卷 62.3 S5 验签纪律单源；+ eneros-allocation——同卷 S6 数值纪律
+    // 单源；四者均为非写面 crate）。
     let cargo = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let text = std::fs::read_to_string(&cargo).expect("Cargo.toml");
     let deps: Vec<&str> = text
@@ -94,7 +96,10 @@ fn federation_depends_only_on_crypto() {
         .collect();
     for d in deps {
         assert!(
-            d == "eneros-crypto" || d == "eneros-tls",
+            d == "eneros-crypto"
+                || d == "eneros-tls"
+                || d == "eneros-signer-keyring"
+                || d == "eneros-allocation",
             "依赖 {d} 不属联邦允许闭包（禁止写面 crate 依赖）"
         );
     }

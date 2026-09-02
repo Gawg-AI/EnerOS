@@ -22,6 +22,8 @@ eneros-config-bundle = { path = "../../runtime/config-bundle", default-features 
 # 蓝图 61 v0.314.33：catalog 条目解码门禁（svc-config consumer）。
 eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }
 eneros-crypto = { path = "../../security/crypto" }
+# 蓝图 62 卷 62.3（S5 收敛）：签名密钥注册/验签/撤销/修订水位单源。
+eneros-signer-keyring = { path = "../../security/signer-keyring" }
 eneros-durable-state = { path = "../../runtime/durable-state" }
 # 市场/账本领域类型（44.4：settlement/account/p2p-match 为 0 引用假依赖已删）。
 eneros-market-types = { path = "../../agents/market-types" }

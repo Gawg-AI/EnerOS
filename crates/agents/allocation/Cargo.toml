@@ -1,0 +1,12 @@
+[package]
+name = "eneros-allocation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图62 卷62.3 WP-62.3.2 (S6+D-4 收敛) — 容量聚合+目标分派数值纪律单源 kernel (no_std, f64 内部)"
+
+[dependencies]
+
+[features]
+default = []
