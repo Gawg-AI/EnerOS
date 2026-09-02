@@ -46,7 +46,7 @@ RC=$?
 tail -2 "$EVROOT/build/compile.log"
 
 echo "=== 步骤 2：sel4-build-rust 重链接 + image raw qemu-prod（root-task 进镜像）==="
-third_party/sel4-build-rust.sh >"$EVROOT/build/sel4.log" 2>&1
+bash "$ROOT/third_party/sel4-build-rust.sh" >"$EVROOT/build/sel4.log" 2>&1
 RC=$?
 [ $RC -eq 0 ] || { echo "SEL4-RELINK FAIL rc=$RC"; tail -20 "$EVROOT/build/sel4.log"; exit 3; }
 cargo xtask image raw qemu-prod \
