@@ -301,4 +301,39 @@ mod tests {
             "表序承载 47 编排：modbus-tcp 必须先于 mqtt"
         );
     }
+
+    /// 驱动绝对基线锁（62 复查补充）：表数据化后相对断言（同相位/错峰）
+    /// 锁不住绝对值漂移——若 15/10/5 被误改（如 16/14/6），相对测试全绿
+    /// 只剩 QEMU 门能抓。绝对基线 = WP-47.1 既有 `PROTO_EXECUTE_PERIOD`=15
+    /// + offset 10（modbus/mqtt，值迁表不变）+ D-1 错峰 offset 5（iec104）。
+    ///
+    /// 改动必须同步 QEMU 串口编排证据。
+    #[test]
+    fn driven_schedule_absolute_baseline_locked() {
+        let sched = |name: &str| {
+            wiring_of(name)
+                .and_then(|w| w.driven.as_ref())
+                .expect("协议驱动服务必须登记 driven")
+        };
+        let (mb, mqtt, iec) = (
+            sched("svc-modbus-tcp"),
+            sched("svc-mqtt"),
+            sched("svc-iec104"),
+        );
+        assert_eq!(
+            (mb.period_ticks, mb.offset_ticks),
+            (15, 10),
+            "svc-modbus-tcp 驱动基线漂移（WP-47.1 PROTO_EXECUTE_PERIOD=15/offset=10）"
+        );
+        assert_eq!(
+            (mqtt.period_ticks, mqtt.offset_ticks),
+            (15, 10),
+            "svc-mqtt 驱动基线漂移（与 modbus-tcp 同相位）"
+        );
+        assert_eq!(
+            (iec.period_ticks, iec.offset_ticks),
+            (15, 5),
+            "svc-iec104 驱动基线漂移（D-1 错峰 offset=5）"
+        );
+    }
 }

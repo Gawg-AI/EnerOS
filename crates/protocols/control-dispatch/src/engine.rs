@@ -2787,6 +2787,19 @@ mod unit_tests {
         ]
     }
 
+    /// IntentAppendFailed / JournalPersistFailed 触发点的真实流程位
+    /// （execute_core：Authorized/Reserved 已推、Persisted 未推——pre-
+    /// persist 阶段）。夹具须与真实位一致，否则未来该触发改 StatesSuffix
+    /// 形态时测试夹具会掩盖词形漂移（62 复查 62.1-B 收口）。
+    fn pre_persist_states() -> Vec<DispatchState> {
+        alloc::vec![
+            DispatchState::Proposed,
+            DispatchState::Validated,
+            DispatchState::Authorized,
+            DispatchState::Reserved,
+        ]
+    }
+
     fn audit_of(s: &Settlement, states: &[DispatchState]) -> (ExecOutcome, SafetyOutcome, String) {
         let (exec, safety, text) = s.audit.as_ref().expect("audit 存在");
         (*exec, *safety, text.render(states))
@@ -2863,7 +2876,7 @@ mod unit_tests {
             &SettleTrigger::IntentAppendFailed {
                 err: String::from("DiskFull"),
             },
-            &ack_states(),
+            &pre_persist_states(),
         );
         assert_eq!(
             s.durable,
@@ -2872,7 +2885,7 @@ mod unit_tests {
                 ExecutionStatus::Failed
             )]
         );
-        let (exec, safety, text) = audit_of(&s, &ack_states());
+        let (exec, safety, text) = audit_of(&s, &pre_persist_states());
         assert!(matches!(exec, ExecOutcome::Failed));
         assert!(matches!(safety, SafetyOutcome::Passed));
         assert_eq!(
@@ -2891,10 +2904,10 @@ mod unit_tests {
             &SettleTrigger::JournalPersistFailed {
                 err: String::from("NotAuthorized"),
             },
-            &ack_states(),
+            &pre_persist_states(),
         );
         assert!(s.durable.is_empty(), "推进已试败，表内无补偿写");
-        let (_, _, text) = audit_of(&s, &ack_states());
+        let (_, _, text) = audit_of(&s, &pre_persist_states());
         assert_eq!(
             text,
             "execution-journal Authorized→Persisted failed: NotAuthorized"

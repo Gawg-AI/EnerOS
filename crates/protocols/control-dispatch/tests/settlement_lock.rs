@@ -218,6 +218,61 @@ impl IntentStore for SpyIntentStore {
     }
 }
 
+/// durable-ack 注入失败存储（62 复查 62.1-A 写序锁专用）：对
+/// `Committed` 更新返回 `Unavailable`——模拟 Applied 写序的
+/// "intent 置 Committed 落盘失败"（v0.314.24 写序不变量：durable
+/// 终态 ack 先行，成功后才 journal AppliedConfirmed）。
+struct FailOnCommittedStore {
+    inner: InMemoryIntentStore,
+    fail_applied: Rc<RefCell<bool>>,
+}
+
+impl FailOnCommittedStore {
+    fn new(fail_applied: Rc<RefCell<bool>>) -> Self {
+        Self {
+            inner: InMemoryIntentStore::new(64),
+            fail_applied,
+        }
+    }
+}
+
+impl IntentStore for FailOnCommittedStore {
+    fn append(&mut self, rec: &IntentRecord) -> Result<(), IntentStoreError> {
+        self.inner.append(rec)
+    }
+    fn update_state(
+        &mut self,
+        command_id: &[u8; 16],
+        state: DispatchState,
+    ) -> Result<(), IntentStoreError> {
+        if matches!(state, DispatchState::Committed) && *self.fail_applied.borrow() {
+            return Err(IntentStoreError::Unavailable(String::from("injected")));
+        }
+        self.inner.update_state(command_id, state)
+    }
+    fn find(&self, command_id: &[u8; 16]) -> Option<IntentRecord> {
+        self.inner.find(command_id)
+    }
+    fn pending(&self) -> Vec<IntentRecord> {
+        self.inner.pending()
+    }
+}
+
+/// Applied 成功通道：对端回 Applied 两相成功帧（`OutcomeFrame` =
+/// `[code=0, class=0]`，见 `eneros_control_gateway::wire`）。
+struct AppliedChannel;
+
+impl DeliveryChannel for AppliedChannel {
+    fn deliver(
+        &mut self,
+        _target: &str,
+        _payload: &[u8],
+        _timeout_ms: u64,
+    ) -> Result<Vec<u8>, eneros_control_dispatch::ChannelError> {
+        Ok([0x00, 0x00].to_vec()) // OutcomeCode::Applied
+    }
+}
+
 /// 捕获型控制审计（audit_chain CaptureLogger 同款：真实链头推进 +
 /// detail 流共享观测）。
 struct CaptureAudit {
@@ -290,7 +345,37 @@ fn engine_unreachable() -> Harness {
     let updates = Rc::new(RefCell::new(Vec::new()));
     let audit_details = Rc::new(RefCell::new(Vec::new()));
     let profile = test_profile();
-    let config = DispatchConfig {
+    let config = base_config(
+        profile,
+        &audit_details,
+        Box::new(SpyIntentStore {
+            inner: InMemoryIntentStore::new(64),
+            appends: Rc::clone(&appends),
+            updates: Rc::clone(&updates),
+        }),
+        Box::new(FailingChannel {
+            fail: eneros_control_dispatch::ChannelError::Unreachable,
+            attempts: Rc::clone(&attempts),
+        }),
+    );
+    Harness {
+        engine: DispatchEngine::new(config),
+        appends,
+        updates,
+        audit_details,
+        attempts,
+    }
+}
+
+/// 装配基线（settlement_lock 套件统一夹具；intent_log/delivery 由调用方
+/// 注入——Unreachable 行为锁与 Applied 写序锁共用同一引擎面）。
+fn base_config(
+    profile: eneros_control_gateway::ControlProfile,
+    audit_details: &Rc<RefCell<Vec<String>>>,
+    intent_log: Box<dyn IntentStore>,
+    delivery: Box<dyn DeliveryChannel>,
+) -> DispatchConfig {
+    DispatchConfig {
         chain: build_chain(),
         key: KEY.to_vec(),
         profile,
@@ -303,17 +388,10 @@ fn engine_unreachable() -> Harness {
         safety_freq_window: (49.5, 50.5),
         safety_ramp_kw_per_min: 200.0,
         gate: DecisionGate::new(100, 1000.0, 3_600_000),
-        control_audit: Some(Box::new(CaptureAudit::new(Rc::clone(&audit_details)))),
+        control_audit: Some(Box::new(CaptureAudit::new(Rc::clone(audit_details)))),
         audit: None,
-        intent_log: Box::new(SpyIntentStore {
-            inner: InMemoryIntentStore::new(64),
-            appends: Rc::clone(&appends),
-            updates: Rc::clone(&updates),
-        }),
-        delivery: Box::new(FailingChannel {
-            fail: eneros_control_dispatch::ChannelError::Unreachable,
-            attempts: Rc::clone(&attempts),
-        }),
+        intent_log,
+        delivery,
         resources: Box::new(support::TestResourceView {
             asset_id: u64::from(DEVICE_ID),
             device_id: DEVICE_ID as u16,
@@ -334,13 +412,6 @@ fn engine_unreachable() -> Harness {
             overtemp: 6,
         },
         now_fn: now_ms,
-    };
-    Harness {
-        engine: DispatchEngine::new(config),
-        appends,
-        updates,
-        audit_details,
-        attempts,
     }
 }
 
@@ -517,4 +588,66 @@ fn unreachable_delivery_appends_exactly_one_persisted_record() {
     assert_eq!(appends[0].state, DispatchState::Persisted);
     let final_rec = h.updates.borrow().last().copied();
     assert_eq!(final_rec, Some(DispatchState::Failed));
+}
+
+/// 62 复查（62.1-A）Applied 写序端到端锁：settle_command 的 Applied 分支
+/// 是**手写两相**（intent Committed → journal AppliedConfirmed），表内
+/// durable 序只是并行表示——表级单测锁不住手写分支。本测试锁真实执行：
+/// durable 终态 ack（intent 置 Committed）失败时，journal **不得**被推至
+/// AppliedConfirmed（外部不得见 Committed/成功）——v0.314.24 写序不变量
+/// "durable 终态 ack 先行，成功后才 journal AppliedConfirmed" 的因果门。
+#[test]
+fn applied_write_order_durable_ack_failure_never_confirms_journal() {
+    // 负控制：ack 成功 → 正常 Committed。
+    let ok_flag = Rc::new(RefCell::new(false));
+    let mut ok_engine = DispatchEngine::new(base_config(
+        test_profile(),
+        &Rc::new(RefCell::new(Vec::new())),
+        Box::new(FailOnCommittedStore::new(Rc::clone(&ok_flag))),
+        Box::new(AppliedChannel),
+    ));
+    let tel = trusted_telemetry();
+    let ok_receipt = ok_engine
+        .submit(&proposal(5.0), &tel, &actor(), 5_000)
+        .expect("ack 成功路径必须 Ok");
+    assert_eq!(
+        ok_receipt.final_state,
+        DispatchState::Committed,
+        "ack 成功 → AppliedConfirmed → Committed（写序第一相成功）"
+    );
+
+    // 注入：intent 置 Committed 失败（durable 终态 ack 落盘失败）。
+    let fail_flag = Rc::new(RefCell::new(true));
+    let audit_details = Rc::new(RefCell::new(Vec::new()));
+    let mut engine = DispatchEngine::new(base_config(
+        test_profile(),
+        &audit_details,
+        Box::new(FailOnCommittedStore::new(Rc::clone(&fail_flag))),
+        Box::new(AppliedChannel),
+    ));
+    let r = engine
+        .submit(&proposal(5.0), &tel, &actor(), 5_000)
+        .expect("Applied 失败路径返回 Ok(receipt)（Indeterminate 对账，不 hard-fail）");
+    // 不伪造成功：终态 Indeterminate（AppliedDurableFailed → journal
+    // TransportAcked→Indeterminate），绝无 Committed。
+    assert_eq!(
+        r.final_state,
+        DispatchState::Indeterminate,
+        "durable ack 失败 → Indeterminate 对账（不伪造 AppliedConfirmed）：{r:?}"
+    );
+    assert!(
+        !r.state_path.contains(&DispatchState::Committed),
+        "外部状态路径不得含 Committed（journal 未被推至 AppliedConfirmed）：{:?}",
+        r.state_path
+    );
+    // 同 key 重放：journal 未到 AppliedConfirmed → 原终态 Indeterminate，
+    // 零重投（幂等真值未被破坏）。
+    let r2 = engine
+        .submit(&proposal(5.0), &tel, &actor(), 5_000)
+        .expect("重放返回原终态不 hard-fail");
+    assert_eq!(
+        r2.final_state,
+        DispatchState::Indeterminate,
+        "重放命中 journal Indeterminate（无 AppliedConfirmed 污染）：{r2:?}"
+    );
 }
