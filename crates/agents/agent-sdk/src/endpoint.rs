@@ -89,6 +89,44 @@ impl ChunkedEndpoint<crate::ipc_sel4::Sel4IpcClient> {
     }
 }
 
+/// 共享 epoch 会话：每次 [`Self::call`] 后**无条件**把端点 epoch 写回
+/// 共享计数器（与成败无关）。
+///
+/// root 侧三步手工协议（`wrap_at(ipc, *epoch)` → `call` →
+/// `*epoch = endpoint.epoch()`）的结构化收拢——写回是 [`Self::call`]
+/// 返回前的固定步骤，调用方结构性不可能漏写（63.2 WP-63.2.1；f207fab
+/// 修的正是漏写实例）。共享计数器跨函数/跨会话连续：`wrap_shared` 以
+/// 当前值为起始 epoch；同一函数内两个会话顺序复用同一 `&mut u64`
+/// （obs_report enqueue/flush 形态）即可，禁止为绕借用检查复制计数器。
+pub struct ChunkedSession<'a, C: RawIpc> {
+    endpoint: ChunkedEndpoint<C>,
+    shared: &'a mut u64,
+}
+
+impl<'a, C: RawIpc> ChunkedSession<'a, C> {
+    /// 以共享计数器当前值为起始 epoch 建会话（迁移面语义：调用前读
+    /// `*shared` 作初值）。
+    pub fn wrap_shared(ipc: C, shared: &'a mut u64) -> Self {
+        Self {
+            endpoint: ChunkedEndpoint::wrap_at(ipc, *shared),
+            shared,
+        }
+    }
+
+    /// 一次 chunked Call；返回前无条件写回共享计数器（成败无关——
+    /// 失败路径同样前进，传输失败后旧 epoch 序号不复用）。
+    pub fn call(&mut self, target: &str, payload: &[u8]) -> Result<Vec<u8>, ChunkError> {
+        let r = self.endpoint.call(target, payload);
+        *self.shared = self.endpoint.epoch();
+        r
+    }
+
+    /// 非 chunked 的单次 Call 面（stats 观测等）——透传端点客户端。
+    pub fn client_mut(&mut self) -> &mut C {
+        self.endpoint.client_mut()
+    }
+}
+
 // ============================================================================
 // host 红测→定义锁：epoch 每次调用恰好 +1（wire 抓包断言）
 // ============================================================================
@@ -134,23 +172,73 @@ mod tests {
         );
     }
 
+    // ---- ChunkedSession（63.2 WP-63.2.1）：共享 epoch 会话定义锁 ----
+
+    #[test]
+    fn session_advances_shared_counter_even_on_transport_error() {
+        let mut shared: u64 = 7;
+        {
+            let mut session = ChunkedSession::wrap_shared(SpyIpc::rejecting(), &mut shared);
+            assert!(
+                session.call("svc-x", &[1]).is_err(),
+                "mock 拒绝 → Err（失败注入）"
+            );
+        }
+        assert_eq!(
+            shared, 8,
+            "传输 Err 后共享计数器仍前进——失败路径推进 = 结构不变量"
+        );
+    }
+
+    #[test]
+    fn session_shared_counter_monotonic_across_calls() {
+        let mut shared: u64 = 0;
+        let mut session = ChunkedSession::wrap_shared(SpyIpc::new(), &mut shared);
+        let _ = session.call("svc-x", &[1]);
+        let _ = session.call("svc-x", &[2]);
+        assert_eq!(shared, 2, "连续两次 call 共享计数器单调");
+    }
+
+    #[test]
+    fn two_sessions_sequentially_reuse_same_counter() {
+        // obs_report enqueue/flush 形态：两个会话（两个独立客户端）顺序
+        // 复用同一 &mut u64——借用合规（R-63.c）且计数连续。
+        let mut shared: u64 = 0;
+        {
+            let mut enq = ChunkedSession::wrap_shared(SpyIpc::new(), &mut shared);
+            let _ = enq.call("svc-observability", &[1]);
+        }
+        {
+            let mut flush = ChunkedSession::wrap_shared(SpyIpc::new(), &mut shared);
+            let _ = flush.call("svc-observability", &[2]);
+            assert!(
+                flush.client_mut().calls >= 1,
+                "client_mut 透传端点客户端（chunked 一次 call 含多帧 request）"
+            );
+        }
+        assert_eq!(shared, 2, "两会话共享计数器连续（0→1→2，不重置）");
+    }
+
     // ---- 简化 mock（本文件专用；完整 chunked 服务端语义见
     //      protocol-services ingestion_stage 测试）----
     struct SpyIpc {
         reject: bool,
         header_epochs: Vec<u64>,
+        calls: usize,
     }
     impl SpyIpc {
         fn new() -> Self {
             Self {
                 reject: false,
                 header_epochs: Vec::new(),
+                calls: 0,
             }
         }
         fn rejecting() -> Self {
             Self {
                 reject: true,
                 header_epochs: Vec::new(),
+                calls: 0,
             }
         }
     }
@@ -161,6 +249,7 @@ mod tests {
             payload: &[u8],
             _timeout_ns: u64,
         ) -> Result<Vec<u8>, crate::AgentError> {
+            self.calls += 1;
             if payload.len() >= 4 && payload[0..4] == *CHUNK_MAGIC_HEADER {
                 if let Ok(h) = ChunkHeader::decode(payload) {
                     self.header_epochs.push(h.epoch);

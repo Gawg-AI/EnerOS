@@ -1,0 +1,36 @@
+{
+  "schema": "eneros.evidence-manifest.v1",
+  "volume": "blueprint-63-vol63-2",
+  "version": "0.316.1",
+  "head": "63.2-exit",
+  "date": "2026-09-03",
+  "gate": "VOL63.2-GATE: PASS",
+  "purpose": "蓝图 63 卷 63.2 出口 QEMU 实弹：ChunkedSession epoch 写回内化 + PERIODIC_SCHEDULE 周期编排表/相位 const 断言 + restart 单方法 + 接线完备性门 + build_ingested_service 装配序列单源 + 四能力壳 bin 收编（modbus + iec104 双对端，对照基线 evidence/62/vol62-3）",
+  "artifacts": {
+    "normal.qemu-serial.log": "qemu-prod 双对端正例一轮串口全量（本地保留，log 被 gitignore）",
+    "investigation-grant-edge.qemu-serial.log": "WP-63.2.3 授予边试修激活运行的串口全量（11MiB 本地保留）：svc-iec104→svc-telemetry 边接通后 iec104 事件（source 3，epoch=本机 now_ms≈10666）入 telemetry → SourceEpochMismatch/ClockNotMonotonic 持续毒化快照/评估器 → agent=OK 59→0、PLAN-COMPILED/Committed 全失——激活即回归实锤，处置=登记不修",
+    "normal.modbus.transcript.jsonl": "modbus 从站对端回放",
+    "normal.iec104.transcript.jsonl": "iec104 从站对端回放（总召+数据 ≥2 轮）",
+    "build/sel4.log": "sel4-build-rust.sh 重链接（root-task 进镜像必需）",
+    "build/image.log": "image raw qemu-prod 重建",
+    "build/compile.log": "config compile qemu-prod",
+    "build/image.sha256": "镜像摘要"
+  },
+  "criteria": [
+    { "id": "C1", "assert": "PRODUCT-READY: true + PANIC=0 + READINESS=29", "result": "PASS" },
+    { "id": "C2", "assert": "授予边处置（登记不修）：NOT granted 词形在（诚实降级基线）+ bound=0（回归防护）+ EIPC-GRANT-TABLE edges=34 与 62.3 基线一致", "result": "PASS" },
+    { "id": "C3", "assert": "modbus 7 点值基线逐点一致（400/50/50/0.6/1/0/0）+ OBS-ROUND sent=7 accepted=7（build_ingested_service 单源装配后行为不变）", "result": "PASS" },
+    { "id": "C4", "assert": "svc-iec104 OBS-SOURCE + ACQ 行 18≥4（D-1 保持）+ iec104 从站总召+数据 ≥2 轮", "result": "PASS" },
+    { "id": "C5", "assert": "编排形状收敛：OTA-DOWNLOAD 行族与基线逐字节一致；ACQ-ROUND 34=34；CONTROL-CHAIN 15432/16648、OBS-REPORT 3107/3350（±25% 容差）；HEARTBEAT-KILL/SUPERVISOR=0（探针 absent 基线）", "result": "PASS" },
+    { "id": "C6", "assert": "typed 链不回归：CATALOG-ACTIVE gen=1 / REGISTRY-ACTIVE / CONTRACT-VIEW-ACTIVE / PLAN-COMPILED / EXEC-JOURNAL applied-confirmed / dispatch=Committed；dispatch=other=0", "result": "PASS" },
+    { "id": "C7", "assert": "fail-closed 兜底词形零出现（REGISTRY-MISSING 等 5 项）", "result": "PASS" }
+  ],
+  "baseline": "evidence/62/vol62-3/normal.qemu-serial.log",
+  "investigation": {
+    "id": "grant-edge-iec104-telemetry",
+    "disposition": "登记不修（WP-63.2.3 处置条款二选一之'深层问题'分支）",
+    "root_cause": "svc-iec104 适配器事件 epoch 用本机 now_ms 而非 open() 分配的连接 epoch；边接通即毒化 telemetry 评估器（SourceEpochMismatch epoch=10666 expected=23384 持续）",
+    "registration": "docs/candidates-registry.md GRANT-EDGE-IEC104 行 + eipc_grants.rs 表注释 + 锁测试 wp6323_iec104_telemetry_edge_stays_ungranted",
+    "prerequisite": "iec104 事件 epoch 语义对齐（61/62 深模块域，独立卷裁决）"
+  }
+}

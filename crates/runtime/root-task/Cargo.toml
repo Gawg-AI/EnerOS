@@ -55,6 +55,11 @@ sha2 = { version = "0.10.9", default-features = false }
 spin = "0.9"
 linked_list_allocator = "0.10"
 
+# 63.2 WP-63.2.3 接线完备性门（仅 host 测试——profile JSON 是 spawn 名单
+# 唯一事实源（WP-36.4），测试直读 profile 断言接线表覆盖，不复制名单）。
+[target.'cfg(unix)'.dev-dependencies]
+serde_json = "1.0"
+
 [features]
 default = []
 # 蓝图 40 收尾：target 构建启用 agent-sdk sel4 客户端（ipc_sel4 模块）。

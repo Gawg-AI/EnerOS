@@ -27,20 +27,11 @@ pub extern "C" fn _start(ep: u64, ipc_buffer: u64, ready_ntfn: u64) -> ! {
     // 39：协议插件在服务侧构造（descriptor 随 readiness 报告）；传输
     // capability 未接通（40 移交）→ 未分配 → EXECUTE 显式 ST_UNAVAILABLE。
     let plugin = eneros_iec101::plugin::Iec101Plugin::new();
-    eneros_runtime::println!(
-        "[protocol-service] iec101 plugin={} role={:?} interop={:?}",
-        plugin.descriptor().id,
-        plugin.descriptor().role,
-        plugin.descriptor().interop_level
-    );
-    let mut service = eneros_protocol_services::service::UnassignedProtocolService;
-    eneros_drv_svc::runtime::driver_service_main(
-        ep,
-        "iec101",
-        ready_ntfn,
-        eneros_protocol_services::now_ms,
-        eneros_protocol_services::instance_epoch(),
-        &mut service,
+    // 能力壳装配单点（63.2 WP-63.2.4 P1 收编）：descriptor 行 + 壳 +
+    // driver_service_main 进 protocol_ladder——bin 直呼
+    // 未分配壳服务的 bin 直呼违纪（C1 阶梯归零面）修除。
+    eneros_protocol_services::protocol_ladder::run_capability_shell(
+        ep, "iec101", ready_ntfn, plugin,
     )
 }
 

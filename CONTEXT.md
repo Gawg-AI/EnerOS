@@ -28,6 +28,13 @@
 | `CandidatePlan` | 候选计划（全时域分配/状态/摘要；非成功 solve status 不可构造） | `decision-contract`（蓝图 61，ADR-0048） | `ProposedControlPlan`（迁移 facade，.32 删） |
 | `CertifiedPlan` | 独立认证证书（seal 收口构造；外部只有 decode+verify） | `decision-contract`（蓝图 61，ADR-0048） | SafetyValidator bool（不得当证书） |
 | `CommandIntent`/`CommandBatch` | 编译后命令意图/有序批（批构造必须持证书+资源视图） | `decision-contract`（蓝图 61，ADR-0048） | 直接设备写（禁止） |
+| `SettleTrigger` | 结算触发源枚举（SafetyReject/BudgetRate/BudgetEnergy/…）：`settle(trigger, states)` 纯函数按表裁决唯一结算出口 | `control-dispatch::engine`（蓝图 62，settle 决策表 369 行纯函数+表级单测） | 结算逻辑散在调用点（已收表） |
+| `SERVICE_WIRING` | 服务装配接线表：name/heartbeat/net_slot/stack_pages/driven（周期+相位）/driven_none_reason——装配属性单源，表序即驱动编排序 | `root-task::wiring`（蓝图 62，D-1） | spawn 期按名手抄表（已删）；完备性门：每个被 spawn 服务必须 ∈ 本表 ∪ EXPLICIT_UNWIRED（63.2） |
+| `IngestionStage` | 采集交付半环单源模块：run_acq_round（tick→checkpoint→drain→ACQ 行→分批上行）+ TelemetryUplink（分批/chunked/epoch 内化）+ ACQ 词形单源 | `protocol-services::ingestion_stage`（蓝图 62 S2a） | bins 本地 collect_and_report/report_obs 双抄（已删） |
+| `ChunkedEndpoint`/`ChunkedSession` | chunked Call 端点（epoch 私有，递增仅 call 内）；ChunkedSession=共享 epoch 会话（每次 call 后无条件写回共享计数器，成败无关——root 三步手工协议的结构化收拢） | `agent-sdk::endpoint`（蓝图 62 S4 / 63.2 WP-63.2.1） | 调用方 `*epoch = endpoint.epoch()` 手写回（已删，结构性不可漏） |
+| `SignerKeyring` | SM2 密钥环 + 类型化验签原语（verify_signature→VerifiedSignature，Ok(false) 陷阱不外泄）+ 修订水位（check_revision 非变异判定 / commit_revision 推进——判据单源，消费方零手写比较） | `signer-keyring`（蓝图 62.3 / 63.3.1） | 消费方手写 `revision <= seen`（已删）；裸 sm2_verify 直调（逐处收口/豁免登记） |
+| `WatermarkTracker` | **序列水位**（ingestion-core）：同源 (epoch, sequence) 两维，check 非变异 + advance 分离——sink 准入守卫判据唯一实现 | `ingestion-core`（蓝图 62.3 W3） | snapshot-service 旧同名 tracker（63.3.1 消歧改名 `SnapshotWatermark`）；手写水位比较（已删） |
+| `SnapshotWatermark` | **快照构建水位**（snapshot-service）：epoch/seq + event_time/ingest_time 四维，observe 合体——快照域分层判据（⊃ 序列水位 + 两时间维），与 ingestion-core WatermarkTracker 不合并 | `snapshot-service::watermark`（蓝图 63.3.1 消歧定名） | 与 WatermarkTracker 同名混用（禁止——分层关系见 watermark.rs 模块 doc） |
 
 ## 2. 市场域词汇
 
@@ -53,6 +60,7 @@
 | `twin-global` | 多域联合仿真/模型融合（MultiDomainSimulator/ModelFusion） | 不用 aggregator 字样（用"联合"） |
 
 同义词纪律：`aggregator`=聚合计算；`coordinator`=编排/协调；`federation`=跨信任域协作；`fusion`=模型/数据融合。
+水位消歧：**watermark 序列水位（ingestion-core WatermarkTracker，(epoch,seq) 准入判据）≠ event-store `WatermarkReport` 容量水位（分区容量观测报告）**——两词不混用（蓝图 63.3 WP-63.3.4）。
 
 ## 4. 插件执行模型（ADR-0025）
 

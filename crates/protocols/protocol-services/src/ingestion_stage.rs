@@ -16,6 +16,7 @@
 //! [`TelemetryUplink::upload`]（epoch 私有，消费方无递增可能）；
 //! 批次 wire 布局单源 agent-sdk `obs_batch_wire`（WP-62.2.2）。
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -26,6 +27,7 @@ use eneros_agent_sdk::obs_batch_wire::{
     decode_obs_response, encode_obs_request_stream, FRAMES_PER_TRANSFER, FRAME_WIRE_LEN,
 };
 use eneros_ingestion_core::{IngestReject, IngestionModule, TickBudget};
+use eneros_protocol_abstract::PointRegistry;
 
 /// 采集轮 tick 预算（蓝图 61 Phase 2 基线值 256/16；禁改——词形与基线锚）。
 pub const ACQ_TICK_BUDGET: TickBudget = TickBudget {
@@ -200,10 +202,101 @@ pub fn run_acq_round<C: RawIpc>(
     any_good
 }
 
+/// 装配序列单源（蓝图 63 卷 63.2 WP-63.2.4）：svc-modbus-tcp / svc-iec104
+/// 两 bin 的 `'build:` 装配序列同构——descriptor 循环（[`descriptor_of`]
+/// 工厂）→ module build → `open(own, epoch_floor)` → [`TelemetryUplink`]
+/// → 自检 ACQ 轮 → 构造服务；任一步失败 → capability_shell 兜底
+/// （fail-closed 终态）。
+///
+/// **谓词/adapter 是参数，序列是一份**——modbus（范围口径恒真）与
+/// iec104（协议地址谓词）的"不与对方静默统一"差异由参数显式承载。
+/// svc-mms 接入 IngestionModule 时（新业务能力，独立卷裁决）第三消费方
+/// 走此入口。
+///
+/// 自检位置内化：[`run_acq_round`] 在服务构造**前**对 module/uplink 直呼
+/// （原两 bin 经 io 字段调用——对象同一、副作用相同，ACQ/ACQ-ROUND/
+/// OBS-ROUND 词形逐字节一致）。
+#[allow(clippy::too_many_arguments)]
+pub fn build_ingested_service<C, S, M, G>(
+    log_tag: &'static str,
+    disabled_row_hint: &str,
+    sources: &[eneros_config_bundle::points::SourceRecord],
+    source_protocol: eneros_config_bundle::points::PointProtocol,
+    registry: eneros_protocol_abstract::VecPointRegistry,
+    schema_of: S,
+    build_module: M,
+    telemetry: Option<C>,
+    make_service: G,
+) -> Box<dyn eneros_drv_svc::runtime::DriverService>
+where
+    C: RawIpc,
+    S: Fn(&eneros_protocol_abstract::VecPointRegistry, u32) -> Option<u32>,
+    M: FnOnce(
+        &eneros_protocol_abstract::VecPointRegistry,
+        &[(u32, eneros_ingestion_core::SourceDescriptor)],
+        u32,
+    ) -> Option<IngestionModule>,
+    G: FnOnce(
+        IngestionModule,
+        u32,
+        TelemetryUplink<C>,
+        eneros_protocol_abstract::VecPointRegistry,
+    ) -> Box<dyn eneros_drv_svc::runtime::DriverService>,
+{
+    // 1. 来源 descriptor 循环（descriptor_of 单源工厂，W3；schema_of 即
+    //    两协议的过滤口径差异点）。
+    let mut descriptors: alloc::vec::Vec<(u32, eneros_ingestion_core::SourceDescriptor)> =
+        alloc::vec::Vec::new();
+    let mut own_source_id: Option<u32> = None;
+    for src in sources {
+        if src.protocol == source_protocol {
+            let mut ids = alloc::vec::Vec::new();
+            registry.collect_ids(&mut ids);
+            let descriptor =
+                eneros_ingestion_core::descriptor_of(src, ids, |id| schema_of(&registry, *id));
+            descriptors.push((src.source_id, descriptor));
+            if own_source_id.is_none() {
+                own_source_id = Some(src.source_id);
+            }
+        }
+    }
+    // 2. 'build 序列（任一失败 → None → capability_shell 兜底）。
+    let built: Option<Box<dyn eneros_drv_svc::runtime::DriverService>> = 'build: {
+        let Some(own) = own_source_id else {
+            eneros_runtime::println!("[{log_tag}] OBS-SOURCE disabled ({disabled_row_hint})");
+            break 'build None;
+        };
+        let Some(mut module) = build_module(&registry, &descriptors, own) else {
+            eneros_runtime::println!("[{log_tag}] OBS-MODULE build FAIL");
+            break 'build None;
+        };
+        // 开源（floor = boot 单调时刻；持久 boot counter = ADR-0047）。
+        let epoch_floor = crate::now_ms();
+        match module.open(own, epoch_floor) {
+            Ok(epoch) => {
+                eneros_runtime::println!(
+                    "[{log_tag}] OBS-SOURCE id={} epoch={} (config-allocated)",
+                    own,
+                    epoch
+                );
+            }
+            Err(e) => {
+                eneros_runtime::println!("[{log_tag}] OBS-SOURCE open FAIL: {e:?}");
+                break 'build None;
+            }
+        }
+        let mut uplink = TelemetryUplink::new(telemetry, own);
+        // 启动期自检：一轮真实采集（外部 peer 记录事务；串口打印 = L2
+        // 互操作/45/46 采集证据行）。
+        run_acq_round(&mut module, &mut uplink, log_tag, eneros_drv_svc::now_ns());
+        break 'build Some(make_service(module, own, uplink, registry));
+    };
+    built.unwrap_or_else(crate::protocol_ladder::capability_shell)
+}
+
 // ============================================================================
 // 词形单源（冻结证据行；host 快照测试逐字节锁定——bin 侧禁止手写格式串）
 // ============================================================================
-
 fn line_acq_good(tag: &str, point_id: u32, value: f64, sequence: u64) -> String {
     format!("[{tag}] ACQ point={point_id} value={value} q=good seq={sequence}")
 }
@@ -470,6 +563,240 @@ mod tests {
                 !src.contains("saturating_add(1)"),
                 "{name} 重新出现 epoch 手递增（S4 禁止）"
             );
+            // 63.2 WP-63.2.4：装配序列进 lib——bin 不得再持有 'build 序列/
+            // 自检调用/(descriptor 循环)。
+            assert!(
+                !src.contains("'build:"),
+                "{name} 重新出现 'build 装配序列（63.2.4 禁止再抄，应走 \
+                 build_ingested_service）"
+            );
+            assert!(
+                !src.contains("OBS-SOURCE"),
+                "{name} 重新出现 OBS-SOURCE 词形手写（63.2.4 禁止——词形归 \
+                 build_ingested_service 单源）"
+            );
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // 63.2 WP-63.2.4：装配序列单源测试（mock 过 build_ingested_service 全
+    // 序列，锁 descriptor 循环谓词 / make_service 契约 / 壳兜底三态）。
+    // ------------------------------------------------------------------------
+
+    use eneros_config_bundle::points::{PointProtocol, SourceRecord};
+    use eneros_drv_svc::runtime::{DriverRequest, DriverResponse, DriverService};
+    use eneros_protocol_abstract::mapping::ProtocolPointMapping;
+    use eneros_protocol_abstract::{ProtocolAddress, VecPointRegistry};
+
+    struct ProbeService {
+        cap: Option<&'static str>,
+    }
+    impl DriverService for ProbeService {
+        fn capability(&self) -> Option<&'static str> {
+            self.cap
+        }
+        fn handle(&mut self, _req: &DriverRequest, _resp: &mut DriverResponse) {}
+    }
+
+    fn source_row(source_id: u32, protocol: PointProtocol) -> SourceRecord {
+        SourceRecord {
+            source_id,
+            tenant_id: 1,
+            site_id: 1,
+            protocol,
+            allow_control: false,
+            require_integrity: false,
+            point_min: 0,
+            point_max: 0,
+            max_events_per_s: 100,
+        }
+    }
+
+    fn mapping(point_id: u32, addr: ProtocolAddress, schema_id: u32) -> ProtocolPointMapping {
+        ProtocolPointMapping {
+            point_id,
+            device_id: 1,
+            protocol_addr: addr,
+            data_type: eneros_upa_model::PointType::Analog,
+            scale: 1.0,
+            offset: 0.0,
+            identity: eneros_protocol_abstract::mapping::PointIdentityBinding {
+                unit_code: 0,
+                schema_id,
+                schema_version: 1,
+                asset_id: 0,
+                mapping_generation: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn assembly_sequence_builds_service_via_make_closure() {
+        let registry = VecPointRegistry::new(alloc::vec![mapping(
+            1,
+            ProtocolAddress::Modbus {
+                slave_addr: 1,
+                reg_addr: 0,
+                func_code: 3,
+            },
+            7
+        )]);
+        let sources = alloc::vec![source_row(2, PointProtocol::ModbusTcp)];
+        let built = core::cell::Cell::new(false);
+        let svc = build_ingested_service(
+            "svc-test",
+            "no test [[source]] row",
+            &sources,
+            PointProtocol::ModbusTcp,
+            registry,
+            |_reg, _id| Some(7),
+            |_reg, descriptors, own| {
+                // descriptor 循环锁：本来源行被收集，schema 谓词结果进入
+                // allowed_schemas。
+                assert_eq!(own, 2);
+                assert_eq!(descriptors.len(), 1);
+                assert_eq!(descriptors[0].0, 2);
+                assert_eq!(descriptors[0].1.allowed_schemas, alloc::vec![7]);
+                let mut module = IngestionModule::new(
+                    Box::new(InMemorySink::new(64)),
+                    Box::new(MemEpochStore::default()),
+                    OperationalProfile::reference(),
+                );
+                for (_, d) in descriptors {
+                    module.register(d.clone());
+                }
+                Some(module)
+            },
+            None::<ChunkServer>,
+            |_module, own, uplink, _registry| {
+                // make_service 契约锁：own/uplink 同源（open→自检→构造的
+                // 顺序由序列本体结构保证——open 失败即走壳，到不了此处）。
+                assert_eq!(own, 2);
+                assert_eq!(uplink.source_id(), 2);
+                built.set(true);
+                Box::new(ProbeService {
+                    cap: Some("test-cap"),
+                })
+            },
+        );
+        assert!(built.get(), "make_service 必经（序列走通）");
+        assert_eq!(svc.capability(), Some("test-cap"), "真实服务（非能力壳）");
+    }
+
+    #[test]
+    fn assembly_sequence_falls_back_to_shell_on_missing_source_row() {
+        let registry = VecPointRegistry::new(alloc::vec![]);
+        let sources = alloc::vec![source_row(3, PointProtocol::Iec104)];
+        let built = core::cell::Cell::new(false);
+        let svc = build_ingested_service(
+            "svc-test",
+            "no test [[source]] row",
+            &sources,
+            PointProtocol::ModbusTcp,
+            registry,
+            |_reg, _id| None,
+            |_reg, _d, _own| {
+                built.set(true);
+                None
+            },
+            None::<ChunkServer>,
+            |_m, _o, _u, _r| {
+                Box::new(ProbeService {
+                    cap: Some("test-cap"),
+                })
+            },
+        );
+        assert!(!built.get(), "无本协议来源行 → 不进 build");
+        assert_eq!(svc.capability(), None, "capability_shell 兜底（cap=None）");
+    }
+
+    #[test]
+    fn assembly_sequence_falls_back_to_shell_on_module_build_fail() {
+        let registry = VecPointRegistry::new(alloc::vec![]);
+        let sources = alloc::vec![source_row(2, PointProtocol::ModbusTcp)];
+        let built = core::cell::Cell::new(false);
+        let svc = build_ingested_service(
+            "svc-test",
+            "no test [[source]] row",
+            &sources,
+            PointProtocol::ModbusTcp,
+            registry,
+            |_reg, _id| None,
+            |_reg, _d, _own| {
+                built.set(true);
+                None
+            },
+            None::<ChunkServer>,
+            |_m, _o, _u, _r| {
+                Box::new(ProbeService {
+                    cap: Some("test-cap"),
+                })
+            },
+        );
+        assert!(built.get(), "builder 被调用但失败");
+        assert_eq!(svc.capability(), None, "module build FAIL → 壳兜底");
+    }
+
+    #[test]
+    fn assembly_sequence_schema_predicate_is_parameterized() {
+        // 谓词参数化锁：同一来源行，iec104 协议地址谓词（非 Iec104 地址
+        // 的映射点被滤除——modbus/iec104 口径差异不静默统一）。
+        let registry = VecPointRegistry::new(alloc::vec![
+            mapping(
+                1,
+                ProtocolAddress::Modbus {
+                    slave_addr: 1,
+                    reg_addr: 0,
+                    func_code: 3
+                },
+                7
+            ),
+            mapping(
+                2,
+                ProtocolAddress::Iec104 {
+                    common_addr: 1,
+                    ioa: 100,
+                    type_id: 1,
+                },
+                9
+            ),
+        ]);
+        let sources = alloc::vec![source_row(2, PointProtocol::Iec104)];
+        let svc = build_ingested_service(
+            "svc-test",
+            "no test [[source]] row",
+            &sources,
+            PointProtocol::Iec104,
+            registry,
+            |reg, id| {
+                reg.resolve(id).and_then(|m| match m.protocol_addr {
+                    ProtocolAddress::Iec104 { .. } => Some(m.identity.schema_id),
+                    _ => None,
+                })
+            },
+            |_reg, descriptors, _own| {
+                assert_eq!(
+                    descriptors[0].1.allowed_schemas,
+                    alloc::vec![9],
+                    "modbus 地址映射点被协议地址谓词滤除（口径差异参数化保留）"
+                );
+                let mut module = IngestionModule::new(
+                    Box::new(InMemorySink::new(64)),
+                    Box::new(MemEpochStore::default()),
+                    OperationalProfile::reference(),
+                );
+                for (_, d) in descriptors {
+                    module.register(d.clone());
+                }
+                Some(module)
+            },
+            None::<ChunkServer>,
+            |_m, _o, _u, _r| {
+                Box::new(ProbeService {
+                    cap: Some("test-cap"),
+                })
+            },
+        );
+        assert_eq!(svc.capability(), Some("test-cap"));
     }
 }

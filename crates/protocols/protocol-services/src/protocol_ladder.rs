@@ -193,6 +193,30 @@ pub fn capability_shell() -> Box<dyn eneros_drv_svc::runtime::DriverService> {
     Box::new(crate::service::UnassignedProtocolService)
 }
 
+/// 能力壳 bin 装配单点（蓝图 63 卷 63.2 WP-63.2.4 P1 收编）：descriptor
+/// 证据行 + [`capability_shell`] + `driver_service_main`——SpecBlocked
+/// 协议 bin（svc-dlt645/iec101/iec103/gbt27930）共享。bin 直呼
+/// `UnassignedProtocolService` 违纪（C1 阶梯归零面）自此消除；串口词形
+/// 逐字节不变（descriptor 行经 [`print_descriptor`] 单源）。
+#[cfg(target_os = "none")]
+pub fn run_capability_shell<P: ProtocolPlugin>(
+    ep: u64,
+    service: &'static str,
+    ready_ntfn: u64,
+    plugin: P,
+) -> ! {
+    print_descriptor(service, &plugin);
+    let mut shell = capability_shell();
+    eneros_drv_svc::runtime::driver_service_main(
+        ep,
+        short_name(service),
+        ready_ntfn,
+        crate::now_ms,
+        crate::instance_epoch(),
+        &mut *shell,
+    )
+}
+
 /// 判定行前缀 `svc-<name>` → `<name>`（wall_epoch / descriptor 行用短名；
 /// 与今日 bin 字面量逐字一致）。
 fn short_name(service: &str) -> &str {

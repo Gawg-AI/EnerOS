@@ -204,7 +204,8 @@ pub extern "C" fn _start(
             eneros_runtime::println!(
                 "[svc-modbus-rtu] RTU-UNAVAILABLE reason={reason} —— capability 壳（EXECUTE ST_UNAVAILABLE）"
             );
-            Box::new(eneros_protocol_services::service::UnassignedProtocolService)
+            // 能力壳构造单点（63.2 WP-63.2.4 P1 收编——直呼 Unassigned 违纪修除）。
+            eneros_protocol_services::protocol_ladder::capability_shell()
         }
     };
     eneros_drv_svc::runtime::driver_service_main(

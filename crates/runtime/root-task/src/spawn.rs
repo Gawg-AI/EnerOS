@@ -2538,6 +2538,12 @@ fn configure_service(
     // （协议服务无传输 → capability None → EXECUTE ST_UNAVAILABLE，
     // fail-closed 不伪造协议 I/O）。
     let mut net_handover: Option<NetHandover> = None;
+    // None 臂 = 无网络槽：对非协议服务（驱动/业务/运营）是**正常装配路径**
+    // 而非降级（多数服务走此臂，不打印——串口词形冻结）。"该登记未登记"
+    // 的表外静默缺省由 wiring 完备性门在 host 红测拦截：
+    // wiring::tests::every_spawned_service_is_wired_or_exempted（63.2
+    // WP-63.2.3）——每个被 spawn 的服务必须 ∈ SERVICE_WIRING ∪
+    // EXPLICIT_UNWIRED（后者逐项理由），profile roster 直读双向断言。
     if let Some(net_slot) = proto_net_slot(&svc.name) {
         let mmio_phys = STORAGE_VIRTIO_REGION_BASE + net_slot * STORAGE_MMIO_SLOT_STRIDE;
         // a) MMIO 设备帧：页 0（slot0-7）与页 1（slot8-15）各只真实 retype

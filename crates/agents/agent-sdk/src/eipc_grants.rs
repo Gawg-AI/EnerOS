@@ -44,6 +44,15 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // 46（WP-46.3 配置驱动装配）：协议服务经 svc-config 取协议配置
     // （GET_ENTRY "protocol-<proto>"）——消灭源码 peer 硬编码。
     ("svc-iec104", "svc-config"),
+    // 63.2 WP-63.2.3 授予边调查结论（62.3 §H 在册项——**不修，登记**）：
+    // svc-iec104→svc-telemetry 边曾试修（本表加行使 iec104 事件上行），
+    // QEMU 实弹（evidence/63/vol63-2/investigation-grant-edge.*）证明边
+    // 本体可承载但**激活即回归**：iec104 适配器事件 epoch 用本机
+    // now_ms（≈10666）而非 open() 分配的连接 epoch，入 telemetry 后
+    // SourceEpochMismatch 持续毒化快照/评估器 → AI 链 agent=OK 59→0、
+    // PLAN-COMPILED/Committed 全失。接线前置 = iec104 事件 epoch 语义
+    // 对齐（61/62 深模块域，独立卷裁决）——缺边 = fail-closed 诚实降级
+    // 基线，锁测试 wp6323_iec104_telemetry_edge_stays_ungranted。
     ("svc-mqtt", "svc-config"),
     ("svc-mms", "svc-config"),
     ("svc-goose", "svc-config"),
@@ -340,5 +349,28 @@ mod tests {
             eipc_resolve("svc-mqtt", "svc-config"),
             Some((0, EIPC_EP_BASE_SLOT))
         );
+    }
+
+    /// 63.2 WP-63.2.3 授予边调查锁：svc-iec104→svc-telemetry **缺边维持**
+    /// （62.3 §H 登记项处置=登记不修——QEMU 实弹证明激活即回归：iec104
+    /// 事件 epoch 语义（本机 now_ms）与 telemetry 评估器冲突，详见
+    /// EIPC_GRANTS 表注释与 evidence/63/vol63-2/investigation-*）。基线
+    /// 锁：iec104 仅 svc-config 一条边，telemetry 边必须解析 None。
+    #[test]
+    fn wp6323_iec104_telemetry_edge_stays_ungranted() {
+        assert_eq!(
+            eipc_resolve("svc-iec104", "svc-config"),
+            Some((0, EIPC_EP_BASE_SLOT)),
+            "既有 config 边槽位冻结"
+        );
+        assert_eq!(
+            eipc_resolve("svc-iec104", "svc-telemetry"),
+            None,
+            "授予边维持缺省（fail-closed 基线）——接线前置=iec104 epoch \
+             语义对齐，见表注释；勿在无前置修复时加行使 AI 链回归"
+        );
+        let (mask, grants) = eipc_grants("svc-iec104");
+        assert_eq!(mask, 0b1, "iec104 仅一条授予边");
+        assert_eq!(grants, alloc::vec![(EIPC_EP_BASE_SLOT, "svc-config")],);
     }
 }

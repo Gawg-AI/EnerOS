@@ -17,7 +17,7 @@
 
 EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power Native + Agent Native + AI Native** 专用操作系统。基于 seL4 微内核形式化验证基座与 Rust `no_std` 运行时构建，采用混合关键性架构（Mixed Criticality），将**实时控制（RTOS 分区）**与**AI Agent（用户态分区）**隔离运行在同一 ARM64 硬件上。
 
-**当前版本**：workspace v0.314.x（精确值以根 `Cargo.toml` 为准）— 交付冲刺 44–59 卷完成（候选冻结 tag `v1.0.0-rc.1`；终验矩阵与缺口清单见 `evidence/52/`）；测试基线计数随卷出口证据更新（52 终验以来各卷 Exit 均全绿）；生产发布（v1.0.0）未授权——当前裁决 NO-GO（`docs/v1.0.0-go-no-go.md`）。
+**当前版本**：workspace v0.316.x（精确值以根 `Cargo.toml` 为准）— 交付冲刺 44–59 卷完成（候选冻结 tag `v1.0.0-rc.1`；终验矩阵与缺口清单见 `evidence/52/`）；蓝图 61 Phase 0–7 全出口后，蓝图 62（三卷）与蓝图 63（单源最后一厘米收口）完成架构深化收口；测试基线计数随卷出口证据更新（52 终验以来各卷 Exit 均全绿）；生产发布（v1.0.0）未授权——当前裁决 NO-GO（`docs/v1.0.0-go-no-go.md`）。
 
 > **唯一内核路线 = seL4**（ADR-0023 用户决策，ADR-0030 执行确认，KRN-001）：自研 microkernel 已淘汰（G2 验证缺陷），产品镜像内核/引导为 seL4（`third_party/sel4-build.sh`）；EnerOS root-task 消费 BootInfo 并 spawn EL0 服务（KRN-002~004）。
 
@@ -53,8 +53,8 @@ EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power
 
 > 主路径共 205 个开发版本（含 13 个刚性子版本），ADR-0001/0002 裁剪后实际约 167 版。
 >
-> **注意（HYG-002，2026-08-27 刷新）**：workspace 版本已推进至 **v0.314.x**（交付冲刺
-> 44–59 卷），远超本路线图表的 v0.191.0 规划；当前版本一律以根 `Cargo.toml`
+> **注意（HYG-002，2026-09-03 刷新）**：workspace 版本已推进至 **v0.316.x**（交付冲刺
+> 44–59 卷 + 蓝图 61/62/63 深化收口），远超本路线图表的 v0.191.0 规划；当前版本一律以根 `Cargo.toml`
 > （version.workspace）与 `git` 为准——本表仅保留历史规划语义。
 
 #### 关键架构决策（ADR）
@@ -138,7 +138,7 @@ eneros/
 └── .github/workflows/ci.yml   # CI 流水线
 ```
 
-> 蓝图文档位于 `蓝图/` 目录（已入 git 跟踪，66 个文件；`git ls-files '蓝图*'` 可列）。
+> 蓝图文档位于 `蓝图/` 目录（本地保留、不入 git——政策见 `.gitignore` 末块；盘外备份 `~/文档/eneros-local-backups/`）。
 
 ---
 
@@ -180,7 +180,7 @@ cargo xtask run qemu-prod
 cargo test --workspace
 ```
 
-预期输出包含 UEFI 交接行 `ENEROS stage=uefi-entry profile=qemu-prod secure=required`，随后是 boot-evidence JSON 行（`"result":"PASS"`，串口同流输出；真值取自 `evidence/w59/c45/qemu-serial.log`，HEAD b5d939b 实弹）。按 `Ctrl+A` 然后 `X` 退出 QEMU。
+预期输出包含 UEFI 交接行 `ENEROS stage=uefi-entry profile=qemu-prod secure=required`，随后是 boot-evidence JSON 行（`"result":"PASS"`，串口同流输出；真值取自 `evidence/62/vol62-3/normal.qemu-serial.log` 实弹串口日志）。按 `Ctrl+A` 然后 `X` 退出 QEMU。
 
 #### 常用入口
 
@@ -198,17 +198,18 @@ cargo test --workspace
 
 ### CI/CD
 
-每次 PR 或 push 到 `main`/`develop` 分支时，CI 自动运行：
+**完整清单以 `.github/workflows/ci.yml` 为唯一事实源**（5 个 job：`g0-fail-closed` 首 job 45min 超时 / `evidence42-portable-tools` 矩阵 / `catalog-gate-43` / `g1-fuzz-gates` / `gkernel-qemu-spawn-ipc`；触发 `branches: ['*']`——PR 与全部分支 push）。要点（非全量）：
 
 | 检查项 | 命令 | 说明 |
 |--------|------|------|
 | 代码格式 | `cargo fmt --all -- --check` | 格式一致 |
 | Clippy lint | `cargo clippy --all-targets -- -D warnings` | 零 warning 容忍 |
-| 安全与许可证 | `cargo deny check advisories licenses bans sources` | 漏洞 + 许可证双查 |
+| loom 并发模型 | account/p2p-match/metrics/telemetry-queue 等 5 组（C-243/C-247 gate） | 并发模型全跑 |
+| 安全与许可证 | `cargo deny check advisories licenses bans sources` | 漏洞 + 许可证双查（advisories 全量） |
 | 单元测试 | `cargo test --workspace` | 所有测试通过 |
-| 交叉编译 | `cargo build --target aarch64-unknown-none` | ARM64 镜像可编译 |
+| QEMU 启动证据 | seL4 kernel + root image + QEMU boot（fail-closed） | 引导链实弹 |
 
-CI 全流程目标 < 10 分钟。
+CI 全流程目标 < 10 分钟（现矩阵含 QEMU/fuzz job，实际更长——以 ci.yml 超时配置为准）。
 
 #### 提交规范
 
@@ -289,7 +290,7 @@ use std::net::TcpStream;
 
 EnerOS (Power Native Agent OS) is an energy-internet-native Agent OS built on the seL4 microkernel and Rust `no_std` runtime. It employs a Mixed Criticality architecture, isolating **real-time control (RTOS partition)** and **AI Agent (user-space partition)** on the same ARM64 hardware.
 
-**Current Version**: workspace v0.314.x — delivery-sprint volumes 44–59 complete (candidate freeze tag `v1.0.0-rc.1`; final verdict NO-GO, gap ledger in `evidence/52/`). The live version is whatever the root `Cargo.toml` declares.
+**Current Version**: workspace v0.316.x — delivery-sprint volumes 44–59 complete, followed by blueprint 61 phases 0–7 and deepening blueprints 62/63 (single-source close-out) (candidate freeze tag `v1.0.0-rc.1`; final verdict NO-GO, gap ledger in `evidence/52/`). The live version is whatever the root `Cargo.toml` declares.
 
 #### Core Architecture
 
@@ -442,7 +443,7 @@ cargo xtask run qemu-prod
 cargo test --workspace
 ```
 
-Expected output includes the UEFI handoff line `ENEROS stage=uefi-entry profile=qemu-prod secure=required`, followed by a boot-evidence JSON line with `"result":"PASS"` (ground truth: `evidence/w59/c45/qemu-serial.log`, live run at HEAD b5d939b). Press `Ctrl+A` then `X` to exit QEMU.
+Expected output includes the UEFI handoff line `ENEROS stage=uefi-entry profile=qemu-prod secure=required`, followed by a boot-evidence JSON line with `"result":"PASS"` (ground truth: `evidence/62/vol62-3/normal.qemu-serial.log` live serial log). Press `Ctrl+A` then `X` to exit QEMU.
 
 #### Common Entry Points
 
@@ -548,5 +549,5 @@ MIT OR Apache-2.0
 
 - **Repository**: [https://github.com/Gawg-AI/EnerOS](https://github.com/Gawg-AI/EnerOS)
 - **CI Pipeline**: [GitHub Actions](https://github.com/Gawg-AI/EnerOS/actions)
-- **Blueprint Docs**: `蓝图/` directory (tracked in git, 66 files)
+- **Blueprint Docs**: `蓝图/` directory (kept locally, not tracked in git — policy in the `.gitignore` trailer; off-machine backup `~/文档/eneros-local-backups/`)
 - **Dev Rules**: `.trae/rules/记忆.md`

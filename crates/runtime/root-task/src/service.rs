@@ -306,28 +306,12 @@ pub fn run_ipc_loop(
     /// 50（WP-50.1）：可观测遥测上报驱动（svc-observability EIPC epoch）。
     let mut obs_epoch: u64 = 0;
     let mut hang_injected = false;
-    /// 控制链驱动周期（轮）。QEMU 实弹验证（round 21）：100 轮 ≈ 0.13s
-    /// 虚拟/次，hello 760 轮/s。dispatch rate gate = 产品值 60/h
-    /// （47 WP-47.1）——AI 链每 ACQ 刷新周期约 1 次 confirm，SCADA 写
-    /// 共 <60 次确认不撞限（QEMU 写链演示窗口）。
-    // SPEC-E 实测订正：net 轮询面（modbus 主站/slrp poll）把根环 tick
-    // 拉长到 ~24s——100-tick 周期 ⇒ 控制链回合 40 分钟一发，且首发常撞
-    // 服务未就绪的瞬态 Transport 错误（w10 重试铁律场景）。改 5-tick：
-    // 瞬态由下一 tick 自愈；EXECUTE(15)/OBS(25) 分支维持低频错峰。
-    const CONTROL_CHAIN_PERIOD: u64 = 5;
-    /// 协议 EXECUTE 驱动周期（ACQ 保鲜 + mqtt 意图轮询；错峰于链回合）。
-    /// 蓝图 62 卷 62.2：常量迁入 wiring::SERVICE_WIRING 的 driven 登记
-    /// （period_ticks=15 值不变），驱动循环改由表驱动。
-    /// 可观测上报驱动周期。
-    const OBS_REPORT_PERIOD: u64 = 25;
-    /// hang 注入轮次（链稳定后一次性）。
-    const HANG_INJECT_ROUND: u64 = 200;
-    // 41（WP-41.3 落盘）：存储持久化验证轮次（服务就绪后一次性；QEMU
-    // 300s 预算内 tick 仅 ~100——60 轮时服务已 Ready，探针可触发）。
+    // 周期编排（控制链 5 / 可观测 25+20 / hang 200 / 存储落盘 60 / OTA
+    // 70 / 故障注入 50 / 看门狗 100）自本函数常量迁入
+    // `wiring::PERIODIC_SCHEDULE` 单源（蓝图 63 卷 63.2 WP-63.2.2）——
+    // 到期判定经 `wiring::periodic_due`，本循环零手写周期算式。
     let mut storage_persist_done = false;
-    const STORAGE_PERSIST_ROUND: u64 = 60;
     let mut ota_download_done = false;
-    const OTA_DOWNLOAD_ROUND: u64 = 70;
 
     loop {
         // 22 §2.W1.6：每轮喂硬件狗（喂狗间隔 < 看门狗超时 10s）。
@@ -486,7 +470,7 @@ pub fn run_ipc_loop(
         // 完成——root 作为**采集链代理**注入样本（source=1 与 svc-telemetry
         // 覆盖声明一致）；样本经 svc-telemetry evaluator 全量校验
         // （coverage/freshness/quality/integrity），不绕过信任评估。
-        if tick % CONTROL_CHAIN_PERIOD == 0 {
+        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::ControlChain, tick) {
             if let (Some(t), Some(e)) = (&telemetry_handle, &energy_handle) {
                 if let Some(i) = handles.iter().position(|h| h.name == "svc-telemetry") {
                     hang_monitor.note_request(i, tick as i64);
@@ -537,9 +521,9 @@ pub fn run_ipc_loop(
         // 顺序使 intent 的 SNAPSHOT 与 ACQ 相隔毫秒）。
         for w in crate::wiring::SERVICE_WIRING {
             if let Some(d) = &w.driven {
-                if tick % d.period_ticks == d.offset_ticks {
+                if d.is_due(tick) {
                     if let Some(h) = handles.iter().find(|h| h.name == w.name) {
-                        let _ = protocol_execute(h.ep, (tick % 0xFFFF) as u32, w.name);
+                        let _ = protocol_execute(h.ep, crate::wiring::execute_nonce(tick), w.name);
                     }
                 }
             }
@@ -549,7 +533,7 @@ pub fn run_ipc_loop(
         // 编排方，周期性向 svc-observability 入队一帧**真实服务健康摘要**
         //（各服务 readiness 实况，非合成 ACQ 读数）并触发 FLUSH → 导出器
         // 经 svc-mqtt 批量帧送达 MQTT broker。驱动失败不阻断主循环。
-        if tick % OBS_REPORT_PERIOD == 20 {
+        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::ObsReport, tick) {
             if let Some(h) = &obs_handle {
                 let _ = telemetry_report_tick(h.ep, handles, &mut obs_epoch);
             }
@@ -558,7 +542,9 @@ pub fn run_ipc_loop(
         // 蓝图 40 收尾：hang 注入（一次性；svc-hang 为心跳超时注入参考
         // 服务——蓝图 §9 isolation 行实弹）。单向 Send 裸帧（svc-hang
         // 自定协议，非 el0 wire；卡死后 root 不阻塞）。
-        if !hang_injected && tick == HANG_INJECT_ROUND {
+        if !hang_injected
+            && crate::wiring::periodic_due(crate::wiring::PeriodicTask::HangInject, tick)
+        {
             if let Some(h) = &hang_handle {
                 hang_injected = true;
                 if let Some(idx) = handles.iter().position(|x| x.name == "svc-hang") {
@@ -582,7 +568,9 @@ pub fn run_ipc_loop(
         // 41（WP-41.3 落盘）：存储真落盘往返验证（一次性）——root 经
         // EIPC 调 svc-ota PERSIST-TRIAL（trial 状态经 svc-storage 块命令
         // 面真写数据盘）再 LOAD-TRIAL 读回。证据行 STORAGE-PERSIST。
-        if !storage_persist_done && tick >= STORAGE_PERSIST_ROUND {
+        if !storage_persist_done
+            && crate::wiring::periodic_due(crate::wiring::PeriodicTask::StoragePersist, tick)
+        {
             if let Some(h) = &ota_handle {
                 storage_persist_done = true;
                 match storage_persist_probe(h.ep, &mut chain_epoch) {
@@ -601,7 +589,9 @@ pub fn run_ipc_loop(
         }
 
         // 41（OTA A/B）：真实签名镜像 download→verify→trial→commit 探针。
-        if !ota_download_done && tick >= OTA_DOWNLOAD_ROUND {
+        if !ota_download_done
+            && crate::wiring::periodic_due(crate::wiring::PeriodicTask::OtaDownload, tick)
+        {
             if let Some(h) = &ota_handle {
                 ota_download_done = true;
                 match ota_download_probe(h.ep, &mut chain_epoch) {
@@ -648,26 +638,13 @@ pub fn run_ipc_loop(
                     sent
                 );
                 supervisor.advance(now_ms());
-                match supervisor.on_service_fault(idx) {
-                    Some(crate::supervisor::Action::Restart { delay_ms }) => {
-                        busy_wait_ms(delay_ms);
-                        if let Err(e) = restart_service(&handles[idx]) {
-                            ipc_fail_closed("heartbeat restart", e);
-                        }
-                        supervisor.on_restart_done(idx);
-                        eneros_runtime::println!(
-                            "[eneros-root-task] HEARTBEAT-KILL: {} restarted (hang isolation verified)",
-                            handle.name
-                        );
-                    }
-                    Some(crate::supervisor::Action::MarkFaulted) => {
-                        eneros_runtime::println!(
-                            "[eneros-root-task] HEARTBEAT-KILL: {} FAULTED (threshold) — no auto restart",
-                            handle.name
-                        );
-                    }
-                    None => {}
-                }
+                apply_restart_action(
+                    &mut supervisor,
+                    idx,
+                    handles,
+                    &hello,
+                    RestartReason::Heartbeat,
+                );
                 // 重启翻篇：清除 pending（重启后空闲不心跳不误杀）。
                 hang_monitor.clear_after_kill(idx, tick as i64);
             }
@@ -707,59 +684,13 @@ pub fn run_ipc_loop(
                         prefetch,
                         fsr
                     );
-                        supervisor.advance(now_ms());
-                        match supervisor.on_service_fault(idx) {
-                            Some(crate::supervisor::Action::Restart { delay_ms }) => {
-                                eneros_runtime::println!(
-                                "[eneros-root-task] SUPERVISOR: {} fault → restart in {}ms (fault_count={})",
-                                name(idx),
-                                delay_ms,
-                                supervisor
-                                    .services
-                                    .get(idx)
-                                    .map(|s| s.fault_count)
-                                    .unwrap_or(0)
-                            );
-                                busy_wait_ms(delay_ms);
-                                if let Err(e) = restart_service(&handles[idx]) {
-                                    ipc_fail_closed("restart service", e);
-                                }
-                                supervisor.on_restart_done(idx);
-                                eneros_runtime::println!(
-                                    "[eneros-root-task] SUPERVISOR: {} restarted (total={})",
-                                    name(idx),
-                                    supervisor
-                                        .services
-                                        .get(idx)
-                                        .map(|s| s.restart_count)
-                                        .unwrap_or(0)
-                                );
-                                // 复验 svc-hello 仍响应（隔离成立；探针缺失
-                                // 时跳过——纯产品装配无 hello 锚点）。
-                                if let Some(hello) = &hello {
-                                    match hello_roundtrip(hello.ep) {
-                                        Ok(f) => {
-                                            if let Ok(fr) = eneros_ipc_wire::el0::decode_frame(&f) {
-                                                eneros_runtime::println!(
-                                                "[eneros-root-task] SUPERVISOR: svc-hello still responsive ({})",
-                                                core::str::from_utf8(&fr.payload)
-                                                    .unwrap_or("<non-utf8>")
-                                            );
-                                            }
-                                        }
-                                        Err(e) => ipc_fail_closed("hello recheck", e),
-                                    }
-                                }
-                            }
-                            Some(crate::supervisor::Action::MarkFaulted) => {
-                                eneros_runtime::println!(
-                                "[eneros-root-task] SUPERVISOR: {} FAULTED (≥{} faults/hour) — no auto restart, alert",
-                                name(idx),
-                                crate::supervisor::FAULT_THRESHOLD_PER_HOUR
-                            );
-                            }
-                            None => {}
-                        }
+                        apply_restart_action(
+                            &mut supervisor,
+                            idx,
+                            handles,
+                            &hello,
+                            RestartReason::Fault,
+                        );
                     } else {
                         eneros_runtime::println!(
                         "[eneros-root-task] SUPERVISOR: unknown fault sender={} — ignore (fail-closed)",
@@ -771,7 +702,7 @@ pub fn run_ipc_loop(
         }
 
         // 22 §2.W1.6：定期检查分层看门狗状态（诊断；无 layer 时为 AllFed）。
-        if tick % 100 == 0 {
+        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::WatchdogCheck, tick) {
             match eneros_watchdog::api::wdt_check() {
                 eneros_watchdog::layered::WatchdogStatus::AllFed => {}
                 eneros_watchdog::layered::WatchdogStatus::LayerTimeout(id) => {
@@ -793,22 +724,131 @@ pub fn run_ipc_loop(
         //    WP-37.3：注入 ExecStack（栈页取指）——NX 生效时产生
         //    instruction-fetch vm fault（可归因：栈地址），supervisor
         //    restart 证明隔离；旧 IllegalAccess（null 写）不证明 NX。
-        fault_tick += 1;
-        if let (Some(fault), Some(fault_idx)) = (&fault, fault_idx) {
-            if fault_tick % 50 == 0
-                && supervisor.state_of(fault_idx) == Some(crate::supervisor::ServiceState::Running)
-            {
-                eneros_runtime::println!(
-                    "[eneros-root-task] IPC: send fault=ExecStack to svc-fault (cycle)"
-                );
-                let req = encode_frame(El0FrameType::Report, b"fault=ExecStack");
-                if let Err(e) = send_frame(fault.ep, &req) {
-                    ipc_fail_closed("send fault", e);
+        //    （原独立计数器 fault_tick 与 tick 每轮各 +1 且主循环无
+        //    continue——恒等；63.2 WP-63.2.2 并入编排表 Repeat(50,0)。）
+        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::FaultInject, tick) {
+            if let (Some(fault), Some(fault_idx)) = (&fault, fault_idx) {
+                if supervisor.state_of(fault_idx) == Some(crate::supervisor::ServiceState::Running)
+                {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] IPC: send fault=ExecStack to svc-fault (cycle)"
+                    );
+                    let req = encode_frame(El0FrameType::Report, b"fault=ExecStack");
+                    if let Err(e) = send_frame(fault.ep, &req) {
+                        ipc_fail_closed("send fault", e);
+                    }
                 }
             }
         }
 
         // 循环回到 1：hello 心跳持续（svc-hello tick 递增可见）。
+    }
+}
+
+/// restart 决策来源（63.2 WP-63.2.2）：只选择日志词形——序列本体一份。
+#[cfg(target_os = "none")]
+enum RestartReason {
+    /// 心跳超时（HEARTBEAT-TIMEOUT → HEARTBEAT-KILL 族）。
+    Heartbeat,
+    /// fault ep 故障上报（SUPERVISOR 族）。
+    Fault,
+}
+
+/// restart 序列单方法（蓝图 63 卷 63.2 WP-63.2.2：原 HEARTBEAT-KILL 与
+/// SUPERVISOR 两处逐字双抄收拢）。
+///
+/// 序列本体：supervisor 推进 → 故障决策 match → 退避 → 重启 → 重启完成
+/// 登记一步不缺、顺序不变；`reason` 仅选择串口词形——HEARTBEAT-KILL /
+/// SUPERVISOR 两族日志行（含 fault_count/total 字段）逐字节保持
+/// （VOL-GATE 词形对照判据）。SUPERVISOR 臂的 hello 复验（隔离成立证据）
+/// 与心跳臂的 pending 清除留在调用方（各自独有）。
+#[cfg(target_os = "none")]
+fn apply_restart_action(
+    supervisor: &mut crate::supervisor::Supervisor,
+    idx: usize,
+    handles: &[crate::spawn::SpawnedHandle],
+    hello: &Option<crate::spawn::SpawnedHandle>,
+    reason: RestartReason,
+) {
+    supervisor.advance(now_ms());
+    match supervisor.on_service_fault(idx) {
+        Some(crate::supervisor::Action::Restart { delay_ms }) => {
+            let name = handles[idx].name.as_str();
+            if matches!(reason, RestartReason::Fault) {
+                eneros_runtime::println!(
+                    "[eneros-root-task] SUPERVISOR: {} fault → restart in {}ms (fault_count={})",
+                    name,
+                    delay_ms,
+                    supervisor
+                        .services
+                        .get(idx)
+                        .map(|s| s.fault_count)
+                        .unwrap_or(0)
+                );
+            }
+            busy_wait_ms(delay_ms);
+            if let Err(e) = restart_service(&handles[idx]) {
+                match reason {
+                    RestartReason::Heartbeat => ipc_fail_closed("heartbeat restart", e),
+                    RestartReason::Fault => ipc_fail_closed("restart service", e),
+                }
+            }
+            supervisor.on_restart_done(idx);
+            match reason {
+                RestartReason::Heartbeat => {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] HEARTBEAT-KILL: {} restarted (hang isolation verified)",
+                        name
+                    );
+                }
+                RestartReason::Fault => {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] SUPERVISOR: {} restarted (total={})",
+                        name,
+                        supervisor
+                            .services
+                            .get(idx)
+                            .map(|s| s.restart_count)
+                            .unwrap_or(0)
+                    );
+                    // 复验 svc-hello 仍响应（隔离成立；探针缺失时跳过——
+                    // 纯产品装配无 hello 锚点）。
+                    if let Some(hello) = hello {
+                        match hello_roundtrip(hello.ep) {
+                            Ok(f) => {
+                                if let Ok(fr) = eneros_ipc_wire::el0::decode_frame(&f) {
+                                    eneros_runtime::println!(
+                                        "[eneros-root-task] SUPERVISOR: svc-hello still responsive ({})",
+                                        core::str::from_utf8(&fr.payload)
+                                            .unwrap_or("<non-utf8>")
+                                    );
+                                }
+                            }
+                            Err(e) => ipc_fail_closed("hello recheck", e),
+                        }
+                    }
+                }
+            }
+        }
+        Some(crate::supervisor::Action::MarkFaulted) => {
+            let name = handles[idx].name.as_str();
+            match reason {
+                RestartReason::Heartbeat => {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] HEARTBEAT-KILL: {} FAULTED (threshold) — no auto restart",
+                        name
+                    );
+                }
+                RestartReason::Fault => {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] SUPERVISOR: {} FAULTED (≥{} faults/hour) — no auto restart, alert",
+                        name,
+                        crate::supervisor::FAULT_THRESHOLD_PER_HOUR
+                    );
+                }
+            }
+        }
+        None => {}
     }
 }
 
@@ -893,20 +933,18 @@ fn restart_service(
 /// （fail-closed 打印，不猜成功）。
 #[cfg(all(target_os = "none", feature = "sel4-eipc"))]
 fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string::String> {
-    use eneros_agent_sdk::endpoint::ChunkedEndpoint;
+    use eneros_agent_sdk::endpoint::ChunkedSession;
     use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
     let mut ipc = Sel4IpcClient::new("root-storage-probe", ota_ep, eneros_time::get_monotonic_ns)
         .map_err(|e| alloc::format!("ota client init: {:?}", e))?;
     // OTA1 0x06 PERSIST-TRIAL：remaining(4)‖version(16) → gen(8)。
-    // 服务循环为分块 EIPC（ChunkedReceiver）——经 chunked 端点发送
-    //（蓝图 62 卷 62.2 WP-62.2.4：epoch 单一递增点；共享计数器 wrap_at/
-    // epoch() 写回保真）。蓝图 58：请求构造/响应解析走 ota_wire 单源。
+    // 服务循环为分块 EIPC（ChunkedReceiver）——经共享 epoch 会话发送
+    //（蓝图 63 卷 63.2 WP-63.2.1：写回内化进 ChunkedSession::call，
+    // 成败无关——结构性不可能漏写回）。蓝图 58：请求构造/响应解析走
+    // ota_wire 单源。
     let req = eneros_agent_sdk::ota_wire::encode_persist_trial(2, "1.2.0");
-    let mut endpoint = ChunkedEndpoint::wrap_at(ipc, *epoch);
-    // 写回与成败无关（原语义：建 transfer 即消耗——失败路径同样前进，
-    // 保证共享计数器在传输失败后不复用旧 epoch）。
+    let mut endpoint = ChunkedSession::wrap_shared(ipc, epoch);
     let resp = endpoint.call("svc-ota", &req);
-    *epoch = endpoint.epoch();
     let resp = resp.map_err(|e| alloc::format!("persist transport: {e:?}"))?;
     // 41 修复：svc-ota 失败响应以 "ERR:" 前缀返回（如存储未授予
     // "ERR:store-unavailable"）。不检查前缀就把错误串前 8 字节解成 gen
@@ -929,7 +967,6 @@ fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::stri
     // OTA1 0x07 LOAD-TRIAL：→ found(1)‖remaining(4)‖version(16)。
     let req2 = eneros_agent_sdk::ota_wire::encode_load_trial();
     let resp2 = endpoint.call("svc-ota", &req2);
-    *epoch = endpoint.epoch();
     let resp2 = resp2.map_err(|e| alloc::format!("load transport: {e:?}"))?;
     let (remaining, version) = match eneros_agent_sdk::ota_wire::parse_load_resp(&resp2) {
         Ok(v) => v,
@@ -996,9 +1033,8 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
 
     let mut ipc = Sel4IpcClient::new("root-ota-download", ota_ep, eneros_time::get_monotonic_ns)
         .map_err(|e| alloc::format!("ota client init: {:?}", e))?;
-    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc, *epoch);
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::wrap_shared(ipc, epoch);
     let resp = endpoint.call("svc-ota", &req);
-    *epoch = endpoint.epoch();
     let resp = resp.map_err(|e| alloc::format!("ota download transport: {e:?}"))?;
     if let Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) =
         eneros_agent_sdk::ota_wire::expect_subcode_resp(
@@ -1020,7 +1056,6 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
     // 0x03 TRIAL
     let req3 = eneros_agent_sdk::ota_wire::encode_trial(1, b"0.123.0");
     let resp3 = endpoint.call("svc-ota", &req3);
-    *epoch = endpoint.epoch();
     let resp3 = resp3.map_err(|e| alloc::format!("ota trial transport: {e:?}"))?;
     eneros_agent_sdk::ota_wire::expect_subcode_resp(&resp3, eneros_agent_sdk::ota_wire::SUB_TRIAL)
         .map_err(|e| alloc::format!("ota trial unexpected resp: {e:?}"))?;
@@ -1029,7 +1064,6 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
     // 0x04 COMMIT
     let req4 = eneros_agent_sdk::ota_wire::encode_commit();
     let resp4 = endpoint.call("svc-ota", &req4);
-    *epoch = endpoint.epoch();
     let resp4 = resp4.map_err(|e| alloc::format!("ota commit transport: {e:?}"))?;
     eneros_agent_sdk::ota_wire::expect_subcode_resp(&resp4, eneros_agent_sdk::ota_wire::SUB_COMMIT)
         .map_err(|e| alloc::format!("ota commit unexpected resp: {e:?}"))?;
@@ -1088,10 +1122,8 @@ fn control_chain_synth_ingest(
     // INGEST（分块：349B → 4 块）。
     let mut ipc = Sel4IpcClient::new("root-collect", telemetry_ep, eneros_time::get_monotonic_ns)
         .map_err(|e| alloc::format!("telemetry client init: {:?}", e))?;
-    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc, *epoch);
-    // 写回与成败无关（共享计数器在失败后不复用旧 epoch——62.2 复查修复）。
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::wrap_shared(ipc, epoch);
     let resp = endpoint.call("svc-telemetry", &req);
-    *epoch = endpoint.epoch();
     let resp = resp.map_err(|e| {
         let stats = endpoint.client_mut().stats();
         alloc::format!(
@@ -1180,10 +1212,8 @@ fn telemetry_report_tick(
             return -1;
         }
     };
-    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc, *epoch);
-    // 写回与成败无关（共享计数器在失败后不复用旧 epoch——62.2 复查修复）。
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::wrap_shared(ipc, epoch);
     let enq_resp = endpoint.call("svc-observability", &req);
-    *epoch = endpoint.epoch();
     let enq_resp = match enq_resp {
         Ok(r) => r,
         Err(e) => {
@@ -1208,9 +1238,8 @@ fn telemetry_report_tick(
             return -1;
         }
     };
-    let mut endpoint2 = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc2, *epoch);
+    let mut endpoint2 = eneros_agent_sdk::endpoint::ChunkedSession::wrap_shared(ipc2, epoch);
     let flush_resp = endpoint2.call("svc-observability", &flush_req);
-    *epoch = endpoint2.epoch();
     let flush_resp = match flush_resp {
         Ok(r) => r,
         Err(e) => {
@@ -1271,9 +1300,8 @@ fn control_chain_tick(
         eneros_time::get_monotonic_ns,
     )
     .map_err(|e| alloc::format!("energy client init: {:?}", e))?;
-    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(ipc2, *epoch);
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::wrap_shared(ipc2, epoch);
     let tick_resp = endpoint.call("svc-energy-agent", &[1u8 /* EA_TICK */]);
-    *epoch = endpoint.epoch();
     let tick_resp = tick_resp.map_err(|e| alloc::format!("tick transport: {:?}", e))?;
     if tick_resp.is_empty() {
         return Err("empty tick response".into());

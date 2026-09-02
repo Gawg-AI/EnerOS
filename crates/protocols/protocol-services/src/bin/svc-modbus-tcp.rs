@@ -385,83 +385,34 @@ pub extern "C" fn _start(
                     },
                 );
                 let records = fetched.records;
-                // 来源 descriptor（modbus-tcp 行 = 本适配器身份；[07] §2.4）。
-                let mut descriptors: alloc::vec::Vec<(
-                    u32,
-                    eneros_ingestion_core::SourceDescriptor,
-                )> = alloc::vec::Vec::new();
-                let mut own_source_id: Option<u32> = None;
-                for src in &sources {
-                    if src.protocol == PointProtocol::ModbusTcp {
-                        // descriptor 构造单源工厂（W3）；本适配器过滤
-                        // 口径 = 本来源映射点全集（协议路由已在 fetch
-                        // 阶段过滤——谓词恒真，不与 iec104 静默统一）。
-                        let mut ids = alloc::vec::Vec::new();
-                        registry.collect_ids(&mut ids);
-                        let descriptor = eneros_ingestion_core::descriptor_of(src, ids, |id| {
-                            registry.resolve(*id).map(|m| m.identity.schema_id)
-                        });
-                        descriptors.push((src.source_id, descriptor));
-                        if own_source_id.is_none() {
-                            own_source_id = Some(src.source_id);
-                        }
-                    }
-                }
-                // 装配序列（任一失败 → 能力壳 fail-closed；labeled block
-                // 汇聚到统一的 Box<dyn DriverService> 臂值）。
-                let built: Option<Box<dyn eneros_drv_svc::runtime::DriverService>> = 'build: {
-                    let Some(own) = own_source_id else {
-                        eneros_runtime::println!(
-                            "[svc-modbus-tcp] OBS-SOURCE disabled (no modbus-tcp [[source]] row)"
-                        );
-                        break 'build None;
-                    };
-                    let Some(mut module) =
-                        build_module(&descriptors, own, &registry, &records, plugin.clone())
-                    else {
-                        eneros_runtime::println!("[svc-modbus-tcp] OBS-MODULE build FAIL");
-                        break 'build None;
-                    };
-                    // 开源（floor = boot 单调时刻；持久 boot counter = ADR-0047）。
-                    let epoch_floor = eneros_protocol_services::now_ms();
-                    match module.open(own, epoch_floor) {
-                        Ok(epoch) => {
-                            eneros_runtime::println!(
-                                "[svc-modbus-tcp] OBS-SOURCE id={} epoch={} (config-allocated)",
-                                own,
-                                epoch
-                            );
-                        }
-                        Err(e) => {
-                            eneros_runtime::println!(
-                                "[svc-modbus-tcp] OBS-SOURCE open FAIL: {e:?}"
-                            );
-                            break 'build None;
-                        }
-                    }
-                    let _ = generation; // generation 已注入 mapping.identity
-                    let uplink = eneros_protocol_services::ingestion_stage::TelemetryUplink::new(
-                        telemetry, own,
-                    );
-                    let mut io = ModbusTcpIoService {
-                        module,
-                        source_id: own,
-                        plugin,
-                        registry,
-                        uplink,
-                        transactions: 0,
-                    };
-                    // 启动期自检：一轮真实采集（外部 peer 记录事务；串口
-                    // 打印 = L2 互操作/45 采集证据行）。
-                    eneros_protocol_services::ingestion_stage::run_acq_round(
-                        &mut io.module,
-                        &mut io.uplink,
-                        "svc-modbus-tcp",
-                        eneros_drv_svc::now_ns(),
-                    );
-                    break 'build Some(Box::new(io));
-                };
-                built.unwrap_or_else(protocol_ladder::capability_shell)
+                let _ = generation; // generation 已注入 mapping.identity
+                                    // 装配序列单源（蓝图 63 卷 63.2 WP-63.2.4）：descriptor
+                                    // 循环→build→open→uplink→自检→壳兜底进 lib；本 bin 只保留
+                                    // 协议差异点。schema 谓词 = 范围口径恒真（本适配器过滤
+                                    // 口径 = 本来源映射点全集——协议路由已在 fetch 阶段过滤，
+                                    // 不与 iec104 静默统一）。
+                eneros_protocol_services::ingestion_stage::build_ingested_service(
+                    "svc-modbus-tcp",
+                    "no modbus-tcp [[source]] row",
+                    &sources,
+                    PointProtocol::ModbusTcp,
+                    registry,
+                    |reg, id| reg.resolve(id).map(|m| m.identity.schema_id),
+                    |reg, descriptors, own| {
+                        build_module(descriptors, own, reg, &records, plugin.clone())
+                    },
+                    telemetry,
+                    |module, own, uplink, registry| {
+                        Box::new(ModbusTcpIoService {
+                            module,
+                            source_id: own,
+                            plugin: plugin.clone(),
+                            registry,
+                            uplink,
+                            transactions: 0,
+                        })
+                    },
+                )
             }
             protocol_ladder::Ladder::Degraded(_) => protocol_ladder::capability_shell(),
         };

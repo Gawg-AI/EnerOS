@@ -308,90 +308,44 @@ pub extern "C" fn _start(
                     |p| p.protocol == PointProtocol::Iec104,
                 );
                 let records = fetched.records;
-                // 来源 descriptor（iec104 行 = 本适配器身份；[07] §2.4）。
-                let mut descriptors: alloc::vec::Vec<(
-                    u32,
-                    eneros_ingestion_core::SourceDescriptor,
-                )> = alloc::vec::Vec::new();
-                let mut own_source_id: Option<u32> = None;
-                for src in &sources {
-                    if src.protocol == PointProtocol::Iec104 {
-                        // descriptor 构造单源工厂（W3）；本适配器过滤
-                        // 口径 = **协议地址谓词**（仅 Iec104 地址的映射
-                        // 点——与 modbus 的范围口径差异参数化保留）。
-                        let mut ids = alloc::vec::Vec::new();
-                        registry.collect_ids(&mut ids);
-                        let descriptor = eneros_ingestion_core::descriptor_of(src, ids, |id| {
-                            registry.resolve(*id).and_then(|m| {
-                                let is_iec104 = matches!(
-                                    m.protocol_addr,
-                                    eneros_protocol_abstract::ProtocolAddress::Iec104 { .. }
-                                );
-                                if is_iec104 {
-                                    Some(m.identity.schema_id)
-                                } else {
-                                    None
-                                }
-                            })
-                        });
-                        descriptors.push((src.source_id, descriptor));
-                        if own_source_id.is_none() {
-                            own_source_id = Some(src.source_id);
-                        }
-                    }
-                }
-                // 装配序列（任一失败 → 能力壳 fail-closed；labeled block
-                // 汇聚到统一的 Box<dyn DriverService> 臂值）。
-                let built: Option<Box<dyn eneros_drv_svc::runtime::DriverService>> = 'build: {
-                    let Some(own) = own_source_id else {
-                        eneros_runtime::println!(
-                            "[svc-iec104] OBS-SOURCE disabled (no iec104 [[source]] row)"
-                        );
-                        break 'build None;
-                    };
-                    let Some(mut module) =
-                        build_module(&descriptors, own, &registry, &records, plugin.clone())
-                    else {
-                        eneros_runtime::println!("[svc-iec104] OBS-MODULE build FAIL");
-                        break 'build None;
-                    };
-                    // 开源（floor = boot 单调时刻；持久 boot counter = ADR-0047）。
-                    let epoch_floor = eneros_protocol_services::now_ms();
-                    match module.open(own, epoch_floor) {
-                        Ok(epoch) => {
-                            eneros_runtime::println!(
-                                "[svc-iec104] OBS-SOURCE id={} epoch={} (config-allocated)",
-                                own,
-                                epoch
+                let _ = generation; // generation 已注入 mapping.identity
+                                    // 装配序列单源（蓝图 63 卷 63.2 WP-63.2.4）：descriptor
+                                    // 循环→build→open→uplink→自检→壳兜底进 lib；本 bin 只保留
+                                    // 协议差异点。schema 谓词 = **协议地址谓词**（仅 Iec104
+                                    // 地址的映射点——与 modbus 的范围口径差异参数化保留）。
+                eneros_protocol_services::ingestion_stage::build_ingested_service(
+                    "svc-iec104",
+                    "no iec104 [[source]] row",
+                    &sources,
+                    PointProtocol::Iec104,
+                    registry,
+                    |reg, id| {
+                        reg.resolve(id).and_then(|m| {
+                            let is_iec104 = matches!(
+                                m.protocol_addr,
+                                eneros_protocol_abstract::ProtocolAddress::Iec104 { .. }
                             );
-                        }
-                        Err(e) => {
-                            eneros_runtime::println!("[svc-iec104] OBS-SOURCE open FAIL: {e:?}");
-                            break 'build None;
-                        }
-                    }
-                    let _ = generation; // generation 已注入 mapping.identity
-                    let uplink = eneros_protocol_services::ingestion_stage::TelemetryUplink::new(
-                        telemetry, own,
-                    );
-                    let mut io = Iec104IoService {
-                        module,
-                        source_id: own,
-                        plugin,
-                        uplink,
-                        transactions: 0,
-                    };
-                    // 启动期自检：一轮真实采集（外部 peer 记录事务；串口
-                    // 打印 = L2 互操作/46 采集证据行）。
-                    eneros_protocol_services::ingestion_stage::run_acq_round(
-                        &mut io.module,
-                        &mut io.uplink,
-                        "svc-iec104",
-                        eneros_drv_svc::now_ns(),
-                    );
-                    break 'build Some(Box::new(io));
-                };
-                built.unwrap_or_else(protocol_ladder::capability_shell)
+                            if is_iec104 {
+                                Some(m.identity.schema_id)
+                            } else {
+                                None
+                            }
+                        })
+                    },
+                    |reg, descriptors, own| {
+                        build_module(descriptors, own, reg, &records, plugin.clone())
+                    },
+                    telemetry,
+                    |module, own, uplink, _registry| {
+                        Box::new(Iec104IoService {
+                            module,
+                            source_id: own,
+                            plugin: plugin.clone(),
+                            uplink,
+                            transactions: 0,
+                        })
+                    },
+                )
             }
             protocol_ladder::Ladder::Degraded(_) => protocol_ladder::capability_shell(),
         };
