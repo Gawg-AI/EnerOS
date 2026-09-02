@@ -85,7 +85,11 @@ S="$DIR/qemu-serial.log"
 
 echo "=== 出口门判据行扫描 ==="
 FAIL=0
-# 词形逐字节不变（对照 evidence/62/vol62-1）：终态由单源 display_name 供给。
+BASE="$ROOT/evidence/62/vol62-1/normal.qemu-serial.log"
+# 词形逐字节不变（对照 evidence/62/vol62-1 基线）：终态由单源 display_name
+# 供给；AUDIT-CHAIN 行按基线口径（typed 链正例基线只含 AUDIT-CHAIN-DURABLE
+# ——AUDIT-CHAIN appended= 是协议写意图路径 DISP_SUBMIT_INTENT 的行，基线无，
+# 本门也不要求）。
 for pat in "PRODUCT-READY: true" \
            "CONTROL-CHAIN: round=" \
            "dispatch=Committed" \
@@ -96,9 +100,22 @@ done
 # root 收窄负判据：原内联 match 的 "other" 词形不得出现（终态才显示）。
 n=$(grep -c "dispatch=other" "$S" 2>/dev/null); n=${n:-0}
 if [ "$n" -eq 0 ]; then echo "[✓] dispatch=other = 0（root 显示收窄）"; else echo "[✗] dispatch=other 出现 $n 次（收窄失败）"; FAIL=1; fi
-# AUDIT-CHAIN 观测面 getter 行（63.1.2 读数词形不变；appended>0 证据）。
-n=$(grep -c "AUDIT-CHAIN appended=" "$S" 2>/dev/null); n=${n:-0}
-if [ "$n" -ge 1 ]; then echo "[✓] AUDIT-CHAIN appended= 命中=$n"; else echo "[✗] AUDIT-CHAIN appended= 缺失（观测面未出证据行）"; FAIL=1; fi
+# AUDIT-CHAIN 行与基线逐字节一致（63.1.2 getter 读数面——typed 链下基线
+# 与现卷都只出 AUDIT-CHAIN-DURABLE；词形漂移即红）。
+BASE_AUDIT=$(grep "AUDIT-CHAIN" "$BASE" | head -1)
+NOW_AUDIT=$(grep "AUDIT-CHAIN" "$S" | head -1)
+if [ "$BASE_AUDIT" = "$NOW_AUDIT" ] && [ -n "$NOW_AUDIT" ]; then
+  echo "[✓] AUDIT-CHAIN 行与基线逐字节一致"
+else
+  echo "[✗] AUDIT-CHAIN 行漂移：基线='$BASE_AUDIT' 现='$NOW_AUDIT'"; FAIL=1
+fi
+# CONTROL-CHAIN dispatch 终态词形与基线一致（Committed 出现 + 无其他词形漂移）。
+for w in "dispatch=Committed" "dispatch=-"; do
+  bn=$(grep -c "$w" "$BASE" 2>/dev/null); bn=${bn:-0}
+  nn=$(grep -c "$w" "$S" 2>/dev/null); nn=${nn:-0}
+  echo "    $w 基线=$bn 现卷=$nn"
+  if [ "$bn" -eq 0 ] && [ "$nn" -ne 0 ]; then echo "[✗] $w 基线零出现但现卷出现（词形新增）"; FAIL=1; fi
+done
 
 [ $FAIL -eq 0 ] && echo "VOL63.1-GATE: PASS" || { echo "VOL63.1-GATE: FAIL"; exit 7; }
 echo "DONE"
