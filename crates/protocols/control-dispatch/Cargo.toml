@@ -36,6 +36,9 @@ eneros-crypto = { path = "../../security/crypto" }
 eneros-decision-contract = { path = "../../ai/decision-contract", features = [
     "transition-certifier",
 ] }
+# 蓝图 63 WP-63.1.1（v0.316.0）：DispatchState 12 态码表单一实现
+# （to_code/from_code/display_name 单源；本 crate re-export 定义点）。
+eneros-dispatch-state = { path = "../dispatch-state" }
 sha2 = { version = "0.10.9", default-features = false }
 # 调度结果（能量预算估算）。
 eneros-energy-lp-model = { path = "../../ai/energy-lp-model" }

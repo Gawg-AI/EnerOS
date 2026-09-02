@@ -212,14 +212,17 @@ pub struct DispatchEngine {
     safety_voltage_window: (f64, f64),
     safety_freq_window: (f64, f64),
     safety_ramp_kw_per_min: f64,
-    /// 速率/能量预算闸（观测：used_kwh/rejected 计数）。
-    pub gate: DecisionGate,
-    /// 决策审计（观测：链校验/条目）。
-    pub audit: Option<DecisionAudit>,
+    /// 速率/能量预算闸（观测：used_kwh/rejected 计数；经只读 getter
+    /// `gate_used_kwh`/`gate_rejected_energy_kwh` 暴露——蓝图 63 WP-63.1.2
+    /// 写序唯一编排点结构收口，无 pub 可变字段）。
+    gate: DecisionGate,
+    /// 决策审计（观测：链校验/条目；经 `audit_log` 只读暴露）。
+    audit: Option<DecisionAudit>,
     /// 47：SHA-256 控制事件审计链。
     control_audit: Option<Box<dyn eneros_audit::AuditLogger>>,
-    /// durable intent 存储（观测：find/pending 对账）。
-    pub intent_log: Box<dyn IntentStore>,
+    /// durable intent 存储（观测：find/pending 对账；经 `find_intent`/
+    /// `pending_intents` 只读暴露——写只经 settle/push_stage 编排点）。
+    intent_log: Box<dyn IntentStore>,
     delivery: Box<dyn DeliveryChannel>,
     /// 61 v0.314.24：执行 journal（执行状态与幂等真值唯一持有者）。
     /// 启动时从 intent store 未决记录播种 Reconciling——旧版/崩溃遗留的
@@ -228,13 +231,13 @@ pub struct DispatchEngine {
     feedback_builder: TrustedFeedbackBuilder,
     now_fn: fn() -> u64,
     seq: u64,
-    /// 已提交（Committed）次数（观测/审计）。
-    pub committed_count: u64,
+    /// 已提交（Committed）次数（观测/审计；经 `committed_count` 只读）。
+    committed_count: u64,
     /// 审计丢弃计数。
-    pub audit_drop_count: u64,
+    audit_drop_count: u64,
     /// 47（Exit 补证）：成功入链条数（append 计数——QEMU 串口
     /// AUDIT-CHAIN 行依据；零计数不打印，杜绝恒 ok 式假证据）。
-    pub audit_append_count: u64,
+    audit_append_count: u64,
     /// 47（WP-47.1）：每来源协议已见最大意图序号（重放门——重复
     /// sequence 零写；跨重启由链幂等（意图 correlation 派生）兜底）。
     last_seq: BTreeMap<String, u64>,
@@ -763,6 +766,27 @@ enum SettleStage {
     JournalTransportAcked,
 }
 
+/// 结算不变参（蓝图 63 WP-63.1.3）：一次命令结算路径上**不随触发变化**
+/// 的上下文——`started`/`command_id`/`correlation`/`energy`/
+/// `setpoint_kw`/`response`。`states` 是唯一随臂推进的可变参，仍逐调用
+/// 传 `&mut`。
+///
+/// `response` 两段式（非变异）：投递帧未到位（前置结算）→ `None`；
+/// 帧解码后调用点以 `Some(&帧)` 重建 ctx 拷贝。Copy 语义——绝不在
+/// 编排点内原地改 ctx。
+#[derive(Clone, Copy)]
+struct ExecutionCtx<'a> {
+    started: u64,
+    command_id: [u8; 16],
+    correlation: [u8; 16],
+    /// 对端回执原文（Applied 行 sm3 摘要供给；前置结算 None）。
+    response: Option<&'a [u8]>,
+    /// 记账能量（kWh；前置结算路径 0.0——与 execute_core 现状一致）。
+    energy: f64,
+    /// 连续 setpoint 值（AppliedConfirmed 时更新爬坡基线；离散 None）。
+    setpoint_kw: Option<f64>,
+}
+
 /// 结算编排面（`DispatchEngine` 内聚实现；host/target 同源）。
 trait SettleDispatch {
     /// stage 推进单点：恰一笔 durable 写，失败返回 `{err:?}` 文案
@@ -776,18 +800,14 @@ trait SettleDispatch {
     ) -> Result<(), String>;
 
     /// 结算单点编排：表驱动 durable 写序（Applied 两相含嵌套结算）+
-    /// audit + 回执。`response` = 回执原文（Applied 行 sm3 摘要供给）。
-    #[allow(clippy::too_many_arguments)]
+    /// audit + 回执。`ctx.response` = 回执原文（Applied 行 sm3 摘要供给）。
+    /// 蓝图 63 WP-63.1.3：原九参（`#[allow(clippy::too_many_arguments)]`）
+    /// 六不变列收进 [`ExecutionCtx`]，每调用点 1–3 行。
     fn settle_command(
         &mut self,
         trigger: SettleTrigger,
         states: &mut Vec<DispatchState>,
-        started: u64,
-        command_id: [u8; 16],
-        correlation: [u8; 16],
-        response: Option<&[u8]>,
-        energy: f64,
-        setpoint_kw: Option<f64>,
+        ctx: &ExecutionCtx<'_>,
     ) -> Result<DispatchReceipt, DispatchError>;
 
     /// 嵌套结算（Applied 两相失败；durable 写失败一律容忍——
@@ -796,9 +816,7 @@ trait SettleDispatch {
         &mut self,
         s: &Settlement,
         states: &mut Vec<DispatchState>,
-        started: u64,
-        command_id: [u8; 16],
-        correlation: [u8; 16],
+        ctx: &ExecutionCtx<'_>,
     ) -> Result<DispatchReceipt, DispatchError>;
 
     /// 结算回执映射（四元组第四元的落地）。
@@ -848,13 +866,13 @@ impl SettleDispatch for DispatchEngine {
         &mut self,
         trigger: SettleTrigger,
         states: &mut Vec<DispatchState>,
-        started: u64,
-        command_id: [u8; 16],
-        correlation: [u8; 16],
-        response: Option<&[u8]>,
-        energy: f64,
-        setpoint_kw: Option<f64>,
+        ctx: &ExecutionCtx<'_>,
     ) -> Result<DispatchReceipt, DispatchError> {
+        // 63 WP-63.1.3：ctx 解构为既有局部（本体内引用原样——纯机械
+        // 收口，零行为/文案变化）。
+        let started = ctx.started;
+        let command_id = ctx.command_id;
+        let correlation = ctx.correlation;
         let settlement = settle(&trigger, states);
         if matches!(trigger, SettleTrigger::Applied) {
             // 61 v0.314.24 写序（表内 durable 序 [Intent, Journal]）：
@@ -869,12 +887,10 @@ impl SettleDispatch for DispatchEngine {
                 return self.settle_nested(
                     &settle(&SettleTrigger::AppliedDurableFailed, states),
                     states,
-                    started,
-                    command_id,
-                    correlation,
+                    ctx,
                 );
             }
-            let response = response.expect("Applied 结算必须携带回执原文");
+            let response = ctx.response.expect("Applied 结算必须携带回执原文");
             let receipt_digest = eneros_crypto::sm3_hash(response);
             if let Err(e) = self.journal.transition(
                 &correlation,
@@ -891,9 +907,7 @@ impl SettleDispatch for DispatchEngine {
                         states,
                     ),
                     states,
-                    started,
-                    command_id,
-                    correlation,
+                    ctx,
                 );
             }
             states.push(DispatchState::ReadbackVerified);
@@ -905,14 +919,14 @@ impl SettleDispatch for DispatchEngine {
             );
             // 复查 FIX（61 §3.4）：记录最近 AppliedConfirmed setpoint
             //（单点爬坡基线；仅 ActivePowerKw 有连续量语义）。
-            if let Some(v) = setpoint_kw {
+            if let Some(v) = ctx.setpoint_kw {
                 self.last_confirmed.insert(
                     (self.profile.device_id, self.profile.point_id),
                     (v, (self.now_fn)()),
                 );
             }
             // 步骤 11：confirmed dispatch 才记账。
-            self.gate.record(started, energy);
+            self.gate.record(started, ctx.energy);
             states.push(DispatchState::Committed);
             self.committed_count += 1;
         } else {
@@ -940,10 +954,11 @@ impl SettleDispatch for DispatchEngine {
         &mut self,
         s: &Settlement,
         states: &mut Vec<DispatchState>,
-        started: u64,
-        command_id: [u8; 16],
-        correlation: [u8; 16],
+        ctx: &ExecutionCtx<'_>,
     ) -> Result<DispatchReceipt, DispatchError> {
+        let started = ctx.started;
+        let command_id = ctx.command_id;
+        let correlation = ctx.correlation;
         for op in &s.durable {
             match op {
                 SettleOp::Journal { from, to } => {
@@ -1082,6 +1097,51 @@ impl DispatchEngine {
     /// 更新 fencing token（租约续期后）。
     pub fn update_fencing_token(&mut self, token: u64) {
         self.fencing_token = token;
+    }
+
+    // 蓝图 63 WP-63.1.2：观测/可写分离——以下只读观测面是外部读这六个
+    // 字段的唯一入口（字段已私有）。可写面唯一编排点 = `settle_command`
+    // / `push_stage`（写序承诺从纪律变结构：任何 `intent_log` 写/`gate`
+    // 记账/计数递增都只能经结算路径发生）。
+
+    /// Committed 次数（观测）。
+    pub fn committed_count(&self) -> u64 {
+        self.committed_count
+    }
+
+    /// 审计链成功入链条数（AUDIT-CHAIN 串口行 appended 依据）。
+    pub fn audit_append_count(&self) -> u64 {
+        self.audit_append_count
+    }
+
+    /// 审计丢弃计数。
+    pub fn audit_drop_count(&self) -> u64 {
+        self.audit_drop_count
+    }
+
+    /// 已记账能量（DecisionGate 只读委托）。
+    pub fn gate_used_kwh(&self) -> f64 {
+        self.gate.used_kwh()
+    }
+
+    /// 被拒能量计数（DecisionGate 只读委托；计数单位见 gate）。
+    pub fn gate_rejected_energy(&self) -> u64 {
+        self.gate.rejected_energy()
+    }
+
+    /// 决策审计只读视图（链校验/条目观测）。
+    pub fn audit_log(&self) -> Option<&DecisionAudit> {
+        self.audit.as_ref()
+    }
+
+    /// durable intent 只读查询（对账）。
+    pub fn find_intent(&self, id: &[u8; 16]) -> Option<IntentRecord> {
+        self.intent_log.find(id)
+    }
+
+    /// durable intent 未决集（对账）。
+    pub fn pending_intents(&self) -> Vec<IntentRecord> {
+        self.intent_log.pending()
     }
 
     fn audit(&mut self, exec: ExecOutcome, safety: SafetyOutcome, detail: &str, now_ms: u64) {
@@ -1347,12 +1407,9 @@ impl DispatchEngine {
         deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError> {
         let started = (self.now_fn)();
-        let mut states: Vec<DispatchState> = Vec::with_capacity(12);
-        states.push(DispatchState::Proposed);
 
         // 步骤 1：proposal 校验。
         self.validate_proposal(proposal)?;
-        states.push(DispatchState::Validated);
 
         // 步骤 2：telemetry 执行时刻新鲜度。
         if !telemetry.is_valid_at(started) {
@@ -1381,8 +1438,6 @@ impl DispatchEngine {
             Some(energy),
             telemetry,
             actor,
-            started,
-            states,
             deadline_ms,
         )
     }
@@ -1397,7 +1452,12 @@ impl DispatchEngine {
     /// （身份 = PlanCommand：sub_index 0 沿用 PlanId 幂等键，Phase 0
     /// 单 PCS 记录兼容）。批内任一命令失败即阻断后继（Saga 收敛归
     /// WP-5.2）。本函数不是第二执行真相：投递只经 `AuthorizedCommand`。
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// 63 WP-63.1.3：`states` 恒为 `[Proposed, Validated]`（两调用点
+    /// 同构构造、本体内不增删——只 `.clone()` 传入逐命令 execute_core），
+    /// 改为体内派生；`started` 两调用点均 `(self.now_fn)()` 现算现传
+    /// （μs 级），同样改体内派生。参数 8 → 6（删除
+    /// `#[allow(clippy::too_many_arguments)]`）。
     fn run_typed(
         &mut self,
         plan: &eneros_decision_contract::CandidatePlan,
@@ -1405,16 +1465,19 @@ impl DispatchEngine {
         energy_kwh: Option<f64>,
         telemetry: &TrustedTelemetry,
         actor: &AuthenticatedActor,
-        started: u64,
-        states: Vec<DispatchState>,
         deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError> {
         use eneros_decision_contract::{CertificateId, CertifiedPlan, CertifierSeal};
         use sha2::Digest as _;
 
+        let started = (self.now_fn)();
         if !plan.is_valid_at(started) {
             return Err(DispatchError::ProposalInvalid(String::from("计划已过期")));
         }
+        // 63 WP-63.1.3：states 恒为推进链起点（原调用点同构构造，本体内
+        // 不增删）。
+        let states: Vec<DispatchState> =
+            alloc::vec![DispatchState::Proposed, DispatchState::Validated];
 
         // —— 过渡认证（[06] §3.5.4：dispatch 入口 CertifiedPlan 路由）——
         // plan_sha256 = SHA-256(CandidatePlan V1 wire)；proof 绑定 profile
@@ -1912,6 +1975,17 @@ impl DispatchEngine {
         }
         states.push(DispatchState::Authorized);
 
+        // 63 WP-63.1.3：前置结算不变参 ctx（前置拒绝路径 energy=0.0/
+        // setpoint=None/response=None——与既有各调用点逐字一致）。
+        let pre_ctx = ExecutionCtx {
+            started,
+            command_id,
+            correlation,
+            response: None,
+            energy: 0.0,
+            setpoint_kw: None,
+        };
+
         // 步骤 4.5（SPEC-SERIES-2026-08-27/A WP-A.2）：AI 电气护栏——
         // run（启发式/AI 计划）与 run_intent（协议入站写）两翼共过的
         // 单咽喉门。拒绝 ⇒ 审计 Blocked 真实置位 + target 串口判定行 +
@@ -1936,12 +2010,7 @@ impl DispatchEngine {
                         reason: reason.clone(),
                     },
                     &mut states,
-                    started,
-                    command_id,
-                    correlation,
-                    None,
-                    0.0,
-                    None,
+                    &pre_ctx,
                 );
                 #[cfg(target_os = "none")]
                 eneros_runtime::println!("[svc-control-dispatch] SAFETY-REJECTED reason={reason}");
@@ -1951,29 +2020,11 @@ impl DispatchEngine {
 
         // 步骤 5：rate 预算 reserve（不 record）；energy 仅 AI 计划路径有语义。
         if self.gate.check_rate(started) != GateDecision::Allow {
-            return self.settle_command(
-                SettleTrigger::BudgetRate,
-                &mut states,
-                started,
-                command_id,
-                correlation,
-                None,
-                0.0,
-                None,
-            );
+            return self.settle_command(SettleTrigger::BudgetRate, &mut states, &pre_ctx);
         }
         if let Some(energy) = cmd.energy_kwh {
             if self.gate.check_energy(started, energy) != GateDecision::Allow {
-                return self.settle_command(
-                    SettleTrigger::BudgetEnergy,
-                    &mut states,
-                    started,
-                    command_id,
-                    correlation,
-                    None,
-                    0.0,
-                    None,
-                );
+                return self.settle_command(SettleTrigger::BudgetEnergy, &mut states, &pre_ctx);
             }
         }
         states.push(DispatchState::Reserved);
@@ -2009,12 +2060,7 @@ impl DispatchEngine {
                     err: alloc::format!("{e:?}"),
                 },
                 &mut states,
-                started,
-                command_id,
-                correlation,
-                None,
-                0.0,
-                None,
+                &pre_ctx,
             );
         }
         if let Err(err) = self.push_stage(
@@ -2026,12 +2072,7 @@ impl DispatchEngine {
             return self.settle_command(
                 SettleTrigger::JournalPersistFailed { err },
                 &mut states,
-                started,
-                command_id,
-                correlation,
-                None,
-                0.0,
-                None,
+                &pre_ctx,
             );
         }
         states.push(DispatchState::Persisted);
@@ -2049,15 +2090,17 @@ impl DispatchEngine {
             CommandValue::ActivePowerKw(v) => Some(v),
             _ => None,
         };
-        self.deliver_and_settle(
-            response,
-            states,
+        // 63 WP-63.1.3：投递路径 ctx（能量 = 命令真实能量——与投递前拒绝
+        // 路径的 0.0 不同，`pre_ctx` 不可复用）。
+        let deliver_ctx = ExecutionCtx {
             started,
             command_id,
             correlation,
-            cmd.energy_kwh.unwrap_or(0.0),
+            response: None,
+            energy: cmd.energy_kwh.unwrap_or(0.0),
             setpoint_kw,
-        )
+        };
+        self.deliver_and_settle(response, states, &deliver_ctx)
     }
 
     /// 步骤 7-12 收尾（run/run_intent 共享）：投递 ControlEnvelope 并分类回执。
@@ -2070,19 +2113,20 @@ impl DispatchEngine {
     ///
     /// 62 v0.315.0 WP-62.1.3：全部分类臂改调结算决策表（`settle_command`/
     /// `push_stage`）——结局语义单点，本函数只保留流程分类。
-    #[allow(clippy::too_many_arguments)]
+    /// 63 WP-63.1.3：六不变参收进 [`ExecutionCtx`]（`#[allow(too_many_
+    /// arguments)]` 删除）。
     fn deliver_and_settle(
         &mut self,
         response: Result<Vec<u8>, crate::ChannelError>,
         mut states: Vec<DispatchState>,
-        started: u64,
-        command_id: [u8; 16],
-        correlation: [u8; 16],
-        energy: f64,
-        // 复查 FIX（61 §3.4）：连续 setpoint 值（AppliedConfirmed 时更新
-        // 单点爬坡基线；离散命令 None）。
-        setpoint_kw: Option<f64>,
+        ctx: &ExecutionCtx<'_>,
     ) -> Result<DispatchReceipt, DispatchError> {
+        // 63 WP-63.1.3：投递未/已到位两段 ctx（非变异——delivered_ctx 是
+        // base_ctx 的结构更新拷贝；帧绑定在 shadow 后存在）。
+        let base_ctx = *ctx;
+        let started = base_ctx.started;
+        let command_id = base_ctx.command_id;
+        let correlation = base_ctx.correlation;
         // 步骤 7：投递已由调用方完成（envelope 参数）；此处直接分类回执。
         let response = match response {
             Ok(r) => {
@@ -2094,12 +2138,7 @@ impl DispatchEngine {
                     return self.settle_command(
                         SettleTrigger::SentAdvanceFailed { err },
                         &mut states,
-                        started,
-                        command_id,
-                        correlation,
-                        None,
-                        energy,
-                        setpoint_kw,
+                        &base_ctx,
                     );
                 }
                 if self
@@ -2114,40 +2153,21 @@ impl DispatchEngine {
                     return self.settle_command(
                         SettleTrigger::MarkDeliveredFailed,
                         &mut states,
-                        started,
-                        command_id,
-                        correlation,
-                        None,
-                        energy,
-                        setpoint_kw,
+                        &base_ctx,
                     );
                 }
                 r
             }
             Err(crate::ChannelError::Timeout) => {
                 // 投递后超时：写可能已发生——Indeterminate 对账，不猜成功。
-                return self.settle_command(
-                    SettleTrigger::DeliveryTimeout,
-                    &mut states,
-                    started,
-                    command_id,
-                    correlation,
-                    None,
-                    energy,
-                    setpoint_kw,
-                );
+                return self.settle_command(SettleTrigger::DeliveryTimeout, &mut states, &base_ctx);
             }
             Err(crate::ChannelError::Unreachable) => {
                 // 通道不可达 = 未投递（可证明）→ 终局 Failed。
                 return self.settle_command(
                     SettleTrigger::DeliveryUnreachable,
                     &mut states,
-                    started,
-                    command_id,
-                    correlation,
-                    None,
-                    energy,
-                    setpoint_kw,
+                    &base_ctx,
                 );
             }
             Err(e) => {
@@ -2162,12 +2182,7 @@ impl DispatchEngine {
                         err: alloc::format!("{e:?}"),
                     },
                     &mut states,
-                    started,
-                    command_id,
-                    correlation,
-                    None,
-                    energy,
-                    setpoint_kw,
+                    &base_ctx,
                 );
             }
         };
@@ -2185,12 +2200,7 @@ impl DispatchEngine {
                         err: alloc::format!("{e:?}"),
                     },
                     &mut states,
-                    started,
-                    command_id,
-                    correlation,
-                    Some(&response),
-                    energy,
-                    setpoint_kw,
+                    &base_ctx,
                 );
             }
         };
@@ -2204,89 +2214,46 @@ impl DispatchEngine {
             return self.settle_command(
                 SettleTrigger::AckAdvanceFailed { err },
                 &mut states,
-                started,
-                command_id,
-                correlation,
-                Some(&response),
-                energy,
-                setpoint_kw,
+                &base_ctx,
             );
         }
         states.push(DispatchState::TransportAcked);
+        // 帧已解码——结算 ctx 携带回执原文（sm3 摘要供给；两段式第二段）。
+        let delivered_ctx = ExecutionCtx {
+            response: Some(&response),
+            ..base_ctx
+        };
         let outcome = frame
             .outcome()
             .ok_or_else(|| DispatchError::BadResponse("未知结果码".into()))?;
         match outcome {
-            OutcomeCode::Applied => self.settle_command(
-                SettleTrigger::Applied,
-                &mut states,
-                started,
-                command_id,
-                correlation,
-                Some(&response),
-                energy,
-                setpoint_kw,
-            ),
+            OutcomeCode::Applied => {
+                self.settle_command(SettleTrigger::Applied, &mut states, &delivered_ctx)
+            }
             OutcomeCode::IdempotentHit => self.settle_command(
                 SettleTrigger::PeerIdempotentHit,
                 &mut states,
-                started,
-                command_id,
-                correlation,
-                Some(&response),
-                energy,
-                setpoint_kw,
+                &delivered_ctx,
             ),
-            OutcomeCode::DryRun => self.settle_command(
-                SettleTrigger::PeerDryRun,
-                &mut states,
-                started,
-                command_id,
-                correlation,
-                Some(&response),
-                energy,
-                setpoint_kw,
-            ),
+            OutcomeCode::DryRun => {
+                self.settle_command(SettleTrigger::PeerDryRun, &mut states, &delivered_ctx)
+            }
             OutcomeCode::Denied => self.settle_command(
                 SettleTrigger::PeerDenied { class: frame.class },
                 &mut states,
-                started,
-                command_id,
-                correlation,
-                Some(&response),
-                energy,
-                setpoint_kw,
+                &delivered_ctx,
             ),
             OutcomeCode::AppliedReadbackUnavailable => self.settle_command(
                 SettleTrigger::ReadbackUnavailable,
                 &mut states,
-                started,
-                command_id,
-                correlation,
-                Some(&response),
-                energy,
-                setpoint_kw,
+                &delivered_ctx,
             ),
-            OutcomeCode::AppliedReadbackMismatch => self.settle_command(
-                SettleTrigger::ReadbackMismatch,
-                &mut states,
-                started,
-                command_id,
-                correlation,
-                Some(&response),
-                energy,
-                setpoint_kw,
-            ),
-            OutcomeCode::Failed => self.settle_command(
-                SettleTrigger::PeerFailed,
-                &mut states,
-                started,
-                command_id,
-                correlation,
-                Some(&response),
-                energy,
-                setpoint_kw,
-            ),
+            OutcomeCode::AppliedReadbackMismatch => {
+                self.settle_command(SettleTrigger::ReadbackMismatch, &mut states, &delivered_ctx)
+            }
+            OutcomeCode::Failed => {
+                self.settle_command(SettleTrigger::PeerFailed, &mut states, &delivered_ctx)
+            }
         }
     }
 
@@ -2395,9 +2362,6 @@ impl ControlDispatch for DispatchEngine {
         deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError> {
         let started = (self.now_fn)();
-        let mut states: Vec<DispatchState> = Vec::with_capacity(12);
-        states.push(DispatchState::Proposed);
-        states.push(DispatchState::Validated);
         if !telemetry.is_valid_at(started) {
             return Err(DispatchError::TelemetryExpired);
         }
@@ -2407,8 +2371,6 @@ impl ControlDispatch for DispatchEngine {
             None,
             telemetry,
             actor,
-            started,
-            states,
             deadline_ms,
         )
     }
@@ -2418,6 +2380,10 @@ impl ControlDispatch for DispatchEngine {
 /// 生产 adapter——命令批经 [`eneros_control_dispatch::saga::BatchSaga`]
 /// 编排时，逐命令的授权/投递/读回/记账仍由唯一合核承载（不产生第二
 /// 执行真相）。
+///
+/// > 状态：**deferred（ADR-0052，蓝图 63 v0.316.0）**——零生产消费者冻结
+/// > 资产（同 saga.rs 模块头）。`#[allow(clippy::too_many_arguments)]` 因
+/// > 冻结纪律保留（构造样板收拢归激活前置，见 ADR-0052 裁决 4）。
 ///
 /// - `execute`：走 [`DispatchEngine::execute_core`]-equivalent 链
 ///   （PlanCommand 身份：幂等键 = intent_id 派生 / legacy 单命令 = PlanId

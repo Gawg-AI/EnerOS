@@ -257,7 +257,7 @@ fn intent_normal_chain_commits() {
         .state_path
         .contains(&DispatchState::ReadbackVerified));
     // 恰好一次投递 + 记账 + 审计入链。
-    let audit = engine.audit.as_ref().expect("audit");
+    let audit = engine.audit_log().expect("audit");
     assert_eq!(audit.chain_state().entry_count, 1);
     assert!(audit.verify().expect("verify").valid);
 }
@@ -286,7 +286,7 @@ fn intent_out_of_binding_denied_zero_delivery() {
         .submit_intent(&bad, &tel, &actor(), 5000)
         .expect_err("deny");
     assert!(matches!(err, DispatchError::NotAuthorized(_)));
-    assert_eq!(engine.committed_count, 0);
+    assert_eq!(engine.committed_count(), 0);
 }
 
 /// 负例：策略拒绝（链 deny）→ NotAuthorized 零投递。
@@ -393,7 +393,7 @@ fn intent_replay_same_sequence_zero_write() {
         "重放必须零写拒绝: {r2:?}"
     );
     assert!(r2.note.as_deref().unwrap_or("").contains("protocol-replay"));
-    assert_eq!(engine.committed_count, 1, "重放不得再次 Committed");
+    assert_eq!(engine.committed_count(), 1, "重放不得再次 Committed");
 }
 
 /// 负例：rate 预算超限（产品速率 60/h 语义——先配额 1 次，第 2 次拒绝）。

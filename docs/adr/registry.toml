@@ -420,3 +420,12 @@ status = "Accepted"
 supersedes = []
 superseded_by = ""
 decision_digest = ""
+
+[[adrs]]
+id = "ADR-052"
+path = "docs/adr/ADR-0052-saga-seam-deferred.md"
+title = "saga 假 seam 冻结登记（蓝图 63 v0.316.0：零生产消费者机制不删不收，冻结至激活前置）"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""

@@ -1,0 +1,11 @@
+[package]
+name = "eneros-dispatch-state"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图 63 WP-63.1.1：DispatchState 12 态码表单一实现（to_code/from_code/display_name），控制面所有 wire/持久化/显示面单源（no_std）"
+
+[dependencies]
+
+[dev-dependencies]

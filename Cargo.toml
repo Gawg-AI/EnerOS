@@ -106,6 +106,9 @@ members = [
     "crates/protocols/protocol-services",
     "crates/protocols/control-gateway",
     "crates/protocols/control-dispatch",
+    # 蓝图 63 WP-63.1.1（v0.316.0）：DispatchState 12 态码表单一实现——
+    # control-dispatch re-export 源 + root-task 零依赖解码面。
+    "crates/protocols/dispatch-state",
     "crates/agents/control-services",
     "crates/protocols/safety-catalog",
     "crates/drivers/calibration",
@@ -187,7 +190,7 @@ members = [
 # rc/1.0 标记；冲刺期一律 0.x.y（0.313 延续历史 120 版本计划顶格 v0.312）；
 # 每 WP Exit 自证后递增 patch（cargo xtask bump-version patch；
 # xtask qa gng-version / eneros-ci version-gate-consistency 双检查强制）。
-version = "0.315.2"
+version = "0.316.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

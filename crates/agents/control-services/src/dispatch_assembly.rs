@@ -205,11 +205,11 @@ impl crate::ControlServiceHandler for DispatchHandler {
                 *resp = crate::dispatch_service::handle_submit_intent(engine, req, tel.as_ref());
                 // 47（Exit 补证）：审计入链可观测——append/drop 计数随
                 // 每个控制事件刷新（appended>0 才有入链证据，dropped>0
-                // 即证据缺口）。
+                // 即证据缺口）。63 WP-63.1.2：只读 getter。
                 eneros_runtime::println!(
                     "[svc-control-dispatch] AUDIT-CHAIN appended={} dropped={}",
-                    engine.audit_append_count,
-                    engine.audit_drop_count
+                    engine.audit_append_count(),
+                    engine.audit_drop_count()
                 );
             }
             _ => {

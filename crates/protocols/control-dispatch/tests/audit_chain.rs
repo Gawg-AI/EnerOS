@@ -299,18 +299,18 @@ fn audit_append_count_observable() {
         Box::new(CaptureLogger::new(Rc::clone(&records))),
         OutcomeCode::Applied.code(),
     );
-    assert_eq!(engine.audit_append_count, 0, "初始零入链");
-    assert_eq!(engine.audit_drop_count, 0);
+    assert_eq!(engine.audit_append_count(), 0, "初始零入链");
+    assert_eq!(engine.audit_drop_count(), 0);
     let tel = trusted_telemetry();
     let receipt = engine
         .submit_intent(&intent(1), &tel, &actor(), 5000)
         .expect("submit");
     assert_eq!(receipt.final_state, DispatchState::Committed, "{receipt:?}");
     assert!(
-        engine.audit_append_count >= 1,
+        engine.audit_append_count() >= 1,
         "Committed 必须 ≥1 条成功入链（append 计数递增）"
     );
-    assert_eq!(engine.audit_drop_count, 0, "成功入链零丢弃");
+    assert_eq!(engine.audit_drop_count(), 0, "成功入链零丢弃");
 }
 
 /// DoD：Committed + Failed 双事件入链；尾部截断 → verify_log 拒绝且

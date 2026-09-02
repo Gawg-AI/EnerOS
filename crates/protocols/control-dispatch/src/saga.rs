@@ -1,6 +1,11 @@
 //! 蓝图 61 Phase 5 WP-5.2（[10] §3）：`BatchSaga` —— 命令批执行 Saga
 //! 与 Reconciler。
 //!
+//! > 状态：**deferred（ADR-0052，蓝图 63 v0.316.0）**——零生产消费者冻结
+//! > 资产。冻结纪律：第一个生产批提交入口出现前，不得添加新参数/新方法/
+//! > 测试以外行为；代码级 bug 修复例外（修完仍冻结）。激活前置与删除支见
+//! > docs/adr/ADR-0052-saga-seam-deferred.md。
+//!
 //! 唯一不变量（[10] §3.1）：命令批在任意部分成功、服务崩溃、设备超时或
 //! 网络分区后，能恢复并收敛到 `AppliedConfirmed`、`Failed`、`Compensated`
 //! 或 `ManualIntervention`；**不会把未知变成功，也不会重复已确认副作用**。

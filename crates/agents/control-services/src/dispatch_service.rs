@@ -43,10 +43,14 @@ pub const DISP_ERR: u8 = 1;
 pub const RECEIPT_WIRE_LEN: usize = 1 + 1 + 8 + 8 + 64;
 
 /// 编码回执（note 截断到 64B）。
+///
+/// 蓝图 63 WP-63.1.1：final_state 码值经单源
+/// [`DispatchState::to_code`]（码表单源 = eneros-dispatch-state），
+/// 回执 wire 字节零变化。
 pub fn encode_receipt(r: &DispatchReceipt) -> Vec<u8> {
     let mut out = Vec::with_capacity(RECEIPT_WIRE_LEN);
     out.push(DISP_OK);
-    out.push(state_code(r.final_state));
+    out.push(r.final_state.to_code());
     out.extend_from_slice(&r.committed_at_ms.unwrap_or(0).to_le_bytes());
     out.extend_from_slice(&r.latency_ms.to_le_bytes());
     let note = r.note.clone().unwrap_or_default();
@@ -63,7 +67,9 @@ pub fn decode_receipt(buf: &[u8]) -> Option<(u8, DispatchState, u64, u64, String
         return None;
     }
     let status = buf[0];
-    let state = state_from_code(buf[1])?;
+    // 蓝图 63 WP-63.1.1：decode 走单源 from_code（码表单源）——未知码
+    // fail-closed None（wire 字节零变化）。
+    let state = DispatchState::from_code(buf[1])?;
     let committed = u64::from_le_bytes(buf[2..10].try_into().ok()?);
     let latency = u64::from_le_bytes(buf[10..18].try_into().ok()?);
     let note_end = buf[18..]
@@ -73,41 +79,6 @@ pub fn decode_receipt(buf: &[u8]) -> Option<(u8, DispatchState, u64, u64, String
         .unwrap_or(0);
     let note = String::from_utf8_lossy(&buf[18..18 + note_end]).into_owned();
     Some((status, state, committed, latency, note))
-}
-
-fn state_code(s: DispatchState) -> u8 {
-    match s {
-        DispatchState::Proposed => 0,
-        DispatchState::Validated => 1,
-        DispatchState::Authorized => 2,
-        DispatchState::Reserved => 3,
-        DispatchState::Persisted => 4,
-        DispatchState::Delivered => 5,
-        DispatchState::TransportAcked => 6,
-        DispatchState::ReadbackVerified => 7,
-        DispatchState::Committed => 8,
-        DispatchState::Rejected => 9,
-        DispatchState::Failed => 10,
-        DispatchState::Indeterminate => 11,
-    }
-}
-
-fn state_from_code(c: u8) -> Option<DispatchState> {
-    match c {
-        0 => Some(DispatchState::Proposed),
-        1 => Some(DispatchState::Validated),
-        2 => Some(DispatchState::Authorized),
-        3 => Some(DispatchState::Reserved),
-        4 => Some(DispatchState::Persisted),
-        5 => Some(DispatchState::Delivered),
-        6 => Some(DispatchState::TransportAcked),
-        7 => Some(DispatchState::ReadbackVerified),
-        8 => Some(DispatchState::Committed),
-        9 => Some(DispatchState::Rejected),
-        10 => Some(DispatchState::Failed),
-        11 => Some(DispatchState::Indeterminate),
-        _ => None,
-    }
 }
 
 /// 服务逻辑：请求（proposal wire + telemetry wire + actor）→ 回执。
@@ -193,7 +164,7 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
 pub fn err_receipt(reason: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(RECEIPT_WIRE_LEN);
     out.push(DISP_ERR);
-    out.push(state_code(DispatchState::Rejected));
+    out.push(DispatchState::Rejected.to_code());
     out.extend_from_slice(&0u64.to_le_bytes());
     out.extend_from_slice(&0u64.to_le_bytes());
     let bytes = reason.as_bytes();

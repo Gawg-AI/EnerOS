@@ -45,6 +45,9 @@ eneros-config-bundle = { path = "../config-bundle", default-features = false }
 # 蓝图 40 收尾：遥测样本构造（控制链采集代理 INGEST——39 设备句柄移交
 # 前的 QEMU 装配路径；样本经 svc-telemetry evaluator 全量校验）。
 eneros-safety-validator = { path = "../../ai/safety-validator" }
+# 蓝图 63 WP-63.1.1（v0.316.0）：DispatchState 码表单源——CONTROL-CHAIN
+# 终态字节解码/显示收窄（零依赖；不拖入 control-dispatch 闭包）。
+eneros-dispatch-state = { path = "../../protocols/dispatch-state" }
 heapless = "0.8"
 # 30 RT-004：init bundle 模块 sha256 校验（打包侧 xtask 用 sha2 0.10
 # Sha256 写摘要——解析侧必须同算法；sha2 no_std 兼容）。

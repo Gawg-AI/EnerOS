@@ -4,6 +4,15 @@
 //! validate → authorize → persist → deliver → ACK → readback → audit 全链，
 //! 返回带 [`DispatchState`] 的 [`DispatchReceipt`]——调用方（svc-energy-agent）
 //! 只以 `final_state == Committed` 作为成功判据（learning 门控）。
+//!
+//! [`DispatchState`] 定义与码表单源（蓝图 63 WP-63.1.1）：
+//! 蓝图 62 之前，12 态码表在三个面各自手写逐臂重复（回执 wire encode/
+//! decode、durable 持久化解码、root 显示）且类型本体定义在此——root-task
+//! 不得链接 control-dispatch（依赖闭包拖入 dual-brain/serde_json），码表
+//! 收口因此把 **定义 + 码表单源移到零依赖 crate `eneros-dispatch-state`**；
+//! 本模块 re-export 保持 `eneros_control_dispatch::DispatchState` 全仓类型
+//! 身份不变（集成测试/消费方零改动）。定义锁测试（往返/未知码/冻结词形）
+//! 在 dispatch-state crate 内。
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -27,58 +36,11 @@ pub struct AuthenticatedActor {
 }
 
 /// 投递状态机（WP-40.6 12 态；`Committed` 是唯一成功终态）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum DispatchState {
-    /// 已提交给 dispatch（proposal 校验前）。
-    Proposed,
-    /// proposal schema/units/ranges/idempotency 校验通过。
-    Validated,
-    /// actor/capability/lease/fencing + safety catalog 授权通过。
-    Authorized,
-    /// rate/energy/concurrency 预算 reserve 通过。
-    Reserved,
-    /// durable intent 已写入。
-    Persisted,
-    /// ControlEnvelope 已投递（device-agent 收到）。
-    Delivered,
-    /// 协议/控制器 transport ACK。
-    TransportAcked,
-    /// 独立 readback 符合容差/时限。
-    ReadbackVerified,
-    /// 审计、预算、反馈完成（唯一成功终态）。
-    Committed,
-    /// 被拒（授权/校验失败，零投递）。
-    Rejected,
-    /// 失败（写失败/读回不符/设备拒绝）。
-    Failed,
-    /// 不确定（投递后超时/重启/读回不可得——不猜成功，执行对账）。
-    Indeterminate,
-}
-
-impl DispatchState {
-    /// 审计标签。
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            DispatchState::Proposed => "proposed",
-            DispatchState::Validated => "validated",
-            DispatchState::Authorized => "authorized",
-            DispatchState::Reserved => "reserved",
-            DispatchState::Persisted => "persisted",
-            DispatchState::Delivered => "delivered",
-            DispatchState::TransportAcked => "transport-acked",
-            DispatchState::ReadbackVerified => "readback-verified",
-            DispatchState::Committed => "committed",
-            DispatchState::Rejected => "rejected",
-            DispatchState::Failed => "failed",
-            DispatchState::Indeterminate => "indeterminate",
-        }
-    }
-
-    /// 是否成功终态（唯一学习/成功判据）。
-    pub fn is_committed(&self) -> bool {
-        matches!(self, DispatchState::Committed)
-    }
-}
+///
+/// 蓝图 63 WP-63.1.1：定义与码表（to_code/from_code/display_name）在
+/// `eneros-dispatch-state`（re-export 源）；本处 re-export 保持类型身份。
+#[doc(inline)]
+pub use eneros_dispatch_state::DispatchState;
 
 /// 投递回执（`final_state` 是唯一成功判据；`state_path` 供审计/对账）。
 #[derive(Debug, Clone)]

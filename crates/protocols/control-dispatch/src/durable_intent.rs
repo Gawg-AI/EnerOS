@@ -62,7 +62,9 @@ impl Encode for IntentRecord {
             }
             None => out.push(0),
         }
-        out.push(self.state as u8);
+        // 蓝图 63 WP-63.1.1：码值走单源 to_code（原 `self.state as u8`
+        // 判别序拷贝——码表布局在 eneros-dispatch-state；写入字节零变化）。
+        out.push(self.state.to_code());
         // ---- v2 追加段（61 v0.314.24）：超集布局——旧解码器可读 v1 前缀，
         // 新解码器对无追加段的记录按 v1（digest=None）处理。----
         out.extend_from_slice(&V2_MAGIC);
@@ -130,7 +132,9 @@ impl Decode for IntentRecord {
             }
             _ => return Err(StoreError::Corrupt),
         };
-        let state = state_from_code(*bytes.get(off).ok_or(StoreError::Corrupt)?)
+        // 蓝图 63 WP-63.1.1：decode 走单源 from_code（码表单源）——
+        // 未知码 Corrupt fail-closed（持久化字节零变化）。
+        let state = DispatchState::from_code(*bytes.get(off).ok_or(StoreError::Corrupt)?)
             .ok_or(StoreError::Corrupt)?;
         off += 1;
         // ---- v2 追加段（可选）：61 v0.314.24。无追加段 = 旧版 v1 记录
@@ -213,24 +217,6 @@ impl Decode for IntentRecord {
             },
         ))
     }
-}
-
-fn state_from_code(c: u8) -> Option<DispatchState> {
-    Some(match c {
-        0 => DispatchState::Proposed,
-        1 => DispatchState::Validated,
-        2 => DispatchState::Authorized,
-        3 => DispatchState::Reserved,
-        4 => DispatchState::Persisted,
-        5 => DispatchState::Delivered,
-        6 => DispatchState::TransportAcked,
-        7 => DispatchState::ReadbackVerified,
-        8 => DispatchState::Committed,
-        9 => DispatchState::Rejected,
-        10 => DispatchState::Failed,
-        11 => DispatchState::Indeterminate,
-        _ => return None,
-    })
 }
 
 /// 持久意图存储（AppendOutbox over PersistIo；重启对账恢复）。

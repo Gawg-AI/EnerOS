@@ -385,18 +385,17 @@ fn normal_chain_commits_with_readback() {
     );
     assert!(receipt.committed_at_ms.is_some());
     assert_eq!(*delivered.borrow(), 1, "必须恰好投递一次");
-    assert_eq!(engine.committed_count, 1);
+    assert_eq!(engine.committed_count(), 1);
     // confirmed dispatch 才记账（WP-40.3：record 移到 dispatch）。
-    assert!(engine.gate.used_kwh() > 0.0, "Committed 后必须记账");
+    assert!(engine.gate_used_kwh() > 0.0, "Committed 后必须记账");
     // intent 终态更新为 Committed。
     let intent = engine
-        .intent_log
-        .find(&receipt.command_id)
+        .find_intent(&receipt.command_id)
         .expect("intent 已持久化");
     assert_eq!(intent.state, DispatchState::Committed);
-    assert!(engine.intent_log.pending().is_empty(), "无未决意图");
+    assert!(engine.pending_intents().is_empty(), "无未决意图");
     // 审计入链。
-    let audit = engine.audit.as_ref().expect("audit");
+    let audit = engine.audit_log().expect("audit");
     assert_eq!(audit.chain_state().entry_count, 1);
     assert!(audit.verify().expect("verify").valid);
     // 状态路径完整（Proposed → … → Committed）。
@@ -430,10 +429,10 @@ fn delivery_timeout_is_indeterminate() {
     assert_eq!(receipt.final_state, DispatchState::Indeterminate);
     assert!(receipt.committed_at_ms.is_none());
     assert!(
-        !engine.intent_log.pending().is_empty(),
+        !engine.pending_intents().is_empty(),
         "Indeterminate 意图必须未决（对账）"
     );
-    assert_eq!(engine.gate.used_kwh(), 0.0, "未确认不得记账");
+    assert_eq!(engine.gate_used_kwh(), 0.0, "未确认不得记账");
 }
 
 /// 负例：通道不可达 → Err（前置失败零投递）。
@@ -458,7 +457,7 @@ fn delivery_unreachable_is_err_zero_delivery() {
         .submit(&proposal(5.0), &tel, &actor(), 5000)
         .expect_err("unreachable");
     assert!(matches!(err, DispatchError::DeliveryUnreachable));
-    assert_eq!(engine.committed_count, 0);
+    assert_eq!(engine.committed_count(), 0);
 }
 
 /// 负例：预算超限 → Err 零投递（拒绝不消耗成功预算）。
@@ -484,7 +483,7 @@ fn budget_exceeded_is_err_zero_delivery() {
     assert!(matches!(err, DispatchError::BudgetExceeded(_)));
     assert_eq!(*delivered.borrow(), 0, "预算拒绝必须零投递");
     assert_eq!(
-        engine.gate.rejected_energy(),
+        engine.gate_rejected_energy(),
         1,
         "拒绝计数（失败预算另行统计）"
     );
@@ -565,7 +564,7 @@ fn tampered_payload_fails_closed() {
         .as_deref()
         .unwrap_or("")
         .contains("device-denied"));
-    assert_eq!(engine.committed_count, 0, "篡改不得 Committed");
+    assert_eq!(engine.committed_count(), 0, "篡改不得 Committed");
 }
 
 /// 幂等：同 command_id 重放 → 链幂等命中 → Committed 且不重复投递。

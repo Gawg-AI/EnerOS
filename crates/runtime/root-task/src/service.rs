@@ -503,16 +503,15 @@ pub fn run_ipc_loop(
                             2 => "UNAVAILABLE",
                             _ => "INVALID",
                         };
-                        // dispatch 终态码与 DispatchState 编码对齐
-                        //（encode_receipt 布局：status1+state1+…）。
-                        let disp = match disp_state {
-                            Some(8) => "Committed",
-                            Some(9) => "Rejected",
-                            Some(10) => "Failed",
-                            Some(11) => "Indeterminate",
-                            Some(_) => "other",
-                            None => "-",
-                        };
+                        // 蓝图 63 WP-63.1.1：终态字节解码/显示收窄——码表单源
+                        // eneros-dispatch-state（原内联 4 态 match + 偏移知识
+                        // 删除；终态才显示，推进态/未知码如实 "-"——与 45-62
+                        // 证据行词形一致）。
+                        let disp = disp_state
+                            .and_then(eneros_dispatch_state::DispatchState::from_code)
+                            .filter(|s| s.is_terminal())
+                            .map(|s| s.display_name())
+                            .unwrap_or("-");
                         eneros_runtime::println!(
                             "[eneros-root-task] CONTROL-CHAIN: round={} telemetry-ingest={} agent={} dispatch={}",
                             chain_rounds,
@@ -1280,7 +1279,9 @@ fn control_chain_tick(
         return Err("empty tick response".into());
     }
     let ea_status = tick_resp[0];
-    // EA_OK 布局：EA_OK(1) + receipt wire（status1+state1+…）。
+    // EA_OK 布局：EA_OK(1) + receipt wire（status1+state1+…）——终态字节
+    // 在 tick_resp[2]（offset 由 svc-energy-agent 装配面冻结；root 只取字节，
+    // 解码/词形归 eneros-dispatch-state，见调用点 display 收窄）。
     let disp_state = if ea_status == 0 && tick_resp.len() >= 3 {
         Some(tick_resp[2])
     } else {
