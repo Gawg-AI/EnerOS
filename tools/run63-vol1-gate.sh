@@ -64,8 +64,12 @@ TPL="$ROOT/target/evidence61/template.fd"
 echo "=== 步骤 3：qemu-prod typed 链正例一轮 ==="
 DIR="$ROOT/target/evidence63-vol1/normal"
 mkdir -p "$DIR"; rm -f "$DIR/qemu-serial.log" "$DIR/eneros-data.raw"
+# peer 会把运行回放 append 进 --transcript 文件——必须先拷基线输入到本卷
+# 证据目录（禁止写已跟踪的 vol62-1 基线文件）。
+cp -f "$ROOT/evidence/62/vol62-1/normal.modbus.transcript.jsonl" \
+      "$EVROOT/normal.modbus.transcript.jsonl"
 python3 "$ROOT/evidence/61/modbus_slave61.py" \
-  --transcript "$ROOT/evidence/62/vol62-1/normal.modbus.transcript.jsonl" &
+  --transcript "$EVROOT/normal.modbus.transcript.jsonl" &
 PPID_PEER=$!
 sleep 1
 if ! kill -0 $PPID_PEER 2>/dev/null; then echo "PEER-DIED"; exit 5; fi
