@@ -7,8 +7,9 @@
 
 use eneros_protocol_abstract::{ProtocolConfig, ProtocolError};
 
-/// 已知配置键（未知键 → `InvalidConfig`，WP-39.10 不变量）。
-pub const KNOWN_KEYS: &[&str] = &["addr_bcd", "baud", "timeout_ms", "retries"];
+/// 已知配置键（未知键 → `InvalidConfig`，WP-39.10 不变量；蓝图 64
+/// WP-64.1.2 起单源引用 `eneros-protocol-keys`）。
+pub const KNOWN_KEYS: &[&str] = eneros_protocol_keys::DLT645;
 
 /// 默认轮询超时（毫秒）。
 pub const DEFAULT_TIMEOUT_MS: u64 = 1000;
@@ -123,5 +124,13 @@ mod tests {
         assert_eq!(c.baud, 4800);
         assert_eq!(c.timeout_ms, DEFAULT_TIMEOUT_MS);
         assert_eq!(c.retries, DEFAULT_RETRIES);
+    }
+
+    /// 蓝图 64 WP-64.1.3 双面引用锁（插件侧）：KNOWN_KEYS = 键表单源
+    /// `eneros_protocol_keys::DLT645`；对侧锁在 config-bundle
+    /// protocol.rs r64_ref_lock_dlt645。
+    #[test]
+    fn r64_ref_lock_dlt645() {
+        assert_eq!(KNOWN_KEYS, eneros_protocol_keys::DLT645);
     }
 }

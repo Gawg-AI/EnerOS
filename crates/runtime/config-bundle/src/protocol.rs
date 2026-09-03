@@ -39,86 +39,21 @@ pub const PROTOCOL_CONFIG_IDS: &[&str] = &[
 ];
 
 /// 每协议已知键（= 插件 validate_config 的 KNOWN_KEYS；未知键拒绝）。
+///
+/// 蓝图 64 WP-64.1.2：键表单源倒置——本函数委托
+/// [`eneros_protocol_keys::by_config_id`]（12 协议 const 数组唯一实现，
+/// 零依赖叶 crate），编译面与插件面同源消费，双面引用锁防漂移。
+/// goose `vlan_id` / mqtt `qos`/`will_topic` 双面漂移（活缺陷，
+/// R-64.a 红测实证 + 64.1 事实差异记录）随本收口修复——合法配置
+/// 编译面拒收面消失，未知键拒绝语义不变。
+///
+/// cj188 例外：叶 crate 键表照存（单源无死角），但编译面显式返回
+/// `None`——编译支持面扩容 = 行为新增，蓝图 64 §4 不做边界，独立裁决。
 pub fn known_keys(id: &str) -> Option<&'static [&'static str]> {
-    Some(match id {
-        "protocol-modbus-tcp" => &["peer", "unit_id", "timeout_ms", "retries"],
-        // SPEC-D WP-D.2：+ baud/parity/clock_hz（串口链路参数；与
-        // modbus-rtu 插件 KNOWN_KEYS 同波次双源同步——两侧字面量锁定测试
-        // 互为漂移闸，教训同 B 卷 F-M2）。消费面：svc-modbus-rtu 装配
-        // SerialTransportFactory/Pl011UartHw 时解析注入。
-        "protocol-modbus-rtu" => &[
-            "slave_id",
-            "baud",
-            "parity",
-            "clock_hz",
-            "timeout_ms",
-            "retries",
-        ],
-        "protocol-iec104" => &[
-            "peer",
-            "t3_timeout_ms",
-            "t1_timeout_ms",
-            "poll_interval_ms",
-            "clock_sync_interval_ms",
-        ],
-        "protocol-mqtt" => &[
-            "broker",
-            "client_id",
-            "keep_alive_ms",
-            "control_topic",
-            // 49（WP-49.2）：远程 dual-brain 传输面主题（可选）。
-            "ai_request_topic",
-            "ai_response_topic",
-            // 50（WP-50.1 exporter 真通道）：遥测批量帧发布主题（可选）。
-            "telemetry_topic",
-            // 50（WP-50.2 mgmt 通道）：管理请求订阅 / 应答发布主题（可选）。
-            "mgmt_request_topic",
-            "mgmt_response_topic",
-            // SPEC-B WP-B.2：CONNECT 凭据管道（可选；与 mqtt 插件 KNOWN_KEYS
-            // 同波次双源同步——漏一处会被编译链未知键拒绝整包拒载）。
-            "username",
-            "password",
-        ],
-        // 48（WP-48.1..48.4）四协议键表（= 各 crate validate_config 已知键；
-        // 49 修齐——与 configs/protocol-*.toml 一致，未知键拒绝语义不变）。
-        "protocol-dlt645" => &["addr_bcd", "baud", "timeout_ms", "retries"],
-        "protocol-iec101" => &[
-            "link_addr",
-            "common_addr",
-            "link_addr_size",
-            "common_addr_size",
-            "balanced",
-            "t0_ms",
-            "t1_ms",
-            "t2_ms",
-            "t3_ms",
-            "k",
-            "w",
-            "timeout_ms",
-        ],
-        "protocol-iec103" => &["common_addr", "timeout_ms", "retries"],
-        "protocol-gbt27930" => &[
-            "charger_addr",
-            "bms_addr",
-            "handshake_timeout_ms",
-            "param_timeout_ms",
-            "charging_timeout_ms",
-            "end_timeout_ms",
-            "retransmit_max",
-        ],
-        "protocol-mms" => &["peer", "timeout_ms", "ap_title"],
-        "protocol-goose" => &[
-            "app_id",
-            "conf_rev",
-            "time_allowed_to_live_ms",
-            "min_time_ms",
-            "go_cb_ref",
-            "dataset_ref",
-            "dst_mac",
-        ],
-        "protocol-sv" => &["app_id", "dst_mac", "buffer_size"],
-        _ => return None,
-    })
+    match id {
+        "protocol-cj188" => None,
+        _ => eneros_protocol_keys::by_config_id(id),
+    }
 }
 
 /// 每协议必填键（插件 start 消费 `.ok_or`；缺失 → 编译期拒绝）。
@@ -357,50 +292,110 @@ mod tests {
         );
     }
 
-    /// SPEC-B WP-B.2/C2 键表锁定：protocol-mqtt 已知键全清单对照字面量。
-    /// 与 crates/protocols/mqtt/src/plugin.rs KNOWN_KEYS 双源——任一侧
-    /// 增删键必须两侧同波次同步，本测试与插件侧 b2_known_keys_literal_lock
-    /// 互为漂移闸（漏同步 = 编译链未知键拒绝整包拒载）。
+    /// SPEC-B WP-B.2/C2 键表锁定（蓝图 64 WP-64.1.3 迁移为引用锁）：
+    /// protocol-mqtt 已知键 = 键表单源 `eneros_protocol_keys::MQTT`。
+    /// 历史为 11 键字面锁（与插件面 13 键漂移实证——64.1 事实差异记录），
+    /// 迁移 diff 见执行卡；键集合把守 = 本引用锁 + 叶 crate 自测
+    /// （字面量只在叶 crate 一处）。
     #[test]
-    fn b2_mqtt_known_keys_literal_lock_includes_credentials() {
-        const EXPECTED: &[&str] = &[
-            "broker",
-            "client_id",
-            "keep_alive_ms",
-            "control_topic",
-            "ai_request_topic",
-            "ai_response_topic",
-            "telemetry_topic",
-            "mgmt_request_topic",
-            "mgmt_response_topic",
-            "username",
-            "password",
-        ];
+    fn b2_mqtt_known_keys_reference_lock() {
         assert_eq!(
             known_keys("protocol-mqtt"),
-            Some(EXPECTED),
-            "config-bundle 侧 mqtt 键表漂移——须与 mqtt 插件 KNOWN_KEYS 同步"
+            Some(eneros_protocol_keys::MQTT),
+            "config-bundle 侧 mqtt 键表须引用单源（eneros-protocol-keys）"
         );
     }
 
-    /// SPEC-D WP-D.2 键表锁定：protocol-modbus-rtu 已知键全清单对照字面量。
-    /// 与 crates/protocols/modbus-rtu/src/plugin.rs `KNOWN_KEYS` 双源——任一
-    /// 侧增删键必须两侧同波次同步，本测试与插件侧 d_known_keys_literal_lock
-    /// 互为漂移闸（漏同步 = 编译链未知键拒绝整包拒载）。
+    /// SPEC-D WP-D.2 键表锁定（蓝图 64 WP-64.1.3 迁移为引用锁）：
+    /// protocol-modbus-rtu 已知键 = 键表单源 `eneros_protocol_keys::MODBUS_RTU`。
+    /// 迁移前字面锁（6 键全清单）与迁移后键集合一致（diff 见执行卡）。
     #[test]
-    fn d_rtu_known_keys_literal_lock() {
-        const EXPECTED: &[&str] = &[
-            "slave_id",
-            "baud",
-            "parity",
-            "clock_hz",
-            "timeout_ms",
-            "retries",
-        ];
+    fn d_rtu_known_keys_reference_lock() {
         assert_eq!(
             known_keys("protocol-modbus-rtu"),
-            Some(EXPECTED),
-            "config-bundle 侧 rtu 键表漂移——须与 modbus-rtu 插件 KNOWN_KEYS 同步"
+            Some(eneros_protocol_keys::MODBUS_RTU),
+            "config-bundle 侧 rtu 键表须引用单源（eneros-protocol-keys）"
+        );
+    }
+
+    // ========== 蓝图 64 WP-64.1.3 双面引用锁（config-bundle 侧 ×9） ==========
+    // 语义：known_keys() 委托接线不裂 + 叶 crate 映射不漂（任何一侧回到
+    // 硬编码或改叶内容必红）。插件侧对照锁在各协议 crate（双面合计 22 道）。
+
+    #[test]
+    fn r64_ref_lock_modbus_tcp() {
+        assert_eq!(
+            known_keys("protocol-modbus-tcp"),
+            Some(eneros_protocol_keys::MODBUS_TCP)
+        );
+    }
+
+    #[test]
+    fn r64_ref_lock_iec104() {
+        assert_eq!(
+            known_keys("protocol-iec104"),
+            Some(eneros_protocol_keys::IEC104_MASTER)
+        );
+    }
+
+    #[test]
+    fn r64_ref_lock_goose() {
+        assert_eq!(
+            known_keys("protocol-goose"),
+            Some(eneros_protocol_keys::GOOSE)
+        );
+    }
+
+    #[test]
+    fn r64_ref_lock_sv() {
+        assert_eq!(known_keys("protocol-sv"), Some(eneros_protocol_keys::SV));
+    }
+
+    #[test]
+    fn r64_ref_lock_mms() {
+        assert_eq!(known_keys("protocol-mms"), Some(eneros_protocol_keys::MMS));
+    }
+
+    #[test]
+    fn r64_ref_lock_dlt645() {
+        assert_eq!(
+            known_keys("protocol-dlt645"),
+            Some(eneros_protocol_keys::DLT645)
+        );
+    }
+
+    #[test]
+    fn r64_ref_lock_gbt27930() {
+        assert_eq!(
+            known_keys("protocol-gbt27930"),
+            Some(eneros_protocol_keys::GBT27930)
+        );
+    }
+
+    #[test]
+    fn r64_ref_lock_iec101() {
+        assert_eq!(
+            known_keys("protocol-iec101"),
+            Some(eneros_protocol_keys::IEC101)
+        );
+    }
+
+    #[test]
+    fn r64_ref_lock_iec103() {
+        assert_eq!(
+            known_keys("protocol-iec103"),
+            Some(eneros_protocol_keys::IEC103)
+        );
+    }
+
+    /// cj188 编译面例外锁（§4 不做边界）：叶 crate 键表照存，但编译面
+    /// 显式 None（编译支持面扩容 = 行为新增，独立裁决）。
+    #[test]
+    fn r64_ref_lock_cj188_compile_face_stays_none() {
+        assert_eq!(known_keys("protocol-cj188"), None);
+        assert!(
+            eneros_protocol_keys::CJ188.contains(&"addr_bcd"),
+            "叶键表照存（单源无死角）"
         );
     }
 
@@ -454,5 +449,66 @@ mod tests {
         let c = ProtocolKvConsumer::new("protocol-modbus-tcp");
         assert!(c.decode_validate(b"\xff\xff\xff").is_err());
         assert!(c.decode_validate(b"").is_err());
+    }
+
+    /// 蓝图 64 R-64.a 红测改写（WP-64.1.2 修复后形态）：goose `vlan_id`
+    /// （插件真消费键：1..=4094 → TX 802.1Q 标签）编译通过且条目进
+    /// canonical payload；真未知键仍拒（未知键拒绝语义不变）。
+    /// 修复前形态（编译面拒 vlan_id，[01] §3 实证）见执行卡记录。
+    /// （compile 门内测试：走 `toml_compile` 编译面。）
+    #[cfg(feature = "compile")]
+    #[test]
+    fn r64_goose_vlan_id_now_compiles() {
+        let with_vlan = r#"
+app_id = 1
+time_allowed_to_live_ms = 1000
+go_cb_ref = "GOOSE1"
+dataset_ref = "DS1"
+vlan_id = 100
+"#;
+        let compiled = crate::toml_compile::compile_protocol("protocol-goose", with_vlan)
+            .expect("修复后：vlan_id ∈ 键表单源（eneros-protocol-keys::GOOSE），编译必须通过");
+        let decoded = decode_protocol(&compiled.payload).expect("decode");
+        assert_eq!(decoded.get("vlan_id"), Some("100"), "vlan_id 条目须进产物");
+        // 负例对照：真未知键仍被拒且拒因点名。
+        let with_bogus = r#"
+app_id = 1
+time_allowed_to_live_ms = 1000
+go_cb_ref = "GOOSE1"
+dataset_ref = "DS1"
+bogus_key = "x"
+"#;
+        let err = crate::toml_compile::compile_protocol("protocol-goose", with_bogus)
+            .expect_err("未知键必须整包拒");
+        assert!(
+            format!("{err:?}").contains("bogus_key"),
+            "拒因须点名：{err:?}"
+        );
+    }
+
+    /// 蓝图 64 事实差异修复形态：mqtt `qos`/`will_topic`（插件面已声明
+    /// 可选键）编译通过进产物；真未知键仍拒。（compile 门内测试。）
+    #[cfg(feature = "compile")]
+    #[test]
+    fn r64_mqtt_optional_keys_now_compiles() {
+        let with_qos = r#"
+broker = "tcp://10.0.2.2:1883"
+qos = "1"
+will_topic = "will/x"
+"#;
+        let compiled = crate::toml_compile::compile_protocol("protocol-mqtt", with_qos)
+            .expect("修复后：qos/will_topic ∈ 键表单源，编译必须通过");
+        let decoded = decode_protocol(&compiled.payload).expect("decode");
+        assert_eq!(decoded.get("qos"), Some("1"));
+        assert_eq!(decoded.get("will_topic"), Some("will/x"));
+        let err = crate::toml_compile::compile_protocol(
+            "protocol-mqtt",
+            "broker = \"tcp://10.0.2.2:1883\"\nbogus_key = \"x\"\n",
+        )
+        .expect_err("未知键必须整包拒");
+        assert!(
+            format!("{err:?}").contains("bogus_key"),
+            "拒因须点名：{err:?}"
+        );
     }
 }

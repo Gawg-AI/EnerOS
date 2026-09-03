@@ -61,33 +61,11 @@ impl MqttTransport for Box<dyn TransportHandle> {
     }
 }
 
-/// 已知配置键。
-const KNOWN_KEYS: &[&str] = &[
-    "broker",
-    "client_id",
-    "keep_alive_ms",
-    "qos",
-    "will_topic",
-    // 47（WP-47.1 协议入站写）：下行写命令订阅主题。缺省 = 不订阅
-    //（方向一禁用——诚实：未配置不假装能收写命令）。
-    "control_topic",
-    // 49（WP-49.2 远程 dual-brain 传输面）：AI 请求发布主题 + 应答订阅
-    // 主题。缺省 = AI 链路关闭（诚实：未配置不假装能收发 peer 消息）。
-    "ai_request_topic",
-    "ai_response_topic",
-    // 50（WP-50.1 exporter 真通道）：遥测/指标/日志批量帧发布主题。
-    // 缺省 = 遥测出口关闭（诚实：未配置不假装能导出遥测）。
-    "telemetry_topic",
-    // 50（WP-50.2 mgmt 通道）：管理请求订阅 / 应答发布主题。缺省 =
-    // 管理通道关闭（诚实：未配置不假装能收发管理命令）。
-    "mgmt_request_topic",
-    "mgmt_response_topic",
-    // SPEC-B WP-B.2：CONNECT 凭据管道（只做管道不做政策——release 无凭据
-    // 是否拒载仍是 OQ-2 待 owner 裁决；明文入签名 bundle 密级挂 OAQ/B-AQ-1）。
-    // 缺省 = 匿名建联，行为与未引入前 byte-for-byte 一致。
-    "username",
-    "password",
-];
+/// 已知配置键（蓝图 64 WP-64.1.2 起单源引用 `eneros-protocol-keys`）。
+/// 历史键语义：47 控制下行 control_topic；49 AI 双主题；50 遥测/管理
+/// 主题；SPEC-B WP-B.2 凭据 username/password（缺省匿名建联）；
+/// qos/will_topic 为已声明可选键（64.1 事实差异：编译面旧表漏收已修复）。
+const KNOWN_KEYS: &[&str] = eneros_protocol_keys::MQTT;
 
 /// 49：peer 应答收件箱上限（有界缓冲；满则丢弃新消息并计数）。
 pub const AI_INBOX_CAP: usize = 8;
@@ -910,27 +888,14 @@ mod tests {
 
     // ================= SPEC-B（WP-B.2）凭据管道 =================
 
-    /// 键表锁定测试：KNOWN_KEYS 全清单对照字面量——新增/删除任一键都必须
-    /// 显式改本测试并同步 config-bundle protocol.rs known_keys("protocol-mqtt")
-    /// （双源键表，漏同步 = 编译链未知键拒绝整包拒载）。
+    /// 键表锁定测试（蓝图 64 WP-64.1.3 迁移为引用锁）：KNOWN_KEYS = 键表
+    /// 单源 `eneros-protocol-keys::MQTT`（13 键含 qos/will_topic——64.1
+    /// 事实差异：编译面旧表 11 键漏收已修复）。迁移前 13 键字面锁 diff
+    /// 见执行卡；对侧锁在 config-bundle protocol.rs
+    /// b2_mqtt_known_keys_reference_lock。
     #[test]
-    fn b2_known_keys_literal_lock_includes_credentials() {
-        const EXPECTED: &[&str] = &[
-            "broker",
-            "client_id",
-            "keep_alive_ms",
-            "qos",
-            "will_topic",
-            "control_topic",
-            "ai_request_topic",
-            "ai_response_topic",
-            "telemetry_topic",
-            "mgmt_request_topic",
-            "mgmt_response_topic",
-            "username",
-            "password",
-        ];
-        assert_eq!(KNOWN_KEYS, EXPECTED, "MQTT 键表漂移——双源须同波次同步");
+    fn b2_known_keys_reference_lock() {
+        assert_eq!(KNOWN_KEYS, eneros_protocol_keys::MQTT);
     }
 
     /// C2 正例：username+password 成对提供 → 校验通过，start 注入到

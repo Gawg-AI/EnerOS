@@ -8,5 +8,7 @@ description = "EnerOS IEC 60870-5-101 master plugin — shared ASDU reuse + conf
 
 [dependencies]
 eneros-protocol-abstract = { path = "../protocol-abstract" }
+# 蓝图 64 WP-64.1.2：协议配置键表单源（零依赖叶 crate；KNOWN_KEYS 只引用不复制）。
+eneros-protocol-keys = { path = "../protocol-keys" }
 eneros-upa-model = { path = "../upa-model" }
 eneros-iec60870-asdu = { path = "../iec60870-asdu" }

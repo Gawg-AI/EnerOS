@@ -54,25 +54,16 @@ fn map_transport_recv_error(e: eneros_protocol_abstract::TransportError) -> Driv
     }
 }
 
-/// 已知配置键（未知键 → `InvalidConfig`，WP-39.10 不变量）。
+/// 已知配置键（未知键 → `InvalidConfig`，WP-39.10 不变量；蓝图 64
+/// WP-64.1.2 起单源引用 `eneros-protocol-keys`，双源同步义务随收口消灭）。
 ///
-/// SPEC-D WP-D.2 键表扩（与 config-bundle `known_keys("protocol-modbus-rtu")`
-/// **同波次双源同步**——漏一侧会被编译链未知键拒绝整包拒载；两侧各有
-/// 字面量锁定测试互为漂移闸）。消费面（配置零消费禁令）：
-/// - `baud` / `parity`：svc-modbus-rtu 装配 [`eneros_protocol_services::
-///   net_transport::SerialTransportFactory`] 时解析注入（工厂构造参数）；
-///   缺失/非法 → 能力壳 fail-closed，不猜 9600 默认值冒充活路。
-/// - `clock_hz`：真机 PL011 参考时钟（`Pl011UartHw::new`；0 = 适配器内
-///   24 MHz 板级默认）。
-/// - `slave_id`/`timeout_ms`/`retries`：插件 start 消费（39 既有）。
-const KNOWN_KEYS: &[&str] = &[
-    "slave_id",
-    "baud",
-    "parity",
-    "clock_hz",
-    "timeout_ms",
-    "retries",
-];
+/// SPEC-D WP-D.2 键语义与真消费面（配置零消费禁令）：
+/// - `baud` / `parity` / `clock_hz`：svc-modbus-rtu 装配
+///   [`eneros_protocol_services::net_transport::SerialTransportFactory`] /
+///   `Pl011UartHw` 时解析注入；缺失/非法 → 能力壳 fail-closed，不猜
+///   9600 默认值冒充活路。
+/// - `slave_id` / `timeout_ms` / `retries`：插件 start 消费（39 既有）。
+const KNOWN_KEYS: &[&str] = eneros_protocol_keys::MODBUS_RTU;
 
 /// Modbus RTU 插件（服务级合同实现）。
 pub struct RtuPlugin {
@@ -398,21 +389,13 @@ mod tests {
         );
     }
 
-    /// SPEC-D WP-D.2 键表锁定：KNOWN_KEYS 全清单对照字面量——新增/删除
-    /// 任一键都必须与 config-bundle `known_keys("protocol-modbus-rtu")`
-    /// **同波次**同步（漏一侧 = 编译链未知键拒绝整包拒载；两测试互为漂移闸，
-    /// 教训同 B 卷 F-M2 mqtt 双源）。
+    /// SPEC-D WP-D.2 键表锁定（蓝图 64 WP-64.1.3 迁移为引用锁）：
+    /// KNOWN_KEYS = 键表单源 `eneros-protocol-keys::MODBUS_RTU`。迁移前
+    /// 6 键字面锁 diff 见执行卡（键集合不变）；对侧锁在 config-bundle
+    /// protocol.rs d_rtu_known_keys_reference_lock。
     #[test]
-    fn d_known_keys_literal_lock() {
-        const EXPECTED: &[&str] = &[
-            "slave_id",
-            "baud",
-            "parity",
-            "clock_hz",
-            "timeout_ms",
-            "retries",
-        ];
-        assert_eq!(KNOWN_KEYS, EXPECTED, "RTU 键表漂移——双源须同波次同步");
+    fn d_known_keys_reference_lock() {
+        assert_eq!(KNOWN_KEYS, eneros_protocol_keys::MODBUS_RTU);
     }
 
     #[test]

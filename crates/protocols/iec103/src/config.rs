@@ -2,8 +2,9 @@
 
 use eneros_protocol_abstract::{ProtocolConfig, ProtocolError};
 
-/// 已知配置键（未知键 → `InvalidConfig`）。
-pub const KNOWN_KEYS: &[&str] = &["common_addr", "timeout_ms", "retries"];
+/// 已知配置键（未知键 → `InvalidConfig`；蓝图 64 WP-64.1.2 起单源
+/// 引用 `eneros-protocol-keys`）。
+pub const KNOWN_KEYS: &[&str] = eneros_protocol_keys::IEC103;
 
 /// 校验配置。
 pub fn validate(cfg: &ProtocolConfig) -> Result<(), ProtocolError> {
@@ -78,5 +79,13 @@ mod tests {
                 retries: 1
             }
         );
+    }
+
+    /// 蓝图 64 WP-64.1.3 双面引用锁（插件侧）：KNOWN_KEYS = 键表单源
+    /// `eneros_protocol_keys::IEC103`；对侧锁在 config-bundle
+    /// protocol.rs r64_ref_lock_iec103。
+    #[test]
+    fn r64_ref_lock_iec103() {
+        assert_eq!(KNOWN_KEYS, eneros_protocol_keys::IEC103);
     }
 }

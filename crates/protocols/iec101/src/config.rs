@@ -6,21 +6,9 @@
 
 use eneros_protocol_abstract::{ProtocolConfig, ProtocolError};
 
-/// 已知配置键（未知键 → `InvalidConfig`）。
-pub const KNOWN_KEYS: &[&str] = &[
-    "link_addr",
-    "common_addr",
-    "link_addr_size",
-    "common_addr_size",
-    "balanced",
-    "t0_ms",
-    "t1_ms",
-    "t2_ms",
-    "t3_ms",
-    "k",
-    "w",
-    "timeout_ms",
-];
+/// 已知配置键（未知键 → `InvalidConfig`；蓝图 64 WP-64.1.2 起单源
+/// 引用 `eneros-protocol-keys`）。
+pub const KNOWN_KEYS: &[&str] = eneros_protocol_keys::IEC101;
 
 /// 校验配置：未知键拒绝 + 地址尺寸 ∈ {1,2} + k/w 正值。
 pub fn validate(cfg: &ProtocolConfig) -> Result<(), ProtocolError> {
@@ -181,5 +169,13 @@ mod tests {
         let mut b = full_cfg();
         b.insert("balanced", "true");
         assert!(Iec101Config::from_validated(&b).expect("cfg").balanced);
+    }
+
+    /// 蓝图 64 WP-64.1.3 双面引用锁（插件侧）：KNOWN_KEYS = 键表单源
+    /// `eneros_protocol_keys::IEC101`；对侧锁在 config-bundle
+    /// protocol.rs r64_ref_lock_iec101。
+    #[test]
+    fn r64_ref_lock_iec101() {
+        assert_eq!(KNOWN_KEYS, eneros_protocol_keys::IEC101);
     }
 }

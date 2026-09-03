@@ -60,8 +60,8 @@ impl L2Transport for Box<dyn TransportHandle> {
     }
 }
 
-/// 已知配置键。
-const KNOWN_KEYS: &[&str] = &["app_id", "dst_mac", "buffer_size"];
+/// 已知配置键（蓝图 64 WP-64.1.2 起单源引用 `eneros-protocol-keys`）。
+const KNOWN_KEYS: &[&str] = eneros_protocol_keys::SV;
 
 /// SV 插件（订阅者，Sub）。
 pub struct SvPlugin {
@@ -750,5 +750,13 @@ mod tests {
             plugin.start(&base_cfg(), &mut SerialOnly, &mut EmptyPointRegistry),
             Err(ProtocolError::Unsupported)
         );
+    }
+
+    /// 蓝图 64 WP-64.1.3 双面引用锁（插件侧）：KNOWN_KEYS = 键表单源
+    /// `eneros-protocol-keys::SV`；对侧锁在 config-bundle protocol.rs
+    /// r64_ref_lock_sv。
+    #[test]
+    fn r64_ref_lock_sv() {
+        assert_eq!(KNOWN_KEYS, eneros_protocol_keys::SV);
     }
 }

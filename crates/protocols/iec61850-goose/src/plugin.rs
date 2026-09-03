@@ -54,17 +54,10 @@ impl L2Transport for Box<dyn TransportHandle> {
     }
 }
 
-/// 已知配置键。
-const KNOWN_KEYS: &[&str] = &[
-    "app_id",
-    "conf_rev",
-    "time_allowed_to_live_ms",
-    "min_time_ms",
-    "go_cb_ref",
-    "dataset_ref",
-    "dst_mac",
-    "vlan_id",
-];
+/// 已知配置键（蓝图 64 WP-64.1.2 起单源引用 `eneros-protocol-keys`——
+/// 含 vlan_id（真消费键：1..=4094 → TX 802.1Q 标签）；本引用即活缺陷
+/// 修复面：编译面同源后 vlan_id 不再被拒）。
+const KNOWN_KEYS: &[&str] = eneros_protocol_keys::GOOSE;
 
 /// GOOSE 插件（发布 + 订阅，PubSub）。
 pub struct GoosePlugin {
@@ -937,5 +930,27 @@ mod tests {
             "confRev=7 != 期望 1 → 告警"
         );
         assert_eq!(plugin.health().last_progress, Progress::Degraded);
+    }
+
+    /// 蓝图 64 R-64.b 活缺陷红测（重建自 [01] §3，2026-09-03 实证原文）：
+    /// 插件面现状锚点——vlan_id ∈ KNOWN_KEYS，validate_config 放行。
+    /// 本测是行为锁：键表收口（WP-64.1.2）后必须保持绿。
+    #[test]
+    fn r64_validate_config_accepts_vlan_id() {
+        let plugin = GoosePlugin::new();
+        let mut cfg = base_cfg();
+        cfg.insert("vlan_id", "100");
+        assert!(
+            plugin.validate_config(&cfg).is_ok(),
+            "插件面现状锚点：vlan_id ∈ KNOWN_KEYS，validate_config 放行"
+        );
+    }
+
+    /// 蓝图 64 WP-64.1.3 双面引用锁（插件侧）：KNOWN_KEYS = 键表单源
+    /// `eneros-protocol-keys::GOOSE`（含 vlan_id——本卷活缺陷修复核心）；
+    /// 对侧锁在 config-bundle protocol.rs r64_ref_lock_goose。
+    #[test]
+    fn r64_ref_lock_goose() {
+        assert_eq!(KNOWN_KEYS, eneros_protocol_keys::GOOSE);
     }
 }

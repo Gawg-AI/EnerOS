@@ -1,0 +1,25 @@
+{
+  "schema": "eneros.evidence-manifest.v1",
+  "volume": "blueprint-64-vol64-1",
+  "version": "0.317.0",
+  "head": "TBD-at-commit",
+  "date": "2026-09-03",
+  "gate": "VOL64.1-GATE: PASS",
+  "purpose": "蓝图 64 卷 64.1 出口 QEMU 实弹：协议配置键表单源（eneros-protocol-keys 零依赖叶 crate）+ goose vlan_id / mqtt qos/will_topic 双面活漂移修复。装载行清单与 63 卷基线逐字节一致 = 键表收口零行为变化的实弹证明",
+  "artifacts": {
+    "normal.qemu-serial.log": "qemu-prod typed 链正例一轮串口全量（对照基线 evidence/63/vol63-1/normal.qemu-serial.log）",
+    "build/sel4.log": "sel4-build-rust.sh 重链接（root-task/config-bundle 进镜像必需）",
+    "build/image.log": "image raw qemu-prod 重建",
+    "build/compile.log": "config compile qemu-prod（11 协议配置全部经新键表编译过链）",
+    "build/image.sha256": "镜像摘要 e46320ad344497cff11bcd4c6e4b7838a7ed48dbcdd9d6b2bfc200c3046cbb20",
+    "normal.modbus.transcript.jsonl": "modbus peer 回放输入拷本（拷自 evidence/62/vol62-1，禁写基线）"
+  },
+  "criteria": [
+    { "id": "C1", "assert": "PRODUCT-READY: true", "result": "PASS" },
+    { "id": "C2", "assert": "CONTROL-CHAIN: round= / dispatch=Committed", "result": "PASS" },
+    { "id": "C3", "assert": "[goose-config] PROTOCOL-CONFIG loaded 6 keys 与基线一致", "result": "PASS" },
+    { "id": "C4", "assert": "[iec104/mms/modbus/mqtt/sv]-config PROTOCOL-CONFIG loaded N keys 五协议装载行与基线逐字节一致（5/2/4/9/3 keys）", "result": "PASS" },
+    { "id": "C5", "assert": "POINTS-LOADED 三服务行与基线一致（iec104 19 / mms 19 / modbus 12×2——modbus 双打=二次 fetch 现状，64.2 收口）", "result": "PASS" }
+  ],
+  "baseline": "evidence/63/vol63-1/normal.qemu-serial.log"
+}

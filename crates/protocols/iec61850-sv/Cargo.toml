@@ -10,6 +10,8 @@ description = "EnerOS IEC 61850-9-2 SV 采样值接收 (v0.108.0) — no_std, Et
 eneros-iec61850-model = { path = "../iec61850-model" }
 # 39 WP-39.11：协议插件合同（ProtocolPlugin/TransportFactory）。
 eneros-protocol-abstract = { path = "../protocol-abstract" }
+# 蓝图 64 WP-64.1.2：协议配置键表单源（零依赖叶 crate；KNOWN_KEYS 只引用不复制）。
+eneros-protocol-keys = { path = "../protocol-keys" }
 # v0.222.0（B2-05）：真实 L2 收发（NetDevice raw 帧）。
 eneros-net = { path = "../../drivers/net", optional = true }
 

@@ -12,6 +12,8 @@ mock = []
 [dependencies]
 eneros-driver-framework = { path = "../../drivers/framework" }
 eneros-protocol-abstract = { path = "../protocol-abstract" }
+# 蓝图 64 WP-64.1.2：协议配置键表单源（零依赖叶 crate；KNOWN_KEYS 只引用不复制）。
+eneros-protocol-keys = { path = "../protocol-keys" }
 eneros-upa-model = { path = "../upa-model" }
 # 36 WP-36.6：rs485 是生产 transport 依赖，但不得携带 mock feature
 # （release resolved graph 零 mock）；mock 仅测试构建可见（dev-dependencies）。

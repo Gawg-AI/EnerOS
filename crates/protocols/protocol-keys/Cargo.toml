@@ -1,0 +1,9 @@
+[package]
+name = "eneros-protocol-keys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 蓝图 64 WP-64.1.1：协议配置键表单一实现——12 协议已知键 const 数组 + by_config_id 映射（config-bundle 编译面与协议插件运行面双面消费；no_std 零依赖叶 crate）"
+
+[dependencies]

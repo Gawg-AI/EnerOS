@@ -18,6 +18,10 @@ eneros-signer-keyring = { path = "../../security/signer-keyring" }
 # 蓝图 45 点表：地址直映 ProtocolAddress / ProtocolPointMapping（no_std；
 # 复用既有工程量变换原语，禁重造——点模型仍仅 upa-model 唯一）。
 eneros-protocol-abstract = { path = "../../protocols/protocol-abstract" }
+# 蓝图 64 WP-64.1.2：协议配置键表单源（零依赖叶 crate；protocol.rs
+# 未门控 → 进 target 闭包，仅 const 数组进 rodata，零运行时开销——
+# 闭包审计见执行卡）。
+eneros-protocol-keys = { path = "../../protocols/protocol-keys" }
 eneros-upa-model = { path = "../../protocols/upa-model" }
 # 蓝图 61：点身份绑定 unit_code 用 UnitCatalog 封闭码表（无环：telemetry-model
 # 仅依赖 upa-model）。

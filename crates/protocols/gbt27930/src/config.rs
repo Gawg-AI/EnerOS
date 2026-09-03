@@ -6,16 +6,9 @@
 
 use eneros_protocol_abstract::{ProtocolConfig, ProtocolError};
 
-/// 已知配置键（未知键 → `InvalidConfig`）。
-pub const KNOWN_KEYS: &[&str] = &[
-    "charger_addr",
-    "bms_addr",
-    "handshake_timeout_ms",
-    "param_timeout_ms",
-    "charging_timeout_ms",
-    "end_timeout_ms",
-    "retransmit_max",
-];
+/// 已知配置键（未知键 → `InvalidConfig`；蓝图 64 WP-64.1.2 起单源
+/// 引用 `eneros-protocol-keys`）。
+pub const KNOWN_KEYS: &[&str] = eneros_protocol_keys::GBT27930;
 
 /// 校验配置：未知键拒绝 + 全键必配 + 正值。
 pub fn validate(cfg: &ProtocolConfig) -> Result<(), ProtocolError> {
@@ -147,5 +140,13 @@ mod tests {
         assert_eq!(c.charger_addr, 86);
         assert_eq!(c.bms_addr, 1);
         assert_eq!(c.retransmit_max, 3);
+    }
+
+    /// 蓝图 64 WP-64.1.3 双面引用锁（插件侧）：KNOWN_KEYS = 键表单源
+    /// `eneros_protocol_keys::GBT27930`；对侧锁在 config-bundle
+    /// protocol.rs r64_ref_lock_gbt27930。
+    #[test]
+    fn r64_ref_lock_gbt27930() {
+        assert_eq!(KNOWN_KEYS, eneros_protocol_keys::GBT27930);
     }
 }

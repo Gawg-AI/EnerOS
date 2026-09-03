@@ -48,8 +48,9 @@ impl TcpTransport for Box<dyn TransportHandle> {
     }
 }
 
-/// 已知配置键。
-const KNOWN_KEYS: &[&str] = &["peer", "unit_id", "retries", "timeout_ms"];
+/// 已知配置键（蓝图 64 WP-64.1.2 起单源引用 `eneros-protocol-keys`；
+/// 键序取 config-bundle 旧序——retries/timeout_ms 互换无行为语义）。
+const KNOWN_KEYS: &[&str] = eneros_protocol_keys::MODBUS_TCP;
 
 /// Modbus TCP 插件。
 pub struct TcpPlugin {
@@ -668,5 +669,13 @@ mod tests {
         // 工程量变换复用 mapping 原语（45 红线：禁重造）。
         let eng = mapping.to_engineering(read.raw);
         assert!((eng - 466.0).abs() < 1e-9);
+    }
+
+    /// 蓝图 64 WP-64.1.3 双面引用锁（插件侧）：KNOWN_KEYS = 键表单源
+    /// `eneros-protocol-keys::MODBUS_TCP`（回退本地字面量必红；对侧锁在
+    /// config-bundle protocol.rs r64_ref_lock_modbus_tcp）。
+    #[test]
+    fn r64_ref_lock_modbus_tcp() {
+        assert_eq!(KNOWN_KEYS, eneros_protocol_keys::MODBUS_TCP);
     }
 }

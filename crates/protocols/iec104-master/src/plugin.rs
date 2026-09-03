@@ -112,14 +112,9 @@ impl MasterTransport for StreamMasterTransport {
     }
 }
 
-/// 已知配置键。
-const KNOWN_KEYS: &[&str] = &[
-    "peer",
-    "clock_sync_interval_ms",
-    "t3_timeout_ms",
-    "t1_timeout_ms",
-    "poll_interval_ms",
-];
+/// 已知配置键（蓝图 64 WP-64.1.2 起单源引用 `eneros-protocol-keys`；
+/// 键序取插件面现序）。
+const KNOWN_KEYS: &[&str] = eneros_protocol_keys::IEC104_MASTER;
 
 /// IEC 104 插件。
 pub struct Iec104Plugin {
@@ -526,5 +521,13 @@ mod tests {
         // 第二段 1B 补齐 → 返回完整 6B STARTDT_CON。
         let frame = t.recv(1).unwrap().expect("补齐后应返回完整 APDU");
         assert_eq!(&frame[..], &startdt_con, "粘包重组须逐字节还原");
+    }
+
+    /// 蓝图 64 WP-64.1.3 双面引用锁（插件侧）：KNOWN_KEYS = 键表单源
+    /// `eneros-protocol-keys::IEC104_MASTER`；对侧锁在 config-bundle
+    /// protocol.rs r64_ref_lock_iec104。
+    #[test]
+    fn r64_ref_lock_iec104_master() {
+        assert_eq!(KNOWN_KEYS, eneros_protocol_keys::IEC104_MASTER);
     }
 }
