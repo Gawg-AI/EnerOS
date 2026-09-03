@@ -11,20 +11,13 @@
 #      分配；持久化缺口 = ADR-0047 登记）+ watermark/幂等恢复不重复写。
 # 证据归档 evidence/61/phase1-e4/。
 set -uo pipefail
+source "$(dirname "$0")/gate-env.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 EVROOT="$ROOT/evidence/61/phase1-e4"
 mkdir -p "$EVROOT"
 
-export PATH="$HOME/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin:$HOME/.cache/cmake-3.31.6-linux-x86_64/bin:$HOME/.cache/dtc-deb/usr/bin:$HOME/.cache/xmllint-bin/usr/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/.cache/libxml2-deb/usr/lib/x86_64-linux-gnu:$HOME/.cache/libicu74-deb/usr/lib/x86_64-linux-gnu"
-export PYTHONPATH="$HOME/.cache/pyfdt-0.3"
-export BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_none="--sysroot=$HOME/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/aarch64-none-elf"
 export ENEROS_IMAGE_SIGNING_KEY="$ROOT/product/security/keys-local/dev-signing.key"
-export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1755523200}"
-export ENEROS_RELEASE_PUBLIC_KEY_HEX="8e5150375a22ae2ad55ea85a3e7a8faee8196315a413163fd4778c82c59af9a7"
-export ENEROS_RELEASE_KEY_ID_HEX="4e28c578ebd8c3c68b83ff1d0b1a16df"
-export ENEROS_PLATFORM_ID_HEX="6afc39cf058a1ca52a5e36d8eefa1463"
 K="$ROOT/product/security/keys-local"
 
 # 孤儿清理（peer/QEMU；5577 被占即秒退）。

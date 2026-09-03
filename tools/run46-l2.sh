@@ -10,6 +10,7 @@
 # 用法：tools/run46-l2.sh          正向（全部对端在线）
 #       tools/run46-l2.sh --neg    modbus 拔 peer 负例（--serve-after 15）
 set -euo pipefail
+source "$(dirname "$0")/gate-env.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -18,9 +19,6 @@ mkdir -p "$EVID"
 NEG="${1:-}"
 
 # 工具链环境（与 run46-qemu.sh 一致）。
-export PATH="$HOME/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin:$HOME/.cache/cmake-3.31.6-linux-x86_64/bin:$HOME/.cache/dtc-deb/usr/bin:$HOME/.cache/xmllint-bin/usr/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/.cache/libxml2-deb/usr/lib/x86_64-linux-gnu:$HOME/.cache/libicu74-deb/usr/lib/x86_64-linux-gnu"
-export PYTHONPATH="$HOME/.cache/pyfdt-0.3"
 
 # 1. 清空旧 transcript（对端 append 写）。
 rm -f "$EVID"/*.transcript.jsonl

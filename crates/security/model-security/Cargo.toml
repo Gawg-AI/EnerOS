@@ -8,3 +8,5 @@ description = "EnerOS 模型签名与白名单 (v0.116.0) — SM3 哈希登记 +
 
 [dependencies]
 eneros-crypto = { path = "../crypto" }
+# 63.3 WP-63.3.2：类型化验签原语收口（Ok(false) 布尔陷阱消除）。
+eneros-signer-keyring = { path = "../signer-keyring" }

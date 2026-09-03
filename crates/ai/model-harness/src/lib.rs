@@ -21,6 +21,13 @@
 //! 任何被规则/solver 依赖的全局状态；`HarnessConfig::model_off` 直接短路
 //! 一切模型路径）。
 
+//! # 机制状态（63.3 WP-63.3.3 冻结登记——总册 ID MH-deferred）
+//!
+//! **ModelHarness 未接生产闭包**（全仓 Cargo.toml 零依赖者——rg 实证；
+//! svc-ai-worker 生产轨走 ai_worker.rs 旧轨 DecisionBackend）；本标注 =
+//! 防复查误判生产地位。激活前置 = DecisionBackend 替换独立评估（00 §4：
+//! 生产轨替换风险大，独立裁决）。不替换、不删除本体。
+
 #![forbid(unsafe_code)]
 
 extern crate alloc;

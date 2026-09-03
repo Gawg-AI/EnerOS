@@ -132,16 +132,14 @@ impl ObsShadow {
                 continue;
             }
             // epoch 钉扎（首见为准；回退 = 重放/回滚 → quarantine）——
-            // W3：tracker 单源。首见 advance 即钉（先于 sink 复核——
-            // 与旧手写钉扎表现状一致：后续被去重拒绝的帧同样完成
-            // 钉扎）；钉值不随 epoch 升级更新。
+            // W3：tracker 单源；判据算式唯一实现 = ingestion-core
+            // WatermarkTracker::check_epoch_floor（63.3 WP-63.3.1——原
+            // 手写回退比较删除）。首见 advance
+            // 即钉（先于 sink 复核——与旧手写钉扎表现状一致：后续被
+            // 去重拒绝的帧同样完成钉扎）；钉值不随 epoch 升级更新。
             let pinned = self.watermarks.pinned(event.source_id);
             let expected = pinned.map_or(event.source_epoch, |(e, _)| e);
-            if pinned.is_some() && event.source_epoch < expected {
-                let reason = IngestReject::EpochRegression {
-                    epoch: event.source_epoch,
-                    expected,
-                };
+            if let Err(reason) = WatermarkTracker::check_epoch_floor(event.source_epoch, expected) {
                 self.quarantine(reason, Some(chunk));
                 rejected += 1;
                 continue;
@@ -150,7 +148,9 @@ impl ObsShadow {
             if first_pin {
                 self.watermarks.advance(&event);
             }
-            if first_pin || event.source_epoch > expected {
+            // 到此域 = {==, >}（回退已被 check_epoch_floor 门拒）——
+            // "新 epoch" = 不等；restore 触发是控制流非判据算式。
+            if first_pin || event.source_epoch != expected {
                 // 首钉 / 新 epoch（adapter 重启）：影子评估器 epoch 对齐
                 // （restore = 生产评估器同步语义，epoch 变更即新序号空间）。
                 self.last_pinned = Some((event.source_id, event.source_epoch));

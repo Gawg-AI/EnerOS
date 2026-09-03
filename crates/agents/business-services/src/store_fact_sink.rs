@@ -1,3 +1,9 @@
+//! # 机制状态（63.3 WP-63.3.3 冻结登记——总册 ID SFS-deferred）
+//!
+//! **StoreFactEventSink 未接生产闭包**（crate 外零引用——rg 实证）；本标注
+//! = 防复查误判生产地位。激活前置 = 目标侧存储句柄移交（BLOCKED，00 §4）。
+//! 不实施真接线、不删除本体（24e12d5 登记项开发①交付资产）。
+//!
 //! 蓝图 61 [11] §5.1/§5.9 + [07] §4.6.3（v0.314.32）：外部事实的
 //! **持久化**事件面 sink——把已认证事实（class/external_id/revision/
 //! canonical/now_ns）写入分区事件日志，RPO=0、掉电/重启后可有序重放，
@@ -20,12 +26,12 @@
 //! 认证后的事实经本 sink 持久化（此前仅 [`MemFactEventSink`] 内存形态，
 //! 掉电即失——本模块补上持久面）。
 
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use eneros_event_store::{
     EventStore, LogOffset, PartitionId, PartitionOffset, RecordRef, RecordVisitor,
 };
+use eneros_signer_keyring::SignerKeyring;
 
 use crate::external_facts::{FactEventEntry, FactEventSink};
 
@@ -142,7 +148,9 @@ impl RecordVisitor for FactCollector {
 pub struct StoreFactEventSink<S: EventStore> {
     store: S,
     /// external_id → 已见最高 revision（重放重建，跨实例单调）。
-    revisions: BTreeMap<[u8; 16], u32>,
+    /// 修订水位（SignerKeyring 承载——判据单源 63.3 WP-63.3.1；原本地
+    /// BTreeMap + 手写回退比较删除）。
+    revisions: SignerKeyring,
     /// 追加失败计数（可观测，不吞）。
     pub append_failures: u64,
     /// 解码失败计数（重放时损坏记录，可观测）。
@@ -153,7 +161,7 @@ impl<S: EventStore> StoreFactEventSink<S> {
     pub fn new(store: S) -> Self {
         Self {
             store,
-            revisions: BTreeMap::new(),
+            revisions: SignerKeyring::new(),
             append_failures: 0,
             decode_failures: 0,
         }
@@ -210,10 +218,9 @@ impl<S: EventStore> StoreFactEventSink<S> {
                 .map_err(|_| "event-store read failed")?;
             self.decode_failures += collector.decode_failures;
             for (_class, external_id, revision, _canonical, _now) in collector.entries {
-                let e = self.revisions.entry(external_id).or_insert(0);
-                if revision > *e {
-                    *e = revision;
-                }
+                // max-merge：commit_revision 只升不降——等值/回退即跳过
+                //（Err 忽略 = 与原 `if revision > *e` 语义逐点一致）。
+                let _ = self.revisions.commit_revision(&external_id, revision);
             }
         }
         Ok(())
@@ -229,11 +236,14 @@ impl<S: EventStore> FactEventSink for StoreFactEventSink<S> {
         canonical: &[u8],
         now_ns: u64,
     ) -> Result<u64, &'static str> {
-        // 修订单调（含重启后重建的水位；[11] §5.5 不原地改值）。
-        if let Some(&seen) = self.revisions.get(external_id) {
-            if revision <= seen {
-                return Err("stale revision");
-            }
+        // 修订单调（含重启后重建的水位；[11] §5.5 不原地改值）——判据
+        // 由 keyring check_revision 单源把守（63.3 WP-63.3.1）。
+        if self
+            .revisions
+            .check_revision(external_id, revision)
+            .is_err()
+        {
+            return Err("stale revision");
         }
         let payload = encode_fact(class, external_id, revision, canonical, now_ns)?;
         let partition = partition_of(external_id);
@@ -246,7 +256,9 @@ impl<S: EventStore> FactEventSink for StoreFactEventSink<S> {
                 self.append_failures += 1;
                 "event-store append failed"
             })?;
-        self.revisions.insert(*external_id, revision);
+        // 判据已由 check_revision 把守——commit 仅防御（不可达臂与
+        // market/facts 两消费方同款）。
+        let _ = self.revisions.commit_revision(external_id, revision);
         Ok(offset)
     }
 }

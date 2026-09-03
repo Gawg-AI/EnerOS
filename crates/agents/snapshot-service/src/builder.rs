@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::conflict::{Conflict, ConflictResolver};
 use crate::policy::SnapshotPolicy;
 use crate::projector::StateProjector;
-use crate::watermark::WatermarkTracker;
+use crate::watermark::SnapshotWatermark;
 use crate::{
     CompletenessReport, DerivedValue, NormalizedObservation, RejectReason, SnapshotRejected,
     SnapshotRequest, TrustedSnapshot,
@@ -52,7 +52,7 @@ impl SnapshotBuilder {
         now_ns: u64,
         catalog: &dyn SemanticCatalog,
         projector: &StateProjector,
-        watermarks: &WatermarkTracker,
+        watermarks: &SnapshotWatermark,
         resolver: &ConflictResolver,
     ) -> Result<TrustedSnapshot, SnapshotBuilderError> {
         let version_set = catalog.version_set();

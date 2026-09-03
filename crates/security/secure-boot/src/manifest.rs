@@ -103,6 +103,9 @@ impl BootManifest {
         // 4. 信任根 SM2 验签（WP-53.6 INV-SB：签名域 = size||timestamp||hash，
         //    与 verifier 同路径）。
         let sm2_sig = Sm2Signature::from_bytes(&sig.signature);
+        // 63.3 WP-63.3.2 豁免登记（总册 ID SB-SM2-EXEMPT）：引导层依赖
+        // 最小化先例（ADR-033 分层——引导层 Crc 阻断），不引 keyring 依赖；
+        // 本处 fail-closed 已对（match Ok(true) 显式），裸原语保留。
         match sm2_verify(&sig.signed_message(), &sm2_sig, root_key) {
             Ok(true) => {}
             Ok(false) | Err(_) => return Err(BootError::SignatureInvalid),

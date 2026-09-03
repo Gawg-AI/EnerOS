@@ -14,7 +14,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use eneros_crypto::sm2::keypair::Sm2PublicKey;
-use eneros_signer_keyring::{SignerKeyring, VerifyReject, WatermarkReject};
+use eneros_signer_keyring::{RevisionStale, SignerKeyring, VerifyReject, WatermarkReject};
 
 /// 事实分类码（信封 class 域；1=市场 2=工艺 3=企业——与
 /// [`FactPayload::class`] 一一对应）。
@@ -455,15 +455,17 @@ impl FactAdapter {
             return Err(r);
         }
         // 修订水位（严格递增；旧修订拒——不原地改值，[11] §5.5 append
-        // 新 revision；水位表在 keyring 单源）。
-        if let Some(seen) = self.keys.revision(&env.header.external_id) {
-            if env.header.revision <= seen {
-                self.rejected_total += 1;
-                return Err(FactReject::StaleRevision {
-                    revision: env.header.revision,
-                    seen,
-                });
-            }
+        // 新 revision）——判据由 keyring check_revision 单源把守（63.3
+        // WP-63.3.1）；reject 语义保留在本消费方。
+        if let Err(RevisionStale { seen }) = self
+            .keys
+            .check_revision(&env.header.external_id, env.header.revision)
+        {
+            self.rejected_total += 1;
+            return Err(FactReject::StaleRevision {
+                revision: env.header.revision,
+                seen,
+            });
         }
         // 时效窗。
         if now_ms > env.header.expires_at_ms {
@@ -491,11 +493,12 @@ impl FactAdapter {
                 now_ms.saturating_mul(1_000_000),
             )
             .map_err(FactReject::Sink)?;
-        // 水位推进（sink 成功才推进；水位检查已保证严格递增——
-        // NotAdvancing 不可达，防御臂如实计拒不静默）。
+        // 水位推进（sink 成功才推进）——判据已由 check_revision 单源
+        // 把守（keyring），此处仅防御；NotAdvancing 不可达，
+        // 防御臂如实计拒不静默。
         if let Err(WatermarkReject::NotAdvancing { seen }) = self
             .keys
-            .advance_revision(&env.header.external_id, env.header.revision)
+            .commit_revision(&env.header.external_id, env.header.revision)
         {
             self.rejected_total += 1;
             return Err(FactReject::StaleRevision {

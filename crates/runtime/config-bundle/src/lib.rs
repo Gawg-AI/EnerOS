@@ -583,9 +583,11 @@ pub fn verify_bundle_startup(
             .try_into()
             .map_err(|_| ConfigError::BadSignature(ConfigId::from_static("bundle")))?,
     );
-    let ok = eneros_crypto::sm2_verify(&enc, &sig, pk)
-        .map_err(|_| ConfigError::Storage("sm2-verify"))?;
-    if !ok {
+    // 63.3 WP-63.3.2：keyring 类型化原语（Ok(false) 布尔检查面消失）。
+    if eneros_signer_keyring::verify_signature(&enc, &sig, pk)
+        .map(|_| ())
+        .is_err()
+    {
         return Err(ConfigError::BadSignature(ConfigId::from_static("bundle")));
     }
     Ok(())
@@ -624,9 +626,11 @@ pub fn verify_bundle(
                 .try_into()
                 .map_err(|_| ConfigError::BadSignature(entry.config_id.clone()))?,
         );
-        let ok = eneros_crypto::sm2_verify(&enc, &sig, pk)
-            .map_err(|_| ConfigError::Storage("sm2-verify"))?;
-        if !ok {
+        // 63.3 WP-63.3.2：keyring 类型化原语（布尔检查面消失）。
+        if eneros_signer_keyring::verify_signature(&enc, &sig, pk)
+            .map(|_| ())
+            .is_err()
+        {
             return Err(ConfigError::BadSignature(entry.config_id.clone()));
         }
     }
@@ -638,9 +642,11 @@ pub fn verify_bundle(
             .try_into()
             .map_err(|_| ConfigError::BadSignature(ConfigId::from_static("bundle")))?,
     );
-    let ok = eneros_crypto::sm2_verify(&enc, &sig, pk)
-        .map_err(|_| ConfigError::Storage("sm2-verify"))?;
-    if !ok {
+    // 63.3 WP-63.3.2：keyring 类型化原语（Ok(false) 布尔检查面消失）。
+    if eneros_signer_keyring::verify_signature(&enc, &sig, pk)
+        .map(|_| ())
+        .is_err()
+    {
         return Err(ConfigError::BadSignature(ConfigId::from_static("bundle")));
     }
     Ok(())

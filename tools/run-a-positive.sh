@@ -3,14 +3,13 @@
 # KMS 注入链 bundle → QEMU 全链控制写打穿（MASTER-WRITE=1/Committed=1），
 # 串口零 CHAIN-KEY-MISSING / REGISTER-REJECTED / SAFETY-REJECTED / PANIC。
 set -uo pipefail
+source "$(dirname "$0")/gate-env.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 # 后台任务壳环境兜底：显式补齐 rustup 工具链路径（最小壳 PATH 无 cargo）。
 case ":$PATH:" in *":$HOME/.cargo/bin:"*) ;; *) export PATH="$HOME/.cargo/bin:$PATH";; esac
 command -v cargo >/dev/null || { echo "cargo NOT FOUND"; exit 9; }
 set -x
 D=target/evidence-wA/pos; mkdir -p "$D"
-export PATH="$HOME/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin:$HOME/.cache/dtc-deb/usr/bin:$HOME/.cache/xmllint-bin/usr/bin:$PATH"
-export PYTHONPATH="$HOME/.cache/pyfdt-0.3"; export SOURCE_DATE_EPOCH=1755523200
 start_broker(){ python3 evidence/47/mqtt_broker47.py --transcript "$1" >/dev/null 2>&1 & echo $!; }
 B1=$(start_broker "$D/broker.jsonl"); sleep 2
 python3 evidence/47/scada_write.py --delay 170 --retries 8 --interval 20 \

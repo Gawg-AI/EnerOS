@@ -4,13 +4,9 @@
 # 两控制服务运行期取键不可得 ⇒ 串口 CHAIN-KEY-MISSING 拒载判定行；
 # 控制写被拒（无 Committed）。执行前 MUST 已保存正例 bundle。
 set -uo pipefail
+source "$(dirname "$0")/gate-env.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 D=target/evidence-wA/neg-nokey; mkdir -p "$D"
-export PATH="$HOME/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin:$HOME/.cache/dtc-deb/usr/bin:$HOME/.cache/xmllint-bin/usr/bin:$PATH"
-export PYTHONPATH="$HOME/.cache/pyfdt-0.3"; export SOURCE_DATE_EPOCH=1755523200
-export ENEROS_RELEASE_PUBLIC_KEY_HEX="8e5150375a22ae2ad55ea85a3e7a8faee8196315a413163fd4778c82c59af9a7"
-export ENEROS_RELEASE_KEY_ID_HEX="4e28c578ebd8c3c68b83ff1d0b1a16df"
-export ENEROS_PLATFORM_ID_HEX="6afc39cf058a1ca52a5e36d8eefa1463"
 K=product/security/keys-local
 # 备份 bundle + registry；临时摘除 security 条目生成无密钥节 bundle。
 # （qemu-dev 清单缺 ai-peer 属预存 CF-01 红，故走 qemu-test + 摘条目路线。）

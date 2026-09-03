@@ -14,8 +14,9 @@
 //!   永不直接触碰布尔返回——验签产出 [`VerifiedSignature`] 证明 token
 //!   或 [`VerifyReject`]（`Ok(false)` 与 `Err` 双通道统一为
 //!   [`VerifyReject::BadSignature`]）。
-//! - 修订水位（external_id → 已见最高 revision）只升不降，纪律单点在
-//!   [`SignerKeyring::advance_revision`]；判拒语义（存档/拒绝计数）
+//! - 修订水位（external_id → 已见最高 revision）只升不降，判据单点在
+//!   [`SignerKeyring::check_revision`]（判定）/ [`SignerKeyring::
+//!   commit_revision`]（推进）；判拒语义（存档/拒绝计数）
 //!   保留在消费方。
 //!
 //! no_std + alloc（消费方为 no_std crate；不引入 std）。
@@ -72,6 +73,15 @@ pub enum VerifyReject {
 pub enum WatermarkReject {
     /// 非严格递增（等值/回退）。
     NotAdvancing { seen: u32 },
+}
+
+/// 修订判定拒绝（[`SignerKeyring::check_revision`] 专用——与推进拒绝
+/// [`WatermarkReject::NotAdvancing`] 分名：判定非变异，语义是"陈旧"
+/// 不是"推进失败"；63.3 WP-63.3.1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RevisionStale {
+    /// 已见最高 revision（消费方错误载荷透传）。
+    pub seen: u32,
 }
 
 /// 登记条目。
@@ -158,20 +168,42 @@ impl SignerKeyring {
         self.revisions.get(source).copied()
     }
 
-    /// 修订水位推进（只升不降——严格递增才接受；等值/回退 →
-    /// [`WatermarkReject::NotAdvancing`]）。调用方在自身判拒语义放行后
-    /// 调用（判拒语义保留在消费方）。
-    pub fn advance_revision(
+    /// 修订判定（只升不降判据唯一实现；**非变异**——消费方在自身判拒
+    /// 语义放行后仍须 [`Self::commit_revision`] 才落表）。
+    ///
+    /// 与推进的分离（63.3 WP-63.3.1）：判定/推进共用同一私有比较
+    /// [`Self::revision_stale_seen`]——消费方的差异化语义（market
+    /// archive vs fact reject）保留在消费方，判据算式不再两抄。
+    pub fn check_revision(&self, source: &[u8; 16], revision: u32) -> Result<(), RevisionStale> {
+        match self.revision_stale_seen(source, revision) {
+            Some(seen) => Err(RevisionStale { seen }),
+            None => Ok(()),
+        }
+    }
+
+    /// 修订推进（前置 = [`Self::check_revision`] 已过；内部走同一私有
+    /// 比较——判据物理一份）。`NotAdvancing` 防御臂保留在判据 owner
+    /// （消费方不再手写比较，成功路径此臂不可达——check 与 commit 之间
+    /// 无第二写入者，单线程流）。
+    pub fn commit_revision(
         &mut self,
         source: &[u8; 16],
         revision: u32,
     ) -> Result<(), WatermarkReject> {
-        match self.revisions.get(source) {
-            Some(&seen) if revision <= seen => Err(WatermarkReject::NotAdvancing { seen }),
-            _ => {
+        match self.revision_stale_seen(source, revision) {
+            Some(seen) => Err(WatermarkReject::NotAdvancing { seen }),
+            None => {
                 self.revisions.insert(*source, revision);
                 Ok(())
             }
+        }
+    }
+
+    /// 判据唯一私有实现（`revision <= seen`——全仓唯一一处）。
+    fn revision_stale_seen(&self, source: &[u8; 16], revision: u32) -> Option<u32> {
+        match self.revisions.get(source) {
+            Some(&seen) if revision <= seen => Some(seen),
+            _ => None,
         }
     }
 }
@@ -293,21 +325,61 @@ mod tests {
         let mut kr = SignerKeyring::new();
         let source = [7u8; 16];
         assert_eq!(kr.revision(&source), None, "未见面 → None");
-        kr.advance_revision(&source, 1).expect("adv1");
+        kr.commit_revision(&source, 1).expect("adv1");
         assert_eq!(kr.revision(&source), Some(1));
         assert_eq!(
-            kr.advance_revision(&source, 1),
+            kr.commit_revision(&source, 1),
             Err(WatermarkReject::NotAdvancing { seen: 1 }),
             "等值拒"
         );
         assert_eq!(kr.revision(&source), Some(1), "拒绝后水位不降");
         assert_eq!(
-            kr.advance_revision(&source, 0),
+            kr.commit_revision(&source, 0),
             Err(WatermarkReject::NotAdvancing { seen: 1 }),
             "回退拒"
         );
-        kr.advance_revision(&source, 2).expect("adv2");
+        kr.commit_revision(&source, 2).expect("adv2");
         assert_eq!(kr.revision(&source), Some(2));
+    }
+
+    /// check_revision 定义锁（63.3 WP-63.3.1 红测）：判定与推进判据同源
+    /// ——等值拒绝/回退拒绝/首见放行/跨源独立/非变异（check 不落表）。
+    #[test]
+    fn check_revision_definition_lock() {
+        let kr = SignerKeyring::new();
+        let source = [9u8; 16];
+        // 首见放行（未登记源）。
+        assert_eq!(kr.check_revision(&source, 1), Ok(()), "首见放行");
+        assert_eq!(kr.revision(&source), None, "check 非变异——不落表");
+        // 回退拒绝：check 报告 seen（变异验证锚——改成 `<` 时本臂转 Ok，
+        // market/facts 既有 StaleRevision 测试必红）。
+        assert_eq!(
+            kr.check_revision(&source, 5),
+            Ok(()),
+            "水位仍空 → 任何首见 revision 放行"
+        );
+        let mut kr = SignerKeyring::new();
+        kr.commit_revision(&source, 5).expect("seed");
+        assert_eq!(
+            kr.check_revision(&source, 5),
+            Err(RevisionStale { seen: 5 }),
+            "等值拒绝"
+        );
+        assert_eq!(
+            kr.check_revision(&source, 4),
+            Err(RevisionStale { seen: 5 }),
+            "回退拒绝（载荷 = 已见水位）"
+        );
+        assert_eq!(kr.check_revision(&source, 6), Ok(()), "递增放行");
+        // 跨源独立（判据按 source 隔离）。
+        let other = [10u8; 16];
+        assert_eq!(kr.check_revision(&other, 0), Ok(()), "跨源独立");
+        // 判据同源证明：commit 对同一输入的拒绝面与 check 一致。
+        assert_eq!(
+            kr.commit_revision(&source, 5),
+            Err(WatermarkReject::NotAdvancing { seen: 5 }),
+            "check 拒 ⇒ commit 拒（同一私有比较）"
+        );
     }
 
     #[test]
@@ -346,9 +418,9 @@ mod tests {
     #[test]
     fn watermark_sources_are_independent() {
         let mut kr = SignerKeyring::new();
-        kr.advance_revision(&[1u8; 16], 5).expect("a");
+        kr.commit_revision(&[1u8; 16], 5).expect("a");
         assert_eq!(kr.revision(&[2u8; 16]), None, "源间隔离");
-        kr.advance_revision(&[2u8; 16], 3).expect("b");
+        kr.commit_revision(&[2u8; 16], 3).expect("b");
         assert_eq!(kr.revision(&[1u8; 16]), Some(5));
     }
 }

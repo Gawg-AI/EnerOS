@@ -7,7 +7,8 @@
 
 use alloc::vec::Vec;
 
-use eneros_crypto::{sm2_verify, Sm2PublicKey};
+use eneros_crypto::Sm2PublicKey;
+use eneros_signer_keyring::verify_signature;
 
 use crate::{ModelSig, VerifyError};
 
@@ -30,9 +31,11 @@ impl ModelSignatureVerifier {
 
     /// 验证模型签名.
     ///
-    /// 顺序：吊销检查 → 可信检查 → SM2 验签。返回 `Ok(true)` 表示签名有效
-    /// 且来源可信；`Ok(false)` 表示签名与数据不匹配（篡改或伪造）。
-    pub fn verify(&self, model_data: &[u8], sig: &ModelSig) -> Result<bool, VerifyError> {
+    /// 顺序：吊销检查 → 可信检查 → SM2 验签。63.3 WP-63.3.2 收口：返回
+    /// `Ok(())` = 签名有效且来源可信；签名与数据不匹配（篡改/伪造）=
+    /// `Err(SigMismatch)`——布尔陷阱从 interface 消失。底层走 keyring
+    /// 类型化原语（同 crate 域内，依赖面代价 = crypto 已在闭包）。
+    pub fn verify(&self, model_data: &[u8], sig: &ModelSig) -> Result<(), VerifyError> {
         // ① 吊销优先：已吊销公钥直接拒绝（即使仍在可信列表）
         if self.revoked_keys.contains(&sig.signer_pubkey) {
             return Err(VerifyError::KeyRevoked);
@@ -41,9 +44,11 @@ impl ModelSignatureVerifier {
         if !self.trusted_keys.contains(&sig.signer_pubkey) {
             return Err(VerifyError::KeyNotTrusted);
         }
-        // ③ SM2 验签（对原始消息，内部含 Z 值 + SM3，GB/T 32918.2）
-        let ok = sm2_verify(model_data, &sig.signature, &sig.signer_pubkey)?;
-        Ok(ok)
+        // ③ SM2 验签（对原始消息，内部含 Z 值 + SM3，GB/T 32918.2）——
+        // keyring 类型化原语，Ok(false) 陷阱收口为 Err(SigMismatch)。
+        verify_signature(model_data, &sig.signature, &sig.signer_pubkey)
+            .map(|_| ())
+            .map_err(|_| VerifyError::SigMismatch)
     }
 
     /// 添加可信公钥（已存在则忽略，保持去重）.
@@ -114,7 +119,7 @@ mod tests {
         verifier.add_trusted_key(kp.public_key);
 
         let result = verifier.verify(data, &sig);
-        assert_eq!(result, Ok(true), "可信签名者 + 未篡改数据必须验签通过");
+        assert_eq!(result, Ok(()), "可信签名者 + 未篡改数据必须验签通过");
     }
 
     /// SIG7：篡改模型数据一字节后 verify 不再返回 Ok(true)（签名与数据不匹配）.
@@ -128,9 +133,13 @@ mod tests {
         let mut tampered = data.to_vec();
         tampered[0] ^= 0xFF; // 篡改首字节
         let result = verifier.verify(&tampered, &sig);
-        assert_ne!(result, Ok(true), "篡改数据不得验签通过");
-        // 国密验签对不匹配返回 Ok(false)（非密码学内部错误）
-        assert_eq!(result, Ok(false), "篡改应判签名不匹配而非内部错误");
+        assert_ne!(result, Ok(()), "篡改数据不得验签通过");
+        // 签名不匹配 = Err(SigMismatch)（非密码学内部错误）
+        assert_eq!(
+            result,
+            Err(VerifyError::SigMismatch),
+            "篡改应判签名不匹配而非内部错误"
+        );
     }
 
     /// SIG8：revoke 签名者公钥后 verify → Err(KeyRevoked).

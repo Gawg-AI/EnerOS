@@ -11,16 +11,13 @@
 #
 # 每场景独立 QEMU 窗口（600s）+ 独立证据目录；判据自动断言。
 set -uo pipefail
+source "$(dirname "$0")/gate-env.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 EVROOT="$ROOT/evidence/61/0.314.26"
 mkdir -p "$EVROOT"
 
-export PATH="$HOME/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin:$HOME/.cache/cmake-3.31.6-linux-x86_64/bin:$HOME/.cache/dtc-deb/usr/bin:$HOME/.cache/xmllint-bin/usr/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/.cache/libxml2-deb/usr/lib/x86_64-linux-gnu:$HOME/.cache/libicu74-deb/usr/lib/x86_64-linux-gnu"
-export PYTHONPATH="$HOME/.cache/pyfdt-0.3"
 export ENEROS_IMAGE_SIGNING_KEY="$ROOT/product/security/keys-local/dev-signing.key"
-export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1755523200}"
 
 IMG="$ROOT/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
 [ -f "$IMG" ] || { echo "image missing"; exit 3; }

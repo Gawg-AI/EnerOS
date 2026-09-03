@@ -518,11 +518,17 @@ impl Default for SourceRegistry {
 
 /// 同源水位（epoch, sequence）tracker。
 ///
+/// **分层消歧（63.3 WP-63.3.1）**：本类型 = sink 准入两维判据；快照构建
+/// 四维水位在 snapshot-service `SnapshotWatermark`（observe 合体 +
+/// event_time/ingest_time 维）——同名对撞已消歧，两者不合并，见
+/// `snapshot-service/src/watermark.rs` 模块头对照表。
+///
 /// 两种既有用法（语义各自保真，见卷执行卡 B3 差异 6）：
 /// - sink（InMemorySink/StoreSink）：准入前 [`Self::check`]，准入成功后
 ///   [`Self::advance`]（水位只在成功路径推进）；
 /// - ObsShadow 钉扎：首见即 [`Self::advance`]（epoch 钉死首见值——
-///   adapter 重启换新 epoch 后，旧 epoch 重放仍被拦）。
+///   adapter 重启换新 epoch 后，旧 epoch 重放仍被拦）；钉扎门的 epoch
+///   下限判据唯一实现 = [`Self::check_epoch_floor`]。
 #[derive(Debug, Clone, Default)]
 pub struct WatermarkTracker {
     per_source: BTreeMap<u32, (u64, u64)>,
@@ -565,6 +571,26 @@ impl WatermarkTracker {
             .insert(event.source_id, (event.source_epoch, event.sequence));
     }
 
+    /// epoch 下限判据（baseline 参数化；63.3 WP-63.3.1：obs_shadow 钉扎门
+    /// 的比较算式唯一实现——原 obs_shadow 手写 `source_epoch < expected`
+    /// 删除）。
+    ///
+    /// 与 [`Self::check`] 的分层：check = sink 准入两维判据（epoch+sequence
+    /// 单调，水位维护绑定）；本判据 = 钉扎维（仅 epoch 下限——序列单调由
+    /// 调用方 sink 复核承载，advance 时机由调用方显式控制，故为无状态
+    /// 关联函数）。判据：`epoch < baseline` → `EpochRegression`；`==`/`>`
+    /// 放行（首钉/新 epoch 的 restore 语义留调用方）。
+    pub fn check_epoch_floor(epoch: u64, baseline: u64) -> Result<(), IngestReject> {
+        if epoch < baseline {
+            Err(IngestReject::EpochRegression {
+                epoch,
+                expected: baseline,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
     /// 当前水位读面（(epoch, sequence)；未见过该源 → None）。
     pub fn pinned(&self, source_id: u32) -> Option<(u64, u64)> {
         self.per_source.get(&source_id).copied()
@@ -576,6 +602,32 @@ mod watermark_tracker_tests {
     #![allow(clippy::disallowed_macros)]
 
     use super::*;
+
+    /// check_epoch_floor 定义锁（63.3 WP-63.3.1）：钉扎维判据（obs_shadow
+    /// 门单源）——等值/递增放行、回退拒绝（载荷 = EpochRegression，期望 =
+    /// baseline）；无状态（不动水位——钉扎/推进时机归调用方）。
+    #[test]
+    fn check_epoch_floor_definition_lock() {
+        assert_eq!(WatermarkTracker::check_epoch_floor(7, 5), Ok(()));
+        assert_eq!(
+            WatermarkTracker::check_epoch_floor(5, 5),
+            Ok(()),
+            "等值放行（== 非回退）"
+        );
+        assert_eq!(
+            WatermarkTracker::check_epoch_floor(4, 5),
+            Err(IngestReject::EpochRegression {
+                epoch: 4,
+                expected: 5
+            }),
+            "回退拒绝（载荷透传 baseline 为期望）"
+        );
+        assert_eq!(
+            WatermarkTracker::check_epoch_floor(0, 0),
+            Ok(()),
+            "零基线首钉放行"
+        );
+    }
 
     /// 定义锁（W3 红测转定义面）：同源更低 epoch 拒、同 epoch 旧/等 seq
     /// 拒、首见钉扎、源间隔离、水位不降级。

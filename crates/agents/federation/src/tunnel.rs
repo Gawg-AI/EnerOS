@@ -56,8 +56,7 @@ use eneros_crypto::rng::{fill_bytes_or_reseed, CsRng};
 use eneros_crypto::sm2::{sm2_decrypt, sm2_encrypt};
 use eneros_crypto::sm4::cbc::Sm4Cbc;
 use eneros_crypto::{
-    ct_eq, ct_zeroize, hmac_sm3, sm2_sign, sm2_verify, sm3_hash, Sm2KeyPair, Sm2PublicKey,
-    Sm2Signature,
+    ct_eq, ct_zeroize, hmac_sm3, sm2_sign, sm3_hash, Sm2KeyPair, Sm2PublicKey, Sm2Signature,
 };
 
 /// SM2 签名序列化长度（r‖s，字节）
@@ -217,12 +216,10 @@ pub fn responder_accept(
     let digest = sm3_hash(&digest_in);
     ct_zeroize(&mut digest_in);
     let sig = Sm2Signature::from_bytes(&sig_bytes);
-    match sm2_verify(&digest, &sig, peer_pk) {
-        Ok(true) => {}
-        _ => {
-            ct_zeroize(&mut pms);
-            return Err(EncryptError::CertInvalid);
-        }
+    // 63.3 WP-63.3.2：keyring 类型化原语（CertInvalid 映射保留）。
+    if eneros_signer_keyring::verify_signature(&digest, &sig, peer_pk).is_err() {
+        ct_zeroize(&mut pms);
+        return Err(EncryptError::CertInvalid);
     }
 
     // 应答签名：SM3(PMS‖spi_answer_be)
@@ -270,9 +267,10 @@ pub fn initiator_finish(
     ct_zeroize(&mut digest_in);
 
     let sig = Sm2Signature::from_bytes(&sig_bytes);
-    match sm2_verify(&digest, &sig, peer_pk) {
-        Ok(true) => Ok(spi_answer),
-        _ => Err(EncryptError::CertInvalid),
+    // 63.3 WP-63.3.2：keyring 类型化原语（CertInvalid 映射保留）。
+    match eneros_signer_keyring::verify_signature(&digest, &sig, peer_pk) {
+        Ok(_) => Ok(spi_answer),
+        Err(_) => Err(EncryptError::CertInvalid),
     }
 }
 
@@ -483,9 +481,10 @@ pub fn verify_dispatch_auth(token: &DispatchToken, pk: &Sm2PublicKey, now_ms: u6
         return AuthResult::Expired;
     }
     let sig = Sm2Signature::from_bytes(&token.signature);
-    match sm2_verify(&token.payload, &sig, pk) {
-        Ok(true) => AuthResult::Granted,
-        _ => AuthResult::Denied,
+    // 63.3 WP-63.3.2：keyring 类型化原语（AuthResult 词形保留）。
+    match eneros_signer_keyring::verify_signature(&token.payload, &sig, pk) {
+        Ok(_) => AuthResult::Granted,
+        Err(_) => AuthResult::Denied,
     }
 }
 

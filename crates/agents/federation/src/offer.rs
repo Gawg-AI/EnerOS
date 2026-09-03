@@ -23,8 +23,9 @@
 use alloc::vec::Vec;
 
 use eneros_crypto::rng::CsRng;
-use eneros_crypto::sm2::{sm2_sign, sm2_verify, Sm2KeyPair, Sm2PublicKey, Sm2Signature};
+use eneros_crypto::sm2::{sm2_sign, Sm2KeyPair, Sm2PublicKey, Sm2Signature};
 use eneros_crypto::sm3::hash as sm3_hash;
+use eneros_signer_keyring::verify_signature;
 
 /// 帧魔数：`FED1`。
 pub const MAGIC: [u8; 4] = *b"FED1";
@@ -148,6 +149,9 @@ pub enum WireError {
     ZeroDigest,
     /// 业务字段越界（区间倒挂/计数超限/保留字段非零）。
     InvalidField,
+    /// SM2 验签拒绝（63.3 WP-63.3.2：`Ok(false)` 布尔陷阱收口——拒绝
+    /// 即 Err，调用方无"忘了检查布尔"面）。
+    InvalidSignature,
 }
 
 /// 确定性 canonical 编码辅助（大端序写）。
@@ -477,11 +481,15 @@ impl FedFrame {
         )
     }
 
-    /// 验签（`sm2_verify` 的布尔结果必须显式检查——`Ok(false)` 也是拒绝）。
-    pub fn verify_signature(env: &FedEnvelope, pk: &Sm2PublicKey) -> Result<bool, WireError> {
+    /// 验签（63.3 WP-63.3.2 收口：布尔陷阱从 interface 消失——拒绝即
+    /// `Err(WireError::InvalidSignature)`；底层走 keyring 类型化原语，
+    /// 调用方无"忘了检查布尔"面）。
+    pub fn verify_signature(env: &FedEnvelope, pk: &Sm2PublicKey) -> Result<(), WireError> {
         let canon = Self::canonical(env)?;
         let sig = Sm2Signature::from_bytes(&env.signature);
-        sm2_verify(&canon, &sig, pk).map_err(|_| WireError::InvalidField)
+        verify_signature(&canon, &sig, pk)
+            .map(|_| ())
+            .map_err(|_| WireError::InvalidSignature)
     }
 }
 
@@ -1207,8 +1215,7 @@ mod tests {
         let frame = FedFrame::encode(&env).expect("frame");
         let dec = FedFrame::decode(&frame).expect("decode");
         assert_eq!(env, dec);
-        let ok = FedFrame::verify_signature(&dec, &k.public_key).expect("verify");
-        assert!(ok, "valid signature must verify true");
+        FedFrame::verify_signature(&dec, &k.public_key).expect("verify");
     }
 
     #[test]
@@ -1229,15 +1236,19 @@ mod tests {
         let mut f_hdr = frame.clone();
         f_hdr[40] ^= 0x01;
         let dec = FedFrame::decode(&f_hdr).expect("header tamper decodes");
-        let ok = FedFrame::verify_signature(&dec, &k.public_key).expect("verify");
-        assert!(!ok, "header tamper must fail signature verification");
+        assert!(
+            FedFrame::verify_signature(&dec, &k.public_key).is_err(),
+            "header tamper must fail signature verification"
+        );
         // 篡改签名 → 验签必假。
         let mut f_sig = frame;
         let n = f_sig.len();
         f_sig[n - 1] ^= 0x80;
         let dec = FedFrame::decode(&f_sig).expect("sig tamper decodes");
-        let ok = FedFrame::verify_signature(&dec, &k.public_key).expect("verify");
-        assert!(!ok, "tampered signature must not verify");
+        assert!(
+            FedFrame::verify_signature(&dec, &k.public_key).is_err(),
+            "tampered signature must not verify"
+        );
     }
 
     #[test]

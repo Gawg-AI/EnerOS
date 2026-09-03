@@ -97,8 +97,8 @@ pub trait DidSystem {
     /// 解析 DID 为 DID 文档.
     fn resolve(&self, did: &Did) -> Result<&DidDocument, DidError>;
 
-    /// 验证消息签名.
-    fn verify(&self, did_doc: &DidDocument, msg: &[u8], sig: &[u8]) -> Result<bool, DidError>;
+    /// 验证消息签名（63.3 WP-63.3.2：布尔陷阱收口——拒绝即 Err）。
+    fn verify(&self, did_doc: &DidDocument, msg: &[u8], sig: &[u8]) -> Result<(), DidError>;
 
     /// 跨域认证.
     fn cross_domain_auth(
@@ -164,7 +164,7 @@ impl DidSystem for DidSystemImpl {
         self.store.get(did)
     }
 
-    fn verify(&self, did_doc: &DidDocument, msg: &[u8], sig: &[u8]) -> Result<bool, DidError> {
+    fn verify(&self, did_doc: &DidDocument, msg: &[u8], sig: &[u8]) -> Result<(), DidError> {
         self.verifier.verify_signature(did_doc, msg, sig)
     }
 

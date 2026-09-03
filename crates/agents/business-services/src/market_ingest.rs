@@ -28,7 +28,7 @@ use alloc::vec::Vec;
 
 use eneros_crypto::sm3::hash as sm3_hash;
 use eneros_ingestion_core::{IngestOutcome, IngestionModule, RawObservation};
-use eneros_signer_keyring::{SignerKeyring, VerifyReject, WatermarkReject};
+use eneros_signer_keyring::{RevisionStale, SignerKeyring, VerifyReject, WatermarkReject};
 use eneros_telemetry_model::event::{quality_bits, IntegrityTag, ObservationValue};
 
 // ===========================================================================
@@ -221,16 +221,17 @@ impl MarketEventAdapter {
             self.rejected_total += 1;
             return Err(MarketReject::NotFinite);
         }
-        // 4. 修订水位（同 external_id 严格递增；旧修订 = 存档；水位表
-        // 在 keyring 单源）。
-        if let Some(seen) = self.keys.revision(&env.external_id) {
-            if env.revision <= seen {
-                self.archive_entry(env.clone(), ArchiveReason::StaleRevision);
-                return Err(MarketReject::StaleRevision {
-                    revision: env.revision,
-                    seen,
-                });
-            }
+        // 4. 修订水位（同 external_id 严格递增；旧修订 = 存档）——判据
+        // 由 keyring check_revision 单源把守（63.3 WP-63.3.1）；archive
+        // 语义保留在本消费方。
+        if let Err(RevisionStale { seen }) =
+            self.keys.check_revision(&env.external_id, env.revision)
+        {
+            self.archive_entry(env.clone(), ArchiveReason::StaleRevision);
+            return Err(MarketReject::StaleRevision {
+                revision: env.revision,
+                seen,
+            });
         }
         // 5. 时间窗（迟到/过期/早到 = 存档——不能进入当前目标）。
         if now_ms > env.expires_at_ms {
@@ -273,10 +274,11 @@ impl MarketEventAdapter {
         let outcome = module
             .ingest(self.source_id, raw, now_ms.saturating_mul(1_000_000))
             .map_err(MarketReject::ModuleReject)?;
-        // 提交水位（ingest 成功才推进修订水位；步骤 4 已保证严格递增，
-        // NotAdvancing 在此不可达——防御臂如实计拒不静默）。
+        // 提交水位（ingest 成功才推进修订水位）——判据已由 check_revision
+        // 单源把守（keyring），此处仅防御；NotAdvancing 在此不可达——
+        // 防御臂如实计拒不静默。
         if let Err(WatermarkReject::NotAdvancing { seen }) =
-            self.keys.advance_revision(&env.external_id, env.revision)
+            self.keys.commit_revision(&env.external_id, env.revision)
         {
             self.rejected_total += 1;
             return Err(MarketReject::StaleRevision {

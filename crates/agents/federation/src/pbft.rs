@@ -10,7 +10,8 @@
 //!   主节点的 PrePrepare 计入 prepare 票（PBFT 经典变体优化），
 //!   n=4 时主票 + 2 备份 Prepare 即 prepared，容忍 1 备份静默/作恶。
 //! - **签名域分离**（D9）：`msg_body = type:u8‖view:u64be‖seq:u64be‖digest‖sender:u64be(‖payload)`，
-//!   复用 eneros-crypto 既有 `sm2_sign` / `sm2_verify`（§5.5 防重复造轮子）。
+//!   签名复用 eneros-crypto `sm2_sign`；验签走 eneros-signer-keyring
+//!   类型化原语（§5.5 防重复造轮子；63.3 WP-63.3.2 收口）。
 //! - **拜占庭防护**：digest ≠ SM3(payload) 的 PrePrepare 拒绝；Prepare/Commit 的
 //!   digest 与本地日志不符拒绝（防 equivocation 跨摘要计票）；BTreeSet 投票去重。
 //! - **恢复重置语义**（EX6）：对未 committed 的既有日志条目收到新视图 PrePrepare 时，
@@ -21,9 +22,7 @@
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use eneros_crypto::{
-    sm2_sign, sm2_verify, sm3_hash, CsRng, Sm2KeyPair, Sm2PublicKey, Sm2Signature,
-};
+use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair, Sm2PublicKey, Sm2Signature};
 
 use crate::consensus::{
     ConsensusBus, ConsensusEngine, ConsensusError, ConsensusResult, ConsensusState, LogEntry,
@@ -76,10 +75,12 @@ pub fn sign_message(kp: &Sm2KeyPair, msg_body: &[u8], rng: &mut CsRng) -> [u8; 6
     }
 }
 
-/// SM2 验签：签名非法或验证未通过均返回 false（不暴露内部错误细节）
+/// SM2 验签：签名非法或验证未通过均返回 false（不暴露内部错误细节）。
+/// 63.3 WP-63.3.2：底层换 keyring 类型化原语（bool 返回语义保留——
+/// fail-closed 已对，仅换 keyring 原语消除裸 crypto 直调）。
 pub fn verify_message(pk: &Sm2PublicKey, msg_body: &[u8], sig: &[u8; 64]) -> bool {
     let signature = Sm2Signature::from_bytes(sig);
-    matches!(sm2_verify(msg_body, &signature, pk), Ok(true))
+    eneros_signer_keyring::verify_signature(msg_body, &signature, pk).is_ok()
 }
 
 impl ConsensusEngine {

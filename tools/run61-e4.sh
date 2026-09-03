@@ -11,17 +11,14 @@
 #   5. AUDIT-CHAIN appended>0（SHA-256 审计入链）；
 #   6. 对端 transcript 有 WRITE(fc6) 与 READBACK(fc3)。
 set -uo pipefail
+source "$(dirname "$0")/gate-env.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 EVROOT="$ROOT/evidence/61/0.314.24"
 EVIDDIR="$ROOT/target/evidence61"
 mkdir -p "$EVROOT" "$EVIDDIR"
 
-export PATH="$HOME/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin:$HOME/.cache/cmake-3.31.6-linux-x86_64/bin:$HOME/.cache/dtc-deb/usr/bin:$HOME/.cache/xmllint-bin/usr/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/.cache/libxml2-deb/usr/lib/x86_64-linux-gnu:$HOME/.cache/libicu74-deb/usr/lib/x86_64-linux-gnu"
-export PYTHONPATH="$HOME/.cache/pyfdt-0.3"
 export ENEROS_IMAGE_SIGNING_KEY="$ROOT/product/security/keys-local/dev-signing.key"
-export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1755523200}"
 
 IMG="$ROOT/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
 ls -la "$IMG" >/dev/null 2>&1 || { echo "image missing: $IMG"; exit 3; }

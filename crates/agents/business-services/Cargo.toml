@@ -88,6 +88,12 @@ name = "svc-mgmt"
 path = "src/bin/svc-mgmt.rs"
 
 [dev-dependencies]
+# 63.3 WP-63.3.3 保留登记（数据类型面）：src 零使用，但集成测试
+# tests/external_facts_objective.rs 真实消费 NormalizedObservation/
+# TrustedSnapshot（机制面 SnapshotModule 零消费——冻结登记见总册
+# SM-deferred）。删除需连测试面迁移，非本卷顺手项。
+eneros-snapshot-service = { path = "../../agents/snapshot-service" }
+
 # [07] §3.5 合同套件（市场事实 adapter 合规测试）。
 eneros-ingestion-core = { path = "../../protocols/ingestion-core", features = ["contract"] }
 eneros-config-bundle = { path = "../../runtime/config-bundle", features = ["compile"] }
@@ -95,5 +101,4 @@ eneros-durable-state = { path = "../../runtime/durable-state" }
 # 蓝图 61 Phase 6 §5.7 step 4：外部事实 → ObjectiveModule shadow 核对。
 eneros-objective-engine = { path = "../../ai/objective-engine" }
 eneros-decision-contract = { path = "../../ai/decision-contract" }
-eneros-snapshot-service = { path = "../../agents/snapshot-service" }
 eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }

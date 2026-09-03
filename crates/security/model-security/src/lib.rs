@@ -63,6 +63,9 @@ pub enum VerifyError {
     KeyRevoked,
     /// 签名者公钥不在可信列表（来源不可信）.
     KeyNotTrusted,
+    /// 签名与数据不匹配（篡改/伪造）——63.3 WP-63.3.2：布尔陷阱收口，
+    /// 原 `Ok(false)` 面改为显式 Err。
+    SigMismatch,
     /// 底层密码学运算失败（验签过程内部错误，非"签名不匹配"）.
     Crypto(CryptoError),
 }

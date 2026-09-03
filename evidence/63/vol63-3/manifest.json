@@ -1,0 +1,34 @@
+{
+  "schema": "eneros.evidence-manifest.v1",
+  "volume": "blueprint-63-vol63-3",
+  "version": "0.316.2",
+  "head": "63.3-exit",
+  "date": "2026-09-03",
+  "gate": "VOL63.3-GATE: PASS",
+  "purpose": "蓝图 63 卷 63.3 出口 QEMU 冒烟：水位判据归一（SnapshotWatermark 消歧 + check_epoch_floor + keyring check_revision/commit_revision 判据单源）+ sm2 验签收口（6 处 + secure-boot 豁免）+ 四机制冻结登记 + 撤 crate 级 blanket + 文档归真 + gate-env.sh 单源 + 总册落盘（对照基线 evidence/62/vol62-3）",
+  "artifacts": {
+    "normal.qemu-serial.log": "qemu-prod 双对端冒烟一轮串口全量（本地保留，log 被 gitignore）",
+    "normal.modbus.transcript.jsonl": "modbus 从站对端回放",
+    "normal.iec104.transcript.jsonl": "iec104 从站对端回放",
+    "build/sel4.log": "sel4-build-rust.sh 重链接",
+    "build/image.log": "image raw qemu-prod 重建",
+    "build/compile.log": "config compile qemu-prod",
+    "build/image.sha256": "镜像摘要"
+  },
+  "criteria": [
+    { "id": "C1", "assert": "PRODUCT-READY: true + PANIC=0 + READINESS=29", "result": "PASS" },
+    { "id": "C2", "assert": "market/fact 拒绝词形链路在（OBS-REJECT / SNAPSHOT rejected）——判据来源收敛后词形不变", "result": "PASS" },
+    { "id": "C3", "assert": "typed 链不回归：CATALOG-ACTIVE gen=1 / REGISTRY-ACTIVE / CONTRACT-VIEW-ACTIVE / PLAN-COMPILED / EXEC-JOURNAL applied-confirmed / dispatch=Committed / dispatch=other=0", "result": "PASS" },
+    { "id": "C4", "assert": "授予边基线保持（63.2 处置不回归）：NOT granted ×1 + bound=0 + edges=34", "result": "PASS" },
+    { "id": "C5", "assert": "采集基线：modbus 7 点值逐点一致 + svc-iec104 ACQ 18≥4", "result": "PASS" },
+    { "id": "C6", "assert": "fail-closed 兜底词形零出现（5 项）", "result": "PASS" }
+  ],
+  "host_side": {
+    "workspace_tests": "8518 passed / 0 failed（首次 8517+1 失败 = modbus-tcp loopback 并发抖动已知基线 L26，单跑恒绿，复跑全绿）",
+    "clippy": "0 警告（workspace --all-targets）",
+    "fmt": "clean",
+    "keyring_edges": "model-security/did/config-bundle 各 +1；secure-boot 0（豁免成立）；federation 拒绝词形对照在位（InvalidSignature×3/CertInvalid×15/AuthResult::Denied×4）",
+    "code_review": "general-purpose 审查代理四焦点核查：P0×1（pre-commit REPO_ROOT 优先级，已修+沙箱复现验证）/P1×1（business-services 依赖段位回 dev-deps）/P2×3（doc 错位/总册锚点/PROJECT 口径，均已修）/P3×3（SDE 语义明示入执行卡等）"
+  },
+  "baseline": "evidence/62/vol62-3/normal.qemu-serial.log"
+}

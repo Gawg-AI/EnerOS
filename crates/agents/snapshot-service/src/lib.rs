@@ -5,19 +5,29 @@
 //! （[08] §3.1）。决策代码不直接读「当前 map」；`SnapshotModule::build`
 //! 是唯一入口（[02] §5）。
 //!
-//! 组件（[08] §3.2）：StateProjector（最近合格事件投影）、WatermarkTracker
+//! 组件（[08] §3.2）：StateProjector（最近合格事件投影）、SnapshotWatermark
 //! （每 source 最大 event/ingest 时间、epoch、sequence）、
 //! SnapshotPolicyRegistry（按 purpose 的 required/optional/freshness/
 //! quality/integrity/substitution）、ConflictResolver（确定性优先/多数/
 //! 主备 + 裁决证据）、SnapshotBuilder（冻结 cut 与 VersionSet、provenance
 //! 根）、SnapshotCatalog（按 snapshot_id 查元数据与 blob 偏移）。
 //!
+//! # 机制状态（63.3 WP-63.3.3 冻结登记——总册 ID SM-deferred）
+//!
+//! **SnapshotModule 机制面未接生产闭包**（`SnapshotModule::build` 唯一
+//! crate 外调用者 = control-services snapshot_diff.rs 整体 `#[cfg(test)]`；
+//! business-services/certifier 仅数据类型面 TrustedSnapshot/
+//! NormalizedObservation/CompletenessReport 真实消费）；crate 级 blanket
+//! allow 已撤（R-63.b）。激活前置 = 目标侧 svc-snapshot 独立服务接线 +
+//! 存储句柄移交（BLOCKED，00 §4）。不实施真接线、不删除本体。
+//!
 //! 依赖纪律（[16] §3.4）：禁止依赖 LLM、solver、control dispatch。
 //! 跨 binary 必须走版本化分页或 BlobRef（[02] §5）；本 crate 提供
 //! 定长规范编码 [`wire`]，分页承载由传输层（agent-sdk chunked）负责。
 
 #![no_std]
-#![cfg_attr(not(test), allow(dead_code))]
+// 63.3 WP-63.3.3：crate 级 blanket allow 已撤（R-63.b）——机制面死项
+// 逐项门控/allow + 登记注释（总册 ID SM-deferred），交付态不再整体静默。
 
 extern crate alloc;
 
@@ -44,7 +54,7 @@ use eneros_telemetry_model::event::ObservationEvent;
 pub use policy::{SnapshotPolicy, SnapshotPolicyRegistry, SubstitutionRule};
 pub use projector::{PointKey, ProjectorCapacity, StateProjector};
 pub use store::{SnapshotCatalog, SnapshotMeta};
-pub use watermark::{SourceWatermark, WatermarkTracker};
+pub use watermark::{SnapshotWatermark, SourceWatermark};
 pub use wire::{decode_snapshot_v1, encode_snapshot_v1};
 
 /// 快照请求（[02] §5 / [08] §3.3 步骤 1）。
@@ -157,7 +167,7 @@ impl fmt::Display for RejectReason {
 pub struct SnapshotModule {
     catalog: Box<dyn eneros_semantic_catalog::SemanticCatalog + 'static>,
     projector: StateProjector,
-    watermarks: WatermarkTracker,
+    watermarks: SnapshotWatermark,
     policies: SnapshotPolicyRegistry,
     resolver: ConflictResolver,
     builder: SnapshotBuilder,
@@ -198,7 +208,7 @@ impl SnapshotModule {
         resolver: ConflictResolver,
         now_ns: u64,
     ) -> Self {
-        let watermarks = WatermarkTracker::new(now_ns);
+        let watermarks = SnapshotWatermark::new(now_ns);
         Self {
             catalog,
             projector: StateProjector::new(projector_cap),

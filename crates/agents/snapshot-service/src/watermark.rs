@@ -1,5 +1,18 @@
 //! 来源水位（[08] §3.2 / [02] §4.3）：每 source 的最大 event time、
 //! ingest time、epoch、sequence；epoch/sequence 回退与「迟到」判定。
+//!
+//! ## 与 ingestion-core `WatermarkTracker` 的分层关系（63.3 WP-63.3.1 消歧
+//! 定名 `SnapshotWatermark`——原名与 ingestion-core 同名对撞，禁再混用）
+//!
+//! | | `ingestion_core::WatermarkTracker` | 本类型（SnapshotWatermark） |
+//! |---|---|---|
+//! | 域 | sink 准入守卫（InMemorySink/StoreSink/ObsShadow 钉扎） | 快照构建缺口/迟到判定 |
+//! | 维度 | (epoch, sequence) 两维 | (epoch, sequence, event_time, ingest_time) 四维 |
+//! | 判据形态 | check（非变异）/ advance（推进）分离 | observe 合体（check+mutate 一步） |
+//! | epoch 语义 | 首见钉扎或水位推进 | 递增 = 可信重启（新代基线重置） |
+//!
+//! 两实现**不合并**：时间维是快照域真实需求，强行并入会污染 sink 准入
+//! interface（63.3 裁决，CONTEXT.md 已登记）。
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -18,9 +31,11 @@ pub struct SourceWatermark {
     pub sequence: u64,
 }
 
-/// 水位跟踪器：单调性纪律（回拨/同 epoch 序回退拒绝——与
-/// `TelemetryTrustEvaluator` 同一意图；本处按 source 逐源跟踪）。
-pub struct WatermarkTracker {
+/// 快照构建水位（原 `WatermarkTracker`，63.3 WP-63.3.1 消歧改名——与
+/// ingestion-core 同名 tracker 分层不同，见模块头对照表）：单调性纪律
+/// （回拨/同 epoch 序回退拒绝——与 `TelemetryTrustEvaluator` 同一意图；
+/// 本处按 source 逐源跟踪）。
+pub struct SnapshotWatermark {
     by_source: BTreeMap<u32, SourceWatermark>,
     /// 每源「首见时刻」（epoch 初始基准；源冷启动用）。
     first_seen: BTreeMap<u32, u64>,
@@ -28,7 +43,7 @@ pub struct WatermarkTracker {
     pub rejected: u64,
 }
 
-impl WatermarkTracker {
+impl SnapshotWatermark {
     pub fn new(_now_ns: u64) -> Self {
         Self {
             by_source: BTreeMap::new(),
@@ -130,7 +145,7 @@ mod tests {
 
     #[test]
     fn monotonic_watermark_and_replay_rejected() {
-        let mut t = WatermarkTracker::new(0);
+        let mut t = SnapshotWatermark::new(0);
         assert!(t.observe(1, 100, 100, 1, 1));
         assert!(t.observe(1, 200, 150, 1, 2));
         // event_time 回拨 → 拒绝。
@@ -150,7 +165,7 @@ mod tests {
 
     #[test]
     fn epoch_bump_resets_sequence_and_time_baseline() {
-        let mut t = WatermarkTracker::new(0);
+        let mut t = SnapshotWatermark::new(0);
         // epoch 1：序号与事件时间推高。
         for i in 1..=5u64 {
             assert!(t.observe(1, 1000 + i, 2000 + i, 1, i));
@@ -172,7 +187,7 @@ mod tests {
 
     #[test]
     fn deficit_uses_lateness_window() {
-        let mut t = WatermarkTracker::new(0);
+        let mut t = SnapshotWatermark::new(0);
         t.observe(1, 90, 90, 1, 1);
         t.observe(2, 30, 30, 1, 1);
         // as_of=100，lateness=50：阈值 50——源 2 的 30 < 50 → 缺口。

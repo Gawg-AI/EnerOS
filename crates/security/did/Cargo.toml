@@ -8,6 +8,8 @@ description = "EnerOS Agent DID 去中心化身份体系 (v0.169.0) — W3C DID 
 
 [dependencies]
 eneros-crypto = { path = "../crypto" }
+# 63.3 WP-63.3.2：类型化验签原语收口（Ok(false) 布尔陷阱消除）。
+eneros-signer-keyring = { path = "../signer-keyring" }
 
 [features]
 default = []

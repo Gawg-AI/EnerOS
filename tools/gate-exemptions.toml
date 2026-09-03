@@ -1,10 +1,13 @@
 # 26-B WP-26.2 门禁豁免登记（孤儿源文件 / mock 泄漏）
-# 格式：key（相对仓库根的路径后缀）= { rule, reason, expires_at, owner_wp }
+# 格式：key（相对仓库根的路径后缀）= { rule, reason, expires_at, status, owner_wp }
 # expires_at = "WP-xx.yy" 表示由该 WP 完成时移除；"never" 表示有意保留。
+# status = "deferred"（蓝图 63.3 WP-63.3.5 到期重裁决）：豁免仍成立（底层
+# 孤儿条件未消解、删除归后续卷逐个裁决——orphan 门为「确认即删」破坏性门，
+# 裁决一律以 rg 事实核查为准、不以跑门验证）。
 
-"crates/agents/device-agent/src/persist.rs" = { rule = "orphan", reason = "注册表持久化模块（v0.227.0 B3-04）——26-B §3.1 活体验收项；WP-26.12 挂载落盘后移除", expires_at = "WP-26.12", owner_wp = "26.12" }
+"crates/agents/device-agent/src/persist.rs" = { rule = "orphan", reason = "注册表持久化模块（v0.227.0 B3-04）：lib.rs 声明 + pub use re-export，活体挂载待目标侧存储句柄移交（BLOCKED）——26.12 出口未达删除条件，豁免维持", expires_at = "WP-26.12", status = "deferred", owner_wp = "26.12" }
 "crates/ai/gguf-loader/src/gpu_ops.rs" = { rule = "orphan", reason = "AI-002 封印虚构 eneros_gpu_* FFI（compile_error 熔断，不得启用）", expires_at = "never", owner_wp = "21-B" }
 "crates/ai/solver-warm/src/ffi.rs" = { rule = "orphan", reason = "AI-002 封印虚构 ort_* FFI（compile_error 熔断，不得启用）", expires_at = "never", owner_wp = "21-B" }
-"crates/agents/model-ota/src/real.rs" = { rule = "orphan", reason = "未挂载历史文件（26-C 处置或删除）", expires_at = "WP-26.15", owner_wp = "26.15" }
+"crates/agents/model-ota/src/real.rs" = { rule = "orphan", reason = "未挂载历史死文件（lib.rs 零声明，git 已跟踪）——26-C 未处置；删除归后续卷逐个裁决（63.3 不做边界：孤儿清剿非本蓝图）", expires_at = "WP-26.15", status = "deferred", owner_wp = "26.15" }
 "crates/agents/mvp-scenario/src/tests.rs" = { rule = "mock-leak", reason = "34 GV-08：经 lib.rs `#[cfg(test)] mod tests;` 整体门控的测试文件（use MockSolver 仅测试构建）", expires_at = "never", owner_wp = "34" }
-"crates/runtime/root-task/src/runtime_spec.rs" = { rule = "orphan", reason = "未跟踪的 WP-37.1 设计模型文件（pub mod runtime_spec 声明但全仓零引用）；未跟踪文件不得删除（保护用户未提交代码），待 36/37 owner 裁决接线或删除", expires_at = "WP-37.1", owner_wp = "37.1" }
+"crates/runtime/root-task/src/runtime_spec.rs" = { rule = "orphan", reason = "WP-37.1 设计模型：38 卷起已提交并在 main.rs 声明 pub mod，全仓零消费（ServiceHandle 等类型无外部使用）——声明但死面，删除/接线归后续卷 owner 裁决", expires_at = "WP-37.1", status = "deferred", owner_wp = "37.1" }

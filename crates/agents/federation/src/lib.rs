@@ -109,7 +109,7 @@
 //! | D6 | `ConsensusState { PrePrepare, Prepare, Commit, Done }` | 增 `Idle` 初始/视图切换后状态（引擎启动与 enter_view 后的合法静止态，否则初始状态无定义） |
 //! | D7 | §4.3 收集 2f+1 Prepare / 2f+1 Commit | 法定人数 `quorum(n) = 2f+1`：`f(n) = (n-1)/3`；PrePrepare 计入主节点 prepare 票（PBFT 经典变体优化，与蓝图 2f+1 数值一致；n=4 时主节点 PrePrepare + 2 备份 Prepare 即 prepared，容忍 1 备份静默/作恶） |
 //! | D8 | §4.4 主节点超时 → ViewChange（未定义消息细节） | 无独立 NewView 消息：ViewChange 广播达 2f+1 法定人数后各节点自主 `enter_view(new_view)`（VC 消息全网广播，诚实节点自然收敛同一 new_view，消除 NewView 伪造面）；新主节点对最近未提交日志重发 PrePrepare 恢复共识；连续 VC 超时指数退避（`timeout_ms << min(连续 vc 次数, 3)`，蓝图 §8.5 坑点"ViewChange 风暴"对策） |
-//! | D9 | 签名验证失败 → 丢弃（算法未指定） | SM2 签名（eneros-crypto 既有 `sm2_sign`/`sm2_verify` 复用，§5.5 防重复造轮子）：签名消息 = `msg_type:u8‖view:u64be‖sequence:u64be‖digest‖sender:u64be（‖payload）`；验签失败/未知 sender → rejected_count+=1 丢弃 |
+//! | D9 | 签名验证失败 → 丢弃（算法未指定） | SM2 签名（签名 eneros-crypto `sm2_sign`、验签 keyring 类型化原语——§5.5 防重复造轮子，63.3 收口）：签名消息 = `msg_type:u8‖view:u64be‖sequence:u64be‖digest‖sender:u64be（‖payload）`；验签失败/未知 sender → rejected_count+=1 丢弃 |
 //! | D10 | 错误处理仅 2 条（超时/验签失败） | `ConsensusError { NotPrimary, UnknownNode, InvalidSignature, ViewMismatch, StaleMessage, NotEnoughNodes, BusError }`（7 变体最小完备） |
 //! | D11 | 测试 `tests/consensus.rs` | crate 内嵌 `#[cfg(test)]` 40 测试（v0.87.0~v0.98.1 项目惯例；Mock 总线故障注入覆盖主节点离线/拜占庭伪造/重复投票） |
 //! | D12 | §9 可观测"共识延迟 metric" | 4 个 pub 计数器（`submit_count` / `committed_count` / `rejected_count` / `view_change_count`）+ `last_latency_ms`（注入时钟：提交时刻 − 提交请求时刻） |

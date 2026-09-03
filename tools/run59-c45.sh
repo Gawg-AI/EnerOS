@@ -1,10 +1,9 @@
 #!/bin/bash
 # SPEC-GAP-CLOSURE w7：C4(建联/发布) + C5(kill→恢复) 编排
 set -uo pipefail
+source "$(dirname "$0")/gate-env.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 D=target/evidence-w59/c45; mkdir -p $D
-export PATH="$HOME/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin:$HOME/.cache/dtc-deb/usr/bin:$HOME/.cache/xmllint-bin/usr/bin:$PATH"
-export PYTHONPATH="$HOME/.cache/pyfdt-0.3"; export SOURCE_DATE_EPOCH=1755523200
 start_broker(){ python3 evidence/47/mqtt_broker47.py --transcript "$1" & echo $!; }
 B1=$(start_broker "$D/broker.gen1.jsonl"); sleep 2
 python3 evidence/47/scada_write.py --delay 50 --retries 4 --interval 12 & P_SCADA=$!

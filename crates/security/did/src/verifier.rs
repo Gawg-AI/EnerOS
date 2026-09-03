@@ -5,7 +5,8 @@
 
 use alloc::string::String;
 
-use eneros_crypto::{sm2_verify, Sm2PublicKey, Sm2Signature};
+use eneros_crypto::{Sm2PublicKey, Sm2Signature};
+use eneros_signer_keyring::verify_signature;
 
 use crate::types::{CertificateChain, Did, DidDocument};
 use crate::DidError;
@@ -34,12 +35,16 @@ impl DidVerifier {
     /// # 错误
     /// - [`DidError::InvalidDocument`][]: 公钥格式无效
     /// - [`DidError::InvalidSignature`][]: 签名长度不为 64 字节或验签失败
+    ///
+    /// 63.3 WP-63.3.2 收口：布尔陷阱消失——验签拒绝即
+    /// `Err(DidError::InvalidSignature)`（keyring 类型化原语；crate 无
+    /// 外部消费者，依赖面代价 = crypto 已在闭包）。
     pub fn verify_signature(
         &self,
         did_doc: &DidDocument,
         msg: &[u8],
         sig: &[u8],
-    ) -> Result<bool, DidError> {
+    ) -> Result<(), DidError> {
         if sig.len() != 64 {
             return Err(DidError::InvalidSignature);
         }
@@ -48,7 +53,9 @@ impl DidVerifier {
         let mut sig_bytes = [0u8; 64];
         sig_bytes.copy_from_slice(sig);
         let signature = Sm2Signature::from_bytes(&sig_bytes);
-        sm2_verify(msg, &signature, &pk).map_err(|_| DidError::InvalidSignature)
+        verify_signature(msg, &signature, &pk)
+            .map(|_| ())
+            .map_err(|_| DidError::InvalidSignature)
     }
 
     /// 验证证书链（29 SE-08：补链签名验证——原实现只查有效期+长度，
@@ -110,15 +117,14 @@ impl DidVerifier {
         }
         let mut sig_bytes = [0u8; 64];
         sig_bytes.copy_from_slice(&chain.signature);
-        let ok = sm2_verify(
+        // 63.3 WP-63.3.2：keyring 类型化原语（拒绝词形 InvalidSignature 保留）。
+        verify_signature(
             &digest,
             &Sm2Signature::from_bytes(&sig_bytes),
             root_public_key,
         )
+        .map(|_| ())
         .map_err(|_| DidError::InvalidSignature)?;
-        if !ok {
-            return Err(DidError::InvalidSignature);
-        }
         Ok(true)
     }
 
@@ -182,8 +188,8 @@ mod tests {
         let sig_bytes = sig.to_bytes();
 
         let verifier = DidVerifier::new();
-        let result = verifier.verify_signature(&doc, msg, &sig_bytes).unwrap();
-        assert!(result);
+        // 63.3 WP-63.3.2：拒绝即 Err（布尔陷阱消失）。
+        assert!(verifier.verify_signature(&doc, msg, &sig_bytes).is_ok());
     }
 
     #[test]
@@ -198,10 +204,12 @@ mod tests {
         let sig_bytes = sig.to_bytes();
 
         let verifier = DidVerifier::new();
-        let result = verifier
-            .verify_signature(&doc, b"tampered message", &sig_bytes)
-            .unwrap();
-        assert!(!result);
+        assert!(
+            verifier
+                .verify_signature(&doc, b"tampered message", &sig_bytes)
+                .is_err(),
+            "篡改消息必须拒绝（Err(InvalidSignature)）"
+        );
     }
 
     #[test]

@@ -19,7 +19,7 @@ use eneros_crypto::sm3_hash;
 
 use crate::{
     GuardError, GuardStats, LoadResult, ModelSig, ModelSignatureVerifier, ModelWhitelist,
-    WhitelistEntry,
+    VerifyError, WhitelistEntry,
 };
 
 /// 审计日志容量（写满后最旧记录被覆盖）.
@@ -83,17 +83,19 @@ impl ModelGuard {
             }
         }
 
-        // ③ 签名验证（吊销/不可信/密码学错误 → VerifyFailed；不匹配 → SignatureInvalid）
+        // ③ 签名验证（吊销/不可信/密码学错误 → VerifyFailed；不匹配 →
+        // SignatureInvalid——63.3 WP-63.3.2：verify 布尔陷阱收口后，
+        // SigMismatch 显式映射 SignatureInvalid，词形/行为不变）。
         match self.verifier.verify(model_data, sig) {
+            Err(VerifyError::SigMismatch) => {
+                self.record(now, hash, LoadResult::DeniedSignature, &sig.signer_id);
+                Err(GuardError::SignatureInvalid)
+            }
             Err(e) => {
                 self.record(now, hash, LoadResult::DeniedSignature, &sig.signer_id);
                 Err(GuardError::from(e))
             }
-            Ok(false) => {
-                self.record(now, hash, LoadResult::DeniedSignature, &sig.signer_id);
-                Err(GuardError::SignatureInvalid)
-            }
-            Ok(true) => {
+            Ok(()) => {
                 // ④ 全部通过
                 self.record(now, hash, LoadResult::Allowed, &sig.signer_id);
                 Ok(())
