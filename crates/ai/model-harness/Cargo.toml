@@ -7,6 +7,7 @@ license.workspace = true
 description = "EnerOS 蓝图61 Phase 6 — ModelHarness/Skill/bounded loop：生产模型唯一入口（身份/投影/输出门/预算/生命周期/白名单工具）"
 
 [dependencies]
+eneros-hex = { path = "../../abi/hex" }
 # 蓝图61 Phase 6 §3.2 复用面：引擎、调度（correlation/deadline/budget/
 # model digest）、加载/硬件/性能检查、结构化 prompt 基础。
 eneros-llm-engine = { path = "../llm-engine" }

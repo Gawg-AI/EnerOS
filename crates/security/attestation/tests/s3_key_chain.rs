@@ -8,7 +8,7 @@ use eneros_attestation::attest::{AttestVerifier, RemoteAttestation};
 use eneros_attestation::event_log::TcgEventLog;
 use eneros_attestation::tpm::{SoftTpm, TpmBackend};
 use eneros_crypto::sm2::encrypt::{sm2_decrypt, sm2_encrypt};
-use eneros_crypto::{sm2_sign, sm2_verify, CsRng, Sm2KeyPair};
+use eneros_crypto::{sm2_sign, CsRng, Sm2KeyPair};
 
 #[test]
 fn test_s3_full_key_chain() {
@@ -21,11 +21,17 @@ fn test_s3_full_key_chain() {
     let msg = b"key-chain-msg";
     let digest = eneros_crypto::sm3::hash(msg);
     let sig = sm2_sign(&digest, &kp.private_key, &kp.public_key, &mut rng).expect("签名");
-    assert!(sm2_verify(&digest, &sig, &kp.public_key).expect("验签"));
+    assert!(
+        eneros_signer_keyring::verify_signature(&digest, &sig, &kp.public_key).is_ok(),
+        "验签"
+    );
     let mut tampered = sig.to_bytes();
     tampered[0] ^= 0xff;
     let tampered_sig = eneros_crypto::Sm2Signature::from_bytes(&tampered);
-    assert!(!sm2_verify(&digest, &tampered_sig, &kp.public_key).expect("篡改拒绝"));
+    assert!(
+        eneros_signer_keyring::verify_signature(&digest, &tampered_sig, &kp.public_key).is_err(),
+        "篡改拒绝"
+    );
 
     // 4) 封仓（SM2 加密语义）→ 5) 解封（解密）往返
     let secret = b"sealed device secret";

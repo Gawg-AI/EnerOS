@@ -314,7 +314,7 @@ mod tests {
     /// SM2 验签通过（证据链自包含，远端可离线复核）。
     #[test]
     fn test_encode_decode_requote_verify_roundtrip() {
-        use eneros_crypto::{sm2_sign, sm2_verify, CsRng, Sm2KeyPair, Sm2Signature};
+        use eneros_crypto::{sm2_sign, CsRng, Sm2KeyPair, Sm2Signature};
         let mut rng = CsRng::from_seed(&[0x7A; 32]);
         let kp = Sm2KeyPair::generate(&mut rng).expect("kp");
         let quote = PcrQuote {
@@ -357,12 +357,12 @@ mod tests {
         };
         let redigest = crate::tpm::quote_digest(&requote);
         assert_eq!(redigest, digest, "远端重算 digest 必须与签名方一致");
-        let ok = sm2_verify(
+        let ok = eneros_signer_keyring::verify_signature(
             &redigest,
             &Sm2Signature::from_bytes(&signature),
             &kp.public_key,
         )
-        .expect("verify");
+        .is_ok();
         assert!(ok, "远端离线验签必须通过（证据链自包含）");
     }
 
@@ -372,7 +372,7 @@ mod tests {
     #[cfg(feature = "tpm2")]
     #[test]
     fn test_der_signature_to_rs_verify() {
-        use eneros_crypto::{sm2_sign, sm2_verify, CsRng, Sm2KeyPair, Sm2Signature};
+        use eneros_crypto::{sm2_sign, CsRng, Sm2KeyPair, Sm2Signature};
         let mut rng = CsRng::from_seed(&[0x3C; 32]);
         let kp = Sm2KeyPair::generate(&mut rng).expect("kp");
         let digest = [0x11; 32];
@@ -387,8 +387,12 @@ mod tests {
         rs[32..].copy_from_slice(&s);
         assert_eq!(rs, sig.to_bytes());
         // 用转换后的 r‖s 验签（等价于 real.rs quote() 的 DER 分支产物）。
-        let ok =
-            sm2_verify(&digest, &Sm2Signature::from_bytes(&rs), &kp.public_key).expect("verify");
+        let ok = eneros_signer_keyring::verify_signature(
+            &digest,
+            &Sm2Signature::from_bytes(&rs),
+            &kp.public_key,
+        )
+        .is_ok();
         assert!(ok, "DER→r‖s 转换后必须可验签");
     }
 

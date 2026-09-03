@@ -99,7 +99,10 @@ fn federation_depends_only_on_crypto() {
             d == "eneros-crypto"
                 || d == "eneros-tls"
                 || d == "eneros-signer-keyring"
-                || d == "eneros-allocation",
+                || d == "eneros-allocation"
+                // 蓝图 64 卷 64.3 WP-64.3.4：hex 编解码零依赖叶 crate
+                // （同 ABI 基础层，非写面）。
+                || d == "eneros-hex",
             "依赖 {d} 不属联邦允许闭包（禁止写面 crate 依赖）"
         );
     }

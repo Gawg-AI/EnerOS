@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use eneros_control_dispatch::{
-    AuthenticatedActor, ControlDispatch, DeliveryChannel, DispatchConfig, DispatchEngine,
-    DispatchState, FeedbackPointMapping, InMemoryIntentStore,
+    AuthenticatedActor, ControlDispatch, DeliveryChannel, DispatchEngine, DispatchState,
+    InMemoryIntentStore,
 };
 use eneros_control_gateway::chain::ControlChain;
 use eneros_control_gateway::envelope::ActorKind;
@@ -22,7 +22,6 @@ use eneros_control_gateway::lease::LeaseScope;
 use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
 use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
 use eneros_control_gateway::wire::ControlEnvelope;
-use eneros_dual_brain::gate::DecisionGate;
 use eneros_dual_brain::{DecisionPath, ProposedControlPlan};
 use eneros_safety_validator::{
     EvaluatorConfig, IntegrityStatus, RequiredPoint, RequiredPointCoverage, SampleQuality,
@@ -296,43 +295,16 @@ fn engine_with() -> (DispatchEngine, Rc<RefCell<u64>>) {
         devices: Rc::clone(&devices),
         delivered: Rc::clone(&delivered),
     };
-    let profile = test_profile();
-    let config = DispatchConfig {
+    let config = support::test_config(support::TestConfigSeed {
         chain: build_chain(),
         key: KEY.to_vec(),
         profile: test_profile(),
-        fencing_token: 1 + EPOCH_SEED,
         issuer_service: ISSUER,
-        issuer_epoch: 0,
-        target_endpoint: String::from("svc-device-agent"),
-        max_power_kw: 500.0,
-        safety_voltage_window: (340.0, 420.0),
-        safety_freq_window: (49.5, 50.5),
-        safety_ramp_kw_per_min: 200.0,
-        gate: DecisionGate::new(100, 1000.0, 3_600_000),
-        control_audit: None,
-        audit: None,
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: now_ms,
         intent_log: Box::new(InMemoryIntentStore::new(64)),
         delivery: Box::new(ch),
-        resources: Box::new(support::TestResourceView {
-            asset_id: u64::from(profile.device_id),
-            device_id: profile.device_id as u16,
-            point_id: profile.point_id,
-            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
-            catalog_version: 1,
-        }),
-        contracts: Box::new(support::test_contract_view(u64::from(profile.device_id), 1)),
-        compiler_policy: support::test_compiler_policy(),
-        control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
-        feedback_mapping: FeedbackPointMapping {
-            grid_up: 5,
-            soc: 4,
-            dc_bus_v: 1,
-            overcurrent: 6,
-            overtemp: 6,
-        },
-        now_fn: now_ms,
-    };
+    });
     (DispatchEngine::new(config), delivered)
 }
 

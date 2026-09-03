@@ -7,6 +7,7 @@ license.workspace = true
 description = "EnerOS 测量启动与远程证明 (v0.114.0) — TPM PCR 度量 + TCG 事件日志 + SM2 Quote 验签, no_std"
 
 [dependencies]
+eneros-signer-keyring = { path = "../signer-keyring" }
 eneros-crypto = { path = "../crypto" }
 # v0.236.0（B4-03）：真实 TPM2 适配器（硬件路径）。
 eneros-tpm = { path = "../tpm", optional = true }

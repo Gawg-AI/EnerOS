@@ -5,32 +5,25 @@ use eneros_decision_contract::{Assignment, CandidatePlan, PlanId, SnapshotId, So
 use eneros_telemetry_model::command::AuthorizedCommand;
 
 fn main() {
-    let plan = CandidatePlan::new(
+    let plan = CandidatePlan::builder(
         PlanId::new([1; 16]).unwrap(),
         SnapshotId([2; 16]),
         [0; 32],
         1,
-        0,
-        0,
-        1,
-        SolveStatusKind::Optimal,
-        0.0,
-        0.0,
-        0.0,
-        0,
-        [3; 32],
-        [4; 32],
-        vec![Assignment {
-            asset_id: 1,
-            device_id: 1,
-            point_id: 1,
-            power_kw: 1.0,
-            unit_code: 6,
-            step_index: 1,
-        }],
-        0,
-        1,
     )
+    .solve(SolveStatusKind::Optimal, 0.0, 0.0, 0.0, 0)
+    .horizons(0, 0, 1)
+    .digests([3; 32], [4; 32])
+    .validity(0, 1)
+    .assignments(vec![Assignment {
+        asset_id: 1,
+        device_id: 1,
+        point_id: 1,
+        power_kw: 1.0,
+        unit_code: 6,
+        step_index: 1,
+    }])
+    .build()
     .unwrap();
     // 期望失败：CandidatePlan 与 AuthorizedCommand 是不可互换类型。
     let _exec: &AuthorizedCommand = &plan;

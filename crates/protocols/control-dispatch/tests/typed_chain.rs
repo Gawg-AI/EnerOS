@@ -27,7 +27,6 @@ use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
 use eneros_control_gateway::wire::ControlEnvelope;
 use eneros_control_gateway::ControlProfile;
 use eneros_dual_brain::audit::DecisionAudit;
-use eneros_dual_brain::gate::DecisionGate;
 use eneros_dual_brain::DecisionPath;
 use eneros_telemetry_model::point_spec::PointSpec;
 use eneros_telemetry_model::PhysicalUnit;
@@ -288,44 +287,20 @@ fn device_side() -> (
 }
 
 fn engine_with(channel: Box<dyn DeliveryChannel>) -> DispatchEngine {
-    let profile = test_profile();
-    let config = DispatchConfig {
+    let config = support::test_config(support::TestConfigSeed {
         chain: build_chain(),
         key: KEY.to_vec(),
-        profile,
-        fencing_token: 1 + EPOCH_SEED,
+        profile: test_profile(),
         issuer_service: ISSUER,
-        issuer_epoch: 0,
-        target_endpoint: String::from("svc-device-agent"),
-        max_power_kw: 500.0,
-        safety_voltage_window: (340.0, 420.0),
-        safety_freq_window: (49.5, 50.5),
-        safety_ramp_kw_per_min: 200.0,
-        gate: DecisionGate::new(100, 1000.0, 3_600_000),
-        control_audit: None,
-        audit: Some(DecisionAudit::new([0x40; 32])),
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: now_ms,
         intent_log: Box::new(eneros_control_dispatch::InMemoryIntentStore::new(64)),
         delivery: channel,
-        resources: Box::new(support::TestResourceView {
-            asset_id: 1,
-            device_id: 1,
-            point_id: profile.point_id,
-            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
-            catalog_version: 1,
-        }),
-        contracts: Box::new(support::test_contract_view(1, 1)),
-        compiler_policy: support::test_compiler_policy(),
-        control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
-        feedback_mapping: eneros_control_dispatch::FeedbackPointMapping {
-            grid_up: 5,
-            soc: 4,
-            dc_bus_v: 1,
-            overcurrent: 6,
-            overtemp: 6,
-        },
-        now_fn: now_ms,
-    };
-    DispatchEngine::new(config)
+    });
+    DispatchEngine::new(DispatchConfig {
+        audit: Some(DecisionAudit::new([0x40; 32])),
+        ..config
+    })
 }
 
 fn actor() -> AuthenticatedActor {
@@ -401,25 +376,24 @@ fn typed_entry_rejects_expired_plan() {
     let mut c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
     // 过期：issued_at 远早于 now 且 ttl 短——直接经 wire 往返改写不可行
     // （构造器校验 ttl>0），用早期 issued_at 重造。
-    let expired = eneros_decision_contract::CandidatePlan::new(
+    let expired = eneros_decision_contract::CandidatePlan::builder(
         *c.id(),
         c.snapshot_id(),
         *c.objective_digest(),
         c.resource_catalog_version(),
-        c.horizon_start_ms(),
-        c.step_ns(),
-        c.step_count(),
+    )
+    .solve(
         c.solver_status(),
         c.objective_value(),
         c.relative_gap(),
         c.max_primal_residual(),
         c.elapsed_ms(),
-        *c.model_digest(),
-        *c.input_digest(),
-        c.assignments().to_vec(),
-        now_ms() - 120_000,
-        60_000,
     )
+    .horizons(c.horizon_start_ms(), c.step_ns(), c.step_count())
+    .digests(*c.model_digest(), *c.input_digest())
+    .validity(now_ms() - 120_000, 60_000)
+    .assignments(c.assignments().to_vec())
+    .build()
     .expect("expired plan constructible");
     let err = engine
         .submit_typed(&expired, "pcs", &trusted_telemetry(), &actor(), 5_000)
@@ -475,26 +449,18 @@ fn two_step_plan() -> eneros_decision_contract::CandidatePlan {
         unit_code: 6,
         step_index: step,
     };
-    CandidatePlan::new(
-        PlanId([0x71; 16]),
-        SnapshotId([2u8; 16]),
-        [0xAA; 32],
-        1,
-        TICK_MS.load(std::sync::atomic::Ordering::Relaxed),
-        10_000_000_000, // 10s 步长
-        2,
-        SolveStatusKind::Optimal,
-        1.0,
-        0.0,
-        0.0,
-        10,
-        [0xBB; 32],
-        [0xCC; 32],
-        vec![a(1, 10.0), a(2, 20.0)],
-        TICK_MS.load(std::sync::atomic::Ordering::Relaxed),
-        60_000,
-    )
-    .expect("合法两步计划")
+    CandidatePlan::builder(PlanId([0x71; 16]), SnapshotId([2u8; 16]), [0xAA; 32], 1)
+        .solve(SolveStatusKind::Optimal, 1.0, 0.0, 0.0, 10)
+        .horizons(
+            TICK_MS.load(std::sync::atomic::Ordering::Relaxed),
+            10_000_000_000, // 10s 步长
+            2,
+        )
+        .digests([0xBB; 32], [0xCC; 32])
+        .validity(TICK_MS.load(std::sync::atomic::Ordering::Relaxed), 60_000)
+        .assignments(vec![a(1, 10.0), a(2, 20.0)])
+        .build()
+        .expect("合法两步计划")
 }
 
 /// 两步计划：首拍只投到期步 1；步 2 未到期不投；推进时钟后重提交同计划
@@ -510,42 +476,19 @@ fn typed_multi_step_plan_delivers_due_commands_per_tick() {
         delivered: delivered.clone(),
     };
     // 与 engine_with 同构，仅时钟可推进。
-    let profile = test_profile();
-    let config = DispatchConfig {
+    let config = support::test_config(support::TestConfigSeed {
         chain: build_chain(),
         key: KEY.to_vec(),
-        profile,
-        fencing_token: 1 + EPOCH_SEED,
+        profile: test_profile(),
         issuer_service: ISSUER,
-        issuer_epoch: 0,
-        target_endpoint: String::from("svc-device-agent"),
-        max_power_kw: 500.0,
-        safety_voltage_window: (340.0, 420.0),
-        safety_freq_window: (49.5, 50.5),
-        safety_ramp_kw_per_min: 200.0,
-        gate: DecisionGate::new(100, 1000.0, 3_600_000),
-        control_audit: None,
-        audit: Some(DecisionAudit::new([0x40; 32])),
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: tick_now,
         intent_log: Box::new(eneros_control_dispatch::InMemoryIntentStore::new(64)),
         delivery: Box::new(channel),
-        resources: Box::new(support::TestResourceView {
-            asset_id: 1,
-            device_id: 1,
-            point_id: profile.point_id,
-            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
-            catalog_version: 1,
-        }),
-        contracts: Box::new(support::test_contract_view(1, 1)),
-        compiler_policy: support::test_compiler_policy(),
-        control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
-        feedback_mapping: eneros_control_dispatch::FeedbackPointMapping {
-            grid_up: 5,
-            soc: 4,
-            dc_bus_v: 1,
-            overcurrent: 6,
-            overtemp: 6,
-        },
-        now_fn: tick_now,
+    });
+    let config = DispatchConfig {
+        audit: Some(DecisionAudit::new([0x40; 32])),
+        ..config
     };
     let mut engine = DispatchEngine::new(config);
     let plan = two_step_plan();
@@ -632,40 +575,18 @@ fn append_failure_terminates_journal_and_resubmission_not_arbiter_locked() {
         fail_append: std::cell::Cell::new(true),
     };
     let mut engine = DispatchEngine::new(DispatchConfig {
-        chain: build_chain(),
-        key: KEY.to_vec(),
-        profile,
-        fencing_token: 1 + EPOCH_SEED,
-        issuer_service: ISSUER,
-        issuer_epoch: 0,
-        target_endpoint: String::from("svc-device-agent"),
-        max_power_kw: 500.0,
-        safety_voltage_window: (340.0, 420.0),
-        safety_freq_window: (49.5, 50.5),
-        safety_ramp_kw_per_min: 200.0,
-        gate: DecisionGate::new(100, 1000.0, 3_600_000),
-        control_audit: None,
         audit: Some(DecisionAudit::new([0x40; 32])),
         intent_log: Box::new(store),
-        delivery: Box::new(channel),
-        resources: Box::new(support::TestResourceView {
-            asset_id: 1,
-            device_id: 1,
-            point_id: profile.point_id,
-            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
-            catalog_version: 1,
-        }),
-        contracts: Box::new(support::test_contract_view(1, 1)),
-        compiler_policy: support::test_compiler_policy(),
-        control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
-        feedback_mapping: eneros_control_dispatch::FeedbackPointMapping {
-            grid_up: 5,
-            soc: 4,
-            dc_bus_v: 1,
-            overcurrent: 6,
-            overtemp: 6,
-        },
-        now_fn: now_ms,
+        ..support::test_config(support::TestConfigSeed {
+            chain: build_chain(),
+            key: KEY.to_vec(),
+            profile,
+            issuer_service: ISSUER,
+            fencing_token: 1 + EPOCH_SEED,
+            now_fn: now_ms,
+            intent_log: Box::new(eneros_control_dispatch::InMemoryIntentStore::new(64)),
+            delivery: Box::new(channel),
+        })
     });
 
     let p = proposal(50.0);

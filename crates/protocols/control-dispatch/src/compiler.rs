@@ -271,24 +271,18 @@ pub fn compile(
     let compiler_digest: [u8; 32] =
         sha2::Sha256::digest(compiler_digest_input(policy).as_slice()).into();
 
-    // 1. 逐 assignment 编译（确定性序：排序后处理；重复 (asset, step) 拒绝）。
+    // 1. 逐 assignment 编译（确定性序：排序后处理）。重复 (asset, step)
+    // 在构造点即拒（WP-64.3.1.2 轨迹不变量；原 DuplicateStep 第二遍
+    // 检查删除——CandidatePlan 构造/解码单通道已挡）。
     let mut assignments: Vec<_> = plan.assignments().to_vec();
     assignments.sort_by_key(|a| (a.asset_id, a.step_index));
     let mut ordered: Vec<CompiledCommand> = Vec::with_capacity(assignments.len());
     let mut skipped: Vec<SkippedCommand> = Vec::new();
     let mut manual_approval: Vec<IntentId> = Vec::new();
-    let mut prev: Option<(u64, u32)> = None;
     for a in &assignments {
-        if prev == Some((a.asset_id, a.step_index)) {
-            return Err(CompileReject::DuplicateStep {
-                asset_id: a.asset_id,
-                step_index: a.step_index,
-            });
-        }
-        prev = Some((a.asset_id, a.step_index));
         // unbound 绑定完成（[06] §3.3；迁移 adapter 形态：assignment
         // 全零——asset/unit 一并由 dispatch profile 完成）。
-        let unbound = a.asset_id == 0;
+        let unbound = a.asset_id == eneros_decision_contract::candidate::UNQUALIFIED_ASSET_ID;
         let asset_id = if unbound {
             default_asset_id
         } else {
@@ -398,22 +392,12 @@ pub fn compile(
             Some(cur) => u8::from(value.abs() > cur.abs()),
             None => u8::from(value != 0.0),
         };
-        let intent_id = intent_id_of(&plan_sha, asset_id, a.step_index);
-        let intent = CommandIntent::new(
-            intent_id,
-            *cert.plan_id(),
-            plan_sha,
-            asset_id,
-            device,
-            point,
-            value,
-            unit,
-            valid_from,
-            valid_until,
-            eneros_decision_contract::Precondition::None,
-            compensation,
-        )
-        .map_err(CompileReject::BatchReject)?;
+        let intent = CommandIntent::builder(intent_id, *cert.plan_id(), plan_sha)
+            .target(asset_id, device, point, value, unit)
+            .window(valid_from, valid_until)
+            .policy(eneros_decision_contract::Precondition::None, compensation)
+            .build()
+            .map_err(CompileReject::BatchReject)?;
         ordered.push(CompiledCommand {
             intent,
             asset_id,
@@ -497,18 +481,12 @@ pub fn compile(
             .map(|i| i.valid_until_ms())
             .max()
             .unwrap_or_default();
-        let batch = CommandBatch::new_compiled(
-            batch_id,
-            cert,
-            registry,
-            intents,
-            now_ms,
-            edges,
-            policy.max_parallel,
-            deadline,
-            compiler_digest,
-        )
-        .map_err(CompileReject::BatchReject)?;
+        let batch = CommandBatch::compile(batch_id, cert, registry)
+            .intents(intents)
+            .built_at(now_ms)
+            .compile_meta(edges, policy.max_parallel, deadline, compiler_digest)
+            .finish()
+            .map_err(CompileReject::BatchReject)?;
         batches.push(batch);
     }
 

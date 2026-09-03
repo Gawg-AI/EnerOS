@@ -253,7 +253,7 @@ impl TpmBackend for SoftTpm {
 
 #[cfg(test)]
 mod tests {
-    use eneros_crypto::{sm2_verify, Sm2Signature};
+    use eneros_crypto::Sm2Signature;
 
     use super::*;
 
@@ -270,7 +270,7 @@ mod tests {
             "同 seed 的 AK 公钥跨重启稳定（锚定设备身份）"
         );
         // 签名一致性：同 seed 派生的 AK 对同一数据签名，验签均通过
-        use eneros_crypto::{sm2_sign, sm2_verify, CsRng};
+        use eneros_crypto::{sm2_sign, CsRng};
         let digest = [0x11u8; 32];
         let mut rng1 = CsRng::new();
         let sig1 = sm2_sign(
@@ -288,8 +288,18 @@ mod tests {
             &mut rng2,
         )
         .unwrap();
-        assert!(sm2_verify(&digest, &sig1, &tpm2.attestation_pubkey().unwrap()).unwrap());
-        assert!(sm2_verify(&digest, &sig2, &tpm1.attestation_pubkey().unwrap()).unwrap());
+        assert!(eneros_signer_keyring::verify_signature(
+            &digest,
+            &sig1,
+            &tpm2.attestation_pubkey().unwrap()
+        )
+        .is_ok());
+        assert!(eneros_signer_keyring::verify_signature(
+            &digest,
+            &sig2,
+            &tpm1.attestation_pubkey().unwrap()
+        )
+        .is_ok());
     }
 
     #[test]
@@ -443,13 +453,13 @@ mod tests {
         );
         assert_eq!(quote.pcr_values[1], pcr_extend_value(&[0u8; 32], &d1));
         assert_eq!(quote.pcr_values[2], [0u8; 32], "PCR2 未度量应为零值");
-        // 签名可验（quote_digest + AK 公钥）
+        // 签名可验（quote_digest + AK 公钥）——WP-64.3.5 类型化原语。
         let sig = Sm2Signature::from_bytes(&sig_bytes);
-        let verified = sm2_verify(
+        let verified = eneros_signer_keyring::verify_signature(
             &quote_digest(&quote),
             &sig,
             &tpm.attestation_pubkey().unwrap(),
         );
-        assert_eq!(verified, Ok(true), "quote 签名应可被 AK 公钥验证");
+        assert!(verified.is_ok(), "quote 签名应可被 AK 公钥验证");
     }
 }

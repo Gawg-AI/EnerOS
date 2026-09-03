@@ -105,7 +105,7 @@ impl ModbusTcpIoService {
         }
         let now = eneros_protocol_services::now_ms();
         let mut cd_hex = [0u8; 16];
-        hex16_into(&command_digest, &mut cd_hex);
+        eneros_hex::encode_into_lower(&command_digest[..8], &mut cd_hex);
         let cd = core::str::from_utf8(&cd_hex).unwrap_or("?");
         let power = match value {
             eneros_telemetry_model::command::CommandValue::ActivePowerKw(v) => v,
@@ -144,7 +144,7 @@ impl ModbusTcpIoService {
                     eneros_telemetry_model::command::CommandValue::ActivePowerKw(eng),
                 );
                 let mut td_hex = [0u8; 16];
-                hex16_into(&td, &mut td_hex);
+                eneros_hex::encode_into_lower(&td[..8], &mut td_hex);
                 let tds = core::str::from_utf8(&td_hex).unwrap_or("?");
                 eneros_runtime::println!(
                     "[svc-modbus-tcp] MASTER-READBACK point={point} eng={eng} target={power} {} td={tds}",
@@ -372,12 +372,5 @@ fn panic(_info: &PanicInfo) -> ! {
 #[cfg(all(not(test), not(target_os = "none")))]
 fn main() {}
 
-/// 摘要前 8 字节 hex 写入 16B ASCII 缓冲（串口证据用；61 v0.314.25）。
-#[cfg(target_os = "none")]
-fn hex16_into(d: &[u8; 32], out: &mut [u8; 16]) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for (i, b) in d[..8].iter().enumerate() {
-        out[i * 2] = HEX[(b >> 4) as usize];
-        out[i * 2 + 1] = HEX[(b & 0xF) as usize];
-    }
-}
+// 摘要前 8 字节 hex 写入 16B ASCII 缓冲（串口证据用；61 v0.314.25）
+// ——WP-64.3.4 起调用点直用 eneros_hex::encode_into_lower（本地抄本删）。

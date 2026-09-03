@@ -307,7 +307,7 @@ impl<L: DecisionBackend, P: PeerLink> RemoteBrain<L, P> {
                     current_a: telemetry.state.current_a,
                     frequency_hz: telemetry.state.frequency_hz,
                     generated_at_ms: telemetry.generated_at_ms,
-                    digest_hex: hex_encode(&telemetry.provenance_digest),
+                    digest_hex: eneros_hex::encode_lower(&telemetry.provenance_digest),
                 },
                 self.peer_budget(),
             );
@@ -405,17 +405,6 @@ fn prompt_summary(req_id: u64, t: &TrustedTelemetry) -> String {
         t.state.soc_pct,
         t.state.voltage_v
     )
-}
-
-/// 小写 hex（digest → 契约字段；no_std 无 {:#x} 补零便利）。
-pub fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0xF) as usize] as char);
-    }
-    s
 }
 
 /// SPEC-SERIES-2026-08-28/B WP-B.3：peer 链路 EIPC 适配（自 svc-ai-worker

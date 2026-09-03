@@ -99,18 +99,17 @@ fn battery() -> EvalBattery {
 }
 
 fn spec(hard: Vec<Constraint>) -> ObjectiveSpec {
-    ObjectiveSpec::new(
-        SnapshotId([7; 16]),
-        hard,
-        vec![],
-        ObjectiveKind::MaxRevenue,
-        1,
-        ObjectiveSource::RuleBundle,
-        ReasonCode::PriceArbitrage,
-        0,
-        u64::MAX,
-    )
-    .unwrap()
+    ObjectiveSpec::builder(SnapshotId([7; 16]))
+        .constraints(hard, vec![])
+        .objective(
+            ObjectiveKind::MaxRevenue,
+            1,
+            ObjectiveSource::RuleBundle,
+            ReasonCode::PriceArbitrage,
+        )
+        .window(0, u64::MAX)
+        .build()
+        .unwrap()
 }
 
 fn base_spec() -> ObjectiveSpec {
@@ -146,28 +145,41 @@ fn ctx<'a>(
     }
 }
 
-/// 手工计划构造（负例直接构造违约轨迹）。
+/// 手工计划构造（合法轨迹；WP-64.3.1 起违约轨迹在构造点即拒——
+/// certifier 的 duplicate/MissingAssignment 独立复检分支保留为纵深，
+/// 公开构造面不可达，见本文件 malicious_nan_and_missing_rejected）。
 fn plan(assignments: Vec<Assignment>) -> CandidatePlan {
-    CandidatePlan::new(
+    CandidatePlan::builder(
         PlanId::new([1; 16]).unwrap(),
         SnapshotId([7; 16]),
         [2; 32],
         1,
-        1_000,
-        STEP_NS_HOUR,
-        2,
-        SolveStatusKind::Optimal,
-        0.0,
-        0.0,
-        0.0,
-        10,
-        [3; 32],
-        [4; 32],
-        assignments,
-        1_000,
-        60_000,
     )
+    .solve(SolveStatusKind::Optimal, 0.0, 0.0, 0.0, 10)
+    .horizons(1_000, STEP_NS_HOUR, 2)
+    .digests([3; 32], [4; 32])
+    .validity(1_000, 60_000)
+    .assignments(assignments)
+    .build()
     .unwrap()
+}
+
+/// 违约轨迹构造基座（负例只重声明 assignments 组；判据现居构造点）。
+fn plan_raw(
+    assignments: Vec<Assignment>,
+) -> Result<CandidatePlan, eneros_decision_contract::ContractError> {
+    CandidatePlan::builder(
+        PlanId::new([1; 16]).unwrap(),
+        SnapshotId([7; 16]),
+        [2; 32],
+        1,
+    )
+    .solve(SolveStatusKind::Optimal, 0.0, 0.0, 0.0, 10)
+    .horizons(1_000, STEP_NS_HOUR, 2)
+    .digests([3; 32], [4; 32])
+    .validity(1_000, 60_000)
+    .assignments(assignments)
+    .build()
 }
 
 fn asg(asset: u64, step: u32, kw: f64) -> Assignment {
@@ -341,66 +353,33 @@ fn malicious_soc_drain_rejected() {
 fn malicious_nan_and_missing_rejected() {
     // NaN 在合同构造层即拒（CandidatePlan 校验构造器；evaluator 的
     // NonFinite 分支为 decode 侧纵深防御）。
-    let r = CandidatePlan::new(
-        PlanId::new([1; 16]).unwrap(),
-        SnapshotId([7; 16]),
-        [2; 32],
-        1,
-        1_000,
-        STEP_NS_HOUR,
-        2,
-        SolveStatusKind::Optimal,
-        0.0,
-        0.0,
-        0.0,
-        10,
-        [3; 32],
-        [4; 32],
-        vec![asg(1, 1, f64::NAN)],
-        1_000,
-        60_000,
-    );
+    let r = plan_raw(vec![asg(1, 1, f64::NAN)]);
     assert_eq!(
         r,
         Err(eneros_decision_contract::ContractError::OutOfRange(
             "assignment.power_kw"
         ))
     );
-    // 缺步（电池缺 t2）。
+    // 缺步（电池缺 t2）：WP-64.3.1 轨迹不变量构造点强制——判据自
+    // certifier MissingAssignment 前移构造点（ADR-051 独立复检分支保留
+    // 为纵深；公开构造面不可达，certifier 不再是唯一守门者）。
     let a = vec![asg(1, 1, -1.0), asg(10, 1, 1.0), asg(10, 2, -5.0)];
-    match certify(a) {
-        Err(CertifierError::MissingAssignment { asset_id, step }) => {
-            assert_eq!(asset_id, 1);
-            assert_eq!(step, 2);
-        }
-        other => panic!("{other:?}"),
-    }
-    // 重复分配。
+    assert_eq!(
+        plan_raw(a),
+        Err(eneros_decision_contract::ContractError::Malformed(
+            "assignment_trajectory_gap"
+        ))
+    );
+    // 重复分配：同上，构造点强制。
     let a = vec![asg(1, 1, 1.0), asg(1, 1, 2.0)];
     assert_eq!(
-        certify(a),
-        Err(CertifierError::MalformedAssignment("duplicate"))
+        plan_raw(a),
+        Err(eneros_decision_contract::ContractError::Malformed(
+            "duplicate_assignment"
+        ))
     );
     // 越步：合同构造层即拒（step_index ≤ step_count）。
-    let r = CandidatePlan::new(
-        PlanId::new([1; 16]).unwrap(),
-        SnapshotId([7; 16]),
-        [2; 32],
-        1,
-        1_000,
-        STEP_NS_HOUR,
-        2,
-        SolveStatusKind::Optimal,
-        0.0,
-        0.0,
-        0.0,
-        10,
-        [3; 32],
-        [4; 32],
-        vec![asg(1, 3, 1.0)],
-        1_000,
-        60_000,
-    );
+    let r = plan_raw(vec![asg(1, 3, 1.0)]);
     assert_eq!(
         r,
         Err(eneros_decision_contract::ContractError::OutOfRange(
@@ -489,6 +468,32 @@ fn binding_and_window_rejections() {
     c2.horizon_step_count = 3;
     match CertifierModule::certify(&c2, &p, 2_000, &ring) {
         Err(CertifierError::PlanMismatch("horizon")) => {}
+        other => panic!("{other:?}"),
+    }
+    // WP-64.3.3.2：spec_snapshot / horizon_start 两对负例（bind 判据
+    // 每对一个负例）。
+    // 规格快照与计划快照不同源（spec 绑定别的快照）。
+    let spec_other_snap = ObjectiveSpec::builder(SnapshotId([8; 16]))
+        .constraints(sp.hard().to_vec(), vec![])
+        .objective(
+            ObjectiveKind::MaxRevenue,
+            1,
+            ObjectiveSource::RuleBundle,
+            ReasonCode::PriceArbitrage,
+        )
+        .window(0, u64::MAX)
+        .build()
+        .unwrap();
+    let c3 = ctx(&snap, &spec_other_snap, &envelopes, &batteries);
+    match CertifierModule::certify(&c3, &p, 2_000, &ring) {
+        Err(CertifierError::PlanMismatch("spec_snapshot")) => {}
+        other => panic!("{other:?}"),
+    }
+    // horizon 起点不匹配。
+    let mut c4 = ctx(&snap, &sp, &envelopes, &batteries);
+    c4.horizon_start_ms = 2_000;
+    match CertifierModule::certify(&c4, &p, 2_000, &ring) {
+        Err(CertifierError::PlanMismatch("horizon_start")) => {}
         other => panic!("{other:?}"),
     }
 }
@@ -786,33 +791,36 @@ fn shadow_certify_highs_golden_plan() {
     #[allow(unused_imports)]
     use eneros_solver_core::solver::Solver;
 
-    let spec_pl = ObjectiveSpec::new(
-        SnapshotId([7; 16]),
-        vec![
-            Constraint {
-                kind: ConstraintKind::MinSoc,
-                bound: 0.1,
-            },
-            Constraint {
-                kind: ConstraintKind::MaxSoc,
-                bound: 0.9,
-            },
-            Constraint {
-                kind: ConstraintKind::MaxPowerKw,
-                bound: 15.0,
-            },
-        ],
-        vec![],
-        ObjectiveKind::MaxRevenue,
-        1,
-        ObjectiveSource::RuleBundle,
-        ReasonCode::PriceArbitrage,
-        0,
-        u64::MAX,
-    )
-    .unwrap();
-    let obj = {
-        let c = eneros_objective_engine::CompiledObjective {
+    let spec_pl = ObjectiveSpec::builder(SnapshotId([7; 16]))
+        .constraints(
+            vec![
+                Constraint {
+                    kind: ConstraintKind::MinSoc,
+                    bound: 0.1,
+                },
+                Constraint {
+                    kind: ConstraintKind::MaxSoc,
+                    bound: 0.9,
+                },
+                Constraint {
+                    kind: ConstraintKind::MaxPowerKw,
+                    bound: 15.0,
+                },
+            ],
+            vec![],
+        )
+        .objective(
+            ObjectiveKind::MaxRevenue,
+            1,
+            ObjectiveSource::RuleBundle,
+            ReasonCode::PriceArbitrage,
+        )
+        .window(0, u64::MAX)
+        .build()
+        .unwrap();
+    // WP-64.3.2.1：CompiledObjective 密封后经 test-util fixture 缝装配。
+    let obj = eneros_objective_engine::CompiledObjective::compile_fixture(
+        eneros_objective_engine::compiler::CompiledObjectiveParts {
             spec: spec_pl.clone(),
             prices_per_kwh: vec![1.0, 10.0],
             min_on_steps: 0,
@@ -820,25 +828,10 @@ fn shadow_certify_highs_golden_plan() {
             registry_generation: 1,
             bundle_version: 1,
             bundle_digest: [9; 32],
-            spec_digest: [0; 32],
             horizon_step_ns: STEP_NS_HOUR,
             horizon_step_count: 2,
-        };
-        let d = eneros_objective_engine::compiler::digest_compiled(
-            &c.spec,
-            &c.prices_per_kwh,
-            &c.bundle_digest,
-            c.registry_generation,
-            c.min_on_steps,
-            c.min_off_steps,
-            c.horizon_step_ns,
-            c.horizon_step_count,
-        );
-        eneros_objective_engine::CompiledObjective {
-            spec_digest: d,
-            ..c
-        }
-    };
+        },
+    );
     let input = PlanInput {
         objective: &obj,
         snapshot_id: [7; 16],
@@ -874,7 +867,7 @@ fn shadow_certify_highs_golden_plan() {
         ],
     };
     let req =
-        eneros_decision_contract::DecisionRequest::new([1; 16], obj.spec.clone(), 1, 10_000, 1)
+        eneros_decision_contract::DecisionRequest::new([1; 16], obj.spec().clone(), 1, 10_000, 1)
             .unwrap();
     let mut hb = HighsSolver::new().unwrap();
     let mut planner = Planner::new(eneros_planner::tolerance::ToleranceProfile::l2(), 100);
@@ -887,7 +880,7 @@ fn shadow_certify_highs_golden_plan() {
     let batteries = vec![battery()];
     let context = EvalContext {
         snapshot: &snap,
-        spec: &obj.spec,
+        spec: obj.spec(),
         envelopes: &envelopes,
         batteries: &batteries,
         horizon_step_ns: STEP_NS_HOUR,
@@ -968,6 +961,86 @@ fn perf_1000_resources_96_steps() {
 // 发放面 rg 门（ADR-051）：certifier feature 仅本 crate 启用
 // ---------------------------------------------------------------------------
 
+/// WP-64.3.1.5：seal 发放面 feature 全仓唯一性 walk（读不到 = panic
+/// 语义保持——`unwrap_or_default` 会把"读不到"变"恒通过"，假阳性门）。
+/// 返回违规 crate 清单；`self_manifest` 豁免（正面断言单列）。
+fn certifier_feature_offenders(
+    crates_root: &std::path::Path,
+    self_manifest: &std::path::Path,
+    min_checked: usize,
+) -> Vec<std::path::PathBuf> {
+    fn walk(
+        dir: &std::path::Path,
+        self_manifest: &std::path::Path,
+        offenders: &mut Vec<std::path::PathBuf>,
+        checked: &mut usize,
+    ) {
+        let entries =
+            std::fs::read_dir(dir).unwrap_or_else(|e| panic!("rg 门必须读到目录 {dir:?}: {e}"));
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| panic!("rg 门目录项读取失败: {e}"));
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, self_manifest, offenders, checked);
+            } else if path.file_name().is_some_and(|n| n == "Cargo.toml") {
+                if path == self_manifest {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("rg 门必须读到 {path:?}: {e}"));
+                *checked += 1;
+                if src.contains("features = [\"certifier\"]") {
+                    offenders.push(path);
+                }
+            }
+        }
+    }
+    let mut offenders = Vec::new();
+    let mut checked = 0usize;
+    walk(crates_root, self_manifest, &mut offenders, &mut checked);
+    assert!(
+        checked >= min_checked,
+        "walk 只覆盖了 {checked} 个 crate（下限 {min_checked}）——遍历失效假绿防护"
+    );
+    offenders
+}
+
+/// WP-64.3.1.5 红测（临时目录形态，不污染真实 crate）：第四 crate 启用
+/// certifier feature → 门红；干净树 → 通过。
+#[test]
+fn seal_gate_walk_rejects_fourth_crate() {
+    let tmp = std::env::temp_dir().join(format!("r64-seal-gate-{}", std::process::id()));
+    let crates = tmp.join("crates");
+    for rel in [
+        "ai/certifier",
+        "ai/planner",
+        "ai/objective-engine",
+        "protocols/control-dispatch",
+    ] {
+        let dir = crates.join(rel);
+        std::fs::create_dir_all(&dir).expect("temp tree");
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("temp toml");
+    }
+    // 干净树：零违规。
+    assert!(
+        certifier_feature_offenders(&crates, &crates.join("ai/certifier/Cargo.toml"), 3).is_empty()
+    );
+    // 第四 crate 启用 feature → 门红。
+    std::fs::write(
+        crates.join("protocols/control-dispatch/Cargo.toml"),
+        "[features]\ncertifier = []\nfeatures = [\"certifier\"]\n",
+    )
+    .expect("temp toml");
+    let offenders =
+        certifier_feature_offenders(&crates, &crates.join("ai/certifier/Cargo.toml"), 3);
+    assert_eq!(
+        offenders.len(),
+        1,
+        "第四 crate 启用 certifier feature 必须被 walk 抓到"
+    );
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
 #[test]
 fn seal_issuance_feature_rg_gate() {
     let toml = include_str!("../Cargo.toml");
@@ -975,27 +1048,25 @@ fn seal_issuance_feature_rg_gate() {
         toml.contains("features = [\"certifier\"]"),
         "本 crate 必须显式启用 certifier feature（seal 发放面）"
     );
-    // 全仓唯一性：其他 crate 不得启用（transition 面为 dispatch 过渡窗，
-    // ADR-051 登记）。路径自 CARGO_MANIFEST_DIR 锚定工作区根；读不到
-    // 即失败（unwrap_or_default 会把"读不到"变"恒通过"——假阳性门）。
+    // 全仓唯一性（WP-64.3.1.5）：其他 crate 不得启用（transition 面为
+    // dispatch 过渡窗，ADR-051 登记）——遍历 workspace crates/**/Cargo.toml
+    // （原 3 路径清单的推广；读不到即 panic）。
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(3)
         .expect("workspace root")
         .to_path_buf();
-    for rel in [
-        "crates/ai/planner/Cargo.toml",
-        "crates/ai/objective-engine/Cargo.toml",
-        "crates/protocols/control-dispatch/Cargo.toml",
-    ] {
-        let path = workspace.join(rel);
-        let src = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("rg 门必须读到 {path:?}: {e}"));
-        assert!(
-            !src.contains("features = [\"certifier\"]"),
-            "{rel} 不得启用 certifier feature（发放面唯一性）"
-        );
-    }
+    let offenders = certifier_feature_offenders(
+        &workspace.join("crates"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("Cargo.toml")
+            .as_path(),
+        100,
+    );
+    assert!(
+        offenders.is_empty(),
+        "以下 crate 不得启用 certifier feature（发放面唯一性）: {offenders:?}"
+    );
     // seal 构造器不在无 feature 面（编译期事实由 decision-contract
     // compile-fail 锁定；此处锁文档面：issue() 只在 certifier feature）。
     let cert_src = include_str!("../../../ai/decision-contract/src/certificate.rs");

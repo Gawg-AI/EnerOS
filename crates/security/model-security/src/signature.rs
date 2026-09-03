@@ -1,81 +1,62 @@
-//! 模型签名验证：可信公钥列表 + 吊销列表 + SM2 验签.
+//! 模型签名验证：验签纪律唯一实现（keyring）的 model-security adapter
+//! （蓝图 64 卷 64.3 WP-64.3.5）.
 //!
-//! 验证顺序固定：①吊销列表命中 → [`VerifyError::KeyRevoked`]；②不在可信
-//! 列表 → [`VerifyError::KeyNotTrusted`]；③经 keyring `verify_signature`
-//! 对模型原始数据验签（内部含 Z 值拼接 + SM3 摘要，GB/T 32918.2）——
-//! 不匹配 = `Err(SigMismatch)`（63.3 WP-63.3.2 收口，布尔陷阱消除）。
-
-use alloc::vec::Vec;
+//! 自持 trusted/revoked 两 Vec + 手写三门的旧实现删除——
+//! [`ModelSignatureVerifier`] 内部持 [`SignerKeyring`]：查表（→
+//! `KeyNotTrusted`）→ 撤销门（→ `KeyRevoked`）→ SM2 验签（→
+//! `SigMismatch`）三门单源，keyring lib「唯一实现」声称随之复真。
+//! interface 方法签名零变化（pentest 消费面不改即绿——修复面窄的实证）.
 
 use eneros_crypto::Sm2PublicKey;
-use eneros_signer_keyring::verify_signature;
+use eneros_signer_keyring::{fingerprint, SignerKeyring, VerifyReject};
 
 use crate::{ModelSig, VerifyError};
 
-/// 模型签名验证器（可信公钥 + 吊销公钥两份列表）.
+/// 模型签名验证器（验签纪律唯一实现的 model-security adapter）.
 pub struct ModelSignatureVerifier {
-    /// 可信签名者公钥列表（去重维护）.
-    trusted_keys: Vec<Sm2PublicKey>,
-    /// 已吊销签名者公钥列表（去重维护；吊销优先于可信）.
-    revoked_keys: Vec<Sm2PublicKey>,
+    /// keyring 单源：查表/撤销门/SM2 验签全部委托.
+    keyring: SignerKeyring,
 }
 
 impl ModelSignatureVerifier {
     /// 创建空验证器（无可信公钥、无吊销公钥）.
     pub fn new() -> Self {
         Self {
-            trusted_keys: Vec::new(),
-            revoked_keys: Vec::new(),
+            keyring: SignerKeyring::new(),
         }
     }
 
     /// 验证模型签名.
     ///
-    /// 顺序：吊销检查 → 可信检查 → SM2 验签。63.3 WP-63.3.2 收口：返回
-    /// `Ok(())` = 签名有效且来源可信；签名与数据不匹配（篡改/伪造）=
-    /// `Err(SigMismatch)`——布尔陷阱从 interface 消失。底层走 keyring
-    /// 类型化原语（同 crate 域内，依赖面代价 = crypto 已在闭包）。
+    /// 三门顺序由 keyring [`SignerKeyring::verify_authenticated`] 唯一
+    /// 裁决：`Ok(())` = 签名有效且来源可信；篡改/伪造 =
+    /// `Err(SigMismatch)`（63.3 布尔陷阱收口保持）。
     pub fn verify(&self, model_data: &[u8], sig: &ModelSig) -> Result<(), VerifyError> {
-        // ① 吊销优先：已吊销公钥直接拒绝（即使仍在可信列表）
-        if self.revoked_keys.contains(&sig.signer_pubkey) {
-            return Err(VerifyError::KeyRevoked);
+        let key_id = fingerprint(&sig.signer_pubkey);
+        let sig_bytes: &[u8; 64] = &sig.signature.to_bytes();
+        match self
+            .keyring
+            .verify_authenticated(key_id, model_data, sig_bytes)
+        {
+            Ok(_) => Ok(()),
+            Err(VerifyReject::UnknownKey { .. }) => Err(VerifyError::KeyNotTrusted),
+            Err(VerifyReject::RevokedKey { .. }) => Err(VerifyError::KeyRevoked),
+            Err(VerifyReject::BadSignature) => Err(VerifyError::SigMismatch),
         }
-        // ② 可信检查：未登记为可信的公钥拒绝
-        if !self.trusted_keys.contains(&sig.signer_pubkey) {
-            return Err(VerifyError::KeyNotTrusted);
-        }
-        // ③ SM2 验签（对原始消息，内部含 Z 值 + SM3，GB/T 32918.2）——
-        // keyring 类型化原语，Ok(false) 陷阱收口为 Err(SigMismatch)。
-        verify_signature(model_data, &sig.signature, &sig.signer_pubkey)
-            .map(|_| ())
-            .map_err(|_| VerifyError::SigMismatch)
     }
 
-    /// 添加可信公钥（已存在则忽略，保持去重）.
+    /// 添加可信公钥（同 id 覆盖 = 去重语义由 keyring `register` 保持）.
     pub fn add_trusted_key(&mut self, key: Sm2PublicKey) {
-        if !self.trusted_keys.contains(&key) {
-            self.trusted_keys.push(key);
-        }
+        let id = fingerprint(&key);
+        self.keyring.register(id, &key);
     }
 
-    /// 吊销公钥：从可信列表移除 + 追加到吊销列表（吊销列表去重）.
+    /// 吊销公钥（先登记后撤销——未登记过的 key 也保持"吊销优先于可信"
+    /// 语义：后续 verify 一律 `KeyRevoked`）.
     pub fn revoke_key(&mut self, key: &Sm2PublicKey) {
-        self.trusted_keys.retain(|k| k != key);
-        if !self.revoked_keys.contains(key) {
-            self.revoked_keys.push(*key);
-        }
-    }
-
-    /// 可信公钥数量（测试观察用）.
-    #[cfg(test)]
-    pub fn trusted_count(&self) -> usize {
-        self.trusted_keys.len()
-    }
-
-    /// 已吊销公钥数量（测试观察用）.
-    #[cfg(test)]
-    pub fn revoked_count(&self) -> usize {
-        self.revoked_keys.len()
+        let id = fingerprint(key);
+        self.keyring.register(id, key);
+        self.keyring.revoke(id);
     }
 }
 
@@ -170,29 +151,42 @@ mod tests {
         );
     }
 
-    /// SIG10：revoke 后可信列表已移除且吊销列表不重复——同一 key revoke 两次，
-    /// revoked 仅一条，trusted 保持为空.
+    /// SIG10（WP-64.3.5 行为化改写）：revoke 幂等 + 重复 add 去重——
+    /// 观测面由 count 改为 verify 判定（keyring 同 id 覆盖去重）.
     #[test]
     fn sig10_revoke_idempotent() {
         let data = b"model-weights-blob-v1";
-        let (kp, _sig) = make_signed_model(data);
+        let (kp, sig) = make_signed_model(data);
         let mut verifier = ModelSignatureVerifier::new();
         verifier.add_trusted_key(kp.public_key);
-        assert_eq!(verifier.trusted_count(), 1);
+        assert_eq!(verifier.verify(data, &sig), Ok(()));
 
         verifier.revoke_key(&kp.public_key);
-        assert_eq!(verifier.trusted_count(), 0, "revoke 后可信列表必须移除");
-        assert_eq!(verifier.revoked_count(), 1, "revoke 后吊销列表必须有一条");
+        assert_eq!(verifier.verify(data, &sig), Err(VerifyError::KeyRevoked));
 
-        // 重复 revoke：吊销列表去重，不得追加第二条
+        // 重复 revoke：仍 KeyRevoked（不得翻回 KeyNotTrusted/Ok）。
         verifier.revoke_key(&kp.public_key);
-        assert_eq!(verifier.trusted_count(), 0, "重复 revoke 可信列表仍为空");
-        assert_eq!(verifier.revoked_count(), 1, "重复 revoke 吊销列表不得重复");
+        assert_eq!(verifier.verify(data, &sig), Err(VerifyError::KeyRevoked));
 
-        // 去重验证：add_trusted_key 重复添加同一 key 仅一条
+        // 重复 add 同一 key：去重语义（仍可信、仍可验签）。
         let mut v2 = ModelSignatureVerifier::new();
         v2.add_trusted_key(kp.public_key);
         v2.add_trusted_key(kp.public_key);
-        assert_eq!(v2.trusted_count(), 1, "可信列表必须去重");
+        assert_eq!(v2.verify(data, &sig), Ok(()));
+    }
+
+    /// WP-64.3.5 新增：吊销从未登记过的 key → verify 仍 KeyRevoked
+    /// （"吊销优先于可信"语义保持——register+revoke 组合）.
+    #[test]
+    fn sig11_revoke_without_register_still_revoked() {
+        let data = b"model-weights-blob-v1";
+        let (kp, sig) = make_signed_model(data);
+        let mut verifier = ModelSignatureVerifier::new();
+        verifier.revoke_key(&kp.public_key);
+        assert_eq!(
+            verifier.verify(data, &sig),
+            Err(VerifyError::KeyRevoked),
+            "未登记即吊销的 key 不得降级为 KeyNotTrusted"
+        );
     }
 }

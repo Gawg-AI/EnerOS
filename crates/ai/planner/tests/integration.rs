@@ -11,7 +11,6 @@ use eneros_decision_contract::CandidatePlan;
 use eneros_decision_contract::{
     DecisionRequest, ObjectiveSpec, ReasonCode, SnapshotId, SolveStatusKind,
 };
-use eneros_objective_engine::compiler::digest_compiled;
 use eneros_objective_engine::CompiledObjective;
 use eneros_planner::builder::{
     BatterySpec, DispatchSpec, GridSpec, LoadSpec, ModelBuilder, PlanInput, RenewableSpec,
@@ -63,22 +62,24 @@ fn env_battery() -> CapabilityEnvelope {
 }
 
 fn spec(hard: Vec<Constraint>, objective: ObjectiveKind) -> ObjectiveSpec {
-    ObjectiveSpec::new(
-        SnapshotId([7; 16]),
-        hard,
-        Vec::new(),
-        objective,
-        1,
-        ObjectiveSource::RuleBundle,
-        ReasonCode::PriceArbitrage,
-        0,
-        u64::MAX,
-    )
-    .unwrap()
+    ObjectiveSpec::builder(SnapshotId([7; 16]))
+        .constraints(hard, Vec::new())
+        .objective(
+            objective,
+            1,
+            ObjectiveSource::RuleBundle,
+            ReasonCode::PriceArbitrage,
+        )
+        .window(0, u64::MAX)
+        .build()
+        .unwrap()
 }
 
+/// WP-64.3.2.1：CompiledObjective 密封后经 test-util fixture 缝装配
+/// （spec_digest 由 digest_compiled 只算不传——同输入同摘要，golden 由
+/// 既有断言锁定）。
 fn compiled(spec: ObjectiveSpec, prices: Vec<f64>, t: u32) -> CompiledObjective {
-    let c = CompiledObjective {
+    CompiledObjective::compile_fixture(eneros_objective_engine::compiler::CompiledObjectiveParts {
         spec,
         prices_per_kwh: prices,
         min_on_steps: 0,
@@ -86,24 +87,9 @@ fn compiled(spec: ObjectiveSpec, prices: Vec<f64>, t: u32) -> CompiledObjective 
         registry_generation: 1,
         bundle_version: 1,
         bundle_digest: [9; 32],
-        spec_digest: [0; 32],
         horizon_step_ns: STEP_NS_HOUR,
         horizon_step_count: t,
-    };
-    let d = digest_compiled(
-        &c.spec,
-        &c.prices_per_kwh,
-        &c.bundle_digest,
-        c.registry_generation,
-        c.min_on_steps,
-        c.min_off_steps,
-        c.horizon_step_ns,
-        c.horizon_step_count,
-    );
-    CompiledObjective {
-        spec_digest: d,
-        ..c
-    }
+    })
 }
 
 fn soc_bounds() -> Vec<Constraint> {
@@ -240,7 +226,7 @@ fn bat_assignments(plan: &CandidatePlan) -> Vec<(u32, f64)> {
 fn golden_two_step_battery_arbitrage() {
     let (obj, input) = scenario(vec![1.0, 10.0], soc_bounds(), ObjectiveKind::MaxRevenue);
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     let mut hb = highs();
     let plan = p.plan(&mut hb, &req, &input).expect("plan");
     // 手算最优：终值 SOC ≥ 1kWh → 初始 5kWh 中 4kWh 免费；
@@ -271,7 +257,7 @@ fn golden_two_step_battery_arbitrage() {
     assert!((g2.1 + 5.0).abs() < 1e-6);
     // 证据链：input_digest = provenance；objective_digest = spec_digest。
     assert_eq!(plan.input_digest(), &[0xAB; 32]);
-    assert_eq!(plan.objective_digest(), &obj.spec_digest);
+    assert_eq!(plan.objective_digest(), obj.spec_digest());
 }
 
 #[test]
@@ -283,7 +269,7 @@ fn infeasible_spec_rejected() {
     }];
     let (obj, input) = scenario(vec![1.0, 10.0], hard, ObjectiveKind::MaxRevenue);
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     let mut hb = highs();
     match p.plan(&mut hb, &req, &input) {
         Err(PlanError::Rejected(m)) => assert!(m.contains("infeasible"), "{m}"),
@@ -322,7 +308,7 @@ fn load_demand_enters_balance() {
         unit_code: 6,
     });
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     let mut hb = highs();
     let plan = p.plan(&mut hb, &req, &input).expect("plan");
     // MinCost = 2 元/kWh × 10kW × 1h × 2 步 = 40。
@@ -348,7 +334,7 @@ fn energy_commitment_forces_sell() {
     });
     let (obj, input) = scenario(vec![1.0, 10.0], hard, ObjectiveKind::MaxRevenue);
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     let mut hb = highs();
     let plan = p.plan(&mut hb, &req, &input).expect("plan");
     let sold: f64 = plan
@@ -394,7 +380,7 @@ fn renewable_curtailment_self_consume() {
         unit_code: 6,
     });
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     let mut hb = highs();
     let plan = p.plan(&mut hb, &req, &input).expect("plan");
     // SelfConsume = min Σ curtail·dt → 0（全部消纳：t0 充 5 + 负 3 + 售/储 0）。
@@ -469,7 +455,7 @@ fn warm_start_injected_on_same_digest() {
     let real = hb.solve(&built.problem, 0).unwrap();
     let mut scripted = ScriptedSolver::replay(real);
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     let _ = p.plan(&mut scripted, &req, &input).unwrap();
     assert!(scripted.warm_starts.is_empty(), "首次无热启动");
     let _ = p.plan(&mut scripted, &req, &input).unwrap();
@@ -492,7 +478,7 @@ fn gate_rejects_short_and_nan_solutions() {
     let mut short = real.clone();
     short.solution.truncate(n - 1);
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     match p.plan(&mut ScriptedSolver::replay(short), &req, &input) {
         Err(PlanError::MalformedSolution("length mismatch")) => {}
         other => panic!("short: {other:?}"),
@@ -510,7 +496,7 @@ fn gate_rejects_short_and_nan_solutions() {
 fn gate_rejects_backend_failures() {
     let (obj, input) = scenario(vec![1.0, 10.0], soc_bounds(), ObjectiveKind::MaxRevenue);
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     match p.plan(
         &mut ScriptedSolver::error(SolverError::RunFailed(-7)),
         &req,
@@ -544,7 +530,7 @@ fn l2_rejects_suboptimal_l3_accepts_within_gap() {
     sub.mip_gap = Some(0.001);
 
     let mut p2 = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     match p2.plan(&mut ScriptedSolver::replay(sub.clone()), &req, &input) {
         Err(PlanError::GapExceeded { .. }) => {}
         other => panic!("l2 suboptimal: {other:?}"),
@@ -570,7 +556,7 @@ fn l2_rejects_suboptimal_l3_accepts_within_gap() {
 fn request_binding_enforced() {
     let (obj, input) = scenario(vec![1.0, 10.0], soc_bounds(), ObjectiveKind::MaxRevenue);
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = DecisionRequest::new([1u8; 16], obj.spec.clone(), 99, 10_000, 1).unwrap();
+    let req = DecisionRequest::new([1u8; 16], obj.spec().clone(), 99, 10_000, 1).unwrap();
     let mut hb = highs();
     match p.plan(&mut hb, &req, &input) {
         Err(PlanError::RequestMismatch("registry_generation")) => {}
@@ -580,12 +566,65 @@ fn request_binding_enforced() {
         snapshot_id: [8; 16],
         ..base_input(&obj)
     };
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     match p.plan(&mut hb, &req, &input2) {
         Err(PlanError::RequestMismatch("snapshot_id")) => {}
         other => panic!("{other:?}"),
     }
     let _ = &mut input2;
+    // WP-64.3.3.2：objective_spec / spec expired 两对负例（bind 判据
+    // 每对一个负例）。
+    let spec2 = {
+        // 同快照不同规格（目标类漂移）。
+        eneros_decision_contract::ObjectiveSpec::builder(eneros_decision_contract::SnapshotId(
+            obj.spec().snapshot_id().0,
+        ))
+        .constraints(soc_bounds(), vec![])
+        .objective(
+            eneros_decision_contract::objective::ObjectiveKind::MinCost,
+            1,
+            eneros_decision_contract::objective::ObjectiveSource::RuleBundle,
+            eneros_decision_contract::ReasonCode::PeakShave,
+        )
+        .window(0, u64::MAX)
+        .build()
+        .unwrap()
+    };
+    let req = DecisionRequest::new([1u8; 16], spec2, 1, 10_000, 1).unwrap();
+    let input3 = base_input(&obj);
+    match p.plan(&mut hb, &req, &input3) {
+        Err(PlanError::RequestMismatch("objective_spec")) => {}
+        other => panic!("{other:?}"),
+    }
+    // 规格过期：req 规格 = 输入规格（全等过 objective_spec 对），但
+    // input.now_ms 在规格窗外 → spec expired。
+    let spec3_expired = {
+        // 同形规格、短窗（builder 校验 valid_until > valid_from）。
+        eneros_decision_contract::ObjectiveSpec::builder(eneros_decision_contract::SnapshotId(
+            [7; 16],
+        ))
+        .constraints(soc_bounds(), vec![])
+        .objective(
+            eneros_decision_contract::objective::ObjectiveKind::MaxRevenue,
+            1,
+            eneros_decision_contract::objective::ObjectiveSource::RuleBundle,
+            eneros_decision_contract::ReasonCode::PriceArbitrage,
+        )
+        .window(2_000, 3_000)
+        .build()
+        .unwrap()
+    };
+    let obj3 = compiled(spec3_expired.clone(), vec![1.0, 10.0], 2);
+    let leaked3: &'static CompiledObjective = Box::leak(Box::new(obj3));
+    let input4 = PlanInput {
+        now_ms: 5_000, // 窗 [2_000, 3_000] 之外
+        ..base_input(leaked3)
+    };
+    let req = request(&spec3_expired);
+    match p.plan(&mut hb, &req, &input4) {
+        Err(PlanError::RequestMismatch("spec expired")) => {}
+        other => panic!("{other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -619,7 +658,7 @@ fn differential_vs_legacy_energy_lp() {
 
     let (obj, input) = scenario(vec![1.0, 10.0], soc_bounds(), ObjectiveKind::MaxRevenue);
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     let plan = p.plan(&mut hb, &req, &input).expect("plan");
     assert!(
         (plan.objective_value() - legacy_obj).abs() < 1e-6,
@@ -741,7 +780,7 @@ fn scale_solve_200x24_real_highs() {
         ..base_input(&obj)
     };
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     let mut hb = highs();
     let out = p.solve_document(&mut hb, &req, &input).expect("solve");
     assert_eq!(out.solver_status, SolveStatusKind::Optimal);
@@ -764,7 +803,7 @@ fn scale_solve_200x24_real_highs() {
 fn gate_rejects_unbounded_status() {
     let (obj, input) = scenario(vec![1.0, 10.0], soc_bounds(), ObjectiveKind::MaxRevenue);
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     let mut s = ScriptedSolver::replay(SolveResult::optimal(0.0, vec![]));
     s.result.as_mut().unwrap().status = SolveStatus::Unbounded;
     match p.plan(&mut s, &req, &input) {
@@ -814,7 +853,7 @@ fn renewable_ramp_forces_preemptive_curtailment() {
         unit_code: 6,
     });
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     let mut hb = highs();
     let plan = p.plan(&mut hb, &req, &input).expect("plan");
     // SelfConsume = min Σ curt·dt：ramp 迫使 curt_0 ≥ 8 − 3.6 = 4.4。
@@ -885,7 +924,7 @@ fn shed_load_ramp_rows_freeze_net() {
         unit_code: 6,
     });
     let mut p = Planner::new(ToleranceProfile::l2(), 100);
-    let req = request(&obj.spec);
+    let req = request(obj.spec());
     let mut hb = highs();
     let plan = p.plan(&mut hb, &req, &input).expect("plan");
     let shed: Vec<f64> = plan

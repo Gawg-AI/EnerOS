@@ -13,6 +13,7 @@ mock = []
 tls = ["dep:eneros-tls"]
 
 [dependencies]
+eneros-hex = { path = "../../abi/hex" }
 eneros-crypto = { path = "../../security/crypto" }
 # 蓝图 62 卷 62.3（S5 收敛）：验签管线类型化单源。
 eneros-signer-keyring = { path = "../../security/signer-keyring" }

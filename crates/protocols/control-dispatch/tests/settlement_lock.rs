@@ -19,12 +19,10 @@ use std::rc::Rc;
 use eneros_audit::{AuditError, AuditEvent, AuditLogger};
 use eneros_control_dispatch::{
     AuthenticatedActor, ControlDispatch, DeliveryChannel, DispatchConfig, DispatchEngine,
-    DispatchError, DispatchState, FeedbackPointMapping, InMemoryIntentStore, IntentRecord,
-    IntentStore, IntentStoreError,
+    DispatchError, DispatchState, InMemoryIntentStore, IntentRecord, IntentStore, IntentStoreError,
 };
 use eneros_control_gateway::chain::ControlChain;
 use eneros_control_gateway::envelope::ActorKind;
-use eneros_dual_brain::gate::DecisionGate;
 use eneros_dual_brain::{DecisionPath, ProposedControlPlan};
 use eneros_safety_validator::{
     EvaluatorConfig, IntegrityStatus, RequiredPoint, RequiredPointCoverage, SampleQuality,
@@ -369,6 +367,9 @@ fn engine_unreachable() -> Harness {
 
 /// 装配基线（settlement_lock 套件统一夹具；intent_log/delivery 由调用方
 /// 注入——Unreachable 行为锁与 Applied 写序锁共用同一引擎面）。
+/// WP-64.3.3.1：字面迁移为 support::test_config 夹具 + 所变字段
+/// （control_audit=CaptureAudit 是本套件判据面，结构更新覆盖）。
+/// 资源视图（DEVICE_ID/POINT_ID）与夹具 profile 派生同构。
 fn base_config(
     profile: eneros_control_gateway::ControlProfile,
     audit_details: &Rc<RefCell<Vec<String>>>,
@@ -376,42 +377,17 @@ fn base_config(
     delivery: Box<dyn DeliveryChannel>,
 ) -> DispatchConfig {
     DispatchConfig {
-        chain: build_chain(),
-        key: KEY.to_vec(),
-        profile,
-        fencing_token: 1 + EPOCH_SEED,
-        issuer_service: ISSUER,
-        issuer_epoch: 0,
-        target_endpoint: String::from("svc-device-agent"),
-        max_power_kw: 500.0,
-        safety_voltage_window: (340.0, 420.0),
-        safety_freq_window: (49.5, 50.5),
-        safety_ramp_kw_per_min: 200.0,
-        gate: DecisionGate::new(100, 1000.0, 3_600_000),
         control_audit: Some(Box::new(CaptureAudit::new(Rc::clone(audit_details)))),
-        audit: None,
-        intent_log,
-        delivery,
-        resources: Box::new(support::TestResourceView {
-            asset_id: u64::from(DEVICE_ID),
-            device_id: DEVICE_ID as u16,
-            point_id: POINT_ID,
-            unit_code: eneros_telemetry_model::unit_catalog::code_of(
-                eneros_telemetry_model::unit::PhysicalUnit::Kilowatts,
-            ),
-            catalog_version: 1,
-        }),
-        contracts: Box::new(support::test_contract_view(u64::from(DEVICE_ID), 1)),
-        compiler_policy: support::test_compiler_policy(),
-        control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
-        feedback_mapping: FeedbackPointMapping {
-            grid_up: 5,
-            soc: 4,
-            dc_bus_v: 1,
-            overcurrent: 6,
-            overtemp: 6,
-        },
-        now_fn: now_ms,
+        ..support::test_config(support::TestConfigSeed {
+            chain: build_chain(),
+            key: KEY.to_vec(),
+            profile,
+            issuer_service: ISSUER,
+            fencing_token: 1 + EPOCH_SEED,
+            now_fn: now_ms,
+            intent_log,
+            delivery,
+        })
     }
 }
 
@@ -470,33 +446,21 @@ fn candidate_plan() -> eneros_decision_contract::CandidatePlan {
     use eneros_decision_contract::{
         Assignment, CandidatePlan, PlanId, SnapshotId, SolveStatusKind,
     };
-    CandidatePlan::new(
-        PlanId([0x62; 16]),
-        SnapshotId([0x53; 16]),
-        [0x63; 32],
-        1,
-        now_ms(),
-        900_000_000,
-        1,
-        SolveStatusKind::Optimal,
-        1.0,
-        0.0,
-        0.0,
-        1,
-        [0x64; 32],
-        [0x65; 32],
-        vec![Assignment {
+    CandidatePlan::builder(PlanId([0x62; 16]), SnapshotId([0x53; 16]), [0x63; 32], 1)
+        .solve(SolveStatusKind::Optimal, 1.0, 0.0, 0.0, 1)
+        .horizons(now_ms(), 900_000_000, 1)
+        .digests([0x64; 32], [0x65; 32])
+        .validity(now_ms(), 60_000)
+        .assignments(vec![Assignment {
             asset_id: 1,
             device_id: 1,
             point_id: 10,
             power_kw: 5.0,
             unit_code: 6,
             step_index: 1,
-        }],
-        now_ms(),
-        60_000,
-    )
-    .expect("合法候选计划")
+        }])
+        .build()
+        .expect("合法候选计划")
 }
 
 /// WP-62.1.2 夹具：saga 命令意图（saga_e4e5 intent() 同形）。
@@ -504,21 +468,12 @@ fn saga_intent(
     plan_id: eneros_decision_contract::PlanId,
 ) -> eneros_decision_contract::CommandIntent {
     use eneros_decision_contract::{CommandIntent, CompensationHint, IntentId, Precondition};
-    CommandIntent::new(
-        IntentId([0x71; 16]),
-        plan_id,
-        [0xAB; 32],
-        1,
-        1,
-        10,
-        5.0,
-        6,
-        now_ms(),
-        now_ms() + 60_000,
-        Precondition::None,
-        CompensationHint::None,
-    )
-    .expect("合法命令意图")
+    CommandIntent::builder(IntentId([0x71; 16]), plan_id, [0xAB; 32])
+        .target(1, 1, 10, 5.0, 6)
+        .window(now_ms(), now_ms() + 60_000)
+        .policy(Precondition::None, CompensationHint::None)
+        .build()
+        .expect("合法命令意图")
 }
 
 /// WP-62.1.2（D-3）红→绿：`EngineSagaExecutor` 落进 CoreCommand 的

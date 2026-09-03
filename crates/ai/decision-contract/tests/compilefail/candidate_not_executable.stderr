@@ -1,7 +1,7 @@
 error[E0308]: mismatched types
-  --> tests/compilefail/candidate_not_executable.rs:36:37
+  --> tests/compilefail/candidate_not_executable.rs:29:37
    |
-36 |     let _exec: &AuthorizedCommand = &plan;
+29 |     let _exec: &AuthorizedCommand = &plan;
    |                ------------------   ^^^^^ expected `&AuthorizedCommand`, found `&CandidatePlan`
    |                |
    |                expected due to this

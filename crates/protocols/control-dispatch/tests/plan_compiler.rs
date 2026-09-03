@@ -60,49 +60,39 @@ fn plan_with(
     step_count: u32,
     assignments: Vec<Assignment>,
 ) -> CandidatePlan {
-    CandidatePlan::new(
-        PlanId([id_byte; 16]),
-        SnapshotId([2u8; 16]),
-        [0xAA; 32],
-        1,
-        issued_at_ms,
-        step_ns,
-        step_count,
-        SolveStatusKind::Optimal,
-        1.0,
-        0.0,
-        0.0,
-        10,
-        [0xBB; 32],
-        [0xCC; 32],
-        assignments,
-        issued_at_ms,
-        ttl_ms,
-    )
-    .expect("合法计划")
+    CandidatePlan::builder(PlanId([id_byte; 16]), SnapshotId([2u8; 16]), [0xAA; 32], 1)
+        .solve(SolveStatusKind::Optimal, 1.0, 0.0, 0.0, 10)
+        .horizons(issued_at_ms, step_ns, step_count)
+        .digests([0xBB; 32], [0xCC; 32])
+        .validity(issued_at_ms, ttl_ms)
+        .assignments(assignments)
+        .build()
+        .expect("合法计划")
 }
 
 fn cert_of(plan: &CandidatePlan, plan_sha: [u8; 32], now_ms: u64) -> CertifiedPlan {
     CertifiedPlan::new_transition(
         CertifierSeal::issue_transition(),
-        CertificateId([9u8; 16]),
-        *plan.id(),
-        plan_sha,
-        plan.snapshot_id(),
-        1,
-        plan.resource_catalog_version(),
-        1,
-        now_ms,
-        now_ms + plan.ttl_ms(),
-        4,
-        [0xCD; 32],
+        eneros_decision_contract::CertifiedPlanFields {
+            certificate_id: CertificateId([9u8; 16]),
+            plan_id: *plan.id(),
+            plan_sha256: plan_sha,
+            snapshot_id: plan.snapshot_id(),
+            certifier_version: 1,
+            constraint_catalog_version: plan.resource_catalog_version(),
+            tolerance_profile_id: 1,
+            certified_at_ms: now_ms,
+            valid_until_ms: now_ms + plan.ttl_ms(),
+            hard_constraint_count: 4,
+            proof_digest: [0xCD; 32],
+        },
     )
     .expect("合法证书")
 }
 
 fn plan_sha(plan: &CandidatePlan) -> [u8; 32] {
-    use sha2::Digest as _;
-    sha2::Sha256::digest(plan.encode_v1().as_slice()).into()
+    // WP-64.3.2.2：测试改调单源辅助（原本地 Sha256::digest 公式重演删）。
+    eneros_decision_contract::CandidatePlan::plan_wire_sha256_of_wire(&plan.encode_v1())
 }
 
 fn policy() -> CompilerPolicy {

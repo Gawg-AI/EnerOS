@@ -243,6 +243,8 @@ pub fn hex_decode(
     config: &ConfigId,
     name: &'static str,
 ) -> Result<alloc::vec::Vec<u8>, ConfigError> {
+    // WP-64.3.4：解码单源 eneros_hex::decode_vec（pub 校验面/错误词形
+    // 保持——长度/非法字符仍归 "expected-hex"）。
     if s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(ConfigError::InvalidValue {
             config: config.clone(),
@@ -250,14 +252,6 @@ pub fn hex_decode(
             reason: "expected-hex".into(),
         });
     }
-    let mut out = alloc::vec::Vec::with_capacity(s.len() / 2);
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let hi = (bytes[i] as char).to_digit(16).unwrap() as u8;
-        let lo = (bytes[i + 1] as char).to_digit(16).unwrap() as u8;
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
+    let out = eneros_hex::decode_vec(s).expect("ASCII hex 已校验");
     Ok(out)
 }

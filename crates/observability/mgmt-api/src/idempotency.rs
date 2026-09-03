@@ -43,15 +43,9 @@ pub fn content_hash_key(action: &str, payload: &str) -> String {
     buf.push(0xFF);
     buf.extend_from_slice(payload.as_bytes());
     let digest = eneros_crypto::sm3_hash(&buf);
-    let mut out = String::with_capacity(64);
-    for b in digest {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xF) as usize] as char);
-    }
-    out
+    // WP-64.3.4：hex 编码单源。
+    eneros_hex::encode_lower(&digest)
 }
-
-const HEX: [u8; 16] = *b"0123456789abcdef";
 
 /// 幂等性错误。
 #[derive(Debug, Clone, PartialEq, Eq)]

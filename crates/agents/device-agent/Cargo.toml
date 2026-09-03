@@ -17,6 +17,7 @@ agent-runtime = ["eneros-agent/runtime"]
 persist-fs = ["dep:eneros-fs"]
 
 [dependencies]
+eneros-hex = { path = "../../abi/hex" }
 # 蓝图 40 诊断打印（target 服务侧）。
 eneros-runtime = { path = "../../runtime/runtime" }
 eneros-agent = { path = "../agent" }

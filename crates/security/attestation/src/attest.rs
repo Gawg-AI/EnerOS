@@ -16,7 +16,7 @@
 
 use alloc::vec::Vec;
 
-use eneros_crypto::{sm2_verify, CsRng, Sm2PublicKey, Sm2Signature};
+use eneros_crypto::{CsRng, Sm2PublicKey, Sm2Signature};
 
 use crate::event_log::{TcgEvent, TcgEventLog};
 use crate::tpm::{quote_digest, TpmBackend};
@@ -129,7 +129,7 @@ impl AttestVerifier {
     /// 验证远程证明（四步流水线，任一失败即拒绝并记统计）：
     ///
     /// 1. `attest.quote.nonce != *nonce` → `NonceMismatch`（防重放）
-    /// 2. `sm2_verify(quote_digest, signature, ak_pubkey)` 非 true →
+    /// 2. AK 公钥对 quote_digest 验签非通过（`verify_signature`）→
     ///    `SignatureInvalid`
     /// 3. 自一致性（D11）：重放 `attest.event_log`，选中索引重放值 ≠
     ///    `quote.pcr_values` 对应项 → `EventLogInconsistent`
@@ -146,12 +146,12 @@ impl AttestVerifier {
         if attest.quote.nonce != *nonce {
             return self.reject(AttestReason::NonceMismatch, Vec::new());
         }
-        // 2. SM2 验签（签名消息为 quote_digest 32B，D6）
+        // 2. SM2 验签（签名消息为 quote_digest 32B，D6）——WP-64.3.5：
+        // 类型化原语（Ok(false)/Err 统一 SignatureInvalid，行为不变）。
         let sig = Sm2Signature::from_bytes(&attest.signature);
         let digest = quote_digest(&attest.quote);
-        match sm2_verify(&digest, &sig, &self.ak_pubkey) {
-            Ok(true) => {}
-            Ok(false) | Err(_) => return self.reject(AttestReason::SignatureInvalid, Vec::new()),
+        if eneros_signer_keyring::verify_signature(&digest, &sig, &self.ak_pubkey).is_err() {
+            return self.reject(AttestReason::SignatureInvalid, Vec::new());
         }
         // 3. 证明日志自一致性（D11：防证明方提交与 quote 不符的日志）
         let attested_pcrs = TcgEventLog::from_events(attest.event_log.clone()).replay();

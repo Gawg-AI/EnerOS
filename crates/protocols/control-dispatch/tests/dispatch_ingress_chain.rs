@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use eneros_control_dispatch::{
     AuthenticatedActor, ControlDispatch, DeliveryChannel, DispatchConfig, DispatchEngine,
-    DispatchError, DispatchState, FeedbackPointMapping, InMemoryIntentStore,
+    DispatchError, DispatchState, InMemoryIntentStore,
 };
 use eneros_control_gateway::chain::ControlChain;
 use eneros_control_gateway::envelope::ActorKind;
@@ -310,45 +310,21 @@ fn device_side() -> (
 }
 
 fn engine_with(channel: Box<dyn DeliveryChannel>, gate: DecisionGate) -> DispatchEngine {
-    let profile = test_profile();
-    let config = DispatchConfig {
+    let config = support::test_config(support::TestConfigSeed {
         chain: build_chain(),
         key: KEY.to_vec(),
         profile: test_profile(),
-        fencing_token: 1 + EPOCH_SEED,
         issuer_service: ISSUER,
-        issuer_epoch: 0,
-        target_endpoint: String::from("svc-device-agent"),
-        max_power_kw: 500.0,
-        // SPEC WP-A.2：护栏窗口/爬坡（缺省 = 蓝图默认，行为连续）。
-        safety_voltage_window: (340.0, 420.0),
-        safety_freq_window: (49.5, 50.5),
-        safety_ramp_kw_per_min: 200.0,
-        gate,
-        control_audit: None,
-        audit: Some(DecisionAudit::new([0x40; 32])),
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: now_ms,
         intent_log: Box::new(InMemoryIntentStore::new(64)),
         delivery: channel,
-        resources: Box::new(support::TestResourceView {
-            asset_id: u64::from(profile.device_id),
-            device_id: profile.device_id as u16,
-            point_id: profile.point_id,
-            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
-            catalog_version: 1,
-        }),
-        contracts: Box::new(support::test_contract_view(u64::from(profile.device_id), 1)),
-        compiler_policy: support::test_compiler_policy(),
-        control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
-        feedback_mapping: FeedbackPointMapping {
-            grid_up: 5,
-            soc: 4,
-            dc_bus_v: 1,
-            overcurrent: 6,
-            overtemp: 6,
-        },
-        now_fn: now_ms,
-    };
-    DispatchEngine::new(config)
+    });
+    DispatchEngine::new(DispatchConfig {
+        gate,
+        audit: Some(DecisionAudit::new([0x40; 32])),
+        ..config
+    })
 }
 
 fn actor() -> AuthenticatedActor {

@@ -82,9 +82,6 @@ impl QosStore for InMemoryQosStore {
 // 字节编解码（fs 行格式）
 // ============================================================================
 
-/// 十六进制字符表。
-const HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
-
 /// 编码一条在途消息为文本行。
 ///
 /// 格式：`<packet_id>,<qos>,<state>,<topic>,<payload_hex>`。
@@ -104,10 +101,8 @@ pub fn encode_line(msg: &PendingMessage) -> Vec<u8> {
     line.push(',');
     line.push_str(&msg.topic);
     line.push(',');
-    for b in &msg.payload {
-        line.push(HEX_DIGITS[(b >> 4) as usize] as char);
-        line.push(HEX_DIGITS[(b & 0xF) as usize] as char);
-    }
+    // WP-64.3.4：hex 编码单源。
+    line.push_str(&eneros_hex::encode_lower(&msg.payload));
     line.push('\n');
     line.into_bytes()
 }
@@ -128,17 +123,8 @@ pub fn decode_line(line: &[u8]) -> Option<PendingMessage> {
         3 => PendingAck::WaitingPubcomp { packet_id },
         _ => return None,
     };
-    // 十六进制解码 payload。
-    let payload_bytes = payload_hex.as_bytes();
-    if payload_bytes.len() % 2 != 0 {
-        return None;
-    }
-    let mut payload = Vec::with_capacity(payload_bytes.len() / 2);
-    for pair in payload_bytes.chunks(2) {
-        let hi = hex_val(pair[0])?;
-        let lo = hex_val(pair[1])?;
-        payload.push((hi << 4) | lo);
-    }
+    // 十六进制解码 payload（WP-64.3.4：单源 decode_vec）。
+    let payload = eneros_hex::decode_vec(payload_hex)?;
     Some(PendingMessage {
         packet_id,
         topic,
@@ -146,15 +132,6 @@ pub fn decode_line(line: &[u8]) -> Option<PendingMessage> {
         qos,
         state,
     })
-}
-
-fn hex_val(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
 }
 
 /// 基于 eneros-fs 的落盘实现。

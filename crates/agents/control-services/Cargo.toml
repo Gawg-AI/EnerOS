@@ -7,6 +7,7 @@ license.workspace = true
 description = "EnerOS 蓝图 40 控制闭环 EL0 服务（svc-telemetry/svc-device-agent/svc-control-dispatch/svc-ai-worker/svc-energy-agent）"
 
 [dependencies]
+eneros-hex = { path = "../../abi/hex" }
 # EIPC 分块传输协议（ControlEnvelope 270B 超 MR 预算）。
 eneros-agent-sdk = { path = "../../agents/agent-sdk" }
 # 目标服务循环（seL4 IPC 原语）。

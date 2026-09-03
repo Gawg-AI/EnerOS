@@ -1,0 +1,28 @@
+{
+  "schema": "eneros.evidence-manifest.v1",
+  "volume": "blueprint-64-vol64-3",
+  "version": "0.317.2",
+  "head": "本 commit（代码+证据同 commit；gate 实跑于该树，bump 0.317.2 同 commit）",
+  "date": "2026-09-04",
+  "gate": "VOL64.3-GATE: PASS（镜像 sha256 dd0b495cde89ab3996e05ecae5a9e848896b5499144a77ebb3f19c216839d9c7，全判据一轮过）",
+  "purpose": "蓝图 64 卷 64.3 出口 QEMU 实弹（构造纪律与横切单源卷）：CandidatePlan 构造收窄（四语义组 builder + 轨迹不变量构造点强制，wire/golden 字节零变化）+ 派生四口单源（spec_digest 只算不传 / plan_wire 辅助 / 能量窗私有函数 R-64.e / intent_id 影子删）+ DispatchConfig·PlanInput·EvalContext 构造校验收拢 + eneros-hex 叶 crate（13+ 抄本归一 + rg 守卫）+ 验签纪律唯一实现（model-security keyring 化 + ota-ab/recovery/attestation verify_signature + 域守卫）+ gate 前导单源。行为不变收口卷：串口词形与计数逐字节对照 63 基线（唯一允许差异 = 64.2 已落库登记变更 modbus POINTS-LOADED 2→1）",
+  "artifacts": {
+    "normal.qemu-serial.log": "qemu-prod typed 链正例一轮串口全量（对照基线 evidence/63/vol63-1/normal.qemu-serial.log）",
+    "build/sel4.log": "sel4-build-rust.sh 重链接（control-dispatch/decision-contract 进镜像）",
+    "build/image.log": "image raw qemu-prod 重建",
+    "build/compile.log": "config compile qemu-prod",
+    "build/image.sha256": "镜像摘要 dd0b495cde89ab3996e05ecae5a9e848896b5499144a77ebb3f19c216839d9c7",
+    "normal.modbus.transcript.jsonl": "modbus peer 回放输入拷本（拷自 evidence/62/vol62-1，禁写基线）"
+  },
+  "criteria": [
+    { "id": "C1", "assert": "PRODUCT-READY: true（构造纪律卷零 readiness 语义变化）", "result": "PASS" },
+    { "id": "C2", "assert": "PROTO-EXEC status=0x00 / status=0x04（能力壳降级）词形不变（intent_id 影子删 + DuplicateStep 删除 + 能量窗私有函数后 dispatch 全链零行为变化）", "result": "PASS" },
+    { "id": "C3", "assert": "OBS-REPORT enqueue rejected / flush rejected / svc= 三行词形不变", "result": "PASS" },
+    { "id": "C4", "assert": "CONTROL-CHAIN round=/dispatch=Committed 行逐字节一致（归一计数后 diff 空）+ ACQ-ROUND + OTA-DOWNLOAD: OK + STORAGE-PERSIST: OK", "result": "PASS" },
+    { "id": "C5", "assert": "AUDIT-CHAIN 行逐字节一致（归一计数后 diff 空）——settle audit 文案对照达成", "result": "PASS" },
+    { "id": "C6", "assert": "PROTOCOL-CONFIG 装载行逐字节一致（goose 6/iec104 5/mms 2/modbus-tcp 4/mqtt 9/sv 3 keys）", "result": "PASS" },
+    { "id": "C7", "assert": "POINTS-LOADED：modbus-config 2→1（64.2 已落库登记变更的持续偏移，本卷无新增变更）；iec104/mms 与基线一致", "result": "PASS" },
+    { "id": "C8", "assert": "SUPERVISOR/HEARTBEAT-KILL 零出现（负断言）", "result": "PASS" }
+  ],
+  "baseline": "evidence/63/vol63-1/normal.qemu-serial.log"
+}

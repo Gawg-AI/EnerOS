@@ -605,9 +605,9 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
             memory_map_count,
             init.media_length,
             manifest.header.source_date_epoch,
-            hex_encode(&digest),
-            hex_encode(&encoded_measurements[64..96]),
-            hex_encode(&encoded_measurements)
+            eneros_hex::encode_lower(&digest),
+            eneros_hex::encode_lower(&encoded_measurements[64..96]),
+            eneros_hex::encode_lower(&encoded_measurements)
         );
         let source_date_epoch = manifest.header.source_date_epoch;
         drop(manifest);
@@ -915,14 +915,6 @@ fn boot_reason_name(reason: BootReason) -> &'static str {
         BootReason::ManualRecovery => "MANUAL_RECOVERY",
         BootReason::VerificationFailure => "VERIFICATION_FAILURE",
     }
-}
-
-fn hex_encode(bytes: &[u8]) -> alloc::string::String {
-    let mut output = alloc::string::String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push_str(&alloc::format!("{byte:02x}"));
-    }
-    output
 }
 
 /// 退出启动服务并跳转内核。

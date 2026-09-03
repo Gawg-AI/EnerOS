@@ -17,6 +17,10 @@ eneros-energy-lp-model = { path = "../energy-lp-model" }
 
 [features]
 default = []
+# crate 内测试装配缝（WP-64.3.2.1）：`compile_fixture` 仅供下游
+# dev-dependencies（planner/certifier 集成测试）构造 fixture——digest
+# 仍由 digest_compiled 算出，不构成构造逃逸口。
+test-util = []
 
 [dev-dependencies]
 eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }

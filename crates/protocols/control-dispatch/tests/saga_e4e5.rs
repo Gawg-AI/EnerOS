@@ -39,24 +39,18 @@ fn intent_windowed(
     valid_until_ms: u64,
     restore: Option<f64>,
 ) -> CommandIntent {
-    CommandIntent::new(
-        IntentId([id_byte; 16]),
-        PlanId([0x61; 16]),
-        [0xAB; 32],
-        u64::from(device),
-        device,
-        point,
-        kw,
-        6, // kW
-        valid_from_ms,
-        valid_until_ms,
-        Precondition::None,
-        match restore {
-            Some(v) => CompensationHint::RestorePowerKw(v),
-            None => CompensationHint::None,
-        },
-    )
-    .unwrap()
+    CommandIntent::builder(IntentId([id_byte; 16]), PlanId([0x61; 16]), [0xAB; 32])
+        .target(u64::from(device), device, point, kw, 6) // 6 = kW
+        .window(valid_from_ms, valid_until_ms)
+        .policy(
+            Precondition::None,
+            match restore {
+                Some(v) => CompensationHint::RestorePowerKw(v),
+                None => CompensationHint::None,
+            },
+        )
+        .build()
+        .unwrap()
 }
 
 /// 虚拟设备面：物理值 + 写次数（重复副作用检测）。

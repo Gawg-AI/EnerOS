@@ -1489,20 +1489,24 @@ impl DispatchEngine {
         proof_input.extend_from_slice(b"eneros.transition-proof.v1");
         proof_input.extend_from_slice(&plan_sha);
         let proof_digest: [u8; 32] = sha2::Sha256::digest(&proof_input).into();
+        let certificate_id = CertificateId::new(plan_sha[..16].try_into().unwrap())
+            .map_err(|_| DispatchError::ProposalInvalid(String::from("证书 ID 派生失败")))?;
         let certificate = CertifiedPlan::new_transition(
             CertifierSeal::issue_transition(),
-            CertificateId::new(plan_sha[..16].try_into().unwrap())
-                .map_err(|_| DispatchError::ProposalInvalid(String::from("证书 ID 派生失败")))?,
-            *plan.id(),
-            plan_sha,
-            plan.snapshot_id(),
-            1, // certifier_version = control-chain-transition v1
-            plan.resource_catalog_version(),
-            1, // tolerance profile
-            started,
-            started.saturating_add(plan.ttl_ms()),
-            0, // hard_constraint_count：迁移期由链内安全目录承载（.38 独立计数）
-            proof_digest,
+            eneros_decision_contract::CertifiedPlanFields {
+                certificate_id,
+                plan_id: *plan.id(),
+                plan_sha256: plan_sha,
+                snapshot_id: plan.snapshot_id(),
+                certifier_version: 1, // control-chain-transition v1
+                constraint_catalog_version: plan.resource_catalog_version(),
+                tolerance_profile_id: 1, // tolerance profile
+                certified_at_ms: started,
+                valid_until_ms: started.saturating_add(plan.ttl_ms()),
+                // hard_constraint_count：迁移期由链内安全目录承载（.38 独立计数）
+                hard_constraint_count: 0,
+                proof_digest,
+            },
         )
         .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("certificate: {e:?}")))?;
 
@@ -1595,17 +1599,9 @@ impl DispatchEngine {
                     intent.intent_id(),
                     legacy_single,
                 );
-                let window_secs = intent
-                    .valid_until_ms()
-                    .saturating_sub(now)
-                    .min(plan.ttl_ms())
-                    / 1000;
-                // typed 路径能量预算估算：|power| × 意图窗（上限形态）。
-                let window_h = (intent
-                    .valid_until_ms()
-                    .saturating_sub(intent.valid_from_ms()) as f64)
-                    / 3_600_000.0;
-                let energy = energy_kwh.or(Some(intent.power_kw().abs() * window_h));
+                // typed 路径能量预算估算（WP-64.3.2.3 单源）。
+                let (window_secs, energy_est) = intent_window_estimate(intent, now, plan.ttl_ms());
+                let energy = energy_kwh.or(Some(energy_est));
                 let receipt = self.execute_core(
                     CoreCommand {
                         identity: CoreIdentity::PlanCommand { correlation },
@@ -2412,6 +2408,27 @@ pub struct EngineSagaExecutor<'a> {
 use crate::saga::{CmdOutcome, ReconcileOutcome, SagaExecutor};
 
 /// correlation → 事件摘要证据（32B 证据位；SHA-256 域分隔）。
+/// 能量窗估算单源（WP-64.3.2.3；R-64.e 边界内——`run_typed` 幂等命中
+/// 路径与 [`EngineSagaExecutor::execute_intent`] 两体共用的 crate 内
+/// 私有函数；**不**给 executor 增删参数/方法/行为）。
+///
+/// 语义冻结：`window_secs = (valid_until - now).min(ttl)/1000`（下限
+/// `max(1)` 由调用方施加，保持原表达式位置）；能量上限形态 =
+/// `|power| × 意图窗（valid_from..valid_until，小时）`。
+fn intent_window_estimate(
+    intent: &eneros_decision_contract::CommandIntent,
+    now_ms: u64,
+    ttl_ms: u64,
+) -> (u64, f64) {
+    let window_secs = intent.valid_until_ms().saturating_sub(now_ms).min(ttl_ms) / 1000;
+    let window_h = (intent
+        .valid_until_ms()
+        .saturating_sub(intent.valid_from_ms()) as f64)
+        / 3_600_000.0;
+    let energy_kwh = intent.power_kw().abs() * window_h;
+    (window_secs, energy_kwh)
+}
+
 fn request_digest_of(correlation: [u8; 16]) -> [u8; 32] {
     use sha2::Digest as _;
     let mut h = sha2::Sha256::new();
@@ -2458,15 +2475,7 @@ impl<'a> EngineSagaExecutor<'a> {
         power_override_kw: Option<f64>,
     ) -> Result<DispatchReceipt, DispatchError> {
         let started = (self.engine.now_fn)();
-        let window_secs = intent
-            .valid_until_ms()
-            .saturating_sub(started)
-            .min(self.plan_ttl_ms)
-            / 1000;
-        let window_h = (intent
-            .valid_until_ms()
-            .saturating_sub(intent.valid_from_ms()) as f64)
-            / 3_600_000.0;
+        let (window_secs, energy_est) = intent_window_estimate(intent, started, self.plan_ttl_ms);
         self.engine.execute_core(
             CoreCommand {
                 identity: CoreIdentity::PlanCommand { correlation },
@@ -2474,7 +2483,7 @@ impl<'a> EngineSagaExecutor<'a> {
                 power_kw: power_override_kw.unwrap_or_else(|| intent.power_kw()),
                 target_device: self.target_device.clone(),
                 input_digest: Some(self.plan_input_digest),
-                energy_kwh: Some(intent.power_kw().abs() * window_h),
+                energy_kwh: Some(energy_est),
                 // 62 v0.315.0 WP-62.1.2（D-3）：wire SHA-256（原此处传
                 // plan_input_digest——输入摘要冒充 wire 绑定摘要）。
                 plan_sha: Some(self.plan_sha),
@@ -2627,6 +2636,38 @@ fn trusted_stub_state() -> TrustedTelemetry {
 #[cfg(test)]
 mod unit_tests {
     use super::*;
+
+    /// WP-64.3.2.3 golden（迁移前固化现值；R-64.e）：私有估算函数输出
+    /// 与两体迁移前公式逐位一致（ttl 封顶形态 + 未封顶形态）。
+    #[test]
+    fn intent_window_estimate_golden() {
+        let intent = |from: u64, until: u64, kw: f64| {
+            eneros_decision_contract::CommandIntent::builder(
+                eneros_decision_contract::IntentId([3u8; 16]),
+                eneros_decision_contract::PlanId([1u8; 16]),
+                [0xAB; 32],
+            )
+            .target(1, 1, 10, kw, 6)
+            .window(from, until)
+            .policy(
+                eneros_decision_contract::Precondition::None,
+                eneros_decision_contract::CompensationHint::None,
+            )
+            .build()
+            .unwrap()
+        };
+        // 形态一（run_typed 幂等命中原值）：now=2000, ttl=60_000 →
+        // window_secs = min(61_000-2_000, 60_000)/1000 = 59；
+        // energy = 50 × (61_000-1_000)/3_600_000 = 0.8333333333333334。
+        let (secs, energy) = intent_window_estimate(&intent(1_000, 61_000, -50.0), 2_000, 60_000);
+        assert_eq!(secs, 59);
+        assert_eq!(energy, 0.8333333333333334f64);
+        // 形态二（execute_intent 原值）：now=1_000（未封顶）→ 60；
+        // energy = 5 × 意图窗。
+        let (secs, energy) = intent_window_estimate(&intent(1_000, 61_000, 5.0), 1_000, 60_000);
+        assert_eq!(secs, 60);
+        assert_eq!(energy, 0.08333333333333333f64);
+    }
 
     #[test]
     fn schedule_energy_estimate() {

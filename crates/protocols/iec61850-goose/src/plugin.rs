@@ -252,7 +252,7 @@ impl ProtocolPlugin for GoosePlugin {
         };
         // 配置真消费：app_id 进入 RX 过滤器构造 + TX 帧 appID；
         // dst_mac 进入 RX MAC 过滤 + TX 目的地址 + 传输 spec.peer。
-        let peer = mac_hex_string(dst_mac);
+        let peer = eneros_hex::encode_lower(&dst_mac);
         let handle_tx = open_raw(transports, &peer)?;
         let handle_rx = open_raw(transports, &peer)?;
         // 46.4：可选 vlan_id（1..=4094）→ TX 帧 802.1Q 标签（None = 不标记）。
@@ -431,17 +431,6 @@ fn parse_mac(text: &str) -> Option<[u8; 6]> {
         }
     }
     None
-}
-
-/// MAC → 小写十六进制字符串（spec.peer 描述用）。
-fn mac_hex_string(mac: [u8; 6]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(12);
-    for b in mac {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0F) as usize] as char);
-    }
-    out
 }
 
 #[cfg(test)]

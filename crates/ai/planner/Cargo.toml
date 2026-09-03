@@ -8,7 +8,8 @@ description = "EnerOS 蓝图61 [09] §3 v0.314.37 — 多资源 Planner：Object
 
 [dependencies]
 eneros-decision-contract = { path = "../decision-contract" }
-eneros-objective-engine = { path = "../objective-engine" }
+# dev 面走 test-util fixture 缝（WP-64.3.2.1，生产面零 feature）
+eneros-objective-engine = { path = "../objective-engine", features = ["test-util"] }
 eneros-resource-registry = { path = "../../agents/resource-registry" }
 eneros-solver-core = { path = "../solver-core", features = ["highs-ffi"] }
 eneros-solver-model = { path = "../solver-model" }

@@ -1,0 +1,13 @@
+[package]
+name = "eneros-hex"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS hex 编解码单一实现（蓝图 64 卷 64.3 WP-64.3.4）——零依赖叶 crate，13+ 生产抄本归一"
+
+[dependencies]
+# R-64.a 零依赖纪律：只准 core/alloc（ipc-wire/dispatch-state/protocol-keys 先例）。
+
+[dev-dependencies]
+# 无（KAT 向量内联）。

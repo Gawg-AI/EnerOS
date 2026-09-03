@@ -56,33 +56,25 @@ pub fn proposal_to_candidate(
     let mut sid = [0u8; 16];
     sid.copy_from_slice(&digest[..16]);
     let (asset_id, device_id, point_id, _) = asset_binding;
-    CandidatePlan::new(
-        plan_id,
-        SnapshotId(sid),
-        [0u8; 32], // objective_digest（迁移期无 ObjectiveSpec）
-        catalog_version,
-        p.issued_at_ms,
-        0, // step_ns（单时段）
-        1, // step_count
-        status,
-        p.schedule.objective_value,
-        0.0, // gap（heuristic 解不声明最优性界）
-        0.0, // residual
-        0,   // elapsed（迁移期未测——审计字段，0 = 未提供）
-        p.model_digest.unwrap_or([0u8; 32]),
-        digest,
-        vec![Assignment {
+    CandidatePlan::builder(plan_id, SnapshotId(sid), [0u8; 32], catalog_version)
+        .solve(status, p.schedule.objective_value, 0.0, 0.0, 0)
+        .horizons(
+            p.issued_at_ms,
+            0, // step_ns（单时段）
+            1, // step_count
+        )
+        .digests(p.model_digest.unwrap_or([0u8; 32]), digest)
+        .validity(p.issued_at_ms, u64::from(p.ttl_secs.max(1)) * 1000)
+        .assignments(vec![Assignment {
             asset_id,
             device_id,
             point_id,
             power_kw: p.power_kw,
             unit_code,
             step_index: 1,
-        }],
-        p.issued_at_ms,
-        u64::from(p.ttl_secs.max(1)) * 1000,
-    )
-    .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("candidate: {e:?}")))
+        }])
+        .build()
+        .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("candidate: {e:?}")))
 }
 
 /// 后端侧转换（资源绑定未定形态——assignment 全零，绑定由 dispatch

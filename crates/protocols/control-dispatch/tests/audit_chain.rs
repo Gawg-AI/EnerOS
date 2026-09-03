@@ -14,12 +14,11 @@ use eneros_audit::durable::{last_valid_prefix, verify_log, DurableAuditRecord};
 use eneros_audit::{AuditError, AuditEvent, AuditLogger, ChainEntry, HashChain};
 use eneros_control_dispatch::{
     AuthenticatedActor, ControlDispatch, DispatchConfig, DispatchEngine, DispatchState,
-    FeedbackPointMapping, InMemoryIntentStore,
+    InMemoryIntentStore,
 };
 use eneros_control_gateway::chain::ControlChain;
 use eneros_control_gateway::envelope::ActorKind;
 use eneros_control_gateway::wire::OutcomeCode;
-use eneros_dual_brain::gate::DecisionGate;
 use eneros_protocol_abstract::write::PointWriteIntent;
 use eneros_safety_validator::{
     EvaluatorConfig, IntegrityStatus, RequiredPoint, RequiredPointCoverage, SampleQuality,
@@ -205,46 +204,21 @@ impl eneros_control_dispatch::DeliveryChannel for StubChannel {
 
 fn build_engine(control_audit: Box<dyn AuditLogger>, outcome_code: u8) -> DispatchEngine {
     let outcome = [outcome_code, 0];
-    let profile = test_profile();
     DispatchEngine::new(DispatchConfig {
-        chain: build_chain(),
-        key: KEY.to_vec(),
-        profile,
-        fencing_token: 8,
-        issuer_service: [0x41; 16],
-        issuer_epoch: 0,
-        target_endpoint: String::from("svc-device-agent"),
-        max_power_kw: 500.0,
-        // SPEC WP-A.2：护栏窗口/爬坡（缺省 = 蓝图默认，行为连续）。
-        safety_voltage_window: (340.0, 420.0),
-        safety_freq_window: (49.5, 50.5),
-        safety_ramp_kw_per_min: 200.0,
-        gate: DecisionGate::new(100, 1000.0, 3_600_000),
-        audit: None,
         control_audit: Some(control_audit),
-        intent_log: Box::new(InMemoryIntentStore::new(64)),
-        delivery: Box::new(StubChannel {
-            outcome,
-            delivered: 0,
-        }),
-        resources: Box::new(support::TestResourceView {
-            asset_id: u64::from(profile.device_id),
-            device_id: profile.device_id as u16,
-            point_id: profile.point_id,
-            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
-            catalog_version: 1,
-        }),
-        contracts: Box::new(support::test_contract_view(u64::from(profile.device_id), 1)),
-        compiler_policy: support::test_compiler_policy(),
-        control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
-        feedback_mapping: FeedbackPointMapping {
-            grid_up: 5,
-            soc: 4,
-            dc_bus_v: 1,
-            overcurrent: 6,
-            overtemp: 6,
-        },
-        now_fn: now_ms,
+        ..support::test_config(support::TestConfigSeed {
+            chain: build_chain(),
+            key: KEY.to_vec(),
+            profile: test_profile(),
+            issuer_service: [0x41; 16],
+            fencing_token: 8,
+            now_fn: now_ms,
+            intent_log: Box::new(InMemoryIntentStore::new(64)),
+            delivery: Box::new(StubChannel {
+                outcome,
+                delivered: 0,
+            }),
+        })
     })
 }
 

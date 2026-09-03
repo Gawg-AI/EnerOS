@@ -14,7 +14,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::mem;
 
-use eneros_crypto::{ct_eq, sm2_verify, Sm2PublicKey, Sm2Signature, Sm3Hasher};
+use eneros_crypto::{ct_eq, Sm2PublicKey, Sm2Signature, Sm3Hasher};
 use eneros_storage::BlockDevice;
 
 use crate::RecoveryError;
@@ -109,10 +109,13 @@ impl<D: BlockDevice> FlashWriter<D> {
             self.verified = false;
             return Err(RecoveryError::SignatureInvalid);
         }
-        // 2) SM2 根公钥验签（对 SM3 哈希验签，与 ota-ab ab_partition.rs 同口径）
+        // 2) SM2 根公钥验签（对 SM3 哈希验签，与 ota-ab ab_partition.rs
+        // 同口径）——WP-64.3.5：类型化原语（布尔陷阱消亡，fail-closed
+        // 行为不变；[01] "ota-ab 最后一处" 失实——此处同型，一并收口）。
         let sig = Sm2Signature::from_bytes(signature);
-        let valid = sm2_verify(&computed, &sig, &self.root_key).unwrap_or(false);
-        if !valid {
+        let sig_valid =
+            eneros_signer_keyring::verify_signature(&computed, &sig, &self.root_key).is_ok();
+        if !sig_valid {
             self.verified = false;
             return Err(RecoveryError::SignatureInvalid);
         }

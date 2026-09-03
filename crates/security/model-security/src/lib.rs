@@ -16,7 +16,7 @@
 //!
 //! - [`WhitelistEntry`] / [`ModelWhitelist`] — 白名单：以 SM3 哈希为键登记
 //!   模型条目（含 `added_at` / `expiry` 有效期），支持严格/宽松两种模式
-//! - [`ModelSig`] / [`ModelSignatureVerifier`] — 签名验证：可信公钥列表 +
+//! - [`ModelSig`] / [`ModelSignatureVerifier`] — 签名验证：keyring 唯一纪律的
 //!   吊销列表，经 keyring 类型化原语对原消息验签（63.3 WP-63.3.2 收口）
 //! - [`ModelGuard`] / [`ModelLoadAttempt`] / [`GuardStats`] — 加载门禁：
 //!   白名单检查 → 有效期检查 → 签名验证，全链路审计（容量 1000 环形覆盖）

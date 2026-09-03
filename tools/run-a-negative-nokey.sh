@@ -7,7 +7,6 @@ set -uo pipefail
 source "$(dirname "$0")/gate-env.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 D=target/evidence-wA/neg-nokey; mkdir -p "$D"
-K=product/security/keys-local
 # 备份 bundle + registry；临时摘除 security 条目生成无密钥节 bundle。
 # （qemu-dev 清单缺 ai-peer 属预存 CF-01 红，故走 qemu-test + 摘条目路线。）
 cp -f product/config-bundle.bin "$D/bundle.true.bak"
@@ -23,11 +22,10 @@ assert "security" not in new.split("[template]")[0], "security 条目未摘除"
 p.write_text(new)
 print("registry security entry stripped")
 PY
-ENEROS_KMS_DIR=configs/kms-dev cargo +nightly-2026-04-04 xtask config compile --profile qemu-prod --root-key-hex "$(printf '5a%.0s' {1..64})" >"$D/compile-nosecurity.log" 2>&1 || { echo COMPILE_FAIL; exit 2; }
+# WP-64.3.6：前导单源（no-key 语义：不导出签名钥——负例 fail-closed 判据）。
+gate_compile_config "$D/compile-nosecurity.log"
 grep -q "CONFIG-COMPILE: security" "$D/compile-nosecurity.log" && { echo "UNEXPECTED: security present"; exit 3; }
-cargo +nightly-2026-04-04 xtask image raw qemu-test \
-  --signing-key $K/dev-signing.key --uefi-key $K/uefi-test.key --uefi-cert $K/uefi-test.pem \
-  >"$D/image.log" 2>&1 || { echo IMAGE_FAIL; exit 4; }
+gate_image_raw qemu-test "$D/image.log"
 start_broker(){ python3 evidence/47/mqtt_broker47.py --transcript "$1" >/dev/null 2>&1 & echo $!; }
 B=$(start_broker "$D/broker.jsonl"); sleep 2
 python3 evidence/47/scada_write.py --delay 60 --retries 3 --interval 15 \

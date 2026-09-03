@@ -7,6 +7,7 @@ license.workspace = true
 description = "EnerOS IEC 61850-9-2 SV 采样值接收 (v0.108.0) — no_std, EtherType 0x88BA"
 
 [dependencies]
+eneros-hex = { path = "../../abi/hex" }
 eneros-iec61850-model = { path = "../iec61850-model" }
 # 39 WP-39.11：协议插件合同（ProtocolPlugin/TransportFactory）。
 eneros-protocol-abstract = { path = "../protocol-abstract" }

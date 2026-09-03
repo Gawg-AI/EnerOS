@@ -138,7 +138,7 @@ impl WalEntry {
                 let endpoint = parts.next()?.to_string();
                 let schema = parts.next()?.parse().ok()?;
                 let ops = parts.next()?.parse().ok()?;
-                let capability = hex_decode(parts.next()?)?;
+                let capability = eneros_hex::decode_fixed(parts.next()?)?;
                 // 第 9 段：`generation;name:id;name:id...`。
                 let gen_and_points = parts.next()?;
                 let mut gp = gen_and_points.splitn(2, ';');
@@ -205,7 +205,7 @@ pub fn parse_wal(data: &[u8]) -> Result<Vec<WalEntry>, PersistError> {
         }
         if let Some(digest_line) = line.strip_prefix("D,") {
             // 校验行必须是最后一行；摘要在行首 `D,` 之前的全部内容上计算。
-            let expected = hex_decode(digest_line)
+            let expected = eneros_hex::decode_fixed(digest_line)
                 .ok_or_else(|| PersistError::Corrupt("WAL digest 格式".into()))?;
             let body_end = data.len().saturating_sub(line.len() + 1);
             let body = &data[..body_end];
@@ -279,7 +279,7 @@ pub fn parse_snapshot(data: &[u8]) -> Result<Vec<SnapshotDevice>, PersistError> 
             continue;
         }
         if let Some(digest_line) = line.strip_prefix("S,") {
-            let expected = hex_decode(digest_line)
+            let expected = eneros_hex::decode_fixed(digest_line)
                 .ok_or_else(|| PersistError::Corrupt("snapshot digest 格式".into()))?;
             let body_end = data.len().saturating_sub(line.len() + 1);
             if sm3_of(&data[..body_end]) != expected {
@@ -318,7 +318,7 @@ pub fn parse_snapshot(data: &[u8]) -> Result<Vec<SnapshotDevice>, PersistError> 
                 .next()
                 .and_then(|v| v.parse().ok())
                 .ok_or_else(|| PersistError::Parse(format!("ops 行: {line}")))?;
-            let capability = hex_decode(parts.next().unwrap_or(""))
+            let capability = eneros_hex::decode_fixed(parts.next().unwrap_or(""))
                 .ok_or_else(|| PersistError::Parse(format!("capability 行: {line}")))?;
             let generation = parts
                 .next()
@@ -569,21 +569,9 @@ fn sm3_of(data: &[u8]) -> [u8; 32] {
     eneros_crypto::sm3_hash(data)
 }
 
+/// WP-64.3.4：hex32 单源 eneros_hex（解码调用点直用 decode_fixed）。
 fn hex32(d: &[u8; 32]) -> String {
-    d.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn hex_decode(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
-        let hi = (chunk[0] as char).to_digit(16)?;
-        let lo = (chunk[1] as char).to_digit(16)?;
-        out[i] = (hi * 16 + lo) as u8;
-    }
-    Some(out)
+    eneros_hex::encode_lower(d)
 }
 
 #[cfg(test)]

@@ -12,19 +12,13 @@ note: if you're trying to build a new `CertifiedPlan` consider using one of the 
   |
   | /     pub fn new_transition(
   | |         seal: CertifierSeal,
-  | |         certificate_id: CertificateId,
-  | |         plan_id: PlanId,
-... |
-  | |         proof_digest: [u8; 32],
+  | |         fields: CertifiedPlanFields,
   | |     ) -> Result<Self, ContractError> {
   | |____________________________________^
 ...
   | /     pub fn new_certified(
   | |         seal: CertifierSeal,
-  | |         certificate_id: CertificateId,
-  | |         plan_id: PlanId,
-... |
-  | |         proof_digest: [u8; 32],
+  | |         fields: CertifiedPlanFields,
   | |     ) -> Result<Self, ContractError> {
   | |____________________________________^
 ...

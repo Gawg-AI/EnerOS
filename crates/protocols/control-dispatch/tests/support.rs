@@ -56,3 +56,72 @@ pub fn test_contract_view(asset_id: u64, reversible: u8) -> MapContractView {
 pub fn test_compiler_policy() -> CompilerPolicy {
     CompilerPolicy::default()
 }
+
+// ---------------------------------------------------------------------------
+// WP-64.3.3.1 · DispatchConfig 测试夹具单源
+// ---------------------------------------------------------------------------
+
+use eneros_control_dispatch::arbiter::ControlMode;
+use eneros_control_dispatch::intent::IntentStore;
+use eneros_control_dispatch::{DeliveryChannel, DispatchConfig, FeedbackPointMapping};
+use eneros_control_gateway::chain::ControlChain;
+use eneros_control_gateway::ControlProfile;
+use eneros_dual_brain::gate::DecisionGate;
+
+/// 套件身份组：每套件**刻意隔离**的本地事实（KEY/ISSUER/chain/profile/
+/// clock 各文件本地常量）+ 两个注入面。其余字段由 [`test_config`] 安全
+/// 默认填充；套件差异经结构更新语法只声明所变字段。
+pub struct TestConfigSeed {
+    pub chain: ControlChain,
+    pub key: Vec<u8>,
+    pub profile: ControlProfile,
+    pub issuer_service: [u8; 16],
+    pub fencing_token: u64,
+    pub now_fn: fn() -> u64,
+    pub intent_log: Box<dyn IntentStore>,
+    pub delivery: Box<dyn DeliveryChannel>,
+}
+
+/// DispatchConfig 测试夹具单源——安全默认 = settlement_lock base_config
+/// 公共值（护栏窗/爬坡/限功率/gate/feedback_mapping/target_endpoint）；
+/// resources/contracts 由 seed.profile 派生（与各套件原字面同构：
+/// asset = profile.device_id、catalog_version 1、合同可逆）。
+pub fn test_config(seed: TestConfigSeed) -> DispatchConfig {
+    let profile = seed.profile;
+    DispatchConfig {
+        chain: seed.chain,
+        key: seed.key,
+        profile,
+        fencing_token: seed.fencing_token,
+        issuer_service: seed.issuer_service,
+        issuer_epoch: 0,
+        target_endpoint: String::from("svc-device-agent"),
+        max_power_kw: 500.0,
+        safety_voltage_window: (340.0, 420.0),
+        safety_freq_window: (49.5, 50.5),
+        safety_ramp_kw_per_min: 200.0,
+        gate: DecisionGate::new(100, 1000.0, 3_600_000),
+        audit: None,
+        control_audit: None,
+        intent_log: seed.intent_log,
+        delivery: seed.delivery,
+        resources: Box::new(TestResourceView {
+            asset_id: u64::from(profile.device_id),
+            device_id: profile.device_id as u16,
+            point_id: profile.point_id,
+            unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+            catalog_version: 1,
+        }),
+        contracts: Box::new(test_contract_view(u64::from(profile.device_id), 1)),
+        compiler_policy: test_compiler_policy(),
+        control_mode: ControlMode::Auto,
+        feedback_mapping: FeedbackPointMapping {
+            grid_up: 5,
+            soc: 4,
+            dc_bus_v: 1,
+            overcurrent: 6,
+            overtemp: 6,
+        },
+        now_fn: seed.now_fn,
+    }
+}

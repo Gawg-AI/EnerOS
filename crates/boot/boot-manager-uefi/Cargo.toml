@@ -18,6 +18,7 @@ path = "src/main.rs"
 required-features = ["uefi-app"]
 
 [dependencies]
+eneros-hex = { path = "../../abi/hex" }
 eneros-boot-protocol = { path = "../boot-protocol" }
 eneros-image-format = { path = "../image-format" }
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["alloc", "fast", "zeroize"] }

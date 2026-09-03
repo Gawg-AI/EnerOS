@@ -55,7 +55,6 @@ use alloc::vec::Vec;
 use eneros_decision_contract::{CandidatePlan, CertificateId, CertifiedPlan, SnapshotId};
 use eneros_resource_registry::capability::CapabilityEnvelope;
 use eneros_snapshot_service::TrustedSnapshot;
-use sha2::Digest;
 
 /// certifier 语义版本（证书 certifier_version 字段来源）。
 pub const CERTIFIER_VERSION: u32 = 1;
@@ -90,6 +89,36 @@ pub struct EvalContext<'a> {
     pub tolerance_profile_id: u32,
     /// 约束/资源目录版本（计划 resource_catalog_version 同源；证据引用）。
     pub constraint_catalog_version: u64,
+}
+
+impl EvalContext<'_> {
+    /// 绑定校验判据（WP-64.3.3.2；自 [`CertifierModule::certify`] 步骤 0
+    /// 原样迁入——计划 ↔ 输入 ↔ horizon 五对 + TTL；错误变体/词形/比较
+    /// 松紧零变化，仅位置迁移：判据与字段同居一处，已登记未修的
+    /// "snapshot 包络输入源"字段未来只改这里）。
+    pub fn bind(&self, plan: &CandidatePlan, now_ms: u64) -> Result<(), CertifierError> {
+        if plan.snapshot_id().0 != self.snapshot.snapshot_id {
+            return Err(CertifierError::PlanMismatch("snapshot_id"));
+        }
+        if plan.snapshot_id().0 != self.spec.snapshot_id().0 {
+            return Err(CertifierError::PlanMismatch("spec_snapshot"));
+        }
+        if plan.step_ns() != self.horizon_step_ns || plan.step_count() != self.horizon_step_count {
+            return Err(CertifierError::PlanMismatch("horizon"));
+        }
+        if plan.horizon_start_ms() != self.horizon_start_ms {
+            return Err(CertifierError::PlanMismatch("horizon_start"));
+        }
+        // 证据引用的目录版本与计划绑定目录必须同源——否则证书声称按
+        // A 目录认证、证据引用 B 目录，且分叉不可检测。
+        if self.constraint_catalog_version != plan.resource_catalog_version() {
+            return Err(CertifierError::PlanMismatch("catalog_version"));
+        }
+        if !plan.is_valid_at(now_ms) {
+            return Err(CertifierError::PlanExpired);
+        }
+        Ok(())
+    }
 }
 
 /// 认证结果（证书 + 证据）。
@@ -150,27 +179,8 @@ impl CertifierModule {
         now_ms: u64,
         ring: &proof::CertifierKeyRing,
     ) -> Result<CertifiedOutcome, CertifierError> {
-        // 0. 绑定校验（计划 ↔ 输入 ↔ horizon）。
-        if plan.snapshot_id().0 != ctx.snapshot.snapshot_id {
-            return Err(CertifierError::PlanMismatch("snapshot_id"));
-        }
-        if plan.snapshot_id().0 != ctx.spec.snapshot_id().0 {
-            return Err(CertifierError::PlanMismatch("spec_snapshot"));
-        }
-        if plan.step_ns() != ctx.horizon_step_ns || plan.step_count() != ctx.horizon_step_count {
-            return Err(CertifierError::PlanMismatch("horizon"));
-        }
-        if plan.horizon_start_ms() != ctx.horizon_start_ms {
-            return Err(CertifierError::PlanMismatch("horizon_start"));
-        }
-        // 证据引用的目录版本与计划绑定目录必须同源——否则证书声称按
-        // A 目录认证、证据引用 B 目录，且分叉不可检测。
-        if ctx.constraint_catalog_version != plan.resource_catalog_version() {
-            return Err(CertifierError::PlanMismatch("catalog_version"));
-        }
-        if !plan.is_valid_at(now_ms) {
-            return Err(CertifierError::PlanExpired);
-        }
+        // 0. 绑定校验（WP-64.3.3.2：判据迁 [`EvalContext::bind`]）。
+        ctx.bind(plan, now_ms)?;
 
         // 1. 独立 forward evaluator（[09] §4.2 全清单的本卷实现）。
         let records = eval::evaluate(ctx, plan)?;
@@ -180,20 +190,23 @@ impl CertifierModule {
         // `plan_wire_sha256`（原手写 SHA-256 删除）。
         let plan_sha: [u8; 32] = eneros_decision_contract::CandidatePlan::plan_wire_sha256(plan);
         let proof_digest = proof::digest_records(&records, &plan_sha, CERTIFIER_VERSION);
+        let certificate_id = CertificateId::new(plan_sha[..16].try_into().expect("16B"))
+            .map_err(|_| CertifierError::DigestMismatch("cert-id"))?;
         let cert = CertifiedPlan::new_certified(
             eneros_decision_contract::CertifierSeal::issue(),
-            CertificateId::new(plan_sha[..16].try_into().expect("16B"))
-                .map_err(|_| CertifierError::DigestMismatch("cert-id"))?,
-            *plan.id(),
-            plan_sha,
-            SnapshotId(plan.snapshot_id().0),
-            CERTIFIER_VERSION,
-            plan.resource_catalog_version(),
-            ctx.tolerance_profile_id,
-            now_ms,
-            plan.issued_at_ms().saturating_add(plan.ttl_ms()),
-            records.len() as u32,
-            proof_digest,
+            eneros_decision_contract::CertifiedPlanFields {
+                certificate_id,
+                plan_id: *plan.id(),
+                plan_sha256: plan_sha,
+                snapshot_id: SnapshotId(plan.snapshot_id().0),
+                certifier_version: CERTIFIER_VERSION,
+                constraint_catalog_version: plan.resource_catalog_version(),
+                tolerance_profile_id: ctx.tolerance_profile_id,
+                certified_at_ms: now_ms,
+                valid_until_ms: plan.issued_at_ms().saturating_add(plan.ttl_ms()),
+                hard_constraint_count: records.len() as u32,
+                proof_digest,
+            },
         )
         .map_err(|_| CertifierError::PlanMismatch("certificate"))?;
 
@@ -236,7 +249,8 @@ impl CertifierModule {
         if !cert.is_valid_at(now_ms) {
             return Err(CertifierError::PlanExpired);
         }
-        let plan_sha: [u8; 32] = sha2::Sha256::digest(plan_wire).into();
+        let plan_sha: [u8; 32] =
+            eneros_decision_contract::CandidatePlan::plan_wire_sha256_of_wire(plan_wire);
         if plan_sha != *cert.plan_sha256() {
             return Err(CertifierError::DigestMismatch("plan_sha"));
         }

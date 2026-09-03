@@ -26,7 +26,6 @@
 //! | 采样数据上游 | 插件 poll 排空缓冲计数；采样值入点表属集成层接缝，**待后续** |
 
 use alloc::boxed::Box;
-use alloc::string::String;
 
 use eneros_protocol_abstract::{
     AdapterState, InteropLevel, PointRegistry, Progress, ProtocolConfig, ProtocolDescriptor,
@@ -195,7 +194,7 @@ impl ProtocolPlugin for SvPlugin {
         }
         // 配置真消费：app_id/dst_mac 进入 SvSubscriber 过滤器构造，
         // buffer_size 进入环形缓冲容量；dst_mac 同时进入传输 spec.peer。
-        let handle = open_raw(transports, &mac_hex_string(dst_mac))?;
+        let handle = open_raw(transports, &eneros_hex::encode_lower(&dst_mac))?;
         let subscriber = SvSubscriber::new(app_id, dst_mac, buffer_size as usize, handle)
             .map_err(|_| ProtocolError::ProtocolInit)?;
         self.subscriber = Some(subscriber);
@@ -336,17 +335,6 @@ fn parse_mac(text: &str) -> Option<[u8; 6]> {
         }
     }
     None
-}
-
-/// MAC → 小写十六进制字符串（spec.peer 描述用）。
-fn mac_hex_string(mac: [u8; 6]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(12);
-    for b in mac {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0F) as usize] as char);
-    }
-    out
 }
 
 #[cfg(test)]

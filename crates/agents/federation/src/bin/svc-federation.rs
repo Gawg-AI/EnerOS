@@ -84,32 +84,29 @@ struct Args {
     run_once: bool,
 }
 
-fn hex_decode(s: &str) -> Vec<u8> {
+/// hex 解码（WP-64.3.4：单源 eneros_hex::decode_vec；坏 hex → Err——
+/// 原实现在此函数内直接退进程，改为 Err 值由 CLI 边界统一处置，行为
+/// 兼容（登记于执行卡 §WP-64.3.4））。
+fn decode_hex_arg(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
-    if s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
-        eprintln!("bad hex: {s}");
+    eneros_hex::decode_vec(s).ok_or_else(|| alloc::format!("bad hex: {s}"))
+}
+
+fn hex_decode_or_exit(s: &str) -> Vec<u8> {
+    decode_hex_arg(s).unwrap_or_else(|e| {
+        eprintln!("{e}");
         exit(2);
-    }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    let b = s.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        let hi = (b[i] as char).to_digit(16).expect("hi");
-        let lo = (b[i + 1] as char).to_digit(16).expect("lo");
-        out.push(((hi << 4) | lo) as u8);
-        i += 2;
-    }
-    out
+    })
 }
 
 fn hex32(s: &str, what: &str) -> [u8; 32] {
-    let b = hex_decode(s);
+    let b = hex_decode_or_exit(s);
     assert_eq!(b.len(), 32, "{what} 需要 32 字节 hex");
     b.try_into().expect("32")
 }
 
 fn hex16(s: &str, what: &str) -> [u8; 16] {
-    let b = hex_decode(s);
+    let b = hex_decode_or_exit(s);
     assert_eq!(b.len(), 16, "{what} 需要 16 字节 hex");
     b.try_into().expect("16")
 }
@@ -630,7 +627,7 @@ fn read_site_keys(p: &Option<PathBuf>) -> Vec<(u32, u32, Sm2PublicKey)> {
             owner.expect("owner="),
             pubhex.expect("pub="),
         );
-        let bytes = hex_decode(pubhex);
+        let bytes = hex_decode_or_exit(pubhex);
         let pk = Sm2PublicKey::from_bytes(&bytes).expect("sm2 pubkey");
         out.push((kid, owner, pk));
     }
@@ -675,7 +672,7 @@ fn run_site(a: &Args) -> ! {
     let epoch = EpochRegulator::sanitized(journal_max_epoch(&journal).max(1)).current();
     let mut site = SiteNegotiator::new(a.node_id, a.tenant, epoch, max_seq.max(1).max(100));
     let mut key_reg = KeyRegistry::new();
-    let pkb = hex_decode(&a.peer_key_hex);
+    let pkb = hex_decode_or_exit(&a.peer_key_hex);
     if pkb.is_empty() {
         eprintln!("[site] --peer-key-hex 未提供（协调器公钥登记为组装前置）");
         exit(2);
@@ -843,7 +840,7 @@ fn proposal_id_of(site_id: u32) -> [u8; 16] {
 }
 
 fn make_signer(a: &Args) -> SiteSigner {
-    let kb = hex_decode(&a.sm2_key_hex);
+    let kb = hex_decode_or_exit(&a.sm2_key_hex);
     assert_eq!(kb.len(), 32, "--sm2-key-hex 需要 32 字节");
     let arr: [u8; 32] = kb.try_into().expect("32");
     let sk = Sm2PrivateKey::from_bytes(&arr).expect("sm2 private key");

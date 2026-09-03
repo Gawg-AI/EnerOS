@@ -35,11 +35,7 @@ for PORT in 5577 5582 2404; do
 done
 
 echo "=== 步骤 1：config compile（qemu-prod）==="
-ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-prod \
-  --root-key-hex "$(printf '5a%.0s' {1..64})" >"$EVROOT/build/compile.log" 2>&1
-RC=$?
-[ $RC -eq 0 ] || { echo "CONFIG-COMPILE FAIL rc=$RC"; tail -5 "$EVROOT/build/compile.log"; exit 2; }
-tail -2 "$EVROOT/build/compile.log"
+gate_compile_config "$EVROOT/build/compile.log"
 
 echo "=== 步骤 1.5：root-task 重链接（门例行，防陈旧顶替）==="
 bash "$ROOT/third_party/sel4-build-rust.sh" >"$EVROOT/build/relink.log" 2>&1
@@ -48,11 +44,7 @@ RC=$?
 grep -a "Rust ELF:" "$EVROOT/build/relink.log" | tail -1
 
 echo "=== 步骤 2：image raw qemu-prod（v0.316.2 树重建）==="
-cargo xtask image raw qemu-prod \
-  --signing-key "$K/dev-signing.key" --uefi-key "$K/uefi-test.key" --uefi-cert "$K/uefi-test.pem" \
-  >"$EVROOT/build/image.log" 2>&1
-RC=$?
-[ $RC -eq 0 ] || { echo "IMAGE FAIL rc=$RC"; tail -20 "$EVROOT/build/image.log"; exit 3; }
+gate_image_raw qemu-prod "$EVROOT/build/image.log"
 IMG="$ROOT/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
 [ -f "$IMG" ] || { echo "image missing"; exit 3; }
 sha256sum "$IMG" | tee "$EVROOT/build/image.sha256"

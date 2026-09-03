@@ -11,6 +11,7 @@ name = "eneros_config_bundle"
 path = "src/lib.rs"
 
 [dependencies]
+eneros-hex = { path = "../../abi/hex" }
 # ADR-022：no_std target 唯一可链接国密实现（sm2_sign/sm2_verify/sm3_hash）。
 eneros-crypto = { path = "../../security/crypto" }
 # 63.3 WP-63.3.2：类型化验签原语收口（Ok(false) 布尔陷阱消除）。

@@ -26,50 +26,41 @@ fn read(name: &str) -> String {
 }
 
 fn canonical_plan() -> CandidatePlan {
-    CandidatePlan::new(
+    CandidatePlan::builder(
         PlanId::new([1; 16]).unwrap(),
         SnapshotId([2; 16]),
         [3; 32],
         1,
-        1_700_000_000_000,
-        1_000,
-        1,
-        SolveStatusKind::Suboptimal,
-        12.5,
-        0.01,
-        0.001,
-        30,
-        [4; 32],
-        [5; 32],
-        vec![Assignment {
-            asset_id: 1,
-            device_id: 1,
-            point_id: 10,
-            power_kw: -50.0,
-            unit_code: 6,
-            step_index: 1,
-        }],
-        1_700_000_001_000,
-        60_000,
     )
+    .solve(SolveStatusKind::Suboptimal, 12.5, 0.01, 0.001, 30)
+    .horizons(1_700_000_000_000, 1_000, 1)
+    .digests([4; 32], [5; 32])
+    .validity(1_700_000_001_000, 60_000)
+    .assignments(vec![Assignment {
+        asset_id: 1,
+        device_id: 1,
+        point_id: 10,
+        power_kw: -50.0,
+        unit_code: 6,
+        step_index: 1,
+    }])
+    .build()
     .unwrap()
 }
 
 fn canonical_intent() -> eneros_decision_contract::CommandIntent {
-    eneros_decision_contract::CommandIntent::new(
+    eneros_decision_contract::CommandIntent::builder(
         eneros_decision_contract::IntentId([3; 16]),
         PlanId([1; 16]),
         [0xAB; 32],
-        1,
-        1,
-        10,
-        -50.0,
-        6,
-        1_700_000_000_000,
-        1_700_000_060_000,
+    )
+    .target(1, 1, 10, -50.0, 6)
+    .window(1_700_000_000_000, 1_700_000_060_000)
+    .policy(
         eneros_decision_contract::Precondition::None,
         eneros_decision_contract::CompensationHint::None,
     )
+    .build()
     .unwrap()
 }
 

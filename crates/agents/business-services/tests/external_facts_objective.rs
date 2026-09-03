@@ -220,10 +220,10 @@ fn market_facts_feed_objective_shadow() {
         .expect("市场事实 + 安全 bundle 必须可编译");
     // 经济输入进入（价格向量非空）；safety 硬约束保留（外部事实不能
     // 覆盖/删除安全约束）。
-    assert_eq!(compiled.prices_per_kwh.len(), 96);
+    assert_eq!(compiled.prices_per_kwh().len(), 96);
     assert!(
         compiled
-            .spec
+            .spec()
             .hard()
             .iter()
             .any(|c| c.kind == ConstraintKind::MinSoc && c.bound == 0.1),
@@ -373,7 +373,7 @@ fn external_facts_cannot_override_safety() {
     // 安全约束整体保留——不存在「外部目标放宽 safety」路径。
     assert!(
         compiled
-            .spec
+            .spec()
             .hard()
             .iter()
             .any(|c| c.kind == ConstraintKind::MinSoc && c.bound == 0.2),
@@ -381,7 +381,7 @@ fn external_facts_cannot_override_safety() {
     );
     assert!(
         compiled
-            .spec
+            .spec()
             .hard()
             .iter()
             .any(|c| c.kind == ConstraintKind::MaxSoc && c.bound == 0.9),
@@ -451,5 +451,5 @@ fn disconnected_external_system_keeps_station_safe() {
             verify: None,
         })
         .expect("D2 下站内规划照常");
-    assert_eq!(compiled.prices_per_kwh.len(), 96);
+    assert_eq!(compiled.prices_per_kwh().len(), 96);
 }

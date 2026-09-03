@@ -8,7 +8,7 @@
 
 use alloc::vec;
 
-use eneros_crypto::{ct_eq, sm2_verify, Sm2PublicKey, Sm2Signature, Sm3Hasher};
+use eneros_crypto::{ct_eq, Sm2PublicKey, Sm2Signature, Sm3Hasher};
 use eneros_storage::BlockDevice;
 use heapless::String as HString;
 
@@ -322,11 +322,14 @@ impl<D: BlockDevice> OtaManager for AbPartitionOta<D> {
             self.partitions[idx].state = PartitionState::Failed;
             return Err(OtaError::HashMismatch);
         }
-        // 2) SM2 签名验证（设备根公钥）
+        // 2) SM2 签名验证（设备根公钥）——WP-64.3.5：类型化原语
+        // verify_signature（Ok(false)/Err 统一 Err → SignatureInvalid，
+        // fail-closed 行为不变；布尔陷阱消亡）。
         let hash = self.partitions[idx].hash;
         let sig = Sm2Signature::from_bytes(&self.partitions[idx].signature);
-        let valid = sm2_verify(&hash, &sig, &self.root_key).unwrap_or(false);
-        if !valid {
+        let sig_valid =
+            eneros_signer_keyring::verify_signature(&hash, &sig, &self.root_key).is_ok();
+        if !sig_valid {
             self.partitions[idx].state = PartitionState::Failed;
             return Err(OtaError::SignatureInvalid);
         }

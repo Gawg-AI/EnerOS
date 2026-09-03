@@ -17,6 +17,7 @@ product_allowed = false
 isolation_reason = "ADR-022: no_std target hand-rolled SM2/SM3/SM4 verified against OpenSSL-3 interop KAT; awaiting commercial crypto review (Phase D) before product inclusion"
 
 [dependencies]
+eneros-hex = { path = "../../abi/hex" }
 # No external dependencies — pure Rust implementation
 # ECDSA P-256 验签（蓝图/20 R1-3：设备端 TLS 证书链验证扩展）；
 # no_std 默认，禁用默认 feature（不引入 rand/std）。

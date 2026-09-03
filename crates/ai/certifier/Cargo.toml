@@ -22,4 +22,5 @@ eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }
 # 生产依赖（[16] §3.9 依赖纪律针对生产面）。
 eneros-planner = { path = "../planner" }
 eneros-solver-core = { path = "../solver-core", features = ["highs-ffi"] }
-eneros-objective-engine = { path = "../objective-engine" }
+# dev 面走 test-util fixture 缝（WP-64.3.2.1，生产面零 feature）
+eneros-objective-engine = { path = "../objective-engine", features = ["test-util"] }

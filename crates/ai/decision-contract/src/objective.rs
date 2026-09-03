@@ -133,21 +133,50 @@ pub struct ObjectiveSpec {
     valid_until_ms: u64,
 }
 
-impl ObjectiveSpec {
-    /// 校验构造（硬约束数、时间窗、有限值）。
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        snapshot_id: SnapshotId,
-        hard: Vec<Constraint>,
-        soft: Vec<Constraint>,
-        objective: ObjectiveKind,
+/// ObjectiveSpec 语义组构造器（WP-64.3.1：constraints/objective/window
+/// 三组；全部字段必填）。
+pub struct ObjectiveSpecBuilder {
+    snapshot_id: SnapshotId,
+    constraints: Option<(Vec<Constraint>, Vec<Constraint>)>,
+    objective: Option<(ObjectiveKind, u8, ObjectiveSource, ReasonCode)>,
+    window: Option<(u64, u64)>,
+}
+
+impl ObjectiveSpecBuilder {
+    /// 约束组（hard 非空；hard/soft 各 ≤[`MAX_CONSTRAINTS`]）。
+    pub fn constraints(mut self, hard: Vec<Constraint>, soft: Vec<Constraint>) -> Self {
+        self.constraints = Some((hard, soft));
+        self
+    }
+
+    /// 目标组（kind/priority/source/reason）。
+    pub fn objective(
+        mut self,
+        kind: ObjectiveKind,
         priority: u8,
         source: ObjectiveSource,
         reason: ReasonCode,
-        valid_from_ms: u64,
-        valid_until_ms: u64,
-    ) -> Result<Self, ContractError> {
-        if snapshot_id.is_unbound() {
+    ) -> Self {
+        self.objective = Some((kind, priority, source, reason));
+        self
+    }
+
+    /// 有效窗组。
+    pub fn window(mut self, valid_from_ms: u64, valid_until_ms: u64) -> Self {
+        self.window = Some((valid_from_ms, valid_until_ms));
+        self
+    }
+
+    /// 组装并校验（硬约束数、时间窗、有限值）。
+    pub fn build(self) -> Result<ObjectiveSpec, ContractError> {
+        let (hard, soft) = self
+            .constraints
+            .ok_or(ContractError::MissingField("hard"))?;
+        let (objective, priority, source, reason) = self
+            .objective
+            .ok_or(ContractError::MissingField("objective"))?;
+        let (valid_from_ms, valid_until_ms) = self.window.ok_or(ContractError::InvalidWindow)?;
+        if self.snapshot_id.is_unbound() {
             return Err(ContractError::MissingField("snapshot_id"));
         }
         if hard.is_empty() {
@@ -164,8 +193,8 @@ impl ObjectiveSpec {
         if valid_until_ms <= valid_from_ms {
             return Err(ContractError::InvalidWindow);
         }
-        Ok(Self {
-            snapshot_id,
+        Ok(ObjectiveSpec {
+            snapshot_id: self.snapshot_id,
             hard,
             soft,
             objective,
@@ -175,6 +204,18 @@ impl ObjectiveSpec {
             valid_from_ms,
             valid_until_ms,
         })
+    }
+}
+
+impl ObjectiveSpec {
+    /// 构造器入口（WP-64.3.1：三语义组 builder）。
+    pub fn builder(snapshot_id: SnapshotId) -> ObjectiveSpecBuilder {
+        ObjectiveSpecBuilder {
+            snapshot_id,
+            constraints: None,
+            objective: None,
+            window: None,
+        }
     }
 
     pub fn snapshot_id(&self) -> SnapshotId {
@@ -402,55 +443,58 @@ mod tests {
     #[test]
     fn objective_spec_negatives() {
         assert_eq!(
-            ObjectiveSpec::new(
-                SnapshotId([0u8; 16]),
-                vec![Constraint {
-                    kind: ConstraintKind::MinSoc,
-                    bound: 0.1
-                }],
-                vec![],
-                ObjectiveKind::PeakShave,
-                1,
-                ObjectiveSource::RuleBundle,
-                ReasonCode::PeakShave,
-                0,
-                1,
-            ),
+            ObjectiveSpec::builder(SnapshotId([0u8; 16]))
+                .constraints(
+                    vec![Constraint {
+                        kind: ConstraintKind::MinSoc,
+                        bound: 0.1
+                    }],
+                    vec![],
+                )
+                .objective(
+                    ObjectiveKind::PeakShave,
+                    1,
+                    ObjectiveSource::RuleBundle,
+                    ReasonCode::PeakShave
+                )
+                .window(0, 1)
+                .build(),
             Err(ContractError::MissingField("snapshot_id"))
         );
         assert_eq!(
-            ObjectiveSpec::new(
-                SnapshotId([1u8; 16]),
-                vec![],
-                vec![],
-                ObjectiveKind::PeakShave,
-                1,
-                ObjectiveSource::RuleBundle,
-                ReasonCode::PeakShave,
-                0,
-                1,
-            ),
+            ObjectiveSpec::builder(SnapshotId([1u8; 16]))
+                .constraints(vec![], vec![])
+                .objective(
+                    ObjectiveKind::PeakShave,
+                    1,
+                    ObjectiveSource::RuleBundle,
+                    ReasonCode::PeakShave
+                )
+                .window(0, 1)
+                .build(),
             Err(ContractError::MissingField("hard"))
         );
     }
 
     #[test]
     fn decision_request_negatives() {
-        let spec = ObjectiveSpec::new(
-            SnapshotId([1u8; 16]),
-            vec![Constraint {
-                kind: ConstraintKind::MaxSoc,
-                bound: 0.9,
-            }],
-            vec![],
-            ObjectiveKind::SelfConsume,
-            1,
-            ObjectiveSource::RuleBundle,
-            ReasonCode::SocBalance,
-            0,
-            1,
-        )
-        .unwrap();
+        let spec = ObjectiveSpec::builder(SnapshotId([1u8; 16]))
+            .constraints(
+                vec![Constraint {
+                    kind: ConstraintKind::MaxSoc,
+                    bound: 0.9,
+                }],
+                vec![],
+            )
+            .objective(
+                ObjectiveKind::SelfConsume,
+                1,
+                ObjectiveSource::RuleBundle,
+                ReasonCode::SocBalance,
+            )
+            .window(0, 1)
+            .build()
+            .unwrap();
         assert_eq!(
             DecisionRequest::new([0u8; 16], spec.clone(), 1, 100, 1),
             Err(ContractError::ZeroId)

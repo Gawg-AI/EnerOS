@@ -2,8 +2,12 @@
 //!
 //! "接入一封认证外部事实"的密钥注册/验签/撤销/修订水位纪律**唯一实现**。
 //! 消费方（market_ingest / external_facts / model-harness skill+registry /
-//! federation KeyRegistry）保留各自 payload schema 与业务闸，四张裸 key
-//! 表与五条 register/verify 管线收敛于此。
+//! federation KeyRegistry / model-security ModelSignatureVerifier——蓝图 64
+//! 卷 64.3 WP-64.3.5 adapter 化 / ota-ab + recovery flash + attestation
+//! `verify_signature` 类型化原语）保留各自 payload schema 与业务闸，四张
+//! 裸 key 表与五条 register/verify 管线收敛于此。域守卫
+//! （`primitive_domain_guard`）锁 security 域内裸 sm2_verify 只存在于
+//! 原始域 crate + secure-boot（ADR-033 豁免）。
 //!
 //! 设计裁决（蓝图 62 卷 62.3）：
 //!
@@ -220,6 +224,61 @@ pub fn verify_signature(
     match sm2_verify(msg, sig, pk) {
         Ok(true) => Ok(VerifiedSignature { _seal: () }),
         _ => Err(VerifyReject::BadSignature),
+    }
+}
+
+/// WP-64.3.5 rg 守卫：security 域内裸 `sm2_verify(` 调用只允许——
+/// 原始域 crate（crypto/crypto-gmssl 实现、signer-keyring 自身纪律
+/// owner）+ secure-boot（ADR-033 登记豁免 REG-SM2-SB）。其余消费面
+/// 必须走 [`verify_signature`] 类型化原语（布尔陷阱域外清零）。
+#[cfg(test)]
+mod primitive_domain_guard {
+    #[test]
+    fn sm2_verify_restricted_to_primitive_domain() {
+        use alloc::string::{String, ToString};
+        use alloc::vec::Vec;
+        use std::path::Path;
+
+        const EXEMPT_CRATES: [&str; 4] = [
+            "/security/crypto/",
+            "/security/crypto-gmssl/",
+            "/security/signer-keyring/",
+            // ADR-033：secure-boot 复用 eneros-crypto 原语（登记豁免）。
+            "/security/secure-boot/",
+        ];
+
+        fn walk(dir: &Path, hits: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("workspace crates/security/") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    walk(&path, hits);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let as_str = path.to_string_lossy().to_string();
+                    if EXEMPT_CRATES.iter().any(|w| as_str.contains(w)) {
+                        continue;
+                    }
+                    let src = std::fs::read_to_string(&path).expect("read src");
+                    for (i, line) in src.lines().enumerate() {
+                        if line.contains("sm2_verify(") {
+                            hits.push(alloc::format!("{as_str}:{}: {line}", i + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("workspace root")
+            .to_path_buf();
+        let mut hits = Vec::new();
+        walk(&workspace.join("crates/security"), &mut hits);
+        assert!(
+            hits.is_empty(),
+            "security 域内非原始域 sm2_verify 残存（须改 signer_keyring::verify_signature）:\n{}",
+            hits.join("\n")
+        );
     }
 }
 

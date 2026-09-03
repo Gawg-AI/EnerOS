@@ -90,6 +90,22 @@ pub struct CertifiedPlan {
     proof_digest: [u8; 32],
 }
 
+/// 认证侧字段袋（WP-64.3.1：三个 seal-gated 构造器共用同一字段形状
+/// ——`new_transition`/`new_certified`/`new_sealed` 12 位置参签名去重）。
+pub struct CertifiedPlanFields {
+    pub certificate_id: CertificateId,
+    pub plan_id: PlanId,
+    pub plan_sha256: [u8; 32],
+    pub snapshot_id: crate::ids::SnapshotId,
+    pub certifier_version: u32,
+    pub constraint_catalog_version: u64,
+    pub tolerance_profile_id: u32,
+    pub certified_at_ms: u64,
+    pub valid_until_ms: u64,
+    pub hard_constraint_count: u32,
+    pub proof_digest: [u8; 32],
+}
+
 impl CertifiedPlan {
     /// 迁移窗口公开构造器（`transition-certifier` feature；.28-.37）。
     ///
@@ -98,57 +114,27 @@ impl CertifiedPlan {
     /// (b) `rg 'issue_transition'` 门 = 仅 control-dispatch 裁决路径调用；
     /// (c) .38 真 certifier 落地即删除本 feature（ADR-0048 如实登记）。
     #[cfg(feature = "transition-certifier")]
-    #[allow(clippy::too_many_arguments)]
     pub fn new_transition(
         seal: CertifierSeal,
-        certificate_id: CertificateId,
-        plan_id: PlanId,
-        plan_sha256: [u8; 32],
-        snapshot_id: crate::ids::SnapshotId,
-        certifier_version: u32,
-        constraint_catalog_version: u64,
-        tolerance_profile_id: u32,
-        certified_at_ms: u64,
-        valid_until_ms: u64,
-        hard_constraint_count: u32,
-        proof_digest: [u8; 32],
+        fields: CertifiedPlanFields,
     ) -> Result<Self, ContractError> {
-        Self::new_sealed(
-            seal,
-            certificate_id,
-            plan_id,
-            plan_sha256,
-            snapshot_id,
-            certifier_version,
-            constraint_catalog_version,
-            tolerance_profile_id,
-            certified_at_ms,
-            valid_until_ms,
-            hard_constraint_count,
-            proof_digest,
-        )
+        Self::new_sealed(seal, fields)
     }
 
     /// 真认证器构造（.38 起；`certifier` feature = 仅 eneros-certifier
     /// 可达）。seal 本身不可跨 crate 构造——构造权仍收口于发放面。
     #[cfg(feature = "certifier")]
-    #[allow(clippy::too_many_arguments)]
     pub fn new_certified(
         seal: CertifierSeal,
-        certificate_id: CertificateId,
-        plan_id: PlanId,
-        plan_sha256: [u8; 32],
-        snapshot_id: crate::ids::SnapshotId,
-        certifier_version: u32,
-        constraint_catalog_version: u64,
-        tolerance_profile_id: u32,
-        certified_at_ms: u64,
-        valid_until_ms: u64,
-        hard_constraint_count: u32,
-        proof_digest: [u8; 32],
+        fields: CertifiedPlanFields,
     ) -> Result<Self, ContractError> {
-        Self::new_sealed(
-            seal,
+        Self::new_sealed(seal, fields)
+    }
+
+    /// 认证侧构造（seal-gated；crate 内唯一入口）。
+    pub(crate) fn new_sealed(
+        _seal: CertifierSeal,
+        CertifiedPlanFields {
             certificate_id,
             plan_id,
             plan_sha256,
@@ -160,24 +146,7 @@ impl CertifiedPlan {
             valid_until_ms,
             hard_constraint_count,
             proof_digest,
-        )
-    }
-
-    /// 认证侧构造（seal-gated；crate 内唯一入口）。
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_sealed(
-        _seal: CertifierSeal,
-        certificate_id: CertificateId,
-        plan_id: PlanId,
-        plan_sha256: [u8; 32],
-        snapshot_id: crate::ids::SnapshotId,
-        certifier_version: u32,
-        constraint_catalog_version: u64,
-        tolerance_profile_id: u32,
-        certified_at_ms: u64,
-        valid_until_ms: u64,
-        hard_constraint_count: u32,
-        proof_digest: [u8; 32],
+        }: CertifiedPlanFields,
     ) -> Result<Self, ContractError> {
         // 零 ID = 缺字段（与 CandidatePlan 同纪律；decode 路径同门复验）。
         if plan_id.0 == [0u8; 16] || certificate_id.0 == [0u8; 16] {
@@ -342,17 +311,19 @@ impl CertifiedPlan {
             // decode 路径无需 seal——wire 是认证侧签发后的字面回放；
             // 但字段合法性必须复验（收口在"构造"，不在"传输"）。
             CertifierSeal { _priv: () },
-            certificate_id,
-            plan_id,
-            plan_sha256,
-            snapshot_id,
-            certifier_version,
-            constraint_catalog_version,
-            tolerance_profile_id,
-            certified_at_ms,
-            valid_until_ms,
-            hard_constraint_count,
-            proof_digest,
+            CertifiedPlanFields {
+                certificate_id,
+                plan_id,
+                plan_sha256,
+                snapshot_id,
+                certifier_version,
+                constraint_catalog_version,
+                tolerance_profile_id,
+                certified_at_ms,
+                valid_until_ms,
+                hard_constraint_count,
+                proof_digest,
+            },
         )
     }
 }
@@ -367,17 +338,19 @@ mod tests {
     fn sealed_cert() -> CertifiedPlan {
         CertifiedPlan::new_sealed(
             CertifierSeal::issue_transition(),
-            CertificateId([9u8; 16]),
-            PlanId([1u8; 16]),
-            [0xAB; 32],
-            crate::ids::SnapshotId([2u8; 16]),
-            1,
-            1,
-            1,
-            1_000,
-            61_000,
-            12,
-            [0xCD; 32],
+            CertifiedPlanFields {
+                certificate_id: CertificateId([9u8; 16]),
+                plan_id: PlanId([1u8; 16]),
+                plan_sha256: [0xAB; 32],
+                snapshot_id: crate::ids::SnapshotId([2u8; 16]),
+                certifier_version: 1,
+                constraint_catalog_version: 1,
+                tolerance_profile_id: 1,
+                certified_at_ms: 1_000,
+                valid_until_ms: 61_000,
+                hard_constraint_count: 12,
+                proof_digest: [0xCD; 32],
+            },
         )
         .unwrap()
     }
@@ -402,49 +375,55 @@ mod tests {
     fn empty_digest_rejected() {
         let r = CertifiedPlan::new_sealed(
             CertifierSeal::issue_transition(),
-            CertificateId([9u8; 16]),
-            PlanId([1u8; 16]),
-            [0u8; 32],
-            crate::ids::SnapshotId([2u8; 16]),
-            1,
-            1,
-            1,
-            1_000,
-            2_000,
-            1,
-            [0xCD; 32],
+            CertifiedPlanFields {
+                certificate_id: CertificateId([9u8; 16]),
+                plan_id: PlanId([1u8; 16]),
+                plan_sha256: [0u8; 32],
+                snapshot_id: crate::ids::SnapshotId([2u8; 16]),
+                certifier_version: 1,
+                constraint_catalog_version: 1,
+                tolerance_profile_id: 1,
+                certified_at_ms: 1_000,
+                valid_until_ms: 2_000,
+                hard_constraint_count: 1,
+                proof_digest: [0xCD; 32],
+            },
         );
         assert_eq!(r, Err(ContractError::MissingField("digest")));
         // 倒窗。
         let r = CertifiedPlan::new_sealed(
             CertifierSeal::issue_transition(),
-            CertificateId([9u8; 16]),
-            PlanId([1u8; 16]),
-            [0xAB; 32],
-            crate::ids::SnapshotId([2u8; 16]),
-            1,
-            1,
-            1,
-            2_000,
-            2_000,
-            1,
-            [0xCD; 32],
+            CertifiedPlanFields {
+                certificate_id: CertificateId([9u8; 16]),
+                plan_id: PlanId([1u8; 16]),
+                plan_sha256: [0xAB; 32],
+                snapshot_id: crate::ids::SnapshotId([2u8; 16]),
+                certifier_version: 1,
+                constraint_catalog_version: 1,
+                tolerance_profile_id: 1,
+                certified_at_ms: 2_000,
+                valid_until_ms: 2_000,
+                hard_constraint_count: 1,
+                proof_digest: [0xCD; 32],
+            },
         );
         assert_eq!(r, Err(ContractError::InvalidWindow));
         // 零 plan/certificate ID = 缺字段（与 CandidatePlan 同纪律）。
         let r = CertifiedPlan::new_sealed(
             CertifierSeal::issue_transition(),
-            CertificateId([9u8; 16]),
-            PlanId([0u8; 16]),
-            [0xAB; 32],
-            crate::ids::SnapshotId([2u8; 16]),
-            1,
-            1,
-            1,
-            1_000,
-            2_000,
-            1,
-            [0xCD; 32],
+            CertifiedPlanFields {
+                certificate_id: CertificateId([9u8; 16]),
+                plan_id: PlanId([0u8; 16]),
+                plan_sha256: [0xAB; 32],
+                snapshot_id: crate::ids::SnapshotId([2u8; 16]),
+                certifier_version: 1,
+                constraint_catalog_version: 1,
+                tolerance_profile_id: 1,
+                certified_at_ms: 1_000,
+                valid_until_ms: 2_000,
+                hard_constraint_count: 1,
+                proof_digest: [0xCD; 32],
+            },
         );
         assert_eq!(r, Err(ContractError::ZeroId));
         // decode 路径同门复验：合法 wire 的 plan_id 清零 → 拒绝。

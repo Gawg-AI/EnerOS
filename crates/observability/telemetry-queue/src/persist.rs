@@ -47,17 +47,13 @@ pub fn persist_snapshot(snapshot: &QueueSnapshot) -> Vec<u8> {
         line.push(',');
         line.push_str(&e.timestamp.to_string());
         line.push(',');
-        for b in e.payload.as_bytes() {
-            line.push(HEX[(b >> 4) as usize] as char);
-            line.push(HEX[(b & 0xF) as usize] as char);
-        }
+        // WP-64.3.4：hex 编码单源。
+        line.push_str(&eneros_hex::encode_lower(e.payload.as_bytes()));
         line.push('\n');
         out.extend_from_slice(line.as_bytes());
     }
     out
 }
-
-const HEX: [u8; 16] = *b"0123456789abcdef";
 
 /// 33 OB-03（复验）：溢出策略 ↔ 快照文本标签（显式映射，不依赖变体顺序）。
 fn policy_tag(p: crate::queue::OverflowPolicy) -> u8 {
@@ -117,7 +113,8 @@ pub fn load_snapshot(data: &[u8]) -> QueueSnapshot {
         else {
             continue;
         };
-        let Some(payload) = hex_decode(payload_hex) else {
+        // WP-64.3.4：单源 decode_vec（大小写混合皆收，兼容超集——登记）。
+        let Some(payload) = eneros_hex::decode_vec(payload_hex) else {
             continue;
         };
         let payload = String::from_utf8(payload).unwrap_or_default();
@@ -135,29 +132,6 @@ pub fn load_snapshot(data: &[u8]) -> QueueSnapshot {
         });
     }
     snap
-}
-
-/// hex 解码。
-fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    let bytes = s.as_bytes();
-    if bytes.len() % 2 != 0 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks(2) {
-        let hi = hex_val(pair[0])?;
-        let lo = hex_val(pair[1])?;
-        out.push((hi << 4) | lo);
-    }
-    Some(out)
-}
-
-fn hex_val(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        _ => None,
-    }
 }
 
 // ============================================================================

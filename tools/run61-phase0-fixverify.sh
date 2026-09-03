@@ -13,33 +13,17 @@ cd "$ROOT"
 EVROOT="$ROOT/evidence/61/phase0-fixverify"
 mkdir -p "$EVROOT"
 
-export ENEROS_IMAGE_SIGNING_KEY="$ROOT/product/security/keys-local/dev-signing.key"
-K="$ROOT/product/security/keys-local"
+# WP-64.3.6：build 前导单源（清场/钥导出/compile/image 收编 gate-env.sh）。
+gate_cleanup_env 5577 5582
+gate_export_signing_key
 
-# 清理前轮孤儿（peer/QEMU；含内部 socket 端口占用核验——5577 被占即秒退）。
-kill -9 $(pgrep -f "modbus_slave61.py") 2>/dev/null || true
-kill -9 $(pgrep -f "qemu-system") 2>/dev/null || true
-sleep 2
-for PORT in 5577 5582; do
-  if (ss -tln 2>/dev/null || netstat -tln 2>/dev/null) | grep -q ":$PORT "; then
-    echo "PORT $PORT 仍被占——清理失败"; exit 4
-  fi
-done
 
 echo "=== 步骤 1：config compile（points.toml 点 7 入 bundle）==="
 mkdir -p "$EVROOT/build"
-ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-prod \
-  --root-key-hex "$(printf '5a%.0s' {1..64})" >"$EVROOT/build/compile.log" 2>&1
-RC=$?
-[ $RC -eq 0 ] || { echo "CONFIG-COMPILE FAIL rc=$RC（RC124 容忍先例另议）"; tail -5 "$EVROOT/build/compile.log"; exit 2; }
-tail -3 "$EVROOT/build/compile.log"
+gate_compile_config "$EVROOT/build/compile.log"
 
 echo "=== 步骤 2：image raw qemu-prod（修复树重建）==="
-cargo xtask image raw qemu-prod \
-  --signing-key "$K/dev-signing.key" --uefi-key "$K/uefi-test.key" --uefi-cert "$K/uefi-test.pem" \
-  >"$EVROOT/build/image.log" 2>&1
-RC=$?
-[ $RC -eq 0 ] || { echo "IMAGE FAIL rc=$RC"; tail -20 "$EVROOT/build/image.log"; exit 3; }
+gate_image_raw qemu-prod "$EVROOT/build/image.log"
 IMG="$ROOT/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
 [ -f "$IMG" ] || { echo "image missing"; exit 3; }
 sha256sum "$IMG" | tee "$EVROOT/build/image.sha256"

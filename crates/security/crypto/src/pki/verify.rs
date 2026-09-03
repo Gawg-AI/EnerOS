@@ -24,7 +24,6 @@
 
 extern crate alloc;
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::pki::crl::Crl;
@@ -35,16 +34,6 @@ use crate::sm2::{Sm2Signature, Sm2Signer};
 // ============================================================================
 // 辅助函数
 // ============================================================================
-
-/// 将字节转为十六进制字符串（用于错误信息中的 serial 显示）.
-fn hex_string(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let hex = alloc::format!("{:02X}", b);
-        s.push_str(&hex);
-    }
-    s
-}
 
 // ============================================================================
 // SubTask 7.5: verify_signature（自由函数）
@@ -202,7 +191,7 @@ impl CertVerifier {
             }
             if crl.is_revoked(&cert.serial_number, now)? {
                 return Err(PkiError::CertRevoked {
-                    serial: hex_string(&cert.serial_number),
+                    serial: eneros_hex::encode_upper(&cert.serial_number),
                 });
             }
         }
@@ -587,7 +576,7 @@ mod tests {
         assert_eq!(
             result,
             Err(PkiError::CertRevoked {
-                serial: hex_string(&cert.serial_number)
+                serial: eneros_hex::encode_upper(&cert.serial_number)
             })
         );
     }
@@ -777,7 +766,7 @@ mod tests {
         assert_eq!(
             result_after,
             Err(PkiError::CertRevoked {
-                serial: hex_string(&cert.serial_number)
+                serial: eneros_hex::encode_upper(&cert.serial_number)
             })
         );
     }

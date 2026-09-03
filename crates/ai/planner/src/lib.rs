@@ -175,7 +175,7 @@ impl Planner {
         h.update(b"eneros.plan-id.v1");
         h.update(req.request_id());
         h.update(out.model_digest);
-        h.update(input.objective.spec_digest);
+        h.update(input.objective.spec_digest());
         h.update(input.provenance_root);
         h.update(input.now_ms.to_le_bytes());
         let digest: [u8; 32] = h.finalize().into();
@@ -183,25 +183,24 @@ impl Planner {
             .map_err(|_| PlanError::RequestMismatch("plan-id"))?;
         let ttl_ms = req.budget_ms().max(1_000) as u64;
         let issued = input.now_ms;
-        CandidatePlan::new(
+        CandidatePlan::builder(
             plan_id,
             SnapshotId(input.snapshot_id),
-            input.objective.spec_digest,
+            *input.objective.spec_digest(),
             input.registry_generation,
-            out.horizon_start_ms,
-            out.step_ns,
-            out.step_count,
+        )
+        .solve(
             out.solver_status,
             out.objective_value,
             out.relative_gap,
             out.max_primal_residual,
             out.elapsed_ms,
-            out.model_digest,
-            input.provenance_root,
-            assignments,
-            issued,
-            ttl_ms,
         )
+        .horizons(out.horizon_start_ms, out.step_ns, out.step_count)
+        .digests(out.model_digest, input.provenance_root)
+        .validity(issued, ttl_ms)
+        .assignments(assignments)
+        .build()
         .map_err(|e| PlanError::CandidateInvalid(format!("candidate:{e:?}")))
     }
 
@@ -212,19 +211,8 @@ impl Planner {
         req: &DecisionRequest,
         input: &builder::PlanInput,
     ) -> Result<SolveOutcome, PlanError> {
-        // 0. 请求绑定（同一快照 + 同一 registry 世代 + 同一规格）。
-        if req.objective().snapshot_id().0 != input.snapshot_id {
-            return Err(PlanError::RequestMismatch("snapshot_id"));
-        }
-        if req.resource_catalog_version() != input.registry_generation {
-            return Err(PlanError::RequestMismatch("registry_generation"));
-        }
-        if req.objective() != &input.objective.spec {
-            return Err(PlanError::RequestMismatch("objective_spec"));
-        }
-        if !req.objective().is_valid_at(input.now_ms) {
-            return Err(PlanError::RequestMismatch("spec expired"));
-        }
+        // 0. 请求绑定（WP-64.3.3.2：判据迁 [`builder::PlanInput::bind`]）。
+        input.bind(req)?;
 
         // 1. 建模。
         let built = builder::ModelBuilder::build(input).map_err(PlanError::ModelBuild)?;
@@ -267,8 +255,8 @@ impl Planner {
             catalog: built.catalog,
             elapsed_ms,
             horizon_start_ms: input.now_ms,
-            step_ns: input.objective.horizon_step_ns,
-            step_count: input.objective.horizon_step_count,
+            step_ns: input.objective.horizon_step_ns(),
+            step_count: input.objective.horizon_step_count(),
         })
     }
 }

@@ -216,29 +216,6 @@ use eneros_storage::BlockDevice;
 pub use factory_reset::{ConfigEntry, FactoryReset, CONFIG_CAPACITY};
 pub use flash::FlashWriter;
 
-/// 单 hex 字符转 4bit 值，非法字符返回 None。
-fn hex_nibble(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
-}
-
-/// hex 字符串解码为定长字节数组：长度不符或含非法字符返回 None。
-fn hex_decode<const N: usize>(s: &str) -> Option<[u8; N]> {
-    let bytes = s.as_bytes();
-    if bytes.len() != N * 2 {
-        return None;
-    }
-    let mut out = [0u8; N];
-    for (i, pair) in bytes.chunks_exact(2).enumerate() {
-        out[i] = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
-    }
-    Some(out)
-}
-
 /// 构造 ≤N 字节的 heapless 字符串：超长按字符边界截断（不 panic）。
 fn hstr_truncate<const N: usize>(s: &str) -> heapless::String<N> {
     let mut out = heapless::String::<N>::new();
@@ -350,10 +327,10 @@ impl<D: BlockDevice, P: HealthProbe> RecoveryModeImpl<D, P> {
         if args.len() != 3 {
             return Err(RecoveryError::CommandUnknown);
         }
-        let Some(expected_hash) = hex_decode::<32>(args[0]) else {
+        let Some(expected_hash) = eneros_hex::decode_fixed::<32>(args[0]) else {
             return Err(RecoveryError::CommandUnknown);
         };
-        let Some(signature) = hex_decode::<64>(args[1]) else {
+        let Some(signature) = eneros_hex::decode_fixed::<64>(args[1]) else {
             return Err(RecoveryError::CommandUnknown);
         };
         let Ok(slot_base) = args[2].parse::<u64>() else {
@@ -530,15 +507,6 @@ mod tests {
 
     use eneros_crypto::{sm2_sign, sm3_hash};
     use eneros_ota_ab::{Partition, PartitionSlot, PartitionState, PartitionTable};
-
-    /// 测试用 hex 编码（小写，无分隔）。
-    fn hex_encode(bytes: &[u8]) -> String {
-        let mut out = String::new();
-        for b in bytes {
-            out.push_str(&format!("{b:02x}"));
-        }
-        out
-    }
 
     /// 构造测试环境：真实 SM2 密钥对 + RecoveryModeImpl（MockBlockDevice 后端）。
     fn setup(
@@ -741,8 +709,8 @@ mod tests {
         let sig = sm2_sign(&hash, &kp.private_key, &kp.public_key, &mut rng)
             .expect("签名失败")
             .to_bytes();
-        let hash_hex = hex_encode(&hash);
-        let sig_hex = hex_encode(&sig);
+        let hash_hex = eneros_hex::encode_lower(&hash);
+        let sig_hex = eneros_hex::encode_lower(&sig);
         let out = rec
             .execute(RecoveryCommand::Flash, &[&hash_hex, &sig_hex, "10"])
             .expect("刷写应成功");
@@ -780,8 +748,8 @@ mod tests {
         let sig = sm2_sign(&hash, &other.private_key, &other.public_key, &mut rng)
             .expect("签名失败")
             .to_bytes();
-        let hash_hex = hex_encode(&hash);
-        let sig_hex = hex_encode(&sig);
+        let hash_hex = eneros_hex::encode_lower(&hash);
+        let sig_hex = eneros_hex::encode_lower(&sig);
         assert_eq!(
             rec.execute(RecoveryCommand::Flash, &[&hash_hex, &sig_hex, "10"]),
             Err(RecoveryError::SignatureInvalid)

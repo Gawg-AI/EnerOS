@@ -116,23 +116,87 @@ pub enum CompileError {
     LimitExceeded(&'static str),
 }
 
-/// 编译产物（[09] §2.2 输出 ObjectiveSpec + 求解经济输入 + 证据）。
-#[derive(Debug, Clone, PartialEq)]
-pub struct CompiledObjective {
-    /// 合同形状 ObjectiveSpec（唯一 solver 面种类）。
+/// 编译字段袋（WP-64.3.2.1）：`compile()` 与 `test-util` fixture 缝的
+/// 共用装配形态；`spec_digest` **不在袋中**——只算不传。
+pub struct CompiledObjectiveParts {
     pub spec: ObjectiveSpec,
-    /// 每步电价（元/kWh；长度 = step_count 或 0）。
     pub prices_per_kwh: Vec<f64>,
-    /// 工艺事实透传（.37 min on/off 用）。
     pub min_on_steps: u32,
     pub min_off_steps: u32,
     pub registry_generation: u64,
     pub bundle_version: u64,
     pub bundle_digest: [u8; 32],
-    /// 规格摘要（CandidatePlan.objective_digest 来源；覆盖全部内容）。
-    pub spec_digest: [u8; 32],
     pub horizon_step_ns: u64,
     pub horizon_step_count: u32,
+}
+
+/// 编译产物（[09] §2.2 输出 ObjectiveSpec + 求解经济输入 + 证据）。
+///
+/// WP-64.3.2.1 密封构造：字段 crate 私有，公开构造唯一出口 =
+/// [`ObjectiveCompiler::compile`]（`spec_digest` 构造时由
+/// [`digest_compiled`] 算出——**只算不传**，外部手调镜像函数即编译
+/// 失败）；crate 内测试装配走 `test-util` feature 的 fixture 缝。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledObjective {
+    /// 合同形状 ObjectiveSpec（唯一 solver 面种类）。
+    pub(crate) spec: ObjectiveSpec,
+    /// 每步电价（元/kWh；长度 = step_count 或 0）。
+    pub(crate) prices_per_kwh: Vec<f64>,
+    /// 工艺事实透传（.37 min on/off 用）。
+    pub(crate) min_on_steps: u32,
+    pub(crate) min_off_steps: u32,
+    pub(crate) registry_generation: u64,
+    pub(crate) bundle_version: u64,
+    pub(crate) bundle_digest: [u8; 32],
+    /// 规格摘要（CandidatePlan.objective_digest 来源；覆盖全部内容）。
+    pub(crate) spec_digest: [u8; 32],
+    pub(crate) horizon_step_ns: u64,
+    pub(crate) horizon_step_count: u32,
+}
+
+impl CompiledObjective {
+    /// crate 内组装（digest 唯一计算点；外部不可达）。
+    pub(crate) fn from_parts(parts: CompiledObjectiveParts) -> Self {
+        let spec_digest = digest_compiled(&parts);
+        Self {
+            spec: parts.spec,
+            prices_per_kwh: parts.prices_per_kwh,
+            min_on_steps: parts.min_on_steps,
+            min_off_steps: parts.min_off_steps,
+            registry_generation: parts.registry_generation,
+            bundle_version: parts.bundle_version,
+            bundle_digest: parts.bundle_digest,
+            spec_digest,
+            horizon_step_ns: parts.horizon_step_ns,
+            horizon_step_count: parts.horizon_step_count,
+        }
+    }
+
+    /// crate 内测试装配缝（WP-64.3.2.1）：planner/certifier 集成测试经
+    /// `test-util` feature 构造 fixture——digest 仍由 [`digest_compiled`]
+    /// 算出，测试面与生产面同构造纪律（`#[cfg(test)]` 不跨 crate，
+    /// 故以 feature 门替代，执行卡登记）。
+    #[cfg(feature = "test-util")]
+    pub fn compile_fixture(parts: CompiledObjectiveParts) -> Self {
+        Self::from_parts(parts)
+    }
+
+    pub fn spec(&self) -> &ObjectiveSpec {
+        &self.spec
+    }
+    pub fn prices_per_kwh(&self) -> &[f64] {
+        &self.prices_per_kwh
+    }
+    /// 规格摘要（CandidatePlan.objective_digest 来源）。
+    pub fn spec_digest(&self) -> &[u8; 32] {
+        &self.spec_digest
+    }
+    pub fn horizon_step_ns(&self) -> u64 {
+        self.horizon_step_ns
+    }
+    pub fn horizon_step_count(&self) -> u32 {
+        self.horizon_step_count
+    }
 }
 
 impl ObjectiveCompiler {
@@ -366,33 +430,19 @@ impl ObjectiveCompiler {
         // 11. 合同 ObjectiveSpec（ms 窗）。
         let valid_from_ms = cut_ns / 1_000_000;
         let valid_until_ms = horizon_end_ns / 1_000_000;
-        let spec = ObjectiveSpec::new(
-            SnapshotId(snapshot.snapshot_id),
-            hard,
-            soft,
-            objective_kind,
-            primary_layer as u8,
-            ObjectiveSource::RuleBundle,
-            reason,
-            valid_from_ms,
-            valid_until_ms,
-        )
-        .map_err(|_| CompileError::InvalidRule("spec"))?;
+        let spec = ObjectiveSpec::builder(SnapshotId(snapshot.snapshot_id))
+            .constraints(hard, soft)
+            .objective(
+                objective_kind,
+                primary_layer as u8,
+                ObjectiveSource::RuleBundle,
+                reason,
+            )
+            .window(valid_from_ms, valid_until_ms)
+            .build()
+            .map_err(|_| CompileError::InvalidRule("spec"))?;
 
-        // 12. 规格摘要（覆盖合同 spec + 经济输入 + 工艺透传 + 地平线 +
-        // 证据链——CompiledObjective 的全部内容字段）。
-        let spec_digest = digest_compiled(
-            &spec,
-            &prices,
-            bundle.digest(),
-            input.registry_generation,
-            facts.process.min_on_steps,
-            facts.process.min_off_steps,
-            horizon.step_ns,
-            horizon.step_count,
-        );
-
-        Ok(CompiledObjective {
+        Ok(CompiledObjective::from_parts(CompiledObjectiveParts {
             spec,
             prices_per_kwh: prices,
             min_on_steps: facts.process.min_on_steps,
@@ -400,10 +450,9 @@ impl ObjectiveCompiler {
             registry_generation: input.registry_generation,
             bundle_version: bundle.version(),
             bundle_digest: *bundle.digest(),
-            spec_digest,
             horizon_step_ns: horizon.step_ns,
             horizon_step_count: horizon.step_count,
-        })
+        }))
     }
 
     /// 层内/跨层冲突检测（同 (scope, class) 分组求交）。
@@ -699,17 +748,20 @@ fn tighten_soc(hard: &mut [Constraint], lo: f64, hi: f64) {
 /// 覆盖 CompiledObjective 全部内容字段（含 min on/off 透传与地平线——
 /// 价格为空/常数广播时 spec+prices 不绑定地平线，缺地平线域 = 可替换
 /// 地平线而不改摘要）。
-#[allow(clippy::too_many_arguments)]
-pub fn digest_compiled(
-    spec: &ObjectiveSpec,
-    prices: &[f64],
-    bundle_digest: &[u8; 32],
-    registry_generation: u64,
-    min_on_steps: u32,
-    min_off_steps: u32,
-    horizon_step_ns: u64,
-    horizon_step_count: u32,
-) -> [u8; 32] {
+pub(crate) fn digest_compiled(parts: &CompiledObjectiveParts) -> [u8; 32] {
+    let CompiledObjectiveParts {
+        ref spec,
+        ref prices_per_kwh,
+        min_on_steps,
+        min_off_steps,
+        registry_generation,
+        bundle_digest,
+        horizon_step_ns,
+        horizon_step_count,
+        ..
+    } = *parts;
+    let prices: &[f64] = prices_per_kwh;
+    let bundle_digest: &[u8; 32] = &bundle_digest;
     use eneros_decision_contract::objective::ObjectiveKind;
     use sha2::Digest;
     let kind_code = |k: ObjectiveKind| match k {
@@ -755,12 +807,64 @@ pub fn digest_compiled(
 #[cfg(test)]
 #[allow(clippy::disallowed_macros)]
 mod tests {
-    use alloc::vec;
+    use alloc::{vec, vec::Vec};
+
+    /// WP-64.3.2.1 known-vector（64.3 密封前现值快照）。
+    const SPEC_DIGEST_KNOWN_VECTOR: &str =
+        "55f8dc19738b6683478c8bfa672503df933677e9deb75afd049db2dfc9114ffc";
 
     use eneros_decision_contract::objective::ConstraintKind as K;
     use eneros_snapshot_service::TrustedSnapshot;
 
     use super::*;
+
+    /// WP-64.3.2.1 golden：固定输入的 spec_digest 快照（64.3 密封前现值
+    /// ——同输入同摘要；摘要公式/域串/字段序任何漂移即红）。
+    #[test]
+    fn spec_digest_known_vector() {
+        let obj = CompiledObjective::from_parts(CompiledObjectiveParts {
+            spec: {
+                let mut sid = [0u8; 16];
+                sid[..8].copy_from_slice(&0xA5A5u64.to_le_bytes());
+                eneros_decision_contract::ObjectiveSpec::builder(
+                    eneros_decision_contract::SnapshotId(sid),
+                )
+                .constraints(
+                    vec![eneros_decision_contract::objective::Constraint {
+                        kind: K::MinSoc,
+                        bound: 0.1,
+                    }],
+                    vec![],
+                )
+                .objective(
+                    eneros_decision_contract::objective::ObjectiveKind::PeakShave,
+                    1,
+                    eneros_decision_contract::objective::ObjectiveSource::RuleBundle,
+                    eneros_decision_contract::ReasonCode::PeakShave,
+                )
+                .window(1_000, 61_000)
+                .build()
+                .unwrap()
+            },
+            prices_per_kwh: vec![420.0],
+            min_on_steps: 2,
+            min_off_steps: 1,
+            registry_generation: 7,
+            bundle_version: 1,
+            bundle_digest: [9; 32],
+            horizon_step_ns: 900_000_000,
+            horizon_step_count: 4,
+        });
+        let hex: alloc::string::String = obj
+            .spec_digest()
+            .iter()
+            .map(|b| alloc::format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            hex, SPEC_DIGEST_KNOWN_VECTOR,
+            "spec_digest 已知向量漂移——digest_compiled 公式/域串/字段序变更"
+        );
+    }
     use crate::bundle::RuleBundle;
     use crate::layer;
     use crate::normalization;

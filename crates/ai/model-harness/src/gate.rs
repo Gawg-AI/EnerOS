@@ -312,7 +312,9 @@ impl OutputGate {
             let s = item
                 .as_str()
                 .ok_or(GateReject::new(GateStage::Reference, "ref type"))?;
-            let id = parse_hex16(s).ok_or(GateReject::new(GateStage::Reference, "ref hex"))?;
+            // WP-64.3.4：单源 decode_fixed（模型输出不可信，字节级判据保持）。
+            let id = eneros_hex::decode_fixed(s)
+                .ok_or(GateReject::new(GateStage::Reference, "ref hex"))?;
             if !ctx.refs.iter().any(|(k, rid, _)| *k == 1 && *rid == id) {
                 return Err(GateReject::new(GateStage::Reference, "ref missing"));
             }
@@ -368,8 +370,9 @@ impl OutputGate {
         if rationale.is_empty() || rationale.len() > TEXT_FIELD_MAX {
             return Err(GateReject::new(GateStage::Value, "rationale"));
         }
-        let facts_ref = parse_hex16(obj.get("facts_ref").and_then(|v| v.as_str()).unwrap_or(""))
-            .ok_or(GateReject::new(GateStage::Reference, "facts_ref hex"))?;
+        let facts_ref =
+            eneros_hex::decode_fixed(obj.get("facts_ref").and_then(|v| v.as_str()).unwrap_or(""))
+                .ok_or(GateReject::new(GateStage::Reference, "facts_ref hex"))?;
         if !ctx
             .refs
             .iter()
@@ -444,22 +447,6 @@ fn check_finite(v: &serde_json::Value) -> Result<(), ()> {
         }
         _ => Ok(()),
     }
-}
-
-fn parse_hex16(s: &str) -> Option<[u8; 16]> {
-    // 字节级解码：字符串来自模型输出（不可信），可能含多字节 UTF-8——
-    // 按字符边界切片会 panic；非 ASCII hex 字节一律拒绝。
-    let b = s.as_bytes();
-    if b.len() != 32 {
-        return None;
-    }
-    let mut out = [0u8; 16];
-    for (i, pair) in b.chunks_exact(2).enumerate() {
-        let hi = (pair[0] as char).to_digit(16)?;
-        let lo = (pair[1] as char).to_digit(16)?;
-        out[i] = (hi * 16 + lo) as u8;
-    }
-    Some(out)
 }
 
 #[cfg(test)]

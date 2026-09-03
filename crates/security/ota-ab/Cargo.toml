@@ -7,6 +7,7 @@ license.workspace = true
 description = "EnerOS A/B 分区 OTA 升级 (v0.123.0) — SM2/SM3 签名校验 + 原子切换 + 失败自动回滚, no_std"
 
 [dependencies]
+eneros-signer-keyring = { path = "../signer-keyring" }
 heapless = { version = "0.8", default-features = false }
 eneros-crypto = { path = "../crypto" }
 eneros-storage = { path = "../../drivers/storage" }

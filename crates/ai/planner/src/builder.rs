@@ -95,8 +95,30 @@ pub struct PlanInput<'a> {
 }
 
 impl PlanInput<'_> {
+    /// 请求绑定判据（WP-64.3.3.2；自 `Planner::solve_document` 步骤 0
+    /// 原样迁入——同一快照 + 同一 registry 世代 + 同一规格 + 未过期；
+    /// 错误变体/词形/比较松紧零变化，仅位置迁移：判据与字段同居一处，
+    /// 后续字段增改只动这里）。
+    pub fn bind(&self, req: &crate::DecisionRequest) -> Result<(), crate::PlanError> {
+        if req.objective().snapshot_id().0 != self.snapshot_id {
+            return Err(crate::PlanError::RequestMismatch("snapshot_id"));
+        }
+        if req.resource_catalog_version() != self.registry_generation {
+            return Err(crate::PlanError::RequestMismatch("registry_generation"));
+        }
+        if req.objective() != self.objective.spec() {
+            return Err(crate::PlanError::RequestMismatch("objective_spec"));
+        }
+        if !req.objective().is_valid_at(self.now_ms) {
+            return Err(crate::PlanError::RequestMismatch("spec expired"));
+        }
+        Ok(())
+    }
+}
+
+impl PlanInput<'_> {
     fn step_count(&self) -> Result<usize, ModelError> {
-        let t = self.objective.horizon_step_count as usize;
+        let t = self.objective.horizon_step_count() as usize;
         if t == 0 || t > MAX_STEPS {
             return Err(ModelError::InvalidInput("step_count"));
         }
@@ -112,7 +134,7 @@ impl PlanInput<'_> {
 
     /// 步长（秒；ramp 换算 kW/s → kW/步）。
     fn step_seconds(&self) -> Result<f64, ModelError> {
-        let ns = self.objective.horizon_step_ns;
+        let ns = self.objective.horizon_step_ns();
         if ns == 0 {
             return Err(ModelError::InvalidInput("step_ns"));
         }
@@ -312,7 +334,7 @@ impl ModelContributor for BatteryContributor {
             let env = input.envelope(b.asset_id)?;
             let m = map_of(maps, b.asset_id)?;
             // 规格比率窗 ∩ 包络能量窗。
-            let spec = spec_soc_window(&input.objective.spec, cap)?;
+            let spec = spec_soc_window(input.objective.spec(), cap)?;
             let (e0, e1) = energy_window(env, cap);
             let emin = e0.max(spec.0);
             let emax = e1.min(spec.1);
@@ -633,7 +655,7 @@ impl ModelContributor for GridContributor {
         let Some(g) = &input.grid else {
             // 站级功率窗/ramp 的落点即 PCC：无并网点无法落地这些规格
             // 硬约束——拒绝（静默跳过 = 产出未受约束的"合规"计划）。
-            let site_power = input.objective.spec.hard().iter().any(|c| {
+            let site_power = input.objective.spec().hard().iter().any(|c| {
                 matches!(
                     c.kind,
                     ConstraintKind::MinPowerKw
@@ -655,7 +677,7 @@ impl ModelContributor for GridContributor {
         let m = map_of(maps, g.asset_id)?;
         // 规格站级功率界 → 收紧 PCC 界。购/售上限各取"包络 ∩ 规格"的
         // 更严者（min 方向）：规格 MinPowerKw=lo ⇒ 售 ≤ −max(p_min, lo)。
-        let (spec_lo, spec_hi) = spec_power_window(&input.objective.spec);
+        let (spec_lo, spec_hi) = spec_power_window(input.objective.spec());
         let import_cap = spec_hi.map_or(env.p_max_kw.max(0.0), |hi| env.p_max_kw.min(hi).max(0.0));
         let export_cap = spec_lo.map_or((-env.p_min_kw).max(0.0), |lo| {
             (-(env.p_min_kw.max(lo))).max(0.0)
@@ -682,7 +704,7 @@ impl ModelContributor for GridContributor {
         // 规格站级 ramp → PCC 净功率步间变化率行（与 certifier 站级
         // ramp 评估同语义；ramp=0 = 冻结）。
         let dt_s = input.step_seconds()?;
-        for c in input.objective.spec.hard() {
+        for c in input.objective.spec().hard() {
             let (bound, sign) = match c.kind {
                 ConstraintKind::RampUpKwS => (c.bound * dt_s, 1.0),
                 ConstraintKind::RampDownKwS => (c.bound * dt_s, -1.0),
@@ -978,10 +1000,10 @@ impl ModelBuilder {
         apply_spec_constraints(input, &mut ctx, &all_maps)?;
 
         // 4. 目标（ObjectiveKind × 价格）。
-        let prices = &input.objective.prices_per_kwh;
+        let prices = input.objective.prices_per_kwh();
         let dt = input.step_hours()?;
         let grid_asset = input.grid.as_ref().map(|g| g.asset_id);
-        let kind = input.objective.spec.objective();
+        let kind = input.objective.spec().objective();
         let sense = match kind {
             ObjectiveKind::MaxRevenue => {
                 if let Some(ga) = grid_asset {
@@ -1175,7 +1197,7 @@ fn apply_spec_constraints(
 ) -> Result<(), ModelError> {
     let t_count = ctx.step_count;
     let dt = input.step_hours()?;
-    for c in input.objective.spec.hard() {
+    for c in input.objective.spec().hard() {
         match c.kind {
             ConstraintKind::SocFinal => {
                 // 终值 SOC：首个电池（单储能迁移语义；多电池登记待扩展）。

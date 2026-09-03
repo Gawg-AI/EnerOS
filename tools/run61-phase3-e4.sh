@@ -20,32 +20,20 @@ cd "$ROOT"
 EVROOT="$ROOT/evidence/61/phase3-e4"
 mkdir -p "$EVROOT/build"
 
-export ENEROS_IMAGE_SIGNING_KEY="$ROOT/product/security/keys-local/dev-signing.key"
-K="$ROOT/product/security/keys-local"
-
-# 孤儿清理（peer/QEMU；5577 被占即秒退）。
-kill -9 $(pgrep -f "modbus_slave61.py") 2>/dev/null || true
-kill -9 $(pgrep -f "qemu-system") 2>/dev/null || true
-sleep 2
-for PORT in 5577 5582; do
-  if (ss -tln 2>/dev/null || netstat -tln 2>/dev/null) | grep -q ":$PORT "; then
-    echo "PORT $PORT 仍被占——清理失败"; exit 4
-  fi
-done
+# WP-64.3.6：build 前导单源（清场/钥导出收编；多 case append 日志语义
+# 保持——compile/image 走本地薄封装，内部复用 gate-env 单点）。
+gate_cleanup_env 5577 5582
+gate_export_signing_key
 
 compile_config() {
   ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-prod \
-    --root-key-hex "$(printf '5a%.0s' {1..64})" >>"$EVROOT/build/compile.log" 2>&1
+    --root-key-hex "$(gate_dev_root_key_hex)" >>"$EVROOT/build/compile.log" 2>&1
   local rc=$?
   [ $rc -eq 0 ] || { tail -5 "$EVROOT/build/compile.log"; exit 2; }
 }
 
 build_image() {
-  cargo xtask image raw qemu-prod \
-    --signing-key "$K/dev-signing.key" --uefi-key "$K/uefi-test.key" --uefi-cert "$K/uefi-test.pem" \
-    >>"$EVROOT/build/image.log" 2>&1
-  local rc=$?
-  [ $rc -eq 0 ] || { tail -20 "$EVROOT/build/image.log"; exit 3; }
+  gate_image_raw qemu-prod "$EVROOT/build/image.log" append
   IMG="$ROOT/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
   [ -f "$IMG" ] || { echo "image missing"; exit 3; }
 }

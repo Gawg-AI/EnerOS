@@ -37,7 +37,7 @@ pub mod wire;
 
 pub use batch::{CommandBatch, EmptyResourceRegistry, ResourceRegistry, MAX_BATCH_SIZE};
 pub use candidate::{Assignment, CandidatePlan, SolveStatusKind};
-pub use certificate::{CertifiedPlan, CertifierSeal};
+pub use certificate::{CertifiedPlan, CertifiedPlanFields, CertifierSeal};
 pub use error::ContractError;
 pub use ids::{CertificateId, IntentId, PlanId, ReasonCode, SnapshotId};
 pub use intent::{CommandIntent, CompensationHint, Precondition};

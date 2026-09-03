@@ -11,6 +11,7 @@ name = "eneros_protocol_services"
 path = "src/lib.rs"
 
 [dependencies]
+eneros-hex = { path = "../../abi/hex" }
 # 39（WP-39.12）：协议服务复用驱动服务 IPC runtime（envelope/bounded
 # queue/deadline/epoch——38 WP-38.9 通用面，非自旋占位）。
 eneros-drv-svc = { path = "../../drivers/drv-svc" }
