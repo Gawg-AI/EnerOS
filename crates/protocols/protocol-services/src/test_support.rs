@@ -11,8 +11,7 @@ use eneros_agent_sdk::chunked::{
     ack_bytes, encode_paged_header, is_pull_request, page_slice, CHUNK_MAGIC_FINAL,
     CHUNK_MAGIC_HEADER,
 };
-use eneros_agent_sdk::AgentError;
-use eneros_agent_sdk::{chunked::RawIpc, AgentError as Err2};
+use eneros_agent_sdk::{chunked::RawIpc, AgentError};
 
 /// 固定应答 chunked 服务端 mock：任意完整传输（Header→ACK / Final→分页头 /
 /// 拉取→分页数据）完成后回预置字节。`failing()` 时 Header 即拒（客户端
@@ -53,7 +52,7 @@ impl RawIpc for FixedRespServer {
         _target: &str,
         payload: &[u8],
         _timeout_ns: u64,
-    ) -> Result<Vec<u8>, Err2> {
+    ) -> Result<Vec<u8>, AgentError> {
         if is_pull_request(payload) {
             return Ok(page_slice(&self.pending, payload[4]).to_vec());
         }
@@ -71,7 +70,7 @@ impl RawIpc for FixedRespServer {
         Err(AgentError::Timeout)
     }
 
-    fn send(&mut self, _target: &str, _payload: &[u8]) -> Result<(), Err2> {
+    fn send(&mut self, _target: &str, _payload: &[u8]) -> Result<(), AgentError> {
         Ok(())
     }
 }

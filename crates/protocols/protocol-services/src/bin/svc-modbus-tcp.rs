@@ -250,6 +250,7 @@ fn build_module(
             _ => None,
         },
         0,
+        |_m, _addr| {},
     );
     module.install_points(1, plans).ok()?;
     let adapter = Box::new(

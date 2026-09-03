@@ -122,8 +122,8 @@ impl eneros_drv_svc::runtime::DriverService for Iec104IoService {
 ///
 /// 蓝图 64 卷 64.2（WP-64.2.2）：64 行点计划孪生收编 lib
 /// `plans_from_records`；本 bin 只保留协议差异点——Iec104 地址反构造闭包
-/// （顺带构建 adapter mappings 表）+ period 0 → 1s drain 节奏缺省
-/// （[07] §2.3 事件驱动在调度面不可达）。
+/// （mappings 表经 on_planned 在配对成功后构建）+ period 0 → 1s drain
+/// 节奏缺省（[07] §2.3 事件驱动在调度面不可达）。
 #[cfg(target_os = "none")]
 fn build_module(
     sources: &[(u32, eneros_ingestion_core::SourceDescriptor)],
@@ -135,7 +135,9 @@ fn build_module(
     use eneros_protocol_services::iec104_ingest::IecMapping;
     use eneros_protocol_services::ingestion_stage::{new_reference_module, plans_from_records};
     let mut module = new_reference_module(sources, own_source_id)?;
-    // 地址反构造：Iec104 → (reg_addr=ioa, 余 0) + adapter mapping 行；
+    // 地址反构造：Iec104 → (reg_addr=ioa, 余 0)；mappings 表经 on_planned
+    // 在**点表记录配对成功后**构建（与原 bin 一致——addr_of 保持纯查询，
+    // "地址匹配但缺记录"的点不产生 mapping 行，64.2 复查硬伤修正）。
     // 非 Iec104 地址的映射点跳过（原 bin 过滤语义）。
     let mappings = core::cell::RefCell::new(alloc::vec::Vec::<IecMapping>::new());
     let plans = plans_from_records(
@@ -143,15 +145,7 @@ fn build_module(
         own_source_id,
         registry,
         |m| match m.protocol_addr {
-            eneros_protocol_abstract::ProtocolAddress::Iec104 {
-                common_addr, ioa, ..
-            } => {
-                mappings.borrow_mut().push(IecMapping {
-                    common_addr,
-                    ioa: u32::from(ioa),
-                    point_id: m.point_id,
-                    device_id: m.device_id,
-                });
+            eneros_protocol_abstract::ProtocolAddress::Iec104 { ioa, .. } => {
                 Some(eneros_protocol_services::ingestion_stage::PlanAddr {
                     slave_addr: 0,
                     reg_addr: ioa,
@@ -163,6 +157,19 @@ fn build_module(
         // [07] §2.3：事件驱动（period_ms=0）在 module 调度面不可达，以点表
         // period 为 drain 节奏（0 → 1s 缺省）；协议本体仍事件驱动。
         1_000,
+        |m, _addr| {
+            if let eneros_protocol_abstract::ProtocolAddress::Iec104 {
+                common_addr, ioa, ..
+            } = m.protocol_addr
+            {
+                mappings.borrow_mut().push(IecMapping {
+                    common_addr,
+                    ioa: u32::from(ioa),
+                    point_id: m.point_id,
+                    device_id: m.device_id,
+                });
+            }
+        },
     );
     module.install_points(1, plans).ok()?;
     let adapter = Box::new(

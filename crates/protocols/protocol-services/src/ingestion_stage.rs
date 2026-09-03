@@ -343,12 +343,19 @@ pub struct PlanAddr {
 ///
 /// 字段默认值 = 原孪生逐字节（phase 0 / deadline 2×period / Q1 + 不可抑制 /
 /// deadband_rel 0 / timeout 1s / retries 2 / 身份与工程量来自映射绑定）。
+///
+/// `on_planned` 在**点表记录配对成功之后**（即该点确定进计划时）回调
+/// （mapping 引用 + 地址投影）——iec104 bin 借此同步构建 adapter mappings
+/// 表。**回调必须只在配对成功后触发**：原 bin 的 mapping 行构建就在配对
+/// 之后，"地址匹配但缺记录"的点不得产生副作用（64.2 复查硬伤修正——
+/// 侧放 addr_of 闭包会让该角落多出 mapping 行，行为漂移）。
 pub fn plans_from_records(
     records: &[eneros_config_bundle::points::PointRecord],
     own_source: u32,
     registry: &dyn eneros_protocol_abstract::PointRegistry,
     addr_of: impl Fn(&eneros_protocol_abstract::mapping::ProtocolPointMapping) -> Option<PlanAddr>,
     period_default_ms: u64,
+    mut on_planned: impl FnMut(&eneros_protocol_abstract::mapping::ProtocolPointMapping, PlanAddr),
 ) -> Vec<eneros_ingestion_core::PointPlan> {
     use eneros_ingestion_core::{EventQos, PointPlan};
     let mut plans = Vec::new();
@@ -371,6 +378,7 @@ pub fn plans_from_records(
         let Some(rec) = records.iter().find(|r| r.point_id == m.point_id) else {
             continue;
         };
+        on_planned(m, addr);
         let period_ms = if rec.period_ms == 0 {
             period_default_ms
         } else {
@@ -1045,7 +1053,7 @@ mod tests {
         // 全 15+ 字段值断言（= 原 build_module 孪生逐字节行为锁）。
         let rec = record(1, 5_000, 0.25);
         let registry = VecPointRegistry::new(alloc::vec![rec.to_mapping().expect("mapping")]);
-        let plans = plans_from_records(&[rec], 6, &registry, modbus_addr_of, 0);
+        let plans = plans_from_records(&[rec], 6, &registry, modbus_addr_of, 0, |_, _| {});
         assert_eq!(plans.len(), 1);
         let p: PointPlan = plans[0];
         assert_eq!(p.source_id, 6);
@@ -1097,7 +1105,7 @@ mod tests {
             event_driven.to_mapping().unwrap(),
         ]);
         let records = [analog, control_point, other_proto, event_driven.clone()];
-        let plans = plans_from_records(&records, 2, &registry, modbus_addr_of, 1_000);
+        let plans = plans_from_records(&records, 2, &registry, modbus_addr_of, 1_000, |_, _| {});
         // 只有 analog（1）与 event_driven（5，period 0 → 缺省 1000ms）进计划。
         assert_eq!(
             plans.iter().map(|p| p.point_id).collect::<Vec<_>>(),
@@ -1106,10 +1114,35 @@ mod tests {
         );
         assert_eq!(plans[1].period_ns, 1_000 * 1_000_000, "period 0 → 缺省");
         // modbus 缺省 = 0：事件驱动点不轮询（原 modbus bin 语义逐字节）。
-        let plans_m = plans_from_records(&[event_driven], 2, &registry, modbus_addr_of, 0);
+        let plans_m =
+            plans_from_records(&[event_driven], 2, &registry, modbus_addr_of, 0, |_, _| {});
         assert_eq!(
             plans_m[0].period_ns, 0,
             "modbus 面 period 0 保持 0（不轮询）"
+        );
+    }
+
+    /// 64.2 复查硬伤回归锁：地址匹配但**缺点表记录**的点不得触发
+    /// on_planned（原 iec104 bin 的 mappings 构建在配对成功后——回调
+    /// 语义必须与之一致，否则该角落多出 adapter mapping 行）。
+    #[test]
+    fn on_planned_fires_only_after_record_pairing() {
+        let paired = record(1, 5_000, 0.1);
+        let mut unpaired = record(2, 5_000, 0.1);
+        unpaired.point_id = 77; // 注册表有映射、records 无配对记录。
+        let registry = VecPointRegistry::new(alloc::vec![
+            paired.to_mapping().unwrap(),
+            unpaired.to_mapping().unwrap(),
+        ]);
+        let planned: core::cell::RefCell<Vec<u32>> = core::cell::RefCell::new(Vec::new());
+        let plans = plans_from_records(&[paired], 2, &registry, modbus_addr_of, 0, |m, _addr| {
+            planned.borrow_mut().push(m.point_id)
+        });
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            planned.into_inner(),
+            alloc::vec![1],
+            "缺记录点（77）不得触发 on_planned"
         );
     }
 }

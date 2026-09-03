@@ -21,8 +21,8 @@ extern crate alloc;
 /// 状态字节（观测：成功/失败均登记串口）。驱动失败不阻断主循环（服务侧
 /// fail-closed 语义由服务自己保证）。
 ///
-/// 蓝图 64 卷 64.2（WP-64.2.1a）：手抄 4B/word 打包循环 + `get_mr(1)` 裸
-/// 偏移删除——wire 面归 `Sel4IpcClient::drv_call`（打包/解包单源）+
+/// 蓝图 64 卷 64.2（WP-64.2.1a）：手抄 4B/word 打包循环 + 状态字节裸
+/// 偏移读删除——wire 面归 `Sel4IpcClient::drv_call`（打包/解包单源）+
 /// `wire::decode_response_padded`（响应信封单源）+ `status_handled`
 /// （"已处理"判据单源，注释/代码矛盾修正：ST_INVALID(5)=坏信封不算已
 /// 处理，0..=4 维持原行为——R-64.b 对照表见执行卡）。
@@ -221,11 +221,12 @@ impl ReadinessTracker {
     }
 
     /// 汇总步：全部判定且未打印过 → 打印 PRODUCT-READY 行（词形逐字节
-    /// 不变）并置已打印旗。`rows` = (服务名, 是否 required)——调用方从
-    /// handles 投影（类型解耦使状态机 host 可测）。
-    fn summarize(&mut self, rows: &[(&str, bool)]) {
+    /// 不变）并置已打印旗；返回是否本次打印（调用方忽略；host 测试的
+    /// 可观测面）。`rows` = (服务名, 是否 required)——调用方从 handles
+    /// 投影（类型解耦使状态机 host 可测）。
+    fn summarize(&mut self, rows: &[(&str, bool)]) -> bool {
         if self.summary_printed || !self.all_decided() {
-            return;
+            return false;
         }
         self.summary_printed = true;
         let degraded: alloc::vec::Vec<&str> = rows
@@ -249,6 +250,7 @@ impl ReadinessTracker {
             degraded.join(","),
             required_degraded.join(",")
         );
+        true
     }
 }
 
@@ -1729,15 +1731,12 @@ mod tests {
             Some(ReadinessVerdict::Degraded)
         );
         assert!(t.all_decided());
-        // 汇总：required 服务（rows[1].1=false → optional 降级不算 required
-        // degraded）——1 个 required Ready + 1 个 optional Degraded。
-        let mut printed = 0;
+        // 汇总：rows[1] 为 optional（降级不算 required degraded）——
+        // 1 个 required Ready + 1 个 optional Degraded → 判据 true。
         let rows = [("req-svc", true), ("opt-svc", false)];
-        t.summarize(&rows);
-        printed += 1;
+        assert!(t.summarize(&rows), "全判定后首次汇总必须打印");
         // 幂等：第二次 summarize 不再打印（旗已立）。
-        t.summarize(&rows);
-        assert_eq!(printed, 1, "汇总行一次性（旗进类型）");
+        assert!(!t.summarize(&rows), "汇总行一次性（旗进类型）");
     }
 
     /// Orchestration 构造：计数/epoch 初值（原循环局部初值语义）。
