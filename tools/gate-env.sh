@@ -70,7 +70,8 @@ gate_cleanup_env() {
   kill -9 $(pgrep -f "qemu-system") 2>/dev/null || true
   sleep 2
   local PORT
-  for PORT in "${@:-5577 5582}"; do
+  local PORTS="${*:-5577 5582}"
+  for PORT in $PORTS; do
     if (ss -tln 2>/dev/null || netstat -tln 2>/dev/null) | grep -q ":$PORT "; then
       echo "PORT $PORT 仍被占——清理失败"
       exit 4

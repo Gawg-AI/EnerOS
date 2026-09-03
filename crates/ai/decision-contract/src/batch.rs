@@ -135,7 +135,9 @@ impl CommandBatchBuilder<'_> {
     /// 组装并校验。
     pub fn finish(self) -> Result<CommandBatch, ContractError> {
         let intents = self.intents.ok_or(ContractError::MissingField("intents"))?;
-        let built_at_ms = self.built_at_ms.ok_or(ContractError::InvalidWindow)?;
+        let built_at_ms = self
+            .built_at_ms
+            .ok_or(ContractError::MissingField("built_at_ms"))?;
         let (dependency_edges, max_parallel, deadline_ms, compiler_digest) = self
             .compile_meta
             .ok_or(ContractError::MissingField("compile_meta"))?;

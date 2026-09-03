@@ -17,10 +17,57 @@ cd "$ROOT"
 EVROOT="$ROOT/evidence/61/phase1-e4"
 mkdir -p "$EVROOT"
 
-# WP-64.3.6：build 前导单源（清场/钥导出/compile/image 收编 gate-env.sh）。
+# WP-64.3.6：build 前导单源（清场/钥导出收编 gate-env.sh）。
 gate_cleanup_env 5577 5582
 gate_export_signing_key
 
+echo "=== 步骤 1：config compile（[[source]] 表 + 身份块入 bundle）==="
+mkdir -p "$EVROOT/build"
+gate_compile_config "$EVROOT/build/compile.log"
+
+echo "=== 步骤 2：image raw qemu-prod（Phase 1 树重建）==="
+gate_image_raw qemu-prod "$EVROOT/build/image.log"
+IMG="$ROOT/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
+[ -f "$IMG" ] || { echo "image missing"; exit 3; }
+sha256sum "$IMG" | tee "$EVROOT/build/image.sha256"
+
+# VARS：复用 Phase 0 验证过的模板（同一测试签名证书——fixverify 先例）。
+TPL="$ROOT/target/evidence61/template.fd"
+[ -f "$TPL" ] || { echo "vars template missing"; exit 3; }
+
+run_case() {
+  local name="$1"
+  local dir="$ROOT/target/evidence61-p1/$name"
+  mkdir -p "$dir"; rm -f "$dir/qemu-serial.log" "$dir/eneros-data.raw"
+  python3 "$ROOT/evidence/61/modbus_slave61.py" \
+    --transcript "$EVROOT/$name.modbus.transcript.jsonl" &
+  local ppid=$!
+  sleep 1
+  if ! kill -0 $ppid 2>/dev/null; then echo "PEER-DIED $name"; return 1; fi
+  cargo xtask run qemu-prod \
+    --image "$IMG" \
+    --vars-template "$TPL" \
+    --expect PASS --evidence-dir "$dir" \
+    --net-mode present --net-user --net-protocols present \
+    --reset-bootctrl --ready-marker product-ready --qmp-deadline-secs 600 >/dev/null 2>&1
+  kill $ppid 2>/dev/null || true
+  cp -f "$dir/qemu-serial.log" "$EVROOT/$name.qemu-serial.log" 2>/dev/null || true
+  echo "case $name rc=$?（124/2=超时杀=完整窗口）"
+}
+
+echo "=== E4-M1：正常 50kW 纵切（typed 链 + 影子轨实弹）==="
+run_case m1-typed
+
+echo "=== E4-RESTART：二次启动（新数据盘 + 新 boot epoch → OBS-SOURCE epoch 变化）==="
+run_case restart
+
+echo "=== 判据行扫描（m1-typed）==="
+FAIL=0
+S="$ROOT/target/evidence61-p1/m1-typed/qemu-serial.log"
+for pat in "OBS-SOURCE" "OBS-ROUND" "OBS-SHADOW MATCH" "OBS-CFG loaded" "CONTRACT-VIEW-ACTIVE" "PLAN-COMPILED" \
+           "EXEC-JOURNAL applied-confirmed" "INGEST"; do
+  if grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; FAIL=1; fi
+done
 if grep -q "OBS-SHADOW MISMATCH" "$S"; then echo "[✗] OBS-SHADOW MISMATCH"; FAIL=1; fi
 echo "=== 判据行扫描（restart epoch 对照）==="
 grep -h "OBS-SOURCE" "$ROOT/target/evidence61-p1/m1-typed/qemu-serial.log" \

@@ -27,7 +27,7 @@ extern crate std;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// nibble → ASCII（大写位由 `| 0x20` 折叠控制：0x20 → 'a'.. 0x61..）。
+/// nibble → ASCII hex 字符（`upper` 选择 'A'..'F' 或 'a'..'f' 段）。
 #[inline]
 fn nibble_to_ascii(nibble: u8, upper: bool) -> u8 {
     let base = if upper { b'A' } else { b'a' };

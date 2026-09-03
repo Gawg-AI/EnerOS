@@ -309,6 +309,9 @@ impl CandidatePlan {
                 return Err(ContractError::OutOfRange("assignment.step_index"));
             }
         }
+        if step_count == 0 {
+            return Err(ContractError::OutOfRange("step_count"));
+        }
         // 轨迹不变量（构造点强制；certifier 独立复检按 ADR-051 保留）：
         // (a) (asset_id, step_index) 唯一；(b) 每个出现资产 1..=step_count
         // 全覆盖（step_index 已逐条界内 ⇒ 集合大小 = step_count 即恰好
@@ -332,9 +335,6 @@ impl CandidatePlan {
         }
         if ttl_ms == 0 {
             return Err(ContractError::OutOfRange("ttl_ms"));
-        }
-        if step_count == 0 {
-            return Err(ContractError::OutOfRange("step_count"));
         }
         Ok(Self {
             id,

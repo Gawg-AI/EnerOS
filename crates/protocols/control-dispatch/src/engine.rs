@@ -2407,7 +2407,6 @@ pub struct EngineSagaExecutor<'a> {
 
 use crate::saga::{CmdOutcome, ReconcileOutcome, SagaExecutor};
 
-/// correlation → 事件摘要证据（32B 证据位；SHA-256 域分隔）。
 /// 能量窗估算单源（WP-64.3.2.3；R-64.e 边界内——`run_typed` 幂等命中
 /// 路径与 [`EngineSagaExecutor::execute_intent`] 两体共用的 crate 内
 /// 私有函数；**不**给 executor 增删参数/方法/行为）。
@@ -2429,6 +2428,7 @@ fn intent_window_estimate(
     (window_secs, energy_kwh)
 }
 
+/// correlation → 事件摘要证据（32B 证据位；SHA-256 域分隔）。
 fn request_digest_of(correlation: [u8; 16]) -> [u8; 32] {
     use sha2::Digest as _;
     let mut h = sha2::Sha256::new();

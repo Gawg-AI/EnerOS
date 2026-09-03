@@ -498,6 +498,44 @@ fn binding_and_window_rejections() {
     }
 }
 
+/// WP-64.3.5 复查补：certifier 独立复检分支的负例保留——构造点强制后
+/// 公开构造面不可达违约轨迹，但 ADR-051 复检分支必须保有自己的直接
+/// 触达测试（evaluate_trajectories pub 面，绕开构造点注入违约 traj）。
+#[test]
+fn independent_recheck_trajectory_branches_still_live() {
+    use std::collections::BTreeMap;
+    let snap = snapshot();
+    let sp = base_spec();
+    let envelopes = vec![(1, env_battery()), (10, env_grid())];
+    let batteries = vec![battery()];
+    let context = ctx(&snap, &sp, &envelopes, &batteries);
+    let ring = CertifierKeyRing::new(1, b"k");
+    let p = plan(valid_assignments());
+
+    // 缺档：asset 1 缺 step2 → MissingAssignment { asset_id: 1, step: 2 }。
+    // （MalformedAssignment("duplicate") 臂经 evaluate 的 traj.entry 路径
+    // 注入需违约 plan——构造点强制后公开面不可达：拒绝语义已前移至
+    // 构造点 duplicate_assignment 拒绝（本文件 malicious_nan_and_missing_
+    // rejected 断言），eval 分支保留为纵深，登记执行卡。）
+    let mut gap: BTreeMap<u64, Vec<Option<f64>>> = BTreeMap::new();
+    gap.insert(1, vec![Some(-1.0), None]);
+    gap.insert(10, vec![Some(1.0), Some(-5.0)]);
+    match eneros_certifier::eval::evaluate_trajectories(&gap, &context) {
+        Err(CertifierError::MissingAssignment { asset_id, step }) => {
+            assert_eq!(asset_id, 1);
+            assert_eq!(step, 2);
+        }
+        other => panic!("{other:?}"),
+    }
+    // 良构 traj：复检通过（同 certify 正例的 evaluator 半边）。
+    let mut ok: BTreeMap<u64, Vec<Option<f64>>> = BTreeMap::new();
+    ok.insert(1, vec![Some(-1.0), Some(-2.0)]);
+    ok.insert(10, vec![Some(1.0), Some(-5.0)]);
+    let records =
+        eneros_certifier::eval::evaluate_trajectories(&ok, &context).expect("良构 traj 复检通过");
+    let _ = (records, &p, &ring);
+}
+
 // ---------------------------------------------------------------------------
 // 6. 变异测试：逐类硬约束变异必须被独立拦截（[09] §4.7）
 // ---------------------------------------------------------------------------

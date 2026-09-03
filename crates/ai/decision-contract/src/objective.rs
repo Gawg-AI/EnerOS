@@ -175,7 +175,8 @@ impl ObjectiveSpecBuilder {
         let (objective, priority, source, reason) = self
             .objective
             .ok_or(ContractError::MissingField("objective"))?;
-        let (valid_from_ms, valid_until_ms) = self.window.ok_or(ContractError::InvalidWindow)?;
+        let (valid_from_ms, valid_until_ms) =
+            self.window.ok_or(ContractError::MissingField("window"))?;
         if self.snapshot_id.is_unbound() {
             return Err(ContractError::MissingField("snapshot_id"));
         }
