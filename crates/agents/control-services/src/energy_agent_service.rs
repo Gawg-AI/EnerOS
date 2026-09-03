@@ -19,11 +19,9 @@ use crate::telemetry::SNAPSHOT_OK;
 /// 请求码。
 pub const EA_TICK: u8 = 1;
 
-/// 响应状态。
-pub const EA_OK: u8 = 0;
-pub const EA_NOACTION: u8 = 1;
-pub const EA_UNAVAILABLE: u8 = 2;
-pub const EA_INVALID: u8 = 0xFF;
+// 蓝图 64 卷 64.2（WP-64.2.1b）：EA 响应状态码族迁 agent-sdk `ea_wire`
+// 单源（root 手写 4 臂镜像收编）；本处 re-export 保持既有调用点零改动。
+pub use eneros_agent_sdk::ea_wire::{EA_INVALID, EA_NOACTION, EA_OK, EA_UNAVAILABLE};
 
 /// 熔断默认冷却时长（毫秒；蓝图 57 D2：预算耗尽后跳过推理的止损窗口，
 /// 到期放行单次探针，Committed/NoAction 复位）。

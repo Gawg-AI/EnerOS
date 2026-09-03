@@ -294,6 +294,146 @@ where
     built.unwrap_or_else(crate::protocol_ladder::capability_shell)
 }
 
+/// 参考闭环 module 构造单源（WP-64.2.2：两 bin `build_module` 前置段
+/// 孪生收编——sink 1024 / epoch store / `OperationalProfile::reference`
+/// 构造 + descriptor 注册 + own 来源在场检查）。own 来源缺席 → `None`
+/// （原 bin fail-closed 语义逐字节）。
+pub fn new_reference_module(
+    sources: &[(u32, eneros_ingestion_core::SourceDescriptor)],
+    own_source_id: u32,
+) -> Option<IngestionModule> {
+    use eneros_ingestion_core::{InMemorySink, MemEpochStore, OperationalProfile};
+    let mut module = IngestionModule::new(
+        Box::new(InMemorySink::new(1024)),
+        Box::new(MemEpochStore::default()),
+        OperationalProfile::reference(),
+    );
+    for (_, d) in sources {
+        module.register(d.clone());
+    }
+    sources
+        .iter()
+        .any(|(id, _)| *id == own_source_id)
+        .then_some(module)
+}
+
+/// 协议组计划地址三字段（[`eneros_ingestion_core::PointPlan`] 的协议侧投影
+/// ——各协议 bin 的唯一真实差异点：ProtocolAddress 反构造）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanAddr {
+    /// 协议从站/设备地址（非 Modbus 协议 0）。
+    pub slave_addr: u8,
+    /// 协议寄存器/对象地址低位（非 Modbus 协议按 bin 语义填）。
+    pub reg_addr: u16,
+    /// 协议功能码（非 Modbus 协议 0）。
+    pub func_code: u8,
+}
+
+/// 点计划装配单源（蓝图 64 卷 64.2 WP-64.2.2）：records → `PointPlan`。
+///
+/// 原 svc-modbus-tcp / svc-iec104 两 bin `build_module` 的 64 行逐字孪生
+/// （注册表遍历 → 遥测点过滤 → 地址反构造 → 点表记录配对 → 15 字段
+/// 默认值构造）唯一实现。**协议差异只经 `addr_of` 闭包与
+/// `period_default_ms` 进入**：
+/// - modbus：地址 = `ProtocolAddress::Modbus` 三字段；`period_default_ms=0`
+///   （事件驱动点 period_ms=0 不轮询——原语义逐字节）；
+/// - iec104：地址 = `ProtocolAddress::Iec104`（ioa→reg_addr，余 0）；
+///   `period_default_ms=1_000`（[07] §2.3 事件驱动在调度面不可达 → 1s
+///   drain 节奏缺省）。
+///
+/// 字段默认值 = 原孪生逐字节（phase 0 / deadline 2×period / Q1 + 不可抑制 /
+/// deadband_rel 0 / timeout 1s / retries 2 / 身份与工程量来自映射绑定）。
+pub fn plans_from_records(
+    records: &[eneros_config_bundle::points::PointRecord],
+    own_source: u32,
+    registry: &dyn eneros_protocol_abstract::PointRegistry,
+    addr_of: impl Fn(&eneros_protocol_abstract::mapping::ProtocolPointMapping) -> Option<PlanAddr>,
+    period_default_ms: u64,
+) -> Vec<eneros_ingestion_core::PointPlan> {
+    use eneros_ingestion_core::{EventQos, PointPlan};
+    let mut plans = Vec::new();
+    let mut ids = Vec::new();
+    registry.collect_ids(&mut ids);
+    for id in ids {
+        let Some(m) = registry.resolve(id) else {
+            continue;
+        };
+        // 遥测点（analog/digital）才进采集调度；控制/设点/计数点不采集。
+        match m.data_type {
+            eneros_upa_model::PointType::Analog | eneros_upa_model::PointType::Digital => {}
+            _ => continue,
+        }
+        // 协议地址反构造（bin 闭包——非本协议地址的映射点跳过）。
+        let Some(addr) = addr_of(m) else {
+            continue;
+        };
+        // 调度字段来自点表记录（缺记录 fail-closed：无调度的点不进计划）。
+        let Some(rec) = records.iter().find(|r| r.point_id == m.point_id) else {
+            continue;
+        };
+        let period_ms = if rec.period_ms == 0 {
+            period_default_ms
+        } else {
+            u64::from(rec.period_ms)
+        };
+        let period_ns = period_ms * 1_000_000;
+        plans.push(PointPlan {
+            source_id: own_source,
+            point_id: m.point_id,
+            device_id: m.device_id,
+            // 周期来自点表（period_ms）；period_ms=0 → bin 缺省（modbus 保持
+            // 0 = 事件驱动不轮询；iec104 → drain 节奏缺省）。
+            period_ns,
+            phase_offset_ns: 0,
+            deadline_ns: period_ns.saturating_mul(2),
+            // 参考闭环 QoS：Q1 + 不可抑制（控制资格点全量上报——与
+            // Phase 0 基线一致；死区/QoS 分级在配置面扩展后生效）。
+            qos: EventQos::Q1,
+            suppressible: false,
+            deadband_abs: rec.deadband,
+            deadband_rel: 0.0,
+            timeout_ns: 1_000_000_000,
+            max_retries: 2,
+            schema_id: m.identity.schema_id,
+            schema_version: m.identity.schema_version,
+            unit_code: m.identity.unit_code,
+            asset_id: m.identity.asset_id,
+            mapping_version: m.identity.mapping_generation,
+            scale: m.scale,
+            offset: m.offset,
+            func_code: addr.func_code,
+            reg_addr: addr.reg_addr,
+            slave_addr: addr.slave_addr,
+        });
+    }
+    plans
+}
+
+/// 遥测上行 EIPC 端点装配单源（WP-64.2.3：两 ingest bin 的 ~13 行
+/// `eipc_resolve + Sel4IpcClient::new + ok()` 闭包归宿；**bound/NOT-granted
+/// 词形归模块**——R-64.g：打印行逐字节不变，变的只是谁拥有拼出它的知识）。
+///
+/// 返回裸客户端（`TelemetryUplink::new` 的 `Option<C>` 形态——source_id
+/// 由 [`build_ingested_service`] 的 own 决定，绑定时不可得；绑定时机保持在
+/// 阶梯 run 之前 = 串口行序不变）。
+#[cfg(any(target_os = "none", feature = "sel4"))]
+pub fn bind_telemetry(service: &str) -> Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient> {
+    let client = eneros_agent_sdk::eipc_resolve(service, "svc-telemetry").and_then(|(_, slot)| {
+        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+            "telemetry-uplink",
+            slot,
+            eneros_drv_svc::now_ns,
+        )
+        .ok()
+    });
+    if client.is_some() {
+        eneros_runtime::println!("{}", line_telemetry_bound(service));
+    } else {
+        eneros_runtime::println!("{}", line_telemetry_not_granted_ep(service));
+    }
+    client
+}
+
 // ============================================================================
 // 词形单源（冻结证据行；host 快照测试逐字节锁定——bin 侧禁止手写格式串）
 // ============================================================================
@@ -338,6 +478,14 @@ fn line_obs_round_eipc(tag: &str, e: &eneros_agent_sdk::chunked::ChunkError) -> 
 
 fn line_telemetry_not_granted(tag: &str) -> String {
     format!("[{tag}] telemetry EP not granted —— 事件未上报（fail-closed）")
+}
+
+fn line_telemetry_bound(service: &str) -> String {
+    format!("[{service}] telemetry EIPC bound (svc-telemetry)")
+}
+
+fn line_telemetry_not_granted_ep(service: &str) -> String {
+    format!("[{service}] telemetry EIPC NOT granted")
 }
 
 // ============================================================================
@@ -403,6 +551,20 @@ mod tests {
         assert_eq!(
             line_telemetry_not_granted(TAG),
             "[svc-modbus-tcp] telemetry EP not granted —— 事件未上报（fail-closed）"
+        );
+        // WP-64.2.3：上行端点装配行（两 ingest bin 的闭包词形收编——逐字节
+        // 取自迁移前 svc-modbus-tcp.rs / svc-iec104.rs）。
+        assert_eq!(
+            line_telemetry_bound(TAG),
+            "[svc-modbus-tcp] telemetry EIPC bound (svc-telemetry)"
+        );
+        assert_eq!(
+            line_telemetry_not_granted_ep(TAG),
+            "[svc-modbus-tcp] telemetry EIPC NOT granted"
+        );
+        assert_eq!(
+            line_telemetry_bound("svc-iec104"),
+            "[svc-iec104] telemetry EIPC bound (svc-telemetry)"
         );
         // iec104 tag 同词形（仅 tag 段差异）。
         assert_eq!(
@@ -574,6 +736,31 @@ mod tests {
                 !src.contains("OBS-SOURCE"),
                 "{name} 重新出现 OBS-SOURCE 词形手写（63.2.4 禁止——词形归 \
                  build_ingested_service 单源）"
+            );
+            // 64.2 WP-64.2.2：点计划装配进 lib——bin 不得再持 PointPlan
+            // 字面构造 / EventQos 字面（孪生 64 行的回归守卫）。
+            assert!(
+                !src.contains("PointPlan {"),
+                "{name} 重新出现 PointPlan 字面构造（64.2.2 禁止——点计划装配归 \
+                 plans_from_records 单源）"
+            );
+            assert!(
+                !src.contains("EventQos::"),
+                "{name} 重新出现 QoS 字面（64.2.2 禁止——默认值归单源）"
+            );
+            // 64.2 WP-64.2.3：二次 fetch / 端点手抄闭包删除——records 由
+            // Ladder::Ready 携带；telemetry 装配归 bind_telemetry。
+            assert!(
+                !src.contains("fetch_points"),
+                "{name} 重新出现 fetch_points 直呼（64.2.3 禁止——records 由 Ready 携带）"
+            );
+            assert!(
+                !src.contains("eipc_resolve"),
+                "{name} 重新出现 EIPC 手工解析（64.2.3 禁止——telemetry 装配归 bind_telemetry）"
+            );
+            assert!(
+                src.matches(concat!("Sel4IpcClient", "::new")).count() == 0,
+                "{name} 重新出现 Sel4IpcClient 手工建端（64.2.3 禁止）"
             );
         }
     }
@@ -798,5 +985,131 @@ mod tests {
             },
         );
         assert_eq!(svc.capability(), Some("test-cap"));
+    }
+
+    // ------------------------------------------------------------------------
+    // WP-64.2.2：plans_from_records——64 行孪生的行为锁（15 字段默认值 +
+    // 过滤/配对/周期缺省语义逐字段断言）。
+    // ------------------------------------------------------------------------
+
+    use eneros_config_bundle::points::PointRecord;
+    use eneros_ingestion_core::{EventQos, PointPlan};
+    use eneros_protocol_abstract::mapping::PointIdentityBinding;
+
+    fn record(point_id: u32, period_ms: u32, deadband: f64) -> PointRecord {
+        PointRecord {
+            point_id,
+            device_id: 1,
+            protocol: PointProtocol::ModbusTcp,
+            addr: Some(ProtocolAddress::Modbus {
+                slave_addr: 3,
+                reg_addr: 0x10,
+                func_code: 4,
+            }),
+            data_type: eneros_upa_model::PointType::Analog,
+            scale: 2.5,
+            offset: -1.0,
+            period_ms,
+            deadband,
+            range: None,
+            identity: PointIdentityBinding {
+                unit_code: 7,
+                schema_id: 11,
+                schema_version: 3,
+                asset_id: 42,
+                mapping_generation: 9,
+            },
+        }
+    }
+
+    fn modbus_addr_of(
+        m: &eneros_protocol_abstract::mapping::ProtocolPointMapping,
+    ) -> Option<PlanAddr> {
+        match m.protocol_addr {
+            ProtocolAddress::Modbus {
+                slave_addr,
+                reg_addr,
+                func_code,
+            } => Some(PlanAddr {
+                slave_addr,
+                reg_addr,
+                func_code,
+            }),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn plans_from_records_locks_twin_field_defaults() {
+        // 1 点（Analog + Modbus 地址 + 记录 period 5000/deadband 0.25）→
+        // 全 15+ 字段值断言（= 原 build_module 孪生逐字节行为锁）。
+        let rec = record(1, 5_000, 0.25);
+        let registry = VecPointRegistry::new(alloc::vec![rec.to_mapping().expect("mapping")]);
+        let plans = plans_from_records(&[rec], 6, &registry, modbus_addr_of, 0);
+        assert_eq!(plans.len(), 1);
+        let p: PointPlan = plans[0];
+        assert_eq!(p.source_id, 6);
+        assert_eq!(p.point_id, 1);
+        assert_eq!(p.device_id, 1);
+        assert_eq!(p.period_ns, 5_000 * 1_000_000);
+        assert_eq!(p.phase_offset_ns, 0);
+        assert_eq!(p.deadline_ns, 2 * 5_000 * 1_000_000);
+        assert_eq!(p.qos, EventQos::Q1);
+        assert!(!p.suppressible);
+        assert_eq!(p.deadband_abs, 0.25);
+        assert_eq!(p.deadband_rel, 0.0);
+        assert_eq!(p.timeout_ns, 1_000_000_000);
+        assert_eq!(p.max_retries, 2);
+        assert_eq!(p.schema_id, 11);
+        assert_eq!(p.schema_version, 3);
+        assert_eq!(p.unit_code, 7);
+        assert_eq!(p.asset_id, 42);
+        assert_eq!(p.mapping_version, 9);
+        assert_eq!(p.scale, 2.5);
+        assert_eq!(p.offset, -1.0);
+        assert_eq!(p.func_code, 4);
+        assert_eq!(p.reg_addr, 0x10);
+        assert_eq!(p.slave_addr, 3);
+    }
+
+    #[test]
+    fn plans_from_records_filters_and_pairs_like_bins() {
+        // 非 Analog 点 / 非本协议地址 / 缺点表记录 → 全跳过（原孪生
+        // continue 三连）；period_ms=0 → period_default_ms（iec104 缺省面）。
+        let analog = record(1, 5_000, 0.1);
+        let mut control_point = record(2, 5_000, 0.1);
+        control_point.data_type = eneros_upa_model::PointType::Setpoint;
+        let mut other_proto = record(3, 5_000, 0.1);
+        other_proto.addr = Some(ProtocolAddress::Iec104 {
+            common_addr: 1,
+            ioa: 9,
+            type_id: 1,
+        });
+        let mut no_record = record(4, 5_000, 0.1);
+        no_record.point_id = 99; // 注册表有映射、records 无配对记录。
+        let mut event_driven = record(5, 0, 0.1); // period_ms=0。
+        event_driven.point_id = 5;
+        let registry = VecPointRegistry::new(alloc::vec![
+            analog.to_mapping().unwrap(),
+            control_point.to_mapping().unwrap(),
+            other_proto.to_mapping().unwrap(),
+            no_record.to_mapping().unwrap(),
+            event_driven.to_mapping().unwrap(),
+        ]);
+        let records = [analog, control_point, other_proto, event_driven.clone()];
+        let plans = plans_from_records(&records, 2, &registry, modbus_addr_of, 1_000);
+        // 只有 analog（1）与 event_driven（5，period 0 → 缺省 1000ms）进计划。
+        assert_eq!(
+            plans.iter().map(|p| p.point_id).collect::<Vec<_>>(),
+            alloc::vec![1, 5],
+            "控制点/他协议地址点/缺记录点全跳过（孪生过滤序）"
+        );
+        assert_eq!(plans[1].period_ns, 1_000 * 1_000_000, "period 0 → 缺省");
+        // modbus 缺省 = 0：事件驱动点不轮询（原 modbus bin 语义逐字节）。
+        let plans_m = plans_from_records(&[event_driven], 2, &registry, modbus_addr_of, 0);
+        assert_eq!(
+            plans_m[0].period_ns, 0,
+            "modbus 面 period 0 保持 0（不轮询）"
+        );
     }
 }

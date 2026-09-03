@@ -218,8 +218,9 @@ impl eneros_drv_svc::runtime::DriverService for ModbusTcpIoService {
 /// 装配接入深模块（[07] §2.6.6：接 EIPC/capability/config 生成 source
 /// descriptor 与点计划）。
 ///
-/// 调度字段（period_ms/deadband）来自点表记录；身份（schema/unit/asset/
-/// 世代）来自映射绑定——两路同源（同一次 bundle 解码）。
+/// 蓝图 64 卷 64.2（WP-64.2.2）：64 行点计划孪生收编 lib
+/// `plans_from_records`（15 字段默认值单源）；本 bin 只保留协议差异点
+/// （Modbus 地址反构造闭包 + 事件驱动 period 0 保持不轮询）。
 #[cfg(target_os = "none")]
 fn build_module(
     sources: &[(u32, eneros_ingestion_core::SourceDescriptor)],
@@ -228,74 +229,28 @@ fn build_module(
     records: &[eneros_config_bundle::points::PointRecord],
     plugin: eneros_protocol_services::modbus_ingest::SharedPlugin,
 ) -> Option<eneros_ingestion_core::IngestionModule> {
-    use eneros_ingestion_core::{
-        EventQos, InMemorySink, IngestionModule, MemEpochStore, OperationalProfile, PointPlan,
-    };
-    let mut module = IngestionModule::new(
-        Box::new(InMemorySink::new(1024)),
-        Box::new(MemEpochStore::default()),
-        OperationalProfile::reference(),
-    );
-    for (_, d) in sources {
-        module.register(d.clone());
-    }
-    if !sources.iter().any(|(id, _)| *id == own_source_id) {
-        return None;
-    }
-    let mut plans: alloc::vec::Vec<PointPlan> = alloc::vec::Vec::new();
-    let mut ids: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
-    registry.collect_ids(&mut ids);
-    for id in ids {
-        let Some(m) = registry.resolve(id) else {
-            continue;
-        };
-        // 遥测点（analog/digital）才进采集调度；控制/设点/计数点不采集。
-        match m.data_type {
-            eneros_upa_model::PointType::Analog | eneros_upa_model::PointType::Digital => {}
-            _ => continue,
-        }
-        let (slave_addr, reg_addr, func_code) = match m.protocol_addr {
+    use eneros_protocol_services::ingestion_stage::{new_reference_module, plans_from_records};
+    let mut module = new_reference_module(sources, own_source_id)?;
+    // 点计划装配单源（WP-64.2.2）：addr_of 反构造 Modbus 地址三字段；
+    // period 缺省 0 = 事件驱动点（period_ms=0）不轮询——原 bin 语义。
+    let plans = plans_from_records(
+        records,
+        own_source_id,
+        registry,
+        |m| match m.protocol_addr {
             eneros_protocol_abstract::ProtocolAddress::Modbus {
                 slave_addr,
                 reg_addr,
                 func_code,
-            } => (slave_addr, reg_addr, func_code),
-            _ => continue,
-        };
-        // 调度字段来自点表记录（缺记录 fail-closed：无调度的点不进计划）。
-        let Some(rec) = records.iter().find(|r| r.point_id == m.point_id) else {
-            continue;
-        };
-        let period_ns = u64::from(rec.period_ms) * 1_000_000;
-        plans.push(PointPlan {
-            source_id: own_source_id,
-            point_id: m.point_id,
-            device_id: m.device_id,
-            // 周期来自点表（period_ms；参考闭环 3s/5s）；事件驱动点（0）
-            // 不轮询。
-            period_ns,
-            phase_offset_ns: 0,
-            deadline_ns: period_ns.saturating_mul(2),
-            // 参考闭环 QoS：Q1 + 不可抑制（控制资格点全量上报——与
-            // Phase 0 基线一致；死区/QoS 分级在配置面扩展后生效）。
-            qos: EventQos::Q1,
-            suppressible: false,
-            deadband_abs: rec.deadband,
-            deadband_rel: 0.0,
-            timeout_ns: 1_000_000_000,
-            max_retries: 2,
-            schema_id: m.identity.schema_id,
-            schema_version: m.identity.schema_version,
-            unit_code: m.identity.unit_code,
-            asset_id: m.identity.asset_id,
-            mapping_version: m.identity.mapping_generation,
-            scale: m.scale,
-            offset: m.offset,
-            func_code,
-            reg_addr,
-            slave_addr,
-        });
-    }
+            } => Some(eneros_protocol_services::ingestion_stage::PlanAddr {
+                slave_addr,
+                reg_addr,
+                func_code,
+            }),
+            _ => None,
+        },
+        0,
+    );
     module.install_points(1, plans).ok()?;
     let adapter = Box::new(
         eneros_protocol_services::modbus_ingest::ModbusIngestAdapter::new(own_source_id, plugin),
@@ -347,20 +302,9 @@ pub extern "C" fn _start(
     // 包成共享句柄供 adapter（组读）与本 bin（出站写）两用。
     let plugin_owned = eneros_modbus_tcp::plugin::TcpPlugin::new();
     protocol_ladder::print_descriptor(parts.service, &plugin_owned);
-    let telemetry =
-        eneros_agent_sdk::eipc_resolve("svc-modbus-tcp", "svc-telemetry").and_then(|(_, slot)| {
-            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                "modbus-telemetry",
-                slot,
-                eneros_drv_svc::now_ns,
-            )
-            .ok()
-        });
-    if telemetry.is_some() {
-        eneros_runtime::println!("[svc-modbus-tcp] telemetry EIPC bound (svc-telemetry)");
-    } else {
-        eneros_runtime::println!("[svc-modbus-tcp] telemetry EIPC NOT granted");
-    }
+    // 遥测上行端装配单源（WP-64.2.3：bound/NOT-granted 词形归模块；
+    // 绑定时机在阶梯 run 前 = 串口行序不变）。
+    let telemetry = eneros_protocol_services::ingestion_stage::bind_telemetry("svc-modbus-tcp");
     // 43：设备移交（virtio-net 槽 8）→ 真实 I/O 服务；未移交 → 能力壳。
     let mut service: Box<dyn eneros_drv_svc::runtime::DriverService> =
         match protocol_ladder::run(wall_epoch, &parts, plugin_owned, &mut io) {
@@ -369,28 +313,17 @@ pub extern "C" fn _start(
                 registry,
                 sources,
                 generation,
+                records,
             } => {
                 // 共享句柄（读=adapter 组读；写=出站写）。
                 let plugin = alloc::rc::Rc::new(core::cell::RefCell::new(plugin));
-                // 调度字段取数（period_ms/deadband；与阶梯同过滤——二次
-                // fetch 先例 = All/Filtered bin 路径）。
-                let fetched = eneros_protocol_services::service_cfg::fetch_points(
-                    &mut protocol_ladder::ServiceIoAsSource(&mut io),
-                    parts.config_client,
-                    |p| {
-                        matches!(
-                            p.protocol,
-                            PointProtocol::ModbusTcp | PointProtocol::ModbusRtu
-                        )
-                    },
-                );
-                let records = fetched.records;
                 let _ = generation; // generation 已注入 mapping.identity
                                     // 装配序列单源（蓝图 63 卷 63.2 WP-63.2.4）：descriptor
                                     // 循环→build→open→uplink→自检→壳兜底进 lib；本 bin 只保留
                                     // 协议差异点。schema 谓词 = 范围口径恒真（本适配器过滤
                                     // 口径 = 本来源映射点全集——协议路由已在 fetch 阶段过滤，
-                                    // 不与 iec104 静默统一）。
+                                    // 不与 iec104 静默统一）。records 由 Ready 携带（WP-64.2.3：
+                                    // 二次 fetch 删除——POINTS-LOADED 2→1 已登记）。
                 eneros_protocol_services::ingestion_stage::build_ingested_service(
                     "svc-modbus-tcp",
                     "no modbus-tcp [[source]] row",

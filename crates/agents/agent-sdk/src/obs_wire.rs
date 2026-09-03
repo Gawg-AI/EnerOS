@@ -139,6 +139,28 @@ pub fn parse_flush_resp(resp: &[u8]) -> Result<u64, ObsWireError> {
     Ok(u64::from_le_bytes(resp[..8].try_into().expect("u64")))
 }
 
+/// ENQUEUE 应答拒绝形态（蓝图 64 卷 64.2 WP-64.2.1c——携带原始字节供
+/// 调用方按原打印面呈现）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObsReject<'a> {
+    /// 首字节非 [`ENQ_OK`]（含空应答——0 兜底）。
+    NotAck(u8),
+    /// `ERR:` 前缀拒绝（原始应答字节）。
+    Err(&'a [u8]),
+}
+
+/// ENQUEUE 应答解析（约定单源：ack=`ENQ_OK`(0x01) 受理；其余值 / `ERR:`
+/// 前缀 = 拒绝——原 root 手解 `first() != Some(&1)` / `starts_with(b"ERR")`
+/// 收编，与 [`parse_flush_resp`] 的 ERR 约定同源）。
+pub fn parse_enqueue_resp(resp: &[u8]) -> Result<(), ObsReject<'_>> {
+    match resp.first() {
+        Some(&ENQ_OK) => Ok(()),
+        Some(_) if resp.starts_with(b"ERR") => Err(ObsReject::Err(resp)),
+        Some(&b) => Err(ObsReject::NotAck(b)),
+        None => Err(ObsReject::NotAck(0)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +220,22 @@ mod tests {
     #[test]
     fn flush_request_shape() {
         assert_eq!(encode_flush(8), Vec::from(&b"OBS1\x02\x08\0\0\0"[..]));
+    }
+
+    /// WP-64.2.1c：ENQUEUE 应答约定锁（正负例——ack=1 受理 / ack=2 /
+    /// ERR 前缀 / 空应答）。
+    #[test]
+    fn enqueue_resp_ack_and_rejection_conventions() {
+        assert_eq!(parse_enqueue_resp(&[1]), Ok(()));
+        assert_eq!(
+            parse_enqueue_resp(&[1, 0, 0]),
+            Ok(()),
+            "首字节判据，尾部忽略"
+        );
+        assert_eq!(parse_enqueue_resp(&[2]), Err(ObsReject::NotAck(2)));
+        assert_eq!(parse_enqueue_resp(&[]), Err(ObsReject::NotAck(0)));
+        let err = b"ERR:queue-full";
+        assert_eq!(parse_enqueue_resp(err), Err(ObsReject::Err(err)));
+        assert_eq!(parse_enqueue_resp(&[0]), Err(ObsReject::NotAck(0)));
     }
 }

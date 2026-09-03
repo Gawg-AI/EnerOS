@@ -17,44 +17,37 @@ extern crate alloc;
 // K2.2：root-task IPC 调度主循环（21-A，替换 spin_loop）
 // ============================================================================
 
-/// IPC 循环 fail-closed 挂起（红线 4：任何 IPC 错误 = 挂起，禁止降级运行）。
+/// 47（WP-47.1 编排驱动）：向协议服务发送 drv-svc `OP_EXECUTE` 信封并读取
+/// 状态字节（观测：成功/失败均登记串口）。驱动失败不阻断主循环（服务侧
+/// fail-closed 语义由服务自己保证）。
+///
+/// 蓝图 64 卷 64.2（WP-64.2.1a）：手抄 4B/word 打包循环 + `get_mr(1)` 裸
+/// 偏移删除——wire 面归 `Sel4IpcClient::drv_call`（打包/解包单源）+
+/// `wire::decode_response_padded`（响应信封单源）+ `status_handled`
+/// （"已处理"判据单源，注释/代码矛盾修正：ST_INVALID(5)=坏信封不算已
+/// 处理，0..=4 维持原行为——R-64.b 对照表见执行卡）。
 #[cfg(target_os = "none")]
-
-/// 47（WP-47.1 编排驱动）：向协议服务发送 drv-svc `OP_EXECUTE` 信封
-///（83B ≤ MR 预算，4B/word 打包——与 drv_call 语义一致），等待应答并
-/// 读取状态字节（观测：成功/失败均登记串口）。驱动失败不阻断主循环
-///（服务侧 fail-closed 语义由服务自己保证）。
 fn protocol_execute(ep: u64, corr: u32, name: &str) -> bool {
-    use eneros_drv_svc::runtime::{wire, DriverRequest, OP_EXECUTE};
-    use eneros_sel4_sys::safe::{get_mr, ipc_call, message_info_new, set_mr};
-    let req = DriverRequest::new(corr, OP_EXECUTE);
-    let enc = wire::encode_request(&req);
-    let words = enc.len().div_ceil(4);
-    for (i, chunk) in enc.chunks(4).enumerate() {
-        let mut word = [0u8; 4];
-        word[..chunk.len()].copy_from_slice(chunk);
-        match set_mr(i as u64, u32::from_le_bytes(word) as u64) {
-            Ok(()) => {}
-            Err(e) => {
-                eneros_runtime::println!("[eneros-root-task] PROTO-EXEC {name} set_mr FAIL {e:?}");
-                return false;
-            }
-        }
-    }
-    let mi = match message_info_new(0, 0, 0, words as u64) {
-        Ok(m) => m,
+    use eneros_drv_svc::runtime::{status_handled, wire, DriverRequest, OP_EXECUTE};
+    let mut ipc = match eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+        "root-protocol-exec",
+        ep,
+        eneros_time::get_monotonic_ns,
+    ) {
+        Ok(c) => c,
         Err(e) => {
-            eneros_runtime::println!("[eneros-root-task] PROTO-EXEC {name} mi FAIL {e:?}");
+            eneros_runtime::println!("[eneros-root-task] PROTO-EXEC {name} client FAIL {e:?}");
             return false;
         }
     };
-    match ipc_call(ep, mi) {
-        Ok(reply) => {
-            // 应答：status 在第 3 个 word 低字节（wire 布局 corr(4) status(1)...）。
-            let status = get_mr(1).unwrap_or(0xFF) & 0xFF;
+    let req = DriverRequest::new(corr, OP_EXECUTE);
+    match ipc.drv_call(&wire::encode_request(&req), PROTO_EXEC_TIMEOUT_NS) {
+        Ok(resp) => {
+            // 解不出 = 0xFF（原 get_mr 失败兜底语义；decode_response_padded
+            // 含 QEMU 实测 20-words 尾 pad 容差）。
+            let status = wire::decode_response_padded(&resp).map_or(0xFF, |r| r.status);
             eneros_runtime::println!("[eneros-root-task] PROTO-EXEC {name} status=0x{status:02x}");
-            let _ = reply;
-            status <= 4 // ST_OK..ST_INVALID 均为已处理；应答异常仍归真
+            status_handled(status)
         }
         Err(e) => {
             eneros_runtime::println!("[eneros-root-task] PROTO-EXEC {name} call FAIL {e:?}");
@@ -63,6 +56,13 @@ fn protocol_execute(ep: u64, corr: u32, name: &str) -> bool {
     }
 }
 
+/// PROTO-EXEC drv_call 超时：原手抄路径为无限期阻塞 `ipc_call`；drv_call
+/// 契约要求显式 deadline——取近无限值保持阻塞语义（≤2^62 防 `checked_add`
+/// 溢出；超时判定与 deadline 同钟自洽，真实应答在同一次 Call 内返回）。
+#[cfg(target_os = "none")]
+const PROTO_EXEC_TIMEOUT_NS: u64 = 1 << 62;
+
+/// IPC 循环 fail-closed 挂起（红线 4：任何 IPC 错误 = 挂起，禁止降级运行）。
 #[cfg(target_os = "none")]
 fn ipc_fail_closed(step: &str, e: impl core::fmt::Debug) -> ! {
     eneros_runtime::println!(
@@ -122,6 +122,284 @@ pub fn check_readiness(
 #[allow(dead_code)] // 44.2：readiness 超时上限，当前路径未用（44.4 冻结登记）
 const READINESS_DEADLINE_MS: u64 = 3_000;
 
+// ============================================================================
+// 蓝图 64 卷 64.2（WP-64.2.5）：root 编排状态单源——run_ipc_loop 循环捕获
+// 的全部可变局部归一（"何时"单源 = wiring::PERIODIC_SCHEDULE，63.2 建表；
+// 本组类型收"做什么/是否已发/进度"）。类型面免 cfg 门 → host 可单测
+// （tick 推进 / once 语义 / readiness 状态迁移——布尔散装时 host 不可达
+// 的状态面）；seL4 触点步保留 cfg 门 impl 块。词形/节拍/表零变化。
+// ============================================================================
+
+/// 一次性触发旗（原循环内布尔散装 `hang_injected`/`storage_persist_done`/
+/// `ota_download_done` 收拢）。once 语义 = 现布尔语义：**真实触发轮立旗**
+/// （句柄缺席时保持未立 = 原重试语义），触发一次后永假。
+struct OnceFlags {
+    hang_injected: bool,
+    storage_persist_done: bool,
+    ota_download_done: bool,
+}
+
+#[allow(dead_code)] // 同 OnceFlags
+impl OnceFlags {
+    const fn new() -> Self {
+        Self {
+            hang_injected: false,
+            storage_persist_done: false,
+            ota_download_done: false,
+        }
+    }
+
+    /// hang 注入触发窗（旗未立 && 到期）。
+    fn hang_due(&self, due: bool) -> bool {
+        !self.hang_injected && due
+    }
+    /// 立 hang 旗（真实触发轮调用）。
+    fn mark_hang(&mut self) {
+        self.hang_injected = true;
+    }
+    /// 存储落盘触发窗。
+    fn storage_due(&self, due: bool) -> bool {
+        !self.storage_persist_done && due
+    }
+    /// 立存储旗。
+    fn mark_storage(&mut self) {
+        self.storage_persist_done = true;
+    }
+    /// OTA 下载触发窗。
+    fn ota_due(&self, due: bool) -> bool {
+        !self.ota_download_done && due
+    }
+    /// 立 OTA 旗。
+    fn mark_ota(&mut self) {
+        self.ota_download_done = true;
+    }
+}
+
+/// readiness 异步收集状态（原 `readiness_start_ms`/`readiness_state` 双
+/// 平行 Vec + `readiness_summary_printed` 旗收拢——同文件 HangMonitor
+/// 先例：防错位不变量随状态机内藏）。
+#[allow(dead_code)] // 同 OnceFlags
+struct ReadinessTracker {
+    start_ms: alloc::vec::Vec<u64>,
+    /// None = 未判定（继续收集）；Some = 已判定。
+    state: alloc::vec::Vec<Option<ReadinessVerdict>>,
+    summary_printed: bool,
+}
+
+#[allow(dead_code)] // 同 OnceFlags
+impl ReadinessTracker {
+    fn new(start_ms: u64, count: usize) -> Self {
+        Self {
+            start_ms: alloc::vec![start_ms; count],
+            state: alloc::vec![None; count],
+            summary_printed: false,
+        }
+    }
+
+    /// 该服务已判定（判过后循环跳过其 ntfn poll——原 `is_some` continue）。
+    fn is_decided(&self, idx: usize) -> bool {
+        self.state[idx].is_some()
+    }
+
+    /// 全部判定完成（汇总行前提）。
+    fn all_decided(&self) -> bool {
+        self.state.iter().all(Option::is_some)
+    }
+
+    /// 单服务判定步（[`check_readiness`] 判定 + 状态登记）。返回 `None`
+    /// = 未到期，继续收集。
+    fn decide(
+        &mut self,
+        idx: usize,
+        deadline_ms: u64,
+        now_ms: u64,
+        signaled: bool,
+    ) -> Option<ReadinessVerdict> {
+        let verdict = check_readiness(self.start_ms[idx], deadline_ms, now_ms, signaled)?;
+        self.state[idx] = Some(verdict);
+        Some(verdict)
+    }
+
+    /// 汇总步：全部判定且未打印过 → 打印 PRODUCT-READY 行（词形逐字节
+    /// 不变）并置已打印旗。`rows` = (服务名, 是否 required)——调用方从
+    /// handles 投影（类型解耦使状态机 host 可测）。
+    fn summarize(&mut self, rows: &[(&str, bool)]) {
+        if self.summary_printed || !self.all_decided() {
+            return;
+        }
+        self.summary_printed = true;
+        let degraded: alloc::vec::Vec<&str> = rows
+            .iter()
+            .zip(self.state.iter())
+            .filter(|(_, v)| **v == Some(ReadinessVerdict::Degraded))
+            .map(|(h, _)| h.0)
+            .collect();
+        // WP-37.1：PRODUCT-READY 判据 = **required 服务**全 Ready（root
+        // 运行到本行即 Ready——elfloader 装载，无 readiness 轮询；optional
+        // 降级只写 CapabilityUnavailable，不阻断）。
+        let required_degraded: alloc::vec::Vec<&str> = rows
+            .iter()
+            .zip(self.state.iter())
+            .filter(|(h, v)| h.1 && **v == Some(ReadinessVerdict::Degraded))
+            .map(|(h, _)| h.0)
+            .collect();
+        eneros_runtime::println!(
+            "[eneros-root-task] PRODUCT-READY: {} (degraded: {}; required degraded: {})",
+            required_degraded.is_empty(),
+            degraded.join(","),
+            required_degraded.join(",")
+        );
+    }
+}
+
+/// root 编排状态单源（[`run_ipc_loop`] 循环捕获的全部可变局部归一；
+/// 死局部 `fault_tick` 不入——63.2 并表后恒等冗余，删除）。
+#[allow(dead_code)] // 同 OnceFlags
+struct Orchestration {
+    /// 主循环轮次（hello 往返后 +1——原 `tick` 语义）。
+    tick: u64,
+    /// 一次性触发旗。
+    once: OnceFlags,
+    /// readiness 异步收集。
+    readiness: ReadinessTracker,
+    /// 心跳监控（WP-40.4/57.3——状态机本体在 supervisor，收编为字段）。
+    hang_monitor: crate::supervisor::HangMonitor,
+    /// 33 WP-33.5：驱动 IRQ 计数（每驱动一槽）。
+    drv_irq_counts: alloc::vec::Vec<u64>,
+    /// IRQ 计数 / 序列（root 自身 ntfn）。
+    irq_count: u64,
+    irq_seq: u64,
+    /// 控制链采集序列 / epoch / 完成轮次。
+    collect_seq: u64,
+    chain_epoch: u64,
+    chain_rounds: u64,
+    /// 50（WP-50.1）：可观测遥测上报 epoch。
+    obs_epoch: u64,
+}
+
+#[allow(dead_code)] // 同 OnceFlags
+impl Orchestration {
+    fn new(
+        service_count: usize,
+        driver_count: usize,
+        start_ms: u64,
+        heartbeat_miss_limit: i64,
+    ) -> Self {
+        Self {
+            tick: 0,
+            once: OnceFlags::new(),
+            readiness: ReadinessTracker::new(start_ms, service_count),
+            hang_monitor: crate::supervisor::HangMonitor::new(service_count, heartbeat_miss_limit),
+            drv_irq_counts: alloc::vec![0; driver_count],
+            irq_count: 0,
+            irq_seq: 0,
+            collect_seq: 0,
+            chain_epoch: 0,
+            chain_rounds: 0,
+            obs_epoch: 0,
+        }
+    }
+
+    /// 直驱服务句柄按名查找（原循环内五处 `.find(|h| h.name == ...)`
+    /// 手写收口；名单与查找语义零变化——不扩 SERVICE_WIRING，§4 边界）。
+    fn direct_handle(
+        handles: &[crate::spawn::SpawnedHandle],
+        name: &str,
+    ) -> Option<crate::spawn::SpawnedHandle> {
+        handles.iter().find(|h| h.name == name).cloned()
+    }
+}
+
+// 一次性周期的 seL4 触点步（cfg 门——host 仅测 OnceFlags 状态机本体）。
+#[cfg(target_os = "none")]
+impl Orchestration {
+    /// hang 注入步（原主循环 hang 块整体迁移；旗与到期判定进 OnceFlags，
+    /// 词形 HEARTBEAT-TEST 行逐字节不变）。
+    fn hang_inject_step(
+        &mut self,
+        hang_handle: &Option<crate::spawn::SpawnedHandle>,
+        handles: &[crate::spawn::SpawnedHandle],
+    ) {
+        if !self.once.hang_due(crate::wiring::periodic_due(
+            crate::wiring::PeriodicTask::HangInject,
+            self.tick,
+        )) {
+            return;
+        }
+        let Some(h) = hang_handle else {
+            return;
+        };
+        self.once.mark_hang();
+        if let Some(idx) = handles.iter().position(|x| x.name == "svc-hang") {
+            self.hang_monitor.note_request(idx, self.tick as i64);
+        }
+        eneros_runtime::println!(
+            "[eneros-root-task] HEARTBEAT-TEST: inject hang to svc-hang (one-shot)"
+        );
+        use eneros_sel4_sys::safe::{ipc_send, message_info_new, set_mr};
+        let _ = set_mr(0, u64::from_le_bytes(*b"hang\0\0\0\0"));
+        let mi = match message_info_new(0, 0, 0, 1) {
+            Ok(m) => m,
+            Err(e) => ipc_fail_closed("hang mi", e),
+        };
+        if let Err(e) = ipc_send(h.ep, mi) {
+            ipc_fail_closed("send hang", e);
+        }
+    }
+
+    /// 存储落盘探针步（一次性；STORAGE-PERSIST 词形逐字节不变）。
+    fn storage_persist_step(&mut self, ota_handle: &Option<crate::spawn::SpawnedHandle>) {
+        if !self.once.storage_due(crate::wiring::periodic_due(
+            crate::wiring::PeriodicTask::StoragePersist,
+            self.tick,
+        )) {
+            return;
+        }
+        let Some(h) = ota_handle else {
+            return;
+        };
+        self.once.mark_storage();
+        match storage_persist_probe(h.ep, &mut self.chain_epoch) {
+            Ok(()) => {
+                eneros_runtime::println!(
+                    "[eneros-root-task] STORAGE-PERSIST: OK (trial persisted + reloaded via svc-storage)"
+                );
+            }
+            Err(e) => {
+                eneros_runtime::println!(
+                    "[eneros-root-task] STORAGE-PERSIST: FAILED ({e}) — fail-closed 不伪造"
+                );
+            }
+        }
+    }
+
+    /// OTA 下载探针步（一次性；OTA-DOWNLOAD 词形逐字节不变）。
+    fn ota_download_step(&mut self, ota_handle: &Option<crate::spawn::SpawnedHandle>) {
+        if !self.once.ota_due(crate::wiring::periodic_due(
+            crate::wiring::PeriodicTask::OtaDownload,
+            self.tick,
+        )) {
+            return;
+        }
+        let Some(h) = ota_handle else {
+            return;
+        };
+        self.once.mark_ota();
+        match ota_download_probe(h.ep, &mut self.chain_epoch) {
+            Ok(()) => {
+                eneros_runtime::println!(
+                    "[eneros-root-task] OTA-DOWNLOAD: OK (real A/B download/verify/trial/commit)"
+                );
+            }
+            Err(e) => {
+                eneros_runtime::println!(
+                    "[eneros-root-task] OTA-DOWNLOAD: FAILED ({e}) — fail-closed 不伪造"
+                );
+            }
+        }
+    }
+}
+
 /// K2.2/K2.3：root-task IPC 主循环（21-A §2.K2.2/K2.3）。
 ///
 /// 首轮迭代（fault 注入只执行一次，svc-fault 挂起后不再接收消息）：
@@ -145,7 +423,7 @@ pub fn run_ipc_loop(
     mut driver_supervisor: eneros_driver_framework::DriverSupervisor,
 ) -> ! {
     use eneros_ipc_wire::el0::{encode_frame, El0FrameType};
-    use eneros_sel4_sys::safe::{get_mr, ipc_call, ipc_poll, ipc_send, message_info_new, set_mr};
+    use eneros_sel4_sys::safe::{get_mr, ipc_poll};
 
     // 服务表：按名寻址。
     let by_name = |name: &str| {
@@ -235,50 +513,24 @@ pub fn run_ipc_loop(
         driver_supervisor.report_line(),
         driver_supervisor.healthy_count()
     );
-    let mut fault_tick = 0u64;
-    let mut tick = 0u64;
-    // 33 WP-33.5：驱动 IRQ 计数（每驱动一槽；UART RX 注入时递增）。
-    let mut drv_irq_counts: alloc::vec::Vec<u64> = alloc::vec![0; irq_drivers.len()];
     // 44.3：svc-fault 探针可选——缺失时 fault_idx=None，注入块跳过。
     let fault_idx = handles.iter().position(|h| h.name == "svc-fault");
-
-    // WP-37.1 #8：readiness **异步收集**——readiness 必须来自 IPC
-    // handshake/health probe，非"spawn 返回成功"（蓝图 WP-37.1 #8）。
-    // 服务 resume 后在其首个调度周期内 Signal 就绪 ntfn；root 在主循环
-    // 阻塞点（hello 往返）之间 poll 收集。QEMU 实测：root 高优先级
-    // 自旋 busy_wait 饿死 EL0 服务，故禁止同步忙等探测。
-    // - 就绪 → 生命周期 Started→Ready；
-    // - deadline 内无信号（svc-drv-* 占位自旋）→ Started→Degraded，
-    //   显式降级不虚报（35-00 P0-08 占位债务由 38/39 清偿）；
-    // 全部判定后打印汇总行 PRODUCT-READY（Exit Gate #1 判据）。
-    let mut readiness_start_ms: alloc::vec::Vec<u64> = alloc::vec![now_ms(); handles.len()];
-    // None = 未判定（继续收集）；Some = 已判定。
-    let mut readiness_state: alloc::vec::Vec<Option<ReadinessVerdict>> =
-        alloc::vec![None; handles.len()];
-    let mut readiness_summary_printed = false;
-
-    let mut irq_count: u64 = 0;
-    let mut irq_seq: u64 = 0;
 
     // ============================================================================
     // 蓝图 40 收尾：控制链驱动 + 心跳监控（WP-40.4 隔离面 + Exit #6/#10
     // 实弹）。root 持全部服务 ep——作为采集链代理与编排触发器。
     // ============================================================================
-    let telemetry_handle = handles.iter().find(|h| h.name == "svc-telemetry").cloned();
-    let energy_handle = handles
-        .iter()
-        .find(|h| h.name == "svc-energy-agent")
-        .cloned();
-    let hang_handle = handles.iter().find(|h| h.name == "svc-hang").cloned();
+    // 64.2 WP-64.2.5：直驱服务句柄按名查找单点（Orchestration::direct_handle
+    // ——原五处手写 .find 收口，名单/语义零变化）。
+    let telemetry_handle = Orchestration::direct_handle(handles, "svc-telemetry");
+    let energy_handle = Orchestration::direct_handle(handles, "svc-energy-agent");
+    let hang_handle = Orchestration::direct_handle(handles, "svc-hang");
     // 41（WP-41.3 落盘）：svc-ota 经 EIPC 调 svc-storage 真落盘——
     // root 作为编排方触发一次 PERSIST+LOAD 往返验证（trial 状态写盘
     // 再读回；证据行 STORAGE-PERSIST）。
-    let ota_handle = handles.iter().find(|h| h.name == "svc-ota").cloned();
+    let ota_handle = Orchestration::direct_handle(handles, "svc-ota");
     // 50（WP-50.1）：svc-observability 句柄（可观测遥测上报目标）。
-    let obs_handle = handles
-        .iter()
-        .find(|h| h.name == "svc-observability")
-        .cloned();
+    let obs_handle = Orchestration::direct_handle(handles, "svc-observability");
     if let (Some(t), Some(e)) = (&telemetry_handle, &energy_handle) {
         eneros_runtime::println!(
             "[eneros-root-task] CONTROL-CHAIN: drivers bound telemetry.ep={} energy.ep={}",
@@ -290,28 +542,23 @@ pub fn run_ipc_loop(
             "[eneros-root-task] CONTROL-CHAIN: telemetry/energy-agent not spawned — chain idle"
         );
     }
-    // 心跳监控状态：最近心跳轮次 / root 最近发请求轮次（-1 = 未发生）。
-    // 判定 = "发过请求却无进展"（probe_sent ≥ 0 且 tick - last_beat 超限）
-    // ——空闲服务无请求在途，不误判。
-    // 蓝图 57 WP-57.3：挂起判定状态机收拢进 supervisor::HangMonitor
-    // （原两组平行数组 + 四处突变块删除；防误杀不变量随状态机内藏）。
-    let mut hang_monitor = crate::supervisor::HangMonitor::new(handles.len(), HEARTBEAT_MISS_LIMIT);
-    /// 心跳缺失容忍轮次。必须 **> 驱动周期**（正常服务在两驱动轮间无
-    /// 请求无心跳——probe 已清除不误杀；svc-hang probe 未清除 → 超限
-    /// kill）。150 轮 ≈ 0.2s 真实（hello ~760 轮/s）。
+    // 心跳缺失容忍轮次。必须 **> 驱动周期**（正常服务在两驱动轮间无
+    // 请求无心跳——probe 已清除不误杀；svc-hang probe 未清除 → 超限
+    // kill）。150 轮 ≈ 0.2s 真实（hello ~760 轮/s）。
     const HEARTBEAT_MISS_LIMIT: i64 = 150;
-    let mut collect_seq: u64 = 0;
-    let mut chain_epoch: u64 = 0;
-    let mut chain_rounds: u64 = 0;
-    /// 50（WP-50.1）：可观测遥测上报驱动（svc-observability EIPC epoch）。
-    let mut obs_epoch: u64 = 0;
-    let mut hang_injected = false;
     // 周期编排（控制链 5 / 可观测 25+20 / hang 200 / 存储落盘 60 / OTA
     // 70 / 故障注入 50 / 看门狗 100）自本函数常量迁入
     // `wiring::PERIODIC_SCHEDULE` 单源（蓝图 63 卷 63.2 WP-63.2.2）——
     // 到期判定经 `wiring::periodic_due`，本循环零手写周期算式。
-    let mut storage_persist_done = false;
-    let mut ota_download_done = false;
+    // 64.2 WP-64.2.5：循环捕获的可变局部（tick/once/readiness/心跳/IRQ
+    // 计数/链序列）归一进 Orchestration（原 16 个散装 let mut 收拢；
+    // 死局部 fault_tick 删除——63.2 并表后恒等冗余）。
+    let mut orch = Orchestration::new(
+        handles.len(),
+        irq_drivers.len(),
+        now_ms(),
+        HEARTBEAT_MISS_LIMIT,
+    );
 
     loop {
         // 22 §2.W1.6：每轮喂硬件狗（喂狗间隔 < 看门狗超时 10s）。
@@ -323,19 +570,19 @@ pub fn run_ipc_loop(
             let mut irq_sender = 0u64;
             if let Ok(_mi) = ipc_poll(binding.ntfn_slot, Some(&mut irq_sender)) {
                 if irq_sender != 0 {
-                    irq_count += 1;
-                    if irq_count % 8 == 1 || irq_count < 4 {
+                    orch.irq_count += 1;
+                    if orch.irq_count % 8 == 1 || orch.irq_count < 4 {
                         eneros_runtime::println!(
                             "[eneros-root-task] IRQ: irq={} badge={} count={}",
                             binding.irq,
                             irq_sender,
-                            irq_count
+                            orch.irq_count
                         );
                     }
                     if let Err(e) = irq_table.ack(binding) {
                         ipc_fail_closed("irq ack", e);
                     }
-                    irq_seq += 1;
+                    orch.irq_seq += 1;
                 }
             }
         }
@@ -357,12 +604,12 @@ pub fn run_ipc_loop(
                     if let Err(e) = irq_table.ack(&drv.binding) {
                         ipc_fail_closed("driver irq ack", e);
                     }
-                    drv_irq_counts[i] += 1;
-                    if drv_irq_counts[i] % 8 == 1 || drv_irq_counts[i] < 4 {
+                    orch.drv_irq_counts[i] += 1;
+                    if orch.drv_irq_counts[i] % 8 == 1 || orch.drv_irq_counts[i] < 4 {
                         eneros_runtime::println!(
                             "[eneros-root-task] DRIVER-IRQ: irq={} count={}",
                             drv.irq,
-                            drv_irq_counts[i]
+                            orch.drv_irq_counts[i]
                         );
                     }
                 }
@@ -397,14 +644,13 @@ pub fn run_ipc_loop(
             }
         }
 
-        tick += 1;
+        orch.tick += 1;
 
         // WP-37.1 #8：readiness 异步收集（每轮在 hello 阻塞点后 poll；
         // 服务在此期间已运行并 Signal 就绪通知）。全部判定后打印一次
-        // 汇总行 PRODUCT-READY。
-        let mut any_pending = false;
+        // 汇总行 PRODUCT-READY。状态面 = ReadinessTracker（WP-64.2.5）。
         for (idx, handle) in handles.iter().enumerate() {
-            if readiness_state[idx].is_some() {
+            if orch.readiness.is_decided(idx) {
                 continue;
             }
             let mut sender = 0u64;
@@ -413,56 +659,36 @@ pub fn run_ipc_loop(
             } else {
                 false
             };
-            match check_readiness(
-                readiness_start_ms[idx],
-                READINESS_DEADLINE_MS,
-                now_ms(),
-                signaled,
-            ) {
-                Some(verdict) => {
-                    // spawn 已完成 → 生命周期推进到 Started（readiness
-                    // 判定的合法基线），再转 Ready/Degraded。
-                    supervisor.services[idx].advance_lifecycle_to_started();
-                    let _ = supervisor.services[idx].lifecycle_transition(match verdict {
-                        ReadinessVerdict::Ready => crate::supervisor::LifecycleState::Ready,
-                        ReadinessVerdict::Degraded => crate::supervisor::LifecycleState::Degraded,
-                    });
-                    readiness_state[idx] = Some(verdict);
-                    eneros_runtime::println!(
-                        "[eneros-root-task] READINESS: {}={:?}",
-                        handle.name,
-                        verdict
-                    );
-                }
-                None => any_pending = true,
-            }
-        }
-        if !any_pending && !readiness_summary_printed {
-            readiness_summary_printed = true;
-            let degraded: alloc::vec::Vec<&str> = handles
-                .iter()
-                .zip(readiness_state.iter())
-                .filter(|(_, v)| **v == Some(ReadinessVerdict::Degraded))
-                .map(|(h, _)| h.name.as_str())
-                .collect();
-            // WP-37.1：PRODUCT-READY 判据 = **required 服务**全 Ready
-            // （root 运行到本行即 Ready——elfloader 装载，无 readiness
-            // 轮询；optional 降级只写 CapabilityUnavailable，不阻断）。
-            let required_degraded: alloc::vec::Vec<&str> = handles
-                .iter()
-                .zip(readiness_state.iter())
-                .filter(|(h, v)| {
-                    h.requirement == crate::bundle::Requirement::Required
-                        && **v == Some(ReadinessVerdict::Degraded)
-                })
-                .map(|(h, _)| h.name.as_str())
-                .collect();
+            let Some(verdict) =
+                orch.readiness
+                    .decide(idx, READINESS_DEADLINE_MS, now_ms(), signaled)
+            else {
+                continue;
+            };
+            // spawn 已完成 → 生命周期推进到 Started（readiness
+            // 判定的合法基线），再转 Ready/Degraded。
+            supervisor.services[idx].advance_lifecycle_to_started();
+            let _ = supervisor.services[idx].lifecycle_transition(match verdict {
+                ReadinessVerdict::Ready => crate::supervisor::LifecycleState::Ready,
+                ReadinessVerdict::Degraded => crate::supervisor::LifecycleState::Degraded,
+            });
             eneros_runtime::println!(
-                "[eneros-root-task] PRODUCT-READY: {} (degraded: {}; required degraded: {})",
-                required_degraded.is_empty(),
-                degraded.join(","),
-                required_degraded.join(",")
+                "[eneros-root-task] READINESS: {}={:?}",
+                handle.name,
+                verdict
             );
+        }
+        if orch.readiness.all_decided() {
+            let rows: alloc::vec::Vec<(&str, bool)> = handles
+                .iter()
+                .map(|h| {
+                    (
+                        h.name.as_str(),
+                        h.requirement == crate::bundle::Requirement::Required,
+                    )
+                })
+                .collect();
+            orch.readiness.summarize(&rows);
         }
 
         // 蓝图 40 收尾：控制链驱动（采集代理 INGEST → 编排 TICK）。
@@ -470,23 +696,21 @@ pub fn run_ipc_loop(
         // 完成——root 作为**采集链代理**注入样本（source=1 与 svc-telemetry
         // 覆盖声明一致）；样本经 svc-telemetry evaluator 全量校验
         // （coverage/freshness/quality/integrity），不绕过信任评估。
-        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::ControlChain, tick) {
+        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::ControlChain, orch.tick) {
             if let (Some(t), Some(e)) = (&telemetry_handle, &energy_handle) {
                 if let Some(i) = handles.iter().position(|h| h.name == "svc-telemetry") {
-                    hang_monitor.note_request(i, tick as i64);
+                    orch.hang_monitor.note_request(i, orch.tick as i64);
                 }
                 if let Some(i) = handles.iter().position(|h| h.name == "svc-energy-agent") {
-                    hang_monitor.note_request(i, tick as i64);
+                    orch.hang_monitor.note_request(i, orch.tick as i64);
                 }
-                match control_chain_tick(t.ep, e.ep, &mut collect_seq, &mut chain_epoch) {
+                match control_chain_tick(t.ep, e.ep, &mut orch.collect_seq, &mut orch.chain_epoch) {
                     Ok((accepted, ea_status, disp_state)) => {
-                        chain_rounds += 1;
-                        let ea = match ea_status {
-                            0 => "OK",
-                            1 => "NOACTION",
-                            2 => "UNAVAILABLE",
-                            _ => "INVALID",
-                        };
+                        orch.chain_rounds += 1;
+                        // 蓝图 64 卷 64.2（WP-64.2.1b）：EA 显示词形单源
+                        // agent-sdk ea_wire（原手写 4 臂镜像删除——词形
+                        // OK/NOACTION/UNAVAILABLE/INVALID 逐字节不变）。
+                        let ea = eneros_agent_sdk::ea_wire::ea_display(ea_status);
                         // 蓝图 63 WP-63.1.1：终态字节解码/显示收窄——码表单源
                         // eneros-dispatch-state（原内联 4 态 match + 偏移知识
                         // 删除；终态才显示，推进态/未知码如实 "-"——与 45-62
@@ -498,7 +722,7 @@ pub fn run_ipc_loop(
                             .unwrap_or("-");
                         eneros_runtime::println!(
                             "[eneros-root-task] CONTROL-CHAIN: round={} telemetry-ingest={} agent={} dispatch={}",
-                            chain_rounds,
+                            orch.chain_rounds,
                             accepted,
                             ea,
                             disp
@@ -521,9 +745,10 @@ pub fn run_ipc_loop(
         // 顺序使 intent 的 SNAPSHOT 与 ACQ 相隔毫秒）。
         for w in crate::wiring::SERVICE_WIRING {
             if let Some(d) = &w.driven {
-                if d.is_due(tick) {
+                if d.is_due(orch.tick) {
                     if let Some(h) = handles.iter().find(|h| h.name == w.name) {
-                        let _ = protocol_execute(h.ep, crate::wiring::execute_nonce(tick), w.name);
+                        let _ =
+                            protocol_execute(h.ep, crate::wiring::execute_nonce(orch.tick), w.name);
                     }
                 }
             }
@@ -533,81 +758,27 @@ pub fn run_ipc_loop(
         // 编排方，周期性向 svc-observability 入队一帧**真实服务健康摘要**
         //（各服务 readiness 实况，非合成 ACQ 读数）并触发 FLUSH → 导出器
         // 经 svc-mqtt 批量帧送达 MQTT broker。驱动失败不阻断主循环。
-        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::ObsReport, tick) {
+        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::ObsReport, orch.tick) {
             if let Some(h) = &obs_handle {
-                let _ = telemetry_report_tick(h.ep, handles, &mut obs_epoch);
+                let _ = telemetry_report_tick(h.ep, handles, &mut orch.obs_epoch);
             }
         }
 
         // 蓝图 40 收尾：hang 注入（一次性；svc-hang 为心跳超时注入参考
         // 服务——蓝图 §9 isolation 行实弹）。单向 Send 裸帧（svc-hang
         // 自定协议，非 el0 wire；卡死后 root 不阻塞）。
-        if !hang_injected
-            && crate::wiring::periodic_due(crate::wiring::PeriodicTask::HangInject, tick)
-        {
-            if let Some(h) = &hang_handle {
-                hang_injected = true;
-                if let Some(idx) = handles.iter().position(|x| x.name == "svc-hang") {
-                    hang_monitor.note_request(idx, tick as i64);
-                }
-                eneros_runtime::println!(
-                    "[eneros-root-task] HEARTBEAT-TEST: inject hang to svc-hang (one-shot)"
-                );
-                use eneros_sel4_sys::safe::{ipc_send, message_info_new, set_mr};
-                let _ = set_mr(0, u64::from_le_bytes(*b"hang\0\0\0\0"));
-                let mi = match message_info_new(0, 0, 0, 1) {
-                    Ok(m) => m,
-                    Err(e) => ipc_fail_closed("hang mi", e),
-                };
-                if let Err(e) = ipc_send(h.ep, mi) {
-                    ipc_fail_closed("send hang", e);
-                }
-            }
-        }
+        // 64.2 WP-64.2.5：旗与到期判定进 OnceFlags（hang_inject_step）。
+        orch.hang_inject_step(&hang_handle, handles);
 
         // 41（WP-41.3 落盘）：存储真落盘往返验证（一次性）——root 经
         // EIPC 调 svc-ota PERSIST-TRIAL（trial 状态经 svc-storage 块命令
         // 面真写数据盘）再 LOAD-TRIAL 读回。证据行 STORAGE-PERSIST。
-        if !storage_persist_done
-            && crate::wiring::periodic_due(crate::wiring::PeriodicTask::StoragePersist, tick)
-        {
-            if let Some(h) = &ota_handle {
-                storage_persist_done = true;
-                match storage_persist_probe(h.ep, &mut chain_epoch) {
-                    Ok(()) => {
-                        eneros_runtime::println!(
-                            "[eneros-root-task] STORAGE-PERSIST: OK (trial persisted + reloaded via svc-storage)"
-                        );
-                    }
-                    Err(e) => {
-                        eneros_runtime::println!(
-                            "[eneros-root-task] STORAGE-PERSIST: FAILED ({e}) — fail-closed 不伪造"
-                        );
-                    }
-                }
-            }
-        }
+        // 64.2 WP-64.2.5：旗与到期判定进 OnceFlags（storage_persist_step）。
+        orch.storage_persist_step(&ota_handle);
 
         // 41（OTA A/B）：真实签名镜像 download→verify→trial→commit 探针。
-        if !ota_download_done
-            && crate::wiring::periodic_due(crate::wiring::PeriodicTask::OtaDownload, tick)
-        {
-            if let Some(h) = &ota_handle {
-                ota_download_done = true;
-                match ota_download_probe(h.ep, &mut chain_epoch) {
-                    Ok(()) => {
-                        eneros_runtime::println!(
-                            "[eneros-root-task] OTA-DOWNLOAD: OK (real A/B download/verify/trial/commit)"
-                        );
-                    }
-                    Err(e) => {
-                        eneros_runtime::println!(
-                            "[eneros-root-task] OTA-DOWNLOAD: FAILED ({e}) — fail-closed 不伪造"
-                        );
-                    }
-                }
-            }
-        }
+        // 64.2 WP-64.2.5：旗与到期判定进 OnceFlags（ota_download_step）。
+        orch.ota_download_step(&ota_handle);
 
         // 蓝图 40 收尾：心跳监控（WP-40.4）——poll 受监控服务心跳 ntfn；
         // "发过请求却无进展超限" → suspend + restart（无 fault 卡死也终止，
@@ -622,14 +793,14 @@ pub fn run_ipc_loop(
                     // 蓝图 57：心跳簿记入 HangMonitor（probe 后已响应即解除
                     // pending 的防误杀不变量随状态机内藏——QEMU 实弹教训，
                     // 原 :620-628 注释语义不变）。
-                    hang_monitor.observe_beat(idx, tick as i64);
+                    orch.hang_monitor.observe_beat(idx, orch.tick as i64);
                 }
             }
             if let Some(crate::supervisor::HangVerdict::TimedOut { .. }) =
-                hang_monitor.hang_verdict(idx, tick as i64)
+                orch.hang_monitor.hang_verdict(idx, orch.tick as i64)
             {
-                let sent = hang_monitor.pending_since(idx).unwrap_or_default();
-                let last_beat = hang_monitor.last_beat(idx);
+                let sent = orch.hang_monitor.pending_since(idx).unwrap_or_default();
+                let last_beat = orch.hang_monitor.last_beat(idx);
                 eneros_runtime::println!(
                     "[eneros-root-task] HEARTBEAT-TIMEOUT: {} no progress {} rounds since probe (last_beat={}, probe={}) — kill+restart",
                     handle.name,
@@ -646,7 +817,7 @@ pub fn run_ipc_loop(
                     RestartReason::Heartbeat,
                 );
                 // 重启翻篇：清除 pending（重启后空闲不心跳不误杀）。
-                hang_monitor.clear_after_kill(idx, tick as i64);
+                orch.hang_monitor.clear_after_kill(idx, orch.tick as i64);
             }
         }
 
@@ -702,7 +873,7 @@ pub fn run_ipc_loop(
         }
 
         // 22 §2.W1.6：定期检查分层看门狗状态（诊断；无 layer 时为 AllFed）。
-        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::WatchdogCheck, tick) {
+        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::WatchdogCheck, orch.tick) {
             match eneros_watchdog::api::wdt_check() {
                 eneros_watchdog::layered::WatchdogStatus::AllFed => {}
                 eneros_watchdog::layered::WatchdogStatus::LayerTimeout(id) => {
@@ -725,8 +896,9 @@ pub fn run_ipc_loop(
         //    instruction-fetch vm fault（可归因：栈地址），supervisor
         //    restart 证明隔离；旧 IllegalAccess（null 写）不证明 NX。
         //    （原独立计数器 fault_tick 与 tick 每轮各 +1 且主循环无
-        //    continue——恒等；63.2 WP-63.2.2 并入编排表 Repeat(50,0)。）
-        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::FaultInject, tick) {
+        //    continue——恒等；63.2 WP-63.2.2 并入编排表 Repeat(50,0)，
+        //    64.2 WP-64.2.5 死局部删除——节拍即 orch.tick。）
+        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::FaultInject, orch.tick) {
             if let (Some(fault), Some(fault_idx)) = (&fault, fault_idx) {
                 if supervisor.state_of(fault_idx) == Some(crate::supervisor::ServiceState::Running)
                 {
@@ -934,16 +1106,16 @@ fn restart_service(
 #[cfg(all(target_os = "none", feature = "sel4-eipc"))]
 fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string::String> {
     use eneros_agent_sdk::endpoint::ChunkedSession;
-    use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
-    let mut ipc = Sel4IpcClient::new("root-storage-probe", ota_ep, eneros_time::get_monotonic_ns)
-        .map_err(|e| alloc::format!("ota client init: {:?}", e))?;
+    // cap 寻址 + 共享 epoch 会话一步装配（WP-64.2.1d——原 new+wrap_shared
+    // 手抄闭包归宿；失败仅建端错，标签长度上界内不可达）。
+    let mut endpoint = ChunkedSession::bind_shared("root-storage-probe", ota_ep, epoch)
+        .ok_or_else(|| alloc::format!("ota client init: endpoint label too long"))?;
     // OTA1 0x06 PERSIST-TRIAL：remaining(4)‖version(16) → gen(8)。
     // 服务循环为分块 EIPC（ChunkedReceiver）——经共享 epoch 会话发送
     //（蓝图 63 卷 63.2 WP-63.2.1：写回内化进 ChunkedSession::call，
     // 成败无关——结构性不可能漏写回）。蓝图 58：请求构造/响应解析走
     // ota_wire 单源。
     let req = eneros_agent_sdk::ota_wire::encode_persist_trial(2, "1.2.0");
-    let mut endpoint = ChunkedSession::wrap_shared(ipc, epoch);
     let resp = endpoint.call("svc-ota", &req);
     let resp = resp.map_err(|e| alloc::format!("persist transport: {e:?}"))?;
     // 41 修复：svc-ota 失败响应以 "ERR:" 前缀返回（如存储未授予
@@ -1003,7 +1175,6 @@ const OTA_PROBE_TEST_SEED: [u8; 32] = [0x41; 32];
 
 #[cfg(all(target_os = "none", feature = "sel4-eipc"))]
 fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string::String> {
-    use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
     use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair, Sm2PrivateKey};
 
     // 47（WP-47.3 密钥注入链）：OTA 探针签章**测试键**（种子 0x41——与
@@ -1031,9 +1202,9 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
         512,
     );
 
-    let mut ipc = Sel4IpcClient::new("root-ota-download", ota_ep, eneros_time::get_monotonic_ns)
-        .map_err(|e| alloc::format!("ota client init: {:?}", e))?;
-    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::wrap_shared(ipc, epoch);
+    let mut endpoint =
+        eneros_agent_sdk::endpoint::ChunkedSession::bind_shared("root-ota-download", ota_ep, epoch)
+            .ok_or_else(|| alloc::format!("ota client init: endpoint label too long"))?;
     let resp = endpoint.call("svc-ota", &req);
     let resp = resp.map_err(|e| alloc::format!("ota download transport: {e:?}"))?;
     if let Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) =
@@ -1084,7 +1255,6 @@ fn control_chain_synth_ingest(
     epoch: &mut u64,
     now: u64,
 ) -> Result<u8, alloc::string::String> {
-    use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
     use eneros_safety_validator::{IntegrityStatus, SampleQuality, TelemetrySample};
 
     let mut req: alloc::vec::Vec<u8> = alloc::vec![1u8];
@@ -1119,10 +1289,13 @@ fn control_chain_synth_ingest(
         // 45.5：58B 编码收归 agent-sdk sample_wire（单一事实）。
         req.extend_from_slice(&eneros_agent_sdk::sample_wire::encode_sample(&sample));
     }
-    // INGEST（分块：349B → 4 块）。
-    let mut ipc = Sel4IpcClient::new("root-collect", telemetry_ep, eneros_time::get_monotonic_ns)
-        .map_err(|e| alloc::format!("telemetry client init: {:?}", e))?;
-    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::wrap_shared(ipc, epoch);
+    // INGEST（分块：349B → 4 块；cap 寻址会话一步装配 WP-64.2.1d）。
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared(
+        "root-collect",
+        telemetry_ep,
+        epoch,
+    )
+    .ok_or_else(|| alloc::format!("telemetry client init: endpoint label too long"))?;
     let resp = endpoint.call("svc-telemetry", &req);
     let resp = resp.map_err(|e| {
         let stats = endpoint.client_mut().stats();
@@ -1170,7 +1343,6 @@ fn telemetry_report_tick(
     handles: &[crate::spawn::SpawnedHandle],
     epoch: &mut u64,
 ) -> i64 {
-    use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
     // 1. 服务健康摘要 payload（真实：spawned 服务计数按必需性；
     // 50 实弹修复——逐服务名清单单条 ≈450B × batch8 超帧限 1024B
     // （frame-oversize），改紧凑计数）。
@@ -1205,14 +1377,17 @@ fn telemetry_report_tick(
             return -1;
         }
     };
-    let mut ipc = match Sel4IpcClient::new("root-obs-enq", obs_ep, eneros_time::get_monotonic_ns) {
-        Ok(c) => c,
-        Err(_) => {
+    let mut endpoint = match eneros_agent_sdk::endpoint::ChunkedSession::bind_shared(
+        "root-obs-enq",
+        obs_ep,
+        epoch,
+    ) {
+        Some(s) => s,
+        None => {
             eneros_runtime::println!("[eneros-root-task] OBS-REPORT enqueue client init FAIL");
             return -1;
         }
     };
-    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::wrap_shared(ipc, epoch);
     let enq_resp = endpoint.call("svc-observability", &req);
     let enq_resp = match enq_resp {
         Ok(r) => r,
@@ -1221,7 +1396,9 @@ fn telemetry_report_tick(
             return -1;
         }
     };
-    if enq_resp.first() != Some(&1) {
+    // ENQUEUE 应答约定单源（WP-64.2.1c）：ack=0x01 受理；拒绝携带原始字节
+    // （打印面不变——{:02x?} 前 8 字节即原打印源）。
+    if eneros_agent_sdk::obs_wire::parse_enqueue_resp(&enq_resp).is_err() {
         eneros_runtime::println!(
             "[eneros-root-task] OBS-REPORT enqueue rejected {:02x?}",
             &enq_resp[..enq_resp.len().min(8)]
@@ -1230,15 +1407,17 @@ fn telemetry_report_tick(
     }
     // 3. FLUSH：蓝图 58 走 obs_wire 单源。
     let flush_req = eneros_agent_sdk::obs_wire::encode_flush(8);
-    let mut ipc2 = match Sel4IpcClient::new("root-obs-flush", obs_ep, eneros_time::get_monotonic_ns)
-    {
-        Ok(c) => c,
-        Err(_) => {
+    let mut endpoint2 = match eneros_agent_sdk::endpoint::ChunkedSession::bind_shared(
+        "root-obs-flush",
+        obs_ep,
+        epoch,
+    ) {
+        Some(s) => s,
+        None => {
             eneros_runtime::println!("[eneros-root-task] OBS-REPORT flush client init FAIL");
             return -1;
         }
     };
-    let mut endpoint2 = eneros_agent_sdk::endpoint::ChunkedSession::wrap_shared(ipc2, epoch);
     let flush_resp = endpoint2.call("svc-observability", &flush_req);
     let flush_resp = match flush_resp {
         Ok(r) => r,
@@ -1248,17 +1427,18 @@ fn telemetry_report_tick(
         }
     };
     // FLUSH 成功响应 = exported u64 LE（8B）；失败 = "ERR:..."（不误读为数字）。
-    let exported = if flush_resp.starts_with(b"ERR") {
-        eneros_runtime::println!(
-            "[eneros-root-task] OBS-REPORT flush rejected {:02x?}",
-            &flush_resp[..flush_resp.len().min(16)]
-        );
-        -1
-    } else {
-        match eneros_agent_sdk::obs_wire::parse_flush_resp(&flush_resp) {
-            Ok(n) => n as i64,
-            Err(_) => 0,
+    // ERR 约定单源 obs_wire::parse_flush_resp（WP-64.2.1c——原 starts_with
+    // 手解删除；拒绝对打印面携带原始字节，词形不变）。
+    let exported = match eneros_agent_sdk::obs_wire::parse_flush_resp(&flush_resp) {
+        Ok(n) => n as i64,
+        Err(eneros_agent_sdk::obs_wire::ObsWireError::FlushRejected(_)) => {
+            eneros_runtime::println!(
+                "[eneros-root-task] OBS-REPORT flush rejected {:02x?}",
+                &flush_resp[..flush_resp.len().min(16)]
+            );
+            -1
         }
+        Err(_) => 0,
     };
     eneros_runtime::println!(
         "[eneros-root-task] OBS-REPORT svc={} exported={}",
@@ -1292,15 +1472,14 @@ fn control_chain_tick(
     // 的零合成路径（accepted=0，无注入）。真实采集由协议服务
     // （先行者 svc-modbus-tcp）经 EIPC 上报。TICK 触发段保留（编排触发器）。
     let accepted = control_chain_synth_ingest(telemetry_ep, *seq, epoch, now)?;
-    // 2. TICK（1B 请求；响应 = EA 状态 + receipt wire 83B）。
-    use eneros_agent_sdk::ipc_sel4::Sel4IpcClient;
-    let mut ipc2 = Sel4IpcClient::new(
+    // 2. TICK（1B 请求；响应 = EA 状态 + receipt wire 83B）——cap 寻址会话
+    // 一步装配（WP-64.2.1d）。
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared(
         "root-orchestrator",
         energy_ep,
-        eneros_time::get_monotonic_ns,
+        epoch,
     )
-    .map_err(|e| alloc::format!("energy client init: {:?}", e))?;
-    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::wrap_shared(ipc2, epoch);
+    .ok_or_else(|| alloc::format!("energy client init: endpoint label too long"))?;
     let tick_resp = endpoint.call("svc-energy-agent", &[1u8 /* EA_TICK */]);
     let tick_resp = tick_resp.map_err(|e| alloc::format!("tick transport: {:?}", e))?;
     if tick_resp.is_empty() {
@@ -1441,6 +1620,141 @@ mod tests {
         assert_eq!(mrs, vec![1, 0xAB]);
         let out = frame_from_mrs(&mrs).expect("decode");
         assert_eq!(out, vec![0xAB]);
+    }
+
+    // ==================== WP-64.2.1：root wire 面单源结构守卫 ====================
+
+    /// 四张 seam（drv-svc wire / EA 码表 / obs wire / chunked 端点）的手抄
+    /// 形态回归即红（沿 ingestion_stage:536 结构守卫先例；token 按最终代码
+    /// 形态锁定——本文件内再出现手抄 wire 面即违纪。token 经 `concat!`
+    /// 拼接防守卫字面量自匹配）。
+    #[test]
+    fn root_wire_faces_live_in_modules() {
+        let src = include_str!("service.rs");
+        // a) drv-svc wire：手抄 4B/word 打包 / 字面判据 / 裸偏移状态读。
+        let t_pack = concat!("chunks", "(4)");
+        assert!(
+            !src.contains(t_pack),
+            "手抄 4B/word 打包回归（应走 drv_call）"
+        );
+        let t_pred = concat!("status ", "<= 4");
+        assert!(
+            !src.contains(t_pred),
+            "字面状态判据回归（应走 status_handled）"
+        );
+        let t_off = concat!(".unwrap_or(", "0xFF) & 0xFF");
+        assert!(
+            !src.contains(t_off),
+            "裸偏移状态读回归（应走 decode_response_padded）"
+        );
+        // b) EA 码表：手写 4 臂镜像回归（词形归 ea_wire 单源）。
+        let t_noact = concat!("\"NO", "ACTION\"");
+        let t_unavail = concat!("\"UNAV", "AILABLE\"");
+        assert!(
+            !src.contains(t_noact) && !src.contains(t_unavail),
+            "EA 手写臂回归（应走 ea_wire::ea_display）"
+        );
+        assert!(
+            src.contains("ea_wire::ea_display"),
+            "EA 显示面必须经 agent-sdk ea_wire 单源"
+        );
+        // c) obs wire：ack 字节 / ERR 前缀手解回归。
+        let t_ack = concat!("first() != ", "Some(&1)");
+        assert!(
+            !src.contains(t_ack),
+            "ENQUEUE ack 手解回归（应走 parse_enqueue_resp）"
+        );
+        let t_err = concat!("starts_with", "(b\"ERR\")");
+        assert!(
+            !src.contains(t_err),
+            "ERR 前缀手解回归（应走 parse_flush_resp）"
+        );
+        // d) chunked 端点：cap 寻址手工装配回归（唯一合法残留 = protocol_execute
+        //    的 drv_call 客户端构造）。
+        assert_eq!(
+            src.matches(concat!("Sel4IpcClient", "::new")).count(),
+            1,
+            "Sel4IpcClient 手工建端必须仅存 protocol_execute 一处（chunked 面走 bind_shared）"
+        );
+        let t_wrap = concat!("wrap_shared", "(ipc");
+        assert!(
+            !src.contains(t_wrap),
+            "wrap_shared 手工装配回归（应走 ChunkedSession::bind_shared）"
+        );
+    }
+
+    // ==================== WP-64.2.5：Orchestration 状态机 ====================
+
+    /// once 语义：触发一次后永假（原布尔散装语义逐字节——触发窗在旗立起
+    /// 前为真，mark 后恒假；句柄缺席不立旗 = 重试语义保持）。
+    #[test]
+    fn once_flags_fire_exactly_once() {
+        let mut once = OnceFlags::new();
+        assert!(once.hang_due(true));
+        assert!(!once.hang_due(false), "未到期不触发");
+        once.mark_hang();
+        assert!(!once.hang_due(true), "触发一次后永假");
+
+        let mut once = OnceFlags::new();
+        assert!(once.storage_due(true));
+        once.mark_storage();
+        assert!(!once.storage_due(true));
+
+        let mut once = OnceFlags::new();
+        assert!(once.ota_due(true));
+        once.mark_ota();
+        assert!(!once.ota_due(true));
+    }
+
+    /// readiness 状态迁移：未到期 None（继续收集）→ 信号 Ready / 超时
+    /// Degraded；已判定的服务跳过（is_decided）；汇总仅在全判定后打印一次。
+    #[test]
+    fn readiness_tracker_transitions_and_summary_once() {
+        let mut t = ReadinessTracker::new(0, 2);
+        assert!(!t.is_decided(0));
+        assert!(!t.all_decided());
+        // 未到期 → None。
+        assert_eq!(t.decide(0, 5_000, 100, false), None);
+        // 信号 → Ready（登记）。
+        assert_eq!(t.decide(0, 5_000, 200, true), Some(ReadinessVerdict::Ready));
+        assert!(t.is_decided(0));
+        // 已判定服务再 decide 不回退（原 is_some continue 语义）。
+        assert_eq!(
+            t.decide(0, 5_000, 9_999, true),
+            Some(ReadinessVerdict::Ready)
+        );
+        // 超时 → Degraded。
+        assert_eq!(
+            t.decide(1, 5_000, 5_000, false),
+            Some(ReadinessVerdict::Degraded)
+        );
+        assert!(t.all_decided());
+        // 汇总：required 服务（rows[1].1=false → optional 降级不算 required
+        // degraded）——1 个 required Ready + 1 个 optional Degraded。
+        let mut printed = 0;
+        let rows = [("req-svc", true), ("opt-svc", false)];
+        t.summarize(&rows);
+        printed += 1;
+        // 幂等：第二次 summarize 不再打印（旗已立）。
+        t.summarize(&rows);
+        assert_eq!(printed, 1, "汇总行一次性（旗进类型）");
+    }
+
+    /// Orchestration 构造：计数/epoch 初值（原循环局部初值语义）。
+    #[test]
+    fn orchestration_initial_state() {
+        let o = Orchestration::new(4, 2, 1_000, 150);
+        assert_eq!(o.tick, 0);
+        assert_eq!(o.irq_count, 0);
+        assert_eq!(o.irq_seq, 0);
+        assert_eq!(o.collect_seq, 0);
+        assert_eq!(o.chain_epoch, 0);
+        assert_eq!(o.chain_rounds, 0);
+        assert_eq!(o.obs_epoch, 0);
+        assert_eq!(o.drv_irq_counts.len(), 2);
+        assert!(!o.readiness.is_decided(0));
+        assert_eq!(o.readiness.state.len(), 4);
+        assert!(!o.once.hang_injected);
     }
 
     // ==================== WP-37.1 #8：readiness 判定 ====================

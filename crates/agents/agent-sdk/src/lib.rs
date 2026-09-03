@@ -95,6 +95,8 @@ pub mod context;
 pub mod eipc_grants;
 pub mod endpoint;
 // SPEC-C（WP-C.2）：北向历史取回 TELR 线格式单一事实源。
+/// 蓝图 64 卷 64.2（WP-64.2.1b）：EA（energy-agent 编排响应状态码）单源。
+pub mod ea_wire;
 pub mod history_wire;
 pub mod ipc;
 #[cfg(any(test, feature = "sel4"))]

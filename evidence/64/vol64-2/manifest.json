@@ -1,0 +1,28 @@
+{
+  "schema": "eneros.evidence-manifest.v1",
+  "volume": "blueprint-64-vol64-2",
+  "version": "0.317.1",
+  "head": "本 commit（代码+证据同 commit；gate 实跑于该树，bump 0.317.1 同 commit）",
+  "date": "2026-09-03",
+  "gate": "VOL64.2-GATE: PASS",
+  "purpose": "蓝图 64 卷 64.2 出口 QEMU 实弹：root 四张 seam 零手抄 wire 面（drv_call+status_handled / ea_wire / obs_wire 解析器 / ChunkedSession::bind_shared ×6）+ 采集 bin 装配三线收口（build_module 孪生删 / Ladder::Ready 携 records 二次 fetch 删 / bind_telemetry）+ MqttWriteIoService 出 bin + run_ipc_loop 编排状态进 Orchestration。冻结词形逐字节不变；唯一登记变更 = modbus-config POINTS-LOADED 每轮 2→1 行（二次 fetch 删除）",
+  "artifacts": {
+    "normal.qemu-serial.log": "qemu-prod typed 链正例一轮串口全量（对照基线 evidence/63/vol63-1/normal.qemu-serial.log）",
+    "build/sel4.log": "sel4-build-rust.sh 重链接（root-task + 4 协议 bin 进镜像必需）",
+    "build/image.log": "image raw qemu-prod 重建",
+    "build/compile.log": "config compile qemu-prod",
+    "build/image.sha256": "镜像摘要 c97bef17cb0f0a8b15fd2ac0740cc6ff024a431edc7c91a1f5ace7431589dce4",
+    "normal.modbus.transcript.jsonl": "modbus peer 回放输入拷本（拷自 evidence/62/vol62-1，禁写基线）"
+  },
+  "criteria": [
+    { "id": "C1", "assert": "PRODUCT-READY: true（ReadinessTracker 重排后汇总行词形不变）", "result": "PASS" },
+    { "id": "C2", "assert": "PROTO-EXEC status=0x00（drv_call 重写）/status=0x04（能力壳降级）词形不变", "result": "PASS" },
+    { "id": "C3", "assert": "OBS-REPORT enqueue rejected / flush rejected / svc= exported 三行词形不变（parse_enqueue_resp/parse_flush_resp 收编后）", "result": "PASS" },
+    { "id": "C4", "assert": "CONTROL-CHAIN round=/dispatch=Committed + ACQ-ROUND + AUDIT-CHAIN + OTA-DOWNLOAD: OK + STORAGE-PERSIST: OK 全词形不变", "result": "PASS" },
+    { "id": "C5", "assert": "telemetry EIPC bound/NOT-granted 两行词形不变（bind_telemetry 收编后；iec104 NOT granted + modbus bound）", "result": "PASS" },
+    { "id": "C6", "assert": "PROTOCOL-CONFIG 装载行与基线逐字节一致（goose 6/iec104 5/mms 2/modbus-tcp 4/mqtt 9/sv 3 keys）", "result": "PASS" },
+    { "id": "C7", "assert": "POINTS-LOADED：modbus-config 2→1（唯一登记变更——二次 fetch 删除）；iec104/mms 与基线一致", "result": "PASS" },
+    { "id": "C8", "assert": "SUPERVISOR/HEARTBEAT-KILL 零出现（负断言——Orchestration 收拢零心跳语义变化）", "result": "PASS" }
+  ],
+  "baseline": "evidence/63/vol63-1/normal.qemu-serial.log"
+}

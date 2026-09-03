@@ -120,9 +120,10 @@ impl eneros_drv_svc::runtime::DriverService for Iec104IoService {
 /// 装配接入深模块（[07] §3.6.5：接 profile/source descriptors；与
 /// svc-modbus-tcp `build_module` 同构）。
 ///
-/// 点计划从点表 `ProtocolAddress::Iec104` 行构建（映射/身份两路同源——同一
-/// 次 bundle 解码）；adapter 映射表同步构建。协议侧功能码/寄存器/从站字段
-/// 填 0（仅 Modbus 组读用；iec104 adapter 用自己的 mappings 表）。
+/// 蓝图 64 卷 64.2（WP-64.2.2）：64 行点计划孪生收编 lib
+/// `plans_from_records`；本 bin 只保留协议差异点——Iec104 地址反构造闭包
+/// （顺带构建 adapter mappings 表）+ period 0 → 1s drain 节奏缺省
+/// （[07] §2.3 事件驱动在调度面不可达）。
 #[cfg(target_os = "none")]
 fn build_module(
     sources: &[(u32, eneros_ingestion_core::SourceDescriptor)],
@@ -131,90 +132,46 @@ fn build_module(
     records: &[eneros_config_bundle::points::PointRecord],
     plugin: eneros_protocol_services::iec104_ingest::SharedIec104Plugin,
 ) -> Option<eneros_ingestion_core::IngestionModule> {
-    use eneros_ingestion_core::{
-        EventQos, InMemorySink, IngestionModule, MemEpochStore, OperationalProfile, PointPlan,
-    };
-    use eneros_protocol_services::iec104_ingest::{Iec104IngestAdapter, IecMapping};
-    let mut module = IngestionModule::new(
-        Box::new(InMemorySink::new(1024)),
-        Box::new(MemEpochStore::default()),
-        OperationalProfile::reference(),
-    );
-    for (_, d) in sources {
-        module.register(d.clone());
-    }
-    if !sources.iter().any(|(id, _)| *id == own_source_id) {
-        return None;
-    }
-    let mut plans: alloc::vec::Vec<PointPlan> = alloc::vec::Vec::new();
-    let mut mappings: alloc::vec::Vec<IecMapping> = alloc::vec::Vec::new();
-    let mut ids: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
-    registry.collect_ids(&mut ids);
-    for id in ids {
-        let Some(m) = registry.resolve(id) else {
-            continue;
-        };
-        // 遥测点（analog/digital）才进采集调度；控制/设点/计数点不采集。
-        match m.data_type {
-            eneros_upa_model::PointType::Analog | eneros_upa_model::PointType::Digital => {}
-            _ => continue,
-        }
-        let (common_addr, ioa) = match m.protocol_addr {
+    use eneros_protocol_services::iec104_ingest::IecMapping;
+    use eneros_protocol_services::ingestion_stage::{new_reference_module, plans_from_records};
+    let mut module = new_reference_module(sources, own_source_id)?;
+    // 地址反构造：Iec104 → (reg_addr=ioa, 余 0) + adapter mapping 行；
+    // 非 Iec104 地址的映射点跳过（原 bin 过滤语义）。
+    let mappings = core::cell::RefCell::new(alloc::vec::Vec::<IecMapping>::new());
+    let plans = plans_from_records(
+        records,
+        own_source_id,
+        registry,
+        |m| match m.protocol_addr {
             eneros_protocol_abstract::ProtocolAddress::Iec104 {
                 common_addr, ioa, ..
-            } => (common_addr, ioa),
-            _ => continue,
-        };
-        // 调度字段来自点表记录（缺记录 fail-closed：无调度的点不进计划）。
-        let Some(rec) = records.iter().find(|r| r.point_id == m.point_id) else {
-            continue;
-        };
-        // [07] §2.3 事件驱动（period_ns=0）在 module 调度面不可达（tick 的
-        // collect_due 只调度 period>0 点；module 公共 API 不动——[07] §3.1
-        // 纪律），故以点表 period_ms 为 drain 节奏（0 → 1s 缺省）；协议本体
-        // 仍事件驱动（总召/自发上送，drain 去重保证不重复发射）。
-        let period_ms = if rec.period_ms == 0 {
-            1_000
-        } else {
-            rec.period_ms
-        };
-        let period_ns = u64::from(period_ms) * 1_000_000;
-        mappings.push(IecMapping {
-            common_addr,
-            ioa: u32::from(ioa),
-            point_id: m.point_id,
-            device_id: m.device_id,
-        });
-        plans.push(PointPlan {
-            source_id: own_source_id,
-            point_id: m.point_id,
-            device_id: m.device_id,
-            period_ns,
-            phase_offset_ns: 0,
-            deadline_ns: period_ns.saturating_mul(2),
-            // 参考闭环 QoS：Q1 + 不可抑制（IEC104 品质变化/总召全量上报，
-            // 与 modbus bin 同判；死区/QoS 分级在配置面扩展后生效）。
-            qos: EventQos::Q1,
-            suppressible: false,
-            deadband_abs: rec.deadband,
-            deadband_rel: 0.0,
-            timeout_ns: 1_000_000_000,
-            max_retries: 2,
-            schema_id: m.identity.schema_id,
-            schema_version: m.identity.schema_version,
-            unit_code: m.identity.unit_code,
-            asset_id: m.identity.asset_id,
-            mapping_version: m.identity.mapping_generation,
-            scale: m.scale,
-            offset: m.offset,
-            // 协议组计划字段仅 Modbus 消费——iec104 用 adapter mappings 表。
-            func_code: 0,
-            reg_addr: ioa,
-            slave_addr: 0,
-        });
-    }
+            } => {
+                mappings.borrow_mut().push(IecMapping {
+                    common_addr,
+                    ioa: u32::from(ioa),
+                    point_id: m.point_id,
+                    device_id: m.device_id,
+                });
+                Some(eneros_protocol_services::ingestion_stage::PlanAddr {
+                    slave_addr: 0,
+                    reg_addr: ioa,
+                    func_code: 0,
+                })
+            }
+            _ => None,
+        },
+        // [07] §2.3：事件驱动（period_ms=0）在 module 调度面不可达，以点表
+        // period 为 drain 节奏（0 → 1s 缺省）；协议本体仍事件驱动。
+        1_000,
+    );
     module.install_points(1, plans).ok()?;
-    let adapter = Box::new(Iec104IngestAdapter::new(own_source_id, plugin, mappings));
+    let adapter = Box::new(
+        eneros_protocol_services::iec104_ingest::Iec104IngestAdapter::new(
+            own_source_id,
+            plugin,
+            mappings.into_inner(),
+        ),
+    );
     module.attach(adapter).ok()?;
     Some(module)
 }
@@ -269,20 +226,9 @@ pub extern "C" fn _start(
     // 39：协议插件在服务侧构造（descriptor 随 readiness 报告）。
     let plugin = eneros_iec104_master::plugin::Iec104Plugin::new();
     protocol_ladder::print_descriptor(parts.service, &plugin);
-    let telemetry =
-        eneros_agent_sdk::eipc_resolve("svc-iec104", "svc-telemetry").and_then(|(_, slot)| {
-            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                "iec104-telemetry",
-                slot,
-                eneros_drv_svc::now_ns,
-            )
-            .ok()
-        });
-    if telemetry.is_some() {
-        eneros_runtime::println!("[svc-iec104] telemetry EIPC bound (svc-telemetry)");
-    } else {
-        eneros_runtime::println!("[svc-iec104] telemetry EIPC NOT granted");
-    }
+    // 遥测上行端装配单源（WP-64.2.3：bound/NOT-granted 词形归模块；
+    // 绑定时机在阶梯 run 前 = 串口行序不变）。
+    let telemetry = eneros_protocol_services::ingestion_stage::bind_telemetry("svc-iec104");
     // 43：设备移交（virtio-net 槽）→ 真实 I/O 服务；未移交 → 能力壳。
     let mut service: Box<dyn eneros_drv_svc::runtime::DriverService> =
         match protocol_ladder::run(wall_epoch, &parts, plugin, &mut io) {
@@ -291,6 +237,7 @@ pub extern "C" fn _start(
                 registry,
                 sources,
                 generation,
+                records,
             } => {
                 // 启动期自检（own plugin——传输建立/STARTDT 窗口）；完成
                 // 后取回所有权包共享句柄（收包=adapter；见 _start 装配序）。
@@ -300,19 +247,14 @@ pub extern "C" fn _start(
                 );
                 check.self_check_poll(parts.self_check_rounds);
                 let plugin = alloc::rc::Rc::new(core::cell::RefCell::new(check.into_plugin()));
-                // 调度字段取数（period_ms/deadband；Iec104 过滤——二次
-                // fetch 先例 = modbus bin）。
-                let fetched = eneros_protocol_services::service_cfg::fetch_points(
-                    &mut protocol_ladder::ServiceIoAsSource(&mut io),
-                    parts.config_client,
-                    |p| p.protocol == PointProtocol::Iec104,
-                );
-                let records = fetched.records;
                 let _ = generation; // generation 已注入 mapping.identity
                                     // 装配序列单源（蓝图 63 卷 63.2 WP-63.2.4）：descriptor
                                     // 循环→build→open→uplink→自检→壳兜底进 lib；本 bin 只保留
                                     // 协议差异点。schema 谓词 = **协议地址谓词**（仅 Iec104
                                     // 地址的映射点——与 modbus 的范围口径差异参数化保留）。
+                                    // records 由 Ready 携带（WP-64.2.3：二次 fetch 删除——
+                                    // POINTS-LOADED 2→1 已登记；All 面记录未过滤，配对按
+                                    // point_id 与原 Iec104 过滤面等价）。
                 eneros_protocol_services::ingestion_stage::build_ingested_service(
                     "svc-iec104",
                     "no iec104 [[source]] row",

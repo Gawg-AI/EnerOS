@@ -111,6 +111,11 @@ pub enum Ladder<P> {
         sources: alloc::vec::Vec<eneros_config_bundle::points::SourceRecord>,
         /// 映射世代（active bundle generation；不可得 → 0）。
         generation: u64,
+        /// 原始点记录（keep 过滤后——调度面 period_ms/deadband 消费）。
+        /// 蓝图 64 卷 64.2（WP-64.2.3）：从 PointsFetch 透传——bin 的二次
+        /// `fetch_points` 整表拉取删除（EIPC 往返 ×2 + 协议谓词双抄收口；
+        /// 唯一登记的串口行为变更 = ingest bin POINTS-LOADED 行 2→1）。
+        records: alloc::vec::Vec<PointRecord>,
     },
     /// fail-closed：判定行已打印，bin 落 [`capability_shell`]。
     Degraded(LadderReason),
@@ -258,16 +263,18 @@ pub fn run<P: ProtocolPlugin>(
     // Eager 点表（modbus-tcp 现行串口行序：点表行先于传输阶段——R2 保序；
     // S1 evidence M-2 登记）。
     // 蓝图 61：取数单源 = fetch_points（注册表 + 来源表 + 映射世代）。
-    let (mut registry, mut obs_sources, mut obs_generation) = match parts.points {
+    // 蓝图 64 卷 64.2（WP-64.2.3）：records 一并透传进 Ready——bin 二次
+    // fetch 删除。
+    let (mut registry, mut obs_sources, mut obs_generation, mut obs_records) = match parts.points {
         PointsPolicy::Eager(keep) => {
             let f = crate::service_cfg::fetch_points(
                 &mut ServiceIoAsSource(&mut *io),
                 parts.config_client,
                 keep,
             );
-            (f.registry, f.sources, f.generation)
+            (f.registry, f.sources, f.generation, f.records)
         }
-        _ => (VecPointRegistry::new(Vec::new()), Vec::new(), 0),
+        _ => (VecPointRegistry::new(Vec::new()), Vec::new(), 0, Vec::new()),
     };
 
     // 判定顺序硬约束（F-36）：transport 先于 config。
@@ -323,6 +330,7 @@ pub fn run<P: ProtocolPlugin>(
         registry = fetched.registry;
         obs_sources = fetched.sources;
         obs_generation = fetched.generation;
+        obs_records = fetched.records;
     }
     // 39：插件 start 消费配置/传输/点表（签名不动，F-12——插件一行不改）。
     match plugin.start(&cfg, factory.as_mut(), &mut registry) {
@@ -333,6 +341,7 @@ pub fn run<P: ProtocolPlugin>(
                 registry,
                 sources: obs_sources,
                 generation: obs_generation,
+                records: obs_records,
             }
         }
         Err(e) => {
@@ -501,6 +510,48 @@ mod tests {
         raw
     }
 
+    /// 两条点记录的 `FIELD_POINTS` payload（1001 = ModbusTcp，1002 =
+    /// Iec104——Filtered keep 语义测试用；record 布局 = points.rs 解码序）。
+    fn points_payload_two_protocols() -> Vec<u8> {
+        use eneros_config_bundle::schema::points::{FIELD_POINTS, PROTO_IEC104, PROTO_MODBUS_TCP};
+        let mut rec1 = Vec::new();
+        rec1.extend_from_slice(&1001u32.to_le_bytes()); // point_id
+        rec1.extend_from_slice(&1u16.to_le_bytes()); // device_id
+        rec1.push(PROTO_MODBUS_TCP);
+        rec1.push(0); // Analog
+        rec1.extend_from_slice(&0.1f64.to_le_bytes()); // scale
+        rec1.extend_from_slice(&(-40.0f64).to_le_bytes()); // offset
+        rec1.extend_from_slice(&5000u32.to_le_bytes()); // period_ms
+        rec1.extend_from_slice(&0.0f64.to_le_bytes()); // deadband
+        rec1.push(0); // no range
+        rec1.extend_from_slice(&4u16.to_le_bytes()); // addr_len
+        rec1.push(1); // slave
+        rec1.extend_from_slice(&4097u16.to_le_bytes()); // reg
+        rec1.push(3); // func
+        let mut rec2 = Vec::new();
+        rec2.extend_from_slice(&1002u32.to_le_bytes()); // point_id
+        rec2.extend_from_slice(&2u16.to_le_bytes()); // device_id
+        rec2.push(PROTO_IEC104);
+        rec2.push(0); // Analog
+        rec2.extend_from_slice(&1.0f64.to_le_bytes()); // scale
+        rec2.extend_from_slice(&0.0f64.to_le_bytes()); // offset
+        rec2.extend_from_slice(&3000u32.to_le_bytes()); // period_ms
+        rec2.extend_from_slice(&0.0f64.to_le_bytes()); // deadband
+        rec2.push(0); // no range
+        rec2.extend_from_slice(&5u16.to_le_bytes()); // addr_len
+        rec2.extend_from_slice(&1u16.to_le_bytes()); // common_addr
+        rec2.extend_from_slice(&100u16.to_le_bytes()); // ioa
+        rec2.push(13); // type_id
+        let mut table = Vec::new();
+        table.extend_from_slice(&2u32.to_le_bytes()); // count
+        table.extend_from_slice(&rec1);
+        table.extend_from_slice(&rec2);
+        let mut raw = alloc::vec![FIELD_POINTS];
+        raw.extend_from_slice(&(table.len() as u16).to_le_bytes());
+        raw.extend_from_slice(&table);
+        raw
+    }
+
     /// 内存假件：按节 id 回吐预置响应；传输成败/调用序可注入。
     struct FakeIo {
         entries: Vec<(&'static str, Option<Vec<u8>>)>,
@@ -641,13 +692,45 @@ mod tests {
         );
         match r {
             Ladder::Ready {
-                plugin, registry, ..
+                plugin,
+                registry,
+                records,
+                ..
             } => {
                 assert!(plugin.started);
                 assert_eq!(plugin.started_point_ids, 1);
                 assert_eq!(registry.len(), 1);
+                // WP-64.2.3：records 从 PointsFetch 透传（过滤后）——二次
+                // fetch 删除的行为锁。
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].point_id, 1001);
+                assert_eq!(records[0].period_ms, 5000);
             }
             Ladder::Degraded(_) => panic!("有效配置 + All 点表应 Ready"),
+        }
+    }
+
+    /// WP-64.2.3：Filtered/Eager 面 records 同样随 keep 过滤透传（非本
+    /// 协议点不进 records——配对语义与原 bin 二次 fetch 面等价）。
+    #[test]
+    fn ready_records_carry_kept_filter_only() {
+        let mut entries = valid_protocol_entry();
+        entries.push(("points", Some(framed(&points_payload_two_protocols()))));
+        let mut io = FakeIo::ok(entries);
+        let keep =
+            |p: &PointRecord| p.protocol == eneros_config_bundle::points::PointProtocol::ModbusTcp;
+        let r = run(
+            0,
+            &FakeIo::parts(PointsPolicy::Filtered(keep)),
+            FakePlugin::new(false),
+            &mut io,
+        );
+        match r {
+            Ladder::Ready { records, .. } => {
+                assert_eq!(records.len(), 1, "Filtered 面只透传本协议记录");
+                assert_eq!(records[0].point_id, 1001);
+            }
+            Ladder::Degraded(_) => panic!("有效配置应 Ready"),
         }
     }
 

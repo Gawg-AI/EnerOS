@@ -41,6 +41,16 @@ pub const ST_UNAVAILABLE: u8 = 4;
 /// 坏信封（版本/长度/未知 opcode）。
 pub const ST_INVALID: u8 = 5;
 
+/// 编排驱动视角的"已处理"判定（蓝图 64 卷 64.2 WP-64.2.1a 单源；原
+/// root `protocol_execute` 的 `status <= 4` 字面判据收编）：
+/// `ST_OK..ST_UNAVAILABLE`（0..=4）= 服务已显式受理或显式降级（不伪造
+/// 成功）；`ST_INVALID`(5) = 坏信封（编程错误信号，不算已处理）；解码
+/// 失败兜底 0xFF 同样不算。裁决：维持既有行为 `<= ST_UNAVAILABLE`，
+/// 行为零变化——本函数是唯一判据点。
+pub const fn status_handled(status: u8) -> bool {
+    status <= ST_UNAVAILABLE
+}
+
 /// 载荷容量（有界；设备命令 39 扩展）。
 pub const PAYLOAD_CAP: usize = 64;
 
@@ -619,6 +629,33 @@ mod tests {
             resp.payload_len = n as u16;
             resp.status = ST_OK;
         }
+    }
+
+    /// WP-64.2.1a：`status_handled` 全枚举对照（R-64.b 七行表——修前
+    /// `status <= 4` 与修后谓词逐状态同值；变异 `<= ST_INVALID` 必红）。
+    #[test]
+    fn status_handled_enumerates_all_states() {
+        assert!(status_handled(ST_OK), "ST_OK(0) = 已处理");
+        assert!(status_handled(ST_BUSY), "ST_BUSY(1) = 已处理（背压显式）");
+        assert!(
+            status_handled(ST_TIMEOUT),
+            "ST_TIMEOUT(2) = 已处理（取消显式）"
+        );
+        assert!(
+            status_handled(ST_STALE_HANDLE),
+            "ST_STALE_HANDLE(3) = 已处理"
+        );
+        assert!(
+            status_handled(ST_UNAVAILABLE),
+            "ST_UNAVAILABLE(4) = 已处理（降级显式）"
+        );
+        assert!(
+            !status_handled(ST_INVALID),
+            "ST_INVALID(5) = 坏信封，不算已处理"
+        );
+        assert!(!status_handled(0xFF), "解码失败兜底 0xFF 不算已处理");
+        // 边界外未见状态（6..=254）同样不属于已处理集。
+        assert!(!status_handled(6));
     }
 
     #[test]

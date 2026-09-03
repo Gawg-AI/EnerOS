@@ -87,6 +87,15 @@ impl ChunkedEndpoint<crate::ipc_sel4::Sel4IpcClient> {
             crate::ipc_sel4::Sel4IpcClient::new(target, slot, eneros_drv_svc::now_ns).ok()?;
         Some(Self::wrap(client))
     }
+
+    /// cap 寻址绑定（蓝图 64 卷 64.2 WP-64.2.1d——bind 的槽位寻址姊妹
+    /// 形态）：root 持 `SpawnedHandle.ep` 裸 cap 直连，不经 eipc_resolve
+    /// 授予表。建端失败 → `None`（fail-closed，语义同 bind）。
+    pub fn bind_cap(label: &str, dest_cap: u64) -> Option<Self> {
+        let client =
+            crate::ipc_sel4::Sel4IpcClient::new(label, dest_cap, eneros_drv_svc::now_ns).ok()?;
+        Some(Self::wrap(client))
+    }
 }
 
 /// 共享 epoch 会话：每次 [`Self::call`] 后**无条件**把端点 epoch 写回
@@ -124,6 +133,20 @@ impl<'a, C: RawIpc> ChunkedSession<'a, C> {
     /// 非 chunked 的单次 Call 面（stats 观测等）——透传端点客户端。
     pub fn client_mut(&mut self) -> &mut C {
         self.endpoint.client_mut()
+    }
+}
+
+#[cfg(feature = "sel4")]
+impl<'a> ChunkedSession<'a, crate::ipc_sel4::Sel4IpcClient> {
+    /// cap 寻址 + 共享 epoch 会话一步装配（蓝图 64 卷 64.2 WP-64.2.1d：
+    /// root 侧六处 `Sel4IpcClient::new` + `wrap_shared` 手抄闭包的归宿）。
+    /// 建端失败 → `None`（fail-closed；调用方按原 `client init FAIL` 路径
+    /// 呈现）。时钟源 = `eneros_drv_svc::now_ns`（bind 同源；仅超时自洽
+    /// 判定用——deadline 与 expiry 同钟，基点差异无行为影响）。
+    pub fn bind_shared(label: &str, dest_cap: u64, shared: &'a mut u64) -> Option<Self> {
+        let ipc =
+            crate::ipc_sel4::Sel4IpcClient::new(label, dest_cap, eneros_drv_svc::now_ns).ok()?;
+        Some(Self::wrap_shared(ipc, shared))
     }
 }
 

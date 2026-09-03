@@ -74,20 +74,15 @@ fn assemble(
     // 首条边 = svc-config；管道单源 = service_cfg/config_gateway）；不可得
     // → 能力壳。wire 失败呈现（too short / length prefix）在管道内，
     // 词形单源 = protocol_ladder::line_*。
-    let Some(mut client) =
-        eneros_agent_sdk::eipc_resolve("svc-modbus-rtu", "svc-config").and_then(|(_, slot)| {
-            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                "modbus-rtu-config",
-                slot,
-                eneros_drv_svc::now_ns,
-            )
-            .ok()
-        })
-    else {
-        return Err("config-missing");
-    };
+    // 64.2 WP-64.2.3：建端三行闭包收编 ChunkedEndpoint::bind（经
+    // client_mut 喂 config 管道——config 面裸客户端，chunked 壳零使用）。
+    let mut config_ep =
+        match eneros_agent_sdk::endpoint::ChunkedEndpoint::bind("svc-modbus-rtu", "svc-config") {
+            Some(ep) => ep,
+            None => return Err("config-missing"),
+        };
     let Ok(cfg) = eneros_protocol_services::service_cfg::fetch_protocol_config(
-        &mut client,
+        config_ep.client_mut(),
         "modbus-rtu-config",
         "protocol-modbus-rtu",
     ) else {
@@ -139,16 +134,11 @@ fn assemble(
 #[cfg(target_os = "none")]
 fn fetch_points_registry() -> VecPointRegistry {
     use eneros_config_bundle::points::PointProtocol;
-    match eneros_agent_sdk::eipc_resolve("svc-modbus-rtu", "svc-config").and_then(|(_, slot)| {
-        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-            "modbus-rtu-config",
-            slot,
-            eneros_drv_svc::now_ns,
-        )
-        .ok()
-    }) {
-        Some(mut client) => eneros_protocol_services::service_cfg::fetch_points_registry(
-            &mut client,
+    // 64.2 WP-64.2.3：建端闭包收编 ChunkedEndpoint::bind（config 面裸
+    // 客户端经 client_mut；chunked 壳零使用）。
+    match eneros_agent_sdk::endpoint::ChunkedEndpoint::bind("svc-modbus-rtu", "svc-config") {
+        Some(mut ep) => eneros_protocol_services::service_cfg::fetch_points_registry(
+            ep.client_mut(),
             "modbus-rtu-config",
             |p| p.protocol == PointProtocol::ModbusRtu,
         ),

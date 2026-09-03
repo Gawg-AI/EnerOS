@@ -45,6 +45,14 @@ pub mod ingestion_stage;
 /// IngestionModule（与 modbus_ingest 同构，不修改 module 内核——[07] §3.1）。
 pub mod iec104_ingest;
 
+/// 蓝图 64 卷 64.2（WP-64.2.4）：svc-mqtt 中继面（写意图/AI 应答/管理
+/// 请求三转发环 + 双面分片重组）出 bin——`C: RawIpc` 泛化后 host 可测。
+pub mod mqtt_io;
+
+/// crate 内共享测试假件（cfg(test)）。
+#[cfg(test)]
+pub mod test_support;
+
 /// 服务进程全局分配器（复用 drv-svc 的实现）。
 pub use eneros_drv_svc::allocator::HeapAllocator;
 /// 服务实例 epoch（重启后变化；客户端旧句柄失效）。
