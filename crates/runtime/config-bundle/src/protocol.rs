@@ -21,7 +21,7 @@ use eneros_protocol_abstract::ProtocolConfig;
 
 use crate::ConfigError;
 
-/// 7 个协议配置 ID（前缀 `protocol-`，与配置文件名一一对应）。
+/// 协议配置 ID（前缀 `protocol-`，与配置文件名一一对应；48 卷起 11 个）。
 pub const PROTOCOL_CONFIG_IDS: &[&str] = &[
     "protocol-modbus-tcp",
     "protocol-modbus-rtu",

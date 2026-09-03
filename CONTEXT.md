@@ -35,6 +35,7 @@
 | `SignerKeyring` | SM2 密钥环 + 类型化验签原语（verify_signature→VerifiedSignature，Ok(false) 陷阱不外泄）+ 修订水位（check_revision 非变异判定 / commit_revision 推进——判据单源，消费方零手写比较） | `signer-keyring`（蓝图 62.3 / 63.3.1） | 消费方手写 `revision <= seen`（已删）；裸 sm2_verify 直调（逐处收口/豁免登记） |
 | `WatermarkTracker` | **序列水位**（ingestion-core）：同源 (epoch, sequence) 两维，check 非变异 + advance 分离——sink 准入守卫判据唯一实现 | `ingestion-core`（蓝图 62.3 W3） | snapshot-service 旧同名 tracker（63.3.1 消歧改名 `SnapshotWatermark`）；手写水位比较（已删） |
 | `SnapshotWatermark` | **快照构建水位**（snapshot-service）：epoch/seq + event_time/ingest_time 四维，observe 合体——快照域分层判据（⊃ 序列水位 + 两时间维），与 ingestion-core WatermarkTracker 不合并 | `snapshot-service::watermark`（蓝图 63.3.1 消歧定名） | 与 WatermarkTracker 同名混用（禁止——分层关系见 watermark.rs 模块 doc） |
+| `eneros-protocol-keys` | **协议配置键表单源**：12 协议已知键 const 数组 + `by_config_id` 映射（零依赖叶 crate，const-only）——config-bundle 编译面 `known_keys` 与插件面 `KNOWN_KEYS` 双面引用消费 | `protocols/protocol-keys`（蓝图 64.1） | 双面镜像手抄（已删，13 处字面 → 1 处）；双面引用锁 22 道 + 叶内容字面锁；cj188 编译面显式 None（行为新增边界） |
 
 ## 2. 市场域词汇
 

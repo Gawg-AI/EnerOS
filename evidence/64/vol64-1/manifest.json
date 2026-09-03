@@ -2,7 +2,7 @@
   "schema": "eneros.evidence-manifest.v1",
   "volume": "blueprint-64-vol64-1",
   "version": "0.317.0",
-  "head": "TBD-at-commit",
+  "head": "2268c41（代码+证据同 commit；gate 实跑于该树）",
   "date": "2026-09-03",
   "gate": "VOL64.1-GATE: PASS",
   "purpose": "蓝图 64 卷 64.1 出口 QEMU 实弹：协议配置键表单源（eneros-protocol-keys 零依赖叶 crate）+ goose vlan_id / mqtt qos/will_topic 双面活漂移修复。装载行清单与 63 卷基线逐字节一致 = 键表收口零行为变化的实弹证明",
