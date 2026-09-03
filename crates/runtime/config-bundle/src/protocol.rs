@@ -1,6 +1,6 @@
 //! 协议配置（46 WP-46.3 配置驱动装配）。
 //!
-//! 7 个协议服务的 ACTIVE 配置源：`configs/protocol-<proto>.toml` —— 扁键值
+//! 11 个协议的 ACTIVE 配置源（48 卷起）：`configs/protocol-<proto>.toml` —— 扁键值
 //! 表（peer/unit-id/IOA 公共地址/topic 前缀/超时/重试；键集 = 各插件
 //! `validate_config` 的 KNOWN_KEYS，单一事实源在本模块）。编译面产出
 //! canonical KV 负载（进签名 RuntimeConfigBundle），svc-* 经 svc-config
