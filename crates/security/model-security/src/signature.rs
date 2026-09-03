@@ -1,9 +1,9 @@
 //! 模型签名验证：可信公钥列表 + 吊销列表 + SM2 验签.
 //!
 //! 验证顺序固定：①吊销列表命中 → [`VerifyError::KeyRevoked`]；②不在可信
-//! 列表 → [`VerifyError::KeyNotTrusted`]；③调用 eneros-crypto `sm2_verify`
-//! 对模型原始数据验签（内部含 Z 值拼接 + SM3 摘要，GB/T 32918.2），密码学
-//! 内部错误经 `?` 映射为 [`VerifyError::Crypto`]，验签布尔结果原样返回。
+//! 列表 → [`VerifyError::KeyNotTrusted`]；③经 keyring `verify_signature`
+//! 对模型原始数据验签（内部含 Z 值拼接 + SM3 摘要，GB/T 32918.2）——
+//! 不匹配 = `Err(SigMismatch)`（63.3 WP-63.3.2 收口，布尔陷阱消除）。
 
 use alloc::vec::Vec;
 

@@ -17,7 +17,7 @@
 //! - [`WhitelistEntry`] / [`ModelWhitelist`] — 白名单：以 SM3 哈希为键登记
 //!   模型条目（含 `added_at` / `expiry` 有效期），支持严格/宽松两种模式
 //! - [`ModelSig`] / [`ModelSignatureVerifier`] — 签名验证：可信公钥列表 +
-//!   吊销列表，复用 eneros-crypto `sm2_verify` 对原消息验签
+//!   吊销列表，经 keyring 类型化原语对原消息验签（63.3 WP-63.3.2 收口）
 //! - [`ModelGuard`] / [`ModelLoadAttempt`] / [`GuardStats`] — 加载门禁：
 //!   白名单检查 → 有效期检查 → 签名验证，全链路审计（容量 1000 环形覆盖）
 //!   与统计
@@ -29,9 +29,10 @@
 //!    用，白名单存储改用 `alloc::collections::BTreeMap`（`[u8; 32]` 有序键）。
 //! 2. **外部 now 参数替代系统时钟**：no_std 环境无系统时钟，有效期判定由
 //!    调用方传入 `now: u64`（Unix 时间戳），同 v0.113.0/v0.115.0 先例。
-//! 3. **sm2_verify 对原消息验签**：`verify` 直接对模型原始数据调用
-//!    `sm2_verify`（内部已完成 Z 值拼接 + SM3 摘要，GB/T 32918.2），而非
-//!    先手工 SM3 再验签，避免双重哈希与国标语义偏差。
+//! 3. **对原消息验签（GB/T 32918.2）**：`verify` 对模型原始数据经 keyring
+//!    `verify_signature` 验签（底层 sm2_verify 内部完成 Z 值拼接 + SM3
+//!    摘要），而非先手工 SM3 再验签，避免双重哈希与国标语义偏差；
+//!    不匹配 = `Err(SigMismatch)`（63.3 收口，布尔陷阱消除）。
 //!
 //! # no_std 合规
 //!
@@ -84,7 +85,7 @@ pub enum GuardError {
     NotInWhitelist,
     /// 白名单条目已过期（`entry.expiry < now`）.
     WhitelistEntryExpired,
-    /// 签名与模型数据不匹配（验签返回 false，数据被篡改或签名伪造）.
+    /// 签名与模型数据不匹配（验签不通过——数据被篡改或签名伪造）.
     SignatureInvalid,
     /// 签名验证失败（携带具体 [`VerifyError`] 原因：吊销/不可信/密码学错误）.
     VerifyFailed(VerifyError),

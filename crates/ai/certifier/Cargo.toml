@@ -11,7 +11,8 @@ eneros-decision-contract = { path = "../decision-contract", features = ["certifi
 eneros-resource-registry = { path = "../../agents/resource-registry" }
 eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 # 63.3 WP-63.3.3：依赖保留（数据类型面 TrustedSnapshot 真实消费——非死边；
-# business-services 的同款声明已删，其 src 零使用 R-63.e 重验坐实）。
+# business-services 的同款声明移 [dev-dependencies] 保留——其 src 零使用
+# R-63.e 重验坐实，集成测试面真实消费）。
 eneros-snapshot-service = { path = "../../agents/snapshot-service" }
 sha2 = { version = "0.10.9", default-features = false }
 
