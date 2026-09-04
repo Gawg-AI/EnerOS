@@ -1491,7 +1491,7 @@ fn control_chain_tick(
     // EA_OK 布局：EA_OK(1) + receipt wire（status1+state1+…）——终态字节
     // 在 tick_resp[2]（offset 由 svc-energy-agent 装配面冻结；root 只取字节，
     // 解码/词形归 eneros-dispatch-state，见调用点 display 收窄）。
-    let disp_state = if ea_status == 0 && tick_resp.len() >= 3 {
+    let disp_state = if ea_status == eneros_agent_sdk::ea_wire::EA_OK && tick_resp.len() >= 3 {
         Some(tick_resp[2])
     } else {
         None
@@ -1659,6 +1659,17 @@ mod tests {
         assert!(
             src.contains("ea_wire::ea_display"),
             "EA 显示面必须经 agent-sdk ea_wire 单源"
+        );
+        // 谓词面同守（蓝图 65 WP-65.5）：EA_OK 常量在谓词上正断言 + 裸
+        // 0 字面判据反断言（显示面在守卫面 ≠ 谓词面在守卫面）。
+        assert!(
+            src.contains("ea_wire::EA_OK"),
+            "EA 谓词面必须走 agent-sdk ea_wire::EA_OK 常量"
+        );
+        let t_pred0 = concat!("ea_status == ", "0");
+        assert!(
+            !src.contains(t_pred0),
+            "ea_status 裸 0 字面判据回归（应走 ea_wire::EA_OK）"
         );
         // c) obs wire：ack 字节 / ERR 前缀手解回归。
         let t_ack = concat!("first() != ", "Some(&1)");

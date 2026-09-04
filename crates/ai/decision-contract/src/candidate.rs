@@ -96,107 +96,6 @@ pub const MAX_INLINE_ASSIGNMENTS: usize = 64;
 /// 拒收判据 + dispatch adapter unbound 判定各自字面 `0`）——收口于此。
 pub const UNQUALIFIED_ASSET_ID: u64 = 0;
 
-/// CandidatePlan 四语义组构造器（WP-64.3.1.1）。
-///
-/// 组界：identity（[`CandidatePlan::builder`] 声明）/ solve / horizons /
-/// digests / validity / assignments——调用方只声明所变组；全部字段必填
-/// （默认值是测试夹具的事，不是构造器的事）。`build()` 执行全部契约校验
-/// 含轨迹不变量。
-pub struct CandidatePlanBuilder {
-    id: PlanId,
-    snapshot_id: SnapshotId,
-    objective_digest: [u8; 32],
-    resource_catalog_version: u64,
-    solve: Option<(SolveStatusKind, f64, f64, f64, u64)>,
-    horizons: Option<(u64, u64, u32)>,
-    digests: Option<([u8; 32], [u8; 32])>,
-    validity: Option<(u64, u64)>,
-    assignments: Option<Vec<Assignment>>,
-}
-
-impl CandidatePlanBuilder {
-    /// 求解报告组（status/objective_value/gap/residual/elapsed）。
-    pub fn solve(
-        mut self,
-        status: SolveStatusKind,
-        objective_value: f64,
-        relative_gap: f64,
-        max_primal_residual: f64,
-        elapsed_ms: u64,
-    ) -> Self {
-        self.solve = Some((
-            status,
-            objective_value,
-            relative_gap,
-            max_primal_residual,
-            elapsed_ms,
-        ));
-        self
-    }
-
-    /// 地平线组（start_ms/step_ns/step_count）。
-    pub fn horizons(mut self, start_ms: u64, step_ns: u64, step_count: u32) -> Self {
-        self.horizons = Some((start_ms, step_ns, step_count));
-        self
-    }
-
-    /// 摘要组（model/input——model_digest 为求解器标识摘要，input_digest
-    /// 为输入 provenance）。
-    pub fn digests(mut self, model: [u8; 32], input: [u8; 32]) -> Self {
-        self.digests = Some((model, input));
-        self
-    }
-
-    /// 有效期组（issued_at_ms/ttl_ms）。
-    pub fn validity(mut self, issued_at_ms: u64, ttl_ms: u64) -> Self {
-        self.validity = Some((issued_at_ms, ttl_ms));
-        self
-    }
-
-    /// 分配组（非空、≤[`MAX_INLINE_ASSIGNMENTS`]、满足轨迹不变量）。
-    pub fn assignments(mut self, v: Vec<Assignment>) -> Self {
-        self.assignments = Some(v);
-        self
-    }
-
-    /// 组装并校验（缺组 = `MissingField`；判据全清单见
-    /// [`CandidatePlanParts`] 文档）。
-    pub fn build(self) -> Result<CandidatePlan, ContractError> {
-        let (solver_status, objective_value, relative_gap, max_primal_residual, elapsed_ms) =
-            self.solve.ok_or(ContractError::MissingField("solve"))?;
-        let (horizon_start_ms, step_ns, step_count) = self
-            .horizons
-            .ok_or(ContractError::MissingField("horizons"))?;
-        let (model_digest, input_digest) =
-            self.digests.ok_or(ContractError::MissingField("digests"))?;
-        let (issued_at_ms, ttl_ms) = self
-            .validity
-            .ok_or(ContractError::MissingField("validity"))?;
-        let assignments = self
-            .assignments
-            .ok_or(ContractError::MissingField("assignments"))?;
-        CandidatePlan::from_parts(CandidatePlanParts {
-            id: self.id,
-            snapshot_id: self.snapshot_id,
-            objective_digest: self.objective_digest,
-            resource_catalog_version: self.resource_catalog_version,
-            horizon_start_ms,
-            step_ns,
-            step_count,
-            solver_status,
-            objective_value,
-            relative_gap,
-            max_primal_residual,
-            elapsed_ms,
-            model_digest,
-            input_digest,
-            assignments,
-            issued_at_ms,
-            ttl_ms,
-        })
-    }
-}
-
 /// 候选计划（公开字段只读；构造经校验构造器）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidatePlan {
@@ -224,9 +123,18 @@ pub struct CandidatePlan {
     ttl_ms: u64,
 }
 
-/// wire 解码字段袋（crate 内构造通道：`decode_v1` → 校验的唯一入口，
-/// WP-64.3.1.1——17 位置参构造器收窄后的内部组合形态）。
-pub(crate) struct CandidatePlanParts {
+/// 候选计划构造字段袋（蓝图 65 WP-65.2 升公开：命名字段构造面 +
+/// [`CandidatePlan::from_parts`] 验证两件套——对齐 `CertifiedPlanFields`
+/// 形态（certificate.rs 树内先例）；17 位置参构造器收窄后的形态演进，
+/// wire 解码与生产构造同通道）。
+///
+/// 组界：identity（id/snapshot_id/objective_digest/resource_catalog_
+/// version）/ solve / horizons / digests / validity / assignments——
+/// **identity + 五语义组（六组）**，全部字段必填（缺字段 = 编译失败，
+/// 命名字段结构性防护——位置元组 group setter builder 退役）。唯一
+/// 验证通道 = [`CandidatePlan::from_parts`]：轨迹不变量/零值门/seal
+/// 判据一行不动。
+pub struct CandidatePlanParts {
     pub id: PlanId,
     pub snapshot_id: SnapshotId,
     pub objective_digest: [u8; 32],
@@ -247,13 +155,14 @@ pub(crate) struct CandidatePlanParts {
 }
 
 impl CandidatePlan {
-    /// 校验组装（唯一构造通道）。
+    /// 校验组装（**唯一构造通道**；蓝图 65 WP-65.2 起 pub——builder 退役
+    /// 后生产/解码/测试共用本验证通道，判据不复制）。
     ///
     /// 拒绝：全零 ID/快照、非有限数值、负 gap/残差、空分配、分配超上限、
     /// 未绑定输入摘要（dispatch 契约沿用）、ttl=0、越界 step；以及轨迹
     /// 不变量（WP-64.3.1.2，构造点强制）：(asset, step) 唯一 + 每个
     /// 出现资产的 1..=step_count 全覆盖。
-    pub(crate) fn from_parts(
+    pub fn from_parts(
         CandidatePlanParts {
             id,
             snapshot_id,
@@ -355,28 +264,6 @@ impl CandidatePlan {
             issued_at_ms,
             ttl_ms,
         })
-    }
-
-    /// CandidatePlan 构造器（WP-64.3.1.1：四语义组 builder——identity/
-    /// solve/horizons/digests/validity/assignments；全部字段必填，无便利
-    /// 默认值。wire 解码走 crate 内 [`CandidatePlanParts`] 通道）。
-    pub fn builder(
-        id: PlanId,
-        snapshot_id: SnapshotId,
-        objective_digest: [u8; 32],
-        resource_catalog_version: u64,
-    ) -> CandidatePlanBuilder {
-        CandidatePlanBuilder {
-            id,
-            snapshot_id,
-            objective_digest,
-            resource_catalog_version,
-            solve: None,
-            horizons: None,
-            digests: None,
-            validity: None,
-            assignments: None,
-        }
     }
 
     // —— 只读访问面 ——
@@ -639,43 +526,64 @@ mod tests {
     fn plan() -> CandidatePlan {
         let mut sid = [0u8; 16];
         sid[..8].copy_from_slice(&0xA5A5u64.to_le_bytes());
-        CandidatePlan::builder(
-            PlanId::new([1u8; 16]).unwrap(),
-            SnapshotId(sid),
-            [2u8; 32],
-            1,
-        )
-        .solve(SolveStatusKind::Suboptimal, 12.5, 0.01, 0.001, 30)
-        .horizons(1_000, 1_000, 1)
-        .digests([3u8; 32], [4u8; 32])
-        .validity(2_000, 60_000)
-        .assignments(vec![Assignment {
-            asset_id: 1,
-            device_id: 1,
-            point_id: 10,
-            power_kw: -50.0,
-            unit_code: 6,
-            step_index: 1,
-        }])
-        .build()
+        CandidatePlan::from_parts(CandidatePlanParts {
+            id: PlanId::new([1u8; 16]).unwrap(),
+            snapshot_id: SnapshotId(sid),
+            objective_digest: [2u8; 32],
+            resource_catalog_version: 1,
+            horizon_start_ms: 1_000,
+            step_ns: 1_000,
+            step_count: 1,
+            solver_status: SolveStatusKind::Suboptimal,
+            objective_value: 12.5,
+            relative_gap: 0.01,
+            max_primal_residual: 0.001,
+            elapsed_ms: 30,
+            model_digest: [3u8; 32],
+            input_digest: [4u8; 32],
+            assignments: vec![Assignment {
+                asset_id: 1,
+                device_id: 1,
+                point_id: 10,
+                power_kw: -50.0,
+                unit_code: 6,
+                step_index: 1,
+            }],
+            issued_at_ms: 2_000,
+            ttl_ms: 60_000,
+        })
         .unwrap()
     }
 
-    /// 负例基座（WP-64.3.1.6：负例只重声明所变组）。
-    fn neg(id: PlanId, sid: SnapshotId) -> CandidatePlanBuilder {
-        CandidatePlan::builder(id, sid, [0u8; 32], 1)
-            .solve(SolveStatusKind::Optimal, 0.0, 0.0, 0.0, 0)
-            .horizons(0, 0, 1)
-            .digests([0u8; 32], [1u8; 32])
-            .validity(0, 1)
-            .assignments(vec![Assignment {
+    /// 负例基座（WP-64.3.1.6 沿革：负例只重声明所变字段——命名字段
+    /// struct update，缺省字段取基座）。
+    fn neg(id: PlanId, sid: SnapshotId) -> CandidatePlanParts {
+        CandidatePlanParts {
+            id,
+            snapshot_id: sid,
+            objective_digest: [0u8; 32],
+            resource_catalog_version: 1,
+            horizon_start_ms: 0,
+            step_ns: 0,
+            step_count: 1,
+            solver_status: SolveStatusKind::Optimal,
+            objective_value: 0.0,
+            relative_gap: 0.0,
+            max_primal_residual: 0.0,
+            elapsed_ms: 0,
+            model_digest: [0u8; 32],
+            input_digest: [1u8; 32],
+            assignments: vec![Assignment {
                 asset_id: 1,
                 device_id: 1,
                 point_id: 1,
                 power_kw: 1.0,
                 unit_code: 6,
                 step_index: 1,
-            }])
+            }],
+            issued_at_ms: 0,
+            ttl_ms: 1,
+        }
     }
 
     #[test]
@@ -692,33 +600,47 @@ mod tests {
         let mut sid = [1u8; 16];
         sid[0] = 0xA5;
         assert_eq!(
-            neg(PlanId([0u8; 16]), SnapshotId(sid)).build(),
+            CandidatePlan::from_parts(neg(PlanId([0u8; 16]), SnapshotId(sid))),
             Err(ContractError::ZeroId)
         );
-        // NaN 目标值（只重声明 solve 组）。
+        // NaN 目标值（只重声明 objective_value）。
         let p = plan();
-        let c = neg(*p.id(), p.snapshot_id())
-            .solve(SolveStatusKind::Optimal, f64::NAN, 0.0, 0.0, 0)
-            .build();
+        let c = CandidatePlan::from_parts(CandidatePlanParts {
+            objective_value: f64::NAN,
+            ..neg(*p.id(), p.snapshot_id())
+        });
         assert_eq!(c, Err(ContractError::OutOfRange("objective_value")));
-        // 空分配（只重声明 assignments 组）。
-        let c = neg(*p.id(), p.snapshot_id()).assignments(vec![]).build();
+        // 空分配（只重声明 assignments）。
+        let c = CandidatePlan::from_parts(CandidatePlanParts {
+            assignments: vec![],
+            ..neg(*p.id(), p.snapshot_id())
+        });
         assert_eq!(c, Err(ContractError::MissingField("assignments")));
-        // 未绑定输入摘要（dispatch 契约：拒绝模糊输入；只重声明 digests 组）。
-        let c = neg(*p.id(), p.snapshot_id())
-            .digests([0u8; 32], [0u8; 32])
-            .build();
+        // 未绑定输入摘要（dispatch 契约：拒绝模糊输入；只重声明 digests）。
+        let c = CandidatePlan::from_parts(CandidatePlanParts {
+            model_digest: [0u8; 32],
+            input_digest: [0u8; 32],
+            ..neg(*p.id(), p.snapshot_id())
+        });
         assert_eq!(c, Err(ContractError::MissingField("input_digest")));
-        // ttl=0（只重声明 validity 组）。
-        let c = neg(*p.id(), p.snapshot_id()).validity(0, 0).build();
+        // ttl=0（只重声明 validity 两字段）。
+        let c = CandidatePlan::from_parts(CandidatePlanParts {
+            issued_at_ms: 0,
+            ttl_ms: 0,
+            ..neg(*p.id(), p.snapshot_id())
+        });
         assert_eq!(c, Err(ContractError::OutOfRange("ttl_ms")));
         // ttl=0 ∧ step_count=0 双非法：错误词序与迁移前实现一致
         // （ttl_ms 先报；step_count 检查必须在轨迹不变量之前保持可达
         // ——64.3 复查回归锁）。
-        let c = neg(*p.id(), p.snapshot_id())
-            .horizons(1_000, 1_000, 0)
-            .validity(2_000, 0)
-            .build();
+        let c = CandidatePlan::from_parts(CandidatePlanParts {
+            horizon_start_ms: 1_000,
+            step_ns: 1_000,
+            step_count: 0,
+            issued_at_ms: 2_000,
+            ttl_ms: 0,
+            ..neg(*p.id(), p.snapshot_id())
+        });
         assert_eq!(c, Err(ContractError::OutOfRange("ttl_ms")));
     }
 
@@ -735,18 +657,10 @@ mod tests {
             unit_code: 6,
             step_index: step,
         };
-        let err = CandidatePlan::builder(
-            PlanId::new([1u8; 16]).unwrap(),
-            SnapshotId([7u8; 16]),
-            [2u8; 32],
-            1,
-        )
-        .solve(SolveStatusKind::Optimal, 1.0, 0.0, 0.0, 1)
-        .horizons(1_000, 1_000, 1)
-        .digests([3u8; 32], [4u8; 32])
-        .validity(2_000, 60_000)
-        .assignments(vec![a(1, 1.0), a(1, 2.0)])
-        .build();
+        let err = CandidatePlan::from_parts(CandidatePlanParts {
+            assignments: vec![a(1, 1.0), a(1, 2.0)],
+            ..neg(PlanId::new([1u8; 16]).unwrap(), SnapshotId([7u8; 16]))
+        });
         assert_eq!(err, Err(ContractError::Malformed("duplicate_assignment")));
     }
 
@@ -762,28 +676,22 @@ mod tests {
             unit_code: 6,
             step_index: step,
         };
-        let base = || {
-            CandidatePlan::builder(
-                PlanId::new([1u8; 16]).unwrap(),
-                SnapshotId([7u8; 16]),
-                [2u8; 32],
-                1,
-            )
-            .solve(SolveStatusKind::Optimal, 1.0, 0.0, 0.0, 1)
-            .horizons(1_000, 1_000, 2)
-            .digests([3u8; 32], [4u8; 32])
-            .validity(2_000, 60_000)
-        };
-        // 缺档：asset 1 只覆盖 step 1 / 2 。
+        // 缺档：asset 1 只覆盖 step 1 / 2（step_count=2）。
         assert_eq!(
-            base().assignments(vec![a(1, 1.0)]).build(),
+            CandidatePlan::from_parts(CandidatePlanParts {
+                step_count: 2,
+                assignments: vec![a(1, 1.0)],
+                ..neg(PlanId::new([1u8; 16]).unwrap(), SnapshotId([7u8; 16]))
+            }),
             Err(ContractError::Malformed("assignment_trajectory_gap"))
         );
         // 全覆盖：1..=2 两步齐备。
-        assert!(base()
-            .assignments(vec![a(1, 1.0), a(2, -2.0)])
-            .build()
-            .is_ok());
+        assert!(CandidatePlan::from_parts(CandidatePlanParts {
+            step_count: 2,
+            assignments: vec![a(1, 1.0), a(2, -2.0)],
+            ..neg(PlanId::new([1u8; 16]).unwrap(), SnapshotId([7u8; 16]))
+        })
+        .is_ok());
     }
 
     #[test]

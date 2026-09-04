@@ -53,26 +53,20 @@ impl ModelSignatureVerifier {
 
     /// 添加可信公钥（同 id 覆盖 = 去重语义由 keyring `register` 保持）.
     ///
-    /// 吊销终态保持（keyring 化前语义：revoked 列表只增不减、add 不洗白
-    /// ——`revoke_key` 后再 `add_trusted_key` 的 verify 仍
-    /// [`VerifyError::KeyRevoked`]，SIG12 锁）。keyring `register` 本身
-    /// 会重置撤销位（其自测 `reregister_clears_revocation_and_overwrites`
-    /// 锁定的登记语义，不改），故此处显式恢复撤销位.
+    /// 吊销终态由 keyring tombstone **单一持有**（蓝图 65 WP-65.1）：
+    /// `register` 永不触碰撤销账，revoke → re-add 后 verify 仍
+    /// [`VerifyError::KeyRevoked`]（SIG12 锁）。本 adapter 无需任何
+    /// 恢复舞步——旧「is_revoked→register→条件 revoke」三行舞步随
+    /// keyring 语义归位删除（不变式的所有者 = keyring，adapter 零补丁）.
     pub fn add_trusted_key(&mut self, key: Sm2PublicKey) {
-        let id = fingerprint(&key);
-        let was_revoked = self.keyring.is_revoked(id);
-        self.keyring.register(id, &key);
-        if was_revoked {
-            self.keyring.revoke(id);
-        }
+        self.keyring.register(fingerprint(&key), &key);
     }
 
-    /// 吊销公钥（先登记后撤销——未登记过的 key 也保持"吊销优先于可信"
-    /// 语义：后续 verify 一律 `KeyRevoked`）.
+    /// 吊销公钥（纯 `revoke`——keyring tombstone 对未登记 id 一律记账，
+    /// 未登记过的 key 也保持"吊销优先于可信"：后续 verify 一律
+    /// `KeyRevoked`；旧 register-before-revoke 垫步删除）.
     pub fn revoke_key(&mut self, key: &Sm2PublicKey) {
-        let id = fingerprint(key);
-        self.keyring.register(id, key);
-        self.keyring.revoke(id);
+        self.keyring.revoke(fingerprint(key));
     }
 }
 
@@ -210,8 +204,9 @@ mod tests {
     ///
     /// keyring 化前语义：revoked 列表只增不减，`add_trusted_key` 不触碰
     /// 吊销门（verify ①吊销 ②可信 ③验签）——revoke → add → verify 恒
-    /// `Err(KeyRevoked)`。keyring `register` 会重置撤销位，若 adapter 不
-    /// 恢复即 fail-open（真签名放行）.
+    /// `Err(KeyRevoked)`.（蓝图 65 WP-65.1 起：该不变式由 keyring
+    /// tombstone 单一持有——register 永不触碰撤销账；本测是消费面对照
+    /// 锁，断言零变化。）
     #[test]
     fn sig12_readd_after_revoke_stays_revoked() {
         let data = b"model-weights-blob-v1";

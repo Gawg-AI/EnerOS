@@ -10,8 +10,10 @@
 //! - `CertifiedPlan::new` 只在认证侧可见：未启用 `transition-certifier`
 //!   feature 的 crate **无法构造** [`CertifiedPlan`]（seal 类型无公开构造
 //!   器；compile-fail 测试锁定）。外部只有 `decode`+`verify`。
-//! - [`CommandBatch::new`] 只接受 `&CertifiedPlan` 与
-//!   `&dyn ResourceRegistry`。
+//! - [`CommandBatch::compile`] 只接受 `&CertifiedPlan` 与
+//!   `&dyn ResourceRegistry`（蓝图 65 WP-65.2：原直填隐藏零值的第二
+//!   免检构造门删除——零值 compiler_digest 与误装配不可分；批级元数据
+//!   经 builder 显式编译）。
 //! - `AuthorizedCommand` **不在本 crate 定义或重导出**（[06] §3.2 红线）：
 //!   它仍由唯一 ControlGateway 构造（telemetry-model::command 单源）。
 //!
@@ -36,11 +38,11 @@ pub mod objective;
 pub mod wire;
 
 pub use batch::{CommandBatch, EmptyResourceRegistry, ResourceRegistry, MAX_BATCH_SIZE};
-pub use candidate::{Assignment, CandidatePlan, SolveStatusKind};
+pub use candidate::{Assignment, CandidatePlan, CandidatePlanParts, SolveStatusKind};
 pub use certificate::{CertifiedPlan, CertifiedPlanFields, CertifierSeal};
 pub use error::ContractError;
 pub use ids::{CertificateId, IntentId, PlanId, ReasonCode, SnapshotId};
-pub use intent::{CommandIntent, CompensationHint, Precondition};
+pub use intent::{CommandIntent, CommandIntentParts, CompensationHint, Precondition};
 pub use objective::{DecisionRequest, IntentCandidate, ObjectiveSpec};
 
 /// 合同 wire 版本（V1；[06] §4.3 兼容矩阵 N-1 读窗口一个版本）。

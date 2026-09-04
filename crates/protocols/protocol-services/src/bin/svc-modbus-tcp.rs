@@ -35,7 +35,10 @@ static ALLOC: eneros_protocol_services::HeapAllocator =
 /// 47：读回容差（kW）——值单源 = control-gateway
 /// `PCS_SETPOINT_READBACK_TOL_KW`（与签发侧 ControlContract.tolerance_abs
 /// 同一事实；历史手抄常量退役）。
-pub use eneros_control_gateway::PCS_SETPOINT_READBACK_TOL_KW as MASTER_READBACK_TOL_KW;
+// 蓝图 65 WP-65.5：bin 内 `pub use` 再出口降 `use`（外部不可达）；消费
+// 点在 target_os="none" 门内——host 面显式豁免未用（事实声明非压制）。
+#[cfg_attr(not(target_os = "none"), allow(unused_imports))]
+use eneros_control_gateway::PCS_SETPOINT_READBACK_TOL_KW as MASTER_READBACK_TOL_KW;
 
 /// 45.5 + v0.314.30：点表驱动 + 事件平面接入的 modbus-tcp I/O 服务。
 ///

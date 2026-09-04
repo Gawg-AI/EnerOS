@@ -10,3 +10,4 @@ description = "EnerOS 版本化管理 API — RBAC/幂等性/限流 (OBS-010), n
 eneros-hex = { path = "../../abi/hex" }
 heapless = { version = "0.8", default-features = false }
 eneros-crypto = { path = "../../security/crypto", default-features = false }
+eneros-signer-keyring = { path = "../../security/signer-keyring", default-features = false }

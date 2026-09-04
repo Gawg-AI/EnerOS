@@ -258,6 +258,31 @@ fn golden_two_step_battery_arbitrage() {
     // 证据链：input_digest = provenance；objective_digest = spec_digest。
     assert_eq!(plan.input_digest(), &[0xAB; 32]);
     assert_eq!(plan.objective_digest(), obj.spec_digest());
+    // 槽位断言（蓝图 65 WP-65.2.4：solve/validity 组命名字段槽位对照
+    // ——solve_document 与 plan 同输入确定性重解，逐槽位对照源值；
+    // gap↔residual、issued↔ttl 的同型互换在此不可通过）。
+    let mut hb2 = highs();
+    let out = Planner::new(ToleranceProfile::l2(), 100)
+        .solve_document(&mut hb2, &req, &input)
+        .expect("solve_document");
+    assert_eq!(plan.relative_gap(), out.relative_gap, "gap 槽位");
+    assert_eq!(
+        plan.max_primal_residual(),
+        out.max_primal_residual,
+        "residual 槽位（≠ gap）"
+    );
+    assert_eq!(
+        plan.objective_value(),
+        out.objective_value,
+        "objective 槽位"
+    );
+    assert_eq!(
+        plan.ttl_ms(),
+        req.budget_ms().max(1_000) as u64,
+        "ttl 源 = 预算（≠ issued）"
+    );
+    assert_eq!(plan.issued_at_ms(), input.now_ms, "issued 源 = now");
+    assert_ne!(plan.issued_at_ms(), plan.ttl_ms(), "issued/ttl 分立");
 }
 
 #[test]

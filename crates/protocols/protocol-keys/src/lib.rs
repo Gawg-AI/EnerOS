@@ -139,11 +139,156 @@ pub fn by_config_id(id: &str) -> Option<&'static [&'static str]> {
     })
 }
 
+/// 每协议必填键（插件 start 消费 `.ok_or`；缺失 → 编译期拒绝）。
+///
+/// 蓝图 65 WP-65.4 进叶（原 config-bundle 六臂硬编码 match 迁移）：6 非空
+/// 集 + 其余空集。cj188 = 空集**显式**（键表照存、必填恒空——REG_CJ188_
+/// COMPILE Open 独立裁决：编译支持面扩容 = 行为新增，本卷逐字节不变）。
+/// 键序与 config-bundle 旧六臂逐字节一致（行为对照表见执行卡）。
+pub const REQUIRED_MODBUS_TCP: &[&str] = &["peer"];
+pub const REQUIRED_IEC104: &[&str] = &["peer"];
+pub const REQUIRED_MQTT: &[&str] = &["broker"];
+pub const REQUIRED_MMS: &[&str] = &["peer"];
+pub const REQUIRED_GOOSE: &[&str] = &["go_cb_ref", "dataset_ref"];
+pub const REQUIRED_SV: &[&str] = &["app_id"];
+pub const REQUIRED_MODBUS_RTU: &[&str] = &[];
+pub const REQUIRED_DLT645: &[&str] = &[];
+pub const REQUIRED_GBT27930: &[&str] = &[];
+pub const REQUIRED_IEC101: &[&str] = &[];
+pub const REQUIRED_IEC103: &[&str] = &[];
+pub const REQUIRED_CJ188: &[&str] = &[];
+
+/// 按 config_id 取必填键表；未登记返回 `None`（形态对齐
+/// [`by_config_id`]）。
+///
+/// `protocol-cj188` 在此返回 `Some(&[])`（空集显式）；config-bundle 委托
+/// 后 `unwrap_or(&[])`，对未知/未登记 id 与旧六臂 `_ => &[]` 行为
+/// 逐字节一致。消费点 = config-bundle `toml_compile`（委托，零改动）。
+pub fn required_keys(id: &str) -> Option<&'static [&'static str]> {
+    Some(match id {
+        "protocol-modbus-tcp" => REQUIRED_MODBUS_TCP,
+        "protocol-modbus-rtu" => REQUIRED_MODBUS_RTU,
+        "protocol-iec104" => REQUIRED_IEC104,
+        "protocol-mqtt" => REQUIRED_MQTT,
+        "protocol-goose" => REQUIRED_GOOSE,
+        "protocol-sv" => REQUIRED_SV,
+        "protocol-mms" => REQUIRED_MMS,
+        "protocol-dlt645" => REQUIRED_DLT645,
+        "protocol-gbt27930" => REQUIRED_GBT27930,
+        "protocol-iec101" => REQUIRED_IEC101,
+        "protocol-iec103" => REQUIRED_IEC103,
+        "protocol-cj188" => REQUIRED_CJ188,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// 全部键表注册进 by_config_id（映射与常量一一对应，未登记 ID → None）。
+    /// required ⊆ known（每协议必填键必在已知键表内）+ 全覆盖锁（镜像
+    /// `by_config_id_covers_every_array` 形态——12 臂一一进映射，未登记
+    /// → None）。
+    #[test]
+    fn required_subset_of_known_and_covers_every_array() {
+        let table: &[(&str, &[&str], &[&str])] = &[
+            ("protocol-modbus-tcp", MODBUS_TCP, REQUIRED_MODBUS_TCP),
+            ("protocol-modbus-rtu", MODBUS_RTU, REQUIRED_MODBUS_RTU),
+            ("protocol-iec104", IEC104_MASTER, REQUIRED_IEC104),
+            ("protocol-mqtt", MQTT, REQUIRED_MQTT),
+            ("protocol-goose", GOOSE, REQUIRED_GOOSE),
+            ("protocol-sv", SV, REQUIRED_SV),
+            ("protocol-mms", MMS, REQUIRED_MMS),
+            ("protocol-dlt645", DLT645, REQUIRED_DLT645),
+            ("protocol-gbt27930", GBT27930, REQUIRED_GBT27930),
+            ("protocol-iec101", IEC101, REQUIRED_IEC101),
+            ("protocol-iec103", IEC103, REQUIRED_IEC103),
+            ("protocol-cj188", CJ188, REQUIRED_CJ188),
+        ];
+        for (id, known, required) in table {
+            assert_eq!(required_keys(id), Some(*required), "映射失配：{id}");
+            for k in *required {
+                assert!(known.contains(k), "{id} 必填键 {k:?} 不在已知键表内");
+            }
+        }
+        assert_eq!(required_keys("protocol-unknown"), None);
+        assert_eq!(required_keys(""), None);
+    }
+
+    /// required 内容字面锁（镜像 `content_locked_literals` 先例——映射锁
+    /// 测不出内容变化，6 非空集逐字节把守；改必填键必经本测）。
+    #[test]
+    fn required_content_literals() {
+        assert_eq!(REQUIRED_MODBUS_TCP, &["peer"]);
+        assert_eq!(REQUIRED_IEC104, &["peer"]);
+        assert_eq!(REQUIRED_MQTT, &["broker"]);
+        assert_eq!(REQUIRED_MMS, &["peer"]);
+        assert_eq!(REQUIRED_GOOSE, &["go_cb_ref", "dataset_ref"]);
+        assert_eq!(REQUIRED_SV, &["app_id"]);
+    }
+
+    /// cj188 空集显式锁（REG-CJ188-COMPILE 边界）：必填恒空——编译面
+    /// 扩容 = 行为新增，独立裁决，本卷逐字节不变。
+    #[test]
+    fn cj188_required_stays_empty() {
+        assert!(REQUIRED_CJ188.is_empty(), "cj188 必填集必须恒空");
+        assert_eq!(required_keys("protocol-cj188"), Some(&[] as &[&str]));
+    }
+
+    /// KNOWN_KEYS 防复制类锁（蓝图 65 WP-65.4，R-65.d 两态 matcher）：
+    /// 全仓 `crates/**.rs` 禁**字面键表定义**——点锁按内容相等断言，消费
+    /// 方重新硬编码一份相同字面照样绿（锁漂移不锁复制）；本 walk 两态：
+    /// ①定义形 `const KNOWN_KEYS` ②注解形 `KNOWN_KEYS: &[&str]`，且行含
+    /// `= &[` 字面初始化才命中（单源引用形
+    /// `const KNOWN_KEYS: &[&str] = eneros_protocol_keys::MQTT;` 合法，
+    /// 不命中）。豁免 = 本叶 crate（键表字面唯一处）；白名单当前为零。
+    /// 守卫消息给行号与文件。
+    #[test]
+    fn known_keys_tables_not_recreated_anywhere() {
+        use std::path::Path;
+
+        const EXEMPT_PATH: &str = "/protocol-keys/src/";
+
+        fn walk(dir: &Path, hits: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("workspace crates/") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    walk(&path, hits);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let as_str = path.to_string_lossy().to_string();
+                    if as_str.contains(EXEMPT_PATH) {
+                        continue;
+                    }
+                    let src = std::fs::read_to_string(&path).expect("read src");
+                    for (i, line) in src.lines().enumerate() {
+                        if line.trim_start().starts_with("//") {
+                            continue;
+                        }
+                        let def_form = line.contains("const KNOWN_KEYS");
+                        let ann_form = line.contains("KNOWN_KEYS: &[&str]");
+                        if (def_form || ann_form) && line.contains("= &[") {
+                            hits.push(format!("{as_str}:{}: {line}", i + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("workspace root")
+            .to_path_buf();
+        let mut hits = Vec::new();
+        walk(&workspace.join("crates"), &mut hits);
+        assert!(
+            hits.is_empty(),
+            "KNOWN_KEYS 字面键表定义残存（键表复制禁令 owner = eneros-protocol-keys 叶；改用 eneros_protocol_keys 引用）:\n{}",
+            hits.join("\n")
+        );
+    }
+
     #[test]
     fn by_config_id_covers_every_array() {
         let table: &[(&str, &[&str])] = &[

@@ -9,6 +9,7 @@ description = "EnerOS Agent Runtime — descriptor/registry/lifecycle/spawner/he
 [dependencies]
 eneros-elf-loader = { path = "../../abi/elf-loader" }
 eneros-crypto = { path = "../../security/crypto" }
+eneros-signer-keyring = { path = "../../security/signer-keyring" }
 eneros-agent-sdk = { path = "../agent-sdk" }
 # WP-54.3：AgentRuntime 错误族需 DualBrainError；feature 门控避免默认闭包膨胀。
 eneros-dual-brain = { path = "../../ai/dual-brain", optional = true }

@@ -444,36 +444,59 @@ fn unreachable_delivery_settles_failed_and_never_retries() {
 /// objective 摘要——两摘要域语义分离）。
 fn candidate_plan() -> eneros_decision_contract::CandidatePlan {
     use eneros_decision_contract::{
-        Assignment, CandidatePlan, PlanId, SnapshotId, SolveStatusKind,
+        Assignment, CandidatePlan, CandidatePlanParts, PlanId, SnapshotId, SolveStatusKind,
     };
-    CandidatePlan::builder(PlanId([0x62; 16]), SnapshotId([0x53; 16]), [0x63; 32], 1)
-        .solve(SolveStatusKind::Optimal, 1.0, 0.0, 0.0, 1)
-        .horizons(now_ms(), 900_000_000, 1)
-        .digests([0x64; 32], [0x65; 32])
-        .validity(now_ms(), 60_000)
-        .assignments(vec![Assignment {
+    CandidatePlan::from_parts(CandidatePlanParts {
+        id: PlanId([0x62; 16]),
+        snapshot_id: SnapshotId([0x53; 16]),
+        objective_digest: [0x63; 32],
+        resource_catalog_version: 1,
+        horizon_start_ms: now_ms(),
+        step_ns: 900_000_000,
+        step_count: 1,
+        solver_status: SolveStatusKind::Optimal,
+        objective_value: 1.0,
+        relative_gap: 0.0,
+        max_primal_residual: 0.0,
+        elapsed_ms: 1,
+        model_digest: [0x64; 32],
+        input_digest: [0x65; 32],
+        assignments: vec![Assignment {
             asset_id: 1,
             device_id: 1,
             point_id: 10,
             power_kw: 5.0,
             unit_code: 6,
             step_index: 1,
-        }])
-        .build()
-        .expect("合法候选计划")
+        }],
+        issued_at_ms: now_ms(),
+        ttl_ms: 60_000,
+    })
+    .expect("合法候选计划")
 }
 
 /// WP-62.1.2 夹具：saga 命令意图（saga_e4e5 intent() 同形）。
 fn saga_intent(
     plan_id: eneros_decision_contract::PlanId,
 ) -> eneros_decision_contract::CommandIntent {
-    use eneros_decision_contract::{CommandIntent, CompensationHint, IntentId, Precondition};
-    CommandIntent::builder(IntentId([0x71; 16]), plan_id, [0xAB; 32])
-        .target(1, 1, 10, 5.0, 6)
-        .window(now_ms(), now_ms() + 60_000)
-        .policy(Precondition::None, CompensationHint::None)
-        .build()
-        .expect("合法命令意图")
+    use eneros_decision_contract::{
+        CommandIntent, CommandIntentParts, CompensationHint, IntentId, Precondition,
+    };
+    CommandIntent::from_parts(CommandIntentParts {
+        intent_id: IntentId([0x71; 16]),
+        plan_id,
+        plan_sha256: [0xAB; 32],
+        asset_id: 1,
+        device_id: 1,
+        point_id: 10,
+        power_kw: 5.0,
+        unit_code: 6,
+        valid_from_ms: now_ms(),
+        valid_until_ms: now_ms() + 60_000,
+        precondition: Precondition::None,
+        compensation: CompensationHint::None,
+    })
+    .expect("合法命令意图")
 }
 
 /// WP-62.1.2（D-3）红→绿：`EngineSagaExecutor` 落进 CoreCommand 的

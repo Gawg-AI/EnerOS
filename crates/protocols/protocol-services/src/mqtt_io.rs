@@ -366,10 +366,13 @@ impl<C: RawIpc> MqttWriteIoService<C> {
         }
     }
 
-    /// 遥测面 END 定稿（原 handle_telemetry_fragment END 分支原样迁移）：
+    /// 遥测面 END 定稿（原 handle_telemetry_fragment END 分支原样迁移；
+    /// doc 序 = 代码序——蓝图 65 WP-65.5 订正，原 doc topic 第 2/connected
+    /// 第 3 与代码相反）：
     /// 1. 帧头（magic `OBSF` + schema 版本）不匹配 → 拒绝解析 + 计数；
-    /// 2. telemetry_topic 未配置 → 拒绝（遥测出口关闭）；
-    /// 3. 插件未连接（broker 断）→ 拒绝 → 调用方 durable outbox 兜底补传。
+    /// 2. 插件未连接（broker 断）→ 拒绝 → 调用方 durable outbox 兜底补传；
+    /// 3. telemetry_topic 校验在 enqueue_telemetry_publish 内（QoS1 发布；
+    ///    未配置主题插件拒绝）。
     fn tel_finalize(&mut self) -> u8 {
         match self.tel_assembler.end() {
             Ok(frame) => {
@@ -441,14 +444,6 @@ impl<C: RawIpc> eneros_drv_svc::runtime::DriverService for MqttWriteIoService<C>
                 resp.payload[0] = status;
                 resp.payload_len = 1;
                 return;
-            }
-            // 50 二分诊断：未识别 EXECUTE 载荷首字节打印（定位后移除）。
-            if req.payload_len > 0 {
-                eneros_runtime::println!(
-                    "[svc-mqtt] DBG-EXEC p0={:#04x} len={}",
-                    p[0],
-                    req.payload_len
-                );
             }
             // 47（WP-47.1）：本轮 poll 解析到的下行写意图 → dispatch 授权链。
             self.forward_intents();

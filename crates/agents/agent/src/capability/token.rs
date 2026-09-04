@@ -27,7 +27,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use eneros_crypto::{sm2_verify, Sm2PublicKey, Sm2Signature};
+use eneros_crypto::{Sm2PublicKey, Sm2Signature};
 
 use crate::error::AgentError;
 use crate::id::AgentId;
@@ -408,12 +408,11 @@ impl CapabilityToken {
         let data = self.serialize_unsigned();
         // 从 64 字节恢复 Sm2Signature
         let sig = Sm2Signature::from_bytes(&self.signature);
-        // 验证签名
-        match sm2_verify(&data, &sig, issuer_pk) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(AgentError::TokenSignatureInvalid),
-            Err(_) => Err(AgentError::TokenSignatureInvalid),
-        }
+        // 验证签名（蓝图 65 WP-65.3：三臂手抄 match 塌缩为类型化原语——
+        // 双通道统一 → TokenSignatureInvalid，词形逐字节不变）。
+        eneros_signer_keyring::verify_signature(&data, &sig, issuer_pk)
+            .map(|_| ())
+            .map_err(|_| AgentError::TokenSignatureInvalid)
     }
 }
 

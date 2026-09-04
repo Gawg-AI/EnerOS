@@ -2642,18 +2642,22 @@ mod unit_tests {
     #[test]
     fn intent_window_estimate_golden() {
         let intent = |from: u64, until: u64, kw: f64| {
-            eneros_decision_contract::CommandIntent::builder(
-                eneros_decision_contract::IntentId([3u8; 16]),
-                eneros_decision_contract::PlanId([1u8; 16]),
-                [0xAB; 32],
+            eneros_decision_contract::CommandIntent::from_parts(
+                eneros_decision_contract::CommandIntentParts {
+                    intent_id: eneros_decision_contract::IntentId([3u8; 16]),
+                    plan_id: eneros_decision_contract::PlanId([1u8; 16]),
+                    plan_sha256: [0xAB; 32],
+                    asset_id: 1,
+                    device_id: 1,
+                    point_id: 10,
+                    power_kw: kw,
+                    unit_code: 6,
+                    valid_from_ms: from,
+                    valid_until_ms: until,
+                    precondition: eneros_decision_contract::Precondition::None,
+                    compensation: eneros_decision_contract::CompensationHint::None,
+                },
             )
-            .target(1, 1, 10, kw, 6)
-            .window(from, until)
-            .policy(
-                eneros_decision_contract::Precondition::None,
-                eneros_decision_contract::CompensationHint::None,
-            )
-            .build()
             .unwrap()
         };
         // 形态一（run_typed 幂等命中原值）：now=2000, ttl=60_000 →

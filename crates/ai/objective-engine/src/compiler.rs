@@ -755,10 +755,14 @@ pub(crate) fn digest_compiled(parts: &CompiledObjectiveParts) -> [u8; 32] {
         min_on_steps,
         min_off_steps,
         registry_generation,
+        // bundle_version 显式出局（弃权而非 `..`）：版本已在 bundle_digest
+        // 输入内（bundle 编码含版本域）——入 preimage 即双计。蓝图 65
+        // WP-65.5 去弃权：穷尽解构后未来 Parts 增字段 = 编译错，静默出
+        // preimage 不再可能；摘要值逐字节不变（known-vector 锁）。
+        bundle_version: _,
         bundle_digest,
         horizon_step_ns,
         horizon_step_count,
-        ..
     } = *parts;
     let prices: &[f64] = prices_per_kwh;
     let bundle_digest: &[u8; 32] = &bundle_digest;

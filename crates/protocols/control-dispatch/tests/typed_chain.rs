@@ -354,6 +354,24 @@ fn typed_entry_commits() {
 
     let p = proposal(-40.0);
     let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
+    // 槽位断言（蓝图 65 WP-65.2.4：adapter 侧 objective_value/ttl 槽位
+    // ——源值在命名字段上对照；issued/ttl 同型相邻位互换在此不可通过）。
+    assert_eq!(
+        c.objective_value(),
+        p.schedule.objective_value,
+        "objective 槽位（源 = schedule.objective_value）"
+    );
+    assert_eq!(
+        c.ttl_ms(),
+        u64::from(p.ttl_secs.max(1)) * 1000,
+        "ttl 槽位（源 = ttl_secs）"
+    );
+    assert_eq!(
+        c.issued_at_ms(),
+        p.issued_at_ms,
+        "issued 槽位（源 = issued_at）"
+    );
+    assert_ne!(c.issued_at_ms(), c.ttl_ms(), "issued/ttl 分立");
     let r = engine
         .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
         .expect("typed submit");
@@ -375,25 +393,29 @@ fn typed_entry_rejects_expired_plan() {
     let p = proposal(50.0);
     let mut c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
     // 过期：issued_at 远早于 now 且 ttl 短——直接经 wire 往返改写不可行
-    // （构造器校验 ttl>0），用早期 issued_at 重造。
-    let expired = eneros_decision_contract::CandidatePlan::builder(
-        *c.id(),
-        c.snapshot_id(),
-        *c.objective_digest(),
-        c.resource_catalog_version(),
+    // （构造器校验 ttl>0），用早期 issued_at 重造（命名字段逐槽位从
+    // getter 取值——字段名自证不换位）。
+    let expired = eneros_decision_contract::CandidatePlan::from_parts(
+        eneros_decision_contract::CandidatePlanParts {
+            id: *c.id(),
+            snapshot_id: c.snapshot_id(),
+            objective_digest: *c.objective_digest(),
+            resource_catalog_version: c.resource_catalog_version(),
+            horizon_start_ms: c.horizon_start_ms(),
+            step_ns: c.step_ns(),
+            step_count: c.step_count(),
+            solver_status: c.solver_status(),
+            objective_value: c.objective_value(),
+            relative_gap: c.relative_gap(),
+            max_primal_residual: c.max_primal_residual(),
+            elapsed_ms: c.elapsed_ms(),
+            model_digest: *c.model_digest(),
+            input_digest: *c.input_digest(),
+            assignments: c.assignments().to_vec(),
+            issued_at_ms: now_ms() - 120_000,
+            ttl_ms: 60_000,
+        },
     )
-    .solve(
-        c.solver_status(),
-        c.objective_value(),
-        c.relative_gap(),
-        c.max_primal_residual(),
-        c.elapsed_ms(),
-    )
-    .horizons(c.horizon_start_ms(), c.step_ns(), c.step_count())
-    .digests(*c.model_digest(), *c.input_digest())
-    .validity(now_ms() - 120_000, 60_000)
-    .assignments(c.assignments().to_vec())
-    .build()
     .expect("expired plan constructible");
     let err = engine
         .submit_typed(&expired, "pcs", &trusted_telemetry(), &actor(), 5_000)
@@ -439,7 +461,7 @@ impl DeliveryChannel for TickCountingChannel {
 
 fn two_step_plan() -> eneros_decision_contract::CandidatePlan {
     use eneros_decision_contract::{
-        Assignment, CandidatePlan, PlanId, SnapshotId, SolveStatusKind,
+        Assignment, CandidatePlan, CandidatePlanParts, PlanId, SnapshotId, SolveStatusKind,
     };
     let a = |step: u32, kw: f64| Assignment {
         asset_id: 1,
@@ -449,18 +471,27 @@ fn two_step_plan() -> eneros_decision_contract::CandidatePlan {
         unit_code: 6,
         step_index: step,
     };
-    CandidatePlan::builder(PlanId([0x71; 16]), SnapshotId([2u8; 16]), [0xAA; 32], 1)
-        .solve(SolveStatusKind::Optimal, 1.0, 0.0, 0.0, 10)
-        .horizons(
-            TICK_MS.load(std::sync::atomic::Ordering::Relaxed),
-            10_000_000_000, // 10s 步长
-            2,
-        )
-        .digests([0xBB; 32], [0xCC; 32])
-        .validity(TICK_MS.load(std::sync::atomic::Ordering::Relaxed), 60_000)
-        .assignments(vec![a(1, 10.0), a(2, 20.0)])
-        .build()
-        .expect("合法两步计划")
+    let tick = TICK_MS.load(std::sync::atomic::Ordering::Relaxed);
+    CandidatePlan::from_parts(CandidatePlanParts {
+        id: PlanId([0x71; 16]),
+        snapshot_id: SnapshotId([2u8; 16]),
+        objective_digest: [0xAA; 32],
+        resource_catalog_version: 1,
+        horizon_start_ms: tick,
+        step_ns: 10_000_000_000, // 10s 步长
+        step_count: 2,
+        solver_status: SolveStatusKind::Optimal,
+        objective_value: 1.0,
+        relative_gap: 0.0,
+        max_primal_residual: 0.0,
+        elapsed_ms: 10,
+        model_digest: [0xBB; 32],
+        input_digest: [0xCC; 32],
+        assignments: vec![a(1, 10.0), a(2, 20.0)],
+        issued_at_ms: tick,
+        ttl_ms: 60_000,
+    })
+    .expect("合法两步计划")
 }
 
 /// 两步计划：首拍只投到期步 1；步 2 未到期不投；推进时钟后重提交同计划

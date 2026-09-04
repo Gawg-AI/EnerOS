@@ -496,14 +496,14 @@ fn xtask_flow_sign_then_verify_repo_configs() {
         let enc = encode_entry_canonical(entry);
         let sig =
             eneros_crypto::Sm2Signature::from_bytes(entry.signature.as_slice().try_into().unwrap());
-        let ok = eneros_crypto::sm2_verify(&enc, &sig, &pk).unwrap();
-        if !ok {
+        eneros_signer_keyring::verify_signature(&enc, &sig, &pk).unwrap_or_else(|_| {
+            // 蓝图 65 WP-65.3：类型化原语（双通道统一），拒因词形不变。
             panic!(
                 "entry verify FAILED: {} payload_len={}",
                 entry.config_id,
                 entry.payload.len()
-            );
-        }
+            )
+        });
     }
     verify_bundle(&bundle, &pk, None).unwrap();
     // 与磁盘产物一致性：**完整**序列化（canonical + 签名）→ 解码 +

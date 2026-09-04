@@ -8,7 +8,9 @@
 
 use alloc::vec;
 
-use eneros_decision_contract::{Assignment, CandidatePlan, PlanId, SnapshotId, SolveStatusKind};
+use eneros_decision_contract::{
+    Assignment, CandidatePlan, CandidatePlanParts, PlanId, SnapshotId, SolveStatusKind,
+};
 use eneros_dual_brain::decision::ProposedControlPlan;
 
 use crate::DispatchError;
@@ -56,25 +58,35 @@ pub fn proposal_to_candidate(
     let mut sid = [0u8; 16];
     sid.copy_from_slice(&digest[..16]);
     let (asset_id, device_id, point_id, _) = asset_binding;
-    CandidatePlan::builder(plan_id, SnapshotId(sid), [0u8; 32], catalog_version)
-        .solve(status, p.schedule.objective_value, 0.0, 0.0, 0)
-        .horizons(
-            p.issued_at_ms,
-            0, // step_ns（单时段）
-            1, // step_count
-        )
-        .digests(p.model_digest.unwrap_or([0u8; 32]), digest)
-        .validity(p.issued_at_ms, u64::from(p.ttl_secs.max(1)) * 1000)
-        .assignments(vec![Assignment {
+    // 蓝图 65 WP-65.2：命名字段 Parts 构造（builder 退役）——objective_
+    // value/ttl 槽位在字段名上自证（槽位断言见 dispatch 集成测试）。
+    CandidatePlan::from_parts(CandidatePlanParts {
+        id: plan_id,
+        snapshot_id: SnapshotId(sid),
+        objective_digest: [0u8; 32],
+        resource_catalog_version: catalog_version,
+        horizon_start_ms: p.issued_at_ms,
+        step_ns: 0, // 单时段
+        step_count: 1,
+        solver_status: status,
+        objective_value: p.schedule.objective_value,
+        relative_gap: 0.0,
+        max_primal_residual: 0.0,
+        elapsed_ms: 0,
+        model_digest: p.model_digest.unwrap_or([0u8; 32]),
+        input_digest: digest,
+        assignments: vec![Assignment {
             asset_id,
             device_id,
             point_id,
             power_kw: p.power_kw,
             unit_code,
             step_index: 1,
-        }])
-        .build()
-        .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("candidate: {e:?}")))
+        }],
+        issued_at_ms: p.issued_at_ms,
+        ttl_ms: u64::from(p.ttl_secs.max(1)) * 1000,
+    })
+    .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("candidate: {e:?}")))
 }
 
 /// 后端侧转换（资源绑定未定形态——assignment 全零，绑定由 dispatch

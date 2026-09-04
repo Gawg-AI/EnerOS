@@ -6,8 +6,9 @@
 //! 卷 64.3 WP-64.3.5 adapter 化 / ota-ab + recovery flash + attestation
 //! `verify_signature` 类型化原语）保留各自 payload schema 与业务闸，四张
 //! 裸 key 表与五条 register/verify 管线收敛于此。域守卫
-//! （`primitive_domain_guard`）锁 security 域内裸 sm2_verify 只存在于
-//! 原始域 crate + secure-boot（ADR-033 豁免）。
+//! （`primitive_domain_guard`，蓝图 65 WP-65.3 加宽）锁**全仓非原始域**
+//! 裸 sm2_verify 只存在于原始域 crate + secure-boot（ADR-033 豁免）+
+//! EXEMPT_FILES 逐行豁免（REG-SM2 台账）。
 //!
 //! 设计裁决（蓝图 62 卷 62.3）：
 //!
@@ -22,13 +23,19 @@
 //!   [`SignerKeyring::check_revision`]（判定）/ [`SignerKeyring::
 //!   commit_revision`]（推进）；判拒语义（存档/拒绝计数）
 //!   保留在消费方。
+//! - **撤销终态 = tombstone 集**（蓝图 65 WP-65.1，本卷唯一授权的深模块
+//!   语义变更）：`revoke` 对任意 id 一律记账（含未登记 id——"吊销优先于
+//!   可信"）；`register` 永不触碰 tombstone（旧「同 id 覆盖即洗白撤销」
+//!   语义废除——全仓无消费方要该语义，且是唯一已发货 fail-open）；
+//!   `verify_authenticated` 撤销判定先于查表；显式洗白仅 [`SignerKeyring::
+//!   reinstate`] 一口（当前零生产调用方）。
 //!
 //! no_std + alloc（消费方为 no_std crate；不引入 std）。
 
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 
 use eneros_crypto::{sm2_verify, sm3_hash, Sm2PublicKey, Sm2Signature};
 
@@ -88,17 +95,22 @@ pub struct RevisionStale {
     pub seen: u32,
 }
 
-/// 登记条目。
+/// 登记条目（撤销表示不在 entry——tombstone 集单一持有，见
+/// [`SignerKeyring`] 文档）。
 #[derive(Debug, Clone)]
 struct KeyEntry {
     public_key: Sm2PublicKey,
-    revoked: bool,
 }
 
 /// 签名密钥注册表（S5 收敛点：注册/验签/撤销/修订水位唯一实现）。
+///
+/// 撤销终态单源 = `revoked` tombstone 集：登记表与吊销账分离，register
+/// 只写登记表（不洗白），revoke 只写 tombstone（无登记前置）。
 #[derive(Debug, Clone, Default)]
 pub struct SignerKeyring {
     keys: BTreeMap<KeyId, KeyEntry>,
+    /// 吊销账（tombstone；含未登记 id）。
+    revoked: BTreeSet<KeyId>,
     revisions: BTreeMap<[u8; 16], u32>,
 }
 
@@ -107,31 +119,32 @@ impl SignerKeyring {
         Self::default()
     }
 
-    /// 登记（同 id 覆盖——与既有消费方 `BTreeMap::insert` 语义一致）。
+    /// 登记（同 id 覆盖公钥字节——与既有消费方 `BTreeMap::insert` 语义
+    /// 一致；消费方审计表见执行卡：model-harness ×2、business-services
+    /// ×4，全为 register-once）。
+    ///
+    /// **永不触碰 tombstone**（蓝图 65 R-65.a）：已吊销 id 重登后仍
+    /// `RevokedKey`——洗白仅 [`Self::reinstate`] 一口。
     pub fn register(&mut self, key_id: KeyId, pk: &Sm2PublicKey) {
-        self.keys.insert(
-            key_id,
-            KeyEntry {
-                public_key: *pk,
-                revoked: false,
-            },
-        );
+        self.keys.insert(key_id, KeyEntry { public_key: *pk });
     }
 
-    /// 撤销（立即拒验；未知 id → false）。
-    pub fn revoke(&mut self, key_id: KeyId) -> bool {
-        match self.keys.get_mut(&key_id) {
-            Some(entry) => {
-                entry.revoked = true;
-                true
-            }
-            None => false,
-        }
+    /// 撤销（立即拒验）。任意 id 一律记账 tombstone（含未登记 id——
+    /// "吊销优先于可信"），幂等；返回 `()`（撤销是无条件记账，无
+    /// "未登记则失败"分支可报——返回值全仓零消费方，rg 审计见执行卡）。
+    pub fn revoke(&mut self, key_id: KeyId) {
+        self.revoked.insert(key_id);
     }
 
-    /// 撤销态读面。
+    /// 显式洗白（移除 tombstone；返回是否本有 tombstone 可移）。当前
+    /// 零生产调用方——撤销终态的唯一逆转口，留给未来真实消费方。
+    pub fn reinstate(&mut self, key_id: KeyId) -> bool {
+        self.revoked.remove(&key_id)
+    }
+
+    /// 撤销态读面（已吊销即真，无论是否登记——model-security 三门所需）。
     pub fn is_revoked(&self, key_id: KeyId) -> bool {
-        self.keys.get(&key_id).is_some_and(|entry| entry.revoked)
+        self.revoked.contains(&key_id)
     }
 
     /// 公钥读面（登记映射诊断用；验签一律走
@@ -149,21 +162,23 @@ impl SignerKeyring {
         self.keys.is_empty()
     }
 
-    /// 类型化验签（唯一验签纪律：查表 → 撤销门 → SM2；产出证明 token
-    /// 或结构化拒绝）。
+    /// 类型化验签（唯一验签纪律：**撤销门先于查表** → 查表 → SM2；产出
+    /// 证明 token 或结构化拒绝。撤销先查保证"未登记即吊销"判
+    /// `RevokedKey` 不降级 `UnknownKey`——SIG 既有语义逐 case 不变，
+    /// R-65.a 对照表见执行卡）。
     pub fn verify_authenticated(
         &self,
         key_id: KeyId,
         msg: &[u8],
         sig: &[u8; 64],
     ) -> Result<VerifiedSignature, VerifyReject> {
+        if self.revoked.contains(&key_id) {
+            return Err(VerifyReject::RevokedKey { key_id });
+        }
         let entry = self
             .keys
             .get(&key_id)
             .ok_or(VerifyReject::UnknownKey { key_id })?;
-        if entry.revoked {
-            return Err(VerifyReject::RevokedKey { key_id });
-        }
         verify_signature(msg, &Sm2Signature::from_bytes(sig), &entry.public_key)
     }
 
@@ -227,10 +242,13 @@ pub fn verify_signature(
     }
 }
 
-/// WP-64.3.5 rg 守卫：security 域内裸 `sm2_verify(` 调用只允许——
+/// WP-64.3.5 + 蓝图 65 WP-65.3 rg 守卫：全仓裸 `sm2_verify(` 调用只允许——
 /// 原始域 crate（crypto/crypto-gmssl 实现、signer-keyring 自身纪律
-/// owner）+ secure-boot（ADR-033 登记豁免 REG-SM2-SB）。其余消费面
-/// 必须走 [`verify_signature`] 类型化原语（布尔陷阱域外清零）。
+/// owner）+ secure-boot（ADR-033 登记豁免 REG-SM2-SB）+ `EXEMPT_FILES`
+/// 逐行豁免（REG-SM2 台账：拒绝词形/错误传输面与类型化原语不相容的
+/// 站点）。其余消费面必须走 [`verify_signature`] 类型化原语——布尔
+/// 陷阱**全仓非原始域**清零（原「security 域内」口径加宽；豁免清单
+/// = EXEMPT_CRATES ∪ EXEMPT_FILES，逐行登记于 REG-SM2）。
 #[cfg(test)]
 mod primitive_domain_guard {
     #[test]
@@ -247,18 +265,37 @@ mod primitive_domain_guard {
             "/security/secure-boot/",
         ];
 
+        /// 逐行豁免（REG-SM2 台账，docs/candidates-registry.md F 节）：
+        /// 1) business-services config_service.rs——Ok(false)/Err 双通道已
+        ///    分词形（"bad-entry-signature" vs "sm2-verify-failed"）；类型化
+        ///    原语统一为 BadSignature 即改词形（禁止项：拒绝词形逐字节
+        ///    不变）。
+        /// 2) agent process.rs——Err 通道错误传输面 "SM2 verify failed:
+        ///    {e:?}"（内层 e 文案透传）；类型化原语统一即丢弃内层错误
+        ///    文案。
+        const EXEMPT_FILES: [&str; 2] = [
+            "/business-services/src/config_service.rs",
+            "/agent/src/process.rs",
+        ];
+
         fn walk(dir: &Path, hits: &mut Vec<String>) {
-            for entry in std::fs::read_dir(dir).expect("workspace crates/security/") {
+            for entry in std::fs::read_dir(dir).expect("workspace crates/") {
                 let path = entry.expect("dir entry").path();
                 if path.is_dir() {
                     walk(&path, hits);
                 } else if path.extension().is_some_and(|e| e == "rs") {
                     let as_str = path.to_string_lossy().to_string();
-                    if EXEMPT_CRATES.iter().any(|w| as_str.contains(w)) {
+                    if EXEMPT_CRATES.iter().any(|w| as_str.contains(w))
+                        || EXEMPT_FILES.iter().any(|w| as_str.ends_with(w))
+                    {
                         continue;
                     }
                     let src = std::fs::read_to_string(&path).expect("read src");
                     for (i, line) in src.lines().enumerate() {
+                        // 注释行不匹配（R-65.d 剥注释——3 行注释锚点不误报）。
+                        if line.trim_start().starts_with("//") {
+                            continue;
+                        }
                         if line.contains("sm2_verify(") {
                             hits.push(alloc::format!("{as_str}:{}: {line}", i + 1));
                         }
@@ -273,10 +310,10 @@ mod primitive_domain_guard {
             .expect("workspace root")
             .to_path_buf();
         let mut hits = Vec::new();
-        walk(&workspace.join("crates/security"), &mut hits);
+        walk(&workspace.join("crates"), &mut hits);
         assert!(
             hits.is_empty(),
-            "security 域内非原始域 sm2_verify 残存（须改 signer_keyring::verify_signature）:\n{}",
+            "全仓非原始域 sm2_verify 残存（须改 signer_keyring::verify_signature；豁免 = EXEMPT_CRATES ∪ EXEMPT_FILES，逐行登记于 REG-SM2）:\n{}",
             hits.join("\n")
         );
     }
@@ -356,17 +393,69 @@ mod tests {
         let sig = sign(&pair, msg);
         let mut kr = SignerKeyring::new();
         kr.register([7u8; 8], &pair.public_key);
-        assert!(kr.revoke([7u8; 8]));
-        assert!(!kr.revoke([8u8; 8]), "未知 id 撤销 → false");
+        kr.revoke([7u8; 8]);
+        assert_eq!(
+            kr.verify_authenticated([7u8; 8], msg, &sig),
+            Err(VerifyReject::RevokedKey { key_id: [7u8; 8] })
+        );
+        // 幂等 revoke：重复记账无差别，仍终态。
+        kr.revoke([7u8; 8]);
         assert_eq!(
             kr.verify_authenticated([7u8; 8], msg, &sig),
             Err(VerifyReject::RevokedKey { key_id: [7u8; 8] })
         );
     }
 
+    /// 撤销终态红测（蓝图 65 WP-65.1，R-65.a；替换旧
+    /// `reregister_clears_revocation_and_overwrites`——旧名锁的是被废
+    /// 「覆盖即洗白」语义）：revoke → re-register → verify 仍
+    /// `RevokedKey`。旧实现（entry.revoked 位 + register 覆盖重置）下
+    /// 本测红（is_revoked=false / verify=Ok）；tombstone 化后转绿。
     #[test]
-    fn reregister_clears_revocation_and_overwrites() {
-        // 同 id 覆盖语义（既有 BTreeMap::insert 现状锁）。
+    fn register_after_revoke_keeps_revocation() {
+        let a = kp();
+        let b = kp();
+        let msg = b"m";
+        let sig = sign(&b, msg);
+        let mut kr = SignerKeyring::new();
+        kr.register([7u8; 8], &a.public_key);
+        kr.revoke([7u8; 8]);
+        kr.register([7u8; 8], &b.public_key);
+        assert_eq!(kr.len(), 1);
+        assert_eq!(
+            kr.public_key([7u8; 8]),
+            Some(&b.public_key),
+            "覆盖公钥字节语义保持"
+        );
+        assert!(kr.is_revoked([7u8; 8]), "重登不洗白（撤销终态）");
+        assert_eq!(
+            kr.verify_authenticated([7u8; 8], msg, &sig),
+            Err(VerifyReject::RevokedKey { key_id: [7u8; 8] })
+        );
+    }
+
+    /// 未登记 id 吊销 = 记账 tombstone（"吊销优先于可信"）：verify 恒
+    /// `RevokedKey`，不降级 `UnknownKey`。旧实现 revoke(未知)→false 且
+    /// 不记账，本测红（is_revoked=false / verify=UnknownKey）。
+    #[test]
+    fn unregistered_revoke_rejects_verification() {
+        let pair = kp();
+        let msg = b"m";
+        let sig = sign(&pair, msg);
+        let mut kr = SignerKeyring::new();
+        assert!(!kr.is_revoked([8u8; 8]), "未吊销未登记 → false");
+        kr.revoke([8u8; 8]);
+        assert!(kr.is_revoked([8u8; 8]), "已吊销即真（无论是否登记）");
+        assert_eq!(
+            kr.verify_authenticated([8u8; 8], msg, &sig),
+            Err(VerifyReject::RevokedKey { key_id: [8u8; 8] })
+        );
+    }
+
+    /// 覆盖公钥字节正例（自旧 `reregister_clears_revocation_and_overwrites`
+    /// 拆出——与撤销终态分立，register 的覆盖语义只指 entry）。
+    #[test]
+    fn register_overwrites_public_key_bytes() {
         let a = kp();
         let b = kp();
         let mut kr = SignerKeyring::new();
@@ -374,9 +463,31 @@ mod tests {
         kr.register([7u8; 8], &b.public_key);
         assert_eq!(kr.len(), 1);
         assert_eq!(kr.public_key([7u8; 8]), Some(&b.public_key));
+        assert!(!kr.is_revoked([7u8; 8]));
+    }
+
+    /// 显式洗白唯一口（蓝图 65 WP-65.1）：reinstate 移除 tombstone 后可
+    /// 验签；无 tombstone 时返回 false。当前零生产调用方（留给未来真实
+    /// 消费方）。
+    #[test]
+    fn reinstate_after_revoke_allows_verification() {
+        let pair = kp();
+        let msg = b"m";
+        let sig = sign(&pair, msg);
+        let mut kr = SignerKeyring::new();
+        kr.register([7u8; 8], &pair.public_key);
         kr.revoke([7u8; 8]);
-        kr.register([7u8; 8], &b.public_key);
-        assert!(!kr.is_revoked([7u8; 8]), "覆盖登记重置撤销态");
+        assert_eq!(
+            kr.verify_authenticated([7u8; 8], msg, &sig),
+            Err(VerifyReject::RevokedKey { key_id: [7u8; 8] })
+        );
+        assert!(!kr.reinstate([9u8; 8]), "无 tombstone 可移 → false");
+        assert!(kr.reinstate([7u8; 8]), "有 tombstone → true");
+        assert!(!kr.is_revoked([7u8; 8]));
+        assert!(
+            kr.verify_authenticated([7u8; 8], msg, &sig).is_ok(),
+            "reinstate 后可验签"
+        );
     }
 
     #[test]

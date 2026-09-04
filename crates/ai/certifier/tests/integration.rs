@@ -19,7 +19,8 @@ use eneros_decision_contract::objective::{
     Constraint, ConstraintKind, ObjectiveKind, ObjectiveSource,
 };
 use eneros_decision_contract::{
-    Assignment, CandidatePlan, ObjectiveSpec, PlanId, ReasonCode, SnapshotId, SolveStatusKind,
+    Assignment, CandidatePlan, CandidatePlanParts, ObjectiveSpec, PlanId, ReasonCode, SnapshotId,
+    SolveStatusKind,
 };
 use eneros_resource_registry::capability::{Availability, CapabilityEnvelope, DeratingReason};
 use eneros_snapshot_service::TrustedSnapshot;
@@ -149,37 +150,32 @@ fn ctx<'a>(
 /// certifier 的 duplicate/MissingAssignment 独立复检分支保留为纵深，
 /// 公开构造面不可达，见本文件 malicious_nan_and_missing_rejected）。
 fn plan(assignments: Vec<Assignment>) -> CandidatePlan {
-    CandidatePlan::builder(
-        PlanId::new([1; 16]).unwrap(),
-        SnapshotId([7; 16]),
-        [2; 32],
-        1,
-    )
-    .solve(SolveStatusKind::Optimal, 0.0, 0.0, 0.0, 10)
-    .horizons(1_000, STEP_NS_HOUR, 2)
-    .digests([3; 32], [4; 32])
-    .validity(1_000, 60_000)
-    .assignments(assignments)
-    .build()
-    .unwrap()
+    plan_raw(assignments).expect("合法计划")
 }
 
-/// 违约轨迹构造基座（负例只重声明 assignments 组；判据现居构造点）。
+/// 负例构造基座（判据现居构造点——from_parts 唯一验证通道）。
 fn plan_raw(
     assignments: Vec<Assignment>,
 ) -> Result<CandidatePlan, eneros_decision_contract::ContractError> {
-    CandidatePlan::builder(
-        PlanId::new([1; 16]).unwrap(),
-        SnapshotId([7; 16]),
-        [2; 32],
-        1,
-    )
-    .solve(SolveStatusKind::Optimal, 0.0, 0.0, 0.0, 10)
-    .horizons(1_000, STEP_NS_HOUR, 2)
-    .digests([3; 32], [4; 32])
-    .validity(1_000, 60_000)
-    .assignments(assignments)
-    .build()
+    CandidatePlan::from_parts(CandidatePlanParts {
+        id: PlanId::new([1; 16]).unwrap(),
+        snapshot_id: SnapshotId([7; 16]),
+        objective_digest: [2; 32],
+        resource_catalog_version: 1,
+        horizon_start_ms: 1_000,
+        step_ns: STEP_NS_HOUR,
+        step_count: 2,
+        solver_status: SolveStatusKind::Optimal,
+        objective_value: 0.0,
+        relative_gap: 0.0,
+        max_primal_residual: 0.0,
+        elapsed_ms: 10,
+        model_digest: [3; 32],
+        input_digest: [4; 32],
+        assignments,
+        issued_at_ms: 1_000,
+        ttl_ms: 60_000,
+    })
 }
 
 fn asg(asset: u64, step: u32, kw: f64) -> Assignment {
@@ -1139,4 +1135,209 @@ fn seal_issuance_feature_rg_gate() {
         .map(|l| l.contains("certifier"))
         .unwrap_or(false);
     assert!(gated, "issue() 必须被 certifier feature 门控：{issue_line}");
+}
+
+// ---------------------------------------------------------------------------
+// WP-65.2.5 组合链测（蓝图 65）：签名 RuleBundle → **真**
+// ObjectiveCompiler::compile → Planner::plan → CertifierModule::certify。
+// test-util fixture seam 不动（服务负例）；本测走唯一真编译入口，验证
+// compile→plan→certify 三段可组合且三元绑定一致。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn combo_chain_real_compile_plan_certify() {
+    use eneros_decision_contract::objective::ConstraintKind;
+    use eneros_objective_engine::compiler::SignatureVerifier;
+    use eneros_objective_engine::spec::MarketFacts;
+    use eneros_objective_engine::{
+        layer, normalization, term_kind, CompileInputs, ConstraintSpec, FactSet, HorizonPlan,
+        ObjectiveCompiler, ObjectiveTerm, RuleBundle, ScopeRef,
+    };
+    use eneros_planner::builder::{BatterySpec, GridSpec, PlanInput};
+    use eneros_planner::tolerance::ToleranceProfile;
+    use eneros_planner::{AssetBinding, Planner};
+
+    const CUT_NS: u64 = 1_000_000_000_000;
+    let unit =
+        |u: eneros_telemetry_model::PhysicalUnit| eneros_telemetry_model::unit_catalog::code_of(u);
+    let rule = |id: u64,
+                kind: ConstraintKind,
+                layer_p: u16,
+                unit_code: u16,
+                lo: f64,
+                hi: f64|
+     -> ConstraintSpec {
+        ConstraintSpec::new(
+            id,
+            kind.code(),
+            0,
+            layer_p,
+            ScopeRef::SITE,
+            unit_code,
+            lo,
+            hi,
+            0,
+            u64::MAX,
+            [1; 16],
+        )
+        .unwrap()
+    };
+
+    // 1. 签名 RuleBundle（MinSoc/MaxSoc/MaxPowerKw + 价格缩放经济项；
+    //    地平线 2 步 × 1h——与 certifier 既有 EvalContext 夹具同形）。
+    let mut b = RuleBundle::builder([9; 16], 5)
+        .validity_window(0, u64::MAX)
+        .horizon(HorizonPlan::new(STEP_NS_HOUR, 2).unwrap())
+        .site_rating_kw(100.0);
+    for c in [
+        rule(
+            1,
+            ConstraintKind::MinSoc,
+            layer::DEVICE_SAFETY,
+            unit(eneros_telemetry_model::PhysicalUnit::Dimensionless),
+            0.1,
+            0.1,
+        ),
+        rule(
+            2,
+            ConstraintKind::MaxSoc,
+            layer::DEVICE_SAFETY,
+            unit(eneros_telemetry_model::PhysicalUnit::Dimensionless),
+            0.9,
+            0.9,
+        ),
+        rule(
+            3,
+            ConstraintKind::MaxPowerKw,
+            layer::GRID_CODE,
+            unit(eneros_telemetry_model::PhysicalUnit::Kilowatts),
+            -100.0,
+            100.0,
+        ),
+    ] {
+        b = b.add_constraint(c);
+    }
+    b = b.add_term(
+        ObjectiveTerm::new(
+            10,
+            term_kind::ECONOMIC,
+            1.0,
+            unit(eneros_telemetry_model::PhysicalUnit::Dimensionless),
+            normalization::PRICE_SCALED,
+            layer::ECONOMIC,
+            [1; 16],
+        )
+        .unwrap(),
+    );
+    let mut bundle = b.build().unwrap();
+    bundle.seal(1, b"test-key");
+
+    // 2. 真 compile（签名验证材料在输入）。
+    let facts = FactSet {
+        as_of_ns: CUT_NS,
+        market: MarketFacts {
+            prices_per_kwh: vec![1.0, 10.0],
+            source_event_id: [1; 16],
+        },
+        ..Default::default()
+    };
+    let compiled = ObjectiveCompiler::new(60_000_000_000, 1, true)
+        .compile(CompileInputs {
+            snapshot: &snapshot(),
+            registry_generation: 1,
+            bundle: &bundle,
+            facts: &facts,
+            intent: None,
+            verify: Some(SignatureVerifier {
+                key_id: 1,
+                key: b"test-key",
+            }),
+        })
+        .expect("真编译（compile）");
+    assert_eq!(compiled.horizon_step_count(), 2);
+
+    // 3. 真 plan（HiGHS 后端；包络/电池/绑定与 certifier 侧同资产）。
+    let input = PlanInput {
+        objective: &compiled,
+        snapshot_id: [7; 16],
+        provenance_root: [0xAB; 32],
+        registry_generation: 1,
+        // now_ms = CUT_NS/1e6（真编译 spec 窗起点——窗内绑定）。
+        now_ms: 1_000_000,
+        site_node_id: 1,
+        envelopes: vec![(1, env_battery()), (10, env_grid())],
+        batteries: vec![BatterySpec {
+            asset_id: 1,
+            capacity_kwh: 10.0,
+            eta_c: 1.0,
+            eta_d: 1.0,
+            initial_kwh: 5.0,
+        }],
+        renewables: vec![],
+        loads: vec![],
+        grid: Some(GridSpec { asset_id: 10 }),
+        dispatchable: vec![],
+        bindings: vec![
+            AssetBinding {
+                asset_id: 1,
+                device_id: 2,
+                point_id: 6,
+                unit_code: 6,
+            },
+            AssetBinding {
+                asset_id: 10,
+                device_id: 3,
+                point_id: 1,
+                unit_code: 6,
+            },
+        ],
+    };
+    let req = eneros_decision_contract::DecisionRequest::new(
+        [1u8; 16],
+        compiled.spec().clone(),
+        1,
+        10_000,
+        1,
+    )
+    .unwrap();
+    let mut hb = eneros_solver_core::highs::HighsSolver::new().expect("Highs");
+    let mut planner = Planner::new(ToleranceProfile::l2(), 100);
+    let plan = planner.plan(&mut hb, &req, &input).expect("真 plan");
+
+    // 4. 真 certify（EvalContext 消费**真编译**的 spec）。
+    let envelopes = vec![(1, env_battery()), (10, env_grid())];
+    let batteries = vec![battery()];
+    let snap = snapshot();
+    // 内联 EvalContext（ctx() 夹具 horizon_start_ms=1_000 服务既有用例；
+    // 本测与真编译 spec 窗一致 = CUT_NS/1e6）。
+    let context = EvalContext {
+        snapshot: &snap,
+        spec: compiled.spec(),
+        envelopes: &envelopes,
+        batteries: &batteries,
+        horizon_step_ns: STEP_NS_HOUR,
+        horizon_step_count: 2,
+        horizon_start_ms: 1_000_000,
+        grid_asset_id: 10,
+        tolerance_profile_id: 1,
+        constraint_catalog_version: 1,
+    };
+    let ring = CertifierKeyRing::new(1, b"station-cert-key");
+    let out = CertifierModule::certify(&context, &plan, 1_005_000, &ring).expect("真 certify");
+
+    // 5. 三元一致断言：plan↔cert 的 plan_sha/plan_id + objective_digest
+    //    归真编译（证书无 objective_digest 字段——[00] §4 推迟证据；
+    //    此处证 plan 与引擎 spec_digest 同源、证书经 certify 绑定二者）。
+    assert_eq!(out.certificate.plan_id(), plan.id(), "plan_id 绑定");
+    assert_eq!(
+        out.certificate.plan_sha256(),
+        &eneros_decision_contract::CandidatePlan::plan_wire_sha256(&plan),
+        "plan_sha256 = 计划 wire SHA-256"
+    );
+    assert_eq!(
+        plan.objective_digest(),
+        compiled.spec_digest(),
+        "objective_digest = 真编译 spec_digest"
+    );
+    assert!(out.records.iter().all(|r| r.pass), "独立评估全过");
 }

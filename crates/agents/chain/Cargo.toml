@@ -8,6 +8,7 @@ description = "EnerOS 存证哈希链 (v0.232.0 正名) — 哈希链 + SM3 + �
 
 [dependencies]
 eneros-crypto = { path = "../../security/crypto" }
+eneros-signer-keyring = { path = "../../security/signer-keyring" }
 
 [features]
 default = []

@@ -55,7 +55,9 @@ impl TxRecord {
     pub fn verify_signature(&self, pubkey: &eneros_crypto::Sm2PublicKey) -> bool {
         let digest = self.digest();
         let sig = eneros_crypto::Sm2Signature::from_bytes(&self.signature);
-        eneros_crypto::sm2_verify(&digest, &sig, pubkey).unwrap_or(false)
+        // 蓝图 65 WP-65.3：类型化原语（Ok(false) 与 Err 统一 → false，
+        // 布尔返回面语义逐字节等价）。
+        eneros_signer_keyring::verify_signature(&digest, &sig, pubkey).is_ok()
     }
 }
 

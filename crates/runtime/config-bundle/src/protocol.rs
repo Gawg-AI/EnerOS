@@ -1,11 +1,13 @@
 //! 协议配置（46 WP-46.3 配置驱动装配）。
 //!
-//! 11 个协议的 ACTIVE 配置源（48 卷起）：`configs/protocol-<proto>.toml` —— 扁键值
-//! 表（peer/unit-id/IOA 公共地址/topic 前缀/超时/重试；键集 = 各插件
-//! `validate_config` 的 KNOWN_KEYS，单一事实源在本模块）。编译面产出
-//! canonical KV 负载（进签名 RuntimeConfigBundle），svc-* 经 svc-config
-//! `GET_ENTRY("protocol-<proto>")` 取回后 `decode_protocol` 还原成
-//! `ProtocolConfig` 喂插件 `start`——**消灭一切源码 peer 常量**（46.3 DoD）。
+//! 键集**单一事实源 = `eneros-protocol-keys`** 叶 crate（蓝图 64 卷 64.1
+//! 倒置 + 蓝图 65 卷 65.1 WP-65.4：known/required 双表全部委托——本模块
+//! = 委托 + cj188 显式边界）。11 个协议的 ACTIVE 配置源（48 卷起）：
+//! `configs/protocol-<proto>.toml` —— 扁键值表（peer/unit-id/IOA 公共
+//! 地址/topic 前缀/超时/重试）；编译面产出 canonical KV 负载（进签名
+//! RuntimeConfigBundle），svc-* 经 svc-config `GET_ENTRY("protocol-<proto>")`
+//! 取回后 `decode_protocol` 还原成 `ProtocolConfig` 喂插件 `start`——
+//! **消灭一切源码 peer 常量**（46.3 DoD）。
 //!
 //! canonical 布局（自描述、无 extern 序列化依赖）：
 //! ```text
@@ -57,16 +59,18 @@ pub fn known_keys(id: &str) -> Option<&'static [&'static str]> {
 }
 
 /// 每协议必填键（插件 start 消费 `.ok_or`；缺失 → 编译期拒绝）。
+///
+/// 蓝图 65 WP-65.4：委托叶 crate
+/// [`eneros_protocol_keys::required_keys`](eneros_protocol_keys::required_keys)
+/// （必填表单一实现；原本模块六臂硬编码 match 删除）。返回形不变
+/// （`&'static [&'static str]`）——未知/未登记 id 与旧 `_ => &[]` 行为
+/// 逐字节一致（对照表见 config-bundle 侧 `required_keys_delegation_
+/// behavior_table` 测试）；消费点 `toml_compile` 零改动。
+///
+/// cj188 边界：叶返回 `Some(&[])`（空集显式），unwrap_or 后仍 `&[]`——
+/// 编译支持面扩容 = 行为新增（REG-CJ188-COMPILE Open），独立裁决不变。
 pub fn required_keys(id: &str) -> &'static [&'static str] {
-    match id {
-        "protocol-modbus-tcp" => &["peer"],
-        "protocol-iec104" => &["peer"],
-        "protocol-mqtt" => &["broker"],
-        "protocol-mms" => &["peer"],
-        "protocol-goose" => &["go_cb_ref", "dataset_ref"],
-        "protocol-sv" => &["app_id"],
-        _ => &[],
-    }
+    eneros_protocol_keys::required_keys(id).unwrap_or(&[])
 }
 
 /// 编码 KV 列表为 canonical 负载（bounded；超限 Err）。
@@ -290,6 +294,42 @@ mod tests {
             required_keys("protocol-goose"),
             &["go_cb_ref", "dataset_ref"]
         );
+    }
+
+    /// 必填键委托行为对照表（蓝图 65 WP-65.4 验收 3：迁移前六臂 match ↔
+    /// 委托后——6 非空 + cj188 空 + 其余空 + 未知空，逐行相等零行为
+    /// 变更留证）。
+    #[test]
+    fn required_keys_delegation_behavior_table() {
+        assert_eq!(required_keys("protocol-modbus-tcp"), &["peer"]);
+        assert_eq!(required_keys("protocol-iec104"), &["peer"]);
+        assert_eq!(required_keys("protocol-mqtt"), &["broker"]);
+        assert_eq!(required_keys("protocol-mms"), &["peer"]);
+        assert_eq!(
+            required_keys("protocol-goose"),
+            &["go_cb_ref", "dataset_ref"]
+        );
+        assert_eq!(required_keys("protocol-sv"), &["app_id"]);
+        assert!(required_keys("protocol-cj188").is_empty(), "cj188 空集边界");
+        assert!(required_keys("protocol-modbus-rtu").is_empty());
+        assert!(required_keys("protocol-dlt645").is_empty());
+        assert!(required_keys("protocol-gbt27930").is_empty());
+        assert!(required_keys("protocol-iec101").is_empty());
+        assert!(required_keys("protocol-iec103").is_empty());
+        assert!(required_keys("protocol-unknown").is_empty());
+    }
+
+    /// config id 命名空间锁（蓝图 65 WP-65.4/D-4）：本模块 11 臂
+    /// （cj188 由编译面例外有意排除——D-4 订正）⊆ 叶 12 臂命名空间。
+    #[test]
+    fn config_ids_are_subset_of_leaf_namespace() {
+        for id in PROTOCOL_CONFIG_IDS {
+            assert!(
+                eneros_protocol_keys::by_config_id(id).is_some(),
+                "config id 不在叶命名空间：{id}"
+            );
+        }
+        assert!(eneros_protocol_keys::by_config_id("protocol-cj188").is_some());
     }
 
     /// SPEC-B WP-B.2/C2 键表锁定（蓝图 64 WP-64.1.3 迁移为引用锁）：

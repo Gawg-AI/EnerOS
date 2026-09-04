@@ -1,0 +1,65 @@
+{
+ "schema": "eneros.evidence-manifest.v1",
+ "volume": "blueprint-65-vol65-1",
+ "version": "0.318.0",
+ "head": "本 commit（代码+证据同 commit；gate 实跑于该树，bump 0.318.0 同 commit）",
+ "date": "2026-09-05",
+ "gate": "VOL65-GATE: PASS（镜像 sha256 9e5aefdd9788d5ea757e74fed2991adde3b86346f2010295176d60fe9ded0d18，全判据一轮过）",
+ "purpose": "蓝图 65 卷 65.1 出口 QEMU 实弹（不变式归位卷）：keyring 吊销终态 tombstone（唯一授权深模块语义变更；adapter 舞步删 + SIG 面逐 case 等价 + 变异留证）+ sm2 原语域守卫全仓化（walk 加宽 + 剥注释 + EXEMPT_FILES ×2 + 7 站迁移词形逐字节不变 + R-65.c 闭包新增 crate=0）+ 决策链构造面命名字段化（Parts 升 pub + builder 退役全仓零命中 + 第二免检构造门删 + 槽位断言 + 真弹组合链测 compile→plan→certify + trybuild 重 bless stderr 仅行号）+ required 进叶 + KNOWN_KEYS 两态类锁 + 卫生收口（doc 漂移 / digest preimage 去 `..` / EA_OK 谓词+守卫双断言 / DBG-EXEC 删 = 唯一授权词形变更）。行为不变收口卷：串口词形与计数逐字节对照 64 基线（vol64-3；64.2 POINTS-LOADED 偏移已烘焙）——normal 窗零差异 + DBG-EXEC 负断言",
+ "artifacts": {
+  "normal.qemu-serial.log": "qemu-prod typed 链正例一轮串口全量（对照基线 evidence/64/vol64-3/normal.qemu-serial.log，零差异）",
+  "build/sel4.log": "sel4-build-rust.sh 重链接（keyring/decision-contract/planner/certifier/control-dispatch/agent 路径全涉闭包）",
+  "build/image.log": "image raw qemu-prod 重建",
+  "build/compile.log": "config compile qemu-prod",
+  "build/image.sha256": "镜像摘要 9e5aefdd9788d5ea757e74fed2991adde3b86346f2010295176d60fe9ded0d18",
+  "normal.modbus.transcript.jsonl": "modbus peer 回放输入拷本（拷自 evidence/62/vol62-1 基线输入）"
+ },
+ "criteria": [
+  {
+   "id": "C1",
+   "assert": "PRODUCT-READY: true（不变式归位卷零 readiness 语义变化）",
+   "result": "PASS"
+  },
+  {
+   "id": "C2",
+   "assert": "PROTO-EXEC status=0x00 / status=0x04（能力壳降级）词形不变（keyring tombstone/Parts 化/守卫加宽后 dispatch 全链零行为变化）",
+   "result": "PASS"
+  },
+  {
+   "id": "C3",
+   "assert": "OBS-REPORT enqueue rejected / flush rejected / svc= 三行词形不变",
+   "result": "PASS"
+  },
+  {
+   "id": "C4",
+   "assert": "CONTROL-CHAIN round=/dispatch=Committed + ACQ-ROUND + OTA-DOWNLOAD: OK + STORAGE-PERSIST: OK + telemetry EIPC bound/NOT-granted 词形不变",
+   "result": "PASS"
+  },
+  {
+   "id": "C5",
+   "assert": "AUDIT-CHAIN 行词形不变——settle audit 文案对照达成",
+   "result": "PASS"
+  },
+  {
+   "id": "C6",
+   "assert": "PROTOCOL-CONFIG 装载行逐字节一致（goose 6/iec104 5/mms 2/modbus-tcp 4/mqtt 9/sv 3 keys；required 进叶零行为变更）",
+   "result": "PASS"
+  },
+  {
+   "id": "C7",
+   "assert": "POINTS-LOADED 全部 ×1 与 vol64-3 基线一致（64.2 偏移已烘焙进基线；本卷零新增登记变更，零调整系数）",
+   "result": "PASS"
+  },
+  {
+   "id": "C8",
+   "assert": "SUPERVISOR/HEARTBEAT-KILL 零出现（负断言）",
+   "result": "PASS"
+  },
+  {
+   "id": "C9",
+   "assert": "DBG-EXEC 零出现（R-65.g 唯一授权删除的实弹面；normal 窗该行本不可达——64.3 基线计数 0，缺席锁为负断言）",
+   "result": "PASS"
+  }
+ ],
+ "baseline": "evidence/64/vol64-3/normal.qemu-serial.log"
+}

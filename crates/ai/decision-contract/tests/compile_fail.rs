@@ -3,7 +3,8 @@
 //! trybuild 逐例编译：期望失败案例**必须**编译不过，期望通过案例必须
 //! 编译过。构造权收口（[06] §3.3）由此机器化：
 //! - 任何外部 crate 都不能凭空构造 `CertifiedPlan`（字段私有 + seal）；
-//! - `CommandBatch::new` 必须持 `&CertifiedPlan`（类型不匹配即编译失败）；
+//! - 命令批只从 `CommandBatch::compile` 出（持 `&CertifiedPlan`）——
+//!   蓝图 65 WP-65.2 起直填死默认的免检构造门不复存在；
 //! - `CandidatePlan` 不能直接交给"执行"（execute 只接受 AuthorizedCommand
 //!   ——候选类型没有该签名，传参即编译失败）。
 

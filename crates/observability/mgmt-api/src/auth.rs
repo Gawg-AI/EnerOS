@@ -8,7 +8,7 @@
 //! - [`TokenVerifier`] — 验签 + 过期检查 + 角色提取；伪造角色请求
 //!   在验签期必失败（`SignatureInvalid`/`TokenExpired`）。
 
-use eneros_crypto::{sm2_verify, sm3_hash, Sm2PublicKey, Sm2Signature};
+use eneros_crypto::{sm3_hash, Sm2PublicKey, Sm2Signature};
 
 use crate::Role;
 
@@ -110,13 +110,11 @@ impl TokenVerifier {
         if now_unix >= token.expires_at {
             return Err(TokenError::TokenExpired);
         }
-        // SM2 验签。
+        // SM2 验签（蓝图 65 WP-65.3：类型化原语——双通道统一
+        // SignatureInvalid，词形不变）。
         let sig = Sm2Signature::from_bytes(&token.signature);
-        let ok = sm2_verify(&token.digest, &sig, &self.issuer_pubkey)
+        eneros_signer_keyring::verify_signature(&token.digest, &sig, &self.issuer_pubkey)
             .map_err(|_| TokenError::SignatureInvalid)?;
-        if !ok {
-            return Err(TokenError::SignatureInvalid);
-        }
         Ok(token.role)
     }
 }

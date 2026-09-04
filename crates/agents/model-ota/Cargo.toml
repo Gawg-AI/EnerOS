@@ -13,3 +13,4 @@ mock = []
 
 [dependencies]
 eneros-crypto = { path = "../../security/crypto" }
+eneros-signer-keyring = { path = "../../security/signer-keyring" }

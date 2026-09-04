@@ -64,7 +64,7 @@ impl AppPackage {
     pub fn verify_app_signature(&self) -> bool {
         match (&self.signer_pubkey, &self.signature) {
             (Some(pubkey), Some(sig)) => {
-                eneros_crypto::sm2_verify(&self.binary_hash, sig, pubkey).unwrap_or(false)
+                eneros_signer_keyring::verify_signature(&self.binary_hash, sig, pubkey).is_ok()
             }
             _ => false,
         }

@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use eneros_crypto::sm2::keypair::Sm2PublicKey;
-use eneros_crypto::sm2::sign::{sm2_verify, Sm2Signature};
+use eneros_crypto::sm2::sign::Sm2Signature;
 use eneros_durable_state::{
     DurableOutbox, IdempotencyKey, OutboxId, PeerReceipt, Pending, StoreError,
 };
@@ -275,16 +275,16 @@ impl ReceiptVerifier for Sm2ReceiptVerifier {
         let Some(pk) = self.keys.get(&signed.key_id) else {
             return Err(MarketError::InvalidReceipt("unknown-key"));
         };
-        // SM2 验签（对 canonical；错误/无效签名统一拒绝）。
+        // SM2 验签（对 canonical；错误/无效签名统一拒绝）。蓝图 65
+        // WP-65.3：类型化原语（双通道归一，拒绝词形逐字节不变）。
         let sig = Sm2Signature::from_bytes(&signed.signature);
-        match sm2_verify(
+        eneros_signer_keyring::verify_signature(
             &SignedPeerReceipt::canonical_bytes(id, msg, &signed.receipt),
             &sig,
             pk,
-        ) {
-            Ok(true) => Ok(()),
-            _ => Err(MarketError::InvalidReceipt("signature")),
-        }
+        )
+        .map(|_| ())
+        .map_err(|_| MarketError::InvalidReceipt("signature"))
     }
 }
 

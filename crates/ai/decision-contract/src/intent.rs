@@ -47,8 +47,10 @@ pub struct CommandIntent {
     compensation: CompensationHint,
 }
 
-/// wire 解码字段袋（crate 内构造通道：`decode_v1` → 校验的唯一入口）。
-pub(crate) struct CommandIntentParts {
+/// 命令意图构造字段袋（蓝图 65 WP-65.2 升公开：命名字段构造面 +
+/// [`CommandIntent::from_parts`] 验证两件套——target 组 device/unit
+/// 同型相邻位，位置元组上换位不可辨，命名字段在调用点自证）。
+pub struct CommandIntentParts {
     pub intent_id: IntentId,
     pub plan_id: crate::ids::PlanId,
     pub plan_sha256: [u8; 32],
@@ -63,87 +65,10 @@ pub(crate) struct CommandIntentParts {
     pub compensation: CompensationHint,
 }
 
-/// CommandIntent 语义组构造器（WP-64.3.1：binding/target/window/policy；
-/// 全部字段必填）。
-pub struct CommandIntentBuilder {
-    intent_id: IntentId,
-    plan_id: crate::ids::PlanId,
-    plan_sha256: [u8; 32],
-    target: Option<(u64, u16, u32, f64, u16)>,
-    window: Option<(u64, u64)>,
-    policy: Option<(Precondition, CompensationHint)>,
-}
-
-impl CommandIntentBuilder {
-    /// 目标组（asset/device/point/power/unit——asset 0 拒收见
-    /// [`crate::candidate::UNQUALIFIED_ASSET_ID`]）。
-    pub fn target(
-        mut self,
-        asset_id: u64,
-        device_id: u16,
-        point_id: u32,
-        power_kw: f64,
-        unit_code: u16,
-    ) -> Self {
-        self.target = Some((asset_id, device_id, point_id, power_kw, unit_code));
-        self
-    }
-
-    /// 生效窗组。
-    pub fn window(mut self, valid_from_ms: u64, valid_until_ms: u64) -> Self {
-        self.window = Some((valid_from_ms, valid_until_ms));
-        self
-    }
-
-    /// 策略组（前置条件/补偿提示）。
-    pub fn policy(mut self, precondition: Precondition, compensation: CompensationHint) -> Self {
-        self.policy = Some((precondition, compensation));
-        self
-    }
-
-    /// 组装并校验。
-    pub fn build(self) -> Result<CommandIntent, ContractError> {
-        let (asset_id, device_id, point_id, power_kw, unit_code) =
-            self.target.ok_or(ContractError::MissingField("target"))?;
-        let (valid_from_ms, valid_until_ms) =
-            self.window.ok_or(ContractError::MissingField("window"))?;
-        let (precondition, compensation) =
-            self.policy.ok_or(ContractError::MissingField("policy"))?;
-        CommandIntent::from_parts(CommandIntentParts {
-            intent_id: self.intent_id,
-            plan_id: self.plan_id,
-            plan_sha256: self.plan_sha256,
-            asset_id,
-            device_id,
-            point_id,
-            power_kw,
-            unit_code,
-            valid_from_ms,
-            valid_until_ms,
-            precondition,
-            compensation,
-        })
-    }
-}
-
 impl CommandIntent {
-    /// 构造器入口（WP-64.3.1：binding 组于 [`CommandIntent::builder`] 声明）。
-    pub fn builder(
-        intent_id: IntentId,
-        plan_id: crate::ids::PlanId,
-        plan_sha256: [u8; 32],
-    ) -> CommandIntentBuilder {
-        CommandIntentBuilder {
-            intent_id,
-            plan_id,
-            plan_sha256,
-            target: None,
-            window: None,
-            policy: None,
-        }
-    }
-
-    pub(crate) fn from_parts(
+    /// 校验组装（**唯一构造通道**；蓝图 65 WP-65.2 起 pub——builder 退役
+    /// 后生产/解码/测试共用本验证通道，判据不复制）。
+    pub fn from_parts(
         CommandIntentParts {
             intent_id,
             plan_id,
@@ -246,7 +171,7 @@ impl CommandIntent {
     }
 }
 
-/// wire V1（定长 96B；迁移期 IPC 内直传 + .29 golden vectors）。
+/// wire V1（定长 146B = [`INTENT_WIRE_LEN`]；迁移期 IPC 内直传 + .29 golden vectors）。
 pub const INTENT_MAGIC: [u8; 4] = *b"CINT";
 pub const INTENT_WIRE_LEN: usize = 146;
 
@@ -385,31 +310,43 @@ mod tests {
     use super::*;
 
     fn intent() -> CommandIntent {
-        CommandIntent::builder(
-            IntentId([3u8; 16]),
-            crate::ids::PlanId([1u8; 16]),
-            [0xAB; 32],
-        )
-        .target(1, 1, 10, -50.0, 6)
-        .window(1_000, 61_000)
-        .policy(
-            Precondition::FeedbackInRange {
+        CommandIntent::from_parts(crate::intent::CommandIntentParts {
+            intent_id: IntentId([3u8; 16]),
+            plan_id: crate::ids::PlanId([1u8; 16]),
+            plan_sha256: [0xAB; 32],
+            asset_id: 1,
+            device_id: 1,
+            point_id: 10,
+            power_kw: -50.0,
+            unit_code: 6,
+            valid_from_ms: 1_000,
+            valid_until_ms: 61_000,
+            precondition: Precondition::FeedbackInRange {
                 point_id: 4,
                 min: 0.0,
                 max: 1.0,
             },
-            CompensationHint::None,
-        )
-        .build()
+            compensation: CompensationHint::None,
+        })
         .unwrap()
     }
 
-    /// 负例基座（WP-64.3.1.6：负例只重声明所变组）。
-    fn neg() -> CommandIntentBuilder {
-        CommandIntent::builder(IntentId([3u8; 16]), crate::ids::PlanId([1u8; 16]), [1; 32])
-            .target(1, 1, 10, 1.0, 6)
-            .window(0, 1)
-            .policy(Precondition::None, CompensationHint::None)
+    /// 负例基座（WP-64.3.1.6 沿革：负例只重声明所变字段）。
+    fn neg() -> crate::intent::CommandIntentParts {
+        crate::intent::CommandIntentParts {
+            intent_id: IntentId([3u8; 16]),
+            plan_id: crate::ids::PlanId([1u8; 16]),
+            plan_sha256: [1; 32],
+            asset_id: 1,
+            device_id: 1,
+            point_id: 10,
+            power_kw: 1.0,
+            unit_code: 6,
+            valid_from_ms: 0,
+            valid_until_ms: 1,
+            precondition: Precondition::None,
+            compensation: CompensationHint::None,
+        }
     }
 
     #[test]
@@ -422,38 +359,44 @@ mod tests {
 
     #[test]
     fn negatives() {
-        // 全零 intent/plan ID（binding 组于 builder 声明）。
+        // 全零 intent/plan ID（identity 字段直接重声明）。
         assert_eq!(
-            CommandIntent::builder(IntentId([0u8; 16]), crate::ids::PlanId([1u8; 16]), [1; 32])
-                .target(1, 1, 10, 1.0, 6)
-                .window(0, 1)
-                .policy(Precondition::None, CompensationHint::None)
-                .build(),
+            CommandIntent::from_parts(crate::intent::CommandIntentParts {
+                intent_id: IntentId([0u8; 16]),
+                ..neg()
+            }),
             Err(ContractError::ZeroId)
         );
         assert_eq!(
-            CommandIntent::builder(IntentId([3u8; 16]), crate::ids::PlanId([0u8; 16]), [1; 32])
-                .target(1, 1, 10, 1.0, 6)
-                .window(0, 1)
-                .policy(Precondition::None, CompensationHint::None)
-                .build(),
+            CommandIntent::from_parts(crate::intent::CommandIntentParts {
+                plan_id: crate::ids::PlanId([0u8; 16]),
+                ..neg()
+            }),
             Err(ContractError::ZeroId)
         );
         // asset 0（资格魔数单源 UNQUALIFIED_ASSET_ID）。
         assert_eq!(
-            neg()
-                .target(crate::candidate::UNQUALIFIED_ASSET_ID, 1, 10, 1.0, 6)
-                .build(),
+            CommandIntent::from_parts(crate::intent::CommandIntentParts {
+                asset_id: crate::candidate::UNQUALIFIED_ASSET_ID,
+                ..neg()
+            }),
             Err(ContractError::ScopeMismatch("asset_id=0"))
         );
-        // 倒窗（只重声明 window 组）。
+        // 倒窗（只重声明 window 两字段）。
         assert_eq!(
-            neg().window(5, 5).build(),
+            CommandIntent::from_parts(crate::intent::CommandIntentParts {
+                valid_from_ms: 5,
+                valid_until_ms: 5,
+                ..neg()
+            }),
             Err(ContractError::InvalidWindow)
         );
-        // 未知单位（只重声明 target 组）。
+        // 未知单位（只重声明 unit_code）。
         assert_eq!(
-            neg().target(1, 1, 10, 1.0, 0).build(),
+            CommandIntent::from_parts(crate::intent::CommandIntentParts {
+                unit_code: 0,
+                ..neg()
+            }),
             Err(ContractError::MissingField("unit_code"))
         );
         // wire: 版本不支持。

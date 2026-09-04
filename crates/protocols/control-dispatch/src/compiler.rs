@@ -31,8 +31,8 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use eneros_decision_contract::{
-    CertifiedPlan, CommandBatch, CommandIntent, CompensationHint, ContractError, IntentId, PlanId,
-    ResourceRegistry,
+    CertifiedPlan, CommandBatch, CommandIntent, CommandIntentParts, CompensationHint,
+    ContractError, IntentId, PlanId, ResourceRegistry,
 };
 use eneros_telemetry_model::unit_catalog;
 use sha2::Digest as _;
@@ -383,12 +383,24 @@ pub fn compile(
             Some(cur) => u8::from(value.abs() > cur.abs()),
             None => u8::from(value != 0.0),
         };
-        let intent = CommandIntent::builder(intent_id, *cert.plan_id(), plan_sha)
-            .target(asset_id, device, point, value, unit)
-            .window(valid_from, valid_until)
-            .policy(eneros_decision_contract::Precondition::None, compensation)
-            .build()
-            .map_err(CompileReject::BatchReject)?;
+        // 蓝图 65 WP-65.2：命名字段 Parts 构造（builder 退役）——
+        // device/point/value/unit 在字段名上自证（同型相邻位换位面收口；
+        // 行为锁 = 既有链路测试六件）。
+        let intent = CommandIntent::from_parts(CommandIntentParts {
+            intent_id,
+            plan_id: *cert.plan_id(),
+            plan_sha256: plan_sha,
+            asset_id,
+            device_id: device,
+            point_id: point,
+            power_kw: value,
+            unit_code: unit,
+            valid_from_ms: valid_from,
+            valid_until_ms: valid_until,
+            precondition: eneros_decision_contract::Precondition::None,
+            compensation,
+        })
+        .map_err(CompileReject::BatchReject)?;
         ordered.push(CompiledCommand {
             intent,
             asset_id,

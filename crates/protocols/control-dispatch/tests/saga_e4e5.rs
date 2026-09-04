@@ -21,7 +21,9 @@ use eneros_control_dispatch::saga::{
     needs_reconcile, BatchPolicy, BatchSaga, BatchState, CmdOutcome, CmdState, DriveReport,
     EventKind, ReconcileOutcome, SagaEvent, SagaExecutor, SagaPolicy,
 };
-use eneros_decision_contract::{CommandIntent, CompensationHint, IntentId, PlanId, Precondition};
+use eneros_decision_contract::{
+    CommandIntent, CommandIntentParts, CompensationHint, IntentId, PlanId, Precondition,
+};
 
 // ---------------------------------------------------------------- 夹具
 
@@ -39,18 +41,24 @@ fn intent_windowed(
     valid_until_ms: u64,
     restore: Option<f64>,
 ) -> CommandIntent {
-    CommandIntent::builder(IntentId([id_byte; 16]), PlanId([0x61; 16]), [0xAB; 32])
-        .target(u64::from(device), device, point, kw, 6) // 6 = kW
-        .window(valid_from_ms, valid_until_ms)
-        .policy(
-            Precondition::None,
-            match restore {
-                Some(v) => CompensationHint::RestorePowerKw(v),
-                None => CompensationHint::None,
-            },
-        )
-        .build()
-        .unwrap()
+    CommandIntent::from_parts(CommandIntentParts {
+        intent_id: IntentId([id_byte; 16]),
+        plan_id: PlanId([0x61; 16]),
+        plan_sha256: [0xAB; 32],
+        asset_id: u64::from(device),
+        device_id: device,
+        point_id: point,
+        power_kw: kw,
+        unit_code: 6, // 6 = kW
+        valid_from_ms,
+        valid_until_ms,
+        precondition: Precondition::None,
+        compensation: match restore {
+            Some(v) => CompensationHint::RestorePowerKw(v),
+            None => CompensationHint::None,
+        },
+    })
+    .unwrap()
 }
 
 /// 虚拟设备面：物理值 + 写次数（重复副作用检测）。

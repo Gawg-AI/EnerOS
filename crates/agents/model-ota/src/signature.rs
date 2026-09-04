@@ -4,7 +4,7 @@
 //! SM3 哈希（32 字节），与蓝图 `sm2_verify(&signature, &hash, &ca_pubkey)`
 //! 语义一致。
 
-use eneros_crypto::{sm2_verify, sm3_hash, Sm2PublicKey, Sm2Signature};
+use eneros_crypto::{sm3_hash, Sm2PublicKey, Sm2Signature};
 
 use crate::ota_client::{ModelInfo, SigAlgorithm};
 use crate::OtaError;
@@ -35,11 +35,11 @@ pub fn verify_model_signature(
         .try_into()
         .map_err(|_| OtaError::SignatureInvalid)?;
     let sig = Sm2Signature::from_bytes(sig_bytes);
-    match sm2_verify(&hash, &sig, pubkey) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(OtaError::SignatureInvalid),
-        Err(_) => Err(OtaError::SignatureInvalid),
-    }
+    // 蓝图 65 WP-65.3：三臂手抄 match 塌缩为类型化原语一行（Ok(false)/Err
+    // 统一 → SignatureInvalid，词形逐字节不变）。
+    eneros_signer_keyring::verify_signature(&hash, &sig, pubkey)
+        .map(|_| ())
+        .map_err(|_| OtaError::SignatureInvalid)
 }
 
 #[cfg(test)]

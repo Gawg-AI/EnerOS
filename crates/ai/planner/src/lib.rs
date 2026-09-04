@@ -53,7 +53,8 @@ use std::vec::Vec;
 
 use catalog::VariableCatalog;
 use eneros_decision_contract::{
-    Assignment, CandidatePlan, DecisionRequest, PlanId, SnapshotId, SolveStatusKind,
+    Assignment, CandidatePlan, CandidatePlanParts, DecisionRequest, PlanId, SnapshotId,
+    SolveStatusKind,
 };
 use eneros_resource_registry::capability::CapabilityEnvelope;
 use gate::SolveGate;
@@ -183,24 +184,28 @@ impl Planner {
             .map_err(|_| PlanError::RequestMismatch("plan-id"))?;
         let ttl_ms = req.budget_ms().max(1_000) as u64;
         let issued = input.now_ms;
-        CandidatePlan::builder(
-            plan_id,
-            SnapshotId(input.snapshot_id),
-            *input.objective.spec_digest(),
-            input.registry_generation,
-        )
-        .solve(
-            out.solver_status,
-            out.objective_value,
-            out.relative_gap,
-            out.max_primal_residual,
-            out.elapsed_ms,
-        )
-        .horizons(out.horizon_start_ms, out.step_ns, out.step_count)
-        .digests(out.model_digest, input.provenance_root)
-        .validity(issued, ttl_ms)
-        .assignments(assignments)
-        .build()
+        // 蓝图 65 WP-65.2：命名字段 Parts 构造（builder 退役）——digests
+        // 组两字段在结构体上命名自证（旧 `.digests(model, input)` 位置
+        // 元组的换位面由此收口；槽位断言见 tests/integration golden）。
+        CandidatePlan::from_parts(CandidatePlanParts {
+            id: plan_id,
+            snapshot_id: SnapshotId(input.snapshot_id),
+            objective_digest: *input.objective.spec_digest(),
+            resource_catalog_version: input.registry_generation,
+            horizon_start_ms: out.horizon_start_ms,
+            step_ns: out.step_ns,
+            step_count: out.step_count,
+            solver_status: out.solver_status,
+            objective_value: out.objective_value,
+            relative_gap: out.relative_gap,
+            max_primal_residual: out.max_primal_residual,
+            elapsed_ms: out.elapsed_ms,
+            model_digest: out.model_digest,
+            input_digest: input.provenance_root,
+            assignments,
+            issued_at_ms: issued,
+            ttl_ms,
+        })
         .map_err(|e| PlanError::CandidateInvalid(format!("candidate:{e:?}")))
     }
 

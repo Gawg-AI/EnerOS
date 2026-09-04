@@ -11,8 +11,8 @@ use eneros_control_dispatch::compiler::{
     SkipReason,
 };
 use eneros_decision_contract::{
-    Assignment, CandidatePlan, CertificateId, CertifiedPlan, CertifierSeal, ContractError, PlanId,
-    ResourceRegistry, SnapshotId, SolveStatusKind,
+    Assignment, CandidatePlan, CandidatePlanParts, CertificateId, CertifiedPlan, CertifierSeal,
+    ContractError, PlanId, ResourceRegistry, SnapshotId, SolveStatusKind,
 };
 
 // ---------------------------------------------------------------- 夹具
@@ -60,14 +60,26 @@ fn plan_with(
     step_count: u32,
     assignments: Vec<Assignment>,
 ) -> CandidatePlan {
-    CandidatePlan::builder(PlanId([id_byte; 16]), SnapshotId([2u8; 16]), [0xAA; 32], 1)
-        .solve(SolveStatusKind::Optimal, 1.0, 0.0, 0.0, 10)
-        .horizons(issued_at_ms, step_ns, step_count)
-        .digests([0xBB; 32], [0xCC; 32])
-        .validity(issued_at_ms, ttl_ms)
-        .assignments(assignments)
-        .build()
-        .expect("合法计划")
+    CandidatePlan::from_parts(CandidatePlanParts {
+        id: PlanId([id_byte; 16]),
+        snapshot_id: SnapshotId([2u8; 16]),
+        objective_digest: [0xAA; 32],
+        resource_catalog_version: 1,
+        horizon_start_ms: issued_at_ms,
+        step_ns,
+        step_count,
+        solver_status: SolveStatusKind::Optimal,
+        objective_value: 1.0,
+        relative_gap: 0.0,
+        max_primal_residual: 0.0,
+        elapsed_ms: 10,
+        model_digest: [0xBB; 32],
+        input_digest: [0xCC; 32],
+        assignments,
+        issued_at_ms,
+        ttl_ms,
+    })
+    .expect("合法计划")
 }
 
 fn cert_of(plan: &CandidatePlan, plan_sha: [u8; 32], now_ms: u64) -> CertifiedPlan {

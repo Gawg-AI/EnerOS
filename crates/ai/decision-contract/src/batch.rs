@@ -156,40 +156,15 @@ impl CommandBatchBuilder<'_> {
 }
 
 impl CommandBatch {
-    /// 唯一构造入口：**必须**持证书与资源注册表视图。
+    /// 编译器入口（[10] §2.2；蓝图 65 WP-65.2 起唯一构造入口——原第二
+    /// 构造门（直填依赖边=[]/max_parallel=1/deadline_ms=0/compiler_
+    /// digest=[0u8;32] 四个隐藏零值的免检 `new`）删除：与误装配不可分
+    /// （零摘要伪装成「digest-0 策略」编译），且生产零调用者；测试
+    /// 调用点已显式化 compile_meta 字面）。
     ///
-    /// 校验（[06] §3.6 负例全集）：
-    /// - 每个意图 plan_id/plan_sha256 与证书一致（`CertificatePlanMismatch`）；
-    /// - 证书有效（未过期）；
-    /// - 资产存在且控制绑定 (device, point, unit) 与意图一致
-    ///   （`ScopeMismatch`）；
-    /// - 目录版本与计划一致；
-    /// - 批非空且不超界；intent_id 唯一。
-    pub fn new(
-        batch_id: [u8; 16],
-        cert: &CertifiedPlan,
-        registry: &dyn ResourceRegistry,
-        intents: Vec<CommandIntent>,
-        built_at_ms: u64,
-    ) -> Result<Self, ContractError> {
-        Self::compile_core(CompiledBatchParts {
-            batch_id,
-            cert,
-            registry,
-            intents,
-            built_at_ms,
-            dependency_edges: alloc::vec::Vec::new(),
-            max_parallel: 1,
-            deadline_ms: 0,
-            compiler_digest: [0u8; 32],
-        })
-    }
-
-    /// 编译器入口（[10] §2.2；WP-64.3.1 builder 化）：在
-    /// [`CommandBatch::new`] 全部校验之上追加批级编译元数据校验（边索引
-    /// 界内、无自环、无环、max_parallel ≥1）并计算 `batch_digest`。
-    ///
-    /// `deadline_ms = 0` 表示未指定（批窗由证书有效期管辖）。
+    /// 批级编译元数据校验（边索引界内、无自环、无环、max_parallel ≥1）
+    /// 与 `batch_digest` 计算在 [`Self::compile_core`]；`deadline_ms = 0`
+    /// 表示未指定（批窗由证书有效期管辖）。
     pub fn compile<'a>(
         batch_id: [u8; 16],
         cert: &'a CertifiedPlan,
@@ -359,8 +334,9 @@ impl CommandBatch {
 
     /// 批规范编码（batch_digest 输入；字段序固定，reserved 全零）。
     ///
-    /// 意图段逐条 [`CommandIntent::encode_v1`]（96B 定长，含 plan 绑定
-    /// 三元组）；批级字段（边/并行/deadline/compiler 摘要）全部入码——
+    /// 意图段逐条 [`CommandIntent::encode_v1`]（定长 146B =
+    /// `INTENT_WIRE_LEN`，含 plan 绑定三元组）；批级字段（边/并行/
+    /// deadline/compiler 摘要）全部入码——
     /// 任何元数据漂移都改变 batch_digest（mutation 可检）。
     pub fn encode_v1(&self) -> Vec<u8> {
         use crate::wire::{put_u16, put_u32, put_u64};
@@ -449,19 +425,44 @@ mod tests {
 
     #[cfg(feature = "transition-certifier")]
     fn intent() -> CommandIntent {
-        CommandIntent::builder(IntentId([3u8; 16]), PlanId([1u8; 16]), [0xAB; 32])
-            .target(1, 1, 10, -50.0, 6)
-            .window(1_000, 60_000)
-            .policy(Precondition::None, CompensationHint::None)
-            .build()
-            .unwrap()
+        crate::intent::CommandIntent::from_parts(crate::intent::CommandIntentParts {
+            intent_id: IntentId([3u8; 16]),
+            plan_id: PlanId([1u8; 16]),
+            plan_sha256: [0xAB; 32],
+            asset_id: 1,
+            device_id: 1,
+            point_id: 10,
+            power_kw: -50.0,
+            unit_code: 6,
+            valid_from_ms: 1_000,
+            valid_until_ms: 60_000,
+            precondition: Precondition::None,
+            compensation: CompensationHint::None,
+        })
+        .unwrap()
+    }
+
+    /// 已删免检构造门的测试调用点显式化形态（蓝图 65 WP-65.2.3
+    /// 死默认显式化）：compile_meta 四参字面 `(vec![], 1, 0, [0u8;32])`
+    /// 即原免检构造门的隐藏零值——不再有免检构造门。
+    #[cfg(feature = "transition-certifier")]
+    fn compile_default(
+        c: &CertifiedPlan,
+        intents: Vec<CommandIntent>,
+        built_at_ms: u64,
+    ) -> Result<CommandBatch, ContractError> {
+        CommandBatch::compile([7u8; 16], c, &SinglePcs)
+            .intents(intents)
+            .built_at(built_at_ms)
+            .compile_meta(Vec::new(), 1, 0, [0u8; 32])
+            .finish()
     }
 
     #[test]
     #[cfg(feature = "transition-certifier")]
     fn batch_requires_cert_and_registry() {
         let c = cert();
-        let b = CommandBatch::new([7u8; 16], &c, &SinglePcs, vec![intent()], 2_000).unwrap();
+        let b = compile_default(&c, vec![intent()], 2_000).unwrap();
         assert_eq!(b.intents().len(), 1);
         assert_eq!(b.certificate_id(), c.certificate_id());
     }
@@ -472,35 +473,54 @@ mod tests {
         let c = cert();
         // 意图绑定别的 plan digest → 拒绝。
         let i = intent();
-        let bad = CommandIntent::builder(*i.intent_id(), *i.plan_id(), [0xEE; 32])
-            .target(1, 1, 10, -50.0, 6)
-            .window(1_000, 60_000)
-            .policy(Precondition::None, CompensationHint::None)
-            .build()
-            .unwrap();
+        let bad = crate::intent::CommandIntent::from_parts(crate::intent::CommandIntentParts {
+            intent_id: *i.intent_id(),
+            plan_id: *i.plan_id(),
+            plan_sha256: [0xEE; 32],
+            asset_id: 1,
+            device_id: 1,
+            point_id: 10,
+            power_kw: -50.0,
+            unit_code: 6,
+            valid_from_ms: 1_000,
+            valid_until_ms: 60_000,
+            precondition: Precondition::None,
+            compensation: CompensationHint::None,
+        })
+        .unwrap();
         assert_eq!(
-            CommandBatch::new([7u8; 16], &c, &SinglePcs, vec![bad], 2_000),
+            compile_default(&c, vec![bad], 2_000),
             Err(ContractError::CertificatePlanMismatch)
         );
         // 意图指向注册表之外的绑定（点/单位不符）。
-        let wrong_point = CommandIntent::builder(*i.intent_id(), *i.plan_id(), [0xAB; 32])
-            .target(1, 1, 99, -50.0, 6)
-            .window(1_000, 60_000)
-            .policy(Precondition::None, CompensationHint::None)
-            .build()
+        let wrong_point =
+            crate::intent::CommandIntent::from_parts(crate::intent::CommandIntentParts {
+                intent_id: *i.intent_id(),
+                plan_id: *i.plan_id(),
+                plan_sha256: [0xAB; 32],
+                asset_id: 1,
+                device_id: 1,
+                point_id: 99,
+                power_kw: -50.0,
+                unit_code: 6,
+                valid_from_ms: 1_000,
+                valid_until_ms: 60_000,
+                precondition: Precondition::None,
+                compensation: CompensationHint::None,
+            })
             .unwrap();
         assert_eq!(
-            CommandBatch::new([7u8; 16], &c, &SinglePcs, vec![wrong_point], 2_000),
+            compile_default(&c, vec![wrong_point], 2_000),
             Err(ContractError::ScopeMismatch("binding"))
         );
         // 证书过期 → 拒绝。
         assert_eq!(
-            CommandBatch::new([7u8; 16], &c, &SinglePcs, vec![intent()], 61_001),
+            compile_default(&c, vec![intent()], 61_001),
             Err(ContractError::InvalidWindow)
         );
         // 空批 → 拒绝。
         assert_eq!(
-            CommandBatch::new([7u8; 16], &c, &SinglePcs, vec![], 2_000),
+            compile_default(&c, vec![], 2_000),
             Err(ContractError::MissingField("intents"))
         );
     }
@@ -509,18 +529,36 @@ mod tests {
 
     #[cfg(feature = "transition-certifier")]
     fn two_intents() -> (CommandIntent, CommandIntent) {
-        let a = CommandIntent::builder(IntentId([3u8; 16]), PlanId([1u8; 16]), [0xAB; 32])
-            .target(1, 1, 10, -50.0, 6)
-            .window(1_000, 60_000)
-            .policy(Precondition::None, CompensationHint::None)
-            .build()
-            .unwrap();
-        let b = CommandIntent::builder(IntentId([4u8; 16]), PlanId([1u8; 16]), [0xAB; 32])
-            .target(1, 1, 10, 30.0, 6)
-            .window(2_000, 60_000)
-            .policy(Precondition::None, CompensationHint::None)
-            .build()
-            .unwrap();
+        let a = crate::intent::CommandIntent::from_parts(crate::intent::CommandIntentParts {
+            intent_id: IntentId([3u8; 16]),
+            plan_id: PlanId([1u8; 16]),
+            plan_sha256: [0xAB; 32],
+            asset_id: 1,
+            device_id: 1,
+            point_id: 10,
+            power_kw: -50.0,
+            unit_code: 6,
+            valid_from_ms: 1_000,
+            valid_until_ms: 60_000,
+            precondition: Precondition::None,
+            compensation: CompensationHint::None,
+        })
+        .unwrap();
+        let b = crate::intent::CommandIntent::from_parts(crate::intent::CommandIntentParts {
+            intent_id: IntentId([4u8; 16]),
+            plan_id: PlanId([1u8; 16]),
+            plan_sha256: [0xAB; 32],
+            asset_id: 1,
+            device_id: 1,
+            point_id: 10,
+            power_kw: 30.0,
+            unit_code: 6,
+            valid_from_ms: 2_000,
+            valid_until_ms: 60_000,
+            precondition: Precondition::None,
+            compensation: CompensationHint::None,
+        })
+        .unwrap();
         (a, b)
     }
 
