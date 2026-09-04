@@ -416,3 +416,28 @@ mod tests {
         assert_eq!(svc.tick(2_700)[0], EA_OK);
     }
 }
+
+#[cfg(test)]
+mod ea_display_guard {
+    /// 蓝图 66 WP-66.6.4：svc-energy-agent 证据行词形 golden 守卫
+    /// （root service.rs 既有守卫 token 复制——bin 侧 4 臂手写 match
+    /// 已换 ea_wire::ea_display 单源；status= 行逐字节不变）。
+    #[test]
+    fn svc_energy_agent_status_line_uses_ea_display() {
+        let src = include_str!("bin/svc-energy-agent.rs");
+        let t_noact = concat!("\"NO", "ACTION\"");
+        let t_unavail = concat!("\"UNAV", "AILABLE\"");
+        assert!(
+            !src.contains(t_noact) && !src.contains(t_unavail),
+            "EA 手写臂回归（应走 ea_wire::ea_display）"
+        );
+        assert!(
+            src.contains("ea_wire::ea_display"),
+            "EA 显示面必须经 agent-sdk ea_wire 单源"
+        );
+        assert!(
+            src.contains("status={status}"),
+            "证据行词形漂移：[svc-energy-agent] tick=… status=… 须逐字节保持"
+        );
+    }
+}

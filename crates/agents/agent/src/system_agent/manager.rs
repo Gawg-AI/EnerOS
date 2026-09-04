@@ -208,6 +208,7 @@ mod tests {
         })
     }
 
+    /// 测试信任锚 = d=1 测试签名钥对应公钥（蓝图 66 WP-66.1.2 锚定装配）。
     /// Helper: create a minimal AgentConfig.
     fn make_config(name: &str) -> AgentConfig {
         AgentConfig {
@@ -240,11 +241,15 @@ mod tests {
             lifecycle.clone(),
             checkpoint_store,
         ));
-        let spawner = Rc::new(AgentSpawner::new(
-            reg.clone(),
-            lifecycle.clone(),
-            signed_registry(),
-        ));
+        let spawner = Rc::new(
+            AgentSpawner::new(
+                reg.clone(),
+                lifecycle.clone(),
+                signed_registry(),
+                &crate::spawner::test_anchor(),
+            )
+            .expect("valid test anchor"),
+        );
         let sa = SystemAgent::new(
             reg.clone(),
             spawner,

@@ -139,7 +139,7 @@ struct OnceFlags {
     ota_download_done: bool,
 }
 
-#[allow(dead_code)] // 同 OnceFlags
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面死码（target run_ipc_loop 活；66.5.2 收窄）
 impl OnceFlags {
     const fn new() -> Self {
         Self {
@@ -178,7 +178,6 @@ impl OnceFlags {
 /// readiness 异步收集状态（原 `readiness_start_ms`/`readiness_state` 双
 /// 平行 Vec + `readiness_summary_printed` 旗收拢——同文件 HangMonitor
 /// 先例：防错位不变量随状态机内藏）。
-#[allow(dead_code)] // 同 OnceFlags
 struct ReadinessTracker {
     start_ms: alloc::vec::Vec<u64>,
     /// None = 未判定（继续收集）；Some = 已判定。
@@ -186,7 +185,7 @@ struct ReadinessTracker {
     summary_printed: bool,
 }
 
-#[allow(dead_code)] // 同 OnceFlags
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面死码（66.5.2 收窄）
 impl ReadinessTracker {
     fn new(start_ms: u64, count: usize) -> Self {
         Self {
@@ -256,7 +255,7 @@ impl ReadinessTracker {
 
 /// root 编排状态单源（[`run_ipc_loop`] 循环捕获的全部可变局部归一；
 /// 死局部 `fault_tick` 不入——63.2 并表后恒等冗余，删除）。
-#[allow(dead_code)] // 同 OnceFlags
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面字段不回读（target run_ipc_loop 活；66.5.2 收窄）
 struct Orchestration {
     /// 主循环轮次（hello 往返后 +1——原 `tick` 语义）。
     tick: u64,
@@ -268,9 +267,8 @@ struct Orchestration {
     hang_monitor: crate::supervisor::HangMonitor,
     /// 33 WP-33.5：驱动 IRQ 计数（每驱动一槽）。
     drv_irq_counts: alloc::vec::Vec<u64>,
-    /// IRQ 计数 / 序列（root 自身 ntfn）。
+    /// IRQ 计数（root 自身 ntfn；write-only 序列字段蓝图 66 已删）。
     irq_count: u64,
-    irq_seq: u64,
     /// 控制链采集序列 / epoch / 完成轮次。
     collect_seq: u64,
     chain_epoch: u64,
@@ -279,7 +277,7 @@ struct Orchestration {
     obs_epoch: u64,
 }
 
-#[allow(dead_code)] // 同 OnceFlags
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面死码（66.5.2 收窄）
 impl Orchestration {
     fn new(
         service_count: usize,
@@ -294,7 +292,6 @@ impl Orchestration {
             hang_monitor: crate::supervisor::HangMonitor::new(service_count, heartbeat_miss_limit),
             drv_irq_counts: alloc::vec![0; driver_count],
             irq_count: 0,
-            irq_seq: 0,
             collect_seq: 0,
             chain_epoch: 0,
             chain_rounds: 0,
@@ -584,7 +581,6 @@ pub fn run_ipc_loop(
                     if let Err(e) = irq_table.ack(binding) {
                         ipc_fail_closed("irq ack", e);
                     }
-                    orch.irq_seq += 1;
                 }
             }
         }
@@ -717,8 +713,9 @@ pub fn run_ipc_loop(
                         // eneros-dispatch-state（原内联 4 态 match + 偏移知识
                         // 删除；终态才显示，推进态/未知码如实 "-"——与 45-62
                         // 证据行词形一致）。
+                        // 蓝图 66 WP-66.5.1：投影已返回 DispatchState
+                        // （解码在 ea_tick_terminal_state 内完成）。
                         let disp = disp_state
-                            .and_then(eneros_dispatch_state::DispatchState::from_code)
                             .filter(|s| s.is_terminal())
                             .map(|s| s.display_name())
                             .unwrap_or("-");
@@ -1108,10 +1105,10 @@ fn restart_service(
 #[cfg(all(target_os = "none", feature = "sel4-eipc"))]
 fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string::String> {
     use eneros_agent_sdk::endpoint::ChunkedSession;
-    // cap 寻址 + 共享 epoch 会话一步装配（WP-64.2.1d——原 new+wrap_shared
-    // 手抄闭包归宿；失败仅建端错，标签长度上界内不可达）。
-    let mut endpoint = ChunkedSession::bind_shared("root-storage-probe", ota_ep, epoch)
-        .ok_or_else(|| alloc::format!("ota client init: endpoint label too long"))?;
+    // cap 寻址 + 共享 epoch 会话一步装配（WP-64.2.1d；蓝图 66 WP-66.5.3
+    // 起走 bind_shared_const——静态标签 ≤64B 结构性必成，Option 脚手架
+    // 死防御已删）。
+    let mut endpoint = ChunkedSession::bind_shared_const("root-storage-probe", ota_ep, epoch);
     // OTA1 0x06 PERSIST-TRIAL：remaining(4)‖version(16) → gen(8)。
     // 服务循环为分块 EIPC（ChunkedReceiver）——经共享 epoch 会话发送
     //（蓝图 63 卷 63.2 WP-63.2.1：写回内化进 ChunkedSession::call，
@@ -1204,9 +1201,11 @@ fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string:
         512,
     );
 
-    let mut endpoint =
-        eneros_agent_sdk::endpoint::ChunkedSession::bind_shared("root-ota-download", ota_ep, epoch)
-            .ok_or_else(|| alloc::format!("ota client init: endpoint label too long"))?;
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
+        "root-ota-download",
+        ota_ep,
+        epoch,
+    );
     let resp = endpoint.call("svc-ota", &req);
     let resp = resp.map_err(|e| alloc::format!("ota download transport: {e:?}"))?;
     if let Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) =
@@ -1259,7 +1258,8 @@ fn control_chain_synth_ingest(
 ) -> Result<u8, alloc::string::String> {
     use eneros_safety_validator::{IntegrityStatus, SampleQuality, TelemetrySample};
 
-    let mut req: alloc::vec::Vec<u8> = alloc::vec![1u8];
+    // 蓝图 66 WP-66.5.4：请求 opcode 单源 = agent-sdk tel_wire。
+    let mut req: alloc::vec::Vec<u8> = alloc::vec![eneros_agent_sdk::tel_wire::TEL_REQ_INGEST];
     for (point, value) in [
         (1u32, 380.0f64),
         (2, 10.0),
@@ -1292,12 +1292,11 @@ fn control_chain_synth_ingest(
         req.extend_from_slice(&eneros_agent_sdk::sample_wire::encode_sample(&sample));
     }
     // INGEST（分块：349B → 4 块；cap 寻址会话一步装配 WP-64.2.1d）。
-    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared(
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
         "root-collect",
         telemetry_ep,
         epoch,
-    )
-    .ok_or_else(|| alloc::format!("telemetry client init: endpoint label too long"))?;
+    );
     let resp = endpoint.call("svc-telemetry", &req);
     let resp = resp.map_err(|e| {
         let stats = endpoint.client_mut().stats();
@@ -1309,14 +1308,18 @@ fn control_chain_synth_ingest(
             stats.2
         )
     })?;
-    // INGEST 响应：[0, accepted]。
-    if resp.len() < 2 || resp[0] != 0 {
-        return Err(alloc::format!(
-            "ingest rejected: {:02x?}",
-            &resp[..resp.len().min(8)]
-        ));
-    }
-    Ok(resp[1])
+    // INGEST 响应：[0, accepted]——解码单源 tel_wire::decode_ingest_ack
+    // （蓝图 66 WP-66.5.4：root 手解 resp[0] 删除；证据行词形不变）。
+    let accepted = match eneros_agent_sdk::tel_wire::decode_ingest_ack(&resp) {
+        Ok(a) => a,
+        Err(_) => {
+            return Err(alloc::format!(
+                "ingest rejected: {:02x?}",
+                &resp[..resp.len().min(8)]
+            ));
+        }
+    };
+    Ok(accepted)
 }
 
 /// 45.5 合成源降级：release/qemu-prod 装配**零合成遥测路径**——closure gate
@@ -1379,17 +1382,11 @@ fn telemetry_report_tick(
             return -1;
         }
     };
-    let mut endpoint = match eneros_agent_sdk::endpoint::ChunkedSession::bind_shared(
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
         "root-obs-enq",
         obs_ep,
         epoch,
-    ) {
-        Some(s) => s,
-        None => {
-            eneros_runtime::println!("[eneros-root-task] OBS-REPORT enqueue client init FAIL");
-            return -1;
-        }
-    };
+    );
     let enq_resp = endpoint.call("svc-observability", &req);
     let enq_resp = match enq_resp {
         Ok(r) => r,
@@ -1409,17 +1406,11 @@ fn telemetry_report_tick(
     }
     // 3. FLUSH：蓝图 58 走 obs_wire 单源。
     let flush_req = eneros_agent_sdk::obs_wire::encode_flush(8);
-    let mut endpoint2 = match eneros_agent_sdk::endpoint::ChunkedSession::bind_shared(
+    let mut endpoint2 = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
         "root-obs-flush",
         obs_ep,
         epoch,
-    ) {
-        Some(s) => s,
-        None => {
-            eneros_runtime::println!("[eneros-root-task] OBS-REPORT flush client init FAIL");
-            return -1;
-        }
-    };
+    );
     let flush_resp = endpoint2.call("svc-observability", &flush_req);
     let flush_resp = match flush_resp {
         Ok(r) => r,
@@ -1466,7 +1457,7 @@ fn control_chain_tick(
     energy_ep: u64,
     seq: &mut u64,
     epoch: &mut u64,
-) -> Result<(u8, u8, Option<u8>), alloc::string::String> {
+) -> Result<(u8, u8, Option<eneros_dispatch_state::DispatchState>), alloc::string::String> {
     let now = abs_now_ms();
     *seq = seq.saturating_add(1);
     // 45.5（合成源降级）：遥测注入经 `qemu-test-synth` 门控——feature 默认
@@ -1476,26 +1467,22 @@ fn control_chain_tick(
     let accepted = control_chain_synth_ingest(telemetry_ep, *seq, epoch, now)?;
     // 2. TICK（1B 请求；响应 = EA 状态 + receipt wire 83B）——cap 寻址会话
     // 一步装配（WP-64.2.1d）。
-    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared(
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
         "root-orchestrator",
         energy_ep,
         epoch,
-    )
-    .ok_or_else(|| alloc::format!("energy client init: endpoint label too long"))?;
+    );
     let tick_resp = endpoint.call("svc-energy-agent", &[1u8 /* EA_TICK */]);
     let tick_resp = tick_resp.map_err(|e| alloc::format!("tick transport: {:?}", e))?;
     if tick_resp.is_empty() {
         return Err("empty tick response".into());
     }
     let ea_status = tick_resp[0];
-    // EA_OK 布局：EA_OK(1) + receipt wire（status1+state1+…）——终态字节
-    // 在 tick_resp[2]（offset 由 svc-energy-agent 装配面冻结；root 只取字节，
-    // 解码/词形归 eneros-dispatch-state，见调用点 display 收窄）。
-    let disp_state = if ea_status == eneros_agent_sdk::ea_wire::EA_OK && tick_resp.len() >= 3 {
-        Some(tick_resp[2])
-    } else {
-        None
-    };
+    // 蓝图 66 WP-66.5.1：终态投影单源 = dispatch-state
+    // `ea_tick_terminal_state`（EA_OK 语义源 = ea_wire；应答布局契约随
+    // 投影函数入 crate，root 零手读零偏移知识）。
+    let disp_state =
+        eneros_dispatch_state::ea_tick_terminal_state(&tick_resp, eneros_agent_sdk::ea_wire::EA_OK);
     Ok((accepted, ea_status, disp_state))
 }
 
@@ -1506,7 +1493,7 @@ fn control_chain_tick(
     _energy_ep: u64,
     _seq: &mut u64,
     _epoch: &mut u64,
-) -> Result<(u8, u8, Option<u8>), alloc::string::String> {
+) -> Result<(u8, u8, Option<eneros_dispatch_state::DispatchState>), alloc::string::String> {
     Err(alloc::string::String::from(
         "control chain driver requires sel4-eipc feature",
     ))
@@ -1756,7 +1743,6 @@ mod tests {
         let o = Orchestration::new(4, 2, 1_000, 150);
         assert_eq!(o.tick, 0);
         assert_eq!(o.irq_count, 0);
-        assert_eq!(o.irq_seq, 0);
         assert_eq!(o.collect_seq, 0);
         assert_eq!(o.chain_epoch, 0);
         assert_eq!(o.chain_rounds, 0);

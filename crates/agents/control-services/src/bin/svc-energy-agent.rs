@@ -205,12 +205,12 @@ impl eneros_control_services::ControlServiceHandler for EnergyAgentHandler<'_> {
         // 蓝图 57：now_ms 注入 tick——错误预算熔断冷却的时钟基准。
         *resp = self.svc.tick(now_ms);
         // 编排结果证据行（外部可观察：串口 = QEMU 外部观察面）。
-        let status = match resp.first() {
-            Some(&eneros_control_services::energy_agent_service::EA_OK) => "OK",
-            Some(&eneros_control_services::energy_agent_service::EA_NOACTION) => "NOACTION",
-            Some(&eneros_control_services::energy_agent_service::EA_UNAVAILABLE) => "UNAVAILABLE",
-            _ => "INVALID",
-        };
+        // 蓝图 66 WP-66.6.4：词形单源 = agent-sdk ea_wire::ea_display
+        // （root :711 同源；4 臂手写 match 删除）。
+        let status = resp
+            .first()
+            .map(|&c| eneros_agent_sdk::ea_wire::ea_display(c))
+            .unwrap_or("INVALID");
         eneros_runtime::println!(
             "[svc-energy-agent] tick={} status={status}",
             self.svc.tick_count

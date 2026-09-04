@@ -202,26 +202,26 @@ impl MqttPlugin {
         self.peer_inbox.push(payload);
     }
 
-    /// 服务层入队一条 AI 请求（poll 时经 QoS1 发布到 ai_request_topic）。
+    /// 蓝图 66 WP-66.3.2（C7 对齐 [`Self::enqueue_telemetry_publish`]
+    /// 形态）：服务层入队一条 AI 请求（poll 时经 QoS1 发布到
+    /// ai_request_topic——**插件内部解析**，调用方不传 topic）。
     ///
-    /// 未配置 ai_request_topic / 超限（条数或字节数）→ 显式拒绝（fail-closed，
-    /// 调用方计数）——不假装接受。
-    pub fn enqueue_app_publish(
-        &mut self,
-        topic: &str,
-        payload: &[u8],
-    ) -> Result<(), ProtocolError> {
-        if self.ai_request_topic.as_deref() != Some(topic) {
-            return Err(ProtocolError::InvalidConfig);
-        }
-        if payload.len() > APP_MSG_MAX_LEN || self.app_outbox.len() >= APP_OUTBOX_CAP {
+    /// 内部 fail-closed 两类错误（词形登记，[02] WP-66.3.2）：未配置
+    /// ai_request_topic → [`ProtocolError::InvalidConfig`]；超限（条数或
+    /// 字节数）→ [`ProtocolError::QueueFull`]。两类均计数
+    /// （ai_dropped_count）后拒绝——不假装接受。历史 `enqueue_app_publish`
+    /// 的 topic 参数比对检查随单源内化删除（检查①③合并为一点）。
+    pub fn enqueue_ai_publish(&mut self, payload: &[u8]) -> Result<(), ProtocolError> {
+        let Some(topic) = self.ai_request_topic.clone() else {
             self.ai_dropped_count = self.ai_dropped_count.saturating_add(1);
             return Err(ProtocolError::InvalidConfig);
+        };
+        if payload.len() > APP_MSG_MAX_LEN || self.app_outbox.len() >= APP_OUTBOX_CAP {
+            self.ai_dropped_count = self.ai_dropped_count.saturating_add(1);
+            return Err(ProtocolError::QueueFull);
         }
-        self.app_outbox.push((
-            alloc::string::String::from(topic),
-            alloc::vec::Vec::from(payload),
-        ));
+        self.app_outbox
+            .push((topic, alloc::vec::Vec::from(payload)));
         Ok(())
     }
 
@@ -1080,36 +1080,45 @@ mod tests {
         assert!(msgs.iter().all(|m| m[0] != 0xEE), "新消息须被丢弃");
     }
 
-    /// 49：enqueue 校验 ai_request_topic 配置 + 超限拒绝（fail-closed）。
+    /// 49 + 蓝图 66 WP-66.3.2：enqueue_ai_publish fail-closed 两类错误
+    /// （未配置 → InvalidConfig / 超限 → QueueFull）+ 成功路径（插件内部
+    /// 解析 ai_request_topic，发布主题逐字节正确）。
     #[test]
-    fn enqueue_app_publish_validates_topic_and_limits() {
+    fn enqueue_ai_publish_classifies_and_publishes() {
         let mut plugin = MqttPlugin::new();
-        // 未配置请求主题 → 拒绝。
-        assert!(plugin.enqueue_app_publish("t", b"x").is_err());
+        // 未配置请求主题 → InvalidConfig（fail-closed 两类之一）。
+        assert_eq!(
+            plugin.enqueue_ai_publish(b"x"),
+            Err(ProtocolError::InvalidConfig)
+        );
         plugin.ai_request_topic = Some(alloc::string::String::from("eneros/brain/request"));
-        // 主题不匹配 → 拒绝。
-        assert!(plugin.enqueue_app_publish("other", b"x").is_err());
-        // 正常入队。
-        assert!(plugin
-            .enqueue_app_publish("eneros/brain/request", b"{\"req_id\":1}")
-            .is_ok());
+        // 正常入队（主题由插件内部解析——调用方不传 topic）。
+        assert!(plugin.enqueue_ai_publish(b"{\"req_id\":1}").is_ok());
         assert_eq!(plugin.app_outbox_len(), 1);
-        // 超长 → 拒绝 + 计数。
+        assert_eq!(
+            plugin.app_outbox.first().map(|(t, _)| t.as_str()),
+            Some("eneros/brain/request"),
+            "发布主题必须逐字节等于配置的 ai_request_topic"
+        );
+        // 超长 → QueueFull + 计数（fail-closed 两类之二）。
         let big = alloc::vec![0u8; APP_MSG_MAX_LEN + 1];
-        assert!(plugin
-            .enqueue_app_publish("eneros/brain/request", &big)
-            .is_err());
-        assert_eq!(plugin.ai_dropped(), 1);
-        // 积压上限 → 拒绝 + 计数。
+        assert_eq!(
+            plugin.enqueue_ai_publish(&big),
+            Err(ProtocolError::QueueFull)
+        );
+        // 计数含未配置拒绝（对齐 enqueue_telemetry_publish：两类均计数）。
+        assert_eq!(plugin.ai_dropped(), 2);
+        // 积压上限 → QueueFull + 计数。
         for i in 0..APP_OUTBOX_CAP - 1 {
             assert!(plugin
-                .enqueue_app_publish("eneros/brain/request", alloc::format!("{{{i}}}").as_bytes())
+                .enqueue_ai_publish(alloc::format!("{{{i}}}").as_bytes())
                 .is_ok());
         }
-        assert!(plugin
-            .enqueue_app_publish("eneros/brain/request", b"{}")
-            .is_err());
-        assert_eq!(plugin.ai_dropped(), 2);
+        assert_eq!(
+            plugin.enqueue_ai_publish(b"{}"),
+            Err(ProtocolError::QueueFull)
+        );
+        assert_eq!(plugin.ai_dropped(), 3);
     }
 
     /// 49：validate_config 接受 AI 主题键（KNOWN_KEYS 扩展回归——未知键
@@ -1337,5 +1346,24 @@ mod tests {
         assert!(plugin.enqueue_mgmt_response(b"\x01status:ok").is_ok());
         assert_eq!(plugin.app_outbox_len(), 1);
         assert_eq!(plugin.app_outbox[0].0, "eneros/mgmt/response");
+    }
+}
+
+#[cfg(test)]
+mod required_keys_face_lock {
+    /// 蓝图 66 WP-66.4.2（C9 插件运行面第三面锁）：插件运行面实际必填
+    /// 检查键集（测试内**字面镜像**，变异敏感——改字面即红）== 叶
+    /// `eneros_protocol_keys::REQUIRED_MQTT`。三方锁链：叶内容锁（叶内）→ 本
+    /// 字面镜像锁（运行面）→ config-bundle 行为表锁（编译面）。
+    /// 维护纪律：start 的 broker 必填检查（`cfg.get("broker")…ok_or`）增删必填检查时必须同步本字面与叶表
+    /// （protocol-keys/src/lib.rs），三面任一失配即红。
+    #[test]
+    fn start_required_keys_locked_to_leaf_table() {
+        const START_REQUIRED: &[&str] = &["broker"];
+        assert_eq!(
+            START_REQUIRED,
+            eneros_protocol_keys::REQUIRED_MQTT,
+            "插件运行面必填检查集漂移——须同步叶表与本字面（蓝图 66 C9）"
+        );
     }
 }

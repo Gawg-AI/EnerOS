@@ -440,11 +440,29 @@ pub struct FrozenPolicy {
     pub policy_ref: String,
     #[serde(default)]
     pub note: String,
+    /// 蓝图 66 WP-66.6.1：schema v1 内扩展注记（v1.1 = 新增
+    /// orphans_allowlist 字段）。
+    #[serde(default)]
+    pub schema_note: String,
     pub crates: Vec<FrozenCrateEntry>,
     #[serde(default)]
     pub release_closure_exemptions: Vec<FrozenExemptionEntry>,
     #[serde(default)]
     pub dependency_allowlist: Vec<FrozenDepAllowEntry>,
+    /// 蓝图 66 WP-66.6.1 R3（schema v1 内扩展，v1.1 注记见册子
+    /// schema_note）：孤儿豁免清单——零消费者的 bin/工具/评估件成员
+    /// （非「死代码冻结」语义，无 unfreeze 条件，豁免理由必填）。
+    #[serde(default)]
+    pub orphans_allowlist: Vec<FrozenOrphanAllowEntry>,
+}
+
+/// R3 孤儿豁免条目（与 FrozenCrateEntry 不同：无 unfreeze 字段，
+/// 豁免语义 = 「结构性零消费者是设计事实」而非「待解冻死代码」）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenOrphanAllowEntry {
+    pub package: String,
+    pub reason: String,
 }
 
 pub fn load_frozen_policy(root: &Path) -> DynResult<FrozenPolicy> {
@@ -497,6 +515,37 @@ pub fn gate_frozen_release_closure(
         }
         if reached.contains(package) {
             violations.push(format!("frozen-crate-in-release-closure:{package}"));
+        }
+    }
+    violations
+}
+
+/// 蓝图 66 WP-66.6.1 R3：冻结册完备性——孤儿（零非冻结入边）lib 成员
+/// 必须在册（frozen）或入 orphans_allowlist。bin-only 成员非判定对象
+/// （工具/评估件天然零 lib 消费者）；入边统计排除来自冻结成员的边
+/// （「非冻结消费者」口径，[02] WP-66.6.1）。
+pub fn gate_frozen_completeness(
+    members: &BTreeSet<String>,
+    frozen: &BTreeSet<String>,
+    allowlist: &BTreeSet<String>,
+    bin_only: &BTreeSet<String>,
+    edges: &[(String, String)],
+) -> Vec<String> {
+    let mut incoming: BTreeMap<&str, usize> = BTreeMap::new();
+    for (from, to) in edges {
+        // 冻结成员的依赖边不计（孤儿链不互相洗白）。
+        if frozen.contains(from) {
+            continue;
+        }
+        *incoming.entry(to.as_str()).or_insert(0) += 1;
+    }
+    let mut violations = Vec::new();
+    for member in members {
+        if frozen.contains(member) || allowlist.contains(member) || bin_only.contains(member) {
+            continue;
+        }
+        if incoming.get(member.as_str()).copied().unwrap_or(0) == 0 {
+            violations.push(format!("orphan-crate-unregistered:{member}"));
         }
     }
     violations

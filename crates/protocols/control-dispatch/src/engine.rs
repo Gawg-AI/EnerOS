@@ -233,6 +233,9 @@ pub struct DispatchEngine {
     seq: u64,
     /// 已提交（Committed）次数（观测/审计；经 `committed_count` 只读）。
     committed_count: u64,
+    /// 最近一次过渡 proof digest（蓝图 66 WP-66.2.2 观测面，getter doc
+    /// 见 last_transition_proof_digest）。
+    last_transition_proof_digest: Option<[u8; 32]>,
     /// 审计丢弃计数。
     audit_drop_count: u64,
     /// 47（Exit 补证）：成功入链条数（append 计数——QEMU 串口
@@ -1062,6 +1065,7 @@ impl DispatchEngine {
             now_fn: config.now_fn,
             seq: 0,
             committed_count: 0,
+            last_transition_proof_digest: None,
             audit_drop_count: 0,
             audit_append_count: 0,
             last_seq: BTreeMap::new(),
@@ -1107,6 +1111,14 @@ impl DispatchEngine {
     /// Committed 次数（观测）。
     pub fn committed_count(&self) -> u64 {
         self.committed_count
+    }
+
+    /// 最近一次过渡认证发放的 proof digest（蓝图 66 WP-66.2.2 观测面）：
+    /// Gateway 侧持钥验证读点——与 keyed::hmac_sha256(key,
+    /// "eneros.transition-proof.v2" ‖ plan_wire_sha256) 逐字节比对；
+    /// 未发证为 None。生产读者随 certifier 接电接入（ADR-051）。
+    pub fn last_transition_proof_digest(&self) -> Option<[u8; 32]> {
+        self.last_transition_proof_digest
     }
 
     /// 审计链成功入链条数（AUDIT-CHAIN 串口行 appended 依据）。
@@ -1468,7 +1480,6 @@ impl DispatchEngine {
         deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError> {
         use eneros_decision_contract::{CertificateId, CertifiedPlan, CertifierSeal};
-        use sha2::Digest as _;
 
         let started = (self.now_fn)();
         if !plan.is_valid_at(started) {
@@ -1480,15 +1491,31 @@ impl DispatchEngine {
             alloc::vec![DispatchState::Proposed, DispatchState::Validated];
 
         // —— 过渡认证（[06] §3.5.4：dispatch 入口 CertifiedPlan 路由）——
-        // plan_sha256 = SHA-256(CandidatePlan V1 wire)；proof 绑定 profile
-        // 摘要与计划（迁移窗口语义，ADR-0048；.38 真 certifier 替换）。
+        // plan_sha256 = SHA-256(CandidatePlan V1 wire)；窗口语义见
+        // ADR-051 §2（transition-certifier 保留至目标侧认证输入齐备，
+        // 蓝图 66 doc 对齐；ADR-0048 初版「.38 替换」口径已被其订正）。
         // 62 v0.315.0 WP-62.1.2：派生单源 = decision-contract
         // `plan_wire_sha256`（原手写 SHA-256 删除）。
+        // 66 WP-66.2.2：过渡 proof keyed MAC 化（v2）——
+        // HMAC-SHA256(控制链信封密钥, "eneros.transition-proof.v2" ‖
+        // plan_sha)。key = 装配面 fetch_control_chain_key 注入的
+        // engine.key（与信封 build 同源，本文件 envelope build(&self.key)）；
+        // keyed 原语契约：生产调用方必须拒绝空 key（fail-closed）。
+        // v1（无钥 SHA-256，可伪造）为蓝图 66 登记的已关闭窗口。
+        if self.key.is_empty() {
+            return Err(DispatchError::ProposalInvalid(String::from(
+                "transition proof key missing (CHAIN-KEY-MISSING; fail-closed)",
+            )));
+        }
         let plan_sha: [u8; 32] = eneros_decision_contract::CandidatePlan::plan_wire_sha256(plan);
         let mut proof_input = alloc::vec::Vec::with_capacity(64);
-        proof_input.extend_from_slice(b"eneros.transition-proof.v1");
+        proof_input.extend_from_slice(b"eneros.transition-proof.v2");
         proof_input.extend_from_slice(&plan_sha);
-        let proof_digest: [u8; 32] = sha2::Sha256::digest(&proof_input).into();
+        let proof_digest: [u8; 32] =
+            eneros_decision_contract::keyed::hmac_sha256(&self.key, &proof_input);
+        // 观测面（蓝图 66 WP-66.2.2）：最近一次过渡 proof digest——Gateway
+        // 侧持钥验证的读点（生产读者随 certifier 接电接入；零 wire 影响）。
+        self.last_transition_proof_digest = Some(proof_digest);
         let certificate_id = CertificateId::new(plan_sha[..16].try_into().unwrap())
             .map_err(|_| DispatchError::ProposalInvalid(String::from("证书 ID 派生失败")))?;
         let certificate = CertifiedPlan::new_transition(
@@ -1503,7 +1530,9 @@ impl DispatchEngine {
                 tolerance_profile_id: 1, // tolerance profile
                 certified_at_ms: started,
                 valid_until_ms: started.saturating_add(plan.ttl_ms()),
-                // hard_constraint_count：迁移期由链内安全目录承载（.38 独立计数）
+                // hard_constraint_count：transition 语义 = 0（ADR-051 窗口
+                // 内无独立评估；链内安全目录无可派生的硬约束计数源——
+                // 蓝图 66 WP-66.2.3 核查登记，wire 布局不变）
                 hard_constraint_count: 0,
                 proof_digest,
             },

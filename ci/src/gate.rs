@@ -23,11 +23,11 @@ pub struct CheckResult {
     pub message: Option<String>,
 }
 
-/// Aggregated report for all six quality checks.
+/// Aggregated report for all seven quality checks.
 #[derive(Debug)]
 pub struct GateReport {
-    /// Results for `[fmt, clippy, audit, test, version-gate, mock-gate]` in that order.
-    pub results: [CheckResult; 6],
+    /// Results for `[fmt, clippy, audit, test, version-gate, mock-gate, sign-key-gate]` in that order.
+    pub results: [CheckResult; 7],
     pub overall_pass: bool,
 }
 
@@ -45,6 +45,9 @@ pub trait QualityGate {
     /// R2-1 Mock 收编门禁：crates/agents + crates/ai 下所有 `pub struct Mock`
     /// 定义行上方必须有 cfg(any(test, feature = "mock")) 保护。
     fn run_mock_gate(&self) -> Result<(), GateError>;
+    /// 签名钥显式来源门禁（蓝图 66 WP-66.1.1）：tools/ 与 .github/workflows/
+    /// 内所有 `xtask config compile` 调用块必须携带显式钥来源。
+    fn run_sign_key_gate(&self) -> Result<(), GateError>;
 }
 
 /// Default gate that shells out to `cargo` subcommands.
@@ -343,7 +346,15 @@ impl QualityGate for DefaultGate {
         mock_cr.name = "mock-gate";
         mock_cr.duration_ms = start.elapsed().as_millis() as u64;
 
-        let results = [fmt_cr, clippy_cr, audit_cr, test_cr, version_cr, mock_cr];
+        // sign-key-gate (蓝图 66 WP-66.1.1)
+        let start = Instant::now();
+        let mut signkey_cr = CheckResult::from(self.run_sign_key_gate());
+        signkey_cr.name = "sign-key-gate";
+        signkey_cr.duration_ms = start.elapsed().as_millis() as u64;
+
+        let results = [
+            fmt_cr, clippy_cr, audit_cr, test_cr, version_cr, mock_cr, signkey_cr,
+        ];
         let overall_pass = results.iter().all(|r| r.passed);
         GateReport {
             results,
@@ -357,6 +368,10 @@ impl QualityGate for DefaultGate {
 
     fn run_mock_gate(&self) -> Result<(), GateError> {
         Self::mock_gate_at(Path::new("."))
+    }
+
+    fn run_sign_key_gate(&self) -> Result<(), GateError> {
+        Self::sign_key_gate_at(Path::new("."))
     }
 }
 
@@ -495,21 +510,87 @@ impl DefaultGate {
             Err(GateError::MockGateViolation(violations.join("; ")))
         }
     }
+
+    /// 签名钥显式来源纪律（蓝图 66 WP-66.1.1，体检 C4）：`resolve_signing_key`
+    /// fail-closed 后，tools/ 与 .github/workflows/ 内所有 `xtask config
+    /// compile` 调用块（含 `\` 续行）必须携带 `--sign-key-hex` 或登记过的
+    /// `--accept-test-signing-key`。静态扫描判据，不做运行时拦截
+    /// （[02] WP-66.1.1 判据 4）。
+    fn sign_key_gate_at(root: &Path) -> Result<(), GateError> {
+        let mut violations: Vec<String> = Vec::new();
+        for dir in ["tools", ".github/workflows"] {
+            let base = root.join(dir);
+            let files = walk_files(&base, &["sh", "yml", "yaml"]);
+            for f in files {
+                let text = fs::read_to_string(&f)
+                    .map_err(|e| GateError::IoError(format!("cannot read {}: {e}", f.display())))?;
+                for v in sign_key_violations_in(&text) {
+                    violations.push(format!("{}: {v}", f.display()));
+                }
+            }
+        }
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(GateError::SignKeyDisciplineViolation(violations.join("; ")))
+        }
+    }
 }
 
-fn walk_rs(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+/// 对单个文件文本扫描 `xtask config compile` 调用块；返回违规描述
+/// （不含文件名前缀，便于单测）。注释行（`#` 前缀）不计。
+fn sign_key_violations_in(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut violations = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        let is_invocation = !trimmed.starts_with('#') && trimmed.contains("xtask config compile");
+        if !is_invocation {
+            i += 1;
+            continue;
+        }
+        // 调用块 = 命中行 + 后续 `\` 续行。
+        let mut block = String::from(lines[i]);
+        let mut j = i;
+        while lines[j].trim_end().ends_with('\\') && j + 1 < lines.len() {
+            j += 1;
+            block.push(' ');
+            block.push_str(lines[j]);
+        }
+        if !block.contains("--sign-key-hex") && !block.contains("--accept-test-signing-key") {
+            violations.push(format!(
+                "{line}: config compile 调用块缺显钥来源（--sign-key-hex | \
+                 --accept-test-signing-key）",
+                line = i + 1
+            ));
+        }
+        i = j + 1;
+    }
+    violations
+}
+
+fn walk_files(dir: &std::path::Path, exts: &[&str]) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
-                out.extend(walk_rs(&p));
-            } else if p.extension().map(|x| x == "rs").unwrap_or(false) {
+                out.extend(walk_files(&p, exts));
+            } else if p
+                .extension()
+                .map(|x| exts.iter().any(|e| x == *e))
+                .unwrap_or(false)
+            {
                 out.push(p);
             }
         }
     }
     out
+}
+
+fn walk_rs(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    walk_files(dir, &["rs"])
 }
 
 impl From<Result<(), GateError>> for CheckResult {
@@ -563,6 +644,7 @@ mod tests {
             pass("test"),
             pass("version-gate"),
             pass("mock-gate"),
+            pass("sign-key-gate"),
         ];
         let overall_pass = results.iter().all(|r| r.passed);
         assert!(overall_pass);
@@ -583,12 +665,13 @@ mod tests {
             pass("test"),
             pass("version-gate"),
             pass("mock-gate"),
+            pass("sign-key-gate"),
         ];
         let overall_pass = results.iter().all(|r| r.passed);
         assert!(!overall_pass);
 
         // Any single failure flips the overall result.
-        for i in 0..6 {
+        for i in 0..7 {
             let mut r = [
                 pass("fmt"),
                 pass("clippy"),
@@ -596,6 +679,7 @@ mod tests {
                 pass("test"),
                 pass("version-gate"),
                 pass("mock-gate"),
+                pass("sign-key-gate"),
             ];
             r[i] = fail("x");
             assert!(!r.iter().all(|c| c.passed), "index {} should fail", i);
@@ -641,9 +725,47 @@ mod tests {
             pass("test"),
             pass("version-gate"),
             pass("mock-gate"),
+            pass("sign-key-gate"),
         ];
         let overall_pass = results.iter().all(|r| r.passed);
         assert!(!overall_pass);
+    }
+
+    #[test]
+    fn sign_key_scanner_flags_bare_invocation() {
+        let text = "\
+echo start
+cargo xtask config compile --profile qemu-prod --root-key-hex 5a5a
+echo done
+";
+        let v = sign_key_violations_in(text);
+        assert_eq!(v.len(), 1, "裸调用必须判违：{v:?}");
+        assert!(v[0].contains("缺显钥来源"));
+    }
+
+    #[test]
+    fn sign_key_scanner_accepts_explicit_key_sources() {
+        let with_flag = "\
+cargo xtask config compile --profile qemu-prod \\
+  --accept-test-signing-key \\
+  --root-key-hex 5a5a
+";
+        assert!(sign_key_violations_in(with_flag).is_empty());
+
+        let with_hex = "cargo xtask config compile --sign-key-hex abcdef";
+        assert!(sign_key_violations_in(with_hex).is_empty());
+    }
+
+    #[test]
+    fn sign_key_scanner_skips_comments_and_multi_line_blocks() {
+        let text = "\
+# xtask config compile 说明性注释不算调用
+gate_compile_config_helper() {
+  cargo xtask config compile --profile \"$P\" \\
+    --accept-test-signing-key --root-key-hex k
+}
+";
+        assert!(sign_key_violations_in(text).is_empty());
     }
 
     #[test]

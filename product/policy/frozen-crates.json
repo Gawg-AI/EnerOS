@@ -268,6 +268,56 @@
    "package": "eneros-twin-global",
    "reason": "数字孪生叙事·Phase4 出口版，全仓零文本引用＋零入边（自 mock 自引用除外）",
    "unfreeze": "孪生叙事立项时由 owner 裁决"
+  },
+  {
+   "package": "eneros-agent-bus-dds",
+   "reason": "R3 完备性首跑孤儿：DDS 总线骨架，仅冻结成员（twin-agent/grid_agent）声明依赖；ADR-0039 DDS 骨架移除后零产品消费",
+   "unfreeze": "真实 DDS 总线接线/对端需求出现并出证据后由 owner 裁决（ADR-0039 口径）"
+  },
+  {
+   "package": "eneros-dr",
+   "reason": "R3 完备性首跑孤儿：灾备/恢复域 lib，全仓零声明消费者",
+   "unfreeze": "灾备/恢复域真实接线需求 owner 裁决"
+  },
+  {
+   "package": "eneros-model-harness",
+   "reason": "R3 完备性首跑孤儿：6,564 行零消费（根 Cargo.toml:43「生产模型唯一入口」注释反事实，蓝图 66 [01] §F 坐实）；DecisionBackend 替换评估件",
+   "unfreeze": "DecisionBackend 替换独立评估 + 接电改造（独立大卷，MH-deferred 激活前置）"
+  },
+  {
+   "package": "eneros-p2p",
+   "reason": "R3 完备性首跑孤儿：P2P 域 lib，仅冻结成员 p2p-match 声明依赖",
+   "unfreeze": "真实 P2P 对端/接线需求并出证据后由 owner 裁决"
+  },
+  {
+   "package": "eneros-recovery",
+   "reason": "R3 完备性首跑孤儿：恢复域 lib，仅冻结成员 vpp-scenario 声明依赖",
+   "unfreeze": "恢复域真实接线（vpp-scenario 之外）owner 裁决"
+  },
+  {
+   "package": "eneros-scale",
+   "reason": "R3 完备性首跑孤儿：election.rs 自述依赖不存在的装配面（蓝图 66 [01] §F 坐实；REG-P2）",
+   "unfreeze": "election/quorum 装配面落地（REG-P2 重锚裁决）"
+  },
+  {
+   "package": "eneros-tls",
+   "reason": "R3 完备性首跑孤儿：TLS 选择层（ADR-0031 trait-only），仅冻结成员 federation 声明依赖",
+   "unfreeze": "TLS 传输需求 owner 裁决（ADR-0031 trait-only 范围再评估）"
+  },
+  {
+   "package": "eneros-tracing",
+   "reason": "R3 完备性首跑孤儿：tracing lib，仅冻结成员 vpp-scenario 声明依赖",
+   "unfreeze": "tracing 接线需求 owner 裁决"
+  },
+  {
+   "package": "eneros-tsn-time",
+   "reason": "R3 完备性首跑孤儿：TSN 时间面（ADR-0040 trait-only），仅冻结成员 vpp-scenario 声明依赖",
+   "unfreeze": "TSN 时间面接线需求 owner 裁决（ADR-0040 范围再评估）"
+  },
+  {
+   "package": "eneros-allocation",
+   "reason": "R3 完备性二阶孤儿（冻结联动显形）：仅冻结/豁免成员（dr/coordinator/cloud-coordinator/federation/energy-market-agent）声明依赖，零非冻结消费者",
+   "unfreeze": "调度分配域真实接线（62.3 allocation 单源收口面激活）owner 裁决"
   }
  ],
  "release_closure_exemptions": [
@@ -326,6 +376,33 @@
    "to": "eneros-model-deploy",
    "reason": "61 Phase 6 v0.314.44 引入 ModelHarness→model-deploy 既有依赖（模型部署链路前置面）；62 卷 62.1 出口首次重建目标镜像时由冻结门暴露并补登记（0.314.43 planner→solver-model 同型先例）",
    "established": "2026-09-01"
+  }
+ ],
+ "schema_note": "v1.1（蓝图 66 WP-66.6.1 R3 完备性门）：新增 orphans_allowlist 字段——零消费者的 bin/工具/评估件成员豁免（结构性零消费是设计事实，无 unfreeze 条件）；与 crates[]（死代码冻结，须带 unfreeze）语义分立。",
+ "orphans_allowlist": [
+  {
+   "package": "eneros-business-services",
+   "reason": "svc-* 服务 bin 装配包：svc-config/svc-storage 等以 bin target 进 release 闭包，包的 lib 面零消费者为结构事实（非死代码）"
+  },
+  {
+   "package": "eneros-certifier",
+   "reason": "ADR-051 §2 裁决：生产零消费者为过渡窗内事实（shadow/dev 测试消费；真发放面 feature 门锁）——certifier 接电前置=目标侧存储句柄移交（BLOCKED 登记）"
+  },
+  {
+   "package": "eneros-modbus-tcp-server",
+   "reason": "L2 互操作测试对端（host 工具；43/46 卷 VERIFIED 证据链组成面）"
+  },
+  {
+   "package": "eneros-ops-gate",
+   "reason": "197 行自述「闸门证据而非产品模块」（评估件；蓝图 66 [01] §F）"
+  },
+  {
+   "package": "eneros-pentest",
+   "reason": "安全评估件（federation 半连接 pentest 面；62.3 卷在册）"
+  },
+  {
+   "package": "eneros-solver-milp",
+   "reason": "host HiGHS MILP 求解工具（ADR-050；planner 接电后自然获得消费者，与 solver-model allowlist 家族同族）"
   }
  ]
 }

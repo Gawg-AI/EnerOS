@@ -279,9 +279,15 @@ mod primitive_domain_guard {
         ];
 
         fn walk(dir: &Path, hits: &mut Vec<String>) {
-            for entry in std::fs::read_dir(dir).expect("workspace crates/") {
+            for entry in std::fs::read_dir(dir).expect("workspace root/") {
                 let path = entry.expect("dir entry").path();
                 if path.is_dir() {
+                    // 蓝图 66 WP-66.4.3：walk 根加宽至全仓——产物/版本
+                    // 控制目录非源码面，排除。
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if name == "target" || name == ".git" {
+                        continue;
+                    }
                     walk(&path, hits);
                 } else if path.extension().is_some_and(|e| e == "rs") {
                     let as_str = path.to_string_lossy().to_string();
@@ -310,7 +316,10 @@ mod primitive_domain_guard {
             .expect("workspace root")
             .to_path_buf();
         let mut hits = Vec::new();
-        walk(&workspace.join("crates"), &mut hits);
+        // 蓝图 66 WP-66.4.3：walk 根 = workspace 全仓（原 crates/ 口径
+        // 加宽；xtask/ci 等域外 .rs 站点同受守卫——「布尔陷阱域外清零」
+        // 措辞自此与 walk 范围一致）。
+        walk(&workspace, &mut hits);
         assert!(
             hits.is_empty(),
             "全仓非原始域 sm2_verify 残存（须改 signer_keyring::verify_signature；豁免 = EXEMPT_CRATES ∪ EXEMPT_FILES，逐行登记于 REG-SM2）:\n{}",

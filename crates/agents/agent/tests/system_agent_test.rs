@@ -106,6 +106,19 @@ fn signed_manifest() -> eneros_agent::AgentPackageManifest {
     }
 }
 
+/// 测试信任锚 = d=1 测试签名钥对应公钥（与 `signed_manifest` 同钥；
+/// 蓝图 66 WP-66.1.2 锚定装配）。
+fn test_anchor() -> [u8; 65] {
+    use eneros_crypto::sm2::{Sm2KeyPair, Sm2PrivateKey};
+    let mut d = [0u8; 32];
+    d[31] = 1;
+    let sk = Sm2PrivateKey::from_bytes(&d).expect("fixed sk");
+    Sm2KeyPair::from_private_key(&sk)
+        .expect("keypair")
+        .public_key
+        .to_bytes_uncompressed()
+}
+
 fn signed_registry() -> &'static StaticAgentRegistry {
     use std::sync::OnceLock;
     static REGS: OnceLock<StaticAgentRegistry> = OnceLock::new();
@@ -162,11 +175,15 @@ fn make_system_agent() -> (
         lifecycle.clone(),
         checkpoint_store,
     ));
-    let spawner = Rc::new(AgentSpawner::new(
-        reg.clone(),
-        lifecycle.clone(),
-        signed_registry(),
-    ));
+    let spawner = Rc::new(
+        AgentSpawner::new(
+            reg.clone(),
+            lifecycle.clone(),
+            signed_registry(),
+            &test_anchor(),
+        )
+        .expect("valid test anchor"),
+    );
     let sa = SystemAgent::new(
         reg.clone(),
         spawner,

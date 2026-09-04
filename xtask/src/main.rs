@@ -361,6 +361,7 @@ fn print_help() {
 fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
     let mut profile_id = "qemu-prod";
     let mut sign_key_hex: Option<String> = None;
+    let mut accept_test_signing_key = false;
     let mut root_key_hex: Option<String> = None;
     let mut control_chain_key_hex: Option<String> = None;
     // 子命令形态：`config compile [--profile ...]`。
@@ -383,6 +384,9 @@ fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
                         .ok_or_else(|| invalid("--sign-key-hex 需要值"))?
                         .clone(),
                 );
+            }
+            "--accept-test-signing-key" => {
+                accept_test_signing_key = true;
             }
             "--root-key-hex" => {
                 i += 1;
@@ -408,6 +412,7 @@ fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
         root,
         profile_id,
         sign_key_hex.as_deref(),
+        accept_test_signing_key,
         root_key_hex.as_deref(),
         control_chain_key_hex.as_deref(),
     )?;
@@ -1063,6 +1068,51 @@ fn audit_profile(
                 &frozen,
                 &allow_edges,
                 &edges,
+            ));
+            // 蓝图 66 WP-66.6.1 R3：冻结册完备性——零非冻结入边的 lib
+            // 成员必须入册（frozen）或入 orphans_allowlist（bin/工具/
+            // 评估件豁免）。edges 扩为全 workspace 直连边（R3 口径）。
+            let orphans_allow: BTreeSet<String> = frozen_policy
+                .orphans_allowlist
+                .iter()
+                .map(|e| e.package.clone())
+                .collect();
+            let bin_only: BTreeSet<String> = metadata
+                .packages
+                .iter()
+                .filter(|p| workspace.contains(p.id.as_str()))
+                .filter(|p| !p.targets.iter().any(|t| t.kind.iter().any(|k| k == "lib")))
+                .map(|p| p.name.clone())
+                .collect();
+            let member_names: BTreeSet<String> = metadata
+                .packages
+                .iter()
+                .filter(|p| workspace.contains(p.id.as_str()))
+                .map(|p| p.name.clone())
+                .collect();
+            let mut all_edges: Vec<(String, String)> = Vec::new();
+            for node in &metadata.resolve.nodes {
+                let Some(from_pkg) = package_by_id.get(node.id.as_str()) else {
+                    continue;
+                };
+                if !workspace.contains(from_pkg.id.as_str()) {
+                    continue;
+                }
+                for dep in &node.deps {
+                    let Some(to_pkg) = package_by_id.get(dep.pkg.as_str()) else {
+                        continue;
+                    };
+                    if workspace.contains(to_pkg.id.as_str()) {
+                        all_edges.push((from_pkg.name.clone(), to_pkg.name.clone()));
+                    }
+                }
+            }
+            violations.extend(policy::gate_frozen_completeness(
+                &member_names,
+                &frozen,
+                &orphans_allow,
+                &bin_only,
+                &all_edges,
             ));
         } else {
             violations.push("frozen-policy-unreadable".to_owned());

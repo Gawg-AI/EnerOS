@@ -33,7 +33,7 @@
 //! | **D3** | 移除 `params: HashMap<String, String>` 缓存字段（HiGHS 内部已存储参数；外部缓存重复状态，过度工程化 — Karpathy Simplicity First） |
 //! | **D4** | `SolverError` 保留完整 7 变体（FfiError/PassFailed/RunFailed/ParamError/ParamSetFailed/InvalidProblem/NotImplemented）；默认构建（Mock）下 FFI 错误变体不可达，标 `#[allow(dead_code)]` |
 //! | **D5** | `impl Drop for HighsSolver` 调用 `Highs_destroy`（feature-gated）；默认构建无 Drop 需求（RAII 资源管理仅 feature-gated 路径需要） |
-//! | **D6** | `build.rs` 在库（HiGHS 构建脚本，对接 `third_party/highs-1.7.2` 的 `libhighs.a`）；默认构建（MockSolver）不触发它，`highs-ffi` feature 零激活——AI-004 具名落地前保持停用 |
+//! | **D6** | `build.rs` 在库（HiGHS 构建脚本，对接 `third_party/highs-1.7.2` 的 `libhighs.a`）；`highs-ffi` 由 planner/solver-milp 等下游**无条件声明**——host 测试图恒激活；**target release 闭包现役 = 静态启发式后端，HiGHS 未经 target 链实弹**（蓝图 66 WP-66.6.4 真话订正；原「零激活」表述失实） |
 //! | **D7** | 测试策略：Rust `MockSolver` 单元测试 T1~T18；真实 HiGHS FFI 测试需 `highs-ffi` feature + 编译库，超出 v0.64.0 单元测试范围（蓝图 §4.4 非瓶颈版本） |
 //! | **D8** | `name()` / `version()` 方法返回 `&'static str`（MockSolver="MockSolver"/"0.1.0"，HighsSolver="HiGHS"/"1.7.2"）；避免 alloc |
 //! | **D9** | crate 位置 `crates/ai/solver-core/`（AI 子系统；项目规则 §2.3.1）；不依赖 v0.59.0~v0.63.0 任何 crate（Solver 是独立基础层） |

@@ -19,7 +19,9 @@
 //!
 //! [`Planner::plan`] 是唯一入口：`(DecisionRequest, PlanInput) ->
 //! CandidatePlan`。ModelBuilder/contributors/变量目录/backend 客户端
-//! 全部私有（深模块）。
+//! 全部 `pub(crate)`（深模块；蓝图 66 WP-66.6.4 pub 面收缩落码——
+//! 保留 `builder::{BatterySpec, GridSpec, PlanInput}` pub：certifier
+//! 测试消费）。
 //!
 //! # 求解 gate（[09] §3.5）
 //!
@@ -41,14 +43,11 @@
 //!   Phase 6 业务接入）；目标项归一化参数随 bundle 携带、权重在
 //!   CompiledObjective 证据链中。
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 pub mod builder;
 pub mod catalog;
 pub mod gate;
 pub mod tolerance;
 
-use std::collections::BTreeMap;
 use std::vec::Vec;
 
 use catalog::VariableCatalog;
@@ -56,7 +55,6 @@ use eneros_decision_contract::{
     Assignment, CandidatePlan, CandidatePlanParts, DecisionRequest, PlanId, SnapshotId,
     SolveStatusKind,
 };
-use eneros_resource_registry::capability::CapabilityEnvelope;
 use gate::SolveGate;
 use sha2::Digest;
 use tolerance::ToleranceProfile;
@@ -273,20 +271,4 @@ pub struct AssetBinding {
     pub device_id: u16,
     pub point_id: u32,
     pub unit_code: u16,
-}
-
-/// 包络查询（asset → 包络；BTreeMap 薄包装）。
-pub struct EnvelopeIndex<'a> {
-    by_asset: BTreeMap<u64, &'a CapabilityEnvelope>,
-}
-
-impl<'a> EnvelopeIndex<'a> {
-    pub fn new(envs: &'a [(u64, CapabilityEnvelope)]) -> Self {
-        Self {
-            by_asset: envs.iter().map(|(id, e)| (*id, e)).collect(),
-        }
-    }
-    pub fn get(&self, asset_id: u64) -> Option<&'a CapabilityEnvelope> {
-        self.by_asset.get(&asset_id).copied()
-    }
 }

@@ -104,8 +104,8 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
         return err_receipt("bad telemetry");
     };
     let actor_kind = body[plan_len + tel_len];
-    if actor_kind != 2 {
-        // 2 = ActorKind::Ai（信封字节码）。
+    // 蓝图 66 WP-66.3.1：actor 语义源 = ActorKind::Ai（匿名 `!= 2` 收编）。
+    if actor_kind != eneros_telemetry_model::command::ActorKind::Ai as u8 {
         return err_receipt("actor must be Ai");
     }
     let actor = AuthenticatedActor {
@@ -187,7 +187,11 @@ pub fn handle_submit_intent(
     let Some(&code) = req.first() else {
         return err_receipt("empty request");
     };
-    if code != DISP_SUBMIT_INTENT {
+    // 蓝图 66 WP-66.3.1：opcode 单源 = telemetry-model
+    // `INTENT_REQUEST_OPCODE`（与下方断言锁的 DISP_SUBMIT_INTENT 恒等，
+    // 引用锁测试 `disp_submit_intent_locked_to_intent_request_opcode`）；
+    // actor 语义源 = ActorKind::Ai（匿名 `!= 2` 字面已收编）。
+    if code != eneros_telemetry_model::command::INTENT_REQUEST_OPCODE {
         return err_receipt("unknown opcode");
     }
     let body = &req[1..];
@@ -199,7 +203,7 @@ pub fn handle_submit_intent(
         return err_receipt("bad intent wire");
     };
     let actor_kind = body[intent_len];
-    if actor_kind != 2 {
+    if actor_kind != eneros_telemetry_model::command::ActorKind::Ai as u8 {
         // 2 = ActorKind::Ai（信封字节码；协议写沿用 AI 决策链唯一签发面）。
         return err_receipt("actor must be Ai");
     }
@@ -464,7 +468,8 @@ mod tests {
         out.push(DISP_SUBMIT);
         out.extend_from_slice(&resp[1..]);
         out.extend_from_slice(tel);
-        out.push(2);
+        // 蓝图 66 WP-66.3.1：actor 语义源收编（匿名 `push(2)` 已删）。
+        out.push(eneros_telemetry_model::command::ActorKind::Ai as u8);
         out
     }
 
@@ -516,13 +521,37 @@ mod tests {
 
     // ============ 47（WP-47.1）协议写意图 ingress ============
 
-    /// 意图请求（opcode 2 + intent wire + actor）。
+    /// 意图请求（蓝图 66 WP-66.3.1：帧壳单源 encode_intent_request，
+    /// 独立手拼已删）。
     fn intent_request(intent: &eneros_protocol_abstract::write::PointWriteIntent) -> Vec<u8> {
-        let mut out = Vec::with_capacity(1 + 49 + 1);
-        out.push(DISP_SUBMIT_INTENT);
-        out.extend_from_slice(&eneros_protocol_abstract::write::encode_intent(intent));
-        out.push(2); // ActorKind::Ai
-        out
+        eneros_protocol_abstract::write::encode_intent_request(intent)
+    }
+
+    /// 引用锁（蓝图 66 WP-66.3.1 判据：opcode 单源 + 帧字面零命中）。
+    /// ① 命名常量与 telemetry-model 单源常量恒等；
+    /// ② 本文件意图帧手拼字面（opcode/actor 匿名 `push`、actor 匿名
+    /// 比较）零命中——漂移即红。（探针字面经分段拼接构造，防自匹配。）
+    #[test]
+    fn disp_submit_intent_locked_to_intent_request_opcode() {
+        use eneros_telemetry_model::command::INTENT_REQUEST_OPCODE;
+        assert_eq!(
+            DISP_SUBMIT_INTENT, INTENT_REQUEST_OPCODE,
+            "命名常量必须与单源 opcode 恒等（值冻结）"
+        );
+        let push2 = concat!("push", "(", "2", ");");
+        let actor_ne2 = concat!("actor_kind", " !", "= ", "2");
+        let src = include_str!("dispatch_service.rs");
+        let offenders: Vec<&str> = src
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                (t.contains(push2) && !t.contains("//")) || t.contains(actor_ne2)
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "意图帧手拼字面复现（蓝图 66 已收编单源）：{offenders:?}"
+        );
     }
 
     #[test]

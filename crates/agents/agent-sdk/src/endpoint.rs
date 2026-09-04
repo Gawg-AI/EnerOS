@@ -139,14 +139,20 @@ impl<'a, C: RawIpc> ChunkedSession<'a, C> {
 #[cfg(feature = "sel4")]
 impl<'a> ChunkedSession<'a, crate::ipc_sel4::Sel4IpcClient> {
     /// cap 寻址 + 共享 epoch 会话一步装配（蓝图 64 卷 64.2 WP-64.2.1d：
-    /// root 侧六处 `Sel4IpcClient::new` + `wrap_shared` 手抄闭包的归宿）。
-    /// 建端失败 → `None`（fail-closed；调用方按原 `client init FAIL` 路径
-    /// 呈现）。时钟源 = `eneros_drv_svc::now_ns`（bind 同源；仅超时自洽
-    /// 判定用——deadline 与 expiry 同钟，基点差异无行为影响）。
-    pub fn bind_shared(label: &str, dest_cap: u64, shared: &'a mut u64) -> Option<Self> {
-        let ipc =
-            crate::ipc_sel4::Sel4IpcClient::new(label, dest_cap, eneros_drv_svc::now_ns).ok()?;
-        Some(Self::wrap_shared(ipc, shared))
+    /// root 侧 `Sel4IpcClient::new` + `wrap_shared` 手抄闭包的归宿）。
+    /// 标签恒短字面（≤64B）= **必然成功**装配（蓝图 66 WP-66.5.3 死防御
+    /// 收口）：错误源唯一 = 标签 >64B（ipc_sel4 heapless `String::<64>`
+    /// 唯一 `endpoint too long`）——调用方以静态字面标签装配时该错误
+    /// 结构性不可达，失败脚手架（None 分支 / ok_or_else 文案）即死防御，
+    /// 违反前置 = panic（装配期即时暴露，不静默降级）。历史无锚
+    /// `bind_shared -> Option`（蓝图 64.2）于本卷删除，不留双入口——
+    /// 运行期可变标签路径自行调 `Sel4IpcClient::new` 并如实处理 Err。
+    pub fn bind_shared_const(label: &str, dest_cap: u64, shared: &'a mut u64) -> Self {
+        let ipc = crate::ipc_sel4::Sel4IpcClient::new(label, dest_cap, eneros_drv_svc::now_ns)
+            .expect(
+                "bind_shared_const: label exceeds 64B (statically unreachable for literal labels)",
+            );
+        Self::wrap_shared(ipc, shared)
     }
 }
 
@@ -287,5 +293,19 @@ mod tests {
         fn send(&mut self, _target: &str, _payload: &[u8]) -> Result<(), crate::AgentError> {
             Ok(())
         }
+    }
+}
+
+// 蓝图 66 WP-66.5.3：>64B 标签 = panic（前置违反即时暴露）。
+// bind_shared_const 为 sel4 特征门——本用例仅 sel4 特征下编译
+// （target 面实弹；host 默认面无 sel4 impl，路径不可达故无从用例）。
+#[cfg(all(test, feature = "sel4"))]
+mod bind_shared_const_tests {
+    #[test]
+    #[should_panic(expected = "bind_shared_const: label exceeds 64B")]
+    fn bind_shared_const_panics_on_overlong_label() {
+        let mut shared: u64 = 0;
+        let long_label: alloc::string::String = alloc::string::String::from("L").repeat(65);
+        let _ = crate::endpoint::ChunkedSession::bind_shared_const(&long_label, 1, &mut shared);
     }
 }

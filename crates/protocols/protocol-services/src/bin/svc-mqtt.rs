@@ -144,6 +144,9 @@ pub extern "C" fn _start(
                 // 丢弃）。
                 let mgmt =
                     eneros_agent_sdk::endpoint::ChunkedEndpoint::bind("svc-mqtt", "svc-mgmt");
+                // 蓝图 66 WP-66.3.2：ai_request_topic 不再注入 io（主题解析
+                // 内化插件）；上方装配期打印保留 = 诚实观测，三臂 match 非门
+                // （门在插件 enqueue_ai_publish fail-closed 分类）。
                 let mut svc = MqttWriteIoService::new(
                     eneros_protocol_services::service::PluginIoService::new(
                         plugin,
@@ -152,7 +155,6 @@ pub extern "C" fn _start(
                     dispatch,
                     ai_worker,
                     mgmt,
-                    ai_request_topic,
                 );
                 // 46.5：启动期自检轮询（post-connect 交换尽早完成）。
                 svc.io.self_check_poll(parts.self_check_rounds);

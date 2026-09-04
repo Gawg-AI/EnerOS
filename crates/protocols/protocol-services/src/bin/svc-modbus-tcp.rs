@@ -74,9 +74,9 @@ struct ModbusTcpIoService {
 
 #[cfg(target_os = "none")]
 impl ModbusTcpIoService {
-    /// 47（WP-47.1 协议出站写）：执行主站写 + 独立 readback，返回 2B
-    /// `OutcomeFrame`。**本方法只执行**——授权已由 ControlDispatch 九步链
-    /// 完成（不双头授权）。
+    /// 47（WP-47.1 协议出站写）：执行主站写 + 独立 readback——蓝图 66
+    /// WP-66.3.3 起核体迁入 lib `master_write::master_write_v2`（词形与
+    /// 判定序逐字节不变，golden 锁在该模块测试段）；bin 只留本薄包装。
     fn master_write_v2(
         &mut self,
         device: u32,
@@ -84,88 +84,14 @@ impl ModbusTcpIoService {
         value: eneros_telemetry_model::command::CommandValue,
         command_digest: [u8; 32],
     ) -> [u8; 2] {
-        use eneros_control_gateway::wire::{OutcomeCode, OutcomeFrame};
-        use eneros_protocol_abstract::write::semantic_command_digest;
-        let computed = semantic_command_digest(device, point, value);
-        if computed != command_digest {
-            eneros_runtime::println!(
-                "[svc-modbus-tcp] MASTER-WRITE device={device} point={point} digest-mismatch —— Denied(2)"
-            );
-            return OutcomeFrame::new(OutcomeCode::Denied, 2).encode();
-        }
-        let Some(mapping) = self.registry.resolve(point) else {
-            eneros_runtime::println!(
-                "[svc-modbus-tcp] MASTER-WRITE point={point} 无点表映射 —— Denied(7)"
-            );
-            return OutcomeFrame::new(OutcomeCode::Denied, 7).encode();
-        };
-        if mapping.device_id != device as u16 {
-            eneros_runtime::println!(
-                "[svc-modbus-tcp] MASTER-WRITE device={device} != 点表 device={} —— Denied(7)",
-                mapping.device_id
-            );
-            return OutcomeFrame::new(OutcomeCode::Denied, 7).encode();
-        }
-        let now = eneros_protocol_services::now_ms();
-        let mut cd_hex = [0u8; 16];
-        eneros_hex::encode_into_lower(&command_digest[..8], &mut cd_hex);
-        let cd = core::str::from_utf8(&cd_hex).unwrap_or("?");
-        let power = match value {
-            eneros_telemetry_model::command::CommandValue::ActivePowerKw(v) => v,
-            _ => {
-                eneros_runtime::println!(
-                    "[svc-modbus-tcp] MASTER-WRITE point={point} 命令类别与模拟量寄存器不符 —— Denied(7)"
-                );
-                return OutcomeFrame::new(OutcomeCode::Denied, 7).encode();
-            }
-        };
-        match self.plugin.borrow_mut().write_point(
-            now,
-            mapping,
-            eneros_upa_model::PointValue::Float(power),
-        ) {
-            Ok(()) => {
-                eneros_runtime::println!(
-                    "[svc-modbus-tcp] MASTER-WRITE device={device} point={point} power={power} cd={cd} ACK"
-                );
-            }
-            Err(e) => {
-                eneros_runtime::println!(
-                    "[svc-modbus-tcp] MASTER-WRITE device={device} point={point} 写失败 {e:?} —— Denied(8)"
-                );
-                return OutcomeFrame::new(OutcomeCode::Denied, 8).encode();
-            }
-        }
-        // 独立 readback（重读该点；值比对——不得回显刚写载荷）。
-        match self.plugin.borrow_mut().read_point(now, mapping) {
-            Ok(read) if read.ok => {
-                let eng = mapping.to_engineering(read.raw);
-                let ok = (eng - power).abs() <= MASTER_READBACK_TOL_KW.max(f64::EPSILON);
-                let td = eneros_protocol_abstract::write::semantic_command_digest(
-                    device,
-                    point,
-                    eneros_telemetry_model::command::CommandValue::ActivePowerKw(eng),
-                );
-                let mut td_hex = [0u8; 16];
-                eneros_hex::encode_into_lower(&td[..8], &mut td_hex);
-                let tds = core::str::from_utf8(&td_hex).unwrap_or("?");
-                eneros_runtime::println!(
-                    "[svc-modbus-tcp] MASTER-READBACK point={point} eng={eng} target={power} {} td={tds}",
-                    if ok { "VERIFIED" } else { "MISMATCH" }
-                );
-                if ok {
-                    OutcomeFrame::new(OutcomeCode::Applied, 0).encode()
-                } else {
-                    OutcomeFrame::new(OutcomeCode::AppliedReadbackMismatch, 0).encode()
-                }
-            }
-            _ => {
-                eneros_runtime::println!(
-                    "[svc-modbus-tcp] MASTER-READBACK point={point} 不可得 —— AppliedReadbackUnavailable"
-                );
-                OutcomeFrame::new(OutcomeCode::AppliedReadbackUnavailable, 0).encode()
-            }
-        }
+        eneros_protocol_services::master_write::master_write_v2(
+            &self.registry,
+            &self.plugin,
+            device,
+            point,
+            value,
+            command_digest,
+        )
     }
 }
 

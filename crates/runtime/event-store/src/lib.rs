@@ -21,6 +21,14 @@
 //! - CRC32 取 `eneros_storage::crc32`（HYG-001：其实现已归一到
 //!   `eneros_ipc_wire::crc32` 唯一出处，此处零新增实现）。
 //!
+//! # 状态登记（蓝图 66 WP-66.6.3；同名异物消歧见 CONTEXT.md 键表）
+//!
+//! 本 crate 与 `cloud-sync::event_store`（跨域同步事件缓存，生产在用）
+//! 同名异物——裸写 `EventStore` 须以 crate 路径限定。上游断链 BLOCKED：
+//! `ingest_bridge` / `store_fact_sink` / `snapshot-service` 三接缝共享
+//! 前置 = 目标侧存储句柄移交（63.3 登记维持）。**机制深、生产零消费是
+//! 裁决内事实**（非疏漏；62.3 SS-deferred 冻结登记）。
+//!
 //! 生产接线注意（durable-log 39 收尾复验同款纪律）：target 侧应把**角色分区
 //! 作用域句柄**（`ScopedBlockDevice`）适配到本 crate 的 `D: BlockDevice` 上，
 //! 整盘裸 handle 不得触及 LBA0/GPT——类型门在调用方完成。

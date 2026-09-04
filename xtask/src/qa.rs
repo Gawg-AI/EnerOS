@@ -100,6 +100,7 @@ pub(super) fn command_qa(root: &Path, args: &[String]) -> DynResult<()> {
         "proof" => command_proof(root, tail),
         "validation" => command_validation(root, tail),
         "gng-version" => command_gng_version(root, tail),
+        "feature-matrix" => command_feature_matrix(root, tail),
         other => Err(invalid(format!("unknown qa subcommand '{other}'"))),
     }
 }
@@ -3357,6 +3358,183 @@ fn command_validation(root: &Path, args: &[String]) -> DynResult<()> {
         report.pass();
     }
     finalize(root, &report)
+}
+
+// ============================================================
+// FEATURE-MATRIX（蓝图 66 WP-66.4.1；体检 C8 / R-64.c 固化）
+// ============================================================
+
+/// feature 面测试矩阵（crate 包名, 必测 feature）。
+///
+/// R-64.c 教训固化：feature-gated 测试在裸 `cargo test -p` 下静默跳过
+/// （如 mqtt 90 测试的 net 面、config-bundle 的 compile 面历史 0 行
+/// 误读）——本矩阵逐项实跑 `cargo test -p <crate> --features <f>`，
+/// 任一红即门红（fail-closed）。新增测试面特征须在此登记。
+const FEATURE_MATRIX: &[(&str, &str)] = &[
+    ("eneros-iec61850-goose", "net"),
+    ("eneros-iec61850-sv", "net"),
+    ("eneros-iec61850-mms", "net"),
+    ("eneros-iec104-master", "net"),
+    ("eneros-iec104-slave", "net"),
+    ("eneros-modbus-tcp", "net"),
+    ("eneros-mqtt", "net"),
+    ("eneros-config-bundle", "compile"),
+];
+
+/// 完备性自检的守卫半径：被视为「测试面特征」的特征名。
+///
+/// 半径外特征面既有守卫（登记）：`mock` → mock-gate（pre-commit）；
+/// `std`/`loom`/`tpm2` → ci.yml 既有矩阵项；`sel4` → target-only
+/// （host 拉起即 compile_error 自守，target 面由 image raw + QEMU 门覆盖）。
+const TEST_FACE_FEATURES: &[&str] = &["net", "compile"];
+
+/// 豁免表（crate 包名 → 理由）：使用测试面特征但不入矩阵的 crate。
+const FEATURE_MATRIX_EXEMPT: &[(&str, &str)] = &[];
+
+/// `qa feature-matrix [--dry-run]`：矩阵逐项实跑 + 完备性自检。
+pub(super) fn command_feature_matrix(root: &Path, args: &[String]) -> DynResult<()> {
+    let dry_run = args.iter().any(|a| a == "--dry-run");
+    let mut report = QaReport::new("feature-matrix");
+    report.summary.insert(
+        "purpose",
+        "R-64.c feature-gate discipline (blueprint 66 WP-66.4.1)".into(),
+    );
+
+    // —— 1) 完备性自检（workspace 扫描）——
+    let members = scan_workspace_crates(&root.join("crates"));
+    let mut violations: Vec<String> = Vec::new();
+    for (name, features) in &members {
+        for f in features {
+            if !TEST_FACE_FEATURES.contains(&f.as_str()) {
+                continue;
+            }
+            let in_matrix = FEATURE_MATRIX.iter().any(|(c, m)| c == name && m == f);
+            let exempt = FEATURE_MATRIX_EXEMPT.iter().any(|(c, _)| c == name);
+            if !in_matrix && !exempt {
+                violations.push(format!(
+                    "{name}: 使用测试面特征 '{f}' 但未入 FEATURE_MATRIX 且未豁免（登记后放行）"
+                ));
+            }
+        }
+    }
+    // 清单反腐化：矩阵项必须真实存在且 crate 确实声明该特征。
+    for (crate_name, feature) in FEATURE_MATRIX {
+        let Some((_, declared)) = members.iter().find(|(n, _)| n == crate_name) else {
+            violations.push(format!(
+                "FEATURE_MATRIX 项 {crate_name} 在 workspace 中未找到"
+            ));
+            continue;
+        };
+        if !declared.contains(&feature.to_string()) {
+            violations.push(format!("{crate_name} 未声明特征 '{feature}'（清单腐化）"));
+        }
+    }
+    report
+        .summary
+        .insert("matrix_size", FEATURE_MATRIX.len().to_string());
+    report
+        .summary
+        .insert("workspace_crates_scanned", members.len().to_string());
+    if !violations.is_empty() {
+        report.violations.extend(violations);
+        return finalize(root, &report); // FAIL → Err（fail-closed）
+    }
+    if dry_run {
+        // 只打印映射不跑测（开发期迭代；[02] WP-66.4.1 成本控制）。
+        for (c, f) in FEATURE_MATRIX {
+            println!("FEATURE-MATRIX: {c} --features {f} (dry-run)");
+        }
+        report.summary.insert("mode", "dry-run".into());
+        report.pass();
+        return finalize(root, &report);
+    }
+
+    // —— 2) 逐项实跑（fail-closed）——
+    let mut failed: Vec<String> = Vec::new();
+    for (crate_name, feature) in FEATURE_MATRIX {
+        println!("FEATURE-MATRIX: cargo test -p {crate_name} --features {feature}");
+        let status =
+            std::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+                .current_dir(root)
+                .args(["test", "-p", crate_name, "--features", feature])
+                .status();
+        match status {
+            Ok(st) if st.success() => {}
+            _ => failed.push(format!("{crate_name} --features {feature}")),
+        }
+    }
+    if !failed.is_empty() {
+        report.violations.extend(failed);
+        return finalize(root, &report); // FAIL → Err（fail-closed）
+    }
+    report.pass();
+    finalize(root, &report)
+}
+
+/// 扫描 `crates/` 下全部成员 crate：返回 (包名, 源码中使用的 cfg 特征集)。
+fn scan_workspace_crates(crates_dir: &Path) -> Vec<(String, std::collections::BTreeSet<String>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![crates_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                // 产物/版本控制目录非源码面（对齐 signer-keyring 守卫口径）。
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name != "target" && name != ".git" {
+                    stack.push(p);
+                }
+                continue;
+            }
+            if p.file_name().map(|n| n == "Cargo.toml").unwrap_or(false) && dir.join("src").is_dir()
+            {
+                if let Some((name, features)) = scan_crate_features(&dir) {
+                    out.push((name, features));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 解析单 crate：Cargo.toml 包名 + src 内 `#[cfg(feature = "x")]` 特征集。
+fn scan_crate_features(crate_dir: &Path) -> Option<(String, std::collections::BTreeSet<String>)> {
+    let toml_text = fs::read_to_string(crate_dir.join("Cargo.toml")).ok()?;
+    let name = toml_text
+        .lines()
+        .map(str::trim)
+        .take_while(|l| !l.starts_with('[') || l.starts_with("[package"))
+        .find_map(|l| l.strip_prefix("name = "))
+        .map(|v| v.trim_matches('"').to_string())?;
+    let mut features = std::collections::BTreeSet::new();
+    let src = crate_dir.join("src");
+    let mut stack = vec![src.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().map(|x| x == "rs").unwrap_or(false) {
+                if let Ok(text) = fs::read_to_string(&p) {
+                    let mut rest = text.as_str();
+                    while let Some(i) = rest.find("cfg(feature = \"") {
+                        let tail = &rest[i + "cfg(feature = \"".len()..];
+                        if let Some(end) = tail.find('"') {
+                            features.insert(tail[..end].to_string());
+                        }
+                        rest = tail;
+                    }
+                }
+            }
+        }
+    }
+    Some((name, features))
 }
 
 #[cfg(test)]

@@ -160,6 +160,31 @@ fn signed_registry() -> &'static StaticAgentRegistry {
 
 // ---- Helpers ----
 
+/// 测试信任锚 = d=1 测试签名钥对应公钥（与 `signed_manifest` 同钥；
+/// 蓝图 66 WP-66.1.2 锚定装配）。
+fn test_anchor() -> [u8; 65] {
+    use eneros_crypto::sm2::{Sm2KeyPair, Sm2PrivateKey};
+    let mut d = [0u8; 32];
+    d[31] = 1;
+    let sk = Sm2PrivateKey::from_bytes(&d).expect("fixed sk");
+    Sm2KeyPair::from_private_key(&sk)
+        .expect("keypair")
+        .public_key
+        .to_bytes_uncompressed()
+}
+
+/// SIG13 负例锚 = d=2 钥公钥（≠ 测试签名钥）。
+fn other_anchor() -> [u8; 65] {
+    use eneros_crypto::sm2::{Sm2KeyPair, Sm2PrivateKey};
+    let mut d = [0u8; 32];
+    d[31] = 2;
+    let sk = Sm2PrivateKey::from_bytes(&d).expect("fixed sk");
+    Sm2KeyPair::from_private_key(&sk)
+        .expect("keypair")
+        .public_key
+        .to_bytes_uncompressed()
+}
+
 fn make_spawner(
     agents: &'static StaticAgentRegistry,
 ) -> (
@@ -169,7 +194,8 @@ fn make_spawner(
 ) {
     let reg = Rc::new(RefCell::new(AgentRegistry::new()));
     let lifecycle = Rc::new(RefCell::new(LifecycleManager::new(reg.clone())));
-    let spawner = AgentSpawner::new(reg.clone(), lifecycle.clone(), agents);
+    let spawner = AgentSpawner::new(reg.clone(), lifecycle.clone(), agents, &test_anchor())
+        .expect("valid test anchor");
     (spawner, reg, lifecycle)
 }
 
@@ -269,4 +295,43 @@ fn integration_spawn_with_overrides() {
     let process = spawner.get_process(id).unwrap();
     assert_eq!(process.budget.priority, 200);
     assert_eq!(process.budget.max_memory_bytes, 1024);
+}
+
+/// SIG13（蓝图 66 WP-66.1.2，体检 C3）：锚定准入——包签名钥 ≠ 注入锚时，
+/// 即使签名本身自洽（旧 verify() 会放行的自证形态）也必须拒绝，错误词形
+/// `agent pubkey not pinned`。
+#[test]
+fn sig13_spawn_rejects_non_pinned_signer() {
+    let reg = Rc::new(RefCell::new(AgentRegistry::new()));
+    let lifecycle = Rc::new(RefCell::new(LifecycleManager::new(reg.clone())));
+    let spawner = AgentSpawner::new(
+        reg.clone(),
+        lifecycle.clone(),
+        signed_registry(),
+        &other_anchor(),
+    )
+    .expect("valid non-anchor test key");
+    let config = make_config(AgentType::Energy, "e1");
+    let err = spawner.spawn(config, 1000).unwrap_err();
+    assert!(
+        matches!(err, AgentError::CodeLoadFailed(ref m) if m.contains("agent pubkey not pinned")),
+        "SIG13：非锚钥自签必须被拒且词形含 agent pubkey not pinned，得：{err:?}"
+    );
+    // 拒绝路径落 Error 终态（与既有失败语义一致）
+    let id = reg.borrow().list_all()[0].agent_id;
+    assert_eq!(lifecycle.borrow().current_state(id), Ok(AgentState::Error));
+}
+
+/// 无效锚字节（非 65B 压缩点格式）= 构造失败（fail-closed，蓝图 66：
+/// 禁止 None 兜底回退自证）。
+#[test]
+fn spawner_construction_fails_on_invalid_anchor() {
+    let reg = Rc::new(RefCell::new(AgentRegistry::new()));
+    let lifecycle = Rc::new(RefCell::new(LifecycleManager::new(reg.clone())));
+    let bad_anchor = [0u8; 65]; // 全零非法点
+    let err = AgentSpawner::new(reg, lifecycle, &FAIL_REGISTRY, &bad_anchor).err();
+    assert!(
+        matches!(err, Some(AgentError::CodeLoadFailed(ref m)) if m.contains("invalid trust anchor")),
+        "无效锚必须使构造失败且词形匹配（fail-closed），得：{err:?}"
+    );
 }

@@ -245,6 +245,8 @@ mod tests {
     static EMPTY_REGISTRY: crate::StaticAgentRegistry =
         crate::StaticAgentRegistry::new(&[] as &[(crate::AgentType, crate::AgentBinary)]);
 
+    /// 测试信任锚 = d=1 测试签名钥对应公钥（蓝图 66 WP-66.1.2 锚定装配；
+    /// 本文件 spawn 永不到达验签，锚仅满足 fail-closed 构造）。
     /// Helper: construct SystemAgent with empty registry.
     fn make_system_agent() -> SystemAgent {
         let reg = Rc::new(RefCell::new(AgentRegistry::new()));
@@ -258,11 +260,15 @@ mod tests {
             lifecycle.clone(),
             checkpoint_store,
         ));
-        let spawner = Rc::new(crate::spawner::AgentSpawner::new(
-            reg.clone(),
-            lifecycle.clone(),
-            &EMPTY_REGISTRY,
-        ));
+        let spawner = Rc::new(
+            crate::spawner::AgentSpawner::new(
+                reg.clone(),
+                lifecycle.clone(),
+                &EMPTY_REGISTRY,
+                &crate::spawner::test_anchor(),
+            )
+            .expect("valid test anchor"),
+        );
         let config = SystemConfig::default();
         SystemAgent::new(reg, spawner, recovery, heartbeat, lifecycle, config)
     }
@@ -286,11 +292,15 @@ mod tests {
             lifecycle.clone(),
             checkpoint_store,
         ));
-        let spawner = Rc::new(crate::spawner::AgentSpawner::new(
-            reg.clone(),
-            lifecycle.clone(),
-            &EMPTY_REGISTRY,
-        ));
+        let spawner = Rc::new(
+            crate::spawner::AgentSpawner::new(
+                reg.clone(),
+                lifecycle.clone(),
+                &EMPTY_REGISTRY,
+                &crate::spawner::test_anchor(),
+            )
+            .expect("valid test anchor"),
+        );
         let sa = SystemAgent::new(
             reg.clone(),
             spawner,

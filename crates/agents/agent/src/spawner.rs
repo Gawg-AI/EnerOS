@@ -100,23 +100,35 @@ pub struct AgentSpawner {
     registry: Rc<RefCell<AgentRegistry>>,
     lifecycle: Rc<RefCell<LifecycleManager>>,
     agents: &'static StaticAgentRegistry,
+    /// 信任锚（蓝图 66 WP-66.1.2，体检 C3）：装配期静态注入；包验签唯一
+    /// 入口 `verify_against` 要求签名公钥与本锚逐字节相等。禁止 None 兜底
+    /// 回退自证。
+    trust_anchor: eneros_crypto::sm2::Sm2PublicKey,
     /// 已 spawn 的进程句柄（按 spawn 顺序存储）.
     processes: RefCell<Vec<ProcessHandle>>,
 }
 
 impl AgentSpawner {
-    /// 创建 AgentSpawner.
+    /// 创建 AgentSpawner（锚定装配）。
+    ///
+    /// `trust_anchor`：SM2 未压缩公钥 65B（`04‖x‖y`）。解析失败 = 构造
+    /// 失败（fail-closed，蓝图 66 WP-66.1.2）——不存在无锚 spawner。
     pub fn new(
         registry: Rc<RefCell<AgentRegistry>>,
         lifecycle: Rc<RefCell<LifecycleManager>>,
         agents: &'static StaticAgentRegistry,
-    ) -> Self {
-        AgentSpawner {
+        trust_anchor: &[u8; 65],
+    ) -> Result<Self, AgentError> {
+        let anchor = eneros_crypto::sm2::Sm2PublicKey::from_bytes(trust_anchor).map_err(|e| {
+            AgentError::CodeLoadFailed(alloc::format!("invalid trust anchor: {e:?}"))
+        })?;
+        Ok(AgentSpawner {
             registry,
             lifecycle,
             agents,
+            trust_anchor: anchor,
             processes: RefCell::new(Vec::new()),
-        }
+        })
     }
 
     /// 启动 Agent（D4 偏差：追加 `now: u64` 参数）.
@@ -171,7 +183,8 @@ impl AgentSpawner {
         })?;
         let elf_bytes = binary.elf;
 
-        // Step 5.5: 签名验证（SEC-002）— 未签名/错签/哈希不符一律拒绝加载
+        // Step 5.5: 锚定验签（SEC-002 + 蓝图 66 C3）— 未签名/错签/哈希不符/
+        // 公钥不在锚上一律拒绝加载
         let manifest = binary.manifest.clone().ok_or_else(|| {
             let _ = self
                 .lifecycle
@@ -185,7 +198,7 @@ impl AgentSpawner {
             manifest,
             elf_bytes: elf_bytes.to_vec(),
         };
-        pkg.verify().map_err(|e| {
+        pkg.verify_against(&self.trust_anchor).map_err(|e| {
             let _ = self
                 .lifecycle
                 .borrow_mut()
@@ -362,6 +375,21 @@ const fn build_minimal_test_elf() -> [u8; 128] {
 static MINIMAL_ELF: &[u8] = &build_minimal_test_elf();
 
 #[cfg(test)]
+pub(crate) fn test_anchor() -> [u8; 65] {
+    /// 测试信任锚 = d=1 测试签名钥对应公钥（蓝图 66 WP-66.1.2 锚定装配；
+    /// crate 内测试共享——system_agent/mod.rs、manager.rs、spawner 测试段
+    /// 与两集成测试文件各自镜像 d=1 语义，pub(crate) 收敛 in-crate 三份）。
+    use eneros_crypto::sm2::{Sm2KeyPair, Sm2PrivateKey};
+    let mut d = [0u8; 32];
+    d[31] = 1;
+    let sk = Sm2PrivateKey::from_bytes(&d).expect("fixed sk");
+    Sm2KeyPair::from_private_key(&sk)
+        .expect("keypair")
+        .public_key
+        .to_bytes_uncompressed()
+}
+
+#[cfg(test)]
 mod tests {
     use alloc::rc::Rc;
     use alloc::string::String;
@@ -476,6 +504,8 @@ mod tests {
 
     static FAIL_REGISTRY: StaticAgentRegistry = StaticAgentRegistry::new(&[]);
 
+    // test_anchor 共享版见文件尾 `pub(crate)`（system_agent 兄弟模块同源）。
+
     // ---- Helper functions ----
 
     /// Create an AgentSpawner with shared registry and lifecycle.
@@ -488,7 +518,8 @@ mod tests {
     ) {
         let reg = Rc::new(RefCell::new(AgentRegistry::new()));
         let lifecycle = Rc::new(RefCell::new(LifecycleManager::new(reg.clone())));
-        let spawner = AgentSpawner::new(reg.clone(), lifecycle.clone(), agents);
+        let spawner = AgentSpawner::new(reg.clone(), lifecycle.clone(), agents, &test_anchor())
+            .expect("valid test anchor");
         (spawner, reg, lifecycle)
     }
 

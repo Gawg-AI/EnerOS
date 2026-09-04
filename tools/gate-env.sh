@@ -85,12 +85,15 @@ gate_export_signing_key() {
 }
 
 # config compile（dev root key 单点推导；KMS 目录单点）。
+# gate=测试链，产物锚=测试锚（在册事实，蓝图 66 §3.4 冻结）——签名钥
+# fail-closed（蓝图 66 WP-66.1.1）后须显式 --accept-test-signing-key。
 # 用法：gate_compile_config <compile.log 路径> [profile=qemu-prod]
 gate_compile_config() {
   local LOG="$1"
   local PROFILE="${2:-qemu-prod}"
   echo "=== config compile（$PROFILE）==="
   ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile "$PROFILE" \
+    --accept-test-signing-key \
     --root-key-hex "$(gate_dev_root_key_hex)" >"$LOG" 2>&1
   local RC=$?
   [ $RC -eq 0 ] || { echo "CONFIG-COMPILE FAIL rc=$RC"; tail -5 "$LOG"; exit 2; }

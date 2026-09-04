@@ -193,7 +193,7 @@ struct RowSpec {
 
 /// 资源变量映射（declare 产物）。
 #[derive(Debug, Default, Clone)]
-pub struct ResourceVarMap {
+pub(crate) struct ResourceVarMap {
     vars: BTreeMap<(u16, u32), SymKey>,
 }
 
@@ -213,7 +213,7 @@ impl ResourceVarMap {
 }
 
 /// contributor 装配上下文。
-pub struct ModelContext {
+pub(crate) struct ModelContext {
     keys: Vec<SymKey>,
     bounds: BTreeMap<SymKey, (f64, f64, VarType)>,
     rows: Vec<RowSpec>,
@@ -257,7 +257,7 @@ impl ModelContext {
 }
 
 /// 资源种类贡献者（[09] §3.3 trait 契约形状）。
-pub trait ModelContributor {
+pub(crate) trait ModelContributor {
     fn declare(
         &self,
         ctx: &mut ModelContext,
@@ -274,7 +274,7 @@ pub trait ModelContributor {
 // ---------------------------------------------------------------------------
 // 电池
 // ---------------------------------------------------------------------------
-pub struct BatteryContributor;
+pub(crate) struct BatteryContributor;
 
 impl ModelContributor for BatteryContributor {
     fn declare(
@@ -427,7 +427,7 @@ impl ModelContributor for BatteryContributor {
 // ---------------------------------------------------------------------------
 // 新能源
 // ---------------------------------------------------------------------------
-pub struct RenewableContributor;
+pub(crate) struct RenewableContributor;
 
 impl ModelContributor for RenewableContributor {
     fn declare(
@@ -511,7 +511,7 @@ impl ModelContributor for RenewableContributor {
 // ---------------------------------------------------------------------------
 // 负荷
 // ---------------------------------------------------------------------------
-pub struct LoadContributor;
+pub(crate) struct LoadContributor;
 
 impl ModelContributor for LoadContributor {
     fn declare(
@@ -607,7 +607,7 @@ impl ModelContributor for LoadContributor {
 // ---------------------------------------------------------------------------
 // 并网点
 // ---------------------------------------------------------------------------
-pub struct GridContributor;
+pub(crate) struct GridContributor;
 
 impl ModelContributor for GridContributor {
     fn declare(
@@ -738,7 +738,7 @@ impl ModelContributor for GridContributor {
 // ---------------------------------------------------------------------------
 // 可调度单元
 // ---------------------------------------------------------------------------
-pub struct DispatchContributor;
+pub(crate) struct DispatchContributor;
 
 impl ModelContributor for DispatchContributor {
     fn declare(
@@ -813,6 +813,9 @@ impl ModelContributor for DispatchContributor {
 // build：装配 + 规格约束 + 目标 + 编译
 // ---------------------------------------------------------------------------
 #[derive(Debug)]
+/// 装配产物（蓝图 66 收缩项中与 [`ModelBuilder`] 同退 pub 者：
+/// `ModelBuilder::build` 的返回类型——接口链耦合，包内集成测试直接
+/// 消费 `model_digest`/`catalog`/`problem`；生产 crate 外零引用）。
 pub struct BuiltModel {
     pub problem: LpProblem,
     pub catalog: VariableCatalog,
@@ -835,7 +838,7 @@ pub(crate) fn built_model_for_test(problem: LpProblem) -> BuiltModel {
 }
 
 /// 解投影（BuiltModel → 每资源净功率；缺列/非有限 → MalformedSolution）。
-pub fn project_solution(
+pub(crate) fn project_solution(
     built: &BuiltModel,
     solution: &[f64],
 ) -> Result<Vec<crate::ResourceSolution>, PlanError> {
@@ -953,6 +956,9 @@ fn step_count_of(catalog: &VariableCatalog) -> usize {
     max_step + 1
 }
 
+/// 装配器（蓝图 66 收缩项中与 [`BuiltModel`] 同退 pub 者：planner 包内
+/// 集成测试（tests/integration.rs digest/热启动两测）直接构造模型面；
+/// 生产 crate 外零引用。随测试迁移卷再收缩并登记 D-8）。
 pub struct ModelBuilder;
 
 impl ModelBuilder {

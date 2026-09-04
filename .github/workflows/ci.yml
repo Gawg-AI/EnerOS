@@ -44,6 +44,12 @@ jobs:
       - name: Unsafe SAFETY comment coverage (C-243 gate)
         run: cargo xtask audit-unsafe-safety
 
+      # 蓝图 66 WP-66.4.1（体检 C8 / R-64.c 固化）：feature 面测试矩阵——
+      # feature-gated 测试在裸 cargo test 下静默跳过，本门逐项带特征实跑
+      # （清单+完备性自检内嵌 xtask qa feature-matrix）。
+      - name: Feature-face test matrix (blueprint 66 C8 gate)
+        run: cargo xtask qa feature-matrix
+
       - name: BumpAllocator loom concurrency model (C-243 gate)
         run: cargo test --locked -p eneros-services --features loom --lib loom_allocator
 
@@ -545,8 +551,11 @@ jobs:
           # release 由 KMS 密钥注入，见 xtask config compile --help）。
           # WP-A.1：控制链信封密钥经 KMS 注入链取得（开发档=仓库 kms-dev
           # 模板；release 由 owner KMS 提供，三者全缺 ⇒ 编译 Err fail-closed）。
+          # CI=测试链：签名钥经 --accept-test-signing-key 显式选择测试锚
+          # （蓝图 66 WP-66.1.1 fail-closed）。
           ENEROS_KMS_DIR="$GITHUB_WORKSPACE/configs/kms-dev" \
-            cargo xtask config compile --profile qemu-prod --root-key-hex "$(printf '5a%.0s' {1..64})"
+            cargo xtask config compile --profile qemu-prod --accept-test-signing-key \
+            --root-key-hex "$(printf '5a%.0s' {1..64})"
 
       - name: Build qemu-prod image (root-task + services ELF + init bundle)
         run: cargo xtask image qemu-prod

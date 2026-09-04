@@ -27,6 +27,7 @@ gate_export_signing_key
 
 compile_config() {
   ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-prod \
+    --accept-test-signing-key \
     --root-key-hex "$(gate_dev_root_key_hex)" >>"$EVROOT/build/compile.log" 2>&1
   local rc=$?
   [ $rc -eq 0 ] || { tail -5 "$EVROOT/build/compile.log"; exit 2; }

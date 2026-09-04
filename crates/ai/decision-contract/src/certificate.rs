@@ -6,9 +6,13 @@
 //! - 未启用 `transition-certifier` 的 crate：**无法构造** CertifiedPlan
 //!   （编译期事实；tests/compilefail 锁定）。外部只有 [`CertifiedPlan::
 //!   decode_v1`]/[`CertifiedPlan::verify_binding`]。
-//! - 启用 `transition-certifier`（迁移窗口 .28-.37）：ControlChain 十二步
-//!   复核（gateway 独立裁决 = 独立代码路径重算）作为过渡认证器发放 seal。
-//!   真 certifier crate（.38）落地后删除本 feature 与过渡发放面。
+//! - 启用 `transition-certifier`：ControlChain 十二步复核（gateway 独立
+//!   裁决 = 独立代码路径重算）作为过渡认证器发放 seal。**窗口延长裁决
+//!   （ADR-051 §2，蓝图 66 对齐）**：transition-certifier 保留至 Phase 5
+//!   PlanCompiler 落地、目标侧认证输入齐备（快照/包络存储句柄移交接线）
+//!   后删除；期间 CertifiedPlan 的规范生产者 = dispatch 的过渡发放面
+//!   （ADR-051 初稿「规范生产者 = eneros-certifier」已订正——该 host/
+//!   planner 路径不存在，certifier 生产零消费者是裁决内事实非疏漏）。
 //!
 //! 生成器不能给自己签证书：CandidatePlan 的生产者（solver/规则/模型）
 //! 不持有 seal；seal 发放只发生在 dispatch 裁决路径（与生成器不同代码

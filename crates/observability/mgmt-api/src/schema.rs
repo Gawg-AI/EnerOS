@@ -59,7 +59,8 @@ pub enum ApiAction {
     LogQuery,
     /// 导出支持包。
     SupportBundleExport,
-    /// 符号化崩溃转储。
+    /// 符号化崩溃转储（crash-dump 编码/解析 host 侧就绪；设备端写入
+    /// seam 未实施——蓝图 66 WP-66.6.2 登记，前置=panic 写入通道）。
     CrashDumpSymbolize,
 
     // === 更新/维护 ===

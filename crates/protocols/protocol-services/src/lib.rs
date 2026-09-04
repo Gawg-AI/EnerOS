@@ -32,6 +32,7 @@ pub mod net_transport;
 
 /// 蓝图 61 v0.314.30（[07] §2.2/§2.3）：Modbus TCP 接入 adapter——
 /// 协议状态机+原始值；身份/映射/工程量/去重/日志在 IngestionModule。
+pub mod master_write;
 pub mod modbus_ingest;
 
 /// 蓝图 62 卷 62.2（WP-62.2.3，S2a）：采集交付半环单源——两协议 bin 的

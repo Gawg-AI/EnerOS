@@ -248,7 +248,7 @@ fn help_text() -> &'static str {
      \n\
      Diagnostics:\n\
        support-bundle export — export encrypted support bundle\n\
-       crash-dump export --file F — symbolize crash dump\n\
+       crash-dump export --file F — symbolize crash dump (host-side; device write seam pending)\n\
      \n\
      Security:\n\
        security revoke --cert-id C — revoke certificate/capability\n\

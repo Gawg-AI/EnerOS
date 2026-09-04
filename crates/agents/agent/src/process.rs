@@ -209,43 +209,24 @@ impl AgentPackage {
         computed == self.manifest.elf_hash
     }
 
-    /// SEC-002：SM2 验签（GB/T 32918-2016）。
+    /// SEC-002 + 蓝图 66 WP-66.1.2（体检 C3）：**锚定验签**——完整验证
+    /// （fail-closed）+ 签名公钥必须与注入信任锚逐字节相等。
     ///
-    /// 签名载荷 = name ‖ version ‖ elf_hash（与 signer 侧一致）；
-    /// `signature` 为 (r‖s) 64 字节，`signer_pubkey` 为 SM2 未压缩公钥的
-    /// x‖y（64 字节，验签时补 0x04 前缀为 65 字节）。
+    /// 旧 `verify()`（包内公钥验包内签名 = 自证）已删除：外部唯一入口是
+    /// 锚定版；锚 = 装配期静态注入（`AgentSpawner::new`），禁止 None 兜底
+    /// 回退自证。
     ///
-    /// 返回 `Ok(true)` 验签通过、`Ok(false)` 验签失败（签名与消息/公钥不符）、
-    /// `Err` 公钥或签名格式非法。
-    pub fn verify_signature(&self) -> Result<bool, AgentError> {
+    /// 验证序（与旧 verify() 逐语义等价 + 锚定准入）：
+    /// 1) 哈希校验；2) 未签名（signature 与 signer_pubkey 全零）一律拒绝
+    ///    （供应链要求签名 ELF PIE）；3) SM2 验签（载荷
+    ///    name‖version‖elf_hash）；4) 签名公钥 == anchor（逐字节；锚定
+    ///    准入，SIG13）。
+    pub fn verify_against(
+        &self,
+        anchor: &eneros_crypto::sm2::Sm2PublicKey,
+    ) -> Result<(), AgentError> {
         use eneros_crypto::sm2::{sm2_verify, Sm2PublicKey, Sm2Signature};
 
-        // 组装签名载荷：name ‖ version ‖ elf_hash
-        let mut msg: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(
-            self.manifest.name.len() + self.manifest.version.len() + 32,
-        );
-        msg.extend_from_slice(self.manifest.name.as_bytes());
-        msg.extend_from_slice(self.manifest.version.as_bytes());
-        msg.extend_from_slice(&self.manifest.elf_hash);
-
-        // 公钥：64 字节 x‖y → 补 0x04 前缀为 65 字节未压缩格式
-        let mut pk_bytes = [0u8; 65];
-        pk_bytes[0] = 0x04;
-        pk_bytes[1..65].copy_from_slice(&self.manifest.signer_pubkey);
-        let pk = Sm2PublicKey::from_bytes(&pk_bytes).map_err(|e| {
-            AgentError::CodeLoadFailed(alloc::format!("invalid signer pubkey: {e:?}"))
-        })?;
-        let sig = Sm2Signature::from_bytes(&self.manifest.signature);
-
-        sm2_verify(&msg, &sig, &pk)
-            .map_err(|e| AgentError::CodeLoadFailed(alloc::format!("SM2 verify failed: {e:?}")))
-    }
-
-    /// SEC-002：完整验证（fail-closed）— 哈希校验 + SM2 签名校验，任一失败即拒绝。
-    ///
-    /// 未签名（signature 与 signer_pubkey 全零）一律拒绝：供应链要求签名 ELF PIE，
-    /// 不允许无签名加载。
-    pub fn verify(&self) -> Result<(), AgentError> {
         // 1) 哈希校验
         if !self.verify_hash() {
             return Err(AgentError::CodeLoadFailed(String::from(
@@ -260,13 +241,33 @@ impl AgentPackage {
                 "agent package is unsigned; signed ELF PIE required (SEC-002)",
             )));
         }
-        // 3) SM2 验签
-        let valid = self.verify_signature().map_err(|e| {
-            AgentError::CodeLoadFailed(alloc::format!("signature check error: {e}"))
+        // 3) SM2 验签（载荷 = name‖version‖elf_hash，与 signer 侧一致）
+        let mut msg: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(
+            self.manifest.name.len() + self.manifest.version.len() + 32,
+        );
+        msg.extend_from_slice(self.manifest.name.as_bytes());
+        msg.extend_from_slice(self.manifest.version.as_bytes());
+        msg.extend_from_slice(&self.manifest.elf_hash);
+
+        let mut pk_bytes = [0u8; 65];
+        pk_bytes[0] = 0x04;
+        pk_bytes[1..65].copy_from_slice(&self.manifest.signer_pubkey);
+        let pk = Sm2PublicKey::from_bytes(&pk_bytes).map_err(|e| {
+            AgentError::CodeLoadFailed(alloc::format!("invalid signer pubkey: {e:?}"))
         })?;
+        let sig = Sm2Signature::from_bytes(&self.manifest.signature);
+        let valid = sm2_verify(&msg, &sig, &pk)
+            .map_err(|e| AgentError::CodeLoadFailed(alloc::format!("SM2 verify failed: {e:?}")))?;
         if !valid {
             return Err(AgentError::CodeLoadFailed(String::from(
                 "agent package signature invalid",
+            )));
+        }
+        // 4) 锚定准入（SIG13）：签名公钥必须与信任锚逐字节相等
+        let anchor_xy = &anchor.to_bytes_uncompressed()[1..65];
+        if self.manifest.signer_pubkey[..] != *anchor_xy {
+            return Err(AgentError::CodeLoadFailed(String::from(
+                "agent pubkey not pinned (trust anchor mismatch; SEC-002)",
             )));
         }
         Ok(())
@@ -476,7 +477,7 @@ mod tests {
     /// - 未签名（全零）→ 拒绝（fail-closed）
     #[test]
     fn test_sec002_sm2_signature_verification_chain() {
-        use eneros_crypto::sm2::{sm2_sign, Sm2KeyPair};
+        use eneros_crypto::sm2::{sm2_sign, Sm2KeyPair, Sm2PrivateKey};
         use eneros_crypto::CsRng;
 
         let elf_data = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03];
@@ -515,19 +516,23 @@ mod tests {
             elf_bytes: elf_data.clone(),
         };
 
-        // 1) 正确签名 → 通过
-        pkg.verify().expect("signed package must verify");
+        // 1) 正确签名 + 锚=签名钥 → 通过（蓝图 66：外部唯一入口锚定版）
+        pkg.verify_against(&keypair.public_key)
+            .expect("signed package must verify against its own key as anchor");
 
         // 2) 篡改 ELF → 哈希校验拒绝
         let mut tampered = pkg.clone();
         tampered.elf_bytes[0] ^= 0xFF;
-        assert!(tampered.verify().is_err(), "tampered ELF must be rejected");
+        assert!(
+            tampered.verify_against(&keypair.public_key).is_err(),
+            "tampered ELF must be rejected"
+        );
 
         // 3) 篡改签名（错误 r 分量）→ SM2 验签拒绝
         let mut bad_sig = pkg.clone();
         bad_sig.manifest.signature[0] ^= 0x01;
         assert!(
-            bad_sig.verify().is_err(),
+            bad_sig.verify_against(&keypair.public_key).is_err(),
             "wrong signature must be rejected"
         );
 
@@ -535,7 +540,7 @@ mod tests {
         let mut unsigned = pkg.clone();
         unsigned.manifest.signature = [0u8; 64];
         assert!(
-            unsigned.verify().is_err(),
+            unsigned.verify_against(&keypair.public_key).is_err(),
             "unsigned package must be rejected (fail-closed)"
         );
 
@@ -543,8 +548,24 @@ mod tests {
         let mut wrong_pk = pkg.clone();
         wrong_pk.manifest.signer_pubkey[0] ^= 0x01;
         assert!(
-            wrong_pk.verify().is_err(),
+            wrong_pk.verify_against(&keypair.public_key).is_err(),
             "wrong signer pubkey must be rejected"
+        );
+
+        // 6) SIG13（蓝图 66）：锚定准入——锚 ≠ 签名钥时即使签名本身有效也拒绝
+        //（坑：CsRng::new() 为固定种子，两次 generate 得同一钥对——负例锚
+        //  必须用不同固定私钥 d=2 派生，勿走随机源）
+        let mut d2 = [0u8; 32];
+        d2[31] = 2;
+        let other_keypair =
+            Sm2KeyPair::from_private_key(&Sm2PrivateKey::from_bytes(&d2).expect("fixed sk"))
+                .expect("keypair");
+        let err = pkg
+            .verify_against(&other_keypair.public_key)
+            .expect_err("non-pinned signer must be rejected (SIG13)");
+        assert!(
+            format!("{err}").contains("agent pubkey not pinned"),
+            "SIG13 错误词形须含 agent pubkey not pinned，得：{err}"
         );
     }
 

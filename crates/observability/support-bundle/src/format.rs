@@ -48,7 +48,9 @@ pub const MAX_NAME_LEN: usize = 64;
 /// 单个诊断条目。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleItem {
-    /// 条目名称（如 `system.log`、`config.json`、`crash-dump.bin`）。
+    /// 条目名称（如 `system.log`、`config.json`、`crash-dump.bin`——
+    /// crash-dump 条目为 host 侧符号化输入；设备端写入 seam 未实施，
+    /// 蓝图 66 WP-66.6.2 登记，前置=panic 写入通道）。
     pub name: String,
     /// 内容类型（如 `text/plain`、`application/json`、`application/octet-stream`）。
     pub content_type: String,

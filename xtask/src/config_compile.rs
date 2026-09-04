@@ -10,8 +10,9 @@
 //! - security.toml 的控制链信封密钥由 `--control-chain-key-hex` /
 //!   `ENEROS_CONTROL_CHAIN_KEY` / `ENEROS_KMS_DIR/control-chain.key` 注入
 //!   （SPEC-SERIES-2026-08-27/A WP-A.1；全缺 → 构建 Err fail-closed）；
-//! - 签名密钥 `--sign-key-hex`（SM2 私钥 32B hex；测试用仓库测试密钥，
-//!   release 用 KMS 密钥）；公钥 65B hex（04 前缀）写入 pubkey 文件。
+//! - 签名密钥 `--sign-key-hex`（SM2 私钥 32B hex）或 `--accept-test-signing-key`
+//!   （显式选择测试锚，测试链专用；全缺 → Err fail-closed，蓝图 66 C4）；
+//!   公钥 65B hex（04 前缀）写入 pubkey 文件。
 
 use std::fs;
 use std::path::Path;
@@ -19,12 +20,14 @@ use std::path::Path;
 use super::{invalid, read_json, DynResult};
 
 /// 生成并签名配置 bundle。
-/// `sign_key_hex`：SM2 私钥（32B hex，可空=测试键）；`root_key_hex`：
+/// `sign_key_hex`：SM2 私钥（32B hex）；`accept_test_signing_key`：显式
+/// 接受仓库测试钥（`--accept-test-signing-key`，测试链专用）；`root_key_hex`：
 /// ota root_key（64B hex，可空=从 ota.toml 读取）。
 pub fn config_compile(
     root: &Path,
     profile_id: &str,
     sign_key_hex: Option<&str>,
+    accept_test_signing_key: bool,
     root_key_hex: Option<&str>,
     control_chain_key_hex: Option<&str>,
 ) -> DynResult<std::path::PathBuf> {
@@ -138,8 +141,8 @@ pub fn config_compile(
         );
     }
 
-    // 3. 签名（SM2；密钥注入或测试键）。
-    let (sk, pk) = resolve_signing_key(sign_key_hex)?;
+    // 3. 签名（SM2；密钥显式注入，或显式选择测试钥）。
+    let (sk, pk) = resolve_signing_key(sign_key_hex, accept_test_signing_key)?;
     let mut rng = eneros_crypto::CsRng::new();
     eneros_config_bundle::sign_bundle(&mut bundle, &sk, &pk, &mut rng)
         .map_err(|e| invalid(format!("config bundle 签名失败：{e}")))?;
@@ -193,10 +196,13 @@ fn hex_decode(hex: &str) -> DynResult<Vec<u8>> {
     Ok(out)
 }
 
-/// 签名密钥：显式注入优先；否则仓库测试密钥（`product/security/config-test-key.hex`，
-/// 缺失则用固定测试种子——仅 CI/开发）。
+/// 签名密钥：显式注入优先；缺省 fail-closed（蓝图 66 WP-66.1.1，体检 C4
+/// ——旧行为静默落公开测试私钥且 gate 基建结构性依赖，已关）。测试链须
+/// 显式 `--accept-test-signing-key`（值固定语义 = 现行 [0x41;32] 测试钥，
+/// 钥字节与产物锚不换，[00] §3.4 冻结词形）。
 fn resolve_signing_key(
     sign_key_hex: Option<&str>,
+    accept_test_signing_key: bool,
 ) -> DynResult<(eneros_crypto::Sm2PrivateKey, eneros_crypto::Sm2PublicKey)> {
     let sk_bytes: [u8; 32] = match sign_key_hex {
         Some(hex) => {
@@ -208,10 +214,16 @@ fn resolve_signing_key(
             out.copy_from_slice(&bytes);
             out
         }
-        None => {
-            // 固定测试私钥（与 config-bundle 测试向量一致；release 必须
-            // 注入 KMS 密钥——pubkey 会随产物进介质，测试键仅 CI）。
+        None if accept_test_signing_key => {
+            // 固定测试私钥（与 config-bundle 测试向量一致；pubkey 会随产物
+            // 进介质——仅显式旗标下的测试链可用，登记于冻结词形清单）。
             [0x41u8; 32]
+        }
+        None => {
+            return Err(invalid(
+                "config bundle 签名键必须显式传入：--sign-key-hex（SM2 私钥 64 hex）\
+                 或 --accept-test-signing-key（测试链显式选择测试锚）——fail-closed",
+            ));
         }
     };
     let sk = eneros_crypto::Sm2PrivateKey::from_bytes(&sk_bytes)
@@ -306,11 +318,50 @@ mod tests {
         assert!(hex_decode("zz").is_err());
     }
 
+    /// R66-1.1（蓝图 66 WP-66.1.1 红测先行）：无 `--sign-key-hex` 且未显式
+    /// 接受测试钥 → 必须 Err fail-closed（旧行为 = 静默落 [0x41;32] 公开
+    /// 测试私钥，gate 基建结构性依赖该兜底——体检 C4，本测改造前红）。
     #[test]
-    fn resolve_test_key() {
-        let (sk, pk) = resolve_signing_key(None).unwrap();
+    fn signing_key_default_path_is_fail_closed() {
+        let err = resolve_signing_key(None, false).unwrap_err();
+        assert!(
+            format!("{err}").contains("fail-closed"),
+            "缺省路径错误文案须含 fail-closed 词形，得：{err}"
+        );
+    }
+
+    /// 显式选择测试钥（`--accept-test-signing-key`）→ 现行测试锚字节
+    /// （[0x41;32] 派生 pubkey `041f5839…`，[00] §3.4 冻结词形，不换钥）。
+    #[test]
+    fn accept_test_signing_key_yields_frozen_anchor() {
+        let (sk, pk) = resolve_signing_key(None, true).unwrap();
+        let pk_hex: String = pk
+            .to_bytes_uncompressed()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            pk_hex,
+            "041f58396696deec97a0090fa612eb5c4784f0b114693696916c01e9cff8ebc5c7ec0c18caf02a7478c73e54bf13a06fb11624fd1a233ab5e41217aa7bb3803e04",
+            "测试锚 pubkey 必须逐字节等于卷前冻结词形"
+        );
         let sig =
             eneros_crypto::sm2_sign(b"hello", &sk, &pk, &mut eneros_crypto::CsRng::new()).unwrap();
-        assert!(eneros_crypto::sm2_verify(b"hello", &sig, &pk).unwrap());
+        // 蓝图 66 WP-66.4.3：类型化原语 verify_signature（裸 sm2_verify
+        // 出域清零——守卫 walk 加宽至全仓后本站点迁移，不入豁免）。
+        assert!(eneros_signer_keyring::verify_signature(b"hello", &sig, &pk).is_ok());
+    }
+
+    /// 显式注入路径（`--sign-key-hex`）逐字节不变。
+    #[test]
+    fn explicit_sign_key_path_unchanged() {
+        let hex = "5a".repeat(32);
+        let (_, pk) = resolve_signing_key(Some(&hex), false).unwrap();
+        let pk_hex: String = pk
+            .to_bytes_uncompressed()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert!(pk_hex.starts_with("04"), "显式注入路径行为不变");
     }
 }

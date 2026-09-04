@@ -272,3 +272,65 @@ mod tests {
         }
     }
 }
+
+/// root tick 应答终态投影（蓝图 66 WP-66.5.1 单源；历史 root service.rs
+/// :1491-1497 手读 `tick_resp[2]` + 内联 from_code 收编）。
+///
+/// 布局契约（EA_OK 路径）：`[EA_OK(1)][receipt status(1)][terminal state(1)]
+/// …`——终态字节在 `resp[2]`（offset 由 svc-energy-agent 装配面冻结）。
+/// `ea_ok` 参数 = 呼叫方语义源（agent-sdk `ea_wire::EA_OK`）——本 crate
+/// 刻意零依赖，不复制 EA 状态码语义；root 侧调用点传
+/// `eneros_agent_sdk::ea_wire::EA_OK`。
+///
+/// 等价性：与 root 原手读逐分支等价——非 OK 首字节 → None；短帧（<3B）
+/// → None；OK 帧尾字节走 [`DispatchState::from_code`]（未知码 → None，
+/// fail-closed 不猜）。
+pub fn ea_tick_terminal_state(resp: &[u8], ea_ok: u8) -> Option<DispatchState> {
+    if resp.first() == Some(&ea_ok) && resp.len() >= 3 {
+        DispatchState::from_code(resp[2])
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod ea_tick_tests {
+    use super::{ea_tick_terminal_state, DispatchState};
+
+    const EA_OK: u8 = 0; // 测试镜像调用方语义源（agent-sdk ea_wire::EA_OK）
+    const EA_NOACTION: u8 = 1;
+
+    #[test]
+    fn ok_frame_projects_terminal_state() {
+        assert_eq!(
+            ea_tick_terminal_state(
+                &[EA_OK, 0, DispatchState::Committed.to_code(), 1, 2, 3],
+                EA_OK
+            ),
+            Some(DispatchState::Committed)
+        );
+        assert_eq!(
+            ea_tick_terminal_state(&[EA_OK, 0, DispatchState::Failed.to_code()], EA_OK),
+            Some(DispatchState::Failed)
+        );
+    }
+
+    #[test]
+    fn short_frame_is_none() {
+        assert_eq!(ea_tick_terminal_state(&[], EA_OK), None);
+        assert_eq!(ea_tick_terminal_state(&[EA_OK], EA_OK), None);
+        assert_eq!(ea_tick_terminal_state(&[EA_OK, 0], EA_OK), None);
+    }
+
+    #[test]
+    fn non_ok_status_is_none_even_with_trailing_bytes() {
+        // NOACTION + 任意尾随字节 → None（原手读同分支等价）。
+        assert_eq!(ea_tick_terminal_state(&[EA_NOACTION, 7, 7, 7], EA_OK), None);
+    }
+
+    #[test]
+    fn unknown_terminal_code_is_none() {
+        // OK 帧尾字节 0xFF（INVALID）→ from_code 未知码 None。
+        assert_eq!(ea_tick_terminal_state(&[EA_OK, 0, 0xFF], EA_OK), None);
+    }
+}

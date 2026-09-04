@@ -11,7 +11,6 @@
 //! 计数器收进 [`FwdCounters`]（类型化）。**打印词形逐字节冻结**
 //! （INTENT-FWD / AI-RESP-* / MGMT-FWD-* 族——47-50 卷证据行依赖）。
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use eneros_agent_sdk::chunked::{ChunkError, RawIpc};
@@ -58,8 +57,6 @@ pub struct MqttWriteIoService<C: RawIpc> {
     /// 49：svc-ai-worker EIPC 客户端（授予槽按名解析；表序第 3 条授予）。
     /// 未授予 → 应答丢弃计数（fail-closed）。
     pub ai_worker: Option<ChunkedEndpoint<C>>,
-    /// 49：AI 请求发布主题（protocol-mqtt 配置；未配置 = AI 链路关闭）。
-    ai_request_topic: Option<String>,
     /// 50（WP-50.1）：遥测帧分片组装器（与 AI 请求组装同语义；不解释内容）。
     tel_assembler: RelayAssembler,
     /// 50（WP-50.2）：svc-mgmt EIPC 客户端（授予槽按名解析；表序第 4 条
@@ -76,14 +73,12 @@ impl<C: RawIpc> MqttWriteIoService<C> {
         dispatch: Option<ChunkedEndpoint<C>>,
         ai_worker: Option<ChunkedEndpoint<C>>,
         mgmt: Option<ChunkedEndpoint<C>>,
-        ai_request_topic: Option<String>,
     ) -> Self {
         Self {
             io,
             dispatch,
             ai_assembler: RelayAssembler::new(),
             ai_worker,
-            ai_request_topic,
             tel_assembler: RelayAssembler::new(),
             mgmt,
             counters: FwdCounters::default(),
@@ -111,12 +106,10 @@ impl<C: RawIpc> MqttWriteIoService<C> {
             ep,
             "svc-control-dispatch",
             |intent| {
-                // 请求布局：[DISP_SUBMIT_INTENT=2][intent wire 49B][actor 2=Ai]。
-                let mut req: Vec<u8> = Vec::with_capacity(1 + 49 + 1);
-                req.push(2);
-                req.extend_from_slice(&eneros_protocol_abstract::write::encode_intent(intent));
-                req.push(2);
-                req
+                // 蓝图 66 WP-66.3.1：帧壳单源 = protocol-abstract
+                // `encode_intent_request`（[2][intent wire 49B][actor 2=Ai]，
+                // 字节面 golden 锁 protocol-abstract 测试段）。
+                eneros_protocol_abstract::write::encode_intent_request(intent)
             },
             |resp| resp.len() >= 2 && resp[0] == 0,
             |intent, r| match r {
@@ -331,17 +324,19 @@ impl<C: RawIpc> MqttWriteIoService<C> {
     fn ai_finalize(&mut self) -> u8 {
         match self.ai_assembler.end() {
             Ok(json) => {
-                let topic = self.ai_request_topic.clone();
-                let enq = match topic {
-                    Some(t) => self.io.plugin_mut().enqueue_app_publish(&t, &json),
-                    None => {
+                // 蓝图 66 WP-66.3.2：主题解析内化插件（enqueue_ai_publish）；
+                // AI-REQ-DROP 证据行词形由插件错误分类承载——未配置
+                // （InvalidConfig）= 本行逐字节不变；超限（QueueFull）=
+                // 静默计数（与旧行为一致，零打印）。
+                let enq = self.io.plugin_mut().enqueue_ai_publish(&json);
+                match enq {
+                    Err(eneros_protocol_abstract::ProtocolError::InvalidConfig) => {
                         eneros_runtime::println!(
                             "[svc-mqtt] AI-REQ-DROP ai_request_topic 未配置（fail-closed）"
                         );
-                        Err(eneros_protocol_abstract::ProtocolError::InvalidConfig)
+                        self.counters.ai_errors = self.counters.ai_errors.saturating_add(1);
+                        1
                     }
-                };
-                match enq {
                     Ok(()) => {
                         self.counters.ai_req_published =
                             self.counters.ai_req_published.saturating_add(1);
@@ -517,7 +512,6 @@ mod tests {
                 "eneros_mqtt::plugin::MqttPlugin",
             ),
             dispatch,
-            None,
             None,
             None,
         )

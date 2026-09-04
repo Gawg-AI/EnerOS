@@ -294,7 +294,9 @@ fn standard_alerts() -> Vec<Alert> {
             runbook: Runbook::new(
                 "RNB-002",
                 vec![
-                    RunbookStep::new("Collect crash dump", "Extract crash-dump.bin from device"),
+                    // 蓝图 66 WP-66.6.2：设备端写入 seam 未实施（前置=
+                    // panic 写入通道）——runbook 如实标注 host 侧就绪面。
+                    RunbookStep::new("Collect crash dump", "crash-dump 编码/解析 host 侧就绪；设备端写入 seam 未实施（蓝图 66 登记，前置=panic 写入通道）——host 侧以 crash-dump.bin 文件为输入"),
                     RunbookStep::new(
                         "Symbolize crash dump",
                         "Run: xtask symbolize crash-dump.bin agent.elf",

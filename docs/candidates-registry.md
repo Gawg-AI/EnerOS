@@ -133,3 +133,40 @@
 
 - E.10（model-security 撤销终态 adapter 舞步）→ **Done（蓝图 65 WP-65.1）**：不变式归位 keyring tombstone 单一持有；adapter 舞步删除；SIG 面逐 case 等价（执行卡对照表）；SIG12 保留为消费面对照锁。
 - REG-SM2 守卫半径（蓝图 64 遗留「布尔陷阱域外清零」失实）→ **Done（蓝图 65 WP-65.3）**：全仓 walk + EXEMPT_FILES 机制 + 本节台账。
+
+## G. 蓝图 66 登记（卷 66.1 执行中追加）
+
+### G.1 ASSEMBLY_TEST_KEY 家族站点补注（[02] WP-66.1.1 判据 5）
+
+- config-bundle 签名钥站点（`xtask/src/config_compile.rs` `resolve_signing_key`）已由
+  **「静默兜底测试钥」转「显式」**（2026-09-05，蓝图 66 WP-66.1.1，体检 C4）：
+  缺省路径 Err fail-closed；测试链经 `--accept-test-signing-key` 显式选择现行测试锚
+  （钥字节与 `product/config-bundle-pubkey.hex` 产物锚逐字节不变，冻结词形 [00] §3.4）。
+  与 evidence/47/WP-47.2.md 在册的 `ASSEMBLY_TEST_KEY`（dispatch 侧，待 47.3 注入链）
+  同族不同站；本站闭合仅关「静默」，钥本身归 47.3 家族裁决不变。
+
+### G.2 蓝图 66 F.3 候选收编结果（卷 66.1 执行完毕更新）
+
+- F.3 第 1 项（master_write_v2 入 lib）→ **Done（蓝图 66 WP-66.3.3）**：核体迁
+  `protocol-services/src/master_write.rs`，词形 golden 锁 + 8 host 单测（readback
+  三态 scripted 传输）；bin 薄包装净 −74 行。
+- F.3 第 3 项（bind_shared Result 化）→ **Done（蓝图 66 WP-66.5.3，形态修订）**：
+  实际落点 = `bind_shared_const`（静态标签 ≤64B 结构性必成，违反前置 panic；
+  旧 `bind_shared -> Option` 删除不留双入口）——Result 化形态经复查为更劣
+  （Err 臂仍死防御），执行卡 D 节无此争议、以 const+expect 收口。
+- F.3 第 4 项（TEL_INGEST 应答双源收拢）→ **Done（蓝图 66 WP-66.5.4）**：
+  `agent-sdk::tel_wire` 单源（照 ea_wire 先例），root/control-services/
+  dispatch_assembly 三侧换装，accepted ≤255 结构性事实 debug_assert 锁。
+- F.3 第 5 项（ai_request_topic 收拢）→ **Done（蓝图 66 WP-66.3.2）**：插件内化
+  `enqueue_ai_publish`（两分类 fail-closed），mqtt_io 存储②删除，QueueFull 变体
+  承载错误词形。
+- F.3 第 6 项（intent-request wire 三抄）→ **Done（蓝图 66 WP-66.3.1）**：
+  `INTENT_REQUEST_OPCODE` 常量 + `encode/decode_intent_request` 单源 + 引用锁。
+- F.3 第 2 项（Orchestration step 化）→ Open（维持，非蓝图 66 范围）。
+
+### G.3 蓝图 66 新登记独立项
+
+| 项 | 锚点 | 状态 | 说明 |
+|---|---|---|---|
+| crash-dump 设备端写入 seam | `crates/observability/crash-dump/`（编码/解析 host 侧就绪） | Blocked | 前置 = panic 写入通道（新机制开发，超 66.1 卷容）；四处运维面已诚实化（66.6.2） |
+| planner 集成测试模型面迁移 | `crates/ai/planner/tests/integration.rs`（ModelBuilder/BuiltModel 直构造两测） | Open | 迁移后 ModelBuilder/BuiltModel 可收缩 pub(crate)（蓝图 66 执行卡 D-8） |

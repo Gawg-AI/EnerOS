@@ -611,17 +611,21 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
                 }
             }
             if !ok {
-                return vec![0xFF];
+                return vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR];
             }
             // INGEST = 新采集周期全量替换（QEMU 实弹：累积多轮样本导致
             // 快照评估同点重复 Replay/跨周期 ClockNotMonotonic）。
             svc.clear();
             let accepted = svc.ingest(&samples);
+            // 蓝图 66 WP-66.5.4：accepted ≤255 为结构性事实（chunked
+            // 逻辑上限 1664B / 样本 58B → 单批 ≤28，tel_wire 模块 doc
+            // 登记核查结论）——无静默回绕风险，debug_assert 锁事实。
+            debug_assert!(accepted <= 255, "accepted 越单批结构性上限（≤28）");
             // WP-2（SPEC-GAP-CLOSURE）：批次边界落历史——磁盘 TSDB 适配器
             // 待 D-TSDB-2 架构裁决（块句柄现仅 svc-storage 持有），当前以
             // HistoryBuffer 内存环为缺省实现。
             svc.flush_history();
-            vec![0, accepted as u8]
+            eneros_agent_sdk::tel_wire::encode_ingest_ack(accepted as u8)
         }
         TEL_SNAPSHOT => match svc.snapshot(now_ms) {
             Ok(t) => {
@@ -640,10 +644,10 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
             // 单源 agent-sdk obs_batch_wire（布局校验失败 → 0xFF 拒绝语义不变）。
             match decode_obs_request(req) {
                 Ok((source_id, frames)) => svc.obs_ingest(source_id, frames, now_ms),
-                Err(_) => vec![0xFF],
+                Err(_) => vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR],
             }
         }
-        _ => vec![0xFF],
+        _ => vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR],
     }
 }
 

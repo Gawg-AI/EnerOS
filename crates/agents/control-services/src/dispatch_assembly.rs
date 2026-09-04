@@ -813,8 +813,14 @@ impl DispatchHandler {
         telemetry: &mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
     ) -> Option<eneros_safety_validator::TrustedTelemetry> {
         let mut transfer = eneros_agent_sdk::ChunkedClient::new(telemetry, 0, 5_000);
-        let resp = transfer.transfer("svc-telemetry", &[2u8]).ok()?; // TEL_SNAPSHOT
-        if resp.first() != Some(&0) || resp.len() != 1 + 144 {
+        // 蓝图 66 WP-66.5.4：请求 opcode/ack 字节单源 tel_wire。
+        let resp = transfer
+            .transfer(
+                "svc-telemetry",
+                &[eneros_agent_sdk::tel_wire::TEL_REQ_SNAPSHOT],
+            )
+            .ok()?; // TEL_SNAPSHOT
+        if resp.first() != Some(&eneros_agent_sdk::tel_wire::TEL_RESP_OK) || resp.len() != 1 + 144 {
             return None;
         }
         crate::telemetry::decode_trusted(&resp[1..])

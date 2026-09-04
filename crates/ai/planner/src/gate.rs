@@ -34,7 +34,7 @@ impl SolveGate {
     ///   incumbent 字段，保守 fail-closed）
     /// - Optimal → 残差 gate
     /// - Suboptimal → 策略 gap + 残差 + deadline gate
-    pub fn evaluate(
+    pub(crate) fn evaluate(
         &self,
         result: &SolveResult,
         built: &BuiltModel,

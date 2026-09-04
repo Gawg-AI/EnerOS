@@ -84,6 +84,15 @@ impl ControlExecState {
 // 使 protocol-abstract 的 AuthorizedWriter 可引用而不破坏依赖方向）
 // ============================================================================
 
+/// 意图请求帧 opcode（蓝图 66 WP-66.3.1 单源；帧 = [2][intent wire 49B][actor]）。
+///
+/// 值冻结（wire 冻结纪律）。语义源 = control-services `DISP_SUBMIT_INTENT`
+/// （历史命名常量，值恒等）——蓝图 66 起编码/解码面共同引用本常量，
+/// 引用锁测试（control-services dispatch_service 测试段）锁定两者相等；
+/// 帧编解码单源 = `protocol-abstract::write::{encode_intent_request,
+/// decode_intent_request}`。
+pub const INTENT_REQUEST_OPCODE: u8 = 2;
+
 /// 命令签发者身份类别。驱动策略（CTL-005）与审计。
 ///
 /// 原定义于 control-gateway::envelope；蓝图/24 D4 类型化接缝时随

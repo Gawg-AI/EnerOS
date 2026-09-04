@@ -1,9 +1,9 @@
 //! 协议抽象层错误类型.
 //!
 //! 定义 [`ProtocolError`]，覆盖点查找/适配器查找/地址匹配/读写/初始化/
-//! 启动/配置/不支持等 9 类错误场景。
+//! 启动/配置/不支持/背压等 10 类错误场景。
 
-/// 协议抽象层错误（9 变体）.
+/// 协议抽象层错误（10 变体）.
 ///
 /// 派生 `Debug`/`Clone`/`PartialEq`/`Eq`，便于在测试中精确匹配错误类型。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,4 +26,7 @@ pub enum ProtocolError {
     InvalidConfig,
     /// 不支持的操作（如对只读点写值，或协议不支持的功能）。
     Unsupported,
+    /// 出站队列满或载荷超限（背压分类；蓝图 66 WP-66.3.2 AI 请求
+    /// fail-closed 两类错误之一——另一类为未配置 `InvalidConfig`）。
+    QueueFull,
 }

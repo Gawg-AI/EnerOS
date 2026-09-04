@@ -748,3 +748,22 @@ mod tests {
         assert_eq!(KNOWN_KEYS, eneros_protocol_keys::SV);
     }
 }
+
+#[cfg(test)]
+mod required_keys_face_lock {
+    /// 蓝图 66 WP-66.4.2（C9 插件运行面第三面锁）：插件运行面实际必填
+    /// 检查键集（测试内**字面镜像**，变异敏感——改字面即红）== 叶
+    /// `eneros_protocol_keys::REQUIRED_SV`。三方锁链：叶内容锁（叶内）→ 本
+    /// 字面镜像锁（运行面）→ config-bundle 行为表锁（编译面）。
+    /// 维护纪律：validate_config 的 app_id 必填检查（config_u64…ok_or）增删必填检查时必须同步本字面与叶表
+    /// （protocol-keys/src/lib.rs），三面任一失配即红。
+    #[test]
+    fn start_required_keys_locked_to_leaf_table() {
+        const START_REQUIRED: &[&str] = &["app_id"];
+        assert_eq!(
+            START_REQUIRED,
+            eneros_protocol_keys::REQUIRED_SV,
+            "插件运行面必填检查集漂移——须同步叶表与本字面（蓝图 66 C9）"
+        );
+    }
+}

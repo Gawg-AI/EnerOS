@@ -644,3 +644,95 @@ fn append_failure_terminates_journal_and_resubmission_not_arbiter_locked() {
     );
     assert_eq!(*delivered.borrow(), 0, "Failed 重放零投递");
 }
+
+// ---- 蓝图 66 WP-66.2.2：过渡 proof keyed MAC（v2）正负例 ----
+
+/// 正例（发证成功 + Gateway 侧可验绑定）：正确信封密钥 → typed 链发证并
+/// Committed；持钥 Gateway 侧以同钥重算 HMAC-SHA256(
+/// "eneros.transition-proof.v2" ‖ plan_wire_sha256) 可复现发证侧派生
+/// （keyed 单源确定性），错钥重算必不匹配（任何错钥 Gateway 必拒），
+/// 且 MAC ≠ 裸 plan_sha（v1「无钥可伪造」形态已关闭）。
+/// 注：proof_digest 的生产读者仍为 0（ADR-051 窗口内登记事实）——
+/// Gateway 在线验证随 certifier 接电自然获得；本测锁「可验性」的
+/// 密钥绑定性质本身。
+#[test]
+fn transition_proof_v2_keyed_mac_issuance_and_gateway_binding() {
+    let (ingress, devices) = device_side();
+    let delivered = Rc::new(RefCell::new(0u64));
+    let channel = CountingChannel {
+        ingress,
+        devices,
+        delivered: delivered.clone(),
+    };
+    let mut engine = engine_with(Box::new(channel));
+
+    let p = proposal(50.0);
+    let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
+    // 正例：正确 key → 发证成功（过渡证书被 compile 绑定校验接受 → Committed）。
+    let r = engine
+        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect("正确钥发证成功");
+    assert!(r.final_state.is_committed(), "receipt: {:?}", r.final_state);
+
+    // Gateway 侧重算（持钥验证面）：发证侧 digest（engine 观测面）==
+    // 同钥重算；错钥必不匹配；≠ 裸 plan_sha。
+    let plan_sha = eneros_decision_contract::CandidatePlan::plan_wire_sha256(&c);
+    let issued = engine
+        .last_transition_proof_digest()
+        .expect("发证后必有过渡 proof digest（观测面）");
+    let issued_form = gateway_recompute(KEY, &plan_sha);
+    assert_eq!(
+        issued, issued_form,
+        "Gateway 持钥重算必须逐字节等于发证侧 digest"
+    );
+    let wrong = gateway_recompute(b"typed-chain-wrong-key", &plan_sha);
+    assert_ne!(issued, wrong, "错钥重算必不匹配（验签面区分度）");
+    assert_ne!(issued, plan_sha, "MAC ≠ 裸 plan_sha（v1 可伪造形态已关闭）");
+}
+
+/// 负例（错 key → 拒，词形登记）：engine 无信封密钥（装配面
+/// CHAIN-KEY-MISSING 形态）→ 过渡认证 fail-closed 拒绝，错误词形
+/// `transition proof key missing`（keyed 原语契约：生产调用方必须拒绝空 key）。
+#[test]
+fn transition_proof_v2_missing_key_rejected_fail_closed() {
+    let (ingress, devices) = device_side();
+    let delivered = Rc::new(RefCell::new(0u64));
+    let channel = CountingChannel {
+        ingress,
+        devices,
+        delivered: delivered.clone(),
+    };
+    let config = support::test_config(support::TestConfigSeed {
+        chain: build_chain(),
+        key: Vec::new(), // 错 key 形态一：缺钥（装配面 fetch 失败的 None 注入面）
+        profile: test_profile(),
+        issuer_service: ISSUER,
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: now_ms,
+        intent_log: Box::new(eneros_control_dispatch::InMemoryIntentStore::new(64)),
+        delivery: Box::new(channel),
+    });
+    let mut engine = DispatchEngine::new(DispatchConfig {
+        audit: Some(DecisionAudit::new([0x40; 32])),
+        ..config
+    });
+
+    let p = proposal(50.0);
+    let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
+    let err = engine
+        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap_err();
+    assert!(
+        matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("transition proof key missing")),
+        "缺钥必须 fail-closed 拒绝且词形匹配，得：{err:?}"
+    );
+    assert_eq!(*delivered.borrow(), 0, "拒发证零投递");
+}
+
+/// Gateway 侧重算：HMAC-SHA256("eneros.transition-proof.v2" ‖ plan_sha)。
+fn gateway_recompute(key: &[u8], plan_sha: &[u8]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(32 + plan_sha.len());
+    input.extend_from_slice(b"eneros.transition-proof.v2");
+    input.extend_from_slice(plan_sha);
+    eneros_decision_contract::keyed::hmac_sha256(key, &input)
+}

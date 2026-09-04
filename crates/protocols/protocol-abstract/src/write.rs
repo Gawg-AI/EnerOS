@@ -198,6 +198,33 @@ pub fn decode_intent(buf: &[u8]) -> Option<PointWriteIntent> {
     })
 }
 
+/// 意图请求帧壳（蓝图 66 WP-66.3.1 单源；历史三处手拼收编：
+/// protocol-services mqtt_io 编码侧 + control-services dispatch_service
+/// 测试 helper）。字节面冻结（[00] §3.4）：
+/// `[INTENT_REQUEST_OPCODE=2][intent wire 49B][actor = ActorKind::Ai as u8]`。
+pub fn encode_intent_request(intent: &PointWriteIntent) -> alloc::vec::Vec<u8> {
+    use eneros_telemetry_model::command::{ActorKind, INTENT_REQUEST_OPCODE};
+    let mut out = alloc::vec::Vec::with_capacity(1 + WRITE_INTENT_WIRE_LEN + 1);
+    out.push(INTENT_REQUEST_OPCODE);
+    out.extend_from_slice(&encode_intent(intent));
+    out.push(ActorKind::Ai as u8);
+    out
+}
+
+/// 解码意图请求帧（opcode/长度/actor 语义校验；非法 → None，fail-closed）。
+///
+/// 返回 `(intent, actor byte)`——actor 语义裁决（Ai 唯一签发面）归调用方
+/// （dispatch 侧错误分型词形保持逐字节不变：unknown opcode / intent
+/// request length / bad intent wire / actor must be Ai）。
+pub fn decode_intent_request(buf: &[u8]) -> Option<(PointWriteIntent, u8)> {
+    use eneros_telemetry_model::command::INTENT_REQUEST_OPCODE;
+    if buf.len() != 1 + WRITE_INTENT_WIRE_LEN + 1 || buf[0] != INTENT_REQUEST_OPCODE {
+        return None;
+    }
+    let intent = decode_intent(&buf[1..1 + WRITE_INTENT_WIRE_LEN])?;
+    Some((intent, buf[1 + WRITE_INTENT_WIRE_LEN]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +245,74 @@ mod tests {
         assert_eq!(intent.value, PointValue::Float(2.5));
         assert_eq!(intent.sequence, 7);
         assert_eq!(intent.issued_ms, 1234);
+    }
+
+    /// 蓝图 66 WP-66.3.1 golden（R-66.d 词形锁先行）：请求帧字节面 =
+    /// 旧手拼 `[2] ++ intent wire ++ [2]`（改造前布局逐字节固化；
+    /// 51B 定长；mutation 敏感——任一字节漂移即红）。
+    #[test]
+    fn intent_request_frame_golden_bytes() {
+        let intent = PointWriteIntent::new(
+            "m",
+            3,
+            PointId::from(10u32),
+            PointValue::Float(2.5),
+            7,
+            1234,
+        );
+        let frame = encode_intent_request(&intent);
+        assert_eq!(frame.len(), 1 + WRITE_INTENT_WIRE_LEN + 1);
+        let expected_hex = concat!(
+            "02",                             // opcode = INTENT_REQUEST_OPCODE（值冻结）
+            "6d",                             // protocol_id "m"
+            "000000000000000000000000000000", // 16B 填充余量 15B
+            "03000000",                       // device 3 LE
+            "0a000000",                       // point 10 LE
+            "00",                             // tag Float
+            "0000000000000440",               // 2.5 f64 LE
+            "0700000000000000",               // seq 7 LE
+            "d204000000000000",               // issued_ms 1234 LE
+            "02",                             // actor = ActorKind::Ai as u8
+        );
+        let mut got = alloc::string::String::new();
+        for b in &frame {
+            use core::fmt::Write as _;
+            let _ = write!(got, "{b:02x}");
+        }
+        assert_eq!(got, expected_hex);
+    }
+
+    /// 蓝图 66 WP-66.3.1：帧壳往返（encode/decode 单源互逆）。
+    #[test]
+    fn intent_request_roundtrip() {
+        use eneros_telemetry_model::command::ActorKind;
+        let intent =
+            PointWriteIntent::new("mqtt", 1, PointId::from(9u32), PointValue::Int(-3), 11, 77);
+        let frame = encode_intent_request(&intent);
+        let (back, actor) = decode_intent_request(&frame).expect("decode");
+        assert_eq!(back.protocol_id, "mqtt");
+        assert_eq!(back.device_id, 1);
+        assert_eq!(back.point_id, PointId::from(9u32));
+        assert_eq!(back.value, PointValue::Int(-3));
+        assert_eq!(back.sequence, 11);
+        assert_eq!(back.issued_ms, 77);
+        assert_eq!(actor, ActorKind::Ai as u8);
+    }
+
+    /// 蓝图 66 WP-66.3.1：解码负例（opcode 漂移 / 短帧 / 长帧）。
+    #[test]
+    fn intent_request_decode_rejects_malformed() {
+        let intent =
+            PointWriteIntent::new("m", 1, PointId::from(1u32), PointValue::Bool(true), 1, 1);
+        let mut frame = encode_intent_request(&intent);
+        assert!(decode_intent_request(&frame).is_some());
+        frame[0] = 3; // opcode 漂移
+        assert!(decode_intent_request(&frame).is_none());
+        assert!(decode_intent_request(&frame[..frame.len() - 1]).is_none());
+        let mut long = frame;
+        long[0] = 2;
+        long.push(0);
+        assert!(decode_intent_request(&long).is_none());
     }
 
     /// 47 WP-47.1：意图线码往返（Float/Int/Bool 三值域）。

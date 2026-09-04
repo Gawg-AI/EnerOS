@@ -257,7 +257,7 @@ use std::net::TcpStream;
 | 文件系统 | littlefs2 | 能源特有点表存储接口封装 |
 | TCP/IP 栈 | smoltcp（no_std） | 无 |
 | DDS 总线 | —（已撤线：ADR-021 out-of-v1.0，Agent 总线由 MQTT/IPC 承担） | 无 |
-| MILP/LP Solver | HiGHS **预留未接线**（`highs-ffi` feature 零激活；素材在库——build.rs + third_party/highs-1.7.2；AI-004 具名落地前保持停用；现役=静态启发式后端） | Rust FFI 封装 + 能源建模层（在库未接） |
+| MILP/LP Solver | HiGHS（`highs-ffi` 由 planner/solver-milp 等无条件声明，host 测试图恒激活；**target release 闭包现役=静态启发式后端，HiGHS 未经 target 链实弹**；素材在库——build.rs + third_party/highs-1.7.2） | Rust FFI 封装 + 能源建模层（在库，host 侧激活） |
 | LLM 推理 | 本地 llama.cpp spike=NO-GO（`docs/ai/local-inference-spike.md`，与 L2 路径行同口径）；`llama-cpp` feature 预留（默认关） | Rust 封装层（未接线） |
 | 密码学 | Ed25519/SHA-256/rustls(P-256)（产品线）；SM2/SM3/SM4 手卷为实验性（无硬件加速宣称，D4） | 协议层适配 |
 
@@ -519,7 +519,7 @@ use std::net::TcpStream;
 | Filesystem | littlefs2 | Energy-specific point table storage API |
 | TCP/IP stack | smoltcp (no_std) | None |
 | DDS bus | — (withdrawn: ADR-021 out-of-v1.0; agent bus carried by MQTT/IPC) | None |
-| MILP/LP Solver | HiGHS **reserved, unwired** (`highs-ffi` feature never activated; materials in-tree — build.rs + third_party/highs-1.7.2; stays disabled until AI-004 lands; live decision = static heuristic backend) | Rust FFI + energy modeling layer (in-tree, unwired) |
+| MILP/LP Solver | HiGHS (`highs-ffi` unconditionally declared by planner/solver-milp et al., always active in the host test graph; **target release closure live backend = static heuristic, HiGHS never exercised through the target chain**; materials in-tree — build.rs + third_party/highs-1.7.2) | Rust FFI + energy modeling layer (in-tree, host-side active) |
 | LLM inference | local llama.cpp spike = NO-GO (`docs/ai/local-inference-spike.md`, same verdict as the L2-path row); `llama-cpp` feature reserved (off by default) | Rust wrapper layer (unwired) |
 | Cryptography | Ed25519/SHA-256/rustls(P-256) (product line); SM2/SM3/SM4 hand-rolled, experimental — no hardware-acceleration claims (D4) | Protocol adaptation |
 

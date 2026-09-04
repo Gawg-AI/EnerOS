@@ -20,6 +20,9 @@ pub enum GateError {
     VersionGateInconsistent(String),
     /// crates/agents + crates/ai 存在无 cfg 保护的 pub struct Mock（蓝图/20 R2-1）。
     MockGateViolation(String),
+    /// `config compile` 调用块缺显式签名钥来源（蓝图 66 WP-66.1.1：
+    /// 须带 `--sign-key-hex` 或 `--accept-test-signing-key`）。
+    SignKeyDisciplineViolation(String),
     /// A command could not be executed (e.g. `cargo` not in PATH).
     IoError(String),
 }
@@ -37,6 +40,9 @@ impl fmt::Display for GateError {
                 write!(f, "VersionGateInconsistent: {}", msg)
             }
             GateError::MockGateViolation(msg) => write!(f, "MockGateViolation: {}", msg),
+            GateError::SignKeyDisciplineViolation(msg) => {
+                write!(f, "SignKeyDisciplineViolation: {}", msg)
+            }
             GateError::IoError(msg) => write!(f, "IoError: {}", msg),
         }
     }
