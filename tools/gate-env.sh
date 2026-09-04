@@ -121,8 +121,9 @@ gate_image_raw() {
 
 # build 前导组合（清场 + 钥导出 + compile + image 一步）。
 # 用法：gate_build_prelude <with-key|no-key> <build 日志目录> [profile]
-# 标准脚本一行调用；compile 与 image 之间需插重链接步骤的脚本
-# （run62-vol3/run63-vol1/run63-vol2/run64-vol1）改用分相调用：
+# 一行调用仅 run62-vol1 使用；其余脚本按需分相调用（compile 与 image
+# 之间需插重链接步骤的脚本 run62-vol3/run63-vol1/run63-vol2/run64-vol1，
+# 及负例脚本 no-key 直调 compile/image 两函数不调钥导出）：
 #   gate_cleanup_env + gate_export_signing_key + gate_compile_config
 #   + [sel4 重链接] + gate_image_raw。
 gate_build_prelude() {

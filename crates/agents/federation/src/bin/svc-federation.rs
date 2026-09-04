@@ -84,9 +84,11 @@ struct Args {
     run_once: bool,
 }
 
-/// hex 解码（WP-64.3.4：单源 eneros_hex::decode_vec；坏 hex → Err——
-/// 原实现在此函数内直接退进程，改为 Err 值由 CLI 边界统一处置，行为
-/// 兼容（登记于执行卡 §WP-64.3.4））。
+/// hex 解码（WP-64.3.4：单源 eneros_hex::decode_vec）。
+/// 坏 hex → Err 值，由 [`hex_decode_or_exit`] 在 CLI 边界统一
+/// eprintln + exit(2)（Err 全部消费方仍退进程——**可观察行为与原
+/// 内联实现零变化**；64.3 复查订正登记见 docs/candidates-registry.md
+/// E 节，原"登记于执行卡 §WP-64.3.4"指向不周年）。
 fn decode_hex_arg(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
     eneros_hex::decode_vec(s).ok_or_else(|| alloc::format!("bad hex: {s}"))

@@ -1002,8 +1002,11 @@ fn perf_1000_resources_96_steps() {
 /// WP-64.3.1.5：seal 发放面 feature 全仓唯一性 walk（读不到 = panic
 /// 语义保持——`unwrap_or_default` 会把"读不到"变"恒通过"，假阳性门）。
 /// 返回违规 crate 清单；`self_manifest` 豁免（正面断言单列）。
+/// 匹配面：Cargo.toml 非注释行中的引号字面 `"certifier"`——覆盖
+/// `features = ["certifier"]`/多元素数组/紧凑写法等全部激活形态
+/// （裸 `certifier = []` 声明不算激活，不误报）。
 fn certifier_feature_offenders(
-    crates_root: &std::path::Path,
+    roots: &[&std::path::Path],
     self_manifest: &std::path::Path,
     min_checked: usize,
 ) -> Vec<std::path::PathBuf> {
@@ -1027,7 +1030,10 @@ fn certifier_feature_offenders(
                 let src = std::fs::read_to_string(&path)
                     .unwrap_or_else(|e| panic!("rg 门必须读到 {path:?}: {e}"));
                 *checked += 1;
-                if src.contains("features = [\"certifier\"]") {
+                if src.lines().any(|l| {
+                    let t = l.trim();
+                    !t.starts_with('#') && t.contains("\"certifier\"")
+                }) {
                     offenders.push(path);
                 }
             }
@@ -1035,7 +1041,9 @@ fn certifier_feature_offenders(
     }
     let mut offenders = Vec::new();
     let mut checked = 0usize;
-    walk(crates_root, self_manifest, &mut offenders, &mut checked);
+    for root in roots {
+        walk(root, self_manifest, &mut offenders, &mut checked);
+    }
     assert!(
         checked >= min_checked,
         "walk 只覆盖了 {checked} 个 crate（下限 {min_checked}）——遍历失效假绿防护"
@@ -1061,7 +1069,8 @@ fn seal_gate_walk_rejects_fourth_crate() {
     }
     // 干净树：零违规。
     assert!(
-        certifier_feature_offenders(&crates, &crates.join("ai/certifier/Cargo.toml"), 3).is_empty()
+        certifier_feature_offenders(&[&crates], &crates.join("ai/certifier/Cargo.toml"), 3)
+            .is_empty()
     );
     // 第四 crate 启用 feature → 门红。
     std::fs::write(
@@ -1070,7 +1079,7 @@ fn seal_gate_walk_rejects_fourth_crate() {
     )
     .expect("temp toml");
     let offenders =
-        certifier_feature_offenders(&crates, &crates.join("ai/certifier/Cargo.toml"), 3);
+        certifier_feature_offenders(&[&crates], &crates.join("ai/certifier/Cargo.toml"), 3);
     assert_eq!(
         offenders.len(),
         1,
@@ -1095,11 +1104,11 @@ fn seal_issuance_feature_rg_gate() {
         .expect("workspace root")
         .to_path_buf();
     let offenders = certifier_feature_offenders(
-        &workspace.join("crates"),
+        &[&workspace.join("crates"), &workspace.join("xtask")],
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("Cargo.toml")
             .as_path(),
-        100,
+        101,
     );
     assert!(
         offenders.is_empty(),

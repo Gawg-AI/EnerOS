@@ -31,6 +31,12 @@ impl ModelSignatureVerifier {
     /// 三门顺序由 keyring [`SignerKeyring::verify_authenticated`] 唯一
     /// 裁决：`Ok(())` = 签名有效且来源可信；篡改/伪造 =
     /// `Err(SigMismatch)`（63.3 布尔陷阱收口保持）。
+    ///
+    /// 身份语义（64.3 复查登记）：来源判定 = `SM3(未压缩钥) 前 8B`
+    /// 指纹查表（keyring `fingerprint`），且验签用**登记钥**而非信封
+    /// 内嵌钥——keyring 化前为全钥等值 `contains`。碰撞/替换方向均
+    /// fail-closed：指纹 2^-64 撞挂他条目 → 用他钥验签必 `BadSignature`；
+    /// 未登记即吊销语义不变。
     pub fn verify(&self, model_data: &[u8], sig: &ModelSig) -> Result<(), VerifyError> {
         let key_id = fingerprint(&sig.signer_pubkey);
         let sig_bytes: &[u8; 64] = &sig.signature.to_bytes();
@@ -46,9 +52,19 @@ impl ModelSignatureVerifier {
     }
 
     /// 添加可信公钥（同 id 覆盖 = 去重语义由 keyring `register` 保持）.
+    ///
+    /// 吊销终态保持（keyring 化前语义：revoked 列表只增不减、add 不洗白
+    /// ——`revoke_key` 后再 `add_trusted_key` 的 verify 仍
+    /// [`VerifyError::KeyRevoked`]，SIG12 锁）。keyring `register` 本身
+    /// 会重置撤销位（其自测 `reregister_clears_revocation_and_overwrites`
+    /// 锁定的登记语义，不改），故此处显式恢复撤销位.
     pub fn add_trusted_key(&mut self, key: Sm2PublicKey) {
         let id = fingerprint(&key);
+        let was_revoked = self.keyring.is_revoked(id);
         self.keyring.register(id, &key);
+        if was_revoked {
+            self.keyring.revoke(id);
+        }
     }
 
     /// 吊销公钥（先登记后撤销——未登记过的 key 也保持"吊销优先于可信"
@@ -187,6 +203,35 @@ mod tests {
             verifier.verify(data, &sig),
             Err(VerifyError::KeyRevoked),
             "未登记即吊销的 key 不得降级为 KeyNotTrusted"
+        );
+    }
+
+    /// SIG12（64 复查三轮）：吊销终态——revoke 后 re-add 不得复活.
+    ///
+    /// keyring 化前语义：revoked 列表只增不减，`add_trusted_key` 不触碰
+    /// 吊销门（verify ①吊销 ②可信 ③验签）——revoke → add → verify 恒
+    /// `Err(KeyRevoked)`。keyring `register` 会重置撤销位，若 adapter 不
+    /// 恢复即 fail-open（真签名放行）.
+    #[test]
+    fn sig12_readd_after_revoke_stays_revoked() {
+        let data = b"model-weights-blob-v1";
+        let (kp, sig) = make_signed_model(data);
+        let mut verifier = ModelSignatureVerifier::new();
+        verifier.revoke_key(&kp.public_key);
+        verifier.add_trusted_key(kp.public_key);
+        assert_eq!(
+            verifier.verify(data, &sig),
+            Err(VerifyError::KeyRevoked),
+            "吊销是终态：re-add 不得洗白已吊销钥"
+        );
+        // 再 revoke 仍终态；换数据/换签名同样拒绝（门序无关验签结果）.
+        verifier.add_trusted_key(kp.public_key);
+        verifier.revoke_key(&kp.public_key);
+        verifier.add_trusted_key(kp.public_key);
+        assert_eq!(
+            verifier.verify(data, &sig),
+            Err(VerifyError::KeyRevoked),
+            "多次 revoke/re-add 循环后吊销仍终态"
         );
     }
 }

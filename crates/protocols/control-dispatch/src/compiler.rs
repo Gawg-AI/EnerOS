@@ -188,8 +188,6 @@ pub enum CompileReject {
     UnitIncompatible { asset_id: u64 },
     /// 值越合同域（指名 asset+step；不钳位——compiler 不修改计划）。
     ValueOutOfRange { asset_id: u64, step_index: u32 },
-    /// (asset, step) 重复 assignment。
-    DuplicateStep { asset_id: u64, step_index: u32 },
     /// 命令有效期不足（过短批拒绝）。
     WindowTooShort,
     /// 单资产依赖链超单批上限（链完整性不可让——fail-closed）。
@@ -214,13 +212,6 @@ impl core::fmt::Display for CompileReject {
             } => write!(
                 f,
                 "value out of contract range: asset {asset_id} step {step_index}"
-            ),
-            Self::DuplicateStep {
-                asset_id,
-                step_index,
-            } => write!(
-                f,
-                "duplicate assignment: asset {asset_id} step {step_index}"
             ),
             Self::WindowTooShort => write!(f, "intent window below policy minimum"),
             Self::ChainExceedsBatch { asset_id, len } => {

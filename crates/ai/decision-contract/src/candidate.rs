@@ -309,6 +309,9 @@ impl CandidatePlan {
                 return Err(ContractError::OutOfRange("assignment.step_index"));
             }
         }
+        if ttl_ms == 0 {
+            return Err(ContractError::OutOfRange("ttl_ms"));
+        }
         if step_count == 0 {
             return Err(ContractError::OutOfRange("step_count"));
         }
@@ -332,9 +335,6 @@ impl CandidatePlan {
             if steps.len() != step_count as usize {
                 return Err(ContractError::Malformed("assignment_trajectory_gap"));
             }
-        }
-        if ttl_ms == 0 {
-            return Err(ContractError::OutOfRange("ttl_ms"));
         }
         Ok(Self {
             id,
@@ -711,6 +711,14 @@ mod tests {
         assert_eq!(c, Err(ContractError::MissingField("input_digest")));
         // ttl=0（只重声明 validity 组）。
         let c = neg(*p.id(), p.snapshot_id()).validity(0, 0).build();
+        assert_eq!(c, Err(ContractError::OutOfRange("ttl_ms")));
+        // ttl=0 ∧ step_count=0 双非法：错误词序与迁移前实现一致
+        // （ttl_ms 先报；step_count 检查必须在轨迹不变量之前保持可达
+        // ——64.3 复查回归锁）。
+        let c = neg(*p.id(), p.snapshot_id())
+            .horizons(1_000, 1_000, 0)
+            .validity(2_000, 0)
+            .build();
         assert_eq!(c, Err(ContractError::OutOfRange("ttl_ms")));
     }
 
