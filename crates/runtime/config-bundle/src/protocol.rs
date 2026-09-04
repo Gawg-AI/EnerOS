@@ -2,7 +2,10 @@
 //!
 //! 键集**单一事实源 = `eneros-protocol-keys`** 叶 crate（蓝图 64 卷 64.1
 //! 倒置 + 蓝图 65 卷 65.1 WP-65.4：known/required 双表全部委托——本模块
-//! = 委托 + cj188 显式边界）。11 个协议的 ACTIVE 配置源（48 卷起）：
+//! = 委托 + cj188 显式边界）。`PROTOCOL_CONFIG_IDS` 与叶命名空间的锁
+//! 关系 = 测试锁 `config_ids_are_subset_of_leaf_namespace`（叶
+//! `by_config_id` 为 match 无 id 列表可派生 + cj188 例外使全集派生失真
+//! ——执行卡 D-4）。11 个协议的 ACTIVE 配置源（48 卷起）：
 //! `configs/protocol-<proto>.toml` —— 扁键值表（peer/unit-id/IOA 公共
 //! 地址/topic 前缀/超时/重试）；编译面产出 canonical KV 负载（进签名
 //! RuntimeConfigBundle），svc-* 经 svc-config `GET_ENTRY("protocol-<proto>")`

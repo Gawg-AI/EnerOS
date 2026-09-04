@@ -1,8 +1,8 @@
 //! 模型签名验证（v0.111.0，D7：复用 eneros-crypto 国密实现，禁止重复造轮子）.
 //!
 //! 验证编排：算法门（D6）→ SM3 哈希比对 → SM2 验签。签名消息为模型字节的
-//! SM3 哈希（32 字节），与蓝图 `sm2_verify(&signature, &hash, &ca_pubkey)`
-//! 语义一致。
+//! SM3 哈希（32 字节）；验签原语 = `eneros_signer_keyring::verify_signature`
+//! （蓝图 65 WP-65.3 自裸 `sm2_verify` 布尔面迁移），与蓝图验签语义一致。
 
 use eneros_crypto::{sm3_hash, Sm2PublicKey, Sm2Signature};
 
@@ -14,8 +14,8 @@ use crate::OtaError;
 /// 1. `info.signature.algorithm != Sm2Sm3` → `Err(UnsupportedAlgorithm)`（D6）
 /// 2. `sm3_hash(data) != info.hash` → `Err(HashMismatch)`
 /// 3. 签名值长度 != 64 → `Err(SignatureInvalid)`，否则 `Sm2Signature::from_bytes` 解码
-/// 4. `sm2_verify(&hash, &sig, pubkey)` → false 或内部错误 ⇒ `Err(SignatureInvalid)`，
-///    true ⇒ `Ok(())`
+/// 4. `verify_signature(&hash, &sig, pubkey)` → `Err(_)` ⇒ `Err(SignatureInvalid)`，
+///    `Ok(())` ⇒ `Ok(())`
 pub fn verify_model_signature(
     data: &[u8],
     info: &ModelInfo,

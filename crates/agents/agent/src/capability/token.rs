@@ -10,7 +10,8 @@
 //! - D1: `build_and_sign` 接受 `now: u64` + `rng: &mut CsRng`（no_std 无系统时钟/RNG）
 //! - D2: token_id 由 `rng.fill_bytes()` 生成（no_std 无 `crate::rng::next_u64()`）
 //! - D3: SM2 签名使用 `sm2_sign(data, &sk, &pk, rng)`（需公钥计算 Z 值 + RNG）
-//! - D4: 验签使用 `sm2_verify(data, &sig, &pk)`（`sm2_verify_hash` 不存在）
+//! - D4: 验签使用类型化原语 `eneros_signer_keyring::verify_signature(data, &sig, &pk)`
+//!   （蓝图 65 WP-65.3 自裸 `sm2_verify` 布尔面迁移）
 //! - D5: `signature: [u8; 64]`（SM2 固定 64 字节 r‖s，非 `Vec<u8>`）
 //! - D6: 手动 `PermissionSet(u32)` bitflags（不依赖 `bitflags` crate）
 //! - D7: 自定义 `SocketAddr { ipv4: u32, port: u16 }`（no_std 无 `std::net::SocketAddr`）
