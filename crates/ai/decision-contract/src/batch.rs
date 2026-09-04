@@ -423,9 +423,11 @@ mod tests {
         .unwrap()
     }
 
+    /// Parts 基座（蓝图 65 复查：4 处 12 字段字面重复收敛——struct
+    /// update 只重声明所变字段，对齐 candidate.rs `neg()` 先例）。
     #[cfg(feature = "transition-certifier")]
-    fn intent() -> CommandIntent {
-        crate::intent::CommandIntent::from_parts(crate::intent::CommandIntentParts {
+    fn intent_base() -> crate::intent::CommandIntentParts {
+        crate::intent::CommandIntentParts {
             intent_id: IntentId([3u8; 16]),
             plan_id: PlanId([1u8; 16]),
             plan_sha256: [0xAB; 32],
@@ -438,8 +440,12 @@ mod tests {
             valid_until_ms: 60_000,
             precondition: Precondition::None,
             compensation: CompensationHint::None,
-        })
-        .unwrap()
+        }
+    }
+
+    #[cfg(feature = "transition-certifier")]
+    fn intent() -> CommandIntent {
+        CommandIntent::from_parts(intent_base()).unwrap()
     }
 
     /// 已删免检构造门的测试调用点显式化形态（蓝图 65 WP-65.2.3
@@ -472,20 +478,9 @@ mod tests {
     fn batch_scope_and_binding_negatives() {
         let c = cert();
         // 意图绑定别的 plan digest → 拒绝。
-        let i = intent();
-        let bad = crate::intent::CommandIntent::from_parts(crate::intent::CommandIntentParts {
-            intent_id: *i.intent_id(),
-            plan_id: *i.plan_id(),
+        let bad = CommandIntent::from_parts(crate::intent::CommandIntentParts {
             plan_sha256: [0xEE; 32],
-            asset_id: 1,
-            device_id: 1,
-            point_id: 10,
-            power_kw: -50.0,
-            unit_code: 6,
-            valid_from_ms: 1_000,
-            valid_until_ms: 60_000,
-            precondition: Precondition::None,
-            compensation: CompensationHint::None,
+            ..intent_base()
         })
         .unwrap();
         assert_eq!(
@@ -493,22 +488,11 @@ mod tests {
             Err(ContractError::CertificatePlanMismatch)
         );
         // 意图指向注册表之外的绑定（点/单位不符）。
-        let wrong_point =
-            crate::intent::CommandIntent::from_parts(crate::intent::CommandIntentParts {
-                intent_id: *i.intent_id(),
-                plan_id: *i.plan_id(),
-                plan_sha256: [0xAB; 32],
-                asset_id: 1,
-                device_id: 1,
-                point_id: 99,
-                power_kw: -50.0,
-                unit_code: 6,
-                valid_from_ms: 1_000,
-                valid_until_ms: 60_000,
-                precondition: Precondition::None,
-                compensation: CompensationHint::None,
-            })
-            .unwrap();
+        let wrong_point = CommandIntent::from_parts(crate::intent::CommandIntentParts {
+            point_id: 99,
+            ..intent_base()
+        })
+        .unwrap();
         assert_eq!(
             compile_default(&c, vec![wrong_point], 2_000),
             Err(ContractError::ScopeMismatch("binding"))
@@ -529,34 +513,12 @@ mod tests {
 
     #[cfg(feature = "transition-certifier")]
     fn two_intents() -> (CommandIntent, CommandIntent) {
-        let a = crate::intent::CommandIntent::from_parts(crate::intent::CommandIntentParts {
-            intent_id: IntentId([3u8; 16]),
-            plan_id: PlanId([1u8; 16]),
-            plan_sha256: [0xAB; 32],
-            asset_id: 1,
-            device_id: 1,
-            point_id: 10,
-            power_kw: -50.0,
-            unit_code: 6,
-            valid_from_ms: 1_000,
-            valid_until_ms: 60_000,
-            precondition: Precondition::None,
-            compensation: CompensationHint::None,
-        })
-        .unwrap();
-        let b = crate::intent::CommandIntent::from_parts(crate::intent::CommandIntentParts {
+        let a = CommandIntent::from_parts(intent_base()).unwrap();
+        let b = CommandIntent::from_parts(crate::intent::CommandIntentParts {
             intent_id: IntentId([4u8; 16]),
-            plan_id: PlanId([1u8; 16]),
-            plan_sha256: [0xAB; 32],
-            asset_id: 1,
-            device_id: 1,
-            point_id: 10,
             power_kw: 30.0,
-            unit_code: 6,
             valid_from_ms: 2_000,
-            valid_until_ms: 60_000,
-            precondition: Precondition::None,
-            compensation: CompensationHint::None,
+            ..intent_base()
         })
         .unwrap();
         (a, b)
