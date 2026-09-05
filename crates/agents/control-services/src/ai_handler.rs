@@ -442,8 +442,11 @@ pub mod target {
     }
 
     /// ai-peer 配置拉取（svc-config CFG1；全必配 fail-closed；词形保留）。
-    pub fn fetch_ai_peer_config(client: &mut Sel4IpcClient) -> Result<AiPeerConfig, &'static str> {
-        let payload = config_client::get_entry(client, "ai-peer", 0, 5_000)
+    /// 蓝图 67 WP-67.2.3：传输面收 `ChunkedEndpoint`（epoch 单点纪律）。
+    pub fn fetch_ai_peer_config(
+        client: &mut eneros_agent_sdk::endpoint::ChunkedEndpoint<Sel4IpcClient>,
+    ) -> Result<AiPeerConfig, &'static str> {
+        let payload = config_client::get_entry(client, "ai-peer")
             .map_err(|_| "config-eipc-transfer-failed")?;
         if payload.starts_with(b"ERR:") {
             // svc-config 结构化拒绝——透传原因串（诊断面）。

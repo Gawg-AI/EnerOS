@@ -381,6 +381,35 @@ impl Solver for HighsSolver {
         Ok(())
     }
 
+    // 蓝图 67 WP-67.4：类型化数值注入——绕过 stringly classify 通道
+    // （整数 0/1 被分类为 Bool 发给 double 选项 → ParamSetFailed，
+    // [01] §2.4 实弹坐实）。直调 double 选项口，类型错配结构性消除；
+    // 错误路径同 set_param（status<0 → ParamSetFailed + status=Error）。
+
+    fn set_time_limit_s(&mut self, limit_s: f64) -> Result<(), SolverError> {
+        let c_key = alloc::format!("{}\0", "time_limit");
+        // SAFETY: handle 非 null，c_key 以 NUL 结尾。
+        let status =
+            unsafe { highs_ffi::Highs_setDoubleOptionValue(self.handle, c_key.as_ptr(), limit_s) };
+        if status < 0 {
+            self.status = SolverStatus::Error;
+            return Err(SolverError::ParamSetFailed(String::from("time_limit")));
+        }
+        Ok(())
+    }
+
+    fn set_mip_rel_gap(&mut self, gap: f64) -> Result<(), SolverError> {
+        let c_key = alloc::format!("{}\0", "mip_rel_gap");
+        // SAFETY: handle 非 null，c_key 以 NUL 结尾。
+        let status =
+            unsafe { highs_ffi::Highs_setDoubleOptionValue(self.handle, c_key.as_ptr(), gap) };
+        if status < 0 {
+            self.status = SolverStatus::Error;
+            return Err(SolverError::ParamSetFailed(String::from("mip_rel_gap")));
+        }
+        Ok(())
+    }
+
     fn status(&self) -> SolverStatus {
         self.status.clone()
     }
@@ -409,6 +438,32 @@ mod tests {
     use crate::problem::{ConstraintMatrix, LpProblem, ObjectiveSense, VarType};
     use crate::result::SolveStatus;
     use crate::solver::Solver;
+
+    // ======================================================================
+    // 蓝图 67 WP-67.4：0/1 Bool 陷阱实弹回归锁（/tmp/repro-67 复现固化
+    // 进仓——真 HiGHS 1.7.2 上 `set_param("time_limit","1")` 与
+    // `set_param("mip_rel_gap","0")` 均 ParamSetFailed（classify 成 Bool
+    // 发给 double 选项）；类型化通道同值必 Ok。陷阱再回归时 CI 抓住）。
+    // ======================================================================
+    #[test]
+    fn bp67_typed_param_channels_reject_free_string_zero_one() {
+        let mut solver = HighsSolver::new().expect("Highs_create");
+        // 类型化通道：完全现实的取值（1 秒预算 / 求精确最优）必须 Ok。
+        assert!(solver.set_time_limit_s(1.0).is_ok());
+        assert!(solver.set_mip_rel_gap(0.0).is_ok());
+        // stringly 通道同值：实弹陷阱（red 路径——旧编码在此必炸）。
+        assert!(matches!(
+            solver.set_param("time_limit", "1"),
+            Err(crate::error::SolverError::ParamSetFailed(_))
+        ));
+        assert!(matches!(
+            solver.set_param("mip_rel_gap", "0"),
+            Err(crate::error::SolverError::ParamSetFailed(_))
+        ));
+        // 陷阱语义自证：classify 把 "1"/"0" 归 Bool（错型根源）。
+        assert_eq!(classify_param_value("1"), ParamValue::Bool(true));
+        assert_eq!(classify_param_value("0"), ParamValue::Bool(false));
+    }
 
     /// T1：真实 LP 求解 — 最大化 3x + 2y，约束 x+y<=4, 2x+y<=5.
     ///

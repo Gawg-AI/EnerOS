@@ -40,6 +40,7 @@
 - **在用（非违规）**：`crates/agents/certifier`（ADR-0051 feature gate 守护）、`crates/agents/federation`（svc-federation bin + pentest 半连接）、`eneros-business-services`/`eneros-did`/`eneros-model-harness`/`eneros-ai-runner`/`eneros-oom-probe`/`eneros-installer-uefi`/`eneros-svc-pie`/`eneros-mvp-scenario`（bin/测试/探针装配体，profile 或验证面直接消费）。
 - **Deferred（留置，无现役接入计划）**：aiops、alarm、ancillary、app-cert、autonomous、bsp-cert、calibration、cellular、chain、cj188、cloud-coordinator、compliance、data-governance、dialog、fault-recorder、firmware-agent、fleet-ops、hmi、iec62351、marl、mgmt-cli、modbus-tcp-server、model-ota、online-learning、ops-gate、ops-lifecycle、p2p-match、power、protocol-sdk、realtime-market、reputation、rl、safety-catalog、scale、simulator、soe-engine、solver-pareto、solver-warm、spot-market、standards、support-bundle、trust、twin-agent、twin-global、vpp-scenario、agent-hot-update（锚点：`rg -l "name = \"eneros-<crate>\"" crates/*/Cargo.toml` 逐个可验；复验口径 = `cargo metadata` 反向依赖为零）。
 - **待裁决**：`eneros-root-task`/`eneros-xtask`/`eneros-ci`（根装配体非孤儿，排除口径登记于此防复课）。
+- **退役（蓝图 67 WP-67.1.4，2026-09-05）**：`eneros-ci` crate 已删——version/mock/sign-key 门 owner 归 xtask，sign-keys 门进 CI。
 
 ### C3. 本轮新增登记
 
@@ -170,3 +171,23 @@
 |---|---|---|---|
 | crash-dump 设备端写入 seam | `crates/observability/crash-dump/`（编码/解析 host 侧就绪） | Blocked | 前置 = panic 写入通道（新机制开发，超 66.1 卷容）；四处运维面已诚实化（66.6.2） |
 | planner 集成测试模型面迁移 | `crates/ai/planner/tests/integration.rs`（ModelBuilder/BuiltModel 直构造两测） | Open | 迁移后 ModelBuilder/BuiltModel 可收缩 pub(crate)（蓝图 66 执行卡 D-8） |
+
+## E-67. 蓝图 67 执行登记（2026-09-05，v0.320.0）
+
+**收编完成**（第十一轮体检候选，[蓝图/67-*/01] §6 登记表对照）：
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| A3 门禁栈单源化 | sign-key 门迁 xtask（`qa gate sign-keys`，语义逐字节迁移+3 单测随迁）+ CI 接电（ci.yml 步骤）；version/mock 门 owner 归 xtask 单源（ci 侧双实现删除） | 收编完成 |
+| B1 chunked epoch 八站点收编 | 八站点 + 执行期订正面（config_gateway impl/protocol_ladder/svc-device-agent/dispatch_assembly catalog 与 build_engine/fetch_control_write/cfg_bindings chain_key/svc-modbus-rtu×2）全收编 ChunkedEndpoint；仓走守卫（agent-sdk，**零白名单全精度**，[01] §2.1b）执法 | 收编完成 |
+| B2 TEL 请求 opcode 单源 | telemetry.rs 三常量 → tel_wire re-export 别名 + include_str! 自守卫；svc-energy-agent 跨 crate 双名混用消除 | 收编完成 |
+| B5 求解器参数类型化 | Solver trait 增 set_time_limit_s/set_mip_rel_gap（默认 Err 诚实失败）；HiGHS 直调 double 选项；planner/day_ahead 注入点类型化；0/1 Bool 陷阱实弹回归锁进仓（highs.rs bp67 测试） | 收编完成 |
+| A5 plan 死入口收敛 | plan_spawn/plan_spawn_dyn_aware/plan_spawn_with_enforcement/plan_start_order + CONTROL_SERVICE_STACK_PAGES 删除；降级循环单实现（对拍测试先行背书）；spawn.rs -249 行 | 收编完成 |
+| 卫生群 | certifier 口径对齐 ADR-051/certificate.rs；planner gate pub(crate)+两 fn 去 pub+solver-model 死依赖删；main.rs:571 腐朽 allow 注记修正 | 收编完成 |
+| D1 gate 脚本收敛债 | run67-vol1-gate.sh 照惯例自 65 模板新抄（**本卷未收敛，现状登记**）；收口承诺归下一卷 | Open（债显式登记） |
+
+**新观察项**（G8 run#1 异常，未定位根因）：qemu-prod 首跑出现 svc-telemetry
+停顿级联（对 chunked 请求全停应答 → 上游 ACQ/INGEST 停 → 心跳无消息进展判卡死
+→ kill+restart ×54，4.5s≈chunked 超时量级）；同镜像同脚本 run#2 全 PASS
+（17 判据 + 计数对照全对）。排除确定性代码回归，疑似首启抖动类新形态；
+建议第十二轮体检单独勘探（详见蓝图 67 执行卡 G8/G 段）。

@@ -7,7 +7,8 @@
 
 use alloc::vec::Vec;
 
-use crate::chunked::{ChunkedClient, RawIpc};
+use crate::chunked::RawIpc;
+use crate::endpoint::ChunkedEndpoint;
 
 /// GET_ENTRY 协议魔数（与服务端 `config_service.rs::PROTO_MAGIC` 同值）。
 pub const CFG_MAGIC: &[u8; 4] = b"CFG1";
@@ -56,27 +57,23 @@ pub fn decode_response_body(resp: &[u8]) -> Result<&[u8], ConfigError> {
 /// GET_ENTRY 一次往返：请求构造 + 分块传输，返回**原始响应**字节（含
 /// 4B 长度前缀；取 canonical payload 用 [`decode_response_body`]）。
 ///
-/// `epoch` 透传 [`ChunkedClient`] 初值——调用方维护页序单调性
-/// （svc-mgmt 逐管理请求递增）；单请求场景传 0。
+/// 蓝图 67 WP-67.2.2 类型化改造：传输/epoch 纪律收 [`ChunkedEndpoint`]
+/// 单点（超时 = 常量默认 5_000，与原全调用方实传值一致）——调用方不再
+/// 手传 epoch（原"调用方维护页序单调性"参数面删除；svc-mgmt 手递增 ×2
+/// 于本卷收编）。
 pub fn get_entry<C: RawIpc>(
-    client: &mut C,
+    endpoint: &mut ChunkedEndpoint<C>,
     entry: &str,
-    epoch: u64,
-    timeout_ms: u64,
 ) -> Result<Vec<u8>, ConfigError> {
-    raw_command(client, CMD_GET_ENTRY, entry.as_bytes(), epoch, timeout_ms)
+    raw_command(endpoint, CMD_GET_ENTRY, entry.as_bytes())
 }
 
 /// GET_GENERATION 一次往返（蓝图 61）：返回 active bundle generation。
 ///
 /// 协议服务用其作观测事件 `mapping_version`（点表生效世代——签名配置
 /// 分配，binary 零硬编码）。服务端响应 = generation 8B LE。
-pub fn get_generation<C: RawIpc>(
-    client: &mut C,
-    epoch: u64,
-    timeout_ms: u64,
-) -> Result<u64, ConfigError> {
-    let resp = raw_command(client, CMD_GET_GENERATION, &[], epoch, timeout_ms)?;
+pub fn get_generation<C: RawIpc>(endpoint: &mut ChunkedEndpoint<C>) -> Result<u64, ConfigError> {
+    let resp = raw_command(endpoint, CMD_GET_GENERATION, &[])?;
     let body = decode_response_body(&resp)?;
     if body.len() != 8 {
         return Err(ConfigError::LengthPrefix);
@@ -87,19 +84,16 @@ pub fn get_generation<C: RawIpc>(
 /// 子命令一次往返（请求构造 + 分块传输单一实现；GET_ENTRY/GET_GENERATION
 /// 共用——服务端同 magic 同前缀词形）。
 fn raw_command<C: RawIpc>(
-    client: &mut C,
+    endpoint: &mut ChunkedEndpoint<C>,
     cmd: u8,
     body: &[u8],
-    epoch: u64,
-    timeout_ms: u64,
 ) -> Result<Vec<u8>, ConfigError> {
     let mut req = Vec::with_capacity(5 + body.len());
     req.extend_from_slice(CFG_MAGIC);
     req.push(cmd);
     req.extend_from_slice(body);
-    let mut transfer = ChunkedClient::new(client, epoch, timeout_ms);
-    transfer
-        .transfer(CONFIG_ENDPOINT, &req)
+    endpoint
+        .call(CONFIG_ENDPOINT, &req)
         .map_err(|_| ConfigError::Transport)
 }
 
@@ -200,25 +194,28 @@ mod tests {
 
     #[test]
     fn get_entry_roundtrip_via_chunked() {
-        let mut peer = FakeConfigServer {
+        // 蓝图 67 WP-67.2.2：调用面 = ChunkedEndpoint（epoch 纪律单点，
+        // 端点持有对端）。
+        let mut ep = crate::endpoint::ChunkedEndpoint::wrap(FakeConfigServer {
             rx: Default::default(),
             pending: None,
             paged: Vec::new(),
-        };
-        let resp = get_entry(&mut peer, "points", 0, 5_000).expect("transfer");
+        });
+        let resp = get_entry(&mut ep, "points").expect("transfer");
         let body = decode_response_body(&resp).unwrap();
         assert_eq!(body, b"points");
+        assert_eq!(ep.epoch_for_test(), 1, "config 往返同样消耗恰好 1 epoch");
     }
 
     /// 蓝图 61：GET_GENERATION 往返（8B LE 响应体）。
     #[test]
     fn get_generation_roundtrip_via_chunked() {
-        let mut peer = FakeConfigServer {
+        let mut ep = crate::endpoint::ChunkedEndpoint::wrap(FakeConfigServer {
             rx: Default::default(),
             pending: None,
             paged: Vec::new(),
-        };
-        let gen = get_generation(&mut peer, 0, 5_000).expect("transfer");
+        });
+        let gen = get_generation(&mut ep).expect("transfer");
         assert_eq!(gen, 42);
     }
 }

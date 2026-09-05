@@ -35,6 +35,26 @@ pub trait Solver {
     /// 设置求解器参数.
     fn set_param(&mut self, key: &str, value: &str) -> Result<(), SolverError>;
 
+    /// 设置时间上限（秒）——类型化注入（蓝图 67 WP-67.4）。
+    ///
+    /// `set_param` stringly 通道下，整数值 0/1 被 classify 成 Bool 发给
+    /// double 选项 → 真 HiGHS 1.7.2 实测 `ParamSetFailed`（[01] §2.4
+    /// 实弹坐实）。数值参数一律走本方法；默认 Err = 诚实失败（不支持的
+    /// 后端不得静默装成功）。
+    fn set_time_limit_s(&mut self, _limit_s: f64) -> Result<(), SolverError> {
+        Err(SolverError::ParamError(alloc::string::String::from(
+            "set_time_limit_s unsupported by backend",
+        )))
+    }
+
+    /// 设置 MIP 相对间隙——类型化注入（蓝图 67 WP-67.4；语义同
+    /// [`Solver::set_time_limit_s`]）。
+    fn set_mip_rel_gap(&mut self, _gap: f64) -> Result<(), SolverError> {
+        Err(SolverError::ParamError(alloc::string::String::from(
+            "set_mip_rel_gap unsupported by backend",
+        )))
+    }
+
     /// 获取求解器运行时状态.
     fn status(&self) -> SolverStatus;
 

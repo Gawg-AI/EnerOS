@@ -112,9 +112,12 @@ impl DayAheadScheduler {
         solver: &mut dyn Solver,
         now_ms: u64,
     ) -> Result<DayAheadPlan, SolverError> {
-        // D10：求解参数注入（在任何一次 solve 之前；注入失败直接传播）
-        solver.set_param("time_limit", &format!("{}", self.time_limit_s))?;
-        solver.set_param("mip_rel_gap", &format!("{}", self.mip_rel_gap))?;
+        // D10：求解参数注入（在任何一次 solve 之前；注入失败直接传播）。
+        // 蓝图 67 WP-67.4：类型化注入（原 `format!("{}", f64)` 编码在整
+        // 数值 0/1 被 classify 成 Bool → 真 HiGHS ParamSetFailed，实弹
+        // 坐实；TD30 测试曾锁死缺陷编码）。
+        solver.set_time_limit_s(self.time_limit_s)?;
+        solver.set_mip_rel_gap(self.mip_rel_gap)?;
 
         // 第 1 级：完整 MILP
         let model = uc.build_model(load, price)?;
@@ -279,10 +282,45 @@ mod tests {
         cursor: usize,
         /// 已注入参数（key, value）.
         params: Vec<(String, String)>,
+        /// 类型化数值参数注入记录（蓝图 67 WP-67.4 TD30 改造——值断言
+        /// 走 f64 类型化通道，不再断言字符串编码）.
+        typed_params: Vec<(&'static str, f64)>,
         /// solve 调用次数.
         solve_calls: u64,
         /// 首次 solve 时已注入的参数数量（验证注入先于求解）.
         params_at_first_solve: usize,
+    }
+
+    /// 蓝图 67 WP-67.4：plan() 路径测试假件——MockSolver 本体保持默认
+    /// Err 的生产语义（[02] WP-67.4 不许做：不动 Mock），本包装按需覆写
+    /// 类型化注入两方法（其他面逐一直通）。
+    struct PlanTestSolver(MockSolver);
+
+    impl Solver for PlanTestSolver {
+        fn solve(&mut self, problem: &LpProblem, now_ms: u64) -> Result<SolveResult, SolverError> {
+            self.0.solve(problem, now_ms)
+        }
+        fn name(&self) -> &'static str {
+            self.0.name()
+        }
+        fn version(&self) -> &'static str {
+            self.0.version()
+        }
+        fn set_param(&mut self, key: &str, value: &str) -> Result<(), SolverError> {
+            self.0.set_param(key, value)
+        }
+        fn status(&self) -> SolverStatus {
+            self.0.status()
+        }
+        fn set_warm_start(&mut self, solution: &[f64]) -> Result<(), SolverError> {
+            self.0.set_warm_start(solution)
+        }
+        fn set_time_limit_s(&mut self, _limit_s: f64) -> Result<(), SolverError> {
+            Ok(())
+        }
+        fn set_mip_rel_gap(&mut self, _gap: f64) -> Result<(), SolverError> {
+            Ok(())
+        }
     }
 
     impl RecordingSolver {
@@ -291,6 +329,7 @@ mod tests {
                 results,
                 cursor: 0,
                 params: Vec::new(),
+                typed_params: Vec::new(),
                 solve_calls: 0,
                 params_at_first_solve: 0,
             }
@@ -304,7 +343,7 @@ mod tests {
             _now_ms: u64,
         ) -> Result<SolveResult, SolverError> {
             if self.solve_calls == 0 {
-                self.params_at_first_solve = self.params.len();
+                self.params_at_first_solve = self.params.len() + self.typed_params.len();
             }
             self.solve_calls += 1;
             let idx = if self.cursor < self.results.len() {
@@ -331,6 +370,16 @@ mod tests {
             Ok(())
         }
 
+        fn set_time_limit_s(&mut self, limit_s: f64) -> Result<(), SolverError> {
+            self.typed_params.push(("time_limit", limit_s));
+            Ok(())
+        }
+
+        fn set_mip_rel_gap(&mut self, gap: f64) -> Result<(), SolverError> {
+            self.typed_params.push(("mip_rel_gap", gap));
+            Ok(())
+        }
+
         fn status(&self) -> SolverStatus {
             SolverStatus::Idle
         }
@@ -353,7 +402,10 @@ mod tests {
     fn td16_e2e_5x24() {
         let uc = fixture_uc();
         let (load, price) = fixture_load_price();
-        let mut solver = MockSolver::with_result(SolveResult::optimal(1234.5, solution_5x24(1.0)));
+        let mut solver = PlanTestSolver(MockSolver::with_result(SolveResult::optimal(
+            1234.5,
+            solution_5x24(1.0),
+        )));
         let mut sched = DayAheadScheduler::new(30.0, 0.01);
         let plan = sched.plan(&uc, &load, &price, &mut solver, 0).unwrap();
         assert_eq!(plan.schedule.len(), 5);
@@ -374,7 +426,7 @@ mod tests {
         sol[uc.var_index(0, 0, 1)] = 0.8; // → true
         sol[uc.var_index(0, 1, 1)] = 0.2; // → false
         sol[uc.var_index(0, 2, 1)] = 0.5; // → false（严格大于）
-        let mut solver = MockSolver::with_result(SolveResult::optimal(0.0, sol));
+        let mut solver = PlanTestSolver(MockSolver::with_result(SolveResult::optimal(0.0, sol)));
         let mut sched = DayAheadScheduler::new(30.0, 0.01);
         let plan = sched.plan(&uc, &load, &price, &mut solver, 0).unwrap();
         assert!(plan.schedule[0].commitments[0]);
@@ -389,7 +441,7 @@ mod tests {
         let (load, price) = fixture_load_price();
         let mut sol = solution_5x24(0.0);
         sol[uc.var_index(0, 3, 0)] = 50.0;
-        let mut solver = MockSolver::with_result(SolveResult::optimal(0.0, sol));
+        let mut solver = PlanTestSolver(MockSolver::with_result(SolveResult::optimal(0.0, sol)));
         let mut sched = DayAheadScheduler::new(30.0, 0.01);
         let plan = sched.plan(&uc, &load, &price, &mut solver, 0).unwrap();
         assert_eq!(plan.schedule[0].generation[3], 50.0);
@@ -400,7 +452,10 @@ mod tests {
     fn td19_total_cost() {
         let uc = fixture_uc();
         let (load, price) = fixture_load_price();
-        let mut solver = MockSolver::with_result(SolveResult::optimal(1234.5, solution_5x24(1.0)));
+        let mut solver = PlanTestSolver(MockSolver::with_result(SolveResult::optimal(
+            1234.5,
+            solution_5x24(1.0),
+        )));
         let mut sched = DayAheadScheduler::new(30.0, 0.01);
         let plan = sched.plan(&uc, &load, &price, &mut solver, 0).unwrap();
         assert_eq!(plan.total_cost, 1234.5);
@@ -411,12 +466,17 @@ mod tests {
     fn td20_status_propagated() {
         let uc = fixture_uc();
         let (load, price) = fixture_load_price();
-        let mut solver = MockSolver::with_result(SolveResult::optimal(1.0, solution_5x24(1.0)));
+        let mut solver = PlanTestSolver(MockSolver::with_result(SolveResult::optimal(
+            1.0,
+            solution_5x24(1.0),
+        )));
         let mut sched = DayAheadScheduler::new(30.0, 0.01);
         let plan = sched.plan(&uc, &load, &price, &mut solver, 0).unwrap();
         assert_eq!(plan.solve_status, SolveStatus::Optimal);
         // Suboptimal 同样可接受并透传
-        let mut solver2 = MockSolver::with_result(result_with(SolveStatus::Suboptimal));
+        let mut solver2 = PlanTestSolver(MockSolver::with_result(result_with(
+            SolveStatus::Suboptimal,
+        )));
         let plan2 = sched.plan(&uc, &load, &price, &mut solver2, 0).unwrap();
         assert_eq!(plan2.solve_status, SolveStatus::Suboptimal);
         // 两次均为可接受状态，计数器保持双 0
@@ -527,7 +587,10 @@ mod tests {
     fn td26_unit_id_order() {
         let uc = fixture_uc();
         let (load, price) = fixture_load_price();
-        let mut solver = MockSolver::with_result(SolveResult::optimal(0.0, solution_5x24(1.0)));
+        let mut solver = PlanTestSolver(MockSolver::with_result(SolveResult::optimal(
+            0.0,
+            solution_5x24(1.0),
+        )));
         let mut sched = DayAheadScheduler::new(30.0, 0.01);
         let plan = sched.plan(&uc, &load, &price, &mut solver, 0).unwrap();
         for (i, us) in plan.schedule.iter().enumerate() {
@@ -549,7 +612,7 @@ mod tests {
             sol[uc.var_index(0, t, 0)] = 50.0;
         }
         // 机组 1 全周期：U=0.0（停机）、P=0.0
-        let mut solver = MockSolver::with_result(SolveResult::optimal(7.5, sol));
+        let mut solver = PlanTestSolver(MockSolver::with_result(SolveResult::optimal(7.5, sol)));
         let mut sched = DayAheadScheduler::new(30.0, 0.01);
         let plan = sched.plan(&uc, &load, &price, &mut solver, 0).unwrap();
         assert_eq!(plan.schedule.len(), 2);
@@ -602,6 +665,8 @@ mod tests {
     }
 
     // === TD30: 参数注入 — time_limit/mip_rel_gap 在 solve 之前注入 ===
+    // 蓝图 67 WP-67.4：断言走类型化值通道（原断言 format!("{}", f64)
+    // 字符串编码 = mock 锁死缺陷编码，已随类型化注入一并消除）。
     #[test]
     fn td30_param_injected() {
         let uc = fixture_uc();
@@ -610,15 +675,12 @@ mod tests {
         let mut sched = DayAheadScheduler::new(30.0, 0.01);
         let plan = sched.plan(&uc, &load, &price, &mut solver, 0).unwrap();
         assert_eq!(plan.solve_status, SolveStatus::Optimal);
-        // 键存在且值与 format!("{}", f64) 输出一致（30.0 → "30"，0.01 → "0.01"）
-        assert!(solver
-            .params
-            .iter()
-            .any(|(k, v)| k == "time_limit" && v == &format!("{}", 30.0f64)));
-        assert!(solver
-            .params
-            .iter()
-            .any(|(k, v)| k == "mip_rel_gap" && v == &format!("{}", 0.01f64)));
+        // 类型化值断言：恰两次注入、值 = 30.0 / 0.01（f64 相等——参数即
+        // 结构体字段原值透传，无编码损耗）。
+        assert_eq!(
+            solver.typed_params,
+            vec![("time_limit", 30.0f64), ("mip_rel_gap", 0.01f64)]
+        );
         // 注入发生在首次 solve 之前
         assert!(solver.params_at_first_solve >= 2);
     }

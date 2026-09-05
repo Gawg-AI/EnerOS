@@ -1,0 +1,64 @@
+{
+ "schema": "eneros.evidence-manifest.v1",
+ "volume": "blueprint-67-vol67-1",
+ "version": "0.320.0",
+ "head": "本 commit（代码+证据同 commit；gate 实跑于该树，bump 0.320.0 同 commit）",
+ "date": "2026-09-05",
+ "gate": "VOL67-GATE: PASS（镜像 sha256 a09b05df93af0e1494cf97a396cf3289a6f796c2fb61325e3bb4bf37c60ef354；run#1 FAIL=环境间歇抖动类新形态，run#2 同镜像同脚本全判据 PASS——处置照硬规则重跑留证，run#1 形态登记执行卡 G 段）",
+ "purpose": "蓝图 67 卷 67.1 出口 QEMU 实弹（接缝收编与守卫接电卷）：门禁栈单源（sign-key 门迁 xtask + CI 接电 + eneros-ci 退役 + pre-commit 三快门）/ chunked epoch 八站点+执行期订正面全收编 ChunkedEndpoint + 零白名单仓走守卫 / TEL 请求 opcode re-export 单源 + 自守卫 / Solver 参数类型化（0/1 Bool 陷阱实弹回归锁）/ plan 死入口收敛（对拍先行背书，5 入口 → 1）/ 卫生群。wire 格式零变更（chunked epoch 取值恒 0→单调 = 服务端忽略，[01] §2.1 wire 中性论证 + R-67.1 epoch 词形预检：基线 epoch 字面全为他域，判据表零调整）",
+ "artifacts": {
+  "normal.qemu-serial.log": "qemu-prod typed 链正例一轮串口全量（gitignore 内，run#2 全判据 PASS 轮；对照基线 evidence/65/vol65-1/normal.qemu-serial.log 计数零差异）",
+  "build/sel4.log": "sel4-build-rust.sh 重链接（67.2 触 5 个 target bin）",
+  "build/image.log": "image raw qemu-prod 重建（实抓并修复 4 处 target-only 漏网站点后通过，[01] §2.1a 补遗）",
+  "build/compile.log": "config compile qemu-prod",
+  "build/image.sha256": "镜像摘要 a09b05df93af0e1494cf97a396cf3289a6f796c2fb61325e3bb4bf37c60ef354",
+  "normal.modbus.transcript.jsonl": "modbus peer 回放输入拷本（拷自 evidence/62/vol62-1 基线输入）"
+ },
+ "criteria": [
+  {
+   "id": "C1",
+   "assert": "PRODUCT-READY: true",
+   "result": "PASS"
+  },
+  {
+   "id": "C2",
+   "assert": "PROTO-EXEC svc-modbus-tcp status=0x00 / status=0x04 能力壳降级词形",
+   "result": "PASS"
+  },
+  {
+   "id": "C3",
+   "assert": "OBS-REPORT enqueue/flush rejected + svc= 词形（root OBS 面）",
+   "result": "PASS"
+  },
+  {
+   "id": "C4",
+   "assert": "CONTROL-CHAIN: round= + dispatch=Committed（run#2）",
+   "result": "PASS"
+  },
+  {
+   "id": "C5",
+   "assert": "ACQ-ROUND / AUDIT-CHAIN / OTA-DOWNLOAD: OK / STORAGE-PERSIST: OK",
+   "result": "PASS"
+  },
+  {
+   "id": "C6",
+   "assert": "telemetry EIPC bound / NOT granted 两态词形",
+   "result": "PASS"
+  },
+  {
+   "id": "C7",
+   "assert": "负断言：SUPERVISOR / HEARTBEAT-KILL / DBG-EXEC 全无（run#2）",
+   "result": "PASS"
+  },
+  {
+   "id": "C8",
+   "assert": "确定性行计数对照 vol65-1 基线 ×1 全对（9 行，零调整系数）",
+   "result": "PASS"
+  },
+  {
+   "id": "C9",
+   "assert": "R-67.1 epoch 词形预检：基线 epoch 字面均他域，判据表零调整、无静默放宽",
+   "result": "PASS"
+  }
+ ]
+}

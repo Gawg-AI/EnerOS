@@ -133,7 +133,8 @@ impl SolveGate {
 }
 
 /// 最大原始残差：行违约 + 列边界违约（未缩放）。
-pub fn primal_residual(problem: &eneros_solver_core::problem::LpProblem, x: &[f64]) -> f64 {
+/// 蓝图 67 WP-67.6：全仓零外部调用者（执行时 grep 复验），去 pub。
+fn primal_residual(problem: &eneros_solver_core::problem::LpProblem, x: &[f64]) -> f64 {
     let mut max_viol = 0.0f64;
     // 列边界。
     for (i, &v) in x.iter().enumerate() {
@@ -165,7 +166,8 @@ pub fn primal_residual(problem: &eneros_solver_core::problem::LpProblem, x: &[f6
 /// **|v| ≥ 1e30 视为无穷排除**：builder 以 ±f64::MAX/4 之类的巨大有限
 /// 值标记"无约束侧"（HiGHS kHighsInf=1e30 同惯例）——收进 scale 会把
 /// 残差阈值放大到 ~1e300，gate 永不可拒。
-pub fn model_scale(problem: &eneros_solver_core::problem::LpProblem) -> f64 {
+/// 蓝图 67 WP-67.6：全仓零外部调用者，去 pub。
+fn model_scale(problem: &eneros_solver_core::problem::LpProblem) -> f64 {
     const INF_SENTINEL: f64 = 1e30;
     let mut scale = 1.0f64;
     for v in problem.rhs_upper.iter().chain(problem.rhs_lower.iter()) {

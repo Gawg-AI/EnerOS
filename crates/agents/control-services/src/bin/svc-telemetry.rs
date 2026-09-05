@@ -124,19 +124,17 @@ impl TelemetryHandler<'_> {
         };
         let cfg_id = eneros_config_bundle::ConfigId::from_static("points");
         // generation（GET_GENERATION；失败 = 0 → 世代未定，观测不满足控制
-        // 资格——fail-closed）。
-        let generation =
-            eneros_agent_sdk::config_client::get_generation(client.client_mut(), 0, 5_000)
-                .ok()
-                .unwrap_or(0);
-        let Some(payload) =
-            eneros_agent_sdk::config_client::get_entry(client.client_mut(), "points", 0, 5_000)
-                .ok()
-                .and_then(|resp| {
-                    eneros_agent_sdk::config_client::decode_response_body(&resp)
-                        .ok()
-                        .map(|b| b.to_vec())
-                })
+        // 资格——fail-closed）。蓝图 67 WP-67.2.3：endpoint 面（删手传 0）。
+        let generation = eneros_agent_sdk::config_client::get_generation(client)
+            .ok()
+            .unwrap_or(0);
+        let Some(payload) = eneros_agent_sdk::config_client::get_entry(client, "points")
+            .ok()
+            .and_then(|resp| {
+                eneros_agent_sdk::config_client::decode_response_body(&resp)
+                    .ok()
+                    .map(|b| b.to_vec())
+            })
         else {
             eneros_runtime::println!(
                 "[svc-telemetry] OBS-CFG points fetch FAIL (retry next round)"
@@ -178,9 +176,7 @@ impl TelemetryHandler<'_> {
         // coverage/feedback point）。目录不可得（legacy bundle）→ 以
         // 装配参数覆盖运行（兼容轨；生产 bundle 必含 catalog 条目）。
         let mut applied_config = eval_config;
-        if let Some(cat) =
-            eneros_control_services::catalog_gateway::fetch_catalog(client.client_mut())
-        {
+        if let Some(cat) = eneros_control_services::catalog_gateway::fetch_catalog(client) {
             applied_config.coverage =
                 eneros_control_services::catalog_gateway::coverage_config(&cat.repo);
             let d = cat.repo.digest();

@@ -50,18 +50,20 @@ pub trait DeliveryChannel {
 ///
 /// 基于 agent-sdk `Sel4IpcClient`（correlation/deadline 检查）与分块
 /// 传输协议；持有最小 endpoint cap（装配期注入 `dest_cap`）。
+/// 蓝图 67 WP-67.2.3：`client + epoch` 两字段收编
+/// [`eneros_agent_sdk::ChunkedEndpoint`]（递增纪律单点；构造签名不变）。
 #[cfg(feature = "sel4")]
 pub struct Sel4EipcChannel {
-    client: eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
-    /// 发送方 epoch（重启计数；防迟到消息）。
-    epoch: u64,
+    endpoint:
+        eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
     /// 单次投递超时（ms）。
     timeout_ms: u64,
 }
 
 #[cfg(feature = "sel4")]
 impl Sel4EipcChannel {
-    /// 构造（`dest_cap` = device-agent endpoint cap；`now_ns` = 单调时钟）。
+    /// 构造（`dest_cap` = device-agent endpoint cap；`now_ns` = 单调时钟；
+    /// `epoch` = 起始 epoch——wrap_at 语义，递增仅发生在 endpoint.call）。
     pub fn new(
         endpoint: &str,
         dest_cap: u64,
@@ -70,8 +72,10 @@ impl Sel4EipcChannel {
         now_ns: fn() -> u64,
     ) -> Result<Self, eneros_agent_sdk::AgentError> {
         Ok(Self {
-            client: eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(endpoint, dest_cap, now_ns)?,
-            epoch,
+            endpoint: eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap_at(
+                eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(endpoint, dest_cap, now_ns)?,
+                epoch,
+            ),
             timeout_ms,
         })
     }
@@ -90,11 +94,8 @@ impl DeliveryChannel for Sel4EipcChannel {
         } else {
             timeout_ms
         };
-        let mut transfer =
-            eneros_agent_sdk::ChunkedClient::new(&mut self.client, self.epoch, timeout);
-        self.epoch = self.epoch.saturating_add(1);
-        transfer
-            .transfer(target, payload)
+        self.endpoint
+            .call_with_timeout(target, payload, timeout)
             .map_err(|e| ChannelError::Protocol(format!("chunked: {e:?}")))
     }
 }

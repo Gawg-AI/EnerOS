@@ -49,14 +49,11 @@ pub extern "C" fn _start(
     // 41（WP-41.11）：ConfigGet 经 EIPC 查 svc-config（授予表按客户端
     // 独立计数：svc-mgmt 首个 grant = 槽 EIPC_EP_BASE_SLOT+0、mask bit 0。
     // SPEC-B：硬编码掩码位（`& 1`）收编 eipc_granted_slot（按名解析）。
+    // 蓝图 67 WP-67.2.3：config 传输面 = ChunkedEndpoint（epoch 单点
+    // 纪律——原 self.epoch 手递增 ×2 面删除）。
     let config_ep = eneros_agent_sdk::eipc_granted_slot("svc-mgmt", eipc_mask, "svc-config")
         .and_then(|slot| {
-            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                "mgmt-config",
-                slot,
-                eneros_drv_svc::now_ns,
-            )
-            .ok()
+            eneros_agent_sdk::endpoint::ChunkedEndpoint::bind_cap("mgmt-config", slot)
         });
     if config_ep.is_some() {
         eneros_runtime::println!("[svc-mgmt] config EIPC bound (svc-config)");
@@ -69,8 +66,13 @@ pub extern "C" fn _start(
     // SPEC-C（WP-C.2）：history-query 取数通道——svc-mgmt 第 2 授予边
     // （SPEC-B：硬编码掩码位 `& 2` 收编 eipc_granted_slot 按名解析）；
     // 未授予 → 执行器回 "telemetry-not-bound"（fail-closed）。
+    // 蓝图 67 WP-67.2.3：取数端点启动期一次装配持有（跨请求 epoch 单调
+    // 延续——原"每请求重建客户端恒 0"面删除；bind 失败词形区分保留）。
     let telemetry_slot =
         eneros_agent_sdk::eipc_granted_slot("svc-mgmt", eipc_mask, "svc-telemetry");
+    let history_ep = telemetry_slot.and_then(|slot| {
+        eneros_agent_sdk::endpoint::ChunkedEndpoint::bind_cap("mgmt-history", slot)
+    });
     if telemetry_slot.is_some() {
         eneros_runtime::println!("[svc-mgmt] history EIPC bound (svc-telemetry)");
     } else {
@@ -82,8 +84,7 @@ pub extern "C" fn _start(
         rpc: eneros_business_services::mgmt_rpc::ManagementRpc::new(TargetExecutor {
             config_ep,
             telemetry_slot,
-            epoch: 0,
-            history_binds: 0,
+            history_ep,
             requests_seen: 0,
             bundle_seq: 0,
             restart_requests: 0,
@@ -102,13 +103,18 @@ pub extern "C" fn _start(
 
 #[cfg(target_os = "none")]
 struct TargetExecutor {
-    config_ep: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
-    /// SPEC-C：svc-telemetry 授予槽（按值重建客户端的先例模式——
-    /// 避免跨请求可变借用纠缠）。
+    // 蓝图 67 WP-67.2.3：config/history 传输面 = ChunkedEndpoint（epoch
+    // 单点递增，跨请求单调延续；原 epoch 字段 + 手递增 ×2 删除）。
+    config_ep: Option<
+        eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    >,
+    /// SPEC-C：svc-telemetry 授予槽（bind 失败/未授予两态词形区分——
+    /// history_ep 为 None 且本槽在场 = 建端失败词形）。
     telemetry_slot: Option<u64>,
-    /// SPEC-C：TELR 通道构建计数（观测）。
-    history_binds: u64,
-    epoch: u64,
+    /// SPEC-C：TELR 取数端点（启动期一次装配）。
+    history_ep: Option<
+        eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    >,
     /// 50（WP-50.2）：请求计数 / 诊断包序号 / 重启请求数（真实观测）。
     requests_seen: u64,
     bundle_seq: u64,
@@ -151,11 +157,10 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                         payload: None,
                     };
                 };
-                // SPEC-B：CFG1 wire 单源 = agent-sdk config_client；epoch
-                // 透传保持页序单调（多管理请求不撞帧）。
-                let resp =
-                    eneros_agent_sdk::config_client::get_entry(client, id, self.epoch, 5_000);
-                self.epoch = self.epoch.saturating_add(1);
+                // SPEC-B：CFG1 wire 单源 = agent-sdk config_client；蓝图 67
+                // WP-67.2.3：endpoint 面（原 epoch 手递增删除——endpoint
+                // 单点递增，跨管理请求单调）。
+                let resp = eneros_agent_sdk::config_client::get_entry(client, id);
                 self.requests_seen = self.requests_seen.saturating_add(1);
                 match resp {
                     Ok(raw) => ActionResult {
@@ -180,10 +185,7 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                         payload: None,
                     };
                 };
-                let resp = eneros_agent_sdk::config_client::get_entry(
-                    client, "logging", self.epoch, 5_000,
-                );
-                self.epoch = self.epoch.saturating_add(1);
+                let resp = eneros_agent_sdk::config_client::get_entry(client, "logging");
                 self.requests_seen = self.requests_seen.saturating_add(1);
                 match resp {
                     Ok(raw) => ActionResult {
@@ -255,33 +257,28 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                 }
                 let point = u32::from_le_bytes(arg[0..4].try_into().unwrap_or([0; 4]));
                 let last_n = u32::from_le_bytes(arg[4..8].try_into().unwrap_or([0; 4]));
-                let Some(slot) = self.telemetry_slot else {
+                // 蓝图 67 WP-67.2.3：端点启动期一次装配持有（跨请求 epoch
+                // 单调延续）。两态失败词形逐字节保留：槽未授予 =
+                // telemetry-not-bound；槽在场但建端失败 = eipc-bind-failed。
+                if self.telemetry_slot.is_none() {
                     return ActionResult {
                         status: RpcStatus::Failed,
                         detail: "telemetry-not-bound".into(),
                         payload: None,
                     };
-                };
-                // 每请求按槽重建客户端（先例：eipc_block_io/协议服务重建）；
-                // 失败 → 显式不可达。
-                let Ok(client) = eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                    "mgmt-history",
-                    slot,
-                    eneros_drv_svc::now_ns,
-                ) else {
+                }
+                let Some(ep) = self.history_ep.as_mut() else {
                     return ActionResult {
                         status: RpcStatus::Failed,
                         detail: "history:eipc-bind-failed".into(),
                         payload: None,
                     };
                 };
-                self.history_binds = self.history_binds.saturating_add(1);
                 match eneros_business_services::mgmt_history::fetch_history(
-                    client,
+                    ep,
                     "svc-telemetry",
                     point,
                     last_n,
-                    5_000,
                 ) {
                     Ok(f) => {
                         let mut detail = f.summary.clone();

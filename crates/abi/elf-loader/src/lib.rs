@@ -5,7 +5,7 @@
 //! - ELF64 + AArch64（拒绝 ELF32 / 非 AArch64）；
 //! - 可执行格式：ET_DYN（PIE，agent 场景）或 ET_EXEC（固定地址，
 //!   aarch64-unknown-none 裸机 EL0 服务与 rootserver——C2/BOOT-007 修复后
-//!   root-task 经 plan_spawn 解析自身 ET_EXEC ELF，原 PIE-only 校验导致
+//!   root-task 经 spawn 计划解析自身 ET_EXEC ELF，原 PIE-only 校验导致
 //!   BadElf）；
 //! - W^X（禁止可写且可执行段）；
 //! - 有界（所有 offset/size 相对输入缓冲校验）；

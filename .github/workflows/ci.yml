@@ -50,6 +50,12 @@ jobs:
       - name: Feature-face test matrix (blueprint 66 C8 gate)
         run: cargo xtask qa feature-matrix
 
+      # 蓝图 67 WP-67.1.2（体检 A3 接电）：sign-key-discipline 静态门进 CI
+      # ——蓝图 66 C4 配套门此前只活在本地 opt-in 的 pre-commit，CI 从不
+      # 扫真实仓库；门本体已自 eneros-ci 迁 xtask（WP-67.1.1 单源化）。
+      - name: Sign-key discipline gate (blueprint 67 A3 gate)
+        run: cargo xtask qa gate sign-keys
+
       - name: BumpAllocator loom concurrency model (C-243 gate)
         run: cargo test --locked -p eneros-services --features loom --lib loom_allocator
 

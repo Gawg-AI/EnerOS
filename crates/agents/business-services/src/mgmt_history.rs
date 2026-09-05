@@ -2,9 +2,9 @@
 //! host/target 共用；RawIpc 泛型宿主注入内存对端）。
 //!
 //! 管道：svc-mgmt executor ←(arg: point‖last_n)→ 本模块经
-//! [`eneros_agent_sdk::ChunkedClient`] 逐页向 svc-telemetry 发 TELR 帧
-//! （`more` 驱动续页，页大小 = history_wire::PAGE_RECORDS；每页一次独立
-//! 分块传输，单线程服务循环天然串行——页间可能插入新的 ingest 批次，
+//! [`eneros_agent_sdk::endpoint::ChunkedEndpoint`] 逐页向 svc-telemetry 发
+//! TELR 帧（`more` 驱动续页，页大小 = history_wire::PAGE_RECORDS；每页一次
+//! 独立分块传输，单线程服务循环天然串行——页间可能插入新的 ingest 批次，
 //! 尾部行集随之前移属登记过的可接受语义），拼装为**定长 25B 行的二进制
 //! 载荷**。
 //!
@@ -17,7 +17,8 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use eneros_agent_sdk::chunked::{ChunkedClient, RawIpc};
+use eneros_agent_sdk::chunked::RawIpc;
+use eneros_agent_sdk::endpoint::ChunkedEndpoint;
 use eneros_agent_sdk::history_wire::{
     clamp_last_n, decode_response, encode_query, HistQuery, HistResponse, FLAG_CLAMPED, HIST_OK,
     HIST_UNKNOWN_POINT, ROW_LEN,
@@ -51,32 +52,28 @@ pub enum HistoryError {
 ///
 /// 单线程阻塞逐页拉取；页数天然 ≤ `MAX_LAST_N / PAGE_RECORDS` 上界；
 /// 空页立即终止（防御性双条件，不对端异常自旋）。
-/// `client` 按值持有（目标侧每请求以授予槽重建 `Sel4IpcClient`——
-/// 与协议服务重建先例同构；host 测试传内存对端）。ChunkedClient 内部
-/// epoch 自增覆盖页序单调性，无跨页共享状态要求。
+/// `endpoint` 可变借用（蓝图 67 WP-67.2.3：epoch 单点递增纪律——调用方
+/// 持 endpoint，跨 fetch 页序单调延续不重启；原"每 fetch 重建恒 0"面
+/// 删除；超时 = 常量默认 5_000，与原全调用方实传值一致）。
 pub fn fetch_history<C: RawIpc>(
-    client: C,
+    endpoint: &mut ChunkedEndpoint<C>,
     target: &'static str,
     point: u32,
     last_n_raw: u32,
-    timeout_ms: u64,
 ) -> Result<HistoryFetch, HistoryError> {
     let (last_n, clamped) = clamp_last_n(last_n_raw);
     let mut out_rows: Vec<u8> = Vec::new();
     let mut total;
     let mut page = 0u32;
     let mut saw_clamped = false;
-    // 客户端整链一次成型（ChunkedClient 内部 epoch 每传输自增——页序
-    // 单调性由此保证，不依赖调用方状态）。
-    let mut transfer = ChunkedClient::new(client, 0, timeout_ms);
     loop {
         let req = encode_query(&HistQuery {
             point,
             last_n,
             page,
         });
-        let raw = transfer
-            .transfer(target, &req)
+        let raw = endpoint
+            .call(target, &req)
             .map_err(|_| HistoryError::Transport)?;
         let resp: HistResponse = decode_response(&raw).ok_or(HistoryError::BadFrame)?;
         match resp.status {
@@ -140,6 +137,8 @@ mod spec_c_four_arm_tests {
         requests: alloc::rc::Rc<core::cell::RefCell<usize>>,
         /// 逻辑页数（FINAL 载荷到达即一页）——钳制窗页数收敛断言用。
         pages: alloc::rc::Rc<core::cell::RefCell<usize>>,
+        /// 收到的 Header epoch 序列（R-67.4 页序单调断言）。
+        epochs: alloc::rc::Rc<core::cell::RefCell<Vec<u64>>>,
         // —— 分块状态机三件套（同 control_service_main）——
         rx: eneros_agent_sdk::chunked::ChunkedReceiver,
         pending: Option<Vec<u8>>,
@@ -153,6 +152,7 @@ mod spec_c_four_arm_tests {
                 disconnect: false,
                 requests: alloc::rc::Rc::new(core::cell::RefCell::new(0)),
                 pages: alloc::rc::Rc::new(core::cell::RefCell::new(0)),
+                epochs: alloc::rc::Rc::new(core::cell::RefCell::new(Vec::new())),
                 rx: Default::default(),
                 pending: None,
                 paged_resp: Vec::new(),
@@ -162,6 +162,16 @@ mod spec_c_four_arm_tests {
         /// 取逻辑页计数句柄（行为锁定：窗口收满页数断言）。
         fn page_counter(&self) -> alloc::rc::Rc<core::cell::RefCell<usize>> {
             alloc::rc::Rc::clone(&self.pages)
+        }
+
+        /// 取 Header epoch 序列句柄（R-67.4 页序单调断言）。
+        fn epoch_log(&self) -> alloc::rc::Rc<core::cell::RefCell<Vec<u64>>> {
+            alloc::rc::Rc::clone(&self.epochs)
+        }
+
+        /// 取请求计数句柄（断连负例：恰一次传输尝试）。
+        fn requests_handle(&self) -> alloc::rc::Rc<core::cell::RefCell<usize>> {
+            alloc::rc::Rc::clone(&self.requests)
         }
     }
 
@@ -210,6 +220,9 @@ mod spec_c_four_arm_tests {
                 return Err(AgentErrName::Timeout);
             }
             if &payload[..4] == CHUNK_MAGIC_HEADER {
+                if let Ok(h) = ChunkHeader::decode(payload) {
+                    self.epochs.borrow_mut().push(h.epoch);
+                }
                 let h = ChunkHeader::decode(payload).unwrap();
                 let _ = self.rx.on_message(&h.encode(), true);
                 return Ok(ack_bytes().to_vec());
@@ -264,8 +277,10 @@ mod spec_c_four_arm_tests {
     #[test]
     fn arm1_normal_fetch_fieldwise_multi_page() {
         // 120 行 ⇒ 3 页（48×2+24）。
-        let peer = FakeTelemetry::new(stored_point(120));
-        let f = fetch_history(peer, "svc-telemetry", 42, 200, 1_000).expect("ok");
+        let mut ep = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap(FakeTelemetry::new(
+            stored_point(120),
+        ));
+        let f = fetch_history(&mut ep, "svc-telemetry", 42, 200).expect("ok");
         assert_eq!(f.total, 120);
         assert!(!f.clamped);
         assert_eq!(f.rows_bin.len(), 120 * ROW_LEN);
@@ -288,8 +303,10 @@ mod spec_c_four_arm_tests {
     /// 臂②：last_n 截断——存量 300 取 40 ⇒ 恰最新 40 行、total=300。
     #[test]
     fn arm2_truncation_takes_newest_window() {
-        let peer = FakeTelemetry::new(stored_point(300));
-        let f = fetch_history(peer, "svc-telemetry", 42, 40, 1_000).expect("ok");
+        let mut ep = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap(FakeTelemetry::new(
+            stored_point(300),
+        ));
+        let f = fetch_history(&mut ep, "svc-telemetry", 42, 40).expect("ok");
         assert_eq!(f.total, 300);
         assert_eq!(f.rows_bin.len(), 40 * ROW_LEN);
         // 首行必须是窗口起点 = 最新 40 条中最早者 ts=(300-40)*10。
@@ -300,8 +317,9 @@ mod spec_c_four_arm_tests {
     /// 臂③：空 point ⇒ NoSuchPoint 明确失败（非空成功、非挂死）。
     #[test]
     fn arm3_unknown_point_is_explicit_error() {
-        let peer = FakeTelemetry::new(stored_point(4));
-        let err = fetch_history(peer, "svc-telemetry", 77, 16, 1_000).expect_err("must fail");
+        let mut ep =
+            eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap(FakeTelemetry::new(stored_point(4)));
+        let err = fetch_history(&mut ep, "svc-telemetry", 77, 16).expect_err("must fail");
         assert_eq!(err, HistoryError::NoSuchPoint);
     }
 
@@ -315,7 +333,8 @@ mod spec_c_four_arm_tests {
     fn arm4_over_limit_clamped_with_hint() {
         let peer = FakeTelemetry::new(stored_point(600));
         let pages = peer.page_counter();
-        let f = fetch_history(peer, "svc-telemetry", 42, u32::MAX, 1_000).expect("ok");
+        let mut ep = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap(peer);
+        let f = fetch_history(&mut ep, "svc-telemetry", 42, u32::MAX).expect("ok");
         assert!(f.clamped, "必须携带钳制提示");
         // total 契约 = 精确全量（600）；行区窗口 = 钳制上限（512）。
         assert_eq!(f.total, 600);
@@ -335,7 +354,37 @@ mod spec_c_four_arm_tests {
     fn transport_failure_maps_to_transport_error() {
         let mut peer = FakeTelemetry::new(stored_point(10));
         peer.disconnect = true;
-        let err = fetch_history(peer, "svc-telemetry", 42, 5, 1_000).expect_err("transport");
+        let requests = peer.requests_handle();
+        let mut ep = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap(peer);
+        let err = fetch_history(&mut ep, "svc-telemetry", 42, 5).expect_err("transport");
         assert_eq!(err, HistoryError::Transport);
+        assert_eq!(
+            *requests.borrow(),
+            1,
+            "失败页一次传输尝试即终止（不挂死自旋）"
+        );
+    }
+
+    /// R-67.4：页序 epoch 严格递增（单 fetch 内 0,1,2…）且**跨 fetch
+    /// 延续**不重启 0（蓝图 67 WP-67.2.3——原"每 fetch 重建恒 0"面删除；
+    /// 服务端忽略 epoch 值，wire 中性 [01] §2.1）。
+    #[test]
+    fn page_epochs_strictly_increasing_and_continue_across_fetches() {
+        // 120 行 ⇒ 单 fetch 3 页。
+        let peer = FakeTelemetry::new(stored_point(120));
+        let epochs = peer.epoch_log();
+        let mut ep = eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap(peer);
+        fetch_history(&mut ep, "svc-telemetry", 42, 200).expect("fetch1");
+        assert_eq!(
+            *epochs.borrow(),
+            alloc::vec![0, 1, 2],
+            "单 fetch 页序严格递增"
+        );
+        fetch_history(&mut ep, "svc-telemetry", 42, 200).expect("fetch2");
+        assert_eq!(
+            *epochs.borrow(),
+            alloc::vec![0, 1, 2, 3, 4, 5],
+            "跨 fetch epoch 延续单调（不重启 0）"
+        );
     }
 }

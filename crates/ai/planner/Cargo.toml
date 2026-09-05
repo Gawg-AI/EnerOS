@@ -11,7 +11,6 @@ eneros-decision-contract = { path = "../decision-contract" }
 eneros-objective-engine = { path = "../objective-engine" }
 eneros-resource-registry = { path = "../../agents/resource-registry" }
 eneros-solver-core = { path = "../solver-core", features = ["highs-ffi"] }
-eneros-solver-model = { path = "../solver-model" }
 sha2 = { version = "0.10.9", default-features = false }
 
 [features]

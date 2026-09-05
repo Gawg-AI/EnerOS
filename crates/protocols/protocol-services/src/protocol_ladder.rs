@@ -374,6 +374,12 @@ pub struct Sel4ServiceIo {
     mmio_vaddr: u64,
     dma_vaddr: u64,
     dma_phys: u64,
+    /// 蓝图 67 WP-67.2.3（[01] §2.1a）：config 端点惰性绑定一次持有
+    /// （原实现每取数重建 endpoint 且 `client_mut()` 绕过 epoch——恒 0
+    /// 违纪面；现单 endpoint 跨取数 epoch 单调递增）。
+    config_ep: Option<
+        eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    >,
 }
 
 #[cfg(all(target_os = "none", feature = "sel4"))]
@@ -391,7 +397,20 @@ impl Sel4ServiceIo {
             mmio_vaddr,
             dma_vaddr,
             dma_phys,
+            config_ep: None,
         }
+    }
+
+    /// config 端点惰性绑定（首次取数时一次；None = 槽未授予/建端失败
+    /// ——fail-closed 语义同原 per-call bind）。
+    fn bind_config_ep(&mut self) -> Option<()> {
+        if self.config_ep.is_none() {
+            self.config_ep = eneros_agent_sdk::endpoint::ChunkedEndpoint::bind(
+                self.service,
+                eneros_agent_sdk::config_client::CONFIG_ENDPOINT,
+            );
+        }
+        Some(())
     }
 }
 
@@ -399,22 +418,15 @@ impl Sel4ServiceIo {
 impl ServiceIo for Sel4ServiceIo {
     fn config_entry(&mut self, id: &str) -> Option<Vec<u8>> {
         use eneros_agent_sdk::config_gateway::ConfigEntrySource as _;
-        // 蓝图 62 卷 62.2（WP-62.2.4）：EIPC 建端单源 ChunkedEndpoint::bind。
-        let mut ep = eneros_agent_sdk::endpoint::ChunkedEndpoint::bind(
-            self.service,
-            eneros_agent_sdk::config_client::CONFIG_ENDPOINT,
-        )?;
-        ep.client_mut().config_entry(id)
+        self.bind_config_ep()?;
+        self.config_ep.as_mut()?.config_entry(id)
     }
 
     /// 蓝图 61：GET_GENERATION（观测映射世代；经同一 config 槽）。
     fn config_generation(&mut self) -> Option<u64> {
         use eneros_agent_sdk::config_gateway::ConfigEntrySource as _;
-        let mut ep = eneros_agent_sdk::endpoint::ChunkedEndpoint::bind(
-            self.service,
-            eneros_agent_sdk::config_client::CONFIG_ENDPOINT,
-        )?;
-        ep.client_mut().config_generation()
+        self.bind_config_ep()?;
+        self.config_ep.as_mut()?.config_generation()
     }
 
     fn transport(

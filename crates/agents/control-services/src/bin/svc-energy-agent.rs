@@ -92,26 +92,26 @@ pub extern "C" fn _start(
     )
 }
 
-/// EIPC 客户端（分块传输 + 裸帧请求）。
+/// EIPC 客户端（分块传输 + 裸帧请求）。蓝图 67 WP-67.2.3：`ipc + epoch
+/// + timeout_ms` 三字段收敛为 `ChunkedEndpoint`（bind_cap_at 起始
+/// instance_epoch；递增纪律单点，超时 5_000 = 常量默认走 `call`）。
 #[cfg(target_os = "none")]
 struct EipcClient {
-    ipc: eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
-    epoch: u64,
-    timeout_ms: u64,
+    endpoint:
+        eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
 }
 
 #[cfg(target_os = "none")]
 impl EipcClient {
     fn new(dest_cap: u64, name: &str) -> Option<Self> {
-        match eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(name, dest_cap, eneros_drv_svc::now_ns)
-        {
-            Ok(ipc) => Some(Self {
-                ipc,
-                epoch: eneros_drv_svc::instance_epoch(),
-                timeout_ms: 5_000,
-            }),
-            Err(e) => {
-                eneros_runtime::println!("[svc-energy-agent] EIPC {name} bind FAILED: {e:?}");
+        match eneros_agent_sdk::endpoint::ChunkedEndpoint::bind_cap_at(
+            name,
+            dest_cap,
+            eneros_drv_svc::instance_epoch(),
+        ) {
+            Some(endpoint) => Some(Self { endpoint }),
+            None => {
+                eneros_runtime::println!("[svc-energy-agent] EIPC {name} bind FAILED");
                 None
             }
         }
@@ -122,11 +122,8 @@ impl EipcClient {
         target: &str,
         req: &[u8],
     ) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
-        let mut transfer =
-            eneros_agent_sdk::ChunkedClient::new(&mut self.ipc, self.epoch, self.timeout_ms);
-        self.epoch = self.epoch.saturating_add(1);
-        transfer
-            .transfer(target, req)
+        self.endpoint
+            .call(target, req)
             .map_err(|e| alloc::format!("eipc:{e:?}"))
     }
 }
@@ -136,9 +133,11 @@ struct TelemetryEipc(EipcClient);
 #[cfg(target_os = "none")]
 impl eneros_control_services::energy_agent_service::TelemetryClient for TelemetryEipc {
     fn fetch_telemetry(&mut self) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
+        // 蓝图 67 WP-67.3：跨 crate 双名混用消除——直呼 wire 单源常量
+        // （control-services 侧 re-export 别名保留供旧路径）。
         self.0.call(
             "svc-telemetry",
-            &[eneros_control_services::telemetry::TEL_SNAPSHOT],
+            &[eneros_agent_sdk::tel_wire::TEL_REQ_SNAPSHOT],
         )
     }
 }

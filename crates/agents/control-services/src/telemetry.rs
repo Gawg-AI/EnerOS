@@ -15,15 +15,6 @@ use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use eneros_control_dispatch::FeedbackPointMapping;
-use eneros_safety_validator::{
-    EvaluatorConfig, TelemetrySample, TelemetryTrustEvaluator, TrustRejection, TrustedTelemetry,
-};
-
-/// 请求码。
-pub const TEL_INGEST: u8 = 1;
-pub const TEL_SNAPSHOT: u8 = 2;
-pub const TEL_ADVANCE_EPOCH: u8 = 3;
 /// 蓝图 61 v0.314.27：观测事件影子批次（V1 128B 帧 × n；影子轨零控制消费）。
 /// 蓝图 62 卷 62.2（WP-62.2.2）：批次 wire（布局/编码/解码/分批预算）收归
 /// agent-sdk `obs_batch_wire` 单一事实源，本 crate 与协议服务共同消费；
@@ -36,6 +27,17 @@ pub use eneros_agent_sdk::obs_batch_wire::{
 /// root/svc-telemetry/协议服务共同消费）。此处 re-export 保持既有调用面。
 pub use eneros_agent_sdk::sample_wire::{
     decode_sample, encode_sample, integrity_code, quality_code, SAMPLE_WIRE_LEN,
+};
+/// 请求码（蓝图 67 WP-67.3 单源收编：常量本体只在 agent-sdk `tel_wire`
+/// ——此处 re-export 别名保持 crate 内分发表与既有调用面零改动；本文件
+/// 禁止再以裸 const 定义请求码（自守卫测试执法，见文件尾））。
+pub use eneros_agent_sdk::tel_wire::{
+    TEL_REQ_ADVANCE_EPOCH as TEL_ADVANCE_EPOCH, TEL_REQ_INGEST as TEL_INGEST,
+    TEL_REQ_SNAPSHOT as TEL_SNAPSHOT,
+};
+use eneros_control_dispatch::FeedbackPointMapping;
+use eneros_safety_validator::{
+    EvaluatorConfig, TelemetrySample, TelemetryTrustEvaluator, TrustRejection, TrustedTelemetry,
 };
 /// 样本缓冲上限（有界）。
 pub const MAX_BUFFERED_SAMPLES: usize = 256;
@@ -1157,6 +1159,20 @@ mod tests {
         assert!(
             DEFAULT_HISTORY_CAP * core::mem::size_of::<HistoryRecord>() <= 32 * 1024,
             "缺省内存环必须守 R2 预算（≤32KiB）；扩容先出静态审计表"
+        );
+    }
+
+    /// 蓝图 67 WP-67.3 自守卫（照 tel_wire.rs include_str! 先例）：本文件
+    /// 禁止再以裸 const 定义请求码——单源在 agent-sdk
+    /// tel_wire，此处只允许 use re-export 别名（`TEL_INGEST_OBS` 是 use
+    /// 别名不是 const，不受影响）。
+    #[test]
+    fn no_bare_tel_const_definitions_in_module() {
+        let src = include_str!("telemetry.rs");
+        let banned = concat!("pub const ", "TEL_");
+        assert!(
+            !src.contains(banned),
+            "请求码裸常量回归（单源 = agent-sdk tel_wire，蓝图 67 WP-67.3）"
         );
     }
 }

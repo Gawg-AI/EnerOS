@@ -92,7 +92,9 @@ pub fn fetch_control_binding<T: eneros_agent_sdk::config_gateway::ConfigEntrySou
 /// 同源（agent-sdk `config_client` + `config_gateway`）。
 #[cfg(feature = "sel4")]
 pub fn fetch_control_chain_key(
-    config: &mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+    config: &mut eneros_agent_sdk::endpoint::ChunkedEndpoint<
+        eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+    >,
 ) -> Option<[u8; 32]> {
     let got = config_get(config, "security", |body| {
         match eneros_config_bundle::control_chain_key::ControlChainKeyConfig::decode(body) {

@@ -14,7 +14,9 @@
 2. **每 WP Exit 自证后递增一个 patch**：`0.313.0 → 0.313.1 → …`；
    52 卷 GO 裁决通过后才允许 tag `v1.0.0`。
 3. 该纪律由双闸门 fail-closed 强制：`cargo xtask qa gng-version` 与
-   `eneros-ci version-gate`（CI 显式步骤 + pre-commit hook 自动执行）。
+   `cargo xtask qa gng-version`（CI 显式步骤 + pre-commit 三快门之一；
+   原 `eneros-ci version-gate` 已随蓝图 67 WP-67.1.4 退役——版本规则
+   只改 xtask/qa.rs 一处）。
    非 `x.y.z` 数字格式同样拒绝。
 
 ## 工具

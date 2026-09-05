@@ -2,7 +2,7 @@
 //! （seL4 kernel 以 ELF entry 创建初始线程）。Rust 默认把 `main` 设为
 //! 入口，这里用 `-e _start` 强制覆盖（rust-lld）。
 //!
-//! 同时强制 4 KiB 页对齐（`-z max-page-size=0x1000`）：plan_spawn 解析
+//! 同时强制 4 KiB 页对齐（`-z max-page-size=0x1000`）：spawn 计划解析
 //! root 模块（bundle 中的 root-task ELF）时要求段 vaddr 页对齐
 //! （`seg.vaddr % PAGE_SIZE == 0`，否则 `SpawnError::PlanMismatch`）；
 //! rust-lld 默认 64 KiB max-page-size 导致非页对齐（C2/BOOT-007 迭代修复）。

@@ -168,10 +168,14 @@ pub(crate) fn handle_unloaded(
 pub struct DispatchHandler {
     /// SPEC WP-A.1：密钥不可得 ⇒ None（拒载态：SUBMIT/INTENT 一律回执拒绝）。
     engine: Option<eneros_control_dispatch::DispatchEngine>,
-    /// 47（WP-47.1 协议入站写）：svc-telemetry 快照客户端（授予槽经
+    /// 47（WP-47.1 协议入站写）：svc-telemetry 快照端点（授予槽经
     /// WP-54.4 按名解析）——意图授权前取受信任遥测（新鲜度/安全
     /// 目录由 12 态链裁决）；未授予 → 意图路径 fail-closed。
-    telemetry: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    /// 蓝图 67 WP-67.2.3：ChunkedEndpoint 单点 epoch 纪律（DISP_SUBMIT_
+    /// INTENT 高频路径——每次请求 epoch 递增，服务端忽略，wire 中性）。
+    telemetry: Option<
+        eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    >,
     /// 47（WP-47.1）：意图线码请求处理计数（观测）。
     pub intent_requests: u64,
 }
@@ -229,7 +233,9 @@ impl crate::ControlServiceHandler for DispatchHandler {
 /// 词形保持今日「全吞 .ok()?」）。
 #[cfg(all(target_os = "none", feature = "sel4"))]
 fn fetch_control_write(
-    config: &mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+    config: &mut eneros_agent_sdk::endpoint::ChunkedEndpoint<
+        eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+    >,
 ) -> Option<eneros_config_bundle::control_write::ControlWriteConfig> {
     use eneros_agent_sdk::config_gateway::{config_get, ConfigStep};
     config_get(config, "control-write", |body| {
@@ -599,13 +605,10 @@ impl DispatchHandler {
         // 47（WP-47.2）：写目标（设备/点）由 45 卷点表 Control 点绑定
         // （svc-config config "points"）；不可得 → 0/0 fail-closed（全部
         // 提交/意图 NotAuthorized 拒绝，串口登记）。
+        // 蓝图 67 WP-67.2.3（[01] §2.1a）：config 传输面 = ChunkedEndpoint
+        // （ConfigEntrySource impl 已迁 endpoint；标签与构造路径同源）。
         let mut config_client = granted_slot(eipc_mask, "svc-config").and_then(|slot| {
-            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                "control-dispatch",
-                slot,
-                eneros_drv_svc::now_ns,
-            )
-            .ok()
+            eneros_agent_sdk::endpoint::ChunkedEndpoint::bind_cap("control-dispatch", slot)
         });
         // 62 v0.315.0 WP-62.1.4（S7）：一次装配一次 catalog 拉取——绑定与
         // build_engine 资源/合同/反馈三视图共享同一 LoadedCatalog（原实现
@@ -647,14 +650,10 @@ impl DispatchHandler {
                 None
             }
         };
-        // 47（WP-47.1）：svc-telemetry 快照客户端（X3 bit2）。
+        // 47（WP-47.1）：svc-telemetry 快照端点（X3 bit2）——蓝图 67
+        // WP-67.2.3：bind_cap 单源装配（epoch 从 0 起）。
         let telemetry = granted_slot(eipc_mask, "svc-telemetry").and_then(|slot| {
-            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-                "control-dispatch",
-                slot,
-                eneros_drv_svc::now_ns,
-            )
-            .ok()
+            eneros_agent_sdk::endpoint::ChunkedEndpoint::bind_cap("control-dispatch", slot)
         });
         if telemetry.is_none() {
             eneros_runtime::println!(
@@ -676,7 +675,9 @@ impl DispatchHandler {
         point_id: u32,
         now: u64,
         eipc_mask: u64,
-        mut config_client: Option<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+        mut config_client: Option<
+            eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+        >,
         catalog: Option<&crate::catalog_gateway::LoadedCatalog>,
     ) -> eneros_control_dispatch::DispatchEngine {
         use alloc::string::String;
@@ -809,13 +810,15 @@ impl DispatchHandler {
 
     /// 47（WP-47.1）：取受信任遥测快照（svc-telemetry TEL_SNAPSHOT →
     /// 144B wire）。不可得 → None（调用方 fail-closed 拒绝）。
+    /// 蓝图 67 WP-67.2.3：endpoint.call（原恒 epoch=0 手搓面收编）。
     fn fetch_trusted_telemetry(
-        telemetry: &mut eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+        telemetry: &mut eneros_agent_sdk::endpoint::ChunkedEndpoint<
+            eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
+        >,
     ) -> Option<eneros_safety_validator::TrustedTelemetry> {
-        let mut transfer = eneros_agent_sdk::ChunkedClient::new(telemetry, 0, 5_000);
         // 蓝图 66 WP-66.5.4：请求 opcode/ack 字节单源 tel_wire。
-        let resp = transfer
-            .transfer(
+        let resp = telemetry
+            .call(
                 "svc-telemetry",
                 &[eneros_agent_sdk::tel_wire::TEL_REQ_SNAPSHOT],
             )

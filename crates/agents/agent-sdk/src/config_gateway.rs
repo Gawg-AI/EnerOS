@@ -21,8 +21,9 @@ use crate::config_client::{self, ConfigError};
 /// ConfigGet 调用侧取数 seam：节 id → 原始响应字节（含 4B 长度前缀）。
 ///
 /// `None` = 未授予 / 传输失败（两态对调用方呈现等价）。target 实现挂在
-/// [`Sel4IpcClient`]；host 测试由各消费方持内存假件（`FakeConfigServer`
-/// 先例，[`crate::config_client`] 同法）。
+/// [`crate::endpoint::ChunkedEndpoint`]（蓝图 67 WP-67.2.2）；host 测试由
+/// 各消费方持内存假件（`FakeConfigServer` 先例，[`crate::config_client`]
+/// 同法）。
 pub trait ConfigEntrySource {
     fn config_entry(&mut self, id: &str) -> Option<Vec<u8>>;
 
@@ -84,17 +85,22 @@ pub fn config_get<T>(
     decode(body)
 }
 
+/// 蓝图 67 WP-67.2.2（[01] §2.1a 执行期订正）：transport impl 挂
+/// [`ChunkedEndpoint`]（epoch 单点纪律直达 trait 面）——原
+/// `Sel4IpcClient` impl 每次往返恒 epoch=0（类二违纪面）随 impl 迁移
+/// 消除；消费方持 endpoint（svc-telemetry/svc-ai-worker/svc-device-agent/
+/// dispatch_assembly catalog 路径/protocol_ladder Sel4ServiceIo）。
 #[cfg(any(test, feature = "sel4"))]
-impl ConfigEntrySource for crate::ipc_sel4::Sel4IpcClient {
-    /// ConfigGet 一次往返（epoch 0 / 超时 5_000ms——今日全部既有调用点
-    /// 同参；svc-mgmt 的逐请求 epoch 面不在本卷范围）。
+impl ConfigEntrySource for crate::endpoint::ChunkedEndpoint<crate::ipc_sel4::Sel4IpcClient> {
+    /// ConfigGet 一次往返（超时 = 常量默认 5_000ms，与原实参一致；
+    /// epoch 由 endpoint 单点递增）。
     fn config_entry(&mut self, id: &str) -> Option<Vec<u8>> {
-        config_client::get_entry(self, id, 0, 5_000).ok()
+        config_client::get_entry(self, id).ok()
     }
 
     /// GET_GENERATION 一次往返（蓝图 61 v0.314.27）。
     fn config_generation(&mut self) -> Option<u64> {
-        config_client::get_generation(self, 0, 5_000).ok()
+        config_client::get_generation(self).ok()
     }
 }
 

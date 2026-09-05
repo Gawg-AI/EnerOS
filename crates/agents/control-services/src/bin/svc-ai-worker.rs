@@ -60,13 +60,10 @@ pub extern "C" fn _start(
     let slot_of = |target: &'static str| -> Option<u64> {
         eneros_agent_sdk::eipc_granted_slot("svc-ai-worker", eipc_mask, target)
     };
+    // 蓝图 67 WP-67.2.3：config 传输面 = ChunkedEndpoint（epoch 单点
+    // 纪律；标签与构造路径同源——bind_cap 内部同 Sel4IpcClient::new）。
     let mut config_client = slot_of("svc-config").and_then(|slot| {
-        eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
-            "aiworker-config",
-            slot,
-            eneros_drv_svc::now_ns,
-        )
-        .ok()
+        eneros_agent_sdk::endpoint::ChunkedEndpoint::bind_cap("aiworker-config", slot)
     });
     // 蓝图 61 v0.314.35：目录版本装载（候选计划 resource_catalog_version
     // 与 dispatch PlannerView 同代——[08] §4.8 planner 输入只查 Registry）。

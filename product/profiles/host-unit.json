@@ -5,10 +5,12 @@
   "platform": "host",
   "target": "host",
   "image_layout": null,
-  "artifacts": ["test-binaries"],
+  "artifacts": [
+    "test-binaries"
+  ],
   "binaries": [
     {
-      "selector": "eneros-ci::eneros-ci",
+      "selector": "eneros-xtask::eneros-xtask",
       "role": "host-gate",
       "default_features": true,
       "features": []
@@ -23,6 +25,8 @@
     "allow_mock": true,
     "allow_unsigned": true,
     "minimum_security_version": 0,
-    "entropy_sources": ["host-os"]
+    "entropy_sources": [
+      "host-os"
+    ]
   }
 }

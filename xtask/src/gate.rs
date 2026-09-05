@@ -1029,6 +1029,8 @@ pub fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
         "config-syntax" => command_config_syntax(root, tail),
         "docs" => command_docs_gate(root, tail),
         "keys" => command_keys_gate(root, tail),
+        // 蓝图 67 WP-67.1.1：sign-key-discipline 门（自 eneros-ci 迁入）。
+        "sign-keys" => command_sign_keys_gate(root, tail),
         other => Err(invalid(format!("unknown gate subcommand '{other}'"))),
     }
 }
@@ -1166,6 +1168,100 @@ pub fn command_docs_gate(root: &Path, _args: &[String]) -> DynResult<()> {
         stale_paths.len()
     );
     Ok(())
+}
+
+/// `qa gate sign-keys`（蓝图 67 WP-67.1.1——sign-key-discipline 门自
+/// eneros-ci crate 迁入 xtask，扫描语义逐字节保持；eneros-ci 已随本卷
+/// 退役，本门为唯一 owner）。
+///
+/// 签名钥显式来源纪律（蓝图 66 WP-66.1.1，体检 C4）：`resolve_signing_key`
+/// fail-closed 后，tools/ 与 .github/workflows/ 内所有 `xtask config
+/// compile` 调用块（含 `\` 续行）必须携带 `--sign-key-hex` 或登记过的
+/// `--accept-test-signing-key`。静态扫描判据，不做运行时拦截。
+/// 名字相近语义不同的姊妹门：`qa gate keys`（47 WP-47.3 私钥出仓门——
+/// 管键文件零跟踪/零默认键引用）；本门管调用块显式钥来源。
+pub fn command_sign_keys_gate(root: &Path, _args: &[String]) -> DynResult<()> {
+    let mut violations: Vec<String> = Vec::new();
+    for dir in ["tools", ".github/workflows"] {
+        let base = root.join(dir);
+        let files = walk_ext_files(&base, &["sh", "yml", "yaml"]);
+        for f in files {
+            let text = fs::read_to_string(&f)
+                .map_err(|e| invalid(format!("cannot read {}: {e}", f.display())))?;
+            for v in sign_key_violations_in(&text) {
+                violations.push(format!("{}: {v}", f.display()));
+            }
+        }
+    }
+    if violations.is_empty() {
+        println!("SIGN-KEYS → 0 violations（tools/ + .github/workflows/）");
+        Ok(())
+    } else {
+        for v in &violations {
+            println!("sign-key-discipline-violation: {v}");
+        }
+        Err(invalid(format!(
+            "sign-key-discipline-violation: {} violation(s)",
+            violations.len()
+        )))
+    }
+}
+
+/// 对单个文件文本扫描 `xtask config compile` 调用块；返回违规描述
+/// （不含文件名前缀，便于单测）。注释行（`#` 前缀）不计。语义自
+/// eneros-ci gate.rs 逐字节迁移（蓝图 67 WP-67.1.1——不扩大扫描面：
+/// 不扫 crates/、不扫 py、不加扩展名）。
+fn sign_key_violations_in(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut violations = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        let is_invocation = !trimmed.starts_with('#') && trimmed.contains("xtask config compile");
+        if !is_invocation {
+            i += 1;
+            continue;
+        }
+        // 调用块 = 命中行 + 后续 `\` 续行。
+        let mut block = String::from(lines[i]);
+        let mut j = i;
+        while lines[j].trim_end().ends_with('\\') && j + 1 < lines.len() {
+            j += 1;
+            block.push(' ');
+            block.push_str(lines[j]);
+        }
+        if !block.contains("--sign-key-hex") && !block.contains("--accept-test-signing-key") {
+            violations.push(format!(
+                "{line}: config compile 调用块缺显钥来源（--sign-key-hex | \
+                 --accept-test-signing-key）",
+                line = i + 1
+            ));
+        }
+        i = j + 1;
+    }
+    violations
+}
+
+/// 递归收集 dir 下指定扩展名文件（排序保证判定行确定性；语义同
+/// eneros-ci walk_files 迁移）。
+fn walk_ext_files(dir: &Path, exts: &[&str]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(walk_ext_files(&p, exts));
+            } else if p
+                .extension()
+                .map(|x| exts.iter().any(|e| x == *e))
+                .unwrap_or(false)
+            {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 /// `qa gate mock-leak`：mock 泄漏执法（26-B §3.3）——WP-26.1 扫描器升级为
@@ -1391,5 +1487,52 @@ mod tests {
         );
         assert!(!reachable.contains(&src.join("orphan.rs")), "orphan 不可达");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ============================================================================
+// 蓝图 67 WP-67.1.1：sign-key-discipline 扫描器单测（自 eneros-ci
+// gate.rs:735-769 四用例随迁——语义逐字节保持：缺钥块违规 / 带两旗标
+// 之一通过 / 注释行不计 / 续行合并）。
+// ============================================================================
+#[cfg(test)]
+mod sign_keys_gate_tests {
+    use super::sign_key_violations_in;
+
+    #[test]
+    fn flags_bare_invocation() {
+        let text = "\
+echo start
+cargo xtask config compile --profile qemu-prod --root-key-hex 5a5a
+echo done
+";
+        let v = sign_key_violations_in(text);
+        assert_eq!(v.len(), 1, "裸调用必须判违：{v:?}");
+        assert!(v[0].contains("缺显钥来源"));
+    }
+
+    #[test]
+    fn accepts_explicit_key_sources() {
+        let with_flag = "\
+cargo xtask config compile --profile qemu-prod \\
+  --accept-test-signing-key \\
+  --root-key-hex 5a5a
+";
+        assert!(sign_key_violations_in(with_flag).is_empty());
+
+        let with_hex = "cargo xtask config compile --sign-key-hex abcdef";
+        assert!(sign_key_violations_in(with_hex).is_empty());
+    }
+
+    #[test]
+    fn skips_comments_and_multi_line_blocks() {
+        let text = "\
+# xtask config compile 说明性注释不算调用
+gate_compile_config_helper() {
+  cargo xtask config compile --profile \"$P\" \\
+    --accept-test-signing-key --root-key-hex k
+}
+";
+        assert!(sign_key_violations_in(text).is_empty());
     }
 }

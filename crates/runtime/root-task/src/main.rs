@@ -85,7 +85,8 @@ fn resolve_init_bundle_phys() -> u64 {
 /// 1. `eneros_runtime::init()` 初始化串口控制台
 /// 2. 打印 root task banner（证明 Rust→seL4 FFI 真实启动）
 /// 3. 消费 BootInfo + 解析 init bundle（resolve_init_bundle_phys）
-/// 4. `spawn::plan_spawn` 生成 spawn 计划（root + ≥2 服务，W^X 页表）
+/// 4. `spawn::plan_spawn_dyn_aware_with_stack` 生成 spawn 计划（root +
+///    ≥2 服务，W^X 页表；蓝图 67 WP-67.5 收敛后生产唯一入口）
 /// 5. `spawn::sel4_spawn_services` 真实 spawn（M2.1 sel4-sys FFI）
 /// 6. 失败即挂起（fail-closed，不进入伪运行态）
 ///
@@ -354,8 +355,9 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
         }
     };
 
-    // WP-37.2：主路径必须经过租户强制（RT-06：旧主路径用不带 enforcement
-    // 的 plan_spawn，enforcement 只是备用 helper）。系统租户 id 由
+    // WP-37.2：主路径必须经过租户强制（RT-06：计划与记账分离——
+    // enforce_spawn 直呼面，蓝图 67 WP-67.5 删备用 helper
+    // plan_spawn_with_enforcement）。系统租户 id 由
     // TenantStore::create 分配（自增，首个为 1）：
     // - 预算来源：计划实际占用（plan 已解析真实 ELF 段/栈大小，非猜测）；
     //   manifest ResourceBudget 注入 bundle wire 后替换本策略常量（37.1 后续）。
@@ -568,7 +570,9 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
 /// 巨量分配与越窗读）。
 /// 30 RT-003：bundle total_len 窗口校验（host 可测纯函数）——header 声明
 /// 长度必须落在 [64, 内核映射窗口] 内；越窗（含 >4MiB）拒绝。
-#[allow(dead_code)] // 44.2：bundle 窗口长度校验，当前路径未用（44.4 冻结登记）
+// host 无调用方（target 侧 read_bundle_slice_from_phys 真实消费——
+// 蓝图 67 WP-67.6 修正 44.4 腐朽注记：非「未用」，是 cfg 差异）。
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
 fn bundle_len_within_window(total: usize) -> bool {
     total >= 64 && total <= eneros_boot_protocol::ENEROS_INIT_BUNDLE_MAX_LEN as usize
 }

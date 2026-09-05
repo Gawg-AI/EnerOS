@@ -3,6 +3,12 @@
 > 版本：v0.2.0  
 > 适用范围：EnerOS 全 workspace（kernel / runtime / ci）  
 > 蓝图依据：`蓝图/phase0.md` §v0.2.0、`记忆.md` §七 CI/CD 规范
+>
+> ⚠ **退役登记（蓝图 67 WP-67.1.4，2026-09-05）**：`eneros-ci` crate 已删除。其
+> version/mock/sign-key 三门 owner 归 xtask（`cargo xtask qa gng-version` /
+> `cargo xtask qa gate mock-leak` / `cargo xtask qa gate sign-keys`）；fmt/clippy/
+> deny/test 由 `.github/workflows/ci.yml` 直跑。本文以下 eneros-ci 章节为历史
+> 叙述，命令不再可执行。
 
 ---
 

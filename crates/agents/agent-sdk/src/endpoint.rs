@@ -50,14 +50,26 @@ impl<C: RawIpc> ChunkedEndpoint<C> {
         self.epoch
     }
 
-    /// 一次 chunked Call（Header/Data/Final/分页拉取）。
+    /// 一次 chunked Call（Header/Data/Final/分页拉取），默认超时
+    /// [`CHUNKED_CALL_TIMEOUT_MS`]。
     ///
     /// epoch 每次调用**恰好 +1**（与传输成败无关——原各消费方"建
     /// transfer 即递增"语义保真：传输失败后旧 epoch 序号不得复用，
     /// 服务端半组装缓冲按 epoch 拒迟到帧）。
     pub fn call(&mut self, target: &str, req: &[u8]) -> Result<Vec<u8>, ChunkError> {
-        let mut transfer =
-            ChunkedClient::new(&mut self.client, self.epoch, CHUNKED_CALL_TIMEOUT_MS);
+        self.call_with_timeout(target, req, CHUNKED_CALL_TIMEOUT_MS)
+    }
+
+    /// [`Self::call`] 的指定超时形态（蓝图 67 WP-67.2.1）：per-call 超时
+    /// 覆盖（原 Sel4EipcChannel 等消费方"timeout_ms==0 → 自持默认"的
+    /// 手写面收编为参数），epoch 递增纪律与 [`Self::call`] 完全一致。
+    pub fn call_with_timeout(
+        &mut self,
+        target: &str,
+        req: &[u8],
+        timeout_ms: u64,
+    ) -> Result<Vec<u8>, ChunkError> {
+        let mut transfer = ChunkedClient::new(&mut self.client, self.epoch, timeout_ms);
         self.epoch = self.epoch.saturating_add(1);
         transfer.transfer(target, req)
     }
@@ -95,6 +107,16 @@ impl ChunkedEndpoint<crate::ipc_sel4::Sel4IpcClient> {
         let client =
             crate::ipc_sel4::Sel4IpcClient::new(label, dest_cap, eneros_drv_svc::now_ns).ok()?;
         Some(Self::wrap(client))
+    }
+
+    /// [`Self::bind_cap`] 的指定起始 epoch 形态（蓝图 67 WP-67.2.1）：
+    /// 供 svc-energy-agent/channel 类「instance_epoch 起步」的装配——
+    /// epoch 初值语义与原手搓字段一致，递增点仍只在 [`Self::call`]。
+    /// 错误语义与 bind_cap 一致（`None` fail-closed）。
+    pub fn bind_cap_at(label: &str, dest_cap: u64, epoch: u64) -> Option<Self> {
+        let client =
+            crate::ipc_sel4::Sel4IpcClient::new(label, dest_cap, eneros_drv_svc::now_ns).ok()?;
+        Some(Self::wrap_at(client, epoch))
     }
 }
 
@@ -201,6 +223,39 @@ mod tests {
         );
     }
 
+    // ---- 蓝图 67 WP-67.2.1：call_with_timeout 定义锁 ----
+
+    #[test]
+    fn call_with_timeout_non_default_observed_by_transport() {
+        let mut ep = ChunkedEndpoint::wrap(SpyIpc::new());
+        let _ = ep.call_with_timeout("svc-x", &[1], 250);
+        // 一次 transfer = Header(request) + Final(request) 两拍，超时同参。
+        assert_eq!(
+            ep.client.timeouts_ns,
+            alloc::vec![250 * 1_000_000, 250 * 1_000_000],
+            "非默认超时透传传输面（ms→ns）"
+        );
+        assert_eq!(
+            ep.epoch_for_test(),
+            1,
+            "指定超时形态 epoch 仍恰好 +1（纪律与 call 一致）"
+        );
+    }
+
+    #[test]
+    fn call_uses_default_timeout_5000() {
+        let mut ep = ChunkedEndpoint::wrap(SpyIpc::new());
+        let _ = ep.call("svc-x", &[1]);
+        assert_eq!(
+            ep.client.timeouts_ns,
+            alloc::vec![
+                CHUNKED_CALL_TIMEOUT_MS * 1_000_000,
+                CHUNKED_CALL_TIMEOUT_MS * 1_000_000
+            ],
+            "call = call_with_timeout(默认 5_000)"
+        );
+    }
+
     // ---- ChunkedSession（63.2 WP-63.2.1）：共享 epoch 会话定义锁 ----
 
     #[test]
@@ -253,6 +308,7 @@ mod tests {
     struct SpyIpc {
         reject: bool,
         header_epochs: Vec<u64>,
+        timeouts_ns: Vec<u64>,
         calls: usize,
     }
     impl SpyIpc {
@@ -260,6 +316,7 @@ mod tests {
             Self {
                 reject: false,
                 header_epochs: Vec::new(),
+                timeouts_ns: Vec::new(),
                 calls: 0,
             }
         }
@@ -267,6 +324,7 @@ mod tests {
             Self {
                 reject: true,
                 header_epochs: Vec::new(),
+                timeouts_ns: Vec::new(),
                 calls: 0,
             }
         }
@@ -276,9 +334,10 @@ mod tests {
             &mut self,
             _target: &str,
             payload: &[u8],
-            _timeout_ns: u64,
+            timeout_ns: u64,
         ) -> Result<Vec<u8>, crate::AgentError> {
             self.calls += 1;
+            self.timeouts_ns.push(timeout_ns);
             if payload.len() >= 4 && payload[0..4] == *CHUNK_MAGIC_HEADER {
                 if let Ok(h) = ChunkHeader::decode(payload) {
                     self.header_epochs.push(h.epoch);
@@ -307,5 +366,91 @@ mod bind_shared_const_tests {
         let mut shared: u64 = 0;
         let long_label: alloc::string::String = alloc::string::String::from("L").repeat(65);
         let _ = crate::endpoint::ChunkedSession::bind_shared_const(&long_label, 1, &mut shared);
+    }
+}
+
+// 蓝图 67 WP-67.2.1：bind_cap_at 起始 epoch 可观测（epoch_for_test）。
+// 同 bind_shared_const 先例——sel4 特征门（host 默认面无 Sel4IpcClient
+// impl，路径不可达；起始 epoch 语义的 host 侧定义锁 =
+// wrap_at_preserves_shared_counter_and_epoch_is_read_only_view）。
+#[cfg(all(test, feature = "sel4"))]
+mod bind_cap_at_tests {
+    #[test]
+    fn bind_cap_at_starts_at_given_epoch() {
+        let ep = crate::endpoint::ChunkedEndpoint::bind_cap_at("bindcapat-probe", 1, 41);
+        assert!(
+            ep.is_some(),
+            "合法短标签建端必然成功（fail-closed 仅限建端失败）"
+        );
+        assert_eq!(
+            ep.unwrap().epoch_for_test(),
+            41,
+            "bind_cap_at 起始 epoch = 实参"
+        );
+    }
+}
+
+// ============================================================================
+// 蓝图 67 WP-67.2.4：仓走守卫——`ChunkedClient::new(` 非测试调用只允许
+// 存在于本 crate（epoch 递增纪律单点 = ChunkedEndpoint）。照
+// signer-keyring sm2_verify 仓走先例（walk crates/ + 注释行豁免）。
+// ============================================================================
+
+#[cfg(test)]
+mod repo_walk_guard {
+    use std::path::Path;
+
+    /// 白名单：**无**。蓝图预判需豁免 ingestion_stage.rs:729 字符串守卫
+    /// 字面，实际守卫模式含尾括号 `ChunkedClient::new(`——字符串守卫行
+    /// `src.contains("ChunkedClient::new")` 不含括号，结构性不匹配
+    /// （变异验证②实测：白名单文件植入真实调用 → 红；字面守卫在场 →
+    /// 绿），零豁免 = 全精度，且杜绝白名单被滥用为第二违纪入口。
+    fn walk(dir: &Path, hits: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("crates/ 可读") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                walk(&path, hits);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let as_str = path.to_string_lossy().to_string();
+                // epoch 纪律单点 crate：endpoint/chunked/config_client 本体。
+                if as_str.contains("agent-sdk") {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).expect("read src");
+                for (i, line) in src.lines().enumerate() {
+                    // 测试段豁免（简化口径）：`#[cfg(test)]` 起文件尾部不计
+                    // ——与 signer-keyring 守卫同粒度。
+                    if line.trim_start().starts_with("#[cfg(test)]") {
+                        break;
+                    }
+                    // 注释行不匹配（signer-keyring 先例）。
+                    if line.trim_start().starts_with("//") {
+                        continue;
+                    }
+                    if line.contains("ChunkedClient::new(") {
+                        hits.push(format!("{as_str}:{}: {}", i + 1, line.trim()));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chunked_client_new_only_inside_agent_sdk() {
+        // CARGO_MANIFEST_DIR = <root>/crates/agents/agent-sdk → ancestors:
+        // [0]=agent-sdk [1]=agents [2]=crates。
+        let crates_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("crates root")
+            .to_path_buf();
+        let mut hits = Vec::new();
+        walk(&crates_root, &mut hits);
+        assert!(
+            hits.is_empty(),
+            "ChunkedClient::new 非测试调用越出 agent-sdk（必须改走 ChunkedEndpoint——\
+             epoch 单点递增纪律，蓝图 67 WP-67.2.4）:\n{}",
+            hits.join("\n")
+        );
     }
 }

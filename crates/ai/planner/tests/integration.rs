@@ -201,6 +201,14 @@ impl Solver for ScriptedSolver {
     fn set_param(&mut self, _k: &str, _v: &str) -> Result<(), SolverError> {
         Ok(())
     }
+    // 蓝图 67 WP-67.4：类型化注入面——假件按需覆写（默认 Err 是生产
+    // 语义；planner 依赖这两调用成功才能进 solve）。
+    fn set_time_limit_s(&mut self, _limit_s: f64) -> Result<(), SolverError> {
+        Ok(())
+    }
+    fn set_mip_rel_gap(&mut self, _gap: f64) -> Result<(), SolverError> {
+        Ok(())
+    }
     fn status(&self) -> eneros_solver_core::solver::SolverStatus {
         eneros_solver_core::solver::SolverStatus::Idle
     }

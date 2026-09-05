@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # ============================================================
 # EnerOS / Power Native Agent OS — Pre-commit Hook
-# Version: v0.3.1
+# Version: v0.4.0
 # Target: WSL2 Ubuntu / native Linux (Bash)
 # ============================================================
-# Git pre-commit hook: runs the eneros-ci quality gate
-# (fmt / clippy / deny / test) before allowing a commit.
+# Git pre-commit hook：三快门（蓝图 67 WP-67.1.4 / R-67.8）：
+#   1. cargo xtask qa gate sign-keys   （签名钥显式来源；WP-67.1.1 迁 xtask）
+#   2. cargo xtask qa gate mock-leak   （mock 收编宽面门）
+#   3. cargo xtask qa gng-version      （Go/No-Go 与版本一致性）
+# fmt / clippy / deny / test 四项归 CI（.github/workflows/ci.yml 直跑；
+# 原 eneros-ci crate 已于蓝图 67 WP-67.1.4 退役——门禁不变式每条一个
+# owner，本地三快门 + CI 四项，无双实现）。
 #
-# Blueprint: phase0.md §v0.2.0 (CI/CD pipeline)
+# Blueprint: 蓝图/67-接缝收编与守卫接电蓝图（WP-67.1）
 #
 # Install / refresh:
 #   tools/pre-commit.sh install
 #   （v0.3.0：安装时写入版本戳；hook 运行前与 tools/pre-commit.sh
 #   比对——旧副本静默续用自检报错，杜绝 .git/hooks 陈旧副本。）
 #
-# 失败处置（63.3 WP-63.3.5：绕过门教唆文案删除——蓝图 62 §3.3 硬规则
-# 「pre-commit 不绕过」）：
-#   修复检查项后重试提交；hook 截断/网络抖动 → 重跑 `cargo run -p
-#   eneros-ci` 确认真实失败面后修复，不绕过门。
+# 失败处置（蓝图 62 §3.3 硬规则「pre-commit 不绕过」）：
+#   修复对应门后重试提交；hook 截断 → 重跑上述三门确认真实失败面，
+#   不绕过门。
 # ============================================================
 
 set -euo pipefail
@@ -38,7 +42,7 @@ else
 fi
 HOOK_PATH="$REPO_ROOT/.git/hooks/pre-commit"
 SOURCE_HOOK="$REPO_ROOT/tools/pre-commit.sh"
-HOOK_VERSION="v0.3.1"
+HOOK_VERSION="v0.4.0"
 
 # Color output (only when stdout is a terminal)
 if [ -t 1 ]; then
@@ -57,7 +61,7 @@ if [ "${1:-}" = "install" ]; then
     cp "$SCRIPT_DIR/pre-commit.sh" "$HOOK_PATH"
     chmod +x "$HOOK_PATH"
     echo -e "${GREEN}[INFO]${NC} Pre-commit hook installed to: $HOOK_PATH ($HOOK_VERSION)"
-    echo -e "${GREEN}[INFO]${NC} It will run 'cargo run -p eneros-ci' on each commit."
+    echo -e "${GREEN}[INFO]${NC} It will run the three fast gates (sign-keys / mock-leak / gng-version) on each commit."
     exit 0
 fi
 
@@ -70,15 +74,29 @@ if ! cmp -s "$SOURCE_HOOK" "$HOOK_PATH" 2>/dev/null; then
     exit 1
 fi
 
-# --- default: pre-commit hook behavior ---
-# Run the eneros-ci quality gate (fmt / clippy / deny / test).
-if cargo run -p eneros-ci; then
-    echo -e "${GREEN}✓ Pre-commit checks passed${NC}"
+# --- default: pre-commit hook behavior（v0.4.0 三快门）---
+GATES=(
+    "cargo xtask qa gate sign-keys"
+    "cargo xtask qa gate mock-leak"
+    "cargo xtask qa gng-version"
+)
+FAILED_GATE=""
+for gate in "${GATES[@]}"; do
+    if ! $gate; then
+        FAILED_GATE="$gate"
+        break
+    fi
+done
+
+if [ -z "$FAILED_GATE" ]; then
+    echo -e "${GREEN}✓ Pre-commit checks passed（sign-keys / mock-leak / gng-version）${NC}"
     exit 0
 else
-    echo -e "${RED}✗ Pre-commit checks failed${NC}" >&2
-    echo -e "${RED}  修复上述检查项后重试提交。${NC}" >&2
-    echo -e "${RED}  hook 截断/网络抖动（advisory fetch）→ 重跑 'cargo run -p eneros-ci'${NC}" >&2
-    echo -e "${RED}  修复后重试；任何绕过门参数都在硬规则禁止之列（蓝图 62 §3.3）。${NC}" >&2
+    echo -e "${RED}✗ Pre-commit checks failed（$FAILED_GATE）${NC}" >&2
+    echo -e "${RED}  修复上述门后重试提交；重跑：${NC}" >&2
+    echo -e "${RED}    cargo xtask qa gate sign-keys${NC}" >&2
+    echo -e "${RED}    cargo xtask qa gate mock-leak${NC}" >&2
+    echo -e "${RED}    cargo xtask qa gng-version${NC}" >&2
+    echo -e "${RED}  任何绕过门参数都在硬规则禁止之列（蓝图 62 §3.3）。${NC}" >&2
     exit 1
 fi

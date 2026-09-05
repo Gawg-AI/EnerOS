@@ -74,15 +74,16 @@ fn assemble(
     // 首条边 = svc-config；管道单源 = service_cfg/config_gateway）；不可得
     // → 能力壳。wire 失败呈现（too short / length prefix）在管道内，
     // 词形单源 = protocol_ladder::line_*。
-    // 64.2 WP-64.2.3：建端三行闭包收编 ChunkedEndpoint::bind（经
-    // client_mut 喂 config 管道——config 面裸客户端，chunked 壳零使用）。
+    // 64.2 WP-64.2.3：建端三行闭包收编 ChunkedEndpoint::bind（蓝图 67
+    // WP-67.2.3：endpoint 直喂 config 管道——ConfigEntrySource impl 已迁
+    // endpoint 面，client_mut 绕行删除）。
     let mut config_ep =
         match eneros_agent_sdk::endpoint::ChunkedEndpoint::bind("svc-modbus-rtu", "svc-config") {
             Some(ep) => ep,
             None => return Err("config-missing"),
         };
     let Ok(cfg) = eneros_protocol_services::service_cfg::fetch_protocol_config(
-        config_ep.client_mut(),
+        &mut config_ep,
         "modbus-rtu-config",
         "protocol-modbus-rtu",
     ) else {
@@ -134,11 +135,11 @@ fn assemble(
 #[cfg(target_os = "none")]
 fn fetch_points_registry() -> VecPointRegistry {
     use eneros_config_bundle::points::PointProtocol;
-    // 64.2 WP-64.2.3：建端闭包收编 ChunkedEndpoint::bind（config 面裸
-    // 客户端经 client_mut；chunked 壳零使用）。
+    // 64.2 WP-64.2.3：建端闭包收编 ChunkedEndpoint::bind（蓝图 67
+    // WP-67.2.3：endpoint 直喂管道，client_mut 绕行删除）。
     match eneros_agent_sdk::endpoint::ChunkedEndpoint::bind("svc-modbus-rtu", "svc-config") {
         Some(mut ep) => eneros_protocol_services::service_cfg::fetch_points_registry(
-            ep.client_mut(),
+            &mut ep,
             "modbus-rtu-config",
             |p| p.protocol == PointProtocol::ModbusRtu,
         ),

@@ -28,8 +28,11 @@
 //!   功率）：同向抵消无物理危害（设备命令为净量）、能量守恒仍被独立
 //!   校验——互斥由 planner 模型 binary 约束保证，登记为模型侧性质。
 //! - control-dispatch 的过渡 seal 发放面（`transition-certifier`）
-//!   在目标侧快照/包络输入具备前保留（Phase 5 PlanCompiler 替换），
-//!   见 ADR-051；本 crate 是 CertifiedPlan 的**规范生产者**。
+//!   在目标侧快照/包络输入具备前保留（Phase 5 PlanCompiler 替代），
+//!   见 ADR-051；CertifiedPlan 的**规范生产者** = control-dispatch
+//!   transition seal 过渡发放面（ADR-051 订正口径，与 decision-contract
+//!   `certificate.rs` 模块头对齐——蓝图 67 WP-67.6；本 crate 生产零
+//!   消费者是裁决内事实非疏漏）。
 //! - min on/off 与工艺状态机类约束：净功率面可校验包络与能量，启停
 //!   状态机依赖合同拓扑外的历史状态（登记待 Phase 5/6 输入源）。
 //! - 控制合同与可读回条件（[09] §4.2）：回读合格性由 registry 合同

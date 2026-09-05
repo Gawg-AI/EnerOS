@@ -70,13 +70,13 @@ impl DeviceAgentHandler {
 
         use eneros_control_services::dispatch_service::prod_profile;
         let now = eneros_drv_svc::now_ms();
+        // 蓝图 67 WP-67.2.3（[01] §2.1a）：config 传输面 = ChunkedEndpoint
+        // （ConfigEntrySource impl 已迁 endpoint；epoch 单点纪律）。
         let mut config_client = if eipc_mask & 1 != 0 {
-            eneros_agent_sdk::ipc_sel4::Sel4IpcClient::new(
+            eneros_agent_sdk::endpoint::ChunkedEndpoint::bind_cap(
                 "device-agent",
                 eneros_agent_sdk::EIPC_EP_BASE_SLOT,
-                eneros_drv_svc::now_ns,
             )
-            .ok()
         } else {
             None
         };

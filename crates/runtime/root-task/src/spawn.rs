@@ -13,7 +13,6 @@
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use eneros_elf_loader::LoadedElf;
@@ -267,93 +266,6 @@ pub const MAX_ETDYN_STAGING: u64 = 8 * 1024 * 1024;
 /// 两个实例分别装载到 `dyn_bias + i*STRIDE`，均正确运行）。
 pub const ET_DYN_BIAS_STRIDE: u64 = 0x40000; // 256 KiB（覆盖 ~50 KiB 服务）
 
-/// WP-37.1 #7（复盘）：依赖 DAG 启动顺序错误。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StartOrderError {
-    /// 依赖引用了服务集之外的名字。
-    UnknownDependency { service: String, dependency: String },
-    /// 依赖图存在环（Kahn 算法剩余节点 = 环成员）。
-    Cycle(Vec<String>),
-}
-
-/// WP-37.1 #7（复盘）：按依赖 DAG 计算启动顺序（依赖先启动）——Kahn
-/// 拓扑排序，检测环（fail-closed：环 → `Err(Cycle)`，不猜测启动顺序）。
-///
-/// `services` = 全部服务 id（bundle 服务集合）；`dependencies` =
-/// (service, 其前置依赖 id 列表)（manifest `ServiceSpec.dependencies` 语义；
-/// runtime wire 扩展后由 bundle 数据驱动，当前为纯函数 + 测试锚点）。
-///
-/// 结果保证：每个服务出现在其全部依赖之后；无环时长度 == services.len()。
-pub fn plan_start_order(
-    services: &[String],
-    dependencies: &[(String, Vec<String>)],
-) -> Result<Vec<String>, StartOrderError> {
-    use alloc::collections::BTreeMap;
-    use alloc::collections::BTreeSet;
-    use alloc::collections::VecDeque;
-
-    // 入度表 + 邻接表（service → 依赖它的服务）。
-    let mut indegree: BTreeMap<&str, usize> = services.iter().map(|s| (s.as_str(), 0)).collect();
-    let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for (service, deps) in dependencies {
-        if !indegree.contains_key(service.as_str()) {
-            // 依赖条目引用了服务集外的 service（防御，调用方保证集合一致）；
-            // dependency 字段无意义（service 本身即越界），用空串标记。
-            return Err(StartOrderError::UnknownDependency {
-                service: service.clone(),
-                dependency: String::new(),
-            });
-        }
-        for dep in deps {
-            if !indegree.contains_key(dep.as_str()) {
-                return Err(StartOrderError::UnknownDependency {
-                    service: service.clone(),
-                    dependency: dep.clone(),
-                });
-            }
-            *indegree.get_mut(service.as_str()).unwrap() += 1;
-            dependents
-                .entry(dep.as_str())
-                .or_default()
-                .push(service.as_str());
-        }
-    }
-    // Kahn：入度 0 的服务先启动。
-    let mut ready: VecDeque<&str> = indegree
-        .iter()
-        .filter(|(_, d)| **d == 0)
-        .map(|(s, _)| *s)
-        .collect();
-    let mut order: Vec<String> = Vec::with_capacity(services.len());
-    let mut scheduled: BTreeSet<&str> = BTreeSet::new();
-    while let Some(svc) = ready.pop_front() {
-        if !scheduled.insert(svc) {
-            continue;
-        }
-        order.push(svc.to_string());
-        if let Some(deps) = dependents.get(svc) {
-            for d in deps {
-                let slot = indegree.get_mut(d).unwrap();
-                *slot -= 1;
-                if *slot == 0 {
-                    ready.push_back(d);
-                }
-            }
-        }
-    }
-    if order.len() != services.len() {
-        // 未调度节点集合包含环成员及其下游（fail-closed：任一无序即拒绝，
-        // 不猜测启动顺序；集合 = 无法进入拓扑序的全部节点）。
-        let cycle: Vec<String> = indegree
-            .iter()
-            .filter(|(s, _)| !scheduled.contains(*s))
-            .map(|(s, _)| s.to_string())
-            .collect();
-        return Err(StartOrderError::Cycle(cycle));
-    }
-    Ok(order)
-}
-
 /// 为单个 ELF 生成 spawn 计划（页表 + 入口 + 栈 + EP）。
 fn plan_one(
     name: &str,
@@ -404,114 +316,6 @@ fn plan_one(
         pages,
         relocated: None, // ET_EXEC：帧从 bundle blob 拷贝（configure_service）
     })
-}
-
-/// 从 init bundle 构造 spawn 计划（蓝图/20 R1-2 核心）。
-///
-/// # 参数
-/// - `bundle`：init bundle（root + service/driver 模块）
-/// - `vspace_base`：root 虚拟地址空间基址（如 0x4000_0000）
-/// - `page_size`：页大小（4K）
-/// - `stack_size`：每服务栈大小
-/// - `ep_base`：IPC 端点编号基址（root=ep_base，服务依次 +1）
-pub fn plan_spawn(
-    bundle: &crate::bundle::InitBundle,
-    vspace_base: u64,
-    page_size: u64,
-    stack_size: u64,
-    ep_base: u64,
-) -> Result<SpawnPlan, SpawnError> {
-    // 1. Root Task 模块（物理页映射页表：boot.rs 提供 paddr 填充）
-    let root_module = bundle
-        .modules
-        .iter()
-        .find(|m| m.kind == crate::bundle::MODULE_KIND_ROOT)
-        .ok_or(SpawnError::NoRootTask)?;
-    let root_elf = LoadedElf::parse(root_module.blob).map_err(|_| SpawnError::BadElf)?;
-    if !root_elf.has_executable() {
-        return Err(SpawnError::BadElf);
-    }
-    // root 由 elfloader 加载（不经 EL0 spawn）——只需 name + stack_top
-    // （服务 vaddr 布局起点）。完整 plan_one 只为 EL0 服务保留。
-    let root_plan = plan_one(
-        &root_module.name,
-        &root_elf,
-        vspace_base,
-        page_size,
-        stack_size,
-        ep_base,
-    )?;
-    let root = SpawnRoot {
-        name: root_plan.name,
-        stack_top: root_plan.stack_top,
-    };
-
-    // 2. EL0 服务（WP-37.1：required 集合必须全部成功；optional 失败
-    //    只降级不阻断——旧实现坏 ELF continue 后只看数量 ≥2）。
-    let mut services = Vec::new();
-    let mut degraded = Vec::new();
-    let mut next_vaddr = root.stack_top;
-    let mut ep = ep_base + 1;
-    for module in &bundle.modules {
-        let kind = module.kind;
-        if kind == crate::bundle::MODULE_KIND_ROOT {
-            // root 由 elfloader 加载（不经 EL0 spawn），跳过。
-            continue;
-        }
-        if kind != crate::bundle::MODULE_KIND_REQUIRED
-            && kind != crate::bundle::MODULE_KIND_OPTIONAL
-        {
-            // kind 非 root/required/optional：bundle.rs 解析期已拒绝未知
-            // kind（WP-37.1），此处防御性失败——不静默 continue。
-            return Err(SpawnError::UnknownBundleKind);
-        }
-        match LoadedElf::parse(module.blob) {
-            Ok(elf) => {
-                // WP-37.1（review 修复）：plan_one 错误同样按 requirement
-                // 处理——required 传播中止（分配/段校验失败即阻断），
-                // optional 降级（安全类错误如 W^X 违反 = 该服务不可用，
-                // 不启动即零风险，无需阻断整个 boot）。
-                match plan_one(&module.name, &elf, next_vaddr, page_size, stack_size, ep) {
-                    Ok(plan) => {
-                        next_vaddr = plan.stack_top;
-                        ep += 1;
-                        services.push(plan);
-                    }
-                    Err(e) => {
-                        if module.requirement() == crate::bundle::Requirement::Required {
-                            return Err(e);
-                        }
-                        degraded.push(module.name.clone());
-                    }
-                }
-            }
-            Err(_) => {
-                if module.requirement() == crate::bundle::Requirement::Required {
-                    // WP-37.1 #6：required 服务坏 ELF → 立即终止 product boot。
-                    return Err(SpawnError::RequiredElfFailed {
-                        name: module.name.clone(),
-                    });
-                }
-                // optional：明确降级（CapabilityUnavailable），不阻断。
-                degraded.push(module.name.clone());
-            }
-        }
-    }
-    if services.is_empty() {
-        return Err(SpawnError::NoServices);
-    }
-    if services.len() < 2 {
-        return Err(SpawnError::TooFewServices);
-    }
-    if !degraded.is_empty() {
-        // 降级必须显式可见（机器可读行），禁止静默 continue。
-        crate::println!(
-            "[eneros-root-task] WP-37.1 optional degraded: {} (capability unavailable)",
-            degraded.join(",")
-        );
-    }
-
-    Ok(SpawnPlan { root, services })
 }
 
 /// WP-37.4（接线）：ET_DYN 服务计划——经统一 `load_verified_elf` 布局
@@ -616,20 +420,17 @@ fn plan_one_dyn(
     })
 }
 
-/// WP-37.4（接线）：统一 loader 的 spawn 计划——ET_DYN 服务经
-/// `load_verified_elf`（bias + 重定位），ET_EXEC 服务走 [`plan_one`]
-/// （链接地址）。required/optional 语义与 [`plan_spawn`] 完全一致。
-/// `dyn_bias` = ET_DYN 装载基址（页对齐；独立 VSpace 下可与其他服务重叠）。
-/// 蓝图 40：控制闭环服务按名栈覆盖（页）。svc-device-agent 的
-/// EnvelopeIngress（MetricsCollectorImpl heapless::Vec<Metric,256>）使
-/// rustc 为 `_start` 生成 ~274 KiB 栈清零帧——默认 16 KiB 栈写入 guard
-/// 页触发 VM fault（QEMU 实测）；全局放大超 ROOT_CNODE 4096 槽预算。
-/// 其余服务保持默认（小栈省 cap 槽）。
-// 蓝图 40：EnvelopeIngress 大缓冲改堆持有后（276 KiB → KB 级），控制服务
-// 不再需要栈覆盖——表置空（机制保留：per-service 栈接线归 42）。
-pub const CONTROL_SERVICE_STACK_PAGES: &[(&str, u64)] = &[];
-
-/// `plan_spawn_dyn_aware` + 按名栈覆盖（蓝图 40）。
+/// 生产唯一 spawn 计划入口（蓝图 67 WP-67.5 死入口收敛：原
+/// `plan_spawn` / `plan_spawn_dyn_aware` / `plan_spawn_with_enforcement`
+/// 三死入口与降级循环双写已删——对拍测试
+/// `bp67_parity_plan_spawn_vs_dyn_aware_on_et_exec` 证明两版对相同
+/// ET_EXEC 输入产出结构级全等的 plan/Err 后收敛为本单实现）。
+/// ET_DYN 服务经统一 `load_verified_elf`（bias + 重定位），ET_EXEC 服务
+/// 走 [`plan_one`]（链接地址）。`dyn_bias` = ET_DYN 装载基址（页对齐；
+/// 独立 VSpace 下可与其他服务重叠）。
+/// 蓝图 40：按名栈覆盖（页）机制保留在 `overrides` 参数；原
+/// `CONTROL_SERVICE_STACK_PAGES` 空表已随本卷删除（EnvelopeIngress 大
+/// 缓冲改堆持有后不再需要覆盖；per-service 栈接线归 42）。
 pub fn plan_spawn_dyn_aware_with_stack(
     bundle: &crate::bundle::InitBundle,
     vspace_base: u64,
@@ -647,25 +448,6 @@ pub fn plan_spawn_dyn_aware_with_stack(
         ep_base,
         dyn_bias,
         overrides,
-    )
-}
-
-pub fn plan_spawn_dyn_aware(
-    bundle: &crate::bundle::InitBundle,
-    vspace_base: u64,
-    page_size: u64,
-    stack_size: u64,
-    ep_base: u64,
-    dyn_bias: u64,
-) -> Result<SpawnPlan, SpawnError> {
-    plan_spawn_dyn_aware_impl(
-        bundle,
-        vspace_base,
-        page_size,
-        stack_size,
-        ep_base,
-        dyn_bias,
-        &[],
     )
 }
 
@@ -802,25 +584,6 @@ pub fn enforce_spawn<E: eneros_tenant::Enforcer>(
         tenant_id,
         resource: eneros_tenant::ResourceReq { cpu_pct, mem_kb },
     })
-}
-
-/// 带租户强制力的 spawn 计划（蓝图/20 R2-3）：计划生成后、真实 spawn
-/// 前执行 `Enforcer::check_spawn`——超配拒绝 → 计划不落地（fail-closed）。
-#[allow(clippy::too_many_arguments)]
-pub fn plan_spawn_with_enforcement<E: eneros_tenant::Enforcer>(
-    enforcer: &mut E,
-    bundle: &crate::bundle::InitBundle,
-    vspace_base: u64,
-    page_size: u64,
-    stack_size: u64,
-    ep_base: u64,
-    tenant_id: u64,
-    mem_kb: usize,
-    cpu_pct: f32,
-) -> Result<SpawnPlan, SpawnError> {
-    let plan = plan_spawn(bundle, vspace_base, page_size, stack_size, ep_base)?;
-    enforce_spawn(enforcer, tenant_id, mem_kb, cpu_pct).map_err(|_| SpawnError::QuotaExceeded)?;
-    Ok(plan)
 }
 
 /// 释放一次 spawn 记账（幂等）。
@@ -3411,6 +3174,98 @@ mod tests {
         bytes
     }
 
+    /// ET_EXEC 变体夹具（WP-37.4 前 plan_spawn 的原生语义域——对拍与
+    /// 迁移用例用；e_type 补丁 = 2）。
+    fn minimal_exec_elf_et_exec() -> Vec<u8> {
+        let mut buf = minimal_exec_elf();
+        buf[16..18].copy_from_slice(&2u16.to_le_bytes());
+        buf
+    }
+
+    fn minimal_data_elf_et_exec() -> Vec<u8> {
+        let mut buf = minimal_data_elf();
+        buf[16..18].copy_from_slice(&2u16.to_le_bytes());
+        buf
+    }
+
+    /// 蓝图 67 WP-67.5 收敛后单实现语义锚（原对拍测试的存留臂：删除前
+    /// `plan_spawn` 与本入口对相同 ET_EXEC 输入产出结构级全等的 plan/Err
+    /// ——`assert_eq!(legacy, modern)` 实测绿后才删旧入口；本用例保留
+    /// with_stack 入口的 ET_EXEC 正例 + required fail-closed 语义锚）。
+    #[test]
+    fn bp67_dyn_aware_with_stack_et_exec_semantics() {
+        // ① 正常：root + 2 required ET_EXEC 服务（ipc_ep 递增 / 页 W^X）。
+        let raw = build_bundle(&[
+            (
+                "root-task",
+                crate::bundle::MODULE_KIND_ROOT,
+                minimal_exec_elf_et_exec(),
+            ),
+            (
+                "svc-fault",
+                crate::bundle::MODULE_KIND_REQUIRED,
+                minimal_data_elf_et_exec(),
+            ),
+            (
+                "svc-proc-ts",
+                crate::bundle::MODULE_KIND_REQUIRED,
+                minimal_data_elf_et_exec(),
+            ),
+        ]);
+        let bundle = InitBundle::parse(&raw).expect("bundle parse");
+        let plan = plan_spawn_dyn_aware_with_stack(
+            &bundle,
+            0x4000_0000,
+            0x1000,
+            0x4000,
+            100,
+            0x200000,
+            &[],
+        )
+        .expect("plan");
+        assert_eq!(plan.service_count(), 2);
+        assert_eq!(plan.services[0].ipc_ep, 101);
+        assert_eq!(plan.services[1].ipc_ep, 102);
+        assert_eq!(
+            plan.services[0].stack_top, plan.services[1].stack_top,
+            "ET_EXEC 链接地址布局（独立 VSpace 地址可复用）"
+        );
+
+        // ② required 坏 ELF → fail-closed（同对拍 ②臂）。
+        let raw_bad = build_bundle(&[
+            (
+                "root-task",
+                crate::bundle::MODULE_KIND_ROOT,
+                minimal_exec_elf_et_exec(),
+            ),
+            (
+                "svc-fault",
+                crate::bundle::MODULE_KIND_REQUIRED,
+                vec![0xDE, 0xAD],
+            ),
+            (
+                "svc-proc-ts",
+                crate::bundle::MODULE_KIND_REQUIRED,
+                minimal_data_elf_et_exec(),
+            ),
+        ]);
+        let bundle_bad = InitBundle::parse(&raw_bad).expect("parse");
+        assert_eq!(
+            plan_spawn_dyn_aware_with_stack(
+                &bundle_bad,
+                0x4000_0000,
+                0x1000,
+                0x4000,
+                100,
+                0x200000,
+                &[],
+            ),
+            Err(SpawnError::RequiredElfFailed {
+                name: "svc-fault".to_string()
+            })
+        );
+    }
+
     #[test]
     fn test_plan_spawn_root_plus_two_services() {
         let raw = build_bundle(&[
@@ -3422,16 +3277,25 @@ mod tests {
             (
                 "svc-fault",
                 crate::bundle::MODULE_KIND_REQUIRED,
-                minimal_data_elf(),
+                minimal_data_elf_et_exec(),
             ),
             (
                 "svc-proc-ts",
                 crate::bundle::MODULE_KIND_REQUIRED,
-                minimal_data_elf(),
+                minimal_data_elf_et_exec(),
             ),
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
-        let plan = plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100).expect("plan");
+        let plan = plan_spawn_dyn_aware_with_stack(
+            &bundle,
+            0x4000_0000,
+            0x1000,
+            0x4000,
+            100,
+            0x200000,
+            &[],
+        )
+        .expect("plan");
         // 验收口径：root + ≥2 服务
         assert_eq!(plan.root.name, "root-task");
         assert_eq!(plan.service_count(), 2);
@@ -3464,16 +3328,25 @@ mod tests {
             (
                 "svc-fault",
                 crate::bundle::MODULE_KIND_REQUIRED,
-                minimal_data_elf(),
+                minimal_data_elf_et_exec(),
             ),
             (
                 "svc-proc-ts",
                 crate::bundle::MODULE_KIND_REQUIRED,
-                minimal_data_elf(),
+                minimal_data_elf_et_exec(),
             ),
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
-        let plan = plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100).expect("plan");
+        let plan = plan_spawn_dyn_aware_with_stack(
+            &bundle,
+            0x4000_0000,
+            0x1000,
+            0x4000,
+            100,
+            0x200000,
+            &[],
+        )
+        .expect("plan");
         let svc = &plan.services[0];
         // 栈区 [stack_top - stack_size, stack_top)；guard 页在栈底下一页
         // [stack_top - stack_size - page_size, stack_top - stack_size)。
@@ -3590,7 +3463,15 @@ mod tests {
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
         assert_eq!(
-            plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100),
+            plan_spawn_dyn_aware_with_stack(
+                &bundle,
+                0x4000_0000,
+                0x1000,
+                0x4000,
+                100,
+                0x200000,
+                &[]
+            ),
             Err(SpawnError::TooFewServices),
             "服务不足 2 个必须 fail-closed"
         );
@@ -3619,7 +3500,15 @@ mod tests {
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
         assert_eq!(
-            plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100),
+            plan_spawn_dyn_aware_with_stack(
+                &bundle,
+                0x4000_0000,
+                0x1000,
+                0x4000,
+                100,
+                0x200000,
+                &[]
+            ),
             Err(SpawnError::RequiredElfFailed {
                 name: "svc-fault".to_string()
             }),
@@ -3654,7 +3543,16 @@ mod tests {
             ),
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
-        let plan = plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100).expect("plan");
+        let plan = plan_spawn_dyn_aware_with_stack(
+            &bundle,
+            0x4000_0000,
+            0x1000,
+            0x4000,
+            100,
+            0x200000,
+            &[],
+        )
+        .expect("plan");
         assert_eq!(
             plan.service_count(),
             2,
@@ -3693,7 +3591,15 @@ mod tests {
             ],
         };
         assert_eq!(
-            plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100),
+            plan_spawn_dyn_aware_with_stack(
+                &bundle,
+                0x4000_0000,
+                0x1000,
+                0x4000,
+                100,
+                0x200000,
+                &[]
+            ),
             Err(SpawnError::UnknownBundleKind)
         );
     }
@@ -3714,7 +3620,15 @@ mod tests {
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
         assert_eq!(
-            plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100),
+            plan_spawn_dyn_aware_with_stack(
+                &bundle,
+                0x4000_0000,
+                0x1000,
+                0x4000,
+                100,
+                0x200000,
+                &[]
+            ),
             Err(SpawnError::NoRootTask)
         );
     }
@@ -3728,7 +3642,15 @@ mod tests {
         )]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
         assert_eq!(
-            plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100),
+            plan_spawn_dyn_aware_with_stack(
+                &bundle,
+                0x4000_0000,
+                0x1000,
+                0x4000,
+                100,
+                0x200000,
+                &[]
+            ),
             Err(SpawnError::NoServices)
         );
     }
@@ -3783,60 +3705,6 @@ mod tests {
             "超配必须拒绝且 usage 不增长"
         );
         assert_eq!(enf.usage(tid).unwrap().mem_kb, 800, "拒绝后 usage 不变");
-    }
-
-    #[test]
-    fn test_plan_spawn_with_enforcement_rejects_over_quota() {
-        // 蓝图/20 R2-3 验收：强制力接入 spawn 路径——超配时计划不落地。
-        use eneros_tenant::manager::TenantManager;
-        use eneros_tenant::{TenantEnforcer, TenantQuota, TenantStore};
-        let mut store = TenantStore::new();
-        let quota = TenantQuota {
-            max_cpu_pct: 100.0,
-            max_mem_kb: 512,
-            max_storage_kb: 65536,
-            max_agents: 4,
-            max_bandwidth_kbps: 1000,
-        };
-        let tenant = store.create("t2", quota).expect("create");
-        let tid = tenant.tenant_id;
-        let mut enf = TenantEnforcer::new(store);
-
-        let raw = build_bundle(&[
-            (
-                "root-task",
-                crate::bundle::MODULE_KIND_ROOT,
-                minimal_data_elf(),
-            ),
-            (
-                "svc-fault",
-                crate::bundle::MODULE_KIND_REQUIRED,
-                minimal_data_elf(),
-            ),
-            (
-                "svc-proc-ts",
-                crate::bundle::MODULE_KIND_REQUIRED,
-                minimal_data_elf(),
-            ),
-        ]);
-        let bundle = InitBundle::parse(&raw).expect("bundle parse");
-        let result = plan_spawn_with_enforcement(
-            &mut enf,
-            &bundle,
-            0x4000_0000,
-            4096,
-            16384,
-            100,
-            tid,
-            4096,
-            50.0,
-        );
-        assert_eq!(
-            result,
-            Err(SpawnError::QuotaExceeded),
-            "超配必须拒绝且计划不落地"
-        );
-        assert_eq!(enf.usage(tid).unwrap().mem_kb, 0, "拒绝后 usage 不增长");
     }
 
     #[test]
@@ -4195,7 +4063,11 @@ mod tests {
     fn test_plan_spawn_optional_plan_one_error_degrades() {
         // 段 vaddr=0x1001（非页对齐）→ parse 通过（parse 不校验对齐），
         // plan_one Err(PlanMismatch)。entry 同步改 0x1001（落在段内）。
+        // e_type 补丁 = 2（蓝图 67 WP-67.5 迁移注记：plan_one 错误分支属
+        // ET_EXEC 路径——收敛后 ET_DYN 走 plan_one_dyn，非对齐由页模型
+        // floor 吸收，不触发 PlanMismatch）。
         let mut misaligned = minimal_exec_elf();
+        misaligned[16..18].copy_from_slice(&2u16.to_le_bytes());
         misaligned[24..32].copy_from_slice(&0x1001u64.to_le_bytes()); // e_entry
         misaligned[64 + 16..64 + 24].copy_from_slice(&0x1001u64.to_le_bytes()); // p_vaddr
         misaligned[64 + 24..64 + 32].copy_from_slice(&0x1001u64.to_le_bytes()); // p_paddr
@@ -4222,7 +4094,16 @@ mod tests {
             ),
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
-        let plan = plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100).expect("plan");
+        let plan = plan_spawn_dyn_aware_with_stack(
+            &bundle,
+            0x4000_0000,
+            0x1000,
+            0x4000,
+            100,
+            0x200000,
+            &[],
+        )
+        .expect("plan");
         assert_eq!(plan.service_count(), 2, "optional 的 plan_one 失败必须降级");
         assert!(plan.services.iter().all(|s| s.name != "svc-drv-opt"));
 
@@ -4242,54 +4123,17 @@ mod tests {
         ]);
         let bundle_req = InitBundle::parse(&raw_req).expect("bundle parse");
         assert_eq!(
-            plan_spawn(&bundle_req, 0x4000_0000, 0x1000, 0x4000, 100),
+            plan_spawn_dyn_aware_with_stack(
+                &bundle_req,
+                0x4000_0000,
+                0x1000,
+                0x4000,
+                100,
+                0x200000,
+                &[]
+            ),
             Err(SpawnError::PlanMismatch),
             "required 的 plan_one 错误必须阻断"
-        );
-    }
-
-    /// WP-37.1 #7（复盘）：依赖 DAG 启动顺序——依赖先启动、环检测。
-    #[test]
-    fn plan_start_order_topological_and_cycle_detection() {
-        let svcs =
-            |names: &[&str]| -> Vec<String> { names.iter().map(|s| s.to_string()).collect() };
-        // 菱形 DAG：a←b、a←c、b←d、c←d（d 依赖 b、c）。
-        let services = svcs(&["a", "b", "c", "d"]);
-        let deps = vec![
-            ("b".to_string(), svcs(&["a"])),
-            ("c".to_string(), svcs(&["a"])),
-            ("d".to_string(), svcs(&["b", "c"])),
-        ];
-        let order = plan_start_order(&services, &deps).expect("DAG 无环");
-        assert_eq!(order.len(), 4);
-        let pos = |name: &str| order.iter().position(|s| s == name).unwrap();
-        assert!(pos("a") < pos("b") && pos("a") < pos("c"), "依赖先启动");
-        assert!(pos("b") < pos("d") && pos("c") < pos("d"), "依赖先启动");
-        // 无依赖：任意合法序（长度一致即可）。
-        let flat = plan_start_order(&svcs(&["x", "y"]), &[]).expect("flat");
-        assert_eq!(flat.len(), 2);
-        // 自环：a→a。
-        let self_cycle = plan_start_order(&svcs(&["a", "b"]), &[("a".to_string(), svcs(&["a"]))]);
-        assert!(matches!(self_cycle, Err(StartOrderError::Cycle(c)) if c.len() == 1));
-        // 两节点环：a→b→a。
-        let pair_cycle = plan_start_order(
-            &svcs(&["a", "b"]),
-            &[
-                ("a".to_string(), svcs(&["b"])),
-                ("b".to_string(), svcs(&["a"])),
-            ],
-        );
-        assert!(matches!(pair_cycle, Err(StartOrderError::Cycle(c)) if c.len() == 2));
-        // 未知依赖。
-        let unknown = plan_start_order(&svcs(&["a"]), &[("a".to_string(), svcs(&["ghost"]))]);
-        assert!(matches!(
-            unknown,
-            Err(StartOrderError::UnknownDependency { .. })
-        ));
-        // 空集合 → 空序。
-        assert_eq!(
-            plan_start_order(&[], &[]).expect("empty"),
-            Vec::<String>::new()
         );
     }
 
@@ -4316,8 +4160,9 @@ mod tests {
             ),
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
-        let plan = plan_spawn_dyn_aware(&bundle, 0x200000, 0x1000, 0x4000, 100, 0x200000)
-            .expect("dyn-aware plan");
+        let plan =
+            plan_spawn_dyn_aware_with_stack(&bundle, 0x200000, 0x1000, 0x4000, 100, 0x200000, &[])
+                .expect("dyn-aware plan");
         assert_eq!(plan.service_count(), 2);
         // 双 bias（WP-37.4）：首个实例 bias=0x200000，第二个实例按
         // ET_DYN_BIAS_STRIDE 递增——同一 PIE 两个不同装载基址。
@@ -4358,7 +4203,15 @@ mod tests {
         ]);
         let bundle_bad = InitBundle::parse(&bad).expect("parse bad");
         assert_eq!(
-            plan_spawn_dyn_aware(&bundle_bad, 0x200000, 0x1000, 0x4000, 100, 0x200000),
+            plan_spawn_dyn_aware_with_stack(
+                &bundle_bad,
+                0x200000,
+                0x1000,
+                0x4000,
+                100,
+                0x200000,
+                &[]
+            ),
             Err(SpawnError::RequiredElfFailed {
                 name: "svc-fault".to_string()
             })
@@ -4385,8 +4238,9 @@ mod tests {
             ("svc-proc-ts", crate::bundle::MODULE_KIND_REQUIRED, exec_elf),
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
-        let plan = plan_spawn_dyn_aware(&bundle, 0x200000, 0x1000, 0x4000, 100, 0x200000)
-            .expect("dyn-aware plan with ET_EXEC");
+        let plan =
+            plan_spawn_dyn_aware_with_stack(&bundle, 0x200000, 0x1000, 0x4000, 100, 0x200000, &[])
+                .expect("dyn-aware plan with ET_EXEC");
         assert_eq!(plan.service_count(), 2);
         for svc in &plan.services {
             assert!(svc.relocated.is_none(), "ET_EXEC 不携带 relocated 镜像");
@@ -4409,16 +4263,25 @@ mod tests {
             (
                 "svc-fault",
                 crate::bundle::MODULE_KIND_REQUIRED,
-                minimal_data_elf(),
+                minimal_data_elf_et_exec(),
             ),
             (
                 "svc-proc-ts",
                 crate::bundle::MODULE_KIND_REQUIRED,
-                minimal_data_elf(),
+                minimal_data_elf_et_exec(),
             ),
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
-        let plan = plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100).expect("plan");
+        let plan = plan_spawn_dyn_aware_with_stack(
+            &bundle,
+            0x4000_0000,
+            0x1000,
+            0x4000,
+            100,
+            0x200000,
+            &[],
+        )
+        .expect("plan");
         // 每服务：ELF 段页 + 栈 16KiB + IPC buffer 页 4KiB（review nit 修复）。
         let per_svc: u64 = plan.services[0].pages.iter().map(|p| p.size).sum::<u64>()
             + plan.services[0].stack_size
@@ -4471,7 +4334,16 @@ mod tests {
             ),
         ]);
         let bundle = InitBundle::parse(&raw).expect("bundle parse");
-        let plan = plan_spawn(&bundle, 0x4000_0000, 0x1000, 0x4000, 100).expect("plan");
+        let plan = plan_spawn_dyn_aware_with_stack(
+            &bundle,
+            0x4000_0000,
+            0x1000,
+            0x4000,
+            100,
+            0x200000,
+            &[],
+        )
+        .expect("plan");
         let mem_kb = plan_mem_kb(&plan, 0x1000);
         assert!(mem_kb > 0);
 

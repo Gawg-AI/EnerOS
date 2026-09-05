@@ -34,6 +34,8 @@
 
 ### 例外：ci/ crate
 
+> 退役登记（蓝图 67 WP-67.1.4）：`ci/` crate（eneros-ci）已删除——其门禁职责归 xtask 三门 + CI 直跑四项；以下 std 例外叙述为历史口径。
+
 `ci/` crate（eneros-ci）是 **host-side 开发工具**，在 CI runner / 开发者 PC 上运行，非嵌入式目标。它需要 `std::process::Command` 执行 cargo 子命令、`std::fs` 读取文件、`std::time` 计时，因此作为例外使用 std：
 
 - **不纳入** no_std 合规范围
