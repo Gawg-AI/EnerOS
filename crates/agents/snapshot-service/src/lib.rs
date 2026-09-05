@@ -12,14 +12,15 @@
 //! 主备 + 裁决证据）、SnapshotBuilder（冻结 cut 与 VersionSet、provenance
 //! 根）、SnapshotCatalog（按 snapshot_id 查元数据与 blob 偏移）。
 //!
-//! # 机制状态（63.3 WP-63.3.3 冻结登记——总册 ID SM-deferred）
+//! # 机制状态（蓝图 68 卷 68.4 WP-68.4.2 解冻翻转——原总册 ID SM-deferred）
 //!
-//! **SnapshotModule 机制面未接生产闭包**（`SnapshotModule::build` 唯一
-//! crate 外调用者 = control-services snapshot_diff.rs 整体 `#[cfg(test)]`；
-//! business-services/certifier 仅数据类型面 TrustedSnapshot/
-//! NormalizedObservation/CompletenessReport 真实消费）；crate 级 blanket
-//! allow 已撤（R-63.b）。激活前置 = 目标侧 svc-snapshot 独立服务接线 +
-//! 存储句柄移交（BLOCKED，00 §4）。不实施真接线、不删除本体。
+//! **SnapshotModule 生产入口已接电**（svc-telemetry 快照面：catalog 经
+//! svc-config 惰性装载 → 政策 required=安全覆盖点 → 8 批窗口构建 →
+//! blob 落 DATA_SNAP_* LFS 卷；装配在 control-services::event_face，
+//! 快照触发源 = OBS 事件流）。certifier 生产消费仍未接线（68.5 后
+//! certifier 接电卷；可达性已验证——certifier tests/integration.rs
+//! wp6844 冒烟）。解冻条件="68.3 块面 + 68.4 接线完成"（Z8），证据 =
+//! evidence/68/vol68-4/ 双窗 QEMU 日志。
 //!
 //! 依赖纪律（[16] §3.4）：禁止依赖 LLM、solver、control dispatch。
 //! 跨 binary 必须走版本化分页或 BlobRef（[02] §5）；本 crate 提供

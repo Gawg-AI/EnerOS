@@ -62,12 +62,17 @@ eneros-ota-ab = { path = "../../security/ota-ab" }
 eneros-tsdb = { path = "../../drivers/tsdb" }
 eneros-fs = { path = "../../drivers/fs" }
 eneros-storage = { path = "../../drivers/storage" }
+# 蓝图 68 卷 68.4（WP-68.4.1/68.4.2）：OBS 事件面（StoreSink/EventStore/
+# 区段打开薄壳单源）+ 事件面区段常量。
+eneros-event-store = { path = "../../runtime/event-store" }
 heapless = { version = "0.8", default-features = false }
 
 [features]
 default = []
 # 生产 DeliveryChannel（seL4 EIPC）——host 禁。
 sel4 = ["eneros-control-dispatch/sel4", "eneros-agent-sdk/sel4"]
+# host 测试夹具缝（WP-64.3.2.1 先例）：FakeStorage 共享面——生产面零。
+test-util = []
 
 [dev-dependencies]
 # 服务逻辑 host 测试：内存通道 + mock 设备。

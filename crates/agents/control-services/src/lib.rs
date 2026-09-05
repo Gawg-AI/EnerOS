@@ -43,6 +43,13 @@ pub mod energy_agent_service;
 // SPEC-SERIES-2026-08-27/E（WP-E.3）：有界学习闭环（svc-ai-worker 宿主）。
 pub mod learn;
 pub mod obs_shadow;
+// 蓝图 68 卷 68.4（WP-68.4.1/68.4.2）：OBS 事件面（StoreSink）+ 快照面
+// （SnapshotModule 生产入口）。
+pub mod event_face;
+// 蓝图 68 卷 68.4：host 测试共享夹具（test-util 缝——WP-64.3.2.1 先例；
+// dependent dev-deps 启用，生产面零 feature）。
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_support;
 // 蓝图 61 v0.314.34：evaluator ↔ snapshot 差分测试（全模块 test-only）。
 pub mod remote_brain;
 pub mod service;

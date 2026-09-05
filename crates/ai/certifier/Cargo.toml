@@ -18,6 +18,9 @@ sha2 = { version = "0.10.9", default-features = false }
 
 [dev-dependencies]
 eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }
+# WP-68.4.4 可达性冒烟（测试面）：prod catalog 编译源（真实 SnapshotModule
+# 产物喂 certifier shadow 路径）——不构成生产依赖。
+eneros-config-bundle = { path = "../../runtime/config-bundle", features = ["compile"] }
 # shadow 认证（[09] §4.5 步骤 5）：仅测试面消费 planner 产物——不构成
 # 生产依赖（[16] §3.9 依赖纪律针对生产面）。
 eneros-planner = { path = "../planner" }

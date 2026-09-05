@@ -36,6 +36,40 @@ pub extern "C" fn _start(
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
+    // 蓝图 68 卷 68.4（WP-68.4.1）：外部事实持久化面（SFS 解冻）。授予边
+    // = 本服务对 svc-storage 既有边（eipc_granted_slot 单源）；Q0 写透
+    // RPO=0；打开失败显式降级（FACT-FACE-UNAVAILABLE），不伪造持久化。
+    // 事实 transport（market peer / sealed 信封通道）未部署 ⇒ sink 生产
+    // 在位零消费（跨 bin 接线登记后续卷，68.4 执行卡 WP-68.4.1）。
+    let fact_face = eneros_agent_sdk::eipc_granted_slot("svc-market", eipc_mask, "svc-storage")
+        .and_then(|slot| eneros_agent_sdk::block_io::eipc_block_io(slot, 0, 5_000))
+        .and_then(|io| {
+            eneros_business_services::fact_face::open_fact_face(
+                io,
+                eneros_ota_ab::ab_partition::DataRegion::FactFace,
+            )
+            .ok()
+        });
+    let fact_sink = match fact_face {
+        Some((mut sink, report)) => {
+            let consistent = report.bad_segments == 0 && report.offset_gaps == 0;
+            // 修订水位重建（重启后跨实例新修订仍单调；失败显式可见）。
+            let wm_ok = sink.recover().is_ok();
+            eneros_runtime::println!(
+                "[svc-market] FACT-FACE-OPEN base_block={} region_blocks_512={} recovered={} consistent={} wm={}",
+                eneros_ota_ab::ab_partition::DATA_FACT_BASE_BLOCK,
+                eneros_ota_ab::ab_partition::DATA_FACT_BLOCKS,
+                report.valid_records,
+                consistent,
+                wm_ok
+            );
+            Some(sink)
+        }
+        None => {
+            eneros_runtime::println!("[svc-market] FACT-FACE-UNAVAILABLE");
+            None
+        }
+    };
     // 真实 transport 依赖外部 market peer（QEMU 未提供）→ Unavailable
     // transport：任何发送显式失败（不伪造 peer 副作用）；outbox 在存储
     // 授予时使用 AppendOutbox 真落盘，未授予时显式 Unavailable。
@@ -55,6 +89,10 @@ pub extern "C" fn _start(
             outbox,
             DisabledMarketTransport,
         ),
+        // SFS 解冻面：事实 transport 到位前零消费（68.4 执行卡 WP-68.4.1
+        // 登记）——持有即生产状态（已 recover、可观测），非死字段。
+        #[allow(dead_code)]
+        fact_sink,
     };
     eneros_control_services::control_service_main(
         ep,
@@ -100,6 +138,11 @@ struct MarketHandler {
             eneros_business_services::market::QuoteMessage,
         >,
         DisabledMarketTransport,
+    >,
+    /// 外部事实持久化 sink（68.4 SFS 解冻；`Option` = 未授予降级态）。
+    #[allow(dead_code)]
+    fact_sink: Option<
+        eneros_business_services::fact_face::FactSink<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
     >,
 }
 

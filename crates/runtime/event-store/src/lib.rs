@@ -157,6 +157,7 @@ pub mod block;
 pub mod format;
 pub mod mem;
 pub mod memdev;
+pub mod scoped;
 
 /// 蓝图 61 [07] §4.6.3：接入桥——IngestionModule → 分区事件日志
 /// （StoreSink：ACK=写透、delivery 位点幂等交付）。

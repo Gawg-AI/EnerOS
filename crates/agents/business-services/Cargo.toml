@@ -94,6 +94,9 @@ path = "src/bin/svc-mgmt.rs"
 # SM-deferred）。删除需连测试面迁移，非本卷顺手项。
 eneros-snapshot-service = { path = "../../agents/snapshot-service" }
 
+# 蓝图 68 卷 68.4：事实面测试经 test-util 缝复用 control-services
+# FakeStorage 夹具（消灭同卷姊妹拷贝）。
+eneros-control-services = { path = "../control-services", features = ["test-util"] }
 # [07] §3.5 合同套件（市场事实 adapter 合规测试）。
 eneros-ingestion-core = { path = "../../protocols/ingestion-core", features = ["contract"] }
 eneros-config-bundle = { path = "../../runtime/config-bundle", features = ["compile"] }

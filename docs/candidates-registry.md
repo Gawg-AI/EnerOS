@@ -30,9 +30,9 @@
 
 | 机制 | 现状证据（rg 可验） | 裁决 | 激活前置 | 登记 ID |
 |---|---|---|---|---|
-| SnapshotModule | `SnapshotModule::build` 唯一 crate 外调用者 = `crates/agents/control-services/src/snapshot_diff.rs`（整体 `#[cfg(test)]`） | 冻结登记（数据类型面 TrustedSnapshot/NormalizedObservation/CompletenessReport 保持 pub 真实消费；机制面零生产） | svc-snapshot 独立服务接线 + 存储句柄移交（BLOCKED） | SM-deferred |
-| StoreFactEventSink | `crates/agents/business-services/src/store_fact_sink.rs`（crate 外零引用） | 冻结登记 | 目标侧存储句柄移交（BLOCKED） | SFS-deferred |
-| StoreSink 桥 | `crates/runtime/event-store/src/ingest_bridge.rs`（仅 tests/ingest_bridge.rs 消费；生产采集 bin 全走 InMemorySink） | 冻结登记 | 目标侧存储句柄移交（BLOCKED） | SS-deferred |
+| SnapshotModule | 生产入口 = `crates/agents/control-services/src/event_face.rs`（svc-telemetry 快照面：catalog 惰性装载 + 8 批窗口构建 + blob 落 DATA_SNAP_* LFS 卷；certifier 生产消费仍未接线——可达性已验证 wp6844 host 冒烟） | **Done（蓝图 68 卷 68.4 WP-68.4.2 解冻）**：解冻条件"68.3 块面+68.4 接线完成"成立（Z8） | certifier 生产消费归 68.5 后接电卷 | SM-deferred |
+| StoreFactEventSink | 生产装配 = `crates/agents/business-services/src/bin/svc-market.rs`（`fact_face::open_fact_face` → DATA_FACT_* 区段 Q0 写透 RPO=0；上游事实 transport 未部署 ⇒ sink 在位零消费，跨 bin 接线登记后续） | **Done（蓝图 68 卷 68.4 WP-68.4.1 解冻）**（Z8） | 事实 transport 到位即写（svc-market） | SFS-deferred |
+| StoreSink 桥 | 生产装配 = `crates/agents/control-services/src/event_face.rs`（svc-telemetry OBS 事件面：接受集逐事件 Q0 追加 + SnapshotModule 投影；`store_mut` 访问器补 68.4 保留策略调用方职责通道；drain/交付面生产消费者仍未接线） | **Done（蓝图 68 卷 68.4 WP-68.4.1 解冻）**（Z8） | 交付面消费者归后续卷（位点纪律+OffsetGone 语义见 trait 文档） | SS-deferred |
 | ModelHarness | `crates/ai/model-harness/`（全仓 Cargo.toml 零依赖者） | 冻结登记 | DecisionBackend 替换独立评估（00 §4） | MH-deferred |
 
 ### C2. 37 孤儿 crate 标注清单（63.3.5；判定口径=cargo metadata 反向依赖 2026-09-03 实测；"零反向依赖 lib"55 个，下表按三类收敛——**删除归后续卷逐个裁决，本蓝图不动**）

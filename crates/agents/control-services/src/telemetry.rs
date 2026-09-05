@@ -39,6 +39,7 @@ use eneros_control_dispatch::FeedbackPointMapping;
 use eneros_safety_validator::{
     EvaluatorConfig, TelemetrySample, TelemetryTrustEvaluator, TrustRejection, TrustedTelemetry,
 };
+use eneros_telemetry_model::event::ObservationEvent;
 /// 样本缓冲上限（有界）。
 pub const MAX_BUFFERED_SAMPLES: usize = 256;
 /// 评估器配置（服务装配期注入；覆盖点由部署配置决定）。
@@ -75,6 +76,10 @@ pub struct TelemetryService {
     /// 蓝图 61：观测事件影子（None = 未装配——旧 bundle 无来源表时如实
     /// 降级；影子轨零控制消费，见 obs_shadow 模块文档）。
     pub obs: Option<crate::obs_shadow::ObsShadow>,
+    /// 蓝图 68 卷 68.4：OBS 事件面接缝（None = 未装配——行为与未接线
+    /// 版本一致）。失败语义与历史接缝同律：计数/串口行可见，**绝不反向
+    /// 影响 ingest ack**（采集与事件面是两条独立生死线）。
+    event_face: Option<Box<dyn crate::event_face::ObsEventFace>>,
 }
 
 /// SPEC-C：历史介质标签（随 sink 装配指定；影响判定行词形与统计语义）。
@@ -103,6 +108,7 @@ impl TelemetryService {
             history_batch_seq: 0,
             rejected_reported: 0,
             obs: None,
+            event_face: None,
         }
     }
 
@@ -142,15 +148,28 @@ impl TelemetryService {
     pub fn obs_ingest(&mut self, source_id: u32, frames: &[u8], now_ms: u64) -> Vec<u8> {
         // 首段借用（obs 准入）作用域化——生产 upsert 需要独立 self
         //（[07] §2.6.5 生产轨切换）。
-        let (accepted, rejected, converted) = {
+        let (accepted, rejected, converted, accepted_events) = {
             let Some(obs) = self.obs.as_mut() else {
                 // 影子未装配 = 配置无来源表 → 显式拒绝（不静默吞帧）。
                 return alloc::vec![0xFF];
             };
             let mut converted: Vec<TelemetrySample> = Vec::new();
-            let (accepted, rejected) = obs.ingest_frames(source_id, frames, now_ms, &mut converted);
-            (accepted, rejected, converted)
+            let mut accepted_events: Vec<ObservationEvent> = Vec::new();
+            let (accepted, rejected) = obs.ingest_frames(
+                source_id,
+                frames,
+                now_ms,
+                &mut converted,
+                &mut accepted_events,
+            );
+            (accepted, rejected, converted, accepted_events)
         };
+        // 蓝图 68 卷 68.4：接受事件本体交事件面（StoreSink 追加 +
+        // SnapshotModule 投影；obs 借用域外——事件面持独立 self）。
+        // 失败语义与历史接缝同律：只计数/打点，绝不反向影响 ack。
+        if let Some(face) = self.event_face.as_mut() {
+            face.on_obs_batch(&accepted_events, now_ms);
+        }
         // 蓝图 61 v0.314.30（[07] §2.6.5）：telemetry 侧改为 ObservationEvent
         // consumer——OBS 是生产轨。转换样本逐点 upsert 进生产缓冲（同点
         // 新样本替换旧样本；**多源不互相 clear**——旧 INGEST 全量替换语义
@@ -201,6 +220,24 @@ impl TelemetryService {
     ) {
         self.history = Some(sink);
         self.history_media = media;
+    }
+
+    /// 蓝图 68 卷 68.4：装配 OBS 事件面接缝（bin 启动期一次；None =
+    /// 未装配零开销直通）。
+    pub fn set_event_face(&mut self, face: Box<dyn crate::event_face::ObsEventFace>) {
+        self.event_face = Some(face);
+    }
+
+    /// 蓝图 68 卷 68.4：catalog 到达（首个 OBS 批次惰性装载）后交给事件
+    /// 面——SnapshotModule 与快照政策的构建输入（未装配事件面时零操作）。
+    pub fn set_event_face_catalog(
+        &mut self,
+        repo: eneros_semantic_catalog::CatalogRepository,
+        now_ms: u64,
+    ) {
+        if let Some(face) = self.event_face.as_mut() {
+            face.set_snapshot_catalog(repo, now_ms);
+        }
     }
 
     /// 批次边界 flush：把当前缓冲（即本轮 ingest 接受集）写往历史接缝。

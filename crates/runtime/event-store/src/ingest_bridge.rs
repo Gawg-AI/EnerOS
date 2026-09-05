@@ -1,9 +1,12 @@
-//! # 机制状态（63.3 WP-63.3.3 冻结登记——总册 ID SS-deferred）
+//! # 机制状态（蓝图 68 卷 68.4 WP-68.4.1 解冻翻转——原总册 ID SS-deferred）
 //!
-//! **StoreSink 桥未接生产闭包**（生产采集 bin 全走 InMemorySink；本桥仅
-//! tests/ingest_bridge.rs 消费——rg 实证）；本标注 = 防复查误判生产地位。
-//! 激活前置 = 目标侧存储句柄移交（BLOCKED，00 §4）。不实施真接线、
-//! 不删除本体。
+//! **StoreSink 桥已接生产装配**（svc-telemetry OBS 事件面：事件面
+//! `crate::scoped::open_region_scoped` → DATA_EVENT_* 区段 →
+//! `StoreSink`——OBS 接受集逐事件 Q0 写透追加 + SnapshotModule 投影，
+//! 装配在 control-services::event_face）。交付面（drain/collect_delivery）
+//! 生产消费者仍未接线（后续卷；位点纪律与 OffsetGone 语义见 trait 文档）。
+//! 解冻条件="68.3 块面 + 68.4 接线完成"（Z8），证据 =
+//! evidence/68/vol68-4/ 双窗 QEMU 日志。
 //!
 //! 蓝图 61 [07] §4.6.3/§4.7（v0.314.32）：接入桥——IngestionModule 的事件
 //! 日志接缝换成分区事件日志（`StoreSink`）。
@@ -101,6 +104,15 @@ impl<S: EventStore> StoreSink<S> {
 
     pub fn into_inner(self) -> S {
         self.store
+    }
+
+    /// 底层 store 访问（蓝图 68 卷 68.4）：[07] §4.5 明文把容量水位阈值
+    /// 动作与保留删除的 consumer/legal hold 检查划给**调用方**——调用方
+    /// 需要 `&mut S` 执行 `delete_full_segments_before`/`watermarks`。
+    /// 本访问器即该调用方职责的唯一合法通道（不破坏 sink 的 tracker/
+    /// 位点状态；生产装配 = svc-telemetry OBS 事件面保留策略）。
+    pub fn store_mut(&mut self) -> &mut S {
+        &mut self.store
     }
 
     pub fn len(&self) -> usize {

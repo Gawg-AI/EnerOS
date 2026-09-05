@@ -104,12 +104,16 @@ impl ObsShadow {
     /// 返回 (accepted, rejected)；一切拒绝进 quarantine（有界）且计数。
     /// `converted`（v0.314.30 生产消费面出参）= 接受事件的旧样本视图
     /// （OBS = 生产轨；调用方 upsert 进生产缓冲）。
+    /// `accepted_events`（68.4）：接受事件本体出参（OBS 事件面
+    /// StoreSink 追加 + SnapshotModule 投影的唯一输入源——与 converted
+    /// 同一接受集，逐事件对应）。
     pub fn ingest_frames(
         &mut self,
         _source_id: u32,
         frames: &[u8],
         now_ms: u64,
         converted: &mut Vec<TelemetrySample>,
+        accepted_events: &mut Vec<ObservationEvent>,
     ) -> (usize, usize) {
         let mut accepted = 0usize;
         let mut rejected = 0usize;
@@ -172,6 +176,7 @@ impl ObsShadow {
             }
             self.accepted += 1;
             accepted += 1;
+            accepted_events.push(event);
             if let Some(sample) = convert_to_legacy(&event) {
                 batch.push(sample);
             }

@@ -1341,3 +1341,164 @@ fn combo_chain_real_compile_plan_certify() {
     );
     assert!(out.records.iter().all(|r| r.pass), "独立评估全过");
 }
+
+// ---------------------------------------------------------------------------
+// WP-68.4.4（stretch）：certifier 输入可达性——真实 SnapshotModule 产物
+// 喂 shadow 认证路径（只验证不接电；生产消费归 68.5 后 certifier 接电卷）。
+// ---------------------------------------------------------------------------
+
+/// 真实 SnapshotModule（prod catalog + 覆盖点政策 + LocalTrustedEdge 采集
+/// 形事件）构建 TrustedSnapshot——替代手搓 fixture 的产物级输入。
+fn snapshot_module_product() -> eneros_snapshot_service::TrustedSnapshot {
+    use eneros_semantic_catalog::SemanticCatalog;
+    use eneros_snapshot_service::conflict::ConflictRule;
+    use eneros_snapshot_service::{
+        ConflictResolver, ProjectorCapacity, SnapshotPolicy, SnapshotPolicyRegistry,
+        SnapshotRequest,
+    };
+
+    let toml = include_str!("../../../../configs/catalog.toml");
+    let compiled =
+        eneros_config_bundle::toml_compile::compile_catalog(toml).expect("compile catalog");
+    let repo = eneros_semantic_catalog::open(&compiled.payload).expect("decode catalog");
+
+    let coverage: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7];
+    let mut policies = SnapshotPolicyRegistry::new();
+    policies.register(SnapshotPolicy {
+        purpose_id: 1,
+        policy_version: 1,
+        required: coverage.clone(),
+        optional: vec![],
+        allowed_lateness_ns: 600_000_000_000,
+        max_age_ns: 600_000_000_000,
+        min_quality_bits_ok: true,
+        // 生产采集轨 integrity = LocalTrustedEdge（builder 门只认
+        // Authenticated）——政策取生产事实（68.4 执行卡"快照政策"）。
+        require_integrity: false,
+        degraded_ok: false,
+        allowed_sources: None,
+        substitution: None,
+        catalog_version: repo.version_set().contract_version,
+    });
+    let mut module = eneros_snapshot_service::module_from_catalog(
+        repo,
+        ProjectorCapacity {
+            max_points: 64,
+            max_events_per_point: 4,
+        },
+        policies,
+        ConflictResolver::new(ConflictRule::PrimaryBackup),
+        0,
+    );
+    // 采集形事件：7 覆盖点 × LocalTrustedEdge（生产 acq 唯一 integrity 形）。
+    for point in coverage.iter() {
+        module.apply_event(eneros_telemetry_model::event::ObservationEvent {
+            tenant_id: 1,
+            site_id: 1,
+            source_id: 1,
+            source_epoch: 1,
+            sequence: u64::from(*point),
+            event_time_ns: 900_000_000,
+            ingest_time_ns: 900_000_000,
+            asset_id: 1,
+            device_id: 2,
+            unit_code: 0,
+            point_id: *point,
+            schema_id: 1,
+            schema_version: 1,
+            quality_bits: eneros_telemetry_model::event::quality_bits::VALID,
+            mapping_version: 1,
+            value: eneros_telemetry_model::event::ObservationValue::F64(100.0),
+            integrity: eneros_telemetry_model::event::IntegrityTag::LocalTrustedEdge,
+            clock_id: 1,
+            flags: 0,
+        });
+    }
+    module
+        .build(
+            SnapshotRequest {
+                tenant_id: 1,
+                site_id: 1,
+                purpose_id: 1,
+                as_of_ns: 1_000_000_000,
+                max_wait_ns: 0,
+                policy_version: 1,
+            },
+            1_000_000_000,
+        )
+        .expect("真实模块必须产出快照（SM 解冻面）")
+}
+
+#[test]
+fn wp6844_certifier_reachable_from_real_snapshot_module_product() {
+    use eneros_decision_contract::SnapshotId;
+
+    // 1. 真实产物：模块构建的 TrustedSnapshot（含 provenance/watermarks）。
+    let snap = snapshot_module_product();
+    assert!(!snap.observations.is_empty(), "产物须含覆盖点观测");
+    assert!(!snap.source_watermarks.is_empty(), "产物须含来源水位");
+
+    // 2. 五对一致输入：spec/plan 以**产物 snapshot_id** 绑定（bind 契约
+    //    certifier/src/lib.rs:102-124）。
+    let sid = SnapshotId(snap.snapshot_id);
+    let sp = ObjectiveSpec::builder(sid)
+        .constraints(
+            vec![
+                Constraint {
+                    kind: ConstraintKind::MinSoc,
+                    bound: 0.1,
+                },
+                Constraint {
+                    kind: ConstraintKind::MaxSoc,
+                    bound: 0.9,
+                },
+            ],
+            vec![],
+        )
+        .objective(
+            ObjectiveKind::MaxRevenue,
+            1,
+            ObjectiveSource::RuleBundle,
+            ReasonCode::PriceArbitrage,
+        )
+        .window(0, u64::MAX)
+        .build()
+        .unwrap();
+    let envelopes = vec![(1, env_battery()), (10, env_grid())];
+    let batteries = vec![battery()];
+    let context = ctx(&snap, &sp, &envelopes, &batteries);
+    let mut parts = plan_parts_template();
+    parts.snapshot_id = sid;
+    let p = CandidatePlan::from_parts(parts).expect("合法计划");
+
+    // 3. 可达性冒烟：bind（五对）+ certify（独立重算 + seal）全通。
+    context
+        .bind(&p, 2_000)
+        .expect("bind 五对一致（可达性成立）");
+    let ring = CertifierKeyRing::new(1, b"station-cert-key");
+    let out = CertifierModule::certify(&context, &p, 2_000, &ring).expect("shadow certify");
+    assert!(out.records.iter().all(|r| r.pass));
+}
+
+/// plan fixture 的可变 id 变体（既有 plan_raw 的 parts 模板）。
+fn plan_parts_template() -> eneros_decision_contract::CandidatePlanParts {
+    eneros_decision_contract::CandidatePlanParts {
+        id: eneros_decision_contract::PlanId::new([1; 16]).unwrap(),
+        snapshot_id: eneros_decision_contract::SnapshotId([7; 16]),
+        objective_digest: [2; 32],
+        resource_catalog_version: 1,
+        horizon_start_ms: 1_000,
+        step_ns: STEP_NS_HOUR,
+        step_count: 2,
+        solver_status: SolveStatusKind::Optimal,
+        objective_value: 0.0,
+        relative_gap: 0.0,
+        max_primal_residual: 0.0,
+        elapsed_ms: 10,
+        model_digest: [3; 32],
+        input_digest: [4; 32],
+        assignments: valid_assignments(),
+        issued_at_ms: 1_000,
+        ttl_ms: 60_000,
+    }
+}

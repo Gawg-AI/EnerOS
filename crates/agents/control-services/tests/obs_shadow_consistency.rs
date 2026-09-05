@@ -302,14 +302,14 @@ fn shadow_watermark_blocks_cross_instance_regression() {
 
     // ① 首帧 → 接受 + 首见钉扎（last_pinned 报告首见 epoch）。
     let f1 = mk_frame(1, 100.0, None);
-    let (a, r) = shadow.ingest_frames(2, &f1, now_ms, &mut converted);
+    let (a, r) = shadow.ingest_frames(2, &f1, now_ms, &mut converted, &mut Vec::new());
     assert_eq!((a, r), (1, 0));
     assert_eq!(shadow.last_pinned(), Some((2, epoch)));
 
     // ② 更低 epoch（伪造重放形态）→ quarantine（EpochRegression）。
     let f_regress = mk_frame(2, 101.0, Some(epoch.saturating_sub(1)));
     let quarantined_before = shadow.quarantine_total();
-    let (_a, r) = shadow.ingest_frames(2, &f_regress, now_ms, &mut converted);
+    let (_a, r) = shadow.ingest_frames(2, &f_regress, now_ms, &mut converted, &mut Vec::new());
     assert_eq!(r, 1, "更低 epoch 帧被拒");
     assert_eq!(
         shadow.quarantine_total(),
@@ -320,15 +320,15 @@ fn shadow_watermark_blocks_cross_instance_regression() {
     // ③ 同 epoch 旧 seq（seq=1、值不同 → 新 event_id）→ sink
     // SequenceReplay → quarantine。
     let f_old_seq = mk_frame(1, 999.0, None);
-    let (_a, r) = shadow.ingest_frames(2, &f_old_seq, now_ms, &mut converted);
+    let (_a, r) = shadow.ingest_frames(2, &f_old_seq, now_ms, &mut converted, &mut Vec::new());
     assert_eq!(r, 1, "同 epoch 旧 seq 被拒");
 
     // ④ 新 epoch 帧接受（adapter 重启形态），随后旧 epoch 重放仍被拦
     // （钉扎首见值不随升级更新）。
     let f_new_epoch = mk_frame(1, 200.0, Some(epoch + 1));
-    let (a, r) = shadow.ingest_frames(2, &f_new_epoch, now_ms, &mut converted);
+    let (a, r) = shadow.ingest_frames(2, &f_new_epoch, now_ms, &mut converted, &mut Vec::new());
     assert_eq!((a, r), (1, 0), "新 epoch 帧接受（影子评估器 restore 同步）");
     let f_replay = mk_frame(50, 300.0, Some(epoch.saturating_sub(1)));
-    let (_a, r) = shadow.ingest_frames(2, &f_replay, now_ms, &mut converted);
+    let (_a, r) = shadow.ingest_frames(2, &f_replay, now_ms, &mut converted, &mut Vec::new());
     assert_eq!(r, 1, "旧 epoch 重放被拦");
 }

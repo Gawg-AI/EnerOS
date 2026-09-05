@@ -27,6 +27,9 @@ pub mod market;
 /// 蓝图 61 v0.314.31（[07] §3.4）：市场事实接入 adapter——经认证信封
 /// （SM3 摘要 + SM2 验签）走同一 IngestionModule 合同；修订/过期纪律。
 pub mod external_facts;
+// 蓝图 68 卷 68.4（WP-68.4.1）：外部事实持久化面（SFS 解冻——svc-market
+// 装配；Q0 写透 RPO=0）。
+pub mod fact_face;
 pub mod market_ingest;
 /// 蓝图 61 v0.314.32（[07] §4.6.3）：外部事实持久化 sink——认证事实经
 /// `StoreFactEventSink` 写分区事件日志（RPO=0、可恢复重放）。

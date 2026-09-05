@@ -46,6 +46,33 @@ pub const LEARN_STATE_BASE_BLOCK: u64 = AUDIT_CHAIN_BASE_BLOCK + AUDIT_CHAIN_BLO
 /// 学习参数快照区段块数（512B 块计 4 KiB）。
 pub const LEARN_STATE_BLOCKS: u64 = 8;
 
+/// 蓝图 68 卷 68.4（WP-68.4.0 裁决 2）：OBS 事件面分区事件日志区段起始块
+/// （紧随学习参数区末 24712 = 4KiB 块 3089，零保护缝隙划区）。让渡方
+/// svc-telemetry；几何 128 KiB = 3 固定块 + 7×16KiB segment 槽（event-store
+/// StoreConfig segment_bytes=16384）+ 3 块余。命令面成本丈量与三项裁决见
+/// 蓝图/68 卷 68.4 执行卡「执行记录」。
+pub const DATA_EVENT_BASE_BLOCK: u64 = LEARN_STATE_BASE_BLOCK + LEARN_STATE_BLOCKS;
+/// OBS 事件面区段块数（512B 块计 128 KiB）。
+pub const DATA_EVENT_BLOCKS: u64 = 256;
+
+/// 蓝图 68 卷 68.4：外部事实持久化区段起始块（紧随事件面）。让渡方
+/// svc-market（StoreFactEventSink；几何与事件面同参）。
+pub const DATA_FACT_BASE_BLOCK: u64 = DATA_EVENT_BASE_BLOCK + DATA_EVENT_BLOCKS;
+/// 外部事实区段块数（512B 块计 128 KiB）。
+pub const DATA_FACT_BLOCKS: u64 = 256;
+
+/// 蓝图 68 卷 68.4：快照面 LFS 卷区段起始块（紧随事实面；256 KiB =
+/// 64×4KiB，BlockDeviceStorage BLOCK_COUNT=64 卷几何上限内，与 TSDB 同
+/// 卷几何纪律）。让渡方 svc-telemetry（SnapshotModule 快照 blob 存档）。
+pub const DATA_SNAP_BASE_BLOCK: u64 = DATA_FACT_BASE_BLOCK + DATA_FACT_BLOCKS;
+/// 快照面区段块数（512B 块计 256 KiB）。
+pub const DATA_SNAP_BLOCKS: u64 = 512;
+
+/// 数据盘总块数（512B 块计 16 MiB；审计表 §三"QEMU virtio-blk 数据面"）。
+/// 块命令面整盘视口折算 4KiB 块 = 本数 / 8（EipcBlockDevice 面容量——
+/// RegionScope 之下的寻址上界，非让渡语义；访问仍被区段钳制）。
+pub const DATA_DISK_BLOCKS: u64 = 32768;
+
 /// 数据盘区段角色（布局类型化，SPEC-B/C 2026-08-28：`×512` 字节换算收进
 /// 唯一 accessor，消灭消费端散抄魔数；常量数值逐字节不变）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +83,12 @@ pub enum DataRegion {
     AuditChain,
     /// 学习参数快照区段（[`LEARN_STATE_BASE_BLOCK`]/[`LEARN_STATE_BLOCKS`]）。
     LearnState,
+    /// OBS 事件面区段（[`DATA_EVENT_BASE_BLOCK`]/[`DATA_EVENT_BLOCKS`]）。
+    EventFace,
+    /// 外部事实区段（[`DATA_FACT_BASE_BLOCK`]/[`DATA_FACT_BLOCKS`]）。
+    FactFace,
+    /// 快照面区段（[`DATA_SNAP_BASE_BLOCK`]/[`DATA_SNAP_BLOCKS`]）。
+    SnapshotFace,
 }
 
 impl DataRegion {
@@ -65,6 +98,9 @@ impl DataRegion {
             DataRegion::Tsdb => DATA_TSDB_BASE_BLOCK,
             DataRegion::AuditChain => AUDIT_CHAIN_BASE_BLOCK,
             DataRegion::LearnState => LEARN_STATE_BASE_BLOCK,
+            DataRegion::EventFace => DATA_EVENT_BASE_BLOCK,
+            DataRegion::FactFace => DATA_FACT_BASE_BLOCK,
+            DataRegion::SnapshotFace => DATA_SNAP_BASE_BLOCK,
         }
     }
     /// 区段长度（512B 块数）。
@@ -73,6 +109,9 @@ impl DataRegion {
             DataRegion::Tsdb => DATA_TSDB_BLOCKS,
             DataRegion::AuditChain => AUDIT_CHAIN_BLOCKS,
             DataRegion::LearnState => LEARN_STATE_BLOCKS,
+            DataRegion::EventFace => DATA_EVENT_BLOCKS,
+            DataRegion::FactFace => DATA_FACT_BLOCKS,
+            DataRegion::SnapshotFace => DATA_SNAP_BLOCKS,
         }
     }
     /// 区段字节基址（`×512` 唯一换算点）。
@@ -671,5 +710,66 @@ mod spec_c_region_tests {
         assert!(learn.end <= 32768, "学习参数区越出 16 MiB 数据盘");
         // 相互隔离（顺序声明不等于隔离——双保险）。
         assert!(!audit.contains(&learn.start) && !learn.contains(&audit.start));
+    }
+
+    /// 蓝图 68 卷 68.4（WP-68.4.0 裁决 2）：全数据盘区段表（六区段）
+    /// 排序不相交 + 4KiB 对齐 + 盘内收敛——执行卡「区段分配」表的无重叠
+    /// 证明 const 级防线。新增区段必须先过本测试与内存审计。
+    #[test]
+    fn data_regions_disjoint_aligned_and_bounded() {
+        use super::{
+            DataRegion, AUDIT_CHAIN_BASE_BLOCK, AUDIT_CHAIN_BLOCKS, DATA_EVENT_BASE_BLOCK,
+            DATA_EVENT_BLOCKS, DATA_FACT_BASE_BLOCK, DATA_FACT_BLOCKS, DATA_SNAP_BASE_BLOCK,
+            DATA_SNAP_BLOCKS, DATA_TSDB_BASE_BLOCK, DATA_TSDB_BLOCKS, LEARN_STATE_BASE_BLOCK,
+            LEARN_STATE_BLOCKS,
+        };
+        const DATA_DISK_BLOCKS: u64 = 32768; // 16 MiB
+        let regions = [
+            ("tsdb", DATA_TSDB_BASE_BLOCK, DATA_TSDB_BLOCKS),
+            ("audit", AUDIT_CHAIN_BASE_BLOCK, AUDIT_CHAIN_BLOCKS),
+            ("learn", LEARN_STATE_BASE_BLOCK, LEARN_STATE_BLOCKS),
+            ("event", DATA_EVENT_BASE_BLOCK, DATA_EVENT_BLOCKS),
+            ("fact", DATA_FACT_BASE_BLOCK, DATA_FACT_BLOCKS),
+            ("snap", DATA_SNAP_BASE_BLOCK, DATA_SNAP_BLOCKS),
+        ];
+        // 排序不相交：前区段末 ≤ 后区段起（允许相邻，禁止重叠/倒序）。
+        for w in regions.windows(2) {
+            let (prev_end, next_start) = (w[0].1 + w[0].2, w[1].1);
+            assert!(
+                prev_end <= next_start,
+                "区段 {} [{}] 与 {} [{}] 重叠/倒序",
+                w[0].0,
+                prev_end,
+                w[1].0,
+                next_start
+            );
+        }
+        // 4KiB 对齐：基址与长度均为 4096B 整除（512B 块即 8 块整除）。
+        // 例外：学习区长度 8 块 = 4KiB 恰好对齐；全表零例外。
+        for (name, base, blocks) in regions {
+            assert_eq!((base * 512) % 4096, 0, "区段 {name} 字节基址非 4KiB 对齐");
+            assert_eq!((blocks * 512) % 4096, 0, "区段 {name} 长度非 4KiB 对齐");
+        }
+        // 盘内收敛 + 未分配余量 ≥2 MiB（上方未来卷划区空间）。
+        let last_end = regions[regions.len() - 1].1 + regions[regions.len() - 1].2;
+        assert!(last_end <= DATA_DISK_BLOCKS, "区段表越出 16 MiB 数据盘");
+        assert!(
+            DATA_DISK_BLOCKS - last_end >= 4096,
+            "上方未分配余量 <2 MiB（未来卷划区空间不足）"
+        );
+        // DataRegion 枚举与常量同源（accessor 零漂移）。
+        for r in [
+            DataRegion::Tsdb,
+            DataRegion::AuditChain,
+            DataRegion::LearnState,
+            DataRegion::EventFace,
+            DataRegion::FactFace,
+            DataRegion::SnapshotFace,
+        ] {
+            let hit = regions
+                .iter()
+                .find(|(_, b, n)| *b == r.base_block_512() && *n == r.blocks_512());
+            assert!(hit.is_some(), "DataRegion::{r:?} 与常量表不同源");
+        }
     }
 }

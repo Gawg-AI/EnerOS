@@ -1198,6 +1198,137 @@ impl ProvisioningGate {
 }
 
 // ============================================================================
+// CachedBlocks（蓝图 68 卷 68.4）：小容量直接映射读缓存（写穿）
+// ============================================================================
+
+/// 直接映射块读缓存 + 写穿（`D: BlockDevice` 通用包装，与 [`BlockTrace`]
+/// 同层的装配件；非角色设备——不做 `ScopedBlockDevice` 透传，生产只垫在
+/// [`RegionScope`] 之下）。
+///
+/// 存在理由（68.4 执行卡裁决 1）：`BlockEventStore` 的 scan/read 逐记录
+/// `read_seg_rel`——同一 4KiB 块被相邻记录反复整块重取（每记录头+载荷
+/// 各一次），无缓存的块命令面（EIPC 分片 ≈10 命令/块）下全量扫描是
+/// 千级命令。`N` 块直接映射缓存把顺序扫描压到每块一次底层取数；写
+/// 一律穿透并更新缓存行（读回校验语义不破坏）。
+///
+/// 命中统计（`hits`/`misses`，可观测）供装配面成本审计。
+/// 缓存行类型（`Some((abs_block, data))`，行号 = `idx % N`）。
+type CacheLine = Option<(u64, alloc::vec::Vec<u8>)>;
+
+pub struct CachedBlocks<const N: usize, D: BlockDevice> {
+    inner: D,
+    /// 直接映射缓存行。RefCell：`BlockDevice::read_block` 是 `&self`
+    /// （BlockTrace/EipcBlockDevice 同款内部可变性——单线程服务循环内
+    /// 诚实所有局）。
+    lines: core::cell::RefCell<[CacheLine; N]>,
+    block_size: usize,
+    /// 命中次数（可观测）。
+    pub hits: core::cell::Cell<u64>,
+    /// 未命中（底层取数）次数（可观测）。
+    pub misses: core::cell::Cell<u64>,
+}
+
+impl<const N: usize, D: BlockDevice> CachedBlocks<N, D> {
+    /// 构造（`N ≥ 1`；`block_size` 取自内层设备）。
+    pub fn new(inner: D) -> Self {
+        assert!(N >= 1, "CachedBlocks 至少 1 行");
+        let block_size = inner.block_size();
+        Self {
+            inner,
+            lines: core::cell::RefCell::new(core::array::from_fn(|_| None)),
+            block_size,
+            hits: core::cell::Cell::new(0),
+            misses: core::cell::Cell::new(0),
+        }
+    }
+
+    /// 内层块设备（构造 RegionScope 等上层包装时克隆面用）。
+    pub fn inner(&self) -> &D {
+        &self.inner
+    }
+}
+
+impl<const N: usize, D: BlockDevice> Clone for CachedBlocks<N, D>
+where
+    D: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            lines: core::cell::RefCell::new({
+                let borrowed = self.lines.borrow();
+                let mut out: [CacheLine; N] = core::array::from_fn(|_| None);
+                for (dst, src) in out.iter_mut().zip(borrowed.iter()) {
+                    if let Some((blk, data)) = src {
+                        *dst = Some((*blk, data.clone()));
+                    }
+                }
+                out
+            }),
+            block_size: self.block_size,
+            hits: core::cell::Cell::new(self.hits.get()),
+            misses: core::cell::Cell::new(self.misses.get()),
+        }
+    }
+}
+
+impl<const N: usize, D: BlockDevice> BlockDevice for CachedBlocks<N, D> {
+    fn read_block(&self, block_idx: u64, buf: &mut [u8]) -> Result<(), StorageError> {
+        let line = (block_idx % N as u64) as usize;
+        if let Some((blk, data)) = self.lines.borrow().get(line).and_then(|s| s.as_ref()) {
+            if *blk == block_idx {
+                self.hits.set(self.hits.get() + 1);
+                buf.copy_from_slice(data);
+                return Ok(());
+            }
+        }
+        self.misses.set(self.misses.get() + 1);
+        let mut data = alloc::vec![0u8; self.block_size];
+        self.inner.read_block(block_idx, &mut data)?;
+        buf.copy_from_slice(&data);
+        self.lines.borrow_mut()[line] = Some((block_idx, data));
+        Ok(())
+    }
+
+    fn write_block(&mut self, block_idx: u64, buf: &[u8]) -> Result<(), StorageError> {
+        // 写穿 + 更新缓存行（读回校验/双槽世代读回都走同一视图）。
+        self.inner.write_block(block_idx, buf)?;
+        let line = (block_idx % N as u64) as usize;
+        let mut data = alloc::vec![0u8; self.block_size];
+        data.copy_from_slice(buf);
+        self.lines.borrow_mut()[line] = Some((block_idx, data));
+        Ok(())
+    }
+
+    fn erase_block(&mut self, block_idx: u64) -> Result<(), StorageError> {
+        self.inner.erase_block(block_idx)?;
+        // 擦除使缓存行失效（内层语义 = 清零/清 FF，不能沿用旧行）。
+        let line = (block_idx % N as u64) as usize;
+        let mut lines = self.lines.borrow_mut();
+        if lines[line].as_ref().is_some_and(|(b, _)| *b == block_idx) {
+            lines[line] = None;
+        }
+        Ok(())
+    }
+
+    fn block_count(&self) -> u64 {
+        self.inner.block_count()
+    }
+
+    fn block_size(&self) -> usize {
+        self.inner.block_size()
+    }
+
+    fn flush(&mut self) -> Result<(), StorageError> {
+        self.inner.flush()
+    }
+
+    fn health_status(&self) -> crate::driver::DeviceHealth {
+        self.inner.health_status()
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1269,6 +1400,54 @@ mod tests {
         let mut rd = [0u8; 4096];
         scope.read_block(3, &mut rd).expect("read");
         assert!(rd.iter().all(|&b| b == 0), "erase 后必须全零");
+    }
+
+    /// 蓝图 68 卷 68.4：直接映射读缓存——顺序重读同块只取一次底层；
+    /// 写穿后读回一致；撞行（idx % N 相同）正确逐出。
+    #[test]
+    fn cached_blocks_hit_write_through_and_eviction() {
+        // 单行缓存：读 A → miss；再读 A → hit；读 B → 逐出 A。
+        let dev = mk_dev(8, 16);
+        let mut cached = CachedBlocks::<1, _>::new(dev);
+        let mut b1 = [0u8; 16];
+        cached.write_block(2, &[7u8; 16]).expect("write 2");
+        cached
+            .read_block(2, &mut b1)
+            .expect("read 2 (hit: 写已入行)");
+        assert_eq!(b1, [7u8; 16]);
+        let hits_after_wt = cached.hits.get();
+        assert_eq!(hits_after_wt, 1, "写穿后同块读必须命中");
+
+        cached
+            .write_block(5, &[9u8; 16])
+            .expect("write 5 (撞行逐出)");
+        let mut rd2 = [0u8; 16];
+        cached
+            .read_block(2, &mut rd2)
+            .expect("read 2 (miss → 底层)");
+        assert_eq!(rd2, [7u8; 16], "逐出行重取必须与介质一致");
+        let mut rd5 = [0u8; 16];
+        cached.read_block(5, &mut rd5).expect("read 5");
+        assert_eq!(rd5, [9u8; 16]);
+        assert!(cached.misses.get() >= 1, "撞行后必须发生底层取数");
+    }
+
+    /// 缓存正确性:块内容变更(经缓存写后)与介质视图一致;erase 失效。
+    #[test]
+    fn cached_blocks_erase_invalidates_line() {
+        let dev = mk_dev(8, 16);
+        let mut cached = CachedBlocks::<2, _>::new(dev);
+        cached.write_block(3, &[1u8; 16]).expect("write 3");
+        // 撞同余行(3 % 2 = 1, 5 % 2 = 1)不逐出块 3(行 0... 3%2=1 行)。
+        cached.write_block(5, &[2u8; 16]).expect("write 5");
+        cached.erase_block(3).expect("erase 3");
+        // MockBlockDevice erase 语义 = 清零(与 RegionScope 零写契约一致面)。
+        let mut rd = [0u8; 16];
+        cached.read_block(3, &mut rd).expect("read 3");
+        assert!(
+            rd.iter().all(|&b| b == 0),
+            "erase 后经缓存读回必须反映擦除态"
+        );
     }
 
     fn mk_dev(blocks: u64, block_size: usize) -> MockBlockDevice {

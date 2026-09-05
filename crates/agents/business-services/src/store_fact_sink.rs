@@ -1,8 +1,12 @@
-//! # 机制状态（63.3 WP-63.3.3 冻结登记——总册 ID SFS-deferred）
+//! # 机制状态（蓝图 68 卷 68.4 WP-68.4.1 解冻翻转——原总册 ID SFS-deferred）
 //!
-//! **StoreFactEventSink 未接生产闭包**（crate 外零引用——rg 实证）；本标注
-//! = 防复查误判生产地位。激活前置 = 目标侧存储句柄移交（BLOCKED，00 §4）。
-//! 不实施真接线、不删除本体（24e12d5 登记项开发①交付资产）。
+//! **StoreFactEventSink 已接生产装配**（svc-market bin 启动期
+//! `fact_face::open_fact_face` → DATA_FACT_* 区段 → Q0 写透 RPO=0；
+//! 授予边 = svc-market→svc-storage 既有边）。上游事实 transport
+//! （market peer / sealed FactEnvelope 通道）未部署 ⇒ sink 生产在位、
+//! 零消费——跨 bin 接线（market_ingest/external_facts）登记后续卷
+//! （68.4 执行卡 WP-68.4.1 改动面 3）。解冻条件="68.3 块面 + 68.4 接线
+//! 完成"（Z8），证据 = evidence/68/vol68-4/ 双窗 QEMU 日志。
 //!
 //! 蓝图 61 [11] §5.1/§5.9 + [07] §4.6.3（v0.314.32）：外部事实的
 //! **持久化**事件面 sink——把已认证事实（class/external_id/revision/

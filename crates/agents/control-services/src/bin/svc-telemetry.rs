@@ -99,6 +99,36 @@ pub extern "C" fn _start(
                 None
             }
         };
+    // 蓝图 68 卷 68.4（WP-68.4.1/68.4.2）：OBS 事件面 + 快照面（三冻
+    // 解冻：SS/SM，事件面含 SFS 同机制）。授予边复用 svc-storage 既有
+    // 边（68.3 同槽）；两块通道（事件面/快照面各一）独立打开，失败显式
+    // 降级（EVENT-STORE-UNAVAILABLE / SNAP-STORE-UNAVAILABLE 词形在
+    // event_face 内一次性落串口）。构造期零 I/O——lazy-open 在首个 OBS
+    // 批次（boot 预算不增，REG-BOOT-SLOW-FINAL 不再翻倍）。
+    let mk_face_io = || {
+        eneros_agent_sdk::eipc_resolve("svc-telemetry", "svc-storage")
+            .and_then(|(_, slot)| eneros_agent_sdk::block_io::eipc_block_io(slot, 0, 5_000))
+    };
+    match mk_face_io().zip(mk_face_io()) {
+        Some((io_event, io_snap)) => {
+            service.set_event_face(alloc::boxed::Box::new(
+                eneros_control_services::event_face::EventFace::new(
+                    io_event,
+                    io_snap,
+                    eneros_ota_ab::ab_partition::DataRegion::EventFace,
+                    eneros_ota_ab::ab_partition::DataRegion::SnapshotFace,
+                ),
+            ));
+            eneros_runtime::println!(
+                "[svc-telemetry] EVENT-FACE armed base_block={} snap_base_block={} (lazy open on first OBS)",
+                eneros_ota_ab::ab_partition::DATA_EVENT_BASE_BLOCK,
+                eneros_ota_ab::ab_partition::DATA_SNAP_BASE_BLOCK
+            );
+        }
+        None => {
+            eneros_runtime::println!("[svc-telemetry] EVENT-STORE-NOT-GRANTED —— 事件面未装配");
+        }
+    }
     // 蓝图 61：svc-config 客户端（授予边 eipc_grants 单源；槽解析无 I/O
     // ——真实取数惰性发生在首个 OBS 批次，此时 svc-config 必已服务）。
     let config_client: Option<
@@ -219,6 +249,12 @@ impl TelemetryHandler<'_> {
                 "[svc-telemetry] CATALOG-COVERAGE points={}",
                 applied_config.coverage.points.len()
             );
+            // 蓝图 68 卷 68.4：catalog 交事件面（SnapshotModule + 快照
+            // 政策构建；repo 所有权移交，coverage/digest 已先取）。模块
+            // 时基取服务单调毫秒（惰性装载点无请求时钟入参）；政策/
+            // 目录版本自 repo 单源。
+            self.svc
+                .set_event_face_catalog(cat.repo, eneros_drv_svc::now_ms());
         } else {
             eneros_runtime::println!(
                 "[svc-telemetry] CATALOG-MISSING —— coverage 走装配参数（legacy 轨，fail-closed 输入不变）"
