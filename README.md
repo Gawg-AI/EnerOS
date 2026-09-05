@@ -17,7 +17,7 @@
 
 EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power Native + Agent Native + AI Native** 专用操作系统。基于 seL4 微内核形式化验证基座与 Rust `no_std` 运行时构建，采用混合关键性架构（Mixed Criticality），将**实时控制（RTOS 分区）**与**AI Agent（用户态分区）**隔离运行在同一 ARM64 硬件上。
 
-**当前版本**：workspace v0.317.x（精确值以根 `Cargo.toml` 为准）— 交付冲刺 44–59 卷完成（候选冻结 tag `v1.0.0-rc.1`；终验矩阵与缺口清单见 `evidence/52/`）；蓝图 61 Phase 0–7 全出口后，蓝图 62/63（单源收口）与蓝图 64（调用方最后一截收口，卷 64.1 协议键表单源 + goose vlan_id 活缺陷修复）推进中；测试基线计数随卷出口证据更新（52 终验以来各卷 Exit 均全绿）；生产发布（v1.0.0）未授权——当前裁决 NO-GO（`docs/v1.0.0-go-no-go.md`）。
+**当前版本**：workspace v0.320.0（精确值以根 `Cargo.toml` 为准）— 交付冲刺 44–59 卷完成（候选冻结 tag `v1.0.0-rc.1`；终验矩阵与缺口清单见 `evidence/52/`）；蓝图 61 Phase 0–7 全出口后，蓝图 62/63（单源收口）与蓝图 64（调用方最后一截收口，卷 64.1 协议键表单源 + goose vlan_id 活缺陷修复）推进中；测试基线计数随卷出口证据更新（52 终验以来各卷 Exit 均全绿）；生产发布（v1.0.0）未授权——当前裁决 NO-GO（`docs/v1.0.0-go-no-go.md`）。
 
 > **唯一内核路线 = seL4**（ADR-0023 用户决策，ADR-0030 执行确认，KRN-001）：自研 microkernel 已淘汰（G2 验证缺陷），产品镜像内核/引导为 seL4（`third_party/sel4-build.sh`）；EnerOS root-task 消费 BootInfo 并 spawn EL0 服务（KRN-002~004）。
 
@@ -34,7 +34,7 @@ EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power
 │   RTOS 控制引擎（10ms 周期/抖动 <1ms，设计目标——真机实测待 bring-up B9）│ 设备协议栈        │
 ├─────────────────────────────────────────────────────────┤
 │              seL4 微内核 + HAL                            │
-│   分区调度器(ARINC 653) │ Capability │ 虚拟内存隔离       │
+│   分区调度器(ARINC 653，设计文档面——代码未实现，docs/smp/arinc653-adaptation.md) │ Capability │ 虚拟内存隔离       │
 │   IPC │ SMP 多核 │ 时钟/看门狗/Panic                      │
 └─────────────────────────────────────────────────────────┘
         7 层纵深安全 │ Ed25519/SHA-256/TLS1.3（国密 SM2/3/4=实验性，D4）│ 横向隔离
@@ -290,7 +290,7 @@ use std::net::TcpStream;
 
 EnerOS (Power Native Agent OS) is an energy-internet-native Agent OS built on the seL4 microkernel and Rust `no_std` runtime. It employs a Mixed Criticality architecture, isolating **real-time control (RTOS partition)** and **AI Agent (user-space partition)** on the same ARM64 hardware.
 
-**Current Version**: workspace v0.316.x — delivery-sprint volumes 44–59 complete, followed by blueprint 61 phases 0–7 and deepening blueprints 62/63 (single-source close-out) (candidate freeze tag `v1.0.0-rc.1`; final verdict NO-GO, gap ledger in `evidence/52/`). The live version is whatever the root `Cargo.toml` declares.
+**Current Version**: workspace v0.320.0 — delivery-sprint volumes 44–59 complete, followed by blueprint 61 phases 0–7 and deepening blueprints 62/63 (single-source close-out) (candidate freeze tag `v1.0.0-rc.1`; final verdict NO-GO, gap ledger in `evidence/52/`). The live version is whatever the root `Cargo.toml` declares.
 
 #### Core Architecture
 
@@ -305,7 +305,7 @@ EnerOS (Power Native Agent OS) is an energy-internet-native Agent OS built on th
 │   RTOS Engine (10ms cycle/jitter <1ms) │ Protocol Stack  │
 ├─────────────────────────────────────────────────────────┤
 │           seL4 Microkernel + HAL                          │
-│   Partition Sched (ARINC 653) │ Capability │ VSpace      │
+│   Partition Sched (ARINC 653, design-doc only——not implemented in code, docs/smp/arinc653-adaptation.md) │ Capability │ VSpace      │
 │   IPC │ SMP │ Clock/Watchdog/Panic                        │
 └─────────────────────────────────────────────────────────┘
      7-Layer Defense │ Ed25519/SHA-256/TLS1.3 │ SM2/SM3/SM4 (experimental) │ Lat. Isolation

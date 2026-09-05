@@ -84,5 +84,5 @@ cargo xtask build all            # 目标命令；当前环境/依赖失败不�
 cargo xtask image raw|iso|recovery|vars|update
 cargo xtask run qemu-prod
 cargo xtask evidence verify|gate # release 只接受 gate PASS
-cargo test --workspace           # 当前并非全绿，执行结果按35-00记录
+cargo test --workspace           # 全绿基线 8624+（2026-09-05 复跑属实，蓝图 68.1 执行卡；计数随各卷出口证据刷新）
 ```

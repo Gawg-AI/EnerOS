@@ -4,9 +4,11 @@
 //! 单一事实：此前 `ChunkedClient::new` 非测试调用点 ×22、bins+root
 //! service.rs 的 epoch `saturating_add` 手递增 ×14（mqtt 一 bin 背 3 组
 //! epoch 字段 + 绑定块 + 递增）。结构性风险 = 新消费点漏递增/错递增即
-//! 触发服务端 epoch 拒绝（重放守卫失效或误伤）。本类型把
+//! 破坏会话身份线序（68.1 口径订正见下）。本类型把
 //! "client + epoch" 收拢为一个端点：epoch 私有，递增只发生在
 //! [`ChunkedEndpoint::call`] 内——消费方**结构性不可能**漏递增。
+//!（68.1 口径订正：服务端不比较 epoch 值——迟到帧拦截由传输代次 +
+//! 严格 index 序承担；单调递增纪律保线序身份，见 chunked 模块 doc。）
 //!
 //! [`ChunkedEndpoint::bind`] 同源收编 EIPC 建端三行闭包
 //! （`eipc_resolve` + `Sel4IpcClient::new` + `ok()`），未授予 → None
@@ -27,8 +29,8 @@ pub const CHUNKED_CALL_TIMEOUT_MS: u64 = 5_000;
 /// `C = Sel4IpcClient`（target）或 mock `RawIpc`（host 测试）。
 pub struct ChunkedEndpoint<C: RawIpc> {
     client: C,
-    /// 发送方 epoch（重启计数；**私有**——服务端 epoch 不匹配拒绝的
-    /// 重放守卫，递增纪律由本类型单点承载）。
+    /// 发送方 epoch（重启计数；**私有**——递增纪律由本类型单点承载；
+    /// 服务端不比较 epoch 值，单调性保会话身份线序，见 chunked 模块 doc）。
     epoch: u64,
 }
 
@@ -54,8 +56,8 @@ impl<C: RawIpc> ChunkedEndpoint<C> {
     /// [`CHUNKED_CALL_TIMEOUT_MS`]。
     ///
     /// epoch 每次调用**恰好 +1**（与传输成败无关——原各消费方"建
-    /// transfer 即递增"语义保真：传输失败后旧 epoch 序号不得复用，
-    /// 服务端半组装缓冲按 epoch 拒迟到帧）。
+    /// transfer 即递增"语义保真：传输失败后旧 epoch 序号不得复用；
+    /// 迟到帧由服务端传输代次 + 严格 index 序拦截，非 epoch 比较）。
     pub fn call(&mut self, target: &str, req: &[u8]) -> Result<Vec<u8>, ChunkError> {
         self.call_with_timeout(target, req, CHUNKED_CALL_TIMEOUT_MS)
     }

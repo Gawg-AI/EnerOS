@@ -1,0 +1,43 @@
+=== 步骤 1：config compile（qemu-prod）===
+=== config compile（qemu-prod）===
+CONFIG-COMPILE: → /home/ahx/文档/EnerOS/product/config-bundle.bin（ai-peer,catalog,cloud-sync,control-write,logging,metrics,ota,points,protocol-dlt645,protocol-gbt27930,protocol-goose,protocol-iec101,protocol-iec103,protocol-iec104,protocol-mms,protocol-modbus-rtu,protocol-modbus-tcp,protocol-mqtt,protocol-sv,security entries，7057B）
+             pubkey → /home/ahx/文档/EnerOS/product/config-bundle-pubkey.hex
+=== 步骤 2：sel4-build-rust 重链接 + image raw qemu-prod（68.1 触 control-services 六 bin）===
+=== image raw qemu-prod ===
+f6700facdbe522da0894302981372eddf67f2665a59ac91591f5539297592dc5  /home/ahx/文档/EnerOS/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw
+=== 步骤 3：qemu-prod typed 链正例一轮 ===
+MODBUS47-SLAVE-READY listening=5502
+run rc=2（124/2=超时杀=完整窗口）
+=== 出口门判据行扫描 ===
+[✓] PRODUCT-READY: true
+[✓] PROTO-EXEC svc-modbus-tcp status=0x00
+[✓] OBS-REPORT enqueue rejected
+[✓] OBS-REPORT flush rejected
+[✓] OBS-REPORT svc=
+[✓] CONTROL-CHAIN: round=
+[✓] dispatch=Committed
+[✓] ACQ-ROUND
+[✓] AUDIT-CHAIN
+[✓] OTA-DOWNLOAD: OK
+[✓] STORAGE-PERSIST: OK
+[✓] telemetry EIPC bound (svc-telemetry)
+[✓] telemetry EIPC NOT granted
+[✓] PROTO-EXEC status=0x04（能力壳显式降级词形）
+[✓] SUPERVISOR 无
+[✓] HEARTBEAT-KILL 无
+[✓] DBG-EXEC 无
+[✓] CHUNKED-SLOT-FULL 零出现
+[✓] CHUNKED-DUP-SESSION 零出现
+[✓] CHUNKED-PAGE-EVICTED 零出现
+[i] CHUNKED-SLOW 观测计数 = 0（不作失败判据）
+[✓] ×1: [goose-config] PROTOCOL-CONFIG loaded 6 keys (id=protocol-goose)
+[✓] ×1: [iec104-config] POINTS-LOADED 19 points (registry 21)
+[✓] ×1: [iec104-config] PROTOCOL-CONFIG loaded 5 keys (id=protocol-iec104)
+[✓] ×1: [mms-config] POINTS-LOADED 19 points (registry 21)
+[✓] ×1: [mms-config] PROTOCOL-CONFIG loaded 2 keys (id=protocol-mms)
+[✓] ×1: [modbus-config] POINTS-LOADED 12 points (registry 21)
+[✓] ×1: [modbus-config] PROTOCOL-CONFIG loaded 4 keys (id=protocol-modbus-tcp)
+[✓] ×1: [mqtt-config] PROTOCOL-CONFIG loaded 9 keys (id=protocol-mqtt)
+[✓] ×1: [sv-config] PROTOCOL-CONFIG loaded 3 keys (id=protocol-sv)
+=== VOL68.1-GATE: PASS ===
+GATE-RC=0

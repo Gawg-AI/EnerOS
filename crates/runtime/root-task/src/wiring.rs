@@ -33,8 +33,9 @@ pub struct ServiceWiring {
     pub heartbeat: bool,
     /// virtio-net MMIO 槽（46.2；None = 无 NIC 面，如串口/纯服务）。
     pub net_slot: Option<u64>,
-    /// 栈页覆盖（1 页 = 4 KiB；None = 默认 16 KiB/4 页。SPEC-E：svc-telemetry
-    /// TSDB 磁盘写链栈峰值 ~30 KiB，16 页 = 64 KiB ≥2× 余量）。
+    /// 栈页覆盖（1 页 = 4 KiB；None = 默认 32 KiB/8 页——蓝图 68.1 起默认
+    /// 翻倍，见 main.rs STACK_SIZE 注记。SPEC-E：svc-telemetry TSDB 磁盘写
+    /// 链栈峰值 ~30 KiB，显式 16 页 = 64 KiB ≥2× 余量）。
     pub stack_pages: Option<u64>,
     /// 编排驱动登记（Some = 周期驱动；None + [`ServiceWiring::
     /// driven_none_reason`] = 显式不驱动 + 理由）。

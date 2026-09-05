@@ -13,7 +13,11 @@
 //!    以结构化响应回执（device-agent 返回 `OutcomeFrame`）。
 //!
 //! 任何一步超时/失败 → 明确错误，不猜成功（服务端未收到 Final 时丢弃
-//! 半组装缓冲——重启/迟到消息由 epoch 拒绝）。
+//! 半组装缓冲——重启/迟到消息由**传输代次 + 严格 index 序**拦截：代次由
+//! Header 到达序定义、Data 帧不携带代次/epoch 字段；index=0 迟到帧的
+//! 跨客户端窗口由服务端按 badge 分槽 + 双会话拒绝拦截，见
+//! control-services `service_slots`。epoch 仅存在于 Header，用于会话
+//! 身份，服务端不比较其值）。
 //!
 //! 纯编解码与状态机逻辑可在 host 单测；目标侧经
 //! [`ChunkedClient`]（泛型 `RawIpc`）与 `Sel4IpcClient` 绑定。
@@ -88,7 +92,8 @@ pub struct ChunkHeader {
     pub chunk_count: u8,
     /// 单块容量。
     pub chunk_size: u16,
-    /// 发送方 epoch（重启计数；服务端 epoch 不匹配拒绝）。
+    /// 发送方 epoch（重启计数；仅作会话身份——服务端不比较其值，迟到
+    /// 帧拦截由传输代次 + 严格 index 序承担，见模块 doc）。
     pub epoch: u64,
 }
 
@@ -195,8 +200,14 @@ pub struct ChunkedReceiver {
     received: u8,
     /// 组装缓冲。
     buf: Vec<u8>,
-    /// 发送方 epoch（传输开始记录；新 header 必须同 epoch 才续传）。
+    /// 发送方 epoch（传输开始记录；仅作会话身份观测——见模块 doc）。
     epoch: u64,
+    /// 传输代次（蓝图 68.1）：每收到 Header +1，由 **Header 到达序**定义
+    /// （wire 不携带；Data 帧无代次字段）。"index 在当前代次内必须严格
+    /// 连续从 0 起"的校验域即由此界定。
+    generation: u64,
+    /// 迟到/交错 Data 帧丢弃计数（index 违例即代次错位证据；累计不回零）。
+    late_dropped: u32,
 }
 
 impl Default for ChunkedReceiver {
@@ -214,12 +225,24 @@ impl ChunkedReceiver {
             received: 0,
             buf: Vec::new(),
             epoch: 0,
+            generation: 0,
+            late_dropped: 0,
         }
     }
 
     /// 是否空闲（无半组装传输）。
     pub fn idle(&self) -> bool {
         self.expected_chunks.is_none()
+    }
+
+    /// 当前传输代次（每 Header +1；观测面——服务端诊断与测试用）。
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// 迟到/交错 Data 丢弃计数（累计；观测面——服务端诊断与测试用）。
+    pub fn late_dropped(&self) -> u32 {
+        self.late_dropped
     }
 
     /// 处理一条入站消息（header/data/final）。
@@ -248,7 +271,10 @@ impl ChunkedReceiver {
             }
         };
         // 进行中传输收到新 header：丢弃旧传输（明确协议：一客户端一传输）。
+        // 代次 +1 = 旧传输全部在途帧从此与新传输的严格 index 序不相容
+        // （除 index=0 的窗口帧——由服务端按 badge 分槽拦截，见模块 doc）。
         self.reset();
+        self.generation = self.generation.wrapping_add(1);
         self.expected_chunks = Some(header.chunk_count);
         self.expected_len = header.total_len;
         self.epoch = header.epoch;
@@ -271,7 +297,9 @@ impl ChunkedReceiver {
             }
         };
         // 严格按序（乱序/重复/越界 → 拒绝整传输，fail-closed）。
+        // index 违例 = 迟到/交错帧的直接证据 → 计数（蓝图 68.1 观测面）。
         if index != self.received {
+            self.late_dropped = self.late_dropped.saturating_add(1);
             let e = ChunkError::BadIndex {
                 got: index,
                 expected: self.received,
@@ -643,6 +671,92 @@ mod tests {
             rx.on_message(&f, false),
             ChunkedEvent::Malformed(ChunkError::NoTransfer)
         ));
+    }
+
+    // ---- 蓝图 68 卷 68.1 WP-68.1.1：服务端交错红测群（接收器面） --------
+    // t2/t6 按实现现状判定为**基线即绿**（严格 index 序已存在），本卷
+    // 转行为锁 + 变异验证（见执行卡）；代次/迟到丢弃计数为本卷新增观测面。
+
+    /// t2：新 Header 作废旧传输的全部在途 Data——旧传输数据不得进入
+    /// 新传输（Header(B) 后到达的旧块 index 必然错位被拒）。
+    #[test]
+    fn t2_new_header_invalidates_stale_data() {
+        let mut rx = ChunkedReceiver::new();
+        let _ = rx.on_message(&plan_chunks(270, 1).expect("plan").0.encode(), true);
+        let _ = rx.on_message(&encode_data(0, &[0xA1; 104]).expect("frame"), false);
+        let _ = rx.on_message(&encode_data(1, &[0xA1; 104]).expect("frame"), false);
+        // 新传输 B（1 块 50B）。
+        let _ = rx.on_message(&plan_chunks(50, 2).expect("plan").0.encode(), true);
+        assert_eq!(rx.generation(), 2, "两次 Header → 代次 2");
+        // 旧传输在途块（index=2）迟到 → 拒绝 + 丢弃计数；fail-closed
+        // 复位终止当前组装（B 的客户端按传输错误重试——旧数据无从进入）。
+        let ev = rx.on_message(&encode_data(2, &[0xA1; 104]).expect("frame"), false);
+        assert!(matches!(
+            ev,
+            ChunkedEvent::Malformed(ChunkError::BadIndex {
+                got: 2,
+                expected: 0
+            })
+        ));
+        assert!(rx.idle(), "违例后复位（fail-closed）");
+        assert_eq!(rx.late_dropped(), 1, "迟到帧必须被计数");
+        // B 重试：全新 Header + 首块 → 完成载荷 = B 声明的 50B，无污染。
+        let _ = rx.on_message(&plan_chunks(50, 3).expect("plan").0.encode(), true);
+        let ev = rx.on_message(&encode_data(0, &[0xBB; 104]).expect("frame"), false);
+        assert!(
+            matches!(ev, ChunkedEvent::Complete(ref v) if v.len() == 50 && v.iter().all(|&b| b == 0xBB)),
+            "B 载荷被旧传输数据污染: {ev:?}"
+        );
+    }
+
+    /// t6：两传输 Data 交错投递——严格序校验下报明确错误词形
+    /// （BadIndex），不得静默拼包。
+    #[test]
+    fn t6_interleaved_data_strict_index_no_silent_splice() {
+        let mut rx = ChunkedReceiver::new();
+        // A：2 块 150B。第 0 块到达。
+        let _ = rx.on_message(&plan_chunks(150, 1).expect("plan").0.encode(), true);
+        let _ = rx.on_message(&encode_data(0, &[0xA1; 104]).expect("frame"), false);
+        // B 的 Header 插入（1 块 10B），随后 A 的第 1 块交错到达。
+        let _ = rx.on_message(&plan_chunks(10, 2).expect("plan").0.encode(), true);
+        let ev = rx.on_message(&encode_data(1, &[0xA1; 104]).expect("frame"), false);
+        assert!(
+            matches!(
+                ev,
+                ChunkedEvent::Malformed(ChunkError::BadIndex {
+                    got: 1,
+                    expected: 0
+                })
+            ),
+            "交错块必须 BadIndex 词形: {ev:?}"
+        );
+        // fail-closed 复位后 B 重试全新传输——A 的块已被全部拒绝，无静默拼接。
+        let _ = rx.on_message(&plan_chunks(10, 3).expect("plan").0.encode(), true);
+        let ev = rx.on_message(&encode_data(0, &[0xBB; 104]).expect("frame"), false);
+        assert!(
+            matches!(ev, ChunkedEvent::Complete(ref v) if v.len() == 10 && v.iter().all(|&b| b == 0xBB)),
+            "B 载荷被 A 的块拼接污染: {ev:?}"
+        );
+        assert_eq!(rx.late_dropped(), 1);
+    }
+
+    /// 代次观测面：每 Header +1（wire 不携带，到达序定义）；迟到帧计数
+    /// 累计不回零（68.1 观测面定义锁）。
+    #[test]
+    fn generation_counts_headers_and_late_dropped_accumulates() {
+        let mut rx = ChunkedReceiver::new();
+        assert_eq!(rx.generation(), 0);
+        let _ = rx.on_message(&plan_chunks(10, 1).expect("plan").0.encode(), true);
+        assert_eq!(rx.generation(), 1);
+        // index 违例（跳 0 发 1）→ 计数。
+        let _ = rx.on_message(&encode_data(1, &[0u8; 104]).expect("frame"), false);
+        assert_eq!(rx.late_dropped(), 1);
+        // 新 Header（代次 +1）后计数不回零；新传输正常序不受既往影响。
+        let _ = rx.on_message(&plan_chunks(10, 2).expect("plan").0.encode(), true);
+        assert_eq!(rx.generation(), 2);
+        assert_eq!(rx.late_dropped(), 1, "迟到丢弃计数累计不回零");
+        let ev = rx.on_message(&encode_data(0, &[0xCC; 104]).expect("frame"), false);
+        assert!(matches!(ev, ChunkedEvent::Complete(_)));
     }
 
     /// host 内存通道（模拟 RawIpc 对端；分页响应对齐 target 语义）。

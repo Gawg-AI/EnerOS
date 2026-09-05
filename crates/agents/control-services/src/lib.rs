@@ -46,6 +46,11 @@ pub mod obs_shadow;
 // 蓝图 61 v0.314.34：evaluator ↔ snapshot 差分测试（全模块 test-only）。
 pub mod remote_brain;
 pub mod service;
+// 蓝图 68 卷 68.1 WP-68.1.2：分块接收槽位表（服务主循环私有单源；host
+// 测试面编译——消费方 control_service_main 为 target-only，host 非测试
+// 构建下整模块排除，无 dead_code 面）。
+#[cfg(any(test, target_os = "none"))]
+mod service_slots;
 #[cfg(test)]
 pub mod snapshot_diff;
 pub mod telemetry;

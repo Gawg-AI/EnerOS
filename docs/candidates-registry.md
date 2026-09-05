@@ -191,3 +191,13 @@
 → kill+restart ×54，4.5s≈chunked 超时量级）；同镜像同脚本 run#2 全 PASS
 （17 判据 + 计数对照全对）。排除确定性代码回归，疑似首启抖动类新形态；
 建议第十二轮体检单独勘探（详见蓝图 67 执行卡 G8/G 段）。
+
+## E-68. 蓝图 68 执行登记（2026-09-05，立卷核实新登记）
+
+| ID | 锚点 | 状态 | 登记处 |
+|---|---|---|---|
+| REG-CHUNK-EPOCH-DOC | `crates/agents/agent-sdk/src/chunked.rs:16,91,198-199`（doc 称"epoch 拒绝迟到帧/新 header 须同 epoch 续传"——`on_data` 从不比较 epoch 且 Data 帧 wire 无 epoch 字段，文档-实现不符） | **Done（蓝图 68.1 WP-68.1.3 方案 A：doc 归真 5 处 + ChunkedReceiver generation/late_dropped 机制 + service_slots 槽位收口，七测变异验证在库）** | 蓝图 68 01-事实基线 F9 |
+| REG-MW-U16 | `crates/protocols/protocol-services/src/master_write.rs:39`（`mapping.device_id != device as u16` u32→u16 截断比较：device=0x10001 折叠成 1 可与点表 device 1 匹配，digest 门用 u32 全值——两门口径不一） | Open（蓝图 68.2 修） | 蓝图 68 01-事实基线 F18 |
+| REG-TEL-GRANT-NOTE | `crates/agents/control-services/src/bin/svc-telemetry.rs:63`（"恢复下方注释的授予边装配即可"为空头支票——文件无留存被注释装配代码；`open_disk_history` 生产零调用，仅 host 测试 telemetry_history.rs 六处） | Open（蓝图 68.3 复通时按现签名重写装配） | 蓝图 68 01-事实基线 F6 |
+| REG-G8-X54 | BP67 执行卡 G8 观察项"kill+restart ×54"计数未入档 evidence（最接近留档：evidence/40 单发、spec-2026-08-27-D 与 41 各 1 次）——后续引用须注明未入档 | **Done（蓝图 68.1 WP-68.1.4：修复后镜像三窗全 CLEAN 三次未复现 → 防御性关闭/观测在位；CHUNKED-SLOW 等四观测词形在库。另：gate 实弹另捕获栈贴线静默冻结一家族成员并修复，见 68.1 执行卡 §F）** | 蓝图 68 01-事实基线 F10 |
+| REG-BOOT-SLOW-FINAL | `crates/agents/control-services/src/bin/svc-energy-agent.rs`（能量链 boot 窗 FINAL 处理深达 6525ms > 客户端 5s chunked 超时 → root 超时重试 → 未拉完分页被覆盖；68.1 观测词形实弹指认：`[energy-agent] CHUNKED-SLOW call=FINAL dur_ms=6525` 与 `CHUNKED-PAGE-EVICTED slot=0` 同窗相邻出现，telemetry/ai-worker/config/dispatch 亦有 101-1634ms 慢 Final） | Open（预存时序行为非 68.1 回归——旧二进制不可见；候选面：能量链 Final 分段化/客户端超时预算与启动窗负载匹配/重试幂等审计；归后续卷） | 蓝图 68.1 执行卡 §D.6 + evidence/68/vol68-1/normal.qemu-serial.log |

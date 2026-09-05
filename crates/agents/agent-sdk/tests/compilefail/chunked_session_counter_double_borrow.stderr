@@ -1,0 +1,10 @@
+error[E0499]: cannot borrow `shared` as mutable more than once at a time
+  --> tests/compilefail/chunked_session_counter_double_borrow.rs:28:56
+   |
+25 |     let mut enqueue = ChunkedSession::wrap_shared(Dummy, &mut shared);
+   |                                                          ----------- first mutable borrow occurs here
+...
+28 |     let mut flush = ChunkedSession::wrap_shared(Dummy, &mut shared);
+   |                                                        ^^^^^^^^^^^ second mutable borrow occurs here
+29 |     let _ = (&mut enqueue, &mut flush);
+   |              ------------ first borrow later used here

@@ -313,7 +313,14 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
         .filter_map(|w| w.stack_pages.map(|p| (w.name, p)))
         .collect();
     let service_stack_overrides: &[(&str, u64)] = &service_stack_overrides;
-    const STACK_SIZE: u64 = 0x4000;
+    // 蓝图 68.1（WP-68.1.2 次生防护）：默认服务栈 16 KiB → 32 KiB。
+    // 68.1 服务循环（SlotTable 槽位表单源）帧较 46.5 内嵌实现 +~450B，
+    // svc-control-dispatch 16 KiB 栈上引擎深调用树贴线，QEMU 实弹在
+    // 加载抖动下触发 guard 页 fault → 溢出线程阻塞 fault 上行 + root 阻塞
+    // EXECUTE Call ⇒ 全系统静默冻结（SPEC-E 已知失效形态，见
+    // telemetry_history 栈审计注记）。32 KiB = 2× 余量，照 SPEC-E
+    // "16 页=64 KiB ≥2×" 同一裕度哲学；svc-telemetry 显式 16 页维持。
+    const STACK_SIZE: u64 = 0x8000;
     const EP_BASE: u64 = 100;
     // BOOT-007 诊断：打印 bundle 与 root 模块头部（定位 BadElf 根因）。
     crate::println!(

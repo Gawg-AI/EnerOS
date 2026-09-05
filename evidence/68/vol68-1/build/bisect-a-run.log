@@ -1,0 +1,4 @@
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.09s
+     Running `target/debug/eneros-xtask run qemu-prod --image target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw --vars-template target/evidence61/template.fd --expect PASS --evidence-dir target/bisect-a --net-mode present --net-user --net-protocols present --reset-bootctrl --ready-marker product-ready --qmp-deadline-secs 420`
+QEMU profile=qemu-prod bootctrl reset before_sha256=1eeabdb21ddca82d3ef4018d01822858709b0fb33dd6a231957936f032f7ced6 after_sha256=1eeabdb21ddca82d3ef4018d01822858709b0fb33dd6a231957936f032f7ced6
+xtask: FAIL: QEMU did not shut down successfully (exit=124); timeout is a failure

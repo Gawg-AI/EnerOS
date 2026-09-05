@@ -1,0 +1,64 @@
+########## run1
+MODBUS47-SLAVE-READY listening=5502
+run rc=2（124/2=超时杀=完整 720s 窗）
+=== run1 停顿判据分析 ===
+[✓] PRODUCT-READY: true
+[✓] HEARTBEAT-KILL ×0（无停顿级联）
+[✓] SUPERVISOR ×0（无停顿级联）
+[i] ACQ-ROUND ×35
+[✓] 采集节奏存活（基线 600s 窗 ×35 校准，≥20 合理下限）
+[i] CHUNKED-SLOW ×14
+[telemetry] CHUNKED-SLOW call=FINAL dur_ms=368
+[diag] poll spin=0 use[ai-worker] CHUNKED-SLOW call=FINAL dur_ms=673
+[control-dispatch] CHUNKED-SLOW call=FINAL dur_ms=1136
+[energy-agent] CHUNKED-SLOW call=FINAL dur_ms=6138
+[observability] CHUNKED-SLOW call=FINAL dur_ms=264
+[i] CHUNKED-SLOT-FULL ×0
+[i] CHUNKED-DUP-SESSION ×0
+[i] CHUNKED-PAGE-EVICTED ×1
+[i] ERR:BadIndex ×0（迟到/交错帧观测）
+=== run1: CLEAN ===
+rc=0
+########## run2
+MODBUS47-SLAVE-READY listening=5502
+run rc=2（124/2=超时杀=完整 720s 窗）
+=== run2 停顿判据分析 ===
+[✓] PRODUCT-READY: true
+[✓] HEARTBEAT-KILL ×0（无停顿级联）
+[✓] SUPERVISOR ×0（无停顿级联）
+[i] ACQ-ROUND ×33
+[✓] 采集节奏存活（基线 600s 窗 ×35 校准，≥20 合理下限）
+[i] CHUNKED-SLOW ×14
+[diag] issue kind=0 sector=6 head=5 sl[telemetry] CHUNKED-SLOW call=FINAL dur_ms=331
+[ai-worker] CHUNKED-SLOW call=FINAL dur_ms=575
+[control-dispatch] CHUNKED-SLOW call=FINAL dur_ms=1555
+[energy-agent] CHUNKED-SLOW call=FINAL dur_ms=6340
+[observability] CHUNKED-SLOW call=FINAL dur_ms=215
+[i] CHUNKED-SLOT-FULL ×0
+[i] CHUNKED-DUP-SESSION ×0
+[i] CHUNKED-PAGE-EVICTED ×1
+[i] ERR:BadIndex ×0（迟到/交错帧观测）
+=== run2: CLEAN ===
+rc=0
+########## run3
+MODBUS47-SLAVE-READY listening=5502
+run rc=2（124/2=超时杀=完整 720s 窗）
+=== run3 停顿判据分析 ===
+[✓] PRODUCT-READY: true
+[✓] HEARTBEAT-KILL ×0（无停顿级联）
+[✓] SUPERVISOR ×0（无停顿级联）
+[i] ACQ-ROUND ×33
+[✓] 采集节奏存活（基线 600s 窗 ×35 校准，≥20 合理下限）
+[i] CHUNKED-SLOW ×13
+[telemetry] CHUNKED-SLOW call=FINAL dur_ms=259
+[diag] issue kind=0 sector=26 head=3 slot=1 avail.idx=1085 used.idx=1084 desc0.addr=0x4[ai-worker] CHUNKED-SLOW call=FINAL dur_ms=706
+[control-dispatch] CHUNKED-SLOW call=FINAL dur_ms=1594
+[energy-agent] CHUNKED-SLOW call=FINAL dur_ms=6431
+[observability] CHUNKED-SLOW call=FINAL dur_ms=572
+[i] CHUNKED-SLOT-FULL ×0
+[i] CHUNKED-DUP-SESSION ×0
+[i] CHUNKED-PAGE-EVICTED ×1
+[i] ERR:BadIndex ×0（迟到/交错帧观测）
+=== run3: CLEAN ===
+rc=0
+ALL-DONE
