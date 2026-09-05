@@ -35,7 +35,9 @@ pub struct ServiceWiring {
     pub net_slot: Option<u64>,
     /// 栈页覆盖（1 页 = 4 KiB；None = 默认 32 KiB/8 页——蓝图 68.1 起默认
     /// 翻倍，见 main.rs STACK_SIZE 注记。SPEC-E：svc-telemetry TSDB 磁盘写
-    /// 链栈峰值 ~30 KiB，显式 16 页 = 64 KiB ≥2× 余量）。
+    /// 链栈峰值 ~30 KiB，显式 16 页 = 64 KiB ≥2× 余量；68.3 持久 mount 后
+    /// littlefs Allocation（~8.5KB cache）移栈入堆、写链栈峰值应降，但
+    /// **不回落**（SPEC-E win1 栈溢出挂死前科——余量纪律优先）。
     pub stack_pages: Option<u64>,
     /// 编排驱动登记（Some = 周期驱动；None + [`ServiceWiring::
     /// driven_none_reason`] = 显式不驱动 + 理由）。
@@ -68,7 +70,14 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
         name: "svc-mqtt",
         heartbeat: false,
         net_slot: Some(10),
-        stack_pages: None,
+        // 68.3（WP-68.3.1 次生防护）：PAYLOAD_CAP 64→461 顶格扩容后
+        // driver_service_main 栈帧 +~4.9KB（BoundedQueue 8×484B=3.9KB 在
+        // 栈上 + raw/mrs/resp 数组），svc-mqtt 为最重 drv 服务（net +
+        // plugin + relay 缓冲），32 KiB 默认栈在 QEMU 实弹（vol68-3 首轮
+        // 窗 A）溢出 → loop 未进入即死 + root 阻塞 EXECUTE Call ⇒ 全系统
+        // 静默冻结（68.1 已知失效形态复发）。16 页 = 64 KiB ≥2× 余量，
+        // 同 svc-telemetry/SPEC-E 裕度哲学。
+        stack_pages: Some(16),
         driven: Some(DrivenSchedule {
             period_ticks: 15,
             offset_ticks: 10,

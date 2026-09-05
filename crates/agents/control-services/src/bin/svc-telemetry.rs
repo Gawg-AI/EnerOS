@@ -51,27 +51,54 @@ pub extern "C" fn _start(
         control_horizon_ms: 30_000,
     };
     let mut service = eneros_control_services::telemetry::TelemetryService::new(config);
-    // SPEC-GAP-CLOSURE WP-2：批次边界历史环缺省在位（内存前置）。
-    // SPEC-C（D-TSDB-2 方案 A）：磁盘 TSDB 接缝（EIPC 授予边 → LFS →
-    // TimeSeriesDB）**target 侧显式停用**（E-DEF-01，2026-08-28 win4 实测）：
-    // littlefs2 每操作 mount_and_then × BlockIo 52B 分片叠加，单个 LFS 操作
-    // 2k-13k 次块命令往返（串口行 6k-40k/操作）——单 checkpoint 分钟级，
-    // TEL_INGEST 5s deadline 物理不可满足，且启动期 format+mount 拖住整编队
-    // readiness。修复方向（burst 块协议 / PAYLOAD_CAP 扩容+内存重审 /
-    // eneros-fs 持久 mount）归 C 卷 owner 裁决；本接缝代码与
-    // telemetry_history 读面保留（host FakeStorage 全链测试在守），修复后
-    // 恢复下方注释的授予边装配即可。TELH 查询回 HIST_UNAVAILABLE（既有
-    // 降级词形），采集线走内存环（TSDB-COMMIT 基线词形）——不伪造持久化。
+    // SPEC-C 磁盘 TSDB 复通（蓝图 68 卷 68.3 WP-68.3.4；E-DEF-01 转正，
+    // 2026-09-05）：EIPC 授予边（svc-telemetry→svc-storage，eipc_grants
+    // 表在册）→ BlockIo 块命令面（68.3 WP-68.3.1 扩容：写 452B/读 461B
+    // 分片，4KiB 块 9-10 次往返，原 52B 分片 79 次）→ eneros-fs 持久
+    // mount（68.3 WP-68.3.2：构造期挂载一次，操作零重挂载）——E-DEF-01
+    // 两处性能病灶（每操作 mount_and_then × 52B 分片，单 LFS 操作 2k-13k
+    // 次块命令往返）均已除，checkpoint 时长经 TSDB-CHECKPOINT-DUR 行观测。
+    // 任一环失败（授予边缺失/区段打开失败）→ 显式降级回内存环，不伪造
+    // 持久化（与 svc-control-dispatch DurableIntentStore 兜底纪律同构）。
+    let disk_track = eneros_agent_sdk::eipc_resolve("svc-telemetry", "svc-storage")
+        .and_then(|(_, slot)| eneros_agent_sdk::block_io::eipc_block_io(slot, 0, 5_000))
+        .and_then(|io| {
+            eneros_control_services::telemetry_history::open_disk_history(
+                io,
+                eneros_ota_ab::ab_partition::DATA_TSDB_BASE_BLOCK,
+                eneros_ota_ab::ab_partition::DATA_TSDB_BLOCKS,
+            )
+            .ok()
+        });
     let history_reader: Option<eneros_control_services::telemetry_history::TsdbHistoryReader> =
-        None;
-    eneros_runtime::println!(
-        "[svc-telemetry] TSDB-DISK DISABLED (E-DEF-01) —— 内存环接替，TELH Unavailable"
-    );
-    service.set_history_sink(alloc::boxed::Box::new(
-        eneros_control_services::telemetry::HistoryBuffer::new(
-            eneros_control_services::telemetry::DEFAULT_HISTORY_CAP,
-        ),
-    ));
+        match disk_track {
+            Some((chain, reader)) => {
+                // points = index.bin 重建条目数（重启 > 0 = 旧数据保持——
+                // 强杀重启窗的持久性串口证据）。
+                eneros_runtime::println!(
+                    "[svc-telemetry] TSDB-DISK-OPEN base_block={} region_blocks_512={} points={}",
+                    eneros_ota_ab::ab_partition::DATA_TSDB_BASE_BLOCK,
+                    eneros_ota_ab::ab_partition::DATA_TSDB_BLOCKS,
+                    reader.index_len()
+                );
+                service.set_history_sink_with_media(
+                    alloc::boxed::Box::new(chain),
+                    eneros_control_services::telemetry::HistoryMedia::Disk,
+                );
+                Some(reader)
+            }
+            None => {
+                eneros_runtime::println!(
+                    "[svc-telemetry] TSDB-DISK-UNAVAILABLE —— 内存环接替，TELH Unavailable"
+                );
+                service.set_history_sink(alloc::boxed::Box::new(
+                    eneros_control_services::telemetry::HistoryBuffer::new(
+                        eneros_control_services::telemetry::DEFAULT_HISTORY_CAP,
+                    ),
+                ));
+                None
+            }
+        };
     // 蓝图 61：svc-config 客户端（授予边 eipc_grants 单源；槽解析无 I/O
     // ——真实取数惰性发生在首个 OBS 批次，此时 svc-config 必已服务）。
     let config_client: Option<

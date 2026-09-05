@@ -68,8 +68,13 @@ def publish(sock, topic, payload):
 
 
 def subscribe(sock):
+    # 68.3 修复（2026-09-05）：原实现 body 已含 pid(2B) 又在 wire 上再拼
+    # 一次 pid——SUBSCRIBE 帧多出 2 字节，broker 侧按 [pid][tlen] 解析时
+    # 把第二个 pid 当 topic 长度，越界 IndexError 杀掉 handler 线程，
+    # 客户端永远等不到 mgmt_response（vol68-3 首轮窗 A TELH TIMEOUT 铁证）。
+    # 修后 body = pid + tlen + topic + qos，长度 = len(body)，单次发送。
     body = struct.pack("!H", 1) + struct.pack("!H", len(RESP_TOPIC)) + RESP_TOPIC + b"\x00"
-    sock.sendall(b"\x82" + _len(len(body) + 2) + struct.pack("!H", 1) + body)
+    sock.sendall(b"\x82" + _len(len(body)) + body)
 
 
 def parse_publish(hdr, body):

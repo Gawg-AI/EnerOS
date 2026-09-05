@@ -29,6 +29,13 @@ pub struct RequestId(u64);
 /// MR[0] = 关联 ID（1 word），wire 帧最多占 `MAX_MR_BYTES - 8` 字节。
 pub const MAX_MR_BYTES: usize = 120;
 
+/// drv-svc 信封通道（4B/word 装配）的单消息 word 上限（蓝图 68 卷 68.3
+/// WP-68.3.1 物理锚定）：内核 aarch64 `seL4_MsgMaxLength = 120 words`
+/// （libsel4 constants.h:55；length 超限被内核钳制，include/api/
+/// types.h:90）→ 4B/word 口径 = 480B/消息。与 [`MAX_MR_BYTES`]（8B/word
+/// 裸帧路径的字节口径预算）互不相干，勿混用。
+pub const DRV_MAX_WORDS: usize = 120;
+
 /// 超时判定（单调时钟）：`now > deadline` 即过期（纯函数，可测）。
 pub fn is_expired(now: u64, deadline: u64) -> bool {
     now > deadline
@@ -50,7 +57,13 @@ impl RequestId {
 ///
 /// 关联 ID 与响应匹配（v0.224.0）：请求时关联 ID 写入 MR[0]，响应
 /// 必须回带相同 ID；`response_id` 校验拒绝错配响应。
+///
+/// Clone（68.3）：`open_disk_history` 的 mount-or-format 双 face 路径
+/// 需要 C: Clone——克隆件各持独立 pending 表/计数器（关联 ID 分配器
+/// 同值起步；双 face 仅限单线程服务循环内顺序使用，与 host SimStorage
+/// 克隆先例同构）。
 #[cfg(any(test, feature = "sel4"))]
+#[derive(Clone)]
 pub struct Sel4IpcClient {
     /// 本地端点名称（供 peer 发现；目标构建经服务发现读取）。
     #[allow(dead_code)]
@@ -278,8 +291,9 @@ impl Sel4IpcClient {
             .checked_add(timeout_ns)
             .ok_or_else(|| self.ipc_err("deadline overflow"))?;
         self.pending.insert(id, deadline);
-        // 4 字节/word 打包（drv-svc 服务端语义）。
-        let max_words = MAX_MR_BYTES / 4;
+        // 4 字节/word 打包（drv-svc 服务端语义）；word 上限=内核物理
+        // （DRV_MAX_WORDS=120，68.3 物理锚定——原 30 words 软件约定退役）。
+        let max_words = DRV_MAX_WORDS;
         if req.len().div_ceil(4) > max_words {
             self.errors += 1;
             return Err(self.ipc_err("drv frame exceeds MR budget"));
@@ -482,5 +496,18 @@ mod tests {
         // host stub：调用本身可完成（stub 数据），断言不超限路径不报错计数。
         let _ = c.request_raw(&ok, 1_000);
         assert_eq!(c.stats().2, 2, "112B 恰好在预算内");
+    }
+
+    #[test]
+    fn test_drv_call_budget_120_words() {
+        // 68.3 WP-68.3.1：drv 通道（4B/word）预算 = 内核物理 120 words
+        // = 480B（REQUEST_LEN 顶格）——481B（121 words）显式拒绝。
+        let mut c = Sel4IpcClient::new("drv-c", 1, || 0).unwrap();
+        let big = alloc::vec![0u8; 481];
+        assert!(c.drv_call(&big, 1_000).is_err());
+        assert_eq!(c.stats().2, 1, "超预算必须计入错误");
+        let ok = alloc::vec![0u8; 480];
+        let _ = c.drv_call(&ok, 1_000); // host stub：预算内无错误计数
+        assert_eq!(c.stats().2, 1, "480B 恰在 120 words 预算内");
     }
 }

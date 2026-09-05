@@ -34,6 +34,22 @@ use crate::telemetry::{HistoryBuffer, HistoryRecord, TelemetryHistorySink};
 /// 上调 MUST 先重出内存审计表。
 pub const TARGET_TSDB_CHUNK_POINTS: u32 = 256;
 
+/// checkpoint 合并窗（批数；68.3 WP-68.3.3 TCG 实测订正，2026-09-06）。
+///
+/// vol68-3 run3 实弹：TCG/QEMU（virtio-blk + O_DIRECT RMW）单块命令
+/// ~5-15ms，逐批 checkpoint（~1.3k 命令/次，实测单次 7.7-32s）在 OBS/
+/// TEL_INGEST 处理内同步执行会饿死决策链（agent=OK 0、17 轮/600s、
+/// CONTROL-CHAIN 无 Committed）。合并为每 8 批一次后：ACK=历史层已
+/// 受理（write_batch 进 TSDB 缓冲/活动 chunk），磁盘持久点=最近一次
+/// checkpoint，**掉电丢尾 ≤8 批**（≈6min@实测 OBS 批距 ~46s；ADR-0047
+/// MemEpochStore 非持久同款诚实登记——对照 68.3 前=内存环掉电全丢）。
+/// 8 的取法：标准 600s 窗实测批数 ~13-24（run4=13），N=128 时全窗零
+/// checkpoint（run4 实弹 TSDB-CHECKPOINT-DUR 缺词形、重启窗无旧数据
+/// 可读）；N=8 保证每窗 ≥1 次落盘且 duty ~2-6%。异步化/命令降本
+/// （扇区对齐批量写、index 增量日志）归后续卷（登记册
+/// REG-TSDB-CHECKPOINT-ASYNC）。
+pub const CHECKPOINT_EVERY_BATCHES: u64 = 8;
+
 /// LFS 几何：4096B 块 × 区段折算段数（16 MiB 盘 8 MiB 区段 → 2048 段）。
 const FS_BLOCK_SIZE: usize = 4096;
 
@@ -72,6 +88,9 @@ pub struct TsdbHistorySink {
     db: DiskDb,
     /// 磁盘写失败批次数（观测）。
     pub disk_errors: u64,
+    /// 距上次 checkpoint 的批次数（合并窗计数；见
+    /// [`CHECKPOINT_EVERY_BATCHES`]）。
+    batches_since_checkpoint: u64,
 }
 
 impl TelemetryHistorySink for TsdbHistorySink {
@@ -81,7 +100,27 @@ impl TelemetryHistorySink for TsdbHistorySink {
     fn write_batch(&mut self, batch: &[HistoryRecord]) -> Result<(), ()> {
         let pts: Vec<TimeSeriesPoint> = batch.iter().map(map_record).collect();
         let mut db = self.db.borrow_mut();
-        let r = db.write_batch(&pts).and_then(|()| db.checkpoint());
+        let r = db.write_batch(&pts);
+        self.batches_since_checkpoint += 1;
+        // checkpoint 合并窗（见 CHECKPOINT_EVERY_BATCHES 文档）：仅窗满
+        // 批次做磁盘 checkpoint；失败按批失败如实上抛（DROPPED 行）。
+        let r = if self.batches_since_checkpoint >= CHECKPOINT_EVERY_BATCHES {
+            self.batches_since_checkpoint = 0;
+            let t0 = eneros_drv_svc::now_ms();
+            let ck = db.checkpoint();
+            let dur = eneros_drv_svc::now_ms().saturating_sub(t0);
+            // 蓝图 68 卷 68.3（WP-68.3.3）：checkpoint 时长判定行（host
+            // 时钟恒 0；target 为 Arm64Timer 单调毫秒）。TCG 实测量级
+            // ~秒级/次（执行卡 §D 落卡）。
+            eneros_runtime::println!(
+                "[svc-telemetry] TSDB-CHECKPOINT-DUR ms={} items={}",
+                dur,
+                batch.len()
+            );
+            ck
+        } else {
+            r
+        };
         if r.is_err() {
             self.disk_errors += 1;
             return Err(());
@@ -107,6 +146,13 @@ pub struct PageResult {
 }
 
 impl TsdbHistoryReader {
+    /// TSDB 索引条目数（重启后 index.bin 重建结果——TSDB-DISK-OPEN
+    /// 行的持久性观测口，蓝图 68 卷 68.3 WP-68.3.4：旧数据保持的
+    /// 串口证据即此值 > 0）。
+    pub fn index_len(&self) -> usize {
+        self.db.borrow().index_len()
+    }
+
     /// 该点位在索引中是否有任何数据来源（区分"未知点位"与"空页"）。
     pub fn point_exists(&self, point: u32) -> bool {
         !self
@@ -265,6 +311,7 @@ pub fn open_disk_history<C: EipcSend + Clone + 'static>(
             disk: TsdbHistorySink {
                 db: shared.clone(),
                 disk_errors: 0,
+                batches_since_checkpoint: 0,
             },
             hot: HistoryBuffer::new(crate::telemetry::DEFAULT_HISTORY_CAP),
         },
@@ -289,10 +336,12 @@ mod spec_c_chain_tests {
     /// svc-storage 命令面内存仿真：整盘 Vec<u8>；共享句柄用于"掉电"
     /// 场景（驱动实例可弃、介质长存——tsdb virtio 掉电测试同法）。
     /// Clone（SPEC-B/C）：EipcBlockDevice 单件 clone 需 C: Clone。
+    /// `cmds`：块命令往返计数器（共享；WP-68.3.3 性能闸门观测口）。
     #[derive(Clone)]
     struct FakeStorage {
         disk: alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<u8>>>,
         region_bytes: u64,
+        cmds: alloc::rc::Rc<core::cell::Cell<u64>>,
     }
 
     impl FakeStorage {
@@ -302,13 +351,18 @@ mod spec_c_chain_tests {
                     alloc::vec![0u8; region_bytes as usize],
                 )),
                 region_bytes,
+                cmds: alloc::rc::Rc::new(core::cell::Cell::new(0)),
             }
         }
         fn take_handle(&self) -> Self {
             Self {
                 disk: alloc::rc::Rc::clone(&self.disk),
                 region_bytes: self.region_bytes,
+                cmds: alloc::rc::Rc::clone(&self.cmds),
             }
+        }
+        fn cmd_count(&self) -> u64 {
+            self.cmds.get()
         }
         fn do_read(&self, off: u64, buf: &mut [u8]) -> Result<(), ()> {
             let end = (off as usize).checked_add(buf.len()).ok_or(())?;
@@ -332,6 +386,7 @@ mod spec_c_chain_tests {
 
     impl eneros_agent_sdk::block_io::EipcSend for FakeStorage {
         fn drv_call(&mut self, req: &[u8], _timeout_ns: u64) -> Result<alloc::vec::Vec<u8>, ()> {
+            self.cmds.set(self.cmds.get() + 1);
             // 复用 drv-svc 真实 wire 解码——协议偏差在测试边界即暴露。
             let r = wire::decode_request(req).ok_or(())?;
             if r.opcode != OP_EXECUTE || r.payload_len == 0 {
@@ -443,21 +498,39 @@ mod spec_c_chain_tests {
         {
             let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
             let (mut chain, reader) = open_disk_history(io, 0, REGION_BLOCKS_512).expect("open");
-            let batch: Vec<HistoryRecord> = (0..40u64)
-                .map(|i| rec(1_000 + i * 10, 7, 42, i as f64 * 0.25, 0))
-                .collect();
-            assert!(chain.write_batch(&batch).is_ok());
-            assert_eq!(reader.query_page(42, 100, 0).expect("pre").total, 40);
+            // 写满一个合并窗（窗内批次仅入 TSDB 缓冲，窗满批承担磁盘
+            // checkpoint——掉电丢尾语义见 CHECKPOINT_EVERY_BATCHES）。
+            for w in 0..CHECKPOINT_EVERY_BATCHES {
+                let base = 1_000 + w * 1_000;
+                let batch: Vec<HistoryRecord> = (0..2u64)
+                    .map(|i| rec(base + i * 10, 7, 42, (w * 2 + i) as f64, 0))
+                    .collect();
+                assert!(chain.write_batch(&batch).is_ok(), "batch #{w}");
+            }
+            assert_eq!(
+                reader
+                    .query_page(42, (CHECKPOINT_EVERY_BATCHES * 2) as usize, 0)
+                    .expect("pre")
+                    .total,
+                (CHECKPOINT_EVERY_BATCHES * 2) as u32
+            );
             // —— 掉电：drop db/LFS 实例（块离开作用域），介质留存 ——
         }
         // —— 上电：新 BlockIo → open 必须 mount 成功并读回全部数据 ——
         let io2 = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
         let (_chain2, reader2) = open_disk_history(io2, 0, REGION_BLOCKS_512).expect("remount");
-        let got = reader2.query_page(42, 100, 0).expect("post");
-        assert_eq!(got.total, 40, "掉电后 40 点必须完整（mount 不重建卷）");
+        let total_want = (CHECKPOINT_EVERY_BATCHES * 2) as usize;
+        let got = reader2.query_page(42, total_want, 0).expect("post");
+        assert_eq!(
+            got.total as usize, total_want,
+            "掉电后窗内全部点必须完整（mount 不重建卷）"
+        );
         for (i, row) in got.rows.iter().enumerate() {
-            assert_eq!(row.timestamp_ms, 1_000 + i as u64 * 10);
-            assert!((row.value - i as f64 * 0.25).abs() < f64::EPSILON);
+            assert_eq!(
+                row.timestamp_ms,
+                1_000 + (i as u64 / 2) * 1_000 + (i as u64 % 2) * 10
+            );
+            assert_eq!(row.value, i as f64, "值一致性 idx={i}");
             assert_eq!(row.quality, 0);
         }
     }
@@ -555,5 +628,49 @@ mod spec_c_chain_tests {
             pages_fetched, 11,
             "512 窗口 = 10 满页 + 1 尾页（32 行），无第 12 页"
         );
+    }
+
+    /// WP-68.3.3 性能闸门（host）：ACK 路径批与 checkpoint 批的块命令
+    /// 双预算。基线对照：68.3 前（52B 分片 × 每操作 mount）同路径
+    /// ~1.2 万次往返/操作（E-DEF-01 实测 2k-13k 上沿，8× 扩容反推）；
+    /// 68.3 后 host 实测（2026-09-06）：checkpoint 批 1264、轻批两位数。
+    /// TCG 目标侧再叠 ~5-15ms/命令物理成本 → 逐批 checkpoint 饿死决策
+    /// 链（run3 实弹），故 checkpoint 合并窗 = 128 批
+    /// （CHECKPOINT_EVERY_BATCHES，掉电丢尾语义见该常量文档）。
+    #[test]
+    fn c5_checkpoint_command_budget() {
+        let storage = FakeStorage::new(REGION_BLOCKS_512 * 512);
+        let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
+        let (mut chain, reader) = open_disk_history(io, 0, REGION_BLOCKS_512).expect("open");
+        let after_open = storage.cmd_count();
+        // 轻批（ACK 路径，无 checkpoint）：命令数必须两位数量级。
+        let light: Vec<HistoryRecord> =
+            (0..7u64).map(|i| rec(i * 100, 7, 3, i as f64, 0)).collect();
+        assert!(chain.write_batch(&light).is_ok());
+        let light_cmds = storage.cmd_count() - after_open;
+        std::println!("[c5-budget] open_cmds={after_open} light_batch_cmds={light_cmds}");
+        assert!(
+            light_cmds <= 150,
+            "轻批块命令 {light_cmds} > 150（ACK 路径必须轻）"
+        );
+        // 写满合并窗：第 CHECKPOINT_EVERY_BATCHES 批承担 checkpoint。
+        let before_window = storage.cmd_count();
+        for w in 1..CHECKPOINT_EVERY_BATCHES {
+            let base = 1_000 + w * 1_000;
+            let b: Vec<HistoryRecord> = (0..2u64)
+                .map(|i| rec(base + i * 10, 7, 3, (w * 2 + i) as f64, 0))
+                .collect();
+            assert!(chain.write_batch(&b).is_ok(), "batch #{w}");
+        }
+        let window_cmds = storage.cmd_count() - before_window;
+        let per_batch = window_cmds / (CHECKPOINT_EVERY_BATCHES - 1);
+        std::println!("[c5-budget] window_cmds={window_cmds} per_batch_avg={per_batch}");
+        // N=8：均值含 checkpoint 尖峰（~1.4k/8 ≈ 180）；轻批（ACK 路径）
+        // 已单独 ≤150 锁定。均值界防分片回缩/重挂载复活。
+        assert!(
+            per_batch <= 250,
+            "合并窗批均块命令 {per_batch} > 250（性能面回归：分片回缩/重挂载复活）"
+        );
+        assert!(reader.index_len() > 0, "索引必须有条目（观测口自检）");
     }
 }

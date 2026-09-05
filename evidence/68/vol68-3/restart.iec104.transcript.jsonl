@@ -1,0 +1,29 @@
+{"t": 1788632440.06262, "kind": "LISTEN", "port": 2404}
+{"t": 1788632452.365446, "kind": "CONNECT", "peer": "('127.0.0.1', 43388)", "session": 0}
+{"t": 1788632452.4122624, "kind": "STARTDT_CON", "session": 0}
+{"t": 1788632457.480824, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1788632457.4810288, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1788632457.5205412, "kind": "S_FRAME", "rsn": 1}
+{"t": 1788632457.5548792, "kind": "S_FRAME", "rsn": 2}
+{"t": 1788632457.5931082, "kind": "S_FRAME", "rsn": 3}
+{"t": 1788632457.635878, "kind": "S_FRAME", "rsn": 4}
+{"t": 1788632457.676352, "kind": "S_FRAME", "rsn": 5}
+{"t": 1788632457.7191372, "kind": "S_FRAME", "rsn": 6}
+{"t": 1788632457.761682, "kind": "S_FRAME", "rsn": 7}
+{"t": 1788632457.8024943, "kind": "S_FRAME", "rsn": 8}
+{"t": 1788632457.8430016, "kind": "S_FRAME", "rsn": 9}
+{"t": 1788632457.8855872, "kind": "S_FRAME", "rsn": 10}
+{"t": 1788632468.4275615, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1788632468.4277358, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1788632470.5353625, "kind": "S_FRAME", "rsn": 11}
+{"t": 1788632471.500001, "kind": "S_FRAME", "rsn": 12}
+{"t": 1788632472.5563774, "kind": "S_FRAME", "rsn": 13}
+{"t": 1788632474.659863, "kind": "S_FRAME", "rsn": 14}
+{"t": 1788632476.509984, "kind": "S_FRAME", "rsn": 15}
+{"t": 1788632476.7758846, "kind": "S_FRAME", "rsn": 16}
+{"t": 1788632478.886059, "kind": "S_FRAME", "rsn": 17}
+{"t": 1788632480.9085195, "kind": "S_FRAME", "rsn": 18}
+{"t": 1788632480.908643, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1788632480.9087443, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1788632481.5921917, "kind": "S_FRAME", "rsn": 19}
+{"t": 1788632501.604804, "kind": "READ_TIMEOUT", "err": "timed out"}

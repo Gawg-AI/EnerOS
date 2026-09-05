@@ -17,5 +17,5 @@ cargo +nightly-2026-04-04 xtask run qemu-test \
   --ready-marker root-heartbeat --qmp-deadline-secs 750
 RC=$?; [ "$RC" = 124 ] && RC=0
 echo "=== RC=$RC ==="
-for k in TSDB-COMMIT TEL-FRAME AI-FRAG CONNACK SUBSCRIBE INTENT-FWD MASTER-WRITE Committed PRODUCT-READY; do printf '%s: ' "$k"; grep -c "$k" "$EVIDDIR/qemu-serial.log" 2>/dev/null || echo 0; done
+for k in TSDB-DISK-COMMIT TSDB-DISK-OPEN TEL-FRAME AI-FRAG CONNACK SUBSCRIBE INTENT-FWD MASTER-WRITE Committed PRODUCT-READY; do printf '%s: ' "$k"; grep -c "$k" "$EVIDDIR/qemu-serial.log" 2>/dev/null || echo 0; done
 exit $RC

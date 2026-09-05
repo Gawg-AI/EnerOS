@@ -1,0 +1,25 @@
+{"t": 1788632026.642743, "kind": "LISTEN", "port": 2404}
+{"t": 1788632042.7059543, "kind": "CONNECT", "peer": "('127.0.0.1', 36938)", "session": 0}
+{"t": 1788632042.7563977, "kind": "STARTDT_CON", "session": 0}
+{"t": 1788632047.8133028, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1788632047.8136065, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1788632047.843301, "kind": "S_FRAME", "rsn": 1}
+{"t": 1788632047.8736596, "kind": "S_FRAME", "rsn": 2}
+{"t": 1788632047.9038777, "kind": "S_FRAME", "rsn": 3}
+{"t": 1788632047.9342892, "kind": "S_FRAME", "rsn": 4}
+{"t": 1788632047.9649687, "kind": "S_FRAME", "rsn": 5}
+{"t": 1788632047.99548, "kind": "S_FRAME", "rsn": 6}
+{"t": 1788632048.025823, "kind": "S_FRAME", "rsn": 7}
+{"t": 1788632048.0563369, "kind": "S_FRAME", "rsn": 8}
+{"t": 1788632048.086755, "kind": "S_FRAME", "rsn": 9}
+{"t": 1788632048.117131, "kind": "S_FRAME", "rsn": 10}
+{"t": 1788632058.0577986, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1788632058.0579743, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1788632060.3329551, "kind": "S_FRAME", "rsn": 11}
+{"t": 1788632061.0336926, "kind": "S_FRAME", "rsn": 12}
+{"t": 1788632062.4998996, "kind": "S_FRAME", "rsn": 13}
+{"t": 1788632064.574139, "kind": "S_FRAME", "rsn": 14}
+{"t": 1788632066.055666, "kind": "S_FRAME", "rsn": 15}
+{"t": 1788632066.5762486, "kind": "S_FRAME", "rsn": 16}
+{"t": 1788632068.691616, "kind": "S_FRAME", "rsn": 17}
+{"t": 1788632088.7115571, "kind": "READ_TIMEOUT", "err": "timed out"}

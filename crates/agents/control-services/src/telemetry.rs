@@ -160,9 +160,28 @@ impl TelemetryService {
         // "最后钉扎者赢"毒化机制本体：每服务 open() floor 各取 boot
         // now_ms 必不相等，后钉者把评估器单全局 epoch 重置，先钉源样本
         // 全拒（agent=OK 59→0）。
-        for sample in converted {
-            self.upsert_sample(&sample);
+        for sample in converted.iter() {
+            self.upsert_sample(sample);
         }
+        // 蓝图 68 卷 68.3（WP-68.3.4 装配补全）：批次边界落盘与 legacy
+        // TEL_INGEST 同语义——OBS 是生产轨（61 v0.314.30 起），历史落盘
+        // 只挂 legacy 路径的旧装配在生产窗里永不触发（vol68-2/vol68-3
+        // 实弹：telemetry-ingest=0 全程）。按**本轮接受集**落盘（非整
+        // 缓冲——buffer 是 SNAPSHOT 存续面，flush 不清；见
+        // commit_history_batch 注记），且在响应前执行：ACK 到达请求方时
+        // 批次已过历史接缝（TsdbHistorySink"后方 ACK"语义对 OBS 轨同等
+        // 成立）。
+        let batch: Vec<HistoryRecord> = converted
+            .iter()
+            .map(|s| HistoryRecord {
+                timestamp_ms: s.measured_at_ms,
+                device_id: s.source,
+                point: s.point,
+                value: s.value,
+                quality: quality_code(s.quality),
+            })
+            .collect();
+        self.commit_history_batch(&batch);
         // 蓝图 62 卷 62.2（WP-62.2.2）：响应编码单源 obs_batch_wire
         //（[OK][accepted u16][rejected u16] 布局逐字节不变）。
         encode_obs_response(accepted as u16, rejected as u16).to_vec()
@@ -197,17 +216,9 @@ impl TelemetryService {
     ///   / `TSDB-DISK-DROPPED n=`（磁盘写失败批）/ `TSDB-DISK-REJECTED n=`
     ///   （本轮 ingest 拒绝样本增量）。
     fn flush_history(&mut self) {
-        let Some(sink) = self.history.as_mut() else {
+        if self.history.is_none() {
             return;
-        };
-        // REJECTED 三态：本轮 ingest 拒绝增量（decode 级拒绝不计入
-        // self.rejected，走既有 0xFF 错误帧路径）。
-        let rejected_now = self.rejected - self.rejected_reported;
-        if rejected_now > 0 && self.history_media == HistoryMedia::Disk {
-            eneros_runtime::println!("[svc-telemetry] TSDB-DISK-REJECTED n={}", rejected_now);
         }
-        self.rejected_reported = self.rejected;
-
         let batch: Vec<HistoryRecord> = self
             .buffer
             .iter()
@@ -219,11 +230,29 @@ impl TelemetryService {
                 quality: quality_code(s.quality),
             })
             .collect();
+        self.commit_history_batch(&batch);
+    }
+
+    /// 批次提交（flush 的落盘+判定行段；68.3 WP-68.3.4 装配补全抽出——
+    /// OBS 生产轨按**本轮接受集**落盘而非整缓冲：buffer 是 SNAPSHOT 的
+    /// 当前样本存续面（flush 不清），整缓冲重写会造成同批历史重复）。
+    fn commit_history_batch(&mut self, batch: &[HistoryRecord]) {
+        let Some(sink) = self.history.as_mut() else {
+            return;
+        };
+        // REJECTED 三态：本轮 ingest 拒绝增量（decode 级拒绝不计入
+        // self.rejected，走既有 0xFF 错误帧路径）。
+        let rejected_now = self.rejected - self.rejected_reported;
+        if rejected_now > 0 && self.history_media == HistoryMedia::Disk {
+            eneros_runtime::println!("[svc-telemetry] TSDB-DISK-REJECTED n={}", rejected_now);
+        }
+        self.rejected_reported = self.rejected;
+
         if batch.is_empty() {
             return;
         }
         self.history_batch_seq += 1;
-        match sink.write_batch(&batch) {
+        match sink.write_batch(batch) {
             Ok(()) => {
                 self.history_written += 1;
                 match self.history_media {

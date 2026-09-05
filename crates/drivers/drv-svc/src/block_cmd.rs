@@ -1,13 +1,14 @@
 //! 块设备命令面（蓝图 39 WP-39.12：svc-storage 的真实命令集）。
 //!
-//! 信封 payload 有界（64 B）——本命令面承载**小载荷**元数据操作
-//! （≤56 B 读/写 + lba 寻址）；整块数据通路（共享 DMA 窗口 + 设备句柄
-//! 移交）随蓝图 40 的 EIPC 域接通。命令以 `payload[0]` 子操作码编码：
+//! 信封 payload 有界（PAYLOAD_CAP=461，68.3 扩容）——本命令面承载
+//! lba 寻址的定长读/写（含历史 52B 小载荷语义，上限放宽不改变旧调用
+//! 方行为）；整块数据通路（共享 DMA 窗口 + 设备句柄移交）随蓝图 40 的
+//! EIPC 域接通。命令以 `payload[0]` 子操作码编码：
 //!
 //! | 子操作码 | 请求 payload | 响应 payload |
 //! |---|---|---|
-//! | `BLK_CMD_READ` | lba(8) + count(4) | data(≤52) |
-//! | `BLK_CMD_WRITE` | lba(8) + data(≤56) | — |
+//! | `BLK_CMD_READ` | lba(8) + count(4) | data(≤[`BLK_READ_MAX`]) |
+//! | `BLK_CMD_WRITE` | lba(8) + data(≤[`BLK_WRITE_MAX`]) | — |
 //! | `BLK_CMD_FLUSH` | — | — |
 //! | `BLK_CMD_HEALTH` | — | block_count(8) + block_size(4) + health(1) |
 //!
@@ -18,15 +19,18 @@ use super::runtime::{DriverRequest, DriverResponse, ST_INVALID, ST_OK, ST_UNAVAI
 
 /// 子操作码：读（lba 8B + count 4B → data）。
 pub const BLK_CMD_READ: u8 = 0x01;
-/// 子操作码：写（lba 8B + data ≤56B）。
+/// 子操作码：写（lba 8B + data ≤[`BLK_WRITE_MAX`]）。
 pub const BLK_CMD_WRITE: u8 = 0x02;
 /// 子操作码：flush。
 pub const BLK_CMD_FLUSH: u8 = 0x03;
 /// 子操作码：健康/容量（只读元数据）。
 pub const BLK_CMD_HEALTH: u8 = 0x04;
 
-/// 小载荷数据上限（64B 信封 - 1B 子码 - 8B lba = 55；取 52 留响应头余量）。
-pub const BLK_SMALL_DATA: usize = 52;
+/// 读命令单次数据上限（响应载荷 = PAYLOAD_CAP；68.3 WP-68.3.1
+/// 52→461——旧调用方 ≤52B 行为不变，上限只放宽）。
+pub const BLK_READ_MAX: usize = super::runtime::PAYLOAD_CAP;
+/// 写命令单次数据上限（payload = 子码 1B + lba 8B + data）。
+pub const BLK_WRITE_MAX: usize = super::runtime::PAYLOAD_CAP - 9;
 
 /// 块后端（服务持有的设备抽象；target 设备句柄随 40 移交）。
 pub trait BlockBackend {
@@ -55,11 +59,11 @@ pub fn handle_block_cmd(
             }
             let lba = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
             let count = u32::from_le_bytes(req.payload[9..13].try_into().unwrap()) as usize;
-            if count == 0 || count > BLK_SMALL_DATA {
+            if count == 0 || count > BLK_READ_MAX {
                 resp.status = ST_INVALID;
                 return;
             }
-            let mut buf = [0u8; BLK_SMALL_DATA];
+            let mut buf = [0u8; BLK_READ_MAX];
             match backend.read(lba, &mut buf[..count]) {
                 Ok(()) => {
                     resp.status = ST_OK;
@@ -78,7 +82,7 @@ pub fn handle_block_cmd(
             }
             let lba = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
             let data_len = (req.payload_len - 9) as usize;
-            if data_len == 0 || data_len > BLK_SMALL_DATA {
+            if data_len == 0 || data_len > BLK_WRITE_MAX {
                 resp.status = ST_INVALID;
                 return;
             }
@@ -289,6 +293,58 @@ mod tests {
 
         // 空 payload → INVALID。
         let req = DriverRequest::new(1, super::super::runtime::OP_EXECUTE);
+        service.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_INVALID);
+    }
+
+    /// 68.3 WP-68.3.1：扩容后满额/奇数长度 roundtrip（旧 ≤52B 调用方
+    /// 语义不变——本测只证上限放宽后新旧两段都可用）。
+    #[test]
+    fn enlarged_payload_roundtrip_and_odd_len() {
+        let mut service = StorageService::new();
+        service.attach(RamBackend::new(4096));
+        let mut resp = DriverResponse::new(1, 0, 1);
+
+        // 满额写（BLK_WRITE_MAX=452）→ 满额读（count=BLK_READ_MAX=461
+        // 截到介质边界内）逐字节一致。
+        let data: std::vec::Vec<u8> = (0..BLK_WRITE_MAX).map(|i| (i * 7) as u8).collect();
+        let mut req = mk_req(BLK_CMD_WRITE);
+        req.payload[1..9].copy_from_slice(&0u64.to_le_bytes());
+        req.payload[9..9 + data.len()].copy_from_slice(&data);
+        req.payload_len = (9 + data.len()) as u16;
+        service.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_OK, "满额写必须接受（PAYLOAD_CAP 扩容）");
+
+        let mut req = mk_req(BLK_CMD_READ);
+        req.payload[1..9].copy_from_slice(&0u64.to_le_bytes());
+        req.payload[9..13].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        req.payload_len = 13;
+        service.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_OK);
+        assert_eq!(resp.payload_len as usize, data.len());
+        assert_eq!(&resp.payload[..data.len()], &data[..]);
+
+        // 奇数长度写读（对齐不敏感）。
+        let mut req = mk_req(BLK_CMD_WRITE);
+        req.payload[1..9].copy_from_slice(&1001u64.to_le_bytes());
+        req.payload[9..12].copy_from_slice(b"abc");
+        req.payload_len = 12;
+        service.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_OK);
+        let mut req = mk_req(BLK_CMD_READ);
+        req.payload[1..9].copy_from_slice(&1001u64.to_le_bytes());
+        req.payload[9..13].copy_from_slice(&3u32.to_le_bytes());
+        req.payload_len = 13;
+        service.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_OK);
+        assert_eq!(&resp.payload[..3], b"abc");
+
+        // 超上限读拒绝（count > BLK_READ_MAX → ST_INVALID；写超上限在
+        // wire 层已被信封容量封死，服务端防线保持防御性对称）。
+        let mut req = mk_req(BLK_CMD_READ);
+        req.payload[1..9].copy_from_slice(&0u64.to_le_bytes());
+        req.payload[9..13].copy_from_slice(&((BLK_READ_MAX + 1) as u32).to_le_bytes());
+        req.payload_len = 13;
         service.handle(&req, &mut resp);
         assert_eq!(resp.status, ST_INVALID);
     }

@@ -48,7 +48,8 @@ S1="$D/qemu-serial.run1.log"; S2="$D/qemu-serial.run2.log"; S3="$D/qemu-serial.r
 {
   echo "=== WINDOW5 ($D) ==="
   echo "--- Run1 fresh ---"
-  echo "TSDB-COMMIT count:        $(grep -c 'TSDB-COMMIT' "$S1" || true)"
+  echo "TSDB-DISK-COMMIT count:   $(grep -c 'TSDB-DISK-COMMIT' "$S1" || true)"
+  echo "TSDB-DISK-OPEN line:      $(grep -m1 'TSDB-DISK-OPEN' "$S1" || echo NONE)"
   echo "INGEST round ok:          $(grep -c 'INGEST round=' "$S1" || true)"
   echo "ingest Transport(must 0): $(grep -c 'ingest transport\|INGEST eipc=Transport' "$S1" || true)"
   echo "AUDIT-CHAIN-DURABLE:      $(grep -m1 'AUDIT-CHAIN-DURABLE' "$S1" || echo NONE)"

@@ -2,7 +2,8 @@
 //! 实现（蓝图 41 WP-41.3 落盘先例；现为 control-services 与
 //! business-services 共享适配）。
 //!
-//! 协议：drv-svc 信封（`DriverRequest/DriverResponse`，83B ≤ MR 112B 预算）
+//! 协议：drv-svc 信封（`DriverRequest/DriverResponse`；68.3 起 PAYLOAD_
+//! CAP=461 顶格 MR 120 words×4B=480B 物理上限——执行卡 WP-68.3.0 丈量）
 //! 经 `Sel4IpcClient::drv_call` 同步调用（4 字节/word 打包，与
 //! svc-storage `driver_service_main` 的 MR 语义一致）。命令子码 =
 //! `block_cmd` 的 BLK_CMD_*（READ/WRITE/FLUSH/HEALTH）。
@@ -10,13 +11,23 @@
 //! fail-closed：存储能力未授予（EIPC mask 对应位为 0）→ `Unavailable`；
 //! 信封响应 status != ST_OK → 对应 `StoreError`（不伪造成功）。
 
-use eneros_drv_svc::block_cmd::{BLK_CMD_FLUSH, BLK_CMD_READ, BLK_CMD_WRITE};
+use eneros_drv_svc::block_cmd::{
+    BLK_CMD_FLUSH, BLK_CMD_READ, BLK_CMD_WRITE, BLK_READ_MAX, BLK_WRITE_MAX,
+};
 use eneros_drv_svc::runtime::{wire, DriverRequest, DriverResponse, OP_EXECUTE, ST_OK};
 use eneros_durable_state::{PersistIo, StoreError};
 // SPEC-B/C（2026-08-28）：EipcBlockDevice（BlockIo→storage BlockDevice
 // 单件）迁入本模块——storage 依赖方向已验无环。
 use eneros_storage::driver::{BlockDevice, DeviceHealth};
 use eneros_storage::StorageError;
+
+/// 读分块（68.3 WP-68.3.1：单源 blk_cmd 服务端上限——响应载荷容量）。
+pub const BLK_READ_CHUNK: usize = BLK_READ_MAX;
+/// 写分块（payload = 子码 1B + lba 8B + data；单源 blk_cmd 服务端上限）。
+pub const BLK_WRITE_CHUNK: usize = BLK_WRITE_MAX;
+
+const _: () = assert!(BLK_WRITE_CHUNK + 9 <= eneros_drv_svc::runtime::PAYLOAD_CAP);
+const _: () = assert!(BLK_READ_CHUNK <= eneros_drv_svc::runtime::PAYLOAD_CAP);
 
 /// 块客户端：经 EIPC 调 svc-storage（X3 授予表槽位）。
 #[derive(Clone)]
@@ -77,9 +88,10 @@ impl<C: EipcSend> BlockIo<C> {
             .client
             .drv_call(&enc, self.timeout_ms * 1_000_000)
             .map_err(|_| StoreError::Unavailable)?;
-        // drv-svc 服务端按 4B/word 回 MR：`RESPONSE_LEN=79` 会以 20 words
-        //（80B）返回——接受尾部 padding（≥79B），只解前 79B。容差解码
-        // 单一事实源 = wire::decode_response_padded（SPEC-B WP-B.2 收编）。
+        // drv-svc 服务端按 4B/word 回 MR：响应字节数非 4 倍数时会以
+        // 整 word 数返回（尾部 padding）——只解前 RESPONSE_LEN 字节。
+        // 容差解码单一事实源 = wire::decode_response_padded（SPEC-B
+        // WP-B.2 收编）。
         let resp =
             wire::decode_response_padded(&resp_bytes).ok_or(StoreError::Encode("bad-envelope"))?;
         // 首个响应吸收 epoch（业务服务无法预知 svc-storage 的实例 epoch）；
@@ -95,14 +107,13 @@ impl<C: EipcSend> BlockIo<C> {
         Ok(resp)
     }
 
-    /// 读 `offset` 起 `buf.len()` 字节（分块 ≤52B；lba = 字节偏移，
-    /// 与 39 命令面 RamBackend 语义一致）。
+    /// 读 `offset` 起 `buf.len()` 字节（分块 = [`BLK_READ_CHUNK`]；lba =
+    /// 字节偏移，与 39 命令面 RamBackend 语义一致）。
     fn read_into(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), StoreError> {
-        const CHUNK: usize = 52;
         let mut off = offset;
         let mut out = buf;
         while !out.is_empty() {
-            let n = core::cmp::min(out.len(), CHUNK);
+            let n = core::cmp::min(out.len(), BLK_READ_CHUNK);
             let mut p = [0u8; 12];
             p[..8].copy_from_slice(&off.to_le_bytes());
             p[8..12].copy_from_slice(&(n as u32).to_le_bytes());
@@ -118,14 +129,13 @@ impl<C: EipcSend> BlockIo<C> {
         Ok(())
     }
 
-    /// 写 `data` 到 `offset` 起（分块 ≤52B）。
+    /// 写 `data` 到 `offset` 起（分块 = [`BLK_WRITE_CHUNK`]）。
     fn write_from(&mut self, offset: u64, data: &[u8]) -> Result<(), StoreError> {
-        const CHUNK: usize = 52;
         let mut off = offset;
         let mut src = data;
         while !src.is_empty() {
-            let n = core::cmp::min(src.len(), CHUNK);
-            let mut p = [0u8; 8 + CHUNK];
+            let n = core::cmp::min(src.len(), BLK_WRITE_CHUNK);
+            let mut p = [0u8; 8 + BLK_WRITE_CHUNK];
             p[..8].copy_from_slice(&off.to_le_bytes());
             p[8..8 + n].copy_from_slice(&src[..n]);
             let _ = self.cmd(BLK_CMD_WRITE, &p[..8 + n])?;
@@ -347,5 +357,55 @@ mod tests {
         let mut b2 = [0u8; 512];
         dev2.read_block(2, &mut b2).unwrap();
         assert_eq!(b2, data);
+    }
+
+    /// 68.3 WP-68.3.1：扩容后大块面边界——奇数长度 / 跨块（多命令拼装）/
+    /// 断在中途（介质边界截断 → 错误如实上抛，不伪成功）。
+    #[test]
+    fn enlarged_chunks_odd_cross_block_and_midfail() {
+        // 4 KiB 介质：跨块写读 + 奇数长度。
+        let media = std::rc::Rc::new(core::cell::RefCell::new(vec![0u8; 4096]));
+        let storage = SimStorage {
+            data: std::rc::Rc::clone(&media),
+        };
+        let mut dev = EipcBlockDevice::new(BlockIo::new(storage, "svc-storage", 0, 1000), 512, 8);
+
+        // 跨块大块写（821B > 旧 52B 单命令容量，触发多 chunk 拼装）。
+        let big: alloc::vec::Vec<u8> = (0..821u32).map(|i| (i % 251) as u8).collect();
+        dev.write_block(1, &big).unwrap();
+        let mut back = alloc::vec![0u8; 821];
+        dev.read_block(1, &mut back).unwrap();
+        assert_eq!(back, big, "跨块 roundtrip 逐字节一致");
+
+        // 奇数长度（512 块内的 137B）。
+        let odd = [0x5Au8; 137];
+        dev.write_block(3, &odd).unwrap();
+        let mut ob = [0u8; 137];
+        dev.read_block(3, &mut ob).unwrap();
+        assert_eq!(ob, odd);
+
+        // 断在中途：写越过介质尾（4096B 介质 + 512 越界）→ 第 10 个
+        // chunk（4068..4520）越界失败必须上抛（不伪成功）。
+        let media2 = std::rc::Rc::new(core::cell::RefCell::new(vec![0u8; 4096]));
+        let storage2 = SimStorage {
+            data: std::rc::Rc::clone(&media2),
+        };
+        let mut io2 = BlockIo::new(storage2, "svc-storage", 0, 1000);
+        let overflow: alloc::vec::Vec<u8> = (0..4608u32).map(|i| (i % 251) as u8).collect();
+        let r = io2.write(0, &overflow);
+        assert!(r.is_err(), "越界写必须失败（不伪成功）");
+        // 错误词形 = 首个失败命令的映射（越界 → 服务端 ST_UNAVAILABLE →
+        // WriteFailed）。
+        assert!(matches!(r.unwrap_err(), StoreError::WriteFailed));
+        // 已写前缀保留（fail-visible 不伪造；块面无事务回滚语义——调用方
+        // 重试即重写同区域）。
+        let d = media2.borrow();
+        assert_eq!(d[0], 0);
+        assert_eq!(
+            d[1000],
+            (1000 % 251) as u8,
+            "已成功 chunk 的前缀必须真实落盘"
+        );
+        assert_eq!(d[4067], (4067 % 251) as u8, "第 10 chunk 起点前一字节已写");
     }
 }

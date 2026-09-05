@@ -1,21 +1,28 @@
 //! [`Lfs`] — the littlefs2-backed [`FileSystem`] implementation.
 //!
-//! `Lfs` wraps a [`BlockDeviceStorage`] adapter (which in turn wraps a
-//! [`BlockDevice`]) and implements the [`FileSystem`] trait by delegating each
-//! operation to littlefs2 via the closure-based `mount_and_then` API.
+//! `Lfs` wraps a littlefs2 [`Filesystem`] held in a **persistent mount**
+//! (蓝图 68 卷 68.3 WP-68.3.2)：构造（format/mount）时挂载一次，此后
+//! 全部操作直接走已挂载实例——不再每操作 `mount_and_then` 重挂载。
 //!
-//! # Design
+//! # Design（持久 mount 的所有权形态）
 //!
-//! Because littlefs2's [`Filesystem`] borrows `&mut Storage` for its entire
-//! lifetime, we cannot store both the storage and a mounted `Filesystem` in
-//! the same struct without self-referential pointers. Instead, `Lfs` holds the
-//! storage in a [`RefCell`] and performs a fresh `mount` for each operation.
-//! This is correct (state persists on disk) and the mount/unmount overhead is
-//! small (a few cache reads).
+//! littlefs2 0.8 的 `Filesystem<'a, Storage>` 持有 `&'a mut Allocation`
+//! 与 `&'a mut Storage`，且 mount 后 C 侧指针指入两者（`set_alloc_config`
+//! 写 cfg.context→storage、read/prog/lookahead→alloc.cache；lfs_t.cfg→
+//! &alloc.config）——**mount 之后两者不可再移动**。本实现的时序：
+//! 1. `BlockDeviceStorage` / `Allocation` 各自装箱后 `Box::leak` 落定
+//!    最终堆地址（构造期指针全 null，装箱移动安全）；
+//! 2. 在最终地址上 `Filesystem::mount`，得 `Filesystem<'static>`；
+//! 3. `Filesystem<'static>` 作为普通字段存入 Lfs——Lfs 本体保持可移动。
 //!
-//! Read-only trait methods (`stat`, `readdir`, `df`) take `&self` and use
-//! [`RefCell::borrow_mut`] internally — safe because the borrow is released
-//! before the method returns.
+//! 泄漏有界性（内存审计，执行卡 WP-68.3.0）：每个 Lfs 实例泄漏
+//! sizeof(Allocation)+sizeof(BlockDeviceStorage)（≈8.5KB，cache 4096×2
+//! 为主）；服务生命周期内实例数=1（构造一次常驻），host 测试按进程回收。
+//! littlefs2 0.8 无 unmount/Drop API（旧 mount_and_then 闭包结束同样
+//! 不 unmount）——耐久语义 = 逐文件 close sync，持久形态逐操作等价。
+//!
+//! Read-only trait methods (`stat`, `readdir`, `df`) take `&self`;
+//! littlefs2 操作全部取 `&Filesystem`，无需内部可变性。
 //!
 //! # Path Handling
 //!
@@ -28,11 +35,10 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::cell::RefCell;
 use core::fmt;
 
 use eneros_storage::ScopedBlockDevice;
-use littlefs2::fs::{Filesystem, OpenOptions};
+use littlefs2::fs::{Allocation, Filesystem, OpenOptions};
 use littlefs2::io::SeekFrom as LfsSeekFrom;
 use littlefs2::path::PathBuf;
 
@@ -46,19 +52,59 @@ use crate::LfsConfig;
 /// littlefs2-backed filesystem implementing [`FileSystem`].
 ///
 /// Construct with [`Lfs::format`] (first-time formatting) or [`Lfs::mount`]
-/// (mount an already-formatted device).
+/// (mount an already-formatted device). 持久 mount：挂载发生在构造期，
+/// 之后操作零重挂载（WP-68.3.2）。
 pub struct Lfs {
-    storage: RefCell<BlockDeviceStorage>,
+    /// 持久挂载的 littlefs2 实例（'static 借用指向泄漏的 Allocation/
+    /// Storage；见模块文档的时序与泄漏纪律）。
+    fs: Filesystem<'static, BlockDeviceStorage>,
     config: LfsConfig,
+    /// 底层设备实际块数（≤ `BlockDeviceStorage::BLOCK_COUNT`；构造期
+    /// 捕获——storage 已归 Filesystem 独占借用，常规路径不可再达）。
+    block_count: usize,
 }
 
 impl fmt::Debug for Lfs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lfs")
             .field("config", &self.config)
-            .field("block_count", &self.storage.borrow().device_block_count())
+            .field("block_count", &self.block_count)
             .finish()
     }
+}
+
+/// 落定 storage 到最终堆地址并预检（68.3 持久 mount 时序第一步）。
+///
+/// `probe`：mount 前置校验（None = format 路径免检；Some(f) = 先跑
+/// 校验、失败返回其错误）。
+fn leak_storage(
+    device: Box<dyn ScopedBlockDevice>,
+    probe: Option<fn(&mut BlockDeviceStorage) -> bool>,
+) -> Result<(&'static mut BlockDeviceStorage, usize), FsError> {
+    let storage = BlockDeviceStorage::new(device)?;
+    let blocks = storage.device_block_count();
+    let storage: &'static mut BlockDeviceStorage = Box::leak(Box::new(storage));
+    if let Some(check) = probe {
+        if !check(storage) {
+            return Err(FsError::BadSuperBlock);
+        }
+    }
+    Ok((storage, blocks))
+}
+
+/// 在已落定地址上完成持久 mount（第二步；泄漏纪律见模块文档）。
+fn mount_at(
+    storage: &'static mut BlockDeviceStorage,
+    block_count: usize,
+    config: LfsConfig,
+) -> Result<Lfs, FsError> {
+    let alloc: &'static mut Allocation<BlockDeviceStorage> = Box::leak(Box::new(Allocation::new()));
+    let fs = Filesystem::mount(alloc, storage).map_err(FsError::from)?;
+    Ok(Lfs {
+        fs,
+        config,
+        block_count,
+    })
 }
 
 impl Lfs {
@@ -79,12 +125,9 @@ impl Lfs {
         device: Box<dyn ScopedBlockDevice>,
         config: LfsConfig,
     ) -> Result<Self, FsError> {
-        let mut storage = BlockDeviceStorage::new(device)?;
-        Filesystem::format(&mut storage).map_err(FsError::from)?;
-        Ok(Self {
-            storage: RefCell::new(storage),
-            config,
-        })
+        let (storage, blocks) = leak_storage(device, None)?;
+        Filesystem::format(storage).map_err(FsError::from)?;
+        mount_at(storage, blocks, config)
     }
 
     /// Mounts an already-formatted filesystem.
@@ -101,16 +144,9 @@ impl Lfs {
         device: Box<dyn ScopedBlockDevice>,
         config: LfsConfig,
     ) -> Result<Self, FsError> {
-        let mut storage = BlockDeviceStorage::new(device)?;
         // Verify mountability; if this fails the superblock is missing/invalid.
-        let mount_ok = Filesystem::is_mountable(&mut storage);
-        if !mount_ok {
-            return Err(FsError::BadSuperBlock);
-        }
-        Ok(Self {
-            storage: RefCell::new(storage),
-            config,
-        })
+        let (storage, blocks) = leak_storage(device, Some(Filesystem::is_mountable))?;
+        mount_at(storage, blocks, config)
     }
 
     /// Returns the active configuration.
@@ -120,7 +156,7 @@ impl Lfs {
 
     /// Returns the block count of the underlying device.
     pub fn block_count(&self) -> usize {
-        self.storage.borrow().device_block_count()
+        self.block_count
     }
 
     // --------------------------------------------------------------------
@@ -136,18 +172,15 @@ impl Lfs {
         buf: &mut [u8],
     ) -> Result<usize, FsError> {
         let lfs_path = make_path(path)?;
-        let mut storage = self.storage.borrow_mut();
-        Filesystem::mount_and_then(&mut *storage, |fs| {
-            OpenOptions::new()
-                .read(true)
-                .open_and_then(fs, &lfs_path, |file| {
-                    if offset > 0 {
-                        file.seek(LfsSeekFrom::Start(offset as u32))?;
-                    }
-                    file.read(buf)
-                })
-        })
-        .map_err(FsError::from)
+        OpenOptions::new()
+            .read(true)
+            .open_and_then(&self.fs, &lfs_path, |file| {
+                if offset > 0 {
+                    file.seek(LfsSeekFrom::Start(offset as u32))?;
+                }
+                file.read(buf)
+            })
+            .map_err(FsError::from)
     }
 
     /// Writes `buf` to the file at `path` starting at `offset`. The file must
@@ -159,90 +192,74 @@ impl Lfs {
         buf: &[u8],
     ) -> Result<usize, FsError> {
         let lfs_path = make_path(path)?;
-        let mut storage = self.storage.borrow_mut();
-        Filesystem::mount_and_then(&mut *storage, |fs| {
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open_and_then(fs, &lfs_path, |file| {
-                    if offset > 0 {
-                        file.seek(LfsSeekFrom::Start(offset as u32))?;
-                    }
-                    file.write(buf)
-                })
-        })
-        .map_err(FsError::from)
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open_and_then(&self.fs, &lfs_path, |file| {
+                if offset > 0 {
+                    file.seek(LfsSeekFrom::Start(offset as u32))?;
+                }
+                file.write(buf)
+            })
+            .map_err(FsError::from)
     }
 
     /// Returns the size of the file at `path` in bytes.
     pub(crate) fn file_size(&self, path: &str) -> Result<u64, FsError> {
         let lfs_path = make_path(path)?;
-        let mut storage = self.storage.borrow_mut();
-        let size = Filesystem::mount_and_then(&mut *storage, |fs| {
-            OpenOptions::new()
-                .read(true)
-                .open_and_then(fs, &lfs_path, |file| file.len())
-        })
-        .map_err(FsError::from)?;
+        let size = OpenOptions::new()
+            .read(true)
+            .open_and_then(&self.fs, &lfs_path, |file| file.len())
+            .map_err(FsError::from)?;
         Ok(size as u64)
     }
 
     /// Truncates (or extends) the file at `path` to `size` bytes.
     pub(crate) fn truncate_file(&self, path: &str, size: u64) -> Result<(), FsError> {
         let lfs_path = make_path(path)?;
-        let mut storage = self.storage.borrow_mut();
-        Filesystem::mount_and_then(&mut *storage, |fs| {
-            OpenOptions::new()
-                .write(true)
-                .open_and_then(fs, &lfs_path, |file| file.set_len(size as usize))
-        })
-        .map_err(FsError::from)
+        OpenOptions::new()
+            .write(true)
+            .open_and_then(&self.fs, &lfs_path, |file| file.set_len(size as usize))
+            .map_err(FsError::from)
     }
 }
 
 impl FileSystem for Lfs {
     fn open(&mut self, path: &str, flags: OpenFlags) -> Result<File, FsError> {
         let lfs_path = make_path(path)?;
-        let mut storage = self.storage.borrow_mut();
 
         if flags.is_create() {
             // CREATE / CREATE_NEW: create the file on disk so subsequent
             // stat() calls succeed even before the first write.
-            Filesystem::mount_and_then(&mut *storage, |fs| {
-                let mut opts = OpenOptions::new();
-                opts.write(true);
-                if flags.contains(OpenFlags::CREATE_NEW) {
-                    opts.create_new(true);
-                } else {
-                    opts.create(true);
-                    if flags.is_truncate() {
-                        opts.truncate(true);
-                    }
+            let mut opts = OpenOptions::new();
+            opts.write(true);
+            if flags.contains(OpenFlags::CREATE_NEW) {
+                opts.create_new(true);
+            } else {
+                opts.create(true);
+                if flags.is_truncate() {
+                    opts.truncate(true);
                 }
-                opts.open_and_then(fs, &lfs_path, |_file| Ok(()))
-            })
-            .map_err(FsError::from)?;
+            }
+            opts.open_and_then(&self.fs, &lfs_path, |_file| Ok(()))
+                .map_err(FsError::from)?;
         } else {
             // Non-create path: verify the file exists.
-            let exists =
-                Filesystem::mount_and_then(&mut *storage, |fs| match fs.metadata(&lfs_path) {
-                    Ok(_) => Ok(true),
-                    Err(littlefs2::io::Error::NO_SUCH_ENTRY) => Ok(false),
-                    Err(e) => Err(e),
-                })
-                .map_err(FsError::from)?;
+            let exists = match self.fs.metadata(&lfs_path) {
+                Ok(_) => true,
+                Err(littlefs2::io::Error::NO_SUCH_ENTRY) => false,
+                Err(e) => return Err(FsError::from(e)),
+            };
             if !exists {
                 return Err(FsError::NotFound {
                     path: String::from(path),
                 });
             }
             if flags.is_truncate() && flags.is_write() {
-                Filesystem::mount_and_then(&mut *storage, |fs| {
-                    let mut opts = OpenOptions::new();
-                    opts.write(true);
-                    opts.open_and_then(fs, &lfs_path, |file| file.set_len(0))
-                })
-                .map_err(FsError::from)?;
+                OpenOptions::new()
+                    .write(true)
+                    .open_and_then(&self.fs, &lfs_path, |file| file.set_len(0))
+                    .map_err(FsError::from)?;
             }
         }
         Ok(File::new(String::from(path), flags))
@@ -250,17 +267,13 @@ impl FileSystem for Lfs {
 
     fn create(&mut self, path: &str, _mode: FileMode) -> Result<File, FsError> {
         let lfs_path = make_path(path)?;
-        let mut storage = self.storage.borrow_mut();
-        // Use littlefs2's create_and_then which opens with create+truncate.
-        Filesystem::mount_and_then(&mut *storage, |fs| {
-            OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open_and_then(fs, &lfs_path, |_file| Ok(()))
-        })
-        .map_err(FsError::from)?;
-        drop(storage);
+        // Use littlefs2's create semantics: open with create+truncate.
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open_and_then(&self.fs, &lfs_path, |_file| Ok(()))
+            .map_err(FsError::from)?;
         Ok(File::new(
             String::from(path),
             OpenFlags::READ | OpenFlags::WRITE,
@@ -269,23 +282,18 @@ impl FileSystem for Lfs {
 
     fn remove(&mut self, path: &str) -> Result<(), FsError> {
         let lfs_path = make_path(path)?;
-        let mut storage = self.storage.borrow_mut();
-        Filesystem::mount_and_then(&mut *storage, |fs| fs.remove(&lfs_path)).map_err(FsError::from)
+        self.fs.remove(&lfs_path).map_err(FsError::from)
     }
 
     fn rename(&mut self, from: &str, to: &str) -> Result<(), FsError> {
         let lfs_from = make_path(from)?;
         let lfs_to = make_path(to)?;
-        let mut storage = self.storage.borrow_mut();
-        Filesystem::mount_and_then(&mut *storage, |fs| fs.rename(&lfs_from, &lfs_to))
-            .map_err(FsError::from)
+        self.fs.rename(&lfs_from, &lfs_to).map_err(FsError::from)
     }
 
     fn stat(&self, path: &str) -> Result<FileStat, FsError> {
         let lfs_path = make_path(path)?;
-        let mut storage = self.storage.borrow_mut();
-        let metadata = Filesystem::mount_and_then(&mut *storage, |fs| fs.metadata(&lfs_path))
-            .map_err(FsError::from)?;
+        let metadata = self.fs.metadata(&lfs_path).map_err(FsError::from)?;
         let mode = if metadata.is_file() {
             FileMode::default_file().bits()
         } else {
@@ -305,24 +313,19 @@ impl FileSystem for Lfs {
 
     fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
         let lfs_path = make_path(path)?;
-        let mut storage = self.storage.borrow_mut();
-        Filesystem::mount_and_then(&mut *storage, |fs| fs.create_dir(&lfs_path))
-            .map_err(FsError::from)
+        self.fs.create_dir(&lfs_path).map_err(FsError::from)
     }
 
     fn rmdir(&mut self, path: &str) -> Result<(), FsError> {
         let lfs_path = make_path(path)?;
-        let mut storage = self.storage.borrow_mut();
-        Filesystem::mount_and_then(&mut *storage, |fs| fs.remove_dir(&lfs_path))
-            .map_err(FsError::from)
+        self.fs.remove_dir(&lfs_path).map_err(FsError::from)
     }
 
     fn readdir(&self, path: &str) -> Result<Vec<DirEntry>, FsError> {
         let lfs_path = make_path(path)?;
-        let mut storage = self.storage.borrow_mut();
-        let entries: Vec<DirEntry> = Filesystem::mount_and_then(&mut *storage, |fs| {
-            let mut out: Vec<DirEntry> = Vec::new();
-            fs.read_dir_and_then(&lfs_path, |read_dir| {
+        let mut out: Vec<DirEntry> = Vec::new();
+        self.fs
+            .read_dir_and_then(&lfs_path, |read_dir| {
                 // Skip the first two entries ("." and "..") emitted by littlefs.
                 for entry in read_dir.skip(2) {
                     let entry = entry?;
@@ -334,33 +337,25 @@ impl FileSystem for Lfs {
                     });
                 }
                 Ok(())
-            })?;
-            Ok(out)
-        })
-        .map_err(FsError::from)?;
-        Ok(entries)
+            })
+            .map_err(FsError::from)?;
+        Ok(out)
     }
 
     fn sync(&mut self) -> Result<(), FsError> {
-        // littlefs2 syncs every file close, so a mount/unmount cycle is the
-        // natural sync point. Re-mounting forces the metadata to be flushed.
-        // For the value-type File design, all writes are already flushed at
-        // the end of each `mount_and_then` closure, so this is effectively a
-        // no-op. We perform a no-op mount to verify the filesystem is still
-        // healthy.
-        let mut storage = self.storage.borrow_mut();
-        Filesystem::mount_and_then(&mut *storage, |_fs| Ok(())).map_err(FsError::from)
+        // 68.3 持久 mount 语义订正：littlefs2 的落盘点是逐文件 close
+        // （每个值类型 File 操作在 open_and_then 闭包内 close+sync）——
+        // 本调用无独立脏状态可冲刷。旧实现注释声称 "mount/unmount cycle
+        // is the natural sync point" 不实（littlefs2 0.8 无 unmount，
+        // mount_and_then 闭包结束只是丢弃实例）；持久形态下耐久保证与
+        // 旧形态逐操作等价（WP-68.3.2）。
+        Ok(())
     }
 
     fn df(&self) -> Result<DiskUsage, FsError> {
-        let mut storage = self.storage.borrow_mut();
-        let (total_bytes, free_bytes, block_count) =
-            Filesystem::mount_and_then(&mut *storage, |fs| {
-                let total = fs.total_space();
-                let free = fs.available_space()?;
-                Ok((total, free, fs.total_blocks()))
-            })
-            .map_err(FsError::from)?;
+        let total_bytes = self.fs.total_space();
+        let free_bytes = self.fs.available_space().map_err(FsError::from)?;
+        let block_count = self.fs.total_blocks();
         let used_bytes = total_bytes.saturating_sub(free_bytes);
         Ok(DiskUsage {
             total_bytes: total_bytes as u64,
@@ -751,7 +746,7 @@ mod tests {
         let _ = f
             .write(&mut fs, b"persistent data")
             .expect("write should succeed");
-        drop(fs);
+        // fs 就此弃置（Lfs 无 Drop；mock 介质随进程，语义同旧 drop(fs)）。
 
         // Re-create the same device state by writing through a fresh mock.
         // Note: MockBlockDevice state is in-memory and lost on drop, so this
@@ -882,5 +877,162 @@ mod tests {
         let long_path = alloc::format!("/{}", "a".repeat(300));
         let err = make_path(&long_path).unwrap_err();
         assert!(matches!(err, FsError::InvalidPath { .. }));
+    }
+
+    // ========================================================================
+    // 68.3 WP-68.3.2：持久 mount 形态判据
+    // ========================================================================
+
+    use std::cell::Cell as StdCell;
+    use std::rc::Rc as StdRc;
+
+    /// 共享介质块设备（测试）：纯字节面 + block-0 读计数（mount 扫描的
+    /// 观测口——littlefs2 mount 必读超级块所在块 0）。Clone 共享介质与
+    /// 计数器（掉电重挂载 = 同介质新实例）。
+    #[derive(Clone)]
+    struct SharedMedia {
+        data: StdRc<std::cell::RefCell<std::vec::Vec<u8>>>,
+        block0_reads: StdRc<StdCell<u64>>,
+        reads: StdRc<StdCell<u64>>,
+        blocks: u64,
+    }
+
+    impl SharedMedia {
+        fn new(blocks: u64) -> Self {
+            Self {
+                data: StdRc::new(std::cell::RefCell::new(vec![0u8; (blocks * 4096) as usize])),
+                block0_reads: StdRc::new(StdCell::new(0)),
+                reads: StdRc::new(StdCell::new(0)),
+                blocks,
+            }
+        }
+        fn reads(&self) -> u64 {
+            self.reads.get()
+        }
+    }
+
+    impl eneros_storage::BlockDevice for SharedMedia {
+        fn read_block(
+            &self,
+            block_idx: u64,
+            buf: &mut [u8],
+        ) -> Result<(), eneros_storage::StorageError> {
+            if block_idx >= self.blocks {
+                return Err(eneros_storage::StorageError::OutOfRange {
+                    block_idx,
+                    max: self.blocks,
+                });
+            }
+            self.reads.set(self.reads.get() + 1);
+            if block_idx == 0 {
+                self.block0_reads.set(self.block0_reads.get() + 1);
+            }
+            let off = (block_idx * 4096) as usize;
+            let d = self.data.borrow();
+            buf.copy_from_slice(&d[off..off + buf.len()]);
+            Ok(())
+        }
+        fn write_block(
+            &mut self,
+            block_idx: u64,
+            buf: &[u8],
+        ) -> Result<(), eneros_storage::StorageError> {
+            if block_idx >= self.blocks {
+                return Err(eneros_storage::StorageError::OutOfRange {
+                    block_idx,
+                    max: self.blocks,
+                });
+            }
+            let off = (block_idx * 4096) as usize;
+            let mut d = self.data.borrow_mut();
+            d[off..off + buf.len()].copy_from_slice(buf);
+            Ok(())
+        }
+        fn erase_block(&mut self, block_idx: u64) -> Result<(), eneros_storage::StorageError> {
+            if block_idx >= self.blocks {
+                return Err(eneros_storage::StorageError::OutOfRange {
+                    block_idx,
+                    max: self.blocks,
+                });
+            }
+            let off = (block_idx * 4096) as usize;
+            let mut d = self.data.borrow_mut();
+            d[off..off + 4096].fill(0);
+            Ok(())
+        }
+        fn block_count(&self) -> u64 {
+            self.blocks
+        }
+        fn block_size(&self) -> usize {
+            4096
+        }
+        fn flush(&mut self) -> Result<(), eneros_storage::StorageError> {
+            Ok(())
+        }
+        fn health_status(&self) -> eneros_storage::driver::DeviceHealth {
+            eneros_storage::driver::DeviceHealth {
+                total_blocks: self.blocks,
+                bad_blocks: 0,
+                wear_level: 0,
+                temperature: 0,
+                remaining_life: 100,
+            }
+        }
+    }
+
+    /// 操作成本有界（mount 消除的观测口）：持久形态下读操作只剩
+    /// littlefs 自身的元数据对扫描（read_file=4、stat=2 块读——根目录
+    /// 对即超级块对 0/1，逐操作触碰属正常）；每操作重挂载的旧形态会
+    /// 叠加 mount 探测 + 挂载扫描（构造期实测 ≥3 块读/次）。以
+    /// "每操作块读 ≤ 6" 锁持久形态（WP-68.3.2 性能计数判据；littlefs
+    /// 内部缓存策略变化时按新事实重标）。
+    #[test]
+    fn persistent_form_op_costs_are_bounded() {
+        let media = SharedMedia::new(64);
+        let mut fs =
+            Lfs::format(boxed_mock_scope(media.clone(), BlockRole::Data)).expect("format+mount");
+        assert!(
+            media.reads() >= 1,
+            "构造期 mount 必须读超级块（观测口自检）"
+        );
+        fs.write_file("/a.txt", b"hello").expect("write");
+        // 读操作逐次计数。
+        for _ in 0..3 {
+            let before = media.reads();
+            assert_eq!(fs.read_file("/a.txt").expect("read"), b"hello");
+            let per_op = media.reads() - before;
+            assert!(per_op <= 6, "read_file 每操作块读必须有界（实得 {per_op}）");
+        }
+        let before = media.reads();
+        let _ = fs.stat("/a.txt").expect("stat");
+        assert!(media.reads() - before <= 4, "stat 每操作块读必须有界");
+    }
+
+    /// 持久形态掉电语义：mount 一次 × N 操作 × 弃实例（掉电）× 同介质
+    /// 重挂载（走 mount 非 format）——数据完整（fs 层 c3 同款）。
+    #[test]
+    fn persistent_form_power_loss_remount_preserves_data() {
+        let media = SharedMedia::new(64);
+        {
+            let mut fs = Lfs::format(boxed_mock_scope(media.clone(), BlockRole::Data))
+                .expect("format+mount");
+            for i in 0..5u32 {
+                let path = alloc::format!("/f{i}.txt");
+                fs.write_file(&path, alloc::format!("payload-{i}").as_bytes())
+                    .expect("write");
+            }
+            // —— 掉电：drop Lfs（介质留存）——
+        }
+        // —— 上电：mount（非 format）读回全部数据 ——
+        let mut fs2 = Lfs::mount(boxed_mock_scope(media, BlockRole::Data))
+            .expect("remount must mount (not reformat)");
+        for i in 0..5u32 {
+            let path = alloc::format!("/f{i}.txt");
+            assert_eq!(
+                fs2.read_file(&path).expect("read back"),
+                alloc::format!("payload-{i}").as_bytes(),
+                "掉电后文件 {i} 必须完整"
+            );
+        }
     }
 }

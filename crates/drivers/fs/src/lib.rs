@@ -58,9 +58,13 @@
 //!   operation re-opens the underlying file via littlefs2's closure-based
 //!   API. This avoids lifetime issues from littlefs2's linked-list file
 //!   handles.
-//! - **Per-operation `mount_and_then`**: each `FileSystem` call mounts and
-//!   unmounts the littlefs2 instance. State persists on disk; the overhead
-//!   is small (a few cache reads per call).
+//! - **Persistent mount**（蓝图 68 卷 68.3 WP-68.3.2，2026-09-05）：`Lfs`
+//!   构造（format/mount）时挂载一次，此后操作直接走已挂载实例。历史形态
+//!   为每操作 `mount_and_then` 重挂载——E-DEF-01 实测（2026-08-28 win4）
+//!   单 LFS 操作 2k-13k 次块命令往返、每操作 mount 为大头，旧注释
+//!   "the overhead is small" 被实弹推翻。所有权时序与泄漏纪律见
+//!   `lfs/filesystem.rs` 模块文档（Box::leak 落定地址后 mount，
+//!   `Filesystem<'static>` 随 Lfs 移动）。
 //!
 //! [`BlockDevice`]: eneros_storage::BlockDevice
 

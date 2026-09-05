@@ -51,8 +51,17 @@ pub const fn status_handled(status: u8) -> bool {
     status <= ST_UNAVAILABLE
 }
 
-/// 载荷容量（有界；设备命令 39 扩展）。
-pub const PAYLOAD_CAP: usize = 64;
+/// 载荷容量（蓝图 68 卷 68.3 WP-68.3.1：64→461，顶格 MR 物理上限）。
+///
+/// 丈量链（执行卡 WP-68.3.0，2026-09-05）：内核 aarch64
+/// `seL4_MsgMaxLength = 120 words`（length 超限被内核钳制）；仓内 drv
+/// wire ABI 4B/word 打包 → 单消息上限 120×4B = 480B；信封头 REQUEST
+/// 19B / RESPONSE 15B → 461 = 480-19 顶格（REQUEST_LEN 恰 120 words，
+/// RESPONSE_LEN=476 = 119 words ≤ 120）。
+///
+/// 旧 64B 消费面（ai_relay/telemetry_relay/relay_face/块命令小载荷）
+/// 行为零变化——扩容只放宽上限，不改变任何既有编码。
+pub const PAYLOAD_CAP: usize = 461;
 
 /// 驱动请求信封（wire 布局：version u32 | correlation u32 | opcode u8 |
 /// deadline_ms u64 | payload_len u16 | payload）。
@@ -243,6 +252,10 @@ impl BoundedQueue {
         }
     }
     /// 入队；满 → Err（背压，调用方回 `ST_BUSY`）。
+    // 68.3：PAYLOAD_CAP 顶格扩容后 Err 变体 = 整信封（480B，超 clippy
+    // result_large_err 阈值）——返回原被拒请求是背压语义本体（调用方
+    // 据此回 ST_BUSY 并保留帧），装箱反而引入堆；单点显式豁免。
+    #[allow(clippy::result_large_err)]
     pub fn push(&mut self, req: DriverRequest) -> Result<(), DriverRequest> {
         if self.len == QUEUE_CAPACITY {
             return Err(req);
