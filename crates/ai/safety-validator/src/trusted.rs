@@ -177,7 +177,10 @@ pub struct EvaluatorConfig {
     pub bindings: StateBindings,
     /// 设备/点映射版本（评估器创建时注入；样本侧不匹配拒绝）。
     pub mapping_version: u64,
-    /// 接收时刻最大偏差（同快照内单调性 + 跨快照不倒退）。
+    /// 接收时刻最大偏差。**68.2 起退役**（字段保留装配兼容）：原"同快照
+    /// 内聚"检查在缓冲评估形态（每点最新替身）下测的是点位周期差而非
+    /// 数据病理，误拒多源异期点位（68.2 执行卡 §D.3）；新鲜度由逐点
+    /// max_age 承载。构造面保留传值、判据不再消费。
     pub max_skew_ms: u64,
     /// 允许的来源白名单（空 = 拒绝一切来源）。
     pub allowed_sources: Vec<u32>,
@@ -204,7 +207,8 @@ pub struct TrustedTelemetry {
     pub provenance_digest: [u8; 32],
     /// 评估生成时刻（单调毫秒）。
     pub generated_at_ms: u64,
-    /// 来源 epoch（本次评估所有样本的 epoch）。
+    /// 来源 epoch（68.2：本次评估样本的最大 per-source epoch；多源快照
+    /// 下各源 epoch 不再相等，单值 = max——观测面语义）。
     pub source_epoch: u64,
     /// 映射版本（本次评估使用的版本）。
     pub mapping_version: u64,
@@ -280,6 +284,73 @@ pub enum TrustRejection {
     },
 }
 
+/// per-source epoch 表容量 = 配置面来源注册上限（config-bundle
+/// `points::MAX_SOURCES`，schema.rs；两处仅注释耦合、无跨 crate 依赖——
+/// 容量漂移由 commit 防御性饱和兜底，不放大判据）。
+const SOURCE_EPOCH_TABLE_CAP: usize = 64;
+
+/// per-source epoch 表（蓝图 68.2：source_id → 已见最大 epoch；定长槽 +
+/// 线性查——来源数有配置上限，no_std 零动态分配。替代原单一全局 `epoch`：
+/// 每服务 `open()` 的 floor 各取 boot 单调时刻必不相等（F13），全局单值
+/// 语义下"最后钉扎者赢"，异源互毒）。
+#[derive(Debug, Clone)]
+struct SourceEpochTable {
+    slots: [Option<(u32, u64)>; SOURCE_EPOCH_TABLE_CAP],
+}
+
+impl SourceEpochTable {
+    const fn new() -> Self {
+        Self {
+            slots: [None; SOURCE_EPOCH_TABLE_CAP],
+        }
+    }
+
+    /// 判据（68.2 唯一实现）：未见源放行；`epoch ≥ seen` 放行（前跳 =
+    /// 重启新 epoch，per-source 取 max）；`< seen` = 同源回退拒绝
+    /// （`Err(已见最大值)`——防真回拨/旧 epoch 重放）。异源互不干扰。
+    fn judge(&self, source: u32, epoch: u64) -> Result<(), u64> {
+        for slot in &self.slots {
+            if let Some((s, seen)) = *slot {
+                if s == source {
+                    return if epoch < seen { Err(seen) } else { Ok(()) };
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 提交（快照评估全过后调用；失败路径零突变）：首见入槽 / 已见取 max。
+    fn commit(&mut self, source: u32, epoch: u64) {
+        for slot in &mut self.slots {
+            match slot {
+                None => {
+                    *slot = Some((source, epoch));
+                    return;
+                }
+                Some((s, seen)) if *s == source => {
+                    if epoch > *seen {
+                        *seen = epoch;
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // 槽满 = 来源数超配置上限（≤MAX_SOURCES 由 config 编译面保证；
+        // 防御性饱和——不记录即视为未见，判据不放大）。
+    }
+
+    /// 已见最大 epoch（各源 max 的最大值；观测面）。
+    fn max_seen(&self) -> u64 {
+        self.slots
+            .iter()
+            .flatten()
+            .map(|&(_, e)| e)
+            .max()
+            .unwrap_or(0)
+    }
+}
+
 /// 可信遥测评估器（WP-40.1 验证器）。
 ///
 /// 有状态：跨快照记住每点最后序号与最后接收时刻（重启后经
@@ -287,12 +358,17 @@ pub enum TrustRejection {
 #[derive(Debug, Clone)]
 pub struct TelemetryTrustEvaluator {
     config: EvaluatorConfig,
-    /// 每点最后接受序号。
-    last_sequences: BTreeMap<PointId, u64>,
-    /// 跨快照最后接收时刻（单调性基线）。
-    last_received_at_ms: u64,
-    /// 当前来源 epoch（断线重连后递增）。
-    epoch: u64,
+    /// 每点最后接受序号，按 (来源, 点) 记账并携带 epoch 空间戳（68.2：
+    /// 同源同 epoch 才比序号；同源换新 epoch 后旧基线自动失效——adapter
+    /// 重启序号回卷不再误拒，也无需全局清态牵连他源）。
+    last_sequences: BTreeMap<(u32, PointId), (u64, u64)>,
+    /// 跨快照最后接收时刻基线，**按来源记账**（68.2 实弹订正：多源各自
+    /// 节奏，全局基线在混合缓冲下互踩——A 源新批抬高基线后 B 源同轮较旧
+    /// 批必判 ClockNotMonotonic，快照永久被打死，QEMU 窗 agent=OK 60→1；
+    /// 单调性是同源性质，判据同源化）。
+    last_received_at_ms: BTreeMap<u32, u64>,
+    /// per-source epoch 表（68.2 起替代单全局 epoch）。
+    epochs: SourceEpochTable,
 }
 
 impl TelemetryTrustEvaluator {
@@ -301,30 +377,43 @@ impl TelemetryTrustEvaluator {
         Self {
             config,
             last_sequences: BTreeMap::new(),
-            last_received_at_ms: 0,
-            epoch: 0,
+            last_received_at_ms: BTreeMap::new(),
+            epochs: SourceEpochTable::new(),
         }
     }
 
-    /// 来源 epoch 推进（采集链断线重连后调用——旧 epoch 样本全部拒绝）。
-    pub fn advance_epoch(&mut self) {
-        self.epoch = self.epoch.saturating_add(1);
-    }
-
-    /// 当前来源 epoch。
+    /// 已见最大 per-source epoch（观测面；68.2 起多源语义——单值 =
+    /// 各源 max 的最大值）。
     pub fn epoch(&self) -> u64 {
-        self.epoch
+        self.epochs.max_seen()
     }
 
-    /// 从持久化状态恢复（重启后防旧消息被误接受）。
+    /// 批内是否已含全部必需点（68.2 影子对照逐批预检：多源上行后单批
+    /// 只含单源点位，对全量覆盖面评估结构性 MissingPoints，无对照意义
+    /// ——调用方跳过该批评估，不产影子拒绝/分歧计数）。
+    pub fn covers_coverage(&self, samples: &[TelemetrySample]) -> bool {
+        self.config
+            .coverage
+            .points
+            .iter()
+            .all(|req| samples.iter().any(|s| s.point == req.point))
+    }
+
+    /// 从持久化状态恢复（重启后防旧消息被误接受；68.2 per-source 形态）：
+    /// `epochs` = (source, 已见最大 epoch) 表种子；序号基线按
+    /// (source, point) → (epoch, seq) 注入。
     pub fn restore(
         &mut self,
-        epoch: u64,
+        epochs: &[(u32, u64)],
         last_received_at_ms: u64,
-        last_sequences: BTreeMap<PointId, u64>,
+        last_sequences: BTreeMap<(u32, PointId), (u64, u64)>,
     ) {
-        self.epoch = epoch;
-        self.last_received_at_ms = last_received_at_ms;
+        for &(source, epoch) in epochs {
+            self.epochs.commit(source, epoch);
+            // 恢复面：已列来源的接收基线统一置该值（持久化恢复无逐源
+            // 接收时刻可考时的一致下界）。
+            self.last_received_at_ms.insert(source, last_received_at_ms);
+        }
         self.last_sequences = last_sequences;
     }
 
@@ -339,28 +428,37 @@ impl TelemetryTrustEvaluator {
             return Err(TrustRejection::NoSamples);
         }
 
-        // 1. 接收时刻单调性（同快照 + 跨快照）。
-        let mut snapshot_max_received = 0u64;
+        // 1. 接收时刻单调性（68.2 实弹订正：判据同源化——跨快照基线按
+        // 来源比。多源各自节奏，全局基线在混合缓冲下为永假阳：A 源新批
+        // 抬高全局基线 → B 源同轮较旧批必拒；同源异期点位的新旧替身散布
+        // 亦然。QEMU 窗 ClockNotMonotonic 数千次、agent=OK 60→1/7 实锤）。
+        // 跨源/跨点时间散布由逐点 Stale(max_age) 各自兜底，安全语义不
+        // 放松。原 max_skew 同快照内聚检查随同退役：缓冲评估形态是
+        // "每点最新替身"，同源散布 = 点位周期差（数据病理由 Stale/重放
+        // 判据承载），max_skew_ms 字段保留装配兼容（见字段 doc）。
+        // 基线提交取本快照该源 **min**（68.2 实弹订正四）：基线收敛到
+        // "该源最老仍在替样本"——异期点位下 max 提交会让慢点位老替身必然
+        // 落后基线（二轮后残余 1.9 万次误拒的根源）；min 语义下重替身
+        // = 基线本身（等值放行），而严格早于上轮最早样本的**新到达**仍
+        // 判回拨（检查的独占职责不变）。
+        let mut per_src_min: BTreeMap<u32, u64> = BTreeMap::new();
         for s in samples {
-            if s.received_at_ms < self.last_received_at_ms {
-                return Err(TrustRejection::ClockNotMonotonic {
-                    received_at_ms: s.received_at_ms,
-                    last_received_at_ms: self.last_received_at_ms,
-                });
+            if let Some(&base) = self.last_received_at_ms.get(&s.source) {
+                if s.received_at_ms < base {
+                    return Err(TrustRejection::ClockNotMonotonic {
+                        received_at_ms: s.received_at_ms,
+                        last_received_at_ms: base,
+                    });
+                }
             }
-            snapshot_max_received = snapshot_max_received.max(s.received_at_ms);
-        }
-        // max skew：同快照内最大接收偏差超限拒绝。
-        let min_received = samples
-            .iter()
-            .map(|s| s.received_at_ms)
-            .min()
-            .unwrap_or(snapshot_max_received);
-        if snapshot_max_received.saturating_sub(min_received) > self.config.max_skew_ms {
-            return Err(TrustRejection::ClockNotMonotonic {
-                received_at_ms: snapshot_max_received,
-                last_received_at_ms: min_received,
-            });
+            per_src_min
+                .entry(s.source)
+                .and_modify(|m| {
+                    if s.received_at_ms < *m {
+                        *m = s.received_at_ms;
+                    }
+                })
+                .or_insert(s.received_at_ms);
         }
 
         // 2. 覆盖检查：必需点是否全部出现且唯一（多源冲突严格拒绝）。
@@ -388,9 +486,8 @@ impl TelemetryTrustEvaluator {
                         sequence: s.sequence,
                         last_sequence: self
                             .last_sequences
-                            .get(&s.point)
-                            .copied()
-                            .unwrap_or(s.sequence.saturating_sub(1)),
+                            .get(&(s.source, s.point))
+                            .map_or(s.sequence.saturating_sub(1), |&(_, ls)| ls),
                     });
                 }
             }
@@ -415,12 +512,14 @@ impl TelemetryTrustEvaluator {
                     source: s.source,
                 });
             }
-            // 来源 epoch。
-            if s.source_epoch != self.epoch {
+            // 来源 epoch（68.2 per-source 表：同源回退拒绝（防真回拨/旧
+            // epoch 重放）、异源互不重置（消灭"最后钉扎者赢"）、前跳放行
+            // （重启新 epoch，per-source 取 max））。
+            if let Err(seen) = self.epochs.judge(s.source, s.source_epoch) {
                 return Err(TrustRejection::SourceEpochMismatch {
                     point: req.point,
                     epoch: s.source_epoch,
-                    expected: self.epoch,
+                    expected: seen,
                 });
             }
             // 映射版本。
@@ -467,14 +566,22 @@ impl TelemetryTrustEvaluator {
                     max_age_ms: req.max_age_ms,
                 });
             }
-            // 序号（重放/乱序）。
-            let last_seq = self.last_sequences.get(&req.point).copied().unwrap_or(0);
-            if s.sequence <= last_seq {
-                return Err(TrustRejection::Replay {
-                    point: req.point,
-                    sequence: s.sequence,
-                    last_sequence: last_seq,
-                });
+            // 序号（重放/乱序）——按 (来源, 点) 记账，epoch 空间隔离
+            //（68.2：同源换新 epoch 后旧基线自动失效，重启序号回卷不误拒）。
+            // 68.2 实弹订正二：判严格回退（<）而非 `<=`——快照评估是缓冲
+            // 只读投影，多源节奏下他源刷新会触发未变点位的**等值重替身**
+            //（单源时代被"按源摄取门"掩盖）：等值 = 同一样本幂等重评，非
+            // 重放。等值重放由上游严线拦截（sink event_id 去重 +
+            // WatermarkTracker::check 序列 `<=` + 旧轨缓冲门 (point,seq)
+            // 去重）——评估层此处独占职责 = 回退。
+            if let Some(&(last_epoch, last_seq)) = self.last_sequences.get(&(s.source, req.point)) {
+                if last_epoch == s.source_epoch && s.sequence < last_seq {
+                    return Err(TrustRejection::Replay {
+                        point: req.point,
+                        sequence: s.sequence,
+                        last_sequence: last_seq,
+                    });
+                }
             }
             values.insert(req.point, s.value);
         }
@@ -489,12 +596,21 @@ impl TelemetryTrustEvaluator {
         );
 
         // 5. provenance 摘要：SM3 覆盖全部样本的规范编码（定长、无歧义）。
-        let digest = provenance_digest(samples, self.config.mapping_version, self.epoch);
+        // 68.2：第三参 = 本次快照样本最大 per-source epoch（多源下
+        // "所有样本同一 epoch"不再成立；确定性不变）。
+        let snap_max_epoch = samples.iter().map(|s| s.source_epoch).max().unwrap_or(0);
+        let digest = provenance_digest(samples, self.config.mapping_version, snap_max_epoch);
 
-        // 6. 推进状态。
-        self.last_received_at_ms = snapshot_max_received;
+        // 6. 推进状态（全部判据通过后——失败路径零突变；epoch 表与
+        // 接收基线同纪律）。接收基线按来源取本快照该源 min（见步骤 1
+        // 订正四——收敛到最老仍在替样本，重替身等值放行）。
+        for (&src, &mn) in &per_src_min {
+            self.last_received_at_ms.insert(src, mn);
+        }
         for (point, s) in &by_point {
-            self.last_sequences.insert(*point, s.sequence);
+            self.last_sequences
+                .insert((s.source, *point), (s.source_epoch, s.sequence));
+            self.epochs.commit(s.source, s.source_epoch);
         }
 
         Ok(TrustedTelemetry {
@@ -503,7 +619,7 @@ impl TelemetryTrustEvaluator {
             valid_until_ms: now_ms.saturating_add(self.config.control_horizon_ms),
             provenance_digest: digest,
             generated_at_ms: now_ms,
-            source_epoch: self.epoch,
+            source_epoch: snap_max_epoch,
             mapping_version: self.config.mapping_version,
             samples: values,
         })
@@ -657,9 +773,15 @@ mod tests {
         }
         let t2 = ev.evaluate(&tampered, 10_000).expect("trusted");
         assert_ne!(t.provenance_digest, t2.provenance_digest);
-        // 同序号重放必须拒绝（评估器有状态）。
+        // 68.2：等值重替身 = 幂等重评（缓冲只读投影）→ 放行。
+        let _ = ev.evaluate(&tampered, 10_000).expect("幂等重评");
+        // 序号严格回退必须拒绝（评估器独占职责）。
+        let mut regressed = tampered.clone();
+        for s in regressed.iter_mut() {
+            s.sequence = 1;
+        }
         assert!(matches!(
-            ev.evaluate(&tampered, 10_000).unwrap_err(),
+            ev.evaluate(&regressed, 10_000).unwrap_err(),
             TrustRejection::Replay { .. }
         ));
     }
@@ -738,8 +860,14 @@ mod tests {
     fn replay_rejected() {
         let mut ev = evaluator();
         let _ = ev.evaluate(&snapshot(10_000), 10_000).expect("first");
-        // 同序号重放（旧消息）。
-        let err = ev.evaluate(&snapshot(10_000), 11_000).unwrap_err();
+        // 等值重替身幂等放行（68.2 实弹订正二）。
+        let _ = ev.evaluate(&snapshot(10_000), 11_000).expect("幂等重评");
+        // 序号严格回退（旧消息）拒绝。
+        let mut regressed = snapshot(12_000);
+        for x in regressed.iter_mut() {
+            x.sequence = 0;
+        }
+        let err = ev.evaluate(&regressed, 12_000).unwrap_err();
         assert!(matches!(err, TrustRejection::Replay { point: 1, .. }));
         // 序号递增但接收时刻倒退 → 时钟不单调。
         let mut s = snapshot(11_000);
@@ -779,23 +907,24 @@ mod tests {
 
     #[test]
     fn stale_epoch_rejected_after_reconnect() {
+        // 68.2 per-source 语义：断线重连由采集侧分配更高 epoch 表达（
+        // open_source 严格递增），消费侧 max 吸收（前跳放行）；旧 epoch
+        // 样本 = 同源回退，结构化拒绝。
         let mut ev = evaluator();
         let _ = ev.evaluate(&snapshot(10_000), 10_000).expect("epoch 0");
-        ev.advance_epoch(); // 断线重连
-                            // 旧 epoch 样本必须拒绝（不误接受旧消息）。
-        let err = ev.evaluate(&snapshot(20_000), 20_000).unwrap_err();
+        // 断线重连：同源新 epoch（前跳）接受。
+        let mut s = snapshot(20_000);
+        for x in s.iter_mut() {
+            x.source_epoch = 1;
+        }
+        let t = ev.evaluate(&s, 20_000).expect("epoch 1 trusted");
+        assert_eq!(t.source_epoch, 1);
+        // 重启重放形态：旧 epoch 样本必须拒绝（不误接受旧消息）。
+        let err = ev.evaluate(&snapshot(30_000), 30_000).unwrap_err();
         assert!(matches!(
             err,
             TrustRejection::SourceEpochMismatch { point: 1, .. }
         ));
-        // 新 epoch 样本接受。
-        let mut s = snapshot(20_000);
-        for x in s.iter_mut() {
-            x.source_epoch = 1;
-            x.sequence = 2;
-        }
-        let t = ev.evaluate(&s, 20_000).expect("epoch 1 trusted");
-        assert_eq!(t.source_epoch, 1);
     }
 
     #[test]
@@ -812,7 +941,7 @@ mod tests {
     #[test]
     fn restore_state_rejects_old_epoch() {
         let mut ev = evaluator();
-        ev.restore(5, 100_000, BTreeMap::new());
+        ev.restore(&[(1, 5)], 100_000, BTreeMap::new());
         let err = ev.evaluate(&snapshot(200_000), 200_000).unwrap_err();
         assert!(matches!(
             err,
@@ -829,10 +958,224 @@ mod tests {
         let _ = ev.evaluate(&s, 200_000).expect("restored epoch accepted");
     }
 
+    /// t3（WP-68.2.1）：同源 epoch 回退仍拒绝（防修复扩大化——per-source
+    /// 归位只消灭异源互毒，不放松同源单调性）。t1/t2 绿后仍须绿。
+    #[test]
+    fn t3_same_source_regression_still_quarantined() {
+        let mut ev = dual_evaluator();
+        // 源 A epoch=100 建立基线。
+        let _ = ev
+            .evaluate(&source_snapshot(1, 100, 0, 10_000), 10_000)
+            .expect("A epoch=100 首评");
+        // 同源回退（99 < 100）→ SourceEpochMismatch（隔离语义维持）。
+        let err = ev
+            .evaluate(&source_snapshot(1, 99, 200, 11_000), 11_000)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            TrustRejection::SourceEpochMismatch { expected: 100, .. }
+        ));
+        // 同源等值/前跳照常放行。
+        let _ = ev
+            .evaluate(&source_snapshot(1, 100, 200, 12_000), 12_000)
+            .expect("等值放行");
+        let _ = ev
+            .evaluate(&source_snapshot(1, 101, 300, 13_000), 13_000)
+            .expect("前跳放行（重启新 epoch）");
+    }
+
+    /// t5（WP-68.2.1）：per-source 表三态（未见/推进/回退）单元锁 +
+    /// 容量（= MAX_SOURCES=64）。
+    #[test]
+    fn t5_evaluator_multi_source_state() {
+        let mut t = SourceEpochTable::new();
+        // 未见 → 放行。
+        assert_eq!(t.judge(1, 100), Ok(()));
+        assert_eq!(t.judge(2, 200), Ok(()));
+        t.commit(1, 100);
+        t.commit(2, 200);
+        // 同源等值/前跳放行；commit 只升不降。
+        assert_eq!(t.judge(1, 100), Ok(()));
+        assert_eq!(t.judge(1, 300), Ok(()));
+        t.commit(1, 50);
+        assert_eq!(t.judge(1, 99), Err(100), "commit(50) 不得拉低已见 max=100");
+        // 同源回退拒绝（载荷 = 已见最大值）。
+        assert_eq!(t.judge(2, 199), Err(200));
+        // 异源互不重置：A 回退判拒不影响 B 独立推进。
+        t.commit(2, 201);
+        assert_eq!(t.judge(2, 201), Ok(()));
+        assert_eq!(t.judge(1, 99), Err(100));
+        // 容量：64 源全容（config-bundle points::MAX_SOURCES 上限）。
+        for s in 3u32..=64 {
+            t.commit(s, u64::from(s));
+        }
+        assert_eq!(t.judge(64, 64), Ok(()));
+        assert_eq!(t.judge(64, 63), Err(64));
+    }
+
     #[test]
     fn required_point_unit_documented_in_coverage() {
         let ev = evaluator();
         let soc = ev.config.coverage.find(4).expect("soc covered");
         assert_eq!(soc.unit, PointUnit::Ratio);
+    }
+
+    // ---- 蓝图 68.2 红测群（WP-68.2.1；F13 每服务 floor 不等 + 消费侧
+    // 单全局 epoch = "最后钉扎者赢"毒化的评估器级行为锁）----
+
+    /// 双源评估器（8 点全覆盖，来源白名单 [1,2]）。
+    fn dual_evaluator() -> TelemetryTrustEvaluator {
+        TelemetryTrustEvaluator::new(EvaluatorConfig {
+            coverage: RequiredPointCoverage {
+                points: (1u32..=8)
+                    .map(|p| RequiredPoint {
+                        point: p,
+                        min: 0.0,
+                        max: 1000.0,
+                        max_age_ms: 5000,
+                        unit: PointUnit::Kilowatt,
+                    })
+                    .collect(),
+            },
+            bindings: StateBindings {
+                voltage: 1,
+                current: 2,
+                frequency: 3,
+                soc: 4,
+            },
+            mapping_version: 1,
+            max_skew_ms: 1000,
+            allowed_sources: alloc::vec![1, 2],
+            require_integrity: true,
+            control_horizon_ms: 30_000,
+        })
+    }
+
+    /// 单源满快照（8 点；seq = 序号基，received 单调递增由调用方保证）。
+    fn source_snapshot(source: u32, epoch: u64, seq: u64, received: u64) -> Vec<TelemetrySample> {
+        (1u32..=8)
+            .map(|p| TelemetrySample {
+                point: p,
+                value: 100.0 + f64::from(p),
+                source,
+                source_epoch: epoch,
+                measured_at_ms: received - 50,
+                received_at_ms: received,
+                quality: SampleQuality::Good,
+                sequence: seq + u64::from(p),
+                integrity: IntegrityStatus::Verified,
+                mapping_version: 1,
+            })
+            .collect()
+    }
+
+    /// t1（WP-68.2.1）：双源交错投递互不毒化——源 B（高 epoch）到达后，
+    /// 源 A（低 epoch）样本评估必须照常全过。现状（单全局 epoch）红。
+    #[test]
+    fn t1_dual_source_no_cross_poison() {
+        let mut ev = dual_evaluator();
+        // 源 A（epoch=100）首评。
+        let _ = ev
+            .evaluate(&source_snapshot(1, 100, 0, 10_000), 10_000)
+            .expect("源 A 首评");
+        // 源 B（epoch=200）到达。
+        let _ = ev
+            .evaluate(&source_snapshot(2, 200, 0, 11_000), 11_000)
+            .expect("源 B 首评");
+        // B 到达后 A 仍全过（毒化点本体）；交错第二轮对称。
+        let _ = ev
+            .evaluate(&source_snapshot(1, 100, 100, 12_000), 12_000)
+            .expect("B 到达后 A 不被毒化");
+        let _ = ev
+            .evaluate(&source_snapshot(2, 200, 100, 13_000), 13_000)
+            .expect("A 再达后 B 不被毒化");
+    }
+
+    /// t2（WP-68.2.1）：启动序翻转（B 先开 A 后开）结论与 t1 对称——毒化
+    /// 方向不随启动序翻转（现状红）。
+    #[test]
+    fn t2_boot_order_independent() {
+        let mut ev = dual_evaluator();
+        let _ = ev
+            .evaluate(&source_snapshot(2, 200, 0, 10_000), 10_000)
+            .expect("源 B 先开");
+        let _ = ev
+            .evaluate(&source_snapshot(1, 100, 0, 11_000), 11_000)
+            .expect("源 A 后开不毒化");
+        let _ = ev
+            .evaluate(&source_snapshot(2, 200, 100, 12_000), 12_000)
+            .expect("B 续过");
+        let _ = ev
+            .evaluate(&source_snapshot(1, 100, 100, 13_000), 13_000)
+            .expect("A 续过");
+    }
+
+    /// 点位区间快照（[lo, hi]；供跨源混合构造——同点异源在快照内属
+    /// SourceConflict，混合用例须点位互斥）。
+    fn span(
+        source: u32,
+        epoch: u64,
+        seq: u64,
+        received: u64,
+        lo: u32,
+        hi: u32,
+    ) -> Vec<TelemetrySample> {
+        (lo..=hi)
+            .map(|p| TelemetrySample {
+                point: p,
+                value: 100.0 + f64::from(p),
+                source,
+                source_epoch: epoch,
+                measured_at_ms: received - 50,
+                received_at_ms: received,
+                quality: SampleQuality::Good,
+                sequence: seq + u64::from(p),
+                integrity: IntegrityStatus::Verified,
+                mapping_version: 1,
+            })
+            .collect()
+    }
+
+    /// t7（68.2 实弹订正锁）：接收时刻判据同源化。QEMU 实弹抓到的次生
+    /// 缺陷——全局接收基线 + 跨源 max_skew 在混合缓冲下永假阳
+    /// （ClockNotMonotonic 数千次、agent=OK 60→1）：A 源新批抬高全局
+    /// 基线后 B 源同轮较旧批必拒。同源化后跨源交错放行；同源失聚/同源
+    /// 跨快照回退仍拒（安全语义不放松）。
+    #[test]
+    fn t7_dual_source_receipt_independence() {
+        let mut ev = dual_evaluator();
+        // A 源全量首评建立基线 10_000。
+        let _ = ev
+            .evaluate(&source_snapshot(1, 100, 0, 10_000), 10_000)
+            .expect("A 全量首评");
+        // 混合快照（点位互斥拼全量）：A 点 1-4 @11_000 + B 点 5-8 @9_500
+        // （B 接收早于 A 历史基线——交错形态；且同快照跨源相距
+        // 1_500ms > max_skew=1_000）。全局基线/skew 下必炸
+        // ClockNotMonotonic；同源化后放行。
+        let mut mixed = span(1, 100, 100, 11_000, 1, 4);
+        mixed.extend(span(2, 200, 0, 9_500, 5, 8));
+        let _ = ev.evaluate(&mixed, 11_000).expect("跨源接收交错不互拒");
+        // 同源异期散布同样放行（68.2 实弹订正三：缓冲评估形态 = 每点最新
+        // 替身，同源散布 = 点位周期差，非数据病理；原 max_skew 同快照内聚
+        // 检查退役，新鲜度由逐点 Stale 承载）——A 源内 3_000ms 散布 +
+        // B 正常，整体放行。
+        let mut spread = span(1, 100, 200, 12_000, 1, 4);
+        for x in spread.iter_mut().skip(2) {
+            x.received_at_ms = 15_000;
+        }
+        spread.extend(span(2, 200, 100, 12_000, 5, 8));
+        let _ = ev.evaluate(&spread, 15_000).expect("同源异期散布不误拒");
+        // 订正四锁：异期替身的重替身幂等放行——基线提交取该源 min（收敛
+        // 到最老仍在替样本），慢点位老替身不得被基线追赶打死（第三轮
+        // QEMU 残余 1.9 万次 ClockNotMonotonic 误拒、agent=OK 33<60 的
+        // 根源；max 提交形态下本断言必炸）。
+        let _ = ev.evaluate(&spread, 16_000).expect("异期替身重替身幂等");
+        // 同源跨快照回退仍拒（A 全量 @9_000 < A 基线 11_000/15_000；单调
+        // 性检查先于覆盖面，结构化 ClockNotMonotonic）。
+        assert!(matches!(
+            ev.evaluate(&source_snapshot(1, 100, 300, 9_000), 16_000)
+                .unwrap_err(),
+            TrustRejection::ClockNotMonotonic { .. }
+        ));
     }
 }

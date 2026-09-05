@@ -9,8 +9,8 @@
 #   - typed 链不回归：CATALOG-ACTIVE / REGISTRY-ACTIVE / CONTRACT-VIEW-
 #     ACTIVE / PLAN-COMPILED / EXEC-JOURNAL applied-confirmed /
 #     dispatch=Committed；
-#   - 授予边基线保持（63.2 处置不回归）：NOT granted ×1、bound=0、
-#     edges=34；
+#   - 授予边基线（68.2 接通转正后翻转：原 63.3 = NOT granted ×1、
+#     bound=0、edges=34；现 = bound ≥1、NOT granted 0、edges=35）；
 #   - keyring 依赖边（host 侧 cargo tree 已验：model-security/did 各 +1，
 #     secure-boot 0 豁免成立）——镜像闭包 diff 不另测（三 crate 均非
 #     qemu-prod 服务 bin 依赖，镜像二进制集合不变，PRODUCT-READY 即证）。
@@ -104,11 +104,12 @@ n=$(grep -ac "dispatch=other" "$S" 2>/dev/null); n=${n:-0}
 if [ "$n" -eq 0 ]; then echo "[✓] dispatch=other = 0"; else echo "[✗] dispatch=other 出现 $n 次"; FAIL=1; fi
 
 # 4. 授予边基线保持（63.2 处置不回归）。
-NG=$(grep -ac '\[svc-iec104\] telemetry EIPC NOT granted' "$S" 2>/dev/null); NG=${NG:-0}
-if [ "$NG" -ge 1 ]; then echo "[✓] svc-iec104 telemetry EIPC NOT granted = $NG（诚实降级基线保持）"; else echo "[✗] NOT granted 缺失"; FAIL=1; fi
+# 68.2 起翻转（原 63.3 基线 = 缺边 fail-closed；边已接通，见 run63-vol2-gate）。
 n=$(grep -ac '\[svc-iec104\] telemetry EIPC bound' "$S" 2>/dev/null); n=${n:-0}
-if [ "$n" -eq 0 ]; then echo "[✓] telemetry EIPC bound = 0（边未接通）"; else echo "[✗] bound 出现 $n 次"; FAIL=1; fi
-grep -aq "EIPC-GRANT-TABLE edges=34" "$S" && echo "[✓] EIPC-GRANT-TABLE edges=34" || { echo "[✗] edges 计数漂移"; FAIL=1; }
+if [ "$n" -ge 1 ]; then echo "[✓] telemetry EIPC bound = $n（68.2 边接通）"; else echo "[✗] bound 缺失（边未接通）"; FAIL=1; fi
+n=$(grep -ac 'telemetry EIPC NOT granted' "$S" 2>/dev/null); n=${n:-0}
+if [ "$n" -eq 0 ]; then echo "[✓] telemetry EIPC NOT granted = 0（缺边词形退场）"; else echo "[✗] NOT granted 出现 $n 次"; FAIL=1; fi
+grep -aq "EIPC-GRANT-TABLE edges=35" "$S" && echo "[✓] EIPC-GRANT-TABLE edges=35（68.2 新边入表）" || { echo "[✗] edges 计数漂移（基线 35）"; FAIL=1; }
 
 # 5. 采集基线（63.2 不回归）：modbus 7 点值 + OBS-ROUND + iec104 ACQ。
 python3 - "$S" <<'EOF'

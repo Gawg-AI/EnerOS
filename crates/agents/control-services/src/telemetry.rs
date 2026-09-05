@@ -140,32 +140,28 @@ impl TelemetryService {
     /// 蓝图 61：OBS 影子批次准入（TEL_INGEST_OBS 服务端；响应
     /// [OK][accepted u16][rejected u16]）。
     pub fn obs_ingest(&mut self, source_id: u32, frames: &[u8], now_ms: u64) -> Vec<u8> {
-        // 首段借用（obs 准入 + 钉扎读出）作用域化——生产 upsert 需要
-        // 独占 self（[07] §2.6.5 生产轨切换）。
-        let (accepted, rejected, converted, pinned) = {
+        // 首段借用（obs 准入）作用域化——生产 upsert 需要独立 self
+        //（[07] §2.6.5 生产轨切换）。
+        let (accepted, rejected, converted) = {
             let Some(obs) = self.obs.as_mut() else {
                 // 影子未装配 = 配置无来源表 → 显式拒绝（不静默吞帧）。
                 return alloc::vec![0xFF];
             };
             let mut converted: Vec<TelemetrySample> = Vec::new();
             let (accepted, rejected) = obs.ingest_frames(source_id, frames, now_ms, &mut converted);
-            let pinned = obs.last_pinned();
-            (accepted, rejected, converted, pinned)
+            (accepted, rejected, converted)
         };
         // 蓝图 61 v0.314.30（[07] §2.6.5）：telemetry 侧改为 ObservationEvent
         // consumer——OBS 是生产轨。转换样本逐点 upsert 进生产缓冲（同点
         // 新样本替换旧样本；**多源不互相 clear**——旧 INGEST 全量替换语义
         // 只保留在 legacy 迁移 reader 路径）。
+        // 蓝图 68.2（F13）：生产评估器 per-source epoch 自管（t1/t2/t4 行
+        // 为锁）——原"钉扎→restore(epoch,0,清态) 同步"删除。该同步是
+        // "最后钉扎者赢"毒化机制本体：每服务 open() floor 各取 boot
+        // now_ms 必不相等，后钉者把评估器单全局 epoch 重置，先钉源样本
+        // 全拒（agent=OK 59→0）。
         for sample in converted {
             self.upsert_sample(&sample);
-        }
-        // 生产评估器 epoch 与 registry 分配的观测身份同源同步（首次钉扎 /
-        // adapter 重启新 epoch）：新 epoch = 新序号空间（restore 清态）。
-        if let Some((_, epoch)) = pinned {
-            if self.evaluator.epoch() != epoch {
-                self.evaluator
-                    .restore(epoch, 0, alloc::collections::BTreeMap::new());
-            }
         }
         // 蓝图 62 卷 62.2（WP-62.2.2）：响应编码单源 obs_batch_wire
         //（[OK][accepted u16][rejected u16] 布局逐字节不变）。
@@ -280,14 +276,16 @@ impl TelemetryService {
             .map(|s| now_ms.saturating_sub(s.measured_at_ms))
     }
 
-    /// 当前来源 epoch。
+    /// 已见最大 per-source epoch（观测面；68.2 起多源语义）。
     pub fn epoch(&self) -> u64 {
         self.evaluator.epoch()
     }
 
-    /// 断线重连推进 epoch（旧 epoch 消息全部拒绝）。
+    /// 断线重连处理（TEL_ADVANCE_EPOCH 请求路径；蓝图 68.2 语义收缩：
+    /// epoch 推进已由采集侧 `open_source` per-source 分配 + 消费侧
+    /// per-source max 吸收承载，本请求降级为清缓冲——丢弃在途旧样本；
+    /// wire opcode 保留兼容，生产零发送方）。
     pub fn advance_epoch(&mut self) {
-        self.evaluator.advance_epoch();
         self.buffer.clear();
     }
 
@@ -820,21 +818,43 @@ mod tests {
     }
 
     #[test]
-    fn epoch_advance_rejects_old_messages() {
+    fn epoch_lifecycle_per_source_and_advance_buffer_only() {
+        // 68.2 per-source 语义（替代旧 advance_epoch 推进全局 epoch）：
+        // 同源前跳（重连新 epoch）放行且推进观测面；旧 epoch = 同源回退
+        // 结构化拒绝；advance_epoch 收缩为清缓冲（在途旧样本丢弃——
+        // legacy INGEST 缓冲为追加式，轮间以此隔离接收时刻基线）。
         let mut svc = service();
         let now = 10_000;
         svc.ingest(&full(now));
+        let _ = svc.snapshot(now).expect("首评（提交 per-source max=0）");
+        assert_eq!(svc.epoch(), 0);
+        // 清缓冲 + 同源前跳（断线重连新 epoch=1）接受。
         svc.advance_epoch();
-        assert_eq!(svc.epoch(), 1);
-        // 旧 epoch 样本 → 评估拒绝（结构化）。
         let mut s = full(20_000);
         for x in s.iter_mut() {
+            x.source_epoch = 1;
             x.sequence = 2;
         }
         svc.ingest(&s);
+        let t = svc.snapshot(20_000).expect("新 epoch 放行");
+        assert_eq!(t.source_epoch, 1);
+        assert_eq!(svc.epoch(), 1);
+        // 清缓冲 + 旧 epoch 样本（同源回退）→ 评估拒绝（结构化）。
+        svc.advance_epoch();
+        let mut old = full(30_000);
+        for x in old.iter_mut() {
+            x.sequence = 100;
+        }
+        svc.ingest(&old);
         assert!(matches!(
-            svc.snapshot(20_000),
+            svc.snapshot(30_000),
             Err(TrustRejection::SourceEpochMismatch { .. })
+        ));
+        // advance_epoch 收缩面：清缓冲（在途旧样本丢弃）→ 无样本拒绝。
+        svc.advance_epoch();
+        assert!(matches!(
+            svc.snapshot(40_000),
+            Err(TrustRejection::NoSamples)
         ));
     }
 

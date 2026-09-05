@@ -138,7 +138,7 @@ for bad in "REGISTRY-MISSING" "CONTRACT-VIEW-MISSING" "CATALOG-MISSING" "CHAIN-K
   if [ "$n" -eq 0 ]; then echo "[✓] $bad = 0"; else echo "[✗] $bad 出现 $n 次"; FAIL=1; fi
 done
 NG=$(grep -ac '\[svc-iec104\] telemetry EP not granted' "$S" 2>/dev/null); NG=${NG:-0}
-echo "    [i] svc-iec104 telemetry EP not granted 行=$NG（预存授予缺口，诚实降级面，63 候选）"
+echo "    [i] svc-iec104 telemetry EP not granted 行=$NG（68.2 接通后应为 0）"
 
 [ $FAIL -eq 0 ] && echo "VOL62.3-GATE: PASS" || { echo "VOL62.3-GATE: FAIL"; exit 7; }
 echo "DONE"

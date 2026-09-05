@@ -93,7 +93,8 @@ mod snapshot_diff_tests {
 
     fn evaluator() -> TelemetryTrustEvaluator {
         let mut ev = evaluator_raw();
-        ev.restore(1, 0, alloc::collections::BTreeMap::new());
+        // 68.2 per-source 种子：事件 source=2、epoch=1（registry 分配形态）。
+        ev.restore(&[(2, 1)], 0, alloc::collections::BTreeMap::new());
         ev
     }
 

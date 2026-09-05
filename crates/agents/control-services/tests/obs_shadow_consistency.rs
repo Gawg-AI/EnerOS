@@ -141,7 +141,7 @@ fn twenty_point_reference_batch_old_and_new_agree() {
 
     // 旧轨评估。
     let mut ev_old = TelemetryTrustEvaluator::new(eval_config());
-    ev_old.restore(1, 0, BTreeMap::new()); // epoch = registry 分配值
+    ev_old.restore(&[(2, 1)], 0, BTreeMap::new()); // epoch = registry 分配值（68.2 per-source 种子）
     let trusted_old = ev_old.evaluate(&legacy, now_ms).expect("old trusted");
 
     // 新轨：事件 → 旧视图 → 影子评估器（同配置独立实例）。
@@ -151,7 +151,7 @@ fn twenty_point_reference_batch_old_and_new_agree() {
         shadow_samples.push(view);
     }
     let mut ev_new = TelemetryTrustEvaluator::new(eval_config());
-    ev_new.restore(1, 0, BTreeMap::new());
+    ev_new.restore(&[(2, 1)], 0, BTreeMap::new());
     let trusted_new = ev_new
         .evaluate(&shadow_samples, now_ms)
         .expect("new trusted");
@@ -178,8 +178,8 @@ fn redline_forged_epoch_zero_rejected_new_track() {
     let now_ms = 10_000u64;
     let (legacy, _events) = reference_batch(now_ms);
     let mut ev = TelemetryTrustEvaluator::new(eval_config());
-    ev.restore(1, 0, BTreeMap::new());
-    // 伪造：同批次样本 epoch 改 0（旧轨）。
+    ev.restore(&[(2, 1)], 0, BTreeMap::new()); // epoch = registry 分配值
+                                               // 伪造：同批次样本 epoch 改 0（旧轨）——已见 max=1 下 0 = 同源回退。
     let mut forged = legacy.clone();
     for s in forged.iter_mut() {
         s.source_epoch = 0;
@@ -201,7 +201,7 @@ fn redline_unregistered_source_never_reaches_control() {
     let now_ms = 10_000u64;
     let (legacy, _) = reference_batch(now_ms);
     let mut ev = TelemetryTrustEvaluator::new(eval_config());
-    ev.restore(1, 0, BTreeMap::new());
+    ev.restore(&[(2, 1)], 0, BTreeMap::new()); // epoch = registry 分配值
     let mut forged = legacy.clone();
     forged[0].source = 99;
     assert!(matches!(

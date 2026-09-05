@@ -10,7 +10,8 @@
 #   - PRODUCT-READY: true；
 #   - 冻结词形存在性：PROTO-EXEC status=0x 行、OBS-REPORT rejected 行、
 #     CONTROL-CHAIN: round= + dispatch=Committed、ACQ-ROUND、AUDIT-CHAIN、
-#     OTA-DOWNLOAD、STORAGE-PERSIST、telemetry EIPC bound/NOT-granted；
+#     OTA-DOWNLOAD、STORAGE-PERSIST、telemetry EIPC bound（NOT granted
+#     词形 68.2 起退场——iec104 边接通）；
 #   - 确定性行计数对照 evidence/63/vol63-1 基线：唯一允许差异 = 64.2 卷
 #     登记变更 modbus POINTS-LOADED 每轮 2→1 行（该变更在 64.2 已落库，
 #     对 63 基线的偏移维持）；其余逐行逐字节计数一致（构造纪律卷零行为
@@ -82,8 +83,8 @@ for pat in "PRODUCT-READY: true" \
            "AUDIT-CHAIN" \
            "OTA-DOWNLOAD: OK" \
            "STORAGE-PERSIST: OK" \
-           "telemetry EIPC bound (svc-telemetry)" \
-           "telemetry EIPC NOT granted"; do
+           "telemetry EIPC bound (svc-telemetry)"; do
+  # 68.2 起无 NOT granted 词形（iec104→telemetry 边接通，缺边词形退场）。
   if grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; FAIL=1; fi
 done
 if grep -qE "PROTO-EXEC svc-(modbus-tcp|mqtt|iec104) status=0x04" "$S"; then

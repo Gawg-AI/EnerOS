@@ -9,7 +9,8 @@
 #   - PRODUCT-READY: true；
 #   - 冻结词形存在性：PROTO-EXEC status=0x 行、OBS-REPORT rejected 行、
 #     CONTROL-CHAIN: round= + dispatch=Committed、ACQ-ROUND、AUDIT-CHAIN、
-#     OTA-DOWNLOAD、STORAGE-PERSIST、telemetry EIPC bound/NOT-granted；
+#     OTA-DOWNLOAD、STORAGE-PERSIST、telemetry EIPC bound（NOT granted
+#     词形 68.2 起退场——iec104 边接通）；
 #   - 确定性行计数对照 evidence/65/vol65-1 基线：零调整系数——本卷
 #     normal 窗预期零差异；
 #   - 负断言：SUPERVISOR/HEARTBEAT-KILL/DBG-EXEC 不出现；
@@ -84,8 +85,8 @@ for pat in "PRODUCT-READY: true" \
            "AUDIT-CHAIN" \
            "OTA-DOWNLOAD: OK" \
            "STORAGE-PERSIST: OK" \
-           "telemetry EIPC bound (svc-telemetry)" \
-           "telemetry EIPC NOT granted"; do
+           "telemetry EIPC bound (svc-telemetry)"; do
+  # 68.2 起无 NOT granted 词形（iec104→telemetry 边接通，缺边词形退场）。
   if grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; FAIL=1; fi
 done
 if grep -qE "PROTO-EXEC svc-(modbus-tcp|mqtt|iec104) status=0x04" "$S"; then

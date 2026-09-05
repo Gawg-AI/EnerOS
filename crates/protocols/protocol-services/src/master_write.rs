@@ -30,6 +30,14 @@ pub fn master_write_v2(
         );
         return OutcomeFrame::new(OutcomeCode::Denied, 2).encode();
     }
+    // 68.2 卫生项（F18）：digest 门为 u32 全值口径，点表 device 为 u16——
+    // 超域 device 不得经 `as u16` 折叠与点表误配（0x10001 → 1）。
+    if device > u32::from(u16::MAX) {
+        eneros_runtime::println!(
+            "[svc-modbus-tcp] MASTER-WRITE device={device} device-range 超 u16 点表域 —— Denied(7)"
+        );
+        return OutcomeFrame::new(OutcomeCode::Denied, 7).encode();
+    }
     let Some(mapping) = registry.resolve(point) else {
         eneros_runtime::println!(
             "[svc-modbus-tcp] MASTER-WRITE point={point} 无点表映射 —— Denied(7)"
@@ -234,6 +242,26 @@ mod tests {
         let d = digest_of(1, 100, v);
         let frame = master_write_v2(&reg, &plugin, 1, 100, v, d);
         assert_eq!(frame, [3, 7], "命令类别不符 → Denied(7)");
+    }
+
+    /// 68.2 卫生项（F18）：u32 device 折叠 u16 不得匹配点表——请求
+    /// device=0x10001（`as u16` 折叠 = 1）与点表 device 1 同点时，digest
+    /// 门（u32 全值口径）通过后不得因截断比较而放行。修复前：折叠匹配
+    /// → 直达出站写（digest 门与点表门口径不一致）。
+    #[test]
+    fn t6_device_id_truncation_rejected() {
+        let reg = VecPointRegistry::new(vec![mapping(100, 1)]);
+        let plugin: crate::modbus_ingest::SharedPlugin = alloc::rc::Rc::new(
+            core::cell::RefCell::new(eneros_modbus_tcp::plugin::TcpPlugin::new()),
+        );
+        let v = eneros_telemetry_model::command::CommandValue::ActivePowerKw(50.0);
+        let d = digest_of(0x10001, 100, v);
+        let frame = master_write_v2(&reg, &plugin, 0x10001, 100, v, d);
+        assert_eq!(
+            frame,
+            [3, 7],
+            "device 超 u16 点表域 → Denied(7)（折叠 1 不得匹配点表 device 1）"
+        );
     }
 
     // ---- readback 三态（scripted 传输；FC06 回显应答 + FC03 定值应答）----

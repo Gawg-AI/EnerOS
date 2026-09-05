@@ -22,7 +22,7 @@
 |---|---|---|---|
 | REG-SM2 | `crates/agents/federation/src/{offer,pbft,tunnel}.rs` + model-security/did/config-bundle（sm2_verify 直调点） | **Done（63.3.2 收口 6 处）** | 执行卡-62.3 §H.1 |
 | REG-SM2-SB | `crates/security/secure-boot/src/manifest.rs`（`sm2_verify` 直调 `Ok(true)` match；代码内豁免注释登记，注释中旧 ID "SB-SM2-EXEMPT" 即本行——2026-09-03 复查去行号锚：原 :106 实为注释位，直调在 :109） | Deferred（ADR-033 分层豁免，代码内登记注释） | 执行卡-62.3 §H.1 |
-| REG-GRANT-EDGE | `crates/agents/agent-sdk/src/eipc_grants.rs:EIPC_GRANTS`（svc-iec104→svc-telemetry 边） | Blocked（调查实证：激活即回归——iec104 事件 epoch=本机 now_ms 毒化评估器，evidence/63/vol63-2/investigation-*；前置=epoch 语义对齐；锁测试 wp6323_iec104_telemetry_edge_stays_ungranted 防误接通） | 执行卡-62.3 §H.2 |
+| REG-GRANT-EDGE | `crates/agents/agent-sdk/src/eipc_grants.rs:EIPC_GRANTS`（svc-iec104→svc-telemetry 边） | **Done（蓝图 68 卷 68.2 WP-68.2.3 接通）**：原"激活即回归"根因经 68 卷 F13 复核失准（"适配器 now_ms 冒充 epoch"不成立；真根因 = 每服务 open() floor 各取 boot now_ms 必不相等 + 消费侧评估器单全局 epoch"最后钉扎者赢"，evidence/63/vol63-2/investigation-*:5454,13765,13819）；68.2 消费侧 per-source 归位（SourceEpochTable + 钉扎门 restore 同步删除，t1/t2/t4 行为锁）修根因后前提消灭，边追加于 iec104 config 边后（Z6 序冻结 s1 守），锁测试翻转 wp682_iec104_telemetry_edge_granted_and_pinned | 执行卡-62.3 §H.2 → 蓝图 68 卷 68.2 |
 
 ## C. 蓝图 63 本轮新增
 

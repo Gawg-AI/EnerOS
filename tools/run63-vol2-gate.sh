@@ -6,8 +6,10 @@
 #   bins（build_ingested_service 装配序列单源 + 能力壳收编）——`image raw`
 #   链重建 + qemu-prod 实弹（modbus + iec104 双对端在位）：
 #   - PRODUCT-READY: true；零 PANIC；readiness 29 服务基线；
-#   - 授予边处置（WP-63.2.3）：svc-iec104 telemetry EIPC bound（NOT granted
-#     词形零出现——62.3 §H 登记缺边修除）+ EIPC-GRANT-TABLE edges=35；
+#   - 授予边处置（WP-68.2.3 接通转正，翻转 63.2 调查期回退基线）：
+#     svc-iec104 telemetry EIPC bound ≥1（NOT granted 词形零出现）+
+#     EIPC-GRANT-TABLE edges=35；新判据 SNAPSHOT rejected/OBS-SHADOW
+#     eval reject = 0、agent=OK >0（F13 真根因修复实弹验证）；
 #   - 编排形状收敛（WP-63.2.2）：ACQ/CONTROL-CHAIN/OBS-REPORT 节奏与 62.3
 #     基线一致（±25% 容差）；OTA-DOWNLOAD 四行逐字节一致；
 #     HEARTBEAT-KILL/SUPERVISOR = 0（探针 absent 基线一致）；
@@ -98,13 +100,24 @@ if [ "$n" -eq 0 ]; then echo "[✓] PANIC = 0"; else echo "[✗] PANIC 出现 $n
 RN=$(grep -ac "READINESS: " "$S" 2>/dev/null); RN=${RN:-0}
 if [ "$RN" -eq 29 ]; then echo "[✓] READINESS = 29（服务 ready 基线）"; else echo "[✗] READINESS 行=$RN（基线 29）"; FAIL=1; fi
 
-# 2. 授予边处置（WP-63.2.3 = 登记不修）：缺边 = fail-closed 诚实降级基线
-#    （激活即回归——iec104 epoch 语义毒化评估器，见 eipc_grants.rs 表注释
-#    与 investigation-grant-edge.qemu-serial.log），与 62.3 基线一致。
-grep -aq '\[svc-iec104\] telemetry EIPC NOT granted' "$S" && echo "[✓] svc-iec104 telemetry EIPC NOT granted = 1（诚实降级基线，62.3 §H 登记维持）" || { echo "[✗] NOT granted 词形缺失（基线应含）"; FAIL=1; }
+# 2. 授予边处置（WP-68.2.3 接通转正）：68.2 消费侧 per-source 归位
+#    （F13 真根因修复）后 iec104 事件上行激活；NOT granted 词形必须消失。
 n=$(grep -ac '\[svc-iec104\] telemetry EIPC bound' "$S" 2>/dev/null); n=${n:-0}
-if [ "$n" -eq 0 ]; then echo "[✓] telemetry EIPC bound = 0（边未接通，回归防护）"; else echo "[✗] bound 出现 $n 次——边被误接通（激活即回归，见登记）"; FAIL=1; fi
-grep -aq "EIPC-GRANT-TABLE edges=34" "$S" && echo "[✓] EIPC-GRANT-TABLE edges=34（62.3 基线一致）" || { echo "[✗] EIPC-GRANT-TABLE edges 计数漂移"; FAIL=1; }
+if [ "$n" -ge 1 ]; then echo "[✓] svc-iec104 telemetry EIPC bound = $n（68.2 边接通）"; else echo "[✗] bound 词形缺失（边未接通）"; FAIL=1; fi
+n=$(grep -ac 'telemetry EIPC NOT granted' "$S" 2>/dev/null); n=${n:-0}
+if [ "$n" -eq 0 ]; then echo "[✓] telemetry EIPC NOT granted = 0（缺边词形退场）"; else echo "[✗] NOT granted 出现 $n 次"; FAIL=1; fi
+grep -aq "EIPC-GRANT-TABLE edges=35" "$S" && echo "[✓] EIPC-GRANT-TABLE edges=35（68.2 新边入表）" || { echo "[✗] EIPC-GRANT-TABLE edges 计数漂移（基线 35）"; FAIL=1; }
+# 68.2 新判据（F13 修复实弹）：快照零 epoch 毒化 + 影子零 eval 拒绝 + AI 链活。
+n=$(grep -ac "SNAPSHOT rejected: SourceEpochMismatch" "$S" 2>/dev/null); n=${n:-0}
+if [ "$n" -eq 0 ]; then echo "[✓] SNAPSHOT rejected: SourceEpochMismatch = 0（毒化清零）"; else echo "[✗] SourceEpochMismatch 快照拒绝 $n 次"; FAIL=1; fi
+n=$(grep -ac "OBS-SHADOW eval reject" "$S" 2>/dev/null); n=${n:-0}
+if [ "$n" -eq 0 ]; then echo "[✓] OBS-SHADOW eval reject = 0"; else echo "[✗] OBS-SHADOW eval reject 出现 $n 次"; FAIL=1; fi
+AGOK=$(grep -ac "agent=OK" "$S" 2>/dev/null); AGOK=${AGOK:-0}
+if [ "$AGOK" -gt 0 ]; then echo "[✓] agent=OK 行 = $AGOK（AI 链复活，对照调查窗 59→0）"; else echo "[✗] agent=OK 缺席（AI 链未复活）"; FAIL=1; fi
+# iec104 事件上行实弹（68.2 新链路）。
+IEC_OBS=$(grep -ac '\[svc-iec104\] OBS-ROUND sent=' "$S" 2>/dev/null); IEC_OBS=${IEC_OBS:-0}
+IEC_OK=$(grep -ac '\[svc-iec104\] OBS-ROUND sent=[1-9]' "$S" 2>/dev/null); IEC_OK=${IEC_OK:-0}
+if [ "$IEC_OK" -gt 0 ]; then echo "[✓] svc-iec104 OBS-ROUND sent>0 行 = $IEC_OK（上行实弹；总行 $IEC_OBS）"; else echo "[✗] svc-iec104 OBS-ROUND sent>0 缺失（上行未通，总行 $IEC_OBS）"; FAIL=1; fi
 
 # 3. 装配收敛回归（WP-63.2.4）：modbus 7 点值基线 + OBS-ROUND + iec104 采集。
 python3 - "$S" <<'EOF'

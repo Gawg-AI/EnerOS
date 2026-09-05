@@ -9,8 +9,8 @@
 #   - 冻结词形存在性：PROTO-EXEC status=0x 行（drv_call 重写后）、
 #     OBS-REPORT enqueue/flush rejected 行（obs_wire 解析器收编后）、
 #     CONTROL-CHAIN: round= + dispatch=Committed、ACQ-ROUND、AUDIT-CHAIN、
-#     OTA-DOWNLOAD、STORAGE-PERSIST、telemetry EIPC bound/NOT-granted 两行
-#     （bind_telemetry 收编后词形不变）；
+#     OTA-DOWNLOAD、STORAGE-PERSIST、telemetry EIPC bound（NOT granted
+#     词形 68.2 起退场——iec104 边接通，run63-vol2-gate 翻转同律）；
 #   - 确定性行计数对照 evidence/63/vol63-1 基线：PROTOCOL-CONFIG 装载行
 #     逐字节一致；POINTS-LOADED **唯一登记变更 = ingest bin 二次 fetch
 #     删除 → modbus-config 每轮 2→1 行**（其余协议与基线一致）；
@@ -85,8 +85,8 @@ for pat in "PRODUCT-READY: true" \
            "AUDIT-CHAIN" \
            "OTA-DOWNLOAD: OK" \
            "STORAGE-PERSIST: OK" \
-           "telemetry EIPC bound (svc-telemetry)" \
-           "telemetry EIPC NOT granted"; do
+           "telemetry EIPC bound (svc-telemetry)"; do
+  # 68.2 起无 NOT granted 词形（iec104→telemetry 边接通，缺边词形退场）。
   if grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; FAIL=1; fi
 done
 # PROTO-EXEC 状态字节词形（status_handled 收编后观测行不变；0x04=能力壳

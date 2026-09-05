@@ -43,7 +43,8 @@ pub struct ObsShadow {
     sink: InMemorySink,
     /// 隔离区（未注册/非法事件存档；控制 evaluator 零消费）。
     quarantine: QuarantineStore,
-    /// 影子评估器（与生产同配置的独立实例；epoch 经 restore 对齐钉扎值）。
+    /// 影子评估器（与生产同配置的独立实例；68.2 起 per-source epoch
+    /// 自管——与生产评估器同律，无钉扎同步）。
     shadow_evaluator: TelemetryTrustEvaluator,
     // —— 计数（可观测；不静默）——
     /// 影子接受事件数。
@@ -56,11 +57,15 @@ pub struct ObsShadow {
     pub shadow_match: u64,
     /// 影子 vs 生产 verdict 分歧次数（不静默，串口行）。
     pub shadow_mismatch: u64,
+    /// 部分批跳过数（批内未含全部必需点，68.2 起不评估不产拒绝——
+    /// 可观测不静默）。
+    pub shadow_uncovered: u64,
     /// 最近一次影子评估是否通过。
     last_shadow_ok: Option<bool>,
     /// 最近一次影子评估的逐点值（与生产 TrustedTelemetry.samples 对照）。
     last_shadow_values: Option<BTreeMap<u32, f64>>,
-    /// 最近钉扎 (source, epoch)（生产评估器同步源）。
+    /// 最近钉扎 (source, epoch)（首钉/升级观测面；68.2 起评估器
+    /// per-source 自管，无生产同步消费——诊断/测试读面）。
     last_pinned: Option<(u32, u64)>,
 }
 
@@ -82,6 +87,7 @@ impl ObsShadow {
             quarantined: 0,
             shadow_match: 0,
             shadow_mismatch: 0,
+            shadow_uncovered: 0,
             last_shadow_ok: None,
             last_shadow_values: None,
             last_pinned: None,
@@ -149,13 +155,13 @@ impl ObsShadow {
                 self.watermarks.advance(&event);
             }
             // 到此域 = {==, >}（回退已被 check_epoch_floor 门拒）——
-            // "新 epoch" = 不等；restore 触发是控制流非判据算式。
+            // "新 epoch" = 不等。蓝图 68.2（F13）：影子评估器 per-source
+            // epoch 自管（与生产评估器同改同律）——原
+            // `restore(event.source_epoch, 0, 清态)` 钉扎同步删除（"最后
+            // 钉扎者赢"毒化机制本体）；epoch 前跳（adapter 重启）由评估器
+            // max 吸收，序号基线随 (source, epoch) 空间自动失效。
             if first_pin || event.source_epoch != expected {
-                // 首钉 / 新 epoch（adapter 重启）：影子评估器 epoch 对齐
-                // （restore = 生产评估器同步语义，epoch 变更即新序号空间）。
                 self.last_pinned = Some((event.source_id, event.source_epoch));
-                self.shadow_evaluator
-                    .restore(event.source_epoch, 0, BTreeMap::new());
             }
             // sink 复核（event_id 去重 + 同源 sequence 单调；真 watermark
             // 语义与生产切换共用同一实现——ingestion-core 单源）。
@@ -170,18 +176,25 @@ impl ObsShadow {
                 batch.push(sample);
             }
         }
-        // 影子评估（与生产同配置；结论只存对照面，零下游）。
+        // 影子评估（与生产同配置；结论只存对照面，零下游）。68.2：仅当
+        // 批内已含全部必需点才评估——多源上行后单批只含单源点位，对全量
+        // 覆盖面评估结构性 MissingPoints（QEMU 窗实弹 11 次，全为
+        // MissingPoints、零 epoch 类），无对照意义 → 跳过并计数（不静默）。
         if !batch.is_empty() {
-            match self.shadow_evaluator.evaluate(&batch, now_ms) {
-                Ok(t) => {
-                    self.last_shadow_ok = Some(true);
-                    self.last_shadow_values = Some(t.samples.clone());
+            if self.shadow_evaluator.covers_coverage(&batch) {
+                match self.shadow_evaluator.evaluate(&batch, now_ms) {
+                    Ok(t) => {
+                        self.last_shadow_ok = Some(true);
+                        self.last_shadow_values = Some(t.samples.clone());
+                    }
+                    Err(e) => {
+                        self.last_shadow_ok = Some(false);
+                        self.last_shadow_values = None;
+                        eneros_runtime::println!("[svc-telemetry] OBS-SHADOW eval reject: {e:?}");
+                    }
                 }
-                Err(e) => {
-                    self.last_shadow_ok = Some(false);
-                    self.last_shadow_values = None;
-                    eneros_runtime::println!("[svc-telemetry] OBS-SHADOW eval reject: {e:?}");
-                }
+            } else {
+                self.shadow_uncovered += 1;
             }
         }
         converted.extend(batch);
@@ -257,8 +270,8 @@ impl ObsShadow {
         self.last_shadow_ok
     }
 
-    /// 最近钉扎的 (source, epoch)（供生产评估器 epoch 同步——观测身份
-    /// 与 registry 分配同源；None = 尚无 OBS 帧）。
+    /// 最近钉扎的 (source, epoch)（68.2 起为纯观测面——评估器 per-source
+    /// 自管后无生产同步消费；None = 尚无 OBS 帧）。
     pub fn last_pinned(&self) -> Option<(u32, u64)> {
         self.last_pinned
     }

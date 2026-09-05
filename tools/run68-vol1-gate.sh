@@ -82,8 +82,8 @@ for pat in "PRODUCT-READY: true" \
            "AUDIT-CHAIN" \
            "OTA-DOWNLOAD: OK" \
            "STORAGE-PERSIST: OK" \
-           "telemetry EIPC bound (svc-telemetry)" \
-           "telemetry EIPC NOT granted"; do
+           "telemetry EIPC bound (svc-telemetry)"; do
+  # 68.2 起无 NOT granted 词形（iec104→telemetry 边接通，缺边词形退场）。
   if grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; FAIL=1; fi
 done
 if grep -qE "PROTO-EXEC svc-(modbus-tcp|mqtt|iec104) status=0x04" "$S"; then

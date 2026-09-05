@@ -1,0 +1,76 @@
+{"t": 1788617727.5624728, "kind": "LISTEN", "port": 2404}
+{"t": 1788617739.5206478, "kind": "CONNECT", "peer": "('127.0.0.1', 43912)", "session": 0}
+{"t": 1788617739.5444787, "kind": "STARTDT_CON", "session": 0}
+{"t": 1788617744.5931668, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1788617744.5934346, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1788617744.6351862, "kind": "S_FRAME", "rsn": 1}
+{"t": 1788617744.6755183, "kind": "S_FRAME", "rsn": 2}
+{"t": 1788617744.7158678, "kind": "S_FRAME", "rsn": 3}
+{"t": 1788617744.7578135, "kind": "S_FRAME", "rsn": 4}
+{"t": 1788617744.7985663, "kind": "S_FRAME", "rsn": 5}
+{"t": 1788617744.839163, "kind": "S_FRAME", "rsn": 6}
+{"t": 1788617744.8795857, "kind": "S_FRAME", "rsn": 7}
+{"t": 1788617744.9202108, "kind": "S_FRAME", "rsn": 8}
+{"t": 1788617744.9606426, "kind": "S_FRAME", "rsn": 9}
+{"t": 1788617745.0010002, "kind": "S_FRAME", "rsn": 10}
+{"t": 1788617755.7301378, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1788617755.7304146, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1788617759.6127458, "kind": "S_FRAME", "rsn": 11}
+{"t": 1788617762.6157575, "kind": "S_FRAME", "rsn": 12}
+{"t": 1788617766.216561, "kind": "S_FRAME", "rsn": 13}
+{"t": 1788617770.4156015, "kind": "S_FRAME", "rsn": 14}
+{"t": 1788617770.415744, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1788617770.4158847, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1788617774.1072052, "kind": "S_FRAME", "rsn": 15}
+{"t": 1788617777.41328, "kind": "S_FRAME", "rsn": 16}
+{"t": 1788617781.2169905, "kind": "S_FRAME", "rsn": 17}
+{"t": 1788617784.4159832, "kind": "S_FRAME", "rsn": 18}
+{"t": 1788617784.4161158, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1788617784.4162874, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1788617787.9138372, "kind": "S_FRAME", "rsn": 19}
+{"t": 1788617790.6174533, "kind": "S_FRAME", "rsn": 20}
+{"t": 1788617793.7405164, "kind": "S_FRAME", "rsn": 21}
+{"t": 1788617796.6147437, "kind": "S_FRAME", "rsn": 22}
+{"t": 1788617796.6148927, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1788617796.6150296, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1788617800.6134617, "kind": "S_FRAME", "rsn": 23}
+{"t": 1788617804.5134025, "kind": "S_FRAME", "rsn": 24}
+{"t": 1788617808.419642, "kind": "S_FRAME", "rsn": 25}
+{"t": 1788617811.7194417, "kind": "S_FRAME", "rsn": 26}
+{"t": 1788617811.7195837, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1788617811.7197263, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1788617815.10677, "kind": "S_FRAME", "rsn": 27}
+{"t": 1788617818.4197288, "kind": "S_FRAME", "rsn": 28}
+{"t": 1788617822.4155447, "kind": "S_FRAME", "rsn": 29}
+{"t": 1788617825.7441118, "kind": "S_FRAME", "rsn": 30}
+{"t": 1788617828.7101376, "kind": "S_FRAME", "rsn": 31}
+{"t": 1788617832.185571, "kind": "S_FRAME", "rsn": 32}
+{"t": 1788617835.6221461, "kind": "S_FRAME", "rsn": 33}
+{"t": 1788617838.710061, "kind": "S_FRAME", "rsn": 34}
+{"t": 1788617841.7096941, "kind": "S_FRAME", "rsn": 35}
+{"t": 1788617844.7124112, "kind": "S_FRAME", "rsn": 36}
+{"t": 1788617846.7117925, "kind": "S_FRAME", "rsn": 37}
+{"t": 1788617849.5852995, "kind": "S_FRAME", "rsn": 38}
+{"t": 1788617852.5850446, "kind": "S_FRAME", "rsn": 39}
+{"t": 1788617855.717341, "kind": "S_FRAME", "rsn": 40}
+{"t": 1788617859.3850017, "kind": "S_FRAME", "rsn": 41}
+{"t": 1788617862.7161534, "kind": "S_FRAME", "rsn": 42}
+{"t": 1788617865.5848458, "kind": "S_FRAME", "rsn": 43}
+{"t": 1788617868.7190883, "kind": "S_FRAME", "rsn": 44}
+{"t": 1788617871.3847244, "kind": "S_FRAME", "rsn": 45}
+{"t": 1788617874.684524, "kind": "S_FRAME", "rsn": 46}
+{"t": 1788617877.3847265, "kind": "S_FRAME", "rsn": 47}
+{"t": 1788617880.7175202, "kind": "S_FRAME", "rsn": 48}
+{"t": 1788617882.7148726, "kind": "S_FRAME", "rsn": 49}
+{"t": 1788617885.5846405, "kind": "S_FRAME", "rsn": 50}
+{"t": 1788617888.584271, "kind": "S_FRAME", "rsn": 51}
+{"t": 1788617891.7195559, "kind": "S_FRAME", "rsn": 52}
+{"t": 1788617894.7226002, "kind": "S_FRAME", "rsn": 53}
+{"t": 1788617897.5826676, "kind": "S_FRAME", "rsn": 54}
+{"t": 1788617900.5828273, "kind": "S_FRAME", "rsn": 55}
+{"t": 1788617903.583057, "kind": "S_FRAME", "rsn": 56}
+{"t": 1788617906.7162247, "kind": "S_FRAME", "rsn": 57}
+{"t": 1788617909.3824778, "kind": "S_FRAME", "rsn": 58}
+{"t": 1788617912.424772, "kind": "S_FRAME", "rsn": 59}
+{"t": 1788617915.4017067, "kind": "S_FRAME", "rsn": 60}
+{"t": 1788617929.60181, "kind": "EOF", "session": 0}

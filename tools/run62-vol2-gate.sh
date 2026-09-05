@@ -126,10 +126,10 @@ for bad in "REGISTRY-MISSING" "CONTRACT-VIEW-MISSING" "CATALOG-MISSING" "CHAIN-K
   n=$(grep -ac "$bad" "$S" 2>/dev/null); n=${n:-0}
   if [ "$n" -eq 0 ]; then echo "[✓] $bad = 0"; else echo "[✗] $bad 出现 $n 次"; FAIL=1; fi
 done
-# iec104 上行授予缺口为预存现状（telemetry EP not granted = 诚实 fail-closed
-# 面，非本卷判据；63 候选登记）。
+# iec104 上行授予边 68.2 起接通（REG-GRANT-EDGE Done）——缺_edges 词形
+# （telemetry EP not granted）此后恒 0，保留计数为历史对照观测。
 NG=$(grep -ac '\[svc-iec104\] telemetry EP not granted' "$S" 2>/dev/null); NG=${NG:-0}
-echo "    [i] svc-iec104 telemetry EP not granted 行=$NG（预存授予缺口，诚实降级面）"
+echo "    [i] svc-iec104 telemetry EP not granted 行=$NG（68.2 接通后应为 0）"
 OBSN=$(grep -ac '\[svc-iec104\] OBS-ROUND' "$S" 2>/dev/null); OBSN=${OBSN:-0}
 echo "    [i] svc-iec104 OBS-ROUND 行=$OBSN（上行面）"
 grep -a '\[svc-iec104\] OBS-SOURCE' "$S" | head -2

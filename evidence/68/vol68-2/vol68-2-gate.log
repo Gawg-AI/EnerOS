@@ -1,0 +1,62 @@
+=== 步骤 1：config compile（qemu-prod）===
+=== config compile（qemu-prod）===
+CONFIG-COMPILE: → /home/ahx/文档/EnerOS/product/config-bundle.bin（ai-peer,catalog,cloud-sync,control-write,logging,metrics,ota,points,protocol-dlt645,protocol-gbt27930,protocol-goose,protocol-iec101,protocol-iec103,protocol-iec104,protocol-mms,protocol-modbus-rtu,protocol-modbus-tcp,protocol-mqtt,protocol-sv,security entries，7057B）
+             pubkey → /home/ahx/文档/EnerOS/product/config-bundle-pubkey.hex
+=== 步骤 2：sel4-build-rust 重链接（root-task 内嵌 EIPC_GRANTS
+表——本卷加边必重链接）+ image raw qemu-prod ===
+  ✓ Rust ELF: /home/ahx/文档/EnerOS/target/aarch64-unknown-none/release/eneros-root-task (434584 bytes)
+=== image raw qemu-prod ===
+86e1e80aa52b8efeb86aaab610244fd0307c3cadce7976ff3892e32e005fb0ee  /home/ahx/文档/EnerOS/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw
+=== 步骤 3：窗 A normal（modbus + iec104 双对端）===
+MODBUS47-SLAVE-READY listening=5502
+window normal rc=2（124/2=超时杀=完整窗口）
+=== 窗 normal 出口门判据行扫描 ===
+[✓] PRODUCT-READY: true
+[✓] PANIC = 0
+[✓] READINESS = 29（服务 ready 基线）
+[✓] EIPC-GRANT-TABLE edges=35（68.2 新边入表）
+[✓] svc-iec104 telemetry EIPC bound = 1（边接通）
+[✓] telemetry EIPC NOT granted = 0（缺边词形退场）
+[✓] 双源 OBS-SOURCE epoch 独立分配: modbus=10180 iec104=22996
+[✓] SNAPSHOT rejected: SourceEpochMismatch = 0（毒化清零）
+[✓] OBS-SHADOW eval reject = 0
+[✓] agent=OK 行 = 164（AI 链健康，62/65 基线 59-60）
+[✓] svc-iec104 ACQ 行 ≥4（run63 基线保持，实得 18）
+[✓] svc-iec104 OBS-ROUND sent>0 accepted>0 行 = 16（上行实弹）
+[✓] CONTROL-CHAIN dispatch=Committed
+[✓] modbus 7 点值基线逐点一致（400/50/50/0.6/1/0/0）
+[✓] modbus OBS-ROUND sent=7 accepted=7
+[✓] ACQ-ROUND vs 65 基线一致（基线=35 现卷=29，±25%）
+[✓] SUPERVISOR = 0
+[✓] HEARTBEAT-KILL = 0
+=== 步骤 4：窗 B restart（强杀 QEMU 后全新 boot——双源重新 open()）===
+MODBUS47-SLAVE-READY listening=5502
+window restart rc=2（124/2=超时杀=完整窗口）
+=== 窗 restart 出口门判据行扫描 ===
+[✓] PRODUCT-READY: true
+[✓] PANIC = 0
+[✓] READINESS = 29（服务 ready 基线）
+[✓] EIPC-GRANT-TABLE edges=35（68.2 新边入表）
+[✓] svc-iec104 telemetry EIPC bound = 1（边接通）
+[✓] telemetry EIPC NOT granted = 0（缺边词形退场）
+[✓] 双源 OBS-SOURCE epoch 独立分配: modbus=10306 iec104=22289
+[✓] SNAPSHOT rejected: SourceEpochMismatch = 0（毒化清零）
+[✓] OBS-SHADOW eval reject = 0
+[✓] agent=OK 行 = 153（AI 链健康，62/65 基线 59-60）
+[✓] svc-iec104 ACQ 行 ≥4（run63 基线保持，实得 18）
+[✓] svc-iec104 OBS-ROUND sent>0 accepted>0 行 = 16（上行实弹）
+[✓] CONTROL-CHAIN dispatch=Committed
+[✓] modbus 7 点值基线逐点一致（400/50/50/0.6/1/0/0）
+[✓] modbus OBS-ROUND sent=7 accepted=7
+[✓] ACQ-ROUND vs 65 基线一致（基线=35 现卷=27，±25%）
+[✓] CONTROL-CHAIN 窗间节奏一致（A=170 B=158，±25% 容差）
+[✓] OBS-REPORT 窗间节奏一致（A=54 B=52，±25% 容差）
+[✓] SUPERVISOR = 0
+[✓] HEARTBEAT-KILL = 0
+=== 窗间对照：重启漂移如实登记（ADR-0047 缺口维持）===
+[i] 窗 A epoch 集: {'modbus-tcp': [10180], 'iec104': [22996]}
+[i] 窗 B epoch 集: {'modbus-tcp': [10306], 'iec104': [22289]}
+[i] MemEpochStore 非持久：全系统重启两侧（生产/消费）同步重置，漂移可见但不毒化（判据 5 已锁零）
+=== 汇总 ===
+VOL68.2-GATE: PASS
+GATE_EXIT=0

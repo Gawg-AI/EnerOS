@@ -44,15 +44,21 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // 46（WP-46.3 配置驱动装配）：协议服务经 svc-config 取协议配置
     // （GET_ENTRY "protocol-<proto>"）——消灭源码 peer 硬编码。
     ("svc-iec104", "svc-config"),
-    // 63.2 WP-63.2.3 授予边调查结论（62.3 §H 在册项——**不修，登记**）：
-    // svc-iec104→svc-telemetry 边曾试修（本表加行使 iec104 事件上行），
-    // QEMU 实弹（evidence/63/vol63-2/investigation-grant-edge.*）证明边
-    // 本体可承载但**激活即回归**：iec104 适配器事件 epoch 用本机
-    // now_ms（≈10666）而非 open() 分配的连接 epoch，入 telemetry 后
-    // SourceEpochMismatch 持续毒化快照/评估器 → AI 链 agent=OK 59→0、
-    // PLAN-COMPILED/Committed 全失。接线前置 = iec104 事件 epoch 语义
-    // 对齐（61/62 深模块域，独立卷裁决）——缺边 = fail-closed 诚实降级
-    // 基线，锁测试 wp6323_iec104_telemetry_edge_stays_ungranted。
+    // 68.2（WP-68.2.3）：iec104 事件上行边接通（62.3 §H 在册项转正）。
+    // 注释归真（68 卷事实基线 F13，2026-09-05）：63.2 试修即回退时判为
+    // "iec104 适配器拿本机 now_ms 冒充 epoch"——复核失准：iec104 adapter
+    // 无任何 epoch 代码，modbus/iec104 epoch 都是 open_source 正常分配
+    // （investigation 实测 10666/23384）。真根因 = 每服务 open() 的
+    // floor 各自取 boot 单调时刻（必不相等，ingestion_stage.rs `epoch_
+    // floor = now_ms()`）+ 消费侧评估器单一全局 epoch（最后钉扎者赢）
+    // → iec104 后开即 modbus（唯一控制合格源）样本全拒
+    // SourceEpochMismatch，AI 链 agent=OK 59→0（evidence/63/vol63-2/
+    // investigation-grant-edge.qemu-serial.log:5454,13765,13819）。
+    // 68.2 消费侧 per-source 归位（trusted.rs SourceEpochTable + 钉扎门
+    // restore 同步删除，t1/t2/t4 行为锁）修根因后"激活即回归"前提消灭；
+    // 本边**追加于 iec104 config 边之后**（槽位冻结：
+    // s1_protocol_clients_config_slots_frozen 守序）。
+    ("svc-iec104", "svc-telemetry"),
     ("svc-mqtt", "svc-config"),
     ("svc-mms", "svc-config"),
     ("svc-goose", "svc-config"),
@@ -351,26 +357,35 @@ mod tests {
         );
     }
 
-    /// 63.2 WP-63.2.3 授予边调查锁：svc-iec104→svc-telemetry **缺边维持**
-    /// （62.3 §H 登记项处置=登记不修——QEMU 实弹证明激活即回归：iec104
-    /// 事件 epoch 语义（本机 now_ms）与 telemetry 评估器冲突，详见
-    /// EIPC_GRANTS 表注释与 evidence/63/vol63-2/investigation-*）。基线
-    /// 锁：iec104 仅 svc-config 一条边，telemetry 边必须解析 None。
+    /// 68.2 WP-68.2.3 授予边接通锁（翻转 63.2 的 wp6323 锁）：svc-iec104→
+    /// svc-telemetry 边在位且钉扎。历史语义（保留防反复）：62.3 §H
+    /// "登记不修"的前提 = 消费侧单全局 epoch 根因未修，激活即回归（AI 链
+    /// agent=OK 59→0，investigation 实证）；68 卷 F13 根因重定位 + 68.2
+    /// 消费侧 per-source 归位（SourceEpochTable，t1/t2/t4 行为锁）后前提
+    /// 消灭，本边转正。追加序（config 边后）由 s1 冻结锁守。
     #[test]
-    fn wp6323_iec104_telemetry_edge_stays_ungranted() {
+    fn wp682_iec104_telemetry_edge_granted_and_pinned() {
         assert_eq!(
             eipc_resolve("svc-iec104", "svc-config"),
             Some((0, EIPC_EP_BASE_SLOT)),
-            "既有 config 边槽位冻结"
+            "既有 config 边槽位冻结（新边不得挤位）"
         );
-        assert_eq!(
-            eipc_resolve("svc-iec104", "svc-telemetry"),
-            None,
-            "授予边维持缺省（fail-closed 基线）——接线前置=iec104 epoch \
-             语义对齐，见表注释；勿在无前置修复时加行使 AI 链回归"
-        );
+        let (bit, slot) = eipc_resolve("svc-iec104", "svc-telemetry").expect("68.2 授予边在位");
+        assert_eq!(bit, 1, "iec104 第 2 条边 = telemetry（追加于 config 后）");
+        assert_eq!(slot, EIPC_EP_BASE_SLOT + 1);
         let (mask, grants) = eipc_grants("svc-iec104");
-        assert_eq!(mask, 0b1, "iec104 仅一条授予边");
-        assert_eq!(grants, alloc::vec![(EIPC_EP_BASE_SLOT, "svc-config")],);
+        assert_eq!(mask, 0b11, "iec104 恰两条授予边");
+        assert_eq!(
+            grants,
+            alloc::vec![
+                (EIPC_EP_BASE_SLOT, "svc-config"),
+                (EIPC_EP_BASE_SLOT + 1, "svc-telemetry"),
+            ],
+        );
+        // 掩码判定便捷面同源一致。
+        assert_eq!(
+            eipc_granted_slot("svc-iec104", mask, "svc-telemetry"),
+            Some(slot)
+        );
     }
 }
