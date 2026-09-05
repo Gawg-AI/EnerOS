@@ -17,7 +17,7 @@
 #     （2026-09-06）：原 ≤2s 预算为 host 口径误设——TCG virtio RMW
 #     ~5-15ms/命令、checkpoint ~1.3k 命令/次 = 秒级物理成本，逐批
 #     checkpoint 饿死决策链（run3 实弹 agent=OK 0）→ checkpoint 合并窗
-#     128 批（CHECKPOINT_EVERY_BATCHES，掉电丢尾 ≤128 批诚实登记）；
+#     8 批（CHECKPOINT_EVERY_BATCHES，掉电丢尾 ≤8 批诚实登记）；
 #     ACK 路径轻批实测 0 命令（host c5）；异步化降本归
 #     REG-TSDB-CHECKPOINT-ASYNC（后续卷）；
 #   - TELH 判据改道（执行卡 §D 订正，2026-09-06）：MQTT broker 在场时

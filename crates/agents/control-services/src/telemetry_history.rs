@@ -94,16 +94,20 @@ pub struct TsdbHistorySink {
 }
 
 impl TelemetryHistorySink for TsdbHistorySink {
-    /// 批次边界"后方 ACK"：写库成功后立即 [`TimeSeriesDB::checkpoint`]
-    /// （compact+index.bin+sync）——ACK 到达服务侧时数据已抗 kill；
-    /// checkpoint 失败按批失败如实上抛（DROPPED 行），不伪成功。
+    /// 批次边界"后方 ACK"：写入 TSDB 缓冲/活动 chunk 即受理（ACK 语义，
+    /// 磁盘持久点 = 最近一次 checkpoint——合并窗见
+    /// [`CHECKPOINT_EVERY_BATCHES`]）。失败如实上抛（DROPPED 行）不伪
+    /// 成功；窗满批 checkpoint 的结果**不得掩盖本批写失败**（68.3 复查
+    /// 回归锁 c6）。
     fn write_batch(&mut self, batch: &[HistoryRecord]) -> Result<(), ()> {
         let pts: Vec<TimeSeriesPoint> = batch.iter().map(map_record).collect();
         let mut db = self.db.borrow_mut();
         let r = db.write_batch(&pts);
         self.batches_since_checkpoint += 1;
         // checkpoint 合并窗（见 CHECKPOINT_EVERY_BATCHES 文档）：仅窗满
-        // 批次做磁盘 checkpoint；失败按批失败如实上抛（DROPPED 行）。
+        // 批次做磁盘 checkpoint。`r.and(ck)`：两步都成功才成功；本批写
+        // 失败优先于 checkpoint 结果上抛（68.3 前行为 = and_then 短路
+        // 同语义——窗满不得把丢批谎报成 COMMIT）。
         let r = if self.batches_since_checkpoint >= CHECKPOINT_EVERY_BATCHES {
             self.batches_since_checkpoint = 0;
             let t0 = eneros_drv_svc::now_ms();
@@ -117,7 +121,7 @@ impl TelemetryHistorySink for TsdbHistorySink {
                 dur,
                 batch.len()
             );
-            ck
+            r.and(ck)
         } else {
             r
         };
@@ -337,11 +341,14 @@ mod spec_c_chain_tests {
     /// 场景（驱动实例可弃、介质长存——tsdb virtio 掉电测试同法）。
     /// Clone（SPEC-B/C）：EipcBlockDevice 单件 clone 需 C: Clone。
     /// `cmds`：块命令往返计数器（共享；WP-68.3.3 性能闸门观测口）。
+    /// `fail_next_write`：单发介质写失败 latch（共享；68.3 复查回归锁——
+    /// 布防后下一个写命令失败一次即自解除，后续写正常）。
     #[derive(Clone)]
     struct FakeStorage {
         disk: alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<u8>>>,
         region_bytes: u64,
         cmds: alloc::rc::Rc<core::cell::Cell<u64>>,
+        fail_next_write: alloc::rc::Rc<core::cell::Cell<bool>>,
     }
 
     impl FakeStorage {
@@ -352,6 +359,7 @@ mod spec_c_chain_tests {
                 )),
                 region_bytes,
                 cmds: alloc::rc::Rc::new(core::cell::Cell::new(0)),
+                fail_next_write: alloc::rc::Rc::new(core::cell::Cell::new(false)),
             }
         }
         fn take_handle(&self) -> Self {
@@ -359,7 +367,12 @@ mod spec_c_chain_tests {
                 disk: alloc::rc::Rc::clone(&self.disk),
                 region_bytes: self.region_bytes,
                 cmds: alloc::rc::Rc::clone(&self.cmds),
+                fail_next_write: alloc::rc::Rc::clone(&self.fail_next_write),
             }
+        }
+        /// 布防单发写失败（下一次 do_write 失败一次后自动解除）。
+        fn arm_one_write_failure(&self) {
+            self.fail_next_write.set(true);
         }
         fn cmd_count(&self) -> u64 {
             self.cmds.get()
@@ -374,6 +387,10 @@ mod spec_c_chain_tests {
             Ok(())
         }
         fn do_write(&self, off: u64, data: &[u8]) -> Result<(), ()> {
+            if self.fail_next_write.get() {
+                self.fail_next_write.set(false);
+                return Err(());
+            }
             let end = (off as usize).checked_add(data.len()).ok_or(())?;
             if end > self.disk.borrow().len() {
                 return Err(());
@@ -635,7 +652,7 @@ mod spec_c_chain_tests {
     /// ~1.2 万次往返/操作（E-DEF-01 实测 2k-13k 上沿，8× 扩容反推）；
     /// 68.3 后 host 实测（2026-09-06）：checkpoint 批 1264、轻批两位数。
     /// TCG 目标侧再叠 ~5-15ms/命令物理成本 → 逐批 checkpoint 饿死决策
-    /// 链（run3 实弹），故 checkpoint 合并窗 = 128 批
+    /// 链（run3 实弹），故 checkpoint 合并窗 = 8 批
     /// （CHECKPOINT_EVERY_BATCHES，掉电丢尾语义见该常量文档）。
     #[test]
     fn c5_checkpoint_command_budget() {
@@ -672,5 +689,37 @@ mod spec_c_chain_tests {
             "合并窗批均块命令 {per_batch} > 250（性能面回归：分片回缩/重挂载复活）"
         );
         assert!(reader.index_len() > 0, "索引必须有条目（观测口自检）");
+    }
+
+    /// 68.3 复查回归锁（2026-09-06）：合并窗满批的**本批写失败**必须如实
+    /// 上抛——窗满分支执行 checkpoint，但 checkpoint 结果不得掩盖
+    /// `write_batch` 的 Err（68.3 前行为 = `and_then` 短路、写错误优先；
+    /// 掩盖即"后方 ACK"契约破损：丢批谎报 TSDB-DISK-COMMIT、无
+    /// TSDB-DISK-DROPPED 观测行）。
+    #[test]
+    fn c6_window_boundary_write_failure_not_masked() {
+        let storage = FakeStorage::new(REGION_BLOCKS_512 * 512);
+        let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
+        let (mut chain, _reader) = open_disk_history(io, 0, REGION_BLOCKS_512).expect("open");
+        // 批 1..=7（窗内轻批）：入 TSDB 内存缓冲，不触盘。
+        for w in 0..(CHECKPOINT_EVERY_BATCHES - 1) {
+            let base = 10_000 + w * 1_000;
+            let b: Vec<HistoryRecord> = (0..2u64)
+                .map(|i| rec(base + i * 10, 7, 3, (w * 2 + i) as f64, 0))
+                .collect();
+            assert!(chain.write_batch(&b).is_ok(), "轻批 #{w} 必须 OK");
+        }
+        // 批 8（窗满批）：点数 > TARGET_TSDB_CHUNK_POINTS 强制 chunk
+        // flush 触盘；布防单发介质写失败 = 本批 write_batch 必 Err，
+        // 而**后续** checkpoint（latch 已自解除）应 Ok。
+        storage.arm_one_write_failure();
+        let big: Vec<HistoryRecord> = (0..(TARGET_TSDB_CHUNK_POINTS as u64 + 1))
+            .map(|i| rec(99_000 + i * 10, 7, 3, i as f64, 0))
+            .collect();
+        let r = chain.write_batch(&big);
+        assert!(
+            r.is_err(),
+            "窗满批本批写失败必须上抛（不得被 checkpoint 结果掩盖）"
+        );
     }
 }

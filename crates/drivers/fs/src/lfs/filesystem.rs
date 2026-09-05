@@ -17,9 +17,12 @@
 //!
 //! 泄漏有界性（内存审计，执行卡 WP-68.3.0）：每个 Lfs 实例泄漏
 //! sizeof(Allocation)+sizeof(BlockDeviceStorage)（≈8.5KB，cache 4096×2
-//! 为主）；服务生命周期内实例数=1（构造一次常驻），host 测试按进程回收。
-//! littlefs2 0.8 无 unmount/Drop API（旧 mount_and_then 闭包结束同样
-//! 不 unmount）——耐久语义 = 逐文件 close sync，持久形态逐操作等价。
+//! 为主）；服务生命周期内常驻实例=1（构造一次）；唯一例外 =
+//! mount-or-format 双 face（如 telemetry_history open_disk_history）——
+//! mount 探测失败的首次泄漏一对（≈8.5KB，每卷一次性，之后恒 mount 成功），
+//! host 测试按进程回收。littlefs2 0.8 无 unmount/Drop API（旧
+//! mount_and_then 闭包结束同样不 unmount）——耐久语义 = 逐文件 close
+//! sync，持久形态逐操作等价。
 //!
 //! Read-only trait methods (`stat`, `readdir`, `df`) take `&self`;
 //! littlefs2 操作全部取 `&Filesystem`，无需内部可变性。

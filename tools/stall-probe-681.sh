@@ -15,7 +15,9 @@ EVROOT="$ROOT/evidence/68/vol68-1/stall-probe"
 mkdir -p "$EVROOT"
 
 IMG="$ROOT/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
-[ -f "$IMG" ] || { echo "image missing（先跑 gate 步骤 2 或 sel4-build-rust.sh）"; exit 3; }
+# 68.1 §F 教训①：只跑 sel4-build-rust.sh 不算镜像重建——必须含
+# gate_image_raw 的完整链（gate 步骤 2），否则陈旧 raw 对新代码无证明力。
+[ -f "$IMG" ] || { echo "image missing（先跑 tools/run68-vol1-gate.sh 步骤 2：sel4 重链接 + gate_image_raw）"; exit 3; }
 TPL="$ROOT/target/evidence61/template.fd"
 [ -f "$TPL" ] || { echo "vars template missing"; exit 3; }
 
