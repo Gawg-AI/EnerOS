@@ -35,7 +35,8 @@ pub const TEL_PUB_CONT: u8 = 0x3B;
 /// 插件 app outbox）。载荷 = `[TEL_PUB_END]`。
 pub const TEL_PUB_END: u8 = 0x3C;
 
-/// 分片数据容量（drv 帧 PAYLOAD_CAP=64 − 子码 1B；BEGIN 再减 total u16 2B）。
+/// 分片数据容量（本层分片常量 64B − 子码 1B；BEGIN 再减 total u16 2B——
+/// 68.3 起 drv 信封 PAYLOAD_CAP=461，本层刻意不随动）。
 pub const TEL_REQ_DATA_BEGIN_MAX: usize = 64 - 3;
 /// CONT/END 数据容量。
 pub const TEL_REQ_DATA_MAX: usize = 64 - 1;
@@ -174,7 +175,7 @@ mod tests {
         assert!(fragment_telemetry_frame(&[0u8; TEL_FRAME_MAX + 1]).is_err());
     }
 
-    /// 50：容量自洽（单帧不越 PAYLOAD_CAP=64）。
+    /// 50：容量自洽（单帧不越本层分片常量 64B）。
     #[test]
     fn capacity_within_payload_cap() {
         const PAYLOAD_CAP: usize = 64;

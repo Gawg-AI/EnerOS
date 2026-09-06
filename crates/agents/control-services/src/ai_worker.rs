@@ -144,6 +144,12 @@ pub const DEGRADE_LEASE_MAX_USES: u32 = 100_000;
 pub trait DegradeArmSeam {
     /// 武装查询（学习冻结判据消费面）。
     fn degradation_armed(&self) -> bool;
+    /// 68.5 复查修复：当前武装 lease 是否已过有效期（复位/重武装判据；
+    /// 未武装恒 false）。authorize 对过期 lease 返回 Err 且状态不动——
+    /// 若无此判据，武装态在 lease 到期后既不能授权（decide 恒
+    /// Unavailable）也不能重武装（已武装守卫短路），peer 长期失联时
+    /// 决策链永久停供。
+    fn degradation_lease_expired(&self, now_ms: u64) -> bool;
     /// 武装（issue + 验签 arm，fail-closed；成功返回 lease_id 供审计事件）。
     fn arm_for_degrade(
         &mut self,
@@ -159,6 +165,10 @@ pub trait DegradeArmSeam {
 impl DegradeArmSeam for HeuristicBackend {
     fn degradation_armed(&self) -> bool {
         self.degradation.is_some()
+    }
+
+    fn degradation_lease_expired(&self, now_ms: u64) -> bool {
+        matches!(&self.degradation, Some((_, l)) if !l.is_valid_at(now_ms))
     }
 
     fn arm_for_degrade(
@@ -305,13 +315,19 @@ impl DecisionBackend for HeuristicBackend {
     ) -> Result<Vec<u8>, DecisionReject> {
         // WP-5.3（[10] §4.7）：降级 lease 门——武装后每次 decide 逐次授权，
         // 任何失败拒绝决策（fail-closed，不产生未授权 fallback 动作）。
+        // 68.5 复查修复：兜底提案功率钳到 lease 授权上界内（站点
+        // max_power_kw 是可配旋钮，可小于后端常量功率 5.0——不钳制则
+        // 武装期逐次授权恒 "action beyond lease bounds"，兜底全拒断供）；
+        // digest 仍按策略原值计算，签名面不变。
+        let mut proposal_power = self.power_kw;
         if let Some((auth, lease)) = &mut self.degradation {
             let digest = HeuristicBackend::strategy_digest_of(
                 self.charge_soc,
                 self.discharge_soc,
                 self.power_kw,
             );
-            let power = self.power_kw.abs();
+            proposal_power = proposal_power.min(lease.max_abs_power_kw);
+            let power = proposal_power.abs();
             // 复查登记（Phase 5）：能量/爬坡限额以功率绝对值代理——本
             // 后端无动作时长/爬坡形态输入，逐次授权仅能作名义包络校验
             // （超功率拒绝仍是硬门）；真实能量/爬坡语义随 D3 降级运行
@@ -332,9 +348,9 @@ impl DecisionBackend for HeuristicBackend {
             )));
         }
         let power = if soc >= self.discharge_soc {
-            self.power_kw
+            proposal_power
         } else {
-            -self.power_kw
+            -proposal_power
         };
         self.seq = self.seq.saturating_add(1);
         // plan_id 唯一（seq 递增）——dispatch 幂等键派生源，每次真实投递。
@@ -829,5 +845,43 @@ mod tests {
             }
             other => panic!("过期 lease 必须拒兜底，got {other:?}"),
         }
+    }
+
+    /// 68.5 复查修复 t5b（红测先行）：lease 功率上界 < 后端常量功率时，
+    /// 兜底提案须钳到上界内产出（修复前 authorize 恒
+    /// "action beyond lease bounds" → Unavailable 全拒断供）。变异靶：
+    /// decide 去掉 proposal_power 钳制 → 本测红。
+    #[test]
+    fn t5b_fallback_power_clamped_to_lease_bound() {
+        use eneros_control_dispatch::degrade::{DegradationLease, DegradationLevel};
+        let key = b"station-degrade-lease-key-000000001";
+        let factory = HeuristicBackend::new();
+        let lease = DegradationLease::issue(
+            key,
+            [8u8; 16],
+            0,
+            DegradationLevel::SolverFallback,
+            factory.strategy_digest(),
+            eneros_crypto::sm3_hash(b"eneros.svc-ai-worker.degrade-scope.v1"),
+            4.0,
+            4.0,
+            4.0, // 上界 4.0 < 后端常量 5.0
+            100,
+            1_000,
+            2_000,
+            0,
+            0,
+        )
+        .expect("issue");
+        let mut backend = factory;
+        backend.arm_degradation_lease(key, lease).expect("arm");
+        let mut t = trusted();
+        t.state.soc_pct = 0.52; // 出厂带 [0.3, 0.5] 带外 ⇒ 兜底放电提案
+        let w = backend
+            .decide(&t, 1_500)
+            .expect("兜底提案须钳到 lease 上界内产出（修复前恒 Unavailable）");
+        let cand = eneros_decision_contract::CandidatePlan::decode_v1(&w).expect("cand");
+        let power = cand.assignments()[0].power_kw;
+        assert!(power > 0.0 && power <= 4.0, "放电提案须钳到上界内: {power}");
     }
 }

@@ -168,10 +168,24 @@ impl<P: PeerLink> TickAudit<RemoteBrain<HeuristicBackend, P>> for RemoteAudit<'_
                     );
                     log_ai_decision(self.audit, "event:lease-arm-fail", "", now_ms);
                 }
-                SwitchEvent::LeaseRevoked => {
-                    eneros_runtime::println!(
-                        "[svc-ai-worker] LEASE-REVOKED reason=peer-accepted —— 有效应答消费，超时 episode 结束（回 D0）"
-                    );
+                SwitchEvent::LeaseRevoked { reason } => {
+                    match *reason {
+                        "peer-accepted" => {
+                            eneros_runtime::println!(
+                                "[svc-ai-worker] LEASE-REVOKED reason=peer-accepted —— 有效应答消费，超时 episode 结束（回 D0）"
+                            );
+                        }
+                        "lease-expired" => {
+                            eneros_runtime::println!(
+                                "[svc-ai-worker] LEASE-REVOKED reason=lease-expired —— lease 到期复位，episode 自然终止（后续超时裁决重武装）"
+                            );
+                        }
+                        other => {
+                            eneros_runtime::println!(
+                                "[svc-ai-worker] LEASE-REVOKED reason={other}"
+                            );
+                        }
+                    }
                     log_ai_decision(self.audit, "event:lease-revoked", "", now_ms);
                 }
             }
@@ -346,6 +360,16 @@ where
     /// LEARN_RESET 处理单源：回出厂 + **立即回注**（旧 heuristic 路径
     /// 缺回注——下一 tick 注入同值，决策等价；登记 BC-B3）+ 串口词形。
     fn learn_reset(&mut self, resp: &mut Vec<u8>) {
+        // 68.5 复查修复：武装期拒绝复位——回厂改变死区 ⇒ strategy digest
+        // 漂移 ⇒ lease 白名单失配 ⇒ System1 断供（与 apply_learn_thresholds
+        // 冻结同判据同理由；附加裁决 8 防线的注入点补口）。
+        if self.worker.backend_mut().is_degradation_armed() {
+            eneros_runtime::println!(
+                "[svc-ai-worker] LEARN-RESET REJECTED reason=degrade-armed —— 武装期死区冻结（digest 漂移防线），peer 恢复后可复位"
+            );
+            *resp = alloc::vec![learn_wire::AI_LEARN_RESET, 1];
+            return;
+        }
         match self.learn.as_mut() {
             Some(l) => match l.reset() {
                 Ok(()) => {
@@ -913,5 +937,57 @@ mod tests {
         // NoAction（若仍冻结则工厂带 → 0.52 放电 = 红）。
         assert!(handler.handle(&propose_req(0.52), &mut resp, 9_000));
         assert_eq!(resp.first(), Some(&AI_NOACTION), "解冻后学到的带重新生效");
+    }
+
+    /// 68.5 复查修复 t7（红测先行）：武装期 LEARN_RESET 须被拒——回厂
+    /// 改变死区 ⇒ strategy digest 漂移 ⇒ lease 白名单失配 ⇒ System1
+    /// 断供（与 apply_learn_thresholds 冻结同判据；附加裁决 8 防线的
+    /// 注入点补口）。变异靶：learn_reset 去掉武装判据 → 本测红
+    /// （reset 得逞 status=0 + 下一 tick 兜底 Unavailable）。
+    #[test]
+    fn t7_learn_reset_rejected_while_degrade_armed() {
+        struct NullLink;
+        impl PeerLink for NullLink {
+            fn send_request(&mut self, _req_json: &str) -> Result<(), LinkError> {
+                Ok(())
+            }
+        }
+        let cfg = RemoteBrainConfig {
+            timeout_ms: 2_000,
+            unhealthy_after: 3,
+            probe_every: 1,
+            max_power_kw: 10.0,
+            ttl_secs: 60,
+            lease_key: [0x5Bu8; 32],
+            lease_ttl_secs: 3_600,
+        };
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let brain = RemoteBrain::new(HeuristicBackend::new(), NullLink, cfg);
+        let mut worker = AiWorkerService::new(brain, [0x41; 16]);
+        let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            RemoteAudit { audit: &mut audit },
+            Some(learner),
+        );
+        let mut resp = Vec::new();
+
+        // tick1/tick2：超时裁决 → 武装（t6 同款时序；学习照常观测）。
+        assert!(handler.handle(&propose_req(0.425), &mut resp, 1_000));
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 6_000));
+        assert_eq!(resp.first(), Some(&AI_OK));
+        resp.clear();
+        // 武装期 LEARN_RESET：拒绝（status=1），学习态与死区均保持。
+        assert!(handler.handle(&alloc::vec![learn_wire::AI_LEARN_RESET], &mut resp, 6_100));
+        assert_eq!(
+            resp,
+            alloc::vec![learn_wire::AI_LEARN_RESET, 1],
+            "武装期复位须被拒（fail-closed）"
+        );
+        resp.clear();
+        // 齿：复位未得逞 ⇒ digest 未漂移 ⇒ 下一 tick 兜底仍持签产出
+        //（若复位得逞：白名单失配 → Unavailable）。
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 7_000));
+        assert_eq!(resp.first(), Some(&AI_OK), "武装期复位被拒后兜底须照常产出");
     }
 }

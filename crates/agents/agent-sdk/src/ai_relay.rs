@@ -1,8 +1,9 @@
 //! 49（WP-49.2 远程 dual-brain）：svc-ai-worker ↔ svc-mqtt AI 中继线码。
 //!
 //! 单一事实源（schema.rs 纪律同款：两侧常量禁止各自定义漂移）：
-//! - svc-ai-worker → svc-mqtt（drv-svc EXECUTE 载荷子码，PAYLOAD_CAP=64B
-//!   单帧约束 → 请求 JSON 分片组装）；
+//! - svc-ai-worker → svc-mqtt（drv-svc EXECUTE 载荷子码，本层分片常量
+//!   64B/帧——68.3 起 drv 信封 PAYLOAD_CAP=461，本层分块刻意不随动
+//!   （编译期断言锚定）→ 请求 JSON 分片组装）；
 //! - svc-mqtt → svc-ai-worker（ChunkedClient 分块推送，载荷首字节子码）。
 //!
 //! 契约解释权在 intent-contract::peer + control-services::remote_brain；
@@ -25,7 +26,8 @@ pub const AI_PEER_MSG: u8 = 0x10;
 /// 只认字节数——超限即中止组装并计数）。
 pub const AI_REQUEST_MAX: usize = 1024;
 
-/// 分片数据容量（drv 帧 PAYLOAD_CAP=64 − 子码 1B；BEGIN 再减 total u16 2B）。
+/// 分片数据容量（本层分片常量 64B − 子码 1B；BEGIN 再减 total u16 2B——
+/// 68.3 起 drv 信封 PAYLOAD_CAP=461，本层刻意不随动）。
 pub const AI_REQ_DATA_BEGIN_MAX: usize = 64 - 3;
 /// CONT/END 数据容量。
 pub const AI_REQ_DATA_MAX: usize = 64 - 1;
@@ -73,7 +75,8 @@ mod tests {
     /// 49：容量常量自洽（单帧不越 PAYLOAD_CAP）。
     #[test]
     fn frame_capacity_within_payload_cap() {
-        // drv-svc runtime PAYLOAD_CAP=64 同值锚定（编译期断言，防常量漂移）。
+        // 本层分片常量 64B 同值锚定（编译期断言，防常量漂移；68.3 起
+        // drv 信封 PAYLOAD_CAP=461 不在本断言域）。
         const PAYLOAD_CAP: usize = 64;
         const _: () = assert!(1 + 2 + AI_REQ_DATA_BEGIN_MAX <= PAYLOAD_CAP);
         const _: () = assert!(AI_REQ_DATA_MAX < PAYLOAD_CAP);

@@ -360,7 +360,14 @@ impl<D: NetDevice + 'static> TransportHandle for TcpStreamHandle<D> {
     fn close(&mut self) -> Result<(), TransportError> {
         let mut stack = self.stack.borrow_mut();
         let mut tcp = TcpSocket::new(self.id);
-        tcp.close(&mut stack.iface);
+        // 68.5 复查补口（REG-MQTT-BROKER-HANG 同族）：裸 remove 不发任何
+        // 段——FIN/RST 永不出环，对端（slirp）侧连接悬挂占住同 4 元组，
+        // 后续新建连接的 SYN 被按重复丢弃（与 reconnect/tcp_connect 超时
+        // 路径 68.5 根因修复同机制）。abort（RST 语义足够）+ poll 出环
+        // 后再移除。
+        tcp.abort(&mut stack.iface);
+        let now = eneros_time::get_monotonic_ns() / 1_000_000;
+        stack.poll(now);
         stack.iface.sockets.remove(self.id);
         Ok(())
     }

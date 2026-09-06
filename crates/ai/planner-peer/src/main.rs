@@ -143,6 +143,16 @@ fn main() {
     let mut client = connect(&args);
     let mut last_ping = Instant::now();
     loop {
+        // 68.5 复查修复：入站静默看门狗（1.5×keepalive 无任何入站 →
+        // 判死重连——半死 broker 盲区，见 DEAD_SILENCE_MS 注记）。
+        if client.inbound_silent_for(now_ms()) > DEAD_SILENCE_MS {
+            eprintln!(
+                "[planner-peer] RECONNECT reason=inbound-silent (>1.5x keepalive={KEEP_ALIVE_SECS}s)"
+            );
+            client = connect(&args);
+            last_ping = Instant::now();
+            continue;
+        }
         // keepalive 节拍（半窗）。
         if last_ping.elapsed() >= Duration::from_millis(15_000) {
             if let Err(e) = client.ping() {
@@ -163,7 +173,7 @@ fn main() {
                         continue;
                     }
                 };
-                handle_request(
+                if !handle_request(
                     json,
                     &cfg,
                     &mut planner,
@@ -171,7 +181,11 @@ fn main() {
                     &mut seq,
                     &args,
                     &mut client,
-                );
+                ) {
+                    eprintln!("[planner-peer] RECONNECT reason=publish-failed");
+                    client = connect(&args);
+                    last_ping = Instant::now();
+                }
             }
             Ok(None) => {}
             Err(e) => {
@@ -197,14 +211,28 @@ fn connect(args: &Args) -> MqttClient {
 }
 
 fn try_connect(args: &Args) -> Result<MqttClient, mqtt::MqttError> {
-    let mut c = MqttClient::connect(&args.broker, &args.client_id, 30, Duration::from_secs(5))?;
+    let mut c = MqttClient::connect(
+        &args.broker,
+        &args.client_id,
+        KEEP_ALIVE_SECS,
+        Duration::from_secs(5),
+    )?;
     c.subscribe(&args.request_topic, 1)?;
+    // 看门狗起点（CONNACK+SUBACK 已到——从此刻计静默）。
+    c.mark_activity(now_ms());
     println!(
         "[planner-peer] SUBSCRIBED topic={} broker={}",
         args.request_topic, args.broker
     );
     Ok(c)
 }
+
+/// broker keepalive（秒；半窗 15s 打 PINGREQ）。
+const KEEP_ALIVE_SECS: u16 = 30;
+/// 68.5 复查修复：入站静默判死阈值 = 1.5×keepalive——TCP 存活但对端
+/// 永不回包（进程挂死）时 poll 恒 Ok(None)、ping 写恒成功，此前连接
+/// 永不重建（REG-MQTT-BROKER-HANG 的 host 侧镜像盲区）。
+const DEAD_SILENCE_MS: u64 = 45_000;
 
 /// 单请求处理：解析 → 求解 → 组装 → 发布。任何失败 = PLANNER-SKIP +
 /// **不应答**（目标侧超时降级——诚实语义）。
@@ -216,14 +244,16 @@ fn handle_request(
     seq: &mut SeqState,
     args: &Args,
     client: &mut MqttClient,
-) {
+) -> bool {
+    // 返回值 = 链路健康（false = 发布失败，链路可疑须重连；68.5 复查
+    // 修复——PUBACK 永不到达的半死链此前只 skip 不重连）。
     // 不受信输入：schema/域全检在 solve_request 内（求解权威域检）；此处
     // 仅反序列化预检——坏请求不值得一次求解。
     let req: PeerRequest = match serde_json::from_str(json) {
         Ok(r) => r,
         Err(e) => {
             println!("[planner-peer] PLANNER-SKIP reason=parse ({e})");
-            return;
+            return true;
         }
     };
     println!(
@@ -235,7 +265,7 @@ fn handle_request(
             Ok(out) => out,
             Err(e) => {
                 println!("[planner-peer] PLANNER-SKIP reason={}", e.0);
-                return;
+                return true;
             }
         };
     println!(
@@ -255,7 +285,7 @@ fn handle_request(
         Ok(s) => s,
         Err(e) => {
             println!("[planner-peer] PLANNER-SKIP reason=encode ({e})");
-            return;
+            return true;
         }
     };
     // 出站自检：目标侧 parse_and_validate 同链预演（t1 语义的运行时面；
@@ -269,11 +299,11 @@ fn handle_request(
     };
     if let Err(e) = parse_and_validate(&out, &checks) {
         println!("[planner-peer] PLANNER-SKIP reason=self-check ({e:?})");
-        return;
+        return true;
     }
     if let Err(e) = client.publish(&args.response_topic, out.as_bytes(), 1) {
         println!("[planner-peer] PLANNER-SKIP reason=publish ({e})");
-        return;
+        return false; // 发布失败 = 链路可疑（PUBACK 永不到达形态）。
     }
     if let Err(e) = seq.store(&args.state_path) {
         println!("[planner-peer] SEQ-PERSIST-FAIL {e}（重启后 seq 回退将由目标侧拒绝——诚实可见）");
@@ -284,4 +314,5 @@ fn handle_request(
         out.len(),
         resp.reason.starts_with(BACKEND_TAG)
     );
+    true
 }

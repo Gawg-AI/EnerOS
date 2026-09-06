@@ -327,7 +327,11 @@ fn shadow_watermark_blocks_cross_instance_regression() {
     // （钉扎首见值不随升级更新）。
     let f_new_epoch = mk_frame(1, 200.0, Some(epoch + 1));
     let (a, r) = shadow.ingest_frames(2, &f_new_epoch, now_ms, &mut converted, &mut Vec::new());
-    assert_eq!((a, r), (1, 0), "新 epoch 帧接受（影子评估器 restore 同步）");
+    assert_eq!(
+        (a, r),
+        (1, 0),
+        "新 epoch 帧接受（影子评估器 per-source max 吸收——68.2）"
+    );
     let f_replay = mk_frame(50, 300.0, Some(epoch.saturating_sub(1)));
     let (_a, r) = shadow.ingest_frames(2, &f_replay, now_ms, &mut converted, &mut Vec::new());
     assert_eq!(r, 1, "旧 epoch 重放被拦");

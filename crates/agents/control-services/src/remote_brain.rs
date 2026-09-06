@@ -39,8 +39,10 @@ pub enum SwitchEvent {
     /// 68.5：lease 武装失败（issue/验签拒绝——fail-closed；System1 后续
     /// Unavailable，装配面打 LEASE-ARM-FAIL 词形）。
     LeaseArmFailed,
-    /// 68.5：有效应答消费 ⇒ 超时 episode 结束，lease 撤销（D0 回归）。
-    LeaseRevoked,
+    /// 68.5：episode 结束，lease 撤销（D0 回归）。reason：`peer-accepted`
+    /// = 有效应答消费；`lease-expired` = lease 到期复位（68.5 复查修复
+    /// ——复位后随本次超时裁决重武装，见 [`RemoteBrain::arm_lease_wiring`]）。
+    LeaseRevoked { reason: &'static str },
 }
 
 /// WP-68.5.2（F27 第 5 项修）：应答来源后端标签——reason 前缀词形单源。
@@ -327,7 +329,9 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
             // 回归；healthy 常态的 fail-operational 兜底回到无 lease 行为）。
             if self.local.degradation_armed() {
                 self.local.revoke_degradation();
-                self.events.push(SwitchEvent::LeaseRevoked);
+                self.events.push(SwitchEvent::LeaseRevoked {
+                    reason: "peer-accepted",
+                });
             }
             // WP-68.5.2：后端标签前置（[backend=X] 在 64 字符截断前缀内
             // 恒可读——审计截断 48/64 维持，F27 第 9 项登记不扩）。
@@ -423,7 +427,20 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
             return;
         }
         if self.local.degradation_armed() {
-            return;
+            // 68.5 复查修复：lease 到期 = episode 自然终止——复位（审计
+            // 可见）后走下方流程重武装。键在目标侧（附加裁决 7 自签），
+            // 重签不越任何安全边界，每 episode 仍受 TTL/次数有界约束；
+            // 无此复位路径时 authorize 恒 "lease expired" 且重武装被
+            // 已武装守卫短路——peer 长期失联（>TTL）时决策链永久停供
+            // （68.5 前启发式兜底可无限期工作，属可用性回归）。未过期
+            // = episode 进行中，不重复武装。
+            if !self.local.degradation_lease_expired(now_ms) {
+                return;
+            }
+            self.local.revoke_degradation();
+            self.events.push(SwitchEvent::LeaseRevoked {
+                reason: "lease-expired",
+            });
         }
         match self.local.arm_for_degrade(
             &self.cfg.lease_key,
@@ -673,7 +690,54 @@ mod tests {
         );
         b.decide_full(&t, 17_000).expect("consume");
         assert!(!b.local_degradation_armed(), "有效应答消费即撤销");
-        assert!(b.drain_events().contains(&SwitchEvent::LeaseRevoked));
+        assert!(b.drain_events().contains(&SwitchEvent::LeaseRevoked {
+            reason: "peer-accepted"
+        }));
+    }
+
+    /// 68.5 复查修复 t7（红测先行）：lease 到期后下一超时裁决须复位重
+    /// 武装——authorize 对过期 lease 恒 Err 且状态不动，重武装又被
+    /// "已武装"守卫短路，peer 长期失联（>TTL）时决策链永久停供（68.5
+    /// 前启发式兜底可无限期工作）。变异靶：arm_lease_wiring 去掉过期
+    /// 复位分支 → 本测红（tick4 Unavailable）。
+    #[test]
+    fn t7_lease_expiry_rearms_on_subsequent_timeout() {
+        let key = [0x5Bu8; 32];
+        let mut b = RemoteBrain::new(
+            HeuristicBackend::new(),
+            MockLink::ok(),
+            cfg_leased(key, 60), // TTL 60s
+        );
+        let t = minimal_trusted_at(10_000);
+        b.decide_full(&t, 10_000).expect("tick1");
+        // tick2：超时裁决 → 武装（有效期 [16s, 76s]）。
+        b.decide_full(&t, 16_000).expect("armed fallback");
+        assert!(b.local_degradation_armed());
+        b.drain_events();
+        // tick3：仍在期内 → 兜底继续持签产出。
+        let w3 = b.decide_full(&t, 70_000).expect("in-validity fallback");
+        assert!(decode_cand(&w3).0.starts_with("heur-"));
+        b.drain_events();
+        // tick4：已过期（>76s）——复位（reason=lease-expired）+ 重武装，
+        // 兜底产出（修复前恒 Unavailable）。
+        let w4 = b
+            .decide_full(&t, 80_000)
+            .expect("过期复位重武装后兜底须产出（修复前恒 Unavailable）");
+        assert!(decode_cand(&w4).0.starts_with("heur-"));
+        let ev = b.drain_events();
+        assert!(
+            ev.contains(&SwitchEvent::LeaseRevoked {
+                reason: "lease-expired"
+            }),
+            "须有过期复位事件: {ev:?}"
+        );
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, SwitchEvent::LeaseArmed { .. })),
+            "复位后须重武装: {ev:?}"
+        );
+        // tick5：新 episode 有效期内（80s 起算）——兜底继续产出。
+        b.decide_full(&t, 100_000).expect("new-episode fallback");
     }
 
     /// 68.5：未装配键（全零）不武装——行为与 68.5 前逐字节一致。

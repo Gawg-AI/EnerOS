@@ -11,9 +11,10 @@
 
 use alloc::vec::Vec;
 
-/// BEGIN 首帧数据容量（drv 帧 PAYLOAD_CAP=64 − 子码 1B − total u16 2B）。
+/// BEGIN 首帧数据容量（本层分片常量 64B − 子码 1B − total u16 2B——68.3
+/// 起 drv 信封 PAYLOAD_CAP=461，本层刻意不随动）。
 pub const DATA_BEGIN_MAX: usize = 64 - 3;
-/// CONT 帧数据容量（PAYLOAD_CAP=64 − 子码 1B）。
+/// CONT 帧数据容量（本层分片常量 64B − 子码 1B）。
 pub const DATA_MAX: usize = 64 - 1;
 
 /// 分片失败（空载荷/超限）。

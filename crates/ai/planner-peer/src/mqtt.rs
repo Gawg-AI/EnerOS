@@ -196,6 +196,20 @@ impl MqttClient {
         self.write_raw(&[PINGREQ << 4, 0x00])
     }
 
+    /// 入站活性打点（连接建立/重连后调用——置零"静默时长"起点；不带此
+    /// 打点则构造期 0 值会被看门狗立即判死）。
+    pub fn mark_activity(&mut self, now_ms: u64) {
+        self.last_activity_ms = now_ms;
+    }
+
+    /// 距最近入站（PINGRESP/数据帧）的静默毫秒数。68.5 复查修复：host
+    /// 侧"半死 broker"盲区——TCP 存活但对端永不回包时，poll 恒
+    /// Ok(None)、ping 写恒成功（进内核缓冲），连接永不重建；bin 以
+    /// "静默 > 1.5×keepalive"判死重连。
+    pub fn inbound_silent_for(&self, now_ms: u64) -> u64 {
+        now_ms.saturating_sub(self.last_activity_ms)
+    }
+
     /// 优雅断开（对端观测面；bin 循环当前不主动断开——进程退出即断，
     /// broker 侧 clean session 清扫。测试消费）。
     #[allow(dead_code)]
@@ -395,6 +409,27 @@ mod tests {
             .expect("connect");
         let out = c.poll(0).expect("poll");
         assert!(out.is_none());
+        c.disconnect();
+    }
+
+    /// 68.5 复查：入站静默看门狗判据——poll 读到入站即刷新活性；
+    /// mark_activity 重置起点（重连后不误判）。变异靶：poll 去掉
+    /// last_activity_ms 刷新 → 本测红。
+    #[test]
+    fn inbound_silence_watchdog_semantics() {
+        let (addr, _rx) = fake_broker(true);
+        let mut c = MqttClient::connect(&addr, "planner-peer-test", 60, Duration::from_millis(200))
+            .expect("connect");
+        // 连接期零入站（mark 前）：静默 = now - 0（起点未置）——bin 在
+        // CONNACK/SUBACK 后 mark_activity 打点重置。
+        assert_eq!(c.inbound_silent_for(10_000), 10_000);
+        c.mark_activity(10_000);
+        assert_eq!(c.inbound_silent_for(10_500), 500);
+        // QoS0 publish（假 broker 原样路由回，无 PUBACK 消费）→ poll 读到
+        // 入站帧 → 活性刷新。
+        c.publish("t/resp", b"x", 0).expect("publish qos0");
+        assert!(c.poll(11_000).expect("poll inbound").is_some());
+        assert_eq!(c.inbound_silent_for(11_500), 500, "入站须刷新活性");
         c.disconnect();
     }
 }

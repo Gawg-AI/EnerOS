@@ -42,6 +42,7 @@ use core::fmt;
 
 use eneros_storage::ScopedBlockDevice;
 use littlefs2::fs::{Allocation, Filesystem, OpenOptions};
+use littlefs2::io::Error as LfsError;
 use littlefs2::io::SeekFrom as LfsSeekFrom;
 use littlefs2::path::PathBuf;
 
@@ -76,23 +77,42 @@ impl fmt::Debug for Lfs {
     }
 }
 
+/// mount 前置探测（错误感知——[`probe_mountable`]；`None` = format 路径免检）。
+type MountProbe = fn(&mut BlockDeviceStorage) -> Result<(), FsError>;
+
 /// 落定 storage 到最终堆地址并预检（68.3 持久 mount 时序第一步）。
 ///
 /// `probe`：mount 前置校验（None = format 路径免检；Some(f) = 先跑
-/// 校验、失败返回其错误）。
+/// 校验、失败透传其错误）。
 fn leak_storage(
     device: Box<dyn ScopedBlockDevice>,
-    probe: Option<fn(&mut BlockDeviceStorage) -> bool>,
+    probe: Option<MountProbe>,
 ) -> Result<(&'static mut BlockDeviceStorage, usize), FsError> {
     let storage = BlockDeviceStorage::new(device)?;
     let blocks = storage.device_block_count();
     let storage: &'static mut BlockDeviceStorage = Box::leak(Box::new(storage));
     if let Some(check) = probe {
-        if !check(storage) {
-            return Err(FsError::BadSuperBlock);
-        }
+        check(storage)?;
     }
     Ok((storage, blocks))
+}
+
+/// mount 探测（错误感知——68.3 复查修复）：真 mount 一次并按错误类别
+/// 分流。`CORRUPTION`（未格式化/坏超级块，littlefs2 -84）→
+/// `BadSuperBlock`（上游 open-or-format 据此显式格式化）；其余（`IO`
+/// 族：块命令超时/总线瞬态错误，-5 等）→ `IoError`——**不得**触发
+/// 上游格式化。旧布尔探测（`is_mountable().is_ok()`）把一切失败折叠
+/// 成 `BadSuperBlock`，重启瞬态错误会静默清空含数据卷（该卷 68.3 起
+/// 是生产 TSDB 数据面）。
+fn probe_mountable(storage: &mut BlockDeviceStorage) -> Result<(), FsError> {
+    let alloc = &mut Allocation::new();
+    match Filesystem::mount(alloc, storage) {
+        Ok(_) => Ok(()),
+        Err(e) if e == LfsError::CORRUPTION => Err(FsError::BadSuperBlock),
+        Err(_) => Err(FsError::IoError {
+            detail: String::from("mount probe: transient io (not a format candidate)"),
+        }),
+    }
 }
 
 /// 在已落定地址上完成持久 mount（第二步；泄漏纪律见模块文档）。
@@ -148,7 +168,7 @@ impl Lfs {
         config: LfsConfig,
     ) -> Result<Self, FsError> {
         // Verify mountability; if this fails the superblock is missing/invalid.
-        let (storage, blocks) = leak_storage(device, Some(Filesystem::is_mountable))?;
+        let (storage, blocks) = leak_storage(device, Some(probe_mountable))?;
         mount_at(storage, blocks, config)
     }
 
@@ -446,6 +466,69 @@ mod tests {
         let dev = data_scope(64);
         let err = Lfs::mount(dev).unwrap_err();
         assert_eq!(err, FsError::BadSuperBlock);
+    }
+
+    /// 68.3 复查修复（mount 探测错误感知）：瞬态读失败（IO 族）不得折叠
+    /// 成 BadSuperBlock——旧布尔探测把一切失败判坏超级块，重启瞬态错误
+    /// 会触发上游 open-or-format 静默清空含数据卷（68.3 起为生产 TSDB
+    /// 数据面）。变异靶：probe 恢复布尔折叠（一切失败=BadSuperBlock）
+    /// → 本测红。
+    #[test]
+    fn test_mount_transient_io_error_is_not_bad_superblock() {
+        use eneros_storage::partition::boxed_mock_scope;
+
+        struct TransientReadFailOnce {
+            inner: MockBlockDevice,
+            armed: core::cell::Cell<bool>,
+        }
+        impl eneros_storage::BlockDevice for TransientReadFailOnce {
+            fn read_block(
+                &self,
+                block_idx: u64,
+                buf: &mut [u8],
+            ) -> Result<(), eneros_storage::StorageError> {
+                if self.armed.replace(false) {
+                    // 一次性瞬态读失败（Timeout = error.rs 分类的可恢复态）。
+                    return Err(eneros_storage::StorageError::Timeout {
+                        operation: "read",
+                        ms: 5,
+                    });
+                }
+                self.inner.read_block(block_idx, buf)
+            }
+            fn write_block(
+                &mut self,
+                idx: u64,
+                buf: &[u8],
+            ) -> Result<(), eneros_storage::StorageError> {
+                self.inner.write_block(idx, buf)
+            }
+            fn erase_block(&mut self, idx: u64) -> Result<(), eneros_storage::StorageError> {
+                self.inner.erase_block(idx)
+            }
+            fn block_count(&self) -> u64 {
+                self.inner.block_count()
+            }
+            fn block_size(&self) -> usize {
+                self.inner.block_size()
+            }
+            fn flush(&mut self) -> Result<(), eneros_storage::StorageError> {
+                self.inner.flush()
+            }
+            fn health_status(&self) -> eneros_storage::DeviceHealth {
+                self.inner.health_status()
+            }
+        }
+
+        let dev = TransientReadFailOnce {
+            inner: MockBlockDevice::new(64, 4096),
+            armed: core::cell::Cell::new(true),
+        };
+        let err = Lfs::mount(boxed_mock_scope(dev, BlockRole::Data)).unwrap_err();
+        assert!(
+            matches!(err, FsError::IoError { .. }),
+            "瞬态 IO 不得判坏超级块（会触发误格式化）: {err:?}"
+        );
     }
 
     #[test]

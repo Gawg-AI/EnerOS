@@ -4,7 +4,7 @@
 //! 逐项校验后才可进入决策/控制链：
 //!
 //! 1. required points 全覆盖；
-//! 2. 时间单调、freshness（`max_age_ms`）、max skew；
+//! 2. 时间单调与逐点新鲜度（`max_age_ms` → Stale；max skew 判据 68.2 退役——同源内聚检查在异期点位缓冲下结构性假阳）；
 //! 3. source 白名单与 source epoch（断线重连后旧 epoch 拒绝）；
 //! 4. 质量（Good 才可用）、范围、单位（经映射版本强制）、NaN/Inf；
 //! 5. sequence/replay（重复/乱序拒绝）；

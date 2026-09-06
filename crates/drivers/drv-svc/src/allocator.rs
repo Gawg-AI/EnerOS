@@ -23,7 +23,8 @@ use linked_list_allocator::LockedHeap;
 // 4 KiB 分配失败 PANIC，evidence/68/vol68-5/reuse1 + degrade 两窗复现；
 // CachedBlocks/EventStore/SnapshotModule 静态上界 ~80 KiB 均有界排除，
 // 泄漏面登记 REG-TELEMETRY-HEAP-CREEP 归后续卷定位）。扩容买窗：
-// +128 KiB × 5 控制服务 = +640 KiB bss（+80 cnode 槽，现用 ~2000 < 4096），
+// +128 KiB × 5 控制服务 = +640 KiB bss（+160 cnode 槽——640/64 × 16，
+// 现用 ~2000 < 4096），
 // QEMU 判据 = 复用盘 + broker 窗 ≥420s 无 PANIC。
 const HEAP_SIZE: usize = 512 * 1024;
 
