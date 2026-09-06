@@ -97,13 +97,24 @@ fn now_ms() -> u64 {
 struct SeqState(u64);
 
 impl SeqState {
+    /// 68 三轮复查修复：三类文件态分流——首启（NotFound）归零合法；
+    /// **存量文件损坏（读失败/JSON 坏/形坏）= seq 单调承诺失效面**，
+    /// 静默归零会使目标侧按 seq 单调判据长期拒收（回退饿死至追平旧
+    /// seq）且主机端零告警——fail-closed 退出交运维裁决（删文件 = 显式
+    /// 接受回退重建）。变异靶：去掉 corrupt 分支 → seq_corrupt_exits
+    /// 判据红（load 静默返回 0）。
     fn load(path: &str) -> Self {
         match std::fs::read_to_string(path) {
             Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-                Ok(v) => SeqState(v.get("seq").and_then(|s| s.as_u64()).unwrap_or(0)),
-                Err(_) => SeqState(0),
+                Ok(v) => v
+                    .get("seq")
+                    .and_then(|s| s.as_u64())
+                    .map(SeqState)
+                    .unwrap_or_else(|| seq_state_corrupt(path, "shape: no u64 seq")),
+                Err(e) => seq_state_corrupt(path, &format!("json: {e}")),
             },
-            Err(_) => SeqState(0),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => SeqState(0),
+            Err(e) => seq_state_corrupt(path, &format!("read: {e}")),
         }
     }
 
@@ -113,6 +124,14 @@ impl SeqState {
         std::fs::write(&tmp, serde_json::json!({ "seq": self.0 }).to_string())?;
         std::fs::rename(&tmp, path)
     }
+}
+
+/// 存量 seq 状态损坏 = fail-closed 退出（诚实可见；运维裁决回退）。
+fn seq_state_corrupt(path: &str, why: &str) -> ! {
+    eprintln!(
+        "[planner-peer] SEQ-STATE-CORRUPT path={path} why={why} —— seq 单调状态不可恢复，fail-closed 退出（删除文件 = 显式回退重建，目标侧将拒收回退前 seq）"
+    );
+    exit(2);
 }
 
 fn main() {
@@ -315,4 +334,31 @@ fn handle_request(
         resp.reason.starts_with(BACKEND_TAG)
     );
     true
+}
+
+// ============================================================================
+// host 测试（seq 状态三态判据的可进程内测路径）
+// ============================================================================
+
+#[cfg(test)]
+mod seq_state_tests {
+    use super::*;
+
+    /// 首启（NotFound）归零 + store/load 往返。损坏路径（JSON 坏/形坏/
+    /// 读失败）走 seq_state_corrupt = exit(2)，进程内不可测——判据由
+    /// load 的分流结构承载（NotFound 之外的 Err 与 shape 失配均不得
+    /// 返回 SeqState(0)）。
+    #[test]
+    fn seq_state_missing_is_zero_and_roundtrips() {
+        let dir =
+            std::env::temp_dir().join(format!("planner-peer-seq-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("seq.json").to_string_lossy().into_owned();
+        // 首启：文件不存在 → 归零（合法回退起点）。
+        assert_eq!(SeqState::load(&path), SeqState(0));
+        // 往返：store 后 load 须还原。
+        SeqState(42).store(&path).expect("store");
+        assert_eq!(SeqState::load(&path), SeqState(42));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

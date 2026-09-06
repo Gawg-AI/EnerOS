@@ -19,8 +19,10 @@
 //! sizeof(Allocation)+sizeof(BlockDeviceStorage)（≈8.5KB，cache 4096×2
 //! 为主）；服务生命周期内常驻实例=1（构造一次）；唯一例外 =
 //! mount-or-format 双 face（如 telemetry_history open_disk_history）——
-//! mount 探测失败的首次泄漏一对（≈8.5KB，每卷一次性，之后恒 mount 成功），
-//! host 测试按进程回收。littlefs2 0.8 无 unmount/Drop API（旧
+//! mount 探测失败的首次泄漏一对；探测通过但真 mount（mount_at）再失败
+//! 时再泄一对（68 三轮复查订正上界：每卷每 boot 至多两对，event_face
+//! 失败即 FaceState::Failed 终态、open_disk_history 每服务一次，无重试
+//! 泄漏环），host 测试按进程回收。littlefs2 0.8 无 unmount/Drop API（旧
 //! mount_and_then 闭包结束同样不 unmount）——耐久语义 = 逐文件 close
 //! sync，持久形态逐操作等价。
 //!
@@ -528,6 +530,68 @@ mod tests {
         assert!(
             matches!(err, FsError::IoError { .. }),
             "瞬态 IO 不得判坏超级块（会触发误格式化）: {err:?}"
+        );
+    }
+
+    /// 68 三轮复查（REG-FS-CRC-MAP-FORMAT，红测先行）：媒体级
+    /// CrcMismatch 一次性读失败与 Timeout 同类——是瞬态/介质疑虑，不是
+    /// littlefs2 的结构损坏裁决，不得作为格式化候选。变异靶：storage_
+    /// adapter 把 CrcMismatch 映回 CORRUPTION → 本测红（误判
+    /// BadSuperBlock → open-or-format 清卷）。
+    #[test]
+    fn test_mount_transient_crc_error_is_not_bad_superblock() {
+        use eneros_storage::partition::boxed_mock_scope;
+
+        struct TransientCrcFailOnce {
+            inner: MockBlockDevice,
+            armed: core::cell::Cell<bool>,
+        }
+        impl eneros_storage::BlockDevice for TransientCrcFailOnce {
+            fn read_block(
+                &self,
+                block_idx: u64,
+                buf: &mut [u8],
+            ) -> Result<(), eneros_storage::StorageError> {
+                if self.armed.replace(false) {
+                    return Err(eneros_storage::StorageError::CrcMismatch {
+                        expected: 0xDEAD_BEEF,
+                        actual: 0xC0FF_EE00,
+                    });
+                }
+                self.inner.read_block(block_idx, buf)
+            }
+            fn write_block(
+                &mut self,
+                idx: u64,
+                buf: &[u8],
+            ) -> Result<(), eneros_storage::StorageError> {
+                self.inner.write_block(idx, buf)
+            }
+            fn erase_block(&mut self, idx: u64) -> Result<(), eneros_storage::StorageError> {
+                self.inner.erase_block(idx)
+            }
+            fn block_count(&self) -> u64 {
+                self.inner.block_count()
+            }
+            fn block_size(&self) -> usize {
+                self.inner.block_size()
+            }
+            fn flush(&mut self) -> Result<(), eneros_storage::StorageError> {
+                self.inner.flush()
+            }
+            fn health_status(&self) -> eneros_storage::DeviceHealth {
+                self.inner.health_status()
+            }
+        }
+
+        let dev = TransientCrcFailOnce {
+            inner: MockBlockDevice::new(64, 4096),
+            armed: core::cell::Cell::new(true),
+        };
+        let err = Lfs::mount(boxed_mock_scope(dev, BlockRole::Data)).unwrap_err();
+        assert!(
+            matches!(err, FsError::IoError { .. }),
+            "媒体级 CrcMismatch 是瞬态疑虑，不得判坏超级块（会触发误格式化）: {err:?}"
         );
     }
 

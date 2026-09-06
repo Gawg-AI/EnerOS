@@ -506,14 +506,12 @@ impl<D: BlockDevice> BlockEventStore<D> {
                 }
                 let Some(rh) = decode_record_header(&hdr) else {
                     broken = true;
-                    stats.truncated_records += 1;
                     break;
                 };
                 if rh.len as usize > PAYLOAD_MAX
                     || pos + RECORD_HEADER_LEN as u64 + u64::from(rh.len) > self.geo.data_end()
                 {
                     broken = true;
-                    stats.truncated_records += 1;
                     break;
                 }
                 self.read_seg_rel(
@@ -524,14 +522,12 @@ impl<D: BlockDevice> BlockEventStore<D> {
                 if !format::verify_record_crc(&hdr, &payload_buf[..rh.len as usize], rh.payload_crc)
                 {
                     broken = true;
-                    stats.truncated_records += 1;
                     break;
                 }
                 if rh.offset != expected {
                     // offset 空洞：介质级损坏，fail-closed 截断。
                     broken = true;
                     stats.offset_gaps += 1;
-                    stats.truncated_records += 1;
                     break;
                 }
                 hasher.update(hdr);
@@ -542,7 +538,9 @@ impl<D: BlockDevice> BlockEventStore<D> {
                 count += 1;
             }
             if broken {
-                // best effort：其后可解析残片逐个计数（含被断链不可达的记录）。
+                // best effort：断链记录与其后可解析残片**唯一计位点**
+                // （68 三轮复查：主循环 break 处不再 +1——残片步进从同一
+                // pos 重启，主循环计数会把断链头记录双计，每坏段恒 +1）。
                 let mut pos = SEGMENT_HEADER_LEN + data_bytes;
                 loop {
                     if pos + RECORD_HEADER_LEN as u64 > self.geo.data_end() {

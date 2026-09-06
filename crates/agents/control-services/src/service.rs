@@ -113,8 +113,11 @@ pub fn control_service_main(
         // MR[0] 开始（QEMU 实弹语义）；length = **words 数**（与
         // hello/svc_entry 全仓一致；内核拷 length words）。客户端按
         // words 组装并按协议头（分页）截断。
+        // 69.1（I3 / REG-CHUNKED-MR-WORDS-CAP）：words 上限单源
+        // MR_REPLY_MAX_WORDS（原 14 魔数两端手抄）；单帧回执 ≤ 预算由
+        // agent-sdk 静态锁 + service_slots step() 出口兜底保证。
         for (i, chunk) in response.chunks(8).enumerate() {
-            if i >= 14 {
+            if i >= eneros_agent_sdk::MR_REPLY_MAX_WORDS {
                 break;
             }
             let mut word = [0u8; 8];

@@ -34,6 +34,14 @@ pub enum OtaError {
     },
     /// 版本降级被拒绝（CRY-006：版本单调防降级）
     DowngradeRejected,
+    /// 声明镜像尺寸超槽容量（68 三轮复查 REG-OTA-SLOT-OVERWRITE：越槽写
+    /// 会穿保护带直入同盘 TSDB/审计/事件/事实/快照区段——prepare 早门）。
+    ImageTooLarge {
+        /// 声明尺寸（字节）。
+        size: u64,
+        /// 槽容量（字节）。
+        cap: u64,
+    },
 }
 
 /// 解析 "X.Y.Z" 三段数字版本；非该形态返回 `None`.

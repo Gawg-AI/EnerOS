@@ -1,0 +1,38 @@
+=== 步骤 1：config compile（qemu-prod）===
+=== config compile（qemu-prod）===
+CONFIG-COMPILE: → /home/ahx/文档/EnerOS/product/config-bundle.bin（ai-peer,catalog,cloud-sync,control-write,logging,metrics,ota,points,protocol-dlt645,protocol-gbt27930,protocol-goose,protocol-iec101,protocol-iec103,protocol-iec104,protocol-mms,protocol-modbus-rtu,protocol-modbus-tcp,protocol-mqtt,protocol-sv,security entries，7099B）
+             pubkey → /home/ahx/文档/EnerOS/product/config-bundle-pubkey.hex
+=== 步骤 2：sel4-build-rust 重链接（控制面 bin 全新）+ image raw ===
+  ✓ Rust ELF: /home/ahx/文档/EnerOS/target/aarch64-unknown-none/release/eneros-root-task (434264 bytes)
+=== image raw qemu-prod ===
+ff604e5e23122dd1a9f99afe11a495149ff2c89dfd7c3930e0a26e43c5ce3e6c  /home/ahx/文档/EnerOS/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw
+MODBUS47-SLAVE-READY listening=5502
+=== 步骤 3：QEMU 实弹窗（planner-live，fresh 盘，720s）===
+tools/run69-vol1-gate.sh: 第 99 行： 553257 已杀死                  python3 "$ROOT/evidence/50/mqtt_telemetry_broker.py" --port 1883 --transcript "$RUN/$W.broker-transcript.jsonl" > "$RUN/$W.broker.log" 2>&1
+tools/run69-vol1-gate.sh: 第 100 行： 553344 已杀死                  "$PP_BIN" --broker 127.0.0.1:1883 --config "$ROOT/crates/ai/planner-peer/planner-peer.toml" --state "$RUN/$W.seq-state.json" > "$RUN/$W.planner-peer.log" 2>&1
+window planner-live rc=2（124/2=超时杀=完整窗口）
+=== 步骤 4：判据扫描 ===
+[✓][Q1] PRODUCT-READY: true
+[✓][Q1] PANIC 净值 = 0（全量 1，豁免 1）
+[✓][Q1] READINESS = 29
+[✓][Q1] TSDB-DISK-OPEN
+[✓][Q1] TSDB-DISK-COMMIT = 21
+[✓][Q1] CONTROL-CHAIN dispatch=Committed
+[✓][Q1] AI-PEER-CFG loaded
+[✓][Q1] broker transcript 有 peer CONNECT
+[✓][Q1] PLANNER-SOLVE optimal = 4
+[✓][Q1] REMOTE-BRAIN used=true
+[✓][Q2] modbus ACQ = 126
+[✓][Q2] iec104 ACQ = 7
+[✓][Q2] TSDB-DISK-UNAVAILABLE = 0（TELH 可答面在）
+[i][Q3] CHUNKED-PAGE-RANGE 未自然触发 ⇒ 本项 N/A（如实记录，不伪造触发）
+[✓][Q4] CHUNKED-PAGE-RANGE = 0
+[✓][Q4] CHUNKED-RESP-TOOLARGE = 0
+[✓][Q4] CHUNKED-REPLY-TRUNCATED = 0
+[✓][Q4] PagesOutstanding = 0
+[✓][Q4] ReplyTooLarge = 0
+[✓][Q4] ResponseTooLarge = 0
+[✓][Q5] agent=OK = 512（≥20，采集/决策链活性）
+[i][Q5] CHUNKED-SLOW 观测计数 = 5（不作失败判据）
+=== 汇总 ===
+VOL69.1-GATE: PASS

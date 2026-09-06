@@ -29,6 +29,15 @@ pub struct RequestId(u64);
 /// MR[0] = 关联 ID（1 word），wire 帧最多占 `MAX_MR_BYTES - 8` 字节。
 pub const MAX_MR_BYTES: usize = 120;
 
+// 69.1（I3 / REG-CHUNKED-MR-WORDS-CAP）静态锁：单帧回执预算必须恰为
+// MR 区减 1 word（裸帧 request_raw/wire 组帧同款预留约定）。变异咬合：
+// 把 chunked::MR_REPLY_MAX_WORDS 改 13（预算 104）→ 120-104=16 ≠ 8 编译
+// 失败。（锁在本模块内——ipc_sel4 为 cfg 门控模块，模块存在即生效。）
+const _: () = assert!(
+    MAX_MR_BYTES - crate::chunked::MR_REPLY_BUDGET_BYTES == core::mem::size_of::<u64>(),
+    "MR 回执预算必须恰为 MR 区减 1 word（120-8=112B）",
+);
+
 /// drv-svc 信封通道（4B/word 装配）的单消息 word 上限（蓝图 68 卷 68.3
 /// WP-68.3.1 物理锚定）：内核 aarch64 `seL4_MsgMaxLength = 120 words`
 /// （libsel4 constants.h:55；length 超限被内核钳制，include/api/
@@ -133,10 +142,6 @@ impl Sel4IpcClient {
             .now()
             .checked_add(timeout_ns)
             .ok_or_else(|| self.ipc_err("deadline overflow"))?;
-        // 蓝图/20 R2-2：pending 表登记（关联 ID → 截止时间）；
-        // 同步 `seL4_Call` 语义下登记窗口覆盖调用全程，超时以
-        // `now() > deadline` 判定（单调时钟注入，host 可测）。
-        self.pending.insert(id, deadline);
         // 编码 wire 帧。
         let mut frame = [0u8; crate::wire::MAX_WIRE_SIZE];
         let n = crate::wire::encode(
@@ -156,6 +161,12 @@ impl Sel4IpcClient {
             self.errors += 1;
             return Err(self.ipc_err("request frame exceeds MR budget (120B)"));
         }
+        // 蓝图/20 R2-2：pending 表登记（关联 ID → 截止时间）；同步
+        // `seL4_Call` 语义下登记窗口覆盖调用全程，超时以 `now() >
+        // deadline` 判定（单调时钟注入，host 可测）。68 三轮复查：登记
+        // 置于全部早退检查之后——编码/预算失败路径早退时不清表即永久
+        // 泄漏（无界增长向量）。
+        self.pending.insert(id, deadline);
         // 写入 MR：MR[0] = 关联 ID，MR[1..] = 帧字节（8 字节/word 打包）。
         // SAFETY: `eneros_sel4_set_mr` 为 C shim 封装（host 为 stub）；
         // 帧 ≤112 字节 → 打包后 ≤14 words（索引 ≤14），在 seL4 MR 区
@@ -232,12 +243,13 @@ impl Sel4IpcClient {
             .now()
             .checked_add(timeout_ns)
             .ok_or_else(|| self.ipc_err("deadline overflow"))?;
-        self.pending.insert(id, deadline);
         let max_frame = MAX_MR_BYTES - core::mem::size_of::<u64>();
         if req.len() > max_frame {
             self.errors += 1;
             return Err(self.ipc_err("raw frame exceeds MR budget (112B)"));
         }
+        // 68 三轮复查：登记置于预算早退之后（早退不清表 = 永久泄漏）。
+        self.pending.insert(id, deadline);
         // SAFETY: `set_mr` 为 C shim（host stub）；req ≤112B → ≤14 words，
         // 写 MR[0..]（数据区从 0 起，QEMU 实弹语义）。
         unsafe {
@@ -261,7 +273,12 @@ impl Sel4IpcClient {
         self.sent += 1;
         self.pending.remove(&id);
         // 响应数据在 MR[0..]（length = words 数；数据区从 0 起）。
-        let words = core::cmp::min(message_info_length(reply) as usize, 14);
+        // 69.1（I3 / REG-CHUNKED-MR-WORDS-CAP）：words 上限单源
+        // chunked::MR_REPLY_MAX_WORDS（原 14 魔数；与服务端组帧 break 同源）。
+        let words = core::cmp::min(
+            message_info_length(reply) as usize,
+            crate::chunked::MR_REPLY_MAX_WORDS,
+        );
         let mut resp = Vec::with_capacity(words * 8);
         for i in 0..words {
             // SAFETY: 索引 < 15 在 MR 槽位范围内。
@@ -290,7 +307,6 @@ impl Sel4IpcClient {
             .now()
             .checked_add(timeout_ns)
             .ok_or_else(|| self.ipc_err("deadline overflow"))?;
-        self.pending.insert(id, deadline);
         // 4 字节/word 打包（drv-svc 服务端语义）；word 上限=内核物理
         // （DRV_MAX_WORDS=120，68.3 物理锚定——原 30 words 软件约定退役）。
         let max_words = DRV_MAX_WORDS;
@@ -298,6 +314,8 @@ impl Sel4IpcClient {
             self.errors += 1;
             return Err(self.ipc_err("drv frame exceeds MR budget"));
         }
+        // 68 三轮复查：登记置于预算早退之后（早退不清表 = 永久泄漏）。
+        self.pending.insert(id, deadline);
         // SAFETY: `set_mr` 为 C shim（host stub）；req ≤ 4×words 字节。
         unsafe {
             for (i, chunk) in req.chunks(4).enumerate() {
@@ -509,5 +527,34 @@ mod tests {
         let ok = alloc::vec![0u8; 480];
         let _ = c.drv_call(&ok, 1_000); // host stub：预算内无错误计数
         assert_eq!(c.stats().2, 1, "480B 恰在 120 words 预算内");
+    }
+
+    /// 68 三轮复查（REG-IPC-PENDING-LEAK）：预算/编码早退路径不得残留
+    /// pending 登记——insert 后早退且不 remove = 无界增长向量（每错帧
+    /// ≈48-64B，且错误可被调用方循环触发）。变异靶：insert 移回早退
+    /// 检查之前 → 本测红。
+    #[test]
+    fn pending_table_empty_after_budget_early_returns() {
+        let mut c = Sel4IpcClient::new("leak-c", 1, || 0).unwrap();
+        // request：wire 封装超 MR 预算（>112B 载荷）。
+        for _ in 0..100 {
+            let big = alloc::vec![0u8; 200];
+            assert!(c.request("svc-x", &big, 1_000).is_err());
+        }
+        // request_raw：>112B。
+        for _ in 0..100 {
+            let big = alloc::vec![0u8; 113];
+            assert!(c.request_raw(&big, 1_000).is_err());
+        }
+        // drv_call：>120 words（4B/word）。
+        for _ in 0..100 {
+            let big = alloc::vec![0u8; 481];
+            assert!(c.drv_call(&big, 1_000).is_err());
+        }
+        assert!(
+            c.pending.is_empty(),
+            "早退路径必须零残留，实际 {} 条",
+            c.pending.len()
+        );
     }
 }

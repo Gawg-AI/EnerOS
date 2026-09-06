@@ -222,11 +222,21 @@ impl MqttClient {
         if qos == 0 {
             return Ok(());
         }
-        if body.len() < 4 {
+        // MQTT 3.1.1 §3.3.1/3.3.2：可变头 = 2B 长度前缀主题 + packet id
+        // （QoS>0 时）。68 三轮复查修复：旧实现取 body[2..4]（主题前两
+        // 字节）当 pid——真 broker（mosquitto）按 pid 记 inflight，错 pid
+        // 使消息永不过窗（max_inflight_messages 默认 20 → 20 条后请求停
+        // 发），且 PINGRESP 持续刷新活性令静默看门狗失效。
+        if body.len() < 2 {
+            return err(String::from("PUBLISH 短帧（无主题）"));
+        }
+        let tlen = u16::from_be_bytes([body[0], body[1]]) as usize;
+        let pid_off = 2 + tlen;
+        if body.len() < pid_off + 2 {
             return err(String::from("PUBLISH 短帧（无 packet id）"));
         }
         let mut pkt = vec![PUBACK << 4, 0x02];
-        pkt.extend_from_slice(&body[2..4]);
+        pkt.extend_from_slice(&body[pid_off..pid_off + 2]);
         self.write_raw(&pkt)
     }
 
@@ -370,11 +380,16 @@ mod tests {
                             pkt.extend_from_slice(&body);
                             let _ = sock.write_all(&pkt);
                         }
-                        // PUBACK 给发布方（QoS1）。
-                        if (hdr[0] >> 1) & 0x03 > 0 && body.len() >= 4 {
-                            let mut ack = vec![PUBACK << 4, 0x02];
-                            ack.extend_from_slice(&body[2..4]);
-                            let _ = sock.write_all(&ack);
+                        // PUBACK 给发布方（QoS1）——pid 位于 2+主题长度
+                        // （与真 broker 同律；ack_publish 修复的同族保真）。
+                        if (hdr[0] >> 1) & 0x03 > 0 && body.len() >= 2 {
+                            let tlen = u16::from_be_bytes([body[0], body[1]]) as usize;
+                            let off = 2 + tlen;
+                            if body.len() >= off + 2 {
+                                let mut ack = vec![PUBACK << 4, 0x02];
+                                ack.extend_from_slice(&body[off..off + 2]);
+                                let _ = sock.write_all(&ack);
+                            }
                         }
                     }
                     PINGREQ => {
@@ -455,6 +470,56 @@ mod tests {
             Err(e) => assert!(e.0.contains("剩余长度超限"), "须分配前拒恶意帧: {e:?}"),
             other => panic!("超大剩余长度帧必须拒绝，got {other:?}"),
         }
+        h.join().unwrap();
+    }
+
+    /// 68 全卷三轮复查（红测先行）：入站 QoS1 PUBLISH 的 PUBACK 必须回显
+    /// 真实 packet id（位于 2+主题长度 处——非 body[2..4]）。错 pid 对真
+    /// broker = 消息永不过 inflight 窗（mosquitto max_inflight_messages
+    /// 默认 20 → 20 条后请求停发），且 PINGRESP 持续刷新活性使入站静默
+    /// 看门狗永不触发——host 端 AI 链静默饿死。变异靶：ack_publish 退回
+    /// body[2..4] → 本测红（收到 0x656E 而非 0x1234）。
+    #[test]
+    fn puback_echoes_real_packet_id() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = l.local_addr().unwrap().to_string();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().expect("accept");
+            let mut buf = [0u8; 512];
+            let _ = s.read(&mut buf).unwrap(); // CONNECT
+            s.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap(); // CONNACK
+            let _ = s.read(&mut buf).unwrap(); // SUBSCRIBE
+            s.write_all(&[0x90, 0x03, 0x00, 0x01, 0x01]).unwrap(); // SUBACK pid=1 qos=1
+                                                                   // 入站 QoS1 PUBLISH：topic="eneros/brain/request"（tlen=20），
+                                                                   // packet id=0x1234（位于 2+20=22 处），payload="{}"。
+            let topic = b"eneros/brain/request";
+            let mut body = Vec::new();
+            body.extend_from_slice(&[0x00, 0x14]);
+            body.extend_from_slice(topic);
+            body.extend_from_slice(&[0x12, 0x34]);
+            body.extend_from_slice(b"{}");
+            let mut pkt = vec![0x32]; // PUBLISH QoS1
+            pkt.extend_from_slice(&encode_len(body.len()));
+            pkt.extend_from_slice(&body);
+            s.write_all(&pkt).unwrap();
+            // 读客户端应答：须为 PUBACK 且 pid=0x1234。
+            s.read_exact(&mut buf[..2]).unwrap(); // fixed header
+            assert_eq!(buf[0], 0x40, "须为 PUBACK，got {:#x}", buf[0]);
+            assert_eq!(buf[1], 0x02);
+            s.read_exact(&mut buf[..2]).unwrap();
+            let acked = u16::from_be_bytes([buf[0], buf[1]]);
+            assert_eq!(acked, 0x1234, "PUBACK 须回显真实 packet id（非主题字节）");
+        });
+        let mut c = MqttClient::connect(&addr, "planner-peer-test", 60, Duration::from_millis(500))
+            .expect("connect");
+        c.subscribe("t/x", 1).expect("subscribe");
+        let got = c
+            .poll(0)
+            .expect("poll inbound")
+            .expect("须收到入站 PUBLISH");
+        assert_eq!(got.topic, "eneros/brain/request");
         h.join().unwrap();
     }
 

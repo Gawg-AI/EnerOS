@@ -205,6 +205,33 @@ fn corrupted_record_detected_and_not_returned() {
     assert!(offsets.is_empty(), "损坏记录绝不返回，实际 {offsets:?}");
 }
 
+/// 68 三轮复查：truncated_records 精确计数——断链头记录 + 其后可解析
+/// 残片**各计一次**（红=主循环 break 处与残片步进对断链头记录双计，
+/// 每坏段恒多 1）。4 记录段（record 0 CRC 坏 + 3 条完好但断链）⇒ 4。
+#[test]
+fn truncated_records_counts_broken_region_exactly_once_per_record() {
+    let dev = block_dev(16);
+    let mut store = BlockEventStore::format(FaultyBlockDevice::new(dev), test_config()).unwrap();
+    for i in 1..=3u64 {
+        store.append(6, eid(i), 2, &[i as u8; 48]).unwrap();
+    }
+    store.flush().unwrap();
+    // 第 4 条写后一次性位翻转命中 record 0 载荷（块内 byte 128 ∈
+    // 100..148）——与其后 3 条完好记录构成"1 坏 + 3 断链"。
+    store.dev.arm(Fault::CorruptAfterWrite {
+        byte: 128,
+        mask: 0xFF,
+    });
+    store.append(6, eid(4), 0, &[4u8; 48]).unwrap();
+    let dev = store.into_inner().into_inner();
+    let mut reopened = BlockEventStore::open(FaultyBlockDevice::new(dev), test_config()).unwrap();
+    let rep = reopened.recover().unwrap();
+    assert_eq!(
+        rep.truncated_records, 4,
+        "1 坏记录 + 3 条断链记录各计一次（红=断链头双计=5）: {rep:?}"
+    );
+}
+
 // ===========================================================================
 // §4.6.1 红测 3：offset 空洞与位点撕裂
 // ===========================================================================

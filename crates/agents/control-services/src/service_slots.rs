@@ -5,8 +5,25 @@
 //! 46.5 按 badge 分槽在此之上收口四类服务端竞争面（蓝图 68 [01] F8/F9）：
 //! 1. **槽满**（>24 badge）：不再退化共享槽 0——新会话 Header 即拒绝（词形 `CHUNKED-SLOT-FULL badge=<n>`，客户端走既有超时/降级路径）；
 //! 2. **同 badge 双逻辑会话**：前一传输在途时到达的第二会话 Header 拒绝（词形 `CHUNKED-DUP-SESSION badge=<n>`，客户端按传输错误处理）；在途孤儿传输同步清场（respawn/中止恢复路径——拒绝只作用于到达帧，清场非静默：计数 + 词形）；
-//! 3. **分页响应覆盖可观测**：未拉完的旧页被同槽新 Final 覆盖即计数（词形 `CHUNKED-PAGE-EVICTED slot=<n>`）；
+//! 3. **分页响应覆盖可观测 + 自愈重同步**：未拉完的旧页被同槽覆盖性
+//!    Final 覆盖即计数（词形 `CHUNKED-PAGE-EVICTED slot=<n>`）且新响应
+//!    照常安装——单 badge 顺序客户端下覆盖 = 与重试客户端页序重同步
+//!    （69.1 实弹订正：拒绝式改法造成重试活锁，已撤回，见 t12）；
 //! 4. **处理时长观测**：单帧分发超 [`SLOW_CALL_THRESHOLD_MS`] 计数并打 `CHUNKED-SLOW call=<op> dur_ms=<n>`——每词形每分钟至多 1 行（计数不受限、行有界，防串口洪泛；BP61 背压刷日志前科）。
+//!
+//! 69.1（接缝判别力收口）在本表之上另收口：
+//! - **陈旧 pending_full 错配**（BUG-S2）：Header 被接受即清上一传输的
+//!   `pending_full`——任何通过 F3 闸门的 Final，其 `take()` 必属本次传输
+//!   （t10/t10c 咬合）；
+//! - **越界 Pull 拒绝记账**（O1）：`page_range_rejections` 计数 + 词形
+//!   `CHUNKED-PAGE-RANGE slot=<n>`（t11）；
+//! - **响应方向页数域检**（I4）：超 u8 页序域界（255×104=26520B）拒绝
+//!   安装，计数 + 词形 `CHUNKED-RESP-TOOLARGE slot=<n>`（t14；界内既有
+//!   生产面如 svc-config 7099B 配置分发不受扰）；
+//! - **单帧回执 MR 预算**（I3）：静态锁（`MR_REPLY_BUDGET_BYTES`）+
+//!   step() 出口兜底替换 + 词形 `CHUNKED-REPLY-TRUNCATED`（t13/t13b）；
+//! - **单帧 ERR 回复一律不入分页态**：ERR 文本若装作 1 页"未拉响应"，
+//!   既污染 evict 判据又主动制造页序发散（覆盖在拉响应）。
 //!
 //! 本模块 host 可编译（无 target 依赖）；词形行以 `String` 返回调用方
 //! （target 主循环经 `eneros_runtime::println!` 落串口，host 测试直接断言）。
@@ -33,6 +50,11 @@ const WORD_SLOT_FULL: usize = 0;
 const WORD_DUP_SESSION: usize = 1;
 const WORD_PAGE_EVICTED: usize = 2;
 const WORD_SLOW: usize = 3;
+/// 69.1 新增词形：越界 Pull 拒绝记账（O1）/ 响应超页数上限（I4）/
+/// 单帧回执超 MR 预算兜底（I3）。
+const WORD_PAGE_RANGE: usize = 4;
+const WORD_RESP_TOO_LARGE: usize = 5;
+const WORD_REPLY_TRUNCATED: usize = 6;
 
 /// 单帧分发分类（CHUNKED-SLOW 的 `call=` 字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,12 +100,29 @@ struct ClientState {
     pages_pulled: u8,
 }
 
+/// 页数超上限拒绝哨兵（69.1 I4 域检；`set_paged` 失败形态）。
+struct PageCapExceeded;
+
 impl ClientState {
     /// 覆盖分页响应并重置拉取进度。
-    fn set_paged(&mut self, resp: Vec<u8>) {
-        self.pages_total = resp.len().div_ceil(eneros_agent_sdk::RESP_PAGE_MAX).max(1) as u8;
+    ///
+    /// 69.1（I4 / REG-CHUNKED-PAGE-U8-CAP，t14 咬合）：响应方向页数域检
+    /// ——超 [`eneros_agent_sdk::RESP_COUNT_MAX`]（u8 域界 255）×
+    /// [`eneros_agent_sdk::RESP_PAGE_MAX`]（= 26520B）拒绝安装；
+    /// `as u8` 静默回绕翻为显式拒绝。失败时**不动分页态**——ERR 文本若
+    /// 装作 1 页"未拉响应"会污染 evict_old 判据（次生：下一个合法 Final
+    /// 被误拒，t14 边界段实测咬合后订正）。
+    fn set_paged(&mut self, resp: Vec<u8>) -> Result<(), PageCapExceeded> {
+        if resp.len() > eneros_agent_sdk::RESP_COUNT_MAX as usize * eneros_agent_sdk::RESP_PAGE_MAX
+        {
+            return Err(PageCapExceeded);
+        }
+        self.pages_total =
+            u8::try_from(resp.len().div_ceil(eneros_agent_sdk::RESP_PAGE_MAX).max(1))
+                .expect("域检已保证 ≤RESP_COUNT_MAX");
         self.pages_pulled = 0;
         self.paged_resp = resp;
+        Ok(())
     }
 }
 
@@ -100,8 +139,16 @@ pub(crate) struct SlotTable {
     dup_session_rejections: u32,
     page_evictions: u32,
     slow_events: u32,
+    /// 69.1 观测面：越界 Pull 拒绝计数（O1，t11 咬合）。
+    page_range_rejections: u32,
+    /// 69.1 观测面：响应超页数上限拒绝计数（I4，t14 咬合）。
+    resp_too_large: u32,
+    /// 69.1 观测面：单帧回执超 MR 预算兜底替换计数（I3，t13b 咬合）。
+    reply_truncations: u32,
     /// 每词形上次打印时刻（`u64::MAX` = 未打印过；单调 ms 时钟）。
-    last_word_ms: [u64; 4],
+    /// 69.1 扩 4 → 7（新增 PAGE-RANGE / RESP-TOOLARGE / REPLY-TRUNCATED
+    /// 三词形各占独立槽——限流按词形独立，不得共用）。
+    last_word_ms: [u64; 7],
 }
 
 impl Default for SlotTable {
@@ -118,7 +165,10 @@ impl SlotTable {
             dup_session_rejections: 0,
             page_evictions: 0,
             slow_events: 0,
-            last_word_ms: [u64::MAX; 4],
+            page_range_rejections: 0,
+            resp_too_large: 0,
+            reply_truncations: 0,
+            last_word_ms: [u64::MAX; 7],
         }
     }
 
@@ -137,6 +187,18 @@ impl SlotTable {
     }
     pub(crate) fn slow_events(&self) -> u32 {
         self.slow_events
+    }
+    /// 69.1 观测面（O1）：越界 Pull 拒绝计数。
+    pub(crate) fn page_range_rejections(&self) -> u32 {
+        self.page_range_rejections
+    }
+    /// 69.1 观测面（I4）：响应超页数上限拒绝计数。
+    pub(crate) fn resp_too_large(&self) -> u32 {
+        self.resp_too_large
+    }
+    /// 69.1 观测面（I3）：单帧回执超 MR 预算兜底替换计数。
+    pub(crate) fn reply_truncations(&self) -> u32 {
+        self.reply_truncations
     }
 
     /// badge → 槽位：既有槽精确命中，否则首个空槽；全满 = 拒绝（不再退化
@@ -165,6 +227,21 @@ impl SlotTable {
         lines.push(line);
     }
 
+    /// 单帧回执 MR 预算兜底（69.1 I3）：超
+    /// [`eneros_agent_sdk::MR_REPLY_BUDGET_BYTES`] 的回执替换为定长
+    /// `ERR:ReplyTooLarge`（19B）+ 计数 + 词形。静态锁保证正常路径
+    /// 不可达（全 ERR 文本 ≤ 112B、分页响应只回头 10B、页载荷 ≤ 104B）；
+    /// 本兜底只对"未来的意外超长形态"（如 Debug 派生变长）负责。
+    fn clamp_reply_budget(&mut self, out: &mut StepOut, now_ms: u64) {
+        if out.response.len() <= eneros_agent_sdk::MR_REPLY_BUDGET_BYTES {
+            return;
+        }
+        self.reply_truncations = self.reply_truncations.saturating_add(1);
+        let line = format!("CHUNKED-REPLY-TRUNCATED len={}", out.response.len());
+        self.push_line(&mut out.lines, WORD_REPLY_TRUNCATED, line, now_ms);
+        out.response = b"ERR:ReplyTooLarge".to_vec();
+    }
+
     /// 处理一条入站消息（对应主循环一次 recv 的分发全流程；含 SLOW 观测）。
     pub(crate) fn step(
         &mut self,
@@ -180,6 +257,12 @@ impl SlotTable {
             lines: Vec::new(),
         };
         self.dispatch(badge, payload, handler, now_ms, &mut out);
+        // 69.1（I3 / REG-CHUNKED-MR-WORDS-CAP 运行时兜底，t13b 咬合）：
+        // 单帧回执超 MR 预算 ⇒ 显式替换拒绝而非静默截断（service.rs 组帧
+        // break 与客户端 min(words, MR_REPLY_MAX_WORDS) 两端静默上限的
+        // 不可达化——静态锁保证正常路径不触发，但 `ERR:{e:?}` 的 Debug
+        // 派生长度不可静态界定）。
+        self.clamp_reply_budget(&mut out, t0);
         let dur = now_ms().saturating_sub(t0);
         if dur >= SLOW_CALL_THRESHOLD_MS {
             self.slow_events = self.slow_events.saturating_add(1);
@@ -242,9 +325,37 @@ impl SlotTable {
         if pull_frame {
             let cs = self.clients[i].as_mut().expect("slot");
             let idx = payload[4];
+            // 68 三轮复查修复（F1/F2，t8 咬合）：越界/无存续分页响应的
+            // Pull 回结构化 ERR——空响应在 target 主循环 message_info_new
+            // 零长度 = 全零 MessageInfo，与"无待回复"哨兵同形，reply 阶段
+            // 被吞，Call 语义客户端（非 MCS 无 IPC 超时）永久挂死。且此
+            // 路径不得推进 pages_pulled（越界杂散帧毒化 PAGE-EVICTED 观测）。
+            // 69.1（O1，t11 咬合）：拒绝路径记账 + 词形——第 4 个改变页序
+            // 可观测面，"静默"变"有痕"（BUG-S1 判别力交付 (ii)）。
+            let page = eneros_agent_sdk::page_slice(&cs.paged_resp, idx);
+            if page.is_empty() {
+                self.page_range_rejections = self.page_range_rejections.saturating_add(1);
+                let line = format!("CHUNKED-PAGE-RANGE slot={i}");
+                self.push_line(&mut out.lines, WORD_PAGE_RANGE, line, now_ms());
+                out.response = b"ERR:PageRange".to_vec();
+                return;
+            }
             cs.pages_pulled = cs.pages_pulled.max(idx.saturating_add(1));
-            out.response = eneros_agent_sdk::page_slice(&cs.paged_resp, idx).to_vec();
+            out.response = page.to_vec();
         } else if final_frame {
+            // 68 三轮复查修复（F3，t9 咬合）：rx 非空闲 = 本传输块未齐，
+            // Final 属协议违例——拒帧且不得 take()（否则上一传输的陈旧
+            // pending_full 被当本次请求处理，以成功形态错配）。在途传输
+            // 不受损：补齐剩余块后重发 Final 正常完成。
+            // 69.1 注：单帧 ERR 回复（含本臂）一律**不**入分页态（不
+            // set_paged）——ERR 文本若装作 1 页"未拉响应"，会污染下方
+            // evict_old 判据（把恢复路径的 Final 误判为覆盖）并主动制造
+            // 服务端-客户端页序发散（01 §3.1 发散源）。
+            let rx_idle = self.clients[i].as_ref().expect("slot").rx.idle();
+            if !rx_idle {
+                out.response = b"ERR:TransferIncomplete".to_vec();
+                return;
+            }
             // 覆盖判定先行（与槽可变借用互斥分离）。
             let evict_old = {
                 let cs = self.clients[i].as_ref().expect("slot");
@@ -253,7 +364,18 @@ impl SlotTable {
             let taken = self.clients[i].as_mut().expect("slot").pending_full.take();
             match taken {
                 Some(full) => {
-                    // 未拉完的旧页被新响应覆盖 → 可观测（F8③收口）。
+                    // 未拉完的旧页被新响应覆盖 → 可观测（F8③收口，68.1 语义）。
+                    // 69.1 订正（VOL69.1-GATE 实弹证伪卷册 B-1"拒绝覆盖"）：
+                    // 单 badge = 顺序客户端，覆盖性 Final 只来自"客户端超时
+                    // 放弃半拉响应后的整体重试"——旧页已无人再拉，覆盖 =
+                    // 与重试客户端（持新头）的页序**重新同步**（自愈）。
+                    // 拒绝（ERR:PagesOutstanding）= 重试的新 Final 反复被拒
+                    // → 活锁：实弹窗 ServerRejected×4050、energy-agent tick
+                    // 停 0、root 控制链 fail-closed、svc-telemetry 心跳饿死
+                    // 被杀（evidence/69/vol69.1）。故维持覆盖 + 计数 + 词形
+                    // （词形 = 超时重试热点观测）。不可判别的真残余面 =
+                    // respawn/badge 复用后旧客户端续拉（发散源 #1，
+                    // REG-CHUNKED-PULL-NO-DISCRIMINATOR，owner 裁决项）。
                     if evict_old {
                         self.page_evictions = self.page_evictions.saturating_add(1);
                         let line = format!("CHUNKED-PAGE-EVICTED slot={i}");
@@ -264,24 +386,37 @@ impl SlotTable {
                     if !ok && resp.is_empty() {
                         resp.extend_from_slice(b"ERR");
                     }
-                    let n = {
-                        let cs = self.clients[i].as_mut().expect("slot");
-                        cs.set_paged(resp);
-                        cs.paged_resp.len()
-                    };
-                    out.response = eneros_agent_sdk::encode_paged_header(n).to_vec();
+                    let cs = self.clients[i].as_mut().expect("slot");
+                    if cs.set_paged(resp).is_err() {
+                        // 69.1（I4 / REG-CHUNKED-PAGE-U8-CAP，t14 咬合）：
+                        // 响应超页数上限——显式拒绝 + 计数 + 词形，不得
+                        // 静默截断页数声明。
+                        self.resp_too_large = self.resp_too_large.saturating_add(1);
+                        let line = format!("CHUNKED-RESP-TOOLARGE slot={i}");
+                        self.push_line(&mut out.lines, WORD_RESP_TOO_LARGE, line, now_ms());
+                        out.response = b"ERR:ResponseTooLarge".to_vec();
+                        return;
+                    }
+                    out.response =
+                        eneros_agent_sdk::encode_paged_header(cs.paged_resp.len()).to_vec();
                 }
                 None => {
-                    let resp = b"ERR:NoTransfer".to_vec();
-                    let ret = resp.clone();
-                    self.clients[i].as_mut().expect("slot").set_paged(resp);
-                    out.response = ret;
+                    out.response = b"ERR:NoTransfer".to_vec();
                 }
             }
         } else {
             let cs = self.clients[i].as_mut().expect("slot");
             match cs.rx.on_message(payload, true) {
                 eneros_agent_sdk::ChunkedEvent::Header { .. } => {
+                    // 69.1（BUG-S2 / REG-CHUNK-FINAL-STALE-MATCH 补全，t10/t10c
+                    // 咬合）：Header 被接受 = 新传输开始 = 上一传输的组装产物
+                    // 作废。不清则 Malformed/DUP 复位 rx 后，Final 的 rx_idle
+                    // 闸门（F3）会放行陈旧载荷并以合法 ENVP 错配（静默错误
+                    // 成功）。完备性：任何"陈旧 pending_full + 到达 Final"的
+                    // 组合，中间必有一次**被接受的** Header——DUP-SESSION 拒绝
+                    // 使客户端在 Header 步即失败（永不到 Final），Malformed
+                    // 复位不产生 Final；故在被接受的 Header 清理即完备。
+                    cs.pending_full = None;
                     out.response = eneros_agent_sdk::ack_bytes().to_vec();
                 }
                 eneros_agent_sdk::ChunkedEvent::Data { .. } => {}
@@ -289,8 +424,9 @@ impl SlotTable {
                     cs.pending_full = Some(full);
                 }
                 eneros_agent_sdk::ChunkedEvent::Malformed(e) => {
+                    // 69.1：单帧 ERR 回复不入分页态（见 final_frame 臂注）——
+                    // 覆盖在拉响应 = 页序发散源（01 §3.1）+ evict_old 污染。
                     let resp = format!("ERR:{e:?}").into_bytes();
-                    cs.set_paged(resp.clone());
                     out.response = resp;
                 }
             }
@@ -515,6 +651,421 @@ mod tests {
         let _ = step(&mut t, 7, &data_frame(0, 0x66), &mut clock);
         let fin = step(&mut t, 7, &final_frame(), &mut clock);
         assert!(fin.response[0..4] == *CHUNK_MAGIC_PAGED);
+    }
+
+    // ---- t8：越界/空响应 Pull 须结构化拒绝（F1 挂死面 + F2 毒化面） ------
+
+    /// 68 三轮复查 t8（红测先行）：Pull 越界（或无分页响应存续）时——
+    /// ① 必须回结构化 ERR（红=空响应：target 主循环 message_info_new
+    /// 零长度 = 全零 MessageInfo，与"无待回复"哨兵同形，reply 阶段被
+    /// 吞，Call 语义客户端（非 MCS 无 IPC 超时）永久挂死）；② 越界帧
+    /// 不得推进 pages_pulled（红=毒化：后续同槽覆盖性 Final 的
+    /// PAGE-EVICTED 观测被无声击穿）。
+    #[test]
+    fn t8_pull_out_of_range_returns_err_and_does_not_poison_eviction() {
+        let mut clock = Clock(1_000);
+        let mut t = SlotTable::new();
+        // ① 新槽（无分页响应存续）上的 Pull：结构化 ERR，不得为空。
+        let fresh = step(&mut t, 5, &pull_frame(0), &mut clock);
+        assert_eq!(
+            fresh.response,
+            b"ERR:PageRange".to_vec(),
+            "无分页响应的 Pull 必须结构化拒绝（空响应 = 客户端挂死面）"
+        );
+        // ② 2 页响应只拉第 0 页，再越界 pull(200)。
+        let _ = step(&mut t, 6, &header_frame(150, 2, 6), &mut clock);
+        for i in 0..2 {
+            let _ = step(&mut t, 6, &data_frame(i, 0x11), &mut clock);
+        }
+        let _ = step(&mut t, 6, &final_frame(), &mut clock);
+        let ok0 = step(&mut t, 6, &pull_frame(0), &mut clock);
+        assert_eq!(ok0.response.len(), 104);
+        let oob = step(&mut t, 6, &pull_frame(200), &mut clock);
+        assert_eq!(
+            oob.response,
+            b"ERR:PageRange".to_vec(),
+            "越界 Pull 必须结构化拒绝"
+        );
+        // ③ 覆盖性 Final 的 PAGE-EVICTED 不得被越界帧毒化（只拉了 1/2 页）。
+        let _ = step(&mut t, 6, &header_frame(10, 1, 7), &mut clock);
+        let _ = step(&mut t, 6, &data_frame(0, 0x22), &mut clock);
+        let out = step(&mut t, 6, &final_frame(), &mut clock);
+        assert_eq!(
+            t.page_evictions(),
+            1,
+            "越界 Pull 不得推进 pages_pulled 击穿驱逐观测"
+        );
+        assert!(out.lines.iter().any(|l| l.contains("CHUNKED-PAGE-EVICTED")));
+    }
+
+    // ---- t9：传输中 Final 须拒帧（F3 陈旧 pending_full 错配） ------------
+
+    /// 68 三轮复查 t9（红测先行）：上一传输完成后未发 Final，客户端即开
+    /// 新传输且块未齐就发 Final——此时 rx 非空闲，Final 必须被拒（红=
+    /// take() 取到上一传输的陈旧载荷当本次请求处理，回合法 ENVP）。拒帧
+    /// 后在途传输不受损：补齐剩余块 + 重发 Final 正常完成。
+    #[test]
+    fn t9_final_mid_transfer_rejected_and_transfer_survives() {
+        let mut clock = Clock(1_000);
+        let mut t = SlotTable::new();
+        // A：完成（pending_full = A 的 150B 载荷），但 Final 尚未发。
+        let _ = step(&mut t, 9, &header_frame(150, 2, 9), &mut clock);
+        for i in 0..2 {
+            let _ = step(&mut t, 9, &data_frame(i, 0x11), &mut clock);
+        }
+        // B：新传输在途（块未齐）就发 Final → 拒帧。
+        let _ = step(&mut t, 9, &header_frame(150, 2, 10), &mut clock);
+        let _ = step(&mut t, 9, &data_frame(0, 0x22), &mut clock);
+        let early = step(&mut t, 9, &final_frame(), &mut clock);
+        assert_eq!(
+            early.response,
+            b"ERR:TransferIncomplete".to_vec(),
+            "传输中 Final 必须拒帧（红=陈旧载荷被当本次请求处理）"
+        );
+        // B 传输不受损：补齐第 1 块 + Final → 正常处理 B 的载荷（0x22）。
+        let _ = step(&mut t, 9, &data_frame(1, 0x22), &mut clock);
+        let fin = step(&mut t, 9, &final_frame(), &mut clock);
+        assert!(
+            fin.response.len() >= 4 && fin.response[0..4] == *CHUNK_MAGIC_PAGED,
+            "补齐后 Final 须正常完成: {:?}",
+            fin.response
+        );
+        let page0 = step(&mut t, 9, &pull_frame(0), &mut clock);
+        assert!(
+            page0.response.iter().all(|&b| b == 0x22),
+            "Final 须处理 B 的载荷（红=处理的是 A 的陈旧载荷）"
+        );
+    }
+
+    // ---- t10：rx 空闲但 pending_full 陈旧，Final 不得以成功形态错配 ----
+
+    /// 69.1 WP-69.1.0 红测（BUG-S2 服务端半边，01 §3.2 S-1 的仓内真测；
+    /// t9 只覆盖 rx 非空闲的一半）：A 完成后 Final 丢失，B 的 Header 被
+    /// 接受（rx idle ⇒ 无 DUP-SESSION 拦截），B 的 Data(0) 重传 ⇒
+    /// BadIndex ⇒ Malformed ⇒ rx 复位 idle——B 的 Final 通过 F3 闸门
+    /// （rx_idle）。红 = take() 取到 A 的陈旧载荷当本次请求处理，回
+    /// **合法 ENVP**（静默错误成功）；绿 = ERR:NoTransfer 显式拒绝。
+    #[test]
+    fn t10_stale_pending_full_not_served_after_malformed_reset() {
+        let mut clock = Clock(1_000);
+        let mut t = SlotTable::new();
+        // A：完成（pending_full = Some(A)），Final 不发（丢失/超时）。
+        assert!(ack(&step(&mut t, 10, &header_frame(150, 2, 9), &mut clock)));
+        let _ = step(&mut t, 10, &data_frame(0, 0x11), &mut clock);
+        let _ = step(&mut t, 10, &data_frame(1, 0x11), &mut clock);
+        // B：Header 被接受（rx idle ⇒ 无 DUP-SESSION）。
+        assert!(ack(&step(
+            &mut t,
+            10,
+            &header_frame(150, 2, 10),
+            &mut clock
+        )));
+        let _ = step(&mut t, 10, &data_frame(0, 0x22), &mut clock);
+        // Data(0) 重传 → BadIndex ⇒ Malformed ⇒ rx 复位 idle。
+        let _ = step(&mut t, 10, &data_frame(0, 0x22), &mut clock);
+        // B 的 Final：【红】陈旧 pending_full(A) 被当 B 的请求处理。
+        let fin = step(&mut t, 10, &final_frame(), &mut clock);
+        assert!(
+            !(fin.response.len() >= 4 && fin.response[0..4] == *CHUNK_MAGIC_PAGED),
+            "陈旧 pending_full 不得以成功形态（ENVP）错配给新传输: {:?}",
+            fin.response
+        );
+        assert_eq!(
+            fin.response,
+            b"ERR:NoTransfer".to_vec(),
+            "B 的 Final 必须显式拒绝（take() = None）"
+        );
+    }
+
+    // ---- t10b/t10c/t10d：BUG-S2 修复的变异锚（69.1 WP-69.1.1） ----------
+
+    /// t10b（变异靶，**现状即绿**）：A 完成无 Final → Header(B) 被接受后
+    /// **直接** Final(B)（无任何 Data/Malformed）——rx 非空闲 ⇒ F3 闸门拒绝。
+    /// 它不是 BUG-S2 的红测：它锁的是"清理点挪位不得破坏 F3 闸门"
+    /// （卷 69.1 §WP-69.1.1 变异表；t10b 绿不代表修好了）。
+    #[test]
+    fn t10b_header_then_immediate_final_hits_f3_gate() {
+        let mut clock = Clock(1_000);
+        let mut t = SlotTable::new();
+        assert!(ack(&step(&mut t, 11, &header_frame(150, 2, 1), &mut clock)));
+        let _ = step(&mut t, 11, &data_frame(0, 0x11), &mut clock);
+        let _ = step(&mut t, 11, &data_frame(1, 0x11), &mut clock);
+        // B：Header 被接受（rx idle）后直接 Final——块未齐。
+        assert!(ack(&step(&mut t, 11, &header_frame(150, 2, 2), &mut clock)));
+        let fin = step(&mut t, 11, &final_frame(), &mut clock);
+        assert_eq!(
+            fin.response,
+            b"ERR:TransferIncomplete".to_vec(),
+            "F3 闸门必须拒绝传输中 Final（清理点挪位不得破坏本闸门）"
+        );
+    }
+
+    /// t10c（BUG-S2 变体红测 + 变异锚）：与 t10 同型，但 B 的**第一帧
+    /// Data 即违例**（index=5 ≠ 0 ⇒ BadIndex ⇒ Malformed，全程无合法
+    /// Data 事件）。红 = 陈旧 pending_full(A) 错配（ENVP）；绿 =
+    /// ERR:NoTransfer。同时咬"清理点挪到 Data 事件臂"的变异——本序列
+    /// 无任何 Data 事件，挪位即漏（t10 的合法 Data(0) 会发 Data 事件，
+    /// 咬不住该变异）。
+    #[test]
+    fn t10c_first_data_frame_bad_index_stale_pending_not_served() {
+        let mut clock = Clock(1_000);
+        let mut t = SlotTable::new();
+        assert!(ack(&step(&mut t, 12, &header_frame(150, 2, 1), &mut clock)));
+        let _ = step(&mut t, 12, &data_frame(0, 0x11), &mut clock);
+        let _ = step(&mut t, 12, &data_frame(1, 0x11), &mut clock);
+        assert!(ack(&step(&mut t, 12, &header_frame(150, 2, 2), &mut clock)));
+        // 第一帧 Data 即违例（index=5）→ BadIndex ⇒ Malformed ⇒ rx 复位。
+        let _ = step(&mut t, 12, &data_frame(5, 0x22), &mut clock);
+        let fin = step(&mut t, 12, &final_frame(), &mut clock);
+        assert!(
+            !(fin.response.len() >= 4 && fin.response[0..4] == *CHUNK_MAGIC_PAGED),
+            "陈旧 pending_full 不得错配（无 Data 事件序列）: {:?}",
+            fin.response
+        );
+        assert_eq!(fin.response, b"ERR:NoTransfer".to_vec());
+    }
+
+    /// t10d（行为锁）：Complete 后、Final 前夹杂一条**无传输在途**的杂散
+    /// Data（NoTransfer Malformed，Send 回执客户端不读）——不得清除
+    /// pending_full：A 的 Final 仍须拿到 A 的响应。咬"清理点挪到
+    /// Malformed 臂"的变异（该挪位会在此杀掉合法挂起的响应）。
+    #[test]
+    fn t10d_junk_data_between_complete_and_final_keeps_pending() {
+        let mut clock = Clock(1_000);
+        let mut t = SlotTable::new();
+        assert!(ack(&step(&mut t, 13, &header_frame(150, 2, 1), &mut clock)));
+        let _ = step(&mut t, 13, &data_frame(0, 0x11), &mut clock);
+        let _ = step(&mut t, 13, &data_frame(1, 0x11), &mut clock);
+        // 杂散 Data（无传输在途）→ NoTransfer Malformed（回执不可读）。
+        let _ = step(&mut t, 13, &data_frame(0, 0x99), &mut clock);
+        // A 的 Final：必须照常处理 A 的载荷。
+        let fin = step(&mut t, 13, &final_frame(), &mut clock);
+        assert!(
+            fin.response.len() >= 4 && fin.response[0..4] == *CHUNK_MAGIC_PAGED,
+            "杂散 Data 不得杀死挂起的 pending_full: {:?}",
+            fin.response
+        );
+        let page0 = step(&mut t, 13, &pull_frame(0), &mut clock);
+        assert!(
+            page0.response.iter().all(|&b| b == 0x11),
+            "Final 须处理 A 的载荷（红=被杂散帧清场）"
+        );
+    }
+
+    // ---- t11：越界 Pull 拒绝必须可观测、可记账（O1） ----------------------
+
+    /// 69.1 WP-69.1.0 红测（BUG-S1 配套观测面，01 §3.3 O1）：越界 Pull 的
+    /// `ERR:PageRange` 拒绝路径此前零计数零词形（第 4 个改变页序状态却
+    /// 不记账的盲点）。① 拒绝词形本身 t8 已锁不重复；② 计数
+    /// `page_range_rejections`；③ 词形 `CHUNKED-PAGE-RANGE slot=<n>`。
+    /// 红 = 计数 0 且无词形（运维不可见）。
+    #[test]
+    fn t11_page_range_reject_is_observable_and_accounted() {
+        let mut clock = Clock(1_000);
+        let mut t = SlotTable::new();
+        // 新槽（无分页响应存续）上的越界 Pull → 结构化拒绝（t8① 同型）。
+        let oob = step(&mut t, 14, &pull_frame(0), &mut clock);
+        assert_eq!(oob.response, b"ERR:PageRange".to_vec());
+        assert_eq!(
+            t.page_range_rejections(),
+            1,
+            "越界 Pull 拒绝必须记账（红=现状零计数）"
+        );
+        assert!(
+            oob.lines
+                .iter()
+                .any(|l| l.contains("CHUNKED-PAGE-RANGE slot=0")),
+            "PAGE-RANGE 词形缺失（红=现状运维不可见）: {:?}",
+            oob.lines
+        );
+        // 计数累计不受限；词形行每分钟每词形至多 1 行。
+        let oob2 = step(&mut t, 14, &pull_frame(3), &mut clock);
+        assert_eq!(t.page_range_rejections(), 2);
+        assert!(
+            !oob2.lines.iter().any(|l| l.contains("CHUNKED-PAGE-RANGE")),
+            "词形行必须每分钟每词形至多 1 行"
+        );
+    }
+
+    // ---- t12：覆盖性 Final 自愈重同步 + 计数（反活锁锁，69.1 订正版） --
+
+    /// 69.1 WP-69.1.2（t12 重写）：A 响应未拉完时，覆盖性 Final（同 badge
+    /// 客户端超时放弃半拉响应后的**整体重试**）必须照常安装新响应（ENVP）
+    /// 且驱逐计数/词形保持——覆盖 = 与重试客户端（持新头）页序重新同步。
+    /// **本测锁死自愈语义，防"拒绝覆盖"回潮**：VOL69.1-GATE 实弹证伪
+    /// 卷册 B-1 拒绝式——拒绝 = 重试的新 Final 反复被拒 → 活锁（
+    /// ServerRejected×4050 / energy-agent tick 停 0 / svc-telemetry 心跳
+    /// 饿死被杀，证据 evidence/69/vol69.1）。
+    #[test]
+    fn t12_covering_final_self_heals_resync_and_counts() {
+        let mut clock = Clock(1_000);
+        let mut t = SlotTable::new();
+        // A：150B（2 页），只拉第 0 页后客户端"超时放弃"。
+        let _ = step(&mut t, 16, &header_frame(150, 2, 1), &mut clock);
+        for i in 0..2 {
+            let _ = step(&mut t, 16, &data_frame(i, 0x11), &mut clock);
+        }
+        let _ = step(&mut t, 16, &final_frame(), &mut clock);
+        let p0 = step(&mut t, 16, &pull_frame(0), &mut clock);
+        assert_eq!(p0.response.len(), 104);
+        // 重试：B 覆盖性传输 + Final——必须成功安装（不得拒）。
+        let _ = step(&mut t, 16, &header_frame(10, 1, 2), &mut clock);
+        let _ = step(&mut t, 16, &data_frame(0, 0x22), &mut clock);
+        let fin = step(&mut t, 16, &final_frame(), &mut clock);
+        assert!(
+            fin.response.len() >= 4 && fin.response[0..4] == *CHUNK_MAGIC_PAGED,
+            "覆盖性 Final 必须自愈安装新响应（拒绝 = 活锁面）: {:?}",
+            fin.response
+        );
+        assert_eq!(t.page_evictions(), 1, "驱逐计数保持（超时重试热点观测）");
+        assert!(
+            fin.lines.iter().any(|l| l.contains("CHUNKED-PAGE-EVICTED")),
+            "PAGE-EVICTED 词形保持"
+        );
+        // 页序已与重试客户端重同步：Pull(0) = B 的 10B 页（不再是 A 的 104B）。
+        let pb = step(&mut t, 16, &pull_frame(0), &mut clock);
+        assert_eq!(pb.response.len(), 10, "页序必须重同步到新响应");
+        assert!(pb.response.iter().all(|&b| b == 0x22), "须是 B 的页");
+    }
+
+    // ---- t13/t13b：单帧回执 MR 预算（I3）---------------------------------
+
+    /// 69.1 WP-69.1.3：`ERR:{e:?}`（Malformed 臂）长度由 Debug 派生决定，
+    /// 不由字面量界定——穷举全部变体断言 ≤ `MR_REPLY_BUDGET_BYTES`（112B）。
+    /// 穷举 match（无通配）= agent-sdk 新增变体漏枚举即编译失败（E0004）：
+    /// 编译期 + 运行期双锁（新增变体必须同时考虑 MR 预算）。
+    #[test]
+    fn t13_all_chunk_error_debug_forms_fit_mr_budget() {
+        use eneros_agent_sdk::{ChunkError, MR_REPLY_BUDGET_BYTES};
+        fn assert_exhaustive(e: ChunkError) {
+            match e {
+                ChunkError::BadMagic
+                | ChunkError::BadLength(_)
+                | ChunkError::BadIndex { .. }
+                | ChunkError::TooLarge { .. }
+                | ChunkError::TooManyChunks(_)
+                | ChunkError::LengthMismatch { .. }
+                | ChunkError::Busy
+                | ChunkError::NoTransfer
+                | ChunkError::Transport
+                | ChunkError::ServerRejected => {}
+            }
+        }
+        // 逐变体按最长 Debug 形态构造（数值域取上界）。
+        let cases = [
+            ChunkError::BadMagic,
+            ChunkError::BadLength(usize::MAX),
+            ChunkError::BadIndex {
+                got: u8::MAX,
+                expected: u8::MAX,
+            },
+            ChunkError::TooLarge { len: usize::MAX },
+            ChunkError::TooManyChunks(u8::MAX),
+            ChunkError::LengthMismatch {
+                total: u32::MAX,
+                chunks: u8::MAX,
+            },
+            ChunkError::Busy,
+            ChunkError::NoTransfer,
+            ChunkError::Transport,
+            ChunkError::ServerRejected,
+        ];
+        for e in cases {
+            assert_exhaustive(e);
+            let wire = format!("ERR:{e:?}").into_bytes();
+            assert!(
+                wire.len() <= MR_REPLY_BUDGET_BYTES,
+                "ERR:{e:?} = {}B 超 MR 回执预算 {MR_REPLY_BUDGET_BYTES}B（该变体须改定长文案）",
+                wire.len()
+            );
+        }
+    }
+
+    /// t13b（I3 运行时兜底白盒测）：step() 出口的超预算回执必须显式替换
+    /// 拒绝（计数 + 词形），不得静默截断。正常路径静态不可达 ⇒ 白盒直调
+    /// 钳制面构造 200B 回执。
+    #[test]
+    fn t13b_reply_budget_clamp_replaces_oversized_response() {
+        let mut t = SlotTable::new();
+        let mut over = StepOut {
+            response: alloc::vec![0xAB; 200],
+            lines: Vec::new(),
+        };
+        t.clamp_reply_budget(&mut over, 1_000);
+        assert_eq!(
+            over.response,
+            b"ERR:ReplyTooLarge".to_vec(),
+            "超预算回执必须整帧替换为定长拒绝（红=静默截断）"
+        );
+        assert_eq!(t.reply_truncations(), 1);
+        assert!(
+            over.lines
+                .iter()
+                .any(|l| l.contains("CHUNKED-REPLY-TRUNCATED len=200")),
+            "REPLY-TRUNCATED 词形缺失: {:?}",
+            over.lines
+        );
+        // 预算内回执原样通过（不计数）。
+        let mut ok = StepOut {
+            response: b"ERR:PageRange".to_vec(),
+            lines: Vec::new(),
+        };
+        t.clamp_reply_budget(&mut ok, 1_000);
+        assert_eq!(ok.response, b"ERR:PageRange".to_vec());
+        assert_eq!(t.reply_truncations(), 1, "预算内回执不得计数");
+    }
+
+    // ---- t14：响应超 u8 页序域界（255×104=26520B）须显式拒绝（I4） ----
+
+    /// 69.1 WP-69.1.4 红测（REG-CHUNKED-PAGE-U8-CAP）：响应方向页数原
+    /// 无上限（`set_paged` 的 `as u8` 与 `encode_paged_header` 的
+    /// `chunks as u8` 均无检查，>255 页静默回绕）。红 = 26521B（256 页）
+    /// 照常分页（页数回绕）；绿 = `ERR:ResponseTooLarge` + 计数 + 词形。
+    /// 边界段：26520B（255 页恰满 u8 域）必须照常 ENVP——svc-config
+    /// 7099B 配置分发等既有生产面在界内不受扰（VOL69.1-GATE 实弹教训：
+    /// 卷册原拟 16 页误界曾误拒 68 页配置束，级联打断全窗采集/决策链）。
+    #[test]
+    fn t14_response_over_page_cap_rejected_not_truncated() {
+        struct FixedLen(usize);
+        impl ControlServiceHandler for FixedLen {
+            fn handle(&mut self, _req: &[u8], resp: &mut Vec<u8>, _now_ms: u64) -> bool {
+                resp.resize(self.0, 0x5A);
+                true
+            }
+        }
+        let mut clock = Clock(1_000);
+        let mut t = SlotTable::new();
+        assert!(ack(&step(&mut t, 15, &header_frame(10, 1, 1), &mut clock)));
+        let _ = step(&mut t, 15, &data_frame(0, 0x11), &mut clock);
+        let out = {
+            let mut nowfn = || clock.now();
+            t.step(15, &final_frame(), &mut FixedLen(26521), &mut nowfn)
+        };
+        assert_eq!(
+            out.response,
+            b"ERR:ResponseTooLarge".to_vec(),
+            "超 u8 页序域界的响应必须显式拒绝（红=照常 ENVP 分页/回绕）"
+        );
+        assert_eq!(t.resp_too_large(), 1);
+        assert!(
+            out.lines
+                .iter()
+                .any(|l| l.contains("CHUNKED-RESP-TOOLARGE slot=0")),
+            "RESP-TOOLARGE 词形缺失: {:?}",
+            out.lines
+        );
+        // 边界内照常分页（26520B = 255 页，恰满 u8 域界）。
+        let _ = step(&mut t, 15, &header_frame(10, 1, 2), &mut clock);
+        let _ = step(&mut t, 15, &data_frame(0, 0x22), &mut clock);
+        let out2 = {
+            let mut nowfn = || clock.now();
+            t.step(15, &final_frame(), &mut FixedLen(26520), &mut nowfn)
+        };
+        assert!(
+            out2.response.len() >= 4 && out2.response[0..4] == *CHUNK_MAGIC_PAGED,
+            "恰在页数上限内的响应不得被拒: {:?}",
+            out2.response
+        );
     }
 
     // ---- 观测面：SLOW（阈值 + 每词形每分钟 1 行） ------------------------

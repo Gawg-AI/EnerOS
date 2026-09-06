@@ -148,9 +148,14 @@ impl<S: EventStore> StoreSink<S> {
                 };
                 self.store.read(part, from, &mut c)?.next_offset
             };
-            // 位点推进（含跳过的非观测帧——消费面不重复见）。
-            self.store
-                .commit_consumer(DELIVERY_GROUP, &[PartitionOffset::new(part, next_from)])?;
+            // 位点推进（含跳过的非观测帧——消费面不重复见）。68 三轮
+            // 复查：零进度（next_from == from）不提交——无条件提交会让
+            // 每次 drain 空转 +1 世代并重写 4KiB 槽块（与 store_fact_
+            // sink.rs 的姊妹守卫对称；交付面生产未接线，属磨损防线）。
+            if next_from > from {
+                self.store
+                    .commit_consumer(DELIVERY_GROUP, &[PartitionOffset::new(part, next_from)])?;
+            }
             out.extend(frames);
         }
         Ok(out)

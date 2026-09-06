@@ -250,6 +250,19 @@ impl<D: BlockDevice> AbPartitionOta<D> {
         }
     }
 
+    /// 槽容量（字节）= `PARTITION_BLOCKS` × 设备块大小——槽跨度在本模块
+    /// 自身寻址中以设备块计（`SLOT_B_BASE = SLOT_A_BASE + PARTITION_
+    /// BLOCKS`；生产设备 bs=512 ⇒ 1 MiB，integration 大块 mock 同式自洽）。
+    /// 68 三轮复查（REG-OTA-SLOT-OVERWRITE）：AbPartitionOta 挂载的设备
+    /// 是整数据盘（svc-ota `EipcBlockDevice::new(io, 512, 32768)`），无
+    /// 槽容量域检时越槽写物理落入槽后块——保护带 → TSDB/审计/学习/事件/
+    /// 事实/快照区段（同盘静默损毁），且自洽超长镜像回读自洽可过
+    /// verify+activate。写面（write_bytes 硬界）与声明面（prepare 早门）
+    /// 双门封闭。
+    fn slot_cap_bytes(bs: usize) -> u64 {
+        PARTITION_BLOCKS * bs as u64
+    }
+
     /// 借出后端设备（持久化等只读场景）。
     pub fn device(&self) -> &D {
         &self.device
@@ -262,7 +275,13 @@ impl<D: BlockDevice> AbPartitionOta<D> {
         offset: u64,
         data: &[u8],
     ) -> Result<(), OtaError> {
+        // 68 三轮复查：槽容量硬界（写面唯一咽喉）——越界整体拒绝（无
+        // 部分写），防越槽物理写破坏同盘数据区段。
         let bs = self.device.block_size();
+        let end = offset.saturating_add(data.len() as u64);
+        if end > Self::slot_cap_bytes(bs) {
+            return Err(OtaError::WriteFailed { offset });
+        }
         let base = Self::slot_base_block(slot);
         let mut buf = vec![0u8; bs];
         let mut written = 0usize;
@@ -312,6 +331,15 @@ impl<D: BlockDevice> OtaManager for AbPartitionOta<D> {
             meta.target_version.as_str(),
             self.partitions[cur_idx].version.as_str(),
         )?;
+        // 68 三轮复查：声明镜像尺寸超槽容量即拒（早门——下游写面另有
+        // write_bytes 硬界兜底；两门口径同源 slot_cap_bytes）。
+        let cap = Self::slot_cap_bytes(self.device.block_size());
+        if meta.image_size > cap {
+            return Err(OtaError::ImageTooLarge {
+                size: meta.image_size,
+                cap,
+            });
+        }
         // 选非激活分区（允许在 Failed/Empty/Verified 上重新发起，支持失败重试）
         let slot = self.get_inactive_slot();
         let idx = Self::slot_index(slot);
@@ -655,6 +683,62 @@ mod tests {
         // Empty 态同样拒绝
         let err2 = ota.activate(PartitionSlot::B).expect_err("仍应拒绝");
         assert_eq!(err2, OtaError::VerifyFailed);
+    }
+
+    // ---- 68 三轮复查（REG-OTA-SLOT-OVERWRITE）：槽容量域 ----------------
+
+    /// 越槽写物理落点测试（红测先行）：设备大于双槽（svc-ota 真实形态 =
+    /// 整数据盘 32768 块）时，槽末之后的 write 此前物理成功落入槽后块
+    /// （保护带→TSDB/审计/事件/事实/快照区段——同盘静默损毁）。红=写
+    /// 成功且槽后块非零。变异靶：去掉 write_bytes 槽容量域检 → 本测红。
+    #[test]
+    fn t10_write_beyond_slot_cap_rejected_and_physical_block_untouched() {
+        let mut rng = CsRng::new();
+        let kp = Sm2KeyPair::generate(&mut rng).expect("密钥对生成失败");
+        // 设备 = 双槽 + 槽后 8 块：暴露越槽写的真实落点。
+        let dev = MockBlockDevice::new(TEST_BLOCKS + 8, 512);
+        let mut ota = AbPartitionOta::new(dev, kp.public_key, 1_000);
+        let (_, meta) = make_image(&kp, &mut rng, 512, 512);
+        let slot = ota.prepare_upgrade(meta).expect("prepare");
+        let base = AbPartitionOta::<MockBlockDevice>::slot_base_block(slot);
+        let cap = PARTITION_BLOCKS * 512; // bs=512 设备的槽容量（字节）
+                                          // 槽末之后 512B 写：必须拒绝。
+        let err = ota
+            .write_chunk(slot, cap, &[0xAA; 512])
+            .expect_err("越槽写必须拒绝（红=物理写入槽后区段）");
+        assert!(matches!(err, OtaError::WriteFailed { .. }));
+        // 物理证据：槽后第一块必须保持零。
+        let mut blk = vec![0u8; 512];
+        ota.device()
+            .read_block(base + PARTITION_BLOCKS, &mut blk)
+            .expect("read");
+        assert!(
+            blk.iter().all(|&b| b == 0),
+            "槽后物理块不得被写入（TSDB/事件/事实/快照区段同盘）"
+        );
+        // 跨界写（最后 256B 在槽内 + 256B 越槽）：整体拒绝（无部分写）。
+        let err2 = ota
+            .write_chunk(slot, cap - 256, &[0xBB; 512])
+            .expect_err("跨界写必须整体拒绝");
+        assert!(matches!(err2, OtaError::WriteFailed { .. }));
+    }
+
+    /// 声明镜像尺寸超槽容量：prepare 即拒（早门，红=Ok 放行）。
+    /// 变异靶：去掉 prepare_upgrade 的 ImageTooLarge 门 → 本测红。
+    #[test]
+    fn t10b_prepare_rejects_oversized_declared_image() {
+        let (mut ota, kp, mut rng) = setup();
+        let (_, mut meta) = make_image(&kp, &mut rng, 512, 512);
+        let cap = PARTITION_BLOCKS * 512;
+        meta.image_size = cap + 512;
+        assert_eq!(
+            ota.prepare_upgrade(meta),
+            Err(OtaError::ImageTooLarge {
+                size: cap + 512,
+                cap,
+            }),
+            "声明尺寸超槽容量必须在 prepare 拒绝（写面另有硬界）"
+        );
     }
 }
 

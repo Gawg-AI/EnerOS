@@ -131,8 +131,8 @@ pub use agent::{Agent, AgentDescriptor, AgentError, AgentId, SDK_VERSION};
 pub use chunked::{
     ack_bytes, encode_paged_header, final_bytes, is_pull_request, page_slice, plan_chunks,
     pull_request, ChunkError, ChunkHeader, ChunkedClient, ChunkedEvent, ChunkedReceiver, RawIpc,
-    CHUNK_DATA_MAX, CHUNK_FRAME_LEN, CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER, PAGED_HEADER_LEN,
-    PULL_MAGIC, RESP_PAGE_MAX,
+    CHUNK_DATA_MAX, CHUNK_FRAME_LEN, CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER, MR_REPLY_BUDGET_BYTES,
+    MR_REPLY_MAX_WORDS, PAGED_HEADER_LEN, PULL_MAGIC, RESP_COUNT_MAX, RESP_PAGE_MAX,
 };
 pub use config::Config;
 pub use context::Context;

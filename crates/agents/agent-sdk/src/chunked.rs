@@ -44,6 +44,24 @@ pub const RESP_PAGE_MAX: usize = 104;
 /// 分页响应头定长：magic 4 + total u32 + chunk_count u8 + last_len u8。
 pub const PAGED_HEADER_LEN: usize = 10;
 
+/// MR 单帧回执 words 上限（69.1 I3 / REG-CHUNKED-MR-WORDS-CAP 单源：
+/// `control_service_main` 组帧 break 与客户端 `request_raw` 组装 min 同引
+/// 此常量；此前是 `14` 魔数两端手抄，超限即静默截断）。
+/// **Z1 合规声明**：本常量与 [`MR_REPLY_BUDGET_BYTES`] 是 MR 传输预算
+/// 常量，**不是** chunked 帧格式常量（magic/帧长/页大小/块数上限一律
+/// 不动）。
+pub const MR_REPLY_MAX_WORDS: usize = 14;
+/// MR 单帧回执字节预算（= [`MR_REPLY_MAX_WORDS`] × word 宽 8B）。
+pub const MR_REPLY_BUDGET_BYTES: usize = MR_REPLY_MAX_WORDS * 8;
+
+// 69.1（I3）静态锁：回执预算与页机制的关系编译期固定。若未来新增超
+// 预算回执形态，此处即编译失败——不得改为运行时检查后放行。（预算与
+// 物理 MR 区"恰减 1 word"的关系锁在 [`crate::ipc_sel4`] 内——该模块
+// cfg 门控，host 裸库构建不可达。）
+const _: () = assert!(MR_REPLY_BUDGET_BYTES >= RESP_PAGE_MAX);
+const _: () = assert!(MR_REPLY_BUDGET_BYTES % 8 == 0);
+const _: () = assert!(MR_REPLY_BUDGET_BYTES / 8 == MR_REPLY_MAX_WORDS);
+
 /// Header 消息定长。
 pub const CHUNK_HEADER_LEN: usize = 24;
 /// Data 消息定长（magic 4 + index 1 + 载荷 104）。
@@ -53,10 +71,21 @@ pub const CHUNK_DATA_MAX: usize = 104;
 /// 块数上限（270B 信封最多 3 块；留裕量防畸形声明）。
 pub const CHUNK_COUNT_MAX: u8 = 16;
 
+/// 响应方向页数上限（69.1 I4 / REG-CHUNKED-PAGE-U8-CAP：u8 页序域界）。
+/// **域界 = 255 页（`u8::MAX`）× 104B = 26520B**——I4 的不变量是"`u8`
+/// 表示静态证明不会截断"，非请求方向预算的美学对齐。卷册原拟 16 页
+/// （1664B）被 VOL69.1-GATE 实弹证伪：svc-config 启动期分发 7099B 配置
+/// 束（68 页）为既有生产面，16 页域检误拒 → 全窗 ACQ/决策链级联失败。
+/// 请求方向 [`CHUNK_COUNT_MAX`]（16 块/1664B）不受本常量影响。
+pub const RESP_COUNT_MAX: u8 = u8::MAX;
+
 // 蓝图 61 [06] §4.2/§4.7：chunk 逻辑上限冻结 = 16 × 104 = 1664B——与
 // telemetry-model::domain 的 `CHUNK_LOGICAL_CAP`（DomainEvent 最大帧
 // 1158B ≤ 1664B 断言）互锁；任一侧容量漂移即编译失败。
 const _: () = assert!((CHUNK_COUNT_MAX as usize) * CHUNK_DATA_MAX == 1664);
+// 69.1（I4）静态锁：响应方向页数域界 = u8 全域（255 × 104 = 26520B）——
+// 域检后 `u8` 表示数学上不可截断。
+const _: () = assert!((RESP_COUNT_MAX as usize) * RESP_PAGE_MAX == 26520);
 
 /// 分块协议错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,6 +360,11 @@ impl ChunkedReceiver {
     }
 
     fn on_final(&mut self, _msg_is_request: bool) -> ChunkedEvent {
+        // 69.1 注记（O2）：`SlotTable` 在 `final_frame` 分支提前拦截 Final
+        // 帧（control-services `service_slots.rs` 的 final_frame 臂先于
+        // rx.on_message 处理），故本函数在 SlotTable 消费路径下**不可达**；
+        // 保留为状态机完备性面（host 侧其他 ChunkedReceiver 消费者可能
+        // 经 on_message 走到此）。`_msg_is_request` 形参保留签名对称。
         // Final 语义：若块已齐（Complete 已发出），Final 只是取回执的信号；
         // 服务端在收到 Final 的请求上回复结果。此处状态机只负责组装：
         // 未齐就 Final → 拒绝。
@@ -481,6 +515,15 @@ impl<T: RawIpc> ChunkedClient<T> {
             } else {
                 RESP_PAGE_MAX
             };
+            // 69.1 注记（REG-CHUNKED-PULL-NO-DISCRIMINATOR，wire 冻结 Z1/Z11
+            // 下不可完全修复）：Pull 回复与拒绝共用同一字节通道且**无判别
+            // 位**——`r.len() < expected` 在 expected ≤ 16 时不可判别"ERR
+            // 文本"与"末页载荷"（MR word 粒度零填充把 13B ERR 回执填成
+            // 16B，service.rs 组帧 + ipc_sel4 组装两端同款）。服务端侧已
+            // 消除覆盖性发散源（control-services 69.1 B-1：未拉完的分页
+            // 响应拒绝被 Final 覆盖）；残余面（respawn/badge 复用后旧客户
+            // 端按旧头续拉）登记为 owner 裁决项——wire 加判别前缀属 Z1
+            // 帧格式修订，须 owner 裁决 + ADR。
             if r.len() < expected {
                 return Err(ChunkError::ServerRejected);
             }

@@ -146,11 +146,18 @@ impl Storage for BlockDeviceStorage {
 }
 
 /// Maps a [`eneros_storage::StorageError`] to a littlefs2 [`LfsError`].
+///
+/// 68 三轮复查（REG-FS-CRC-MAP-FORMAT）：`BadBlock`/`CrcMismatch` 是
+/// 媒体层疑虑（真坏块/介质疑虑与瞬态读失败在下层不可区分），一律映射
+/// `IO`——`CORRUPTION` 只保留给 littlefs2 自身的结构损坏裁决（超级块
+/// 校验和），否则 probe_mountable 会把媒体级一次性 CRC 误报当"未格式
+/// 化"候选，open-or-format 静默清空含数据卷（68 一轮修复病灶的映射表
+/// 复活通道；守卫 test_mount_transient_crc_error_is_not_bad_superblock）。
 fn map_storage_error(err: eneros_storage::StorageError) -> LfsError {
     match err {
         eneros_storage::StorageError::OutOfRange { .. } => LfsError::IO,
-        eneros_storage::StorageError::BadBlock { .. } => LfsError::CORRUPTION,
-        eneros_storage::StorageError::CrcMismatch { .. } => LfsError::CORRUPTION,
+        eneros_storage::StorageError::BadBlock { .. } => LfsError::IO,
+        eneros_storage::StorageError::CrcMismatch { .. } => LfsError::IO,
         eneros_storage::StorageError::WriteProtected => LfsError::IO,
         _ => LfsError::IO,
     }

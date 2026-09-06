@@ -269,3 +269,65 @@ fn store_sink_blocks_cross_instance_epoch_regression() {
         }
     );
 }
+
+/// 68 三轮复查：零进度 drain 不得提交位点（镜像 store_fact_sink 的姊妹
+/// 守卫）——无条件提交 = 每次 drain 空转 +1 世代并重写 4KiB 位点槽块
+/// （交付面未接线前的磨损防线；变异靶：去掉 `next_from > from` 守卫
+/// → 本测红）。
+#[test]
+fn delivery_drain_without_progress_commits_nothing() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct CountingDevice {
+        inner: MemBlockDevice,
+        writes: Rc<Cell<u64>>,
+    }
+    impl eneros_storage::BlockDevice for CountingDevice {
+        fn read_block(&self, idx: u64, buf: &mut [u8]) -> Result<(), eneros_storage::StorageError> {
+            self.inner.read_block(idx, buf)
+        }
+        fn write_block(
+            &mut self,
+            idx: u64,
+            buf: &[u8],
+        ) -> Result<(), eneros_storage::StorageError> {
+            self.writes.set(self.writes.get() + 1);
+            self.inner.write_block(idx, buf)
+        }
+        fn erase_block(&mut self, idx: u64) -> Result<(), eneros_storage::StorageError> {
+            self.inner.erase_block(idx)
+        }
+        fn block_count(&self) -> u64 {
+            self.inner.block_count()
+        }
+        fn block_size(&self) -> usize {
+            self.inner.block_size()
+        }
+        fn flush(&mut self) -> Result<(), eneros_storage::StorageError> {
+            self.inner.flush()
+        }
+        fn health_status(&self) -> eneros_storage::DeviceHealth {
+            self.inner.health_status()
+        }
+    }
+
+    let writes = Rc::new(Cell::new(0u64));
+    let dev = CountingDevice {
+        inner: MemBlockDevice::new(3 + 64 * 2, BLOCK_SIZE),
+        writes: Rc::clone(&writes),
+    };
+    let mut sink = StoreSink::new(BlockEventStore::format(dev, config()).unwrap());
+    sink.append(&make_event(3, 1, 1, 100.0, 1_000)).unwrap();
+    let frames = sink.collect_delivery().unwrap();
+    assert_eq!(frames.len(), 1, "首 drain 交付 1 帧");
+    let after_first = writes.get();
+    assert!(after_first > 0, "首次 drain 有进度须提交位点（写槽块）");
+    // 第二次 drain 零进度：不得再写盘（位点槽块空转磨损）。
+    assert!(sink.collect_delivery().unwrap().is_empty());
+    assert_eq!(
+        writes.get(),
+        after_first,
+        "零进度 drain 不得提交位点（红=空转 +1 世代 + 重写槽块）"
+    );
+}
