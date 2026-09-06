@@ -107,7 +107,10 @@ impl TelemetryHistorySink for TsdbHistorySink {
         // checkpoint 合并窗（见 CHECKPOINT_EVERY_BATCHES 文档）：仅窗满
         // 批次做磁盘 checkpoint。`r.and(ck)`：两步都成功才成功；本批写
         // 失败优先于 checkpoint 结果上抛（68.3 前行为 = and_then 短路
-        // 同语义——窗满不得把丢批谎报成 COMMIT）。
+        // 同语义——窗满不得把丢批谎报成 COMMIT）。ck 失败也清零计数：
+        // 保留计数会让后续每批都重试 ~30s 级 checkpoint（TCG 实测），复
+        // 现 68.3 D.4 饿死形态——清零后 8 批再试，ck 持续失败期掉电丢尾
+        // 上界 16 批（词形/Err 显式暴露，非静默）。
         let r = if self.batches_since_checkpoint >= CHECKPOINT_EVERY_BATCHES {
             self.batches_since_checkpoint = 0;
             let t0 = eneros_drv_svc::now_ms();

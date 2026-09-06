@@ -181,7 +181,7 @@ scan_window() {  # $1=串口日志  $2=窗口名
   if [ "$n" -ge 1 ]; then echo "[✓] SNAP-STORED = $n"; else echo "[✗] SNAP-STORED = 0"; FAIL=1; fi
   n=$(grep -ac "SNAP-SKIP" "$S" 2>/dev/null); n=${n:-0}
   if [ "$n" -eq 0 ]; then echo "[✓] SNAP-SKIP = 0（政策/目录/存储零失配）"; else echo "[✗] SNAP-SKIP $n 次——诚实失败面暴露:"; grep -a "SNAP-SKIP" "$S" | sort | uniq -c | head -5; FAIL=1; fi
-  n=$(grep -ac "EVENT-PRUNE" "$S" 2>/dev/null); n=${n:-0}
+  n=$(grep -ac "EVENT-PRUNE n=" "$S" 2>/dev/null); n=${n:-0}
   echo "    [i] EVENT-PRUNE 修剪批数 = $n（滚动保留观测；600s 窗允许 0）"
 
   # ── 68.4 事实面在环 ──
@@ -264,7 +264,7 @@ FAILB=$?
 echo "=== 窗 B 专项：事件/快照持久性（本卷核心判据；跨窗 RPO=0 精确对账）==="
 ASUM=$(grep -o 'EVENT-STORE append n=[0-9]*' "$ROOT/target/evidence68-vol4/normal/qemu-serial.log" | grep -o '[0-9]*$' | paste -sd+ | bc)
 ASUM=${ASUM:-0}
-APRUNE=$(grep -ac "EVENT-PRUNE" "$ROOT/target/evidence68-vol4/normal/qemu-serial.log" 2>/dev/null); APRUNE=${APRUNE:-0}
+APRUNE=$(grep -ac "EVENT-PRUNE n=" "$ROOT/target/evidence68-vol4/normal/qemu-serial.log" 2>/dev/null); APRUNE=${APRUNE:-0}
 python3 - "$ROOT/target/evidence68-vol4/restart/qemu-serial.log" "$ASUM" "$APRUNE" <<'PYEOF' || FAILB=1
 import re, sys
 rep = None; cons = None; blobs = None; pts = None; appended = False

@@ -207,7 +207,11 @@ impl PeerPlannerConfig {
         if target_device.trim().is_empty() {
             return Err(ConfigError(String::from("plan.target_device empty")));
         }
-        let budget_ms = get_u64(t, "plan", "budget_ms", 100, 60_000)? as u32;
+        // 上限 15s 与 broker keepalive（30s）联动：求解同步阻塞主循环，
+        // 超过 ping 半窗（15s）即可能错过 keepalive 节拍（68 复查：
+        // 60s 档在求解期 0 ping → broker 按 1.5×keepalive 踢链，自愈靠
+        // 重连但每次请求浪费——配置域直接拒自害档）。
+        let budget_ms = get_u64(t, "plan", "budget_ms", 100, 15_000)? as u32;
         Ok(Self {
             battery,
             grid_rating_kw,

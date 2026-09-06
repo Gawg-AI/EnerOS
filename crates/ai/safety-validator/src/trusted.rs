@@ -572,8 +572,10 @@ impl TelemetryTrustEvaluator {
             // 只读投影，多源节奏下他源刷新会触发未变点位的**等值重替身**
             //（单源时代被"按源摄取门"掩盖）：等值 = 同一样本幂等重评，非
             // 重放。等值重放由上游严线拦截（sink event_id 去重 +
-            // WatermarkTracker::check 序列 `<=` + 旧轨缓冲门 (point,seq)
-            // 去重）——评估层此处独占职责 = 回退。
+            // WatermarkTracker::check 序列 `<=`；旧轨 TEL_INGEST 缓冲门
+            // 仅单轮效力——每次 ingest 前 clear()，跨轮等值重放无此防线；
+            // 该轨生产零发送方（仅测试/合成源），如实注记）——评估层此处
+            // 独占职责 = 回退。
             if let Some(&(last_epoch, last_seq)) = self.last_sequences.get(&(s.source, req.point)) {
                 if last_epoch == s.source_epoch && s.sequence < last_seq {
                     return Err(TrustRejection::Replay {

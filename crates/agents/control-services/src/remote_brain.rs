@@ -36,8 +36,10 @@ pub enum SwitchEvent {
     /// 68.5 WP-68.5.3：D3 降级 lease 武装（peer 超时裁决后，System1 兜底
     /// 逐次持签授权——"兜底也要持签"）。
     LeaseArmed { lease_id: [u8; 16] },
-    /// 68.5：lease 武装失败（issue/验签拒绝——fail-closed；System1 后续
-    /// Unavailable，装配面打 LEASE-ARM-FAIL 词形）。
+    /// 68.5：lease 武装失败（issue/验签拒绝）。如实注记：当前装配该臂
+    /// 结构性不可达（全零键/TTL=0 被 cfg 守卫拦截、自签验签必过、
+    /// already-armed 被前置判据挡）——若达此面 = 无签兜底继续（68.5
+    /// 前行为），非决策停供。
     LeaseArmFailed,
     /// 68.5：episode 结束，lease 撤销（D0 回归）。reason：`peer-accepted`
     /// = 有效应答消费；`lease-expired` = lease 到期复位（68.5 复查修复

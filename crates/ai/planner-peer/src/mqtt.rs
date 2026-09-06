@@ -230,6 +230,10 @@ impl MqttClient {
         self.write_raw(&pkt)
     }
 
+    /// 入站帧上限（防御不受信 broker 的 varint 超大剩余长度；协议请求
+    /// ≤1024B + 主题，1 MiB 量级余量）。
+    const MAX_INBOUND_FRAME: usize = 1024 * 1024;
+
     fn write_raw(&mut self, pkt: &[u8]) -> Result<(), MqttError> {
         self.stream
             .write_all(pkt)
@@ -268,6 +272,13 @@ impl MqttClient {
             if mult > 128 * 128 * 128 * 128 {
                 return err(String::from("varint 溢出"));
             }
+        }
+        // 68 全卷复查修复：剩余长度上限（不受信 broker 防御）——MQTT
+        // 规范外 4 字节 varint（0xFF×4）现解码接受，rem 可达 ~539 MiB →
+        // 分配 OOM；本客户端协议帧 ~1 KiB 级，1 MiB 上限远宽且全防恶意
+        // 帧（5 字节形由上方 mult 检查拦，4 字节形由本检查拦）。
+        if rem > Self::MAX_INBOUND_FRAME {
+            return err(String::from("剩余长度超限"));
         }
         let mut body = vec![0u8; rem];
         if rem > 0 {
@@ -410,6 +421,41 @@ mod tests {
         let out = c.poll(0).expect("poll");
         assert!(out.is_none());
         c.disconnect();
+    }
+
+    /// 68 全卷复查修复：不受信 broker 的 varint 超大剩余长度（规范外
+    /// 4 字节 0xFF×4 → rem≈539 MiB）须在分配前拒绝——OOM 面防御。
+    /// 变异靶：去掉 MAX_INBOUND_FRAME 检查 → 本测真分配 539 MiB 致进程
+    /// OOM 崩溃（红）。
+    #[test]
+    #[allow(clippy::disallowed_macros)] // 仓例先例（68.2 卡 D.6）：负例断言用 panic!
+    fn oversized_varint_rejected_before_alloc() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = l.local_addr().unwrap().to_string();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().expect("accept");
+            let mut buf = [0u8; 512];
+            let _ = s.read(&mut buf).unwrap(); // CONNECT
+            s.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap(); // CONNACK ok
+            let _ = s.read(&mut buf).unwrap(); // SUBSCRIBE
+            s.write_all(&[0x90, 0x03, 0x00, 0x01, 0x00]).unwrap(); // SUBACK pid=1
+                                                                   // 恶意帧：PINGRESP 头 + 4 字节 varint 顶格形 0xFF×3+0x7F
+                                                                   //（≈171 MiB——第 4 字节无 continuation 位，解码器在 4 字节停，
+                                                                   // 由剩余长度上限检查拦；0xFF×4 续位会读第 5 字节属另一分支）。
+            s.write_all(&[0xD0, 0xFF, 0xFF, 0xFF, 0x7F]).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+        let mut c = MqttClient::connect(&addr, "planner-peer-test", 60, Duration::from_millis(500))
+            .expect("connect");
+        c.subscribe("t/x", 1).expect("subscribe");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        match c.poll(0) {
+            Err(e) => assert!(e.0.contains("剩余长度超限"), "须分配前拒恶意帧: {e:?}"),
+            other => panic!("超大剩余长度帧必须拒绝，got {other:?}"),
+        }
+        h.join().unwrap();
     }
 
     /// 68.5 复查：入站静默看门狗判据——poll 读到入站即刷新活性；

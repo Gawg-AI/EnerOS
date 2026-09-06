@@ -164,7 +164,7 @@ impl<P: PeerLink> TickAudit<RemoteBrain<HeuristicBackend, P>> for RemoteAudit<'_
                 }
                 SwitchEvent::LeaseArmFailed => {
                     eneros_runtime::println!(
-                        "[svc-ai-worker] LEASE-ARM-FAIL —— 降级武装被拒（fail-closed；System1 后续 Unavailable，决策链停供为诚实语义）"
+                        "[svc-ai-worker] LEASE-ARM-FAIL —— 降级武装被拒（结构性不可达面：全零键/TTL=0 已被装配守卫拦、自签验签必过；若达此面=无签兜底继续=68.5 前行为，须查配置链）"
                     );
                     log_ai_decision(self.audit, "event:lease-arm-fail", "", now_ms);
                 }
