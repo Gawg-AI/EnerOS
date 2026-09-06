@@ -519,11 +519,13 @@ impl<T: RawIpc> ChunkedClient<T> {
             // 下不可完全修复）：Pull 回复与拒绝共用同一字节通道且**无判别
             // 位**——`r.len() < expected` 在 expected ≤ 16 时不可判别"ERR
             // 文本"与"末页载荷"（MR word 粒度零填充把 13B ERR 回执填成
-            // 16B，service.rs 组帧 + ipc_sel4 组装两端同款）。服务端侧已
-            // 消除覆盖性发散源（control-services 69.1 B-1：未拉完的分页
-            // 响应拒绝被 Final 覆盖）；残余面（respawn/badge 复用后旧客户
-            // 端按旧头续拉）登记为 owner 裁决项——wire 加判别前缀属 Z1
-            // 帧格式修订，须 owner 裁决 + ADR。
+            // 16B，service.rs 组帧 + ipc_sel4 组装两端同款）。69.1 复查订正：
+            // 服务端覆盖性 Final（同 badge 客户端超时放弃半拉响应后的整体
+            // 重试）为页序**自愈重同步**（覆盖 + 驱逐计数，见 control-services
+            // `service_slots.rs` 与 t12——卷册 B-1 拒绝式经实弹证伪活锁撤回）；
+            // 真残余面 = respawn/badge 复用后旧客户端按旧头续拉（发散源 #1），
+            // 登记为 owner 裁决项——wire 加判别前缀属 Z1 帧格式修订，须
+            // owner 裁决 + ADR。
             if r.len() < expected {
                 return Err(ChunkError::ServerRejected);
             }
