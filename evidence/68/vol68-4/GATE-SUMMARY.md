@@ -10,11 +10,11 @@
 | PRODUCT-READY | true | true |
 | PANIC 净值（豁免 REG-DISPATCH-HEAP-HIGHROUNDS 签名后） | 0 | 0 |
 | READINESS | 29 | 29 |
-| TSDB-DISK-COMMIT（68.3 不回归） | 18 | 19 |
+| TSDB-DISK-COMMIT（68.3 不回归） | 18 | 15 |
 | TSDB-CHECKPOINT-DUR max | 31.7s | 30.4s |
-| EVENT-STORE append | 18 批 fail=0 | 20 批 fail=0 |
+| EVENT-STORE append | 18 批 fail=0 | 15 批 fail=0 |
 | EVENT-REPLAY | recovered=0 consistent=true（fresh） | **recovered=112 consistent=true** |
-| SNAP-BUILT / SNAP-STORED / SNAP-SKIP | 2 / 2 / 0 | 2 / 2 / 0 |
+| SNAP-BUILT / SNAP-STORED / SNAP-SKIP | 2 / 2 / 0 | 1 / 1 / 0 |
 | SNAP-RECOVERED blobs | —（fresh 0） | 2 |
 | LEARN-STATE restored | — | 1（68.3 学习态恢复不回归） |
 | modbus ACQ 行 | 105 | 98 |
