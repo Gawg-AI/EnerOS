@@ -32,6 +32,7 @@ use alloc::vec::Vec;
 use eneros_agent_sdk::ai_relay::AI_PEER_MSG;
 use eneros_dual_brain::audit::{DecisionAudit, DecisionRecord, ExecOutcome, SafetyOutcome};
 use eneros_durable_state::PersistIo;
+use eneros_hex::encode_lower as hex_encode_lower;
 
 use crate::ai_worker::{
     learn_wire, AiWorkerService, DecisionBackend, HeuristicBackend, AI_OK, AI_PROPOSE,
@@ -59,6 +60,25 @@ impl DeadbandTarget for HeuristicBackend {
 impl<P: PeerLink> DeadbandTarget for RemoteBrain<HeuristicBackend, P> {
     fn apply_deadband(&mut self, charge_soc: f64, discharge_soc: f64) {
         self.local_mut().set_deadband(charge_soc, discharge_soc);
+    }
+}
+
+/// 68.5 WP-68.5.3：降级武装查询面（tick 编排的学习冻结判据——武装期
+/// 死区参数必须冻结：学习继续改阈值 ⇒ strategy digest 漂移 ⇒ lease
+/// 白名单失配 ⇒ System1 断供。次生面处置，机制面零改动）。
+pub trait DegradeArmQuery {
+    fn is_degradation_armed(&self) -> bool;
+}
+
+impl DegradeArmQuery for HeuristicBackend {
+    fn is_degradation_armed(&self) -> bool {
+        HeuristicBackend::degradation_armed(self)
+    }
+}
+
+impl<P: PeerLink> DegradeArmQuery for RemoteBrain<HeuristicBackend, P> {
+    fn is_degradation_armed(&self) -> bool {
+        self.local_degradation_armed()
     }
 }
 
@@ -134,6 +154,25 @@ impl<P: PeerLink> TickAudit<RemoteBrain<HeuristicBackend, P>> for RemoteAudit<'_
                 SwitchEvent::PeerRecovered => {
                     eneros_runtime::println!("[svc-ai-worker] REMOTE-BRAIN event=peer-recovered");
                     log_ai_decision(self.audit, "event:peer-recovered", "", now_ms);
+                }
+                SwitchEvent::LeaseArmed { lease_id } => {
+                    eneros_runtime::println!(
+                        "[svc-ai-worker] LEASE-ARMED level=D3 lease_id={} —— peer 失联，System1 兜底持签降级（68.5 WP-68.5.3）",
+                        hex_encode_lower(lease_id)
+                    );
+                    log_ai_decision(self.audit, "event:lease-armed", "", now_ms);
+                }
+                SwitchEvent::LeaseArmFailed => {
+                    eneros_runtime::println!(
+                        "[svc-ai-worker] LEASE-ARM-FAIL —— 降级武装被拒（fail-closed；System1 后续 Unavailable，决策链停供为诚实语义）"
+                    );
+                    log_ai_decision(self.audit, "event:lease-arm-fail", "", now_ms);
+                }
+                SwitchEvent::LeaseRevoked => {
+                    eneros_runtime::println!(
+                        "[svc-ai-worker] LEASE-REVOKED reason=peer-accepted —— 有效应答消费，超时 episode 结束（回 D0）"
+                    );
+                    log_ai_decision(self.audit, "event:lease-revoked", "", now_ms);
                 }
             }
         }
@@ -220,7 +259,7 @@ pub struct AiTickHandler<'a, B: DecisionBackend, Io: PersistIo, A: TickAudit<B>>
 
 impl<'a, B, Io, A> AiTickHandler<'a, B, Io, A>
 where
-    B: DecisionBackend + DeadbandTarget,
+    B: DecisionBackend + DeadbandTarget + DegradeArmQuery,
     Io: PersistIo,
     A: TickAudit<B>,
 {
@@ -238,10 +277,16 @@ where
     }
 
     /// SPEC-E WP-E.3（decide 前）：阈值注入单点（[`DeadbandTarget`]）。
+    /// 68.5 WP-68.5.3 次生面处置：降级武装期**冻结注入**——学习继续改
+    /// 死区 ⇒ strategy digest 漂移 ⇒ lease 白名单失配 ⇒ System1 断供；
+    /// 恢复（LEASE-REVOKED）后自动解冻。
     fn apply_learn_thresholds(&mut self) {
         let Some(l) = self.learn.as_mut() else {
             return;
         };
+        if self.worker.backend_mut().is_degradation_armed() {
+            return;
+        }
         let (charge, discharge) = l.thresholds();
         self.worker.backend_mut().apply_deadband(charge, discharge);
     }
@@ -334,7 +379,7 @@ where
 
 impl<B, Io, A> ControlServiceHandler for AiTickHandler<'_, B, Io, A>
 where
-    B: DecisionBackend + DeadbandTarget,
+    B: DecisionBackend + DeadbandTarget + DegradeArmQuery,
     Io: PersistIo,
     A: TickAudit<B>,
 {
@@ -722,6 +767,8 @@ mod tests {
             probe_every: 1,
             max_power_kw: 10.0,
             ttl_secs: 60,
+            lease_key: [0u8; 32], // 68.5：未装配（不武装——既有行为锁）
+            lease_ttl_secs: 0,
         };
         let mut direct = HeuristicBackend::new();
         let brain = RemoteBrain::new(HeuristicBackend::new(), NullLink, cfg);
@@ -778,6 +825,8 @@ mod tests {
             probe_every: 1,
             max_power_kw: 10.0,
             ttl_secs: 60,
+            lease_key: [0u8; 32], // 68.5：未装配（不武装——既有行为锁）
+            lease_ttl_secs: 0,
         };
         let brain = RemoteBrain::new(HeuristicBackend::new(), NullLink, cfg);
         let mut worker = AiWorkerService::new(brain, [0x41; 16]);
@@ -802,5 +851,67 @@ mod tests {
         resp.clear();
         assert!(handler.handle(&[0x77], &mut resp, 1_002));
         assert_eq!(resp, alloc::vec![0xFF]);
+    }
+
+    /// 68.5 WP-68.5.3 t6（次生面处置锁）：降级武装期学习阈值注入冻结
+    /// （学习继续改死区 ⇒ strategy digest 漂移 ⇒ lease 白名单失配 ⇒
+    /// System1 断供）；peer 恢复消费后自动解冻。变异靶：删
+    /// apply_learn_thresholds 的武装短路 → 本测红。
+    #[test]
+    fn t6_learn_thresholds_frozen_while_degrade_armed() {
+        struct NullLink;
+        impl PeerLink for NullLink {
+            fn send_request(&mut self, _req_json: &str) -> Result<(), LinkError> {
+                Ok(())
+            }
+        }
+        let cfg = RemoteBrainConfig {
+            timeout_ms: 2_000,
+            unhealthy_after: 3,
+            probe_every: 1,
+            max_power_kw: 10.0,
+            ttl_secs: 60,
+            lease_key: [0x5Bu8; 32],
+            lease_ttl_secs: 3_600,
+        };
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let brain = RemoteBrain::new(HeuristicBackend::new(), NullLink, cfg);
+        let mut worker = AiWorkerService::new(brain, [0x41; 16]);
+        let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            RemoteAudit { audit: &mut audit },
+            Some(learner),
+        );
+        let mut resp = Vec::new();
+
+        // tick1（soc 0.425）：发请求 + 出厂带死区 NoAction；观测锚定。
+        assert!(handler.handle(&propose_req(0.425), &mut resp, 1_000));
+        assert_eq!(resp.first(), Some(&AI_NOACTION));
+        // tick2（soc 0.52，now 超时窗）：超时裁决 → LEASE 武装；0.52 出厂
+        // 带外放电；观测 → 学到 current=0.137。
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 6_000));
+        assert_eq!(resp.first(), Some(&AI_OK));
+        // tick3（soc 0.52）：武装期注入冻结 → 工厂带 [0.3, 0.5] 生效 →
+        // 0.52 放电（若未冻结则学到的带 [0.263, 0.537] 生效 → NoAction=红）。
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 7_000));
+        assert_eq!(resp.first(), Some(&AI_OK), "武装期阈值冻结在武装时刻形态");
+
+        // peer 应答到达（AI_PEER_MSG 推送；配对超时后重发的 req_id=2）
+        // → 校验接受；下一 tick 消费。
+        let mut peer = alloc::vec![AI_PEER_MSG];
+        peer.extend_from_slice(
+            r#"{"v":1,"req_id":2,"seq":5,"plan":{"power_kw":-3.0,"target_device":"pcs","ttl_secs":60},"reason":"soc"}"#.as_bytes(),
+        );
+        assert!(handler.handle(&peer, &mut resp, 7_100));
+        // tick4（soc 0.60）：消费远程提案（System2 路径）→ LEASE-REVOKED
+        //（撤销在此 tick decide 内发生——apply 时仍武装）；观测 0.60 →
+        // 学到 current=0.118（带 [0.282, 0.518]）。
+        assert!(handler.handle(&propose_req(0.60), &mut resp, 8_000));
+        assert_eq!(resp.first(), Some(&AI_OK), "远程提案消费（System2 路径）");
+        // tick 解冻（soc 0.52）：学到的带 [0.282, 0.518] 生效 → 死区
+        // NoAction（若仍冻结则工厂带 → 0.52 放电 = 红）。
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 9_000));
+        assert_eq!(resp.first(), Some(&AI_NOACTION), "解冻后学到的带重新生效");
     }
 }

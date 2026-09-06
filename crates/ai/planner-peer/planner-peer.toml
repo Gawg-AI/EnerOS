@@ -1,0 +1,30 @@
+# eneros-planner-peer 部署配置（host 侧自持；68.5 WP-68.5.1 裁决 2）。
+#
+# 本文件**不是** target 签名 bundle 配置（registry.toml 不含它，config
+# compile 不消费）——ADR-050 裁决 2 的 host 分区服务自持其模型规格，
+# 不依赖上行全量遥测；字段值域在 PeerPlannerConfig::parse 全检。
+#
+# 启动：eneros-planner-peer --config <本文件> --state <seq-state.json> \
+#          --broker <host:port>（QEMU 形态对 evidence/50 假 broker 或
+#          真 mosquitto；guest 侧 10.0.2.2 = host 回环）
+
+[battery]
+capacity_kwh = 10.0    # 额定容量（>0）
+eta_c = 1.0            # 充电效率 (0,1]
+eta_d = 1.0            # 放电效率 (0,1]
+soc_min = 0.1          # SOC 硬窗下界
+soc_max = 0.9          # SOC 硬窗上界
+power_max_kw = 5.0     # 功率幅值上界（与请求预算取 min 进包络）
+
+[grid]
+rating_kw = 20.0       # 并网点额定（对称包络）
+
+[objective]
+kind = "max_revenue"   # min_cost | max_revenue（闭集）
+prices_per_kwh = [1.0, 10.0]  # 每步电价 元/kWh（len == steps）
+step_ns = 3600000000000       # 步长纳秒（此处 1h）
+steps = 2                     # 步数 [1, 24]
+
+[plan]
+target_device = "pcs"  # 提案目标设备（与目标侧 dispatch 点表绑定对账）
+budget_ms = 5000       # host 求解预算毫秒（HiGHS time_limit 派生）

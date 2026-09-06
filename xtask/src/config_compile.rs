@@ -30,6 +30,7 @@ pub fn config_compile(
     accept_test_signing_key: bool,
     root_key_hex: Option<&str>,
     control_chain_key_hex: Option<&str>,
+    degrade_lease_key_hex: Option<&str>,
 ) -> DynResult<std::path::PathBuf> {
     // 1. 读取 registry 与 release profile 的 configs 链接。
     let registry_path = root.join("configs/registry.toml");
@@ -112,11 +113,20 @@ pub fn config_compile(
             } else {
                 None
             };
+        // 68.5 WP-68.5.3：D3 降级 lease 键惰性解析（ai-peer 节时才走注入
+        // 链；compile_security 同款纪律——键不落 TOML）。
+        let degrade_lease_key: Option<[u8; 32]> =
+            if name == eneros_config_bundle::schema::ai_peer::CONFIG_ID {
+                Some(resolve_degrade_lease_key(root, degrade_lease_key_hex)?)
+            } else {
+                None
+            };
         let compiled = eneros_config_bundle::toml_compile::compile_by_id(
             name,
             &text,
             injected.as_ref(),
             control_chain_key.as_ref(),
+            degrade_lease_key.as_ref(),
         )?
         .ok_or_else(|| {
             invalid(format!(
@@ -240,19 +250,25 @@ const ENV_CONTROL_CHAIN_KEY: &str = "ENEROS_CONTROL_CHAIN_KEY";
 const ENV_KMS_DIR: &str = "ENEROS_KMS_DIR";
 /// KMS 目录内的信封密钥文件名。
 const CONTROL_CHAIN_KEY_FILE: &str = "control-chain.key";
+/// 68.5 WP-68.5.3：D3 降级 lease 键（注入链第二级环境变量）。
+const ENV_DEGRADE_LEASE_KEY: &str = "ENEROS_DEGRADE_LEASE_KEY";
+/// KMS 目录内的降级 lease 键文件名。
+const DEGRADE_LEASE_KEY_FILE: &str = "degrade-lease.key";
 
-/// 解析控制链信封密钥（32B hex → bytes）。
-///
-/// 优先级镜像签章键纪律（keys.rs）：`--control-chain-key-hex` >
-/// `ENEROS_CONTROL_CHAIN_KEY` > `$ENEROS_KMS_DIR/control-chain.key`；
-/// 三者皆无 → Err（文案对齐 fail-closed 先例）。开发档模板见
-/// `configs/kms-dev/`（qemu-test 登记测试键，值不经任何 .rs 源文件）。
-fn resolve_control_chain_key(root: &Path, explicit: Option<&str>) -> DynResult<[u8; 32]> {
-    fn parse(hex_str: &str) -> DynResult<[u8; 32]> {
+/// 注入链共享解析（显式 hex > env > KMS 文件；fail-closed 文案由 label
+/// 参数组装——优先级纪律镜像 keys.rs，WP-A.1 先例）。
+fn resolve_kms_key(
+    root: &Path,
+    explicit: Option<&str>,
+    env_var: &str,
+    file_name: &str,
+    label: &str,
+) -> DynResult<[u8; 32]> {
+    fn parse(hex_str: &str, label: &str) -> DynResult<[u8; 32]> {
         let bytes = hex_decode(hex_str.trim())?;
         if bytes.len() != 32 {
             return Err(invalid(format!(
-                "控制链信封密钥必须为 64 hex（32B），得 {}B",
+                "{label}必须为 64 hex（32B），得 {}B",
                 bytes.len()
             )));
         }
@@ -261,10 +277,10 @@ fn resolve_control_chain_key(root: &Path, explicit: Option<&str>) -> DynResult<[
         Ok(out)
     }
     if let Some(hex_str) = explicit {
-        return parse(hex_str);
+        return parse(hex_str, label);
     }
-    if let Ok(v) = std::env::var(ENV_CONTROL_CHAIN_KEY) {
-        return parse(&v);
+    if let Ok(v) = std::env::var(env_var) {
+        return parse(&v, label);
     }
     if let Ok(dir) = std::env::var(ENV_KMS_DIR) {
         let pb = if dir.starts_with('/') {
@@ -272,10 +288,10 @@ fn resolve_control_chain_key(root: &Path, explicit: Option<&str>) -> DynResult<[
         } else {
             root.join(&dir)
         };
-        let file = pb.join(CONTROL_CHAIN_KEY_FILE);
+        let file = pb.join(file_name);
         if !file.is_file() {
             return Err(invalid(format!(
-                "{ENV_KMS_DIR} 下缺少 {CONTROL_CHAIN_KEY_FILE}: {}（fail-closed）",
+                "{ENV_KMS_DIR} 下缺少 {file_name}: {}（fail-closed）",
                 file.display()
             )));
         }
@@ -285,26 +301,53 @@ fn resolve_control_chain_key(root: &Path, explicit: Option<&str>) -> DynResult<[
         let trimmed = raw.trim();
         let looks_hex = trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit());
         if looks_hex {
-            return parse(trimmed);
+            return parse(trimmed, label);
         }
         if raw.len() == 32 && !raw.contains('\n') && !raw.contains('\r') {
             let mut out = [0u8; 32];
             out.copy_from_slice(raw.as_bytes());
             if out == [0u8; 32] {
-                return Err(invalid(format!(
-                    "{CONTROL_CHAIN_KEY_FILE} 为全零——fail-closed（SPEC WP-A.1）"
-                )));
+                return Err(invalid(format!("{file_name} 为全零——fail-closed")));
             }
             return Ok(out);
         }
         return Err(invalid(format!(
-            "{CONTROL_CHAIN_KEY_FILE} 非法：须为 64-hex 或恰好 32B 原始键（fail-closed）"
+            "{file_name} 非法：须为 64-hex 或恰好 32B 原始键（fail-closed）"
         )));
     }
-    Err(invalid(
-        "控制链信封密钥未提供：--control-chain-key-hex 或 ENEROS_CONTROL_CHAIN_KEY \
-         或 ENEROS_KMS_DIR/control-chain.key——release 无键构建 fail-closed（SPEC WP-A.1）",
-    ))
+    Err(invalid(format!(
+        "{label}未提供：对应 --*-hex 旗标 / {env_var} / $ENEROS_KMS_DIR/{file_name}\
+         ——release 无键构建 fail-closed"
+    )))
+}
+
+/// 解析控制链信封密钥（32B hex → bytes）。
+///
+/// 优先级镜像签章键纪律（keys.rs）：`--control-chain-key-hex` >
+/// `ENEROS_CONTROL_CHAIN_KEY` > `$ENEROS_KMS_DIR/control-chain.key`；
+/// 三者皆无 → Err（文案对齐 fail-closed 先例）。开发档模板见
+/// `configs/kms-dev/`（qemu-test 登记测试键，值不经任何 .rs 源文件）。
+fn resolve_control_chain_key(root: &Path, explicit: Option<&str>) -> DynResult<[u8; 32]> {
+    resolve_kms_key(
+        root,
+        explicit,
+        ENV_CONTROL_CHAIN_KEY,
+        CONTROL_CHAIN_KEY_FILE,
+        "控制链信封密钥",
+    )
+}
+
+/// 解析 D3 降级 lease 键（68.5 WP-68.5.3；ai-peer 编译期注入——
+/// `--degrade-lease-key-hex` > `ENEROS_DEGRADE_LEASE_KEY` >
+/// `$ENEROS_KMS_DIR/degrade-lease.key`；开发档模板同目录）。
+fn resolve_degrade_lease_key(root: &Path, explicit: Option<&str>) -> DynResult<[u8; 32]> {
+    resolve_kms_key(
+        root,
+        explicit,
+        ENV_DEGRADE_LEASE_KEY,
+        DEGRADE_LEASE_KEY_FILE,
+        "D3 降级 lease 键",
+    )
 }
 
 #[cfg(test)]

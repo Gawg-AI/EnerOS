@@ -182,18 +182,31 @@ impl<D: NetDevice> NetStack<D> {
             .wrapping_add(ip.iter().fold(0u16, |acc, b| acc.wrapping_add(*b as u16)) % 10000);
         let remote = ip_endpoint(ipv4_addr(ip[0], ip[1], ip[2], ip[3]), port);
         let mut tcp = TcpSocket::new(handle);
-        tcp.connect(&mut self.iface, remote, local_port)
-            .map_err(|_| {
-                self.iface.sockets.remove(handle);
-                TransportError::ConnectFailed
-            })?;
+        // 68.5 诊断（REG-MQTT-BROKER-HANG）：连接结局显式化（建立/拒绝/
+        // 超时三态可观测；词形有界——每调用一行）。
+        let peer = alloc::format!("{}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], port);
+        let r = tcp.connect(&mut self.iface, remote, local_port);
+        if let Err(e) = r {
+            eneros_runtime::println!("[net] tcp-connect FAIL {peer} err={e:?}");
+            self.iface.sockets.remove(handle);
+            return Err(TransportError::ConnectFailed);
+        }
         for _ in 0..POLL_ITERS {
             let now = eneros_time::get_monotonic_ns() / 1_000_000;
             self.poll(now);
             if tcp.state(&self.iface).is_connected() {
+                eneros_runtime::println!("[net] tcp-connect OK {peer}");
                 return Ok(handle);
             }
         }
+        let st = tcp.state(&self.iface);
+        eneros_runtime::println!("[net] tcp-connect TIMEOUT {peer} state={st:?}");
+        // 68.5（REG-MQTT-BROKER-HANG 根因修复）：裸 remove 不发任何段，
+        // 对端（slirp）侧连接悬挂——同 4 元组的新 SYN 会被按重复丢弃。
+        // abort 先行（RST 出环）再移除，对端同步清理。
+        tcp.abort(&mut self.iface);
+        let now = eneros_time::get_monotonic_ns() / 1_000_000;
+        self.poll(now);
         self.iface.sockets.remove(handle);
         Err(TransportError::ConnectFailed)
     }
@@ -362,7 +375,16 @@ impl<D: NetDevice + 'static> TransportHandle for TcpStreamHandle<D> {
     fn reconnect(&mut self, peer: &str) -> Result<(), TransportError> {
         let (ip, port) = parse_ip_port(peer).ok_or(TransportError::ConnectFailed)?;
         let mut stack = self.stack.borrow_mut();
-        // 移除旧 socket（若仍被内核持有）。
+        // 68.5（REG-MQTT-BROKER-HANG 根因修复）：旧 socket 先 abort（RST
+        // 出环让 slirp 侧连接同步清理）再移除——50 卷"一律重建"语义下，
+        // 裸 remove 留下悬挂连接占用同 4 元组，重建的新 SYN 永被丢弃
+        //（SynSent 卡死；broker 在场窗 Degraded 的直接机制）。
+        {
+            let mut old = TcpSocket::new(self.id);
+            old.abort(&mut stack.iface);
+            let now = eneros_time::get_monotonic_ns() / 1_000_000;
+            stack.poll(now);
+        }
         stack.iface.sockets.remove(self.id);
         let id = stack.tcp_connect(ip, port)?;
         self.id = id;

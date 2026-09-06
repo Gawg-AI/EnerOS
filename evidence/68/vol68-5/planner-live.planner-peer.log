@@ -1,0 +1,22 @@
+[planner-peer] READY broker=127.0.0.1:1883 request=eneros/brain/request response=eneros/brain/response battery=10kWh@5kW steps=2 kind=max_revenue state=/home/ahx/文档/EnerOS/target/evidence68-vol5/planner-live.seq-state.json
+[planner-peer] SUBSCRIBED topic=eneros/brain/request broker=127.0.0.1:1883
+[planner-peer] PEER-REQ req_id=1 soc=0.600 v=400 i=50.0 f=50.0 budget=5.0kW ttl=60s
+[planner-peer] PLANNER-SOLVE status=optimal power=0.000000kW model=0dea0b5b769d366c87786b20ab5b0c0c00a1717e8b20d43df17fa39a1bd40998 elapsed=1ms obj=50.0000
+[planner-peer] PEER-RESP seq=15 bytes=212 backend-tag-ok=true
+[planner-peer] PEER-REQ req_id=2 soc=0.600 v=400 i=50.0 f=50.0 budget=5.0kW ttl=60s
+[planner-peer] PLANNER-SOLVE status=optimal power=0.000000kW model=0dea0b5b769d366c87786b20ab5b0c0c00a1717e8b20d43df17fa39a1bd40998 elapsed=0ms obj=50.0000
+[planner-peer] PEER-RESP seq=16 bytes=212 backend-tag-ok=true
+[planner-peer] PEER-REQ req_id=3 soc=0.600 v=400 i=50.0 f=50.0 budget=5.0kW ttl=60s
+[planner-peer] PLANNER-SOLVE status=optimal power=0.000000kW model=0dea0b5b769d366c87786b20ab5b0c0c00a1717e8b20d43df17fa39a1bd40998 elapsed=0ms obj=50.0000
+[planner-peer] PEER-RESP seq=17 bytes=212 backend-tag-ok=true
+[planner-peer] PEER-REQ req_id=4 soc=0.600 v=400 i=50.0 f=50.0 budget=5.0kW ttl=60s
+[planner-peer] PLANNER-SOLVE status=optimal power=0.000000kW model=0dea0b5b769d366c87786b20ab5b0c0c00a1717e8b20d43df17fa39a1bd40998 elapsed=0ms obj=50.0000
+[planner-peer] PEER-RESP seq=18 bytes=212 backend-tag-ok=true
+[planner-peer] PEER-REQ req_id=5 soc=0.600 v=400 i=50.0 f=50.0 budget=5.0kW ttl=60s
+[planner-peer] PLANNER-SOLVE status=optimal power=0.000000kW model=0dea0b5b769d366c87786b20ab5b0c0c00a1717e8b20d43df17fa39a1bd40998 elapsed=0ms obj=50.0000
+[planner-peer] PEER-RESP seq=19 bytes=212 backend-tag-ok=true
+[planner-peer] PEER-REQ req_id=6 soc=0.600 v=400 i=50.0 f=50.0 budget=5.0kW ttl=60s
+[planner-peer] PLANNER-SOLVE status=optimal power=0.000000kW model=0dea0b5b769d366c87786b20ab5b0c0c00a1717e8b20d43df17fa39a1bd40998 elapsed=0ms obj=50.0000
+[planner-peer] PEER-RESP seq=20 bytes=212 backend-tag-ok=true
+[planner-peer] RECONNECT reason=poll-failed (read: failed to fill whole buffer)
+[planner-peer] RECONNECT reason=tcp: Connection refused (os error 111) (retry 2s)

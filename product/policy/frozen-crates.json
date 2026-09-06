@@ -403,6 +403,10 @@
   {
    "package": "eneros-solver-milp",
    "reason": "host HiGHS MILP 求解工具（ADR-050；planner 接电后自然获得消费者，与 solver-model allowlist 家族同族）"
+  },
+  {
+   "package": "eneros-planner-peer",
+   "reason": "68.5 WP-68.5.1：host planner 分区第一形态（ADR-050 裁决 2）——站端常驻 std bin（bin target=eneros-planner-peer），lib 仅为 host 可测核心；target release 闭包零消费为设计事实（host-only，不进任何 product profile manifest）"
   }
  ]
 }

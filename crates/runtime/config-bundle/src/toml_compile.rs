@@ -2365,10 +2365,16 @@ pub fn compile_protocol(config_id: &str, toml: &str) -> Result<CompiledConfig, C
     })
 }
 
-/// 49（WP-49.2）：`ai-peer` 编译——RemoteBrain 状态机参数，**六键全必配**
+/// 49（WP-49.2）：`ai-peer` 编译——RemoteBrain 状态机参数，**八键全必配**
 /// （fail-closed 禁凭记忆缺省；48 卷 config 解析器数值纪律同款：先值域后
-/// 类型，杜绝 as 截断。SPEC-E WP-E.3 增 learn_enabled 闸键）。
-pub fn compile_ai_peer(toml: &str) -> Result<CompiledConfig, ConfigError> {
+/// 类型，杜绝 as 截断。SPEC-E WP-E.3 增 learn_enabled 闸键；68.5
+/// WP-68.5.3 增 degrade_lease 键——**键不落 TOML**（compile_security 同款
+/// 纪律，TOML 内任何键名尝试一律 UnknownKey 拒绝），经 `injected_lease_key`
+/// 注入链供给，全缺 Err fail-closed）。
+pub fn compile_ai_peer(
+    toml: &str,
+    injected_lease_key: Option<&[u8; 32]>,
+) -> Result<CompiledConfig, ConfigError> {
     let config = ConfigId::from_static(ai_peer::CONFIG_ID);
     let root: Value = toml::from_str(toml).map_err(|e| ConfigError::InvalidValue {
         config: config.clone(),
@@ -2386,6 +2392,7 @@ pub fn compile_ai_peer(toml: &str) -> Result<CompiledConfig, ConfigError> {
             "max_power_kw",
             "ttl_secs",
             "learn_enabled",
+            "degrade_lease_ttl_secs",
         ],
     )?;
     let timeout_ms = get_u64(t, &config, "timeout_ms")?;
@@ -2437,6 +2444,35 @@ pub fn compile_ai_peer(toml: &str) -> Result<CompiledConfig, ConfigError> {
     // 归 owner 配置裁决——键必配无缺省）。
     let learn_enabled_raw = get_bool(t, &config, "learn_enabled")?;
     let learn_enabled = if learn_enabled_raw { 1u8 } else { 0u8 };
+    // 68.5 WP-68.5.3：D3 降级 lease TTL（toml 可载非密）+ lease 键（注入链
+    // 供给，全缺 fail-closed；全零拒绝——镜像 resolve_control_chain_key）。
+    let lease_ttl_secs = get_u32(t, &config, "degrade_lease_ttl_secs")?;
+    if !(ai_peer::DEGRADE_LEASE_TTL_SECS_MIN..=ai_peer::DEGRADE_LEASE_TTL_SECS_MAX)
+        .contains(&lease_ttl_secs)
+    {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "degrade_lease_ttl_secs",
+            reason: alloc::format!(
+                "range-{}..={}",
+                ai_peer::DEGRADE_LEASE_TTL_SECS_MIN,
+                ai_peer::DEGRADE_LEASE_TTL_SECS_MAX
+            ),
+        });
+    }
+    let lease_key = injected_lease_key.ok_or_else(|| ConfigError::InvalidValue {
+        config: config.clone(),
+        field: "degrade_lease_key",
+        reason: "未注入：--degrade-lease-key-hex / ENEROS_DEGRADE_LEASE_KEY / \
+                 ENEROS_KMS_DIR/degrade-lease.key 全缺（fail-closed）"
+            .into(),
+    })?;
+    if lease_key.iter().all(|&b| b == 0) {
+        return Err(ConfigError::ZeroSecret {
+            config,
+            field: "degrade_lease_key",
+        });
+    }
     Ok(CompiledConfig {
         payload: encode_payload(&[
             (ai_peer::FIELD_TIMEOUT_MS, timeout_ms.to_le_bytes().to_vec()),
@@ -2454,6 +2490,11 @@ pub fn compile_ai_peer(toml: &str) -> Result<CompiledConfig, ConfigError> {
             ),
             (ai_peer::FIELD_TTL_SECS, ttl_secs.to_le_bytes().to_vec()),
             (ai_peer::FIELD_LEARN_ENABLED, alloc::vec![learn_enabled]),
+            (ai_peer::FIELD_DEGRADE_LEASE_KEY, lease_key.to_vec()),
+            (
+                ai_peer::FIELD_DEGRADE_LEASE_TTL_SECS,
+                lease_ttl_secs.to_le_bytes().to_vec(),
+            ),
         ]),
         config_id: config,
     })
@@ -2502,15 +2543,18 @@ pub fn compile_security(
     })
 }
 
+/// 按 config_id 分派 typed 编译器（键注入面逐配置显式：root_key → ota /
+/// control_chain_key → security / degrade_lease_key → ai-peer）。
 pub fn compile_by_id(
     config_id: &str,
     toml: &str,
     injected_root_key: Option<&[u8; 64]>,
     injected_control_chain_key: Option<&[u8; 32]>,
+    injected_degrade_lease_key: Option<&[u8; 32]>,
 ) -> Result<Option<CompiledConfig>, ConfigError> {
     match config_id {
         control_write::CONFIG_ID => compile_control_write(toml).map(Some),
-        ai_peer::CONFIG_ID => compile_ai_peer(toml).map(Some),
+        ai_peer::CONFIG_ID => compile_ai_peer(toml, injected_degrade_lease_key).map(Some),
         ota::CONFIG_ID => compile_ota(toml, injected_root_key).map(Some),
         security::CONFIG_ID => compile_security(toml, injected_control_chain_key).map(Some),
         cloud_sync::CONFIG_ID => compile_cloud_sync(toml).map(Some),

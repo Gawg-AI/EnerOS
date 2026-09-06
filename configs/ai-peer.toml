@@ -18,3 +18,8 @@ ttl_secs = 60
 # 的装配配置归 owner 拍板——false ⇒ 零学习零持久，System1 阈值恒出厂，
 # 行为 byte-equal 旧链路）。
 learn_enabled = true
+# 68.5（WP-68.5.3）：D3 降级 lease 有效时长秒——peer 失联后 System1 兜底
+# 持签降级窗；到期不复位即拒降级维持（fail-closed，D3 语义）。键本体
+# **不落 TOML**（compile_security 同款注入链，configs/kms-dev/degrade-lease.key
+# 开发档模板）。
+degrade_lease_ttl_secs = 86400

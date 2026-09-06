@@ -27,6 +27,10 @@ members = [
     "crates/ai/objective-engine",
     # 蓝图 61 [09] §3（v0.314.37）：多资源 Planner——真实 HiGHS 求解后端。
     "crates/ai/planner",
+    # 蓝图 68.5（v0.325.0）WP-68.5.1：host planner 分区第一形态——站端
+    # planner 服务经 RemoteBrain peer 通道应答单值提案（host-only std bin，
+    # 不进任何 product profile manifest）。
+    "crates/ai/planner-peer",
     # 蓝图 61 [09] §4（v0.314.38）：独立 CertifierModule——唯一
     # CertifiedPlan 生产者（独立重算全部硬约束）。
     "crates/ai/certifier",
@@ -195,7 +199,7 @@ members = [
 # rc/1.0 标记；冲刺期一律 0.x.y（0.313 延续历史 120 版本计划顶格 v0.312）；
 # 每 WP Exit 自证后递增 patch（cargo xtask bump-version patch；
 # xtask qa gng-version 单一 owner 强制；eneros-ci 已于蓝图 67 WP-67.1.4 退役）。
-version = "0.324.0"
+version = "0.325.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

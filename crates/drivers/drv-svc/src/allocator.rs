@@ -18,7 +18,14 @@ use linked_list_allocator::LockedHeap;
 // 内嵌，结构体 276,040 B）的堆分配 + chain/key/审计余量（QEMU 实测
 // OOM size=276040 于 256 KiB 堆）。bss 预算：384 KiB × 5 控制服务 = 480
 // cap 槽 + 现有 ~1500 < ROOT_CNODE 4096。
-const HEAP_SIZE: usize = 384 * 1024;
+// 蓝图 68.5：384→512 KiB——"复用数据盘 + broker 流量"窗实测 svc-telemetry
+// 堆水位慢爬升（~0.35 KiB/s，420-480s 触顶 384K → EVENT-STORE-OPEN 的
+// 4 KiB 分配失败 PANIC，evidence/68/vol68-5/reuse1 + degrade 两窗复现；
+// CachedBlocks/EventStore/SnapshotModule 静态上界 ~80 KiB 均有界排除，
+// 泄漏面登记 REG-TELEMETRY-HEAP-CREEP 归后续卷定位）。扩容买窗：
+// +128 KiB × 5 控制服务 = +640 KiB bss（+80 cnode 槽，现用 ~2000 < 4096），
+// QEMU 判据 = 复用盘 + broker 窗 ≥420s 无 PANIC。
+const HEAP_SIZE: usize = 512 * 1024;
 
 #[cfg(not(feature = "heap-large"))]
 const HEAP_SIZE: usize = match option_env!("ENEROS_HEAP_SIZE_BYTES") {

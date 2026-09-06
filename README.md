@@ -17,7 +17,7 @@
 
 EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power Native + Agent Native + AI Native** 专用操作系统。基于 seL4 微内核形式化验证基座与 Rust `no_std` 运行时构建，采用混合关键性架构（Mixed Criticality），将**实时控制（RTOS 分区）**与**AI Agent（用户态分区）**隔离运行在同一 ARM64 硬件上。
 
-**当前版本**：workspace v0.320.0（精确值以根 `Cargo.toml` 为准）— 交付冲刺 44–59 卷完成（候选冻结 tag `v1.0.0-rc.1`；终验矩阵与缺口清单见 `evidence/52/`）；蓝图 61 Phase 0–7 全出口后，蓝图 62/63（单源收口）与蓝图 64（调用方最后一截收口，卷 64.1 协议键表单源 + goose vlan_id 活缺陷修复）推进中；测试基线计数随卷出口证据更新（52 终验以来各卷 Exit 均全绿）；生产发布（v1.0.0）未授权——当前裁决 NO-GO（`docs/v1.0.0-go-no-go.md`）。
+**当前版本**：workspace v0.325.0（精确值以根 `Cargo.toml` 为准）— 交付冲刺 44–59 卷完成（候选冻结 tag `v1.0.0-rc.1`；终验矩阵与缺口清单见 `evidence/52/`）；蓝图 61–67 全收官后，蓝图 68（持久化解冻与决策链接电，68.1–68.5 五卷）收口——68.5 落地 host planner 分区第一形态（真 HiGHS 经 RemoteBrain 通道 + DegradationLease 武装 + MQTT broker 通道根因修复）；测试基线计数随卷出口证据更新（52 终验以来各卷 Exit 均全绿）；生产发布（v1.0.0）未授权——当前裁决 NO-GO（`docs/v1.0.0-go-no-go.md`）。
 
 > **唯一内核路线 = seL4**（ADR-0023 用户决策，ADR-0030 执行确认，KRN-001）：自研 microkernel 已淘汰（G2 验证缺陷），产品镜像内核/引导为 seL4（`third_party/sel4-build.sh`）；EnerOS root-task 消费 BootInfo 并 spawn EL0 服务（KRN-002~004）。
 
@@ -70,7 +70,7 @@ EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power
 
 | 路径 | 内容 | MVP 可验收 | 实时性 |
 |------|------|-----------|--------|
-| **L1 主路径** | Solver-only（LP/MILP，HiGHS 求解器**预留未接线**：feature 零激活，AI-004 具名落地前保持停用；现役 L1 决策=静态启发式后端） | ⚠️ 求解器未接线 | < 500ms，不依赖 LLM |
+| **L1 主路径** | Solver-only（LP/MILP）——**host planner 分区第一形态（68.5，ADR-050 裁决 2）：真 HiGHS 在站端 `eneros-planner-peer`（host-only std bin）求解，经 RemoteBrain peer 通道（MQTT QoS1）供给单值功率提案；目标侧不运行 planner（现役 L1 兜底=静态启发式后端 + D3 持签降级）。mTLS/DecisionRequest 全通道与结构化 CertifiedPlan 为后续卷** | ⚠️ 需配套站端服务（在库） | < 500ms，不依赖 LLM |
 | **L2 增强路径** | 站端 LLM peer 经 MQTT 远程供给（ADR-0045 方案 B 主线）；本地 llama.cpp 推理 spike=NO-GO（内存/移植面证据见 `docs/ai/local-inference-spike.md`，重启条件三条） | ⚠️ 需配套站端服务 | < 2s（受网络 RTT 支配） |
 
 ---
@@ -257,7 +257,7 @@ use std::net::TcpStream;
 | 文件系统 | littlefs2 | 能源特有点表存储接口封装 |
 | TCP/IP 栈 | smoltcp（no_std） | 无 |
 | DDS 总线 | —（已撤线：ADR-021 out-of-v1.0，Agent 总线由 MQTT/IPC 承担） | 无 |
-| MILP/LP Solver | HiGHS（`highs-ffi` 由 planner/solver-milp 等无条件声明，host 测试图恒激活；**target release 闭包现役=静态启发式后端，HiGHS 未经 target 链实弹**；素材在库——build.rs + third_party/highs-1.7.2） | Rust FFI 封装 + 能源建模层（在库，host 侧激活） |
+| MILP/LP Solver | HiGHS（`highs-ffi` 真实求解经 68.5 `eneros-planner-peer` host bin 实弹在环——L2 门只收 Optimal、model_digest/gap/残差证据链随提案 reason 携带；**target 侧仍不运行 planner（aarch64/seL4 裁决不可行，ADR-050）**；素材在库——build.rs + third_party/highs-1.7.2） | Rust FFI 封装 + 能源建模层（host 侧实弹激活） |
 | LLM 推理 | 本地 llama.cpp spike=NO-GO（`docs/ai/local-inference-spike.md`，与 L2 路径行同口径）；`llama-cpp` feature 预留（默认关） | Rust 封装层（未接线） |
 | 密码学 | Ed25519/SHA-256/rustls(P-256)（产品线）；SM2/SM3/SM4 手卷为实验性（无硬件加速宣称，D4） | 协议层适配 |
 
@@ -337,7 +337,7 @@ EnerOS (Power Native Agent OS) is an energy-internet-native Agent OS built on th
 
 | Path | Content | MVP Verifiable | Latency |
 |------|---------|---------------|---------|
-| **L1 Main** | Solver-only (LP/MILP; HiGHS solver **reserved, unwired**: feature never activated, stays disabled until AI-004 lands; live L1 decision = static heuristic backend) | ⚠️ solver unwired | < 500ms, no LLM dependency |
+| **L1 Main** | Solver-only (LP/MILP) — **host planner partition, first form (68.5, ADR-050 ruling 2): real HiGHS solves inside the station-side `eneros-planner-peer` (host-only std bin), single-value power proposals delivered via the RemoteBrain peer channel (MQTT QoS1); the target never runs the planner (live L1 fallback = static heuristic backend + D3 signed degradation). mTLS/DecisionRequest full channel and structured CertifiedPlan are later volumes** | ⚠️ requires station service (in-tree) | < 500ms, no LLM dependency |
 | **L2 Enhanced** | Station-side LLM peer via MQTT (ADR-0045 plan B mainline); local llama.cpp inference spike = NO-GO (`docs/ai/local-inference-spike.md`) | ⚠️ requires station service | < 2s (network RTT bound) |
 
 ---
@@ -519,7 +519,7 @@ use std::net::TcpStream;
 | Filesystem | littlefs2 | Energy-specific point table storage API |
 | TCP/IP stack | smoltcp (no_std) | None |
 | DDS bus | — (withdrawn: ADR-021 out-of-v1.0; agent bus carried by MQTT/IPC) | None |
-| MILP/LP Solver | HiGHS (`highs-ffi` unconditionally declared by planner/solver-milp et al., always active in the host test graph; **target release closure live backend = static heuristic, HiGHS never exercised through the target chain**; materials in-tree — build.rs + third_party/highs-1.7.2) | Rust FFI + energy modeling layer (in-tree, host-side active) |
+| MILP/LP Solver | HiGHS (`highs-ffi` real solving live through the 68.5 `eneros-planner-peer` host bin — L2 gate accepts Optimal only, model_digest/gap/residual evidence travels in the proposal reason; **the target side still never runs the planner (aarch64/seL4 ruled infeasible, ADR-050)**; materials in-tree — build.rs + third_party/highs-1.7.2) | Rust FFI + energy modeling layer (live, host-side) |
 | LLM inference | local llama.cpp spike = NO-GO (`docs/ai/local-inference-spike.md`, same verdict as the L2-path row); `llama-cpp` feature reserved (off by default) | Rust wrapper layer (unwired) |
 | Cryptography | Ed25519/SHA-256/rustls(P-256) (product line); SM2/SM3/SM4 hand-rolled, experimental — no hardware-acceleration claims (D4) | Protocol adaptation |
 

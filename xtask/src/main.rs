@@ -364,6 +364,7 @@ fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
     let mut accept_test_signing_key = false;
     let mut root_key_hex: Option<String> = None;
     let mut control_chain_key_hex: Option<String> = None;
+    let mut degrade_lease_key_hex: Option<String> = None;
     // 子命令形态：`config compile [--profile ...]`。
     let args: Vec<String> = if args.first().map(|s| s.as_str()) == Some("compile") {
         args[1..].to_vec()
@@ -404,6 +405,14 @@ fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
                         .clone(),
                 );
             }
+            "--degrade-lease-key-hex" => {
+                i += 1;
+                degrade_lease_key_hex = Some(
+                    args.get(i)
+                        .ok_or_else(|| invalid("--degrade-lease-key-hex 需要值"))?
+                        .clone(),
+                );
+            }
             other => return Err(invalid(format!("config: 未知参数 {other}"))),
         }
         i += 1;
@@ -415,6 +424,7 @@ fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
         accept_test_signing_key,
         root_key_hex.as_deref(),
         control_chain_key_hex.as_deref(),
+        degrade_lease_key_hex.as_deref(),
     )?;
     Ok(())
 }

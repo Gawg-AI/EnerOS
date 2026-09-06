@@ -24,7 +24,7 @@ use eneros_intent_contract::peer::{
 };
 use eneros_safety_validator::TrustedTelemetry;
 
-use crate::ai_worker::{encode_candidate_payload, DecisionBackend, DecisionReject};
+use crate::ai_worker::{encode_candidate_payload, DecisionBackend, DecisionReject, DegradeArmSeam};
 
 /// 切换/状态迁移事件（审计与串口证据面）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +33,52 @@ pub enum SwitchEvent {
     PeerUnhealthy { consecutive_timeouts: u32 },
     /// 有效应答重新到达——恢复 Healthy（回 AI）。
     PeerRecovered,
+    /// 68.5 WP-68.5.3：D3 降级 lease 武装（peer 超时裁决后，System1 兜底
+    /// 逐次持签授权——"兜底也要持签"）。
+    LeaseArmed { lease_id: [u8; 16] },
+    /// 68.5：lease 武装失败（issue/验签拒绝——fail-closed；System1 后续
+    /// Unavailable，装配面打 LEASE-ARM-FAIL 词形）。
+    LeaseArmFailed,
+    /// 68.5：有效应答消费 ⇒ 超时 episode 结束，lease 撤销（D0 回归）。
+    LeaseRevoked,
+}
+
+/// WP-68.5.2（F27 第 5 项修）：应答来源后端标签——reason 前缀词形单源。
+///
+/// 对端约定（planner-peer bin `BACKEND_TAG` 同源）：`backend=planner` 前缀
+/// = host planner 分区真 HiGHS 产物；其余非空 reason = remote-llm（旧
+/// LLM peer 形态）。System1 启发式不经此函数（used_remote=false 即
+/// heuristic）。词形漂移 = 审计不可区分（t3 锁）。
+pub fn backend_tag(reason: &str) -> &'static str {
+    if reason.starts_with("backend=planner") {
+        "planner"
+    } else {
+        "remote-llm"
+    }
+}
+
+/// reason 字段取值（" key=" 定界；无则 None）。
+fn reason_field<'a>(reason: &'a str, key: &str) -> Option<&'a str> {
+    let needle = alloc::format!(" {key}=");
+    let start = reason.find(&needle)? + needle.len();
+    let rest = &reason[start..];
+    let end = rest.find(' ').unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// 求解状态诚实映射：仅字面 `status=optimal` 可声明 Optimal（对端 L2 求解
+/// 门只产 optimal）；其余一律 Suboptimal（无声明不升格——解码侧同纪律）。
+fn reason_solve_status(reason: &str) -> eneros_solver_core::result::SolveStatus {
+    match reason_field(reason, "status") {
+        Some("optimal") => eneros_solver_core::result::SolveStatus::Optimal,
+        _ => eneros_solver_core::result::SolveStatus::Suboptimal,
+    }
+}
+
+/// 模型 digest 诚实映射：`model=<64hex>` → 32B；缺/形不符 = None
+/// （不伪造——remote-llm/heuristic 形态本就无模型）。
+fn reason_model_digest(reason: &str) -> Option<[u8; 32]> {
+    reason_field(reason, "model").and_then(eneros_hex::decode_fixed::<32>)
 }
 
 /// 决策元数据（审计留痕用；每次 decide 后可读）。
@@ -73,6 +119,12 @@ pub struct RemoteBrainConfig {
     pub max_power_kw: f64,
     /// 提案 TTL 上限秒。
     pub ttl_secs: u32,
+    /// 68.5 WP-68.5.3：D3 降级 lease HMAC 键（ai-peer 配置注入链供给；
+    /// **全零 = 未装配**——不武装，行为与 68.5 前一致，host 测试缺省态）。
+    pub lease_key: [u8; 32],
+    /// D3 lease 有效时长秒（0 = 未装配；到期不复位即拒降级维持——D3
+    /// fail-closed 语义，t5 锁）。
+    pub lease_ttl_secs: u32,
 }
 
 /// 在途请求。
@@ -132,7 +184,7 @@ pub struct RemoteBrain<L: DecisionBackend, P: PeerLink> {
     pub last_reject_detail: Option<String>,
 }
 
-impl<L: DecisionBackend, P: PeerLink> RemoteBrain<L, P> {
+impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
     pub fn new(local: L, link: P, cfg: RemoteBrainConfig) -> Self {
         Self::with_catalog_ver(local, link, cfg, 0)
     }
@@ -259,6 +311,11 @@ impl<L: DecisionBackend, P: PeerLink> RemoteBrain<L, P> {
                         consecutive_timeouts: self.consecutive_timeouts,
                     });
                 }
+                // 68.5 WP-68.5.3：peer 失联（超时裁决）即武装 D3 lease——
+                // 后续每个 System1 兜底决策逐次持签授权（"兜底也要持签"，
+                // D3 SolverFallback 语义；degrade.rs 机制面零改动，本处
+                // 只接线）。同 tick 的 System1 兜底即在武装后执行。
+                self.arm_lease_wiring(now_ms);
             }
         }
 
@@ -266,9 +323,18 @@ impl<L: DecisionBackend, P: PeerLink> RemoteBrain<L, P> {
         if let Some(a) = self.accepted.take() {
             self.consecutive_timeouts = 0;
             self.remote_used_total = self.remote_used_total.saturating_add(1);
+            // 68.5：有效应答消费 ⇒ 超时 episode 结束——lease 撤销（D0
+            // 回归；healthy 常态的 fail-operational 兜底回到无 lease 行为）。
+            if self.local.degradation_armed() {
+                self.local.revoke_degradation();
+                self.events.push(SwitchEvent::LeaseRevoked);
+            }
+            // WP-68.5.2：后端标签前置（[backend=X] 在 64 字符截断前缀内
+            // 恒可读——审计截断 48/64 维持，F27 第 9 项登记不扩）。
             let resp_summary = truncate_for_audit(
                 &alloc::format!(
-                    "power={}kW ttl={}s dev={} why={}",
+                    "[backend={}] power={}kW ttl={}s dev={} why={}",
+                    backend_tag(&a.reason),
                     a.power_kw,
                     a.ttl_secs,
                     a.target_device,
@@ -349,13 +415,38 @@ impl<L: DecisionBackend, P: PeerLink> RemoteBrain<L, P> {
         peer_budget(self.cfg.max_power_kw, self.cfg.ttl_secs)
     }
 
+    /// 68.5 WP-68.5.3：D3 lease 武装（接线级——seam issue + 验签 arm；
+    /// 失败事件化 fail-closed，绝不裸兜底）。键全零 = 未装配（host 测试
+    /// 缺省 /68.5 前行为）。lease_id = 武装时刻 u128 LE（可读可对账）。
+    fn arm_lease_wiring(&mut self, now_ms: u64) {
+        if self.cfg.lease_key == [0u8; 32] || self.cfg.lease_ttl_secs == 0 {
+            return;
+        }
+        if self.local.degradation_armed() {
+            return;
+        }
+        match self.local.arm_for_degrade(
+            &self.cfg.lease_key,
+            now_ms,
+            self.cfg.lease_ttl_secs,
+            self.cfg.max_power_kw,
+        ) {
+            Ok(lease_id) => self.events.push(SwitchEvent::LeaseArmed { lease_id }),
+            Err(_) => self.events.push(SwitchEvent::LeaseArmFailed),
+        }
+    }
+
+    /// 68.5：System1 本地后端降级武装查询（学习冻结判据消费面）。
+    pub fn local_degradation_armed(&self) -> bool {
+        self.local.degradation_armed()
+    }
+
     fn build_plan(
         a: &AcceptedPlan,
         telemetry: &TrustedTelemetry,
         now_ms: u64,
     ) -> ProposedControlPlan {
         use eneros_energy_lp_model::result::{ScheduleEntry, ScheduleResult};
-        use eneros_solver_core::result::SolveStatus;
         let power = a.power_kw;
         ProposedControlPlan {
             plan_id: alloc::format!("remote-{}", a.req_id),
@@ -371,14 +462,18 @@ impl<L: DecisionBackend, P: PeerLink> RemoteBrain<L, P> {
                 }],
                 total_revenue_yuan: 0.0,
                 objective_value: 0.0,
-                solve_status: SolveStatus::Suboptimal,
+                // WP-68.5.2：不再硬编码 Suboptimal——按应答 reason 词形
+                // 诚实映射（planner 对端 L2 门产 optimal；无声明不升格）。
+                solve_status: reason_solve_status(&a.reason),
             },
             power_kw: power,
             target_device: a.target_device.clone(),
             ttl_secs: a.ttl_secs,
             issued_at_ms: now_ms,
             input_digest: Some(telemetry.provenance_digest),
-            model_digest: None,
+            // WP-68.5.2：不再恒 None——planner 对端随 reason 携带模型
+            // digest（64 hex → 32B）；remote-llm/heuristic 本就无模型 = None。
+            model_digest: reason_model_digest(&a.reason),
             latency: Default::default(),
             safety_violations: 0,
             safety_clamped: false,
@@ -387,7 +482,7 @@ impl<L: DecisionBackend, P: PeerLink> RemoteBrain<L, P> {
     }
 }
 
-impl<L: DecisionBackend, P: PeerLink> DecisionBackend for RemoteBrain<L, P> {
+impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> DecisionBackend for RemoteBrain<L, P> {
     fn decide(
         &mut self,
         telemetry: &TrustedTelemetry,
@@ -509,6 +604,17 @@ mod tests {
             probe_every: 5,
             max_power_kw: 5.0,
             ttl_secs: 60,
+            lease_key: [0u8; 32], // 缺省 = 未装配（不武装——既有行为锁）
+            lease_ttl_secs: 0,
+        }
+    }
+
+    /// 68.5：lease 装配态配置（t4/t5 判据面）。
+    fn cfg_leased(key: [u8; 32], ttl: u32) -> RemoteBrainConfig {
+        RemoteBrainConfig {
+            lease_key: key,
+            lease_ttl_secs: ttl,
+            ..cfg()
         }
     }
 
@@ -520,6 +626,164 @@ mod tests {
         alloc::format!(
             r#"{{"v":1,"req_id":{req_id},"seq":{seq},"plan":{{"power_kw":{power},"target_device":"pcs","ttl_secs":60}},"reason":"soc"}}"#
         )
+    }
+
+    /// t3：自定义 reason 应答（后端词形注入）。
+    fn resp_json_reason(req_id: u64, seq: u64, power: f64, reason: &str) -> String {
+        alloc::format!(
+            r#"{{"v":1,"req_id":{req_id},"seq":{seq},"plan":{{"power_kw":{power},"target_device":"pcs","ttl_secs":60}},"reason":"{reason}"}}"#
+        )
+    }
+
+    /// 68.5 WP-68.5.3 t4（红测先行）：peer 超时 → D3 lease 武装
+    /// （LEASE-ARMED 事件 + 同 tick System1 兜底持签成功）；有效应答
+    /// 消费 → 撤销（LEASE-REVOKED，回 D0）。变异靶：删 arm_lease_wiring
+    /// 调用 → 本测红。
+    #[test]
+    fn t4_lease_armed_on_degrade_revoked_on_recover() {
+        let key = [0x5Bu8; 32];
+        let mut b = RemoteBrain::new(
+            HeuristicBackend::new(),
+            MockLink::ok(),
+            cfg_leased(key, 3_600),
+        );
+        let t = minimal_trusted_at(10_000);
+        // tick1：发请求，无超时 → 未武装（healthy 常态 fail-operational
+        // 兜底与 68.5 前行为一致）。
+        b.decide_full(&t, 10_000).expect("tick1");
+        assert!(!b.local_degradation_armed(), "healthy 常态不武装");
+        assert!(b.drain_events().is_empty());
+        // tick2：首次超时裁决（16_000 > 10_000+5_000）→ 武装 + 同 tick
+        // System1 兜底在 lease 授权下产出（授权逐次记账成功）。
+        let w = b.decide_full(&t, 16_000).expect("fallback tick");
+        assert!(b.local_degradation_armed(), "超时裁决即武装");
+        assert!(
+            b.drain_events()
+                .iter()
+                .any(|e| matches!(e, SwitchEvent::LeaseArmed { .. })),
+            "须有 LEASE-ARMED 事件"
+        );
+        let (plan_id, _) = decode_cand(&w);
+        assert_eq!(plan_id, "heur-2", "持签兜底照常产出（tick1=heur-1）");
+        // 应答到达（超时裁决后已重发 req_id=2——配对走新在途）→ 消费 →
+        // 撤销（episode 结束，回 D0）。
+        assert_eq!(
+            b.on_peer_message(&resp_json(2, 1, -3.0), 16_100),
+            PeerMsgVerdict::Accepted
+        );
+        b.decide_full(&t, 17_000).expect("consume");
+        assert!(!b.local_degradation_armed(), "有效应答消费即撤销");
+        assert!(b.drain_events().contains(&SwitchEvent::LeaseRevoked));
+    }
+
+    /// 68.5：未装配键（全零）不武装——行为与 68.5 前逐字节一致。
+    #[test]
+    fn t4b_lease_unconfigured_never_arms() {
+        let mut b = brain(); // lease_key 全零
+        let t = minimal_trusted_at(10_000);
+        b.decide_full(&t, 10_000).expect("tick1");
+        b.decide_full(&t, 16_000).expect("timeout tick");
+        assert!(!b.local_degradation_armed());
+        assert!(b.drain_events().is_empty(), "无武装事件");
+    }
+
+    /// WP-68.5.2 t3（红测先行）：三后端审计词形可区分 + 64 字符截断前缀
+    /// 内标签恒可读 + build_plan 诚实标注（status/model_digest 按 reason
+    /// 词形映射，不再硬编码伪造）。变异靶：backend_tag 把 planner 标成
+    /// remote-llm → 本测红。
+    #[test]
+    fn t3_backend_tag_honest_audit_forms() {
+        let t = minimal_trusted_at(10_000);
+        let model_hex = eneros_hex::encode_lower(&[0x5Au8; 32]);
+
+        // ── planner 形态：reason 带词形前缀 ──
+        let mut b = brain();
+        b.decide_full(&t, 10_000).expect("tick1");
+        assert_eq!(
+            b.on_peer_message(
+                &resp_json_reason(
+                    1,
+                    1,
+                    -3.0,
+                    &alloc::format!("backend=planner status=optimal model={model_hex}")
+                ),
+                10_500
+            ),
+            PeerMsgVerdict::Accepted
+        );
+        let w = b.decide_full(&t, 11_000).expect("consume");
+        let meta = b.last_meta().expect("meta");
+        assert!(
+            meta.resp_summary.starts_with("[backend=planner] "),
+            "标签前置可读：{}",
+            meta.resp_summary
+        );
+        assert!(
+            meta.resp_summary.chars().count() <= 65,
+            "审计截断维持（64B + 省略号）：{}",
+            meta.resp_summary
+        );
+        let cand = eneros_decision_contract::CandidatePlan::decode_v1(&w).expect("cand");
+        assert_eq!(
+            cand.solver_status(),
+            eneros_decision_contract::SolveStatusKind::Optimal,
+            "status=optimal 诚实透传"
+        );
+        assert_eq!(cand.model_digest(), &[0x5Au8; 32], "model digest 透传");
+
+        // ── remote-llm 形态：普通 reason ──
+        let mut b2 = brain();
+        b2.decide_full(&t, 10_000).expect("tick1");
+        assert_eq!(
+            b2.on_peer_message(&resp_json_reason(1, 2, 2.0, "price arb"), 10_500),
+            PeerMsgVerdict::Accepted
+        );
+        let w2 = b2.decide_full(&t, 11_000).expect("consume");
+        let meta2 = b2.last_meta().expect("meta");
+        assert!(meta2.resp_summary.starts_with("[backend=remote-llm] "));
+        let cand2 = eneros_decision_contract::CandidatePlan::decode_v1(&w2).expect("cand2");
+        assert_eq!(
+            cand2.solver_status(),
+            eneros_decision_contract::SolveStatusKind::Suboptimal,
+            "无声明不升格"
+        );
+        assert!(
+            cand2.model_digest().iter().all(|&b| b == 0),
+            "无模型形态 digest = 零（adapter 既有语义）"
+        );
+
+        // ── heuristic（System1）：used_remote=false，独立词形 ──
+        let mut b3 = brain();
+        b3.decide_full(&t, 10_000).expect("sys1 tick");
+        let meta3 = b3.last_meta().expect("meta3");
+        assert!(!meta3.used_remote);
+        assert_eq!(meta3.resp_summary, "");
+    }
+
+    /// backend_tag / reason 字段解析单源单测（词形漂移即红）。
+    #[test]
+    fn t3b_backend_tag_parsing_unit() {
+        assert_eq!(backend_tag("backend=planner status=optimal"), "planner");
+        assert_eq!(backend_tag("backend=plannerX"), "planner", "前缀匹配");
+        assert_eq!(backend_tag("soc low"), "remote-llm");
+        assert_eq!(backend_tag(""), "remote-llm");
+        assert_eq!(
+            reason_field("backend=planner status=optimal m=1", "status"),
+            Some("optimal")
+        );
+        assert_eq!(
+            reason_field("a=1 status=suboptimal", "status"),
+            Some("suboptimal")
+        );
+        assert_eq!(reason_field("no fields", "status"), None);
+        assert_eq!(reason_model_digest("model=00ff"), None, "形不符 = None");
+        assert_eq!(
+            reason_model_digest(&alloc::format!(
+                "backend=planner status=optimal model={}",
+                eneros_hex::encode_lower(&[7u8; 32])
+            )),
+            Some([7u8; 32])
+        );
     }
 
     #[test]

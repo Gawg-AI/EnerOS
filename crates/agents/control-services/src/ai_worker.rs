@@ -133,6 +133,76 @@ pub struct HeuristicBackend {
     )>,
 }
 
+/// 68.5 WP-68.5.3：D3 降级 lease 单发使用次数上界（逐次授权记账；耗尽 =
+/// fail-closed "lease exhausted"——兜底不是无限额度）。
+pub const DEGRADE_LEASE_MAX_USES: u32 = 100_000;
+
+/// 68.5 WP-68.5.3：降级武装 seam——RemoteBrain 对 System1 本地后端的
+/// lease 执行面（D3 SolverFallback 语义"兜底也要持签"；degrade.rs 机制面
+/// 零改动）。生产唯一 RemoteBrain 本地形态 = [`HeuristicBackend`]；新
+/// 后端接入 RemoteBrain 须显式实现（武装语义是决策点，不给静默缺省）。
+pub trait DegradeArmSeam {
+    /// 武装查询（学习冻结判据消费面）。
+    fn degradation_armed(&self) -> bool;
+    /// 武装（issue + 验签 arm，fail-closed；成功返回 lease_id 供审计事件）。
+    fn arm_for_degrade(
+        &mut self,
+        key: &[u8; 32],
+        now_ms: u64,
+        ttl_secs: u32,
+        max_power_kw: f64,
+    ) -> Result<[u8; 16], alloc::string::String>;
+    /// 撤销（超时 episode 结束/恢复 D0）。
+    fn revoke_degradation(&mut self);
+}
+
+impl DegradeArmSeam for HeuristicBackend {
+    fn degradation_armed(&self) -> bool {
+        self.degradation.is_some()
+    }
+
+    fn arm_for_degrade(
+        &mut self,
+        key: &[u8; 32],
+        now_ms: u64,
+        ttl_secs: u32,
+        max_power_kw: f64,
+    ) -> Result<[u8; 16], alloc::string::String> {
+        use eneros_control_dispatch::degrade::{DegradationLease, DegradationLevel};
+        if self.degradation.is_some() {
+            return Err(alloc::string::String::from("already-armed"));
+        }
+        // lease_id = 武装时刻 u128 LE（单调可读可对账）。
+        let lease_id = (now_ms as u128).to_le_bytes();
+        // 资源作用域摘要 = 服务域标识常量（授权面不消费——仅签名覆盖）。
+        let scope = eneros_crypto::sm3_hash(b"eneros.svc-ai-worker.degrade-scope.v1");
+        // 限额代理语义（Phase 5 复查登记同源）：本装配面无动作时长/爬坡
+        // 输入，energy/ramp 以功率幅值代理（authorize 调用同口径）。
+        let lease = DegradationLease::issue(
+            key,
+            lease_id,
+            0,
+            DegradationLevel::SolverFallback,
+            self.strategy_digest(),
+            scope,
+            max_power_kw,
+            max_power_kw,
+            max_power_kw,
+            DEGRADE_LEASE_MAX_USES,
+            now_ms,
+            now_ms.saturating_add(u64::from(ttl_secs).saturating_mul(1_000)),
+            0,
+            0,
+        )?;
+        self.arm_degradation_lease(key, lease)?;
+        Ok(lease_id)
+    }
+
+    fn revoke_degradation(&mut self) {
+        HeuristicBackend::revoke_degradation(self);
+    }
+}
+
 impl HeuristicBackend {
     /// 构造（出厂死区 = [`soc_band`] 单源：MID±FACTORY_HALF_WIDTH =
     /// [0.3, 0.5]：≥0.5 放电 / ≤0.3 充电 / 死区 NoAction）。
@@ -192,6 +262,12 @@ impl HeuristicBackend {
             auth.revoke_all();
             let _ = (auth, lease);
         }
+    }
+
+    /// 68.5 WP-68.5.3：降级武装查询（装配观测 + 学习冻结判据——武装期
+    /// 死区参数必须冻结，否则 strategy digest 漂移击穿 lease 白名单）。
+    pub fn degradation_armed(&self) -> bool {
+        self.degradation.is_some()
     }
 
     /// 目录版本注入（bin 启动装载；[08] §4.8 planner 输入与 Registry 同代）。
@@ -713,5 +789,45 @@ mod tests {
         );
         assert_eq!(soc_band::MID, 0.4);
         assert_eq!(soc_band::FACTORY_HALF_WIDTH, 0.1);
+    }
+
+    /// 68.5 WP-68.5.3 t5（红测先行）：过期 lease 不得作为降级凭证——
+    /// arm 接受（签名合法）但 decide 逐次授权的时效门拒绝 → System1
+    /// Unavailable（fail-closed：降级维持必须有活 lease）。
+    #[test]
+    fn t5_lease_expiry_blocks_stale_fallback() {
+        use eneros_control_dispatch::degrade::{DegradationLease, DegradationLevel};
+        let key = b"station-degrade-lease-key-000000001";
+        let factory = HeuristicBackend::new();
+        let lease = DegradationLease::issue(
+            key,
+            [7u8; 16],
+            0,
+            DegradationLevel::SolverFallback,
+            factory.strategy_digest(),
+            eneros_crypto::sm3_hash(b"eneros.svc-ai-worker.degrade-scope.v1"),
+            5.0,
+            5.0,
+            5.0,
+            100,
+            1_000,
+            2_000,
+            0,
+            0,
+        )
+        .expect("issue");
+        let mut backend = factory;
+        backend.arm_degradation_lease(key, lease).expect("arm");
+        assert!(backend.degradation_armed());
+        let t = trusted();
+        // 窗内（1_500 ≤ 2_000）：授权成功 → 兜底产出。
+        assert!(backend.decide(&t, 1_500).is_ok(), "窗内兜底持签产出");
+        // 过期（3_000 > 2_000）：时效门拒绝 → Unavailable（不是 NoAction）。
+        match backend.decide(&t, 3_000) {
+            Err(DecisionReject::Unavailable(reason)) => {
+                assert!(reason.contains("expired"), "{reason}");
+            }
+            other => panic!("过期 lease 必须拒兜底，got {other:?}"),
+        }
     }
 }

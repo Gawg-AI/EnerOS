@@ -1,0 +1,24 @@
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.13s
+     Running `target/debug/eneros-xtask config compile --profile qemu-prod --accept-test-signing-key --root-key-hex 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a`
+CONFIG-COMPILE: ai-peer → 89B
+CONFIG-COMPILE: catalog → 986B
+CONFIG-COMPILE: cloud-sync → 43B
+CONFIG-COMPILE: control-write → 34B
+CONFIG-COMPILE: logging → 29B
+CONFIG-COMPILE: metrics → 36B
+CONFIG-COMPILE: ota → 154B
+CONFIG-COMPILE: points → 1670B
+CONFIG-COMPILE: protocol-dlt645 → 52B
+CONFIG-COMPILE: protocol-gbt27930 → 144B
+CONFIG-COMPILE: protocol-goose → 132B
+CONFIG-COMPILE: protocol-iec101 → 156B
+CONFIG-COMPILE: protocol-iec103 → 44B
+CONFIG-COMPILE: protocol-iec104 → 117B
+CONFIG-COMPILE: protocol-mms → 38B
+CONFIG-COMPILE: protocol-modbus-rtu → 84B
+CONFIG-COMPILE: protocol-modbus-tcp → 60B
+CONFIG-COMPILE: protocol-mqtt → 307B
+CONFIG-COMPILE: protocol-sv → 52B
+CONFIG-COMPILE: security → 35B
+CONFIG-COMPILE: → /home/ahx/文档/EnerOS/product/config-bundle.bin（ai-peer,catalog,cloud-sync,control-write,logging,metrics,ota,points,protocol-dlt645,protocol-gbt27930,protocol-goose,protocol-iec101,protocol-iec103,protocol-iec104,protocol-mms,protocol-modbus-rtu,protocol-modbus-tcp,protocol-mqtt,protocol-sv,security entries，7099B）
+             pubkey → /home/ahx/文档/EnerOS/product/config-bundle-pubkey.hex

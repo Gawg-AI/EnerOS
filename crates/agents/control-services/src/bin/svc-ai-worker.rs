@@ -127,6 +127,10 @@ pub extern "C" fn _start(
                 probe_every: c.probe_every,
                 max_power_kw: c.max_power_kw,
                 ttl_secs: c.ttl_secs,
+                // 68.5 WP-68.5.3：D3 降级 lease 武装参数（ai-peer 配置注入
+                // 链供给；peer 失联 → LEASE-ARMED → System1 兜底持签降级）。
+                lease_key: c.degrade_lease_key,
+                lease_ttl_secs: c.degrade_lease_ttl_secs,
             };
             // SPEC-E WP-E.3：学习器装配（闸+授予双条件；None ⇒ 出厂行为）。
             let learn = build_learner(eipc_mask, c.learn_enabled);

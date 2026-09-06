@@ -1,0 +1,1810 @@
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.11s
+     Running `target/debug/eneros-xtask image raw qemu-prod --signing-key '/home/ahx/文档/EnerOS/product/security/keys-local/dev-signing.key' --uefi-key '/home/ahx/文档/EnerOS/product/security/keys-local/uefi-test.key' --uefi-cert '/home/ahx/文档/EnerOS/product/security/keys-local/uefi-test.pem'`
++ cd "/home/ahx/文档/EnerOS" && ENEROS_PLATFORM_ID_HEX="6afc39cf058a1ca52a5e36d8eefa1463" ENEROS_RELEASE_KEY_ID_HEX="712b01b0402a500dc68a78949d60188d" ENEROS_RELEASE_PUBLIC_KEY_HEX="c82d9ea85d7eddeafa309387c37b93411d7153dde87ea39b3f4a9a895152fe3d" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-uefi" "-p" "eneros-boot-manager-uefi" "--bin" "boot-manager-uefi" "--no-default-features" "--features" "uefi-app"
+   Compiling eneros-boot-manager-uefi v0.325.0 (/home/ahx/文档/EnerOS/crates/boot/boot-manager-uefi)
+   Compiling eneros-ipc-wire v0.325.0 (/home/ahx/文档/EnerOS/crates/abi/ipc-wire)
+   Compiling eneros-hex v0.325.0 (/home/ahx/文档/EnerOS/crates/abi/hex)
+   Compiling eneros-boot-protocol v0.325.0 (/home/ahx/文档/EnerOS/crates/boot/boot-protocol)
+   Compiling eneros-image-format v0.325.0 (/home/ahx/文档/EnerOS/crates/boot/image-format)
+warning: field `source_date_epoch` is never read
+   --> crates/boot/boot-manager-uefi/src/main.rs:196:5
+    |
+190 | struct LoadedBoot {
+    |        ---------- field in this struct
+...
+196 |     source_date_epoch: u64,
+    |     ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-boot-manager-uefi` (bin "boot-manager-uefi") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 1.72s
++ "sbsign" "--key" "/home/ahx/文档/EnerOS/product/security/keys-local/uefi-test.key" "--cert" "/home/ahx/文档/EnerOS/product/security/keys-local/uefi-test.pem" "--output" "/home/ahx/文档/EnerOS/target/eneros/artifacts/qemu-prod/BOOTAA64.EFI" "/home/ahx/文档/EnerOS/target/aarch64-unknown-uefi/release/boot-manager-uefi.efi"
+Signing Unsigned original image
++ "sbverify" "--cert" "/home/ahx/文档/EnerOS/product/security/keys-local/uefi-test.pem" "/home/ahx/文档/EnerOS/target/eneros/artifacts/qemu-prod/BOOTAA64.EFI"
+Signature verification OK
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-root-task" "--bin" "eneros-root-task" "--features" "sel4-eipc"
+   Compiling eneros-sel4-sys v0.325.0 (/home/ahx/文档/EnerOS/crates/runtime/sel4-sys)
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+   Compiling eneros-runtime v0.325.0 (/home/ahx/文档/EnerOS/crates/runtime/runtime)
+   Compiling eneros-storage v0.325.0 (/home/ahx/文档/EnerOS/crates/drivers/storage)
+   Compiling eneros-drv-svc v0.325.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+   Compiling eneros-durable-log v0.325.0 (/home/ahx/文档/EnerOS/crates/runtime/durable-log)
+   Compiling eneros-agent-sdk v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/agent-sdk)
+   Compiling eneros-root-task v0.325.0 (/home/ahx/文档/EnerOS/crates/runtime/root-task)
+warning: unused doc comment
+  --> crates/runtime/root-task/src/main.rs:82:1
+   |
+82 | / /// Root task 入口 — 由 seL4 elfloader 在 rootserver 模式下调用。
+83 | | ///
+84 | | /// M0+ 行为（蓝图/20 R1-2）：
+85 | | /// 1. `eneros_runtime::init()` 初始化串口控制台
+...  |
+97 | | /// 故 `_start` 必须为汇编：先设 SP（.bss 栈顶）再跳 `rust_entry`——与
+98 | | /// `third_party/sel4-root/root_task.c` 的 C 入口同模式。
+   | |_--------------------------------------------------------^
+   |   |
+   |   rustdoc does not generate documentation for macro invocations
+   |
+   = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+   = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `cpu_topology_from`
+  --> crates/runtime/root-task/src/platform.rs:28:5
+   |
+28 |     cpu_topology_from, cross_check_cpu_count, PlatformAdapter, PlatformError, PlatformInput,
+   |     ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable expression
+   --> crates/runtime/root-task/src/main.rs:567:5
+    |
+463 | /         match crate::spawn::sel4_spawn_services(&plan, &bundle, &mut ctx) {
+464 | |             Ok(handles) => {
+465 | |                 println!("[eneros-root-task] EL0 services spawned — entering service loop");
+466 | |                 println!(
+...   |
+558 | |         }
+    | |_________- any code following this `match` expression is unreachable, as all arms diverge
+...
+567 | /     loop {
+568 | |         core::hint::spin_loop();
+569 | |     }
+    | |_____^ unreachable expression
+    |
+    = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `elf`
+    --> crates/runtime/root-task/src/spawn.rs:1974:5
+     |
+1974 |     elf: &LoadedElf,
+     |     ^^^ help: if this is intentional, prefix it with an underscore: `_elf`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `copy_segment_via_window` is never used
+    --> crates/runtime/root-task/src/spawn.rs:2919:4
+     |
+2919 | fn copy_segment_via_window(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-root-task` (bin "eneros-root-task") generated 5 warnings (run `cargo fix --bin "eneros-root-task" -p eneros-root-task` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 2.93s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-drv-svc" "--bin" "svc-drv-rng"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+   Compiling eneros-drv-svc v0.325.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+    Finished `release` profile [optimized] target(s) in 0.19s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-drv-svc" "--bin" "svc-drv-blk"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+   Compiling eneros-drv-svc v0.325.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+    Finished `release` profile [optimized] target(s) in 0.19s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-drv-svc" "--bin" "svc-drv-net"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+   Compiling eneros-drv-svc v0.325.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+    Finished `release` profile [optimized] target(s) in 0.19s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-drv-svc" "--bin" "svc-drv-console"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+   Compiling eneros-drv-svc v0.325.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+    Finished `release` profile [optimized] target(s) in 0.18s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-drv-svc" "--bin" "svc-storage"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+   Compiling eneros-drv-svc v0.325.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+    Finished `release` profile [optimized] target(s) in 0.24s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-protocol-services" "--bin" "svc-modbus-rtu" "--features" "sel4"
+   Compiling eneros-protocol-services v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+   Compiling eneros-iec60870-asdu v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/iec60870-asdu)
+   Compiling eneros-iec61850-model v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/iec61850-model)
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+   Compiling eneros-modbus-rtu v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/modbus-rtu)
+   Compiling eneros-gbt27930 v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/gbt27930)
+   Compiling eneros-dlt645 v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/dlt645)
+   Compiling eneros-iec103 v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/iec103)
+   Compiling eneros-mqtt v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/mqtt)
+   Compiling eneros-control-gateway v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/control-gateway)
+   Compiling eneros-ingestion-core v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/ingestion-core)
+   Compiling eneros-iec101 v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/iec101)
+   Compiling eneros-iec61850-goose v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/iec61850-goose)
+   Compiling eneros-iec61850-mms v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/iec61850-mms)
+   Compiling eneros-iec61850-sv v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/iec61850-sv)
+   Compiling eneros-modbus-tcp v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/modbus-tcp)
+   Compiling eneros-iec104-slave v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/iec104-slave)
+   Compiling eneros-iec104-master v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/iec104-master)
+warning: unused import: `ProtocolConfig`
+  --> crates/protocols/protocol-services/src/protocol_ladder.rs:30:5
+   |
+30 |     ProtocolConfig, ProtocolError, TransportFactory, TransportKind, VecPointRegistry,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `config_client` is never read
+   --> crates/protocols/protocol-services/src/protocol_ladder.rs:373:5
+    |
+371 | pub struct Sel4ServiceIo {
+    |            ------------- field in this struct
+372 |     service: &'static str,
+373 |     config_client: &'static str,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-protocol-services` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 2.80s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-protocol-services" "--bin" "svc-modbus-tcp" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `ProtocolConfig`
+  --> crates/protocols/protocol-services/src/protocol_ladder.rs:30:5
+   |
+30 |     ProtocolConfig, ProtocolError, TransportFactory, TransportKind, VecPointRegistry,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `config_client` is never read
+   --> crates/protocols/protocol-services/src/protocol_ladder.rs:373:5
+    |
+371 | pub struct Sel4ServiceIo {
+    |            ------------- field in this struct
+372 |     service: &'static str,
+373 |     config_client: &'static str,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-protocol-services` to apply 1 suggestion)
+   Compiling eneros-protocol-services v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+warning: unused import: `eneros_protocol_abstract::plugin::ProtocolPlugin`
+  --> crates/protocols/protocol-services/src/bin/svc-modbus-tcp.rs:24:5
+   |
+24 | use eneros_protocol_abstract::plugin::ProtocolPlugin;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `eneros_control_gateway::PCS_SETPOINT_READBACK_TOL_KW as MASTER_READBACK_TOL_KW`
+  --> crates/protocols/protocol-services/src/bin/svc-modbus-tcp.rs:41:5
+   |
+41 | use eneros_control_gateway::PCS_SETPOINT_READBACK_TOL_KW as MASTER_READBACK_TOL_KW;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `source_id` is never read
+  --> crates/protocols/protocol-services/src/bin/svc-modbus-tcp.rs:62:5
+   |
+58 | struct ModbusTcpIoService {
+   |        ------------------ field in this struct
+...
+62 |     source_id: u32,
+   |     ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (bin "svc-modbus-tcp") generated 3 warnings (run `cargo fix --bin "svc-modbus-tcp" -p eneros-protocol-services` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.39s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-protocol-services" "--bin" "svc-iec104" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `ProtocolConfig`
+  --> crates/protocols/protocol-services/src/protocol_ladder.rs:30:5
+   |
+30 |     ProtocolConfig, ProtocolError, TransportFactory, TransportKind, VecPointRegistry,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `config_client` is never read
+   --> crates/protocols/protocol-services/src/protocol_ladder.rs:373:5
+    |
+371 | pub struct Sel4ServiceIo {
+    |            ------------- field in this struct
+372 |     service: &'static str,
+373 |     config_client: &'static str,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-protocol-services` to apply 1 suggestion)
+   Compiling eneros-protocol-services v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+warning: unused import: `eneros_protocol_abstract::plugin::ProtocolPlugin`
+  --> crates/protocols/protocol-services/src/bin/svc-iec104.rs:25:5
+   |
+25 | use eneros_protocol_abstract::plugin::ProtocolPlugin;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `source_id` and `plugin` are never read
+  --> crates/protocols/protocol-services/src/bin/svc-iec104.rs:54:5
+   |
+50 | struct Iec104IoService {
+   |        --------------- fields in this struct
+...
+54 |     source_id: u32,
+   |     ^^^^^^^^^
+55 |     /// 共享插件（收包=adapter drain；自检=启动期 PluginIoService 轮）。
+56 |     plugin: eneros_protocol_services::iec104_ingest::SharedIec104Plugin,
+   |     ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (bin "svc-iec104") generated 2 warnings (run `cargo fix --bin "svc-iec104" -p eneros-protocol-services` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.42s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-protocol-services" "--bin" "svc-mqtt" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `ProtocolConfig`
+  --> crates/protocols/protocol-services/src/protocol_ladder.rs:30:5
+   |
+30 |     ProtocolConfig, ProtocolError, TransportFactory, TransportKind, VecPointRegistry,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `config_client` is never read
+   --> crates/protocols/protocol-services/src/protocol_ladder.rs:373:5
+    |
+371 | pub struct Sel4ServiceIo {
+    |            ------------- field in this struct
+372 |     service: &'static str,
+373 |     config_client: &'static str,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-protocol-services` to apply 1 suggestion)
+   Compiling eneros-protocol-services v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+    Finished `release` profile [optimized] target(s) in 0.37s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-protocol-services" "--bin" "svc-mms" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `ProtocolConfig`
+  --> crates/protocols/protocol-services/src/protocol_ladder.rs:30:5
+   |
+30 |     ProtocolConfig, ProtocolError, TransportFactory, TransportKind, VecPointRegistry,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `config_client` is never read
+   --> crates/protocols/protocol-services/src/protocol_ladder.rs:373:5
+    |
+371 | pub struct Sel4ServiceIo {
+    |            ------------- field in this struct
+372 |     service: &'static str,
+373 |     config_client: &'static str,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-protocol-services` to apply 1 suggestion)
+   Compiling eneros-protocol-services v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+    Finished `release` profile [optimized] target(s) in 0.34s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-protocol-services" "--bin" "svc-goose" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `ProtocolConfig`
+  --> crates/protocols/protocol-services/src/protocol_ladder.rs:30:5
+   |
+30 |     ProtocolConfig, ProtocolError, TransportFactory, TransportKind, VecPointRegistry,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `config_client` is never read
+   --> crates/protocols/protocol-services/src/protocol_ladder.rs:373:5
+    |
+371 | pub struct Sel4ServiceIo {
+    |            ------------- field in this struct
+372 |     service: &'static str,
+373 |     config_client: &'static str,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-protocol-services` to apply 1 suggestion)
+   Compiling eneros-protocol-services v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+    Finished `release` profile [optimized] target(s) in 0.33s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-protocol-services" "--bin" "svc-sv" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `ProtocolConfig`
+  --> crates/protocols/protocol-services/src/protocol_ladder.rs:30:5
+   |
+30 |     ProtocolConfig, ProtocolError, TransportFactory, TransportKind, VecPointRegistry,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `config_client` is never read
+   --> crates/protocols/protocol-services/src/protocol_ladder.rs:373:5
+    |
+371 | pub struct Sel4ServiceIo {
+    |            ------------- field in this struct
+372 |     service: &'static str,
+373 |     config_client: &'static str,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-protocol-services` to apply 1 suggestion)
+   Compiling eneros-protocol-services v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+    Finished `release` profile [optimized] target(s) in 0.32s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-control-services" "--bin" "svc-telemetry" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+   Compiling eneros-drv-svc v0.325.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+   Compiling eneros-metrics v0.325.0 (/home/ahx/文档/EnerOS/crates/observability/metrics)
+   Compiling eneros-control-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/control-services)
+   Compiling eneros-decision-contract v0.325.0 (/home/ahx/文档/EnerOS/crates/ai/decision-contract)
+   Compiling eneros-fs v0.325.0 (/home/ahx/文档/EnerOS/crates/drivers/fs)
+   Compiling eneros-config-bundle v0.325.0 (/home/ahx/文档/EnerOS/crates/runtime/config-bundle)
+   Compiling eneros-intent-parser v0.325.0 (/home/ahx/文档/EnerOS/crates/ai/intent-parser)
+   Compiling eneros-ota-ab v0.325.0 (/home/ahx/文档/EnerOS/crates/security/ota-ab)
+   Compiling eneros-agent-sdk v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/agent-sdk)
+   Compiling eneros-intent-contract v0.325.0 (/home/ahx/文档/EnerOS/crates/ai/intent-contract)
+   Compiling eneros-ingestion-core v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/ingestion-core)
+   Compiling eneros-semantic-catalog v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/semantic-catalog)
+   Compiling eneros-tsdb v0.325.0 (/home/ahx/文档/EnerOS/crates/drivers/tsdb)
+   Compiling eneros-event-store v0.325.0 (/home/ahx/文档/EnerOS/crates/runtime/event-store)
+   Compiling eneros-agent v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/agent)
+   Compiling eneros-dual-brain v0.325.0 (/home/ahx/文档/EnerOS/crates/ai/dual-brain)
+   Compiling eneros-control-dispatch v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/control-dispatch)
+   Compiling eneros-snapshot-service v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/snapshot-service)
+   Compiling eneros-device-agent v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/device-agent)
+   Compiling eneros-resource-registry v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/resource-registry)
+warning: unused import: `PROD_FEEDBACK_MAPPING`
+   --> crates/agents/control-services/src/dispatch_assembly.rs:685:55
+    |
+685 |         use eneros_control_dispatch::{DispatchConfig, PROD_FEEDBACK_MAPPING};
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-control-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-control-services` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 8.66s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-control-services" "--bin" "svc-energy-agent" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `PROD_FEEDBACK_MAPPING`
+   --> crates/agents/control-services/src/dispatch_assembly.rs:685:55
+    |
+685 |         use eneros_control_dispatch::{DispatchConfig, PROD_FEEDBACK_MAPPING};
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-control-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-control-services` to apply 1 suggestion)
+   Compiling eneros-control-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/control-services)
+    Finished `release` profile [optimized] target(s) in 0.44s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-control-services" "--bin" "svc-ai-worker" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `PROD_FEEDBACK_MAPPING`
+   --> crates/agents/control-services/src/dispatch_assembly.rs:685:55
+    |
+685 |         use eneros_control_dispatch::{DispatchConfig, PROD_FEEDBACK_MAPPING};
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-control-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-control-services` to apply 1 suggestion)
+   Compiling eneros-control-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/control-services)
+    Finished `release` profile [optimized] target(s) in 0.51s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-control-services" "--bin" "svc-control-dispatch" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `PROD_FEEDBACK_MAPPING`
+   --> crates/agents/control-services/src/dispatch_assembly.rs:685:55
+    |
+685 |         use eneros_control_dispatch::{DispatchConfig, PROD_FEEDBACK_MAPPING};
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-control-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-control-services` to apply 1 suggestion)
+   Compiling eneros-control-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/control-services)
+    Finished `release` profile [optimized] target(s) in 0.53s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-control-services" "--bin" "svc-device-agent" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `PROD_FEEDBACK_MAPPING`
+   --> crates/agents/control-services/src/dispatch_assembly.rs:685:55
+    |
+685 |         use eneros_control_dispatch::{DispatchConfig, PROD_FEEDBACK_MAPPING};
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-control-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-control-services` to apply 1 suggestion)
+   Compiling eneros-control-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/control-services)
+    Finished `release` profile [optimized] target(s) in 0.92s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-business-services" "--bin" "svc-config" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+   Compiling eneros-control-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/control-services)
+   Compiling eneros-business-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+   Compiling eneros-logging v0.325.0 (/home/ahx/文档/EnerOS/crates/observability/logging)
+   Compiling eneros-telemetry-queue v0.325.0 (/home/ahx/文档/EnerOS/crates/observability/telemetry-queue)
+   Compiling eneros-market-types v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/market-types)
+   Compiling eneros-mgmt-api v0.325.0 (/home/ahx/文档/EnerOS/crates/observability/mgmt-api)
+   Compiling eneros-control-dispatch v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/control-dispatch)
+warning: constant `AUDIT_DOMAIN` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:25:18
+   |
+25 | pub(crate) const AUDIT_DOMAIN: &[u8] = b"svc-control-dispatch-audit";
+   |                  ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `build_intent_store_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:35:15
+   |
+35 | pub(crate) fn build_intent_store_ladder<I>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `build_control_audit_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:79:15
+   |
+79 | pub(crate) fn build_control_audit_ladder<R>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `handle_unloaded` is never used
+   --> crates/agents/control-services/src/dispatch_assembly.rs:139:15
+    |
+139 | pub(crate) fn handle_unloaded(
+    |               ^^^^^^^^^^^^^^^
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+
+warning: `eneros-control-services` (lib) generated 5 warnings
+    Finished `release` profile [optimized] target(s) in 3.05s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-business-services" "--bin" "svc-ledger" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: constant `AUDIT_DOMAIN` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:25:18
+   |
+25 | pub(crate) const AUDIT_DOMAIN: &[u8] = b"svc-control-dispatch-audit";
+   |                  ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `build_intent_store_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:35:15
+   |
+35 | pub(crate) fn build_intent_store_ladder<I>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `build_control_audit_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:79:15
+   |
+79 | pub(crate) fn build_control_audit_ladder<R>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `handle_unloaded` is never used
+   --> crates/agents/control-services/src/dispatch_assembly.rs:139:15
+    |
+139 | pub(crate) fn handle_unloaded(
+    |               ^^^^^^^^^^^^^^^
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+
+warning: `eneros-control-services` (lib) generated 5 warnings
+   Compiling eneros-business-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+    Finished `release` profile [optimized] target(s) in 0.44s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-business-services" "--bin" "svc-market" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: constant `AUDIT_DOMAIN` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:25:18
+   |
+25 | pub(crate) const AUDIT_DOMAIN: &[u8] = b"svc-control-dispatch-audit";
+   |                  ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `build_intent_store_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:35:15
+   |
+35 | pub(crate) fn build_intent_store_ladder<I>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `build_control_audit_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:79:15
+   |
+79 | pub(crate) fn build_control_audit_ladder<R>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `handle_unloaded` is never used
+   --> crates/agents/control-services/src/dispatch_assembly.rs:139:15
+    |
+139 | pub(crate) fn handle_unloaded(
+    |               ^^^^^^^^^^^^^^^
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+
+warning: `eneros-control-services` (lib) generated 5 warnings
+   Compiling eneros-business-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+warning: unused import: `OutboxId`
+   --> crates/agents/business-services/src/bin/svc-market.rs:153:52
+    |
+153 |         use eneros_durable_state::{IdempotencyKey, OutboxId};
+    |                                                    ^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-business-services` (bin "svc-market") generated 1 warning (run `cargo fix --bin "svc-market" -p eneros-business-services` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 1.89s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-business-services" "--bin" "svc-ota" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: constant `AUDIT_DOMAIN` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:25:18
+   |
+25 | pub(crate) const AUDIT_DOMAIN: &[u8] = b"svc-control-dispatch-audit";
+   |                  ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `build_intent_store_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:35:15
+   |
+35 | pub(crate) fn build_intent_store_ladder<I>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `build_control_audit_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:79:15
+   |
+79 | pub(crate) fn build_control_audit_ladder<R>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `handle_unloaded` is never used
+   --> crates/agents/control-services/src/dispatch_assembly.rs:139:15
+    |
+139 | pub(crate) fn handle_unloaded(
+    |               ^^^^^^^^^^^^^^^
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+
+warning: `eneros-control-services` (lib) generated 5 warnings
+   Compiling eneros-business-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+    Finished `release` profile [optimized] target(s) in 0.46s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-business-services" "--bin" "svc-observability" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: constant `AUDIT_DOMAIN` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:25:18
+   |
+25 | pub(crate) const AUDIT_DOMAIN: &[u8] = b"svc-control-dispatch-audit";
+   |                  ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `build_intent_store_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:35:15
+   |
+35 | pub(crate) fn build_intent_store_ladder<I>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `build_control_audit_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:79:15
+   |
+79 | pub(crate) fn build_control_audit_ladder<R>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `handle_unloaded` is never used
+   --> crates/agents/control-services/src/dispatch_assembly.rs:139:15
+    |
+139 | pub(crate) fn handle_unloaded(
+    |               ^^^^^^^^^^^^^^^
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+
+warning: `eneros-control-services` (lib) generated 5 warnings
+   Compiling eneros-business-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+warning: struct `UnavailableExporter` is never constructed
+   --> crates/agents/business-services/src/bin/svc-observability.rs:117:8
+    |
+117 | struct UnavailableExporter;
+    |        ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-business-services` (bin "svc-observability") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.98s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-business-services" "--bin" "svc-cloud-sync" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: constant `AUDIT_DOMAIN` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:25:18
+   |
+25 | pub(crate) const AUDIT_DOMAIN: &[u8] = b"svc-control-dispatch-audit";
+   |                  ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `build_intent_store_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:35:15
+   |
+35 | pub(crate) fn build_intent_store_ladder<I>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `build_control_audit_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:79:15
+   |
+79 | pub(crate) fn build_control_audit_ladder<R>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `handle_unloaded` is never used
+   --> crates/agents/control-services/src/dispatch_assembly.rs:139:15
+    |
+139 | pub(crate) fn handle_unloaded(
+    |               ^^^^^^^^^^^^^^^
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+
+warning: `eneros-control-services` (lib) generated 5 warnings
+   Compiling eneros-business-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+    Finished `release` profile [optimized] target(s) in 0.73s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-business-services" "--bin" "svc-agent-bus" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: constant `AUDIT_DOMAIN` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:25:18
+   |
+25 | pub(crate) const AUDIT_DOMAIN: &[u8] = b"svc-control-dispatch-audit";
+   |                  ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `build_intent_store_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:35:15
+   |
+35 | pub(crate) fn build_intent_store_ladder<I>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `build_control_audit_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:79:15
+   |
+79 | pub(crate) fn build_control_audit_ladder<R>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `handle_unloaded` is never used
+   --> crates/agents/control-services/src/dispatch_assembly.rs:139:15
+    |
+139 | pub(crate) fn handle_unloaded(
+    |               ^^^^^^^^^^^^^^^
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+
+warning: `eneros-control-services` (lib) generated 5 warnings
+   Compiling eneros-business-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+    Finished `release` profile [optimized] target(s) in 0.40s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-business-services" "--bin" "svc-mgmt" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: constant `AUDIT_DOMAIN` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:25:18
+   |
+25 | pub(crate) const AUDIT_DOMAIN: &[u8] = b"svc-control-dispatch-audit";
+   |                  ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `build_intent_store_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:35:15
+   |
+35 | pub(crate) fn build_intent_store_ladder<I>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `build_control_audit_ladder` is never used
+  --> crates/agents/control-services/src/dispatch_assembly.rs:79:15
+   |
+79 | pub(crate) fn build_control_audit_ladder<R>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `handle_unloaded` is never used
+   --> crates/agents/control-services/src/dispatch_assembly.rs:139:15
+    |
+139 | pub(crate) fn handle_unloaded(
+    |               ^^^^^^^^^^^^^^^
+
+warning: methods `occupied`, `slot_full_rejections`, `dup_session_rejections`, `page_evictions`, and `slow_events` are never used
+   --> crates/agents/control-services/src/service_slots.rs:126:19
+    |
+113 | impl SlotTable {
+    | -------------- methods in this implementation
+...
+126 |     pub(crate) fn occupied(&self) -> usize {
+    |                   ^^^^^^^^
+...
+129 |     pub(crate) fn slot_full_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+132 |     pub(crate) fn dup_session_rejections(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     pub(crate) fn page_evictions(&self) -> u32 {
+    |                   ^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn slow_events(&self) -> u32 {
+    |                   ^^^^^^^^^^^
+
+warning: `eneros-control-services` (lib) generated 5 warnings
+   Compiling eneros-business-services v0.325.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+    Finished `release` profile [optimized] target(s) in 0.44s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-protocol-services" "--bin" "svc-dlt645" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `ProtocolConfig`
+  --> crates/protocols/protocol-services/src/protocol_ladder.rs:30:5
+   |
+30 |     ProtocolConfig, ProtocolError, TransportFactory, TransportKind, VecPointRegistry,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `config_client` is never read
+   --> crates/protocols/protocol-services/src/protocol_ladder.rs:373:5
+    |
+371 | pub struct Sel4ServiceIo {
+    |            ------------- field in this struct
+372 |     service: &'static str,
+373 |     config_client: &'static str,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-protocol-services` to apply 1 suggestion)
+   Compiling eneros-protocol-services v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+warning: unused import: `eneros_protocol_abstract::plugin::ProtocolPlugin`
+  --> crates/protocols/protocol-services/src/bin/svc-dlt645.rs:14:5
+   |
+14 | use eneros_protocol_abstract::plugin::ProtocolPlugin;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (bin "svc-dlt645") generated 1 warning (run `cargo fix --bin "svc-dlt645" -p eneros-protocol-services` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.24s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-protocol-services" "--bin" "svc-iec101" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `ProtocolConfig`
+  --> crates/protocols/protocol-services/src/protocol_ladder.rs:30:5
+   |
+30 |     ProtocolConfig, ProtocolError, TransportFactory, TransportKind, VecPointRegistry,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `config_client` is never read
+   --> crates/protocols/protocol-services/src/protocol_ladder.rs:373:5
+    |
+371 | pub struct Sel4ServiceIo {
+    |            ------------- field in this struct
+372 |     service: &'static str,
+373 |     config_client: &'static str,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-protocol-services` to apply 1 suggestion)
+   Compiling eneros-protocol-services v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+warning: unused import: `eneros_protocol_abstract::plugin::ProtocolPlugin`
+  --> crates/protocols/protocol-services/src/bin/svc-iec101.rs:14:5
+   |
+14 | use eneros_protocol_abstract::plugin::ProtocolPlugin;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (bin "svc-iec101") generated 1 warning (run `cargo fix --bin "svc-iec101" -p eneros-protocol-services` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.25s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-protocol-services" "--bin" "svc-iec103" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `ProtocolConfig`
+  --> crates/protocols/protocol-services/src/protocol_ladder.rs:30:5
+   |
+30 |     ProtocolConfig, ProtocolError, TransportFactory, TransportKind, VecPointRegistry,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `config_client` is never read
+   --> crates/protocols/protocol-services/src/protocol_ladder.rs:373:5
+    |
+371 | pub struct Sel4ServiceIo {
+    |            ------------- field in this struct
+372 |     service: &'static str,
+373 |     config_client: &'static str,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-protocol-services` to apply 1 suggestion)
+   Compiling eneros-protocol-services v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+warning: unused import: `eneros_protocol_abstract::plugin::ProtocolPlugin`
+  --> crates/protocols/protocol-services/src/bin/svc-iec103.rs:14:5
+   |
+14 | use eneros_protocol_abstract::plugin::ProtocolPlugin;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (bin "svc-iec103") generated 1 warning (run `cargo fix --bin "svc-iec103" -p eneros-protocol-services` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.22s
++ cd "/home/ahx/文档/EnerOS" && CROSS_COMPILE="aarch64-none-elf-" SEL4_BUILD_DIR="/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust" "/home/ahx/.rustup/toolchains/nightly-2026-04-04-x86_64-unknown-linux-gnu/bin/cargo" "build" "--locked" "--release" "-Z" "build-std=core,alloc" "-Z" "build-std-features=compiler-builtins-mem" "--target" "aarch64-unknown-none" "-p" "eneros-protocol-services" "--bin" "svc-gbt27930" "--features" "sel4"
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.325.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.325.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.325.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.325.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.325.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.325.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.325.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.325.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.325.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.325.0:       |      ^~~~~~~~~~~~~~~~~
+warning: unused import: `ProtocolConfig`
+  --> crates/protocols/protocol-services/src/protocol_ladder.rs:30:5
+   |
+30 |     ProtocolConfig, ProtocolError, TransportFactory, TransportKind, VecPointRegistry,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `config_client` is never read
+   --> crates/protocols/protocol-services/src/protocol_ladder.rs:373:5
+    |
+371 | pub struct Sel4ServiceIo {
+    |            ------------- field in this struct
+372 |     service: &'static str,
+373 |     config_client: &'static str,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (lib) generated 2 warnings (run `cargo fix --lib -p eneros-protocol-services` to apply 1 suggestion)
+   Compiling eneros-protocol-services v0.325.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+warning: unused import: `eneros_protocol_abstract::plugin::ProtocolPlugin`
+  --> crates/protocols/protocol-services/src/bin/svc-gbt27930.rs:14:5
+   |
+14 | use eneros_protocol_abstract::plugin::ProtocolPlugin;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-protocol-services` (bin "svc-gbt27930") generated 1 warning (run `cargo fix --bin "svc-gbt27930" -p eneros-protocol-services` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.22s
+IMAGE profile=qemu-prod result=PASS path=/home/ahx/文档/EnerOS/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw bytes=134217728 sha256=92f244a9e760252c10431d66cc6b5836c25473136ef2a40cf8f235335ffad4c0

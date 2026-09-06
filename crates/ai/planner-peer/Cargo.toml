@@ -1,0 +1,26 @@
+[package]
+name = "eneros-planner-peer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EnerOS 68.5 WP-68.5.1：host planner 分区第一形态——站端 planner 服务经 RemoteBrain peer 通道（MQTT）应答单值功率提案（ADR-050 裁决 2 部署位置）"
+
+[[bin]]
+name = "eneros-planner-peer"
+path = "src/main.rs"
+
+[dependencies]
+eneros-hex = { path = "../../abi/hex" }
+eneros-intent-contract = { path = "../intent-contract" }
+eneros-decision-contract = { path = "../decision-contract" }
+eneros-objective-engine = { path = "../objective-engine", features = ["test-util"] }
+eneros-planner = { path = "../planner" }
+eneros-resource-registry = { path = "../../agents/resource-registry" }
+eneros-solver-core = { path = "../solver-core", features = ["highs-ffi"] }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+toml = "0.8"
+
+[features]
+default = []

@@ -135,6 +135,8 @@ pub struct MqttPlugin {
     peer_inbox: alloc::vec::Vec<alloc::vec::Vec<u8>>,
     /// 49：inbox 满 / 超限丢弃计数（观测）。
     pub ai_dropped_count: u64,
+    /// 68.5 诊断：最近 MQTT 握手失败详情（Debug 串；None=未失败）。
+    hs_err_detail: Option<alloc::string::String>,
 }
 
 impl MqttPlugin {
@@ -170,12 +172,18 @@ impl MqttPlugin {
             app_outbox: alloc::vec::Vec::new(),
             peer_inbox: alloc::vec::Vec::new(),
             ai_dropped_count: 0,
+            hs_err_detail: None,
         }
     }
 
     /// 45.4：注入点表路由点数（观测）。
     pub fn routed_count(&self) -> usize {
         self.routed_count
+    }
+
+    /// 68.5 诊断：最近一次 MQTT 握手失败详情（debug_line 通道）。
+    pub fn handshake_error_detail(&self) -> Option<&str> {
+        self.hs_err_detail.as_deref()
     }
 
     /// 47（WP-47.1）：不可解析下行负载计数（观测）。
@@ -477,11 +485,16 @@ impl ProtocolPlugin for MqttPlugin {
             peer_len: 0,
             mtu: 4096,
             connect_timeout_ms: 2000,
-            // 50（WP-50.1 实弹登记）：维持 1000ms——实测 150ms 使空闲 poll
-            // 错误率放大 ~6×，与断连判定/重连节拍交互导致启动期整体爬慢
-            // （long5/long6/final6 三连复现；long4 @1000ms 全程正常）。
-            // 入站数据由 rx_buf 残留缓冲续收，不丢。
-            recv_timeout_ms: 1000,
+            // 50（WP-50.1 实弹登记）：1000ms——150ms 使空闲 poll 错误率
+            // 放大 ~6×（long5/long6/final6 三连复现）。
+            // 68.5（WP-68.5.4 实弹登记）：1000→200ms——broker 在场窗
+            // root 对 svc-mqtt 的同步 EXECUTE 每轮等满 recv 超时（无入站
+            // 数据时），1000ms 使决策链轮转 4.5s/轮、agent=OK 82/463
+            // （evidence/68/vol68-5/planner-live）；200ms 折中：错误计数
+            // 噪音 ~2-3×（断连判定不依赖——50 卷 keepalive PING 无应答
+            // 才 mark_disconnected），轮转恢复带内。入站数据由 rx_buf
+            // 残留缓冲续收，不丢。
+            recv_timeout_ms: 200,
         };
         let bytes = broker.as_bytes();
         spec.peer[..bytes.len()].copy_from_slice(bytes);
@@ -559,10 +572,14 @@ impl ProtocolPlugin for MqttPlugin {
         if !self.connected {
             match client.connect(now_ms) {
                 Ok(()) => self.connected = true,
-                Err(_) => {
+                Err(e) => {
                     self.error_count += 1;
                     self.last_error = Some(ProtocolError::ReadFailed);
                     self.last_progress = Progress::Degraded;
+                    // 68.5 诊断（REG-MQTT-BROKER-HANG）：失败详情入插件
+                    // 字段，经 debug_line → self-check dbg= 通道带出（插件
+                    // 库无打印面；词形 MQTT-HS-ERR 有界可观测）。
+                    self.hs_err_detail = Some(alloc::format!("{e:?}"));
                     return Err(ProtocolError::ReadFailed);
                 }
             }
@@ -710,6 +727,19 @@ impl ProtocolPlugin for MqttPlugin {
             last_error: self.last_error.clone(),
             last_progress: self.last_progress,
         }
+    }
+
+    /// 68.5 诊断（REG-MQTT-BROKER-HANG）：握手失败详情观测行——
+    /// self-check 每 25 轮经 dbg= 通道带出（词形 MQTT-HS-ERR）。
+    fn debug_line(&self) -> Option<alloc::string::String> {
+        Some(match &self.hs_err_detail {
+            Some(d) => alloc::format!("MQTT-HS-ERR n={} detail={d}", self.error_count),
+            None => alloc::format!(
+                "MQTT-HS n={} connected={}",
+                self.error_count,
+                self.connected
+            ),
+        })
     }
 
     fn stop(&mut self) -> Result<(), ProtocolError> {

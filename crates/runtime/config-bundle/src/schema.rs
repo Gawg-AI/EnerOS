@@ -202,7 +202,7 @@ pub mod points {
 pub mod ai_peer {
     pub const CONFIG_ID: &str = "ai-peer";
     pub const SCHEMA: u16 = 1;
-    pub const MAX_FIELD: u8 = 6;
+    pub const MAX_FIELD: u8 = 8;
     /// 1：在途请求超时毫秒 u64（值域 [100, 60000]）。
     pub const FIELD_TIMEOUT_MS: u8 = 1;
     /// 2：连续超时→Unhealthy 阈值 u32（[1, 10]）。
@@ -216,6 +216,13 @@ pub mod ai_peer {
     /// 6：有界学习闸（SPEC-E WP-E.3）u8 0/1（EAQ-2：dev/qemu=true、
     /// release 归 owner 配置裁决——值必配，无代码缺省）。
     pub const FIELD_LEARN_ENABLED: u8 = 6;
+    /// 7：D3 降级 lease HMAC 键 32B（蓝图 68.5 WP-68.5.3；**不落 TOML**
+    /// ——compile_security 同款注入链：`--degrade-lease-key-hex` >
+    /// `ENEROS_DEGRADE_LEASE_KEY` > `$ENEROS_KMS_DIR/degrade-lease.key`，
+    /// 全缺 fail-closed；开发档模板 configs/kms-dev/degrade-lease.key）。
+    pub const FIELD_DEGRADE_LEASE_KEY: u8 = 7;
+    /// 8：D3 降级 lease 有效时长秒 u32（[60, 86400]；toml 可载非密）。
+    pub const FIELD_DEGRADE_LEASE_TTL_SECS: u8 = 8;
 
     pub const TIMEOUT_MS_MIN: u64 = 100;
     pub const TIMEOUT_MS_MAX: u64 = 60_000;
@@ -225,6 +232,8 @@ pub mod ai_peer {
     pub const PROBE_EVERY_MAX: u32 = 100;
     pub const MAX_POWER_KW_MAX: f64 = 1000.0;
     pub const TTL_SECS_MAX: u32 = 3600;
+    pub const DEGRADE_LEASE_TTL_SECS_MIN: u32 = 60;
+    pub const DEGRADE_LEASE_TTL_SECS_MAX: u32 = 86_400;
 }
 
 /// `security`（consumer: svc-control-dispatch / svc-device-agent；

@@ -697,6 +697,8 @@ mod tests {
         let root_key = [0x5Au8; 64];
         // SPEC WP-A.1：控制链信封密钥（32B 测试值；夹具域）。
         let control_chain_key: [u8; 32] = [0x77; 32];
+        // 68.5 WP-68.5.3：D3 降级 lease 键（32B 测试值；夹具域）。
+        let test_lease_key: [u8; 32] = [0x5B; 32];
         let configs = [
             (cloud_sync::CONFIG_ID, "cloud-sync.toml", 0u8),
             (logging::CONFIG_ID, "logging.toml", 0),
@@ -722,6 +724,7 @@ mod tests {
                 &text,
                 root_injected,
                 cc_opt.as_ref(),
+                None,
             )
             .unwrap()
             .unwrap();
@@ -746,6 +749,7 @@ mod tests {
                 &text,
                 None,
                 None,
+                Some(&test_lease_key),
             )
             .unwrap()
             .unwrap();
@@ -784,9 +788,10 @@ mod tests {
                 .join("../../../configs")
                 .join(&file);
             let text = std::fs::read_to_string(&path).unwrap();
-            let compiled = eneros_config_bundle::toml_compile::compile_by_id(id, &text, None, None)
-                .unwrap()
-                .unwrap();
+            let compiled =
+                eneros_config_bundle::toml_compile::compile_by_id(id, &text, None, None, None)
+                    .unwrap()
+                    .unwrap();
             let digest = CbDigest::of(&compiled.payload);
             entries.push(SignedConfigEntry {
                 config_id: compiled.config_id,

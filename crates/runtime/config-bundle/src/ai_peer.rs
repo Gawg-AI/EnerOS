@@ -21,6 +21,11 @@ pub struct AiPeerConfig {
     /// SPEC-E WP-E.3：有界学习闸（dev/qemu=true、release 归 owner 裁决；
     /// false ⇒ 零学习零持久，System1 阈值恒出厂——行为等价旧链路）。
     pub learn_enabled: bool,
+    /// 68.5 WP-68.5.3：D3 降级 lease HMAC 键（KMS 注入链供给，bundle 载荷
+    /// 32B；svc-ai-worker 自签有界 lease 的验签钥）。
+    pub degrade_lease_key: [u8; 32],
+    /// D3 降级 lease 有效时长秒（到期不复位即拒降级维持——D3 fail-closed）。
+    pub degrade_lease_ttl_secs: u32,
 }
 
 impl AiPeerConfig {
@@ -35,8 +40,10 @@ impl AiPeerConfig {
             max_power_kw: 0.0,
             ttl_secs: 0,
             learn_enabled: false,
+            degrade_lease_key: [0u8; 32],
+            degrade_lease_ttl_secs: 0,
         };
-        let mut seen = [false; 7];
+        let mut seen = [false; 9];
         for (id, value) in fields {
             match id {
                 crate::schema::ai_peer::FIELD_TIMEOUT_MS => {
@@ -106,6 +113,36 @@ impl AiPeerConfig {
                     out.learn_enabled = value[0] == 1;
                     seen[id as usize] = true;
                 }
+                crate::schema::ai_peer::FIELD_DEGRADE_LEASE_KEY => {
+                    if value.len() != 32 {
+                        return Err(ConfigError::InvalidValue {
+                            config: config.clone(),
+                            field: "degrade_lease_key",
+                            reason: "len".into(),
+                        });
+                    }
+                    if value.iter().all(|&b| b == 0) {
+                        return Err(ConfigError::InvalidValue {
+                            config: config.clone(),
+                            field: "degrade_lease_key",
+                            reason: "all-zero".into(),
+                        });
+                    }
+                    out.degrade_lease_key = value.try_into().expect("checked len");
+                    seen[id as usize] = true;
+                }
+                crate::schema::ai_peer::FIELD_DEGRADE_LEASE_TTL_SECS => {
+                    if value.len() != 4 {
+                        return Err(ConfigError::InvalidValue {
+                            config: config.clone(),
+                            field: "degrade_lease_ttl_secs",
+                            reason: "len".into(),
+                        });
+                    }
+                    out.degrade_lease_ttl_secs =
+                        u32::from_le_bytes(value.try_into().expect("checked len"));
+                    seen[id as usize] = true;
+                }
                 other => {
                     return Err(ConfigError::InvalidValue {
                         config: config.clone(),
@@ -167,6 +204,15 @@ impl AiPeerConfig {
                 reason: "range".into(),
             });
         }
+        if !(DEGRADE_LEASE_TTL_SECS_MIN..=DEGRADE_LEASE_TTL_SECS_MAX)
+            .contains(&out.degrade_lease_ttl_secs)
+        {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "degrade_lease_ttl_secs",
+                reason: "range".into(),
+            });
+        }
         Ok(out)
     }
 }
@@ -176,12 +222,34 @@ mod tests {
     use super::*;
     use crate::payload::encode_payload;
 
+    /// 测试键（32B 非零；与 configs/kms-dev/degrade-lease.key 开发档模板
+    /// 同形态——值域复检只拒全零）。
+    const TEST_LEASE_KEY: [u8; 32] = [0x5B; 32];
+
     fn compile_payload(
         timeout_ms: u64,
         unhealthy_after: u32,
         probe_every: u32,
         max_power_kw: f64,
         ttl_secs: u32,
+    ) -> alloc::vec::Vec<u8> {
+        compile_payload_full(
+            timeout_ms,
+            unhealthy_after,
+            probe_every,
+            max_power_kw,
+            ttl_secs,
+            3600,
+        )
+    }
+
+    fn compile_payload_full(
+        timeout_ms: u64,
+        unhealthy_after: u32,
+        probe_every: u32,
+        max_power_kw: f64,
+        ttl_secs: u32,
+        lease_ttl: u32,
     ) -> alloc::vec::Vec<u8> {
         encode_payload(&[
             (
@@ -208,6 +276,14 @@ mod tests {
                 crate::schema::ai_peer::FIELD_LEARN_ENABLED,
                 alloc::vec![1u8],
             ),
+            (
+                crate::schema::ai_peer::FIELD_DEGRADE_LEASE_KEY,
+                TEST_LEASE_KEY.to_vec(),
+            ),
+            (
+                crate::schema::ai_peer::FIELD_DEGRADE_LEASE_TTL_SECS,
+                lease_ttl.to_le_bytes().to_vec(),
+            ),
         ])
     }
 
@@ -223,9 +299,26 @@ mod tests {
                 probe_every: 5,
                 max_power_kw: 5.0,
                 ttl_secs: 60,
-                learn_enabled: true
+                learn_enabled: true,
+                degrade_lease_key: TEST_LEASE_KEY,
+                degrade_lease_ttl_secs: 3600,
             }
         );
+    }
+
+    /// 68.5 WP-68.5.3：lease 键全零拒绝 + TTL 值域（[60, 86400]）。
+    #[test]
+    fn degrade_lease_fields_validated() {
+        let mut zero = compile_payload(5_000, 3, 5, 5.0, 60);
+        // 键字段在 ttl_secs 之前：定位 learn_enabled(1B)+key(32B) 尾段改零。
+        let n = zero.len();
+        for b in &mut zero[n - 32 - 1 - 4..n - 1 - 4] {
+            *b = 0;
+        }
+        assert!(AiPeerConfig::decode(&zero).is_err(), "全零键必须拒绝");
+        // TTL 越界（<60 / >86400）拒绝。
+        assert!(AiPeerConfig::decode(&compile_payload_full(5_000, 3, 5, 5.0, 60, 59)).is_err());
+        assert!(AiPeerConfig::decode(&compile_payload_full(5_000, 3, 5, 5.0, 60, 86_401)).is_err());
     }
 
     /// SPEC-E WP-E.3：learn_enabled 0/1 语义 + 非 0/1 拒绝 + 缺键拒绝。
@@ -234,20 +327,20 @@ mod tests {
         let mk = |v: u8| {
             encode_payload(&[(crate::schema::ai_peer::FIELD_LEARN_ENABLED, alloc::vec![v])])
         };
-        // 单独字段必然缺其余五键 → MissingField（全必配纪律不受新键稀释）。
+        // 单独字段必然缺其余七键 → MissingField（全必配纪律不受新键稀释）。
         assert!(AiPeerConfig::decode(&mk(0)).is_err());
-        // 完整载荷 learn_enabled=false。
+        // 完整载荷 learn_enabled=false（字段 = id1+len2+value；learn_enabled
+        // 值字节后跟 key(35B)+ttl(7B) 两个完整字段 ⇒ 索引 n−43）。
         let raw_off = compile_payload(5_000, 3, 5, 5.0, 60);
         let mut patched = raw_off.clone();
-        // 末字段即 learn_enabled（encode_payload 按序拼接）——改末字节 0。
         let n = patched.len();
-        patched[n - 1] = 0;
+        patched[n - 43] = 0;
         let cfg = AiPeerConfig::decode(&patched).expect("decode off");
         assert!(!cfg.learn_enabled);
         // 非 0/1 拒绝。
         let mut bad = compile_payload(5_000, 3, 5, 5.0, 60);
         let n = bad.len();
-        bad[n - 1] = 2;
+        bad[n - 43] = 2;
         assert!(AiPeerConfig::decode(&bad).is_err());
     }
 

@@ -4,6 +4,14 @@
 - 关联：蓝图 61 [09] §3.2；[16] §3.8/§4；ADR-0048（决策链）
 - 验收映射：[09] §3.9 退出 gate——产品 closure 含真实 HiGHS backend；
   mock-leak gate 全绿；CandidatePlan 数值可追溯；无设备副作用
+- **状态注记（蓝图 68.5，v0.325.0，2026-09-06）**：裁决 1/2 的**第一形态
+  落地**——`crates/ai/planner-peer`（host-only std bin，target 闭包零
+  消费）以真 HiGHS（`eneros-solver-core/highs-ffi`，L2 门只收 Optimal）
+  经既有 RemoteBrain peer 通道（MQTT QoS1，F26 单值投影）供给提案；
+  目标侧决策链消费 + D3 DegradationLease 持签降级（蓝图 68.5 卷册与
+  QEMU 证据为锚）。裁决 2 的 mTLS/attestation DecisionRequest 全通道、
+  结构化 CertifiedPlan 通道（schema v2）与 certifier 生产接电（ADR-051
+  过渡窗）**仍为后续卷**；Phase 5 语义维持。
 
 ## 背景
 

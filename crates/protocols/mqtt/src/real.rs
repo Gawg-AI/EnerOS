@@ -49,6 +49,16 @@ const SEND_DEADLINE_MS: u64 = 5000;
 /// 39 收尾复验（F4）：连续零入队上限（双保险：时钟异常时也能终止）。
 #[cfg(feature = "net")]
 const SEND_MAX_ZERO_STREAK: u32 = 100_000;
+/// 68.5（REG-MQTT-BROKER-HANG 修复）：握手等待窗（ms）——SYN-ACK 经
+/// slirp 往返需真实时间；紧轮询微秒级跑完只会空转（68.3 bisect 铁证：
+/// 有 broker 窗 CONNECT 字节从未到达 host——首试 SynSent 残留后
+/// `connect()` 永久 Illegal 且 iface.poll 失去驱动）。
+#[cfg(feature = "net")]
+const HANDSHAKE_WINDOW_MS: u64 = 100;
+/// 68.5：recv 有界等待窗（ms）——旧实现 100 次紧轮询（微秒级）在对端
+/// RTT 面前恒空转（CONNACK/PUBACK 必超时）。
+#[cfg(feature = "net")]
+const RECV_WINDOW_MS: u64 = 100;
 
 /// 基于 eneros-net（smoltcp）的 MQTT TCP 传输。
 ///
@@ -109,9 +119,30 @@ impl<D: NetDevice> NetTcpTransport<D> {
 }
 
 #[cfg(feature = "net")]
+impl<D: NetDevice + 'static> NetTcpTransport<D> {
+    /// 68.5：有界驱动协议栈直至握手完成（SYN-ACK 归来）。
+    /// 窗口 = [`HANDSHAKE_WINDOW_MS`] 真实时间（紧轮询无时间预算时对端
+    /// RTT 面前恒空转——68.3 bisect 形态）。Ok = Established。
+    fn drive_handshake(&mut self) -> Result<(), MqttError> {
+        let deadline = eneros_time::get_monotonic_ns() / 1_000_000 + HANDSHAKE_WINDOW_MS;
+        loop {
+            self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
+            let _ = self.iface.poll(self.now_ms);
+            if self.tcp.state(&self.iface).is_connected() {
+                return Ok(());
+            }
+            if self.now_ms >= deadline {
+                return Err(MqttError::PublishTimeout);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "net")]
 impl<D: NetDevice + 'static> MqttTransport for NetTcpTransport<D> {
     // 31-review：as_any_mut→&mut dyn Any 需 Self:'static（PR-15 引入该方法时漏约束致 net feature 编译失败）
     fn connect(&mut self, host: &str, port: u16) -> Result<(), MqttError> {
+        use eneros_net::tcpip::TcpState;
         if self.connected {
             return Ok(());
         }
@@ -126,17 +157,41 @@ impl<D: NetDevice + 'static> MqttTransport for NetTcpTransport<D> {
                 .fold(0u16, |acc, b| acc.wrapping_add(*b as u16))
                 % 10000,
         );
-        self.tcp
-            .connect(&mut self.iface, remote, local_port)
-            .map_err(|_| MqttError::BrokerUnreachable)?;
-        // 有限轮询推进握手。
-        for _ in 0..100 {
-            self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
-            let _ = self.iface.poll(self.now_ms);
-            if self.tcp.state(&self.iface).is_connected() {
+        // 68.5（REG-MQTT-BROKER-HANG 根因修复）：socket 状态机复位纪律。
+        // 旧缺陷：首试紧轮询（微秒级）等不到 SYN-ACK → Err 后 socket 残留
+        // SynSent；插件下轮重试 `tcp.connect()` 对非 Closed socket 永久
+        // Illegal，且 Err 早退使 iface.poll 彻底失去驱动——握手永不完成
+        // （有 broker 窗冻结形态；无 broker 时 slirp 快速 RST 复位 socket
+        // 反而每次全新 SYN，窗口全绿——双态之谜的解释）。
+        match self.tcp.state(&self.iface) {
+            TcpState::Established => {
                 self.connected = true;
                 return Ok(());
             }
+            TcpState::SynSent | TcpState::SynReceived => {
+                // 残留握手态：有界驱动（SYN 重传随 iface 时间推进）；
+                // 仍未完成 → abort 复位（RST/Closed），落回全新 connect。
+                let _ = self.drive_handshake();
+                if self.tcp.state(&self.iface) != TcpState::Established {
+                    self.tcp.abort(&mut self.iface);
+                    self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
+                    let _ = self.iface.poll(self.now_ms);
+                    if self.tcp.state(&self.iface) != TcpState::Closed {
+                        return Err(MqttError::BrokerUnreachable);
+                    }
+                } else {
+                    self.connected = true;
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+        self.tcp
+            .connect(&mut self.iface, remote, local_port)
+            .map_err(|_| MqttError::BrokerUnreachable)?;
+        if self.drive_handshake().is_ok() {
+            self.connected = true;
+            return Ok(());
         }
         Err(MqttError::BrokerUnreachable)
     }
@@ -188,17 +243,26 @@ impl<D: NetDevice + 'static> MqttTransport for NetTcpTransport<D> {
             return Err(MqttError::NotConnected);
         }
         let mut buf = [0u8; RX_BUF];
-        // 轮询直到收到数据（或连接关闭）。
-        for _ in 0..100 {
+        // 68.5：真实时间预算窗（旧 100 次紧轮询 = 微秒级，对端 RTT 面前
+        // 恒空转——CONNACK/PUBACK 等首包必超时的同族根因）。
+        let deadline = eneros_time::get_monotonic_ns() / 1_000_000 + RECV_WINDOW_MS;
+        loop {
             self.now_ms = eneros_time::get_monotonic_ns() / 1_000_000;
             let _ = self.iface.poll(self.now_ms);
             match self.tcp.recv(&mut self.iface, &mut buf) {
                 Ok(n) if n > 0 => return Ok(buf[..n].to_vec()),
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(_) => return Err(MqttError::TransportError),
             }
+            if self.now_ms >= deadline {
+                // 链路/连接已死 → 不再等（fail-closed，不伪装）。
+                if !self.tcp.state(&self.iface).is_connected() {
+                    self.connected = false;
+                    return Err(MqttError::NotConnected);
+                }
+                return Err(MqttError::PublishTimeout);
+            }
         }
-        Err(MqttError::PublishTimeout)
     }
 
     fn close(&mut self) -> Result<(), MqttError> {
