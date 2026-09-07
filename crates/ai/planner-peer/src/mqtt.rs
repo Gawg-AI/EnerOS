@@ -29,6 +29,54 @@ impl std::fmt::Display for MqttError {
 
 impl std::error::Error for MqttError {}
 
+/// 读超时哨兵（`poll` 以此区分"无数据"与真错误；69.2 提为具名常量——
+/// 字面值是行为锁，不得改动）。
+pub(crate) const TIMEOUT_SENTINEL: &str = "timeout";
+
+/// 传输面抽象（69.2 WP-69.2.0）。
+///
+/// codebase-design 判据："One adapter means a hypothetical seam. Two
+/// adapters means a real one." 本 trait 立即有 **2 个真实 adapter**：
+/// `TcpStream`（生产）与 `LoopbackTransport`（session.rs 测试，内存双端
+/// 队列）⇒ 真缝，非假想缝；且它是唯一能让会话策略（看门狗/keepalive/
+/// 重连）获得测试覆盖的手段——原 55 行主循环零测试。
+pub trait PeerTransport {
+    /// 精确读满 `buf`。读超时（无入站数据）→ `MqttError(TIMEOUT_SENTINEL)`；
+    /// EOF/其他 IO 错 → 描述性错误。
+    fn read_exact_bytes(&mut self, buf: &mut [u8]) -> Result<(), MqttError>;
+    fn write_all_bytes(&mut self, buf: &[u8]) -> Result<(), MqttError>;
+    fn flush_bytes(&mut self) -> Result<(), MqttError>;
+    fn set_read_timeout(&mut self, d: Duration) -> Result<(), MqttError>;
+}
+
+impl PeerTransport for TcpStream {
+    fn read_exact_bytes(&mut self, buf: &mut [u8]) -> Result<(), MqttError> {
+        let map = |e: std::io::Error| {
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) {
+                MqttError(String::from(TIMEOUT_SENTINEL))
+            } else {
+                MqttError(format!("read: {e}"))
+            }
+        };
+        Read::read_exact(self, buf).map_err(map)
+    }
+
+    fn write_all_bytes(&mut self, buf: &[u8]) -> Result<(), MqttError> {
+        Write::write_all(self, buf).map_err(|e| MqttError(format!("write: {e}")))
+    }
+
+    fn flush_bytes(&mut self) -> Result<(), MqttError> {
+        Write::flush(self).map_err(|e| MqttError(format!("flush: {e}")))
+    }
+
+    fn set_read_timeout(&mut self, d: Duration) -> Result<(), MqttError> {
+        TcpStream::set_read_timeout(self, Some(d)).map_err(|e| MqttError(format!("opt: {e}")))
+    }
+}
+
 const CONNECT: u8 = 1;
 const CONNACK: u8 = 2;
 const PUBLISH: u8 = 3;
@@ -70,13 +118,13 @@ pub struct InboundPublish {
     pub payload: Vec<u8>,
 }
 
-pub struct MqttClient {
-    stream: TcpStream,
+pub struct MqttClient<T: PeerTransport = TcpStream> {
+    stream: T,
     /// 最近入站活动（keepalive 判据；bin 按 ms 供给）。
     last_activity_ms: u64,
 }
 
-impl MqttClient {
+impl MqttClient<TcpStream> {
     /// 建联 + CONNECT/CONNACK（clean session；keep_alive_secs 上限 65535）。
     pub fn connect(
         host: &str,
@@ -85,9 +133,20 @@ impl MqttClient {
         timeout: Duration,
     ) -> Result<Self, MqttError> {
         let stream = TcpStream::connect(host).map_err(|e| MqttError(format!("tcp: {e}")))?;
-        stream
-            .set_read_timeout(Some(timeout))
-            .map_err(|e| MqttError(format!("opt: {e}")))?;
+        Self::over(stream, client_id, keep_alive_secs, timeout)
+    }
+}
+
+impl<T: PeerTransport> MqttClient<T> {
+    /// 在既有传输上完成 CONNECT/CONNACK 握手（TCP 生产路径与测试假件
+    /// 共用；69.2 WP-69.2.0 泛型化——协议/会话语义零变更）。
+    pub fn over(
+        mut transport: T,
+        client_id: &str,
+        keep_alive_secs: u16,
+        timeout: Duration,
+    ) -> Result<Self, MqttError> {
+        transport.set_read_timeout(timeout)?;
         let mut body = Vec::new();
         write_utf(&mut body, client_id);
         // flags: clean session = 0x02；无用户名/口令/will（peer 通道匿名，
@@ -98,7 +157,7 @@ impl MqttClient {
         pkt.extend_from_slice(&encode_len(body.len()));
         pkt.extend_from_slice(&body);
         let mut c = Self {
-            stream,
+            stream: transport,
             last_activity_ms: 0,
         };
         c.write_raw(&pkt)?;
@@ -186,7 +245,7 @@ impl MqttClient {
                     _ => Ok(None),
                 }
             }
-            Err(e) if e.0 == "timeout" => Ok(None),
+            Err(e) if e.0 == TIMEOUT_SENTINEL => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -245,35 +304,20 @@ impl MqttClient {
     const MAX_INBOUND_FRAME: usize = 1024 * 1024;
 
     fn write_raw(&mut self, pkt: &[u8]) -> Result<(), MqttError> {
-        self.stream
-            .write_all(pkt)
-            .map_err(|e| MqttError(format!("write: {e}")))?;
-        self.stream
-            .flush()
-            .map_err(|e| MqttError(format!("flush: {e}")))
+        self.stream.write_all_bytes(pkt)?;
+        self.stream.flush_bytes()
     }
 
     /// 读一完整包（fixed header + varint 剩余长度 + body）。
     /// 读超时（无入站数据）→ `Err(MqttError(TIMEOUT_SENTINEL))`。
     fn read_packet(&mut self) -> Result<(u8, Vec<u8>), MqttError> {
-        const TIMEOUT_SENTINEL: &str = "timeout";
-        let map = |e: std::io::Error| {
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-            ) {
-                MqttError(String::from(TIMEOUT_SENTINEL))
-            } else {
-                MqttError(format!("read: {e}"))
-            }
-        };
         let mut hdr = [0u8; 1];
-        self.stream.read_exact(&mut hdr).map_err(map)?;
+        self.stream.read_exact_bytes(&mut hdr)?;
         let mut rem = 0usize;
         let mut mult = 1usize;
         loop {
             let mut b = [0u8; 1];
-            self.stream.read_exact(&mut b).map_err(map)?;
+            self.stream.read_exact_bytes(&mut b)?;
             rem += (b[0] & 0x7F) as usize * mult;
             if b[0] & 0x80 == 0 {
                 break;
@@ -292,7 +336,7 @@ impl MqttClient {
         }
         let mut body = vec![0u8; rem];
         if rem > 0 {
-            self.stream.read_exact(&mut body).map_err(map)?;
+            self.stream.read_exact_bytes(&mut body)?;
         }
         Ok((hdr[0], body))
     }

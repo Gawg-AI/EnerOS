@@ -1,0 +1,42 @@
+b4ee58e6141942d262596dc4ae0bb0b0d24be935ab0f31531e4eb030269b8c83  /home/ahx/文档/EnerOS/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw
+[i] 目标镜像复用（69.1 出口构建；69.2 未触 target 代码）
+MODBUS47-SLAVE-READY listening=5502
+=== host+QEMU 联合窗（780 s，四段串行）===
+[gate] 段2：kill broker（拔线降级）
+tools/run69-vol2-gate.sh: 第 104 行： 2721573 已杀死                  python3 "$ROOT/evidence/50/mqtt_telemetry_broker.py" --port 1883 --transcript "$RUN/$W.broker-transcript.jsonl" > "$RUN/$W.broker.log" 2>&1
+[gate] 段2：kill -9 planner-peer + 重启（Q7 seq 跨重启单调）
+tools/run69-vol2-gate.sh: 第 109 行： 2721691 已杀死                  "$PP_BIN" --broker 127.0.0.1:1883 --config "$ROOT/crates/ai/planner-peer/planner-peer.toml" --state "$RUN/$W.seq-state.json" > "$RUN/$W.planner-peer.log" 2>&1
+[gate] 段2：重启 broker（恢复）
+[gate] 段3：SIGSTOP broker（半死）——Q5 计时开始
+[gate] Q5 inbound-silent 出现耗时 = 30s（判据 ≤50s）
+[gate] 段4：SIGCONT broker（恢复）
+tools/run69-vol2-gate.sh: 第 141 行： 2754748 已杀死                  python3 "$ROOT/evidence/50/mqtt_telemetry_broker.py" --port 1883 --transcript "$RUN/$W.broker-transcript.jsonl" >> "$RUN/$W.broker.log" 2>&1
+tools/run69-vol2-gate.sh: 第 142 行： 2754605 已杀死                  "$PP_BIN" --broker 127.0.0.1:1883 --config "$ROOT/crates/ai/planner-peer/planner-peer.toml" --state "$RUN/$W.seq-state.json" >> "$RUN/$W.planner-peer.log" 2>&1
+=== 判据扫描 ===
+[✓][Q1] READY 词形（字段齐全）
+[✓][Q1] SUBSCRIBED
+[✓][Q1] broker transcript CONNACK
+[✓][Q1] PEER-REQ = 3
+[✓][Q1] PLANNER-SOLVE optimal = 3（真 HiGHS L2 门）
+[✓][Q1] PEER-RESP 在
+[✗][Q2] used=true 缺失
+[✗][Q3] backend=planner 词形缺失
+[✓][Q2] dispatch=Committed
+[✓][Q2] modbus ACQ = 126
+[✓][Q2] iec104 ACQ = 7
+[✓][Q2] TSDB-DISK-COMMIT = 21
+[✓][Q4] peer 侧拔线重连词形
+[✓][Q4] LEASE-ARMED（lease 到期武装）
+[✓][Q4] 降级期 used=false
+[✗][Q4] used=true 回归缺失（0）
+[✓][Q7] PEER-RESP seq 跨重启单调（重启前末值=3，窗内末值=3）
+[✓][Q5] SIGSTOP 后 30s ≤50s 出现 inbound-silent（静态锁实弹）
+[✓][Q5→段4] SIGCONT 后 SUBSCRIBED 回归
+[i][Q6] RECONNECT reason=inbound-silent ×1（按 reason 分行的运维可读账；stats() 程序面由 p8 锁）
+[i][Q6] RECONNECT reason=ping-failed ×0（按 reason 分行的运维可读账；stats() 程序面由 p8 锁）
+[i][Q6] RECONNECT reason=publish-failed ×0（按 reason 分行的运维可读账；stats() 程序面由 p8 锁）
+[i][Q6] RECONNECT reason=poll-failed ×2（按 reason 分行的运维可读账；stats() 程序面由 p8 锁）
+[✓] PANIC 净值 = 0
+[✓] PRODUCT-READY: true
+=== 汇总 ===
+VOL69.2-GATE: FAIL
