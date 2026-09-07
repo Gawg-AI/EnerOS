@@ -1,0 +1,53 @@
+   Compiling eneros-upa-model v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/upa-model)
+   Compiling eneros-hex v0.328.0 (/home/ahx/文档/EnerOS/crates/abi/hex)
+   Compiling eneros-handover-abi v0.328.0 (/home/ahx/文档/EnerOS/crates/abi/handover-abi)
+   Compiling eneros-ipc-wire v0.328.0 (/home/ahx/文档/EnerOS/crates/abi/ipc-wire)
+   Compiling eneros-llm-engine v0.328.0 (/home/ahx/文档/EnerOS/crates/ai/llm-engine)
+   Compiling eneros-hal v0.328.0 (/home/ahx/文档/EnerOS/crates/hal/hal)
+   Compiling eneros-boot-manager-uefi v0.328.0 (/home/ahx/文档/EnerOS/crates/boot/boot-manager-uefi)
+   Compiling eneros-virtio-core v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/virtio-core)
+   Compiling eneros-protocol-keys v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-keys)
+   Compiling eneros-iec60870-asdu v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/iec60870-asdu)
+   Compiling eneros-elf-loader v0.328.0 (/home/ahx/文档/EnerOS/crates/abi/elf-loader)
+   Compiling eneros-net v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/net)
+   Compiling eneros-crypto v0.328.0 (/home/ahx/文档/EnerOS/crates/security/crypto)
+   Compiling eneros-image-format v0.328.0 (/home/ahx/文档/EnerOS/crates/boot/image-format)
+   Compiling eneros-boot-protocol v0.328.0 (/home/ahx/文档/EnerOS/crates/boot/boot-protocol)
+   Compiling eneros-crash-dump v0.328.0 (/home/ahx/文档/EnerOS/crates/observability/crash-dump)
+   Compiling eneros-telemetry-model v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/telemetry-model)
+   Compiling eneros-board v0.328.0 (/home/ahx/文档/EnerOS/crates/hal/board)
+   Compiling eneros-time v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/time)
+   Compiling eneros-gguf-loader v0.328.0 (/home/ahx/文档/EnerOS/crates/ai/gguf-loader)
+   Compiling eneros-protocol-abstract v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-abstract)
+   Compiling eneros-driver-framework v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/framework)
+   Compiling eneros-rs485 v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/rs485)
+   Compiling eneros-control-gateway v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/control-gateway)
+   Compiling eneros-signer-keyring v0.328.0 (/home/ahx/文档/EnerOS/crates/security/signer-keyring)
+   Compiling eneros-modbus-rtu v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/modbus-rtu)
+   Compiling eneros-config-bundle v0.328.0 (/home/ahx/文档/EnerOS/crates/runtime/config-bundle)
+   Compiling eneros-iec104-slave v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/iec104-slave)
+   Compiling eneros-xtask v0.328.0 (/home/ahx/文档/EnerOS/xtask)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 27.67s
+     Running `target/debug/eneros-xtask config compile --profile qemu-prod --accept-test-signing-key --root-key-hex 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a`
+CONFIG-COMPILE: ai-peer → 89B
+CONFIG-COMPILE: catalog → 986B
+CONFIG-COMPILE: cloud-sync → 43B
+CONFIG-COMPILE: control-write → 34B
+CONFIG-COMPILE: logging → 29B
+CONFIG-COMPILE: metrics → 36B
+CONFIG-COMPILE: ota → 154B
+CONFIG-COMPILE: points → 1670B
+CONFIG-COMPILE: protocol-dlt645 → 52B
+CONFIG-COMPILE: protocol-gbt27930 → 144B
+CONFIG-COMPILE: protocol-goose → 132B
+CONFIG-COMPILE: protocol-iec101 → 156B
+CONFIG-COMPILE: protocol-iec103 → 44B
+CONFIG-COMPILE: protocol-iec104 → 117B
+CONFIG-COMPILE: protocol-mms → 38B
+CONFIG-COMPILE: protocol-modbus-rtu → 84B
+CONFIG-COMPILE: protocol-modbus-tcp → 60B
+CONFIG-COMPILE: protocol-mqtt → 307B
+CONFIG-COMPILE: protocol-sv → 52B
+CONFIG-COMPILE: security → 35B
+CONFIG-COMPILE: → /home/ahx/文档/EnerOS/product/config-bundle.bin（ai-peer,catalog,cloud-sync,control-write,logging,metrics,ota,points,protocol-dlt645,protocol-gbt27930,protocol-goose,protocol-iec101,protocol-iec103,protocol-iec104,protocol-mms,protocol-modbus-rtu,protocol-modbus-tcp,protocol-mqtt,protocol-sv,security entries，7099B）
+             pubkey → /home/ahx/文档/EnerOS/product/config-bundle-pubkey.hex

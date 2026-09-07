@@ -15,6 +15,11 @@ use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 
+/// 69.3 T2：来源身份装载走 ConfigEntrySource trait 面（bin = ChunkedEndpoint
+/// impl；host 测试 = 内存假件——签名收窄，见 [`TelemetryService::
+/// ensure_source_identity`]）。cfg 与方法体同门（fetch_catalog 口径）。
+#[cfg(any(test, feature = "sel4"))]
+use eneros_agent_sdk::config_gateway::ConfigEntrySource;
 /// 蓝图 61 v0.314.27：观测事件影子批次（V1 128B 帧 × n；影子轨零控制消费）。
 /// 蓝图 62 卷 62.2（WP-62.2.2）：批次 wire（布局/编码/解码/分批预算）收归
 /// agent-sdk `obs_batch_wire` 单一事实源，本 crate 与协议服务共同消费；
@@ -48,6 +53,44 @@ pub const DEFAULT_CONTROL_HORIZON_MS: u64 = 30_000;
 /// 快照响应（TrustedTelemetry wire）。
 pub const SNAPSHOT_OK: u8 = 0;
 pub const SNAPSHOT_REJECTED: u8 = 1;
+
+/// 69.3 WP-69.3.2 T1：safe 评估器配置**单源构造器**（原 svc-telemetry bin
+/// `:36-52` 装配初值与 `:217-230` 生产重建两处双抄收编——五项恒同字段
+/// （coverage/bindings/max_skew_ms/require_integrity/control_horizon_ms）
+/// 单点于此，两处刻意差异字段（mapping_version/allowed_sources）入参：
+/// 装配初值 = (1, vec![1])（root 合成设施兼容轨），生产重建 =
+/// (generation, vec![])（配置覆盖）。产出与两处原字面量逐字段相同
+/// （t_evalcfg_single_source 冻结对照）。
+pub fn evaluator_config(mapping_version: u64, allowed_sources: Vec<u32>) -> EvaluatorConfig {
+    EvaluatorConfig {
+        coverage: eneros_control_dispatch::feedback::safety_coverage(),
+        bindings: eneros_safety_validator::StateBindings {
+            voltage: 1,
+            current: 2,
+            frequency: 3,
+            soc: 4,
+        },
+        mapping_version,
+        max_skew_ms: 1000,
+        allowed_sources,
+        require_integrity: true,
+        control_horizon_ms: DEFAULT_CONTROL_HORIZON_MS,
+    }
+}
+
+/// 69.3 WP-69.3.2 T3：SNAPSHOT 拒绝判定行**词形单源**（原 svc-telemetry
+/// bin SNAPSHOT 分支收编，对齐 protocol_ladder `line_*` 模式；词形字面
+/// 逐字不变，Z2——t_tel_snapshot_wordform_byte_identical 冻结对照）。
+pub fn line_snapshot_rejected(
+    e: &TrustRejection,
+    ingested: u64,
+    now_ms: u64,
+    first_age: u64,
+) -> alloc::string::String {
+    alloc::format!(
+        "[svc-telemetry] SNAPSHOT rejected: {e:?} (ingested={ingested} now={now_ms} first_age={first_age})"
+    )
+}
 
 /// TelemetryService 服务逻辑（host 可测；target 经 EIPC 循环调用）。
 pub struct TelemetryService {
@@ -141,6 +184,94 @@ impl TelemetryService {
         // 重建生产评估器（启动窗口调用：评估器无积累状态——restore 空）。
         self.evaluator = TelemetryTrustEvaluator::new(eval_config.clone());
         self.enable_obs_shadow(descriptors, eval_config);
+    }
+
+    /// 69.3 WP-69.3.2 T2：惰性来源身份装载**单源**（原 svc-telemetry bin
+    /// `ensure_source_identity` 96 行收编——落点订正见执行卡 7.1-2：该函数
+    /// 依赖 agent-sdk/control-services，ingestion-core 依赖方向不可达，且
+    /// 函数零 SourceRegistry 直呼，实为 TelemetryService 装配编排，落本
+    /// 库与 [`TelemetryService::apply_source_identity`] 同域）。
+    ///
+    /// 签名收窄（卷册要求）：bin 局部状态 → 参数/返回值——config 经
+    /// [`ConfigEntrySource`] trait 面（bin 传 `ChunkedEndpoint` 的
+    /// Option<&mut T>；host 测试传内存假件，免 chunked 状态机）；now_ms
+    /// 入参（catalog 事件面模块时基；调用点 handle() 已持有，时钟同源）。
+    ///
+    /// 返回 true = 身份已装载（一次成功后短路——obs 在场即 true）；
+    /// false = 未装载（下一轮 OBS 重试；期间 legacy 兼容轨以装配参数
+    /// 运行）。词形逐字保持（Z2：OBS-CFG/CATALOG-*/OBS-CFG loaded 三组）。
+    /// cfg 与 fetch_catalog 同口径（catalog 装配域，dispatch_assembly 先例）。
+    #[cfg(any(test, feature = "sel4"))]
+    pub fn ensure_source_identity<T: ConfigEntrySource>(
+        &mut self,
+        config: Option<&mut T>,
+        now_ms: u64,
+    ) -> bool {
+        if self.obs.is_some() {
+            return true;
+        }
+        let Some(config) = config else {
+            return false;
+        };
+        let cfg_id = eneros_config_bundle::ConfigId::from_static("points");
+        // generation（GET_GENERATION；失败 = 0 → 世代未定，观测不满足控制
+        // 资格——fail-closed）。蓝图 67 WP-67.2.3：endpoint trait 面。
+        let generation = config.config_generation().unwrap_or(0);
+        let Some(payload) = config.config_entry("points").and_then(|resp| {
+            eneros_agent_sdk::config_client::decode_response_body(&resp)
+                .ok()
+                .map(|b| b.to_vec())
+        }) else {
+            eneros_runtime::println!(
+                "[svc-telemetry] OBS-CFG points fetch FAIL (retry next round)"
+            );
+            return false;
+        };
+        let Ok(table) = eneros_config_bundle::points::decode_points(&payload, &cfg_id) else {
+            eneros_runtime::println!("[svc-telemetry] OBS-CFG points decode FAIL");
+            return false;
+        };
+        if table.sources.is_empty() {
+            eneros_runtime::println!("[svc-telemetry] OBS-CFG no [[source]] rows (legacy bundle)");
+            return false;
+        }
+        let descriptors = crate::obs_shadow::descriptors_from_config(&table.sources, &table.points);
+        // 生产评估器重建（T1 单源构造器；allowed_sources/mapping_version
+        // 换为配置事实：注册来源 id 集合覆盖 + bundle generation）。
+        let mut applied_config = evaluator_config(generation, Vec::new());
+        // 蓝图 61 v0.314.33：目录装载（安全覆盖/反馈槽单一事实源）。目录
+        // 不可得（legacy bundle）→ 以装配参数覆盖运行（兼容轨；生产
+        // bundle 必含 catalog 条目）。
+        if let Some(cat) = crate::catalog_gateway::fetch_catalog(config) {
+            applied_config.coverage = crate::catalog_gateway::coverage_config(&cat.repo);
+            let d = cat.repo.digest();
+            eneros_runtime::println!(
+                "[svc-telemetry] CATALOG-ACTIVE gen={} digest={:02x}{:02x}{:02x}{:02x}",
+                cat.generation,
+                d[0],
+                d[1],
+                d[2],
+                d[3]
+            );
+            eneros_runtime::println!(
+                "[svc-telemetry] CATALOG-COVERAGE points={}",
+                applied_config.coverage.points.len()
+            );
+            // 蓝图 68 卷 68.4：catalog 交事件面（SnapshotModule + 快照
+            // 政策构建；repo 所有权移交，coverage/digest 已先取）。
+            self.set_event_face_catalog(cat.repo, now_ms);
+        } else {
+            eneros_runtime::println!(
+                "[svc-telemetry] CATALOG-MISSING —— coverage 走装配参数（legacy 轨，fail-closed 输入不变）"
+            );
+        }
+        self.apply_source_identity(descriptors, applied_config);
+        eneros_runtime::println!(
+            "[svc-telemetry] OBS-CFG loaded sources={} generation={}",
+            table.sources.len(),
+            generation
+        );
+        true
     }
 
     /// 蓝图 61：OBS 影子批次准入（TEL_INGEST_OBS 服务端；响应
@@ -699,7 +830,16 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
                 out.extend_from_slice(&encode_trusted(&t));
                 out
             }
-            Err(_) => vec![SNAPSHOT_REJECTED],
+            Err(e) => {
+                // 69.3 T3：拒绝判定行收编（原 svc-telemetry bin SNAPSHOT
+                // twin 分支——词形逐字不变，bin 分支删除改走本单源路径）。
+                let age = svc.first_sample_age_ms(now_ms).unwrap_or(u64::MAX);
+                eneros_runtime::println!(
+                    "{}",
+                    line_snapshot_rejected(&e, svc.ingested, now_ms, age)
+                );
+                vec![SNAPSHOT_REJECTED]
+            }
         },
         TEL_ADVANCE_EPOCH => {
             svc.advance_epoch();
@@ -1260,5 +1400,240 @@ mod tests {
             !src.contains(banned),
             "请求码裸常量回归（单源 = agent-sdk tel_wire，蓝图 67 WP-67.3）"
         );
+    }
+
+    // --------------------------------------------------------------------
+    // 69.3 WP-69.3.2：T1/T2/T3 红测（执行卡 7.2；变异验证见执行卡）
+    // --------------------------------------------------------------------
+
+    /// t_evalcfg_single_source：T1 构造器产出与原 bin 两处字面量**逐字段
+    /// 相同**（装配初值形 = svc-telemetry.rs 原 :36-52；生产重建形 = 原
+    /// :217-230。期望侧手抄冻结（F-37 同律），改构造器任一字段必红）。
+    #[test]
+    fn t_evalcfg_single_source() {
+        // 装配初值形（兼容轨：mapping_version=1，合成源 1 在册）。
+        let boot = evaluator_config(1, alloc::vec![1]);
+        assert_eq!(boot.mapping_version, 1);
+        assert_eq!(boot.allowed_sources, alloc::vec![1]);
+        // 生产重建形（mapping_version = bundle generation，注册集合覆盖）。
+        let prod = evaluator_config(0x1234, alloc::vec![]);
+        assert_eq!(prod.mapping_version, 0x1234);
+        assert_eq!(prod.allowed_sources, Vec::<u32>::new());
+        // 两形五项恒同字段（与原 bin 字面逐项相同）。
+        for cfg in [&boot, &prod] {
+            let b = &cfg.bindings;
+            assert_eq!((b.voltage, b.current, b.frequency, b.soc), (1u32, 2, 3, 4));
+            assert_eq!(cfg.max_skew_ms, 1000);
+            assert!(cfg.require_integrity);
+            assert_eq!(cfg.control_horizon_ms, 30_000);
+            // coverage 同源 = control-dispatch feedback 单源（非空）。
+            assert!(!cfg.coverage.points.is_empty());
+        }
+    }
+
+    /// t_tel_snapshot_wordform_byte_identical：T3 词形冻结对照（期望侧
+    /// 手抄 = 原 svc-telemetry bin SNAPSHOT 分支 println 字面；改一词段
+    /// 必红——Z2）。
+    #[test]
+    fn t_tel_snapshot_wordform_byte_identical() {
+        assert_eq!(
+            line_snapshot_rejected(&TrustRejection::NoSamples, 0, 199785, u64::MAX),
+            alloc::format!(
+                "[svc-telemetry] SNAPSHOT rejected: {:?} (ingested={} now={} first_age={})",
+                TrustRejection::NoSamples,
+                0,
+                199785,
+                u64::MAX
+            )
+        );
+        // 冻结字面（69.1 出口窗串口实采形态；NoSamples Debug 词形在场）。
+        assert_eq!(
+            line_snapshot_rejected(&TrustRejection::NoSamples, 0, 199785, u64::MAX),
+            "[svc-telemetry] SNAPSHOT rejected: NoSamples (ingested=0 now=199785 \
+             first_age=18446744073709551615)"
+        );
+    }
+
+    /// t_snapshot_reject_via_handle_request：SNAPSHOT 臂收编后，空服务
+    /// 快照请求经 handle_request 单源路径回 SNAPSHOT_REJECTED（bin 分支
+    /// 删除的响应字节等价锁）。
+    #[test]
+    fn t_snapshot_reject_via_handle_request() {
+        let mut svc = service();
+        let resp = handle_request(&mut svc, &[TEL_SNAPSHOT], 100);
+        assert_eq!(resp, alloc::vec![SNAPSHOT_REJECTED]);
+    }
+
+    /// t_source_registration_order_preserved（T2 红测；执行卡 7.1 判据
+    /// ③不适用登记——本函数不触 SourceRegistry）：① descriptors 转换序
+    /// = `[[source]]` 表序（7→3）；② 未注册来源事件只进 quarantine，
+    /// 生产 evaluator 零消费（ingested 不动 + 快照仍 NoSamples）；
+    /// ③ 取数失败 → false（下一轮重试）。变异：交换表序/放行未注册
+    /// 事件均必红。
+    #[test]
+    fn t_source_registration_order_preserved() {
+        use eneros_config_bundle::points::decode_points;
+        use eneros_config_bundle::schema::points as pts_schema;
+        use eneros_config_bundle::ConfigId;
+
+        // [[source]] 表：7 = ModbusTcp，3 = Iec104（行 26B 布局 =
+        // toml_compile::compile_sources 单源；rate ≥1 必填）。
+        let source_row = |id: u32, tenant: u32, tag: u8| {
+            let mut r = Vec::new();
+            r.extend_from_slice(&id.to_le_bytes());
+            r.extend_from_slice(&tenant.to_le_bytes());
+            r.extend_from_slice(&1u32.to_le_bytes()); // site_id
+            r.push(tag);
+            r.push(pts_schema::SOURCE_FLAG_REQUIRE_INTEGRITY);
+            r.extend_from_slice(&0u32.to_le_bytes()); // point_min（0 = 全域）
+            r.extend_from_slice(&0u32.to_le_bytes()); // point_max（0 = 无界）
+            r.extend_from_slice(&100u32.to_le_bytes()); // max_events_per_s
+            r
+        };
+        let mut sources = Vec::new();
+        sources.extend_from_slice(&2u32.to_le_bytes());
+        sources.extend_from_slice(&source_row(7, 10, pts_schema::PROTO_MODBUS_TCP));
+        sources.extend_from_slice(&source_row(3, 20, pts_schema::PROTO_IEC104));
+        // 点记录（v1 布局 = schema::points 注释序；2 点，全域命中两源）。
+        let point_row = |pid: u32, tag: u8| {
+            let mut r = Vec::new();
+            r.extend_from_slice(&pid.to_le_bytes());
+            r.extend_from_slice(&1u16.to_le_bytes()); // device_id
+            r.push(tag);
+            r.push(0); // PointType::Analog
+            r.extend_from_slice(&1.0f64.to_le_bytes()); // scale
+            r.extend_from_slice(&0.0f64.to_le_bytes()); // offset
+            r.extend_from_slice(&1000u32.to_le_bytes()); // period_ms
+            r.extend_from_slice(&0.0f64.to_le_bytes()); // deadband
+            r.push(0); // no range
+            match tag {
+                pts_schema::PROTO_MODBUS_TCP => {
+                    r.extend_from_slice(&4u16.to_le_bytes()); // addr_len
+                    r.extend_from_slice(&[1, 0, 0, 0]); // slave,reg,func
+                }
+                _ => {
+                    r.extend_from_slice(&5u16.to_le_bytes()); // addr_len
+                    r.extend_from_slice(&[1, 0, 100, 0, 13]); // common,ioa,type
+                }
+            }
+            r
+        };
+        let mut table = Vec::new();
+        table.extend_from_slice(&2u32.to_le_bytes());
+        table.extend_from_slice(&point_row(1001, pts_schema::PROTO_MODBUS_TCP));
+        table.extend_from_slice(&point_row(1002, pts_schema::PROTO_IEC104));
+        let payload = eneros_config_bundle::payload::encode_payload([
+            (pts_schema::FIELD_POINTS, &table[..]),
+            (pts_schema::FIELD_SOURCES, &sources[..]),
+        ]);
+        let decoded =
+            decode_points(&payload, &ConfigId::from_static("points")).expect("夹具表必须可解码");
+        assert_eq!(decoded.sources.len(), 2);
+
+        // ① 转换序 = 表序（7→3；交换表序必红）。
+        let descriptors =
+            crate::obs_shadow::descriptors_from_config(&decoded.sources, &decoded.points);
+        let order: alloc::vec::Vec<u32> = descriptors.iter().map(|d| d.source_id).collect();
+        assert_eq!(order, alloc::vec![7, 3], "注册序 = [[source]] 表序");
+
+        // 装配 + 内存 config 假件（generation 42 + points 载荷；无
+        // catalog 条目 → CATALOG-MISSING 兼容轨）。
+        struct FakeSrc {
+            gen: u64,
+            points: Option<alloc::vec::Vec<u8>>,
+        }
+        impl ConfigEntrySource for FakeSrc {
+            fn config_entry(&mut self, id: &str) -> Option<alloc::vec::Vec<u8>> {
+                let body = match id {
+                    "points" => self.points.as_ref()?,
+                    _ => return None,
+                };
+                let mut out = alloc::vec::Vec::new();
+                out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+                out.extend_from_slice(body);
+                Some(out)
+            }
+            fn config_generation(&mut self) -> Option<u64> {
+                Some(self.gen)
+            }
+        }
+        let mut src = FakeSrc {
+            gen: 42,
+            points: Some(payload),
+        };
+        let mut svc = service();
+        // 装载成功：注册两源 + generation 生效；二次调用短路。
+        assert!(svc.ensure_source_identity(Some(&mut src), 1_000));
+        assert!(svc.ensure_source_identity(Some(&mut src), 1_000), "短路");
+        {
+            let obs = svc.obs.as_ref().expect("装载后 obs 在场");
+            assert!(obs.is_registered(7) && obs.is_registered(3));
+        }
+
+        // ② 未注册来源（id=9）事件 → 只进 quarantine；生产 evaluator
+        // 零消费（ingested 不动 + 快照仍 NoSamples 拒绝）。
+        let ev = eneros_telemetry_model::event::ObservationEvent {
+            source_id: 9,
+            source_epoch: 5,
+            sequence: 1,
+            ..make_min_event()
+        };
+        let mut frames = ev.encode_v1().to_vec();
+        // 同批第二帧 = 已注册源 7 的合法事件（对照：不进 quarantine）。
+        frames.extend_from_slice(
+            &eneros_telemetry_model::event::ObservationEvent {
+                source_id: 7,
+                sequence: 1,
+                ..make_min_event()
+            }
+            .encode_v1(),
+        );
+        let resp = svc.obs_ingest(7, &frames, 2_000);
+        assert_eq!(resp[0], 0, "批次 ack OK");
+        {
+            let obs = svc.obs.as_ref().expect("obs 在场");
+            assert_eq!(obs.quarantined, 1, "未注册源事件必须进 quarantine");
+            assert_eq!(obs.quarantine_len(), 1);
+            assert!(obs.is_registered(7));
+            assert!(!obs.is_registered(9));
+        }
+        // 未注册事件零消费：批内 2 帧只 registered 源的 1 帧进生产轨
+        //（若未注册事件泄漏，ingested = 2）。
+        assert_eq!(svc.ingested, 1, "仅注册源样本进生产轨");
+
+        // ③ 取数失败（points 缺席）→ false（下一轮重试；legacy 轨续行）。
+        let mut empty_src = FakeSrc {
+            gen: 42,
+            points: None,
+        };
+        let mut fresh = service();
+        assert!(!fresh.ensure_source_identity(Some(&mut empty_src), 1_000));
+        assert!(fresh.obs.is_none(), "失败不半装载");
+    }
+
+    /// T2 夹具最小事件（ingestion-core make_min_event 同款布局；source
+    /// 域按用例覆盖）。
+    fn make_min_event() -> eneros_telemetry_model::event::ObservationEvent {
+        eneros_telemetry_model::event::ObservationEvent {
+            tenant_id: 1,
+            site_id: 1,
+            source_id: 2,
+            source_epoch: 5,
+            sequence: 10,
+            point_id: 1,
+            value: eneros_telemetry_model::event::ObservationValue::F64(1.0),
+            event_time_ns: 1,
+            ingest_time_ns: 1,
+            quality_bits: 0,
+            integrity: eneros_telemetry_model::event::IntegrityTag::Unverified,
+            flags: 0,
+            schema_id: 0,
+            schema_version: 0,
+            unit_code: 0,
+            asset_id: 0,
+            mapping_version: 0,
+            device_id: 0,
+            clock_id: 1,
+        }
     }
 }

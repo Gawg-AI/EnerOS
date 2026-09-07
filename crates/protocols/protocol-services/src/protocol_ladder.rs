@@ -183,13 +183,115 @@ pub fn line_config_bad_prefix(client: &str) -> String {
 /// M-1/M-4 登记）。
 pub fn print_descriptor<P: ProtocolPlugin>(service: &str, plugin: &P) {
     let d = plugin.descriptor();
-    eneros_runtime::println!(
+    emit(alloc::format!(
         "[protocol-service] {} plugin={} role={:?} interop={:?}",
         short_name(service),
         d.id,
         d.role,
         d.interop_level
+    ));
+}
+
+// ============================================================================
+// 判定行发射单点 + bin 装配核心（69.3 WP-69.3.1：族 A bin 91 行共同壳收编）
+// ============================================================================
+
+/// 判定行发射单点（生产 = 串口 `println!`；host 测试 = 收集进
+/// `EMITTED_LINES`——`bin_body` 行序快照测试 t-ladder-1/2 的捕获接缝）。
+/// 发射内容与改造前 bin 的 `println!` 逐字节相同（R2 词形零漂移）。
+fn emit(line: String) {
+    #[cfg(test)]
+    EMITTED_LINES.with(|l| l.borrow_mut().push(line.clone()));
+    eneros_runtime::println!("{}", line);
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static EMITTED_LINES: core::cell::RefCell<alloc::vec::Vec<String>> =
+        const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+}
+
+/// 取走测试期收集的判定行（行序快照断言用；仅 host 测试构建存在）。
+#[cfg(test)]
+pub(crate) fn take_emitted_lines() -> alloc::vec::Vec<String> {
+    EMITTED_LINES.with(core::cell::RefCell::take)
+}
+
+/// 族 A bin 装配核心的产物（WP-69.3.1）：Ready 臂插件已 start（READY 行
+/// 已打印），启动期自检与 Box 装配由调用方衔接——自检本体含轮间有界
+/// 自旋，host 测试不可承受（46.5 裁决 6），故不在 [`assemble`] 内。
+pub(crate) enum Assembled<P: ProtocolPlugin> {
+    /// 装配成功：bin 侧 `self_check_poll(parts.self_check_rounds)` 后
+    /// `Box::new` 进 `driver_service_main`（与改造前 bin Ready 臂同序）。
+    Ready(crate::service::PluginIoService<P>),
+    /// fail-closed：失败判定行已打印，bin 落 [`capability_shell`]。
+    Degraded,
+}
+
+/// [`bin_body`] 的 host 可测核心：descriptor → ladder run → Ready/Degraded
+/// 分支。判定行经 [`emit`] 单点发射，行序与改造前 bin 逐字节相同
+/// （t-ladder-1/2 行序快照锁；期望值 = 改造前 svc-goose.rs 装配序手抄）。
+pub(crate) fn assemble<P: ProtocolPlugin>(
+    wall_epoch: u64,
+    parts: &ProtocolParts,
+    plugin: P,
+    io: &mut dyn ServiceIo,
+) -> Assembled<P> {
+    // 39：协议插件在服务侧构造（descriptor 随 readiness 报告）——改造前
+    // bin 在 run 前调用，次序不变。
+    print_descriptor(parts.service, &plugin);
+    match run(wall_epoch, parts, plugin, io) {
+        Ladder::Ready { plugin, .. } => Assembled::Ready(crate::service::PluginIoService::new(
+            plugin,
+            parts.capability,
+        )),
+        Ladder::Degraded(_) => Assembled::Degraded,
+    }
+}
+
+/// 协议 bin 的标准入口（族 A；WP-69.3.1）：io 构造 → [`assemble`] →
+/// Ready 臂自检 → `driver_service_main`。**不含** `#[global_allocator]` /
+/// `#[panic_handler]` / `_start` 签名与 `set_ipc_buffer`/`ALLOC.init()`
+/// （链接期 / EL0 入口 ABI 约束，留在 bin crate 根——卷册 WP-69.3.1 边界，
+/// 移动会改变链接期语义且触碰内存预算铁律）。
+/// 短名经 [`short_name`] 单源由 `parts.service` 推导（"svc-goose"→"goose"，
+/// 与改造前 `driver_service_main` 第二参字面逐字相同，不另设参数双源）。
+#[cfg(all(target_os = "none", feature = "sel4"))]
+pub fn bin_body<P: ProtocolPlugin>(
+    ep: u64,
+    ready_ntfn: u64,
+    mmio_vaddr: u64,
+    dma_vaddr: u64,
+    dma_phys: u64,
+    wall_epoch: u64,
+    parts: &ProtocolParts,
+    make_plugin: fn() -> P,
+) -> ! {
+    let mut io = Sel4ServiceIo::new(
+        parts.service,
+        parts.config_client,
+        mmio_vaddr,
+        dma_vaddr,
+        dma_phys,
     );
+    let mut service: Box<dyn eneros_drv_svc::runtime::DriverService> =
+        match assemble(wall_epoch, parts, make_plugin(), &mut io) {
+            Assembled::Ready(mut io) => {
+                // 46.5：启动期自检轮询——post-connect 协议交换在进入
+                // request 循环前完成（有界不阻塞对端）。
+                io.self_check_poll(parts.self_check_rounds);
+                Box::new(io)
+            }
+            Assembled::Degraded => capability_shell(),
+        };
+    eneros_drv_svc::runtime::driver_service_main(
+        ep,
+        short_name(parts.service),
+        ready_ntfn,
+        crate::now_ms,
+        crate::instance_epoch(),
+        &mut *service,
+    )
 }
 
 /// 能力壳构造单点（fail-closed 终态：EXECUTE `ST_UNAVAILABLE`）。bin 不
@@ -281,7 +383,7 @@ pub fn run<P: ProtocolPlugin>(
     let mut factory = match io.transport(TransportKind::Tcp) {
         Ok(factory) => factory,
         Err(e) => {
-            eneros_runtime::println!("{}", line_handover_missing(parts.service, e));
+            emit(line_handover_missing(parts.service, e));
             return Ladder::Degraded(LadderReason::HandoverMissing);
         }
     };
@@ -292,13 +394,13 @@ pub fn run<P: ProtocolPlugin>(
     ) {
         Ok(cfg) => cfg,
         Err(step) => {
-            eneros_runtime::println!("{}", line_config_unavailable(parts.service));
+            emit(line_config_unavailable(parts.service));
             if parts.degraded == DegradedStyle::HandoverAlias {
                 // modbus-tcp 族：try_new 的 Err 再经 _start 判定行（M-6）。
-                eneros_runtime::println!(
-                    "{}",
-                    line_handover_missing(parts.service, "protocol-config-missing")
-                );
+                emit(line_handover_missing(
+                    parts.service,
+                    "protocol-config-missing",
+                ));
             }
             return Ladder::Degraded(match step {
                 ConfigStep::Unavailable => LadderReason::ConfigUnavailable,
@@ -311,7 +413,7 @@ pub fn run<P: ProtocolPlugin>(
     // 46.5 诊断：落盘实际配置值（iec104 独有；poll_interval 是否 5000）。
     if parts.config_dump {
         for (k, v) in cfg.entries.iter() {
-            eneros_runtime::println!("[{}] {k} = {v}", parts.config_client);
+            emit(alloc::format!("[{}] {k} = {v}", parts.config_client));
         }
     }
     // 点表注入（46.5）：All/Filtered 在配置取回后取（iec104/mms 现行行序）。
@@ -335,7 +437,7 @@ pub fn run<P: ProtocolPlugin>(
     // 39：插件 start 消费配置/传输/点表（签名不动，F-12——插件一行不改）。
     match plugin.start(&cfg, factory.as_mut(), &mut registry) {
         Ok(()) => {
-            eneros_runtime::println!("{}", line_ready(parts.service, parts.capability));
+            emit(line_ready(parts.service, parts.capability));
             Ladder::Ready {
                 plugin,
                 registry,
@@ -346,14 +448,11 @@ pub fn run<P: ProtocolPlugin>(
         }
         Err(e) => {
             if parts.degraded == DegradedStyle::Standard {
-                eneros_runtime::println!("{}", line_plugin_start_failed(parts.service, &e));
+                emit(line_plugin_start_failed(parts.service, &e));
             } else {
                 // modbus-tcp 族：无 plugin start FAILED 行，统一 handover
                 // 别名（M-6——try_new map_err 单词原因的逐字保真）。
-                eneros_runtime::println!(
-                    "{}",
-                    line_handover_missing(parts.service, "plugin-start-failed")
-                );
+                emit(line_handover_missing(parts.service, "plugin-start-failed"));
             }
             Ladder::Degraded(LadderReason::PluginStartFailed)
         }
@@ -913,5 +1012,190 @@ mod tests {
             func_code: 3,
         };
         assert!(matches!(addr, ProtocolAddress::Modbus { .. }));
+    }
+
+    // --------------------------------------------------------------------
+    // 69.3 WP-69.3.1：bin_body 行序快照（改造前 svc-goose.rs 装配序冻结：
+    // print_descriptor → run 判定行；69.1 出口窗串口相邻序佐证）+ PARTS
+    // 字面锁。F-37 同律：期望侧手抄冻结字面，禁引用 helper。
+    // --------------------------------------------------------------------
+
+    /// 改造前 Ready 路径行序（descriptor → READY；FakePlugin descriptor
+    /// = id"fake"/Master/SpecBlocked，FakeIo::parts capability 同 goose bin）。
+    const BIN_SEQ_READY_EXPECTED: [&str; 2] = [
+        "[protocol-service] goose plugin=fake role=Master interop=SpecBlocked",
+        "[svc-goose] NET-TRANSPORT READY capability=eneros_iec61850_goose::plugin::GoosePlugin",
+    ];
+    /// 改造前 Degraded（传输缺席）路径行序（descriptor → handover 判定行）。
+    const BIN_SEQ_DEGRADED_EXPECTED: [&str; 2] = [
+        "[protocol-service] goose plugin=fake role=Master interop=SpecBlocked",
+        "[svc-goose] handover missing (\"no-dma\") —— capability 壳（EXECUTE ST_UNAVAILABLE）",
+    ];
+
+    fn seq_expected(seq: &[&str]) -> alloc::vec::Vec<String> {
+        seq.iter().map(alloc::string::ToString::to_string).collect()
+    }
+
+    /// t-ladder-1：Ready 路径判定行序列与改造前 bin 逐字节相同。
+    #[test]
+    fn bin_body_ready_path_matches_legacy_line_sequence() {
+        let mut io = FakeIo::ok(valid_protocol_entry());
+        let a = assemble(
+            0,
+            &FakeIo::parts(PointsPolicy::None),
+            FakePlugin::new(false),
+            &mut io,
+        );
+        assert!(
+            matches!(a, Assembled::Ready(_)),
+            "有效配置应 Ready（自检窗口在调用方——host 不跑有界自旋）"
+        );
+        assert_eq!(take_emitted_lines(), seq_expected(&BIN_SEQ_READY_EXPECTED));
+    }
+
+    /// t-ladder-2：Degraded 路径判定行序列不变 + 落能力壳
+    ///（capability None + EXECUTE 显式 ST_UNAVAILABLE——fail-closed 终态）。
+    #[test]
+    fn bin_body_degraded_path_falls_back_to_capability_shell() {
+        use eneros_drv_svc::runtime::{DriverRequest, DriverResponse, OP_EXECUTE};
+        let mut io = FakeIo::ok(valid_protocol_entry());
+        io.transport = Err("no-dma");
+        let a = assemble(
+            0,
+            &FakeIo::parts(PointsPolicy::None),
+            FakePlugin::new(false),
+            &mut io,
+        );
+        assert_eq!(
+            take_emitted_lines(),
+            seq_expected(&BIN_SEQ_DEGRADED_EXPECTED)
+        );
+        let mut svc = match a {
+            Assembled::Degraded => capability_shell(),
+            Assembled::Ready(_) => panic!("传输缺席应 Degraded"),
+        };
+        assert_eq!(svc.capability(), None, "能力壳 capability=None");
+        // 完整 dispatch 路径锁（runtime::process_request 的映射语义）：
+        // capability None + 设备操作 EXECUTE → 显式 ST_UNAVAILABLE。
+        let req = DriverRequest::new(0, OP_EXECUTE);
+        let mut queue = eneros_drv_svc::runtime::BoundedQueue::new();
+        let mut resp = DriverResponse::new(0, 0, 0);
+        eneros_drv_svc::runtime::process_request(
+            &mut queue,
+            &mut *svc,
+            0,
+            0,
+            &eneros_drv_svc::runtime::wire::encode_request(&req),
+            &mut resp,
+        );
+        assert_eq!(
+            resp.status,
+            eneros_drv_svc::runtime::ST_UNAVAILABLE,
+            "能力壳 EXECUTE 显式 ST_UNAVAILABLE（不伪造设备 I/O）"
+        );
+    }
+
+    /// t-ladder-3：改造 bin 的 `static PARTS` 8 字段与改造前内联字面量
+    /// 逐项相同（include_str! 字面锁。运行时断言双保险不可达：bin 非
+    /// lib，host 测试无法实例化其 static——字面锁为唯一可达保险，执行
+    /// 卡登记）。同时锁改造事实：`_start` 体内不再内联 parts 字面量。
+    #[test]
+    fn parts_static_is_byte_identical_to_inline_literal() {
+        for (name, src, cfg_client, cfg_id, capability, plugin_path) in [
+            (
+                "svc-goose",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/svc-goose.rs")),
+                "goose-config",
+                "protocol-goose",
+                "eneros_iec61850_goose::plugin::GoosePlugin",
+                "eneros_iec61850_goose::plugin::GoosePlugin::new",
+            ),
+            (
+                "svc-sv",
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/svc-sv.rs")),
+                "sv-config",
+                "protocol-sv",
+                "eneros_iec61850_sv::plugin::SvPlugin",
+                "eneros_iec61850_sv::plugin::SvPlugin::new",
+            ),
+        ] {
+            assert!(
+                src.contains("static PARTS"),
+                "{name} 须以 static PARTS 声明描述符（_start 纯接线）"
+            );
+            assert!(
+                src.contains(&alloc::format!("service: \"{name}\",")),
+                "{name} PARTS.service 字面漂移"
+            );
+            assert!(
+                src.contains(&alloc::format!("config_client: \"{cfg_client}\",")),
+                "{name} PARTS.config_client 字面漂移"
+            );
+            assert!(
+                src.contains(&alloc::format!("config_id: \"{cfg_id}\",")),
+                "{name} PARTS.config_id 字面漂移"
+            );
+            assert!(
+                src.contains(&alloc::format!("capability: \"{capability}\",")),
+                "{name} PARTS.capability 字面漂移"
+            );
+            assert!(
+                src.contains("points: protocol_ladder::PointsPolicy::None,")
+                    || src.contains("points: PointsPolicy::None,"),
+                "{name} PARTS.points 字面漂移"
+            );
+            assert!(
+                src.contains("config_dump: false,"),
+                "{name} PARTS.config_dump 字面漂移"
+            );
+            assert!(
+                src.contains("self_check_rounds: 150,"),
+                "{name} PARTS.self_check_rounds 字面漂移（改造前 150）"
+            );
+            assert!(
+                src.contains("degraded: protocol_ladder::DegradedStyle::Standard,")
+                    || src.contains("degraded: DegradedStyle::Standard,"),
+                "{name} PARTS.degraded 字面漂移"
+            );
+            assert!(
+                src.contains(&alloc::format!("{plugin_path},")),
+                "{name} 插件构造函数指针漂移"
+            );
+            assert!(
+                src.contains("bin_body("),
+                "{name} _start 须经 bin_body 接线"
+            );
+            assert!(
+                !src.contains("let parts ="),
+                "{name} _start 体内不得再内联 parts 字面量（静态化兑现）"
+            );
+            assert!(
+                src.contains("#[global_allocator]"),
+                "{name} allocator 留 bin（链接期约束，WP-69.3.1 边界）"
+            );
+            assert!(
+                src.contains("#[panic_handler]"),
+                "{name} panic handler 留 bin（no_std bin 根约束）"
+            );
+        }
+    }
+
+    /// t-ladder-4（变异 M3 覆盖：bin_body 的 Ready 臂自检调用是 target-only
+    /// 代码，host 行序不含自检痕迹——按卷册变异表补结构锁）：`bin_body`
+    /// 体内必须保有 `self_check_poll(parts.self_check_rounds)` 调用
+    ///（46.5 启动期自检 = goose/sv STARTDT/订阅前交换的实弹前提）。
+    #[test]
+    fn bin_body_keeps_self_check_poll_call() {
+        let src = include_str!("protocol_ladder.rs");
+        let needle = concat!("io.self_check_poll(", "parts.self_check_rounds)");
+        assert!(
+            src.contains(needle),
+            "bin_body Ready 臂自检调用被删（46.5 启动期交换窗口丢失）"
+        );
+        // 轮数单点：自检轮数只能来自 PARTS（bin 侧 150 字面由 t-ladder-3 锁）。
+        assert!(
+            !src.contains(concat!("self_check_poll(", "150")),
+            "自检轮数必须单点自 PARTS，禁止 bin_body 内字面轮数"
+        );
     }
 }

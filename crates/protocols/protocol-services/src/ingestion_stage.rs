@@ -701,6 +701,21 @@ mod tests {
 
     // ------------------------------------------------------------------------
     // 结构守卫（防再抄）：两 bin 不得再持有本地采集编排函数/手拼批次/chunked 直用。
+    // 69.3 WP-69.3.3 M3 逐锁处置（执行卡 7.0 M3 表，实测 2026-09-07）：
+    //   删 1 道——原 #4 `!src.contains("ChunkedClient::new")`：冗余副本。
+    //     agent-sdk endpoint.rs `chunked_client_new_only_inside_agent_sdk`
+    //     仓走守卫（67 WP-67.2.4）已全仓覆盖（crates/ 递归、白名单空、
+    //     含尾括号全精度模式、变异②实弹咬合），本窄域锁删除后防御面不缩
+    //     （M3 核于 2026-09-07：守卫 walk 含两 bin 文件）。
+    //   边界加固 1 道——#10 `fetch_points`：主函数已降 `pub(crate)`
+    //     （service_cfg.rs，bin 结构性不可达 E0603）；锁保留防孪生
+    //     `fetch_points_registry`（svc-modbus-rtu 合法消费，无法降级）
+    //     被族 B bin 用于二次拉表。
+    //   余 10 道保留：#1/#2/#6 本地定义/标签禁令（bin 是独立 crate，无
+    //     边界可挡本地新定义）；#3/#5 内存/算术字面（bin 对自有 Vec 有
+    //     完全控制权）；#7 Z2 词形（println 字面无边界）；#8/#9 pub POD
+    //     字段/pub 枚举被 adapter 合法消费（私有化=破坏读 API）；#11/#12
+    //     pub 且跨 bin/crate 合法消费（降级必炸）——逐锁依据见执行卡。
     // ------------------------------------------------------------------------
     #[test]
     fn bins_no_longer_own_collection_orchestration() {
@@ -725,10 +740,9 @@ mod tests {
                 !src.contains("push(4u8)"),
                 "{name} 重新出现 OBS 批次手拼（S2b 禁止）"
             );
-            assert!(
-                !src.contains("ChunkedClient::new"),
-                "{name} 重新出现 chunked 直用（S4 收敛面，应走 uplink/ChunkedEndpoint）"
-            );
+            // 69.3：原第 4 道锁 `!src.contains("ChunkedClient::new")` 已删
+            // ——agent-sdk endpoint.rs 仓走守卫全仓覆盖本 bin（M3 核于
+            // 2026-09-07，防御更强：白名单空 + 尾括号全精度 + 变异咬合）。
             assert!(
                 !src.contains("saturating_add(1)"),
                 "{name} 重新出现 epoch 手递增（S4 禁止）"
@@ -758,17 +772,22 @@ mod tests {
             );
             // 64.2 WP-64.2.3：二次 fetch / 端点手抄闭包删除——records 由
             // Ladder::Ready 携带；telemetry 装配归 bind_telemetry。
+            // 69.3：主函数 fetch_points 已降 pub(crate)（bin 调用 = E0603
+            // 编译失败，实测证据在执行卡）；锁保留防孪生
+            // fetch_points_registry 面（svc-modbus-rtu 合法消费无法降级）。
             assert!(
                 !src.contains("fetch_points"),
                 "{name} 重新出现 fetch_points 直呼（64.2.3 禁止——records 由 Ready 携带）"
             );
             assert!(
                 !src.contains("eipc_resolve"),
-                "{name} 重新出现 EIPC 手工解析（64.2.3 禁止——telemetry 装配归 bind_telemetry）"
+                "{name} 重新出现 EIPC 手工解析（64.2.3 禁止——telemetry 装配归 bind_telemetry；\
+                 eipc_resolve 被其它 bin 合法消费无法降级，M3 #11）"
             );
             assert!(
                 src.matches(concat!("Sel4IpcClient", "::new")).count() == 0,
-                "{name} 重新出现 Sel4IpcClient 手工建端（64.2.3 禁止）"
+                "{name} 重新出现 Sel4IpcClient 手工建端（64.2.3 禁止；跨 5+ \
+                 crate 合法消费无法降级，M3 #12）"
             );
         }
     }

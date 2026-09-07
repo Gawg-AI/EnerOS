@@ -1,0 +1,186 @@
+============================================================
+G-KERNEL (21-A): Rust root task (eneros-root-task) on seL4
+============================================================
+
+[1/3] Building Rust root task (eneros-root-task, release)...
+   Compiling eneros-solver-core v0.328.0 (/home/ahx/文档/EnerOS/crates/ai/solver-core)
+   Compiling eneros-drv-svc v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+   Compiling eneros-root-task v0.328.0 (/home/ahx/文档/EnerOS/crates/runtime/root-task)
+   Compiling eneros-ipc-wire v0.328.0 (/home/ahx/文档/EnerOS/crates/abi/ipc-wire)
+   Compiling eneros-sel4-sys v0.328.0 (/home/ahx/文档/EnerOS/crates/runtime/sel4-sys)
+   Compiling eneros-handover-abi v0.328.0 (/home/ahx/文档/EnerOS/crates/abi/handover-abi)
+   Compiling eneros-hex v0.328.0 (/home/ahx/文档/EnerOS/crates/abi/hex)
+   Compiling eneros-upa-model v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/upa-model)
+   Compiling eneros-virtio-core v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/virtio-core)
+   Compiling eneros-hal v0.328.0 (/home/ahx/文档/EnerOS/crates/hal/hal)
+   Compiling eneros-protocol-keys v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-keys)
+   Compiling eneros-dispatch-state v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/dispatch-state)
+   Compiling eneros-tenant v0.328.0 (/home/ahx/文档/EnerOS/crates/agents/tenant)
+   Compiling eneros-elf-loader v0.328.0 (/home/ahx/文档/EnerOS/crates/abi/elf-loader)
+   Compiling eneros-net v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/net)
+   Compiling eneros-crypto v0.328.0 (/home/ahx/文档/EnerOS/crates/security/crypto)
+   Compiling eneros-image-format v0.328.0 (/home/ahx/文档/EnerOS/crates/boot/image-format)
+   Compiling eneros-durable-state v0.328.0 (/home/ahx/文档/EnerOS/crates/runtime/durable-state)
+   Compiling eneros-boot-protocol v0.328.0 (/home/ahx/文档/EnerOS/crates/boot/boot-protocol)
+   Compiling eneros-audit v0.328.0 (/home/ahx/文档/EnerOS/crates/security/audit)
+   Compiling eneros-solver-model v0.328.0 (/home/ahx/文档/EnerOS/crates/ai/solver-model)
+   Compiling eneros-telemetry-model v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/telemetry-model)
+   Compiling eneros-energy-lp-model v0.328.0 (/home/ahx/文档/EnerOS/crates/ai/energy-lp-model)
+   Compiling eneros-board v0.328.0 (/home/ahx/文档/EnerOS/crates/hal/board)
+   Compiling eneros-time v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/time)
+   Compiling eneros-protocol-abstract v0.328.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-abstract)
+   Compiling eneros-watchdog v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/watchdog)
+   Compiling eneros-driver-framework v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/framework)
+warning: eneros-sel4-sys@0.328.0: shim/sel4_shim.c: In function 'eneros_sel4_get_boot_info':
+warning: eneros-sel4-sys@0.328.0: shim/sel4_shim.c:121:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.328.0:   121 |     return (seL4_Word)seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.328.0:       |     ^~~~~~
+warning: eneros-sel4-sys@0.328.0: In file included from /home/ahx/.cache/sel4-src/libsel4/include/sel4/sel4.h:22,
+warning: eneros-sel4-sys@0.328.0:                  from shim/sel4_shim.h:40,
+warning: eneros-sel4-sys@0.328.0:                  from shim/sel4_shim.c:29:
+warning: eneros-sel4-sys@0.328.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.328.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.328.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.328.0: shim/sel4_shim.c: In function 'eneros_sel4_user_image_phys_base':
+warning: eneros-sel4-sys@0.328.0: shim/sel4_shim.c:129:5: warning: 'seL4_GetBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.328.0:   129 |     seL4_BootInfo *bi = seL4_GetBootInfo();
+warning: eneros-sel4-sys@0.328.0:       |     ^~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.328.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:15:16: note: declared here
+warning: eneros-sel4-sys@0.328.0:    15 | seL4_BootInfo *seL4_GetBootInfo(void)
+warning: eneros-sel4-sys@0.328.0:       |                ^~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.328.0: shim/sel4_shim.c: In function 'eneros_sel4_boot_init':
+warning: eneros-sel4-sys@0.328.0: shim/sel4_shim.c:151:5: warning: 'seL4_InitBootInfo' is deprecated: libsel4 management of bootinfo is deprecated, see the BootInfo Frame section of the manual [-Wdeprecated-declarations]
+warning: eneros-sel4-sys@0.328.0:   151 |     seL4_InitBootInfo(info);
+warning: eneros-sel4-sys@0.328.0:       |     ^~~~~~~~~~~~~~~~~
+warning: eneros-sel4-sys@0.328.0: /home/ahx/.cache/sel4-src/libsel4/include/sel4/bootinfo.h:13:6: note: declared here
+warning: eneros-sel4-sys@0.328.0:    13 | void seL4_InitBootInfo(seL4_BootInfo *bi)
+warning: eneros-sel4-sys@0.328.0:       |      ^~~~~~~~~~~~~~~~~
+   Compiling eneros-runtime v0.328.0 (/home/ahx/文档/EnerOS/crates/runtime/runtime)
+   Compiling eneros-rs485 v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/rs485)
+   Compiling eneros-can v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/can)
+   Compiling eneros-uart v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/uart)
+   Compiling eneros-storage v0.328.0 (/home/ahx/文档/EnerOS/crates/drivers/storage)
+   Compiling eneros-signer-keyring v0.328.0 (/home/ahx/文档/EnerOS/crates/security/signer-keyring)
+   Compiling eneros-safety-validator v0.328.0 (/home/ahx/文档/EnerOS/crates/ai/safety-validator)
+   Compiling eneros-config-bundle v0.328.0 (/home/ahx/文档/EnerOS/crates/runtime/config-bundle)
+   Compiling eneros-durable-log v0.328.0 (/home/ahx/文档/EnerOS/crates/runtime/durable-log)
+   Compiling eneros-agent-sdk v0.328.0 (/home/ahx/文档/EnerOS/crates/agents/agent-sdk)
+warning: unused doc comment
+  --> crates/runtime/root-task/src/main.rs:82:1
+   |
+82 | / /// Root task 入口 — 由 seL4 elfloader 在 rootserver 模式下调用。
+83 | | ///
+84 | | /// M0+ 行为（蓝图/20 R1-2）：
+85 | | /// 1. `eneros_runtime::init()` 初始化串口控制台
+...  |
+97 | | /// 故 `_start` 必须为汇编：先设 SP（.bss 栈顶）再跳 `rust_entry`——与
+98 | | /// `third_party/sel4-root/root_task.c` 的 C 入口同模式。
+   | |_--------------------------------------------------------^
+   |   |
+   |   rustdoc does not generate documentation for macro invocations
+   |
+   = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+   = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `cpu_topology_from`
+  --> crates/runtime/root-task/src/platform.rs:28:5
+   |
+28 |     cpu_topology_from, cross_check_cpu_count, PlatformAdapter, PlatformError, PlatformInput,
+   |     ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable expression
+   --> crates/runtime/root-task/src/main.rs:567:5
+    |
+463 | /         match crate::spawn::sel4_spawn_services(&plan, &bundle, &mut ctx) {
+464 | |             Ok(handles) => {
+465 | |                 println!("[eneros-root-task] EL0 services spawned — entering service loop");
+466 | |                 println!(
+...   |
+558 | |         }
+    | |_________- any code following this `match` expression is unreachable, as all arms diverge
+...
+567 | /     loop {
+568 | |         core::hint::spin_loop();
+569 | |     }
+    | |_____^ unreachable expression
+    |
+    = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `elf`
+    --> crates/runtime/root-task/src/spawn.rs:1974:5
+     |
+1974 |     elf: &LoadedElf,
+     |     ^^^ help: if this is intentional, prefix it with an underscore: `_elf`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `copy_segment_via_window` is never used
+    --> crates/runtime/root-task/src/spawn.rs:2919:4
+     |
+2919 | fn copy_segment_via_window(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-root-task` (bin "eneros-root-task") generated 5 warnings (run `cargo fix --bin "eneros-root-task" -p eneros-root-task` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 5.06s
+  ✓ Rust ELF: /home/ahx/文档/EnerOS/target/aarch64-unknown-none/release/eneros-root-task (434824 bytes)
+  ✓ ELF magic OK
+
+[2/3] Building seL4 with RUST_ROOT_TASK=ON...
+elfloader patch already applied: 0002-elfloader-remove-dbg-temp-write.patch
+-- Extracting device tree from QEMU
+-- qemu-system-aarch64: info: dtb dumped to /home/ahx/文档/EnerOS/third_party/sel4-build/top-rust/qemu-arm-virt.dtb. Exiting.
+-- Appending /home/ahx/文档/EnerOS/third_party/sel4-top/overlay-init-bundle-reserved.dts overlay
+-- /home/ahx/文档/EnerOS/third_party/sel4-build/top-rust/kernel/gen_headers/plat/machine/devices_gen.h is out of date. Regenerating from DTB...
+-- Configuring done (0.6s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/ahx/文档/EnerOS/third_party/sel4-build/top-rust
+ninja: Entering directory `/home/ahx/文档/EnerOS/third_party/sel4-build/top-rust'
+[1/41] Using Rust root task: /home/ahx/文档/EnerOS/target/aarch64-unknown-none/release/eneros-root-task
+[2/41] Building C object kernel/CMakeFiles/kernel_all_pp_prune_wrapper_temp_lib.dir/kernel_all_pp_prune_wrapper_temp.c.obj
+[3/41] Generating kernel_all_pp_prune.c
+[4/41] Generating from generated/arch/object/structures.bf.pbf
+[5/41] Creating C input file for preprocessor
+[6/41] Building C object kernel/CMakeFiles/kernel_bf_gen_target_11_pbf_temp_lib.dir/kernel_bf_gen_target_11_pbf_temp.c.obj
+[7/41] Generating generated/sel4/shared_types.bf.pbf
+[8/41] Generating from generated/sel4/shared_types.bf.pbf
+[9/41] Creating C input file for preprocessor
+[10/41] Creating C input file for preprocessor
+[11/41] Building C object kernel/CMakeFiles/linker_ld_wrapper_temp_lib.dir/linker_ld_wrapper_temp.c.obj
+[12/41] Generating linker.lds_pp
+[13/41] Building C object kernel/CMakeFiles/kernel_i_wrapper_temp_lib.dir/kernel_all_copy.c.obj
+[14/41] Generating kernel_all.i
+[15/41] Generating circular_includes_valid
+[16/41] Building C object kernel/CMakeFiles/kernel.elf.dir/kernel_all.c.obj
+[17/41] Linking C executable kernel/kernel.elf
+/home/ahx/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin/../lib/gcc/aarch64-none-elf/15.2.1/../../../../aarch64-none-elf/bin/ld: warning: kernel/kernel.elf has a LOAD segment with RWX permissions
+[18/41] Generating kernel.elf
+[19/41] Generating rootserver
+[20/41] Generate CPIO archive archive.o
+[21/41] Generating gen_headers/devices_gen.h
+[22/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/uart/exynos-uart.c.obj
+[23/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/uart/imx-uart.c.obj
+[24/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/uart/imx-lpuart.c.obj
+[25/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/arch-arm/smp_boot.c.obj
+[26/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/uart/common.c.obj
+[27/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/timer/arm_generic_timer.c.obj
+[28/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/arch-arm/drivers/smp-zynq7000.c.obj
+[29/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/uart/msm-uart.c.obj
+[30/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/uart/bcm-uart.c.obj
+[31/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/uart/meson-uart.c.obj
+[32/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/arch-arm/drivers/smp-spin-table.c.obj
+[33/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/arch-arm/drivers/smp-imx6.c.obj
+[34/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/arch-arm/drivers/smp-psci.c.obj
+[35/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/uart/8250-uart.c.obj
+[36/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/smp/common.c.obj
+[37/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/uart/stm32mp2-uart.c.obj
+[38/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/uart/pl011-uart.c.obj
+[39/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/driver.c.obj
+[40/41] Building C object elfloader/CMakeFiles/elfloader.dir/src/drivers/uart/xilinx-uart.c.obj
+[41/41] Linking C executable elfloader/elfloader
+
+[3/3] elfloader (Rust root task) → /home/ahx/文档/EnerOS/target/sel4/elfloader-arm-qemu-arm-virt
+  后续：SOURCE_DATE_EPOCH=... cargo xtask image qemu-prod

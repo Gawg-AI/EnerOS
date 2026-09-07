@@ -14,7 +14,7 @@
 //! 本模块只保留 fail-closed 判定与诊断措辞（R2 逐字节保持）。任一步
 //! 失败 → None（装配方不得自造写目标）。
 
-#[cfg(feature = "sel4")]
+#[cfg(any(test, feature = "sel4"))]
 use eneros_agent_sdk::config_gateway::{config_get, ConfigStep};
 
 /// 获取控制点绑定（设备/点）。
@@ -90,11 +90,17 @@ pub fn fetch_control_binding<T: eneros_agent_sdk::config_gateway::ConfigEntrySou
 /// 缺节/长度≠32/全零 ⇒ None（fail-closed：调用方打 `CHAIN-KEY-MISSING`
 /// 判定行并拒载）。请求/响应 wire 与管道与 [`fetch_control_binding`]
 /// 同源（agent-sdk `config_client` + `config_gateway`）。
-#[cfg(feature = "sel4")]
-pub fn fetch_control_chain_key(
-    config: &mut eneros_agent_sdk::endpoint::ChunkedEndpoint<
-        eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
-    >,
+///
+/// 69.3 WP-69.3.4：`ChunkedEndpoint<Sel4IpcClient>` 具体绑定 → `<C:
+/// RawIpc>` 泛型（config_gateway blanket impl 同卷使能）——函数体内零
+/// sel4 专有调用（执行卡 7.4 逐行核）；cfg 门 `feature="sel4"` →
+/// `any(test, feature="sel4")`（catalog_gateway::fetch_catalog 同口径）：
+/// 生产 sel4 路径字节不变，host 测试经内存 RawIpc 假件首次可达（c1–c6；
+/// 本函数产出 = 控制链信封 HMAC-SM3 密钥，信任锚——改造前后 c4 合法
+/// 用例返回值逐字节快照一致，执行卡在案）。
+#[cfg(any(test, feature = "sel4"))]
+pub fn fetch_control_chain_key<C: eneros_agent_sdk::chunked::RawIpc>(
+    config: &mut eneros_agent_sdk::endpoint::ChunkedEndpoint<C>,
 ) -> Option<[u8; 32]> {
     let got = config_get(config, "security", |body| {
         match eneros_config_bundle::control_chain_key::ControlChainKeyConfig::decode(body) {
@@ -122,5 +128,154 @@ pub fn fetch_control_chain_key(
             None
         }
         Err(ConfigStep::DecodeFailed) => None,
+    }
+}
+
+// 测试模块只随 host 测试构建编译（`#[cfg(test)]`）——此前误用
+// `any(test, feature="sel4")` 会把测试体编进 target 镜像（aarch64 无
+// std/alloc::vec 导入面，E0425/E0433 实弹咬出，2026-09-07）；被测函数
+// 的可达门 `any(test, feature="sel4")` 在函数上，两者口径分离。
+#[cfg(test)]
+mod tests {
+    use eneros_agent_sdk::chunked::{
+        ack_bytes, encode_paged_header, is_pull_request, page_slice, ChunkHeader, ChunkedEvent,
+        ChunkedReceiver, CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER,
+    };
+
+    use super::*;
+
+    /// 内存 svc-config 假件（RawIpc；chunked 分块状态机 = agent-sdk
+    /// config_client FakeConfigServer 同款模式，c1–c6 测试面）。`security`
+    /// 载荷可选（None = 缺节语义路径）。
+    struct FakeConfigServer {
+        rx: ChunkedReceiver,
+        pending: Option<Vec<u8>>,
+        paged: Vec<u8>,
+        security: Option<Vec<u8>>,
+    }
+
+    impl FakeConfigServer {
+        fn with_security(payload: Vec<u8>) -> Self {
+            Self {
+                rx: ChunkedReceiver::new(),
+                pending: None,
+                paged: Vec::new(),
+                security: Some(payload),
+            }
+        }
+    }
+
+    impl eneros_agent_sdk::chunked::RawIpc for FakeConfigServer {
+        fn request(
+            &mut self,
+            _t: &str,
+            payload: &[u8],
+            _to: u64,
+        ) -> Result<Vec<u8>, eneros_agent_sdk::AgentError> {
+            if &payload[..4] == CHUNK_MAGIC_HEADER {
+                let h = ChunkHeader::decode(payload).unwrap();
+                let _ = self.rx.on_message(&h.encode(), true);
+                return Ok(ack_bytes().to_vec());
+            }
+            if &payload[..4] == CHUNK_MAGIC_FINAL {
+                match self.pending.take() {
+                    Some(full) => {
+                        assert_eq!(&full[..4], b"CFG1", "请求帧 magic");
+                        // 节载荷 = security（4B 前缀在下方统一加——单前缀
+                        // 词形；请求内容不回显——假件是 config 服务端不是
+                        // 回环）。
+                        let body = self.security.clone().unwrap_or_default();
+                        let mut resp = Vec::new();
+                        resp.extend_from_slice(&(body.len() as u32).to_le_bytes());
+                        resp.extend_from_slice(&body);
+                        self.paged = resp;
+                        Ok(encode_paged_header(self.paged.len()).to_vec())
+                    }
+                    None => Ok(b"ERR:NoTransfer".to_vec()),
+                }
+            } else if is_pull_request(payload) {
+                Ok(page_slice(&self.paged, payload[4]).to_vec())
+            } else {
+                Err(eneros_agent_sdk::AgentError::IpcError(
+                    heapless::String::try_from("unexpected").unwrap_or_default(),
+                ))
+            }
+        }
+
+        fn send(&mut self, _t: &str, payload: &[u8]) -> Result<(), eneros_agent_sdk::AgentError> {
+            if let ChunkedEvent::Complete(full) = self.rx.on_message(payload, false) {
+                self.pending = Some(full);
+            }
+            Ok(())
+        }
+    }
+
+    /// security canonical payload（FIELD_CONTROL_CHAIN_KEY 帧）。
+    fn security_payload(key: &[u8]) -> Vec<u8> {
+        eneros_config_bundle::payload::encode_payload([(
+            eneros_config_bundle::schema::security::FIELD_CONTROL_CHAIN_KEY,
+            key,
+        )])
+    }
+
+    fn endpoint(
+        security: Option<Vec<u8>>,
+    ) -> eneros_agent_sdk::endpoint::ChunkedEndpoint<FakeConfigServer> {
+        eneros_agent_sdk::endpoint::ChunkedEndpoint::wrap(FakeConfigServer::with_security(
+            security.unwrap_or_default(),
+        ))
+    }
+
+    /// c4（信任锚快照）：合法 32B ⇒ Some(k) 且逐字节等于配置值。
+    #[test]
+    fn c4_chain_key_valid_yields_bytes() {
+        let key: [u8; 32] = core::array::from_fn(|i| (i as u8) ^ 0xA5);
+        let mut ep = endpoint(Some(security_payload(&key)));
+        assert_eq!(fetch_control_chain_key(&mut ep), Some(key));
+    }
+
+    /// c1：缺 security 节（传输层无应答）⇒ None（fail-closed）。
+    #[test]
+    fn c1_chain_key_missing_section_yields_none() {
+        let mut ep = endpoint(None);
+        assert_eq!(fetch_control_chain_key(&mut ep), None);
+    }
+
+    /// c2：密钥长度 ≠ 32 ⇒ None（decode Err(InvalidValue len)）。
+    #[test]
+    fn c2_chain_key_wrong_length_yields_none() {
+        let mut ep = endpoint(Some(security_payload(&[0xA5; 31])));
+        assert_eq!(fetch_control_chain_key(&mut ep), None);
+    }
+
+    /// c3：全零密钥 ⇒ None（decode Err(ZeroSecret)——不伪造信任锚）。
+    #[test]
+    fn c3_chain_key_all_zero_yields_none() {
+        let mut ep = endpoint(Some(security_payload(&[0u8; 32])));
+        assert_eq!(fetch_control_chain_key(&mut ep), None);
+    }
+
+    /// c5：canonical payload 解码失败（截断帧）⇒ None。
+    #[test]
+    fn c5_chain_key_decode_error_yields_none() {
+        let mut ep = endpoint(Some(vec![0x01, 0xFF, 0x00]));
+        assert_eq!(fetch_control_chain_key(&mut ep), None);
+    }
+
+    /// c6（字面锁）：本文件只允许**一个** `fetch_control_chain_key` 定义
+    /// ——防 sel4 专版分叉复发（泛型化前的原病灶形态）。
+    #[test]
+    fn c6_generic_and_sel4_paths_share_body() {
+        let src = include_str!("cfg_bindings.rs");
+        let needle = concat!("fn ", "fetch_control_chain_key");
+        assert_eq!(
+            src.matches(needle).count(),
+            1,
+            "fetch_control_chain_key 出现多定义（sel4 专版分叉复发）"
+        );
+        assert!(
+            src.contains("C: eneros_agent_sdk::chunked::RawIpc"),
+            "chain key 取数须保持泛型接口（host 可测）"
+        );
     }
 }

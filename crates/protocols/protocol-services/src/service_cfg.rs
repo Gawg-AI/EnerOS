@@ -117,7 +117,17 @@ where
 /// generation 经 `GET_GENERATION`（服务端既有动词）；不可得 → 0（fail-
 /// closed：世代未知的映射不满足控制资格，事件只可存档）。失败呈现词形
 /// 与 [`fetch_points_registry`] 逐字节一致（历史 caller 行为不变）。
-pub fn fetch_points<F>(io: &mut dyn ConfigEntrySource, client_name: &str, keep: F) -> PointsFetch
+///
+/// 69.3 WP-69.3.3（M3 #10 边界加固）：`pub` → `pub(crate)`——全仓零跨
+/// crate 消费者（同 crate ladder run 两处调用不受影响），降级后 bin 在
+/// 结构上不可达（E0603），主取数面由字符串锁升级为编译期边界；孪生
+/// [`fetch_points_registry`] 因 svc-modbus-rtu 合法消费保持 pub（执行卡
+/// 7.0 M3 表 #10）。
+pub(crate) fn fetch_points<F>(
+    io: &mut dyn ConfigEntrySource,
+    client_name: &str,
+    keep: F,
+) -> PointsFetch
 where
     F: Fn(&PointRecord) -> bool,
 {

@@ -90,8 +90,15 @@ pub fn config_get<T>(
 /// `Sel4IpcClient` impl 每次往返恒 epoch=0（类二违纪面）随 impl 迁移
 /// 消除；消费方持 endpoint（svc-telemetry/svc-ai-worker/svc-device-agent/
 /// dispatch_assembly catalog 路径/protocol_ladder Sel4ServiceIo）。
-#[cfg(any(test, feature = "sel4"))]
-impl ConfigEntrySource for crate::endpoint::ChunkedEndpoint<crate::ipc_sel4::Sel4IpcClient> {
+///
+/// 69.3 WP-69.3.4：具体 impl 泛化为无条件 blanket（`C: RawIpc`）——任意
+/// 传输适配器经同一桥进 ConfigGet 管道（`fetch_control_chain_key` 泛型化
+/// + host RawIpc 假件的使能面）。
+///
+/// 原 `any(test, feature="sel4")` 门随泛型化失去意义：impl 体零 sel4 专有
+/// 调用（get_entry/get_generation 本就泛型于 RawIpc），且不再提及
+/// Sel4IpcClient（其类型门留在 ipc_sel4）；wire/epoch 语义零变更。
+impl<C: crate::chunked::RawIpc> ConfigEntrySource for crate::endpoint::ChunkedEndpoint<C> {
     /// ConfigGet 一次往返（超时 = 常量默认 5_000ms，与原实参一致；
     /// epoch 由 endpoint 单点递增）。
     fn config_entry(&mut self, id: &str) -> Option<Vec<u8>> {
