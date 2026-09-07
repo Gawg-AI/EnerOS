@@ -114,7 +114,50 @@ pub fn schedule_energy_kwh(s: &eneros_energy_lp_model::result::ScheduleResult) -
 }
 
 /// 装配配置。
+///
+/// 蓝图 69.4 WP-69.4.4：22 个平铺 pub 字段收窄为 **10 个顶层字段**：
+/// 签发身份 [`IssuerIdentity`]（6）、护栏限值 [`SafetyLimits`]（4）、
+/// 留痕落点 [`AuditSinks`]（3）、投递绑定 [`DeliveryBinding`]（3）四束，
+/// 加 `gate` / `resources` / `contracts` / `compiler_policy` /
+/// `control_mode` / `now_fn` 六个单项。字段集合与类型零变化（分组只改
+/// 组织）；装配种子见 [`crate::config_seed::ConfigSeed`]。
 pub struct DispatchConfig {
+    /// 签发身份与授权束（谁在签发、凭什么签发）。
+    pub issuer: IssuerIdentity,
+    /// 速率/能量预算闸（check 在 submit；record 仅在 confirmed dispatch）。
+    pub gate: DecisionGate,
+    /// SPEC WP-A.2：护栏限值束。
+    pub safety: SafetyLimits,
+    /// 决策留痕落点束。
+    pub audit_sinks: AuditSinks,
+    /// 投递绑定束（往哪投 + 怎么回读）。
+    pub delivery_binding: DeliveryBinding,
+    /// 蓝图 61 v0.314.35：资源注册表只读视图（命令批编译的绑定权威；
+    /// 生产装配注入 resource-registry `PlannerView`——planner 输入只能
+    /// 查询 Registry，[08] §4.8 门；缺装配 = `EmptyResourceRegistry`
+    /// fail-closed，批编译拒绝）。
+    pub resources: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static>,
+    /// 蓝图 61 v0.314.41（WP-5.1）：控制合同编译视图（PlanCompiler 的
+    /// 合同半边——readback/可逆/值域/补偿；缺装配 = 空视图 fail-closed，
+    /// 全部计划编译拒绝「未知合同」）。
+    pub contracts: alloc::boxed::Box<dyn crate::compiler::PlanContractView + 'static>,
+    /// WP-5.1 编译器策略（全部参与 compiler_digest——策略漂移可检）。
+    pub compiler_policy: crate::compiler::CompilerPolicy,
+    /// WP-5.3：资源控制模式（人工/检修模式下自动命令被 Arbiter 拒绝）。
+    /// 装配期一次性设定、运行期不变——人工→自动切换在生产上只发生在
+    /// `Arbiter` 层（`CommandArbiter::resume_auto` 持 fresh snapshot/
+    /// capability，`tests/arbiter_degrade.rs` 覆盖）；Engine 层转发壳
+    /// `DispatchEngine::resume_auto` 因零调用方已删（蓝图 69.4 WP-69.4.4，
+    /// 卷内裁决 ②）。
+    pub control_mode: crate::arbiter::ControlMode,
+    /// 单调时钟（毫秒）。
+    pub now_fn: fn() -> u64,
+}
+
+/// 签发身份与授权束（蓝图 69.4 WP-69.4.4 分组）——授权链、信封签名
+/// 密钥、同源档案、fencing token、签发服务与代次：信封签发路径成束
+/// 消费，禁再散抄。
+pub struct IssuerIdentity {
     /// 授权链（gateway/lease/idempotency/policy/safety/SBO——default-deny）。
     pub chain: ControlChain,
     /// 信封签名密钥（与 chain gateway 同源）。
@@ -128,8 +171,12 @@ pub struct DispatchConfig {
     pub issuer_service: [u8; 16],
     /// 签发服务 epoch（重启计数）。
     pub issuer_epoch: u64,
-    /// 投递目标端点（EIPC 服务名）。
-    pub target_endpoint: String,
+}
+
+/// SPEC WP-A.2：护栏限值束（工程单位见各字段；测试域可自由构造）。
+/// 与引擎内部私有 `SafetyGuardParams` 对齐（后者另含预留阈派生域）。
+#[derive(Debug, Clone, Copy)]
+pub struct SafetyLimits {
     /// 功率上限（kW）——proposal 校验。
     pub max_power_kw: f64,
     /// SPEC WP-A.2：电压保护窗（V；缺省 = 蓝图默认 (340,420)）。
@@ -138,8 +185,11 @@ pub struct DispatchConfig {
     pub safety_freq_window: (f64, f64),
     /// SPEC WP-A.2：保护配合爬坡率上限（kW/min；缺省 = 校验器默认 200）。
     pub safety_ramp_kw_per_min: f64,
-    /// 速率/能量预算闸（check 在 submit；record 仅在 confirmed dispatch）。
-    pub gate: DecisionGate,
+}
+
+/// 决策留痕落点束（蓝图 69.4 WP-69.4.4 分组）：决策审计、SHA-256
+/// 事件审计链、durable intent 存储——三者都是「决策留痕落点」。
+pub struct AuditSinks {
     /// 决策审计（可选）。
     pub audit: Option<DecisionAudit>,
     /// 47（WP-47.4）：SHA-256 审计链（security/audit D4 线）——每个
@@ -150,26 +200,16 @@ pub struct DispatchConfig {
     pub control_audit: Option<Box<dyn eneros_audit::AuditLogger>>,
     /// durable intent 存储（WP-40.12 对账）。
     pub intent_log: Box<dyn IntentStore>,
+}
+
+/// 投递绑定束（蓝图 69.4 WP-69.4.4 分组）：往哪投 + 怎么回读。
+pub struct DeliveryBinding {
+    /// 投递目标端点（EIPC 服务名）。
+    pub target_endpoint: String,
     /// 投递通道（生产：Sel4EipcChannel；测试：内存通道）。
     pub delivery: Box<dyn DeliveryChannel>,
     /// 反馈点映射（受信任遥测 → FeedbackBundle）。
     pub feedback_mapping: crate::feedback::FeedbackPointMapping,
-    /// 蓝图 61 v0.314.35：资源注册表只读视图（命令批编译的绑定权威；
-    /// 生产装配注入 resource-registry `PlannerView`——planner 输入只能
-    /// 查询 Registry，[08] §4.8 门；缺装配 = `EmptyResourceRegistry`
-    /// fail-closed，批编译拒绝）。
-    pub resources: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static>,
-    /// 蓝图 61 v0.314.41（WP-5.1）：控制合同编译视图（PlanCompiler 的
-    /// 合同半边——readback/可逆/值域/补偿；缺装配 = 空视图 fail-closed，
-    /// 全部计划编译拒绝「未知合同」）。
-    pub contracts: alloc::boxed::Box<dyn crate::compiler::PlanContractView + 'static>,
-    /// WP-5.1 编译器策略（全部参与 compiler_digest——策略漂移可检）。
-    pub compiler_policy: crate::compiler::CompilerPolicy,
-    /// WP-5.3：资源控制模式（人工/检修模式下自动命令被 Arbiter 拒绝；
-    /// 切回自动必须经 `resume_auto` 持 fresh snapshot/capability）。
-    pub control_mode: crate::arbiter::ControlMode,
-    /// 单调时钟（毫秒）。
-    pub now_fn: fn() -> u64,
 }
 
 /// SPEC WP-A.2：护栏参数束（工程单位见各字段；测试域可自由构造）。
@@ -1036,32 +1076,32 @@ impl DispatchEngine {
 
     /// 构造。
     pub fn new(config: DispatchConfig) -> Self {
-        let pending = config.intent_log.pending();
+        let pending = config.audit_sinks.intent_log.pending();
         let mut engine = Self {
             resources: config.resources,
             contracts: config.contracts,
             compiler_policy: config.compiler_policy,
             arbiter: crate::arbiter::CommandArbiter::new(256),
             control_mode: config.control_mode,
-            chain: config.chain,
-            key: config.key,
-            profile: config.profile,
-            fencing_token: config.fencing_token,
-            issuer_service: config.issuer_service,
-            issuer_epoch: config.issuer_epoch,
-            target_endpoint: config.target_endpoint,
-            max_power_kw: config.max_power_kw,
-            safety_voltage_window: config.safety_voltage_window,
-            safety_freq_window: config.safety_freq_window,
-            safety_ramp_kw_per_min: config.safety_ramp_kw_per_min,
+            chain: config.issuer.chain,
+            key: config.issuer.key,
+            profile: config.issuer.profile,
+            fencing_token: config.issuer.fencing_token,
+            issuer_service: config.issuer.issuer_service,
+            issuer_epoch: config.issuer.issuer_epoch,
+            target_endpoint: config.delivery_binding.target_endpoint,
+            max_power_kw: config.safety.max_power_kw,
+            safety_voltage_window: config.safety.safety_voltage_window,
+            safety_freq_window: config.safety.safety_freq_window,
+            safety_ramp_kw_per_min: config.safety.safety_ramp_kw_per_min,
             gate: config.gate,
-            audit: config.audit,
-            control_audit: config.control_audit,
-            intent_log: config.intent_log,
-            delivery: config.delivery,
+            audit: config.audit_sinks.audit,
+            control_audit: config.audit_sinks.control_audit,
+            intent_log: config.audit_sinks.intent_log,
+            delivery: config.delivery_binding.delivery,
             // 与 durable 槽位同阶的有界执行 journal（61 v0.314.24）。
             journal: ExecutionJournal::new(256),
-            feedback_builder: TrustedFeedbackBuilder::new(config.feedback_mapping),
+            feedback_builder: TrustedFeedbackBuilder::new(config.delivery_binding.feedback_mapping),
             now_fn: config.now_fn,
             seq: 0,
             committed_count: 0,
@@ -1293,12 +1333,12 @@ impl DispatchEngine {
         }
     }
 
-    /// 人工 → 自动切换（[10] §4.3：必须重新 Snapshot/Capability）。
-    pub fn resume_auto(&mut self, fresh_snapshot: bool) -> Result<(), String> {
-        self.arbiter.resume_auto(fresh_snapshot)?;
-        self.control_mode = crate::arbiter::ControlMode::Auto;
-        Ok(())
-    }
+    // 蓝图 69.4 WP-69.4.4：`DispatchEngine::resume_auto` 已删（全仓零
+    // 外部调用方——唯一命中是自身转调与 `Arbiter` 同名方法的测试）。
+    // 人工→自动切换在生产上只发生在 `Arbiter` 层
+    // （`CommandArbiter::resume_auto` 持 fresh snapshot/capability，
+    // `tests/arbiter_degrade.rs` 覆盖）；`DispatchEngine.control_mode`
+    // 由此成为装配期一次性设定、运行期不变的字段（卷内裁决 ②）。
 
     fn run_intent(
         &mut self,
@@ -1431,7 +1471,7 @@ impl DispatchEngine {
         // 蓝图 61 v0.314.28：**typed 链收口**——proposal 在 dispatch 边界
         // 经严格 adapter 进入 CandidatePlan（[17] .28"经严格 adapter 进入
         // CandidatePlan"），合核只消费 typed 产物（含 PlanTyped 身份）。
-        // facade reader 保留至 .32（[17] .32 删除期限）。
+        // 旧 facade reader（70B wire 读臂）已于 v0.329.0 删除（蓝图 69.4）。
         let plan = crate::adapter::proposal_to_candidate(
             proposal,
             (

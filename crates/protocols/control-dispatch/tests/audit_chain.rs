@@ -204,21 +204,25 @@ impl eneros_control_dispatch::DeliveryChannel for StubChannel {
 
 fn build_engine(control_audit: Box<dyn AuditLogger>, outcome_code: u8) -> DispatchEngine {
     let outcome = [outcome_code, 0];
+    let base = support::test_config(support::TestConfigSeed {
+        chain: build_chain(),
+        key: KEY.to_vec(),
+        profile: test_profile(),
+        issuer_service: [0x41; 16],
+        fencing_token: 8,
+        now_fn: now_ms,
+        intent_log: Box::new(InMemoryIntentStore::new(64)),
+        delivery: Box::new(StubChannel {
+            outcome,
+            delivered: 0,
+        }),
+    });
     DispatchEngine::new(DispatchConfig {
-        control_audit: Some(control_audit),
-        ..support::test_config(support::TestConfigSeed {
-            chain: build_chain(),
-            key: KEY.to_vec(),
-            profile: test_profile(),
-            issuer_service: [0x41; 16],
-            fencing_token: 8,
-            now_fn: now_ms,
-            intent_log: Box::new(InMemoryIntentStore::new(64)),
-            delivery: Box::new(StubChannel {
-                outcome,
-                delivered: 0,
-            }),
-        })
+        audit_sinks: eneros_control_dispatch::AuditSinks {
+            control_audit: Some(control_audit),
+            ..base.audit_sinks
+        },
+        ..base
     })
 }
 

@@ -189,7 +189,10 @@ fn engine_with_chain(
     });
     DispatchEngine::new(DispatchConfig {
         gate,
-        audit: Some(DecisionAudit::new([0x47; 32])),
+        audit_sinks: eneros_control_dispatch::AuditSinks {
+            audit: Some(DecisionAudit::new([0x47; 32])),
+            ..config.audit_sinks
+        },
         ..config
     })
 }

@@ -17,7 +17,6 @@ use eneros_control_dispatch::ControlDispatch;
 #[cfg(test)]
 use eneros_control_dispatch::DeliveryChannel;
 
-use crate::ai_worker::decode_proposal;
 use crate::telemetry::decode_trusted;
 
 /// 蓝图 61 v0.314.35：proposal → CandidatePlan（resource_catalog_version
@@ -90,11 +89,10 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
         return err_receipt("unknown opcode");
     }
     let body = &req[1..];
-    // 蓝图 61 v0.314.29 双读（§4.3 reader-first 窗口）：
-    // - 新形态：CandidatePlan V1（body[0..4] == b"CAND"；writer switch 完成）
-    //   → `submit_typed`；
-    // - 旧形态：70B proposal wire（固定长度识别；**旧 reader 至 v0.314.32
-    //   删除**——回滚窗口与混合编队兼容读）→ facade `submit`。
+    // 蓝图 69.4 v0.329.0：单读——唯一入口 = CandidatePlan V1（`CAND`
+    // magic；decision-contract 单源）→ `submit_typed`。旧 70B proposal
+    // wire 读臂已删除（v0.314.32 承诺的退役，卷 69.4 WP-69.4.1 落实；
+    // 词形 SUBMIT/SUBMIT-ERR 随臂退役）。
     let tel_len = crate::telemetry::TRUSTED_WIRE_LEN;
     if body.len() < tel_len + 1 {
         return err_receipt("short request");
@@ -114,7 +112,7 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
         session_epoch: 0,
     };
     let deadline_ms = 5000;
-    // 双读判别：候选 wire 以 `CAND` magic 开头。
+    // 单读判别：唯一入口 = `CAND` magic（CandidatePlan V1）。
     if plan_len >= 4 && &body[0..4] == b"CAND" {
         let Ok(cand) = eneros_decision_contract::CandidatePlan::decode_v1(&body[..plan_len]) else {
             return err_receipt("bad candidate");
@@ -136,29 +134,10 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
             }
         };
     }
-    // 旧 reader（v0.314.32 删除）：70B proposal → facade（内部同 typed 链）。
-    if plan_len != crate::ai_worker::LEGACY_PROPOSAL_WIRE_LEN {
-        return err_receipt("bad proposal length");
-    }
-    let Some(plan) = decode_proposal(&body[..plan_len]) else {
-        return err_receipt("bad proposal");
-    };
-    match engine.submit(&plan, &telemetry, &actor, deadline_ms) {
-        Ok(receipt) => {
-            if !receipt.final_state.is_committed() {
-                eneros_runtime::println!(
-                    "[svc-control-dispatch] SUBMIT state={:?} note={:?}",
-                    receipt.final_state,
-                    receipt.note
-                );
-            }
-            encode_receipt(&receipt)
-        }
-        Err(e) => {
-            eneros_runtime::println!("[svc-control-dispatch] SUBMIT-ERR {e:?}");
-            err_receipt(&format!("{e:?}"))
-        }
-    }
+    // 蓝图 69.4 v0.329.0：旧 70B proposal wire 读臂已删除（v0.314.32
+    // 承诺的退役）——非候选形态 fail-closed 显式拒绝（如实回执，不得
+    // 静默成功；t21 锁此语义）。
+    err_receipt("plan body not CAND (legacy proposal wire retired v0.329.0)")
 }
 
 pub fn err_receipt(reason: &str) -> Vec<u8> {
@@ -298,7 +277,7 @@ pub fn prod_chain(
 
 #[cfg(test)]
 mod tests {
-    use eneros_control_dispatch::{DispatchConfig, DispatchEngine, InMemoryIntentStore};
+    use eneros_control_dispatch::{DispatchEngine, InMemoryIntentStore};
 
     use super::*;
 
@@ -355,6 +334,7 @@ mod tests {
         device_id: u16,
         point_id: u32,
         unit_code: u16,
+        catalog_version: u64,
     }
 
     impl eneros_decision_contract::ResourceRegistry for HostResourceView {
@@ -371,11 +351,18 @@ mod tests {
         }
 
         fn catalog_version(&self) -> u64 {
-            0
+            self.catalog_version
         }
     }
 
     fn engine() -> DispatchEngine {
+        engine_with_catalog_version(0)
+    }
+
+    /// WP-69.4.1：catalog_version 可变引擎装配。旧 facade 读臂硬编码
+    /// `catalog_version=1`（engine.rs `run`）——t21 用 1 使删除前旧臂可
+    /// 真达 Committed（红测语义 =「旧臂是活入口」）；主路夹具恒 0。
+    fn engine_with_catalog_version(catalog_version: u64) -> DispatchEngine {
         // 简化装配：budget 宽松；delivery 回 Applied（code 0）。
         // 蓝图 55：档案单源（TTL 600/代次 4 为本测试变体，值语义与旧
         // 手抄 build_chain 一致）。
@@ -400,57 +387,42 @@ mod tests {
         let _ = profile.issue_lease(&mut chain, 1_700_000_000);
         // 蓝图 61 v0.314.35：host 参考装配视图 = 内部 DTO（生产装配在
         // dispatch_assembly 注入 PlannerView——[08] §4.8 门）。
-        DispatchEngine::new(DispatchConfig {
-            resources: alloc::boxed::Box::new(HostResourceView {
-                device_id: TEST_DEVICE_ID as u16,
-                point_id: TEST_POINT_ID,
-                unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
-            }),
-            contracts: {
-                use eneros_control_dispatch::compiler::{MapContractView, PlanContract};
-                let mut v = MapContractView::new();
-                v.insert(
-                    u64::from(TEST_DEVICE_ID),
-                    PlanContract {
-                        class: 2,
-                        readback_point_id: 1001,
-                        reversible: 1,
-                        min: -500.0,
-                        max: 500.0,
-                        settle_ms: 0,
-                        compensable: false,
-                    },
-                );
-                alloc::boxed::Box::new(v)
+        // 蓝图 69.4 WP-69.4.4：经 src 侧 ConfigSeed 装配（安全默认单源；
+        // 本夹具只声明资源/合同视图与 catalog_version 变体）。
+        use eneros_control_dispatch::compiler::{MapContractView, PlanContract};
+        let mut contracts = MapContractView::new();
+        contracts.insert(
+            u64::from(TEST_DEVICE_ID),
+            PlanContract {
+                class: 2,
+                readback_point_id: 1001,
+                reversible: 1,
+                min: -500.0,
+                max: 500.0,
+                settle_ms: 0,
+                compensable: false,
             },
-            compiler_policy: eneros_control_dispatch::compiler::CompilerPolicy::default(),
-            control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
-            chain,
-            key: key.to_vec(),
-            profile,
-            fencing_token: 8,
-            issuer_service: [0x41; 16],
-            issuer_epoch: 0,
-            target_endpoint: String::from("svc-device-agent"),
-            max_power_kw: 500.0,
-            // SPEC WP-A.2：护栏窗口/爬坡（缺省 = 蓝图默认，行为连续）。
-            safety_voltage_window: (340.0, 420.0),
-            safety_freq_window: (49.5, 50.5),
-            safety_ramp_kw_per_min: 200.0,
-            gate: eneros_dual_brain::gate::DecisionGate::new(100, 1000.0, 3_600_000),
-            control_audit: None,
-            audit: None,
-            intent_log: Box::new(InMemoryIntentStore::new(64)),
-            delivery: Box::new(MemoryChannel { outcome }),
-            feedback_mapping: eneros_control_dispatch::FeedbackPointMapping {
-                grid_up: 5,
-                soc: 4,
-                dc_bus_v: 1,
-                overcurrent: 6,
-                overtemp: 6,
-            },
-            now_fn: || 1_700_000_000_000,
-        })
+        );
+        DispatchEngine::new(
+            eneros_control_dispatch::ConfigSeed {
+                chain,
+                key: key.to_vec(),
+                fencing_token: 8,
+                issuer_service: [0x41; 16],
+                now_fn: || 1_700_000_000_000,
+                intent_log: Box::new(InMemoryIntentStore::new(64)),
+                delivery: Box::new(MemoryChannel { outcome }),
+                resources: Box::new(HostResourceView {
+                    device_id: TEST_DEVICE_ID as u16,
+                    point_id: TEST_POINT_ID,
+                    unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+                    catalog_version,
+                }),
+                contracts: Box::new(contracts),
+                profile,
+            }
+            .assemble(),
+        )
     }
 
     fn request_from_worker() -> Vec<u8> {
@@ -517,6 +489,92 @@ mod tests {
         assert_eq!(resp[0], DISP_ERR);
         let resp = handle_submit(&mut engine, &[99]);
         assert_eq!(resp[0], DISP_ERR);
+    }
+
+    // ============ 蓝图 69.4 WP-69.4.1：旧 70B proposal wire 读臂退役 ====
+
+    /// 旧 70B proposal wire 请求（v0.314.32 已停止写入；v0.329.0 读臂退役）。
+    /// 本地定长常量自持——不依赖任何仓内常量（后者已随读臂删除）。
+    fn legacy_request() -> Vec<u8> {
+        const RETIRED_WIRE_LEN: usize = 70;
+        let t = crate::ai_worker::tests_helpers::minimal_trusted_at(1_700_000_000_000);
+        let mut legacy = vec![0u8; RETIRED_WIRE_LEN];
+        let id = b"req-legacy-70b";
+        legacy[..id.len()].copy_from_slice(id);
+        legacy[16] = 1; // DecisionPath::Fast（旧 wire 线码）
+        legacy[17..25].copy_from_slice(&5.0f64.to_le_bytes());
+        legacy[25..29].copy_from_slice(&300u32.to_le_bytes());
+        legacy[29..37].copy_from_slice(&1_700_000_000_000u64.to_le_bytes());
+        legacy[37..69].fill(0xAA); // input_digest（全零会被拒）
+        legacy[69] = 0; // solve_status Optimal
+        let mut out =
+            Vec::with_capacity(1 + RETIRED_WIRE_LEN + crate::telemetry::TRUSTED_WIRE_LEN + 1);
+        out.push(DISP_SUBMIT);
+        out.extend_from_slice(&legacy);
+        out.extend_from_slice(&crate::telemetry::encode_trusted(&t));
+        out.push(eneros_telemetry_model::command::ActorKind::Ai as u8);
+        out
+    }
+
+    /// WP-69.4.1：`CAND` 主路是唯一活入口。删除前后都必须绿——
+    /// ①候选 wire 可达 Committed；②非候选且非旧定长的垃圾体被拒绝。
+    #[test]
+    fn t20_typed_candidate_path_is_the_only_live_ingress() {
+        let mut eng = engine();
+        let resp = handle_submit(&mut eng, &request_from_worker());
+        let (status, state, _c, _l, note) = decode_receipt(&resp).expect("receipt");
+        assert_eq!(status, DISP_OK, "note={note}");
+        assert_eq!(state, DispatchState::Committed, "note={note}");
+        // 垃圾体（非 `CAND` magic、长度不在任何已识别形态）⇒ 显式拒绝。
+        let mut eng2 = engine();
+        let t = crate::ai_worker::tests_helpers::minimal_trusted_at(1_700_000_000_000);
+        let mut req = vec![DISP_SUBMIT];
+        req.extend_from_slice(b"garbage!");
+        req.extend_from_slice(&crate::telemetry::encode_trusted(&t));
+        req.push(eneros_telemetry_model::command::ActorKind::Ai as u8);
+        let resp = handle_submit(&mut eng2, &req);
+        assert_eq!(resp[0], DISP_ERR, "非候选计划体必须被拒绝");
+    }
+
+    /// WP-69.4.1：旧 70B 定长体在读臂删除后必须被显式拒绝（fail-closed，
+    /// 不得静默成功）。删除前本测**红**（旧臂还在时走 facade 成功），
+    /// 删除后转绿——红测先行的具体形态。
+    #[test]
+    fn t21_non_candidate_plan_body_is_rejected_after_legacy_removal() {
+        // catalog_version=1 与旧 facade 硬编码常量对齐——删除前旧臂可真达
+        // Committed（红），删除后同一请求被尾部拒绝（绿）。
+        let mut eng = engine_with_catalog_version(1);
+        let resp = handle_submit(&mut eng, &legacy_request());
+        let (status, _state, _c, _l, note) = decode_receipt(&resp).expect("receipt");
+        assert_eq!(status, DISP_ERR, "旧 70B 形态必须被拒绝，note={note}");
+        assert!(
+            note.contains("CAND"),
+            "拒绝回执须可诊断（指向唯一入口），note={note}"
+        );
+    }
+
+    /// WP-69.4.1：主路词形字面锁（Z2）。`TYPED`/`TYPED-ERR` 两条串口词形
+    /// 逐字节冻结（探针经分段拼接构造，防自匹配）；已退役的
+    /// `SUBMIT …`/`SUBMIT-ERR` 词形复现即红（词形退役不可逆）。
+    #[test]
+    fn t22_typed_word_form_literal_lock() {
+        let src = include_str!("dispatch_service.rs");
+        let typed = concat!("[svc-control-dispatch] ", "TYPED state={:?} note={:?}");
+        let typed_err = concat!("[svc-control-dispatch] ", "TYPED-ERR {e:?}");
+        assert!(
+            src.contains(typed),
+            "TYPED 词形漂移（Z2 主路词形逐字节冻结）"
+        );
+        assert!(
+            src.contains(typed_err),
+            "TYPED-ERR 词形漂移（Z2 主路词形逐字节冻结）"
+        );
+        let submit = concat!("[svc-control-dispatch] ", "SUBMIT state");
+        let submit_err = concat!("[svc-control-dispatch] ", "SUBMIT-ERR");
+        assert!(
+            !src.contains(submit) && !src.contains(submit_err),
+            "已退役词形 SUBMIT/SUBMIT-ERR 复现（v0.329.0 随旧读臂退役）"
+        );
     }
 
     // ============ 47（WP-47.1）协议写意图 ingress ============

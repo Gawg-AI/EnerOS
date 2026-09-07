@@ -26,13 +26,6 @@ pub const AI_NOACTION: u8 = 1; // no-action（含拒绝原因串）
 pub const AI_UNAVAILABLE: u8 = 2; // 后端未声明/不可用（零推理）
 pub const AI_INVALID: u8 = 0xFF;
 
-/// proposal wire（定长）：plan_id 16 + path 1 + power 8 + ttl 4 + issued 8 +
-/// input_digest 32。
-/// 61 v0.314.25 §3.4：+solve_status 1B（线码：0=Optimal/1=Suboptimal/
-/// 2=Infeasible/3=Unbounded/4=Timeout/5=Error）——状态不再由解码侧
-/// 捏造/升级；非成功状态拒绝成提案。
-pub const LEGACY_PROPOSAL_WIRE_LEN: usize = 70;
-
 /// SPEC-SERIES-2026-08-27/E WP-E.4：System1 SOC 死区带**单源**（中点 ± 半宽）。
 ///
 /// 全仓 SOC 死区阈值只许从这里取值（`HeuristicBackend` 出厂值与
@@ -379,59 +372,6 @@ pub fn encode_candidate_payload(
     c.encode_v1()
 }
 
-/// wire → proposal（长度/字段校验；digest 全零 → None）。
-pub fn decode_proposal(buf: &[u8]) -> Option<ProposedControlPlan> {
-    if buf.len() != LEGACY_PROPOSAL_WIRE_LEN {
-        return None;
-    }
-    let mut plan_id = [0u8; 16];
-    plan_id.copy_from_slice(&buf[..16]);
-    // 去尾零。
-    let end = plan_id
-        .iter()
-        .rposition(|&b| b != 0)
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let plan_id = String::from_utf8(plan_id[..end].to_vec()).ok()?;
-    let path = match buf[16] {
-        0 => eneros_dual_brain::DecisionPath::Slow,
-        1 => eneros_dual_brain::DecisionPath::Fast,
-        2 => eneros_dual_brain::DecisionPath::Fallback,
-        3 => eneros_dual_brain::DecisionPath::Degraded,
-        _ => return None,
-    };
-    let power_kw = f64::from_le_bytes(buf[17..25].try_into().ok()?);
-    let ttl_secs = u32::from_le_bytes(buf[25..29].try_into().ok()?);
-    let issued_at_ms = u64::from_le_bytes(buf[29..37].try_into().ok()?);
-    let mut digest = [0u8; 32];
-    digest.copy_from_slice(&buf[37..69]);
-    let input_digest = if digest == [0u8; 32] {
-        None
-    } else {
-        Some(digest)
-    };
-    // 61 v0.314.25：solve_status 由 wire 承载——非成功状态（Infeasible/
-    // Unbounded/Timeout/Error）拒绝成提案（fail-closed），Suboptimal 如实
-    // 保留（不再升级为 Optimal）。
-    let solve_status = match buf[69] {
-        0 => eneros_solver_core::result::SolveStatus::Optimal,
-        1 => eneros_solver_core::result::SolveStatus::Suboptimal,
-        2..=5 => return None,
-        _ => return None,
-    };
-    // 蓝图 55：wire 重建走单时段计划构造器（soc 固定 0.5 为 wire 契约既有语义）。
-    Some(ProposedControlPlan::single_entry(
-        plan_id,
-        path,
-        power_kw,
-        0.5,
-        solve_status,
-        ttl_secs,
-        issued_at_ms,
-        input_digest,
-    ))
-}
-
 /// AI worker 服务逻辑。
 pub struct AiWorkerService<B: DecisionBackend> {
     backend: B,
@@ -672,41 +612,6 @@ mod tests {
         assert_eq!(worker.propose(&[], 1), vec![AI_INVALID]);
         assert_eq!(worker.propose(&[99], 1), vec![AI_INVALID]);
         assert_eq!(worker.propose(&[AI_PROPOSE, 1, 2, 3], 1), vec![AI_INVALID]);
-    }
-
-    #[test]
-    fn proposal_wire_roundtrip() {
-        let t = trusted();
-        let p = ProposedControlPlan {
-            plan_id: String::from("req-170000000000"),
-            path: eneros_dual_brain::DecisionPath::Fallback,
-            schedule: eneros_energy_lp_model::result::ScheduleResult {
-                schedule: vec![],
-                total_revenue_yuan: 0.0,
-                objective_value: 0.0,
-                solve_status: eneros_solver_core::result::SolveStatus::Optimal,
-            },
-            power_kw: -2.5,
-            target_device: String::from("pcs"),
-            ttl_secs: 300,
-            issued_at_ms: 7,
-            input_digest: Some(t.provenance_digest),
-            model_digest: None,
-            latency: Default::default(),
-            safety_violations: 0,
-            safety_clamped: false,
-            feedback: None,
-        };
-        // 蓝图 61 v0.314.29：旧 reader 保留至 .32（dispatch 双读窗口）。
-        let mut legacy = [0u8; LEGACY_PROPOSAL_WIRE_LEN];
-        let id = p.plan_id.as_bytes();
-        let n = core::cmp::min(16, id.len());
-        legacy[..n].copy_from_slice(&id[..n]);
-        legacy[17..25].copy_from_slice(&p.power_kw.to_le_bytes());
-        let d = decode_proposal(&legacy).expect("legacy decode");
-        assert_eq!(d.plan_id, "req-170000000000");
-        assert_eq!(d.power_kw, -2.5);
-        let _ = t;
     }
 
     #[test]

@@ -1,0 +1,7 @@
+== after（0.329.0 重建，2026-09-07 21:41 首建；svc bin mtime 21:41:33）==
+   text	   data	    bss	    dec	    hex	filename
+ 528132	     32	 540744	1068908	 104f6c	target/aarch64-unknown-none/release/svc-control-dispatch
+ 289508	   2968	5524080	5816556	 58c0ec	target/sel4/rootserver.elf
+== before（0.328.0 产物，同上文件 2026-09-07 19:46 版）==
+   text	   data	    bss	    dec	    hex	filename
+ 530528	     32	 540744	1071304	 1058c8	target/aarch64-unknown-none/release/svc-control-dispatch

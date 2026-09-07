@@ -494,7 +494,6 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
             // digest（64 hex → 32B）；remote-llm/heuristic 本就无模型 = None。
             model_digest: reason_model_digest(&a.reason),
             latency: Default::default(),
-            safety_violations: 0,
             safety_clamped: false,
             feedback: None,
         }

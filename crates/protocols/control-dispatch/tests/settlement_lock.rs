@@ -164,7 +164,6 @@ fn proposal(power_kw: f64) -> ProposedControlPlan {
         input_digest: None,
         model_digest: None,
         latency: Default::default(),
-        safety_violations: 0,
         safety_clamped: false,
         feedback: None,
     }
@@ -376,18 +375,22 @@ fn base_config(
     intent_log: Box<dyn IntentStore>,
     delivery: Box<dyn DeliveryChannel>,
 ) -> DispatchConfig {
+    let base = support::test_config(support::TestConfigSeed {
+        chain: build_chain(),
+        key: KEY.to_vec(),
+        profile,
+        issuer_service: ISSUER,
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: now_ms,
+        intent_log,
+        delivery,
+    });
     DispatchConfig {
-        control_audit: Some(Box::new(CaptureAudit::new(Rc::clone(audit_details)))),
-        ..support::test_config(support::TestConfigSeed {
-            chain: build_chain(),
-            key: KEY.to_vec(),
-            profile,
-            issuer_service: ISSUER,
-            fencing_token: 1 + EPOCH_SEED,
-            now_fn: now_ms,
-            intent_log,
-            delivery,
-        })
+        audit_sinks: eneros_control_dispatch::AuditSinks {
+            control_audit: Some(Box::new(CaptureAudit::new(Rc::clone(audit_details)))),
+            ..base.audit_sinks
+        },
+        ..base
     }
 }
 

@@ -169,7 +169,6 @@ fn proposal(power_kw: f64) -> ProposedControlPlan {
         input_digest: None,
         model_digest: None,
         latency: Default::default(),
-        safety_violations: 0,
         safety_clamped: false,
         feedback: None,
     }
@@ -322,7 +321,10 @@ fn engine_with(channel: Box<dyn DeliveryChannel>, gate: DecisionGate) -> Dispatc
     });
     DispatchEngine::new(DispatchConfig {
         gate,
-        audit: Some(DecisionAudit::new([0x40; 32])),
+        audit_sinks: eneros_control_dispatch::AuditSinks {
+            audit: Some(DecisionAudit::new([0x40; 32])),
+            ..config.audit_sinks
+        },
         ..config
     })
 }

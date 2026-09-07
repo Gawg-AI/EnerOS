@@ -46,7 +46,14 @@
 //! 目标侧 svc-certifier）。
 
 #![no_std]
-#![cfg_attr(not(test), allow(dead_code))]
+
+// 蓝图 69.4 WP-69.4.3（方案 B1）：原 `#![cfg_attr(not(test), allow(dead_code))]`
+// 全 crate 豁免已删——「暂不接电」不该永久静音编译器。本 crate 生产零
+// 消费者（ADR-051 §2 / 蓝图 67 WP-67.6 裁决内事实）：接电前必须先复核
+// ①本头「偏离登记」第 2 条解冻条件（目标侧快照/包络输入齐备）；
+// ②接电时以 `cargo build -p eneros-certifier 2>&1 | grep dead_code` 重取
+// 未消费面清单，逐面确认未被腐坏后再消费（v0.329.0 时点该清单为空，
+// 见卷 69.4 执行卡）。
 
 extern crate alloc;
 

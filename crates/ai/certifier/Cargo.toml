@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "EnerOS 蓝图61 [09] §4 v0.314.38 — 独立 CertifierModule：独立重算全部硬约束，唯一 CertifiedPlan 生产者（no_std 可移植）"
+description = "EnerOS 蓝图61 [09] §4 v0.314.38 — 独立 CertifierModule：独立重算全部硬约束（no_std 可移植）。生产暂不接电：CertifiedPlan 规范生产者 = control-dispatch transition seal 过渡发放面（ADR-051 §2 / 蓝图67 WP-67.6）"
 
 [dependencies]
 eneros-decision-contract = { path = "../decision-contract", features = ["certifier"] }

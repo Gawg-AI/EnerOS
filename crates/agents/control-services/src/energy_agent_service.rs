@@ -270,7 +270,6 @@ mod tests {
                 input_digest: Some(t.provenance_digest),
                 model_digest: None,
                 latency: Default::default(),
-                safety_violations: 0,
                 safety_clamped: false,
                 feedback: None,
             };

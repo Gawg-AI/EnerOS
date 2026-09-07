@@ -195,7 +195,6 @@ fn proposal_with_id(plan_id: &str, power_kw: f64) -> ProposedControlPlan {
         input_digest: None,
         model_digest: None,
         latency: Default::default(),
-        safety_violations: 0,
         safety_clamped: false,
         feedback: None,
     }
@@ -424,7 +423,10 @@ fn engine_with(
         delivery: channel,
     });
     DispatchEngine::new(DispatchConfig {
-        audit: Some(DecisionAudit::new([0x61; 32])),
+        audit_sinks: eneros_control_dispatch::AuditSinks {
+            audit: Some(DecisionAudit::new([0x61; 32])),
+            ..config.audit_sinks
+        },
         ..config
     })
 }

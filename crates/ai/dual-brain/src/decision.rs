@@ -83,8 +83,6 @@ pub struct ProposedControlPlan {
     pub model_digest: Option<[u8; 32]>,
     /// 延迟分解（审计/观测）。
     pub latency: LatencyBreakdown,
-    /// 安全校验违规数（0 = 通过）。
-    pub safety_violations: usize,
     /// 是否经安全钳位（降级通过）。
     pub safety_clamped: bool,
     /// 慢路径预测反馈（仅供学习参考——学习门控在 dispatch 的 Committed
@@ -94,7 +92,9 @@ pub struct ProposedControlPlan {
 
 impl ProposedControlPlan {
     /// 单时段计划构造器（蓝图 55）：heuristic/mock backend 与 wire 解码的
-    /// 十五字段字面量单源。目标设备固定 `"pcs"`（dispatch 层经 registry
+    /// 十二字段结构字面量单源（蓝图 69.4 删除只写不读的
+    /// `safety_violations` 后实数；旧"十五字段"措辞把构造器点位数误作
+    /// 字段数，已订正）。目标设备固定 `"pcs"`（dispatch 层经 registry
     /// 映射 DeviceId/PointId）；TTL 为显式参数——fast/slow 路径语义差异
     /// 不在本卷收敛（蓝图 55 D4）。
     #[allow(clippy::too_many_arguments)]
@@ -139,7 +139,6 @@ impl ProposedControlPlan {
             input_digest,
             model_digest: None,
             latency: LatencyBreakdown::default(),
-            safety_violations: 0,
             safety_clamped: false,
             feedback: None,
         }

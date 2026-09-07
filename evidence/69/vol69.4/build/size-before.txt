@@ -1,0 +1,6 @@
+== before（0.328.0 产物，2026-09-07 19:46 构建）==
+   text	   data	    bss	    dec	    hex	filename
+ 530528	     32	 540744	1071304	 1058c8	target/aarch64-unknown-none/release/svc-control-dispatch
+ 289508	   2968	5524080	5816556	 58c0ec	target/sel4/rootserver.elf
+target/aarch64-unknown-none/release/svc-control-dispatch 2026-09-07 19:46:40.379379463 +0800
+target/sel4/rootserver.elf 2026-08-31 03:45:44.564058467 +0800

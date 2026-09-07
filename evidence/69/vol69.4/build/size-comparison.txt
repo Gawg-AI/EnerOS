@@ -1,0 +1,7 @@
+== size 前后对比（卷 69.4 §7 出口要求）==
+before (0.328.0-era, 2026-09-07 19:46):
+   text	   data	    bss	    dec	    hex	filename
+ 530528	     32	 540744	1071304	 1058c8	target/aarch64-unknown-none/release/svc-control-dispatch
+after (0.329.0, 2026-09-07 21:41):
+ 528128	     32	 540744	1068904	 104f68	target/aarch64-unknown-none/release/svc-control-dispatch
+delta: text -2400 B (净负 ✓; root-task 未动 → rootserver.elf 不变)

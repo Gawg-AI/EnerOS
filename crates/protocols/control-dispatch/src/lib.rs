@@ -32,6 +32,7 @@ pub mod adapter;
 pub mod arbiter;
 pub mod channel;
 pub mod compiler;
+pub mod config_seed;
 pub mod degrade;
 pub mod dispatch;
 pub mod durable_intent;
@@ -44,11 +45,14 @@ pub mod saga;
 #[cfg(feature = "sel4")]
 pub use channel::Sel4EipcChannel;
 pub use channel::{ChannelError, DeliveryChannel};
+pub use config_seed::ConfigSeed;
 // 蓝图 63 WP-63.1.1（v0.316.0）：DispatchState 码表单源定义于
 // eneros-dispatch-state（re-export 源，见 dispatch.rs 模块头注释）。
 pub use dispatch::DispatchState;
 pub use dispatch::{AuthenticatedActor, ControlDispatch, DispatchError, DispatchReceipt};
-pub use engine::{DispatchConfig, DispatchEngine};
+pub use engine::{
+    AuditSinks, DeliveryBinding, DispatchConfig, DispatchEngine, IssuerIdentity, SafetyLimits,
+};
 pub use feedback::{FeedbackPointMapping, TrustedFeedbackBuilder, PROD_FEEDBACK_MAPPING};
 pub use intent::{InMemoryIntentStore, IntentRecord, IntentStore, IntentStoreError};
 pub use journal::{ExecutionJournal, ExecutionStatus, IdempotencyRecord, JournalError, JournalHit};

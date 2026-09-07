@@ -166,7 +166,6 @@ fn proposal(power_kw: f64) -> eneros_dual_brain::ProposedControlPlan {
         input_digest: Some([0xAB; 32]),
         model_digest: Some([0xCD; 32]),
         latency: Default::default(),
-        safety_violations: 0,
         safety_clamped: false,
         feedback: None,
     }
@@ -298,7 +297,10 @@ fn engine_with(channel: Box<dyn DeliveryChannel>) -> DispatchEngine {
         delivery: channel,
     });
     DispatchEngine::new(DispatchConfig {
-        audit: Some(DecisionAudit::new([0x40; 32])),
+        audit_sinks: eneros_control_dispatch::AuditSinks {
+            audit: Some(DecisionAudit::new([0x40; 32])),
+            ..config.audit_sinks
+        },
         ..config
     })
 }
@@ -518,7 +520,10 @@ fn typed_multi_step_plan_delivers_due_commands_per_tick() {
         delivery: Box::new(channel),
     });
     let config = DispatchConfig {
-        audit: Some(DecisionAudit::new([0x40; 32])),
+        audit_sinks: eneros_control_dispatch::AuditSinks {
+            audit: Some(DecisionAudit::new([0x40; 32])),
+            ..config.audit_sinks
+        },
         ..config
     };
     let mut engine = DispatchEngine::new(config);
@@ -605,19 +610,23 @@ fn append_failure_terminates_journal_and_resubmission_not_arbiter_locked() {
         inner: InMemoryIntentStore::new(64),
         fail_append: std::cell::Cell::new(true),
     };
+    let base = support::test_config(support::TestConfigSeed {
+        chain: build_chain(),
+        key: KEY.to_vec(),
+        profile,
+        issuer_service: ISSUER,
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: now_ms,
+        intent_log: Box::new(eneros_control_dispatch::InMemoryIntentStore::new(64)),
+        delivery: Box::new(channel),
+    });
     let mut engine = DispatchEngine::new(DispatchConfig {
-        audit: Some(DecisionAudit::new([0x40; 32])),
-        intent_log: Box::new(store),
-        ..support::test_config(support::TestConfigSeed {
-            chain: build_chain(),
-            key: KEY.to_vec(),
-            profile,
-            issuer_service: ISSUER,
-            fencing_token: 1 + EPOCH_SEED,
-            now_fn: now_ms,
-            intent_log: Box::new(eneros_control_dispatch::InMemoryIntentStore::new(64)),
-            delivery: Box::new(channel),
-        })
+        audit_sinks: eneros_control_dispatch::AuditSinks {
+            audit: Some(DecisionAudit::new([0x40; 32])),
+            intent_log: Box::new(store),
+            ..base.audit_sinks
+        },
+        ..base
     });
 
     let p = proposal(50.0);
@@ -713,7 +722,10 @@ fn transition_proof_v2_missing_key_rejected_fail_closed() {
         delivery: Box::new(channel),
     });
     let mut engine = DispatchEngine::new(DispatchConfig {
-        audit: Some(DecisionAudit::new([0x40; 32])),
+        audit_sinks: eneros_control_dispatch::AuditSinks {
+            audit: Some(DecisionAudit::new([0x40; 32])),
+            ..config.audit_sinks
+        },
         ..config
     });
 

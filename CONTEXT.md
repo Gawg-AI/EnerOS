@@ -25,7 +25,7 @@
 | `RawObservation` | adapter 内部原始观测（无 epoch 字段——身份由注册表分配；跨出 adapter 必须成为 ObservationEvent） | `ingestion-core`（蓝图 61，ADR-0046） | 裸 TelemetrySample 跨 binary（禁止） |
 | `SourceRegistry` | 来源注册深模块：SourceDescriptor/register/verify/open_source；未注册事件只进 quarantine（控制 evaluator 零消费） | `ingestion-core`（蓝图 61，ADR-0046） | 评估器白名单数字（allowed_sources 硬编码，已废） |
 | `UnitCatalog` | 封闭数字单位码表（0=未知；wire 层 unit_code 唯一事实） | `telemetry-model::unit`（蓝图 61） | 裸 f64 跨域传递（禁止） |
-| `CandidatePlan` | 候选计划（全时域分配/状态/摘要；非成功 solve status 不可构造） | `decision-contract`（蓝图 61，ADR-0048） | `ProposedControlPlan`（迁移 facade，.32 删） |
+| `CandidatePlan` | 候选计划（全时域分配/状态/摘要；非成功 solve status 不可构造） | `decision-contract`（蓝图 61，ADR-0048） | `ProposedControlPlan`（dual-brain 内部决策表示；旧 70B wire 读臂已于 v0.329.0 删除，类型本身仍在 energy-market-agent → dispatch.submit 生产链上） |
 | `CertifiedPlan` | 独立认证证书（seal 收口构造；外部只有 decode+verify） | `decision-contract`（蓝图 61，ADR-0048） | SafetyValidator bool（不得当证书） |
 | `CommandIntent`/`CommandBatch` | 编译后命令意图/有序批（批构造必须持证书+资源视图） | `decision-contract`（蓝图 61，ADR-0048） | 直接设备写（禁止） |
 | `SettleTrigger` | 结算触发源枚举（SafetyReject/BudgetRate/BudgetEnergy/…）：`settle(trigger, states)` 纯函数按表裁决唯一结算出口 | `control-dispatch::engine`（蓝图 62，settle 决策表 369 行纯函数+表级单测） | 结算逻辑散在调用点（已收表） |

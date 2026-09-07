@@ -169,7 +169,6 @@ fn proposal_with_id(plan_id: &str, power_kw: f64) -> ProposedControlPlan {
         input_digest: None,
         model_digest: None,
         latency: Default::default(),
-        safety_violations: 0,
         safety_clamped: false,
         feedback: None,
     }

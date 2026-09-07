@@ -763,13 +763,12 @@ impl DispatchHandler {
         let contracts: alloc::boxed::Box<
             dyn eneros_control_dispatch::compiler::PlanContractView + 'static,
         > = views.contract;
-        let config = DispatchConfig {
-            resources,
-            contracts,
-            compiler_policy: eneros_control_dispatch::compiler::CompilerPolicy::default(),
-            // WP-5.3：生产装配 = 自动模式（人工接管走 gateway override 面，
-            // 切回自动经 resume_auto 持 fresh snapshot）。
-            control_mode: eneros_control_dispatch::arbiter::ControlMode::Auto,
+        // 蓝图 69.4 WP-69.4.4：22 平铺字段收窄后，生产装配经 src 侧
+        // ConfigSeed（安全默认单源）+ 结构更新语法只声明生产差异
+        // （gate 速率参 / 双审计落点 / catalog 反馈映射）。
+        // WP-5.3：生产装配 = 自动模式（人工接管走 gateway override 面；
+        // 人工→自动切换在 Arbiter 层 resume_auto，蓝图 69.4 删 Engine 转发壳）。
+        let base = eneros_control_dispatch::ConfigSeed {
             chain,
             key: key.to_vec(),
             // 蓝图 55：档案事实（lease/代次/绑定设备点）单源；首签 fencing
@@ -777,22 +776,24 @@ impl DispatchHandler {
             profile,
             fencing_token: crate::dispatch_service::PROD_EPOCH_SEED + 1,
             issuer_service: [0x41; 16],
-            issuer_epoch: 0,
-            target_endpoint: String::from("svc-device-agent"),
-            max_power_kw: 500.0,
-            // SPEC WP-A.2：护栏窗口/爬坡（缺省 = 蓝图默认，行为连续）。
-            safety_voltage_window: (340.0, 420.0),
-            safety_freq_window: (49.5, 50.5),
-            safety_ramp_kw_per_min: 200.0,
-            gate: eneros_dual_brain::gate::DecisionGate::new(rate_per_hour, 1000.0, 3_600_000),
+            now_fn: eneros_drv_svc::now_ms,
             intent_log: build_intent_store(eipc_mask),
+            delivery,
+            resources,
+            contracts,
+        }
+        .assemble();
+        let config = DispatchConfig {
+            gate: eneros_dual_brain::gate::DecisionGate::new(rate_per_hour, 1000.0, 3_600_000),
             // SPEC-E WP-E.2：决策审计链真持久（audit 区段 + boot 校验；
             // 伪持久 MemStore 桩已订正——存储未授予时易失兜底并如实标注）。
-            control_audit: Some(build_control_audit(eipc_mask)),
-            audit: Some(eneros_dual_brain::audit::DecisionAudit::new(
-                eneros_audit::genesis(b"svc-control-dispatch-audit"),
-            )),
-            delivery,
+            audit_sinks: eneros_control_dispatch::AuditSinks {
+                control_audit: Some(build_control_audit(eipc_mask)),
+                audit: Some(eneros_dual_brain::audit::DecisionAudit::new(
+                    eneros_audit::genesis(b"svc-control-dispatch-audit"),
+                )),
+                ..base.audit_sinks
+            },
             // SPEC-R4 WP-R4.1：反馈映射单源 = control-dispatch
             // PROD_FEEDBACK_MAPPING（历史手抄 6/6 字面量已收编；⚠ 6/6 别名
             // 现状与矫正前置见该常量文档）。
@@ -802,8 +803,11 @@ impl DispatchHandler {
             // 缺失/槽不齐 → 回退装配常量 PROD_FEEDBACK_MAPPING（legacy
             // 兼容轨，值必须与目录一致——parity 测试锁定）。退出 gate：
             // 生产无手写 feedback point（[08] §2.7）。
-            feedback_mapping: views.feedback,
-            now_fn: eneros_drv_svc::now_ms,
+            delivery_binding: eneros_control_dispatch::DeliveryBinding {
+                feedback_mapping: views.feedback,
+                ..base.delivery_binding
+            },
+            ..base
         };
         eneros_control_dispatch::DispatchEngine::new(config)
     }

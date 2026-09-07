@@ -641,7 +641,6 @@ impl<S: Solver> DualBrainCoordinator<S> {
             input_digest: None,
             model_digest: None,
             latency,
-            safety_violations: 0,
             safety_clamped,
             feedback,
         }

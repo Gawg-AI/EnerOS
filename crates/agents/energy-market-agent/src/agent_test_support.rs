@@ -245,7 +245,6 @@ impl ControlDispatch for RecordingDispatch {
                 input_digest: None,
                 model_digest: None,
                 latency: Default::default(),
-                safety_violations: 0,
                 safety_clamped: false,
                 feedback: None,
             },
