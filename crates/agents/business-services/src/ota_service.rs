@@ -11,7 +11,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use eneros_durable_state::StoreError;
-use eneros_ota_ab::upgrade::{OtaManager, UpgradeMeta};
+use eneros_ota_ab::upgrade::{OtaError, OtaManager, UpgradeMeta};
 
 /// 升级包策略（CheckPolicy 输入；来自 ota.toml canonical 配置）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,12 +180,21 @@ impl<M: OtaManager> OtaService<M> {
     }
 
     /// 策略门 + 下载到非激活槽位（transport 已取回镜像字节）。
+    ///
+    /// 69.5（WP-69.5.3，DEMO-69 第 5 窗）：Err 侧从抹平的 `&'static str`
+    /// 改为携带**关键数字/环节**的诊断串——此前 `prepare-failed` 抹掉了
+    /// `ImageTooLarge { image_size, partition_capacity }` 的两个数字，
+    /// 口径分歧导致的拒绝说不出口径是什么（§2.3/§2.4：容量分歧的危险
+    /// 一半在拒绝不可诊断）。格式：十进制、无空格、无千分位（词形基线
+    /// 脚本 token 解析口径）。
+    /// Z3 检查：`image_size`/`partition_capacity`/`offset` 均为几何量，
+    /// 可安全暴露；SM2 公钥/root key 字节**绝不入串**（t39 锁）。
     pub fn download_and_verify(
         &mut self,
         meta: &UpgradeMeta,
         target_sku: &str,
         image_bytes: &[u8],
-    ) -> Result<OtaStep, &'static str> {
+    ) -> Result<OtaStep, String> {
         let verdict = check_policy(
             &self.policy,
             &meta.target_version,
@@ -201,21 +210,41 @@ impl<M: OtaManager> OtaService<M> {
                 PolicyVerdict::Pass => "unreachable",
             }));
         }
-        // 下载（真实字节；分块写盘）。
+        // 下载（真实字节；分块写盘）。69.5：容量不足区分产出双数字
+        // （`prepare-failed:image-too-large:{image_size}>{partition_capacity}`），
+        // 其余类别保留类别名（Debug 词形；prepare 路径可达类别均无字段）。
         let slot = self
             .ota
             .prepare_upgrade(meta.clone())
-            .map_err(|_| "prepare-failed")?;
+            .map_err(|e| match e {
+                OtaError::ImageTooLarge {
+                    image_size,
+                    partition_capacity,
+                } => {
+                    alloc::format!(
+                        "prepare-failed:image-too-large:{image_size}>{partition_capacity}"
+                    )
+                }
+                other => alloc::format!("prepare-failed:{other:?}"),
+            })?;
         let chunk = self.policy.chunk_size as usize;
         let mut offset = 0u64;
         for chunk_bytes in image_bytes.chunks(chunk) {
             self.ota
                 .write_chunk(slot, offset, chunk_bytes)
-                .map_err(|_| "write-failed")?;
+                .map_err(|e| match e {
+                    OtaError::WriteFailed { offset } => alloc::format!("write-failed:{offset}"),
+                    other => alloc::format!("write-failed:{other:?}"),
+                })?;
             offset += chunk_bytes.len() as u64;
         }
-        // 真实回读验签（SM3 + SM2；恒真闭包在此无立足点）。
-        let verified = self.ota.verify(slot).map_err(|_| "verify-failed")?;
+        // 真实回读验签（SM3 + SM2；恒真闭包在此无立足点）。69.5：失败
+        // 环节可区分（SM3 哈希 vs SM2 验签 vs 状态机）。
+        let verified = self.ota.verify(slot).map_err(|e| match e {
+            OtaError::HashMismatch => String::from("verify-failed:sm3-hash-mismatch"),
+            OtaError::SignatureInvalid => String::from("verify-failed:sm2-signature-invalid"),
+            other => alloc::format!("verify-failed:{other:?}"),
+        })?;
         if !verified {
             return Ok(OtaStep::Rejected("verify-failed"));
         }
@@ -687,5 +716,272 @@ mod tests {
         assert_eq!(version_cmp("1.0.0", "1.0.1"), core::cmp::Ordering::Less);
         assert_eq!(version_cmp("2.0", "1.9.9"), core::cmp::Ordering::Greater);
         assert_eq!(version_cmp("1.0.0", "1.0.0"), core::cmp::Ordering::Equal);
+    }
+
+    // ---- 69.5（WP-69.5.3）：错误可诊断性 t36-t39（DEMO-69 第 5 窗）----
+
+    /// 可注入故障的 OtaManager（prepare/write/verify 三门独立指定）。
+    struct FaultOta {
+        prepare_err: Option<OtaError>,
+        write_err: Option<OtaError>,
+        verify_err: Option<OtaError>,
+    }
+    impl OtaManager for FaultOta {
+        fn prepare_upgrade(&mut self, _meta: UpgradeMeta) -> Result<PartitionSlot, OtaError> {
+            if let Some(e) = self.prepare_err.clone() {
+                return Err(e);
+            }
+            Ok(PartitionSlot::B)
+        }
+        fn write_chunk(
+            &mut self,
+            _slot: PartitionSlot,
+            _offset: u64,
+            _data: &[u8],
+        ) -> Result<(), OtaError> {
+            if let Some(e) = self.write_err.clone() {
+                return Err(e);
+            }
+            Ok(())
+        }
+        fn verify(&mut self, _slot: PartitionSlot) -> Result<bool, OtaError> {
+            if let Some(e) = self.verify_err.clone() {
+                return Err(e);
+            }
+            Ok(true)
+        }
+        fn activate(&mut self, _slot: PartitionSlot) -> Result<(), OtaError> {
+            Ok(())
+        }
+        fn rollback(&mut self) -> Result<PartitionSlot, OtaError> {
+            Ok(PartitionSlot::A)
+        }
+        fn get_active_slot(&self) -> PartitionSlot {
+            PartitionSlot::A
+        }
+        fn get_partitions(&self) -> [eneros_ota_ab::ab_partition::Partition; 2] {
+            [
+                eneros_ota_ab::ab_partition::Partition {
+                    slot: PartitionSlot::A,
+                    state: eneros_ota_ab::ab_partition::PartitionState::Active,
+                    version: Default::default(),
+                    size: 0,
+                    hash: [0; 32],
+                    signature: [0; 64],
+                    boot_count: 0,
+                    last_boot_ms: 0,
+                },
+                eneros_ota_ab::ab_partition::Partition {
+                    slot: PartitionSlot::B,
+                    state: eneros_ota_ab::ab_partition::PartitionState::Empty,
+                    version: Default::default(),
+                    size: 0,
+                    hash: [0; 32],
+                    signature: [0; 64],
+                    boot_count: 0,
+                    last_boot_ms: 0,
+                },
+            ]
+        }
+    }
+
+    /// 0x02 DOWNLOAD+VERIFY 请求构造（OTA1 魔数 + 定长头 + 镜像字节）；
+    /// target="9.9.9"/sku="qemu" 过策略门（策略拒绝用例单独走降级版本）。
+    fn req02(image_size: u64, image: &[u8]) -> Vec<u8> {
+        let mut hdr = alloc::vec![0u8; 32 + 16 + 4 + 8 + 32 + 64 + 4 + 4];
+        hdr[..5].copy_from_slice(b"9.9.9");
+        hdr[32..36].copy_from_slice(b"qemu");
+        hdr[32 + 16 + 4..32 + 16 + 4 + 8].copy_from_slice(&image_size.to_le_bytes());
+        hdr[32 + 16 + 4 + 8 + 32 + 64..32 + 16 + 4 + 8 + 32 + 64 + 4]
+            .copy_from_slice(&64u32.to_le_bytes());
+        hdr[32 + 16 + 4 + 8 + 32 + 64 + 4..].copy_from_slice(&(image.len() as u32).to_le_bytes());
+        let mut req = alloc::vec::Vec::with_capacity(5 + hdr.len() + image.len());
+        req.extend_from_slice(b"OTA1");
+        req.push(0x02);
+        req.extend_from_slice(&hdr);
+        req.extend_from_slice(image);
+        req
+    }
+
+    fn svc_with(ota: FaultOta) -> OtaService<FaultOta> {
+        OtaService::new(ota, policy(), "1.0.0", "qemu", 2, 1)
+    }
+
+    /// t36：容量不足错误串**同时携带** image_size 与 partition_capacity
+    /// 的十进制字面，且断言**完整格式**（`{image}>{capacity}` 顺序敏感
+    /// ——变异靶 1：交换两个数字 → 本测红）。
+    #[test]
+    fn t36_image_too_large_error_carries_both_numbers() {
+        let mut svc = svc_with(FaultOta {
+            prepare_err: Some(OtaError::ImageTooLarge {
+                image_size: 10_485_760,
+                partition_capacity: 1_048_576,
+            }),
+            write_err: None,
+            verify_err: None,
+        });
+        let req = req02(10_485_760, &[0u8; 8]);
+        let mut resp = Vec::new();
+        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert_eq!(
+            core::str::from_utf8(&resp).unwrap(),
+            "ERR:ota:prepare-failed:image-too-large:10485760>1048576",
+            "回执须携带双数字（DEMO-69 第 5 窗；顺序=声明>容量）"
+        );
+    }
+
+    /// t37：容量不足 / 设备写失败 / 策略门拒绝 ⇒ 三个错误串互不相同
+    /// （变异靶 2：抹平回 "prepare-failed" → 本测红）。
+    #[test]
+    fn t37_prepare_failure_categories_are_distinguishable() {
+        // 容量不足。
+        let mut svc = svc_with(FaultOta {
+            prepare_err: Some(OtaError::ImageTooLarge {
+                image_size: 10_485_760,
+                partition_capacity: 1_048_576,
+            }),
+            write_err: None,
+            verify_err: None,
+        });
+        let mut resp = Vec::new();
+        assert!(!handle_ota_ab_command(
+            Some(&mut svc),
+            &req02(10_485_760, &[0u8; 8]),
+            &mut resp
+        ));
+        let cap_resp = core::str::from_utf8(&resp).unwrap().to_owned();
+        // 设备写失败（WriteFailed 携带 offset 数字）。
+        let mut svc = svc_with(FaultOta {
+            prepare_err: None,
+            write_err: Some(OtaError::WriteFailed { offset: 65_536 }),
+            verify_err: None,
+        });
+        let mut resp = Vec::new();
+        assert!(!handle_ota_ab_command(
+            Some(&mut svc),
+            &req02(128, &[0xABu8; 128]),
+            &mut resp
+        ));
+        let write_resp = core::str::from_utf8(&resp).unwrap().to_owned();
+        // 策略门拒绝（降级版本 → Rejected 静态臂）。
+        let mut svc = svc_with(FaultOta {
+            prepare_err: None,
+            write_err: None,
+            verify_err: None,
+        });
+        let mut req = req02(128, &[0xABu8; 128]);
+        req[4] = 0x02;
+        req[5..10].copy_from_slice(b"1.0.0"); // == current → downgrade-or-equal
+        let mut resp = Vec::new();
+        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        let policy_resp = core::str::from_utf8(&resp).unwrap().to_owned();
+        assert_eq!(
+            cap_resp,
+            "ERR:ota:prepare-failed:image-too-large:10485760>1048576"
+        );
+        assert_eq!(write_resp, "ERR:ota:write-failed:65536");
+        assert_eq!(policy_resp, "ERR:rejected:downgrade-or-equal-version");
+        assert_ne!(cap_resp, write_resp);
+        assert_ne!(cap_resp, policy_resp);
+        assert_ne!(write_resp, policy_resp);
+    }
+
+    /// t38：最长错误串 ≤ 单帧回执可用上界（MR_REPLY_MAX_WORDS×8 =
+    /// 112B；69.1 I3 单源常量——施工前实测的回执预算锁）。**经真实
+    /// wire 路径产出**最坏形态（双 u64::MAX），格式串膨胀即本测红
+    /// （变异靶 3 的牙；自抄字面算长度无牙，故走 handle_ota_ab_command）。
+    #[test]
+    fn t38_error_string_fits_receipt_budget() {
+        const BUDGET: usize = eneros_agent_sdk::MR_REPLY_MAX_WORDS * 8;
+        assert_eq!(BUDGET, 112);
+        let mut svc = svc_with(FaultOta {
+            prepare_err: Some(OtaError::ImageTooLarge {
+                image_size: u64::MAX,
+                partition_capacity: u64::MAX,
+            }),
+            write_err: None,
+            verify_err: None,
+        });
+        let mut resp = Vec::new();
+        assert!(!handle_ota_ab_command(
+            Some(&mut svc),
+            &req02(128, &[0u8; 8]),
+            &mut resp
+        ));
+        assert_eq!(resp.first(), Some(&b'E'));
+        let full_len = resp.len();
+        assert!(
+            full_len <= BUDGET,
+            "最长错误串 {}（{full_len}B）超出单帧回执预算 {BUDGET}B（格式串膨胀即截断/丢字）",
+            core::str::from_utf8(&resp).unwrap_or("?")
+        );
+    }
+
+    /// t39：错误串不泄密——不含 root key / 65B 公钥的任何 4 字节窗口
+    /// （原始字节与 hex 两形态；Z3 检查的回归锁）。
+    #[test]
+    fn t39_error_string_leaks_no_key_material() {
+        // 确定性伪随机 key/公钥（真实密钥不入仓——测试用模式字节）。
+        let mut key = [0u8; 64];
+        let mut x = 0x1234_5678u32;
+        for b in key.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *b = (x >> 24) as u8;
+        }
+        let mut pubkey = [0u8; 65];
+        pubkey[0] = 0x04;
+        pubkey[1..].copy_from_slice(&key);
+        let candidates = [
+            "prepare-failed:image-too-large:10485760>1048576",
+            "write-failed:65536",
+            "verify-failed:sm3-hash-mismatch",
+            "verify-failed:sm2-signature-invalid",
+            "prepare-failed:DowngradeRejected",
+        ];
+        for s in candidates {
+            assert!(s.is_ascii(), "诊断串须为 ASCII（可打印几何/类别量）: {s}");
+            for win in key.windows(4).chain(pubkey.windows(4)) {
+                assert!(
+                    !s.as_bytes().windows(4).any(|w| w == win),
+                    "诊断串 {s} 泄露密钥窗口 {win:02x?}"
+                );
+                let hex_win: String = win.iter().map(|b| format!("{b:02x}")).collect();
+                assert!(
+                    !s.contains(&hex_win),
+                    "诊断串 {s} 泄露密钥 hex 窗口 {hex_win}"
+                );
+            }
+        }
+    }
+}
+
+/// 69.5（WP-69.5.2 变异靶 1 反向锁）：生产块大小**单源守卫**——svc-ota
+/// bin 挂载 EipcBlockDevice 必须引用 ota-ab 共享常量（OTA_PROD_BLOCK_SIZE
+/// / DATA_DISK_BLOCKS），不得回退手抄字面（字面复现 = 第三个口径源
+/// 复活，容量口径三处一致破坏 → 本测红）。与能量侧 ea_display_guard
+/// 同款源文本守卫先例。
+#[cfg(test)]
+mod svc_ota_source_guard {
+    #[test]
+    fn svc_ota_block_size_uses_shared_constants() {
+        let src = include_str!("bin/svc-ota.rs");
+        assert!(
+            src.contains("OTA_PROD_BLOCK_SIZE"),
+            "svc-ota 须引用 ota-ab::OTA_PROD_BLOCK_SIZE 单源常量（容量口径三处一致）"
+        );
+        assert!(
+            src.contains("DATA_DISK_BLOCKS"),
+            "svc-ota 整盘块数须引用 ota-ab::DATA_DISK_BLOCKS"
+        );
+        assert!(
+            !src.contains("EipcBlockDevice::new(io, 512"),
+            "手抄块大小字面回归（第三口径源复活）"
+        );
+        assert!(
+            !src.contains("32768"),
+            "手抄整盘块数字面回归（应引用 DATA_DISK_BLOCKS）"
+        );
     }
 }

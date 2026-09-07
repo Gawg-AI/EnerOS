@@ -81,7 +81,13 @@ pub enum MigrateError {
 pub struct KernelOta<D: BlockDevice> {
     /// 底层 A/B 分区 OTA 管理器
     ab: AbPartitionOta<D>,
-    /// 分区容量（字节）
+    /// 分区容量（字节）——69.5（WP-69.5.4）：**派生**自
+    /// `AbPartitionOta::slot_cap_bytes(设备 block_size())`（与 ab_partition
+    /// 双门同一函数），不再接受构造器注入的裸 u64——注入式容量意味着
+    /// 装配方传错一个数字整个容量门形同虚设而编译器不发声（§2.5 双源
+    /// 缺陷的 locality 收口；全仓构造点普查=仅本 crate 测试，且传值
+    /// `PARTITION_BLOCKS × 512` 与派生一致，故按卷册步骤 2 走"删除注入"
+    /// 分支）。
     partition_capacity: u64,
     /// 分区表认证密钥（33 SE-18：与 OTA root_key 同源派生注入）。
     table_hmac_key: [u8; 32],
@@ -93,21 +99,24 @@ impl<D: BlockDevice> KernelOta<D> {
     /// - `device`：后端块设备
     /// - `root_key`：设备根公钥（SM2 验签）
     /// - `now_ms`：当前时间戳（毫秒）
-    /// - `partition_capacity`：单分区容量（字节）
     /// - `device_root_secret`：设备根密钥（与 `root_key` 同源）。33 SE-18 复验：
     ///   旧实现 `table_hmac_key` 由调用方直传，全仓调用点均传公开常量
     ///   `[0x42; 32]`——分区表认证密钥在所有执行路径为公开常量、可伪造。
     ///   现于构造器内派生 `table_hmac_key = HMAC-SM3(root_secret, 域常量)`，
     ///   密钥不再可经参数直传常量。
+    ///
+    /// 69.5（WP-69.5.4）：`partition_capacity` 形参删除——容量改由设备
+    /// 几何派生（`slot_cap_bytes` 单源），与 `AbPartitionOta` 的写面/
+    /// 声明面双门同源。
     pub fn new(
         device: D,
         root_key: eneros_crypto::Sm2PublicKey,
         now_ms: u64,
-        partition_capacity: u64,
         device_root_secret: [u8; 32],
     ) -> Self {
         const TABLE_KEY_DOMAIN: &[u8] = b"eneros-ota-partition-table-v1|";
         let table_hmac_key = eneros_crypto::hmac_sm3(&device_root_secret, TABLE_KEY_DOMAIN);
+        let partition_capacity = AbPartitionOta::<D>::slot_cap_bytes(device.block_size());
         Self {
             ab: AbPartitionOta::new(device, root_key, now_ms),
             partition_capacity,
@@ -125,6 +134,19 @@ impl<D: BlockDevice> KernelOta<D> {
         &mut self.ab
     }
 
+    /// 69.5（WP-69.5.4）：镜像尺寸容量门单点（原 `update`/`hot_migrate`
+    /// 两处同款手抄收编——t40 锁两路调用同一方法；t41 锁错误变体字段
+    /// 与 `OtaError::ImageTooLarge` 名/序一致）。
+    fn check_capacity(&self, image_size: u64) -> Result<(), KernelOtaError> {
+        if image_size > self.partition_capacity {
+            return Err(KernelOtaError::ImageTooLarge {
+                image_size,
+                partition_capacity: self.partition_capacity,
+            });
+        }
+        Ok(())
+    }
+
     /// 执行内核 OTA（重启切换模式）。
     ///
     /// 流程：
@@ -137,14 +159,9 @@ impl<D: BlockDevice> KernelOta<D> {
     ///
     /// 调用后由外部触发 reboot，Bootloader 读取 BootConfig 切换分区。
     pub fn update(&mut self, image: &KernelImage, chunk_size: u32) -> Result<(), KernelOtaError> {
-        // 1. 检查镜像大小
+        // 1. 检查镜像大小（69.5：单点 check_capacity——两路判定合一）。
         let image_size = image.data.len() as u64;
-        if image_size > self.partition_capacity {
-            return Err(KernelOtaError::ImageTooLarge {
-                image_size,
-                partition_capacity: self.partition_capacity,
-            });
-        }
+        self.check_capacity(image_size)?;
 
         // 2. 构造升级元数据
         let total_chunks = (image_size as u32).div_ceil(chunk_size);
@@ -207,14 +224,9 @@ impl<D: BlockDevice> KernelOta<D> {
         chunk_size: u32,
         migrator: &mut dyn HotMigrate,
     ) -> Result<(), KernelOtaError> {
-        // 1. 检查镜像大小
+        // 1. 检查镜像大小（69.5：单点 check_capacity——两路判定合一）。
         let image_size = image.data.len() as u64;
-        if image_size > self.partition_capacity {
-            return Err(KernelOtaError::ImageTooLarge {
-                image_size,
-                partition_capacity: self.partition_capacity,
-            });
-        }
+        self.check_capacity(image_size)?;
 
         // 2. 写入备用分区
         let total_chunks = (image_size as u32).div_ceil(chunk_size);
@@ -324,6 +336,8 @@ pub trait HotMigrate {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_macros)] // 测试断言 panic!（mgmt-cli 先例）
+
     use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair};
     use eneros_storage::MockBlockDevice;
 
@@ -332,7 +346,8 @@ mod tests {
 
     /// 设备总块数：保留块 + 双分区。
     const TEST_BLOCKS: u64 = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
-    /// 测试分区容量（字节）
+    /// 测试分区容量（字节，bs=512 设备）——69.5 起仅作派生期望值的对照
+    /// 锚（构造器不再接受注入；`setup` 断言派生值与本锚一致）。
     const TEST_CAPACITY: u64 = PARTITION_BLOCKS * 512;
     /// 33 SE-18（复验）：测试用设备根密钥（KernelOta::new 内派生分区表 HMAC 密钥，
     /// 密钥不再直传常量）。
@@ -342,7 +357,7 @@ mod tests {
         let mut rng = CsRng::new();
         let kp = Sm2KeyPair::generate(&mut rng).expect("密钥对生成失败");
         let dev = MockBlockDevice::new(TEST_BLOCKS, 512);
-        let ota = KernelOta::new(dev, kp.public_key, 1_000, TEST_CAPACITY, TEST_ROOT_SECRET);
+        let ota = KernelOta::new(dev, kp.public_key, 1_000, TEST_ROOT_SECRET);
         (ota, kp, rng)
     }
 
@@ -395,6 +410,76 @@ mod tests {
         assert!(matches!(err, KernelOtaError::ImageTooLarge { .. }));
         // 活动分区不变
         assert_eq!(ota.get_active(), PartitionSlot::A);
+    }
+
+    /// 69.5（WP-69.5.4 t40）：两路容量判定对同一 image_size 给出**相同**
+    /// 结果——`update` 与 `hot_migrate` 均经单点 `check_capacity`（本测
+    /// 锁的就是"两处调用同一方法"）。变异靶：只删 update 侧的门（或只
+    /// 删 hot_migrate 侧）→ 被删一路落到 `Ota(OtaError::ImageTooLarge)`
+    /// （ab 双门兜底）而非 `KernelOtaError::ImageTooLarge` → 本测红。
+    #[test]
+    fn t40_kernel_ota_capacity_single_source() {
+        let (mut ota, kp, mut rng) = setup();
+        // 派生容量与 512B 块几何锚一致（构造器派生口径锁定）。
+        assert_eq!(
+            ota.partition_capacity, TEST_CAPACITY,
+            "容量必须派生自设备几何（PARTITION_BLOCKS × bs）"
+        );
+        let oversized = (TEST_CAPACITY + 1) as usize;
+        let image = make_kernel_image(&kp, &mut rng, oversized, "0.163.0");
+        let image2 = make_kernel_image(&kp, &mut rng, oversized, "0.163.1");
+        let err_update = ota.update(&image, 512).expect_err("update 应拒超大镜像");
+        let err_migrate = ota
+            .hot_migrate(&image2, 512, &mut MockMigrator::new())
+            .expect_err("hot_migrate 应拒同一超大镜像");
+        let (s1, c1) = match err_update {
+            KernelOtaError::ImageTooLarge {
+                image_size,
+                partition_capacity,
+            } => (image_size, partition_capacity),
+            other => panic!("update 应出 KernelOtaError::ImageTooLarge，得 {other:?}"),
+        };
+        let (s2, c2) = match err_migrate {
+            KernelOtaError::ImageTooLarge {
+                image_size,
+                partition_capacity,
+            } => (image_size, partition_capacity),
+            other => panic!("hot_migrate 应出 KernelOtaError::ImageTooLarge，得 {other:?}"),
+        };
+        assert_eq!((s1, c1), (s2, c2), "两路判定必须同源同结果");
+        assert_eq!(s1, oversized as u64);
+        assert_eq!(c1, TEST_CAPACITY);
+    }
+
+    /// 69.5（WP-69.5.4 t41）：两个 `ImageTooLarge` 变体字段名/序一致性锁
+    /// ——具名字段解构（改名/换序/加字段 → 编译期红；值一致 → 运行期红）。
+    /// 两条 OTA 路径的公开错误面**不合并类型**（波及全部 match 点），
+    /// 只锁字段级对齐。
+    #[test]
+    fn t41_image_too_large_variants_have_identical_fields() {
+        let o = OtaError::ImageTooLarge {
+            image_size: 1048577,
+            partition_capacity: 1048576,
+        };
+        let OtaError::ImageTooLarge {
+            image_size: os,
+            partition_capacity: oc,
+        } = o
+        else {
+            panic!("unreachable");
+        };
+        let k = KernelOtaError::ImageTooLarge {
+            image_size: 1048577,
+            partition_capacity: 1048576,
+        };
+        let KernelOtaError::ImageTooLarge {
+            image_size: ks,
+            partition_capacity: kc,
+        } = k
+        else {
+            panic!("unreachable");
+        };
+        assert_eq!((os, oc), (ks, kc));
     }
 
     /// KOT3：签名无效拒绝。

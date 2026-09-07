@@ -735,6 +735,14 @@ pub fn run_ipc_loop(
                 }
             }
         }
+        // 蓝图 69 卷 69.5（WP-69.5.1）：只读观测探针（period 25/offset 8
+        // 与 ControlChain 错峰；服务未 spawn 时自然 no-op——handle 缺失
+        // 即跳过，与 HangInject 同款装配容错）。
+        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::DegradeObserve, orch.tick) {
+            if let Some(h) = handles.iter().find(|h| h.name == "svc-ai-worker") {
+                degrade_observe_tick(h.ep, &mut orch.chain_epoch);
+            }
+        }
         // 47（WP-47.1 Exit 编排驱动）→ 蓝图 62 卷 62.2（WP-62.2.1 接线表
         // 单源 + D-1 修复）：协议服务 EXECUTE 编排驱动——驱动名单/周期/
         // 错峰相位全部来自 wiring::SERVICE_WIRING 的 driven 登记（svc-iec104
@@ -1498,6 +1506,29 @@ fn control_chain_tick(
         "control chain driver requires sel4-eipc feature",
     ))
 }
+
+/// 蓝图 69 卷 69.5（WP-69.5.1）：降级/学习**只读**观测探针——对
+/// svc-ai-worker 连发 5 次 `AI_DEGRADE_OBSERVE(0x22)`（QEMU Q5 只读性
+/// 判据的「连发 5 次」；`DEGRADE-OBS` 串口行由 svc-ai-worker 处理时落，
+/// root 不解析不转发不打印——词形零新增，观测对决策链零接触）。线码
+/// 单源 agent-sdk::ai_relay（与 svc-ai-worker 同取一处）。
+#[cfg(all(target_os = "none", feature = "sel4-eipc"))]
+fn degrade_observe_tick(ai_ep: u64, epoch: &mut u64) {
+    use eneros_agent_sdk::ai_relay::AI_DEGRADE_OBSERVE;
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
+        "root-orchestrator",
+        ai_ep,
+        epoch,
+    );
+    for _ in 0..5u8 {
+        // 只读：传输失败静默（观测不可用不得反噬决策链）。
+        let _ = endpoint.call("svc-ai-worker", &[AI_DEGRADE_OBSERVE]);
+    }
+}
+
+/// host/无 sel4-eipc 构建占位（观测探针不可用——同 control_chain_tick 门控）。
+#[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]
+fn degrade_observe_tick(_ai_ep: u64, _epoch: &mut u64) {}
 
 /// host/无 sel4-eipc 构建的占位（存储探针不可用——如实报错，不伪造）。
 #[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]

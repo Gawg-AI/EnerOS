@@ -73,6 +73,21 @@ pub const DATA_SNAP_BLOCKS: u64 = 512;
 /// RegionScope 之下的寻址上界，非让渡语义；访问仍被区段钳制）。
 pub const DATA_DISK_BLOCKS: u64 = 32768;
 
+/// 蓝图 69 卷 69.5（WP-69.5.2 裁决 A+C）：**生产** svc-ota 挂载 OTA A/B
+/// 时的设备块大小（字节）——单源常量，`svc-ota` bin 与容量口径锁测试
+/// **都引用本值**（此前 512 是 svc-ota.rs:82 的手抄字面，configs/ota.toml
+/// ⑧ 又按 chunk_size=64 KiB 心算容量，三个源互不知晓：生产单槽容量实为
+/// `PARTITION_BLOCKS × 512 = 1 MiB`，与"10 MiB 性能基线"文档口径差
+/// 128 倍且无机械信号）。
+///
+/// Z15 纪律：本值与 [`DATA_DISK_BLOCKS`] 的块号语义按 512 B 块绑定
+/// （TSDB/审计/事件/事实/快照各区段基址均按 512B 块计）——**改本值等价
+/// 改盘上几何**，须 owner 裁决 + 独立迁移方案，不属调参旋钮。
+/// `production_slot_capacity_matches_documented_baseline` 测试锁
+/// 「本常量 × [`PARTITION_BLOCKS`] ≥ configs/ota.toml ③ 声明的性能基线
+/// 镜像尺寸」三处一致。
+pub const OTA_PROD_BLOCK_SIZE: usize = 512;
+
 /// 数据盘区段角色（布局类型化，SPEC-B/C 2026-08-28：`×512` 字节换算收进
 /// 唯一 accessor，消灭消费端散抄魔数；常量数值逐字节不变）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,12 +269,14 @@ impl<D: BlockDevice> AbPartitionOta<D> {
     /// 自身寻址中以设备块计（`SLOT_B_BASE = SLOT_A_BASE + PARTITION_
     /// BLOCKS`；生产设备 bs=512 ⇒ 1 MiB，integration 大块 mock 同式自洽）。
     /// 68 三轮复查（REG-OTA-SLOT-OVERWRITE）：AbPartitionOta 挂载的设备
-    /// 是整数据盘（svc-ota `EipcBlockDevice::new(io, 512, 32768)`），无
-    /// 槽容量域检时越槽写物理落入槽后块——保护带 → TSDB/审计/学习/事件/
-    /// 事实/快照区段（同盘静默损毁），且自洽超长镜像回读自洽可过
-    /// verify+activate。写面（write_bytes 硬界）与声明面（prepare 早门）
-    /// 双门封闭。
-    fn slot_cap_bytes(bs: usize) -> u64 {
+    /// 是整数据盘（svc-ota `EipcBlockDevice::new(io, OTA_PROD_BLOCK_SIZE,
+    /// DATA_DISK_BLOCKS)`），无槽容量域检时越槽写物理落入槽后块——保护
+    /// 带 → TSDB/审计/学习/事件/事实/快照区段（同盘静默损毁），且自洽
+    /// 超长镜像回读自洽可过 verify+activate。写面（write_bytes 硬界）与
+    /// 声明面（prepare 早门）双门封闭。
+    /// 69.5（WP-69.5.4）：pub(crate)——`KernelOta` 容量改派生（与本法
+    /// 同一函数，删除注入式裸 u64 的第二口径源）。
+    pub(crate) fn slot_cap_bytes(bs: usize) -> u64 {
         PARTITION_BLOCKS * bs as u64
     }
 
@@ -336,8 +353,8 @@ impl<D: BlockDevice> OtaManager for AbPartitionOta<D> {
         let cap = Self::slot_cap_bytes(self.device.block_size());
         if meta.image_size > cap {
             return Err(OtaError::ImageTooLarge {
-                size: meta.image_size,
-                cap,
+                image_size: meta.image_size,
+                partition_capacity: cap,
             });
         }
         // 选非激活分区（允许在 Failed/Empty/Verified 上重新发起，支持失败重试）
@@ -734,11 +751,76 @@ mod tests {
         assert_eq!(
             ota.prepare_upgrade(meta),
             Err(OtaError::ImageTooLarge {
-                size: cap + 512,
-                cap,
+                image_size: cap + 512,
+                partition_capacity: cap,
             }),
             "声明尺寸超槽容量必须在 prepare 拒绝（写面另有硬界）"
         );
+    }
+
+    // ---- 69.5（WP-69.5.2 裁决 A+C）：容量口径单源锁 --------------------
+
+    /// 容量口径**文档一致性锁**（变异靶 3 的牙；出口清单第 4 项的机械
+    /// 锚）：configs/ota.toml ③⑥⑧ 订正后的关键文字逐条锁定——撤回 ⑧
+    /// 订正（恢复 chunk/block 混淆心算）或改掉 ③ 的 1 MiB 裁决口径 →
+    /// 本测红（与 production_slot_capacity_matches_documented_baseline
+    /// 组成"文字 ↔ 常量 ↔ 断言"三处一致的文字侧）。
+    #[test]
+    fn ota_toml_capacity_caliber_doc_locked() {
+        let toml = include_str!("../../../../configs/ota.toml");
+        // ③：生产实际口径 + 裁决基线（旧"当前性能基线 10 MiB"表述须消失）。
+        assert!(
+            toml.contains("2048 × 512 B ="),
+            "③ 须写明生产实际容量 = 2048 × 512 B"
+        );
+        assert!(toml.contains("≤ 1 MiB"), "③ 性能基线须如实化为 ≤ 1 MiB");
+        assert!(
+            !toml.contains("当前性能"),
+            "③ 旧「当前性能基线 10 MiB 镜像」表述须已订正"
+        );
+        // ⑥：生产后端块大小注记 + 单源常量指向（公式本身不动）。
+        assert!(toml.contains("OTA_PROD_BLOCK_SIZE"), "⑥ 须指向单源常量");
+        assert!(toml.contains("512 B"), "⑥ 须注明生产后端 = 512 B");
+        // ⑧：chunk_size 与设备块大小两个量的区分（混淆心算在位即红）。
+        assert!(
+            toml.contains("不是**设备块大小"),
+            "⑧ 须明确 chunk_size ≠ 设备块大小（容量按 ⑥ block_size 算）"
+        );
+        assert!(
+            !toml.contains("10 MiB 镜像 = 160 块。"),
+            "⑧ 旧混淆心算句须已订正"
+        );
+    }
+
+    /// configs/ota.toml ③ 声明的性能基线镜像尺寸（69.5 裁决 A-1：基线按
+    /// 生产实际口径如实化为 1 MiB——生产单槽容量 = PARTITION_BLOCKS ×
+    /// OTA_PROD_BLOCK_SIZE = 1 MiB；原「10 MiB 基线」在当前盘上几何下
+    /// 不成立，>1 MiB 镜像能力须 owner 裁决 + 盘上迁移方案（Z15））。
+    const BASELINE_IMAGE_BYTES: u64 = 1024 * 1024;
+
+    /// 容量口径单源锁（WP-69.5.2 的牙）：configs/ota.toml ③「单分区容量
+    /// ≥ 最大镜像尺寸」此前只活在文档心算里（⑧ 把 chunk_size 当
+    /// block_size，隐含 64 KiB 块 ⇒ 心算自洽 128 MiB），而生产 svc-ota
+    /// 以 512 B 块实例化 ⇒ 实际容量 1 MiB，差 128 倍且无机械信号。本锁
+    /// 把「生产块大小」（[`OTA_PROD_BLOCK_SIZE`] 单源常量，svc-ota bin
+    /// 同引用）与「声明的基线镜像尺寸」绑成一处可执行断言——文档 ③⑥⑧
+    /// / 常量 / 断言三者任一漂移即红。
+    /// 变异靶 1（把常量改成 65536 假装生产是大块）→ 末行 512 语义锚红 +
+    /// svc-ota 实例化行为连带改变（bin 侧另有源文本守卫锁引用关系）。
+    #[test]
+    fn production_slot_capacity_matches_documented_baseline() {
+        let cap = AbPartitionOta::<MockBlockDevice>::slot_cap_bytes(OTA_PROD_BLOCK_SIZE);
+        assert_eq!(cap, PARTITION_BLOCKS * OTA_PROD_BLOCK_SIZE as u64);
+        assert!(
+            cap >= BASELINE_IMAGE_BYTES,
+            "生产单槽容量 {cap} B < 文档性能基线 {BASELINE_IMAGE_BYTES} B —— \
+             容量口径分歧（configs/ota.toml ③⑥⑧ 与 OTA_PROD_BLOCK_SIZE 不同源；\
+             Z15：改生产块大小须 owner 裁决 + 盘上迁移方案）"
+        );
+        // 512 B 语义锚：全部盘上常量（DATA_*_BASE_BLOCK 族）的块号语义
+        // 按 512 B 块绑定（Z15）——这不是"第二来源"，是把常量钉在盘上
+        // 几何纪律上的可执行锚（改常量而不改盘 = 本行红）。
+        assert_eq!(OTA_PROD_BLOCK_SIZE, 512);
     }
 }
 

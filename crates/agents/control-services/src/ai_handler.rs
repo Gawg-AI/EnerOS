@@ -35,7 +35,8 @@ use eneros_durable_state::PersistIo;
 use eneros_hex::encode_lower as hex_encode_lower;
 
 use crate::ai_worker::{
-    learn_wire, AiWorkerService, DecisionBackend, HeuristicBackend, AI_OK, AI_PROPOSE,
+    learn_wire, AiWorkerService, DecisionBackend, DegradeObservation, HeuristicBackend, AI_OK,
+    AI_PROPOSE,
 };
 use crate::learn::{DeadbandLearner, LearnOutcome};
 use crate::remote_brain::{PeerLink, PeerMsgVerdict, RemoteBrain, SwitchEvent};
@@ -82,6 +83,31 @@ impl<P: PeerLink> DegradeArmQuery for RemoteBrain<HeuristicBackend, P> {
     }
 }
 
+/// 蓝图 69 卷 69.5（WP-69.5.1）：降级/学习**只读**观测查询面。
+///
+/// 与 [`DegradeArmQuery`] 分立（不改既有 trait——订正 ⑧ 纪律：判据面
+/// 与观测面是两件事）；实现只允许装配既有量的只读投影
+/// （[`DegradeObservation`]），**不得**在此面引入任何 setter/写路径
+/// （Z3/Z5/Z2）。计数器字段（applies/frozen_skips）由持有 learn 的
+/// [`AiTickHandler`] 装配时填入——本面回 0 值占位。
+pub trait DegradeObserveQuery {
+    /// 只读快照（`now_ms` 仅用于既有 `degradation_lease_expired` 判定
+    /// 的透传；本方法自身不改任何状态）。
+    fn degrade_observation(&self, now_ms: u64) -> DegradeObservation;
+}
+
+impl DegradeObserveQuery for HeuristicBackend {
+    fn degrade_observation(&self, now_ms: u64) -> DegradeObservation {
+        HeuristicBackend::degrade_observation(self, now_ms)
+    }
+}
+
+impl<P: PeerLink> DegradeObserveQuery for RemoteBrain<HeuristicBackend, P> {
+    fn degrade_observation(&self, now_ms: u64) -> DegradeObservation {
+        self.local().degrade_observation(now_ms)
+    }
+}
+
 /// tick 留痕钩子（remote 与 heuristic-only 的行为差异收窄点）。
 pub trait TickAudit<B: DecisionBackend> {
     /// propose 成功（AI_OK）后的决策留痕：切换事件/路径标记入审计链
@@ -117,6 +143,27 @@ pub(crate) fn log_ai_decision(audit: &mut DecisionAudit, intent: &str, lp: &str,
         audit.chain_state().entry_count,
         audit.dropped_count()
     );
+}
+
+/// 蓝图 69 卷 69.5（WP-69.5.1）：`DEGRADE-OBS` 串口行**纯函数**（词形
+/// 单点——`degrade_observe` 只负责装配快照与落盘输出；t30b 饱和语义
+/// 锁的测试锚：`expires_in_ms` 用 saturating 减，到期后必须为 0 而非
+/// 回绕巨大值——观测行的数字供词形基线脚本解析，负数/巨大值即假证）。
+fn degrade_obs_line(obs: &DegradeObservation, now_ms: u64) -> alloc::string::String {
+    alloc::format!(
+        "[svc-ai-worker] DEGRADE-OBS armed={} expired={} level={} lease={} uses={}/{} expires_in_ms={} deadband=({:.6},{:.6}) applies={} frozen_skips={}",
+        if obs.armed { "true" } else { "false" },
+        if obs.expired { "true" } else { "false" },
+        obs.level,
+        hex_encode_lower(&obs.lease_id[..8]),
+        obs.uses_left,
+        obs.uses_max,
+        obs.expires_at_ms.saturating_sub(now_ms),
+        obs.charge_soc,
+        obs.discharge_soc,
+        obs.deadband_applies,
+        obs.deadband_frozen_skips,
+    )
 }
 
 /// 纯启发式路径留痕（固定 sys1 标记——词形保留自旧 bin）。
@@ -269,11 +316,18 @@ pub struct AiTickHandler<'a, B: DecisionBackend, Io: PersistIo, A: TickAudit<B>>
     audit: A,
     /// SPEC-E WP-E.3：学习器（闸/授予任一不满足 ⇒ None=出厂行为）。
     learn: Option<DeadbandLearner<Io>>,
+    /// 蓝图 69 卷 69.5（WP-69.5.1）：自启动以来成功注入死区的次数
+    /// （观测计数——saturating：观测面读到 MAX 比回绕成小值更诚实，
+    /// 计数不参与任何判定）。
+    deadband_applies: u32,
+    /// 自启动以来武装期冻结跳过次数（注入早退 + 复位拒绝两处；观测
+    /// 计数，同 saturating 纪律）。
+    deadband_frozen_skips: u32,
 }
 
 impl<'a, B, Io, A> AiTickHandler<'a, B, Io, A>
 where
-    B: DecisionBackend + DeadbandTarget + DegradeArmQuery,
+    B: DecisionBackend + DeadbandTarget + DegradeArmQuery + DegradeObserveQuery,
     Io: PersistIo,
     A: TickAudit<B>,
 {
@@ -287,6 +341,8 @@ where
             worker,
             audit,
             learn,
+            deadband_applies: 0,
+            deadband_frozen_skips: 0,
         }
     }
 
@@ -299,10 +355,16 @@ where
             return;
         };
         if self.worker.backend_mut().is_degradation_armed() {
+            // 69.5（WP-69.5.1）：武装期冻结跳过留痕（观测计数；本分支
+            // 结构原样保留——与 learn_reset 拒绝分支守不同动作，订正 ⑧）。
+            self.deadband_frozen_skips = self.deadband_frozen_skips.saturating_add(1);
             return;
         }
         let (charge, discharge) = l.thresholds();
         self.worker.backend_mut().apply_deadband(charge, discharge);
+        // 69.5（WP-69.5.1）：成功注入计数（观测面；学习闭环"自启动以来
+        // 被学习改动 N 次"的读出根）。
+        self.deadband_applies = self.deadband_applies.saturating_add(1);
     }
 
     /// SPEC-E WP-E.3（decide 后）：以本帧受信 SOC 观测学习（阈值下一
@@ -364,6 +426,10 @@ where
         // 漂移 ⇒ lease 白名单失配 ⇒ System1 断供（与 apply_learn_thresholds
         // 冻结同判据同理由；附加裁决 8 防线的注入点补口）。
         if self.worker.backend_mut().is_degradation_armed() {
+            // 69.5（WP-69.5.1）：复位拒绝同属"武装期冻结跳过"（观测计数；
+            // 本 if 与 apply_learn_thresholds 的早退守不同动作、行为本就
+            // 不同——拒绝还要回 AI_LEARN_RESET,1 回执，不得合并，订正 ⑧）。
+            self.deadband_frozen_skips = self.deadband_frozen_skips.saturating_add(1);
             eneros_runtime::println!(
                 "[svc-ai-worker] LEARN-RESET REJECTED reason=degrade-armed —— 武装期死区冻结（digest 漂移防线），peer 恢复后可复位"
             );
@@ -399,11 +465,46 @@ where
             }
         }
     }
+
+    /// 蓝图 69 卷 69.5（WP-69.5.1）：DEGRADE-OBSERVE 只读观测处理——
+    /// 装配快照（后端既有量 + 本 handler 计数器）→ 串口 `DEGRADE-OBS`
+    /// 行 + 68B 定长响应。**只读纪律**：本方法不改任何状态（计数器只在
+    /// 注入/冻结路径推进，本路径零接触——t31/Q5 的对象）。
+    ///
+    /// 词形（Z2，随卷 69.5 登记基线）：
+    /// `[svc-ai-worker] DEGRADE-OBS armed={} expired={} level={} lease={}
+    /// uses={}/{} expires_in_ms={} deadband=({},{}) applies={} frozen_skips={}`
+    /// - `lease` = lease_id 前 8 字节 hex（武装时刻 u128 LE 的高对账半段；
+    ///   16 字节全打超行预算）。未武装 = 全 0 hex——不打非数字占位
+    ///   （词形基线脚本按 token 解析）；
+    /// - `expires_in_ms` = saturating 减（不得负数/回绕）；
+    /// - `uses` = 剩余/总额度。
+    fn degrade_observe(&mut self, resp: &mut Vec<u8>, now_ms: u64) {
+        let mut obs = self.worker.backend_mut().degrade_observation(now_ms);
+        obs.deadband_applies = self.deadband_applies;
+        obs.deadband_frozen_skips = self.deadband_frozen_skips;
+        eneros_runtime::println!("{}", degrade_obs_line(&obs, now_ms));
+        resp.clear();
+        resp.push(learn_wire::AI_DEGRADE_OBSERVE);
+        resp.push(u8::from(obs.armed));
+        resp.push(u8::from(obs.expired));
+        resp.push(obs.level);
+        resp.extend_from_slice(&obs.lease_id);
+        resp.extend_from_slice(&obs.issued_at_ms.to_le_bytes());
+        resp.extend_from_slice(&obs.expires_at_ms.to_le_bytes());
+        resp.extend_from_slice(&obs.uses_max.to_le_bytes());
+        resp.extend_from_slice(&obs.uses_left.to_le_bytes());
+        resp.extend_from_slice(&obs.charge_soc.to_le_bytes());
+        resp.extend_from_slice(&obs.discharge_soc.to_le_bytes());
+        resp.extend_from_slice(&obs.deadband_applies.to_le_bytes());
+        resp.extend_from_slice(&obs.deadband_frozen_skips.to_le_bytes());
+        debug_assert_eq!(resp.len(), learn_wire::DEGRADE_OBS_WIRE_LEN);
+    }
 }
 
 impl<B, Io, A> ControlServiceHandler for AiTickHandler<'_, B, Io, A>
 where
-    B: DecisionBackend + DeadbandTarget + DegradeArmQuery,
+    B: DecisionBackend + DeadbandTarget + DegradeArmQuery + DegradeObserveQuery,
     Io: PersistIo,
     A: TickAudit<B>,
 {
@@ -429,6 +530,12 @@ where
             }
             Some(&learn_wire::AI_LEARN_RESET) => {
                 self.learn_reset(resp);
+                true
+            }
+            // 69.5（WP-69.5.1）：只读观测——只产生响应，不改任何状态
+            // （默认臂 0xFF 兜底行为不变，TickAudit::on_other doc 承诺）。
+            Some(&learn_wire::AI_DEGRADE_OBSERVE) => {
+                self.degrade_observe(resp, now_ms);
                 true
             }
             _ => {
@@ -989,5 +1096,337 @@ mod tests {
         //（若复位得逞：白名单失配 → Unavailable）。
         assert!(handler.handle(&propose_req(0.52), &mut resp, 7_000));
         assert_eq!(resp.first(), Some(&AI_OK), "武装期复位被拒后兜底须照常产出");
+    }
+
+    // ========================================================================
+    // 蓝图 69 卷 69.5（WP-69.5.1）：只读观测窗 t30-t35
+    // ========================================================================
+
+    /// DEGRADE-OBSERVE 68B 定长响应解码（测试面；字节布局见
+    /// `learn_wire::DEGRADE_OBS_WIRE_LEN` 注记）。
+    struct ObsWire {
+        armed: bool,
+        expired: bool,
+        level: u8,
+        lease_id: [u8; 16],
+        issued_at_ms: u64,
+        expires_at_ms: u64,
+        uses_max: u32,
+        uses_left: u32,
+        charge_soc: f64,
+        discharge_soc: f64,
+        deadband_applies: u32,
+        deadband_frozen_skips: u32,
+    }
+
+    fn decode_obs(resp: &[u8]) -> ObsWire {
+        #![allow(clippy::disallowed_macros)]
+        assert_eq!(resp.len(), learn_wire::DEGRADE_OBS_WIRE_LEN, "{resp:?}");
+        assert_eq!(resp[0], learn_wire::AI_DEGRADE_OBSERVE);
+        let arr = <&[u8; 16]>::try_from(&resp[4..20]).expect("lease_id");
+        let f64_at = |off: usize| f64::from_le_bytes(resp[off..off + 8].try_into().expect("f64"));
+        ObsWire {
+            armed: resp[1] != 0,
+            expired: resp[2] != 0,
+            level: resp[3],
+            lease_id: *arr,
+            issued_at_ms: u64::from_le_bytes(resp[20..28].try_into().expect("u64")),
+            expires_at_ms: u64::from_le_bytes(resp[28..36].try_into().expect("u64")),
+            uses_max: u32::from_le_bytes(resp[36..40].try_into().expect("u32")),
+            uses_left: u32::from_le_bytes(resp[40..44].try_into().expect("u32")),
+            charge_soc: f64_at(44),
+            discharge_soc: f64_at(52),
+            deadband_applies: u32::from_le_bytes(resp[60..64].try_into().expect("u32")),
+            deadband_frozen_skips: u32::from_le_bytes(resp[64..68].try_into().expect("u32")),
+        }
+    }
+
+    /// t30：武装后读快照——lease 字段与签发 lease 逐字段相等（WP-69.5.1
+    /// 步骤 5；M2 四行确认表的 host 层化身）。变异靶：字段错配/残值/
+    /// saturating 换回绕减 → 本测红。
+    #[test]
+    fn t30_degrade_observe_reports_armed_lease_fields() {
+        struct NullLink;
+        impl PeerLink for NullLink {
+            fn send_request(&mut self, _req_json: &str) -> Result<(), LinkError> {
+                Ok(())
+            }
+        }
+        let cfg = RemoteBrainConfig {
+            timeout_ms: 2_000,
+            unhealthy_after: 3,
+            probe_every: 1,
+            max_power_kw: 10.0,
+            ttl_secs: 60,
+            lease_key: [0x5Bu8; 32],
+            lease_ttl_secs: 3_600,
+        };
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let brain = RemoteBrain::new(HeuristicBackend::new(), NullLink, cfg);
+        let mut worker = AiWorkerService::new(brain, [0x41; 16]);
+        let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            RemoteAudit { audit: &mut audit },
+            Some(learner),
+        );
+        let mut resp = Vec::new();
+        // tick1（锚定）/ tick2（超时裁决 → 武装 + 兜底授权记账 1 次）。
+        assert!(handler.handle(&propose_req(0.425), &mut resp, 1_000));
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 6_000));
+        assert_eq!(resp.first(), Some(&AI_OK));
+        resp.clear();
+        // 观测（6_100 < expires 3_606_000：未过期）。
+        assert!(handler.handle(&[learn_wire::AI_DEGRADE_OBSERVE], &mut resp, 6_100));
+        let o = decode_obs(&resp);
+        assert!(o.armed);
+        assert!(!o.expired);
+        assert_eq!(
+            o.lease_id,
+            6_000u128.to_le_bytes(),
+            "lease_id=武装时刻 u128 LE"
+        );
+        assert_eq!(o.level, 3, "SolverFallback = D3 码值");
+        assert_eq!(o.issued_at_ms, 6_000);
+        assert_eq!(o.expires_at_ms, 6_000 + 3_600 * 1_000);
+        assert_eq!(o.uses_max, crate::ai_worker::DEGRADE_LEASE_MAX_USES);
+        assert_eq!(o.uses_left, o.uses_max - 1, "tick2 兜底授权记账 1 次");
+        // 武装期注入冻结 ⇒ 后端死区保持出厂带（观测=实际生效值）。
+        assert!((o.charge_soc - 0.3).abs() < 1e-9);
+        assert!((o.discharge_soc - 0.5).abs() < 1e-9);
+        // tick1/tick2 均在武装前注入成功 ⇒ applies=2；尚未有冻结。
+        assert_eq!(o.deadband_applies, 2);
+        assert_eq!(o.deadband_frozen_skips, 0);
+    }
+
+    /// t30b（WP-69.5.1 变异靶 1 的牙）：`expires_in_ms` 饱和语义——
+    /// 已过期 lease 的观测行必须打 `expires_in_ms=0`（saturating 减），
+    /// 不得回绕成巨大值（词形数字供基线脚本解析，回绕即假证）。
+    #[test]
+    fn t30b_expires_in_ms_saturates_not_wraps() {
+        let obs = DegradeObservation {
+            armed: true,
+            expired: true,
+            lease_id: [1; 16],
+            level: 3,
+            issued_at_ms: 1_000,
+            expires_at_ms: 2_000,
+            uses_max: 5,
+            uses_left: 4,
+            charge_soc: 0.3,
+            discharge_soc: 0.5,
+            deadband_applies: 1,
+            deadband_frozen_skips: 0,
+        };
+        let line = degrade_obs_line(&obs, 9_000);
+        assert!(line.contains("expired=true"), "{line}");
+        assert!(line.contains("expires_in_ms=0"), "过期须饱和为 0: {line}");
+        assert!(
+            !line.contains("expires_in_ms=18"),
+            "不得出现无饱和回绕的巨大值: {line}"
+        );
+        // 未武装（全 0 快照）：expires_in_ms=0、uses=0/0、全零 lease hex
+        // ——词形基线的未武装形态锚（不打 N/A 类非数字占位）。
+        let unarmed = DegradeObservation {
+            armed: false,
+            expired: false,
+            lease_id: [0; 16],
+            level: 0,
+            issued_at_ms: 0,
+            expires_at_ms: 0,
+            uses_max: 0,
+            uses_left: 0,
+            charge_soc: 0.3,
+            discharge_soc: 0.5,
+            deadband_applies: 0,
+            deadband_frozen_skips: 0,
+        };
+        let line = degrade_obs_line(&unarmed, 1_000);
+        assert!(line.contains("lease=0000000000000000"), "{line}");
+        assert!(line.contains("uses=0/0"), "{line}");
+        assert!(line.contains("level=0"), "{line}");
+        assert!(line.contains("armed=false"), "{line}");
+    }
+
+    /// t31：观测是只读的——同刻连调两次，两次响应逐字节相同（含计数器
+    /// 与 armed；本卷防次生 BUG 的第一牙——观测面自己改状态是最易犯的
+    /// 错）。变异靶 2（观测路径顺手 +=1）→ 本测红。
+    #[test]
+    fn t31_degrade_observe_is_read_only() {
+        struct NullLink;
+        impl PeerLink for NullLink {
+            fn send_request(&mut self, _req_json: &str) -> Result<(), LinkError> {
+                Ok(())
+            }
+        }
+        let cfg = RemoteBrainConfig {
+            timeout_ms: 2_000,
+            unhealthy_after: 3,
+            probe_every: 1,
+            max_power_kw: 10.0,
+            ttl_secs: 60,
+            lease_key: [0x5Bu8; 32],
+            lease_ttl_secs: 3_600,
+        };
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let brain = RemoteBrain::new(HeuristicBackend::new(), NullLink, cfg);
+        let mut worker = AiWorkerService::new(brain, [0x41; 16]);
+        let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            RemoteAudit { audit: &mut audit },
+            Some(learner),
+        );
+        let mut resp = Vec::new();
+        assert!(handler.handle(&propose_req(0.425), &mut resp, 1_000));
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 6_000));
+        let mut r1 = Vec::new();
+        let mut r2 = Vec::new();
+        assert!(handler.handle(&[learn_wire::AI_DEGRADE_OBSERVE], &mut r1, 6_100));
+        assert!(handler.handle(&[learn_wire::AI_DEGRADE_OBSERVE], &mut r2, 6_100));
+        assert_eq!(r1, r2, "观测两次必须逐字节相同（只读性）");
+        let o1 = decode_obs(&r1);
+        let o2 = decode_obs(&r2);
+        assert_eq!(o1.deadband_applies, o2.deadband_applies);
+        assert_eq!(o1.deadband_frozen_skips, o2.deadband_frozen_skips);
+        assert_eq!(o1.armed, o2.armed);
+        assert_eq!(o1.uses_left, o2.uses_left, "观测不得消耗 lease 额度");
+    }
+
+    /// t32：非武装期注入计数——N 次 tick（learn 装配、未武装）⇒
+    /// `deadband_applies == N`。
+    #[test]
+    fn t32_deadband_apply_count_increments() {
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let mut worker = AiWorkerService::new(HeuristicBackend::new(), [0x41; 16]);
+        let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            HeuristicAudit { audit: &mut audit },
+            Some(learner),
+        );
+        let mut resp = Vec::new();
+        for (i, now) in [1_000u64, 2_000, 3_000].into_iter().enumerate() {
+            assert!(handler.handle(&propose_req(0.6), &mut resp, now));
+            resp.clear();
+            assert!(handler.handle(&[learn_wire::AI_DEGRADE_OBSERVE], &mut resp, now + 1));
+            let o = decode_obs(&resp);
+            assert_eq!(o.deadband_applies, (i + 1) as u32);
+            assert_eq!(o.deadband_frozen_skips, 0);
+            assert!(!o.armed);
+            resp.clear();
+        }
+    }
+
+    /// t33（本卷最重要的牙）：武装期 注入早退 + 复位拒绝 各计 1 次 ⇒
+    /// `deadband_frozen_skips == 2`，且复位**仍返回 AI_LEARN_RESET,1 拒绝
+    /// 回执**（证明只加观测、没改判定）。变异靶 3（删武装拒绝分支）/
+    /// 变异靶 4（合并两处 if 丢回执）→ 本测红。
+    #[test]
+    fn t33_deadband_frozen_skip_count_increments() {
+        struct NullLink;
+        impl PeerLink for NullLink {
+            fn send_request(&mut self, _req_json: &str) -> Result<(), LinkError> {
+                Ok(())
+            }
+        }
+        let cfg = RemoteBrainConfig {
+            timeout_ms: 2_000,
+            unhealthy_after: 3,
+            probe_every: 1,
+            max_power_kw: 10.0,
+            ttl_secs: 60,
+            lease_key: [0x5Bu8; 32],
+            lease_ttl_secs: 3_600,
+        };
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let brain = RemoteBrain::new(HeuristicBackend::new(), NullLink, cfg);
+        let mut worker = AiWorkerService::new(brain, [0x41; 16]);
+        let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            RemoteAudit { audit: &mut audit },
+            Some(learner),
+        );
+        let mut resp = Vec::new();
+        assert!(handler.handle(&propose_req(0.425), &mut resp, 1_000));
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 6_000));
+        // 武装期注入（tick3）：早退 +1。
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 7_000));
+        // 武装期复位：拒绝 +1，回执保持 [0x20, 1]（判定未变）。
+        resp.clear();
+        assert!(handler.handle(&[learn_wire::AI_LEARN_RESET], &mut resp, 7_100));
+        assert_eq!(
+            resp,
+            alloc::vec![learn_wire::AI_LEARN_RESET, 1],
+            "武装期复位仍须拒绝（观测加了自己，没动守卫）"
+        );
+        // 观测：frozen=2；applies 停在 2（武装后的 tick3 不再注入）。
+        resp.clear();
+        assert!(handler.handle(&[learn_wire::AI_DEGRADE_OBSERVE], &mut resp, 7_200));
+        let o = decode_obs(&resp);
+        assert_eq!(o.deadband_frozen_skips, 2);
+        assert_eq!(o.deadband_applies, 2);
+        assert!(o.armed);
+    }
+
+    /// t35：未武装观测全 0——不是上一次武装的残值（arm → peer 消费撤销
+    /// 后再观测，lease 字段必须全 0）。
+    #[test]
+    fn t35_unarmed_observation_is_all_zero_not_garbage() {
+        struct NullLink;
+        impl PeerLink for NullLink {
+            fn send_request(&mut self, _req_json: &str) -> Result<(), LinkError> {
+                Ok(())
+            }
+        }
+        let cfg = RemoteBrainConfig {
+            timeout_ms: 2_000,
+            unhealthy_after: 3,
+            probe_every: 1,
+            max_power_kw: 10.0,
+            ttl_secs: 60,
+            lease_key: [0x5Bu8; 32],
+            lease_ttl_secs: 3_600,
+        };
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let brain = RemoteBrain::new(HeuristicBackend::new(), NullLink, cfg);
+        let mut worker = AiWorkerService::new(brain, [0x41; 16]);
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            RemoteAudit { audit: &mut audit },
+            None::<DeadbandLearner<MemIo>>,
+        );
+        let mut resp = Vec::new();
+        // 全新 handler：未武装全 0。
+        assert!(handler.handle(&[learn_wire::AI_DEGRADE_OBSERVE], &mut resp, 100));
+        let o = decode_obs(&resp);
+        assert!(!o.armed && !o.expired);
+        assert_eq!(o.level, 0);
+        assert_eq!(o.lease_id, [0; 16]);
+        assert_eq!(o.issued_at_ms, 0);
+        assert_eq!(o.expires_at_ms, 0);
+        assert_eq!(o.uses_max, 0);
+        assert_eq!(o.uses_left, 0);
+        // 武装（t6 时序）→ peer 应答消费 → 撤销 → 观测不得见残值。
+        assert!(handler.handle(&propose_req(0.425), &mut resp, 1_000));
+        assert!(handler.handle(&propose_req(0.52), &mut resp, 6_000));
+        let mut peer = alloc::vec![AI_PEER_MSG];
+        peer.extend_from_slice(
+            r#"{"v":1,"req_id":2,"seq":5,"plan":{"power_kw":-3.0,"target_device":"pcs","ttl_secs":60},"reason":"soc"}"#
+                .as_bytes(),
+        );
+        assert!(handler.handle(&peer, &mut resp, 7_100));
+        assert!(handler.handle(&propose_req(0.60), &mut resp, 8_000));
+        resp.clear();
+        assert!(handler.handle(&[learn_wire::AI_DEGRADE_OBSERVE], &mut resp, 8_100));
+        let o = decode_obs(&resp);
+        assert!(!o.armed, "peer 消费后已撤销");
+        assert_eq!(o.lease_id, [0; 16], "不得残留上一次武装的 lease_id");
+        assert_eq!(o.level, 0);
+        assert_eq!(o.issued_at_ms, 0);
+        assert_eq!(o.expires_at_ms, 0);
+        assert_eq!(o.uses_max, 0);
+        assert_eq!(o.uses_left, 0);
     }
 }

@@ -1,0 +1,3 @@
+# 69.5 出口（同口径）
+   text	   data	    bss	    dec	    hex	filename
+ 407996	     32	 540744	 948772	  e7a24	target/aarch64-unknown-none/release/svc-ai-worker

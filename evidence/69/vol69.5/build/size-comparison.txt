@@ -1,0 +1,5 @@
+svc-ai-worker text: 404620 -> 407996 (+3376 B)
+  = WP-69.5.1 观测 match 臂 + 68B wire 组装 + DEGRADE-OBS 词形格式化 + 2×u32 计数器
+svc-control-dispatch text: 528132（69.4 出口 528128，+4B = 未触碰 crate 重建非确定抖动，
+  与 69.4 登记「镜像 raw 逐次重建 sha 非确定」同类预存性质）
+常驻净增 = 8 B（两个 u32 计数器，恰在卷册 §7 上界）

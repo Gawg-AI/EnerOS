@@ -59,11 +59,22 @@ pub mod learn_wire {
     /// 学习状态查询（StatusQuery 等价面——current/min/max/samples/
     /// rejected/applies 原样回显，逐字节可对照）。
     pub const AI_LEARN_STATUS: u8 = 0x21;
+    /// 蓝图 69 卷 69.5（WP-69.5.1）：降级/学习**只读**观测查询。值单源
+    /// 在 agent-sdk::ai_relay（root-task 探针同取一处——root 不依赖本
+    /// crate，线码须落两侧共同依赖叶）；此处 re-export 保持 learn_wire
+    /// 命名空间完整。**只读纪律**：本码只产生响应，不改任何状态（无
+    /// setter、无判定参与——加写命令码同时踩 Z5/Z3/Z2，明令禁止）。
+    pub use eneros_agent_sdk::ai_relay::AI_DEGRADE_OBSERVE;
     /// LEARN_STATUS 响应定长：code(1)+enabled(1)+current(8)+min(8)+max(8)
     /// +samples(8)+rejected(8)+applies(8) = 50B（LE）。
     pub const LEARN_STATUS_WIRE_LEN: usize = 1 + 1 + 8 * 6;
     /// LEARN_RESET 响应定长：code(1)+status(1)（0=ok / 1=不可用）。
     pub const LEARN_RESET_WIRE_LEN: usize = 2;
+    /// DEGRADE_OBSERVE 响应定长（LE）：code(1)+armed(1)+expired(1)
+    /// +level(1)+lease_id(16)+issued_at_ms(8)+expires_at_ms(8)+uses_max(4)
+    /// +uses_left(4)+charge_soc(8)+discharge_soc(8)+deadband_applies(4)
+    /// +deadband_frozen_skips(4) = 68B。
+    pub const DEGRADE_OBS_WIRE_LEN: usize = 68;
 }
 
 /// 决策后端（服务注入 seam——target 无声明后端时为 Unavailable）。
@@ -129,6 +140,44 @@ pub struct HeuristicBackend {
 /// 68.5 WP-68.5.3：D3 降级 lease 单发使用次数上界（逐次授权记账；耗尽 =
 /// fail-closed "lease exhausted"——兜底不是无限额度）。
 pub const DEGRADE_LEASE_MAX_USES: u32 = 100_000;
+
+/// 蓝图 69 卷 69.5（WP-69.5.1）：降级/学习可调面的**只读**观测快照。
+///
+/// 只读纪律：本结构不含任何 setter，不新增 wire 写命令码，不参与任何
+/// 判定（判限单源仍在 `DegradeArmQuery` / `DegradationLease` 既有实现
+/// ——Z10 同源：只加观测不改判限）。字段准入：全部 lease 字段均为
+/// 结构体内既有量（`degrade.rs:72-90` 14 字段子集 + 既有
+/// `is_degradation_armed`/`degradation_lease_expired` 读面），无新增
+/// 判定输入。`deadband_applies`/`deadband_frozen_skips` 由
+/// `AiTickHandler`（持有 learn 的结构）装配时填入。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DegradeObservation {
+    /// 既有 `is_degradation_armed()`（未武装时以下 lease 字段全 0）。
+    pub armed: bool,
+    /// 既有 `degradation_lease_expired(now_ms)`（未武装恒 false）。
+    pub expired: bool,
+    /// 未武装 = 全 0（不是上一次武装的残值——revoke 后归零）。
+    pub lease_id: [u8; 16],
+    /// `DegradationLevel::severity()` 码值（未武装 = 0）。
+    pub level: u8,
+    /// 未武装 = 0。
+    pub issued_at_ms: u64,
+    /// 未武装 = 0。
+    pub expires_at_ms: u64,
+    /// 总额度（未武装 = 0）。
+    pub uses_max: u32,
+    /// 剩余额度 = `max_uses - authority.usage_of(lease_id)`（饱和减，
+    /// 未武装 = 0）。
+    pub uses_left: u32,
+    /// 死区现值（后端实际生效值——含学习注入与防御性钳制后的结果）。
+    pub charge_soc: f64,
+    /// 死区现值。
+    pub discharge_soc: f64,
+    /// 自启动以来 `apply_learn_thresholds` 成功注入次数（AiTickHandler 填）。
+    pub deadband_applies: u32,
+    /// 自启动以来武装期冻结跳过次数（注入早退 + 复位拒绝；AiTickHandler 填）。
+    pub deadband_frozen_skips: u32,
+}
 
 /// 68.5 WP-68.5.3：降级武装 seam——RemoteBrain 对 System1 本地后端的
 /// lease 执行面（D3 SolverFallback 语义"兜底也要持签"；degrade.rs 机制面
@@ -271,6 +320,37 @@ impl HeuristicBackend {
     /// 死区参数必须冻结，否则 strategy digest 漂移击穿 lease 白名单）。
     pub fn degradation_armed(&self) -> bool {
         self.degradation.is_some()
+    }
+
+    /// 蓝图 69 卷 69.5（WP-69.5.1）：只读观测快照装配（本方法不改任何
+    /// 状态；lease 字段取自 `self.degradation` 既有量，uses_left 为
+    /// authority 记账的饱和投影——纯读，不推进记账）。
+    pub fn degrade_observation(&self, now_ms: u64) -> DegradeObservation {
+        let mut obs = DegradeObservation {
+            armed: self.degradation.is_some(),
+            expired: self.degradation_lease_expired(now_ms),
+            lease_id: [0; 16],
+            level: 0,
+            issued_at_ms: 0,
+            expires_at_ms: 0,
+            uses_max: 0,
+            uses_left: 0,
+            charge_soc: self.charge_soc,
+            discharge_soc: self.discharge_soc,
+            deadband_applies: 0,
+            deadband_frozen_skips: 0,
+        };
+        if let Some((auth, lease)) = &self.degradation {
+            obs.lease_id = lease.lease_id;
+            obs.level = lease.level.severity();
+            obs.issued_at_ms = lease.issued_at_ms;
+            obs.expires_at_ms = lease.expires_at_ms;
+            obs.uses_max = lease.max_uses;
+            obs.uses_left = lease
+                .max_uses
+                .saturating_sub(auth.usage_of(&lease.lease_id));
+        }
+        obs
     }
 
     /// 目录版本注入（bin 启动装载；[08] §4.8 planner 输入与 Registry 同代）。
@@ -673,6 +753,81 @@ mod tests {
         // code(1)+enabled(1)+current(8)+min(8)+max(8)+samples(8)+rejected(8)+applies(8)。
         assert_eq!(LEARN_STATUS_WIRE_LEN, 50);
         assert_eq!(LEARN_RESET_WIRE_LEN, 2);
+    }
+
+    /// 蓝图 69 卷 69.5 t34（WP-69.5.1 准入检查 2）：观测命令码字面锁——
+    /// 值单源在 agent-sdk::ai_relay（本侧 re-export 漂移即编译期失效），
+    /// 本锁钉住 learn_wire 面三码值域与响应定长（词形基线随卷登记）。
+    #[test]
+    fn t34_observe_wire_code_locked() {
+        use super::learn_wire::{
+            AI_DEGRADE_OBSERVE, AI_LEARN_RESET, AI_LEARN_STATUS, DEGRADE_OBS_WIRE_LEN,
+        };
+        assert_eq!(AI_DEGRADE_OBSERVE, 0x22);
+        // 既有 0x20/0x21 锁不变（E.3 基线逐字节保留）。
+        assert_eq!(AI_LEARN_RESET, 0x20);
+        assert_eq!(AI_LEARN_STATUS, 0x21);
+        // code(1)+armed(1)+expired(1)+level(1)+lease_id(16)+issued(8)
+        // +expires(8)+uses_max(4)+uses_left(4)+charge(8)+discharge(8)
+        // +applies(4)+frozen_skips(4)。
+        assert_eq!(DEGRADE_OBS_WIRE_LEN, 68);
+    }
+
+    /// 蓝图 69 卷 69.5（WP-69.5.1 步骤 5 配套）：只读快照装配——武装后
+    /// 逐字段等于签发 lease；`degrade_observation` 自身不推进使用记账
+    /// （连调两次 uses_left 不变——t31 的后端层同款牙）。
+    #[test]
+    fn degrade_observation_reports_issued_lease_and_is_nonadvancing() {
+        use eneros_control_dispatch::degrade::{DegradationLease, DegradationLevel};
+        let key = b"station-degrade-lease-key-000000001";
+        let factory = HeuristicBackend::new();
+        let lease = DegradationLease::issue(
+            key,
+            6_000u128.to_le_bytes(),
+            0,
+            DegradationLevel::SolverFallback,
+            factory.strategy_digest(),
+            eneros_crypto::sm3_hash(b"eneros.svc-ai-worker.degrade-scope.v1"),
+            5.0,
+            5.0,
+            5.0,
+            7,
+            6_000,
+            66_000,
+            0,
+            0,
+        )
+        .expect("issue");
+        let mut backend = factory;
+        backend.arm_degradation_lease(key, lease).expect("arm");
+        let obs = backend.degrade_observation(7_000);
+        assert!(obs.armed);
+        assert!(!obs.expired);
+        assert_eq!(obs.lease_id, 6_000u128.to_le_bytes());
+        assert_eq!(obs.level, 3, "SolverFallback = D3");
+        assert_eq!(obs.issued_at_ms, 6_000);
+        assert_eq!(obs.expires_at_ms, 66_000);
+        assert_eq!(obs.uses_max, 7);
+        assert_eq!(obs.uses_left, 7, "未消费时剩余=总额度");
+        assert!((obs.charge_soc - 0.3).abs() < 1e-9);
+        assert!((obs.discharge_soc - 0.5).abs() < 1e-9);
+        // 出厂带现值经 set_deadband 后须如实反映（观测=实际生效值）。
+        backend.set_deadband(0.26, 0.54);
+        let obs2 = backend.degrade_observation(7_000);
+        assert!((obs2.charge_soc - 0.26).abs() < 1e-9);
+        assert!((obs2.discharge_soc - 0.54).abs() < 1e-9);
+        // 纯读：两次快照逐字段相同（记账不推进）。
+        assert_eq!(backend.degrade_observation(7_000), obs2);
+        // revoke 后不留残值（t35 的后端层根）。
+        backend.revoke_degradation();
+        let obs3 = backend.degrade_observation(7_000);
+        assert!(!obs3.armed);
+        assert_eq!(obs3.lease_id, [0; 16]);
+        assert_eq!(obs3.level, 0);
+        assert_eq!(obs3.issued_at_ms, 0);
+        assert_eq!(obs3.expires_at_ms, 0);
+        assert_eq!(obs3.uses_max, 0);
+        assert_eq!(obs3.uses_left, 0);
     }
 
     /// SPEC-E WP-E.3：自适应阈值真实改变拒绝/放行边界（下游消费判据

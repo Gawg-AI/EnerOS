@@ -86,6 +86,21 @@ type MountProbe = fn(&mut BlockDeviceStorage) -> Result<(), FsError>;
 ///
 /// `probe`：mount 前置校验（None = format 路径免检；Some(f) = 先跑
 /// 校验、失败透传其错误）。
+///
+/// # 泄漏纪律与量化（蓝图 69 卷 69.5 WP-69.5.0 M3 + WP-69.5.5 裁决）
+///
+/// `Box::leak` 在 `probe` **之前**——探测失败时已泄漏的那份不回收。
+/// M3 实测（2026-09-07）：`size_of::<BlockDeviceStorage>()` = **24 B**
+/// （`Box<dyn ScopedBlockDevice>` 16 B + `usize` 8 B）；生产调用点全仓
+/// 恰 2 处（`telemetry_history::open_disk_history`、
+/// `event_face::open_snap_volume`——均 `ensure_open`/构造期 `Option::
+/// take` **一次性**，无任何失败重试路径），故超设计泄漏上界
+/// `= 2 × 24 B = 48 B/次启动`，对 svc-telemetry 预算（栈 64 KiB、堆
+/// MB 级）占比可忽略。**裁决：不修**（有界且已知；本函数是 Lfs
+/// `&'static mut` 所有权模型的根，动签名波及整个 FileSystem trait
+/// 面——卷册明令禁止）。设计内泄漏（backing a live `Lfs`）另含每卷
+/// 1 × `BlockDeviceStorage`（24 B）+ 1 × `Allocation`（8536 B，
+/// littlefs2 缓存），随卷存活、随卷计入内存预算。
 fn leak_storage(
     device: Box<dyn ScopedBlockDevice>,
     probe: Option<MountProbe>,

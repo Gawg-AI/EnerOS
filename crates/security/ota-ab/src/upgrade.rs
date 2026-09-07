@@ -36,11 +36,14 @@ pub enum OtaError {
     DowngradeRejected,
     /// 声明镜像尺寸超槽容量（68 三轮复查 REG-OTA-SLOT-OVERWRITE：越槽写
     /// 会穿保护带直入同盘 TSDB/审计/事件/事实/快照区段——prepare 早门）。
+    /// 69.5（WP-69.5.4 t41）：字段名/序与 `KernelOtaError::ImageTooLarge`
+    /// 一致（`image_size`/`partition_capacity`）——两条 OTA 路径的公开
+    /// 错误面字段级对齐，一致性锁见 crate 测试。
     ImageTooLarge {
         /// 声明尺寸（字节）。
-        size: u64,
+        image_size: u64,
         /// 槽容量（字节）。
-        cap: u64,
+        partition_capacity: u64,
     },
 }
 

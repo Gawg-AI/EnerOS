@@ -1,0 +1,3 @@
+# 69.4 出口基线（stash 对照构建，aarch64-unknown-none release, --features sel4）
+   text	   data	    bss	    dec	    hex	filename
+ 404620	     32	 540744	 945396	  e6cf4	target/aarch64-unknown-none/release/svc-ai-worker

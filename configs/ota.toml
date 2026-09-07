@@ -16,9 +16,17 @@
 #    超过 max_boot_attempts 自动回滚旧版本。
 # ③ 存储规划（记忆 §5.6 内存预算）：单分区容量 = partition_blocks × 块大小
 #    （512B 块 → 1 MiB；4 KiB 块 → 8 MiB；8 KiB 块 → 16 MiB），设备总占用
-#    = 保留块 + 双分区；选型时须保证单分区容量 ≥ 最大镜像尺寸（当前性能
-#    基线 10 MiB 镜像，蓝图 §6.3/§7.2），OTA 写/读缓冲按块大小各 1 块
-#    （alloc 堆上临时分配），分区表序列化定长 307B 单保留块即可容纳。
+#    = 保留块 + 双分区；选型时须保证单分区容量 ≥ 最大镜像尺寸。69.5 容量
+#    口径裁决（v0.330.0，A-1）：**生产实际**单分区容量 = 2048 × 512 B =
+#    1 MiB（生产后端块大小 = 512 B，见 ⑥ 与 ab_partition
+#    OTA_PROD_BLOCK_SIZE 单源常量）；性能基线镜像尺寸据此如实化为
+#    **≤ 1 MiB**（当前探针镜像 512 B）——旧文"10 MiB 性能基线"（蓝图
+#    §6.3/§7.2）在当前盘上几何下**不成立**：如需 >1 MiB 镜像能力，须
+#    owner 裁决 + 盘上迁移方案（改块大小等价改盘上几何，TSDB/审计等
+#    区段块号语义按 512B 块绑定）。三者一致性由可执行断言锁
+#    production_slot_capacity_matches_documented_baseline 承载（ota-ab）。
+#    OTA 写/读缓冲按块大小各 1 块（alloc 堆上临时分配），分区表序列化
+#    定长 307B 单保留块即可容纳。
 
 [partition]
 # ④ 分区表保留块地址（块 0）：`save_to_device`/`load_from_device` 持久化
@@ -34,7 +42,10 @@ slot_a_base = 1
 # ⑥ 单分区块数：与代码常量 PARTITION_BLOCKS=2048 对齐（运行时不可改，
 #    本项仅作集成层核对参考）。槽位 B 起始块 = slot_a_base +
 #    partition_blocks = 1 + 2048 = 2049。单分区字节容量 = 2048 × 块大小，
-#    随后端 `BlockDevice::block_size()` 缩放（见 ③）。
+#    随后端 `BlockDevice::block_size()` 缩放（见 ③）。69.5 注：**生产
+#    后端块大小 = 512 B**（svc-ota 挂载 EipcBlockDevice 时引用 ota-ab
+#    `OTA_PROD_BLOCK_SIZE` 单源常量，与容量口径锁同源）——⇒ 生产实际
+#    单分区容量 = 1 MiB；公式本身不变，块大小才是变量。
 partition_blocks = 2048
 
 # ⑦ 槽位 B 起始块地址：slot_a_base + partition_blocks = 2049。B 为首个
@@ -45,7 +56,13 @@ slot_b_base = 2049
 # ⑧ 下载/写入分块大小（字节）：`UpgradeMeta.chunk_size`，total_chunks =
 #    ceil(image_size / chunk_size)。write_chunk 内部按块大小读-改-写，
 #    容忍非块对齐分块；64 KiB 在下载吞吐与内存占用间折中（单分块缓冲
-#    64 KiB，Agent Runtime ≤ 64 MB 预算内）。10 MiB 镜像 = 160 块。
+#    64 KiB，Agent Runtime ≤ 64 MB 预算内）。69.5 口径订正：`chunk_size`
+#    是**下载/写入分块**（内存缓冲单位），**不是**设备块大小——容量按
+#    ⑥ 的 `block_size` 算，二者不可互换；"10 MiB 镜像 = 160 块"是按
+#    chunk_size 的**分块数**心算（10 MiB ÷ 64 KiB = 160 个分块），与
+#    分区容量无关（旧文把它当块数推容量，隐含假设 chunk_size ==
+#    block_size == 64 KiB，与生产 512 B 实际差 128 倍——本行即混淆源头，
+#    见 ③ 的裁决记录）。
 chunk_size = 65536
 
 # ⑨ 最大启动尝试次数：activate 后每次上电调用 `boot_health_check(ota,

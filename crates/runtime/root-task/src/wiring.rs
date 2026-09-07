@@ -238,6 +238,11 @@ pub enum PeriodicTask {
     FaultInject,
     /// 分层看门狗状态检查（诊断打印；原 `tick % 100` 块按职责命名）。
     WatchdogCheck,
+    /// 蓝图 69 卷 69.5（WP-69.5.1）：降级/学习**只读**观测探针——向
+    /// svc-ai-worker 连发 5 次 `AI_DEGRADE_OBSERVE(0x22)`，`DEGRADE-OBS`
+    /// 串口行由 svc-ai-worker 侧落（root 零新词形）；五连读同刻读数
+    /// 逐字节一致 = 观测只读性实弹（Q5）。探针零决策面状态接触。
+    DegradeObserve,
 }
 
 /// 到期语义（一次性任务首达即到期；fired 防重由分派侧既有 done 标志
@@ -319,6 +324,15 @@ pub const PERIODIC_SCHEDULE: &[PeriodicEntry] = &[
         offset: 0,
         kind: ScheduleKind::Repeat,
         task: PeriodicTask::WatchdogCheck,
+    },
+    // 69.5（WP-69.5.1）：观测探针 period 25 / offset 8——与 ControlChain
+    // （5/0）、ObsReport（25/20）错峰；观测轮与决策轮不同 tick，五连读
+    // 之间零 decide 交错（Q5 的同刻可比性由此承载）。
+    PeriodicEntry {
+        period: 25,
+        offset: 8,
+        kind: ScheduleKind::Repeat,
+        task: PeriodicTask::DegradeObserve,
     },
 ];
 
@@ -612,6 +626,9 @@ mod tests {
     /// （5/25/200/60/70/50/100 + ObsReport offset 20）自 service.rs 平移，
     /// 逐行锁定 (period, offset, kind, task)——任何周期数字/相位/到期
     /// 语义漂移即红。改动必须同步 QEMU 串口编排证据（VOL63.2-GATE）。
+    /// 69.5 追记：DegradeObserve（25/8，只读观测探针）为蓝图 69 卷 69.5
+    /// 有意新增行（WP-69.5.1；与 ControlChain 5/0、ObsReport 25/20 错峰
+    /// ——观测轮与决策轮不同 tick），既有七行数字零变化。
     #[test]
     fn periodic_schedule_absolute_baseline_locked() {
         let rows: Vec<(u16, u16, ScheduleKind, PeriodicTask)> = PERIODIC_SCHEDULE
@@ -628,6 +645,8 @@ mod tests {
                 (70, 70, ScheduleKind::OnceFrom, PeriodicTask::OtaDownload),
                 (50, 0, ScheduleKind::Repeat, PeriodicTask::FaultInject),
                 (100, 0, ScheduleKind::Repeat, PeriodicTask::WatchdogCheck),
+                // 69.5 新增（WP-69.5.1）：只读观测探针——非平移行，有意扩展。
+                (25, 8, ScheduleKind::Repeat, PeriodicTask::DegradeObserve),
             ],
             "周期编排表绝对基线漂移（service.rs 平移值必须逐字节保持）"
         );

@@ -22,6 +22,14 @@ pub const AI_REQ_END: u8 = 0x2C;
 /// 载荷 = `[AI_PEER_MSG][应答 JSON 字节]`。
 pub const AI_PEER_MSG: u8 = 0x10;
 
+/// 蓝图 69 卷 69.5（WP-69.5.1）：降级/学习可调面**只读**观测查询码
+/// （root 编排探针 → svc-ai-worker；定义在本层与 AI_PEER_MSG 同纪律——
+/// root-task 不依赖 control-services，线码须落在两侧共同的依赖叶上）。
+/// 语义契约在 control-services::ai_handler（响应 = `DEGRADE_OBS_WIRE_LEN`
+/// 定长快照 + 串口 `DEGRADE-OBS` 行）；**只产生响应，不改任何状态**——
+/// 本线码不是写命令（Z3/Z5：新增写命令码须独立裁决，本卷明令不做）。
+pub const AI_DEGRADE_OBSERVE: u8 = 0x22;
+
 /// 组装总长上限（= intent-contract PEER_REQUEST_MAX_LEN 同量级；传输面
 /// 只认字节数——超限即中止组装并计数）。
 pub const AI_REQUEST_MAX: usize = 1024;
@@ -70,6 +78,12 @@ mod tests {
         }
         // chunked push 面与控制服务请求码不冲突：ai_worker AI_PROPOSE=1。
         assert_ne!(AI_PEER_MSG, 1u8);
+        // 69.5：观测码与既有 AI 面线码互斥（0x20/0x21 为 learn_wire 管理
+        // 动词——值域冲突即两侧定义漂移提示）。
+        assert_ne!(AI_DEGRADE_OBSERVE, AI_PEER_MSG);
+        assert_ne!(AI_DEGRADE_OBSERVE, 0x20);
+        assert_ne!(AI_DEGRADE_OBSERVE, 0x21);
+        assert_ne!(AI_DEGRADE_OBSERVE, 1u8);
     }
 
     /// 49：容量常量自洽（单帧不越 PAYLOAD_CAP）。

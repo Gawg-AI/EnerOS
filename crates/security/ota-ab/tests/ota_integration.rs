@@ -21,6 +21,14 @@
 //!
 //! 集成测试运行于 host std 环境（`std::time::Instant`/`std::env`/`Rc` 可用），
 //! 通过 `eneros_ota_ab` crate 公共 API 调用被测的 no_std 代码。
+//!
+//! ⚠️ 69.5（WP-69.5.2）容量口径注记：INT1/PERF5 的 `SharedDevice`/
+//! `MockBlockDevice` 取 `LARGE_BLOCK_SIZE=8KiB` **参数化大块 mock**，
+//! 使 `PARTITION_BLOCKS × 8 KiB = 16 MiB ≥ 10 MiB` 自洽——**不代表生产
+//! 容量**。生产后端 = 512 B 块（`OTA_PROD_BLOCK_SIZE` 单源常量）⇒ 生产
+//! 单槽容量 = 1 MiB，`IMAGE_SIZE_10MB` 在生产口径下必然被 prepare 拒绝
+//! （见 `prod_caliber_bs512_rejects_over_capacity_image_with_both_numbers`；
+//! 裁决记录见 configs/ota.toml ③/⑥/⑧ 与 ota-ab 容量口径锁）。
 
 // 测试代码允许 panic!/unwrap（与 src 内嵌测试模块同口径）
 #![allow(clippy::disallowed_macros)]
@@ -402,4 +410,48 @@ fn perf5_write_and_verify_10mb() {
             "PERF5 端到端 {elapsed:?} 超过 30s 上限（蓝图 §7.2）"
         );
     }
+}
+
+/// 69.5（WP-69.5.2 裁决 A-1 集成测试处置）：**生产口径锁**——bs=512
+/// （与生产 svc-ota 同源 `OTA_PROD_BLOCK_SIZE`）设备上，声明 10 MiB
+/// （旧"性能基线"）镜像必须在 prepare 拒绝（生产单槽容量 =
+/// 2048 × 512 = 1 MiB），且错误**同时携带两个数字**
+/// （`image_size` / `partition_capacity`——WP-69.5.3 诊断串的数据源）。
+/// 此前测试面用大块 mock 使 10 MiB 自洽，永远看不到生产的 1 MiB 上限
+/// （§2.3 分歧为何 8696/0 全绿没抓到）。变异靶：换回大块 mock 或删
+/// prepare 早门 → 本测红。
+#[test]
+fn prod_caliber_bs512_rejects_over_capacity_image_with_both_numbers() {
+    let mut rng = CsRng::new();
+    let kp = Sm2KeyPair::generate(&mut rng).expect("密钥对生成失败");
+    let dev = MockBlockDevice::new(
+        TOTAL_BLOCKS,
+        eneros_ota_ab::ab_partition::OTA_PROD_BLOCK_SIZE,
+    );
+    let mut ota = AbPartitionOta::new(dev, kp.public_key, 1_000);
+    // 镜像字节本身不落盘（prepare 早门在其前拒绝）；哈希/签名进 meta。
+    let (_image, meta) = make_image(&kp, &mut rng, IMAGE_SIZE_10MB, CHUNK_SIZE);
+    let cap: u64 = PARTITION_BLOCKS * eneros_ota_ab::ab_partition::OTA_PROD_BLOCK_SIZE as u64;
+    assert_eq!(cap, 1024 * 1024, "生产单槽容量 = 1 MiB（裁决 A-1 口径）");
+    assert_eq!(meta.image_size, 10 * 1024 * 1024);
+    // prepare 早门：声明尺寸 > 槽容量 → 携带双数字拒绝（无部分写）。
+    match ota.prepare_upgrade(meta) {
+        Err(OtaError::ImageTooLarge {
+            image_size,
+            partition_capacity,
+        }) => {
+            assert_eq!(image_size, 10 * 1024 * 1024, "image_size 必须可读");
+            assert_eq!(
+                partition_capacity, 1048576,
+                "partition_capacity 必须可读（与 ota.toml ③ 订正文字一致）"
+            );
+        }
+        other => panic!("生产口径下 10 MiB 必须被拒（得 {other:?}）"),
+    }
+    // 齿：分区状态未动（无部分写副作用）。
+    assert_eq!(
+        part(&ota, PartitionSlot::B).state,
+        PartitionState::Empty,
+        "被拒 prepare 不得污染分区状态"
+    );
 }

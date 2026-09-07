@@ -79,7 +79,17 @@ pub extern "C" fn _start(
             5_000,
         ) {
             Some(io) => {
-                let dev = eneros_agent_sdk::block_io::EipcBlockDevice::new(io, 512, 32768);
+                // 69.5（WP-69.5.2）：生产块大小单源 = ota-ab
+                // OTA_PROD_BLOCK_SIZE（512）——原手抄字面与 ota.toml ⑧
+                // 的 chunk_size 心算双源分歧（生产实际单槽容量 1 MiB）即
+                // 出于此；容量口径锁 production_slot_capacity_matches_
+                // documented_baseline 与本调用同取一常量。盘上块号语义按
+                // 512B 块绑定（DATA_DISK_BLOCKS 同源），Z15 不得改值。
+                let dev = eneros_agent_sdk::block_io::EipcBlockDevice::new(
+                    io,
+                    eneros_ota_ab::ab_partition::OTA_PROD_BLOCK_SIZE,
+                    eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS,
+                );
                 let mut key65 = [0u8; 65];
                 key65[0] = 0x04;
                 key65[1..].copy_from_slice(&ENEROS_OTA_ROOT_KEY);

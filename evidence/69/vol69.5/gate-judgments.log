@@ -1,0 +1,17 @@
+=== VOL69.5 QEMU 窗判据复演（证据=win/qemu-serial.log，840s 窗；判据脚本修复后重跑，窗证据本身未变）===
+[Q4] DEGRADE-OBS 行数=520
+[Q4] armed=true 观测行=370
+[Q4] LEASE-ARMED 行=1
+[Q4] armed 行 expires_in_ms=0 数=0（判据 0）
+[Q4] uses 形态非法行=0（判据 0）
+[Q5] bursts=104 状态字段不一致 burst 数=0（判据 0）
+[Q5] burst 内 expires_in_ms 逆增数=0（判据 0——单调钟）
+[Q5] armed 段 uses 轮间单调不增=True 首=99995 末=99633 递减轮=73（兜底授权记账）持平轮=0（观测不记账）
+[Q5] rc=0
+[Q6] OTA 三词形行号: download=14285 trial=14286 commit=14287（顺序判据 L1<L2<L3）
+[Q4b] CONTROL-CHAIN rounds=519 dispatch=Committed x512
+[Q7] CHAIN-KEY-MISSING x0（判据 0）
+[Q7] 非豁免 PANIC x0（判据 0）
+[Q3] 新增词形=['[svc-ai-worker] DEGRADE-OBS']
+[Q3] 消失词形=[]（判据：空）
+[Q3] rc=0

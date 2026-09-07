@@ -235,6 +235,13 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
         &mut self.local
     }
 
+    /// 蓝图 69 卷 69.5（WP-69.5.1）：System1 本地后端**只读**访问——
+    /// 降级/学习观测快照经此透传（`DegradeObserveQuery` 的 RemoteBrain
+    /// 臂委托本地后端既有读面）；纯读，零状态接触。
+    pub fn local(&self) -> &L {
+        &self.local
+    }
+
     /// 取上次 decide 的元数据（审计留痕）。
     pub fn last_meta(&self) -> Option<&DecisionMeta> {
         self.last_meta.as_ref()
