@@ -11,8 +11,10 @@
 //!
 //! R2 红线：本模块**不打印**任何串口行、不定义任何词形——调用方按
 //! [`ConfigStep`] 呈现各自既有措辞（各串口判定行逐字节保持）。
-//! host 无条件可用（不依赖 `sel4` feature；[`Sel4IpcClient`] 实现块
-//! 随 `ipc_sel4` 同门控）。
+//! host 无条件可用（不依赖 `sel4` feature；69.3 WP-69.3.4 起
+//! [`crate::endpoint::ChunkedEndpoint`] 的 impl 为无条件 blanket
+//! `C: RawIpc`，原 `Sel4IpcClient` 具体实现及其 `any(test, sel4)` 门
+//! 随泛型化撤销）。
 
 use alloc::vec::Vec;
 

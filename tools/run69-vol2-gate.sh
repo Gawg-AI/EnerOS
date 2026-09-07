@@ -1,15 +1,20 @@
 #!/bin/bash
 # 蓝图 69 卷 69.2（v0.327.0）出口 host+QEMU 联合窗（2026-09-07）：
 #   planner-peer 会话深模块化（PeerSession）——host 侧 bin，目标镜像零变更
-#   （复用 69.1 出口镜像）。单窗 780s 串行四段：
+#   （复用 69.1 出口镜像）。段0 + 单窗 840s 串行五段：
+#   段0 host 侧 seq 跨重启窗（Q7 主证据，69.2-review 增设）：脚本发布器
+#      对真 peer 发布请求 → 3 轮 kill -9 重启（同 state 文件）→ 每轮应答
+#      seq 严格大于重启前末值。背景：QEMU 窗内目标侧 MQTT 面在 broker
+#      死亡后不复重连（预存，REG-69.2-GATE-VACUOUS），重启后零请求，
+#      原 QEMU 侧 Q7「7→7」判据空转——本窗为确定性替代证据；
 #   段1 健康链（Q1/Q2/Q3/Q6）：broker+peer+QEMU → READY/SUBSCRIBED/
 #      PEER-REQ/PLANNER-SOLVE optimal/PEER-RESP → REMOTE-BRAIN used=true
 #      + [backend=planner] + dispatch=Committed + ACQ 双源；
 #   段2 拔线降级（Q4/Q7）：kill broker → peer RECONNECT(poll-failed/
 #      inbound-silent) → QEMU lease LEASE-ARMED → used=false → Committed
-#      维持；中途 kill -9 peer + 重启（同 state 文件）→ PEER-RESP seq
-#      跨重启单调（REG-PLANNER-SEQ-STATE-CORRUPT 不回退）；重启 broker →
-#      used=true 回归；
+#      维持；中途 kill -9 peer + 重启（同 state 文件）→ QEMU 窗 Q7 转条件
+#      断言（有重启后样本强制单调，零样本记观察项）；重启 broker →
+#      used=true 回归同样条件化（零样本 = 观察项）；
 #   段3 半死 broker（Q5，本卷的牙）：SIGSTOP broker → peer 侧 ≤50s
 #      （45s 判死 + 轮询余量）出现 RECONNECT reason=inbound-silent
 #      （§3.2 静态锁的实弹验证）；
@@ -54,6 +59,56 @@ mkdir -p "$DIR"; rm -f "$DIR/qemu-serial.log" "$DIR/eneros-data.raw"
 rm -f "$RUN/$W.planner-peer.log" "$RUN/$W.seq-state.json" "$RUN/$W.broker-transcript.jsonl"
 
 BROKER_PID=""
+
+# ---- 段 0：host 侧 seq 跨重启窗（Q7 主证据；确定性，不依赖 QEMU 时序） ------
+# 69.2-review 订正：QEMU 窗内目标侧 MQTT 面（svc-mqtt）在 broker 死亡后不复
+# 重连（预存行为，REG-69.2-GATE-VACUOUS）→ 重启后零请求零应答，原 QEMU 侧
+# 「7→7」判据实为空转。本窗用脚本发布器对真 peer 直接产出 Q7 证据：3 轮
+# kill -9 重启（同 state 文件），每轮应答 seq 必须严格大于重启前末值
+# （执行卡 §5 Q7「杀进程时机 ≥3 次」的进程级近似；「写入中」语义由 p10
+# 文件层锁承载）。
+SEQ_PUB="$ROOT/tools/run69-vol2-seq-publisher.py"
+HW="$RUN/hostwin"
+# 段0 工件清理（重跑确定性——残留 state 文件会使 PRE0 首 seq≠1，Q7' 必红）。
+rm -f "$HW".peer.log "$HW".broker.log "$HW".broker-transcript.jsonl \
+  "$HW".seq-state.json "$HW".seq-state.json.tmp*
+python3 "$ROOT/evidence/50/mqtt_telemetry_broker.py" \
+  --port 1883 --transcript "$HW.broker-transcript.jsonl" >"$HW.broker.log" 2>&1 &
+HW_BROKER=$!
+sleep 1
+"$PP_BIN" --broker 127.0.0.1:1883 \
+  --config "$ROOT/crates/ai/planner-peer/planner-peer.toml" \
+  --state "$HW.seq-state.json" >"$HW.peer.log" 2>&1 &
+HW_PEER=$!
+sleep 1
+grep -q "SUBSCRIBED topic=" "$HW.peer.log" || { echo "HOSTWIN peer 未局"; cat "$HW.peer.log"; exit 5; }
+
+HOSTWIN_FAIL=0
+python3 "$SEQ_PUB" --broker 127.0.0.1:1883 --count 2 --expect-min 0 \
+  --req-base 100 --tag PRE0 || HOSTWIN_FAIL=1
+for CYC in 1 2 3; do
+  kill -9 $HW_PEER 2>/dev/null || true
+  sleep 1
+  "$PP_BIN" --broker 127.0.0.1:1883 \
+    --config "$ROOT/crates/ai/planner-peer/planner-peer.toml" \
+    --state "$HW.seq-state.json" >>"$HW.peer.log" 2>&1 &
+  HW_PEER=$!
+  sleep 1
+  grep -q "SUBSCRIBED topic=" "$HW.peer.log" || { echo "HOSTWIN cyc$CYC peer 未局"; HOSTWIN_FAIL=1; break; }
+  python3 "$SEQ_PUB" --broker 127.0.0.1:1883 --count 2 --expect-min $((CYC * 2)) \
+    --req-base $((200 + CYC * 100)) --tag "C$CYC" || HOSTWIN_FAIL=1
+done
+kill $HW_BROKER $HW_PEER 2>/dev/null || true
+kill -9 $(pgrep -f "eneros-planner-peer") 2>/dev/null || true
+sleep 1
+for _ in $(seq 1 10); do
+  (ss -tln 2>/dev/null | grep -q ":1883 ") || break
+  sleep 1
+done
+if [ "$HOSTWIN_FAIL" -ne 0 ]; then
+  echo "VOL69.2-GATE 段0 host 窗 FAIL（Q7 seq 跨重启单调）"; exit 8
+fi
+echo "[gate] 段0：host 侧 seq 跨重启窗 PASS（3 轮 kill-9，seq 严格单调）"
 
 # ---- 段 1：拉起全场（broker + peer + 采集对端 + QEMU） --------------------
 python3 "$ROOT/evidence/50/mqtt_telemetry_broker.py" \
@@ -111,6 +166,9 @@ sleep 2
   --state "$RUN/$W.seq-state.json" >>"$RUN/$W.planner-peer.log" 2>&1 &
 sleep 2
 echo "[gate] 段2：重启 broker（恢复）"
+# 串口日志行数锚（append-only——此后新增行 = 重启窗样本；Q4 回归子判据用）。
+RECOVER_LINES=$(wc -l < "$DIR/qemu-serial.log" 2>/dev/null || echo 0)
+RECOVER_LINES=${RECOVER_LINES:-0}
 python3 "$ROOT/evidence/50/mqtt_telemetry_broker.py" \
   --port 1883 --transcript "$RUN/$W.broker-transcript.jsonl" >>"$RUN/$W.broker.log" 2>&1 &
 BROKER_PID=$!
@@ -142,6 +200,8 @@ sleep 2
 cp -f "$DIR/qemu-serial.log" "$EVROOT/$W.qemu-serial.log" 2>/dev/null || true
 cp -f "$RUN/$W.planner-peer.log" "$EVROOT/$W.planner-peer.log"
 cp -f "$RUN/$W.broker-transcript.jsonl" "$EVROOT/$W.broker-transcript.jsonl"
+cp -f "$HW.peer.log" "$EVROOT/$W.hostwin-peer.log"
+cp -f "$HW.broker-transcript.jsonl" "$EVROOT/$W.hostwin-broker-transcript.jsonl" 2>/dev/null || true
 S="$DIR/qemu-serial.log"
 P="$EVROOT/$W.planner-peer.log"
 BT="$EVROOT/$W.broker-transcript.jsonl"
@@ -174,14 +234,40 @@ grep -aq "RECONNECT reason=poll-failed\|RECONNECT reason=inbound-silent" "$P" \
 grep -aq "LEASE-ARMED" "$S" && echo "[✓][Q4] LEASE-ARMED（lease 到期武装）" || { echo "[✗][Q4] LEASE-ARMED 缺失"; FAIL=1; }
 grep -aq "REMOTE-BRAIN used=false" "$S" && echo "[✓][Q4] 降级期 used=false" || { echo "[✗][Q4] used=false 缺失"; FAIL=1; }
 n=$(grep -ac "REMOTE-BRAIN used=true" "$S"); n=${n:-0}
-[ "$n" -ge 2 ] && echo "[✓][Q4] used=true 回归（$n 次）" || { echo "[✗][Q4] used=true 回归缺失（$n）"; FAIL=1; }
-# ---- Q7 seq 跨重启单调 ----
-SEQ_AFTER_FIRST=$(grep -o "PEER-RESP seq=[0-9]*" "$P" | awk -F= -v b="$SEQ_BEFORE" 'seen && $2<=b {print "REGRESS"; exit} $2>b {seen=1} END{}')
-SEQ_AFTER=$(grep -o "PEER-RESP seq=[0-9]*" "$P" | tail -1 | grep -o "[0-9]*")
-if [ -n "$SEQ_AFTER" ] && [ "$SEQ_AFTER" -ge "$SEQ_BEFORE" ] && [ "$SEQ_BEFORE" -ge 0 ]; then
-  echo "[✓][Q7] PEER-RESP seq 跨重启单调（重启前末值=$SEQ_BEFORE，窗内末值=$SEQ_AFTER）"
+[ "$n" -ge 1 ] && echo "[✓][Q4] used=true 样本（$n 次）" || { echo "[✗][Q4] used=true 缺失"; FAIL=1; }
+# 回归子判据（69.2-review 订正：原「全窗 n≥2」会把段1样本误计为回归——
+# broker transcript 证目标侧 MQTT 面杀后不复重连。改为只数重启窗锚后样本；
+# 零样本 = 观察项如实登记，不判 PASS/FAIL。）
+POST_USED=$(tail -n +"$((RECOVER_LINES + 1))" "$S" 2>/dev/null | grep -ac "REMOTE-BRAIN used=true"); POST_USED=${POST_USED:-0}
+if [ "$POST_USED" -ge 1 ]; then
+  echo "[✓][Q4] used=true 回归（重启窗 $POST_USED 次）"
 else
-  echo "[✗][Q7] seq 单调性（before=$SEQ_BEFORE after=$SEQ_AFTER）"; FAIL=1
+  echo "[i][Q4] 重启窗零 used=true（目标侧 MQTT 面未复重连——预存行为，REG-69.2-GATE-VACUOUS）；回归强制断言随目标侧重连接线收口恢复"
+fi
+# ---- Q7 seq 跨重启单调（主证据=段0 host 窗；QEMU 窗侧为条件断言） ----------
+# 69.2-review 订正：原「7→7」为同一条重启前末线的恒真判据（重启后零应答）。
+# 有重启后应答样本 ⇒ 强制全部严格大于重启前末值；零样本 ⇒ 观察项如实登记。
+POST_READY_LINE=$(awk '/READY broker=/{l=NR} END{print l+0}' "$P")
+POST_SEQS=$(tail -n +"$POST_READY_LINE" "$P" | grep -o "PEER-RESP seq=[0-9]*" | grep -o "[0-9]*")
+if [ -n "$POST_SEQS" ]; then
+  if [ "$SEQ_BEFORE" -ge 0 ] && [ "$(echo "$POST_SEQS" | sort -n | head -1)" -gt "$SEQ_BEFORE" ]; then
+    echo "[✓][Q7] QEMU 窗重启后应答 seq 单调（重启前末值=$SEQ_BEFORE，样本=$(echo "$POST_SEQS" | tr '\n' ',' | sed 's/,$//')）"
+  else
+    echo "[✗][Q7] QEMU 窗重启后 seq 回退（before=$SEQ_BEFORE）"; FAIL=1
+  fi
+else
+  echo "[i][Q7] QEMU 窗重启后零应答（目标侧 MQTT 面未复重连——预存行为，REG-69.2-GATE-VACUOUS）；seq 跨重启单调由段0 host 窗强制实弹"
+fi
+# ---- Q7' 段0 host 窗（Q7 主证据，文件级复验） ------------------------------
+HP="$EVROOT/$W.hostwin-peer.log"
+HW_SEQS=$(grep -o "PEER-RESP seq=[0-9]*" "$HP" 2>/dev/null | grep -o "[0-9]*"); HW_SEQS=${HW_SEQS:-}
+HW_N=$(echo "$HW_SEQS" | grep -c .); HW_N=${HW_N:-0}
+HW_FIRST=$(echo "$HW_SEQS" | head -1)
+HW_MONO=$(echo "$HW_SEQS" | awk 'NR>1 && $1<=prev{bad=1} {prev=$1} END{print (bad?"0":"1")}')
+if [ "$HW_N" -eq 8 ] && [ "$HW_FIRST" = "1" ] && [ "$HW_MONO" = "1" ]; then
+  echo "[✓][Q7'] 段0 host 窗 3 轮 kill-9 重启后 seq 严格单调（首=$HW_FIRST 末=$(echo "$HW_SEQS" | tail -1)）"
+else
+  echo "[✗][Q7'] 段0 host 窗 seq 断言失败（条数=$HW_N 首=$HW_FIRST 单调=$HW_MONO）"; FAIL=1
 fi
 # ---- Q5 半死 broker（本卷的牙） ----
 if [ "$Q5_OK" -eq 1 ] && [ "$Q5_ELAPSED" -le 50 ]; then

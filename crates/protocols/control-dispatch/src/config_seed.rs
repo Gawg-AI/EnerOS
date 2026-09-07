@@ -54,7 +54,9 @@ impl ConfigSeed {
                 profile: self.profile,
                 fencing_token: self.fencing_token,
                 issuer_service: self.issuer_service,
-                // 签发代次默认 0（host 测试夹具；生产装配按重启计数覆盖）。
+                // 签发代次默认 0（生产装配与 host 夹具当前均用此默认；
+                // 重启种子 PROD_EPOCH_SEED 派生的是首签 fencing token，
+                // 见 control-services/dispatch_assembly，非本字段）。
                 issuer_epoch: 0,
             },
             gate: DecisionGate::new(100, 1000.0, 3_600_000),
