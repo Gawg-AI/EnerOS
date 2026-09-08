@@ -58,6 +58,8 @@ run_case() {
 # M2 错回读：读回偏移 1.5×（5→7.5，超容差）→ AppliedReadbackMismatch → dispatch Failed
 run_case "m2-wrong-readback" "--wrong-readback-scale 1.5" "readback-mismatch" "ACK 成功但物理状态未达目标 → Failed"
 # M3 transport 拒绝：无对端 → driver status≠ST_OK → 通道 Rejected → Indeterminate 对账
-run_case "m3-no-peer" "--port 5599" "SUBMIT state=Indeterminate" "transport 拒绝 → Indeterminate（不假失败）"
+# （69 全卷独立复查：词形前缀随 v0.329.0 旧读臂退役更新 SUBMIT→TYPED——
+#   非 Committed 终态行现由 CAND 主路 TYPED 词形承载，退役词形复现即 t22 红）
+run_case "m3-no-peer" "--port 5599" "TYPED state=Indeterminate" "transport 拒绝 → Indeterminate（不假失败）"
 
 echo "=== 矩阵汇总（M4 重启对账=0.314.24 run-e4c 串口；M5 超时=E3 套件）==="

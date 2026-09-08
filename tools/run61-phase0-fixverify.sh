@@ -58,7 +58,8 @@ run_case "m2-wrong-readback" "--wrong-readback-scale 1.5" "readback-mismatch" "�
 # 源的正确装配下 = 无遥测 = 链不提交（陈旧 root 合成源掩盖的历史偶然）。
 # 对端协议级拒写 → writer Denied(8) → dispatch Failed 终态（蓝图
 # 05 §4.5「transport 拒绝 | Failed」行）。
-run_case "m3-reject-writes" "--reject-writes" "SUBMIT state=Failed" "对端拒写 → Failed 终态，不重复投递"
+# （69 全卷独立复查：词形前缀随 v0.329.0 旧读臂退役更新 SUBMIT→TYPED）
+run_case "m3-reject-writes" "--reject-writes" "TYPED state=Failed" "对端拒写 → Failed 终态，不重复投递"
 
 echo "=== 步骤 4：M4 崩溃重启对账补证（读回不可得 → Indeterminate + 同数据盘二次启动）==="
 M4DIR="$ROOT/target/evidence61-fixverify/m4-restart-reconcile"
@@ -74,8 +75,8 @@ cargo xtask run qemu-prod \
   --expect PASS --evidence-dir "$M4DIR" \
   --net-mode present --net-user --net-protocols present \
   --reset-bootctrl --ready-marker product-ready --qmp-deadline-secs 600 >/dev/null 2>&1
-ind=$(grep -c 'SUBMIT state=Indeterminate' "$M4DIR/qemu-serial.log" 2>/dev/null); ind=${ind:-0}
-echo "  首轮 SUBMIT Indeterminate=$ind"
+ind=$(grep -c 'TYPED state=Indeterminate' "$M4DIR/qemu-serial.log" 2>/dev/null); ind=${ind:-0}
+echo "  首轮 TYPED Indeterminate=$ind"
 # 二轮：同 evidence-dir（数据盘复用，不清盘）→ 启动恢复对账。
 cargo xtask run qemu-prod \
   --image "$IMG" \
