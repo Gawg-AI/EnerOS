@@ -111,6 +111,22 @@ impl HeapAllocator {
 // SAFETY: LockedHeap 内部自旋锁 + UnsafeCell 单初始化（init CAS 防重入）。
 unsafe impl Sync for HeapAllocator {}
 
+impl HeapAllocator {
+    /// 蓝图 70.1 WP-70.1.1：堆水位（used, free）快照——分配曲线诊断探针。
+    ///
+    /// 读侧走 LockedHeap 内部自旋锁（与 alloc/dealloc 同锁，单线程服务
+    /// 循环内无争用）；init 前调用返回 (0,0)（服务循环内恒已 init）。
+    pub fn used_free(&self) -> (usize, usize) {
+        if self.init.load(Ordering::Acquire) != 1 {
+            return (0, 0);
+        }
+        // SAFETY: init 已完成；UnsafeCell 访问经内部自旋锁串行化
+        //（与上方 GlobalAlloc 实现同证）。
+        let heap = unsafe { (*self.heap.get()).lock() };
+        (heap.used(), heap.free())
+    }
+}
+
 impl Default for HeapAllocator {
     fn default() -> Self {
         Self::new()

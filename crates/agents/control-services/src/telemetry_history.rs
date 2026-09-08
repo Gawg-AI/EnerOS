@@ -50,6 +50,34 @@ pub const TARGET_TSDB_CHUNK_POINTS: u32 = 256;
 /// REG-TSDB-CHECKPOINT-ASYNC）。
 pub const CHECKPOINT_EVERY_BATCHES: u64 = 8;
 
+/// 蓝图 70.2 WP-70.2.2：checkpoint 最长时间约束（毫秒；**P 建议值**，
+/// 目标环境测量与产品裁决后冻结为正式门限）。
+///
+/// 批数窗（[`CHECKPOINT_EVERY_BATCHES`]）只保证高流量下的丢尾上界；
+/// 低流量时 8 批可能数小时不齐——持久水位持续老化。本约束：存在未
+/// 持久批且距上次成功 checkpoint ≥ 本阈值时，下一批写入触发 checkpoint
+/// （批距 = 写入边界，不引入独立定时器/线程）。与批数窗取**或**。
+pub const CHECKPOINT_MAX_AGE_MS: u64 = 600_000;
+
+/// 蓝图 70.2 WP-70.2.2：checkpoint 触发裁决（纯函数单源，host 可测）。
+///
+/// - `pending == 0`：无未持久批，永不触发（避免空转 checkpoint——
+///   68.3 实测单次 7.7-32s 的同步开销必须有未持久工作为前提）；
+/// - 批数窗：`batches_since ≥ CHECKPOINT_EVERY_BATCHES`（既有合并窗）；
+/// - 时长窗：`batches_since > 0 && ms_since ≥ CHECKPOINT_MAX_AGE_MS`
+///   （低流量老化线；host 时钟恒 0 时该窗自然失效，行为同旧）。
+pub fn checkpoint_due(
+    batches_since: u64,
+    ms_since_last_checkpoint: u64,
+    pending_batches: u64,
+) -> bool {
+    if pending_batches == 0 {
+        return false;
+    }
+    batches_since >= CHECKPOINT_EVERY_BATCHES
+        || (batches_since > 0 && ms_since_last_checkpoint >= CHECKPOINT_MAX_AGE_MS)
+}
+
 /// LFS 几何：4096B 块 × 区段折算段数（16 MiB 盘 8 MiB 区段 → 2048 段）。
 const FS_BLOCK_SIZE: usize = 4096;
 
@@ -88,9 +116,92 @@ pub struct TsdbHistorySink {
     db: DiskDb,
     /// 磁盘写失败批次数（观测）。
     pub disk_errors: u64,
-    /// 距上次 checkpoint 的批次数（合并窗计数；见
-    /// [`CHECKPOINT_EVERY_BATCHES`]）。
+    /// 蓝图 70.2 WP-70.2.2：受理/持久双账与触发窗口（纯逻辑，host 全测）。
+    wm: PersistWatermark,
+}
+
+/// 蓝图 70.2 WP-70.2.2：持久水位账（纯逻辑单源）。
+///
+/// 三本账：**受理**（写入 TSDB 缓冲成功 = ACK）、**持久**（最近一次
+/// 成功 checkpoint 覆盖的受理数）、**窗口**（距上次 checkpoint 触发
+/// 判定的批数/时刻）。pending = 受理-持久 = 掉电可丢上界的实账——
+/// 持续写失败/checkpoint 失败期显式增长，不得声称仍 ≤8 批丢尾。
+struct PersistWatermark {
+    accepted: u64,
+    persisted: u64,
     batches_since_checkpoint: u64,
+    last_checkpoint_ms: Option<u64>,
+}
+
+impl PersistWatermark {
+    const fn new() -> Self {
+        PersistWatermark {
+            accepted: 0,
+            persisted: 0,
+            batches_since_checkpoint: 0,
+            last_checkpoint_ms: None,
+        }
+    }
+
+    /// 批写入尝试后登记（成败均计——窗口纪律沿用 68.3 口径）。
+    fn on_batch_attempt(&mut self) {
+        self.batches_since_checkpoint += 1;
+    }
+
+    /// 批整体成功（写+窗满 ck）后登记受理（ACK 口径）。
+    fn on_batch_accepted(&mut self) {
+        self.accepted += 1;
+    }
+
+    /// 未持久账快照（含当前在途批；write_batch 判定/打印口径）。
+    fn pending_including_current(&self) -> u64 {
+        self.accepted - self.persisted + 1
+    }
+
+    /// 本批边界是否应 checkpoint（判定单源 = [`checkpoint_due`]）。
+    fn checkpoint_due(&self, now_ms: u64) -> bool {
+        let ms_since = self
+            .last_checkpoint_ms
+            .map_or(0, |t| now_ms.saturating_sub(t));
+        checkpoint_due(
+            self.batches_since_checkpoint,
+            ms_since,
+            self.pending_including_current(),
+        )
+    }
+
+    /// checkpoint 结果回填：窗口清零沿用 68.3 防饿死纪律（失败也清零，
+    /// 8 批后再试）；成功才推进持久账——本批仅当写入成功时随 ck 入账
+    ///（写失败批不在缓冲；持久账永不超过受理账）。
+    fn on_checkpoint_done(&mut self, ck_ok: bool, now_ms: u64, current_write_ok: bool) {
+        self.batches_since_checkpoint = 0;
+        if ck_ok {
+            self.persisted = self.accepted + if current_write_ok { 1 } else { 0 };
+            self.last_checkpoint_ms = Some(now_ms);
+        }
+    }
+
+    /// 未持久批数（掉电可丢上界实账；受理-持久）。
+    fn pending(&self) -> u64 {
+        self.accepted - self.persisted
+    }
+}
+
+impl TsdbHistorySink {
+    /// 未持久批数（受理-持久；RPO 曲线观测口）。
+    pub fn pending_batches(&self) -> u64 {
+        self.wm.pending()
+    }
+
+    /// 受理账（ACK 口径累计批数）。
+    pub fn accepted_batches(&self) -> u64 {
+        self.wm.accepted
+    }
+
+    /// 持久账（最近一次成功 checkpoint 覆盖的批数）。
+    pub fn persisted_batches(&self) -> u64 {
+        self.wm.persisted
+    }
 }
 
 impl TelemetryHistorySink for TsdbHistorySink {
@@ -103,26 +214,38 @@ impl TelemetryHistorySink for TsdbHistorySink {
         let pts: Vec<TimeSeriesPoint> = batch.iter().map(map_record).collect();
         let mut db = self.db.borrow_mut();
         let r = db.write_batch(&pts);
-        self.batches_since_checkpoint += 1;
+        self.wm.on_batch_attempt();
+        // checkpoint 触发裁决（蓝图 70.2 WP-70.2.2 双约束单源）：
+        // 批数窗（合并窗）**或**时长窗（低流量老化线），且以未持久
+        // pending > 0 为前提（空转 checkpoint = 白付 7.7-32s 同步开销）。
+        let now_ms = eneros_drv_svc::now_ms();
+        let due = self.wm.checkpoint_due(now_ms);
+        let write_ok = r.is_ok();
+        // checkpoint 前的未持久账快照（打印口径；on_checkpoint_done 推进
+        // 持久账后再算会 u64 下溢——受理账在批尾才入账）。
+        let pending_snapshot = self.wm.pending_including_current();
         // checkpoint 合并窗（见 CHECKPOINT_EVERY_BATCHES 文档）：仅窗满
         // 批次做磁盘 checkpoint。`r.and(ck)`：两步都成功才成功；本批写
         // 失败优先于 checkpoint 结果上抛（68.3 前行为 = and_then 短路
         // 同语义——窗满不得把丢批谎报成 COMMIT）。ck 失败也清零计数：
         // 保留计数会让后续每批都重试 ~30s 级 checkpoint（TCG 实测），复
-        // 现 68.3 D.4 饿死形态——清零后 8 批再试，ck 持续失败期掉电丢尾
-        // 上界 16 批（词形/Err 显式暴露，非静默）。
-        let r = if self.batches_since_checkpoint >= CHECKPOINT_EVERY_BATCHES {
-            self.batches_since_checkpoint = 0;
+        // 现 68.3 D.4 饿死形态——清零后 8 批再试。
+        let r = if due {
             let t0 = eneros_drv_svc::now_ms();
             let ck = db.checkpoint();
             let dur = eneros_drv_svc::now_ms().saturating_sub(t0);
+            self.wm
+                .on_checkpoint_done(ck.is_ok(), eneros_drv_svc::now_ms(), write_ok);
             // 蓝图 68 卷 68.3（WP-68.3.3）：checkpoint 时长判定行（host
             // 时钟恒 0；target 为 Arm64Timer 单调毫秒）。TCG 实测量级
-            // ~秒级/次（执行卡 §D 落卡）。
+            // ~秒级/次（执行卡 §D 落卡）。70.2 追加 pending_batches 字段
+            // = checkpoint 前的未持久账（RPO 观测；行尾追加——旧 gate 的
+            // `ms=[0-9]*` 提取不受影响）。
             eneros_runtime::println!(
-                "[svc-telemetry] TSDB-CHECKPOINT-DUR ms={} items={}",
+                "[svc-telemetry] TSDB-CHECKPOINT-DUR ms={} items={} pending_batches={}",
                 dur,
-                batch.len()
+                batch.len(),
+                pending_snapshot
             );
             r.and(ck)
         } else {
@@ -132,6 +255,8 @@ impl TelemetryHistorySink for TsdbHistorySink {
             self.disk_errors += 1;
             return Err(());
         }
+        // 受理账：写入（含窗满批的 checkpoint）整体成功才计 ACK。
+        self.wm.on_batch_accepted();
         Ok(())
     }
 }
@@ -318,7 +443,7 @@ pub fn open_disk_history<C: EipcSend + Clone + 'static>(
             disk: TsdbHistorySink {
                 db: shared.clone(),
                 disk_errors: 0,
-                batches_since_checkpoint: 0,
+                wm: PersistWatermark::new(),
             },
             hot: HistoryBuffer::new(crate::telemetry::DEFAULT_HISTORY_CAP),
         },
@@ -724,5 +849,80 @@ mod spec_c_chain_tests {
             r.is_err(),
             "窗满批本批写失败必须上抛（不得被 checkpoint 结果掩盖）"
         );
+    }
+
+    // ===== 蓝图 70.2 WP-70.2.2：双约束触发与受理/持久水位账 =====
+
+    /// 触发裁决单源：pending=0 永不触发（防空转 checkpoint）；批数窗
+    /// 第 8 批触发；时长窗（≥600s 且有未持久批）低流量触发；双窗皆不
+    /// 达不触发。
+    #[test]
+    fn wm70_trigger_rationale_single_source() {
+        // pending=0：任何窗口满都不触发。
+        assert!(!checkpoint_due(CHECKPOINT_EVERY_BATCHES, 0, 0));
+        assert!(!checkpoint_due(
+            CHECKPOINT_EVERY_BATCHES,
+            CHECKPOINT_MAX_AGE_MS,
+            0
+        ));
+        // 批数窗：第 8 批触发，第 7 批不触发（无时长累计）。
+        assert!(checkpoint_due(CHECKPOINT_EVERY_BATCHES, 0, 1));
+        assert!(!checkpoint_due(CHECKPOINT_EVERY_BATCHES - 1, 0, 1));
+        // 时长窗：批数不足但老化达阈（host 时钟恒 0 时该窗自然失效，
+        // 与旧行为等价——target 单调钟下为低流量老化线）。
+        assert!(checkpoint_due(1, CHECKPOINT_MAX_AGE_MS, 1));
+        assert!(!checkpoint_due(1, CHECKPOINT_MAX_AGE_MS - 1, 1));
+        // 时长窗不越过 pending>0 前提（纯函数口径；sink 侧 pending 恒
+        // 含在途批，>0 由调用结构保证）。
+        assert!(!checkpoint_due(0, CHECKPOINT_MAX_AGE_MS, 0));
+    }
+
+    /// 双账对平（全链）：窗满前 pending 递增、accepted 递增、persisted
+    /// 停留；第 8 批 checkpoint 后 pending=0、persisted=accepted=8。
+    #[test]
+    fn wm70_watermark_zeroes_at_batch_window() {
+        let storage = FakeStorage::new(REGION_BLOCKS_512 * 512);
+        let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
+        let (mut chain, _reader) = open_disk_history(io, 0, REGION_BLOCKS_512).expect("open");
+        let batch = alloc::vec![rec(100, 7, 42, 1.0, 0)];
+        for w in 0..(CHECKPOINT_EVERY_BATCHES - 1) {
+            assert!(chain.write_batch(&batch).is_ok(), "batch #{w}");
+            assert_eq!(chain.disk.accepted_batches(), w + 1);
+            assert_eq!(chain.disk.pending_batches(), w + 1, "窗内未持久账递增");
+            assert_eq!(chain.disk.persisted_batches(), 0, "未触窗不得虚记持久");
+            assert_eq!(chain.disk.disk_errors, 0);
+        }
+        // 第 8 批：窗满触发 checkpoint，水位对平。
+        assert!(chain.write_batch(&batch).is_ok());
+        assert_eq!(chain.disk.accepted_batches(), CHECKPOINT_EVERY_BATCHES);
+        assert_eq!(chain.disk.persisted_batches(), CHECKPOINT_EVERY_BATCHES);
+        assert_eq!(chain.disk.pending_batches(), 0, "checkpoint 后无未持久批");
+        // 下一窗口：pending 重新递增（账本持续记账而非一次性）。
+        assert!(chain.write_batch(&batch).is_ok());
+        assert_eq!(chain.disk.pending_batches(), 1);
+        assert_eq!(chain.disk.persisted_batches(), CHECKPOINT_EVERY_BATCHES);
+    }
+
+    /// 失败路径账本：写失败批不进受理账；ck 成功时持久账只覆盖缓冲内
+    /// 真实批（持久账永不超过受理账——u64 下限防线）；ck 失败不动持久账
+    /// 但窗口照常清零（68.3 防饿死纪律）。
+    #[test]
+    fn wm70_failure_paths_never_overtake_accepted() {
+        let mut wm = PersistWatermark::new();
+        // 写失败批：attempt 计窗、不计受理；ck 成功且 write_ok=false →
+        // persisted = accepted（不含失败批）。
+        wm.on_batch_attempt();
+        wm.on_checkpoint_done(true, 1_000, false);
+        assert_eq!(wm.pending(), 0);
+        assert_eq!(wm.pending_including_current(), 1);
+        // 正常受理后 ck 失败：持久账不动、pending 保持、窗口清零。
+        wm.on_batch_attempt();
+        wm.on_batch_accepted();
+        assert_eq!(wm.pending_including_current(), 2);
+        wm.on_checkpoint_done(false, 2_000, true);
+        assert_eq!(wm.pending(), 1, "ck 失败不得虚推进持久账");
+        // 窗口已清零：紧邻批不再触发（防饿死纪律的账本面）。
+        wm.on_batch_attempt();
+        assert!(!wm.checkpoint_due(3_000));
     }
 }

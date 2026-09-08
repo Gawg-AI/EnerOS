@@ -106,7 +106,8 @@ pub extern "C" fn _start(
 }
 
 #[cfg(target_os = "none")]
-const MARKET_OUTBOX_OFFSET: u64 = 32768;
+// 蓝图 70.2 WP-70.2.4：事实 outbox 坐标单源 = DataRegion::MarketOutbox。
+const MARKET_OUTBOX_OFFSET: u64 = eneros_ota_ab::ab_partition::DataRegion::MarketOutbox.base_byte();
 #[cfg(target_os = "none")]
 const MARKET_OUTBOX_SLOT_LEN: usize = 256;
 #[cfg(target_os = "none")]

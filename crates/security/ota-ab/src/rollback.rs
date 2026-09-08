@@ -318,11 +318,17 @@ mod tests {
     use heapless::String as HString;
 
     use super::*;
-    use crate::ab_partition::{PARTITION_BLOCKS, SLOT_A_BASE_BLOCK};
+    use crate::ab_partition::{META_BLOCK, PARTITION_BLOCKS, SLOT_A_BASE_BLOCK};
     use crate::upgrade::{OtaManager, UpgradeMeta};
 
     /// 设备总块数：保留块 + 双分区。
-    const TEST_BLOCKS: u64 = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
+    // 蓝图 70.2：META_BLOCK 移至保护间隙（块 4704）后，测试设备须容纳
+    // meta 块与 A/B 双槽的整体跨度。
+    const TEST_BLOCKS: u64 = if META_BLOCK + 1 > SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS {
+        META_BLOCK + 1
+    } else {
+        SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS
+    };
 
     /// 33 SE-18：测试用分区表 HMAC 密钥（生产由集成层从 root_key 派生注入）。
     const TEST_HMAC_KEY: [u8; 32] = [0x42; 32];

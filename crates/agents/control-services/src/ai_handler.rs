@@ -649,7 +649,12 @@ pub mod target {
     ) -> ! {
         // 决策审计（ADR-0042 边界：dual-brain/audit 为决策语义门面）。
         // 蓝图 54 WP-54.1：同源魔数 [0x47;32] → 唯一入口按本服务域派生。
-        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"svc-ai-worker-decision"));
+        // 蓝图 70.1 WP-70.1.2：决策审计字节预算显式声明（BoundedMemStore
+        // 构造期预分配，扩容峰值 = 0，满载丢新计数——69.5 窗 OOM 根因消除）。
+        let mut audit = DecisionAudit::with_budget(
+            eneros_audit::genesis(b"svc-ai-worker-decision"),
+            eneros_dual_brain::audit::DECISION_AUDIT_BUDGET_BYTES,
+        );
         let link = crate::remote_brain::PeerLinkEipc {
             mqtt,
             correlation: 0,
@@ -681,7 +686,12 @@ pub mod target {
         learn: Option<TargetLearner>,
         catalog_version: u64,
     ) -> ! {
-        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"svc-ai-worker-decision"));
+        // 蓝图 70.1 WP-70.1.2：决策审计字节预算显式声明（BoundedMemStore
+        // 构造期预分配，扩容峰值 = 0，满载丢新计数——69.5 窗 OOM 根因消除）。
+        let mut audit = DecisionAudit::with_budget(
+            eneros_audit::genesis(b"svc-ai-worker-decision"),
+            eneros_dual_brain::audit::DECISION_AUDIT_BUDGET_BYTES,
+        );
         let mut worker = AiWorkerService::new(
             HeuristicBackend::new().with_catalog_version(catalog_version),
             [0x41; 16],

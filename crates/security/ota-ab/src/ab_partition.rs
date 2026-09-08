@@ -14,21 +14,34 @@ use heapless::String as HString;
 
 use crate::upgrade::{OtaError, OtaManager, UpgradeMeta};
 
-/// 分区表保留块地址（块 0，见 [`crate::rollback`] 持久化）。
-pub const META_BLOCK: u64 = 0;
-/// A 槽位起始块地址。
-pub const SLOT_A_BASE_BLOCK: u64 = 1;
+/// OTA 回滚分区表保留块（rollback 持久化，当前生产未接线）。
+///
+/// 蓝图 70.2 WP-70.2.4（N01 区段冲突收口）：旧值 0 与意图日志区
+/// （[`DataRegion::IntentLog`]，字节 [0,131136)）重叠——rollback 尚无
+/// 生产写入方（grep 全仓仅 ota-ab 内部与测试），零生产字节受迁移影响；
+/// 移入保护间隙块 4704，使未来接线天然不冲突。
+pub const META_BLOCK: u64 = 4704;
+/// A 槽位起始块地址（512B 块计）。
+///
+/// 蓝图 70.2 WP-70.2.4：旧值 1（字节 512）使 OTA 数据槽压住意图日志、
+/// TrialState、账本、三个 outbox 与 agent-bus 状态区（N01 P0 静态冲突，
+/// 双向互写）。试验探针槽是唯一无生产状态的迁移动作，移至块 512
+/// （字节 256 KiB，4 MiB 对齐保护带内）；旧槽数据 = 历史探针镜像，
+/// 无可恢复生产状态（迁移合同见登记册 REG-70.2-MEDIA-RELAYOUT）。
+pub const SLOT_A_BASE_BLOCK: u64 = 512;
 /// 每个分区占用的块数（按 512 字节块计 1 MiB；实际口径随 `block_size()` 缩放）。
 pub const PARTITION_BLOCKS: u64 = 2048;
 /// B 槽位起始块地址。
 pub const SLOT_B_BASE_BLOCK: u64 = SLOT_A_BASE_BLOCK + PARTITION_BLOCKS;
 
 /// SPEC-C（D-TSDB-2 方案 A）：svc-storage 数据盘上让渡给 svc-telemetry 的
-/// TSDB 区段起始块（512B 块计，字节 4 MiB）。避开全部既有占用：META 块 0、
-/// 意图日志信封 [0,128KiB)、各业务状态区 [8KiB..64KiB)、A/B 槽 [块 1,
-/// 4097)，前置 ≈2 MiB 保护间隙。内存审计与区段清单见
-/// docs/delivery/wp-c-memory-audit-spec-c-20260827.md §三。
-pub const DATA_TSDB_BASE_BLOCK: u64 = SLOT_B_BASE_BLOCK + PARTITION_BLOCKS + 4095;
+/// TSDB 区段起始块（512B 块计，字节 4 MiB）。
+///
+/// 蓝图 70.2 WP-70.2.4：由 `SLOT_B_BASE_BLOCK + PARTITION_BLOCKS + 4095`
+/// 派生改为字面锁定——让渡区坐标不随低位移区而漂移（A/B 槽新几何
+/// [块 512,4608) 之后的 ≈1.75 MiB 保护间隙延续原隔离意图）。内存审计
+/// 与区段清单见 docs/delivery/wp-c-memory-audit-spec-c-20260827.md §三。
+pub const DATA_TSDB_BASE_BLOCK: u64 = 8192;
 /// TSDB 区段块数（512B 块计 8 MiB；16 MiB 数据盘上方再留 4 MiB 未分配余量）。
 pub const DATA_TSDB_BLOCKS: u64 = 16384;
 
@@ -92,6 +105,26 @@ pub const OTA_PROD_BLOCK_SIZE: usize = 512;
 /// 唯一 accessor，消灭消费端散抄魔数；常量数值逐字节不变）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataRegion {
+    /// svc-storage 数据盘 OTA 回滚分区表保留块（rollback 未接线）。
+    Meta,
+    /// svc-control-dispatch 持久意图日志（64B tail + 512B×256 槽）。
+    IntentLog,
+    /// svc-ota 试启动状态（RegionStateStore，128B）。
+    TrialState,
+    /// svc-ledger 账本持久快照（RegionStateStore，1024B）。
+    LedgerState,
+    /// svc-market 事实 outbox（AppendOutbox 64B tail + 256B×8 槽）。
+    MarketOutbox,
+    /// svc-cloud-sync 云同步 outbox（64B tail + 256B×8 槽）。
+    CloudOutbox,
+    /// svc-agent-bus 总线游标状态（RegionStateStore，1024B）。
+    AgentBusState,
+    /// svc-observability 观测 outbox（64B tail + 1024B×16 槽）。
+    ObsOutbox,
+    /// OTA 数据槽 A（试验探针；[`SLOT_A_BASE_BLOCK`]）。
+    OtaSlotA,
+    /// OTA 数据槽 B（试验探针；[`SLOT_B_BASE_BLOCK`]）。
+    OtaSlotB,
     /// TSDB 历史区段（[`DATA_TSDB_BASE_BLOCK`]/[`DATA_TSDB_BLOCKS`]）。
     Tsdb,
     /// 决策审计链区段（[`AUDIT_CHAIN_BASE_BLOCK`]/[`AUDIT_CHAIN_BLOCKS`]）。
@@ -106,10 +139,25 @@ pub enum DataRegion {
     SnapshotFace,
 }
 
+/// 低位业务区带基址（块 264 = 字节 135168，4 KiB 对齐；意图日志区末
+/// 131136 之后首个 4 KiB 边界）。带内各区按 8 块（4 KiB）或 16 块（8 KiB）
+/// 节距排布——容量远超实际需求，节距即未来的扩容余量。
+pub const BUSINESS_BAND_BASE_BLOCK: u64 = 264;
+
 impl DataRegion {
     /// 区段基址（512B 块号，ota-ab 常量口径）。
-    pub fn base_block_512(self) -> u64 {
+    pub const fn base_block_512(self) -> u64 {
         match self {
+            DataRegion::Meta => META_BLOCK,
+            DataRegion::IntentLog => 0,
+            DataRegion::TrialState => BUSINESS_BAND_BASE_BLOCK,
+            DataRegion::LedgerState => BUSINESS_BAND_BASE_BLOCK + 8,
+            DataRegion::MarketOutbox => BUSINESS_BAND_BASE_BLOCK + 16,
+            DataRegion::CloudOutbox => BUSINESS_BAND_BASE_BLOCK + 32,
+            DataRegion::AgentBusState => BUSINESS_BAND_BASE_BLOCK + 48,
+            DataRegion::ObsOutbox => BUSINESS_BAND_BASE_BLOCK + 64,
+            DataRegion::OtaSlotA => SLOT_A_BASE_BLOCK,
+            DataRegion::OtaSlotB => SLOT_B_BASE_BLOCK,
             DataRegion::Tsdb => DATA_TSDB_BASE_BLOCK,
             DataRegion::AuditChain => AUDIT_CHAIN_BASE_BLOCK,
             DataRegion::LearnState => LEARN_STATE_BASE_BLOCK,
@@ -119,8 +167,19 @@ impl DataRegion {
         }
     }
     /// 区段长度（512B 块数）。
-    pub fn blocks_512(self) -> u64 {
+    pub const fn blocks_512(self) -> u64 {
         match self {
+            DataRegion::Meta => 1,
+            // 64B tail + 256×512B 槽 = 131136B → 占块 [0,257)。
+            DataRegion::IntentLog => 257,
+            DataRegion::TrialState => 8,
+            DataRegion::LedgerState => 8,
+            DataRegion::MarketOutbox => 16,
+            DataRegion::CloudOutbox => 16,
+            DataRegion::AgentBusState => 8,
+            // 64B tail + 16×1024B 槽 = 16448B ≤ 40 块（20480B）。
+            DataRegion::ObsOutbox => 40,
+            DataRegion::OtaSlotA | DataRegion::OtaSlotB => PARTITION_BLOCKS,
             DataRegion::Tsdb => DATA_TSDB_BLOCKS,
             DataRegion::AuditChain => AUDIT_CHAIN_BLOCKS,
             DataRegion::LearnState => LEARN_STATE_BLOCKS,
@@ -130,13 +189,36 @@ impl DataRegion {
         }
     }
     /// 区段字节基址（`×512` 唯一换算点）。
-    pub fn base_byte(self) -> u64 {
+    pub const fn base_byte(self) -> u64 {
         self.base_block_512() * 512
     }
     /// 区段字节长度（`×512` 唯一换算点）。
-    pub fn len_bytes(self) -> u64 {
+    pub const fn len_bytes(self) -> u64 {
         self.blocks_512() * 512
     }
+    /// 区段字节末端（半开区间 `base..end`）。
+    pub const fn end_byte(self) -> u64 {
+        self.base_byte() + self.len_bytes()
+    }
+    /// 全部区段（媒体字节图遍历序——按基址升序；机器不重叠守卫的消费点）。
+    pub const ALL: [DataRegion; 16] = [
+        DataRegion::Meta,
+        DataRegion::IntentLog,
+        DataRegion::TrialState,
+        DataRegion::LedgerState,
+        DataRegion::MarketOutbox,
+        DataRegion::CloudOutbox,
+        DataRegion::AgentBusState,
+        DataRegion::ObsOutbox,
+        DataRegion::OtaSlotA,
+        DataRegion::OtaSlotB,
+        DataRegion::Tsdb,
+        DataRegion::AuditChain,
+        DataRegion::LearnState,
+        DataRegion::EventFace,
+        DataRegion::FactFace,
+        DataRegion::SnapshotFace,
+    ];
 }
 
 /// 分区标识。
@@ -937,5 +1019,110 @@ mod spec_c_region_tests {
                 .find(|(_, b, n)| *b == r.base_block_512() && *n == r.blocks_512());
             assert!(hit.is_some(), "DataRegion::{r:?} 与常量表不同源");
         }
+    }
+
+    /// 蓝图 70.2 WP-70.2.4（N01 P0 静态区段冲突收口）：**全域**字节图
+    /// 机器守卫——16 个区段两两不交、盘内收敛。旧布局中 OTA A 槽
+    /// （旧块 1 起 1 MiB）压住意图日志/TrialState/账本/三 outbox/agent-bus，
+    /// 且意图日志（[0,131136)）自身与 TrialState（旧 8192）等业务状态
+    /// 互压；本测试是防复发的常量级防线（新增消费者必须先入图）。
+    #[test]
+    fn media_region_map_pairwise_disjoint_and_in_bounds() {
+        use super::DataRegion;
+        const DATA_DISK_BYTES: u64 = 32768 * 512; // 16 MiB
+        let rs = DataRegion::ALL;
+        assert_eq!(rs.len(), 16, "新增区段必须入图并同步本测试");
+        for (i, a) in rs.iter().enumerate() {
+            assert!(
+                a.end_byte() <= DATA_DISK_BYTES,
+                "{a:?} 越出 16 MiB 数据盘（end={}）",
+                a.end_byte()
+            );
+            for b in rs.iter().skip(i + 1) {
+                let disjoint = a.end_byte() <= b.base_byte() || b.end_byte() <= a.base_byte();
+                assert!(
+                    disjoint,
+                    "区段冲突：{a:?} [{}, {}) 与 {b:?} [{}, {}) 重叠",
+                    a.base_byte(),
+                    a.end_byte(),
+                    b.base_byte(),
+                    b.end_byte()
+                );
+            }
+        }
+    }
+
+    /// 蓝图 70.2 WP-70.2.4：全域坐标锁——迁移后的新几何逐区段钉死；
+    /// 任何常量漂移（含"顺手优化"派生式改写）在此红。
+    #[test]
+    fn media_region_map_coordinates_locked() {
+        use super::{DataRegion, DATA_DISK_BLOCKS, PARTITION_BLOCKS};
+        let expect: [(DataRegion, u64, u64); 16] = [
+            (DataRegion::Meta, 4704 * 512, 512),
+            (DataRegion::IntentLog, 0, 131_584),
+            (DataRegion::TrialState, 135_168, 4_096),
+            (DataRegion::LedgerState, 139_264, 4_096),
+            (DataRegion::MarketOutbox, 143_360, 8_192),
+            (DataRegion::CloudOutbox, 151_552, 8_192),
+            (DataRegion::AgentBusState, 159_744, 4_096),
+            (DataRegion::ObsOutbox, 328 * 512, 20_480),
+            (DataRegion::OtaSlotA, 512 * 512, PARTITION_BLOCKS * 512),
+            (DataRegion::OtaSlotB, 2560 * 512, PARTITION_BLOCKS * 512),
+            (DataRegion::Tsdb, 8192 * 512, 16384 * 512),
+            (DataRegion::AuditChain, 24576 * 512, 128 * 512),
+            (DataRegion::LearnState, 24704 * 512, 8 * 512),
+            (DataRegion::EventFace, 24712 * 512, 256 * 512),
+            (DataRegion::FactFace, 24968 * 512, 256 * 512),
+            (DataRegion::SnapshotFace, 25224 * 512, 512 * 512),
+        ];
+        for (r, base, len) in expect {
+            assert_eq!(r.base_byte(), base, "{r:?} 基址漂移");
+            assert_eq!(r.len_bytes(), len, "{r:?} 长度漂移");
+        }
+        // 生产坐标保持声明：意图日志（svc-control-dispatch 活跃持久区）
+        // 基址 0 未迁移；让渡区（TSDB 起）全部未动。
+        assert_eq!(DataRegion::IntentLog.base_byte(), 0);
+        assert_eq!(DataRegion::Tsdb.base_byte(), 4_194_304);
+        // 盘内余量：快照面末之后 ≥2 MiB 未分配。
+        let last_end = DataRegion::SnapshotFace.end_byte();
+        assert!(DATA_DISK_BLOCKS * 512 - last_end >= 2 * 1024 * 1024);
+    }
+
+    /// 蓝图 70.2 WP-70.2.4：低位业务区带承载核验——各区实际写入跨度
+    /// （tail+槽）必须落在图内区段长度内；4 KiB 对齐（outbox/tail 布局
+    /// 的块命令友好性）。
+    #[test]
+    fn business_band_capacity_and_alignment() {
+        use super::DataRegion;
+        // (区段, 实际写跨度字节)
+        let spans = [
+            (DataRegion::IntentLog, 64 + 256u64 * 512),
+            (DataRegion::MarketOutbox, 64 + 8u64 * 256),
+            (DataRegion::CloudOutbox, 64 + 8u64 * 256),
+            (DataRegion::ObsOutbox, 64 + 16u64 * 1024),
+            (DataRegion::TrialState, 128),
+            (DataRegion::LedgerState, 1024),
+            (DataRegion::AgentBusState, 1024),
+        ];
+        for (r, span) in spans {
+            assert!(
+                span <= r.len_bytes(),
+                "{r:?} 实际写跨度 {span} 超区段长度 {}",
+                r.len_bytes()
+            );
+        }
+        for r in [
+            DataRegion::TrialState,
+            DataRegion::LedgerState,
+            DataRegion::MarketOutbox,
+            DataRegion::CloudOutbox,
+            DataRegion::AgentBusState,
+            DataRegion::ObsOutbox,
+        ] {
+            assert_eq!(r.base_byte() % 4096, 0, "{r:?} 基址非 4KiB 对齐");
+        }
+        // A/B 槽恰落在意图日志/业务区带之后的保护带内，TSDB 之前。
+        assert!(DataRegion::ObsOutbox.end_byte() <= DataRegion::OtaSlotA.base_byte());
+        assert!(DataRegion::OtaSlotB.end_byte() <= DataRegion::Tsdb.base_byte());
     }
 }

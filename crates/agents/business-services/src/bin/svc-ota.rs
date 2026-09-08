@@ -139,7 +139,9 @@ pub extern "C" fn _start(
 
 /// 数据盘持久化区域（字节偏移；避开首块引导区/GPT 保护区）。
 #[cfg(target_os = "none")]
-const OTA_PERSIST_OFFSET: u64 = 8192;
+// 蓝图 70.2 WP-70.2.4：试启动状态区坐标单源 = DataRegion::TrialState
+//（旧字面 8192 与意图日志区重叠——N01 P0 静态冲突，迁移见登记册）。
+const OTA_PERSIST_OFFSET: u64 = eneros_ota_ab::ab_partition::DataRegion::TrialState.base_byte();
 #[cfg(target_os = "none")]
 const OTA_PERSIST_LEN: u64 = 128;
 

@@ -35,6 +35,9 @@ pub extern "C" fn _start(
     unsafe { ALLOC.init() };
     // 装配面（fail-closed 阶梯 + 通道 + 审计）在 dispatch_assembly 单点；
     // 本 bin 只声明服务并进主循环。
+    // 蓝图 70.1 WP-70.1.1：堆水位探针注入（HEAP-WM 曲线的 bin 半边——
+    // 堆所有权在本 bin 的 global_allocator 静态上）。
+    eneros_control_services::dispatch_assembly::install_heap_probe(|| ALLOC.used_free());
     let mut handler = eneros_control_services::dispatch_assembly::DispatchHandler::new(eipc_mask);
     eneros_control_services::control_service_main(
         ep,

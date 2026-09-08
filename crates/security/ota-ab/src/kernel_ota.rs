@@ -342,10 +342,16 @@ mod tests {
     use eneros_storage::MockBlockDevice;
 
     use super::*;
-    use crate::ab_partition::{PARTITION_BLOCKS, SLOT_A_BASE_BLOCK};
+    use crate::ab_partition::{META_BLOCK, PARTITION_BLOCKS, SLOT_A_BASE_BLOCK};
 
     /// 设备总块数：保留块 + 双分区。
-    const TEST_BLOCKS: u64 = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
+    // 蓝图 70.2：META_BLOCK 移至保护间隙（块 4704）后，测试设备须容纳
+    // meta 块与 A/B 双槽的整体跨度。
+    const TEST_BLOCKS: u64 = if META_BLOCK + 1 > SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS {
+        META_BLOCK + 1
+    } else {
+        SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS
+    };
     /// 测试分区容量（字节，bs=512 设备）——69.5 起仅作派生期望值的对照
     /// 锚（构造器不再接受注入；`setup` 断言派生值与本锚一致）。
     const TEST_CAPACITY: u64 = PARTITION_BLOCKS * 512;

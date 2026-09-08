@@ -42,7 +42,19 @@ where
     use eneros_control_dispatch::durable_intent::DurableIntentStore;
     if let Some(slot) = storage_slot {
         if let Some(io) = bind_io(slot) {
-            let mut store = DurableIntentStore::new(io, 0, 512, 256);
+            // 蓝图 70.2 WP-70.2.4：意图日志区几何单源 = DataRegion::IntentLog
+            //（基址 0、64B tail + 512B×256 槽 = 131136B；slot_len/max_slots
+            // 与区段长度的承载关系由 ota-ab media_region 守卫测试钉死）。
+            debug_assert!(
+                64 + 512 * 256 <= eneros_ota_ab::ab_partition::DataRegion::IntentLog.len_bytes(),
+                "意图日志写跨度不得超过区段长度"
+            );
+            let mut store = DurableIntentStore::new(
+                io,
+                eneros_ota_ab::ab_partition::DataRegion::IntentLog.base_byte(),
+                512,
+                256,
+            );
             match store.open() {
                 Ok(()) => {
                     eneros_runtime::println!(
@@ -178,12 +190,56 @@ pub struct DispatchHandler {
     >,
     /// 47（WP-47.1）：意图线码请求处理计数（观测）。
     pub intent_requests: u64,
+    /// 蓝图 70.1 WP-70.1.1：handle() 总调用计数（HEAP-WM 采样节拍）。
+    handle_calls: u64,
 }
+
+/// 蓝图 70.1 WP-70.1.1：堆水位探针钩子（bin 装配期注入；堆所有权在
+/// bin 的 global_allocator 静态上，lib 侧只持 fn 地址，0 = 未注入）。
+/// host 构建无消费者（handle() 采样在 target-only impl）——随用随门。
+#[cfg(target_os = "none")]
+static HEAP_PROBE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// bin 装配期安装堆水位探针（svc-control-dispatch `_start` 注入
+/// `ALLOC.used_free`；host 测试不注入——HEAP-WM 行只在目标产出）。
+#[cfg(target_os = "none")]
+pub fn install_heap_probe(f: fn() -> (usize, usize)) {
+    HEAP_PROBE.store(f as usize, core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(target_os = "none")]
+fn heap_probe() -> Option<(usize, usize)> {
+    let p = HEAP_PROBE.load(core::sync::atomic::Ordering::Acquire);
+    if p == 0 {
+        return None;
+    }
+    // SAFETY: store 侧只接受 `fn() -> (usize, usize)`（install_heap_probe
+    // 签名），类型往返一致；单线程服务循环内调用。
+    let f: fn() -> (usize, usize) = unsafe { core::mem::transmute(p) };
+    Some(f())
+}
+
+/// 堆水位打印节距（每 N 个意图请求一行；≈64 轮粒度的分配曲线采样）。
+#[cfg(target_os = "none")]
+const HEAP_WM_EVERY: u64 = 64;
 
 #[cfg(all(target_os = "none", feature = "sel4"))]
 impl crate::ControlServiceHandler for DispatchHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, _now_ms: u64) -> bool {
         use crate::dispatch_service::{DISP_SUBMIT, DISP_SUBMIT_INTENT};
+        // 蓝图 70.1 WP-70.1.1：堆水位曲线采样（handle() 总入口——全部
+        // 请求臂统一节拍；bin 未注入时静默；HOST-WM 只在目标产出）。
+        self.handle_calls += 1;
+        if self.handle_calls % HEAP_WM_EVERY == 0 {
+            if let Some((used, free)) = heap_probe() {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] HEAP-WM req={} used={} free={}",
+                    self.handle_calls,
+                    used,
+                    free
+                );
+            }
+        }
         // 拒载态（WP-A.1 chain-key-missing）三臂整体早路由到同源单点
         // （host 可测——见 handle_unloaded 测试）。
         let Some(engine) = self.engine.as_mut() else {
@@ -664,6 +720,7 @@ impl DispatchHandler {
             engine,
             telemetry,
             intent_requests: 0,
+            handle_calls: 0,
         }
     }
 
@@ -789,8 +846,13 @@ impl DispatchHandler {
             // 伪持久 MemStore 桩已订正——存储未授予时易失兜底并如实标注）。
             audit_sinks: eneros_control_dispatch::AuditSinks {
                 control_audit: Some(build_control_audit(eipc_mask)),
-                audit: Some(eneros_dual_brain::audit::DecisionAudit::new(
+                // 蓝图 70.1 WP-70.1.2：决策审计字节预算装配点显式声明——
+                // BoundedMemStore 构造期预分配 64 KiB（585 条），扩容峰值
+                // = 0，满载丢新记录计数；69.5 窗 114 688 B 扩容 OOM 根因
+                // 由预算化消除（evidence/69/vol69.5/qemu-serial.log:203189）。
+                audit: Some(eneros_dual_brain::audit::DecisionAudit::with_budget(
                     eneros_audit::genesis(b"svc-control-dispatch-audit"),
+                    eneros_dual_brain::audit::DECISION_AUDIT_BUDGET_BYTES,
                 )),
                 ..base.audit_sinks
             },

@@ -185,11 +185,28 @@ pub trait ActionExecutor {
 }
 
 /// 管理 RPC 处理器。
+///
+/// 蓝图 70.1 WP-70.1.3（N02）：`audit` 与 `replay_seen` 由无界 `Vec` 追加
+/// 收口为有界记录——超过 [`MGMT_AUDIT_MAX_RECORDS`] / [`MGMT_REPLAY_SEEN_MAX`]
+/// 时丢最旧一条并计数（`audit_dropped_count`/`replay_dropped_count` 可观测），
+/// 常驻字节与请求量解耦。语义边界如实声明：重放缓存是**易失防重放窗口**
+/// （丢弃最旧后，超出窗口的旧 request_id 不再被判重），不是已执行操作账本；
+/// 持久 operation 幂等记录归蓝图 70.6 WP-70.6.1 的操作模块。
 pub struct ManagementRpc<E: ActionExecutor> {
     pub executor: E,
     pub audit: Vec<AuditRecord>,
     pub replay_seen: Vec<u64>,
+    /// 因容量到顶被丢弃的审计记录数.
+    audit_dropped: u64,
+    /// 因容量到顶被挤出的重放缓存条目数.
+    replay_dropped: u64,
 }
+
+/// 审计记录容量上限（128 条，AuditRecord 字段含 String 换算字节有界）。
+pub const MGMT_AUDIT_MAX_RECORDS: usize = 128;
+
+/// 重放防护窗口容量上限（request_id 环窗）。
+pub const MGMT_REPLAY_SEEN_MAX: usize = 1024;
 
 impl<E: ActionExecutor> ManagementRpc<E> {
     pub fn new(executor: E) -> Self {
@@ -197,7 +214,37 @@ impl<E: ActionExecutor> ManagementRpc<E> {
             executor,
             audit: Vec::new(),
             replay_seen: Vec::new(),
+            audit_dropped: 0,
+            replay_dropped: 0,
         }
+    }
+
+    /// 有界审计追加：到顶丢最旧并计数（记录数与请求量解耦）.
+    fn push_audit(&mut self, record: AuditRecord) {
+        if self.audit.len() >= MGMT_AUDIT_MAX_RECORDS {
+            self.audit.remove(0);
+            self.audit_dropped += 1;
+        }
+        self.audit.push(record);
+    }
+
+    /// 有界重放窗口追加：到顶丢最旧并计数.
+    fn push_replay_seen(&mut self, request_id: u64) {
+        if self.replay_seen.len() >= MGMT_REPLAY_SEEN_MAX {
+            self.replay_seen.remove(0);
+            self.replay_dropped += 1;
+        }
+        self.replay_seen.push(request_id);
+    }
+
+    /// 因容量到顶被丢弃的审计记录数.
+    pub fn audit_dropped_count(&self) -> u64 {
+        self.audit_dropped
+    }
+
+    /// 因容量到顶被挤出的重放缓存条目数.
+    pub fn replay_dropped_count(&self) -> u64 {
+        self.replay_dropped
     }
 
     /// 处理请求：认证会话（transport 层已产生）→ parse action（未知 →
@@ -225,7 +272,7 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                 payload: None,
             };
         }
-        self.replay_seen.push(request_id);
+        self.push_replay_seen(request_id);
         let action = match MgmtAction::parse(action_raw) {
             Ok(a) => a,
             Err(()) => {
@@ -234,7 +281,7 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                     detail: format!("unknown-action:{action_raw}"),
                     payload: None,
                 };
-                self.audit.push(AuditRecord {
+                self.push_audit(AuditRecord {
                     principal: session.principal.clone(),
                     channel: session.channel_binding.clone(),
                     action: action_raw.into(),
@@ -252,7 +299,7 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                 detail: format!("insufficient-role:{}", action.role_for()),
                 payload: None,
             };
-            self.audit.push(AuditRecord {
+            self.push_audit(AuditRecord {
                 principal: session.principal.clone(),
                 channel: session.channel_binding.clone(),
                 action: action_raw.into(),
@@ -262,7 +309,7 @@ impl<E: ActionExecutor> ManagementRpc<E> {
             return r;
         }
         let result = self.executor.execute(&action, session, arg, now_ms);
-        self.audit.push(AuditRecord {
+        self.push_audit(AuditRecord {
             principal: session.principal.clone(),
             channel: session.channel_binding.clone(),
             action: action_raw.into(),
@@ -496,6 +543,68 @@ mod tests {
         assert_eq!(rpc.executor.executed.len(), 1);
         assert_eq!(rpc.audit.len(), 1);
         assert_eq!(rpc.audit[0].result, "Completed");
+    }
+    // ================= 蓝图 70.1 WP-70.1.3：有界账本 =================
+
+    /// 审计账有界：超过 [`MGMT_AUDIT_MAX_RECORDS`] 丢最旧并计数——
+    /// 常驻字节与请求量解耦（N02 无界 Vec 收口），窗口内记录完整。
+    #[test]
+    fn bounded70_audit_ring_drops_oldest_and_counts() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            fail: false,
+            executed: vec![],
+        });
+        let total = MGMT_AUDIT_MAX_RECORDS + 8;
+        for i in 0..total {
+            let r = rpc.handle(&admin(1000), 100 + i as u64, "status", b"", 1000);
+            assert_eq!(r.status, RpcStatus::Completed);
+        }
+        assert_eq!(rpc.audit.len(), MGMT_AUDIT_MAX_RECORDS, "账本封顶");
+        assert_eq!(rpc.audit[0].action, "status", "窗口内记录类型不变");
+        // 首条应是被挤出的第 9 条请求之后的那条（旧 0..8 已逐出）。
+        assert_eq!(rpc.audit_dropped_count(), 8, "逐出计数 = 总数-容量");
+        // 窗口语义：仍在窗口内的 request_id 判重，已逐出的不再判重。
+        let r = rpc.handle(
+            &admin(1000),
+            100 + MGMT_AUDIT_MAX_RECORDS as u64,
+            "status",
+            b"",
+            1001,
+        );
+        assert_eq!(r.detail, "replay-request", "窗口内 id 判重");
+    }
+
+    /// 重放窗口有界：超过 [`MGMT_REPLAY_SEEN_MAX`] 逐出最旧 request_id
+    /// 并计数；逐出后同 id 不再判重（窗口语义如实——非持久操作账）。
+    #[test]
+    fn bounded70_replay_window_evicts_oldest() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            fail: false,
+            executed: vec![],
+        });
+        // 填满窗口（首个 id = 1）。
+        for i in 1..=(MGMT_REPLAY_SEEN_MAX as u64) {
+            let r = rpc.handle(&admin(1000), i, "status", b"", 1000);
+            assert_eq!(r.status, RpcStatus::Completed);
+        }
+        assert_eq!(rpc.replay_seen.len(), MGMT_REPLAY_SEEN_MAX);
+        // 再来一条 → 最旧（id=1）被逐出。
+        let r = rpc.handle(
+            &admin(1000),
+            MGMT_REPLAY_SEEN_MAX as u64 + 1,
+            "status",
+            b"",
+            1000,
+        );
+        assert_eq!(r.status, RpcStatus::Completed);
+        assert_eq!(rpc.replay_dropped_count(), 1);
+        assert_eq!(rpc.replay_seen.len(), MGMT_REPLAY_SEEN_MAX);
+        // id=1 已逐出：重发不再判 replay-request（窗口外如实放行）。
+        let r = rpc.handle(&admin(1000), 1, "status", b"", 1002);
+        assert_ne!(r.detail, "replay-request", "窗口外 id 不得谎判重放");
+        // 窗口内 id（如 500）仍判重。
+        let r = rpc.handle(&admin(1000), 500, "status", b"", 1003);
+        assert_eq!(r.detail, "replay-request");
     }
 }
 

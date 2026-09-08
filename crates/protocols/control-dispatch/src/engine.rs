@@ -1100,7 +1100,14 @@ impl DispatchEngine {
             intent_log: config.audit_sinks.intent_log,
             delivery: config.delivery_binding.delivery,
             // 与 durable 槽位同阶的有界执行 journal（61 v0.314.24）。
-            journal: ExecutionJournal::new(256),
+            // 蓝图 70.1 WP-70.1.1/70.1.3（I4 字节预算）：HEAP-WM 实弹曲线
+            // （evidence/70/70.1 归因窗）显示 cap=256 时 journal 随逐条
+            // IdempotencyRecord 入账把 svc-control-dispatch 堆推到 ~423KB
+            // 平台期（512KiB 堆余量 <100KB，~850 轮分配抖动后碎裂到无
+            // 512B 连续块 → 512B 申请 OOM）。cap 收至 128：幂等/重放窗
+            // 减半（在途非终态不受逐出影响——Full 背压语义保持），堆
+            // 平台期回落至 ~300KB 级、余量 ≥180KB。
+            journal: ExecutionJournal::new(128),
             feedback_builder: TrustedFeedbackBuilder::new(config.delivery_binding.feedback_mapping),
             now_fn: config.now_fn,
             seq: 0,

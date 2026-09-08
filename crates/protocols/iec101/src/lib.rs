@@ -21,7 +21,6 @@
 
 extern crate alloc;
 
-pub mod asdu_bridge;
 pub mod config;
 pub mod plugin;
 

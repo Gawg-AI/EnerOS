@@ -62,7 +62,8 @@ pub extern "C" fn _start(
 }
 
 #[cfg(target_os = "none")]
-const CLOUD_OUTBOX_OFFSET: u64 = 40960;
+// 蓝图 70.2 WP-70.2.4：云同步 outbox 坐标单源 = DataRegion::CloudOutbox。
+const CLOUD_OUTBOX_OFFSET: u64 = eneros_ota_ab::ab_partition::DataRegion::CloudOutbox.base_byte();
 #[cfg(target_os = "none")]
 const CLOUD_OUTBOX_SLOT_LEN: usize = 256;
 #[cfg(target_os = "none")]

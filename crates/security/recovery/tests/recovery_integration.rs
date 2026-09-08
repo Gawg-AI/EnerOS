@@ -28,7 +28,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair};
-use eneros_ota_ab::ab_partition::{PARTITION_BLOCKS, SLOT_A_BASE_BLOCK, SLOT_B_BASE_BLOCK};
+use eneros_ota_ab::ab_partition::{META_BLOCK, PARTITION_BLOCKS, SLOT_B_BASE_BLOCK};
 use eneros_ota_ab::{
     boot_health_check, load_from_device, save_to_device, AbPartitionOta, OtaManager, PartitionSlot,
     PartitionState, PartitionTable, UpgradeMeta,
@@ -49,7 +49,13 @@ const FLASH_CHUNK: usize = 4096;
 /// 大镜像用块大小：8 KiB 时单分区容量 = PARTITION_BLOCKS × 8 KiB = 16 MiB ≥ 10 MiB。
 const LARGE_BLOCK_SIZE: usize = 8 * 1024;
 /// 设备总块数：保留块 + 双分区。
-const TOTAL_BLOCKS: u64 = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
+// 蓝图 70.2：META_BLOCK 移至保护间隙（块 4704）后，测试设备须容纳
+// meta 块与 A/B 双槽的整体跨度。
+const TOTAL_BLOCKS: u64 = if META_BLOCK + 1 > SLOT_B_BASE_BLOCK + PARTITION_BLOCKS {
+    META_BLOCK + 1
+} else {
+    SLOT_B_BASE_BLOCK + PARTITION_BLOCKS
+};
 
 /// 共享句柄块设备：OTA 管理器与 RecoveryModeImpl 接力持有同一底层存储
 /// （host 单线程测试场景，`Rc<RefCell>` 语义足够；crate 内实现零改动）。

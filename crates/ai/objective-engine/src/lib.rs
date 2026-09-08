@@ -45,7 +45,6 @@ extern crate alloc;
 
 pub mod bundle;
 pub mod compiler;
-pub mod migrate;
 pub mod spec;
 
 pub use bundle::RuleBundle;

@@ -96,7 +96,8 @@ pub extern "C" fn _start(
 }
 
 #[cfg(target_os = "none")]
-const LEDGER_PERSIST_OFFSET: u64 = 16384;
+// 蓝图 70.2 WP-70.2.4：账本状态区坐标单源 = DataRegion::LedgerState。
+const LEDGER_PERSIST_OFFSET: u64 = eneros_ota_ab::ab_partition::DataRegion::LedgerState.base_byte();
 #[cfg(target_os = "none")]
 const LEDGER_PERSIST_LEN: u64 = 1024;
 

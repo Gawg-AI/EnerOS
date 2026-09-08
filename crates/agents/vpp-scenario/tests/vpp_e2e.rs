@@ -289,7 +289,7 @@ fn collect_evidence_observability() -> ExitEvidence {
 /// 真实 SM2 签名镜像升级 A→B（prepare→write→verify→activate），随后连续
 /// 启动健康检查超过 max_boot_attempts=3 次 → 自动回滚 A 分区.
 fn collect_evidence_ota_rollback() -> ExitEvidence {
-    const TEST_BLOCKS: u64 = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
+    const TEST_BLOCKS: u64 = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS + 1;
     let mut rng = CsRng::new();
     let kp = Sm2KeyPair::generate(&mut rng).expect("SM2 密钥对生成");
     let dev = MockBlockDevice::new(TEST_BLOCKS, 512);

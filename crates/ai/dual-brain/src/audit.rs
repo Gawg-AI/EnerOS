@@ -14,7 +14,7 @@ use alloc::format;
 
 use eneros_audit::chain::{AuditLogger, AuditLoggerImpl, ChainVerifier, ChainVerifierImpl};
 use eneros_audit::events::{AuditEvent, AuditEventType};
-use eneros_audit::store::MemStore;
+use eneros_audit::store::BoundedMemStore;
 use eneros_audit::AuditStore;
 use eneros_audit::{AuditError, VerifyReport};
 
@@ -87,23 +87,41 @@ pub struct DecisionRecord<'a> {
 
 /// AI 决策审计器（SM3 哈希链，篡改可检出）。
 pub struct DecisionAudit {
-    /// 底层审计日志器（内存存储）。
-    logger: AuditLoggerImpl<MemStore>,
-    /// 31-review（P1 AG-04）：有界缓冲上限（链条目数；超限丢弃新记录）。
-    max_entries: usize,
+    /// 底层审计日志器（字节预算化内存存储：构造期预分配、永不扩容）。
+    logger: AuditLoggerImpl<BoundedMemStore>,
     /// 31-review：因缓冲上限被丢弃的记录数（写失败计数）。
     dropped: u64,
 }
 
-/// 31-review：内存审计链的默认有界上限（条目数）。
-pub const MAX_AUDIT_ENTRIES: usize = 4096;
+/// 蓝图 70.1 WP-70.1.2（DEC-70-01）：决策审计字节预算单一来源。
+///
+/// 64 KiB = 585 条 ChainEntry（112 B/条）。该值取代旧的 4096 条数门
+/// （`4096 × 112 = 448 KiB`，占 512 KiB 目标堆 87.5%，扩容翻倍瞬态
+/// 672 KiB 必然 OOM——69.5 窗实弹在 513 条处失败）。预算语义：
+/// 构造期一次预分配（svc-control-dispatch / svc-ai-worker 两生产装配点
+/// 显式传入本常量），满载丢新记录并计数，覆盖窗 = 容量条数 ÷ 决策速率
+/// （D2 保留窗口裁决前的如实口径：约 585 轮控制决策，审计覆盖在满载后
+/// 停止而非回绕；持久化覆盖窗归 DEC-70-01 的 A 案后续裁决）。
+pub const DECISION_AUDIT_BUDGET_BYTES: usize = 64 * 1024;
 
 impl DecisionAudit {
     /// 新建决策审计器（`genesis` = 创世锚哈希）。
+    ///
+    /// 预算取 [`DECISION_AUDIT_BUDGET_BYTES`] 单一来源；生产装配点应经
+    /// [`DecisionAudit::with_budget`] 显式声明（预算来源可核对）。
     pub fn new(genesis: [u8; 32]) -> Self {
+        Self::with_budget(genesis, DECISION_AUDIT_BUDGET_BYTES)
+    }
+
+    /// 蓝图 70.1 WP-70.1.2：以显式字节预算创建决策审计器。
+    ///
+    /// `budget_bytes` 在构造期一次性预分配（`capacity = budget/112` 向下
+    /// 取整），此后追加零分配；预算到顶丢弃新记录并计入
+    /// [`DecisionAudit::dropped_count`]，返回 `BufferFull`——满载不通过
+    /// OOM 表达。
+    pub fn with_budget(genesis: [u8; 32], budget_bytes: usize) -> Self {
         Self {
-            logger: AuditLoggerImpl::new(MemStore::new(), genesis),
-            max_entries: MAX_AUDIT_ENTRIES,
+            logger: AuditLoggerImpl::new(BoundedMemStore::with_byte_budget(budget_bytes), genesis),
             dropped: 0,
         }
     }
@@ -135,12 +153,6 @@ impl DecisionAudit {
         &mut self,
         r: &DecisionRecord,
     ) -> Result<eneros_audit::ChainEntry, AuditError> {
-        // 31-review（P1 AG-04）：有界缓冲——链满后丢弃新记录并计数
-        //（MemStore 为无界 Vec，旧实现永不失败 → audit_drop_count 死计数器）。
-        if self.chain_state().entry_count as usize >= self.max_entries {
-            self.dropped += 1;
-            return Err(AuditError::BufferFull);
-        }
         let detail = format!(
             "i={};p={};s={};x={}",
             r.intent,
@@ -150,7 +162,17 @@ impl DecisionAudit {
         );
         let mut event = AuditEvent::new(AuditEventType::AiDecision, r.actor, r.target, &detail);
         event.timestamp_ms = r.now_ms;
-        self.logger.log(event)
+        // 31-review（P1 AG-04）+ 蓝图 70.1：有界缓冲——链满后丢弃新记录
+        // 并计数（BoundedMemStore 预分配容量到顶返回 BufferFull，零扩容；
+        // 决策路径不阻塞、满载不经 OOM 表达）。
+        match self.logger.log(event) {
+            Ok(entry) => Ok(entry),
+            Err(AuditError::BufferFull) => {
+                self.dropped += 1;
+                Err(AuditError::BufferFull)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// 当前链头（链尾哈希/序号/条数）。
@@ -311,23 +333,36 @@ mod tests {
         );
     }
 
-    /// 31-review（P1 AG-04）：有界缓冲——超过上限丢弃新记录并计数（BufferFull），
-    /// 决策路径不阻塞（MemStore 无界 Vec 的旧行为已封顶）。
+    /// 31-review（P1 AG-04）+ 蓝图 70.1：有界缓冲——预算到顶丢弃新记录并
+    /// 计数（BufferFull），决策路径不阻塞；预分配容量恒定、覆盖窗如实。
     #[test]
     fn test_audit_bounded_buffer_drops_overflow() {
-        let mut audit = DecisionAudit::new([0x11; 32]);
-        for _ in 0..MAX_AUDIT_ENTRIES {
-            audit.log_decision(&rec(0)).expect("上限内必须入链");
+        // 显式小预算：4 条 × 112 B/条 = 448 B。
+        let mut audit = DecisionAudit::with_budget([0x11; 32], 4 * 112);
+        for _ in 0..4 {
+            audit.log_decision(&rec(0)).expect("预算内必须入链");
         }
-        assert_eq!(
-            audit.chain_state().entry_count,
-            MAX_AUDIT_ENTRIES as u64,
-            "链条目数必须封顶"
-        );
+        assert_eq!(audit.chain_state().entry_count, 4, "链条目数必须封顶");
         assert!(
             audit.log_decision(&rec(0)).is_err(),
-            "超上限必须返回 Err（BufferFull）"
+            "超预算必须返回 Err（BufferFull）"
         );
         assert_eq!(audit.dropped_count(), 1, "丢弃计数必须递增");
+        // 容量锁定：满载后链条既有条目完整可校验（丢新不丢旧）。
+        assert!(audit.verify().expect("校验").valid);
+    }
+
+    /// 蓝图 70.1 WP-70.1.2：默认预算单一来源——`DecisionAudit::new` 的
+    /// 预分配恰为 `DECISION_AUDIT_BUDGET_BYTES` 换算的条目容量（64 KiB
+    /// → 585 条），容量经底层 store 只读访问器核对。
+    #[test]
+    fn test_audit_default_budget_matches_single_source() {
+        let audit = DecisionAudit::new([0x12; 32]);
+        let expected_cap = DECISION_AUDIT_BUDGET_BYTES / 112;
+        assert_eq!(expected_cap, 585);
+        assert_eq!(audit.chain_state().entry_count, 0);
+        // 预分配容量经 logger.store() 视图核对（构造期锁定，非增长值）。
+        assert_eq!(audit.logger.store().capacity_entries(), expected_cap);
+        assert!(audit.logger.store().byte_budget() <= DECISION_AUDIT_BUDGET_BYTES);
     }
 }

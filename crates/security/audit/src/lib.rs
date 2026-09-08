@@ -87,7 +87,7 @@ pub use baseline::{
 };
 pub use chain::{AuditLogger, AuditLoggerImpl, ChainVerifier, ChainVerifierImpl};
 pub use events::{AuditEvent, AuditEventType, ChainEntry, HashChain};
-pub use store::{AuditStore, MemStore};
+pub use store::{AuditStore, BoundedMemStore, MemStore};
 
 // ============================================================
 // WP-54.1 装配接缝：创世根派生与生产装配唯一入口

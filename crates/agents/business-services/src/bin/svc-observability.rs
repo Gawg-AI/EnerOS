@@ -103,7 +103,8 @@ pub extern "C" fn _start(
 }
 
 #[cfg(target_os = "none")]
-const OBS_OUTBOX_OFFSET: u64 = 57344;
+// 蓝图 70.2 WP-70.2.4：观测 outbox 坐标单源 = DataRegion::ObsOutbox。
+const OBS_OUTBOX_OFFSET: u64 = eneros_ota_ab::ab_partition::DataRegion::ObsOutbox.base_byte();
 #[cfg(target_os = "none")]
 const OBS_OUTBOX_SLOT_LEN: usize = 1024;
 // 50（WP-50.1 实弹修复）：4 → 16——flush batch=8 单批即超 4 槽

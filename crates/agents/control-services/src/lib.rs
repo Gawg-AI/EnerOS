@@ -24,7 +24,6 @@
 
 extern crate alloc;
 
-pub mod acquisition;
 pub mod ai_worker;
 // SPEC-B（WP-B.3）：AI tick 编排单源（svc-ai-worker 双 handler 收编；
 // 注入路径等价性分析与锁定测试见模块头）。
@@ -33,7 +32,6 @@ pub mod cfg_bindings;
 // 蓝图 61 v0.314.33：SemanticCatalog 生产装载窄口（反馈槽/覆盖/控制
 // 绑定自目录派生；三服务共用）。
 pub mod catalog_gateway;
-pub mod collector;
 // SPEC-B（WP-B.2）：svc-control-dispatch 装配面下沉（fail-closed 阶梯 +
 // 出站通道；bin 退化为装配接线）。阶梯核心 host 可测（DoD B1：seL4 叶子
 // 以 closure seam 注入）；EIPC 通道/引擎装配限目标构建（cfg(none) 项级门）。

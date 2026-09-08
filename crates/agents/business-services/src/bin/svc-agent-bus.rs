@@ -102,7 +102,9 @@ pub extern "C" fn _start(
 }
 
 #[cfg(target_os = "none")]
-const AGENTBUS_STATE_OFFSET: u64 = 49152;
+// 蓝图 70.2 WP-70.2.4：总线状态区坐标单源 = DataRegion::AgentBusState。
+const AGENTBUS_STATE_OFFSET: u64 =
+    eneros_ota_ab::ab_partition::DataRegion::AgentBusState.base_byte();
 #[cfg(target_os = "none")]
 const AGENTBUS_STATE_LEN: u64 = 1024;
 

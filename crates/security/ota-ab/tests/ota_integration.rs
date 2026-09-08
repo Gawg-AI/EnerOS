@@ -57,8 +57,13 @@ const CHUNK_SIZE: u32 = 64 * 1024;
 /// 大镜像用块大小：8 KiB 时单分区容量 = PARTITION_BLOCKS × 8 KiB = 16 MiB
 /// ≥ 10 MiB 镜像（分区容量随 `block_size()` 缩放，见 ab_partition 注释）。
 const LARGE_BLOCK_SIZE: usize = 8 * 1024;
-/// 设备总块数：保留块 + 双分区。
-const TOTAL_BLOCKS: u64 = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
+/// 设备总块数：保留块（META 已移至保护间隙块 4704，蓝图 70.2 WP-70.2.4）
+/// 与双分区跨度的较大者。
+const TOTAL_BLOCKS: u64 = if META_BLOCK + 1 > SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS {
+    META_BLOCK + 1
+} else {
+    SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS
+};
 
 /// 共享句柄块设备：INT1 模拟重启时同一底层存储可被新旧管理器实例接力持有
 /// （host 单线程测试场景，`Rc<RefCell>` 语义足够；crate 内实现零改动）。

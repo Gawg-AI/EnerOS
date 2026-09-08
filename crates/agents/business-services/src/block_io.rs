@@ -171,7 +171,7 @@ mod tests {
         use eneros_ota_ab::ab_partition::{AbPartitionOta, PARTITION_BLOCKS, SLOT_A_BASE_BLOCK};
 
         use crate::ota_service::{OtaPolicy, OtaService};
-        let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
+        let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS + 1;
         let storage = SimStorage::new((total_blocks * 512) as usize, 7);
         let client = SimClient { storage };
         let io = BlockIo::new(client, "svc-storage", 7, 1000);
@@ -227,7 +227,7 @@ mod tests {
 
         use crate::ota_service::handle_ota_ab_command;
         use crate::ota_service::{OtaPolicy, OtaService};
-        let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
+        let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS + 1;
         let storage = SimStorage::new((total_blocks * 512) as usize, 7);
         let client = SimClient { storage };
         let io = BlockIo::new(client, "svc-storage", 7, 1000);
@@ -309,7 +309,7 @@ mod tests {
         use crate::ota_service::handle_ota_ab_command;
         use crate::ota_service::{OtaPolicy, OtaService};
 
-        let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
+        let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS + 1;
         let storage = SimStorage::new((total_blocks * 512) as usize, 7);
         let client = SimClient { storage };
         let io = BlockIo::new(client, "svc-storage", 7, 1000);
@@ -408,7 +408,7 @@ mod tests {
         use crate::ota_service::handle_ota_ab_command;
         use crate::ota_service::{OtaPolicy, OtaService};
 
-        let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS;
+        let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS + 1;
         let storage = SimStorage::new((total_blocks * 512) as usize, 7);
         let client = SimClient { storage };
         let io = BlockIo::new(client, "svc-storage", 7, 1000);
