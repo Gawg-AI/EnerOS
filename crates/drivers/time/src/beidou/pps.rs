@@ -216,13 +216,12 @@ pub(crate) fn reset_pps_history() {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex as StdMutex;
-
     use super::*;
+    // Serialize tests that touch shared global state. 与 beidou::mod tests
+    // 共用同一把锁（单实例）——本模块 `reset_state()` 会清空 `LAST_NMEA`，
+    // 私有锁互不互斥时会插进 mod.rs 测试的 feed→sync 窗口（偶发 NoSignal）。
+    use crate::beidou::TEST_LOCK;
     use crate::beidou::{reset_state, FixQuality, PiState};
-
-    // Serialize tests that touch shared global state.
-    static TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
     /// Build a BeidouState with the given BDT fix (in BDT nanos).
     fn make_state(bdt_nanos: u64) -> BeidouState {

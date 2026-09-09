@@ -505,7 +505,7 @@ mod tests {
     use alloc::boxed::Box;
 
     use eneros_agent_sdk::chunked::{
-        ack_bytes, encode_paged_header, is_pull_request, page_slice, ChunkedEvent, ChunkedReceiver,
+        ack_bytes, is_pull_request, ChunkedEvent, ChunkedReceiver, PagedServerV2,
         CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER,
     };
     use eneros_agent_sdk::obs_batch_wire::{decode_obs_request, encode_obs_response};
@@ -587,7 +587,7 @@ mod tests {
     struct ChunkServer {
         rx: ChunkedReceiver,
         complete: Option<Vec<u8>>,
-        pending_resp: Vec<u8>,
+        pages: PagedServerV2,
         fail: bool,
         /// Final 处理计数（停批断言用）。
         final_count: usize,
@@ -597,7 +597,7 @@ mod tests {
             Self {
                 rx: ChunkedReceiver::new(),
                 complete: None,
-                pending_resp: Vec::new(),
+                pages: PagedServerV2::new(),
                 fail,
                 final_count: 0,
             }
@@ -610,24 +610,34 @@ mod tests {
             payload: &[u8],
             _timeout_ns: u64,
         ) -> Result<Vec<u8>, AgentError> {
-            if is_pull_request(payload) {
-                return Ok(page_slice(&self.pending_resp, payload[4]).to_vec());
-            }
-            if payload.len() == 4 && payload[0..4] == *CHUNK_MAGIC_FINAL {
-                self.final_count += 1;
-                let body = self.complete.clone().unwrap_or_default();
-                // obs 服务端语义：解析批次 → 全收（fail 时回 1B 0xFF）。
-                if self.fail {
-                    self.pending_resp = alloc::vec![0xFF];
+            if is_pull_request(payload)
+                || (payload.len() == 4 && payload[0..4] == *CHUNK_MAGIC_FINAL)
+            {
+                let is_final = payload.len() == 4 && payload[0..4] == *CHUNK_MAGIC_FINAL;
+                let resp = if is_final {
+                    self.final_count += 1;
+                    let body = self.complete.clone().unwrap_or_default();
+                    // obs 服务端语义：解析批次 → 全收（fail 时回 1B 0xFF）。
+                    if self.fail {
+                        alloc::vec![0xFF]
+                    } else {
+                        let (_, frames) =
+                            decode_obs_request(&body).map_err(|_| AgentError::Timeout)?;
+                        let count = (frames.len() / FRAME_WIRE_LEN) as u16;
+                        encode_obs_response(count, 0).to_vec()
+                    }
                 } else {
-                    let (_, frames) = decode_obs_request(&body).map_err(|_| AgentError::Timeout)?;
-                    let count = (frames.len() / FRAME_WIRE_LEN) as u16;
-                    self.pending_resp = encode_obs_response(count, 0).to_vec();
-                }
-                return Ok(encode_paged_header(self.pending_resp.len()).to_vec());
+                    Vec::new()
+                };
+                return self
+                    .pages
+                    .on_request(payload, resp)
+                    .ok_or(AgentError::Timeout);
             }
             if payload.len() >= 4 && payload[0..4] == *CHUNK_MAGIC_HEADER {
-                let _ = self.rx.on_message(payload, true);
+                if let ChunkedEvent::Header { epoch, .. } = self.rx.on_message(payload, true) {
+                    self.pages.set_txn(epoch);
+                }
                 return Ok(ack_bytes().to_vec());
             }
             Err(AgentError::Timeout)

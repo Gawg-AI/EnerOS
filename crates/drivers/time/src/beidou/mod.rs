@@ -440,14 +440,21 @@ pub(crate) fn set_satellites_visible(n: u8) {
 // Unit tests
 // ============================================================================
 
+/// beidou 模块树测试串行锁（`mod.rs` 与 `pps.rs` 测试共用同一把）：
+/// 两处测试操作同一组生产静态（`LAST_NMEA`/`LAST_PPS_NS`/`BEIDOU_STATE`/
+/// `PI_STATE`），锁必须单实例——各自持私有锁互不互斥时，一侧
+/// `reset_state()`（清空 `LAST_NMEA`）可插进另一侧 `feed_nmea`→
+/// `beidou_sync` 窗口，产出偶发 `NoSignal`（2026-09-09 复查 workspace
+/// 全量窗 leap-second 测试实弹咬合）。
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex as StdMutex;
-
+    use super::TEST_LOCK;
     use super::*;
 
     // Tests serialize on this guard because the production statics are shared.
-    static TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
     /// Build a valid NMEA sentence with correct checksum from a body
     /// (body excludes `$` prefix and `*XX` suffix).

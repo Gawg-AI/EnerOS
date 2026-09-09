@@ -91,6 +91,27 @@ pub struct PeerStats {
     pub seq: u64,
 }
 
+/// [`PeerSession::respond_reserved`] 失败分类（WP-70.4.3）。
+#[derive(Debug)]
+pub enum RespondError {
+    /// seq 持久失败——未发布（fail-closed；运维介入前不再可恢复发布）。
+    Persist(String),
+    /// 载荷组装/自检失败——序号已预留（有解释间隙），未发布。
+    Compose(String),
+    /// 发布失败——会话已自行重连，调用方不得再重连。
+    Publish(MqttError),
+}
+
+impl std::fmt::Display for RespondError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Persist(e) => write!(f, "seq-persist: {e}"),
+            Self::Compose(e) => write!(f, "compose: {e}"),
+            Self::Publish(e) => write!(f, "publish: {e}"),
+        }
+    }
+}
+
 // ---- seq 状态（自 main.rs 迁入；Z12：三分支 + exit(2) 原样） -----------
 
 /// seq 状态（跨重启单调；peer 重启 seq 回退会被目标侧按重放拒绝）。
@@ -126,14 +147,21 @@ impl SeqState {
     fn store(&self, path: &str) -> std::io::Result<()> {
         let body = serde_json::json!({ "seq": self.0 }).to_string();
         let tmp = format!("{path}.tmp");
+        // 蓝图 70.4（WP-70.4.3）：temp 写入后 `sync_all` 再 rename——
+        // 原子 rename 只保证命名空间原子性，不等价于掉电持久；半持久
+        // 状态文件在掉电窗可能回退到旧 seq（重发回退序号冒充新响应）。
+        let sync_one = |f: &mut std::fs::File| -> std::io::Result<()> {
+            use std::io::Write;
+            f.write_all(body.as_bytes())?;
+            f.sync_all()
+        };
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&tmp)
         {
             Ok(mut f) => {
-                use std::io::Write;
-                f.write_all(body.as_bytes())?;
+                sync_one(&mut f)?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 let tmp2 = format!("{tmp}.{}", std::process::id());
@@ -144,16 +172,24 @@ impl SeqState {
                     .map_err(|e2| {
                         io::Error::other(format!("seq 临时名冲突且 pid 重试失败: {e2}"))
                     })?;
-                {
-                    use std::io::Write;
-                    f.write_all(body.as_bytes())?;
-                }
-                return std::fs::rename(&tmp2, path);
+                sync_one(&mut f)?;
+                std::fs::rename(&tmp2, path)?;
+                return sync_parent_dir(path);
             }
             Err(e) => return Err(e),
         }
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, path)?;
+        sync_parent_dir(path)
     }
+}
+
+/// fsync 父目录（rename 落盘持久语义；Unix 目录 fd sync_all）。
+fn sync_parent_dir(path: &str) -> std::io::Result<()> {
+    let parent = std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    std::fs::File::open(&parent)?.sync_all()
 }
 
 /// 存量 seq 状态损坏 = fail-closed 退出（诚实可见；运维裁决回退）。
@@ -334,24 +370,40 @@ impl<T: PeerTransport> PeerSession<T> {
         None
     }
 
-    /// 回一条响应（QoS1 发布；成功后 seq 状态原子落盘）。返回 Err 时
-    /// **会话已自行重连**（publish-failed 词形已落），调用方不得再重连。
-    pub fn respond(&mut self, payload: &[u8]) -> Result<(), MqttError> {
-        if let Err(e) = self.client.publish(&self.response_topic, payload, 1) {
+    /// 回一条响应（QoS1 发布）——蓝图 70.4（WP-70.4.3 / N15 修复）
+    /// **先持久预留 seq，再发布**：
+    ///
+    /// 1. seq+1 **先原子落盘**（sync file + rename + fsync 目录）；持久
+    ///    失败 = 不发布、显式 `Err(RespondError::Persist)`（fail-closed
+    ///    ——持久失败时停止宣告可恢复发布，旧实现打印后仍返回 Ok）；
+    /// 2. `compose(seq)` 组装载荷（Err = 序号间隙，有解释地放弃）；
+    /// 3. 发布；失败 = 会话已自行重连（publish-failed 词形已落）+
+    ///    `Err(RespondError::Publish)`。
+    ///
+    /// 序号合同：断电/崩溃后 seq **不回退**（发布前已持久——至多产生
+    /// "已预留未发布"的有解释间隙，目标侧单调判据不受回退重放冲击）。
+    /// 旧 `next_seq`+`respond` 两段式（发布后才持久，保存失败仅打印）
+    /// 退役——单一 owner。
+    pub fn respond_reserved(
+        &mut self,
+        compose: impl FnOnce(u64) -> Result<Vec<u8>, String>,
+    ) -> Result<u64, RespondError> {
+        let seq = self.seq.0.saturating_add(1);
+        if let Err(e) = SeqState(seq).store(&self.state_path) {
+            return Err(RespondError::Persist(format!("{e}")));
+        }
+        self.seq.0 = seq;
+        let payload = compose(seq).map_err(RespondError::Compose)?;
+        if let Err(e) = self.client.publish(&self.response_topic, &payload, 1) {
             self.reconnect(ReconnectKind::PublishFailed);
-            return Err(e);
+            return Err(RespondError::Publish(e));
         }
-        if let Err(e) = self.seq.store(&self.state_path) {
-            println!(
-                "[planner-peer] SEQ-PERSIST-FAIL {e}（重启后 seq 回退将由目标侧拒绝——诚实可见）"
-            );
-        }
-        Ok(())
+        Ok(seq)
     }
 
-    /// 取下一个响应序号（单调；跨重启经状态文件持久）。
-    pub fn next_seq(&mut self) -> u64 {
-        self.seq.0 = self.seq.0.saturating_add(1);
+    /// 测试观测：当前内存 seq（已持久预留的最后值）。
+    #[cfg(test)]
+    fn next_seq_probe(&self) -> u64 {
         self.seq.0
     }
 
@@ -465,6 +517,17 @@ mod tests {
                 return Err(MqttError(String::from("write: injected")));
             }
             bus.outbox.push(buf.to_vec());
+            // 70.4：QoS1 PUBLISH 自动回 PUBACK（pid 回显——真 broker 同律；
+            // 使 respond_reserved 测试不必手工预置 ACK，且注入写失败仍在
+            // PUBACK 之前生效）。
+            if !buf.is_empty() && (buf[0] >> 4) == 3 && (buf[0] >> 1) & 0x03 > 0 && buf.len() >= 4 {
+                let mut ack = vec![0x40, 0x02];
+                let tlen = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+                if buf.len() >= 4 + tlen + 2 {
+                    ack.extend_from_slice(&buf[4 + tlen..6 + tlen]);
+                    bus.inbox.extend(ack);
+                }
+            }
             Ok(())
         }
 
@@ -693,9 +756,152 @@ mod tests {
         let mut s = make_session(&c);
         c.fail_next_write();
         c.arm_reconnect();
-        let r = s.respond(b"{}");
+        let r = s.respond_reserved(|_| Ok(b"{}".to_vec()));
         assert!(r.is_err(), "publish 失败必须上抛 Err");
         assert_eq!(s.stats().reconnects.publish, 1, "respond 内部须自愈重连");
+    }
+
+    // ---- 70.4 WP-70.4.3：seq 先持久预留再发布 ----------------------------
+
+    /// seq 持久失败 = 不发布、显式 Persist Err（红 = 旧实现打印 SEQ-PERSIST-
+    /// FAIL 后仍返回 Ok 并发布）；内存 seq 不推进（下次复用该号——发布
+    /// 面未见，无单调性破坏）。
+    #[test]
+    fn seq_persist_failure_refuses_publish() {
+        let c = ctx();
+        let mut s = make_session(&c);
+        // 令 state 文件路径不可写（替换为目录/不可创建路径）。
+        let bad_dir = std::path::Path::new(&c.state_path)
+            .parent()
+            .unwrap()
+            .join("nope");
+        std::fs::create_dir_all(&bad_dir).expect("mkdir");
+        // 直接改会话的 state_path 为不可达子路径（目录不存在 → open 失败）。
+        s.state_path = bad_dir
+            .join("sub")
+            .join("seq.json")
+            .to_string_lossy()
+            .into_owned();
+        let r = s.respond_reserved(|_| Ok(b"{}".to_vec()));
+        assert!(
+            matches!(r, Err(RespondError::Persist(_))),
+            "持久失败必须 Persist Err（不发布）: {r:?}"
+        );
+        assert_eq!(s.next_seq_probe(), 0, "内存 seq 不得推进（号未消费）");
+    }
+
+    /// 成功路径：compose 收到预留 seq；seq 文件先于发布更新；再预留递增。
+    #[test]
+    fn respond_reserved_persists_seq_before_publish() {
+        let c = ctx();
+        let mut s = make_session(&c);
+        let mut seen_in_compose = 0u64;
+        let r = s.respond_reserved(|seq| {
+            seen_in_compose = seq;
+            Ok(b"x".to_vec())
+        });
+        assert_eq!(r.expect("ok"), 1);
+        assert_eq!(seen_in_compose, 1, "compose 收到的是预留 seq");
+        // 文件已持有所预留 seq（先持久后发布的合同）。
+        let text = std::fs::read_to_string(&c.state_path).expect("read seq file");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(v["seq"].as_u64(), Some(1), "发布前 seq 必须已持久");
+        let r2 = s.respond_reserved(|_seq| Ok(b"y".to_vec())).expect("ok2");
+        assert_eq!(r2, 2);
+    }
+
+    /// compose 失败 = 序号间隙（预留生效、未发布、显式 Compose Err）。
+    #[test]
+    fn compose_failure_leaves_explained_gap() {
+        let c = ctx();
+        let mut s = make_session(&c);
+        let r = s.respond_reserved(|seq| {
+            let _ = seq;
+            Err(String::from("self-check failed"))
+        });
+        assert!(matches!(r, Err(RespondError::Compose(_))));
+        // 下一次成功预留跳过该号（间隙可见、单调不回退）。
+        let r2 = s.respond_reserved(|_seq| Ok(b"z".to_vec())).expect("ok");
+        assert_eq!(r2, 2, "间隙后下一次预留 = 2（不回退复用 1）");
+    }
+
+    /// 70.4 WP-70.4.3：等待 PUBACK 期间到达的 PUBLISH 不再"ACK 后丢弃"
+    /// ——经有界队列保留，业务层下一轮 next_event 取得（N14 交付面）。
+    #[test]
+    #[allow(clippy::disallowed_macros)] // 负例断言用 panic!（68.2 卡 D.6 仓例）
+    fn interleaved_publish_during_puback_wait_is_delivered() {
+        let c = ctx();
+        let mut s = make_session(&c);
+        // 预置交错 PUBLISH（请求 B）在 inbox——respond 的 PUBACK 等待环
+        // 先读到它（bus 对 A 的 PUBACK 自动追加在其后）。
+        c.bus.borrow_mut().inbox.extend(publish_inbound(
+            REQUEST_TOPIC,
+            Some(0x0B),
+            br#"{"req":2}"#,
+        ));
+        let r = s
+            .respond_reserved(|seq| Ok(format!(r#"{{"s":{seq}}}"#).into_bytes()))
+            .expect("publish ok");
+        assert_eq!(r, 1);
+        // 下一轮 next_event 交付 B（红 = 旧实现 ACK 后丢弃 → None）。
+        match s.next_event().expect("交错请求须交付") {
+            PeerEvent::Request { json } => {
+                assert!(json.contains("\"req\":2"), "B 的载荷: {json}")
+            }
+            other => unreachable!("须为 Request 事件，got {other:?}"),
+        }
+    }
+
+    /// 70.4 WP-70.4.3 满队合同：交错 PUBLISH 超出有界队列上限时——
+    /// QoS1 溢出**不回 PUBACK**（broker 重投 = 显式不接纳，不静默丢弃、
+    /// 不计 dropped）；QoS0 溢出只能丢弃但计数可见。交付顺序 FIFO。
+    #[test]
+    #[allow(clippy::disallowed_macros)] // 负例断言用 panic!（68.2 卡 D.6 仓例）
+    fn interleaved_overflow_bounded_no_silent_drop() {
+        let c = ctx();
+        let mut s = make_session(&c);
+        // 预置 18 条交错 PUBLISH（16 上限 + 2 溢出；等待环预算 32 轮够读）。
+        {
+            let mut bus = c.bus.borrow_mut();
+            for i in 0..18u16 {
+                bus.inbox
+                    .extend(publish_inbound(REQUEST_TOPIC, Some(0x30 + i), b"x"));
+            }
+        }
+        let _ = s
+            .respond_reserved(|_seq| Ok(b"x".to_vec()))
+            .expect("publish ok");
+        // FIFO 交付 16 条（上限内），内容有序不串。
+        for i in 0..16u16 {
+            match s.next_event().expect("上限内必须交付") {
+                PeerEvent::Request { json } => {
+                    let _ = json; // 主题过滤后的载荷——序由 FIFO 保证
+                }
+                other => unreachable!("第 {i} 条须为 Request，got {other:?}"),
+            }
+        }
+        // 溢出 2 条为 QoS1：不 ACK（重投语义）、不计 QoS0 丢弃。
+        assert_eq!(s.client.pending_dropped(), 0);
+        // QoS0 溢出路径： stuffed 满 + 1 条 QoS0 → dropped 计数可见。
+        let c2 = ctx();
+        let mut s2 = make_session(&c2);
+        {
+            let mut bus = c2.bus.borrow_mut();
+            for _i in 0..17u16 {
+                bus.inbox.extend(publish_inbound(REQUEST_TOPIC, None, b"y")); // QoS0
+            }
+        }
+        let _ = s2
+            .respond_reserved(|_seq| Ok(b"y".to_vec()))
+            .expect("publish ok");
+        for _ in 0..16 {
+            let _ = s2.next_event();
+        }
+        assert_eq!(
+            s2.client.pending_dropped(),
+            1,
+            "QoS0 溢出必须可见计数（不得静默）"
+        );
     }
 
     // ---- p6：主题过滤 ----------------------------------------------------
@@ -762,7 +968,7 @@ mod tests {
         // publish-failed。
         c.fail_next_write();
         c.arm_reconnect();
-        assert!(s.respond(b"{}").is_err());
+        assert!(s.respond_reserved(|_| Ok(b"{}".to_vec())).is_err());
         // inbound-silent。
         c.advance(46_000); // 字面 spec 值
         c.arm_reconnect();

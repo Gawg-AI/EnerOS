@@ -7,9 +7,9 @@
 //!
 //! - **已交付**：crate 骨架 / `ProtocolPlugin` seam 接入 / 配置 typed 消费
 //!   （链路地址/公共地址尺寸 1|2、平衡模式、t0-t3/k/w——键集=蓝图卷内登记）/
-//!   Serial 传输接线 / 点表路由 seam（`ProtocolAddress::Iec101`）/
-//!   **ASDU 公共层真复用**（[`asdu_bridge`]：经 WP-48.0 共用 crate
-//!   构造+解析，字节布局断言）；
+//!   Serial 传输接线 / 点表路由 seam（`ProtocolAddress::Iec101`）；
+//!   （原 asdu_bridge 复用层经蓝图 70 孤儿收编删除——SpecBlocked 边界内
+//!   无生产调用方；共用 crate `iec60870-asdu` 由 104 系继续承载）；
 //! - **BLOCKED（owner 输入：IEC 60870-5-101 规约文本）**：FT1.2 帧格式
 //!   字节层（固定帧/E5/ack）、链路规程（RESET_LINK/1·2 级召唤/FIR-FIN-CON
 //!   分段）、非平衡召唤全流程 host peer 双向证据、分段重组负例、slave

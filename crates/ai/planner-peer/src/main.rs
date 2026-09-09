@@ -29,7 +29,7 @@ use eneros_solver_core::highs::HighsSolver;
 
 mod mqtt;
 mod session;
-use session::{PeerEvent, PeerSession};
+use session::{PeerEvent, PeerSession, RespondError};
 
 const DEFAULT_REQUEST_TOPIC: &str = "eneros/brain/request";
 const DEFAULT_RESPONSE_TOPIC: &str = "eneros/brain/response";
@@ -169,43 +169,48 @@ fn handle_request(
         "[planner-peer] PLANNER-SOLVE status={} power={power:.6}kW model={} elapsed={}ms obj={:.4}",
         meta.status_word, meta.model_digest_hex, meta.elapsed_ms, meta.objective_value
     );
-    let seqn = session.next_seq();
-    let resp = eneros_planner_peer::build_response(
-        req.req_id,
-        seqn,
-        power,
-        req.budget.ttl_secs,
-        &cfg.target_device,
-        &meta,
-    );
-    let out = match serde_json::to_string(&resp) {
-        Ok(s) => s,
-        Err(e) => {
-            println!("[planner-peer] PLANNER-SKIP reason=encode ({e})");
+    // 蓝图 70.4（WP-70.4.3）：seq **先持久预留再发布**（respond_reserved
+    // 单点承载）——组装/自检/发布任一失败都产生有解释的序号间隙并如实
+    // 记账（PEER-RESP-ABANDONED）；持久失败 = 不发布（fail-closed）。
+    // 观测字段（字节数/backend-tag）经 RefCell 由 compose 闭包带出。
+    let meta_out: std::cell::RefCell<Option<(usize, bool)>> = std::cell::RefCell::new(None);
+    let seqn = match session.respond_reserved(|seq| {
+        let resp = eneros_planner_peer::build_response(
+            req.req_id,
+            seq,
+            power,
+            req.budget.ttl_secs,
+            &cfg.target_device,
+            &meta,
+        );
+        let out = serde_json::to_string(&resp).map_err(|e| format!("encode: {e}"))?;
+        // 出站自检：目标侧 parse_and_validate 同链预演（t1 语义的运行时
+        // 面；失败不发布——发一条必被拒的应答只会烧目标侧 bad 计数）。
+        // 配对（expect_req_id）本地可判；seq 递增判据目标侧会话状态 peer
+        // 不可知——置 None 只查本地可判定域。
+        let checks = ResponseChecks {
+            expect_req_id: req.req_id,
+            expect_seq_gt: None,
+            budget: &req.budget,
+        };
+        parse_and_validate(&out, &checks).map_err(|e| format!("self-check: {e:?}"))?;
+        *meta_out.borrow_mut() = Some((out.len(), resp.reason.starts_with(BACKEND_TAG)));
+        Ok(out.into_bytes())
+    }) {
+        Ok(seqn) => seqn,
+        Err(RespondError::Compose(e)) => {
+            println!("[planner-peer] PEER-RESP-ABANDONED reason={e}（序号间隙，如实记账）");
+            return;
+        }
+        Err(RespondError::Persist(e)) => {
+            println!("[planner-peer] PLANNER-SKIP reason=seq-persist ({e})——未发布");
+            return;
+        }
+        Err(RespondError::Publish(e)) => {
+            println!("[planner-peer] PLANNER-SKIP reason=publish ({e})");
             return;
         }
     };
-    // 出站自检：目标侧 parse_and_validate 同链预演（t1 语义的运行时面；
-    // 失败不发布——发一条必被拒的应答只会烧目标侧 bad 计数）。配对
-    // （expect_req_id）本地可判；seq 递增判据目标侧会话状态 peer 不可知
-    // ——置 None 只查本地可判定域。
-    let checks = ResponseChecks {
-        expect_req_id: req.req_id,
-        expect_seq_gt: None,
-        budget: &req.budget,
-    };
-    if let Err(e) = parse_and_validate(&out, &checks) {
-        println!("[planner-peer] PLANNER-SKIP reason=self-check ({e:?})");
-        return;
-    }
-    if let Err(e) = session.respond(out.as_bytes()) {
-        println!("[planner-peer] PLANNER-SKIP reason=publish ({e})");
-        return;
-    }
-    println!(
-        "[planner-peer] PEER-RESP seq={} bytes={} backend-tag-ok={}",
-        seqn,
-        out.len(),
-        resp.reason.starts_with(BACKEND_TAG)
-    );
+    let (bytes, tag_ok) = meta_out.into_inner().unwrap_or((0, false));
+    println!("[planner-peer] PEER-RESP seq={seqn} bytes={bytes} backend-tag-ok={tag_ok}");
 }

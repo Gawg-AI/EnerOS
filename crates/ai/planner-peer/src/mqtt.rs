@@ -118,10 +118,57 @@ pub struct InboundPublish {
     pub payload: Vec<u8>,
 }
 
+/// 等待 PUBACK 期间入站 PUBLISH 的有界保留队列上限（蓝图 70.4
+/// WP-70.4.3；单请求 ≤1024B → 上限内内存有界 ≈ 16KiB）。
+pub(crate) const PENDING_INBOUND_CAP: usize = 16;
+
 pub struct MqttClient<T: PeerTransport = TcpStream> {
     stream: T,
     /// 最近入站活动（keepalive 判据；bin 按 ms 供给）。
     last_activity_ms: u64,
+    /// 70.4（WP-70.4.3）：等待 PUBACK 期间接到的 PUBLISH（已回 QoS1
+    /// PUBACK）经此有界队列保留，业务层经 [`Self::poll`] 依次取得——
+    /// 不再"ACK 后丢弃"。满队：QoS1 不回 PUBACK（broker 按重传策略
+    /// 重投 = 显式不接纳，不静默丢弃）；QoS0 只能丢弃（无重投语义）
+    /// 且 [`Self::pending_dropped`] 计数可见。
+    pending_inbound: std::vec::Vec<InboundPublish>,
+    /// QoS0 交错 PUBLISH 满队丢弃计数（观测面）。
+    pending_dropped: u32,
+    /// 出站包 id 计数器（70.4：PUBACK/SUBACK 必须核对对应 pid——
+    /// 单在途槽下陈旧 ACK 不得完结当前请求）。
+    next_pid: u16,
+}
+
+impl<T: PeerTransport> MqttClient<T> {
+    fn allocate_pid(&mut self) -> u16 {
+        let pid = self.next_pid;
+        self.next_pid = if self.next_pid == u16::MAX {
+            1
+        } else {
+            self.next_pid + 1
+        };
+        pid
+    }
+
+    /// 满队丢弃计数（观测面；QoS0 交错帧无法重投只能可见地丢）。
+    /// host 会话测试消费（session::tests 满队合同）。
+    #[allow(dead_code)]
+    pub fn pending_dropped(&self) -> u32 {
+        self.pending_dropped
+    }
+
+    /// 入队一条交错 PUBLISH；满队时 QoS1 返回 false（调用方不回 PUBACK
+    /// → broker 重投），QoS0 计数后丢弃。
+    fn queue_inbound(&mut self, pub_: InboundPublish, qos: u8) -> bool {
+        if self.pending_inbound.len() < PENDING_INBOUND_CAP {
+            self.pending_inbound.push(pub_);
+            return true;
+        }
+        if qos == 0 {
+            self.pending_dropped = self.pending_dropped.saturating_add(1);
+        }
+        false
+    }
 }
 
 impl MqttClient<TcpStream> {
@@ -159,6 +206,9 @@ impl<T: PeerTransport> MqttClient<T> {
         let mut c = Self {
             stream: transport,
             last_activity_ms: 0,
+            pending_inbound: std::vec::Vec::new(),
+            pending_dropped: 0,
+            next_pid: 1,
         };
         c.write_raw(&pkt)?;
         let (hdr, _body) = c.read_packet()?;
@@ -169,9 +219,13 @@ impl<T: PeerTransport> MqttClient<T> {
     }
 
     /// 订阅（QoS 上限 1；等待 SUBACK）。
+    ///
+    /// 70.4（WP-70.4.3）：SUBACK 必须回带本次 SUBSCRIBE 的 pid（失配 =
+    /// 陈旧/错配 ACK，不完结本次订阅）；等待期间到达的 PUBLISH 照
+    /// [`Self::publish`] 同律入有界队列保留。
     pub fn subscribe(&mut self, topic: &str, qos: u8) -> Result<(), MqttError> {
         let mut body = Vec::new();
-        let pid = 1u16; // 单在途槽：包 id 常量即可（同步等 SUBACK）
+        let pid = self.allocate_pid();
         body.extend_from_slice(&pid.to_be_bytes());
         write_utf(&mut body, topic);
         body.push(qos.min(1));
@@ -179,25 +233,68 @@ impl<T: PeerTransport> MqttClient<T> {
         pkt.extend_from_slice(&encode_len(body.len()));
         pkt.extend_from_slice(&body);
         self.write_raw(&pkt)?;
-        let (hdr, body) = self.read_packet()?;
-        if hdr >> 4 != SUBACK {
-            return err(format!("期望 SUBACK 得 {:#x}", hdr >> 4));
+        // 单在途：循环读直到本 pid 的 SUBACK（旁路包按律处置）。
+        for _ in 0..32 {
+            let (hdr, body) = self.read_packet()?;
+            match hdr >> 4 {
+                SUBACK => {
+                    if body.len() < 3 {
+                        return err(String::from("SUBACK 短帧"));
+                    }
+                    let acked = u16::from_be_bytes([body[0], body[1]]);
+                    if acked != pid {
+                        continue; // 陈旧 SUBACK：不完结本次订阅
+                    }
+                    if body[2] == 0x80 {
+                        return err(String::from("SUBACK 拒绝"));
+                    }
+                    return Ok(());
+                }
+                PINGRESP => continue,
+                PUBLISH => {
+                    self.stash_inbound(&hdr, &body)?;
+                    continue;
+                }
+                k => return err(format!("SUBACK 等待中得 {k:#x}")),
+            }
         }
-        if body.len() < 3 {
-            return err(String::from("SUBACK 短帧"));
+        err(String::from("SUBACK 超时（32 轮无确认）"))
+    }
+
+    /// 解析并保留一条交错 PUBLISH（publish/subscribe 等待环共用）：
+    /// 有界队列未满 → QoS1 即回 PUBACK 后入队；满队 → QoS1 **不回
+    /// PUBACK**（broker 重投 = 显式不接纳）；QoS0 计数丢弃（无重投）。
+    fn stash_inbound(&mut self, hdr: &u8, body: &[u8]) -> Result<(), MqttError> {
+        let qos = (hdr >> 1) & 0x03;
+        let (topic, payload) = parse_publish(body, qos)?;
+        let retained = {
+            let pub_ = InboundPublish {
+                topic,
+                payload: payload.clone(),
+            };
+            self.queue_inbound(pub_, qos)
+        };
+        if !retained {
+            // 满队：QoS1 不 ACK（重投）；QoS0 已计数（queue_inbound 内）。
+            return Ok(());
         }
-        if body[2] == 0x80 {
-            return err(String::from("SUBACK 拒绝"));
+        if qos > 0 {
+            self.ack_publish(hdr, body)?;
         }
         Ok(())
     }
 
     /// 发布（QoS1：同步等 PUBACK；QoS0：即返）。
+    ///
+    /// 70.4（WP-70.4.3 / N14 修复）：PUBACK 必须回带本次发布 pid——
+    /// 失配 = 陈旧 ACK，继续等待不完结；等待期间到达的 PUBLISH 经有界
+    /// 队列保留（满队 QoS1 不 ACK = broker 重投），业务层经 [`Self::poll`]
+    /// 取得，不再"确认后丢弃"。
     pub fn publish(&mut self, topic: &str, payload: &[u8], qos: u8) -> Result<(), MqttError> {
         let qos = qos.min(1);
         let mut body = Vec::new();
         write_utf(&mut body, topic);
-        let pid = 1u16;
+        let pid = self.allocate_pid();
         if qos > 0 {
             body.extend_from_slice(&pid.to_be_bytes());
         }
@@ -209,15 +306,20 @@ impl<T: PeerTransport> MqttClient<T> {
         if qos == 0 {
             return Ok(());
         }
-        // 单在途：循环读直到 PUBACK（PINGRESP 等旁路包吞掉）。
+        // 单在途：循环读直到本 pid 的 PUBACK（旁路包按律处置）。
         for _ in 0..32 {
             let (hdr, b) = self.read_packet()?;
             match hdr >> 4 {
-                PUBACK => return Ok(()),
+                PUBACK => {
+                    if b.len() >= 2 && u16::from_be_bytes([b[0], b[1]]) == pid {
+                        return Ok(());
+                    }
+                    continue; // 陈旧/错配 PUBACK：不完结本次发布
+                }
                 PINGRESP => continue,
                 PUBLISH => {
-                    // broker 转发先到：回 PUBACK 后继续等本条 ACK。
-                    self.ack_publish(&hdr, &b)?;
+                    // broker 转发先到：保留入队（容量允许时回 PUBACK）。
+                    self.stash_inbound(&hdr, &b)?;
                     continue;
                 }
                 k => return err(format!("PUBACK 等待中得 {k:#x}")),
@@ -228,7 +330,13 @@ impl<T: PeerTransport> MqttClient<T> {
 
     /// 读一包；inbound PUBLISH（QoS1）即时回 PUBACK 并上抛内容。
     /// 无数据（读超时）→ Ok(None)。
+    ///
+    /// 70.4：等待 PUBACK 期间保留的交错 PUBLISH 优先交付（FIFO）——
+    /// 业务层仍经本方法取得，交付语义与直读一致。
     pub fn poll(&mut self, now_ms: u64) -> Result<Option<InboundPublish>, MqttError> {
+        if !self.pending_inbound.is_empty() {
+            return Ok(Some(self.pending_inbound.remove(0)));
+        }
         match self.read_packet() {
             Ok((hdr, body)) => {
                 self.last_activity_ms = now_ms;

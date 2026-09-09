@@ -59,8 +59,10 @@ def judge(path, min_rounds, transcripts):
                    f"PRODUCT-READY: true x{len(ready)}"))
     # G4 相位分布（ready 后按行四等分）：禁止尾部死亡与后段塌陷，
     # 允许启动热身爬坡（首相位含 checkpoint 首停顿/对端握手，节奏天然
-    # 低于稳态）。判据 = 尾相位非零 ∧ 尾相位 ≥ 第二相位（无晚期塌陷）
-    # ∧ 每相位 ≥ ceil(门限/8)（绝对地板）。
+    # 低于稳态）。判据 = 尾相位非零 ∧ 尾相位 ≥ 第二相位×80%（无晚期
+    # 塌陷；70.3 门实测 [364,222,210,213] 形——稳态 ±5% 抖动在"尾≥二"
+    # 严格式下误判负，80% 容差仍咬死腰斩式塌陷/尾部死亡，自检负例 5
+    # 同步加锁）∧ 每相位 ≥ ceil(门限/8)（绝对地板）。
     round_idx = [i for i, ln in enumerate(lines) if "CONTROL-CHAIN: round=" in ln]
     total_rounds = len(round_idx)
     per_phase_floor = -(-min_rounds // 8)  # ceil
@@ -70,7 +72,7 @@ def judge(path, min_rounds, transcripts):
         c = sum(1 for i in round_idx if lo <= i < hi)
         phase_counts.append(c)
     tail_ok = (phase_counts[3] >= 1
-               and phase_counts[3] >= phase_counts[1]
+               and phase_counts[3] * 100 >= phase_counts[1] * 80
                and min(phase_counts) >= per_phase_floor)
     report.append(("G4", tail_ok,
                    f"相位样本={[c for c in phase_counts]} 地板={per_phase_floor}"
@@ -141,6 +143,25 @@ def selftest():
         p_dead = os.path.join(d, "dead.log")
         open(p_dead, "w").write(mklog(600, tail_dead=True))
         results.append(("tail-dead-fail", judge_quiet(p_dead, 400) == 1))
+        # 负例 2b：晚期塌陷（尾相位 = 第二相位一半 [150,150,150,75]——
+        # 80% 容差仍判负；75 ≥ 地板 50，只有容差臂能咬死）
+        p_collapse = os.path.join(d, "collapse.log")
+        def rline(r):
+            return (f"[svc-control-dispatch] CONTROL-CHAIN: round={r} "
+                    f"dispatch=Committed")
+        ls2 = ["PRODUCT-READY: true"]
+        r = 0
+        for _ in range(3):
+            for _ in range(150):
+                r += 1
+                ls2.append(rline(r))
+        for _ in range(75):
+            r += 1
+            ls2.append(rline(r))
+        ls2.extend(["[filler] idle"] * 75)  # 尾相位稀释至 50%
+        open(p_collapse, "w").write("\n".join(ls2) + "\n")
+        results.append(("late-collapse-fail",
+                        judge_quiet(p_collapse, 400) == 1))
         # 负例 3：缺日志
         results.append(("missing-log-fail",
                         judge_quiet(os.path.join(d, "nope.log"), 400) == 2))

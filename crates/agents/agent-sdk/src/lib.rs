@@ -129,10 +129,13 @@ pub mod wire;
 // 重导出核心类型
 pub use agent::{Agent, AgentDescriptor, AgentError, AgentId, SDK_VERSION};
 pub use chunked::{
-    ack_bytes, encode_paged_header, final_bytes, is_pull_request, page_slice, plan_chunks,
-    pull_request, ChunkError, ChunkHeader, ChunkedClient, ChunkedEvent, ChunkedReceiver, RawIpc,
-    CHUNK_DATA_MAX, CHUNK_FRAME_LEN, CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER, MR_REPLY_BUDGET_BYTES,
-    MR_REPLY_MAX_WORDS, PAGED_HEADER_LEN, PULL_MAGIC, RESP_COUNT_MAX, RESP_PAGE_MAX,
+    ack_bytes, decode_page_frame, decode_paged_header_v2, encode_page_frame,
+    encode_paged_header_v2, final_bytes, is_pull_request, page_slice, plan_chunks, pull_request_v2,
+    ChunkError, ChunkHeader, ChunkedClient, ChunkedEvent, ChunkedReceiver, PagedServerV2, RawIpc,
+    CHUNK_DATA_MAX, CHUNK_FRAME_LEN, CHUNK_LOGICAL_CAP, CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER,
+    CHUNK_MAGIC_PAGE, CHUNK_MAGIC_PAGED_V2, MR_REPLY_BUDGET_BYTES, MR_REPLY_MAX_WORDS,
+    PAGED_HEADER_V2_LEN, PAGE_FRAME_HEADER_LEN, PULL_MAGIC, PULL_REQUEST_V2_LEN, RESP_COUNT_MAX,
+    RESP_PAGE_MAX,
 };
 pub use config::Config;
 pub use context::Context;

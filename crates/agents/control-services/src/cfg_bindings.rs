@@ -138,8 +138,8 @@ pub fn fetch_control_chain_key<C: eneros_agent_sdk::chunked::RawIpc>(
 #[cfg(test)]
 mod tests {
     use eneros_agent_sdk::chunked::{
-        ack_bytes, encode_paged_header, is_pull_request, page_slice, ChunkHeader, ChunkedEvent,
-        ChunkedReceiver, CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER,
+        ack_bytes, is_pull_request, ChunkHeader, ChunkedEvent, ChunkedReceiver, PagedServerV2,
+        CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER,
     };
 
     use super::*;
@@ -150,7 +150,7 @@ mod tests {
     struct FakeConfigServer {
         rx: ChunkedReceiver,
         pending: Option<Vec<u8>>,
-        paged: Vec<u8>,
+        pages: PagedServerV2,
         security: Option<Vec<u8>>,
     }
 
@@ -159,7 +159,7 @@ mod tests {
             Self {
                 rx: ChunkedReceiver::new(),
                 pending: None,
-                paged: Vec::new(),
+                pages: PagedServerV2::new(),
                 security: Some(payload),
             }
         }
@@ -174,7 +174,9 @@ mod tests {
         ) -> Result<Vec<u8>, eneros_agent_sdk::AgentError> {
             if &payload[..4] == CHUNK_MAGIC_HEADER {
                 let h = ChunkHeader::decode(payload).unwrap();
-                let _ = self.rx.on_message(&h.encode(), true);
+                if let ChunkedEvent::Header { epoch, .. } = self.rx.on_message(&h.encode(), true) {
+                    self.pages.set_txn(epoch);
+                }
                 return Ok(ack_bytes().to_vec());
             }
             if &payload[..4] == CHUNK_MAGIC_FINAL {
@@ -188,13 +190,20 @@ mod tests {
                         let mut resp = Vec::new();
                         resp.extend_from_slice(&(body.len() as u32).to_le_bytes());
                         resp.extend_from_slice(&body);
-                        self.paged = resp;
-                        Ok(encode_paged_header(self.paged.len()).to_vec())
+                        self.pages.on_request(payload, resp).ok_or_else(|| {
+                            eneros_agent_sdk::AgentError::IpcError(
+                                heapless::String::try_from("paged-reject").unwrap_or_default(),
+                            )
+                        })
                     }
                     None => Ok(b"ERR:NoTransfer".to_vec()),
                 }
             } else if is_pull_request(payload) {
-                Ok(page_slice(&self.paged, payload[4]).to_vec())
+                self.pages.on_request(payload, Vec::new()).ok_or_else(|| {
+                    eneros_agent_sdk::AgentError::IpcError(
+                        heapless::String::try_from("paged-reject").unwrap_or_default(),
+                    )
+                })
             } else {
                 Err(eneros_agent_sdk::AgentError::IpcError(
                     heapless::String::try_from("unexpected").unwrap_or_default(),

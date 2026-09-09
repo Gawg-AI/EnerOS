@@ -171,13 +171,17 @@ impl PersistWatermark {
     }
 
     /// checkpoint 结果回填：窗口清零沿用 68.3 防饿死纪律（失败也清零，
-    /// 8 批后再试）；成功才推进持久账——本批仅当写入成功时随 ck 入账
-    ///（写失败批不在缓冲；持久账永不超过受理账）。
+    /// 8 批后再试）；时长窗基线随每次**尝试**推进（成功或失败）——ck
+    /// 持续失败期重试节奏 = min(8 批, 600s)，不得退化为逐批重试（否则
+    /// 距上次成功 ≥600s 后每批重付 7.7-32s 同步开销，68.3 D.4 饿死形态
+    /// 复活；回归锁 wm70_duration_window_baseline_advances_on_failed_ck）。
+    /// 成功才推进持久账——本批仅当写入成功时随 ck 入账（写失败批不在
+    /// 缓冲；持久账永不超过受理账）。
     fn on_checkpoint_done(&mut self, ck_ok: bool, now_ms: u64, current_write_ok: bool) {
         self.batches_since_checkpoint = 0;
+        self.last_checkpoint_ms = Some(now_ms);
         if ck_ok {
             self.persisted = self.accepted + if current_write_ok { 1 } else { 0 };
-            self.last_checkpoint_ms = Some(now_ms);
         }
     }
 
@@ -924,5 +928,51 @@ mod spec_c_chain_tests {
         // 窗口已清零：紧邻批不再触发（防饿死纪律的账本面）。
         wm.on_batch_attempt();
         assert!(!wm.checkpoint_due(3_000));
+    }
+
+    /// 蓝图 70 卷复查（2026-09-09）：时长窗基线必须随每次 checkpoint
+    /// **尝试**推进（成功或失败）——若只在成功时推进，则 ck 持续失败且
+    /// 距上次成功 ≥600s 时，每批都重新满足时长窗（7.7-32s 同步开销/批），
+    /// 复现 68.3 D.4 饿死形态，与"失败也清零、8 批后再试"纪律矛盾
+    /// （结构体文档口径：窗口字段 = 距上次 checkpoint **触发判定**的
+    /// 批数/时刻）。重试节奏必须 = min(8 批, 600s)。调用序镜像
+    /// `write_batch`：attempt → due 裁决 → ck 回填 → 受理。
+    #[test]
+    fn wm70_duration_window_baseline_advances_on_failed_ck() {
+        let mut wm = PersistWatermark::new();
+        // 批 1..=8（全部写成功）：第 8 批批数窗触发，ck 成功 @t0。
+        for i in 0..CHECKPOINT_EVERY_BATCHES {
+            wm.on_batch_attempt();
+            if wm.checkpoint_due(1_000_000) {
+                assert_eq!(i, CHECKPOINT_EVERY_BATCHES - 1, "首窗应在第 8 批触发");
+                wm.on_checkpoint_done(true, 1_000_000, true);
+            }
+            wm.on_batch_accepted();
+        }
+        assert_eq!(wm.persisted, CHECKPOINT_EVERY_BATCHES);
+        // 批 9：低流量老化（t0+601s）触发时长窗，但 ck 失败（慢盘/介质错）。
+        let t9 = 1_000_000 + CHECKPOINT_MAX_AGE_MS + 1_000;
+        wm.on_batch_attempt();
+        assert!(wm.checkpoint_due(t9), "老化达阈应触发时长窗");
+        wm.on_checkpoint_done(false, t9, true);
+        wm.on_batch_accepted();
+        // 批 10..16（每批 +1s）：不得再触发——基线已随失败尝试推进，
+        // 重试须等批数窗（8 批）或新的 600s 窗。
+        let mut retriggers = 0;
+        for k in 1..=(CHECKPOINT_EVERY_BATCHES - 1) {
+            wm.on_batch_attempt();
+            if wm.checkpoint_due(t9 + k * 1_000) {
+                retriggers += 1;
+                wm.on_checkpoint_done(false, t9 + k * 1_000, true);
+            }
+            wm.on_batch_accepted();
+        }
+        assert_eq!(retriggers, 0, "ck 失败后逐批重试 = 68.3 D.4 饿死形态复活");
+        // 自失败起第 8 批：批数窗照常重试——纪律 = min(8 批, 600s)。
+        wm.on_batch_attempt();
+        assert!(
+            wm.checkpoint_due(t9 + CHECKPOINT_EVERY_BATCHES * 1_000),
+            "批数窗重试点必须照常触发"
+        );
     }
 }

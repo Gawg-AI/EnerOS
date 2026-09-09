@@ -101,16 +101,17 @@ fn raw_command<C: RawIpc>(
 mod tests {
     use super::*;
     use crate::chunked::{
-        ack_bytes, encode_paged_header, is_pull_request, page_slice, ChunkHeader, ChunkedEvent,
-        CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER,
+        ack_bytes, is_pull_request, ChunkHeader, ChunkedEvent, PagedServerV2, CHUNK_MAGIC_FINAL,
+        CHUNK_MAGIC_HEADER,
     };
 
     /// svc-config 内存对端：chunked 分块状态机（同 control_service_main）+
-    /// GET_ENTRY 回显（4B 长度前缀 + 条目字节）。
+    /// GET_ENTRY 回显（4B 长度前缀 + 条目字节）。分页帧律（v2 判别帧）
+    /// 由 [`PagedServerV2`] 承载（70.3 收编）。
     struct FakeConfigServer {
         rx: crate::chunked::ChunkedReceiver,
         pending: Option<Vec<u8>>,
-        paged: Vec<u8>,
+        pages: PagedServerV2,
     }
 
     impl RawIpc for FakeConfigServer {
@@ -122,11 +123,13 @@ mod tests {
         ) -> Result<Vec<u8>, crate::AgentError> {
             if &payload[..4] == CHUNK_MAGIC_HEADER {
                 let h = ChunkHeader::decode(payload).unwrap();
-                let _ = self.rx.on_message(&h.encode(), true);
+                if let ChunkedEvent::Header { epoch, .. } = self.rx.on_message(&h.encode(), true) {
+                    self.pages.set_txn(epoch);
+                }
                 return Ok(ack_bytes().to_vec());
             }
             if &payload[..4] == CHUNK_MAGIC_FINAL {
-                match self.pending.take() {
+                let resp = match self.pending.take() {
                     Some(full) => {
                         assert_eq!(&full[..4], b"CFG1", "请求帧 magic");
                         // 响应体（4B 前缀在下方统一加——单前缀词形）。
@@ -141,18 +144,27 @@ mod tests {
                         let mut resp = Vec::new();
                         resp.extend_from_slice(&(body.len() as u32).to_le_bytes());
                         resp.extend_from_slice(&body);
-                        self.paged = resp;
-                        Ok(encode_paged_header(self.paged.len()).to_vec())
+                        resp
                     }
-                    None => Ok(b"ERR:NoTransfer".to_vec()),
-                }
-            } else if is_pull_request(payload) {
-                Ok(page_slice(&self.paged, payload[4]).to_vec())
-            } else {
-                Err(crate::AgentError::IpcError(
-                    heapless::String::try_from("unexpected").unwrap_or_default(),
-                ))
+                    // Final 无完整请求 → 保持显式拒绝词形（不装空响应）。
+                    None => return Ok(b"ERR:NoTransfer".to_vec()),
+                };
+                return self.pages.on_request(payload, resp).ok_or_else(|| {
+                    crate::AgentError::IpcError(
+                        heapless::String::try_from("paged-reject").unwrap_or_default(),
+                    )
+                });
             }
+            if is_pull_request(payload) {
+                return self.pages.on_request(payload, Vec::new()).ok_or_else(|| {
+                    crate::AgentError::IpcError(
+                        heapless::String::try_from("paged-reject").unwrap_or_default(),
+                    )
+                });
+            }
+            Err(crate::AgentError::IpcError(
+                heapless::String::try_from("unexpected").unwrap_or_default(),
+            ))
         }
 
         fn send(&mut self, _t: &str, payload: &[u8]) -> Result<(), crate::AgentError> {
@@ -199,7 +211,7 @@ mod tests {
         let mut ep = crate::endpoint::ChunkedEndpoint::wrap(FakeConfigServer {
             rx: Default::default(),
             pending: None,
-            paged: Vec::new(),
+            pages: PagedServerV2::new(),
         });
         let resp = get_entry(&mut ep, "points").expect("transfer");
         let body = decode_response_body(&resp).unwrap();
@@ -213,7 +225,7 @@ mod tests {
         let mut ep = crate::endpoint::ChunkedEndpoint::wrap(FakeConfigServer {
             rx: Default::default(),
             pending: None,
-            paged: Vec::new(),
+            pages: PagedServerV2::new(),
         });
         let gen = get_generation(&mut ep).expect("transfer");
         assert_eq!(gen, 42);

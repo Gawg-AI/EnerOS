@@ -14,7 +14,7 @@
 //!   [`AuditError::StorageWriteFailed`]（停止追加），**不静默重建 genesis**
 //!   （重建 = 洗账，禁止）。
 //! - **容量策略显式**：槽满丢新 + [`AuditError::BufferFull`] +
-//!   `dropped_count()`（对齐 MAX_AUDIT_ENTRIES 既有纪律，词形
+//!   `dropped_count()`（对齐 `BoundedMemStore` 既有纪律，词形
 //!   `AUDIT-FULL dropped=`）。
 //! - **双哈希面分离**：磁盘权威 = record_hash 链（`H(prev ‖ canonical)`，
 //!   durable.rs 既有代数）；[`AuditLogger`] trait 面按 entry 代数
@@ -258,7 +258,7 @@ impl<Io: RegionIo> AuditLogger for DurableAuditLog<Io> {
             });
         }
         if self.chain.entry_count as usize >= self.capacity_slots {
-            // 容量策略：丢新 + 计数（对齐 MAX_AUDIT_ENTRIES 纪律）。
+            // 容量策略：丢新 + 计数（对齐 BoundedMemStore 纪律）。
             self.dropped += 1;
             return Err(AuditError::BufferFull);
         }

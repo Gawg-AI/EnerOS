@@ -71,6 +71,11 @@ const KNOWN_KEYS: &[&str] = eneros_protocol_keys::MQTT;
 pub const AI_INBOX_CAP: usize = 8;
 /// 49：app 发布 outbox 上限。
 pub const APP_OUTBOX_CAP: usize = 4;
+/// 蓝图 70.4（WP-70.4.4）：离线存留上限（P 建议值 300s）——超龄条目
+/// 不再补发（过期遥测 = 误导性数据、过期应答/管理回复 = 已过请求配对
+/// 窗），显式丢弃 + `outbox_expired` 计数。条数/字节上限由
+/// [`APP_OUTBOX_CAP`]×[`APP_MSG_MAX_LEN`] 承载（字节/条数/年龄三限）。
+pub const APP_OUTBOX_TTL_MS: u64 = 300_000;
 /// 49：单条 app 消息负载上限（契约层 PEER_REQUEST_MAX_LEN 同量级；
 /// 插件不依赖契约 crate——传输面只认字节）。
 pub const APP_MSG_MAX_LEN: usize = 1024;
@@ -128,16 +133,36 @@ pub struct MqttPlugin {
     /// 50：mgmt inbox 满 / 超限丢弃计数（观测）。
     pub mgmt_dropped_count: u64,
 
-    /// 49：待发布 app 消息（topic, payload）——服务层入队，poll 时 QoS1 发布。
-    app_outbox: alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>,
+    /// 49：待发布 app 消息（topic, payload, 入队时刻 ms）——服务层入队，
+    /// poll 时 QoS1 发布；入队时刻 = 最近一次 poll 时刻（误差 ≤ 一个
+    /// poll 周期，远小于 [`APP_OUTBOX_TTL_MS`] 量级）。
+    app_outbox: alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>, u64)>,
     /// 49：已收到待转发的 peer 应答（原始字节；服务层 drain 后经 EIPC 推送
     /// svc-ai-worker——插件不解释内容）。
     peer_inbox: alloc::vec::Vec<alloc::vec::Vec<u8>>,
     /// 49：inbox 满 / 超限丢弃计数（观测）。
     pub ai_dropped_count: u64,
+    /// 70.4（WP-70.4.4）：离线存留超龄丢弃计数（观测面）。
+    outbox_expired_count: u64,
     /// 68.5 诊断：最近 MQTT 握手失败详情（Debug 串；None=未失败）。
     hs_err_detail: Option<alloc::string::String>,
+    /// 蓝图 70.4（WP-70.4.2）：连接代次——每次成功 CONNECT +1（单调）。
+    /// 恢复观测面：代次变化即"所有必要订阅已失效并按配置逐项恢复"的
+    /// 事件锚（调试行/自检通道带出，gate 据此判恢复后新流量归属）。
+    conn_gen: u32,
+    /// 蓝图 70.4（WP-70.4.2 预算）：重连退避——下次可尝试建联时刻
+    /// （单调 ms；失败后 1s 倍增到 30s 封顶，成功复位）。无界快速重试
+    /// = 无界 I/O 步数（vol4 门 w1 窗实弹：半开断链窗每 poll 建联尝试
+    /// 拖停同优先级服务面——CONTROL-CHAIN/ACQ 停摆）。
+    next_connect_ok_ms: u64,
+    /// 连续失败次数（退避指数；成功复位）。
+    connect_failures: u32,
 }
+
+/// 重连退避参数（WP-70.4.2 预算，P 建议值）：基值 1s，倍增，封顶 30s
+/// （退役的 D15 参数在唯一 owner 层重立）。
+const CONNECT_BACKOFF_BASE_MS: u64 = 1_000;
+const CONNECT_BACKOFF_CAP_MS: u64 = 30_000;
 
 impl MqttPlugin {
     pub fn new() -> Self {
@@ -172,7 +197,11 @@ impl MqttPlugin {
             app_outbox: alloc::vec::Vec::new(),
             peer_inbox: alloc::vec::Vec::new(),
             ai_dropped_count: 0,
+            outbox_expired_count: 0,
             hs_err_detail: None,
+            conn_gen: 0,
+            next_connect_ok_ms: 0,
+            connect_failures: 0,
         }
     }
 
@@ -184,6 +213,31 @@ impl MqttPlugin {
     /// 68.5 诊断：最近一次 MQTT 握手失败详情（debug_line 通道）。
     pub fn handshake_error_detail(&self) -> Option<&str> {
         self.hs_err_detail.as_deref()
+    }
+
+    /// 蓝图 70.4（WP-70.4.2）：当前连接代次（每次成功 CONNECT +1；
+    /// 观测面——恢复后新流量归属判据）。
+    pub fn connection_generation(&self) -> u32 {
+        self.conn_gen
+    }
+
+    /// 蓝图 70.4（WP-70.4.2）：必要订阅就绪判据——**全部已配置**的必要
+    /// 订阅在当前连接代次内被 SUBACK 确认。缺任一 = 部分功能恢复
+    /// （false），不得将整链 Ready 置真（每主题确认状态各自可见）。
+    pub fn subscriptions_ready(&self) -> bool {
+        if !self.connected {
+            return false;
+        }
+        if self.control_topic.is_some() && !self.subscribed {
+            return false;
+        }
+        if self.ai_response_topic.is_some() && !self.ai_subscribed {
+            return false;
+        }
+        if self.mgmt_request_topic.is_some() && !self.mgmt_subscribed {
+            return false;
+        }
+        true
     }
 
     /// 47（WP-47.1）：不可解析下行负载计数（观测）。
@@ -229,7 +283,7 @@ impl MqttPlugin {
             return Err(ProtocolError::QueueFull);
         }
         self.app_outbox
-            .push((topic, alloc::vec::Vec::from(payload)));
+            .push((topic, alloc::vec::Vec::from(payload), self.last_poll_ms));
         Ok(())
     }
 
@@ -252,7 +306,7 @@ impl MqttPlugin {
             return Err(ProtocolError::InvalidConfig);
         }
         self.app_outbox
-            .push((topic, alloc::vec::Vec::from(payload)));
+            .push((topic, alloc::vec::Vec::from(payload), self.last_poll_ms));
         Ok(())
     }
 
@@ -317,7 +371,7 @@ impl MqttPlugin {
             return Err(ProtocolError::InvalidConfig);
         }
         self.app_outbox
-            .push((topic, alloc::vec::Vec::from(payload)));
+            .push((topic, alloc::vec::Vec::from(payload), self.last_poll_ms));
         Ok(())
     }
 
@@ -344,6 +398,11 @@ impl MqttPlugin {
     /// 49：outbox 积压数（观测/测试）。
     pub fn app_outbox_len(&self) -> usize {
         self.app_outbox.len()
+    }
+
+    /// 70.4（WP-70.4.4）：离线存留超龄丢弃计数（观测）。
+    pub fn outbox_expired(&self) -> u64 {
+        self.outbox_expired_count
     }
 
     /// 47（WP-47.1）：解析一条下行写命令负载为写意图。
@@ -569,13 +628,31 @@ impl ProtocolPlugin for MqttPlugin {
         };
         self.last_poll_ms = now_ms;
         // 惰性连接（事件循环语义：首次 poll 建立 CONNECT 握手）。
-        if !self.connected {
+        // 70.4（WP-70.4.2 预算）：退避门——失败后按 1s→30s 倍增节流建联
+        // 尝试（单轮 I/O 步数有界；成功复位）。首试不延迟。
+        if !self.connected && now_ms >= self.next_connect_ok_ms {
             match client.connect(now_ms) {
-                Ok(()) => self.connected = true,
+                Ok(()) => {
+                    self.connected = true;
+                    // 70.4：新连接代次（旧代次的订阅确认全部作废——上方
+                    // 断连路径已复位各订阅标志，此处仅记账）。
+                    self.conn_gen = self.conn_gen.saturating_add(1);
+                    self.connect_failures = 0;
+                    self.next_connect_ok_ms = 0;
+                }
                 Err(e) => {
                     self.error_count += 1;
                     self.last_error = Some(ProtocolError::ReadFailed);
                     self.last_progress = Progress::Degraded;
+                    // 70.4（WP-70.4.2 预算）：失败即安排退避（1s 倍增至
+                    // 30s 封顶——指数臂封顶在移位前 min）。
+                    let backoff = core::cmp::min(
+                        CONNECT_BACKOFF_BASE_MS
+                            << self.connect_failures.min(5),
+                        CONNECT_BACKOFF_CAP_MS,
+                    );
+                    self.connect_failures = self.connect_failures.saturating_add(1);
+                    self.next_connect_ok_ms = now_ms.saturating_add(backoff);
                     // 68.5 诊断（REG-MQTT-BROKER-HANG）：失败详情入插件
                     // 字段，经 debug_line → self-check dbg= 通道带出（插件
                     // 库无打印面；词形 MQTT-HS-ERR 有界可观测）。
@@ -583,6 +660,13 @@ impl ProtocolPlugin for MqttPlugin {
                     return Err(ProtocolError::ReadFailed);
                 }
             }
+        }
+        if !self.connected {
+            // 70.4（WP-70.4.2 预算）：退避窗内无连接可 I/O——跳过
+            // client.poll 的无谓 recv 尝试（单轮 I/O 步数有界；半开链
+            // 每 poll recv 空转 = w1 窗服务面拖停根因之一）。
+            self.last_progress = Progress::Degraded;
+            return Ok(Progress::Degraded);
         }
         // 47：connect 后惰性订阅 control_topic（若上轮失败本轮重试）。
         if self.connected && self.pending_subscribe && !self.subscribed {
@@ -624,8 +708,15 @@ impl ProtocolPlugin for MqttPlugin {
         // 49：outbox 冲刷（每轮排空至多 APP_OUTBOX_CAP 条——积压会使
         // 应答相对请求错相，49 第六轮实弹根因；单条失败保留待下轮）。
         if self.connected && !self.app_outbox.is_empty() {
+            // 70.4（WP-70.4.4）：离线存留老化——超龄条目不再补发（过期
+            // 遥测 = 误导性数据；应答/管理回复 = 已过请求配对窗），显式
+            // 丢弃 + 计数（字节/条数/年龄三限的"年龄"臂）。
+            let before = self.app_outbox.len();
+            self.app_outbox
+                .retain(|(_, _, enq)| now_ms.saturating_sub(*enq) <= APP_OUTBOX_TTL_MS);
+            self.outbox_expired_count += (before - self.app_outbox.len()) as u64;
             while !self.app_outbox.is_empty() {
-                let Some((topic, payload)) = self.app_outbox.first() else {
+                let Some((topic, payload, _enq)) = self.app_outbox.first() else {
                     break;
                 };
                 let topic = topic.clone();
@@ -735,9 +826,13 @@ impl ProtocolPlugin for MqttPlugin {
         Some(match &self.hs_err_detail {
             Some(d) => alloc::format!("MQTT-HS-ERR n={} detail={d}", self.error_count),
             None => alloc::format!(
-                "MQTT-HS n={} connected={}",
+                "MQTT-HS n={} gen={} ready={} ctl={} ai={} mgmt={}",
                 self.error_count,
-                self.connected
+                self.conn_gen,
+                self.subscriptions_ready(),
+                self.subscribed,
+                self.ai_subscribed,
+                self.mgmt_subscribed
             ),
         })
     }
@@ -778,8 +873,25 @@ mod tests {
         fn recv(&mut self, buf: &mut [u8]) -> Result<usize, TransportError> {
             let data = self.last.borrow().clone();
             // CONNECT 包（0x10 开头）→ 应答 CONNACK。
+            // SUBSCRIBE（0x82 开头）→ 回 SUBACK（pid 回显 + rc=0，70.4
+            // ready 判据测试需要逐主题确认面）。
             let reply: alloc::vec::Vec<u8> = if data.first() == Some(&0x10) {
                 alloc::vec![0x20, 0x02, 0x00, 0x00]
+            } else if data.first() == Some(&0x82) && data.len() >= 4 {
+                let mut r = alloc::vec![0x90, 0x03];
+                r.extend_from_slice(&data[2..4]);
+                r.push(0);
+                r
+            } else if data.first() == Some(&0x32) && data.len() >= 6 {
+                // QoS1 PUBLISH → PUBACK（pid 位于 2+主题长度，68 复查同律）。
+                let tlen = u16::from_be_bytes([data[2], data[3]]) as usize;
+                let mut r = alloc::vec![0x40, 0x02];
+                if data.len() >= 4 + tlen + 2 {
+                    r.extend_from_slice(&data[4 + tlen..6 + tlen]);
+                } else {
+                    r.extend_from_slice(&[0, 1]);
+                }
+                r
             } else {
                 data
             };
@@ -833,6 +945,44 @@ mod tests {
             plugin.validate_config(&cfg),
             Err(ProtocolError::InvalidConfig)
         );
+    }
+
+    /// 蓝图 70.4（WP-70.4.2）：连接代次与必要订阅就绪判据——
+    /// ① 无配置订阅时 ready 随 connected 置真；② 断连检测后 ready=false、
+    /// 各订阅标志复位；③ 恢复后 gen 单调递增、ready 重新置真。
+    #[test]
+    fn recovery_generation_and_ready_semantics() {
+        let mut plugin = MqttPlugin::new();
+        let mut factory = TestTcpFactory;
+        let mut cfg = ProtocolConfig::default();
+        cfg.insert("broker", "127.0.0.1:1883");
+        cfg.insert("control_topic", "t/ctl");
+        plugin
+            .start(&cfg, &mut factory, &mut EmptyPointRegistry)
+            .expect("start");
+        let budget = WorkBudget {
+            max_work_ms: 50,
+            max_polls: 1,
+        };
+        // 首 poll：connect（gen=1）。
+        let _ = plugin.poll(1000, budget);
+        assert_eq!(plugin.connection_generation(), 1);
+        // 同代次内 control_topic 完成订阅确认 → ready。
+        let _ = plugin.poll(1100, budget);
+        assert!(plugin.subscriptions_ready(), "全部必要订阅确认后 ready");
+        // 模拟底层断连（client 状态离开 Connected）→ 下轮 poll 同步：
+        // ready=false，订阅标志复位（部分恢复不可宣称整链 Ready）。
+        if let Some(c) = plugin.client.as_mut() {
+            c.mark_disconnected();
+        }
+        let _ = plugin.poll(1200, budget);
+        assert!(!plugin.subscriptions_ready(), "断连后不得 ready");
+        assert_eq!(plugin.health().last_poll_ms, 1200);
+        // 恢复 poll：connect（gen=2）→ 订阅逐项恢复 → ready 重新置真。
+        let _ = plugin.poll(1300, budget);
+        assert_eq!(plugin.connection_generation(), 2, "恢复必须推进代次");
+        let _ = plugin.poll(1400, budget);
+        assert!(plugin.subscriptions_ready(), "恢复后重新 ready");
     }
 
     #[test]
@@ -1074,6 +1224,111 @@ mod tests {
 
     // ================= 49（WP-49.2）远程 dual-brain 传输面 =================
 
+    /// 蓝图 70.4（WP-70.4.2 预算）：重连退避——失败后 1s 倍增封顶 30s，
+    /// 退避窗内的 poll 不产生建联尝试（单轮 I/O 步数有界）；成功复位。
+    #[test]
+    fn connect_backoff_bounds_retry_rate() {
+        /// start 可开（MqttBrokerTransport），但每次 reconnect 拒——
+        /// 建联失败面 = MqttTransport::connect → reconnect Err。
+        struct ReconnectFailFactory;
+        impl TransportFactory for ReconnectFailFactory {
+            fn open(
+                &mut self,
+                _spec: &TransportSpec,
+            ) -> Result<Box<dyn TransportHandle>, TransportError> {
+                #[derive(Default)]
+                struct NoReconnect;
+                impl TransportHandle for NoReconnect {
+                    fn send(&mut self, _: &[u8]) -> Result<(), TransportError> {
+                        Err(TransportError::Io)
+                    }
+                    fn recv(&mut self, _: &mut [u8]) -> Result<usize, TransportError> {
+                        Err(TransportError::Closed)
+                    }
+                    fn close(&mut self) -> Result<(), TransportError> {
+                        Ok(())
+                    }
+                    fn is_connected(&self) -> bool {
+                        false
+                    }
+                    fn reconnect(&mut self, _: &str) -> Result<(), TransportError> {
+                        Err(TransportError::ConnectFailed)
+                    }
+                    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+                        self
+                    }
+                }
+                Ok(Box::new(NoReconnect))
+            }
+            fn supports(&self, kind: TransportKind) -> bool {
+                kind == TransportKind::Tcp
+            }
+        }
+        let mut plugin = MqttPlugin::new();
+        let mut factory = ReconnectFailFactory;
+        let mut cfg = ProtocolConfig::default();
+        cfg.insert("broker", "127.0.0.1:1883");
+        plugin
+            .start(&cfg, &mut factory, &mut EmptyPointRegistry)
+            .expect("start");
+        let budget = WorkBudget {
+            max_work_ms: 50,
+            max_polls: 1,
+        };
+        // t=0：首试（立即）失败 → 下次可试 1000。
+        let _ = plugin.poll(0, budget);
+        assert_eq!(plugin.error_count, 1);
+        // t=500：退避窗内——无尝试（error_count 不变）。
+        let _ = plugin.poll(500, budget);
+        assert_eq!(plugin.error_count, 1, "退避窗内不得建联尝试");
+        // t=1000：第二次尝试失败 → 下次 3000（1s 倍增）。
+        let _ = plugin.poll(1000, budget);
+        assert_eq!(plugin.error_count, 2);
+        let _ = plugin.poll(2999, budget);
+        assert_eq!(plugin.error_count, 2, "倍增窗内不得尝试");
+        let _ = plugin.poll(3000, budget);
+        assert_eq!(plugin.error_count, 3, "倍增到期后恢复尝试");
+        assert_eq!(plugin.connection_generation(), 0, "全程未成功建联");
+    }
+
+    /// 蓝图 70.4（WP-70.4.4）：离线存留老化——超龄 outbox 条目不再补发
+    /// （显式丢弃 + 计数）；新鲜条目照常发布。
+    #[test]
+    fn outbox_expired_entries_dropped_not_replayed() {
+        let mut plugin = MqttPlugin::new();
+        let mut factory = TestTcpFactory;
+        let mut cfg = ProtocolConfig::default();
+        cfg.insert("broker", "127.0.0.1:1883");
+        cfg.insert("telemetry_topic", "t/tel");
+        plugin
+            .start(&cfg, &mut factory, &mut EmptyPointRegistry)
+            .expect("start");
+        let budget = WorkBudget {
+            max_work_ms: 50,
+            max_polls: 1,
+        };
+        let _ = plugin.poll(1_000, budget); // connect + ready
+                                            // 断连期间入队两帧（enq = last_poll_ms = 1000）。
+        if let Some(c) = plugin.client.as_mut() {
+            c.mark_disconnected();
+        }
+        plugin
+            .enqueue_telemetry_publish(b"old-frame")
+            .expect("enq1");
+        // 推进时钟：poll 重连（gen=2、条目时间戳仍在 1000——断连期无更新）。
+        let _ = plugin.poll(1_000 + APP_OUTBOX_TTL_MS + 500, budget);
+        let _ = plugin.poll(1_000 + APP_OUTBOX_TTL_MS + 600, budget);
+        // 超龄帧被丢弃（不补发）+ 计数；随后入队的新鲜帧照常发布。
+        assert_eq!(plugin.outbox_expired(), 1, "超龄帧必须显式丢弃计数");
+        assert_eq!(plugin.app_outbox_len(), 0);
+        plugin
+            .enqueue_telemetry_publish(b"fresh-frame")
+            .expect("enq2");
+        let _ = plugin.poll(1_000 + APP_OUTBOX_TTL_MS + 700, budget);
+        assert_eq!(plugin.app_outbox_len(), 0, "新鲜帧照常发布");
+        assert_eq!(plugin.outbox_expired(), 1, "计数不误增");
+    }
+
     /// 49：应答主题 PUBLISH → 原始字节入 inbox（不解释）；drain 清空；
     /// control_topic 解析不受影响（双主题并存路由正确）。
     #[test]
@@ -1126,7 +1381,7 @@ mod tests {
         assert!(plugin.enqueue_ai_publish(b"{\"req_id\":1}").is_ok());
         assert_eq!(plugin.app_outbox_len(), 1);
         assert_eq!(
-            plugin.app_outbox.first().map(|(t, _)| t.as_str()),
+            plugin.app_outbox.first().map(|(t, _, _)| t.as_str()),
             Some("eneros/brain/request"),
             "发布主题必须逐字节等于配置的 ai_request_topic"
         );

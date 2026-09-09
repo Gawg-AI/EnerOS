@@ -429,3 +429,12 @@ status = "Accepted"
 supersedes = []
 superseded_by = ""
 decision_digest = ""
+
+[[adrs]]
+id = "ADR-0053"
+path = "docs/adr/ADR-0053-chunked-paged-wire-v2.md"
+title = "chunked 分页响应 wire v2（判别帧 + 16-bit 事务标识，v1 硬退役；蓝图 70.3 WP-70.3.3）"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""

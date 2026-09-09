@@ -19,61 +19,17 @@ use crate::will::LastWill;
 /// 客户端连接状态.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
-    /// 已断开（初始状态或显式 disconnect）.
+    /// 已断开（初始状态、显式 disconnect 或断线标记——恢复 owner 在 plugin 层）.
     Disconnected,
     /// 正在连接（已发送 CONNECT，等待 CONNACK）.
     Connecting,
     /// 已连接（CONNACK 接受）.
     Connected,
-    /// 重连中（断线后指数退避重连）.
-    Reconnecting,
 }
 
-/// 重连状态（指数退避）.
-#[derive(Debug, Clone, Copy)]
-pub struct ReconnectState {
-    /// 已尝试重连次数.
-    pub attempt_count: u32,
-    /// 下次可重连的时间戳（ms）.
-    pub next_retry_ms: u64,
-    /// 当前退避时间（ms）.
-    pub backoff_ms: u32,
-}
-
-impl ReconnectState {
-    /// 初始值：attempt_count=0, next_retry_ms=0, backoff_ms=1000（D15：初始 1s）.
-    pub fn new() -> Self {
-        Self {
-            attempt_count: 0,
-            next_retry_ms: 0,
-            backoff_ms: 1000,
-        }
-    }
-
-    /// 计算下次退避：倍增 backoff_ms，封顶 30000（30s），自增 attempt_count，
-    /// 设置 next_retry_ms = now + backoff_ms（参数为当前时间戳）.
-    pub fn next_backoff(&mut self, now_ms: u64) -> u32 {
-        self.attempt_count += 1;
-        let current = self.backoff_ms;
-        // 倍增并封顶 30s（D15）
-        self.backoff_ms = (self.backoff_ms.saturating_mul(2)).min(30_000);
-        self.next_retry_ms = now_ms.saturating_add(current as u64);
-        current
-    }
-
-    /// 重置为初始状态（重连成功后调用）.
-    pub fn reset(&mut self) {
-        self.attempt_count = 0;
-        self.next_retry_ms = 0;
-        self.backoff_ms = 1000;
-    }
-}
-
-impl Default for ReconnectState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// 蓝图 70.4（WP-70.4.2 / N12 收口）：`ReconnectState`（客户端内自持指数
+// 退避）随 `try_reconnect` 一并退役——唯一恢复 owner = plugin 层；保留
+// 客户端内第二套重试调度 = 第二个自认 owner（本类型无重试循环）。
 
 /// QoS 1/2 在途消息状态.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +62,6 @@ pub struct MqttClient {
     /// 传输层.
     pub transport: Option<Box<dyn MqttTransport>>,
     /// 重连状态.
-    pub reconnect_state: ReconnectState,
     /// 下一个待分配的 QoS 1/2 packet ID.
     pub pending_publish_packet_id: u16,
     /// 在途 QoS 1/2 消息（packet_id → 状态）.
@@ -141,7 +96,6 @@ impl MqttClient {
             keep_alive_ms,
             last_activity_ms: 0,
             transport: None,
-            reconnect_state: ReconnectState::new(),
             pending_publish_packet_id: 1,
             pending_acks: BTreeMap::new(),
             inbound_qos2: BTreeMap::new(),
@@ -648,44 +602,18 @@ impl MqttClient {
         }
     }
 
-    /// 触发重连（指数退避，D15：初始 1s，最大 30s）.
-    ///
-    /// - 若状态非 Reconnecting/Disconnected：返回 Ok（无需重连）
-    /// - 若 now_ms < next_retry_ms：返回 Err(NotConnected)（仍在退避中）
-    /// - 否则调用 connect() 重连
-    ///   - 成功：恢复所有订阅，重置 reconnect_state
-    ///   - 失败：调用 next_backoff()，返回 Err
-    pub fn try_reconnect(&mut self, now_ms: u64) -> Result<(), MqttError> {
-        if self.state != ConnectionState::Reconnecting
-            && self.state != ConnectionState::Disconnected
-        {
-            return Ok(());
-        }
-        if now_ms < self.reconnect_state.next_retry_ms {
-            return Err(MqttError::NotConnected);
-        }
-        self.state = ConnectionState::Reconnecting;
-        match self.connect(now_ms) {
-            Ok(()) => {
-                // 恢复订阅
-                let subs = self.subscriptions.clone();
-                for (topic, qos) in subs {
-                    let _ = self.subscribe(&topic, qos);
-                }
-                self.reconnect_state.reset();
-                Ok(())
-            }
-            Err(e) => {
-                self.reconnect_state.next_backoff(now_ms);
-                self.state = ConnectionState::Reconnecting;
-                Err(e)
-            }
-        }
-    }
+    // 蓝图 70.4（WP-70.4.2 / N12 收口）：旧 `try_reconnect`（自持指数退避
+    // + "恢复所有订阅、忽略 subscribe 结果"）**退役**——生产装配（plugin
+    // poll 惰性 connect + 逐主题订阅标志）从未调用过它；它与 plugin 形成
+    // 两个自认的恢复 owner，且其订阅恢复成败不可观测。唯一恢复 owner =
+    // plugin 层（必要订阅逐项确认，见 plugin.rs）。
 
     /// 标记断线（外部检测到传输断开时调用）.
+    ///
+    /// 70.4 口径：状态置 `Disconnected`（诚实事实——本类型内无重试循环；
+    /// 恢复调度 owner 在 plugin 层）。持久会话保留在途状态（WP-53.4 同前）。
     pub fn mark_disconnected(&mut self) {
-        self.state = ConnectionState::Reconnecting;
+        self.state = ConnectionState::Disconnected;
         // WP-53.4 切片 D：持久会话保留在途状态（同 disconnect 语义）。
         if self.clean_session {
             self.pending_acks.clear();
@@ -748,39 +676,6 @@ mod tests {
     }
 
     use super::*;
-
-    #[test]
-    fn test_reconnect_state_initial() {
-        let s = ReconnectState::new();
-        assert_eq!(s.attempt_count, 0);
-        assert_eq!(s.next_retry_ms, 0);
-        assert_eq!(s.backoff_ms, 1000);
-    }
-
-    #[test]
-    fn test_reconnect_state_backoff_doubles() {
-        let mut s = ReconnectState::new();
-        let b1 = s.next_backoff(0);
-        assert_eq!(b1, 1000);
-        assert_eq!(s.attempt_count, 1);
-        assert_eq!(s.next_retry_ms, 1000);
-        assert_eq!(s.backoff_ms, 2000);
-
-        let b2 = s.next_backoff(1000);
-        assert_eq!(b2, 2000);
-        assert_eq!(s.attempt_count, 2);
-        assert_eq!(s.next_retry_ms, 3000);
-        assert_eq!(s.backoff_ms, 4000);
-    }
-
-    #[test]
-    fn test_reconnect_state_backoff_cap() {
-        let mut s = ReconnectState::new();
-        s.backoff_ms = 16_000;
-        let b = s.next_backoff(0);
-        assert_eq!(b, 16_000);
-        assert_eq!(s.backoff_ms, 30_000); // 封顶 30s
-    }
 
     #[test]
     fn test_parse_broker() {
@@ -1073,8 +968,8 @@ mod tests {
             .expect("sub#2 同 topic 去重");
         assert_eq!(client.subscriptions.len(), 1, "同 topic 不得累积两条订阅");
 
-        // 断线→重连两轮：恢复订阅不改列表长度。
-        // 每轮预置该轮的 CONNACK + SUBACK（packet_id 随全局计数器递增）。
+        // 断线→重连两轮（plugin 层 connect + 重订阅——70.4 起唯一恢复
+        // owner）：重复 subscribe 不改列表长度（去重锁保持）。
         for (round, pid) in [(0u32, 3u16), (1, 4)] {
             client.mark_disconnected();
             feed(
@@ -1091,13 +986,12 @@ mod tests {
                     return_codes: vec![0],
                 })),
             );
-            client
-                .try_reconnect(10_000 + u64::from(round) * 60_000)
-                .expect("reconnect");
+            assert!(client.connect(10_000 + u64::from(round) * 60_000).is_ok());
+            client.subscribe("a/b", QoS::AtLeastOnce).expect("重订阅");
             assert_eq!(
                 client.subscriptions.len(),
                 1,
-                "重连恢复订阅后列表长度必须恒定"
+                "恢复订阅后列表长度必须恒定（去重）"
             );
         }
     }
@@ -1211,11 +1105,11 @@ mod gap_closure_tests {
             ConnectionState::Disconnected,
             "握手失败臂不得停留 Connecting（F-A1）"
         );
-        // F-A2 联动锁：Disconnected 态 try_reconnect 必须是可推进的
-        // （不再被状态门直接放行返回 Ok）。
+        // F-A2 联动锁（70.4 口径）：Disconnected 态下 subscribe 拒绝
+        // NotConnected——恢复重试 owner = plugin 层，客户端无自持循环。
         assert!(matches!(
-            c.try_reconnect(c.reconnect_state.next_retry_ms),
-            Err(MqttError::NotConnected) | Err(_)
+            c.subscribe("t", crate::qos::QoS::AtMostOnce),
+            Err(MqttError::NotConnected)
         ));
     }
 
@@ -1288,8 +1182,8 @@ mod gap_closure_tests {
         assert_eq!(r, Err(MqttError::PublishTimeout));
         assert_eq!(
             c.state,
-            ConnectionState::Reconnecting,
-            "PING 无应答必须标记断连（plugin :676 注释所宣称的语义）"
+            ConnectionState::Disconnected,
+            "PING 无应答必须标记断连（70.4 口径：Disconnected = 诚实事实，恢复 owner 在 plugin 层）"
         );
         let sent = transport_of(&mut c).sent_packets();
         assert!(

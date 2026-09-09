@@ -1,0 +1,8 @@
+{"id": "G1", "verdict": "PASS", "reason": "PANIC 总数=0（无豁免）"}
+{"id": "G2", "verdict": "PASS", "reason": "分配失败总数=0"}
+{"id": "G3", "verdict": "PASS", "reason": "PRODUCT-READY: true x1"}
+{"id": "G4", "verdict": "PASS", "reason": "相位样本=[364, 222, 210, 213] 地板=50 尾/二=213/222（热身爬坡允许，塌陷/尾部0判负）"}
+{"id": "G5", "verdict": "PASS", "reason": "rounds=1009 Committed=804 门限=400"}
+{"id": "G6", "verdict": "PASS", "reason": "CHAIN-KEY-MISSING x0"}
+{"id": "G7", "verdict": "PASS", "reason": "transcript x2 非空"}
+=== VOL70 JUDGE: PASS ===

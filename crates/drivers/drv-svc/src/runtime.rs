@@ -120,6 +120,9 @@ pub mod wire {
     pub const RESPONSE_LEN: usize = 4 + 1 + 8 + 2 + PAYLOAD_CAP;
 
     pub fn encode_request(req: &DriverRequest) -> [u8; REQUEST_LEN] {
+        // 70.3（WP-70.3.2）：写侧辅助断言——声明长度超容量 = 编程错误
+        // （decode 面是运行时硬拒绝；此处不静默裁剪掩盖）。
+        debug_assert!((req.payload_len as usize) <= PAYLOAD_CAP);
         let mut out = [0u8; REQUEST_LEN];
         let mut o = 0;
         for b in ENVELOPE_VERSION.to_le_bytes() {
@@ -145,6 +148,10 @@ pub mod wire {
         out
     }
 
+    /// 请求解码（70.3 WP-70.3.2 单点拒绝：`payload_len > PAYLOAD_CAP`
+    /// = 运行时 `None`——release 构建同样拒绝，`debug_assert` 只作辅助。
+    /// 旧实现按 min 截取却保留过大的声明长度，把未传输的零填充当有效
+    /// 载荷（REG-DRV-PAYLOAD-LEN-CLAMP 修法第一步）。
     pub fn decode_request(bytes: &[u8]) -> Option<DriverRequest> {
         if bytes.len() != REQUEST_LEN {
             return None;
@@ -163,9 +170,12 @@ pub mod wire {
         o += 8;
         let payload_len = u16::from_le_bytes(bytes[o..o + 2].try_into().ok()?);
         o += 2;
+        if payload_len as usize > PAYLOAD_CAP {
+            return None;
+        }
+        debug_assert!((payload_len as usize) <= PAYLOAD_CAP);
         let mut payload = [0u8; PAYLOAD_CAP];
-        let n = core::cmp::min(payload_len as usize, PAYLOAD_CAP);
-        payload[..n].copy_from_slice(&bytes[o..o + n]);
+        payload[..payload_len as usize].copy_from_slice(&bytes[o..o + payload_len as usize]);
         Some(DriverRequest {
             correlation,
             opcode,
@@ -176,6 +186,8 @@ pub mod wire {
     }
 
     pub fn encode_response(resp: &DriverResponse) -> [u8; RESPONSE_LEN] {
+        // 70.3（WP-70.3.2）：写侧辅助断言（同 encode_request）。
+        debug_assert!((resp.payload_len as usize) <= PAYLOAD_CAP);
         let mut out = [0u8; RESPONSE_LEN];
         let mut o = 0;
         for b in resp.correlation.to_le_bytes() {
@@ -197,6 +209,7 @@ pub mod wire {
         out
     }
 
+    /// 响应解码（70.3 WP-70.3.2 单点拒绝——同 [`decode_request`]）。
     pub fn decode_response(bytes: &[u8]) -> Option<DriverResponse> {
         if bytes.len() != RESPONSE_LEN {
             return None;
@@ -210,9 +223,12 @@ pub mod wire {
         o += 8;
         let payload_len = u16::from_le_bytes(bytes[o..o + 2].try_into().ok()?);
         o += 2;
+        if payload_len as usize > PAYLOAD_CAP {
+            return None;
+        }
+        debug_assert!((payload_len as usize) <= PAYLOAD_CAP);
         let mut payload = [0u8; PAYLOAD_CAP];
-        let n = core::cmp::min(payload_len as usize, PAYLOAD_CAP);
-        payload[..n].copy_from_slice(&bytes[o..o + n]);
+        payload[..payload_len as usize].copy_from_slice(&bytes[o..o + payload_len as usize]);
         Some(DriverResponse {
             correlation,
             status,
@@ -534,6 +550,94 @@ mod tests {
         bytes[0] = 99; // 版本坏
         assert!(wire::decode_request(&bytes).is_none());
         assert!(wire::decode_request(&bytes[..10]).is_none(), "长度不足拒绝");
+    }
+
+    // ---- 蓝图 70.3 WP-70.3.2：driver wire 长度单点拒绝 ------------------
+    // 验收：PAYLOAD_CAP−1/CAP/+1/u16::MAX（声明长度域）、短信封、尾
+    // padding；越声明 = 运行时 None（release 同律），负例后队列仍可用。
+
+    /// 把请求信封的 payload_len 字段改写为指定值（绕过 encode 的
+    /// debug_assert，模拟不受信 wire）。
+    fn request_with_declared_len(declared: u16) -> Vec<u8> {
+        let mut bytes = wire::encode_request(&DriverRequest::new(7, OP_PING)).to_vec();
+        // 布局：version 4 | correlation 4 | opcode 1 | deadline 8 | len 2。
+        let off = 4 + 4 + 1 + 8;
+        bytes[off..off + 2].copy_from_slice(&declared.to_le_bytes());
+        bytes
+    }
+
+    fn response_with_declared_len(declared: u16) -> Vec<u8> {
+        let mut bytes = wire::encode_response(&DriverResponse::new(7, ST_OK, 1)).to_vec();
+        // 布局：correlation 4 | status 1 | epoch 8 | len 2。
+        let off = 4 + 1 + 8;
+        bytes[off..off + 2].copy_from_slice(&declared.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn payload_len_over_cap_rejected_at_runtime() {
+        // 请求：CAP−1 / CAP 合法；CAP+1 / u16::MAX 运行时拒绝。
+        for (declared, ok) in [
+            ((PAYLOAD_CAP - 1) as u16, true),
+            (PAYLOAD_CAP as u16, true),
+            ((PAYLOAD_CAP + 1) as u16, false),
+            (u16::MAX, false),
+        ] {
+            let bytes = request_with_declared_len(declared);
+            let decoded = wire::decode_request(&bytes);
+            assert_eq!(decoded.is_some(), ok, "声明 {declared}: 合法性 {ok}");
+            if let Some(req) = decoded {
+                assert_eq!(req.payload_len as usize, declared as usize);
+            }
+            // 响应同律。
+            let rbytes = response_with_declared_len(declared);
+            assert_eq!(wire::decode_response(&rbytes).is_some(), ok);
+        }
+        // release 同律的结构性依据：拒绝在普通路径（非 debug_assert）。
+        assert!(wire::decode_request(&request_with_declared_len(u16::MAX)).is_none());
+    }
+
+    #[test]
+    fn padded_response_decodes_within_cap_and_rejects_over_decl() {
+        // 合法响应 + 尾 padding（服务端 4B/word 回 MR 的物理补齐）。
+        let resp = DriverResponse::new(3, ST_OK, 9);
+        let bytes = wire::encode_response(&resp);
+        let mut padded = bytes.to_vec();
+        padded.extend_from_slice(&[0u8; 5]);
+        let got = wire::decode_response_padded(&padded).expect("补齐容忍");
+        assert_eq!((got.correlation, got.status, got.epoch), (3, ST_OK, 9));
+        // 声明越容量 → padded 形同样拒绝（不因补齐放宽声明域检）。
+        let mut over = response_with_declared_len(u16::MAX);
+        over.extend_from_slice(&[0u8; 5]);
+        assert!(wire::decode_response_padded(&over).is_none());
+    }
+
+    #[test]
+    fn oversize_request_is_invalid_and_queue_stays_usable() {
+        // process_request 面：越声明请求 → ST_INVALID（不入队、不触发
+        // handle）；随后合法请求照常完成（负例后队列可用——70.3 出口）。
+        struct Counting(u32);
+        impl DriverService for Counting {
+            fn capability(&self) -> Option<&'static str> {
+                Some("blk")
+            }
+            fn handle(&mut self, _req: &DriverRequest, _resp: &mut DriverResponse) {
+                self.0 += 1;
+            }
+        }
+        let mut queue = BoundedQueue::new();
+        let mut svc = Counting(0);
+        let mut out = DriverResponse::new(0, ST_OK, 1);
+        // 负例：越声明长度。
+        let bad = request_with_declared_len(u16::MAX);
+        assert!(process_request(&mut queue, &mut svc, 1, 0, &bad, &mut out));
+        assert_eq!(out.status, ST_INVALID, "越声明长度必须 ST_INVALID");
+        assert_eq!(svc.0, 0, "非法请求不得触发驱动 handle");
+        assert!(queue.is_empty(), "非法请求不得入队");
+        // 合法请求恢复。
+        let good = wire::encode_request(&DriverRequest::new(8, OP_PING));
+        assert!(process_request(&mut queue, &mut svc, 1, 0, &good, &mut out));
+        assert_eq!(out.status, ST_OK);
     }
 
     #[test]

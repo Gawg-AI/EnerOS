@@ -8,8 +8,7 @@
 use alloc::vec::Vec;
 
 use eneros_agent_sdk::chunked::{
-    ack_bytes, encode_paged_header, is_pull_request, page_slice, CHUNK_MAGIC_FINAL,
-    CHUNK_MAGIC_HEADER,
+    ack_bytes, is_pull_request, PagedServerV2, CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER,
 };
 use eneros_agent_sdk::{chunked::RawIpc, AgentError};
 
@@ -18,7 +17,7 @@ use eneros_agent_sdk::{chunked::RawIpc, AgentError};
 /// → Err 传输分支）。
 pub struct FixedRespServer {
     resp: Vec<u8>,
-    pending: Vec<u8>,
+    pages: PagedServerV2,
     fail_transport: bool,
     /// 完成传输计数（断言用）。
     pub transfers: usize,
@@ -29,7 +28,7 @@ impl FixedRespServer {
     pub fn responding(resp: Vec<u8>) -> Self {
         Self {
             resp,
-            pending: Vec::new(),
+            pages: PagedServerV2::new(),
             fail_transport: false,
             transfers: 0,
         }
@@ -39,7 +38,7 @@ impl FixedRespServer {
     pub fn failing() -> Self {
         Self {
             resp: Vec::new(),
-            pending: Vec::new(),
+            pages: PagedServerV2::new(),
             fail_transport: true,
             transfers: 0,
         }
@@ -53,15 +52,21 @@ impl RawIpc for FixedRespServer {
         payload: &[u8],
         _timeout_ns: u64,
     ) -> Result<Vec<u8>, AgentError> {
-        if is_pull_request(payload) {
-            return Ok(page_slice(&self.pending, payload[4]).to_vec());
-        }
-        if payload.len() == 4 && payload[0..4] == *CHUNK_MAGIC_FINAL {
-            self.transfers += 1;
-            self.pending = self.resp.clone();
-            return Ok(encode_paged_header(self.pending.len()).to_vec());
+        if is_pull_request(payload) || (payload.len() == 4 && payload[0..4] == *CHUNK_MAGIC_FINAL) {
+            let is_final = payload.len() == 4 && payload[0..4] == *CHUNK_MAGIC_FINAL;
+            if is_final {
+                self.transfers += 1;
+            }
+            return self
+                .pages
+                .on_request(payload, self.resp.clone())
+                .ok_or(AgentError::Timeout);
         }
         if payload.len() >= 4 && payload[0..4] == *CHUNK_MAGIC_HEADER {
+            // 事务标识随 Header epoch 绑定（v2 Pull 回带校验的供页前提）。
+            if let Ok(h) = eneros_agent_sdk::chunked::ChunkHeader::decode(payload) {
+                self.pages.set_txn(h.epoch);
+            }
             if self.fail_transport {
                 return Ok(alloc::vec![0xDE, 0xAD, 0xBE, 0xEF]);
             }

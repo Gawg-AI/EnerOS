@@ -12,8 +12,9 @@
 //! - [`packet::MqttPacket`] — 14 种控制报文枚举
 //! - [`packet::encode`]/[`packet::decode`] — 报文编解码
 //! - [`transport::MqttTransport`] — 传输层 trait + [`transport::MockTransport`] mock
-//! - [`client::MqttClient`] — 客户端状态机（Disconnected/Connecting/Connected/Reconnecting）
-//! - [`client::ReconnectState`] — 指数退避重连状态
+//! - [`client::MqttClient`] — 客户端状态机（Disconnected/Connecting/Connected；
+//!   70.4 起 Reconnecting 变体与 try_reconnect/ReconnectState 退役——唯一
+//!   恢复 owner = plugin 层，N12 收口）
 //!
 //! # 偏差声明（D11~D18）
 //!
@@ -50,7 +51,7 @@ pub mod transport;
 pub mod plugin;
 pub mod will;
 
-pub use client::{ConnectionState, MqttClient, PendingAck, ReconnectState};
+pub use client::{ConnectionState, MqttClient, PendingAck};
 pub use error::MqttError;
 pub use packet::{
     ConnackPacket, ConnectPacket, MqttPacket, PublishPacket, SubackPacket, SubscribePacket,
@@ -312,42 +313,32 @@ mod tests {
         assert_eq!(client.pending_count(), 0);
     }
 
-    // ===== T15：MqttClient 指数退避重连 =====
+    // ===== 70.4 WP-70.4.2（N12 收口）：恢复 owner 单一化 = plugin 层 =====
+    // 旧 T15（客户端内 try_reconnect 指数退避）随 try_reconnect/ReconnectState
+    // 退役——生产从未调用该路径，且其"恢复订阅、忽略 subscribe 结果"与
+    // plugin 逐主题确认形成两个自认 owner。本测锁新合同：断线标记 =
+    // Disconnected（诚实事实）；客户端内无重试循环可依赖。
     #[test]
-    fn test_t15_client_reconnect_backoff() {
+    fn test_t15_mark_disconnected_is_honest_disconnected_state() {
         let mut mock = MockTransport::new();
         mock.set_connected(true);
         mock.enqueue_recv(make_connack());
         let mut client = MqttClient::new("localhost", "client-1", 60_000);
         client.set_transport(Box::new(mock));
-        // 初始连接成功
         assert!(client.connect(0).is_ok());
         assert_eq!(client.state, ConnectionState::Connected);
-        // 初始 backoff_ms=1000
-        assert_eq!(client.reconnect_state.backoff_ms, 1000);
-        assert_eq!(client.reconnect_state.attempt_count, 0);
-        // 模拟断线
         client.mark_disconnected();
-        assert_eq!(client.state, ConnectionState::Reconnecting);
-        // 第 1 次重连（t=0）：无 CONNACK → 失败，backoff 翻倍 1000→2000
-        let r = client.try_reconnect(0);
-        assert!(r.is_err());
-        assert_eq!(client.state, ConnectionState::Reconnecting);
-        assert_eq!(client.reconnect_state.attempt_count, 1);
-        assert_eq!(client.reconnect_state.backoff_ms, 2000);
-        assert_eq!(client.reconnect_state.next_retry_ms, 1000);
-        // 第 2 次重连（t=500）：仍在退避期（500 < 1000）→ Err(NotConnected)
-        let r = client.try_reconnect(500);
-        assert!(matches!(r, Err(MqttError::NotConnected)));
-        // backoff 不变
-        assert_eq!(client.reconnect_state.backoff_ms, 2000);
-        assert_eq!(client.reconnect_state.attempt_count, 1);
-        // 第 3 次重连（t=1000）：退避期满，再次尝试，失败 → backoff 翻倍 2000→4000
-        let r = client.try_reconnect(1000);
-        assert!(r.is_err());
-        assert_eq!(client.reconnect_state.attempt_count, 2);
-        assert_eq!(client.reconnect_state.backoff_ms, 4000);
-        assert_eq!(client.reconnect_state.next_retry_ms, 3000); // 1000 + 2000
+        assert_eq!(client.state, ConnectionState::Disconnected);
+        // 断线状态下 publish/subscribe 拒绝（NotConnected）——重连由
+        // plugin 层 connect 承担。
+        assert!(matches!(
+            client.publish("t", b"x", QoS::AtLeastOnce, 0),
+            Err(MqttError::NotConnected)
+        ));
+        assert!(matches!(
+            client.subscribe("t", QoS::AtMostOnce),
+            Err(MqttError::NotConnected)
+        ));
     }
 
     // ===== v0.221.0（B2-04）：QoS 持久化集成 =====

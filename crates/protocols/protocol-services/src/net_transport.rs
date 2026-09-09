@@ -272,6 +272,7 @@ impl<D: NetDevice + 'static> NetTransportFactory<D> {
             stack: self.stack.clone(),
             id,
             recv_timeout_ms: spec.recv_timeout_ms,
+            connected: true,
         }))
     }
 
@@ -313,14 +314,27 @@ impl<D: NetDevice + 'static> NetTransportFactory<D> {
 
 /// `TransportHandle` 实现：TCP 流（连接在 `open` 完成；收发语义与 45 卷
 /// `HandleAdapter`/`SmoltcpTcpTransport` 一致——轮询推进协议栈）。
+///
+/// 蓝图 70.4（WP-70.4.1 / N8·N9 修复）：socket 所有权显式状态机——
+/// `connected = true` 当且仅当 `id` 指向集合内有效 socket。close 恒幂等
+/// （二次 close/close 后观察不再触碰已移除槽位）；reconnect 失败后句柄
+/// 停留 Disconnected（可再次 reconnect/send 得到显式错误，不再以陈旧 id
+/// 触碰后来复用的新连接）。`id` 仅在 `connected == true` 时被解引用。
 pub struct TcpStreamHandle<D: NetDevice> {
     stack: Rc<RefCell<NetStack<D>>>,
     id: SocketHandle,
     recv_timeout_ms: u64,
+    /// 显式所有权状态（70.4 WP-70.4.1 单一事实源）：false = 无 socket
+    /// （close/建联失败/重连失败后）；此时 `id` 是陈旧值，任何方法不得
+    /// 用其构造 `TcpSocket`。
+    connected: bool,
 }
 
 impl<D: NetDevice + 'static> TransportHandle for TcpStreamHandle<D> {
     fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
+        if !self.connected {
+            return Err(TransportError::Closed);
+        }
         let mut stack = self.stack.borrow_mut();
         let mut sent = 0usize;
         let mut tcp = TcpSocket::new(self.id);
@@ -340,6 +354,9 @@ impl<D: NetDevice + 'static> TransportHandle for TcpStreamHandle<D> {
     }
 
     fn recv(&mut self, buf: &mut [u8]) -> Result<usize, TransportError> {
+        if !self.connected {
+            return Err(TransportError::Closed);
+        }
         let mut stack = self.stack.borrow_mut();
         let mut tcp = TcpSocket::new(self.id);
         for _ in 0..self.recv_timeout_ms.max(1) {
@@ -358,6 +375,11 @@ impl<D: NetDevice + 'static> TransportHandle for TcpStreamHandle<D> {
     }
 
     fn close(&mut self) -> Result<(), TransportError> {
+        // 70.4（WP-70.4.1 / N9 修复）：close 恒幂等——无 socket 时直接
+        // 成功返回，不得以陈旧 id 触碰已移除槽位（可能已复用为他人连接）。
+        if !self.connected {
+            return Ok(());
+        }
         let mut stack = self.stack.borrow_mut();
         let mut tcp = TcpSocket::new(self.id);
         // 68.5 复查补口（REG-MQTT-BROKER-HANG 同族）：裸 remove 不发任何
@@ -369,32 +391,49 @@ impl<D: NetDevice + 'static> TransportHandle for TcpStreamHandle<D> {
         let now = eneros_time::get_monotonic_ns() / 1_000_000;
         stack.poll(now);
         stack.iface.sockets.remove(self.id);
+        self.connected = false;
         Ok(())
     }
 
     fn is_connected(&self) -> bool {
+        // 70.4：显式状态单源——无 socket 即 false（N9：close 后旧实现
+        // 仍以陈旧 id 读栈返回真值）。
+        if !self.connected {
+            return false;
+        }
         let stack = self.stack.borrow();
         TcpSocket::new(self.id).state(&stack.iface).is_connected()
     }
 
-    /// 50（WP-50.1）：断线重连到原 peer（broker 重启 seam）——移除旧 socket
-    /// 并新建连接（tcp_connect 内 poll 到 connected）。失败 → ConnectFailed。
+    /// 50（WP-50.1）：断线重连到原 peer（broker 重启 seam）——释放旧
+    /// socket（若持有）并新建连接（tcp_connect 内 poll 到 connected）。
+    ///
+    /// 70.4（WP-70.4.1 / N8 修复）：建联失败后句柄停留 Disconnected
+    /// （`connected = false`），不把 `self.id` 留在"已移除槽位"上——旧
+    /// 实现 `tcp_connect()?` 提前返回后，后续 send/recv/is_connected 以
+    /// 陈旧 id 触碰可能已复用的新连接。重试前不重复移除（`connected`
+    /// 已 false 时直接建联）。
     fn reconnect(&mut self, peer: &str) -> Result<(), TransportError> {
         let (ip, port) = parse_ip_port(peer).ok_or(TransportError::ConnectFailed)?;
-        let mut stack = self.stack.borrow_mut();
-        // 68.5（REG-MQTT-BROKER-HANG 根因修复）：旧 socket 先 abort（RST
-        // 出环让 slirp 侧连接同步清理）再移除——50 卷"一律重建"语义下，
-        // 裸 remove 留下悬挂连接占用同 4 元组，重建的新 SYN 永被丢弃
-        //（SynSent 卡死；broker 在场窗 Degraded 的直接机制）。
-        {
-            let mut old = TcpSocket::new(self.id);
-            old.abort(&mut stack.iface);
-            let now = eneros_time::get_monotonic_ns() / 1_000_000;
-            stack.poll(now);
+        if self.connected {
+            let mut stack = self.stack.borrow_mut();
+            // 68.5（REG-MQTT-BROKER-HANG 根因修复）：旧 socket 先 abort
+            // （RST 出环让 slirp 侧连接同步清理）再移除——裸 remove 留下
+            // 悬挂连接占用同 4 元组，重建的新 SYN 永被丢弃。
+            {
+                let mut old = TcpSocket::new(self.id);
+                old.abort(&mut stack.iface);
+                let now = eneros_time::get_monotonic_ns() / 1_000_000;
+                stack.poll(now);
+            }
+            stack.iface.sockets.remove(self.id);
+            self.connected = false;
         }
-        stack.iface.sockets.remove(self.id);
+        // 建联（无 socket 状态下；失败 = 显式 Err，所有权保持 Disconnected）。
+        let mut stack = self.stack.borrow_mut();
         let id = stack.tcp_connect(ip, port)?;
         self.id = id;
+        self.connected = true;
         Ok(())
     }
 
@@ -1093,5 +1132,88 @@ mod tests {
             connect_timeout_ms: 1000,
             recv_timeout_ms,
         }
+    }
+
+    // ========================================================================
+    // 蓝图 70.4 WP-70.4.1：socket 所有权显式状态机（N8/N9 修复）
+    // ========================================================================
+
+    use core::cell::RefCell as TcRefCell;
+
+    /// 直构造持有合法 socket 的 TCP 句柄（不经握手——所有权语义与连接
+    /// 成败正交；真实握手恢复由 vol4 gate 目标窗承载）。
+    fn handle_with_live_socket(
+        stack: &Rc<TcRefCell<NetStack<ScriptedNet>>>,
+    ) -> TcpStreamHandle<ScriptedNet> {
+        let id = stack
+            .borrow_mut()
+            .iface
+            .sockets
+            .add_tcp(SOCK_RX_BUF, SOCK_TX_BUF);
+        TcpStreamHandle {
+            stack: Rc::clone(stack),
+            id,
+            recv_timeout_ms: 1,
+            connected: true,
+        }
+    }
+
+    fn socket_count(stack: &Rc<TcRefCell<NetStack<ScriptedNet>>>) -> usize {
+        stack.borrow().iface.sockets.inner.iter().count()
+    }
+
+    /// N9 修复：close 恒幂等；close 后观察/收发走显式 Disconnected 事实
+    /// 源（红 = 旧实现以陈旧 id 读栈——is_connected 可能仍真、send 触碰
+    /// 已移除槽位）。
+    #[test]
+    fn close_is_idempotent_and_observers_report_disconnected() {
+        let (dev, _rx, _tx) = ScriptedNet::new();
+        let stack = Rc::new(TcRefCell::new(stack_with(dev)));
+        let mut h = handle_with_live_socket(&stack);
+        assert_eq!(socket_count(&stack), 1);
+        assert!(h.close().is_ok());
+        assert_eq!(socket_count(&stack), 0, "close 必须释放 socket");
+        // 二次 close：幂等成功、零 PANIC、socket 计数不变。
+        assert!(h.close().is_ok());
+        assert_eq!(socket_count(&stack), 0);
+        // close 后观察/收发 = Disconnected。
+        assert!(!h.is_connected(), "close 后 is_connected 必须为 false");
+        assert!(matches!(h.send(b"x"), Err(TransportError::Closed)));
+        let mut buf = [0u8; 4];
+        assert!(matches!(h.recv(&mut buf), Err(TransportError::Closed)));
+    }
+
+    /// N8 修复：重连失败后句柄停留 Disconnected（可安全观察与重试），
+    /// 不再以陈旧 id 触碰后来复用的槽位；连续失败重连零 socket 泄漏、
+    /// 零 PANIC（红 = 旧实现失败路径后 send 直接命中已移除 id）。
+    #[test]
+    fn reconnect_failure_leaves_disconnected_and_no_socket_leak() {
+        let (dev, _rx, _tx) = ScriptedNet::new();
+        let stack = Rc::new(TcRefCell::new(stack_with(dev)));
+        let mut h = handle_with_live_socket(&stack);
+        // 首次重连（无监听者）：旧 socket 释放 → tcp_connect 有界轮询后
+        // ConnectFailed（其本次 socket 亦释放）。
+        assert!(matches!(
+            h.reconnect("10.0.2.2:5502"),
+            Err(TransportError::ConnectFailed)
+        ));
+        assert!(!h.is_connected(), "失败后必须 Disconnected（N8 事实源）");
+        assert!(matches!(h.send(b"x"), Err(TransportError::Closed)));
+        let mut buf = [0u8; 4];
+        assert!(matches!(h.recv(&mut buf), Err(TransportError::Closed)));
+        let n0 = socket_count(&stack);
+        // 连续多次失败重连：状态保持、socket 数量稳定（零增长）。
+        for _ in 0..3 {
+            assert!(matches!(
+                h.reconnect("10.0.2.2:5502"),
+                Err(TransportError::ConnectFailed)
+            ));
+            assert!(!h.is_connected());
+        }
+        assert_eq!(socket_count(&stack), n0, "失败重连不得泄漏 socket");
+        // 失败重连后的 close：幂等成功（不得再移除/触碰他人槽位）。
+        assert!(h.close().is_ok());
+        assert_eq!(socket_count(&stack), n0);
+        assert!(!h.is_connected());
     }
 }

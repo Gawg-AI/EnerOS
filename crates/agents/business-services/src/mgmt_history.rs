@@ -117,8 +117,8 @@ pub fn fetch_history<C: RawIpc>(
 #[cfg(test)]
 mod spec_c_four_arm_tests {
     use eneros_agent_sdk::chunked::{
-        ack_bytes, encode_paged_header, is_pull_request, page_slice, ChunkHeader, ChunkedEvent,
-        CHUNK_MAGIC_FINAL, CHUNK_MAGIC_HEADER,
+        ack_bytes, is_pull_request, ChunkHeader, ChunkedEvent, PagedServerV2, CHUNK_MAGIC_FINAL,
+        CHUNK_MAGIC_HEADER,
     };
     use eneros_agent_sdk::history_wire::{
         answer_history_query, HistPointWire, HistoryPageSource, ROW_LEN,
@@ -139,10 +139,11 @@ mod spec_c_four_arm_tests {
         pages: alloc::rc::Rc<core::cell::RefCell<usize>>,
         /// 收到的 Header epoch 序列（R-67.4 页序单调断言）。
         epochs: alloc::rc::Rc<core::cell::RefCell<Vec<u64>>>,
-        // —— 分块状态机三件套（同 control_service_main）——
+        // —— 分块状态机三件套（同 control_service_main；分页帧律 v2
+        // 由 PagedServerV2 承载——70.3 收编）——
         rx: eneros_agent_sdk::chunked::ChunkedReceiver,
         pending: Option<Vec<u8>>,
-        paged_resp: Vec<u8>,
+        pages_v2: PagedServerV2,
     }
 
     impl FakeTelemetry {
@@ -155,7 +156,7 @@ mod spec_c_four_arm_tests {
                 epochs: alloc::rc::Rc::new(core::cell::RefCell::new(Vec::new())),
                 rx: Default::default(),
                 pending: None,
-                paged_resp: Vec::new(),
+                pages_v2: PagedServerV2::new(),
             }
         }
 
@@ -224,20 +225,32 @@ mod spec_c_four_arm_tests {
                     self.epochs.borrow_mut().push(h.epoch);
                 }
                 let h = ChunkHeader::decode(payload).unwrap();
-                let _ = self.rx.on_message(&h.encode(), true);
+                if let ChunkedEvent::Header { epoch, .. } = self.rx.on_message(&h.encode(), true) {
+                    self.pages_v2.set_txn(epoch);
+                }
                 return Ok(ack_bytes().to_vec());
             }
             if &payload[..4] == CHUNK_MAGIC_FINAL {
                 match self.pending.take() {
                     Some(full) => {
                         *self.pages.borrow_mut() += 1;
-                        self.paged_resp = self.answer(&full);
-                        Ok(encode_paged_header(self.paged_resp.len()).to_vec())
+                        let resp = self.answer(&full);
+                        self.pages_v2.on_request(payload, resp).ok_or_else(|| {
+                            AgentErrAlias::IpcError(
+                                heapless::String::try_from("paged-reject").unwrap_or_default(),
+                            )
+                        })
                     }
                     None => Ok(b"ERR:NoTransfer".to_vec()),
                 }
             } else if is_pull_request(payload) {
-                Ok(page_slice(&self.paged_resp, payload[4]).to_vec())
+                self.pages_v2
+                    .on_request(payload, Vec::new())
+                    .ok_or_else(|| {
+                        AgentErrAlias::IpcError(
+                            heapless::String::try_from("paged-reject").unwrap_or_default(),
+                        )
+                    })
             } else {
                 Err(AgentErrAlias::IpcError(
                     heapless::String::try_from("unexpected").unwrap_or_default(),
